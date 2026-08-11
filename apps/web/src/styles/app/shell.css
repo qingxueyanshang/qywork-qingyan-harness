@@ -1,0 +1,223 @@
+/*
+ * 布局与组件样式。
+ *
+ * 桌面端与手机端是**同一套组件**，差异全部由这里的媒体查询承担。断点取 820px：
+ * 侧栏 232 + 会话最小可读宽度 ~560 加起来的自然折点。
+ */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  height: 100%;
+  background: var(--bg-app);
+}
+/* 开右侧面板时让出一列。宽度固定，会话区自适应剩余空间。 */
+.app.with-panel {
+  grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
+}
+
+/* ── 连接状态条 ── */
+.conn-bar {
+  position: fixed;
+  top: calc(var(--safe-top) + var(--s-2));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: 5px var(--s-4);
+  border-radius: var(--r-full);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.conn-bar.bad {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ── 侧栏 ── */
+.sidebar-slot {
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
+  min-width: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding-top: var(--safe-top);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  height: var(--header-h);
+  padding: 0 var(--s-2) 0 var(--s-3);
+  flex: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px var(--s-2);
+  border-radius: var(--r-xs);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  letter-spacing: -0.01em;
+}
+
+.head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-1) var(--s-2) var(--s-4);
+}
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  text-align: left;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.nav-item.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.nav-item.conv {
+  padding-left: var(--s-3);
+}
+
+.nav-section {
+  margin-top: var(--s-5);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-align: left;
+}
+.section-head.static {
+  cursor: default;
+}
+
+.sidebar-foot {
+  flex: none;
+  padding: var(--s-2) var(--s-3) calc(var(--s-2) + var(--safe-bottom));
+  border-top: 1px solid var(--border-subtle);
+}
+
+.git-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+/* 扩展摘要比 git 分支次要一级：装了什么是背景信息，分支是随时要看的 */
+.ext-chip {
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  min-width: 0;
+  margin-bottom: 4px;
+}
+/* 沙箱状态。没有沙箱时用警告色——那条信息比「装了几个插件」重要得多，
+   而它恰恰是默认状态，不能和普通说明文字长得一样。 */
+.sandbox-chip.warn {
+  color: var(--warning, #b8860b);
+}
+.git-count {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.git-count.danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ── 主区 ── */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: var(--header-h);
+  padding: 0 var(--s-3);
+  padding-top: var(--safe-top);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: none;
+}
+
+.title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  margin: 0;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.drawer-toggle {
+  display: none;
+}

@@ -1,0 +1,229 @@
+/* 命令面板、授权、手机接入。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── 命令面板 ── */
+/*
+ * 点空白关闭用的遮罩。
+ *
+ * 它是**对话框的兄弟节点**：套成父节点的话，要么是 div 加 onClick（键盘够不着），
+ * 要么是 button 里塞交互内容（无效 HTML，而且得靠 stopPropagation 兜）。
+ * 兄弟结构下两个问题一起消失，代价只是多一层 pass-through 的 CSS。
+ */
+.backdrop-close {
+  position: fixed;
+  inset: 0;
+  z-index: 79;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  cursor: default;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(3px);
+}
+
+/* 遮罩层只负责居中，点击穿透到底下的关闭按钮；对话框自己重新接住点击。 */
+.sheet-backdrop.pass-through,
+.palette-backdrop.pass-through {
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.sheet-backdrop.pass-through > *,
+.palette-backdrop.pass-through > * {
+  pointer-events: auto;
+}
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: start center;
+  padding-top: 14vh;
+}
+
+.palette {
+  width: min(560px, calc(100vw - var(--s-8)));
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  padding: var(--s-4);
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: none;
+  outline: none;
+  font-size: var(--fs-lg);
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--s-1);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--text-primary);
+}
+.palette-item.active {
+  background: var(--bg-active);
+}
+.palette-item kbd {
+  margin-left: auto;
+}
+.palette-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+}
+
+/* ── 授权 ── */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.36);
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+}
+
+.sheet {
+  width: min(520px, 100%);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sheet-tool {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.sheet-preview {
+  margin: 0;
+  padding: var(--s-4);
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--bg-inset);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sheet-actions {
+  display: flex;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+}
+
+.btn {
+  padding: 7px var(--s-4);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-raised);
+  font-size: var(--fs-base);
+  transition: background var(--t-fast) var(--ease);
+}
+.btn:hover {
+  background: var(--bg-hover);
+}
+.btn.ghost {
+  border-color: transparent;
+  color: var(--text-secondary);
+  margin-right: auto;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+/* ── 手机接入 ── */
+.pair-sheet {
+  width: min(360px, 100%);
+}
+.pair-body {
+  padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+}
+.pair-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  align-self: stretch;
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+.pair-qr {
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  /* 二维码必须白底黑码：反色的码大量扫码器识别不了。 */
+  background: #fff;
+  line-height: 0;
+}
+.pair-addrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  justify-content: center;
+}
+.pair-addr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+.pair-addr.active {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--accent-soft);
+}
+.pair-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}

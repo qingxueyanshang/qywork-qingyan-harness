@@ -1,0 +1,264 @@
+/* 右侧面板：文件树、预览、git、diff。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── 右侧面板 ── */
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: var(--header-h);
+  padding: 0 var(--s-2) 0 var(--s-3);
+  padding-top: var(--safe-top);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: none;
+}
+
+.side-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+}
+.side-tab {
+  padding: 4px var(--s-3);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.side-tab:hover {
+  background: var(--bg-hover);
+}
+.side-tab.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.side-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 文件树 ── */
+.file-browser {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.file-browser > .tree {
+  overflow-y: auto;
+  padding: var(--s-2) var(--s-1);
+}
+
+.tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.tree-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── 预览 ── */
+.preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-1);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  flex: none;
+}
+.preview-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  background: var(--bg-app);
+}
+.preview-foot {
+  flex: none;
+  padding: 4px var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.preview-note {
+  padding: var(--s-6);
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.preview-loading {
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  animation: sweep 1.1s var(--ease) infinite;
+}
+@keyframes sweep {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+.preview-media {
+  display: block;
+  max-width: 100%;
+  margin: var(--s-4) auto;
+}
+.preview-audio {
+  display: block;
+  width: calc(100% - var(--s-8));
+  margin: var(--s-6) auto;
+}
+.preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+.code-view {
+  height: 100%;
+}
+
+/* ── git 面板 ── */
+.git-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-2);
+}
+.git-conflict {
+  margin: 0 var(--s-1) var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+.git-section {
+  margin-bottom: var(--s-4);
+}
+.git-section-head {
+  padding: 4px var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.git-branches,
+.git-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.git-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.git-branch.current {
+  color: var(--text-primary);
+  font-weight: 500;
+  background: var(--bg-active);
+}
+.git-file {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.git-file:hover {
+  background: var(--bg-hover);
+}
+.git-file.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.git-flag {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.git-flag[data-status="M"] {
+  color: var(--warning);
+}
+.git-flag[data-status="A"] {
+  color: var(--success);
+}
+.git-flag[data-status="D"] {
+  color: var(--danger);
+}
+.git-flag[data-status="!"] {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* ── diff ── */
+.diff-body {
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  overflow-x: auto;
+}
+.diff-line {
+  padding: 0 var(--s-3);
+  white-space: pre;
+}
+.diff-line[data-kind="add"] {
+  background: var(--diff-add-bg);
+  color: var(--success);
+}
+.diff-line[data-kind="del"] {
+  background: var(--diff-del-bg);
+  color: var(--danger);
+}
+.diff-line[data-kind="hunk"] {
+  color: var(--accent);
+  background: var(--bg-inset);
+}
+.diff-line[data-kind="meta"] {
+  color: var(--text-tertiary);
+}

@@ -1,0 +1,199 @@
+/* 工具类、响应式断点、任务清单。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── 工具 ── */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.icon-spin {
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 遮罩是个 button（键盘可达），所以要把浏览器给按钮的默认样式全部抹掉，
+   否则窄屏下会看到一圈边框和默认背景。 */
+.drawer-scrim {
+  display: none;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: default;
+}
+
+/* ══════════ 窄屏：侧栏变抽屉 ══════════ */
+@media (max-width: 820px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar-slot {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: min(84vw, 300px);
+    transform: translateX(-100%);
+    transition: transform var(--t-base) var(--ease);
+    box-shadow: var(--shadow-lg);
+  }
+  .drawer-open .sidebar-slot {
+    transform: translateX(0);
+  }
+
+  .drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-base) var(--ease);
+  }
+  .drawer-open .drawer-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .drawer-toggle {
+    display: grid;
+  }
+
+  .transcript-inner,
+  .composer-wrap {
+    padding-left: var(--s-3);
+    padding-right: var(--s-3);
+  }
+
+  /* 窄屏放不下三栏：面板改为覆盖全屏，而不是把会话区挤成一条缝。 */
+  .app.with-panel {
+    grid-template-columns: 1fr;
+  }
+  .side-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    border-left: none;
+  }
+
+  .bubble {
+    max-width: 88%;
+  }
+
+  /* 授权在手机上从底部升起，拇指够得着。 */
+  .sheet-backdrop {
+    place-items: end stretch;
+    padding: 0;
+  }
+  .sheet {
+    width: 100%;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    padding-bottom: var(--safe-bottom);
+  }
+  .sheet-actions {
+    flex-wrap: wrap;
+  }
+  .sheet-actions .btn {
+    flex: 1;
+    min-width: 96px;
+  }
+
+  .palette-backdrop {
+    padding-top: 8vh;
+  }
+}
+
+/* ── 任务清单 ──
+   固定在会话流上方：计划是当前状态不是历史事件，插进流里会随滚动跑出视野，
+   而用户最需要看它的时刻恰恰是在往下翻输出的时候。 */
+.plan-card {
+  flex: none;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+}
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+}
+.plan-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-count {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.plan-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.plan-item.now {
+  color: var(--text-primary);
+}
+/* 已完成的划掉并压到最低对比度：它还在那里（说明做过了），但不再抢注意力 */
+.plan-item.done {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.plan-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+}
+.plan-item.done .plan-mark {
+  color: var(--success);
+}
+.plan-item.now .plan-mark {
+  color: var(--accent);
+}
+.plan-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: currentColor;
+  opacity: 0.5;
+}
+.plan-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

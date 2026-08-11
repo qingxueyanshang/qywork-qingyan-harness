@@ -1,0 +1,457 @@
+/* 会话流、思考、Markdown、工具组卡与工具卡。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── 会话流 ── */
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  /* 滚动锚定：新内容插入时不让浏览器把视口往回跳 */
+  overflow-anchor: none;
+}
+
+.transcript-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--s-6) var(--s-5) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.row {
+  display: flex;
+}
+
+/* 用户消息**左对齐**，和助手正文、工具卡在同一条竖线上。
+ *
+ * 原先是右对齐气泡。它在两个人来回聊天的场景里没问题，但这是个编码 agent：
+ * 一轮里除了两条对话，还有工具卡、思考折叠、压缩提示、计划清单，全都是左对齐的。
+ * 唯独用户消息甩到右边，眼睛得在两条竖线之间来回跳，中间那大片空白既不承载
+ * 信息也读不过去——参照物（Codex）也是单列，原因同此。
+ *
+ * 区分靠底色，不靠位置：位置这个维度留给「层级」（工具卡缩进、思考折叠），
+ * 不该同时再表达「谁说的」。
+ */
+.bubble {
+  max-width: 100%;
+  padding: 8px var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+}
+
+/* ── 思考 ── */
+.thinking {
+  border-left: 2px solid var(--border-default);
+  padding-left: var(--s-3);
+}
+.thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+.thinking-body {
+  margin-top: var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+}
+
+/* ── Markdown ── */
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p {
+  margin: 0 0 var(--s-3);
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.markdown h1 {
+  font-size: var(--fs-xl);
+}
+.markdown h2 {
+  font-size: var(--fs-lg);
+}
+.markdown h3 {
+  font-size: var(--fs-md);
+}
+.markdown ul,
+.markdown ol {
+  margin: 0 0 var(--s-3);
+  padding-left: var(--s-5);
+}
+.markdown li {
+  margin: 2px 0;
+}
+.markdown blockquote {
+  margin: 0 0 var(--s-3);
+  padding-left: var(--s-3);
+  border-left: 2px solid var(--border-default);
+  color: var(--text-secondary);
+}
+.markdown :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--s-5) 0;
+}
+.markdown a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.code-block {
+  position: relative;
+  margin: 0 0 var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  overflow-x: auto;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+/*
+ * 语法着色。
+ *
+ * 自己定义而不是引 highlight.js 的现成主题：现成主题是写死的一套亮色或暗色，
+ * 不跟随 prefers-color-scheme，也和这里的调色板对不上。
+ *
+ * 只用六个语义槽（关键字/字符串/数字/注释/函数/类型），不做二十种颜色的彩虹——
+ * 代码块的作用是让人读懂结构，不是当装饰画。注释刻意压到最低对比度，
+ * 它是所有 token 里最不需要被抢眼的。
+ */
+:root {
+  --hl-keyword: #8250df;
+  --hl-string: #0a6b3d;
+  --hl-number: #0550ae;
+  --hl-comment: #8b8b93;
+  --hl-function: #6639ba;
+  --hl-type: #953800;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hl-keyword: #d2a8ff;
+    --hl-string: #7ee787;
+    --hl-number: #79c0ff;
+    --hl-comment: #7a7a84;
+    --hl-function: #d2a8ff;
+    --hl-type: #ffa657;
+  }
+}
+:root[data-theme="dark"] {
+  --hl-keyword: #d2a8ff;
+  --hl-string: #7ee787;
+  --hl-number: #79c0ff;
+  --hl-comment: #7a7a84;
+  --hl-function: #d2a8ff;
+  --hl-type: #ffa657;
+}
+
+.hljs-keyword,
+.hljs-built_in,
+.hljs-literal,
+.hljs-selector-tag {
+  color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-attr {
+  color: var(--hl-string);
+}
+.hljs-number,
+.hljs-meta {
+  color: var(--hl-number);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--hl-function);
+}
+.hljs-type,
+.hljs-class,
+.hljs-title.class_,
+.hljs-variable.language_,
+.hljs-tag {
+  color: var(--hl-type);
+}
+.hljs-strong {
+  font-weight: 600;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.code-lang {
+  position: absolute;
+  top: 6px;
+  right: var(--s-3);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-ui);
+  /* 不挡住代码的横向滚动 */
+  pointer-events: none;
+}
+
+/* 宽表格必须能独立横向滚动，否则会把整页撑出横向滚动条。 */
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 var(--s-3);
+}
+.markdown table {
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.markdown th,
+.markdown td {
+  padding: 5px var(--s-3);
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+}
+.markdown th {
+  background: var(--bg-sunken);
+  font-weight: 600;
+}
+
+/* ── 工具组卡 ── */
+.tool-group {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.tool-group.failed {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border-subtle));
+}
+.tool-group-body {
+  padding: var(--s-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── 工具卡 ── */
+.tool {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.tool.failed {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border-subtle));
+}
+
+/*
+ * 已被重试接替的 run：降透明度但完整保留。
+ * 这些步骤是真实发生过的历史（文件真的改了、命令真的跑了），
+ * 折叠或隐藏会让用户看不到那次失败到底做了什么，而排查恰恰需要这段。
+ */
+.superseded {
+  opacity: 0.45;
+}
+.superseded:hover {
+  opacity: 0.8;
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 7px var(--s-3);
+  font-size: var(--fs-sm);
+  text-align: left;
+  min-width: 0;
+}
+.tool-head:hover {
+  background: var(--bg-hover);
+}
+
+.tool-status {
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  flex: none;
+}
+.tool-status.ok {
+  color: var(--success);
+}
+.tool-status.bad {
+  color: var(--danger);
+}
+
+.tool-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  flex: none;
+}
+
+.tool-label {
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.tool-target {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+
+.tool-time {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.tool-body {
+  padding: 0 var(--s-3) var(--s-3) var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.tool-msg {
+  padding-top: var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.tool-out {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  max-height: 300px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 竖排而不是横排：message 里可能带配置文件路径这种换行内容，
+   横排 + baseline 对齐会把第二行挤到重试按钮下面去。 */
+.error-card {
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  align-items: flex-start;
+}
+.error-card strong {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.error-card .hint {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+/* 指令被拒绝的回执：比错误轻，但必须看得见——静默吞掉正是要修的问题 */
+.notice-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.notice-card span {
+  flex: 1;
+}
+
+/* 卡片内的次级按钮：不抢视觉，但确实可点 */
+.ghost-btn {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.ghost-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* 压缩事件：默认极轻，失败时才醒目 */
+.compaction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--s-1) 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+.compaction.failed {
+  color: var(--danger);
+}
+
+.run-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: var(--s-1);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.run-status.abnormal {
+  color: var(--warning);
+}
+.run-status .dot {
+  opacity: 0.5;
+}
+
+/*
+ * 空会话：输入区上浮居中，会话区收成 0 高。
+ * 不加任何引导文案（需求 5、14）——输入框本身已经说明了该做什么。
+ */
+.main.empty .transcript {
+  flex: 0 1 auto;
+}
+.main.empty .composer-wrap {
+  margin-top: auto;
+  margin-bottom: auto;
+}
