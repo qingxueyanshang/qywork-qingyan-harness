@@ -64,7 +64,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { type BuiltinBackend, type Role, TeamOrchestrator } from '@qywork/team'
-import { resolveInWorkspace } from '@qywork/tools'
+import { detectSandbox, resolveInWorkspace } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { EventBus } from './bus.ts'
 import { listTree, preview } from './files.ts'
@@ -474,11 +474,25 @@ function handleHello(
         plugins: deps.extensions.plugins,
         teamBackends: deps.extensions.teamBackends,
         mcpServers: deps.extensions.mcpServers,
+        sandbox: sandboxCapability(),
       },
     }),
   )
 
   for (const f of backlog) ws.send(JSON.stringify(f))
+}
+
+/**
+ * 沙箱状态的握手形态。
+ *
+ * `detectSandbox()` 自己带缓存，所以每次握手都调不额外起进程；
+ * 但**必须每次握手都重新取**而不是在 serve 启动时算一次存下来——
+ * 那样一来「装上 bwrap 之后重连一下就生效」这件事就不成立了，
+ * 用户得重启整个服务，而他不会知道要重启。
+ */
+function sandboxCapability(): { backend: string; active: boolean; reason: string } {
+  const s = detectSandbox()
+  return { backend: s.backend, active: s.active, reason: s.reason }
 }
 
 interface CommandDeps {

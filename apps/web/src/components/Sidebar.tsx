@@ -49,6 +49,26 @@ export function Sidebar(props: { onClose?: () => void }) {
     return parts.join(' · ')
   }
 
+  /**
+   * 沙箱状态。**与扩展摘要相反：没有的时候更要显示。**
+   *
+   * 扩展是「装了才说」——一条恒显示的「0 个插件」只占地方。
+   * 沙箱是「没有才更要说」：用户以为模型跑的命令被拦得住，而实际上没有，
+   * 是这套权限模型最危险的误解，而界面是他唯一看得到的地方
+   * （`qy config` 桌面端用户根本不会去跑）。
+   *
+   * 报后端名不报布尔值，理由同 ServerCapabilities 那条注释。
+   */
+  const sandboxChip = () => {
+    const sb = state.capabilities?.sandbox
+    if (!sb) return null
+    return {
+      active: sb.active,
+      label: sb.active ? `沙箱 ${sb.backend}` : '无内核沙箱',
+      title: sb.reason,
+    }
+  }
+
   return (
     <nav class="sidebar">
       <header class="sidebar-head">
@@ -134,6 +154,20 @@ export function Sidebar(props: { onClose?: () => void }) {
             握手里早就带着 plugins / teamBackends / mcpServers，但从来没有任何组件
             读过 state.capabilities——存了不渲染，等于服务端认真算出来的东西
             一路传到前端然后丢掉。装没装上、连没连通，用户在别处无从知道。 */}
+        <Show when={sandboxChip()}>
+          {(chip) => (
+            <div
+              class="ext-chip sandbox-chip"
+              classList={{ warn: !chip().active }}
+              title={chip().title}
+            >
+              <span class="truncate">
+                {chip().active ? '✓' : '⚠'} {chip().label}
+              </span>
+            </div>
+          )}
+        </Show>
+
         <Show when={extensionSummary()}>
           {(text) => (
             <div class="ext-chip" title={text()}>

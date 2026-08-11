@@ -145,15 +145,24 @@ describe('平台判定', () => {
     if (s.active) expect(['bwrap', 'seatbelt']).toContain(s.backend)
   })
 
-  test('原生 Windows 一律报「没有内核边界」', () => {
-    // 这条锁的是**如实上报**：合并成一个「有沙箱」的布尔值是插件那边踩过的坑，
-    // 用户看到「开」就以为全保住了。
-    // macOS 不在这里断死——它现在有 seatbelt，能不能用由运行期自检说了算。
+  test('每个平台要么给出后端，要么给出下一步', () => {
+    /*
+     * 这条原来写的是「原生 Windows 一律报没有内核边界」——**把某个平台今天的
+     * 实现进度写进了断言**。实现一往前走它就红，而红的原因是好事；
+     * 反过来实现退回去（Windows 那条最后决定不做，ROADMAP §42），它又得再改一次。
+     *
+     * 真正该锁的是**如实上报**这条不变量，它跟哪个平台有没有沙箱无关：
+     * 有边界就说清是哪个后端，没有就说清下一步怎么办——
+     * 两种情况都不能只丢一句「不支持」。
+     */
     const s = detectSandbox()
-    if (process.platform === 'win32') {
-      expect(s.active).toBe(false)
-      // 「不支持」没有下一步。必须给得出一条能照着做的路。
-      expect(s.reason).toContain('WSL2')
+    if (s.active) {
+      expect(s.backend).not.toBe('none')
+      expect(s.reason).toContain('实测')
+    } else {
+      expect(s.backend).toBe('none')
+      // 「没有」必须带着可操作的下一步：装什么、开什么、或者去哪儿跑。
+      expect(s.reason).toMatch(/装|升级|WSL2|运行|启用/)
     }
   })
 

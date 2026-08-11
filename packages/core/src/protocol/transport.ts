@@ -51,6 +51,17 @@ export interface ServerCapabilities {
   teamBackends: string[]
   /** 已连上的 MCP server 名。连不上的不在这里——报了等于骗客户端。 */
   mcpServers: string[]
+  /**
+   * shell 命令有没有内核级边界。
+   *
+   * **报后端名而不是布尔值。** 合并成 `sandboxed: true/false` 是插件那边踩过的坑
+   * （ARCHITECTURE §24.1）：用户看到「开」就以为全都保住了，而不同后端、
+   * 不同平台保住的东西不一样。`'none'` 时 `reason` 说得出为什么、下一步怎么办。
+   *
+   * 这条必须进握手：桌面端和手机端上，用户唯一能知道「我这条命令跑在什么边界里」
+   * 的地方就是界面——而 `qy config` 他们看不到。
+   */
+  sandbox: { backend: string; active: boolean; reason: string }
 }
 
 export interface HelloErrFrame {
