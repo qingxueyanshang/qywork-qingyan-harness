@@ -1,0 +1,403 @@
+/* 工作区、分支条、设置、插件、定时任务、工作区列表。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ───────────────────────── 工作区 ───────────────────────── */
+
+/* 只读的一行，不是按钮：它现在只回答「我在哪」。
+   做成按钮就等于承诺点得动，而切换工作区要重启 sidecar，不在这一轮范围里。 */
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px var(--s-3);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.workspace-row svg {
+  flex: none;
+}
+
+.settings-entry {
+  width: 100%;
+}
+
+/* ───────────────────────── 分支条 ───────────────────────── */
+
+.branch-bar {
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.branch-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px var(--s-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.branch-chip:hover {
+  background: var(--bg-hover);
+}
+.branch-chip svg:last-child {
+  margin-left: auto;
+  flex: none;
+}
+
+/* ───────────────────────── 设置 ───────────────────────── */
+
+/* 比默认 sheet 宽：模型档案是一组并排的字段，520px 下每个输入框都只剩半行，
+   编辑 baseUrl 这类长值时看不到自己在改什么。 */
+.settings-sheet {
+  width: min(720px, 100%);
+  max-height: min(82vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+.settings-sheet .sheet-head {
+  padding: var(--s-2) var(--s-3);
+  font-weight: 400;
+}
+.sheet-body {
+  overflow-y: auto;
+  padding: var(--s-4);
+  min-height: 0;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.settings-loading {
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.field-label {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+/* 提示行恒为次要级：它解释代价与边界，不该和输入框抢注意力 */
+.field-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.field-path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 6px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.field textarea {
+  resize: vertical;
+}
+.code-area {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.profile-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+/* 当前档案要一眼看出来：改错档案是这个页面最容易犯的错，
+   而它的后果（下一轮用了另一个模型和另一份计价）要到账单上才显形 */
+.profile-card.active {
+  border-color: var(--accent);
+}
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.profile-name {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.profile-head .icon-btn {
+  margin-left: auto;
+}
+
+.settings-save {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  position: sticky;
+  bottom: 0;
+  padding-top: var(--s-2);
+  background: var(--bg-raised);
+}
+.save-msg {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+/* 失败必须显眼且带原因。只说「保存失败」等于让用户猜哪一条不合格。 */
+.save-msg.bad {
+  color: var(--danger);
+}
+
+.settings-notices {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+.settings-notices.bad {
+  color: var(--danger);
+}
+
+.btn-primary {
+  padding: 6px var(--s-4);
+  border-radius: var(--r-xs);
+  background: var(--accent);
+  color: var(--text-inverted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+}
+.btn-ghost {
+  align-self: flex-start;
+  padding: 5px var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.btn-ghost:hover {
+  background: var(--bg-hover);
+}
+
+/* ───────────────────────── 插件 ───────────────────────── */
+
+.plugins-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.plugins-empty {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.plugins-section-head {
+  margin-top: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.plugin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+/* 装失败的必须显眼：它是用户唯一能据以排查「我明明放进去了」的东西 */
+.plugin-card.failed {
+  border-color: var(--danger);
+}
+.plugin-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.plugin-id {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+.plugin-version {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.plugin-isolation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+/* 「有」和「无」都照实显示，两者都不是错误状态——
+   把「无」画成红色会让「node 版本不够所以没有出网闸」看起来像故障 */
+.iso-flag {
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  background: var(--success-soft);
+  color: var(--success);
+}
+.iso-flag.off {
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+}
+.plugin-tools {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--fs-xs);
+}
+.plugin-tools code {
+  font-family: var(--font-mono);
+}
+.field-hint.bad {
+  color: var(--danger);
+}
+
+/* ───────────────────────── 定时任务 ───────────────────────── */
+
+/* 前提写在最前面，不折叠、不淡化：
+   一个用户以为在后台跑、实际不跑的定时任务，比没有这个功能坏得多。 */
+.schedule-caveat {
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-xs);
+  background: var(--warning-soft, var(--bg-inset));
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+/* 停用的整条压暗，但**照常显示全部内容**：
+   折叠起来会让人忘了自己还有这条任务。 */
+.schedule-card.off {
+  opacity: 0.55;
+}
+.schedule-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.schedule-title {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.schedule-head .icon-btn {
+  margin-left: auto;
+}
+.schedule-prompt {
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.schedule-actions {
+  display: flex;
+  gap: var(--s-2);
+}
+
+/* ───────────────────────── 工作区列表 ───────────────────────── */
+
+.workspace-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ws-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.ws-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 当前工作区禁用而不是隐藏：看到自己在列表里的哪一项，
+   比「当前那项凭空消失」更容易建立位置感。 */
+.ws-item.current {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.ws-item:disabled {
+  cursor: default;
+}
+.ws-name {
+  flex: none;
+  font-weight: 500;
+}
+.ws-path {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.install-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--r-sm);
+}
+.install-box .btn-ghost {
+  align-self: flex-start;
+}
+.plugin-head .icon-btn {
+  margin-left: auto;
+}

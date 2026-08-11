@@ -1,0 +1,126 @@
+/* Agent Team 面板。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── Agent Team 面板 ── */
+.team-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-3);
+}
+.team-error {
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+.team-empty {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+.team-empty .hint {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.team-empty code {
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+}
+.team-roles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.team-role {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.team-role-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.team-role-name {
+  flex: 1;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.team-role-backend {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.team-role-desc {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.team-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.team-goal {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+.team-start {
+  align-self: flex-end;
+  padding: 5px var(--s-4);
+  border-radius: var(--r-full);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.team-start:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.team-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.team-member {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.team-member.failed {
+  color: var(--danger);
+}
+.team-member-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+}
+.team-member-name {
+  flex: none;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.team-member-summary {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}

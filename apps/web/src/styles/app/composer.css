@@ -1,0 +1,190 @@
+/* 输入区。
+ *
+ * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+
+/* ── 输入区 ── */
+.composer-wrap {
+  flex: none;
+  padding: 0 var(--s-5) calc(var(--s-4) + var(--safe-bottom));
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.changes-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+  padding: 4px var(--s-3);
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.changes-chip .add {
+  color: var(--success);
+}
+.changes-chip .del {
+  color: var(--danger);
+}
+
+.composer {
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color var(--t-base) var(--ease),
+    box-shadow var(--t-base) var(--ease);
+}
+.composer:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  padding: var(--s-3) var(--s-4) var(--s-1);
+  border: none;
+  background: none;
+  resize: none;
+  outline: none;
+  /* 移动端 Safari 对 <16px 的输入框会自动放大页面，锁死 16px 避免。 */
+  font-size: 16px;
+  line-height: 1.6;
+  max-height: 200px;
+  overflow-y: auto;
+}
+@media (min-width: 821px) {
+  .composer-input {
+    font-size: var(--fs-md);
+  }
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: var(--s-1) var(--s-2) var(--s-2);
+}
+
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-full);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.mode-chip:hover {
+  background: var(--bg-hover);
+}
+.mode-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mode-chip:disabled:hover {
+  background: transparent;
+}
+
+/* 模型选择器：向上弹出——输入区贴着窗口底部，向下会被裁掉 */
+.model-picker {
+  position: relative;
+}
+.model-picker .mode-chip {
+  max-width: 190px;
+}
+.model-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--s-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.model-menu-error {
+  padding: var(--s-2) var(--s-3);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.model-item:hover {
+  background: var(--bg-hover);
+}
+.model-item.active {
+  color: var(--accent);
+}
+.model-item .truncate {
+  flex: 1;
+}
+.model-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+.ctx-meter {
+  padding: 3px var(--s-2);
+  border-radius: var(--r-full);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-meter.warn {
+  color: var(--warning);
+  background: var(--bg-inset);
+}
+
+.cost {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  margin-right: var(--s-1);
+}
+
+.send-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-full);
+  background: var(--text-primary);
+  color: var(--bg-app);
+  transition:
+    opacity var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+.send-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.send-btn:not(:disabled):active {
+  transform: scale(0.94);
+}
+.send-btn.stop {
+  background: var(--danger);
+  color: #fff;
+}
