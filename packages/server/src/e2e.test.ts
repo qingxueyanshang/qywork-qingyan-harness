@@ -199,7 +199,13 @@ describe('WebSocket 协议与一轮完整 run', () => {
     )
     const frames: EventEnvelope<AgentEvent>[] = []
     const rejections: { command?: string; reason?: string }[] = []
-    let helloOk: { type?: string; capabilities?: { pty?: boolean } } | null = null
+    let helloOk: {
+      type?: string
+      capabilities?: {
+        pty?: boolean
+        sandbox?: { backend?: string; active?: boolean; reason?: string }
+      }
+    } | null = null
     let permissionAsks = 0
     const done = Promise.withResolvers<void>()
 
@@ -235,7 +241,32 @@ describe('WebSocket 协议与一轮完整 run', () => {
       }),
     )
     await Bun.sleep(200)
-    expect((helloOk as { type?: string } | null)?.type).toBe('hello.ok')
+    const hello = helloOk as {
+      type?: string
+      capabilities?: {
+        pty?: boolean
+        sandbox?: { backend?: string; active?: boolean; reason?: string }
+      }
+    } | null
+    expect(hello?.type).toBe('hello.ok')
+
+    /*
+     * 沙箱状态必须**进握手**。
+     *
+     * 桌面端和手机端用户唯一能知道「我这条命令跑在什么边界里」的地方就是界面——
+     * `qy config` 他们根本不会去跑。而「以为被拦住了、其实没有」是这套权限模型
+     * 最危险的误解，所以这条不能是个加了没人验的字段。
+     *
+     * 断言的是**形状与自洽**，不是具体后端：CI 跑在什么平台上不该决定这条测试的成败。
+     */
+    const sb = hello?.capabilities?.sandbox
+    expect(sb).toBeDefined()
+    expect(typeof sb?.active).toBe('boolean')
+    // 报后端名而不是布尔值——合并成一个 boolean 是插件那边踩过的坑。
+    expect(typeof sb?.backend).toBe('string')
+    // 「没有沙箱」也必须说得出为什么、下一步怎么办。
+    expect((sb?.reason ?? '').length).toBeGreaterThan(10)
+    if (sb?.backend === 'none') expect(sb.active).toBe(false)
 
     // 指令 fail-closed：未实现的指令必须有回执。
     // 静默吞掉的话，客户端永远等不到反馈，而「服务端正在处理」与

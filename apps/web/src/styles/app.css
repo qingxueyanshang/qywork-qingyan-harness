@@ -174,6 +174,11 @@
   min-width: 0;
   margin-bottom: 4px;
 }
+/* 沙箱状态。没有沙箱时用警告色——那条信息比「装了几个插件」重要得多，
+   而它恰恰是默认状态，不能和普通说明文字长得一样。 */
+.sandbox-chip.warn {
+  color: var(--warning, #b8860b);
+}
 .git-count {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;

@@ -72,6 +72,8 @@ qy serve                本地服务，桌面端与手机端都连它
   --port / --host / --cwd / --static
   --print-token         把令牌打到 stdout（供 Tauri 读取）
   --parent-pid <pid>    父进程退出时一并退出
+qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
+  --json                给脚本用（只有阻断项才退非零）
 qy mcp                  检查 .qy/mcp.json 里的 server 连没连上
   --tools               连带列出每个 server 提供的工具
 qy plugins              检查 .qy/plugins 里的插件装没装上、隔离到什么程度

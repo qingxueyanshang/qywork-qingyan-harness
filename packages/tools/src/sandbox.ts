@@ -20,7 +20,7 @@
  * |---|---|---|
  * | Linux / WSL2 | bubblewrap | 内核级：写边界 + 凭证目录屏蔽 |
  * | macOS | seatbelt（`sandbox-exec`） | 同上，用 SBPL 规则而不是挂载表达 |
- * | 原生 Windows | 暂无 | 只有静态规则与分类器 |
+ * | 原生 Windows | 暂无（决定不做，ROADMAP §42） | 只有静态规则与分类器 |
  * | WSL1 | 暂无 | 没有独立内核，namespace 不可用 |
  *
  * 合并成一个布尔值是插件那边踩过的坑（ROADMAP §16）：用户看到「沙箱：开」
@@ -302,17 +302,35 @@ function probe(): SandboxStatus {
     }
   }
 
+  if (platform === 'win32') {
+    return {
+      backend: 'none',
+      active: false,
+      /*
+       * 措辞要**按真实的残余风险**写，不能只说「没有沙箱」。
+       *
+       * 前一版写成「只受静态规则与分类器约束，两者都是文本判断」，
+       * 读起来像「你完全没有防护」——而补完字面路径那条之后（ROADMAP §40），
+       * 确定性拦得住的东西已经不少了。把缺口说大和说小一样是不如实的，
+       * 而说大的代价是用户对提示脱敏，真出问题时那条提示已经没人看了。
+       */
+      reason:
+        '原生 Windows 上没有内核级边界：shell 命令只受硬边界 + 静态规则 + 分类器约束，' +
+        '而后两者是**文本判断**。\n' +
+        '  确定性拦得住的：家目录与系统目录（符号写法和字面绝对路径都认）、' +
+        '写 .qy/、提权、毁盘、下载即执行、写 SSH 凭据。\n' +
+        '  **拦不住的**：工作区外**且**家目录外的路径（另一块盘、ProgramData、网络共享）。\n' +
+        '  要那一层也有边界，现成的办法是在 WSL2 里运行 qy——会自动启用 bubblewrap。\n' +
+        '  为什么不在原生 Windows 上做：ROADMAP §42。',
+      platform,
+      wsl,
+    }
+  }
+
   return {
     backend: 'none',
     active: false,
-    reason:
-      '原生 Windows 上尚未接内核级边界：shell 命令只受静态规则与分类器约束，' +
-      '两者都是**文本判断**，挡不住一条没想到的写法。\n' +
-      '  想要真实边界，现成的办法是**在 WSL2 里运行 qy**——那边会自动启用 bubblewrap。\n' +
-      '  （另有一条路线：@anthropic-ai/sandbox-runtime 带 Windows 后端，\n' +
-      '   用 WFP 出网栅栏 + 专用本地账户的 ACL。它是 alpha，且需要一次管理员安装\n' +
-      '   会创建本地用户账户并装系统级网络过滤器——本项目不替你做这件事，也还没接。\n' +
-      '   见 ROADMAP §32.5。）',
+    reason: `${platform} 上没有对应的内核沙箱实现，shell 命令只受静态规则与分类器约束。`,
     platform,
     wsl,
   }
@@ -570,6 +588,11 @@ export interface GuardedSpawn {
    * 三个流的形态写死在类型里（`stdin: 'ignore'`、两条输出 `'pipe'`）。
    * 不写死的话 `proc.stdout` 的类型是 `number | ReadableStream | undefined`，
    * 每个调用方都得自己断言一次——而断言的地方就是将来改错了也不报错的地方。
+   *
+   * 这里一度抽象成过一个四成员的 `GuardedProcess` 接口，为的是让 Windows 的
+   * AppContainer 那条路（走 `CreateProcessW`，拿不到 `Bun.Subprocess`）也能塞进来。
+   * 那条路已经撤掉（ROADMAP §42），于是这个接口只剩一个实现——
+   * **只有一个实现的接口是另一种过度设计**，退回具体类型。
    */
   proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
   sandbox: SandboxStatus
@@ -591,6 +614,7 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
     : ['/bin/sh', '-c', input.command]
 
   const policy = input.policy
+
   const argv =
     policy === null || status.backend === 'none'
       ? inner

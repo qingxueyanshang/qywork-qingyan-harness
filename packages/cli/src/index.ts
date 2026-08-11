@@ -28,6 +28,7 @@ import {
 import { lanCandidates, serve } from '@qywork/server'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { detectSandbox } from '@qywork/tools'
+import { runDoctor } from './doctor.ts'
 import { runExport } from './export.ts'
 import { runInit } from './init.ts'
 import { runMcp } from './mcp.ts'
@@ -55,6 +56,10 @@ const USAGE = `qy —— qywork 编码 agent
     --static <目录>       前端构建产物目录
     --print-token         把令牌打到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
+
+  qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
+    --cwd <路径>          指定工作区
+    --json                给脚本用（只有阻断项才退非零）
 
   qy mcp                  检查 .qy/mcp.json 里的 server 连没连上
     --tools               连带列出每个 server 提供的工具
@@ -128,6 +133,7 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write(`\n${mark} shell 沙箱：${sb.backend}（${where}）\n  ${sb.reason}\n`)
     return 0
   }
+  if (cmd === 'doctor') return runDoctor(rest)
   if (cmd === 'mcp') return runMcp(rest)
   if (cmd === 'plugins') return runPlugins(rest)
   if (cmd === 'usage') return runUsage(rest)
