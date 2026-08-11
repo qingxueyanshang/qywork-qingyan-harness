@@ -1,0 +1,47 @@
+[package]
+name = "qywork"
+version = "0.1.0"
+description = "qywork —— 开源本地编程 agent"
+authors = ["qywork"]
+edition = "2021"
+rust-version = "1.80"
+
+# main.rs 只是一个薄壳，实现都在 lib.rs——这样逻辑能被 cargo test 覆盖，
+# 也能被 mobile 入口复用。
+# 注意：这一段必须放在全部 [package] 字段之后，否则后续键会被算作 lib 的键
+# （cargo 只会给一句 "unused manifest key: lib.authors" 的警告，很容易漏看）。
+[lib]
+name = "qywork_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# PTY：Windows 走 ConPTY，macOS/Linux 走 openpty。Bun 的内建 PTY 只支持 POSIX，
+# 所以交互式终端必须由 Rust 侧承担（见 pty.rs 的说明）。
+portable-pty = "0.9"
+# 文件监听：notify 在各平台用的都是内核原生通知（ReadDirectoryChangesW / FSEvents /
+# inotify），比 JS 侧轮询快一个量级，且不会在大仓库上烧 CPU。
+notify = "8"
+notify-debouncer-full = "0.5"
+parking_lot = "0.12"
+anyhow = "1"
+
+[features]
+# 由 tauri-build 生成的自定义协议开关，勿手改。
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# 单文件体积优先：这是选 Tauri 的理由之一，不该在编译配置上白白让回去。
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

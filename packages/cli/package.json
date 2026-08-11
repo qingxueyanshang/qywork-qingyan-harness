@@ -1,0 +1,23 @@
+{
+  "name": "@qywork/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qy": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --compile --minify --outfile ../../dist/qy"
+  },
+  "dependencies": {
+    "@qywork/core": "workspace:*",
+    "@qywork/runtime": "workspace:*",
+    "@qywork/server": "workspace:*",
+    "@qywork/store": "workspace:*",
+    "@qywork/tools": "workspace:*",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@qywork/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@qywork/ai": "workspace:*",
+    "@qywork/core": "workspace:*",
+    "@qywork/store": "workspace:*"
+  }
+}

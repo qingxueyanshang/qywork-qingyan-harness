@@ -1,0 +1,170 @@
+/**
+ * Provider 无关的请求/事件类型。
+ *
+ * AgentLoop 只认识这一层；换供应商不改 loop 一行代码。
+ */
+
+import type { EffortLevel, ModelSpec, ProviderKind } from './catalog.ts'
+
+// ─────────────────────────────── 配置 ───────────────────────────────
+
+export interface ProviderProfile {
+  kind: ProviderKind
+  /**
+   * 只有 baseUrl 指向本机回环时才允许为空（本地模型服务不需要鉴权）。
+   * 其余情况下 `buildAdapter` 直接抛 `no_api_key`——不发请求去等 401。
+   */
+  apiKey: string
+  /** 自定义端点（中转站、自建网关、ollama）。 */
+  baseUrl?: string
+  model: string
+  maxOutputTokens?: number
+  /** 额外请求头，给需要特殊鉴权的中转站用。 */
+  headers?: Record<string, string>
+  /**
+   * 实测出来的能力覆盖（`qy probe` 写入）。
+   *
+   * 只覆盖**探得出来的**几项。上下文窗口和计价探不出来，所以这里没有它们——
+   * 写一个猜的值进去，会把「未知计价」变成一个看起来确定的错数字。
+   */
+  capabilities?: {
+    thinking?: ModelSpec['thinking']
+    effortLevels?: ModelSpec['effortLevels']
+    thinksByDefault?: boolean
+  }
+}
+
+// ─────────────────────────────── 请求 ───────────────────────────────
+
+export interface ChatRequest {
+  model: string
+  /** 冻结前缀：跨 run 逐字节稳定。日期/技能/记忆一律不进这里。 */
+  system: SystemBlock[]
+  messages: WireMessage[]
+  tools: ToolSchema[]
+  maxOutputTokens: number
+  effort?: EffortLevel
+  thinking?: ThinkingRequest
+  /** 缓存路由亲和键；同一会话稳定。 */
+  cacheKey?: string
+  cacheTtl?: '5m' | '1h'
+  /** 政策性拒绝时的服务端兜底模型。 */
+  fallbacks?: 'default' | { model: string }[]
+  signal?: AbortSignal
+}
+
+export interface SystemBlock {
+  text: string
+  /** true = 在这里放一个缓存断点。 */
+  cacheBreakpoint?: boolean
+}
+
+export type ThinkingRequest =
+  | { mode: 'adaptive'; display?: 'summarized' | 'omitted' }
+  | { mode: 'disabled' }
+  | { mode: 'budget'; budgetTokens: number }
+
+export interface WireMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string | ContentBlock[]
+  /** assistant 轮携带的工具调用。 */
+  toolCalls?: WireToolCall[]
+  /** role='tool' 时对应的调用 id。 */
+  toolCallId?: string
+  /**
+   * DeepSeek 等 OpenAI 兼容供应商在思考模式下要求带 tool_calls 的 assistant 消息
+   * 原样回传 reasoning_content，否则后续轮次 400。Anthropic 路径不需要。
+   */
+  reasoningContent?: string
+  cacheBreakpoint?: boolean
+  /** 内部记账用，绝不上线。 */
+  _group?: ContextGroup
+  _messageId?: string
+}
+
+export type ContextGroup =
+  | 'systemPrompt'
+  | 'systemTools'
+  | 'mcpTools'
+  | 'skills'
+  | 'memory'
+  | 'summary'
+  | 'historyMessages'
+  | 'executionRecords'
+  | 'intermediateContent'
+  | 'workspaceState'
+
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mimeType: string; data: string }
+  | { type: 'document'; mimeType: string; data: string; title?: string }
+
+export interface WireToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+export interface ToolSchema {
+  name: string
+  description: string
+  /** JSON Schema object。序列化必须确定性（键排序），否则前缀缓存永远不命中。 */
+  parameters: Record<string, unknown>
+  /** 声明但先不载入上下文，等 tool_addition 再浮出。 */
+  deferLoading?: boolean
+}
+
+// ─────────────────────────────── 流式事件 ───────────────────────────────
+
+export type ProviderEvent =
+  | { type: 'request_prepared'; measuredInputTokens: number; exact: boolean }
+  | { type: 'thinking_delta'; delta: string }
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_call_start'; index: number; id: string; name: string }
+  | { type: 'tool_call_delta'; index: number; argsDelta: string }
+  | { type: 'tool_calls'; calls: WireToolCall[] }
+  | { type: 'usage'; usage: ProviderUsage }
+  | { type: 'done'; stopReason: ProviderStopReason; refusal?: RefusalDetail }
+
+export type ProviderStopReason =
+  | 'end_turn'
+  | 'tool_use'
+  | 'max_tokens'
+  | 'stop_sequence'
+  | 'pause_turn'
+  | 'refusal'
+
+export interface RefusalDetail {
+  /** 开放集合：cyber / bio / reasoning_extraction / frontier_llm / null。 */
+  category: string | null
+  explanation?: string
+}
+
+export interface ProviderUsage {
+  inputTokens: number
+  outputTokens: number
+  /** null = provider 未回报，与真实 0 命中不是一回事，绝不混同。 */
+  cachedTokens: number | null
+  cacheWriteTokens: number | null
+  reasoningTokens: number
+  /** 是模型真回报还是本地估算。 */
+  source: 'provider' | 'estimated'
+}
+
+// ─────────────────────────────── 适配器 ───────────────────────────────
+
+export interface LlmAdapter {
+  readonly kind: ProviderKind
+  readonly spec: ModelSpec
+  /**
+   * 本适配器**实际会发送**哪些可选轴。
+   *
+   * 探测器靠它区分「端点接受了」和「我们压根没发」。没有这个声明的话，
+   * 一个根本不传 thinking 的协议会让每一个探针都「通过」，
+   * 于是探测报告说「支持思考」——而那是把没验过的说成验过了。
+   */
+  readonly transmits: { thinking: boolean; effort: boolean }
+  stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
+  /** 不开网络请求，测量 provider-native prompt 的 token 数。 */
+  measure(req: ChatRequest): Promise<number>
+}

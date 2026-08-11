@@ -1,0 +1,189 @@
+/*
+ * 设计令牌。
+ *
+ * 「高级、简约、圆润」不是每个组件各自把玩的形容词，它必须落在可枚举的量上，
+ * 否则十个组件会长出十种圆角和十种灰。这里定死三组：
+ *
+ * 1. **一条中性色阶**（surface/border/text 各三档）。不引入第二套灰。
+ * 2. **一条圆角阶梯**，最小 8px 起步。圆润感来自「小元素也不尖」，
+ *    而不是把大卡片做成胶囊。
+ * 3. **一条间距阶梯**（4 的倍数）。
+ *
+ * 强调色只有一个，且只用于「当前选中」和「主操作」。界面上超过两处彩色，
+ * 高级感就没了。
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ── 中性色阶：亮色 ── */
+  --bg-app: #ffffff;
+  --bg-sunken: #f7f7f8;
+  --bg-raised: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(0, 0, 0, 0.07);
+  --bg-inset: #f2f2f3;
+
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-default: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+
+  --text-primary: #16161a;
+  --text-secondary: #6b6b73;
+  --text-tertiary: #9a9aa2;
+  --text-inverted: #ffffff;
+
+  /* 唯一强调色。克制使用。 */
+  --accent: #2f6feb;
+  --accent-hover: #2560d6;
+  --accent-soft: rgba(47, 111, 235, 0.1);
+
+  --success: #1a7f47;
+  --success-soft: rgba(26, 127, 71, 0.1);
+  --danger: #c2371f;
+  --danger-soft: rgba(194, 55, 31, 0.1);
+  --warning: #9a6400;
+
+  /* diff 专用：正负两色必须同时对亮暗底可读 */
+  --diff-add-bg: rgba(26, 127, 71, 0.1);
+  --diff-del-bg: rgba(194, 55, 31, 0.1);
+
+  /* ── 圆角阶梯 ── */
+  --r-xs: 8px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* ── 间距 ── */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* ── 字体 ──
+   * 中文优先苹方/思源，英文数字走系统 UI 字体。
+   * 等宽栈里 Cascadia/SF Mono 打头，它们的字重和 UI 字体更协调。 */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", system-ui,
+    "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono:
+    "Cascadia Code", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+
+  /* ── 阴影：极轻，只用于真正浮起的层 ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.14);
+
+  /* ── 动效：短、有阻尼，绝不弹跳 ── */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+
+  /* ── 布局 ── */
+  --sidebar-w: 232px;
+  --panel-w: 380px;
+  --header-h: 44px;
+
+  /* 刘海屏 / 手势条 */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/*
+ * 暗色。只重定义颜色令牌，尺寸与动效不动。
+ * 用 :root:not([data-theme='light']) 包住，保证显式切亮色时不被系统偏好覆盖。
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-app: #0c0c0d;
+    --bg-sunken: #151517;
+    --bg-raised: #1b1b1e;
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.1);
+    --bg-inset: #202024;
+
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-default: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.2);
+
+    --text-primary: #f2f2f4;
+    --text-secondary: #a0a0a8;
+    --text-tertiary: #6e6e78;
+    --text-inverted: #16161a;
+
+    --accent: #5b8dff;
+    --accent-hover: #7aa2ff;
+    --accent-soft: rgba(91, 141, 255, 0.16);
+
+    --success: #4ec98a;
+    --success-soft: rgba(78, 201, 138, 0.14);
+    --danger: #ff7b63;
+    --danger-soft: rgba(255, 123, 99, 0.14);
+    --warning: #e0a33a;
+
+    --diff-add-bg: rgba(78, 201, 138, 0.14);
+    --diff-del-bg: rgba(255, 123, 99, 0.14);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* 显式选暗色时同样生效，且优先级压过 media query。 */
+:root[data-theme="dark"] {
+  --bg-app: #0c0c0d;
+  --bg-sunken: #151517;
+  --bg-raised: #1b1b1e;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-inset: #202024;
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  --text-primary: #f2f2f4;
+  --text-secondary: #a0a0a8;
+  --text-tertiary: #6e6e78;
+  --text-inverted: #16161a;
+
+  --accent: #5b8dff;
+  --accent-hover: #7aa2ff;
+  --accent-soft: rgba(91, 141, 255, 0.16);
+
+  --success: #4ec98a;
+  --success-soft: rgba(78, 201, 138, 0.14);
+  --danger: #ff7b63;
+  --danger-soft: rgba(255, 123, 99, 0.14);
+  --warning: #e0a33a;
+
+  --diff-add-bg: rgba(78, 201, 138, 0.14);
+  --diff-del-bg: rgba(255, 123, 99, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* 尊重系统的减弱动效设置。这不是可选项。 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-base: 0ms;
+  }
+}

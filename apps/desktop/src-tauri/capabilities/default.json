@@ -1,0 +1,35 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "qywork 桌面外壳所需的最小权限集",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-internal-toggle-devtools",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:allow-open-url",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "bin/qy",
+          "sidecar": true,
+          "args": [
+            "serve",
+            "--port",
+            { "validator": "\\d+" },
+            "--host",
+            { "validator": "^(127\\.0\\.0\\.1|0\\.0\\.0\\.0)$" },
+            "--cwd",
+            { "validator": ".+" },
+            "--print-token",
+            "--parent-pid",
+            { "validator": "\\d+" }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,534 @@
+/**
+ * OpenAI Responses 协议适配器（/v1/responses）。
+ *
+ * 与 chat/completions 的差别不在「换个路径」，而在三处**形状**：
+ *
+ * 1. **`input` 不是 `messages`**。它是一串条目（item），每条有自己的 `type`：
+ *    `message` / `function_call` / `function_call_output`。工具调用和工具结果
+ *    是**顶层条目**，不是挂在 message 上的字段——这是最容易照搬 chat 协议搬错的地方。
+ * 2. **工具定义扁平**。`{type:'function', name, description, parameters}`，
+ *    没有 chat 协议那层 `function: {...}` 包装。
+ * 3. **流式事件是有类型的 SSE**，不是 delta 拼接：`response.output_text.delta`、
+ *    `response.function_call_arguments.delta` 等等。
+ *
+ * 还有一处不在形状上但同样致命：**`max_output_tokens` 同时封顶思考与正文**。
+ * 按「不思考」的口径调小它，回答会从中间被截断。
+ *
+ * 实现取舍：**直接打 HTTP，不用 SDK**。SDK 的 Responses 类型随版本变动频繁，
+ * 而这里要处理的字段集本来就得按 Record 断言（推理条目、各家中转站的扩展字段）。
+ * 引一层类型再全部 as never，等于既付了依赖又没拿到类型收益。
+ *
+ * ## 推理内容的两套方言（2026-08 对 DeepSeek v4 flash 实测）
+ *
+ * 说 Responses 协议的**不止 OpenAI**，而它们在推理这一块**不是一套东西**：
+ *
+ * | | OpenAI | DeepSeek |
+ * |---|---|---|
+ * | 流式事件 | `response.reasoning_summary_text.delta` | `response.reasoning_text.delta` |
+ * | 输出条目 | `reasoning.summary[]` | `reasoning.content[].reasoning_text` |
+ * | 要不要回传 | 不要求 | **要求，不传就 400** |
+ *
+ * 这两条最初都写错了，而且**错法不一样**：
+ *
+ * - 只认 `reasoning_summary_text` 的后果是**静默的**——流跑完、正文正常、
+ *   一个 `thinking_delta` 都没有。没有报错，只是思考过程凭空消失。
+ * - 不回传的后果是**响亮的**——`The reasoning_text in the thinking mode must be
+ *   passed back to the API`，400。而且它只在**第二轮**才发作：
+ *   第一轮没有历史可回传，一路正常；模型一旦调了工具，把结果喂回去就炸。
+ *   也就是说**任何单轮测试都测不出它**，而 agent 的主循环恰恰全是多轮。
+ *
+ * 实测出来的回传规则（见 `buildInput`）：
+ * - `reasoning` 条目必须排在它对应的 `function_call` **之前**；插在
+ *   `function_call` 和 `function_call_output` 中间会得到「找不到工具输出」。
+ * - `id` 和 `summary` 可以省。
+ * - **文本为空串等于没传**，照样 400。所以占位文本不能是空的。
+ * - 只有**最后**一轮工具调用被检查；但我们每一轮都带上，不去赌它的实现细节。
+ */
+
+import type { ModelSpec } from '../catalog.ts'
+import { classifyProviderError, ProviderError } from '../errors.ts'
+import type {
+  ChatRequest,
+  LlmAdapter,
+  ProviderEvent,
+  ProviderProfile,
+  ProviderStopReason,
+  ProviderUsage,
+  ToolSchema,
+  WireMessage,
+  WireToolCall,
+} from '../types.ts'
+
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+
+export class OpenAIResponsesAdapter implements LlmAdapter {
+  readonly kind = 'openai_responses' as const
+  // Responses 协议有原生的 reasoning 字段（含 effort），两条都发。
+  readonly transmits = { thinking: true, effort: true }
+  readonly spec: ModelSpec
+  private readonly baseUrl: string
+  private readonly headers: Record<string, string>
+
+  constructor(profile: ProviderProfile, spec: ModelSpec) {
+    this.spec = spec
+    this.baseUrl = (profile.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '')
+    this.headers = {
+      'content-type': 'application/json',
+      ...(profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : {}),
+      ...(profile.headers ?? {}),
+    }
+  }
+
+  async measure(req: ChatRequest): Promise<number> {
+    // 没有免费的 count_tokens 端点。给字符估算，并在事件里标 exact=false——
+    // 面板必须能区分「实测」和「估算」，否则用户会拿估算值去对账单。
+    return estimateTokens(this.buildBody(req))
+  }
+
+  async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+    const body = this.buildBody(req)
+
+    yield { type: 'request_prepared', measuredInputTokens: estimateTokens(body), exact: false }
+
+    const usage: ProviderUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: 0,
+      source: 'estimated',
+    }
+    let stopReason: ProviderStopReason = 'end_turn'
+    /** 按 output_index 累积的工具调用。参数是分片到达的。 */
+    const partial = new Map<number, { id: string; name: string; json: string }>()
+
+    let res: Response
+    try {
+      res = await fetch(`${this.baseUrl}/responses`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ ...body, stream: true }),
+        ...(req.signal ? { signal: req.signal } : {}),
+      })
+    } catch (err) {
+      throw classifyProviderError('openai_responses', err)
+    }
+
+    if (!res.ok) {
+      // 错误体要读出来再分类：容量拒绝的判据全在响应正文里，
+      // 只拿状态码分类会把「上下文超了」和「参数写错了」混成同一个 400。
+      const text = await res.text().catch(() => '')
+      throw classifyProviderError('openai_responses', asError(res.status, text))
+    }
+    if (!res.body) {
+      throw new ProviderError({
+        code: 'provider_unavailable',
+        message: '响应没有 body',
+        retryable: true,
+        provider: 'openai_responses',
+        status: res.status,
+      })
+    }
+
+    try {
+      for await (const event of readSse(res.body)) {
+        const type = String(event.type ?? '')
+
+        if (type === 'response.output_text.delta') {
+          const delta = String(event.delta ?? '')
+          if (delta) yield { type: 'text_delta', delta }
+          continue
+        }
+
+        // 推理内容。**不是** output_text——把它当正文会让思考内容混进回答里。
+        //
+        // 两个事件名都要认：OpenAI 发 `reasoning_summary_text`（摘要），
+        // DeepSeek 发 `reasoning_text`（原文）。只认前者的后果是静默丢失——
+        // 流跑完、正文正常、思考过程一个字都没有，不报任何错。
+        if (
+          type === 'response.reasoning_text.delta' ||
+          type === 'response.reasoning_summary_text.delta'
+        ) {
+          const delta = String(event.delta ?? '')
+          if (delta) yield { type: 'thinking_delta', delta }
+          continue
+        }
+
+        if (type === 'response.output_item.added') {
+          const item = (event.item ?? {}) as Record<string, unknown>
+          if (item.type === 'function_call') {
+            const idx = Number(event.output_index ?? partial.size)
+            const slot = {
+              id: String(item.call_id ?? item.id ?? `call_${idx}`),
+              name: String(item.name ?? ''),
+              json: '',
+            }
+            partial.set(idx, slot)
+            if (slot.name) {
+              yield { type: 'tool_call_start', index: idx, id: slot.id, name: slot.name }
+            }
+          }
+          continue
+        }
+
+        if (type === 'response.function_call_arguments.delta') {
+          const idx = Number(event.output_index ?? 0)
+          const slot = partial.get(idx)
+          const argsDelta = String(event.delta ?? '')
+          if (slot && argsDelta) {
+            slot.json += argsDelta
+            yield { type: 'tool_call_delta', index: idx, argsDelta }
+          }
+          continue
+        }
+
+        // 收尾事件带**完整**参数。以它为准而不是只靠拼分片：
+        // 掉一片分片的表现是「参数少一个字段」——那比整条调用失败更难查，
+        // 因为工具会拿着一份看起来合法的参数跑出一个错结果。
+        if (type === 'response.function_call_arguments.done') {
+          const idx = Number(event.output_index ?? 0)
+          const slot = partial.get(idx)
+          if (slot && typeof event.arguments === 'string') slot.json = event.arguments
+          continue
+        }
+
+        if (type === 'response.output_item.done') {
+          const item = (event.item ?? {}) as Record<string, unknown>
+          if (item.type !== 'function_call') continue
+          const idx = Number(event.output_index ?? 0)
+          const name = String(item.name ?? '')
+          const id = String(item.call_id ?? item.id ?? `call_${idx}`)
+          const slot = partial.get(idx)
+          if (slot) {
+            if (typeof item.arguments === 'string' && item.arguments) slot.json = item.arguments
+            if (!slot.name && name) slot.name = name
+            continue
+          }
+          // 没见过 added 事件也要能收下这条调用——中转站漏发增量事件时，
+          // 丢掉它等于模型调了工具而我们当作没调，然后模型下一轮重复调用。
+          if (!name) continue
+          partial.set(idx, {
+            id,
+            name,
+            json: typeof item.arguments === 'string' ? item.arguments : '',
+          })
+          yield { type: 'tool_call_start', index: idx, id, name }
+          continue
+        }
+
+        if (type === 'response.completed' || type === 'response.incomplete') {
+          const response = (event.response ?? {}) as Record<string, unknown>
+          applyUsage(usage, response.usage as Record<string, unknown> | undefined)
+          stopReason = normalizeStatus(response)
+          continue
+        }
+
+        // 流内错误。SSE 已经 200 了，错误只能从事件里出——不认它的话
+        // 表现是「流正常结束但什么都没有」。
+        if (type === 'response.failed' || type === 'error') {
+          const detail =
+            ((event.response as Record<string, unknown>)?.error as Record<string, unknown>) ??
+            (event.error as Record<string, unknown>) ??
+            {}
+          throw classifyProviderError(
+            'openai_responses',
+            asError(200, JSON.stringify(detail || event)),
+          )
+        }
+      }
+    } catch (err) {
+      throw classifyProviderError('openai_responses', err)
+    }
+
+    const calls = collectToolCalls(partial)
+    if (calls.length) {
+      stopReason = 'tool_use'
+      yield { type: 'tool_calls', calls }
+    }
+
+    yield { type: 'usage', usage }
+    yield { type: 'done', stopReason }
+  }
+
+  private buildBody(req: ChatRequest): Record<string, unknown> {
+    const instructions = req.system
+      .map((b) => b.text)
+      .filter(Boolean)
+      .join('\n\n')
+
+    return {
+      model: req.model,
+      ...(instructions ? { instructions } : {}),
+      input: buildInput(req.messages),
+      // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
+      max_output_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
+      ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
+      ...this.buildReasoning(req),
+      // 兼容端点的隐式前缀缓存同样怕抖动，但 Responses 有显式的会话亲和键。
+      ...(req.cacheKey ? { prompt_cache_key: req.cacheKey } : {}),
+      store: false,
+    }
+  }
+
+  /**
+   * 推理配置。
+   *
+   * 与 Anthropic 一样，**关不掉的模型上必须整个省略这个字段**——
+   * 传 `{effort:'none'}` 给一个恒开推理的模型会 400，而那种 400 的文案
+   * 跟容量拒绝长得很像，之后就是一次毫无用处的压缩重发。
+   *
+   * ## 「不思考」必须是 `none`，不能是 `minimal`
+   *
+   * 这里原来把 `disabled` 映射成 `{effort:'minimal'}`。实测
+   * （deepseek-v4-flash，`max_output_tokens=900`，各三次）：
+   *
+   * ```
+   * effort=none      reasoning_tokens  0,   0,   0
+   * effort=minimal   reasoning_tokens  900, 900, 900
+   * ```
+   *
+   * `minimal` 不是「少想一点」，它跟 high 一样把整个输出预算烧在推理上，
+   * 正文直接被截断。**用户要求不思考，拿到的是全额思考并且付钱**——
+   * 而且因为没报错，这件事完全静默。
+   */
+  private buildReasoning(req: ChatRequest): Record<string, unknown> {
+    if (this.spec.thinking === 'none') return {}
+    if (req.thinking?.mode === 'disabled') {
+      // `always_on` 是「连关的字段都不接受」，只能整个省略。
+      return this.spec.thinking === 'always_on' ? {} : { reasoning: { effort: 'none' } }
+    }
+    const effort =
+      req.effort && this.spec.effortLevels.includes(req.effort) ? req.effort : undefined
+    return {
+      reasoning: {
+        ...(effort ? { effort } : {}),
+        // 要拿到 thinking_delta 就必须显式要摘要；不要的话推理过程完全不可见，
+        // 而用户看到的是「模型停了很久然后突然出结果」。
+        summary: 'auto',
+      },
+    }
+  }
+}
+
+// ───────────────────────── 请求装配 ─────────────────────────
+
+/**
+ * 思考内容丢失时的占位。
+ *
+ * **不能是空串**：DeepSeek 对空 `reasoning_text` 的处理与「没传」完全一样，
+ * 照样 400。同时它必须读起来就是一句交代，不能编一段像模像样的思考——
+ * 那等于往模型的历史里塞它没想过的东西。
+ */
+const LOST_REASONING = '(上一轮的思考内容未能保留)'
+
+function reasoningItem(text: string): Record<string, unknown> {
+  return { type: 'reasoning', content: [{ type: 'reasoning_text', text }] }
+}
+
+/**
+ * `input` 是条目序列，不是消息序列。
+ *
+ * 工具调用与工具结果是**顶层条目**（`function_call` / `function_call_output`），
+ * 不是挂在 assistant message 上的字段。照搬 chat 协议的写法会得到一个
+ * 结构合法但语义错误的请求：模型看不到自己调过什么。
+ *
+ * 带工具调用的 assistant 轮还要**回传思考内容**，见文件头。
+ */
+export function buildInput(messages: WireMessage[]): Record<string, unknown>[] {
+  const items: Record<string, unknown>[] = []
+
+  /**
+   * 这个端点说不说「要回传 reasoning_text」这套方言。
+   *
+   * 判据是**证据**不是猜测：这批消息里只要有一条真的带着思考内容，
+   * 就说明我们确实从这个端点收到过 `reasoning_text`，那它多半也要求回传。
+   * 于是那些**缺**思考内容的轮次（压缩投影时掉了、从旧记录里读出来的）
+   * 才补占位条目。
+   *
+   * 反过来，一条思考内容都没有的端点（OpenAI 自家在不给摘要时就是这样）
+   * 一个 reasoning 条目都不会多出来——不拿一个只在 DeepSeek 上验过的行为，
+   * 去改一条没验过的路径。
+   */
+  const speaksReasoningText = messages.some((m) => Boolean(m.reasoningContent?.trim()))
+
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      items.push({
+        type: 'function_call_output',
+        call_id: m.toolCallId,
+        output: typeof m.content === 'string' ? m.content : flatten(m.content),
+      })
+      continue
+    }
+
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const text = typeof m.content === 'string' ? m.content : ''
+      // reasoning 必须排在 function_call **之前**。放到 call 与 output 中间，
+      // 会被判成「找不到工具输出」——错误信息指向的地方跟真正的原因无关。
+      const reasoning = m.reasoningContent?.trim()
+      if (reasoning) items.push(reasoningItem(reasoning))
+      else if (speaksReasoningText) items.push(reasoningItem(LOST_REASONING))
+      if (text) {
+        items.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text }],
+        })
+      }
+      for (const c of m.toolCalls) {
+        items.push({
+          type: 'function_call',
+          call_id: c.id,
+          name: c.name,
+          arguments: JSON.stringify(c.arguments),
+        })
+      }
+      continue
+    }
+
+    // 输入侧文本用 input_text，输出侧用 output_text。写反了会被拒，
+    // 而错误信息只说「content 无效」，不说是哪一条。
+    const role = m.role === 'system' ? 'system' : m.role
+    const isAssistant = role === 'assistant'
+    if (typeof m.content === 'string') {
+      items.push({
+        type: 'message',
+        role,
+        content: [{ type: isAssistant ? 'output_text' : 'input_text', text: m.content }],
+      })
+      continue
+    }
+    items.push({ type: 'message', role, content: toResponsesContent(m.content) })
+  }
+
+  return items
+}
+
+function toResponsesContent(content: Exclude<WireMessage['content'], string>) {
+  return content.map((b) => {
+    if (b.type === 'text') return { type: 'input_text', text: b.text }
+    if (b.type === 'image') {
+      return { type: 'input_image', image_url: `data:${b.mimeType};base64,${b.data}` }
+    }
+    return {
+      type: 'input_file',
+      filename: b.title ?? 'file',
+      file_data: `data:${b.mimeType};base64,${b.data}`,
+    }
+  })
+}
+
+/** 工具定义是**扁平**的，没有 chat 协议那层 `function: {...}` 包装。 */
+export function buildTools(tools: ToolSchema[]): Record<string, unknown>[] {
+  return [...tools]
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((t) => ({
+      type: 'function',
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    }))
+}
+
+// ───────────────────────── 响应解析 ─────────────────────────
+
+/**
+ * 读 SSE。
+ *
+ * 只认 `data:` 行，事件类型从 JSON 体里的 `type` 取——Responses 的 `event:` 行
+ * 与体内的 `type` 是重复的，而中转站不一定两个都发。以体为准更稳。
+ */
+export async function* readSse(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<Record<string, any>, void, unknown> {
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true })
+    for (;;) {
+      const idx = buffer.indexOf('\n')
+      if (idx < 0) break
+      const line = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx + 1)
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+      try {
+        yield JSON.parse(payload)
+      } catch {
+        // 半行或非 JSON 的心跳。忽略而不是报协议错误——
+        // 一个心跳把整轮 run 打断，代价完全不成比例。
+      }
+    }
+  }
+}
+
+export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | undefined): void {
+  if (!raw) return
+  const input = Number(raw.input_tokens ?? 0)
+  const details = raw.input_tokens_details as Record<string, unknown> | undefined
+  const cached = details?.cached_tokens
+  const outDetails = raw.output_tokens_details as Record<string, unknown> | undefined
+
+  // Responses 的 input_tokens **含**缓存命中，与 Anthropic 的排他口径相反。
+  // 统一收敛到排他口径：不减的话缓存命中越多，账单错得越离谱。
+  acc.cachedTokens = typeof cached === 'number' ? cached : null
+  acc.inputTokens = Math.max(0, input - (acc.cachedTokens ?? 0))
+  acc.outputTokens = Number(raw.output_tokens ?? 0)
+  acc.reasoningTokens = Number(outDetails?.reasoning_tokens ?? 0)
+  acc.source = 'provider'
+}
+
+function normalizeStatus(response: Record<string, unknown>): ProviderStopReason {
+  const incomplete = response.incomplete_details as Record<string, unknown> | undefined
+  if (incomplete?.reason === 'max_output_tokens') return 'max_tokens'
+  if (incomplete?.reason === 'content_filter') return 'refusal'
+  return 'end_turn'
+}
+
+function collectToolCalls(
+  partial: Map<number, { id: string; name: string; json: string }>,
+): WireToolCall[] {
+  return [...partial.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, slot]) => ({
+      id: slot.id,
+      name: slot.name,
+      // 参数解析失败**不能吞**：交一个空对象上去，模型会以为工具收到了它给的参数。
+      arguments: parseArgs(slot.json),
+    }))
+    .filter((c) => c.name !== '')
+}
+
+function parseArgs(json: string): Record<string, unknown> {
+  if (!json.trim()) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return typeof parsed === 'object' && parsed !== null ? parsed : { _raw: json }
+  } catch {
+    // 保留原文交给工具层去拒绝，比静默变成 {} 强：后者会让模型
+    // 以为参数被接受了，然后对着一个完全不同的结果继续往下走。
+    return { _malformed: json }
+  }
+}
+
+function flatten(content: Exclude<WireMessage['content'], string>): string {
+  return content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('\n')
+}
+
+function asError(status: number, body: string): Error & { status: number } {
+  let message = body
+  try {
+    const parsed = JSON.parse(body)
+    message = parsed?.error?.message ?? parsed?.message ?? body
+  } catch {
+    // 非 JSON 错误体（网关的 HTML 页面之类）原样带上。
+  }
+  return Object.assign(new Error(message || `HTTP ${status}`), { status })
+}
+
+function estimateTokens(body: unknown): number {
+  // 与兼容适配器同一套粗估：4 字符 ≈ 1 token。标 exact=false 让面板知道这是估算。
+  return Math.ceil(JSON.stringify(body).length / 4)
+}
