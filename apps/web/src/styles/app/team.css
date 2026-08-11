@@ -25,6 +25,8 @@
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
+/* `.markdown :not(pre) > code` 特异性更高但永远碰不到这里：`.markdown` 只出现在
+ * `Transcript.tsx` 的助手正文上，而 `.team-empty` 在右侧面板里，两者不可能嵌套。 */
 .team-empty code {
   padding: 1px 5px;
   border-radius: var(--r-xs);

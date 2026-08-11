@@ -71,7 +71,7 @@ export function ModelPicker() {
                   setOpen(false)
                 }}
               >
-                <span class="truncate">{m.label}</span>
+                <span class="model-name truncate">{m.label}</span>
                 {/* 自建端点的模型标出来：它没有内置的计价与能力信息，
                     用量和费用只能按 provider 回报的算。 */}
                 <Show when={!m.known}>
