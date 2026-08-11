@@ -205,20 +205,18 @@ A、B、D 的多数条款引自 `青研魔盒` 仓库的 `CLAUDE.md`，按 qywor
 
 ## C2　门禁
 
-改动覆盖到的域必须全绿：
+**一条命令，四道闸，全绿才算过：**
 
-| 域 | 命令 |
-|---|---|
-| 包（`packages/*`） | `bun run typecheck` |
-| 前端（`apps/web`） | `bun run --cwd apps/web typecheck` |
-| 全仓格式与 lint | `bunx biome check --write .` |
-| 测试 | `bun test` |
-| 桌面端 Rust | `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` |
+```bash
+bun run gate
+```
 
-> ⚠️ 根 `bun run typecheck` **目前不覆盖 `apps/web`**（根 `tsconfig.json` 的 references
-> 里没有它，且它是 `composite: false`）。实测：往 `apps/web/src/` 放一个
-> `const x: number = "boom"`，根 typecheck 依然全绿。**改前端必须单独跑第二行。**
-> 收敛成一条命令的方案见 `ROADMAP.md` §39 批 1。
+它按顺序跑：`typecheck`（`packages/*` 的 solution build **加** `apps/web`）→
+`biome check` → `bun test` → `cargo check`（桌面端 Rust）。
+
+**门禁只读，不改文件。** `gate` 里用的是 `biome check`，不是 `--write`——
+要自动修跑单独的 `bun run check`。原因：门禁会在别人也在改这个工作区时跑，
+一个顺手改写文件的门禁会动到不属于本次改动的东西。
 
 **每次都跑全量，不设范围限制**——本仓全量是秒级，圈范围只会漏掉跨包回归。
 

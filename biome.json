@@ -13,7 +13,10 @@
       "!**/node_modules",
       "!**/*.gen.ts",
       "!apps/desktop/src-tauri/gen",
-      "!apps/desktop/src-tauri/icons"
+      "!apps/desktop/src-tauri/icons",
+      "!.tmp-probe",
+      "!.smoke-ws",
+      "!.shoot-ws"
     ]
   },
   "formatter": {
