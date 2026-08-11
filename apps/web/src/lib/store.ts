@@ -747,7 +747,7 @@ export function loadServerConfig(): Promise<ConfigPayload> {
  * （`problems` 数组或 `message`），取不到才回落到原文——**回落到原文而不是
  * 一句「操作失败」**：原文再难看也带着信息，泛化的失败提示一点都不带。
  */
-function explainApiError(e: unknown, fallback: string): string {
+export function explainApiError(e: unknown, fallback: string): string {
   const raw = e instanceof Error ? e.message : String(e)
   const at = raw.indexOf('{')
   if (at >= 0) {
