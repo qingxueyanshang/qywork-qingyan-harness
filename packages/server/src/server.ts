@@ -10,10 +10,9 @@
  * 只想本机用就传 --host 127.0.0.1。
  */
 
-import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import type { Summarizer } from '@qywork/agent'
-import { buildAdapter, builtinCatalog, ProviderError } from '@qywork/ai'
+import { buildAdapter, ProviderError } from '@qywork/ai'
 import type {
   AgentEvent,
   ClientCommand,
@@ -26,25 +25,19 @@ import type {
   RunId,
   RunUsage,
 } from '@qywork/core'
-import { encodePairingUrl, PROTOCOL_VERSION } from '@qywork/core'
+import { PROTOCOL_VERSION } from '@qywork/core'
 import {
   acquireExtensions,
   collectSecrets,
-  configNotices,
   configPath,
-  diagnoseConfig,
-  diagnoseSchedule,
   isDue,
   loadSchedules,
-  nextRunAt,
   type QyConfig,
   RuntimeCompaction,
   releaseExtensions,
   resolveApiKey,
   type Schedule,
   Session,
-  type StoredProfile,
-  saveConfig,
   saveSchedules,
 } from '@qywork/runtime'
 import {
@@ -53,23 +46,19 @@ import {
   createConversation,
   getConversation,
   getRun,
-  listConversations,
   listMessages,
-  listRuns,
-  listSteps,
-  listWorkspaces,
   recoverStaleRuns,
   type Store,
   setConversationModel,
   upsertWorkspace,
 } from '@qywork/store'
 import { type BuiltinBackend, type Role, TeamOrchestrator } from '@qywork/team'
-import { detectSandbox, resolveInWorkspace } from '@qywork/tools'
+import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
+import { handleApi, json } from './api/index.ts'
 import { EventBus } from './bus.ts'
-import { listTree, preview } from './files.ts'
 import * as git from './git.ts'
-import { extractToken, lanCandidates, Pairing, preferredLanAddress } from './pairing.ts'
+import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { RunManager } from './runs.ts'
 
 export interface ServeOptions {
@@ -308,7 +297,6 @@ export function serve(opts: ServeOptions) {
         try {
           const res = await handleApi(url, req, {
             store: opts.store,
-            content,
             workspaceRoot: opts.workspaceRoot,
             workspaceId: workspace.id,
             config: opts.config,
@@ -321,6 +309,19 @@ export function serve(opts: ServeOptions) {
             disableLan,
             lanEnabled,
             lanPort: () => lanPort,
+            // 定时任务的「立刻跑一次」走这条，与正常对话完全同一条路径。
+            // 注入而不是让 api 模块 import：那会成环（server → api → server）。
+            startRun: (conversationId, prompt) => {
+              void startRun(conversationId, prompt, undefined, {
+                store: opts.store,
+                content,
+                config: opts.config,
+                workspaceRoot: opts.workspaceRoot,
+                workspaceId: workspace.id,
+                bus,
+                runs,
+              })
+            },
           })
           if (res) return res
         } catch (err) {
@@ -1041,461 +1042,6 @@ function makeServerSummarizer(deps: CommandDeps, conversationId: ConversationId)
 
 // ───────────────────────── HTTP API ─────────────────────────
 
-interface ApiDeps {
-  store: Store
-  /** 正文库。定时任务的「立刻跑一次」要走同一条 startRun 路径，它需要这个。 */
-  content: ContentStore
-  workspaceRoot: string
-  workspaceId: string
-  config: QyConfig
-  bus: EventBus
-  runs: RunManager
-  pairing: Pairing
-  token: string
-  port: number
-  enableLan(): { port: number }
-  disableLan(): void
-  lanEnabled(): boolean
-  lanPort(): number
-}
-
-async function handleApi(url: URL, req: Request, d: ApiDeps): Promise<Response | null> {
-  const p = url.pathname
-  const q = url.searchParams
-
-  if (p === '/api/pairing/lan' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { enabled?: boolean }
-    if (body.enabled) d.enableLan()
-    else d.disableLan()
-    return json({ enabled: d.lanEnabled() })
-  }
-
-  if (p === '/api/pairing') {
-    // 二维码必须指向**局域网监听的那个端口**，不是主端口——主端口只绑 127.0.0.1，
-    // 手机连不上。没开局域网时先给主端口，UI 会提示要先开开关。
-    const reachablePort = d.lanEnabled() ? d.lanPort() : d.port
-    return json({
-      ...d.pairing.payload(reachablePort),
-      qr: d.pairing.qrUrl(reachablePort),
-      lanEnabled: d.lanEnabled(),
-      // 一并回全部候选：自动判断在 VPN / 虚拟网卡环境下不可靠，
-      // UI 必须能让用户换一个地址重新出码。
-      candidates: lanCandidates().map((c) => ({
-        name: c.name,
-        address: c.address,
-        url: `http://${c.address}:${reachablePort}`,
-        qr: encodePairingUrl({
-          url: `http://${c.address}:${reachablePort}`,
-          token: d.token,
-          expiresAt: d.pairing.expiresAt,
-          deviceName: d.pairing.deviceName,
-        }),
-      })),
-    })
-  }
-
-  if (p === '/api/workspaces') {
-    return json({ workspaces: listWorkspaces(d.store), current: d.workspaceRoot })
-  }
-
-  // 当前工作区。侧边栏必须能显示「我在哪」——工作区由启动时的 --cwd 决定，
-  // 而桌面端和手动起的 serve 很容易落在两个不同目录上，会话按 workspaceId 分表，
-  // 于是同一个人在两个客户端看到两份互不相交的会话，界面上却没有任何线索。
-  // 这是 ROADMAP §33.2 那条「数据看起来丢了」的 bug 的可见性一半。
-  if (p === '/api/workspace') {
-    return json({
-      id: d.workspaceId,
-      root: d.workspaceRoot,
-      name: basename(d.workspaceRoot) || d.workspaceRoot,
-    })
-  }
-
-  // ── 配置读写 ────────────────────────────────────────────────
-  // 在此之前改配置只有两条路：手编 JSON，或跑 `qy init` 覆盖重来。
-  //
-  // **明文 key 永远不出这个进程**：GET 只回 `hasApiKey` 布尔，PUT 时若某档案
-  // 没带 apiKey 但标了 hasApiKey，就沿用库里那一份。否则「打开设置页看一眼再保存」
-  // 会静默清掉用户的 key——这类破坏是不可见的，直到下一次调用才报错。
-  if (p === '/api/config' && req.method === 'GET') {
-    return json({
-      path: configPath(),
-      config: redactConfig(d.config),
-      notices: configNotices(d.config),
-      problems: diagnoseConfig(d.config),
-    })
-  }
-
-  if (p === '/api/config' && req.method === 'PUT') {
-    const body = (await req.json().catch(() => null)) as { config?: RedactedConfig } | null
-    if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
-    const merged = mergeConfig(d.config, body.config)
-    const problems = diagnoseConfig(merged)
-    // 有致命问题就不落盘。写进去再让 CLI 起不来，比拒绝保存糟得多。
-    if (problems.length) return json({ error: 'invalid', problems }, 422)
-    await saveConfig(merged)
-    // 就地更新运行中的这份：不更新的话，保存成功但本进程仍用旧配置，
-    // 用户下一轮对话还是老模型——又一个「看起来生效了」。
-    Object.assign(d.config, merged)
-    for (const k of Object.keys(d.config.profiles)) {
-      if (!(k in merged.profiles)) delete d.config.profiles[k]
-    }
-    return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
-  }
-
-  // ── 定时任务 ────────────────────────────────────────────────
-  //
-  // 只暴露当前工作区的任务：文件是全机共享的，但一个工作区的界面不该看到、
-  // 更不该改到另一个工作区的任务。
-  if (p === '/api/schedules') {
-    const all = await loadSchedules()
-    const now = Date.now()
-
-    if (req.method === 'GET') {
-      return json({
-        schedules: all
-          .filter((s) => s.workspaceRoot === d.workspaceRoot)
-          .map((s) => ({ ...s, nextRunAt: nextRunAt(s, now), due: isDue(s, now) })),
-        // 这句必须由服务端给，别让每个客户端各写一遍措辞：
-        // 「关掉应用就不触发」是这个功能的前提，不是补充说明。
-        runtimeOnly: '仅在应用运行时触发，关闭后不触发，错过的不补',
-      })
-    }
-
-    if (req.method === 'POST') {
-      const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
-      if (!body) return json({ error: 'bad request' }, 400)
-      const draft: Schedule = {
-        id: `sch_${crypto.randomUUID().slice(0, 12)}`,
-        workspaceRoot: d.workspaceRoot,
-        title: (body.title ?? '').trim(),
-        prompt: (body.prompt ?? '').trim(),
-        kind: body.kind === 'daily' ? 'daily' : 'interval',
-        enabled: body.enabled ?? true,
-        createdAt: now,
-        ...(body.kind === 'daily'
-          ? { atHour: body.atHour ?? 9, atMinute: body.atMinute ?? 0 }
-          : { everyMinutes: body.everyMinutes ?? 60 }),
-      }
-      const problems = diagnoseSchedule(draft)
-      if (problems.length) return json({ error: 'invalid', problems }, 422)
-      await saveSchedules([...all, draft])
-      return json({ schedule: draft })
-    }
-  }
-
-  const schedMatch = /^\/api\/schedules\/([^/]+)$/.exec(p)
-  if (schedMatch) {
-    const id = schedMatch[1]!
-    const all = await loadSchedules()
-    const idx = all.findIndex((s) => s.id === id && s.workspaceRoot === d.workspaceRoot)
-    if (idx < 0) return json({ error: 'not found' }, 404)
-
-    if (req.method === 'DELETE') {
-      await saveSchedules(all.filter((_, i) => i !== idx))
-      return json({ ok: true })
-    }
-
-    if (req.method === 'PUT') {
-      const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
-      if (!body) return json({ error: 'bad request' }, 400)
-      // id / workspaceRoot / createdAt / 运行状态一律不接受客户端改写：
-      // 让客户端能写 lastRunAt 等于把「下次什么时候触发」交给它决定。
-      const next: Schedule = {
-        ...all[idx]!,
-        title: (body.title ?? all[idx]!.title).trim(),
-        prompt: (body.prompt ?? all[idx]!.prompt).trim(),
-        kind: body.kind ?? all[idx]!.kind,
-        enabled: body.enabled ?? all[idx]!.enabled,
-        ...(body.everyMinutes !== undefined ? { everyMinutes: body.everyMinutes } : {}),
-        ...(body.atHour !== undefined ? { atHour: body.atHour } : {}),
-        ...(body.atMinute !== undefined ? { atMinute: body.atMinute } : {}),
-      }
-      const problems = diagnoseSchedule(next)
-      if (problems.length) return json({ error: 'invalid', problems }, 422)
-      const list = [...all]
-      list[idx] = next
-      await saveSchedules(list)
-      return json({ schedule: next })
-    }
-  }
-
-  // 立刻跑一次。
-  //
-  // 这是这个功能唯一能被**当场验证**的入口：定时触发要等到点，
-  // 而「配好了到底会不会跑」是用户第一个想知道的事。
-  const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
-  if (schedRunMatch && req.method === 'POST') {
-    const all = await loadSchedules()
-    const s = all.find((x) => x.id === schedRunMatch[1] && x.workspaceRoot === d.workspaceRoot)
-    if (!s) return json({ error: 'not found' }, 404)
-    const conv = createConversation(d.store, {
-      workspaceId: d.workspaceId as never,
-      model: d.config.profiles[d.config.active]?.model ?? 'unknown',
-      title: s.title,
-    })
-    // 手动试跑**不推进** lastRunAt：它是调度状态，被手动触发改掉的话
-    // 「每天 9 点」会因为你下午点了一次试跑而当天不再自动触发。
-    void startRun(conv.id, s.prompt, undefined, {
-      store: d.store,
-      content: d.content,
-      config: d.config,
-      workspaceRoot: d.workspaceRoot,
-      workspaceId: d.workspaceId,
-      bus: d.bus,
-      runs: d.runs,
-    })
-    return json({ ok: true, conversationId: conv.id })
-  }
-
-  // ── 插件 ────────────────────────────────────────────────────
-  //
-  // 页面叫「插件」，**不叫市场**。这个项目没有中心 registry，也不该现造一个：
-  // 一个叫「市场」而里面没有任何可安装内容的页面，就是把这次要删的空壳
-  // 换个名字再造一遍（ROADMAP §34.3）。
-  //
-  // 数据源与 `qy plugins` 完全相同（loadExtensions），所以 CLI 与界面不会
-  // 对「装了什么、隔离到什么程度」给出两种答案。
-  //
-  // 失败项与成功项一起回：装失败的插件恰恰是用户最需要看到的那部分，
-  // 只回成功的会让「我明明放进去了怎么没有」无从查起。
-  if (p === '/api/plugins') {
-    const { loadExtensions } = await import('@qywork/runtime')
-    const ext = await loadExtensions(d.workspaceRoot)
-    const reg = ext.plugins
-    return json({
-      dir: join(d.workspaceRoot, '.qy', 'plugins'),
-      plugins: reg.plugins.map((pl) => {
-        const rt = pl.host?.runtime
-        return {
-          id: pl.manifest.id,
-          name: pl.manifest.name,
-          version: pl.manifest.version,
-          permissions: pl.manifest.permissions ?? [],
-          tools: reg.toolSpecs
-            .filter((t) => t.name.startsWith(`${pl.manifest.id}__`))
-            .map((t) => ({ name: t.name, description: t.description })),
-          // 纯声明式插件没有进程，也就无所谓隔离。这三种状态必须分开报——
-          // 把「不适用」显示成「无隔离」会让人以为出了安全问题。
-          process: !pl.host ? 'declarative' : rt ? 'running' : 'unknown',
-          ...(rt ? { sandboxed: rt.sandboxed, netGuarded: rt.netGuarded, note: rt.note } : {}),
-        }
-      }),
-      failures: reg.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
-      mcpServers: ext.mcp.servers.map((m) => m.name),
-      mcpFailures: ext.mcp.failures.map((f) => ({ server: f.server, reason: f.reason })),
-    })
-  }
-
-  // 安装 / 卸载插件。
-  //
-  // ## 「安装」只有一种形式：把一个目录放进 .qy/plugins/
-  //
-  // 没有中心 registry，所以没有「从市场安装」。来源只能是**本机已经存在的目录**——
-  // 用户先自己 clone 或下载，看过内容，再指给这里。
-  //
-  // **刻意不做 `git clone <任意 URL>`**：那等于「从网上取一段代码，下一次加载就跑它」。
-  // 插件确实跑在沙箱里，但沙箱管的是它能碰什么，不管它是不是你想要的东西。
-  // 少这一步的代价只是用户多敲一条 git 命令，而多这一步的代价是这个入口
-  // 变成一条 `curl | sh`。同样的结果照样能达成，只是中间多一次「你看到了自己装的是什么」。
-  //
-  // ## 装之前必须校验清单
-  //
-  // 目录里没有合法的 `qywork.plugin.json` 就直接拒绝。不校验的话，
-  // 指错目录会「安装成功」然后在下一次加载时变成一条 failure——
-  // 而那时候用户已经不记得自己指了哪里。
-  if (p === '/api/plugins/install' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as { path?: string } | null
-    const src = body?.path?.trim()
-    if (!src) return json({ error: 'bad request', message: '缺少目录路径' }, 400)
-
-    const manifestPath = join(src, 'qywork.plugin.json')
-    const raw = await readFile(manifestPath, 'utf8').catch(() => null)
-    if (raw === null) {
-      return json({ error: 'invalid', message: `目录里没有 qywork.plugin.json：${src}` }, 422)
-    }
-    let id: string
-    try {
-      const { parseManifest } = await import('@qywork/plugins')
-      id = parseManifest(JSON.parse(raw), manifestPath).id
-    } catch (e) {
-      return json({ error: 'invalid', message: `清单不合法：${(e as Error).message}` }, 422)
-    }
-
-    const dest = join(d.workspaceRoot, '.qy', 'plugins', id)
-    // 已经装过同 id 的就拒绝，而不是静默覆盖：覆盖会把用户可能改过的
-    // 那一份直接抹掉，且没有任何提示。要换版本先卸载。
-    if (await stat(dest).catch(() => null)) {
-      return json({ error: 'conflict', message: `已经装了同名插件 ${id}，请先卸载` }, 409)
-    }
-    // 源目录就是目标目录时直接返回：那说明用户指的是 .qy/plugins 里已有的那个。
-    if (resolve(src) === resolve(dest)) return json({ ok: true, id })
-
-    await mkdir(dirname(dest), { recursive: true })
-    await cp(src, dest, { recursive: true })
-    return json({ ok: true, id })
-  }
-
-  const pluginMatch = /^\/api\/plugins\/([^/]+)$/.exec(p)
-  if (pluginMatch && req.method === 'DELETE') {
-    const id = pluginMatch[1]!
-    // id 来自 URL，必须挡住 `..` 之类——否则这就是一条任意目录删除。
-    if (id.includes('/') || id.includes('\\') || id.includes('..')) {
-      return json({ error: 'bad request' }, 400)
-    }
-    const dir = join(d.workspaceRoot, '.qy', 'plugins', id)
-    if (!(await stat(dir).catch(() => null))) return json({ error: 'not found' }, 404)
-    await rm(dir, { recursive: true, force: true })
-    return json({ ok: true })
-  }
-
-  // ── Agent Team 配置读写 ─────────────────────────────────────
-  // 原先 TeamPanel 明确按「只读不写」设计，理由是「配置有两个来源迟早分叉」。
-  // 结论下错了：界面直接读写**同一个** .qy/team.json，来源仍然只有一个，
-  // 界面只是它的编辑器。分叉风险来自「界面另存一份」，不来自「有界面」。
-  //
-  // 与「禁止写 .qy/」不冲突：那条硬边界拦的是 **agent 工具**
-  // （tools.ts:resolveWritablePath、policy.ts 的命令裁决），
-  // 拦的是 agent 改自己的配置，不是用户经 UI 的显式操作。见 docs/permissions.md。
-  if (p === '/api/team/raw') {
-    const file = join(d.workspaceRoot, '.qy', 'team.json')
-    if (req.method === 'GET') {
-      const raw = await readFile(file, 'utf8').catch(() => null)
-      return json({ path: file, exists: raw !== null, raw: raw ?? '' })
-    }
-    if (req.method === 'PUT') {
-      const body = (await req.json().catch(() => null)) as { raw?: string } | null
-      if (typeof body?.raw !== 'string') return json({ error: 'bad request' }, 400)
-      // 先解析再落盘：写进去一份坏 JSON，下次编排会在完全无关的地方失败。
-      try {
-        JSON.parse(body.raw)
-      } catch (e) {
-        return json({ error: 'invalid json', message: (e as Error).message }, 422)
-      }
-      await mkdir(join(d.workspaceRoot, '.qy'), { recursive: true })
-      await writeFile(file, body.raw.endsWith('\n') ? body.raw : `${body.raw}\n`, 'utf8')
-      return json({ ok: true })
-    }
-  }
-
-  if (p === '/api/team') {
-    // 直接读工作区配置而不是返回启动时的缓存：用户可能刚改完 team.json，
-    // 让他为了看到新配置去重启服务是不合理的。
-    const { loadTeamConfig } = await import('@qywork/runtime')
-    const team = await loadTeamConfig(d.workspaceRoot)
-    return json({
-      backends: Object.keys(team.backends),
-      roles: team.roles.map((r) => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        backend: r.backend.kind === 'cli' ? r.backend.command : 'builtin',
-      })),
-      plan: team.plan,
-      rules: team.rules,
-      error: team.error,
-    })
-  }
-
-  if (p === '/api/models') {
-    // 可选模型 = 内置目录 ∪ 用户档案里声明的模型。
-    // 并集是必须的：用户接自建端点或中转时，模型 id 内置目录里根本没有，
-    // 只列内置的会让「切模型」在最需要它的场景下没有选项。
-    const seen = new Set<string>()
-    const models: { id: string; label: string; provider: string; known: boolean }[] = []
-    for (const spec of builtinCatalog()) {
-      if (seen.has(spec.id)) continue
-      seen.add(spec.id)
-      models.push({ id: spec.id, label: spec.displayName, provider: spec.provider, known: true })
-    }
-    for (const [name, profile] of Object.entries(d.config.profiles)) {
-      if (seen.has(profile.model)) continue
-      seen.add(profile.model)
-      models.push({
-        id: profile.model,
-        label: `${profile.model}（${name}）`,
-        provider: profile.kind,
-        known: false,
-      })
-    }
-    return json({ models, active: d.config.profiles[d.config.active]?.model ?? null })
-  }
-
-  if (p === '/api/conversations') {
-    if (req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { title?: string; model?: string }
-      const conv = createConversation(d.store, {
-        workspaceId: d.workspaceId as never,
-        model: body.model ?? d.config.profiles[d.config.active]?.model ?? 'unknown',
-        ...(body.title ? { title: body.title } : {}),
-      })
-      return json({ conversation: conv })
-    }
-    return json({ conversations: listConversations(d.store, d.workspaceId as never) })
-  }
-
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs)$/.exec(p)
-  if (convMatch) {
-    const id = convMatch[1] as ConversationId
-    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
-    return convMatch[2] === 'messages'
-      ? json({ messages: listMessages(d.store, id) })
-      : json({ runs: listRuns(d.store, id) })
-  }
-
-  const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)
-  if (stepMatch) {
-    return json({ steps: listSteps(d.store, stepMatch[1] as RunId) })
-  }
-
-  if (p === '/api/files/tree') {
-    const rel = q.get('path') ?? '.'
-    // 走同一套路径约束：HTTP 入口和工具入口不能有两套安全策略。
-    await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
-    const depth = Math.min(6, Math.max(1, Number(q.get('depth') ?? 2)))
-    return json({ nodes: await listTree(d.workspaceRoot, rel === '.' ? '' : rel, depth) })
-  }
-
-  if (p === '/api/files/preview') {
-    const rel = q.get('path')
-    if (!rel) return json({ error: 'path required' }, 400)
-    await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
-    return json(await preview(d.workspaceRoot, rel))
-  }
-
-  if (p === '/api/git/status') {
-    if (!(await git.isRepo(d.workspaceRoot))) return json({ repo: false })
-    return json({ repo: true, status: await git.status(d.workspaceRoot) })
-  }
-  if (p === '/api/git/branches') {
-    return json({ branches: await git.branches(d.workspaceRoot) })
-  }
-  if (p === '/api/git/log') {
-    return json({
-      commits: await git.log(d.workspaceRoot, {
-        limit: Number(q.get('limit') ?? 50),
-        ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
-      }),
-    })
-  }
-  if (p === '/api/git/diff') {
-    return json({
-      diff: await git.diff(d.workspaceRoot, {
-        ...(q.get('path') ? { path: q.get('path')! } : {}),
-        ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
-        staged: q.get('staged') === '1',
-      }),
-    })
-  }
-
-  if (p === '/api/runs/active') {
-    return json({
-      active: d.runs.listActive().map((r) => ({ runId: r.runId, startedAt: r.startedAt })),
-    })
-  }
-
-  return null
-}
-
 // ───────────────────────── 辅助 ─────────────────────────
 
 async function publishGitState(root: string, bus: EventBus): Promise<void> {
@@ -1510,61 +1056,6 @@ function verifyToken(req: Request, token: string): boolean {
   let diff = 0
   for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ token.charCodeAt(i)
   return diff === 0
-}
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-  })
-}
-
-// ───────────────────────── 配置的脱敏与回填 ─────────────────────────
-
-/** 档案的对外形状：`apiKey` 换成一个布尔。 */
-export type RedactedProfile = Omit<StoredProfile, 'apiKey'> & { hasApiKey: boolean }
-export type RedactedConfig = Omit<QyConfig, 'profiles'> & {
-  profiles: Record<string, RedactedProfile>
-}
-
-/**
- * 明文 key 不出进程。
- *
- * 只脱 `apiKey`，`apiKeyEnv` 照常回——它是变量名不是值，而用户在界面上
- * 需要看到自己配的是哪个变量名，否则「为什么没读到 key」无从排查。
- */
-function redactConfig(cfg: QyConfig): RedactedConfig {
-  const profiles: Record<string, RedactedProfile> = {}
-  for (const [name, p] of Object.entries(cfg.profiles)) {
-    const { apiKey, ...rest } = p
-    profiles[name] = { ...rest, hasApiKey: Boolean(apiKey) }
-  }
-  return { ...cfg, profiles }
-}
-
-/**
- * 把前端交回来的脱敏配置合回真实配置。
- *
- * 关键的一条：**档案带 `hasApiKey: true` 但没带 `apiKey` 时，沿用旧的那份**。
- * 不这样做的话，「打开设置页，改个 baseUrl，保存」会把 key 清成 undefined——
- * 而这件事在保存的那一刻完全没有反馈，要等到下一次调用模型才炸，
- * 那时候人已经不会把它和「我刚才改了 baseUrl」联系起来了。
- *
- * 显式传空串是「清掉」，与「没带」区分开：前者是意图，后者是脱敏的副作用。
- */
-function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConfig {
-  const profiles: Record<string, StoredProfile> = {}
-  for (const [name, p] of Object.entries(incoming.profiles ?? {})) {
-    const { hasApiKey, ...rest } = p as RedactedProfile & { apiKey?: string }
-    const explicit = (p as { apiKey?: string }).apiKey
-    const prior = current.profiles[name]?.apiKey
-    const apiKey = explicit !== undefined ? explicit : hasApiKey ? prior : undefined
-    profiles[name] = {
-      ...(rest as StoredProfile),
-      ...(apiKey ? { apiKey } : {}),
-    }
-  }
-  return { ...current, ...incoming, profiles }
 }
 
 async function serveStatic(dir: string, pathname: string): Promise<Response | null> {
