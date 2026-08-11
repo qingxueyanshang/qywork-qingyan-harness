@@ -13,7 +13,7 @@
  * - **少于 2 个工具不组卡**：为一个工具套一层折叠纯属添乱。
  */
 
-import type { TranscriptItem } from './store.ts'
+import type { TranscriptItem } from './store/index.ts'
 
 export type RenderItem =
   | { kind: 'user'; id: string; item: TranscriptItem }

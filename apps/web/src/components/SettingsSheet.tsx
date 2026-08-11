@@ -10,7 +10,7 @@ import {
   setPairOpen,
   setSettingsOpen,
   workspace,
-} from '../lib/store.ts'
+} from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 import { PluginsPanel } from './PluginsPanel.tsx'
 import { SchedulesPanel } from './SchedulesPanel.tsx'

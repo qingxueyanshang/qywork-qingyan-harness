@@ -1,5 +1,5 @@
 import { For, Show } from 'solid-js'
-import { state } from '../lib/store.ts'
+import { state } from '../lib/store/index.ts'
 import { IconCheck, IconSpinner } from './Icons.tsx'
 
 /**

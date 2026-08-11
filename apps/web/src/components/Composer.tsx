@@ -1,5 +1,5 @@
 import { createSignal, Show } from 'solid-js'
-import { interrupt, sendMessage, state } from '../lib/store.ts'
+import { interrupt, sendMessage, state } from '../lib/store/index.ts'
 import { IconPlus, IconSend, IconShield, IconStop } from './Icons.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
 

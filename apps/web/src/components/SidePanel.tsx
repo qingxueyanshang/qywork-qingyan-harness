@@ -8,7 +8,7 @@ import {
   setSidePanel,
   sidePanel,
   state,
-} from '../lib/store.ts'
+} from '../lib/store/index.ts'
 import { IconBranch, IconChevron, IconFile, IconFolder, IconX } from './Icons.tsx'
 import { TeamPanel } from './TeamPanel.tsx'
 

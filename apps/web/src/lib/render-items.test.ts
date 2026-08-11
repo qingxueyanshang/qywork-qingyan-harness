@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { actionLabel, buildRenderItems, groupTitle, verb } from './render-items.ts'
-import type { TranscriptItem } from './store.ts'
+import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
 
