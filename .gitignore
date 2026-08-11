@@ -37,6 +37,7 @@ packages/*/dist/
 .shots/
 .probe/
 .tmp/
+.tmp-probe/
 
 # agent 运行态（.claude/memory/ 是项目记忆，要入库）
 .claude/*.lock
