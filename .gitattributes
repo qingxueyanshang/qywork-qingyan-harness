@@ -1,0 +1,17 @@
+# 行尾统一在仓库里存 LF，检出时不做平台改写。
+#
+# 不用 core.autocrlf 的默认行为：这个仓库对脚本编码敏感（见 CLAUDE.md A5 与
+# scripts/start.ps1 顶部注释），让 git 按平台改写行尾会在 diff 里制造大片
+# 与改动无关的噪音，也让「文件到底是什么字节」这个问题多一层不确定。
+* text=auto eol=lf
+
+# 这两类必须是 CRLF：cmd.exe 与 Windows PowerShell 对 LF-only 的脚本
+# 在某些路径下会解析出意料之外的结果。
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制，不做任何行尾处理
+*.png binary
+*.ico binary
+*.icns binary
+*.sqlite3 binary

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["bun"]
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../agent" },
+    { "path": "../ai" },
+    { "path": "../core" },
+    { "path": "../store" },
+    { "path": "../tools" },
+    { "path": "../team" },
+    { "path": "../runtime" }
+  ]
+}

@@ -1,0 +1,42 @@
+node_modules/
+dist/
+dist-*/
+target/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# 本地运行时数据。
+#
+# 全局数据在**用户主目录** `~/.qywork/`（可用 QYWORK_HOME 改），
+# 见 packages/runtime/src/config.ts:107 —— config.json / qywork.sqlite3 /
+# schedules.json / last-workspace 都在那里，本来就不在仓库里。
+# 这里留一条 `.qywork/` 是防 QYWORK_HOME 被指到仓库内（跑测试时会）。
+.qywork/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# 工作区级配置 `<workspace>/.qy/`：
+# mcp.json 与 team.json 是**项目配置，应当入库**；plugins/ 是装进来的产物，不入库。
+.qy/plugins/
+
+# 密钥与本地配置
+.env
+.env.local
+*.local.json
+
+# 构建产物
+apps/desktop/src-tauri/bin/
+apps/web/dist/
+packages/*/dist/
+
+# 测试与截图脚本的临时工作区
+.smoke-ws/
+.shoot-ws/
+.shots/
+.probe/
+.tmp/
+
+# agent 运行态（.claude/memory/ 是项目记忆，要入库）
+.claude/*.lock

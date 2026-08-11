@@ -1,0 +1,13 @@
+{
+  "name": "@qywork/team",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@qywork/core": "workspace:*",
+    "@qywork/tools": "workspace:*"
+  }
+}

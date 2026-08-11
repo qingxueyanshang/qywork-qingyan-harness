@@ -1,0 +1,16 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/ai" },
+    { "path": "./packages/store" },
+    { "path": "./packages/agent" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/plugins" },
+    { "path": "./packages/mcp" },
+    { "path": "./packages/team" },
+    { "path": "./packages/runtime" },
+    { "path": "./packages/server" },
+    { "path": "./packages/cli" }
+  ]
+}
