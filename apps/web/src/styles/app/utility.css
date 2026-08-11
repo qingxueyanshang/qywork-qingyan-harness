@@ -197,3 +197,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── 状态覆盖 ──
+ *
+ * 放在**响应式断点之后**，让「顺序」和「特异性」给出同一个答案。
+ *
+ * 下面这两条原本写在会话流那一节，也就是 `.composer-wrap` 的基础规则**之前**。
+ * 行为一直是对的——`.main.empty .composer-wrap` 特异性更高，赢过后面那条
+ * `margin: 0 auto` 简写。但从上往下读会以为后写的简写生效，而它没有。
+ * 「赢在特异性、输在顺序」是这份文件最容易读错的一类地方。
+ *
+ * 往后挪不改变结果（它本来就赢），只是让两个判据不再互相打架。
+ */
+
+/*
+ * 空会话：输入区上浮居中，会话区收成 0 高。
+ * 不加任何引导文案（需求 5、14）——输入框本身已经说明了该做什么。
+ */
+.main.empty .transcript {
+  flex: 0 1 auto;
+}
+.main.empty .composer-wrap {
+  margin-top: auto;
+  margin-bottom: auto;
+}
