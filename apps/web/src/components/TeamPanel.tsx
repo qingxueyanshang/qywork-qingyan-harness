@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loadTeam, runTeam, setSettingsOpen, state, type TeamInfo } from '../lib/store.ts'
+import { loadTeam, runTeam, setSettingsOpen, state, type TeamInfo } from '../lib/store/index.ts'
 import { IconCheck, IconSpinner, IconX } from './Icons.tsx'
 
 /**

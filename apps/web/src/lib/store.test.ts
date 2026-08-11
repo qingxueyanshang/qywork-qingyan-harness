@@ -33,7 +33,7 @@ g.sessionStorage = {
 g.matchMedia = () => ({ matches: false })
 
 const { explainApiError, openPanel, setSidePanel, sidePanel, togglePanel } = await import(
-  './store.ts'
+  './store/index.ts'
 )
 
 describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {

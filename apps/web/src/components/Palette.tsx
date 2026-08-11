@@ -7,7 +7,7 @@ import {
   setPaletteOpen,
   setSettingsOpen,
   state,
-} from '../lib/store.ts'
+} from '../lib/store/index.ts'
 import { IconEye, IconFile, IconNewChat, IconSettings, IconSpinner, IconUsers } from './Icons.tsx'
 
 interface Command {

@@ -1,5 +1,5 @@
 import { createEffect, createResource, createSignal, For, onCleanup, Show } from 'solid-js'
-import { client, pairOpen, setPairOpen } from '../lib/store.ts'
+import { client, pairOpen, setPairOpen } from '../lib/store/index.ts'
 import { IconShield, IconX } from './Icons.tsx'
 
 interface Candidate {

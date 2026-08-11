@@ -7,7 +7,7 @@ import {
   setWorkspaceSheetOpen,
   state,
   workspace,
-} from '../lib/store.ts'
+} from '../lib/store/index.ts'
 import { IconFolder, IconNewChat, IconSearch, IconSettings } from './Icons.tsx'
 
 /**

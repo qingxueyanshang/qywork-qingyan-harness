@@ -1,5 +1,5 @@
 import { Show } from 'solid-js'
-import { resolvePermission, state } from '../lib/store.ts'
+import { resolvePermission, state } from '../lib/store/index.ts'
 import { IconShield } from './Icons.tsx'
 
 /**

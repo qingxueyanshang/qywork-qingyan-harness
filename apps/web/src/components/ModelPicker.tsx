@@ -1,5 +1,5 @@
 import { createSignal, For, onCleanup, Show } from 'solid-js'
-import { activeModel, loadModels, type ModelOption, setModel, state } from '../lib/store.ts'
+import { activeModel, loadModels, type ModelOption, setModel, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
 
 /**

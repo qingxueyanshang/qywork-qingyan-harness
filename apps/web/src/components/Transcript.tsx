@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
 import { renderMarkdown } from '../lib/markdown.ts'
 import { actionLabel, buildRenderItems, groupTitle } from '../lib/render-items.ts'
-import { retryLastRun, setState, state, type TranscriptItem } from '../lib/store.ts'
+import { retryLastRun, setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { IconCheck, IconChevron, IconSpinner, IconX, toolIcon } from './Icons.tsx'
 
 /**

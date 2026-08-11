@@ -6,7 +6,7 @@ import {
   runScheduleNow,
   type ScheduleItem,
   updateSchedule,
-} from '../lib/store.ts'
+} from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 
 /**

@@ -29,7 +29,7 @@ import {
   state,
   togglePanel,
   workspaceSheetOpen,
-} from './lib/store.ts'
+} from './lib/store/index.ts'
 
 export function App() {
   // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
