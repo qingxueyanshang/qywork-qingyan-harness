@@ -7,11 +7,14 @@ import {
   createRun,
   findRunByClientRequest,
   finishRun,
+  getConversation,
   listConversations,
   listMessages,
   listSteps,
+  setConversationEffort,
   settleToolStep,
   upsertWorkspace,
+  workspaceOf,
 } from './repos.ts'
 
 function fresh() {
@@ -44,7 +47,7 @@ describe('会话列表排序', () => {
       workspaceId: ws.id,
       model: 'm',
       title: '子代理的',
-      source: 'team',
+      source: 'workflow',
     })
     expect(listConversations(store, ws.id).map((c) => c.title)).toEqual(['用户的'])
     store.close()
@@ -169,6 +172,81 @@ describe('run 收尾', () => {
     const found = findRunByClientRequest(store, conv.id, 'r')
     expect(found?.usage.cachedTokens).toBeNull()
     expect(run.usage.cachedTokens).toBeNull()
+    store.close()
+  })
+})
+
+describe('会话级思考强度', () => {
+  /**
+   * 复现原始形状：这个值以前只有全局一份（`config.effort`），于是「给这个会话
+   * 调低一点」做不到，改了会连带改掉所有会话的下一轮。
+   */
+  test('不传就是 null —— 跟随配置默认，不是「关掉思考」', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    expect(conv.effort).toBeNull()
+    store.close()
+  })
+
+  test('新建时定格下来的值能读回', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'low' })
+    expect(getConversation(store, conv.id)?.effort).toBe('low')
+    store.close()
+  })
+
+  test('改一条不影响另一条', () => {
+    const { store, ws } = fresh()
+    const a = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'high' })
+    const b = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'high' })
+    setConversationEffort(store, a.id, 'max')
+    expect(getConversation(store, a.id)?.effort).toBe('max')
+    expect(getConversation(store, b.id)?.effort).toBe('high')
+    store.close()
+  })
+
+  /** null 是合法目标值。用「假值即不改」的写法会让「清除」这个动作永远失效。 */
+  test('能清回 null', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'max' })
+    setConversationEffort(store, conv.id, null)
+    expect(getConversation(store, conv.id)?.effort).toBeNull()
+    store.close()
+  })
+
+  test('会话不存在时回 null，不是静默成功', () => {
+    const { store } = fresh()
+    expect(setConversationEffort(store, 'cv_没有这条' as never, 'low')).toBeNull()
+    store.close()
+  })
+})
+
+/*
+ * 「这条会话跑在哪个目录下」的权威。
+ *
+ * 回归的是这条：服务进程曾经自己拿着一个 `workspaceRoot` 常量（启动时的 --cwd），
+ * 一个进程只服务得了一个项目，换项目只能重启。删掉那份常量之后，所有解析都走
+ * 这里——它必须在**同时存在多个项目**时也答对，而不只是在只有一个项目时碰巧对。
+ */
+describe('会话所属项目', () => {
+  test('两个项目并存时，各自的会话解析到各自的根', () => {
+    const store = new Store({ path: ':memory:' })
+    const a = upsertWorkspace(store, '/tmp/a', 'a')
+    const b = upsertWorkspace(store, '/tmp/b', 'b')
+    const ca = createConversation(store, { workspaceId: a.id, model: 'm' })
+    const cb = createConversation(store, { workspaceId: b.id, model: 'm' })
+
+    expect(workspaceOf(store, ca.id)?.rootPath).toBe('/tmp/a')
+    expect(workspaceOf(store, cb.id)?.rootPath).toBe('/tmp/b')
+    store.close()
+  })
+
+  /* 查不到必须是 null，让调用方停下来。回落到「某个默认根」等于拿着 A 项目的
+     会话去 B 项目的目录里跑命令，而工具的路径约束正是以这个根为界的。 */
+  test('会话不存在时返回 null，不回落到任何项目', () => {
+    const store = new Store({ path: ':memory:' })
+    upsertWorkspace(store, '/tmp/a', 'a')
+    expect(workspaceOf(store, 'cv_nope' as never)).toBeNull()
     store.close()
   })
 })

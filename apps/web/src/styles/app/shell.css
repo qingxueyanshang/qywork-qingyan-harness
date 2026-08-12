@@ -5,15 +5,42 @@
  * 侧栏 232 + 会话最小可读宽度 ~560 加起来的自然折点。
  */
 
+/*
+ * 两行两列（开面板时三列）：
+ *
+ *   ┌─────────┬────────────────────────────┐
+ *   │         │  .topbar（横跨到窗口右沿）  │
+ *   │ sidebar ├──────────────┬─────────────┤
+ *   │         │    .main     │ .side-panel │
+ *   └─────────┴──────────────┴─────────────┘
+ *
+ * 顶栏必须自己占一行、横跨到最后一列，**不能塞进 .main**：塞进去的话开面板
+ * 时顶栏跟着变窄，窗口按钮被挤到窗口中央，右上角变成面板的标签页。
+ *
+ * 底色是 sunken（灰），白色只给内容那一格——「灰壳 + 白纸」是圆角能被看见的
+ * 前提，两边都白的话圆角画出来也是白盖白。
+ */
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  /*
+   * 内容行必须显式写成 minmax(0, 1fr)，不能留给隐式的 auto 行。
+   *
+   * auto 行的尺寸下限是 max-content：`align-content: stretch` 只会把**多余**空间
+   * 分给它，从不把它压到内容高度以下。于是会话一长，这一行就撑到内容那么高，
+   * 整个 .app 超出 100%，滚动落到最外层——表现是一条贯穿窗口的滚动条、页面
+   * 「无限滚动」，左栏底部的导航和输入框一起被顶出窗口下沿。
+   *
+   * minmax(0, 1fr) 把行钉死在容器高度上，各列内部再自己滚。
+   * 第一行反过来必须是 auto——它由顶栏自己的高度定义，而侧栏跨两行不参与。
+   */
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
-  background: var(--bg-app);
+  background: var(--bg-sunken);
 }
 /* 开右侧面板时让出一列。宽度固定，会话区自适应剩余空间。 */
 .app.with-panel {
-  grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--panel-w);
 }
 
 /* ── 连接状态条 ── */
@@ -24,7 +51,7 @@
   transform: translateX(-50%);
   z-index: 60;
   padding: 5px var(--s-4);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: var(--bg-raised);
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-md);
@@ -37,8 +64,11 @@
 }
 
 /* ── 侧栏 ── */
+/* 跨满两行：它自己的头部就是标题栏那一格，和顶栏连成一条通栏。
+   不画右边框——那条线由内容纸的左边框负责，画两条会在圆角处露出一段直角。 */
 .sidebar-slot {
-  border-right: 1px solid var(--border-subtle);
+  grid-column: 1;
+  grid-row: 1 / -1;
   background: var(--bg-sunken);
   min-width: 0;
 }
@@ -92,16 +122,53 @@
   color: var(--text-primary);
 }
 
+/* 头部与滚动区之间的固定块：「新建 work」和它的错误提示。
+   放进滚动区的代价是会话一多就被滚走，而它是这一栏唯一的「开新项目」入口。 */
+.sidebar-lead {
+  flex: none;
+  padding: var(--s-1) var(--s-2) var(--s-2);
+}
+/* 手机 / 浏览器端没有目录选择器，这一块两个孩子都不渲染——
+   留着就是一条 12px 的空白横带。`:empty` 不受注释节点影响，
+   而 Solid 的 `<Show>` 关掉时留下的正是一个注释占位。 */
+.sidebar-lead:empty {
+  display: none;
+}
+
 .sidebar-scroll {
   flex: 1;
+  /* flex 子项的默认 min-height 是 auto，它会拒绝收缩到内容高度以下——
+     会话一多，底部导航就被顶出窗口外，而 overflow-y 在这里根本不生效。
+     写死 0 才让「列表滚动、底部常驻」成立。 */
+  min-height: 0;
   overflow-y: auto;
   padding: var(--s-1) var(--s-2) var(--s-4);
 }
 
+/* 这一栏不画滚动条，但照样能滚。
+   左栏宽度紧，一条 12px 的轨道会再吃掉一截项目名和会话标题；而「这里还有内容」
+   由列表被裁在底边的形状本身就说明了。
+   两套写法必须互斥，理由见 base.css 那段：Chromium 一旦看见 `scrollbar-width`
+   就整套忽略 `::-webkit-scrollbar`，回退成带箭头的系统原生滚动条。 */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .sidebar-scroll {
+    scrollbar-width: none;
+  }
+}
+
+/* 相邻两项之间留 2px：不留的话选中/悬停的底色会连成一整块，
+   看不出这是几条独立的项。全仓的可选列表都按这个间距走。 */
 .nav-list {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .nav-item {
@@ -127,44 +194,149 @@
   color: var(--text-primary);
   font-weight: 500;
 }
+/* 会话缩进挂在项目名下面：缩进本身就是「它属于这个项目」，
+   不需要再加一个分组标题去说。
+   缩进量对齐的是**项目名的第一个字**，不是随便取一档：项目行是
+   `var(--s-2)` 内边距 + 15px 文件夹图标 + `var(--s-2)` 间隙。
+   15 写死是因为它由 `<IconFolder size={15}>` 决定，不是 token——
+   改图标尺寸时这两处要一起改。 */
 .nav-item.conv {
-  padding-left: var(--s-3);
+  padding-left: calc(var(--s-2) * 2 + 15px);
 }
 
-.nav-section {
-  margin-top: var(--s-5);
-}
-
-.section-head {
+/* ── 项目 ──
+   一行文件夹 + 它的会话。当前项目的那一行右侧挂「新建对话」——
+   会话属于哪个项目，这个位置本身就说明了，不用再写一句。 */
+/* 白底方圆卡：左栏底色是灰的，这一块浮在上面——它是这一栏里唯一一个
+   「开一个新项目」的动作，和下面那些导航项不是一类，长得也不该像。 */
+.new-work {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  width: 100%;
+  padding: 7px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  text-align: left;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+/* 底色不动：白底卡上盖一层半透明黑会把它压回灰色，看着像被禁用了。 */
+.new-work:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
   width: 100%;
   padding: 4px var(--s-2);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 500;
   text-align: left;
 }
-.section-head.static {
-  cursor: default;
+.project-name {
+  min-width: 0;
+}
+/* 别的项目那一行有两个动作：切过去、从列表里移除。
+   所以它是一个容器 div，内边距下放到里面那个按钮身上——
+   两个 button 不能嵌套，浏览器会把内层直接拎出去，点击区随之错位。 */
+.project-head.other {
+  color: var(--text-secondary);
+  font-weight: 400;
+  gap: 0;
+  padding: 0;
+}
+.project-open {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 1;
+  min-width: 0;
+  padding: 4px var(--s-2);
+  border-radius: var(--r-xs);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.project-open:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.project-remove {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+.project-remove:hover {
+  color: var(--danger);
+}
+
+/* 移除确认就地展开，不弹浮层：要删的那一行和它的代价必须同时在视野里。
+   字号降一档是因为它比项目名长，但它只活到用户按下取消或移除为止。 */
+.project-head.confirm {
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-size: var(--fs-xs);
+}
+/* `.truncate` 自己带 min-width: 0，这里只补「把剩下的宽度都吃掉」。 */
+.project-head.confirm > .truncate {
+  flex: 1;
+}
+.confirm-yes,
+.confirm-no {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  transition: background var(--t-fast) var(--ease);
+}
+.confirm-yes {
+  color: var(--danger);
+}
+.confirm-no {
+  color: var(--text-secondary);
+}
+.confirm-yes:hover,
+.confirm-no:hover {
+  background: var(--bg-hover);
+}
+
+.project-new {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+}
+
+/* 切工作区失败要看得见，不能静默吞掉。
+   间距挂在上边而不是下边：它和上面那个按钮是一对，而它下面的间距由
+   `.sidebar-lead` 的下内边距统一负责——没有错误时不该多留一档空白。 */
+.side-error {
+  margin-top: var(--s-2);
+  padding: 0 var(--s-2);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
 }
 
 .sidebar-foot {
   flex: none;
   padding: var(--s-2) var(--s-3) calc(var(--s-2) + var(--safe-bottom));
-  border-top: 1px solid var(--border-subtle);
 }
 
-.git-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  min-width: 0;
-}
 /* 扩展摘要比 git 分支次要一级：装了什么是背景信息，分支是随时要看的 */
 .ext-chip {
   display: flex;
@@ -173,11 +345,6 @@
   color: var(--text-tertiary);
   min-width: 0;
   margin-bottom: 4px;
-}
-/* 沙箱状态。没有沙箱时用警告色——那条信息比「装了几个插件」重要得多，
-   而它恰恰是默认状态，不能和普通说明文字长得一样。 */
-.sandbox-chip.warn {
-  color: var(--warning, #b8860b);
 }
 .git-count {
   color: var(--text-tertiary);
@@ -188,22 +355,50 @@
   font-weight: 600;
 }
 
-/* ── 主区 ── */
+/* ── 主区 ──
+ *
+ * 内容纸的左上角是整个界面唯一的圆角：灰壳（侧栏 + 顶栏）在外，白纸在内，
+ * 那道弧就是两者的分界。右沿和下沿贴着窗口边，所以只画上、左两条边框——
+ * 补齐四条边会在窗口边缘多出两条对不齐的线。
+ *
+ * 开右侧面板时这张纸继续往右延伸（面板同底色、只多一条左分隔线），
+ * 分栏不该把一张纸切成两张。
+ */
 .main {
+  grid-column: 2;
+  grid-row: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
   height: 100%;
+  background: var(--bg-app);
+  border-top: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--border-subtle);
+  border-top-left-radius: var(--r-xl);
+  /* 往左上方投一点点影，让这张「白纸」真的浮在灰壳上——只有 1px 描边时，
+     圆角看着像画上去的，而不是一个盖住侧栏的边。
+     方向阴影只此一处，不进 tokens：那里的 sm/md/lg 是四周均匀的浮层用的。 */
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.05);
 }
 
+/*
+ * 顶栏与侧栏头同底色，连成一条贯穿整个窗口宽度的灰带——桌面外壳的标题栏
+ * 就落在这条带子上。白色顶栏 + 白色正文之间只剩一条 1px 描边，窗口拖拽区
+ * 和内容区在视觉上是同一块，找不到"这里可以拖动"。
+ *
+ * 底色继承 .app，不再自己声明——它和侧栏头是同一块灰，重复写等于给自己
+ * 留一个漂移的机会。分界线也归内容纸的上边框管，这里不画 border-bottom。
+ */
 .topbar {
+  grid-column: 2 / -1;
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  height: var(--header-h);
-  padding: 0 var(--s-3);
-  padding-top: var(--safe-top);
-  border-bottom: 1px solid var(--border-subtle);
+  /* 高度要把安全区**加**在标题栏之外，不是从 --header-h 里挖掉——挖掉的话刘海屏上
+     顶栏比侧栏头矮一截，同一行的两半对不齐。 */
+  height: calc(var(--header-h) + var(--safe-top));
+  padding: var(--safe-top) var(--s-3) 0;
   flex: none;
 }
 
@@ -220,4 +415,71 @@
 
 .drawer-toggle {
   display: none;
+}
+
+/* ── 自绘标题栏 ──
+ *
+ * 系统装饰在 Rust 侧关掉了（`decorations(false)`），顶栏挂 `data-tauri-drag-region`
+ * 成为拖拽区，双击最大化由它自带。
+ *
+ * **不需要给按钮加「取消拖拽」的样式**：Tauri 判定的是事件目标身上有没有那个属性，
+ * 而按钮没有，所以点击照常。（Electron 的 `-webkit-app-region: no-drag` 在这里
+ * 是空操作——写了会让人以为它在起作用，那比没写更坏。）
+ */
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  /* 贴到窗口右上角，抵消顶栏的内边距——系统按钮就是顶到边的。 */
+  margin: 0 calc(var(--s-3) * -1) 0 var(--s-2);
+}
+.win-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  color: var(--text-secondary);
+  transition: background var(--t-fast) var(--ease);
+}
+.win-btn:hover {
+  background: var(--bg-hover);
+}
+/* 关闭键的红底白字是系统的既有约定，用户对它的肌肉记忆比任何自创样式都强。 */
+.win-btn.danger:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+/* 手机与浏览器没有窗口，这组按钮根本不渲染（见 WindowControls）；
+   窄屏下即便渲染了也要让位给抽屉开关。 */
+@media (max-width: 820px) {
+  .win-controls {
+    display: none;
+  }
+  /* 窄屏的左栏本来就是浮动抽屉，「收起」由 drawer 那套管——
+     这个按钮在那里是第二套机制，直接不显示。 */
+  .sidebar-expand {
+    display: none;
+  }
+}
+
+/* ── 左栏收起 ──
+   整段锁在宽屏：窄屏没有常驻左栏可收（见 utility.css 的断点）。
+   列宽归零而不是留一条窄条——留条窄条就得再定一套「收起态长什么样」。
+   收起后内容纸占满窗口宽度，左边框和圆角跟着取消，理由同窄屏那条：
+   它们表达的是「灰壳里嵌着一张纸」，而这时左边没有灰壳了。 */
+@media (min-width: 821px) {
+  .app.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  .app.sidebar-collapsed.with-panel {
+    grid-template-columns: 0 minmax(0, 1fr) var(--panel-w);
+  }
+  .app.sidebar-collapsed .sidebar-slot {
+    display: none;
+  }
+  .app.sidebar-collapsed .main {
+    border-left: none;
+    border-top-left-radius: 0;
+    box-shadow: none;
+  }
 }

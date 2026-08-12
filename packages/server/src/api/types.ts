@@ -21,8 +21,6 @@ import type { RunManager } from '../runs.ts'
 
 export interface ApiDeps {
   store: Store
-  workspaceRoot: string
-  workspaceId: string
   config: QyConfig
   bus: EventBus
   runs: RunManager
@@ -38,12 +36,24 @@ export interface ApiDeps {
 }
 
 /**
+ * 处理器看到的依赖 = `ApiDeps` + **这一次请求问的是哪个项目**。
+ *
+ * 两个字段由派发器按 `?ws=<workspaceId>` 当场解析（见 `api/index.ts`），
+ * 不带参数时落到最近打开的那个。**它们不是进程常量**——那份常量已经删了，
+ * 它正是「一个进程只服务得了一个项目、换项目只能重启」的成因。
+ */
+export interface ApiRequestDeps extends ApiDeps {
+  workspaceRoot: string
+  workspaceId: string
+}
+
+/**
  * 一个域的路由处理器。
  *
  * **返回 `null` 表示「这条路由不归我管」**，不是「处理了但没有结果」——
  * 派发器靠它往下走。任何真实结果都必须是一个 `Response`，包括错误。
  */
-export type ApiHandler = (url: URL, req: Request, d: ApiDeps) => Promise<Response | null>
+export type ApiHandler = (url: URL, req: Request, d: ApiRequestDeps) => Promise<Response | null>
 
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

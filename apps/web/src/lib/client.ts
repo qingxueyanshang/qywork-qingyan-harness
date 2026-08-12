@@ -22,8 +22,26 @@ import type {
   ServerCapabilities,
 } from '@qywork/core'
 import { decodePairingUrl, PROTOCOL_VERSION } from '@qywork/core'
+import { workspace } from './store/ui.ts'
 
 export type ConnectionState = 'connecting' | 'ready' | 'reconnecting' | 'unauthorized' | 'closed'
+
+/**
+ * 每条 REST 都带上「问的是哪个项目」。
+ *
+ * **在这一个出口统一加，不在几十个调用点各写一遍。** 服务端一次服务多个项目，
+ * 缺这个参数它只能落到「最近打开的那个」——那在切换的一瞬间就是错的：
+ * 前端已经切到 B，而这条请求还回着 A 的会话列表。
+ *
+ * 调用方自己写了 `ws=` 就不覆盖（目前没有这种调用，留着是因为覆盖别人显式写的
+ * 参数是那种查半天才找得到的坑）。首屏还不知道自己在哪个项目时不带，
+ * 服务端回落到最近打开的那个——那正是首屏要显示的东西。
+ */
+function withWorkspace(path: string): string {
+  const id = workspace()?.id
+  if (!id || path.includes('ws=')) return path
+  return `${path}${path.includes('?') ? '&' : '?'}ws=${encodeURIComponent(id)}`
+}
 
 export interface ClientOptions {
   onEvent(event: AgentEvent, seq: number): void
@@ -42,6 +60,29 @@ interface Endpoint {
   base: string
   token: string
   origin: ClientOrigin
+}
+
+/**
+ * 这个类和浏览器之间的两个接缝。
+ *
+ * 存在的唯一理由是**让重连语义能被测**。之前那条「握手被拒之后还要不要重连」
+ * 的判断埋在消息回调里，跑起来得有真 WebSocket 和 `location` / `sessionStorage`，
+ * 于是它一直没有测试——而它恰恰出过一个 bug：版本对不上时无限重连，
+ * 界面显示成「N 秒后重试」。
+ *
+ * 生产路径走默认实现，测试传自己的假 socket。**不是开关，是接缝**：
+ * 没有第二套行为，只有第二个 socket 来源。
+ */
+export interface SocketLike {
+  addEventListener(type: string, fn: (e: { data?: unknown }) => void, opts?: unknown): void
+  send(data: string): void
+  close(): void
+  readonly readyState: number
+}
+
+export interface ClientDeps {
+  endpoint: Endpoint
+  open(url: string): SocketLike
 }
 
 /**
@@ -91,15 +132,27 @@ function isMobileViewport(): boolean {
 }
 
 export class QyClient {
-  private ws: WebSocket | null = null
+  private ws: SocketLike | null = null
   private lastSeq = 0
   private attempt = 0
   private closed = false
-  private readonly endpoint = resolveEndpoint()
+  private readonly endpoint: Endpoint
+  private readonly open: (url: string) => SocketLike
   private subscribed: string[] = []
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(private readonly opts: ClientOptions) {}
+  constructor(
+    private readonly opts: ClientOptions,
+    deps?: ClientDeps,
+  ) {
+    this.endpoint = deps?.endpoint ?? resolveEndpoint()
+    this.open = deps?.open ?? ((url) => new WebSocket(url) as unknown as SocketLike)
+  }
+
+  /** 这条连接是不是已经放弃重连。握手被拒、或调用方主动 close 之后为真。 */
+  get terminated(): boolean {
+    return this.closed
+  }
 
   get token(): string {
     return this.endpoint.token
@@ -122,7 +175,7 @@ export class QyClient {
 
     const wsBase = this.endpoint.base.replace(/^http/, 'ws')
     const url = `${wsBase}/stream?token=${encodeURIComponent(this.endpoint.token)}&origin=${this.endpoint.origin}`
-    const ws = new WebSocket(url)
+    const ws = this.open(url)
     this.ws = ws
 
     ws.addEventListener('open', () => {
@@ -158,7 +211,17 @@ export class QyClient {
       }
       if (msg.type === 'hello.err') {
         this.opts.onState('unauthorized', msg.message)
-        this.closed = msg.reason === 'bad_token'
+        // **握手被拒一律是终态。**
+        //
+        // 这里原来写 `reason === 'bad_token'`，而服务端真会发的是两种：
+        // `bad_token`（令牌换了——重连一万次带的还是同一个令牌）和
+        // `protocol_mismatch`（版本对不上，要改的是某一端的代码）。
+        // 于是版本对不上时客户端每 ≤15 秒重连一次、每次都被同样地拒掉，
+        // 而界面显示的是「N 秒后重试」——一个永远不会好的「稍后重试」。
+        //
+        // 以后真出现「等等就好」的原因（连接数超限之类），在这里按 reason
+        // 分支。现在不预留那个分支：没有生产者的分支只会让人以为它生效过。
+        this.closed = true
         return
       }
       if (msg.type === 'command.rejected') {
@@ -217,13 +280,17 @@ export class QyClient {
 
   /** REST 请求。令牌走 Authorization 头，不放 query（不进访问日志）。 */
   async api<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.endpoint.base}${path}`, {
+    // 只在调用方**没有**自己指定时才默认 JSON。写在后面无条件覆盖的话，
+    // 二进制上传（附件）的 `image/png` 会被改写成 `application/json`，
+    // 服务端据此归类，结果是每张图都被当成文件。
+    const given = new Headers(init?.headers ?? {})
+    if (init?.body && !given.has('content-type')) {
+      given.set('content-type', 'application/json')
+    }
+    given.set('authorization', `Bearer ${this.endpoint.token}`)
+    const res = await fetch(`${this.endpoint.base}${withWorkspace(path)}`, {
       ...init,
-      headers: {
-        ...(init?.headers ?? {}),
-        authorization: `Bearer ${this.endpoint.token}`,
-        ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      },
+      headers: given,
     })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')

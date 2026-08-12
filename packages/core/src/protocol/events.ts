@@ -12,6 +12,7 @@
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   CompactionManifest,
+  EffortLevel,
   FileChange,
   RunUsage,
   StopReason,
@@ -70,6 +71,8 @@ export interface ConversationUpdatedEvent {
   type: 'conversation.updated'
   conversationId: ConversationId
   model: string
+  /** null = 跟随配置默认。和 model 同一条广播——它们是同一层的两个旋钮。 */
+  effort: EffortLevel | null
   title: string
 }
 
@@ -272,6 +275,14 @@ export interface FileChangedEvent {
 
 export interface GitStateEvent {
   type: 'git.state'
+  /**
+   * 这份状态属于哪个项目。
+   *
+   * **不能省。** git 状态是工作区级事件，走全局广播（`bus.visibleTo` 对没有会话的
+   * 事件一律放行）。同时开着多个项目时，不带这个字段的话 B 项目的分支和改动数
+   * 会盖在正在看 A 的界面上——而那个数字看起来完全合理，没人会怀疑它是别人的。
+   */
+  workspaceId: string
   branch: string
   /** 上游分支，detached HEAD 时为 null。 */
   upstream: string | null
@@ -309,8 +320,14 @@ export interface PermissionRequestEvent {
 export interface PermissionScope {
   id: string
   label: string
-  /** once=仅这次；run=本轮；session=本会话；always=持久写入策略。 */
-  duration: 'once' | 'run' | 'session' | 'always'
+  /**
+   * once=仅这次；run=本轮；session=本会话。
+   *
+   * 曾经还有一个 `always`（「一直允许」），**它的标签在说谎**：授权记在
+   * `RunManager` 的内存 Map 里，进程一重启就没了，实际效果和 `session`
+   * 完全一样。要做真正的持久授权得写进配置，那是另一件事。
+   */
+  duration: 'once' | 'run' | 'session'
 }
 
 export interface PermissionResolvedEvent {

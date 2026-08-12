@@ -10,4 +10,7 @@ export * from './actions.ts'
 export * from './connection.ts'
 export * from './settings.ts'
 export * from './state.ts'
+// 具名，不跟上面几行的 `export *`——B6 的判据是「这个模块对外承诺了什么」，
+// 而 theme 只承诺三个符号。上面几行是拆分前就有的形状，不在这次改动范围内。
+export { initTheme, setTheme, type ThemePref, theme } from './theme.ts'
 export * from './ui.ts'
