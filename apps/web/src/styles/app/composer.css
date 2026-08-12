@@ -4,11 +4,73 @@
 
 /* ── 输入区 ── */
 .composer-wrap {
+  position: relative;
   flex: none;
+  /* 上边距必须是 0。
+   *
+   * 输入区不是悬浮层，它和会话流是上下两格；会话流的裁切边就是这里的上沿。
+   * 一旦给它补 padding-top，裁切边就被顶到输入框上方的空白里——往回拖历史时
+   * 正文会在半空中被齐刷刷切掉半行，看起来像那儿摆着一个看不见的盒子。
+   * 正文和输入框之间的呼吸感由 `.transcript-inner` 的 padding-bottom 给，
+   * 那样裁切边和框的上沿重合，滚动时正文是「滑进框底下」而不是被凭空切断。 */
   padding: 0 var(--s-5) calc(var(--s-4) + var(--safe-bottom));
   max-width: 760px;
   width: 100%;
   margin: 0 auto;
+}
+
+/* ── 等待提示 ──
+ *
+ * 一行裸的灰色小字，absolute 贴在输入框上沿，**不占文档流**：占了的话
+ * 每次出现/消失都会把整块输入区往上顶一格。无底色、无边框、无胶囊；
+ * 靠 opacity 淡入淡出，文案不清空，免得淡出过程中字先没了框还在。
+ */
+.live-status {
+  position: absolute;
+  left: var(--s-5);
+  bottom: 100%;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - var(--s-10));
+  padding-bottom: var(--s-1);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--t-base) var(--ease);
+}
+.live-status.show {
+  opacity: 1;
+}
+.live-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
 .changes-chip {
@@ -17,7 +79,7 @@
   gap: var(--s-2);
   margin-bottom: var(--s-2);
   padding: 4px var(--s-3);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: var(--bg-inset);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
@@ -54,6 +116,17 @@
   /* 移动端 Safari 对 <16px 的输入框会自动放大页面，锁死 16px 避免。 */
   font-size: 16px;
   line-height: 1.6;
+  /*
+   * 起步两行，不是一行。
+   *
+   * 写成 em + 上下内边距而不是一个像素数：桌面 14px、手机 16px 两档字号下
+   * 它都正好是**两行文字加原本的内边距**，换字号不用回来改这个数。
+   * `3.2em` = 2 × line-height 1.6。
+   *
+   * 只管起步高度，长起来仍由 autosize 顶到 200px 封顶——min-height 会把
+   * autosize 写进来的行内 height 兜住，两边不打架。
+   */
+  min-height: calc(3.2em + var(--s-3) + var(--s-1));
   max-height: 200px;
   overflow-y: auto;
 }
@@ -75,9 +148,12 @@
   align-items: center;
   gap: 5px;
   padding: 3px var(--s-2);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
+  /* **必须 nowrap**：390px 宽下「自动审批」会断成「自动审 / 批」两行，
+     把整条工具栏撑高一倍。实测截出来的。 */
+  white-space: nowrap;
 }
 .mode-chip:hover {
   background: var(--bg-hover);
@@ -85,6 +161,14 @@
 .mode-chip:disabled {
   opacity: 0.45;
   cursor: default;
+}
+/* 只读的那一个（「运行于 <项目>」）：不是控件就不要有悬停反馈——
+   有反馈就是在说「点我」。 */
+.mode-chip.static {
+  cursor: default;
+}
+.mode-chip.static:hover {
+  background: transparent;
 }
 .mode-chip:disabled:hover {
   background: transparent;
@@ -106,6 +190,9 @@
   max-height: 320px;
   overflow-y: auto;
   padding: var(--s-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--bg-raised);
@@ -144,7 +231,7 @@
 .model-tag {
   flex-shrink: 0;
   padding: 1px 6px;
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: var(--bg-inset);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
@@ -152,7 +239,7 @@
 
 .ctx-meter {
   padding: 3px var(--s-2);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
@@ -160,13 +247,6 @@
 .ctx-meter.warn {
   color: var(--warning);
   background: var(--bg-inset);
-}
-
-.cost {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-  margin-right: var(--s-1);
 }
 
 .send-btn {
@@ -191,4 +271,238 @@
 .send-btn.stop {
   background: var(--danger);
   color: #fff;
+}
+
+/* ── 上下文占用弹层 ──
+   向上开：输入区在窗口底部，向下会开到窗外。 */
+.ctx-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.ctx-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 260px;
+  padding: var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.ctx-total {
+  margin-bottom: var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ctx-row {
+  display: grid;
+  grid-template-columns: 5.5em 1fr max-content;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+}
+.ctx-name {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* 条形只表达相对大小，不标刻度——刻度会让人以为它是精确值，而这是估算。 */
+.ctx-bar {
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  position: relative;
+  overflow: hidden;
+}
+.ctx-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 0%);
+  background: var(--accent);
+  opacity: 0.7;
+}
+.ctx-num {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-note {
+  margin-top: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+/* ── 斜杠命令弹层 ──
+   贴在输入框上沿，向上开。行内是「/名字 + 标签 + 一句代价说明」——
+   代价说明必须在这里，用户按回车前唯一能看到它的地方就是这一行。 */
+.slash-pop {
+  position: absolute;
+  bottom: 100%;
+  left: var(--s-5);
+  right: var(--s-5);
+  z-index: 25;
+  margin-bottom: 6px;
+  padding: var(--s-1);
+  max-height: 40vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  padding: 5px var(--s-2);
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.slash-item.active {
+  background: var(--bg-active);
+}
+.slash-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-tertiary);
+}
+.slash-name {
+  flex: none;
+  color: var(--accent);
+}
+.slash-label {
+  flex: none;
+}
+.slash-hint {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: var(--s-3);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* 命令面板里的同一条说明。它不是快捷键，所以不用 kbd 的键帽样式。 */
+.palette-hint {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: var(--s-3);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* ── 附件 ──
+   只列名字，不做缩略图墙：一行一个看得清、删得掉；缩略图会把输入区顶掉半屏。 */
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: var(--s-2);
+  min-width: 0;
+}
+.attach-row.sent {
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  min-width: 0;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+.attach-chip.busy {
+  color: var(--text-tertiary);
+  border-style: dashed;
+}
+.attach-x {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-tertiary);
+}
+.attach-x:hover {
+  color: var(--danger);
+}
+
+/* ── 空会话时的「运行于」──
+   三个 chip 各回答一个真问题：改哪个工作区、要不要逐条问、在哪条分支上。
+   它们决定了这一轮 agent 能碰什么，而以前用户在发第一句话之前完全看不到。 */
+.run-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: var(--s-3);
+  padding-left: 2px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+.run-context-label {
+  margin-right: 2px;
+}
+
+/* 录音中：图标呼吸，不加红点也不改底色——一个持续闪烁的红点在输入区太吵，
+   而这个按钮本来就在用户眼皮底下。 */
+.icon-btn.recording {
+  color: var(--danger);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.voice-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.icon-btn.bad {
+  color: var(--danger);
+}
+/* 失败原因就近显示。它只和这个按钮有关，塞进全局提示条会盖住用户正在打的字。 */
+.voice-error {
+  max-width: 200px;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 窄屏的输入区工具栏 ──
+ *
+ * 桌面上这一行有六个控件（附件 / 权限 / 模型 / 运行详情 / 语音 / 发送），
+ * 390px 下挤不开。**不删控件**——每一个都有真实去处；改成挤压可压缩的那部分：
+ * 模型名截短、间距归零。模型名是这里唯一「长度不可控」的东西。
+ */
+@media (max-width: 820px) {
+  .composer-bar {
+    gap: 0;
+  }
+  .model-picker .mode-chip {
+    max-width: 96px;
+  }
 }

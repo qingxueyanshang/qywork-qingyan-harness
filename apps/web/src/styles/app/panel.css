@@ -2,22 +2,30 @@
  *
  * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
 
-/* ── 右侧面板 ── */
+/* ── 右侧面板 ──
+ *
+ * 它在标题栏**下面**那一行，和会话区并排——不是从窗口顶端整列切下来。
+ * 后者会把顶栏截短，窗口按钮被挤进窗口中央。
+ *
+ * 底色跟会话区一致：两者是同一张纸的两栏，中间只需要一条分隔线。 */
 .side-panel {
+  grid-column: 3;
+  grid-row: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
-  background: var(--bg-sunken);
+  background: var(--bg-app);
 }
 
+/* 标签行不再顶到窗口上沿，安全区由顶栏那一行吃掉了，这里不用再让。 */
 .side-head {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   height: var(--header-h);
   padding: 0 var(--s-2) 0 var(--s-3);
-  padding-top: var(--safe-top);
   border-bottom: 1px solid var(--border-subtle);
   flex: none;
 }
@@ -44,6 +52,8 @@
 
 .side-body {
   flex: 1;
+  /* 同 .transcript：不写 0 的话这一块会把整个面板撑破，overflow 形同虚设。 */
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -61,6 +71,16 @@
   list-style: none;
   margin: 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* li 里装的是「本行 + 展开后的子树」，所以它自己也得排成一列——
+   否则父目录那一行和它第一个子项之间没有那 2px，底色又粘上了。 */
+.tree li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .file-browser > .tree {
   overflow-y: auto;
@@ -180,6 +200,9 @@
   list-style: none;
   margin: 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .git-branch {
   display: flex;
@@ -233,6 +256,35 @@
 .git-flag[data-status="!"] {
   color: var(--danger);
   font-weight: 700;
+}
+
+/* ── 能力开关 ──
+ *
+ * 「这一轮用什么」。分组沿用 git 面板那套小标题（`.git-section`），
+ * 这里只多一个行式的复选行——分两套小标题会让同一块面板里出现两种层级感。 */
+.extras-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-2);
+}
+.extra-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 3px var(--s-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  min-width: 0;
+}
+.extra-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.extra-label {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* ── diff ── */
