@@ -6,10 +6,10 @@
  */
 
 import type {
-  Artifact,
   CompactionManifest,
   Conversation,
   ConversationId,
+  EffortLevel,
   Message,
   MessageId,
   Run,
@@ -22,14 +22,7 @@ import type {
   Workspace,
   WorkspaceId,
 } from '@qywork/core'
-import {
-  newArtifactId,
-  newConversationId,
-  newMessageId,
-  newRunId,
-  newStepId,
-  newWorkspaceId,
-} from '@qywork/core'
+import { newConversationId, newMessageId, newRunId, newStepId, newWorkspaceId } from '@qywork/core'
 import type { Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
 
@@ -39,7 +32,8 @@ const EMPTY_USAGE: RunUsage = {
   cachedTokens: null,
   cacheWriteTokens: null,
   reasoningTokens: 0,
-  costUsd: 0,
+  cost: 0,
+  currency: 'USD',
   turns: [],
 }
 
@@ -71,11 +65,83 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
   return ws
 }
 
+/**
+ * 按「最近打开」倒序。
+ *
+ * 次级排序键 `id DESC` 不是装饰：同一毫秒 upsert 的两个项目 `last_opened_at` 会并列，
+ * 只按它排序时 SQLite 退回插入顺序，结果正好是反的。而这个顺序现在有实际后果——
+ * 不带 `?ws=` 的请求落到第一条，git 轮询也盯着第一条。
+ * （与 `listConversations` 是同一条教训。）
+ */
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
-    .query<Record<string, any>, []>('SELECT * FROM workspaces ORDER BY last_opened_at DESC')
+    .query<Record<string, any>, []>(
+      'SELECT * FROM workspaces ORDER BY last_opened_at DESC, id DESC',
+    )
     .all()
     .map(rowToWorkspace)
+}
+
+export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
+  const row = store.db
+    .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE id = ?')
+    .get(id)
+  return row ? rowToWorkspace(row) : null
+}
+
+/**
+ * 这个项目下有几条会话。
+ *
+ * 存在的理由只有一个：**删项目之前要把代价说出来**。`workspaces.id` 上挂着
+ * `ON DELETE CASCADE`，删一行项目会把它的会话、消息、run、step 一起带走，
+ * 而列表上只写一个项目名的话，用户看不出自己按下去要丢多少东西。
+ */
+export function countConversations(store: Store, id: WorkspaceId): number {
+  const row = store.db
+    .query<{ n: number }, [string]>(
+      'SELECT COUNT(*) AS n FROM conversations WHERE workspace_id = ?',
+    )
+    .get(id)
+  return row?.n ?? 0
+}
+
+/**
+ * 从账本里删掉一个项目。
+ *
+ * **会连着它的会话一起没。** 这不是可以绕开的选择：`conversations.workspace_id`
+ * 是 `ON DELETE CASCADE`，而没有项目行的会话根本读不回来——`workspaceOf` 查不到根，
+ * run 起不来，`listConversations` 也不会带上它。留一份「删了项目但留着会话」的
+ * 中间态等于造一批永远打不开的孤儿。
+ *
+ * `usage_ledger` 不受影响：它刻意没有外键，「这个月花了多少」不该因为删了项目而少一笔
+ * （理由写在 `schema.ts` 第 3 条迁移里）。
+ *
+ * 返回是否真的删掉了一行。id 不存在时返回 false，由调用方回 404——
+ * 静默当成功会让界面以为删掉了，刷新之后它又回来。
+ */
+export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
+  return store.db.query('DELETE FROM workspaces WHERE id = ?').run(id).changes > 0
+}
+
+/**
+ * 这条会话跑在哪个目录下。
+ *
+ * **这是「哪个根」的唯一权威。** 服务进程曾经自己拿着一个 `workspaceRoot` 常量
+ * （启动时的 `--cwd`），于是一个进程只服务得了一个项目，换项目只能重启。
+ * 那个常量是这两张表的一份缓存，删掉之后一律来这里查。
+ *
+ * 查不到返回 `null`，**调用方必须停下来**：回落到某个默认根等于拿着 A 项目的
+ * 会话去 B 项目的目录里跑命令，而工具的路径约束正是以这个根为边界的。
+ */
+export function workspaceOf(store: Store, id: ConversationId): Workspace | null {
+  const row = store.db
+    .query<Record<string, any>, [string]>(
+      `SELECT w.* FROM conversations c
+       JOIN workspaces w ON w.id = c.workspace_id
+       WHERE c.id = ?`,
+    )
+    .get(id)
+  return row ? rowToWorkspace(row) : null
 }
 
 // ─────────────────────────────── 会话 ───────────────────────────────
@@ -86,6 +152,7 @@ export function createConversation(
     workspaceId: WorkspaceId
     model: string
     title?: string
+    effort?: EffortLevel
     source?: Conversation['source']
     sourceRef?: string
   },
@@ -96,6 +163,7 @@ export function createConversation(
     workspaceId: input.workspaceId,
     title: input.title ?? '',
     model: input.model,
+    effort: input.effort ?? null,
     compactionManifest: null,
     cacheGeneration: 0,
     source: input.source ?? null,
@@ -106,14 +174,15 @@ export function createConversation(
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, model, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, model, effort, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
       conv.workspaceId,
       conv.title,
       conv.model,
+      conv.effort,
       null,
       0,
       conv.source,
@@ -142,7 +211,7 @@ export function getConversation(store: Store, id: ConversationId): Conversation 
 export function listRecentConversations(store: Store, limit = 20): Conversation[] {
   return store.db
     .query<Record<string, any>, [number]>(
-      // `source IS NULL` = 用户会话；team / workflow 产生的机器会话不列，
+      // `source IS NULL` = 用户会话；编排产生的机器会话不列，
       // 与 listConversations 用同一条判据（不是另发明一个 kind 列）。
       `SELECT * FROM conversations WHERE source IS NULL
        ORDER BY updated_at DESC, id DESC LIMIT ?`,
@@ -154,7 +223,7 @@ export function listRecentConversations(store: Store, limit = 20): Conversation[
 export function listConversations(store: Store, workspaceId: WorkspaceId): Conversation[] {
   return store.db
     .query<Record<string, any>, [string]>(
-      // 只列用户会话：team/workflow 产生的机器会话不进会话列表，
+      // 只列用户会话：编排产生的机器会话不进会话列表，
       // 它们由父会话的协作视图展示。
       //
       // 次级排序键 id DESC 不是装饰：同一毫秒创建的会话（批量导入、同秒连续操作）
@@ -194,6 +263,24 @@ export function setConversationModel(
   const changed = store.db
     .query('UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?')
     .run(model, Date.now(), id)
+  if (changed.changes === 0) return null
+  return getConversation(store, id)
+}
+
+/**
+ * 切换会话思考强度。
+ *
+ * `null` 是合法值，表示**回到跟随配置默认**——所以这里不能用「假值即不改」的
+ * 写法，那会让「清除」这个动作永远没法执行。
+ */
+export function setConversationEffort(
+  store: Store,
+  id: ConversationId,
+  effort: EffortLevel | null,
+): Conversation | null {
+  const changed = store.db
+    .query('UPDATE conversations SET effort = ?, updated_at = ? WHERE id = ?')
+    .run(effort, Date.now(), id)
   if (changed.changes === 0) return null
   return getConversation(store, id)
 }
@@ -256,6 +343,30 @@ export function appendMessage(
  * 排队期间用户可能又发了几条消息——那些消息**不属于**本 run 的历史，
  * 让它们穿越进来会让模型看到「未来」。
  */
+/**
+ * 所有被消息引用过的附件路径。
+ *
+ * 给附件目录的 GC 用：**没有任何消息引用的文件就是孤儿**——用户选了图、
+ * 没发出去就换了话题，那份字节永远不会再被读到。
+ *
+ * 一次全表扫。附件是低频操作，消息表再大也只需要在**启动时**跑这一次；
+ * 为它单开一张索引表等于给自己加一本要维护的账。
+ */
+export function referencedAttachmentPaths(store: Store): Set<string> {
+  const rows = store.db
+    .query<{ attachments: string | null }, []>(
+      "SELECT attachments FROM messages WHERE attachments IS NOT NULL AND attachments != ''",
+    )
+    .all()
+  const out = new Set<string>()
+  for (const r of rows) {
+    for (const a of readJson<{ path?: unknown }[]>(r.attachments, [])) {
+      if (typeof a?.path === 'string' && a.path) out.add(a.path)
+    }
+  }
+  return out
+}
+
 export function listMessages(
   store: Store,
   conversationId: ConversationId,
@@ -305,7 +416,6 @@ export function createRun(
     stepCount: 0,
     errorMessage: null,
     errorCode: null,
-    executionState: null,
     contextTokens: 0,
     contextLimit: 0,
     contextPercent: 0,
@@ -319,10 +429,10 @@ export function createRun(
       `INSERT INTO runs
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
-        cache_write_tokens, reasoning_tokens, cost_usd, usage_turns, step_count, error_message, error_code,
-        execution_state, context_tokens, context_limit, context_percent, retry_of_run_id, superseded_by,
+        cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
+        context_tokens, context_limit, context_percent, retry_of_run_id, superseded_by,
         created_at, finished_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'[]',0,NULL,NULL,NULL,0,0,0,?,NULL,?,NULL)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,0,0,0,?,NULL,?,NULL)`,
     )
     .run(
       run.id,
@@ -370,7 +480,7 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
   store.db
     .query(
       `UPDATE runs SET input_tokens = ?, output_tokens = ?, cached_tokens = ?,
-       cache_write_tokens = ?, reasoning_tokens = ?, cost_usd = ?, usage_turns = ? WHERE id = ?`,
+       cache_write_tokens = ?, reasoning_tokens = ?, cost = ?, currency = ?, usage_turns = ? WHERE id = ?`,
     )
     .run(
       usage.inputTokens,
@@ -378,7 +488,8 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
       usage.cachedTokens,
       usage.cacheWriteTokens,
       usage.reasoningTokens,
-      usage.costUsd,
+      usage.cost,
+      usage.currency,
       JSON.stringify(usage.turns),
       id,
     )
@@ -464,8 +575,9 @@ export function markRunSuperseded(store: Store, id: RunId, by: RunId): boolean {
  * 两者都标终态，区别在 `stopReason`——**不要为了界面干净统一成 user_interrupt**，
  * 那会让「进程崩了」和「用户点了停止」在事后无法区分。
  *
- * 注意 `runs.execution_state` 这个列虽然存在但从未被写入，拿它做判据会让
- * 所有 run 都被判成「安全可重放」——正好是最危险的那个方向。
+ * 曾经有一个 `runs.execution_state` 列，从未被写入过——拿它做判据会让所有 run
+ * 都被判成「安全可重放」，正好是最危险的那个方向。已连同 `ExecutionState` 一起删掉，
+ * 判据只有一个：**steps 表里那条带 `execution_started_at` 的 running 行**。
  */
 export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: number } {
   const rows = store.db
@@ -563,14 +675,13 @@ export function appendStep(
     content: input.content ?? null,
     payload: input.payload ?? null,
     status: input.status ?? 'done',
-    artifactId: null,
     createdAt: Date.now(),
   }
   store.db
     .query(
       `INSERT INTO steps (id, run_id, seq, kind, tool_name, tool_call_id, provider_batch_id,
-       call_index, execution_wave_index, execution_started_at, content, payload, status, artifact_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       call_index, execution_wave_index, execution_started_at, content, payload, status, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       step.id,
@@ -586,7 +697,6 @@ export function appendStep(
       step.content,
       writeJson(step.payload),
       step.status,
-      null,
       step.createdAt,
     )
   store.db.query('UPDATE runs SET step_count = step_count + 1 WHERE id = ?').run(input.runId)
@@ -626,36 +736,6 @@ export function listSteps(store: Store, runId: RunId): Step[] {
     .map(rowToStep)
 }
 
-// ─────────────────────────────── 产物 ───────────────────────────────
-
-export function createArtifact(
-  store: Store,
-  input: Omit<Artifact, 'id' | 'createdAt' | 'version'> & { version?: number },
-): Artifact {
-  const a: Artifact = {
-    ...input,
-    id: newArtifactId(),
-    version: input.version ?? 1,
-    createdAt: Date.now(),
-  }
-  store.db
-    .query(
-      'INSERT INTO artifacts (id, conversation_id, run_id, type, title, content, version, metadata, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    )
-    .run(
-      a.id,
-      a.conversationId,
-      a.runId,
-      a.type,
-      a.title,
-      a.content,
-      a.version,
-      JSON.stringify(a.metadata),
-      a.createdAt,
-    )
-  return a
-}
-
 // ─────────────────────────────── 行 → 领域对象 ───────────────────────────────
 
 function rowToWorkspace(r: Record<string, any>): Workspace {
@@ -674,6 +754,7 @@ function rowToConversation(r: Record<string, any>): Conversation {
     workspaceId: r.workspace_id,
     title: r.title,
     model: r.model,
+    effort: r.effort ?? null,
     compactionManifest: readJson(r.compaction_manifest, null),
     cacheGeneration: r.cache_generation,
     source: r.source,
@@ -713,13 +794,13 @@ function rowToRun(r: Record<string, any>): Run {
       cachedTokens: r.cached_tokens,
       cacheWriteTokens: r.cache_write_tokens,
       reasoningTokens: r.reasoning_tokens,
-      costUsd: r.cost_usd,
+      cost: r.cost,
+      currency: r.currency,
       turns: readJson(r.usage_turns, []),
     },
     stepCount: r.step_count,
     errorMessage: r.error_message,
     errorCode: r.error_code,
-    executionState: readJson(r.execution_state, null),
     contextTokens: r.context_tokens,
     contextLimit: r.context_limit,
     contextPercent: r.context_percent,
@@ -745,7 +826,6 @@ function rowToStep(r: Record<string, any>): Step {
     content: r.content,
     payload: readJson(r.payload, null),
     status: r.status,
-    artifactId: r.artifact_id,
     createdAt: r.created_at,
   }
 }

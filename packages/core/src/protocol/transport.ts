@@ -6,7 +6,7 @@
  */
 
 import type { ConversationId, RunId } from '../domain/ids.ts'
-import type { Attachment } from '../domain/model.ts'
+import type { Attachment, EffortLevel, PermissionMode } from '../domain/model.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
@@ -41,16 +41,19 @@ export interface HelloOkFrame {
 }
 
 export interface ServerCapabilities {
-  /** 交互式终端。手机端连接时为 false —— PTY 在 Tauri 侧，网络那头够不着。 */
-  pty: boolean
-  git: boolean
-  fileWatch: boolean
-  /** 已装载的插件 id。 */
-  plugins: string[]
-  /** 可用的 agent team 后端。 */
-  teamBackends: string[]
-  /** 已连上的 MCP server 名。连不上的不在这里——报了等于骗客户端。 */
-  mcpServers: string[]
+  // 这里曾经还有 `pty` / `git` / `fileWatch` 三个布尔。全部删掉，理由各不相同
+  // 但结论一样：**没有任何客户端读它们**。
+  //
+  // - `pty` 恒 false，而全项目就没有终端功能，声明一个不存在能力的「不存在」
+  //   等于什么都没说；
+  // - `git` 恒 true，而 git 面板实际上是靠 `/api/git/status` 的返回判断的；
+  // - `fileWatch` 恒 true，**而它是假的**——全仓一个文件监视器都没有。
+  //
+  // 以后真做了终端，连同它的消费者一起加回来。
+  // 插件 / 编排后端 / MCP 三份清单也不在这里了，理由是**它们不是进程级的**：
+  // 三者都配在项目目录下（`.qy/plugins`、`.qy/team.json`、`.qy/mcp.json`），
+  // 而一条连接横跨用户同时开着的所有项目。报在握手里等于「A 项目的插件显示在
+  // B 项目上」，而且只有重连时才更新。改由 `/api/capabilities?ws=` 回答。
   /**
    * shell 命令有没有内核级边界。
    *
@@ -62,11 +65,21 @@ export interface ServerCapabilities {
    * 的地方就是界面——而 `qy config` 他们看不到。
    */
   sandbox: { backend: string; active: boolean; reason: string }
+  /**
+   * 权限模式。**只有两种**：`auto` 由硬边界 + 静态规则 + 分类器裁决，
+   * `full` 全放行（`full` 仍保留三条硬边界，见设置页那句说明）。
+   *
+   * 和 `sandbox` 放在一起、走同一条路进握手：它们回答的是同一个问题——
+   * **这一轮跑在什么边界里**。这个答案的真源在服务端的 config.json，
+   * 客户端只显示与请求修改，不自己存一份。
+   */
+  mode: PermissionMode
 }
 
 export interface HelloErrFrame {
   type: 'hello.err'
-  reason: 'bad_token' | 'protocol_mismatch' | 'too_many_clients' | 'not_paired'
+  /** 服务端只会发这两个。都是终态——重连一万次带的还是同一个令牌 / 同一份代码。 */
+  reason: 'bad_token' | 'protocol_mismatch'
   message: string
 }
 
@@ -80,6 +93,7 @@ export type ClientCommand =
   | ResolvePermissionCommand
   | SubscribeCommand
   | SetModelCommand
+  | SetEffortCommand
   | CompactCommand
 
 export interface SendMessageCommand {
@@ -121,6 +135,20 @@ export interface SetModelCommand {
   type: 'conversation.setModel'
   conversationId: ConversationId
   model: string
+}
+
+/**
+ * 切换会话思考强度。
+ *
+ * 和 `setModel` 分开，因为这是两个独立动作：换模型时不该顺手改思考强度，
+ * 反过来也一样。合成一条指令会逼调用方每次都把另一个值也带上，
+ * 而它带的那个值来自它自己的本地状态——那正是覆盖别人刚改的值的经典形状。
+ */
+export interface SetEffortCommand {
+  type: 'conversation.setEffort'
+  conversationId: ConversationId
+  /** null = 回到跟随配置默认。 */
+  effort: EffortLevel | null
 }
 
 /** 用户显式触发上下文压缩。 */
@@ -184,8 +212,6 @@ export interface PairingPayload {
   /** 形如 http://192.168.1.20:7717 */
   url: string
   token: string
-  /** 令牌有效期（epoch ms）。过期后必须重新扫码。 */
-  expiresAt: number
   /** 桌面端主机名，手机上显示「已连接到 <name>」。 */
   deviceName: string
 }
@@ -193,7 +219,6 @@ export interface PairingPayload {
 export function encodePairingUrl(p: PairingPayload): string {
   const frag = new URLSearchParams({
     t: p.token,
-    e: String(p.expiresAt),
     n: p.deviceName,
   })
   return `${p.url}/m#${frag.toString()}`
@@ -208,12 +233,10 @@ export function decodePairingUrl(raw: string): PairingPayload | null {
   }
   const frag = new URLSearchParams(u.hash.replace(/^#/, ''))
   const token = frag.get('t')
-  const expiresAt = Number(frag.get('e'))
-  if (!token || !Number.isFinite(expiresAt)) return null
+  if (!token) return null
   return {
     url: u.origin,
     token,
-    expiresAt,
     deviceName: frag.get('n') ?? '',
   }
 }

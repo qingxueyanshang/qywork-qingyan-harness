@@ -5,10 +5,17 @@
  * **用户点了什么**。两边都只经 `setState` 改同一份 store，没有第二本账。
  */
 
-import type { Conversation } from '@qywork/core'
+import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { client, reloadActiveConversation } from './connection.ts'
+import {
+  addWorkspace,
+  isDesktopShell,
+  loadWorkspaceExtensions,
+  watchWorkspace,
+} from './settings.ts'
 import { setState, state } from './state.ts'
+import { setWorkspace } from './ui.ts'
 
 export async function loadConversations(): Promise<void> {
   const res = await client.api<{ conversations: Conversation[] }>('/api/conversations')
@@ -16,6 +23,35 @@ export async function loadConversations(): Promise<void> {
   if (!state.activeConversation && res.conversations[0]) {
     await selectConversation(res.conversations[0].id)
   }
+}
+
+/**
+ * 切到另一个项目。**不重启任何东西。**
+ *
+ * 这条路以前是「换掉整个 sidecar」：换项目要重启服务、断掉 WebSocket、
+ * 打断正在跑的那一轮，而且只有桌面端做得到。根因是服务端把「哪个根」
+ * 存成了进程级常量；那份常量已经删了，现在它按会话 / 按请求查表
+ * （`workspaceOf` 与 `?ws=`），所以切项目就只是换一个参数。
+ *
+ * 顺序有讲究：**先把活动项目改掉，再拉数据**——`client.api` 按当前活动项目
+ * 拼 `?ws=`，反过来的话拉回来的还是上一个项目的会话。
+ *
+ * 会话选择要清空：那个 id 属于上一个项目，留着会让界面去订阅一条
+ * 在新项目里不存在的会话。
+ */
+export async function activateWorkspace(path: string): Promise<void> {
+  const { workspace: ws } = await addWorkspace(path)
+  setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
+  setState({ activeConversation: null, transcript: [], fileChanges: [], error: null, git: null })
+  client.subscribe([])
+  await loadConversations()
+  // 扩展清单跟着项目走。失败不阻断切换——它只影响左栏底部那行摘要。
+  await loadWorkspaceExtensions()
+    .then((ext) => setState('extensions', ext))
+    .catch(() => setState('extensions', null))
+  // 文件监听的句柄在 Rust 侧，只有桌面端有。失败不阻断切换：
+  // 没有监听只是外部编辑器的改动不会实时推，会话本身照常。
+  if (isDesktopShell()) await watchWorkspace(ws.rootPath).catch(() => {})
 }
 
 export async function selectConversation(id: string): Promise<void> {
@@ -68,6 +104,13 @@ export function setModel(model: string): void {
   client.send({ type: 'conversation.setModel', conversationId: id as never, model })
 }
 
+/** 切换当前会话的思考强度。与 `setModel` 同样不做乐观更新，理由同上。 */
+export function setEffort(effort: EffortLevel | null): void {
+  const id = state.activeConversation
+  if (!id) return
+  client.send({ type: 'conversation.setEffort', conversationId: id as never, effort })
+}
+
 /**
  * 手动压缩当前会话上下文。
  *
@@ -115,15 +158,34 @@ export function runTeam(goal: string): void {
 export interface ModelOption {
   id: string
   label: string
+  /** **协议**，不是厂商。 */
   provider: string
+  /** 厂商 id；null = 未收录。 */
+  vendor: string | null
+  /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */
+  effortLevels: EffortLevel[]
+  /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
+  currency: 'USD' | 'CNY'
   /** false = 内置目录里没有，来自用户自己配的档案（自建端点 / 中转）。 */
   known: boolean
 }
 
+export interface VendorOption {
+  id: string
+  displayName: string
+  defaultKind: string
+  defaultBaseUrl?: string
+  apiKeyEnv: string
+}
+
+export interface ModelCatalog {
+  models: ModelOption[]
+  vendors: VendorOption[]
+}
+
 /** 模型列表按需拉取：不是每个会话都会点开选择器，没必要开屏就请求。 */
-export async function loadModels(): Promise<ModelOption[]> {
-  const res = await client.api<{ models: ModelOption[] }>('/api/models')
-  return res.models
+export async function loadModels(): Promise<ModelCatalog> {
+  return client.api<ModelCatalog>('/api/models')
 }
 
 /** 当前会话正在用的模型。会话不存在时返回 null，不编一个默认值糊弄。 */
@@ -131,6 +193,13 @@ export function activeModel(): string | null {
   const id = state.activeConversation
   if (!id) return null
   return state.conversations.find((c) => c.id === id)?.model ?? null
+}
+
+/** 当前会话的思考强度。null = 跟随配置默认，不是「关掉」。 */
+export function activeEffort(): EffortLevel | null {
+  const id = state.activeConversation
+  if (!id) return null
+  return state.conversations.find((c) => c.id === id)?.effort ?? null
 }
 
 export async function newConversation(): Promise<void> {
@@ -142,13 +211,20 @@ export async function newConversation(): Promise<void> {
   await selectConversation(conversation.id)
 }
 
-export function sendMessage(content: string): void {
+export function sendMessage(content: string, attachments?: Attachment[]): void {
   const id = state.activeConversation
-  if (!id || !content.trim()) return
+  // 只带附件不带文字也算一条有效消息——「看这张图」这种意图，
+  // 逼用户再打几个字没有道理。
+  if (!id || (!content.trim() && !attachments?.length)) return
   setState(
     produce((s) => {
       // 乐观插入：用户按下回车立刻看到自己的消息，不等服务端回执。
-      s.transcript.push({ id: `local_${Date.now()}`, kind: 'user', text: content })
+      s.transcript.push({
+        id: `local_${Date.now()}`,
+        kind: 'user',
+        text: content,
+        ...(attachments?.length ? { attachments } : {}),
+      })
       s.running = true
       s.error = null
     }),
@@ -158,6 +234,7 @@ export function sendMessage(content: string): void {
     clientRequestId: crypto.randomUUID(),
     conversationId: id as never,
     content,
+    ...(attachments?.length ? { attachments } : {}),
   })
 }
 

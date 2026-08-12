@@ -8,19 +8,31 @@
  * 一个域返回了 `null` 但其实已经做过副作用，是这套结构唯一会出的新错——
  * 那会让请求继续往下走，被后面的域或 404 接管，而副作用已经发生了。
  *
- * 夹具用 `as unknown as ApiDeps`：这里挑的三条路由只碰 `ApiDeps` 里的四个字段，
- * 为它们造一个真的 Store 与 RunManager 只会把测试变成集成测试，
+ * 夹具用 `as unknown as ApiDeps`：这里挑的三条路由只碰 `ApiDeps` 里的几个字段，
+ * 为它们造一个真的 RunManager 只会把测试变成集成测试，
  * 而集成部分 `e2e.test.ts` 已经覆盖了。
+ *
+ * **Store 必须是真的**：派发器要按 `?ws=` 查 `workspaces` 表决定这一次请求
+ * 问的是哪个项目——那张表就是「哪个根」的权威，假不了。
  */
 
 import { describe, expect, test } from 'bun:test'
+import {
+  createConversation,
+  listConversations,
+  listWorkspaces,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 import { type ApiDeps, handleApi } from './index.ts'
 
-function deps(over: Partial<ApiDeps> = {}): ApiDeps {
+function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
   let lan = false
+  const store = new Store({ path: ':memory:' })
+  const ws = upsertWorkspace(store, root, root.split(/[/]/).filter(Boolean).pop() ?? root)
   return {
-    workspaceRoot: 'C:/ws/demo',
-    workspaceId: 'ws_demo',
+    store,
+    wsId: ws.id,
     enableLan: () => {
       lan = true
       return { port: 7788 }
@@ -30,8 +42,7 @@ function deps(over: Partial<ApiDeps> = {}): ApiDeps {
     },
     lanEnabled: () => lan,
     lanPort: () => 7788,
-    ...over,
-  } as unknown as ApiDeps
+  } as unknown as ApiDeps & { wsId: string }
 }
 
 const call = (path: string, init?: RequestInit, d: ApiDeps = deps()) =>
@@ -49,14 +60,26 @@ describe('派发', () => {
     expect(res?.status).toBe(200)
   })
 
-  test('工作区那条回的是「我在哪」，名字取目录名', async () => {
-    const res = await call('/api/workspace')
-    expect(await res?.json()).toEqual({ id: 'ws_demo', root: 'C:/ws/demo', name: 'demo' })
+  test('工作区那条回的是「这次问的是哪个项目」，名字取目录名', async () => {
+    const d = deps()
+    const res = await call('/api/workspace', undefined, d)
+    expect(await res?.json()).toEqual({
+      id: (d as unknown as { wsId: string }).wsId,
+      root: 'C:/ws/demo',
+      name: 'demo',
+    })
   })
 
   test('根目录这种取不出目录名时回落到整条路径，不回空串', async () => {
-    const res = await call('/api/workspace', undefined, deps({ workspaceRoot: '/' }))
+    const res = await call('/api/workspace', undefined, deps('/'))
     expect(((await res?.json()) as { name: string }).name).toBe('/')
+  })
+
+  /* 指了一个不存在的项目要 404，**不能静默回落到最近打开的那个**——
+     回落等于在用户以为是 A 的地方读写 B。 */
+  test('?ws= 指到不存在的项目回 404', async () => {
+    const res = await call('/api/workspace?ws=ws_nope')
+    expect(res?.status).toBe(404)
   })
 })
 
@@ -87,9 +110,67 @@ describe('方法参与匹配，不是只看路径', () => {
   })
 
   test('body 不是合法 JSON 时按「关」处理，不抛 —— 开关默认落在更安全的一侧', async () => {
-    const d = deps({ lanEnabled: () => true })
+    const d = deps()
     const res = await call('/api/pairing/lan', { method: 'POST', body: 'not json' }, d)
     expect(res?.status).toBe(200)
+  })
+})
+
+/**
+ * 移除项目。
+ *
+ * 这一组盯的是三件会被写错的事：**会话真的跟着没了**（不是只删了项目行，
+ * 留一批读不回来的孤儿）、**当前这个删不掉**（删了之后界面手里的 `?ws=`
+ * 指向不存在的记录，随后每条请求都 404）、**不存在的 id 回 404 而不是静默成功**。
+ */
+describe('移除项目', () => {
+  /** 两个项目：后 upsert 的那个是「当前」（不带 `?ws=` 落到最近打开的）。 */
+  const twoWorkspaces = () => {
+    const d = deps('C:/ws/old')
+    const oldId = (d as unknown as { wsId: string }).wsId
+    const current = upsertWorkspace(d.store, 'C:/ws/current', 'current')
+    return { d, oldId, currentId: current.id }
+  }
+
+  test('删掉项目，它的会话一起没 —— 不留读不回来的孤儿', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    expect(listConversations(d.store, oldId as never)).toHaveLength(1)
+
+    const res = await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d)
+    expect(res?.status).toBe(200)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(oldId)
+    expect(listConversations(d.store, oldId as never)).toHaveLength(0)
+  })
+
+  test('当前正在用的那个删不掉，回 409 且账本不动', async () => {
+    const { d, currentId } = twoWorkspaces()
+    const res = await call(`/api/workspaces/${currentId}`, { method: 'DELETE' }, d)
+    expect(res?.status).toBe(409)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(currentId)
+  })
+
+  test('id 不存在回 404 —— 静默成功会让界面以为删掉了，刷新又回来', async () => {
+    const { d } = twoWorkspaces()
+    const res = await call('/api/workspaces/ws_nope', { method: 'DELETE' }, d)
+    expect(res?.status).toBe(404)
+  })
+
+  test('GET 同一路径不归它管 —— 方法参与匹配', async () => {
+    const { d, oldId } = twoWorkspaces()
+    expect(await call(`/api/workspaces/${oldId}`, undefined, d)).toBe(null)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(oldId)
+  })
+
+  test('列表带上会话数 —— 界面要能在删之前说出代价', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    const res = await call('/api/workspaces', undefined, d)
+    const { workspaces } = (await res?.json()) as {
+      workspaces: { id: string; conversations: number }[]
+    }
+    expect(workspaces.find((w) => w.id === oldId)?.conversations).toBe(2)
   })
 })
 
@@ -97,5 +178,202 @@ describe('出参形状', () => {
   test('一律 application/json 且带 charset —— 少了 charset 中文会被按 ASCII 读', async () => {
     const res = await call('/api/workspace')
     expect(res?.headers.get('content-type')).toBe('application/json; charset=utf-8')
+  })
+})
+
+/**
+ * 模型目录端点（`api/conversations.ts` 的 `/api/models` 分支）。
+ *
+ * 它现在同时喂两处界面：输入区的模型选择器，和设置里「从内置库选」那个下拉。
+ * 后者要靠 `vendors` 才能把端点和环境变量名填出来——`provider` 是**协议**，
+ * 协议里没有端点，所以少了厂商这一维，「选个模型就配好」根本无从做起。
+ */
+describe('模型目录', () => {
+  /** 一个接口一个模型就够了：这一组测的是「协议怎么算」，不是接口表怎么组。 */
+  const withConfig = (kind: string, model: string): ApiDeps => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'p', model },
+      providers: { p: { kind, models: { [model]: {} } } },
+    }
+    return d
+  }
+
+  const models = async (d: ApiDeps) =>
+    ((await (await call('/api/models', undefined, d))!.json()) as any).models
+
+  test('内置模型带厂商，未收录的是 null', async () => {
+    const d = withConfig('openai_compatible', '中转站上的某个模型')
+    const list = await models(d)
+    expect(list.find((m: any) => m.id === 'claude-opus-5').vendor).toBe('anthropic')
+    expect(list.find((m: any) => m.id === 'deepseek-v4-flash').vendor).toBe('deepseek')
+    expect(list.find((m: any) => m.id === '中转站上的某个模型').vendor).toBeNull()
+  })
+
+  /**
+   * `effortLevels` 决定界面显不显示思考强度那个 chip。照实报——Haiku 4.5 走的是
+   * budget_tokens，没有 effort 档；报成五档就是一个选了没反应的控件。
+   */
+  test('effortLevels 照实报，没有档位的就是空数组', async () => {
+    const list = await models(withConfig('anthropic', 'claude-opus-5'))
+    expect(list.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBeGreaterThan(0)
+    expect(list.find((m: any) => m.id === 'claude-haiku-4-5').effortLevels).toEqual([])
+    expect(list.find((m: any) => m.id === 'qwen3.7-max').effortLevels).toEqual([])
+  })
+
+  /**
+   * **档位按这个模型实际会走的协议算。**
+   *
+   * 复现的是一个只在某些配置下才犯的形状：接口是「以 OpenAI 兼容协议经中转站调
+   * Claude」，目录里 claude-opus-5 的原生条目声明五档 effort，但兼容协议根本不发
+   * Anthropic 那套思考字段。按原生条目报出去，界面就会画一个选了没反应的控件。
+   */
+  test('中转站以兼容协议调 Claude 时不报 Anthropic 的档位', async () => {
+    const native = await models(withConfig('anthropic', 'claude-opus-5'))
+    expect(native.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBe(5)
+
+    const relay = await models(withConfig('openai_compatible', 'claude-opus-5'))
+    const row = relay.find((m: any) => m.id === 'claude-opus-5')
+    expect(row.provider).toBe('openai_compatible')
+    expect(row.effortLevels).toEqual([])
+  })
+
+  /** DeepSeek 两条协议的档位不一样，报的必须是接口实际用的那条。 */
+  test('DeepSeek 按接口协议报档位', async () => {
+    const compat = await models(withConfig('openai_compatible', 'deepseek-v4-flash'))
+    expect(compat.find((m: any) => m.id === 'deepseek-v4-flash').effortLevels).toEqual([
+      'high',
+      'max',
+    ])
+
+    const responses = await models(withConfig('openai_responses', 'deepseek-v4-flash'))
+    expect(responses.find((m: any) => m.id === 'deepseek-v4-flash').effortLevels).toEqual([])
+  })
+
+  /** 九家厂商、19 条内置模型都在——这是从青研魔盒那份目录整体搬过来的。 */
+  test('内置库覆盖九家厂商', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    const body = (await (await call('/api/models', undefined, d))!.json()) as any
+    expect(body.vendors.map((v: any) => v.id).sort()).toEqual([
+      'alibaba',
+      'anthropic',
+      'deepseek',
+      'google',
+      'minimax',
+      'moonshot',
+      'openai',
+      'xai',
+      'zhipu',
+    ])
+    for (const id of ['gpt-5.6-sol', 'gemini-3.1-pro', 'grok-4.5', 'kimi-k3', 'glm-5.2']) {
+      expect(body.models.some((m: any) => m.id === id)).toBe(true)
+    }
+  })
+
+  /**
+   * 人民币标价的三家要带出币种。少了它，¥6 会被当成 $6 显示，差七倍——
+   * 而这个错误在界面上完全看不出来，它只是一个数字。
+   */
+  test('人民币标价的模型带币种', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    const body = (await (await call('/api/models', undefined, d))!.json()) as any
+    expect(body.models.find((m: any) => m.id === 'qwen3.7-max').currency).toBe('CNY')
+    expect(body.models.find((m: any) => m.id === 'kimi-k3').currency).toBe('CNY')
+    expect(body.models.find((m: any) => m.id === 'gpt-5.6-sol').currency).toBe('USD')
+  })
+
+  test('未收录的模型不假装支持 effort', async () => {
+    const list = await models(withConfig('openai_compatible', '自建的'))
+    expect(list.find((m: any) => m.id === '自建的').effortLevels).toEqual([])
+  })
+
+  /** 厂商表要带出端点与环境变量名，否则设置页只能继续让用户手填。 */
+  test('厂商表带默认端点与环境变量名', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    const body = (await (await call('/api/models', undefined, d))!.json()) as any
+    const ds = body.vendors.find((v: any) => v.id === 'deepseek')
+    expect(ds.defaultBaseUrl).toBe('https://api.deepseek.com/v1')
+    expect(ds.apiKeyEnv).toBe('DEEPSEEK_API_KEY')
+    expect(ds.defaultKind).toBe('openai_compatible')
+    // Anthropic 走 SDK 自带默认，不编一个端点出来。
+    expect(body.vendors.find((v: any) => v.id === 'anthropic').defaultBaseUrl).toBeUndefined()
+  })
+
+  test('每个内置厂商都至少有一个模型能挂上去', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    const body = (await (await call('/api/models', undefined, d))!.json()) as any
+    for (const v of body.vendors) {
+      expect(body.models.some((m: any) => m.vendor === v.id)).toBe(true)
+    }
+  })
+})
+
+/*
+ * 多项目：这一次请求问的是哪个项目。
+ *
+ * 回归的是「换项目要重启整个 sidecar」那条——根因是服务端把「哪个根」存成了
+ * 进程级常量。删掉之后由 `?ws=` 逐请求解析，所以下面这三条就是新权威的契约。
+ */
+describe('按 ?ws= 解析项目', () => {
+  function twoProjects() {
+    const store = new Store({ path: ':memory:' })
+    const a = upsertWorkspace(store, 'C:/ws/a', 'a')
+    const b = upsertWorkspace(store, 'C:/ws/b', 'b')
+    return { d: { store } as unknown as ApiDeps, a, b }
+  }
+
+  test('带 ?ws= 时问的就是那一个，不是最近打开的那个', async () => {
+    const { d, a, b } = twoProjects()
+    // b 是后 upsert 的，缺省会落到它身上——所以这条能证明参数真的起作用。
+    const res = await call(`/api/workspace?ws=${a.id}`, undefined, d)
+    expect(await res?.json()).toEqual({ id: a.id, root: 'C:/ws/a', name: 'a' })
+    const fallback = await call('/api/workspace', undefined, d)
+    expect(((await fallback?.json()) as { id: string }).id).toBe(b.id)
+  })
+
+  test('加项目：不是本机已存在的目录就 422，并且不落盘', async () => {
+    const { d } = twoProjects()
+    const res = await call(
+      '/api/workspaces',
+      {
+        method: 'POST',
+        body: JSON.stringify({ path: 'C:/ws/根本没有这个目录' }),
+      },
+      d,
+    )
+    expect(res?.status).toBe(422)
+    const list = (await (await call('/api/workspaces', undefined, d))!.json()) as {
+      workspaces: unknown[]
+    }
+    expect(list.workspaces.length).toBe(2)
+  })
+
+  test('加项目：已经有了就只更新「最近打开」，不插第二行', async () => {
+    const store = new Store({ path: ':memory:' })
+    const here = process.cwd()
+    const d = { store } as unknown as ApiDeps
+    const first = await call(
+      '/api/workspaces',
+      {
+        method: 'POST',
+        body: JSON.stringify({ path: here }),
+      },
+      d,
+    )
+    const again = await call(
+      '/api/workspaces',
+      {
+        method: 'POST',
+        body: JSON.stringify({ path: here }),
+      },
+      d,
+    )
+    const id1 = ((await first?.json()) as { workspace: { id: string } }).workspace.id
+    const id2 = ((await again?.json()) as { workspace: { id: string } }).workspace.id
+    expect(id2).toBe(id1)
+    const list = (await (await call('/api/workspaces', undefined, d))!.json()) as {
+      workspaces: unknown[]
+    }
+    expect(list.workspaces.length).toBe(1)
   })
 })

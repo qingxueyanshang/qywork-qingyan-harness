@@ -9,26 +9,36 @@ import { Transcript } from './components/Transcript.tsx'
 // 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
 // 只想聊天的用户不该为文件预览付首屏成本。
 const SidePanel = lazy(() => import('./components/SidePanel.tsx'))
-// 同理：二维码编码器约 28 kB，只有真要配对时才下载。
-const PairSheet = lazy(() => import('./components/PairSheet.tsx'))
 
-const SettingsSheet = lazy(() => import('./components/SettingsSheet.tsx'))
-const WorkspaceSheet = lazy(() => import('./components/WorkspaceSheet.tsx'))
+// 设置整页只在真的打开设置时才下载。它下面还挂着八个类目，其中五个各自
+// 又是懒加载的——见 SettingsPage 里的说明。
+const SettingsPage = lazy(() =>
+  import('./components/settings/SettingsPage.tsx').then((m) => ({ default: m.SettingsPage })),
+)
+const SettingsNav = lazy(() =>
+  import('./components/settings/SettingsNav.tsx').then((m) => ({ default: m.SettingsNav })),
+)
+
+const RunDetails = lazy(() => import('./components/RunDetails.tsx'))
 
 import { IconChevron, IconPanel, IconSearch } from './components/Icons.tsx'
+import { Sheet } from './components/Sheet.tsx'
+import { WindowControls } from './components/WindowControls.tsx'
 import {
   client,
   loadConversations,
   loadWorkspace,
-  pairOpen,
+  loadWorkspaceExtensions,
+  overlay,
   setPaletteOpen,
-  settingsOpen,
+  setState,
+  settingsPage,
   setWorkspace,
-  setWorkspaceSheetOpen,
+  sidebarCollapsed,
   sidePanel,
   state,
   togglePanel,
-  workspaceSheetOpen,
+  toggleSidebar,
 } from './lib/store/index.ts'
 
 export function App() {
@@ -40,9 +50,14 @@ export function App() {
     void loadConversations().catch(() => {
       // 首次拉取失败不阻塞界面——连接层会自己重试，状态条会显示进度。
     })
-    // 工作区名要尽早出现：它是「我的会话为什么是空的」唯一的自诊断线索。
+    // 首屏的活动项目 = 服务端「最近打开」的那个。名字要尽早出现：
+    // 它是「我的会话为什么是空的」唯一的自诊断线索。
     void loadWorkspace()
       .then(setWorkspace)
+      .catch(() => {})
+    // 扩展清单按项目拉，不再来自握手（三份清单都配在项目目录下）。
+    void loadWorkspaceExtensions()
+      .then((ext) => setState('extensions', ext))
       .catch(() => {})
 
     const onKey = (e: KeyboardEvent) => {
@@ -57,15 +72,26 @@ export function App() {
   })
 
   return (
-    <div class="app" classList={{ 'drawer-open': drawer(), 'with-panel': sidePanel() !== null }}>
+    <div
+      class="app"
+      classList={{
+        'drawer-open': drawer(),
+        'with-panel': sidePanel() !== null,
+        'sidebar-collapsed': sidebarCollapsed(),
+      }}
+    >
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>
           {connLabel()}
         </div>
       </Show>
 
+      {/* 看设置时左栏整个换成类目导航——设置和会话是互斥的两个场景，
+          同时看不到对方不是损失，而多留一列就多一套宽度、断点和收起逻辑。 */}
       <aside class="sidebar-slot">
-        <Sidebar onClose={() => setDrawer(false)} />
+        <Show when={settingsPage()} fallback={<Sidebar onClose={() => setDrawer(false)} />}>
+          <SettingsNav />
+        </Show>
       </aside>
 
       {/* 窄屏下点遮罩关抽屉。宽屏时它被 CSS 隐藏，不会挡住内容。
@@ -78,19 +104,40 @@ export function App() {
         onClick={() => setDrawer(false)}
       />
 
-      {/* 空会话时把输入区居中：底部钉一个孤零零的输入框看起来像没加载完 */}
-      <main class="main" classList={{ empty: state.transcript.length === 0 }}>
-        <header class="topbar">
+      {/* 顶栏是 .app 网格的第一行，横跨会话区与右侧面板——它不属于会话区。
+          放在 .main 里的后果是：一开右侧面板，顶栏跟着缩短，窗口按钮被挤到
+          窗口中间，右上角让给了面板的标签页。窗口按钮必须钉在窗口右上角。
+
+          整条是拖拽区。Tauri 判定的是**事件目标身上有没有这个属性**，
+          所以里面的按钮（都没有它）照常可点，不需要额外「取消拖拽」的声明。
+          双击最大化由拖拽区自带，不用自己接。 */}
+      <header class="topbar" data-tauri-drag-region>
+        <button
+          class="icon-btn drawer-toggle"
+          type="button"
+          aria-label="打开侧栏"
+          onClick={() => setDrawer(true)}
+        >
+          <IconChevron size={16} dir="right" />
+        </button>
+        {/* 左栏收起之后它自己身上的开关也跟着不在了，展开的入口只能长在顶栏。
+            只在收起时出现——常驻一个「展开」按钮，左栏明明开着，那就是句废话。 */}
+        <Show when={sidebarCollapsed()}>
           <button
-            class="icon-btn drawer-toggle"
+            class="icon-btn sidebar-expand"
             type="button"
-            aria-label="打开侧栏"
-            onClick={() => setDrawer(true)}
+            aria-label="展开会话面板"
+            title="展开会话面板"
+            onClick={toggleSidebar}
           >
-            <IconChevron size={16} dir="right" />
+            <IconPanel size={15} />
           </button>
-          <h1 class="title truncate">{activeTitle()}</h1>
-          <span class="spacer" />
+        </Show>
+        <h1 class="title truncate">{settingsPage() ? '设置' : activeTitle()}</h1>
+        <span class="spacer" />
+        {/* 搜索和面板开关只对会话有意义——设置页里没有可搜的会话，也没有文件树可开。
+            按 B5，能力不存在的那一端不显示入口，而不是显示一个点了没反应的按钮。 */}
+        <Show when={!settingsPage()}>
           <button
             class="icon-btn"
             type="button"
@@ -114,26 +161,40 @@ export function App() {
           >
             <IconPanel size={15} />
           </button>
-        </header>
+        </Show>
+        <WindowControls />
+      </header>
 
-        <PlanCard />
-        <Transcript />
-        <Composer />
-      </main>
+      <Show
+        when={settingsPage()}
+        fallback={
+          /* 空会话时把输入区居中：底部钉一个孤零零的输入框看起来像没加载完 */
+          <main class="main" classList={{ empty: state.transcript.length === 0 }}>
+            <PlanCard />
+            <Transcript />
+            <Composer />
+          </main>
+        }
+      >
+        <main class="main">
+          <SettingsPage />
+        </main>
+      </Show>
 
-      <Show when={sidePanel()}>
+      {/* 设置页占满主区，右侧面板同时开着会把它挤成一条缝——而设置里没有任何
+          需要对照文件树的东西。 */}
+      <Show when={sidePanel() && !settingsPage()}>
         <SidePanel />
       </Show>
       <Palette />
       <PermissionSheet />
-      <Show when={pairOpen()}>
-        <PairSheet />
-      </Show>
-      <Show when={settingsOpen()}>
-        <SettingsSheet />
-      </Show>
-      <Show when={workspaceSheetOpen()}>
-        <WorkspaceSheet onClose={() => setWorkspaceSheetOpen(false)} />
+      {/* 浮层由一个 overlay 信号裁决，同一时刻只可能有一个——见 store/ui.ts。
+          只剩一个，而且是**会话上下文**：这个会话花了多少。机器配置那六个已经
+          整体搬进设置整页；「换项目」那个也没了——换项目在左栏点一下就是。 */}
+      <Show when={overlay() === 'runs'}>
+        <Sheet title="运行详情" note="这个会话累计花了多少，以及每一轮各花了多少" wide>
+          <RunDetails />
+        </Sheet>
       </Show>
     </div>
   )

@@ -7,10 +7,12 @@
  * 两个模块互相 import 是一定要避免的。
  */
 
-import type { ActionDescriptor, AgentEvent } from '@qywork/core'
+import type { ActionDescriptor, AgentEvent, Attachment, RunUsage, StopReason } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
+import { createPacer } from '../stream-pace.ts'
 import { setState, state, type TeamMemberState, type TranscriptItem } from './state.ts'
+import { workspace } from './ui.ts'
 
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
@@ -23,7 +25,41 @@ export const client = new QyClient({
   onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
 })
 
+/**
+ * 正文的匀速呈现。缓冲区里永远只有当前尾部那一段 text step——
+ * **除 `text.delta` 外的任何事件都先冲一次**，所以不需要按 step 记账。
+ * 编排逻辑在 `stream-pace.ts` 里（那边能测），这里只做接线。
+ */
+function writeTail(stepId: string, chunk: string): void {
+  if (!chunk) return
+  setState(
+    produce((s) => {
+      const last = s.transcript[s.transcript.length - 1]
+      // 同一条 text step 持续追加：只改这一个字段，只更新一个文本节点。
+      if (last?.kind === 'text' && last.id === stepId) last.text += chunk
+      else s.transcript.push({ id: stepId, kind: 'text', text: chunk })
+    }),
+  )
+}
+
+const pacer = createPacer({
+  write: writeTail,
+  schedule: (fn, ms) => {
+    const t = setInterval(fn, ms)
+    return () => clearInterval(t)
+  },
+})
+
+/** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
+export function discardPace(): void {
+  pacer.discard()
+}
+
 function applyEvent(ev: AgentEvent): void {
+  // 正文之外的一切都意味着「这一刻的界面要是完整的」——读数条、错误卡、
+  // 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
+  if (ev.type !== 'text.delta') pacer.flush()
+
   switch (ev.type) {
     case 'conversation.updated':
       setState(
@@ -31,6 +67,7 @@ function applyEvent(ev: AgentEvent): void {
           const conv = s.conversations.find((c) => c.id === ev.conversationId)
           if (conv) {
             conv.model = ev.model
+            conv.effort = ev.effort
             conv.title = ev.title
           }
         }),
@@ -49,6 +86,7 @@ function applyEvent(ev: AgentEvent): void {
             backend: ev.backend,
             phase: ev.phase,
             ...(ev.summary ? { summary: ev.summary } : {}),
+            ...(ev.childConversationId ? { childConversationId: ev.childConversationId } : {}),
           }
           if (i >= 0) s.teamMembers[i] = next
           else s.teamMembers.push(next)
@@ -66,13 +104,14 @@ function applyEvent(ev: AgentEvent): void {
       setState(
         produce((s) => {
           s.running = true
-          s.stopReason = null
+          s.usage = null
           s.error = null
           s.notice = null
           s.fileChanges = []
           s.todos = []
           s.teamMembers = []
           s.lastRunId = ev.runId
+          s.runStartedAt = Date.now()
           // 重试：把被接替那一轮的条目降透明度，而不是清空重来——
           // 清空会让用户失去「上次错在哪」的现场，那正是他点重试的原因。
           //
@@ -91,17 +130,7 @@ function applyEvent(ev: AgentEvent): void {
       return
 
     case 'text.delta':
-      setState(
-        produce((s) => {
-          const last = s.transcript[s.transcript.length - 1]
-          // 同一条 text step 持续追加：只改这一个字段，只更新一个文本节点。
-          if (last?.kind === 'text' && last.id === ev.stepId) {
-            last.text += ev.delta
-          } else {
-            s.transcript.push({ id: ev.stepId, kind: 'text', text: ev.delta })
-          }
-        }),
-      )
+      pacer.push(ev.stepId, ev.delta)
       return
 
     case 'thinking.delta':
@@ -123,6 +152,7 @@ function applyEvent(ev: AgentEvent): void {
             text: '',
             toolName: ev.toolName,
             action: ev.action,
+            args: ev.args,
             status: 'running',
             batchId: ev.batchId,
             waveIndex: ev.waveIndex,
@@ -215,11 +245,21 @@ function applyEvent(ev: AgentEvent): void {
       return
 
     case 'context':
-      setState('context', { tokens: ev.tokens, limit: ev.limit, percent: ev.percent })
+      setState('context', {
+        tokens: ev.tokens,
+        limit: ev.limit,
+        percent: ev.percent,
+        breakdown: ev.breakdown,
+      })
       return
 
     case 'git.state':
+      // 这是**工作区级**事件，走全局广播（没有会话可归属，总线对它一律放行）。
+      // 同时开着多个项目时，别的项目那份状态到了这里必须丢掉——
+      // 它的分支名和改动数看起来完全合理，盖上去没人会怀疑它是别人的。
+      if (ev.workspaceId !== workspace()?.id) return
       setState('git', {
+        workspaceId: ev.workspaceId,
         branch: ev.branch,
         upstream: ev.upstream,
         ahead: ev.ahead,
@@ -237,6 +277,7 @@ function applyEvent(ev: AgentEvent): void {
         toolName: ev.toolName,
         action: ev.action,
         preview: ev.preview,
+        scopes: ev.scopes,
         expiresAt: ev.expiresAt,
       })
       return
@@ -258,9 +299,23 @@ function applyEvent(ev: AgentEvent): void {
       setState(
         produce((s) => {
           s.running = false
-          s.stopReason = ev.stopReason
-          s.usage = ev.usage
           s.permission = null
+          // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
+          // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
+          s.transcript.push({
+            id: `run_${ev.runId}`,
+            kind: 'run',
+            text: '',
+            run: {
+              runId: ev.runId,
+              stopReason: ev.stopReason,
+              usage: ev.usage,
+              startedAt: s.runStartedAt ?? Date.now(),
+              endedAt: Date.now(),
+            },
+          })
+          s.usage = null
+          s.runStartedAt = null
         }),
       )
       return
@@ -274,14 +329,18 @@ interface StoredMessage {
   id: string
   role: string
   content: string
+  attachments?: Attachment[]
   createdAt: number
 }
 interface StoredRun {
   id: string
   userMessageId: string | null
   createdAt: number
-  stopReason: string | null
+  /** null = 这一轮还没收尾（正在跑，或进程被杀）。 */
+  finishedAt: number | null
+  stopReason: StopReason | null
   status: string
+  usage: RunUsage | null
   supersededBy: string | null
 }
 interface StoredStep {
@@ -311,6 +370,9 @@ interface StoredStep {
 export async function reloadActiveConversation(): Promise<void> {
   const id = state.activeConversation
   if (!id) return
+  // 整段重拉之前把积压**丢掉而不是冲出去**：那段字属于重拉之前的那份
+  // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
+  discardPace()
 
   const [{ messages }, { runs }] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
@@ -337,11 +399,37 @@ export async function reloadActiveConversation(): Promise<void> {
   const items: TranscriptItem[] = []
   for (const m of messages) {
     if (m.role === 'user') {
-      items.push({ id: m.id, kind: 'user', text: m.content })
+      items.push({
+        id: m.id,
+        kind: 'user',
+        text: m.content,
+        ...(m.attachments?.length ? { attachments: m.attachments } : {}),
+      })
       for (const r of runsByUserMessage.get(m.id) ?? []) {
         for (const s of stepsByRun.get(r.id) ?? []) {
           const item = stepToItem(s)
           if (item) items.push(r.supersededBy ? { ...item, superseded: true } : item)
+        }
+        // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类东西：
+        // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
+        // 为什么停」在刷新后就只剩最后一轮（而且是活的那一份，重连即丢）。
+        //
+        // 还没收尾的 run（进程被杀、正在跑）不折：它没有终态，
+        // 造一条 `endedAt: null` 的条目会让读数条以为还在跑，永远滴答下去。
+        if (r.finishedAt !== null) {
+          items.push({
+            id: `run_${r.id}`,
+            kind: 'run',
+            text: '',
+            ...(r.supersededBy ? { superseded: true } : {}),
+            run: {
+              runId: r.id,
+              stopReason: r.stopReason,
+              usage: r.usage,
+              startedAt: r.createdAt,
+              endedAt: r.finishedAt,
+            },
+          })
         }
       }
     } else if (m.content.trim()) {
@@ -374,6 +462,7 @@ function stepToItem(s: StoredStep): TranscriptItem | null {
       text: '',
       toolName: s.toolName ?? '',
       action,
+      ...(s.payload?.args ? { args: s.payload.args } : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),
     }

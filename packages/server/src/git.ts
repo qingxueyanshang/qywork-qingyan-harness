@@ -39,9 +39,34 @@ export interface GitFileEntry {
   renamedFrom?: string
 }
 
-export interface GitStatus extends Omit<GitStateEvent, 'type'> {
+/** 读 git 读出来的东西。**不含 workspaceId**——那是「谁在问」，由 `toStateEvent` 补。 */
+export interface GitStatus extends Omit<GitStateEvent, 'type' | 'workspaceId'> {
   files: GitFileEntry[]
   detached: boolean
+}
+
+/**
+ * revision 的合法字符集。首字符不能是 `-`。
+ *
+ * git 的 revision 语法用到 `~` `^` `@{}` `:` `/`，所以字符集只能收到这个程度；
+ * 真正起作用的是**首字符**那一段。
+ */
+const SAFE_REF = /^[A-Za-z0-9_@][A-Za-z0-9_./~^@{}:+-]*$/
+
+/**
+ * 校验 revision 参数。
+ *
+ * `ref` 来自 HTTP query，最终作为**独立 argv** 传给 git。这不是 shell 注入
+ * （`git()` 用 `Bun.spawn` 收数组），但 git 自己会把以 `-` 开头的值按选项解析：
+ * `ref=--output=<path>` 命中的是 diff 的 `--output`，效果是**向任意路径写文件**
+ * ——实测 `git log --max-count=5 --format=%H --output=pwned.txt` 真的落出了文件。
+ *
+ * 加 `--` 隔断在这里不成立：`git log -- <x>` 里的 x 是**路径**不是 revision，
+ * 语义会变。所以按合法字符集正面校验，非法的直接抛——
+ * 静默返回空会让「ref 打错了」和「这个 ref 没有提交」看起来一模一样。
+ */
+function assertSafeRef(ref: string): void {
+  if (!SAFE_REF.test(ref)) throw new Error(`非法的 git ref：${ref}`)
 }
 
 async function git(
@@ -210,7 +235,10 @@ export async function log(
   // 避免提交标题里含制表符或换行时把解析打乱。
   const fmt = ['%H', '%h', '%s', '%an', '%at', '%D'].join('%x1f')
   const args = ['log', `--max-count=${limit}`, `--format=${fmt}%x1e`]
-  if (opts.ref) args.push(opts.ref)
+  if (opts.ref) {
+    assertSafeRef(opts.ref)
+    args.push(opts.ref)
+  }
   const r = await git(cwd, args)
   if (!r.ok) return []
 
@@ -246,6 +274,7 @@ export async function diff(
 ): Promise<string> {
   const args = ['diff', '--no-color', '--no-ext-diff']
   if (opts.ref) {
+    assertSafeRef(opts.ref)
     // 单个提交的改动：与它的父提交比。根提交没有父，git 会自己处理。
     args.push(`${opts.ref}^!`)
   } else if (opts.staged) {
@@ -258,13 +287,15 @@ export async function diff(
 
 /** 读取某个 ref 下的文件内容，用于「改动前长什么样」的对照预览。 */
 export async function showFile(cwd: string, ref: string, path: string): Promise<string | null> {
+  assertSafeRef(ref)
   const r = await git(cwd, ['show', `${ref}:${path}`])
   return r.ok ? r.out : null
 }
 
-export function toStateEvent(s: GitStatus): GitStateEvent {
+export function toStateEvent(s: GitStatus, workspaceId: string): GitStateEvent {
   return {
     type: 'git.state',
+    workspaceId,
     branch: s.branch,
     upstream: s.upstream,
     ahead: s.ahead,

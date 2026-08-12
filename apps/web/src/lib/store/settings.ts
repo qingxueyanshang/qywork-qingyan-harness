@@ -5,31 +5,63 @@
  * 它们加起来比会话链路还长，混在一起会让读 store 的人以为这些是热路径。
  */
 
+import type { Attachment, EffortLevel, PermissionMode } from '@qywork/core'
 import { client } from './connection.ts'
 import type { WorkspaceInfo } from './ui.ts'
 
 // ───────────────────────── 配置 ─────────────────────────
 
-/** 档案的对外形状：明文 key 不出服务进程，只回「有没有」。 */
-export interface RedactedProfile {
-  kind: string
+/** 指向一个具体模型的二元指针。模型 id 本身含斜杠，所以不能拼成一个串。 */
+export interface ModelRef {
+  provider: string
   model: string
+}
+
+/** 一个模型在这个接口下的那一格。 */
+export interface RedactedModel {
+  maxOutputTokens?: number
+  /** 保存时原样回传，避免把探测的实测结果洗掉。 */
+  capabilities?: unknown
+}
+
+/** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
+export interface RedactedProvider {
+  kind: string
   apiKeyEnv?: string
   baseUrl?: string
-  maxOutputTokens?: number
-  hasApiKey: boolean
-  /** 保存时原样回传，避免把 `qy probe` 的实测结果洗掉。 */
-  capabilities?: unknown
   headers?: Record<string, string>
+  models: Record<string, RedactedModel>
+  hasApiKey: boolean
+  /**
+   * **只写。** 读接口永远不回它（回的是上面那个 `hasApiKey`），
+   * 只有用户在设置里真的敲了新 key 时才带上；不带 = 沿用服务端已有的那份。
+   *
+   * 之前这个键没写进类型，改 key 的地方只能 `as Partial<...>` 硬转——
+   * 转过去之后拼错键名也不会报错，而拼错的后果是保存成功、key 没变、
+   * 下一次调模型才炸。写进类型是为了让编译器接着管这一格。
+   */
+  apiKey?: string
 }
+/**
+ * 服务端配置的对外形状。**这是一份手抄，而且是故意抄不全的。**
+ *
+ * 抄是因为够不着：真源 `QyConfig` 在 `@qywork/runtime`(L5)，界面只依赖
+ * `@qywork/core`(L0)。抄不全是因为 `sandboxNetwork` 只有内核沙箱的平台上才生效，
+ * Windows 上画个开关等于画个假的（见 CLAUDE.md B5）。
+ *
+ * 所以这里少一个字段是有意的，**但它不能因此在保存时被抹掉**：保存走的是
+ * 整份 PUT，服务端 `mergeConfig` 靠 `{ ...current, ...incoming }` 保住客户端
+ * 不认识的键。那条语义由 `server/src/api/config.test.ts`「客户端不认识的顶层
+ * 字段不会被抹掉」钉住——改这里之前先看那条。
+ */
 export interface RedactedConfig {
-  active: string
-  profiles: Record<string, RedactedProfile>
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-  mode?: 'auto' | 'full'
+  active: ModelRef
+  providers: Record<string, RedactedProvider>
+  effort?: EffortLevel
+  mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]
-  classifierProfile?: string
+  classifier?: ModelRef
 }
 export interface ConfigPayload {
   path: string
@@ -87,6 +119,73 @@ export async function saveServerConfig(config: RedactedConfig): Promise<ConfigPa
   return loadServerConfig()
 }
 
+/**
+ * 切换权限模式。
+ *
+ * 走 `/api/config` 这条**已有的**写入路径，不新开接口：配置的真源是那一个
+ * `config.json`，多一条写入路径就多一本账。代价是要先读一次全量再写回去——
+ * 一次多余的往返，换掉「两个地方都能写同一个文件」这种必然漂移的结构。
+ *
+ * 写成功后就地更新握手带来的 `capabilities.mode`：服务端只在握手时报一次，
+ * 不这么做的话按钮点完不变，看起来像没生效。
+ */
+export async function setPermissionMode(mode: PermissionMode): Promise<void> {
+  const payload = await loadServerConfig()
+  await saveServerConfig({ ...payload.config, mode })
+}
+
+// ───────────────────────── 测连接 ─────────────────────────
+
+/**
+ * 一次探测的结果。
+ *
+ * `probes` 是**每一步的原始结论**，不只是最后那个总结。结论错了要能查——
+ * 只给「支持思考：是」的话，错了没有任何线索。
+ *
+ * `detail` 由服务端脱敏后才下发：它是 provider 的原始错误消息，可能回显
+ * 请求 URL 甚至凭证。
+ */
+export interface ProbeStep {
+  name: string
+  ok: boolean
+  detail: string
+  /** true = 这一步没有真的验证任何东西（本协议下客户端不发这个字段）。 */
+  skipped?: boolean
+}
+export interface ProbeOutcome {
+  reachable: boolean
+  thinking: string | null
+  /** 本协议下无从探测的轴。**与「探了、被拒了」不是一回事**，不能合并显示。 */
+  untested: ('thinking' | 'effort')[]
+  effortLevels: EffortLevel[]
+  thinksByDefault: boolean
+  probes: ProbeStep[]
+}
+export interface ProbeResult {
+  outcome: ProbeOutcome
+  /** 可以安全写回配置的那一部分，没探过的轴一条都不含。 */
+  capabilities: Record<string, unknown>
+}
+
+/**
+ * 实测这个接口下的这个模型。
+ *
+ * **探的是落盘配置**，不是界面上的草稿：请求体只带名字，key 由服务端自己取。
+ * 允许探草稿就得让端点接收临时明文 key，等于多开一条 key 上行路径。
+ *
+ * 会真的发几个请求（每个 ≤16 token），所以只由用户点按钮触发。
+ */
+export function probeModel(
+  provider: string,
+  model: string,
+  mode: 'reachability' | 'full',
+): Promise<ProbeResult> {
+  return scheduleWrite('/api/probe', {
+    method: 'POST',
+    body: JSON.stringify({ provider, model, mode }),
+  })
+}
+
 export function loadWorkspace(): Promise<WorkspaceInfo> {
   return client.api<WorkspaceInfo>('/api/workspace')
 }
@@ -101,38 +200,87 @@ export interface KnownWorkspace {
   rootPath: string
   name: string
   lastOpenedAt: number
+  /** 它下面挂着几条会话。移除项目会把它们一起带走，所以这个数要说出来。 */
+  conversations: number
 }
-export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[]; current: string }> {
-  return client.api<{ workspaces: KnownWorkspace[]; current: string }>('/api/workspaces')
+export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }> {
+  return client.api<{ workspaces: KnownWorkspace[] }>('/api/workspaces')
+}
+
+/**
+ * 把一个项目从列表里移除。
+ *
+ * **这是删除，不是隐藏。** 它的会话跟着一起没（外键 `ON DELETE CASCADE`），
+ * 因为没有项目行的会话读不回来——留着就是一批永远打不开的孤儿。
+ * 目录本身不动：账本管的是「我开过哪些项目」，不是那些文件。
+ *
+ * 当前正在用的那个删不了，服务端回 409。这条规则在服务端，不在这里：
+ * 前端不显示按钮只是不让人白点，真正的守卫得在唯一权威那一侧。
+ */
+export function removeKnownWorkspace(id: string): Promise<{ ok: boolean }> {
+  return client.api<{ ok: boolean }>(`/api/workspaces/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * 把一个本机目录加成项目，并把它顶成「最近打开」。
+ *
+ * **加和切是同一条路**：服务端 upsert，已有就更新 `last_opened_at`，没有就插一行。
+ * 分成两个端点等于两条路写同一个字段，而那个字段正是 git 轮询和缺省 `?ws=` 的判据。
+ */
+export function addWorkspace(path: string): Promise<{ workspace: KnownWorkspace }> {
+  return client.api<{ workspace: KnownWorkspace }>('/api/workspaces', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
+
+/**
+ * 这个项目上装了什么。
+ *
+ * **按项目拉，不从握手拿**：三份清单都配在项目目录下，而一条连接横跨用户
+ * 同时开着的所有项目——握手报一份就等于「A 项目的插件显示在 B 项目上」。
+ */
+export interface WorkspaceExtensions {
+  plugins: string[]
+  teamBackends: string[]
+  mcpServers: string[]
+}
+export function loadWorkspaceExtensions(): Promise<WorkspaceExtensions> {
+  return client.api<WorkspaceExtensions>('/api/capabilities')
 }
 
 // ───────────────────────── 插件安装 ─────────────────────────
 
 /**
- * 装一个插件 = 把一个**本机已存在的目录**复制进 `.qy/plugins/`。
+ * 装一个插件 = 把一个**本机已存在的目录**复制进那一层的 `plugins/`。
  *
  * 没有 registry，所以没有「从市场安装」；也刻意不做 `git clone <任意 URL>`——
  * 那等于「从网上取一段代码，下次加载就跑它」。用户先自己 clone、看过内容，
  * 再把目录指给这里，中间那一步「你看到了自己装的是什么」值这条命令的成本。
  */
-export function installPlugin(path: string): Promise<{ ok: boolean; id: string }> {
-  return scheduleWrite('/api/plugins/install', {
+export function installPlugin(path: string, scope: Scope): Promise<{ ok: boolean; id: string }> {
+  return scheduleWrite(`/api/plugins/install?scope=${scope}`, {
     method: 'POST',
     body: JSON.stringify({ path }),
   })
 }
-export function uninstallPlugin(id: string): Promise<{ ok: boolean }> {
-  return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export function uninstallPlugin(id: string, scope: Scope): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}?scope=${scope}`, {
+    method: 'DELETE',
+  })
 }
 
 // ───────────────────────── 桌面外壳 ─────────────────────────
 
 /**
- * 切换工作区需要**换掉整个 sidecar**，而进程管理只有桌面外壳做得到。
+ * 桌面外壳才有的能力：系统目录选择器、窗口控制。
  *
- * Web 端（浏览器 / 手机）连的是一个已经起好的服务，它没有、也不该有
- * 重启宿主进程的能力。所以这里如实返回 false，让界面把原因说出来，
- * 而不是给一个点了没反应的按钮——那正是这轮返工要消灭的东西。
+ * **换项目已经不在这个名单里了。** 它曾经要重启整个 sidecar，所以只有桌面端
+ * 做得到；现在服务端一次服务多个项目，换项目只是换一个 `?ws=` 参数，
+ * 浏览器和手机上照样能换。这里只剩「挑一个本机目录」需要外壳——
+ * 那是系统对话框，Web 拿不到。
  */
 export function isDesktopShell(): boolean {
   return typeof (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ === 'object'
@@ -146,7 +294,7 @@ function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>
   const internals = (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ as
     | TauriInternals
     | undefined
-  if (!internals) return Promise.reject(new Error('不在桌面端，无法切换工作区'))
+  if (!internals) return Promise.reject(new Error('不在桌面端，用不了这个能力'))
   return internals.invoke(cmd, args) as Promise<T>
 }
 
@@ -156,13 +304,14 @@ export function pickWorkspace(): Promise<string | null> {
 }
 
 /**
- * 切到另一个工作区。
+ * 把文件监听改到这个项目的目录上。
  *
- * 成功之后**窗口会被重建**，所以这个 Promise 之后的代码不保证还在跑。
- * 界面上不要在它后面接「切换成功」的提示——那条提示大概率来不及显示。
+ * 换项目本身不需要外壳，但**文件监听需要**：notify 的句柄在 Rust 侧。
+ * 不改的话，切到 B 之后外部编辑器改 B 的文件不会推事件——而界面看起来一切正常，
+ * 只是永远不刷新，这种「安静的不工作」最难被发现。
  */
-export function switchWorkspace(path: string): Promise<void> {
-  return tauriInvoke<void>('switch_workspace', { path })
+export function watchWorkspace(path: string): Promise<void> {
+  return tauriInvoke<void>('watch_workspace', { path })
 }
 
 // ───────────────────────── 定时任务 ─────────────────────────
@@ -235,4 +384,239 @@ export async function saveTeamRaw(raw: string): Promise<{ ok: boolean }> {
   } catch (e) {
     throw new Error(explainApiError(e, '保存失败'))
   }
+}
+
+// ───────────────────────── 记忆与技能 ─────────────────────────
+
+/**
+ * 记忆是 `.qy/memory/*.md`，技能是 `.qy/skills/<name>/`——都是工作区里的普通文件。
+ * agent 通过工具随时能写，但 `.qy/` 是权限边界，人在界面上一直看不到也删不掉。
+ * 这一组就是把那条不对称补上。
+ */
+/**
+ * 一条记忆 / 技能 / MCP / 插件来自哪一层。
+ *
+ * - `builtin` 随程序发布，只读，**用户看不到**（服务端现在也还没有内容）。
+ * - `user` 是工作区 `.agents/`，跟着这个仓库走，别的 CLI 也读得到。
+ * - `global` 是 `~/.qywork/`，跨工作区。
+ *
+ * 优先级 `builtin > user > global`，同名先认领的赢。**解析在服务端做**——
+ * 界面上列出来的那条必须就是模型真的加载的那条，前端不许自己再算一遍。
+ */
+export type Scope = 'builtin' | 'user' | 'global'
+
+/** 可写的两层。内置随程序发布，写进去下次升级就没了。 */
+export const WRITABLE_SCOPES: { id: Scope; label: string }[] = [
+  { id: 'user', label: '用户级' },
+  { id: 'global', label: '全局' },
+]
+
+export interface ScopeDir {
+  scope: Scope
+  dir: string
+}
+
+export interface MemoryEntry {
+  key: string
+  preview: string
+  scope: Scope
+}
+export function loadMemory(): Promise<{ dirs: ScopeDir[]; entries: MemoryEntry[] }> {
+  return client.api<{ dirs: ScopeDir[]; entries: MemoryEntry[] }>('/api/memory')
+}
+/**
+ * 读一条记忆的**全文**。
+ *
+ * 列表只回首行摘要，够渲染列表、不够编辑。编辑器必须走这条——
+ * 拿摘要去填编辑框，用户不改字点一下保存就把正文截成一行了。
+ */
+export function loadMemoryEntry(
+  key: string,
+): Promise<{ key: string; content: string; scope: Scope }> {
+  return client.api<{ key: string; content: string; scope: Scope }>(
+    `/api/memory/${encodeURIComponent(key)}`,
+  )
+}
+export function saveMemory(key: string, content: string, scope: Scope): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/memory/${encodeURIComponent(key)}?scope=${scope}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  })
+}
+export function deleteMemory(key: string, scope: Scope): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/memory/${encodeURIComponent(key)}?scope=${scope}`, {
+    method: 'DELETE',
+  })
+}
+
+export interface SkillMeta {
+  name: string
+  description: string
+  /** 技能目录的绝对路径。技能只读，用户得知道去哪儿改。 */
+  dir: string
+  scope: Scope
+}
+export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }> {
+  return client.api<{ dirs: ScopeDir[]; skills: SkillMeta[] }>('/api/skills')
+}
+
+// ───────────────────────── MCP ─────────────────────────
+
+/**
+ * 已连上的 server 与它们给出的工具。
+ *
+ * `failures` 和 `unsupported` 与成功项一起回：一个只提供 prompts 的 server 会
+ * 连上、握手成功、注册 0 个工具、不报任何错——「配了但什么都没发生」是这一页
+ * 最需要显示出来的状态。
+ */
+export interface McpServerRow {
+  name: string
+  scope: Scope
+  serverInfo: { name?: string; version?: string }
+  protocolVersion: string
+  unsupported: string[]
+  tools: { name: string; description: string }[]
+}
+export interface McpPayload {
+  configPath: string
+  files: { scope: Scope; path: string }[]
+  servers: McpServerRow[]
+  failures: { server: string; reason: string }[]
+  /** 配置里有、但这一轮没连上的。不列的话它们凭空消失。 */
+  configured: { name: string; scope: Scope }[]
+  error: string | null
+}
+export function loadMcp(): Promise<McpPayload> {
+  return client.api<McpPayload>('/api/mcp')
+}
+export function loadMcpRaw(
+  scope: Scope,
+): Promise<{ path: string; exists: boolean; raw: string; scope: Scope }> {
+  return client.api<{ path: string; exists: boolean; raw: string; scope: Scope }>(
+    `/api/mcp/raw?scope=${scope}`,
+  )
+}
+export function saveMcpRaw(scope: Scope, raw: string): Promise<{ ok: boolean; path: string }> {
+  return scheduleWrite(`/api/mcp/raw?scope=${scope}`, {
+    method: 'PUT',
+    body: JSON.stringify({ raw }),
+  })
+}
+
+// ───────────────────────── 会话级开关 ─────────────────────────
+
+/**
+ * 一条可开关的条目。**只影响当前那一条会话。**
+ *
+ * 清单由服务端按三层解析出来，和 agent 真正加载的那份同源——前端各扫一遍
+ * 就会出现「面板上关掉了，模型还在用」。内置层不在里面：用户看不见它。
+ */
+export interface ExtraRow {
+  /** `<类目>:<标识>`。前缀就是类目。 */
+  key: string
+  label: string
+  detail: string
+  scope: Scope
+  enabled: boolean
+}
+
+export async function loadExtras(conversationId: string): Promise<ExtraRow[]> {
+  const r = await client.api<{ extras: ExtraRow[] }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/extras`,
+  )
+  return r.extras
+}
+
+export function setExtraEnabled(
+  conversationId: string,
+  key: string,
+  enabled: boolean,
+): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/conversations/${encodeURIComponent(conversationId)}/extras`, {
+    method: 'PUT',
+    body: JSON.stringify({ key, enabled }),
+  })
+}
+
+// ───────────────────────── 附件 ─────────────────────────
+
+/**
+ * 上传一个附件，拿到可直接随消息发出去的 `Attachment`。
+ *
+ * 走原始字节而不是 base64 JSON：base64 会让传输体积涨三分之一，
+ * 而这是本机回环，没有任何理由为它多付这一份。
+ */
+export async function uploadAttachment(file: File): Promise<Attachment> {
+  const res = await client.api<{ attachment: Attachment }>('/api/attachments', {
+    method: 'POST',
+    headers: {
+      'content-type': file.type || 'application/octet-stream',
+      // 文件名可能带中文与空格，必须编码后再进 header。
+      'x-attachment-name': encodeURIComponent(file.name),
+    },
+    body: await file.arrayBuffer(),
+  })
+  return res.attachment
+}
+
+// ───────────────────────── 窗口控制 ─────────────────────────
+
+/**
+ * 最小化 / 最大化 / 关闭。
+ *
+ * 系统装饰关掉之后这三个动作没有别的入口了。**只有桌面端有窗口**——
+ * `isDesktopShell()` 为假时界面根本不渲染这组按钮，而不是渲染出来点了报错。
+ */
+export function windowMinimize(): Promise<void> {
+  return tauriInvoke<void>('window_minimize')
+}
+/** 返回切换之后的状态：true = 现在是最大化。 */
+export function windowToggleMaximize(): Promise<boolean> {
+  return tauriInvoke<boolean>('window_toggle_maximize')
+}
+export function windowClose(): Promise<void> {
+  return tauriInvoke<void>('window_close')
+}
+export function windowIsMaximized(): Promise<boolean> {
+  return tauriInvoke<boolean>('window_is_maximized')
+}
+
+// ───────────────────────── 语音输入 ─────────────────────────
+
+/**
+ * 浏览器内置的语音识别构造器。
+ *
+ * **这条和大模型没有任何关系，也不经过服务端**——`SpeechRecognition` 是浏览器
+ * 自带的能力，识别结果直接是文字，拼进草稿就完了。（我一开始去搜后端有没有
+ * STT 通路，那是查错了方向：参照物那边同样没有后端。）
+ *
+ * 特性检测拿不到就返回 null，界面据此**不渲染那个按钮**——Tauri 的 WebView2
+ * 未必带这套 API，而一个点了没反应的麦克风比没有麦克风更糟。
+ */
+export interface SpeechRecognitionLike {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  start(): void
+  stop(): void
+  abort(): void
+  onresult:
+    | ((e: {
+        resultIndex: number
+        results: {
+          length: number
+          [i: number]: { isFinal: boolean; [j: number]: { transcript: string } }
+        }
+      }) => void)
+    | null
+  onerror: ((e: { error: string }) => void) | null
+  onend: (() => void) | null
+}
+
+export function speechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
+  const w = globalThis as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike
+  }
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
 }
