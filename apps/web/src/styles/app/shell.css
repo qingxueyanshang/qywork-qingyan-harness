@@ -245,12 +245,22 @@
   box-shadow: var(--shadow-md);
 }
 
+/*
+ * 项目行是一个容器 div，**自己不带内边距**——内边距全下放到里面的
+ * `.project-open` 身上（两个 button 不能嵌套，浏览器会把内层直接拎出去，
+ * 点击区随之错位，所以外层只能是 div）。
+ *
+ * 这里曾经写着 `padding: 4px var(--s-2)`，而 `.other` 又把它清零。当前项目和
+ * 其他项目还是两套标记时这没问题；合并成同一个组件之后，当前项目那一行没有
+ * `.other`，8(滚动区) + 8(这里) + 8(project-open) = 24，比 `+` 和齿轮右 8px。
+ * **清零是唯一权威**：内距只由 `.project-open` 说了算，不许在这一层再加一份。
+ */
 .project-head {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: 0;
   width: 100%;
-  padding: 4px var(--s-2);
+  padding: 0;
   border-radius: var(--r-xs);
   color: var(--text-primary);
   font-size: var(--fs-md);
@@ -260,14 +270,16 @@
 .project-name {
   min-width: 0;
 }
-/* 别的项目那一行有两个动作：切过去、从列表里移除。
-   所以它是一个容器 div，内边距下放到里面那个按钮身上——
-   两个 button 不能嵌套，浏览器会把内层直接拎出去，点击区随之错位。 */
+/* 其他项目比当前项目次要一级：只差颜色和字重，位置完全一致。 */
 .project-head.other {
   color: var(--text-secondary);
   font-weight: 400;
-  gap: 0;
-  padding: 0;
+}
+/* 还没连上时那一行是纯文字，没有 `.project-open` 兜着内距，自己补一份。 */
+.project-head.empty {
+  padding: 4px var(--s-2);
+  color: var(--text-tertiary);
+  font-weight: 400;
 }
 .project-open {
   display: flex;

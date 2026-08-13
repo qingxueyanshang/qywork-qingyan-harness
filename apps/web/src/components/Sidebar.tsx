@@ -171,7 +171,7 @@ export function Sidebar(props: { onClose?: () => void }) {
           {/* 当前项目也用同一个行组件：置顶 / 在资源管理器中打开 / 归档聊天
               对它一样成立，只有「移除」不成立（服务端回 409，组件里不画）。
               两处各写一遍的话，菜单迟早会长得不一样。 */}
-          <Show when={currentRow()} fallback={<div class="project-head">未连接</div>}>
+          <Show when={currentRow()} fallback={<div class="project-head empty">未连接</div>}>
             {(w) => (
               <ProjectRow
                 workspace={w()}
