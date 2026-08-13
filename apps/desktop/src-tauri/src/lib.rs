@@ -175,6 +175,26 @@ fn show_fatal(message: &str) {
 /// 一次只监听一个目录，不是每个项目各挂一个：用户同一时刻只看得见一个项目，
 /// 而每个监听器都是一组真实的 OS 句柄。切过去先停再起，顺序不能反——
 /// 反过来会有一小段时间两个监听器同时往同一条 bus 上推。
+/// 在系统文件管理器里定位一个目录。
+///
+/// 走 Rust 侧的 `OpenerExt`，**不是**给 WebView 授 `opener:*` 权限。
+/// ACL 只拦 IPC 层，Rust 直调不过那一层——所以 `capabilities/default.json`
+/// 保持两条权限不变（同 `pick_workspace` 用 dialog 的做法）。
+///
+/// 只接受本机已存在的目录（CLAUDE.md E）：路径来自本机账本里的项目行，
+/// 但仍然当外部输入校验一次——不存在时明确报错，不静默什么也不做。
+#[tauri::command]
+fn reveal_workspace(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("不是一个目录：{path}"));
+    }
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn watch_workspace(app: AppHandle, path: String) -> Result<(), String> {
     let dir = PathBuf::from(&path);
@@ -212,6 +232,7 @@ pub fn run() {
         .manage(watcher::WatcherHandle::default())
         .invoke_handler(tauri::generate_handler![
             pick_workspace,
+            reveal_workspace,
             watch_workspace,
             window_minimize,
             window_toggle_maximize,

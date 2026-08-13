@@ -3,17 +3,18 @@ import {
   activateWorkspace,
   isDesktopShell,
   type KnownWorkspace,
+  loadConversations,
   loadKnownWorkspaces,
   newConversation,
   openSettings,
   pickWorkspace,
-  removeKnownWorkspace,
   selectConversation,
   state,
   toggleSidebar,
   workspace,
 } from '../lib/store/index.ts'
-import { IconFolder, IconNewChat, IconPanel, IconPlus, IconSettings, IconX } from './Icons.tsx'
+import { IconPanel, IconPlus, IconSettings } from './Icons.tsx'
+import { ProjectRow } from './ProjectRow.tsx'
 
 /**
  * 左侧导航。
@@ -71,15 +72,15 @@ export function Sidebar(props: { onClose?: () => void }) {
   const desktop = isDesktopShell()
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
+
   /**
-   * 正在等确认的那个项目。
+   * 当前项目在账本里的那一行。
    *
-   * 移除**不删任何数据**（`removeWorkspace` 只打标记），所以这里不再摊开代价。
-   * 仍然要一次确认：× 挨着切换项目的按钮，误点会让一个项目从列表上消失，
-   * 而「怎么让它回来」不是自明的。
-   * 一个 id 而不是每行一个布尔：同时展开两条确认在类型上就不该成立。
+   * 从同一份 `/api/workspaces` 里挑，而不是另拿 `workspace()` 拼一个——
+   * 菜单要用到 `id`（置顶 / 归档都按 id 发）和会话数，而那两样只有账本里有。
+   * 拼一个假的等于第二份数据源。
    */
-  const [armed, setArmed] = createSignal<string | null>(null)
+  const currentRow = () => (known()?.workspaces ?? []).find((w) => w.rootPath === workspace()?.root)
 
   /** 当前项目已经在上面单独一行，不在这里重复。 */
   const others = () => (known()?.workspaces ?? []).filter((w) => w.rootPath !== workspace()?.root)
@@ -90,17 +91,6 @@ export function Sidebar(props: { onClose?: () => void }) {
     try {
       await activateWorkspace(path)
       // 列表按「最近打开」排序，切过之后顺序变了，重拉一次。
-      void refetchWorkspaces()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const remove = async (id: string) => {
-    setError(null)
-    try {
-      await removeKnownWorkspace(id)
-      setArmed(null)
       void refetchWorkspaces()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -162,9 +152,13 @@ export function Sidebar(props: { onClose?: () => void }) {
           切换失败的提示同理：它解释的是刚按下去的那个按钮，得和按钮待在一起。 */}
       <div class="sidebar-lead">
         <Show when={desktop}>
+          {/* 「添加项目」不是「新建项目」：它开的是目录选择器，指一个**已经存在**
+              的本机目录（CLAUDE.md E：不做 git clone 式安装）。写成「新建」会让人
+              以为它会去创建一个目录，然后在选择器里找不到「新建」这个动作。
+              原来写的是「新建 work」——work 在这个界面里不指任何东西。 */}
           <button class="new-work" type="button" onClick={() => void newWork()}>
             <IconPlus size={14} />
-            新建 work
+            添加项目
           </button>
         </Show>
 
@@ -174,25 +168,27 @@ export function Sidebar(props: { onClose?: () => void }) {
 
       <div class="sidebar-scroll">
         <div class="project">
-          <div class="project-head">
-            <IconFolder size={15} />
-            <span class="project-name truncate" title={workspace()?.root ?? ''}>
-              {workspace()?.name ?? '未连接'}
-            </span>
-            {/* 常显而不是悬停才出现：手机端没有 hover，藏起来等于没有。 */}
-            <button
-              class="icon-btn project-new"
-              type="button"
-              aria-label="新建对话"
-              title="在这个项目里新建对话"
-              onClick={() => {
-                void newConversation()
-                props.onClose?.()
-              }}
-            >
-              <IconNewChat size={14} />
-            </button>
-          </div>
+          {/* 当前项目也用同一个行组件：置顶 / 在资源管理器中打开 / 归档聊天
+              对它一样成立，只有「移除」不成立（服务端回 409，组件里不画）。
+              两处各写一遍的话，菜单迟早会长得不一样。 */}
+          <Show when={currentRow()} fallback={<div class="project-head">未连接</div>}>
+            {(w) => (
+              <ProjectRow
+                workspace={w()}
+                current
+                onNewChat={() => {
+                  void newConversation()
+                  props.onClose?.()
+                }}
+                onChanged={() => {
+                  void refetchWorkspaces()
+                  // 归档动的是当前项目的会话列表，不重拉的话侧栏还显示着已归档的那些。
+                  void loadConversations()
+                }}
+                onError={setError}
+              />
+            )}
+          </Show>
 
           <ul class="nav-list">
             <For each={state.conversations}>
@@ -220,44 +216,12 @@ export function Sidebar(props: { onClose?: () => void }) {
             而用户同一时刻也只看得见一个。 */}
         <For each={others()}>
           {(w: KnownWorkspace) => (
-            <Show
-              when={armed() === w.id}
-              fallback={
-                <div class="project-head other">
-                  <button
-                    class="project-open"
-                    type="button"
-                    title={w.rootPath}
-                    onClick={() => void go(w.rootPath)}
-                  >
-                    <IconFolder size={15} />
-                    <span class="project-name truncate">{w.name}</span>
-                  </button>
-                  {/* 常显而不是悬停才出现：手机端没有 hover，藏起来等于没有。 */}
-                  <button
-                    class="icon-btn project-remove"
-                    type="button"
-                    aria-label={`从列表里移除 ${w.name}`}
-                    onClick={() => setArmed(w.id)}
-                  >
-                    <IconX size={12} />
-                  </button>
-                </div>
-              }
-            >
-              {/* 边界声明按 B7 留全：不写的话「移除」看起来就像删数据。 */}
-              <div class="project-head confirm">
-                <span class="truncate">
-                  移除 {w.name}？文件和聊天记录都不会删，重新添加就回来。
-                </span>
-                <button class="confirm-yes" type="button" onClick={() => void remove(w.id)}>
-                  移除
-                </button>
-                <button class="confirm-no" type="button" onClick={() => setArmed(null)}>
-                  取消
-                </button>
-              </div>
-            </Show>
+            <ProjectRow
+              workspace={w}
+              onOpen={() => void go(w.rootPath)}
+              onChanged={() => void refetchWorkspaces()}
+              onError={setError}
+            />
           )}
         </For>
       </div>

@@ -2,7 +2,14 @@
 
 import { stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
-import { countConversations, listWorkspaces, removeWorkspace, upsertWorkspace } from '@qywork/store'
+import {
+  archiveWorkspaceConversations,
+  countConversations,
+  listWorkspaces,
+  removeWorkspace,
+  setWorkspacePinned,
+  upsertWorkspace,
+} from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
 export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
@@ -51,12 +58,42 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    *
    * 路径里的 id 直接进 SQL 参数，不拼路径也不拼 SQL；查不到回 404 而不是静默成功。
    */
-  const del = /^\/api\/workspaces\/([^/]+)$/.exec(p)
-  if (del && req.method === 'DELETE') {
-    const id = decodeURIComponent(del[1] as string)
+  const one = /^\/api\/workspaces\/([^/]+)$/.exec(p)
+  if (one && req.method === 'DELETE') {
+    const id = decodeURIComponent(one[1] as string)
     if (id === d.workspaceId) return json({ error: '不能移除当前正在用的项目' }, 409)
     if (!removeWorkspace(d.store, id as never)) return json({ error: '这个项目不存在' }, 404)
     return json({ ok: true })
+  }
+
+  /*
+   * 置顶 / 取消置顶。
+   *
+   * PATCH 而不是两条 POST（`/pin` + `/unpin`）：它改的是同一行上的同一个字段，
+   * 两条路写一个字段就是两本账。目标状态由 body 给，不是「翻转当前状态」——
+   * 翻转在并发下会翻错方向，而且客户端没法重试。
+   */
+  if (one && req.method === 'PATCH') {
+    const id = decodeURIComponent(one[1] as string)
+    const body = (await req.json().catch(() => null)) as { pinned?: unknown } | null
+    if (typeof body?.pinned !== 'boolean') return json({ error: '缺少 pinned（布尔）' }, 422)
+    if (!setWorkspacePinned(d.store, id as never, body.pinned)) {
+      return json({ error: '这个项目不存在，或已经是这个状态' }, 404)
+    }
+    return json({ ok: true })
+  }
+
+  /*
+   * 归档这个项目当前的全部会话。
+   *
+   * **不删数据**：只是从会话列表里去掉，此后新建的照常显示（见
+   * `archiveWorkspaceConversations`）。回归档条数而不是 `{ok:true}`——
+   * 界面要能说「归档了 N 条」，而「0 条」和「成功」在界面上必须能区分开。
+   */
+  const archive = /^\/api\/workspaces\/([^/]+)\/archive$/.exec(p)
+  if (archive && req.method === 'POST') {
+    const id = decodeURIComponent(archive[1] as string)
+    return json({ archived: archiveWorkspaceConversations(d.store, id as never) })
   }
 
   // 这一次请求问的是哪个项目（`?ws=` 解析的结果，见 api/index.ts）。
