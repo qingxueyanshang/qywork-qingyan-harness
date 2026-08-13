@@ -79,7 +79,9 @@ export const DEFAULT_RULES: ClassifierRules = {
     '递归删除整个工作区或其中的大片目录树——单个文件可以，成片清空不行',
     '安装一个项目依赖清单里没有的新包：安装脚本会执行第三方代码，而这个包不是项目本来就要的',
     '改写 git 历史或推送到远端：push、reset --hard、clean -fd、rebase',
-    '启动会长期驻留、不会自己退出的进程或服务器',
+    '启动进程或服务器并让它一直占着资源——**每条命令都带强制超时**，到点会被杀掉，' +
+      '所以判据是它在被杀之前会不会造成不该有的后果（对外提供服务、' +
+      '占住端口影响别的程序、持续写数据），不是「它自己会不会退出」',
     '把工作区内容作为请求体或参数发到网络上',
     '读取或遍历工作区之外的路径：主目录、系统目录、其它项目目录。' +
       '这台机器没有内核级的路径边界，规则本身就是唯一的约束，' +
@@ -115,6 +117,18 @@ export interface ClassifyInput {
   command: string
   /** 最近的对话/工具调用片段，给分类器上下文。 */
   transcript: string
+  /**
+   * 这条调用实际的超时（毫秒）。到点是无条件 `proc.kill()`。
+   *
+   * **必须传**，否则「会不会一直挂着」只能靠命令字面猜。实测的误拒：
+   * `python -m http.server 8000` 带 `timeout_ms: 3000`，被按
+   * 「启动 HTTP 服务器会长期驻留、不会自行退出」拒掉——而它 3 秒后就被杀了，
+   * 那条拒绝理由的前提根本不成立。
+   *
+   * 值由 `resolveCommandTimeout` 算，与执行层同一个函数：两处各算一遍的话，
+   * 裁决时说的那个数和真正生效的不是同一个。
+   */
+  timeoutMs?: number
 }
 
 // ───────────────────────── system prompt ─────────────────────────
@@ -219,6 +233,11 @@ function buildUserMessage(input: ClassifyInput, stage: 1 | 2): string {
   return [
     `<transcript>\n${transcript || '（无）'}\n</transcript>`,
     `<command>\n${input.command}\n</command>`,
+    // 事实而不是提示：这条命令确实会在那个时刻被 kill。放在命令之后、
+    // 判定要求之前——它是这条命令的属性，不是一条额外的规则。
+    ...(input.timeoutMs === undefined
+      ? []
+      : [`<fact>这条命令会在 ${input.timeoutMs} 毫秒后被强制终止。</fact>`]),
     stage === 1 ? STAGE1_HINT : STAGE2_HINT,
   ].join('\n\n')
 }
@@ -326,14 +345,14 @@ const MAX_CACHE_ENTRIES = 512
 export class VerdictCache {
   private readonly entries = new Map<string, Verdict>()
 
-  get(command: string): Verdict | undefined {
-    const v = this.entries.get(cacheKey(command))
+  get(input: ClassifyInput): Verdict | undefined {
+    const v = this.entries.get(cacheKey(input))
     // 命中的结论一律标成 cache：调用方（以及观测指标）要能分清这次有没有真的问过模型。
     return v ? { ...v, stage: 'cache' } : undefined
   }
 
-  set(command: string, v: Verdict): void {
-    const k = cacheKey(command)
+  set(input: ClassifyInput, v: Verdict): void {
+    const k = cacheKey(input)
     this.entries.delete(k)
     this.entries.set(k, v)
     if (this.entries.size > MAX_CACHE_ENTRIES) {
@@ -347,9 +366,16 @@ export class VerdictCache {
   }
 }
 
-/** 只归一化两端空白：它不改变 shell 语义，命令中间的任何字符都必须保真。 */
-function cacheKey(command: string): string {
-  return command.trim()
+/**
+ * 只归一化两端空白：它不改变 shell 语义，命令中间的任何字符都必须保真。
+ *
+ * **超时进 key。** 同一条命令带 3 秒和带 10 分钟不是同一件事——
+ * `python -m http.server` 跑 3 秒和占住端口十分钟，判据完全不同。
+ * 不进 key 的话，前者放行的结论会直接套到后者头上，而这与本文件警告过的
+ * 「用前缀做 key」是同一类错误：把两个不同的调用当成了同一个。
+ */
+function cacheKey(input: ClassifyInput): string {
+  return `${input.timeoutMs ?? ''} ${input.command.trim()}`
 }
 
 // ───────────────────────── 判定 ─────────────────────────
@@ -388,7 +414,7 @@ function errText(err: unknown): string {
 
 /** 判一条。 */
 export async function classify(input: ClassifyInput, deps: ClassifyDeps): Promise<Verdict> {
-  const cached = deps.cache?.get(input.command)
+  const cached = deps.cache?.get(input)
   if (cached) return cached
 
   const system = buildSystemPrompt(deps.rules ?? DEFAULT_RULES)
@@ -400,14 +426,14 @@ export async function classify(input: ClassifyInput, deps: ClassifyDeps): Promis
   const fast = await runStage(deps, system, input, 1)
   if (fast.ok && !fast.value.blocked) {
     const v: Verdict = { ...fast.value, stage: 'fast' }
-    deps.cache?.set(input.command, v)
+    deps.cache?.set(input, v)
     return v
   }
 
   const deep = await runStage(deps, system, input, 2)
   if (deep.ok) {
     const v: Verdict = { ...deep.value, stage: 'deep' }
-    deps.cache?.set(input.command, v)
+    deps.cache?.set(input, v)
     return v
   }
 
@@ -426,7 +452,7 @@ export async function classifyMany(
   // 写成 for…of + await 就是串行：3 条命令从 2 秒变 6 秒，而这段等待用户全程看得见。
   const inflight = new Map<string, Promise<Verdict>>()
   const jobs = inputs.map((input) => {
-    const k = cacheKey(input.command)
+    const k = cacheKey(input)
     let job = inflight.get(k)
     if (!job) {
       // 同一批内的重复命令共用一次请求。缓存在这里帮不上忙——

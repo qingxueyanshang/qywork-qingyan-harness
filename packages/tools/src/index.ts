@@ -58,6 +58,7 @@ export {
 } from './scopes.ts'
 // 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证
 export { scrubEnv } from './secrets.ts'
+export { resolveCommandTimeout } from './shell.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页
 export { SKILLS_SUBDIR, type SkillMeta, scanSkills } from './skills.ts'
 

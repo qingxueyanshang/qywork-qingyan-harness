@@ -178,15 +178,36 @@ describe('会话内缓存', () => {
 
   test('命令中间差一个字符就不命中', () => {
     const cache = new VerdictCache()
-    cache.set('rm -rf dist', { blocked: false, reason: 'x', stage: 'fast' })
-    expect(cache.get('rm -rf dist/')).toBeUndefined()
-    expect(cache.get('rm  -rf dist')).toBeUndefined()
+    cache.set(cmd('rm -rf dist'), { blocked: false, reason: 'x', stage: 'fast' })
+    expect(cache.get(cmd('rm -rf dist/'))).toBeUndefined()
+    expect(cache.get(cmd('rm  -rf dist'))).toBeUndefined()
   })
 
   test('只有两端空白被归一化 —— 它不改变 shell 语义', () => {
     const cache = new VerdictCache()
-    cache.set('  ls  ', { blocked: false, reason: 'x', stage: 'fast' })
-    expect(cache.get('ls')?.blocked).toBe(false)
+    cache.set(cmd('  ls  '), { blocked: false, reason: 'x', stage: 'fast' })
+    expect(cache.get(cmd('ls'))?.blocked).toBe(false)
+  })
+
+  /**
+   * **超时不同就是两条不同的调用。**
+   *
+   * `python -m http.server` 跑 3 秒和占住端口十分钟，判据完全不同。
+   * 不把超时纳入 key 的话，前者放行的结论会直接套到后者头上——
+   * 与上面那条「差一个字符就不命中」防的是同一类错误：
+   * 把两个不同的调用当成同一个。
+   */
+  test('超时不同不命中同一条缓存', () => {
+    const cache = new VerdictCache()
+    const short: ClassifyInput = {
+      command: 'python -m http.server',
+      transcript: '',
+      timeoutMs: 3000,
+    }
+    const long: ClassifyInput = { ...short, timeoutMs: 600_000 }
+    cache.set(short, { blocked: false, reason: '3 秒就被杀', stage: 'fast' })
+    expect(cache.get(short)?.blocked).toBe(false)
+    expect(cache.get(long)).toBeUndefined()
   })
 
   test('拒绝的结论同样缓存，免得对同一条危险命令反复付费', async () => {
@@ -422,5 +443,59 @@ describe('parseVerdict', () => {
 
   test('判定字段的值是没见过的词 → null，不猜', () => {
     expect(parseVerdict('{"decision":"maybe","reason":"说不好"}')).toBeNull()
+  })
+})
+
+/**
+ * 超时是这条调用的**事实**，必须进 user 消息。
+ *
+ * 复现的误拒（2026-08-13，41 步的一轮跑到最后一步被拦）：
+ * `python -m http.server 8000` 带 `timeout_ms: 3000`，判定
+ * 「启动 HTTP 服务器会长期驻留、不会自行退出，属于默认拒绝的常驻进程/服务器」。
+ *
+ * 结论没错——按它看到的信息。错的是它**看不到超时**：`run_command` 到点是
+ * 无条件 `proc.kill()`，那条命令 3 秒后就没了，「不会自行退出」这个前提
+ * 在这个工具里对任何命令都不成立（默认 120 秒、上限 600 秒）。
+ */
+describe('超时事实', () => {
+  test('带超时时把它作为事实写进 user 消息', async () => {
+    let seen = ''
+    await classify(
+      { command: 'python -m http.server 8000', transcript: '', timeoutMs: 3000 },
+      {
+        ask: async ({ user }) => {
+          seen = user
+          return '{"decision":"allow","reason":"3 秒后被杀"}'
+        },
+      },
+    )
+    expect(seen).toContain('3000 毫秒后被强制终止')
+  })
+
+  /** 不知道超时就什么都不说——编一个数比不说更糟。 */
+  test('没给超时就不提这件事', async () => {
+    let seen = ''
+    await classify(cmd('ls'), {
+      ask: async ({ user }) => {
+        seen = user
+        return '{"decision":"allow","reason":"只读"}'
+      },
+    })
+    expect(seen).not.toContain('强制终止')
+  })
+
+  /** system prompt 是缓存前缀，超时属于**这一次调用**，混进去会让前缀每次都变。 */
+  test('超时不进 system prompt', async () => {
+    let seen = ''
+    await classify(
+      { command: 'python -m http.server', transcript: '', timeoutMs: 3000 },
+      {
+        ask: async ({ system }) => {
+          seen = system
+          return '{"decision":"allow","reason":"x"}'
+        },
+      },
+    )
+    expect(seen).not.toContain('3000')
   })
 })

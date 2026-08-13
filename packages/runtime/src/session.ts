@@ -61,6 +61,7 @@ import {
   listScopedEntries,
   normalizeAdditionalDirectories,
   registerBuiltinTools,
+  resolveCommandTimeout,
   resolveInWorkspace,
   scanSkills,
   scopeRoots,
@@ -637,7 +638,13 @@ export class Session {
     // 一律拒的话 agent 基本不能干活，用户三分钟内就会切到 full——
     // 那等于用一个「安全」的默认值把所有人推到完全没有防线的那一档。
     const v = await classify(
-      { command, transcript: this.lastPrompt },
+      {
+        command,
+        transcript: this.lastPrompt,
+        // 超时是**这条调用的事实**，不给的话「会不会一直挂着」只能靠命令字面猜。
+        // 用执行层同一个函数算，免得裁决时说的那个数和真正生效的不是同一个。
+        timeoutMs: resolveCommandTimeout(meta.args.timeout_ms),
+      },
       { ask: this.classifierAsk(), cache: this.verdicts },
     )
     if (!v.blocked) return { allowed: true }

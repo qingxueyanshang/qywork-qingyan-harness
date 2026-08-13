@@ -43,6 +43,21 @@ import { deliver } from './sink.ts'
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 600_000
 
+/**
+ * 这条调用实际会在多少毫秒后被强制终止。
+ *
+ * **导出是因为裁决层要用同一个数。** `run_command` 的超时到点是无条件
+ * `proc.kill()`，所以「这条命令会不会一直挂着」在这个工具里有个确定答案——
+ * 而分类器原来看不到它，只能按命令字面判，于是把带 3 秒超时的
+ * `python -m http.server` 按「不会自己退出的服务器」拒掉了。
+ *
+ * 两处各算一遍必然漂移，而漂移的表现是**裁决时说的那个数和真正生效的不是同一个**
+ * ——那比不告诉它更糟。
+ */
+export function resolveCommandTimeout(timeoutMs: unknown): number {
+  return Math.min(MAX_TIMEOUT_MS, Math.max(1000, Number(timeoutMs ?? DEFAULT_TIMEOUT_MS)))
+}
+
 export const shellTool: ToolSpec = {
   name: 'run_command',
   description:
@@ -72,10 +87,7 @@ export const shellTool: ToolSpec = {
     const cwd = await resolveInWorkspace(rootsOf(ctx), String(args.cwd ?? '.'), {
       mustExist: true,
     })
-    const timeout = Math.min(
-      MAX_TIMEOUT_MS,
-      Math.max(1000, Number(args.timeout_ms ?? DEFAULT_TIMEOUT_MS)),
-    )
+    const timeout = resolveCommandTimeout(args.timeout_ms)
 
     // 缺 secrets 时按空集合处理——那是「没有已知凭证」，不是「不用剥」。
     const secrets = ctx.secrets ?? { values: [], envNames: [] }
