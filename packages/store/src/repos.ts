@@ -45,8 +45,10 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
     .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
     .get(rootPath)
   if (existing) {
+    // `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
+    // 它原来的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
     store.db
-      .query('UPDATE workspaces SET last_opened_at = ?, name = ? WHERE id = ?')
+      .query('UPDATE workspaces SET last_opened_at = ?, name = ?, removed_at = NULL WHERE id = ?')
       .run(now, name, existing.id)
     return { ...rowToWorkspace(existing), lastOpenedAt: now, name }
   }
@@ -66,7 +68,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
 }
 
 /**
- * 按「最近打开」倒序。
+ * 按「最近打开」倒序。**已移除的不在其中**（`removed_at IS NULL`）。
  *
  * 次级排序键 `id DESC` 不是装饰：同一毫秒 upsert 的两个项目 `last_opened_at` 会并列，
  * 只按它排序时 SQLite 退回插入顺序，结果正好是反的。而这个顺序现在有实际后果——
@@ -76,7 +78,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
     .query<Record<string, any>, []>(
-      'SELECT * FROM workspaces ORDER BY last_opened_at DESC, id DESC',
+      'SELECT * FROM workspaces WHERE removed_at IS NULL ORDER BY last_opened_at DESC, id DESC',
     )
     .all()
     .map(rowToWorkspace)
@@ -106,21 +108,28 @@ export function countConversations(store: Store, id: WorkspaceId): number {
 }
 
 /**
- * 从账本里删掉一个项目。
+ * 把一个项目从列表里移除。**数据一条不动。**
  *
- * **会连着它的会话一起没。** 这不是可以绕开的选择：`conversations.workspace_id`
- * 是 `ON DELETE CASCADE`，而没有项目行的会话根本读不回来——`workspaceOf` 查不到根，
- * run 起不来，`listConversations` 也不会带上它。留一份「删了项目但留着会话」的
- * 中间态等于造一批永远打不开的孤儿。
+ * 打 `removed_at` 标记，不 `DELETE`。行必须留下：`conversations.workspace_id` 是
+ * `ON DELETE CASCADE`，而 `workspaceOf` 要 join 这一行才答得出「这条会话跑在哪个根」
+ * ——删了行，它的会话就成了永远打不开的孤儿。
  *
- * `usage_ledger` 不受影响：它刻意没有外键，「这个月花了多少」不该因为删了项目而少一笔
- * （理由写在 `schema.ts` 第 3 条迁移里）。
+ * 所以移除只改「列表里显不显示」（`listWorkspaces` 过滤它），不改「能不能读回来」
+ * （`workspaceOf` / `getWorkspace` 不过滤）。重新添加同一个路径就整个回来：
+ * `root_path` 是 UNIQUE，`upsertWorkspace` 命中同一行并清掉这个标记。
  *
- * 返回是否真的删掉了一行。id 不存在时返回 false，由调用方回 404——
- * 静默当成功会让界面以为删掉了，刷新之后它又回来。
+ * `usage_ledger` 本来就不受影响：它刻意没有外键，「这个月花了多少」不该因为项目
+ * 从列表里消失而少一笔（理由写在 `schema.ts` 第 3 条迁移里）。
+ *
+ * 返回是否真的改动了一行。id 不存在、或它已经是移除状态时返回 false，
+ * 由调用方回 404——静默当成功会让界面以为移除了，刷新之后它又回来。
  */
 export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
-  return store.db.query('DELETE FROM workspaces WHERE id = ?').run(id).changes > 0
+  return (
+    store.db
+      .query('UPDATE workspaces SET removed_at = ? WHERE id = ? AND removed_at IS NULL')
+      .run(Date.now(), id).changes > 0
+  )
 }
 
 /**

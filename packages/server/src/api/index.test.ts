@@ -19,6 +19,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createConversation,
+  getWorkspace,
   listConversations,
   listWorkspaces,
   Store,
@@ -132,7 +133,7 @@ describe('移除项目', () => {
     return { d, oldId, currentId: current.id }
   }
 
-  test('删掉项目，它的会话一起没 —— 不留读不回来的孤儿', async () => {
+  test('移除项目只是从列表里拿掉，会话一条不少', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
@@ -140,7 +141,26 @@ describe('移除项目', () => {
     const res = await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(200)
     expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(oldId)
-    expect(listConversations(d.store, oldId as never)).toHaveLength(0)
+    // 数据没动：行还在（`getWorkspace` 不过滤），会话照样读得回来
+    expect(getWorkspace(d.store, oldId as never)).not.toBeNull()
+    expect(listConversations(d.store, oldId as never)).toHaveLength(1)
+  })
+
+  test('重新添加同一路径 —— 项目和它的会话一起回来', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
+
+    const again = upsertWorkspace(d.store, 'C:/ws/old', 'old')
+    expect(String(again.id)).toBe(oldId) // root_path UNIQUE，命中的是同一行
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(oldId)
+    expect(listConversations(d.store, oldId as never)).toHaveLength(1)
+  })
+
+  test('移除两次 —— 第二次回 404，不静默当成功', async () => {
+    const { d, oldId } = twoWorkspaces()
+    expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
+    expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(404)
   })
 
   test('当前正在用的那个删不掉，回 409 且账本不动', async () => {
