@@ -34,7 +34,18 @@
 /* ══════════ 窄屏：侧栏变抽屉 ══════════ */
 @media (max-width: 820px) {
   .app {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* 单列下顶栏和会话区都落在第一列；侧栏改成浮动抽屉，不再占格子。
+     内容纸贴满整个窗口宽度，圆角和左边框跟着取消——它们表达的是
+     「灰壳里嵌着一张纸」，而窄屏没有灰壳。 */
+  .topbar,
+  .main {
+    grid-column: 1;
+  }
+  .main {
+    border-left: none;
+    border-top-left-radius: 0;
   }
 
   .sidebar-slot {
@@ -69,24 +80,33 @@
     display: grid;
   }
 
-  .transcript-inner,
   .composer-wrap {
     padding-left: var(--s-3);
     padding-right: var(--s-3);
   }
+  /* 窄屏同样要多让出 `--composer-text-inset`，否则宽屏对齐、窄屏又错开 17px。 */
+  .transcript-inner {
+    padding-left: calc(var(--s-3) + var(--composer-text-inset));
+    padding-right: calc(var(--s-3) + var(--composer-text-inset));
+  }
 
-  /* 窄屏放不下三栏：面板改为覆盖全屏，而不是把会话区挤成一条缝。 */
+  /* 窄屏放不下三栏：面板改为覆盖全屏，而不是把会话区挤成一条缝。
+     盖满全屏时它自己就是顶层，安全区得自己让。 */
   .app.with-panel {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .side-panel {
     position: fixed;
     inset: 0;
     z-index: 45;
-    border-left: none;
+    border: none;
+  }
+  .side-head {
+    height: calc(var(--header-h) + var(--safe-top));
+    padding-top: var(--safe-top);
   }
 
-  .bubble {
+  .user-col {
     max-width: 88%;
   }
 
@@ -129,6 +149,27 @@
   display: flex;
   align-items: baseline;
   gap: var(--s-2);
+  cursor: pointer;
+  /* 折叠三角由 ::after 接管，位置在行尾——行首那一列符号会把当前任务往右推。 */
+  list-style: none;
+}
+.plan-head::-webkit-details-marker {
+  display: none;
+}
+.plan-head::after {
+  content: "›";
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+.plan-card[open] > .plan-head::after {
+  transform: rotate(90deg);
+}
+/* 只有展开时才和下面的清单拉开距离；收起时它就是孤零零一行。 */
+.plan-card[open] > .plan-head {
   margin-bottom: var(--s-2);
 }
 .plan-title {

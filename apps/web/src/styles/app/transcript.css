@@ -5,66 +5,112 @@
 /* ── 会话流 ── */
 .transcript {
   flex: 1;
+  /* flex 子项的默认 min-height 是 auto——它拒绝收缩到内容高度以下，于是这一块
+     把 .main 撑破 100%，上面的 overflow-y 根本不生效，滚动落到最外层：表现是
+     一条贯穿整个窗口的滚动条 + 页面"无限滚动"，左栏底部导航被一起顶出窗口。
+     同一个成因在 .sidebar-scroll 上出现过一次。 */
+  min-height: 0;
   overflow-y: auto;
+  /*
+   * 两侧都预留滚动条槽。
+   *
+   * 滚动条只占右侧的话，这一块的内容盒比 .main 窄 10px，`margin: 0 auto` 的
+   * 会话正文就整体左移 5px；而输入区不是滚动容器，它按 .main 的整宽居中。
+   * 于是同样写着 max-width 760 + auto 的两块，肉眼看差了半个滚动条——
+   * 「输入框和对话内容没对齐」就是这 5px。
+   *
+   * both-edges 把槽对称地留在两边，正文的居中基准回到 .main 的整宽，和输入区
+   * 用的是同一条中线。给输入区补一个 padding-right 也能对齐，但那是拿一个
+   * 写死的数字去追一个由系统滚动条宽度决定的值。
+   */
+  scrollbar-gutter: stable both-edges;
   /* 滚动锚定：新内容插入时不让浏览器把视口往回跳 */
   overflow-anchor: none;
 }
 
+/* 条目间距 8px。
+ *
+ * 实测过：gap 10 + `.fold` 的 margin 6/2，得到「正文↔折叠 16px、折叠↔正文 12px」
+ * ——和参照物的 CSS 算出来一模一样。但参照物是一块 320px 宽的侧栏，文字换行多、
+ * 折叠行挨得紧；这里是 760px 宽的主列，同样的数字看起来就散。
+ * 所以按**观感**再收一档，而不是照抄那两个数字。 */
 .transcript-inner {
   max-width: 760px;
   margin: 0 auto;
-  padding: var(--s-6) var(--s-5) var(--s-4);
+  /* 横向边距 = 输入区的 s-5 再加 `--composer-text-inset`：对齐的是输入框里的
+     文字列，不是它的边框（理由写在 tokens.css 那个变量上）。 */
+  /* 底部留白比顶部大：它同时是「最后一条离输入框多远」。放在这里而不是输入区的
+     padding-top——理由写在 `.composer-wrap` 上。 */
+  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
   display: flex;
   flex-direction: column;
-  gap: var(--s-4);
+  gap: 8px;
 }
 
 .row {
   display: flex;
 }
+/* 用户消息右对齐，与助手正文分列两侧——这是参照物（青研魔盒 `.v2-msg-user`）的口径。
+ *
+ * 上一版为了"和工具卡对齐在同一条竖线"改成了左对齐全宽，结果是用户说的话和
+ * 模型说的话只靠底色区分，翻长会话时找不到"我上一句问的是什么"。
+ * 位置这个维度分给"谁说的"，层级交给折叠的缩进。 */
+.row.user {
+  justify-content: flex-end;
+}
+/* 附件与气泡同一列、同样右对齐——附件属于这条消息，不是独立的一行。
+   宽度上限**只写在这里**，见下面 .bubble 的说明。 */
+.user-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 85%;
+  min-width: 0;
+}
 
-/* 用户消息**左对齐**，和助手正文、工具卡在同一条竖线上。
+/*
+ * **不能再写 `max-width: 85%`。**
  *
- * 原先是右对齐气泡。它在两个人来回聊天的场景里没问题，但这是个编码 agent：
- * 一轮里除了两条对话，还有工具卡、思考折叠、压缩提示、计划清单，全都是左对齐的。
- * 唯独用户消息甩到右边，眼睛得在两条竖线之间来回跳，中间那大片空白既不承载
- * 信息也读不过去——参照物（Codex）也是单列，原因同此。
+ * 这个百分比是相对 .user-col 的，而 .user-col 的宽度又是被自己的内容撑出来的
+ * （shrink-to-fit，上限 85%）。求父宽时子元素的循环百分比按 none 处理，父宽先
+ * 落在 max-content；父宽定下来之后 85% 才生效，于是气泡永远比它自己的内容窄
+ * 15%——每条用户消息都被迫换行，「咋啦」两个字会被拆成上下两行。
  *
- * 区分靠底色，不靠位置：位置这个维度留给「层级」（工具卡缩进、思考折叠），
- * 不该同时再表达「谁说的」。
+ * 上限归 .user-col 一处，气泡本身跟着内容走。
  */
 .bubble {
-  max-width: 100%;
-  padding: 8px var(--s-4);
-  border-radius: var(--r-lg);
+  padding: 8px var(--s-3);
+  border-radius: var(--r-xl);
   background: var(--bg-inset);
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+/*
+ * 助手正文。
+ *
+ * **不能写 `white-space: pre-wrap`。** 这个 div 拿到的是 markdown 渲染后的 HTML，
+ * 块级标签之间带着换行（`<p>A</p>\n<p>B</p>\n`）。pre-wrap 会把那些换行当成
+ * 可见空行画出来：每两段之间凭空多一整行行高，每条消息末尾再多一行。
+ *
+ * 这就是「段落间距怎么调都不变」的真正原因——多出来的不是 margin，是**字符**，
+ * 改 gap 和 margin 当然一点用都没有。前后调了几轮 8px/10px/16px 全是在错的量上打转。
+ *
+ * 行距 1.6 对齐参照物；这一列里还夹着折叠行与代码块，再松一档就一屏装不下
+ * 一次完整的工具往返。
+ *
+ * `min-width: 0` 不是可选的：作为列向 flex 子项，它的宽度下限是 min-content，
+ * 而里面一个不换行的代码块能把这个下限顶到几百像素——正文整块被撑得比会话列宽，
+ * 右边直接切在窗口沿上，也就不再和输入框同宽了。`.fold` / `.fold-group` /
+ * `.user-col` 早就各自写了这一对，这里是唯一漏掉的。
+ * （代码块本身有 overflow-x，压住外层它就自己滚。）
+ */
 .prose {
-  white-space: pre-wrap;
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
-  line-height: 1.75;
-}
-
-/* ── 思考 ── */
-.thinking {
-  border-left: 2px solid var(--border-default);
-  padding-left: var(--s-3);
-}
-.thinking-head {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-tertiary);
-  font-size: var(--fs-sm);
-}
-.thinking-body {
-  margin-top: var(--s-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  white-space: pre-wrap;
+  line-height: 1.6;
 }
 
 /* ── Markdown ── */
@@ -75,7 +121,10 @@
   margin-bottom: 0;
 }
 .markdown p {
-  margin: 0 0 var(--s-3);
+  margin: 0 0 var(--s-2);
+}
+.markdown p:last-child {
+  margin-bottom: 0;
 }
 .markdown h1,
 .markdown h2,
@@ -96,11 +145,11 @@
 }
 .markdown ul,
 .markdown ol {
-  margin: 0 0 var(--s-3);
-  padding-left: var(--s-5);
+  margin: var(--s-1) 0;
+  padding-left: 1.5em;
 }
-.markdown li {
-  margin: 2px 0;
+.markdown li + li {
+  margin-top: 2px;
 }
 .markdown blockquote {
   margin: 0 0 var(--s-3);
@@ -242,33 +291,239 @@
   font-weight: 600;
 }
 
-/* ── 工具组卡 ── */
-.tool-group {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--bg-raised);
-  overflow: hidden;
-}
-.tool-group.failed {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border-subtle));
-}
-.tool-group-body {
-  padding: var(--s-2);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  border-top: 1px solid var(--border-subtle);
+/* ── 折叠：思考 / 工具 / 工具组共用同一个形状 ──
+ *
+ * 一比一对齐参照物（青研魔盒 `.v2-fold`）。三条决定值得写下来：
+ *
+ * 1. **箭头在右侧、默认不显示**，hover / 键盘聚焦才淡入，展开态常显并转 90°。
+ *    左侧常驻箭头会在每一行的行首砌一列符号，把真正要读的动作名往右推。
+ * 2. **hover 只加深文字颜色，不加底色。** 一列折叠行里，底色块会让人以为
+ *    自己选中了什么。
+ * 3. **展开体靠一条左竖线表达从属**，不是靠边框围一个盒子。嵌套的盒子边框
+ *    是上一版最重的视觉噪声。
+ */
+.fold {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  /* 折叠行之间比段落更紧：它们是过程记录，不是正文。 */
+  margin: 4px 0 2px;
+  font-size: var(--fs-base);
 }
 
-/* ── 工具卡 ── */
-.tool {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--bg-raised);
+.fold-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+  /* 过程记录整体降一号字号 + 次级灰，和模型正文拉开层级。 */
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+  user-select: none;
+  list-style: none;
+  transition: color var(--t-fast) var(--ease);
 }
-.tool.failed {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border-subtle));
+.fold-head::-webkit-details-marker {
+  display: none;
+}
+.fold-head:hover {
+  color: var(--text-primary);
+}
+.fold-head::after {
+  /* 直接写字面量，不用 CSS 的 a 转义：转义序列经过任何一层字符串处理都可能
+     被当成八进制解释掉，页面上就变成一个豆腐块加一个 a。实测踩到过。 */
+  content: "›";
+  flex: 0 0 auto;
+  align-self: center;
+  position: relative;
+  top: -1px;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  transition:
+    transform 0.15s,
+    opacity 0.15s;
+}
+.fold-head:hover::after,
+.fold-head:focus-visible::after {
+  opacity: 1;
+}
+.fold[open] > .fold-head::after {
+  transform: rotate(90deg);
+  opacity: 1;
+}
+
+/* 唯一的文本槽：动作名 / 状态字 / 目标都在里面，由它统一负责单行省略。
+   片段各自只保留「不换行」语义，不各自截断——各截各的会出现两个省略号。 */
+.fold-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fold-summary > * + * {
+  margin-left: 6px;
+}
+.fold-label {
+  white-space: nowrap;
+}
+.fold-word {
+  color: var(--danger);
+}
+.fold-target {
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.fold.failed > .fold-head {
+  color: var(--danger);
+}
+
+/* 运行中的转圈：12px 圆环，0.7s 匀速。停在行尾，不占文本槽。 */
+.fold-spin {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid currentcolor;
+  border-top-color: transparent;
+  border-radius: var(--r-full);
+  animation: fold-spin 0.7s linear infinite;
+}
+@keyframes fold-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 思考这类背景信息压暗一档，hover 恢复。 */
+.fold-dim > .fold-head {
+  opacity: 0.5;
+}
+.fold-dim > .fold-head:hover {
+  opacity: 0.8;
+}
+
+.fold-body {
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px 0 4px 10px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  overflow-x: auto;
+}
+/* 参数表：键窄值宽，值可换行。它回答的是「这一步到底带了什么参数」，
+   而那正是标题行放不下的东西。 */
+.args-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 6px;
+  font-size: var(--fs-xs);
+}
+.args-table th,
+.args-table td {
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+.args-table th {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-family: var(--font-mono);
+}
+.args-table td {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* 展开体里的三种块，形状统一：等宽、11px、灰底、可滚。
+   参照物的 `.v2-code-block` / `<pre>` / `.v2-fold-error` 是同一套观感。 */
+.fold-code,
+.fold-out {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  max-height: 260px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.fold-out.err {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 分隔线：同一个展开体里两格之间的界，1px 极浅，不是边框也不是留白。 */
+.fold-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--border-subtle);
+}
+
+/* 「输出」这类小标签，压在结果块上方。 */
+.fold-tag {
+  margin-bottom: 3px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* 编辑动作的红绿两块。看一次改动最快的方式是看那两行，不是读一句摘要。 */
+.fold-diff {
+  margin: 0 0 6px;
+  padding: var(--s-2) var(--s-3);
+  max-height: 260px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.fold-diff .del {
+  display: block;
+  color: var(--danger);
+  background: var(--diff-del-bg);
+}
+.fold-diff .add {
+  display: block;
+  color: var(--success);
+  background: var(--diff-add-bg);
+}
+.fold-pre {
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 组内成员：同样一条左竖线，比展开体少一点内边距。 */
+.fold-group {
+  min-width: 0;
+  max-width: 100%;
+}
+.fold-group .fold {
+  margin: 2px 0;
 }
 
 /*
@@ -281,81 +536,6 @@
 }
 .superseded:hover {
   opacity: 0.8;
-}
-
-.tool-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  width: 100%;
-  padding: 7px var(--s-3);
-  font-size: var(--fs-sm);
-  text-align: left;
-  min-width: 0;
-}
-.tool-head:hover {
-  background: var(--bg-hover);
-}
-
-.tool-status {
-  display: grid;
-  place-items: center;
-  color: var(--text-tertiary);
-  flex: none;
-}
-.tool-status.ok {
-  color: var(--success);
-}
-.tool-status.bad {
-  color: var(--danger);
-}
-
-.tool-icon {
-  display: grid;
-  place-items: center;
-  color: var(--text-tertiary);
-  flex: none;
-}
-
-.tool-label {
-  color: var(--text-secondary);
-  flex: none;
-}
-
-.tool-target {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  min-width: 0;
-}
-
-.tool-time {
-  margin-left: auto;
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-  flex: none;
-}
-
-.tool-body {
-  padding: 0 var(--s-3) var(--s-3) var(--s-3);
-  border-top: 1px solid var(--border-subtle);
-}
-.tool-msg {
-  padding-top: var(--s-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-}
-.tool-out {
-  margin: var(--s-2) 0 0;
-  padding: var(--s-2) var(--s-3);
-  max-height: 300px;
-  overflow: auto;
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* 竖排而不是横排：message 里可能带配置文件路径这种换行内容，
@@ -400,7 +580,7 @@
   flex-shrink: 0;
   padding: 2px 10px;
   border: 1px solid var(--border-default);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -426,20 +606,135 @@
   color: var(--danger);
 }
 
-.run-status {
-  display: flex;
+/* ── 运行读数条 ──
+ *
+ * 这是「这一轮花了多少」的唯一落点（输入区那份重复的金额已经删掉）。
+ * 左边 52×7 的星河条负责"还在不在跑"——文字变化在余光里看不出来，动效能。
+ * 跑完不是把它藏掉，而是暂停动画并压暗：读数要留在对应的那一轮下面。
+ */
+.run-strip {
+  display: grid;
+  grid-template-columns: 52px minmax(0, max-content);
   align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-top: var(--s-1);
+  column-gap: 7px;
+  min-height: 16px;
+  margin: 7px 0 2px;
+  overflow: hidden;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.run-status.abnormal {
+
+.run-galaxy {
+  position: relative;
+  overflow: hidden;
+  width: 52px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--r-full);
+  background: linear-gradient(90deg, #c4b5fd 0%, #8b5cf6 30%, #6d28d9 62%, #4c1d95 100%);
+  opacity: 0.9;
+}
+.run-galaxy::before,
+.run-galaxy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+}
+.run-galaxy::before {
+  background-image:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.96) 0 0.65px, transparent 1px),
+    radial-gradient(circle at 50% 72%, rgba(221, 214, 254, 0.92) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 50% 43%, rgba(196, 181, 253, 0.9) 0 0.75px, transparent 1.1px);
+  background-size:
+    17px 7px,
+    23px 7px,
+    31px 7px;
+  animation: run-stars 2.1s linear infinite;
+}
+.run-galaxy::after {
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(237, 233, 254, 0.12) 18%,
+      rgba(255, 255, 255, 0.58) 50%,
+      rgba(221, 214, 254, 0.16) 82%,
+      transparent 100%
+    ), radial-gradient(circle at 50% 68%, rgba(255, 255, 255, 0.7) 0 0.4px, transparent 0.75px),
+    radial-gradient(circle at 50% 24%, rgba(233, 213, 255, 0.72) 0 0.45px, transparent 0.8px);
+  background-repeat: no-repeat, repeat, repeat;
+  background-size:
+    28px 100%,
+    13px 7px,
+    29px 7px;
+  background-position:
+    -30px 0,
+    0 0,
+    0 0;
+  opacity: 0.78;
+  animation: run-galaxy-flow 2.6s linear infinite;
+}
+.run-strip.done .run-galaxy {
+  opacity: 0.58;
+}
+.run-strip.done .run-galaxy::before,
+.run-strip.done .run-galaxy::after {
+  animation-play-state: paused;
+}
+@keyframes run-stars {
+  to {
+    background-position:
+      34px 0,
+      23px 0,
+      31px 0;
+  }
+}
+@keyframes run-galaxy-flow {
+  to {
+    background-position:
+      66px 0,
+      26px 0,
+      29px 0;
+  }
+}
+
+.run-readout {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.run-metric {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 耗时预留 ch 位宽：配合固定一位小数与 tabular-nums，秒数逐跳时右侧读数零位移。 */
+.run-elapsed {
+  min-width: 4.5ch;
+}
+.run-cost {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+/* 非正常停止的原因用警告色——它比任何读数都重要，但排在末位（见 RunStatusBar）：
+   排在最前会把后面几格读数整体右推，出错的那一轮就和正常的那些轮对不齐。 */
+.run-strip.abnormal .run-reason {
+  flex: 0 0 auto;
   color: var(--warning);
+  font-weight: 600;
 }
-.run-status .dot {
-  opacity: 0.5;
+
+@media (prefers-reduced-motion: reduce) {
+  .run-galaxy::before,
+  .run-galaxy::after {
+    animation: none;
+  }
 }
