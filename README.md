@@ -74,14 +74,14 @@ qy serve                本地服务，桌面端与手机端都连它
   --parent-pid <pid>    父进程退出时一并退出
 qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
   --json                给脚本用（只有阻断项才退非零）
-qy mcp                  检查 .qy/mcp.json 里的 server 连没连上
+qy mcp                  检查 mcp.json 里的 server 连没连上
   --tools               连带列出每个 server 提供的工具
-qy plugins              检查 .qy/plugins 里的插件装没装上、隔离到什么程度
+qy plugins              检查装了哪些插件、隔离到什么程度
   --tools               连带列出每个插件提供的工具与启动日志
 qy usage                本机用量账本（账目不随会话删除而消失）
   --days <n> --by model|day|workspace|kind --json
 qy export [<会话 id>]   导出会话（markdown 给人读 / --json 完整）
-qy probe [<档案名>]     实测端点支持什么（--save 写回配置）
+qy probe [<模型名>]     实测端点支持什么（--save 写回配置）
 qy config               显示当前配置与配置文件路径
 ```
 
@@ -96,18 +96,21 @@ qy config               显示当前配置与配置文件路径
 
 ```json
 {
-  "active": "deepseek",
-  "profiles": {
+  "active": { "provider": "deepseek", "model": "deepseek-v4-flash" },
+  "providers": {
     "deepseek": {
       "kind": "openai_compatible",
-      "model": "deepseek-v4-flash",
       "baseUrl": "https://api.deepseek.com/v1",
-      "apiKeyEnv": "DEEPSEEK_API_KEY"
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "models": {
+        "deepseek-v4-flash": {},
+        "deepseek-v4-pro": { "maxOutputTokens": 8192 }
+      }
     },
     "anthropic": {
       "kind": "anthropic",
-      "model": "claude-opus-5",
-      "apiKeyEnv": "ANTHROPIC_API_KEY"
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "models": { "claude-opus-5": {} }
     }
   },
   "effort": "high",
@@ -115,17 +118,27 @@ qy config               显示当前配置与配置文件路径
 }
 ```
 
+- **凭证挂在接口上，模型挂在接口下面。** 同一家的几个模型共用一把 key、一个端点，
+  改一次端点只改一处。
+- `active` 是**两段**（接口 + 模型），不是一个拼接串——模型 id 本身可能含斜杠
+  （`anthropic/claude-3`），拼起来就拆不回去。
 - `kind` 决定用哪套协议，**不按模型名猜厂商**——经中转站以 OpenAI 协议调 Claude
   是常见配置，按名字猜会路由到错误的协议上。
-- `apiKeyEnv` 优先于同档案的 `apiKey`。明文 key 不该躺在配置文件里。
+- `apiKeyEnv` 优先于同接口的 `apiKey`。明文 key 不该躺在配置文件里。
 - `baseUrl` 指向本机回环（`127.0.0.1` / `localhost`）时允许不配 key，
   给 ollama / LM Studio / vLLM 用。
+- `models` 里每一格可以放 `maxOutputTokens` 和 `capabilities`（`qy probe --save`
+  或设置页的「校准思考」写进去的实测结论）。**它按「接口 × 模型」分格**：
+  同一个模型经不同中转站走的协议可能不同，能力也就不同。
 - `mode` 是权限模式，`auto`（默认）或 `full`。**老配置里的 `autoApprove` 已经失效**，
   它不会被自动映射成 `full`（那等于在你没表态时把防线拆掉），启动时会提示一次。
+- **旧的扁平 `profiles` 不再加载**，也不自动迁移：一条旧档案要拆成「接口 + 模型」，
+  而两条同协议同端点的档案该并成一个接口还是两个只能猜。模型那部分回到默认值，
+  启动时点名提示，key 需要重填一次（旧的明文还在文件里，可以复制）。
 
 还有几个可选项，都在 [`docs/permissions.md`](docs/permissions.md) 里：
 `additionalDirectories`（放开工作区之外的目录）、`sandboxNetwork`（断掉 shell 出网）、
-`envAllowList`（放行某个环境变量）、`classifierProfile`（裁决用一个更小更快的模型）。
+`envAllowList`（放行某个环境变量）、`classifier`（裁决用一个更小更快的模型）。
 
 ---
 
@@ -137,7 +150,7 @@ qy config               显示当前配置与配置文件路径
 
 **权限**只有两种模式，没有逐次审批弹窗：`auto`（默认，由硬边界 + 静态规则 + 分类器裁决）
 和 `full`（全放行）。`auto` 下被拒不是弹窗，是把理由作为工具失败交回给模型让它换做法。
-凭证不进子进程、输出里的凭证明文屏蔽、禁止写 `.qy/`——这三条 `full` 也生效。
+凭证不进子进程、输出里的凭证明文屏蔽、禁止写 `.qy/` 与 `.agents/`——这三条 `full` 也生效。
 
 裁决那三层全是**文本判断**，挡不住一条没想到的写法。真正的边界在内核层：
 Linux / **WSL2** 用 bubblewrap，**macOS** 用 seatbelt——工作区外只读、
@@ -155,6 +168,9 @@ Linux / **WSL2** 用 bubblewrap，**macOS** 用 seatbelt——工作区外只读
 
 **技能与记忆**只把索引放进上下文，正文由模型按需拉取。两者都在尾区而不是冻结前缀里：
 装一个技能就让整个 provider 缓存失效的代价，远大于它省下的那点 token。
+技能、记忆、MCP、插件都有**三层**：内置（随程序发布，只读）> 用户级（工作区
+`.agents/`，别的 CLI 也读得到）> 全局（`~/.qywork/`），同名先认领的赢。
+逐条开关在对话右侧面板里，**只影响当前那一条会话**。
 
 **插件**跑在独立子进程里，走 stdio 上的行分隔 JSON-RPC，不继承宿主的
 `process.env`，宿主能力按权限清单闸门（fail-closed）。强制隔离分**两个维度、

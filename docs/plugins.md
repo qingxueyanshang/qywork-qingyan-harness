@@ -136,10 +136,19 @@ ode.exe
 - `permissions` 必须覆盖你所有工具的 `permissionEffect`——声明 `read` 的工具而清单里
   没有 `workspace:read`，加载期直接拒绝。用户在安装提示里看到的权限清单必须和插件
   实际能做的事自洽。
-- 只贡献预览器且 `renders` 不是 `custom` 的插件不需要 `main`，也不会起进程。
+- 只贡献预览器、角色或供应商的插件不需要 `main`，也不会起进程。
 
-`contributes` 还支持 `previewers`（按渲染族接管扩展名）、`roles`（给 Agent Team 加角色）、
-`providers`（加模型供应商）。字段定义见 `packages/plugins/src/manifest.ts`。
+## `previewers` / `roles` / `providers` 当前不生效
+
+`contributes` 里还有这三项：`previewers`（按渲染族接管扩展名）、`roles`（给 Agent Team
+加角色）、`providers`（加模型供应商）。字段定义见 `packages/plugins/src/manifest.ts`，
+清单校验、扩展名冲突检测、跨作用域合并都是通的。
+
+**但宿主目前没有任何一处读取它们**——注册进去之后不会有渲染调用、不会出现在 Agent Team
+的角色表里、也不会被模型工厂认出来。写了不报错，只是没有效果。
+
+保留这三条通道是有意的（它们是面向插件作者的契约，删掉等于毁约），但在接上消费端之前
+**不要指望它们工作**。只有 `tools` 是端到端通的。
 
 ---
 
