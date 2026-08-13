@@ -294,6 +294,41 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
     reason: '往 SSH 凭据里写入等于装一把长期后门，之后每次登录都绕开了这套权限模型',
   },
   {
+    /**
+     * **碰凭证文件本身**——读也算。
+     *
+     * 这条和上一条不同：上一条管的是「往凭证里写」，这条管的是「把凭证读出来」。
+     * 读出来的后果不比写小：内容进上下文，随下一次请求发给 provider，
+     * **发出去就收不回**。而模型没有任何正当理由需要看你的私钥或云凭据。
+     *
+     * ## 为什么不能只靠脱敏
+     *
+     * 输出脱敏（`secrets.ts` 的形状规则）是第二道，它按 PEM 包头、`sk-`/`ghp_`
+     * 这类固定形状抓。**形状列不全**：自建服务的 token、数据库连接串里的密码、
+     * 一段没有包头的 base64 私钥，它一个都认不出来。所以第一道是路径——
+     * 让这些文件的内容根本不进管道，比事后猜它长什么样可靠得多。
+     *
+     * 两道都要：路径挡住已知位置，形状兜住换了位置的（比如项目里的 `.env`，
+     * 那是项目文件、不该拦读，但值不该原样进上下文）。
+     *
+     * ## 为什么 `~/.qywork/config.json` 也在里面
+     *
+     * 那是**本程序自己的**全局配置：明文 apiKey、权限模式、classifier 指向都在
+     * 那一个文件里。它躺在家目录，所以「工作区外写」那条已经挡住了写；
+     * 这里补上读——key 被读走的代价和私钥一样。
+     *
+     * 注意它与工作区里的 `.qy/` / `.agents/` 是**两回事**：后者是项目自己的
+     * agent 配置（mcp.json、skills、team.json），改它不构成提权（模型有
+     * `run_command`，加不加工具能做的事一样多），不在这条规则里。
+     */
+    pattern:
+      /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|\.qywork[\\/]config\.json)/i,
+    reason:
+      '这是凭证文件（SSH 私钥、云厂商凭据、包管理器 token，或 qywork 自己的配置）。' +
+      '读出来的内容会进上下文再发给模型供应商，发出去就收不回。' +
+      '需要用到某个凭证时，用环境变量传给命令，不要把文件内容读进来',
+  },
+  {
     pattern: atCommandStart(
       String.raw`(?:shutdown|reboot|halt|poweroff|Stop-Computer|Restart-Computer)\b`,
     ),

@@ -296,10 +296,26 @@ describe('流式脱敏', () => {
     expect(pushed + r.flush()).toBe(text)
   })
 
-  test('没有可用 secret 时直通，不扣尾巴', () => {
+  /**
+   * **没有已知 secret 也不能直通。**
+   *
+   * 这条原来断言的是「直通、不扣尾巴」，那个前提在只按明文匹配时成立：
+   * 不知道明文就什么也抓不到，扣尾巴纯属浪费。加了形状脱敏之后前提没了——
+   * `cat ~/.ssh/id_rsa` 的私钥、`.env` 里的 token，我们从来不知道它们的明文，
+   * 而这条链路恰恰是唯一能抓到它们的地方。直通等于把这一层关掉。
+   *
+   * 代价是普通输出会晚一点吐出来，所以这里同时钉住「一个字节都不少」。
+   */
+  test('没有已知 secret 也不直通，但内容一个字节不少', () => {
     const r = createStreamRedactor({ values: [], envNames: [] })
-    expect(r.push('立刻出来')).toBe('立刻出来')
-    expect(r.flush()).toBe('')
+    const text = '立刻出来'
+    expect(r.push(text) + r.flush()).toBe(text)
+  })
+
+  test('没有已知 secret 时照样吃掉私钥', () => {
+    const r = createStreamRedactor({ values: [], envNames: [] })
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAABBBB\n-----END RSA PRIVATE KEY-----'
+    expect(r.push(pem) + r.flush()).toBe(REDACTED)
   })
 
   test('多个 secret 时按最长的那个留尾巴', () => {
@@ -311,5 +327,76 @@ describe('流式脱敏', () => {
     for (let i = 0; i < text.length; i += 3) out += r.push(text.slice(i, i + 3))
     out += r.flush()
     expect(out).toBe(`x${REDACTED}y${REDACTED}z`)
+  })
+})
+
+/**
+ * 按形状脱敏。
+ *
+ * 与按明文匹配是两件互补的事：按明文只认得 `collectSecrets` 收到的东西
+ * （配置里的 apiKey、apiKeyEnv 指向的环境变量），所以 `cat ~/.ssh/id_rsa`、
+ * `cat .env` 的输出一个字都不会被脱敏——我们不知道那些明文，结构上就抓不到。
+ *
+ * 形状不需要事先知道值，这正是它存在的理由。
+ */
+describe('按形状脱敏', () => {
+  const bare: SecretSet = { values: [], envNames: [] }
+
+  test('私钥整块吃掉，不是只打包头', () => {
+    const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF'
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`
+    const out = redactSecrets(`前${pem}后`, bare)
+    // 正文一个字符都不许留：私钥本身没有固定特征，留着等于没屏蔽。
+    expect(out).not.toContain(body)
+    expect(out).not.toContain('BEGIN RSA PRIVATE KEY')
+    expect(out).toBe(`前${REDACTED}后`)
+  })
+
+  test('各家 token 的形状', () => {
+    for (const t of [
+      'sk-abcdefghijklmnopqrstuvwxyz0123',
+      'sk-ant-api03-abcdefghijklmnop',
+      'ghp_abcdefghijklmnopqrstuvwxyz12',
+      'github_pat_abcdefghijklmnopqrstuv',
+      'AKIAIOSFODNN7EXAMPLE',
+      'xoxb-123456789012-abcdefghijkl',
+      'AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz012345',
+    ]) {
+      expect(redactSecrets(`token=${t}`, bare)).toBe(`token=${REDACTED}`)
+    }
+  })
+
+  /**
+   * **不做通用高熵检测**，这条钉的就是那个边界。
+   *
+   * 把 commit sha、UUID、base64 资源全打成 [REDACTED] 会让输出没法读，
+   * 而模型看不懂输出就会反复重试——比漏掉一个不认识的 token 更糟。
+   */
+  test('长得像随机串但不是凭证的原样保留', () => {
+    for (const s of [
+      '9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c', // commit sha
+      '550e8400-e29b-41d4-a716-446655440000', // uuid
+      'aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQ=', // base64
+    ]) {
+      expect(redactSecrets(s, bare)).toBe(s)
+    }
+  })
+
+  /** 说明文字里提到前缀不该被打码——只匹配前缀会让文档读起来像坏了。 */
+  test('只有前缀没有足够长的尾巴时不动它', () => {
+    expect(redactSecrets('把 key 放进 sk- 开头的变量里', bare)).toContain('sk-')
+    expect(redactSecrets('前缀是 ghp_ 那种', bare)).toContain('ghp_')
+  })
+
+  /** 私钥必然跨片，滑窗按「最长明文 -1」算兜不住它。 */
+  test('私钥跨片到达也能整块吃掉', () => {
+    const pem =
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAABG5vbmUAAAAE\n-----END OPENSSH PRIVATE KEY-----'
+    const r = createStreamRedactor(bare)
+    let out = ''
+    for (let i = 0; i < pem.length; i += 7) out += r.push(pem.slice(i, i + 7))
+    out += r.flush()
+    expect(out).toBe(REDACTED)
+    expect(out).not.toContain('b3BlbnNz')
   })
 })

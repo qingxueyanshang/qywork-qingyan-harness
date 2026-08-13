@@ -21,6 +21,7 @@ import {
   resolveWritablePath,
   rootsOf,
 } from './paths.ts'
+import { redactSecrets } from './secrets.ts'
 
 /** 记录本 run 内每个文件被读到时的内容哈希，供写前校验。 */
 const READ_STATE_KEY = 'files.readHashes'
@@ -101,10 +102,31 @@ export const readFileTool: ToolSpec = {
     return {
       status: 'success',
       message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（${slice.length} 行${truncated ? '，已截断' : ''}）`,
-      data: { content: numbered, totalLines: lines.length, truncated },
+      /*
+       * **正文过一遍脱敏。**
+       *
+       * 这条路原来完全没接凭证保护：`shell.ts` 的输出有 `createStreamRedactor`，
+       * 而 `read_file` 直接把磁盘上的字节交给模型。工作区里的 `.env`、误提交的
+       * 私钥、`config/*.local.json` 里的 token，读一次就进上下文、随下一次请求
+       * 发给 provider——**而那是不可撤回的**。
+       *
+       * 一头拦一头不拦等于没拦：模型拿不到 `cat .env` 的输出，换 `read_file`
+       * 就拿到了，而它并不是在绕过什么，只是选了个更顺手的工具。
+       *
+       * 脱敏的是**交给模型的那一份**，磁盘上的文件一个字节没动；`edit_file`
+       * 的读回校验走的是另一条路（`readHashes` 存的是原文哈希），不受影响。
+       */
+      data: {
+        content: redactSecrets(numbered, ctx.secrets ?? EMPTY_SECRETS),
+        totalLines: lines.length,
+        truncated,
+      },
     }
   },
 }
+
+/** 没有配置任何 secret 时的空集合。形状脱敏与它无关，照常生效。 */
+const EMPTY_SECRETS = { values: [], envNames: [] }
 
 export const writeFileTool: ToolSpec = {
   name: 'write_file',
