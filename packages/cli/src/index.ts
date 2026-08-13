@@ -222,7 +222,18 @@ async function runExec(args: string[]): Promise<number> {
 
 async function runServe(args: string[]): Promise<number> {
   const flags = parseFlags(args)
-  const workspaceRoot = resolve(flags.cwd ?? process.cwd())
+  /*
+   * **给没给 `--cwd` 是两种语义，不能合并成一个默认值。**
+   *
+   * 给了 = 「就用这个目录当项目」，CLI 的正常用法（`qy serve --cwd D:\项目`），
+   * 必须照用。没给 = 「我没指定」——这时候把进程的 cwd 登记成项目是错的：
+   * 桌面外壳的 cwd 是它自己的安装目录或 `src-tauri`，登记进去就成了一个
+   * 谁也没要过的项目（ROADMAP §33.2 那个 `src-tauri` 项目就是这么来的）。
+   *
+   * 没给的时候交给 `serve()` 自己决定：账本里有项目就用最近打开的那个，
+   * 一个都没有才建默认工作区。
+   */
+  const workspaceRoot = flags.cwd ? resolve(flags.cwd) : null
 
   await mkdir(configDir(), { recursive: true })
   const config = await loadConfig()
@@ -240,7 +251,7 @@ async function runServe(args: string[]): Promise<number> {
   const handle = serve({
     store,
     config,
-    workspaceRoot,
+    ...(workspaceRoot ? { workspaceRoot } : {}),
     port: flags.port ?? 7717,
     host: flags.host ?? '0.0.0.0',
     ...(flags.static ? { staticDir: resolve(flags.static) } : {}),

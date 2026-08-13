@@ -30,7 +30,6 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
@@ -79,8 +78,9 @@ const agent = Bun.spawn(
     // 只绑本机：局域网接入由应用内显式开启，开发脚本不替用户做这个决定。
     '--host',
     '127.0.0.1',
-    '--cwd',
-    ROOT,
+    // **不传 --cwd**：传了就等于把这个仓库登记成项目，而开发时那正是我们不想要的
+    // 默认（用户拿到的第一个项目会是 qywork 的源码树）。不传则由服务端决定——
+    // 账本里有项目就用最近打开的，一个都没有才建默认工作区。
   ],
   { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
 )
@@ -102,28 +102,17 @@ while (!(await portTaken(PORT))) {
 process.stderr.write('[dev] sidecar 就绪，拉起桌面外壳\n')
 
 /*
- * 只在**没有** last-workspace 时才把工作区钉到仓库根。
+ * **不设 `QYWORK_WORKSPACE`。**
  *
- * `resolve_workspace()`（`lib.rs:323`）的优先级是
- * argv → `QYWORK_WORKSPACE` → last-workspace → cwd。无条件设这个环境变量的话，
- * 它永远压过 last-workspace——用户在应用里切到别的项目，下次启动又被拽回仓库根，
- * 而且仓库自己成了那个删不掉的默认项目。
- *
- * 钉住仍然有必要，但只在第一次：不设的话 `tauri dev` 的 cwd 是 `src-tauri`，
- * 会被 cwd 那条分支当成一个项目记进账本（ROADMAP §33.2）。
- * 有 last-workspace 就说明用户已经选过，那时候 cwd 那条根本轮不到。
+ * 它在 `resolve_workspace()`（`lib.rs`）里优先级最高，设了就等于每次启动都把
+ * 这个仓库钉成当前项目——用户在应用里切走，下次又被拽回来，而且仓库自己成了
+ * 那个默认项目。「首次运行挂哪儿」现在由服务端一处决定
+ * （`server.ts` 的 `bootstrapWorkspace`）：账本里有项目就用最近打开的，
+ * 一个都没有才建默认工作区。
  */
-const lastWorkspace = Bun.file(
-  join(process.env.QYWORK_HOME ?? join(homedir(), '.qywork'), 'last-workspace'),
-)
-const pinWorkspace = (await lastWorkspace.exists()) ? {} : { QYWORK_WORKSPACE: ROOT }
-if (!('QYWORK_WORKSPACE' in pinWorkspace)) {
-  process.stderr.write('[dev] 沿用上次在应用里选的项目\n')
-}
-
 const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
   cwd: ROOT,
-  env: { ...env, ...pinWorkspace },
+  env,
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'inherit',

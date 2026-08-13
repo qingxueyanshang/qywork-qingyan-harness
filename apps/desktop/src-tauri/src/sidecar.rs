@@ -45,8 +45,6 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
             // 不能一启动就把工作区暴露在整个 Wi-Fi 上。
             "--host",
             "127.0.0.1",
-            "--cwd",
-            workspace,
             "--print-token",
             // 让 sidecar 自己盯着我们：`shutdown` 只在正常退出路径上跑，
             // 崩溃或被强杀时不会触发（实测 Stop-Process 就会留下孤儿 qy，
@@ -54,6 +52,15 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
             "--parent-pid",
             &std::process::id().to_string(),
         ])
+        // 空字符串 = 「没有可用的上次工作区」，这时**不传 --cwd**：
+        // 传的话服务端会把外壳的启动目录登记成项目（安装目录 / src-tauri），
+        // 那是一个谁也没要过的项目。不传则由服务端自己决定——账本里有项目就用
+        // 最近打开的，一个都没有才建默认工作区（见 server.ts 的 bootstrapWorkspace）。
+        .args(if workspace.is_empty() {
+            Vec::new()
+        } else {
+            vec!["--cwd", workspace]
+        })
         .spawn()
         .map_err(|e| anyhow!("启动 qy serve 失败：{e}"))?;
 

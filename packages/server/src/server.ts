@@ -10,10 +10,13 @@
  * 只想本机用就传 --host 127.0.0.1。
  */
 
-import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame, Workspace } from '@qywork/core'
 import type { QyConfig, Schedule } from '@qywork/runtime'
 import {
   acquireExtensions,
+  configDir,
   isDue,
   loadSchedules,
   releaseExtensions,
@@ -24,6 +27,7 @@ import {
   ContentStore,
   contentPathFor,
   createConversation,
+  getWorkspaceByPath,
   listWorkspaces,
   recoverStaleRuns,
   upsertWorkspace,
@@ -48,13 +52,64 @@ export interface ServeOptions {
    * 超预算的工具输出落在这里，模型用 read_resource 读回。
    */
   content?: ContentStore
-  workspaceRoot: string
+  /**
+   * 启动时用哪个目录当项目。
+   *
+   * **不给是合法的，而且和「给了进程 cwd」不是一回事。** 不给 = 由服务端决定：
+   * 账本里有项目就用最近打开的那个，一个都没有才建默认工作区。
+   *
+   * 把进程 cwd 当默认值是错的：桌面外壳的 cwd 是安装目录或 `src-tauri`，
+   * 登记进去就成了一个谁也没要过的项目（ROADMAP §33.2）。
+   */
+  workspaceRoot?: string
   port: number
   host: string
   /** web 构建产物目录；不存在时只提供 API。 */
   staticDir?: string
   /** 由外部注入的令牌（Tauri spawn 时用环境变量传），不传则自己生成。 */
   token?: string
+}
+
+/** 首次运行时建的那个工作区叫什么。已落盘的目录名是历史事实，别改（D2）。 */
+const DEFAULT_WORKSPACE_NAME = '默认工作区'
+
+/**
+ * 决定启动时挂在哪个项目上。**这是「首次运行挂哪儿」的唯一权威。**
+ *
+ * 三条路，优先级从高到低：
+ *
+ * 1. 显式给了根 —— 照用（`qy serve --cwd <目录>` 是 CLI 的正常用法）。
+ * 2. 账本里已有项目 —— 用最近打开的那个（`listWorkspaces` 已按「置顶 > 最近打开」
+ *    排序，取第一条）。**首次之后每次启动都走这条**，所以用户在界面里切过的项目
+ *    不会被启动目录顶掉。
+ * 3. 一个都没有 —— 在 `~/.qywork/workspaces/默认工作区/` 建一个。
+ *
+ * 第 3 条是关键：原来无条件登记启动目录，于是首次运行「挂在启动目录上」——
+ * 桌面端的启动目录就是 qywork 的源码树，用户拿到的默认项目是这个仓库本身。
+ *
+ * 目录用 `mkdirSync`：账本这一行必须和目录同生共死，异步建目录会留下一段
+ * 「行已经在了、目录还没有」的窗口，而那段时间里任何工具调用都会因为根不存在而炸。
+ */
+function bootstrapWorkspace(
+  store: Store,
+  explicitRoot?: string,
+): { workspace: Workspace; rootPath: string } {
+  if (explicitRoot) {
+    const name = explicitRoot.split(/[\\/]/).filter(Boolean).pop() ?? 'workspace'
+    const known = getWorkspaceByPath(store, explicitRoot)
+    return {
+      workspace: upsertWorkspace(store, explicitRoot, known?.name ?? name),
+      rootPath: explicitRoot,
+    }
+  }
+
+  const recent = listWorkspaces(store)[0]
+  if (recent) return { workspace: recent, rootPath: recent.rootPath }
+
+  const rootPath = join(configDir(), 'workspaces', DEFAULT_WORKSPACE_NAME)
+  mkdirSync(rootPath, { recursive: true })
+  process.stderr.write(`[qy] 首次运行，已创建默认工作区 ${rootPath}\n`)
+  return { workspace: upsertWorkspace(store, rootPath, DEFAULT_WORKSPACE_NAME), rootPath }
 }
 
 export function serve(opts: ServeOptions) {
@@ -67,11 +122,19 @@ export function serve(opts: ServeOptions) {
   })
   const token = pairing.token
 
-  const workspace = upsertWorkspace(
-    opts.store,
-    opts.workspaceRoot,
-    opts.workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? 'workspace',
-  )
+  /*
+   * 启动时的项目。三条路，优先级从高到低：
+   *
+   * 1. **显式给了 `workspaceRoot`** —— 照用（`qy serve --cwd <目录>`）。
+   * 2. **账本里已有项目** —— 用最近打开的那个。`listWorkspaces` 已按
+   *    「置顶 > 最近打开」排序，取第一条即可。
+   * 3. **一个都没有（首次运行）** —— 建一个默认工作区。
+   *
+   * 第 3 条是补上的。原来无条件登记 `opts.workspaceRoot`，于是首次运行
+   * 「挂在启动目录上」——桌面端的启动目录就是这个仓库自己，用户拿到的默认项目
+   * 是 qywork 的源码树。
+   */
+  const { workspace, rootPath: workspaceRoot } = bootstrapWorkspace(opts.store, opts.workspaceRoot)
 
   // 正文库与主账本挨着放。开在这里而不是每个 run 现开：SQLite 连接有成本，
   // 而且 GC 需要一个跨 run 存活的句柄。
@@ -92,7 +155,7 @@ export function serve(opts: ServeOptions) {
    * 异步、不阻塞服务启动——一个慢插件不该让整个服务起不来。
    */
   let pluginTeardown: (() => void) | null = null
-  void acquireExtensions(opts.workspaceRoot, (line) => process.stderr.write(`${line}\n`))
+  void acquireExtensions(workspaceRoot, (line) => process.stderr.write(`${line}\n`))
     .then((ext) => {
       for (const f of ext.mcp.failures) {
         process.stderr.write(`[qy] MCP ${f.server}：${f.reason}\n`)
@@ -101,7 +164,7 @@ export function serve(opts: ServeOptions) {
         process.stderr.write(`[qy] 插件加载失败 ${f.dir}：${f.reason}\n`)
       }
       if (ext.team.error) process.stderr.write(`[qy] team 配置：${ext.team.error}\n`)
-      pluginTeardown = () => releaseExtensions(opts.workspaceRoot)
+      pluginTeardown = () => releaseExtensions(workspaceRoot)
     })
     .catch((err) => {
       process.stderr.write(`[qy] 扩展加载失败：${String(err)}\n`)
@@ -121,7 +184,7 @@ export function serve(opts: ServeOptions) {
   // 附件目录的回收。只在启动时跑一次，判据是「有没有被消息引用」——
   // 运行期跑会误删「刚上传、还挂在输入框上没发出去」的那一份。
   // 失败不阻断启动：它回收的是磁盘空间，不是正确性。
-  void sweepAttachments(opts.store, opts.workspaceRoot)
+  void sweepAttachments(opts.store, workspaceRoot)
     .then((r) => {
       if (r.removed > 0) {
         process.stderr.write(
@@ -165,7 +228,7 @@ export function serve(opts: ServeOptions) {
     const all = await loadSchedules().catch(() => [] as Schedule[])
     // 只管本工作区的：一台机器上可能同时开着两个工作区的 sidecar，
     // 不加这条过滤会让同一条任务被触发两次。
-    const mine = all.filter((s) => s.workspaceRoot === opts.workspaceRoot)
+    const mine = all.filter((s) => s.workspaceRoot === workspaceRoot)
     if (!mine.length) return
 
     const now = Date.now()
