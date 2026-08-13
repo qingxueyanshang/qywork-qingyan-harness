@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
+import type { QyConfig, StoredProvider } from '@qywork/runtime'
 import { configPath, loadConfig, saveConfig } from '@qywork/runtime'
 
 interface Preset {
@@ -19,8 +19,6 @@ interface Preset {
   provider: StoredProvider
   /** 预置里那一个模型。接口下可以挂很多个，init 只负责让第一个跑起来。 */
   model: string
-  /** 那个模型这一格的预置值。用户改了模型名也照用——它描述的是端点的限制。 */
-  modelConfig?: StoredModel
   /** 去哪儿领 key。写死链接比让用户自己搜要省事得多。 */
   keyUrl: string
 }
@@ -43,7 +41,6 @@ const PRESETS: Preset[] = [
       models: {},
     },
     model: 'deepseek-v4-flash',
-    modelConfig: { maxOutputTokens: 8192 },
     keyUrl: 'https://platform.deepseek.com/api_keys',
   },
   {
@@ -112,7 +109,22 @@ export async function runInit(args: string[]): Promise<number> {
   process.stderr.write(`\n模型 [${modelId}]：`)
   const typed = (await readLine()).trim()
   if (typed) modelId = typed
-  provider.models[modelId] = { ...preset.modelConfig }
+  /*
+   * 这一格**留空**。
+   *
+   * 这里原来灌一个 `maxOutputTokens: 8192` 的预置值，字段注释说它「描述的是
+   * 端点的限制」——而 DeepSeek 的真实上限是 384000（`catalog.ts:335`），
+   * 小了 47 倍，且上面一句解释都没有。
+   *
+   * 它是硬上限：`factory.ts:80-84` 拿它与目录值取 min，`loop.ts:708` 每次请求
+   * 都用它。实测的失败形状：DeepSeek 开 max 思考档，一轮光思考就 8493 token，
+   * 预算在正文开始前就用完，run 以 `output_truncated` 收尾——而用户看到的是
+   * 「输出被截断，回答不完整」，完全看不出根因是 init 灌进去的一个数。
+   *
+   * 目录值是本仓自己实测维护的，init 没有任何理由去覆盖它。真需要压上限的
+   * 用户自己在配置里写。
+   */
+  provider.models[modelId] = {}
 
   if (provider.baseUrl) {
     process.stderr.write(`接口地址 [${provider.baseUrl}]：`)
@@ -168,7 +180,7 @@ function templateConfig(): QyConfig {
       [preset.key]: {
         ...preset.provider,
         apiKey: 'sk-你的key',
-        models: { [preset.model]: { ...preset.modelConfig } },
+        models: { [preset.model]: {} },
       },
     },
     mode: 'auto',
