@@ -109,10 +109,14 @@
   font-weight: 600;
   font-size: var(--fs-lg);
   letter-spacing: -0.01em;
-  /* 上移 2px：标题栏这一格的视觉重心比几何中心低——右边那排窗口按钮是
-     28px 见方的图标，字比它们矮，居中对齐时看着偏下。
-     用 transform 而不是改 padding：它不参与布局，不会把这一行撑高。 */
-  transform: translateY(-2px);
+  /* 上移 2px、左移 2px。
+     上移：标题栏这一格的视觉重心比几何中心低——右边那排窗口按钮是 28px 见方的
+     图标，字比它们矮，居中对齐时看着偏下。
+     左移：字形自带的左侧边距（Q 是圆的，光学左边界比字框靠里）让它看着比
+     下面那一列图标缩进得多。
+     用 transform 而不是改 padding：它不参与布局，不会把这一行撑高、也不会
+     把右边那颗按钮挤走。 */
+  transform: translate(-2px, -2px);
 }
 
 .head-actions {
