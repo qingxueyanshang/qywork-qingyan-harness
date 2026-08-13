@@ -31,7 +31,6 @@ export const handlePairingApi: ApiHandler = async (url, req, d) => {
         qr: encodePairingUrl({
           url: `http://${c.address}:${reachablePort}`,
           token: d.token,
-          expiresAt: d.pairing.expiresAt,
           deviceName: d.pairing.deviceName,
         }),
       })),

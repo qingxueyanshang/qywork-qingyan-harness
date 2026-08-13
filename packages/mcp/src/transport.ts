@@ -153,10 +153,29 @@ export class StdioTransport implements McpTransport {
     stdin.write(`${JSON.stringify(payload)}\n`)
   }
 
+  /**
+   * 停掉 server。
+   *
+   * **Windows 上必须杀整棵进程树。** 那边 `spawn` 带 `shell: true`（npx / uvx 是
+   * .cmd，不走 shell 起不来），于是 `this.proc` 是 cmd.exe，server 本体是它的孙进程。
+   * 只 `proc.kill()` 的话 cmd 没了、node 还在——每跑一次 `qy mcp` / `qy doctor`、
+   * 每次扩展缓存释放都漏一批常驻进程。`taskkill /T` 是这台机器上唯一能连孙进程一起
+   * 收掉的办法（Node 没有跨平台的进程组 API）。
+   */
   stop(): void {
     const proc = this.proc
     if (!proc) return
     this.proc = null
+
+    if (process.platform === 'win32' && proc.pid !== undefined) {
+      // /T 连子孙一起，/F 强制。失败（进程已经没了）不用管，下面的 kill 是兜底。
+      spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).on('error', () => {})
+      return
+    }
+
     proc.kill()
     const timer = setTimeout(() => proc.kill('SIGKILL'), 2000)
     timer.unref?.()

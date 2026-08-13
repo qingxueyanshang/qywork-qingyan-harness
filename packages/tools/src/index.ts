@@ -23,23 +23,43 @@ import { shellTool } from './shell.ts'
 import { listSkillsTool, readSkillTool } from './skills.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
-// 记忆：runtime/session.ts 装配提示词时要读索引
-export { listEntries, MEMORY_DIR } from './memory.ts'
+// 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
+export {
+  listScopedEntries,
+  MAX_ENTRIES,
+  MAX_ENTRY_CHARS,
+  MEMORY_DIR,
+  MEMORY_SUBDIR,
+  type MemoryEntry,
+  readScoped,
+} from './memory.ts'
 // 联网：runtime/capabilities.ts 给插件的 host.net.fetch 用
 export { type SafetyOptions, safeFetch } from './net-safety.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 都要
 export {
   displayPath,
+  IGNORED_DIRS,
   normalizeAdditionalDirectories,
   PROTECTED_DIRS,
   resolveInWorkspace,
 } from './paths.ts'
 // 沙箱：cli 的 doctor/config、server 的握手都要报它
 export { detectSandbox, spawnGuarded } from './sandbox.ts'
+// 作用域：runtime 与 server 都要按同一份规则算三层的根
+export {
+  AGENTS_DIR,
+  globalScopeRoot,
+  type Scope,
+  type ScopeRoots,
+  scanScoped,
+  scopeDir,
+  scopePaths,
+  scopeRoots,
+} from './scopes.ts'
 // 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证
 export { scrubEnv } from './secrets.ts'
-// 技能：runtime/session.ts 扫索引
-export { scanSkills } from './skills.ts'
+// 技能：runtime/session.ts 扫索引，server/api 列给设置页
+export { SKILLS_SUBDIR, type SkillMeta, scanSkills } from './skills.ts'
 
 /** 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。 */
 export function registerBuiltinTools(registry: ToolRegistry): void {

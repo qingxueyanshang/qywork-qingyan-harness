@@ -22,7 +22,7 @@
 
 import type { AgentEvent, ConversationId, PermissionScope, RunId } from '@qywork/core'
 import type { Store } from '@qywork/store'
-import { getRun, listConversations } from '@qywork/store'
+import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
 
 export interface PendingPermission {
@@ -62,6 +62,8 @@ export class RunManager {
   private readonly pending = new Map<string, PendingPermission>()
   /** 同一会话同时只允许一个 run —— 两个 run 并发改同一批文件必然互相踩。 */
   private readonly byConversation = new Map<string, RunId>()
+  /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
+  private readonly reserved = new Set<string>()
   private readonly grants = new Map<string, Grant>()
 
   /**
@@ -87,7 +89,7 @@ export class RunManager {
     runId: RunId,
     conversationId: ConversationId,
   ): void {
-    if (scopeId === 'run' || scopeId === 'session' || scopeId === 'always') {
+    if (scopeId === 'run' || scopeId === 'session') {
       this.grants.set(scope, { duration: scopeId, runId, conversationId })
     }
   }
@@ -105,12 +107,35 @@ export class RunManager {
   ) {}
 
   isBusy(conversationId: ConversationId): boolean {
-    return this.byConversation.has(conversationId)
+    return this.byConversation.has(conversationId) || this.reserved.has(conversationId)
+  }
+
+  /**
+   * 占住一个会话，**同步**完成检查与登记。
+   *
+   * 「同会话只允许一个 run」此前是 `isBusy()` 检查加后面某处的 `register()`，
+   * 中间隔着建 Session、读历史附件、等首个带 runId 的事件——好几个 await。
+   * 桌面端和手机端几乎同时发一条消息时，两次检查都读到 false，
+   * 于是两个 AgentLoop 对着同一个工作区一起写文件。
+   * JS 是单线程的，所以检查与占位放在同一个同步块里就是原子的。
+   *
+   * 返回 false = 已经有人在跑，调用方必须直接回绝。
+   */
+  reserve(conversationId: ConversationId): boolean {
+    if (this.isBusy(conversationId)) return false
+    this.reserved.add(conversationId)
+    return true
+  }
+
+  /** 释放占位。run 已经 register 过就交给 unregister 收，这里只管没跑起来的那些。 */
+  release(conversationId: ConversationId): void {
+    this.reserved.delete(conversationId)
   }
 
   register(run: ActiveRun): void {
     this.active.set(run.runId, run)
     this.byConversation.set(run.conversationId, run.runId)
+    this.reserved.delete(run.conversationId)
   }
 
   unregister(runId: RunId): void {
@@ -251,25 +276,18 @@ export class RunManager {
     }))
   }
 
-  /** 进程退出前把还在跑的 run 收敛成 interrupted，不留孤儿 running 行。 */
-  drain(): void {
-    this.interruptAll()
-    for (const run of this.active.values()) {
-      const row = getRun(this.store, run.runId)
-      if (row && row.status === 'running') {
-        // finishRun 的调用留给 session 的 finally；这里只保证信号发出去了。
-      }
-    }
-  }
-
   conversationsOf(workspaceId: string): ConversationId[] {
     return listConversations(this.store, workspaceId as never).map((c) => c.id)
   }
 }
 
+/**
+ * 可授予的范围。**这是唯一一份**——界面按事件里带来的这几项渲染按钮，
+ * 不在自己那边另写一套（曾经就是两套：这里发四档，界面硬编码两个按钮，
+ * `run` 和 `always` 谁也点不到）。
+ */
 const DEFAULT_SCOPES: PermissionScope[] = [
   { id: 'once', label: '仅这次', duration: 'once' },
   { id: 'run', label: '本轮都允许', duration: 'run' },
   { id: 'session', label: '本会话都允许', duration: 'session' },
-  { id: 'always', label: '一直允许', duration: 'always' },
 ]

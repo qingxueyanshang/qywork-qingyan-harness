@@ -9,6 +9,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
+import { IGNORED_DIRS } from '@qywork/tools'
 
 export type PreviewKind =
   | 'text'
@@ -45,22 +46,6 @@ export interface PreviewResult {
   /** 无法内联时给出的说明，UI 直接显示。 */
   note?: string
 }
-
-const IGNORED_DIRS = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  'target',
-  '.next',
-  '.venv',
-  '__pycache__',
-  '.cache',
-  'vendor',
-  '.turbo',
-  'coverage',
-  '.svelte-kit',
-])
 
 /** 文本预览上限。超过就截断——把 5MB 的日志塞进浏览器只会把标签页卡死。 */
 const MAX_TEXT_BYTES = 512 * 1024

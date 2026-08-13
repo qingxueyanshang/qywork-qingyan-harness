@@ -60,7 +60,6 @@ export type AgentEvent =
   | UsageEvent
   | ContextEvent
   | TodosEvent
-  | ProgressEvent
   | CompactionEvent
   // ── 工作区实时性 ──
   | FileChangedEvent
@@ -247,13 +246,6 @@ export interface TodosEvent {
   type: 'todos'
   runId: RunId
   todos: TodoItem[]
-}
-
-export interface ProgressEvent {
-  type: 'progress'
-  runId: RunId
-  label: string
-  detail?: string
 }
 
 export interface CompactionEvent {

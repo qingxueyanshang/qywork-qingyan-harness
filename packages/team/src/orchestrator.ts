@@ -10,7 +10,7 @@
 
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { runCli } from './cli-backend.ts'
-import type { NodeResult, PlanNode, Role, TeamConfig } from './types.ts'
+import type { NodeResult, PlanNode, Role, TeamConfig, TeamRules } from './types.ts'
 
 export interface OrchestratorDeps {
   workspaceRoot: string
@@ -43,7 +43,7 @@ export class TeamOrchestrator {
 
   async run(goal: string): Promise<NodeResult[]> {
     const plan = this.resolvePlan()
-    validatePlan(plan, this.config.roles)
+    validatePlan(plan, this.config.roles, this.config.rules)
 
     const results = new Map<string, NodeResult>()
     const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
@@ -219,6 +219,12 @@ export class TeamOrchestrator {
         backend: role.backend.kind === 'builtin' ? 'builtin' : 'custom',
         phase: res.ok ? 'done' : 'failed',
         summary: res.output.slice(0, 200),
+        // 子会话不进会话列表（`source='workflow'`），**这个 id 是它唯一的入口**。
+        // 不带出去的话，成员到底读了什么、跑了哪些命令就永远看不到了。
+        // CLI 后端没有子会话，那边这个字段自然缺席。
+        ...('conversationId' in res && res.conversationId
+          ? { childConversationId: res.conversationId }
+          : {}),
       })
 
       return {
@@ -258,11 +264,21 @@ export class TeamOrchestrator {
 }
 
 /** 加载期就把成环和悬空引用挡掉，不留到运行时变成死循环。 */
-export function validatePlan(plan: PlanNode[], roles: Role[]): void {
+export function validatePlan(plan: PlanNode[], roles: Role[], rules?: TeamRules): void {
   const roleIds = new Set(roles.map((r) => r.id))
   const nodeIds = new Set(plan.map((n) => n.id))
 
   if (nodeIds.size !== plan.length) throw new Error('plan 节点 id 重复')
+
+  // 人工门禁是 fail-closed 语义的开关，**它的悬空引用必须报出来**。
+  // 不校验的话，把节点 id 拼错一个字符 = 门禁永远不命中 = 那个「必须人看过」的
+  // 节点直接执行，钱已花、文件已改，而且全程没有任何提示。
+  // 一个开着但不生效的安全开关比没有这个开关更坏。
+  for (const id of rules?.humanGates ?? []) {
+    if (!nodeIds.has(id)) {
+      throw new Error(`rules.humanGates 引用了不存在的节点 ${id}`)
+    }
+  }
 
   for (const node of plan) {
     if (!roleIds.has(node.roleId)) {

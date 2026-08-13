@@ -16,6 +16,7 @@
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { AgentEvent } from '@qywork/core'
+import { formatMoney } from '@qywork/core'
 import {
   configDir,
   configNotices,
@@ -333,7 +334,7 @@ function renderHuman(ev: AgentEvent): void {
       const u = ev.usage
       const cached = u.cachedTokens === null ? '未回报' : String(u.cachedTokens)
       process.stdout.write(
-        `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存命中 ${cached} · $${u.costUsd.toFixed(4)}${RESET}\n`,
+        `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存命中 ${cached} · ${formatMoney(u.cost, u.currency)}${RESET}\n`,
       )
       if (ev.fileChanges.length) {
         const adds = ev.fileChanges.reduce((s, c) => s + c.additions, 0)

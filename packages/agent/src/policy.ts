@@ -193,9 +193,10 @@ const OUTSIDE_LOCATION_RULE = 'outside-location'
 export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string }[] = [
   {
     /**
-     * 用 shell 写 `.qy/` = 自我提权。
+     * 用 shell 写 `.qy/` 或 `.agents/` = 自我提权。
      *
-     * `.qy/mcp.json` 决定模型能拿到哪些工具、`.qy/plugins/` 决定装什么插件。
+     * `.agents/mcp.json` 决定模型能拿到哪些工具、`.agents/plugins/` 决定装什么
+     * 插件、`.agents/skills/` 决定跑什么流程；`.qy/team.json` 决定派哪些角色。
      * 文件工具那边已经由 `resolveWritablePath` 挡死了，但 **`run_command`
      * 里的路径不经过我们任何一行代码**，那道保护对它完全无效。
      *
@@ -212,12 +213,13 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
      * 而且用文件工具写完全不受影响。
      */
     pattern: new RegExp(
-      String.raw`(?:${WRITE_VERB})[^;&|\n]*\.qy[/\\]|\.qy[/\\][^;&|\n]*\s*${String.raw`>>?`}`,
+      String.raw`(?:${WRITE_VERB})[^;&|\n]*\.(?:qy|agents)[/\\]` +
+        String.raw`|\.(?:qy|agents)[/\\][^;&|\n]*\s*>>?`,
       'i',
     ),
     reason:
-      '用 shell 写 .qy/ 等于给自己加工具或改权限配置（自我提权）。' +
-      '需要改请用户手动改，或改用文件工具（那条路有独立的保护）',
+      '用 shell 写 .qy/ 或 .agents/ 等于给自己加工具或改权限配置（自我提权）。' +
+      '需要改请用户手动改；记忆改用 memory 工具（那条路有独立的保护）',
   },
   {
     /**
@@ -512,7 +514,17 @@ function literalOutsideHome(command: string, ctx: PolicyContext): string | null 
     .map(normalizeSeparators)
     .filter(Boolean)
 
-  const inside = (p: string, root: string) => p === root || p.startsWith(`${root}/`)
+  // 大小写必须折。Windows 与 macOS 的文件系统不区分大小写，`c:/users/x/.ssh/id_rsa`
+  // 和 `C:/Users/x/.ssh/id_rsa` 是同一个文件——不折的话，把盘符敲成小写就绕过了
+  // 这条规则，正是上面那段注释要消灭的「同一个文件，两种拼法，两种结论」。
+  // 同文件的 isSystem 两条正则一开始就带 /i，只有这条比较漏了。
+  const fold = (s: string) =>
+    process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s
+  const inside = (p: string, root: string) => {
+    const a = fold(p)
+    const b = fold(root)
+    return a === b || a.startsWith(`${b}/`)
+  }
 
   for (const m of command.matchAll(/(?:^|[\s"'=(])((?:\/|[A-Za-z]:[\\/])[^\s"'`;&|)]*)/g)) {
     const p = normalizeSeparators(m[1] ?? '')

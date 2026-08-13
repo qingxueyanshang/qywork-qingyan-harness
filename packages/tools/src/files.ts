@@ -14,7 +14,13 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import type { FileChange } from '@qywork/core'
-import { displayPath, resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
+import {
+  displayPath,
+  IGNORED_DIRS,
+  resolveInWorkspace,
+  resolveWritablePath,
+  rootsOf,
+} from './paths.ts'
 
 /** 记录本 run 内每个文件被读到时的内容哈希，供写前校验。 */
 const READ_STATE_KEY = 'files.readHashes'
@@ -232,20 +238,6 @@ export const editFileTool: ToolSpec = {
     }
   },
 }
-
-const IGNORED_DIRS = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  'target',
-  '.next',
-  '.venv',
-  '__pycache__',
-  '.cache',
-  'vendor',
-  '.turbo',
-])
 
 export const listDirTool: ToolSpec = {
   name: 'list_dir',

@@ -54,9 +54,9 @@ describe('触发门槛', () => {
     const previous: CompactionManifest = {
       revision: 1,
       compactedThroughMessageId: 'ms_004' as MessageId,
-      compactedRunSteps: {},
+      compactedMessageCount: 0,
       summary: '之前的摘要',
-      facts: { filesTouched: [], decisions: [], openItems: [], userConstraints: [] },
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
       createdAt: 0,
     }
     const r = await compact({ messages: longHistory, actions: [], previous }, null)
@@ -130,11 +130,10 @@ describe('事实包必须逐字保留，不经模型', () => {
     const previous: CompactionManifest = {
       revision: 1,
       compactedThroughMessageId: 'ms_000' as MessageId,
-      compactedRunSteps: {},
+      compactedMessageCount: 0,
       summary: '旧摘要',
       facts: {
         filesTouched: ['src/legacy/keep.ts'],
-        decisions: ['决定用 RS256'],
         openItems: [],
         userConstraints: ['第一轮就定下的约束'],
       },
@@ -143,7 +142,6 @@ describe('事实包必须逐字保留，不经模型', () => {
     const r = await compact({ messages: longHistory, actions, previous }, null)
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
     expect(r.manifest.facts.filesTouched).toContain('src/legacy/keep.ts')
-    expect(r.manifest.facts.decisions).toContain('决定用 RS256')
     expect(r.manifest.facts.userConstraints).toContain('第一轮就定下的约束')
     expect(r.manifest.revision).toBe(2)
   })
@@ -177,11 +175,10 @@ describe('投影', () => {
   const manifest: CompactionManifest = {
     revision: 3,
     compactedThroughMessageId: 'ms_010' as MessageId,
-    compactedRunSteps: { rn_1: 5 },
+    compactedMessageCount: 5,
     summary: '重构认证模块，已改完 token.ts',
     facts: {
       filesTouched: ['src/auth/token.ts'],
-      decisions: ['用 RS256'],
       openItems: ['npm test 有 2 个用例失败'],
       userConstraints: ['不要动 legacy/ 目录'],
     },
@@ -205,7 +202,7 @@ describe('投影', () => {
   test('事实全空时也给出明确的「无」，不产出空消息', () => {
     const empty = projectManifest({
       ...manifest,
-      facts: { filesTouched: [], decisions: [], openItems: [], userConstraints: [] },
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
     })
     expect(empty[1]!.content.trim().length).toBeGreaterThan(0)
   })

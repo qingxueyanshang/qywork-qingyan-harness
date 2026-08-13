@@ -162,20 +162,13 @@ export async function compact(
     return { status: 'failed', reasonCode: 'empty_summary', message: '摘要为空，未产出可用投影' }
   }
 
-  const compactedRunSteps = { ...(previous?.compactedRunSteps ?? {}) }
-  for (const a of actions) {
-    const runId = a.stepId.split(':')[0] ?? ''
-    if (!runId) continue
-    compactedRunSteps[runId] = (compactedRunSteps[runId] ?? 0) + 1
-  }
-
   return {
     status: 'compacted',
     usedModel,
     manifest: {
       revision: (previous?.revision ?? 0) + 1,
       compactedThroughMessageId: through,
-      compactedRunSteps,
+      compactedMessageCount: (previous?.compactedMessageCount ?? 0) + messages.length,
       summary,
       facts,
       createdAt: Date.now(),
@@ -228,7 +221,6 @@ function extractFacts(
     if (a.target && /[./\\]/.test(a.target)) filesTouched.add(a.target)
   }
 
-  const decisions = [...(previous?.decisions ?? [])]
   const openItems = [...(previous?.openItems ?? [])]
   const userConstraints = [...(previous?.userConstraints ?? [])]
 
@@ -252,7 +244,6 @@ function extractFacts(
 
   return {
     filesTouched: [...filesTouched].slice(-80),
-    decisions: dedupeTail(decisions, 40),
     openItems: dedupeTail(openItems, 40),
     // 约束条数比其他两项收得更紧：它逐字保留，是投影里最占地方的部分。
     userConstraints: dedupeTail(userConstraints, 24),
@@ -339,8 +330,6 @@ export function projectManifest(
   if (f.userConstraints.length)
     factLines.push(`用户约束：\n${f.userConstraints.map((s) => `- ${s}`).join('\n')}`)
   if (f.filesTouched.length) factLines.push(`涉及文件：${f.filesTouched.join('、')}`)
-  if (f.decisions.length)
-    factLines.push(`已定决策：\n${f.decisions.map((s) => `- ${s}`).join('\n')}`)
   if (f.openItems.length) factLines.push(`未解决：\n${f.openItems.map((s) => `- ${s}`).join('\n')}`)
 
   return [

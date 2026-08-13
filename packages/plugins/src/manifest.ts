@@ -144,7 +144,18 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
   const contributes = (m.contributes ?? {}) as PluginManifest['contributes']
 
   // 声明了工具却没声明相应权限，是清单写错了——放行等于把权限模型架空。
+  //
+  // **先校验 permissionEffect 本身。** 它是权限检查的输入，认不出来就必须拒绝而不是
+  // 跳过：`requiredPermission` 对未知值返回 null，于是把 `execute` 拼成 `exec`
+  // 就能让下面这道闸整个不生效——一个拼写错误换来免检，方向反了。
   for (const t of contributes.tools ?? []) {
+    if (!t.name || typeof t.name !== 'string') return fail('工具贡献缺少 name')
+    if (!KNOWN_EFFECTS.includes(t.permissionEffect)) {
+      return fail(
+        `工具 ${t.name} 的 permissionEffect 无法识别：${String(t.permissionEffect)}` +
+          `（可用：${KNOWN_EFFECTS.join('、')}）`,
+      )
+    }
     const need = requiredPermission(t.permissionEffect)
     if (need && !permissions.includes(need)) {
       return fail(`工具 ${t.name} 需要权限 ${need}，但清单未声明`)
@@ -173,6 +184,14 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
     contributes,
   }
 }
+
+const KNOWN_EFFECTS: ToolContribution['permissionEffect'][] = [
+  'read',
+  'write',
+  'delete',
+  'execute',
+  'network',
+]
 
 function requiredPermission(effect: ToolContribution['permissionEffect']): PluginPermission | null {
   switch (effect) {

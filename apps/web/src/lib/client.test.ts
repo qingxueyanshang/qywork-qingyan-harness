@@ -100,8 +100,13 @@ describe('握手被拒是终态', () => {
 
     // close 到来时不能再排重连——排了就是那个永远好不了的「N 秒后重试」。
     sockets[0]!.fire('close')
-    expect(states.at(-1)?.state).toBe('closed')
     expect(sockets).toHaveLength(1)
+
+    // **而且不能把原因盖掉。** 服务端发完 hello.err 立刻 close，两个事件前后脚到；
+    // close 处理器原来无条件再报一次泛化的 'closed'，用户最终看到的是
+    // 「连接已断开」而不是「令牌无效」——后者才说得出下一步该干什么。
+    expect(states.at(-1)?.state).toBe('unauthorized')
+    expect(states.at(-1)?.detail).toBe('令牌无效')
   })
 
   /** 拒绝的原因要原样带给用户——只说「连接失败」等于让他自己猜。 */
@@ -110,7 +115,9 @@ describe('握手被拒是终态', () => {
     c.connect()
     sockets[0]!.fire('open')
     sockets[0]!.deliver({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' })
-    expect(states.some((s) => s.detail === '令牌无效')).toBe(true)
+    // 看**最后**一条，不是 some()：被后面的状态盖掉时 some() 照样为真，
+    // 而用户看到的只有最后那条。
+    expect(states.at(-1)?.detail).toBe('令牌无效')
   })
 })
 

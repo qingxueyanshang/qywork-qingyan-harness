@@ -34,7 +34,7 @@
 
 import type { ToolSpec } from '@qywork/agent'
 import type { McpClient } from './client.ts'
-import { permissionLabel } from './register.ts'
+import { permissionLabel, toolName } from './register.ts'
 
 /** 单次读回的文本上限。超出的部分交给 sink 落盘，模型可以再读回来。 */
 const MAX_RESOURCE_CHARS = 60_000
@@ -71,7 +71,7 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
   return [
     {
       // 名字里的 `mcp__` 不只是命名风格，是 sink 的落盘判据，见文件头第 2 条。
-      name: sanitize(`mcp__${server}__list_resources`),
+      name: toolName(server, 'list_resources'),
       description:
         `[MCP ${server}] 列出该 server 提供的 resource（uri、名称、类型），` +
         `不返回正文。拿到 uri 之后用 mcp__${server}__fetch_resource 读正文。`,
@@ -107,7 +107,7 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       },
     },
     {
-      name: sanitize(`mcp__${server}__fetch_resource`),
+      name: toolName(server, 'fetch_resource'),
       description:
         `[MCP ${server}] 按 uri 读取一个 resource 的正文。` +
         `uri 从 mcp__${server}__list_resources 拿。` +
@@ -197,6 +197,3 @@ function withAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /** server 名来自用户配置，可能带 provider 不接受的字符。 */
-function sanitize(raw: string): string {
-  return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
-}

@@ -33,6 +33,22 @@ export interface LoadedPlugin {
   host: PluginHost | null
 }
 
+/** 插件工具的注册名。消毒是硬要求，理由见调用处。 */
+export function pluginToolName(pluginId: string, tool: string): string {
+  return sanitizeToolName(`${pluginId}__${tool}`)
+}
+
+/**
+ * 「这个插件的工具」的名字前缀。
+ *
+ * **必须走这里，不要自己拼 `${id}__`。** 注册名消毒过，一个 id 带点的插件
+ * （清单推荐反向域名，`com.example` 是常态）拿原始 id 拼前缀一条都匹配不上，
+ * 表现是 `qy plugins` 报「0 个工具」而工具其实全都在。
+ */
+export function pluginToolPrefix(pluginId: string): string {
+  return sanitizeToolName(`${pluginId}__`)
+}
+
 export interface PluginRegistry {
   plugins: LoadedPlugin[]
   previewers: Map<string, { plugin: string; contribution: PreviewerContribution }>
@@ -120,12 +136,18 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
   const manifest = parseManifest(parsed, manifestPath)
 
   const entry = join(dir, manifest.main ?? 'index.js')
-  // 没有任何需要代码的贡献时允许纯声明式插件（例如只注册文本预览器的）。
-  // 这类插件不起进程——为一个只声明扩展名的插件付一个进程的代价不划算。
-  const needsCode =
-    (manifest.contributes.tools?.length ?? 0) > 0 ||
-    (manifest.contributes.previewers ?? []).some((p) => p.renders === 'custom') ||
-    (manifest.contributes.providers ?? []).some((p) => p.protocol === 'custom')
+  /*
+   * 只有**工具**贡献需要代码，所以只有它起进程。
+   *
+   * 这里曾经把 `renders:'custom'` 的预览器和 `protocol:'custom'` 的 provider 也算进来，
+   * 于是这两类插件各白起一个子进程——而宿主**从来不会向它们发起渲染 / adapter 调用**：
+   * `registry.previewers` / `roles` / `providers` 在 `runtime/src/extensions.ts` 合并之后，
+   * 全仓没有任何读取点。为一条不存在的调用链付一个常驻进程的代价，是纯粹的浪费。
+   *
+   * 三条贡献通道本身按用户决定先保留（清单类型、注册、冲突检测原样）。
+   * 等哪天真接上消费端，把对应的条件加回这里——**连同消费者一起加**。
+   */
+  const needsCode = (manifest.contributes.tools?.length ?? 0) > 0
 
   if (!needsCode) return { manifest, dir, host: null }
 
@@ -162,7 +184,7 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
     // **必须消毒**：清单推荐反向域名风格的 id（`com.example.tool`），
     // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`。不转的话装一个带点的插件，
     // 之后每一轮 run 都被 400 打死，错误信息还不说是谁干的。
-    const name = sanitizeToolName(`${manifest.id}__${t.name}`)
+    const name = pluginToolName(manifest.id, t.name)
     if (registry.toolSpecs.some((s) => s.name === name)) {
       // 消毒会制造碰撞（`a.b` 与 `a_b` 同名）。查重并报出来，不静默覆盖。
       registry.failures.push({ dir: plugin.dir, reason: `工具名消毒后与已有的撞了：${name}` })

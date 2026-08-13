@@ -80,7 +80,7 @@ function toMarkdown(bundle: ArchiveBundle, opts: ArchiveOptions): string {
 
   const totals = bundle.runs.reduce(
     (a, r) => ({
-      cost: a.cost + r.usage.costUsd,
+      cost: a.cost + r.usage.cost,
       input: a.input + r.usage.inputTokens,
       output: a.output + r.usage.outputTokens,
     }),

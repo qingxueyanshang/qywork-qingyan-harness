@@ -65,7 +65,6 @@ export type MessageId = string & { readonly __brand: 'MessageId' }
 export type RunId = string & { readonly __brand: 'RunId' }
 export type StepId = string & { readonly __brand: 'StepId' }
 export type ToolCallId = string & { readonly __brand: 'ToolCallId' }
-export type ArtifactId = string & { readonly __brand: 'ArtifactId' }
 export type ResourceId = string & { readonly __brand: 'ResourceId' }
 export type ProviderRequestId = string & { readonly __brand: 'ProviderRequestId' }
 export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' }
@@ -75,7 +74,6 @@ export const newConversationId = () => `cv_${monotonicId()}` as ConversationId
 export const newMessageId = () => `ms_${monotonicId()}` as MessageId
 export const newRunId = () => `rn_${monotonicId()}` as RunId
 export const newStepId = () => `st_${monotonicId()}` as StepId
-export const newArtifactId = () => `af_${monotonicId()}` as ArtifactId
 export const newResourceId = () => `rs_${monotonicId()}` as ResourceId
 export const newProviderRequestId = () => `pr_${monotonicId()}` as ProviderRequestId
 export const newWorkspaceId = () => `ws_${monotonicId()}` as WorkspaceId

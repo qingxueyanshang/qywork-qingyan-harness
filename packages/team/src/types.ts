@@ -8,6 +8,8 @@
  * 「调度自己」是同一条代码路径，多层嵌套不需要特判。
  */
 
+import type { EffortLevel } from '@qywork/core'
+
 export type BackendKind = 'builtin' | 'cli'
 
 /**
@@ -37,10 +39,10 @@ export interface CliBackend {
 
 export interface BuiltinBackend {
   kind: 'builtin'
-  /** 用哪个供应商档案（config.profiles 的键）。不填用当前生效的。 */
-  profile?: string
+  /** 用哪个接口（config.providers 的键）。不填用当前生效的。 */
+  provider?: string
   model?: string
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  effort?: EffortLevel
 }
 
 export type Backend = BuiltinBackend | CliBackend
@@ -68,8 +70,6 @@ export interface TeamRules {
   shared?: string
   /** 同时最多几个角色在跑。默认 3——再多，用户就看不过来了。 */
   maxConcurrent?: number
-  /** 整轮的总步数预算。 */
-  maxTotalSteps?: number
   /**
    * 需要人工确认才能继续的节点 id。
    * 用于「设计评审必须人看过」这类硬门禁。

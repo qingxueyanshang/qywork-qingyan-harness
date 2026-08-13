@@ -525,8 +525,28 @@ describe('默认落 undecided（fail-closed）', () => {
  * 文件工具那边由 `resolveWritablePath` 挡死了，而 run_command 的路径
  * 不经过我们任何一行代码，所以只能在这里补一道确定性的。
  */
-describe('写 .qy/ 是自我提权', () => {
+describe('写 .qy/ 与 .agents/ 是自我提权', () => {
   const ctx = { workspaceRoot: '/ws' }
+
+  /*
+   * 用户层的技能 / MCP / 插件搬到 `.agents/` 之后，这条静态规则必须跟着搬。
+   * 只挡 `.qy/` 的话，防线名义上还在，实际保护的是一个只剩 team.json 的目录。
+   */
+  test('.agents/ 下的写入同样拒', () => {
+    for (const cmd of [
+      "Set-Content -Path .agents/mcp.json -Value '{}'",
+      'echo x > .agents/mcp.json',
+      'echo x >> .agents/skills/evil/SKILL.md',
+      'cp payload.json .agents/plugins/evil/qywork.plugin.json',
+      String.raw`Remove-Item .agents\mcp.json`,
+    ]) {
+      expect(decideCommand(cmd, ctx).kind).toBe('deny')
+    }
+  })
+
+  test('读 .agents/ 不拦', () => {
+    expect(decideCommand('cat .agents/mcp.json', ctx).kind).not.toBe('deny')
+  })
 
   test('各种写法都拒', () => {
     for (const cmd of [

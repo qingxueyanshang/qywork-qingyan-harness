@@ -326,7 +326,26 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       return
 
     case 'run.error':
-      setState('error', { code: ev.code, message: ev.message, retryable: ev.retryable })
+      setState(
+        produce((s) => {
+          s.error = { code: ev.code, message: ev.message, retryable: ev.retryable }
+          /*
+           * **`run.error` 也是终态，必须把 running 放下来。**
+           *
+           * loop 内的错误后面跟着 `run.finished`，只看那一条也够；但 loop **之外**
+           * 抛出的错误没有 run.finished——`run-control.ts` 的 catch 只 publish 了
+           * run.error（没配 API key、档案解析失败都走那里），而那时 run 行可能
+           * 根本没建出来，服务端没有「结束」可发。
+           * 客户端的 running 是 `sendMessage` 乐观置上去的，这条 run.error 就是
+           * 它唯一的终态信号。不放下来的表现是：错误卡说「还没配 API Key」，
+           * 而发送按钮永久变成停止按钮，配好 key 也发不出下一条，只能刷新。
+           *
+           * 与 run.finished 同时到达也无妨——两者都置 false，幂等。
+           */
+          s.running = false
+          s.permission = null
+        }),
+      )
       return
 
     case 'run.finished':
@@ -474,7 +493,42 @@ export async function reloadActiveConversation(): Promise<void> {
     }
   }
 
-  setState('transcript', items)
+  // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
+  // 于是标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
+  // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
+  if (state.activeConversation !== id) return
+
+  /*
+   * **run 作用域的状态一律从这里派生，不靠事件残留。**
+   *
+   * 这些字段（running / lastRunId / runStartedAt / todos / teamMembers /
+   * usage / context / permission）是扁平的全局量，没有「属于哪条会话」这一维。
+   * 切会话时若只重置 transcript，它们会连同上一条会话的 run 一起留在界面上；
+   * 而 `applyEvent` 现在按 conversationId 丢弃非当前会话的事件，
+   * 那条 run 的 `run.finished`——唯一把 running 置回 false 的地方——
+   * **结构性地永远到不了**。表现是新会话里输入框永久卡在停止按钮上，
+   * 点停止发出去的还是上一条会话的 runId，只能刷新页面。
+   *
+   * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
+   * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
+   */
+  const live = runs.find((r) => r.status === 'running') ?? null
+
+  setState(
+    produce((s) => {
+      s.transcript = items
+      s.running = live !== null
+      s.lastRunId = live?.id ?? null
+      s.runStartedAt = live ? live.createdAt : null
+      // 以下几项是 run 内的易失投影，账本里没有，重拉之后一律清空，
+      // 等这条会话自己的事件把它们填回来。
+      s.todos = []
+      s.teamMembers = []
+      s.usage = null
+      s.context = null
+      s.permission = null
+    }),
+  )
 }
 
 function stepToItem(s: StoredStep): TranscriptItem | null {

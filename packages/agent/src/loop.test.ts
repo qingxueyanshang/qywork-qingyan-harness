@@ -1,16 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
-import { lookupModel } from '@qywork/ai'
+import { lookupModel, ProviderError } from '@qywork/ai'
 import { AgentLoop, type LoopPersistence, type ToolContext } from './index.ts'
 import { ToolRegistry } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 吐出预设的一轮。 */
-function fakeAdapter(turns: (WireToolCall[] | null)[]): LlmAdapter {
+function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0
   return {
     kind: 'anthropic',
     transmits: { thinking: true, effort: true },
-    spec: lookupModel('claude-opus-5', 'anthropic'),
+    spec: lookupModel(model, model === 'claude-opus-5' ? 'anthropic' : 'openai_compatible'),
     measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
@@ -332,5 +332,428 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     }
     expect(events).not.toContain('run.error')
     expect(events).toContain('run.finished')
+  })
+})
+
+describe('上下文分组占用', () => {
+  /**
+   * 回归测试：`context` 事件的 `breakdown` 必须是**真值**。
+   *
+   * 它在协议里存在很久，而唯一的生产者把七个字段全写成 0，也没有任何消费者——
+   * 「字段在、值是假的」比没有这个字段更坏：界面照着它画出来的饼图会是空的，
+   * 而没人能从界面看出那是假数据。
+   *
+   * 断言的是**口径**不是具体数字：系统提示词与工具 schema 各自非零、
+   * 带 `_group` 的消息落进对应的桶、不带 `_group` 的落进 historyMessages。
+   */
+  /**
+   * 回归测试：**压缩之后 breakdown 必须跟着变**。
+   *
+   * `breakdownOf` 算的是 `req.messages`，而那是 `compaction.project()` 的产物。
+   * 如果哪天有人图省事改成「直接读 input.history」，这条会红——
+   * 而界面上的表现是：压缩明明生效了（模型确实看不到远期历史了），
+   * 占用面板却一动不动，用户会以为压缩没起作用，然后反复点压缩。
+   */
+  test('压缩投影之后，历史那一桶让位给摘要桶', async () => {
+    const registry = new ToolRegistry()
+    const long = '历史正文'.repeat(200)
+
+    const captured: { historyMessages: number; summary: number }[] = []
+    const makeLoop = (projected: boolean) =>
+      new AgentLoop({
+        adapter: fakeAdapter([null]),
+        registry,
+        systemPrompt: 'sys',
+        tailNotes: () => [],
+        persist: noopPersistence(),
+        // project() 模拟压缩：把历史换成一条 summary。这正是 RuntimeCompaction 的形状。
+        compaction: {
+          project: (history) =>
+            projected
+              ? [{ role: 'assistant', content: '压缩摘要', _group: 'summary' as const }]
+              : history,
+          run: async () => ({ status: 'skipped', reasonCode: 'nothing_to_compact' }) as never,
+        },
+        makeToolContext: (runId, emit) => ({
+          workspaceRoot: '/tmp',
+          conversationId: 'cv',
+          runId,
+          model: 'test',
+          resources: new Map(),
+          state: new Map(),
+          sink: null,
+          signal: new AbortController().signal,
+          emit: (channel, delta) =>
+            emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+          requestPermission: async () => true,
+        }),
+      })
+
+    for (const projected of [false, true]) {
+      const events = []
+      for await (const ev of makeLoop(projected).run({
+        runId: 'rn_proj' as never,
+        history: [{ role: 'user', content: long, _group: 'historyMessages' }],
+        signal: new AbortController().signal,
+      })) {
+        events.push(ev)
+      }
+      const ctx = events.find((e) => e.type === 'context')
+      const b = ctx?.type === 'context' ? ctx.breakdown : null
+      expect(b).toBeDefined()
+      captured.push({ historyMessages: b!.historyMessages, summary: b!.summary })
+    }
+
+    const [before, after] = captured
+    // 未压缩：历史那一桶很大、摘要为 0。
+    expect(before!.historyMessages).toBeGreaterThan(100)
+    expect(before!.summary).toBe(0)
+    // 压缩后：摘要有了，历史那一桶塌下去。
+    expect(after!.summary).toBeGreaterThan(0)
+    expect(after!.historyMessages).toBeLessThan(before!.historyMessages)
+  })
+
+  test('breakdown 不是七个零，且按 _group 分桶', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noop',
+      description: '占位工具，只为让 tools schema 非空。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空操作',
+      permissionEffect: 'internal_control',
+      async fn() {
+        return { status: 'success', message: 'ok' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      registry,
+      systemPrompt: '这是一段足够长的系统提示词，用来让 systemPrompt 那一桶明确非零。',
+      // 尾区注记 → workspaceState 桶。
+      tailNotes: () => ['当前工作区状态：分支 main，无未提交改动。'],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: (channel, delta) =>
+          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+        requestPermission: async () => true,
+      }),
+    })
+
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_breakdown' as never,
+      history: [
+        { role: 'user', content: '历史消息一', _group: 'historyMessages' },
+        { role: 'assistant', content: '这是上一轮的摘要', _group: 'summary' },
+        // 不带 _group：按口径落进 historyMessages，不单开「其他」桶。
+        { role: 'user', content: '没有分组标记的消息' },
+      ],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const ctx = events.find((e) => e.type === 'context')
+    expect(ctx?.type).toBe('context')
+    const b = ctx?.type === 'context' ? ctx.breakdown : null
+    expect(b).toBeDefined()
+
+    expect(b!.systemPrompt).toBeGreaterThan(0)
+    expect(b!.toolSchemas).toBeGreaterThan(0)
+    expect(b!.summary).toBeGreaterThan(0)
+    expect(b!.workspaceState).toBeGreaterThan(0)
+    // 两条历史（一条带标记、一条不带）都归到 historyMessages。
+    expect(b!.historyMessages).toBeGreaterThan(0)
+    // 全零就是这条测试要挡的那个回归。
+    expect(Object.values(b!).some((v) => v > 0)).toBe(true)
+  })
+})
+
+describe('原地打转', () => {
+  /**
+   * 复现要挡的形状：模型用一模一样的参数反复调同一个只读工具，拿到一模一样的
+   * 结果。之前这会一路烧到 `max_steps`——几十轮 provider 往返，最后报一个
+   * 「已达步数上限」，而那个原因是错的：多给一百步也一样。
+   */
+  test('同样的调用同样的结果三轮之后停下，stopReason=no_progress', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'stuck',
+      description: '永远返回同一个结果，用于验证空转判定。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空',
+      permissionEffect: 'internal_control',
+      fn: async () => {
+        executed++
+        return { status: 'success' as const, message: '还是这些' }
+      },
+    })
+
+    // 脚本给足十轮，如果判定没生效它会一路跑完。
+    const turns = Array.from({ length: 10 }, () => [call('stuck')])
+    const loop = new AgentLoop({
+      adapter: fakeAdapter(turns),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: () => {},
+        requestPermission: async () => true,
+      }),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_stuck' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('no_progress')
+    // 停在第三轮，不是第十轮——这条数字就是这个改动的全部价值。
+    expect(executed).toBe(3)
+  })
+
+  /** 结果每轮都在变（轮询等待）就不该被判成打转，得让它跑完。 */
+  test('结果在变的不判，跑满脚本', async () => {
+    const registry = new ToolRegistry()
+    let n = 0
+    registry.register({
+      name: 'poll',
+      description: '每次返回不同结果，模拟轮询等待。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空',
+      permissionEffect: 'internal_control',
+      fn: async () => ({ status: 'success' as const, message: `第 ${++n} 次` }),
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('poll')], [call('poll')], [call('poll')], [call('poll')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: () => {},
+        requestPermission: async () => true,
+      }),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_poll' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+    expect(n).toBe(4)
+  })
+})
+
+/**
+ * 思考强度从 `RunInput` 走到 `ChatRequest`。
+ *
+ * 这是那条链路的最后一跳，也是最容易断的一跳——它两头都有类型，
+ * 中间少传一个字段不会报任何错，表现只是「选了 max 和选了 low 一模一样」。
+ */
+describe('effort 传到请求上', () => {
+  function capturing(): { adapter: LlmAdapter; seen: ChatRequest[] } {
+    const seen: ChatRequest[] = []
+    const inner = fakeAdapter([null])
+    return {
+      seen,
+      adapter: {
+        ...inner,
+        async *stream(req: ChatRequest) {
+          seen.push(req)
+          yield* inner.stream(req)
+        },
+      },
+    }
+  }
+
+  async function runWith(effort?: 'low' | 'max') {
+    const { adapter, seen } = capturing()
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 's',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) =>
+        ({
+          workspaceRoot: '/tmp',
+          conversationId: 'cv',
+          runId,
+          model: 'test',
+          resources: new Map(),
+          state: new Map(),
+          sink: null,
+          signal: new AbortController().signal,
+          emit: () => {},
+          requestPermission: async () => true,
+        }) as ToolContext,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      ...(effort ? { effort } : {}),
+      signal: new AbortController().signal,
+    })) {
+      // 跑完即可。
+    }
+    return seen
+  }
+
+  test('传了就带上，且原样传', async () => {
+    expect((await runWith('max'))[0]?.effort).toBe('max')
+    expect((await runWith('low'))[0]?.effort).toBe('low')
+  })
+
+  /** 不传是**不带这个键**，不是带一个 undefined——省略和显式空值在协议上不等价。 */
+  test('没传就不带这个键', async () => {
+    const req = (await runWith())[0]!
+    expect('effort' in req).toBe(false)
+  })
+})
+
+/**
+ * 一轮的花费带着它自己的币种。
+ *
+ * 币种写死美元不会让任何东西报错——`cost` 仍然是个数字、界面仍然画得出来，
+ * 只是 ¥ 会显示成 $，差七倍。这类错误只能靠这种测试挡。
+ */
+describe('花费带币种', () => {
+  async function usageOf(model: string) {
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null], model),
+      registry: new ToolRegistry(),
+      systemPrompt: 's',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) =>
+        ({
+          workspaceRoot: '/tmp',
+          conversationId: 'cv',
+          runId,
+          model,
+          resources: new Map(),
+          state: new Map(),
+          sink: null,
+          signal: new AbortController().signal,
+          emit: () => {},
+          requestPermission: async () => true,
+        }) as ToolContext,
+    })
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    const finished = events.find((e) => e.type === 'run.finished')
+    return finished?.type === 'run.finished' ? finished.usage : null
+  }
+
+  test('美元标价的模型记 USD', async () => {
+    expect((await usageOf('claude-opus-5'))?.currency).toBe('USD')
+  })
+
+  /** GLM 官网按人民币标价。目录里记的是 ¥，这一轮的花费就得是 ¥。 */
+  test('人民币标价的模型记 CNY', async () => {
+    expect((await usageOf('glm-5.2'))?.currency).toBe('CNY')
+  })
+})
+
+describe('用户中断不是错误', () => {
+  /**
+   * 原始失败形状：run 挂在等 provider 事件的 await 上，此时 abort 让底层请求抛出，
+   * 被归类成 ProviderError('internal_error','已取消') 走异常路径——
+   * loop 里三处 `signal.aborted` 检查全在「两个事件之间」，一个都赶不上。
+   * 结果是用户主动点停止，DB 记 failed、界面弹一条红色 internal_error。
+   */
+  function abortingAdapter(controller: AbortController): LlmAdapter {
+    return {
+      kind: 'anthropic' as const,
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('claude-opus-5', 'anthropic'),
+      measure: async () => 0,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        // 在「两个事件之间」之外的地方中断，并像真实 SDK 那样抛出。
+        controller.abort()
+        throw new ProviderError({
+          code: 'internal_error',
+          message: '已取消',
+          retryable: false,
+          provider: 'anthropic',
+        })
+      },
+    }
+  }
+
+  test('流式等待中被中断 —— 终态是 interrupted，且不发 run.error', async () => {
+    const controller = new AbortController()
+    const loop = new AgentLoop({
+      adapter: abortingAdapter(controller),
+      registry: new ToolRegistry(),
+      systemPrompt: 's',
+      tailNotes: () => [],
+      makeToolContext: () => ({}) as never,
+      persist: noopPersistence(),
+    })
+
+    const types: string[] = []
+    let finished: { status: string; stopReason: string } | undefined
+    for await (const ev of loop.run({
+      runId: 'rn_abort' as never,
+      history: [],
+      signal: controller.signal,
+    })) {
+      types.push(ev.type)
+      if (ev.type === 'run.finished') finished = ev
+    }
+
+    expect(finished?.status).toBe('interrupted')
+    expect(finished?.stopReason).toBe('user_interrupt')
+    // 报红的那条不能出现——中断不该走错误通道。
+    expect(types).not.toContain('run.error')
   })
 })

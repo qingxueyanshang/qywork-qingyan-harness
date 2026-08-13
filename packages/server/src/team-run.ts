@@ -230,6 +230,7 @@ export async function runBuiltinMember(
     signal: input.signal,
     ...(role.systemPrompt ? { extraSystem: role.systemPrompt } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
+    ...(role.maxSteps ? { maxSteps: role.maxSteps } : {}),
   })
 
   let text = ''

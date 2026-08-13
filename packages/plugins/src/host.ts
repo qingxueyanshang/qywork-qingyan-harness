@@ -164,6 +164,14 @@ export class PluginHost {
     })
     this.proc = proc
 
+    // stdin 上必须挂 error 监听。插件进程崩掉的瞬间我们可能正在往它的管道里写，
+    // 而**没有监听者的 stream error 事件会直接掀掉整个宿主进程**——
+    // 一个装错的插件不该有能力做到这件事，那正是本文件开头承诺过的边界。
+    // MCP 那条传输链上同款问题已经修过（`mcp/src/transport.ts`），这里当时漏了。
+    proc.stdin?.on('error', (err: Error) => {
+      this.opts.onLog?.(`[${this.opts.manifest.id}] 写入失败：${err.message}`)
+    })
+
     proc.stdout?.setEncoding('utf8')
     proc.stdout?.on('data', (chunk: string) => this.onStdout(chunk))
     proc.stderr?.setEncoding('utf8')
@@ -263,7 +271,9 @@ export class PluginHost {
   }
 
   private send(payload: Record<string, unknown>): void {
-    this.proc?.stdin?.write(`${JSON.stringify(payload)}\n`)
+    const stdin = this.proc?.stdin
+    if (!stdin || stdin.destroyed) return
+    stdin.write(`${JSON.stringify(payload)}\n`)
   }
 
   /** 调用插件导出的方法。超时会拒绝，但**不杀进程**——可能只是这一次调用慢。 */
