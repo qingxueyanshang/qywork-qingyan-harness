@@ -79,7 +79,9 @@ export async function startRun(
   retry?: { retryOf: Run; clientRequestId: string },
   attachments?: Attachment[],
 ): Promise<void> {
-  if (deps.runs.isBusy(conversationId)) {
+  // 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
+  // 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
+  if (!deps.runs.reserve(conversationId)) {
     deps.bus.publish(
       {
         type: 'run.error',
@@ -104,6 +106,7 @@ export async function startRun(
    */
   const ws = workspaceOf(deps.store, conversationId)
   if (!ws) {
+    deps.runs.release(conversationId)
     deps.bus.publish(
       {
         type: 'run.error',
@@ -184,7 +187,10 @@ export async function startRun(
         conversationId,
       )
     } finally {
+      // register 过就走 unregister，没跑起来的由 release 收——两者都不做的话
+      // 这个会话会被永久占住，之后每一条消息都被回绝「已有任务在执行」。
       if (currentRunId) deps.runs.unregister(currentRunId)
+      else deps.runs.release(conversationId)
       // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
       session.dispose()

@@ -11,7 +11,7 @@ import {
   loadSchedules,
   nextRunAt,
   type Schedule,
-  saveSchedules,
+  updateSchedules,
 } from '@qywork/runtime'
 import { createConversation } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
@@ -51,7 +51,9 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       }
       const problems = diagnoseSchedule(draft)
       if (problems.length) return json({ error: 'invalid', problems }, 422)
-      await saveSchedules([...all, draft])
+      // 走 updateSchedules 而不是拿上面那份快照整表覆盖：从 loadSchedules()
+      // 到这里之间调度 tick 可能已经写过 lastRunAt，覆盖会把它抹掉。
+      await updateSchedules((cur) => [...cur, draft])
       return json({ schedule: draft })
     }
   }
@@ -64,7 +66,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
     if (idx < 0) return json({ error: 'not found' }, 404)
 
     if (req.method === 'DELETE') {
-      await saveSchedules(all.filter((_, i) => i !== idx))
+      await updateSchedules((cur) => cur.filter((x) => x.id !== id))
       return json({ ok: true })
     }
 
@@ -85,9 +87,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       }
       const problems = diagnoseSchedule(next)
       if (problems.length) return json({ error: 'invalid', problems }, 422)
-      const list = [...all]
-      list[idx] = next
-      await saveSchedules(list)
+      await updateSchedules((cur) => cur.map((x) => (x.id === id ? next : x)))
       return json({ schedule: next })
     }
   }
@@ -103,7 +103,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
     if (!s) return json({ error: 'not found' }, 404)
     const conv = createConversation(d.store, {
       workspaceId: d.workspaceId as never,
-      model: d.config.profiles[d.config.active]?.model ?? 'unknown',
+      model: d.config.active.model,
       title: s.title,
     })
     // 手动试跑**不推进** lastRunAt：它是调度状态，被手动触发改掉的话

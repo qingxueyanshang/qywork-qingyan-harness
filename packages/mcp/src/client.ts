@@ -21,6 +21,7 @@
  * 那个头只出现一次，错过了之后每条请求都会被当成新会话。
  */
 
+import pkg from '../package.json' with { type: 'json' }
 import type { McpResourceContents, McpResourceDef } from './resources.ts'
 import {
   HttpTransport,
@@ -29,6 +30,12 @@ import {
   type McpTransport,
   StdioTransport,
 } from './transport.ts'
+
+/**
+ * 本包版本。**真源是根 `VERSION`**，由 `bun run scripts/sync-version.ts` 灌进
+ * 各包的 package.json；手写字面量不在那个脚本的覆盖范围里，升版本时会原地不动。
+ */
+const PKG_VERSION: string = pkg.version
 
 export type { HttpServerSpec, McpServerSpec, StdioServerSpec } from './transport.ts'
 
@@ -243,7 +250,7 @@ export class McpClient {
             // 只声明我们真的实现了的。声明了没实现的能力，server 会据此发我们
             // 处理不了的请求——那比不声明糟得多。
             capabilities: {},
-            clientInfo: { name: 'qywork', version: '0.1.0' },
+            clientInfo: { name: 'qywork', version: PKG_VERSION },
           },
           INIT_TIMEOUT_MS,
         )) as never

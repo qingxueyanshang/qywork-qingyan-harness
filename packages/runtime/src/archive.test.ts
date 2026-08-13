@@ -81,7 +81,8 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     cachedTokens: null,
     cacheWriteTokens: null,
     reasoningTokens: 0,
-    costUsd: 0.0012,
+    cost: 0.0012,
+    currency: 'USD',
     turns: [],
   })
   finishRun(store, run.id, { status: 'done', stopReason: 'completed' })

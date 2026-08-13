@@ -23,7 +23,7 @@
 
 import { projectManifest } from '@qywork/agent'
 import { buildAdapter } from '@qywork/ai'
-import { loadConfig, RuntimeCompaction, resolveApiKey } from '@qywork/runtime'
+import { loadConfig, RuntimeCompaction, resolveApiKey, resolveModel } from '@qywork/runtime'
 import {
   appendMessage,
   ContentStore,
@@ -80,9 +80,9 @@ function check(label: string, ok: boolean, detail?: unknown): void {
 
 async function main(): Promise<number> {
   const config = await loadConfig()
-  const profile = config.profiles[config.active]
+  const profile = resolveModel(config)
   if (!profile) {
-    process.stderr.write('没有可用的供应商档案\n')
+    process.stderr.write('没有可用的接口\n')
     return 2
   }
 

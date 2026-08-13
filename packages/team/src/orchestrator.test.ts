@@ -241,3 +241,52 @@ function byId(results: NodeResult[], id: string): NodeResult {
   if (!r) throw new Error(`没有节点 ${id}`)
   return r
 }
+
+/**
+ * 成员子会话的 id 要带出去。
+ *
+ * 子会话打了 `source: 'workflow'`，不进会话列表——**`team.member` 事件里的这个 id
+ * 是它唯一的入口**。断在这一环的表现最难查：面板照常显示「完成」，
+ * 只是那个成员到底读了什么、跑了哪些命令永远看不到，而且没有任何报错。
+ */
+describe('成员子会话', () => {
+  function collect(run: (roleId: string) => Promise<Record<string, unknown>>) {
+    const events: Record<string, unknown>[] = []
+    return {
+      events,
+      deps: {
+        workspaceRoot: '/tmp',
+        signal: new AbortController().signal,
+        runId: 'rn_t' as never,
+        emit: (e: Record<string, unknown>) => events.push(e),
+        awaitHumanGate: async () => true,
+        runBuiltin: async ({ role: r }: { role: Role }) => run(r.id),
+      },
+    }
+  }
+
+  const cfg: TeamConfig = {
+    name: 't',
+    roles: [role('dev')],
+    plan: [{ id: 'n1', roleId: 'dev', task: '干活' }],
+  }
+
+  test('内置后端返回了会话 id，就出现在 done 事件上', async () => {
+    const { events, deps: d } = collect(async (id) => ({
+      ok: true,
+      output: `${id} 的产出`,
+      conversationId: 'cv_child',
+    }))
+    await new TeamOrchestrator(cfg, d as never).run('目标')
+    const done = events.find((e) => e.phase === 'done')
+    expect(done?.childConversationId).toBe('cv_child')
+  })
+
+  /** 没有子会话时这个键必须**缺席**，不是 undefined：界面据它判断这行能不能点。 */
+  test('没有子会话时不带这个键', async () => {
+    const { events, deps: d } = collect(async (id) => ({ ok: true, output: `${id} 的产出` }))
+    await new TeamOrchestrator(cfg, d as never).run('目标')
+    const done = events.find((e) => e.phase === 'done')
+    expect('childConversationId' in (done ?? {})).toBe(false)
+  })
+})

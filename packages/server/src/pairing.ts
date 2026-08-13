@@ -7,6 +7,10 @@
  *
  * 设计取舍：
  * - 令牌随进程生成，不落盘。桌面端从 spawn 时的环境变量拿，手机端扫码拿。
+ * - **令牌的有效期就是进程的生命周期，没有单独的 TTL。** 曾经有一个 12 小时的
+ *   `expiresAt`：写进二维码给手机看，却没有任何一条鉴权路径校验它。加上校验会
+ *   把桌面端一起锁在门外（它的 sidecar 开一整天很正常），所以删掉这个承诺，
+ *   而不是补一个会误伤自己人的检查。要真做限期得配一套重新配对的流程，那是另一件事。
  * - 令牌放在 URL fragment（`#t=...`）而不是 query：fragment 不会进服务端访问日志、
  *   不会进 Referer 头、不会被中间代理记录。
  * - 比较用定长时间算法，避免按字符早退泄露前缀。
@@ -17,18 +21,20 @@ import { encodePairingUrl, type PairingPayload } from '@qywork/core'
 
 export class Pairing {
   readonly token: string
-  readonly expiresAt: number
   readonly deviceName: string
 
-  constructor(opts: { ttlMs?: number; deviceName?: string } = {}) {
-    this.token = generateToken()
-    this.expiresAt = Date.now() + (opts.ttlMs ?? 12 * 60 * 60 * 1000)
+  /** `token` 由外部给（桌面端 spawn 时的环境变量），不给就随进程生成一个。 */
+  constructor(opts: { token?: string; deviceName?: string } = {}) {
+    this.token = opts.token || generateToken()
     this.deviceName = opts.deviceName ?? 'qywork'
   }
 
+  /**
+   * 校验令牌。**这是唯一的鉴权入口**——曾经这里和 `http-util.ts` 各有一份实现，
+   * 而真正被 `/stream` 与 `/api` 调用的是后者，于是这份的判断条件全都不生效。
+   */
   verify(candidate: string | null | undefined): boolean {
     if (!candidate) return false
-    if (Date.now() > this.expiresAt) return false
     return timingSafeEqual(candidate, this.token)
   }
 
@@ -36,7 +42,6 @@ export class Pairing {
     return {
       url: `http://${preferredLanAddress()}:${port}`,
       token: this.token,
-      expiresAt: this.expiresAt,
       deviceName: this.deviceName,
     }
   }

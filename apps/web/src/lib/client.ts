@@ -144,6 +144,15 @@ export class QyClient {
   private lastSeq = 0
   private attempt = 0
   private closed = false
+  /**
+   * 终态已经带着具体原因报过了。
+   *
+   * `closed` 只说「别再重连」，说不出**为什么**。握手被拒时服务端发完 hello.err
+   * 立刻 close，两个事件前后脚到：先报了 unauthorized（「令牌无效」），
+   * 紧接着 close 处理器又无条件报一遍 closed（「连接已断开」），
+   * 用户最终看到的是后面那句泛化的——而真正能指导他下一步的是前面那句。
+   */
+  private terminalReported = false
   private readonly endpoint: Endpoint
   private readonly open: (url: string) => SocketLike
   /**
@@ -227,6 +236,7 @@ export class QyClient {
       }
       if (msg.type === 'hello.err') {
         this.opts.onState('unauthorized', msg.message)
+        this.terminalReported = true
         // **握手被拒是终态**，不按 reason 分支。
         //
         // 服务端现在只会发 `bad_token`，而它重连一万次带的还是同一个令牌。
@@ -253,7 +263,8 @@ export class QyClient {
     ws.addEventListener('close', () => {
       this.ws = null
       if (this.closed) {
-        this.opts.onState('closed')
+        // 已经报过带原因的终态就不要再盖一层泛化的。
+        if (!this.terminalReported) this.opts.onState('closed')
         return
       }
       this.scheduleReconnect()

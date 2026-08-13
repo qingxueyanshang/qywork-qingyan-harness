@@ -85,9 +85,9 @@ const okOutcome: CompactionOutcome = {
   manifest: {
     revision: 1,
     compactedThroughMessageId: null,
-    compactedRunSteps: {},
+    compactedMessageCount: 0,
     summary: '摘要',
-    facts: { filesTouched: [], decisions: [], openItems: [], userConstraints: [] },
+    facts: { filesTouched: [], openItems: [], userConstraints: [] },
     createdAt: 0,
   },
 }

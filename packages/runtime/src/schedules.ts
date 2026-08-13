@@ -75,6 +75,34 @@ export async function saveSchedules(list: Schedule[]): Promise<void> {
   await writeFile(schedulesPath(), `${JSON.stringify(list, null, 2)}\n`, 'utf8')
 }
 
+/** 串行化 `updateSchedules`。同一进程内所有读-改-写排成一条队。 */
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+/**
+ * 读-改-写一次定时任务表，**全程串行**。
+ *
+ * 为什么必须有这个：调度 tick 要回写 `lastRunAt`，设置页的增删改要写整表，
+ * 两条路径都是「读全表 → 改 → 写全表」，而中间隔着 await。交错时后写的那方
+ * 拿的是过期快照，会把先写方的改动整段抹掉——用户刚建的任务凭空消失，
+ * 或者刚记下的 lastRunAt 丢了导致任务被重复触发，而且两者都毫无提示。
+ *
+ * 只解决**同一进程内**的交错。跨进程要文件锁，那是另一件事，
+ * 而现在两个写入方本来就在同一个进程里。
+ */
+export function updateSchedules(
+  mutate: (current: Schedule[]) => Schedule[] | Promise<Schedule[]>,
+): Promise<Schedule[]> {
+  const next = writeQueue.then(async () => {
+    const current = await loadSchedules()
+    const updated = await mutate(current)
+    await saveSchedules(updated)
+    return updated
+  })
+  // 队列本身不能因为某次失败就断掉，否则后续写入全部无声挂起。
+  writeQueue = next.catch(() => {})
+  return next
+}
+
 /**
  * 校验一条定时任务。返回问题列表，空数组 = 合格。
  *

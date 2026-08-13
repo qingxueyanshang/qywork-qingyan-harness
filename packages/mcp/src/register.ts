@@ -38,6 +38,18 @@ export function toolName(server: string, tool: string): string {
   return sanitizeToolName(`mcp__${server}__${tool}`)
 }
 
+/**
+ * 「这个 server 的工具」的名字前缀。
+ *
+ * **必须走这里，不要自己拼 `mcp__${name}__`。** 注册名是消毒过的，
+ * 一个叫 `my.server` 的 server 注册出来是 `mcp__my_server__foo`，
+ * 拿未消毒的名字拼前缀一条都匹配不上——`load.ts` 的「产出为零」判定和三个
+ * CLI 的工具计数都栽在这上面，表现是「装好了却报 0 个工具 / 报注册失败」。
+ */
+export function toolNamePrefix(server: string): string {
+  return sanitizeToolName(`mcp__${server}__`)
+}
+
 /** 权限 scope 里用的目标串。裁决层按它识别「这是哪个 server 的哪个工具」。 */
 export function permissionLabel(server: string, tool: string): string {
   return `mcp:${server}/${tool}`

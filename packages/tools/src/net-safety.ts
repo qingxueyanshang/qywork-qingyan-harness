@@ -202,25 +202,81 @@ function classifyV4(address: string): { reason: BlockReason; message: string } |
   return null
 }
 
+/**
+ * 展开成 8 组 16 位数。`::` 补零，尾部的点分十进制段折成两组。
+ *
+ * 判 IPv6 **只能按展开后的数值判，不能按字面量匹配**：同一个地址有无数种写法，
+ * `::ffff:127.0.0.1` 和 `::ffff:7f00:1` 是同一个回环地址，按写法枚举永远漏。
+ *
+ * 解析不出来返回 null，调用方按默认拒绝处理。
+ */
+function expandV6(address: string): number[] | null {
+  // 区域标识（fe80::1%eth0）不参与地址判定。
+  const bare = (address.split('%')[0] ?? '').toLowerCase()
+  const halves = bare.split('::')
+  if (halves.length > 2) return null
+
+  const parseSide = (side: string): number[] | null => {
+    if (side === '') return []
+    const parts = side.split(':')
+    const out: number[] = []
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i] ?? ''
+      // 尾部允许一个点分十进制段（::ffff:127.0.0.1），它占两组。
+      if (part.includes('.')) {
+        if (i !== parts.length - 1) return null
+        const oct = part.split('.').map(Number)
+        if (oct.length !== 4 || oct.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+          return null
+        }
+        out.push(((oct[0] as number) << 8) | (oct[1] as number))
+        out.push(((oct[2] as number) << 8) | (oct[3] as number))
+        continue
+      }
+      if (!/^[0-9a-f]{1,4}$/.test(part)) return null
+      out.push(Number.parseInt(part, 16))
+    }
+    return out
+  }
+
+  const head = parseSide(halves[0] ?? '')
+  const tail = halves.length === 2 ? parseSide(halves[1] ?? '') : []
+  if (head === null || tail === null) return null
+
+  if (halves.length === 1) return head.length === 8 ? head : null
+  const fill = 8 - head.length - tail.length
+  if (fill < 1) return null
+  return [...head, ...new Array<number>(fill).fill(0), ...tail]
+}
+
 function classifyV6(address: string): { reason: BlockReason; message: string } | null {
-  const lower = address.toLowerCase()
+  const g = expandV6(address)
+  if (!g) return { reason: 'reserved', message: `无法识别的 IPv6 地址：${address}` }
 
-  // IPv4 映射地址：::ffff:127.0.0.1 与 127.0.0.1 等价。
-  // 不展开判的话，一个 ::ffff: 前缀就绕过了全部 IPv4 规则。
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower)
-  if (mapped) return classifyV4(mapped[1]!)
+  if (g.every((x) => x === 0)) return { reason: 'reserved', message: '拒绝访问未指定地址' }
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) {
+    return { reason: 'loopback', message: `拒绝访问回环地址 ${address}` }
+  }
 
-  if (lower === '::1') return { reason: 'loopback', message: '拒绝访问回环地址 ::1' }
-  if (lower === '::') return { reason: 'reserved', message: '拒绝访问未指定地址' }
+  // IPv4 映射（::ffff:x）与 IPv4 兼容（::x）：低 32 位就是一个 IPv4 地址，
+  // 必须还原成 IPv4 再判，否则一个前缀就绕过了全部 IPv4 规则。
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) {
+    const hi = g[6] as number
+    const lo = g[7] as number
+    return classifyV4([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.'))
+  }
+
+  const first = g[0] as number
   // fc00::/7 唯一本地地址，相当于 IPv6 的内网段。
-  if (/^f[cd]/.test(lower)) {
+  if ((first & 0xfe00) === 0xfc00) {
     return { reason: 'private_network', message: `拒绝访问 IPv6 内网地址 ${address}` }
   }
   // fe80::/10 链路本地。
-  if (/^fe[89ab]/.test(lower)) {
+  if ((first & 0xffc0) === 0xfe80) {
     return { reason: 'link_local', message: `拒绝访问 IPv6 链路本地地址 ${address}` }
   }
-  if (/^ff/.test(lower)) {
+  // ff00::/8 组播。
+  if ((first & 0xff00) === 0xff00) {
     return { reason: 'reserved', message: `拒绝访问 IPv6 组播地址 ${address}` }
   }
   return null
@@ -287,7 +343,12 @@ export async function safeFetch(
     const timeout = AbortSignal.timeout(opts.timeoutMs ?? 30_000)
     const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
 
-    const res = await fetch(current, {
+    // **按校验时解析出的 IP 连接**，而不是把主机名再交给 fetch 解析一次。
+    // 解析两次中间那个窗口就是 DNS 重绑定：第一次回公网 IP 过闸，
+    // 第二次回 127.0.0.1 / 169.254.169.254。
+    const pinned = pinToAddress(current, verdict.resolved)
+
+    const res = await fetch(pinned.url, {
       method,
       redirect: 'manual',
       signal,
@@ -296,9 +357,14 @@ export async function safeFetch(
         'user-agent': 'qywork-agent/0.1 (+https://github.com/qywork)',
         accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5',
         ...extraHeaders,
+        // URL 里放的是 IP，得把原主机名带回去，虚拟主机才路由得对。
+        ...(pinned.host ? { host: pinned.host } : {}),
       },
+      // TLS 证书仍按**原主机名**校验：servername 给错名字连不上（已实测），
+      // 所以钉 IP 不等于把证书校验降级。
+      ...(pinned.servername ? { tls: { servername: pinned.servername } } : {}),
       ...(body !== undefined && method !== 'GET' && method !== 'HEAD' ? { body } : {}),
-    })
+    } as RequestInit)
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location')
@@ -379,9 +445,46 @@ function sanitizeHeaders(raw: Record<string, string> | undefined): Record<string
   return out
 }
 
+/**
+ * 把 URL 的主机换成已解析的 IP，并交出要带回去的原主机名。
+ *
+ * `resolved` 与原主机相同（主机名本来就是字面 IP，或走了 allowHosts）时原样返回，
+ * 不做无谓改写。
+ */
+function pinToAddress(
+  raw: string,
+  resolved: string | undefined,
+): { url: string; host?: string; servername?: string } {
+  if (!resolved) return { url: raw }
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return { url: raw }
+  }
+  const original = u.hostname.replace(/^\[|\]$/g, '')
+  if (original.toLowerCase() === resolved.toLowerCase()) return { url: raw }
+
+  const host = u.host
+  u.hostname = isIP(resolved) === 6 ? `[${resolved}]` : resolved
+  return { url: u.toString(), host, servername: original }
+}
+
+/**
+ * 跨源跳转要丢掉的请求头。
+ *
+ * 不能只列 `authorization` / `cookie`：凭证同样常见于 `x-api-key` 这类自定义头，
+ * 插件的 net.fetch 就是这么用的。所以用**正面白名单之外一律丢**的口径——
+ * 逐条枚举「哪些头是凭证」永远列不全，而跨源之后本来也没有几个头值得带过去。
+ */
+const CROSS_ORIGIN_KEEP = new Set(['accept', 'accept-language', 'user-agent', 'content-type'])
+
 function dropAuth(headers: Record<string, string>): Record<string, string> {
-  const { authorization: _drop, cookie: _drop2, ...rest } = headers
-  return rest
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(headers)) {
+    if (CROSS_ORIGIN_KEEP.has(k)) out[k] = v
+  }
+  return out
 }
 
 function originOf(url: string): string {

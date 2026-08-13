@@ -9,22 +9,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { resolveInWorkspace, rootsOf } from './paths.ts'
-
-const IGNORED = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  'target',
-  '.next',
-  '.venv',
-  '__pycache__',
-  '.cache',
-  'vendor',
-  '.turbo',
-  'coverage',
-])
+import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 
 const MAX_RESULTS = 200
 
@@ -55,7 +40,7 @@ export const globTool: ToolSpec = {
     const hits: { path: string; mtime: number }[] = []
 
     for await (const rel of glob.scan({ cwd: root, onlyFiles: true, dot: false })) {
-      if (rel.split(/[\\/]/).some((seg) => IGNORED.has(seg))) continue
+      if (rel.split(/[\\/]/).some((seg) => IGNORED_DIRS.has(seg))) continue
       const abs = join(root, rel)
       const info = await stat(abs).catch(() => null)
       if (!info) continue
@@ -132,7 +117,7 @@ export const grepTool: ToolSpec = {
           return
         }
         if (e.isDirectory()) {
-          if (IGNORED.has(e.name) || e.name.startsWith('.')) continue
+          if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.')) continue
           await walk(join(dir, e.name))
           continue
         }

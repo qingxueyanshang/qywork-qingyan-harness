@@ -99,9 +99,11 @@ describe('配对令牌', () => {
     expect(p.verify(null)).toBe(false)
   })
 
-  test('过期令牌被拒', () => {
-    const p = new Pairing({ ttlMs: -1 })
-    expect(p.verify(p.token)).toBe(false)
+  test('外部注入的令牌被原样采用——鉴权只认这一个持有者', () => {
+    const p = new Pairing({ token: 'injected-by-desktop' })
+    expect(p.token).toBe('injected-by-desktop')
+    expect(p.verify('injected-by-desktop')).toBe(true)
+    expect(p.verify('injected-by-deskto')).toBe(false)
   })
 
   test('令牌走 fragment，不进 query（不会被日志与 Referer 捕获）', () => {

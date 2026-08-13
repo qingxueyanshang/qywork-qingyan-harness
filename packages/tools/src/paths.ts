@@ -8,8 +8,8 @@
  * 绝不允许把原始 path 直接交给 open/readFile/unlink——那是这类工具最常见的破口。
  */
 
-import { realpath } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { readlink, realpath } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 export class PathEscapeError extends Error {
   constructor(readonly attempted: string) {
@@ -110,8 +110,10 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 /**
  * 把工具参数里的相对路径解析成允许范围内的绝对路径。
  *
- * `mustExist=false`（写入新文件）时不能对目标本身做 realpath——它还不存在。
- * 这种情况下解析它**已存在的最近祖先**，符号链接逃逸同样挡得住。
+ * `mustExist=false`（写入新文件）时目标可能还不存在，但**判定与返回值都必须是
+ * 解析后的路径**：只解祖先、返回字面路径的话，`out` 是一条指向界外的软链时，
+ * 边界查的是 `<工作区>`、写下去的却是 `out` 指向的地方——软链逃逸在写路径上原样成立。
+ * 悬挂软链（指向一个还不存在的位置）也要按它指向的地方判，见 `resolveForWrite`。
  *
  * 额外根目录走的是**完全相同的一套判定**（先 realpath 再比对），不是另开一条
  * 宽松通道：一个指向清单内目录的软链，如果只按字面比较就能把整棵树带出来。
@@ -133,7 +135,7 @@ export async function resolveInWorkspace(
     ? await realpath(joined).catch(() => {
         throw new PathEscapeError(candidate)
       })
-    : await realpathOfNearestExisting(joined)
+    : await resolveForWrite(joined)
 
   // 工作区根解析不了是**装配错误**，让它原样抛：那条 ENOENT 指向真正的问题，
   // 换成「路径越界」只会把排查方向引到用户输入上去。
@@ -146,23 +148,47 @@ export async function resolveInWorkspace(
 
   for (const rootReal of rootReals) {
     if (isInside(rootReal, targetReal)) {
-      // 返回按 realpath 拼回的路径：中间目录的软链已被解开，尾部保留原始名字
-      // （目标可能尚不存在）。
-      return opts.mustExist ? targetReal : joined
+      // **判定用的和返回的是同一个路径。** 两者不同的话，判的是 A、写的是 B，
+      // 边界就只是看起来在那里；调用方按返回值记账时也会与读路径对不上
+      // （`files.ts` 的「本轮读过没有」曾因此在软链根下恒判 stale）。
+      return targetReal
     }
   }
 
   throw new PathEscapeError(candidate)
 }
 
-/** 解析已存在的最近祖先目录，用于「即将创建」的路径。 */
-async function realpathOfNearestExisting(target: string): Promise<string> {
+/**
+ * 解析一个「即将写入」的路径。
+ *
+ * 三种情形，都要落到**它实际会写到的那个位置**：
+ * 1. 目标已存在（含软链）—— realpath 直接解开。
+ * 2. 目标是**悬挂软链** —— realpath 会失败，但写下去照样跟随它。
+ *    所以 lstat 到软链时按 readlink 的指向判，这是「写新文件」这条路上的真正破口。
+ * 3. 目标确实不存在 —— 解析已存在的最近祖先，再把消耗掉的段接回去，
+ *    这样中间目录的软链也已经解开。
+ */
+async function resolveForWrite(target: string): Promise<string> {
+  const real = await realpath(target).catch(() => null)
+  if (real !== null) return real
+
+  const link = await readlink(target).catch(() => null)
+  if (link !== null) return resolve(dirname(target), link)
+
+  const { real: ancestor, rest } = await nearestExisting(target)
+  return rest.length ? resolve(ancestor, ...rest) : ancestor
+}
+
+/** 已存在的最近祖先目录，以及从它到目标之间被消耗掉的路径段。 */
+async function nearestExisting(target: string): Promise<{ real: string; rest: string[] }> {
+  const rest: string[] = []
   let cur = target
   for (;;) {
     const parent = resolve(cur, '..')
-    if (parent === cur) return cur // 到根了
+    if (parent === cur) return { real: cur, rest } // 到根了
+    rest.unshift(basename(cur))
     const real = await realpath(parent).catch(() => null)
-    if (real !== null) return real
+    if (real !== null) return { real, rest }
     cur = parent
   }
 }
@@ -199,9 +225,9 @@ function decodeSafely(input: string): string {
  *
  * ## 为什么单独有这一条
  *
- * 工作区约束挡的是「越界」，而 `.qy/` 就在工作区**里面**——它完全合法地
- * 通过了 `resolveInWorkspace`。但那个目录里放的是 `mcp.json`（配哪些 MCP server，
- * 等于配模型能拿到哪些工具）和 `plugins/`（装什么插件）。
+ * 工作区约束挡的是「越界」，而这两个目录就在工作区**里面**——它们完全合法地
+ * 通过了 `resolveInWorkspace`。但里面放的是 `mcp.json`（配哪些 MCP server，
+ * 等于配模型能拿到哪些工具）、`plugins/`（装什么插件）和 `skills/`（跑什么流程）。
  *
  * 也就是说：**模型可以通过写一个它自己有权限写的文件，给自己加工具。**
  * 这是自我提权，不是越权——两种模式都必须挡，`full` 也不例外，
@@ -214,8 +240,48 @@ function decodeSafely(input: string): string {
  *
  * `run_command` 里的路径不经过这里（`rm .qy/mcp.json` 照样能跑）。
  * 那条路只能靠 OS 沙箱，Windows 上暂时没有。如实记在 ROADMAP §26.6。
+ *
+ * ## 为什么 `.agents/` 也在里面
+ *
+ * 用户层的技能 / MCP / 插件搬到了 `.agents/`（跨客户端约定的那条路径）。
+ * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。
+ *
+ * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而 `memory`
+ * 工具走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
+ * 只是必须走那一条唯一的写入路径，而不是拿 `write_file` 直接改。
  */
-export const PROTECTED_DIRS: readonly string[] = ['.qy']
+export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents']
+
+/**
+ * 遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
+ *
+ * ## 为什么必须是一份
+ *
+ * 这份清单原来抄了三份：`server/files.ts`（界面文件树）、`tools/search.ts`
+ * （glob / grep）、`tools/files.ts`（list_dir）。到发现时已经漂成 13 / 12 / 11 条：
+ * `coverage` 和 `.svelte-kit` 只有界面那份有。**后果不是不整洁，是三方对
+ * 「这个目录存不存在」给出不同答案**——用户在文件树里看不到 `coverage/`，
+ * 模型 `list_dir` 却把它列出来，然后 `grep` 又搜不进去。模型据此去读一份
+ * 构建产物当源码，或者报告「在 coverage/lcov-report/x.html 里找到了」。
+ *
+ * 它和 `PROTECTED_DIRS` 不是一回事，别合并：那份是**安全边界**（挡自我提权），
+ * 这份是**噪音过滤**（省 token、省眼睛）。跳过噪音目录不构成任何保护。
+ */
+export const IGNORED_DIRS: ReadonlySet<string> = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'target',
+  '.next',
+  '.venv',
+  '__pycache__',
+  '.cache',
+  'vendor',
+  '.turbo',
+  'coverage',
+  '.svelte-kit',
+])
 
 export class ProtectedPathError extends Error {
   constructor(readonly attempted: string) {

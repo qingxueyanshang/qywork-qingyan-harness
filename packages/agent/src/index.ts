@@ -1,6 +1,39 @@
-export * from './classifier.ts'
-export * from './compaction.ts'
-export * from './loop.ts'
-export * from './policy.ts'
-export * from './prefix-audit.ts'
-export * from './registry.ts'
+/**
+ * `@qywork/agent` 的对外面。
+ *
+ * **这里列的就是承诺，没列的就是内部实现。** 之前六个模块走 `export *`，
+ * 把五十个符号一并推到包外——其中三十多个从来没有包外调用点。
+ * 后果不是「用了会坏」，是**看不出这个包对外承诺了什么**：改任何一个内部函数
+ * 都得先全仓 grep 一遍才敢动。现在只导出真实有外部消费者的，逐个核过调用点。
+ *
+ * 包内互相引用照常走相对路径，测试也一样——它们不受这份清单约束。
+ *
+ * 加新的对外符号时：先确认它真的有包外调用点，再往下面加一行。
+ * 「以后可能有人要用」不是理由（见 CLAUDE.md B3）。
+ */
+
+// 分类器：runtime 装配 Session 时注入 AskFn 与缓存
+export { type AskFn, classify, VerdictCache } from './classifier.ts'
+// 压缩：runtime 的压缩端口与 server 的手动压缩入口共用同一份实现
+// CompactionOutcome 没有被谁 import，但它出现在 runtime 的公开签名的推断类型里——
+// 不导出会让那个类型无法命名（TS2742）。这类「隐式对外」同样是承诺。
+export {
+  type CompactionOutcome,
+  compact,
+  projectManifest,
+  type Summarizer,
+} from './compaction.ts'
+// 主循环：runtime/session.ts 是唯一装配方
+export { AgentLoop, type CompactionPort, type LoopPersistence } from './loop.ts'
+// 静态规则：runtime 在分类器之前先问它
+export { decideCommand } from './policy.ts'
+// 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
+export {
+  type PermissionVerdict,
+  type SinkPort,
+  sanitizeToolName,
+  type ToolContext,
+  type ToolOutcome,
+  ToolRegistry,
+  type ToolSpec,
+} from './registry.ts'

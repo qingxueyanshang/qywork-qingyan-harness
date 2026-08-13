@@ -120,3 +120,34 @@ describe('URL 校验', () => {
     expect((await checkUrl('http://169.254.169.254/', { allowPrivate: true })).allowed).toBe(false)
   })
 })
+
+describe('IPv6 写法等价性 —— 按数值判，不按字面量匹配', () => {
+  /**
+   * 复现原始失败形状：`::ffff:127.0.0.1` 挡得住，`::ffff:7f00:1` 放行。
+   * 同一个地址、两种合法写法、两种结论——只认点分十进制的那条正则等于没判。
+   */
+  test('IPv4 映射地址的十六进制写法照样挡住', () => {
+    expect(classifyAddress('::ffff:7f00:1')?.reason).toBe('loopback')
+    expect(classifyAddress('::ffff:127.0.0.1')?.reason).toBe('loopback')
+    // 云元数据端点：a9fe:a9fe = 169.254.169.254，这条最危险。
+    expect(classifyAddress('::ffff:a9fe:a9fe')?.reason).toBe('link_local')
+    expect(classifyAddress('::ffff:c0a8:1')?.reason).toBe('private_network')
+  })
+
+  test('大小写与零压缩的各种写法结论一致', () => {
+    expect(classifyAddress('::FFFF:7F00:1')?.reason).toBe('loopback')
+    expect(classifyAddress('0:0:0:0:0:ffff:7f00:1')?.reason).toBe('loopback')
+    expect(classifyAddress('fe80::1')?.reason).toBe('link_local')
+    expect(classifyAddress('FE80:0:0:0:0:0:0:1')?.reason).toBe('link_local')
+    expect(classifyAddress('fd00::1')?.reason).toBe('private_network')
+  })
+
+  test('URL 里带方括号的十六进制映射地址被 checkUrl 挡住', async () => {
+    const v = await checkUrl('http://[::ffff:a9fe:a9fe]/')
+    expect(v.allowed).toBe(false)
+  })
+
+  test('解析不出来的 IPv6 默认拒绝，不当成公网放行', () => {
+    expect(classifyAddress('::ffff:1.2.3')?.reason).toBe('reserved')
+  })
+})

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
@@ -153,10 +153,13 @@ describe('额外根目录', () => {
     )
   })
 
-  test('工作区的 .qy 保护不受额外目录影响', async () => {
+  test('工作区的 .qy / .agents 保护不受额外目录影响', async () => {
     const { root, extra } = await withExtra()
     await expect(
-      resolveWritablePath({ workspaceRoot: root, additional: [extra] }, '.qy/mcp.json'),
+      resolveWritablePath({ workspaceRoot: root, additional: [extra] }, '.qy/team.json'),
+    ).rejects.toThrow(/权限|扩展配置/)
+    await expect(
+      resolveWritablePath({ workspaceRoot: root, additional: [extra] }, '.agents/mcp.json'),
     ).rejects.toThrow(/权限|扩展配置/)
   })
 
@@ -316,11 +319,12 @@ describe('搜索与命令', () => {
 })
 
 /**
- * `.qy/` 的写保护。
+ * `.qy/` 与 `.agents/` 的写保护。
  *
- * 这一条挡的不是**越权**，是**自我提权**：`.qy/mcp.json` 决定模型能拿到哪些工具，
- * `.qy/plugins/` 决定装什么插件。模型完全合法地能写工作区内的文件，
- * 于是它可以通过写一个自己有权限写的文件，给自己加工具。
+ * 这一条挡的不是**越权**，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
+ * 工具、`.agents/plugins/` 决定装什么插件、`.agents/skills/` 决定跑什么流程。
+ * 模型完全合法地能写工作区内的文件，于是它可以通过写一个自己有权限写的文件，
+ * 给自己加工具。
  *
  * 所以两种权限模式都要挡——`full` 的意思是「不裁决这次操作」，
  * 不是「可以修改裁决规则本身」。
@@ -328,15 +332,35 @@ describe('搜索与命令', () => {
 describe('受保护目录', () => {
   test('.qy 下的写入被拒，且理由说清是为什么', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
-    await expect(resolveWritablePath(dir, '.qy/mcp.json')).rejects.toThrow(/权限|扩展配置/)
-    await expect(resolveWritablePath(dir, '.qy/plugins/evil/qywork.plugin.json')).rejects.toThrow()
+    await expect(resolveWritablePath(dir, '.qy/team.json')).rejects.toThrow(/权限|扩展配置/)
+  })
+
+  /*
+   * 用户层的技能 / MCP / 插件搬到 `.agents/` 之后，保护必须跟着搬。
+   * 不搬的话这条防线就只剩一个空目录名——而空目录名看起来和防线一模一样。
+   */
+  test('.agents 下的写入同样被拒 —— 它现在装着技能、MCP、插件', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
+    await expect(resolveWritablePath(dir, '.agents/mcp.json')).rejects.toThrow(/权限|扩展配置/)
+    await expect(
+      resolveWritablePath(dir, '.agents/plugins/evil/qywork.plugin.json'),
+    ).rejects.toThrow()
+    await expect(resolveWritablePath(dir, '.agents/skills/evil/SKILL.md')).rejects.toThrow()
   })
 
   /** 绕过尝试：`..` 回绕、大小写、分隔符混用。判定基于已解析的绝对路径，都该挡住。 */
   test('绕不过去', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     const backslash = String.fromCharCode(92)
-    for (const p of ['./.qy/x.json', 'sub/../.qy/x.json', `.qy${backslash}x.json`]) {
+    const attempts = [
+      './.qy/x.json',
+      'sub/../.qy/x.json',
+      `.qy${backslash}x.json`,
+      './.agents/x.json',
+      'sub/../.agents/x.json',
+      `.agents${backslash}x.json`,
+    ]
+    for (const p of attempts) {
       await expect(resolveWritablePath(dir, p)).rejects.toThrow()
     }
   })
@@ -347,12 +371,86 @@ describe('受保护目录', () => {
     // 名字里带 .qy 但不是那个目录的，不能误伤。
     await expect(resolveWritablePath(dir, '.qyx/a.ts')).resolves.toContain('a.ts')
     await expect(resolveWritablePath(dir, 'docs/.qy.md')).resolves.toContain('.qy.md')
+    await expect(resolveWritablePath(dir, '.agentsx/a.ts')).resolves.toContain('a.ts')
   })
 
   /** 读不受限制：模型需要能看懂现有配置才能给出合理建议，看不等于改。 */
   test('只挡写，不挡读', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
-    expect(isProtectedPath(dir, join(dir, '.qy', 'mcp.json'))).toBe(true)
+    expect(isProtectedPath(dir, join(dir, '.qy', 'team.json'))).toBe(true)
+    expect(isProtectedPath(dir, join(dir, '.agents', 'mcp.json'))).toBe(true)
     expect(isProtectedPath(dir, join(dir, 'src', 'a.ts'))).toBe(false)
+  })
+})
+
+describe('噪音目录', () => {
+  /**
+   * 复现原始失败形状：`coverage/` 曾经只有 `list_dir` 会列出来。
+   *
+   * 那份清单抄了三份（界面文件树 / glob·grep / list_dir），漂到 13 / 12 / 11 条。
+   * `coverage` 不是点目录，躲不过任何一条点开头规则，所以它是唯一真正露出来的那个：
+   * 用户在文件树里看不到，模型 `list_dir` 却列得出来，`grep` 又搜不进去。
+   */
+  test('list_dir 与 glob 对 coverage 给出同一个答案', async () => {
+    const root = await workspace()
+    await mkdir(join(root, 'coverage'), { recursive: true })
+    await writeFile(join(root, 'coverage', 'lcov.ts'), 'export const x = 1\n', 'utf8')
+
+    const listed = await registry().get('list_dir')?.fn({ path: '.' }, ctx(root))
+    expect((listed?.data as { entries: string[] }).entries).not.toContain('coverage/')
+
+    const globbed = await registry().get('glob')?.fn({ pattern: '**/*.ts' }, ctx(root))
+    const files = (globbed?.data as { files: string[] }).files
+    expect(files).toContain('src/main.ts')
+    expect(files.some((p) => p.includes('coverage'))).toBe(false)
+  })
+})
+
+describe('写路径的软链边界', () => {
+  /**
+   * 原始失败形状：`resolveInWorkspace(mustExist:false)` 只解析目标**已存在的祖先**，
+   * 却返回未解析的字面路径。工作区里放一条指向界外的软链，
+   * 边界查的是工作区、写下去的是软链指向的地方。
+   *
+   * 这里直接复现那个形状——包括**悬挂**软链（目标还不存在），
+   * 那才是「写新文件」这条路上真正的破口。
+   */
+  test('指向界外的软链（含悬挂）不能写进去', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-ws-'))
+    const outside = await mkdtemp(join(tmpdir(), 'qy-out-'))
+
+    // 1. 悬挂软链：目标尚不存在，realpath 会失败，但写入照样跟随它。
+    await symlink(join(outside, '还不存在.txt'), join(root, 'dangling'))
+    expect(resolveInWorkspace(root, 'dangling')).rejects.toThrow(PathEscapeError)
+
+    // 2. 已存在的软链。
+    await writeFile(join(outside, '已存在.txt'), 'x', 'utf8')
+    await symlink(join(outside, '已存在.txt'), join(root, 'existing'))
+    expect(resolveInWorkspace(root, 'existing')).rejects.toThrow(PathEscapeError)
+
+    // 3. 中间目录是软链，同样不行。
+    await symlink(outside, join(root, 'dir'))
+    expect(resolveInWorkspace(root, 'dir/新文件.txt')).rejects.toThrow(PathEscapeError)
+  })
+
+  /** 别拒过头：工作区内还不存在的新文件必须照常解析得出来。 */
+  test('工作区内的新文件正常放行，且返回解析后的路径', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-ws-')))
+    const abs = await resolveInWorkspace(root, '子目录/新文件.txt')
+    expect(abs).toBe(join(root, '子目录', '新文件.txt'))
+  })
+
+  /**
+   * 读与写必须落在**同一个键**上。
+   *
+   * 两者不同的话，`files.ts` 的「本轮读过没有」在软链根下永远取不到值，
+   * 覆盖已存在的文件被恒定拒绝（macOS 的 /tmp → /private/tmp 就是这个形状）。
+   */
+  test('读路径与写路径解析出同一个绝对路径', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-ws-')))
+    await writeFile(join(root, 'a.txt'), 'hi', 'utf8')
+    const read = await resolveInWorkspace(root, 'a.txt', { mustExist: true })
+    const write = await resolveInWorkspace(root, 'a.txt')
+    expect(write).toBe(read)
   })
 })

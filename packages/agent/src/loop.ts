@@ -20,10 +20,11 @@ import type {
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
-import { computeCost, ProviderError } from '@qywork/ai'
+import { computeCost, estimateTokens, ProviderError } from '@qywork/ai'
 import type {
   ActionDescriptor,
   AgentEvent,
+  ContextBreakdown,
   FileChange,
   RunId,
   RunUsage,
@@ -33,6 +34,12 @@ import type {
 import { newBatchId } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
+import {
+  actionFingerprint,
+  cycleFingerprint,
+  type ProgressEvidence,
+  repeatsNoProgress,
+} from './progress.ts'
 import { isParallelSafe, resolveAction, type ToolContext, type ToolRegistry } from './registry.ts'
 
 export interface LoopDeps {
@@ -258,7 +265,9 @@ export class AgentLoop {
       cachedTokens: null,
       cacheWriteTokens: null,
       reasoningTokens: 0,
-      costUsd: 0,
+      cost: 0,
+      // 币种跟着模型走，一个 run 只用一个模型，所以整轮同一个币种。
+      currency: adapter.spec.pricing.currency ?? 'USD',
       turns: [],
     }
     const fileChanges: FileChange[] = []
@@ -266,7 +275,14 @@ export class AgentLoop {
     const transcript: WireMessage[] = []
 
     let stopReason: StopReason = 'completed'
+    /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
+    const progress: ProgressEvidence[] = []
     let turnIndex = 0
+
+    // `run.finished` 上这两个字段一直写死 0。协议里有、渲染层认得、值是假的，
+    // 比没有更坏——所以要么填真，要么删字段；这里填真。
+    const startedAt = Date.now()
+    let stepsRun = 0
 
     // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的东西
     // （files 插件记录的「哪些文件本轮读过」、目录大小缓存等）要跨调用可见；
@@ -281,6 +297,7 @@ export class AgentLoop {
           stopReason = 'user_interrupt'
           break
         }
+        stepsRun++
 
         const batchId = newBatchId()
 
@@ -300,6 +317,9 @@ export class AgentLoop {
         // 这里的重试次数必须有上限：压缩后仍然超限说明压不动了（比如单条消息本身
         // 就超过窗口），继续循环就是无限烧钱。
         let stream: AsyncIterable<ProviderEvent>
+        // 分组占用在**请求装配处**算，因为 `req` 只活在这个 for 里；
+        // 而 `context` 事件是在下面的流循环里发的，那时 req 已经出了作用域。
+        let breakdown: ContextBreakdown | null = null
         for (let attempt = 0; ; attempt++) {
           // 每次尝试一个独立的中止句柄，链到 run 的 signal 上。
           // 空闲超时只掐**这一次**请求，不能把整个 run 的 signal 也 abort 掉——
@@ -307,6 +327,7 @@ export class AgentLoop {
           const attemptAbort = new AbortController()
           const signal = AbortSignal.any([input.signal, attemptAbort.signal])
           const req = { ...this.buildRequest(input, transcript), signal }
+          breakdown = breakdownOf(req)
 
           // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
           // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
@@ -383,15 +404,7 @@ export class AgentLoop {
                 tokens: ev.measuredInputTokens,
                 limit,
                 percent: pct,
-                breakdown: {
-                  systemPrompt: 0,
-                  toolSchemas: 0,
-                  skills: 0,
-                  historyMessages: 0,
-                  executionRecords: 0,
-                  summary: 0,
-                  workspaceState: 0,
-                },
+                breakdown: breakdown ?? EMPTY_BREAKDOWN,
               }
               break
             }
@@ -470,20 +483,17 @@ export class AgentLoop {
         }
 
         if (!calls.length) {
+          // `pause_turn` 不是「说完了」，是「服务端把这一轮切开了，原样再发一次继续」。
+          // 当成结束的表现是：用户拿到一个**半截**回答，而 run 显示成功完成、
+          // 既不报错也不续写。本轮 assistant 输出已经在上面进了 transcript，
+          // 直接进下一步就是官方要的那个「原样重发」。maxSteps 兜住反复暂停的情形。
+          if (providerStop === 'pause_turn') continue
+
           // 没有工具调用 = 模型认为任务结束。
           // 唯一例外是 provider 报 max_tokens：那是**输出**被截断，模型话没说完，
           // 不是它认为结束了。曾经这里判成 context_exhausted（输入超限），
           // 会把用户引向「精简上下文」——那条路解决不了输出截断。
           stopReason = providerStop === 'max_tokens' ? 'output_truncated' : 'completed'
-          if (assistantText && textStepId) {
-            yield {
-              type: 'message.committed',
-              runId: input.runId,
-              messageId: '' as never,
-              stepId: textStepId as never,
-              content: assistantText,
-            }
-          }
           break
         }
 
@@ -577,6 +587,14 @@ export class AgentLoop {
             })
 
             if (s.outcome.errorKind === 'permission_denied') denied = true
+
+            // 进展证据：**`noProgress` 取执行器给出的事实，不猜**。
+            // 报错不算证据——写了一半再抛也是错，那时副作用已经发生了。
+            progress.push({
+              action: actionFingerprint(s.call.name, s.call.arguments),
+              cycle: cycleFingerprint(s.call.name, s.call.arguments, s.outcome),
+              noProgress: !s.outcome.fileChanges?.length,
+            })
           }
         }
 
@@ -586,9 +604,40 @@ export class AgentLoop {
           break
         }
 
+        // 原地打转：同样的调用、同样的结果、没有副作用，连着两个周期。
+        // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
+        // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
+        // provider 直接 400。代价是比参照物晚一轮，仍然远好过烧满 maxSteps。
+
+        if (repeatsNoProgress(progress)) {
+          stopReason = 'no_progress'
+          break
+        }
+
         if (step === maxSteps - 1) stopReason = 'max_steps'
       }
     } catch (err) {
+      // **先看是不是用户按了停止。**
+      //
+      // run 的绝大部分时间挂在等 provider 事件的 await 上，中止在那里表现为底层请求
+      // 被拒绝并抛出，而不是「两个事件之间」——上面三处 `signal.aborted` 检查一个都
+      // 赶不上。不在这里认出来的话，一次主动停止会落成 status:'failed' + 一条红色的
+      // internal_error（`ai/src/errors.ts` 把 AbortError 归到那里），
+      // 而那个文件自己写着「中断不是错误：不该报红也不该重试」。
+      if (input.signal.aborted) {
+        yield {
+          type: 'run.finished',
+          runId: input.runId,
+          status: 'interrupted',
+          stopReason: 'user_interrupt',
+          usage,
+          stepCount: stepsRun,
+          durationMs: Date.now() - startedAt,
+          fileChanges,
+        }
+        return
+      }
+
       const pe = err instanceof ProviderError ? err : null
       stopReason = 'provider_error'
       yield {
@@ -604,8 +653,8 @@ export class AgentLoop {
         status: 'failed',
         stopReason,
         usage,
-        stepCount: 0,
-        durationMs: 0,
+        stepCount: stepsRun,
+        durationMs: Date.now() - startedAt,
         fileChanges,
       }
       return
@@ -622,8 +671,8 @@ export class AgentLoop {
             : 'failed',
       stopReason,
       usage,
-      stepCount: 0,
-      durationMs: 0,
+      stepCount: stepsRun,
+      durationMs: Date.now() - startedAt,
       fileChanges,
     }
   }
@@ -728,7 +777,7 @@ function mergeUsage(
     acc.cacheWriteTokens = (acc.cacheWriteTokens ?? 0) + turn.cacheWriteTokens
   }
   const turnCost = computeCost(adapter.spec, turn)
-  acc.costUsd = Math.round((acc.costUsd + turnCost) * 1e6) / 1e6
+  acc.cost = Math.round((acc.cost + turnCost) * 1e6) / 1e6
   acc.turns.push({
     turnIndex,
     input: turn.inputTokens,
@@ -741,4 +790,61 @@ function mergeUsage(
     costUsd: turnCost,
     at: Date.now(),
   })
+}
+
+/**
+ * 上下文占用按组分解。
+ *
+ * 这个字段在协议里存在很久了，但生产者一直写死七个 0，消费者一个都没有——
+ * 典型的死链路：字段在、值是假的，比没有更坏。分组信息其实一直是真实的：
+ * `session.ts` 标 `historyMessages`、本文件标 `executionRecords`、
+ * `compaction.ts` 标 `summary`、尾区注记标 `workspaceState`，
+ * **只是从来没有人按组去量**。
+ *
+ * 两条口径要写清楚：
+ * - **没有 `_group` 的消息一律归到 `historyMessages`**，不单开一个「其他」桶。
+ *   一个永远对不上账的「其他」比归错桶更难解释。
+ * - 各组之和**略小于** `measuredInputTokens`：后者量的是整个序列化请求体，
+ *   含 JSON 骨架与字段名的开销。这是估算面板，不是账单。
+ */
+const EMPTY_BREAKDOWN: ContextBreakdown = {
+  systemPrompt: 0,
+  toolSchemas: 0,
+  skills: 0,
+  historyMessages: 0,
+  executionRecords: 0,
+  summary: 0,
+  workspaceState: 0,
+}
+
+function breakdownOf(req: ChatRequest): ContextBreakdown {
+  const out: ContextBreakdown = {
+    systemPrompt: estimateTokens(req.system),
+    toolSchemas: estimateTokens(req.tools),
+    skills: 0,
+    historyMessages: 0,
+    executionRecords: 0,
+    summary: 0,
+    workspaceState: 0,
+  }
+  for (const m of req.messages) {
+    const n = estimateTokens(m.content)
+    switch (m._group) {
+      case 'skills':
+        out.skills += n
+        break
+      case 'executionRecords':
+        out.executionRecords += n
+        break
+      case 'summary':
+        out.summary += n
+        break
+      case 'workspaceState':
+        out.workspaceState += n
+        break
+      default:
+        out.historyMessages += n
+    }
+  }
+  return out
 }

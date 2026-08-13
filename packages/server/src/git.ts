@@ -285,13 +285,6 @@ export async function diff(
   return r.ok ? r.out : ''
 }
 
-/** 读取某个 ref 下的文件内容，用于「改动前长什么样」的对照预览。 */
-export async function showFile(cwd: string, ref: string, path: string): Promise<string | null> {
-  assertSafeRef(ref)
-  const r = await git(cwd, ['show', `${ref}:${path}`])
-  return r.ok ? r.out : null
-}
-
 export function toStateEvent(s: GitStatus, workspaceId: string): GitStateEvent {
   return {
     type: 'git.state',
