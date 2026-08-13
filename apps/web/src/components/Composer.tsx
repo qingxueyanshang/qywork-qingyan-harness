@@ -19,6 +19,7 @@ import {
   IconPlus,
   IconSend,
   IconShield,
+  IconSpinner,
   IconStop,
   IconX,
 } from './Icons.tsx'
@@ -75,6 +76,63 @@ function ModeChip() {
       <IconShield size={13} />
       {full() ? '完全访问' : '自动审批'}
     </button>
+  )
+}
+
+/**
+ * 这一轮跑到哪了：进度 + 改了多少。
+ *
+ * **一条居中的状态条，不是两块各自贴边的东西。** 参照物（Codex）把
+ * 「第 3 / 6 步」和「35 个文件已更改 +227 -2139」放进同一枚胶囊里，
+ * 理由是它们回答的是同一个问题——这一轮进行得怎么样了。拆成两处的话，
+ * 眼睛要在输入区上方来回找，而它们本来就该一起读。
+ *
+ * 居中是跟着这条来的：它不属于任何一侧的控件，是整轮的状态。左对齐时
+ * 它看起来像输入框长出来的一个附件。
+ *
+ * 步数取**正在做的那一条**（1-based），不是已完成数：进行中的第 3 步
+ * 报成「第 2 步」会让人以为它卡住了。全部做完就没有进行中的那条，
+ * 这时才回落到已完成数。
+ */
+function RunStatusChip() {
+  const todos = () => state.todos
+  const total = () => todos().length
+  const done = () => todos().filter((t) => t.status === 'completed').length
+  const step = () => {
+    const i = todos().findIndex((t) => t.status === 'in_progress')
+    return i >= 0 ? i + 1 : done()
+  }
+  const files = () => state.fileChanges
+  const additions = () => files().reduce((s, c) => s + c.additions, 0)
+  const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
+
+  return (
+    <Show when={total() > 0 || files().length > 0}>
+      <div class="run-status">
+        <div class="changes-chip">
+          <Show when={total() > 0}>
+            {/* 转圈只在真的还在跑时给：停下来之后它还在转，是在说一件不成立的事。 */}
+            <Show when={state.running}>
+              <IconSpinner size={12} />
+            </Show>
+            <span>
+              第 {step()} / {total()} 步
+            </span>
+          </Show>
+          {/* 两段都在时才要分隔点——只有一段时它会变成一个悬空的符号。 */}
+          <Show when={total() > 0 && files().length > 0}>
+            <span class="sep" aria-hidden="true">
+              ·
+            </span>
+          </Show>
+          <Show when={files().length > 0}>
+            <strong>{files().length} 个文件已更改</strong>
+            <span class="add">+{additions()}</span>
+            <span class="del">-{deletions()}</span>
+          </Show>
+        </div>
+      </div>
+    </Show>
   )
 }
 
@@ -221,13 +279,7 @@ export function Composer() {
         </div>
       </Show>
 
-      <Show when={state.fileChanges.length > 0}>
-        <div class="changes-chip">
-          <strong>{state.fileChanges.length} 个文件已更改</strong>
-          <span class="add">+{state.fileChanges.reduce((s, c) => s + c.additions, 0)}</span>
-          <span class="del">-{state.fileChanges.reduce((s, c) => s + c.deletions, 0)}</span>
-        </div>
-      </Show>
+      <RunStatusChip />
 
       {/* 斜杠弹层向上开：输入区贴着窗口底部。 */}
       <Show when={slashHits().length > 0}>

@@ -43,16 +43,29 @@
   }
 }
 
+/* 整轮状态条：居中。
+   它不属于左右任何一侧的控件，是这一轮的状态——左对齐时看起来像输入框
+   长出来的一个附件。居中交给外层，chip 自己仍然按内容宽度收缩。 */
+.run-status {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--s-2);
+}
 .changes-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  margin-bottom: var(--s-2);
   padding: 4px var(--s-3);
+  /* 参照物那条是药丸形，这里不跟。tokens.css 的圆角阶梯写死了「带文字的标签
+     一律不用 --r-full」——这次要的是居中，不是换形状。与工具栏上的 chip 同阶。 */
   border-radius: var(--r-sm);
   background: var(--bg-inset);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
+}
+/* 分隔点压暗：它是标点不是内容，跟两侧一样重会把一条读成三块。 */
+.changes-chip .sep {
+  color: var(--text-tertiary);
 }
 .changes-chip .add {
   color: var(--success);
