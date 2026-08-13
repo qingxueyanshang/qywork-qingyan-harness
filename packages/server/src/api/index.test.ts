@@ -19,6 +19,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createConversation,
+  getConversation,
   getWorkspace,
   listConversations,
   listWorkspaces,
@@ -161,6 +162,74 @@ describe('移除项目', () => {
     const { d, oldId } = twoWorkspaces()
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(404)
+  })
+
+  const patchPin = (id: string, pinned: boolean, d: ApiDeps) =>
+    call(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ pinned }) }, d)
+
+  test('置顶把项目提到列表最前，取消置顶回到「最近打开」的位置', async () => {
+    const { d, oldId, currentId } = twoWorkspaces()
+    // current 是后 upsert 的，默认排在前面
+    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(currentId)
+
+    expect((await patchPin(oldId, true, d))?.status).toBe(200)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(oldId)
+
+    expect((await patchPin(oldId, false, d))?.status).toBe(200)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(currentId)
+  })
+
+  test('置顶两次回 404，body 不是布尔回 422 —— 都不静默当成功', async () => {
+    const { d, oldId } = twoWorkspaces()
+    expect((await patchPin(oldId, true, d))?.status).toBe(200)
+    expect((await patchPin(oldId, true, d))?.status).toBe(404)
+    const bad = await call(`/api/workspaces/${oldId}`, { method: 'PATCH', body: '{}' }, d)
+    expect(bad?.status).toBe(422)
+  })
+
+  test('归档把现有会话从列表里拿掉，新建的照常显示', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    expect(listConversations(d.store, oldId as never)).toHaveLength(2)
+
+    const res = await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
+    expect(res?.status).toBe(200)
+    expect(await res?.json()).toEqual({ archived: 2 })
+    expect(listConversations(d.store, oldId as never)).toHaveLength(0)
+
+    // 归档之后新建的一条照常出现——归档的是「当时那些」，不是这个项目本身
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    expect(listConversations(d.store, oldId as never)).toHaveLength(1)
+  })
+
+  test('归档不删数据：按 id 仍然读得回来', async () => {
+    const { d, oldId } = twoWorkspaces()
+    const c = createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
+    expect(getConversation(d.store, c.id)).not.toBeNull()
+  })
+
+  test('重复归档回 0 条 —— 「0 条」和「成功」在界面上要能分开', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
+    const again = await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
+    expect(await again?.json()).toEqual({ archived: 0 })
+  })
+
+  test('列表里的会话数与列表口径一致 —— 归档后一起归零', async () => {
+    const { d, oldId } = twoWorkspaces()
+    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    const list = async () =>
+      (
+        (await (await call('/api/workspaces', undefined, d))?.json()) as {
+          workspaces: { id: string; conversations: number }[]
+        }
+      ).workspaces.find((w) => w.id === oldId)?.conversations
+    expect(await list()).toBe(1)
+    await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
+    expect(await list()).toBe(0)
   })
 
   test('当前正在用的那个删不掉，回 409 且账本不动', async () => {

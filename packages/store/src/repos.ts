@@ -68,7 +68,10 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
 }
 
 /**
- * 按「最近打开」倒序。**已移除的不在其中**（`removed_at IS NULL`）。
+ * 置顶的在前，其余按「最近打开」倒序。**已移除的不在其中**（`removed_at IS NULL`）。
+ *
+ * `pinned_at IS NULL` 作为第一排序键：SQLite 里 false(0) 排在 true(1) 前，
+ * 所以这一条把「有置顶时间的」提到最上面，再按置顶时间倒序（后置顶的更靠前）。
  *
  * 次级排序键 `id DESC` 不是装饰：同一毫秒 upsert 的两个项目 `last_opened_at` 会并列，
  * 只按它排序时 SQLite 退回插入顺序，结果正好是反的。而这个顺序现在有实际后果——
@@ -78,10 +81,25 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
     .query<Record<string, any>, []>(
-      'SELECT * FROM workspaces WHERE removed_at IS NULL ORDER BY last_opened_at DESC, id DESC',
+      `SELECT * FROM workspaces WHERE removed_at IS NULL
+       ORDER BY pinned_at IS NULL, pinned_at DESC, last_opened_at DESC, id DESC`,
     )
     .all()
     .map(rowToWorkspace)
+}
+
+/**
+ * 置顶 / 取消置顶。
+ *
+ * 幂等：已经是目标状态时返回 false，由调用方回 404 之外的处理——
+ * 和 `removeWorkspace` 同一条纪律，静默当成功会让界面以为生效了，刷新又回去。
+ */
+export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolean): boolean {
+  const sql = pinned
+    ? 'UPDATE workspaces SET pinned_at = ? WHERE id = ? AND pinned_at IS NULL'
+    : 'UPDATE workspaces SET pinned_at = NULL WHERE id = ? AND pinned_at IS NOT NULL'
+  const q = store.db.query(sql)
+  return (pinned ? q.run(Date.now(), id) : q.run(id)).changes > 0
 }
 
 export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
@@ -92,16 +110,16 @@ export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
 }
 
 /**
- * 这个项目下有几条会话。
+ * 这个项目下有几条会话——**口径与 `listConversations` 完全一致**。
  *
- * 存在的理由只有一个：**删项目之前要把代价说出来**。`workspaces.id` 上挂着
- * `ON DELETE CASCADE`，删一行项目会把它的会话、消息、run、step 一起带走，
- * 而列表上只写一个项目名的话，用户看不出自己按下去要丢多少东西。
+ * 同样只数用户会话、同样排除已归档的。两处口径必须一样：卡片上写「111 个任务」
+ * 而列表里一条都没有，用户只会认为列表坏了。
  */
 export function countConversations(store: Store, id: WorkspaceId): number {
   const row = store.db
     .query<{ n: number }, [string]>(
-      'SELECT COUNT(*) AS n FROM conversations WHERE workspace_id = ?',
+      `SELECT COUNT(*) AS n FROM conversations
+       WHERE workspace_id = ? AND source IS NULL AND archived_at IS NULL`,
     )
     .get(id)
   return row?.n ?? 0
@@ -235,13 +253,41 @@ export function listConversations(store: Store, workspaceId: WorkspaceId): Conve
       // 只列用户会话：编排产生的机器会话不进会话列表，
       // 它们由父会话的协作视图展示。
       //
+      // 已归档的也不列（`archived_at IS NULL`）。归档只改「显不显示」，
+      // `getConversation` 不过滤——按 id 仍然读得回来。
+      //
       // 次级排序键 id DESC 不是装饰：同一毫秒创建的会话（批量导入、同秒连续操作）
       // updated_at 会并列，只按它排序时 SQLite 退回插入顺序，结果看起来是反的。
       // id 单调递增，保证并列时顺序仍然正确且可复现。
-      'SELECT * FROM conversations WHERE workspace_id = ? AND source IS NULL ORDER BY updated_at DESC, id DESC',
+      `SELECT * FROM conversations
+       WHERE workspace_id = ? AND source IS NULL AND archived_at IS NULL
+       ORDER BY updated_at DESC, id DESC`,
     )
     .all(workspaceId)
     .map(rowToConversation)
+}
+
+/**
+ * 归档一个项目下当前的全部会话。
+ *
+ * **不是删除**：数据一条不动，只是从 `listConversations` 里消失；此后在这个项目里
+ * 新建的会话照常显示（新行的 `archived_at` 是 NULL）。
+ *
+ * 与 `runtime/src/archive.ts` 同名不同物——那个是导出成 markdown / json。
+ *
+ * 只归档用户会话（`source IS NULL`）：机器会话本来就不在列表里，
+ * 给它们打标记等于给一个没有消费者的字段写值。
+ *
+ * 返回归档了几条。已经归档的不重复计数（`archived_at IS NULL` 卡住），
+ * 界面据此说「归档了 N 条」而不是「操作成功」。
+ */
+export function archiveWorkspaceConversations(store: Store, workspaceId: WorkspaceId): number {
+  return store.db
+    .query(
+      `UPDATE conversations SET archived_at = ?
+       WHERE workspace_id = ? AND source IS NULL AND archived_at IS NULL`,
+    )
+    .run(Date.now(), workspaceId).changes
 }
 
 export function touchConversation(store: Store, id: ConversationId, title?: string): void {
@@ -754,6 +800,9 @@ function rowToWorkspace(r: Record<string, any>): Workspace {
     rootPath: r.root_path,
     lastOpenedAt: r.last_opened_at,
     createdAt: r.created_at,
+    // 键不存在与键为 undefined 在 exactOptionalPropertyTypes 下不是一回事，
+    // 所以按 null 判断后再决定加不加这个键。
+    ...(r.pinned_at === null || r.pinned_at === undefined ? {} : { pinnedAt: r.pinned_at }),
   }
 }
 

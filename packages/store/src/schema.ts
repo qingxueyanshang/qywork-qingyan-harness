@@ -414,6 +414,47 @@ CREATE TABLE conversation_extras (
 ALTER TABLE workspaces ADD COLUMN removed_at INTEGER;
 `,
   },
+  {
+    id: 10,
+    name: 'workspace_pinned_at',
+    /**
+     * 置顶项目。
+     *
+     * `last_opened_at` 倒序答的是「最近碰过哪个」，不是「我关心哪个」。项目攒多之后
+     * 常用的那个会被一次临时切换挤下去——而用户对「常用」的预期是稳定位置。
+     *
+     * 存时间戳不存布尔：多个置顶项目之间也要有确定顺序（后置顶的在前），
+     * 布尔到时候只能再加一列。`NULL` = 没置顶。
+     */
+    sql: `
+ALTER TABLE workspaces ADD COLUMN pinned_at INTEGER;
+`,
+  },
+  {
+    id: 11,
+    name: 'conversation_archived_at',
+    /**
+     * 归档会话：**从会话列表里去掉，此后新建的照常显示**。
+     *
+     * ## 和 `runtime/src/archive.ts` 同名不同物
+     *
+     * 那个是「会话**导出**」——产出 markdown / json，只读，产出物是死的，
+     * 不承诺能导回来。这里的归档是「不在列表里显示」，数据一条不动。
+     * 两个都叫 archive 会持续制造误读，所以这里点名说清；导出那套保持原名。
+     *
+     * ## 数据不删，但界面上够不着
+     *
+     * `listConversations` 过滤它，`getConversation` **不过滤**——按 id 仍然读得回来。
+     * 这与迁移 9「移除项目」的立场一致：状态标记只改「显不显示」。
+     * 区别是移除项目能靠「重新添加同一路径」回来，而归档没有对应的翻回入口
+     * ——**这是用户点名要的行为**（原话：不是列表收敛，是不在会话里面显示了，
+     * 新开对话还是会显示新的），不是疏漏。将来若要翻回，加的是一个视图，
+     * 不是改这条语义。
+     */
+    sql: `
+ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
+`,
+  },
 ]
 
 /**

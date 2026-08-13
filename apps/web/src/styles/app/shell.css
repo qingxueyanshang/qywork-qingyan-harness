@@ -276,26 +276,111 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-.project-remove {
+.project-open:disabled {
+  /* 当前项目那一行点了也不换，但它仍要能 hover 出卡片，所以不降透明度。 */
+  cursor: default;
+}
+.pinned-mark {
+  color: var(--accent);
+}
+
+/* ── `⋯` 菜单与悬浮卡片 ──
+   两个浮层共用这个定位容器。它必须是 relative：菜单和卡片都相对这一行右端展开，
+   挂到 body 上就要自己跟着滚动位置重算，而这一栏是会滚的。 */
+.project-menu-wrap {
+  position: relative;
+  flex: none;
+  display: flex;
+}
+.project-more {
   flex: none;
   width: 22px;
   height: 22px;
 }
-.project-remove:hover {
+
+.project-menu,
+.project-card {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+
+.project-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  padding: 4px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease);
+}
+.menu-item:hover {
+  background: var(--bg-hover);
+}
+.menu-item.danger {
   color: var(--danger);
 }
 
-/* 移除确认就地展开，不弹浮层：要删的那一行和它的代价必须同时在视野里。
-   字号降一档是因为它比项目名长，但它只活到用户按下取消或移除为止。 */
-.project-head.confirm {
+/* 确认就地替换菜单内容，不再叠一层：要确认的那句话和刚点的那一项必须同处一个面。 */
+.project-menu-confirm {
+  max-width: 232px;
+  padding: var(--s-2);
   color: var(--text-secondary);
+  font-size: var(--fs-xs);
   font-weight: 400;
+  white-space: normal;
+}
+.project-menu-confirm > p {
+  margin: 0 0 var(--s-2);
+  line-height: 1.5;
+}
+.confirm-row {
+  display: flex;
+  gap: var(--s-1);
+  justify-content: flex-end;
+}
+
+/* 悬浮卡片只读，不含动作——动作都在 `⋯` 里。路径不截断：
+   它正是这张卡片存在的理由（两个同名目录只有路径能区分）。 */
+.project-card {
+  min-width: 180px;
+  max-width: 288px;
+  padding: var(--s-2);
+  font-weight: 400;
+}
+.project-card-name {
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+.project-card-meta {
+  margin-top: 2px;
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
 }
-/* `.truncate` 自己带 min-width: 0，这里只补「把剩下的宽度都吃掉」。 */
-.project-head.confirm > .truncate {
-  flex: 1;
+.project-card-path {
+  margin-top: var(--s-1);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
+
 .confirm-yes,
 .confirm-no {
   flex: none;

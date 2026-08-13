@@ -43,10 +43,18 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
   )
 }
 
+/**
+ * 新建会话。
+ *
+ * 「方框缺一角 + 一支笔」，不是「对话气泡加一个加号」。改掉的理由：
+ * 气泡是**读**的符号（一条已经存在的消息），加号叠上去表达的是「多一条消息」；
+ * 而这个按钮的语义是「开始写一篇新的」。参照物（Codex）用的也是这个形，
+ * 而且它和旁边的 `⋯` 同为线性笔画，气泡那个实心感的闭合轮廓在 14px 下明显更重。
+ */
 export const IconNewChat = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M4 7.5A3.5 3.5 0 0 1 7.5 4h9A3.5 3.5 0 0 1 20 7.5v6a3.5 3.5 0 0 1-3.5 3.5H12l-4.2 3.2a.6.6 0 0 1-1-.5V17h-.3A3.5 3.5 0 0 1 4 13.5z" />
-    <path d="M12 8.2v5M9.5 10.7h5" />
+    <path d="M12.5 4.8H7.2A2.7 2.7 0 0 0 4.5 7.5v9.3a2.7 2.7 0 0 0 2.7 2.7h9.3a2.7 2.7 0 0 0 2.7-2.7v-5.3" />
+    <path d="M17.1 3.9a1.9 1.9 0 0 1 2.7 2.7l-7.4 7.4-3.4.7.7-3.4z" />
   </Svg>
 )
 
@@ -206,6 +214,41 @@ export const IconStop = (p: IconProps) => (
 export const IconPlus = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 5.6v12.8M5.6 12h12.8" />
+  </Svg>
+)
+
+/** 溢出菜单。三点横排——竖排在这一栏里会和滚动条抢同一条视觉竖线。 */
+export const IconMore = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+  </Svg>
+)
+
+/** 置顶。图钉朝左上斜，和「固定在顶部」这个动作方向一致。 */
+export const IconPin = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9.5 4.5 19.5 14.5M14 4l6 6M8.4 10.1l-3 3a1 1 0 0 0 0 1.4l4.1 4.1a1 1 0 0 0 1.4 0l3-3" />
+    <path d="M5 19l3.2-3.2" />
+  </Svg>
+)
+
+/** 归档：一个盖子 + 一只箱子。不用向下箭头——那读起来是「下载」。 */
+export const IconArchive = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 5.6h16v3.2H4z" />
+    <path d="M5.4 8.8h13.2v8a1.6 1.6 0 0 1-1.6 1.6H7a1.6 1.6 0 0 1-1.6-1.6z" />
+    <path d="M10.2 12.4h3.6" />
+  </Svg>
+)
+
+/** 在文件管理器里打开：文件夹 + 一支斜向外的箭头。 */
+export const IconFolderOpen = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 16.4V7.6A2.6 2.6 0 0 1 6.6 5h2.5a2 2 0 0 1 1.5.7l1 1.2h2.6" />
+    <path d="M4 16.4A2.6 2.6 0 0 0 6.6 19h10.8a2.6 2.6 0 0 0 2.6-2.6v-4.9" />
+    <path d="M14.6 9.4H20V4M20 4l-5.6 5.6" />
   </Svg>
 )
 

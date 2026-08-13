@@ -391,4 +391,10 @@ export interface Workspace {
   /** 上次打开时间，用于「最近」列表排序。 */
   lastOpenedAt: number
   createdAt: number
+  /**
+   * 置顶时间。不存在这个键 = 没置顶。
+   *
+   * 存时间戳不存布尔：多个置顶项目之间也要有确定顺序（后置顶的在前）。
+   */
+  pinnedAt?: number
 }

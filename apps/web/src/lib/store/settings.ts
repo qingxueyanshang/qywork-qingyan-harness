@@ -200,8 +200,10 @@ export interface KnownWorkspace {
   rootPath: string
   name: string
   lastOpenedAt: number
-  /** 它下面挂着几条会话。移除项目会把它们一起带走，所以这个数要说出来。 */
+  /** 它下面挂着几条会话。口径与会话列表一致：不含机器会话，不含已归档。 */
   conversations: number
+  /** 置顶时间。没有这个键 = 没置顶。置顶的排在列表最前。 */
+  pinnedAt?: number
 }
 export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }> {
   return client.api<{ workspaces: KnownWorkspace[] }>('/api/workspaces')
@@ -210,17 +212,49 @@ export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }>
 /**
  * 把一个项目从列表里移除。
  *
- * **这是删除，不是隐藏。** 它的会话跟着一起没（外键 `ON DELETE CASCADE`），
- * 因为没有项目行的会话读不回来——留着就是一批永远打不开的孤儿。
- * 目录本身不动：账本管的是「我开过哪些项目」，不是那些文件。
+ * **这是隐藏，不是删除。** 服务端只打 `removed_at` 标记：文件、会话、消息、run
+ * 一条不动，重新添加同一个路径就整个回来。目录本身当然也不动——账本管的是
+ * 「我开过哪些项目」，不是那些文件。
  *
- * 当前正在用的那个删不了，服务端回 409。这条规则在服务端，不在这里：
+ * 当前正在用的那个移不掉，服务端回 409。这条规则在服务端，不在这里：
  * 前端不显示按钮只是不让人白点，真正的守卫得在唯一权威那一侧。
  */
 export function removeKnownWorkspace(id: string): Promise<{ ok: boolean }> {
   return client.api<{ ok: boolean }>(`/api/workspaces/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
+}
+
+/**
+ * 置顶 / 取消置顶。目标状态由调用方给，不是「翻转」——翻转在并发下会翻错方向。
+ */
+export function pinKnownWorkspace(id: string, pinned: boolean): Promise<{ ok: boolean }> {
+  return client.api<{ ok: boolean }>(`/api/workspaces/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  })
+}
+
+/**
+ * 归档这个项目当前的全部会话：**从会话列表里去掉，数据不动**，
+ * 此后新建的照常显示。
+ *
+ * 回的是归档条数而不是一个布尔——「0 条」和「成功」在界面上必须能分开。
+ */
+export function archiveWorkspaceChats(id: string): Promise<{ archived: number }> {
+  return client.api<{ archived: number }>(`/api/workspaces/${encodeURIComponent(id)}/archive`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * 在系统文件管理器里定位这个项目的目录。
+ *
+ * 只有桌面外壳有这个能力（走 Rust 侧的 `reveal_workspace`）。浏览器 / 手机端
+ * 拿不到，所以那边**不显示这个入口**，而不是显示一个点了报错的按钮（B5）。
+ */
+export function revealWorkspace(path: string): Promise<void> {
+  return tauriInvoke<void>('reveal_workspace', { path })
 }
 
 /**
