@@ -10,13 +10,17 @@
  */
 
 import { existsSync } from 'node:fs'
-import type { QyConfig, StoredProfile } from '@qywork/runtime'
+import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
 import { configPath, loadConfig, saveConfig } from '@qywork/runtime'
 
 interface Preset {
   key: string
   label: string
-  profile: StoredProfile
+  provider: StoredProvider
+  /** 预置里那一个模型。接口下可以挂很多个，init 只负责让第一个跑起来。 */
+  model: string
+  /** 那个模型这一格的预置值。用户改了模型名也照用——它描述的是端点的限制。 */
+  modelConfig?: StoredModel
   /** 去哪儿领 key。写死链接比让用户自己搜要省事得多。 */
   keyUrl: string
 }
@@ -25,40 +29,44 @@ const PRESETS: Preset[] = [
   {
     key: 'anthropic',
     label: 'Anthropic（Claude）',
-    profile: { kind: 'anthropic', model: 'claude-opus-5', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+    provider: { kind: 'anthropic', apiKeyEnv: 'ANTHROPIC_API_KEY', models: {} },
+    model: 'claude-opus-5',
     keyUrl: 'https://console.anthropic.com/settings/keys',
   },
   {
     key: 'deepseek',
     label: 'DeepSeek',
-    profile: {
+    provider: {
       kind: 'openai_compatible',
-      model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com/v1',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
-      maxOutputTokens: 8192,
+      models: {},
     },
+    model: 'deepseek-v4-flash',
+    modelConfig: { maxOutputTokens: 8192 },
     keyUrl: 'https://platform.deepseek.com/api_keys',
   },
   {
     key: 'openai',
     label: 'OpenAI 或任意 OpenAI 兼容中转站',
-    profile: {
+    provider: {
       kind: 'openai_compatible',
-      model: 'gpt-5',
       baseUrl: 'https://api.openai.com/v1',
       apiKeyEnv: 'OPENAI_API_KEY',
+      models: {},
     },
+    model: 'gpt-5',
     keyUrl: 'https://platform.openai.com/api-keys',
   },
   {
     key: 'local',
     label: '本机模型服务（ollama / LM Studio / vLLM）',
-    profile: {
+    provider: {
       kind: 'openai_compatible',
-      model: 'qwen3-coder',
       baseUrl: 'http://127.0.0.1:11434/v1',
+      models: {},
     },
+    model: 'qwen3-coder',
     keyUrl: '',
   },
 ]
@@ -98,39 +106,41 @@ export async function runInit(args: string[]): Promise<number> {
     return 2
   }
 
-  const profile: StoredProfile = { ...preset.profile }
+  const provider: StoredProvider = { ...preset.provider, models: {} }
 
-  process.stderr.write(`\n模型 [${profile.model}]：`)
-  const model = (await readLine()).trim()
-  if (model) profile.model = model
+  let modelId = preset.model
+  process.stderr.write(`\n模型 [${modelId}]：`)
+  const typed = (await readLine()).trim()
+  if (typed) modelId = typed
+  provider.models[modelId] = { ...preset.modelConfig }
 
-  if (profile.baseUrl) {
-    process.stderr.write(`接口地址 [${profile.baseUrl}]：`)
+  if (provider.baseUrl) {
+    process.stderr.write(`接口地址 [${provider.baseUrl}]：`)
     const url = (await readLine()).trim()
-    if (url) profile.baseUrl = url
+    if (url) provider.baseUrl = url
   }
 
   // 本机服务不需要 key，别逼用户对着一个不需要填的输入框想「我是不是漏了什么」。
   if (preset.key !== 'local') {
-    const fromEnv = profile.apiKeyEnv ? process.env[profile.apiKeyEnv] : undefined
+    const fromEnv = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined
     if (fromEnv) {
       process.stderr.write(
-        `\n${DIM}检测到环境变量 ${profile.apiKeyEnv} 已设置，直接用它（配置文件里不存明文）。${RESET}\n`,
+        `\n${DIM}检测到环境变量 ${provider.apiKeyEnv} 已设置，直接用它（配置文件里不存明文）。${RESET}\n`,
       )
     } else {
       if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
-      process.stderr.write(`API Key（直接回车则跳过，之后设 ${profile.apiKeyEnv} 也行）：`)
+      process.stderr.write(`API Key（直接回车则跳过，之后设 ${provider.apiKeyEnv} 也行）：`)
       const key = (await readLine()).trim()
-      if (key) profile.apiKey = key
+      if (key) provider.apiKey = key
     }
   }
 
   const existing = existsSync(configPath()) ? await loadConfig() : null
   const cfg: QyConfig = {
-    active: preset.key,
-    // --force 重建时保留用户已有的其它档案：他们要换的是当前用哪个，
+    active: { provider: preset.key, model: modelId },
+    // --force 重建时保留用户已有的其它接口：他们要换的是当前用哪个，
     // 不是把之前配好的几家全删掉。
-    profiles: { ...(existing?.profiles ?? {}), [preset.key]: profile },
+    providers: { ...(existing?.providers ?? {}), [preset.key]: provider },
     effort: existing?.effort ?? 'high',
     // 默认 auto：不弹窗，由硬边界 + 静态规则 + 分类器裁决。
     // 想完全放开要用户自己去写 "mode": "full"——那个决定不该由 init 替他做。
@@ -139,11 +149,11 @@ export async function runInit(args: string[]): Promise<number> {
   await saveConfig(cfg)
 
   const keyed =
-    Boolean(profile.apiKey) || Boolean(profile.apiKeyEnv && process.env[profile.apiKeyEnv])
+    Boolean(provider.apiKey) || Boolean(provider.apiKeyEnv && process.env[provider.apiKeyEnv])
   process.stderr.write(`\n${BOLD}已写入${RESET} ${configPath()}\n`)
   if (!keyed && preset.key !== 'local') {
     process.stderr.write(
-      `${DIM}还差 key：设置环境变量 ${profile.apiKeyEnv}，或往配置文件里加 "apiKey"。${RESET}\n`,
+      `${DIM}还差 key：设置环境变量 ${provider.apiKeyEnv}，或往配置文件里加 "apiKey"。${RESET}\n`,
     )
   } else {
     process.stderr.write(`${DIM}试一下：qy exec "介绍一下这个目录里的代码"${RESET}\n`)
@@ -154,8 +164,14 @@ export async function runInit(args: string[]): Promise<number> {
 function templateConfig(): QyConfig {
   const preset = PRESETS[0]!
   return {
-    active: preset.key,
-    profiles: { [preset.key]: { ...preset.profile, apiKey: 'sk-你的key' } },
+    active: { provider: preset.key, model: preset.model },
+    providers: {
+      [preset.key]: {
+        ...preset.provider,
+        apiKey: 'sk-你的key',
+        models: { [preset.model]: { ...preset.modelConfig } },
+      },
+    },
     effort: 'high',
     mode: 'auto',
   }

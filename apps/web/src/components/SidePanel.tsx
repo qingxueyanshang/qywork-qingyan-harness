@@ -9,6 +9,7 @@ import {
   sidePanel,
   state,
 } from '../lib/store/index.ts'
+import { ExtrasPanel } from './ExtrasPanel.tsx'
 import { IconBranch, IconChevron, IconFile, IconFolder, IconX } from './Icons.tsx'
 import { TeamPanel } from './TeamPanel.tsx'
 
@@ -67,7 +68,19 @@ export default function SidePanel() {
               type="button"
               onClick={() => setSidePanel('team')}
             >
-              协作
+              {/* 「协作」会被读成多人同时看同一份东西。这里是多个 agent 按角色
+                  分工跑一件事，一个人都不涉及——名字必须把这件事说对。 */}
+              Agent
+            </button>
+            <button
+              class="side-tab"
+              classList={{ active: sidePanel() === 'extras' }}
+              type="button"
+              onClick={() => setSidePanel('extras')}
+            >
+              {/* 「这一轮用什么」。设置页只管内容，开关全在这儿——
+                  两处都放开关的话，用户分不清自己关掉的是这一轮还是所有会话。 */}
+              能力
             </button>
           </div>
           <button
@@ -90,6 +103,9 @@ export default function SidePanel() {
             </Match>
             <Match when={sidePanel() === 'team'}>
               <TeamPanel />
+            </Match>
+            <Match when={sidePanel() === 'extras'}>
+              <ExtrasPanel />
             </Match>
           </Switch>
         </div>

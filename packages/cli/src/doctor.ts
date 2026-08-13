@@ -35,6 +35,8 @@ import {
   loadConfig,
   loadExtensions,
   loadWorkspaceMcp,
+  resolveModel,
+  toolNamePrefix,
 } from '@qywork/runtime'
 import { contentPathFor } from '@qywork/store'
 import { detectSandbox } from '@qywork/tools'
@@ -139,10 +141,10 @@ async function checkConfig(): Promise<Line[]> {
     })
   }
   if (problems.length === 0) {
-    const active = cfg.profiles[cfg.active]
+    const active = resolveModel(cfg)
     out.push({
       level: 'ok',
-      text: `档案 ${cfg.active}（${active?.kind} · ${active?.model}）`,
+      text: `接口 ${cfg.active.provider}（${active?.kind} · ${cfg.active.model}）`,
       detail: configPath(),
     })
   }
@@ -231,7 +233,7 @@ async function checkMcp(workspaceRoot: string): Promise<Line[]> {
   }
 
   for (const s of reg.servers) {
-    const tools = reg.toolSpecs.filter((t) => t.name.startsWith(`mcp__${s.name}__`)).length
+    const tools = reg.toolSpecs.filter((t) => t.name.startsWith(toolNamePrefix(s.name))).length
     out.push({
       level: s.unsupported.length ? 'warn' : 'ok',
       text: `${s.name} · ${s.client.transportKind} · ${tools} 个工具`,

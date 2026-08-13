@@ -6,10 +6,10 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lookupModel, type ProviderKind, type ProviderProfile } from '@qywork/ai'
-import { normalizeAdditionalDirectories } from '@qywork/tools'
+import type { EffortLevel, PermissionMode } from '@qywork/core'
+import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
 /**
  * 权限模式。**只有两种**，刻意不做逐次审批。
@@ -26,14 +26,25 @@ import { normalizeAdditionalDirectories } from '@qywork/tools'
  * 注意 `full` **不豁免硬边界**（凭证剥离、禁止改权限配置本身）——
  * 那一层防的是凭证泄漏与自我提权，不是越权。
  */
-export type PermissionMode = 'auto' | 'full'
+
+/**
+ * 指向一个具体模型的二元指针。
+ *
+ * **不用 `"接口/模型"` 拼接串**：模型 id 本身就含斜杠
+ * （openrouter 的 `anthropic/claude-3`），拼起来就没法无歧义地拆回去。
+ */
+export interface ModelRef {
+  /** `providers` 的键。 */
+  provider: string
+  model: string
+}
 
 export interface QyConfig {
-  /** 当前生效的供应商档案 id。 */
-  active: string
-  profiles: Record<string, StoredProfile>
+  /** 当前生效的「接口 × 模型」。 */
+  active: ModelRef
+  providers: Record<string, StoredProvider>
   /** 默认思考强度。 */
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  effort?: EffortLevel
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
@@ -82,29 +93,74 @@ export interface QyConfig {
    */
   envAllowList?: string[]
   /**
-   * 分类器专用档案名。不填则用当前档案。
+   * 分类器专用模型。不填则用当前生效的那个。
    *
    * 分类是短、结构化、低难度的任务，不需要跟主循环同一个模型。
    * 指向一个本机小模型可以把每次往返从两秒压到几百毫秒、成本压到零。
    */
-  classifierProfile?: string
+  classifier?: ModelRef
 }
 
-export interface StoredProfile {
+/**
+ * 一个接口 = 一套凭证 + 一个端点 + 挂在它下面的若干模型。
+ *
+ * **凭证挂在接口这一层，不挂在模型上。** 之前是扁平档案，一个档案一个模型，
+ * 于是同一家的三个模型要把同一把 key 和同一个 baseUrl 各抄三份——
+ * 改一次端点得改三处，漏一处的表现是「有的模型好使有的不好使」。
+ */
+export interface StoredProvider {
   kind: ProviderKind
-  model: string
   /** 环境变量名，或直接明文。优先读环境变量——明文 key 不该躺在配置文件里。 */
   apiKeyEnv?: string
   apiKey?: string
   baseUrl?: string
-  maxOutputTokens?: number
   headers?: Record<string, string>
+  /** 键是模型 id。 */
+  models: Record<string, StoredModel>
+}
+
+/**
+ * 一个模型在**这个接口下**的实测结论。
+ *
+ * `capabilities` 挂在「接口 × 模型」这一格是这次改动的要点：同一个模型经不同
+ * 中转站走的协议可能不同，能力也就不同。挂在接口上会让一次探测的结论套到
+ * 同接口的其它模型头上——那正是旧结构下 `session.ts` 的错配来源。
+ */
+export interface StoredModel {
+  maxOutputTokens?: number
   /** `qy probe` 实测写入的能力覆盖。手改也行——它只是配置。 */
   capabilities?: ProviderProfile['capabilities']
 }
 
+/**
+ * 把「接口这一层」和「模型这一格」摊平成发一次请求需要的全部信息。
+ *
+ * 派生值，不落盘。落盘的是两层结构，但调用方要的是一份平的——
+ * 让每个调用方自己去拼，拼法就会各不相同。
+ */
+export interface ResolvedModel {
+  /** 接口名，即 `providers` 的键。 */
+  provider: string
+  kind: ProviderKind
+  model: string
+  apiKeyEnv?: string
+  apiKey?: string
+  baseUrl?: string
+  headers?: Record<string, string>
+  maxOutputTokens?: number
+  /** **模型没在这个接口下声明过就是 undefined**，不会套用别的模型的实测结果。 */
+  capabilities?: ProviderProfile['capabilities']
+}
+
+/**
+ * 全局层的根。配置文件、全局记忆、全局技能都在这棵树下。
+ *
+ * 定义在 `@qywork/tools`：那边的作用域解析要用同一个根，而 tools 在更底层、
+ * 引不到这里。两处各算一遍的话，某次改 `QYWORK_HOME` 就会让配置和全局记忆
+ * 落在两个地方。
+ */
 export function configDir(): string {
-  return process.env.QYWORK_HOME ?? join(homedir(), '.qywork')
+  return globalScopeRoot()
 }
 
 export function configPath(): string {
@@ -116,33 +172,63 @@ export function dataPath(): string {
 }
 
 const DEFAULT_CONFIG: QyConfig = {
-  active: 'anthropic',
-  profiles: {
+  active: { provider: 'anthropic', model: 'claude-opus-5' },
+  providers: {
     anthropic: {
       kind: 'anthropic',
-      model: 'claude-opus-5',
       apiKeyEnv: 'ANTHROPIC_API_KEY',
+      models: { 'claude-opus-5': {} },
     },
   },
   effort: 'high',
   mode: 'auto',
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function isModelRef(v: unknown): v is ModelRef {
+  return isRecord(v) && typeof v.provider === 'string' && typeof v.model === 'string'
+}
+
 export async function loadConfig(): Promise<QyConfig> {
   const raw = await readFile(configPath(), 'utf8').catch(() => null)
   if (raw === null) return structuredClone(DEFAULT_CONFIG)
+
+  let parsed: Partial<QyConfig>
   try {
-    const parsed = JSON.parse(raw) as Partial<QyConfig>
-    return {
-      ...DEFAULT_CONFIG,
-      ...parsed,
-      profiles: { ...DEFAULT_CONFIG.profiles, ...(parsed.profiles ?? {}) },
-    }
+    parsed = JSON.parse(raw) as Partial<QyConfig>
   } catch {
     // 配置坏了不能让整个 CLI 起不来：用默认值继续，并让调用方看得见这件事。
     process.stderr.write(`[qy] 配置文件解析失败，已使用默认配置：${configPath()}\n`)
     return structuredClone(DEFAULT_CONFIG)
   }
+
+  const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
+
+  /*
+   * 接口表**不与默认值合并**。
+   *
+   * 旧实现是 `{ ...DEFAULT.profiles, ...parsed.profiles }`，后果是内置那条
+   * anthropic 删不掉：设置页删掉它、落盘也确实没有了，下次启动又长回来。
+   * 默认值的职责只是「一个字都没配时有东西可跑」，不是每次加载都往里塞一条。
+   */
+  if (isModelRef(parsed.active) && isRecord(parsed.providers)) return cfg
+
+  /*
+   * 旧的扁平档案（`profiles`）**不迁移**。
+   *
+   * 一条旧档案要拆成「一个接口 + 一个模型」，而两条同 kind 同 baseUrl 的档案
+   * 该并成一个接口还是两个、key 归谁，只能猜。猜错的表现是「配置看起来还在，
+   * 请求发去了另一个端点」——比明说「重配一次」糟得多。
+   *
+   * 所以模型那部分整块回默认值，其余设置（权限、额外目录、思考强度）照旧保留，
+   * 再由 `configNotices` 点名说清楚。先例是 `autoApprove`：一律忽略，但必须说出来。
+   */
+  cfg.active = structuredClone(DEFAULT_CONFIG.active)
+  cfg.providers = structuredClone(DEFAULT_CONFIG.providers)
+  return cfg
 }
 
 export async function saveConfig(cfg: QyConfig): Promise<void> {
@@ -150,8 +236,60 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
   await writeFile(configPath(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
 }
 
+/**
+ * 这个模型该走哪个接口、带什么凭证。
+ *
+ * 规则：**先找哪个接口声明了这个模型**，找不到就挂到当前接口上——后者覆盖
+ * 「同一家换个模型」这个最常见的情形（例如 DeepSeek 接口下在 v4-flash 和
+ * v4-pro 之间切）。不传模型名就是当前生效的那一格。
+ *
+ * 两个接口都声明了同一个模型时**当前接口优先**。旧实现在这里是
+ * `Object.values(...).find(...)`，取的是对象键的枚举顺序——用户明明选了 A 接口，
+ * 请求可能发去 B，而且换个顺序保存一次结果就变了。
+ *
+ * 传 `ModelRef` 则**接口是指定死的**，不再去猜：`classifier` 这类配置写的就是
+ * 「哪个接口的哪个模型」，猜一遍只会把用户写死的东西改掉。
+ *
+ * 抽出来是因为有多个消费方：`Session.resolveProfile` 决定这一轮真的发给谁，
+ * `/api/models` 决定界面上这个模型该显示成什么协议、有哪几档思考强度。
+ * 两处各写一遍的话，界面说「这个模型能调思考」而实际那条协议根本不发，
+ * 又是一个选了没反应的控件——而且是**只在某些配置下**才犯。
+ */
+export function resolveModel(cfg: QyConfig, model?: string | ModelRef): ResolvedModel | undefined {
+  const ref = typeof model === 'object' ? model : undefined
+  const wanted = typeof model === 'object' ? model.model : (model ?? cfg.active.model)
+
+  let name: string
+  if (ref) {
+    name = ref.provider
+  } else {
+    const owners = Object.keys(cfg.providers).filter((n) => cfg.providers[n]?.models[wanted])
+    name = owners.includes(cfg.active.provider)
+      ? cfg.active.provider
+      : (owners[0] ?? cfg.active.provider)
+  }
+
+  const provider = cfg.providers[name]
+  if (!provider) return undefined
+  const declared = provider.models[wanted]
+
+  return {
+    provider: name,
+    kind: provider.kind,
+    model: wanted,
+    ...(provider.apiKeyEnv ? { apiKeyEnv: provider.apiKeyEnv } : {}),
+    ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+    ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+    ...(provider.headers ? { headers: provider.headers } : {}),
+    ...(declared?.maxOutputTokens ? { maxOutputTokens: declared.maxOutputTokens } : {}),
+    // 没声明过这个模型就**不给** capabilities：套用同接口另一个模型的实测结果，
+    // 等于拿 A 的实测事实去描述 B。旧结构下这是静默发生的。
+    ...(declared?.capabilities ? { capabilities: declared.capabilities } : {}),
+  }
+}
+
 /** 解析出真正要用的 key：环境变量优先于配置文件里的明文。 */
-export function resolveApiKey(p: StoredProfile): string {
+export function resolveApiKey(p: { apiKeyEnv?: string; apiKey?: string }): string {
   if (p.apiKeyEnv) {
     const fromEnv = process.env[p.apiKeyEnv]
     if (fromEnv) return fromEnv
@@ -164,7 +302,7 @@ export function resolveApiKey(p: StoredProfile): string {
  *
  * ## 三条都要收，少一条就有洞
  *
- * 1. **所有档案**的 key，不只是 `active` 那个。用户配了三家就有三把 key，
+ * 1. **所有接口**的 key，不只是 `active` 那个。用户配了三家就有三把 key，
  *    模型能读到哪一把跟当前用哪个模型毫无关系。
  * 2. **明文 `apiKey` 和 `apiKeyEnv` 指向的环境变量值都要取**，
  *    而不是只取 `resolveApiKey` 的结果——后者在两者都有时只返回一个，
@@ -179,7 +317,7 @@ export function collectSecrets(cfg: QyConfig): { values: string[]; envNames: str
   const values = new Set<string>()
   const envNames = new Set<string>()
 
-  for (const p of Object.values(cfg.profiles ?? {})) {
+  for (const p of Object.values(cfg.providers ?? {})) {
     if (p.apiKey) values.add(p.apiKey)
     if (p.apiKeyEnv) {
       envNames.add(p.apiKeyEnv)
@@ -203,14 +341,14 @@ export function collectSecrets(cfg: QyConfig): { values: string[]; envNames: str
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
-  const stored = cfg.profiles[cfg.active]
+  const stored = cfg.providers[cfg.active.provider]
 
   if (!stored) {
-    const names = Object.keys(cfg.profiles)
+    const names = Object.keys(cfg.providers)
     problems.push(
-      `配置里没有名为 "${cfg.active}" 的供应商档案。\n` +
-        `  已有档案：${names.length ? names.join('、') : '（一个都没有）'}\n` +
-        `  改 ${configPath()} 里的 "active"，或运行 qy init 重建。`,
+      `配置里没有名为 "${cfg.active.provider}" 的接口。\n` +
+        `  已有接口：${names.length ? names.join('、') : '（一个都没有）'}\n` +
+        `  改 ${configPath()} 里的 "active.provider"，或运行 qy init 重建。`,
     )
     return problems
   }
@@ -219,12 +357,12 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   if (!resolveApiKey(stored) && !local) {
     const where = stored.apiKeyEnv
       ? `环境变量 ${stored.apiKeyEnv} 是空的，配置文件里也没有 apiKey。`
-      : `档案 "${cfg.active}" 既没有 apiKey 也没有 apiKeyEnv。`
+      : `接口 "${cfg.active.provider}" 既没有 apiKey 也没有 apiKeyEnv。`
     problems.push(
       `未配置 API Key。${where}\n` +
         `  配置文件：${configPath()}\n` +
         `  最快的办法：qy init\n` +
-        `  或者手动改成：\n${indent(exampleProfile(cfg.active, stored))}`,
+        `  或者手动改成：\n${indent(exampleProvider(cfg.active, stored))}`,
     )
   }
 
@@ -233,6 +371,11 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
 
 /**
  * 配置提醒：**不阻断运行**，但每次都要说。
+ *
+ * 两个落点共用这一份文案：终端（`qy` 启动时打印）和设置页（按 markdown 渲染）。
+ * 所以正文写成 markdown（列表用 `- `，不用缩进和 `·`），出口也不能只给命令行的
+ * ——桌面端用户手边不一定有终端，一条只说「跑 xxx 命令」的提醒对他等于没说。
+ * 不为界面单开一份措辞：同一件事两套文案，迟早只改其中一套。
  *
  * 与 `diagnoseConfig` 分开是因为调用方对两者的处置完全不同：
  * `qy exec` 遇到 `diagnoseConfig` 的问题会**直接退出**（没有 key 就发不出请求，
@@ -254,7 +397,7 @@ export function configNotices(cfg: QyConfig): string[] {
     // 不是错误，但必须每次都说：这几个目录在工作区之外，模型可以读写它们。
     notices.push(
       `已放开工作区之外的 ${extras.dirs.length} 个目录（模型可读写）：\n` +
-        extras.dirs.map((d) => `    ${d}`).join('\n'),
+        extras.dirs.map((d) => `- ${d}`).join('\n'),
     )
   }
 
@@ -267,9 +410,9 @@ export function configNotices(cfg: QyConfig): string[] {
   if ((cfg as { autoApprove?: unknown }).autoApprove !== undefined) {
     notices.push(
       `配置里的 autoApprove 已经不再生效，权限改成了两种模式。\n` +
-        `  当前按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹窗，由规则与分类器裁决）。\n` +
-        `  想完全放开就在 ${configPath()} 里写 "mode": "full"——那等于放弃全部裁决。\n` +
-        `  删掉 autoApprove 这一行即可消除本提示。`,
+        `- 当前按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹窗，由规则与分类器裁决）。\n` +
+        `- 想完全放开就在 ${configPath()} 里写 "mode": "full"——那等于放弃全部裁决。\n` +
+        `- 删掉 autoApprove 这一行即可消除本提示。`,
     )
   }
 
@@ -287,15 +430,26 @@ export function configNotices(cfg: QyConfig): string[] {
    * 错的是不说。这正是 ARCHITECTURE §27 那条「不能把『没测』写成『不支持』」，
    * 只不过上一次是在探测器里，这一次在目录里。
    */
-  const active = cfg.profiles[cfg.active]
+  // 旧的扁平 profiles 已经不再加载（见 `loadConfig`）。**必须说**——
+  // 不说的话用户只会看到「我配好的接口和 key 全没了」，而配置文件里还原样躺着。
+  if ((cfg as { profiles?: unknown }).profiles !== undefined) {
+    notices.push(
+      `配置里的 profiles 是旧格式，已经不再加载。模型配置改成了「接口 → 模型」两层。\n` +
+        `- 当前用的是默认接口，**API Key 需要重新填一次**（旧的明文还在文件里，可以复制）。\n` +
+        `- 在设置页「模型」里重配，或直接改 ${configPath()} 的 "active" / "providers"。\n` +
+        `- 重配完删掉 profiles 这一段即可消除本提示。`,
+    )
+  }
+
+  const active = resolveModel(cfg)
   if (active && !active.capabilities) {
     const spec = lookupModel(active.model, active.kind)
     if (spec.catalogued === false) {
       notices.push(
         `模型 ${active.model} 不在内置目录里，能力按**最保守**假设处理：\n` +
-          `  · 不会请求思考（reasoning_tokens 恒为 0），即使这个模型支持\n` +
-          `  · 计价按 0 计算，qy usage 会报 $0\n` +
-          `  实测一次并写回配置即可消除：qy probe --save`,
+          `- 不会请求思考（reasoning_tokens 恒为 0），即使这个模型支持\n` +
+          `- 计价按 0 计算，用量会报 $0\n` +
+          `\n实测一次并写回配置即可消除：qy probe --save`,
       )
     }
   }
@@ -306,7 +460,8 @@ export function configNotices(cfg: QyConfig): string[] {
     notices.push(
       '配置里写了 sandboxNetwork: "deny"。它只在有内核沙箱的平台上生效' +
         '（Linux / WSL2 的 bubblewrap、macOS 的 seatbelt）。' +
-        '本机是哪一档见 `qy config` 最后那行「shell 沙箱」——报 none 就说明这条没有生效。',
+        '本机是哪一档见「权限与沙箱」那一节，命令行是 `qy config` 最后那行「shell 沙箱」' +
+        '——报 none 就说明这条没有生效。',
     )
   }
 
@@ -315,7 +470,7 @@ export function configNotices(cfg: QyConfig): string[] {
     // 如果安静地跑，用户会忘记自己开过它。
     notices.push(
       `权限模式为 full：模型可以不经裁决执行任何命令、读写任何位置。\n` +
-        `  凭证剥离与「禁止改写权限配置」仍然生效（那两条防的是泄漏与自我提权，不豁免）。`,
+        `凭证剥离与「禁止改写权限配置」仍然生效（那两条防的是泄漏与自我提权，不豁免）。`,
     )
   }
 
@@ -329,16 +484,16 @@ function indent(text: string): string {
     .join('\n')
 }
 
-function exampleProfile(name: string, p: StoredProfile): string {
+function exampleProvider(active: ModelRef, p: StoredProvider): string {
   return JSON.stringify(
     {
-      active: name,
-      profiles: {
-        [name]: {
+      active,
+      providers: {
+        [active.provider]: {
           kind: p.kind,
-          model: p.model,
           apiKey: 'sk-你的key',
           ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+          models: { [active.model]: {} },
         },
       },
     },

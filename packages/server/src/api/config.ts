@@ -13,15 +13,15 @@ import {
   configPath,
   diagnoseConfig,
   type QyConfig,
-  type StoredProfile,
+  type StoredProvider,
   saveConfig,
 } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
-/** 档案的对外形状：`apiKey` 换成一个布尔。 */
-export type RedactedProfile = Omit<StoredProfile, 'apiKey'> & { hasApiKey: boolean }
-export type RedactedConfig = Omit<QyConfig, 'profiles'> & {
-  profiles: Record<string, RedactedProfile>
+/** 接口的对外形状：`apiKey` 换成一个布尔。 */
+export type RedactedProvider = Omit<StoredProvider, 'apiKey'> & { hasApiKey: boolean }
+export type RedactedConfig = Omit<QyConfig, 'providers'> & {
+  providers: Record<string, RedactedProvider>
 }
 
 /**
@@ -31,18 +31,18 @@ export type RedactedConfig = Omit<QyConfig, 'profiles'> & {
  * 需要看到自己配的是哪个变量名，否则「为什么没读到 key」无从排查。
  */
 export function redactConfig(cfg: QyConfig): RedactedConfig {
-  const profiles: Record<string, RedactedProfile> = {}
-  for (const [name, p] of Object.entries(cfg.profiles)) {
+  const providers: Record<string, RedactedProvider> = {}
+  for (const [name, p] of Object.entries(cfg.providers)) {
     const { apiKey, ...rest } = p
-    profiles[name] = { ...rest, hasApiKey: Boolean(apiKey) }
+    providers[name] = { ...rest, hasApiKey: Boolean(apiKey) }
   }
-  return { ...cfg, profiles }
+  return { ...cfg, providers }
 }
 
 /**
  * 把前端交回来的脱敏配置合回真实配置。
  *
- * 关键的一条：**档案带 `hasApiKey: true` 但没带 `apiKey` 时，沿用旧的那份**。
+ * 关键的一条：**接口带 `hasApiKey: true` 但没带 `apiKey` 时，沿用旧的那份**。
  * 不这样做的话，「打开设置页，改个 baseUrl，保存」会把 key 清成 undefined——
  * 而这件事在保存的那一刻完全没有反馈，要等到下一次调用模型才炸，
  * 那时候人已经不会把它和「我刚才改了 baseUrl」联系起来了。
@@ -56,17 +56,17 @@ export function redactConfig(cfg: QyConfig): RedactedConfig {
  * 拆出来之后补的单测顶出的。
  */
 export function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConfig {
-  const profiles: Record<string, StoredProfile> = {}
-  for (const [name, p] of Object.entries(incoming.profiles ?? {})) {
-    const { hasApiKey, apiKey: explicit, ...rest } = p as RedactedProfile & { apiKey?: string }
-    const prior = current.profiles[name]?.apiKey
+  const providers: Record<string, StoredProvider> = {}
+  for (const [name, p] of Object.entries(incoming.providers ?? {})) {
+    const { hasApiKey, apiKey: explicit, ...rest } = p as RedactedProvider & { apiKey?: string }
+    const prior = current.providers[name]?.apiKey
     const apiKey = explicit !== undefined ? explicit : hasApiKey ? prior : undefined
-    profiles[name] = {
-      ...(rest as StoredProfile),
+    providers[name] = {
+      ...(rest as StoredProvider),
       ...(apiKey ? { apiKey } : {}),
     }
   }
-  return { ...current, ...incoming, profiles }
+  return { ...current, ...incoming, providers }
 }
 
 export const handleConfigApi: ApiHandler = async (url, req, d) => {
@@ -92,8 +92,8 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     // 就地更新运行中的这份：不更新的话，保存成功但本进程仍用旧配置，
     // 用户下一轮对话还是老模型——又一个「看起来生效了」。
     Object.assign(d.config, merged)
-    for (const k of Object.keys(d.config.profiles)) {
-      if (!(k in merged.profiles)) delete d.config.profiles[k]
+    for (const k of Object.keys(d.config.providers)) {
+      if (!(k in merged.providers)) delete d.config.providers[k]
     }
     return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
   }

@@ -10,8 +10,14 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { loadMcpServers, type McpRegistry, parseMcpConfig } from '@qywork/mcp'
-import { loadPlugins, type PluginRegistry } from '@qywork/plugins'
+import {
+  loadMcpServers,
+  type McpConfig,
+  type McpRegistry,
+  parseMcpConfig,
+  toolNamePrefix,
+} from '@qywork/mcp'
+import { loadPlugins, type PluginRegistry, pluginToolPrefix } from '@qywork/plugins'
 import {
   type Backend,
   type BuiltinBackend,
@@ -21,12 +27,24 @@ import {
   type Role,
   type TeamRules,
 } from '@qywork/team'
-import { resolveInWorkspace } from '@qywork/tools'
+import { AGENTS_DIR, resolveInWorkspace, type Scope, scopePaths, scopeRoots } from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
 
-export const PLUGINS_DIR = '.qy/plugins'
+/** 各层根目录下的子路径。三层都按这几个名字找。 */
+export const PLUGINS_SUBDIR = 'plugins'
+export const MCP_FILE = 'mcp.json'
+
+/** 用户层（工作区 `.agents/`）里的位置。安装、写回、报路径用它们。 */
+export const PLUGINS_DIR = `${AGENTS_DIR}/${PLUGINS_SUBDIR}`
+export const MCP_CONFIG = `${AGENTS_DIR}/${MCP_FILE}`
+
+/**
+ * team 配置**只有工作区一份，不分层**。
+ *
+ * 它描述的是「这个项目怎么分工」——角色、后端、编排图全是项目属性，
+ * 跟到别的仓库去只会派错人。所以它留在 `.qy/`，不进 `.agents/`。
+ */
 export const TEAM_CONFIG = '.qy/team.json'
-export const MCP_CONFIG = '.qy/mcp.json'
 
 export interface Extensions {
   plugins: PluginRegistry
@@ -57,20 +75,7 @@ export async function loadExtensions(
   workspaceRoot: string,
   onLog?: (line: string) => void,
 ): Promise<Extensions> {
-  const plugins = await loadPlugins(join(workspaceRoot, PLUGINS_DIR), {
-    ...(onLog ? { onLog } : {}),
-    workspaceRoot,
-    onCapability: makeCapabilityHandler({ workspaceRoot }),
-  }).catch(
-    (err): PluginRegistry => ({
-      plugins: [],
-      previewers: new Map(),
-      roles: new Map(),
-      providers: new Map(),
-      toolSpecs: [],
-      failures: [{ dir: PLUGINS_DIR, reason: err instanceof Error ? err.message : String(err) }],
-    }),
-  )
+  const plugins = await loadScopedPlugins(workspaceRoot, onLog)
 
   const mcp = await loadWorkspaceMcp(workspaceRoot, onLog)
 
@@ -157,9 +162,82 @@ export function releaseAllExtensions(): void {
 }
 
 /**
- * 读 `.qy/mcp.json` 并把里面的 server 全部连上。
+ * 三层的插件目录合起来，同 id 只留优先级最高的那份。
  *
- * 没有这个文件 = 没配 MCP，返回空注册表，不是错误。
+ * `loadPlugins` 一次只认一个目录，所以这里逐层调用再合并。合并按 **id** 去重，
+ * 不是按目录——两个层里同名的插件是一个东西的两份，装两遍会让工具名撞车，
+ * 而撞车的表现是「有一个插件的工具凭空消失」。
+ */
+async function loadScopedPlugins(
+  workspaceRoot: string,
+  onLog?: (line: string) => void,
+): Promise<PluginRegistry> {
+  const merged: PluginRegistry = {
+    plugins: [],
+    previewers: new Map(),
+    roles: new Map(),
+    providers: new Map(),
+    toolSpecs: [],
+    failures: [],
+  }
+  const seen = new Set<string>()
+  const takenTools = new Set<string>()
+
+  for (const { dir } of scopePaths(scopeRoots(workspaceRoot), PLUGINS_SUBDIR)) {
+    const reg = await loadPlugins(dir, {
+      ...(onLog ? { onLog } : {}),
+      workspaceRoot,
+      onCapability: makeCapabilityHandler({ workspaceRoot }),
+    }).catch(
+      (err): PluginRegistry => ({
+        plugins: [],
+        previewers: new Map(),
+        roles: new Map(),
+        providers: new Map(),
+        toolSpecs: [],
+        failures: [{ dir, reason: err instanceof Error ? err.message : String(err) }],
+      }),
+    )
+
+    merged.failures.push(...reg.failures)
+    for (const pl of reg.plugins) {
+      const id = pl.manifest.id
+      if (seen.has(id)) {
+        // 说出来而不是安静丢掉：「我在全局装了但没生效」否则查不出原因。
+        merged.failures.push({ dir, reason: `插件 ${id} 已被更高优先级的层提供，这一份被忽略` })
+        continue
+      }
+      seen.add(id)
+      merged.plugins.push(pl)
+    }
+    // 工具按**名字**去重，不按插件 id 前缀：注册名是消毒过的
+    //（`test.probe` → `test_probe__probe`），按 id 拼前缀会一个都匹配不上。
+    // 名字唯一本来就是硬约束，这里和 `loadExtensions` 合并 MCP 时同一个口径。
+    for (const spec of reg.toolSpecs) {
+      if (takenTools.has(spec.name)) {
+        merged.failures.push({ dir, reason: `工具名已被更高优先级的层占用：${spec.name}` })
+        continue
+      }
+      takenTools.add(spec.name)
+      merged.toolSpecs.push(spec)
+    }
+    for (const [k, v] of reg.previewers) if (!merged.previewers.has(k)) merged.previewers.set(k, v)
+    for (const [k, v] of reg.roles) if (!merged.roles.has(k)) merged.roles.set(k, v)
+    for (const [k, v] of reg.providers) if (!merged.providers.has(k)) merged.providers.set(k, v)
+  }
+  return merged
+}
+
+/**
+ * 读三层的 `mcp.json` 并把里面的 server 全部连上。
+ *
+ * 一个 server 都没有 = 没配 MCP，返回空注册表，不是错误。
+ *
+ * 同名 server **先认领的赢**：全局配了一个 `github`，工作区又配了一个同名的，
+ * 用的是工作区那份——这正是「这个项目要连另一个实例」的表达方式。
+ *
+ * `cwd` 仍然锁在工作区内。全局那份写了工作区外的 cwd 会失败，而不是被放行：
+ * 一个跨工作区的配置能把 server 的工作目录指到任意位置，那条路不该开。
  */
 export async function loadWorkspaceMcp(
   workspaceRoot: string,
@@ -172,11 +250,9 @@ export async function loadWorkspaceMcp(
     stopAll: () => {},
   }
 
-  const raw = await readFile(join(workspaceRoot, MCP_CONFIG), 'utf8').catch(() => null)
-  if (raw === null) return empty
-
-  const config = parseMcpConfig(raw)
-  if (config.error) onLog?.(`[qy] ${MCP_CONFIG}：${config.error}`)
+  const config = await loadScopedMcpConfig(workspaceRoot)
+  if (config.error) onLog?.(`[qy] ${MCP_FILE}：${config.error}`)
+  if (Object.keys(config.servers).length === 0) return empty
 
   return loadMcpServers(config, workspaceRoot, {
     ...(onLog ? { onLog } : {}),
@@ -189,6 +265,44 @@ export async function loadWorkspaceMcp(
       failures: [{ server: MCP_CONFIG, reason: err instanceof Error ? err.message : String(err) }],
     }),
   )
+}
+
+/** 一个 server 在配置里来自哪一层。设置页据此决定开关归谁、能不能改。 */
+export interface ScopedMcpConfig extends McpConfig {
+  scopeOf: Record<string, Scope>
+  /** 每一层的文件路径，存在与否都列出来——「该去哪儿加」比「这里没有」有用。 */
+  files: { scope: Scope; path: string }[]
+}
+
+/**
+ * 三层的 `mcp.json` 合成一份。
+ *
+ * **加载器和设置页共用它**：页面上列出来的 server，必须就是模型真的连上的那批。
+ */
+export async function loadScopedMcpConfig(workspaceRoot: string): Promise<ScopedMcpConfig> {
+  const servers: ScopedMcpConfig['servers'] = {}
+  const scopeOf: Record<string, Scope> = {}
+  const files: { scope: Scope; path: string }[] = []
+  const errors: string[] = []
+
+  for (const { scope, dir } of scopePaths(scopeRoots(workspaceRoot), '')) {
+    const path = join(dir, MCP_FILE)
+    files.push({ scope, path })
+    const raw = await readFile(path, 'utf8').catch(() => null)
+    if (raw === null) continue
+    const parsed = parseMcpConfig(raw)
+    if (parsed.error) {
+      errors.push(`${path}：${parsed.error}`)
+      continue
+    }
+    for (const [name, spec] of Object.entries(parsed.servers)) {
+      if (name in servers) continue
+      servers[name] = spec
+      scopeOf[name] = scope
+    }
+  }
+
+  return { servers, scopeOf, files, error: errors.length ? errors.join('\n') : null }
 }
 
 /**
@@ -221,7 +335,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
     // 一条写漏了 command 的 CLI 配置默默变成内置，跑出来的东西完全不是用户要的。
     if (b.kind === 'builtin') {
       const builtin: BuiltinBackend = { kind: 'builtin' }
-      if (b.profile) builtin.profile = String(b.profile)
+      if (b.provider) builtin.provider = String(b.provider)
       if (b.model) builtin.model = String(b.model)
       if (b.effort) builtin.effort = b.effort as NonNullable<BuiltinBackend['effort']>
       backends[id] = builtin
@@ -297,3 +411,13 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
     error: dropped > 0 ? `${dropped} 项配置引用了不存在的后端或角色，已忽略` : null,
   }
 }
+
+/**
+ * 工具名前缀，转出给 CLI 用。
+ *
+ * CLI 不直接依赖 `@qywork/mcp` / `@qywork/plugins`（依赖图里它只挂 runtime），
+ * 但 `qy mcp` / `qy doctor` / `qy plugins` 都要按前缀数「这个 server / 插件贡献了
+ * 几个工具」。三处原本各自拼 `mcp__${name}__` / `${id}__`，**都没消毒**，
+ * 带点的名字一条都匹配不上，体检结果直接骗人。转出来是为了只有一份实现。
+ */
+export { pluginToolPrefix, toolNamePrefix }

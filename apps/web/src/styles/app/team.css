@@ -82,7 +82,7 @@
 .team-start {
   align-self: flex-end;
   padding: 5px var(--s-4);
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: var(--accent);
   color: #fff;
   font-size: var(--fs-sm);
@@ -109,6 +109,21 @@
 }
 .team-member.failed {
   color: var(--danger);
+}
+/* 只有带子会话的那行可点。不给它加图标或箭头——一行里已经有状态标记、
+   角色名、摘要三段，第四个视觉元素会把这行读成一个控件栏。 */
+.team-member.openable {
+  cursor: pointer;
+  border-radius: var(--r-xs);
+  margin: 0 calc(var(--s-2) * -1);
+  padding: 2px var(--s-2);
+}
+.team-member.openable:hover {
+  background: var(--bg-hover);
+}
+.team-member.openable:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .team-member-mark {
   flex: none;

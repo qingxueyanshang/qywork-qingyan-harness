@@ -3,7 +3,7 @@
  *
  * ## 存在工作区里，不存在账本里
  *
- * 记忆是 `.qy/memory/*.md`——普通文件。三个理由：
+ * 记忆是 `<作用域>/memory/*.md`——普通文件。三个理由：
  *
  * 1. **用户能直接看、直接改、直接删。** 存进 SQLite 就需要一套 UI 才能管理，
  *    而记忆恰恰是最需要用户随手纠正的东西（记错了一条会一直错下去）。
@@ -15,19 +15,36 @@
  * 这是本项目的既有不变量（ARCHITECTURE.md 第 6 节）。记忆随用户增删而变，
  * 放进前缀等于每加一条记忆就把整个 provider 缓存打掉一次。
  * 一律压到 transcript 之后的尾区。
+ *
+ * ## 三层作用域：列表和读跨层，写和删只在用户层
+ *
+ * `list` / `read` 看得到全局层的记忆（跨工作区那几条常用事实），
+ * 但 `write` / `delete` **只动工作区 `.agents/memory/`**。
+ *
+ * 不对称是刻意的：让模型在一次任务里改掉一条「所有项目都生效」的记忆，
+ * 影响范围远远超出它当时看到的上下文。全局那几条由人在设置页管。
  */
 
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { resolveInWorkspace } from './paths.ts'
+import { type Scope, type ScopeRoots, scanScoped, scopePaths, scopeRoots } from './scopes.ts'
 
-export const MEMORY_DIR = '.qy/memory'
+/** 各层根目录下装记忆的那个子目录。 */
+export const MEMORY_SUBDIR = 'memory'
+/** 用户层记忆相对工作区的路径。写入、fileChanges 用它。 */
+export const MEMORY_DIR = `.agents/${MEMORY_SUBDIR}`
 
-/** 单条记忆的上限。超过说明该写进文档而不是记忆。 */
-const MAX_ENTRY_CHARS = 4000
-/** 记忆条数上限。无上限的话尾区会慢慢吃掉整个上下文。 */
-const MAX_ENTRIES = 200
+/**
+ * 单条记忆的上限。超过说明该写进文档而不是记忆。
+ *
+ * **导出**：HTTP 面（`server/api/memory.ts`）写的是同一批文件，两处各写一个数
+ * 迟早漂成两个——`estimateTokens` 就是这么漂的（ARCHITECTURE §5.7）。
+ */
+export const MAX_ENTRY_CHARS = 4000
+/** 记忆条数上限。无上限的话尾区索引会慢慢吃掉整个上下文。同上，导出共用。 */
+export const MAX_ENTRIES = 200
 
 /** 文件名安全化：记忆的 key 由模型给，不能让它写到目录外。 */
 function safeName(key: string): string | null {
@@ -77,10 +94,11 @@ export const memoryTool: ToolSpec = {
 
   async fn(args, ctx) {
     const action = String(args.action ?? '')
+    const roots = scopeRoots(ctx.workspaceRoot)
     const dir = join(ctx.workspaceRoot, MEMORY_DIR)
 
     if (action === 'list') {
-      const entries = await listEntries(dir)
+      const entries = await listScopedEntries(roots)
       return {
         status: 'success',
         message: entries.length
@@ -98,10 +116,11 @@ export const memoryTool: ToolSpec = {
     })
 
     if (action === 'read') {
-      const text = await readFile(file, 'utf8').catch(() => null)
-      return text === null
+      // 读跨层：用户层没有就往全局找。找不到才算 not_found。
+      const found = await readScoped(roots, key)
+      return found === null
         ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
-        : { status: 'success', message: text, data: { key, content: text } }
+        : { status: 'success', message: found.content, data: { key, content: found.content } }
     }
 
     if (action === 'write') {
@@ -164,6 +183,8 @@ export const memoryTool: ToolSpec = {
 export interface MemoryEntry {
   key: string
   preview: string
+  /** 这条来自哪一层。界面据此决定能不能改、开关归谁管。 */
+  scope: Scope
 }
 
 /**
@@ -173,7 +194,7 @@ export interface MemoryEntry {
  * 把全部正文塞进去，几十条记忆就能吃掉可观的上下文，而模型多数时候只需要
  * 知道「有哪些记忆」，需要哪条再单独读。
  */
-export async function listEntries(dir: string): Promise<MemoryEntry[]> {
+export async function listEntries(dir: string, scope: Scope = 'user'): Promise<MemoryEntry[]> {
   const names = await readdir(dir).catch(() => [] as string[])
   const out: MemoryEntry[] = []
   for (const name of names.sort()) {
@@ -183,7 +204,30 @@ export async function listEntries(dir: string): Promise<MemoryEntry[]> {
     out.push({
       key: name.slice(0, -3),
       preview: firstLine.trim().slice(0, 100),
+      scope,
     })
   }
   return out
+}
+
+/**
+ * 三层合起来的记忆索引。同 key 只留优先级最高的那条。
+ *
+ * **加载器和设置页共用这一个函数**：界面上列出来的那条，必须就是模型真的看到的
+ * 那条。两边各扫一遍的话，界面显示全局那份、模型读到用户层那份，而两者内容不同。
+ */
+export function listScopedEntries(roots: ScopeRoots): Promise<MemoryEntry[]> {
+  return scanScoped(roots, MEMORY_SUBDIR, listEntries, (e) => e.key)
+}
+
+/** 按优先级找一条记忆的全文。找不到回 null。 */
+export async function readScoped(
+  roots: ScopeRoots,
+  key: string,
+): Promise<{ content: string; scope: Scope } | null> {
+  for (const { scope, dir } of scopePaths(roots, MEMORY_SUBDIR)) {
+    const text = await readFile(join(dir, `${key}.md`), 'utf8').catch(() => null)
+    if (text !== null) return { content: text, scope }
+  }
+  return null
 }

@@ -13,30 +13,42 @@ import { computeCost, lookupModel } from './catalog.ts'
 
 describe('同一模型在不同协议下能力不同', () => {
   /**
-   * `deepseek-v4-flash` 走两种协议，**能不能控制它思考是不一样的**：
-   * chat/completions 下我们根本不发思考字段，无从控制；
-   * Responses 下 `reasoning.effort:'none'` 能真的关掉它。
+   * `deepseek-v4-flash` 走两种协议，**思考的控制面完全是两套**：
+   *
+   * - chat/completions：`thinking:{type:'enabled'}` + `reasoning_effort`
+   *   两个字段一起发，两档（high / max）。
+   * - Responses：只有 `reasoning.effort` 一个旋钮，实测四档全部「接受但不采纳」，
+   *   只有 `'none'` 真的关得掉。
    *
    * 一个目录条目描述不了两种协议，所以 `lookupModel` 必须先按
    * `(id, provider)` 精确匹配。只按 id 找的话，命中的是「先声明的那条」——
    * 一个跟正确性毫无关系的顺序。
    */
-  test('Responses 下认得出思考可控', () => {
+  test('Responses 下是 reasoning.effort 那一套', () => {
     const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
     expect(spec.provider).toBe('openai_responses')
     expect(spec.thinking).toBe('reasoning_effort')
   })
 
-  test('chat/completions 下如实说无从控制', () => {
+  test('chat/completions 下是 DeepSeek 自己那一套', () => {
     const spec = lookupModel('deepseek-v4-flash', 'openai_compatible')
     expect(spec.provider).toBe('openai_compatible')
-    expect(spec.thinking).toBe('none')
+    expect(spec.thinking).toBe('deepseek_thinking')
+  })
+
+  /** 两条协议的档位必须各记各的——合并过一次，代价是其中一边一定在说谎。 */
+  test('两条协议的档位互不覆盖', () => {
+    expect(lookupModel('deepseek-v4-flash', 'openai_compatible').effortLevels).toEqual([
+      'high',
+      'max',
+    ])
+    expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
   })
 
   test('别名（deepseek-chat / deepseek-reasoner）两种协议下都在', () => {
     for (const id of ['deepseek-chat', 'deepseek-reasoner']) {
       expect(lookupModel(id, 'openai_responses').thinking).toBe('reasoning_effort')
-      expect(lookupModel(id, 'openai_compatible').thinking).toBe('none')
+      expect(lookupModel(id, 'openai_compatible').thinking).toBe('deepseek_thinking')
     }
   })
 })
@@ -55,7 +67,7 @@ describe('实测修正过的字段', () => {
   })
 
   /**
-   * `effortLevels: []` 是**实测结论**，不是「还没探」的保守默认。
+   * Responses 下的 `effortLevels: []` 是**实测结论**，不是「还没探」的保守默认。
    *
    * minimal / low / medium / high 全部返回 200，而 reasoning_tokens 三次采样
    * 都是 899~900（`max_output_tokens=900`），**没有一档被采纳**。
@@ -63,10 +75,16 @@ describe('实测修正过的字段', () => {
    *
    * 把四档写上去等于宣称一个不存在的能力——面板会显示「已按 high 运行」，
    * 那是一句假话。
+   *
+   * 这条**只管 Responses**。chat/completions 那边是另一套字段，见上面那个 describe。
    */
-  test('deepseek 没有可用的 effort 档位（accepted ≠ works）', () => {
+  test('Responses 下 deepseek 没有可用的 effort 档位（accepted ≠ works）', () => {
     expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
-    expect(lookupModel('deepseek-v4-flash', 'openai_compatible').effortLevels).toEqual([])
+  })
+
+  /** Haiku 4.5 走 budget_tokens，没有 effort 档——这条没被上面那次订正影响。 */
+  test('haiku-4-5 仍然没有 effort 档', () => {
+    expect(lookupModel('claude-haiku-4-5', 'anthropic').effortLevels).toEqual([])
   })
 })
 

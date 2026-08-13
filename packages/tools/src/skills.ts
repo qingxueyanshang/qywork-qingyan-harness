@@ -14,29 +14,44 @@
  * 自己决定要不要 `read_skill` 拉全文。
  *
  * 索引同样**永不进冻结前缀**——用户装一个技能就会让整个 provider 缓存失效。
+ *
+ * ## 三层作用域，技能全程只读
+ *
+ * 工作区 `.agents/skills/`（用户层）和 `~/.qywork/skills/`（全局层）都扫，
+ * 同名先到的赢。技能没有任何写接口——它是一个目录（`SKILL.md` + 附带脚本），
+ * 在网页上编辑一个目录需要一整套文件管理界面，而那是编辑器该干的事。
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { type Scope, type ScopeRoots, scanScoped, scopeRoots } from './scopes.ts'
 
-export const SKILLS_DIR = '.qy/skills'
+/** 各层根目录下装技能的那个子目录。`.agents/skills` 是跨客户端约定的那条。 */
+export const SKILLS_SUBDIR = 'skills'
+/** 用户层技能相对工作区的路径。 */
+export const SKILLS_DIR = `.agents/${SKILLS_SUBDIR}`
 
 export interface SkillMeta {
   name: string
   description: string
-  /** 相对工作区的目录路径。 */
+  /**
+   * 技能目录的**绝对路径**。
+   *
+   * 曾经是相对工作区的——全局层的技能根本不在工作区里，相对路径表达不了它，
+   * 而拼出来的 `../../..` 既读不懂、回填给工具还会指向别处。
+   */
   dir: string
+  scope: Scope
 }
 
 /**
- * 扫描技能目录。
+ * 扫一个目录里的技能。
  *
  * 单个技能坏了（缺 SKILL.md、前置元信息写错）**只跳过它自己**，不影响其余——
  * 一个手滑的技能包让整个技能体系不可用是不可接受的。
  */
-export async function scanSkills(workspaceRoot: string): Promise<SkillMeta[]> {
-  const root = join(workspaceRoot, SKILLS_DIR)
+export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMeta[]> {
   const names = await readdir(root).catch(() => [] as string[])
   const out: SkillMeta[] = []
 
@@ -56,10 +71,23 @@ export async function scanSkills(workspaceRoot: string): Promise<SkillMeta[]> {
     out.push({
       name: meta.name || name,
       description: meta.description,
-      dir: `${SKILLS_DIR}/${name}`,
+      dir,
+      scope,
     })
   }
   return out
+}
+
+/**
+ * 三层合起来的技能索引。同名只留优先级最高的那个。
+ *
+ * **加载器和设置页共用这一个函数。** 两边各扫一遍的话，菜单描述的是一个技能、
+ * 跑的是另一个——而这种错只在同名时才犯，最难被当成 bug 报出来。
+ */
+export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<SkillMeta[]> {
+  const roots =
+    typeof rootsOrWorkspace === 'string' ? scopeRoots(rootsOrWorkspace) : rootsOrWorkspace
+  return scanScoped(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
 }
 
 /**
@@ -133,7 +161,7 @@ export const readSkillTool: ToolSpec = {
     if (!wanted) return { status: 'failure', message: '缺少 name' }
 
     const skills = await scanSkills(ctx.workspaceRoot)
-    const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(`/${wanted}`))
+    const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
       // 列出可用的名字而不是只说「找不到」：模型多半是名字记错了一个字，
       // 给它候选它下一轮就能自己修正。
@@ -144,9 +172,7 @@ export const readSkillTool: ToolSpec = {
       }
     }
 
-    const text = await readFile(join(ctx.workspaceRoot, hit.dir, 'SKILL.md'), 'utf8').catch(
-      () => null,
-    )
+    const text = await readFile(join(hit.dir, 'SKILL.md'), 'utf8').catch(() => null)
     if (text === null) {
       return { status: 'failure', message: `技能 ${wanted} 的 SKILL.md 读取失败` }
     }

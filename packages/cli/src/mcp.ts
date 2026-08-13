@@ -8,7 +8,7 @@
  */
 
 import { resolve } from 'node:path'
-import { loadWorkspaceMcp } from '@qywork/runtime'
+import { loadWorkspaceMcp, toolNamePrefix } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -38,7 +38,7 @@ export async function runMcp(args: string[]): Promise<number> {
     }
 
     for (const s of reg.servers) {
-      const tools = reg.toolSpecs.filter((t) => t.name.startsWith(`mcp__${s.name}__`))
+      const tools = reg.toolSpecs.filter((t) => t.name.startsWith(toolNamePrefix(s.name)))
       // 报出传输种类：本地进程和远端 server 的排查方向完全不同，
       // 一眼看出来是哪种，比事后猜省事。
       process.stderr.write(

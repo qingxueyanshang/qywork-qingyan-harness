@@ -12,7 +12,7 @@ import {
   type McpToolDef,
   SUPPORTED_CAPABILITIES,
 } from './client.ts'
-import { specFor, toolName } from './register.ts'
+import { specFor, toolName, toolNamePrefix } from './register.ts'
 import { resourceToolsFor } from './resources.ts'
 import { isHttpSpec, type McpServerSpec } from './transport.ts'
 
@@ -244,7 +244,9 @@ export async function loadMcpServers(
      * 而用户关心的是结果。理由里带上 server 声明了什么，
      * 这样「它只提供 prompts」和「它什么都不提供」一眼能分开。
      */
-    const produced = out.toolSpecs.filter((s) => s.name.startsWith(`mcp__${item.name}__`)).length
+    const produced = out.toolSpecs.filter((s) =>
+      s.name.startsWith(toolNamePrefix(item.name)),
+    ).length
     if (produced === 0) {
       const declared = Object.keys(item.client.capabilities)
       out.failures.push({

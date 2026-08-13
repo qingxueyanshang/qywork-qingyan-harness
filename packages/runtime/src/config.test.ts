@@ -5,17 +5,18 @@ import {
   diagnoseConfig,
   type QyConfig,
   resolveApiKey,
+  resolveModel,
 } from './config.ts'
 
 function cfg(over: Partial<QyConfig> = {}): QyConfig {
   return {
-    active: 'ds',
-    profiles: {
+    active: { provider: 'ds', model: 'deepseek-v4-flash' },
+    providers: {
       ds: {
         kind: 'openai_compatible',
-        model: 'deepseek-v4-flash',
         baseUrl: 'https://api.deepseek.com/v1',
         apiKeyEnv: 'QYWORK_TEST_KEY',
+        models: { 'deepseek-v4-flash': {} },
       },
     },
     ...over,
@@ -29,19 +30,88 @@ afterEach(() => {
 describe('key 解析', () => {
   test('环境变量优先于配置文件明文', () => {
     process.env.QYWORK_TEST_KEY = 'from-env'
-    expect(
-      resolveApiKey({ kind: 'anthropic', model: 'm', apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' }),
-    ).toBe('from-env')
+    expect(resolveApiKey({ apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' })).toBe('from-env')
   })
 
   test('环境变量为空时回落明文', () => {
-    expect(
-      resolveApiKey({ kind: 'anthropic', model: 'm', apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' }),
-    ).toBe('p')
+    expect(resolveApiKey({ apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' })).toBe('p')
   })
 
   test('都没有时是空串而不是 undefined', () => {
-    expect(resolveApiKey({ kind: 'anthropic', model: 'm' })).toBe('')
+    expect(resolveApiKey({})).toBe('')
+  })
+})
+
+/**
+ * 「接口 → 模型」两层之后的解析。
+ *
+ * 这一组测的是**旧结构做不到的三件事**，不是把老断言换个写法：
+ * 能力按模型分格、同名模型时当前接口优先、凭证只写一份。
+ */
+describe('模型解析', () => {
+  const two = cfg({
+    providers: {
+      ds: {
+        kind: 'openai_compatible',
+        baseUrl: 'https://api.deepseek.com/v1',
+        apiKey: 'sk-ds',
+        models: {
+          'deepseek-v4-flash': { capabilities: { thinking: 'none' } },
+          'deepseek-v4-pro': {},
+        },
+      },
+      mirror: {
+        kind: 'openai_compatible',
+        baseUrl: 'https://mirror.example/v1',
+        apiKey: 'sk-mirror',
+        models: { 'deepseek-v4-flash': {} },
+      },
+    },
+  })
+
+  test('同接口下换模型，凭证与端点跟着接口走', () => {
+    const r = resolveModel(two, 'deepseek-v4-pro')
+    expect(r?.provider).toBe('ds')
+    expect(r?.apiKey).toBe('sk-ds')
+    expect(r?.baseUrl).toBe('https://api.deepseek.com/v1')
+  })
+
+  /*
+   * 旧结构把 capabilities 挂在档案上，于是「档案里没声明的模型」会**套上**
+   * 同档案另一个模型的实测结果——探过 flash 支持思考，换到 pro 就当 pro 也支持。
+   * 那是拿 A 的实测事实去描述 B，而且完全静默。
+   */
+  test('没在这个接口下声明过的能力不会被套到别的模型上', () => {
+    expect(resolveModel(two, 'deepseek-v4-flash')?.capabilities).toEqual({ thinking: 'none' })
+    expect(resolveModel(two, 'deepseek-v4-pro')?.capabilities).toBeUndefined()
+    expect(resolveModel(two, '完全没配过的模型')?.capabilities).toBeUndefined()
+  })
+
+  /*
+   * 同一个模型 id 挂在两个接口下（官方 + 中转）是常见配置。旧实现取的是
+   * `Object.values().find()`——对象键的枚举顺序，用户选了 A 可能发去 B，
+   * 而且重新保存一次顺序变了结果就变。
+   */
+  test('两个接口都有这个模型时，当前接口优先', () => {
+    expect(resolveModel(two, 'deepseek-v4-flash')?.provider).toBe('ds')
+    const onMirror = { ...two, active: { provider: 'mirror', model: 'deepseek-v4-flash' } }
+    expect(resolveModel(onMirror, 'deepseek-v4-flash')?.provider).toBe('mirror')
+  })
+
+  test('当前接口没有这个模型时挂到声明了它的那个接口上', () => {
+    const elsewhere = { ...two, active: { provider: 'mirror', model: 'deepseek-v4-flash' } }
+    expect(resolveModel(elsewhere, 'deepseek-v4-pro')?.provider).toBe('ds')
+  })
+
+  /** 传 ref 是「用户写死了哪个接口」，不能再去猜——classifier 就是这么配的。 */
+  test('传 ModelRef 时接口是指定死的，不参与猜测', () => {
+    const r = resolveModel(two, { provider: 'mirror', model: 'deepseek-v4-pro' })
+    expect(r?.provider).toBe('mirror')
+    expect(r?.apiKey).toBe('sk-mirror')
+  })
+
+  test('接口不存在时返回 undefined，而不是回落到别的接口', () => {
+    expect(resolveModel(two, { provider: '不存在', model: 'x' })).toBeUndefined()
   })
 })
 
@@ -61,20 +131,25 @@ describe('配置体检', () => {
     expect(diagnoseConfig(cfg())).toEqual([])
   })
 
-  test('active 指向不存在的档案时列出实际有哪些', () => {
-    const [p] = diagnoseConfig(cfg({ active: '打错了' }))
+  test('active 指向不存在的接口时列出实际有哪些', () => {
+    const [p] = diagnoseConfig(cfg({ active: { provider: '打错了', model: 'm' } }))
     expect(p).toContain('打错了')
     expect(p).toContain('ds')
   })
 
-  test('一个档案都没有时也不崩', () => {
-    expect(diagnoseConfig({ active: 'x', profiles: {} })).toHaveLength(1)
+  test('一个接口都没有时也不崩', () => {
+    expect(diagnoseConfig({ active: { provider: 'x', model: 'm' }, providers: {} })).toHaveLength(1)
   })
 
   test('本机模型服务不要求 key', () => {
     const local = cfg({
-      profiles: {
-        ds: { kind: 'openai_compatible', model: 'qwen3', baseUrl: 'http://127.0.0.1:11434/v1' },
+      active: { provider: 'ds', model: 'qwen3' },
+      providers: {
+        ds: {
+          kind: 'openai_compatible',
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          models: { qwen3: {} },
+        },
       },
     })
     expect(diagnoseConfig(local)).toEqual([])
@@ -102,12 +177,12 @@ describe('收集凭证', () => {
    * 只收 active 那个档案是不够的：用户配了三家就有三把 key 躺在环境里，
    * 而模型能读到哪一把跟当前用哪个模型毫无关系。
    */
-  test('收全部档案的 key，不只是 active 那个', () => {
+  test('收全部接口的 key，不只是 active 那个', () => {
     const s = collectSecrets(
       cfg({
-        profiles: {
-          ds: { kind: 'openai_compatible', model: 'm', apiKey: 'sk-deepseek-plaintext' },
-          cl: { kind: 'anthropic', model: 'm', apiKey: 'sk-anthropic-plaintext' },
+        providers: {
+          ds: { kind: 'openai_compatible', apiKey: 'sk-deepseek-plaintext', models: { m: {} } },
+          cl: { kind: 'anthropic', apiKey: 'sk-anthropic-plaintext', models: { m: {} } },
         },
       }),
     )
@@ -123,12 +198,12 @@ describe('收集凭证', () => {
     process.env.QYWORK_TEST_KEY = 'sk-from-environment'
     const s = collectSecrets(
       cfg({
-        profiles: {
+        providers: {
           ds: {
             kind: 'openai_compatible',
-            model: 'm',
             apiKey: 'sk-from-config-file',
             apiKeyEnv: 'QYWORK_TEST_KEY',
+            models: { m: {} },
           },
         },
       }),
@@ -152,9 +227,9 @@ describe('收集凭证', () => {
     process.env.QYWORK_TEST_KEY = 'sk-same-key-everywhere'
     const s = collectSecrets(
       cfg({
-        profiles: {
-          a: { kind: 'anthropic', model: 'm', apiKeyEnv: 'QYWORK_TEST_KEY' },
-          b: { kind: 'anthropic', model: 'm', apiKey: 'sk-same-key-everywhere' },
+        providers: {
+          a: { kind: 'anthropic', apiKeyEnv: 'QYWORK_TEST_KEY', models: { m: {} } },
+          b: { kind: 'anthropic', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
         },
       }),
     )
@@ -195,8 +270,10 @@ describe('配置提醒', () => {
      */
     const n = configNotices(
       cfg({
-        active: 'x',
-        profiles: { x: { kind: 'openai_responses', model: '某个没收录的模型', apiKey: 'sk-a' } },
+        active: { provider: 'x', model: '某个没收录的模型' },
+        providers: {
+          x: { kind: 'openai_responses', apiKey: 'sk-a', models: { 某个没收录的模型: {} } },
+        },
       }),
     ).join('\n')
     expect(n).toContain('不在内置目录')
@@ -208,8 +285,10 @@ describe('配置提醒', () => {
   test('内置目录里的模型不提醒', () => {
     const n = configNotices(
       cfg({
-        active: 'x',
-        profiles: { x: { kind: 'anthropic', model: 'claude-opus-5', apiKey: 'sk-a' } },
+        active: { provider: 'x', model: 'claude-opus-5' },
+        providers: {
+          x: { kind: 'anthropic', apiKey: 'sk-a', models: { 'claude-opus-5': {} } },
+        },
       }),
     ).join('\n')
     expect(n).not.toContain('不在内置目录')
@@ -218,17 +297,36 @@ describe('配置提醒', () => {
   test('已经有实测能力时不提醒——那说明用户跑过 qy probe 了', () => {
     const n = configNotices(
       cfg({
-        active: 'x',
-        profiles: {
+        active: { provider: 'x', model: '某个没收录的模型' },
+        providers: {
           x: {
             kind: 'openai_responses',
-            model: '某个没收录的模型',
             apiKey: 'sk-a',
-            capabilities: { thinking: 'reasoning_effort', effortLevels: ['low', 'high'] },
+            models: {
+              某个没收录的模型: {
+                capabilities: { thinking: 'reasoning_effort', effortLevels: ['low', 'high'] },
+              },
+            },
           },
         },
       }),
     ).join('\n')
     expect(n).not.toContain('不在内置目录')
+  })
+
+  /*
+   * 旧格式**不迁移**（B3：开发期不留兼容层），但静默丢弃是另一回事：
+   * 用户看到的是「我配好的接口和 key 全没了」，而配置文件里还原样躺着。
+   * 先例是 autoApprove——一律忽略，但必须说出来。
+   */
+  test('检出旧的扁平 profiles 时点名说清楚，并指出 key 要重填', () => {
+    const legacy = { ...cfg(), profiles: { ds: { kind: 'anthropic', model: 'm' } } } as QyConfig
+    const n = configNotices(legacy).join('\n')
+    expect(n).toContain('profiles')
+    expect(n).toContain('API Key')
+  })
+
+  test('没有旧字段时一个字都不说', () => {
+    expect(configNotices(cfg()).some((s) => s.includes('profiles'))).toBe(false)
   })
 })

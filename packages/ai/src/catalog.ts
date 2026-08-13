@@ -8,10 +8,20 @@
  * 口径来源：Anthropic 官方文档（2026-06-24 快照）。改动这里前先核对，别凭记忆写。
  */
 
-/** 每百万 token 的美元单价。 */
+import type { EffortLevel } from '@qywork/core'
+
+/**
+ * 每百万 token 的单价。
+ *
+ * **币种是这条数据的一部分。** 阿里 / 月之暗面 / 智谱三家官网就是按人民币标价的，
+ * 把 ¥6 当成 $6 会让账面差七倍。所以带上 `currency`，由消费方决定怎么显示、
+ * 要不要合计——而不是在这里偷偷换算成一个假的美元数字。
+ */
 export interface Pricing {
   input: number
   output: number
+  /** 省略即 `'USD'`。缺省不写是为了不用给已有的每一条都加一遍。 */
+  currency?: 'USD' | 'CNY'
   /** 缓存读取，通常是 input 的 0.1 倍。 */
   cacheRead: number
   /** 缓存写入（5 分钟 TTL），通常是 input 的 1.25 倍。 */
@@ -41,14 +51,29 @@ export type ThinkingMode =
    * 这类模型的 `effortLevels` 应当照实填 `[]`。
    */
   | 'reasoning_effort'
+  /**
+   * DeepSeek 自己的那套：**`thinking` 开关和 `reasoning_effort` 档位要一起发**。
+   *
+   * 只发 `reasoning_effort` 不发 `thinking` 时思考根本没开，档位自然没有效果——
+   * 这正是本仓之前测出「effort 被接受但不被采纳」的原因，结论对（那个发法确实没用），
+   * 但归因错了（不是模型不支持，是少发了一半）。线格式抄自青研魔盒的
+   * `reasoning_probe.py:297`，那边是实测跑通过的。
+   */
+  | 'deepseek_thinking'
   | 'none'
-
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface ModelSpec {
   id: string
   displayName: string
+  /** **协议**，不是厂商。见 `Vendor` 上的注释。 */
   provider: ProviderKind
+  /**
+   * 厂商 id（`VENDORS` 里的一条）。`null` = 未收录，来自用户自建端点。
+   *
+   * 显式写在每条上，不按 id 前缀推断——L 那条规矩：任何「从名字推断行为」
+   * 的便利都要先问反例是什么，而中转站的模型名可以是任何东西。
+   */
+  vendor: string | null
   contextWindow: number
   maxOutputTokens: number
   pricing: Pricing
@@ -89,6 +114,91 @@ export interface ModelSpec {
 
 export type ProviderKind = 'anthropic' | 'openai_responses' | 'openai_compatible'
 
+/**
+ * 厂商。
+ *
+ * **和 `ProviderKind` 是两个轴，不能合并。** `ProviderKind` 说的是协议——
+ * DeepSeek、OpenAI、任何中转站都可以是 `openai_compatible`。厂商回答的是
+ * 另外三个问题：端点在哪、key 惯例上叫什么名字、旗下有哪些模型。
+ * 合成一个的话「选了模型自动带出端点」就无从做起，因为协议里没有端点。
+ *
+ * **它不落盘。** 配置文件里存的仍然是 `kind` / `model` / `baseUrl` / `apiKey`
+ * 那几个字段，这张表只是填表时的默认值来源。多存一个 `vendor` 就会和 `baseUrl`
+ * 打架：用户把端点改成中转站之后，vendor 还写着 deepseek，两本账立刻开始漂移。
+ */
+export interface Vendor {
+  id: string
+  displayName: string
+  defaultKind: ProviderKind
+  /** 官方端点。省略 = 用 SDK 自带的默认值（Anthropic 就是这种情况）。 */
+  defaultBaseUrl?: string
+  /** 惯例上的环境变量名。 */
+  apiKeyEnv: string
+}
+
+/**
+ * `defaultBaseUrl` **只填有实据的**。
+ *
+ * Anthropic 走 SDK 自带默认；DeepSeek 那条来自这台机器上跑通的配置；
+ * OpenAI 那条是本仓 `openai-responses.ts` 里的常量。其余六家两个仓库里
+ * 都没有落过地，所以留空——凭印象写一个域名，错了的表现是「填好了却连不上」，
+ * 比空着要人自己填糟得多。
+ */
+export const VENDORS: readonly Vendor[] = [
+  {
+    id: 'anthropic',
+    displayName: 'Anthropic',
+    defaultKind: 'anthropic',
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
+  },
+  {
+    id: 'openai',
+    displayName: 'OpenAI',
+    defaultKind: 'openai_compatible',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    apiKeyEnv: 'OPENAI_API_KEY',
+  },
+  {
+    id: 'deepseek',
+    displayName: 'DeepSeek',
+    defaultKind: 'openai_compatible',
+    // 带 `/v1`：DeepSeek 的 OpenAI 兼容端点在这一层，少了它是 404。
+    defaultBaseUrl: 'https://api.deepseek.com/v1',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+  },
+  {
+    id: 'google',
+    displayName: 'Google',
+    defaultKind: 'openai_compatible',
+    apiKeyEnv: 'GEMINI_API_KEY',
+  },
+  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_compatible', apiKeyEnv: 'XAI_API_KEY' },
+  {
+    id: 'alibaba',
+    displayName: '阿里云百炼',
+    defaultKind: 'openai_compatible',
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+  },
+  {
+    id: 'moonshot',
+    displayName: '月之暗面',
+    defaultKind: 'openai_compatible',
+    apiKeyEnv: 'MOONSHOT_API_KEY',
+  },
+  {
+    id: 'zhipu',
+    displayName: '智谱',
+    defaultKind: 'openai_compatible',
+    apiKeyEnv: 'ZHIPU_API_KEY',
+  },
+  {
+    id: 'minimax',
+    displayName: 'MiniMax',
+    defaultKind: 'openai_compatible',
+    apiKeyEnv: 'MINIMAX_API_KEY',
+  },
+]
+
 function anthropicPricing(input: number, output: number): Pricing {
   return {
     input,
@@ -113,10 +223,12 @@ function sonnet5Pricing(now = Date.now()): Pricing {
 
 const CLAUDE_BASE = {
   provider: 'anthropic' as const,
+  vendor: 'anthropic',
   contextWindow: 1_000_000,
   maxOutputTokens: 128_000,
   vision: true,
   thinking: 'adaptive_only' as const,
+  // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
   rejectsSamplingParams: true,
   maxCacheBreakpoints: 4,
@@ -218,11 +330,23 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
 function deepseekCatalog(): ModelSpec[] {
   const base = {
     provider: 'openai_compatible' as const,
+    vendor: 'deepseek',
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
     vision: false,
-    thinking: 'none' as const,
-    effortLevels: [] as EffortLevel[],
+    /**
+     * 订正过一次，**但只订正 chat/completions 这一支**（Responses 那支见下面）。
+     *
+     * 原来写 `'none'`，理由是「本适配器不发思考字段」——那是在描述我们自己，
+     * 不是在描述模型。青研魔盒的 `model_catalog.py:237` 把它记成
+     * `deepseek_thinking` 两档（high / max），`reasoning_probe.py:297` 里
+     * `thinking:{type:'enabled'}` 和 `reasoning_effort` 是**一起发**的。
+     *
+     * **这两档没有在本仓实测过**，依据是另一个仓库的目录与探测代码。
+     * 要坐实就跑 `qy probe`——它会把实际接受的档位写回档案覆盖这里。
+     */
+    thinking: 'deepseek_thinking' as const,
+    effortLevels: ['high', 'max'] as EffortLevel[],
     thinksByDefault: false,
     disableThinkingMaxEffort: 'max' as EffortLevel,
     rejectsSamplingParams: false,
@@ -262,6 +386,12 @@ function deepseekCatalog(): ModelSpec[] {
     provider: 'openai_responses',
     thinking: 'reasoning_effort',
     thinksByDefault: true,
+    // **本仓那次实测是在这条协议下做的，不被上面那条改动覆盖。**
+    // Responses 只有 `reasoning.effort` 一个旋钮，没有 DeepSeek 那个 `thinking`
+    // 开关可配；实测四档全部返回 200 而 reasoning_tokens 都是 899~900，
+    // 一档都没被采纳。chat/completions 那边两个字段一起发是另一回事，
+    // 各自的结论各自记，不合并。
+    effortLevels: [],
   })
 
   return [
@@ -302,6 +432,8 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     id,
     displayName: id,
     provider,
+    // 未收录 = 没有厂商。别按 id 猜——中转站的模型名可以叫任何东西。
+    vendor: null,
     /*
      * **这一条必须被消费。** 下面那些值是「没测」，不是「不支持」——
      * 而 ARCHITECTURE §27 记的正是这两者不能合并。
@@ -332,9 +464,223 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
   }
 }
 
+/**
+ * 其余七家。
+ *
+ * 数据源是青研魔盒的 `services/sidecar/qybox/harness/model_catalog.py`
+ * （2026-07-30 seed，逐条对照抄的：窗口、默认最大输出、四档价、思考档位）。
+ * 那份是它的产品真源，不是我这里重新查的——所以要改价先去核那边，别凭印象改。
+ *
+ * 三个字段魔盒那份里没有，qywork 需要，这里按下面的口径填，都不猜：
+ *
+ * - `vision`：魔盒没有这一维，而 qywork 里这个字段**目前一个消费者都没有**
+ *   （全仓 grep 只有定义和赋值）。所以一律 `false` = 未确认，
+ *   等它真的有消费者时再逐条实测填。
+ * - `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
+ *   多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
+ * - `minCacheablePrefix` / `maxCacheBreakpoints`：兼容协议没有显式断点，
+ *   断点数一律 0；最小前缀取魔盒缓存画像里的 `minimumCacheTokens: 1024`。
+ */
+function openAiCompatCatalog(): ModelSpec[] {
+  const base = {
+    provider: 'openai_compatible' as const,
+    vision: false,
+    disableThinkingMaxEffort: 'max' as EffortLevel,
+    rejectsSamplingParams: false,
+    minCacheablePrefix: 1024,
+    maxCacheBreakpoints: 0,
+  }
+  /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
+  const effort = (levels: EffortLevel[]) => ({
+    thinking: 'reasoning_effort' as const,
+    effortLevels: levels,
+    thinksByDefault: true,
+  })
+  const noThinking = {
+    thinking: 'none' as const,
+    effortLevels: [] as EffortLevel[],
+    thinksByDefault: false,
+  }
+  const usd = (input: number, output: number, cacheRead: number, write = 0): Pricing => ({
+    input,
+    output,
+    cacheRead,
+    cacheWrite5m: write,
+    cacheWrite1h: write,
+  })
+  const cny = (input: number, output: number, cacheRead: number): Pricing => ({
+    input,
+    output,
+    cacheRead,
+    cacheWrite5m: 0,
+    cacheWrite1h: 0,
+    currency: 'CNY',
+  })
+  const FIVE: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+  return [
+    // ── OpenAI GPT-5.6 ──
+    {
+      ...base,
+      ...effort(FIVE),
+      id: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6 Sol',
+      vendor: 'openai',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(5, 30, 0.5, 6.25),
+    },
+    {
+      ...base,
+      ...effort(FIVE),
+      id: 'gpt-5.6-terra',
+      displayName: 'GPT-5.6 Terra',
+      vendor: 'openai',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(2.5, 15, 0.25, 3.125),
+    },
+    {
+      ...base,
+      ...effort(FIVE),
+      id: 'gpt-5.6-luna',
+      displayName: 'GPT-5.6 Luna',
+      vendor: 'openai',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(1, 6, 0.1, 1.25),
+    },
+
+    // ── Google Gemini ──
+    // 魔盒给 flash 两款的档位是 minimal/low/medium/high。`minimal` 不在
+    // qywork 的 EffortLevel 词表里，**不为它扩词表**——扩了就得让所有
+    // 消费方都认一个只有一家用的档，而少这一档只是少一个更省的选项。
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-3.1-pro',
+      displayName: 'Gemini 3.1 Pro',
+      vendor: 'google',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      pricing: usd(2, 12, 0.2),
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-3.6-flash',
+      displayName: 'Gemini 3.6 Flash',
+      vendor: 'google',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      pricing: usd(0.3, 2.5, 0.03),
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-3.5-flash',
+      displayName: 'Gemini 3.5 Flash',
+      vendor: 'google',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      pricing: usd(0.3, 2.5, 0.03),
+    },
+
+    // ── xAI ──
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'grok-4.5',
+      displayName: 'Grok 4.5',
+      vendor: 'xai',
+      contextWindow: 500_000,
+      maxOutputTokens: 64_000,
+      pricing: usd(2, 6, 0.2),
+    },
+
+    // ── 阿里云百炼 Qwen（人民币标价）──
+    {
+      ...base,
+      ...noThinking,
+      id: 'qwen3.7-max',
+      displayName: 'Qwen3.7 Max',
+      vendor: 'alibaba',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 32_000,
+      pricing: cny(6, 24, 1.5),
+    },
+    {
+      ...base,
+      ...noThinking,
+      id: 'qwen3.7-plus',
+      displayName: 'Qwen3.7 Plus',
+      vendor: 'alibaba',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 32_000,
+      pricing: cny(2, 8, 0.5),
+    },
+    {
+      ...base,
+      ...noThinking,
+      id: 'qwen3.7-flash',
+      displayName: 'Qwen3.7 Flash',
+      vendor: 'alibaba',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 16_000,
+      pricing: cny(0.3, 1.2, 0.08),
+    },
+
+    // ── 月之暗面（人民币标价）──
+    {
+      ...base,
+      ...effort(['low', 'high', 'max']),
+      id: 'kimi-k3',
+      displayName: 'Kimi K3',
+      vendor: 'moonshot',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 32_000,
+      pricing: cny(21, 105, 2.1),
+    },
+
+    // ── 智谱（人民币标价）──
+    {
+      ...base,
+      ...effort(['high', 'max']),
+      id: 'glm-5.2',
+      displayName: 'GLM-5.2',
+      vendor: 'zhipu',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: cny(10, 30, 2),
+    },
+    {
+      ...base,
+      ...noThinking,
+      id: 'glm-4.7',
+      displayName: 'GLM-4.7',
+      vendor: 'zhipu',
+      contextWindow: 200_000,
+      maxOutputTokens: 128_000,
+      pricing: cny(2, 8, 0.4),
+    },
+
+    // ── MiniMax ──
+    {
+      ...base,
+      ...noThinking,
+      id: 'MiniMax-M3',
+      displayName: 'MiniMax M3',
+      vendor: 'minimax',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(0.6, 2.4, 0.12),
+    },
+  ]
+}
+
 /** 全部内置模型。仅用于能力约束与计价，不是可用模型的白名单。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [...claudeCatalog(now), ...deepseekCatalog()]
+  return [...claudeCatalog(now), ...deepseekCatalog(), ...openAiCompatCatalog()]
 }
 
 /**
@@ -366,6 +712,30 @@ export function lookupModel(id: string, provider: ProviderKind, now = Date.now()
   return unknownModel(id, provider)
 }
 
+/**
+ * 这条 spec 在**它当前那条协议**上，思考强度是不是真的发得出去。
+ *
+ * 存在的理由是 `lookupModel` 的那条兜底：目录里没有「Claude + 兼容协议」的条目时，
+ * 它保留 Claude 的能力约束、只改写 `provider`——而注释里已经写明**这只保留约束、
+ * 不保证能力属实**。于是 `effortLevels` 还是那五档，但兼容协议根本不发 Anthropic
+ * 的 `output_config.effort`。界面照着那五档画一个 chip，选了没有任何反应。
+ *
+ * 判据按协议分：
+ * - `anthropic`：适配器只看 `effortLevels` 非空就发 `output_config.effort`。
+ * - `openai_responses`：只有 `reasoning.effort` 一条路。
+ * - `openai_compatible`：`reasoning_effort`（OpenAI 那套）或 `deepseek_thinking`
+ *   （DeepSeek 要两个字段一起发），其余一律发不出去。
+ *
+ * 与 `openai-compat.ts` 的 `buildReasoning` 是同一份判断的两个用途：
+ * 这里答「能不能」，那里答「用哪几个字段」。改一处务必看另一处。
+ */
+export function effortIsTransmittable(spec: ModelSpec): boolean {
+  if (spec.effortLevels.length === 0) return false
+  if (spec.provider === 'anthropic') return true
+  if (spec.provider === 'openai_responses') return spec.thinking === 'reasoning_effort'
+  return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
+}
+
 /** 按 usage 算这一轮的花费（美元）。 */
 export function computeCost(
   spec: ModelSpec,
@@ -375,10 +745,12 @@ export function computeCost(
     cachedTokens?: number | null
     cacheWriteTokens?: number | null
   },
-  cacheTtl: '5m' | '1h' = '5m',
 ): number {
   const p = spec.pricing
-  const writeRate = cacheTtl === '1h' ? p.cacheWrite1h : p.cacheWrite5m
+  // 只按 5 分钟档算：全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是
+  // **参考数据**（它是真实价格），不是可达的代码分支——曾经这里有一个 cacheTtl 参数，
+  // 而没有任何调用方传过它，那条 1h 分支永远走不到。
+  const writeRate = p.cacheWrite5m
   const total =
     (usage.inputTokens * p.input +
       usage.outputTokens * p.output +

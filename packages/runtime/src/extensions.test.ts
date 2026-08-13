@@ -10,7 +10,13 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolRegistry } from '@qywork/agent'
-import { acquireExtensions, loadExtensions, PLUGINS_DIR, releaseExtensions } from './extensions.ts'
+import {
+  acquireExtensions,
+  loadExtensions,
+  MCP_CONFIG,
+  PLUGINS_DIR,
+  releaseExtensions,
+} from './extensions.ts'
 
 /**
  * 插件本体。
@@ -236,13 +242,13 @@ describe('MCP 接线', () => {
 
   async function withMcp(extra: Record<string, unknown> = {}) {
     const root = await mkdtemp(join(tmpdir(), 'qywork-mcpext-'))
-    await mkdir(join(root, '.qy'), { recursive: true })
-    await writeFile(join(root, '.qy', 'server.mjs'), SERVER, 'utf8')
+    await mkdir(join(root, '.agents'), { recursive: true })
+    await writeFile(join(root, '.agents', 'server.mjs'), SERVER, 'utf8')
     await writeFile(
-      join(root, '.qy', 'mcp.json'),
+      join(root, MCP_CONFIG),
       JSON.stringify({
         mcpServers: {
-          demo: { command: process.execPath, args: [join(root, '.qy', 'server.mjs')] },
+          demo: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
           ...extra,
         },
       }),

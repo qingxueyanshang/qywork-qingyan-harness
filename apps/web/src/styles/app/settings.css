@@ -1,27 +1,6 @@
-/* 工作区、分支条、设置、插件、定时任务、工作区列表。
+/* 分支条、设置、插件、定时任务、工作区列表。
  *
  * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
-
-/* ───────────────────────── 工作区 ───────────────────────── */
-
-/* 只读的一行，不是按钮：它现在只回答「我在哪」。
-   做成按钮就等于承诺点得动，而切换工作区要重启 sidecar，不在这一轮范围里。 */
-.workspace-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: 5px var(--s-3);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  min-width: 0;
-}
-.workspace-row svg {
-  flex: none;
-}
-
-.settings-entry {
-  width: 100%;
-}
 
 /* ───────────────────────── 分支条 ───────────────────────── */
 
@@ -48,19 +27,241 @@
   flex: none;
 }
 
-/* ───────────────────────── 设置 ───────────────────────── */
+/* ───────────────────────── 设置整页 ───────────────────────── */
 
-/* 比默认 sheet 宽：模型档案是一组并排的字段，520px 下每个输入框都只剩半行，
-   编辑 baseUrl 这类长值时看不到自己在改什么。 */
-.settings-sheet {
-  width: min(720px, 100%);
+/*
+ * 设置占的是会话区那一格（`.main` 的子元素），所以顶栏和窗口按钮照旧。
+ *
+ * 滚动条在 `.settings-scroll` 上，不在 `.main` 上——和 `.transcript` 同一条：
+ * 外层滚起来的话顶栏会跟着走，而顶栏上有窗口按钮。
+ */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.settings-scroll {
+  flex: 1;
+  /* 同 .transcript：不写 0 的话这一块把 .main 撑破，overflow 形同虚设。 */
+  min-height: 0;
+  overflow-y: auto;
+}
+/* 内容列上限比会话列宽一档：模型档案是一组并排字段，760px 下 baseUrl
+   这类长值看不到自己在改什么。左对齐而不是居中——设置是逐条读下来的表单，
+   居中会让第一列的标签在宽窗口下飘到屏幕中间。 */
+.settings-inner {
+  max-width: 840px;
+  padding: var(--s-8) var(--s-8) var(--s-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+
+.settings-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-page-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+/* 边界说明跟着标题，**不折叠也不降对比度**：「明文 key 不出服务端」不是解释，
+   是用户据以决定要不要在这里填 key 的事实（B7 的例外条款）。 */
+.settings-page-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* 一页内的分组。用小标题分段而不是再套一层卡片——设置页最容易长成
+   一堆嵌套的圆角盒子，而分组要表达的只是「这几格是一类」。 */
+/*
+ * 分节之间**不画横线**。
+ *
+ * 画过一版，是一条横跨整列 840px 的 border-top，而里面的控件只有 340~560px 宽——
+ * 那条线一头顶着内容、另一头孤零零伸进空白里，看着像画歪了。分节的界已经由
+ * 小标题和 `--s-6` 的行距给出来了，再加一条线是第二遍说同一件事。
+ *
+ * 卡**内部**行与行之间那条线要留：它分的是同一张卡里的两格，两头都顶着内容。
+ */
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+/* 既当 `<h3>` 用，也当「标题 + 右侧一个动作」的那一行用（模型页的删接口）。
+   两种写法共用一套字号，否则同一层级的标题在两个页面上大小不一样。 */
+.settings-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.settings-block-head h3 {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+.settings-block-head .icon-btn {
+  margin-left: auto;
+}
+
+/* ── 行式设置卡 ──
+ *
+ * 若干行叠成一张卡，行间一条分隔线。左标题右控件，控件右缘对齐——
+ * 找某个开关时眼睛只扫右缘，不用从上往下读一遍标题。
+ *
+ * `overflow: hidden` 是给圆角用的：行自己的底色不裁的话会从卡的四角漏出来。
+ * 只给有界控件用，理由见 `Row.tsx`。 */
+.setting-rows {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-3) var(--s-4);
+  min-width: 0;
+}
+.setting-row + .setting-row {
+  border-top: 1px solid var(--border-subtle);
+}
+/* 控件无界的那一格：标题和说明在上，控件自己占满一行。
+   绝对路径、多行清单挤到右边一列只会被截断，而截断的路径没用。 */
+.setting-row.stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-2);
+}
+.setting-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.setting-row-label {
+  font-size: var(--fs-base);
+  color: var(--text-primary);
+}
+.setting-row-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.setting-row-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* 行里的控件不再铺满——它的宽度由内容定，这正是「有界」的意思。 */
+.setting-row-control select {
+  width: auto;
+  min-width: 140px;
+}
+
+/* 没有内核沙箱是**危险的默认**，必须一眼看到——所以标题染警告色而不是
+   和普通状态行长得一样。这不是装饰，是这套权限模型里最容易被误解的一格。 */
+.setting-row.warn .setting-row-label {
+  color: var(--warning);
+  font-weight: 500;
+}
+
+/* 三态分段控件。用一排按钮而不是下拉：三个选项全部可见时，
+   「跟随系统」和「浅色」的区别一眼看得到，下拉要点开才知道有第三个。 */
+.seg {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+.seg-item {
+  padding: 4px var(--s-3);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.seg-item:hover {
+  color: var(--text-primary);
+}
+.seg-item.active {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── 类目导航 ──
+   它占左栏的位置，类目本身沿用 `.nav-item`，只多两件事：返回和组间分隔。 */
+
+/* 返回是**出口，不是第九个类目**，所以不套 `.nav-item`：
+   套上去就是同样的整行底色、同样的字号，除了图标方向没有任何区别。
+   这里只包住自己那三个字符，小一号字。
+   左移 4px 抵掉 `.sidebar-head` 比 `.sidebar-scroll` 多出的那截内边距——
+   图标和底色左沿都落到 16px / 8px 上，和下面的类目列对齐。
+   顺带把行高压回 27px：`.nav-item` 那身 33px 塞进 36px 的头部只剩 1px 余量，
+   贴着窗口上沿看就是没居中。 */
+.back-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: calc(var(--s-1) * -1);
+  padding: 4px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.back-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.nav-group-split {
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ───────────────────────── 浮层 ───────────────────────── */
+
+/* 浮层默认 520px 就够；带表单的那几个要宽一档：模型档案是一组并排字段，
+   520px 下每个输入框只剩半行，编辑 baseUrl 这类长值时看不到自己在改什么。 */
+.sheet {
   max-height: min(82vh, 900px);
   display: flex;
   flex-direction: column;
 }
-.settings-sheet .sheet-head {
-  padding: var(--s-2) var(--s-3);
+.sheet-wide {
+  width: min(720px, 100%);
+}
+.sheet-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+/* 边界说明跟在标题后面，比标题低一级但不折叠：「不是远程协作」这类话
+   是能力边界，折起来等于没说。 */
+.sheet-note {
+  font-size: var(--fs-xs);
   font-weight: 400;
+  color: var(--text-tertiary);
+  min-width: 0;
 }
 .sheet-body {
   overflow-y: auto;
@@ -76,6 +277,30 @@
 .settings-loading {
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
+}
+/* 失败必须和加载中长得不一样，并且带着「再试一次」的路。 */
+.settings-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* 同一页里的第二组：模型档案。用一条分隔线和一个小标题分段，
+   而不是再开一个选项卡——它们改的是同一个文件。 */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-section-head {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .field {
@@ -101,10 +326,16 @@
   word-break: break-all;
 }
 
+/* 控件样式要**两种容器都给到**：`.field`（标签包着控件）和 `Row` / `Field`
+   渲染的 `.setting-row`。只写一种的代价是实打实的——「权限与沙箱」里那两个
+   多行清单落在 `.setting-row.stack` 里，于是一路掉回浏览器默认样式：
+   方角、系统边框、和旁边的输入框长得不是一套东西。 */
 .field input,
 .field select,
-.field textarea {
-  width: 100%;
+.field textarea,
+.setting-row input,
+.setting-row select,
+.setting-row textarea {
   padding: 6px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
@@ -113,13 +344,26 @@
   font-size: var(--fs-sm);
   font-family: inherit;
 }
+/* 铺满只给「宽度无界」的那类格子。行式里的下拉宽度由内容定
+   （见上面 `.setting-row-control select`），铺满会把一个三选项的下拉拉成一条横杠。 */
+.field input,
+.field select,
+.field textarea,
+.setting-row.stack input,
+.setting-row.stack textarea {
+  width: 100%;
+}
 .field input:focus,
 .field select:focus,
-.field textarea:focus {
+.field textarea:focus,
+.setting-row input:focus,
+.setting-row select:focus,
+.setting-row textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
-.field textarea {
+.field textarea,
+.setting-row textarea {
   resize: vertical;
 }
 .code-area {
@@ -130,30 +374,158 @@
   overflow-x: auto;
 }
 
-.profile-card {
+/* ── 接口横向切换 ──
+ *
+ * 接口是**上下文而不是内容**：选中哪个决定下面整块字段属于谁。所以做成一排标签，
+ * 而不是把每个接口铺成一张卡竖着排——竖排时用户要滚很远才知道自己配了几个。
+ *
+ * `active`（正在看）和 `live`（当前生效）是两件事，各给各的标记：
+ * 看着 B 接口却以为 B 在跑，是这一页最容易犯的错，而后果要到账单上才显形。 */
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+.tab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px var(--s-3);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.tab-chip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tab-chip.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+/* 当前生效的那个接口前面点一个圆点。不用颜色区分——`active` 已经占了底色，
+   两种状态叠在同一个视觉通道上会互相盖掉。 */
+.tab-chip.live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.tab-chip.add {
+  border: 1px dashed var(--border-default);
+  color: var(--text-tertiary);
+}
+
+/* ── 作用域 ──
+ *
+ * 「加到哪一层」的选择条 + 那一层的落盘位置。只在「加」的时候出现：
+ * 列表本身不按层分组（模型看到的是合并去重后的一份），每条自己贴一个标签。 */
+.scope-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+.scope-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 全局层要看得出来是全局层：改它会影响所有工作区，而这一点从条目本身看不出来。 */
+.scope-tag[data-scope="global"] {
+  background: var(--warning-soft, var(--bg-inset));
+  color: var(--text-secondary);
+}
+
+/* 一行动作按钮 + 结果消息。显式保存只剩三处：记忆正文、team.json、mcp.json。 */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+/* ── 接口下的模型列表 ── */
+.model-list {
   display: flex;
   flex-direction: column;
-  gap: var(--s-3);
-  padding: var(--s-3);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
+  overflow: hidden;
 }
-/* 当前档案要一眼看出来：改错档案是这个页面最容易犯的错，
-   而它的后果（下一轮用了另一个模型和另一份计价）要到账单上才显形 */
-.profile-card.active {
-  border-color: var(--accent);
+.model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--s-2) var(--s-3);
+  min-width: 0;
 }
-.profile-head {
+.model-row + .model-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.model-row.active {
+  background: var(--bg-inset);
+}
+.model-row-main {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  min-width: 0;
 }
-.profile-name {
-  font-weight: 600;
-  font-size: var(--fs-sm);
-}
-.profile-head .icon-btn {
+.model-row-main .icon-btn {
   margin-left: auto;
+}
+.model-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.model-pick {
+  flex: none;
+  padding: 2px var(--s-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.model-pick:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.model-pick:disabled {
+  color: var(--accent);
+  cursor: default;
+}
+/* 最后一行是「加一个」：主操作和空区同位，接口一个模型都没有时它就是唯一那行。 */
+.model-row.add {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* 探测结论。**「未探测」和「不支持」分开写**，合并成一个否就是把没验过的
+   事写成了结论——而用户会据此去查一个根本没坏的东西。 */
+.probe-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.probe-line.bad {
+  color: var(--danger);
+}
+/* 失败那几步给原文：结论错了要能查，只给「不支持」查不出任何东西。 */
+.probe-fail {
+  width: 100%;
+  color: var(--danger);
+  word-break: break-word;
 }
 
 .settings-save {
@@ -174,15 +546,51 @@
   color: var(--danger);
 }
 
+/* ── 整页对上面这些浮层内表单的覆盖 ──
+   **必须写在被覆盖的规则之后**：这几条特异性更高，写在前面的话「顺序」和
+   「特异性」会给出相反的答案，biome 的 noDescendingSpecificity 就是在拦这个。 */
+
+/*
+ * 整页里的控件不铺满整列。
+ *
+ * 浮层里 520px 宽，输入框铺满正好；整页是 840px，一个只填 `high` 的下拉拉到
+ * 840px 宽会让人以为那里该填一长串东西——控件宽度是对内容长度的暗示。
+ * 多行文本框放宽一档：它装的是一行一个的绝对路径。
+ */
+.settings-inner .field input,
+.settings-inner .field select {
+  max-width: 340px;
+}
+.settings-inner .field textarea,
+.settings-inner .setting-row.stack textarea {
+  max-width: 560px;
+}
+/* 行式卡里的自由文本不收窄：baseUrl 和 key 都是长值，而卡本身已经把宽度限住了。 */
+.settings-inner .setting-row.stack input {
+  max-width: 560px;
+}
+
+/* 配置提醒与诊断。每条自己是一段 markdown（列表、行内代码都可能出现），
+   所以外层不再画列表符号——条与条之间靠间距分开，条内的层级由 markdown 自己给。 */
 .settings-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
   margin: 0;
-  padding-left: 1.1em;
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
   line-height: 1.6;
 }
 .settings-notices.bad {
   color: var(--danger);
+}
+/* markdown 段落在会话流里带着 12px 段距，这里一条提醒就三五行，撑得太散。 */
+.settings-notices .markdown p {
+  margin-bottom: var(--s-1);
+}
+.settings-notices .markdown ul,
+.settings-notices .markdown ol {
+  margin: var(--s-1) 0;
 }
 
 .btn-primary {
@@ -207,6 +615,16 @@
 .btn-ghost:hover {
   background: var(--bg-hover);
 }
+/* 挤在一行里的那种：模型行上的测连接 / 校准思考。 */
+.btn-ghost.sm {
+  flex: none;
+  align-self: auto;
+  padding: 2px var(--s-2);
+  font-size: var(--fs-xs);
+}
+.btn-ghost:disabled {
+  opacity: 0.5;
+}
 
 /* ───────────────────────── 插件 ───────────────────────── */
 
@@ -214,10 +632,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
-}
-.plugins-empty {
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
 }
 .plugins-section-head {
   margin-top: var(--s-2);
@@ -338,56 +752,6 @@
   gap: var(--s-2);
 }
 
-/* ───────────────────────── 工作区列表 ───────────────────────── */
-
-.workspace-row:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.ws-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.ws-item {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  width: 100%;
-  padding: 6px var(--s-2);
-  border-radius: var(--r-xs);
-  text-align: left;
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  min-width: 0;
-}
-.ws-item:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-/* 当前工作区禁用而不是隐藏：看到自己在列表里的哪一项，
-   比「当前那项凭空消失」更容易建立位置感。 */
-.ws-item.current {
-  background: var(--bg-active);
-  color: var(--text-primary);
-}
-.ws-item:disabled {
-  cursor: default;
-}
-.ws-name {
-  flex: none;
-  font-weight: 500;
-}
-.ws-path {
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  min-width: 0;
-}
-
 .install-box {
   display: flex;
   flex-direction: column;
@@ -401,4 +765,115 @@
 }
 .plugin-head .icon-btn {
   margin-left: auto;
+}
+
+/* ── 记忆与技能 ──
+   一行一条：标识 + 首行摘要 + 一个删除。技能那半没有删除，多一列目录路径
+   ——它只读，得让人知道去哪儿改。 */
+.mem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mem-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  border-radius: var(--r-sm);
+}
+.mem-item:hover {
+  background: var(--bg-hover);
+}
+.mem-item.static:hover {
+  background: none;
+}
+.mem-open {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px var(--s-2);
+  text-align: left;
+  font-size: var(--fs-sm);
+}
+.mem-key {
+  flex: none;
+  color: var(--text-primary);
+}
+.mem-preview {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* ── 运行详情 ── */
+.run-total {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+.run-total-cost {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.run-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.run-row-tag {
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.run-row-tag.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+/* 被接替的那几轮压暗——产出不算数，但钱算数，所以照常列出来。 */
+.args-table tr.superseded {
+  opacity: 0.55;
+}
+/* 逐请求账本与失败诊断：默认收起。一轮几十次调用平铺开会把这张表淹掉，
+   而它们是「查账时才看」的东西，不是每次都要读的。 */
+.run-fold {
+  margin-top: var(--s-1);
+}
+.run-fold > summary {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.run-fold > summary:hover {
+  color: var(--text-secondary);
+}
+/* 数字列右对齐并等宽：账本是拿来和中转站后台逐行对的，位数对不齐就没法扫。 */
+.args-table.ledger td:not(:first-child),
+.args-table.ledger th:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.args-table.ledger {
+  margin-top: var(--s-1);
+  font-size: var(--fs-xs);
+}
+/* 异常原文可能很长，且里面常有不带空格的长串（URL、堆栈）。 */
+.run-error-raw {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+/* 账本的两排切换钮。复用 .side-tab 的外观，这里只管排布。 */
+.usage-controls {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
 }

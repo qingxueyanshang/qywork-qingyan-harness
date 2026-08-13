@@ -22,7 +22,7 @@
  */
 
 import { relative, resolve } from 'node:path'
-import { loadExtensions } from '@qywork/runtime'
+import { loadExtensions, pluginToolPrefix } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -54,7 +54,7 @@ export async function runPlugins(args: string[]): Promise<number> {
     }
 
     for (const p of reg.plugins) {
-      const tools = reg.toolSpecs.filter((t) => t.name.startsWith(`${p.manifest.id}__`))
+      const tools = reg.toolSpecs.filter((t) => t.name.startsWith(pluginToolPrefix(p.manifest.id)))
       const perms = p.manifest.permissions ?? []
       process.stderr.write(
         `${GREEN}✓${RESET} ${BOLD}${p.manifest.id}${RESET} ` +
@@ -64,6 +64,26 @@ export async function runPlugins(args: string[]): Promise<number> {
 
       // 纯声明式插件（只贡献预览器/角色）没有进程，也就无所谓隔离。
       // 说清楚是「不适用」而不是「没有隔离」——后者会让人以为出了问题。
+      /*
+       * `previewers` / `roles` / `providers` **当前没有任何消费者**。
+       *
+       * 打一个绿勾再说一句「纯声明式插件，没有代码进程」，读起来像是装好了、
+       * 在生效——而那些贡献注册完就没人读。装了却不生效而工具又不说，
+       * 用户只能去猜是不是自己写错了。这条按 B5/B7 必须明说，
+       * 直到消费端接上为止（见 docs/plugins.md 同名小节）。
+       */
+      const inert: string[] = []
+      if (p.manifest.contributes.previewers?.length) inert.push('预览器')
+      if (p.manifest.contributes.roles?.length) inert.push('角色')
+      if (p.manifest.contributes.providers?.length) inert.push('供应商')
+      if (inert.length) {
+        process.stderr.write(
+          `    ${YELLOW}${inert.join(' / ')}贡献当前不生效${RESET}` +
+            `${DIM}——宿主还没有接上消费端${RESET}
+`,
+        )
+      }
+
       const rt = p.host?.runtime
       if (!p.host) {
         process.stderr.write(`    ${DIM}纯声明式插件，没有代码进程${RESET}\n`)

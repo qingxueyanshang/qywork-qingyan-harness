@@ -17,7 +17,8 @@
  *   所以这里根本不碰它们。探测的价值在于它报的每一条都是实测的。
  */
 
-import type { EffortLevel, ProviderKind, ThinkingMode } from './catalog.ts'
+import { EFFORT_ORDER, type EffortLevel } from '@qywork/core'
+import type { ProviderKind, ThinkingMode } from './catalog.ts'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, ProviderProfile } from './types.ts'
 
@@ -57,8 +58,6 @@ export interface ProbeStep {
   /** true = 这一步没有真的验证任何东西（客户端不发这个字段）。 */
   skipped?: boolean
 }
-
-const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 /** 一次探针请求：一个字的输入、最小的输出。 */
 function tiny(model: string, extra: Partial<ChatRequest>): ChatRequest {
@@ -107,6 +106,16 @@ export interface ProbeOptions {
   signal?: AbortSignal
   /** 每个探针之间歇一下，避免撞限速。默认 300ms。 */
   gapMs?: number
+  /**
+   * 只测通不通，第一个探针跑完就返回。
+   *
+   * 「连得上吗」是一个请求的事，「支持哪几档思考」要逐档试、加上退避是好几秒。
+   * 用户填完 key 想立刻知道的是前者，把它绑在后者上等于每次都付全价。
+   *
+   * 停下来的那几轴走 `untested`，**不是报成不支持**——这两件事的差别正是
+   * 这个文件存在的理由。
+   */
+  reachabilityOnly?: boolean
 }
 
 export async function probeModel(
@@ -131,6 +140,17 @@ export async function probeModel(
       untested: [],
       effortLevels: [],
       thinksByDefault: false,
+      probes,
+    }
+  }
+
+  if (opts.reachabilityOnly) {
+    return {
+      reachable: true,
+      thinking: null,
+      untested: ['thinking', 'effort'],
+      effortLevels: [],
+      thinksByDefault,
       probes,
     }
   }
@@ -224,7 +244,7 @@ export async function probeModel(
       detail: '本协议下客户端不发送 effort 字段，无从探测',
     })
   } else
-    for (const level of ALL_EFFORTS) {
+    for (const level of EFFORT_ORDER) {
       await pause()
       const r = await attempt(profile, `effort=${level}`, { effort: level }, opts.signal)
       probes.push(r.step)

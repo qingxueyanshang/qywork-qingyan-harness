@@ -14,7 +14,18 @@
 
 import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { PLUGINS_SUBDIR } from '@qywork/runtime'
+import { type Scope, scopeDir, scopePaths, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
+
+/**
+ * 装到哪一层。默认用户层（跟着这个仓库走）。
+ *
+ * 只有这两层可写。内置随程序发布，装进去下次升级就没了，而用户会以为装好了。
+ */
+function installScope(url: URL): Scope {
+  return url.searchParams.get('scope') === 'global' ? 'global' : 'user'
+}
 
 export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
@@ -23,13 +34,19 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     const { loadExtensions } = await import('@qywork/runtime')
     const ext = await loadExtensions(d.workspaceRoot)
     const reg = ext.plugins
+    const dirs = scopePaths(scopeRoots(d.workspaceRoot), PLUGINS_SUBDIR)
+    // 层是**从插件所在目录反推**的，不是让插件包多存一个字段：目录已经是事实，
+    // 再存一份就是第二本账，而两本账迟早在某次改路径时对不上。
+    const scopeOf = (dir: string): Scope =>
+      dirs.find((x) => resolve(dir).startsWith(resolve(x.dir)))?.scope ?? 'user'
     return json({
-      dir: join(d.workspaceRoot, '.qy', 'plugins'),
+      dirs,
       plugins: reg.plugins.map((pl) => {
         const rt = pl.host?.runtime
         return {
           id: pl.manifest.id,
           name: pl.manifest.name,
+          scope: scopeOf(pl.dir),
           version: pl.manifest.version,
           permissions: pl.manifest.permissions ?? [],
           tools: reg.toolSpecs
@@ -42,14 +59,12 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
         }
       }),
       failures: reg.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
-      mcpServers: ext.mcp.servers.map((m) => m.name),
-      mcpFailures: ext.mcp.failures.map((f) => ({ server: f.server, reason: f.reason })),
     })
   }
 
   // 安装 / 卸载插件。
   //
-  // ## 「安装」只有一种形式：把一个目录放进 .qy/plugins/
+  // ## 「安装」只有一种形式：把一个目录放进某一层的 plugins/
   //
   // 没有中心 registry，所以没有「从市场安装」。来源只能是**本机已经存在的目录**——
   // 用户先自己 clone 或下载，看过内容，再指给这里。
@@ -82,13 +97,15 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
       return json({ error: 'invalid', message: `清单不合法：${(e as Error).message}` }, 422)
     }
 
-    const dest = join(d.workspaceRoot, '.qy', 'plugins', id)
+    const destDir = scopeDir(scopeRoots(d.workspaceRoot), installScope(url), PLUGINS_SUBDIR)
+    if (destDir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
+    const dest = join(destDir, id)
     // 已经装过同 id 的就拒绝，而不是静默覆盖：覆盖会把用户可能改过的
     // 那一份直接抹掉，且没有任何提示。要换版本先卸载。
     if (await stat(dest).catch(() => null)) {
       return json({ error: 'conflict', message: `已经装了同名插件 ${id}，请先卸载` }, 409)
     }
-    // 源目录就是目标目录时直接返回：那说明用户指的是 .qy/plugins 里已有的那个。
+    // 源目录就是目标目录时直接返回：那说明用户指的是已经装好的那一个。
     if (resolve(src) === resolve(dest)) return json({ ok: true, id })
 
     await mkdir(dirname(dest), { recursive: true })
@@ -103,9 +120,11 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     if (id.includes('/') || id.includes('\\') || id.includes('..')) {
       return json({ error: 'bad request' }, 400)
     }
-    const dir = join(d.workspaceRoot, '.qy', 'plugins', id)
-    if (!(await stat(dir).catch(() => null))) return json({ error: 'not found' }, 404)
-    await rm(dir, { recursive: true, force: true })
+    const dir = scopeDir(scopeRoots(d.workspaceRoot), installScope(url), PLUGINS_SUBDIR)
+    if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
+    const target = join(dir, id)
+    if (!(await stat(target).catch(() => null))) return json({ error: 'not found' }, 404)
+    await rm(target, { recursive: true, force: true })
     return json({ ok: true })
   }
 

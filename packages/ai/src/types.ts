@@ -4,7 +4,8 @@
  * AgentLoop 只认识这一层；换供应商不改 loop 一行代码。
  */
 
-import type { EffortLevel, ModelSpec, ProviderKind } from './catalog.ts'
+import type { EffortLevel } from '@qywork/core'
+import type { ModelSpec, ProviderKind } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
 
@@ -47,9 +48,6 @@ export interface ChatRequest {
   thinking?: ThinkingRequest
   /** 缓存路由亲和键；同一会话稳定。 */
   cacheKey?: string
-  cacheTtl?: '5m' | '1h'
-  /** 政策性拒绝时的服务端兜底模型。 */
-  fallbacks?: 'default' | { model: string }[]
   signal?: AbortSignal
 }
 
@@ -76,7 +74,6 @@ export interface WireMessage {
    * 原样回传 reasoning_content，否则后续轮次 400。Anthropic 路径不需要。
    */
   reasoningContent?: string
-  cacheBreakpoint?: boolean
   /** 内部记账用，绝不上线。 */
   _group?: ContextGroup
   _messageId?: string
@@ -103,6 +100,15 @@ export interface WireToolCall {
   id: string
   name: string
   arguments: Record<string, unknown>
+  /**
+   * 参数 JSON 没解析出来时的**原文**。
+   *
+   * 曾经三个 provider 各自往 `arguments` 里塞一个魔法键（`__malformed_arguments`
+   * 与 `_malformed` 两套写法），而**没有任何消费者认得它们**——注释里写的
+   * 「上层会把它记成一次失败的工具调用」那个上层不存在，工具照样拿着垃圾参数执行。
+   * 改成独立字段：一个名字、一处判断，消费者在 `AgentLoop` 里。
+   */
+  argumentsError?: string
 }
 
 export interface ToolSchema {
@@ -120,8 +126,6 @@ export type ProviderEvent =
   | { type: 'request_prepared'; measuredInputTokens: number; exact: boolean }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
-  | { type: 'tool_call_start'; index: number; id: string; name: string }
-  | { type: 'tool_call_delta'; index: number; argsDelta: string }
   | { type: 'tool_calls'; calls: WireToolCall[] }
   | { type: 'usage'; usage: ProviderUsage }
   | { type: 'done'; stopReason: ProviderStopReason; refusal?: RefusalDetail }
@@ -162,6 +166,11 @@ export interface LlmAdapter {
    * 探测器靠它区分「端点接受了」和「我们压根没发」。没有这个声明的话，
    * 一个根本不传 thinking 的协议会让每一个探针都「通过」，
    * 于是探测报告说「支持思考」——而那是把没验过的说成验过了。
+   *
+   * **必须按 `spec` 算，不能是类级常量。** 协议支持不等于这条模型会发：
+   * 未收录的模型 `thinking='none'`、`effortLevels=[]`，三个适配器在装配期就把
+   * 这两个字段整个省掉，请求里一个字节都没有——此时若声明成 true，
+   * 每个探针都会「通过」，`--save` 再把这份凭空的结论覆盖回目录。
    */
   readonly transmits: { thinking: boolean; effort: boolean }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
