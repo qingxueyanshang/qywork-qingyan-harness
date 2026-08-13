@@ -403,7 +403,7 @@ export function Composer() {
               </button>
             }
           >
-            <button class="send-btn stop" type="button" onClick={interrupt} aria-label="停止">
+            <button class="send-btn" type="button" onClick={interrupt} aria-label="停止">
               <IconStop size={16} />
             </button>
           </Show>
