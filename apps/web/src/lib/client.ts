@@ -44,7 +44,15 @@ function withWorkspace(path: string): string {
 }
 
 export interface ClientOptions {
-  onEvent(event: AgentEvent, seq: number): void
+  /**
+   * 收到一帧。
+   *
+   * **交出整个信封，不是拆开的 `event` + `seq`。** 归属会话在信封上
+   * （`EventEnvelope.conversationId`），而消费方必须据此丢弃不属于当前会话的事件——
+   * 服务端的订阅过滤挡不住 `subscribe` 指令的往返窗口，那一段是物理存在的。
+   * 拆参数的话这个字段就传不过去，接收方只能盲信「我收到的都是我订阅的」。
+   */
+  onEvent(frame: EventEnvelope<AgentEvent>): void
   onState(state: ConnectionState, detail?: string): void
   /** 服务端补发不上时触发，调用方须重拉全量。 */
   onResync(): void
@@ -138,7 +146,15 @@ export class QyClient {
   private closed = false
   private readonly endpoint: Endpoint
   private readonly open: (url: string) => SocketLike
-  private subscribed: string[] = []
+  /**
+   * 声明过的订阅。**`null` = 还没声明过，和「声明了空集」是两件事。**
+   *
+   * 这个区分要一路传到服务端：重连时 hello 帧带着它，服务端按同一口径解释
+   * （`Subscriber.conversations`）。写成 `[]` 起步、再用 `length` 判断要不要带上的话，
+   * 「我明确一条都不要」会被压成「我没说过」，服务端于是给全订阅——
+   * 切项目之后重连一次，串台就全回来了。
+   */
+  private subscribed: string[] | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
@@ -185,7 +201,8 @@ export class QyClient {
         token: this.endpoint.token,
         origin: this.endpoint.origin,
         ...(this.lastSeq > 0 ? { lastSeq: this.lastSeq } : {}),
-        ...(this.subscribed.length ? { subscribe: this.subscribed as never } : {}),
+        // 判 `!== null` 而不是 `.length`：空集要原样带上去，见 `subscribed` 的注释。
+        ...(this.subscribed !== null ? { subscribe: this.subscribed as never } : {}),
       }
       ws.send(JSON.stringify(hello))
     })
@@ -231,7 +248,7 @@ export class QyClient {
       if (typeof msg.seq === 'number' && msg.event) {
         const frame = msg as EventEnvelope<AgentEvent>
         this.lastSeq = Math.max(this.lastSeq, frame.seq)
-        this.opts.onEvent(frame.event, frame.seq)
+        this.opts.onEvent(frame)
       }
     })
 
@@ -261,12 +278,38 @@ export class QyClient {
     }, delay)
   }
 
+  /**
+   * 发一条指令。
+   *
+   * **连接不可用时必须有终态。** 上一版是 `if (OPEN) send()`——不在 OPEN 就什么也
+   * 不做：不抛、不排队、不回执。而切模型、切思考强度、中断、重试、发消息全走这里，
+   * 且 `setModel` 刻意不做乐观更新（等服务端广播回来才改显示）。两件事叠在一起的
+   * 结果是：用户点了模型，界面一动不动，和「服务端还没回」完全无法区分。
+   * 这正是 C1 第 2 款点名的形状——静默 no-op 比明确报错糟得多。
+   *
+   * 落在已有的拒绝回执通道上，而不是抛出：五个调用点都是同步 `void` 函数，
+   * 让它们各自 try/catch 是把同一件事写五遍。
+   */
   send(cmd: ClientCommand): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(cmd))
+      return
     }
+    this.opts.onRejected({
+      type: 'command.rejected',
+      command: cmd.type,
+      reason: 'not_ready',
+      message: this.closed ? '连接已断开，请重新打开应用' : '正在重连，稍后再试',
+    })
   }
 
+  /**
+   * 声明这条连接要看哪些会话。
+   *
+   * **空数组是「一条都不要」，不是「全都要」。** 服务端按同一口径解释
+   * （`Subscriber.conversations`）：没声明过 = 全收，空集 = 明确退订。
+   * 这个区分是切项目时必须的——那一刻旧会话已经不该再推了，而新的还没选好。
+   */
   subscribe(conversationIds: string[]): void {
     this.subscribed = conversationIds
     this.send({ type: 'subscribe', conversationIds: conversationIds as never })

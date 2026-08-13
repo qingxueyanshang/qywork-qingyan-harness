@@ -7,7 +7,14 @@
  * 两个模块互相 import 是一定要避免的。
  */
 
-import type { ActionDescriptor, AgentEvent, Attachment, RunUsage, StopReason } from '@qywork/core'
+import type {
+  ActionDescriptor,
+  AgentEvent,
+  Attachment,
+  EventEnvelope,
+  RunUsage,
+  StopReason,
+} from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createPacer } from '../stream-pace.ts'
@@ -21,7 +28,7 @@ export const client = new QyClient({
     // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
     void reloadActiveConversation()
   },
-  onEvent: (ev) => applyEvent(ev),
+  onEvent: (frame) => applyEvent(frame),
   onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
 })
 
@@ -55,25 +62,52 @@ export function discardPace(): void {
   pacer.discard()
 }
 
-function applyEvent(ev: AgentEvent): void {
+/**
+ * 把一帧折进 `state`。
+ *
+ * ## 归属校验只判一次，就在这里
+ *
+ * 下面三十个 case 里的绝大多数（`text.delta` / `tool.*` / `usage` / `run.*`）写的都是
+ * **当前会话**那一份 transcript 和 run 状态，而事件体自己不带 `conversationId`——
+ * 归属在信封上。上一版没有这道校验，靠的是「服务端只会推我订阅的」，
+ * 而那个前提有一段物理上消不掉的窗口：`subscribe` 指令发出到服务端处理之间，
+ * 旧会话还在推。表现就是切了会话、正文却是上一条的。
+ *
+ * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。入口判一次。
+ *
+ * ## `conversation.updated` 在校验之前处理
+ *
+ * 它改的是左栏那份**列表**，不是 transcript，对后台会话同样有意义（标题、模型）。
+ * 一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。
+ * 它自己带着 `conversationId`，本来就该按 id 精确路由。
+ */
+export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
+  const ev = frame.event
+
+  // 会话属性变更先处理：它按自己的 id 找列表项，和「当前是哪条」无关。
+  if (ev.type === 'conversation.updated') {
+    pacer.flush()
+    setState(
+      produce((s) => {
+        const conv = s.conversations.find((c) => c.id === ev.conversationId)
+        if (conv) {
+          conv.model = ev.model
+          conv.effort = ev.effort
+          conv.title = ev.title
+        }
+      }),
+    )
+    return
+  }
+
+  // 归属不是当前会话的一律丢弃。没有归属的是工作区级事件（git 状态那类），放行。
+  if (frame.conversationId && frame.conversationId !== state.activeConversation) return
+
   // 正文之外的一切都意味着「这一刻的界面要是完整的」——读数条、错误卡、
   // 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
   if (ev.type !== 'text.delta') pacer.flush()
 
   switch (ev.type) {
-    case 'conversation.updated':
-      setState(
-        produce((s) => {
-          const conv = s.conversations.find((c) => c.id === ev.conversationId)
-          if (conv) {
-            conv.model = ev.model
-            conv.effort = ev.effort
-            conv.title = ev.title
-          }
-        }),
-      )
-      return
-
     case 'team.member':
       setState(
         produce((s) => {
@@ -221,7 +255,7 @@ function applyEvent(ev: AgentEvent): void {
               ...(ev.manifest
                 ? {
                     revision: ev.manifest.revision,
-                    compactedMessages: Object.keys(ev.manifest.compactedRunSteps ?? {}).length,
+                    compactedMessages: ev.manifest.compactedMessageCount,
                   }
                 : {}),
             }

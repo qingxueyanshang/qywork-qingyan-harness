@@ -26,6 +26,19 @@ export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
   seq: number
   /** 服务端发出时刻（epoch ms）。 */
   at: number
+  /**
+   * 这条事件属于哪个会话。缺省 = 工作区级事件（git 状态那类），人人可见。
+   *
+   * **必须在帧上，不能只在服务端内存里。** 这个字段本来是有的——服务端一直拿着它
+   * 做订阅过滤——但它从不随帧发出，于是客户端只能盲信「我收到的都是我订阅的」。
+   * 那个前提有三处不成立（空订阅集被当成全订阅、断线补发根本不过滤、
+   * `subscribe` 指令的往返窗口），任何一处都表现为「切了会话，内容是上一条的」。
+   *
+   * 事件体自己带 `conversationId` 的只有两个（`conversation.updated`、`run.started`），
+   * 而串台的主力是 `text.delta` / `tool.*` / `run.finished` 这些不带的——
+   * 所以归属只能放在信封上，不是逐个事件补字段。
+   */
+  conversationId?: ConversationId
   event: T
 }
 
@@ -39,7 +52,6 @@ export type AgentEvent =
   // ── 模型输出 ──
   | TextDeltaEvent
   | ThinkingDeltaEvent
-  | MessageCommittedEvent
   // ── 工具 ──
   | ToolStartedEvent
   | ToolDeltaEvent
@@ -147,14 +159,6 @@ export interface ThinkingDeltaEvent {
 }
 
 /** 一段完整 assistant 文本已落库，客户端可以用它替换本地累积的 delta。 */
-export interface MessageCommittedEvent {
-  type: 'message.committed'
-  runId: RunId
-  messageId: MessageId
-  stepId: StepId
-  content: string
-}
-
 // ─────────────────────────────── 工具 ───────────────────────────────
 
 export interface ToolStartedEvent {

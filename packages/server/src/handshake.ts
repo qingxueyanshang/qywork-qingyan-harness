@@ -10,8 +10,15 @@ import { PROTOCOL_VERSION } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import type { EventBus } from './bus.ts'
+import pkg from '../package.json' with { type: 'json' }
+import type { EventBus, Subscriber } from './bus.ts'
 import type { SocketData } from './deps.ts'
+
+/**
+ * 本包版本。**真源是根 `VERSION`**，由 `bun run scripts/sync-version.ts` 灌进
+ * 各包的 package.json；手写字面量不在那个脚本的覆盖范围里，升版本时会原地不动。
+ */
+const PKG_VERSION: string = pkg.version
 
 export function handleHello(
   ws: ServerWebSocket<SocketData>,
@@ -44,28 +51,37 @@ export function handleHello(
   ws.data.authed = true
   ws.data.origin = frame.origin
 
+  /*
+   * **先建订阅，再算补发。** 顺序不是风格问题：补发要按这个客户端订了哪些会话
+   * 过滤，而订阅集就是过滤的判据。上一版反着写，于是补发那条路上根本没有判据
+   * 可用——重连一次就把窗口里所有会话的事件灌进当前界面。
+   *
+   * `?? null` 而不是 `?? []`：没声明过订阅 = 全收（首连时界面还没选会话），
+   * 空数组 = 明确不要任何会话事件。两者不是同一件事，见 `Subscriber.conversations`。
+   */
+  const subscriber: Subscriber = {
+    id: ws.data.id,
+    origin: frame.origin,
+    conversations: frame.subscribe ? new Set(frame.subscribe) : null,
+    send: (f) => ws.send(JSON.stringify(f)),
+  }
+  const off = deps.bus.subscribe(subscriber)
+  deps.unsubscribers.set(ws.data.id, off)
+
   // 断线补发：缺口在保留窗口内就逐条补，超出就让客户端重拉全量。
   let resync = false
   let backlog: EventEnvelope[] = []
   if (typeof frame.lastSeq === 'number') {
-    const replay = deps.bus.replayFrom(frame.lastSeq)
+    const replay = deps.bus.replayFrom(frame.lastSeq, subscriber)
     if (replay === null) resync = true
     else backlog = replay
   }
-
-  const off = deps.bus.subscribe({
-    id: ws.data.id,
-    origin: frame.origin,
-    conversations: new Set(frame.subscribe ?? []),
-    send: (f) => ws.send(JSON.stringify(f)),
-  })
-  deps.unsubscribers.set(ws.data.id, off)
 
   ws.send(
     JSON.stringify({
       type: 'hello.ok',
       protocolVersion: PROTOCOL_VERSION,
-      serverVersion: '0.1.0',
+      serverVersion: PKG_VERSION,
       sessionId: ws.data.id,
       currentSeq: deps.bus.currentSeq,
       resync,

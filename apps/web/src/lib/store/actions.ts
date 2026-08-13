@@ -7,7 +7,7 @@
 
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
-import { client, reloadActiveConversation } from './connection.ts'
+import { client, discardPace, reloadActiveConversation } from './connection.ts'
 import {
   addWorkspace,
   isDesktopShell,
@@ -54,10 +54,32 @@ export async function activateWorkspace(path: string): Promise<void> {
   if (isDesktopShell()) await watchWorkspace(ws.rootPath).catch(() => {})
 }
 
+/**
+ * 切到另一条会话。
+ *
+ * **两处以前会静默失败，都补上了终态：**
+ *
+ * 1. `discardPace()` 和清空 transcript 在同一处。以前只在 `reloadActiveConversation`
+ *    里丢积压，而那是 await 之后的事——这中间到达的 delta 会落在新会话的正文末尾，
+ *    表现成「切过去，开头多了半句上一条会话的话」。
+ * 2. 拉取失败落 `state.error`。调用点写的是 `void selectConversation(id)`，
+ *    里面任何一条 `client.api` 抛错都会变成 unhandled rejection：transcript 已经
+ *    清空、新的没加载上，界面停在一个空会话上，一个字的解释都没有。
+ *    **这就是「点了会话没反应」**。
+ */
 export async function selectConversation(id: string): Promise<void> {
   setState({ activeConversation: id, transcript: [], fileChanges: [], error: null })
+  discardPace()
   client.subscribe([id])
-  await reloadActiveConversation()
+  try {
+    await reloadActiveConversation()
+  } catch (e) {
+    setState('error', {
+      code: 'internal_error',
+      message: `打不开这条会话：${e instanceof Error ? e.message : String(e)}`,
+      retryable: true,
+    })
+  }
 }
 
 /**

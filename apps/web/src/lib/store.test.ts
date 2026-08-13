@@ -32,9 +32,16 @@ g.sessionStorage = {
 }
 g.matchMedia = () => ({ matches: false })
 
-const { explainApiError, openPanel, setSidePanel, sidePanel, togglePanel } = await import(
-  './store/index.ts'
-)
+const {
+  applyEvent,
+  explainApiError,
+  openPanel,
+  setSidePanel,
+  setState,
+  sidePanel,
+  state,
+  togglePanel,
+} = await import('./store/index.ts')
 
 describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {
   test('收起状态下点开，回到默认的文件视图', () => {
@@ -115,5 +122,107 @@ describe('接口错误还原成人话', () => {
 
   test('只有空消息时才用兜底文案', () => {
     expect(explainApiError(new Error(''), '保存失败')).toBe('保存失败')
+  })
+})
+
+/**
+ * 事件的会话归属校验（`store/connection.ts` 的 `applyEvent`）。
+ *
+ * 这一组锁的是一个**症状**：切了会话，正文却是上一条会话的；偶尔还会卡死。
+ * 根因不在切换那段代码里——服务端的订阅过滤挡不住 `subscribe` 指令的往返窗口，
+ * 那一段是物理存在的，所以接收端必须自己判一次。
+ *
+ * 断言形状是原始失败形状：喂一条**别的会话**的事件，看当前会话的投影有没有被污染。
+ */
+describe('事件按会话归属过滤', () => {
+  const reset = (activeConversation: string | null) => {
+    setState({ activeConversation, transcript: [], conversations: [], running: false })
+  }
+
+  const deltaFrame = (conversationId: string | undefined, delta: string) =>
+    ({
+      seq: 1,
+      at: 0,
+      ...(conversationId ? { conversationId } : {}),
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta },
+    }) as never
+
+  test('别的会话的正文不写进当前 transcript —— 这就是「切了还是上一条」', () => {
+    reset('cv_now')
+    applyEvent(deltaFrame('cv_other', '别人的话'))
+    expect(state.transcript).toHaveLength(0)
+  })
+
+  test('自己会话的正文照常写入', () => {
+    reset('cv_now')
+    applyEvent(deltaFrame('cv_now', '我的话'))
+    // 正文走匀速呈现，先冲一次再看：flush 由下一条非 delta 事件触发。
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+    expect(state.transcript.map((t) => t.text).join('')).toContain('我的话')
+  })
+
+  test('没有归属的是工作区级事件，照样放行', () => {
+    reset('cv_now')
+    applyEvent({
+      seq: 3,
+      at: 0,
+      event: {
+        type: 'run.error',
+        runId: 'run_1',
+        code: 'internal_error',
+        message: '工作区级错误',
+        retryable: false,
+      },
+    } as never)
+    expect(state.error?.message).toBe('工作区级错误')
+  })
+
+  test('别的会话的 run.started 不会把当前会话点亮成「执行中」', () => {
+    reset('cv_now')
+    applyEvent({
+      seq: 4,
+      at: 0,
+      conversationId: 'cv_other',
+      event: {
+        type: 'run.started',
+        runId: 'run_x',
+        conversationId: 'cv_other',
+        model: 'm',
+        userMessageId: null,
+        retryOfRunId: null,
+      },
+    } as never)
+    expect(state.running).toBe(false)
+  })
+
+  /**
+   * 反过来的那一半：`conversation.updated` 改的是**左栏列表**，不是 transcript，
+   * 对后台会话同样有意义。一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。
+   */
+  test('后台会话的属性变更仍然落到列表上', () => {
+    reset('cv_now')
+    setState('conversations', [
+      { id: 'cv_now', title: '当前', model: 'a', effort: null } as never,
+      { id: 'cv_other', title: '新对话', model: 'a', effort: null } as never,
+    ])
+    applyEvent({
+      seq: 5,
+      at: 0,
+      conversationId: 'cv_other',
+      event: {
+        type: 'conversation.updated',
+        conversationId: 'cv_other',
+        model: 'b',
+        effort: null,
+        title: '改过的标题',
+      },
+    } as never)
+    expect(state.conversations.find((c) => c.id === 'cv_other')?.title).toBe('改过的标题')
+    expect(state.conversations.find((c) => c.id === 'cv_now')?.title).toBe('当前')
   })
 })
