@@ -67,6 +67,17 @@
 .changes-chip .sep {
   color: var(--text-tertiary);
 }
+/* 步数是个按钮（点开完整计划），但不画成按钮：它在一条状态里，
+   画个边框或底色会让整条读成「一个控件旁边挂了些数字」。 */
+.plan-jump {
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.plan-jump:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .changes-chip .add {
   color: var(--success);
 }

@@ -11,6 +11,7 @@ import {
 } from '../lib/store/index.ts'
 import { ExtrasPanel } from './ExtrasPanel.tsx'
 import { IconBranch, IconChevron, IconFile, IconFolder, IconX } from './Icons.tsx'
+import { PlanPanel } from './PlanPanel.tsx'
 import { TeamPanel } from './TeamPanel.tsx'
 
 interface FileNode {
@@ -46,6 +47,15 @@ export default function SidePanel() {
       <aside class="side-panel">
         <header class="side-head">
           <div class="side-tabs">
+            {/* 计划排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。 */}
+            <button
+              class="side-tab"
+              classList={{ active: sidePanel() === 'plan' }}
+              type="button"
+              onClick={() => setSidePanel('plan')}
+            >
+              计划
+            </button>
             <button
               class="side-tab"
               classList={{ active: sidePanel() === 'files' }}
@@ -95,6 +105,9 @@ export default function SidePanel() {
 
         <div class="side-body">
           <Switch>
+            <Match when={sidePanel() === 'plan'}>
+              <PlanPanel />
+            </Match>
             <Match when={sidePanel() === 'files'}>
               <FileBrowser />
             </Match>

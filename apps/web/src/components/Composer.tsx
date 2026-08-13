@@ -115,9 +115,16 @@ function RunStatusChip() {
             <Show when={state.running}>
               <IconSpinner size={12} />
             </Show>
-            <span>
+            {/* 点步数打开计划面板。完整清单收在那边，这里只报进度——
+                不给入口的话，用户得自己去右侧翻出「计划」这个标签页。 */}
+            <button
+              class="plan-jump"
+              type="button"
+              title="查看完整计划"
+              onClick={() => openPanel('plan')}
+            >
               第 {step()} / {total()} 步
-            </span>
+            </button>
           </Show>
           {/* 两段都在时才要分隔点——只有一段时它会变成一个悬空的符号。 */}
           <Show when={total() > 0 && files().length > 0}>
