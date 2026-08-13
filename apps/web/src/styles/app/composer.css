@@ -106,12 +106,10 @@
   }
 }
 
-/* gap 归 0：每个 chip 自己带 8px 内边距，两个相邻 chip 的文字之间已经有 16px。
-   再叠 4px 的 gap 会让这一排显得散。窄屏那条媒体查询因此不再需要覆盖它。 */
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: var(--s-1);
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
 
@@ -163,9 +161,13 @@
 .model-picker .mode-chip {
   max-width: 190px;
 }
-/* 思考不额外加边距：这一排所有控件之间都由 `.composer-bar` 的 gap 统一决定，
-   模型和思考也走同一档。加过 8px 和 16px 两版，结果是这一对比别的都宽——
-   要的是「和别的一样」，不是「更宽」。 */
+/* **只收窄模型与思考这一对，别处不动。**
+   这一排统一 gap 是 4px，两个 chip 各带 8px 内边距，所以任意相邻两个的文字
+   之间是 20px。用负边距把这一对的那 4px gap 抵掉 → 16px，其余各对保持 20px。
+   收在这一个元素上，不动 `.composer-bar`，别的控件的间距一点不受影响。 */
+.effort-picker {
+  margin-left: calc(var(--s-1) * -1);
+}
 .model-menu {
   position: absolute;
   bottom: calc(100% + 6px);
