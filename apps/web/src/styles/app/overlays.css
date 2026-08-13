@@ -304,10 +304,24 @@
 
 /* 没选文件夹时是一块虚线区，和 Codex 那个「添加可读取和编辑的文件夹」同构：
    它是一个待填的位置，不是一条已经成立的信息。 */
+/*
+ * **两种状态必须一样高。**
+ *
+ * 选了文件夹之后这一块从「虚线空框」变成「一行路径」，高度一变，整个弹窗
+ * 就跟着长高或缩短——弹窗在用户眼皮底下改尺寸，按钮位置跟着跳，
+ * 上一秒瞄准的「创建项目」下一秒不在那儿了。
+ *
+ * 固定高度而不是让内容撑：`min-height` 取空态那一档，选中态在里面垂直居中。
+ * 路径长了在框内换行并滚动，**不把外面撑开**。
+ */
 .np-folder {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  box-sizing: border-box;
+  min-height: 88px;
+  max-height: 88px;
+  overflow-y: auto;
   padding: var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-sm);
@@ -316,8 +330,8 @@
 }
 .np-folder.empty {
   flex-direction: column;
+  justify-content: center;
   gap: 6px;
-  padding: var(--s-4) var(--s-2);
   border-style: dashed;
 }
 .np-pick {
