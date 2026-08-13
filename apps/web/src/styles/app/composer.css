@@ -106,10 +106,13 @@
   }
 }
 
+/* 间距取 --s-2 而不是 --s-1：这一排里只有「完全访问」带描边，描边本身把它和
+   邻居分开了；模型和思考两个 chip 没有描边，4px 下两串文字几乎粘在一起。
+   按最不利的那一对定间距，带描边的那个宽一点无妨。 */
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--s-1);
+  gap: var(--s-2);
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
 
