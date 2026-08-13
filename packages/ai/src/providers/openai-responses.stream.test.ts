@@ -308,8 +308,12 @@ describe('工具调用', () => {
    */
   test('reasoning 占了 index 0 时工具调用仍然收得到', async () => {
     const events = await run(TOOL_RUN)
-    const start = events.find((e) => e.type === 'tool_call_start') as { index: number } | undefined
-    expect(start?.index).toBe(1)
+    const calls = events.find((e) => e.type === 'tool_calls') as
+      | { calls: { name: string; arguments: Record<string, unknown> }[] }
+      | undefined
+    // 槽位对错的可观察形状是**参数对不对**：喂给不存在的槽位会得到一条空参数的调用。
+    expect(calls?.calls[0]?.name).toBe('get_weather')
+    expect(calls?.calls[0]?.arguments).toEqual({ city: '北京' })
   })
 
   /**
@@ -322,7 +326,6 @@ describe('工具调用', () => {
       | { calls: { arguments: Record<string, unknown> }[] }
       | undefined
     expect(calls?.calls[0]?.arguments).toEqual({ city: '上海' })
-    expect(events.some((e) => e.type === 'tool_call_start')).toBe(true)
   })
 })
 

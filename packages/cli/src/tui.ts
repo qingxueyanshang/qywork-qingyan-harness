@@ -21,6 +21,7 @@
  */
 
 import type { AgentEvent, ConversationId } from '@qywork/core'
+import { formatCosts, formatMoney } from '@qywork/core'
 import {
   configNotices,
   dataPath,
@@ -61,7 +62,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   const content = new ContentStore(contentPathFor(dataPath()))
 
   let conversationId: ConversationId | undefined
-  let model = config.profiles[config.active]?.model ?? '(未配置)'
+  let model = config.active.model
   /** 当前这一轮的中断句柄。null = 空闲。 */
   let running: AbortController | null = null
   let quitting = false
@@ -176,7 +177,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
 
     case 'model': {
       if (!arg) {
-        const names = Object.values(ctx.config.profiles).map((p) => p.model)
+        const names = Object.values(ctx.config.providers).flatMap((p) => Object.keys(p.models))
         process.stdout.write(
           `当前 ${BOLD}${ctx.model}${RESET}\n${DIM}配置里有：${names.join('、')}${RESET}\n`,
         )
@@ -194,7 +195,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       process.stdout.write(
         t.entries === 0
           ? `${DIM}最近 30 天没有记录${RESET}\n`
-          : `最近 30 天：${t.entries} 笔 · 入 ${t.inputTokens} 出 ${t.outputTokens} · $${t.costUsd.toFixed(4)}\n`,
+          : `最近 30 天：${t.entries} 笔 · 入 ${t.inputTokens} 出 ${t.outputTokens} · ${formatCosts(t.cost)}\n`,
       )
       return 'ok'
     }
@@ -205,7 +206,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
         return 'ok'
       }
       const t = usageTotals(ctx.store, {})
-      process.stdout.write(`${DIM}账本总计 $${t.costUsd.toFixed(4)}（本机全部会话）${RESET}\n`)
+      process.stdout.write(`${DIM}账本总计 ${formatCosts(t.cost)}（本机全部会话）${RESET}\n`)
       return 'ok'
     }
 
@@ -267,7 +268,7 @@ function render(ev: AgentEvent): void {
       const u = ev.usage
       const cached = u.cachedTokens === null ? '未回报' : String(u.cachedTokens)
       process.stdout.write(
-        `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存 ${cached} · $${u.costUsd.toFixed(4)}${RESET}\n`,
+        `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存 ${cached} · ${formatMoney(u.cost, u.currency)}${RESET}\n`,
       )
       break
     }

@@ -21,6 +21,7 @@ export type RenderItem =
   | { kind: 'thinking'; id: string; item: TranscriptItem }
   | { kind: 'tool'; id: string; item: TranscriptItem }
   | { kind: 'compaction'; id: string; item: TranscriptItem }
+  | { kind: 'run'; id: string; item: TranscriptItem }
   | { kind: 'group'; id: string; members: TranscriptItem[] }
 
 export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
@@ -77,6 +78,13 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
       // 压缩是会话级事件，不属于任何工具组，独立成条。
       flush()
       out.push({ kind: 'compaction', id: item.id, item })
+      continue
+    }
+    if (item.kind === 'run') {
+      // 收尾读数是这一轮的句号：**必须先 flush**，否则它会被卷进末尾那张工具组卡里，
+      // 折叠起来就看不见了——而它恰恰是要一眼扫到的那一行。
+      flush()
+      out.push({ kind: 'run', id: item.id, item })
       continue
     }
     segment.push(item)
@@ -149,4 +157,37 @@ export function actionLabel(item: TranscriptItem): string {
   if (kind === 'execute') return '执行命令'
   const obj = item.action?.objectLabel
   return obj ? `${verb(kind)}${obj}` : (item.toolName ?? '操作')
+}
+
+/**
+ * 让没变的行保持**同一个对象引用**。
+ *
+ * `<For>` 是按引用配对的（不是按 id），而 `buildRenderItems` 每次都产出全新的包装
+ * 对象——于是 transcript 每 push 一条（每个工具启动、每段思考、每次收尾），
+ * 整列 DOM 全部销毁重建。两个后果：长会话里每来一条就重建一次全表；
+ * 更烦人的是**展开着的折叠会自己合上**——`<details>` 的 open 是原生状态，
+ * 存在 DOM 节点上，节点没了状态就没了。运行中点开一张工具卡，
+ * 下一个工具启动的瞬间它就关了。
+ *
+ * 这里不改 `buildRenderItems`（它是纯的、有测试），只在它之后补一次对账：
+ * id 与 kind 相同、且底下指的还是同一条 transcript 条目，就沿用上一轮那个包装。
+ * 正文增量不影响——store 的条目是代理对象，原地改字段时引用不变，
+ * 行内的文本靠细粒度响应自己更新。
+ */
+export function reconcileRenderItems(prev: RenderItem[], next: RenderItem[]): RenderItem[] {
+  if (prev.length === 0) return next
+  const byId = new Map(prev.map((p) => [p.id, p]))
+
+  return next.map((n) => {
+    const old = byId.get(n.id)
+    if (!old || old.kind !== n.kind) return n
+    if (n.kind === 'group') {
+      const o = old as Extract<RenderItem, { kind: 'group' }>
+      const same =
+        o.members.length === n.members.length && o.members.every((m, i) => m === n.members[i])
+      return same ? o : n
+    }
+    const o = old as Exclude<RenderItem, { kind: 'group' }>
+    return o.item === n.item ? o : n
+  })
 }

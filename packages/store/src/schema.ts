@@ -285,6 +285,100 @@ CREATE INDEX idx_usage_model ON usage_ledger(model, occurred_at);
 CREATE UNIQUE INDEX uq_usage_run ON usage_ledger(run_id) WHERE run_id IS NOT NULL;
 `,
   },
+  {
+    id: 5,
+    name: 'drop_unwritten_columns',
+    /**
+     * 删掉三处从来没被写入过的东西。
+     *
+     * - `artifacts` 表与 `steps.artifact_id`：产物是从 Python 版带过来的概念，
+     *   qywork 里没有任何生产者，界面也没有对应渲染。
+     * - `runs.execution_state`：**这个最该删**。它从未被写入，而崩溃恢复如果
+     *   拿它做判据，会把所有 run 都判成「安全可重放」——正好是最危险的方向。
+     *   真正的判据一直是 steps 表里那条带 `execution_started_at` 的 running 行。
+     *
+     * 保留空表/空列不叫兼容，叫留一个下次有人误用的机会。
+     */
+    sql: `
+DROP INDEX IF EXISTS idx_artifact_conv;
+DROP TABLE IF EXISTS artifacts;
+ALTER TABLE steps DROP COLUMN artifact_id;
+ALTER TABLE runs DROP COLUMN execution_state;
+`,
+  },
+  {
+    id: 6,
+    name: 'conversation_effort',
+    /**
+     * 思考强度下沉到会话，形状与 `model` 完全一致。
+     *
+     * 之前只有 `config.effort` 一个全局值。它确实被主循环消费（不是死链路），
+     * 但和模型不同层：模型是会话级的，切一个会话去用 Haiku 不会影响另一个会话，
+     * 而思考强度切一次是全局的。两个本该并排的旋钮分处两层，改一个还会改到别处。
+     *
+     * `NULL` = 跟随配置里的默认值，不是「关掉思考」——所以这里不给 DEFAULT，
+     * 给了就再也分不出「用户显式选了这一档」和「还没选过」。
+     */
+    sql: `ALTER TABLE conversations ADD COLUMN effort TEXT;`,
+  },
+  {
+    id: 7,
+    name: 'multi_currency_cost',
+    /**
+     * 账本与 run 改成多币种，**不做汇率换算**。
+     *
+     * 起因是内置目录扩到九家厂商：阿里 / 月之暗面 / 智谱三家官网按人民币标价。
+     * 三条路摆在面前——
+     *
+     * 1. 换算成美元：要一个汇率。汇率天天变，落盘的那个数字第二天就不对了，
+     *    而它看起来仍然是个确切的金额。
+     * 2. 把 ¥ 数字塞进 `cost_usd`：字段名直接说谎，差七倍且界面上看不出来。
+     * 3. 记下币种，各币种分开合计。**选这条。**
+     *
+     * 列名一并从 `cost_usd` 改成 `cost`。这不违反「已落盘的键名不改」——
+     * 那条防的是读不回旧数据，而 RENAME COLUMN 把数据原样带过去了；
+     * 留一个名字说谎的列才是真的会误导后来的人。
+     *
+     * 存量行一律记 `'USD'`：迁移之前目录里只有 Anthropic 与 DeepSeek 两家，
+     * 都是美元标价，所以这个默认值是事实，不是猜测。
+     */
+    sql: `
+ALTER TABLE runs RENAME COLUMN cost_usd TO cost;
+ALTER TABLE runs ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+ALTER TABLE usage_ledger RENAME COLUMN cost_usd TO cost;
+ALTER TABLE usage_ledger ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+`,
+  },
+  {
+    id: 8,
+    name: 'conversation_extras',
+    /**
+     * 会话级的「这一轮不用某个技能 / MCP / 插件 / 记忆」。
+     *
+     * ## 为什么必须落盘，而不是只在内存里
+     *
+     * 它要跨重启活着：关掉一个吵闹的 MCP 之后重开应用又冒出来，用户会以为
+     * 开关没生效。而**它只属于这一条会话**——写进全局配置就不是「这一轮」了，
+     * 那是另一个语义，别处无处安放。这是本轮唯一新增的一份状态账。
+     *
+     * ## 只存「关掉的」，不存「开着的」
+     *
+     * 默认全开，所以没有行 = 全开。反过来存的话，每装一个新技能都要给所有
+     * 历史会话补一行，漏补的表现是「新装的技能在老会话里不生效」——
+     * 而那是一条谁都不会去查的路径。
+     *
+     * `key` 形如 `skill:release` / `mcp:github` / `plugin:foo` / `memory:style`，
+     * 前缀就是类目。不拆成两列：这张表只被「按会话取全集」这一种方式读，
+     * 拆开只会多一个 join 条件。
+     */
+    sql: `
+CREATE TABLE conversation_extras (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  key             TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, key)
+);
+`,
+  },
 ]
 
 /**
