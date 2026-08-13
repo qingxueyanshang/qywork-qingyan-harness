@@ -42,7 +42,9 @@
   --success-soft: rgba(26, 127, 71, 0.1);
   --danger: #c2371f;
   --danger-soft: rgba(194, 55, 31, 0.1);
-  --warning: #9a6400;
+  /* 琥珀，不是黄。#9a6400 那种纯黄在白底上读起来像「过期的贴纸」，而它承载的是
+     「这一步有风险」——要的是暖橙的警觉感，不是荧光笔的刺眼。 */
+  --warning: #b45309;
 
   /* diff 专用：正负两色必须同时对亮暗底可读 */
   --diff-add-bg: rgba(26, 127, 71, 0.1);
@@ -154,7 +156,7 @@
     --success-soft: rgba(78, 201, 138, 0.14);
     --danger: #ff7b63;
     --danger-soft: rgba(255, 123, 99, 0.14);
-    --warning: #e0a33a;
+    --warning: #eda45c;
 
     --diff-add-bg: rgba(78, 201, 138, 0.14);
     --diff-del-bg: rgba(255, 123, 99, 0.14);
@@ -191,7 +193,7 @@
   --success-soft: rgba(78, 201, 138, 0.14);
   --danger: #ff7b63;
   --danger-soft: rgba(255, 123, 99, 0.14);
-  --warning: #e0a33a;
+  --warning: #eda45c;
 
   --diff-add-bg: rgba(78, 201, 138, 0.14);
   --diff-del-bg: rgba(255, 123, 99, 0.14);

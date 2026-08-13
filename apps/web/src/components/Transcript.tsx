@@ -153,6 +153,20 @@ export function Transcript() {
   )
 }
 
+/**
+ * 这一轮此刻在干什么。
+ *
+ * 按**流的位置**判断，而不是按快照推：最后一条是思考就说「正在思考」，
+ * 是工具就说「正在执行」。从时间线快照反推会慢半拍，而这行字的全部意义
+ * 就是「它现在有反应」。
+ */
+function liveStatus(): string {
+  const last = state.transcript[state.transcript.length - 1]
+  if (last?.kind === 'thinking') return '正在思考…'
+  if (last?.kind === 'tool') return '正在执行…'
+  return '模型响应中…'
+}
+
 /** 流式期两次重解析之间的最小间隔。见 `Prose` 的说明。 */
 const REPARSE_MS = 60
 
@@ -346,6 +360,16 @@ function RunStatusBar(props: {
               </Show>
             </>
           )}
+        </Show>
+        {/*
+         * 「正在思考…」跟在钱后面，和停止原因同一格。
+         *
+         * 它原来浮在输入区上方，那里没有它的位置——出现和消失会把输入框整体推动，
+         * 也就是 B9 说的「尺寸随内容变」。而这一格本来就是给「这一轮怎么样了」用的：
+         * 跑着的时候说在干什么，跑完了说为什么停，同一个位置、同一种语义。
+         */}
+        <Show when={props.running}>
+          <span class="run-live">{liveStatus()}</span>
         </Show>
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
             于是出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
