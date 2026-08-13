@@ -2,7 +2,6 @@ import { createSignal, lazy, onCleanup, onMount, Show } from 'solid-js'
 import { Composer } from './components/Composer.tsx'
 import { Palette } from './components/Palette.tsx'
 import { PermissionSheet } from './components/PermissionSheet.tsx'
-import { PlanCard } from './components/PlanCard.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Transcript } from './components/Transcript.tsx'
 
@@ -170,7 +169,6 @@ export function App() {
         fallback={
           /* 空会话时把输入区居中：底部钉一个孤零零的输入框看起来像没加载完 */
           <main class="main" classList={{ empty: state.transcript.length === 0 }}>
-            <PlanCard />
             <Transcript />
             <Composer />
           </main>

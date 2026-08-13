@@ -134,55 +134,14 @@
 }
 
 /* ── 任务清单 ──
-   固定在会话流上方：计划是当前状态不是历史事件，插进流里会随滚动跑出视野，
-   而用户最需要看它的时刻恰恰是在往下翻输出的时候。 */
-.plan-card {
-  flex: none;
-  max-width: 760px;
-  width: 100%;
-  margin: 0 auto;
-  padding: var(--s-3) var(--s-4);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-app);
+   住在右侧面板里。原来它钉在会话流上方，于是同一件事被摊在三处说：
+   顶部卡片、输入区状态条、展开后的清单。现在按密度分层——状态条只报
+   「第 N / M 步」，完整清单要点开面板才看。 */
+.plan-panel {
+  padding: var(--s-3);
 }
-.plan-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  cursor: pointer;
-  /* 折叠三角由 ::after 接管，位置在行尾——行首那一列符号会把当前任务往右推。 */
-  list-style: none;
-}
-.plan-head::-webkit-details-marker {
-  display: none;
-}
-.plan-head::after {
-  content: "›";
-  flex: none;
-  color: var(--text-tertiary);
-  font-size: var(--fs-lg);
-  font-weight: 700;
-  line-height: 1;
-  transition: transform 0.15s;
-}
-.plan-card[open] > .plan-head::after {
-  transform: rotate(90deg);
-}
-/* 只有展开时才和下面的清单拉开距离；收起时它就是孤零零一行。 */
-.plan-card[open] > .plan-head {
+.plan-progress {
   margin-bottom: var(--s-2);
-}
-.plan-title {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.plan-count {
-  flex: none;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
@@ -193,11 +152,12 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--s-1);
 }
 .plan-item {
   display: flex;
-  align-items: center;
+  /* 顶对齐：正文换行之后 center 会让左边的标记浮在两行中间。 */
+  align-items: flex-start;
   gap: var(--s-2);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
@@ -216,7 +176,8 @@
   display: grid;
   place-items: center;
   width: 14px;
-  height: 14px;
+  /* 与首行文字等高，标记才落在第一行上而不是整块的中线上。 */
+  height: calc(var(--fs-sm) * 1.6);
   color: var(--text-tertiary);
 }
 .plan-item.done .plan-mark {
@@ -232,11 +193,10 @@
   background: currentColor;
   opacity: 0.5;
 }
+/* 面板里换行显示，不截断：这里宽度只有 300 多像素，省略号会把长任务名
+   切成一句看不懂的半话，而这块地方存在的理由正是「要看细节」。 */
 .plan-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ── 状态覆盖 ──
