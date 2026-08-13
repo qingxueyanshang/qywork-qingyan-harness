@@ -17,12 +17,26 @@ import {
 import { setState, state } from './state.ts'
 import { setWorkspace } from './ui.ts'
 
+/**
+ * 拉这个项目的会话列表，并保证**总有一条是活动的**。
+ *
+ * 最后那条分支不是锦上添花：模型选择器（`disabled={!state.activeConversation}`）、
+ * 思考强度、`sendMessage` 全都以「有一条活动会话」为前提。一条都没有时
+ * 输入框看着能打字，但发不出去、模型也选不了——而新项目和新装的应用
+ * 正好都是这个状态，也就是每个人的第一屏。
+ *
+ * 建一条空会话没有代价：它本来就是用户接下来必然要做的第一个动作，
+ * 而空会话不占额度、不发请求。
+ */
 export async function loadConversations(): Promise<void> {
   const res = await client.api<{ conversations: Conversation[] }>('/api/conversations')
   setState('conversations', res.conversations)
-  if (!state.activeConversation && res.conversations[0]) {
+  if (state.activeConversation) return
+  if (res.conversations[0]) {
     await selectConversation(res.conversations[0].id)
+    return
   }
+  await newConversation()
 }
 
 /**
