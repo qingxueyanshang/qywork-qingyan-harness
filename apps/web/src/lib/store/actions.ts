@@ -40,7 +40,8 @@ export async function loadConversations(): Promise<void> {
  * 在新项目里不存在的会话。
  */
 export async function activateWorkspace(path: string): Promise<void> {
-  const { workspace: ws } = await addWorkspace(path)
+  // 切过去用的是同一条 upsert：只给路径，名字由服务端沿用账本里那一行的。
+  const { workspace: ws } = await addWorkspace({ path })
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setState({ activeConversation: null, transcript: [], fileChanges: [], error: null, git: null })
   client.subscribe([])

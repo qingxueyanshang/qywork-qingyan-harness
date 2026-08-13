@@ -102,6 +102,19 @@ export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolea
   return (pinned ? q.run(Date.now(), id) : q.run(id)).changes > 0
 }
 
+/**
+ * 按路径找那一行。**不过滤 `removed_at`**——移除过的也要找得到。
+ *
+ * 存在的理由：`upsertWorkspace` 会覆盖名字，而「切到另一个项目」走的是同一条
+ * upsert。不先查一次的话，每切一次就把用户自己起的项目名重置成目录名。
+ */
+export function getWorkspaceByPath(store: Store, rootPath: string): Workspace | null {
+  const row = store.db
+    .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
+    .get(rootPath)
+  return row ? rowToWorkspace(row) : null
+}
+
 export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
   const row = store.db
     .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE id = ?')

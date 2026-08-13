@@ -1,16 +1,60 @@
 /** 项目：本机开过哪些、加一个、以及某个项目上装了什么扩展。 */
 
-import { stat } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
+import { mkdir, stat } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
+import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
   countConversations,
+  getWorkspaceByPath,
   listWorkspaces,
   removeWorkspace,
   setWorkspacePinned,
   upsertWorkspace,
 } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
+
+/**
+ * 不给源文件夹时，默认工作区建在这里。
+ *
+ * 跟账本同根（`~/.qywork/`，可由 `QYWORK_HOME` 改）：它们是同一类东西——
+ * 这台机器上 qywork 自己的数据，卸载时一并带走。放进用户主目录会多出一个
+ * 谁都不知道能不能删的文件夹。要打开它有菜单里的「在资源管理器中打开」。
+ */
+function defaultWorkspacesRoot(): string {
+  return join(configDir(), 'workspaces')
+}
+
+/** Windows 文件名里不能出现的那几个。斜杠与 `..` 另外单判。 */
+const WINDOWS_RESERVED = '<>:"|?*'
+
+/**
+ * 项目名 → 文件夹名。不合法回 `null`，由调用方回 422。
+ *
+ * **拒绝而不是清洗**（CLAUDE.md E）：把 `../../etc` 洗成 `etc` 会让用户以为
+ * 自己建的就是那个名字，而实际建的是别的——建到一半失败比一开始就说不行难查。
+ *
+ * 逐字符判控制字符，不写含控制字符的正则：那种正则要么在源码里塞裸控制字节，
+ * 要么得挂一条 biome-ignore，两样都不必要。
+ */
+function folderNameFrom(name: string): string | null {
+  if (!name || name === '.' || name === '..') return null
+  if (/[/\\]/.test(name) || name.includes('..')) return null
+  for (const ch of name) {
+    if ((ch.codePointAt(0) ?? 0) < 32 || WINDOWS_RESERVED.includes(ch)) return null
+  }
+  // Windows 会静默去掉结尾的点和空格，落盘的名字就和用户填的不一样了。
+  if (/[. ]$/.test(name)) return null
+  return name
+}
+
+/** 重名就加后缀。**不复用已有目录**——那可能是上一个同名项目留下的东西。 */
+async function freshDir(root: string, folder: string): Promise<string> {
+  for (let i = 1; ; i++) {
+    const candidate = join(root, i === 1 ? folder : `${folder}-${i}`)
+    if (!(await stat(candidate).catch(() => null))) return candidate
+  }
+}
 
 export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
@@ -23,17 +67,48 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      * `last_opened_at`，没有就插一行。给「切换」单开一个端点等于两条路写同一个
      * 字段，而那个字段正是 git 轮询与缺省 `?ws=` 的判据。
      *
-     * 只接受**本机已存在的目录**（CLAUDE.md E）：这里不做 `git clone <URL>`，
-     * 那等于从网上取一段代码、下次加载就跑它。
+     * 两种入参：
+     *
+     * - **给了 `path`**：只接受本机已存在的目录（CLAUDE.md E）。这里不做
+     *   `git clone <URL>`——那等于从网上取一段代码、下次加载就跑它。
+     *   `name` 不给就取目录名。
+     * - **只给 `name`**：在 `~/.qywork/workspaces/<name>/` 建一个新目录。
+     *   重名加后缀，不复用已有目录。
+     *
+     * **路径已经在账本里时复用那一行**（`root_path` 是 UNIQUE），
+     * `upsertWorkspace` 顺带清掉 `removed_at`——移除过的项目重新添加，
+     * 它原来的会话跟着回来。会话挂的是 id，不是路径。
      */
     if (req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { path?: string }
-      const raw = body.path?.trim()
-      if (!raw) return json({ error: '缺少 path' }, 422)
-      const path = resolve(raw)
-      const st = await stat(path).catch(() => null)
-      if (!st?.isDirectory()) return json({ error: `不是本机已存在的目录：${path}` }, 422)
-      return json({ workspace: upsertWorkspace(d.store, path, basename(path) || path) })
+      const body = (await req.json().catch(() => ({}))) as { path?: string; name?: string }
+      const rawPath = body.path?.trim()
+      const rawName = body.name?.trim()
+
+      if (rawPath) {
+        const path = resolve(rawPath)
+        const st = await stat(path).catch(() => null)
+        if (!st?.isDirectory()) return json({ error: `不是本机已存在的目录：${path}` }, 422)
+        /*
+         * 名字的优先级：显式给的 > 账本里已有的 > 目录名。
+         *
+         * 中间那一档不能省：「切到另一个项目」走的也是这条 upsert 且不带 name，
+         * 省掉的话每切一次就把用户自己起的项目名重置成目录名。
+         */
+        const known = getWorkspaceByPath(d.store, path)
+        const name = rawName || known?.name || basename(path) || path
+        return json({ workspace: upsertWorkspace(d.store, path, name) })
+      }
+
+      if (!rawName) return json({ error: '要么给 path，要么给 name' }, 422)
+      const folder = folderNameFrom(rawName)
+      if (!folder) {
+        return json({ error: `这个名字不能当文件夹名：${rawName}` }, 422)
+      }
+      const root = defaultWorkspacesRoot()
+      const path = await freshDir(root, folder)
+      // 先建目录再写账本：反过来的话建失败就留下一条指向不存在目录的记录。
+      await mkdir(path, { recursive: true })
+      return json({ workspace: upsertWorkspace(d.store, path, rawName) })
     }
     /*
      * 每条带上会话数。它曾经的用途是「删之前说清会丢多少」——移除不再删数据之后
@@ -50,11 +125,6 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   /*
    * 把一个项目从列表里移除。**不删任何数据**——见 `removeWorkspace`：
    * 它只打 `removed_at` 标记，会话、消息、run 一条不动，重新添加同一路径就回来。
-   *
-   * **只能移除自己不在的那个。** 移除当前这一个之后，界面手里的 `?ws=` 指向一个
-   * 已经不在列表里的项目，而且如果它恰好是最后一行，界面就没有任何项目可切。
-   * 让「不能移除脚下这块地板」成为一条硬规则，比在下游到处补「移除之后跳去哪」
-   * 的分支干净。
    *
    * 路径里的 id 直接进 SQL 参数，不拼路径也不拼 SQL；查不到回 404 而不是静默成功。
    */

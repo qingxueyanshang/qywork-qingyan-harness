@@ -266,3 +266,97 @@
 .btn-primary.danger {
   background: var(--danger);
 }
+
+/* ── 新建 work ──
+   比确认框宽一档：它有两个字段和一块可能很长的路径。 */
+.new-project {
+  width: min(440px, 100%);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+}
+.np-field {
+  display: block;
+  margin-top: var(--s-4);
+}
+.np-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.np-input {
+  width: 100%;
+  padding: 7px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+.np-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 没选文件夹时是一块虚线区，和 Codex 那个「添加可读取和编辑的文件夹」同构：
+   它是一个待填的位置，不是一条已经成立的信息。 */
+.np-folder {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.np-folder.empty {
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--s-4) var(--s-2);
+  border-style: dashed;
+}
+.np-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px var(--s-3);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.np-pick:hover {
+  background: var(--bg-hover);
+}
+/* 边界声明不降对比度也不折叠（B7）：它说的是「留空会发生什么」。 */
+.np-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+/* 路径不截断——它正是这一行存在的理由。 */
+.np-path {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+.np-clear {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.np-clear:hover {
+  background: var(--bg-hover);
+}
+.np-error {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}

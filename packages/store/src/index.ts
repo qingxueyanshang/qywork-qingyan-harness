@@ -28,6 +28,7 @@ export {
   getConversation,
   getRun,
   getWorkspace,
+  getWorkspaceByPath,
   listConversations,
   listMessages,
   listRecentConversations,
