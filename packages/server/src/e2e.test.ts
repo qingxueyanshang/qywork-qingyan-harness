@@ -32,6 +32,7 @@ import type { AgentEvent, EventEnvelope } from '@qywork/core'
 import { PROTOCOL_VERSION } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
+import { MAX_ENTRY_CHARS } from '@qywork/tools'
 import { serve } from './server.ts'
 
 // ───────────────────────── 假 provider ─────────────────────────
@@ -83,10 +84,12 @@ function textTurn(text: string): string {
 }
 
 let calls = 0
+/** 假 provider 收到的请求体。附件链路的断言要看模型**实际收到了什么**。 */
+const seenBodies: string[] = []
 const provider = Bun.serve({
   port: 0,
   async fetch(req) {
-    await req.text()
+    seenBodies.push(await req.text())
     calls++
     const body = calls === 1 ? toolTurn('out.txt', 'written by fake\n') : textTurn('已经写好了。')
     return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
@@ -108,13 +111,13 @@ beforeAll(async () => {
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   const config: QyConfig = {
-    active: 'fake',
-    profiles: {
+    active: { provider: 'fake', model: 'deepseek-v4-flash' },
+    providers: {
       fake: {
         kind: 'openai_responses',
-        model: 'deepseek-v4-flash',
         apiKey: 'sk-fake',
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+        models: { 'deepseek-v4-flash': {} },
       },
     },
     mode: 'auto',
@@ -160,6 +163,168 @@ describe('HTTP 面', () => {
       headers: { authorization: `Bearer ${'0'.repeat(handle.token.length)}` },
     })
     expect(bad.status).toBe(401)
+  })
+
+  test('跨源预检在鉴权之前答复，正常响应带 CORS 头', async () => {
+    // 桌面端的页面与本服务不同源（dev 是 vite 的 5180，装机版是 tauri 的 asset 协议）。
+    // 预检不带 Authorization：拿它去验令牌会得到 401，而预检 401 意味着真正的请求
+    // 根本不会发出——表现是 WebSocket 连着、所有面板却永远停在「读取中」。
+    const pre = await fetch(`${base()}/api/config`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://localhost:5180',
+        'access-control-request-method': 'PUT',
+        'access-control-request-headers': 'authorization,content-type',
+      },
+    })
+    expect(pre.status).toBe(204)
+    expect(pre.headers.get('access-control-allow-origin')).toBe('*')
+    expect(pre.headers.get('access-control-allow-headers')).toContain('authorization')
+
+    const ok = await fetch(`${base()}/api/config`, {
+      headers: { ...auth(), origin: 'http://localhost:5180' },
+    })
+    expect(ok.status).toBe(200)
+    expect(ok.headers.get('access-control-allow-origin')).toBe('*')
+  })
+
+  test('不带 providers 的配置 PUT 被挡住，不会把接口清空', async () => {
+    /*
+     * `mergeConfig` 从 `incoming.providers ?? {}` **重建**接口表——
+     * 也就是说一次「只想改 mode」的偷懒 PUT 会把所有接口抹掉。
+     *
+     * 界面上的 ModeChip 因此是**先读全量再写回**的。但那只是调用方守规矩，
+     * 真正兜底的必须是服务端：这条断言锁的是「即使客户端写错了，也不会落盘」。
+     * 表现如果失守，是用户点一下权限开关，所有 API Key 配置消失。
+     */
+    const before = (await (await fetch(`${base()}/api/config`, { headers: auth() })).json()) as {
+      config: { active: { provider: string; model: string }; providers: Record<string, unknown> }
+    }
+    expect(Object.keys(before.config.providers).length).toBeGreaterThan(0)
+
+    const res = await fetch(`${base()}/api/config`, {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ config: { active: before.config.active, mode: 'full' } }),
+    })
+    // 校验先于落盘：active 指向一个不存在的接口，422 且不写。
+    expect(res.status).toBe(422)
+
+    const after = (await (await fetch(`${base()}/api/config`, { headers: auth() })).json()) as {
+      config: { providers: Record<string, unknown> }
+    }
+    expect(Object.keys(after.config.providers)).toEqual(Object.keys(before.config.providers))
+  })
+
+  test('记忆可增可删，非法 key 与超长内容被挡在落盘之前', async () => {
+    // agent 能写记忆，人却看不到也删不掉——这条接口就是补那个不对称的。
+    const put = await fetch(`${base()}/api/memory/build-commands`, {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '构建用 bun run gate，不要单独跑 tsc。' }),
+    })
+    expect(put.status).toBe(200)
+
+    const list = (await (await fetch(`${base()}/api/memory`, { headers: auth() })).json()) as {
+      entries?: { key: string; preview: string }[]
+    }
+    expect(list.entries?.some((e) => e.key === 'build-commands')).toBe(true)
+
+    // 校验先于落盘：超长直接 422，不写一半。上限与 memoryTool **共用同一个常数**
+    // （`@qywork/tools` 导出），两处各写一个数迟早漂成两个。
+    const tooLong = await fetch(`${base()}/api/memory/build-commands`, {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'x'.repeat(MAX_ENTRY_CHARS + 1) }),
+    })
+    expect(tooLong.status).toBe(422)
+    // 边界值本身要能存进去——差一位的上限是最容易写错的那种。
+    const atLimit = await fetch(`${base()}/api/memory/at-limit`, {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'x'.repeat(MAX_ENTRY_CHARS) }),
+    })
+    expect(atLimit.status).toBe(200)
+    await fetch(`${base()}/api/memory/at-limit`, { method: 'DELETE', headers: auth() })
+
+    // 路径穿越：安全化之后不该还能碰到 .qy/memory 之外。
+    const traversal = await fetch(
+      `${base()}/api/memory/${encodeURIComponent('../../etc/passwd')}`,
+      { method: 'DELETE', headers: auth() },
+    )
+    expect(traversal.status).toBeGreaterThanOrEqual(400)
+
+    const del = await fetch(`${base()}/api/memory/build-commands`, {
+      method: 'DELETE',
+      headers: auth(),
+    })
+    expect(del.status).toBe(200)
+    // 删一个不存在的回 404 而不是静默成功——静默成功会让「我明明删了它还在」查不出原因。
+    const again = await fetch(`${base()}/api/memory/build-commands`, {
+      method: 'DELETE',
+      headers: auth(),
+    })
+    expect(again.status).toBe(404)
+  })
+
+  test('附件上传：落进 .qy/attachments，回可直接发的 Attachment，超限 413', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    const up = await fetch(`${base()}/api/attachments`, {
+      method: 'POST',
+      headers: {
+        ...auth(),
+        'content-type': 'image/png',
+        'x-attachment-name': encodeURIComponent('截图 1.png'),
+      },
+      body: png,
+    })
+    expect(up.status).toBe(200)
+    const { attachment } = (await up.json()) as { attachment: import('@qywork/core').Attachment }
+    // 按 mime 归类，不按扩展名猜。
+    expect(attachment.type).toBe('image')
+    expect(attachment.mime).toBe('image/png')
+    expect(attachment.size).toBe(png.length)
+    // 落在 .qy/attachments/：agent 写不进那里，所以它伪造不出一个附件。
+    expect(attachment.path.startsWith('.qy/attachments/')).toBe(true)
+    // 中文名安全化后仍要保留可读的部分，不能被削成空串。
+    expect(attachment.path).toContain('.png')
+    expect(await readFile(join(ws_dir, attachment.path))).toEqual(png)
+
+    // 同名再传一次不能覆盖上一份——否则上一条消息引用的图会被下一条换掉。
+    const again = await fetch(`${base()}/api/attachments`, {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
+      body: png,
+    })
+    const second = (await again.json()) as { attachment: { path: string } }
+    const third = await fetch(`${base()}/api/attachments`, {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
+      body: png,
+    })
+    expect(second.attachment.path).not.toBe(
+      ((await third.json()) as { attachment: { path: string } }).attachment.path,
+    )
+
+    // 目录必须自带 .gitignore：`.qy/` 不是整体忽略的（mcp.json / team.json 要入库），
+    // 不这么做的话用户粘的每张截图都会跟着下一次 git add 进他的仓库。
+    const ignore = await readFile(join(ws_dir, '.qy/attachments/.gitignore'), 'utf8')
+    expect(ignore).toContain('*')
+
+    // 超限挡在写盘之前。
+    const tooBig = await fetch(`${base()}/api/attachments`, {
+      method: 'POST',
+      headers: {
+        ...auth(),
+        'content-type': 'application/octet-stream',
+        'x-attachment-name': 'b.bin',
+      },
+      body: new Uint8Array(10 * 1024 * 1024 + 1),
+    })
+    expect(tooBig.status).toBe(413)
   })
 
   test('文件接口走同一套路径约束', async () => {
@@ -245,10 +410,18 @@ describe('WebSocket 协议与一轮完整 run', () => {
       type?: string
       capabilities?: {
         pty?: boolean
+        mode?: string
         sandbox?: { backend?: string; active?: boolean; reason?: string }
       }
     } | null
     expect(hello?.type).toBe('hello.ok')
+
+    /*
+     * 权限模式也走握手，理由和沙箱同一条：它回答的是「这一轮跑在什么边界里」。
+     * 界面上那个 chip 读的就是这个字段——不进握手的话，客户端只能自己再拉一次
+     * 配置，于是同一个值有两条来路。**只有两种模式**，多出第三种就是 bug。
+     */
+    expect(['auto', 'full']).toContain(hello?.capabilities?.mode ?? '')
 
     /*
      * 沙箱状态必须**进握手**。
@@ -317,10 +490,144 @@ describe('WebSocket 协议与一轮完整 run', () => {
     expect(seqs.every((s, i) => i === 0 || s > (seqs[i - 1] as number))).toBe(true)
 
     // 断线补发：从中途的 seq 要能补出后面全部，已同步的补出空。
+    // 订阅传 null = 还没声明过订阅，全收——这里验的是缺口计算，不是过滤
+    // （过滤本身在 bus.test.ts 里单独锁）。
+    const anySub = { id: 'x', origin: 'cli', conversations: null, send: () => {} } as const
     const mid = seqs[Math.floor(seqs.length / 2)] as number
-    expect(handle.bus.replayFrom(mid)?.length ?? 0).toBeGreaterThan(0)
-    expect(handle.bus.replayFrom(handle.bus.currentSeq)?.length).toBe(0)
+    expect(handle.bus.replayFrom(mid, anySub)?.length ?? 0).toBeGreaterThan(0)
+    expect(handle.bus.replayFrom(handle.bus.currentSeq, anySub)?.length).toBe(0)
 
     ws.close()
   }, 30_000)
+})
+
+/*
+ * 这一块**必须放在文件最后**。
+ *
+ * 假 provider 是按调用次数发不同脚本的（第一次工具轮、之后文本轮）。
+ * 把这个 describe 放在前面会吃掉前两次调用，于是「全链路走通」那条拿不到
+ * 工具轮，断言 `tool.started` 直接红——而红的地方和真正的改动毫无关系。
+ * 实测踩到过一次。
+ */
+describe('图片附件', () => {
+  /**
+   * 回归测试：**附件必须真的到达模型请求体**。
+   *
+   * 这条链路曾经是完整的死链路——`Attachment` 类型在、`messages.attachments` 列在、
+   * `repos.ts` 会写、三个 provider 都会编码 image 块，**中间三处却把它丢在地上**：
+   * 服务端不转发、`session.ts` 落库不带、装配历史时只取 `content`。
+   * 有类型、有列、有编码器，就是没有数据。
+   *
+   * 所以断言不能停在「接口回了 200」，必须看**假 provider 收到的字节里有没有那张图**。
+   */
+  test('随消息发出的图片进入请求体的 image 块', async () => {
+    // 一个 1x1 的 PNG，够小又是真图。
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    await writeFile(join(ws_dir, 'shot.png'), png)
+
+    const conv = (await (
+      await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    ).json()) as { conversation?: { id?: string } }
+    const conversationId = conv.conversation?.id
+    expect(conversationId).toBeTruthy()
+
+    const before = seenBodies.length
+    const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    const settled = Promise.withResolvers<void>()
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
+      if (msg.type === 'hello.ok') {
+        ws.send(
+          JSON.stringify({
+            type: 'message.send',
+            clientRequestId: crypto.randomUUID(),
+            conversationId,
+            content: '看这张图',
+            attachments: [
+              {
+                type: 'image',
+                name: 'shot.png',
+                mime: 'image/png',
+                size: png.length,
+                path: 'shot.png',
+              },
+            ],
+          }),
+        )
+      }
+      if (msg.event?.type === 'run.finished') settled.resolve()
+    })
+    ws.addEventListener('open', () => {
+      ws.send(
+        JSON.stringify({
+          type: 'hello',
+          protocolVersion: PROTOCOL_VERSION,
+          token: handle.token,
+          origin: 'desktop',
+          subscribe: [conversationId],
+        }),
+      )
+    })
+
+    const timer = setTimeout(() => settled.reject(new Error('run 超时')), 20_000)
+    await settled.promise
+    clearTimeout(timer)
+    ws.close()
+
+    const body = seenBodies.slice(before).join('')
+    expect(body.length).toBeGreaterThan(0)
+    // 图片以 base64 进 image 块——原始字节的前缀应当出现在请求体里。
+    expect(body).toContain(png.toString('base64').slice(0, 40))
+
+    /*
+     * 重试必须**照样带着那张图**。
+     *
+     * 重试复用同一条用户消息（不新建），所以附件只能从库里来。
+     * 如果哪天有人「优化」成只从指令里取 attachments，这条会红——
+     * 而在界面上它的表现是「重试之后模型突然看不见图了」，
+     * 几乎不可能被联想到是重试路径的问题。
+     */
+    const runs = (await (
+      await fetch(`${base()}/api/conversations/${conversationId}/runs`, { headers: auth() })
+    ).json()) as { runs: { id: string }[] }
+    const lastRun = runs.runs.at(-1)
+    expect(lastRun).toBeTruthy()
+
+    const beforeRetry = seenBodies.length
+    const retried = Promise.withResolvers<void>()
+    const ws2 = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    ws2.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
+      if (msg.type === 'hello.ok') {
+        ws2.send(
+          JSON.stringify({
+            type: 'run.retry',
+            clientRequestId: crypto.randomUUID(),
+            runId: lastRun!.id,
+          }),
+        )
+      }
+      if (msg.event?.type === 'run.finished') retried.resolve()
+    })
+    ws2.addEventListener('open', () => {
+      ws2.send(
+        JSON.stringify({
+          type: 'hello',
+          protocolVersion: PROTOCOL_VERSION,
+          token: handle.token,
+          origin: 'desktop',
+          subscribe: [conversationId],
+        }),
+      )
+    })
+    const t2 = setTimeout(() => retried.reject(new Error('retry 超时')), 20_000)
+    await retried.promise
+    clearTimeout(t2)
+    ws2.close()
+
+    expect(seenBodies.slice(beforeRetry).join('')).toContain(png.toString('base64').slice(0, 40))
+  })
 })

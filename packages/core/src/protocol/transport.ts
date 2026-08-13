@@ -201,6 +201,13 @@ export type CommandRejectReason =
   | 'invalid_payload'
   /** 当前状态下不允许（如会话正忙）。 */
   | 'conflict'
+  /**
+   * 连接还没就绪，这条指令根本没发出去。
+   *
+   * **只由客户端自己产生**，服务端不会发——它是「连接不可用时静默丢弃指令」的替代品。
+   * 那个 no-op 的表现是用户点了模型、界面一动不动，和「服务端还没回」无法区分。
+   */
+  | 'not_ready'
 
 // ─────────────────────────────── 配对 ───────────────────────────────
 
@@ -241,5 +248,16 @@ export function decodePairingUrl(raw: string): PairingPayload | null {
   }
 }
 
-/** 当前协议版本。改动不向后兼容的字段时 +1。 */
+/**
+ * 当前协议版本。改动不向后兼容的字段时 +1。
+ *
+ * **一直是 1，而且大概率会一直是 1。** 这个数唯一挡得住的东西是「客户端和 sidecar
+ * 不是同一批出的」，而那个漂移已经在源头消灭了：`bun run tauri:dev` 和
+ * `tauri:build` 都先跑 `build:agent`，桌面端不可能再连上一个旧 sidecar；
+ * 手机端的页面本来就是那个 sidecar 自己托管的。
+ *
+ * 所以加字段（如 `EventEnvelope.conversationId`）不跳这一格——**跳了也拦不住谁**，
+ * 只会多一个和根 `VERSION` 各走各的数让人对不上。真要跳的时机是：
+ * 出现了一个能独立升级、不跟着 sidecar 走的客户端。现在没有。
+ */
 export const PROTOCOL_VERSION = 1
