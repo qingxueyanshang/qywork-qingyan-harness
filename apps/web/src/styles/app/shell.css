@@ -80,12 +80,23 @@
   padding-top: var(--safe-top);
 }
 
+/*
+ * 左栏的一级图标必须落在同一条竖线上（x = 16px）。
+ *
+ * 这条线是「容器左内距 + 控件左内距」两段加出来的，而这三块曾经各写各的：
+ * lead 8+8+1 = 17、scroll 8+8 = 16、foot 12+8 = 20。三个图标于是各偏一点，
+ * 单看每一块都正常，放在一栏里就是「有的靠前有的靠后」。
+ *
+ * 现在统一成 8 + 8：三块容器一律 `--s-2`，三个控件一律 `--s-2`。
+ * `.new-work` 多一条 1px 边框，所以它的左内距减 1 抵掉——边框也占位置。
+ * 改任何一处内距之前，先确认另一处跟着改。
+ */
 .sidebar-head {
   display: flex;
   align-items: center;
   gap: var(--s-1);
   height: var(--header-h);
-  padding: 0 var(--s-2) 0 var(--s-3);
+  padding: 0 var(--s-2);
   flex: none;
 }
 
@@ -96,7 +107,7 @@
   padding: 4px var(--s-2);
   border-radius: var(--r-xs);
   font-weight: 600;
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   letter-spacing: -0.01em;
 }
 
@@ -122,7 +133,7 @@
   color: var(--text-primary);
 }
 
-/* 头部与滚动区之间的固定块：「新建 work」和它的错误提示。
+/* 头部与滚动区之间的固定块：「添加项目」和它的错误提示。
    放进滚动区的代价是会话一多就被滚走，而它是这一栏唯一的「开新项目」入口。 */
 .sidebar-lead {
   flex: none;
@@ -179,7 +190,7 @@
   padding: 6px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-secondary);
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   text-align: left;
   transition:
     background var(--t-fast) var(--ease),
@@ -214,13 +225,14 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 7px var(--s-2);
+  /* 左内距减 1 抵掉自己那条 1px 边框，图标才和下面的文件夹图标同一条竖线。 */
+  padding: 7px var(--s-2) 7px calc(var(--s-2) - 1px);
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
   background: var(--bg-raised);
   box-shadow: var(--shadow-sm);
   color: var(--text-primary);
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   font-weight: 500;
   text-align: left;
   transition:
@@ -241,7 +253,7 @@
   padding: 4px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-primary);
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   font-weight: 500;
   text-align: left;
 }
@@ -417,9 +429,10 @@
   line-height: 1.5;
 }
 
+/* 左内距与 lead / scroll 一致（`--s-2`），否则齿轮图标比上面那些偏右 4px。 */
 .sidebar-foot {
   flex: none;
-  padding: var(--s-2) var(--s-3) calc(var(--s-2) + var(--safe-bottom));
+  padding: var(--s-2) var(--s-2) calc(var(--s-2) + var(--safe-bottom));
 }
 
 /* 扩展摘要比 git 分支次要一级：装了什么是背景信息，分支是随时要看的 */
