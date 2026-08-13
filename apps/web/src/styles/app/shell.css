@@ -109,6 +109,10 @@
   font-weight: 600;
   font-size: var(--fs-lg);
   letter-spacing: -0.01em;
+  /* 上移 2px：标题栏这一格的视觉重心比几何中心低——右边那排窗口按钮是
+     28px 见方的图标，字比它们矮，居中对齐时看着偏下。
+     用 transform 而不是改 padding：它不参与布局，不会把这一行撑高。 */
+  transform: translateY(-2px);
 }
 
 .head-actions {
@@ -133,7 +137,7 @@
   color: var(--text-primary);
 }
 
-/* 头部与滚动区之间的固定块：「添加项目」和它的错误提示。
+/* 头部与滚动区之间的固定块：「新建 work」和它的错误提示。
    放进滚动区的代价是会话一多就被滚走，而它是这一栏唯一的「开新项目」入口。 */
 .sidebar-lead {
   flex: none;
@@ -367,25 +371,6 @@
   color: var(--danger);
 }
 
-/* 确认就地替换菜单内容，不再叠一层：要确认的那句话和刚点的那一项必须同处一个面。 */
-.project-menu-confirm {
-  max-width: 232px;
-  padding: var(--s-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
-  font-weight: 400;
-  white-space: normal;
-}
-.project-menu-confirm > p {
-  margin: 0 0 var(--s-2);
-  line-height: 1.5;
-}
-.confirm-row {
-  display: flex;
-  gap: var(--s-1);
-  justify-content: flex-end;
-}
-
 /* 悬浮卡片只读，不含动作——动作都在 `⋯` 里。路径不截断：
    它正是这张卡片存在的理由（两个同名目录只有路径能区分）。 */
 .project-card {
@@ -409,25 +394,6 @@
   font-size: var(--fs-xs);
   line-height: 1.4;
   overflow-wrap: anywhere;
-}
-
-.confirm-yes,
-.confirm-no {
-  flex: none;
-  padding: 2px 6px;
-  border-radius: var(--r-xs);
-  font-size: var(--fs-xs);
-  transition: background var(--t-fast) var(--ease);
-}
-.confirm-yes {
-  color: var(--danger);
-}
-.confirm-no {
-  color: var(--text-secondary);
-}
-.confirm-yes:hover,
-.confirm-no:hover {
-  background: var(--bg-hover);
 }
 
 .project-new {

@@ -226,3 +226,43 @@
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
 }
+
+/* ── 确认弹窗 ──
+   破坏性动作的确认是「打断」，所以它夺焦点、盖遮罩，而不是在列表里就地展开。
+   之前那版塞在侧栏那一行里：232px 宽的栏放不下一句带边界声明的话，
+   折三行、挤开下面的项目、盖在列表上，看起来像列表自己坏了。
+   比 `.sheet` 窄一档——它只有一句话和两个按钮，520px 会显得空。 */
+.confirm-dialog {
+  width: min(400px, 100%);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+}
+.confirm-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+/* 边界声明不折叠、不降对比度（B7）：它不是解释，是这次操作的后果本身。 */
+.confirm-message {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+/* 取消不该 `align-self: flex-start`——它在这一行里要和确认按钮同高。 */
+.confirm-actions > .btn-ghost {
+  align-self: auto;
+}
+.btn-primary.danger {
+  background: var(--danger);
+}
