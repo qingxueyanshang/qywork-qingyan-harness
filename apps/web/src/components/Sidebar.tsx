@@ -30,7 +30,7 @@ import { ProjectRow } from './ProjectRow.tsx'
  * 实际上**会话是长在工作区里的**（server 的 listConversations 吃 workspaceId，
  * 换一个根就是另一份列表）。所以现在直接列项目，会话缩进挂在当前项目下面。
  *
- * ## 「添加项目」不是「新对话」
+ * ## 「新建 work」不是「新对话」
  *
  * 它开系统目录选择器，指一个**另外的本机目录**当项目。新建会话是另一件事，
  * 所以它的按钮长在项目名旁边：会话属于哪个项目，这个位置本身就说明了。
@@ -147,18 +147,14 @@ export function Sidebar(props: { onClose?: () => void }) {
       </header>
 
       {/* 头部下方的固定块，不进滚动区。
-          「添加项目」是这一栏唯一一个「开一个新项目」的入口，会话攒多之后
+          「新建 work」是这一栏唯一一个「开一个新项目」的入口，会话攒多之后
           它会被滚出视野——用户找不到它时的合理推断是「这个功能没了」。
           切换失败的提示同理：它解释的是刚按下去的那个按钮，得和按钮待在一起。 */}
       <div class="sidebar-lead">
         <Show when={desktop}>
-          {/* 「添加项目」不是「新建项目」：它开的是目录选择器，指一个**已经存在**
-              的本机目录（CLAUDE.md E：不做 git clone 式安装）。写成「新建」会让人
-              以为它会去创建一个目录，然后在选择器里找不到「新建」这个动作。
-              原来写的是「新建 work」——work 在这个界面里不指任何东西。 */}
           <button class="new-work" type="button" onClick={() => void newWork()}>
             <IconPlus size={14} />
-            添加项目
+            新建 work
           </button>
         </Show>
 
@@ -168,9 +164,8 @@ export function Sidebar(props: { onClose?: () => void }) {
 
       <div class="sidebar-scroll">
         <div class="project">
-          {/* 当前项目也用同一个行组件：置顶 / 在资源管理器中打开 / 归档聊天
-              对它一样成立，只有「移除」不成立（服务端回 409，组件里不画）。
-              两处各写一遍的话，菜单迟早会长得不一样。 */}
+          {/* 当前项目也用同一个行组件：菜单四项对它全都成立（移除之后服务端会
+              指好切去哪个）。两处各写一遍的话，菜单迟早会长得不一样。 */}
           <Show when={currentRow()} fallback={<div class="project-head empty">未连接</div>}>
             {(w) => (
               <ProjectRow

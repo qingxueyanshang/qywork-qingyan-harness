@@ -8,6 +8,7 @@ import {
   removeKnownWorkspace,
   revealWorkspace,
 } from '../lib/store/index.ts'
+import { ConfirmDialog } from './ConfirmDialog.tsx'
 import {
   IconArchive,
   IconFolder,
@@ -29,8 +30,8 @@ import {
  * ## 每一项都必须产生可观察的变化
  *
  * 「在资源管理器中打开」只有桌面外壳有这个能力，浏览器和手机端**不渲染这一项**，
- * 而不是渲染出来点了报错（B5）。「移除」在当前项目上不渲染——服务端本来就回 409，
- * 前端不显示只是不让人白点，守卫仍在服务端。
+ * 而不是渲染出来点了报错（B5）。「移除」对当前项目也画——服务端会指好接下来切哪个，
+ * 只有它是最后一个时才回 409，那时拒绝的理由由服务端说，比「按钮没了」清楚。
  *
  * ## 两个破坏性动作都要确认
  *
@@ -40,7 +41,7 @@ import {
  */
 export function ProjectRow(props: {
   workspace: KnownWorkspace
-  /** 当前正在用的那个：它展开会话列表，也不允许移除。 */
+  /** 当前正在用的那个：它展开会话列表，移除之后会自动切到服务端指定的下一个。 */
   current?: boolean
   onOpen?: () => void
   onNewChat?: () => void
@@ -58,8 +59,16 @@ export function ProjectRow(props: {
     setArmed(null)
   }
 
-  /* 点到别处就收起来。捕获阶段监听，免得被内部的 stopPropagation 吃掉。 */
+  /*
+   * 点到别处就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   *
+   * **确认弹窗立着的时候一律不管**：弹窗渲染在 `.project-menu-wrap` 之外，
+   * 按下「移除项目」的那一下 mousedown 会先命中这里、把 `armed` 清掉，
+   * 弹窗随之卸载，click 根本轮不到——按钮看起来点了没反应。
+   * 弹窗自己有遮罩和 Esc，它开着时由它负责关。
+   */
   const onDocDown = (e: MouseEvent) => {
+    if (armed() !== null) return
     if (!(e.target as HTMLElement | null)?.closest?.('.project-menu-wrap')) close()
   }
   const onKey = (e: KeyboardEvent) => {
@@ -161,74 +170,68 @@ export function ProjectRow(props: {
 
         <Show when={menuOpen()}>
           <div class="project-menu" role="menu">
-            <Show
-              when={armed() === null}
-              fallback={
-                <div class="project-menu-confirm">
-                  <p>
-                    {armed() === 'remove'
-                      ? '从列表里移除？文件和聊天记录都不删，重新添加就回来。'
-                      : '归档现有会话？数据不删，但界面上不再显示；之后新建的照常显示。'}
-                  </p>
-                  <div class="confirm-row">
-                    <button class="confirm-yes" type="button" onClick={() => void run(confirmed)}>
-                      {armed() === 'remove' ? '移除' : '归档'}
-                    </button>
-                    <button class="confirm-no" type="button" onClick={() => setArmed(null)}>
-                      取消
-                    </button>
-                  </div>
-                </div>
-              }
+            <button
+              class="menu-item"
+              type="button"
+              role="menuitem"
+              onClick={() => void run(() => pinKnownWorkspace(props.workspace.id, !pinned()))}
             >
+              <IconPin size={14} />
+              {pinned() ? '取消置顶' : '置顶项目'}
+            </button>
+
+            {/* 只有桌面外壳够得着系统文件管理器。 */}
+            <Show when={isDesktopShell()}>
               <button
                 class="menu-item"
                 type="button"
                 role="menuitem"
-                onClick={() => void run(() => pinKnownWorkspace(props.workspace.id, !pinned()))}
+                onClick={() => void run(() => revealWorkspace(props.workspace.rootPath))}
               >
-                <IconPin size={14} />
-                {pinned() ? '取消置顶' : '置顶项目'}
-              </button>
-
-              {/* 只有桌面外壳够得着系统文件管理器。 */}
-              <Show when={isDesktopShell()}>
-                <button
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void run(() => revealWorkspace(props.workspace.rootPath))}
-                >
-                  <IconFolderOpen size={14} />
-                  在资源管理器中打开
-                </button>
-              </Show>
-
-              <button
-                class="menu-item"
-                type="button"
-                role="menuitem"
-                onClick={() => setArmed('archive')}
-              >
-                <IconArchive size={14} />
-                归档聊天
-              </button>
-
-              {/* 当前项目也能移除——服务端会指好接下来切哪个。只有最后一个才回 409，
-                  那种情况下这里照样画按钮：拒绝的理由由服务端说，说得比「按钮没了」清楚。 */}
-              <button
-                class="menu-item danger"
-                type="button"
-                role="menuitem"
-                onClick={() => setArmed('remove')}
-              >
-                <IconX size={14} />
-                移除
+                <IconFolderOpen size={14} />
+                在资源管理器中打开
               </button>
             </Show>
+
+            <button
+              class="menu-item"
+              type="button"
+              role="menuitem"
+              onClick={() => setArmed('archive')}
+            >
+              <IconArchive size={14} />
+              归档聊天
+            </button>
+
+            {/* 当前项目也能移除——服务端会指好接下来切哪个。只有最后一个才回 409，
+                  那种情况下这里照样画按钮：拒绝的理由由服务端说，说得比「按钮没了」清楚。 */}
+            <button
+              class="menu-item danger"
+              type="button"
+              role="menuitem"
+              onClick={() => setArmed('remove')}
+            >
+              <IconX size={14} />
+              移除
+            </button>
           </div>
         </Show>
       </div>
+
+      {/* 确认是弹窗，不在列表里就地展开——232px 的栏放不下一句带边界声明的话。 */}
+      <ConfirmDialog
+        open={armed() !== null}
+        title={armed() === 'remove' ? `移除 ${props.workspace.name}？` : '归档现有会话？'}
+        message={
+          armed() === 'remove'
+            ? '这会把项目从列表里移除。你电脑上的文件和已有的聊天记录都不会被删除，重新添加同一个文件夹就会回来。'
+            : '这个项目现有的会话不再显示在列表里。数据不会被删除，之后新建的会话照常显示。'
+        }
+        confirmLabel={armed() === 'remove' ? '移除项目' : '归档'}
+        danger={armed() === 'remove'}
+        onConfirm={() => void run(confirmed)}
+        onCancel={() => setArmed(null)}
+      />
     </div>
   )
 }
