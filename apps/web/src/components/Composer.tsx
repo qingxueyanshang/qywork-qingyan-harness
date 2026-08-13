@@ -349,11 +349,13 @@ export function Composer() {
 
           <ModeChip />
 
-          <ModelPicker />
-
-          {/* 思考强度紧挨着模型：它是模型的旋钮，而且换模型时可选档位会变
-              （有些模型一档都不吃，那时这个 chip 自己不显示）。 */}
-          <EffortPicker />
+          {/* 模型和思考装在同一个盒子里：它是模型的旋钮，两者是一组，不是两个
+              并列控件。装进盒子之后这一对的间距由盒子自己说了算，与工具栏其余
+              控件的间距互不影响——之前靠负边距去抵消工具栏 gap，改一处动全身。 */}
+          <div class="model-group">
+            <ModelPicker />
+            <EffortPicker />
+          </div>
 
           <ContextMeter />
 
