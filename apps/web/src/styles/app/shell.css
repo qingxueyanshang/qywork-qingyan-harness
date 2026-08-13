@@ -208,10 +208,11 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+/* 选中只靠底色 + 主文字色，**不加粗**：会话是项目的子项，
+   粗一档会让它比上面的项目名还重，层级正好读反。 */
 .nav-item.active {
   background: var(--bg-active);
   color: var(--text-primary);
-  font-weight: 500;
 }
 /* 会话缩进挂在项目名下面：缩进本身就是「它属于这个项目」，
    不需要再加一个分组标题去说。
@@ -221,6 +222,8 @@
    改图标尺寸时这两处要一起改。 */
 .nav-item.conv {
   padding-left: calc(var(--s-2) * 2 + 15px);
+  /* 比项目行小一档：缩进表达从属，字号表达层级，两者方向要一致。 */
+  font-size: var(--fs-base);
 }
 
 /* ── 项目 ──
