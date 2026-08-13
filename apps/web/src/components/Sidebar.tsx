@@ -7,13 +7,13 @@ import {
   loadKnownWorkspaces,
   newConversation,
   openSettings,
-  pickWorkspace,
   selectConversation,
   state,
   toggleSidebar,
   workspace,
 } from '../lib/store/index.ts'
 import { IconPanel, IconPlus, IconSettings } from './Icons.tsx'
+import { NewProjectDialog } from './NewProjectDialog.tsx'
 import { ProjectRow } from './ProjectRow.tsx'
 
 /**
@@ -32,8 +32,9 @@ import { ProjectRow } from './ProjectRow.tsx'
  *
  * ## 「新建 work」不是「新对话」
  *
- * 它开系统目录选择器，指一个**另外的本机目录**当项目。新建会话是另一件事，
- * 所以它的按钮长在项目名旁边：会话属于哪个项目，这个位置本身就说明了。
+ * 它开一个弹窗：项目名称 + 源文件夹（可留空，留空就在数据目录下建一个新的）。
+ * 新建会话是另一件事，所以那个按钮长在项目名旁边——会话属于哪个项目，
+ * 这个位置本身就说明了。
  *
  * ## 切项目不重启
  *
@@ -65,9 +66,10 @@ import { ProjectRow } from './ProjectRow.tsx'
  */
 export function Sidebar(props: { onClose?: () => void }) {
   /**
-   * **换项目不需要桌面外壳**——服务端一次服务多个项目，切过去只是换一个 `?ws=`。
-   * 只有「挑一个本机目录」要外壳：那是系统对话框，浏览器拿不到。
-   * 所以 Web 端照样能在已知项目之间切，只是加不了新的（B5：能力不存在就不显示入口）。
+   * **换项目和新建项目都不需要桌面外壳**——服务端一次服务多个项目，
+   * 切过去只是换一个 `?ws=`；新建只填名字的话由服务端建目录。
+   * 只有「挑一个已存在的本机目录」要外壳（系统对话框浏览器拿不到），
+   * 所以弹窗里只有那一颗按钮按 `canPickFolder` 收起来（B5）。
    */
   const desktop = isDesktopShell()
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
@@ -97,16 +99,13 @@ export function Sidebar(props: { onClose?: () => void }) {
     }
   }
 
-  const newWork = async () => {
-    setError(null)
-    try {
-      const picked = await pickWorkspace()
-      // 取消不是错误，什么也不做。
-      if (picked) await go(picked)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
+  /**
+   * 新建 work 是一个弹窗，不是直接开目录选择器。
+   *
+   * 直接开选择器的话「项目」被迫等于「一个已经存在的目录」——名字只能取目录名，
+   * 也没法先建一个空的开始干活。弹窗把两件事分开：名字是项目的，路径是它落在哪。
+   */
+  const [creating, setCreating] = createSignal(false)
 
   /**
    * 扩展一句话摘要。
@@ -151,12 +150,10 @@ export function Sidebar(props: { onClose?: () => void }) {
           它会被滚出视野——用户找不到它时的合理推断是「这个功能没了」。
           切换失败的提示同理：它解释的是刚按下去的那个按钮，得和按钮待在一起。 */}
       <div class="sidebar-lead">
-        <Show when={desktop}>
-          <button class="new-work" type="button" onClick={() => void newWork()}>
-            <IconPlus size={14} />
-            新建 work
-          </button>
-        </Show>
+        <button class="new-work" type="button" onClick={() => setCreating(true)}>
+          <IconPlus size={14} />
+          新建 work
+        </button>
 
         {/* 失败要有终态：选目录被拒、切换失败，都在这里说出来，不静默吞掉。 */}
         <Show when={error()}>{(e) => <div class="side-error">{e()}</div>}</Show>
@@ -246,6 +243,16 @@ export function Sidebar(props: { onClose?: () => void }) {
           </li>
         </ul>
       </footer>
+
+      {/* 新建 work：项目名称 + 源文件夹（可留空，留空就建默认工作区）。 */}
+      <NewProjectDialog
+        open={creating()}
+        canPickFolder={desktop}
+        onCreated={(rootPath) => {
+          void go(rootPath)
+        }}
+        onClose={() => setCreating(false)}
+      />
     </nav>
   )
 }

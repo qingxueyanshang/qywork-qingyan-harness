@@ -266,10 +266,15 @@ export function revealWorkspace(path: string): Promise<void> {
  * **加和切是同一条路**：服务端 upsert，已有就更新 `last_opened_at`，没有就插一行。
  * 分成两个端点等于两条路写同一个字段，而那个字段正是 git 轮询和缺省 `?ws=` 的判据。
  */
-export function addWorkspace(path: string): Promise<{ workspace: KnownWorkspace }> {
+export function addWorkspace(input: {
+  /** 本机已存在的目录。不给就在 `~/.qywork/workspaces/<name>/` 建一个。 */
+  path?: string
+  /** 显示名。不给且给了 `path` 时取目录名。两个都不给回 422。 */
+  name?: string
+}): Promise<{ workspace: KnownWorkspace }> {
   return client.api<{ workspace: KnownWorkspace }>('/api/workspaces', {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify(input),
   })
 }
 

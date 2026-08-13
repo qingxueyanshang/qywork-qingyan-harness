@@ -16,7 +16,10 @@
  * 问的是哪个项目——那张表就是「哪个根」的权威，假不了。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   createConversation,
   getConversation,
@@ -216,6 +219,84 @@ describe('移除项目', () => {
     await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
     const again = await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
     expect(await again?.json()).toEqual({ archived: 0 })
+  })
+
+  /**
+   * 新建项目的两条入参。
+   *
+   * **`QYWORK_HOME` 必须指到临时目录**：只给 name 那条会真的 mkdir，
+   * 不改的话测试会往开发者真实的 `~/.qywork/workspaces/` 里堆文件夹——
+   * 这个仓库为「测试残留污染真实账本」已经付过一次代价。
+   */
+  describe('新建项目', () => {
+    let home = ''
+    const prev = process.env.QYWORK_HOME
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), 'qywork-newproj-'))
+      process.env.QYWORK_HOME = home
+    })
+    afterEach(async () => {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+      await rm(home, { recursive: true, force: true }).catch(() => {})
+    })
+
+    const post = (body: unknown, d: ApiDeps) =>
+      call('/api/workspaces', { method: 'POST', body: JSON.stringify(body) }, d)
+
+    test('只给名字 —— 在默认根下建一个同名文件夹', async () => {
+      const d = deps()
+      const res = await post({ name: '青学研上' }, d)
+      expect(res?.status).toBe(200)
+      const { workspace } = (await res?.json()) as { workspace: { name: string; rootPath: string } }
+      expect(workspace.name).toBe('青学研上')
+      expect(workspace.rootPath).toBe(join(home, 'workspaces', '青学研上'))
+      expect((await stat(workspace.rootPath)).isDirectory()).toBe(true)
+    })
+
+    test('重名不复用已有目录，加后缀 —— 那里可能是上一个同名项目的东西', async () => {
+      const d = deps()
+      const a = (await (await post({ name: 'demo' }, d))?.json()) as {
+        workspace: { rootPath: string }
+      }
+      const b = (await (await post({ name: 'demo' }, d))?.json()) as {
+        workspace: { rootPath: string }
+      }
+      expect(a.workspace.rootPath).toBe(join(home, 'workspaces', 'demo'))
+      expect(b.workspace.rootPath).toBe(join(home, 'workspaces', 'demo-2'))
+    })
+
+    test('名字含分隔符或 .. 回 422 —— 拒绝而不是洗成别的名字', async () => {
+      const d = deps()
+      for (const name of ['../../etc', 'a/b', 'a\\b', '..', 'a:b', 'a?']) {
+        expect((await post({ name }, d))?.status).toBe(422)
+      }
+      // 建了一半再失败最难查，所以默认根下不该留下任何东西
+      expect(await stat(join(home, 'workspaces')).catch(() => null)).toBe(null)
+    })
+
+    test('两个都不给回 422', async () => {
+      expect((await post({}, deps()))?.status).toBe(422)
+    })
+
+    test('给的路径已在账本里 —— 复用那一行，移除过的会话跟着回来', async () => {
+      const d = deps('C:/ws/demo')
+      const id = (d as unknown as { wsId: string }).wsId
+      createConversation(d.store, { workspaceId: id as never, model: 'm' })
+      upsertWorkspace(d.store, 'C:/ws/other', 'other') // 留一个，不然移除会被 409 挡住
+      expect((await call(`/api/workspaces/${id}`, { method: 'DELETE' }, d))?.status).toBe(200)
+      expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(id)
+
+      // 用真实存在的目录重新添加：路径唯一，命中的还是同一行
+      const dir = await mkdtemp(join(tmpdir(), 'qywork-readd-'))
+      const again = upsertWorkspace(d.store, dir, 'x')
+      expect(String(again.id)).not.toBe(id) // 换了路径就是另一个项目
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+
+      const back = upsertWorkspace(d.store, 'C:/ws/demo', 'demo')
+      expect(String(back.id)).toBe(id)
+      expect(listConversations(d.store, id as never)).toHaveLength(1)
+    })
   })
 
   test('列表里的会话数与列表口径一致 —— 归档后一起归零', async () => {
