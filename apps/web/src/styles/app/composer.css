@@ -161,12 +161,13 @@
 .model-picker .mode-chip {
   max-width: 190px;
 }
-/* **只收窄模型与思考这一对，别处不动。**
-   这一排统一 gap 是 4px，两个 chip 各带 8px 内边距，所以任意相邻两个的文字
-   之间是 20px。用负边距把这一对的那 4px gap 抵掉 → 16px，其余各对保持 20px。
-   收在这一个元素上，不动 `.composer-bar`，别的控件的间距一点不受影响。 */
-.effort-picker {
-  margin-left: calc(var(--s-1) * -1);
+/* 模型 + 思考是一组。盒子内部的间距只管这一对，工具栏的 gap 只管盒子与
+   别的控件之间——两个数各管各的，改一个不会带动另一个。 */
+.model-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 .model-menu {
   position: absolute;
