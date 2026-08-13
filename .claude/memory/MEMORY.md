@@ -8,3 +8,4 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 
 - [dev server 必须显式绑 IPv4](dev-server-must-bind-ipv4.md) — vite 不写 host 只听 `::1`，Tauri/PowerShell 探 localhost 走 IPv4，表现为 `tauri dev` 卡 180 秒；`strictPort` 同样必须开
 - [桌面端 WebView 够不到 CDP](tauri-webview-no-cdp.md) — Tauri 用自己的 `additional_browser_args` 覆盖环境变量，`switch_workspace` 的那次点击至今未验，见 ROADMAP §37.4/§38.6
+- [终端（PTY）重做前先读这三条](pty-lessons-before-removal.md) — pty.rs 已删（零调用方 + 注册的 command 不受 capabilities 约束）；Bun PTY 只支持 POSIX、slave 必须立刻丢、字节流只能 lossy 解码

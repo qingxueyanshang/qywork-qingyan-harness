@@ -34,7 +34,9 @@ const IGNORED: &[&str] = &[
 ];
 
 #[derive(Default)]
-pub struct WatcherHandle(pub Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, RecommendedCache>>>>);
+pub struct WatcherHandle(
+    pub Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, RecommendedCache>>>>,
+);
 
 #[derive(serde::Serialize, Clone)]
 struct FsBatch {
@@ -45,35 +47,36 @@ pub fn start(app: &AppHandle, root: &Path, handle: &WatcherHandle) -> Result<()>
     let app_for_event = app.clone();
     let root_owned = root.to_path_buf();
 
-    let mut debouncer = new_debouncer(
-        DEBOUNCE,
-        None,
-        move |result: DebounceEventResult| match result {
-            Ok(events) => {
-                let mut paths: Vec<String> = Vec::new();
-                for ev in events {
-                    for p in &ev.paths {
-                        if is_ignored(p) {
-                            continue;
-                        }
-                        if let Some(rel) = relative(&root_owned, p) {
-                            if !paths.contains(&rel) {
-                                paths.push(rel);
+    let mut debouncer =
+        new_debouncer(
+            DEBOUNCE,
+            None,
+            move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    let mut paths: Vec<String> = Vec::new();
+                    for ev in events {
+                        for p in &ev.paths {
+                            if is_ignored(p) {
+                                continue;
+                            }
+                            if let Some(rel) = relative(&root_owned, p) {
+                                if !paths.contains(&rel) {
+                                    paths.push(rel);
+                                }
                             }
                         }
                     }
+                    if !paths.is_empty() {
+                        let _ = app_for_event.emit("fs:changed", FsBatch { paths });
+                    }
                 }
-                if !paths.is_empty() {
-                    let _ = app_for_event.emit("fs:changed", FsBatch { paths });
+                Err(errors) => {
+                    for e in errors {
+                        eprintln!("[qywork] 文件监听错误：{e}");
+                    }
                 }
-            }
-            Err(errors) => {
-                for e in errors {
-                    eprintln!("[qywork] 文件监听错误：{e}");
-                }
-            }
-        },
-    )?;
+            },
+        )?;
 
     debouncer.watch(root, RecursiveMode::Recursive)?;
     *handle.0.lock() = Some(debouncer);
@@ -99,4 +102,3 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
         .and_then(|p| p.to_str())
         .map(|s| s.replace('\\', "/"))
 }
-

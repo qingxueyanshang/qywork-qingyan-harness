@@ -1,7 +1,7 @@
 //! qywork 桌面外壳。
 //!
 //! **这一层不持有任何业务状态。** 会话、账本、权限、缓存全在 `qy serve` 里；
-//! Tauri 只负责原生窗口、托盘、PTY、文件监听，以及 sidecar 的生死。
+//! Tauri 只负责原生窗口、文件监听，以及 sidecar 的生死。
 //!
 //! 这是刻意与 Codex 桌面版拉开的一点：它的 Electron 主进程自己揣了一个
 //! better-sqlite3 库，和外挂的 Rust CLI 是两本账。两本账迟早会漂移，
@@ -10,19 +10,11 @@
 //! WebView 也不通过 Tauri IPC 拿业务数据，它直连 `qy serve` 的 WebSocket，
 //! 和手机端走完全相同的协议。这样「桌面能做手机做不了」的能力漂移在结构上就不存在。
 
-mod pty;
 mod sidecar;
 mod watcher;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
-
-#[tauri::command]
-fn sidecar_info(
-    state: tauri::State<'_, sidecar::CurrentSidecar>,
-) -> Result<sidecar::SidecarInfo, String> {
-    state.get().ok_or_else(|| "sidecar 尚未就绪".to_string())
-}
 
 /// 选一个目录当工作区。
 ///
@@ -40,18 +32,6 @@ async fn pick_workspace(app: AppHandle) -> Result<Option<String>, String> {
     Ok(picked.map(|p| p.to_string()))
 }
 
-/// 切换工作区 = **换掉整个 sidecar**。
-///
-/// 不是让一个进程同时服务多个工作区根（ROADMAP §34.1 否掉了那条路：
-/// 工作区不只是分表用的 id，它是 `workspaceRoot`——工具的路径约束、文件树、
-/// git 状态、权限硬边界全都以它为根，改成会话属性会牵动三条链路）。
-///
-/// 重启式的代价是**正在跑的那一轮会被打断**，这一点必须由界面提前说明，
-/// 而不是让用户按下去之后才发现。
-///
-/// 窗口是**重建**而不是 reload：令牌走 `initialization_script` 注入，
-/// 而初始化脚本在每次导航时都会重跑——直接 reload 会把旧令牌又写回去，
-/// 表现成「切换后连的还是旧工作区」。
 /// 窗口控制。
 ///
 /// 关掉系统装饰之后，最小化 / 最大化 / 关闭三个动作没有别的入口了，
@@ -163,6 +143,29 @@ fn extend_frame_for_shadow(window: &tauri::WebviewWindow) {
     }
 }
 
+/// 启动失败时把原因说出来。
+///
+/// **不能靠 stderr**：release 是 `windows_subsystem = "windows"`，没有控制台，
+/// 那行字谁也看不见。也不能用 Tauri 的对话框插件——它要 app handle，
+/// 而这条路径正是「app 没建起来」。所以直接走系统 MessageBox。
+#[cfg(windows)]
+fn show_fatal(message: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let text = HSTRING::from(message);
+    let caption = HSTRING::from("qywork 启动失败");
+    // SAFETY: 两个字符串在调用期间都活着；hwnd 传 None = 无父窗口的模态框。
+    unsafe {
+        MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_fatal(message: &str) {
+    // 非 Windows 上有控制台，stderr 就够了。
+    eprintln!("[qywork] {message}");
+}
+
 /// 把文件监听改到另一个项目的目录上。
 ///
 /// 换项目**不再重启 sidecar**（服务端一次服务多个项目，见
@@ -187,26 +190,33 @@ fn watch_workspace(app: AppHandle, path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    /*
+     * 这三个插件是给 **Rust 侧**用的，不给 WebView 里的 JS 用。
+     *
+     * `capabilities/default.json` 里因此只留了 `core:default` 和拖动标题栏那一条。
+     * 曾经还授过 `shell:allow-spawn`、`dialog:allow-open/save`、
+     * `opener:allow-open-url`、devtools 切换——**它们一条都没有前端调用方**
+     * （`apps/web` 里连 `@tauri-apps` 的依赖都没有，只经 `__TAURI_INTERNALS__`
+     * 调本 crate 自己注册的那几个命令），唯一用得上它们的主体是被注入的脚本。
+     * 其中 `shell:allow-spawn` 的 `--host` 校验放行 `0.0.0.0`、`--cwd` 校验是 `.+`，
+     * 一次 XSS 就能再起一个把任意目录暴露到局域网的 qy。
+     *
+     * 删掉授权不影响这里：ACL 只拦 IPC 层（插件的 `commands.rs`），
+     * `ShellExt::sidecar()` 与 `app.dialog()` 都是 Rust 直调，不过那一层。
+     */
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(sidecar::SidecarHandle::default())
-        .manage(sidecar::CurrentSidecar::default())
-        .manage(pty::PtyRegistry::default())
         .manage(watcher::WatcherHandle::default())
         .invoke_handler(tauri::generate_handler![
-            sidecar_info,
             pick_workspace,
             watch_workspace,
             window_minimize,
             window_toggle_maximize,
             window_close,
             window_is_maximized,
-            pty::pty_open,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_close,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -238,7 +248,6 @@ pub fn run() {
                 // 两处都声明会得到 "a webview with label `main` already exists" 的 panic，
                 // 而 panic 会绕过退出清理，把 qy sidecar 留成孤儿进程。
                 let script = sidecar::init_script(&info);
-                handle.state::<sidecar::CurrentSidecar>().set(info);
 
                 build_main_window(&handle, &script)?;
 
@@ -248,13 +257,33 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("构建 qywork 失败")
+        .unwrap_or_else(|e| {
+            /*
+             * **起不来也要有终态。**
+             *
+             * 这里原来是 `.expect(...)`。release 下 `panic = "abort"` 且
+             * `windows_subsystem = "windows"`（没有控制台），于是 sidecar 缺失、
+             * 损坏、或在报出令牌前退出时，进程无声消失——没有窗口、没有对话框、
+             * 没有任何可见输出。用户唯一的感知是「双击没反应」，而这恰恰是
+             * 最常见的一类启动故障（`bin/qy-*.exe` 没构建、被杀毒删了）。
+             *
+             * 弹一个系统对话框再退。它不依赖 WebView，正好覆盖「窗口还没建出来」
+             * 这段时间。
+             */
+            let msg = format!(
+                "qywork 启动失败：{e}\n\n\
+                 常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
+                 （apps/desktop/src-tauri/bin/qy-*.exe）。"
+            );
+            eprintln!("[qywork] {msg}");
+            show_fatal(&msg);
+            std::process::exit(1);
+        })
         .run(|app, event| {
             // Windows 上父进程退出不会带走子进程：残留的 qy serve 会占着端口和
             // SQLite 的 WAL 锁，下次启动直接起不来。所以退出路径必须显式收干净。
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 watcher::stop(&app.state::<watcher::WatcherHandle>());
-                pty::close_all(&app.state::<pty::PtyRegistry>());
                 sidecar::shutdown(app);
             }
         });
