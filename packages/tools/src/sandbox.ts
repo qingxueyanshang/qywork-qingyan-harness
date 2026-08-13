@@ -637,7 +637,92 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
       // 关掉 stdin：交互式提示在这里等不到人，只会挂到超时。
       stdin: 'ignore',
       env: input.env,
-    }),
+      /*
+       * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
+       *
+       * 不这么做的话它和 `qy serve` 同组，而 `process.kill(-pid)` 打的是**组**
+       * ——那一下会连自己一起杀掉。`killTree` 因此还要再验一次组长身份，
+       * 见那边的注释：这里只是把「能安全整组杀」这个前提创造出来。
+       *
+       * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
+       * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
+       */
+      ...(isWindows ? {} : { detached: true }),
+    } as never),
     sandbox: effective,
   }
+}
+
+/**
+ * 杀掉整棵进程树。
+ *
+ * ## 为什么不能只 `proc.kill()`
+ *
+ * 我们 spawn 的从来不是命令本身，是一个 shell：Windows 上
+ * `powershell.exe -Command <命令>`、其余平台 `/bin/sh -c <命令>`（见上面的 `inner`）。
+ * 真正干活的进程是它的**子进程**，而 `proc.kill()` 只杀那一个 shell。
+ *
+ * 本机实测（Windows 11 / Bun 1.3.14，完全复刻上面的 spawn 参数）：
+ *
+ * ```
+ * kill 前:  HTTP 200
+ * proc.kill(); await proc.exited   → 143
+ * kill 后:  HTTP 200               ← powershell 死了，服务进程还在监听
+ * pump:     3 秒没等到 EOF          ← 孙进程握着 stdout，管道永不关闭
+ * ```
+ *
+ * **第二行比第一行严重得多。** `shell.ts` 是先 `await` 读完两条流、再等
+ * `proc.exited`；管道不 EOF，那次 `registry.execute` 就永不返回，而
+ * `loop.ts:546` 外面没有任何超时。后果一路传导到 `run-control.ts` 的 finally
+ * 不执行、`runs.unregister` 不执行——**这条会话从此永远回绝「已有任务在执行」，
+ * 直到重启 `qy serve`**。触发它不需要「起服务器」这种边角：任何经 shell 派生了
+ * 子进程的命令（`npm test` → node、`python x.py`）碰上超时或用户中断都会走到。
+ *
+ * 换成树杀之后同一个脚本：
+ *
+ * ```
+ * taskkill /F /T /PID → 0
+ * kill 后:  连不上
+ * pump:     EOF
+ * ```
+ *
+ * 两个症状一次消失——它们本来就是同一个根因。
+ *
+ * ## 平台
+ *
+ * - **Windows**：`taskkill /F /T`，`/T` 连子孙一起。上面那段是本机实测。
+ * - **其余平台**：杀进程组。**但必须先确认它真是自己那一组的组长**——
+ *   `detached` 万一没生效，`-pid` 指向的就是 `qy serve` 自己所在的组，
+ *   而那一下不会报错，它会安静地把服务端杀掉。验不过就回落到单进程 kill，
+ *   那是本次改动之前的行为，不会更糟。
+ *   **这条路径没有在本机验证过**（本机是 Windows），如实写在这里。
+ */
+export function killTree(proc: { pid: number; kill(): void }): void {
+  if (process.platform === 'win32') {
+    // 同步等它杀完：异步的话调用方紧接着读流，可能读到一个还没断的管道。
+    Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    return
+  }
+  // `getpgid` 运行时有、`@types/bun` 里没声明；断言到最小形状而不是 any，
+  // 这样「它可能不存在」这件事仍然写在类型里。
+  const getpgid = (process as unknown as { getpgid?: (pid: number) => number }).getpgid
+  let leadsOwnGroup = false
+  try {
+    leadsOwnGroup = getpgid?.(proc.pid) === proc.pid
+  } catch {
+    // 进程已经没了，或者平台不提供 getpgid：都按「不确定」处理。
+    leadsOwnGroup = false
+  }
+  if (leadsOwnGroup) {
+    try {
+      process.kill(-proc.pid, 'SIGKILL')
+      return
+    } catch {
+      // 组已经空了，落到下面补一刀单进程的。
+    }
+  }
+  proc.kill()
 }

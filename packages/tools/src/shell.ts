@@ -36,7 +36,7 @@
 import type { ToolContext, ToolSpec } from '@qywork/agent'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
-import { type SandboxPolicy, spawnGuarded } from './sandbox.ts'
+import { killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
 
@@ -124,13 +124,20 @@ export const shellTool: ToolSpec = {
     let err = ''
     let timedOut = false
 
+    /*
+     * 超时与中断都走**树杀**，不是 `proc.kill()`。
+     *
+     * 我们 spawn 的是一个 shell，真正干活的是它的子进程；只杀 shell 的话
+     * 孙进程不但活着，还握着 stdout —— 下面那个 `pump` 永远等不到 EOF，
+     * 这次调用就再也不返回了。详见 `killTree` 的注释（含本机实测）。
+     */
     const timer = setTimeout(() => {
       timedOut = true
-      proc.kill()
+      killTree(proc)
     }, timeout)
 
     // 中断信号要能真正杀掉子进程，否则用户点了停止但构建还在跑。
-    const onAbort = () => proc.kill()
+    const onAbort = () => killTree(proc)
     ctx.signal.addEventListener('abort', onAbort, { once: true })
 
     // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
