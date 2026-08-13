@@ -170,16 +170,27 @@ describe('移除项目', () => {
   const patchPin = (id: string, pinned: boolean, d: ApiDeps) =>
     call(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ pinned }) }, d)
 
-  test('置顶把项目提到列表最前，取消置顶回到「最近打开」的位置', async () => {
+  /* 侧栏顺序是「置顶 > 添加先后」，**不跟着切换重排**——按最近打开排的话
+     切一次项目它就跳到最前，列表在用户眼皮底下来回跳，而置顶已经是显式按钮。 */
+  test('置顶把项目提到最前，取消置顶回到添加时的位置', async () => {
     const { d, oldId, currentId } = twoWorkspaces()
-    // current 是后 upsert 的，默认排在前面
-    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(currentId)
+    // old 先添加，所以默认排在前面；后添加的 current 在后
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual([oldId, currentId])
 
-    expect((await patchPin(oldId, true, d))?.status).toBe(200)
-    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(oldId)
+    expect((await patchPin(currentId, true, d))?.status).toBe(200)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual([currentId, oldId])
 
-    expect((await patchPin(oldId, false, d))?.status).toBe(200)
-    expect(listWorkspaces(d.store).map((w) => String(w.id))[0]).toBe(currentId)
+    expect((await patchPin(currentId, false, d))?.status).toBe(200)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual([oldId, currentId])
+  })
+
+  test('切项目不改变侧栏顺序 —— 顺序稳定，跳动才是 bug', async () => {
+    const { d, oldId, currentId } = twoWorkspaces()
+    const before = listWorkspaces(d.store).map((w) => String(w.id))
+    // 「切过去」走的是同一条 upsert，它会更新 last_opened_at
+    upsertWorkspace(d.store, 'C:/ws/current', 'current')
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual(before)
+    expect(before).toEqual([oldId, currentId])
   })
 
   test('置顶两次回 404，body 不是布尔回 422 —— 都不静默当成功', async () => {

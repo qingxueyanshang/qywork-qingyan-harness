@@ -28,7 +28,7 @@ import {
   contentPathFor,
   createConversation,
   getWorkspaceByPath,
-  listWorkspaces,
+  mostRecentWorkspace,
   recoverStaleRuns,
   upsertWorkspace,
 } from '@qywork/store'
@@ -79,9 +79,9 @@ const DEFAULT_WORKSPACE_NAME = '默认工作区'
  * 三条路，优先级从高到低：
  *
  * 1. 显式给了根 —— 照用（`qy serve --cwd <目录>` 是 CLI 的正常用法）。
- * 2. 账本里已有项目 —— 用最近打开的那个（`listWorkspaces` 已按「置顶 > 最近打开」
- *    排序，取第一条）。**首次之后每次启动都走这条**，所以用户在界面里切过的项目
- *    不会被启动目录顶掉。
+ * 2. 账本里已有项目 —— 用最近打开的那个（`mostRecentWorkspace`）。
+ *    **首次之后每次启动都走这条**，所以用户在界面里切过的项目不会被启动目录顶掉。
+ *    注意它和侧栏顺序是两回事：侧栏按「置顶 > 添加先后」稳定排列，不跟着切换重排。
  * 3. 一个都没有 —— 在 `~/.qywork/workspaces/默认工作区/` 建一个。
  *
  * 第 3 条是关键：原来无条件登记启动目录，于是首次运行「挂在启动目录上」——
@@ -103,7 +103,7 @@ function bootstrapWorkspace(
     }
   }
 
-  const recent = listWorkspaces(store)[0]
+  const recent = mostRecentWorkspace(store)
   if (recent) return { workspace: recent, rootPath: recent.rootPath }
 
   const rootPath = join(configDir(), 'workspaces', DEFAULT_WORKSPACE_NAME)
@@ -126,8 +126,7 @@ export function serve(opts: ServeOptions) {
    * 启动时的项目。三条路，优先级从高到低：
    *
    * 1. **显式给了 `workspaceRoot`** —— 照用（`qy serve --cwd <目录>`）。
-   * 2. **账本里已有项目** —— 用最近打开的那个。`listWorkspaces` 已按
-   *    「置顶 > 最近打开」排序，取第一条即可。
+   * 2. **账本里已有项目** —— 用最近打开的那个（`mostRecentWorkspace`）。
    * 3. **一个都没有（首次运行）** —— 建一个默认工作区。
    *
    * 第 3 条是补上的。原来无条件登记 `opts.workspaceRoot`，于是首次运行
@@ -447,7 +446,7 @@ export function serve(opts: ServeOptions) {
    * 不需要再记一个「当前是谁」的状态。
    */
   const pollGit = () => {
-    const [recent] = listWorkspaces(opts.store)
+    const recent = mostRecentWorkspace(opts.store)
     if (recent) void publishGitState(recent.rootPath, recent.id, bus)
   }
   const gitTimer = setInterval(pollGit, 4000)

@@ -68,24 +68,43 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
 }
 
 /**
- * 置顶的在前，其余按「最近打开」倒序。**已移除的不在其中**（`removed_at IS NULL`）。
+ * 侧栏里的顺序：**置顶的在前，其余按添加先后**。已移除的不在其中。
+ *
+ * **不按「最近打开」排。** 那样切一次项目它就跳到最前，而置顶已经是一个显式按钮——
+ * 自动重排等于把那个按钮的语义抢掉，代价是列表在用户眼皮底下来回跳，
+ * 上一秒点的位置下一秒是另一个项目。
  *
  * `pinned_at IS NULL` 作为第一排序键：SQLite 里 false(0) 排在 true(1) 前，
  * 所以这一条把「有置顶时间的」提到最上面，再按置顶时间倒序（后置顶的更靠前）。
  *
- * 次级排序键 `id DESC` 不是装饰：同一毫秒 upsert 的两个项目 `last_opened_at` 会并列，
- * 只按它排序时 SQLite 退回插入顺序，结果正好是反的。而这个顺序现在有实际后果——
- * 不带 `?ws=` 的请求落到第一条，git 轮询也盯着第一条。
- * （与 `listConversations` 是同一条教训。）
+ * 「哪个是最近打开的」由 `mostRecentWorkspace` 单独回答——那是**启动挂哪儿**的
+ * 判据，和**显示顺序**不是一件事，合用一条查询就是这次跳动的根因。
  */
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
     .query<Record<string, any>, []>(
       `SELECT * FROM workspaces WHERE removed_at IS NULL
-       ORDER BY pinned_at IS NULL, pinned_at DESC, last_opened_at DESC, id DESC`,
+       ORDER BY pinned_at IS NULL, pinned_at DESC, created_at ASC, id ASC`,
     )
     .all()
     .map(rowToWorkspace)
+}
+
+/**
+ * 最近打开的那个项目。**启动挂哪儿**用它，不是显示顺序。
+ *
+ * 与 `listWorkspaces` 分开：显示顺序要稳定（不能切一次就重排），
+ * 而「上次在用哪个」必须跟着 `last_opened_at` 走。一条查询同时担两个职责，
+ * 就会出现「为了让启动记得住，列表只好跟着跳」。
+ */
+export function mostRecentWorkspace(store: Store): Workspace | null {
+  const row = store.db
+    .query<Record<string, any>, []>(
+      `SELECT * FROM workspaces WHERE removed_at IS NULL
+       ORDER BY last_opened_at DESC, id DESC LIMIT 1`,
+    )
+    .get()
+  return row ? rowToWorkspace(row) : null
 }
 
 /**

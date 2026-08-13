@@ -12,7 +12,7 @@
  */
 
 import type { Store } from '@qywork/store'
-import { getWorkspace, listWorkspaces } from '@qywork/store'
+import { getWorkspace, mostRecentWorkspace } from '@qywork/store'
 import { handleAttachmentsApi } from './attachments.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
@@ -49,7 +49,7 @@ function resolveWorkspace(store: Store, url: URL): { id: string; root: string } 
     const w = getWorkspace(store, id as never)
     return w ? { id: w.id, root: w.rootPath } : null
   }
-  const [recent] = listWorkspaces(store)
+  const recent = mostRecentWorkspace(store)
   return recent ? { id: recent.id, root: recent.rootPath } : null
 }
 
