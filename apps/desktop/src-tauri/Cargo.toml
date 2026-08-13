@@ -18,21 +18,32 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2" }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
+# 只为 `timeout`（sidecar 握手上限）。tokio 本来就在依赖树里（tauri 的运行时就是它），
+# 写成直接依赖只是让它可以被命名，不新增任何 crate。
+tokio = { version = "1", features = ["time"] }
 serde_json = "1"
-# PTY：Windows 走 ConPTY，macOS/Linux 走 openpty。Bun 的内建 PTY 只支持 POSIX，
-# 所以交互式终端必须由 Rust 侧承担（见 pty.rs 的说明）。
-portable-pty = "0.9"
 # 文件监听：notify 在各平台用的都是内核原生通知（ReadDirectoryChangesW / FSEvents /
 # inotify），比 JS 侧轮询快一个量级，且不会在大仓库上烧 CPU。
 notify = "8"
 notify-debouncer-full = "0.5"
 parking_lot = "0.12"
 anyhow = "1"
+
+# 只有 Windows 需要：无装饰窗口的投影要自己向 DWM 要，见 lib.rs 的
+# `extend_frame_for_shadow`。版本跟 tauri 传递依赖的那份对齐（0.61），
+# 否则同一套 Win32 类型会编出两份，`hwnd()` 的返回值就对不上了。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Graphics_Dwm",
+  "Win32_UI_Controls",
+  # 启动失败时弹 MessageBoxW。它不依赖 WebView，正好覆盖「窗口还没建出来」那段。
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 # 由 tauri-build 生成的自定义协议开关，勿手改。
@@ -45,3 +56,4 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+

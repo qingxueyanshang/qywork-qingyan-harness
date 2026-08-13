@@ -12,7 +12,6 @@
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -29,23 +28,6 @@ pub struct SidecarInfo {
 /// 子进程句柄。放进 Tauri 的 state，退出时由 `shutdown` 收走。
 #[derive(Default)]
 pub struct SidecarHandle(pub Arc<Mutex<Option<CommandChild>>>);
-
-/// 当前 sidecar 的连接信息。
-///
-/// 用 `Mutex` 而不是直接 `manage(SidecarInfo)`：切换工作区要换掉整个 sidecar，
-/// 端口和令牌都会变。Tauri 的 `manage` 每个类型只认第一次，切换后再 `manage`
-/// 是静默的 no-op——那会让 `sidecar_info` 一直回旧端口，表现成「切换后连不上」。
-#[derive(Default)]
-pub struct CurrentSidecar(pub Arc<Mutex<Option<SidecarInfo>>>);
-
-impl CurrentSidecar {
-    pub fn get(&self) -> Option<SidecarInfo> {
-        self.0.lock().clone()
-    }
-    pub fn set(&self, info: SidecarInfo) {
-        *self.0.lock() = Some(info);
-    }
-}
 
 /// 启动 sidecar 并等它报出令牌与端口。
 ///
@@ -81,48 +63,75 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     let mut token: Option<String> = None;
     let mut port: Option<u16> = None;
 
-    // 握手输出格式固定为两行 KEY=VALUE，见 cli 的 --print-token。
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(line) => {
-                let text = String::from_utf8_lossy(&line);
-                for raw in text.lines() {
-                    if let Some(v) = raw.trim().strip_prefix("QYWORK_TOKEN=") {
-                        token = Some(v.to_string());
+    /*
+     * 握手要有上限。
+     *
+     * 原来这里是一个裸的 `while rx.recv().await`：只有拿到两个 KV、进程 Terminated、
+     * 或流关闭才会退出。qy 起来了却卡在打印令牌之前（server 初始化阻塞、
+     * 端口探测挂住）时，这个循环**永远不返回**——而主窗口是在它之后才建的
+     * （`lib.rs` 的 `build_main_window`）。表现是 qywork.exe 和 qy.exe 都在后台
+     * 活着、桌面上什么都没有，任务管理器里就是那条「qy.exe 常驻」。
+     *
+     * 20 秒：冷启动要读配置、开 SQLite、可能还要预热扩展，给得比感觉上宽一些；
+     * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
+     */
+    let handshake = async {
+        // 握手输出格式固定为两行 KEY=VALUE，见 cli 的 --print-token。
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    for raw in text.lines() {
+                        if let Some(v) = raw.trim().strip_prefix("QYWORK_TOKEN=") {
+                            token = Some(v.to_string());
+                        }
+                        if let Some(v) = raw.trim().strip_prefix("QYWORK_PORT=") {
+                            port = v.parse().ok();
+                        }
                     }
-                    if let Some(v) = raw.trim().strip_prefix("QYWORK_PORT=") {
-                        port = v.parse().ok();
+                    if let (Some(t), Some(p)) = (&token, port) {
+                        return Ok(SidecarInfo {
+                            token: t.clone(),
+                            port: p,
+                            base: format!("http://127.0.0.1:{p}"),
+                        });
                     }
                 }
-                if let (Some(t), Some(p)) = (&token, port) {
-                    return Ok(SidecarInfo {
-                        token: t.clone(),
-                        port: p,
-                        base: format!("http://127.0.0.1:{p}"),
-                    });
+                CommandEvent::Stderr(line) => {
+                    // sidecar 的人读输出走 stderr（启动横幅、二维码）。原样转发到
+                    // 宿主终端，方便 `tauri dev` 时排查。
+                    eprint!("{}", String::from_utf8_lossy(&line));
                 }
+                CommandEvent::Terminated(payload) => {
+                    return Err(anyhow!(
+                        "qy serve 在报出令牌前退出，code={:?}",
+                        payload.code
+                    ));
+                }
+                _ => {}
             }
-            CommandEvent::Stderr(line) => {
-                // sidecar 的人读输出走 stderr（启动横幅、二维码）。原样转发到
-                // 宿主终端，方便 `tauri dev` 时排查。
-                eprint!("{}", String::from_utf8_lossy(&line));
-            }
-            CommandEvent::Terminated(payload) => {
-                return Err(anyhow!(
-                    "qy serve 在报出令牌前退出，code={:?}",
-                    payload.code
-                ));
-            }
-            _ => {}
+        }
+
+        Err(anyhow!("qy serve 输出结束但未报出令牌"))
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(20), handshake).await {
+        Ok(result) => result,
+        Err(_) => {
+            // 超时了就把它收掉再报错，别留一个既不干活又占着端口的进程。
+            shutdown_handle(&handle);
+            Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌，已终止"))
         }
     }
-
-    Err(anyhow!("qy serve 输出结束但未报出令牌"))
 }
 
 /// 收掉子进程。退出路径上必须调用，且要能被重复调用而不出错。
 pub fn shutdown(app: &AppHandle) {
-    let handle = app.state::<SidecarHandle>();
+    shutdown_handle(&app.state::<SidecarHandle>());
+}
+
+/// 同上，但直接拿句柄——握手超时那条路径上还没有可用的 app state 引用。
+fn shutdown_handle(handle: &SidecarHandle) {
     let child = handle.0.lock().take();
     if let Some(c) = child {
         // kill 失败只能记日志——此时进程可能已经自己退了，
@@ -140,6 +149,23 @@ pub fn shutdown(app: &AppHandle) {
 pub fn from_env() -> Option<SidecarInfo> {
     let token = std::env::var("QYWORK_TOKEN").ok()?;
     let port: u16 = std::env::var("QYWORK_PORT").ok()?.parse().ok()?;
+
+    // **必须探活。** 这两个变量是开发时手动 export 的，很容易在那个 qy 早就退出之后
+    // 还留在 shell 环境里；打包版从这样的 shell 启动，就会拿着一个死端口直接开窗口，
+    // 界面连不上任何东西。而唯一的提示是 `eprintln!`——release 没有控制台，看不见。
+    //
+    // 探不通就**当作没有这个变量**，落回正常的 spawn 路径。自愈比报一个看不见的错好；
+    // 也正因为会自愈，这里不需要再对用户说什么。
+    if std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_err()
+    {
+        eprintln!("[qywork] QYWORK_PORT={port} 上没有在监听的服务，忽略这两个环境变量");
+        return None;
+    }
+
     Some(SidecarInfo {
         token,
         port,
@@ -207,15 +233,4 @@ fn dirs_home() -> Option<PathBuf> {
         .or_else(|_| std::env::var("HOME"))
         .ok()
         .map(PathBuf::from)
-}
-
-/// 读取 BufReader 的一行，超时由调用方控制。仅用于非 Tauri 上下文的测试。
-#[allow(dead_code)]
-pub fn read_kv_line<R: std::io::Read>(reader: &mut BufReader<R>) -> Option<(String, String)> {
-    let mut line = String::new();
-    if reader.read_line(&mut line).ok()? == 0 {
-        return None;
-    }
-    let (k, v) = line.trim().split_once('=')?;
-    Some((k.to_string(), v.to_string()))
 }

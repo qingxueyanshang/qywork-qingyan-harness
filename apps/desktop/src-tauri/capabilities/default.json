@@ -1,35 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "qywork 桌面外壳所需的最小权限集",
+  "description": "qywork 桌面外壳所需的最小权限集。这里只授给 WebView 里的 JS——Rust 侧调用不经这层 ACL，所以能删的都删了，见 README 段注释。",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "core:window:allow-start-dragging",
-    "core:webview:allow-internal-toggle-devtools",
-    "dialog:allow-open",
-    "dialog:allow-save",
-    "opener:allow-open-url",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "bin/qy",
-          "sidecar": true,
-          "args": [
-            "serve",
-            "--port",
-            { "validator": "\\d+" },
-            "--host",
-            { "validator": "^(127\\.0\\.0\\.1|0\\.0\\.0\\.0)$" },
-            "--cwd",
-            { "validator": ".+" },
-            "--print-token",
-            "--parent-pid",
-            { "validator": "\\d+" }
-          ]
-        }
-      ]
-    }
-  ]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

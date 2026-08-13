@@ -52,6 +52,26 @@ function Clear-DevPort([int]$Port) {
   if ($conns.Count) { Start-Sleep -Milliseconds 500 }
 }
 
+# 上一次没退干净的桌面壳。
+#
+# 它不占 5180，也不占固定端口（sidecar 走 --port 0），所以端口清场抓不到它。
+# 但它**占着 `target\debug\qy.exe` 的文件句柄**——tauri-build 要把新的 sidecar
+# 复制过去，复制失败后整个 dev 构建以 exit 101 挂掉，报出来的只有一句
+# 「拒绝访问」，完全看不出和上一个还在跑的窗口有关。实测踩到过。
+#
+# 只清本仓 target 目录下的那两个可执行文件，路径不匹配的同名进程一律不动
+# ——机器上可能装着正式版 qywork。
+function Clear-StaleShell {
+  $root = (Resolve-Path $PSScriptRoot\..).Path
+  foreach ($p in @(Get-Process qywork, qy -ErrorAction SilentlyContinue)) {
+    $path = try { $p.Path } catch { $null }
+    if ($path -and $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+      Warn "上一次的 $($p.ProcessName) (pid $($p.Id)) 还在跑，占着 target\debug 里的文件，清掉"
+      try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
+    }
+  }
+}
+
 # --- 前置检查 -----------------------------------------------------------------
 # Start-Process 只认真正的可执行文件。npm 装出来的 bun 在 PATH 上有三份同名东西
 # （bun.ps1 / bun.cmd / 无扩展名的 shell 脚本），`-FilePath 'bun'` 会挑到最后那个，
@@ -99,6 +119,7 @@ if ($Mode -eq 'desktop') {
   }
 
   Clear-DevPort 5180
+  Clear-StaleShell
 
   # 把工作区钉到仓库根。
   #
