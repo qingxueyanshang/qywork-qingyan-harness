@@ -1,12 +1,16 @@
 /**
- * WebSocket 握手：验令牌、验协议版本、报能力。
+ * WebSocket 握手：验令牌、报能力。
  *
- * 拒连的两种原因都是终态——令牌不对重连一万次带的还是同一个令牌，
- * 协议版本不对要改的是某一端的代码。客户端据此不再退避重连。
+ * 拒连只有一种原因，而且是终态——重连一万次带的还是同一个令牌，
+ * 客户端据此不再退避重连。
+ *
+ * **这里曾经还验协议版本**，连同那个手写的 `PROTOCOL_VERSION` 一起删了。
+ * 它想挡的漂移（客户端与 sidecar 不是同一批出的）已经从源头消灭：开发时两端
+ * 都从同一棵源码树跑（`scripts/dev.ts`），打包时出自同一次构建。理由写在
+ * `HelloFrame` 的注释里。
  */
 
 import type { EventEnvelope, HelloFrame } from '@qywork/core'
-import { PROTOCOL_VERSION } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
@@ -36,18 +40,6 @@ export function handleHello(
     ws.close(1008, 'unauthorized')
     return
   }
-  if (frame.protocolVersion !== PROTOCOL_VERSION) {
-    ws.send(
-      JSON.stringify({
-        type: 'hello.err',
-        reason: 'protocol_mismatch',
-        message: `服务端协议版本 ${PROTOCOL_VERSION}，客户端 ${frame.protocolVersion}`,
-      }),
-    )
-    ws.close(1008, 'protocol')
-    return
-  }
-
   ws.data.authed = true
   ws.data.origin = frame.origin
 
@@ -80,7 +72,6 @@ export function handleHello(
   ws.send(
     JSON.stringify({
       type: 'hello.ok',
-      protocolVersion: PROTOCOL_VERSION,
       serverVersion: PKG_VERSION,
       sessionId: ws.data.id,
       currentSeq: deps.bus.currentSeq,

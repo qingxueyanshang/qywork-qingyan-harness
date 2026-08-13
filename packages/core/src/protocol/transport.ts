@@ -10,10 +10,29 @@ import type { Attachment, EffortLevel, PermissionMode } from '../domain/model.ts
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
+/**
+ * 握手。
+ *
+ * **这里没有协议版本，而且是有意的。**
+ *
+ * 曾经有一个手写的 `PROTOCOL_VERSION`，握手时两端比对、不匹配拒连。它想挡的是
+ * 「客户端和 sidecar 不是同一批出的」——而它挡不住：那个数只在有人**记得**手动 +1
+ * 时才生效，没有任何东西强制。真实发生过的漂移（旧 sidecar 少一条 HTTP 路由）
+ * 根本没动线上格式，那个数一动不动，照样连上，症状伪装成前端的
+ * `undefined.id`。一个只在有人记得时才生效的检查，比没有检查更坏——它看起来像保护。
+ *
+ * 漂移改成从源头消灭，不靠对数字：
+ * - 开发：`bun run dev` 两端都从**同一棵源码树**跑，sidecar 走 `bun --watch`
+ *   自动重载，前端走 vite HMR（`scripts/dev.ts`）；
+ * - 打包：`tauri:build` 先 `build:agent` 再打包，前端产物与 sidecar 出自同一次构建；
+ * - 手机：页面由那个 sidecar 自己托管，本来就是同一份。
+ *
+ * 要重新引入版本号，前提是出现一个**能独立升级、不跟着 sidecar 走的客户端**。
+ * 那时候该比的也不是手写的数，是构建产出的标识——手写的那个已经证明不可靠。
+ * （注意别和 MCP 的 `protocolVersion` 混淆：那个面对第三方进程，必须协商，留着。）
+ */
 export interface HelloFrame {
   type: 'hello'
-  /** 协议版本。服务端为真源，客户端只声明支持上限，不匹配直接拒连。 */
-  protocolVersion: number
   /** 配对令牌。桌面端从 Tauri 环境拿；手机端从二维码带来。 */
   token: string
   origin: ClientOrigin
@@ -30,7 +49,6 @@ export type ClientOrigin = 'desktop' | 'mobile' | 'cli' | 'external'
 
 export interface HelloOkFrame {
   type: 'hello.ok'
-  protocolVersion: number
   serverVersion: string
   sessionId: string
   /** 服务端当前 seq。客户端据此判断自己落后多少。 */
@@ -78,8 +96,13 @@ export interface ServerCapabilities {
 
 export interface HelloErrFrame {
   type: 'hello.err'
-  /** 服务端只会发这两个。都是终态——重连一万次带的还是同一个令牌 / 同一份代码。 */
-  reason: 'bad_token' | 'protocol_mismatch'
+  /**
+   * 只有一种。**终态**——重连一万次带的还是同一个令牌。
+   *
+   * 曾经还有一个 `protocol_mismatch`，随手写的协议版本号一起删了（见 HelloFrame）。
+   * 留一个没有生产者的枚举值，会让客户端那边长出一条永远不会命中的分支。
+   */
+  reason: 'bad_token'
   message: string
 }
 
@@ -247,17 +270,3 @@ export function decodePairingUrl(raw: string): PairingPayload | null {
     deviceName: frag.get('n') ?? '',
   }
 }
-
-/**
- * 当前协议版本。改动不向后兼容的字段时 +1。
- *
- * **一直是 1，而且大概率会一直是 1。** 这个数唯一挡得住的东西是「客户端和 sidecar
- * 不是同一批出的」，而那个漂移已经在源头消灭了：`bun run tauri:dev` 和
- * `tauri:build` 都先跑 `build:agent`，桌面端不可能再连上一个旧 sidecar；
- * 手机端的页面本来就是那个 sidecar 自己托管的。
- *
- * 所以加字段（如 `EventEnvelope.conversationId`）不跳这一格——**跳了也拦不住谁**，
- * 只会多一个和根 `VERSION` 各走各的数让人对不上。真要跳的时机是：
- * 出现了一个能独立升级、不跟着 sidecar 走的客户端。现在没有。
- */
-export const PROTOCOL_VERSION = 1

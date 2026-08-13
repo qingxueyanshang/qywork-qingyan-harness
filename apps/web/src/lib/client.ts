@@ -21,7 +21,7 @@ import type {
   HelloFrame,
   ServerCapabilities,
 } from '@qywork/core'
-import { decodePairingUrl, PROTOCOL_VERSION } from '@qywork/core'
+import { decodePairingUrl } from '@qywork/core'
 import { workspace } from './store/ui.ts'
 
 export type ConnectionState = 'connecting' | 'ready' | 'reconnecting' | 'unauthorized' | 'closed'
@@ -197,7 +197,6 @@ export class QyClient {
     ws.addEventListener('open', () => {
       const hello: HelloFrame = {
         type: 'hello',
-        protocolVersion: PROTOCOL_VERSION,
         token: this.endpoint.token,
         origin: this.endpoint.origin,
         ...(this.lastSeq > 0 ? { lastSeq: this.lastSeq } : {}),
@@ -228,13 +227,12 @@ export class QyClient {
       }
       if (msg.type === 'hello.err') {
         this.opts.onState('unauthorized', msg.message)
-        // **握手被拒一律是终态。**
+        // **握手被拒是终态**，不按 reason 分支。
         //
-        // 这里原来写 `reason === 'bad_token'`，而服务端真会发的是两种：
-        // `bad_token`（令牌换了——重连一万次带的还是同一个令牌）和
-        // `protocol_mismatch`（版本对不上，要改的是某一端的代码）。
-        // 于是版本对不上时客户端每 ≤15 秒重连一次、每次都被同样地拒掉，
-        // 而界面显示的是「N 秒后重试」——一个永远不会好的「稍后重试」。
+        // 服务端现在只会发 `bad_token`，而它重连一万次带的还是同一个令牌。
+        // 曾经还有一个 `protocol_mismatch`，随手写的协议版本号一起删了——
+        // 那个数只在有人记得手动 +1 时才生效，而它想挡的漂移已经从源头消灭
+        // （两端从同一棵源码树跑，见 `scripts/dev.ts`）。
         //
         // 以后真出现「等等就好」的原因（连接数超限之类），在这里按 reason
         // 分支。现在不预留那个分支：没有生产者的分支只会让人以为它生效过。
