@@ -441,6 +441,94 @@ describe('模型目录', () => {
     expect(responses.find((m: any) => m.id === 'deepseek-v4-flash').effortLevels).toEqual([])
   })
 
+  /**
+   * **`qy probe --save` 实测出来的档位要覆盖内置目录。**
+   *
+   * 这条锁的是一条断链：`buildAdapter`（`ai/src/factory.ts:68-78`）一直是拿
+   * capabilities 覆盖目录的，所以**真正发出去的请求**用的是校准值；而这里原来
+   * 只取了 `resolveModel(...)?.kind`，把同一个返回值里的 `capabilities` 丢在地上，
+   * 于是**界面上能选哪几档仍然按内置目录报**。
+   *
+   * 失败形状是「校准了但界面纹丝不动」：探测器写回的结论有生产者没消费者，
+   * 而两处口径不一致的后果是用户选不到一个其实调得动的档位。
+   */
+  test('探测写回的档位覆盖内置目录', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'p', model: 'deepseek-v4-flash' },
+      providers: {
+        p: {
+          kind: 'openai_compatible',
+          models: {
+            'deepseek-v4-flash': {
+              capabilities: { thinking: 'reasoning_effort', effortLevels: ['low', 'medium'] },
+            },
+          },
+        },
+      },
+    }
+    const row = (await models(d)).find((m: any) => m.id === 'deepseek-v4-flash')
+    // 内置目录写的是 high/max，实测覆盖成 low/medium。
+    expect(row.effortLevels).toEqual(['low', 'medium'])
+  })
+
+  /**
+   * 未收录的模型**探过就算数**。
+   *
+   * 这一支原来写死 `effortLevels: []`，理由是「未收录 = 没测过它吃不吃 effort」。
+   * 那句话在探测之前成立，探完就不成立了——自建端点和中转站正是最需要探的地方，
+   * 而探完界面照样不给选，等于 `qy probe --save` 对它们完全无效。
+   */
+  test('未收录的模型探过之后也报档位', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'p', model: '中转站上的某个模型' },
+      providers: {
+        p: {
+          kind: 'openai_compatible',
+          models: {
+            中转站上的某个模型: {
+              capabilities: { thinking: 'reasoning_effort', effortLevels: ['high'] },
+            },
+            没探过的: {},
+          },
+        },
+      },
+    }
+    const list = await models(d)
+    expect(list.find((m: any) => m.id === '中转站上的某个模型').effortLevels).toEqual(['high'])
+    // 没探过的仍然是空：不能把「没测」说成「不支持」，也不能反过来。
+    expect(list.find((m: any) => m.id === '没探过的').effortLevels).toEqual([])
+  })
+
+  /**
+   * 选定档随模型目录一起下发，**与该模型的 `effortLevels` 同源**。
+   *
+   * 不走握手：握手是连接级、只报一次，而档位是「接口 × 模型」的属性——报上来的
+   * 那个值在用户切一次模型之后就不再成立。分两处取则必然出现「档位面是 A 模型的、
+   * 选定值是 B 模型的」。
+   */
+  test('选定档随模型目录下发，各取各的', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_compatible',
+          models: { 'deepseek-v4-flash': { effort: 'max' }, 'deepseek-v4-pro': {} },
+        },
+      },
+    }
+    const list = await models(d)
+    const flash = list.find((m: any) => m.id === 'deepseek-v4-flash')
+    expect(flash.effort).toBe('max')
+    expect(flash.effortLevels).toEqual(['high', 'max'])
+    // 同接口的另一个模型没选过就是 null，不跟着变。
+    expect(list.find((m: any) => m.id === 'deepseek-v4-pro').effort).toBeNull()
+    // 没在配置里声明过的内置模型同样是 null。
+    expect(list.find((m: any) => m.id === 'claude-opus-5').effort).toBeNull()
+  })
+
   /** 九家厂商、19 条内置模型都在——这是从青研魔盒那份目录整体搬过来的。 */
   test('内置库覆盖九家厂商', async () => {
     const d = withConfig('anthropic', 'claude-opus-5')

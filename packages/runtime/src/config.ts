@@ -8,7 +8,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { lookupModel, type ProviderKind, type ProviderProfile } from '@qywork/ai'
-import type { EffortLevel, PermissionMode } from '@qywork/core'
+import { EFFORT_ORDER, type EffortLevel, type PermissionMode } from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
 /**
@@ -43,8 +43,6 @@ export interface QyConfig {
   /** 当前生效的「接口 × 模型」。 */
   active: ModelRef
   providers: Record<string, StoredProvider>
-  /** 默认思考强度。 */
-  effort?: EffortLevel
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
@@ -130,6 +128,35 @@ export interface StoredModel {
   maxOutputTokens?: number
   /** `qy probe` 实测写入的能力覆盖。手改也行——它只是配置。 */
   capabilities?: ProviderProfile['capabilities']
+  /**
+   * 用户为这个模型选定的思考档。`undefined` = 没选过，不发思考字段。
+   *
+   * **和 `capabilities` 一样挂在「接口 × 模型」这一格，理由是同一条：
+   * 档位集合逐模型不同。** 这个字段原来是全局一个 `config.effort`，
+   * 而本仓的模型档位面从 0 档到 5 档都有：
+   *
+   * ```
+   * claude-opus-5        low medium high xhigh max
+   * deepseek-v4-flash              high       max      ← 没有 low/medium/xhigh
+   * gemini-3.1-pro       low medium high                ← 没有 xhigh/max
+   * kimi-k3              low        high       max      ← 没有 medium
+   * qwen3.7-max          （一档都没有）
+   * deepseek(responses)  （同一个模型换条协议就没档了）
+   * ```
+   *
+   * 一个全局值装不下这件事：在 Claude 上选的 `xhigh` 换到 DeepSeek 就是个
+   * 它词表里没有的值。Codex 与 Claude Code 能用一个全局字段
+   * （`model_reasoning_effort` / `effortLevel`），前提是它们只调自家模型；
+   * 本仓同时接多家，还允许 Agent Team 的每个角色各带一个模型
+   * （`team-run.ts` 的 `backend.model`），那个前提不成立。
+   *
+   * 同样多厂商的青研魔盒也是这么存的（`reasoning_level` 挂模型条目，
+   * 原话：「档位集合逐模型不同，故存在模型条目上」）。
+   *
+   * 注意这**不是第二条线**：真源仍然只有 config.json 这一处，只是键从全局
+   * 变成了「接口 × 模型」。真正的第二条线是会话表上那一列，已经删掉。
+   */
+  effort?: EffortLevel
 }
 
 /**
@@ -150,6 +177,8 @@ export interface ResolvedModel {
   maxOutputTokens?: number
   /** **模型没在这个接口下声明过就是 undefined**，不会套用别的模型的实测结果。 */
   capabilities?: ProviderProfile['capabilities']
+  /** 用户为这个模型选定的思考档。undefined = 没选过，不发思考字段。 */
+  effort?: EffortLevel
 }
 
 /**
@@ -180,7 +209,6 @@ const DEFAULT_CONFIG: QyConfig = {
       models: { 'claude-opus-5': {} },
     },
   },
-  effort: 'high',
   mode: 'auto',
 }
 
@@ -285,6 +313,7 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     // 没声明过这个模型就**不给** capabilities：套用同接口另一个模型的实测结果，
     // 等于拿 A 的实测事实去描述 B。旧结构下这是静默发生的。
     ...(declared?.capabilities ? { capabilities: declared.capabilities } : {}),
+    ...(declared?.effort ? { effort: declared.effort } : {}),
   }
 }
 
@@ -341,6 +370,29 @@ export function collectSecrets(cfg: QyConfig): { values: string[]; envNames: str
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
+
+  /*
+   * 思考档位必须在词表里。
+   *
+   * 这条校验原来在 `conversation.setEffort` 那条 WebSocket 指令上。档位收回成
+   * config.json 里那一个字段之后，指令没了，校验必须跟着搬到这里——**配置写入
+   * 的唯一闸门**（`/api/config` 不合法回 422 且不落盘）。
+   *
+   * 不搬的代价是原注释早写清楚的：落盘一个不在词表里的值，下一轮就被原样发给
+   * provider，然后是一个 400，而错误信息里只有 provider 的原话。
+   */
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    for (const [id, m] of Object.entries(p.models)) {
+      if (m.effort !== undefined && !EFFORT_ORDER.includes(m.effort)) {
+        problems.push(
+          `${name} / ${id} 的思考强度 "${m.effort}" 不认识。\n` +
+            `  可选：${EFFORT_ORDER.join('、')}\n` +
+            `  这是**档位全集**；这个模型实际支持哪几档看 qy probe 或界面上的选项。`,
+        )
+      }
+    }
+  }
+
   const stored = cfg.providers[cfg.active.provider]
 
   if (!stored) {

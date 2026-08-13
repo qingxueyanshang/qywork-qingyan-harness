@@ -89,6 +89,39 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
   })
 })
 
+/**
+ * 档位不在这个模型的档位面里，一个字节都不发。
+ *
+ * **这道闸只有这条协议缺**：`openai-responses` 是
+ * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档，
+ * 而这里原来把 `effort` 原样发出去，判据只有「有没有给」。
+ *
+ * 单厂商工具（Codex 的 `model_reasoning_effort`、Claude Code 的 `effortLevel`）
+ * 不需要它，因为它们只调自家模型、档位面一致。本仓不是：档位选定值挂在
+ * 「接口 × 模型」那一格，同一个模型换条协议档位面就变，Agent Team 的角色还
+ * 各带各的模型。越界值到这里不拦，就是发给 provider 的一个 400。
+ */
+describe('越界的档位不发', () => {
+  /** DeepSeek 只有 high/max。`xhigh` 是 Claude 那边的档，它在这里不存在。 */
+  test('DeepSeek 收不到 xhigh', async () => {
+    const body = await send('deepseek-v4-flash', 'xhigh')
+    expect('thinking' in body).toBe(false)
+    expect('reasoning_effort' in body).toBe(false)
+  })
+
+  /** Gemini 只有 low/medium/high，`max` 同样越界。 */
+  test('Gemini 收不到 max', async () => {
+    expect('reasoning_effort' in (await send('gemini-3.1-pro', 'max'))).toBe(false)
+  })
+
+  /** 档位面里的照常发——这道闸只拦越界的，不是把 effort 整个关掉。 */
+  test('档位面里的照常发', async () => {
+    const body = await send('deepseek-v4-flash', 'high')
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.reasoning_effort).toBe('high')
+  })
+})
+
 describe('不该发的时候一个字节都不多发', () => {
   /**
    * 自建端点 / 中转站的模型目录里没有，`unknownModel()` 的 `thinking` 是 `'none'`。

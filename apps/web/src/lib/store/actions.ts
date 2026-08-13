@@ -11,7 +11,10 @@ import { client, discardPace, reloadActiveConversation } from './connection.ts'
 import {
   addWorkspace,
   isDesktopShell,
+  loadServerConfig,
   loadWorkspaceExtensions,
+  type RedactedConfig,
+  saveServerConfig,
   watchWorkspace,
 } from './settings.ts'
 import { setState, state } from './state.ts'
@@ -141,11 +144,52 @@ export function setModel(model: string): void {
   client.send({ type: 'conversation.setModel', conversationId: id as never, model })
 }
 
-/** 切换当前会话的思考强度。与 `setModel` 同样不做乐观更新，理由同上。 */
-export function setEffort(effort: EffortLevel | null): void {
-  const id = state.activeConversation
-  if (!id) return
-  client.send({ type: 'conversation.setEffort', conversationId: id as never, effort })
+/**
+ * 切换当前模型的思考强度。
+ *
+ * **写「接口 × 模型」那一格**，走 `/api/config` 这条已有的写入路径——配置的
+ * 真源就是那一个 config.json，不新开接口。档位不是全局一个值：本仓同时接多家
+ * 模型，档位面从 0 档到 5 档都有（Claude 五档、DeepSeek 两档、Qwen 一档没有），
+ * 而且 Agent Team 的每个角色各带一个模型。Codex 与 Claude Code 用一个全局字段
+ * 是因为它们只调自家模型，这个前提在这里不成立。
+ *
+ * 只负责落盘。界面那一行由调用方就地更新——模型目录的 signal 住在选择器组件里，
+ * 从这里去改它要反向依赖组件，那条边一加就成环。
+ */
+export async function setEffort(effort: EffortLevel | null): Promise<void> {
+  const model = activeModel()
+  if (!model) return
+  const payload = await loadServerConfig()
+  const owner = ownerProvider(payload.config, model)
+  if (!owner) return
+  const providers = payload.config.providers
+  const entry = { ...providers[owner]?.models[model] }
+  if (effort) entry.effort = effort
+  else delete entry.effort
+  await saveServerConfig({
+    ...payload.config,
+    providers: {
+      ...providers,
+      [owner]: {
+        ...providers[owner]!,
+        models: { ...providers[owner]!.models, [model]: entry },
+      },
+    },
+  })
+}
+
+/**
+ * 这个模型挂在哪个接口下。
+ *
+ * 规则与服务端的 `resolveModel` 一致：**先找哪个接口声明了它，当前接口优先**，
+ * 都没有就落到当前接口。两处答案不一致的话，写进去的那一格和读出来的不是同一格。
+ */
+function ownerProvider(config: RedactedConfig, model: string): string | undefined {
+  const owners = Object.keys(config.providers).filter((n) => config.providers[n]?.models[model])
+  if (owners.includes(config.active.provider)) return config.active.provider
+  return (
+    owners[0] ?? (config.providers[config.active.provider] ? config.active.provider : undefined)
+  )
 }
 
 /**
@@ -201,6 +245,8 @@ export interface ModelOption {
   vendor: string | null
   /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */
   effortLevels: EffortLevel[]
+  /** 用户为这个模型选定的档。null = 没选过，不发思考字段。与上一行同源。 */
+  effort: EffortLevel | null
   /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
   currency: 'USD' | 'CNY'
   /** false = 内置目录里没有，来自用户自己配的档案（自建端点 / 中转）。 */
@@ -230,13 +276,6 @@ export function activeModel(): string | null {
   const id = state.activeConversation
   if (!id) return null
   return state.conversations.find((c) => c.id === id)?.model ?? null
-}
-
-/** 当前会话的思考强度。null = 跟随配置默认，不是「关掉」。 */
-export function activeEffort(): EffortLevel | null {
-  const id = state.activeConversation
-  if (!id) return null
-  return state.conversations.find((c) => c.id === id)?.effort ?? null
 }
 
 export async function newConversation(): Promise<void> {

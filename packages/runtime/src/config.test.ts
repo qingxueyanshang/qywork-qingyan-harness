@@ -330,3 +330,94 @@ describe('配置提醒', () => {
     expect(configNotices(cfg()).some((s) => s.includes('profiles'))).toBe(false)
   })
 })
+
+/**
+ * 思考档位的词表校验。
+ *
+ * 这条校验原来住在 `conversation.setEffort` 那条 WebSocket 指令上。档位收回成
+ * config.json 里那**一个**字段之后指令没了，校验必须跟着搬到配置这道闸门——
+ * 否则任何客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider，
+ * 换来一个 400，而错误信息里只有 provider 的原话。
+ */
+/**
+ * 档位挂在「接口 × 模型」那一格。
+ *
+ * **本仓不能用一个全局值**，理由是 Codex / Claude Code 那个前提在这里不成立：
+ * 它们只调自家模型、档位面一致，所以一个 `model_reasoning_effort` /
+ * `effortLevel` 够用。这里同时接多家（Claude 五档、DeepSeek 两档、Qwen 一档没有、
+ * 同一个模型换条协议档位面还会变），而且 Agent Team 的每个角色各带一个模型
+ * （`team-run.ts` 的 `backend.model`）——一个全局值套上去必然错配。
+ */
+describe('按「接口 × 模型」取档位', () => {
+  const two = cfg({
+    active: { provider: 'ds', model: 'deepseek-v4-flash' },
+    providers: {
+      ds: {
+        kind: 'openai_compatible',
+        apiKey: 'sk-ds',
+        models: { 'deepseek-v4-flash': { effort: 'max' }, 'deepseek-v4-pro': {} },
+      },
+      claude: {
+        kind: 'anthropic',
+        apiKey: 'sk-c',
+        models: { 'claude-opus-5': { effort: 'xhigh' } },
+      },
+    },
+  })
+
+  test('各取各的那一格', () => {
+    expect(resolveModel(two, 'deepseek-v4-flash')?.effort).toBe('max')
+    // xhigh 在 DeepSeek 上根本不存在，而它是 Claude 那一格的合法值——
+    // 这正是全局一个值装不下的东西。
+    expect(resolveModel(two, 'claude-opus-5')?.effort).toBe('xhigh')
+  })
+
+  /** 同接口的另一个模型不跟着变：挂在接口上就是拿 A 的选择去描述 B。 */
+  test('同接口的另一个模型不受影响', () => {
+    expect(resolveModel(two, 'deepseek-v4-pro')?.effort).toBeUndefined()
+  })
+
+  /** 没选过就是 undefined，**不替它挑一档**——挑「第一档」在两个模型上是两个意思。 */
+  test('没选过是 undefined，不编一个默认档', () => {
+    expect(resolveModel(cfg(), 'deepseek-v4-flash')?.effort).toBeUndefined()
+  })
+})
+
+describe('思考档位校验', () => {
+  // 只看档位这一条：夹具没有 key，别的问题与这里无关。
+  const effortProblems = (c: QyConfig) => diagnoseConfig(c).filter((p) => p.includes('思考强度'))
+
+  const withEffort = (effort: unknown): QyConfig =>
+    cfg({
+      providers: {
+        ds: {
+          kind: 'openai_compatible',
+          apiKey: 'sk-x',
+          models: { 'deepseek-v4-flash': { effort: effort as never } },
+        },
+      },
+    })
+
+  /**
+   * 这条校验原来住在 `conversation.setEffort` 那条 WebSocket 指令上。档位改挂
+   * 「接口 × 模型」那一格之后指令没了，校验必须跟到配置这道闸门——否则任何
+   * 客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider 换一个 400。
+   */
+  test('词表外的值算致命问题（422 且不落盘）', () => {
+    expect(effortProblems(withEffort('ultra'))).toHaveLength(1)
+  })
+
+  test('词表里的值放行', () => {
+    expect(effortProblems(withEffort('max'))).toEqual([])
+  })
+
+  /** 没选过 = 不发思考字段，让模型走自己的默认，不是问题。 */
+  test('没选过不算问题', () => {
+    expect(effortProblems(cfg())).toEqual([])
+  })
+
+  /** 报错要点名是哪个接口下的哪个模型——多家模型并存时，不点名等于没说。 */
+  test('报错点名接口与模型', () => {
+    expect(effortProblems(withEffort('ultra'))[0]).toContain('ds / deepseek-v4-flash')
+  })
+})

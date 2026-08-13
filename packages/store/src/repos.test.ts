@@ -7,11 +7,9 @@ import {
   createRun,
   findRunByClientRequest,
   finishRun,
-  getConversation,
   listConversations,
   listMessages,
   listSteps,
-  setConversationEffort,
   settleToolStep,
   upsertWorkspace,
   workspaceOf,
@@ -172,51 +170,6 @@ describe('run 收尾', () => {
     const found = findRunByClientRequest(store, conv.id, 'r')
     expect(found?.usage.cachedTokens).toBeNull()
     expect(run.usage.cachedTokens).toBeNull()
-    store.close()
-  })
-})
-
-describe('会话级思考强度', () => {
-  /**
-   * 复现原始形状：这个值以前只有全局一份（`config.effort`），于是「给这个会话
-   * 调低一点」做不到，改了会连带改掉所有会话的下一轮。
-   */
-  test('不传就是 null —— 跟随配置默认，不是「关掉思考」', () => {
-    const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
-    expect(conv.effort).toBeNull()
-    store.close()
-  })
-
-  test('新建时定格下来的值能读回', () => {
-    const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'low' })
-    expect(getConversation(store, conv.id)?.effort).toBe('low')
-    store.close()
-  })
-
-  test('改一条不影响另一条', () => {
-    const { store, ws } = fresh()
-    const a = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'high' })
-    const b = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'high' })
-    setConversationEffort(store, a.id, 'max')
-    expect(getConversation(store, a.id)?.effort).toBe('max')
-    expect(getConversation(store, b.id)?.effort).toBe('high')
-    store.close()
-  })
-
-  /** null 是合法目标值。用「假值即不改」的写法会让「清除」这个动作永远失效。 */
-  test('能清回 null', () => {
-    const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', effort: 'max' })
-    setConversationEffort(store, conv.id, null)
-    expect(getConversation(store, conv.id)?.effort).toBeNull()
-    store.close()
-  })
-
-  test('会话不存在时回 null，不是静默成功', () => {
-    const { store } = fresh()
-    expect(setConversationEffort(store, 'cv_没有这条' as never, 'low')).toBeNull()
     store.close()
   })
 })

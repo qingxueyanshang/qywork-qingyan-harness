@@ -141,7 +141,6 @@ export async function runInit(args: string[]): Promise<number> {
     // --force 重建时保留用户已有的其它接口：他们要换的是当前用哪个，
     // 不是把之前配好的几家全删掉。
     providers: { ...(existing?.providers ?? {}), [preset.key]: provider },
-    effort: existing?.effort ?? 'high',
     // 默认 auto：不弹窗，由硬边界 + 静态规则 + 分类器裁决。
     // 想完全放开要用户自己去写 "mode": "full"——那个决定不该由 init 替他做。
     mode: existing?.mode ?? 'auto',
@@ -172,7 +171,6 @@ function templateConfig(): QyConfig {
         models: { [preset.model]: { ...preset.modelConfig } },
       },
     },
-    effort: 'high',
     mode: 'auto',
   }
 }

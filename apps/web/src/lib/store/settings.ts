@@ -22,6 +22,13 @@ export interface RedactedModel {
   maxOutputTokens?: number
   /** 保存时原样回传，避免把探测的实测结果洗掉。 */
   capabilities?: unknown
+  /**
+   * 用户为这个模型选定的思考档。
+   *
+   * 和 `capabilities` 一样住在这一格：档位集合逐模型不同，全局一个值在
+   * Claude 上选的 `xhigh` 换到 DeepSeek 就是个它没有的档。
+   */
+  effort?: EffortLevel
 }
 
 /** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
@@ -57,7 +64,7 @@ export interface RedactedProvider {
 export interface RedactedConfig {
   active: ModelRef
   providers: Record<string, RedactedProvider>
-  effort?: EffortLevel
+  // 思考档位**不在顶层**：它是「接口 × 模型」那一格的属性，见 `RedactedModel.effort`。
   mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]

@@ -318,9 +318,6 @@ export class Session {
         workspaceId: this.workspaceId as never,
         model: options?.model ?? config.active.model,
         title: prompt.slice(0, 60),
-        // 新会话把当前默认思考强度**定格下来**，而不是留 null 一直跟随配置。
-        // 留 null 的话，用户改一次全局默认会连带改掉所有老会话的下一轮行为。
-        ...(config.effort ? { effort: config.effort } : {}),
         ...(options?.source ? { source: options.source } : {}),
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
       }).id
@@ -330,8 +327,10 @@ export class Session {
     // 下一轮又被配置文件里的默认值悄悄改回去。
     const conversation = getConversation(store, conversationId)
     const model = options?.model ?? conversation?.model ?? config.active.model
-    // 思考强度同理，会话优先。null 表示这条会话没有自己的值（老数据），才回落配置。
-    const effort = conversation?.effort ?? config.effort
+    // 思考强度**按这一轮真正要用的那个模型解析**，真源是配置里
+    // 「接口 × 模型」那一格。不存会话级的第二份，也不共用一个全局值——
+    // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
+    const effort = resolveModel(config, model)?.effort
 
     // 重试不新增消息：要重现的是「当时那个上下文」。新写一条会让同一句话
     // 在历史里出现两遍，模型看到的输入和第一次就不一样了。
@@ -666,17 +665,25 @@ export class Session {
   private classifierAsk(): AskFn {
     return async ({ system, user }) => {
       const ref = this.opts.config.classifier
-      const stored = ref ? resolveModel(this.opts.config, ref) : undefined
-      const profile = stored
+      const stored = resolveModel(this.opts.config, ref)
+      const profile = ref
         ? {
-            kind: stored.kind,
-            apiKey: resolveApiKey(stored),
-            model: stored.model,
-            ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-            ...(stored.headers ? { headers: stored.headers } : {}),
+            kind: stored?.kind ?? 'openai_compatible',
+            apiKey: stored ? resolveApiKey(stored) : '',
+            model: stored?.model ?? ref.model,
+            ...(stored?.baseUrl ? { baseUrl: stored.baseUrl } : {}),
+            ...(stored?.headers ? { headers: stored.headers } : {}),
           }
         : this.resolveProfile()
       const adapter = buildAdapter(profile)
+      /*
+       * 档位按**分类器自己那个模型**解析，不是主循环那一档。
+       *
+       * `config.classifier` 可以指向另一个模型（这条配置存在的理由就是「裁决
+       * 不必和主循环同一个模型」），而档位集合逐模型不同——主循环在 Claude 上
+       * 跑 `xhigh`，分类器指向 DeepSeek 时那一档它根本没有。
+       */
+      const effort = stored?.effort
 
       let text = ''
       let spent: { cost: number; u: ProviderUsage } | null = null
@@ -686,11 +693,25 @@ export class Session {
         system: [{ text: system, cacheBreakpoint: true }],
         messages: [{ role: 'user', content: user }],
         tools: [],
-        // 判定只需要一个短结论。给大了不会更准，只会更慢更贵——
-        // 而这次调用挡在每条命令前面，慢一秒用户就感觉得到。
-        maxOutputTokens: 512,
-        // 裁决不需要思考：要的是照规则对号入座，不是推理。
-        thinking: { mode: 'disabled' },
+        /**
+         * 预算必须容得下**思考 + 正文**，不能按正文的长度给。
+         *
+         * 这里原来是 512，配着一句「裁决不需要思考」的 `thinking:{mode:'disabled'}`。
+         * 两条都不成立，代价是实测出来的（2026-08-13，deepseek-v4-flash）：
+         *
+         * - **「不思考」不是每个模型都有的档。** DeepSeek 的控制面只有 high / max
+         *   两档，没有关闭档；`disabled` 在这条协议上根本发不出去，模型照常思考。
+         * - **512 于是全被推理吃光**（`reasoning_tokens=512`），正文一个字都没有，
+         *   `parseVerdict('')` 返回 null，两段判定都失败 → fail-closed。
+         *   表现是 auto 模式下每一条静态规则判不了的命令都必然被拒，
+         *   而理由写的是「分类器回复解析失败」。
+         * - 真按它的档位跑，**光正文那一段就要 1109 token**（high 档峰值）。
+         *
+         * 4096 是按那次峰值留的余量。它是上限不是消耗——判得快的那些
+         * （max 档 fast 段一次判完，529 token）不会因为上限高而多花一分钱。
+         */
+        maxOutputTokens: 4096,
+        ...(effort ? { effort } : {}),
         // 同一会话内规则前缀不变，给一个稳定的亲和键。
         cacheKey: `qy-classifier-${adapter.spec.id}`,
         signal: this.opts.signal,

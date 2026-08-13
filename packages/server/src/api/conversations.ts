@@ -1,5 +1,6 @@
 /** 模型目录、会话、消息、run。前端进来第一屏要的全在这。 */
 
+import type { ModelSpec, ProviderProfile } from '@qywork/ai'
 import { builtinCatalog, effortIsTransmittable, lookupModel, VENDORS } from '@qywork/ai'
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
 import { resolveModel } from '@qywork/runtime'
@@ -19,9 +20,42 @@ interface ModelRow {
   provider: string
   vendor: string | null
   effortLevels: EffortLevel[]
+  /**
+   * 用户为这个模型选定的档。`null` = 没选过，不发思考字段。
+   *
+   * **和 `effortLevels` 一起下发**：一个是「这个模型有哪几档」，一个是
+   * 「当前选的是哪档」，两者都逐模型不同，分两处取必然出现「档位面是 A 模型的、
+   * 选定值是 B 模型的」。不走握手也是这个原因——握手是连接级、只报一次，
+   * 用户切一次模型那个值就不再成立。
+   */
+  effort: EffortLevel | null
   /** 计价币种。缺省是 USD，阿里 / 月之暗面 / 智谱三家官网按人民币标价。 */
   currency: 'USD' | 'CNY'
   known: boolean
+}
+
+/**
+ * 把 `qy probe --save` 实测出来的能力叠到目录条目上。
+ *
+ * **与 `buildAdapter` 是同一件事**（`ai/src/factory.ts:68-78`），必须同一个口径：
+ * 那边决定请求里真的发哪几档，这里决定界面上能选哪几档。原来这里没叠，于是
+ * **校准过的档位决定得了发出去的请求，却决定不了界面上的选项**——探测器写回的
+ * capabilities 有生产者没消费者，用户探完一看界面纹丝不动。
+ *
+ * 顺序与那边一致：目录是猜的，探测是实测的，越往后越权威。
+ */
+function withProbed(
+  spec: ModelSpec,
+  stored: { capabilities?: ProviderProfile['capabilities'] } | undefined,
+): ModelSpec {
+  const probed = stored?.capabilities
+  if (!probed) return spec
+  return {
+    ...spec,
+    ...(probed.thinking ? { thinking: probed.thinking } : {}),
+    ...(probed.effortLevels ? { effortLevels: probed.effortLevels } : {}),
+    ...(probed.thinksByDefault !== undefined ? { thinksByDefault: probed.thinksByDefault } : {}),
+  }
 }
 
 export const handleConversationsApi: ApiHandler = async (url, req, d) => {
@@ -42,7 +76,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       // 用原生那条报出去，经中转站以兼容协议调 Claude 的用户会看到五档
       // 思考强度，而那条协议根本不发 Anthropic 的思考字段——又一个
       // 选了没反应的控件，且只在某些配置下才犯，最难被当成 bug 报出来。
-      const actual = lookupModel(spec.id, resolveModel(d.config, spec.id)?.kind ?? spec.provider)
+      const stored = resolveModel(d.config, spec.id)
+      const actual = withProbed(lookupModel(spec.id, stored?.kind ?? spec.provider), stored)
       models.push({
         id: spec.id,
         label: spec.displayName,
@@ -51,6 +86,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上
         // 调不了思考，显示出来就是一个选了没反应的控件。
         effortLevels: effortIsTransmittable(actual) ? actual.effortLevels : [],
+        effort: stored?.effort ?? null,
         currency: spec.pricing.currency ?? 'USD',
         known: true,
       })
@@ -59,13 +95,19 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       for (const id of Object.keys(provider.models)) {
         if (seen.has(id)) continue
         seen.add(id)
+        const actual = withProbed(lookupModel(id, provider.kind), {
+          capabilities: provider.models[id]?.capabilities,
+        })
         models.push({
           id,
           label: `${id}（${name}）`,
           provider: provider.kind,
           vendor: null,
-          // 未收录 = 没测过它吃不吃 effort，按 `unknownModel()` 的口径给空。
-          effortLevels: [],
+          // 未收录的模型目录里查不到档位，**但探过就算数**：`qy probe --save`
+          // 写回的 capabilities 是实测事实，比「按 unknownModel() 给空」准。
+          // 这里原来写死 `[]`，于是自建端点探完了界面上照样没有档位可选。
+          effortLevels: effortIsTransmittable(actual) ? actual.effortLevels : [],
+          effort: provider.models[id]?.effort ?? null,
           // 未收录的计价本来就是 0，币种给 USD 只是占位——前端按「未知计价」显示。
           currency: 'USD',
           known: false,

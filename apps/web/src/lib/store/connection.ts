@@ -92,7 +92,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
         const conv = s.conversations.find((c) => c.id === ev.conversationId)
         if (conv) {
           conv.model = ev.model
-          conv.effort = ev.effort
           conv.title = ev.title
         }
       }),

@@ -12,7 +12,6 @@
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   CompactionManifest,
-  EffortLevel,
   FileChange,
   RunUsage,
   StopReason,
@@ -82,8 +81,6 @@ export interface ConversationUpdatedEvent {
   type: 'conversation.updated'
   conversationId: ConversationId
   model: string
-  /** null = 跟随配置默认。和 model 同一条广播——它们是同一层的两个旋钮。 */
-  effort: EffortLevel | null
   title: string
 }
 
