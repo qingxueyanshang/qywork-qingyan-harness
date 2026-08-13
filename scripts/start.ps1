@@ -121,24 +121,23 @@ if ($Mode -eq 'desktop') {
   Clear-DevPort 5180
   Clear-StaleShell
 
-  # 把工作区钉到仓库根。
+  # 走 scripts/dev.ts，**不要直接 `tauri dev`**。
   #
-  # `tauri dev` 实际执行的是 `cargo run`，它的 cwd 是 apps/desktop/src-tauri。
-  # Rust 侧 resolve_workspace() 的第三条分支拿 current_dir() 且能通过可写探针，
-  # 于是桌面端的工作区变成了 src-tauri 目录——而手动跑的 `qy serve` 在仓库根。
-  # 会话是按 workspaceId 分表的，结果就是同一个人在两个客户端看到两份互不相交
-  # 的会话列表，看起来像「对话丢了」（ROADMAP §33.2）。
+  # 直接跑 tauri dev 的话，外壳会 spawn `externalBin` 那个预编译的 bin/qy——
+  # 于是改了 packages/server 不重编就完全看不出来，症状还会伪装成前端 bug。
+  # 实际踩到过：旧二进制少一条路由，前端抛的是 undefined.id；旧二进制还在按
+  # 老规矩报协议版本，新前端已经不发这个字段，界面上是「服务端协议版本 2，
+  # 客户端 undefined」。dev.ts 让 sidecar 从源码跑（bun --watch）并把令牌和端口
+  # 灌给两边，两端同源，这类漂移在开发路径上不再可能。
   #
-  # 用 Rust 侧**本来就支持**的这个环境变量钉死，不需要改 Rust，
-  # 也不影响安装版的行为（那边 cwd 是安装目录，照常回落到家目录）。
-  $env:QYWORK_WORKSPACE = $root
-
-  Say 'tauri dev 启动中（首次编译较慢，之后走 target\debug 缓存约 20 秒）…'
+  # 工作区钉到仓库根这件事由 dev.ts 自己做（它 spawn 外壳时设 QYWORK_WORKSPACE）,
+  # 这里不再设第二遍——设了也会被它覆盖，留着就是两本账。
+  Say 'dev 编排启动中：sidecar 从源码跑，外壳首次编译较慢，之后约 20 秒…'
   Say "工作区 $root"
   Say '窗口出来即可用。Ctrl-C 或关窗口退出，sidecar 会跟着退。'
   Write-Host ''
 
-  bun run --cwd apps/desktop tauri dev
+  bun run dev
   exit $LASTEXITCODE
 }
 
