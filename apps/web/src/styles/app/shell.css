@@ -214,6 +214,10 @@
   background: var(--bg-active);
   color: var(--text-primary);
 }
+/* 会话选中**不转深色**：底色已经说明了选中，再加深就比上面的项目名还黑。 */
+.nav-item.conv.active {
+  color: var(--text-secondary);
+}
 /* 会话缩进挂在项目名下面：缩进本身就是「它属于这个项目」，
    不需要再加一个分组标题去说。
    缩进量对齐的是**项目名的第一个字**，不是随便取一档：项目行是
@@ -222,8 +226,22 @@
    改图标尺寸时这两处要一起改。 */
 .nav-item.conv {
   padding-left: calc(var(--s-2) * 2 + 15px);
-  /* 比项目行小一档：缩进表达从属，字号表达层级，两者方向要一致。 */
-  font-size: var(--fs-base);
+  /* 比项目行小两档：14px 的项目名旁边放 13px 分不出来，12px 才读得出主次。 */
+  font-size: var(--fs-sm);
+}
+
+/* 项目行和它下面的会话之间、以及项目与项目之间，都留 2px。
+   不留的话高亮底色会连成一整块，看不出这是几条独立的行——
+   `.nav-list` 里本来就是这个间距，这里只是把同一条规矩补到外面这一层。 */
+.sidebar-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* ── 项目 ──
