@@ -484,6 +484,45 @@ describe('超时事实', () => {
     expect(seen).not.toContain('强制终止')
   })
 
+  /**
+   * 带探测地址时，命令的性质变了：不是「起一个服务器」，而是
+   * 「起服务 → 探到就绪 → 抓一次响应 → 树杀」这一个原子动作。
+   *
+   * 不告诉裁决层的话它看到的还是命令字面，仍然按「启动常驻服务器」拒——
+   * 与超时是同一类信息缺失。实测（deepseek-v4-flash，max 档）：给了这条事实
+   * 之后 `python -m http.server 8000` 与 `npm run dev` 都在 fast 段直接放行，
+   * 理由是「进程会被强制终止且不对外提供服务」。
+   */
+  test('带探测地址时把这次调用的真实动作说清楚', async () => {
+    let seen = ''
+    await classify(
+      {
+        command: 'npm run dev',
+        transcript: '',
+        timeoutMs: 30_000,
+        probeUrl: 'http://127.0.0.1:5173/',
+      },
+      {
+        ask: async ({ user }) => {
+          seen = user
+          return '{"decision":"allow","reason":"探完就杀"}'
+        },
+      },
+    )
+    expect(seen).toContain('http://127.0.0.1:5173/')
+    expect(seen).toContain('杀掉整棵进程树')
+  })
+
+  /** 带不带探测是两条不同的调用，不能命中同一条缓存。 */
+  test('探测地址进缓存 key', () => {
+    const cache = new VerdictCache()
+    const plain: ClassifyInput = { command: 'npm run dev', transcript: '', timeoutMs: 30_000 }
+    const probed: ClassifyInput = { ...plain, probeUrl: 'http://127.0.0.1:5173/' }
+    cache.set(probed, { blocked: false, reason: '探完就杀', stage: 'fast' })
+    expect(cache.get(probed)?.blocked).toBe(false)
+    expect(cache.get(plain)).toBeUndefined()
+  })
+
   /** system prompt 是缓存前缀，超时属于**这一次调用**，混进去会让前缀每次都变。 */
   test('超时不进 system prompt', async () => {
     let seen = ''
