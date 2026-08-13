@@ -8,6 +8,7 @@
  * 所以账本不设外键：`run_id` / `conversation_id` 只是线索，指向的行没了不影响账目成立。
  */
 
+import type { Currency } from '@qywork/core'
 import { newUsageId } from '@qywork/core'
 import type { Store } from './db.ts'
 
@@ -38,7 +39,9 @@ export interface UsageEntry {
   cachedTokens?: number | null
   cacheWriteTokens?: number | null
   reasoningTokens?: number
-  costUsd: number
+  cost: number
+  /** 上面那个数字的币种。省略即 USD。**不换算**，各币种分开合计。 */
+  currency?: Currency
   occurredAt?: number
 }
 
@@ -56,8 +59,8 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
         `INSERT INTO usage_ledger
            (id, kind, run_id, conversation_id, workspace_id, model, provider,
             input_tokens, output_tokens, cached_tokens, cache_write_tokens,
-            reasoning_tokens, cost_usd, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            reasoning_tokens, cost, currency, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         newUsageId(),
@@ -72,7 +75,8 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
         entry.cachedTokens ?? null,
         entry.cacheWriteTokens ?? null,
         entry.reasoningTokens ?? 0,
-        entry.costUsd,
+        entry.cost,
+        entry.currency ?? 'USD',
         entry.occurredAt ?? Date.now(),
       )
     return true
@@ -111,7 +115,14 @@ export interface UsageTotals {
   /** null = 这段区间里没有任何一笔回报过缓存。不要显示成 0。 */
   cachedTokens: number | null
   reasoningTokens: number
-  costUsd: number
+  /**
+   * **按币种分开，不合计也不换算。**
+   *
+   * 只放这段区间里真的出现过的币种——空对象就是「这段区间没花钱」。
+   * 合成一个数字要一个汇率，而汇率天天变，落盘之后那个数字就开始说谎，
+   * 偏偏它看起来仍然是个确切的金额。
+   */
+  cost: Record<string, number>
 }
 
 export interface UsageBucket extends UsageTotals {
@@ -148,7 +159,6 @@ interface RawTotals {
   cached_tokens: number | null
   cached_reports: number
   reasoning_tokens: number | null
-  cost_usd: number | null
 }
 
 const TOTAL_COLS = `COUNT(*) AS n,
@@ -156,8 +166,7 @@ const TOTAL_COLS = `COUNT(*) AS n,
    SUM(output_tokens) AS output_tokens,
    SUM(cached_tokens) AS cached_tokens,
    COUNT(cached_tokens) AS cached_reports,
-   SUM(reasoning_tokens) AS reasoning_tokens,
-   SUM(cost_usd) AS cost_usd`
+   SUM(reasoning_tokens) AS reasoning_tokens`
 
 function shape(r: RawTotals): UsageTotals {
   return {
@@ -169,8 +178,28 @@ function shape(r: RawTotals): UsageTotals {
     // 而那是个具体但错误的结论。
     cachedTokens: r.cached_reports > 0 ? (r.cached_tokens ?? 0) : null,
     reasoningTokens: r.reasoning_tokens ?? 0,
-    costUsd: r.cost_usd ?? 0,
+    // 金额单独查（见 `costsOf`）：一行 SUM 出不来「按币种分开」。
+    cost: {},
   }
+}
+
+/**
+ * 这段区间里各币种各花了多少。
+ *
+ * 单独一条 `GROUP BY currency` 而不是塞进 `TOTAL_COLS`：一次 SUM 只能得到
+ * 一个数字，而把两种货币加起来的那个数字没有意义。
+ */
+function costsOf(store: Store, where: string, args: (string | number)[]): Record<string, number> {
+  const rows = store.db
+    .query<{ currency: string; total: number | null }, (string | number)[]>(
+      `SELECT currency, SUM(cost) AS total FROM usage_ledger ${where} GROUP BY currency`,
+    )
+    .all(...args)
+  const out: Record<string, number> = {}
+  for (const r of rows) {
+    if (r.total) out[r.currency] = r.total
+  }
+  return out
 }
 
 export function usageTotals(store: Store, q: UsageQuery = {}): UsageTotals {
@@ -178,10 +207,13 @@ export function usageTotals(store: Store, q: UsageQuery = {}): UsageTotals {
   const row = store.db
     .query<RawTotals, (string | number)[]>(`SELECT ${TOTAL_COLS} FROM usage_ledger ${w.sql}`)
     .get(...w.args)
-  return shape(row ?? ({ n: 0, cached_reports: 0 } as RawTotals))
+  return {
+    ...shape(row ?? ({ n: 0, cached_reports: 0 } as RawTotals)),
+    cost: costsOf(store, w.sql, w.args),
+  }
 }
 
-export type GroupBy = 'model' | 'day' | 'workspace' | 'kind'
+export type GroupBy = 'model' | 'day' | 'workspace' | 'kind' | 'currency'
 
 const GROUP_EXPR: Record<GroupBy, string> = {
   model: 'model',
@@ -190,18 +222,44 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   day: "strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch', 'localtime')",
   workspace: "COALESCE(workspace_id, '(无)')",
   kind: 'kind',
+  currency: 'currency',
 }
 
+/**
+ * 分组统计。
+ *
+ * 排序口径变过一次：原来是 `ORDER BY cost_usd DESC`——「最贵的排前面」。
+ * 多币种之后这句话没有唯一解（¥100 和 $20 谁在前？要汇率才知道），
+ * 所以改成按**笔数**倒序。笔数是无量纲的，跨币种可比，而且「哪个模型用得最多」
+ * 本身也是这张表要回答的问题之一。金额仍在每行里按币种分开列出。
+ */
 export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBucket[] {
   const w = where(q)
   const expr = GROUP_EXPR[by]
   const rows = store.db
     .query<RawTotals & { key: string }, (string | number)[]>(
       `SELECT ${expr} AS key, ${TOTAL_COLS} FROM usage_ledger ${w.sql}
-       GROUP BY key ORDER BY cost_usd DESC, key ASC`,
+       GROUP BY key ORDER BY n DESC, key ASC`,
     )
     .all(...w.args)
-  return rows.map((r) => ({ key: r.key, ...shape(r) }))
+
+  // 金额按 (分组键, 币种) 再查一遍。同一个分组里出现两种币种是可能的
+  // ——`--by day` 就是典型：同一天用了 Claude 也用了 GLM。
+  const costRows = store.db
+    .query<{ key: string; currency: string; total: number | null }, (string | number)[]>(
+      `SELECT ${expr} AS key, currency, SUM(cost) AS total FROM usage_ledger ${w.sql}
+       GROUP BY key, currency`,
+    )
+    .all(...w.args)
+  const costs = new Map<string, Record<string, number>>()
+  for (const r of costRows) {
+    if (!r.total) continue
+    const bucket = costs.get(r.key) ?? {}
+    bucket[r.currency] = r.total
+    costs.set(r.key, bucket)
+  }
+
+  return rows.map((r) => ({ key: r.key, ...shape(r), cost: costs.get(r.key) ?? {} }))
 }
 
 /** 删掉某个时间点之前的账目。用户要清账时用，不是自动 GC。 */

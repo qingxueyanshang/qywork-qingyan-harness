@@ -47,6 +47,7 @@
 
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError, ProviderError } from '../errors.ts'
+import { estimateTokens } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -63,8 +64,14 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
-  // Responses 协议有原生的 reasoning 字段（含 effort），两条都发。
-  readonly transmits = { thinking: true, effort: true }
+  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按模型的 spec 算**：
+  // 未收录的模型两个字段都省略，声明成恒 true 会让探针恒通过。
+  get transmits(): { thinking: boolean; effort: boolean } {
+    return {
+      thinking: this.spec.thinking !== 'none',
+      effort: this.spec.effortLevels.length > 0,
+    }
+  }
   readonly spec: ModelSpec
   private readonly baseUrl: string
   private readonly headers: Record<string, string>
@@ -164,9 +171,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
               json: '',
             }
             partial.set(idx, slot)
-            if (slot.name) {
-              yield { type: 'tool_call_start', index: idx, id: slot.id, name: slot.name }
-            }
           }
           continue
         }
@@ -175,10 +179,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           const idx = Number(event.output_index ?? 0)
           const slot = partial.get(idx)
           const argsDelta = String(event.delta ?? '')
-          if (slot && argsDelta) {
-            slot.json += argsDelta
-            yield { type: 'tool_call_delta', index: idx, argsDelta }
-          }
+          if (slot && argsDelta) slot.json += argsDelta
           continue
         }
 
@@ -212,7 +213,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             name,
             json: typeof item.arguments === 'string' ? item.arguments : '',
           })
-          yield { type: 'tool_call_start', index: idx, id, name }
           continue
         }
 
@@ -242,7 +242,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
     const calls = collectToolCalls(partial)
     if (calls.length) {
-      stopReason = 'tool_use'
+      // 截断优先，别把 max_tokens 覆盖成 tool_use——理由同 openai-compat：
+      // 参数拼到一半被截断时，抹掉截断信号 = 上层拿着残缺参数照常执行工具。
+      if (stopReason !== 'max_tokens') stopReason = 'tool_use'
       yield { type: 'tool_calls', calls }
     }
 
@@ -492,24 +494,30 @@ function collectToolCalls(
 ): WireToolCall[] {
   return [...partial.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([, slot]) => ({
-      id: slot.id,
-      name: slot.name,
+    .map(([, slot]) => {
       // 参数解析失败**不能吞**：交一个空对象上去，模型会以为工具收到了它给的参数。
-      arguments: parseArgs(slot.json),
-    }))
+      const parsed = parseArgs(slot.json)
+      return {
+        id: slot.id,
+        name: slot.name,
+        arguments: parsed.args,
+        ...(parsed.error === null ? {} : { argumentsError: parsed.error }),
+      }
+    })
     .filter((c) => c.name !== '')
 }
 
-function parseArgs(json: string): Record<string, unknown> {
-  if (!json.trim()) return {}
+function parseArgs(json: string): { args: Record<string, unknown>; error: string | null } {
+  if (!json.trim()) return { args: {}, error: null }
   try {
     const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed : { _raw: json }
+    return typeof parsed === 'object' && parsed !== null
+      ? { args: parsed, error: null }
+      : { args: {}, error: json }
   } catch {
-    // 保留原文交给工具层去拒绝，比静默变成 {} 强：后者会让模型
+    // 保留原文交给上层去拒绝，比静默变成 {} 强：后者会让模型
     // 以为参数被接受了，然后对着一个完全不同的结果继续往下走。
-    return { _malformed: json }
+    return { args: {}, error: json }
   }
 }
 
@@ -526,9 +534,4 @@ function asError(status: number, body: string): Error & { status: number } {
     // 非 JSON 错误体（网关的 HTML 页面之类）原样带上。
   }
   return Object.assign(new Error(message || `HTTP ${status}`), { status })
-}
-
-function estimateTokens(body: unknown): number {
-  // 与兼容适配器同一套粗估：4 字符 ≈ 1 token。标 exact=false 让面板知道这是估算。
-  return Math.ceil(JSON.stringify(body).length / 4)
 }

@@ -1,8 +1,38 @@
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
+import type { RunUsage, StopReason } from '@qywork/core'
+import { formatMoney } from '@qywork/core'
+import type { JSX } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onCleanup,
+  Show,
+  Switch,
+} from 'solid-js'
 import { renderMarkdown } from '../lib/markdown.ts'
-import { actionLabel, buildRenderItems, groupTitle } from '../lib/render-items.ts'
+import {
+  actionLabel,
+  buildRenderItems,
+  groupTitle,
+  type RenderItem,
+  reconcileRenderItems,
+} from '../lib/render-items.ts'
+import {
+  argsRows,
+  clamp,
+  compact,
+  diffFrom,
+  firstString,
+  hitRate,
+  listOf,
+  sanitizeTarget,
+  statusWord,
+  stopReasonLabel,
+} from '../lib/step-view.ts'
 import { retryLastRun, setState, state, type TranscriptItem } from '../lib/store/index.ts'
-import { IconCheck, IconChevron, IconSpinner, IconX, toolIcon } from './Icons.tsx'
+import { IconSpinner } from './Icons.tsx'
 
 /**
  * 会话流。
@@ -14,7 +44,11 @@ export function Transcript() {
   let scroller!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
 
-  const items = createMemo(() => buildRenderItems(state.transcript))
+  // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
+  // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
+  const items = createMemo<RenderItem[]>((prev = []) =>
+    reconcileRenderItems(prev, buildRenderItems(state.transcript)),
+  )
 
   const onScroll = () => {
     const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
@@ -36,7 +70,23 @@ export function Transcript() {
             <Switch>
               <Match when={node.kind === 'user'}>
                 <div class="row user">
-                  <div class="bubble">{node.kind === 'user' ? node.item.text : ''}</div>
+                  <div class="user-col">
+                    {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
+                    <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
+                      <div class="attach-row sent">
+                        <For each={(node as { item: TranscriptItem }).item.attachments}>
+                          {(a) => (
+                            <span class="attach-chip" title={a.path}>
+                              <span class="truncate">{a.name}</span>
+                            </span>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
+                    <Show when={(node as { item: TranscriptItem }).item.text}>
+                      <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
+                    </Show>
+                  </div>
                 </div>
               </Match>
               <Match when={node.kind === 'text'}>
@@ -50,6 +100,9 @@ export function Transcript() {
               </Match>
               <Match when={node.kind === 'compaction'}>
                 <CompactionCard item={(node as { item: TranscriptItem }).item} />
+              </Match>
+              <Match when={node.kind === 'run'}>
+                <RunCard item={(node as { item: TranscriptItem }).item} />
               </Match>
               <Match when={node.kind === 'group'}>
                 <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
@@ -90,25 +143,75 @@ export function Transcript() {
           )}
         </Show>
 
-        <Show when={!state.running && state.stopReason}>
-          <RunStatusBar />
+        {/* 还在跑的那一轮没有 run 行可读，挂在流尾；跑完由 `run.finished`
+            落成条目，位置就在它那一轮的最后一步之后。 */}
+        <Show when={state.running}>
+          <LiveRunBar />
         </Show>
       </div>
     </div>
   )
 }
 
+/** 流式期两次重解析之间的最小间隔。见 `Prose` 的说明。 */
+const REPARSE_MS = 60
+
 /**
  * assistant 正文。
  *
  * 只有「运行中且是最后一条」才按流式渲染（关闭语言自动检测）；定稿后重渲染一次
  * 并开启检测。这是原版踩出来的性能取舍，见 markdown.ts 的说明。
+ *
+ * ## 为什么要给重解析限速
+ *
+ * **不是**因为 Solid 更新慢——那正好相反：一个 delta 只改一条 step 的 text 字段，
+ * 只更新一个文本节点。贵的是 markdown **整篇重解析**，而它和文档长度成正比。
+ *
+ * 实测（`renderMarkdown`，切片覆盖到全文尾部）：
+ *
+ * ```
+ *  1330 字   平均 0.8ms/次   尾部最慢 1.0ms
+ *  5320 字   平均 3.0ms/次   尾部最慢 7.5ms
+ * 15960 字   平均 15.7ms/次  尾部最慢 39.6ms   ← 一帧才 16.7ms
+ * ```
+ *
+ * 也就是说：短回复毫无问题，**长回复的后半段每来一个 delta 就掉两帧以上**。
+ * 所以限的是重解析的频率，不是状态更新的频率——文字照常按原速进 store，
+ * 一个字都不会丢，只是画面每 60ms 才追一次。
+ *
+ * 定稿时**必须立刻用最新全文重渲染一次**：否则最后 60ms 内到达的尾巴会永远
+ * 停在上一帧，用户看到的是一段被截断的回答。
  */
 function Prose(props: { item: TranscriptItem }) {
   const streaming = () =>
     state.running && state.transcript[state.transcript.length - 1]?.id === props.item.id
 
-  const html = createMemo(() => renderMarkdown(props.item.text, { streaming: streaming() }))
+  const [paced, setPaced] = createSignal(props.item.text)
+  let timer: ReturnType<typeof setTimeout> | null = null
+  onCleanup(() => {
+    if (timer) clearTimeout(timer)
+  })
+
+  createEffect(() => {
+    const text = props.item.text
+    if (!streaming()) {
+      // 定稿：清掉待跑的节流，立刻对齐到全文。
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      setPaced(text)
+      return
+    }
+    if (timer) return
+    timer = setTimeout(() => {
+      timer = null
+      // 读的是**当下最新**的 text，不是排队时那一份——中间到达的 delta 一次补齐。
+      setPaced(props.item.text)
+    }, REPARSE_MS)
+  })
+
+  const html = createMemo(() => renderMarkdown(paced(), { streaming: streaming() }))
 
   return (
     <div class="row assistant" classList={{ superseded: props.item.superseded }}>
@@ -118,8 +221,57 @@ function Prose(props: { item: TranscriptItem }) {
   )
 }
 
+/**
+ * 折叠：思考、工具、工具组共用的**同一个**形状。
+ *
+ * 之前它们长成三样——思考是「左边框 + 自写按钮」，工具是「带边框的卡片」，
+ * 工具组是另一张更大的卡片。三种形状在同一列里交替出现，而它们在语义上
+ * 是同一类东西：**这一轮里发生了一件可以展开看的事**。参照物（青研魔盒）
+ * 用的就是一套 `.v2-fold`。
+ *
+ * 用原生 `<details>` 而不是自己管 open 状态：键盘语义、`Enter`/`Space` 展开、
+ * 屏幕阅读器的展开态播报全是白拿的，自写 button + signal 每一样都要补。
+ */
+function Fold(props: {
+  label: string
+  /** 终态字样。**成功不写字**——一屏几十行全是「成功」等于没有信息。 */
+  statusWord?: string
+  target?: string
+  running?: boolean
+  /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
+  dim?: boolean
+  failed?: boolean
+  superseded?: boolean
+  children: JSX.Element
+}) {
+  return (
+    <details
+      class="fold"
+      classList={{ 'fold-dim': props.dim, failed: props.failed, superseded: props.superseded }}
+    >
+      {/* 一整行不换行：文本槽负责省略，右侧的箭头与转圈不收缩。 */}
+      <summary class="fold-head">
+        <span class="fold-summary">
+          <span class="fold-label">{props.label}</span>
+          <Show when={props.statusWord}>
+            <span class="fold-word">{props.statusWord}</span>
+          </Show>
+          <Show when={props.target}>
+            <span class="fold-target" title={props.target}>
+              · {sanitizeTarget(props.target!)}
+            </span>
+          </Show>
+        </span>
+        <Show when={props.running}>
+          <span class="fold-spin" />
+        </Show>
+      </summary>
+      <div class="fold-body">{props.children}</div>
+    </details>
+  )
+}
+
 function ThinkingFold(props: { item: TranscriptItem }) {
-  const [open, setOpen] = createSignal(false)
   const streaming = () =>
     state.running && state.transcript[state.transcript.length - 1]?.id === props.item.id
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
@@ -128,20 +280,24 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   const preview = () => props.item.text.replace(/\s+/g, ' ').trim().slice(0, 80)
 
   return (
-    <div class="thinking">
-      <button class="thinking-head" type="button" onClick={() => setOpen((v) => !v)}>
-        <IconChevron size={12} dir={open() ? 'down' : 'right'} />
-        <span class="truncate">{preview() ? `${verb()} — ${preview()}` : verb()}</span>
-      </button>
-      <Show when={open()}>
-        <div class="thinking-body">{props.item.text}</div>
-      </Show>
-    </div>
+    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()}>
+      <pre class="fold-pre">{props.item.text}</pre>
+    </Fold>
   )
 }
 
 /**
- * Run 收尾条：停止原因 + 真实用量。
+ * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
+ *
+ * ## 为什么收数据靠 props 而不是读 store
+ *
+ * 它原来读 `state.usage` / `state.stopReason` / `state.runStartedAt` 那几个全局字段，
+ * 于是整个会话只有一条：第二轮跑完把第一轮的读数冲掉，刷新更是一条不剩。
+ * 而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，
+ * 才是它本来的形状（参照物青研魔盒也是一个 run 一个容器）。
+ *
+ * 跑完的那一轮走 `props.run`；还在跑的那一轮没有 run 行可读，
+ * 由 `<LiveRunBar />` 拿实时状态渲染同一个外壳。
  *
  * 三条口径必须守住：
  * - **停止原因永远显示**，正常完成也显示（只是低调）。废除「静默 done」的意义
@@ -150,32 +306,101 @@ function ThinkingFold(props: { item: TranscriptItem }) {
  *   是两回事，显示成 0 会让人以为缓存配置错了。
  * - 计价为 0 时不显示金额，而不是显示 $0.0000——未知计价冒充免费更误导。
  */
-function RunStatusBar() {
-  const u = () => state.usage
-  const normal = () => state.stopReason === 'completed'
+function RunStatusBar(props: {
+  usage: RunUsage | null
+  stopReason: StopReason | null
+  /** 秒。null = 没有可信的起止时刻，不显示这一格。 */
+  elapsed: number | null
+  running: boolean
+}) {
+  const normal = () => !props.stopReason || props.stopReason === 'completed'
+
   return (
-    <div class="run-status" classList={{ abnormal: !normal() }}>
-      <span>{stopReasonLabel(state.stopReason!)}</span>
-      <Show when={u()}>
-        {(usage) => (
-          <>
-            <span class="dot">·</span>
-            <span title="输入 / 输出 token">
-              {usage().inputTokens.toLocaleString()} 入 / {usage().outputTokens.toLocaleString()} 出
-            </span>
-            <span class="dot">·</span>
-            <span title="缓存命中 token">
-              缓存{' '}
-              {usage().cachedTokens === null ? '未回报' : usage().cachedTokens!.toLocaleString()}
-            </span>
-            <Show when={usage().costUsd > 0}>
-              <span class="dot">·</span>
-              <span>${usage().costUsd.toFixed(4)}</span>
-            </Show>
-          </>
-        )}
-      </Show>
+    <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>
+      {/* 星河条：运行时星点流动，跑完暂停动画并压暗——「还在跑」和「跑完了」
+          必须在余光里就能分清，光靠文字变化做不到。 */}
+      <span class="run-galaxy" aria-hidden="true" />
+
+      <span class="run-readout">
+        <Show when={props.elapsed !== null}>
+          <span class="run-metric run-elapsed" title="本轮耗时">
+            {props.elapsed!.toFixed(1)}s
+          </span>
+        </Show>
+        <Show when={props.usage}>
+          {(usage) => (
+            <>
+              <span class="run-metric" title="输入 / 输出 token">
+                ↓{compact(usage().inputTokens)} ↑{compact(usage().outputTokens)}
+              </span>
+              {/* 口径（分母是输入总量、优先取最后一次调用、null 与 0 的区别）
+                  全在 `hitRate` 上，这里不复述——两处各写一遍必然漂移。 */}
+              <span class="run-metric" title="最后一次模型调用的缓存命中占输入总量的比例">
+                命中 {hitRate(usage())}
+              </span>
+              {/* 计价为 0 时不显示金额：未知计价冒充免费更误导。 */}
+              <Show when={usage().cost > 0}>
+                <span class="run-metric run-cost">
+                  {formatMoney(usage().cost, usage().currency)}
+                </span>
+              </Show>
+            </>
+          )}
+        </Show>
+        {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
+            于是出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
+        <Show when={!normal()}>
+          <span class="run-reason">{stopReasonLabel(props.stopReason!)}</span>
+        </Show>
+      </span>
     </div>
+  )
+}
+
+/**
+ * 还在跑的那一轮。
+ *
+ * 只有它需要一个每 100ms 走一格的计时器，所以单独一层：**跑完的那些条目不该
+ * 各挂一个定时器**，一个几十轮的会话会挂出几十个永远滴答的 interval，
+ * 每次触发都让整棵会话流重算。
+ *
+ * 停止原因恒为 null——还没停，没有原因可说。
+ */
+function LiveRunBar() {
+  const [now, setNow] = createSignal(Date.now())
+  createEffect(() => {
+    if (!state.running) return
+    const t = setInterval(() => setNow(Date.now()), 100)
+    onCleanup(() => clearInterval(t))
+  })
+
+  const elapsed = () => {
+    const from = state.runStartedAt
+    return from === null ? null : (now() - from) / 1000
+  }
+
+  return <RunStatusBar usage={state.usage} stopReason={null} elapsed={elapsed()} running={true} />
+}
+
+/** 跑完那一轮的条目。耗时用落库的起止时刻算，和实时那条是同一个含义。 */
+function RunCard(props: { item: TranscriptItem }) {
+  const run = () => props.item.run
+  const elapsed = () => {
+    const r = run()
+    return r?.endedAt == null ? null : (r.endedAt - r.startedAt) / 1000
+  }
+
+  return (
+    <Show when={run()}>
+      {(r) => (
+        <RunStatusBar
+          usage={r().usage}
+          stopReason={r().stopReason}
+          elapsed={elapsed()}
+          running={false}
+        />
+      )}
+    </Show>
   )
 }
 
@@ -190,8 +415,7 @@ function CompactionCard(props: { item: TranscriptItem }) {
   const label = () => {
     const phase = c()?.phase
     if (phase === 'started') return '正在压缩上下文'
-    if (phase === 'failed')
-      return `上下文压缩失败${c()?.reasonCode ? `（${c()!.reasonCode}）` : ''}`
+    if (phase === 'failed') return compactionFailureLabel(c()?.reasonCode)
     const n = c()?.compactedMessages
     return n ? `上下文已压缩，折叠 ${n} 轮` : '上下文已压缩'
   }
@@ -205,96 +429,200 @@ function CompactionCard(props: { item: TranscriptItem }) {
   )
 }
 
+/**
+ * 压缩失败的说法。**未知的码不往外露**——`reasonCode` 是给日志看的英文标识，
+ * 括号里挂一个 `too_few_messages` 对用户不构成信息，只构成困惑。
+ *
+ * 「没什么可压的」两种走的也是 failed 通道（用户点了按钮，必须有回音），
+ * 但它们不是错误，措辞要分开。
+ */
+function compactionFailureLabel(code: string | undefined): string {
+  const map: Record<string, string> = {
+    too_few_messages: '没什么可压缩的，对话还太短',
+    nothing_new: '没什么可压缩的，上次压缩后没有新内容',
+    empty_summary: '上下文压缩失败：摘要为空',
+  }
+  return (code && map[code]) || '上下文压缩失败'
+}
+
 function ToolGroup(props: { members: TranscriptItem[] }) {
-  const [open, setOpen] = createSignal(false)
   const tools = () => props.members.filter((m) => m.kind === 'tool')
   const running = () => tools().some((t) => t.status === 'running')
   const failed = () => tools().some((t) => t.status === 'failure')
 
+  // 组头文案里已经带了「，N 个失败」，右侧不再挂一个计数——
+  // 那个数字回答不了任何问题，只是把行尾占满。
   return (
-    <div class="tool-group" classList={{ failed: failed() }}>
-      <button class="tool-head" type="button" onClick={() => setOpen((v) => !v)}>
-        <span class="tool-status">
-          <Show
-            when={running()}
-            fallback={<IconChevron size={13} dir={open() ? 'down' : 'right'} />}
-          >
-            <IconSpinner size={14} />
-          </Show>
-        </span>
-        <span class="tool-label">{groupTitle(props.members)}</span>
-        <span class="tool-time">{tools().length}</span>
-      </button>
-      <Show when={open()}>
-        <div class="tool-group-body">
-          <For each={props.members}>
-            {(m) => (
-              <Show when={m.kind === 'tool'} fallback={<ThinkingFold item={m} />}>
-                <ToolCard item={m} />
-              </Show>
-            )}
-          </For>
-        </div>
-      </Show>
-    </div>
+    <Fold failed={failed()} running={running()} label={groupTitle(props.members)}>
+      <div class="fold-group">
+        <For each={props.members}>
+          {(m) => (
+            <Show when={m.kind === 'tool'} fallback={<ThinkingFold item={m} />}>
+              <ToolCard item={m} />
+            </Show>
+          )}
+        </For>
+      </div>
+    </Fold>
   )
 }
 
 function ToolCard(props: { item: TranscriptItem }) {
-  const [open, setOpen] = createSignal(false)
-  const Icon = () => toolIcon(props.item.toolName ?? '')
-  const target = () => props.item.action?.target
+  return (
+    <Fold
+      failed={props.item.status === 'failure'}
+      superseded={props.item.superseded === true}
+      running={props.item.status === 'running'}
+      label={actionLabel(props.item)}
+      statusWord={statusWord(props.item.status)}
+      {...(props.item.action?.target ? { target: props.item.action.target } : {})}
+    >
+      <StepBody item={props.item} />
+    </Fold>
+  )
+}
+
+/**
+ * 展开体。**必须给出标题行没有的东西**。
+ *
+ * 之前这里只渲染 `outcome.message`，而那句话就是标题行的复述——
+ * 「读取 packages/server/src/git.ts」展开后看到「读取 packages/server/src/git.ts（278 行）」，
+ * 用户点了一下，什么也没多知道。真正有信息的是参数：改的 diff、跑的命令、
+ * 读的范围，全在 `args` 里。
+ *
+ * 按动作类型分四种呈现，和参照物（青研魔盒 `StepBody`）同一套口径。
+ */
+/**
+ * 展开体。**结构一比一照参照物（青研魔盒 `StepBody`）：一种动作一种主体，
+ * 不是把所有可能的块堆在一起。**
+ *
+ * 上一版我自己拼了一个「失败块 + diff + 命令 + 正文 + stdout + stderr + 列表 +
+ * 参数表 + 摘要」的堆栈，一次展开吐出三四个盒子——那不是还原，是另造一套。
+ *
+ * 参照物的分法：
+ *   失败  错误正文 →（分隔线）→ 参数表
+ *   编辑  diff →（分隔线）→ 结果
+ *   执行  命令原文 →（分隔线）→「输出」标签 + 输出
+ *   写入  新内容全文 → 结果
+ *   其余  参数表 →（分隔线）→ 结果
+ *
+ * 唯一的本地差异：参照物那边 `outcome.message` 本身就是结果正文，
+ * qywork 的 message 只是一句摘要，真正的正文在 `outcome.data`
+ * （`content` / `stdout` / `entries` / `matches`）。所以「结果」这一格取 data，
+ * 取不到才回落到 message——**位置不变，只换取值的地方**。
+ */
+function StepBody(props: { item: TranscriptItem }) {
+  const args = () => props.item.args ?? {}
+  const rows = () => argsRows(args())
+  const kind = () => props.item.action?.kind
 
   return (
-    <div
-      class="tool"
-      classList={{
-        failed: props.item.status === 'failure',
-        superseded: props.item.superseded,
-      }}
-    >
-      <button class="tool-head" type="button" onClick={() => setOpen((v) => !v)}>
-        <span
-          class="tool-status"
-          classList={{
-            ok: props.item.status === 'success',
-            bad: props.item.status === 'failure',
-          }}
-        >
-          <Switch>
-            <Match when={props.item.status === 'running'}>
-              <IconSpinner size={14} />
-            </Match>
-            <Match when={props.item.status === 'success'}>
-              <IconCheck size={14} />
-            </Match>
-            <Match when={props.item.status === 'failure'}>
-              <IconX size={14} />
-            </Match>
-          </Switch>
-        </span>
-        <span class="tool-icon">{Icon()({ size: 14 })}</span>
-        <span class="tool-label">{actionLabel(props.item)}</span>
-        <Show when={target()}>
-          <code class="tool-target truncate">{target()}</code>
+    <Switch fallback={<Generic item={props.item} />}>
+      <Match when={props.item.status === 'failure'}>
+        <pre class="fold-out err">{props.item.outcome?.message || '（没有错误正文）'}</pre>
+        <Show when={rows().length > 0}>
+          <div class="fold-divider" />
+          <ArgsTable rows={rows()} />
         </Show>
-        <Show when={props.item.durationMs}>
-          <span class="tool-time">{formatMs(props.item.durationMs!)}</span>
-        </Show>
-      </button>
+      </Match>
 
-      {/* 失败的卡默认展开：失败信息不该还要多点一下才看得到 */}
-      <Show when={open() || props.item.status === 'failure'}>
-        <div class="tool-body">
-          <Show when={props.item.outcome}>
-            <div class="tool-msg">{props.item.outcome!.message}</div>
-          </Show>
-          <Show when={props.item.stdout}>
-            <pre class="tool-out">{props.item.stdout}</pre>
-          </Show>
-        </div>
+      <Match when={kind() === 'edit' && diffFrom(args()) !== null}>
+        {(() => {
+          const d = diffFrom(args())!
+          return (
+            <pre class="fold-diff">
+              <Show when={d.removed}>
+                <span class="del">{d.removed}</span>
+              </Show>
+              <Show when={d.added}>
+                <span class="add">{d.added}</span>
+              </Show>
+            </pre>
+          )
+        })()}
+        <Result item={props.item} withDivider />
+      </Match>
+
+      <Match when={kind() === 'execute'}>
+        <Show when={firstString(args(), 'command', 'script', 'code')}>
+          {(cmd) => <pre class="fold-code">{cmd()}</pre>}
+        </Show>
+        <Result item={props.item} label="输出" withDivider />
+      </Match>
+
+      <Match when={kind() === 'write'}>
+        <Show when={firstString(args(), 'content', 'text')}>
+          {(text) => <pre class="fold-code">{clamp(text())}</pre>}
+        </Show>
+        <Result item={props.item} />
+      </Match>
+    </Switch>
+  )
+}
+
+function Generic(props: { item: TranscriptItem }) {
+  const rows = () => argsRows(props.item.args ?? {})
+  return (
+    <>
+      <Show when={rows().length > 0}>
+        <ArgsTable rows={rows()} />
       </Show>
-    </div>
+      <Result item={props.item} withDivider={rows().length > 0} />
+    </>
+  )
+}
+
+/**
+ * 结果那一格。
+ *
+ * 取值顺序：`data.content` → `data.stdout` → 列表型 → `outcome.message`。
+ * 空的时候整格不渲染——参照物的 `MessageBlock` 也是 `if (!raw.trim()) return null`，
+ * 一个空 `<pre>` 只会在展开体里留一道没有内容的边框。
+ */
+function Result(props: { item: TranscriptItem; label?: string; withDivider?: boolean }) {
+  const text = () => {
+    const data = (props.item.outcome?.data ?? {}) as Record<string, unknown>
+    for (const k of ['content', 'stdout']) {
+      if (typeof data[k] === 'string' && (data[k] as string).trim()) return data[k] as string
+    }
+    const list = listOf(data)
+    if (list) return list.join(NEWLINE)
+    return props.item.outcome?.message ?? ''
+  }
+
+  return (
+    <Show when={text().trim()}>
+      {(body) => (
+        <>
+          <Show when={props.withDivider}>
+            <div class="fold-divider" />
+          </Show>
+          <Show when={props.label}>
+            <div class="fold-tag">{props.label}</div>
+          </Show>
+          <pre class="fold-out">{clamp(body())}</pre>
+        </>
+      )}
+    </Show>
+  )
+}
+
+const NEWLINE = String.fromCharCode(10)
+
+function ArgsTable(props: { rows: [string, string][] }) {
+  return (
+    <table class="args-table">
+      <tbody>
+        <For each={props.rows}>
+          {([k, v]) => (
+            <tr>
+              <th>{k}</th>
+              <td>{v}</td>
+            </tr>
+          )}
+        </For>
+      </tbody>
+    </table>
   )
 }
 
@@ -316,25 +644,4 @@ function errorHint(code: string): string {
     permission_denied: '有操作被权限规则拒绝了：看工具卡片上的拒绝理由，改写这一步或调整权限规则。',
   }
   return map[code] ?? ''
-}
-
-function stopReasonLabel(reason: string): string {
-  const map: Record<string, string> = {
-    completed: '已完成',
-    max_steps: '已达步数上限',
-    user_interrupt: '已中断',
-    permission_denied: '授权被拒绝，已停止',
-    context_exhausted: '上下文超出模型窗口',
-    output_truncated: '输出被截断，回答不完整',
-    provider_error: '模型服务出错',
-    internal_guard: '内部保护触发',
-    budget_exceeded: '已超出预算',
-  }
-  return map[reason] ?? reason
-}
-
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`
 }

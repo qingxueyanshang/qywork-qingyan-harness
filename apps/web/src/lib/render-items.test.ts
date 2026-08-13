@@ -7,7 +7,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { actionLabel, buildRenderItems, groupTitle, verb } from './render-items.ts'
+import {
+  actionLabel,
+  buildRenderItems,
+  groupTitle,
+  reconcileRenderItems,
+  verb,
+} from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
@@ -99,6 +105,15 @@ describe('分组规则', () => {
     expect(buildRenderItems([])).toEqual([])
   })
 
+  /*
+   * 收尾读数是这一轮的句号，被折进末尾那张组卡就等于没有——用户要一眼扫到
+   * 「这轮花了多少、跑了多久」，而组卡默认是收起的。
+   */
+  test('收尾读数独立成条，不被卷进末尾的工具组', () => {
+    const out = buildRenderItems([tool('a'), tool('b'), item('run')])
+    expect(kinds(out)).toEqual(['group', 'run'])
+  })
+
   test('任何输入下条目都不丢 —— 组内成员加组外条目等于原长度', () => {
     const input = [
       item('user'),
@@ -109,6 +124,7 @@ describe('分组规则', () => {
       item('text'),
       tool('c'),
       item('compaction'),
+      item('run'),
     ]
     const out = buildRenderItems(input)
     const count = out.reduce((n, r) => n + (r.kind === 'group' ? r.members.length : 1), 0)
@@ -171,5 +187,41 @@ describe('动词与单条文案', () => {
 
   test('没有 action 时退回工具名，不显示空动词', () => {
     expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('grep')
+  })
+})
+
+describe('对账：没变的行保持同一个引用', () => {
+  /**
+   * 直接复现原始失败形状：`<For>` 按引用配对，而每次 build 都产出全新包装对象，
+   * 于是每 push 一条就整列重建 DOM——展开着的 `<details>` 随之合上。
+   * 所以这里断言的是**引用相等**，不是内容相等。
+   */
+  test('追加一条时，先前的行仍是同一个对象', () => {
+    const a = item('user', { text: '问' })
+    const b = item('text', { text: '答' })
+
+    const first = buildRenderItems([a, b])
+    const second = reconcileRenderItems(
+      first,
+      buildRenderItems([a, b, item('text', { text: '又' })]),
+    )
+
+    expect(second.length).toBe(first.length + 1)
+    expect(second[0]).toBe(first[0])
+    expect(second[1]).toBe(first[1])
+  })
+
+  test('底下那条 transcript 换了对象就不能复用', () => {
+    const a = item('user', { text: '问' })
+    const first = buildRenderItems([a])
+    // 同一个 id、不同对象：内容变了，必须换新包装，否则行内容不刷新。
+    const replaced = { ...a, text: '改过了' } as TranscriptItem
+    const second = reconcileRenderItems(first, buildRenderItems([replaced]))
+    expect(second[0]).not.toBe(first[0])
+  })
+
+  test('首次构建原样返回，不做无谓分配', () => {
+    const built = buildRenderItems([item('user', { text: '问' })])
+    expect(reconcileRenderItems([], built)).toBe(built)
   })
 })

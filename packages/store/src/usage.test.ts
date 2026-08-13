@@ -13,7 +13,7 @@ function entry(over: Partial<UsageEntry> = {}): UsageEntry {
     outputTokens: 50,
     cachedTokens: 10,
     reasoningTokens: 0,
-    costUsd: 0.001,
+    cost: 0.001,
     ...over,
   }
 }
@@ -29,14 +29,15 @@ describe('记账', () => {
     const t = usageTotals(s)
     expect(t.entries).toBe(1)
     expect(t.inputTokens).toBe(100)
-    expect(t.costUsd).toBeCloseTo(0.001, 6)
+    expect(t.cost.USD).toBeCloseTo(0.001, 6)
     s.close()
   })
 
   test('空账本返回 0 而不是抛', () => {
     const s = fresh()
     expect(usageTotals(s).entries).toBe(0)
-    expect(usageTotals(s).costUsd).toBe(0)
+    // 空账本是 `{}` 不是 `{USD: 0}`：「这段区间没花钱」不该凭空冒出一个币种。
+    expect(usageTotals(s).cost).toEqual({})
     s.close()
   })
 
@@ -117,21 +118,62 @@ describe('区间与筛选', () => {
   test('按 kind 筛 —— 能单独问「压缩花了多少」', () => {
     const s = fresh()
     recordUsage(s, entry({ kind: 'run', runId: 'rn_1' }))
-    recordUsage(s, entry({ kind: 'summary', costUsd: 0.005 }))
-    expect(usageTotals(s, { kind: 'summary' }).costUsd).toBeCloseTo(0.005, 6)
+    recordUsage(s, entry({ kind: 'summary', cost: 0.005 }))
+    expect(usageTotals(s, { kind: 'summary' }).cost.USD).toBeCloseTo(0.005, 6)
     s.close()
   })
 })
 
 describe('分组', () => {
-  test('按模型分组，贵的在前', () => {
+  /**
+   * 排序口径变过：原来是「金额倒序」，多币种之后那句话没有唯一解
+   * （¥100 和 $20 谁在前？要汇率才知道），所以改成按**笔数**倒序——
+   * 笔数无量纲，跨币种可比。
+   */
+  test('按模型分组，用得多的在前', () => {
     const s = fresh()
-    recordUsage(s, entry({ model: '便宜的', costUsd: 0.001 }))
-    recordUsage(s, entry({ model: '贵的', costUsd: 0.5 }))
+    recordUsage(s, entry({ model: '少用的', cost: 0.5 }))
+    recordUsage(s, entry({ model: '常用的', runId: 'rn_a', cost: 0.001 }))
+    recordUsage(s, entry({ model: '常用的', runId: 'rn_b', cost: 0.001 }))
     const rows = usageBy(s, 'model')
-    expect(rows[0]!.key).toBe('贵的')
+    expect(rows[0]!.key).toBe('常用的')
     expect(rows).toHaveLength(2)
     s.close()
+  })
+
+  /**
+   * **两种币种分开列，不相加。** 合起来要一个汇率，而汇率天天变——
+   * 落盘之后那个数字就开始说谎，偏偏它看起来仍然是个确切的金额。
+   */
+  test('多币种分开合计', () => {
+    const s = fresh()
+    recordUsage(s, entry({ model: 'claude', cost: 0.5 }))
+    recordUsage(s, entry({ model: 'glm', runId: 'rn_c', cost: 3, currency: 'CNY' }))
+    const t = usageTotals(s)
+    expect(t.cost.USD).toBeCloseTo(0.5, 6)
+    expect(t.cost.CNY).toBeCloseTo(3, 6)
+    expect(t.entries).toBe(2)
+    s.close()
+  })
+
+  /** 同一个分组里也可能两种币种共存——`--by day` 就是典型。 */
+  test('同一分组里的两种币种各归各的', () => {
+    const s = fresh()
+    recordUsage(s, entry({ model: 'm', cost: 0.5, occurredAt: 1000 }))
+    recordUsage(s, entry({ model: 'm', runId: 'rn_d', cost: 3, currency: 'CNY', occurredAt: 1000 }))
+    const row = usageBy(s, 'day')[0]!
+    expect(row.cost.USD).toBeCloseTo(0.5, 6)
+    expect(row.cost.CNY).toBeCloseTo(3, 6)
+    s.close()
+  })
+
+  /** 币种本身可以当分组维度：「人民币那边一共花了多少」是个会被问的问题。 */
+  test('能按币种分组', () => {
+    const s = fresh()
+    recordUsage(s, entry({ cost: 0.5 }))
+    recordUsage(s, entry({ runId: 'rn_e', cost: 3, currency: 'CNY' }))
+    const rows = usageBy(s, 'currency')
+    expect(rows.map((r) => r.key).sort()).toEqual(['CNY', 'USD'])
   })
 
   test('按天分组', () => {
@@ -197,7 +239,7 @@ describe('记账失败要说出来', () => {
       provider: 'openai_compatible',
       inputTokens: 10,
       outputTokens: 2,
-      costUsd: 0.0001,
+      cost: 0.0001,
     })
     expect(ok).toBe(true)
     expect(usageTotals(store, { kind: 'classifier' }).entries).toBe(1)
@@ -214,7 +256,7 @@ describe('记账失败要说出来', () => {
       provider: 'anthropic' as const,
       inputTokens: 1,
       outputTokens: 1,
-      costUsd: 0,
+      cost: 0,
     }
     expect(recordUsage(store, entry)).toBe(true)
     expect(recordUsage(store, entry)).toBe(false)
@@ -242,7 +284,7 @@ describe('记账失败要说出来', () => {
         provider: 'anthropic',
         inputTokens: 1,
         outputTokens: 1,
-        costUsd: 0,
+        cost: 0,
       })
     } finally {
       process.stderr.write = original

@@ -16,8 +16,10 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import type { EffortLevel, ModelSpec } from '../catalog.ts'
+import { EFFORT_ORDER, type EffortLevel } from '@qywork/core'
+import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError } from '../errors.ts'
+import { estimateTokens } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -36,14 +38,14 @@ import type {
  */
 const MIN_TOKENS_WHEN_THINKING = 16_000
 
-/** effort 档位强弱序，用于「降到不超过某档」的比较。 */
-const EFFORT_ORDER: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
-
-const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
-
 export class AnthropicAdapter implements LlmAdapter {
   readonly kind = 'anthropic' as const
-  readonly transmits = { thinking: true, effort: true }
+  get transmits(): { thinking: boolean; effort: boolean } {
+    // always_on / none 在 resolveThinking 里返回 undefined = 整个省略 thinking 字段。
+    const thinking =
+      this.spec.thinking === 'adaptive_only' || this.spec.thinking === 'budget_tokens'
+    return { thinking, effort: this.spec.effortLevels.length > 0 }
+  }
   readonly spec: ModelSpec
   private readonly client: Anthropic
 
@@ -96,17 +98,10 @@ export class AnthropicAdapter implements LlmAdapter {
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
     try {
-      const stream = req.fallbacks
-        ? this.client.beta.messages.stream({
-            ...body,
-            betas: [FALLBACK_BETA],
-            fallbacks: req.fallbacks,
-            ...(req.signal ? { signal: req.signal } : {}),
-          } as never)
-        : this.client.messages.stream(
-            body as unknown as Anthropic.MessageStreamParams,
-            req.signal ? { signal: req.signal } : {},
-          )
+      const stream = this.client.messages.stream(
+        body as unknown as Anthropic.MessageStreamParams,
+        req.signal ? { signal: req.signal } : {},
+      )
 
       for await (const ev of stream as AsyncIterable<Record<string, any>>) {
         switch (ev.type) {
@@ -119,12 +114,6 @@ export class AnthropicAdapter implements LlmAdapter {
             const block = ev.content_block
             if (block?.type === 'tool_use') {
               partial.set(ev.index, { id: block.id, name: block.name, json: '' })
-              yield {
-                type: 'tool_call_start',
-                index: ev.index,
-                id: block.id,
-                name: block.name,
-              }
             }
             break
           }
@@ -139,7 +128,6 @@ export class AnthropicAdapter implements LlmAdapter {
             } else if (d?.type === 'input_json_delta') {
               const slot = partial.get(ev.index)
               if (slot) slot.json += d.partial_json
-              yield { type: 'tool_call_delta', index: ev.index, argsDelta: d.partial_json }
             }
             break
           }
@@ -289,14 +277,7 @@ function buildSystem(req: ChatRequest) {
     .map((b) => ({
       type: 'text' as const,
       text: b.text,
-      ...(b.cacheBreakpoint
-        ? {
-            cache_control: {
-              type: 'ephemeral' as const,
-              ...(req.cacheTtl === '1h' ? { ttl: '1h' as const } : {}),
-            },
-          }
-        : {}),
+      ...(b.cacheBreakpoint ? { cache_control: { type: 'ephemeral' as const } } : {}),
     }))
 }
 
@@ -426,21 +407,22 @@ function collectToolCalls(
   const calls: WireToolCall[] = []
   for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
     let args: Record<string, unknown> = {}
+    let argsError: string | null = null
     if (slot.json.trim()) {
       try {
         args = JSON.parse(slot.json)
       } catch {
-        // 参数 JSON 分片没拼完整（流被中断）。给出可诊断的形状，
-        // 而不是让整轮崩掉——上层会把它记成一次失败的工具调用。
-        args = { __malformed_arguments: slot.json }
+        // 参数 JSON 分片没拼完整（流被中断）。标出来交给 loop 记成一次失败的工具调用，
+        // 而不是让整轮崩掉、也不是塞个魔法键假装参数还在。
+        argsError = slot.json
       }
     }
-    calls.push({ id: slot.id, name: slot.name, arguments: args })
+    calls.push({
+      id: slot.id,
+      name: slot.name,
+      arguments: args,
+      ...(argsError === null ? {} : { argumentsError: argsError }),
+    })
   }
   return calls
-}
-
-/** 粗略字符估算，仅用于面板即时反馈；精确值走 measure()。 */
-function estimateTokens(body: Record<string, unknown>): number {
-  return Math.ceil(JSON.stringify(body).length / 3.5)
 }

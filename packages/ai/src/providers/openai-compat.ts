@@ -15,6 +15,7 @@
 import OpenAI from 'openai'
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError } from '../errors.ts'
+import { estimateTokens } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -29,10 +30,29 @@ import type {
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_compatible' as const
-  // OpenAI 兼容协议下 thinking / effort 的字段名各家不一（有的叫 reasoning_effort，
-  // 有的用模型名区分，有的干脆没有），本适配器**不发**这两个字段。
-  // 如实声明，探测器才不会把「没发」当成「被接受」。
-  readonly transmits = { thinking: false, effort: false }
+  /**
+   * effort 发不发，**由目录里那条模型的 `effortLevels` 决定**，不是由协议决定。
+   *
+   * 这里原来是 `effort: false`：理由是「兼容协议下字段名各家不一」。理由本身成立，
+   * 但结论下重了——字段名确实不一，可它是**每个模型自己的属性**，目录里正好有
+   * （`thinking` 说用哪套字段、`effortLevels` 说有哪几档）。一律不发的代价是
+   * GPT-5.6 / Gemini / Grok / Kimi / GLM 这些真有思考档位的模型全都调不了，
+   * 而界面上还画着一个选了没反应的控件。
+   *
+   * `thinking` 仍然是 false：正文里的思考内容是从流里**读**出来的
+   * （`reasoning_content`），我们从不主动声明它。
+   *
+   * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
+   * 不会因为这个改动开始收到它不认识的字段。
+   */
+  get transmits(): { thinking: boolean; effort: boolean } {
+    // effort 真正上线的判据是 `buildReasoning`：只有这两种 thinking 会带
+    // `reasoning_effort`，其余（含未收录模型的 'none'）一个字节都不发。
+    // 恒 true 会让 `qy probe` 的 effort 探针在这些模型上全部假通过。
+    const sendsEffort =
+      this.spec.thinking === 'deepseek_thinking' || this.spec.thinking === 'reasoning_effort'
+    return { thinking: false, effort: sendsEffort }
+  }
   readonly spec: ModelSpec
   private readonly client: OpenAI
 
@@ -103,18 +123,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
           if (!slot) {
             slot = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? '', json: '' }
             partial.set(idx, slot)
-            if (slot.name) {
-              yield { type: 'tool_call_start', index: idx, id: slot.id, name: slot.name }
-            }
           }
           // 名字有时分片到达，补齐它；id 同理。
           if (tc.id) slot.id = tc.id
           if (tc.function?.name) slot.name = tc.function.name
           const argsDelta: string = tc.function?.arguments ?? ''
-          if (argsDelta) {
-            slot.json += argsDelta
-            yield { type: 'tool_call_delta', index: idx, argsDelta }
-          }
+          if (argsDelta) slot.json += argsDelta
         }
 
         if (choice.finish_reason) {
@@ -124,7 +138,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
       const calls = collectToolCalls(partial)
       if (calls.length) {
-        stopReason = 'tool_use'
+        // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
+        // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
+        // 抹掉，上层于是拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
+        // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「有没有工具调用」更靠前。
+        if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls }
       }
     } catch (err) {
@@ -150,8 +168,33 @@ export class OpenAICompatAdapter implements LlmAdapter {
       messages,
       max_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
+      ...buildReasoning(this.spec, req.effort),
     }
   }
+}
+
+/**
+ * 兼容协议下的思考控制字段。
+ *
+ * **判据是 `spec.thinking`（用哪套字段），不是 `spec.effortLevels`（有哪几档）。**
+ *
+ * 拿档位表当门禁很自然，但会把 `qy probe` 废掉：探测器的工作正是去试目录里
+ * 还没写的档位，用档位表挡住它，它就只能确认已知的东西，永远发现不了新的。
+ * 档位是否合法由**发起方**保证——界面只列这个模型声明的档位。
+ *
+ * 不认识的模型 `thinking` 是 `'none'`，落到最后一行返回 `{}`，
+ * 一个字节都不会多发；自建端点和中转站不会因为这个函数收到没见过的键。
+ *
+ * DeepSeek 那支要**两个字段一起发**：只发 `reasoning_effort` 而不开 `thinking`，
+ * 思考根本没打开，档位当然没有效果。线格式抄自青研魔盒 `reasoning_probe.py:297`。
+ */
+function buildReasoning(spec: ModelSpec, effort: string | undefined) {
+  if (!effort) return {}
+  if (spec.thinking === 'deepseek_thinking') {
+    return { thinking: { type: 'enabled' }, reasoning_effort: effort }
+  }
+  if (spec.thinking === 'reasoning_effort') return { reasoning_effort: effort }
+  return {}
 }
 
 function buildTools(tools: ToolSchema[]) {
@@ -269,18 +312,20 @@ function collectToolCalls(
   for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
     if (!slot.name) continue
     let args: Record<string, unknown> = {}
+    let argsError: string | null = null
     if (slot.json.trim()) {
       try {
         args = JSON.parse(slot.json)
       } catch {
-        args = { __malformed_arguments: slot.json }
+        argsError = slot.json
       }
     }
-    calls.push({ id: slot.id, name: slot.name, arguments: args })
+    calls.push({
+      id: slot.id,
+      name: slot.name,
+      arguments: args,
+      ...(argsError === null ? {} : { argumentsError: argsError }),
+    })
   }
   return calls
-}
-
-function estimateTokens(body: Record<string, unknown>): number {
-  return Math.ceil(JSON.stringify(body).length / 3.5)
 }

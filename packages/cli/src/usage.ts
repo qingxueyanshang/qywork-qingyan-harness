@@ -10,6 +10,7 @@
  *   qy usage --json          给脚本用
  */
 
+import { formatCosts } from '@qywork/core'
 import { dataPath } from '@qywork/runtime'
 import { type GroupBy, Store, usageBy, usageTotals } from '@qywork/store'
 
@@ -17,7 +18,7 @@ const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
 const BOLD = '\x1b[1m'
 
-const GROUPS: GroupBy[] = ['model', 'day', 'workspace', 'kind']
+const GROUPS: GroupBy[] = ['model', 'day', 'workspace', 'kind', 'currency']
 
 export async function runUsage(args: string[]): Promise<number> {
   const json = args.includes('--json')
@@ -55,12 +56,12 @@ export async function runUsage(args: string[]): Promise<number> {
     const width = Math.max(...rows.map((r) => displayWidth(r.key)), 8)
     for (const r of rows) {
       process.stdout.write(
-        `  ${pad(r.key, width)}  ${money(r.costUsd)}  ` +
+        `  ${pad(r.key, width)}  ${formatCosts(r.cost)}  ` +
           `${DIM}入 ${num(r.inputTokens)} 出 ${num(r.outputTokens)} ${cacheNote(r.cachedTokens)}${RESET}\n`,
       )
     }
     process.stdout.write(
-      `\n  ${pad('合计', width)}  ${BOLD}${money(totals.costUsd)}${RESET}  ` +
+      `\n  ${pad('合计', width)}  ${BOLD}${formatCosts(totals.cost)}${RESET}  ` +
         `${DIM}入 ${num(totals.inputTokens)} 出 ${num(totals.outputTokens)} ${cacheNote(totals.cachedTokens)}${RESET}\n`,
     )
     return 0
@@ -72,20 +73,6 @@ export async function runUsage(args: string[]): Promise<number> {
 /** 未回报显示「未回报」，不显示 0——后者是个具体但错误的结论。 */
 function cacheNote(cached: number | null): string {
   return cached === null ? '缓存未回报' : `缓存 ${num(cached)}`
-}
-
-/**
- * 金额。
- *
- * 小额必须看得见：真花了钱却显示 `$0.0000`，读起来就是「免费」。
- * 所以低于四位小数能表示的下限时显示 `<$0.0001` 而不是一串零——
- * 「小到显示不出来」和「没有」是两回事。
- */
-function money(usd: number): string {
-  if (usd === 0) return '$0.00'
-  if (usd < 0.0001) return '<$0.0001'
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2)}`
 }
 
 function num(n: number): string {

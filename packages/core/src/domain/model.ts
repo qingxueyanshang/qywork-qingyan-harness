@@ -3,21 +3,42 @@
  *
  * 移植口径（对应 Python 版 harness/models.py）：
  * - run  = 一次用户回合（一次 agent loop）
- * - step = loop 内可回放的 text / tool_action / artifact / progress / compaction
+ * - step = loop 内可回放的 text / tool_action / compaction
  * - 一次工具调用 = 一行 tool_action，原地从 running 更新到终态；没有 tool_call / tool_result 两行。
  * - thinking 只做实时状态，不落库回放。
  */
 
 import type { ActionDescriptor } from '../protocol/events.ts'
-import type {
-  ArtifactId,
-  ConversationId,
-  MessageId,
-  ResourceId,
-  RunId,
-  StepId,
-  WorkspaceId,
-} from './ids.ts'
+import type { ConversationId, MessageId, ResourceId, RunId, StepId, WorkspaceId } from './ids.ts'
+
+// ──────────────────────────── 共享词表 ────────────────────────────
+//
+// 配置、协议、界面三方都要说的那几个词。放在 core 是因为**只有它三方都够得着**：
+// `ai` 在 L1、`runtime` 在 L5，而界面只依赖 core，写在任何一个更高层都会逼出
+// 第二份拷贝。这两个词表原来正是这么散成六份和五份的。
+
+/**
+ * 思考强度档位，**弱到强有序**。
+ *
+ * 派生方向是「数组 → 类型」而不是反过来：类型只能在编译期存在，
+ * 而 `qy probe` 要逐档试、适配器要按序比大小（`indexOf`），两处都需要
+ * 一个能在运行期枚举的东西。反过来写就必然再抄一份数组出来。
+ *
+ * 注意：**「档位全集」和「某个模型支持哪些档」是两件事。**
+ * `catalog.ts` 里各家 spec 的 `effortLevels` 是照实测填的事实声明，
+ * 不能改成引用这个数组——那等于替新加的档位替所有厂商作保。
+ */
+export const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export type EffortLevel = (typeof EFFORT_ORDER)[number]
+
+/**
+ * 权限模式。**只有两种**：`auto` 由硬边界 + 静态规则 + 分类器裁决，
+ * `full` 全放行（`full` 仍保留三条硬边界）。
+ *
+ * 真源是服务端的 config.json，握手把它带给客户端；客户端只显示与请求修改，
+ * 不自己存一份。
+ */
+export type PermissionMode = 'auto' | 'full'
 
 // ─────────────────────────────── 会话 ───────────────────────────────
 
@@ -27,12 +48,30 @@ export interface Conversation {
   workspaceId: WorkspaceId
   title: string
   model: string
+  /**
+   * 本会话的思考强度。`null` = 跟随配置里的默认值。
+   *
+   * 和 `model` 同层同形状：都是会话级、都以配置里的值作为新建时的默认。
+   * 不合并成一个字段——换模型和调思考强度是两个独立动作。
+   */
+  effort: EffortLevel | null
   /** 上下文压缩的唯一投影权威。有界 JSON，正文仍只存在 messages/steps 里。 */
   compactionManifest: CompactionManifest | null
   /** 用户显式重置缓存时递增；稳定路由键含该值，旧 provider 缓存自然隔离。 */
   cacheGeneration: number
-  /** null=用户会话；'team'=Agent Team 子会话；'workflow'=编排产生的机器会话。 */
-  source: 'team' | 'workflow' | null
+  /**
+   * null=用户会话，会出现在会话列表里；`'workflow'`=编排产生的机器会话，不出现。
+   *
+   * **只有这两个值，因为它只回答一个问题**：这条会话要不要进列表。
+   *
+   * 名字刻意取执行层的说法而不是 `'team'`：**Agent Team 是配置项**
+   * （`.qy/team.json` 里的角色与编排图），不是底层执行概念。领域模型按配置功能
+   * 命名，等于把「今天恰好只有这一种编排」写死进了数据形状——明天多一种编排，
+   * 要么再加一个并列的值（两个值回答同一个问题），要么让新东西顶着 `team` 的名字跑。
+   *
+   * 「是哪一次编排、哪个角色」由 `sourceRef` 带，那才是该区分的地方。
+   */
+  source: 'workflow' | null
   sourceRef: string | null
   createdAt: number
   updatedAt: number
@@ -48,14 +87,12 @@ export interface Message {
 }
 
 export interface Attachment {
-  type: 'image' | 'file' | 'selection'
+  type: 'image' | 'file'
   name: string
   mime: string
   size: number
   /** 工作区相对路径；外部粘贴的内容先落盘再引用，不把字节塞进消息。 */
   path: string
-  /** 代码选区附件才有。 */
-  range?: { startLine: number; endLine: number }
 }
 
 // ─────────────────────────────── Run ───────────────────────────────
@@ -68,6 +105,13 @@ export type RunStatus = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 export type StopReason =
   | 'completed'
   | 'max_steps'
+  /**
+   * 原地打转：同样的调用、同样的结果、没有任何副作用，连着两个周期。
+   *
+   * 与 `max_steps` 严格区分——那是「步数不够」，这是「多给一百步也一样」。
+   * 判据见 `@qywork/agent` 的 `repeatsNoProgress`。
+   */
+  | 'no_progress'
   | 'user_interrupt'
   | 'permission_denied'
   /**
@@ -110,9 +154,6 @@ export interface Run {
   errorMessage: string | null
   errorCode: string | null
 
-  /** 本 run 自己的终态权威快照，不从会话级状态回填。 */
-  executionState: ExecutionState | null
-
   contextTokens: number
   contextLimit: number
   contextPercent: number
@@ -125,6 +166,49 @@ export interface Run {
   finishedAt: number | null
 }
 
+/**
+ * 计价币种。
+ *
+ * **放在 core 而不是 ai 包里**，因为账本（store）、界面（web）和目录（ai）
+ * 三边都要认它。各自定义一遍的下场这个仓库已经吃过一次（IGNORED_DIRS 抄了三份、
+ * 漂成 13/12/11 条）。
+ *
+ * 只有实际出现在目录里的两种。加第三种时**同时**要看 `usage_ledger` 里
+ * 已有的行——那些行的币种是历史事实，不能追认成别的。
+ */
+export type Currency = 'USD' | 'CNY'
+
+export const CURRENCY_SYMBOL: Record<Currency, string> = { USD: '$', CNY: '¥' }
+
+/**
+ * 金额显示。**命令行和界面共用这一份**——两边各写一个必然漂移成
+ * 「`qy usage` 说 $0.0001、面板说 $0.00」，而那种不一致没人会当成 bug 报出来。
+ *
+ * 小额必须看得见：真花了钱却显示 `$0.0000`，读起来就是「免费」。
+ * 所以低于四位小数能表示的下限时显示 `<$0.0001` 而不是一串零——
+ * 「小到显示不出来」和「没有」是两回事。
+ */
+export function formatMoney(amount: number, currency: Currency = 'USD'): string {
+  const s = CURRENCY_SYMBOL[currency] ?? '$'
+  if (amount === 0) return `${s}0.00`
+  if (amount < 0.0001) return `<${s}0.0001`
+  if (amount < 0.01) return `${s}${amount.toFixed(4)}`
+  return `${s}${amount.toFixed(2)}`
+}
+
+/**
+ * 多币种金额。**分开列，不合计**——把 ¥100 和 $20 加起来的那个数字没有意义。
+ *
+ * 空对象显示成零：那表示这段区间确实没花钱，不是「不知道」。
+ */
+export function formatCosts(cost: Record<string, number>): string {
+  const parts = Object.entries(cost)
+    .filter(([, v]) => v !== 0)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([cur, v]) => formatMoney(v, cur as Currency))
+  return parts.length ? parts.join(' + ') : formatMoney(0)
+}
+
 export interface RunUsage {
   inputTokens: number
   outputTokens: number
@@ -133,8 +217,17 @@ export interface RunUsage {
   /** 缓存写入，与读取分离，便于与中转账单对账。 */
   cacheWriteTokens: number | null
   reasoningTokens: number
-  /** 本币计价的累计花费，按 modelCatalog 定价算。 */
-  costUsd: number
+  /**
+   * 累计花费，**单位是下面那个 `currency`，不是恒定美元**。
+   *
+   * 原来这个字段叫 `costUsd`。阿里 / 月之暗面 / 智谱三家官网按人民币标价，
+   * 把 ¥6 装进一个叫 usd 的字段，差的是七倍，而且界面上完全看不出来
+   * ——它只是一个数字。改名连同落盘的列名一起（迁移 7），
+   * 留一个名字说谎的字段比改名危险。
+   */
+  cost: number
+  /** 上面那个数字的币种。**不做汇率换算**：换算出来的是一个我们编的数字。 */
+  currency: Currency
   /** 每轮一条，供命中率分桶与成本审计；不参与计费。 */
   turns: UsageTurn[]
 }
@@ -153,14 +246,6 @@ export interface UsageTurn {
   at: number
 }
 
-export interface ExecutionState {
-  turnIndex: number
-  lastToolBatchId: string | null
-  todos: TodoItem[]
-  /** 已消费的执行波次数，崩溃恢复用。 */
-  waveIndex: number
-}
-
 export interface TodoItem {
   id: string
   content: string
@@ -169,9 +254,9 @@ export interface TodoItem {
 
 // ─────────────────────────────── Step ───────────────────────────────
 
-export type StepKind = 'text' | 'tool_action' | 'artifact' | 'progress' | 'compaction'
+export type StepKind = 'text' | 'tool_action' | 'compaction'
 
-export type ToolActionStatus = 'running' | 'success' | 'failure' | 'deferred' | 'skipped'
+export type ToolActionStatus = 'running' | 'success' | 'failure'
 
 export interface Step {
   id: StepId
@@ -186,7 +271,7 @@ export interface Step {
   callIndex: number | null
   /**
    * 一个 provider batch 内的后端执行边界。同 index 属于一次水平波次；
-   * 不同 index 有先后。未进入波次规划的 deferred/skipped 保持 null。
+   * 不同 index 有先后；没进入波次规划的保持 null。
    */
   executionWaveIndex: number | null
   /**
@@ -198,7 +283,6 @@ export interface Step {
   content: string | null
   payload: StepPayload | null
   status: ToolActionStatus | 'done'
-  artifactId: ArtifactId | null
   createdAt: number
 }
 
@@ -216,7 +300,6 @@ export type StepPayload =
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
     }
-  | { kind: 'progress'; label: string; detail?: string }
   | { kind: 'compaction'; manifestRevision: number; compactedMessages: number }
 
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
@@ -273,26 +356,20 @@ export interface FileChange {
 
 // ─────────────────────────────── 产物 ───────────────────────────────
 
-export interface Artifact {
-  id: ArtifactId
-  conversationId: ConversationId
-  runId: RunId | null
-  type: 'code' | 'html' | 'markdown' | 'diagram' | 'image' | 'document'
-  title: string
-  content: string
-  version: number
-  metadata: Record<string, unknown>
-  createdAt: number
-}
-
 // ─────────────────────────────── 上下文压缩 ───────────────────────────────
 
 export interface CompactionManifest {
   revision: number
   /** 该 id 及之前的消息已被摘要替代。 */
   compactedThroughMessageId: MessageId | null
-  /** 已压缩的 run → 已压缩到的 step seq。 */
-  compactedRunSteps: Record<string, number>
+  /**
+   * 累计被摘要替代掉的消息条数。
+   *
+   * 这里曾经是 `compactedRunSteps: Record<runId, 步数>`——**没有任何投影消费它**
+   * （投影只按 `compactedThroughMessageId` 过滤），唯一的读者是前端，
+   * 而它拿 `Object.keys(...).length`（run 个数）当消息数显示，数字本身是错的。
+   */
+  compactedMessageCount: number
   summary: string
   /** 摘要保留的精确事实包（文件路径、决定、未完成项），不是自由文本。 */
   facts: CompactionFacts
@@ -301,7 +378,6 @@ export interface CompactionManifest {
 
 export interface CompactionFacts {
   filesTouched: string[]
-  decisions: string[]
   openItems: string[]
   userConstraints: string[]
 }

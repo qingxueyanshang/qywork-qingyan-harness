@@ -13,10 +13,10 @@ import { createConversation, recordUsage, Store, upsertWorkspace } from '@qywork
 import { type CommandContext, handleCommand } from './tui.ts'
 
 const config: QyConfig = {
-  active: 'ds',
-  profiles: {
-    ds: { kind: 'openai_compatible', model: 'deepseek-v4-flash', apiKey: 'sk-x' },
-    cl: { kind: 'anthropic', model: 'claude-opus-5', apiKey: 'sk-y' },
+  active: { provider: 'ds', model: 'deepseek-v4-flash' },
+  providers: {
+    ds: { kind: 'openai_compatible', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+    cl: { kind: 'anthropic', apiKey: 'sk-y', models: { 'claude-opus-5': {} } },
   },
 }
 
@@ -130,7 +130,7 @@ describe('用量与导出', () => {
       provider: 'openai_compatible',
       inputTokens: 10,
       outputTokens: 5,
-      costUsd: 0.01,
+      cost: 0.01,
     })
     expect(await handleCommand('/usage', c)).toBe('ok')
     store.close()
