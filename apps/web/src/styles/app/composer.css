@@ -19,36 +19,6 @@
   margin: 0 auto;
 }
 
-/* ── 等待提示 ──
- *
- * 一行裸的灰色小字，absolute 贴在输入框上沿，**不占文档流**：占了的话
- * 每次出现/消失都会把整块输入区往上顶一格。无底色、无边框、无胶囊；
- * 靠 opacity 淡入淡出，文案不清空，免得淡出过程中字先没了框还在。
- */
-.live-status {
-  position: absolute;
-  left: var(--s-5);
-  bottom: 100%;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: calc(100% - var(--s-10));
-  padding-bottom: var(--s-1);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  line-height: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  user-select: none;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity var(--t-base) var(--ease);
-}
-.live-status.show {
-  opacity: 1;
-}
 .live-dot {
   flex: none;
   width: 6px;

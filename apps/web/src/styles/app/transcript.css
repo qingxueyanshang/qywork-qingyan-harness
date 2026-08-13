@@ -726,7 +726,13 @@
 }
 /* 非正常停止的原因用警告色——它比任何读数都重要，但排在末位（见 RunStatusBar）：
    排在最前会把后面几格读数整体右推，出错的那一轮就和正常的那些轮对不齐。 */
-.run-strip.abnormal .run-reason {
+.run-strip.abnormal
+/* 跑着的时候这一格说「在干什么」，跑完说「为什么停」——同一个位置、同一种语义，
+   所以和 .run-reason 一个样式。 */
+.run-live {
+  color: var(--text-tertiary);
+}
+.run-reason {
   flex: 0 0 auto;
   color: var(--warning);
   font-weight: 600;

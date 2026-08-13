@@ -157,21 +157,6 @@ export function Composer() {
     })
   }
 
-  /**
-   * 等待提示。
-   *
-   * 按**流的位置**判断说哪句话，而不是按快照推：最后一条是思考就说「正在思考」，
-   * 是正文就说「模型响应中」。参照物那边同样是从流事件直接发布这个字符串——
-   * 从时间线快照反推会慢半拍，而这行字的全部意义就是「它现在有反应」。
-   */
-  const liveStatus = () => {
-    if (!state.running) return ''
-    const last = state.transcript[state.transcript.length - 1]
-    if (last?.kind === 'thinking') return '正在思考…'
-    if (last?.kind === 'tool') return '正在执行…'
-    return '模型响应中…'
-  }
-
   return (
     <div class="composer-wrap">
       {/* 空会话时的「这一轮会跑在哪」。**不写标语**——一句口号不携带任何信息，
@@ -210,10 +195,6 @@ export function Composer() {
 
       {/* 悬浮在输入框上沿，不占文档流：占了的话每次出现/消失都会把整块输入区
           往上顶一格。pointer-events:none 保证它不挡住输入框的点击。 */}
-      <div class="live-status" classList={{ show: !!liveStatus() }} aria-live="polite">
-        <span class="live-dot" />
-        <span>{liveStatus()}</span>
-      </div>
 
       {/* 待发附件。只列名字不做缩略图墙：一行一个看得清、删得掉，
           而缩略图会把输入区顶掉半屏。 */}
