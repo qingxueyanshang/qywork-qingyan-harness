@@ -29,8 +29,8 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       return json({ workspace: upsertWorkspace(d.store, path, basename(path) || path) })
     }
     /*
-     * 每条带上会话数：删项目会把会话一起带走（`removeWorkspace` 的注释写明了
-     * 为什么不能不带），界面得先能说出「这一下会丢多少」。
+     * 每条带上会话数。它曾经的用途是「删之前说清会丢多少」——移除不再删数据之后
+     * 那个用途没了，但计数本身仍是项目卡片上要显示的信息。
      */
     return json({
       workspaces: listWorkspaces(d.store).map((w) => ({
@@ -41,12 +41,13 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 移除一个项目。
+   * 把一个项目从列表里移除。**不删任何数据**——见 `removeWorkspace`：
+   * 它只打 `removed_at` 标记，会话、消息、run 一条不动，重新添加同一路径就回来。
    *
-   * **只能删自己不在的那个。** 删掉当前这一个之后，界面手里的 `?ws=` 立刻指向
-   * 一行不存在的记录，随后每一条请求都回 404——而且如果它恰好是最后一行，
-   * 整个服务就没有任何项目可服务了。让「不能删脚下这块地板」成为一条硬规则，
-   * 比在下游到处补「删完之后跳去哪」的分支干净。
+   * **只能移除自己不在的那个。** 移除当前这一个之后，界面手里的 `?ws=` 指向一个
+   * 已经不在列表里的项目，而且如果它恰好是最后一行，界面就没有任何项目可切。
+   * 让「不能移除脚下这块地板」成为一条硬规则，比在下游到处补「移除之后跳去哪」
+   * 的分支干净。
    *
    * 路径里的 id 直接进 SQL 参数，不拼路径也不拼 SQL；查不到回 404 而不是静默成功。
    */

@@ -74,7 +74,9 @@ export function Sidebar(props: { onClose?: () => void }) {
   /**
    * 正在等确认的那个项目。
    *
-   * 移除会把它的会话一起删掉，一次点击就生效的代价太高——所以先摊开代价再删。
+   * 移除**不删任何数据**（`removeWorkspace` 只打标记），所以这里不再摊开代价。
+   * 仍然要一次确认：× 挨着切换项目的按钮，误点会让一个项目从列表上消失，
+   * 而「怎么让它回来」不是自明的。
    * 一个 id 而不是每行一个布尔：同时展开两条确认在类型上就不该成立。
    */
   const [armed, setArmed] = createSignal<string | null>(null)
@@ -243,11 +245,10 @@ export function Sidebar(props: { onClose?: () => void }) {
                 </div>
               }
             >
-              {/* 先说代价再删。会话数是服务端一起回来的真实计数，不是估的。 */}
+              {/* 边界声明按 B7 留全：不写的话「移除」看起来就像删数据。 */}
               <div class="project-head confirm">
                 <span class="truncate">
-                  移除 {w.name}
-                  {w.conversations > 0 ? ` 和 ${w.conversations} 条会话？` : '？'}
+                  移除 {w.name}？文件和聊天记录都不会删，重新添加就回来。
                 </span>
                 <button class="confirm-yes" type="button" onClick={() => void remove(w.id)}>
                   移除

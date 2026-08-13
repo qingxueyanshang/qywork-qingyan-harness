@@ -379,6 +379,41 @@ CREATE TABLE conversation_extras (
 );
 `,
   },
+  {
+    id: 9,
+    name: 'workspace_removed_at',
+    /**
+     * 「从列表里移除项目」不再等于「删掉这个项目的全部数据」。
+     *
+     * ## 为什么原来是删
+     *
+     * `conversations.workspace_id` 是 `ON DELETE CASCADE`，而 `workspaceOf` 要 join
+     * 这一行才能答出「这条会话跑在哪个根」。删了行，会话就永远打不开——所以当时的
+     * 结论是「不能留中间态」，只能连着删。那个推理没错，错在结论：**不留中间态的
+     * 办法不止「删行」一种，还可以「行留着，但不出现在列表里」。**
+     *
+     * ## 所以行必须留下
+     *
+     * 移除只改「列表里显不显示」，不改「能不能读回来」：`listWorkspaces` 过滤
+     * `removed_at IS NULL`，而 `workspaceOf` / `getWorkspace` **一律不过滤**。
+     * 会话、消息、run、step 一条不动，重新添加同一个路径就整个回来
+     * （`root_path` 是 UNIQUE，upsert 命中同一行并清掉这个标记）。
+     *
+     * 这样「移除」和别处一致：`usage_ledger` 早就是这个立场——它刻意不设外键，
+     * 「这个月花了多少」不该因为项目从列表里消失而少一笔。
+     *
+     * ## 不提供「彻底删除」
+     *
+     * 没有这个需求就不做（B5）。真要清数据的人现在有备份、有 SQL，
+     * 而多一个入口就要多一套「确认几次才算数」的交互和一条能永久毁数据的路径。
+     *
+     * `NULL` = 在列表里。用时间戳而不是布尔：移除时间迟早要显示，
+     * 而布尔到时候只能再加一列。
+     */
+    sql: `
+ALTER TABLE workspaces ADD COLUMN removed_at INTEGER;
+`,
+  },
 ]
 
 /**
