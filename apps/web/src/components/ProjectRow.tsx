@@ -50,7 +50,6 @@ export function ProjectRow(props: {
   onError?: (message: string) => void
 }) {
   const [menuOpen, setMenuOpen] = createSignal(false)
-  const [card, setCard] = createSignal(false)
   /** 正在等确认的动作。null = 没有。同时只可能有一个。 */
   const [armed, setArmed] = createSignal<'remove' | 'archive' | null>(null)
 
@@ -110,18 +109,11 @@ export function ProjectRow(props: {
 
   return (
     <div class="project-head">
-      {/* 卡片的 hover 挂在这个按钮上，不挂外层 div：
-          给静态元素加交互处理器过不了 a11y 这一闸，而给它补一个 role 只是把
-          规则绕过去——真正的交互元素本来就是这个按钮。 */}
       <button
         class="project-open"
         type="button"
         onClick={() => props.onOpen?.()}
         disabled={props.current}
-        onMouseEnter={() => setCard(true)}
-        onMouseLeave={() => setCard(false)}
-        onFocus={() => setCard(true)}
-        onBlur={() => setCard(false)}
       >
         <Show when={pinned()} fallback={<IconFolder size={15} />}>
           {/* 置顶的项目换图标，而不是在名字后面加一个「已置顶」标签：
@@ -151,22 +143,12 @@ export function ProjectRow(props: {
           aria-label={`${props.workspace.name} 的更多操作`}
           aria-expanded={menuOpen()}
           onClick={() => {
-            setCard(false)
             setMenuOpen(!menuOpen())
             setArmed(null)
           }}
         >
           <IconMore size={14} />
         </button>
-
-        {/* 悬浮卡片：名字 / 会话数 / 完整路径。菜单开着时不出现，两个浮层不叠。 */}
-        <Show when={card() && !menuOpen()}>
-          <div class="project-card">
-            <div class="project-card-name truncate">{props.workspace.name}</div>
-            <div class="project-card-meta">{props.workspace.conversations} 个会话</div>
-            <div class="project-card-path">{props.workspace.rootPath}</div>
-          </div>
-        </Show>
 
         <Show when={menuOpen()}>
           <div class="project-menu" role="menu">

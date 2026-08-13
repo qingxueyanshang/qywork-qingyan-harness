@@ -337,17 +337,6 @@
 }
 
 .project-menu,
-.project-card {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow-md);
-}
-
 .project-menu {
   display: flex;
   flex-direction: column;
@@ -373,31 +362,6 @@
 }
 .menu-item.danger {
   color: var(--danger);
-}
-
-/* 悬浮卡片只读，不含动作——动作都在 `⋯` 里。路径不截断：
-   它正是这张卡片存在的理由（两个同名目录只有路径能区分）。 */
-.project-card {
-  min-width: 180px;
-  max-width: 288px;
-  padding: var(--s-2);
-  font-weight: 400;
-}
-.project-card-name {
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-}
-.project-card-meta {
-  margin-top: 2px;
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
-}
-.project-card-path {
-  margin-top: var(--s-1);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
 }
 
 .project-new {
