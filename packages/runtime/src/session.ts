@@ -9,16 +9,13 @@ import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import {
   AgentLoop,
-  type AskFn,
   type CompactionPort,
-  classify,
   decideCommand,
   type LoopPersistence,
   type PermissionVerdict,
   type Summarizer,
   type ToolContext,
   ToolRegistry,
-  VerdictCache,
 } from '@qywork/agent'
 import {
   buildAdapter,
@@ -61,7 +58,6 @@ import {
   listScopedEntries,
   normalizeAdditionalDirectories,
   registerBuiltinTools,
-  resolveCommandTimeout,
   resolveInWorkspace,
   scanSkills,
   scopeRoots,
@@ -152,24 +148,6 @@ export class Session {
 
   /** 已加载的扩展。null = 还没加载过（首次 ask 时加载）。 */
   private extensions: Extensions | null = null
-
-  /**
-   * 命令判定缓存，**会话级**。
-   *
-   * 挂在 Session 上而不是全局：同一条命令在不同会话的上下文里风险不同
-   * （「用户让我跑测试」与「用户让我读 README」下的 `npm test` 不是一回事）。
-   * 跨会话复用会把上一个会话的结论泄漏到新上下文里。
-   */
-  private readonly verdicts = new VerdictCache()
-
-  /**
-   * 最近一次任务描述，作为分类器的上下文。
-   *
-   * 这是**任务文本而不是完整 transcript**——如实说明，别让人以为分类器
-   * 看得到全部历史。任务文本已经承担了最关键的那部分判据：
-   * 同一条命令在「跑测试」和「读文档」两种任务下的合理性完全不同。
-   */
-  private lastPrompt = ''
 
   /**
    * 规范化后的额外根目录。**只算一次**：三个消费者（路径层、静态规则、沙箱）
@@ -310,8 +288,6 @@ export class Session {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const { store, config } = this.opts
     const retryOf = options?.retryOf
-    // 给分类器当上下文用。放在最前面：后面任何一步抛错都不影响它已经记下来。
-    this.lastPrompt = prompt
 
     const conversationId =
       existing ??
@@ -619,137 +595,14 @@ export class Session {
     if (meta?.toolName !== 'run_command') return { allowed: true }
 
     const command = String(meta.args.command ?? '')
-    // 静态规则拿到的根目录清单必须与路径层、沙箱层是**同一份**。
-    // 三处各算各的，表现就是「配了但只有一层生效」，而三层的报错互不相干。
+    // 根目录清单必须与路径层、沙箱层是**同一份**。三处各算各的，
+    // 表现就是「配了但只有一层生效」，而三层的报错互不相干。
     const d = decideCommand(command, {
       workspaceRoot: this.opts.workspaceRoot,
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
-      ...(this.opts.config.sandboxNetwork === 'deny' ? { denyNetwork: true } : {}),
     })
     if (d.kind === 'allow') return { allowed: true }
-    if (d.kind === 'deny') {
-      return { allowed: false, reason: `${d.reason}（scope ${scope}）。换一条不做这件事的命令。` }
-    }
-
-    // 静态规则判不了 —— 交给分类器。
-    //
-    // **这一步不能省成「一律拒绝」**：静态允许清单只有十几条，而真实任务里
-    // `npm test`、`cargo build`、`python script.py` 全都落在 undecided，
-    // 一律拒的话 agent 基本不能干活，用户三分钟内就会切到 full——
-    // 那等于用一个「安全」的默认值把所有人推到完全没有防线的那一档。
-    const v = await classify(
-      {
-        command,
-        transcript: this.lastPrompt,
-        // 超时是**这条调用的事实**，不给的话「会不会一直挂着」只能靠命令字面猜。
-        // 用执行层同一个函数算，免得裁决时说的那个数和真正生效的不是同一个。
-        timeoutMs: resolveCommandTimeout(meta.args.timeout_ms),
-        // 带探测地址时命令的性质变了：进程活不过这次调用。不说的话裁决层
-        // 看到的还是「启动服务器」这个字面，与超时是同一类信息缺失。
-        ...(typeof meta.args.probe_url === 'string' && meta.args.probe_url.trim()
-          ? { probeUrl: meta.args.probe_url.trim() }
-          : {}),
-      },
-      { ask: this.classifierAsk(), cache: this.verdicts },
-    )
-    if (!v.blocked) return { allowed: true }
-    return {
-      allowed: false,
-      reason:
-        `${v.reason}（scope ${scope}）。` +
-        `优先改用内置工具：读文件用 read_file、找文件用 glob/grep、改文件用 edit_file。` +
-        `确实需要这条命令时，请说明理由让用户决定是否切到 full 模式。`,
-    }
-  }
-
-  /**
-   * 分类器的单次调用。
-   *
-   * 三件事与主循环不同，都是刻意的：
-   *
-   * 1. **可以用另一个模型**（`classifier`）。裁决是短、结构化、低难度的任务，
-   *    不需要跟主循环同一个模型；指向本机小模型能把每次往返从两秒压到几百毫秒。
-   * 2. **system 块单独设缓存断点**。规则前缀逐字节稳定，命中缓存与否差 3.6 倍成本，
-   *    而这次调用的绝大部分 token 就是那段规则。
-   * 3. **单独记账**（`kind: 'classifier'`）。它按每条待判命令计费，频次可能比 run
-   *    高一个量级。不单独记的话，用户只会看到「总花费莫名变高」而查不出是谁。
-   */
-  private classifierAsk(): AskFn {
-    return async ({ system, user }) => {
-      const ref = this.opts.config.classifier
-      const stored = resolveModel(this.opts.config, ref)
-      const profile = ref
-        ? {
-            kind: stored?.kind ?? 'openai_compatible',
-            apiKey: stored ? resolveApiKey(stored) : '',
-            model: stored?.model ?? ref.model,
-            ...(stored?.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-            ...(stored?.headers ? { headers: stored.headers } : {}),
-          }
-        : this.resolveProfile()
-      const adapter = buildAdapter(profile)
-      /*
-       * 档位按**分类器自己那个模型**解析，不是主循环那一档。
-       *
-       * `config.classifier` 可以指向另一个模型（这条配置存在的理由就是「裁决
-       * 不必和主循环同一个模型」），而档位集合逐模型不同——主循环在 Claude 上
-       * 跑 `xhigh`，分类器指向 DeepSeek 时那一档它根本没有。
-       */
-      const effort = stored?.effort
-
-      let text = ''
-      let spent: { cost: number; u: ProviderUsage } | null = null
-      for await (const ev of adapter.stream({
-        model: adapter.spec.id,
-        // 缓存断点设在整段规则末尾：它是唯一稳定的部分。
-        system: [{ text: system, cacheBreakpoint: true }],
-        messages: [{ role: 'user', content: user }],
-        tools: [],
-        /**
-         * 预算必须容得下**思考 + 正文**，不能按正文的长度给。
-         *
-         * 这里原来是 512，配着一句「裁决不需要思考」的 `thinking:{mode:'disabled'}`。
-         * 两条都不成立，代价是实测出来的（2026-08-13，deepseek-v4-flash）：
-         *
-         * - **「不思考」不是每个模型都有的档。** DeepSeek 的控制面只有 high / max
-         *   两档，没有关闭档；`disabled` 在这条协议上根本发不出去，模型照常思考。
-         * - **512 于是全被推理吃光**（`reasoning_tokens=512`），正文一个字都没有，
-         *   `parseVerdict('')` 返回 null，两段判定都失败 → fail-closed。
-         *   表现是 auto 模式下每一条静态规则判不了的命令都必然被拒，
-         *   而理由写的是「分类器回复解析失败」。
-         * - 真按它的档位跑，**光正文那一段就要 1109 token**（high 档峰值）。
-         *
-         * 4096 是按那次峰值留的余量。它是上限不是消耗——判得快的那些
-         * （max 档 fast 段一次判完，529 token）不会因为上限高而多花一分钱。
-         */
-        maxOutputTokens: 4096,
-        ...(effort ? { effort } : {}),
-        // 同一会话内规则前缀不变，给一个稳定的亲和键。
-        cacheKey: `qy-classifier-${adapter.spec.id}`,
-        signal: this.opts.signal,
-      })) {
-        if (ev.type === 'text_delta') text += ev.delta
-        else if (ev.type === 'usage') {
-          spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
-        }
-      }
-      if (spent) {
-        recordUsage(this.opts.store, {
-          kind: 'classifier',
-          workspaceId: this.workspaceId,
-          model: adapter.spec.id,
-          provider: profile.kind,
-          inputTokens: spent.u.inputTokens,
-          outputTokens: spent.u.outputTokens,
-          cachedTokens: spent.u.cachedTokens,
-          cacheWriteTokens: spent.u.cacheWriteTokens,
-          reasoningTokens: spent.u.reasoningTokens,
-          cost: spent.cost,
-          currency: adapter.spec.pricing.currency ?? 'USD',
-        })
-      }
-      return text
-    }
+    return { allowed: false, reason: `${d.reason}（scope ${scope}）。换一条不做这件事的命令。` }
   }
 
   private makeToolContext(runId: RunId, emit: (e: AgentEvent) => void, model: string): ToolContext {

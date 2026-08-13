@@ -90,13 +90,6 @@ export interface QyConfig {
    * 已配置的 API Key，不管它叫什么都必须剥。
    */
   envAllowList?: string[]
-  /**
-   * 分类器专用模型。不填则用当前生效的那个。
-   *
-   * 分类是短、结构化、低难度的任务，不需要跟主循环同一个模型。
-   * 指向一个本机小模型可以把每次往返从两秒压到几百毫秒、成本压到零。
-   */
-  classifier?: ModelRef
 }
 
 /**

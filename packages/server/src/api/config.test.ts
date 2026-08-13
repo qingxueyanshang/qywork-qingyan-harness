@@ -159,7 +159,6 @@ describe('回填', () => {
       mode: 'full',
       additionalDirectories: wire.additionalDirectories,
       envAllowList: wire.envAllowList,
-      classifier: wire.classifier,
     }
     // 过一遍 JSON：真实路径上 `undefined` 的键根本不会上线，别在内存里假装它在。
     const incoming = JSON.parse(JSON.stringify(asClientSeesIt)) as RedactedConfig
