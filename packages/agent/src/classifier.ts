@@ -129,6 +129,17 @@ export interface ClassifyInput {
    * 裁决时说的那个数和真正生效的不是同一个。
    */
   timeoutMs?: number
+  /**
+   * 这次调用带的探测地址（`run_command` 的 `probe_url`）。
+   *
+   * 它把命令的性质整个改了：不再是「起一个服务器」，而是**「起服务 → 探到就绪
+   * → 抓一次响应 → 无条件树杀」这一个原子动作**，进程活不过这次调用，
+   * 而且只探本机回环（工具层已经强制，非回环压根走不到裁决）。
+   *
+   * 不告诉裁决层的话它看到的还是命令字面，仍然按「启动常驻服务器」拒——
+   * 与 `timeoutMs` 是同一类信息缺失。
+   */
+  probeUrl?: string
 }
 
 // ───────────────────────── system prompt ─────────────────────────
@@ -238,6 +249,13 @@ function buildUserMessage(input: ClassifyInput, stage: 1 | 2): string {
     ...(input.timeoutMs === undefined
       ? []
       : [`<fact>这条命令会在 ${input.timeoutMs} 毫秒后被强制终止。</fact>`]),
+    ...(input.probeUrl === undefined
+      ? []
+      : [
+          `<fact>这次调用带了探测地址 ${input.probeUrl}（只允许本机回环，工具层强制）。` +
+            `实际动作是：起进程 → 轮询该地址至就绪 → 抓一次响应 → 立即杀掉整棵进程树。` +
+            `进程不会活过这次调用。</fact>`,
+        ]),
     stage === 1 ? STAGE1_HINT : STAGE2_HINT,
   ].join('\n\n')
 }
@@ -375,7 +393,7 @@ export class VerdictCache {
  * 「用前缀做 key」是同一类错误：把两个不同的调用当成了同一个。
  */
 function cacheKey(input: ClassifyInput): string {
-  return `${input.timeoutMs ?? ''} ${input.command.trim()}`
+  return [input.timeoutMs ?? '', input.probeUrl ?? '', input.command.trim()].join(' ')
 }
 
 // ───────────────────────── 判定 ─────────────────────────

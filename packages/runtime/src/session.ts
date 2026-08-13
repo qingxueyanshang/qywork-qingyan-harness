@@ -644,6 +644,11 @@ export class Session {
         // 超时是**这条调用的事实**，不给的话「会不会一直挂着」只能靠命令字面猜。
         // 用执行层同一个函数算，免得裁决时说的那个数和真正生效的不是同一个。
         timeoutMs: resolveCommandTimeout(meta.args.timeout_ms),
+        // 带探测地址时命令的性质变了：进程活不过这次调用。不说的话裁决层
+        // 看到的还是「启动服务器」这个字面，与超时是同一类信息缺失。
+        ...(typeof meta.args.probe_url === 'string' && meta.args.probe_url.trim()
+          ? { probeUrl: meta.args.probe_url.trim() }
+          : {}),
       },
       { ask: this.classifierAsk(), cache: this.verdicts },
     )

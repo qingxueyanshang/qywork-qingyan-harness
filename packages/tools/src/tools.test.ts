@@ -319,6 +319,109 @@ describe('搜索与命令', () => {
 })
 
 /**
+ * `probe_url`：起服务 → 等就绪 → 抓一次响应 → 关掉，一次调用内完成。
+ *
+ * 存在的理由是「起个服务看看页面能不能打开」在本仓**形状上做不到**：
+ * `run_command` 是同步的，起一个不会自己退出的服务器就是阻塞到超时——
+ * 与权限模式无关（实测：开了完全访问照样只等到 output_truncated）。
+ *
+ * 这一组先测边界再测功能：边界写错的代价是多一条绕开 SSRF 闸的出网通道，
+ * 比功能不好使严重得多。
+ */
+describe('probe_url', () => {
+  const run = (root: string, command: string, probe_url: string, timeout_ms = 15_000) =>
+    registry().execute('run_command', { command, probe_url, timeout_ms }, ctx(root))
+
+  /**
+   * **只准回环。** `web_fetch` 那条路刻意挡掉本机（127.0.0.1 后面可能是 qy
+   * 自己的 API），这条方向相反、边界也相反。放宽一点它就是第二条出网通道。
+   */
+  test('非回环地址一律拒绝，且不起进程', async () => {
+    const root = await workspace()
+    for (const url of [
+      'http://example.com/',
+      'http://8.8.8.8/',
+      'http://192.168.1.10/',
+      // 主机名不做 DNS 解析：解析结果由外部决定，等于没有边界。
+      'http://dev.example.com/',
+    ]) {
+      const out = await run(root, 'echo 不该跑到这里', url)
+      expect(out.status).toBe('failure')
+      expect(out.errorKind).toBe('bad_request')
+      expect(out.message).toContain('回环')
+    }
+  })
+
+  /** IPv6 的等价写法按数值判，不按字面量——`::ffff:127.0.0.1` 也是回环。 */
+  test('回环的各种写法都认', async () => {
+    const root = await workspace()
+    // 端口挑一个必然没人听的：这里只验「没被边界拒掉」，探测失败是预期的。
+    for (const url of [
+      'http://localhost:19801/',
+      'http://127.0.0.1:19801/',
+      'http://[::1]:19801/',
+    ]) {
+      const out = await run(root, 'exit 0', url, 1500)
+      expect(out.errorKind).not.toBe('bad_request')
+    }
+  }, 20_000)
+
+  test('非 http/https 拒绝', async () => {
+    const root = await workspace()
+    const out = await run(root, 'exit 0', 'file:///etc/passwd')
+    expect(out.errorKind).toBe('bad_request')
+  })
+
+  /** 起真服务、真探测、真关掉——这条是整个功能的验收。 */
+  test('起服务、抓到响应、进程随调用结束而消失', async () => {
+    const root = await workspace()
+    const port = 19807
+    const server = `require('http').createServer((_,r)=>{r.writeHead(200);r.end('hello from probe')}).listen(${port},'127.0.0.1');setInterval(()=>{},1000)`
+    const cmd = process.platform === 'win32' ? `node -e "${server}"` : `node -e '${server}'`
+    const out = await run(root, cmd, `http://127.0.0.1:${port}/`)
+
+    expect(out.status).toBe('success')
+    const probe = out.data?.probe as { status: number; body: string }
+    expect(probe.status).toBe(200)
+    expect(probe.body).toContain('hello from probe')
+
+    // **进程必须已经没了。** 这是这个形状的全部承诺：不跨出这次调用。
+    // 还连得上就说明留了个孤儿，而孤儿会占着端口坑下一次运行。
+    let gone = false
+    for (let i = 0; i < 20 && !gone; i++) {
+      await Bun.sleep(100)
+      try {
+        await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(500) })
+      } catch {
+        gone = true
+      }
+    }
+    expect(gone).toBe(true)
+  }, 30_000)
+
+  /**
+   * 连不上要把**进程自己的输出**带回来。
+   *
+   * 端口被占、模块缺失这类原因只写在服务器的 stderr 里；只报一句「没连上」
+   * 等于让模型去猜，而它猜的方向通常是再试一次。
+   */
+  test('探测失败带回进程输出', async () => {
+    const root = await workspace()
+    // 三层引号（shell / JS 源码 / 字符串字面量）嵌起来极易写错，
+    // 用一个不含引号的消息，靠 process.stderr.write 输出。
+    const marker = 'PORT_TAKEN_MARKER'
+    const cmd =
+      process.platform === 'win32'
+        ? `node -e "process.stderr.write('${marker}')"`
+        : `node -e "process.stderr.write('${marker}')"`
+    const out = await run(root, cmd, 'http://127.0.0.1:19809/', 2000)
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('probe_failed')
+    expect(JSON.stringify(out.data)).toContain(marker)
+  }, 20_000)
+})
+
+/**
  * `.qy/` 与 `.agents/` 的写保护。
  *
  * 这一条挡的不是**越权**，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
