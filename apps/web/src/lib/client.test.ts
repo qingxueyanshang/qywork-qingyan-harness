@@ -12,7 +12,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, CommandRejectedFrame, EventEnvelope } from '@qywork/core'
-import { PROTOCOL_VERSION } from '@qywork/core'
 import { QyClient, type SocketLike } from './client.ts'
 
 class FakeSocket implements SocketLike {
@@ -72,7 +71,6 @@ describe('握手', () => {
     sockets[0]!.fire('open')
     const hello = JSON.parse(sockets[0]!.sent[0]!)
     expect(hello.type).toBe('hello')
-    expect(hello.protocolVersion).toBe(PROTOCOL_VERSION)
     expect(hello.token).toBe('tk')
   })
 
@@ -86,33 +84,23 @@ describe('握手', () => {
 
 describe('握手被拒是终态', () => {
   /**
-   * 复现原始失败形状：`protocol_mismatch` 曾经不算终态，于是每次 close
-   * 都会排一次重连，永远失败。
+   * 复现原始失败形状：hello.err 曾经只把 `bad_token` 当终态，别的原因每次 close
+   * 都会再排一次重连、每次都被同样地拒掉，而界面显示「N 秒后重试」——
+   * 一个永远不会好的稍后重试。
+   *
+   * 现在服务端只发 `bad_token` 一种（协议版本那条连同手写的版本号一起删了），
+   * 但**这里仍然不按 reason 分支**：认的是「hello.err 一律终态」这条规则本身。
    */
-  test('protocol_mismatch 之后不再重连', () => {
+  test('hello.err 之后不再重连', () => {
     const { c, sockets, states } = client()
     c.connect()
     sockets[0]!.fire('open')
-    sockets[0]!.deliver({
-      type: 'hello.err',
-      reason: 'protocol_mismatch',
-      message: '服务端协议版本 1，客户端 2',
-    })
+    sockets[0]!.deliver({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' })
     expect(c.terminated).toBe(true)
 
     // close 到来时不能再排重连——排了就是那个永远好不了的「N 秒后重试」。
     sockets[0]!.fire('close')
     expect(states.at(-1)?.state).toBe('closed')
-    expect(sockets).toHaveLength(1)
-  })
-
-  test('bad_token 同样是终态', () => {
-    const { c, sockets } = client()
-    c.connect()
-    sockets[0]!.fire('open')
-    sockets[0]!.deliver({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' })
-    expect(c.terminated).toBe(true)
-    sockets[0]!.fire('close')
     expect(sockets).toHaveLength(1)
   })
 
@@ -137,7 +125,6 @@ describe('正常断线仍然重连', () => {
     sockets[0]!.fire('open')
     sockets[0]!.deliver({
       type: 'hello.ok',
-      protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
       currentSeq: 0,
       resync: false,

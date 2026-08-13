@@ -29,7 +29,6 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
-import { PROTOCOL_VERSION } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { MAX_ENTRY_CHARS } from '@qywork/tools'
@@ -148,13 +147,11 @@ const base = () => `http://127.0.0.1:${handle.port}`
 const auth = () => ({ authorization: `Bearer ${handle.token}` })
 
 describe('HTTP 面', () => {
-  test('健康检查免鉴权，且回报协议版本', async () => {
+  test('健康检查免鉴权', async () => {
     const r = (await (await fetch(`${base()}/api/health`)).json()) as {
       ok?: boolean
-      protocolVersion?: number
     }
     expect(r.ok).toBe(true)
-    expect(r.protocolVersion).toBe(PROTOCOL_VERSION)
   })
 
   test('无令牌 / 错令牌一律 401', async () => {
@@ -399,7 +396,6 @@ describe('WebSocket 协议与一轮完整 run', () => {
     ws.send(
       JSON.stringify({
         type: 'hello',
-        protocolVersion: PROTOCOL_VERSION,
         token: handle.token,
         origin: 'desktop',
         subscribe: [conversationId],
@@ -564,7 +560,6 @@ describe('图片附件', () => {
       ws.send(
         JSON.stringify({
           type: 'hello',
-          protocolVersion: PROTOCOL_VERSION,
           token: handle.token,
           origin: 'desktop',
           subscribe: [conversationId],
@@ -616,7 +611,6 @@ describe('图片附件', () => {
       ws2.send(
         JSON.stringify({
           type: 'hello',
-          protocolVersion: PROTOCOL_VERSION,
           token: handle.token,
           origin: 'desktop',
           subscribe: [conversationId],

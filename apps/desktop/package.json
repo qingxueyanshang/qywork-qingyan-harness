@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "dev": "bun run --cwd ../.. tauri:dev",
+    "dev": "bun run --cwd ../.. dev",
     "build": "bun run --cwd ../.. tauri:build",
     "sidecar": "bun run ../../scripts/build-sidecar.ts"
   },

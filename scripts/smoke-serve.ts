@@ -11,7 +11,6 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
-import { PROTOCOL_VERSION } from '@qywork/core'
 import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
@@ -76,7 +75,7 @@ async function main(): Promise<number> {
     process.stdout.write('HTTP API\n')
 
     const health = await (await fetch(`${base}/api/health`)).json()
-    check('健康检查免鉴权', health.ok === true && health.protocolVersion === PROTOCOL_VERSION)
+    check('健康检查免鉴权', health.ok === true)
 
     const noAuth = await fetch(`${base}/api/workspaces`)
     check('无令牌访问 API 返回 401', noAuth.status === 401, noAuth.status)
@@ -189,7 +188,6 @@ async function main(): Promise<number> {
     ws.send(
       JSON.stringify({
         type: 'hello',
-        protocolVersion: PROTOCOL_VERSION,
         token: h.token,
         origin: 'desktop',
         subscribe: [conversationId],
@@ -197,7 +195,16 @@ async function main(): Promise<number> {
     )
     await Bun.sleep(300)
     check('hello 握手成功', helloOk?.type === 'hello.ok', helloOk)
-    check('能力声明里 pty=false（网络那头够不着）', helloOk?.capabilities?.pty === false)
+    // 能力位只声明**有消费者**的那几项。`pty` / `git` / `fileWatch` 已删：
+    // 前两个没人读，第三个还是假的（全仓没有文件监视器）。
+    check(
+      '能力声明里不再有无人消费的能力位',
+      helloOk?.capabilities &&
+        !('pty' in helloOk.capabilities) &&
+        !('git' in helloOk.capabilities) &&
+        !('fileWatch' in helloOk.capabilities),
+      helloOk?.capabilities,
+    )
 
     // ── 指令 fail-closed ──
     // 这一组验的是「拒绝必须有回执」。曾经未实现的指令被 default 分支静默吞掉，
@@ -553,8 +560,8 @@ async function main(): Promise<number> {
     const h3 = serve({
       store: store4,
       config: {
-        active: 'anthropic',
-        profiles: { anthropic: { kind: 'anthropic', model: 'claude-opus-5' } },
+        active: { provider: 'anthropic', model: 'claude-opus-5' },
+        providers: { anthropic: { kind: 'anthropic', models: { 'claude-opus-5': {} } } },
       },
       workspaceRoot: WS_DIR,
       port: 0,
@@ -582,7 +589,6 @@ async function main(): Promise<number> {
       sock.send(
         JSON.stringify({
           type: 'hello',
-          protocolVersion: PROTOCOL_VERSION,
           token: h3.token,
           origin: 'desktop',
           subscribe: [created.conversation.id],

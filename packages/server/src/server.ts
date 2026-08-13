@@ -11,14 +11,13 @@
  */
 
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
-import { PROTOCOL_VERSION } from '@qywork/core'
 import type { QyConfig, Schedule } from '@qywork/runtime'
 import {
   acquireExtensions,
   isDue,
   loadSchedules,
   releaseExtensions,
-  saveSchedules,
+  updateSchedules,
 } from '@qywork/runtime'
 import type { Store } from '@qywork/store'
 import {
@@ -36,13 +35,7 @@ import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
-import {
-  CORS_HEADERS,
-  hostLabel,
-  publishGitState,
-  serveStatic,
-  withCors,
-} from './http-util.ts'
+import { CORS_HEADERS, hostLabel, publishGitState, serveStatic, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
@@ -68,7 +61,10 @@ export function serve(opts: ServeOptions) {
   const bus = new EventBus()
   const runs = new RunManager(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
-  const pairing = new Pairing({ deviceName: hostLabel(), ...(opts.token ? { token: opts.token } : {}) })
+  const pairing = new Pairing({
+    deviceName: hostLabel(),
+    ...(opts.token ? { token: opts.token } : {}),
+  })
   const token = pairing.token
 
   const workspace = upsertWorkspace(
@@ -173,19 +169,21 @@ export function serve(opts: ServeOptions) {
     if (!mine.length) return
 
     const now = Date.now()
-    let changed = false
+    // 先收集要打的补丁，最后**在一次串行的读-改-写里**落盘。
+    // 直接改这份快照再整表回写的话，这段 await 期间用户在设置页新建 / 删除的任务
+    // 会被这份过期快照抹掉——两条写入路径各拿各的快照，就是标准的丢更新。
+    const patches = new Map<string, Partial<Schedule>>()
     for (const s of mine) {
       if (!isDue(s, now)) continue
-      s.lastRunAt = now
-      changed = true
+      const patch: Partial<Schedule> = { lastRunAt: now }
+      patches.set(s.id, patch)
       try {
         const conv = createConversation(opts.store, {
           workspaceId: workspace.id as never,
           model: opts.config.active.model,
           title: s.title,
         })
-        s.lastRunConversationId = conv.id
-        delete s.lastError
+        patch.lastRunConversationId = conv.id
         await startRun(conv.id, s.prompt, undefined, {
           store: opts.store,
           content,
@@ -196,15 +194,20 @@ export function serve(opts: ServeOptions) {
       } catch (err) {
         // 失败也要把 lastRunAt 留在已更新的状态：否则下一个 tick 会立刻重试，
         // 一个稳定失败的任务会变成每 30 秒刷一个新会话。
-        s.lastError = err instanceof Error ? err.message : String(err)
+        patch.lastError = err instanceof Error ? err.message : String(err)
       }
     }
-    if (changed) {
-      // 只回写本工作区改过的那几条，其余原样带回——
-      // 整表覆盖会把另一个 sidecar 刚写进去的状态抹掉。
-      const byId = new Map(mine.map((s) => [s.id, s]))
-      await saveSchedules(all.map((s) => byId.get(s.id) ?? s)).catch(() => {})
-    }
+    if (patches.size === 0) return
+
+    await updateSchedules((cur) =>
+      cur.map((s) => {
+        const patch = patches.get(s.id)
+        if (!patch) return s
+        // 成功那次要把上一轮的错误清掉；`lastError` 在补丁里没有就是「这次没错」。
+        const { lastError: _prev, ...rest } = s
+        return { ...rest, ...patch }
+      }),
+    ).catch(() => {})
   }
 
   /**
@@ -281,7 +284,7 @@ export function serve(opts: ServeOptions) {
 
       // ── 健康检查：唯一免鉴权的端点，只回协议版本 ──
       if (url.pathname === '/api/health') {
-        return withCors(json({ ok: true, protocolVersion: PROTOCOL_VERSION }))
+        return withCors(json({ ok: true }))
       }
 
       if (url.pathname.startsWith('/api/')) {

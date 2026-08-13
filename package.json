@@ -14,13 +14,13 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "bun run --filter '*' dev",
-    "dev:agent": "bun run --cwd packages/server dev",
+    "dev": "bun run scripts/dev.ts",
+    "dev:agent": "bun --watch packages/cli/src/index.ts serve --port 7717 --host 127.0.0.1",
     "dev:web": "bun run --cwd apps/web dev",
     "build": "bun run build:web && bun run build:agent",
     "build:web": "bun run --cwd apps/web build",
     "build:agent": "bun run scripts/build-sidecar.ts",
-    "tauri:dev": "bun run build:agent && QYWORK_WORKSPACE=$PWD bun run --cwd apps/desktop tauri dev",
+    "tauri:dev": "bun run scripts/dev.ts",
     "tauri:build": "bun run build:agent && bun run --cwd apps/desktop tauri build",
     "gate": "bun run typecheck && biome check . && bun test && bun run typecheck:rust",
     "typecheck": "tsc --build --force && bun run --cwd apps/web typecheck",
