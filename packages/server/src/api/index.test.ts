@@ -232,11 +232,21 @@ describe('移除项目', () => {
     expect(await list()).toBe(0)
   })
 
-  test('当前正在用的那个删不掉，回 409 且账本不动', async () => {
-    const { d, currentId } = twoWorkspaces()
+  test('当前项目也能移除，并回「接下来切哪个」', async () => {
+    const { d, oldId, currentId } = twoWorkspaces()
     const res = await call(`/api/workspaces/${currentId}`, { method: 'DELETE' }, d)
+    expect(res?.status).toBe(200)
+    // 不回 next 的话，客户端手里的 ?ws= 指着刚被移除的那个，随后每条请求都 404
+    expect(await res?.json()).toEqual({ ok: true, next: { id: oldId, rootPath: 'C:/ws/old' } })
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(currentId)
+  })
+
+  test('最后一个项目移不掉，回 409 且账本不动 —— 移完没有项目可服务', async () => {
+    const d = deps('C:/ws/only')
+    const onlyId = (d as unknown as { wsId: string }).wsId
+    const res = await call(`/api/workspaces/${onlyId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(409)
-    expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(currentId)
+    expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(onlyId)
   })
 
   test('id 不存在回 404 —— 静默成功会让界面以为删掉了，刷新又回来', async () => {

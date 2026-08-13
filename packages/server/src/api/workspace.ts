@@ -61,9 +61,27 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   const one = /^\/api\/workspaces\/([^/]+)$/.exec(p)
   if (one && req.method === 'DELETE') {
     const id = decodeURIComponent(one[1] as string)
-    if (id === d.workspaceId) return json({ error: '不能移除当前正在用的项目' }, 409)
+    /*
+     * **当前项目也能移除**，只要还剩别的可切。
+     *
+     * 原来一律回 409（「不能移除脚下这块地板」）。那条规则挡住的是真实需求：
+     * 开发这个仓库时它自己就是当前项目，于是那一行的 `⋯` 里永远没有「移除」。
+     * 而「先切到别的项目再回来移除它」不是用户该被要求做的编排。
+     *
+     * 只有它是**最后一个**时才拒绝——移除完界面没有任何项目可服务，
+     * 那不是一个有终态的状态。这一条仍然是硬规则。
+     */
+    if (id === d.workspaceId && listWorkspaces(d.store).length <= 1) {
+      return json({ error: '这是最后一个项目，先添加另一个再移除它' }, 409)
+    }
     if (!removeWorkspace(d.store, id as never)) return json({ error: '这个项目不存在' }, 404)
-    return json({ ok: true })
+    /*
+     * 回「接下来该切到哪个」。客户端手里的 `?ws=` 指着刚被移除的那个，
+     * 不给它一个去处的话，随后每条请求都落到 404——让服务端直接说，
+     * 比在客户端各处补「移除之后跳哪」的分支干净。
+     */
+    const next = listWorkspaces(d.store)[0]
+    return json({ ok: true, ...(next ? { next: { id: next.id, rootPath: next.rootPath } } : {}) })
   }
 
   /*
