@@ -42,11 +42,13 @@ import { ProjectRow } from './ProjectRow.tsx'
  * 根因是服务端把「哪个根」存成了进程级常量；那份常量已经删了，
  * 现在按会话 / 按请求查表，切过去只是换一个 `?ws=`（见 `activateWorkspace`）。
  *
- * ## 只有当前项目展开会话
+ * ## 一条列表，顺序稳定
  *
- * 服务端一次回一个项目的会话列表，而用户同一时刻也只看得见一个。
- * 所以其他项目是一行可点的文件夹，点下去就是切过去，而不是画一个
- * 永远展不开的箭头。
+ * 项目按「置顶 > 添加先后」排，**当前项目不被提到最上面**——那样切一次它就跳到
+ * 顶部，位置跳动比「当前项目在哪」更难用。它原地展开自己的会话，
+ * 由高亮和缩进说明现在在哪个项目里。
+ *
+ * 只有当前项目展开：服务端一次回一个项目的会话列表，用户同一时刻也只看得见一个。
  *
  * ## 这一版删掉了四个入口，理由是同一条
  *
@@ -74,18 +76,6 @@ export function Sidebar(props: { onClose?: () => void }) {
   const desktop = isDesktopShell()
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
-
-  /**
-   * 当前项目在账本里的那一行。
-   *
-   * 从同一份 `/api/workspaces` 里挑，而不是另拿 `workspace()` 拼一个——
-   * 菜单要用到 `id`（置顶 / 归档都按 id 发）和会话数，而那两样只有账本里有。
-   * 拼一个假的等于第二份数据源。
-   */
-  const currentRow = () => (known()?.workspaces ?? []).find((w) => w.rootPath === workspace()?.root)
-
-  /** 当前项目已经在上面单独一行，不在这里重复。 */
-  const others = () => (known()?.workspaces ?? []).filter((w) => w.rootPath !== workspace()?.root)
 
   const go = async (path: string) => {
     if (path === workspace()?.root) return
@@ -159,62 +149,57 @@ export function Sidebar(props: { onClose?: () => void }) {
         <Show when={error()}>{(e) => <div class="side-error">{e()}</div>}</Show>
       </div>
 
+      {/* **一条列表，顺序稳定。** 当前项目不被提到最上面——那样切一次它就跳到
+          顶部，而位置跳动比「当前项目在哪」更难用。它原地展开自己的会话，
+          由高亮和缩进说明「现在在这个项目里」。 */}
       <div class="sidebar-scroll">
-        <div class="project">
-          {/* 当前项目也用同一个行组件：菜单四项对它全都成立（移除之后服务端会
-              指好切去哪个）。两处各写一遍的话，菜单迟早会长得不一样。 */}
-          <Show when={currentRow()} fallback={<div class="project-head empty">未连接</div>}>
-            {(w) => (
-              <ProjectRow
-                workspace={w()}
-                current
-                onNewChat={() => {
-                  void newConversation()
-                  props.onClose?.()
-                }}
-                onChanged={() => {
-                  void refetchWorkspaces()
-                  // 归档动的是当前项目的会话列表，不重拉的话侧栏还显示着已归档的那些。
-                  void loadConversations()
-                }}
-                onError={setError}
-              />
-            )}
-          </Show>
+        <For each={known()?.workspaces ?? []}>
+          {(w: KnownWorkspace) => {
+            const isCurrent = () => w.rootPath === workspace()?.root
+            return (
+              <div class="project">
+                <ProjectRow
+                  workspace={w}
+                  current={isCurrent()}
+                  onOpen={() => void go(w.rootPath)}
+                  onNewChat={() => {
+                    void newConversation()
+                    props.onClose?.()
+                  }}
+                  onChanged={() => {
+                    void refetchWorkspaces()
+                    // 归档动的是当前项目的会话列表，不重拉的话侧栏还显示着已归档的那些。
+                    void loadConversations()
+                  }}
+                  onError={setError}
+                />
 
-          <ul class="nav-list">
-            <For each={state.conversations}>
-              {(c) => (
-                <li>
-                  <button
-                    class="nav-item conv"
-                    classList={{ active: c.id === state.activeConversation }}
-                    type="button"
-                    onClick={() => {
-                      void selectConversation(c.id)
-                      props.onClose?.()
-                    }}
-                  >
-                    <span class="truncate">{c.title || '新对话'}</span>
-                  </button>
-                </li>
-              )}
-            </For>
-          </ul>
-        </div>
-
-        {/* 别的项目。点一下就切过去——不重启、不断连、别的项目里正在跑的那一轮
-            也不受影响。只有当前项目展开会话：服务端一次回一个项目的列表，
-            而用户同一时刻也只看得见一个。 */}
-        <For each={others()}>
-          {(w: KnownWorkspace) => (
-            <ProjectRow
-              workspace={w}
-              onOpen={() => void go(w.rootPath)}
-              onChanged={() => void refetchWorkspaces()}
-              onError={setError}
-            />
-          )}
+                {/* 只有当前项目展开会话：服务端一次回一个项目的列表，
+                    而用户同一时刻也只看得见一个。 */}
+                <Show when={isCurrent()}>
+                  <ul class="nav-list">
+                    <For each={state.conversations}>
+                      {(c) => (
+                        <li>
+                          <button
+                            class="nav-item conv"
+                            classList={{ active: c.id === state.activeConversation }}
+                            type="button"
+                            onClick={() => {
+                              void selectConversation(c.id)
+                              props.onClose?.()
+                            }}
+                          >
+                            <span class="truncate">{c.title || '新对话'}</span>
+                          </button>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </Show>
+              </div>
+            )
+          }}
         </For>
       </div>
 
