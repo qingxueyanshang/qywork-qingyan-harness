@@ -322,9 +322,9 @@
   color: var(--accent);
 }
 
-/* ── `⋯` 菜单与悬浮卡片 ──
-   两个浮层共用这个定位容器。它必须是 relative：菜单和卡片都相对这一行右端展开，
-   挂到 body 上就要自己跟着滚动位置重算，而这一栏是会滚的。 */
+/* ── `⋯` 菜单 ──
+   定位容器必须是 relative：菜单相对这一行的右端展开，挂到 body 上就要自己
+   跟着滚动位置重算，而这一栏是会滚的。 */
 .project-menu-wrap {
   position: relative;
   flex: none;
@@ -336,12 +336,22 @@
   height: 22px;
 }
 
-.project-menu,
+/* 属性写全在这一条里，**不和别的浮层共用选择器**。
+   共用过一次，代价是删掉其中一个浮层时把另一个的定位、边框、底色、投影
+   一起带走了——菜单退化成一堆裸文字，而 CSS 不会为此报任何错。 */
 .project-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   min-width: 168px;
   padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
 }
 .menu-item {
   display: flex;
