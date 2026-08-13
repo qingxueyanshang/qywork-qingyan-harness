@@ -106,10 +106,12 @@
   }
 }
 
+/* gap 归 0：每个 chip 自己带 8px 内边距，两个相邻 chip 的文字之间已经有 16px。
+   再叠 4px 的 gap 会让这一排显得散。窄屏那条媒体查询因此不再需要覆盖它。 */
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--s-1);
+  gap: 0;
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
 
