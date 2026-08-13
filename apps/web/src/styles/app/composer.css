@@ -256,11 +256,6 @@
 .send-btn:not(:disabled):active {
   transform: scale(0.94);
 }
-.send-btn.stop {
-  background: var(--danger);
-  color: #fff;
-}
-
 /* ── 上下文占用弹层 ──
    向上开：输入区在窗口底部，向下会开到窗外。 */
 .ctx-wrap {
