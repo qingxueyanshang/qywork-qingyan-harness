@@ -30,6 +30,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
@@ -100,11 +101,29 @@ while (!(await portTaken(PORT))) {
 }
 process.stderr.write('[dev] sidecar 就绪，拉起桌面外壳\n')
 
+/*
+ * 只在**没有** last-workspace 时才把工作区钉到仓库根。
+ *
+ * `resolve_workspace()`（`lib.rs:323`）的优先级是
+ * argv → `QYWORK_WORKSPACE` → last-workspace → cwd。无条件设这个环境变量的话，
+ * 它永远压过 last-workspace——用户在应用里切到别的项目，下次启动又被拽回仓库根，
+ * 而且仓库自己成了那个删不掉的默认项目。
+ *
+ * 钉住仍然有必要，但只在第一次：不设的话 `tauri dev` 的 cwd 是 `src-tauri`，
+ * 会被 cwd 那条分支当成一个项目记进账本（ROADMAP §33.2）。
+ * 有 last-workspace 就说明用户已经选过，那时候 cwd 那条根本轮不到。
+ */
+const lastWorkspace = Bun.file(
+  join(process.env.QYWORK_HOME ?? join(homedir(), '.qywork'), 'last-workspace'),
+)
+const pinWorkspace = (await lastWorkspace.exists()) ? {} : { QYWORK_WORKSPACE: ROOT }
+if (!('QYWORK_WORKSPACE' in pinWorkspace)) {
+  process.stderr.write('[dev] 沿用上次在应用里选的项目\n')
+}
+
 const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
   cwd: ROOT,
-  // QYWORK_WORKSPACE 钉到仓库根：不给的话 tauri dev 的 cwd 是 src-tauri，
-  // 会被 resolve_workspace 当成一个项目记进账本。
-  env: { ...env, QYWORK_WORKSPACE: ROOT },
+  env: { ...env, ...pinWorkspace },
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'inherit',

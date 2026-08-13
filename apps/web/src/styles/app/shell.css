@@ -255,6 +255,10 @@
  * `.other`，8(滚动区) + 8(这里) + 8(project-open) = 24，比 `+` 和齿轮右 8px。
  * **清零是唯一权威**：内距只由 `.project-open` 说了算，不许在这一层再加一份。
  */
+/*
+ * 色阶与字重跟 `.nav-item` 一致——项目行和「通用设置」是同一级导航项，
+ * 加粗加黑会让它读成一个标题。层级由缩进表达（会话缩在它下面），不由字重表达。
+ */
 .project-head {
   display: flex;
   align-items: center;
@@ -262,25 +266,35 @@
   width: 100%;
   padding: 0;
   border-radius: var(--r-xs);
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   text-align: left;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+/*
+ * 悬停底色盖**整行**，不是只盖住名字那一段。
+ *
+ * 之前底色画在 `.project-open` 上，而那个按钮只占到右边两个图标之前，
+ * 于是灰框在半路被截断——一行里出现两种底色，看起来像坏了。
+ * 底色属于「这一行」，就该画在行这一层；里面的图标按钮各自的 hover 叠在上面，
+ * 指示的是「现在会点到哪个图标」，是另一件事。
+ */
+.project-head:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .project-name {
   min-width: 0;
-}
-/* 其他项目比当前项目次要一级：只差颜色和字重，位置完全一致。 */
-.project-head.other {
-  color: var(--text-secondary);
-  font-weight: 400;
 }
 /* 还没连上时那一行是纯文字，没有 `.project-open` 兜着内距，自己补一份。 */
 .project-head.empty {
   padding: 4px var(--s-2);
   color: var(--text-tertiary);
-  font-weight: 400;
 }
+/* 只负责内距与布局，**不画自己的底色**——底色由 `.project-head:hover` 盖整行。 */
 .project-open {
   display: flex;
   align-items: center;
@@ -288,17 +302,9 @@
   flex: 1;
   min-width: 0;
   padding: 4px var(--s-2);
-  border-radius: var(--r-xs);
   color: inherit;
   font: inherit;
   text-align: left;
-  transition:
-    background var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
-}
-.project-open:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 .project-open:disabled {
   /* 当前项目那一行点了也不换，但它仍要能 hover 出卡片，所以不降透明度。 */

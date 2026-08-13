@@ -216,13 +216,16 @@ export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }>
  * 一条不动，重新添加同一个路径就整个回来。目录本身当然也不动——账本管的是
  * 「我开过哪些项目」，不是那些文件。
  *
- * 当前正在用的那个移不掉，服务端回 409。这条规则在服务端，不在这里：
- * 前端不显示按钮只是不让人白点，真正的守卫得在唯一权威那一侧。
+ * **当前项目也能移除**，只要还剩别的可切；服务端会在 `next` 里回「接下来切哪个」。
+ * 只有最后一个才移不掉（回 409）——移完没有任何项目可服务，那不是一个有终态的状态。
  */
-export function removeKnownWorkspace(id: string): Promise<{ ok: boolean }> {
-  return client.api<{ ok: boolean }>(`/api/workspaces/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  })
+export function removeKnownWorkspace(
+  id: string,
+): Promise<{ ok: boolean; next?: { id: string; rootPath: string } }> {
+  return client.api<{ ok: boolean; next?: { id: string; rootPath: string } }>(
+    `/api/workspaces/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  )
 }
 
 /**

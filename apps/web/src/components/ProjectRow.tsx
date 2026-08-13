@@ -1,5 +1,6 @@
 import { createSignal, onCleanup, Show } from 'solid-js'
 import {
+  activateWorkspace,
   archiveWorkspaceChats,
   isDesktopShell,
   type KnownWorkspace,
@@ -71,6 +72,19 @@ export function ProjectRow(props: {
     document.removeEventListener('keydown', onKey)
   })
 
+  /**
+   * 确认之后真正执行的那一下。
+   *
+   * 移除的如果正是脚下这块地板，服务端会在 `next` 里指好去处——**立刻切过去**。
+   * 不切的话客户端手里的 `?ws=` 指着一个已经不在列表里的项目，随后每条请求都 404。
+   */
+  const confirmed = async () => {
+    if (armed() === 'archive') return archiveWorkspaceChats(props.workspace.id)
+    const res = await removeKnownWorkspace(props.workspace.id)
+    if (props.current && res.next) await activateWorkspace(res.next.rootPath)
+    return res
+  }
+
   /** 每个菜单动作都走这里：统一收起菜单、统一把失败说出来，不静默吞掉。 */
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -86,7 +100,7 @@ export function ProjectRow(props: {
   const pinned = () => props.workspace.pinnedAt !== undefined
 
   return (
-    <div class="project-head" classList={{ other: !props.current }}>
+    <div class="project-head">
       {/* 卡片的 hover 挂在这个按钮上，不挂外层 div：
           给静态元素加交互处理器过不了 a11y 这一闸，而给它补一个 role 只是把
           规则绕过去——真正的交互元素本来就是这个按钮。 */}
@@ -157,17 +171,7 @@ export function ProjectRow(props: {
                       : '归档现有会话？数据不删，但界面上不再显示；之后新建的照常显示。'}
                   </p>
                   <div class="confirm-row">
-                    <button
-                      class="confirm-yes"
-                      type="button"
-                      onClick={() =>
-                        void run(() =>
-                          armed() === 'remove'
-                            ? removeKnownWorkspace(props.workspace.id)
-                            : archiveWorkspaceChats(props.workspace.id),
-                        )
-                      }
-                    >
+                    <button class="confirm-yes" type="button" onClick={() => void run(confirmed)}>
                       {armed() === 'remove' ? '移除' : '归档'}
                     </button>
                     <button class="confirm-no" type="button" onClick={() => setArmed(null)}>
@@ -210,18 +214,17 @@ export function ProjectRow(props: {
                 归档聊天
               </button>
 
-              {/* 当前项目移不掉：服务端回 409，这里不画这个按钮。 */}
-              <Show when={!props.current}>
-                <button
-                  class="menu-item danger"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => setArmed('remove')}
-                >
-                  <IconX size={14} />
-                  移除
-                </button>
-              </Show>
+              {/* 当前项目也能移除——服务端会指好接下来切哪个。只有最后一个才回 409，
+                  那种情况下这里照样画按钮：拒绝的理由由服务端说，说得比「按钮没了」清楚。 */}
+              <button
+                class="menu-item danger"
+                type="button"
+                role="menuitem"
+                onClick={() => setArmed('remove')}
+              >
+                <IconX size={14} />
+                移除
+              </button>
             </Show>
           </div>
         </Show>
