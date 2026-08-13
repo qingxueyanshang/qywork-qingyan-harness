@@ -6,7 +6,7 @@
  */
 
 import type { ConversationId, RunId } from '../domain/ids.ts'
-import type { Attachment, EffortLevel, PermissionMode } from '../domain/model.ts'
+import type { Attachment, PermissionMode } from '../domain/model.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
@@ -92,6 +92,10 @@ export interface ServerCapabilities {
    * 客户端只显示与请求修改，不自己存一份。
    */
   mode: PermissionMode
+  // 思考强度**不在这里**。它是「接口 × 模型」那一格的属性，而握手是连接级、
+  // 只报一次——报上来的那个值在用户切一次模型之后就不再成立。
+  // 它随模型目录一起下发（`/api/models` 每行的 `effort`），与该模型的
+  // `effortLevels` 同源，前端一处读。
 }
 
 export interface HelloErrFrame {
@@ -116,7 +120,6 @@ export type ClientCommand =
   | ResolvePermissionCommand
   | SubscribeCommand
   | SetModelCommand
-  | SetEffortCommand
   | CompactCommand
 
 export interface SendMessageCommand {
@@ -158,20 +161,6 @@ export interface SetModelCommand {
   type: 'conversation.setModel'
   conversationId: ConversationId
   model: string
-}
-
-/**
- * 切换会话思考强度。
- *
- * 和 `setModel` 分开，因为这是两个独立动作：换模型时不该顺手改思考强度，
- * 反过来也一样。合成一条指令会逼调用方每次都把另一个值也带上，
- * 而它带的那个值来自它自己的本地状态——那正是覆盖别人刚改的值的经典形状。
- */
-export interface SetEffortCommand {
-  type: 'conversation.setEffort'
-  conversationId: ConversationId
-  /** null = 回到跟随配置默认。 */
-  effort: EffortLevel | null
 }
 
 /** 用户显式触发上下文压缩。 */

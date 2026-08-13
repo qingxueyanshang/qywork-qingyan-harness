@@ -20,6 +20,7 @@ export {
   computeCost,
   effortIsTransmittable,
   lookupModel,
+  type ModelSpec,
   type ProviderKind,
   VENDORS,
 } from './catalog.ts'

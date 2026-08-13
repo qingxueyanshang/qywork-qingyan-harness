@@ -221,25 +221,124 @@ describe('新建会话的来源', () => {
     expect(listConversations(store, ws.id)).toHaveLength(1)
     expect(listConversations(store, ws.id)[0]?.source).toBeNull()
   })
+})
 
-  /**
-   * 新会话把当时的默认思考强度**定格**下来。
-   *
-   * 留 null 一直跟随配置的话，用户改一次全局默认会连带改掉所有老会话的下一轮，
-   * 而那些会话的 chip 上显示的还是原来那档——界面和实际发出去的参数对不上。
-   */
-  test('新会话定格当前默认思考强度', async () => {
-    const { store, root } = await askOnce(undefined, { ...offline, effort: 'low' })
-    const ws = upsertWorkspace(store, root, 'x')
-    expect(listConversations(store, ws.id)[0]?.effort).toBe('low')
-    store.close()
+/**
+ * 裁决分类器实际发出去的请求。
+ *
+ * **必须看真实请求体。** 这条链路上出过的事故正是「两头都对、中间那节把值丢了」：
+ * 分类器要求 `thinking:{mode:'disabled'}`，而兼容协议的装配层只看 `effort`，
+ * 那条指令被静默吃掉，DeepSeek 照常思考，512 的预算全被推理烧光
+ * （落盘的 `usage_ledger` 里 `output_tokens=512, reasoning_tokens=512`），
+ * 正文一个字都没有 → `parseVerdict('')` 返回 null → 两段判定都失败 → fail-closed。
+ *
+ * 表现是 **auto 模式下每一条静态规则判不了的命令都必然被拒**，而给用户看的理由
+ * 是「分类器回复解析失败」——从那句话完全看不出问题在请求装配上。
+ *
+ * 归因也是错的：「裁决不需要思考」这个前提对 DeepSeek 根本不成立，
+ * 它的控制面只有 high / max 两档，**没有关闭档**。所以现在不再要求关思考，
+ * 而是跟着主循环那一档走。
+ */
+describe('分类器的请求装配', () => {
+  /** 主循环带工具，分类器不带——假端点靠这个区分该回哪一种流。 */
+  const isClassifier = (body: any) => !(body.tools?.length > 0)
+
+  const TOOL_CALL =
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":' +
+    '{"name":"run_command","arguments":"{\\"command\\":\\"npm test\\"}"}}]},' +
+    '"finish_reason":null}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
+    'data: [DONE]\n\n'
+
+  const text = (s: string) =>
+    `data: {"choices":[{"delta":{"content":${JSON.stringify(s)}},"finish_reason":null}]}\n\n` +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    'data: [DONE]\n\n'
+
+  async function run(effort?: 'low' | 'high' | 'max') {
+    const bodies: any[] = []
+    let mainTurns = 0
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as any
+        bodies.push(body)
+        if (isClassifier(body)) {
+          // 判 block：命令因此不会真的执行，测试不落任何副作用。
+          return new Response(text('{"decision":"block","reason":"测试固定拒绝"}'), {
+            headers: { 'content-type': 'text/event-stream' },
+          })
+        }
+        mainTurns += 1
+        return new Response(mainTurns === 1 ? TOOL_CALL : text('好了'), {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      },
+    })
+    const store = new Store({ path: ':memory:' })
+    const root = await mkdtemp(join(tmpdir(), 'qywork-cls-'))
+    const s = new Session({
+      store,
+      config: {
+        active: { provider: 'p', model: 'deepseek-v4-flash' },
+        providers: {
+          p: {
+            kind: 'openai_compatible',
+            apiKey: 'sk-x',
+            baseUrl: `http://127.0.0.1:${server.port}/v1`,
+            models: { 'deepseek-v4-flash': effort ? { effort } : {} },
+          },
+        },
+      },
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+    })
+    try {
+      for await (const _ of s.ask('跑一下测试')) {
+        // 产出不关心，要的是发出去的那几个请求体。
+      }
+    } finally {
+      s.dispose()
+      store.close()
+      server.stop(true)
+    }
+    return bodies.filter(isClassifier)
+  }
+
+  test('不再要求关思考——DeepSeek 没有关闭档', async () => {
+    const [first] = await run('max')
+    expect(first).toBeDefined()
+    expect(first.thinking).not.toEqual({ type: 'disabled' })
   })
 
-  /** 配置里没写就是 null，不编一个默认档位塞进库里。 */
-  test('配置没写默认强度时会话留 null', async () => {
-    const { store, root } = await askOnce()
-    const ws = upsertWorkspace(store, root, 'x')
-    expect(listConversations(store, ws.id)[0]?.effort).toBeNull()
-    store.close()
+  /**
+   * 档位取**分类器自己那个模型**的那一格，不自己挑、也不借用主循环那一档。
+   *
+   * `config.classifier` 可以指向另一个模型（这条配置存在的理由就是「裁决不必和
+   * 主循环同一个模型」）。借用主循环那一档的话，主循环在 Claude 上跑 `xhigh`、
+   * 分类器指向 DeepSeek 时那一档它根本没有——档位集合逐模型不同。
+   */
+  test('档位取这个模型自己那一格', async () => {
+    const [first] = await run('max')
+    expect(first.thinking).toEqual({ type: 'enabled' })
+    expect(first.reasoning_effort).toBe('max')
+  })
+
+  /** 没选过就一个思考字段都不发，让模型走自己的默认。 */
+  test('没选过档位就不发思考字段', async () => {
+    const [first] = await run()
+    expect('thinking' in first).toBe(false)
+    expect('reasoning_effort' in first).toBe(false)
+  })
+
+  /**
+   * 预算要容得下**思考 + 正文**。
+   *
+   * 512 是按正文长度给的，而实测（2026-08-13，deepseek-v4-flash）光正文那一段
+   * 就要 1109 token（high 档峰值）——原来的值连思考都不够，正文自然一个字不剩。
+   */
+  test('预算容得下思考加正文', async () => {
+    const [first] = await run('max')
+    expect(first.max_tokens).toBe(4096)
   })
 })

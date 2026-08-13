@@ -48,13 +48,6 @@ export interface Conversation {
   workspaceId: WorkspaceId
   title: string
   model: string
-  /**
-   * 本会话的思考强度。`null` = 跟随配置里的默认值。
-   *
-   * 和 `model` 同层同形状：都是会话级、都以配置里的值作为新建时的默认。
-   * 不合并成一个字段——换模型和调思考强度是两个独立动作。
-   */
-  effort: EffortLevel | null
   /** 上下文压缩的唯一投影权威。有界 JSON，正文仍只存在 messages/steps 里。 */
   compactionManifest: CompactionManifest | null
   /** 用户显式重置缓存时递增；稳定路由键含该值，旧 provider 缓存自然隔离。 */

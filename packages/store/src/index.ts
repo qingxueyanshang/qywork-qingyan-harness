@@ -43,7 +43,6 @@ export {
   referencedAttachmentPaths,
   removeWorkspace,
   setCompactionManifest,
-  setConversationEffort,
   setConversationModel,
   settleToolStep,
   setWorkspacePinned,

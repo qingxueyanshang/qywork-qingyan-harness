@@ -1,6 +1,6 @@
+import type { EffortLevel } from '@qywork/core'
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import {
-  activeEffort,
   activeModel,
   loadModels,
   type ModelOption,
@@ -134,7 +134,27 @@ export function EffortPicker() {
   // 一个控件在被点的瞬间消失，比它从来没出现过糟得多。
   onMount(() => void ensureCatalog())
 
-  const levels = () => catalog().find((m) => m.id === activeModel())?.effortLevels ?? []
+  /**
+   * 档位面与当前选定档**取自目录里同一行**。
+   *
+   * 分两处取必然出现「档位面是 A 模型的、选定值是 B 模型的」——两者都逐模型
+   * 不同（Claude 五档、DeepSeek 两档、Qwen 一档没有），而用户随时会切模型。
+   */
+  const row = () => catalog().find((m) => m.id === activeModel())
+  const levels = () => row()?.effortLevels ?? []
+  const selected = () => row()?.effort ?? null
+
+  /**
+   * 选一档：先落盘，成功了再改目录里那一行。
+   *
+   * 顺序反过来的话，写盘失败时界面显示的是一个从未落盘的档，而下一轮实际发出去
+   * 的还是旧值——那种不一致用户没有任何办法看出来。
+   */
+  const pick = async (lv: EffortLevel | null) => {
+    await setEffort(lv)
+    const id = activeModel()
+    setCatalog((list) => list.map((m) => (m.id === id ? { ...m, effort: lv } : m)))
+  }
 
   const toggle = () => setOpen((v) => !v)
 
@@ -154,7 +174,7 @@ export function EffortPicker() {
           title={state.running ? '执行中不能改思考强度' : '思考强度'}
           onClick={toggle}
         >
-          <span class="truncate">{activeEffort() ?? '思考'}</span>
+          <span class="truncate">{selected() ?? '思考'}</span>
           <IconChevron size={11} dir={open() ? 'up' : 'down'} />
         </button>
 
@@ -164,12 +184,12 @@ export function EffortPicker() {
               {(lv) => (
                 <button
                   class="model-item"
-                  classList={{ active: lv === activeEffort() }}
+                  classList={{ active: lv === selected() }}
                   type="button"
                   role="option"
-                  aria-selected={lv === activeEffort()}
+                  aria-selected={lv === selected()}
                   onClick={() => {
-                    setEffort(lv)
+                    void pick(lv)
                     setOpen(false)
                   }}
                 >

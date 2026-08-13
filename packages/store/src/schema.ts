@@ -455,6 +455,30 @@ ALTER TABLE workspaces ADD COLUMN pinned_at INTEGER;
 ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
 `,
   },
+  {
+    id: 12,
+    name: 'drop_conversation_effort',
+    /**
+     * 思考强度**收回成一个变量**，会话上这一列删掉。
+     *
+     * 迁移 6 把它下沉到会话，理由是「模型是会话级的，思考强度该跟模型同层」。
+     * 那个理由站不住：它造出了第二条线——输入区的 chip 写会话、设置页的下拉写
+     * `config.effort`，两处各写各的。表现是**在 chip 上选的档换个会话就没了**，
+     * 而设置页里那个值看着还在，两边谁也不知道对方改过。
+     *
+     * 对照三家真实实现，档位都只是**全局配置里的一个字段**，与 model 并排，
+     * 会话不存自己的那一份：
+     *
+     * ```
+     * Codex        ~/.codex/config.toml     model_reasoning_effort = "xhigh"
+     * Claude Code  ~/.claude/settings.json  "effortLevel": "xhigh"
+     * ```
+     *
+     * Codex 的 `session_meta` 里连 model 都不记，只有 cwd / git / provider——
+     * 档位不是会话属性，每轮请求从那个全局值取。
+     */
+    sql: `ALTER TABLE conversations DROP COLUMN effort;`,
+  },
 ]
 
 /**

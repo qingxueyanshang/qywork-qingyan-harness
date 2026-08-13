@@ -9,7 +9,6 @@ import type {
   CompactionManifest,
   Conversation,
   ConversationId,
-  EffortLevel,
   Message,
   MessageId,
   Run,
@@ -211,7 +210,6 @@ export function createConversation(
     workspaceId: WorkspaceId
     model: string
     title?: string
-    effort?: EffortLevel
     source?: Conversation['source']
     sourceRef?: string
   },
@@ -222,7 +220,6 @@ export function createConversation(
     workspaceId: input.workspaceId,
     title: input.title ?? '',
     model: input.model,
-    effort: input.effort ?? null,
     compactionManifest: null,
     cacheGeneration: 0,
     source: input.source ?? null,
@@ -233,15 +230,14 @@ export function createConversation(
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, model, effort, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, model, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
       conv.workspaceId,
       conv.title,
       conv.model,
-      conv.effort,
       null,
       0,
       conv.source,
@@ -350,24 +346,6 @@ export function setConversationModel(
   const changed = store.db
     .query('UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?')
     .run(model, Date.now(), id)
-  if (changed.changes === 0) return null
-  return getConversation(store, id)
-}
-
-/**
- * 切换会话思考强度。
- *
- * `null` 是合法值，表示**回到跟随配置默认**——所以这里不能用「假值即不改」的
- * 写法，那会让「清除」这个动作永远没法执行。
- */
-export function setConversationEffort(
-  store: Store,
-  id: ConversationId,
-  effort: EffortLevel | null,
-): Conversation | null {
-  const changed = store.db
-    .query('UPDATE conversations SET effort = ?, updated_at = ? WHERE id = ?')
-    .run(effort, Date.now(), id)
   if (changed.changes === 0) return null
   return getConversation(store, id)
 }
@@ -844,7 +822,6 @@ function rowToConversation(r: Record<string, any>): Conversation {
     workspaceId: r.workspace_id,
     title: r.title,
     model: r.model,
-    effort: r.effort ?? null,
     compactionManifest: readJson(r.compaction_manifest, null),
     cacheGeneration: r.cache_generation,
     source: r.source,

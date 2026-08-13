@@ -25,7 +25,7 @@ const cfg = (): QyConfig => ({
       models: { qwen: {} },
     },
   },
-  effort: 'high',
+  mode: 'auto',
 })
 
 describe('脱敏', () => {
@@ -54,7 +54,7 @@ describe('脱敏', () => {
 
   test('非密钥字段原样保留', () => {
     const r = redactConfig(cfg())
-    expect(r.effort).toBe('high')
+    expect(r.mode).toBe('auto')
     expect(r.active).toEqual({ provider: 'main', model: 'claude-opus-5' })
     expect(r.providers.local?.baseUrl).toBe('http://127.0.0.1:11434/v1')
   })
@@ -128,10 +128,10 @@ describe('回填', () => {
 
   test('顶层字段以传入的为准', () => {
     const out = roundTrip((r) => {
-      r.effort = 'low'
+      r.mode = 'full'
       r.active = { provider: 'local', model: 'qwen' }
     })
-    expect(out.effort).toBe('low')
+    expect(out.mode).toBe('full')
     expect(out.active).toEqual({ provider: 'local', model: 'qwen' })
   })
 
@@ -156,8 +156,7 @@ describe('回填', () => {
     const asClientSeesIt = {
       active: wire.active,
       profiles: wire.providers,
-      effort: 'low',
-      mode: wire.mode,
+      mode: 'full',
       additionalDirectories: wire.additionalDirectories,
       envAllowList: wire.envAllowList,
       classifier: wire.classifier,
@@ -166,7 +165,7 @@ describe('回填', () => {
     const incoming = JSON.parse(JSON.stringify(asClientSeesIt)) as RedactedConfig
 
     const out = mergeConfig(current, incoming)
-    expect(out.effort).toBe('low')
+    expect(out.mode).toBe('full')
     expect(out.sandboxNetwork).toBe('deny')
     expect(out.envAllowList).toEqual(['GITHUB_TOKEN'])
   })

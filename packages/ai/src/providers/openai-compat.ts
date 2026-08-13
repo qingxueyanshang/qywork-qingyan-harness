@@ -190,6 +190,23 @@ export class OpenAICompatAdapter implements LlmAdapter {
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
   if (!effort) return {}
+  /*
+   * **不在这个模型档位面里的档，一个字节都不发。**
+   *
+   * 三条协议里只有这条没有这道闸：`openai-responses` 是
+   * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档。
+   * 这里原来把 `effort` 原样发出去，判据只有「有没有给」。
+   *
+   * 单厂商工具（Codex / Claude Code）不需要这道闸，因为它们只调自家模型、
+   * 档位面一致。本仓不是：档位选定值挂在「接口 × 模型」那一格，可同一个模型
+   * 换条协议档位面就变（DeepSeek 走 chat/completions 是 high/max，走 Responses
+   * 一档都没有），Agent Team 的角色还各带各的模型。越界值到这里必须被拦下，
+   * 否则就是发给 provider 的一个 400，而错误信息里只有它的原话。
+   *
+   * 拦下而不是降档：本仓的目录没有「默认档」这个概念，替它挑一档是猜。
+   * 不发 = 模型走自己的默认，这与「没选过」是同一个行为，可预期。
+   */
+  if (!spec.effortLevels.includes(effort as never)) return {}
   if (spec.thinking === 'deepseek_thinking') {
     return { thinking: { type: 'enabled' }, reasoning_effort: effort }
   }

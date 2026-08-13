@@ -6,8 +6,7 @@
  */
 
 import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@qywork/core'
-import { EFFORT_ORDER } from '@qywork/core'
-import { getConversation, setConversationEffort, setConversationModel } from '@qywork/store'
+import { getConversation, setConversationModel } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
 import { compactConversation, retryRun, startRun } from './run-control.ts'
@@ -49,33 +48,6 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
           type: 'conversation.updated',
           conversationId: updated.id,
           model: updated.model,
-          effort: updated.effort,
-          title: updated.title,
-        },
-        cmd.conversationId,
-      )
-      return
-    }
-
-    case 'conversation.setEffort': {
-      // 档位在这里校验，不是在界面上。界面按当前模型的 effortLevels 出选项，
-      // 但指令可以从任何客户端来——落盘一个不在词表里的值，下一轮就会被
-      // 原样发给 provider，然后是一个 400。
-      if (cmd.effort !== null && !EFFORT_ORDER.includes(cmd.effort)) {
-        reject(deps.ws, cmd.type, 'invalid_payload', `不认识的思考强度：${cmd.effort}`)
-        return
-      }
-      const updated = setConversationEffort(deps.store, cmd.conversationId, cmd.effort)
-      if (!updated) {
-        reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
-        return
-      }
-      deps.bus.publish(
-        {
-          type: 'conversation.updated',
-          conversationId: updated.id,
-          model: updated.model,
-          effort: updated.effort,
           title: updated.title,
         },
         cmd.conversationId,
