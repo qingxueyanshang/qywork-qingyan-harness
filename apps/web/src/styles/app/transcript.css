@@ -732,10 +732,11 @@
 .run-live {
   color: var(--text-tertiary);
 }
+/* 不加粗：这一行是读数条，其余几格都是常规字重，只有它粗一档会读成标题。
+   它的显眼由颜色负责，不需要再叠一层字重。 */
 .run-reason {
   flex: 0 0 auto;
   color: var(--warning);
-  font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {
