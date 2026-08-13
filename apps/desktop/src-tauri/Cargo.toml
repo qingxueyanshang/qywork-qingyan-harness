@@ -49,6 +49,25 @@ windows = { version = "0.61", features = [
 # 由 tauri-build 生成的自定义协议开关，勿手改。
 custom-protocol = ["tauri/custom-protocol"]
 
+# target/debug 曾长到 12 GB。实测构成：incremental 4.7 G · deps 4.6 G · build 1.3 G，
+# 其中 .pdb 1.48 G、.o 4.2 G——大头是调试信息。cargo 不回收旧产物，dev 每跑一次就往上堆，
+# 所以在生成端掐掉，而不是定期 clean。
+[profile.dev]
+# 增量缓存只对本 crate 生效（依赖一律非增量编译），而本 crate 只有 lib/sidecar/watcher 几个
+# 文件，全量重编它的代价远小于 4.7 G 的缓存。
+incremental = false
+# 保留行号表：panic 仍能定位到 .rs:行。去掉变量级调试信息——Rust 侧下断点本来就不是
+# 这个项目的调试方式，UI 在 WebView 里。
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# 依赖树全部不生成调试信息。本 crate 不受影响（这条只作用于非工作区成员）。
+debug = false
+
+[profile.dev.build-override]
+# build script 及其依赖同样不需要。
+debug = false
+
 [profile.release]
 # 单文件体积优先：这是选 Tauri 的理由之一，不该在编译配置上白白让回去。
 opt-level = "s"
