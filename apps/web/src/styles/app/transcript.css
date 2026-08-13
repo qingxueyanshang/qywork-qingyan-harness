@@ -377,9 +377,11 @@
 .fold-word {
   color: var(--danger);
 }
+/* **不加 opacity。** 它曾经是 .85，于是失败行里「执行命令 失败」和后面那段
+   命令预览是同一个 --danger 却显出两种深浅——半透明把红洗淡了一档。
+   要淡就把 token 定成淡的，不要在个别元素上再蒙一层。 */
 .fold-target {
   white-space: nowrap;
-  opacity: 0.85;
 }
 .fold.failed > .fold-head {
   color: var(--danger);
