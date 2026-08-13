@@ -13,7 +13,6 @@
  */
 
 // 分类器：runtime 装配 Session 时注入 AskFn 与缓存
-export { type AskFn, classify, VerdictCache } from './classifier.ts'
 // 压缩：runtime 的压缩端口与 server 的手动压缩入口共用同一份实现
 // CompactionOutcome 没有被谁 import，但它出现在 runtime 的公开签名的推断类型里——
 // 不导出会让那个类型无法命名（TS2742）。这类「隐式对外」同样是承诺。

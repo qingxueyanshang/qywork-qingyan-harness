@@ -68,7 +68,6 @@ export interface RedactedConfig {
   mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]
-  classifier?: ModelRef
 }
 export interface ConfigPayload {
   path: string
