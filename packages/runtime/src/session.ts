@@ -5,7 +5,8 @@
  * 不各自再拼一遍——三套装配就是三套会漂移的行为。
  */
 
-import { basename, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
 import {
   AgentLoop,
   type AskFn,
@@ -21,12 +22,20 @@ import {
 } from '@qywork/agent'
 import {
   buildAdapter,
+  type ContentBlock,
   computeCost,
   type ProviderProfile,
   type ProviderUsage,
   type WireToolCall,
 } from '@qywork/ai'
-import type { AgentEvent, ConversationId, MessageId, RunId } from '@qywork/core'
+import type {
+  AgentEvent,
+  Attachment,
+  Conversation,
+  ConversationId,
+  MessageId,
+  RunId,
+} from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -36,6 +45,7 @@ import {
   createRun,
   finishRun,
   getConversation,
+  listDisabledExtras,
   listMessages,
   markRunRunning,
   markRunSuperseded,
@@ -48,14 +58,15 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import {
-  listEntries,
-  MEMORY_DIR,
+  listScopedEntries,
   normalizeAdditionalDirectories,
   registerBuiltinTools,
+  resolveInWorkspace,
   scanSkills,
+  scopeRoots,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
-import { collectSecrets, type QyConfig, resolveApiKey } from './config.ts'
+import { collectSecrets, type QyConfig, resolveApiKey, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
@@ -82,6 +93,13 @@ export interface SessionOptions {
    * 不传 = 全部内置工具。合并这两者会让「只让它读、不让它写」这类配置静默失效。
    */
   allowedTools?: string[]
+  /**
+   * 本会话单轮的步数上限。不传 = 用 loop 的默认值。
+   *
+   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色跑飞会把整轮拖垮，
+   * 而那个字段此前**解析了但没有任何人消费**——配了不生效。
+   */
+  maxSteps?: number
 }
 
 /** 重试：复用原 run 的用户消息与高水位，不新增消息。 */
@@ -97,6 +115,24 @@ export interface AskOptions {
   retryOf?: RetrySource
   /** 幂等键。同一 (conversationId, clientRequestId) 不会起两个 run。 */
   clientRequestId?: string
+  /**
+   * 本条消息带的附件。
+   *
+   * **只存定位事实（工作区相对路径），不把字节塞进消息**——这是 `Attachment`
+   * 本来的约定（`core/domain/model.ts`）。正文在装配请求时才从磁盘读，
+   * 所以历史里躺着的是路径，几十轮之后读历史也不会拖着几 MB base64。
+   */
+  attachments?: Attachment[]
+  /**
+   * 这一轮**新建**会话时给它打的来源标记（续跑已有会话时无效）。
+   *
+   * 不填 = `null` = 用户会话，会出现在会话列表里。编排产生的成员子会话
+   * 必须填 `'workflow'`：`listConversations` 的判据是 `source IS NULL`，
+   * 不填的话每跑一次 team、列表里就多出 N 条以成员 prompt 开头的条目，
+   * 而那些会话用户点进去也没有意义——它们由父会话的协作视图展示。
+   */
+  source?: Conversation['source']
+  sourceRef?: string
 }
 
 export class Session {
@@ -163,28 +199,26 @@ export class Session {
   }
 
   /**
-   * 按模型解析出该用哪个供应商档案。
+   * 按模型解析出该走哪个接口。
    *
-   * 模型是会话级的，而 API Key / baseUrl 挂在档案上，所以「切模型」实质是
-   * 「切档案 + 切模型」。规则：**先找哪个档案声明了这个模型**，找不到就用当前档案
-   * 覆盖模型名——后者覆盖「同一供应商下换个模型」这个最常见的情形
-   * （例如 DeepSeek 档案下在 v4-flash 和 v4-pro 之间切）。
+   * 模型是会话级的，而 API Key / baseUrl 挂在接口上，所以「切模型」实质是
+   * 「切接口 + 切模型」。规则见 `resolveModel`——解析只有那一份，
+   * 界面上列出来的协议和这一轮真的发出去的必须是同一个结论。
    *
    * 曾经这个解析在构造函数里做一次就固定了，导致会话级模型切换无从生效。
    */
   private resolveProfile(model?: string): ProviderProfile {
-    const { profiles, active } = this.opts.config
-    const owner = model ? Object.values(profiles).find((p) => p.model === model) : undefined
-    const stored = owner ?? profiles[active]
+    const { providers, active } = this.opts.config
+    const stored = resolveModel(this.opts.config, model)
     if (!stored) {
       throw new Error(
-        `配置里没有名为 "${active}" 的供应商档案。可用：${Object.keys(profiles).join(', ') || '（空）'}`,
+        `配置里没有名为 "${active.provider}" 的接口。可用：${Object.keys(providers).join(', ') || '（空）'}`,
       )
     }
     return {
       kind: stored.kind,
       apiKey: resolveApiKey(stored),
-      model: model ?? stored.model,
+      model: stored.model,
       ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
       ...(stored.maxOutputTokens ? { maxOutputTokens: stored.maxOutputTokens } : {}),
       ...(stored.headers ? { headers: stored.headers } : {}),
@@ -259,7 +293,8 @@ export class Session {
           cachedTokens: spent.u.cachedTokens,
           cacheWriteTokens: spent.u.cacheWriteTokens,
           reasoningTokens: spent.u.reasoningTokens,
-          costUsd: spent.cost,
+          cost: spent.cost,
+          currency: adapter.spec.pricing.currency ?? 'USD',
         })
       }
       return text.trim() || null
@@ -281,23 +316,33 @@ export class Session {
       existing ??
       createConversation(store, {
         workspaceId: this.workspaceId as never,
-        model: options?.model ?? config.profiles[config.active]!.model,
+        model: options?.model ?? config.active.model,
         title: prompt.slice(0, 60),
+        // 新会话把当前默认思考强度**定格下来**，而不是留 null 一直跟随配置。
+        // 留 null 的话，用户改一次全局默认会连带改掉所有老会话的下一轮行为。
+        ...(config.effort ? { effort: config.effort } : {}),
+        ...(options?.source ? { source: options.source } : {}),
+        ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
       }).id
 
     // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
     // **会话是权威**——config 只在会话还没有模型时兜底，否则用户在界面上切了模型，
     // 下一轮又被配置文件里的默认值悄悄改回去。
-    const model =
-      options?.model ??
-      getConversation(store, conversationId)?.model ??
-      config.profiles[config.active]!.model
+    const conversation = getConversation(store, conversationId)
+    const model = options?.model ?? conversation?.model ?? config.active.model
+    // 思考强度同理，会话优先。null 表示这条会话没有自己的值（老数据），才回落配置。
+    const effort = conversation?.effort ?? config.effort
 
     // 重试不新增消息：要重现的是「当时那个上下文」。新写一条会让同一句话
     // 在历史里出现两遍，模型看到的输入和第一次就不一样了。
     const userMessageId = retryOf
       ? retryOf.userMessageId
-      : appendMessage(store, { conversationId, role: 'user', content: prompt }).id
+      : appendMessage(store, {
+          conversationId,
+          role: 'user',
+          content: prompt,
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+        }).id
 
     const run = createRun(store, {
       conversationId,
@@ -315,12 +360,18 @@ export class Session {
     // 那个瞬间崩溃就留下一条悬空引用。
     if (retryOf) markRunSuperseded(store, retryOf.runId, run.id)
 
-    const history = listMessages(store, conversationId, run.messageIdUpperBound).map((m) => ({
-      role: m.role,
-      content: m.content,
-      _group: 'historyMessages' as const,
-      _messageId: m.id,
-    }))
+    const history = await Promise.all(
+      listMessages(store, conversationId, run.messageIdUpperBound).map(async (m) => ({
+        role: m.role,
+        // 带附件的消息装成 ContentBlock[]：文本一块，每个附件一块。
+        // **附件是这一步才从磁盘读的**——消息表里只有路径。
+        content: m.attachments.length
+          ? await withAttachments(this.opts.workspaceRoot, m.content, m.attachments)
+          : m.content,
+        _group: 'historyMessages' as const,
+        _messageId: m.id,
+      })),
+    )
 
     // run.started 必须由这里发：协议早就定义了它，但一直没有发送方——
     // 于是客户端拿不到真实 runId，中断和重试都在拿步骤 id 当 run id 用，
@@ -343,23 +394,36 @@ export class Session {
       summarize: this.makeSummarizer(model),
     })
 
+    // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
+    // 所以新装的东西默认就在，不需要给历史会话补什么。
+    const disabled = listDisabledExtras(store, conversationId)
+
     // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
     // 重起一遍既慢又会丢掉它们的进程内状态。会话只负责把工具规格注册进自己的表。
     if (!this.extensions) {
-      await this.loadExtensionTools()
+      await this.loadExtensionTools(disabled)
     }
 
     // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
     // 而让整轮 run 因为扫目录失败而挂掉是不成比例的。
-    this.skillIndex = await scanSkills(this.opts.workspaceRoot).catch(() => [])
-    this.memoryIndex = await listEntries(join(this.opts.workspaceRoot, MEMORY_DIR)).catch(() => [])
+    //
+    // 关掉的那些**从索引里拿掉**：索引是模型判断「有没有这个技能」的唯一依据，
+    // 留在索引里而调用时才拒绝，等于让它去撞一堵看不见的墙。
+    const roots = scopeRoots(this.opts.workspaceRoot)
+    this.skillIndex = (await scanSkills(roots).catch(() => [])).filter(
+      (s) => !disabled.has(`skill:${s.name}`),
+    )
+    this.memoryIndex = (await listScopedEntries(roots).catch(() => [])).filter(
+      (m) => !disabled.has(`memory:${m.key}`),
+    )
 
     let finished = false
     try {
       for await (const ev of this.makeLoop(model, compaction).run({
         runId: run.id,
         history,
-        ...(config.effort ? { effort: config.effort } : {}),
+        ...(effort ? { effort } : {}),
+        ...(this.opts.maxSteps ? { maxSteps: this.opts.maxSteps } : {}),
         cacheKey: conversationId,
         signal: this.opts.signal,
       })) {
@@ -381,7 +445,8 @@ export class Session {
             cachedTokens: ev.usage.cachedTokens,
             cacheWriteTokens: ev.usage.cacheWriteTokens,
             reasoningTokens: ev.usage.reasoningTokens,
-            costUsd: ev.usage.costUsd,
+            cost: ev.usage.cost,
+            currency: ev.usage.currency,
           })
         }
         yield ev
@@ -401,7 +466,7 @@ export class Session {
    * 注册失败（重名）只跳过那一个工具：让整个会话因为一个撞名的插件工具起不来，
    * 代价完全不成比例。
    */
-  private async loadExtensionTools(): Promise<void> {
+  private async loadExtensionTools(disabled: ReadonlySet<string> = new Set()): Promise<void> {
     const ext = await acquireExtensions(this.opts.workspaceRoot, (line) =>
       process.stderr.write(`${line}
 `),
@@ -411,8 +476,17 @@ export class Session {
     // 角色的 allowedTools 同样约束插件与 MCP 工具。
     // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
     const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
+    // 会话级开关关掉的那些**根本不注册**，而不是注册完再拦。
+    // 注册完再拦的话模型仍然在 schema 里看得见它，会反复去调一个必然失败的工具。
+    const off = (spec: { name: string }) => {
+      const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(spec.name)
+      if (mcp) return disabled.has(`mcp:${mcp[1]}`)
+      const plugin = /^(.+?)__/.exec(spec.name)
+      return plugin ? disabled.has(`plugin:${plugin[1]}`) : false
+    }
     for (const spec of ext.toolSpecs) {
       if (allow && !allow.has(spec.name)) continue
+      if (off(spec)) continue
       if (this.registry.has(spec.name)) continue
       try {
         this.registry.register(spec)
@@ -582,7 +656,7 @@ export class Session {
    *
    * 三件事与主循环不同，都是刻意的：
    *
-   * 1. **可以用另一个档案**（`classifierProfile`）。裁决是短、结构化、低难度的任务，
+   * 1. **可以用另一个模型**（`classifier`）。裁决是短、结构化、低难度的任务，
    *    不需要跟主循环同一个模型；指向本机小模型能把每次往返从两秒压到几百毫秒。
    * 2. **system 块单独设缓存断点**。规则前缀逐字节稳定，命中缓存与否差 3.6 倍成本，
    *    而这次调用的绝大部分 token 就是那段规则。
@@ -591,8 +665,8 @@ export class Session {
    */
   private classifierAsk(): AskFn {
     return async ({ system, user }) => {
-      const name = this.opts.config.classifierProfile
-      const stored = name ? this.opts.config.profiles[name] : undefined
+      const ref = this.opts.config.classifier
+      const stored = ref ? resolveModel(this.opts.config, ref) : undefined
       const profile = stored
         ? {
             kind: stored.kind,
@@ -637,7 +711,8 @@ export class Session {
           cachedTokens: spent.u.cachedTokens,
           cacheWriteTokens: spent.u.cacheWriteTokens,
           reasoningTokens: spent.u.reasoningTokens,
-          costUsd: spent.cost,
+          cost: spent.cost,
+          currency: adapter.spec.pricing.currency ?? 'USD',
         })
       }
       return text
@@ -669,4 +744,61 @@ export class Session {
       requestPermission: async (scope, _preview, meta) => this.decide(scope, meta),
     }
   }
+}
+
+const NEWLINE = String.fromCharCode(10)
+
+/**
+ * 把附件读成 provider 认得的内容块。
+ *
+ * ## 为什么在这里读，而不是在存的时候
+ *
+ * 消息表里只放路径（`Attachment.path`）。存 base64 的话，每次读历史都要把
+ * 几 MB 的图片一起拖出来，而绝大多数轮次根本用不到它。
+ *
+ * ## 读不出来不是致命错
+ *
+ * 文件被用户删了、改名了、换了工作区——这些都会发生。**跳过那一个附件并在
+ * 文本里留一行说明**，而不是让整轮对话起不来：模型看到「这里原本有张图，
+ * 现在读不到了」还能继续干活，看到一个 500 就只能重来。
+ */
+async function withAttachments(
+  workspaceRoot: string,
+  text: string,
+  attachments: Attachment[],
+): Promise<ContentBlock[]> {
+  const blocks: ContentBlock[] = []
+  const notes: string[] = []
+
+  for (const a of attachments) {
+    // 走同一条工作区边界：附件路径是客户端给的，不能例外。
+    const abs = await resolveInWorkspace(workspaceRoot, a.path, { mustExist: true }).catch(
+      () => null,
+    )
+    if (!abs) {
+      notes.push(`（附件 ${a.name} 已不存在，跳过）`)
+      continue
+    }
+    const bytes = await readFile(abs).catch(() => null)
+    if (!bytes) {
+      notes.push(`（附件 ${a.name} 读取失败，跳过）`)
+      continue
+    }
+    if (a.type === 'image') {
+      blocks.push({ type: 'image', mimeType: a.mime, data: bytes.toString('base64') })
+    } else {
+      // 非图片按文档块投递；provider 不支持时适配层会自行降级。
+      blocks.push({
+        type: 'document',
+        mimeType: a.mime,
+        data: bytes.toString('base64'),
+        title: a.name,
+      })
+    }
+  }
+
+  // 文本块放最后：附件是这句话的**语境**，先看图再读要求更符合阅读顺序。
+  const body = notes.length ? [text, ...notes].join(NEWLINE) : text
+  blocks.push({ type: 'text', text: body })
+  return blocks
 }

@@ -133,16 +133,23 @@ describe('适配器如实声明自己发不发这些字段', () => {
   })
 
   /**
-   * OpenAI 兼容协议下这两个字段的形态各家不一，本适配器不发。
-   * 这条测试钉住那个事实：改成「发」的那天，探测器的行为必须跟着改。
+   * 兼容协议：**effort 发、thinking 不发**。
+   *
+   * 这条原来是「两条都不发」，注释还写着「改成发的那天探测器必须跟着改」——
+   * 那天到了。effort 的字段名各家不一没错，但那是**每个模型自己的属性**，
+   * 目录里正好有（`thinking` 说用哪套字段）；一律不发的代价是 GPT-5.6 /
+   * Gemini / Grok / Kimi / GLM 这些真有档位的模型全都调不了。
+   *
+   * `thinking` 仍然是 false：思考内容是从流里读出来的（`reasoning_content`），
+   * 我们从不主动声明它。探测器据此仍然跳过 thinking 那一项。
    */
-  test('openai_compatible 两条都不发', async () => {
+  test('openai_compatible 发 effort 不发 thinking', async () => {
     const { OpenAICompatAdapter } = await import('./providers/openai-compat.ts')
     const a = new OpenAICompatAdapter(
       { kind: 'openai_compatible', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
       lookupModel('deepseek-v4-flash', 'openai_compatible'),
     )
-    expect(a.transmits).toEqual({ thinking: false, effort: false })
+    expect(a.transmits).toEqual({ thinking: false, effort: true })
   })
 })
 

@@ -10,13 +10,15 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from '@qywork/store'
+import { listConversations, listRecentConversations, Store, upsertWorkspace } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { Session } from './session.ts'
 
 const config: QyConfig = {
-  active: 'p',
-  profiles: { p: { kind: 'openai_compatible', model: 'deepseek-v4-flash', apiKey: 'sk-x' } },
+  active: { provider: 'p', model: 'deepseek-v4-flash' },
+  providers: {
+    p: { kind: 'openai_compatible', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+  },
 }
 
 async function session(over: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
@@ -102,10 +104,10 @@ describe('角色约束', () => {
 describe('allowedTools 与扩展工具', () => {
   async function workspaceWithMcp(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
-    await mkdir(join(root, '.qy'), { recursive: true })
+    await mkdir(join(root, '.agents'), { recursive: true })
     const NL = String.fromCharCode(10)
     await writeFile(
-      join(root, '.qy', 'server.mjs'),
+      join(root, '.agents', 'server.mjs'),
       [
         "let buf = ''",
         'const NL = String.fromCharCode(10)',
@@ -122,10 +124,10 @@ describe('allowedTools 与扩展工具', () => {
       'utf8',
     )
     await writeFile(
-      join(root, '.qy', 'mcp.json'),
+      join(root, '.agents', 'mcp.json'),
       JSON.stringify({
         mcpServers: {
-          demo: { command: process.execPath, args: [join(root, '.qy', 'server.mjs')] },
+          demo: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
         },
       }),
       'utf8',
@@ -154,4 +156,90 @@ describe('allowedTools 与扩展工具', () => {
     s.dispose()
     store.close()
   }, 20_000)
+})
+
+/**
+ * 新建会话的来源标记。
+ *
+ * `ask` 不带 conversationId 时会**当场建一个会话**——这一步在任何 provider
+ * 调用之前发生，所以下面用一个必然连不上的 baseUrl 就能测到它：请求失败，
+ * 但会话已经在库里了。
+ */
+describe('新建会话的来源', () => {
+  const offline: QyConfig = {
+    active: { provider: 'p', model: 'deepseek-v4-flash' },
+    providers: {
+      p: {
+        kind: 'openai_compatible',
+        apiKey: 'sk-x',
+        // 端口 1 上不会有人在听，连接立刻被拒——不出网、不等超时。
+        baseUrl: 'http://127.0.0.1:1/v1',
+        models: { 'deepseek-v4-flash': {} },
+      },
+    },
+  }
+
+  async function askOnce(
+    over?: Partial<Parameters<Session['ask']>[2]>,
+    config: QyConfig = offline,
+  ) {
+    const store = new Store({ path: ':memory:' })
+    const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
+    const s = new Session({
+      store,
+      config,
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+    })
+    try {
+      for await (const _ of s.ask('查一下这个函数', undefined, over)) {
+        // 只要跑到第一次 provider 调用就够了，产出不关心。
+      }
+    } catch {
+      // 连不上是预期的。
+    }
+    s.dispose()
+    return { store, root }
+  }
+
+  /**
+   * 复现原始失败形状：team 成员的子会话曾经不打来源标记，于是每跑一次 team，
+   * 用户的会话列表里就多出 N 条以成员 prompt 开头的条目。
+   */
+  test("source: 'workflow' 的会话不进会话列表", async () => {
+    const { store, root } = await askOnce({ source: 'workflow', sourceRef: 'reviewer' })
+    const ws = upsertWorkspace(store, root, 'x')
+    expect(listConversations(store, ws.id)).toEqual([])
+    expect(listRecentConversations(store)).toEqual([])
+    store.close()
+  })
+
+  /** 不填仍然是用户会话——`qy run "..."` 走的就是这条，它必须能被列出来。 */
+  test('不填来源的仍然是用户会话', async () => {
+    const { store, root } = await askOnce()
+    const ws = upsertWorkspace(store, root, 'x')
+    expect(listConversations(store, ws.id)).toHaveLength(1)
+    expect(listConversations(store, ws.id)[0]?.source).toBeNull()
+  })
+
+  /**
+   * 新会话把当时的默认思考强度**定格**下来。
+   *
+   * 留 null 一直跟随配置的话，用户改一次全局默认会连带改掉所有老会话的下一轮，
+   * 而那些会话的 chip 上显示的还是原来那档——界面和实际发出去的参数对不上。
+   */
+  test('新会话定格当前默认思考强度', async () => {
+    const { store, root } = await askOnce(undefined, { ...offline, effort: 'low' })
+    const ws = upsertWorkspace(store, root, 'x')
+    expect(listConversations(store, ws.id)[0]?.effort).toBe('low')
+    store.close()
+  })
+
+  /** 配置里没写就是 null，不编一个默认档位塞进库里。 */
+  test('配置没写默认强度时会话留 null', async () => {
+    const { store, root } = await askOnce()
+    const ws = upsertWorkspace(store, root, 'x')
+    expect(listConversations(store, ws.id)[0]?.effort).toBeNull()
+    store.close()
+  })
 })

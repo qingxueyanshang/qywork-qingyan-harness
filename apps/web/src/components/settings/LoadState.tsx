@@ -1,0 +1,22 @@
+import { Show } from 'solid-js'
+
+/**
+ * 读取中 / 读取失败。
+ *
+ * **失败必须和加载中长得不一样。** 之前这里只有一句「读取配置…」，请求失败时
+ * 它就是终态——面板永远停在那句话上，既不说为什么，也没有再试一次的路。
+ * 那次的真实原因是跨源预检被 401 挡掉（server.ts 的 CORS_HEADERS），
+ * 而界面上完全看不出「请求根本没发出去」。
+ */
+export function LoadState(props: { error: unknown; onRetry: () => void }) {
+  return (
+    <Show when={props.error} fallback={<div class="settings-loading">读取中…</div>}>
+      <div class="settings-error">
+        <span>{props.error instanceof Error ? props.error.message : String(props.error)}</span>
+        <button class="btn-ghost" type="button" onClick={props.onRetry}>
+          重试
+        </button>
+      </div>
+    </Show>
+  )
+}

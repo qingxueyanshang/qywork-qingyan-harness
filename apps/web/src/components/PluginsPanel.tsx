@@ -4,9 +4,12 @@ import {
   installPlugin,
   isDesktopShell,
   pickWorkspace,
+  type Scope,
+  type ScopeDir,
   uninstallPlugin,
 } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
+import { ScopeBar, ScopeTag } from './settings/ScopeBar.tsx'
 
 interface PluginTool {
   name: string
@@ -15,6 +18,7 @@ interface PluginTool {
 interface PluginEntry {
   id: string
   name: string
+  scope: Scope
   version: string
   permissions: string[]
   tools: PluginTool[]
@@ -24,11 +28,9 @@ interface PluginEntry {
   note?: string
 }
 interface PluginsPayload {
-  dir: string
+  dirs: ScopeDir[]
   plugins: PluginEntry[]
   failures: { dir: string; reason: string }[]
-  mcpServers: string[]
-  mcpFailures: { server: string; reason: string }[]
 }
 
 /**
@@ -48,7 +50,13 @@ interface PluginsPayload {
  * ## 失败的也要列
  *
  * 装失败的插件恰恰是最需要被看到的：只列成功的，会让「我明明放进去了怎么没有」
- * 完全无从查起。
+ * 完全无从查起。**「被更高优先级的层盖掉」也算一条失败**——不然「我在全局装了
+ * 但没生效」查不出原因。
+ *
+ * ## MCP 不在这一页
+ *
+ * 它自己有一页。之前挂在这里是因为当时没有 MCP 接口，只有 `/api/plugins` 顺带
+ * 回的一个名字数组——那不是设计，是将就。
  */
 export function PluginsPanel() {
   const [data, { refetch }] = createResource(() => client.api<PluginsPayload>('/api/plugins'))
@@ -56,6 +64,8 @@ export function PluginsPanel() {
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
   const [manual, setManual] = createSignal('')
+  /** 装到哪一层。默认用户级——跟着这个仓库走。 */
+  const [scope, setScope] = createSignal<Scope>('user')
 
   const act = async (key: string, fn: () => Promise<unknown>, ok: (r: never) => string) => {
     setBusy(key)
@@ -76,7 +86,7 @@ export function PluginsPanel() {
   const install = (path: string) =>
     act(
       'install',
-      () => installPlugin(path),
+      () => installPlugin(path, scope()),
       (r: { id: string }) =>
         // 说清「装好了但还没生效」：插件在服务启动时加载，不是热插拔。
         // 不写这句的话，装完发现工具列表没变，会被当成安装失败。
@@ -98,121 +108,93 @@ export function PluginsPanel() {
       <Show when={data()} fallback={<div class="settings-loading">读取插件…</div>}>
         {(d) => (
           <>
-            <Show
-              when={d().plugins.length || d().failures.length}
-              fallback={
-                <div class="plugins-empty">
-                  <p>没有装任何插件。</p>
-                  <p class="field-hint">
-                    插件放在 <code>{d().dir}</code> 下，目录里要有 <code>qywork.plugin.json</code>{' '}
-                    和清单里 main 指向的入口。
-                  </p>
-                </div>
-              }
-            >
-              <For each={d().plugins}>
-                {(p) => (
-                  <div class="plugin-card">
-                    <div class="plugin-head">
-                      <span class="plugin-id">{p.id}</span>
-                      <span class="plugin-version">{p.version}</span>
-                      <button
-                        class="icon-btn"
-                        type="button"
-                        aria-label={`卸载 ${p.id}`}
-                        title="卸载"
-                        disabled={busy() === p.id}
-                        onClick={() =>
-                          void act(
-                            p.id,
-                            () => uninstallPlugin(p.id),
-                            () => `已卸载 ${p.id}，重启后生效。`,
-                          )
-                        }
-                      >
-                        <IconX size={13} />
-                      </button>
-                    </div>
-                    <div class="field-hint">
-                      {p.name} · {p.tools.length} 个工具 · 权限{' '}
-                      {p.permissions.length ? p.permissions.join('、') : '（无）'}
-                    </div>
+            {/* 一个都没装时这里什么都不渲染，下面那个安装框就是这一页的全部——
+                主操作和空区同位。空状态不写引导文案：删掉它用户照样知道该干什么。 */}
+            <For each={d().plugins}>
+              {(p) => (
+                <div class="plugin-card">
+                  <div class="plugin-head">
+                    <span class="plugin-id">{p.id}</span>
+                    <span class="plugin-version">{p.version}</span>
+                    <ScopeTag scope={p.scope} />
+                    <button
+                      class="icon-btn"
+                      type="button"
+                      aria-label={`卸载 ${p.id}`}
+                      title="卸载"
+                      disabled={busy() === p.id}
+                      onClick={() =>
+                        void act(
+                          p.id,
+                          () => uninstallPlugin(p.id, p.scope),
+                          () => `已卸载 ${p.id}，重启后生效。`,
+                        )
+                      }
+                    >
+                      <IconX size={13} />
+                    </button>
+                  </div>
+                  <div class="field-hint">
+                    {p.name} · {p.tools.length} 个工具 · 权限{' '}
+                    {p.permissions.length ? p.permissions.join('、') : '（无）'}
+                  </div>
 
-                    {/* 隔离状态分三种，不能合并显示。
+                  {/* 隔离状态分三种，不能合并显示。
                         「纯声明式插件没有进程」和「有进程但没隔离」是完全不同的事，
                         显示成同一个「无」会让人以为出了安全问题。 */}
-                    <div class="plugin-isolation">
-                      <Show when={p.process === 'declarative'}>
-                        <span class="field-hint">纯声明式插件，没有代码进程</span>
+                  <div class="plugin-isolation">
+                    <Show when={p.process === 'declarative'}>
+                      <span class="field-hint">纯声明式插件，没有代码进程</span>
+                    </Show>
+                    <Show when={p.process === 'unknown'}>
+                      <span class="field-hint">进程未启动，隔离状态未知</span>
+                    </Show>
+                    <Show when={p.process === 'running'}>
+                      <span class="iso-flag" classList={{ off: !p.sandboxed }}>
+                        沙箱 {p.sandboxed ? '有' : '无'}
+                      </span>
+                      <span class="iso-flag" classList={{ off: !p.netGuarded }}>
+                        出网闸 {p.netGuarded ? '有' : '无'}
+                      </span>
+                      <Show when={p.note}>
+                        <span class="field-hint">{p.note}</span>
                       </Show>
-                      <Show when={p.process === 'unknown'}>
-                        <span class="field-hint">进程未启动，隔离状态未知</span>
-                      </Show>
-                      <Show when={p.process === 'running'}>
-                        <span class="iso-flag" classList={{ off: !p.sandboxed }}>
-                          沙箱 {p.sandboxed ? '有' : '无'}
-                        </span>
-                        <span class="iso-flag" classList={{ off: !p.netGuarded }}>
-                          出网闸 {p.netGuarded ? '有' : '无'}
-                        </span>
-                        <Show when={p.note}>
-                          <span class="field-hint">{p.note}</span>
-                        </Show>
-                      </Show>
-                    </div>
-
-                    <Show when={p.tools.length}>
-                      <ul class="plugin-tools">
-                        <For each={p.tools}>
-                          {(t) => (
-                            <li>
-                              <code>{t.name}</code>
-                              <span class="field-hint">{t.description}</span>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
                     </Show>
                   </div>
-                )}
-              </For>
 
-              <For each={d().failures}>
-                {(f) => (
-                  <div class="plugin-card failed">
-                    <div class="plugin-head">
-                      <span class="plugin-id">{f.dir}</span>
-                    </div>
-                    <div class="field-hint bad">{f.reason}</div>
-                  </div>
-                )}
-              </For>
-            </Show>
+                  <Show when={p.tools.length}>
+                    <ul class="plugin-tools">
+                      <For each={p.tools}>
+                        {(t) => (
+                          <li>
+                            <code>{t.name}</code>
+                            <span class="field-hint">{t.description}</span>
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </Show>
+                </div>
+              )}
+            </For>
 
-            <Show when={d().mcpServers.length || d().mcpFailures.length}>
-              <div class="plugins-section-head">MCP</div>
-              <For each={d().mcpServers}>
-                {(s) => (
-                  <div class="plugin-card">
-                    <span class="plugin-id">{s}</span>
+            <For each={d().failures}>
+              {(f) => (
+                <div class="plugin-card failed">
+                  <div class="plugin-head">
+                    <span class="plugin-id">{f.dir}</span>
                   </div>
-                )}
-              </For>
-              <For each={d().mcpFailures}>
-                {(f) => (
-                  <div class="plugin-card failed">
-                    <span class="plugin-id">{f.server}</span>
-                    <div class="field-hint bad">{f.reason}</div>
-                  </div>
-                )}
-              </For>
-            </Show>
+                  <div class="field-hint bad">{f.reason}</div>
+                </div>
+              )}
+            </For>
 
             {/* 安装入口。
                 只接受**本机已存在的目录**：没有 registry，所以没有「从市场安装」；
                 也刻意不做 git clone 任意 URL——那等于从网上取一段代码，下次加载就跑它。 */}
             <div class="plugins-section-head">安装</div>
             <div class="install-box">
+              <ScopeBar value={scope()} onChange={setScope} dirs={d().dirs} />
               <Show when={isDesktopShell()}>
                 <button
                   class="btn-primary"

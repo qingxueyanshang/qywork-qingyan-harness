@@ -5,15 +5,15 @@
  * 它回落到一组保守的猜测。保守是对的，但**没有任何办法验证那个猜测**——
  * 结果是：支持思考的端点从不开思考，不支持的又每次都 400，只能靠人试。
  *
- *   qy probe                  探当前档案
- *   qy probe <档案名>         探指定档案
+ *   qy probe                  探当前生效的那个模型
+ *   qy probe <模型名>         探指定模型（走它所属的接口）
  *   qy probe --save           把结果写回配置（不加这个只打印，不改任何东西）
  *
  * 探测会**真的发几个请求**（每个一个字、最多 16 token），所以它只由用户显式触发。
  */
 
 import { describeProbe, probeModel, toCapabilities } from '@qywork/ai'
-import { loadConfig, resolveApiKey, saveConfig } from '@qywork/runtime'
+import { loadConfig, resolveApiKey, resolveModel, saveConfig } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -25,17 +25,15 @@ export async function runProbe(args: string[]): Promise<number> {
   const name = args.find((a) => !a.startsWith('-'))
 
   const config = await loadConfig()
-  const profileName = name ?? config.active
-  const stored = config.profiles[profileName]
+  const stored = resolveModel(config, name)
   if (!stored) {
-    process.stderr.write(
-      `没有名为 "${profileName}" 的档案。已有：${Object.keys(config.profiles).join('、') || '（空）'}\n`,
-    )
+    const known = Object.keys(config.providers).join('、') || '（空）'
+    process.stderr.write(`配置里没有名为 "${config.active.provider}" 的接口。已有：${known}\n`)
     return 2
   }
 
   process.stderr.write(
-    `${BOLD}探测 ${profileName}${RESET} ${DIM}${stored.kind} / ${stored.model}${RESET}\n` +
+    `${BOLD}探测 ${stored.provider} / ${stored.model}${RESET} ${DIM}${stored.kind}${RESET}\n` +
       `${DIM}会发几个极小的请求（每个 ≤16 token）${RESET}\n\n`,
   )
 
@@ -80,8 +78,14 @@ export async function runProbe(args: string[]): Promise<number> {
     return 0
   }
 
-  config.profiles[profileName] = { ...stored, capabilities: caps }
+  // 写回**这个接口下这个模型**那一格，不是整个接口。同一个接口下另一个模型
+  // 的能力是另一件事，套上去就是拿 A 的实测事实去描述 B。
+  const provider = config.providers[stored.provider]
+  if (!provider) return 2
+  provider.models[stored.model] = { ...provider.models[stored.model], capabilities: caps }
   await saveConfig(config)
-  process.stderr.write(`\n已写回 ${profileName}.capabilities：${Object.keys(caps).join('、')}\n`)
+  process.stderr.write(
+    `\n已写回 ${stored.provider} / ${stored.model} 的能力：${Object.keys(caps).join('、')}\n`,
+  )
   return 0
 }

@@ -1,12 +1,20 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loadTeam, runTeam, setSettingsOpen, state, type TeamInfo } from '../lib/store/index.ts'
+import {
+  loadTeam,
+  openSettings,
+  runTeam,
+  selectConversation,
+  setOverlay,
+  state,
+  type TeamInfo,
+} from '../lib/store/index.ts'
 import { IconCheck, IconSpinner, IconX } from './Icons.tsx'
 
 /**
  * Agent Team 面板。
  *
  * 编排图与角色来自工作区的 `.qy/team.json`。**这个面板只读**，
- * 但改配置现在有地方去了：设置 → 协作，直接编辑同一个文件。
+ * 但改配置现在有地方去了：左栏的「Agent 团队」直接编辑同一个文件。
  *
  * 这里原先写的理由是「做界面等于配置有两个来源，而两个来源迟早分叉」。
  * 担心成立，结论下错了：分叉来自「界面自己另存一份」，不来自「有界面」。
@@ -44,8 +52,8 @@ export function TeamPanel() {
               定义 <code>backends</code> 与 <code>roles</code>，可以把 codex / claude / qy
               当作角色后端编排起来。
             </p>
-            <button class="btn-ghost" type="button" onClick={() => setSettingsOpen(true)}>
-              去设置 → 协作
+            <button class="btn-ghost" type="button" onClick={() => openSettings('team')}>
+              去编辑 team.json
             </button>
           </div>
         }
@@ -92,7 +100,25 @@ export function TeamPanel() {
         <div class="team-progress">
           <For each={state.teamMembers}>
             {(m) => (
-              <div class="team-member" classList={{ failed: m.phase === 'failed' }}>
+              // 成员做完之后整行可点：子会话不在会话列表里（source=team），
+              // 这里是看「它到底读了什么、跑了哪些命令」的唯一入口。
+              // 没有子会话的（CLI 后端、还在跑的）就是一个普通的 div，
+              // 不渲染成一个点了没反应的按钮。
+              <div
+                class="team-member"
+                classList={{ failed: m.phase === 'failed', openable: !!m.childConversationId }}
+                {...(m.childConversationId
+                  ? {
+                      role: 'button',
+                      tabindex: 0,
+                      title: '打开这个成员的完整对话',
+                      onClick: () => {
+                        setOverlay(null)
+                        void selectConversation(m.childConversationId as string)
+                      },
+                    }
+                  : {})}
+              >
                 <span class="team-member-mark">
                   <Show
                     when={m.phase === 'done' || m.phase === 'failed'}
