@@ -319,6 +319,56 @@ describe('搜索与命令', () => {
 })
 
 /**
+ * 凭证不进上下文。
+ *
+ * `read_file` 这条路原来完全没接脱敏：shell 的输出有 createStreamRedactor，
+ * 而它把磁盘字节直接交给模型。一头拦一头不拦等于没拦——模型拿不到
+ * `cat .env` 的输出，换 `read_file` 就拿到了，而它并不是在绕过什么，
+ * 只是选了个更顺手的工具。
+ */
+describe('read_file 的凭证脱敏', () => {
+  test('工作区里的私钥读不出明文', async () => {
+    const root = await workspace()
+    const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn'
+    await writeFile(
+      join(root, 'leaked.pem'),
+      `-----BEGIN RSA PRIVATE KEY-----
+${body}
+-----END RSA PRIVATE KEY-----`,
+      'utf8',
+    )
+    const out = await registry().execute('read_file', { path: 'leaked.pem' }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(String(out.data?.content)).not.toContain(body)
+  })
+
+  test('.env 里的 token 读不出明文', async () => {
+    const root = await workspace()
+    const token = 'ghp_abcdefghijklmnopqrstuvwxyz12'
+    await writeFile(
+      join(root, '.env'),
+      `GITHUB_TOKEN=${token}
+PORT=3000
+`,
+      'utf8',
+    )
+    const out = await registry().execute('read_file', { path: '.env' }, ctx(root))
+    // 变量名和其余内容照常可见，只有值被屏蔽——模型仍然看得懂这个文件的结构。
+    const content = String(out.data?.content)
+    expect(content).not.toContain(token)
+    expect(content).toContain('GITHUB_TOKEN')
+    expect(content).toContain('PORT=3000')
+  })
+
+  /** 普通代码一个字都不许动，否则模型读到的和磁盘上的对不上，编辑就会失败。 */
+  test('普通文件原样返回', async () => {
+    const root = await workspace()
+    const out = await registry().execute('read_file', { path: 'src/main.ts' }, ctx(root))
+    expect(String(out.data?.content)).toContain('answer')
+  })
+})
+
+/**
  * `probe_url`：起服务 → 等就绪 → 抓一次响应 → 关掉，一次调用内完成。
  *
  * 存在的理由是「起个服务看看页面能不能打开」在本仓**形状上做不到**：

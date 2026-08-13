@@ -770,9 +770,79 @@ describe('家目录的字面写法', () => {
     expect(decideCommand('type /etc/passwd', c).kind).toBe('deny')
   })
 
-  test('拒绝理由指出是哪个路径、以及下一步', () => {
+  /**
+   * 凭证文件由**凭证规则**命中，理由也该是凭证那一套。
+   *
+   * 这条原来断言理由里有 `additionalDirectories`——那是「越界路径」的下一步建议，
+   * 对私钥完全不成立：**把 `~/.ssh` 加进可写目录清单不是正确做法**，
+   * 给出这个建议等于教模型去要一个不该给的权限。
+   */
+  test('凭证文件的拒绝理由说的是凭证，不建议去要目录权限', () => {
     const r = decideCommand(`type ${join(H, '.ssh', 'id_rsa')}`, c).reason
-    expect(r).toContain('.ssh')
+    expect(r).toContain('凭证')
+    expect(r).not.toContain('additionalDirectories')
+  })
+
+  /** 非凭证的家目录路径仍然走越界那条：指出是哪个路径，并给出正确的下一步。 */
+  test('普通的家目录路径指出路径与下一步', () => {
+    const r = decideCommand(`type ${join(H, 'notes.txt')}`, c).reason
+    expect(r).toContain('notes.txt')
     expect(r).toContain('additionalDirectories')
+  })
+})
+
+/**
+ * 凭证文件：**读也拦**。
+ *
+ * 与「往 SSH 凭据里写」那条不同——写是装后门，读是把内容送进上下文再发给
+ * 模型供应商，**发出去就收不回**。而模型没有任何正当理由需要看你的私钥。
+ *
+ * 这是两道防线里的第一道。第二道是 `secrets.ts` 按形状脱敏，兜住换了位置的
+ * （项目里的 `.env` 属于项目文件、不该拦读，但值不该原样进上下文）。
+ * 只有第二道不够：形状列不全——自建服务的 token、连接串里的密码、
+ * 没有 PEM 包头的密钥，一个都认不出来。
+ */
+describe('凭证文件', () => {
+  const ctx = { workspaceRoot: 'C:/ws' }
+
+  test('读私钥与云凭据都拒', () => {
+    for (const cmd of [
+      'cat ~/.ssh/id_rsa',
+      'type C:/Users/x/.ssh/id_ed25519',
+      'cat ~/.aws/credentials',
+      'cat ~/.config/gcloud/application_default_credentials.json',
+      'cat ~/.kube/config',
+      'cat ~/.npmrc',
+      'cat ~/.netrc',
+      'cat ~/.docker/config.json',
+    ]) {
+      expect(decideCommand(cmd, ctx).kind).toBe('deny')
+    }
+  })
+
+  /**
+   * 本程序自己的配置：明文 apiKey、权限模式、classifier 指向都在这一个文件里。
+   * key 被读走的代价和私钥一样。
+   */
+  test('qywork 自己的配置也拦', () => {
+    expect(decideCommand('cat ~/.qywork/config.json', ctx).kind).toBe('deny')
+  })
+
+  /**
+   * **工作区里的 `.qy/` `.agents/` 不在这条规则里。**
+   *
+   * 那是项目自己的 agent 配置（mcp.json、skills、team.json），与程序全局目录
+   * 是两回事。改它不构成提权——模型有 `run_command`，给自己加不加工具，
+   * 能做的事一样多。
+   */
+  test('项目里的 .agents 配置不算凭证', () => {
+    expect(decideCommand('cat .agents/mcp.json', ctx).kind).not.toBe('deny')
+  })
+
+  /** 名字里碰巧带这些词的普通文件不该被误伤。 */
+  test('不误伤同名的普通文件', () => {
+    for (const cmd of ['cat docs/ssh-setup.md', 'cat src/config.json', 'cat kubeconfig.md']) {
+      expect(decideCommand(cmd, ctx).kind).not.toBe('deny')
+    }
   })
 })

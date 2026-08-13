@@ -26,6 +26,25 @@
 /** 短于这个长度的 secret 明文不参与按值匹配。见文件头「短值」一节。 */
 export const MIN_SECRET_VALUE_LENGTH = 8
 
+/**
+ * 流式脱敏时为「有界形状」预留的回看长度。
+ *
+ * 一个 `sk-…` token 正好卡在两片之间时，前片留个头、后片留个尾，两片各自都不命中，
+ * 拼起来就是完整明文。扣住的这段保证任何一条有界模式都能在下一片到达时完整匹配。
+ */
+const SHAPE_HOLD = 256
+
+/** 未闭合的 PEM 包头。看到它就得一直扣到 END。 */
+const PEM_OPEN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?![\s\S]*-----END )/
+
+/**
+ * PEM 块最多扣住多少。
+ *
+ * 私钥通常 1–4 KB。给到 64 KB 是为了容下带注释的证书链；再大就不像私钥了，
+ * 而无上限的代价是**命令看起来卡住不出输出**——那比漏掉一个不存在的私钥糟。
+ */
+const PEM_MAX_HOLD = 64 * 1024
+
 /** 屏蔽标记。导出便于测试与文档。 */
 export const REDACTED = '[REDACTED]'
 
@@ -169,17 +188,60 @@ export function scrubEnv(
  */
 export function redactSecrets(text: string, secrets: SecretSet): string {
   if (typeof text !== 'string' || text === '') return text
-  const values = usableValues(secrets)
-  if (values.length === 0) return text
 
   let out = text
   // usableValues 已按长度降序：长的先替换，短的才不会把长 secret 切碎。
-  for (const secret of values) {
+  for (const secret of usableValues(secrets)) {
     if (!out.includes(secret)) continue
     out = out.split(secret).join(REDACTED)
   }
+  return redactByShape(out)
+}
+
+/**
+ * 按**形状**屏蔽凭证。与上面按明文匹配是两件事，缺一不可。
+ *
+ * 按明文只认得 `collectSecrets` 收到的东西——配置里的 apiKey、apiKeyEnv 指向的
+ * 环境变量。也就是说 `cat ~/.ssh/id_rsa`、`cat .env` 的输出**一个字都不会被脱敏**，
+ * 原样进上下文再随下一次请求发给 provider。我们不知道那些明文，所以按值这条
+ * 结构上就抓不到它们。
+ *
+ * 形状能抓：私钥有固定的 PEM 包头包尾，主流服务的 token 有固定前缀。
+ * 这一层不需要事先知道值是什么，这正是它存在的理由。
+ *
+ * **不做通用「高熵字符串」检测**：那会把 commit sha、base64 资源、UUID、
+ * minified 代码全打成 [REDACTED]，输出变得没法读，而模型看不懂输出就会反复重试。
+ * 宁可只抓有明确标志的那些，漏掉的靠路径规则挡在前面。
+ */
+export function redactByShape(text: string): string {
+  let out = text
+  for (const { pattern } of CREDENTIAL_SHAPES) {
+    out = out.replace(pattern, REDACTED)
+  }
   return out
 }
+
+/**
+ * 凭证的形状。导出供测试与文档。
+ *
+ * 每条都要求**足够长的尾巴**：只匹配前缀的话，一句「把 key 放进 sk- 开头的
+ * 变量里」这种说明文字也会被打码，而那种误伤读起来像输出坏了。
+ */
+export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
+  {
+    name: 'PEM 私钥',
+    // 整块吞掉，不只是包头：私钥正文本身没有任何固定特征，留着等于没屏蔽。
+    // [\s\S] 而不是 . ——私钥必然跨行。
+    pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  },
+  { name: 'OpenAI 系', pattern: /\bsk-[A-Za-z0-9_-]{16,}/g },
+  { name: 'GitHub', pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g },
+  { name: 'GitHub 细粒度', pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}/g },
+  { name: 'AWS Access Key', pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  { name: 'Slack', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g },
+  { name: 'Google API Key', pattern: /\bAIza[A-Za-z0-9_-]{30,}/g },
+  { name: 'Anthropic', pattern: /\bsk-ant-[A-Za-z0-9_-]{16,}/g },
+]
 
 /**
  * 流式脱敏。
@@ -211,12 +273,18 @@ export function createStreamRedactor(secrets: SecretSet): {
   flush(): string
 } {
   const values = usableValues(secrets)
-  // 没有可用 secret 时整条链路直通，不留尾巴也不做扫描。
-  if (values.length === 0) {
-    return { push: (chunk) => chunk, flush: () => '' }
-  }
-
-  const hold = Math.max(...values.map((v) => v.length)) - 1
+  /*
+   * **没有已知 secret 也不能直通。**
+   *
+   * 这里原来是 `if (values.length === 0) return 直通`，因为那时唯一的判据是
+   * 「文本里有没有出现我们知道的那几个明文」。加了形状脱敏之后这个前提没了：
+   * `cat ~/.ssh/id_rsa` 的私钥、`.env` 里的 token，我们**从来不知道它们的明文**，
+   * 恰恰是这条链路唯一能抓到它们的地方。直通等于把这一层关掉。
+   */
+  const valueHold = values.length ? Math.max(...values.map((v) => v.length)) - 1 : 0
+  // 有界形状（sk-…、ghp_…）的最长可能长度。扣住这么多才不会让一个 token
+  // 正好卡在两片之间：前片留个头、后片留个尾，两片各自都不命中。
+  const hold = Math.max(valueHold, SHAPE_HOLD)
   let carry = ''
 
   return {
@@ -224,6 +292,21 @@ export function createStreamRedactor(secrets: SecretSet): {
       if (!chunk) return ''
       // 先脱敏整个缓冲。之后里面不可能再有完整 secret，尾巴最多是残缺前缀。
       const buf = redactSecrets(carry + chunk, secrets)
+
+      /*
+       * PEM 块必然跨片（私钥有几十行），按 `hold` 那点长度根本兜不住。
+       * 看到未闭合的包头就从那里整段扣住，直到 END 到齐——脱敏才吃得到整块。
+       *
+       * 上限是必须的：命令输出里出现一个永远等不到 END 的 `-----BEGIN … KEY-----`
+       * （比如一段讲解私钥格式的文档）会让缓冲无限涨，表现成命令卡住不出输出。
+       * 撞上限就照常放行，那时它已经不像一个真的私钥了。
+       */
+      const open = buf.search(PEM_OPEN)
+      if (open >= 0 && buf.length - open < PEM_MAX_HOLD) {
+        carry = buf.slice(open)
+        return buf.slice(0, open)
+      }
+
       // 尾巴不够长时整段扣住：还无法判断它是不是某个 secret 的开头。
       if (buf.length <= hold) {
         carry = buf
