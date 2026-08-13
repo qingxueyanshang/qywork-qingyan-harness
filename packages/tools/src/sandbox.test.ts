@@ -5,6 +5,7 @@ import {
   buildSeatbeltProfile,
   defaultMaskPaths,
   detectSandbox,
+  killTree,
 } from './sandbox.ts'
 
 /** 把 argv 里 `flag src dst` 这种三元组抽出来，方便按语义断言而不是按下标。 */
@@ -360,4 +361,85 @@ describe('出网开关', () => {
     expect(binds(argv, '--bind')).toContainEqual({ src: '/ws', dst: '/ws' })
     expect(binds(argv, '--ro-bind-try').map((x) => x.dst)).toContain('/ws/.qy')
   })
+})
+
+/**
+ * 树杀。**复现的是原始失败形状，不是「新函数被调到了」。**
+ *
+ * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只杀我们
+ * spawn 的那个 shell，真正干活的孙进程照常监听端口，而且握着 stdout ——
+ * `shell.ts` 的 pump 永远等不到 EOF，那次 `registry.execute` 再也不返回，
+ * 一路传导到会话永久回绝「已有任务在执行」。
+ *
+ * 所以这条测试断言两件事，缺一不可：
+ *
+ * 1. 树杀之后**端口不再监听**（孙进程真的死了）；
+ * 2. 树杀之后**stdout 拿得到 EOF**（管道关闭，pump 能结束）。
+ *
+ * 只断言第 1 条会漏掉那个真正致命的——会话卡死。
+ *
+ * 起真进程、占真端口，所以不并入纯函数那几组：它慢，而且要清理。
+ */
+describe('killTree', () => {
+  /** 端口挑一个不太可能撞上的；撞上了这条测试会以「kill 前连不上」失败，不会误判成功。 */
+  const PORT = 18947
+  const SERVER = `require('http').createServer((_,r)=>r.end('alive')).listen(${PORT},'127.0.0.1');setInterval(()=>console.log('tick'),200)`
+
+  const hit = async (): Promise<boolean> => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(1000) })
+      return r.ok
+    } catch {
+      return false
+    }
+  }
+
+  test('杀掉整棵树，且 stdout 随之 EOF', async () => {
+    // 与 spawnGuarded 同一个形状：spawn 的是 shell，真正监听的是它的子进程。
+    const inner =
+      process.platform === 'win32'
+        ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `node -e "${SERVER}"`]
+        : ['/bin/sh', '-c', `node -e '${SERVER}'`]
+    const proc = Bun.spawn(inner, {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+      ...(process.platform === 'win32' ? {} : { detached: true }),
+    } as never)
+
+    try {
+      // 等它把端口听起来。听不起来就不是在测树杀了，直接失败。
+      let up = false
+      for (let i = 0; i < 30 && !up; i++) {
+        await Bun.sleep(100)
+        up = await hit()
+      }
+      expect(up).toBe(true)
+
+      killTree(proc)
+      await proc.exited
+
+      // 孙进程死了才算杀干净。给一点回收时间，但不能无限等——
+      // 等太久会把「杀慢了」和「没杀掉」混为一谈。
+      let down = false
+      for (let i = 0; i < 20 && !down; i++) {
+        await Bun.sleep(100)
+        down = !(await hit())
+      }
+      expect(down).toBe(true)
+
+      // 管道必须关闭。挂住的话这条测试会超时——那正是线上表现出来的样子。
+      const drained = (async () => {
+        for await (const _ of proc.stdout as ReadableStream) {
+          // 丢弃，只要读到结束。
+        }
+        return 'eof'
+      })()
+      const verdict = await Promise.race([drained, Bun.sleep(5000).then(() => 'hung')])
+      expect(verdict).toBe('eof')
+    } finally {
+      // 测试失败也要清理，否则孤儿会占着端口让下一次运行误判。
+      killTree(proc)
+    }
+  }, 20_000)
 })
