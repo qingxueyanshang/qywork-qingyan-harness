@@ -163,9 +163,13 @@
 }
 /* **只加在模型和思考之间。** 这一排别的控件都带图标或描边，各自看得出边界；
    只有这两个是「一串文字 + 一个小箭头」，紧挨着时读起来像一个控件。
-   所以间距加在这一对身上，不动整条工具栏——动整条会把别处的节奏一起改掉。 */
-.model-picker + .effort-picker {
-  margin-left: var(--s-2);
+   间距加在思考这一个身上，不动整条工具栏——动整条会把别处的节奏一起改掉。
+
+   写成 `.effort-picker` 而不是 `.model-picker + .effort-picker`：
+   相邻选择器一旦中间插进别的元素就整条失效，而这里只需要「思考左边留白」
+   这一件事，不需要它去关心左边是谁。 */
+.effort-picker {
+  margin-left: var(--s-4);
 }
 .model-menu {
   position: absolute;
