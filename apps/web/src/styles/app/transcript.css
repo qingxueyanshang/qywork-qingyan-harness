@@ -462,9 +462,10 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* 只用红字，不铺红底。底纹会把这一块整体推到前景，而失败的是**其中一步**，
+   不是整条会话——红字已经足够指出是哪一行。 */
 .fold-out.err {
   color: var(--danger);
-  background: var(--danger-soft);
 }
 
 /* 分隔线：同一个展开体里两格之间的界，1px 极浅，不是边框也不是留白。 */
@@ -543,7 +544,6 @@
 .error-card {
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
-  background: var(--danger-soft);
   color: var(--danger);
   font-size: var(--fs-sm);
   display: flex;
