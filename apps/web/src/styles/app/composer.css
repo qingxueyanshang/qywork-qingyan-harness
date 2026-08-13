@@ -161,16 +161,9 @@
 .model-picker .mode-chip {
   max-width: 190px;
 }
-/* **只加在模型和思考之间。** 这一排别的控件都带图标或描边，各自看得出边界；
-   只有这两个是「一串文字 + 一个小箭头」，紧挨着时读起来像一个控件。
-   间距加在思考这一个身上，不动整条工具栏——动整条会把别处的节奏一起改掉。
-
-   写成 `.effort-picker` 而不是 `.model-picker + .effort-picker`：
-   相邻选择器一旦中间插进别的元素就整条失效，而这里只需要「思考左边留白」
-   这一件事，不需要它去关心左边是谁。 */
-.effort-picker {
-  margin-left: var(--s-4);
-}
+/* 思考不额外加边距：这一排所有控件之间都由 `.composer-bar` 的 gap 统一决定，
+   模型和思考也走同一档。加过 8px 和 16px 两版，结果是这一对比别的都宽——
+   要的是「和别的一样」，不是「更宽」。 */
 .model-menu {
   position: absolute;
   bottom: calc(100% + 6px);
