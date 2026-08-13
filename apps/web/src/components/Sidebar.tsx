@@ -30,7 +30,7 @@ import { ProjectRow } from './ProjectRow.tsx'
  * 实际上**会话是长在工作区里的**（server 的 listConversations 吃 workspaceId，
  * 换一个根就是另一份列表）。所以现在直接列项目，会话缩进挂在当前项目下面。
  *
- * ## 「新建 work」不是「新对话」
+ * ## 「添加项目」不是「新对话」
  *
  * 它开系统目录选择器，指一个**另外的本机目录**当项目。新建会话是另一件事，
  * 所以它的按钮长在项目名旁边：会话属于哪个项目，这个位置本身就说明了。
@@ -129,7 +129,7 @@ export function Sidebar(props: { onClose?: () => void }) {
       <header class="sidebar-head">
         {/* 品牌位是静态的。它曾经是个带下拉箭头的 button——箭头承诺了一个菜单，
             而那个菜单不存在。承诺一个不存在的交互比没有交互更坏。 */}
-        <span class="brand">qywork</span>
+        <span class="brand">QyWork</span>
         <div class="head-actions">
           {/* 这里原先是第二个搜索入口——顶栏上就有一个，命令面板还有 Ctrl/Cmd-K。
               同一个动作在同一屏出现两次，用户得先判断这俩是不是一回事。
@@ -147,7 +147,7 @@ export function Sidebar(props: { onClose?: () => void }) {
       </header>
 
       {/* 头部下方的固定块，不进滚动区。
-          「新建 work」是这一栏唯一一个「开一个新项目」的入口，会话攒多之后
+          「添加项目」是这一栏唯一一个「开一个新项目」的入口，会话攒多之后
           它会被滚出视野——用户找不到它时的合理推断是「这个功能没了」。
           切换失败的提示同理：它解释的是刚按下去的那个按钮，得和按钮待在一起。 */}
       <div class="sidebar-lead">
