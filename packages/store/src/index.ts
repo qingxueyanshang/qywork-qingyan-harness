@@ -38,6 +38,7 @@ export {
   markRunRunning,
   markRunSuperseded,
   markStepExecuting,
+  mostRecentWorkspace,
   recoverStaleRuns,
   referencedAttachmentPaths,
   removeWorkspace,
