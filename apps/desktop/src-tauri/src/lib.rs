@@ -166,15 +166,6 @@ fn show_fatal(message: &str) {
     eprintln!("[qywork] {message}");
 }
 
-/// 把文件监听改到另一个项目的目录上。
-///
-/// 换项目**不再重启 sidecar**（服务端一次服务多个项目，见
-/// `docs/plans/2026-08-12-多项目并存.md`），所以这里只剩「监听哪一个目录」这一件事
-/// 需要外壳出手：notify 的句柄在 Rust 侧，Web 端够不着。
-///
-/// 一次只监听一个目录，不是每个项目各挂一个：用户同一时刻只看得见一个项目，
-/// 而每个监听器都是一组真实的 OS 句柄。切过去先停再起，顺序不能反——
-/// 反过来会有一小段时间两个监听器同时往同一条 bus 上推。
 /// 在系统文件管理器里定位一个目录。
 ///
 /// 走 Rust 侧的 `OpenerExt`，**不是**给 WebView 授 `opener:*` 权限。
@@ -195,6 +186,15 @@ fn reveal_workspace(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 把文件监听改到另一个项目的目录上。
+///
+/// 换项目**不再重启 sidecar**（服务端一次服务多个项目，见
+/// `docs/plans/2026-08-12-多项目并存.md`），所以这里只剩「监听哪一个目录」这一件事
+/// 需要外壳出手：notify 的句柄在 Rust 侧，Web 端够不着。
+///
+/// 一次只监听一个目录，不是每个项目各挂一个：用户同一时刻只看得见一个项目，
+/// 而每个监听器都是一组真实的 OS 句柄。切过去先停再起，顺序不能反——
+/// 反过来会有一小段时间两个监听器同时往同一条 bus 上推。
 #[tauri::command]
 fn watch_workspace(app: AppHandle, path: String) -> Result<(), String> {
     let dir = PathBuf::from(&path);
@@ -250,16 +250,25 @@ pub fn run() {
                         eprintln!("[qywork] 复用外部 sidecar :{}", existing.port);
                         existing
                     }
-                    None => sidecar::spawn(&handle, &workspace.to_string_lossy()).await?,
+                    // 空串 = 没有显式指定，让服务端自己决定挂哪个项目。
+                    None => {
+                        let arg = workspace
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        sidecar::spawn(&handle, &arg).await?
+                    }
                 };
 
-                if let Err(e) = watcher::start(
-                    &handle,
-                    &workspace,
-                    &handle.state::<watcher::WatcherHandle>(),
-                ) {
-                    // 监听起不来只影响实时刷新，不该阻断启动。
-                    eprintln!("[qywork] 文件监听未启用：{e}");
+                // 没有显式工作区时不起监听：起了也不知道该盯哪个目录。
+                // 前端拿到服务端解析出的那个项目之后会调 `watch_workspace` 补上。
+                if let Some(dir) = workspace.as_ref() {
+                    if let Err(e) =
+                        watcher::start(&handle, dir, &handle.state::<watcher::WatcherHandle>())
+                    {
+                        // 监听起不来只影响实时刷新，不该阻断启动。
+                        eprintln!("[qywork] 文件监听未启用：{e}");
+                    }
                 }
 
                 // 令牌走初始化脚本注入，而不是等前端来调命令：
@@ -320,70 +329,28 @@ pub fn run() {
 /// 那里既不是用户的代码，又是只读的。之前只跑 `cargo check` 不打包，
 /// 这条路径一次都没走到过，表现会是「装完一打开，工作区是一堆程序自己的文件，
 /// 而且写任何东西都 EPERM」。
-fn resolve_workspace() -> PathBuf {
+/// 启动时**显式**指定过的工作区。没有就回 `None`，交给服务端决定。
+///
+/// 原来这里最后回落到 cwd / 家目录，于是「没指定」被悄悄变成了「就用启动目录」——
+/// 而桌面端的启动目录是安装目录或 `src-tauri`，那会被登记成一个谁也没要过的项目
+/// （ROADMAP §33.2 里的 `src-tauri` 项目就是这么来的）。
+///
+/// 现在没指定就是没指定：`server.ts` 的 `bootstrapWorkspace` 会用最近打开的那个，
+/// 一个都没有才建默认工作区。**「首次挂哪儿」的判断只留一处。**
+fn resolve_workspace() -> Option<PathBuf> {
     if let Some(arg) = std::env::args().nth(1) {
         let p = PathBuf::from(arg);
         if p.is_dir() {
-            return p;
+            return Some(p);
         }
     }
     if let Ok(v) = std::env::var("QYWORK_WORKSPACE") {
         let p = PathBuf::from(v);
         if p.is_dir() {
-            return p;
+            return Some(p);
         }
     }
-    // 上次在应用里选的那个。排在环境变量之后、cwd 之前：
-    // 环境变量是显式指定（`tauri dev` 用它钉到仓库根），优先级更高；
-    // 而 cwd 在打包安装之后基本没有意义，不该压过用户自己选过的目录。
-    if let Some(p) = sidecar::read_last_workspace() {
-        return p;
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        if is_usable_workspace(&cwd) {
-            return cwd;
-        }
-    }
-    home_dir().unwrap_or_else(|| PathBuf::from("."))
+    // 上次在应用里选的那个。排在环境变量之后：环境变量是显式指定，优先级更高。
+    sidecar::read_last_workspace()
 }
 
-/// 当前目录能不能当工作区。
-///
-/// 两条否决：**它是不是程序自己待的地方**，以及**能不能往里写**。
-/// 可写性只能实地试一次——Windows 上的 ACL 判断不出来，`Program Files` 在
-/// 提权进程里反而是可写的，光看路径会得出相反的结论。
-///
-/// 「程序自己待的地方」是**双向**的，这一点第一版只写了一半，代价是真实的：
-/// `tauri dev` 的 cwd 是 `apps/desktop/src-tauri`，而那次运行的 exe 在它下面的
-/// `target/debug/`——包含关系正好反过来，于是单向判断放行，`src-tauri` 被当成
-/// 一个项目记进了账本，和用户真正的项目并排显示在左栏里。
-/// 两个方向问的是同一件事：这个目录和程序自己是不是套在一起的。
-fn is_usable_workspace(dir: &std::path::Path) -> bool {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if dir.starts_with(exe_dir) || exe_dir.starts_with(dir) {
-                return false;
-            }
-        }
-    }
-    let probe = dir.join(".qywork-write-probe");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-fn home_dir() -> Option<PathBuf> {
-    for key in ["USERPROFILE", "HOME"] {
-        if let Ok(v) = std::env::var(key) {
-            let p = PathBuf::from(v);
-            if p.is_dir() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
