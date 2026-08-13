@@ -3,8 +3,10 @@
  *
  * 自己画而不用图标库，为的是三条能统一的规则——套用现成库时这三条几乎必然被打破：
  *
- * 1. **统一 24 网格、1.6 描边、round 端点与拐角。** 「圆润」是通过
+ * 1. **统一 24 网格、2.0 描边、round 端点与拐角。** 「圆润」是通过
  *    `stroke-linecap/linejoin: round` 落实的结构属性，不是靠给容器加圆角。
+ *    描边取 2.0 是为了和参照物（青研魔盒用的 lucide）对齐——1.6 在 13/14px
+ *    的实际显示尺寸下明显偏细，和旁边 500 字重的文字放在一起像是没加载完。
  * 2. **描边不随尺寸缩放**（`vector-effect: non-scaling-stroke`），
  *    16px 和 20px 下视觉粗细一致。
  * 3. **颜色恒为 currentColor**，由父级文字色决定，不在图标里写死颜色。
@@ -26,7 +28,7 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.6"
+      stroke-width="2"
       stroke-linecap="round"
       stroke-linejoin="round"
       vector-effect="non-scaling-stroke"
@@ -45,6 +47,68 @@ export const IconNewChat = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 7.5A3.5 3.5 0 0 1 7.5 4h9A3.5 3.5 0 0 1 20 7.5v6a3.5 3.5 0 0 1-3.5 3.5H12l-4.2 3.2a.6.6 0 0 1-1-.5V17h-.3A3.5 3.5 0 0 1 4 13.5z" />
     <path d="M12 8.2v5M9.5 10.7h5" />
+  </Svg>
+)
+
+/* ── 窗口按钮 ──
+   刻意画得比其他图标细、比其他图标小：它们是系统级控件的替身，
+   照 Windows 的观感应当是 1px 细线，跟 UI 图标的 2.0 描边不是一套语言。 */
+export const IconWinMin = (p: IconProps) => (
+  <svg width={p.size ?? 10} height={p.size ?? 10} viewBox="0 0 10 10" aria-hidden="true">
+    <path d="M0 5h10" stroke="currentColor" stroke-width="1" />
+  </svg>
+)
+
+export const IconWinMax = (p: IconProps & { restore?: boolean }) => (
+  <svg
+    width={p.size ?? 10}
+    height={p.size ?? 10}
+    viewBox="0 0 10 10"
+    fill="none"
+    aria-hidden="true"
+  >
+    {p.restore ? (
+      <>
+        <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" stroke-width="1" />
+        <path d="M2.5 2.5V0.5h7v7h-2" stroke="currentColor" stroke-width="1" />
+      </>
+    ) : (
+      <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" stroke-width="1" />
+    )}
+  </svg>
+)
+
+export const IconWinClose = (p: IconProps) => (
+  <svg width={p.size ?? 10} height={p.size ?? 10} viewBox="0 0 10 10" aria-hidden="true">
+    <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1" />
+  </svg>
+)
+
+export const IconMic = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="10" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+    <path d="M12 17.5V21" />
+  </Svg>
+)
+
+export const IconActivity = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 12h3.5l2.5-7 4 14 2.5-7H21" />
+  </Svg>
+)
+
+export const IconBrain = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9.5 4.5a2.6 2.6 0 0 0-2.6 2.6 2.6 2.6 0 0 0-1.4 4.6 2.7 2.7 0 0 0 1.6 4.5A2.6 2.6 0 0 0 12 18V6.9a2.4 2.4 0 0 0-2.5-2.4z" />
+    <path d="M14.5 4.5a2.6 2.6 0 0 1 2.6 2.6 2.6 2.6 0 0 1 1.4 4.6 2.7 2.7 0 0 1-1.6 4.5A2.6 2.6 0 0 1 12 18" />
+  </Svg>
+)
+
+export const IconClock = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <path d="M12 7.5V12l3 1.8" />
   </Svg>
 )
 
@@ -115,9 +179,15 @@ export const IconBell = (p: IconProps) => (
   </Svg>
 )
 
-export const IconChevron = (p: IconProps & { dir?: 'down' | 'right' }) => (
+const CHEVRON: Record<'down' | 'up' | 'right' | 'left', string> = {
+  down: 'M5.6 9.5 12 16l6.4-6.5',
+  up: 'M5.6 14.5 12 8l6.4 6.5',
+  right: 'M9.5 5.6 16 12l-6.5 6.4',
+  left: 'M14.5 5.6 8 12l6.5 6.4',
+}
+export const IconChevron = (p: IconProps & { dir?: 'down' | 'up' | 'right' | 'left' }) => (
   <Svg {...p}>
-    <path d={p.dir === 'right' ? 'M9.5 5.6 16 12l-6.5 6.4' : 'M5.6 9.5 12 16l6.4-6.5'} />
+    <path d={CHEVRON[p.dir ?? 'down']} />
   </Svg>
 )
 

@@ -55,23 +55,36 @@ button {
   outline: none;
 }
 
-/* 滚动条：细、无箭头、悬停才明显。WebKit 与 Firefox 各写一套。 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-default) transparent;
+/* 滚动条：细、无箭头、悬停才明显。WebKit 与 Firefox 各写一套。
+ *
+ * 两套**必须互斥**，不能并排写：Chromium 只要看见 `scrollbar-width` /
+ * `scrollbar-color`，就整套忽略 `::-webkit-scrollbar`，回退到系统原生滚动条——
+ * Windows 上那条原生滚动条上下各挂一个箭头按钮。「无箭头」的注释和实际渲染
+ * 对不上就是这么来的：注释描述的是下面那几条，而下面那几条根本没生效。
+ *
+ * 所以标准属性只发给**不认识** `::-webkit-scrollbar` 的引擎（Firefox）。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-subtle) transparent;
+  }
 }
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--border-default);
+  /* 静置态用 subtle 而不是 default：滑块加宽到 8px 之后，同一个灰的面积大了一倍，
+     看起来就比当边框时重。悬停仍跳到 strong，手感不丢。 */
+  background: var(--border-subtle);
   border-radius: var(--r-full);
-  /* 用透明边框把滑块视觉宽度收窄，避免贴边太粗。 */
-  border: 3px solid transparent;
+  /* 用透明边框把滑块视觉宽度收窄，避免贴边太粗：轨道 12px - 两侧 2px = 滑块 8px。
+     轨道宽同时是 `scrollbar-gutter` 两侧预留的槽宽，改它会连带改会话区可用宽度
+     （两侧对称，正文的居中线不变）。 */
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
@@ -99,16 +112,4 @@ kbd {
 
 ::selection {
   background: var(--accent-soft);
-}
-
-/* 屏幕阅读器专用：视觉隐藏但仍可被读出。 */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }

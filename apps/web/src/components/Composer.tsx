@@ -404,10 +404,18 @@ export function Composer() {
               同源同值显示两遍，只会让人以为是两笔账。留下的是运行状态那条：
               它和「这一轮跑成什么样」在一起，而输入区的工具栏是给下一轮用的。 */}
 
+          {/* 发送按钮的 disabled 判据必须和 submit() 一致：只有附件没有文字也能发
+              （见 submit 里那条注释）。只看文字的话，粘一张图不打字的用户点发送
+              没反应，只有知道按 Enter 的人发得出去。 */}
           <Show
             when={state.running}
             fallback={
-              <button class="send-btn" type="submit" disabled={!text().trim()} aria-label="发送">
+              <button
+                class="send-btn"
+                type="submit"
+                disabled={!text().trim() && pending().length === 0}
+                aria-label="发送"
+              >
                 <IconSend size={16} />
               </button>
             }
