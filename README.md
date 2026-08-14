@@ -176,7 +176,7 @@ QYWORK_BASH_PATH=D:\msys64\usr\bin\bash.exe qy serve
 ## 能力
 
 **工具**：`read_file` `write_file` `edit_file` `list_dir` `glob` `grep`
-`run_command` `read_resource` `update_plan` `web_fetch` `web_search`
+`run_command` `read_resource` `write_todos` `web_fetch` `web_search`
 `memory` `list_skills` `read_skill`
 
 **权限**只有两种模式，没有逐次审批弹窗：`auto`（默认，**只有一张静态拒绝清单**——

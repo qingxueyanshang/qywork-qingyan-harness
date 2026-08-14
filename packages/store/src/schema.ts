@@ -630,6 +630,28 @@ SET payload = json_set(
 WHERE json_extract(payload, '$.outcome.message') LIKE '计划已更新%';
 `,
   },
+  {
+    id: 17,
+    name: 'tool_renamed_write_todos',
+    /**
+     * `update_plan` 改名 `write_todos`，**落库的 `tool_name` 跟着转**。
+     *
+     * 不转的后果是实测撞出来的：待办面板整个空了。面板不是靠事件活着的——
+     * 重拉会话时从账本投影（`web` 的 `todosFromSteps`：找最后一条成功的
+     * 待办提交，整表就在它的 `args` 里），而投影按新名字找，老行还叫旧名字，
+     * 于是一条都匹配不上。用户看到的是「之前的数据没了」。
+     *
+     * **为什么改而不是在投影里兼容两个名字**：那就是一条兼容分支，而它会一直留着
+     * （B3）。同一个工具换了个名字，账本里记的「这一步调了哪个工具」应该跟着换，
+     * 否则模型回放历史时还会看到一个当前工具表里不存在的名字。
+     *
+     * 这不违反「已落盘的键名是历史事实」——那条说的是**结构键名**（列名、
+     * schema 版本键、迁移标记），不是记录内容里的一个值。
+     */
+    sql: `
+UPDATE steps SET tool_name = 'write_todos' WHERE tool_name = 'update_plan';
+`,
+  },
 ]
 
 /**

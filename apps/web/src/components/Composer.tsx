@@ -92,8 +92,11 @@ function ModeChip() {
  * 它看起来像输入框长出来的一个附件。
  *
  * 步数取**正在做的那一条**（1-based），不是已完成数：进行中的第 3 步
- * 报成「第 2 步」会让人以为它卡住了。全部做完就没有进行中的那条，
- * 这时才回落到已完成数。
+ * 报成「第 2 步」会让人以为它卡住了。中间没有进行中的那条（刚打完勾、还没认领
+ * 下一条）才回落到已完成数。
+ *
+ * **全部做完之后这一段整个不显示**：进度条回答的是「还要多久」，没有「还要」
+ * 就没有它。做完了要回看清单，右侧面板一直在。
  */
 function RunStatusChip() {
   const todos = () => state.todos
@@ -103,21 +106,29 @@ function RunStatusChip() {
     const i = todos().findIndex((t) => t.status === 'in_progress')
     return i >= 0 ? i + 1 : done()
   }
+  /**
+   * **全做完就不报进度了。**
+   *
+   * 这里原来的判据是「清单有没有条目」，而不是「还剩没剩」——三条全打勾之后
+   * 它照样挂着一句「第 3 / 3 步」，说的是一件已经结束的事。进度条的存在理由是
+   * 「还要多久」，没有「还要」就没有它。做完了要看清单，右侧面板一直在。
+   */
+  const inProgress = () => todos().some((t) => t.status !== 'completed')
   const files = () => state.fileChanges
   const additions = () => files().reduce((s, c) => s + c.additions, 0)
   const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
 
   return (
-    <Show when={total() > 0 || files().length > 0}>
+    <Show when={inProgress() || files().length > 0}>
       <div class="run-status">
         <div class="changes-chip">
-          <Show when={total() > 0}>
+          <Show when={inProgress()}>
             {/* 转圈只在真的还在跑时给：停下来之后它还在转，是在说一件不成立的事。 */}
             <Show when={state.running}>
               <IconSpinner size={12} />
             </Show>
-            {/* 点步数打开计划面板。完整清单收在那边，这里只报进度——
-                不给入口的话，用户得自己去右侧翻出「计划」这个标签页。 */}
+            {/* 点步数打开待办面板。完整清单收在那边，这里只报进度——
+                不给入口的话，用户得自己去右侧翻出「待办」这个标签页。 */}
             <button
               class="todo-jump"
               type="button"
@@ -128,7 +139,7 @@ function RunStatusChip() {
             </button>
           </Show>
           {/* 两段都在时才要分隔点——只有一段时它会变成一个悬空的符号。 */}
-          <Show when={total() > 0 && files().length > 0}>
+          <Show when={inProgress() && files().length > 0}>
             <span class="sep" aria-hidden="true">
               ·
             </span>
