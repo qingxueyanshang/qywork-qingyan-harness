@@ -156,6 +156,11 @@ QYWORK_BASH_PATH=D:\msys64\usr\bin\bash.exe qy serve
 
 它优先于上面所有位置。**指了但那个位置没有文件会直接报错**，不会退回自动搜索。
 
+没有 bash 时服务照常起得来，只是**模型手里没有 `run_command` 这个工具**；
+设置页「系统 · 位置」那一格会说明原因，Windows 上还带一个按钮，
+点了会开一个终端窗口跑 `winget install --id Git.Git`。**装完要重启 qywork**
+——当前进程的 `PATH` 是启动时的快照，看不到新装的 git。
+
 ---
 
 ## 能力

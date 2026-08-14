@@ -112,6 +112,16 @@ export function GeneralSettings() {
         </div>
       </section>
 
+      {/* **不挂在 `config()` 里面。** 配置读不出来时这一格照样要显示：
+          「模型手里为什么没有 run_command」和配置能不能加载是两件事，
+          绑在一起的后果是配置一出错，用户连原因都看不到。 */}
+      <section class="settings-block">
+        <h3 class="settings-block-head">运行环境</h3>
+        <div class="setting-rows">
+          <CommandShellRows />
+        </div>
+      </section>
+
       <Show
         when={config()}
         fallback={<LoadState error={configError()} onRetry={() => void reloadConfig()} />}
@@ -119,7 +129,6 @@ export function GeneralSettings() {
         <section class="settings-block">
           <h3 class="settings-block-head">位置</h3>
           <div class="setting-rows">
-            <CommandShellRows />
             <PathRow label="配置文件" value={configPath()} />
             <Show when={workspace()}>
               {(w) => (
