@@ -19,34 +19,34 @@ import { IconCheck, IconSpinner } from './Icons.tsx'
  * 他看到的是一块空白，而不是「都做完了」。这与顶部那张卡的处境正相反——
  * 那里是常驻的，做完不收起来就只是占地方。
  */
-export function PlanPanel() {
+export function TodoPanel() {
   const todos = () => state.todos
   const done = () => todos().filter((t) => t.status === 'completed').length
 
   return (
-    <div class="plan-panel">
+    <div class="todo-panel">
       <Show when={todos().length > 0}>
-        <div class="plan-progress">
+        <div class="todo-progress">
           {done()}/{todos().length}
         </div>
-        <ol class="plan-list">
+        <ol class="todo-list">
           <For each={todos()}>
             {(t) => (
               <li
-                class="plan-item"
+                class="todo-item"
                 classList={{ done: t.status === 'completed', now: t.status === 'in_progress' }}
               >
-                <span class="plan-mark">
+                <span class="todo-mark">
                   <Show
                     when={t.status !== 'pending'}
-                    fallback={<span class="plan-dot" aria-hidden="true" />}
+                    fallback={<span class="todo-dot" aria-hidden="true" />}
                   >
                     <Show when={t.status === 'completed'} fallback={<IconSpinner size={12} />}>
                       <IconCheck size={12} />
                     </Show>
                   </Show>
                 </span>
-                <span class="plan-text">{t.content}</span>
+                <span class="todo-text">{t.content}</span>
               </li>
             )}
           </For>

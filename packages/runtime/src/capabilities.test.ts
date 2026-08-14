@@ -2,14 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { COMMAND_SHELL } from '@qywork/tools'
 import { HOST_CAPABILITIES, makeCapabilityHandler } from './capabilities.ts'
 
-/** 「把某个环境变量原样打出来」在当前 shell 的写法。方言随 shell 走，不随平台走。 */
-const echoEnv = (name: string) =>
-  String(COMMAND_SHELL.argv[0]).includes('powershell')
-    ? `Write-Output "[$env:${name}]"`
-    : `echo "[$${name}]"`
+/** 「把某个环境变量原样打出来」。命令一律跑 bash（`commandShell()`），所以只有一种写法。 */
+const echoEnv = (name: string) => `echo "[$${name}]"`
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'qywork-cap-'))
@@ -124,8 +120,7 @@ describe('exec —— 绝不透传宿主环境变量', () => {
 
   test('非零退出码如实回报，不当异常抛', async () => {
     const { call } = await fixture()
-    const cmd = process.platform === 'win32' ? 'exit 3' : 'exit 3'
-    expect(((await call('exec.run', { command: cmd })) as any).exitCode).toBe(3)
+    expect(((await call('exec.run', { command: 'exit 3' })) as any).exitCode).toBe(3)
   })
 
   /**
@@ -138,8 +133,6 @@ describe('exec —— 绝不透传宿主环境变量', () => {
     process.env.QYWORK_CAP_SECRET = 'super-secret-value'
     try {
       const { call } = await fixture()
-      // 方言按**真正在跑的那个 shell**取，不按 platform：Windows 上装了
-      // Git Bash 就跑 bash，`Write-Output` 在那里根本不是命令，stdout 会是空的。
       const cmd = echoEnv('QYWORK_CAP_SECRET')
       const r = (await call('exec.run', { command: cmd })) as any
       expect(r.stdout).not.toContain('super-secret-value')

@@ -10,11 +10,12 @@
  * `HelloFrame` 的注释里。
  */
 
-import type { EventEnvelope, HelloFrame } from '@qywork/core'
+import type { EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { detectSandbox } from '@qywork/tools'
+import { detectSandbox, probeBash } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import pkg from '../package.json' with { type: 'json' }
+import { canInstallShell } from './api/host.ts'
 import type { EventBus, Subscriber } from './bus.ts'
 import type { SocketData } from './deps.ts'
 
@@ -60,33 +61,38 @@ export function handleHello(
   const off = deps.bus.subscribe(subscriber)
   deps.unsubscribers.set(ws.data.id, off)
 
-  // 断线补发：缺口在保留窗口内就逐条补，超出就让客户端重拉全量。
+  // 断线补发：缺口在保留窗口内就逐条补，补不上就让客户端重拉全量。
+  // 「补不补得上」全由 `replayFrom` 裁决（含「这是不是我这条流上的位置」），
+  // 这里只负责把结论转成帧上的两个字段。
   let resync = false
   let backlog: EventEnvelope[] = []
-  if (typeof frame.lastSeq === 'number') {
-    const replay = deps.bus.replayFrom(frame.lastSeq, subscriber)
+  if (frame.resume) {
+    const replay = deps.bus.replayFrom(frame.resume, subscriber)
     if (replay === null) resync = true
     else backlog = replay
   }
 
-  ws.send(
-    JSON.stringify({
-      type: 'hello.ok',
-      serverVersion: PKG_VERSION,
-      sessionId: ws.data.id,
-      currentSeq: deps.bus.currentSeq,
-      resync,
-      /*
-       * **只报进程级的能力。** 插件 / MCP / 编排后端是按工作区的，而这条连接
-       * 横跨用户开着的所有项目——报在这里就等于「A 项目的插件显示在 B 项目上」，
-       * 而且只有重连时才会更新。它们改由 `/api/capabilities?ws=` 回答。
-       */
-      capabilities: {
-        sandbox: sandboxCapability(),
-        mode: deps.config.mode ?? 'auto',
-      },
-    }),
-  )
+  const ok: HelloOkFrame = {
+    type: 'hello.ok',
+    serverVersion: PKG_VERSION,
+    sessionId: ws.data.id,
+    streamId: deps.bus.streamId,
+    currentSeq: deps.bus.currentSeq,
+    resync,
+    /*
+     * **只报进程级的能力。** 插件 / MCP / 编排后端是按工作区的，而这条连接
+     * 横跨用户开着的所有项目——报在这里就等于「A 项目的插件显示在 B 项目上」，
+     * 而且只有重连时才会更新。它们改由 `/api/capabilities?ws=` 回答。
+     */
+    capabilities: {
+      sandbox: sandboxCapability(),
+      // 同样**每次握手重新探测**：装完 git 重连一下就该显示出来，
+      // 而不是让用户重启整个服务——他不会知道要重启。`probeBash` 本身不缓存。
+      commandShell: { ...probeBash(), canInstall: canInstallShell() },
+      mode: deps.config.mode ?? 'auto',
+    },
+  }
+  ws.send(JSON.stringify(ok))
 
   for (const f of backlog) ws.send(JSON.stringify(f))
 }

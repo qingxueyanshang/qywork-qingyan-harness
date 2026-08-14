@@ -8,6 +8,9 @@ import { SettingsNav } from './SettingsNav.tsx'
 
 // 内容类目各自带着自己的请求和列表，进设置才下载。
 // 只想换个主题的用户不该为「定时任务」付首屏成本。
+const ToolsSettings = lazy(() =>
+  import('./ToolsSettings.tsx').then((m) => ({ default: m.ToolsSettings })),
+)
 const AgentsSettings = lazy(() => import('./AgentsSettings.tsx'))
 const MemorySettings = lazy(() => import('./MemorySettings.tsx'))
 const SkillsSettings = lazy(() => import('./SkillsSettings.tsx'))
@@ -37,6 +40,10 @@ const META: Record<Page, { title: string; note?: string }> = {
   access: {
     title: '权限与沙箱',
     note: '自动审批 / 完全访问的开关不在这里，在输入区那个盾牌 chip 上。',
+  },
+  tools: {
+    title: '工具',
+    note: '按能力大类列出它会做什么。MCP 提供的工具要连上 server 才知道，不在这里。',
   },
   team: { title: '智能体' },
   memory: { title: '记忆' },
@@ -122,6 +129,9 @@ export function SettingsDialog() {
                   </Match>
                   <Match when={settingsPage() === 'access'}>
                     <AccessSettings />
+                  </Match>
+                  <Match when={settingsPage() === 'tools'}>
+                    <ToolsSettings />
                   </Match>
                   <Match when={settingsPage() === 'team'}>
                     <AgentsSettings />

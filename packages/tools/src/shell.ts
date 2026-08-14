@@ -39,7 +39,7 @@ import { estimateText } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
-import { COMMAND_SHELL, killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
+import { type CommandShell, killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
 
@@ -61,182 +61,196 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
   return Math.min(MAX_TIMEOUT_MS, Math.max(1000, Number(timeoutMs ?? DEFAULT_TIMEOUT_MS)))
 }
 
-export const shellTool: ToolSpec = {
-  name: 'run_command',
-  description:
-    '在工作区里执行一条 shell 命令并返回 stdout/stderr 与退出码。' +
-    '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
-    `${COMMAND_SHELL.hint}` +
-    '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',
-  parameters: {
-    type: 'object',
-    properties: {
-      command: { type: 'string', description: '要执行的完整命令' },
-      cwd: { type: 'string', description: '工作目录（工作区相对路径），默认工作区根' },
-      timeout_ms: { type: 'integer', description: `超时毫秒，默认 ${DEFAULT_TIMEOUT_MS}` },
-      probe_url: {
-        type: 'string',
-        description:
-          '要验证的本机地址（只接受 localhost / 127.x / ::1，端口任意）。' +
-          '给了它就变成「起服务 → 等它就绪 → 抓一次响应 → 关掉」：' +
-          '命令不必自己退出，探测到即停。用来验证 dev server、静态服务器起得来、页面能打开。',
+/**
+ * `run_command` 的规格。**方言提示由传进来的 shell 说了算。**
+ *
+ * 做成工厂而不是常量，是因为「有没有 bash」现在是一种能力状态（`commandShell()`
+ * 可以返回 null）：没有 shell 就不该造出这个 spec，注册处直接跳过它。
+ * 参数是 shell 对象本身而不是让这里再取一次——再取一次就是两本账，
+ * 而漂移的表现是「说明里写的 shell 和真正执行的不是同一个」。
+ */
+export function makeShellTool(shell: CommandShell): ToolSpec {
+  return {
+    name: 'run_command',
+    description:
+      '在工作区里执行一条 shell 命令并返回 stdout/stderr 与退出码。' +
+      '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
+      `${shell.hint}` +
+      '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: '要执行的完整命令' },
+        cwd: { type: 'string', description: '工作目录（工作区相对路径），默认工作区根' },
+        timeout_ms: { type: 'integer', description: `超时毫秒，默认 ${DEFAULT_TIMEOUT_MS}` },
+        probe_url: {
+          type: 'string',
+          description:
+            '要验证的本机地址（只接受 localhost / 127.x / ::1，端口任意）。' +
+            '给了它就变成「起服务 → 等它就绪 → 抓一次响应 → 关掉」：' +
+            '命令不必自己退出，探测到即停。用来验证 dev server、静态服务器起得来、页面能打开。',
+        },
       },
+      required: ['command'],
+      additionalProperties: false,
     },
-    required: ['command'],
-    additionalProperties: false,
-  },
-  actionKind: 'execute',
-  objectLabel: '命令',
-  targetExtractor: (a) => (typeof a.command === 'string' ? a.command : null),
-  permissionEffect: 'execute',
-  // 永不并行：命令之间的顺序几乎总是携带意图（先装依赖再构建）。
-  parallelSafe: false,
-  async fn(args, ctx) {
-    const command = String(args.command ?? '').trim()
-    if (!command) return { status: 'failure', message: '命令为空' }
+    actionKind: 'run',
+    objectLabel: '命令',
+    category: 'code',
+    facet: '执行',
+    summary: '在工作区里跑一条 shell 命令',
+    targetExtractor: (a) => (typeof a.command === 'string' ? a.command : null),
+    permissionEffect: 'execute',
+    // 永不并行：命令之间的顺序几乎总是携带意图（先装依赖再构建）。
+    parallelSafe: false,
+    async fn(args, ctx) {
+      const command = String(args.command ?? '').trim()
+      if (!command) return { status: 'failure', message: '命令为空' }
 
-    const cwd = await resolveInWorkspace(rootsOf(ctx), String(args.cwd ?? '.'), {
-      mustExist: true,
-    })
-    const timeout = resolveCommandTimeout(args.timeout_ms)
+      const cwd = await resolveInWorkspace(rootsOf(ctx), String(args.cwd ?? '.'), {
+        mustExist: true,
+      })
+      const timeout = resolveCommandTimeout(args.timeout_ms)
 
-    /*
-     * 探测地址**只准回环**，而且拿不准就当没给。
-     *
-     * 这是本仓第二条能发起出站请求的路径，第一条 `web_fetch` 恰恰刻意挡掉了
-     * 本机（`net-safety.ts` 开头那段：127.0.0.1 后面可能是 qy 自己的 API）。
-     * 这里方向相反、边界也相反：**只有回环允许**，别的一律拒。
-     * 放宽一点点，它就成了绕开那道 SSRF 闸的第二条出网通道。
-     */
-    const probeRaw = typeof args.probe_url === 'string' ? args.probe_url.trim() : ''
-    let probeUrl: URL | null = null
-    if (probeRaw) {
-      const checked = loopbackTarget(probeRaw)
-      if (!checked.ok) return { status: 'failure', message: checked.why, errorKind: 'bad_request' }
-      probeUrl = checked.url
-    }
-
-    // 缺 secrets 时按空集合处理——那是「没有已知凭证」，不是「不用剥」。
-    const secrets = ctx.secrets ?? { values: [], envNames: [] }
-
-    /*
-     * 沙箱策略与路径层用**同一份根目录清单**。
-     *
-     * 两边分别算的话，一条 `additionalDirectories` 只接了路径层的后果是：
-     * 工具参数放行了、内核拒绝了，而模型收到的是一条 EACCES——
-     * 它会以为是文件权限问题，然后开始 chmod。反过来只接沙箱层，
-     * 表现是参数被我们自己拒掉，而内核那边本来是允许的。
-     * 两种都表现为「配了但不管用」，且错误信息互不相干。
-     */
-    const policy: SandboxPolicy = {
-      workspaceRoot: ctx.workspaceRoot,
-      ...(ctx.additionalDirectories?.length ? { writableRoots: ctx.additionalDirectories } : {}),
-      readOnlySubdirs: PROTECTED_DIRS,
-      ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
-    }
-
-    const { proc, sandbox } = spawnGuarded({
-      command,
-      cwd,
-      policy,
-      // NON_INTERACTIVE_ENV 放在剥离**之后**：它是我们自己加的，
-      // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
-      env: {
-        ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
-        ...NON_INTERACTIVE_ENV,
-      },
-    })
-
-    let out = ''
-    let err = ''
-    let timedOut = false
-
-    /*
-     * 超时与中断都走**树杀**，不是 `proc.kill()`。
-     *
-     * 我们 spawn 的是一个 shell，真正干活的是它的子进程；只杀 shell 的话
-     * 孙进程不但活着，还握着 stdout —— 下面那个 `pump` 永远等不到 EOF，
-     * 这次调用就再也不返回了。详见 `killTree` 的注释（含本机实测）。
-     */
-    const timer = setTimeout(() => {
-      timedOut = true
-      killTree(proc)
-    }, timeout)
-
-    // 中断信号要能真正杀掉子进程，否则用户点了停止但构建还在跑。
-    const onAbort = () => killTree(proc)
-    ctx.signal.addEventListener('abort', onAbort, { once: true })
-
-    // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
-    const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
-      const decoder = new TextDecoder()
-      const redactor = createStreamRedactor(secrets)
-      const take = (text: string) => {
-        if (!text) return
-        if (channel === 'stdout') out += text
-        else err += text
-        ctx.emit(channel, text)
+      /*
+       * 探测地址**只准回环**，而且拿不准就当没给。
+       *
+       * 这是本仓第二条能发起出站请求的路径，第一条 `web_fetch` 恰恰刻意挡掉了
+       * 本机（`net-safety.ts` 开头那段：127.0.0.1 后面可能是 qy 自己的 API）。
+       * 这里方向相反、边界也相反：**只有回环允许**，别的一律拒。
+       * 放宽一点点，它就成了绕开那道 SSRF 闸的第二条出网通道。
+       */
+      const probeRaw = typeof args.probe_url === 'string' ? args.probe_url.trim() : ''
+      let probeUrl: URL | null = null
+      if (probeRaw) {
+        const checked = loopbackTarget(probeRaw)
+        if (!checked.ok)
+          return { status: 'failure', message: checked.why, errorKind: 'bad_request' }
+        probeUrl = checked.url
       }
-      for await (const chunk of stream) {
-        take(redactor.push(decoder.decode(chunk, { stream: true })))
+
+      // 缺 secrets 时按空集合处理——那是「没有已知凭证」，不是「不用剥」。
+      const secrets = ctx.secrets ?? { values: [], envNames: [] }
+
+      /*
+       * 沙箱策略与路径层用**同一份根目录清单**。
+       *
+       * 两边分别算的话，一条 `additionalDirectories` 只接了路径层的后果是：
+       * 工具参数放行了、内核拒绝了，而模型收到的是一条 EACCES——
+       * 它会以为是文件权限问题，然后开始 chmod。反过来只接沙箱层，
+       * 表现是参数被我们自己拒掉，而内核那边本来是允许的。
+       * 两种都表现为「配了但不管用」，且错误信息互不相干。
+       */
+      const policy: SandboxPolicy = {
+        workspaceRoot: ctx.workspaceRoot,
+        ...(ctx.additionalDirectories?.length ? { writableRoots: ctx.additionalDirectories } : {}),
+        readOnlySubdirs: PROTECTED_DIRS,
+        ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
       }
-      // 不调 flush 会静默吞掉输出末尾——那比泄露更难发现，因为没人会去数字节。
-      take(redactor.flush())
-    }
 
-    // 两条流一直在后台读。**不能先 await 它们再等进程**——探测模式下服务器
-    // 根本不会退出，先读完流就是先挂死。树杀之后管道自然 EOF，这个 promise
-    // 也就跟着结束了（`killTree` 的注释里有实测）。
-    const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
+      const { proc, sandbox } = spawnGuarded({
+        command,
+        cwd,
+        policy,
+        // NON_INTERACTIVE_ENV 放在剥离**之后**：它是我们自己加的，
+        // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
+        env: {
+          ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
+          ...NON_INTERACTIVE_ENV,
+        },
+      })
 
-    try {
-      if (probeUrl !== null) {
-        const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
+      let out = ''
+      let err = ''
+      let timedOut = false
+
+      /*
+       * 超时与中断都走**树杀**，不是 `proc.kill()`。
+       *
+       * 我们 spawn 的是一个 shell，真正干活的是它的子进程；只杀 shell 的话
+       * 孙进程不但活着，还握着 stdout —— 下面那个 `pump` 永远等不到 EOF，
+       * 这次调用就再也不返回了。详见 `killTree` 的注释（含本机实测）。
+       */
+      const timer = setTimeout(() => {
+        timedOut = true
+        killTree(proc)
+      }, timeout)
+
+      // 中断信号要能真正杀掉子进程，否则用户点了停止但构建还在跑。
+      const onAbort = () => killTree(proc)
+      ctx.signal.addEventListener('abort', onAbort, { once: true })
+
+      // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
+      const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
+        const decoder = new TextDecoder()
+        const redactor = createStreamRedactor(secrets)
+        const take = (text: string) => {
+          if (!text) return
+          if (channel === 'stdout') out += text
+          else err += text
+          ctx.emit(channel, text)
+        }
+        for await (const chunk of stream) {
+          take(redactor.push(decoder.decode(chunk, { stream: true })))
+        }
+        // 不调 flush 会静默吞掉输出末尾——那比泄露更难发现，因为没人会去数字节。
+        take(redactor.flush())
+      }
+
+      // 两条流一直在后台读。**不能先 await 它们再等进程**——探测模式下服务器
+      // 根本不会退出，先读完流就是先挂死。树杀之后管道自然 EOF，这个 promise
+      // 也就跟着结束了（`killTree` 的注释里有实测）。
+      const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
+
+      try {
+        if (probeUrl !== null) {
+          const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
+          await pumping
+          await proc.exited
+          clearTimeout(timer)
+          ctx.signal.removeEventListener('abort', onAbort)
+
+          const delivered = deliverStreams(ctx, command, out, err)
+          return {
+            status: probe.ok ? 'success' : 'failure',
+            message: probe.message,
+            data: { ...probe.data, ...delivered.data },
+            ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+            ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
+          }
+        }
+
         await pumping
-        await proc.exited
+        const code = await proc.exited
         clearTimeout(timer)
         ctx.signal.removeEventListener('abort', onAbort)
 
         const delivered = deliverStreams(ctx, command, out, err)
-        return {
-          status: probe.ok ? 'success' : 'failure',
-          message: probe.message,
-          data: { ...probe.data, ...delivered.data },
-          ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-          ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
+
+        if (timedOut) {
+          return {
+            status: 'failure',
+            message: `命令超时（${timeout}ms）已终止`,
+            data: { ...delivered.data, timedOut: true },
+            ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+            errorKind: 'timeout',
+          }
         }
-      }
 
-      await pumping
-      const code = await proc.exited
-      clearTimeout(timer)
-      ctx.signal.removeEventListener('abort', onAbort)
-
-      const delivered = deliverStreams(ctx, command, out, err)
-
-      if (timedOut) {
         return {
-          status: 'failure',
-          message: `命令超时（${timeout}ms）已终止`,
-          data: { ...delivered.data, timedOut: true },
+          // 非零退出码是**事实**不是异常：模型需要看到失败输出才能修。
+          status: code === 0 ? 'success' : 'failure',
+          message:
+            code === 0 ? '命令执行成功' : `命令退出码 ${code}${sandboxHint(sandbox.active, err)}`,
+          data: { exitCode: code, ...delivered.data },
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-          errorKind: 'timeout',
         }
+      } finally {
+        clearTimeout(timer)
+        ctx.signal.removeEventListener('abort', onAbort)
       }
-
-      return {
-        // 非零退出码是**事实**不是异常：模型需要看到失败输出才能修。
-        status: code === 0 ? 'success' : 'failure',
-        message:
-          code === 0 ? '命令执行成功' : `命令退出码 ${code}${sandboxHint(sandbox.active, err)}`,
-        data: { exitCode: code, ...delivered.data },
-        ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-      }
-    } finally {
-      clearTimeout(timer)
-      ctx.signal.removeEventListener('abort', onAbort)
-    }
-  },
+    },
+  }
 }
 
 /**

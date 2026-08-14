@@ -13,6 +13,7 @@
  * - **少于 2 个工具不组卡**：为一个工具套一层折叠纯属添乱。
  */
 
+import type { ActionKind } from '@qywork/core'
 import type { TranscriptItem } from './store/index.ts'
 
 export type RenderItem =
@@ -100,12 +101,19 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
 export function groupTitle(members: TranscriptItem[]): string {
   const tools = members.filter((m) => m.kind === 'tool')
   const running = tools.find((s) => s.status === 'running')
-  if (running) return `正在${verb(running.action?.kind)}…`
+  // 说不出动作时说「进行中…」，不借「执行」之类的具体词——那是替一个
+  // 我们叫不出名字的调用编造它在干什么。
+  if (running) {
+    const k = running.action?.kind
+    return k && VERBS[k] ? `正在${VERBS[k]}…` : '进行中…'
+  }
 
-  const order: string[] = []
-  const byKind = new Map<string, TranscriptItem[]>()
+  const order: ActionKind[] = []
+  const byKind = new Map<ActionKind, TranscriptItem[]>()
   for (const s of tools) {
-    const k = s.action?.kind ?? 'execute'
+    const k = s.action?.kind
+    // 没有动作的行不进桶：它不是「某一类动作里的一个」，组头也不该替它编一类。
+    if (!k || !VERBS[k]) continue
     const bucket = byKind.get(k)
     if (bucket) bucket.push(s)
     else {
@@ -118,7 +126,7 @@ export function groupTitle(members: TranscriptItem[]): string {
     const list = byKind.get(k)!
     const objects = new Set(list.map((s) => s.action?.objectLabel ?? ''))
     const noun = objects.size === 1 ? (list[0]!.action?.objectLabel ?? '动作') : '动作'
-    return `${verb(k)} ${list.length} 个${noun}`
+    return `${VERBS[k]} ${list.length} 个${noun}`
   })
 
   const failed = tools.filter((s) => s.status === 'failure').length
@@ -126,37 +134,47 @@ export function groupTitle(members: TranscriptItem[]): string {
   return failed > 0 ? `${base}，${failed} 个失败` : base
 }
 
-export function verb(kind: string | undefined): string {
-  switch (kind) {
-    case 'read':
-      return '读取'
-    case 'write':
-      return '写入'
-    case 'edit':
-      return '编辑'
-    case 'delete':
-      return '删除'
-    case 'execute':
-      return '执行'
-    case 'search':
-      return '搜索'
-    case 'fetch':
-      return '获取'
-    case 'plan':
-      return '规划'
-    case 'delegate':
-      return '委派'
-    default:
-      return '操作'
-  }
+/**
+ * 动作动词。**一个 kind 一个词，一个不多。**
+ *
+ * 没有「其他 / 未知」这一档。动作由工具在注册期声明，注册表是唯一权威——
+ * 这张表覆盖全部六个合法值，查不到只可能是两种情况：这次调用根本不是工具
+ * （名字不在注册表里，`action` 为 null），或者是一条落库时枚举还没收敛的老 step。
+ * 两种都不该编一个动词出来，见 `actionLabel`。
+ */
+const VERBS: Record<ActionKind, string> = {
+  query: '查询',
+  read: '读取',
+  write: '创建',
+  edit: '编辑',
+  delete: '删除',
+  run: '运行',
 }
 
-/** 单条工具卡的完整文案：动词 + 对象。 */
+export function verb(kind: ActionKind): string {
+  return VERBS[kind]
+}
+
+/**
+ * 单条工具卡的完整文案：**动词 + 对象**。
+ *
+ * ## 桌面端一律中文，原始工具名不进界面
+ *
+ * 这里一度回落到 `item.toolName`，于是界面上直接出现 `update_plan` 这种东西。
+ * 工具名是机制字段，**英文原文只在 CLI 里显示**（那边的读者就是在读命令行的人，
+ * 见 `cli/src/index.ts` 与 `tui.ts` 里 `▸ ${ev.toolName}` 那两行）。
+ *
+ * 拼不出动作只剩一种情况：这次调用的名字不在注册表里，它不是工具
+ * （`action` 为 null，见 `loop.ts`）。那就照实说「未知工具」——这是对**对象**的
+ * 陈述，不是在动作轴上开一档「其他」；名字本身走 `target`，以「· 名字」的机制位显示。
+ * 已经落盘的老 kind 由迁移 16 转成六枚举，不走这条路。
+ */
+const UNKNOWN_TOOL = '未知工具'
+
 export function actionLabel(item: TranscriptItem): string {
-  const kind = item.action?.kind
-  if (kind === 'execute') return '执行命令'
-  const obj = item.action?.objectLabel
-  return obj ? `${verb(kind)}${obj}` : (item.toolName ?? '操作')
+  const a = item.action
+  if (!a || !VERBS[a.kind] || !a.objectLabel) return UNKNOWN_TOOL
+  return `${VERBS[a.kind]}${a.objectLabel}`
 }
 
 /**

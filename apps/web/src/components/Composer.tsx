@@ -119,10 +119,10 @@ function RunStatusChip() {
             {/* 点步数打开计划面板。完整清单收在那边，这里只报进度——
                 不给入口的话，用户得自己去右侧翻出「计划」这个标签页。 */}
             <button
-              class="plan-jump"
+              class="todo-jump"
               type="button"
-              title="查看完整计划"
-              onClick={() => openPanel('plan')}
+              title="查看完整待办"
+              onClick={() => openPanel('todos')}
             >
               第 {step()} / {total()} 步
             </button>

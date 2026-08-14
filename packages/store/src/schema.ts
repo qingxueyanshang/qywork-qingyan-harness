@@ -582,6 +582,54 @@ CREATE TABLE file_reads (
 );
 `,
   },
+  {
+    id: 16,
+    name: 'action_kind_six',
+    /**
+     * 动作轴从九个值收敛到六个，**已经落盘的行跟着转**。
+     *
+     * 不转的后果实测见过：动作枚举在代码里改完了，账本里的老 step 还带着
+     * `execute` / `search` / `plan`，回放时前端查不到动词，卡片标题掉回原始工具名，
+     * 界面上直接出现 `update_plan` 这种机制字段。**改了协议不转数据，就叫没改完。**
+     *
+     * 映射逐条有据（对齐青研魔盒 `contracts.py` 的六枚举）：
+     * `execute` / `delegate` → `run`（跑命令、跑编排节点都是运行）、
+     * `search` → `query`（搜索是查询的一种）、`fetch` → `read`（取一份已知的东西）、
+     * `plan` → `write`（那个工具是提交待办清单，首建是创建）。
+     *
+     * `plan` 那条同时把对象名从「计划」改成「待办」：它产出的一直是待办清单，
+     * 「计划／方案」是另一件事（一篇讲清怎么做的文档），名字得还回去。
+     *
+     * **这是一次性转换，不是兼容层**：转完之后代码里没有任何分支还认识老值。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(payload, '$.action.objectLabel', '待办')
+WHERE json_extract(payload, '$.action.kind') = 'plan';
+
+UPDATE steps
+SET payload = json_set(
+  payload,
+  '$.action.kind',
+  CASE json_extract(payload, '$.action.kind')
+    WHEN 'execute'  THEN 'run'
+    WHEN 'delegate' THEN 'run'
+    WHEN 'search'   THEN 'query'
+    WHEN 'fetch'    THEN 'read'
+    WHEN 'plan'     THEN 'write'
+  END
+)
+WHERE json_extract(payload, '$.action.kind') IN ('execute', 'delegate', 'search', 'fetch', 'plan');
+
+UPDATE steps
+SET payload = json_set(
+  payload,
+  '$.outcome.message',
+  replace(json_extract(payload, '$.outcome.message'), '计划已更新', '待办已更新')
+)
+WHERE json_extract(payload, '$.outcome.message') LIKE '计划已更新%';
+`,
+  },
 ]
 
 /**

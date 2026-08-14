@@ -78,6 +78,11 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: label,
+      // MCP 的工具一律归「外部扩展」：类目由第三方决定，混进内置分类学会让
+      // 「文件与草稿」那一栏突然冒出别人家的工具。
+      category: 'external',
+      facet: `MCP ${server}`,
+      summary: `列出 ${server} 提供的 resource`,
       targetExtractor: () => label,
       permissionEffect: 'read',
       // 纯只读、无状态，可以与别的读操作同波次。
@@ -120,6 +125,9 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       },
       actionKind: 'read',
       objectLabel: label,
+      category: 'external',
+      facet: `MCP ${server}`,
+      summary: `读 ${server} 的一个 resource 正文`,
       targetExtractor: (a) => (typeof a.uri === 'string' ? a.uri : label),
       permissionEffect: 'read',
       parallelSafe: true,

@@ -34,8 +34,10 @@ g.matchMedia = () => ({ matches: false })
 
 const {
   applyEvent,
+  client,
   explainApiError,
   openPanel,
+  reloadActiveConversation,
   setSidePanel,
   setState,
   sidePanel,
@@ -224,5 +226,88 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(state.conversations.find((c) => c.id === 'cv_other')?.title).toBe('改过的标题')
     expect(state.conversations.find((c) => c.id === 'cv_now')?.title).toBe('当前')
+  })
+})
+
+/**
+ * 刷新 / 重连之后的会话投影（`store/connection.ts` 的 `reloadActiveConversation`）。
+ *
+ * 这一组锁的是**账本里有、界面上却没了**的那一类。它们全都只在重拉这条路上出现，
+ * 实时那条路好好的，所以看起来一切正常——直到你刷新一次。
+ *
+ * 用假的 `client.api` 喂账本回体，走的是真的折叠逻辑。
+ */
+describe('重拉会话：账本里有的，界面上就得有', () => {
+  const stub = (steps: unknown[], runs: unknown[]) => {
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/messages')) {
+        return { messages: [{ id: 'ms_1', role: 'user', content: '为什么动不了', createdAt: 1 }] }
+      }
+      // 先判 `/steps`：run 的 steps 路径是 `/api/runs/<id>/steps`，两条都含 `/runs`。
+      if (p.includes('/steps')) return { steps }
+      if (p.includes('/runs')) return { runs }
+      throw new Error('没有上下文面板')
+    }
+  }
+
+  const toolStep = (thinking: string) => ({
+    id: 'st_1',
+    seq: 1,
+    kind: 'tool_action',
+    toolName: 'run_command',
+    content: thinking,
+    payload: {
+      kind: 'tool_result',
+      args: { command: 'nvidia-smi -L' },
+      action: { kind: 'run', objectLabel: '命令', target: 'nvidia-smi -L' },
+    },
+    status: 'success',
+    createdAt: 2,
+  })
+
+  const interruptedRun = {
+    id: 'rn_1',
+    userMessageId: 'ms_1',
+    createdAt: 1,
+    finishedAt: 9,
+    stopReason: 'user_interrupt',
+    status: 'interrupted',
+    usage: null,
+    supersededBy: null,
+  }
+
+  /**
+   * **原始失败形状**：一轮跑了十分钟，大半时间产出的是思考；进程被掐断、界面重拉
+   * 之后，思考一条不剩。它落在批次首条工具 step 的 `content` 上（后端
+   * `session.ts` 的 `openToolStep`），而这里曾经只读 `payload`。
+   */
+  test('思考正文跟着工具 step 折回来，位置在工具卡之前', async () => {
+    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    stub([toolStep('先看看这台机器的显卡')], [interruptedRun])
+    await reloadActiveConversation()
+
+    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'thinking', 'tool', 'run'])
+    expect(state.transcript[1]?.text).toBe('先看看这台机器的显卡')
+  })
+
+  test('没有思考的工具 step 不平白多出一条空折叠', async () => {
+    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    stub([toolStep('')], [interruptedRun])
+    await reloadActiveConversation()
+
+    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'tool', 'run'])
+  })
+
+  /**
+   * 后台进程被杀之后，账本里那一轮已经是 `interrupted`。**界面必须据此放下
+   * 「执行中」**——这是重连后唯一能纠正它的地方，事件那条路已经随进程一起没了。
+   */
+  test('账本里那一轮是中断态，重拉之后输入框不再卡在执行中', async () => {
+    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    stub([toolStep('思考')], [interruptedRun])
+    await reloadActiveConversation()
+
+    expect(state.running).toBe(false)
+    expect(state.transcript.at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
 })

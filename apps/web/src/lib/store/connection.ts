@@ -16,6 +16,7 @@ import type {
   EventEnvelope,
   RunUsage,
   StopReason,
+  TodoItem,
 } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
@@ -143,7 +144,11 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           s.error = null
           s.notice = null
           s.fileChanges = []
-          s.todos = []
+          // **待办不清。** 它是这条会话的进度，不是这一轮的临时读数——
+          // 一轮做三条、下一轮接着做第四条是常态。清了的表现是：中断再继续，
+          // 清单整个消失，等模型下次整表提交才回来（`write_todos` 是整表语义，
+          // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的东西
+          // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
           s.teamMembers = []
           s.lastRunId = ev.runId
           s.runStartedAt = Date.now()
@@ -479,8 +484,9 @@ export async function reloadActiveConversation(): Promise<void> {
       })
       for (const r of runsByUserMessage.get(m.id) ?? []) {
         for (const s of stepsByRun.get(r.id) ?? []) {
-          const item = stepToItem(s)
-          if (item) items.push(r.supersededBy ? { ...item, superseded: true } : item)
+          for (const item of stepToItems(s)) {
+            items.push(r.supersededBy ? { ...item, superseded: true } : item)
+          }
         }
         // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类东西：
         // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
@@ -541,10 +547,14 @@ export async function reloadActiveConversation(): Promise<void> {
       s.runStartedAt = live ? live.createdAt : null
       // 以下几项是 run 内的易失投影，账本里没有，重拉之后一律清空，
       // 等这条会话自己的事件把它们填回来。
-      s.todos = []
       s.teamMembers = []
       s.usage = null
       s.permission = null
+      // **待办从账本投影回来，不新增持久化路径。**
+      // 它曾经只活在 WS 事件里，于是刷新一次、切走再切回就没了。真源早就有了：
+      // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
+      // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
+      s.todos = todosFromSteps(runs, stepsByRun)
       // 上下文不在这一批里——它有账本可依（`provider_requests`），
       // 不是「run 内的易失投影」。
       // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。
@@ -563,49 +573,75 @@ export async function reloadActiveConversation(): Promise<void> {
   )
 }
 
-function stepToItem(s: StoredStep): TranscriptItem | null {
+/**
+ * 从落库的 steps 里投影出当前待办清单。
+ *
+ * **不新增持久化路径**（A2 第 5 问答「否」）。待办以前只活在 WS 事件里，刷新即丢，
+ * 而它的真源一直都在：`write_todos` 每次调用本身就是一条 tool step，整表 todos
+ * 就躺在它的 `args` 里。整表语义下**最后一次成功提交就是全部事实**，
+ * 所以从后往前找第一条成功的即可，不需要合并、也不需要另建一张表。
+ *
+ * 按 run 顺序倒着扫：跨 run 的进度要延续——一轮做三条、下一轮接着做第四条是常态。
+ */
+function todosFromSteps(runs: StoredRun[], stepsByRun: Map<string, StoredStep[]>): TodoItem[] {
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const steps = stepsByRun.get(runs[i]!.id) ?? []
+    for (let j = steps.length - 1; j >= 0; j--) {
+      const st = steps[j]!
+      if (st.kind !== 'tool_action' || st.toolName !== 'write_todos') continue
+      if (st.status !== 'success') continue
+      const todos = st.payload?.args?.todos
+      if (Array.isArray(todos)) return todos as TodoItem[]
+    }
+  }
+  return []
+}
+
+/**
+ * 一条 step 折成界面上的若干条。
+ *
+ * **一条 step 不等于一条界面条目**：批次首条工具 step 的 `content` 里落着这一批
+ * 之前的思考正文（后端 `session.ts` 的 `openToolStep` 借了这一列，理由写在那里），
+ * 它在界面上是独立的一条。这里曾经只读 `payload`，于是**刷新一次页面、切一次会话，
+ * 整轮思考就没了**——而思考恰恰是「模型为什么做了这些」的唯一现场，
+ * 一轮跑十分钟、绝大部分时间产出的就是它。
+ */
+function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'text') {
-    return s.content ? { id: s.id, kind: 'text', text: s.content } : null
+    return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
   // 压缩条。这里曾经不处理它，而压缩事件只活在连接期——刷新一次
   // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
   if (s.kind === 'compaction') {
-    return {
-      id: s.id,
-      kind: 'compaction',
-      text: '',
-      compaction: { phase: s.status === 'failure' ? 'failed' : 'done' },
-    }
+    return [
+      {
+        id: s.id,
+        kind: 'compaction',
+        text: '',
+        compaction: { phase: s.status === 'failure' ? 'failed' : 'done' },
+      },
+    ]
   }
   if (s.kind === 'tool_action') {
     const outcome = s.payload?.outcome
-    // action 来自后端落库的解析结果。存量行（本字段上线前写入的）没有它，
-    // 回落成工具名本身——显示成工具名比一律显示「读取」诚实。
-    const action = s.payload?.action ?? {
-      kind: 'execute' as const,
-      objectLabel: s.toolName ?? '',
-      target: targetOf(s),
-    }
-    return {
+    const out: TranscriptItem[] = []
+    // 思考在这批工具**之前**发生，位置就在工具卡上面。id 由 step id 派生：
+    // 每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
+    if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
+    // action 来自后端落库的解析结果。**没有就是没有，不补**——
+    // 这里曾经回落成 `execute`，于是刷新一次页面，一整轮的读文件全变成「执行」。
+    // 拼不出动作时卡片显示工具名（见 `actionLabel`），那比一个假动词诚实。
+    out.push({
       id: s.id,
       kind: 'tool',
       text: '',
       toolName: s.toolName ?? '',
-      action,
+      ...(s.payload?.action ? { action: s.payload.action } : {}),
       ...(s.payload?.args ? { args: s.payload.args } : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),
-    }
+    })
+    return out
   }
-  return null
-}
-
-function targetOf(s: StoredStep): string | null {
-  const args = s.payload?.args
-  if (!args) return null
-  for (const key of ['path', 'file_path', 'pattern', 'command']) {
-    const v = args[key]
-    if (typeof v === 'string' && v) return v
-  }
-  return null
+  return []
 }

@@ -37,12 +37,26 @@ export interface HelloFrame {
   token: string
   origin: ClientOrigin
   /**
-   * 断线重连时带上最后收到的 seq，服务端补发缺口。
-   * 缺口超出服务端保留窗口时回 `resync`，客户端改走全量拉取。
+   * 断线重连时报上「我停在哪」，服务端补发缺口；补不上就回 `resync`，
+   * 客户端改走全量拉取。
+   *
+   * **位置和流身份必须一起给，这是一个字段而不是两个。** seq 是服务端进程里的
+   * 一个计数器，重启就从头开始——只给一个数字，服务端没有任何办法判断它是不是
+   * 自己这条流上的坐标。这里曾经只有一个 `lastSeq`，代价是：sidecar 一重启
+   * （开发态热重载、崩溃拉起、桌面端重装），重连的客户端带着上一代的
+   * `lastSeq=800` 撞上新服务的 `seq=0`，`800 >= 0` 被判成「你已经是最新的」，
+   * 于是补发零条、resync 为假。界面就此停在断线那一刻：那一轮**永远显示执行中**，
+   * 而账本里它早在启动回收时就被判成中断了。
    */
-  lastSeq?: number
+  resume?: ResumePosition
   /** 只订阅这些会话的事件。省手机流量；不传=订阅全部。 */
   subscribe?: ConversationId[]
+}
+
+/** 客户端在某条事件流上停到的位置。`streamId` 来自 `HelloOkFrame`。 */
+export interface ResumePosition {
+  streamId: string
+  lastSeq: number
 }
 
 export type ClientOrigin = 'desktop' | 'mobile' | 'cli' | 'external'
@@ -51,6 +65,12 @@ export interface HelloOkFrame {
   type: 'hello.ok'
   serverVersion: string
   sessionId: string
+  /**
+   * 这条事件流的身份，**一个服务进程一个**（`sessionId` 是一条连接一个，两回事）。
+   * 客户端存下来，重连时随 `resume` 原样带回；换了值就说明服务端重启过，
+   * 手上那个 seq 在新流里不再是有效坐标。
+   */
+  streamId: string
   /** 服务端当前 seq。客户端据此判断自己落后多少。 */
   currentSeq: number
   /** true = 缺口太大已放弃补发，客户端必须重新拉全量。 */
@@ -83,6 +103,27 @@ export interface ServerCapabilities {
    * 的地方就是界面——而 `qy config` 他们看不到。
    */
   sandbox: { backend: string; active: boolean; reason: string }
+  /**
+   * 命令跑哪个 shell。**报路径而不是布尔**，与 `sandbox` 报后端名同一个理由：
+   * 「有」不足以让用户知道跑的是哪一个（Git Bash、Homebrew 的 bash、自己指的 MSYS），
+   * 而那正是排查「同一条命令在终端能跑、在这里不行」时唯一有用的信息。
+   *
+   * `path` 为 null = 这台机器上没有 bash，**`run_command` 因此根本没有注册**
+   * （`tools/index.ts`），`reason` 说得出为什么、下一步怎么办。
+   * 这一格和它的消费者（设置页那一行 + 安装按钮）是同一次加进来的——
+   * 上面那三个被删掉的布尔就是死在「有生产者没有消费者」上。
+   */
+  commandShell: {
+    path: string | null
+    reason: string
+    /**
+     * 这台机器上「一键装」可不可行（Windows + 有 winget）。
+     *
+     * `false` 时界面**不显示那个按钮**，而不是显示一个点了回 409 的按钮（B5）。
+     * 判据与 `POST /api/host/install-shell` 是同一个函数，分开算必然漂移。
+     */
+    canInstall: boolean
+  }
   /**
    * 权限模式。**只有两种**：`auto` 由硬边界 + 静态规则 + 分类器裁决，
    * `full` 全放行（`full` 仍保留三条硬边界，见设置页那句说明）。

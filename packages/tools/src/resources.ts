@@ -48,6 +48,9 @@ export const readResourceTool: ToolSpec = {
   },
   actionKind: 'read',
   objectLabel: '资源',
+  category: 'session',
+  facet: '中间内容',
+  summary: '按区间读回落盘的大结果',
   targetExtractor: (a) => (typeof a.resource_id === 'string' ? a.resource_id : null),
   // 读的是本进程自己落盘的内容，不触碰工作区也不出网，没有需要用户批准的副作用。
   permissionEffect: 'internal_control',

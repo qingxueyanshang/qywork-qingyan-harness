@@ -36,6 +36,8 @@ export {
   resetBatchBudget,
   type SinkPort,
   sanitizeToolName,
+  TOOL_CATEGORIES,
+  type ToolCategory,
   type ToolContext,
   type ToolOutcome,
   ToolRegistry,

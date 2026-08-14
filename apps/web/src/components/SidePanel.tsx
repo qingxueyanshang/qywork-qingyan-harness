@@ -11,8 +11,8 @@ import {
 } from '../lib/store/index.ts'
 import { ExtrasPanel } from './ExtrasPanel.tsx'
 import { IconBranch, IconChevron, IconFile, IconFolder, IconX } from './Icons.tsx'
-import { PlanPanel } from './PlanPanel.tsx'
 import { TeamPanel } from './TeamPanel.tsx'
+import { TodoPanel } from './TodoPanel.tsx'
 
 interface FileNode {
   name: string
@@ -47,14 +47,14 @@ export default function SidePanel() {
       <aside class="side-panel">
         <header class="side-head">
           <div class="side-tabs">
-            {/* 计划排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。 */}
+            {/* 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。 */}
             <button
               class="side-tab"
-              classList={{ active: sidePanel() === 'plan' }}
+              classList={{ active: sidePanel() === 'todos' }}
               type="button"
-              onClick={() => setSidePanel('plan')}
+              onClick={() => setSidePanel('todos')}
             >
-              计划
+              待办
             </button>
             <button
               class="side-tab"
@@ -105,8 +105,8 @@ export default function SidePanel() {
 
         <div class="side-body">
           <Switch>
-            <Match when={sidePanel() === 'plan'}>
-              <PlanPanel />
+            <Match when={sidePanel() === 'todos'}>
+              <TodoPanel />
             </Match>
             <Match when={sidePanel() === 'files'}>
               <FileBrowser />

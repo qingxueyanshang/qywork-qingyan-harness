@@ -119,21 +119,20 @@ export type StopReason =
   | 'user_interrupt'
   | 'permission_denied'
   /**
-   * **输入**超出模型窗口。只有 provider 明确回容量拒绝（4xx + 原生容量码或强消息匹配）
-   * 才能用这个值，判据见 `@qywork/ai` 的 `classifyCapacityRejection`。
-   */
-  | 'context_exhausted'
-  /**
    * **输出**被 max_tokens 截断。答案不完整但已发生的部分是有效的。
    *
-   * 与 `context_exhausted` 严格区分：一个是「说不下了」，一个是「听不下了」，
-   * 用户的下一步动作完全不同（前者加大 max_tokens 或让模型分段，后者精简上下文）。
-   * 曾经这两者被混成一个值，导致输出截断时提示用户去清理历史 —— 清了也没用。
+   * 曾经这里还并列着一个 `context_exhausted`（输入超窗），两者被混成过一个值，
+   * 导致输出截断时提示用户去清理历史——清了也没用。现在输入超窗**不占一个停止原因**：
+   * 它由 `run.error.code = 'context_overflow'` 表达，停止原因是 `provider_error`。
+   * 一件事一本账，两处都记的结果是两处会漂。
    */
   | 'output_truncated'
   | 'provider_error'
+  /**
+   * 上次进程在工具执行期间退出，这一轮跑到哪判不明（`store` 的 `recoverStaleRuns`）。
+   * 与 `user_interrupt` 分开：那是用户按了停止、已完成的步骤结果可信，这条不可信。
+   */
   | 'internal_guard'
-  | 'budget_exceeded'
 
 export interface Run {
   id: RunId

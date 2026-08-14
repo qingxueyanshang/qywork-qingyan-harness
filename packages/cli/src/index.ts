@@ -328,7 +328,7 @@ function renderHuman(ev: AgentEvent): void {
       break
     case 'tool.started':
       process.stdout.write(
-        `\n${DIM}▸ ${ev.toolName}${ev.action.target ? ` ${ev.action.target}` : ''}${RESET}\n`,
+        `\n${DIM}▸ ${ev.toolName}${ev.action?.target ? ` ${ev.action.target}` : ''}${RESET}\n`,
       )
       break
     case 'tool.finished': {

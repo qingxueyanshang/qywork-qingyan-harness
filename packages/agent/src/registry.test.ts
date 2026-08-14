@@ -10,7 +10,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { sanitizeToolName, TOOL_NAME_PATTERN, ToolRegistry, type ToolSpec } from './registry.ts'
+import {
+  resolveAction,
+  sanitizeToolName,
+  TOOL_NAME_PATTERN,
+  type ToolContext,
+  ToolRegistry,
+  type ToolSpec,
+} from './registry.ts'
 
 const spec = (name: string): ToolSpec => ({
   name,
@@ -18,6 +25,9 @@ const spec = (name: string): ToolSpec => ({
   parameters: { type: 'object' },
   actionKind: 'read',
   objectLabel: 'x',
+  category: 'session',
+  facet: '测试',
+  summary: '测试夹具',
   permissionEffect: 'read',
   fn: async () => ({ status: 'success', message: 'ok' }),
 })
@@ -74,5 +84,38 @@ describe('消毒', () => {
    */
   test('a.b 与 a_b 消毒后同名 —— 调用方必须自己查重', () => {
     expect(sanitizeToolName('a.b')).toBe(sanitizeToolName('a_b'))
+  })
+})
+
+/**
+ * 动作语义的解析。
+ *
+ * 兜底那条是实打实的坑：注册表里查不到的工具，`loop.ts` 曾经把它记成
+ * `{ kind: 'read', objectLabel: 工具名 }`——一个可能在写、在删、在跑的陌生工具，
+ * 卡片上写着「读取 xxx」。不是把原词当动词，是**编了一个具体且错误的动词**。
+ */
+describe('动作语义按参数解析，不按工具名猜', () => {
+  test('常量 kind 原样返回', () => {
+    expect(resolveAction(spec('read_thing'), {}).kind).toBe('read')
+  })
+
+  test('函数 kind 拿得到 args', () => {
+    const s: ToolSpec = {
+      ...spec('facade'),
+      actionKind: (a) => (a.mode === 'rm' ? 'delete' : 'read'),
+    }
+    expect(resolveAction(s, { mode: 'rm' }).kind).toBe('delete')
+    expect(resolveAction(s, { mode: 'cat' }).kind).toBe('read')
+  })
+
+  /** 有些动作光看参数分不出创建还是编辑，差别在 ctx.state 里的既有状态。 */
+  test('函数 kind 拿得到 ctx', () => {
+    const s: ToolSpec = {
+      ...spec('stateful'),
+      actionKind: (_a, c) => (c?.state.get('has') ? 'edit' : 'write'),
+    }
+    const c = { state: new Map([['has', true]]) } as unknown as ToolContext
+    expect(resolveAction(s, {}).kind).toBe('write')
+    expect(resolveAction(s, {}, c).kind).toBe('edit')
   })
 })

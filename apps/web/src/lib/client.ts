@@ -7,7 +7,7 @@
  *
  * 重连是这里的主要复杂度。手机在地铁里断网是常态，所以：
  * - 指数退避 + 抖动，避免服务端刚恢复就被一堆客户端同时打爆。
- * - 重连时带 `lastSeq`，服务端补发缺口；补不上就置 `resync`，
+ * - 重连时带 `resume`（流身份 + 位置），服务端补发缺口；补不上就置 `resync`，
  *   由调用方重新拉全量。**绝不静默丢事件**——UI 停在不完整状态却自以为正确，
  *   比明确报错糟糕得多。
  */
@@ -142,6 +142,13 @@ function isMobileViewport(): boolean {
 export class QyClient {
   private ws: SocketLike | null = null
   private lastSeq = 0
+  /**
+   * 服务端那条事件流的身份。**`null` = 还没握过手，此时 `lastSeq` 无处安放。**
+   *
+   * 位置离开流身份就没有意义：sidecar 重启后 seq 从 0 重新数，光报一个数字
+   * 会被判成「已是最新」。所以这两个值只以 `resume` 整体出现，见 `HelloFrame`。
+   */
+  private streamId: string | null = null
   private attempt = 0
   private closed = false
   /**
@@ -208,7 +215,9 @@ export class QyClient {
         type: 'hello',
         token: this.endpoint.token,
         origin: this.endpoint.origin,
-        ...(this.lastSeq > 0 ? { lastSeq: this.lastSeq } : {}),
+        ...(this.streamId && this.lastSeq > 0
+          ? { resume: { streamId: this.streamId, lastSeq: this.lastSeq } }
+          : {}),
         // 判 `!== null` 而不是 `.length`：空集要原样带上去，见 `subscribed` 的注释。
         ...(this.subscribed !== null ? { subscribe: this.subscribed as never } : {}),
       }
@@ -226,12 +235,14 @@ export class QyClient {
       if (msg.type === 'hello.ok') {
         // 握手成功才重置退避计数——open 事件不代表服务端接受了我们。
         this.attempt = 0
+        // 换了一条流（服务端重启过）与服务端放弃补发，两种情形下手里那个 seq
+        // 都不再是有效位置，一律对齐到服务端当前值。
+        const sameStream = msg.streamId === this.streamId
+        this.streamId = msg.streamId
+        if (!sameStream || msg.resync) this.lastSeq = msg.currentSeq
         this.opts.onCapabilities(msg.capabilities)
         this.opts.onState('ready')
-        if (msg.resync) {
-          this.lastSeq = msg.currentSeq
-          this.opts.onResync()
-        }
+        if (msg.resync) this.opts.onResync()
         return
       }
       if (msg.type === 'hello.err') {

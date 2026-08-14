@@ -44,11 +44,12 @@ function client(token = 'tk') {
   const states: { state: string; detail?: string }[] = []
   const frames: EventEnvelope<AgentEvent>[] = []
   const rejected: CommandRejectedFrame[] = []
+  const resyncs: number[] = []
   const c = new QyClient(
     {
       onEvent: (f) => frames.push(f),
       onState: (state, detail) => states.push({ state, ...(detail ? { detail } : {}) }),
-      onResync: () => {},
+      onResync: () => resyncs.push(1),
       onCapabilities: () => {},
       onRejected: (f) => rejected.push(f),
     },
@@ -61,7 +62,7 @@ function client(token = 'tk') {
       },
     },
   )
-  return { c, sockets, states, frames, rejected }
+  return { c, sockets, states, frames, rejected, resyncs }
 }
 
 describe('握手', () => {
@@ -242,6 +243,88 @@ describe('订阅在重连时原样带回去', () => {
     c.connect()
     sockets[0]!.fire('open')
     expect('subscribe' in helloOf(sockets[0]!)).toBe(false)
+    c.close()
+  })
+})
+
+/**
+ * 重连时报的「我停在哪」。
+ *
+ * 位置离开流身份没有意义：sidecar 一重启 seq 就从 0 重新数，只报一个数字会被
+ * 服务端判成「已是最新」。那条判断在服务端（`bus.replayFrom`），这里守的是
+ * 客户端这一半——**报上去的必须是当前这条流上的坐标**。
+ */
+describe('断线重连报的位置', () => {
+  const helloOf = (s: FakeSocket) => JSON.parse(s.sent.find((x) => x.includes('"hello"')) as string)
+  const helloOk = (streamId: string, currentSeq: number, resync = false) => ({
+    type: 'hello.ok',
+    capabilities: {},
+    streamId,
+    currentSeq,
+    resync,
+  })
+
+  test('首连不带 resume —— 还没握过手，手上没有任何流的坐标', () => {
+    const { c, sockets } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    expect('resume' in helloOf(sockets[0]!)).toBe(false)
+    c.close()
+  })
+
+  test('收过帧之后重连，带上流身份 + 最后一条 seq', () => {
+    const { c, sockets } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    sockets[0]!.deliver(helloOk('stream-a', 0))
+    sockets[0]!.deliver({
+      seq: 12,
+      at: 1,
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta: '喂' },
+    })
+    sockets[0]!.fire('close')
+
+    c.connect()
+    sockets[1]!.fire('open')
+    expect(helloOf(sockets[1]!).resume).toEqual({ streamId: 'stream-a', lastSeq: 12 })
+    c.close()
+  })
+
+  /**
+   * **原始失败形状的客户端一半**：sidecar 重启后 hello.ok 换了流身份，
+   * 而客户端手上还揣着上一代的 `lastSeq=12`。再断一次线时若把这个数报上去，
+   * 服务端就得替一个不属于自己的坐标做判断。
+   */
+  test('服务端换了流，位置跟着对齐到新流 —— 不把上一代的数字报过去', () => {
+    const { c, sockets } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    sockets[0]!.deliver(helloOk('stream-a', 0))
+    sockets[0]!.deliver({
+      seq: 12,
+      at: 1,
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta: '喂' },
+    })
+    sockets[0]!.fire('close')
+
+    // 重启后的 sidecar：新流、seq 从头数起，并要求整段重拉。
+    c.connect()
+    sockets[1]!.fire('open')
+    sockets[1]!.deliver(helloOk('stream-b', 3, true))
+    sockets[1]!.fire('close')
+
+    c.connect()
+    sockets[2]!.fire('open')
+    expect(helloOf(sockets[2]!).resume).toEqual({ streamId: 'stream-b', lastSeq: 3 })
+    c.close()
+  })
+
+  test('服务端说 resync，就要通知调用方整段重拉', () => {
+    const { c, sockets, resyncs } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    sockets[0]!.deliver(helloOk('stream-a', 40, true))
+    expect(resyncs).toHaveLength(1)
     c.close()
   })
 })

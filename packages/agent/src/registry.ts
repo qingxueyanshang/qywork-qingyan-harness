@@ -250,6 +250,49 @@ export interface ToolOutcome {
 
 // ─────────────────────────────── 工具声明 ───────────────────────────────
 
+/**
+ * 工具能力大类。**七个，没有「其他」。**
+ *
+ * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
+ * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
+ * 三条轴分开的直接好处是动作轴不必再兼职领域——`search` / `fetch` / `plan` /
+ * `delegate` 曾经挤在动作轴上，正是因为没有这条轴。
+ *
+ * 类目按**这个仓真的有工具的领域**取，不照抄也不硬凑：青研魔盒的
+ * `ToolCategory`（`contracts.py:47-62`）里有 `sheet`（表格数据），qywork 是编码 agent，
+ * 一个表格工具都没有——建一个空类目就是 B5 的空壳。
+ *
+ * `external` 是**可插拔那一类**，不是兜底桶：MCP 与插件的工具自动归它，
+ * 理由是它们的类目由第三方决定，混进内置分类学会让「文件与草稿」这一栏
+ * 突然冒出别人家的工具。魔盒同一条（`contracts.py:51-52`）。
+ *
+ * 枚举顺序即界面呈现顺序。
+ */
+export type ToolCategory =
+  | 'files'
+  | 'code'
+  | 'web'
+  | 'knowledge'
+  | 'planning'
+  | 'session'
+  | 'external'
+
+/**
+ * 全部类目，**顺序即界面顺序**。
+ *
+ * 派生不了——TypeScript 的联合类型在运行时不存在，注册期校验需要一份真值。
+ * 两处必须一起改，所以放在紧邻的位置：类型定义的下一行。
+ */
+export const TOOL_CATEGORIES: ToolCategory[] = [
+  'files',
+  'code',
+  'web',
+  'knowledge',
+  'planning',
+  'session',
+  'external',
+]
+
 /** 权限副作用轴。注册时必填——没有默认值，忘了填就注册失败。 */
 export type PermissionEffect =
   | 'read'
@@ -264,8 +307,15 @@ export interface ToolSpec {
   name: string
   description: string
   parameters: Record<string, unknown>
-  /** 动作语义。多动作门面从**显式参数**解析，禁止按工具名或结果文案猜。 */
-  actionKind: ActionKind | ((args: Record<string, unknown>) => ActionKind)
+  /**
+   * 动作语义。多动作门面从**显式参数**解析，禁止按工具名或结果文案猜。
+   *
+   * 第二个参数是可选的 `ctx`：有些动作光看参数分不出创建还是编辑——同一份
+   * `write_todos(todos)`，第一次提交是「创建计划」，之后是「编辑计划」，
+   * 差别在**当前有没有一份未完成的计划**，那是 `ctx.state` 里的事实。
+   * 拿不到 ctx 时（权限预检那条路）必须能只靠 args 给出一个不撒谎的答案。
+   */
+  actionKind: ActionKind | ((args: Record<string, unknown>, ctx?: ToolContext) => ActionKind)
   objectLabel: string | ((args: Record<string, unknown>) => string)
   /** 从参数提取稳定目标（通常是文件路径），供进度判定与并行冲突检测使用。 */
   targetExtractor?: (args: Record<string, unknown>) => string | null
@@ -277,11 +327,30 @@ export interface ToolSpec {
   parallelSafe?: boolean | ((args: Record<string, unknown>) => boolean)
   /** 本次调用会触碰的资源键，用于同波次冲突检测（同一文件不能并行写）。 */
   resourceKeys?: (args: Record<string, unknown>) => string[]
+  /**
+   * 能力大类。注册时必填——漏标即注册失败，不给默认值。
+   *
+   * 给默认值（比如默认 `session`）的代价是实打实的：新加的工具会静默落进一个
+   * 与它无关的类目，而分类表看起来是完整的。魔盒同一条纪律，它把完整性闸放在
+   * `taxonomy()` 里抛错（`tool_registry.py:425-431`）；这里放在注册期，更早。
+   */
+  category: ToolCategory
+  /**
+   * 类内的功能方向（第二层）。受控短语，同一类里复用同一批词——
+   * 「文件与草稿」下就是「读写」「检索」「管理」这几个，不是一句自由描述。
+   */
+  facet: string
+  /** 一句话用途，给人看（工具清单那一栏）。不是给模型看的——那是 `description`。 */
+  summary: string
   fn: ToolFn
 }
 
-export function resolveAction(spec: ToolSpec, args: Record<string, unknown>): ActionDescriptor {
-  const kind = typeof spec.actionKind === 'function' ? spec.actionKind(args) : spec.actionKind
+export function resolveAction(
+  spec: ToolSpec,
+  args: Record<string, unknown>,
+  ctx?: ToolContext,
+): ActionDescriptor {
+  const kind = typeof spec.actionKind === 'function' ? spec.actionKind(args, ctx) : spec.actionKind
   const label = typeof spec.objectLabel === 'function' ? spec.objectLabel(args) : spec.objectLabel
   return {
     kind,
@@ -367,7 +436,7 @@ export class ToolRegistry {
 
     const effect = resolvePermissionEffect(spec, args)
     if (effect !== 'internal_control') {
-      const action = resolveAction(spec, args)
+      const action = resolveAction(spec, args, ctx)
       const scope = `${effect}:${action.target ?? action.objectLabel}`
       const verdict = normalizeVerdict(
         await ctx.requestPermission(scope, describeCall(spec, args), { toolName: name, args }),
@@ -453,6 +522,16 @@ function validate(spec: ToolSpec): void {
   if (!spec.permissionEffect) {
     throw new Error(`[qywork] 工具 ${spec.name} 未声明 permissionEffect`)
   }
+  // 三条轴一样对待：漏标就是装配错误，当场抛。给默认值的话新工具会静默落进
+  // 一个与它无关的类目，而分类表看起来完整——那种错没人会发现。
+  if (!TOOL_CATEGORIES.includes(spec.category)) {
+    throw new Error(
+      `[qywork] 工具 ${spec.name} 的 category 无法识别：${String(spec.category)}` +
+        `（可用：${TOOL_CATEGORIES.join('、')}）`,
+    )
+  }
+  if (!spec.facet?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 facet`)
+  if (!spec.summary?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 summary`)
 }
 
 /** 给用户看的授权预览。要具体到能判断该不该批，不能只说「要写文件」。 */

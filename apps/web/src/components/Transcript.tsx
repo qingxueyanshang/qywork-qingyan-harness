@@ -154,17 +154,23 @@ export function Transcript() {
 }
 
 /**
- * 这一轮此刻在干什么。
+ * 这一轮此刻在**哪个阶段**。
  *
- * 按**流的位置**判断，而不是按快照推：最后一条是思考就说「正在思考」，
- * 是工具就说「正在执行」。从时间线快照反推会慢半拍，而这行字的全部意义
- * 就是「它现在有反应」。
+ * 三态，句式平齐：正在思考 / 正在执行 / 正在回复。原来第三档写的是
+ * 「模型响应中…」——同一格里两种句式，读起来像是另一套东西冒出来的。
+ *
+ * 这一格说的是阶段，不是动作。工具组头那句「正在<动词>…」说的才是这一批工具
+ * 在做什么（查询 / 读取 / 创建 / 编辑 / 删除 / 运行），两者粒度不同、不重复——
+ * 动作轴里也没有「执行」这个词，不会撞。
+ *
+ * 按**流的位置**判断，而不是按快照推：从时间线快照反推会慢半拍，
+ * 而这行字的全部意义就是「它现在有反应」。
  */
 function liveStatus(): string {
   const last = state.transcript[state.transcript.length - 1]
   if (last?.kind === 'thinking') return '正在思考…'
   if (last?.kind === 'tool') return '正在执行…'
-  return '模型响应中…'
+  return '正在回复…'
 }
 
 /** 流式期两次重解析之间的最小间隔。见 `Prose` 的说明。 */
@@ -526,8 +532,8 @@ function ToolCard(props: { item: TranscriptItem }) {
  * 参照物的分法：
  *   失败  错误正文 →（分隔线）→ 参数表
  *   编辑  diff →（分隔线）→ 结果
- *   执行  命令原文 →（分隔线）→「输出」标签 + 输出
- *   写入  新内容全文 → 结果
+ *   运行  命令原文 →（分隔线）→「输出」标签 + 输出
+ *   创建  新内容全文 → 结果
  *   其余  参数表 →（分隔线）→ 结果
  *
  * 唯一的本地差异：参照物那边 `outcome.message` 本身就是结果正文，
@@ -567,7 +573,7 @@ function StepBody(props: { item: TranscriptItem }) {
         <Result item={props.item} withDivider />
       </Match>
 
-      <Match when={kind() === 'execute'}>
+      <Match when={kind() === 'run'}>
         <Show when={firstString(args(), 'command', 'script', 'code')}>
           {(cmd) => <pre class="fold-code">{cmd()}</pre>}
         </Show>

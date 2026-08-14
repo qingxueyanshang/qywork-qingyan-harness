@@ -164,11 +164,9 @@ export function stopReasonLabel(reason: string): string {
     no_progress: '在原地重复，已停下',
     user_interrupt: '已中断',
     permission_denied: '授权被拒绝，已停止',
-    context_exhausted: '上下文超出模型窗口',
     output_truncated: '输出被截断，回答不完整',
     provider_error: '模型服务出错',
-    internal_guard: '内部保护触发',
-    budget_exceeded: '已超出预算',
+    internal_guard: '进程中途退出，本轮结果不可信',
   }
   return map[reason] ?? reason
 }

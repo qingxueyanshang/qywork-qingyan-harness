@@ -210,6 +210,19 @@
   font-weight: 500;
 }
 
+/* 「它会做什么」那一页：一个功能方向下若干条用途。
+   列的是中文用途，不是工具名——机制字段只在 CLI 里露面。 */
+.tool-uses {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
 /* 三态分段控件。用一排按钮而不是下拉：三个选项全部可见时，
    「跟随系统」和「浅色」的区别一眼看得到，下拉要点开才知道有第三个。 */
 .seg {

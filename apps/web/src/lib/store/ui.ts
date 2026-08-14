@@ -18,7 +18,7 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
  * （由 `previewPath` 决定），不再是并列的第四个视图：它本来就是从文件树点进去的，
  * 做成并列项会让「返回文件树」没有自然的落点。
  */
-export type PanelView = 'plan' | 'files' | 'git' | 'team' | 'extras'
+export type PanelView = 'todos' | 'files' | 'git' | 'team' | 'extras'
 export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
 
 /**
@@ -91,6 +91,7 @@ export type SettingsPage =
   | 'general'
   | 'models'
   | 'access'
+  | 'tools'
   | 'team'
   | 'memory'
   | 'skills'

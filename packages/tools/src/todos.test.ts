@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@qywork/agent'
 import type { TodoItem } from '@qywork/core'
-import { PLAN_STATE_KEY, updatePlanTool } from './plan.ts'
+import { TODOS_STATE_KEY, writeTodosTool } from './todos.ts'
 
 function ctx(): ToolContext & { emitted: TodoItem[][] } {
   const emitted: TodoItem[][] = []
@@ -22,10 +22,10 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
   } as ToolContext & { emitted: TodoItem[][] }
 }
 
-const run = (todos: unknown, c = ctx()) => updatePlanTool.fn({ todos }, c).then((r) => ({ r, c }))
+const run = (todos: unknown, c = ctx()) => writeTodosTool.fn({ todos }, c).then((r) => ({ r, c }))
 
 describe('todos 事件终于有了生产者', () => {
-  test('提交计划会广播整表快照', async () => {
+  test('提交待办会广播整表快照', async () => {
     const { r, c } = await run([
       { content: '读现有实现', status: 'completed' },
       { content: '改造 token.ts', status: 'in_progress' },
@@ -40,13 +40,13 @@ describe('todos 事件终于有了生产者', () => {
   test('没有 emitTodos 装配时不炸 —— 工具照样记账', async () => {
     const bare = ctx()
     delete (bare as { emitTodos?: unknown }).emitTodos
-    const r = await updatePlanTool.fn({ todos: [{ content: 'x', status: 'pending' }] }, bare)
+    const r = await writeTodosTool.fn({ todos: [{ content: 'x', status: 'pending' }] }, bare)
     expect(r.status).toBe('success')
   })
 
-  test('计划存进 ctx.state，整个 run 共用一份', async () => {
+  test('清单存进 ctx.state，整个 run 共用一份', async () => {
     const { c } = await run([{ content: '第一步', status: 'in_progress' }])
-    expect((c.state.get(PLAN_STATE_KEY) as TodoItem[])[0]!.content).toBe('第一步')
+    expect((c.state.get(TODOS_STATE_KEY) as TodoItem[])[0]!.content).toBe('第一步')
   })
 
   test('message 里带进度与当前步骤 —— 模型读的是 message', async () => {
@@ -71,7 +71,7 @@ describe('整表替换语义', () => {
       c,
     )
 
-    const final = c.state.get(PLAN_STATE_KEY) as TodoItem[]
+    const final = c.state.get(TODOS_STATE_KEY) as TodoItem[]
     expect(final).toHaveLength(2)
     expect(final.some((t) => t.content === '旧计划')).toBe(false)
   })
@@ -81,7 +81,7 @@ describe('整表替换语义', () => {
       { content: 'a', status: 'pending', id: '模型瞎给的 id' },
       { content: 'b', status: 'pending' },
     ])
-    const todos = c.state.get(PLAN_STATE_KEY) as TodoItem[]
+    const todos = c.state.get(TODOS_STATE_KEY) as TodoItem[]
     expect(todos.map((t) => t.id)).toEqual(['todo_1', 'todo_2'])
   })
 })
@@ -95,11 +95,11 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('invalid_plan')
     expect(r.message).toContain('只能有一条')
-    // 拒绝就不该广播 —— 广播了前端会显示一份服务端并不认可的计划。
+    // 拒绝就不该广播 —— 广播了前端会显示一份服务端并不认可的清单。
     expect(c.emitted).toHaveLength(0)
   })
 
-  test('拒绝时不改动已有计划', async () => {
+  test('拒绝时不改动已有清单', async () => {
     const c = ctx()
     await run([{ content: '好计划', status: 'in_progress' }], c)
     await run(
@@ -109,10 +109,10 @@ describe('硬约束：拒绝而不是静默纠正', () => {
       ],
       c,
     )
-    expect((c.state.get(PLAN_STATE_KEY) as TodoItem[])[0]!.content).toBe('好计划')
+    expect((c.state.get(TODOS_STATE_KEY) as TodoItem[])[0]!.content).toBe('好计划')
   })
 
-  test('空计划被拒 —— 不需要计划就别调这个工具', async () => {
+  test('空清单被拒 —— 不需要列清单就别调这个工具', async () => {
     const { r } = await run([])
     expect(r.status).toBe('failure')
   })
@@ -153,11 +153,50 @@ describe('硬约束：拒绝而不是静默纠正', () => {
 })
 
 describe('权限', () => {
-  test('是内部记账，不走权限闸 —— 建个计划不该弹窗打断用户', () => {
-    expect(updatePlanTool.permissionEffect).toBe('internal_control')
+  test('是内部记账，不走权限闸 —— 列个清单不该弹窗打断用户', () => {
+    expect(writeTodosTool.permissionEffect).toBe('internal_control')
   })
 
   test('不可并行 —— 两次并发提交谁赢全看调度', () => {
-    expect(updatePlanTool.parallelSafe).toBe(false)
+    expect(writeTodosTool.parallelSafe).toBe(false)
+  })
+})
+
+/**
+ * 动作语义。这里曾经是一个专造的 `plan` 动作，配上对象「计划」，
+ * 界面上读出来是「规划计划」——动宾同义反复。
+ */
+describe('动作语义：首建是创建，改未完成的才是编辑', () => {
+  const kindOf = (c?: ToolContext) => {
+    const k = writeTodosTool.actionKind
+    return typeof k === 'function' ? k({}, c) : k
+  }
+
+  test('还没有计划 → 创建', () => {
+    expect(kindOf(ctx())).toBe('write')
+  })
+
+  test('有一份没做完的计划 → 编辑', async () => {
+    const { c } = await run([
+      { content: '甲', status: 'in_progress' },
+      { content: '乙', status: 'pending' },
+    ])
+    expect(kindOf(c)).toBe('edit')
+  })
+
+  /** 上一份全做完了，再提交一份就是新一轮的计划，不是修订。 */
+  test('上一份全做完 → 又是创建', async () => {
+    const { c } = await run([{ content: '甲', status: 'completed' }])
+    expect(kindOf(c)).toBe('write')
+  })
+
+  /** 权限预检那条路拿不到 ctx。说「创建」最多把修订说小了，说「编辑」是声称改过一份不存在的东西。 */
+  test('拿不到 ctx 时按创建，不按编辑', () => {
+    expect(kindOf(undefined)).toBe('write')
+  })
+
+  /** 对象是「待办」不是「计划」：计划（方案）是另一件东西，这个工具不产出它。 */
+  test('对象恒为「待办」', () => {
+    expect(writeTodosTool.objectLabel).toBe('待办')
   })
 })

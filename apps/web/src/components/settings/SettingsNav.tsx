@@ -33,6 +33,7 @@ const GROUPS: Item[][] = [
     { id: 'general', label: '系统设置', icon: IconSettings },
     { id: 'models', label: '模型', icon: IconPackage },
     { id: 'access', label: '权限与沙箱', icon: IconShield },
+    { id: 'tools', label: '工具', icon: IconTerminal },
   ],
   [
     { id: 'team', label: '智能体', icon: IconUsers },

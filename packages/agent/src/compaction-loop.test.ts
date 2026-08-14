@@ -282,6 +282,9 @@ describe('投影时机', () => {
       parameters: { type: 'object', properties: {} },
       actionKind: 'read',
       objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       fn: async () => ({ status: 'success', message: 'ok' }),
     })

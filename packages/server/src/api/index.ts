@@ -17,6 +17,7 @@ import { handleAttachmentsApi } from './attachments.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
 import { handleExtrasApi } from './extras.ts'
+import { handleHostApi } from './host.ts'
 import { handleMcpApi } from './mcp.ts'
 import { handleMemoryApi } from './memory.ts'
 import { handlePairingApi } from './pairing.ts'
@@ -62,6 +63,7 @@ const HANDLERS: ApiHandler[] = [
   handleMemoryApi,
   handleMcpApi,
   handleExtrasApi,
+  handleHostApi,
   handleAttachmentsApi,
   handlePluginsApi,
   handleTeamApi,

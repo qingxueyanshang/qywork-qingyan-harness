@@ -140,16 +140,16 @@
    住在右侧面板里。原来它钉在会话流上方，于是同一件事被摊在三处说：
    顶部卡片、输入区状态条、展开后的清单。现在按密度分层——状态条只报
    「第 N / M 步」，完整清单要点开面板才看。 */
-.plan-panel {
+.todo-panel {
   padding: var(--s-3);
 }
-.plan-progress {
+.todo-progress {
   margin-bottom: var(--s-2);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
-.plan-list {
+.todo-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -157,7 +157,7 @@
   flex-direction: column;
   gap: var(--s-1);
 }
-.plan-item {
+.todo-item {
   display: flex;
   /* 顶对齐：正文换行之后 center 会让左边的标记浮在两行中间。 */
   align-items: flex-start;
@@ -165,16 +165,16 @@
   font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
-.plan-item.now {
+.todo-item.now {
   color: var(--text-primary);
 }
 /* 已完成的划掉并压到最低对比度：它还在那里（说明做过了），但不再抢注意力 */
-.plan-item.done {
+.todo-item.done {
   color: var(--text-tertiary);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
-.plan-mark {
+.todo-mark {
   flex: none;
   display: grid;
   place-items: center;
@@ -183,13 +183,13 @@
   height: calc(var(--fs-sm) * 1.6);
   color: var(--text-tertiary);
 }
-.plan-item.done .plan-mark {
+.todo-item.done .todo-mark {
   color: var(--success);
 }
-.plan-item.now .plan-mark {
+.todo-item.now .todo-mark {
   color: var(--accent);
 }
-.plan-dot {
+.todo-dot {
   width: 5px;
   height: 5px;
   border-radius: var(--r-full);
@@ -198,7 +198,7 @@
 }
 /* 面板里换行显示，不截断：这里宽度只有 300 多像素，省略号会把长任务名
    切成一句看不懂的半话，而这块地方存在的理由正是「要看细节」。 */
-.plan-text {
+.todo-text {
   min-width: 0;
 }
 
