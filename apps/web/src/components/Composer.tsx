@@ -534,14 +534,14 @@ function ContextRing(props: { percent: number }) {
   const offset = () => CIRC * (1 - Math.min(100, Math.max(0, props.percent)) / 100)
   return (
     <svg class="ctx-ring" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <circle class="ctx-ring-track" cx="8" cy="8" r="6" fill="none" stroke-width="2.5" />
+      <circle class="ctx-ring-track" cx="8" cy="8" r="6" fill="none" stroke-width="3.2" />
       <circle
         class="ctx-ring-fill"
         cx="8"
         cy="8"
         r="6"
         fill="none"
-        stroke-width="2.5"
+        stroke-width="3.2"
         stroke-dasharray={String(CIRC)}
         stroke-dashoffset={String(offset())}
         transform="rotate(-90 8 8)"
