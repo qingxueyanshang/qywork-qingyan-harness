@@ -104,26 +104,18 @@ export interface ServerCapabilities {
    */
   sandbox: { backend: string; active: boolean; reason: string }
   /**
-   * 命令跑哪个 shell。**报路径而不是布尔**，与 `sandbox` 报后端名同一个理由：
-   * 「有」不足以让用户知道跑的是哪一个（Git Bash、Homebrew 的 bash、自己指的 MSYS），
+   * 这台机器上装没装齐 qywork 要用的外部程序。**每一条都对应一处真实的
+   * `Bun.spawn`**，不是一张「环境检查」的装饰清单：
+   * bash → `run_command`，git → 版本面板，rg → 搜索加速，node → 插件运行时。
+   *
+   * 报路径而不是布尔，与 `sandbox` 报后端名同一个理由：「有」不足以让用户知道
+   * 用的是哪一个（Git Bash、Homebrew 的 bash、自己指的 MSYS），
    * 而那正是排查「同一条命令在终端能跑、在这里不行」时唯一有用的信息。
    *
-   * `path` 为 null = 这台机器上没有 bash，**`run_command` 因此根本没有注册**
-   * （`tools/index.ts`），`reason` 说得出为什么、下一步怎么办。
-   * 这一格和它的消费者（设置页那一行 + 安装按钮）是同一次加进来的——
+   * 这一格和它的消费者（设置页「运行环境」那一节）是同一次加进来的——
    * 上面那三个被删掉的布尔就是死在「有生产者没有消费者」上。
    */
-  commandShell: {
-    path: string | null
-    reason: string
-    /**
-     * 这台机器上「一键装」可不可行（Windows + 有 winget）。
-     *
-     * `false` 时界面**不显示那个按钮**，而不是显示一个点了回 409 的按钮（B5）。
-     * 判据与 `POST /api/host/install-shell` 是同一个函数，分开算必然漂移。
-     */
-    canInstall: boolean
-  }
+  environment: EnvDependency[]
   /**
    * 权限模式。**只有两种**：`auto` 由硬边界 + 静态规则 + 分类器裁决，
    * `full` 全放行（`full` 仍保留三条硬边界，见设置页那句说明）。
@@ -137,6 +129,42 @@ export interface ServerCapabilities {
   // 只报一次——报上来的那个值在用户切一次模型之后就不再成立。
   // 它随模型目录一起下发（`/api/models` 每行的 `effort`），与该模型的
   // `effortLevels` 同源，前端一处读。
+}
+
+/**
+ * 一个外部程序依赖。
+ *
+ * **入表门槛：代码里真的有一处 `Bun.spawn` 调它。** 「装了更好」「同类工具都列了」
+ * 不算——那种清单只会让用户对着一堆和他无关的红点发愁，而真正坏掉的那一条淹在里面。
+ */
+export interface EnvDependency {
+  /** 稳定 id，安装路由按它查常量表。 */
+  id: string
+  /** 界面上的名字。 */
+  label: string
+  /** 找到的可执行文件路径；`null` = 没装。 */
+  path: string | null
+  /**
+   * 缺了它会怎样。**必填**——一行「未安装」不告诉用户要不要管它。
+   */
+  impact: string
+  /**
+   * `true` = 缺了就有功能不能用（bash、git）；
+   * `false` = 缺了只是降级或只在特定场景要（rg 有内置遍历顶上，node 只有装插件才用）。
+   *
+   * 分这一档是为了**不制造假警报**：把可选项也标成「需要安装」，用户第一次点开
+   * 设置页看到的就是一片红，而其中大半根本不影响他用。
+   */
+  required: boolean
+  /** 没装时的下一步（怎么装、或者环境变量怎么指）。装了时是空串。 */
+  hint: string
+  /**
+   * 能不能一键装（Windows + 有 winget + 我们知道它的包 id）。
+   *
+   * `false` 时界面**不显示那个按钮**，而不是显示一个点了回 409 的按钮（B5）。
+   * 判据与 `POST /api/host/install` 是同一张表，分开算必然漂移。
+   */
+  canInstall: boolean
 }
 
 export interface HelloErrFrame {

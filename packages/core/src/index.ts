@@ -90,6 +90,7 @@ export {
   type CommandRejectedFrame,
   type CommandRejectReason,
   decodePairingUrl,
+  type EnvDependency,
   encodePairingUrl,
   type HelloFrame,
   type HelloOkFrame,
