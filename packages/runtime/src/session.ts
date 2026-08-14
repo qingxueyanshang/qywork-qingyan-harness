@@ -42,31 +42,37 @@ import {
   createRun,
   finishRun,
   getConversation,
+  getRun,
+  latestAnchoredProviderRequest,
   listDisabledExtras,
-  listMessages,
+  markProviderRequestSent,
   markRunRunning,
   markRunSuperseded,
   markStepExecuting,
+  openProviderRequest,
   recordUsage,
   type Store,
+  settleProviderRequest,
+  settleRunningSteps,
   settleToolStep,
-  updateRunContext,
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
 import {
-  listScopedEntries,
+  loadScopedMemories,
   normalizeAdditionalDirectories,
   registerBuiltinTools,
   resolveInWorkspace,
   scanSkills,
   scopeRoots,
+  selectMemories,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
 import { collectSecrets, type QyConfig, resolveApiKey, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
+import { buildHistory } from './transcript.ts'
 
 export interface SessionOptions {
   store: Store
@@ -144,7 +150,15 @@ export class Session {
    * 所以在这里缓存，由 ask() 在每轮开始前刷新。
    */
   private skillIndex: { name: string; description: string }[] = []
-  private memoryIndex: { key: string; preview: string }[] = []
+  /**
+   * 本轮选中的记忆**正文**，以及超预算转按需的那些 key。
+   *
+   * 每 run 选一次（`ask()` 里按当轮 user 文本召回），run 内多次模型调用共用
+   * 同一份——否则尾区字节每次请求都变，缓存白丢。青研魔盒
+   * `run_stream.py:257-262` 同口径。
+   */
+  private memoryBodies: { key: string; body: string }[] = []
+  private deferredMemories: string[] = []
 
   /** 已加载的扩展。null = 还没加载过（首次 ask 时加载）。 */
   private extensions: Extensions | null = null
@@ -225,7 +239,8 @@ export class Session {
           workspaceRoot: this.opts.workspaceRoot,
           platform: process.platform,
           skills: this.skillIndex,
-          memories: this.memoryIndex,
+          memories: this.memoryBodies,
+          deferredMemories: this.deferredMemories,
         }),
       makeToolContext: (runId, emit) => this.makeToolContext(runId, emit, model),
       persist: this.makePersistence(),
@@ -336,18 +351,44 @@ export class Session {
     // 那个瞬间崩溃就留下一条悬空引用。
     if (retryOf) markRunSuperseded(store, retryOf.runId, run.id)
 
-    const history = await Promise.all(
-      listMessages(store, conversationId, run.messageIdUpperBound).map(async (m) => ({
-        role: m.role,
-        // 带附件的消息装成 ContentBlock[]：文本一块，每个附件一块。
-        // **附件是这一步才从磁盘读的**——消息表里只有路径。
-        content: m.attachments.length
-          ? await withAttachments(this.opts.workspaceRoot, m.content, m.attachments)
-          : m.content,
-        _group: 'historyMessages' as const,
-        _messageId: m.id,
-      })),
+    /*
+     * 历史 = 消息 + **由 steps 投影出来的 assistant/tool 回合**。
+     *
+     * 这里曾经只映射 `listMessages`。而那张表只有 user 行——全项目唯一的
+     * `appendMessage` 就在上面几行，写的是 `role:'user'`。于是第二轮起模型拿到的
+     * 输入字面上是「用户说了三次话，我一次都没回过」，跨轮结构性失忆。
+     *
+     * **被接替的 run 不折**。前端对 superseded 是「打标仍渲染」给人看
+     * （`connection.ts`），模型侧没有等价标记位，只有折或不折；照抄会让模型看到
+     * 「失败尝试 + 重试」两遍同一件事，结论还可能互相矛盾。重试的语义本来就是
+     * 「重现当时那个上下文」，不带失败尝试。两处口径**刻意不同**，各自带测试。
+     */
+    const history = await buildHistory(
+      store,
+      conversationId,
+      run.messageIdUpperBound,
+      (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
     )
+
+    /*
+     * 把账本里最后一次真值回执带给 loop 当锚点。
+     *
+     * 覆盖边界取那次回执所属 run 的消息高水位——它之后的历史消息是锚点没算过的。
+     * 没有回执（新会话、或一直没拿到 usage）就不传，loop 退回本地估算并如实
+     * 标 `estimated`。
+     */
+    const anchored = latestAnchoredProviderRequest(store, conversationId)
+    const anchorRun = anchored ? getRun(store, anchored.runId) : null
+    const anchor = anchored
+      ? {
+          tokens:
+            (anchored.providerInputTokens ?? 0) +
+            (anchored.providerCachedTokens ?? 0) +
+            (anchored.providerCacheWriteTokens ?? 0) +
+            (anchored.providerOutputTokens ?? 0),
+          throughMessageId: anchorRun?.messageIdUpperBound ?? null,
+        }
+      : null
 
     // run.started 必须由这里发：协议早就定义了它，但一直没有发送方——
     // 于是客户端拿不到真实 runId，中断和重试都在拿步骤 id 当 run id 用，
@@ -389,9 +430,21 @@ export class Session {
     this.skillIndex = (await scanSkills(roots).catch(() => [])).filter(
       (s) => !disabled.has(`skill:${s.name}`),
     )
-    this.memoryIndex = (await listScopedEntries(roots).catch(() => [])).filter(
+    /*
+     * 记忆按**当轮 user 文本**召回正文，每 run 选一次。
+     *
+     * 改成正文的理由见 `prompt.ts`：目录制下模型得自己判断哪条相关，
+     * 判断错了那条记忆这一轮就等于不存在，而且不报错、看不出来。
+     *
+     * 选一次而不是每次请求选：召回结果随查询变，run 内每次重选会让尾区字节
+     * 每次请求都变一遍，缓存白丢。
+     */
+    const memories = (await loadScopedMemories(roots).catch(() => [])).filter(
       (m) => !disabled.has(`memory:${m.key}`),
     )
+    const picked = selectMemories(memories, prompt)
+    this.memoryBodies = picked.selected.map((m) => ({ key: m.key, body: m.body }))
+    this.deferredMemories = picked.deferred
 
     let finished = false
     try {
@@ -402,6 +455,10 @@ export class Session {
         ...(this.opts.maxSteps ? { maxSteps: this.opts.maxSteps } : {}),
         cacheKey: conversationId,
         signal: this.opts.signal,
+        // 上一轮的真值带进来，这一轮开头就用同一把尺。不带的话每个 run 的
+        // 第一次请求只能报估算（系统性偏低），第二次起弹回真值——
+        // 用户看到的就是每轮开头掉一次。
+        ...(anchor ? { anchor } : {}),
       })) {
         if (ev.type === 'run.finished') {
           finished = true
@@ -433,6 +490,15 @@ export class Session {
       if (!finished) {
         finishRun(store, run.id, { status: 'interrupted', stopReason: 'user_interrupt' })
       }
+      // **step 也要落终态，不只是 run。**
+      //
+      // 这里曾经只收 run。而 `tool.started` 的 yield 处被 `.return()` 掐断时，
+      // step 已经是 running 却没人settle——run 随即被标成终态，于是那条 step
+      // 永远碰不到启动时的 `recoverStaleRuns`（它只扫 running/queued 的 run）。
+      //
+      // 代价不是 UI 上一张转圈的卡：历史投影必须跳过含未终结调用的整个 batch，
+      // 一条孤儿会让同批次里**已经成功的写文件结果一起从历史里消失**。
+      settleRunningSteps(store, run.id)
     }
   }
 
@@ -537,7 +603,16 @@ export class Session {
       nextSeq: (runId) => this.nextSeq(runId),
       openTextStep: (runId, seq) => appendStep(store, { runId, seq, kind: 'text', content: '' }).id,
       appendText: (stepId, delta) => appendTextToStep(store, stepId as never, delta),
-      openToolStep: (runId, seq, call: WireToolCall, batchId, callIndex, waveIndex, action) =>
+      openToolStep: (
+        runId,
+        seq,
+        call: WireToolCall,
+        batchId,
+        callIndex,
+        waveIndex,
+        action,
+        reasoning,
+      ) =>
         appendStep(store, {
           runId,
           seq,
@@ -548,6 +623,9 @@ export class Session {
           callIndex,
           executionWaveIndex: waveIndex,
           status: 'running',
+          // 思考正文借 `content` 落库——tool_action 行的这一列本来就是空的，
+          // 为它单开一列等于给同一件事建第二个位置。读法见投影函数。
+          ...(reasoning ? { content: reasoning } : {}),
           // action 必须落库：它由 ToolSpec 按参数解析，前端回猜不出来。
           payload: { kind: 'tool_call', args: call.arguments, action },
         }).id,
@@ -560,8 +638,19 @@ export class Session {
           action,
         }),
       saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
-      saveContext: (runId, tokens, limit, percent) =>
-        updateRunContext(store, runId, { tokens, limit, percent }),
+      recordCompaction: (runId, seq, status, payload) => {
+        appendStep(store, {
+          runId,
+          seq,
+          kind: 'compaction',
+          status,
+          payload: { kind: 'compaction', ...payload },
+        })
+      },
+      openRequest: (input) => openProviderRequest(store, input).id,
+      markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
+      settleRequest: (requestId, status, usage, errorCode) =>
+        settleProviderRequest(store, requestId as never, status, usage, errorCode),
     }
   }
 
@@ -612,6 +701,9 @@ export class Session {
       conversationId: '',
       runId,
       model,
+      // 投递预算按窗口算，且**在执行时**应用——换模型只影响之后的读取，
+      // 已落库的 step 一个字节不改（投影因此仍是纯函数）。
+      contextWindow: buildAdapter(this.resolveProfile(model)).spec.contextWindow,
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，

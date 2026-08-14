@@ -479,6 +479,36 @@ ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
      */
     sql: `ALTER TABLE conversations DROP COLUMN effort;`,
   },
+  {
+    id: 13,
+    name: 'provider_request_ledger',
+    /**
+     * 逐请求账**接上**，`runs` 上那三列同时删掉。
+     *
+     * ## 表早就在，只是没有人写
+     *
+     * `provider_requests` 建于迁移 1，列是照青研魔盒 `agent_provider_requests`
+     * 直译的。此后全项目**零读写**——只有 `newProviderRequestId()` 这个类型活着。
+     * 面板于是只能读 `runs.context_tokens`，而那三列每个 step 覆盖一次，
+     * 一个 run 只剩最后一次请求的读数。「这一轮上下文怎么长起来的」在账本里
+     * 根本不存在，「为什么第三轮比第二轮还低」也就无从查起。
+     *
+     * ## 两列一删一加
+     *
+     * - 加 `omitted_categories`：面板要回答「什么被拿掉了」。压缩把历史换成摘要、
+     *   把工具结果换成定位符之后，原文仍在账本里，只是没进这次请求——
+     *   这个数就是那部分。原来的表只有 `sent_categories`，是半张账。
+     * - 删 `runs` 的 `context_tokens/limit/percent`：真源改成本表之后它们就是
+     *   第二本账，而两本账迟早漂。留空列不叫兼容，叫留一个下次有人误用的机会
+     *   （同迁移 5 的立场）。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN omitted_categories TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE runs DROP COLUMN context_tokens;
+ALTER TABLE runs DROP COLUMN context_limit;
+ALTER TABLE runs DROP COLUMN context_percent;
+`,
+  },
 ]
 
 /**

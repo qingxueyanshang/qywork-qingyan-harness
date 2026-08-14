@@ -48,11 +48,69 @@ export interface SinkPort {
   stat(resourceId: string): { sizeBytes: number; mimeType: string | null } | null
 }
 
+/**
+ * 一次工具调用的结果最多占窗口的几分之一。
+ *
+ * **不是拍的百分比，是从已有的界推出来的。** `read_file` 的默认行数上限是 2000
+ * 行（`tools/files.ts`），2000 行普通代码约 20~25k token。token 上限必须容得下
+ * 这个默认读法，否则工具描述里写的「默认 2000 行」就是假的——模型照描述调用，
+ * 结果被截，而它不知道为什么。
+ *
+ * 1/8 在 200k 窗口上恰好是 25k，与 cc-haha 的 `maxTokens = 25000`
+ * （`FileReadTool/limits.ts:19`）重合。那不是巧合，是同一个推导。
+ */
+export const RESULT_BUDGET_RATIO = 1 / 8
+
+/**
+ * 一个执行波次内**全部**结果之和的上限。
+ *
+ * 限单次没有上界：工具按波次并行，一波五个 `read_file` 各自都在 1/8 以内，
+ * 加起来就是 5/8。而「压缩只留发送前检查一个入口」的前提正是
+ * **两次检查之间的跳变有上界**——没有批级预算，那个前提不成立。
+ */
+export const BATCH_BUDGET_RATIO = 1 / 4
+
+const BATCH_SPENT_KEY = 'ctx.batchSpent'
+
+/** 新波次开始，批级预算清零。由 loop 在下发每一波之前调。 */
+export function resetBatchBudget(state: Map<string, unknown>): void {
+  state.set(BATCH_SPENT_KEY, 0)
+}
+
+/**
+ * 记一笔结果占用，回答「还放得下吗」。
+ *
+ * **只对无副作用的读取工具用。** 写入类工具执行完再说超预算是没有意义的——
+ * 副作用已经发生，拒绝只会让模型以为它没写成。
+ */
+export function chargeBatchBudget(
+  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
+  tokens: number,
+): { ok: boolean; perCall: number; batchRemaining: number } {
+  const perCall = Math.floor(ctx.contextWindow * RESULT_BUDGET_RATIO)
+  const batchCap = Math.floor(ctx.contextWindow * BATCH_BUDGET_RATIO)
+  const spent = (ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0
+  const ok = tokens <= perCall && spent + tokens <= batchCap
+  if (ok) ctx.state.set(BATCH_SPENT_KEY, spent + tokens)
+  return { ok, perCall, batchRemaining: Math.max(0, batchCap - spent) }
+}
+
 export interface ToolContext {
   workspaceRoot: string
   conversationId: string
   runId: string
   model: string
+  /**
+   * 这一轮那个模型的上下文窗口。
+   *
+   * 投递预算按它算，**在执行时应用**——工具跑的那一刻就知道当前模型，
+   * 按窗口算出预算、截到位、把结果写进 step。投影只读已落库的 payload、
+   * 永不重算界，所以换模型只影响之后的读取，历史一个字节不改。
+   *
+   * 反过来（投影时按当前模型重算界）会让同一条 step 的字节随模型变，
+   * 换一次模型整段历史失配、缓存全丢，投影也不再是纯函数。
+   */
+  contextWindow: number
   /** 环境注入的只读资源；插件按名取自己需要的，核心不为业务字段扩张。 */
   resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */

@@ -14,6 +14,7 @@ import type {
   ActionDescriptor,
   Attachment,
   ContextBreakdown,
+  ContextOmitted,
   Conversation,
   GitStateEvent,
   PermissionScope,
@@ -111,14 +112,18 @@ export interface AppState {
    */
   usage: RunUsage | null
   /**
-   * 上下文占用。`breakdown` 回答的是「被谁占的」——这一条以前后端写死全 0、
-   * 前端也不存，于是「上下文 87%」这个数字下面没有任何可操作的信息。
+   * 上下文占用。`breakdown` 回答「被谁占的」，`omitted` 回答「什么被拿掉了」——
+   * 只有前者是半张账：用户看到占用下降却不知道降在哪里。
+   *
+   * `source` 必须显示出来。总数是实测还是估算，直接决定这个数字能不能拿来做决定。
    */
   context: {
     tokens: number
     limit: number
     percent: number
+    source: 'actual' | 'estimated'
     breakdown: ContextBreakdown
+    omitted: ContextOmitted
   } | null
   /** 当前计划清单。整表快照语义——每次 todos 事件整体替换。 */
   todos: TodoItem[]

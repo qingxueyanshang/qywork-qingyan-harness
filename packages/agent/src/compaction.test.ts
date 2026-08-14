@@ -280,3 +280,38 @@ describe('压缩必须真的变小', () => {
     expect(c).not.toContain('看看 src/a.ts')
   })
 })
+
+describe('约束不许被静默逐出', () => {
+  /**
+   * **第一天定下的铁律最先被挤掉**——这是原实现的形状。
+   *
+   * `dedupeTail(userConstraints, 24)` 只保最近 24 条，第 25 条进来时最早那条
+   * 无声消失。而同一个文件的注释写着「早期定下的约束不能随着一次新压缩消失」，
+   * 两句直接自相矛盾。约束一旦丢失，模型会做出它已经被明确禁止的事。
+   */
+  test('三十条约束全部保留，最早那条还在', async () => {
+    const messages = Array.from({ length: 30 }, (_, i) => ({
+      id: `ms_${String(i).padStart(3, '0')}` as never,
+      role: 'user' as const,
+      content: `第 ${i} 条：不要动 config/${i}.json`,
+    }))
+    const out = await compact({ messages, actions: [], previous: null }, null)
+    expect(out.status).toBe('compacted')
+    if (out.status !== 'compacted') return
+    const kept = out.manifest.facts.userConstraints
+    expect(kept.length).toBe(30)
+    expect(kept.some((c) => c.includes('第 0 条'))).toBe(true)
+    expect(kept.some((c) => c.includes('第 29 条'))).toBe(true)
+  })
+
+  test('逐字相同的重复约束只留一条', async () => {
+    const messages = Array.from({ length: 5 }, (_, i) => ({
+      id: `ms_${i}` as never,
+      role: 'user' as const,
+      content: '不要 force-push',
+    }))
+    const out = await compact({ messages, actions: [], previous: null }, null)
+    if (out.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(out.manifest.facts.userConstraints).toHaveLength(1)
+  })
+})

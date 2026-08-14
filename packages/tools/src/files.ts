@@ -12,7 +12,8 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import { chargeBatchBudget, type ToolSpec } from '@qywork/agent'
+import { estimateText } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import {
   displayPath,
@@ -25,6 +26,15 @@ import { redactSecrets } from './secrets.ts'
 
 /** 记录本 run 内每个文件被读到时的内容哈希，供写前校验。 */
 const READ_STATE_KEY = 'files.readHashes'
+
+/**
+ * 默认读多少行。
+ *
+ * 与 `RESULT_BUDGET_RATIO` 是一对：2000 行普通代码约 20~25k token，
+ * 而 200k 窗口的 1/8 正好是 25k。改这个数就要回去看那个比例还容不容得下，
+ * 否则工具描述里写的默认值就是假的。
+ */
+const DEFAULT_READ_LINES = 2000
 
 function readHashes(state: Map<string, unknown>): Map<string, string> {
   let m = state.get(READ_STATE_KEY) as Map<string, string> | undefined
@@ -94,10 +104,36 @@ export const readFileTool: ToolSpec = {
 
     const lines = text.split('\n')
     const offset = Math.max(1, Number(args.offset ?? 1))
-    const limit = Math.max(1, Number(args.limit ?? 2000))
+    const limit = Math.max(1, Number(args.limit ?? DEFAULT_READ_LINES))
     const slice = lines.slice(offset - 1, offset - 1 + limit)
     const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
     const truncated = offset - 1 + slice.length < lines.length
+
+    /*
+     * 投递预算：这一次调用最多往上下文里放多少。
+     *
+     * **超了就拒绝，不截断。** cc-haha 实测过反方向（#21841，2026-03，
+     * `FileReadTool/limits.ts` 头部记着）：把拒绝改成截断，工具错误率下降但
+     * **平均 token 反而上升**——拒绝只产生约 100 字节的错误回执，截断产生的是
+     * 满额正文，而那份正文往往并不是模型要的那一段。已回滚。
+     *
+     * 预算随模型窗口走（`RESULT_BUDGET_RATIO`），不是硬编码；判据与建议范围
+     * 一起给回去，否则模型只知道「太大了」，只能靠二分去猜。
+     */
+    const tokens = estimateText(numbered)
+    const charged = chargeBatchBudget(ctx, tokens)
+    if (!charged.ok) {
+      const perLine = Math.max(1, Math.ceil(tokens / Math.max(1, slice.length)))
+      const room = Math.min(charged.perCall, charged.batchRemaining)
+      return {
+        status: 'failure',
+        message:
+          `这一段约 ${tokens} token，超出单次投递预算 ${charged.perCall}` +
+          `（本批还剩 ${charged.batchRemaining}）。` +
+          `改成 offset=${offset}、limit=${Math.max(1, Math.floor(room / perLine))} 分段读。`,
+        errorKind: 'result_too_large',
+      }
+    }
 
     return {
       status: 'success',

@@ -15,7 +15,7 @@
 import OpenAI from 'openai'
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError } from '../errors.ts'
-import { estimateTokens } from '../tokens.ts'
+import { estimateRequest } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -68,7 +68,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
   async measure(req: ChatRequest): Promise<number> {
     // 兼容端点普遍没有 count_tokens。给字符估算，并在事件里标 exact=false——
     // 面板必须能区分「实测」和「估算」，否则用户会拿估算值去对账单。
-    return estimateTokens(this.buildBody(req))
+    return estimateRequest(req)
   }
 
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
@@ -76,7 +76,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
     yield {
       type: 'request_prepared',
-      measuredInputTokens: estimateTokens(body),
+      measuredInputTokens: estimateRequest(req),
       exact: false,
     }
 

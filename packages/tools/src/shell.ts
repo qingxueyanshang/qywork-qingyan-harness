@@ -34,7 +34,8 @@
  */
 
 import { isIP } from 'node:net'
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { estimateText } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
@@ -320,6 +321,9 @@ function deliverStreams(
       mimeType: 'text/plain',
       query: command,
     })
+
+    // 摘录记进本批预算：`deliver` 已压到 8 KB 内，但一波多次执行仍是一笔。
+    chargeBatchBudget(ctx, estimateText(landed.text))
     data[channel] = landed.text
     // 覆盖事实必须进 data：模型读 message 和 data，读不到 coverage 就不知道自己看的是几分之几。
     if (landed.coverage.truncated) data[`${channel}Coverage`] = landed.coverage

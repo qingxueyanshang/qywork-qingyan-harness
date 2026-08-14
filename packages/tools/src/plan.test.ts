@@ -11,6 +11,7 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
     conversationId: 'cv',
     runId: 'rn',
     model: 'test',
+    contextWindow: 200_000,
     resources: new Map(),
     state: new Map(),
     sink: null,

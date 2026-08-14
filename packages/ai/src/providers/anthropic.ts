@@ -19,7 +19,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { EFFORT_ORDER, type EffortLevel } from '@qywork/core'
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError } from '../errors.ts'
-import { estimateTokens } from '../tokens.ts'
+import { estimateMessage, estimateRequest, estimateSchemas, estimateText } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -79,7 +79,7 @@ export class AnthropicAdapter implements LlmAdapter {
     // 不是重新拼一遍的近似物。
     yield {
       type: 'request_prepared',
-      measuredInputTokens: estimateTokens(body),
+      measuredInputTokens: estimateRequest(req),
       exact: false,
     }
 
@@ -182,7 +182,12 @@ export class AnthropicAdapter implements LlmAdapter {
       model: req.model,
       max_tokens: this.resolveMaxTokens(req, thinking),
       system: buildSystem(req),
-      messages: buildMessages(req.messages),
+      // 断点的前缀长度从工具 schema + 系统提示词算起——它们排在消息之前。
+      messages: buildMessages(
+        req.messages,
+        this.spec.minCacheablePrefix,
+        estimateSchemas(req.tools) + req.system.reduce((n, b) => n + estimateText(b.text), 0),
+      ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
       ...(effort ? { output_config: { effort } } : {}),
@@ -306,9 +311,28 @@ function buildTools(tools: ToolSchema[]) {
  * tool_result 要跨消息合并），逐条满足 SDK 的判别联合会让代码难以读懂，收益却只是
  * 把同一个断言拆成十几个。断言只在这一个出口，形状正确性由下面的分支逻辑保证。
  */
-function buildMessages(messages: WireMessage[]): Anthropic.MessageParam[] {
+/**
+ * 消息形状翻译，顺带落缓存断点。
+ *
+ * `minPrefix` 是这条模型能缓存的最短前缀（逐模型不同：512 / 1024 / 2048 / 4096）。
+ * 短于它打断点不会报错，**只是不生效**——但仍然会记一次缓存写入，
+ * 于是账面上多一笔、实际一点没省。所以在这里判掉，不把无效断点发上线。
+ *
+ * `prefixTokens` 是消息之前那一段（工具 schema + 系统提示词）的量，
+ * 断点的前缀长度要从它算起。
+ */
+function buildMessages(
+  messages: WireMessage[],
+  minPrefix = 0,
+  prefixTokens = 0,
+): Anthropic.MessageParam[] {
   const out: Record<string, any>[] = []
+  // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
+  // 所以输入下标和输出下标不是一一对应的——只能边走边记。
+  const marks: number[] = []
+  let running = prefixTokens
   for (const m of messages) {
+    running += estimateMessage(m)
     if (m.role === 'tool') {
       // Anthropic 的工具结果是 user 轮里的 tool_result block。
       // 同一轮的多个结果必须合并进**一条** user 消息——拆成多条会训练模型
@@ -324,6 +348,7 @@ function buildMessages(messages: WireMessage[]): Anthropic.MessageParam[] {
       } else {
         out.push({ role: 'user', content: [block], _toolBatch: true })
       }
+      if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }
 
@@ -336,6 +361,7 @@ function buildMessages(messages: WireMessage[]): Anthropic.MessageParam[] {
         content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments })
       }
       out.push({ role: 'assistant', content })
+      if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }
 
@@ -343,6 +369,17 @@ function buildMessages(messages: WireMessage[]): Anthropic.MessageParam[] {
       role: m.role,
       content: typeof m.content === 'string' ? m.content : toBlocks(m.content),
     })
+    if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
+  }
+  for (const at of marks) {
+    const entry = out[at]
+    if (!entry) continue
+    // `cache_control` 只能挂在内容块上，字符串正文得先摊成块。
+    if (typeof entry.content === 'string') {
+      entry.content = [{ type: 'text', text: entry.content }]
+    }
+    const last = entry.content[entry.content.length - 1]
+    if (last) last.cache_control = { type: 'ephemeral' as const }
   }
   // 清掉只用于合并的内部标记，避免它进入请求体破坏缓存前缀。
   for (const m of out) delete m._toolBatch

@@ -172,3 +172,54 @@ describe('崩溃恢复', () => {
     store.close()
   })
 })
+
+describe('终态 run 底下的孤儿 step', () => {
+  /**
+   * **这条是回归测试，挡的是一个真实写错过的形状。**
+   *
+   * 孤儿扫描原本写在「有 stale run」的早退之后，于是最常见的情形——
+   * run 全是终态、底下留着 running step——那趟扫描一次都不会跑。
+   * 而这正是它要治的场景：`tool.started` 的 yield 处被生成器 `.return()`
+   * 掐断，step 已经 running 但没人收尾，随后 run 被标成 interrupted 终态。
+   *
+   * 后果不是「UI 上一张转圈的卡」：历史投影必须跳过含未终结调用的整个 batch，
+   * 一条孤儿会让同批次里**已经成功的写文件结果一起从历史里消失**。
+   */
+  test('没有任何 stale run 时，孤儿 step 照样被收尾', () => {
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, 'C:/ws', 'ws')
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const orphan = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_file',
+      toolCallId: 'A',
+      providerBatchId: 'b1',
+      callIndex: 0,
+      status: 'running',
+      payload: { kind: 'tool_call', args: { path: 'a.ts' } },
+    })
+    markStepExecuting(store, orphan.id)
+    // run 先落终态——这一步让它逃出「status IN ('running','queued')」那次扫描。
+    finishRun(store, run.id, { status: 'interrupted', stopReason: 'user_interrupt' })
+
+    const result = recoverStaleRuns(store)
+    // 一个 stale run 都没有。
+    expect(result.recovered).toBe(0)
+
+    const settled = listSteps(store, run.id)[0]
+    expect(settled?.status).toBe('failure')
+    // 已进执行器 → 保守标「可能已执行」，不能说没执行。
+    expect((settled?.payload as { outcome?: { executed?: boolean } })?.outcome?.executed).toBe(true)
+    store.close()
+  })
+})
