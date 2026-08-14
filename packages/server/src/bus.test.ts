@@ -129,7 +129,7 @@ describe('断线补发按订阅过滤', () => {
       conversations: new Set([c1]),
       send: () => {},
     }
-    const replay = bus.replayFrom(0, onlyC1)
+    const replay = bus.replayFrom({ streamId: bus.streamId, lastSeq: 0 }, onlyC1)
     expect(replay?.map((f) => f.conversationId)).toEqual([c1, c1])
   })
 
@@ -144,14 +144,16 @@ describe('断线补发按订阅过滤', () => {
       conversations: new Set([c1]),
       send: () => {},
     }
-    expect(bus.replayFrom(0, onlyC1)?.map((f) => f.event.type)).toEqual(['git.state'])
+    expect(
+      bus.replayFrom({ streamId: bus.streamId, lastSeq: 0 }, onlyC1)?.map((f) => f.event.type),
+    ).toEqual(['git.state'])
   })
 
   test('已经同步到最新时补出空数组，不是 null', () => {
     const bus = new EventBus()
     bus.publish(delta('a'), c1)
     const sub: Subscriber = { id: 'r', origin: 'cli', conversations: null, send: () => {} }
-    expect(bus.replayFrom(bus.currentSeq, sub)).toEqual([])
+    expect(bus.replayFrom({ streamId: bus.streamId, lastSeq: bus.currentSeq }, sub)).toEqual([])
   })
 
   /** 缺口超出保留窗口要明确回 null，让客户端改走全量重拉，而不是悄悄少几条。 */
@@ -159,6 +161,54 @@ describe('断线补发按订阅过滤', () => {
     const bus = new EventBus()
     for (let i = 0; i < 5100; i++) bus.publish(delta(String(i)), c1)
     const sub: Subscriber = { id: 'r', origin: 'cli', conversations: null, send: () => {} }
-    expect(bus.replayFrom(1, sub)).toBe(null)
+    expect(bus.replayFrom({ streamId: bus.streamId, lastSeq: 1 }, sub)).toBe(null)
+  })
+})
+
+/**
+ * 服务端重启之后重连。
+ *
+ * **原始失败形状**：sidecar 重启（开发态热重载、崩溃拉起），客户端带着上一代的
+ * `lastSeq=800` 撞上新总线的 `seq=0`。上一版只比大小，`800 >= 0` 判成「已是最新」，
+ * 补发零条、resync 为假——于是界面永远停在断线那一刻，那一轮一直显示执行中，
+ * 而账本里它在新进程启动时就被 `recoverStaleRuns` 判成中断了。
+ */
+describe('换了一条流就不能按位置比大小', () => {
+  const sub = (): Subscriber => ({
+    id: 'r',
+    origin: 'desktop',
+    conversations: null,
+    send: () => {},
+  })
+
+  test('上一代服务的位置一律回 null，哪怕那个数比新流的 seq 大', () => {
+    const before = new EventBus()
+    for (let i = 0; i < 800; i++) before.publish(delta(String(i)), c1)
+
+    const after = new EventBus()
+    expect(after.currentSeq).toBe(0)
+    expect(after.replayFrom({ streamId: before.streamId, lastSeq: before.currentSeq }, sub())).toBe(
+      null,
+    )
+  })
+
+  /**
+   * 落后一大截也仍然是 null，不能只补新流里那一段。
+   *
+   * 重连有退避（最长 15 秒），这段时间里新服务可能已经推了几百条——那时
+   * `lastSeq` 不再大于 `seq`，环里也还留着第一帧，只按位置算会补出
+   * 「新流的 (lastSeq, now]」并宣称补全了，而被跳过的恰恰是新流开头那一段。
+   */
+  test('新流已经推了更多帧，照样 null —— 不能补出一段假的缺口', () => {
+    const before = new EventBus()
+    for (let i = 0; i < 10; i++) before.publish(delta(String(i)), c1)
+
+    const after = new EventBus()
+    for (let i = 0; i < 50; i++) after.publish(delta(String(i)), c1)
+    expect(after.replayFrom({ streamId: before.streamId, lastSeq: 10 }, sub())).toBe(null)
+  })
+
+  test('两条总线的流身份必定不同 —— 判据不能落在一个恒等的值上', () => {
+    expect(new EventBus().streamId).not.toBe(new EventBus().streamId)
   })
 })

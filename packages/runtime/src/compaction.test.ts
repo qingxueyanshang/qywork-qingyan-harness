@@ -188,7 +188,7 @@ describe('事实提取', () => {
       payload: {
         kind: 'tool_call',
         args: {},
-        action: { kind: 'execute', objectLabel: '命令', target: '还没跑完.sh' },
+        action: { kind: 'run', objectLabel: '命令', target: '还没跑完.sh' },
       },
     })
 

@@ -13,7 +13,7 @@ import {
   resolveInWorkspace,
   resolveWritablePath,
 } from './paths.ts'
-import { COMMAND_SHELL } from './sandbox.ts'
+import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))
@@ -43,6 +43,26 @@ function registry(): ToolRegistry {
   const r = new ToolRegistry()
   registerBuiltinTools(r)
   return r
+}
+
+/**
+ * 「这台机器没有 bash」时注册出来的工具名。
+ *
+ * 用 `QYWORK_BASH_PATH` 指到一个不存在的位置来制造这个状态——那是探测的第一顺位，
+ * 所以它同时验了两件事：**指错即无**，以及**探测是每次现跑的**（缓存的话这里拿到的
+ * 还是上一轮的结果）。
+ */
+function builtinNamesWithoutShell(): string[] {
+  const prev = process.env[BASH_PATH_ENV]
+  process.env[BASH_PATH_ENV] = join(tmpdir(), 'qywork-there-is-no-bash-here')
+  try {
+    const r = new ToolRegistry()
+    registerBuiltinTools(r)
+    return r.list().map((t) => t.name)
+  } finally {
+    if (prev === undefined) delete process.env[BASH_PATH_ENV]
+    else process.env[BASH_PATH_ENV] = prev
+  }
 }
 
 describe('路径约束', () => {
@@ -380,36 +400,49 @@ describe('搜索与命令', () => {
    * 工具说明里必须写明**真正在跑的那个 shell**。
    *
    * 这条是从账本里的失败倒推来的：模型只被告知「平台：win32」时会写 cmd/bash 的
-   * 写法，而 Windows 上跑的是 `powershell.exe`——`&&` 在那里是解析错误，
+   * 写法，而 Windows 上当时跑的是 `powershell.exe`——`&&` 在那里是解析错误，
    * 整条命令一个字都不执行（实测 `node --version & python --version` 就这么废掉）。
    * 锁的是「说的和跑的是同一个」，不是某句文案。
    */
   test('run_command 的说明写明真正在用的 shell', () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器没有 bash，这条测不了')
     const spec = registry()
       .list()
       .find((t) => t.name === 'run_command')
-    expect(spec?.description).toContain(COMMAND_SHELL.hint)
-    const argv0 = String(COMMAND_SHELL.argv[0]).toLowerCase()
-    const named = argv0.includes('powershell')
-      ? 'PowerShell'
-      : argv0.includes('bash')
-        ? 'bash'
-        : '/bin/sh'
-    expect(COMMAND_SHELL.hint).toContain(named)
+    expect(spec?.description).toContain(shell.hint)
+    // shell 只有 bash 一种，所以这里是定值比对，不按平台分叉。
+    expect(shell.path.toLowerCase()).toContain('bash')
+    expect(shell.hint).toContain('bash')
+  })
+
+  /**
+   * **没有 bash 就没有 `run_command`**，而不是有一个必然失败的工具。
+   *
+   * 锁的是注册这一步本身：探测返回 null 时那一格从工具表里消失。
+   * 同样的做法见 cc-haha 的 `isBashToolEnabled()`——它决定 Bash 工具暴不暴露。
+   */
+  test('探测不到 bash 时不注册 run_command', () => {
+    expect(
+      registry()
+        .list()
+        .map((t) => t.name),
+    ).toContain('run_command')
+    const names = builtinNamesWithoutShell()
+    expect(names).not.toContain('run_command')
+    // 其余工具一个都不能少——缺 bash 只影响这一个。
+    expect(names).toContain('read_file')
+    expect(names).toContain('grep')
   })
 
   /**
    * `&&` 必须真的能跑。
    *
-   * 这条是这次换 shell 的验收：Windows 上原来跑 PowerShell 5.1，`&&` 在那里
+   * 这条是换 shell 的验收：Windows 上原来跑 PowerShell 5.1，`&&` 在那里
    * 是解析错误，模型每写一条 POSIX 组合命令就废一次。**测的是原始失败形状**
    * （一条带 `&&` 的命令），不是「选中了 bash」这个中间量。
-   *
-   * 没装 Git Bash 的 Windows 机器上落回 PowerShell，那里 `&&` 确实不合法，
-   * 所以显式跳过而不是伪装通过。
    */
-  const POSIX_SHELL = /bash|\/bin\/sh$/.test(String(COMMAND_SHELL.argv[0]))
-  test.skipIf(!POSIX_SHELL)('POSIX 组合命令能跑通', async () => {
+  test('POSIX 组合命令能跑通', async () => {
     const root = await workspace()
     const out = await registry().execute('run_command', { command: 'echo a && echo b' }, ctx(root))
     expect(out.status).toBe('success')
@@ -419,8 +452,7 @@ describe('搜索与命令', () => {
 
   test('非零退出码报告为 failure 但仍带回输出', async () => {
     const root = await workspace()
-    const cmd = process.platform === 'win32' ? 'exit 3' : 'exit 3'
-    const out = await registry().execute('run_command', { command: cmd }, ctx(root))
+    const out = await registry().execute('run_command', { command: 'exit 3' }, ctx(root))
     expect(out.status).toBe('failure')
     expect(out.data?.exitCode).toBe(3)
   })

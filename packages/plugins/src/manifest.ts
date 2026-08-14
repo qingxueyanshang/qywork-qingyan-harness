@@ -55,8 +55,8 @@ export interface ToolContribution {
   name: string
   description: string
   parameters: Record<string, unknown>
-  /** 与内置工具同一套动作语义轴。 */
-  actionKind: 'read' | 'write' | 'edit' | 'delete' | 'execute' | 'search' | 'fetch'
+  /** 与内置工具同一套动作语义轴（`ActionKind` 的六个真动作，不含降级值 unknown）。 */
+  actionKind: 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run'
   objectLabel: string
   permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network'
 }

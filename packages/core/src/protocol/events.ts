@@ -171,7 +171,13 @@ export interface ToolStartedEvent {
   /** 同 index = 同一次水平并行波次。 */
   waveIndex: number
   args: Record<string, unknown>
-  /** 动作语义，前端据此选图标与措辞；后端不下发 UI 文案。 */
+  /**
+   * 动作语义，前端据此选图标与措辞；后端不下发 UI 文案。
+   *
+   * **必填。** 名字不在注册表里的调用根本走不到这里——`loop.ts` 在编排波次之前
+   * 就把它们整段挡掉了（那不是工具，是 provider 违反了下发的工具表）。
+   * 所以每一条 `tool.started` 背后都有一个真实的 `ToolSpec`，动作永远解析得出来。
+   */
   action: ActionDescriptor
 }
 
@@ -183,16 +189,25 @@ export interface ActionDescriptor {
   target: string | null
 }
 
-export type ActionKind =
-  | 'read'
-  | 'write'
-  | 'edit'
-  | 'delete'
-  | 'execute'
-  | 'search'
-  | 'fetch'
-  | 'plan'
-  | 'delegate'
+/**
+ * 一次工具调用对用户表达的**唯一动作语义**。六个，就这六个。
+ *
+ * 这条轴**只表达「做了什么动作」，不表达「属于哪个领域」**。曾经这里有
+ * `search / fetch / plan / delegate` 四个值，它们全是领域不是动作——搜索是查询的一种、
+ * fetch 是读、plan 是创建或编辑、delegate 是运行。混进来的直接后果是
+ * `plan` + 对象「计划」拼出「规划计划」这种动宾同义反复。
+ * 领域该走另一条轴（工具分类），而不是挤进动作轴。
+ *
+ * **没有「未知 / 其他」这一档，也不需要有。** 动作由工具在注册期声明，注册表是
+ * 唯一权威；名字不在表里的调用在 `loop.ts` 里就被挡在执行链之外，永远不会
+ * 变成一条 step——所以这条轴上不存在「不知道是什么动作」的行。
+ *
+ * **这些值会落盘**（`steps.payload.action.kind`），所以改这个联合类型不是改一个
+ * 类型别名：删掉或改名一个值，同一次改动里必须带一条数据迁移把老行转过去
+ * （样例 `store/schema.ts` 的迁移 16）。不转的表现不是报错，是回放历史会话时
+ * 卡片标题查不到动词——上一次就这么在界面上露出了 `undefined`。
+ */
+export type ActionKind = 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run'
 
 /** 长工具的中途输出（shell stdout、下载进度、子 agent 的流）。 */
 export interface ToolDeltaEvent {

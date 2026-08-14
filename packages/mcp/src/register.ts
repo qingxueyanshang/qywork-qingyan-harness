@@ -68,8 +68,13 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
 
     // 动作语义只用于展示与并行判定。destructive 的 hint 采纳（更严），
     // readOnly 的 hint 不采纳（会更松）。
-    actionKind: destructive ? 'delete' : 'execute',
+    actionKind: destructive ? 'delete' : 'run',
     objectLabel: permissionLabel(server, def.name),
+    // 一律归「外部扩展」：这一类的存在理由就是不与内置分类学混排——
+    // 第三方 server 提供什么、算哪个领域，我们并不知道，猜一个填进去更糟。
+    category: 'external',
+    facet: `MCP ${server}`,
+    summary: def.description?.trim() || def.name,
     targetExtractor: () => permissionLabel(server, def.name),
 
     // 恒为 execute（destructive 时 resolvePermissionEffect 会因 actionKind

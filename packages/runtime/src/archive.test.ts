@@ -64,7 +64,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
       executed: true,
       message: '命令退出码 1\nExpected 3 to be 4',
     },
-    action: { kind: 'execute', objectLabel: '命令', target: 'npm test' },
+    action: { kind: 'run', objectLabel: '命令', target: 'npm test' },
   })
 
   appendStep(store, {

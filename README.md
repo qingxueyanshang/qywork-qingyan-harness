@@ -138,7 +138,23 @@ qy config               显示当前配置与配置文件路径
 
 还有几个可选项，都在 [`docs/permissions.md`](docs/permissions.md) 里：
 `additionalDirectories`（放开工作区之外的目录）、`sandboxNetwork`（断掉 shell 出网）、
-`envAllowList`（放行某个环境变量）、`classifier`（裁决用一个更小更快的模型）。
+`envAllowList`（放行某个环境变量）。
+
+### 命令跑哪个 shell
+
+`run_command` **一律跑 bash**，没有第二种 shell：Windows 上用 Git for Windows 自带的
+`bash.exe`（只认 Git 的安装目录，不查 PATH——那上面第一条常是 WSL 启动器，命令会进另一个
+文件系统跑），其余平台按 `/opt/homebrew/bin/bash` → `/usr/local/bin/bash` → `/bin/bash`
+→ `/usr/bin/bash` 找。**找不到就启动报错**，不降级成别的 shell。
+
+bash 装在非常规位置（scoop / MSYS2 / Cygwin / 自定义盘符）时，用 `QYWORK_BASH_PATH`
+指向那个可执行文件：
+
+```bash
+QYWORK_BASH_PATH=D:\msys64\usr\bin\bash.exe qy serve
+```
+
+它优先于上面所有位置。**指了但那个位置没有文件会直接报错**，不会退回自动搜索。
 
 ---
 
@@ -148,9 +164,11 @@ qy config               显示当前配置与配置文件路径
 `run_command` `read_resource` `update_plan` `web_fetch` `web_search`
 `memory` `list_skills` `read_skill`
 
-**权限**只有两种模式，没有逐次审批弹窗：`auto`（默认，由硬边界 + 静态规则 + 分类器裁决）
-和 `full`（全放行）。`auto` 下被拒不是弹窗，是把理由作为工具失败交回给模型让它换做法。
-凭证不进子进程、输出里的凭证明文屏蔽、禁止写 `.qy/` 与 `.agents/`——这三条 `full` 也生效。
+**权限**只有两种模式，没有逐次审批弹窗：`auto`（默认，**只有一张静态拒绝清单**——
+没有允许清单，也没有分类器）和 `full`（全放行）。`auto` 拦的是「不可逆且越出工作区」
+那三类：越界写删、改系统状态、碰凭证文件；判不出属于这三类就放行。被拒不是弹窗，
+是把理由作为工具失败交回给模型让它换做法。
+凭证不进子进程、输出里的凭证明文屏蔽、文件工具的路径锁在工作区内——这三条 `full` 也生效。
 
 裁决那三层全是**文本判断**，挡不住一条没想到的写法。真正的边界在内核层：
 Linux / **WSL2** 用 bubblewrap，**macOS** 用 seatbelt——工作区外只读、

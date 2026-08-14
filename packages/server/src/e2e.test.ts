@@ -489,9 +489,14 @@ describe('WebSocket 协议与一轮完整 run', () => {
     // 订阅传 null = 还没声明过订阅，全收——这里验的是缺口计算，不是过滤
     // （过滤本身在 bus.test.ts 里单独锁）。
     const anySub = { id: 'x', origin: 'cli', conversations: null, send: () => {} } as const
+    const stream = handle.bus.streamId
     const mid = seqs[Math.floor(seqs.length / 2)] as number
-    expect(handle.bus.replayFrom(mid, anySub)?.length ?? 0).toBeGreaterThan(0)
-    expect(handle.bus.replayFrom(handle.bus.currentSeq, anySub)?.length).toBe(0)
+    expect(
+      handle.bus.replayFrom({ streamId: stream, lastSeq: mid }, anySub)?.length ?? 0,
+    ).toBeGreaterThan(0)
+    expect(
+      handle.bus.replayFrom({ streamId: stream, lastSeq: handle.bus.currentSeq }, anySub)?.length,
+    ).toBe(0)
 
     ws.close()
   }, 30_000)

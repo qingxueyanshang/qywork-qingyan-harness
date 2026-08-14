@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  BASH_PATH_ENV,
   buildBwrapArgv,
   buildSeatbeltArgv,
   buildSeatbeltProfile,
-  COMMAND_SHELL,
+  commandShell,
   defaultMaskPaths,
   detectSandbox,
   killTree,
+  resolveBashPath,
 } from './sandbox.ts'
 
 /** 把 argv 里 `flag src dst` 这种三元组抽出来，方便按语义断言而不是按下标。 */
@@ -31,6 +33,71 @@ function tmpfsTargets(argv: readonly string[]): string[] {
 const inner = ['/bin/sh', '-c', 'echo hi']
 const never = () => false
 const always = () => true
+
+describe('bash 路径解析', () => {
+  const has =
+    (...ok: string[]) =>
+    (p: string) =>
+      ok.includes(p)
+  const noGitBash = () => null
+
+  test('环境变量优先于一切平台位置', () => {
+    const got = resolveBashPath({
+      env: { [BASH_PATH_ENV]: 'D:/msys64/usr/bin/bash.exe' },
+      platform: 'win32',
+      exists: has('D:/msys64/usr/bin/bash.exe', 'C:/Program Files/Git/bin/bash.exe'),
+      gitBash: () => 'C:/Program Files/Git/bin/bash.exe',
+    })
+    expect(got.path).toBe('D:/msys64/usr/bin/bash.exe')
+  })
+
+  test('环境变量指到不存在的位置就当没有，不回落到搜索', () => {
+    // 回落的后果是「跑起来了，但跑的不是我指的那个」——那要靠对比输出才发现。
+    const got = resolveBashPath({
+      env: { [BASH_PATH_ENV]: 'D:/nope/bash.exe' },
+      platform: 'win32',
+      exists: has('C:/Program Files/Git/bin/bash.exe'),
+      gitBash: () => 'C:/Program Files/Git/bin/bash.exe',
+    })
+    expect(got.path).toBeNull()
+    // 理由要说得出是哪个变量指错了，否则用户只知道「没有 bash」而机器上明明有一个。
+    expect(got.reason).toContain(BASH_PATH_ENV)
+    expect(got.reason).toContain('D:/nope/bash.exe')
+  })
+
+  test('macOS 上 Homebrew 的 bash 排在自带的 /bin/bash 前面', () => {
+    // 自带的是 bash 3.2，没有 declare -A / mapfile / ${x,,}。
+    const got = resolveBashPath({
+      env: {},
+      platform: 'darwin',
+      exists: has('/opt/homebrew/bin/bash', '/bin/bash'),
+      gitBash: noGitBash,
+    })
+    expect(got.path).toBe('/opt/homebrew/bin/bash')
+  })
+
+  test('只有 /bin/bash 时就用它', () => {
+    expect(
+      resolveBashPath({
+        env: {},
+        platform: 'linux',
+        exists: has('/bin/bash'),
+        gitBash: noGitBash,
+      }).path,
+    ).toBe('/bin/bash')
+  })
+
+  test('找不到 bash 就报 null 加原因，不落回 PowerShell 也不落回 sh', () => {
+    // 两件事一起锁：**没有第二种 shell**（兜底回来方言就是两套），
+    // 以及**「没有」是一种可上报的状态而不是崩溃**——服务得起得来才能把这句话说给用户听。
+    const win = resolveBashPath({ env: {}, platform: 'win32', exists: never, gitBash: noGitBash })
+    expect(win.path).toBeNull()
+    expect(win.reason).toContain('Git for Windows')
+    const linux = resolveBashPath({ env: {}, platform: 'linux', exists: never, gitBash: noGitBash })
+    expect(linux.path).toBeNull()
+    expect(linux.reason).toContain('/bin/bash')
+  })
+})
 
 describe('bwrap 参数生成', () => {
   test('整机只读打底，工作区单独开写', () => {
@@ -397,10 +464,12 @@ describe('killTree', () => {
 
   test('杀掉整棵树，且 stdout 随之 EOF', async () => {
     // 与 spawnGuarded 同一个形状：spawn 的是 shell，真正监听的是它的子进程。
-    // shell 取 `COMMAND_SHELL`，不按 platform 现判——这里复刻的就是它。
+    // shell 取 `commandShell()`，不按 platform 现判——这里复刻的就是它。
     // 脚本一律用双引号包：`SERVER` 里全是单引号，用单引号包会在第一个内层引号处断开
     // （原来的 `/bin/sh` 分支就是这么写的，那条路一次也没跑过，所以一直没暴露）。
-    const inner = [...COMMAND_SHELL.argv, `node -e "${SERVER}"`]
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
+    const inner = [...shell.argv, `node -e "${SERVER}"`]
     const proc = Bun.spawn(inner, {
       stdout: 'pipe',
       stderr: 'pipe',

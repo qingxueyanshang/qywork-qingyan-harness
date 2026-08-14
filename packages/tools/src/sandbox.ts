@@ -603,6 +603,8 @@ export interface GuardedSpawn {
 /**
  * Git for Windows 自带的 bash。找不到返回 `null`。
  *
+ * 这是 Windows 上**唯一**认的 bash——`locateBash` 的 win32 分支只调它。
+ *
  * **不查 PATH。** 这台机器上 `where bash` 的第一条是
  * `C:\Windows\System32\bash.exe` —— 那是 **WSL 启动器**，它把命令送进另一个
  * 发行版的文件系统里跑（工作区在那边是 `/mnt/c/...`），cwd 和路径全对不上，
@@ -633,47 +635,146 @@ function findGitBash(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null
 }
 
+/** bash 路径的环境变量覆盖。装在非常规位置（scoop、MSYS2、Cygwin）时唯一的出路。 */
+export const BASH_PATH_ENV = 'QYWORK_BASH_PATH'
+
+/**
+ * 探测结果。形状照 `SandboxStatus`：**「没有」也是一种可上报的状态，不是崩溃。**
+ *
+ * 上一版这里是「找不到就抛」，而抛发生在模块加载时——没有 bash 的机器上整个
+ * `qy serve` 起不来，用户在浏览器里只看到「连不上」。终端程序可以 `exit(1)`
+ * 打一行英文了事（cc-haha 就是），带界面的服务端不行：它得能起来，然后如实说
+ * 「这台机器没有 bash，所以模型手里没有 run_command」。
+ */
+export interface BashResolution {
+  /** 找到的 bash 可执行文件；`null` = 这台机器上没有可用的 bash。 */
+  path: string | null
+  /** `path` 为 `null` 时说明为什么、下一步怎么办；找到时是空串。 */
+  reason: string
+}
+
+/** 命令交给哪个 shell。`null` = 没有 bash，`run_command` 因此不会被注册。 */
+export interface CommandShell {
+  readonly path: string
+  readonly argv: readonly string[]
+  readonly hint: string
+}
+
+/**
+ * 本机的 bash。**找不到就抛**，不落回任何别的 shell。
+ *
+ * ## 为什么必须有环境变量这个口
+ *
+ * 没有落回，就必须有一个**用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 /
+ * Cygwin / 自定义盘符的机器一律没救——而「没救」的表现是整个服务起不来。
+ * 四个参照实现都留了这个口（cc-haha 的 `CLAUDE_CODE_GIT_BASH_PATH`、
+ * pi 与 prime-agent 的 `shellPath` 设置）。
+ *
+ * **指了但不存在照样抛，不悄悄回到搜索**：回搜索会把「我指错了」变成
+ * 「跑起来了，但跑的不是我指的那个」，而后者要靠对比输出才能发现。
+ *
+ * ## 顺序
+ *
+ * Windows 只认 Git for Windows（见 `findGitBash` 上方为什么不查 PATH）。
+ * 其余平台按位置找，**Homebrew 的 bash 5 排在 `/bin/bash` 前面**：macOS 自带的
+ * 是 bash 3.2（2007 年，卡在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
+ * 而模型写的是 bash 4+ 的方言。pi 与 prime-agent 走 `which bash`，PATH 上有
+ * Homebrew 时得到的也是这个顺序。
+ *
+ * 不用 `/bin/sh`：那在 Debian 系是 dash，`[[ ]]`、数组、`<(...)` 全部散架。
+ * 判据和删掉 PowerShell 那次一样——模型的默认方言要和真正执行的 shell 对得上。
+ *
+ * 参数全部注入，是为了能直接测顺序和逃生口，不必重载模块。
+ */
+export function resolveBashPath(deps: {
+  env: Record<string, string | undefined>
+  platform: string
+  exists: (p: string) => boolean
+  gitBash: () => string | null
+}): BashResolution {
+  const pinned = deps.env[BASH_PATH_ENV]
+  if (pinned) {
+    if (deps.exists(pinned)) return { path: pinned, reason: '' }
+    return {
+      path: null,
+      reason: `${BASH_PATH_ENV} 指向 ${pinned}，但那个位置没有文件。改对，或者不设它、让它自己找。`,
+    }
+  }
+
+  if (deps.platform === 'win32') {
+    const bash = deps.gitBash()
+    if (bash !== null) return { path: bash, reason: '' }
+    return {
+      path: null,
+      reason:
+        '没找到 Git for Windows 自带的 bash（找过 git.exe 的同级目录、' +
+        `Program Files\\Git\\bin、LOCALAPPDATA\\Programs\\Git\\bin）。装 Git for Windows，或用 ${BASH_PATH_ENV} 指向已有的 bash.exe。`,
+    }
+  }
+
+  const candidates = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', '/bin/bash', '/usr/bin/bash']
+  const found = candidates.find(deps.exists)
+  if (found !== undefined) return { path: found, reason: '' }
+  return {
+    path: null,
+    reason: `这几个位置都没有 bash：${candidates.join('、')}。装 bash，或用 ${BASH_PATH_ENV} 指向它。`,
+  }
+}
+
+/**
+ * 探测结果。**每次调用重新探测，不缓存。**
+ *
+ * 判据抄 `detectSandbox()` 上方那段：缓存的话「装完 git 之后重连一下就生效」不成立，
+ * 用户得重启整个服务，而他不会知道要重启。探测本身是几次 `existsSync`
+ * （`whichSync` 是纯 PATH 扫描，不起进程），每次跑得起。
+ */
+export function probeBash(): BashResolution {
+  return resolveBashPath({
+    env: process.env,
+    platform: process.platform,
+    exists: existsSync,
+    gitBash: findGitBash,
+  })
+}
+
 /**
  * 命令交给哪个 shell，以及**模型必须知道的那条语法差异**。
  *
- * ## Windows 上优先 bash，不是 PowerShell
+ * ## 只有 bash 一种，没有落回
  *
- * 原来无条件走 `powershell.exe -Command`，而模型只被告知「平台：win32」时
- * 写的是 cmd 或 POSIX 的写法。`&&` 在 Windows PowerShell 5.1 里是**解析错误**
- * （实测 `标记「&&」不是此版本中的有效语句分隔符`）——整条命令一个字都不执行，
+ * 起因是 Windows 上原来无条件走 `powershell.exe -Command`：`&&` 在 Windows
+ * PowerShell 5.1 里是**解析错误**（实测 `标记「&&」不是此版本中的有效语句分隔符`），
+ * 而模型只被告知「平台：win32」时写的就是 POSIX 写法——整条命令一个字都不执行，
  * 账本里已经有这么废掉的调用（`node --version & python --version`）。
  * 那不是模型不会写 PowerShell，是**它的默认方言和这里跑的 shell 对不上**，
  * 而两边只有一边能改：换 shell 一处，纠正模型每一条命令是无穷次。
  *
- * 装了 Git 就有 bash（编码 agent 的机器上几乎恒真），没装才落回 PowerShell。
- * **落回时提示跟着换**——两种 shell 用同一句提示等于告诉模型一个假的方言。
+ * 上一版留了「没装 Git Bash 就落回 PowerShell」。删掉它的理由不是那条路跑不通，
+ * 是**它把方言变成两套**：`policy.ts` 的拒绝规则要同时认两种语法、测试每一条
+ * 涉及命令的都要按 shell 分叉、模型拿到的提示也分叉。而落回的那台机器上，
+ * 模型该写不对的还是写不对——第二条路的收益是「跑得起来」，代价是每一处
+ * 用到 shell 的地方都多一本账。没有 bash 就明确报错，比给一个方言对不上的
+ * shell 更早、更准。
  *
  * `hint` 会原样进 `run_command` 的工具说明，与下面 `spawnGuarded` 用的是同一份
  * argv：两处各写一遍必然漂移，而漂移的表现是**告诉模型的那个 shell 和真正执行
  * 的不是同一个**，比不告诉更糟。
  *
- * 探测在模块加载时做一次：结果在一个进程的生命周期内不会变。
+ * 返回 `null` 时 `run_command` **不会被注册**（`tools/index.ts`）——模型手里
+ * 根本没有这个工具，而不是有一个必然失败的工具。同样的做法见 cc-haha 的
+ * `isBashToolEnabled()` 与 deepseek-harness 在 bundle 配置里按平台 disable 整个工具包。
  */
-export const COMMAND_SHELL: { readonly argv: readonly string[]; readonly hint: string } = (() => {
-  if (process.platform !== 'win32') {
-    return { argv: ['/bin/sh', '-c'], hint: '命令由 `/bin/sh -c` 执行。' }
+export function commandShell(): CommandShell | null {
+  const { path } = probeBash()
+  if (path === null) return null
+  return {
+    path,
+    argv: [path, '-c'],
+    hint:
+      '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
+      '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
   }
-  const bash = findGitBash()
-  return bash
-    ? {
-        argv: [bash, '-c'],
-        hint:
-          '命令由 Git for Windows 的 `bash -c` 执行（POSIX 语法，不是 cmd/PowerShell，也不是 WSL）：' +
-          '`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
-      }
-    : {
-        argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command'],
-        hint:
-          '这台机器没装 Git Bash，命令由 Windows PowerShell 执行：' +
-          '`&&`、`||`、`&` 都是语法错误，多条命令用 `;` 连；' +
-          '丢弃输出写 `2>$null`（不是 `2>nul`），环境变量写 `$env:NAME`。',
-      }
-})()
+}
 
 /**
  * **本项目唯一一处为模型给出的命令起子进程的地方。**
@@ -684,9 +785,14 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
   const status = detectSandbox()
   const isWindows = process.platform === 'win32'
 
+  // `run_command` 在没有 bash 时压根不注册，所以正常路径到不了这里；
+  // 插件的 `exec.run` 走的是同一个函数，它需要一个说得清的错而不是崩在 argv 上。
+  const shell = commandShell()
+  if (shell === null) throw new Error(`没有可用的 bash，命令跑不了：${probeBash().reason}`)
+
   // 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
   // 转义黑名单挡不住构造，真正的边界在内核那一层。
-  const inner = [...COMMAND_SHELL.argv, input.command]
+  const inner = [...shell.argv, input.command]
 
   const policy = input.policy
 
@@ -731,7 +837,7 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
  *
  * ## 为什么不能只 `proc.kill()`
  *
- * 我们 spawn 的从来不是命令本身，是一个 shell（`COMMAND_SHELL.argv` + 命令串）。
+ * 我们 spawn 的从来不是命令本身，是一个 shell（`commandShell()` 的 argv + 命令串）。
  * 真正干活的进程是它的**子进程**，而 `proc.kill()` 只杀那一个 shell。
  *
  * 本机实测（Windows 11 / Bun 1.3.14，完全复刻上面的 spawn 参数）：

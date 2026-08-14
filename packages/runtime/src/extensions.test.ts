@@ -10,7 +10,6 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolRegistry } from '@qywork/agent'
-import { COMMAND_SHELL } from '@qywork/tools'
 import {
   acquireExtensions,
   loadExtensions,
@@ -188,11 +187,7 @@ describe('插件端到端', () => {
     process.env.QYWORK_EXT_SECRET = 'leaked-secret'
     try {
       const { probe, stop } = await workspaceWith(['process:exec'])
-      // 方言按真正在跑的 shell 取，不按 platform——见 capabilities.test.ts 同名助手。
-      const cmd = String(COMMAND_SHELL.argv[0]).includes('powershell')
-        ? 'Write-Output "[$env:QYWORK_EXT_SECRET]"'
-        : 'echo "[$QYWORK_EXT_SECRET]"'
-      const r = await probe('exec.run', { command: cmd })
+      const r = await probe('exec.run', { command: 'echo "[$QYWORK_EXT_SECRET]"' })
       expect(r.status).toBe('success')
       expect((r.data as any).r.stdout).not.toContain('leaked-secret')
       stop()

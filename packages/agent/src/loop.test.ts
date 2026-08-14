@@ -76,6 +76,9 @@ describe('ToolContext 生命周期', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '状态',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       async fn(_args, ctx) {
         seenStates.push(ctx.state)
@@ -141,6 +144,9 @@ describe('ToolContext 生命周期', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       fn: async () => ({ status: 'success' as const, message: 'ok' }),
     })
@@ -193,6 +199,9 @@ describe('权限拒绝', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'write',
       objectLabel: '文件',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'write',
       fn: async () => {
         executed++
@@ -429,6 +438,9 @@ describe('上下文分组占用', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空操作',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       async fn() {
         return { status: 'success', message: 'ok' }
@@ -509,6 +521,9 @@ describe('原地打转', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       fn: async () => {
         executed++
@@ -563,6 +578,9 @@ describe('原地打转', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
       permissionEffect: 'internal_control',
       fn: async () => ({ status: 'success' as const, message: `第 ${++n} 次` }),
     })

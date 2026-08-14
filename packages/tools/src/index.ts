@@ -16,11 +16,12 @@
 import type { ToolRegistry } from '@qywork/agent'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { memoryTool } from './memory.ts'
-import { updatePlanTool } from './plan.ts'
 import { readResourceTool } from './resources.ts'
+import { commandShell } from './sandbox.ts'
 import { globTool, grepTool } from './search.ts'
-import { shellTool } from './shell.ts'
+import { makeShellTool } from './shell.ts'
 import { listSkillsTool, readSkillTool } from './skills.ts'
+import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
@@ -46,8 +47,17 @@ export {
   resolveInWorkspace,
 } from './paths.ts'
 // 沙箱：cli 的 doctor/config、server 的握手都要报它
-// `COMMAND_SHELL` 一并出去：命令写成哪种方言由它说了算，判 platform 就是第二本账
-export { COMMAND_SHELL, detectSandbox, spawnGuarded } from './sandbox.ts'
+// `commandShell` / `probeBash` 一并出去：命令跑哪个 shell 由它说了算，判 platform 就是第二本账；
+// 握手要报「这台机器有没有 bash」，没有时还要把原因说给用户听
+export {
+  BASH_PATH_ENV,
+  type BashResolution,
+  type CommandShell,
+  commandShell,
+  detectSandbox,
+  probeBash,
+  spawnGuarded,
+} from './sandbox.ts'
 // 作用域：runtime 与 server 都要按同一份规则算三层的根
 export {
   AGENTS_DIR,
@@ -65,8 +75,15 @@ export { resolveCommandTimeout } from './shell.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页
 export { SKILLS_SUBDIR, type SkillMeta, scanSkills } from './skills.ts'
 
-/** 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。 */
+/**
+ * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
+ *
+ * **`run_command` 按能力注册**：这台机器上没有 bash 就根本不给模型这个工具，
+ * 而不是给一个必然失败的工具（B5）。探测每次重新跑，而这个函数每条消息都会被
+ * 调一次（`runtime/session.ts`），所以装完 git **下一条消息就有了**，不用重启。
+ */
 export function registerBuiltinTools(registry: ToolRegistry): void {
+  const shell = commandShell()
   for (const spec of [
     readFileTool,
     writeFileTool,
@@ -74,9 +91,9 @@ export function registerBuiltinTools(registry: ToolRegistry): void {
     listDirTool,
     globTool,
     grepTool,
-    shellTool,
+    ...(shell ? [makeShellTool(shell)] : []),
     readResourceTool,
-    updatePlanTool,
+    writeTodosTool,
     webFetchTool,
     webSearchTool,
     memoryTool,

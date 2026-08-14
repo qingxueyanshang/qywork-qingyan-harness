@@ -31,9 +31,11 @@
  * 要么扫**整个原始串**（路径、凭证那几条）。所以 `ls && rm -rf ~` 里的第二段照样
  * 被抓到，不必先判「这是不是单条命令」。
  *
- * 本项目跑的是 `bash -c` / `/bin/sh -c`，只有没装 Git Bash 的 Windows 才落回
- * `powershell.exe -Command`（`tools/sandbox.ts` 的 `COMMAND_SHELL`），
- * 两套语法都要认。判断时不看 process.platform：一条命令完全可能在一台机器上被裁决、
+ * 本项目只跑 `bash -c`（Windows 上是 Git for Windows 自带的那个，
+ * 见 `tools/sandbox.ts` 的 `commandShell()`），没有第二种 shell。
+ * **PowerShell 语法的模式仍然留在表里**：命令串里随时可以写
+ * `powershell.exe -Command "Remove-Item ..."`，那条路和外层 shell 是什么无关。
+ * 判断时不看 process.platform：一条命令完全可能在一台机器上被裁决、
  * 在另一台上被执行。
  */
 

@@ -1,5 +1,5 @@
-import { For, Show } from 'solid-js'
-import { setTheme, type ThemePref, theme, workspace } from '../../lib/store/index.ts'
+import { createSignal, For, Show } from 'solid-js'
+import { client, setTheme, state, type ThemePref, theme, workspace } from '../../lib/store/index.ts'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import { config, configError, configPath, ensureConfig, reloadConfig } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
@@ -20,6 +20,69 @@ const THEMES: { id: ThemePref; label: string }[] = [
  * 模型和路径边界各自成页：它们条目多、改一次要读一段说明，混在这里会把
  * 上面这三样淹掉。
  */
+/**
+ * 命令跑哪个 shell，以及没有时怎么装上。
+ *
+ * **`path` 有值时只是一行只读路径**，没有按钮也没有说明——它是「一切正常」的样子。
+ * 有值还写一段解释，就是在给不需要读的人制造阅读量（B7）。
+ *
+ * 没有时那一格才展开：为什么没有（服务端给的 `reason`，它说得出下一步）、
+ * `run_command` 已经不在工具表里、以及能装的话那个按钮。
+ * 按钮**只在服务端说能装时出现**（`canInstall`），不做一个点了报错的按钮（B5）。
+ */
+function CommandShellRows() {
+  const shell = () => state.capabilities?.commandShell ?? null
+  const [busy, setBusy] = createSignal(false)
+  const [result, setResult] = createSignal('')
+
+  async function install() {
+    setBusy(true)
+    setResult('')
+    try {
+      const r = await client.api<{ note: string }>('/api/host/install-shell', { method: 'POST' })
+      setResult(r.note)
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Show when={shell()}>
+      {(sh) => (
+        <Show
+          when={sh().path === null}
+          fallback={<PathRow label="命令 shell" value={sh().path ?? ''} />}
+        >
+          <div class="setting-row stack warn">
+            <span class="setting-row-label">未检测到 bash · run_command 已停用</span>
+            <span class="setting-row-hint">{sh().reason}</span>
+            <Show when={sh().canInstall}>
+              <div class="setting-row-control">
+                <button
+                  class="btn-primary"
+                  type="button"
+                  disabled={busy()}
+                  onClick={() => void install()}
+                >
+                  {busy() ? '正在打开安装窗口…' : '安装 Git for Windows'}
+                </button>
+              </div>
+              {/* 装完要重启——这句是能力边界不是解释，不许折叠（B7）：
+                  当前进程的 PATH 是启动时的快照，新装的 git 不在里面。 */}
+              <span class="setting-row-hint">
+                会开一个终端窗口跑 winget install --id Git.Git；装完请重启 qywork。
+              </span>
+            </Show>
+            <Show when={result()}>{(r) => <span class="setting-row-hint">{r()}</span>}</Show>
+          </div>
+        </Show>
+      )}
+    </Show>
+  )
+}
+
 export function GeneralSettings() {
   ensureConfig()
 
@@ -56,6 +119,7 @@ export function GeneralSettings() {
         <section class="settings-block">
           <h3 class="settings-block-head">位置</h3>
           <div class="setting-rows">
+            <CommandShellRows />
             <PathRow label="配置文件" value={configPath()} />
             <Show when={workspace()}>
               {(w) => (

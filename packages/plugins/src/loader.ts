@@ -197,6 +197,11 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       actionKind: t.actionKind,
       objectLabel: t.objectLabel,
       permissionEffect: t.permissionEffect,
+      // 插件工具同 MCP，归「外部扩展」——清单里不让插件自己声明类目，
+      // 否则一个插件就能把自己塞进「文件与草稿」，和内置工具混在一栏里。
+      category: 'external',
+      facet: plugin.manifest.id,
+      summary: t.description,
       // 跨进程调用。**不传 ctx**——它带着 sink 句柄、AbortSignal、
       // 权限回调这些宿主内部对象，序列化过去等于把它们交出去。
       // 插件要用宿主能力就走 host.* RPC，那条路上有权限闸。

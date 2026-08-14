@@ -92,6 +92,8 @@ export {
   decodePairingUrl,
   encodePairingUrl,
   type HelloFrame,
+  type HelloOkFrame,
   type PairingPayload,
+  type ResumePosition,
   type ServerCapabilities,
 } from './protocol/transport.ts'

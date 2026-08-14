@@ -211,5 +211,48 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     })
   }
 
+  /*
+   * 这个 agent 会做什么：全部工具按「能力大类 → 功能方向」两层列出来。
+   *
+   * **这是分类轴（`ToolCategory`）的消费者。** 没有它那条轴就是 C1 第 1 款的死链路
+   * ——注册期校验着、schema 里写着、没有任何人读。
+   *
+   * 只回**中文的用途**（`summary`）、类目与功能方向，**不回工具名**：
+   * 桌面端一律中文，`read_file` 这种机制字段只在 CLI 里露面。
+   *
+   * 内置工具直接从注册表取（零成本，就是这一份真源）；插件贡献的工具从清单取
+   * （清单本来就已经读进来了，不用把插件跑起来）。**MCP 不在这里列** ——
+   * 它的工具清单要连上 server 才知道，为了一个设置页去连一串外部进程不划算，
+   * 而「装了几个 server」`/api/capabilities` 已经在回答。这条边界写在界面上。
+   */
+  if (p === '/api/tools') {
+    const { ToolRegistry } = await import('@qywork/agent')
+    const { registerBuiltinTools } = await import('@qywork/tools')
+    const { loadExtensions } = await import('@qywork/runtime')
+
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry)
+    const rows = registry
+      .list()
+      .map((s) => ({ category: s.category, facet: s.facet, summary: s.summary }))
+
+    const ext = await loadExtensions(d.workspaceRoot)
+    for (const plugin of ext.plugins.plugins) {
+      for (const t of plugin.manifest.contributes?.tools ?? []) {
+        rows.push({ category: 'external', facet: plugin.manifest.id, summary: t.description })
+      }
+    }
+
+    // 确定性排序：类目按枚举顺序，其后按功能方向与用途字典序。
+    const { TOOL_CATEGORIES } = await import('@qywork/agent')
+    rows.sort(
+      (a, b) =>
+        TOOL_CATEGORIES.indexOf(a.category) - TOOL_CATEGORIES.indexOf(b.category) ||
+        a.facet.localeCompare(b.facet, 'zh') ||
+        a.summary.localeCompare(b.summary, 'zh'),
+    )
+    return json({ tools: rows, mcpServers: ext.mcp.servers.map((m) => m.name) })
+  }
+
   return null
 }

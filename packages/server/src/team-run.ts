@@ -137,7 +137,7 @@ export async function runTeam(
               toolName: 'team',
               scope: `team:gate:${nodeId}`,
               preview: summary,
-              action: { kind: 'delegate', objectLabel: '编排节点', target: nodeId } as never,
+              action: { kind: 'run', objectLabel: '编排节点', target: nodeId } as never,
             }),
         },
       )

@@ -673,7 +673,42 @@ export class AgentLoop {
         }
 
         // ── 工具执行：按波次调度 ──
-        const waves = planWaves(calls, this.deps.registry)
+        /*
+         * **名字不在注册表里的，一律不进执行链。**
+         *
+         * 注册表是工具的唯一权威——名字不在表里的东西不是工具，它是 provider
+         * 违反了我们下发的工具表（模型胡诌了一个名字）。这种调用曾经照样开一条
+         * tool step、发一条 `tool.started`，于是界面上多出一张既没有动作、
+         * 也什么都没做的卡片，标题只能编一个（先后编过「读取 xxx」和「未知工具」，
+         * 两个都是在给不存在的东西造词条）。
+         *
+         * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
+         * 渲染那侧不再需要任何兜底分支。
+         *
+         * 但结果**必须回给模型**：provider 的契约是每个 tool_call 都要有一条
+         * 对应 id 的 tool 结果，少一条下一轮直接 400。所以照常推一条失败结果，
+         * 它自己会改用真实存在的工具。
+         */
+        const bogus = calls.filter((c) => !registry.has(c.name))
+        for (const c of bogus) {
+          transcript.push({
+            role: 'tool',
+            toolCallId: c.id,
+            content: JSON.stringify({
+              call_id: c.id,
+              tool: c.name,
+              status: 'failure',
+              executed: false,
+              summary: `没有这个工具：${c.name}。只能调用工具表里列出的那些。`,
+            }),
+            _group: 'executionRecords',
+          })
+        }
+
+        const waves = planWaves(
+          calls.filter((c) => registry.has(c.name)),
+          this.deps.registry,
+        )
         let denied = false
 
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
@@ -684,10 +719,9 @@ export class AgentLoop {
           resetBatchBudget(ctx.state)
           const results = await Promise.all(
             wave.map(async ({ call, callIndex }) => {
-              const spec = registry.get(call.name)
-              const action = spec
-                ? resolveAction(spec, call.arguments)
-                : { kind: 'read' as const, objectLabel: call.name, target: null }
+              // 非空断言成立：上面已经把不在注册表里的调用整段挡掉了，
+              // 走到这里的每一条都有 spec。
+              const action = resolveAction(registry.get(call.name)!, call.arguments, ctx)
               const stepId = persist.openToolStep(
                 input.runId,
                 persist.nextSeq(input.runId),

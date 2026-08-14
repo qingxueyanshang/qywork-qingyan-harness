@@ -10,7 +10,7 @@
  *   事件、让 UI 停在一个不完整的状态上还以为自己是对的。
  */
 
-import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
+import type { AgentEvent, ConversationId, EventEnvelope, ResumePosition } from '@qywork/core'
 
 /** 保留窗口。够覆盖几分钟的断线；再长就该走全量重拉了。 */
 const RETAIN = 5000
@@ -48,6 +48,14 @@ function visibleTo(sub: Subscriber, frame: EventEnvelope): boolean {
 }
 
 export class EventBus {
+  /**
+   * 这条流的身份，进程内唯一。**seq 只在同一条流里有意义。**
+   *
+   * 没有它的时候，`replayFrom` 只能拿大小比：重启后的新总线 `seq=0`，
+   * 客户端带着上一代的 `lastSeq=800` 过来，`800 >= 0` 就被判成「已是最新」。
+   * 而它真正错过的是上一代服务最后那几条——包括那一轮的终态。
+   */
+  readonly streamId: string = crypto.randomUUID()
   private seq = 0
   private readonly ring: EventEnvelope[] = []
   private readonly subscribers = new Map<string, Subscriber>()
@@ -104,14 +112,21 @@ export class EventBus {
    * 窗口内所有会话的事件灌给这个客户端，而它正开着其中某一条——那不是「多收了几条」，
    * 是内容串台，而且看起来完全合理。
    *
-   * 返回 null 表示缺口已超出保留窗口，客户端必须重新拉全量。
+   * 返回 null 表示缺口补不上，客户端必须重新拉全量。
+   *
+   * **「补不补得上」只有这一处裁决**，所以流身份也在这里判、不在握手里判——
+   * 拆成两处的话，「你落后了多少」和「你说的落后是不是我这条流上的事」
+   * 就成了两个可以各自改坏的判断。
    */
-  replayFrom(lastSeq: number, sub: Subscriber): EventEnvelope[] | null {
-    if (lastSeq >= this.seq) return []
+  replayFrom(from: ResumePosition, sub: Subscriber): EventEnvelope[] | null {
+    // 不是这条流上的坐标 → 缺口无从计算，只能全量重拉。这不是「保守起见」，
+    // 是那个数字在这里确实没有含义：新流的 seq 从 0 重新数起。
+    if (from.streamId !== this.streamId) return null
+    if (from.lastSeq >= this.seq) return []
     const oldest = this.ring[0]
     // 环里最老的一条比客户端下一条需要的还新 → 中间那段已经被挤掉了。
-    if (!oldest || oldest.seq > lastSeq + 1) return null
-    return this.ring.filter((f) => f.seq > lastSeq && visibleTo(sub, f))
+    if (!oldest || oldest.seq > from.lastSeq + 1) return null
+    return this.ring.filter((f) => f.seq > from.lastSeq && visibleTo(sub, f))
   }
 
   subscriberCount(): number {

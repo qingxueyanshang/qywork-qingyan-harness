@@ -135,8 +135,13 @@ describe('分组规则', () => {
 describe('组头文案', () => {
   test('有正在跑的就只说正在做什么', () => {
     expect(groupTitle([tool('a', 'read'), tool('b', 'write', { status: 'running' })])).toBe(
-      '正在写入…',
+      '正在创建…',
     )
+  })
+
+  /** 说不出动作时说「进行中」。不许借「执行」这类具体词——那是替一次调用编造它在干什么。 */
+  test('没有动作的行在跑时说「进行中」，不编一个动词', () => {
+    expect(groupTitle([item('tool', { status: 'running', toolName: 'x' })])).toBe('进行中…')
   })
 
   test('同桶对象一致时用那个名词', () => {
@@ -149,7 +154,7 @@ describe('组头文案', () => {
 
   test('多桶按首次出现顺序拼', () => {
     const t = groupTitle([tool('x', 'read'), tool('y', 'write'), tool('x', 'read')])
-    expect(t.indexOf('读取')).toBeLessThan(t.indexOf('写入'))
+    expect(t.indexOf('读取')).toBeLessThan(t.indexOf('创建'))
   })
 
   test('有失败要报出失败数', () => {
@@ -166,27 +171,43 @@ describe('组头文案', () => {
 })
 
 describe('动词与单条文案', () => {
-  test('认识的 kind 各有动词', () => {
+  /** 六个真动作，一个 kind 一个词，和青研魔盒 `StepCard.ACTION_VERBS` 同一套。 */
+  test('六个动作各有动词', () => {
+    expect(verb('query')).toBe('查询')
     expect(verb('read')).toBe('读取')
-    expect(verb('execute')).toBe('执行')
-    expect(verb('delegate')).toBe('委派')
+    expect(verb('write')).toBe('创建')
+    expect(verb('edit')).toBe('编辑')
+    expect(verb('delete')).toBe('删除')
+    expect(verb('run')).toBe('运行')
   })
 
-  test('不认识的 kind 落到「操作」，不抛也不显示原始 kind', () => {
-    expect(verb('frobnicate')).toBe('操作')
-    expect(verb(undefined)).toBe('操作')
+  /**
+   * **没有第七个「其他」档，也不许把原始工具名当标题。**
+   *
+   * 桌面端一律中文，英文原文只在 CLI 里显示。这里一度回落到 `toolName`，
+   * 于是界面上直接出现 `update_plan` 这种机制字段。
+   *
+   * 拼不出动作只剩一种情况：名字不在注册表里，它不是工具（`action` 为 null）。
+   * 落库的老 kind 由迁移 16 转成六枚举，不走这条路。
+   */
+  test('认不出的 kind 说「未知工具」，不拿原始名当标题', () => {
+    expect(actionLabel(tool('命令', 'execute', { toolName: 'run_command' }))).toBe('未知工具')
   })
 
-  test('execute 不拼对象 —— 命令行本身已经显示在卡片里', () => {
-    expect(actionLabel(tool('rm -rf /', 'execute'))).toBe('执行命令')
+  test('没有 action 的行说「未知工具」', () => {
+    expect(actionLabel(item('tool', { toolName: 'weird__thing' }))).toBe('未知工具')
+  })
+
+  test('运行命令是动词加对象拼出来的，不是特例', () => {
+    expect(actionLabel(tool('命令', 'run'))).toBe('运行命令')
   })
 
   test('有对象就动词加对象', () => {
     expect(actionLabel(tool('a.ts', 'read'))).toBe('读取a.ts')
   })
 
-  test('没有 action 时退回工具名，不显示空动词', () => {
-    expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('grep')
+  test('没有对象名时也不拿工具名顶替', () => {
+    expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('未知工具')
   })
 })
 

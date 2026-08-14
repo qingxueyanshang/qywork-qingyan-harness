@@ -82,6 +82,9 @@ export const memoryTool: ToolSpec = {
     return 'read'
   },
   objectLabel: '记忆',
+  category: 'knowledge',
+  facet: '记忆',
+  summary: '读写这个工作区的长期记忆',
   targetExtractor: (a) => (typeof a.key === 'string' ? a.key : null),
   permissionEffect: (a) => {
     const action = String(a.action ?? '')
