@@ -51,9 +51,13 @@ function EnvironmentRows() {
 
   return (
     <>
+      {/* **行式，不用 `stack`。** 按钮是宽度有界的控件，该在右缘对齐——
+          四行按钮各自换行堆在左边，会把这一节撑高一倍，而扫读时眼睛本来
+          只需要扫右缘（`Row.tsx` 的判据）。路径虽然长，但它是**说明**不是控件，
+          留在左栏里被截断也比挤走按钮好。 */}
       <For each={deps()}>
         {(d) => (
-          <div class="setting-row stack" classList={{ warn: d.path === null && d.required }}>
+          <div class="setting-row" classList={{ warn: d.path === null && d.required }}>
             <div class="setting-row-text">
               <span class="setting-row-label">
                 {d.label}
@@ -78,9 +82,6 @@ function EnvironmentRows() {
           </div>
         )}
       </For>
-      {/* 装完要重启——这句是能力边界不是解释，不许折叠（B7）：
-          当前进程的 PATH 是启动时的快照，新装的程序不在里面。
-          只在真有东西可装时才出现，装齐的机器上不该看到它。 */}
       <Show when={deps().some((d) => d.canInstall)}>
         <div class="setting-row stack">
           <span class="setting-row-hint">安装会开一个终端窗口跑 winget；装完请重启 qywork。</span>

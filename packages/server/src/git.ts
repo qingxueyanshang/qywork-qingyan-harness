@@ -74,13 +74,33 @@ async function git(
   args: string[],
   timeoutMs = 15_000,
 ): Promise<{ ok: boolean; out: string; err: string }> {
-  const proc = Bun.spawn(['git', '--no-optional-locks', ...args], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    stdin: 'ignore',
-    env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
-  })
+  // 显式写出三条流的形态：用 `ReturnType<typeof Bun.spawn>` 会退化成默认泛型，
+  // `proc.stdout` 变成 `number | ReadableStream | undefined`，下面读流就编译不过。
+  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  try {
+    proc = Bun.spawn(['git', '--no-optional-locks', ...args], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+      env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+    })
+  } catch (e) {
+    /*
+     * **这台机器上没装 git。**
+     *
+     * `Bun.spawn` 找不到可执行文件是**同步抛**，而 `pollGit` 是
+     * `void publishGitState(...)` 这样的浮动 promise——不接住的话，没有 git 的机器上
+     * 每 4 秒一个未捕获拒绝，启动时先糊一屏栈。实测（把 PATH 剥到只剩 System32
+     * 起一次服务）就是这个形状。
+     *
+     * 接在这里而不是在 `pollGit` 上加 `.catch`：那是在下游堵症状，而「git 跑不跑得起来」
+     * 本来就属于这个函数的返回类型——它已经有 `ok: false` 这一档，每个调用方都在处理。
+     * 于是「没装 git」和「这不是个仓库」走同一条路：版本面板不显示，其余功能照常。
+     * 界面上要说明的那句由 `api/host.ts` 的环境清单负责。
+     */
+    return { ok: false, out: '', err: e instanceof Error ? e.message : String(e) }
+  }
   const timer = setTimeout(() => proc.kill(), timeoutMs)
   try {
     const [out, err] = await Promise.all([
