@@ -12,77 +12,101 @@ const THEMES: { id: ThemePref; label: string }[] = [
 ]
 
 /**
- * 系统设置。
+ * 运行环境：qywork 要调的那几个外部程序在不在。
  *
- * 这一页最容易长成一个杂物间——什么都不好归类就丢进来。这里的判据是
- * **打开应用第一天就想改的那几样**：长什么样、新会话默认怎么跑、配置和会话存在哪。
+ * ## 三态，不是两态
  *
- * 模型和路径边界各自成页：它们条目多、改一次要读一段说明，混在这里会把
- * 上面这三样淹掉。
+ * 已拥有 / 需要安装 / 未安装（可选）。**中间那档不能省**：rg 缺了只是搜索慢一点
+ * （内置遍历顶上），node 只有装插件才用——把它们也标成「需要安装」，
+ * 用户第一次点开设置页看到的就是一片红，而真正坏掉的那条淹在里面。
+ *
+ * ## 装了就只显示路径，不显示用途
+ *
+ * 「缺了会怎样」只有在缺的时候才需要读。装齐的机器上这一节应该是四行安安静静的
+ * 路径，而不是四段说明（B7：删掉这句用户还能不能用？能 → 删）。
+ *
+ * 按钮**只在服务端说能装时出现**（`canInstall` = Windows + 有 winget + 知道包 id），
+ * 不做一个点了报错的按钮（B5）。
  */
-/**
- * 命令跑哪个 shell，以及没有时怎么装上。
- *
- * **`path` 有值时只是一行只读路径**，没有按钮也没有说明——它是「一切正常」的样子。
- * 有值还写一段解释，就是在给不需要读的人制造阅读量（B7）。
- *
- * 没有时那一格才展开：为什么没有（服务端给的 `reason`，它说得出下一步）、
- * `run_command` 已经不在工具表里、以及能装的话那个按钮。
- * 按钮**只在服务端说能装时出现**（`canInstall`），不做一个点了报错的按钮（B5）。
- */
-function CommandShellRows() {
-  const shell = () => state.capabilities?.commandShell ?? null
-  const [busy, setBusy] = createSignal(false)
+function EnvironmentRows() {
+  const deps = () => state.capabilities?.environment ?? []
+  const [busy, setBusy] = createSignal('')
   const [result, setResult] = createSignal('')
 
-  async function install() {
-    setBusy(true)
+  async function install(id: string) {
+    setBusy(id)
     setResult('')
     try {
-      const r = await client.api<{ note: string }>('/api/host/install-shell', { method: 'POST' })
+      const r = await client.api<{ note: string }>('/api/host/install', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      })
       setResult(r.note)
     } catch (e) {
       setResult(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusy(false)
+      setBusy('')
     }
   }
 
   return (
-    <Show when={shell()}>
-      {(sh) => (
-        <Show
-          when={sh().path === null}
-          fallback={<PathRow label="命令 shell" value={sh().path ?? ''} />}
-        >
-          <div class="setting-row stack warn">
-            <span class="setting-row-label">未检测到 bash · run_command 已停用</span>
-            <span class="setting-row-hint">{sh().reason}</span>
-            <Show when={sh().canInstall}>
+    <>
+      <For each={deps()}>
+        {(d) => (
+          <div class="setting-row stack" classList={{ warn: d.path === null && d.required }}>
+            <div class="setting-row-text">
+              <span class="setting-row-label">
+                {d.label}
+                {d.path === null ? (d.required ? ' · 需要安装' : ' · 未安装（可选）') : ' · 已拥有'}
+              </span>
+              {/* 装了就只报路径——排查「同一条命令在终端能跑、在这里不行」时，
+                  唯一有用的信息就是它到底用的哪一个。 */}
+              <span class="setting-row-hint">{d.path ?? `${d.impact} · ${d.hint}`}</span>
+            </div>
+            <Show when={d.canInstall}>
               <div class="setting-row-control">
                 <button
                   class="btn-primary"
                   type="button"
-                  disabled={busy()}
-                  onClick={() => void install()}
+                  disabled={busy() !== ''}
+                  onClick={() => void install(d.id)}
                 >
-                  {busy() ? '正在打开安装窗口…' : '安装 Git for Windows'}
+                  {busy() === d.id ? '正在打开安装窗口…' : '安装'}
                 </button>
               </div>
-              {/* 装完要重启——这句是能力边界不是解释，不许折叠（B7）：
-                  当前进程的 PATH 是启动时的快照，新装的 git 不在里面。 */}
-              <span class="setting-row-hint">
-                会开一个终端窗口跑 winget install --id Git.Git；装完请重启 qywork。
-              </span>
             </Show>
-            <Show when={result()}>{(r) => <span class="setting-row-hint">{r()}</span>}</Show>
           </div>
-        </Show>
-      )}
-    </Show>
+        )}
+      </For>
+      {/* 装完要重启——这句是能力边界不是解释，不许折叠（B7）：
+          当前进程的 PATH 是启动时的快照，新装的程序不在里面。
+          只在真有东西可装时才出现，装齐的机器上不该看到它。 */}
+      <Show when={deps().some((d) => d.canInstall)}>
+        <div class="setting-row stack">
+          <span class="setting-row-hint">安装会开一个终端窗口跑 winget；装完请重启 qywork。</span>
+        </div>
+      </Show>
+      <Show when={result()}>
+        {(r) => (
+          <div class="setting-row stack">
+            <span class="setting-row-hint">{r()}</span>
+          </div>
+        )}
+      </Show>
+    </>
   )
 }
 
+/**
+ * 系统设置。
+ *
+ * 这一页最容易长成一个杂物间——什么都不好归类就丢进来。这里的判据是
+ * **打开应用第一天就想改的那几样**：长什么样、这台机器缺不缺东西、
+ * 配置和会话存在哪。
+ *
+ * 模型和路径边界各自成页：它们条目多、改一次要读一段说明，混在这里会把
+ * 上面这三样淹掉。
+ */
 export function GeneralSettings() {
   ensureConfig()
 
@@ -118,7 +142,7 @@ export function GeneralSettings() {
       <section class="settings-block">
         <h3 class="settings-block-head">运行环境</h3>
         <div class="setting-rows">
-          <CommandShellRows />
+          <EnvironmentRows />
         </div>
       </section>
 

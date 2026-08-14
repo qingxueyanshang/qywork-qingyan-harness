@@ -1,9 +1,9 @@
 /**
  * 握手时的「我停在哪」。
  *
- * 覆盖范围：`handshake.ts` 的补发分支与 `commandShell` 能力上报
- * （令牌校验由 `e2e.test.ts` 走真连接覆盖）；`canInstall` 那条顺带覆盖
- * `api/host.ts` 的判据——它必须与安装路由是同一个函数。
+ * 覆盖范围：`handshake.ts` 的补发分支与 `environment` 能力上报
+ * （令牌校验由 `e2e.test.ts` 走真连接覆盖）；后者顺带覆盖 `api/host.ts` 的
+ * 依赖表——那张表同时喂握手和安装路由，分开算必然漂移。
  *
  * 这份测试锁的是一条用户可见的链路：**sidecar 重启之后，重连的客户端必须被告知
  * 要重拉全量**。不告知的代价是界面永远停在断线那一刻——那一轮一直显示执行中，
@@ -27,7 +27,15 @@ interface HelloOk {
   currentSeq: number
   resync: boolean
   capabilities: {
-    commandShell: { path: string | null; reason: string; canInstall: boolean }
+    environment: {
+      id: string
+      label: string
+      path: string | null
+      impact: string
+      required: boolean
+      hint: string
+      canInstall: boolean
+    }[]
   }
 }
 
@@ -104,27 +112,33 @@ describe('断线重连的位置', () => {
 
 describe('能力上报', () => {
   /**
-   * `commandShell` 必须**在握手里就有消费者可读的三格**。
+   * `environment` 必须**在握手里就有消费者可读的每一格**。
    *
    * 这条不是形式检查：`ServerCapabilities` 上一版有过 `pty` / `git` / `fileWatch`
    * 三个布尔，全被删掉，理由是**没有任何客户端读它们**（`transport.ts` 注释）。
-   * 所以这一格的验收是「设置页那一行能据此渲染」——
-   * 有路径就显示路径，没有就显示原因，`canInstall` 决定按钮出不出现。
+   * 所以这一格的验收是「设置页那一节能据此渲染」——
+   * 有路径就显示路径，没有就显示影响与下一步，`canInstall` 决定按钮出不出现。
    */
-  test('commandShell 报路径、原因与能不能一键装', () => {
-    const caps = shake(new EventBus(), {}).ok().capabilities
-    expect(caps.commandShell).toBeDefined()
-    const sh = caps.commandShell
-    // 本机装了 Git Bash，所以这里必然是有路径的那一支；两支的不变式分开写。
-    if (sh.path === null) expect(sh.reason.length).toBeGreaterThan(0)
-    else expect(sh.path.toLowerCase()).toContain('bash')
-    expect(typeof sh.canInstall).toBe('boolean')
+  test('environment 逐条报路径、影响与能不能一键装', () => {
+    const env = shake(new EventBus(), {}).ok().capabilities.environment
+    // 表里每一条都对应代码里一处真实的 spawn；bash 与 git 是必需的那两条。
+    expect(env.map((d) => d.id)).toEqual(['bash', 'git', 'ripgrep', 'node'])
+    for (const d of env) {
+      expect(d.label.length).toBeGreaterThan(0)
+      // 「缺了会怎样」必填：一行「未安装」不告诉用户要不要管它。
+      expect(d.impact.length).toBeGreaterThan(0)
+      if (d.path === null) expect(d.hint.length).toBeGreaterThan(0)
+      // 装上了就没什么可装的——按钮不该在已拥有的那一行出现。
+      else expect(d.canInstall).toBe(false)
+    }
+    expect(env.filter((d) => d.required).map((d) => d.id)).toEqual(['bash', 'git'])
   })
 
-  test('canInstall 与安装路由用同一个判据', async () => {
-    // 分开算的表现是「界面上有按钮、点下去回 409」——B5 明令不做那种按钮。
-    const caps = shake(new EventBus(), {}).ok().capabilities
-    const { canInstallShell } = await import('./api/host.ts')
-    expect(caps.commandShell.canInstall).toBe(canInstallShell())
+  test('本机装了 Git，所以 bash 与 git 都报得出路径', () => {
+    // 这条锁的是探测真的在探，而不是恒返回 null 也能让上一条通过。
+    const env = shake(new EventBus(), {}).ok().capabilities.environment
+    const bash = env.find((d) => d.id === 'bash')
+    expect(bash?.path?.toLowerCase()).toContain('bash')
+    expect(env.find((d) => d.id === 'git')?.path).not.toBeNull()
   })
 })

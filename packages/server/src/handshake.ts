@@ -12,10 +12,10 @@
 
 import type { EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { detectSandbox, probeBash } from '@qywork/tools'
+import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import pkg from '../package.json' with { type: 'json' }
-import { canInstallShell } from './api/host.ts'
+import { probeEnvironment } from './api/host.ts'
 import type { EventBus, Subscriber } from './bus.ts'
 import type { SocketData } from './deps.ts'
 
@@ -86,9 +86,9 @@ export function handleHello(
      */
     capabilities: {
       sandbox: sandboxCapability(),
-      // 同样**每次握手重新探测**：装完 git 重连一下就该显示出来，
-      // 而不是让用户重启整个服务——他不会知道要重启。`probeBash` 本身不缓存。
-      commandShell: { ...probeBash(), canInstall: canInstallShell() },
+      // 同样**每次握手重新探测**：装完之后重连一下就该显示出来，
+      // 而不是让用户重启整个服务——他不会知道要重启。这几个探针都不缓存。
+      environment: probeEnvironment(),
       mode: deps.config.mode ?? 'auto',
     },
   }
