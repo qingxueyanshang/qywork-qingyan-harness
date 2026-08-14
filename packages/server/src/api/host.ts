@@ -34,7 +34,7 @@ import { type ApiHandler, json } from './types.ts'
  * `start` 开一个新控制台窗口，`cmd /k` 让它在 winget 跑完后**留着**——
  * 装失败时那几行输出是用户唯一的线索。
  */
-const INSTALL_ARGV = [
+const INSTALL_ARGV: string[] = [
   'cmd.exe',
   '/c',
   'start',
@@ -48,7 +48,7 @@ const INSTALL_ARGV = [
   '-e',
   '--source',
   'winget',
-] as const
+]
 
 /** 给用户看的那一行——和真正跑的是同一份 argv，不另写一遍。 */
 const INSTALL_DISPLAY = 'winget install --id Git.Git -e --source winget'
@@ -91,7 +91,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
 
   // 起进程本身失败（cmd.exe 都没有）也要如实回报，不能让按钮看起来点成功了。
   try {
-    Bun.spawn(INSTALL_ARGV as unknown as string[], {
+    Bun.spawn(INSTALL_ARGV, {
       stdin: 'ignore',
       stdout: 'ignore',
       stderr: 'ignore',
