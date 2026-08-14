@@ -567,16 +567,20 @@
 
 /* ── 面板放大 ──
  *
- * 「藏起对话内容，只留输入框和右侧那块面板」。三列变两列，内容那一列改成上下
- * 两格：
+ * 「藏起对话内容，只留输入框和右侧那块面板」。三列变两列，面板**独占**整块内容区，
+ * 输入框悬浮在它上面——同一格重叠，不是上下两格：
  *
  *   ┌─────────┬────────────────────────────┐
  *   │         │  .topbar                   │
  *   │ sidebar ├────────────────────────────┤
  *   │         │        .side-panel         │
- *   │         ├────────────────────────────┤
- *   │         │   .main（只剩输入框）       │
- *   └─────────┴────────────────────────────┘
+ *   │         │      ┌──────────────┐      │
+ *   │         │      │ .composer 浮 │      │
+ *   └─────────┴──────┴──────────────┴──────┘
+ *
+ * **切成上下两格是错的**，试过一版：那样面板底下会多出一条分隔线加一块自己的
+ * 底色，等于在面板下面又造了一个盒子；输入框看着是被那个盒子装着，而不是浮在
+ * 面板上。现在 `.main` 和面板同格叠着，只当一层透明的浮层。
  *
  * 正文不是在这里藏的，是整块不渲染（见 `App.tsx`）——`display: none` 会把滚动
  * 位置清零，还原时落在几百条之前的开头。
@@ -588,14 +592,11 @@
 @media (min-width: 821px) {
   .app.panel-max.with-panel {
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-    /* 第三行按输入框自己的高度走，不能给 1fr——给了它就和面板对半分。 */
-    grid-template-rows: auto minmax(0, 1fr) auto;
   }
   .app.panel-max.sidebar-collapsed.with-panel {
     grid-template-columns: 0 minmax(0, 1fr);
   }
-  /* 面板成了这张「白纸」的上半截，圆角和左沿投影跟着它走
-     （数值同 `.main`，理由见那里）。 */
+  /* 面板成了那张「白纸」本身，圆角和左沿投影跟着它走（数值同 `.main`，理由见那里）。 */
   .app.panel-max .side-panel {
     grid-column: 2;
     grid-row: 2;
@@ -613,19 +614,33 @@
   .app.panel-max .side-head {
     border-top-left-radius: var(--r-xl);
   }
-  /* 下半截只剩输入框：高度由内容定，圆角和投影交给上半截。
-     `border-top` 留着——它就是面板和输入框之间那条分隔线。 */
+  /*
+   * 输入框那一层：和面板同格叠着，贴底，**什么都不画**——底色、边框、圆角、
+   * 投影全归面板，这一层只负责把输入框放到底下那个位置。
+   *
+   * `pointer-events: none` 是必须的：这一层铺满整块内容区，不关掉指针的话，
+   * 输入框上方那一大片透明区会把面板里的点击和选中全吃掉。开回来的是输入框
+   * 自己那一块。同 `.run-status` 那条悬浮状态条，理由写在 composer.css。
+   */
   .app.panel-max .main {
     grid-column: 2;
-    grid-row: 3;
-    height: auto;
+    grid-row: 2;
+    z-index: 1;
+    justify-content: flex-end;
+    background: none;
+    border: none;
     border-top-left-radius: 0;
     box-shadow: none;
+    pointer-events: none;
   }
-  /* 输入区的上留白平时由正文的 padding-bottom 给（理由见 composer.css），
-     正文不在了就得自己补一档，否则输入框直接贴着那条分隔线。 */
   .app.panel-max .composer-wrap {
-    padding-top: var(--s-4);
+    pointer-events: auto;
+  }
+  /* 空会话时输入区本来会上下居中（见 utility.css）。悬浮态不跟：那会让它停在
+     面板正中间，糊住内容——auto 外边距压得过 justify-content，得显式清掉。 */
+  .app.panel-max .main.empty .composer-wrap {
+    margin-top: 0;
+    margin-bottom: 0;
   }
   /* 左栏也收起时左边没有灰壳了，边框和圆角一起取消——同 `.main` 那条。 */
   .app.sidebar-collapsed.panel-max .side-panel {

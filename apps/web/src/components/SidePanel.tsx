@@ -135,7 +135,15 @@ export default function SidePanel() {
             >
               <IconExpand size={15} collapse={panelMaximized()} />
             </button>
-            <button class="icon-btn" type="button" aria-label="关闭面板" onClick={closePanel}>
+            {/* 关闭只在窄屏出现（样式见 utility.css）。宽屏由顶栏那个开关管，
+                这里再放一颗就是同一件事的第二个入口；窄屏的面板盖满全屏、把顶栏
+                一起盖住了，不留这颗就没有出路。 */}
+            <button
+              class="icon-btn panel-close-btn"
+              type="button"
+              aria-label="关闭面板"
+              onClick={closePanel}
+            >
               <IconX size={15} />
             </button>
           </div>

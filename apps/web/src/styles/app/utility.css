@@ -110,6 +110,11 @@
   .panel-max-btn {
     display: none;
   }
+  /* 反过来，关闭只有窄屏才需要：`inset: 0` 把顶栏连同那个开合按钮一起盖住了，
+     不留这一颗，面板开起来就关不掉。 */
+  .panel-close-btn {
+    display: grid;
+  }
 
   .user-col {
     max-width: 88%;
