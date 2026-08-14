@@ -4,7 +4,9 @@
  * AgentLoop 只认识这一层；换供应商不改 loop 一行代码。
  */
 
-import type { EffortLevel } from '@qywork/core'
+// `ContextGroup` 的真源在 `core/domain/model.ts`。这里只转出去给 `_group` 用——
+// 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
+import type { ContextGroup, EffortLevel } from '@qywork/core'
 import type { ModelSpec, ProviderKind } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
@@ -74,22 +76,21 @@ export interface WireMessage {
    * 原样回传 reasoning_content，否则后续轮次 400。Anthropic 路径不需要。
    */
   reasoningContent?: string
+  /**
+   * 缓存断点：**从请求开头到这条消息为止**的字节被 provider 缓存。
+   *
+   * 这是**协议差异，不是行为分支**：Anthropic 要显式划线
+   * （`cache_control`），而兼容协议的前缀缓存由服务端自动做、请求体里
+   * 根本没有这个位置。装配层无条件标注，各适配器自己决定要不要落到线上——
+   * 与 `reasoningContent`、`transmits` 是同一个形状。
+   *
+   * 标在哪由「这一段跨请求是不是逐字节稳定」决定，见 `agent/loop.ts` 的装配。
+   */
+  cacheBreakpoint?: boolean
   /** 内部记账用，绝不上线。 */
   _group?: ContextGroup
   _messageId?: string
 }
-
-export type ContextGroup =
-  | 'systemPrompt'
-  | 'systemTools'
-  | 'mcpTools'
-  | 'skills'
-  | 'memory'
-  | 'summary'
-  | 'historyMessages'
-  | 'executionRecords'
-  | 'intermediateContent'
-  | 'workspaceState'
 
 export type ContentBlock =
   | { type: 'text'; text: string }

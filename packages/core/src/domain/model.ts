@@ -5,11 +5,22 @@
  * - run  = 一次用户回合（一次 agent loop）
  * - step = loop 内可回放的 text / tool_action / compaction
  * - 一次工具调用 = 一行 tool_action，原地从 running 更新到终态；没有 tool_call / tool_result 两行。
- * - thinking 只做实时状态，不落库回放。
+ * - thinking **不回放给用户**，但要落库——两件事。给用户看的回放不含它；
+ *   而 DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传
+ *   `reasoning_content`，否则后续轮次 400。历史从 steps 投影回去时缺这一段
+ *   就是必然的 400，所以它借 tool_action 首条的 `content` 落库。
  */
 
 import type { ActionDescriptor } from '../protocol/events.ts'
-import type { ConversationId, MessageId, ResourceId, RunId, StepId, WorkspaceId } from './ids.ts'
+import type {
+  ConversationId,
+  MessageId,
+  ProviderRequestId,
+  ResourceId,
+  RunId,
+  StepId,
+  WorkspaceId,
+} from './ids.ts'
 
 // ──────────────────────────── 共享词表 ────────────────────────────
 //
@@ -147,9 +158,8 @@ export interface Run {
   errorMessage: string | null
   errorCode: string | null
 
-  contextTokens: number
-  contextLimit: number
-  contextPercent: number
+  // 上下文读数不在这里。真源是 `ProviderRequest`——一个 run 有 N 次请求，
+  // 账就该有 N 行；挂在 run 上的标量每 step 覆盖一次，只剩最后一次的读数。
 
   /** 重试链：本 run 是哪个失败 run 的重试；本 run 被哪个新 run 接替。 */
   retryOfRunId: RunId | null
@@ -289,7 +299,18 @@ export type StepPayload =
   | { kind: 'tool_call'; args: Record<string, unknown>; action?: ActionDescriptor }
   | {
       kind: 'tool_result'
-      args: Record<string, unknown>
+      /**
+       * **可缺**。正常终态一定有，但恢复/中断收尾（`settleRunningSteps`）
+       * 整体替换 payload 时 `args` 与 `action` 会被抹掉——那一刻我们只知道
+       * 「这次调用没有终态」，重建不出它当时的参数。
+       *
+       * 这里原来声明成必填，而写入侧早就在写不带它的行：类型说的和库里躺的
+       * 不是一回事。历史投影按类型写就会在孤儿行上拿到 undefined 再展开。
+       * 消费方（`runtime/transcript.ts`）的口径是 `args ?? {}`，
+       * 且那种行的 status 必然是 failure——模型看到「调用失败、参数已不可考」，
+       * 而不是一次「参数为空却自称成功」的记录。
+       */
+      args?: Record<string, unknown>
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
     }
@@ -349,6 +370,149 @@ export interface FileChange {
 
 // ─────────────────────────────── 产物 ───────────────────────────────
 
+// ─────────────────────────────── 上下文分组 ───────────────────────────────
+
+/**
+ * 上下文占用的分组口径。**这是唯一一份**，面板、装配层、账本都用它。
+ *
+ * 十个键逐字对应青研魔盒 `harness/llm/adapter.py` 的 `_CONTEXT_CATEGORY_KEYS`。
+ * 照抄不是偷懒：那份口径是产品上验证过的，而「分组该怎么切」本身没有更优解——
+ * 切法一变，两边的面板数字就再也没法对照，排查时连「谁和谁应该一样」都说不清。
+ *
+ * 定义在 `core` 而不是 `ai`：`ai` 的 `WireMessage._group` 与 `core` 的事件协议
+ * 必须是同一个类型。放在 `ai` 里的话 `core` 引不到（依赖只能朝下层走），
+ * 结果就是两处各写一份枚举——而那正是这次要清理的历史：`ai/types.ts` 曾有完整
+ * 的十个键，`protocol/events.ts` 另立了七个不同名的桶，面板建在后者上。
+ */
+export type ContextGroup =
+  | 'systemPrompt'
+  | 'systemTools'
+  | 'mcpTools'
+  | 'skills'
+  | 'memory'
+  | 'summary'
+  | 'historyMessages'
+  | 'executionRecords'
+  | 'intermediateContent'
+  | 'workspaceState'
+
+/**
+ * 分组顺序。**面板按这个顺序定序渲染，零值行也显示。**
+ *
+ * 顺序本身是协议的一部分：按值排序会让行随数字大小上下跳，用户在上面找一行
+ * 得每次重新扫一遍；而零值行不显示会让行数随会话变化——上一秒有九行，
+ * 下一秒十行，浮层高度跟着跳（B9）。
+ */
+export const CONTEXT_GROUPS: readonly ContextGroup[] = [
+  'historyMessages',
+  'executionRecords',
+  'intermediateContent',
+  'systemTools',
+  'mcpTools',
+  'systemPrompt',
+  'memory',
+  'skills',
+  'summary',
+  'workspaceState',
+]
+
+/** 各分组的 token 占用。键集与 `ContextGroup` 恒等，不允许出现别的键。 */
+export type ContextBreakdown = Record<ContextGroup, number>
+
+/**
+ * **没有发给模型**的那部分原文有多少。
+ *
+ * 压缩把一段历史换成摘要、把工具结果换成定位符之后，原文仍在账本里躺着，
+ * 只是没进这次请求。这两个数回答「什么被拿掉了」——面板只报「被谁占的」
+ * 是半张账，用户看到占用下降却不知道降在哪里。
+ *
+ * 能报出这个数的前提是**压缩是投影、不销毁原文**：原文还在 Step / 正文库里，
+ * 装配时用同一把尺量两次相减就得到它。cc-haha 没有这一行不是漏了——
+ * 它的旧结果正文被直接改写成占位串，原文不在任何可测处，算不出诚实的数。
+ */
+export interface ContextOmitted {
+  /** 被摘要替代掉的历史消息原文。 */
+  historyOriginal: number
+  /** 被定位符存根替代掉的工具结果正文。 */
+  intermediateOriginal: number
+}
+
+export function emptyBreakdown(): ContextBreakdown {
+  return {
+    systemPrompt: 0,
+    systemTools: 0,
+    mcpTools: 0,
+    skills: 0,
+    memory: 0,
+    summary: 0,
+    historyMessages: 0,
+    executionRecords: 0,
+    intermediateContent: 0,
+    workspaceState: 0,
+  }
+}
+
+export function emptyOmitted(): ContextOmitted {
+  return { historyOriginal: 0, intermediateOriginal: 0 }
+}
+
+// ─────────────────────────── 逐请求账 ───────────────────────────
+
+/**
+ * 一次真实模型请求的快照。**不存 payload 本身**，只存能对账的事实。
+ *
+ * ## 为什么账要落到「请求」这一层，而不是「run」这一层
+ *
+ * `runs` 上曾经有三列 `context_tokens/limit/percent`，每个 step 覆盖一次——
+ * 于是一个 run 只剩最后一次请求的读数，而「这一轮上下文怎么长起来的」
+ * 在账本里根本不存在。面板刷新后只能显示一个孤零零的数字，
+ * 更查不出「为什么第三轮比第二轮还低」。一个 run 有 N 次请求，
+ * 账就该有 N 行。
+ *
+ * ## `status` 的五态是 provider 交互的真实形状
+ *
+ * `pending`（已装配未发出）→ `in_flight`（已发出未回）→ 终态三选一：
+ * `received` 正常收完 / `rejected` 被 4xx 拒 / `uncertain` 超时或断流。
+ * **`uncertain` 不能并进 `rejected`**：被拒是 provider 明确说了话，
+ * 超时是我们不知道它收没收到——按「拒了」处理会把一次可能已计费的请求
+ * 记成没发生。
+ *
+ * ## usage 四个字段允许为 null
+ *
+ * `null` = provider 没回报，与真实的 0 是两回事。中转站漏 usage 是常态，
+ * 把没回报记成 0 会让上下文锚点误判成「这次请求什么都没占」。
+ */
+export interface ProviderRequest {
+  id: ProviderRequestId
+  runId: RunId
+  /** 本 run 内第几次模型往返，从 0 起。 */
+  turnIndex: number
+  /** 同一 turn 的第几次重试，从 0 起。与 turnIndex 一起构成唯一键。 */
+  retryIndex: number
+  model: string
+  status: ProviderRequestStatus
+  /** 发送前本地测得的输入量。除非适配器明说，否则它是估算。 */
+  measuredInputTokens: number
+  /** 上一条到底是不是精确值。面板据此决定标「实际统计」还是「估算统计」。 */
+  measurementExact: boolean
+  providerInputTokens: number | null
+  providerOutputTokens: number | null
+  providerCachedTokens: number | null
+  providerCacheWriteTokens: number | null
+  /** 本次请求各分组的占用。 */
+  sentCategories: ContextBreakdown
+  /** 本次请求**没有**发出去的那部分原文。 */
+  omittedCategories: ContextOmitted
+  errorCode: string | null
+  /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
+  payloadHash: string
+  cacheRouteFingerprint: string | null
+  sentAt: number | null
+  createdAt: number
+}
+
+export type ProviderRequestStatus = 'pending' | 'in_flight' | 'received' | 'uncertain' | 'rejected'
+
 // ─────────────────────────────── 上下文压缩 ───────────────────────────────
 
 export interface CompactionManifest {
@@ -373,6 +537,18 @@ export interface CompactionFacts {
   filesTouched: string[]
   openItems: string[]
   userConstraints: string[]
+  /**
+   * 被压掉那段里**落过盘的中间产物**，形如
+   * `run_command npm test → rs_abc123`。
+   *
+   * 不带它的话，压缩会让 sink 里那份正文变成**不可达**：登记行还在正文库里，
+   * 但模型再也不知道 `rs_abc123` 这个 id 存在过，`read_resource` 无从调起。
+   * 于是「落盘只解决不丢，读回才解决要用」这句话在压缩之后就不成立了。
+   *
+   * 只存定位事实，不存正文——正文一直在内容库里按哈希寻址。
+   * 旧 manifest 没有这个键，读出来是 `undefined`，按空处理（已落盘的是历史事实）。
+   */
+  resources?: string[]
 }
 
 // ─────────────────────────────── 工作区 ───────────────────────────────

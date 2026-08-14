@@ -12,6 +12,8 @@
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   CompactionManifest,
+  ContextBreakdown,
+  ContextOmitted,
   FileChange,
   RunUsage,
   StopReason,
@@ -224,19 +226,21 @@ export interface ContextEvent {
   runId: RunId
   tokens: number
   limit: number
+  /** 保留一位小数。1M 窗口下取整会把 2139 显示成 0%，那一位是有信息量的。 */
   percent: number
+  /**
+   * 这个总数是**实测**还是**估算**。
+   *
+   * 必须显式说出来。曾经的做法是 `max(全量估算, provider 真值)`，
+   * 两个数出自两把尺，锚点一失效显示值就从真值尺跌到估算尺——会话内容没变，
+   * 数字却掉了三分之一，而界面上没有任何东西解释这件事。
+   * 现在只有一把尺（见 `agent/context-meter.ts`），这个标签负责说明尺的成色。
+   */
+  source: 'actual' | 'estimated'
   /** 分组占用，供上下文面板画堆叠条。 */
   breakdown: ContextBreakdown
-}
-
-export interface ContextBreakdown {
-  systemPrompt: number
-  toolSchemas: number
-  skills: number
-  historyMessages: number
-  executionRecords: number
-  summary: number
-  workspaceState: number
+  /** 没有发给模型的那部分原文。 */
+  omitted: ContextOmitted
 }
 
 export interface TodosEvent {

@@ -50,8 +50,23 @@ export function buildSystemPrompt(): string {
 }
 
 /**
+ * 一条尾区注记及它归哪个桶。
+ *
+ * 分组必须带出来：原来全部标 `workspaceState`，于是面板上「记忆内容」
+ * 与「技能清单」两行**永远是 0**——数据一直在发，只是没人按组去量。
+ */
+export interface TailNote {
+  content: string
+  group: 'workspaceState' | 'skills' | 'memory'
+}
+
+/**
  * 尾区注记。每次请求重算，压在 transcript 之后靠近生成位置。
- * 放在这里而不是前缀里，是为了让它变化时不冲掉缓存。
+ *
+ * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的：记忆放在历史之前，
+ * 记忆一变其后整段历史全部失配；而召回按当轮查询做、几乎每 run 都变，
+ * 于是每 run 打掉一次整段历史缓存。放在历史之后，新一轮的历史是上一轮的前缀，
+ * 缓存一路命中到旧历史末尾。青研魔盒 `run_stream.py:257-262` 是同一个结论。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string
@@ -59,33 +74,43 @@ export function buildTailNotes(input: {
   gitBranch?: string | null
   /** 技能索引：只有 name + description，正文由模型按需 read_skill 拉取。 */
   skills?: { name: string; description: string }[]
-  /** 记忆索引：只有 key + 首行摘要，正文按需 memory(action=read) 拉取。 */
-  memories?: { key: string; preview: string }[]
-}): string[] {
+  /**
+   * 本轮选中的记忆**正文**（不是目录）。
+   *
+   * 改成正文的理由：目录制下模型得自己判断哪条相关，判断错了那条记忆这一轮
+   * 就等于不存在——而且不报错、界面上看不出来。「记忆没生效」和「记忆不存在」
+   * 从外面看一模一样。挑选与预算见 `tools/memory.ts` 的 `selectMemories`。
+   */
+  memories?: { key: string; body: string }[]
+  /** 超预算转按需的那些 key。要如实告诉模型它们存在。 */
+  deferredMemories?: string[]
+}): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
   const lines = [`工作区：${input.workspaceRoot}`, `平台：${input.platform}`, `当前日期：${today}`]
   if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
 
-  const notes = [lines.join('\n')]
+  const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]
 
-  // 技能与记忆**只放索引不放正文**。
   //
-  // 全放正文的话十个技能就能吃掉几万 token，而一次任务通常只用得上其中一个。
-  // 索引让模型自己判断要不要拉全文——这是按需加载的全部意义。
+  // 技能仍然**只放索引**：十个技能全放正文就能吃掉几万 token，而一次任务
+  // 通常只用得上其中一个，索引让模型自己判断要不要 read_skill 拉全文。
   //
-  // 两者都在尾区而不是冻结前缀：装一个技能、记一条记忆就会让整个 provider
-  // 缓存失效，那个代价远大于它们省下的那点 token。
+  // 记忆不同——它已经改成正文（见上面 `memories` 的注释）。两者的差别在于
+  // 判断成本：技能「要不要用」由任务本身决定，模型看名字就知道；
+  // 记忆「相关不相关」得看内容，只给名字等于让它猜。
   if (input.skills?.length) {
-    notes.push(
-      `## 可用技能（需要完整步骤时用 read_skill 读）\n` +
-        input.skills.map((s) => `- ${s.name}：${s.description}`).join('\n'),
-    )
+    const list = input.skills.map((s) => `- ${s.name}：${s.description}`).join('\n')
+    notes.push({
+      content: `## 可用技能（需要完整步骤时用 read_skill 读）\n${list}`,
+      group: 'skills',
+    })
   }
-  if (input.memories?.length) {
-    notes.push(
-      `## 已记住的事实（需要全文时用 memory(action=read) 读）\n` +
-        input.memories.map((m) => `- ${m.key}：${m.preview}`).join('\n'),
-    )
+  if (input.memories?.length || input.deferredMemories?.length) {
+    const bodies = (input.memories ?? []).map((m) => `### ${m.key}\n${m.body}`).join('\n\n')
+    const rest = input.deferredMemories?.length
+      ? `\n\n（另有 ${input.deferredMemories.join('、')} 未展开，需要时用 memory(action=read) 读）`
+      : ''
+    notes.push({ content: `## 已记住的事实\n\n${bodies}${rest}`, group: 'memory' })
   }
   return notes
 }

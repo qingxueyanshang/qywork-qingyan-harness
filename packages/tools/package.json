@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@qywork/agent": "workspace:*",
+    "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*"
   }
 }

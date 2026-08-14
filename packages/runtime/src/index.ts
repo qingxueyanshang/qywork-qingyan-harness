@@ -32,6 +32,8 @@ export {
   type StoredProvider,
   saveConfig,
 } from './config.ts'
+// 上下文面板：按会话现算，切会话/刷新后仍可查
+export { type ContextPanel, contextPanel } from './context-panel.ts'
 // 扩展装配：插件 + MCP + team。
 // `toolNamePrefix` / `pluginToolPrefix` 由这里转出——CLI 不直接依赖 mcp / plugins
 // 两个包，但 `qy mcp` / `qy doctor` / `qy plugins` 都要按前缀数工具，

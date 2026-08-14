@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
 import { lookupModel, ProviderError } from '@qywork/ai'
+import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext } from './index.ts'
 import { ToolRegistry } from './registry.ts'
 
@@ -46,7 +47,10 @@ function noopPersistence(): LoopPersistence {
     markExecuting: () => {},
     settleTool: () => {},
     saveUsage: () => {},
-    saveContext: () => {},
+    recordCompaction: () => {},
+    openRequest: () => 'pr_test',
+    markRequestSent: () => {},
+    settleRequest: () => {},
   }
 }
 
@@ -94,6 +98,7 @@ describe('ToolContext 生命周期', () => {
           conversationId: 'cv',
           runId,
           model: 'test',
+          contextWindow: 200_000,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -154,6 +159,7 @@ describe('ToolContext 生命周期', () => {
           conversationId: 'cv',
           runId,
           model: 'test',
+          contextWindow: 200_000,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -205,6 +211,7 @@ describe('权限拒绝', () => {
         conversationId: 'cv',
         runId,
         model: 'test',
+        contextWindow: 200_000,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -379,6 +386,7 @@ describe('上下文分组占用', () => {
           conversationId: 'cv',
           runId,
           model: 'test',
+          contextWindow: 200_000,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -432,13 +440,16 @@ describe('上下文分组占用', () => {
       registry,
       systemPrompt: '这是一段足够长的系统提示词，用来让 systemPrompt 那一桶明确非零。',
       // 尾区注记 → workspaceState 桶。
-      tailNotes: () => ['当前工作区状态：分支 main，无未提交改动。'],
+      tailNotes: () => [
+        { content: '当前工作区状态：分支 main，无未提交改动。', group: 'workspaceState' as const },
+      ],
       persist: noopPersistence(),
       makeToolContext: (runId, emit) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
         model: 'test',
+        contextWindow: 200_000,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -469,13 +480,17 @@ describe('上下文分组占用', () => {
     expect(b).toBeDefined()
 
     expect(b!.systemPrompt).toBeGreaterThan(0)
-    expect(b!.toolSchemas).toBeGreaterThan(0)
+    // 内置工具进 systemTools，不进已删的 toolSchemas；本例没有 mcp__ 工具。
+    expect(b!.systemTools).toBeGreaterThan(0)
+    expect(b!.mcpTools).toBe(0)
     expect(b!.summary).toBeGreaterThan(0)
     expect(b!.workspaceState).toBeGreaterThan(0)
     // 两条历史（一条带标记、一条不带）都归到 historyMessages。
     expect(b!.historyMessages).toBeGreaterThan(0)
     // 全零就是这条测试要挡的那个回归。
     expect(Object.values(b!).some((v) => v > 0)).toBe(true)
+    // 桶集必须与协议恒等：多一个少一个都说明有人又另立了一套。
+    expect(Object.keys(b!).sort()).toEqual([...CONTEXT_GROUPS].sort())
   })
 })
 
@@ -514,6 +529,7 @@ describe('原地打转', () => {
         conversationId: 'cv',
         runId,
         model: 'test',
+        contextWindow: 200_000,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -562,6 +578,7 @@ describe('原地打转', () => {
         conversationId: 'cv',
         runId,
         model: 'test',
+        contextWindow: 200_000,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -621,6 +638,7 @@ describe('effort 传到请求上', () => {
           conversationId: 'cv',
           runId,
           model: 'test',
+          contextWindow: 200_000,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -672,6 +690,7 @@ describe('花费带币种', () => {
           conversationId: 'cv',
           runId,
           model,
+          contextWindow: 200_000,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -755,5 +774,88 @@ describe('用户中断不是错误', () => {
     expect(finished?.stopReason).toBe('user_interrupt')
     // 报红的那条不能出现——中断不该走错误通道。
     expect(types).not.toContain('run.error')
+  })
+})
+
+describe('上下文读数：一把尺', () => {
+  /**
+   * **跨 run 不换尺。**
+   *
+   * 没有锚点时，每个 run 的第一次请求只能报本地估算（系统性偏低），
+   * 第二次起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
+   * 用户实测报的「一个轮会话里上下文跳了好几次」，跨轮的那一半就是它。
+   */
+  test('带着上一轮真值开跑，首个读数就是 actual 而不是估算', async () => {
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        contextWindow: 200_000,
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: (channel, delta) =>
+          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+        requestPermission: async () => true,
+      }),
+    })
+
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_anchor' as never,
+      history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
+      anchor: { tokens: 33_000, throughMessageId: 'ms_8' },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const ctx = events.find((e) => e.type === 'context')
+    expect(ctx?.type === 'context' && ctx.source).toBe('actual')
+    // 锚点 + 锚点之后新增的那条消息，不是 fakeAdapter 报的 10。
+    expect(ctx?.type === 'context' && ctx.tokens).toBeGreaterThanOrEqual(33_000)
+  })
+
+  test('没有锚点时如实标 estimated，不假装是实测', async () => {
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        contextWindow: 200_000,
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: (channel, delta) =>
+          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+        requestPermission: async () => true,
+      }),
+    })
+
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_noanchor' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    const ctx = events.find((e) => e.type === 'context')
+    expect(ctx?.type === 'context' && ctx.source).toBe('estimated')
   })
 })

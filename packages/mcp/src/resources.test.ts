@@ -270,6 +270,7 @@ function ctx() {
     conversationId: 'cv',
     runId: 'rn',
     model: 'm',
+    contextWindow: 200_000,
     resources: new Map(),
     state: new Map(),
     sink: null,

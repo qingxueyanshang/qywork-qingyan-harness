@@ -11,6 +11,8 @@ import type {
   ActionDescriptor,
   AgentEvent,
   Attachment,
+  ContextBreakdown,
+  ContextOmitted,
   EventEnvelope,
   RunUsage,
   StopReason,
@@ -282,7 +284,9 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
         tokens: ev.tokens,
         limit: ev.limit,
         percent: ev.percent,
+        source: ev.source,
         breakdown: ev.breakdown,
+        omitted: ev.omitted,
       })
       return
 
@@ -384,6 +388,16 @@ interface StoredMessage {
   attachments?: Attachment[]
   createdAt: number
 }
+/** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
+interface StoredContextPanel {
+  available: boolean
+  total: number
+  limit: number
+  percent: number
+  source: 'actual' | 'estimated'
+  breakdown: ContextBreakdown
+  omitted: ContextOmitted
+}
 interface StoredRun {
   id: string
   userMessageId: string | null
@@ -426,9 +440,16 @@ export async function reloadActiveConversation(): Promise<void> {
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
 
-  const [{ messages }, { runs }] = await Promise.all([
+  const [{ messages }, { runs }, ctx] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
     client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
+    // 上下文面板从账本现算。这里曾经直接 `s.context = null`，于是刷新一次、
+    // 切一次会话，面板就空了——而用户恰恰是回头看的时候才想知道被谁占的。
+    // 拉失败不影响会话本身能不能打开，退化成没有面板。
+    client
+      .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
+      .then((r) => r.context)
+      .catch(() => null),
   ])
 
   // 并行取每个 run 的 steps：串行拉在有几十轮的会话上会明显卡顿。
@@ -524,8 +545,19 @@ export async function reloadActiveConversation(): Promise<void> {
       s.todos = []
       s.teamMembers = []
       s.usage = null
-      s.context = null
       s.permission = null
+      // 上下文不在这一批里——它有账本可依（`provider_requests`），
+      // 不是「run 内的易失投影」。
+      s.context = ctx?.available
+        ? {
+            tokens: ctx.total,
+            limit: ctx.limit,
+            percent: ctx.percent,
+            source: ctx.source,
+            breakdown: ctx.breakdown,
+            omitted: ctx.omitted,
+          }
+        : null
     }),
   )
 }
@@ -533,6 +565,16 @@ export async function reloadActiveConversation(): Promise<void> {
 function stepToItem(s: StoredStep): TranscriptItem | null {
   if (s.kind === 'text') {
     return s.content ? { id: s.id, kind: 'text', text: s.content } : null
+  }
+  // 压缩条。这里曾经不处理它，而压缩事件只活在连接期——刷新一次
+  // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
+  if (s.kind === 'compaction') {
+    return {
+      id: s.id,
+      kind: 'compaction',
+      text: '',
+      compaction: { phase: s.status === 'failure' ? 'failed' : 'done' },
+    }
   }
   if (s.kind === 'tool_action') {
     const outcome = s.payload?.outcome

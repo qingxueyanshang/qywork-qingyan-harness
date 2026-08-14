@@ -7,10 +7,15 @@
 
 import type {
   CompactionManifest,
+  ContextBreakdown,
+  ContextOmitted,
   Conversation,
   ConversationId,
   Message,
   MessageId,
+  ProviderRequest,
+  ProviderRequestId,
+  ProviderRequestStatus,
   Run,
   RunId,
   RunUsage,
@@ -21,7 +26,16 @@ import type {
   Workspace,
   WorkspaceId,
 } from '@qywork/core'
-import { newConversationId, newMessageId, newRunId, newStepId, newWorkspaceId } from '@qywork/core'
+import {
+  emptyBreakdown,
+  emptyOmitted,
+  newConversationId,
+  newMessageId,
+  newProviderRequestId,
+  newRunId,
+  newStepId,
+  newWorkspaceId,
+} from '@qywork/core'
 import type { Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
 
@@ -481,9 +495,6 @@ export function createRun(
     stepCount: 0,
     errorMessage: null,
     errorCode: null,
-    contextTokens: 0,
-    contextLimit: 0,
-    contextPercent: 0,
     retryOfRunId: input.retryOfRunId ?? null,
     supersededBy: null,
     createdAt: now,
@@ -495,9 +506,9 @@ export function createRun(
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
         cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
-        context_tokens, context_limit, context_percent, retry_of_run_id, superseded_by,
+        retry_of_run_id, superseded_by,
         created_at, finished_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,0,0,0,?,NULL,?,NULL)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,NULL)`,
     )
     .run(
       run.id,
@@ -558,18 +569,6 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
       JSON.stringify(usage.turns),
       id,
     )
-}
-
-export function updateRunContext(
-  store: Store,
-  id: RunId,
-  ctx: { tokens: number; limit: number; percent: number },
-): void {
-  store.db
-    .query(
-      'UPDATE runs SET context_tokens = ?, context_limit = ?, context_percent = ? WHERE id = ?',
-    )
-    .run(ctx.tokens, ctx.limit, ctx.percent, id)
 }
 
 /**
@@ -658,34 +657,22 @@ export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: 
        WHERE r.status IN ('running','queued')`,
     )
     .all()
-  if (rows.length === 0) return { recovered: 0, ambiguous: 0 }
 
+  // **不能在这里提前返回。** 下面还有一趟「终态 run 底下的孤儿 step」要扫，
+  // 而那趟与本次有没有 stale run 无关——恰恰相反，最常见的情形就是
+  // 「run 都是终态的、但底下留着 running step」。早退会让那趟永远不执行。
   let ambiguous = 0
   const now = Date.now()
   const finishStmt = store.db.query(
     `UPDATE runs SET status = 'interrupted', stop_reason = ?, error_code = ?, error_message = ?,
      finished_at = ? WHERE id = ?`,
   )
-  // 卡在 running 的 step 也要落终态，否则 UI 上留一张永远转圈的工具卡。
-  const settleStepsStmt = store.db.query(
-    `UPDATE steps SET status = 'failure', payload = ? WHERE run_id = ? AND status = 'running'`,
-  )
-  const orphanPayload = JSON.stringify({
-    kind: 'tool_result',
-    outcome: {
-      status: 'failure',
-      // executed 无法判定，所以取**保守值 true**：假设它执行过。
-      // 反过来标 false 等于向模型和用户断言「没有副作用」，而我们并不知道。
-      executed: true,
-      message: '进程在该工具执行期间退出，结果未知',
-    },
-  })
 
   store.db.transaction(() => {
     for (const r of rows) {
       const isAmbiguous = Number(r.ambiguous) === 1
       if (isAmbiguous) ambiguous++
-      settleStepsStmt.run(orphanPayload, r.id)
+      settleRunningSteps(store, r.id)
       finishStmt.run(
         isAmbiguous ? 'internal_guard' : 'user_interrupt',
         isAmbiguous ? 'internal_error' : null,
@@ -694,9 +681,82 @@ export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: 
         r.id,
       )
     }
+
+    // **终态 run 底下也会留孤儿 step。** 上面那次扫描按 run 状态取，漏掉了它们。
+    //
+    // 产生路径是真实的：`tool.started` 的 yield 处被生成器 `.return()` 掐断
+    // （客户端断连、用户切走），step 已经 openToolStep 成 running 但没人收尾；
+    // 随后 session 的 finally 把 run 标成 interrupted 终态。于是这条 step
+    // **永远碰不到恢复流程**，在库里挂着 running 直到天荒地老。
+    //
+    // 后果不是「UI 上一张转圈的卡」那么轻——历史投影必须跳过含未终结调用的整个
+    // batch（provider 要求每个 tool call 有配对结果），一条孤儿会让**同一批次里
+    // 已经成功的写文件结果一起从历史里消失**。跨轮记忆修好了，中断过的那一轮
+    // 反而还是失忆的。
+    const orphanRuns = store.db
+      .query<{ run_id: string }, []>(
+        `SELECT DISTINCT s.run_id AS run_id FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE s.status = 'running' AND r.status NOT IN ('running','queued')`,
+      )
+      .all()
+    for (const o of orphanRuns) settleRunningSteps(store, o.run_id as RunId)
   })()
 
   return { recovered: rows.length, ambiguous }
+}
+
+/**
+ * 把一个 run 底下所有还挂着 running 的 step 落终态。
+ *
+ * ## 分两种，不能统一成一种
+ *
+ * 判据是 `execution_started_at`——**这是那条歧义边界的全部意义**：
+ *
+ * - **非空**：已经进了执行器。工具可能已经跑完并产生了副作用，也可能刚进去就崩了，
+ *   两者无法区分。所以 `executed: true`（保守假设它执行过）+ 「结果未知」。
+ *   向模型断言「没执行」等于让它重做——如果那是 `write_file` 或 `run_command`，
+ *   就是重复副作用。
+ * - **为空**：还没进执行器。这是**确定**没有发生的事，如实标 `executed: false`。
+ *   把它也说成「结果未知」会让模型对每一次中断都花一轮去核实所有工具，
+ *   包括那些明显没跑成的。
+ *
+ * 原来这两种被同一条 UPDATE 用同一份 payload 盖掉，于是「确定没跑」被记成了
+ * 「可能跑过」。
+ */
+export function settleRunningSteps(store: Store, runId: RunId): void {
+  store.db
+    .query(
+      `UPDATE steps SET status = 'failure', payload = ?
+       WHERE run_id = ? AND status = 'running' AND execution_started_at IS NOT NULL`,
+    )
+    .run(
+      JSON.stringify({
+        kind: 'tool_result',
+        outcome: {
+          status: 'failure',
+          executed: true,
+          message: '执行期间进程退出或被中断，结果未知；需要时请核实后再决定是否重做',
+        },
+      }),
+      runId,
+    )
+  store.db
+    .query(
+      `UPDATE steps SET status = 'failure', payload = ?
+       WHERE run_id = ? AND status = 'running' AND execution_started_at IS NULL`,
+    )
+    .run(
+      JSON.stringify({
+        kind: 'tool_result',
+        outcome: {
+          status: 'failure',
+          executed: false,
+          message: '未开始执行即被中断',
+        },
+      }),
+      runId,
+    )
 }
 
 export function listRuns(store: Store, conversationId: ConversationId): Run[] {
@@ -706,6 +766,194 @@ export function listRuns(store: Store, conversationId: ConversationId): Run[] {
     )
     .all(conversationId)
     .map(rowToRun)
+}
+
+// ─────────────────────────── 逐请求账 ───────────────────────────
+
+/**
+ * 记一次即将发出的模型请求。
+ *
+ * 在**装配完成之后、真正发出之前**调用，所以状态是 `pending`：这一刻我们已经
+ * 知道要发什么（分组占用、指纹都算得出来），但还不知道 provider 会不会收。
+ * 把这两件事分开记，是为了让「发出去了但没回」和「压根没发出去」在账本上
+ * 可区分——它们对上下文占用的含义完全不同。
+ */
+export function openProviderRequest(
+  store: Store,
+  input: {
+    runId: RunId
+    turnIndex: number
+    retryIndex: number
+    model: string
+    measuredInputTokens: number
+    measurementExact: boolean
+    sentCategories: ContextBreakdown
+    omittedCategories: ContextOmitted
+    payloadHash: string
+    cacheRouteFingerprint?: string | null
+  },
+): ProviderRequest {
+  const row: ProviderRequest = {
+    id: newProviderRequestId(),
+    runId: input.runId,
+    turnIndex: input.turnIndex,
+    retryIndex: input.retryIndex,
+    model: input.model,
+    status: 'pending',
+    measuredInputTokens: input.measuredInputTokens,
+    measurementExact: input.measurementExact,
+    providerInputTokens: null,
+    providerOutputTokens: null,
+    providerCachedTokens: null,
+    providerCacheWriteTokens: null,
+    sentCategories: input.sentCategories,
+    omittedCategories: input.omittedCategories,
+    errorCode: null,
+    payloadHash: input.payloadHash,
+    cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
+    sentAt: null,
+    createdAt: Date.now(),
+  }
+  store.db
+    .query(
+      `INSERT INTO provider_requests
+       (id, run_id, turn_index, retry_index, model, status, measured_input_tokens, measurement_exact,
+        provider_input_tokens, provider_output_tokens, provider_cached_tokens, provider_cache_write_tokens,
+        sent_categories, omitted_categories, error_code, payload_hash, cache_route_fingerprint,
+        sent_at, created_at)
+       VALUES (?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,NULL,?)`,
+    )
+    .run(
+      row.id,
+      row.runId,
+      row.turnIndex,
+      row.retryIndex,
+      row.model,
+      row.status,
+      row.measuredInputTokens,
+      row.measurementExact ? 1 : 0,
+      writeJson(row.sentCategories),
+      writeJson(row.omittedCategories),
+      row.payloadHash,
+      row.cacheRouteFingerprint,
+      row.createdAt,
+    )
+  return row
+}
+
+/** 请求真的发出去了。`sent_at` 只在这里置——面板据它选「最近一次已发送」。 */
+export function markProviderRequestSent(store: Store, id: ProviderRequestId): void {
+  store.db
+    .query("UPDATE provider_requests SET status = 'in_flight', sent_at = ? WHERE id = ?")
+    .run(Date.now(), id)
+}
+
+/**
+ * 请求终态。
+ *
+ * `usage` 为 null 表示 provider 没回报——**四个字段保持 null，不要填 0**。
+ * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次请求什么都没占」。
+ */
+export function settleProviderRequest(
+  store: Store,
+  id: ProviderRequestId,
+  status: Exclude<ProviderRequestStatus, 'pending' | 'in_flight'>,
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cachedTokens: number | null
+    cacheWriteTokens: number | null
+  } | null,
+  errorCode: string | null = null,
+): void {
+  store.db
+    .query(
+      `UPDATE provider_requests
+       SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
+           provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?
+       WHERE id = ?`,
+    )
+    .run(
+      status,
+      usage?.inputTokens ?? null,
+      usage?.outputTokens ?? null,
+      usage?.cachedTokens ?? null,
+      usage?.cacheWriteTokens ?? null,
+      errorCode,
+      id,
+    )
+}
+
+/** 本会话最近一次**已发送**的请求。面板的锚点从这里取。 */
+export function latestSentProviderRequest(
+  store: Store,
+  conversationId: ConversationId,
+): ProviderRequest | null {
+  const row = store.db
+    .query<Record<string, any>, [string]>(
+      `SELECT pr.* FROM provider_requests pr
+       JOIN runs r ON r.id = pr.run_id
+       WHERE r.conversation_id = ? AND pr.sent_at IS NOT NULL
+       ORDER BY pr.sent_at DESC, pr.id DESC
+       LIMIT 1`,
+    )
+    .get(conversationId)
+  return row ? rowToProviderRequest(row) : null
+}
+
+/**
+ * 本会话最近一次**带 usage 回报**的请求。
+ *
+ * 与上一个的区别是判据：这个要求 provider 真的报了数。锚点必须用这一个——
+ * 一次超时或漏 usage 的请求也是「已发送」，拿它当锚等于把锚点归零。
+ */
+export function latestAnchoredProviderRequest(
+  store: Store,
+  conversationId: ConversationId,
+): ProviderRequest | null {
+  const row = store.db
+    .query<Record<string, any>, [string]>(
+      `SELECT pr.* FROM provider_requests pr
+       JOIN runs r ON r.id = pr.run_id
+       WHERE r.conversation_id = ? AND pr.provider_input_tokens IS NOT NULL
+       ORDER BY pr.sent_at DESC, pr.id DESC
+       LIMIT 1`,
+    )
+    .get(conversationId)
+  return row ? rowToProviderRequest(row) : null
+}
+
+export function listProviderRequests(store: Store, runId: RunId): ProviderRequest[] {
+  return store.db
+    .query<Record<string, any>, [string]>(
+      'SELECT * FROM provider_requests WHERE run_id = ? ORDER BY turn_index ASC, retry_index ASC',
+    )
+    .all(runId)
+    .map(rowToProviderRequest)
+}
+
+function rowToProviderRequest(r: Record<string, any>): ProviderRequest {
+  return {
+    id: r.id,
+    runId: r.run_id,
+    turnIndex: r.turn_index,
+    retryIndex: r.retry_index,
+    model: r.model,
+    status: r.status,
+    measuredInputTokens: r.measured_input_tokens,
+    measurementExact: r.measurement_exact === 1,
+    providerInputTokens: r.provider_input_tokens,
+    providerOutputTokens: r.provider_output_tokens,
+    providerCachedTokens: r.provider_cached_tokens,
+    providerCacheWriteTokens: r.provider_cache_write_tokens,
+    sentCategories: { ...emptyBreakdown(), ...readJson(r.sent_categories, {}) },
+    omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
+    errorCode: r.error_code,
+    payloadHash: r.payload_hash,
+    cacheRouteFingerprint: r.cache_route_fingerprint,
+    sentAt: r.sent_at,
+    createdAt: r.created_at,
+  }
 }
 
 // ─────────────────────────────── Step ───────────────────────────────
@@ -868,9 +1116,6 @@ function rowToRun(r: Record<string, any>): Run {
     stepCount: r.step_count,
     errorMessage: r.error_message,
     errorCode: r.error_code,
-    contextTokens: r.context_tokens,
-    contextLimit: r.context_limit,
-    contextPercent: r.context_percent,
     retryOfRunId: r.retry_of_run_id,
     supersededBy: r.superseded_by,
     createdAt: r.created_at,

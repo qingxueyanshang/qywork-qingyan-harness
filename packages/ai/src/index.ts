@@ -31,7 +31,16 @@ export { buildAdapter } from './factory.ts'
 // 能力探测：cli 的 probe 子命令与设置页的「探测」按钮
 export { describeProbe, type ProbeOutcome, probeModel, toCapabilities } from './probe.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上用它兜底
-export { estimateTokens } from './tokens.ts'
+export {
+  estimateContent,
+  estimateJson,
+  estimateMessage,
+  estimateMessages,
+  estimateRequest,
+  estimateSchemas,
+  estimateText,
+  MEDIA_TOKENS,
+} from './tokens.ts'
 // 协议无关的请求与事件形状
 export type {
   ChatRequest,

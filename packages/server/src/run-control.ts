@@ -6,7 +6,7 @@
  */
 
 import type { Summarizer } from '@qywork/agent'
-import { buildAdapter, ProviderError } from '@qywork/ai'
+import { buildAdapter, computeCost, ProviderError, type ProviderUsage } from '@qywork/ai'
 import type { AgentEvent, Attachment, ConversationId, Run, RunId } from '@qywork/core'
 import {
   configPath,
@@ -15,7 +15,7 @@ import {
   resolveModel,
   Session,
 } from '@qywork/runtime'
-import { getConversation, getRun, listMessages, workspaceOf } from '@qywork/store'
+import { getConversation, getRun, listMessages, recordUsage, workspaceOf } from '@qywork/store'
 import { reject } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -266,6 +266,15 @@ export function makeServerSummarizer(
       ...(stored.capabilities ? { capabilities: stored.capabilities } : {}),
     })
     let text = ''
+    /*
+     * 摘要也花钱，而且这条路**从来没有记过账**。
+     *
+     * `usage_ledger` 的 CHECK 里早就有 `'summary'` 这个 kind，schema 注释也亲口
+     * 说压缩摘要的钱要单记——但生产代码零写入，只有测试在写它。
+     * 结果是手动压缩越频繁，账单和界面上的数字差得越多，而用户查不出是谁花的。
+     * （会话内自动压缩那条路一直在记，见 `runtime/session.ts` 的 `makeSummarizer`。）
+     */
+    let spent: { cost: number; u: ProviderUsage } | null = null
     for await (const ev of adapter.stream({
       model: adapter.spec.id,
       system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
@@ -275,6 +284,23 @@ export function makeServerSummarizer(
       signal: AbortSignal.timeout(120_000),
     })) {
       if (ev.type === 'text_delta') text += ev.delta
+      else if (ev.type === 'usage')
+        spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
+    }
+    if (spent) {
+      recordUsage(deps.store, {
+        kind: 'summary',
+        workspaceId: workspaceOf(deps.store, conversationId)?.id ?? '',
+        model: adapter.spec.id,
+        provider: stored.kind,
+        inputTokens: spent.u.inputTokens,
+        outputTokens: spent.u.outputTokens,
+        cachedTokens: spent.u.cachedTokens,
+        cacheWriteTokens: spent.u.cacheWriteTokens,
+        reasoningTokens: spent.u.reasoningTokens,
+        cost: spent.cost,
+        currency: adapter.spec.pricing.currency ?? 'USD',
+      })
     }
     return text.trim() || null
   }

@@ -3,7 +3,7 @@
 import type { ModelSpec, ProviderProfile } from '@qywork/ai'
 import { builtinCatalog, effortIsTransmittable, lookupModel, VENDORS } from '@qywork/ai'
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
-import { resolveModel } from '@qywork/runtime'
+import { contextPanel, resolveModel } from '@qywork/runtime'
 import {
   createConversation,
   getConversation,
@@ -142,6 +142,21 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     return convMatch[2] === 'messages'
       ? json({ messages: listMessages(d.store, id) })
       : json({ runs: listRuns(d.store, id) })
+  }
+
+  // 上下文面板。**按会话现算，不靠事件残留**——事件只在 run 跑着时流，
+  // 而用户恰恰是回头看的时候才想知道上下文被谁占的。
+  const ctxMatch = /^\/api\/conversations\/([^/]+)\/context$/.exec(p)
+  if (ctxMatch) {
+    const id = ctxMatch[1] as ConversationId
+    const conv = getConversation(d.store, id)
+    if (!conv) return json({ error: 'conversation not found' }, 404)
+    // 窗口按**这条会话的模型**解析。`active.provider` 是接口名不是协议名，
+    // 拿它当 kind 会让中转站上的 claude 走错目录条目。
+    const stored = resolveModel(d.config, conv.model)
+    const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
+    const spec = lookupModel(conv.model, kind ?? 'openai_compatible')
+    return json({ context: contextPanel(d.store, id, spec.contextWindow) })
   }
 
   const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)

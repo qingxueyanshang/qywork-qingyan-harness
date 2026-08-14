@@ -28,7 +28,11 @@ export { AgentLoop, type CompactionPort, type LoopPersistence } from './loop.ts'
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
+  BATCH_BUDGET_RATIO,
+  chargeBatchBudget,
   type PermissionVerdict,
+  RESULT_BUDGET_RATIO,
+  resetBatchBudget,
   type SinkPort,
   sanitizeToolName,
   type ToolContext,

@@ -28,6 +28,7 @@ function ctx(root: string, approve = true): ToolContext {
     conversationId: 'cv_test',
     runId: 'rn_test',
     model: 'test',
+    contextWindow: 200_000,
     resources: new Map(),
     state: new Map(),
     sink: null,

@@ -47,7 +47,7 @@
 
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError, ProviderError } from '../errors.ts'
-import { estimateTokens } from '../tokens.ts'
+import { estimateRequest } from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -89,13 +89,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
   async measure(req: ChatRequest): Promise<number> {
     // 没有免费的 count_tokens 端点。给字符估算，并在事件里标 exact=false——
     // 面板必须能区分「实测」和「估算」，否则用户会拿估算值去对账单。
-    return estimateTokens(this.buildBody(req))
+    return estimateRequest(req)
   }
 
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
     const body = this.buildBody(req)
 
-    yield { type: 'request_prepared', measuredInputTokens: estimateTokens(body), exact: false }
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req), exact: false }
 
     const usage: ProviderUsage = {
       inputTokens: 0,

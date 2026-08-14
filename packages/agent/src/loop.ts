@@ -13,25 +13,35 @@
  */
 
 import type {
-  CapacityRejection,
   ChatRequest,
   LlmAdapter,
   ProviderEvent,
+  ProviderUsage,
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
-import { computeCost, estimateTokens, ProviderError } from '@qywork/ai'
+import {
+  computeCost,
+  estimateJson,
+  estimateMessage,
+  estimateMessages,
+  estimateRequest,
+  estimateSchemas,
+  estimateText,
+  ProviderError,
+} from '@qywork/ai'
 import type {
   ActionDescriptor,
   AgentEvent,
   ContextBreakdown,
+  ContextOmitted,
   FileChange,
   RunId,
   RunUsage,
   StopReason,
   ToolOutcomeWire,
 } from '@qywork/core'
-import { newBatchId } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, newBatchId } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
 import {
@@ -40,15 +50,27 @@ import {
   type ProgressEvidence,
   repeatsNoProgress,
 } from './progress.ts'
-import { isParallelSafe, resolveAction, type ToolContext, type ToolRegistry } from './registry.ts'
+import {
+  BATCH_BUDGET_RATIO,
+  isParallelSafe,
+  resetBatchBudget,
+  resolveAction,
+  type ToolContext,
+  type ToolRegistry,
+} from './registry.ts'
 
 export interface LoopDeps {
   adapter: LlmAdapter
   registry: ToolRegistry
   /** 三层冻结前缀，已拼好。 */
   systemPrompt: string
-  /** 尾区注记：日期、技能索引、工作区状态。随时变化，不进前缀。 */
-  tailNotes: () => string[]
+  /**
+   * 尾区注记：日期、工作区状态、技能索引、**本轮召回的记忆正文**。
+   *
+   * 每条自带分组——原来全部标 `workspaceState`，于是面板上「记忆内容」
+   * 与「技能清单」两行永远是 0：数据一直在发，只是没人按组去量。
+   */
+  tailNotes: () => { content: string; group: 'workspaceState' | 'skills' | 'memory' }[]
   makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContext
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence
@@ -93,6 +115,23 @@ export interface LoopPersistence {
     callIndex: number,
     waveIndex: number,
     action: ActionDescriptor,
+    /**
+     * 本轮的思考正文，**只在一个 batch 的第一条上给**（其余传空串）。
+     *
+     * 它属于整个 assistant 轮而不是某一次调用，挂在首条上是最省的编码方式，
+     * 与青研魔盒 `agent_transcript.py:571-574` 的读法对齐。
+     *
+     * ## 为什么必须落库——这推翻了一条既有不变量
+     *
+     * 本文件原来写着「思考只做实时状态，不落库回放」。那条对**给用户看**成立，
+     * 对**给模型看**不成立：`ai/types.ts` 与 `openai-compat.ts` 都记着
+     * DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传
+     * `reasoning_content`，**否则后续轮次 400**，并标注「这不是可选优化」。
+     * 历史一旦从 steps 投影回去（跨轮记忆），缺这一段就是必然的 400。
+     *
+     * 不额外花上下文：活的 transcript 本来就在发它，落库只是让下一轮还能发。
+     */
+    reasoning: string,
   ): string
   markExecuting(stepId: string): void
   settleTool(
@@ -103,7 +142,55 @@ export interface LoopPersistence {
     action: ActionDescriptor,
   ): void
   saveUsage(runId: RunId, usage: RunUsage): void
-  saveContext(runId: RunId, tokens: number, limit: number, percent: number): void
+  /**
+   * 压缩落一条 step。
+   *
+   * `steps.kind` 的 CHECK 里一直有 `'compaction'`，`StepKind`、`StepPayload`、
+   * archive 渲染分支也都在——**唯独没有生产者**。前端的压缩条纯由活事件创建，
+   * 刷新一次就消失，而它恰恰是解释「上下文为什么降了」的唯一线索。
+   * 这是 C1 第 1 款的标准死链：协议有、界面认、没人往里写。
+   */
+  recordCompaction(
+    runId: RunId,
+    seq: number,
+    status: 'success' | 'failure',
+    payload: { manifestRevision: number; compactedMessages: number },
+  ): void
+  /**
+   * 逐请求账。**装配完成、发出之前**记一行，返回 id 供后续回填。
+   *
+   * 这里曾经是 `saveContext(runId, tokens, limit, percent)`——三个标量写在 run 上、
+   * 每个 step 覆盖一次。一个 run 有 N 次请求，账只剩最后一次的读数，
+   * 「这一轮上下文怎么长起来的」在账本里根本不存在。
+   */
+  openRequest(input: {
+    runId: RunId
+    turnIndex: number
+    retryIndex: number
+    model: string
+    measuredInputTokens: number
+    measurementExact: boolean
+    sentCategories: ContextBreakdown
+    omittedCategories: ContextOmitted
+    payloadHash: string
+  }): string
+  /** 请求真的发出去了。sent_at 只在这里置。 */
+  markRequestSent(requestId: string): void
+  /**
+   * 请求终态。`usage` 为 null = provider 没回报，**四个字段落 null 不落 0**——
+   * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次什么都没占」。
+   */
+  settleRequest(
+    requestId: string,
+    status: 'received' | 'uncertain' | 'rejected',
+    usage: {
+      inputTokens: number
+      outputTokens: number
+      cachedTokens: number | null
+      cacheWriteTokens: number | null
+    } | null,
+    errorCode: string | null,
+  ): void
 }
 
 export interface RunInput {
@@ -113,18 +200,20 @@ export interface RunInput {
   maxSteps?: number
   cacheKey?: string
   signal: AbortSignal
+  /**
+   * 上一次 provider 真值回执，从账本取。**决定这一轮开头显示的是不是同一把尺。**
+   *
+   * 没有它的话，每个 run 的第一次请求只能报本地估算（系统性偏低），
+   * 第二次请求起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
+   * 那正是「上下文跳了好几次」里跨轮的那一半。
+   *
+   * `throughMessageId`：这个回执覆盖到哪条消息为止。它之后的历史消息是
+   * 锚点没算过的，要另外估。
+   */
+  anchor?: { tokens: number; throughMessageId: string | null }
 }
 
 const DEFAULT_MAX_STEPS = 120
-
-/**
- * 一次请求最多压缩几次。
- *
- * 压缩后仍然超限说明压不动了——比如单条用户消息本身就超过窗口，或者工具 schema
- * 加冻结前缀已经吃满。继续循环就是每轮烧一次摘要调用的无限循环。
- * 2 次的依据：第一次压历史，第二次压上一次压完后新增的部分；再多没有新东西可压。
- */
-const MAX_COMPACTION_ATTEMPTS = 2
 
 /**
  * 流空闲超时。**两个事件之间**超过这个时长没有新事件就判定流卡死。
@@ -141,50 +230,38 @@ const MAX_COMPACTION_ATTEMPTS = 2
 export const STREAM_IDLE_TIMEOUT_MS = 180_000
 
 /**
- * 「本地测得的输入远低于窗口」里的**远**。
+ * 按思考档位放宽空闲超时。
  *
- * 本地估算是 4 字符 ≈ 1 token 的粗估，对中文会**低估**——纯中文大约
- * 1～1.5 token/字，粗估可能只报到实际的 1/4 甚至 1/6。所以倍率必须留足余量：
- * 20 倍意味着即使低估了 6 倍，仍然有 3 倍以上的空档才会触发否决。
+ * 180 秒是给常规档留的。高档位下首 token 之前模型要先想很久——`xhigh`/`max`
+ * 在长 prompt 上实测能超过三分钟，而那时掐掉的是一次**完全正常**的请求。
+ * 判错的代价（把慢请求掐死）比判漏（多挂一会儿）大得多，所以往宽了给。
  *
- * 实测撞到过的那次是 1963 / 1,000,000 —— 500 倍，离阈值远得很。
+ * 这条与「不按模型名猜行为」不冲突：档位是**用户显式选的配置**，不是从名字推的。
  */
-const IMPLAUSIBLE_CAPACITY_RATIO = 20
+function idleTimeoutFor(effort: ChatRequest['effort']): number {
+  if (effort === 'max') return STREAM_IDLE_TIMEOUT_MS * 3
+  if (effort === 'xhigh') return STREAM_IDLE_TIMEOUT_MS * 2
+  return STREAM_IDLE_TIMEOUT_MS
+}
 
 /**
- * 否决一个明显不成立的容量拒绝信号。
+ * 压缩的软阈值：占用超过它就在**发出之前**压一次。
  *
- * ## 这不违背「拒绝驱动」
+ * 三段相减，每一段都有理由：
  *
- * 拒绝驱动说的是**不要用本地估算去触发压缩**——那会在根本不需要的时候损失信息。
- * 这里做的是反方向的事：用一个**量级差**去**否掉**一个信号。
- * 触发仍然只认 provider 亲口说的话，本地数字没有资格让压缩发生，
- * 只有资格在差了 20 倍以上时说一句「这条大概不是真的」。
+ * - **减 `maxOutputTokens`**：那块空间是这一轮的输出要用的，provider 会按
+ *   `输入 + max_output > 窗口` 直接拒。不减它，检查放行的请求照样会被拒。
+ * - **减一个批级投递预算**：两次检查之间最多再进一个执行波次的结果，
+ *   而那一波的上界正是 `BATCH_BUDGET_RATIO`。不留这块余量，跳变就会跨过阈值——
+ *   而「只留一个触发入口」的全部前提就是跳变有上界。
  *
- * ## 三个条件必须同时满足，缺一不否
- *
- * 1. **判据来自文案匹配而非 provider 原生错误码**。`provider_code` 是端点
- *    自己说的「context_length_exceeded」，那没什么可怀疑的；`provider_message`
- *    是我们从一句话里认出来的，认错的可能性真实存在。
- * 2. **provider 没有自报任何数字**。它要是说了「用了 213000，上限 200000」，
- *    那就是一次带证据的拒绝，本地估算没资格推翻它。
- * 3. **本地测得的输入比窗口小 20 倍以上**。
- *
- * 否掉之后**不吞错误**，原样抛出去。我们只是拒绝为它烧一次摘要调用——
- * 「这条拒绝可疑」和「这次请求成功了」是两回事。
+ * 所以这个阈值不是拍的百分比，是「还能安全装下多少」的算术结果。
  */
-function implausibleCapacity(
-  capacity: CapacityRejection,
-  measuredInputTokens: number,
-  contextWindow: number,
-): string | null {
-  if (capacity.matchSource !== 'provider_message') return null
-  if (capacity.reportedInputTokens !== null || capacity.reportedLimitTokens !== null) return null
-  if (contextWindow <= 0 || measuredInputTokens <= 0) return null
-  if (measuredInputTokens * IMPLAUSIBLE_CAPACITY_RATIO >= contextWindow) return null
-  return `本地测得输入约 ${measuredInputTokens} token，模型窗口 ${contextWindow.toLocaleString()} token，相差 ${Math.round(
-    contextWindow / measuredInputTokens,
-  )} 倍`
+function softLimit(spec: { contextWindow: number; maxOutputTokens: number }): number {
+  return Math.max(
+    0,
+    spec.contextWindow - spec.maxOutputTokens - Math.floor(spec.contextWindow * BATCH_BUDGET_RATIO),
+  )
 }
 
 export class AgentLoop {
@@ -197,6 +274,9 @@ export class AgentLoop {
    * 装配方（runtime）传的是 conversationId。
    */
   private readonly audit = new PrefixAudit()
+
+  /** 上一次装配丢掉了多少原文。由 `buildRequest` 写，`context` 事件与账本读。 */
+  private lastOmitted: ContextOmitted = emptyOmitted()
 
   constructor(private readonly deps: LoopDeps) {}
 
@@ -213,7 +293,7 @@ export class AgentLoop {
     onStall: () => void,
   ): Promise<AsyncIterable<ProviderEvent>> {
     const provider = adapter.spec.provider
-    const idleMs = this.deps.streamIdleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS
+    const idleMs = this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(req.effort)
     const it = adapter.stream(req)[Symbol.asyncIterator]()
 
     /** 等一个事件，超时就判流卡死并中止本次请求。 */
@@ -274,6 +354,43 @@ export class AgentLoop {
     // transcript = 本 run 内新产生的对话，与传入的 history 拼接后发给模型。
     const transcript: WireMessage[] = []
 
+    /*
+     * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 仅对其后新增内容的估算。
+     *
+     * 这里刻意不做 `max(全量估算, 真值)`。那个形状是青研魔盒
+     * （`context/panel.py:460`）与 cc-haha（`contextBudget.ts:149`）共有的毛病：
+     * 两个数出自两把尺，锚点一失效显示值就从真值尺跌到系统性偏低的估算尺，
+     * 会话内容没变而数字掉三成——用户实测报的 33%→20% 就是它。
+     *
+     * `uncovered` 是锚点之后新增的历史消息（本轮的新用户消息）。锚点覆盖到
+     * 上一轮为止，不减掉这一块就会漏算。
+     */
+    let anchor: { tokens: number; uncovered: number; transcriptIndex: number } | null = input.anchor
+      ? {
+          tokens: input.anchor.tokens,
+          uncovered: estimateMessages(
+            input.history.filter(
+              (m) =>
+                !input.anchor?.throughMessageId ||
+                !m._messageId ||
+                m._messageId > input.anchor.throughMessageId,
+            ),
+          ),
+          transcriptIndex: 0,
+        }
+      : null
+
+    const meter = (fallback: number): { tokens: number; source: 'actual' | 'estimated' } =>
+      anchor
+        ? {
+            tokens:
+              anchor.tokens +
+              anchor.uncovered +
+              estimateMessages(transcript.slice(anchor.transcriptIndex)),
+            source: 'actual',
+          }
+        : { tokens: fallback, source: 'estimated' }
+
     let stopReason: StopReason = 'completed'
     /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
     const progress: ProgressEvidence[] = []
@@ -307,87 +424,112 @@ export class AgentLoop {
         const calls: WireToolCall[] = []
         let providerStop: string = 'end_turn'
         let refusalNote: string | null = null
+        /** 本次请求 provider 回报的 usage。null = 它没报——不要拿累计值代替。 */
+        let turnUsage: ProviderUsage | null = null
 
-        // ── 拒绝驱动的压缩：先发，被拒了再压 ──
-        //
-        // 不用阈值触发。本地 token 估算永远不准（各家 tokenizer 不同、工具 schema
-        // 与缓存前缀的计法也各异），按估算提前压缩会在**根本不需要压缩的时候**损失信息。
-        // 等 provider 亲口说「超了」，判据才是确定的。
-        //
-        // 这里的重试次数必须有上限：压缩后仍然超限说明压不动了（比如单条消息本身
-        // 就超过窗口），继续循环就是无限烧钱。
-        let stream: AsyncIterable<ProviderEvent>
-        // 分组占用在**请求装配处**算，因为 `req` 只活在这个 for 里；
-        // 而 `context` 事件是在下面的流循环里发的，那时 req 已经出了作用域。
-        let breakdown: ContextBreakdown | null = null
-        for (let attempt = 0; ; attempt++) {
-          // 每次尝试一个独立的中止句柄，链到 run 的 signal 上。
-          // 空闲超时只掐**这一次**请求，不能把整个 run 的 signal 也 abort 掉——
-          // 那样重试和后续步骤会一起死掉。
-          const attemptAbort = new AbortController()
-          const signal = AbortSignal.any([input.signal, attemptAbort.signal])
-          const req = { ...this.buildRequest(input, transcript), signal }
-          breakdown = breakdownOf(req)
+        /*
+         * ── 压缩触发：**只有这一个入口** ──
+         *
+         * 这里原来是「先发、被 provider 拒了再压、然后重发」，配着
+         * `MAX_COMPACTION_ATTEMPTS` 与 `implausibleCapacity` 两道补丁。三条问题：
+         *
+         * 1. **每次触发都先烧掉一次注定失败的长请求**——长 prompt 上是几秒到
+         *    几十秒外加计费。
+         * 2. 那条注释声称「原版三句话一句不能改」，但青研魔盒主线**不是**纯拒绝
+         *    驱动：它在发送前有真实载荷投影闸（`projection/apply.py:784-838`），
+         *    容量拒绝只是保底。qywork 只搬了保底、丢了前闸——**移植本身是残缺的**。
+         * 3. 反对阈值的论据是「本地估算永远不准」。那个前提在锚定尺下不成立：
+         *    占用 = provider 真值 + 仅一轮尾巴的估算，误差被限制在单轮增量内。
+         *
+         * 所以现在是**发送前检查**这一个入口。容量拒绝那条路保留，但**不再触发
+         * 压缩**——它只如实报错。两个触发就是两个执行入口，A2 第五问过不去。
+         *
+         * 代价说清楚：估算失误时不再自动救回，直接报错。可接受——报错是诚实的，
+         * 而单次/单批投递预算（`RESULT_BUDGET_RATIO` / `BATCH_BUDGET_RATIO`）
+         * 给了跳变上界，不存在无预警的跃迁。
+         */
+        const attemptAbort = new AbortController()
+        const signal = AbortSignal.any([input.signal, attemptAbort.signal])
+        const build = () => ({ ...this.buildRequest(input, transcript), signal })
+        let req = build()
 
-          // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
-          // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
-          const drift = this.audit.observe(input.cacheKey ?? input.runId, req.system)
-          if (drift)
-            process.stderr.write(`[qy] ${describeDrift(drift)}
-`)
-          try {
-            stream = await this.openStream(adapter, req, () => attemptAbort.abort())
-            break
-          } catch (err) {
-            const capacity = err instanceof ProviderError ? err.capacity : undefined
-            if (!capacity || !this.deps.compaction || attempt >= MAX_COMPACTION_ATTEMPTS) throw err
-
-            // 明显不成立的容量信号：否掉它，别为它烧一次摘要调用。
-            // `measure` 失败不能连累主路径——探测失败时按「测不出来」处理，照常压缩。
-            const measured = await adapter.measure(req).catch(() => 0)
-            const implausible = implausibleCapacity(capacity, measured, adapter.spec.contextWindow)
-            if (implausible) {
-              process.stderr.write(
-                `[qy] 容量拒绝存疑，已跳过压缩：${implausible}；判据来自文案匹配且 provider 未自报数字。原始错误：${
-                  (err as Error).message
-                }\n`,
-              )
-              throw err
-            }
-
-            // 把触发压缩的那条 provider 错误打到 stderr。
-            //
-            // 压缩是**拒绝驱动**的，所以「为什么会压缩」等价于「provider 说了什么」。
-            // 事件里只有 phase，没有原因——真出现误判（在一个 1M 窗口的模型上
-            // 因为两千 token 就触发压缩）时，没有这一行就完全无从查起。
-            // 实测撞到过一次，当时唯一的线索就是「有两条 compaction 事件」。
+        if (this.deps.compaction) {
+          const occupancy = anchor ? meter(0).tokens : estimateRequest(req)
+          if (occupancy > softLimit(adapter.spec)) {
             process.stderr.write(
-              `[qy] 容量拒绝触发压缩（第 ${attempt + 1} 次）：status=${
-                (err as ProviderError).status ?? '?'
-              } ${(err as Error).message}
+              `[qy] 发送前检查触发压缩：占用约 ${occupancy}，软阈值 ${softLimit(adapter.spec)}
 `,
             )
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             const outcome = await this.deps.compaction.run()
             if (outcome.status === 'compacted') {
+              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'success', {
+                manifestRevision: outcome.manifest.revision,
+                compactedMessages: outcome.manifest.compactedMessageCount,
+              })
               yield {
                 type: 'compaction',
                 runId: input.runId,
                 phase: 'done',
                 manifest: outcome.manifest,
               }
+              // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
+              req = build()
             } else {
-              // 压不动就把原始的容量错误抛出去。**不要吞掉它换成压缩失败**——
-              // 用户要知道的是「上下文超了」，压缩失败只是没能自动解决而已。
+              // 压不动不是致命错：照常发出去，让 provider 来判。
+              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'failure', {
+                manifestRevision: 0,
+                compactedMessages: 0,
+              })
               yield {
                 type: 'compaction',
                 runId: input.runId,
                 phase: 'failed',
                 reasonCode: outcome.reasonCode,
               }
-              throw err
             }
           }
+        }
+
+        const breakdown = breakdownOf(req)
+
+        // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
+        // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
+        const drift = this.audit.observe(input.cacheKey ?? input.runId, req.system)
+        if (drift)
+          process.stderr.write(`[qy] ${describeDrift(drift)}
+`)
+
+        // 账本行在**发出之前**落。这一刻我们已经知道要发什么（分组、指纹都算得出），
+        // 但还不知道 provider 会不会收——两件事分开记，「发出去了没回」
+        // 和「压根没发出去」在账本上才可区分。
+        const requestId = persist.openRequest({
+          runId: input.runId,
+          turnIndex: step,
+          retryIndex: 0,
+          model: adapter.spec.id,
+          measuredInputTokens: estimateRequest(req),
+          measurementExact: false,
+          sentCategories: breakdown,
+          omittedCategories: this.lastOmitted,
+          payloadHash: payloadHashOf(req),
+        })
+
+        let stream: AsyncIterable<ProviderEvent>
+        try {
+          stream = await this.openStream(adapter, req, () => attemptAbort.abort())
+          persist.markRequestSent(requestId)
+        } catch (err) {
+          const code = err instanceof ProviderError ? err.code : 'internal_error'
+          // 超时/断流与被拒不是一回事：前者我们不知道 provider 收没收到，
+          // 按「拒了」记会把一次可能已计费的请求记成没发生。
+          persist.settleRequest(
+            requestId,
+            code === 'stream_idle_timeout' ? 'uncertain' : 'rejected',
+            null,
+            code,
+          )
+          throw err
         }
 
         for await (const ev of stream) {
@@ -396,15 +538,18 @@ export class AgentLoop {
           switch (ev.type) {
             case 'request_prepared': {
               const limit = adapter.spec.contextWindow
-              const pct = limit ? Math.round((ev.measuredInputTokens / limit) * 100) : 0
-              persist.saveContext(input.runId, ev.measuredInputTokens, limit, pct)
+              const m = meter(ev.measuredInputTokens)
+              // 保留一位小数：1M 窗口下 2139 token 取整就是 0%，那一位有信息量。
+              const pct = limit ? Math.round((m.tokens / limit) * 1000) / 10 : 0
               yield {
                 type: 'context',
                 runId: input.runId,
-                tokens: ev.measuredInputTokens,
+                tokens: m.tokens,
                 limit,
                 percent: pct,
-                breakdown: breakdown ?? EMPTY_BREAKDOWN,
+                source: m.source,
+                breakdown: breakdown ?? emptyBreakdown(),
+                omitted: this.lastOmitted,
               }
               break
             }
@@ -433,6 +578,7 @@ export class AgentLoop {
               break
             }
             case 'usage': {
+              turnUsage = ev.usage
               mergeUsage(usage, ev.usage, adapter, turnIndex)
               persist.saveUsage(input.runId, usage)
               yield { type: 'usage', runId: input.runId, usage: structuredClone(usage) }
@@ -452,6 +598,17 @@ export class AgentLoop {
 
         turnIndex++
 
+        // 流跑完了就给这一行落终态。中途被用户打断算 `uncertain`——
+        // provider 那边收没收全我们不知道，而这正是 `uncertain` 存在的意义。
+        if (requestId) {
+          persist.settleRequest(
+            requestId,
+            input.signal.aborted ? 'uncertain' : 'received',
+            turnUsage,
+            null,
+          )
+        }
+
         if (input.signal.aborted) {
           stopReason = 'user_interrupt'
           break
@@ -468,6 +625,24 @@ export class AgentLoop {
             ...(thinkingText && calls.length ? { reasoningContent: thinkingText } : {}),
             _group: 'executionRecords',
           })
+        }
+
+        /*
+         * 锚点前移。**只有真的拿到 usage 才动**——0 或缺失不是可用回执，
+         * 那种时候锚点原地不动、增量继续长，显示值不会因为一次漏报而跳水。
+         *
+         * `transcriptIndex` 取**推完 assistant 消息之后**的长度：这一轮的输出
+         * 已经算在 `outputTokens` 里，再估一遍就是重复计数。其后推进来的
+         * 工具结果才是锚点没覆盖到的增量。
+         */
+        if (turnUsage) {
+          const total =
+            turnUsage.inputTokens +
+            (turnUsage.cachedTokens ?? 0) +
+            (turnUsage.cacheWriteTokens ?? 0) +
+            turnUsage.outputTokens
+          if (total > 0)
+            anchor = { tokens: total, uncovered: 0, transcriptIndex: transcript.length }
         }
 
         if (refusalNote) {
@@ -503,6 +678,10 @@ export class AgentLoop {
 
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
           const wave = waves[waveIndex]!
+          // 批级投递预算按波次清零。限单次没有上界——一波五个 read_file
+          // 各自都在 1/8 以内，加起来就是 5/8，而「压缩只留一个入口」的前提
+          // 正是两次检查之间的跳变有上界。
+          resetBatchBudget(ctx.state)
           const results = await Promise.all(
             wave.map(async ({ call, callIndex }) => {
               const spec = registry.get(call.name)
@@ -517,6 +696,8 @@ export class AgentLoop {
                 callIndex,
                 waveIndex,
                 action,
+                // 整个 batch 的思考只落一份，挂在首条上。
+                callIndex === 0 ? thinkingText : '',
               )
               return { call, callIndex, stepId, action }
             }),
@@ -677,6 +858,14 @@ export class AgentLoop {
     }
   }
 
+  /**
+   * 装配一次请求，并**同时算出这次没发出去多少原文**。
+   *
+   * 省略量不是事后统计出来的，是装配时**同尺两测相减**——原文一直在
+   * Message/Step 里躺着（压缩是投影、不销毁数据），所以量得到。
+   * cc-haha 没有这一行不是漏了：它的旧结果正文被直接改写成占位串，
+   * 原文不在任何可测处，算不出诚实的数。qywork 与青研魔盒同架构，配得上这一行。
+   */
   private buildRequest(input: RunInput, transcript: WireMessage[]): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
 
@@ -690,15 +879,68 @@ export class AgentLoop {
       : input.history
     const messages: WireMessage[] = [...projected]
 
+    /*
+     * 缓存断点之二：**投影后历史的末尾**。
+     *
+     * 位置是被布局逼出来的。请求的形状是
+     * `[tools][system] [history] [tailNotes] [transcript]`：
+     *
+     * - `history` 跨轮**只追加不改写**（新一轮的历史是上一轮的前缀），
+     *   所以这里是跨请求逐字节稳定的最远点——断点打在这儿，
+     *   上一轮缓存的那段这一轮直接命中。
+     * - `tailNotes` 里有日期和按当轮查询召回的记忆，**跨轮必变**。
+     *   断点打在它之后，每轮都会整体失配，等于没打。
+     *
+     * 在此之前 qywork 只有一个断点、打在系统提示词末尾，所以缓存住的只有
+     * 工具 schema + 系统提示词（约 1.8k）——**消息历史每一轮都在全价重付**。
+     * 这条只对 Anthropic 有效；兼容协议的前缀缓存由服务端自动做，不需要标记
+     * （`openai-compat.ts` 从不读这个字段，上线字节一个不变）。
+     */
+    const lastHistory = messages.length - 1
+    if (lastHistory >= 0) {
+      messages[lastHistory] = { ...messages[lastHistory]!, cacheBreakpoint: true }
+    }
+
+    // 被投影丢掉的那部分原文，按分组分开记：历史消息一份、工具结果一份。
+    // 面板的「省略上下文」两行就是它——只回答「被谁占的」是半张账，
+    // 用户看到占用下降却不知道降在哪里。
+    const kept = new Set(projected)
+    this.lastOmitted = emptyOmitted()
+    for (const m of input.history) {
+      if (kept.has(m)) continue
+      const n = estimateMessage(m)
+      if (m.role === 'tool' || m._group === 'intermediateContent') {
+        this.lastOmitted.intermediateOriginal += n
+      } else {
+        this.lastOmitted.historyOriginal += n
+      }
+    }
+
     // 尾区注记：日期、技能索引、工作区状态。放在 transcript **之前**但在冻结前缀
     // **之后**，这样它们变化时不会冲掉前缀缓存，同时又足够靠近生成位置。
     for (const note of this.deps.tailNotes()) {
-      if (note.trim()) {
-        messages.push({ role: 'system', content: note, _group: 'workspaceState' })
+      if (note.content.trim()) {
+        messages.push({ role: 'system', content: note.content, _group: note.group })
       }
     }
 
     messages.push(...transcript)
+
+    /*
+     * 缓存断点之三：**整串消息的末尾**。
+     *
+     * 一个 run 内 `tailNotes` 逐字节不变（日期不跨天、记忆每 run 只选一次、
+     * 技能索引每轮只刷一次），而 `transcript` 只追加。所以 run 内
+     * 「历史 + 尾区 + 已产生的 transcript」是一个不断变长的稳定前缀：
+     * 每一步读上一步缓存的那段（0.1×）、只写新增的那点（1.25×），
+     * 而不是每一步把整串 transcript 全价重付一遍。
+     *
+     * 跨 run 它必然失配（尾区变了），那时退回断点之二，历史那段照样命中。
+     */
+    const lastMessage = messages.length - 1
+    if (lastMessage > lastHistory) {
+      messages[lastMessage] = { ...messages[lastMessage]!, cacheBreakpoint: true }
+    }
 
     return {
       model: adapter.spec.id,
@@ -795,56 +1037,80 @@ function mergeUsage(
 /**
  * 上下文占用按组分解。
  *
- * 这个字段在协议里存在很久了，但生产者一直写死七个 0，消费者一个都没有——
- * 典型的死链路：字段在、值是假的，比没有更坏。分组信息其实一直是真实的：
- * `session.ts` 标 `historyMessages`、本文件标 `executionRecords`、
- * `compaction.ts` 标 `summary`、尾区注记标 `workspaceState`，
- * **只是从来没有人按组去量**。
+ * ## 桶的口径只有一份
  *
- * 两条口径要写清楚：
- * - **没有 `_group` 的消息一律归到 `historyMessages`**，不单开一个「其他」桶。
- *   一个永远对不上账的「其他」比归错桶更难解释。
- * - 各组之和**略小于** `measuredInputTokens`：后者量的是整个序列化请求体，
- *   含 JSON 骨架与字段名的开销。这是估算面板，不是账单。
+ * 键来自 `core` 的 `ContextGroup`，与青研魔盒 `harness/llm/adapter.py` 的
+ * `_CONTEXT_CATEGORY_KEYS` 逐字对应。这里曾经另立过一套七个桶
+ * （`toolSchemas` 一个桶顶掉 `systemTools`+`mcpTools`，没有 `memory`、
+ * 没有 `intermediateContent`），而完整的十个键其实一直躺在 `ai/types.ts` 里没人用。
+ * 面板建在那七个上，于是修得越勤离目标形态越远。**那一套已删，不留别名。**
+ *
+ * ## 各组之和与总数的关系
+ *
+ * 两者由 `context-meter.ts` 的对账步骤保证恒等：固定类目保实测值，
+ * 差额归到消息类目。不要在这里追求「加起来正好」——这个函数只负责量，
+ * 对账是另一件事。
  */
-const EMPTY_BREAKDOWN: ContextBreakdown = {
-  systemPrompt: 0,
-  toolSchemas: 0,
-  skills: 0,
-  historyMessages: 0,
-  executionRecords: 0,
-  summary: 0,
-  workspaceState: 0,
+/**
+ * 请求体指纹。用来在账本上认出「同一份内容发了两遍」。
+ *
+ * 非加密哈希是够的：它回答的是「这两行是不是同一次请求的重复」，
+ * 不承担任何安全语义。用加密哈希只会让每次装配多花几毫秒。
+ */
+function payloadHashOf(req: ChatRequest): string {
+  return Bun.hash(JSON.stringify([req.system, req.messages, req.tools])).toString(36)
+}
+
+/**
+ * 工具结果消息的**执行记录 / 工具结果**二分。
+ *
+ * 一条 tool 消息里装的是 `{call_id, tool, status, executed, summary, result}`：
+ * 前四个是这次调用的**事实信封**，后两个是它**带回来的正文**。两者的处置完全
+ * 不同——正文可以落 sink、可以在压缩时换成定位符，信封不能动。合成一个桶，
+ * 面板就答不了「上下文是被工具输出吃掉的，还是被模型自己的话吃掉的」。
+ *
+ * 量法照搬魔盒 `llm/adapter.py:170-215`：把同一份记录**去掉正文再量一次**，
+ * 两次之差就是正文。tokenization 不可加，所以不能分别量两段再相加。
+ */
+function splitToolResult(content: string, total: number): { envelope: number; body: number } {
+  try {
+    const record = JSON.parse(content) as Record<string, unknown>
+    if (typeof record !== 'object' || record === null) return { envelope: total, body: 0 }
+    const { summary: _s, result: _r, ...envelope } = record
+    const envelopeTokens = Math.min(total, estimateJson(envelope))
+    return { envelope: envelopeTokens, body: total - envelopeTokens }
+  } catch {
+    // 不是我们那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
+    return { envelope: total, body: 0 }
+  }
 }
 
 function breakdownOf(req: ChatRequest): ContextBreakdown {
-  const out: ContextBreakdown = {
-    systemPrompt: estimateTokens(req.system),
-    toolSchemas: estimateTokens(req.tools),
-    skills: 0,
-    historyMessages: 0,
-    executionRecords: 0,
-    summary: 0,
-    workspaceState: 0,
-  }
+  const out = emptyBreakdown()
+  out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text), 0)
+
+  // 工具 schema 分两桶。判据是 `mcp__` 前缀——`mcp/register.ts` 保证 MCP 工具
+  // 一律带它，插件工具走 `<插件id>__` 归内置一侧。这两类的处置完全不同：
+  // MCP 涨了是用户自己装的服务器在涨，内置涨了是我们自己的事。
+  const mcp = req.tools.filter((t) => t.name.startsWith('mcp__'))
+  const builtin = req.tools.filter((t) => !t.name.startsWith('mcp__'))
+  if (mcp.length) out.mcpTools = estimateSchemas(mcp)
+  if (builtin.length) out.systemTools = estimateSchemas(builtin)
+
   for (const m of req.messages) {
-    const n = estimateTokens(m.content)
-    switch (m._group) {
-      case 'skills':
-        out.skills += n
-        break
-      case 'executionRecords':
-        out.executionRecords += n
-        break
-      case 'summary':
-        out.summary += n
-        break
-      case 'workspaceState':
-        out.workspaceState += n
-        break
-      default:
-        out.historyMessages += n
+    // 整条量：正文 + tool call 参数 + 思考正文 + 协议开销。
+    // 只量 `m.content` 会把 `write_file` 的整份文件正文漏掉——它在参数里。
+    const n = estimateMessage(m)
+    // 没有 `_group` 的一律归 historyMessages，不单开「其他」桶——
+    // 一个永远对不上账的「其他」比归错桶更难解释。
+    const group = m._group ?? 'historyMessages'
+    if (m.role === 'tool' && typeof m.content === 'string') {
+      const { envelope, body } = splitToolResult(m.content, n)
+      out.executionRecords += envelope
+      out.intermediateContent += body
+      continue
     }
+    out[group] += n
   }
   return out
 }

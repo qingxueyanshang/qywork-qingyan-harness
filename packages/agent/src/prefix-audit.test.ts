@@ -186,7 +186,9 @@ describe('审真实的系统提示词', () => {
    */
   test('尾区注记确实带着会变的内容（证明分层不是摆设）', async () => {
     const { buildTailNotes } = await import('@qywork/runtime')
-    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux' }).join('\n')
+    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux' })
+      .map((n) => n.content)
+      .join('\n')
     const kinds = auditFrozenText(notes).map((h) => h.kind)
     expect(kinds).toContain('date')
     expect(kinds).toContain('abs-path')

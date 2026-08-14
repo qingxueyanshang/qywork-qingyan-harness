@@ -1,4 +1,5 @@
-import type { Attachment } from '@qywork/core'
+import type { Attachment, ContextGroup } from '@qywork/core'
+import { CONTEXT_GROUPS } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { type Command, matchSlash } from '../lib/commands.ts'
 import {
@@ -472,36 +473,97 @@ export function Composer() {
   )
 }
 
+/** 分组行的中文名。键与 `CONTEXT_GROUPS` 一一对应，顺序由后者决定。 */
+const GROUP_LABEL: Record<ContextGroup, string> = {
+  historyMessages: '历史消息',
+  executionRecords: '执行记录',
+  intermediateContent: '工具结果',
+  systemTools: '系统工具',
+  mcpTools: 'MCP工具',
+  systemPrompt: '系统提示词',
+  memory: '记忆内容',
+  skills: '技能清单',
+  summary: '会话摘要',
+  workspaceState: '工作区与状态',
+}
+
+/**
+ * 段色。**按行序取，不按值取**——颜色要和标签绑定，
+ * 这样用户第二次打开时「那条紫的」还是同一个类目。
+ */
+const SEG_COLOR = [
+  '#6366f1',
+  '#8b5cf6',
+  '#a855f7',
+  '#ec4899',
+  '#f43f5e',
+  '#f97316',
+  '#eab308',
+  '#22c55e',
+  '#14b8a6',
+  '#0ea5e9',
+  '#cbd5e1',
+]
+
+/** 紧凑记法：823 / 19.7k / 916.3k / 1M。数字要能一眼比大小，不是要精确到个位。 */
+function fmtTok(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+  return `${(n / 1_000_000).toFixed(1)}M`
+}
+
+function fmtLimit(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
+  if (n >= 1000) return `${Math.round(n / 1000)}k`
+  return String(n)
+}
+
 /**
  * 上下文占用。
  *
  * 点开看**被谁占的**——一个孤零零的「87%」不可操作：用户既不知道该压缩、
  * 该删记忆、还是该换个窗口更大的模型。
  *
- * 分组数字来自 `context` 事件的 `breakdown`。它在协议里躺了很久、生产者一直写死
- * 全 0；后端刚按 `_group` 填了真值，这里是它的第一个消费者。
+ * ## 行集与行序是固定的，零值也显示
  *
- * **各组之和略小于总数**：总数量的是整个序列化请求体，含 JSON 骨架开销。
- * 这句写在弹层里，不写的话「加起来对不上」会被当成 bug。
+ * 这里曾经 `filter(n > 0)` 再按值降序排。两条都要不得：行会随值出现、消失、
+ * 换位置，用户每次打开都得重新扫一遍才能找到关心的那一行；而行数一变，
+ * 浮层高度跟着跳（B9 明令禁止）。现在按 `CONTEXT_GROUPS` 定序，十行恒在，
+ * 末尾固定是剩余空间。
+ *
+ * ## 「省略上下文」只在真的省略了才出现
+ *
+ * 它回答「什么被拿掉了」。压缩之前恒为 0，此时整段不渲染——
+ * 一个恒零的区块是噪声，而不是信息。
  */
 function ContextMeter() {
   const [open, setOpen] = createSignal(false)
+
   const rows = () => {
-    const b = state.context?.breakdown
-    if (!b) return []
-    return (
-      [
-        ['系统提示词', b.systemPrompt],
-        ['工具定义', b.toolSchemas],
-        ['技能', b.skills],
-        ['对话历史', b.historyMessages],
-        ['执行记录', b.executionRecords],
-        ['压缩摘要', b.summary],
-        ['工作区状态', b.workspaceState],
-      ] as [string, number][]
-    )
-      .filter(([, n]) => n > 0)
-      .sort((a, b2) => b2[1] - a[1])
+    const c = state.context
+    if (!c) return []
+    const list = CONTEXT_GROUPS.map((key, i) => ({
+      key: key as string,
+      label: GROUP_LABEL[key],
+      tokens: c.breakdown[key],
+      color: SEG_COLOR[i] ?? '#cbd5e1',
+    }))
+    list.push({
+      key: 'freeSpace',
+      label: '剩余空间',
+      tokens: Math.max(0, c.limit - c.tokens),
+      color: SEG_COLOR[SEG_COLOR.length - 1]!,
+    })
+    return list
+  }
+
+  const omittedRows = () => {
+    const o = state.context?.omitted
+    if (!o) return []
+    return [
+      { key: 'historyOriginal', label: '历史消息原文', tokens: o.historyOriginal },
+      { key: 'intermediateOriginal', label: '工具结果原文', tokens: o.intermediateOriginal },
+    ].filter((r) => r.tokens > 0)
   }
 
   return (
@@ -518,26 +580,64 @@ function ContextMeter() {
           >
             {c().percent}%
           </button>
-          <Show when={open() && rows().length > 0}>
+          <Show when={open()}>
             <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
-              <div class="ctx-total">
-                {c().tokens.toLocaleString()} / {c().limit.toLocaleString()}
+              <div class="ctx-head">
+                <span>上下文</span>
+                <span class="ctx-head-nums">
+                  {fmtTok(c().tokens)} / {fmtLimit(c().limit)} ({c().percent}%)
+                </span>
+              </div>
+              {/* 总数的成色。不写的话用户没法判断这个数能不能拿来做决定。 */}
+              <div class="ctx-source">{c().source === 'actual' ? '实际统计' : '估算统计'}</div>
+              <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
+                <For each={rows()}>
+                  {(r) => (
+                    <Show when={r.tokens > 0}>
+                      <span
+                        class="ctx-stack-seg"
+                        style={{
+                          width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
+                          background: r.color,
+                        }}
+                      />
+                    </Show>
+                  )}
+                </For>
               </div>
               <ul class="ctx-rows">
                 <For each={rows()}>
-                  {([label, n]) => (
+                  {(r) => (
                     <li class="ctx-row">
-                      <span class="ctx-name">{label}</span>
-                      <span
-                        class="ctx-bar"
-                        style={{ '--w': `${Math.min(100, (n / Math.max(1, c().tokens)) * 100)}%` }}
-                      />
-                      <span class="ctx-num">{n.toLocaleString()}</span>
+                      <span class="ctx-dot" style={{ background: r.color }} />
+                      <span class="ctx-name">{r.label}</span>
+                      <span class="ctx-num">{fmtTok(r.tokens)}</span>
+                      <span class="ctx-pct">
+                        {((r.tokens / Math.max(1, c().limit)) * 100).toFixed(1)}%
+                      </span>
                     </li>
                   )}
                 </For>
               </ul>
-              <div class="ctx-note">各组之和略小于总数：总数含请求体本身的结构开销。</div>
+              <Show when={omittedRows().length > 0}>
+                <div class="ctx-omitted">
+                  <div class="ctx-subtitle">省略上下文</div>
+                  <ul class="ctx-rows">
+                    <For each={omittedRows()}>
+                      {(r) => (
+                        <li class="ctx-row">
+                          <span class="ctx-dot ctx-dot-hollow" />
+                          <span class="ctx-name">{r.label}</span>
+                          <span class="ctx-num">{fmtTok(r.tokens)}</span>
+                          <span class="ctx-pct">
+                            {((r.tokens / Math.max(1, c().limit)) * 100).toFixed(1)}%
+                          </span>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </div>
+              </Show>
             </div>
           </Show>
         </span>

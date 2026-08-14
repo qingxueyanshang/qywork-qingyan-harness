@@ -84,14 +84,39 @@ export class RuntimeCompaction implements CompactionPort {
     const through = this.manifest?.compactedThroughMessageId
     const fresh = through ? target.filter((m) => m.id > through) : target
 
+    /*
+     * 摘要输入 = 用户消息 + **模型自己说过的话**。
+     *
+     * 这里曾经只喂 `listMessages`，而那张表只有 user 行。表现是：一次压缩之后
+     * 模型保住了「调过哪些工具」的一行式事实（`collectActions` 给的），
+     * 却丢光了自己历轮说过的所有结论——跨轮记忆刚修好，第一次压缩就塌回去一半，
+     * 而且塌得无声。
+     *
+     * 正文取 text step，它一直在库里，只是从来没有人喂给摘要器。
+     * id 沿用归属的那条 user 消息：`through` 由最后一条 user 决定，
+     * 插进来的 assistant 条目不参与边界计算，只参与摘要正文。
+     */
+    const assistantText = this.collectAssistantText(fresh)
+    const segments: {
+      id: MessageId
+      role: 'user' | 'assistant'
+      content: string
+      hasAttachments?: boolean
+    }[] = []
+    for (const m of fresh) {
+      segments.push({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        hasAttachments: m.attachments.length > 0,
+      })
+      const said = assistantText.get(m.id)
+      if (said?.trim()) segments.push({ id: m.id, role: 'assistant', content: said })
+    }
+
     const outcome = await compact(
       {
-        messages: fresh.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          hasAttachments: m.attachments.length > 0,
-        })),
+        messages: segments,
         actions: this.collectActions(fresh),
         previous: this.manifest,
       },
@@ -108,6 +133,33 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
+   * 待压缩范围内模型说过的话，按归属的 user 消息聚合。
+   *
+   * 只取 `text` step——`tool_action` 的事实由 `collectActions` 单独收，
+   * 两边都收会让同一次调用在摘要输入里出现两遍。
+   *
+   * **被接替的 run 不收**，口径与历史投影一致：失败尝试说过的话不该进摘要，
+   * 否则压缩会把一段作废的推理固化成「已确认的事实」。
+   */
+  private collectAssistantText(messages: { id: MessageId }[]): Map<MessageId, string> {
+    const out = new Map<MessageId, string>()
+    if (messages.length === 0) return out
+    const wanted = new Set(messages.map((m) => m.id))
+
+    for (const run of listRuns(this.deps.store, this.deps.conversationId)) {
+      if (!run.userMessageId || run.supersededBy) continue
+      if (!wanted.has(run.userMessageId)) continue
+      const said = listSteps(this.deps.store, run.id)
+        .filter((s) => s.kind === 'text' && s.content)
+        .map((s) => s.content)
+        .join('')
+      if (!said) continue
+      out.set(run.userMessageId, (out.get(run.userMessageId) ?? '') + said)
+    }
+    return out
+  }
+
+  /**
    * 收集待压缩范围内的工具动作。
    *
    * 只取已终结的 step：还在 running 的动作结果未知，把「未知」写进事实包
@@ -120,6 +172,7 @@ export class RuntimeCompaction implements CompactionPort {
     target: string | null
     summary: string
     errorCode?: string | null
+    resourceId?: string | null
   }[] {
     if (messages.length === 0) return []
     const lastId = messages[messages.length - 1]!.id
@@ -133,7 +186,11 @@ export class RuntimeCompaction implements CompactionPort {
         if (step.status === 'running') continue
         const payload = step.payload as {
           action?: { target?: string | null }
-          outcome?: { message?: string; errorKind?: string }
+          outcome?: {
+            message?: string
+            errorKind?: string
+            resources?: { resourceId?: string }[]
+          }
         } | null
         out.push({
           stepId: `${run.id}:${step.id}`,
@@ -142,6 +199,7 @@ export class RuntimeCompaction implements CompactionPort {
           target: payload?.action?.target ?? null,
           summary: payload?.outcome?.message ?? '',
           errorCode: payload?.outcome?.errorKind ?? null,
+          resourceId: payload?.outcome?.resources?.[0]?.resourceId ?? null,
         })
       }
     }

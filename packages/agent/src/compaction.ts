@@ -102,6 +102,8 @@ export interface CompactionInput {
     target: string | null
     summary: string
     errorCode?: string | null
+    /** 这次调用落盘的正文 id。压缩后靠它才能把内容库里那份读回来。 */
+    resourceId?: string | null
   }[]
   /** 上一份 manifest；增量压缩时在它基础上推进。 */
   previous: CompactionManifest | null
@@ -223,6 +225,11 @@ function extractFacts(
 
   const openItems = [...(previous?.openItems ?? [])]
   const userConstraints = [...(previous?.userConstraints ?? [])]
+  // 落盘产物的定位符。合并而不是替换——早期落的那份正文压缩之后照样要能读回。
+  const resources = new Set(previous?.resources ?? [])
+  for (const a of actions) {
+    if (a.resourceId) resources.add(`${a.tool}${a.target ? ` ${a.target}` : ''} → ${a.resourceId}`)
+  }
 
   for (const m of messages) {
     const text = (m.content ?? '').trim()
@@ -245,8 +252,20 @@ function extractFacts(
   return {
     filesTouched: [...filesTouched].slice(-80),
     openItems: dedupeTail(openItems, 40),
-    // 约束条数比其他两项收得更紧：它逐字保留，是投影里最占地方的部分。
-    userConstraints: dedupeTail(userConstraints, 24),
+    /*
+     * 约束**按身份去重，不设条数上限**。
+     *
+     * 这里原来是 `dedupeTail(userConstraints, 24)`——只保最近 24 条，第 25 条
+     * 进来时**最早的那条无声消失**。而同一个文件 `extractFacts` 的注释写着
+     * 「早期定下的约束不能随着一次新压缩消失」，两句直接自相矛盾。
+     * 长会话里「永远不要 force-push」这类第一天定下的铁律，正是最先被挤掉的。
+     *
+     * 去重按逐字内容（青研魔盒用 `fact_hash`，同一个意思）。规模算得出来：
+     * 约束来自用户键入，40 轮会话上限约 40×320 字符 ≈ 6K token——
+     * 为了不反转一条约束，这个代价是对的。
+     */
+    userConstraints: [...new Set(userConstraints)],
+    ...(resources.size ? { resources: [...resources].slice(-40) } : {}),
   }
 }
 
@@ -263,17 +282,33 @@ function dedupeTail(list: string[], keep: number): string[] {
   return out.reverse()
 }
 
+/**
+ * 摘要提示。**分节，不是一段自由要求。**
+ *
+ * 原来是五条并列的要求，模型会把它们当成风格建议——第一条「约束用原话」
+ * 在一段长会话里几乎必然被概括掉，而约束一旦被概括就可能反转含义。
+ *
+ * 分节的关键在第 1、2 两节：**逐条列出全部用户消息**，以及**用原文引用**
+ * 交代下一步。cc-haha 的压缩提示（`services/compact/prompt.ts:61-143`）
+ * 就是这个形状，它把「保真」从一句要求变成了一个可检查的结构——
+ * 少列一条用户消息是看得出来的，而「概括得不够准」看不出来。
+ *
+ * 机械提取的事实包（`extractFacts`）仍然是第二道保险：正则漏掉的靠这里的
+ * 结构兜住，这里概括掉的靠事实包逐字兜住。两道都不完美，但它们的失效方式不同。
+ */
 function buildSummaryPrompt(segments: string[], previousSummary: string | null): string {
   const head = previousSummary
     ? `已有摘要（本次在它基础上续写，不要重复其中内容）：\n${previousSummary}\n\n`
     : ''
   return (
-    `${head}把下面的会话记录压缩成一份交接摘要。要求：\n` +
-    `1. 保留用户的原始意图与全部约束条件，约束用原话不要概括。\n` +
-    `2. 保留已完成的改动、当前进度、未解决的问题。\n` +
-    `3. 保留关键文件路径与决定的理由。\n` +
-    `4. 丢掉过程性的探索、失败的尝试细节、重复的确认。\n` +
-    `5. 只输出摘要正文，不要开场白。\n\n` +
+    `${head}把下面的会话记录压缩成一份交接摘要，按这几节输出，不要开场白：\n\n` +
+    `## 用户要求\n逐条列出**全部**用户消息的意图，一条不能少。原话里的约束` +
+    `（不要做什么、必须用什么、具体数值与期限）**逐字引用**，不要改写。\n\n` +
+    `## 已完成\n改了哪些文件、做成了什么。带上文件路径。\n\n` +
+    `## 当前状态\n正在做什么、卡在哪里、有哪些已知失败。\n\n` +
+    `## 关键决定\n定了什么、为什么这么定。理由不能省——省了下一轮会重新讨论一遍。\n\n` +
+    `## 下一步\n接手者应该先做什么。涉及具体位置时**引用原文**，不要只说「那个文件」。\n\n` +
+    `过程性的探索、失败的尝试细节、重复的确认可以丢掉。\n\n` +
     `会话记录：\n${segments.join('\n')}`
   )
 }
@@ -330,6 +365,10 @@ export function projectManifest(
   if (f.userConstraints.length)
     factLines.push(`用户约束：\n${f.userConstraints.map((s) => `- ${s}`).join('\n')}`)
   if (f.filesTouched.length) factLines.push(`涉及文件：${f.filesTouched.join('、')}`)
+  if (f.resources?.length) {
+    const list = f.resources.map((s) => `- ${s}`).join('\n')
+    factLines.push(`落盘产物（需要正文时用 read_resource 取回）：\n${list}`)
+  }
   if (f.openItems.length) factLines.push(`未解决：\n${f.openItems.map((s) => `- ${s}`).join('\n')}`)
 
   return [

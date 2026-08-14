@@ -77,7 +77,6 @@ export interface ModelSpec {
   contextWindow: number
   maxOutputTokens: number
   pricing: Pricing
-  vision: boolean
   thinking: ThinkingMode
   /**
    * 支持的 effort 档位。空数组=不支持 effort 参数。
@@ -95,11 +94,9 @@ export interface ModelSpec {
    */
   disableThinkingMaxEffort: EffortLevel | null
   /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
-  rejectsSamplingParams: boolean
   /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
   minCacheablePrefix: number
   /** 提示缓存断点上限。 */
-  maxCacheBreakpoints: number
   /**
    * 这条 spec 是不是来自内置目录。
    *
@@ -226,12 +223,9 @@ const CLAUDE_BASE = {
   vendor: 'anthropic',
   contextWindow: 1_000_000,
   maxOutputTokens: 128_000,
-  vision: true,
   thinking: 'adaptive_only' as const,
   // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
-  rejectsSamplingParams: true,
-  maxCacheBreakpoints: 4,
 }
 
 export function claudeCatalog(now = Date.now()): ModelSpec[] {
@@ -295,7 +289,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       thinksByDefault: false,
       disableThinkingMaxEffort: 'max',
       // 4.6 的采样参数仍然可用。
-      rejectsSamplingParams: false,
       minCacheablePrefix: 1024,
     },
     {
@@ -309,7 +302,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       effortLevels: [],
       thinksByDefault: false,
       disableThinkingMaxEffort: 'max',
-      rejectsSamplingParams: false,
       minCacheablePrefix: 4096,
     },
   ]
@@ -333,7 +325,6 @@ function deepseekCatalog(): ModelSpec[] {
     vendor: 'deepseek',
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
-    vision: false,
     /**
      * 订正过一次，**但只订正 chat/completions 这一支**（Responses 那支见下面）。
      *
@@ -349,10 +340,8 @@ function deepseekCatalog(): ModelSpec[] {
     effortLevels: ['high', 'max'] as EffortLevel[],
     thinksByDefault: false,
     disableThinkingMaxEffort: 'max' as EffortLevel,
-    rejectsSamplingParams: false,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
     minCacheablePrefix: 0,
-    maxCacheBreakpoints: 0,
   }
   const flash: ModelSpec = {
     ...base,
@@ -453,14 +442,11 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     contextWindow: 128_000,
     maxOutputTokens: 8_192,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
-    vision: false,
     thinking: 'none',
     effortLevels: [],
     thinksByDefault: false,
     disableThinkingMaxEffort: 'max',
-    rejectsSamplingParams: false,
     minCacheablePrefix: 1024,
-    maxCacheBreakpoints: 4,
   }
 }
 
@@ -471,24 +457,33 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * （2026-07-30 seed，逐条对照抄的：窗口、默认最大输出、四档价、思考档位）。
  * 那份是它的产品真源，不是我这里重新查的——所以要改价先去核那边，别凭印象改。
  *
- * 三个字段魔盒那份里没有，qywork 需要，这里按下面的口径填，都不猜：
+ * `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
+ * 多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
  *
- * - `vision`：魔盒没有这一维，而 qywork 里这个字段**目前一个消费者都没有**
- *   （全仓 grep 只有定义和赋值）。所以一律 `false` = 未确认，
- *   等它真的有消费者时再逐条实测填。
- * - `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
- *   多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
- * - `minCacheablePrefix` / `maxCacheBreakpoints`：兼容协议没有显式断点，
- *   断点数一律 0；最小前缀取魔盒缓存画像里的 `minimumCacheTokens: 1024`。
+ * `minCacheablePrefix`：兼容协议的前缀缓存由服务端自动做、不需要显式断点，
+ * 这个数在那条路上没有消费者；填魔盒缓存画像里的 `minimumCacheTokens: 1024` 只是占位。
+ * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
+ * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
+ *
+ * ## 删掉的三个能力位
+ *
+ * `vision` / `rejectsSamplingParams` / `maxCacheBreakpoints` 曾经在这里，
+ * 三个都是零消费者，按 C1 删掉。
+ *
+ * `vision` 值得单说：它对绝大多数条目填的是 `false`，而语义是**未确认**不是
+ * 「确认不支持」。拿它当门控会把一批实际支持视觉的中转站模型挡掉，
+ * 而那种失败看起来像「图片发不出去」，查不到这里。**按不确定的数据做门控，
+ * 比不做门控更糟。**
+ *
+ * `maxCacheBreakpoints` 只有两个取值：Anthropic 恒 4、兼容协议恒 0。
+ * 那是**协议常量**不是模型能力，而我们只用 2 个断点——一个逐模型不变的字段，
+ * 放在逐模型的目录里就是误导。断点数写在用它的那个适配器里。
  */
 function openAiCompatCatalog(): ModelSpec[] {
   const base = {
     provider: 'openai_compatible' as const,
-    vision: false,
     disableThinkingMaxEffort: 'max' as EffortLevel,
-    rejectsSamplingParams: false,
     minCacheablePrefix: 1024,
-    maxCacheBreakpoints: 0,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({

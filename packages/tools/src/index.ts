@@ -26,12 +26,14 @@ import { webFetchTool, webSearchTool } from './web.ts'
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
 export {
   listScopedEntries,
+  loadScopedMemories,
   MAX_ENTRIES,
   MAX_ENTRY_CHARS,
   MEMORY_DIR,
   MEMORY_SUBDIR,
   type MemoryEntry,
   readScoped,
+  selectMemories,
 } from './memory.ts'
 // 联网：runtime/capabilities.ts 给插件的 host.net.fetch 用
 export { type SafetyOptions, safeFetch } from './net-safety.ts'

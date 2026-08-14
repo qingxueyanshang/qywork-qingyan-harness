@@ -1,9 +1,18 @@
 /**
  * 压缩与主循环的接线测试。
  *
- * `compaction.test.ts` 验的是压缩算法本身；这里验的是**拒绝 → 压缩 → 重发**
- * 这条控制流真的走通了。两者分开是因为前者纯函数、后者要造 provider 拒绝，
+ * `compaction.test.ts` 验的是压缩算法本身；这里验的是**发送前检查 → 压缩 →
+ * 重新装配**这条控制流真的走通了。两者分开是因为前者纯函数、后者要造占用压力，
  * 混在一起会让「算法对不对」和「接线对不对」在失败时分不出来。
+ *
+ * ## 这份测试整个换过一次
+ *
+ * 原来验的是「拒绝 → 压缩 → 重发」：先发一次注定失败的长请求，被 provider 拒了
+ * 再压。那条路已经删掉，连同 `MAX_COMPACTION_ATTEMPTS` 与 `implausibleCapacity`
+ * 两道补丁——它们是那个形状的下游产物，形状没了它们就没有存在理由。
+ *
+ * 换掉的理由在 `loop.ts` 的触发处写着：每次触发先烧一次注定失败的长请求，
+ * 而青研魔盒主线本来就有发送前投影闸，qywork 只移植了保底那一半。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -25,7 +34,10 @@ function noopPersistence(): LoopPersistence {
     markExecuting: () => {},
     settleTool: () => {},
     saveUsage: () => {},
-    saveContext: () => {},
+    recordCompaction: () => {},
+    openRequest: () => 'pr_test',
+    markRequestSent: () => {},
+    settleRequest: () => {},
   }
 }
 
@@ -35,6 +47,7 @@ function makeCtx(): ToolContext {
     conversationId: 'cv',
     runId: 'rn' as never,
     model: 'test',
+    contextWindow: 200_000,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -77,6 +90,21 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
     },
   }
   return { adapter, state }
+}
+
+/** 一路正常的 adapter。 */
+function okAdapter(): LlmAdapter {
+  return {
+    kind: 'anthropic',
+    transmits: { thinking: true, effort: true },
+    spec: lookupModel('claude-opus-5', 'anthropic'),
+    measure: async () => 0,
+    async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    },
+  }
 }
 
 const okOutcome: CompactionOutcome = {
@@ -135,179 +163,113 @@ function build(
   })
 }
 
-describe('拒绝驱动的压缩', () => {
-  test('容量拒绝触发压缩并重发，run 正常收尾', async () => {
-    const { adapter, state } = rejectingAdapter(1)
+describe('发送前检查：唯一的压缩触发', () => {
+  /**
+   * 占用没到软阈值就**一次也不压**。
+   *
+   * 这是「不在根本不需要的时候损失信息」那条原则的落点——原来靠「等 provider
+   * 亲口说超了」实现，现在靠阈值本身足够高（窗口 − 输出预留 − 一个批级预算）。
+   */
+  test('占用远低于阈值时不压缩', async () => {
     const comp = fakeCompaction(okOutcome)
-    const events = await collect(build(adapter, comp.port), 'rn_1')
+    const events = await collect(build(okAdapter(), comp.port), 'rn_low')
+    expect(comp.state.runs).toBe(0)
+    expect(events.some((e) => e.type === 'compaction')).toBe(false)
+    expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
+  })
 
-    expect(comp.state.runs).toBe(1)
-    // 第一次被拒、第二次成功 —— 证明重发真的发生了，而不是把错误吞掉了事。
-    expect(state.attempts).toBe(2)
+  /**
+   * 占用越过软阈值 → 发出去**之前**压一次，然后重新装配。
+   *
+   * 「重新装配」不能省：压缩改的是投影，拿压缩前那份请求发出去，
+   * 这次压缩就白花了。
+   */
+  test('越过软阈值：发送前压一次并重新装配', async () => {
+    const comp = fakeCompaction(okOutcome)
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_high' as never,
+      history: [],
+      // 锚点直接把占用顶到阈值之上——不用真造一段几十万字的历史。
+      // 1M 窗口、128k 输出预留、1/4 批级余量 → 软阈值 622,000。
+      anchor: { tokens: 700_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    expect(comp.state.runs).toBeGreaterThan(0)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
-
-    const finished = events.find((e) => e.type === 'run.finished')
-    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+    expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
   })
 
-  test('压缩次数有上限 —— 压不动时不无限烧钱', async () => {
-    const { adapter, state } = rejectingAdapter(99)
-    const comp = fakeCompaction(okOutcome)
-    const events = await collect(build(adapter, comp.port), 'rn_2')
-
-    // 上限 2 次压缩 → 最多 3 次请求。没有上限的话这里会一直转下去，
-    // 每转一圈烧一次摘要调用。
-    expect(state.attempts).toBeLessThanOrEqual(3)
-    expect(comp.state.runs).toBeLessThanOrEqual(2)
-    expect(events.some((e) => e.type === 'run.error' && e.code === 'context_overflow')).toBe(true)
-  })
-
-  test('压不动时上报原始的容量错误，不吞成「压缩失败」', async () => {
-    const { adapter } = rejectingAdapter(99)
+  /** 压不动不是致命错：照常发出去，让 provider 来判。 */
+  test('压不动时照常发送，不把 run 掐死', async () => {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'too_few_messages' })
-    const events = await collect(build(adapter, comp.port), 'rn_3')
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_skip' as never,
+      history: [],
+      anchor: { tokens: 700_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    expect(events.some((e) => e.type === 'compaction' && e.phase === 'failed')).toBe(true)
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.status).toBe('done')
+  })
 
-    expect(
-      events.some(
-        (e) =>
-          e.type === 'compaction' && e.phase === 'failed' && e.reasonCode === 'too_few_messages',
-      ),
-    ).toBe(true)
-    // 用户要知道的是「上下文超了」；压缩失败只是没能自动解决而已，
-    // 报成压缩失败会让人去查压缩配置，而真正该做的是精简会话。
+  /**
+   * **容量拒绝不再触发压缩，只如实报错。**
+   *
+   * 两个触发就是两个执行入口。保留拒绝那条路做保底看着更稳，实际是把
+   * A2 第五问的「否」变成「不是明确的否」，而它换来的只是一次注定失败的
+   * 长请求外加一套重试状态。
+   */
+  test('容量拒绝直接上报，不再触发压缩重发', async () => {
+    const comp = fakeCompaction(okOutcome)
+    const { adapter, state } = rejectingAdapter(1)
+    const events = await collect(build(adapter, comp.port), 'rn_reject')
+
+    expect(comp.state.runs).toBe(0)
+    // 只发了一次——没有「压完再来一次」。
+    expect(state.attempts).toBe(1)
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
   })
 
-  test('没有压缩端口时容量拒绝直接上报，不静默卡住', async () => {
-    const { adapter, state } = rejectingAdapter(1)
-    const events = await collect(build(adapter), 'rn_4')
-
-    expect(state.attempts).toBe(1)
-    expect(events.some((e) => e.type === 'run.error' && e.code === 'context_overflow')).toBe(true)
+  test('没有压缩端口时容量拒绝照样上报，不静默卡住', async () => {
+    const { adapter } = rejectingAdapter(1)
+    const events = await collect(build(adapter), 'rn_nocomp')
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
   })
 
-  test('非容量错误不触发压缩 —— 压缩解决不了参数错误', async () => {
-    const { adapter } = rejectingAdapter(99, paramError)
+  test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
-    await collect(build(adapter, comp.port), 'rn_5')
-
-    // 一次都不该压。判宽了会变成「压缩 → 重发 → 同样的参数错误」的烧钱死循环。
+    const { adapter } = rejectingAdapter(1, paramError)
+    const events = await collect(build(adapter, comp.port), 'rn_param')
     expect(comp.state.runs).toBe(0)
-  })
-})
-
-/**
- * 否掉明显不成立的容量信号。
- *
- * 起因是实测撞到过一次：1963 token 的输入，模型窗口 100 万，却收到容量拒绝，
- * 白烧了一次摘要调用。差了 500 倍的信号不该被当真。
- *
- * **这不违背「拒绝驱动」**：本地数字没有资格让压缩**发生**，
- * 只有资格在差了一个量级以上时**否掉**一个信号。方向相反，不是同一件事。
- */
-describe('容量信号的兜底否决', () => {
-  /** 文案强匹配、但 provider 一个数字都没自报 —— 最脆弱的那条判定路径。 */
-  function numberlessCapacityError(): unknown {
-    const err = new Error('prompt is too long') as Error & { status: number }
-    err.status = 400
-    return classifyProviderError('anthropic', err)
-  }
-
-  /** measure 可控的 adapter：本地测得多少 token 由这里说了算。 */
-  function measuringAdapter(measured: number, makeError: () => unknown, rejectTimes = 99) {
-    const state = { attempts: 0 }
-    const adapter: LlmAdapter = {
-      kind: 'anthropic',
-      transmits: { thinking: true, effort: true },
-      // claude-opus-5 的窗口是 100 万，正好对上实测那次的量级差。
-      spec: lookupModel('claude-opus-5', 'anthropic'),
-      measure: async () => measured,
-      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        state.attempts++
-        if (state.attempts <= rejectTimes) throw makeError()
-        yield { type: 'done', stopReason: 'end_turn' }
-      },
-    }
-    return { adapter, state }
-  }
-
-  test('1963 token 对 100 万窗口 —— 跳过压缩，原始错误照样上报', async () => {
-    const { adapter, state } = measuringAdapter(1963, numberlessCapacityError)
-    const comp = fakeCompaction(okOutcome)
-    const events = await collect(build(adapter, comp.port), 'rn_c1')
-
-    // 一次摘要调用都不该花。
-    expect(comp.state.runs).toBe(0)
-    // 也不该重发 —— 跳过压缩不等于重试。
-    expect(state.attempts).toBe(1)
-    // **不吞错误**：「这条拒绝可疑」和「这次请求成功了」是两回事。
-    expect(events.some((e) => e.type === 'run.error' && e.code === 'context_overflow')).toBe(true)
-  })
-
-  /**
-   * provider 自报了数字就是一次带证据的拒绝，本地估算没资格推翻它。
-   * `capacityError()` 的文案是「213000 tokens > 200000 maximum」。
-   */
-  test('provider 自报了数字时不否决，照常压缩', async () => {
-    const { adapter } = measuringAdapter(1963, capacityError)
-    const comp = fakeCompaction(okOutcome)
-    await collect(build(adapter, comp.port), 'rn_c2')
-
-    expect(comp.state.runs).toBeGreaterThan(0)
-  })
-
-  /**
-   * 原生容量码是端点自己说的，没什么可怀疑的。只有文案匹配才可能认错。
-   */
-  test('判据是 provider 原生容量码时不否决', async () => {
-    const withCode = (): unknown => {
-      const err = Object.assign(new Error('too long'), {
-        status: 400,
-        body: { error: { code: 'context_length_exceeded' } },
-      })
-      return classifyProviderError('anthropic', err)
-    }
-    const { adapter } = measuringAdapter(1963, withCode)
-    const comp = fakeCompaction(okOutcome)
-    await collect(build(adapter, comp.port), 'rn_c3')
-
-    expect(comp.state.runs).toBeGreaterThan(0)
-  })
-
-  /**
-   * 量级差不够就不否决。本地估算对中文会低估，倍率必须留足余量——
-   * 判错的代价是「该压的没压」，那比「白压一次」严重得多。
-   */
-  test('输入只比窗口小几倍时不否决 —— 估算不准，留足余量', async () => {
-    const { adapter } = measuringAdapter(500_000, numberlessCapacityError)
-    const comp = fakeCompaction(okOutcome)
-    await collect(build(adapter, comp.port), 'rn_c4')
-
-    expect(comp.state.runs).toBeGreaterThan(0)
-  })
-
-  /** measure 炸了不能连累主路径：测不出来就按「不知道」处理，照常压缩。 */
-  test('measure 失败时不否决', async () => {
-    const state = { attempts: 0 }
-    const adapter: LlmAdapter = {
-      kind: 'anthropic',
-      transmits: { thinking: true, effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic'),
-      measure: async () => {
-        throw new Error('探测失败')
-      },
-      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        state.attempts++
-        if (state.attempts <= 99) throw numberlessCapacityError()
-        yield { type: 'done', stopReason: 'end_turn' }
-      },
-    }
-    const comp = fakeCompaction(okOutcome)
-    await collect(build(adapter, comp.port), 'rn_c5')
-
-    expect(comp.state.runs).toBeGreaterThan(0)
+    expect(events.some((e) => e.type === 'run.error')).toBe(true)
   })
 })
 
