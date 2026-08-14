@@ -24,8 +24,6 @@ import { emptyBreakdown, emptyOmitted } from '@qywork/core'
 import { latestAnchoredProviderRequest, latestSentProviderRequest, type Store } from '@qywork/store'
 
 export interface ContextPanel {
-  /** 这条会话还没发过任何请求时为 false，其余字段无意义。 */
-  available: boolean
   total: number
   limit: number
   /** 一位小数。1M 窗口下取整会把 2139 显示成 0%。 */
@@ -34,17 +32,6 @@ export interface ContextPanel {
   breakdown: ContextBreakdown
   omitted: ContextOmitted
   freeSpace: number
-}
-
-const UNAVAILABLE: ContextPanel = {
-  available: false,
-  total: 0,
-  limit: 0,
-  percent: 0,
-  source: 'estimated',
-  breakdown: emptyBreakdown(),
-  omitted: emptyOmitted(),
-  freeSpace: 0,
 }
 
 /**
@@ -135,9 +122,25 @@ export function contextPanel(
   conversationId: ConversationId,
   contextWindow: number,
 ): ContextPanel {
+  const limit = Math.max(1, contextWindow)
+
   // 分组明细取最近一次**已发送**的请求：它描述的是模型当下看到的那份上下文。
   const sent = latestSentProviderRequest(store, conversationId)
-  if (!sent) return UNAVAILABLE
+  // 还没发过请求的会话是 **0 / 窗口**，不是「没有面板」。
+  // 这里曾经回 `available: false`，前端据此整个不渲染——于是新开一条会话，
+  // 上下文那一格是空的，用户看到的是「这个功能没了」而不是「还没占」。
+  // 窗口是模型的属性，不是请求的属性：一条请求都没发也知道它有多大。
+  if (!sent) {
+    return {
+      total: 0,
+      limit,
+      percent: 0,
+      source: 'estimated',
+      breakdown: emptyBreakdown(),
+      omitted: emptyOmitted(),
+      freeSpace: limit,
+    }
+  }
 
   // 锚点取最近一次**带 usage 回报**的请求，可能比上面那条更早。
   // 判据不同是刻意的：一次超时或漏 usage 的请求也是「已发送」，
@@ -146,10 +149,8 @@ export function contextPanel(
 
   const total = anchored ? anchorTokens(anchored) : sent.measuredInputTokens
   const source: ContextPanel['source'] = anchored ? 'actual' : 'estimated'
-  const limit = Math.max(1, contextWindow)
 
   return {
-    available: true,
     total,
     limit,
     percent: Math.round((total / limit) * 1000) / 10,

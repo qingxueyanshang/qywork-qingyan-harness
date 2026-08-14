@@ -250,6 +250,9 @@
 }
 
 .ctx-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 3px var(--s-2);
   border-radius: var(--r-sm);
   color: var(--text-tertiary);
@@ -259,6 +262,22 @@
 .ctx-meter.warn {
   color: var(--warning);
   background: var(--bg-inset);
+}
+/* 数字定宽：位数从「0%」涨到「100%」时，右边那个按钮不许跟着挪。 */
+.ctx-meter-num {
+  min-width: 30px;
+  text-align: left;
+}
+.ctx-ring {
+  flex-shrink: 0;
+}
+.ctx-ring-track {
+  stroke: var(--border-default);
+}
+/* 环取 currentColor：过线变黄由 `.warn` 一处说了算，不在两个地方各写一遍色。 */
+.ctx-ring-fill {
+  stroke: currentColor;
+  transition: stroke-dashoffset var(--t-fast) var(--ease);
 }
 
 .send-btn {
@@ -291,7 +310,9 @@
   bottom: calc(100% + 6px);
   left: 0;
   z-index: 20;
-  width: 288px;
+  /* 宽度按最长的那一行定（「工作区与状态 948.3k 94.8%」），不留富余空隙——
+     行内本来就短，多出来的宽度全变成名字和数字之间的空档。 */
+  width: 240px;
   padding: var(--s-3);
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
@@ -302,17 +323,24 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  gap: var(--s-2);
   color: var(--text-primary);
   font-size: var(--fs-sm);
+}
+.ctx-head-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
 }
 .ctx-head-nums {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .ctx-source {
-  margin-top: 2px;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 /* 堆叠条：段宽按占**窗口**的比例，不是占已用量的比例——
    否则「剩余空间」永远画不出来，而它恰恰是这条最该表达的东西。 */

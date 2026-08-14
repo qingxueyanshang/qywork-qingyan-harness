@@ -82,7 +82,12 @@ describe('逐请求账', () => {
       payloadHash: 'h',
     })
     expect(latestSentProviderRequest(store, conversationId)).toBeNull()
-    expect(contextPanel(store, conversationId, 1_000_000).available).toBe(false)
+    // 未发送 = 没占——但窗口是模型的属性，照样报得出来，面板显示 0 / 1M。
+    const panel = contextPanel(store, conversationId, 1_000_000)
+    expect(panel.total).toBe(0)
+    expect(panel.percent).toBe(0)
+    expect(panel.limit).toBe(1_000_000)
+    expect(panel.freeSpace).toBe(1_000_000)
   })
 
   test('没有 usage 回报时四个字段留 null，不落 0', () => {
