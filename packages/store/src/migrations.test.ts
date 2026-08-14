@@ -115,3 +115,41 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     expect(JSON.parse(row.payload).action).toBeUndefined()
   })
 })
+
+/**
+ * 工具改名，落库的 `tool_name` 要跟着转。
+ *
+ * 不转的后果实测撞过：待办面板整个空了。面板是从账本投影的（找最后一条成功的
+ * 待办提交，整表在它的 args 里），投影按新名字找，老行还叫旧名字，一条都匹配不上，
+ * 用户看到的是「之前的数据没了」。
+ */
+describe('迁移 17：update_plan → write_todos', () => {
+  test('老名字转成新名字，别的工具不动', () => {
+    const db = dbBefore(17)
+    insertStep(db, 'old', 'update_plan', {
+      kind: 'tool_result',
+      args: { todos: [{ id: 't1', content: '甲', status: 'in_progress' }] },
+    })
+    insertStep(db, 'other', 'read_file', { kind: 'tool_result', args: { path: 'a.ts' } })
+    applyOne(db, 17)
+
+    const name = (id: string) =>
+      db.query<{ n: string }, [string]>('SELECT tool_name AS n FROM steps WHERE id = ?').get(id)!.n
+    expect(name('old')).toBe('write_todos')
+    expect(name('other')).toBe('read_file')
+  })
+
+  /** 转完之后，整表 todos 还在原处——改的是名字，不是内容。 */
+  test('args 里的整表原样保留', () => {
+    const db = dbBefore(17)
+    insertStep(db, 'old', 'update_plan', {
+      kind: 'tool_result',
+      args: { todos: [{ id: 't1', content: '甲', status: 'completed' }] },
+    })
+    applyOne(db, 17)
+    const row = db
+      .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
+      .get('old')!
+    expect(JSON.parse(row.payload).args.todos[0].content).toBe('甲')
+  })
+})
