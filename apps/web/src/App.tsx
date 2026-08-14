@@ -9,13 +9,10 @@ import { Transcript } from './components/Transcript.tsx'
 // 只想聊天的用户不该为文件预览付首屏成本。
 const SidePanel = lazy(() => import('./components/SidePanel.tsx'))
 
-// 设置整页只在真的打开设置时才下载。它下面还挂着八个类目，其中五个各自
-// 又是懒加载的——见 SettingsPage 里的说明。
-const SettingsPage = lazy(() =>
-  import('./components/settings/SettingsPage.tsx').then((m) => ({ default: m.SettingsPage })),
-)
-const SettingsNav = lazy(() =>
-  import('./components/settings/SettingsNav.tsx').then((m) => ({ default: m.SettingsNav })),
+// 设置弹窗只在真的打开设置时才下载。它下面还挂着十个类目，其中七个各自
+// 又是懒加载的——见 SettingsDialog 里的说明。
+const SettingsDialog = lazy(() =>
+  import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
 
 const RunDetails = lazy(() => import('./components/RunDetails.tsx'))
@@ -85,12 +82,8 @@ export function App() {
         </div>
       </Show>
 
-      {/* 看设置时左栏整个换成类目导航——设置和会话是互斥的两个场景，
-          同时看不到对方不是损失，而多留一列就多一套宽度、断点和收起逻辑。 */}
       <aside class="sidebar-slot">
-        <Show when={settingsPage()} fallback={<Sidebar onClose={() => setDrawer(false)} />}>
-          <SettingsNav />
-        </Show>
+        <Sidebar onClose={() => setDrawer(false)} />
       </aside>
 
       {/* 窄屏下点遮罩关抽屉。宽屏时它被 CSS 隐藏，不会挡住内容。
@@ -132,60 +125,49 @@ export function App() {
             <IconPanel size={15} />
           </button>
         </Show>
-        <h1 class="title truncate">{settingsPage() ? '设置' : activeTitle()}</h1>
+        <h1 class="title truncate">{activeTitle()}</h1>
         <span class="spacer" />
-        {/* 搜索和面板开关只对会话有意义——设置页里没有可搜的会话，也没有文件树可开。
-            按 B5，能力不存在的那一端不显示入口，而不是显示一个点了没反应的按钮。 */}
-        <Show when={!settingsPage()}>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="命令面板"
-            onClick={() => setPaletteOpen(true)}
-          >
-            <IconSearch size={15} />
-          </button>
-          {/* 右侧面板只留**一个**开关。
-              这里曾经是两个按钮，各自 toggle 一个视图，而面板内部又有三个 tab——
-              两套并列且不等价的机制：顶栏点不出「协作」，tab 点不掉面板。
-              于是「怎么关掉它」和「怎么打开协作」都得靠试。
-              现在职责分开：顶栏管开关，tab 管看哪个视图。 */}
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label={sidePanel() ? '收起侧面板' : '展开侧面板'}
-            aria-expanded={sidePanel() !== null}
-            title={sidePanel() ? '收起侧面板' : '展开侧面板'}
-            onClick={togglePanel}
-          >
-            <IconPanel size={15} />
-          </button>
-        </Show>
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label="命令面板"
+          onClick={() => setPaletteOpen(true)}
+        >
+          <IconSearch size={15} />
+        </button>
+        {/* 右侧面板只留**一个**开关。
+            这里曾经是两个按钮，各自 toggle 一个视图，而面板内部又有三个 tab——
+            两套并列且不等价的机制：顶栏点不出「协作」，tab 点不掉面板。
+            于是「怎么关掉它」和「怎么打开协作」都得靠试。
+            现在职责分开：顶栏管开关，tab 管看哪个视图。 */}
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label={sidePanel() ? '收起侧面板' : '展开侧面板'}
+          aria-expanded={sidePanel() !== null}
+          title={sidePanel() ? '收起侧面板' : '展开侧面板'}
+          onClick={togglePanel}
+        >
+          <IconPanel size={15} />
+        </button>
         <WindowControls />
       </header>
 
-      <Show
-        when={settingsPage()}
-        fallback={
-          /* 空会话时把输入区居中：底部钉一个孤零零的输入框看起来像没加载完 */
-          <main class="main" classList={{ empty: state.transcript.length === 0 }}>
-            <Transcript />
-            <Composer />
-          </main>
-        }
-      >
-        <main class="main">
-          <SettingsPage />
-        </main>
-      </Show>
+      {/* 空会话时把输入区居中：底部钉一个孤零零的输入框看起来像没加载完 */}
+      <main class="main" classList={{ empty: state.transcript.length === 0 }}>
+        <Transcript />
+        <Composer />
+      </main>
 
-      {/* 设置页占满主区，右侧面板同时开着会把它挤成一条缝——而设置里没有任何
-          需要对照文件树的东西。 */}
-      <Show when={sidePanel() && !settingsPage()}>
+      <Show when={sidePanel()}>
         <SidePanel />
       </Show>
       <Palette />
       <PermissionSheet />
+      {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
+      <Show when={settingsPage()}>
+        <SettingsDialog />
+      </Show>
       {/* 浮层由一个 overlay 信号裁决，同一时刻只可能有一个——见 store/ui.ts。
           只剩一个，而且是**会话上下文**：这个会话花了多少。机器配置那六个已经
           整体搬进设置整页；「换项目」那个也没了——换项目在左栏点一下就是。 */}

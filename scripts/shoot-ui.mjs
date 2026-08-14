@@ -194,12 +194,12 @@ async function main() {
         await page.waitForTimeout(900)
         await page.screenshot({ path: join(OUT, `${shot.name}-git.png`) })
 
-        // 手机接入：开局域网监听后应该出二维码。
+        // 手机接入：开局域网监听后应该出二维码。它住在系统设置弹窗里的一个类目下，
+        // 不先把弹窗打开就点不到——这一步曾经因为它搬了家而静默失败，
+        // 拍出来的 `-pair.png` 只是一张普通会话截图。
         await page.click('[aria-label="变更"]').catch(() => {})
-        await page
-          .getByText('手机接入')
-          .click()
-          .catch(() => {})
+        await page.getByRole('button', { name: '系统设置' }).click()
+        await page.getByRole('button', { name: '手机接入' }).click()
         await page.waitForTimeout(500)
         await page
           .locator('.pair-toggle input')

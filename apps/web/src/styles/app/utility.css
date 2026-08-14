@@ -128,6 +128,9 @@
     min-width: 96px;
   }
 
+  /* 设置弹窗的窄屏规则不在这里，在 `settings.css` 的同名断点里——
+     它的基准规则写在这个文件之后，写在这儿会被原样盖掉。 */
+
   .palette-backdrop {
     padding-top: 8vh;
   }

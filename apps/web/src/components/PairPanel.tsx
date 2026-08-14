@@ -25,7 +25,7 @@ interface PairingInfo {
  * 候选地址全部列出并各配一个二维码：自动判断在装了 VPN / Hyper-V / Docker 的
  * 机器上没有可靠解（实测会选中 VPN 隧道或虚拟交换机），扫不通要能一键换一个。
  *
- * 标题与那句边界说明归 `SettingsPage` 的 `META` 管，这里只出内容。
+ * 标题与那句边界说明归 `SettingsDialog` 的 `META` 管，这里只出内容。
  */
 export default function PairPanel() {
   // 组件只在这一页被选中时才渲染，所以这里不需要「开着才拉」的门闩。

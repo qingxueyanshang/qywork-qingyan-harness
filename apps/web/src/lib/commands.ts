@@ -71,7 +71,7 @@ export function buildCommands(): Command[] {
     // 让用户「先进设置再自己找」等于把命令面板的价值抵消掉。
     { id: 'schedules', label: '定时任务', icon: IconClock, run: () => openSettings('schedules') },
     { id: 'plugins', label: '插件', icon: IconPlug, run: () => openSettings('plugins') },
-    { id: 'settings', label: '设置', icon: IconSettings, run: () => openSettings() },
+    { id: 'settings', label: '系统设置', icon: IconSettings, run: () => openSettings() },
   ]
 }
 
