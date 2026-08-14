@@ -63,7 +63,7 @@ export function toggleSidebar(): void {
  *
  * **只剩一个。** `runs` 回答「这一个会话花了多少」。原先并列在这里的
  * settings / schedules / plugins / team / memory / mobile 六个是**机器配置**，
- * 已经整体搬进设置整页（见 `settingsPage`）；`workspace` 那个是「换项目」的浮层，
+ * 已经整体搬进设置弹窗（见 `settingsPage`）；`workspace` 那个是「换项目」的浮层，
  * 换项目现在就在左栏点一下的事，浮层整个删了，不留第二条路。
  */
 export type Overlay = 'runs'
@@ -73,18 +73,19 @@ export function closeOverlay(): void {
 }
 
 /**
- * 设置整页。`null` = 没在看设置。
+ * 设置弹窗当前看的类目。`null` = 没在看设置。
  *
- * ## 为什么是整页不是浮层
+ * ## 为什么是一个弹窗，不是十个平行浮层
  *
- * 浮层适合「改一格就走」。设置有八个类目、要来回比对，浮层把整页遮住之后
- * 既看不到自己正在改的会话，也没有地方放类目导航——上一版把六个能力做成六个
- * 平行浮层，正是因为浮层里塞不下一层导航。
+ * 最早那版是六个平行浮层（定时、记忆、插件、团队、手机、设置），每个自己一套
+ * 开关——「设置和配对同时开着」在类型上完全合法。类目导航就是解药：一个弹窗，
+ * 左边一栏列类目，十个类目共用同一个状态。
  *
- * ## 为什么复用现有网格而不是新开一列
+ * ## 为什么不是整页
  *
- * 打开设置时左栏换成类目导航、主区换成设置内容。多开一列就多一套宽度、断点和
- * 收起逻辑，而设置和会话本来就互斥——同时看不到对方不是损失。
+ * 中间试过整页：打开设置时左栏换成类目导航、主区换成设置内容。代价是「改一格
+ * 就走」被做成了一次场景切换——顶栏的搜索和面板开关得跟着藏，回来还要点一次
+ * 「返回」。类目导航塞得进弹窗，所以整页那一层没有存在的理由。
  */
 export type SettingsPage =
   | 'general'
@@ -99,7 +100,7 @@ export type SettingsPage =
   | 'mobile'
 export const [settingsPage, setSettingsPage] = createSignal<SettingsPage | null>(null)
 
-/** 打开设置。不带参数回到「通用」——它是唯一不需要前置知识的类目。 */
+/** 打开设置。不带参数回到「系统设置」——它是唯一不需要前置知识的类目。 */
 export function openSettings(page: SettingsPage = 'general'): void {
   setSettingsPage(page)
 }

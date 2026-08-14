@@ -218,12 +218,12 @@ export function Sidebar(props: { onClose?: () => void }) {
             这里曾经是六个并排的 `nav-item`：定时任务 / 记忆与技能 / 插件 /
             Agent 团队 / 手机接入 / 设置。前五个其实是「设置」的子项，却和它
             并排——每加一个能力就在这里多一行，左栏迟早被配置项挤掉会话列表，
-            而左栏的主职责是会话。它们现在是设置整页里的五个类目。 */}
+            而左栏的主职责是会话。它们现在是设置弹窗里的五个类目。 */}
         <ul class="nav-list">
           <li>
             <button class="nav-item" type="button" onClick={() => openSettings()}>
               <IconSettings size={15} />
-              通用设置
+              系统设置
             </button>
           </li>
         </ul>

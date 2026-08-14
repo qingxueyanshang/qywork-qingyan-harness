@@ -27,42 +27,74 @@
   flex: none;
 }
 
-/* ───────────────────────── 设置整页 ───────────────────────── */
+/* ───────────────────────── 设置弹窗 ───────────────────────── */
 
 /*
- * 设置占的是会话区那一格（`.main` 的子元素），所以顶栏和窗口按钮照旧。
+ * 左类目右内容，两栏都通到顶——**没有横贯整条的标题栏**：弹窗的名字就是当前
+ * 类目的名字，在最上面再横一条「设置」等于把同一件事说两遍，还把类目栏压下一格。
+ * 标题和关闭都在右栏那一行里。
  *
- * 滚动条在 `.settings-scroll` 上，不在 `.main` 上——和 `.transcript` 同一条：
- * 外层滚起来的话顶栏会跟着走，而顶栏上有窗口按钮。
+ * **尺寸写死，不随内容变**（B9）：类目从「系统设置」切到「模型」，内容长度差着
+ * 好几屏；让内容去撑的话对话框会在用户眼皮底下伸缩，刚才瞄准的那个类目
+ * 就跑到别处去了。宽度取一档能放下模型档案那组并排字段的值——760px 下
+ * baseUrl 这类长值看不到自己在改什么；高度取一个定值，内容长了在右栏里滚。
  */
-.settings-page {
+.settings-dialog {
+  width: min(1040px, 100%);
+  height: min(700px, 100%);
+  display: flex;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.settings-pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  flex: 1;
 }
+/* 关闭钉在右上角，**不占标题那一行**：它是整个弹窗的出口，不是这一页的动作。
+   定位基准是内容区而不是弹窗，所以窄屏（类目栏横在上面）时它会跟着落到
+   类目栏下面，而不是压在最后一个类目上。 */
+.settings-close {
+  position: absolute;
+  top: var(--s-2);
+  right: var(--s-2);
+  z-index: 1;
+}
+/* 标题这一行不进滚动区：那句边界说明滚走了等于没写（B7）。
+   顶内距和类目栏取同一档，标题的第一行和第一个类目落在同一条横线上。
+   右内距给关闭键留出位置——标题短，但边界说明是整行的。 */
+.settings-pane-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--s-4) var(--s-8) var(--s-4) var(--s-6);
+}
+
+/* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，
+   而类目栏是用来来回切的。 */
 .settings-scroll {
   flex: 1;
-  /* 同 .transcript：不写 0 的话这一块把 .main 撑破，overflow 形同虚设。 */
+  /* 同 .transcript：不写 0 的话这一块把外面撑破，overflow 形同虚设。 */
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
 }
-/* 内容列上限比会话列宽一档：模型档案是一组并排字段，760px 下 baseUrl
-   这类长值看不到自己在改什么。左对齐而不是居中——设置是逐条读下来的表单，
-   居中会让第一列的标签在宽窗口下飘到屏幕中间。 */
+/* 左对齐而不是居中——设置是逐条读下来的表单，居中会让第一列的标签飘到中间。
+   不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。 */
 .settings-inner {
-  max-width: 840px;
-  padding: var(--s-8) var(--s-8) var(--s-10);
+  padding: var(--s-2) var(--s-6) var(--s-8);
   display: flex;
   flex-direction: column;
   gap: var(--s-6);
 }
 
-.settings-page-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 .settings-page-title {
   margin: 0;
   font-size: var(--fs-xl);
@@ -207,36 +239,77 @@
 }
 
 /* ── 类目导航 ──
-   它占左栏的位置，类目本身沿用 `.nav-item`，只多两件事：返回和组间分隔。 */
-
-/* 返回是**出口，不是第九个类目**，所以不套 `.nav-item`：
-   套上去就是同样的整行底色、同样的字号，除了图标方向没有任何区别。
-   这里只包住自己那三个字符，小一号字。
-   左移 4px 抵掉 `.sidebar-head` 比 `.sidebar-scroll` 多出的那截内边距——
-   图标和底色左沿都落到 16px / 8px 上，和下面的类目列对齐。
-   顺带把行高压回 27px：`.nav-item` 那身 33px 塞进 36px 的头部只剩 1px 余量，
-   贴着窗口上沿看就是没居中。 */
-.back-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: calc(var(--s-1) * -1);
-  padding: 4px var(--s-2);
-  border-radius: var(--r-xs);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  transition:
-    background var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
-}
-.back-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+   弹窗里的左边一栏，类目本身沿用 `.nav-item`，这里只管排布和组间分隔。
+   底色比内容区暗一档：两栏之间那条线是边界，但光靠一条 1px 的线，
+   十个类目会读成内容的一部分。宽度写死——它跟着内容变宽就等于尺寸会跳。 */
+.settings-nav {
+  flex: none;
+  width: 208px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s-4) var(--s-2);
+  overflow-y: auto;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-subtle);
 }
 .nav-group-split {
   margin-top: var(--s-3);
   padding-top: var(--s-3);
   border-top: 1px solid var(--border-subtle);
+}
+
+/*
+ * 窄屏：类目栏从左边一栏转成顶上一条。
+ *
+ * 390px 的屏上留一栏 208px 的类目，内容只剩 180px——一条绝对路径要折六行。
+ * 所以这里换向：类目横着排、自己横向滚，内容拿满整宽。这是**同一套类目的
+ * 两种排布**，不是第二套导航——两边点的都是 `.nav-item`，状态还是同一个信号。
+ *
+ * `.nav-item` / `.nav-list` 是左栏也在用的通用件，所以这里的覆盖一律限定在
+ * `.settings-nav` 里面：不限定的话，窄屏的会话抽屉会跟着横过来。
+ *
+ * **这个断点必须写在这里**，不能放进 `utility.css`：那个文件先于本文件引入，
+ * 同名选择器写在那边会被上面几条基准规则原样盖掉（试过，弹窗照旧是 700px 高）。
+ */
+@media (max-width: 820px) {
+  .settings-dialog {
+    height: 100%;
+    flex-direction: column;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    /* 铺满整屏之后安全区得自己让：类目栏会顶到状态栏，底部会被小白条压住。 */
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+  }
+  .settings-nav {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--s-2);
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .settings-nav .nav-list {
+    flex-direction: row;
+  }
+  .settings-nav .nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
+  /* 组间那条线跟着转 90 度：竖排时它在上，横排时它在左。 */
+  .settings-nav .nav-group-split {
+    margin: 0 0 0 var(--s-2);
+    padding: 0 0 0 var(--s-2);
+    border-top: none;
+    border-left: 1px solid var(--border-subtle);
+  }
+  .settings-pane-head {
+    padding: var(--s-3) var(--s-8) var(--s-3) var(--s-3);
+  }
+  .settings-inner {
+    padding: var(--s-1) var(--s-3) var(--s-6);
+  }
 }
 
 /* ───────────────────────── 浮层 ───────────────────────── */
@@ -546,16 +619,16 @@
   color: var(--danger);
 }
 
-/* ── 整页对上面这些浮层内表单的覆盖 ──
+/* ── 设置内容区对上面这些表单规则的覆盖 ──
    **必须写在被覆盖的规则之后**：这几条特异性更高，写在前面的话「顺序」和
    「特异性」会给出相反的答案，biome 的 noDescendingSpecificity 就是在拦这个。 */
 
 /*
- * 整页里的控件不铺满整列。
+ * 内容区里的控件不铺满整列。
  *
- * 浮层里 520px 宽，输入框铺满正好；整页是 840px，一个只填 `high` 的下拉拉到
- * 840px 宽会让人以为那里该填一长串东西——控件宽度是对内容长度的暗示。
- * 多行文本框放宽一档：它装的是一行一个的绝对路径。
+ * 授权那种 520px 的小浮层里输入框铺满正好；设置的内容区有八百来像素宽，
+ * 一个只填 `high` 的下拉拉到那么宽会让人以为那里该填一长串东西——
+ * 控件宽度是对内容长度的暗示。多行文本框放宽一档：它装的是一行一个的绝对路径。
  */
 .settings-inner .field input,
 .settings-inner .field select {
