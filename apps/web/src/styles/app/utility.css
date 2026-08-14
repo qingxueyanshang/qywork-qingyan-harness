@@ -105,6 +105,11 @@
     height: calc(var(--header-h) + var(--safe-top));
     padding-top: var(--safe-top);
   }
+  /* 窄屏的面板本来就盖满全屏，没有「放大」可言（布局见 shell.css 那一段）。
+     留一颗点了什么都不会变的按钮，比不留更坏。 */
+  .panel-max-btn {
+    display: none;
+  }
 
   .user-col {
     max-width: 88%;

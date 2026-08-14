@@ -19,35 +19,120 @@
   background: var(--bg-app);
 }
 
-/* 标签行不再顶到窗口上沿，安全区由顶栏那一行吃掉了，这里不用再让。 */
+/* 标签行不再顶到窗口上沿，安全区由顶栏那一行吃掉了，这里不用再让。
+ *
+ * 底色比面板正文低一档：这条横带是「几页纸的上沿」，选中那一格换回正文底色，
+ * 于是它和下面的内容连成同一张。`align-items: stretch` 是这套的前提——标签
+ * 必须自己撑满整条横带，缩在中间的话「连成一张」无从谈起。
+ * 也因此**左右内距归零**：内距改由标签自己带，否则第一格和横带左沿之间会
+ * 露出一段和正文不同色的缝。 */
 .side-head {
   display: flex;
-  align-items: center;
-  gap: var(--s-2);
+  align-items: stretch;
   height: var(--header-h);
-  padding: 0 var(--s-2) 0 var(--s-3);
   border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
   flex: none;
 }
 
 .side-tabs {
   display: flex;
-  gap: 2px;
   flex: 1;
+  min-width: 0;
 }
+
+/*
+ * 浏览器式页签：选中靠**顶上那条线**加换回正文底色，不靠一块圆角高亮。
+ *
+ * 圆角高亮读起来是「一颗被按下去的按钮」，而这五格是并排的页——形状要说的是
+ * 「现在翻开的是这一页」。方角是同一件事的另一半：圆角一上，页签和它下面的
+ * 内容之间就断开了，选中态白给。
+ */
 .side-tab {
-  padding: 4px var(--s-3);
-  border-radius: var(--r-xs);
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding: 0 var(--s-3);
+  border-radius: 0;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
+  white-space: nowrap;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
-.side-tab:hover {
+/* 相邻两格之间一条短竖线，上下各留 8px——不留的话它和横带的下边框接上，
+   五格看着像被框成了一排格子。 */
+.side-tab + .side-tab::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--s-2);
+  bottom: var(--s-2);
+  width: 1px;
+  background: var(--border-subtle);
+}
+/* 选中那一格两侧不画：它的底色已经和邻居不同，再补一条线等于把翻开的这一页
+   又框回一个盒子里。 */
+.side-tab.active::before,
+.side-tab.active + .side-tab::before {
+  display: none;
+}
+/* 选中态不吃 hover 底色：那层半透明会把它压回横带的灰，指针一划过去就像
+   选中丢了。 */
+.side-tab:not(.active):hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
+/*
+ * 选中态三件事：顶上 2px 的线、换回正文底色、把横带的下边框在这一格盖掉。
+ *
+ * 第三件用向下的 box-shadow，不用 `margin-bottom: -1px`——负外边距会把这一格
+ * 整体往下拽 1px，五格的文字基线随之错开一档。
+ * 线用 `--text-primary` 而不是 `--accent`：这条横带上已经有底色在说「选中」，
+ * 再上一个彩色就是第二处彩，参照物（qoder）用的也是中性的近黑。
+ */
 .side-tab.active {
-  background: var(--bg-active);
+  background: var(--bg-app);
   color: var(--text-primary);
   font-weight: 500;
+  box-shadow:
+    inset 0 2px 0 var(--text-primary),
+    0 1px 0 var(--bg-app);
+}
+
+/* 右侧的三颗按钮：新开预览 / 放大 / 关闭。
+   它们竖直居中，**不跟着页签撑满整条**——按钮撑满会读成第六、第七个页签。 */
+.side-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 0 var(--s-2);
+}
+
+/* ── 新开预览 ──
+   定位容器必须是 relative：菜单相对这颗按钮的右端展开。
+   属性写全在下面这一条里，**不和别的浮层共用选择器**——共用过一次，代价是
+   删掉其中一个浮层时把另一个的定位、边框、底色、投影一起带走了。 */
+.panel-add {
+  position: relative;
+  display: flex;
+}
+.panel-add-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
 }
 
 .side-body {

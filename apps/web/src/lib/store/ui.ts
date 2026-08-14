@@ -22,19 +22,41 @@ export type PanelView = 'todos' | 'files' | 'git' | 'team' | 'extras'
 export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
 
 /**
+ * 面板放大：会话正文让位，只留输入框和这块面板（布局见 `shell.css` 的
+ * `.app.panel-max`）。
+ *
+ * 面板收起时一并复位——不复位的话下次展开直接落进放大态，而用户上次关掉它
+ * 可能正是因为不想要放大。所以这个标志没有独立的「关」路径，只跟着面板走。
+ */
+export const [panelMaximized, setPanelMaximized] = createSignal(false)
+export function togglePanelMax(): void {
+  setPanelMaximized((v) => !v)
+}
+
+/**
  * 上一次看的视图。
  *
  * 顶栏只有一个按钮负责「展开 / 收起」，展开时要回到用户上次待的地方而不是
  * 一律跳回文件——否则在变更视图里手滑收起，再展开就得重新点一次 tab。
  */
 const [lastPanelView, setLastPanelView] = createSignal<PanelView>('files')
+
+/**
+ * 收起面板。**唯一的收起入口**——顶栏那个开关和面板头上的 × 都走这里。
+ *
+ * 两处各写各的时候，× 只做了 `setSidePanel(null)`：它既不记「上次看的是哪个
+ * 视图」，将来也不会复位放大态。同一个动作两本账，差异只会越拉越大。
+ */
+export function closePanel(): void {
+  const view = sidePanel()
+  if (view) setLastPanelView(view)
+  setSidePanel(null)
+  setPanelMaximized(false)
+}
+
 export function togglePanel(): void {
-  if (sidePanel()) {
-    setLastPanelView(sidePanel() as PanelView)
-    setSidePanel(null)
-  } else {
-    setSidePanel(lastPanelView())
-  }
+  if (sidePanel()) closePanel()
+  else setSidePanel(lastPanelView())
 }
 export function openPanel(view: PanelView): void {
   setLastPanelView(view)

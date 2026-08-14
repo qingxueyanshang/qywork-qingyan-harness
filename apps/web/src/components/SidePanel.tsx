@@ -1,16 +1,29 @@
 import type { EditorView } from '@codemirror/view'
+import type { JSX } from 'solid-js'
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import {
   client,
+  closePanel,
+  type PanelView,
+  panelMaximized,
   previewPath,
   setPreviewPath,
   setSidePanel,
   sidePanel,
   state,
+  togglePanelMax,
 } from '../lib/store/index.ts'
 import { ExtrasPanel } from './ExtrasPanel.tsx'
-import { IconBranch, IconChevron, IconFile, IconFolder, IconX } from './Icons.tsx'
+import {
+  IconBranch,
+  IconChevron,
+  IconExpand,
+  IconFile,
+  IconFolder,
+  IconPlus,
+  IconX,
+} from './Icons.tsx'
 import { TeamPanel } from './TeamPanel.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
@@ -41,66 +54,91 @@ interface PreviewResult {
  * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
  * 放进首屏等于让「只想聊天的用户」为文件预览付费。
  */
+/**
+ * 五个固定视图。顺序即优先级。
+ *
+ * 写成一份清单而不是五段 JSX：标签页的外观改一次要改五处，改漏一处的表现是
+ * 「有一格长得不一样」，而 CSS 不会为此报错。
+ */
+const VIEWS: { view: PanelView; label: string }[] = [
+  // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
+  { view: 'todos', label: '待办' },
+  { view: 'files', label: '文件' },
+  { view: 'git', label: '变更' },
+  // 「协作」会被读成多人同时看同一份东西。这里是多个 agent 按角色分工跑一件事，
+  // 一个人都不涉及——名字必须把这件事说对。
+  { view: 'team', label: 'Agent' },
+  // 「这一轮用什么」。设置页只管内容，开关全在这儿——两处都放开关的话，
+  // 用户分不清自己关掉的是这一轮还是所有会话。
+  { view: 'extras', label: '能力' },
+]
+
+/**
+ * 「新开预览」能开出什么。
+ *
+ * **这份清单只收真的能打开的东西。** 浏览器预览、表格预览这些插件的后端还没
+ * 接进来，接进来之前不在这里占一行——一个点了没反应的菜单项比没有这一项更坏
+ * （CLAUDE.md B5）。接进来时往这里加一条，`AddPreview` 一行不用改。
+ */
+const PREVIEW_SOURCES: {
+  key: string
+  label: string
+  icon: (p: { size?: number }) => JSX.Element
+  open: () => void
+}[] = [
+  {
+    key: 'file',
+    label: '文件预览',
+    icon: IconFile,
+    // 先清掉上一次看的那个文件再切过去：不清的话点开「新开一个预览」，
+    // 出来的是上次那份内容，看着像没生效。
+    open: () => {
+      setPreviewPath(null)
+      setSidePanel('files')
+    },
+  },
+]
+
 export default function SidePanel() {
   return (
     <Show when={sidePanel()}>
       <aside class="side-panel">
         <header class="side-head">
-          <div class="side-tabs">
-            {/* 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。 */}
+          <div class="side-tabs" role="tablist">
+            <For each={VIEWS}>
+              {(t) => (
+                <button
+                  class="side-tab"
+                  classList={{ active: sidePanel() === t.view }}
+                  type="button"
+                  role="tab"
+                  aria-selected={sidePanel() === t.view}
+                  onClick={() => setSidePanel(t.view)}
+                >
+                  {t.label}
+                </button>
+              )}
+            </For>
+          </div>
+
+          <div class="side-actions">
+            <AddPreview />
+            {/* 放大：正文让位，只留输入框和这块面板。窄屏不显示——那里的面板
+                本来就盖满全屏，没有「放大」可言（样式见 utility.css）。 */}
             <button
-              class="side-tab"
-              classList={{ active: sidePanel() === 'todos' }}
+              class="icon-btn panel-max-btn"
               type="button"
-              onClick={() => setSidePanel('todos')}
+              aria-label={panelMaximized() ? '还原面板' : '放大面板'}
+              aria-pressed={panelMaximized()}
+              title={panelMaximized() ? '还原面板' : '放大面板'}
+              onClick={togglePanelMax}
             >
-              待办
+              <IconExpand size={15} collapse={panelMaximized()} />
             </button>
-            <button
-              class="side-tab"
-              classList={{ active: sidePanel() === 'files' }}
-              type="button"
-              onClick={() => setSidePanel('files')}
-            >
-              文件
-            </button>
-            <button
-              class="side-tab"
-              classList={{ active: sidePanel() === 'git' }}
-              type="button"
-              onClick={() => setSidePanel('git')}
-            >
-              变更
-            </button>
-            <button
-              class="side-tab"
-              classList={{ active: sidePanel() === 'team' }}
-              type="button"
-              onClick={() => setSidePanel('team')}
-            >
-              {/* 「协作」会被读成多人同时看同一份东西。这里是多个 agent 按角色
-                  分工跑一件事，一个人都不涉及——名字必须把这件事说对。 */}
-              Agent
-            </button>
-            <button
-              class="side-tab"
-              classList={{ active: sidePanel() === 'extras' }}
-              type="button"
-              onClick={() => setSidePanel('extras')}
-            >
-              {/* 「这一轮用什么」。设置页只管内容，开关全在这儿——
-                  两处都放开关的话，用户分不清自己关掉的是这一轮还是所有会话。 */}
-              能力
+            <button class="icon-btn" type="button" aria-label="关闭面板" onClick={closePanel}>
+              <IconX size={15} />
             </button>
           </div>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="关闭面板"
-            onClick={() => setSidePanel(null)}
-          >
-            <IconX size={15} />
-          </button>
         </header>
 
         <div class="side-body">
@@ -124,6 +162,66 @@ export default function SidePanel() {
         </div>
       </aside>
     </Show>
+  )
+}
+
+/**
+ * 新开预览。菜单内容由 `PREVIEW_SOURCES` 说了算，这里只管开合。
+ *
+ * 点到别处就收起，捕获阶段监听，免得被内部的 stopPropagation 吃掉——
+ * 和项目行的 `⋯` 菜单同一套做法。
+ */
+function AddPreview() {
+  const [open, setOpen] = createSignal(false)
+  const close = () => setOpen(false)
+
+  const onDocDown = (e: MouseEvent) => {
+    if (!(e.target as HTMLElement | null)?.closest?.('.panel-add')) close()
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close()
+  }
+  document.addEventListener('mousedown', onDocDown, true)
+  document.addEventListener('keydown', onKey)
+  onCleanup(() => {
+    document.removeEventListener('mousedown', onDocDown, true)
+    document.removeEventListener('keydown', onKey)
+  })
+
+  return (
+    <div class="panel-add">
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="新开预览"
+        title="新开预览"
+        aria-expanded={open()}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <IconPlus size={15} />
+      </button>
+
+      <Show when={open()}>
+        <div class="panel-add-menu" role="menu">
+          <For each={PREVIEW_SOURCES}>
+            {(s) => (
+              <button
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  s.open()
+                  close()
+                }}
+              >
+                <s.icon size={14} />
+                {s.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
   )
 }
 

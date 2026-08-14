@@ -564,3 +564,73 @@
     box-shadow: none;
   }
 }
+
+/* ── 面板放大 ──
+ *
+ * 「藏起对话内容，只留输入框和右侧那块面板」。三列变两列，内容那一列改成上下
+ * 两格：
+ *
+ *   ┌─────────┬────────────────────────────┐
+ *   │         │  .topbar                   │
+ *   │ sidebar ├────────────────────────────┤
+ *   │         │        .side-panel         │
+ *   │         ├────────────────────────────┤
+ *   │         │   .main（只剩输入框）       │
+ *   └─────────┴────────────────────────────┘
+ *
+ * 正文不是在这里藏的，是整块不渲染（见 `App.tsx`）——`display: none` 会把滚动
+ * 位置清零，还原时落在几百条之前的开头。
+ *
+ * 整段锁在宽屏：窄屏的面板本来就是 `position: fixed` 盖满全屏（见 utility.css），
+ * 那里没有「放大」这回事，按钮也不显示。这一段必须排在上面那个收起块**之后**
+ * ——两边都要说「收起 + 放大」时左边框归谁，顺序即层叠。
+ */
+@media (min-width: 821px) {
+  .app.panel-max.with-panel {
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    /* 第三行按输入框自己的高度走，不能给 1fr——给了它就和面板对半分。 */
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .app.panel-max.sidebar-collapsed.with-panel {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  /* 面板成了这张「白纸」的上半截，圆角和左沿投影跟着它走
+     （数值同 `.main`，理由见那里）。 */
+  .app.panel-max .side-panel {
+    grid-column: 2;
+    grid-row: 2;
+    border-top-left-radius: var(--r-xl);
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.05);
+  }
+  /*
+   * 标签行也得跟着圆同一档，**否则上面那行圆角是白写的**。
+   *
+   * 圆角一上，面板那条左边框在拐角处是往里弯的；而子元素默认不受父级圆角裁切，
+   * 标签行那块不透明底色于是把弯进来的那一段整个盖掉——表现是左边框从标签行
+   * 底下才开始，上面 36px 凭空少一截。实测（1440×900 暗色）：拐角那几行
+   * x=465 处取到的是标签行底色 #151517，而不是边框的 #1D1D1E。
+   */
+  .app.panel-max .side-head {
+    border-top-left-radius: var(--r-xl);
+  }
+  /* 下半截只剩输入框：高度由内容定，圆角和投影交给上半截。
+     `border-top` 留着——它就是面板和输入框之间那条分隔线。 */
+  .app.panel-max .main {
+    grid-column: 2;
+    grid-row: 3;
+    height: auto;
+    border-top-left-radius: 0;
+    box-shadow: none;
+  }
+  /* 输入区的上留白平时由正文的 padding-bottom 给（理由见 composer.css），
+     正文不在了就得自己补一档，否则输入框直接贴着那条分隔线。 */
+  .app.panel-max .composer-wrap {
+    padding-top: var(--s-4);
+  }
+  /* 左栏也收起时左边没有灰壳了，边框和圆角一起取消——同 `.main` 那条。 */
+  .app.sidebar-collapsed.panel-max .side-panel {
+    border-left: none;
+    border-top-left-radius: 0;
+    box-shadow: none;
+  }
+}

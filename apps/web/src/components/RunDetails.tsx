@@ -261,7 +261,7 @@ function UsageHistory() {
         <For each={RANGES}>
           {(d) => (
             <button
-              class="side-tab"
+              class="usage-chip"
               classList={{ active: days() === d }}
               type="button"
               onClick={() => setDays(d)}
@@ -276,7 +276,7 @@ function UsageHistory() {
         <For each={GROUPS}>
           {(g) => (
             <button
-              class="side-tab"
+              class="usage-chip"
               classList={{ active: by() === g.by }}
               type="button"
               onClick={() => setBy(g.by)}

@@ -957,9 +957,27 @@
   word-break: break-word;
   white-space: pre-wrap;
 }
-/* 账本的两排切换钮。复用 .side-tab 的外观，这里只管排布。 */
+/* 账本的两排切换钮。
+ *
+ * 曾经直接借 `.side-tab` 的外观，而那个类后来改成了浏览器式页签（方角、
+ * 顶上一条选中线、撑满整条横带）——账本这两排跟着变成一排贴死的方块，
+ * 而 CSS 不会为此报任何错。长得像不等于是同一个东西，各写各的。 */
 .usage-controls {
   display: flex;
   gap: var(--s-1);
   flex-wrap: wrap;
+}
+.usage-chip {
+  padding: 4px var(--s-3);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.usage-chip:hover {
+  background: var(--bg-hover);
+}
+.usage-chip.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 500;
 }
