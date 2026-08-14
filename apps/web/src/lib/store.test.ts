@@ -35,14 +35,17 @@ g.matchMedia = () => ({ matches: false })
 const {
   applyEvent,
   client,
+  closePanel,
   explainApiError,
   openPanel,
+  panelMaximized,
   reloadActiveConversation,
   setSidePanel,
   setState,
   sidePanel,
   state,
   togglePanel,
+  togglePanelMax,
 } = await import('./store/index.ts')
 
 describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {
@@ -82,6 +85,34 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
     expect(sidePanel()).toBe(null)
     togglePanel()
     expect(sidePanel()).toBe('team')
+  })
+
+  test('面板头上的 × 也记住当前视图 —— 它和顶栏开关走同一条收起路径', () => {
+    openPanel('git')
+    closePanel()
+    togglePanel()
+    expect(sidePanel()).toBe('git')
+  })
+})
+
+describe('面板放大：跟着面板走，不留下一个自己开着的态', () => {
+  test('收起面板一并复位 —— 下次展开不该直接落进放大态', () => {
+    openPanel('files')
+    togglePanelMax()
+    expect(panelMaximized()).toBe(true)
+    togglePanel()
+    expect(panelMaximized()).toBe(false)
+    togglePanel()
+    expect(panelMaximized()).toBe(false)
+  })
+
+  test('换视图不影响放大 —— 放大的是这块面板，不是某一个视图', () => {
+    openPanel('files')
+    togglePanelMax()
+    setSidePanel('git')
+    expect(panelMaximized()).toBe(true)
+    closePanel()
+    expect(panelMaximized()).toBe(false)
   })
 })
 

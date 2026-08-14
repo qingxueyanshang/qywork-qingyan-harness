@@ -292,6 +292,28 @@ export const IconPanel = (p: IconProps) => (
   </Svg>
 )
 
+/**
+ * 面板放大 / 还原。两支对角箭头：朝外是「占满」，朝内是「还原」。
+ *
+ * 不用方框类图标——那和顶栏的 `IconPanel`（开合面板）撞形，两个按钮并排时
+ * 会被读成同一件事的两个说法。
+ */
+export const IconExpand = (p: IconProps & { collapse?: boolean }) => (
+  <Svg {...p}>
+    {p.collapse ? (
+      <>
+        <path d="M14 10h5.5M14 10V4.5M14 10l6-6" />
+        <path d="M10 14H4.5M10 14v5.5M10 14l-6 6" />
+      </>
+    ) : (
+      <>
+        <path d="M14 4.5h5.5V10M19.5 4.5 13.5 10.5" />
+        <path d="M10 19.5H4.5V14M4.5 19.5l6-6" />
+      </>
+    )}
+  </Svg>
+)
+
 export const IconUsers = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="9" cy="8.2" r="3.2" />
