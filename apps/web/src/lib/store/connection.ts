@@ -390,7 +390,6 @@ interface StoredMessage {
 }
 /** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
 interface StoredContextPanel {
-  available: boolean
   total: number
   limit: number
   percent: number
@@ -548,7 +547,9 @@ export async function reloadActiveConversation(): Promise<void> {
       s.permission = null
       // 上下文不在这一批里——它有账本可依（`provider_requests`），
       // 不是「run 内的易失投影」。
-      s.context = ctx?.available
+      // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。
+      // 只有这次拉取失败（上面 catch 成 null）才降级成不显示。
+      s.context = ctx
         ? {
             tokens: ctx.total,
             limit: ctx.limit,

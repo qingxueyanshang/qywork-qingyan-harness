@@ -519,6 +519,38 @@ function fmtLimit(n: number): string {
 }
 
 /**
+ * 占用环。
+ *
+ * 数字要读，环不用读——扫一眼就知道满没满，这是它和「5.2%」的分工。
+ *
+ * 两处细节是被具体形状逼出来的：
+ * - **端点用平头（默认 butt），不用 round。** 圆头端点在 0% 时会自己画出一个小圆点，
+ *   而新会话恰恰恒为 0%——那个点会让人以为已经占了一丁点。
+ * - **-90° 起画**，从十二点走顺时针。不转的话 SVG 从三点开始，
+ *   低占用时那一小段挂在右侧腰上，看不出是「刚开始」。
+ */
+function ContextRing(props: { percent: number }) {
+  const CIRC = 2 * Math.PI * 6
+  const offset = () => CIRC * (1 - Math.min(100, Math.max(0, props.percent)) / 100)
+  return (
+    <svg class="ctx-ring" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      <circle class="ctx-ring-track" cx="8" cy="8" r="6" fill="none" stroke-width="2.5" />
+      <circle
+        class="ctx-ring-fill"
+        cx="8"
+        cy="8"
+        r="6"
+        fill="none"
+        stroke-width="2.5"
+        stroke-dasharray={String(CIRC)}
+        stroke-dashoffset={String(offset())}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  )
+}
+
+/**
  * 上下文占用。
  *
  * 点开看**被谁占的**——一个孤零零的「87%」不可操作：用户既不知道该压缩、
@@ -578,18 +610,24 @@ function ContextMeter() {
             title={`${c().tokens.toLocaleString()} / ${c().limit.toLocaleString()} tokens`}
             onClick={() => setOpen((v) => !v)}
           >
-            {c().percent}%
+            <ContextRing percent={c().percent} />
+            <span class="ctx-meter-num">{c().percent}%</span>
           </button>
           <Show when={open()}>
             <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
               <div class="ctx-head">
-                <span>上下文</span>
+                <span class="ctx-head-title">
+                  上下文
+                  {/* 成色紧跟标题，不另起一行：它是「上下文」这个数的定语，
+                      不是一条独立信息。百分比不重复——弹层正下方那个按钮就是它。 */}
+                  <span class="ctx-source">
+                    {c().source === 'actual' ? '实际统计' : '估算统计'}
+                  </span>
+                </span>
                 <span class="ctx-head-nums">
-                  {fmtTok(c().tokens)} / {fmtLimit(c().limit)} ({c().percent}%)
+                  {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
                 </span>
               </div>
-              {/* 总数的成色。不写的话用户没法判断这个数能不能拿来做决定。 */}
-              <div class="ctx-source">{c().source === 'actual' ? '实际统计' : '估算统计'}</div>
               <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
                 <For each={rows()}>
                   {(r) => (
