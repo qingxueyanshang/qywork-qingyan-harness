@@ -46,7 +46,8 @@ export {
   resolveInWorkspace,
 } from './paths.ts'
 // 沙箱：cli 的 doctor/config、server 的握手都要报它
-export { detectSandbox, spawnGuarded } from './sandbox.ts'
+// `COMMAND_SHELL` 一并出去：命令写成哪种方言由它说了算，判 platform 就是第二本账
+export { COMMAND_SHELL, detectSandbox, spawnGuarded } from './sandbox.ts'
 // 作用域：runtime 与 server 都要按同一份规则算三层的根
 export {
   AGENTS_DIR,

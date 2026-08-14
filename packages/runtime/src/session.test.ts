@@ -10,7 +10,16 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listConversations, listRecentConversations, Store, upsertWorkspace } from '@qywork/store'
+import type { ToolContext } from '@qywork/agent'
+import {
+  createConversation,
+  fileReadHash,
+  listConversations,
+  listRecentConversations,
+  listWorkspaces,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { Session } from './session.ts'
 
@@ -220,5 +229,33 @@ describe('新建会话的来源', () => {
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toHaveLength(1)
     expect(listConversations(store, ws.id)[0]?.source).toBeNull()
+  })
+})
+
+/**
+ * 读记录接没接上。
+ *
+ * 这条锁的是**装配**：`files.ts` 那边只约定形状，寿命由这里给。没接上的话
+ * 它会静默退回 run 内记账，表现是「上一轮读过、这一轮改文件先失败一次」——
+ * 而那正是要修的原始形状，且不会有任何报错。
+ */
+describe('工具上下文的读记录', () => {
+  test('两个 run 共用同一份，且落在账本里按会话归属', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const make = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
+      }
+    ).makeToolContext.bind(s)
+
+    const first = make('rn_1', () => {}, 'm', conv.id)
+    const second = make('rn_2', () => {}, 'm', conv.id)
+    first.reads?.mark('C:/ws/a.ts', 'h1')
+
+    expect(second.reads?.seen('C:/ws/a.ts')).toBe('h1')
+    expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBe('h1')
+    store.close()
   })
 })

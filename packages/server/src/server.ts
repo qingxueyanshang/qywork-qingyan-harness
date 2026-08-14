@@ -171,12 +171,23 @@ export function serve(opts: ServeOptions) {
 
   // 回收上次进程留下的 running run。必须在开始服务**之前**做：
   // 留着不管的话 isBusy 会一直判真，用户在那个会话里发不出任何消息——会话被永久锁死。
+  //
+  // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。这里原来
+  // 无差别回收，于是本进程一启动就把别的进程正在跑的那一轮判成中断——
+  // 账本是共享的，而一台机器上同时可以有好几个写入者。
   const stale = recoverStaleRuns(opts.store)
   if (stale.recovered > 0) {
     process.stderr.write(
       `[qy] 回收上次残留的 ${stale.recovered} 个执行记录` +
         (stale.ambiguous > 0 ? `，其中 ${stale.ambiguous} 个在工具执行期间中断，结果不可信` : '') +
         '\n',
+    )
+  }
+  // 放过的也要说。不说的话「回收了 0 个」有两种含义（没有残留 / 有但都还活着），
+  // 而这两种在排查「为什么那条会话还显示执行中」时是完全不同的方向。
+  if (stale.heldByOthers > 0) {
+    process.stderr.write(
+      `[qy] 另有 ${stale.heldByOthers} 个执行记录由其它还在跑的进程持有，未回收\n`,
     )
   }
 

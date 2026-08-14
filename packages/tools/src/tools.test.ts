@@ -13,6 +13,7 @@ import {
   resolveInWorkspace,
   resolveWritablePath,
 } from './paths.ts'
+import { COMMAND_SHELL } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))
@@ -228,6 +229,71 @@ describe('文件工具', () => {
     expect(out.fileChanges?.[0]?.changeType).toBe('created')
   })
 
+  /**
+   * **读记录的寿命由装配方定，这里只验两端。**
+   *
+   * 上一轮读过、这一轮直接改，是完全正常的用法。它原来必然先失败一次
+   * 「本轮未读取过」——因为记录挂在 run 内的便签上，每轮清零一次。
+   * 账本里三次 edit_file 失败全是这个形状。
+   *
+   * 接上会话级 port 之后不再重来；而**没接上时行为一个字不变**（更严的那一侧），
+   * 所以两条都测。
+   */
+  describe('跨轮读记录', () => {
+    /** 一个最小的会话级 port：两个 run 共用同一份，正是 runtime 注入的那种形状。 */
+    function sessionReads() {
+      const m = new Map<string, string>()
+      return {
+        seen: (p: string) => m.get(p) ?? null,
+        mark: (p: string, h: string) => void m.set(p, h),
+      }
+    }
+
+    test('接上会话级记录后，上一轮读过这一轮就能直接改', async () => {
+      const root = await workspace()
+      const r = registry()
+      const reads = sessionReads()
+      // 第一轮：读。第二轮是**另一个 ToolContext**（run 之间必须重建）。
+      await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
+      const out = await r.execute(
+        'edit_file',
+        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        { ...ctx(root), reads },
+      )
+      expect(out.status).toBe('success')
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
+    })
+
+    test('没接 port 时仍然要求本 run 读过 —— 退化到更严的一侧', async () => {
+      const root = await workspace()
+      const r = registry()
+      await r.execute('read_file', { path: 'a.txt' }, ctx(root))
+      const out = await r.execute(
+        'edit_file',
+        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        ctx(root),
+      )
+      expect(out.status).toBe('failure')
+      expect(out.errorKind).toBe('stale_write')
+    })
+
+    test('会话级记录照样拦得住「你读完之后文件被改过」', async () => {
+      const root = await workspace()
+      const r = registry()
+      const reads = sessionReads()
+      await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
+      // 别人（用户、另一个进程）改了盘上的内容。
+      await writeFile(join(root, 'a.txt'), 'hello\nworld\nplus\n', 'utf8')
+      const out = await r.execute(
+        'edit_file',
+        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        { ...ctx(root), reads },
+      )
+      expect(out.status).toBe('failure')
+      expect(out.errorKind).toBe('stale_write')
+    })
+  })
+
   test('edit 命中多处且未开 replace_all 时失败，且不落盘', async () => {
     const root = await workspace()
     await writeFile(join(root, 'dup.txt'), 'x\nx\n', 'utf8')
@@ -308,6 +374,47 @@ describe('搜索与命令', () => {
     const out = await registry().execute('glob', { pattern: '**/*.ts' }, ctx(root))
     expect(out.status).toBe('success')
     expect(out.data?.files).toContain('src/main.ts')
+  })
+
+  /**
+   * 工具说明里必须写明**真正在跑的那个 shell**。
+   *
+   * 这条是从账本里的失败倒推来的：模型只被告知「平台：win32」时会写 cmd/bash 的
+   * 写法，而 Windows 上跑的是 `powershell.exe`——`&&` 在那里是解析错误，
+   * 整条命令一个字都不执行（实测 `node --version & python --version` 就这么废掉）。
+   * 锁的是「说的和跑的是同一个」，不是某句文案。
+   */
+  test('run_command 的说明写明真正在用的 shell', () => {
+    const spec = registry()
+      .list()
+      .find((t) => t.name === 'run_command')
+    expect(spec?.description).toContain(COMMAND_SHELL.hint)
+    const argv0 = String(COMMAND_SHELL.argv[0]).toLowerCase()
+    const named = argv0.includes('powershell')
+      ? 'PowerShell'
+      : argv0.includes('bash')
+        ? 'bash'
+        : '/bin/sh'
+    expect(COMMAND_SHELL.hint).toContain(named)
+  })
+
+  /**
+   * `&&` 必须真的能跑。
+   *
+   * 这条是这次换 shell 的验收：Windows 上原来跑 PowerShell 5.1，`&&` 在那里
+   * 是解析错误，模型每写一条 POSIX 组合命令就废一次。**测的是原始失败形状**
+   * （一条带 `&&` 的命令），不是「选中了 bash」这个中间量。
+   *
+   * 没装 Git Bash 的 Windows 机器上落回 PowerShell，那里 `&&` 确实不合法，
+   * 所以显式跳过而不是伪装通过。
+   */
+  const POSIX_SHELL = /bash|\/bin\/sh$/.test(String(COMMAND_SHELL.argv[0]))
+  test.skipIf(!POSIX_SHELL)('POSIX 组合命令能跑通', async () => {
+    const root = await workspace()
+    const out = await registry().execute('run_command', { command: 'echo a && echo b' }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(String(out.data?.stdout)).toContain('a')
+    expect(String(out.data?.stdout)).toContain('b')
   })
 
   test('非零退出码报告为 failure 但仍带回输出', async () => {

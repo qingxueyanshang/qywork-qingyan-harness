@@ -49,6 +49,26 @@ export interface SinkPort {
 }
 
 /**
+ * 「这个会话读到那个文件时，它长什么样」。写前的新鲜度校验就靠它。
+ *
+ * ## 为什么必须是个 port，不能塞进 `state`
+ *
+ * `state` 是 **run 内的便签**（批级预算、计划快照都在里面，两者必须每轮清零），
+ * 而读记录的正确寿命是**整条会话**：模型上一轮读过、这一轮直接改是完全正常的用法，
+ * 挂在 run 上就意味着每轮第一次改文件必然先失败一次「未读取过」。
+ * 服务端又是**每条消息新建一个 Session**，进程里没有「会话级」这个生命周期可挂——
+ * 所以寿命交给装配方（runtime 拿账本按会话存），这里只约定形状。
+ *
+ * `null` 是合法值：没注入时工具退化成 run 内记账（老行为），不能假设它存在。
+ */
+export interface FileReadPort {
+  /** 读到过就返回当时的内容哈希，没有就 null。 */
+  seen(path: string): string | null
+  /** 记下刚读到（或刚写出）的内容哈希。 */
+  mark(path: string, hash: string): void
+}
+
+/**
  * 一次工具调用的结果最多占窗口的几分之一。
  *
  * **不是拍的百分比，是从已有的界推出来的。** `read_file` 的默认行数上限是 2000
@@ -118,6 +138,13 @@ export interface ToolContext {
   signal: AbortSignal
   /** 中间资源落盘。null = 本次执行没有正文库，工具须降级为纯截断。 */
   sink: SinkPort | null
+  /**
+   * 会话级的「读过哪些文件」。见 `FileReadPort`。
+   *
+   * 可选而不是必填可空（`sink` 是那种）：没接上时工具退化成 run 内记账，
+   * 那是**更严**的一侧（每轮要求重读一次），漏接不会放宽任何边界。
+   */
+  reads?: FileReadPort
   /** 长工具的中途输出回传通道（shell stdout、下载进度）。 */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**

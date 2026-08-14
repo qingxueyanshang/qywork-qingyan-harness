@@ -4,6 +4,7 @@ import {
   appendStep,
   createConversation,
   createRun,
+  fileReadHash,
   finishRun,
   getConversation,
   getRun,
@@ -11,8 +12,10 @@ import {
   markRunRunning,
   markRunSuperseded,
   markStepExecuting,
+  recordFileRead,
   recoverStaleRuns,
   setConversationModel,
+  touchRun,
   upsertWorkspace,
 } from './repos.ts'
 
@@ -168,7 +171,117 @@ describe('崩溃恢复', () => {
 
   test('干净启动时是零成本的 no-op', () => {
     const { store } = fresh()
-    expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0 })
+    expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0, heldByOthers: 0 })
+    store.close()
+  })
+})
+
+/**
+ * **只回收没人在跑的那些。**
+ *
+ * 账本是共享的：两个工作区的 sidecar、开发态热重载、终端里的 `qy exec` 都写它。
+ * 这里原来无差别回收，实测把另一个进程正在跑的一轮判死了——那条 run 已经跑了
+ * 40 步，第 27 次请求发出后 257 毫秒被写成 interrupted，写入者是刚起来的进程。
+ *
+ * 四条判据两两互补，所以四条都要测：pid 会被复用（只看 pid 会漏），
+ * 崩溃后立刻重启时心跳还是新的（只看心跳会漏）。
+ */
+describe('run 归属', () => {
+  const setOwner = (store: Store, id: string, pid: number, beat: number) =>
+    store.db
+      .query('UPDATE runs SET owner_pid = ?, heartbeat_at = ? WHERE id = ?')
+      .run(pid, beat, id)
+
+  function running() {
+    const f = fresh()
+    const run = newRun(f.store, f.ws, f.conv)
+    markRunRunning(f.store, run.id)
+    return { ...f, run }
+  }
+
+  test('归属进程活着、心跳在推 → 放过，这是别人正在跑的那一轮', () => {
+    const { store, run } = running()
+    // 父进程一定活着，而且不是自己——正是「另一个还在跑的进程」的形状。
+    setOwner(store, run.id, process.ppid, Date.now())
+
+    const r = recoverStaleRuns(store)
+    expect(r.recovered).toBe(0)
+    expect(r.heldByOthers).toBe(1)
+    expect(getRun(store, run.id)?.status).toBe('running')
+    store.close()
+  })
+
+  test('归属进程活着但心跳早停了 → 回收（pid 被复用的兜底）', () => {
+    const { store, run } = running()
+    setOwner(store, run.id, process.ppid, Date.now() - 10 * 60_000)
+
+    expect(recoverStaleRuns(store).recovered).toBe(1)
+    expect(getRun(store, run.id)?.status).toBe('interrupted')
+    store.close()
+  })
+
+  test('归属进程已经没了 → 回收，哪怕心跳是刚推的', async () => {
+    const { store, run } = running()
+    // 真起一个进程再等它退出：拿一个确定死掉的 pid，不靠猜一个大数字。
+    const dead = Bun.spawn([process.execPath, '-e', ''], { stdout: 'ignore', stderr: 'ignore' })
+    await dead.exited
+    setOwner(store, run.id, dead.pid, Date.now())
+
+    expect(recoverStaleRuns(store).recovered).toBe(1)
+    expect(getRun(store, run.id)?.status).toBe('interrupted')
+    store.close()
+  })
+
+  /**
+   * **这条是「不要引入新 bug」的那一条。**
+   *
+   * 崩溃后立刻重启，Windows 把同一个 pid 发给了新进程。此时 pid 活着（就是我）、
+   * 心跳才过去两秒——只按这两条判都会认定「还有人在跑」，那条 run 于是永远没人
+   * 回收，会话被 isBusy 永久锁死。所以「归属是我自己」必须单独成一条，且在心跳之前。
+   */
+  test('归属是本进程的 pid → 回收：我刚启动，不可能拥有任何 run', () => {
+    const { store, run } = running()
+    setOwner(store, run.id, process.pid, Date.now())
+
+    expect(recoverStaleRuns(store).recovered).toBe(1)
+    expect(getRun(store, run.id)?.status).toBe('interrupted')
+    store.close()
+  })
+
+  test('心跳只推 running 的行 —— 终态 run 不该看起来像还在跑', () => {
+    const { store, run } = running()
+    finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+    setOwner(store, run.id, process.ppid, 0)
+    touchRun(store, run.id)
+
+    const beat = store.db
+      .query<{ heartbeat_at: number | null }, [string]>(
+        'SELECT heartbeat_at FROM runs WHERE id = ?',
+      )
+      .get(run.id)?.heartbeat_at
+    expect(beat).toBe(0)
+    store.close()
+  })
+})
+
+describe('会话级读记录', () => {
+  test('记下、读回、覆盖只留最近一次', () => {
+    const { store, conv } = fresh()
+    expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBeNull()
+
+    recordFileRead(store, conv.id, 'C:/ws/a.ts', 'h1')
+    expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBe('h1')
+
+    recordFileRead(store, conv.id, 'C:/ws/a.ts', 'h2')
+    expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBe('h2')
+    store.close()
+  })
+
+  test('按会话隔离 —— 另一条会话读过不算你读过', () => {
+    const { store, ws, conv } = fresh()
+    const other = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    recordFileRead(store, conv.id, 'C:/ws/a.ts', 'h1')
+    expect(fileReadHash(store, other.id, 'C:/ws/a.ts')).toBeNull()
     store.close()
   })
 })
