@@ -509,6 +509,79 @@ ALTER TABLE runs DROP COLUMN context_limit;
 ALTER TABLE runs DROP COLUMN context_percent;
 `,
   },
+  {
+    id: 14,
+    name: 'run_lease',
+    /**
+     * run 记下**是谁在跑它**，启动回收据此放过还活着的那些。
+     *
+     * ## 为什么必须有这两列
+     *
+     * `recoverStaleRuns` 原来无差别扫全库的 running/queued。而一台机器上可以有
+     * 好几个进程写同一个账本——两个工作区各一个 sidecar（`server.ts` 自己的注释
+     * 就这么写着）、开发态的热重载、终端里的 `qy exec`。**后起的那个进程一启动，
+     * 就把前一个正在跑的那一轮判成中断**，而那个进程还活着、还在往下写。
+     * 实测撞到过：一条跑了 40 步的 run 在第 27 次请求发出后 257 毫秒被判死，
+     * 写入者是另一个刚起来的进程。
+     *
+     * 判「还活着」需要两个信号，缺一不可：
+     *
+     * - `owner_pid`：进程没了就该回收——这是**原来那条保证**，不能弱化。
+     *   只有它不行：Windows 会复用 pid，一个不相干的新进程占了同一个号，
+     *   死掉的那条 run 就永远判成「还活着」，会话被永久锁死。
+     * - `heartbeat_at`：跑着的进程每隔十秒把它推一次。pid 被复用（或进程活着
+     *   但那一轮早就废了）时，心跳停了就是停了，超时即回收。
+     *
+     * 反过来只有心跳也不行：进程崩溃后立刻重启，心跳才过去两秒，按超时判还「活着」,
+     * 那条 run 就躲过了回收——而它已经没有任何人在跑，会话就此锁死。
+     * **两个信号各自堵的是对方的漏，所以两列都要。**
+     *
+     * 可空：迁移之前的历史行没有归属，按「无归属」处理，照旧回收。
+     */
+    sql: `
+ALTER TABLE runs ADD COLUMN owner_pid INTEGER;
+ALTER TABLE runs ADD COLUMN heartbeat_at INTEGER;
+`,
+  },
+  {
+    id: 15,
+    name: 'file_reads',
+    /**
+     * 「写之前必须先读过」的那条记录，从进程内存挪进账本，按**会话**归属。
+     *
+     * ## 原来住错了地方
+     *
+     * 它存在 `ToolContext.state` 里，而那张 map 是 **run 内的便签**
+     * （批级预算、计划快照也在里面，两者都必须每轮清零）。于是「读过 x.ts」
+     * 这件事每轮清零一次：模型上一轮读过、这一轮直接改，必然先失败一次
+     * 「本轮未读取过」，补一次 read 再改才成——账本里三次 edit_file 失败全是它。
+     *
+     * 服务端**每条消息新建一个 Session**（`run-control.ts` 的注释写明了），
+     * 所以进程里根本没有「会话级」这个生命周期可挂。而账本里有：会话就是一行，
+     * 删会话时这些行随 `ON DELETE CASCADE` 一起走，不需要另外发明淘汰策略。
+     * 同一条推理让上下文面板改成从账本现算（`runtime/context-panel.ts`）。
+     *
+     * ## 这条守卫管的是新鲜度，不是记性
+     *
+     * 存的是**整份文件内容的哈希**，部分读（offset/limit）也记全量哈希——
+     * 所以它从来不承诺「模型看过全文」，它只回答「你要写的这份，还是你读到的那份吗」。
+     * 新鲜度的判据是磁盘现值，与 run 边界无关，因此挪长生命周期不放宽任何东西：
+     * 文件被别人改过照样拦得住，拦它的是哈希比对。
+     *
+     * 主键 (conversation_id, path)：同一文件重复读就覆盖，只留最近那次。
+     * `path` 存**解析后的绝对路径**，与内存那版同一个键——模型写的相对路径
+     * 形态不唯一（`js/a.js` / `./js/a.js`），拿它当键会漏。
+     */
+    sql: `
+CREATE TABLE file_reads (
+  conversation_id TEXT    NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  path            TEXT    NOT NULL,
+  hash            TEXT    NOT NULL,
+  read_at         INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, path)
+);
+`,
+  },
 ]
 
 /**

@@ -30,6 +30,7 @@ export { decideCommand } from './policy.ts'
 export {
   BATCH_BUDGET_RATIO,
   chargeBatchBudget,
+  type FileReadPort,
   type PermissionVerdict,
   RESULT_BUDGET_RATIO,
   resetBatchBudget,

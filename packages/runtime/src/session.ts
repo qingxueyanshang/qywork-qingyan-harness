@@ -40,6 +40,7 @@ import {
   type ContentStore,
   createConversation,
   createRun,
+  fileReadHash,
   finishRun,
   getConversation,
   getRun,
@@ -50,11 +51,13 @@ import {
   markRunSuperseded,
   markStepExecuting,
   openProviderRequest,
+  recordFileRead,
   recordUsage,
   type Store,
   settleProviderRequest,
   settleRunningSteps,
   settleToolStep,
+  touchRun,
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
@@ -225,7 +228,11 @@ export class Session {
    * 注意这与「ToolContext 每轮只建一个」不冲突——那条说的是**一个 run 内部**
    * 不能每波次重建（会丢读文件状态），run 之间重建是必须的。
    */
-  private makeLoop(model: string, compaction?: CompactionPort): AgentLoop {
+  private makeLoop(
+    model: string,
+    conversationId: ConversationId,
+    compaction?: CompactionPort,
+  ): AgentLoop {
     return new AgentLoop({
       adapter: buildAdapter(this.resolveProfile(model)),
       registry: this.registry,
@@ -242,7 +249,8 @@ export class Session {
           memories: this.memoryBodies,
           deferredMemories: this.deferredMemories,
         }),
-      makeToolContext: (runId, emit) => this.makeToolContext(runId, emit, model),
+      makeToolContext: (runId, emit) =>
+        this.makeToolContext(runId, emit, model, conversationId as ConversationId),
       persist: this.makePersistence(),
       ...(compaction ? { compaction } : {}),
     })
@@ -446,9 +454,22 @@ export class Session {
     this.memoryBodies = picked.selected.map((m) => ({ key: m.key, body: m.body }))
     this.deferredMemories = picked.deferred
 
+    /*
+     * 心跳：**告诉别的进程「这一轮还有人在跑」。**
+     *
+     * 账本是共享的，一台机器上同时有好几个写入者（两个工作区的 sidecar、
+     * 开发态热重载、终端里的 `qy exec`）。后起的那个进程在启动时回收残留 run，
+     * 判据就是这个心跳加 `owner_pid`（见 `store/repos.ts` 的 `isOrphan`）——
+     * 不推心跳的话，别人一启动就把这条正在跑的判成中断。
+     *
+     * `unref()`：它不该成为「进程关不掉」的理由。
+     */
+    const heartbeat = setInterval(() => touchRun(store, run.id), HEARTBEAT_MS)
+    heartbeat.unref?.()
+
     let finished = false
     try {
-      for await (const ev of this.makeLoop(model, compaction).run({
+      for await (const ev of this.makeLoop(model, conversationId, compaction).run({
         runId: run.id,
         history,
         ...(effort ? { effort } : {}),
@@ -485,6 +506,9 @@ export class Session {
         yield ev
       }
     } finally {
+      // 心跳先停。停晚了不要紧（只推 running 的行），但停在最前面才保证
+      // 无论下面哪一步抛异常都不会留下一个还在推心跳的定时器。
+      clearInterval(heartbeat)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断连）时也要给 run 一个终态，
       // 否则账本里会永远躺着一条 running 的孤儿记录。
       if (!finished) {
@@ -694,11 +718,17 @@ export class Session {
     return { allowed: false, reason: `${d.reason}（scope ${scope}）。换一条不做这件事的命令。` }
   }
 
-  private makeToolContext(runId: RunId, emit: (e: AgentEvent) => void, model: string): ToolContext {
+  private makeToolContext(
+    runId: RunId,
+    emit: (e: AgentEvent) => void,
+    model: string,
+    conversationId: ConversationId,
+  ): ToolContext {
     const secrets = collectSecrets(this.opts.config)
+    const store = this.opts.store
     return {
       workspaceRoot: this.opts.workspaceRoot,
-      conversationId: '',
+      conversationId,
       runId,
       model,
       // 投递预算按窗口算，且**在执行时**应用——换模型只影响之后的读取，
@@ -709,6 +739,18 @@ export class Session {
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，
       // run 被删时引用随之消失，GC 才能把正文回收掉。
       sink: this.opts.content ? new RuntimeSink(this.opts.store, this.opts.content, runId) : null,
+      /*
+       * 读记录绑定到**会话**，不是 run。
+       *
+       * 服务端每条消息新建一个 Session（`run-control.ts`），所以进程里没有
+       * 「会话级」这个生命周期可挂——真源放账本，随会话删除一起走。
+       * 挂在 run 上的后果是每轮第一次改文件必然先失败一次「没读取过」，
+       * 而这条守卫要回答的是「你写的还是你读到的那份吗」，与 run 边界无关。
+       */
+      reads: {
+        seen: (path) => fileReadHash(store, conversationId, path),
+        mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
+      },
       signal: this.opts.signal,
       emit: (channel, delta) => {
         emit({ type: 'tool.delta', runId, stepId: '' as never, channel, delta })
@@ -723,6 +765,9 @@ export class Session {
     }
   }
 }
+
+/** 心跳间隔。回收那边按 60 秒判过期（`store/repos.ts`），六倍余量。 */
+const HEARTBEAT_MS = 10_000
 
 const NEWLINE = String.fromCharCode(10)
 

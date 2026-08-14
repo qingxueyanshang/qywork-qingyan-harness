@@ -3,6 +3,7 @@ import {
   buildBwrapArgv,
   buildSeatbeltArgv,
   buildSeatbeltProfile,
+  COMMAND_SHELL,
   defaultMaskPaths,
   detectSandbox,
   killTree,
@@ -396,10 +397,10 @@ describe('killTree', () => {
 
   test('杀掉整棵树，且 stdout 随之 EOF', async () => {
     // 与 spawnGuarded 同一个形状：spawn 的是 shell，真正监听的是它的子进程。
-    const inner =
-      process.platform === 'win32'
-        ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `node -e "${SERVER}"`]
-        : ['/bin/sh', '-c', `node -e '${SERVER}'`]
+    // shell 取 `COMMAND_SHELL`，不按 platform 现判——这里复刻的就是它。
+    // 脚本一律用双引号包：`SERVER` 里全是单引号，用单引号包会在第一个内层引号处断开
+    // （原来的 `/bin/sh` 分支就是这么写的，那条路一次也没跑过，所以一直没暴露）。
+    const inner = [...COMMAND_SHELL.argv, `node -e "${SERVER}"`]
     const proc = Bun.spawn(inner, {
       stdout: 'pipe',
       stderr: 'pipe',

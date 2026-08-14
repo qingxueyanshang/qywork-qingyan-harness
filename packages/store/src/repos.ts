@@ -446,6 +446,40 @@ export function referencedAttachmentPaths(store: Store): Set<string> {
   return out
 }
 
+/**
+ * 记下这个会话读到某个文件时的内容哈希。写前的新鲜度校验就靠它。
+ *
+ * 同一文件重复读只留最近那次：判据是「你手上那份还是不是磁盘上这份」，
+ * 历史上的旧哈希对这个问题没有任何贡献，留着只会让表白涨。
+ */
+export function recordFileRead(
+  store: Store,
+  conversationId: ConversationId,
+  path: string,
+  hash: string,
+): void {
+  store.db
+    .query(
+      `INSERT INTO file_reads (conversation_id, path, hash, read_at) VALUES (?,?,?,?)
+       ON CONFLICT(conversation_id, path) DO UPDATE SET hash = excluded.hash, read_at = excluded.read_at`,
+    )
+    .run(conversationId, path, hash, Date.now())
+}
+
+/** 这个会话读到那个文件时的内容哈希；没读过返回 null。 */
+export function fileReadHash(
+  store: Store,
+  conversationId: ConversationId,
+  path: string,
+): string | null {
+  const row = store.db
+    .query<{ hash: string }, [string, string]>(
+      'SELECT hash FROM file_reads WHERE conversation_id = ? AND path = ?',
+    )
+    .get(conversationId, path)
+  return row?.hash ?? null
+}
+
 export function listMessages(
   store: Store,
   conversationId: ConversationId,
@@ -507,8 +541,8 @@ export function createRun(
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
         cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
         retry_of_run_id, superseded_by,
-        created_at, finished_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,NULL)`,
+        created_at, finished_at, owner_pid, heartbeat_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,NULL,?,?)`,
     )
     .run(
       run.id,
@@ -523,8 +557,25 @@ export function createRun(
       null,
       run.retryOfRunId,
       now,
+      // 归属从建行那一刻就写上。晚一步写的话，「刚 createRun 就崩」留下的那条
+      // 无归属行会被下一个进程按老规矩回收——那正是本来就该发生的事，
+      // 但归属如果只在跑起来之后才补，同一条路径上会多出一段判据不同的窗口。
+      process.pid,
+      now,
     )
   return run
+}
+
+/**
+ * 心跳：告诉别的进程「这一轮还有人在跑」。
+ *
+ * 只推 running 的行——已经落终态的 run 再推心跳没有意义，
+ * 而且会让「心跳新 = 还在跑」这句话在事后读起来是假的。
+ */
+export function touchRun(store: Store, id: RunId): void {
+  store.db
+    .query("UPDATE runs SET heartbeat_at = ? WHERE id = ? AND status = 'running'")
+    .run(Date.now(), id)
 }
 
 /** 幂等：同一 (conversationId, clientRequestId) 已有 run 时直接返回它。 */
@@ -642,11 +693,22 @@ export function markRunSuperseded(store: Store, id: RunId, by: RunId): boolean {
  * 曾经有一个 `runs.execution_state` 列，从未被写入过——拿它做判据会让所有 run
  * 都被判成「安全可重放」，正好是最危险的那个方向。已连同 `ExecutionState` 一起删掉，
  * 判据只有一个：**steps 表里那条带 `execution_started_at` 的 running 行**。
+ *
+ * ## 只回收没人在跑的那些
+ *
+ * 这里原来无差别扫全库，于是**后起的进程会把别的进程正在跑的那一轮判死**
+ * ——账本是共享的，而一台机器上同时有好几个写入者（两个工作区的 sidecar、
+ * 开发态热重载、终端里的 `qy exec`）。判据见 `isOrphan`，两个信号缺一不可。
  */
-export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: number } {
-  const rows = store.db
+export function recoverStaleRuns(store: Store): {
+  recovered: number
+  ambiguous: number
+  /** 有归属、且那个归属还活着，本次放过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
+  heldByOthers: number
+} {
+  const all = store.db
     .query<Record<string, any>, []>(
-      `SELECT r.id AS id,
+      `SELECT r.id AS id, r.owner_pid AS ownerPid, r.heartbeat_at AS heartbeatAt,
               EXISTS (
                 SELECT 1 FROM steps s
                 WHERE s.run_id = r.id
@@ -657,6 +719,9 @@ export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: 
        WHERE r.status IN ('running','queued')`,
     )
     .all()
+
+  const rows = all.filter((r) => isOrphan(r.ownerPid, r.heartbeatAt))
+  const heldByOthers = all.length - rows.length
 
   // **不能在这里提前返回。** 下面还有一趟「终态 run 底下的孤儿 step」要扫，
   // 而那趟与本次有没有 stale run 无关——恰恰相反，最常见的情形就是
@@ -676,7 +741,12 @@ export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: 
       finishStmt.run(
         isAmbiguous ? 'internal_guard' : 'user_interrupt',
         isAmbiguous ? 'internal_error' : null,
-        isAmbiguous ? '上次进程在工具执行期间退出，本轮结果不可信' : '上次进程退出，本轮未开始执行',
+        // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
+        // 完全兼容一个已经跑了几十步、恰好停在等模型回复那一刻的 run。
+        // 实测就撞上了：一条 40 步的 run 被这句话描述成从没开始过。
+        isAmbiguous
+          ? '上次进程在工具执行期间退出，本轮结果不可信'
+          : '上次进程退出，本轮中断；没有工具停在执行中，已完成的步骤结果可信',
         now,
         r.id,
       )
@@ -703,7 +773,45 @@ export function recoverStaleRuns(store: Store): { recovered: number; ambiguous: 
     for (const o of orphanRuns) settleRunningSteps(store, o.run_id as RunId)
   })()
 
-  return { recovered: rows.length, ambiguous }
+  return { recovered: rows.length, ambiguous, heldByOthers }
+}
+
+/** 心跳超过这么久没推，就当那个进程已经不在跑它了。心跳是十秒一次，给六倍余量。 */
+const HEARTBEAT_STALE_MS = 60_000
+
+/**
+ * 这条 run 还有没有活人在跑。
+ *
+ * **四条判据的顺序是有意的**，每一条堵的都是前一条的漏：
+ *
+ * 1. **没有归属** —— 迁移之前的历史行。按老规矩回收，不能因为不认识就放过。
+ * 2. **归属是我自己的 pid** —— 我刚启动，不可能拥有任何 run，所以这一定是
+ *    上一个进程留下的、而 Windows 恰好把同一个号发给了我。**这条必须在心跳之前**：
+ *    崩溃后立刻重启时心跳只过去两三秒，按超时判会认定它「还活着」，
+ *    于是那条 run 永远没人回收，会话被永久锁死。
+ * 3. **那个 pid 已经不在** —— 进程没了，回收。这是本函数原本的全部意义，不能弱化。
+ *    `EPERM` 算活着：宁可晚一分钟由心跳兜底，也不误杀一条真在跑的。
+ * 4. **pid 还在但心跳停了** —— pid 被复用，或者那个进程活着但那一轮早就废了。
+ *
+ * 只有 pid 会被复用骗过，只有心跳会被「崩溃后立刻重启」骗过。两个都要。
+ */
+function isOrphan(ownerPid: unknown, heartbeatAt: unknown): boolean {
+  const pid = Number(ownerPid)
+  if (!Number.isInteger(pid) || pid <= 0) return true
+  if (pid === process.pid) return true
+  if (!pidAlive(pid)) return true
+  const beat = Number(heartbeatAt)
+  return !Number.isFinite(beat) || Date.now() - beat > HEARTBEAT_STALE_MS
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    // 信号 0 不投递任何东西，只做存在性与权限检查。
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
 }
 
 /**

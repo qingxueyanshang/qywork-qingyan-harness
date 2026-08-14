@@ -2,7 +2,14 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { COMMAND_SHELL } from '@qywork/tools'
 import { HOST_CAPABILITIES, makeCapabilityHandler } from './capabilities.ts'
+
+/** 「把某个环境变量原样打出来」在当前 shell 的写法。方言随 shell 走，不随平台走。 */
+const echoEnv = (name: string) =>
+  String(COMMAND_SHELL.argv[0]).includes('powershell')
+    ? `Write-Output "[$env:${name}]"`
+    : `echo "[$${name}]"`
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'qywork-cap-'))
@@ -131,10 +138,9 @@ describe('exec —— 绝不透传宿主环境变量', () => {
     process.env.QYWORK_CAP_SECRET = 'super-secret-value'
     try {
       const { call } = await fixture()
-      const cmd =
-        process.platform === 'win32'
-          ? 'Write-Output "[$env:QYWORK_CAP_SECRET]"'
-          : 'echo "[$QYWORK_CAP_SECRET]"'
+      // 方言按**真正在跑的那个 shell**取，不按 platform：Windows 上装了
+      // Git Bash 就跑 bash，`Write-Output` 在那里根本不是命令，stdout 会是空的。
+      const cmd = echoEnv('QYWORK_CAP_SECRET')
       const r = (await call('exec.run', { command: cmd })) as any
       expect(r.stdout).not.toContain('super-secret-value')
       expect(r.stdout).toContain('[]')

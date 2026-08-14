@@ -601,6 +601,81 @@ export interface GuardedSpawn {
 }
 
 /**
+ * Git for Windows 自带的 bash。找不到返回 `null`。
+ *
+ * **不查 PATH。** 这台机器上 `where bash` 的第一条是
+ * `C:\Windows\System32\bash.exe` —— 那是 **WSL 启动器**，它把命令送进另一个
+ * 发行版的文件系统里跑（工作区在那边是 `/mnt/c/...`），cwd 和路径全对不上，
+ * 而且失败形状是「命令跑了但找不到文件」，比没有 bash 难查得多。
+ * 所以只认 Git 的安装目录，按确定的几个位置找。
+ *
+ * 从 `git.exe` 反推要往上走两级**和**三级：PATH 上可能是 `Git\cmd\git.exe`，
+ * 也可能是 `Git\mingw64\bin\git.exe`（本机实测两条都在）。
+ */
+function findGitBash(): string | null {
+  const candidates: string[] = []
+  const git = whichSync('git.exe')
+  if (git) {
+    const cmdDir = joinNative(git, '..')
+    candidates.push(
+      joinNative(cmdDir, '..', 'bin', 'bash.exe'),
+      joinNative(cmdDir, '..', '..', 'bin', 'bash.exe'),
+    )
+  }
+  const local = process.env.LOCALAPPDATA
+  for (const base of [
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    local ? joinNative(local, 'Programs') : undefined,
+  ]) {
+    if (base) candidates.push(joinNative(base, 'Git', 'bin', 'bash.exe'))
+  }
+  return candidates.find((p) => existsSync(p)) ?? null
+}
+
+/**
+ * 命令交给哪个 shell，以及**模型必须知道的那条语法差异**。
+ *
+ * ## Windows 上优先 bash，不是 PowerShell
+ *
+ * 原来无条件走 `powershell.exe -Command`，而模型只被告知「平台：win32」时
+ * 写的是 cmd 或 POSIX 的写法。`&&` 在 Windows PowerShell 5.1 里是**解析错误**
+ * （实测 `标记「&&」不是此版本中的有效语句分隔符`）——整条命令一个字都不执行，
+ * 账本里已经有这么废掉的调用（`node --version & python --version`）。
+ * 那不是模型不会写 PowerShell，是**它的默认方言和这里跑的 shell 对不上**，
+ * 而两边只有一边能改：换 shell 一处，纠正模型每一条命令是无穷次。
+ *
+ * 装了 Git 就有 bash（编码 agent 的机器上几乎恒真），没装才落回 PowerShell。
+ * **落回时提示跟着换**——两种 shell 用同一句提示等于告诉模型一个假的方言。
+ *
+ * `hint` 会原样进 `run_command` 的工具说明，与下面 `spawnGuarded` 用的是同一份
+ * argv：两处各写一遍必然漂移，而漂移的表现是**告诉模型的那个 shell 和真正执行
+ * 的不是同一个**，比不告诉更糟。
+ *
+ * 探测在模块加载时做一次：结果在一个进程的生命周期内不会变。
+ */
+export const COMMAND_SHELL: { readonly argv: readonly string[]; readonly hint: string } = (() => {
+  if (process.platform !== 'win32') {
+    return { argv: ['/bin/sh', '-c'], hint: '命令由 `/bin/sh -c` 执行。' }
+  }
+  const bash = findGitBash()
+  return bash
+    ? {
+        argv: [bash, '-c'],
+        hint:
+          '命令由 Git for Windows 的 `bash -c` 执行（POSIX 语法，不是 cmd/PowerShell，也不是 WSL）：' +
+          '`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
+      }
+    : {
+        argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command'],
+        hint:
+          '这台机器没装 Git Bash，命令由 Windows PowerShell 执行：' +
+          '`&&`、`||`、`&` 都是语法错误，多条命令用 `;` 连；' +
+          '丢弃输出写 `2>$null`（不是 `2>nul`），环境变量写 `$env:NAME`。',
+      }
+})()
+
+/**
  * **本项目唯一一处为模型给出的命令起子进程的地方。**
  *
  * 新增调用方之前先想清楚：绕开这里就等于绕开沙箱，而且不会有任何报错。
@@ -611,9 +686,7 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
 
   // 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
   // 转义黑名单挡不住构造，真正的边界在内核那一层。
-  const inner = isWindows
-    ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', input.command]
-    : ['/bin/sh', '-c', input.command]
+  const inner = [...COMMAND_SHELL.argv, input.command]
 
   const policy = input.policy
 
@@ -658,8 +731,7 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
  *
  * ## 为什么不能只 `proc.kill()`
  *
- * 我们 spawn 的从来不是命令本身，是一个 shell：Windows 上
- * `powershell.exe -Command <命令>`、其余平台 `/bin/sh -c <命令>`（见上面的 `inner`）。
+ * 我们 spawn 的从来不是命令本身，是一个 shell（`COMMAND_SHELL.argv` + 命令串）。
  * 真正干活的进程是它的**子进程**，而 `proc.kill()` 只杀那一个 shell。
  *
  * 本机实测（Windows 11 / Bun 1.3.14，完全复刻上面的 spawn 参数）：

@@ -12,7 +12,7 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { chargeBatchBudget, type ToolSpec } from '@qywork/agent'
+import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { estimateText } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import {
@@ -24,7 +24,7 @@ import {
 } from './paths.ts'
 import { redactSecrets } from './secrets.ts'
 
-/** 记录本 run 内每个文件被读到时的内容哈希，供写前校验。 */
+/** 没有会话级 port 时的退路：把读记录暂存在 run 内的便签上。 */
 const READ_STATE_KEY = 'files.readHashes'
 
 /**
@@ -36,13 +36,30 @@ const READ_STATE_KEY = 'files.readHashes'
  */
 const DEFAULT_READ_LINES = 2000
 
-function readHashes(state: Map<string, unknown>): Map<string, string> {
-  let m = state.get(READ_STATE_KEY) as Map<string, string> | undefined
+/**
+ * 读记录的取用口。
+ *
+ * **寿命由装配方决定，不由这里决定。** 接上 `ctx.reads`（runtime 按会话落账本）
+ * 就是会话级；没接上退回 run 内的便签——那是更严的一侧（每轮头一次写要先读），
+ * 所以漏接不会放宽边界。这里只管「读的时候记、写之前比」。
+ */
+interface ReadHashes {
+  get(path: string): string | null
+  set(path: string, hash: string): void
+}
+
+function readHashes(ctx: ToolContext): ReadHashes {
+  if (ctx.reads) {
+    const port = ctx.reads
+    return { get: (p) => port.seen(p), set: (p, h) => port.mark(p, h) }
+  }
+  let m = ctx.state.get(READ_STATE_KEY) as Map<string, string> | undefined
   if (!m) {
     m = new Map()
-    state.set(READ_STATE_KEY, m)
+    ctx.state.set(READ_STATE_KEY, m)
   }
-  return m
+  const fallback = m
+  return { get: (p) => fallback.get(p) ?? null, set: (p, h) => void fallback.set(p, h) }
 }
 
 function hash(text: string): string {
@@ -100,7 +117,7 @@ export const readFileTool: ToolSpec = {
       return { status: 'failure', message: '二进制文件，无法作为文本读取' }
     }
 
-    readHashes(ctx.state).set(abs, hash(text))
+    readHashes(ctx).set(abs, hash(text))
 
     const lines = text.split('\n')
     const offset = Math.max(1, Number(args.offset ?? 1))
@@ -188,11 +205,11 @@ export const writeFileTool: ToolSpec = {
 
     const existing = await readFile(abs, 'utf8').catch(() => null)
     if (existing !== null) {
-      const seen = readHashes(ctx.state).get(abs)
-      if (seen === undefined) {
+      const seen = readHashes(ctx).get(abs)
+      if (seen === null) {
         return {
           status: 'failure',
-          message: `${args.path} 已存在但本轮未读取过。先 read_file 再覆盖。`,
+          message: `${args.path} 已存在但没读取过。先 read_file 再覆盖。`,
           errorKind: 'stale_write',
         }
       }
@@ -207,7 +224,7 @@ export const writeFileTool: ToolSpec = {
 
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, content, 'utf8')
-    readHashes(ctx.state).set(abs, hash(content))
+    readHashes(ctx).set(abs, hash(content))
 
     const change: FileChange = {
       path: displayPath(ctx.workspaceRoot, abs),
@@ -252,11 +269,11 @@ export const editFileTool: ToolSpec = {
     const replaceAll = args.replace_all === true
 
     const current = await readFile(abs, 'utf8')
-    const seen = readHashes(ctx.state).get(abs)
-    if (seen === undefined) {
+    const seen = readHashes(ctx).get(abs)
+    if (seen === null) {
       return {
         status: 'failure',
-        message: `${args.path} 本轮未读取过。先 read_file。`,
+        message: `${args.path} 没读取过。先 read_file。`,
         errorKind: 'stale_write',
       }
     }
@@ -282,7 +299,7 @@ export const editFileTool: ToolSpec = {
 
     const next = replaceAll ? current.split(oldStr).join(newStr) : current.replace(oldStr, newStr)
     await writeFile(abs, next, 'utf8')
-    readHashes(ctx.state).set(abs, hash(next))
+    readHashes(ctx).set(abs, hash(next))
 
     const change: FileChange = {
       path: displayPath(ctx.workspaceRoot, abs),

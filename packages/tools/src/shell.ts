@@ -39,7 +39,7 @@ import { estimateText } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
-import { killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
+import { COMMAND_SHELL, killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
 
@@ -66,6 +66,7 @@ export const shellTool: ToolSpec = {
   description:
     '在工作区里执行一条 shell 命令并返回 stdout/stderr 与退出码。' +
     '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
+    `${COMMAND_SHELL.hint}` +
     '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',
   parameters: {
     type: 'object',
