@@ -13,6 +13,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
 import type { ServerWebSocket } from 'bun'
+import { wingetUsable } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
@@ -140,5 +141,26 @@ describe('能力上报', () => {
     const bash = env.find((d) => d.id === 'bash')
     expect(bash?.path?.toLowerCase()).toContain('bash')
     expect(env.find((d) => d.id === 'git')?.path).not.toBeNull()
+  })
+
+  /**
+   * **winget 的探测不能走 `Bun.which`。** 这条是实测撞出来的 bug 的回归。
+   *
+   * `WindowsApps\winget.exe` 是应用执行别名（APPEXECLINK 重解析点），不是真文件：
+   * `existsSync` 报 ENOENT、`Bun.which` 返回 null、`Bun.spawnSync(['winget',…])`
+   * 直接抛「Executable not found in $PATH」，而 `cmd /c winget --version` 是 exit 0。
+   * Win10/11 上 winget 一律是这个形状——用 `Bun.which` 探的后果不是偶尔漏，
+   * 是**一键装按钮在任何机器上都不会出现**。
+   *
+   * 断言写成「与 `where.exe` 的结论一致」而不是写死 true：没装 winget 的机器上
+   * 两边都该是假，这条测试在那种机器上依然成立。
+   */
+  test('winget 探测认得应用执行别名（Bun.which 认不出的那种）', () => {
+    if (process.platform !== 'win32') return
+    const found =
+      Bun.spawnSync(['where.exe', 'winget'], { stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
+    expect(wingetUsable()).toBe(found)
+    // 反向对照：真是别名的话 Bun 自己解析不出来，这正是本条存在的理由。
+    if (found) expect(Bun.which('winget')).toBeNull()
   })
 })

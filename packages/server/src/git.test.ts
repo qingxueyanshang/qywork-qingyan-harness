@@ -1,7 +1,7 @@
 /**
  * git 面板数据源的边界。
  *
- * 覆盖 `git.ts` 的 revision 参数校验。这里只测**不可信输入**那一段：
+ * 覆盖 `git.ts` 的 revision 参数校验，以及**这台机器上没装 git 时的形状**。
  * 其余读操作的正确性由 git 自己保证，复刻一遍它的行为没有意义。
  */
 
@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { diff, log } from './git.ts'
+import { diff, isRepo, log } from './git.ts'
 
 async function emptyRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -58,6 +58,31 @@ describe('revision 参数不是可信输入', () => {
       // 空仓库里这些 ref 解析不出提交，log 回空数组即可——
       // 关键是**没有抛出「非法的 git ref」**，说明它过了校验这一关。
       expect(await log(dir, { ref: ok })).toEqual([])
+    }
+  })
+})
+
+describe('这台机器上没装 git', () => {
+  /**
+   * **不能抛，只能报「不是仓库」。**
+   *
+   * 原始失败形状是实测撞出来的：把 PATH 剥到只剩 System32 起一次服务，
+   * `Bun.spawn(['git', …])` 同步抛 ENOENT，而 `server.ts` 的 `pollGit` 是
+   * `void publishGitState(...)`——浮动 promise 没人接，于是启动时糊一屏栈、
+   * 之后每 4 秒再来一次。
+   *
+   * 判据是「git 跑不跑得起来」本来就属于 `git()` 的返回类型（它有 `ok: false` 这一档），
+   * 所以接在那里而不是给 `pollGit` 加 `.catch`——后者是在下游堵症状。
+   *
+   * 用清空 PATH 制造这个状态：Bun 按 PATH 解析可执行文件，空 PATH 就是「没装」。
+   */
+  test('git 不在 PATH 上时 isRepo 返回 false，而不是抛', async () => {
+    const prev = process.env.PATH
+    process.env.PATH = ''
+    try {
+      expect(await isRepo(process.cwd())).toBe(false)
+    } finally {
+      process.env.PATH = prev
     }
   })
 })

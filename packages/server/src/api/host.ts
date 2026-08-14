@@ -53,9 +53,56 @@ interface DepSpec {
   probe: () => { path: string | null; hint: string }
 }
 
-/** `Bun.which` 在编译出的单文件二进制里同样可用（`plugins/runtime.ts` 已实测）。 */
+/**
+ * PATH 上的可执行文件。`Bun.which` 在编译出的单文件二进制里同样可用
+ * （`plugins/runtime.ts` 已实测）。
+ *
+ * **探测方式必须和调用方式一致。** 上面三条（git / rg / node）的调用方都是
+ * `Bun.spawn(['git', …])` 这种交给 Bun 解析 PATH 的写法，所以用 `Bun.which` 探
+ * 恰好一致：Bun 找不到的，那些调用点同样启动不了，报「未安装」是对的。
+ * winget 不一样，见 `wingetUsable()`。
+ */
 function onPath(cmd: string): string | null {
   return Bun.which(cmd)
+}
+
+/**
+ * winget 能不能用。**必须经 `cmd.exe` 探，不能用 `Bun.which`。**
+ *
+ * 本机实测（Windows 10，winget v1.12.460 确实装着）：
+ *
+ * ```
+ * where.exe winget            → C:\...\AppData\Local\Microsoft\WindowsApps\winget.exe
+ * fs.existsSync(那个路径)      → false      ← ENOENT
+ * Bun.which('winget')         → null
+ * Bun.spawnSync(['winget',…]) → 抛 Executable not found in $PATH
+ * cmd.exe /c winget --version → exit 0, v1.12.460, 82ms
+ * ```
+ *
+ * `WindowsApps` 下那个 winget.exe 是**应用执行别名**（APPEXECLINK 重解析点），
+ * 不是真文件：`stat` 认不出这个标签，于是所有基于 `existsSync` 的查找一律说没有，
+ * 而 `CreateProcess` 能解析它。**Win10/11 上 winget 一律是这个形状**，所以
+ * 上一版的 `Bun.which('winget')` 在任何机器上都返回 null——一键装按钮永远不会出现。
+ * 这个 bug 是自己起服务实测才撞出来的，单测和类型都拦不住它。
+ *
+ * 判据仍然是本仓一贯的那条（`sandbox.ts` 的 `detectSandbox`）：
+ * **「装了」不等于「能用」，所以真跑一次**。而且跑的是**和安装时同一条路**——
+ * 装是 `cmd /c start … winget …`，探也走 cmd，两边一致才有意义。
+ *
+ * 不缓存：命中 82ms、落空 9ms（实测），而且只在有依赖缺失时才会问到它。
+ */
+export function wingetUsable(): boolean {
+  try {
+    return (
+      Bun.spawnSync(['cmd.exe', '/c', 'winget', '--version'], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+        stdin: 'ignore',
+      }).exitCode === 0
+    )
+  } catch {
+    return false
+  }
 }
 
 const DEPS: DepSpec[] = [
@@ -115,12 +162,13 @@ const DEPS: DepSpec[] = [
  * 而不是显示一个点了报错的按钮」。
  */
 function canInstall(dep: DepSpec): boolean {
-  return dep.winget !== null && process.platform === 'win32' && Bun.which('winget') !== null
+  return dep.winget !== null && process.platform === 'win32' && wingetUsable()
 }
 
 /**
  * 全部依赖的当前状态。**每次调用重新探测，不缓存**——装完之后重连一下就该变，
- * 而不是让用户重启整个服务（他不会知道要重启）。探测是几次 `which` 与 `existsSync`。
+ * 而不是让用户重启整个服务（他不会知道要重启）。四条探测是 `which` 与 `existsSync`；
+ * winget 那次 `cmd /c winget --version` 只在**有依赖缺失**时才会跑到（实测命中 82ms）。
  */
 export function probeEnvironment(): EnvDependency[] {
   return DEPS.map((d) => {
@@ -187,7 +235,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
       409,
     )
   }
-  if (Bun.which('winget') === null) {
+  if (!wingetUsable()) {
     return json(
       {
         error: 'no winget',
