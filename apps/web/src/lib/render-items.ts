@@ -97,15 +97,20 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
 /**
  * 组头文案：按动作类型首次出现顺序分桶，每桶「动词 N 个对象」。
  * 同桶对象不一致时退化成「N 个动作」——硬凑一个名词只会误导。
+ *
+ * **恒为摘要，跑着也是。** 这里曾经有一条前置分支：只要有一个工具在跑，
+ * 整组标题就变成「正在<那一个的动词>…」。两个毛病——
+ *
+ * - 一组里常常混着好几种动作（读三个文件、再跑一条命令），拿**其中一个**的动词
+ *   当整组的标题，说的不是这一组在干什么。
+ * - 它和卡片自己的「运行命令 · npm test」是同一句话加了个「正在」，
+ *   而「这一轮此刻在哪个阶段」读数条已经说过一次了。
+ *
+ * 现在在不在跑由组头右边那个转圈说（`Fold` 的 `running`），文字只管「干了什么」，
+ * 计数随工具陆续启动自然增长。
  */
 export function groupTitle(members: TranscriptItem[]): string {
   const tools = members.filter((m) => m.kind === 'tool')
-  const running = tools.find((s) => s.status === 'running')
-  // `?.` 与 `VERBS[k]` 只是类型上的收口，运行时走不到（见 `actionLabel` 那段）。
-  if (running) {
-    const k = running.action?.kind
-    return k && VERBS[k] ? `正在${VERBS[k]}…` : '进行中…'
-  }
 
   const order: ActionKind[] = []
   const byKind = new Map<ActionKind, TranscriptItem[]>()

@@ -133,15 +133,22 @@ describe('分组规则', () => {
 })
 
 describe('组头文案', () => {
-  test('有正在跑的就只说正在做什么', () => {
-    expect(groupTitle([tool('a', 'read'), tool('b', 'write', { status: 'running' })])).toBe(
-      '正在创建…',
+  /**
+   * **跑着也是摘要**，不换成「正在<某一个的动词>…」。
+   *
+   * 一组里常混着好几种动作，拿其中一个的动词当整组标题说的不是这一组在干什么；
+   * 而且那句话和卡片自己的「运行命令 · npm test」只差一个「正在」。
+   * 在不在跑由组头右边的转圈说。
+   */
+  test('有正在跑的也是摘要，不换成「正在…」', () => {
+    expect(groupTitle([tool('文件', 'read'), tool('命令', 'run', { status: 'running' })])).toBe(
+      '读取 1 个文件，运行 1 个命令',
     )
   })
 
-  /** 说不出动作时说「进行中」。不许借「执行」这类具体词——那是替一次调用编造它在干什么。 */
-  test('没有动作的行在跑时说「进行中」，不编一个动词', () => {
-    expect(groupTitle([item('tool', { status: 'running', toolName: 'x' })])).toBe('进行中…')
+  /** 计数把正在跑的那条也算进去：工具陆续启动时数字自然增长，不会先空着。 */
+  test('正在跑的工具也进计数', () => {
+    expect(groupTitle([tool('命令', 'run', { status: 'running' })])).toBe('运行 1 个命令')
   })
 
   test('同桶对象一致时用那个名词', () => {

@@ -98,7 +98,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
     objectLabel: '命令',
     category: 'code',
     facet: '执行',
-    summary: '在工作区里跑一条 shell 命令',
+    summary: '在工作区里跑一条 bash 命令',
     targetExtractor: (a) => (typeof a.command === 'string' ? a.command : null),
     permissionEffect: 'execute',
     // 永不并行：命令之间的顺序几乎总是携带意图（先装依赖再构建）。

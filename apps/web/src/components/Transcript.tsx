@@ -7,6 +7,7 @@ import {
   createSignal,
   For,
   Match,
+  on,
   onCleanup,
   Show,
   Switch,
@@ -258,15 +259,37 @@ function Fold(props: {
   statusWord?: string
   target?: string
   running?: boolean
+  /**
+   * 跟着状态自动开合：跑起来展开、跑完收起。
+   *
+   * **不是 `open={props.running}` 直绑。** 直绑的话用户在跑的过程中点不动它——
+   * 每次重渲染都会被拉回去。这里只在**状态翻转的那一刻**写一次，
+   * 中间用户自己点开或点合，以用户的为准，直到下一次翻转。
+   *
+   * 不给这个 prop 的折叠维持原样：默认收起、全靠手点。
+   */
+  autoOpen?: boolean
   /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
   superseded?: boolean
   children: JSX.Element
 }) {
+  const [open, setOpen] = createSignal(props.autoOpen === true)
+  createEffect(
+    on(
+      () => props.autoOpen,
+      (v) => {
+        if (v !== undefined) setOpen(v)
+      },
+    ),
+  )
+
   return (
     <details
       class="fold"
+      open={open()}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
       classList={{ 'fold-dim': props.dim, failed: props.failed, superseded: props.superseded }}
     >
       {/* 一整行不换行：文本槽负责省略，右侧的箭头与转圈不收缩。 */}
@@ -300,7 +323,7 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   const preview = () => props.item.text.replace(/\s+/g, ' ').trim().slice(0, 80)
 
   return (
-    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()}>
+    <Fold dim autoOpen={streaming()} label={preview() ? `${verb()} — ${preview()}` : verb()}>
       <pre class="fold-pre">{props.item.text}</pre>
     </Fold>
   )
@@ -483,7 +506,12 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
   // 组头文案里已经带了「，N 个失败」，右侧不再挂一个计数——
   // 那个数字回答不了任何问题，只是把行尾占满。
   return (
-    <Fold failed={failed()} running={running()} label={groupTitle(props.members)}>
+    <Fold
+      failed={failed()}
+      running={running()}
+      autoOpen={running()}
+      label={groupTitle(props.members)}
+    >
       <div class="fold-group">
         <For each={props.members}>
           {(m) => (

@@ -70,7 +70,7 @@ const step = (input: Parameters<typeof appendStep>[1]) =>
 
 /** 动作语义与真实运行一致：由后端解析后随 step 落库，前端不回猜。 */
 const ACTIONS = {
-  grep: { kind: 'search' as const, objectLabel: '内容', target: 'author_id' },
+  grep: { kind: 'query' as const, objectLabel: '内容', target: 'author_id' },
   read_file: {
     kind: 'read' as const,
     objectLabel: '文件',
@@ -82,7 +82,7 @@ const ACTIONS = {
     target: 'services/core-api/qybox_core/routes/tools.py',
   },
   run_command: {
-    kind: 'execute' as const,
+    kind: 'run' as const,
     objectLabel: '命令',
     target: 'uv run --extra dev python -m pytest tests/market -q',
   },
