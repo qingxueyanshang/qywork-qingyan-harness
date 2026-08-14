@@ -182,20 +182,17 @@ describe('动词与单条文案', () => {
   })
 
   /**
-   * **没有第七个「其他」档，也不许把原始工具名当标题。**
-   *
-   * 桌面端一律中文，英文原文只在 CLI 里显示。这里一度回落到 `toolName`，
-   * 于是界面上直接出现 `update_plan` 这种机制字段。
-   *
-   * 拼不出动作只剩一种情况：名字不在注册表里，它不是工具（`action` 为 null）。
-   * 落库的老 kind 由迁移 16 转成六枚举，不走这条路。
+   * **没有兜底文案。** 拼不出动作的行不存在——名字不在注册表里的调用在 `loop.ts`
+   * 就被挡在执行链外、根本不会变成 step；`action` 从第一个提交起就一直落库；
+   * 退役的 kind 由迁移 16 转掉。这两条断言锁的是「真出现了要看得出来是 bug」，
+   * 不是「要显示成什么中文」——曾经这里先后编过四个版本的兜底词条。
    */
-  test('认不出的 kind 说「未知工具」，不拿原始名当标题', () => {
-    expect(actionLabel(tool('命令', 'execute', { toolName: 'run_command' }))).toBe('未知工具')
+  test('认不出的 kind 给空串，不编词也不拿原始名顶替', () => {
+    expect(actionLabel(tool('命令', 'execute', { toolName: 'run_command' }))).toBe('')
   })
 
-  test('没有 action 的行说「未知工具」', () => {
-    expect(actionLabel(item('tool', { toolName: 'weird__thing' }))).toBe('未知工具')
+  test('没有 action 的行给空串', () => {
+    expect(actionLabel(item('tool', { toolName: 'weird__thing' }))).toBe('')
   })
 
   test('运行命令是动词加对象拼出来的，不是特例', () => {
@@ -207,7 +204,7 @@ describe('动词与单条文案', () => {
   })
 
   test('没有对象名时也不拿工具名顶替', () => {
-    expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('未知工具')
+    expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('')
   })
 })
 

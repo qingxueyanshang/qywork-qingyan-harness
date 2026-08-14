@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
 import { lookupModel, ProviderError } from '@qywork/ai'
+import type { AgentEvent } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext } from './index.ts'
-import { ToolRegistry } from './registry.ts'
+import { ToolRegistry, type ToolSpec } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 吐出预设的一轮。 */
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
@@ -56,6 +57,24 @@ function noopPersistence(): LoopPersistence {
 
 function call(name: string, args: Record<string, unknown> = {}): WireToolCall {
   return { id: `c_${Math.random().toString(36).slice(2)}`, name, arguments: args }
+}
+
+/** 最小可用的 ToolContext。测试只关心 loop 的编排，工具本身不碰这些字段。 */
+function baseCtx(runId: string, emit: (e: AgentEvent) => void): ToolContext {
+  return {
+    workspaceRoot: '/tmp',
+    conversationId: 'cv',
+    runId,
+    model: 'test',
+    contextWindow: 200_000,
+    resources: new Map(),
+    state: new Map(),
+    sink: null,
+    signal: new AbortController().signal,
+    emit: (channel, delta) =>
+      emit({ type: 'tool.delta', runId: runId as never, stepId: 'st' as never, channel, delta }),
+    requestPermission: async () => true,
+  }
 }
 
 describe('ToolContext 生命周期', () => {
@@ -875,5 +894,64 @@ describe('上下文读数：一把尺', () => {
     }
     const ctx = events.find((e) => e.type === 'context')
     expect(ctx?.type === 'context' && ctx.source).toBe('estimated')
+  })
+})
+
+/**
+ * 名字不在注册表里的调用**不进执行链**。
+ *
+ * 曾经它照样开一条 tool step、发一条 `tool.started`，于是界面上多出一张既没有动作、
+ * 也什么都没做的卡片，标题只能编——先后编过「读取<工具名>」和「未知工具」，
+ * 两个都是在给一个不存在的东西造词条。注册表是工具的唯一权威：名字不在表里的
+ * 不是工具，是 provider 违反了我们下发的工具表。
+ *
+ * 但结果必须回给模型：provider 的契约是每个 tool_call 都要有一条对应 id 的
+ * tool 结果，少一条下一轮直接 400。
+ */
+describe('注册表是工具的唯一权威', () => {
+  const realSpec = (name: string): ToolSpec => ({
+    name,
+    description: 'd',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    actionKind: 'read',
+    objectLabel: '文件',
+    category: 'files',
+    facet: '测试',
+    summary: '测试夹具',
+    permissionEffect: 'internal_control',
+    fn: async () => ({ status: 'success', message: 'ok' }),
+  })
+
+  test('胡诌的工具名不产生工具卡，也不产生 step', async () => {
+    const registry = new ToolRegistry()
+    registry.register(realSpec('read_thing'))
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('read_thing'), call('no_such_tool')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_bogus' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const started = events.filter((e) => e.type === 'tool.started')
+    expect(started).toHaveLength(1)
+    expect(started[0]?.type === 'tool.started' && started[0].toolName).toBe('read_thing')
+    // 真工具那条必然有动作——挡掉之后下游不再需要任何兜底。
+    expect(started[0]?.type === 'tool.started' && started[0].action.kind).toBe('read')
+
+    // 这一轮照常收尾，不因为一次胡诌就报错中断。
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 })

@@ -101,8 +101,7 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
 export function groupTitle(members: TranscriptItem[]): string {
   const tools = members.filter((m) => m.kind === 'tool')
   const running = tools.find((s) => s.status === 'running')
-  // 说不出动作时说「进行中…」，不借「执行」之类的具体词——那是替一个
-  // 我们叫不出名字的调用编造它在干什么。
+  // `?.` 与 `VERBS[k]` 只是类型上的收口，运行时走不到（见 `actionLabel` 那段）。
   if (running) {
     const k = running.action?.kind
     return k && VERBS[k] ? `正在${VERBS[k]}…` : '进行中…'
@@ -112,7 +111,6 @@ export function groupTitle(members: TranscriptItem[]): string {
   const byKind = new Map<ActionKind, TranscriptItem[]>()
   for (const s of tools) {
     const k = s.action?.kind
-    // 没有动作的行不进桶：它不是「某一类动作里的一个」，组头也不该替它编一类。
     if (!k || !VERBS[k]) continue
     const bucket = byKind.get(k)
     if (bucket) bucket.push(s)
@@ -137,10 +135,8 @@ export function groupTitle(members: TranscriptItem[]): string {
 /**
  * 动作动词。**一个 kind 一个词，一个不多。**
  *
- * 没有「其他 / 未知」这一档。动作由工具在注册期声明，注册表是唯一权威——
- * 这张表覆盖全部六个合法值，查不到只可能是两种情况：这次调用根本不是工具
- * （名字不在注册表里，`action` 为 null），或者是一条落库时枚举还没收敛的老 step。
- * 两种都不该编一个动词出来，见 `actionLabel`。
+ * 没有「其他 / 未知」这一档，也不需要有：动作由工具在注册期声明，注册表是唯一权威，
+ * 这张表覆盖全部六个合法值。查不到的情况怎么被逐条堵死，见 `actionLabel`。
  */
 const VERBS: Record<ActionKind, string> = {
   query: '查询',
@@ -158,22 +154,22 @@ export function verb(kind: ActionKind): string {
 /**
  * 单条工具卡的完整文案：**动词 + 对象**。
  *
- * ## 桌面端一律中文，原始工具名不进界面
+ * ## 这里没有兜底文案，因为拼不出来的情况不存在
  *
- * 这里一度回落到 `item.toolName`，于是界面上直接出现 `update_plan` 这种东西。
- * 工具名是机制字段，**英文原文只在 CLI 里显示**（那边的读者就是在读命令行的人，
- * 见 `cli/src/index.ts` 与 `tui.ts` 里 `▸ ${ev.toolName}` 那两行）。
+ * 曾经它先后回落到「读取<工具名>」「未知动作」「工具名」「未知工具」——四个版本，
+ * 全是在给一个**不可能出现**的行编词条。核过之后：
  *
- * 拼不出动作只剩一种情况：这次调用的名字不在注册表里，它不是工具
- * （`action` 为 null，见 `loop.ts`）。那就照实说「未知工具」——这是对**对象**的
- * 陈述，不是在动作轴上开一档「其他」；名字本身走 `target`，以「· 名字」的机制位显示。
- * 已经落盘的老 kind 由迁移 16 转成六枚举，不走这条路。
+ * - 名字不在注册表里的调用**根本不会变成一条 step**：`loop.ts` 在编排波次之前
+ *   就把它们挡在执行链外了（那不是工具，是 provider 违反了我们下发的工具表）。
+ * - `action` 从版本控制的第一个提交起就一直随 step 落库，**没有缺它的历史行**。
+ * - 退役的 kind 由 `store` 的迁移 16 一次性转成六枚举。
+ *
+ * 所以三条路各自堵死，剩下的空串只是类型上的收口：真出现了那是 bug，
+ * 要在界面上看得出来，而不是被一句编出来的中文盖住。
  */
-const UNKNOWN_TOOL = '未知工具'
-
 export function actionLabel(item: TranscriptItem): string {
   const a = item.action
-  if (!a || !VERBS[a.kind] || !a.objectLabel) return UNKNOWN_TOOL
+  if (!a || !VERBS[a.kind] || !a.objectLabel) return ''
   return `${VERBS[a.kind]}${a.objectLabel}`
 }
 
