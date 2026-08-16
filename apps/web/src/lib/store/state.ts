@@ -35,10 +35,10 @@ export interface TranscriptItem {
   /**
    * kind='run' 专有：这一轮的收尾读数（停止原因 + 真实用量 + 耗时）。
    *
-   * **它必须是条目，不能是全局状态。** 读数条原来读的是 `state.usage` /
-   * `state.stopReason` 那几个全局字段，于是整个会话只有一份：第二轮跑完把第一轮
-   * 冲掉，刷新一次全没。而 run 行本来就逐轮落库（`runs` 表带 usage / stop_reason /
-   * created_at / finished_at），投影层只是从来没把它折回来。
+   * **它必须是条目，不能是全局状态。** 挂在 `state.usage` / `state.stopReason`
+   * 那几个全局字段上的话，整个会话只有一份：第二轮跑完把第一轮冲掉，刷新一次全没。
+   * 而 run 行本来就逐轮落库（`runs` 表带 usage / stop_reason / created_at /
+   * finished_at），投影层照着折回来即可。
    */
   run?: {
     runId: string

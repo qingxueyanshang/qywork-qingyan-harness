@@ -276,8 +276,8 @@ export function createStreamRedactor(secrets: SecretSet): {
   /*
    * **没有已知 secret 也不能直通。**
    *
-   * 这里原来是 `if (values.length === 0) return 直通`，因为那时唯一的判据是
-   * 「文本里有没有出现我们知道的那几个明文」。加了形状脱敏之后这个前提没了：
+   * 别写 `if (values.length === 0) return 直通`——那个前提只在判据是「文本里有没有
+   * 出现我们知道的那几个明文」时成立，而这里还有形状脱敏：
    * `cat ~/.ssh/id_rsa` 的私钥、`.env` 里的 token，我们**从来不知道它们的明文**，
    * 恰恰是这条链路唯一能抓到它们的地方。直通等于把这一层关掉。
    */

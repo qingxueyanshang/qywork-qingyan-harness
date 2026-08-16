@@ -92,9 +92,9 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
 /**
  * 档位不在这个模型的档位面里，一个字节都不发。
  *
- * **这道闸只有这条协议缺**：`openai-responses` 是
- * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档，
- * 而这里原来把 `effort` 原样发出去，判据只有「有没有给」。
+ * 另两条协议各有各的写法：`openai-responses` 是
+ * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档。
+ * 这条别只判「有没有给」就把 `effort` 原样发出去。
  *
  * 只调一家模型时档位面一致，用不上这道闸；本仓不是：档位选定值挂在
  * 「接口 × 模型」那一格，同一个模型换条协议档位面就变，Agent Team 的角色还

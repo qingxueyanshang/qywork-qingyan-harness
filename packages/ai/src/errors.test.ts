@@ -26,9 +26,9 @@ describe('传输层失败必须可重试', () => {
   /**
    * 这一组是这个文件存在的直接原因。
    *
-   * 原来的判据 `/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i`
-   * 是照 Node/undici 的文案写的，而**运行时是 Bun**。下面三条真实失败
-   * 一条都没匹配上，全部落到 `internal_error` + 不可重试——
+   * 判据必须按 **Bun** 的文案写。照 Node/undici 写的那套
+   * （`/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i`）在下面三条真实
+   * 失败上一条都匹配不上，全部落到 `internal_error` + 不可重试——
    * 一次抖动就把整轮 run 判死。
    */
   test('Bun 实测：The operation timed out.', () => {

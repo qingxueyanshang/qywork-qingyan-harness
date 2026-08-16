@@ -191,9 +191,8 @@ export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): W
 /**
  * 装配一次请求的完整历史：消息 + 由 steps 投影出的执行回合。
  *
- * 提成独立函数是为了**能单独测**。它原来内联在 `Session.ask()` 里，而那条路
- * 要跑通得有真实 provider——于是「第二轮到底看得见什么」这件事没有任何测试
- * 能碰到，正是这次要修的 bug 藏身的地方。
+ * 独立成函数是为了**能单独测**：内联在 `Session.ask()` 里的话，那条路要跑通得有
+ * 真实 provider，于是「第二轮到底看得见什么」这件事没有任何测试能碰到。
  *
  * `attachments` 由调用方注入：附件正文要读磁盘，而这个函数不该知道工作区在哪。
  */

@@ -84,8 +84,8 @@ const DEFAULT_WORKSPACE_NAME = '默认工作区'
  *    注意它和侧栏顺序是两回事：侧栏按「置顶 > 添加先后」稳定排列，不跟着切换重排。
  * 3. 一个都没有 —— 在 `~/.qywork/workspaces/默认工作区/` 建一个。
  *
- * 第 3 条是关键：原来无条件登记启动目录，于是首次运行「挂在启动目录上」——
- * 桌面端的启动目录就是 qywork 的源码树，用户拿到的默认项目是这个仓库本身。
+ * 第 3 条是关键：**不能无条件登记启动目录**，那样首次运行就「挂在启动目录上」——
+ * 桌面端的启动目录是 qywork 的源码树，用户拿到的默认项目会是这个仓库本身。
  *
  * 目录用 `mkdirSync`：账本这一行必须和目录同生共死，异步建目录会留下一段
  * 「行已经在了、目录还没有」的窗口，而那段时间里任何工具调用都会因为根不存在而炸。
@@ -129,9 +129,9 @@ export function serve(opts: ServeOptions) {
    * 2. **账本里已有项目** —— 用最近打开的那个（`mostRecentWorkspace`）。
    * 3. **一个都没有（首次运行）** —— 建一个默认工作区。
    *
-   * 第 3 条是补上的。原来无条件登记 `opts.workspaceRoot`，于是首次运行
-   * 「挂在启动目录上」——桌面端的启动目录就是这个仓库自己，用户拿到的默认项目
-   * 是 qywork 的源码树。
+   * 第 3 条不能省：无条件登记 `opts.workspaceRoot` 的话，首次运行就「挂在启动
+   * 目录上」——桌面端的启动目录是这个仓库自己，用户拿到的默认项目会是 qywork
+   * 的源码树。
    */
   const { workspace, rootPath: workspaceRoot } = bootstrapWorkspace(opts.store, opts.workspaceRoot)
 
@@ -172,9 +172,9 @@ export function serve(opts: ServeOptions) {
   // 回收上次进程留下的 running run。必须在开始服务**之前**做：
   // 留着不管的话 isBusy 会一直判真，用户在那个会话里发不出任何消息——会话被永久锁死。
   //
-  // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。这里原来
-  // 无差别回收，于是本进程一启动就把别的进程正在跑的那一轮判成中断——
-  // 账本是共享的，而一台机器上同时可以有好几个写入者。
+  // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。无差别
+  // 回收的话，本进程一启动就把别的进程正在跑的那一轮判成中断——账本是共享的，
+  // 而一台机器上同时可以有好几个写入者。
   const stale = recoverStaleRuns(opts.store)
   if (stale.recovered > 0) {
     process.stderr.write(

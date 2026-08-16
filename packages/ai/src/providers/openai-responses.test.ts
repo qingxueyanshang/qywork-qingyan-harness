@@ -327,7 +327,6 @@ describe('装配', () => {
     const { buildAdapter } = await import('../factory.ts')
     const a = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'gpt-5' })
     expect(a.kind).toBe('openai_responses')
-    // 之前这里是一句 throw。
   })
 
   /**

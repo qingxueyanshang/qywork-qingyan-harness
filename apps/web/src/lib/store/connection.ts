@@ -72,9 +72,9 @@ export function discardPace(): void {
  *
  * 下面三十个 case 里的绝大多数（`text.delta` / `tool.*` / `usage` / `run.*`）写的都是
  * **当前会话**那一份 transcript 和 run 状态，而事件体自己不带 `conversationId`——
- * 归属在信封上。上一版没有这道校验，靠的是「服务端只会推我订阅的」，
- * 而那个前提有一段物理上消不掉的窗口：`subscribe` 指令发出到服务端处理之间，
- * 旧会话还在推。表现就是切了会话、正文却是上一条的。
+ * 归属在信封上。不能靠「服务端只会推我订阅的」：那个前提有一段物理上消不掉的
+ * 窗口——`subscribe` 指令发出到服务端处理之间，旧会话还在推。
+ * 表现就是切了会话、正文却是上一条的。
  *
  * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。入口判一次。
  *
@@ -447,8 +447,8 @@ export async function reloadActiveConversation(): Promise<void> {
   const [{ messages }, { runs }, ctx] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
     client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
-    // 上下文面板从账本现算。这里曾经直接 `s.context = null`，于是刷新一次、
-    // 切一次会话，面板就空了——而用户恰恰是回头看的时候才想知道被谁占的。
+    // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
+    // 切一次会话面板就空了，而用户恰恰是回头看的时候才想知道被谁占的。
     // 拉失败不影响会话本身能不能打开，退化成没有面板。
     client
       .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
@@ -551,7 +551,7 @@ export async function reloadActiveConversation(): Promise<void> {
       s.usage = null
       s.permission = null
       // **待办从账本投影回来，不新增持久化路径。**
-      // 它曾经只活在 WS 事件里，于是刷新一次、切走再切回就没了。真源早就有了：
+      // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。真源现成的：
       // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
       // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
       s.todos = todosFromSteps(runs, stepsByRun)
@@ -576,8 +576,8 @@ export async function reloadActiveConversation(): Promise<void> {
 /**
  * 从落库的 steps 里投影出当前待办清单。
  *
- * **不新增持久化路径**（A2 第 5 问答「否」）。待办以前只活在 WS 事件里，刷新即丢，
- * 而它的真源一直都在：`write_todos` 每次调用本身就是一条 tool step，整表 todos
+ * **不新增持久化路径**（A2 第 5 问答「否」）。只活在 WS 事件里的话刷新即丢，
+ * 而真源现成的：`write_todos` 每次调用本身就是一条 tool step，整表 todos
  * 就躺在它的 `args` 里。整表语义下**最后一次成功提交就是全部事实**，
  * 所以从后往前找第一条成功的即可，不需要合并、也不需要另建一张表。
  *
@@ -602,7 +602,7 @@ function todosFromSteps(runs: StoredRun[], stepsByRun: Map<string, StoredStep[]>
  *
  * **一条 step 不等于一条界面条目**：批次首条工具 step 的 `content` 里落着这一批
  * 之前的思考正文（后端 `session.ts` 的 `openToolStep` 借了这一列，理由写在那里），
- * 它在界面上是独立的一条。这里曾经只读 `payload`，于是**刷新一次页面、切一次会话，
+ * 它在界面上是独立的一条。**只读 `payload` 的话，刷新一次页面、切一次会话，
  * 整轮思考就没了**——而思考恰恰是「模型为什么做了这些」的唯一现场，
  * 一轮跑十分钟、绝大部分时间产出的就是它。
  */
@@ -610,7 +610,7 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'text') {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
-  // 压缩条。这里曾经不处理它，而压缩事件只活在连接期——刷新一次
+  // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
   // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
   if (s.kind === 'compaction') {
     return [
@@ -629,7 +629,7 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     // 每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
     if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
     // action 来自后端落库的解析结果。**没有就是没有，不补**——
-    // 这里曾经回落成 `execute`，于是刷新一次页面，一整轮的读文件全变成「执行」。
+    // 回落成 `execute` 的后果是：刷新一次页面，一整轮的读文件全变成「执行」。
     // 拼不出动作时卡片显示工具名（见 `actionLabel`），那比一个假动词诚实。
     out.push({
       id: s.id,

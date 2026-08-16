@@ -5,7 +5,7 @@
  * 扩展名归属），随机顺序会让同一份安装在不同机器上表现不同。
  *
  * 隔离：**插件代码在独立子进程里跑**（见 host.ts），宿主这边只有 RPC 句柄。
- * 曾经这里是同进程 `import()`，插件能直接读宿主的 `process.env` 拿走 API Key。
+ * 同进程 `import()` 的话，插件能直接读宿主的 `process.env` 拿走 API Key。
  *
  * 边界的确切范围见 host.ts 顶部。简而言之：宿主的环境与进程内对象一定挡住；
  * 文件系统与网络**取决于运行时**——node 20+ 给沙箱、node 22.15+ 再给出网闸，
@@ -139,10 +139,10 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
   /*
    * 只有**工具**贡献需要代码，所以只有它起进程。
    *
-   * 这里曾经把 `renders:'custom'` 的预览器和 `protocol:'custom'` 的 provider 也算进来，
-   * 于是这两类插件各白起一个子进程——而宿主**从来不会向它们发起渲染 / adapter 调用**：
-   * `registry.previewers` / `roles` / `providers` 在 `runtime/src/extensions.ts` 合并之后，
-   * 全仓没有任何读取点。为一条不存在的调用链付一个常驻进程的代价，是纯粹的浪费。
+   * **不要把 `renders:'custom'` 的预览器和 `protocol:'custom'` 的 provider 也算进来**：
+   * 宿主从来不会向它们发起渲染 / adapter 调用（`registry.previewers` / `roles` /
+   * `providers` 在 `runtime/src/extensions.ts` 合并之后全仓没有读取点），
+   * 算进来就是为一条不存在的调用链各付一个常驻进程。
    *
    * 三条贡献通道本身按用户决定先保留（清单类型、注册、冲突检测原样）。
    * 等哪天真接上消费端，把对应的条件加回这里——**连同消费者一起加**。

@@ -81,8 +81,8 @@ function onPath(cmd: string): string | null {
  * `WindowsApps` 下那个 winget.exe 是**应用执行别名**（APPEXECLINK 重解析点），
  * 不是真文件：`stat` 认不出这个标签，于是所有基于 `existsSync` 的查找一律说没有，
  * 而 `CreateProcess` 能解析它。**Win10/11 上 winget 一律是这个形状**，所以
- * 上一版的 `Bun.which('winget')` 在任何机器上都返回 null——一键装按钮永远不会出现。
- * 这个 bug 是自己起服务实测才撞出来的，单测和类型都拦不住它。
+ * `Bun.which('winget')` 在任何机器上都返回 null——照它判的话一键装按钮永远不出现，
+ * 而这个 bug 只有真起一次服务才撞得到，单测和类型都拦不住。
  *
  * 判据仍然是本仓一贯的那条（`sandbox.ts` 的 `detectSandbox`）：
  * **「装了」不等于「能用」，所以真跑一次**。而且跑的是**和安装时同一条路**——

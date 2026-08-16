@@ -396,9 +396,8 @@ describe('思考档位校验', () => {
     })
 
   /**
-   * 这条校验原来住在 `conversation.setEffort` 那条 WebSocket 指令上。档位改挂
-   * 「接口 × 模型」那一格之后指令没了，校验必须跟到配置这道闸门——否则任何
-   * 客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider 换一个 400。
+   * 校验必须落在配置这道闸门上——否则任何客户端 PUT 一个词表外的值就直接落盘，
+   * 下一轮原样发给 provider 换一个 400。
    */
   test('词表外的值算致命问题（422 且不落盘）', () => {
     expect(effortProblems(withEffort('ultra'))).toHaveLength(1)

@@ -259,8 +259,8 @@ async function run(
 describe('推理增量：两套方言都要认', () => {
   /**
    * 这条是这个文件存在的理由。DeepSeek 发 `response.reasoning_text.delta`，
-   * 我们原来只认 OpenAI 的 `reasoning_summary_text`——**一个错都不报**，
-   * 只是思考内容凭空消失。断言「有 thinking_delta」才抓得住「什么都没有」。
+   * 只认 OpenAI 的 `reasoning_summary_text` 时**一个错都不报**，只是思考内容
+   * 凭空消失。断言「有 thinking_delta」才抓得住「什么都没有」。
    */
   test('DeepSeek 的 reasoning_text.delta 变成 thinking_delta', async () => {
     const events = await run(TEXT_RUN)
@@ -406,7 +406,7 @@ describe('我们发出去的请求', () => {
  * effort=minimal   reasoning_tokens  900, 900, 900
  * ```
  *
- * 原来这里映射的是 `minimal`——它不是「少想一点」，它跟 high 一样把整个输出预算
+ * **不能映射成 `minimal`**——它不是「少想一点」，它跟 high 一样把整个输出预算
  * 烧在推理上，正文被截断。用户要求不思考，拿到的是全额思考并且付钱，
  * 而且**完全静默**：没有报错，只有账单和一段被截断的回答。
  */

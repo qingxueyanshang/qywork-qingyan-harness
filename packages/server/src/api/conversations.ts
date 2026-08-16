@@ -38,7 +38,7 @@ interface ModelRow {
  * 把 `qy probe --save` 实测出来的能力叠到目录条目上。
  *
  * **与 `buildAdapter` 是同一件事**（`ai/src/factory.ts:68-78`），必须同一个口径：
- * 那边决定请求里真的发哪几档，这里决定界面上能选哪几档。原来这里没叠，于是
+ * 那边决定请求里真的发哪几档，这里决定界面上能选哪几档。这里不叠的话，
  * **校准过的档位决定得了发出去的请求，却决定不了界面上的选项**——探测器写回的
  * capabilities 有生产者没消费者，用户探完一看界面纹丝不动。
  *
@@ -105,7 +105,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           vendor: null,
           // 未收录的模型目录里查不到档位，**但探过就算数**：`qy probe --save`
           // 写回的 capabilities 是实测事实，比「按 unknownModel() 给空」准。
-          // 这里原来写死 `[]`，于是自建端点探完了界面上照样没有档位可选。
+          // 写死 `[]` 的话，自建端点探完了界面上照样没有档位可选。
           effortLevels: effortIsTransmittable(actual) ? actual.effortLevels : [],
           effort: provider.models[id]?.effort ?? null,
           // 未收录的计价本来就是 0，币种给 USD 只是占位——前端按「未知计价」显示。

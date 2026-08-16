@@ -251,7 +251,7 @@ async function runEndpoint(): Promise<void> {
     // 算错是**模型能力**不是协议问题。只在会思考时断言它，否则这条会变成
     // 「小模型心算不准」的噪声——而噪声一多，真的红就没人看了。
     check('正文含正确答案 301148', r1.text.includes('301148'), r1.text)
-    // 这条抓的是「什么都没有」，不是「内容对不对」。上一版的 bug 就长这样。
+    // 这条抓的是「什么都没有」，不是「内容对不对」。
     // **这是唯一一条真正跨方言的断言**：只认一个事件名的话，另一边会静默地一个增量都没有。
     check('收到思考增量（两种方言的事件名都要认得出来）', r1.thinking.trim().length > 0)
   } else {
@@ -260,8 +260,8 @@ async function runEndpoint(): Promise<void> {
     )
   }
   // 兜底串写成转义 `\0` 而不是一个**裸的 NUL 字节**。
-  // 原来那里就是一个真的 0x00：源码里完全看不见，还让整个文件被
-  // grep 当成二进制（`Binary file matches`，于是搜不到任何东西）。
+  // 真的 0x00 在源码里完全看不见，还让整个文件被 grep 当成二进制
+  // （`Binary file matches`，于是搜不到任何东西）。
   // 语义上它必须是「正常文本里不会出现的字符」——换成空格的话
   // `text.includes(' ')` 几乎恒真，这条断言就永远失败了。
   check('思考内容没混进正文', !r1.text.includes(r1.thinking.slice(0, 30) || '\0'))
@@ -400,8 +400,8 @@ async function runEndpoint(): Promise<void> {
 
   // ── 4. 「不思考」必须真的不思考 ──
   //
-  // 这条抓的 bug **完全静默**：原来 `disabled` 映射成 `effort:'minimal'`，
-  // 而实测 minimal 跟 high 一样把整个输出预算烧在推理上，正文被截断。
+  // 这条抓的 bug **完全静默**：把「不思考」映射成 `effort:'minimal'` 时，
+  // 实测 minimal 跟 high 一样把整个输出预算烧在推理上，正文被截断。
   // 用户要求不思考，拿到的是全额思考 + 一段截断的回答 + 账单，没有任何报错。
   // 只有对着真实端点看 `reasoning_tokens` 才拦得住它。
   process.stdout.write('\n4. 关掉思考\n')

@@ -87,12 +87,11 @@ export class RuntimeCompaction implements CompactionPort {
     /*
      * 摘要输入 = 用户消息 + **模型自己说过的话**。
      *
-     * 这里曾经只喂 `listMessages`，而那张表只有 user 行。表现是：一次压缩之后
-     * 模型保住了「调过哪些工具」的一行式事实（`collectActions` 给的），
-     * 却丢光了自己历轮说过的所有结论——跨轮记忆刚修好，第一次压缩就塌回去一半，
-     * 而且塌得无声。
+     * **只喂 `listMessages` 不够**：那张表只有 user 行，于是一次压缩之后模型保住了
+     * 「调过哪些工具」的一行式事实（`collectActions` 给的），却丢光了自己历轮说过的
+     * 所有结论——跨轮记忆就此塌掉一半，而且塌得无声。
      *
-     * 正文取 text step，它一直在库里，只是从来没有人喂给摘要器。
+     * 正文取 text step。
      * id 沿用归属的那条 user 消息：`through` 由最后一条 user 决定，
      * 插进来的 assistant 条目不参与边界计算，只参与摘要正文。
      */

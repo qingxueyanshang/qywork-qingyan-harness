@@ -59,7 +59,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
     .get(rootPath)
   if (existing) {
     // `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
-    // 它原来的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
+    // 它的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
     store.db
       .query('UPDATE workspaces SET last_opened_at = ?, name = ?, removed_at = NULL WHERE id = ?')
       .run(now, name, existing.id)
@@ -198,9 +198,9 @@ export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
 /**
  * 这条会话跑在哪个目录下。
  *
- * **这是「哪个根」的唯一权威。** 服务进程曾经自己拿着一个 `workspaceRoot` 常量
- * （启动时的 `--cwd`），于是一个进程只服务得了一个项目，换项目只能重启。
- * 那个常量是这两张表的一份缓存，删掉之后一律来这里查。
+ * **这是「哪个根」的唯一权威。** 服务进程不许自己拿一个 `workspaceRoot` 常量
+ * （启动时的 `--cwd`）：那样一个进程只服务得了一个项目，换项目只能重启，
+ * 而那个常量本身就是这两张表的一份缓存。
  *
  * 查不到返回 `null`，**调用方必须停下来**：回落到某个默认根等于拿着 A 项目的
  * 会话去 B 项目的目录里跑命令，而工具的路径约束正是以这个根为边界的。
@@ -346,9 +346,9 @@ export function touchConversation(store: Store, id: ConversationId, title?: stri
  * 切换会话模型。
  *
  * 模型是**会话级**属性，不是全局配置项——同一个工作区里一个会话用 Opus 深度改代码、
- * 另一个用 Haiku 快速问答是常态。曾经这里没有写入路径，`conversation.setModel`
- * 指令是个静默返回的空分支：切换看起来成功了，实际每一轮还在用配置文件里的模型，
- * 而界面按新模型的价目表显示费用。
+ * 另一个用 Haiku 快速问答是常态。**这条写入路径不能没有**：少了它
+ * `conversation.setModel` 就是个静默返回的空分支——切换看起来成功了，实际每一轮
+ * 还在用配置文件里的模型，而界面按新模型的价目表显示费用。
  *
  * 返回 null 表示会话不存在（客户端拿的是过期的 id）。
  */
@@ -690,15 +690,15 @@ export function markRunSuperseded(store: Store, id: RunId, by: RunId): boolean {
  * 两者都标终态，区别在 `stopReason`——**不要为了界面干净统一成 user_interrupt**，
  * 那会让「进程崩了」和「用户点了停止」在事后无法区分。
  *
- * 曾经有一个 `runs.execution_state` 列，从未被写入过——拿它做判据会让所有 run
- * 都被判成「安全可重放」，正好是最危险的那个方向。已连同 `ExecutionState` 一起删掉，
  * 判据只有一个：**steps 表里那条带 `execution_started_at` 的 running 行**。
+ * 别再给 `runs` 加一个 `execution_state` 之类的列——没有写入方的列拿来做判据，
+ * 会让所有 run 都被判成「安全可重放」，正好是最危险的那个方向。
  *
  * ## 只回收没人在跑的那些
  *
- * 这里原来无差别扫全库，于是**后起的进程会把别的进程正在跑的那一轮判死**
- * ——账本是共享的，而一台机器上同时有好几个写入者（两个工作区的 sidecar、
- * 开发态热重载、终端里的 `qy exec`）。判据见 `isOrphan`，两个信号缺一不可。
+ * **不能无差别扫全库**：账本是共享的，一台机器上同时有好几个写入者（两个工作区的
+ * sidecar、开发态热重载、终端里的 `qy exec`），扫全库就是**后起的进程把别的进程
+ * 正在跑的那一轮判死**。判据见 `isOrphan`，两个信号缺一不可。
  */
 export function recoverStaleRuns(store: Store): {
   recovered: number
@@ -829,7 +829,7 @@ function pidAlive(pid: number): boolean {
  *   把它也说成「结果未知」会让模型对每一次中断都花一轮去核实所有工具，
  *   包括那些明显没跑成的。
  *
- * 原来这两种被同一条 UPDATE 用同一份 payload 盖掉，于是「确定没跑」被记成了
+ * **两种必须分开 UPDATE**：用同一份 payload 一起盖掉的话，「确定没跑」会被记成
  * 「可能跑过」。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {

@@ -20,7 +20,7 @@ import { IconMic } from './Icons.tsx'
  *
  * `interimResults` 开着，说到一半就能看到字。**基线是开始录音那一刻的草稿**，
  * 已定稿的部分累加在它后面——不这么记的话，每来一段中途结果都会把用户
- * 原来打的字覆盖掉。
+ * 已经打好的字覆盖掉。
  */
 export function VoiceButton(props: { draft: string; onText: (next: string) => void }) {
   const Ctor = speechRecognitionCtor()

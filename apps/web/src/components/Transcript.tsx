@@ -117,11 +117,11 @@ export function Transcript() {
             <div class="error-card" role="alert">
               <strong>{e().message}</strong>
               {/* 错误码存在的全部意义就是决定「用户下一步该做什么」。
-                  之前这里只渲染 message，等于把分类结果丢掉了——同一句
-                  「请求失败」下面，该去配 key 和该等一分钟是两种完全不同的处境。 */}
+                  只渲染 message 等于把分类结果丢掉——同一句「请求失败」下面，
+                  该去配 key 和该等一分钟是两种完全不同的处境。 */}
               <Show when={errorHint(e().code)}>{(h) => <span class="hint">{h()}</span>}</Show>
-              {/* 曾经这里只是一行「可以重试」的文字，没有任何交互——
-                  告诉用户可以做某件事却不给做的入口，比不提更让人恼火。 */}
+              {/* 「可以重试」必须带一个真的能点的按钮：告诉用户可以做某件事
+                  却不给做的入口，比不提更让人恼火。 */}
               <Show when={e().retryable && state.lastRunId && !state.running}>
                 <button class="ghost-btn" type="button" onClick={retryLastRun}>
                   重试
@@ -368,8 +368,8 @@ function ThinkingFold(props: { item: TranscriptItem }) {
  *
  * ## 为什么收数据靠 props 而不是读 store
  *
- * 它原来读 `state.usage` / `state.stopReason` / `state.runStartedAt` 那几个全局字段，
- * 于是整个会话只有一条：第二轮跑完把第一轮的读数冲掉，刷新更是一条不剩。
+ * 读 `state.usage` / `state.stopReason` / `state.runStartedAt` 那几个全局字段的话，
+ * 整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新更是一条不剩。
  * 而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，
  * 才是它本来的形状。
  *
@@ -427,7 +427,7 @@ function RunStatusBar(props: {
         {/*
          * 「正在思考…」跟在钱后面，和停止原因同一格。
          *
-         * 它原来浮在输入区上方，那里没有它的位置——出现和消失会把输入框整体推动，
+         * 别把它浮在输入区上方：那里没有它的位置，出现和消失会把输入框整体推动，
          * 也就是 B9 说的「尺寸随内容变」。而这一格本来就是给「这一轮怎么样了」用的：
          * 跑着的时候说在干什么，跑完了说为什么停，同一个位置、同一种语义。
          */}
@@ -603,10 +603,10 @@ function StepBody(props: { item: TranscriptItem }) {
       <Match when={props.item.status === 'failure'}>
         <pre class="fold-out err">{props.item.outcome?.message || '（没有错误正文）'}</pre>
         {/*
-         * **失败也要把输出带出来。** 这里原来只有一句 message 加一张参数表，
-         * 而 qywork 的 message 只是摘要——命令失败时它就是「命令退出码 1」这七个字。
-         * 于是用户展开一张失败的命令卡，看到的是「跑了什么」和「失败了」，
-         * 唯独没有「它到底吐了什么」，也就无从判断是命令不对还是被测的东西不对。
+         * **失败也要把输出带出来。** 只给一句 message 加一张参数表是不够的：
+         * message 只是摘要，命令失败时它就是「命令退出码 1」这七个字。用户展开一张
+         * 失败的命令卡看到「跑了什么」和「失败了」，唯独没有「它到底吐了什么」，
+         * 也就无从判断是命令不对还是被测的东西不对。
          *
          * `noMessage` 是因为上面那行已经把 message 显示过了，回落会原样重复一遍。
          */}

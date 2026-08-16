@@ -78,8 +78,8 @@ export async function runTeam(
 
   // 编排的用量是各成员之和。
   //
-  // 之前这里恒为 0 —— 内置后端没接线时那还算诚实，接上之后它就是在骗人了：
-  // 一轮编排可能烧掉比一次普通对话多得多的 token，而账面显示 $0.0000。
+  // 不能恒为 0：一轮编排可能烧掉比一次普通对话多得多的 token，
+  // 而账面显示 $0.0000 就是在骗人。
   const total: RunUsage = {
     inputTokens: 0,
     outputTokens: 0,

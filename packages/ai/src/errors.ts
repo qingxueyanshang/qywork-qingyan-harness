@@ -11,10 +11,8 @@
  *    ——次稳，跨版本基本不动。
  * 3. **文案匹配**——最后兜底，且**只在文案是唯一线索时**用。
  *
- * 这里原来写的是「一律用类型化异常判定，不做文案匹配」。那句话不实：429 分
- * 限速与欠费全靠文案，传输层错误也是。既然实际在匹配，就该把规矩写清楚
- * （优先级 + 兜底），而不是留一句自己都没遵守的原则——后者会让下一个人
- * 以为文案匹配是 bug 而不是刻意的兜底，然后把它删掉。
+ * **文案匹配是刻意的兜底，不是 bug，别删。** 429 分限速与欠费全靠文案，
+ * 传输层错误也是——这里没有别的线索可用。规矩写在上面那三档优先级里。
  */
 
 import type { ErrorCode } from '@qywork/core'
@@ -174,9 +172,8 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
  *
  * ## 为什么不能只匹配 `fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network`
  *
- * 那一版是照着 Node/undici 的文案写的，而**运行时是 Bun**，它自己的 fetch
- * 报的是另一套话。2026-08 在一台网络抖动的机器上对 DeepSeek 连打，三种真实失败
- * 一条都没匹配上：
+ * 那串是 Node/undici 的文案，而**运行时是 Bun**，它自己的 fetch 报的是另一套话。
+ * 2026-08 在一台网络抖动的机器上对 DeepSeek 连打，三种真实失败一条都匹配不上：
  *
  * - `The operation timed out.`
  * - `The socket connection was closed unexpectedly.`

@@ -358,9 +358,7 @@ function deepseekCatalog(): ModelSpec[] {
    * - 走 chat/completions 时客户端根本不发思考相关字段，无从控制 → `thinking: 'none'`。
    * - 走 Responses 时 `reasoning.effort:'none'` 能真的关掉 → `thinking: 'reasoning_effort'`。
    *
-   * `thinksByDefault` 两边都是 **true**：省略字段它自己就思考。
-   * 目录里原来写的 `false` 是错的——`qy probe` 早就打印过「省略字段时自己思考：是」，
-   * 只是那个结论当时被 `toCapabilities` 一起丢掉了（见 ROADMAP §22.3）。
+   * `thinksByDefault` 两边都是 **true**：省略字段它自己就思考，`qy probe` 实测过。
    *
    * `effortLevels` 仍然是 **`[]`**，这是实测结论不是保守默认：
    * minimal / low / medium / high 全部返回 200，而 reasoning_tokens 三次采样
@@ -460,12 +458,11 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
  * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
  *
- * ## 删掉的三个能力位
+ * ## 三个不要加回来的能力位
  *
- * `vision` / `rejectsSamplingParams` / `maxCacheBreakpoints` 曾经在这里，
- * 三个都是零消费者，按 C1 删掉。
+ * `vision` / `rejectsSamplingParams` / `maxCacheBreakpoints`：三个都会是零消费者。
  *
- * `vision` 值得单说：它对绝大多数条目填的是 `false`，而语义是**未确认**不是
+ * `vision` 值得单说：它对绝大多数条目只能填 `false`，而语义是**未确认**不是
  * 「确认不支持」。拿它当门控会把一批实际支持视觉的中转站模型挡掉，
  * 而那种失败看起来像「图片发不出去」，查不到这里。**按不确定的数据做门控，
  * 比不做门控更糟。**
@@ -738,8 +735,8 @@ export function computeCost(
 ): number {
   const p = spec.pricing
   // 只按 5 分钟档算：全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是
-  // **参考数据**（它是真实价格），不是可达的代码分支——曾经这里有一个 cacheTtl 参数，
-  // 而没有任何调用方传过它，那条 1h 分支永远走不到。
+  // **参考数据**（它是真实价格），不是可达的代码分支。别为它加一个 cacheTtl 参数：
+  // 没有调用方会传，那条 1h 分支永远走不到。
   const writeRate = p.cacheWrite5m
   const total =
     (usage.inputTokens * p.input +

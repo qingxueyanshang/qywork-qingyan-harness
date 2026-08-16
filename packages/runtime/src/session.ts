@@ -102,8 +102,8 @@ export interface SessionOptions {
   /**
    * 本会话单轮的步数上限。不传 = 用 loop 的默认值。
    *
-   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色跑飞会把整轮拖垮，
-   * 而那个字段此前**解析了但没有任何人消费**——配了不生效。
+   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色跑飞会把整轮拖垮。
+   * 少了这一手，那个字段就是**解析了但没有任何人消费**——配了不生效。
    */
   maxSteps?: number
 }
@@ -200,7 +200,7 @@ export class Session {
    * 「切接口 + 切模型」。规则见 `resolveModel`——解析只有那一份，
    * 界面上列出来的协议和这一轮真的发出去的必须是同一个结论。
    *
-   * 曾经这个解析在构造函数里做一次就固定了，导致会话级模型切换无从生效。
+   * **每次用时现解析**：在构造函数里做一次就固定的话，会话级模型切换无从生效。
    */
   private resolveProfile(model?: string): ProviderProfile {
     const { providers, active } = this.opts.config
@@ -361,8 +361,8 @@ export class Session {
     /*
      * 历史 = 消息 + **由 steps 投影出来的 assistant/tool 回合**。
      *
-     * 这里曾经只映射 `listMessages`。而那张表只有 user 行——全项目唯一的
-     * `appendMessage` 就在上面几行，写的是 `role:'user'`。于是第二轮起模型拿到的
+     * **只映射 `listMessages` 是不够的**：那张表只有 user 行（全项目唯一的
+     * `appendMessage` 就在上面几行，写的是 `role:'user'`），于是第二轮起模型拿到的
      * 输入字面上是「用户说了三次话，我一次都没回过」，跨轮结构性失忆。
      *
      * **被接替的 run 不折**。前端对 superseded 是「打标仍渲染」给人看
@@ -515,8 +515,8 @@ export class Session {
       }
       // **step 也要落终态，不只是 run。**
       //
-      // 这里曾经只收 run。而 `tool.started` 的 yield 处被 `.return()` 掐断时，
-      // step 已经是 running 却没人settle——run 随即被标成终态，于是那条 step
+      // 只收 run 是不够的：`tool.started` 的 yield 处被 `.return()` 掐断时，
+      // step 已经是 running 却没人 settle——run 随即被标成终态，于是那条 step
       // 永远碰不到启动时的 `recoverStaleRuns`（它只扫 running/queued 的 run）。
       //
       // 代价不是 UI 上一张转圈的卡：历史投影必须跳过含未终结调用的整个 batch，
@@ -604,9 +604,8 @@ export class Session {
    * 不直接 stop：扩展是按工作区共享的，别的会话可能还在用。
    * 引用归零时才真的关子进程。
    *
-   * 这个方法此前存在但**全项目没有一个调用点**——于是 server 每条消息新建的
-   * Session 各自起了一套插件子进程，一个都没关。协议里有类型不等于有实现，
-   * 公开方法有定义同样不等于有人调。
+   * **它必须真的被调用。** 没有调用点的话，server 每条消息新建的 Session 各自
+   * 起一套插件子进程，一个都不会关——公开方法有定义不等于有人调。
    */
   dispose(): void {
     if (!this.extensions) return

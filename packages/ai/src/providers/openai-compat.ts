@@ -33,11 +33,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
   /**
    * effort 发不发，**由目录里那条模型的 `effortLevels` 决定**，不是由协议决定。
    *
-   * 这里原来是 `effort: false`：理由是「兼容协议下字段名各家不一」。理由本身成立，
-   * 但结论下重了——字段名确实不一，可它是**每个模型自己的属性**，目录里正好有
-   * （`thinking` 说用哪套字段、`effortLevels` 说有哪几档）。一律不发的代价是
-   * GPT-5.6 / Gemini / Grok / Kimi / GLM 这些真有思考档位的模型全都调不了，
-   * 而界面上还画着一个选了没反应的控件。
+   * **不要因为「兼容协议下字段名各家不一」就写成 `effort: false`。** 字段名确实
+   * 不一，可它是**每个模型自己的属性**，目录里正好有（`thinking` 说用哪套字段、
+   * `effortLevels` 说有哪几档）。一律不发的代价是 GPT-5.6 / Gemini / Grok / Kimi /
+   * GLM 这些真有思考档位的模型全都调不了，而界面上还画着一个选了没反应的控件。
    *
    * `thinking` 仍然是 false：正文里的思考内容是从流里**读**出来的
    * （`reasoning_content`），我们从不主动声明它。

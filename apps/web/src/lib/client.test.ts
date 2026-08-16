@@ -85,12 +85,12 @@ describe('握手', () => {
 
 describe('握手被拒是终态', () => {
   /**
-   * 复现原始失败形状：hello.err 曾经只把 `bad_token` 当终态，别的原因每次 close
-   * 都会再排一次重连、每次都被同样地拒掉，而界面显示「N 秒后重试」——
-   * 一个永远不会好的稍后重试。
+   * 复现原始失败形状：只把 `bad_token` 当终态的话，别的原因每次 close 都会再排
+   * 一次重连、每次都被同样地拒掉，而界面显示「N 秒后重试」——一个永远不会好的
+   * 稍后重试。
    *
-   * 现在服务端只发 `bad_token` 一种（协议版本那条连同手写的版本号一起删了），
-   * 但**这里仍然不按 reason 分支**：认的是「hello.err 一律终态」这条规则本身。
+   * 服务端目前只发 `bad_token` 一种，但**这里不按 reason 分支**：
+   * 认的是「hello.err 一律终态」这条规则本身。
    */
   test('hello.err 之后不再重连', () => {
     const { c, sockets, states } = client()
@@ -104,7 +104,7 @@ describe('握手被拒是终态', () => {
     expect(sockets).toHaveLength(1)
 
     // **而且不能把原因盖掉。** 服务端发完 hello.err 立刻 close，两个事件前后脚到；
-    // close 处理器原来无条件再报一次泛化的 'closed'，用户最终看到的是
+    // close 处理器无条件再报一次泛化的 'closed' 的话，用户最终看到的是
     // 「连接已断开」而不是「令牌无效」——后者才说得出下一步该干什么。
     expect(states.at(-1)?.state).toBe('unauthorized')
     expect(states.at(-1)?.detail).toBe('令牌无效')
@@ -150,7 +150,7 @@ describe('指令发不出去要有回执', () => {
   /**
    * **原始失败形状**：切模型点了没反应。
    *
-   * `send` 曾经是 `if (readyState === OPEN) send()`——不在 OPEN 就静默什么也不做。
+   * `send` 写成 `if (readyState === OPEN) send()` 的话，不在 OPEN 就静默什么也不做。
    * 而 `setModel` 刻意不做乐观更新（等服务端广播回来才改显示），两件事叠起来
    * 就是「点了，界面一动不动」，和「服务端还没回」完全无法区分。
    */
@@ -222,7 +222,7 @@ describe('订阅在重连时原样带回去', () => {
   /**
    * **原始失败形状**：切完项目再断一次网，串台全回来了。
    *
-   * 空集曾经被 `this.subscribed.length` 判掉、不写进 hello 帧，服务端于是当成
+   * 空集被 `this.subscribed.length` 判掉、不写进 hello 帧的话，服务端会当成
    * 「没声明过」给全订阅——而切项目时前端发的正是 `subscribe([])`。
    */
   test('明确退订（空集）也要带上，不能被压成「没说过」', () => {

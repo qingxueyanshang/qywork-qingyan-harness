@@ -104,10 +104,9 @@ export interface WireToolCall {
   /**
    * 参数 JSON 没解析出来时的**原文**。
    *
-   * 曾经三个 provider 各自往 `arguments` 里塞一个魔法键（`__malformed_arguments`
-   * 与 `_malformed` 两套写法），而**没有任何消费者认得它们**——注释里写的
-   * 「上层会把它记成一次失败的工具调用」那个上层不存在，工具照样拿着垃圾参数执行。
-   * 改成独立字段：一个名字、一处判断，消费者在 `AgentLoop` 里。
+   * **独立字段，不要往 `arguments` 里塞魔法键**：各 provider 各塞各的写法，
+   * 而没有任何消费者认得它们，工具照样拿着垃圾参数执行。
+   * 一个名字、一处判断，消费者在 `AgentLoop` 里。
    */
   argumentsError?: string
 }

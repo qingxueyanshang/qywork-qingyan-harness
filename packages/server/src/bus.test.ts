@@ -77,11 +77,11 @@ describe('订阅语义：null 和空集不是一回事', () => {
   /**
    * **这条就是原始失败形状。**
    *
-   * 前端切项目时发 `client.subscribe([])`，本意是退订。上一版 `visibleTo` 的第一行
-   * 是 `if (sub.conversations.size === 0) return true`——空集被当成全订阅，
+   * 前端切项目时发 `client.subscribe([])`，本意是退订。`visibleTo` 里写一句
+   * `if (sub.conversations.size === 0) return true` 就把空集当成了全订阅，
    * 于是所有会话的事件一起涌向这个客户端，而客户端无条件写进当前 transcript。
    */
-  test('空集 = 明确不要任何会话事件（上一版把它当成全订阅）', () => {
+  test('空集 = 明确不要任何会话事件，不是全订阅', () => {
     const bus = new EventBus()
     const a = attach(bus, 'a', null)
     bus.setSubscription('a', [])
@@ -114,7 +114,7 @@ describe('断线补发按订阅过滤', () => {
   /**
    * **原始失败形状**：重连之后界面里混进了另一条会话的正文。
    *
-   * 上一版 `replayFrom` 只按 seq 过滤，补发路径上没有任何可见性判断——
+   * `replayFrom` 只按 seq 过滤的话，补发路径上就没有任何可见性判断——
    * 按会话隔离在实时推送上成立、在补发上不成立，等于没有。
    */
   test('只补出订阅范围内的帧', () => {
@@ -169,7 +169,7 @@ describe('断线补发按订阅过滤', () => {
  * 服务端重启之后重连。
  *
  * **原始失败形状**：sidecar 重启（开发态热重载、崩溃拉起），客户端带着上一代的
- * `lastSeq=800` 撞上新总线的 `seq=0`。上一版只比大小，`800 >= 0` 判成「已是最新」，
+ * `lastSeq=800` 撞上新总线的 `seq=0`。只比大小的话 `800 >= 0` 判成「已是最新」，
  * 补发零条、resync 为假——于是界面永远停在断线那一刻，那一轮一直显示执行中，
  * 而账本里它在新进程启动时就被 `recoverStaleRuns` 判成中断了。
  */

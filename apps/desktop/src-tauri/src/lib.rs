@@ -212,8 +212,8 @@ pub fn run() {
      * 这三个插件是给 **Rust 侧**用的，不给 WebView 里的 JS 用。
      *
      * `capabilities/default.json` 里因此只留了 `core:default` 和拖动标题栏那一条。
-     * 曾经还授过 `shell:allow-spawn`、`dialog:allow-open/save`、
-     * `opener:allow-open-url`、devtools 切换——**它们一条都没有前端调用方**
+     * **别再往 capability 里加 `shell:allow-spawn`、`dialog:allow-open/save`、
+     * `opener:allow-open-url`、devtools 切换这类条目**：它们一条都没有前端调用方
      * （`apps/web` 里连 `@tauri-apps` 的依赖都没有，只经 `__TAURI_INTERNALS__`
      * 调本 crate 自己注册的那几个命令），唯一用得上它们的主体是被注入的脚本。
      * 其中 `shell:allow-spawn` 的 `--host` 校验放行 `0.0.0.0`、`--cwd` 校验是 `.+`，
@@ -289,7 +289,7 @@ pub fn run() {
             /*
              * **起不来也要有终态。**
              *
-             * 这里原来是 `.expect(...)`。release 下 `panic = "abort"` 且
+             * **不能用 `.expect(...)`**：release 下 `panic = "abort"` 且
              * `windows_subsystem = "windows"`（没有控制台），于是 sidecar 缺失、
              * 损坏、或在报出令牌前退出时，进程无声消失——没有窗口、没有对话框、
              * 没有任何可见输出。用户唯一的感知是「双击没反应」，而这恰恰是
@@ -329,11 +329,10 @@ pub fn run() {
 /// 而且写任何东西都 EPERM」。
 /// 启动时**显式**指定过的工作区。没有就回 `None`，交给服务端决定。
 ///
-/// 原来这里最后回落到 cwd / 家目录，于是「没指定」被悄悄变成了「就用启动目录」——
-/// 而桌面端的启动目录是安装目录或 `src-tauri`，那会被登记成一个谁也没要过的项目
-/// （ROADMAP §33.2 里的 `src-tauri` 项目就是这么来的）。
+/// **不要回落到 cwd / 家目录**：那把「没指定」悄悄变成「就用启动目录」，而桌面端的
+/// 启动目录是安装目录或 `src-tauri`，会被登记成一个谁也没要过的项目。
 ///
-/// 现在没指定就是没指定：`server.ts` 的 `bootstrapWorkspace` 会用最近打开的那个，
+/// 没指定就是没指定：`server.ts` 的 `bootstrapWorkspace` 会用最近打开的那个，
 /// 一个都没有才建默认工作区。**「首次挂哪儿」的判断只留一处。**
 fn resolve_workspace() -> Option<PathBuf> {
     if let Some(arg) = std::env::args().nth(1) {

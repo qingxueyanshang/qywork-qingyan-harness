@@ -163,10 +163,10 @@ export class McpClient {
    *
    * ## 为什么必须留着
    *
-   * 这里曾经是 `result?.protocolVersion` 和 `serverInfo` 取走、**`capabilities`
-   * 原地丢掉**。后果是一个只提供 `resources`（不提供 `tools`）的 server
-   * 表现为：连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具、
-   * **没有任何错误**。用户看到的是「配了但什么都没发生」，而日志里干干净净。
+   * **不能只取 `protocolVersion` 和 `serverInfo`、把 `capabilities` 丢掉。**
+   * 丢掉的后果是：一个只提供 `resources`（不提供 `tools`）的 server 表现为
+   * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具、**没有任何错误**。
+   * 用户看到的是「配了但什么都没发生」，而日志里干干净净。
    *
    * 我们目前只消费 `tools`。声明了而我们没接的能力（`resources` / `prompts`）
    * 必须在加载时**说出来**——那句话是用户唯一能拿到的线索。

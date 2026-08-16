@@ -73,8 +73,8 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     /*
      * 握手要有上限。
      *
-     * 原来这里是一个裸的 `while rx.recv().await`：只有拿到两个 KV、进程 Terminated、
-     * 或流关闭才会退出。qy 起来了却卡在打印令牌之前（server 初始化阻塞、
+     * **不能写成裸的 `while rx.recv().await`**：那样只有拿到两个 KV、进程
+     * Terminated、或流关闭才退出。qy 起来了却卡在打印令牌之前（server 初始化阻塞、
      * 端口探测挂住）时，这个循环**永远不返回**——而主窗口是在它之后才建的
      * （`lib.rs` 的 `build_main_window`）。表现是 qywork.exe 和 qy.exe 都在后台
      * 活着、桌面上什么都没有，任务管理器里就是那条「qy.exe 常驻」。

@@ -58,9 +58,8 @@ export interface QyConfig {
    * ## 三层都接了才算数
    *
    * 路径解析（`resolveInWorkspace`）、静态规则（`policy.ts`）、
-   * 沙箱 bind 清单（`sandbox.ts`）。这个字段曾经因为**只声明没消费**被删过一次
-   * （ROADMAP §27.4）——它是 ARCHITECTURE §11 那张表里我自己加的那一条。
-   * 现在三层都接了，测试覆盖「清单内可写 / 清单外仍拒 / 软链逃逸 / 相对路径被拒」。
+   * 沙箱 bind 清单（`sandbox.ts`）。**少接一层这个字段就是只声明没消费**，
+   * 测试覆盖「清单内可写 / 清单外仍拒 / 软链逃逸 / 相对路径被拒」四条。
    *
    * ## `full` 不豁免它
    *
@@ -125,8 +124,8 @@ export interface StoredModel {
    * 用户为这个模型选定的思考档。`undefined` = 没选过，不发思考字段。
    *
    * **和 `capabilities` 一样挂在「接口 × 模型」这一格，理由是同一条：
-   * 档位集合逐模型不同。** 这个字段原来是全局一个 `config.effort`，
-   * 而本仓的模型档位面从 0 档到 5 档都有：
+   * 档位集合逐模型不同。** 不能是全局一个 `config.effort`——
+   * 本仓的模型档位面从 0 档到 5 档都有：
    *
    * ```
    * claude-opus-5        low medium high xhigh max
@@ -362,12 +361,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   /*
    * 思考档位必须在词表里。
    *
-   * 这条校验原来在 `conversation.setEffort` 那条 WebSocket 指令上。档位收回成
-   * config.json 里那一个字段之后，指令没了，校验必须跟着搬到这里——**配置写入
-   * 的唯一闸门**（`/api/config` 不合法回 422 且不落盘）。
-   *
-   * 不搬的代价是原注释早写清楚的：落盘一个不在词表里的值，下一轮就被原样发给
-   * provider，然后是一个 400，而错误信息里只有 provider 的原话。
+   * 校验必须落在这里——**配置写入的唯一闸门**（`/api/config` 不合法回 422
+   * 且不落盘）。落盘一个不在词表里的值，下一轮就被原样发给 provider，
+   * 然后是一个 400，而错误信息里只有 provider 的原话。
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
     for (const [id, m] of Object.entries(p.models)) {

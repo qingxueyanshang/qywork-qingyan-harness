@@ -16,7 +16,7 @@ import type { RunManager } from './runs.ts'
  *
  * 「跑在哪个目录下」是会话的属性，不是连接的属性——由
  * `workspaceRootOf(store, conversationId)` 当场查（`@qywork/store`）。
- * 曾经这里挂着一个进程级常量，于是一个进程只服务得了一个项目，换项目只能重启；
+ * 别在这里挂一个进程级常量：那样一个进程只服务得了一个项目，换项目只能重启；
  * 而同一条会话可以同时开在桌面端和手机上，「当前工作区」本来就不该由连接来回答。
  */
 export interface CommandDeps {

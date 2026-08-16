@@ -207,7 +207,7 @@ async function main(): Promise<number> {
     )
 
     // ── 指令 fail-closed ──
-    // 这一组验的是「拒绝必须有回执」。曾经未实现的指令被 default 分支静默吞掉，
+    // 这一组验的是「拒绝必须有回执」。未实现的指令被 default 分支静默吞掉的话，
     // 客户端永远等不到任何反馈，表现和「服务端正在处理」完全无法区分。
     process.stdout.write('\n指令回执（fail-closed）\n')
 
@@ -319,14 +319,8 @@ async function main(): Promise<number> {
     check('本轮没有 provider 错误', errored === undefined, errored?.event)
 
     /*
-     * 这里原来断言的是 `permissionAsks > 0`：「权限请求经 WebSocket 往返」。
-     *
-     * **那条断言验的行为已经不存在了。** 改成两模式之后，工具授权由
-     * `Session.decide()` 在本地裁决（硬边界 → 静态规则 → 分类器），
-     * 不再往 WebSocket 上发 `permission.request`。它在两模式落地之后
-     * 一直是红的，而 `bun test` 看不见它——那正是 §29.2 要补的那道缝。
-     *
-     * 现在断言的是**新的事实**：裁决不弹窗，所以
+     * 工具授权由 `Session.decide()` 在本地裁决（硬边界 → 静态规则 → 分类器），
+     * **不往 WebSocket 上发 `permission.request`**。所以这里断言两件事：
      *
      * 1. 一次 `permission.request` 都不该出现；
      * 2. 被拒的调用以 `tool.finished`（`status: 'failure'`、
