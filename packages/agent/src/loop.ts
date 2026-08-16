@@ -65,12 +65,15 @@ export interface LoopDeps {
   /** 三层冻结前缀，已拼好。 */
   systemPrompt: string
   /**
-   * 尾区注记：日期、工作区状态、技能索引、记忆索引。
+   * 尾区注记：日期、工作区状态、技能索引、记忆索引、待加载的外部工具清单。
    *
    * 每条自带分组，**不要一律标成 `workspaceState`**：那样面板上「记忆内容」
    * 与「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
-  tailNotes: () => { content: string; group: 'workspaceState' | 'skills' | 'memory' }[]
+  tailNotes: () => {
+    content: string
+    group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
+  }[]
   makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContext
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence

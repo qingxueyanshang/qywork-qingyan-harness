@@ -780,6 +780,41 @@ CREATE TABLE goal_events (
 CREATE INDEX idx_goal_events_conv ON goal_events(conversation_id, goal_id);
 `,
   },
+  {
+    id: 23,
+    name: 'conversation_loaded_tools',
+    /**
+     * 「这条会话已经把哪几个外部工具装进工具表了」。
+     *
+     * ## 为什么必须落盘
+     *
+     * 服务端**每条消息新建一个 Session**，进程内的「已加载」集合活不过这条消息。
+     * 不落盘的话模型每一轮都得重新 `load_tool` 一遍——而它在 transcript 里
+     * 看得见上一轮装过、工具表里却没有，会反复去试。那种每轮固定一次的往返
+     * 开销，反而输给「全部常驻」，按需加载就白做了。
+     *
+     * ## 为什么不写进 `conversation_extras`
+     *
+     * 那张表是**「这一轮关掉了哪几项」**的成员表（没有行 = 全开）。这里记的是
+     * 「已经打开了哪几项」，默认相反、写入方不同、清理时机也不同。共表就是两套账
+     * 共用一个键空间，迟早有人按前缀过滤时把对方的行一起算进去。
+     *
+     * 主键 (conversation_id, tool_name)：同一个工具装两次是同一件事，
+     * `INSERT OR IGNORE` 直接落到这条约束上。它同时充当 FK 的索引
+     * （级联删除按 conversation_id 前缀查），所以不另建。
+     *
+     * 存的是**注册名**（`mcp__<server>__<tool>` / `<插件id>__<tool>`）——
+     * 它就是模型调用时用的那个名字，也是待加载池里的键。
+     */
+    sql: /* sql */ `
+CREATE TABLE conversation_loaded_tools (
+  conversation_id TEXT    NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  tool_name       TEXT    NOT NULL,
+  loaded_at       INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, tool_name)
+);
+`,
+  },
 ]
 
 /**

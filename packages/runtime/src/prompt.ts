@@ -57,7 +57,22 @@ export function buildSystemPrompt(): string {
  */
 export interface TailNote {
   content: string
-  group: 'workspaceState' | 'skills' | 'memory'
+  group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
+}
+
+/**
+ * 外部工具那一行摘要截多长。
+ *
+ * MCP 与插件的 `summary` 就是第三方给的 description 原文，可以是好几段。
+ * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼 2620 token，
+ * 截到 100 字 1187 token。截的是**清单**不是工具本身——完整说明由
+ * `load_tool` 按需拉，清单只负责让模型知道有这么个东西。
+ */
+const SUMMARY_MAX_CHARS = 100
+
+function oneLine(text: string): string {
+  const first = text.split('\n')[0]!.trim()
+  return first.length > SUMMARY_MAX_CHARS ? `${first.slice(0, SUMMARY_MAX_CHARS)}…` : first
 }
 
 /**
@@ -75,6 +90,13 @@ export function buildTailNotes(input: {
   skills?: { name: string; description: string }[]
   /** 记忆索引：只有 key + 首行摘要，正文由模型按需 read_memory 拉取。 */
   memories?: { key: string; preview: string }[]
+  /**
+   * 待加载的外部工具：只有工具名 + 一句话，完整参数说明由模型按需 load_tool 拉。
+   *
+   * **这份清单必须在尾区，不能进冻结前缀**——它随用户装卸 MCP / 插件而变，
+   * 进前缀等于装一个插件就把整段缓存打掉，而那正是按需加载要治的病。
+   */
+  externalTools?: { name: string; summary: string }[]
 }): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
   const lines = [`工作区：${input.workspaceRoot}`, `平台：${input.platform}`, `当前日期：${today}`]
@@ -99,6 +121,15 @@ export function buildTailNotes(input: {
     notes.push({
       content: `## 已记住的事实（需要正文时用 read_memory 读）\n${list}`,
       group: 'memory',
+    })
+  }
+  // 外部工具同技能与记忆：**清单常驻、参数说明按需**。它归 `mcpTools` 桶，
+  // 与那些工具的 schema 同一格——面板上「外部工具」那一行答的就是这件事的开销。
+  if (input.externalTools?.length) {
+    const list = input.externalTools.map((t) => `- ${t.name}：${oneLine(t.summary)}`).join('\n')
+    notes.push({
+      content: `## 可加载的外部工具（要用先用 load_tool 装，装完直接调）\n${list}`,
+      group: 'mcpTools',
     })
   }
   return notes
