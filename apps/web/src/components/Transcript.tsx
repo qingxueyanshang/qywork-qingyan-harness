@@ -592,6 +592,11 @@ function ToolCard(props: { item: TranscriptItem }) {
  *
  * 「结果」这一格取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
  * 取不到才回落到 `message`——message 只是一句摘要，不是正文。
+ *
+ * **自带主体块的那几支一律 `noMessage`。** 编辑和创建的 message 是
+ * 「编辑 x（1 处）」「创建 x」，与标题行的「修改文件 · x」逐字重合，
+ * 回落出来就是正文底下再挂一个复述标题的灰块。没有主体块的「其余」那一支
+ * 要留着回落：搜索零命中时，那句「匹配 0 个文件」是展开体里唯一的结论。
  */
 function StepBody(props: { item: TranscriptItem }) {
   const args = () => props.item.args ?? {}
@@ -631,7 +636,7 @@ function StepBody(props: { item: TranscriptItem }) {
             </pre>
           )
         })()}
-        <Result item={props.item} withDivider />
+        <Result item={props.item} withDivider noMessage />
       </Match>
 
       <Match when={kind() === 'run'}>
@@ -641,11 +646,9 @@ function StepBody(props: { item: TranscriptItem }) {
         <Result item={props.item} label="输出" withDivider />
       </Match>
 
-      <Match when={kind() === 'write'}>
-        <Show when={firstString(args(), 'content', 'text')}>
-          {(text) => <pre class="fold-code">{clamp(text())}</pre>}
-        </Show>
-        <Result item={props.item} />
+      <Match when={kind() === 'write' && firstString(args(), 'content', 'text') !== ''}>
+        <pre class="fold-code">{clamp(firstString(args(), 'content', 'text'))}</pre>
+        <Result item={props.item} noMessage />
       </Match>
     </Switch>
   )
@@ -676,7 +679,12 @@ function Result(props: {
   item: TranscriptItem
   label?: string
   withDivider?: boolean
-  /** 取不到正文时不要回落到 `outcome.message`——调用方自己已经显示过它了。 */
+  /**
+   * 取不到正文时不要回落到 `outcome.message`。
+   *
+   * 两种情况要给：调用方自己已经把 message 显示过了（失败那一支），
+   * 或者 message 只是标题行的复述（编辑、创建）。
+   */
   noMessage?: boolean
 }) {
   const text = () => {
@@ -737,7 +745,7 @@ function ArgsTable(props: { rows: [string, string][] }) {
  */
 function errorHint(code: string): string {
   const map: Record<string, string> = {
-    no_api_key: '还没配 API Key。在配置文件里填 apiKey，或跑 qy init。',
+    no_api_key: '还没配 API Key：设置 → 模型，在对应接口下填。',
     auth_failed: 'Key 存在但不被接受：确认没抄错、没过期、账号有该模型的权限。',
     insufficient_quota: '账户额度用完了，重试不会好转。',
     rate_limited: '触发限速，等一会儿再重试。',

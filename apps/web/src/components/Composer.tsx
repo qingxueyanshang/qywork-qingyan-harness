@@ -269,9 +269,6 @@ export function Composer() {
         </div>
       </Show>
 
-      {/* 悬浮在输入框上沿，不占文档流：占了的话每次出现/消失都会把整块输入区
-          往上顶一格。pointer-events:none 保证它不挡住输入框的点击。 */}
-
       {/* 待发附件。只列名字不做缩略图墙：一行一个看得清、删得掉，
           而缩略图会把输入区顶掉半屏。 */}
       <Show when={pending().length > 0 || uploading() > 0}>
