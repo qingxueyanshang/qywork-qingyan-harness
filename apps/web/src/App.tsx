@@ -1,4 +1,4 @@
-import { createSignal, lazy, onCleanup, onMount, Show } from 'solid-js'
+import { createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { Composer } from './components/Composer.tsx'
 import { Palette } from './components/Palette.tsx'
 import { PermissionSheet } from './components/PermissionSheet.tsx'
@@ -66,6 +66,20 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     onCleanup(() => window.removeEventListener('keydown', onKey))
+
+    /*
+     * 空闲时先把面板那块代码取回来。
+     *
+     * 它是首屏之外最可能被点开的一块，而**点开它的时机偏偏最忙**——用户通常是
+     * 在模型正输出时想看文件或改动，那时主线程被 markdown 重解析占着，
+     * 这一次动态导入会从几十毫秒拉长到肉眼可见。空闲时取回来就没有这一下。
+     *
+     * 用 `requestIdleCallback`，没有就退到定时器：这只是提前量，早晚都行，
+     * 唯独不能和首屏抢。
+     */
+    const idle =
+      window.requestIdleCallback?.bind(window) ?? ((cb: () => void) => setTimeout(cb, 2000))
+    idle(() => void SidePanel.preload())
   })
 
   return (
@@ -166,21 +180,38 @@ export function App() {
         <Composer />
       </main>
 
+      {/*
+       * **每个懒加载都要自己的 `Suspense`。**
+       *
+       * 不给边界的话，挂起会一路冒到根：打开面板那一下不只是面板空着，整棵树
+       * 都被挂起，正文跟着一起消失，等 chunk 到了才恢复。平时几十毫秒看不出来，
+       * 流式输出时主线程被 markdown 重解析占满，这一下就拉长到肉眼可见。
+       *
+       * fallback 是一个**同样尺寸的空壳**，不是转圈也不是文案：网格已经按
+       * `with-panel` 给这一列留好了位置，占位块只要把那块位置占住，
+       * 否则会看到栏宽先塌一下再弹回来。
+       */}
       <Show when={sidePanel()}>
-        <SidePanel />
+        <Suspense fallback={<aside class="side-panel" />}>
+          <SidePanel />
+        </Suspense>
       </Show>
       <Palette />
       <PermissionSheet />
       {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
       <Show when={settingsPage()}>
-        <SettingsDialog />
+        <Suspense>
+          <SettingsDialog />
+        </Suspense>
       </Show>
       {/* 浮层由一个 overlay 信号裁决，同一时刻只可能有一个——见 store/ui.ts。
           只剩一个，而且是**会话上下文**：这个会话花了多少。机器配置那六个已经
           整体搬进设置整页；「换项目」那个也没了——换项目在左栏点一下就是。 */}
       <Show when={overlay() === 'runs'}>
         <Sheet title="运行详情" note="这个会话累计花了多少，以及每一轮各花了多少" wide>
-          <RunDetails />
+          <Suspense>
+            <RunDetails />
+          </Suspense>
         </Sheet>
       </Show>
     </div>

@@ -328,15 +328,18 @@ function Fold(props: {
               · {sanitizeTarget(props.target!)}
             </span>
           </Show>
+          {/* 改了多少行**紧跟在文件名后面**，不钉行尾：它说的是这个文件的事，
+              隔着半行空白放到最右边，眼睛要横扫过去才能把两者对上。
+              路径长时截的是路径（`.fold-target` 自己收缩），这两个数不收缩。 */}
+          <Show when={props.changes}>
+            {(c) => (
+              <span class="fold-delta">
+                <span class="fold-add">+{c().additions}</span>
+                <span class="fold-del">−{c().deletions}</span>
+              </span>
+            )}
+          </Show>
         </span>
-        <Show when={props.changes}>
-          {(c) => (
-            <span class="fold-diff">
-              <span class="fold-add">+{c().additions}</span>
-              <span class="fold-del">−{c().deletions}</span>
-            </span>
-          )}
-        </Show>
         <Show when={props.running && !(props.quietWhenOpen && open())}>
           <span class="fold-spin" />
         </Show>

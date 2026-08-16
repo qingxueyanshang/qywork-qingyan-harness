@@ -357,33 +357,41 @@
   opacity: 1;
 }
 
-/* 唯一的文本槽：动作名 / 状态字 / 目标都在里面，由它统一负责单行省略。
-   片段各自只保留「不换行」语义，不各自截断——各截各的会出现两个省略号。 */
+/* 唯一的文本槽：动作名 / 状态字 / 目标 / 增删行数都在里面，按这个顺序排。
+   **只有目标那一格会被截**——它是唯一长度不定的；别的都短且定长，
+   各截各的会出现两个省略号。 */
 .fold-summary {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+.fold-label {
+  flex: none;
+  white-space: nowrap;
+}
+.fold-word {
+  flex: none;
+  color: var(--danger);
+}
+/* **不加 opacity。** 蒙一层半透明会让失败行里「执行命令 失败」和后面那段命令预览
+   同为 --danger 却显出两种深浅。要淡就把 token 定成淡的，不要在个别元素上再蒙。
+   槽里唯一会被截的就是它——路径和命令都可能很长。 */
+.fold-target {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fold-summary > * + * {
-  margin-left: 6px;
-}
-.fold-label {
-  white-space: nowrap;
-}
-.fold-word {
-  color: var(--danger);
-}
-/* **不加 opacity。** 蒙一层半透明会让失败行里「执行命令 失败」和后面那段命令预览
-   同为 --danger 却显出两种深浅。要淡就把 token 定成淡的，不要在个别元素上再蒙。 */
-.fold-target {
-  white-space: nowrap;
-}
-/* 改了多少行。**在文本槽外面**：槽里那一串负责单行省略，路径一长这两个数就
-   跟着被截掉，而它们是定宽的事实，该钉在行尾。等宽数字，行与行之间对得齐。 */
-.fold-diff {
-  flex: 0 0 auto;
+/* 改了多少行，紧跟在目标后面、不收缩。
+   **这个类不能叫 `.fold-diff`**：那个名字被展开体里的 diff 代码块占着
+   （带内边距、灰底、260px 上限），同名的后果是这两个数被套上代码块的壳——
+   行尾长出一个灰盒子、整行被撑高，而 CSS 不会为此报任何错。 */
+.fold-delta {
+  flex: none;
   display: inline-flex;
   gap: 4px;
   font-family: var(--font-mono);
