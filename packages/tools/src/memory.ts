@@ -16,6 +16,15 @@
  * 放进前缀等于每加一条记忆就把整个 provider 缓存打掉一次。
  * 一律压到 transcript 之后的尾区。
  *
+ * ## 进上下文的只有标题
+ *
+ * 尾区每轮列的是 `key：首行摘要`，正文只有 `read_memory` 拿得到。哪条相关由模型
+ * 看着标题自己判断——上下文里已经有当前任务的全部细节，而任何按当轮文本打分的召回
+ * 只看得见字面重合度。模型读了哪条是一次工具调用，会话流里看得见；打分选中了哪条
+ * 是隐式的，「没生效」和「不存在」从外面看一模一样。
+ *
+ * 成立的前提是**第一行就是摘要**，所以 `write_memory` 的描述里这么要求。
+ *
  * ## 三层作用域：列表和读跨层，写和删只在用户层
  *
  * 索引与 `read_memory` 看得到全局层的记忆（跨工作区那几条常用事实），
@@ -28,7 +37,6 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
 import { resolveInWorkspace } from './paths.ts'
 import { type Scope, type ScopeRoots, scanScoped, scopePaths, scopeRoots } from './scopes.ts'
 
@@ -65,7 +73,7 @@ function safeName(key: string): string | null {
  * 要跑完一整轮往返才由工具体报错。拆开之后必填由参数层拦住，
  * 每个工具的动作与权限也各自是一个常量，不必再从参数里现算。
  *
- * **不做 `list_memory`**：全部记忆的 key 每轮都在尾区列着
+ * **不做 `list_memory`**：全部记忆的 `key：首行摘要` 每轮都在尾区列着
  * （`runtime/prompt.ts` 装配），列一遍拿回的是模型已经看得见的东西。
  */
 
@@ -76,7 +84,7 @@ function requireKey(args: Record<string, unknown>): string | null {
 
 export const readMemoryTool: ToolSpec = {
   name: 'read_memory',
-  description: '读一条长期记忆的全文。尾区已经列出全部记忆的 key，按 key 取一条没展开的。',
+  description: '读一条长期记忆的全文。尾区只列出 key 与首行摘要，正文只有这里拿得到。',
   parameters: {
     type: 'object',
     properties: { key: { type: 'string', description: '记忆标识' } },
@@ -114,7 +122,10 @@ export const writeMemoryTool: ToolSpec = {
     type: 'object',
     properties: {
       key: { type: 'string', description: '记忆标识' },
-      content: { type: 'string', description: '正文，整条覆盖' },
+      content: {
+        type: 'string',
+        description: '正文，整条覆盖。第一行写一句话摘要——尾区只列这一行，之后要不要读全文全看它。',
+      },
     },
     required: ['key', 'content'],
     additionalProperties: false,
@@ -226,6 +237,9 @@ export interface MemoryEntry {
  * 只给**首行摘要**不给全文：索引要进尾区注记，每轮都发一遍。
  * 把全部正文塞进去，几十条记忆就能吃掉可观的上下文，而模型多数时候只需要
  * 知道「有哪些记忆」，需要哪条再单独读。
+ *
+ * 摘要就是首行原文，这里不做任何加工——加工出来的一句话和文件里写着的那句
+ * 不一致时，用户在设置页看到的和模型看到的就是两回事。
  */
 export async function listEntries(dir: string, scope: Scope = 'user'): Promise<MemoryEntry[]> {
   const names = await readdir(dir).catch(() => [] as string[])
@@ -263,123 +277,4 @@ export async function readScoped(
     if (text !== null) return { content: text, scope }
   }
   return null
-}
-
-// ─────────────────────────── 注入选择 ───────────────────────────
-
-/**
- * 每轮注入记忆的 token 预算。
- *
- * 常驻与召回**合用一个池**，不分开计数：记忆文件没有「常驻」这个标记，
- * 造一个新的存储格式去表达它、只为在预算内区分优先级，不划算。
- *
- * 合成之后行为在两端都对：条数少时全部装得下（等价于全部常驻），
- * 条数多时按相关性排序取前若干条（等价于召回）。
- */
-export const MEMORY_BUDGET_TOKENS = 2000
-
-/** 中文二元组 + 英文单词。 */
-function tokenize(text: string): string[] {
-  const out: string[] = []
-  const lower = text.toLowerCase()
-  for (const m of lower.matchAll(/[a-z0-9_]+/g)) out.push(m[0])
-  const cjk = lower.replace(/[^\u4e00-\u9fff]/g, ' ')
-  for (const run of cjk.split(/\s+/)) {
-    if (run.length === 1) out.push(run)
-    for (let i = 0; i + 1 < run.length; i++) out.push(run.slice(i, i + 2))
-  }
-  return out
-}
-
-/**
- * BM25。参数取标准值（k1=1.5, b=0.75）。
- *
- * 对几十条记忆这种小语料，IDF 会出现负值（一个词出现在多数文档里时），
- * 所以下限截到 0——负分会让「到处都出现的常用词」反过来把文档往下压，
- * 而在小语料里那恰恰常常是主题词。
- */
-function bm25(query: string[], docs: string[][]): number[] {
-  const n = docs.length
-  if (n === 0) return []
-  const avg = docs.reduce((s, d) => s + d.length, 0) / n
-  const df = new Map<string, number>()
-  for (const d of docs) for (const t of new Set(d)) df.set(t, (df.get(t) ?? 0) + 1)
-
-  return docs.map((doc) => {
-    const tf = new Map<string, number>()
-    for (const t of doc) tf.set(t, (tf.get(t) ?? 0) + 1)
-    let score = 0
-    for (const q of new Set(query)) {
-      const f = tf.get(q)
-      if (!f) continue
-      const idf = Math.max(0, Math.log(1 + (n - (df.get(q) ?? 0) + 0.5) / ((df.get(q) ?? 0) + 0.5)))
-      score += (idf * (f * 2.5)) / (f + 1.5 * (0.25 + (0.75 * doc.length) / avg))
-    }
-    return score
-  })
-}
-
-export interface SelectedMemory {
-  key: string
-  body: string
-  scope: Scope
-}
-
-/**
- * 挑出这一轮要注入正文的记忆。
- *
- * ## 为什么是正文不是目录
- *
- * 目录制（只发 `key：首行摘要`）省 token，代价是**模型得自己判断哪条相关**。
- * 判断错了那条记忆这一轮就等于不存在——而且不报错、界面上看不出来。
- * 「记忆没生效」和「记忆不存在」从外面看一模一样，出了问题查不出来。
- *
- * ## 装不下的怎么办
- *
- * 转按需：`read_memory` 仍然读得到全文。所以超预算不是丢失，
- * 是降级——降级路径必须存在，否则记忆一多就变成随机丢几条。
- */
-export function selectMemories(
-  all: SelectedMemory[],
-  query: string,
-  budgetTokens = MEMORY_BUDGET_TOKENS,
-): { selected: SelectedMemory[]; deferred: string[] } {
-  if (all.length === 0) return { selected: [], deferred: [] }
-
-  const scores = bm25(
-    tokenize(query),
-    all.map((m) => tokenize(`${m.key} ${m.body}`)),
-  )
-  // 相关性降序；同分按 key 稳定排序——顺序抖动会让尾区字节每轮都变。
-  const ranked = all
-    .map((m, i) => ({ m, score: scores[i] ?? 0 }))
-    .sort((a, b) => b.score - a.score || (a.m.key < b.m.key ? -1 : 1))
-
-  const selected: SelectedMemory[] = []
-  const deferred: string[] = []
-  let spent = 0
-  for (const { m } of ranked) {
-    const cost = estimateText(m.body)
-    if (spent + cost > budgetTokens && selected.length > 0) {
-      deferred.push(m.key)
-      continue
-    }
-    selected.push(m)
-    spent += cost
-  }
-  // 注入顺序按 key 定序，不按相关性——相关性每轮都变，而尾区字节每变一次
-  // 就是一次多付。哪些进来由相关性决定，进来之后怎么排由 key 决定。
-  selected.sort((a, b) => (a.key < b.key ? -1 : 1))
-  return { selected, deferred }
-}
-
-/** 读出三层全部记忆的正文。 */
-export async function loadScopedMemories(roots: ScopeRoots): Promise<SelectedMemory[]> {
-  const index = await listScopedEntries(roots)
-  const out: SelectedMemory[] = []
-  for (const e of index) {
-    const found = await readScoped(roots, e.key)
-    if (found) out.push({ key: e.key, body: found.content.trim(), scope: found.scope })
-  }
-  return out
 }

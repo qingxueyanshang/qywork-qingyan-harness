@@ -63,10 +63,9 @@ export interface TailNote {
 /**
  * 尾区注记。每次请求重算，压在 transcript 之后靠近生成位置。
  *
- * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的：记忆放在历史之前，
- * 记忆一变其后整段历史全部失配；而召回按当轮查询做、几乎每 run 都变，
- * 于是每 run 打掉一次整段历史缓存。放在历史之后，新一轮的历史是上一轮的前缀，
- * 缓存一路命中到旧历史末尾。
+ * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的：这一段放在历史之前的话，
+ * 用户改一条记忆、装一个技能，其后整段历史全部失配。放在历史之后，新一轮的历史
+ * 是上一轮的前缀，缓存一路命中到旧历史末尾。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string
@@ -74,16 +73,8 @@ export function buildTailNotes(input: {
   gitBranch?: string | null
   /** 技能索引：只有 name + description，正文由模型按需 read_skill 拉取。 */
   skills?: { name: string; description: string }[]
-  /**
-   * 本轮选中的记忆**正文**（不是目录）。
-   *
-   * 改成正文的理由：目录制下模型得自己判断哪条相关，判断错了那条记忆这一轮
-   * 就等于不存在——而且不报错、界面上看不出来。「记忆没生效」和「记忆不存在」
-   * 从外面看一模一样。挑选与预算见 `tools/memory.ts` 的 `selectMemories`。
-   */
-  memories?: { key: string; body: string }[]
-  /** 超预算转按需的那些 key。要如实告诉模型它们存在。 */
-  deferredMemories?: string[]
+  /** 记忆索引：只有 key + 首行摘要，正文由模型按需 read_memory 拉取。 */
+  memories?: { key: string; preview: string }[]
 }): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
   const lines = [`工作区：${input.workspaceRoot}`, `平台：${input.platform}`, `当前日期：${today}`]
@@ -92,12 +83,10 @@ export function buildTailNotes(input: {
   const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]
 
   //
-  // 技能仍然**只放索引**：十个技能全放正文就能吃掉几万 token，而一次任务
-  // 通常只用得上其中一个，索引让模型自己判断要不要 read_skill 拉全文。
-  //
-  // 记忆不同——它已经改成正文（见上面 `memories` 的注释）。两者的差别在于
-  // 判断成本：技能「要不要用」由任务本身决定，模型看名字就知道；
-  // 记忆「相关不相关」得看内容，只给名字等于让它猜。
+  // 技能与记忆都**只放标题**：正文全放进来，十来条就能吃掉几万 token，而一次任务
+  // 通常只用得上其中一两条。标题的成本线性于条数不是内容，全列也装得下，
+  // 哪条要展开由模型看着标题自己判断——它手上有当前任务的全部细节，
+  // 而任何按当轮文本打分的召回只看得见字面重合度。
   if (input.skills?.length) {
     const list = input.skills.map((s) => `- ${s.name}：${s.description}`).join('\n')
     notes.push({
@@ -105,12 +94,12 @@ export function buildTailNotes(input: {
       group: 'skills',
     })
   }
-  if (input.memories?.length || input.deferredMemories?.length) {
-    const bodies = (input.memories ?? []).map((m) => `### ${m.key}\n${m.body}`).join('\n\n')
-    const rest = input.deferredMemories?.length
-      ? `\n\n（另有 ${input.deferredMemories.join('、')} 未展开，需要时用 read_memory 读）`
-      : ''
-    notes.push({ content: `## 已记住的事实\n\n${bodies}${rest}`, group: 'memory' })
+  if (input.memories?.length) {
+    const list = input.memories.map((m) => `- ${m.key}：${m.preview}`).join('\n')
+    notes.push({
+      content: `## 已记住的事实（需要正文时用 read_memory 读）\n${list}`,
+      group: 'memory',
+    })
   }
   return notes
 }

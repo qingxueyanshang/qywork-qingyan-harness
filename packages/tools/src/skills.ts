@@ -118,34 +118,9 @@ export function parseFrontmatter(text: string): { name: string; description: str
   return out
 }
 
-export const listSkillsTool: ToolSpec = {
-  name: 'list_skills',
-  description: '列出当前工作区可用的技能（名称与用途）。需要某个技能的完整步骤时用 read_skill 读。',
-  parameters: { type: 'object', properties: {}, additionalProperties: false },
-  actionKind: 'read',
-  objectLabel: '技能',
-  category: 'knowledge',
-  facet: '技能',
-  summary: '列出当前工作区可用的技能',
-  targetExtractor: () => null,
-  permissionEffect: 'internal_control',
-  parallelSafe: true,
-
-  async fn(_args, ctx) {
-    const skills = await scanSkills(ctx.workspaceRoot)
-    return {
-      status: 'success',
-      message: skills.length
-        ? `${skills.length} 个技能：\n${skills.map((s) => `- ${s.name}：${s.description}`).join('\n')}`
-        : '当前工作区没有技能',
-      data: { skills },
-    }
-  },
-}
-
 export const readSkillTool: ToolSpec = {
   name: 'read_skill',
-  description: '读取一个技能的完整内容（操作步骤）。名称从 list_skills 或尾区的技能索引里取。',
+  description: '读取一个技能的完整内容（操作步骤）。名称从尾区的技能索引里取。',
   parameters: {
     type: 'object',
     properties: { name: { type: 'string', description: '技能名称' } },
