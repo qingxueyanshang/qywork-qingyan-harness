@@ -64,9 +64,9 @@
   top: 0;
   left: 0;
   right: 0;
-  /* `+ 2px`：整条往下压两像素。它悬在输入框卡片上沿之上，间距按 --s-2 算出来
-     偏松，读起来像是浮在半空而不是贴着框——这是看出来的两像素，不是算出来的。 */
-  transform: translateY(calc(-100% - var(--s-2) + 2px));
+  /* `+ 3px`：整条往下压三像素。它悬在输入框卡片上沿之上，间距按 --s-2 算出来
+     偏松，读起来像是浮在半空而不是贴着框——这是看出来的三像素，不是算出来的。 */
+  transform: translateY(calc(-100% - var(--s-2) + 3px));
   display: flex;
   justify-content: center;
   pointer-events: none;
