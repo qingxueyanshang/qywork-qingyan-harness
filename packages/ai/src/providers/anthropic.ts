@@ -305,13 +305,6 @@ function buildTools(tools: ToolSchema[]) {
 }
 
 /**
- * 消息装配。
- *
- * 返回值在末尾整体断言成 SDK 类型：这里的形状是按 role 动态分支拼出来的（尤其
- * tool_result 要跨消息合并），逐条满足 SDK 的判别联合会让代码难以读懂，收益却只是
- * 把同一个断言拆成十几个。断言只在这一个出口，形状正确性由下面的分支逻辑保证。
- */
-/**
  * 消息形状翻译，顺带落缓存断点。
  *
  * `minPrefix` 是这条模型能缓存的最短前缀（逐模型不同：512 / 1024 / 2048 / 4096）。
@@ -320,6 +313,10 @@ function buildTools(tools: ToolSchema[]) {
  *
  * `prefixTokens` 是消息之前那一段（工具 schema + 系统提示词）的量，
  * 断点的前缀长度要从它算起。
+ *
+ * 返回值在末尾整体断言成 SDK 类型：形状是按 role 动态分支拼出来的（尤其
+ * tool_result 要跨消息合并），逐条满足 SDK 的判别联合会让代码难以读懂。
+ * 断言只在这一个出口，形状正确性由下面的分支逻辑保证。
  */
 function buildMessages(
   messages: WireMessage[],

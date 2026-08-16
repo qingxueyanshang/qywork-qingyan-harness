@@ -66,9 +66,8 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
     }
 
     case 'conversation.compact': {
-      // 手动压缩是与「provider 拒绝驱动」并列的第二条入口。原版文件名就写着
-      // `Rejection-driven / manual`——手动那条没有 provider 拒绝可依据，
-      // 由用户的显式意图代替判据。
+      // 手动压缩走的是与自动触发同一个 `compaction.run()`，只是判据换成用户的
+      // 显式意图——不要在这里另起一条压缩路径。
       if (deps.runs.isBusy(cmd.conversationId)) {
         reject(deps.ws, cmd.type, 'conflict', '该会话正在执行，请先中断再压缩')
         return

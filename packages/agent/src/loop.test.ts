@@ -372,16 +372,6 @@ describe('流卡死要有终态，不能无限期挂着', () => {
 
 describe('上下文分组占用', () => {
   /**
-   * 回归测试：`context` 事件的 `breakdown` 必须是**真值**。
-   *
-   * 它在协议里存在很久，而唯一的生产者把七个字段全写成 0，也没有任何消费者——
-   * 「字段在、值是假的」比没有这个字段更坏：界面照着它画出来的饼图会是空的，
-   * 而没人能从界面看出那是假数据。
-   *
-   * 断言的是**口径**不是具体数字：系统提示词与工具 schema 各自非零、
-   * 带 `_group` 的消息落进对应的桶、不带 `_group` 的落进 historyMessages。
-   */
-  /**
    * 回归测试：**压缩之后 breakdown 必须跟着变**。
    *
    * `breakdownOf` 算的是 `req.messages`，而那是 `compaction.project()` 的产物。
@@ -449,6 +439,15 @@ describe('上下文分组占用', () => {
     expect(after!.historyMessages).toBeLessThan(before!.historyMessages)
   })
 
+  /**
+   * 回归测试：`context` 事件的 `breakdown` 必须是**真值**。
+   *
+   * 「字段在、值是假的」比没有这个字段更坏：界面照着它画出来的饼图会是空的，
+   * 而没人能从界面看出那是假数据。
+   *
+   * 断言的是**口径**不是具体数字：系统提示词与工具 schema 各自非零、
+   * 带 `_group` 的消息落进对应的桶、不带 `_group` 的落进 historyMessages。
+   */
   test('breakdown 不是七个零，且按 _group 分桶', async () => {
     const registry = new ToolRegistry()
     registry.register({

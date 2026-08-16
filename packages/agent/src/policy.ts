@@ -72,13 +72,6 @@ const CMD_POS = String.raw`(?:^|[;&|(\n\r]|\$\()\s*(?:sudo\s+|env\s+\S+=\S+\s+)*
 const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
 
 /**
- * 硬拒绝的模式。导出供文档与测试。
- *
- * 入选门槛：**没有任何合法的工作区用途**。不是「危险」，是「在一个写代码的 agent
- * 手里不可能有正当理由」。凡是能想出「万一用户真要这么干」的，都不该进这张表——
- * 它们该落 undecided，让分类器结合上下文判。
- */
-/**
  * 会**改变磁盘**的动作。
  *
  * 用来把「越界」这条规则限定在写和删上——**读工作区外的文件不拦**。
@@ -125,6 +118,14 @@ const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|\$\{?HOME\}?|\$env:USER
  * 真正需要保护的是**本程序自己的**全局目录 `~/.qywork/`（明文 apiKey、权限模式、
  * 全部会话历史）——而它躺在家目录，写由「工作区外」那条挡、读由凭证那条挡，
  * 不需要单开一条。这两个东西名字像，位置和含义完全不同。
+ */
+
+/**
+ * 硬拒绝的模式。导出供文档与测试。
+ *
+ * 入选门槛：**没有任何合法的工作区用途**。不是「危险」，是「在一个写代码的 agent
+ * 手里不可能有正当理由」。凡是能想出「万一用户真要这么干」的，都不该进这张表——
+ * 它们该落 undecided，让分类器结合上下文判。
  */
 export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string }[] = [
   {
@@ -183,14 +184,12 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
     reason: '递归删除盘符根目录（cmd 语法），与 rm -rf / 是同一件事',
   },
   /*
-   * **「下载即执行」也不在这张表里。**
+   * **「下载即执行」不在这张表里，别再加回来。**
    *
-   * 这里曾经有三条盯着 `curl … | sh`、`sh <(curl …)`、`iex (irm …)`。它拦住的是
-   * **一种写法**，不是「执行来自网络的代码」这件事：`curl -o x.sh … && sh x.sh`
-   * 分两步就绕过，`npm install 任意包` 的安装脚本同样在跑第三方代码。
-   *
-   * 而代价是实打实的：rustup、bun、deno、homebrew 的官方安装方式**就是**
-   * `curl … | sh`。三个参照实现（pi / prime-agent / cc-haha）也都没有这条。
+   * 盯 `curl … | sh`、`sh <(curl …)`、`iex (irm …)` 拦的是**一种写法**，不是
+   * 「执行来自网络的代码」这件事：`curl -o x.sh … && sh x.sh` 分两步就绕过，
+   * `npm install 任意包` 的安装脚本同样在跑第三方代码。而误伤是实打实的：
+   * rustup、bun、deno、homebrew 的官方安装方式**就是** `curl … | sh`。
    *
    * 拦不住想拦的、误伤真实用法，那就不该留着假装有防线。真正的缓解手段是
    * 沙箱（限制它能碰什么）和用户看得见每一条命令，不是模式匹配。

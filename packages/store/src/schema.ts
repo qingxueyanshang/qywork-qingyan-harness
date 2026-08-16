@@ -1,15 +1,14 @@
 /**
  * SQLite 账本表结构。
  *
- * 移植自 Python 版 harness/models.py，但改掉了它踩过的坑：
+ * 三条踩过的坑：
  *
- * - **主键用带前缀的字符串 ID，不用自增整数。** Python 版五张表都有删除路径，
- *   普通 INTEGER PRIMARY KEY 会复用被删的最高 id，导致 retry_of_run_id /
- *   step.artifact_id 这类跨引用悄悄指到别人身上；那边靠给每张表挂
- *   sqlite_autoincrement 兜底。字符串 ID 从结构上消灭这个问题。
+ * - **主键用带前缀的字符串 ID，不用自增整数。** 这几张表都有删除路径，普通
+ *   INTEGER PRIMARY KEY 会复用被删的最高 id，导致 retry_of_run_id /
+ *   step.artifact_id 这类跨引用悄悄指到别人身上。字符串 ID 从结构上消灭这个问题。
  * - **FK 引用列一律建索引。** PRAGMA foreign_keys=ON 下，父行每删一条 SQLite 都要
- *   在子表里找引用者，无索引即退化成全表扫描——Python 版实测删一个会话被拖到十几秒
- *   并撞 busy_timeout 报 500。
+ *   在子表里找引用者，无索引即退化成全表扫描——删一个长会话会被拖到十几秒并撞
+ *   busy_timeout。
  * - **cached_tokens 可空。** null=provider 未回报，与真实 0 命中是两回事。
  */
 
@@ -291,8 +290,7 @@ CREATE UNIQUE INDEX uq_usage_run ON usage_ledger(run_id) WHERE run_id IS NOT NUL
     /**
      * 删掉三处从来没被写入过的东西。
      *
-     * - `artifacts` 表与 `steps.artifact_id`：产物是从 Python 版带过来的概念，
-     *   qywork 里没有任何生产者，界面也没有对应渲染。
+     * - `artifacts` 表与 `steps.artifact_id`：没有任何生产者，界面也没有对应渲染。
      * - `runs.execution_state`：**这个最该删**。它从未被写入，而崩溃恢复如果
      *   拿它做判据，会把所有 run 都判成「安全可重放」——正好是最危险的方向。
      *   真正的判据一直是 steps 表里那条带 `execution_started_at` 的 running 行。
@@ -466,16 +464,7 @@ ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
      * `config.effort`，两处各写各的。表现是**在 chip 上选的档换个会话就没了**，
      * 而设置页里那个值看着还在，两边谁也不知道对方改过。
      *
-     * 对照三家真实实现，档位都只是**全局配置里的一个字段**，与 model 并排，
-     * 会话不存自己的那一份：
-     *
-     * ```
-     * Codex        ~/.codex/config.toml     model_reasoning_effort = "xhigh"
-     * Claude Code  ~/.claude/settings.json  "effortLevel": "xhigh"
-     * ```
-     *
-     * Codex 的 `session_meta` 里连 model 都不记，只有 cwd / git / provider——
-     * 档位不是会话属性，每轮请求从那个全局值取。
+     * 档位不是会话属性：它是配置里与 model 并排的一个字段，每轮请求现取。
      */
     sql: `ALTER TABLE conversations DROP COLUMN effort;`,
   },
@@ -485,15 +474,11 @@ ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
     /**
      * 逐请求账**接上**，`runs` 上那三列同时删掉。
      *
-     * ## 表早就在，只是没有人写
+     * `provider_requests` 建于迁移 1 但一直零读写，面板只能读 `runs.context_tokens`，
+     * 而那三列每个 step 覆盖一次，一个 run 只剩最后一次请求的读数——
+     * 「这一轮上下文怎么长起来的」在账本里根本不存在。
      *
-     * `provider_requests` 建于迁移 1，列是照青研魔盒 `agent_provider_requests`
-     * 直译的。此后全项目**零读写**——只有 `newProviderRequestId()` 这个类型活着。
-     * 面板于是只能读 `runs.context_tokens`，而那三列每个 step 覆盖一次，
-     * 一个 run 只剩最后一次请求的读数。「这一轮上下文怎么长起来的」在账本里
-     * 根本不存在，「为什么第三轮比第二轮还低」也就无从查起。
-     *
-     * ## 两列一删一加
+     * 两列一删一加：
      *
      * - 加 `omitted_categories`：面板要回答「什么被拿掉了」。压缩把历史换成摘要、
      *   把工具结果换成定位符之后，原文仍在账本里，只是没进这次请求——
@@ -592,7 +577,7 @@ CREATE TABLE file_reads (
      * `execute` / `search` / `plan`，回放时前端查不到动词，卡片标题掉回原始工具名，
      * 界面上直接出现 `update_plan` 这种机制字段。**改了协议不转数据，就叫没改完。**
      *
-     * 映射逐条有据（对齐青研魔盒 `contracts.py` 的六枚举）：
+     * 映射逐条有据：
      * `execute` / `delegate` → `run`（跑命令、跑编排节点都是运行）、
      * `search` → `query`（搜索是查询的一种）、`fetch` → `read`（取一份已知的东西）、
      * `plan` → `write`（那个工具是提交待办清单，首建是创建）。
@@ -656,18 +641,9 @@ UPDATE steps SET tool_name = 'write_todos' WHERE tool_name = 'update_plan';
     id: 18,
     name: 'todos_message_wording_again',
     /**
-     * 再扫一遍待办回执里的「计划已更新」。
-     *
-     * 迁移 16 已经转过同一句话，为什么还要转第二遍——**因为迁移只转它执行那一刻
-     * 之前的行**，而这次文案改动分了两批落地：动作轴（`plan`→`write`、对象「计划」
-     * →「待办」）先改，回执文案后改。中间那段时间里跑过真实的轮次，写进去的行
-     * 是「新动作 + 旧文案」的组合：卡片标题读作「创建待办」，展开体里却写着
-     * 「计划已更新（1/3）」。实测确认过是这个形状——
-     * `action.kind='write' / objectLabel='待办'`，`outcome.message` 以「计划已更新」开头，
-     * 而这些行的时间戳晚于 `_migrations` 里 16 的落库时间。
-     *
-     * 教训写在这里而不是别处：**同一件事的文案与语义必须一次改完**，
-     * 分两批的代价就是要为中间那一批再写一条迁移。
+     * 再扫一遍待办回执里的「计划已更新」：迁移 16 只转到它执行那一刻，
+     * 而回执文案比动作轴晚一批改，中间跑过的轮次落成了「新动作 + 旧文案」
+     * （卡片标题读作「创建待办」，展开体里写着「计划已更新（1/3）」）。
      *
      * 幂等：转完之后不存在以「计划已更新」开头的回执，重复执行命中零行。
      */

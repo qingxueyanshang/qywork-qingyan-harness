@@ -49,12 +49,6 @@ interface PreviewResult {
 }
 
 /**
- * 右侧面板容器。文件 / git / 预览三个视图共用同一块区域，互斥显示。
- *
- * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
- * 放进首屏等于让「只想聊天的用户」为文件预览付费。
- */
-/**
  * 五个固定视图。顺序即优先级。
  *
  * 写成一份清单而不是五段 JSX：标签页的外观改一次要改五处，改漏一处的表现是
@@ -99,6 +93,12 @@ const PREVIEW_SOURCES: {
   },
 ]
 
+/**
+ * 右侧面板容器。`VIEWS` 那几个视图共用同一块区域，互斥显示。
+ *
+ * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
+ * 放进首屏等于让「只想聊天的用户」为文件预览付费。
+ */
 export default function SidePanel() {
   return (
     <Show when={sidePanel()}>

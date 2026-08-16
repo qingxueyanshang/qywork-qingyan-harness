@@ -1,5 +1,5 @@
 /**
- * 记忆。移植自原版 `plugins/memory.py`。
+ * 记忆。
  *
  * ## 存在工作区里，不存在账本里
  *
@@ -241,16 +241,15 @@ export async function readScoped(
 /**
  * 每轮注入记忆的 token 预算。
  *
- * 青研魔盒是两池各自计数（常驻 800 + 召回 1200，`memory/select.py:11-12`）。
- * 这里合成一个池，因为 qywork 的记忆文件**没有「常驻」这个标记**——
- * 造一个新的存储格式去表达它，只为在预算内区分优先级，不划算。
+ * 常驻与召回**合用一个池**，不分开计数：记忆文件没有「常驻」这个标记，
+ * 造一个新的存储格式去表达它、只为在预算内区分优先级，不划算。
  *
  * 合成之后行为在两端都对：条数少时全部装得下（等价于全部常驻），
  * 条数多时按相关性排序取前若干条（等价于召回）。
  */
 export const MEMORY_BUDGET_TOKENS = 2000
 
-/** 中文二元组 + 英文单词。与青研魔盒的 `_tokenize` 同口径（它把这套同时用于技能召回）。 */
+/** 中文二元组 + 英文单词。 */
 function tokenize(text: string): string[] {
   const out: string[] = []
   const lower = text.toLowerCase()

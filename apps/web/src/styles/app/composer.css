@@ -79,8 +79,8 @@
   align-items: center;
   gap: var(--s-2);
   padding: 4px var(--s-3);
-  /* 参照物那条是药丸形，这里不跟。tokens.css 的圆角阶梯写死了「带文字的标签
-     一律不用 --r-full」——这次要的是居中，不是换形状。与工具栏上的 chip 同阶。 */
+  /* 不做药丸形：tokens.css 的圆角阶梯写死了「带文字的标签一律不用 --r-full」。
+     与工具栏上的 chip 同阶。 */
   border-radius: var(--r-sm);
   background: var(--bg-inset);
   font-size: var(--fs-sm);

@@ -137,7 +137,6 @@ const SCAN_STEP = 256 * 1024
 /**
  * 在整份正文里搜子串，返回命中的行。
  *
- * 移植自原版 `_filter_text_query` / `_iter_search_projection`。
  * 加这个是因为实测发现：只给字节偏移的话，模型为了定位「第 2000 行」
  * 会连发五次 read_resource 手工二分猜偏移——每次都是一轮完整的模型往返。
  * 有了 query 一次就够。

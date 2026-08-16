@@ -178,6 +178,15 @@ export function detectSandbox(): SandboxStatus {
 }
 
 /**
+ * 自检用的最小策略：一个一定存在的可写根，没有屏蔽项。
+ *
+ * 刻意不用真实策略——自检要回答的是「这台机器允不允许建命名空间」，
+ * 与具体放开哪些目录无关，而掺进真实路径只会让探针在某个目录恰好不存在时
+ * 假红一次。
+ */
+const PROBE_POLICY: SandboxPolicy = { workspaceRoot: '/tmp', maskPaths: [] }
+
+/**
  * 真的跑一次，确认这个后端在**这台机器上**确实能用。
  *
  * ## 为什么不能只查 `which`
@@ -198,15 +207,6 @@ export function detectSandbox(): SandboxStatus {
  *
  * 代价是一次进程启动，**整个进程生命周期只付一次**（`detectSandbox` 缓存结果）。
  */
-/**
- * 自检用的最小策略：一个一定存在的可写根，没有屏蔽项。
- *
- * 刻意不用真实策略——自检要回答的是「这台机器允不允许建命名空间」，
- * 与具体放开哪些目录无关，而掺进真实路径只会让探针在某个目录恰好不存在时
- * 假红一次。
- */
-const PROBE_POLICY: SandboxPolicy = { workspaceRoot: '/tmp', maskPaths: [] }
-
 function selfCheck(argv: readonly string[]): string | null {
   try {
     const r = Bun.spawnSync(argv as string[], {
@@ -295,8 +295,7 @@ function probe(): SandboxStatus {
       active: true,
       reason:
         'sandbox-exec，已实测可用：工作区之外只读、凭证目录不可读、网络不受限。' +
-        '（`sandbox-exec` 被 Apple 标记为 deprecated，但 Chrome / Codex CLI 等仍在用它，' +
-        '目前没有可替代的用户态接口。）',
+        '（`sandbox-exec` 被 Apple 标记为 deprecated，但目前没有可替代的用户态接口。）',
       platform,
       wsl,
     }
@@ -641,10 +640,10 @@ export const BASH_PATH_ENV = 'QYWORK_BASH_PATH'
 /**
  * 探测结果。形状照 `SandboxStatus`：**「没有」也是一种可上报的状态，不是崩溃。**
  *
- * 上一版这里是「找不到就抛」，而抛发生在模块加载时——没有 bash 的机器上整个
- * `qy serve` 起不来，用户在浏览器里只看到「连不上」。终端程序可以 `exit(1)`
- * 打一行英文了事（cc-haha 就是），带界面的服务端不行：它得能起来，然后如实说
- * 「这台机器没有 bash，所以模型手里没有 run_command」。
+ * 坑：不要在模块加载时抛。没有 bash 的机器上那会让整个 `qy serve` 起不来，
+ * 用户在浏览器里只看到「连不上」。终端程序可以 `exit(1)` 打一行了事，带界面的
+ * 服务端不行——它得能起来，然后如实说「这台机器没有 bash，所以模型手里没有
+ * run_command」。
  */
 export interface BashResolution {
   /** 找到的 bash 可执行文件；`null` = 这台机器上没有可用的 bash。 */
@@ -667,8 +666,6 @@ export interface CommandShell {
  *
  * 没有落回，就必须有一个**用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 /
  * Cygwin / 自定义盘符的机器一律没救——而「没救」的表现是整个服务起不来。
- * 四个参照实现都留了这个口（cc-haha 的 `CLAUDE_CODE_GIT_BASH_PATH`、
- * pi 与 prime-agent 的 `shellPath` 设置）。
  *
  * **指了但不存在照样抛，不悄悄回到搜索**：回搜索会把「我指错了」变成
  * 「跑起来了，但跑的不是我指的那个」，而后者要靠对比输出才能发现。
@@ -678,8 +675,7 @@ export interface CommandShell {
  * Windows 只认 Git for Windows（见 `findGitBash` 上方为什么不查 PATH）。
  * 其余平台按位置找，**Homebrew 的 bash 5 排在 `/bin/bash` 前面**：macOS 自带的
  * 是 bash 3.2（2007 年，卡在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
- * 而模型写的是 bash 4+ 的方言。pi 与 prime-agent 走 `which bash`，PATH 上有
- * Homebrew 时得到的也是这个顺序。
+ * 而模型写的是 bash 4+ 的方言。
  *
  * 不用 `/bin/sh`：那在 Debian 系是 dash，`[[ ]]`、数组、`<(...)` 全部散架。
  * 判据和删掉 PowerShell 那次一样——模型的默认方言要和真正执行的 shell 对得上。
@@ -761,8 +757,7 @@ export function probeBash(): BashResolution {
  * 的不是同一个**，比不告诉更糟。
  *
  * 返回 `null` 时 `run_command` **不会被注册**（`tools/index.ts`）——模型手里
- * 根本没有这个工具，而不是有一个必然失败的工具。同样的做法见 cc-haha 的
- * `isBashToolEnabled()` 与 deepseek-harness 在 bundle 配置里按平台 disable 整个工具包。
+ * 根本没有这个工具，而不是有一个必然失败的工具。
  */
 export function commandShell(): CommandShell | null {
   const { path } = probeBash()

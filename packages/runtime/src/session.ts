@@ -157,8 +157,7 @@ export class Session {
    * 本轮选中的记忆**正文**，以及超预算转按需的那些 key。
    *
    * 每 run 选一次（`ask()` 里按当轮 user 文本召回），run 内多次模型调用共用
-   * 同一份——否则尾区字节每次请求都变，缓存白丢。青研魔盒
-   * `run_stream.py:257-262` 同口径。
+   * 同一份——否则尾区字节每次请求都变，缓存白丢。
    */
   private memoryBodies: { key: string; body: string }[] = []
   private deferredMemories: string[] = []
@@ -694,8 +693,8 @@ export class Session {
    * - **文件与网络类**（read/write/delete/network）：路径已经被
    *   `resolveInWorkspace` 锁死、外发已经过 SSRF 闸，都是**确定性**判断，
    *   越界的根本走不到这里。所以放行，不必再花一次往返去问模型。
-   * - **MCP 与插件工具**：是用户显式配置/安装的，属于知情同意，放行。
-   *   这与 pi 和 Claude Code 的立场一致——不为用户自己选的东西造第三套闸。
+   * - **MCP 与插件工具**：是用户显式配置/安装的，属于知情同意，放行——
+   *   不为用户自己选的东西造第三套闸。
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
    *   （命令字符串里的路径不经过我们的参数解析）。只有它需要真正的裁决。
    */

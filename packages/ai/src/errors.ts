@@ -30,9 +30,9 @@ export class ProviderError extends Error {
   /**
    * 只有**被容量分类器证实**的上下文超限才带这个字段。
    *
-   * 它是压缩重发的唯一触发依据：`code === 'context_overflow'` 不够——
-   * 那个码也可能来自别的路径。上层判 `err.capacity !== undefined`，
-   * 保证「触发压缩」和「provider 亲口说超了」严格同义。
+   * 要区分「provider 亲口说超了」和「我们从消息里猜它超了」时判
+   * `err.capacity !== undefined`——只看 `code === 'context_overflow'` 不够，
+   * 那个码也可能来自别的路径。
    */
   readonly capacity: CapacityRejection | undefined
 
@@ -149,10 +149,10 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
     }
     case 400:
     case 422:
-      // 曾经这里用 `包含 context / too long / max_tokens` 判上下文超限，是错的：
-      // `max_tokens must be ≤ 8192` 是**输出**参数校验，判成上下文超限会触发一次
-      // 毫无用处的压缩重发，而重发的参数错误一模一样 —— 烧钱的死循环。
-      // 现在容量判定全部交给上面的分类器，这里只剩「确实是参数错了」。
+      // 不要按「消息里含 context / too long / max_tokens」判上下文超限：
+      // `max_tokens must be ≤ 8192` 是**输出**参数校验，判成上下文超限等于把一个
+      // 参数错误报成「上下文满了」，用户照着这条查不下去。
+      // 容量判定全部交给上面的分类器，这里只剩「确实是参数错了」。
       return build('provider_unavailable', false, message)
     case 500:
     case 502:

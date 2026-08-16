@@ -1,35 +1,18 @@
 /**
- * 上下文压缩。移植自原版 `context_compaction.py`。
+ * 上下文压缩：把一段历史投影成摘要，腾出窗口。
  *
- * 原版 docstring 的三句话是全部设计，一句都不能改：
+ * 这个文件只管**怎么压**；**什么时候压**是 `agent/loop.ts` 的事（发送前按占用与
+ * 软阈值判，只有那一个入口），手动压缩走同一个 `run()`，只是判据换成用户的显式意图。
  *
- * > Rejection-driven / manual context compaction.
- * > Projection authority is Conversation.compaction_manifest only.
- * > Canonical Message/Step/content store stay intact; checkpoint is a request projection.
+ * 两条不变量：
  *
- * ## 一、拒绝驱动，不是阈值驱动
- *
- * 不是「到 80% 就压缩」，而是**发出去被 provider 以容量错误拒绝了才压缩，然后重发**。
- * 判据由 `classifyCapacityRejection` 给出（只认 4xx + 原生容量码或强消息匹配）。
- *
- * 为什么不用阈值：本地 token 估算永远不准（各家 tokenizer 不同、工具 schema 和
- * 缓存前缀的计法也各异），按估算提前压缩会在**根本不需要压缩的时候**损失信息。
- * 等 provider 亲口说「超了」，判据是确定的。
- *
- * 手动压缩是并列的第二条入口（`conversation.compact`）：那时没有 provider 拒绝可依据，
- * 由用户的显式意图代替判据。
- *
- * ## 二、压缩是投影，不销毁数据
- *
- * 产出一份 manifest，构造请求时按它投影；**Message / Step / 正文库一个字节不动**。
- * 所以压缩可撤销、可重放、历史面板永远显示完整会话。
- * 做成「删掉旧消息换成摘要」的话，用户翻历史会发现前面的对话凭空消失。
- *
- * ## 三、摘要失败不能把整轮 run 带崩
- *
- * 摘要本身是一次模型调用，它也会失败（正是上下文超限时更容易失败）。
- * 所以有 `localSummary()` 这条**确定性降级路径**：不调模型，纯截取拼装。
- * 质量差得多，但「差的摘要」远好于「压缩失败 → 请求还是超限 → run 直接挂掉」。
+ * 1. **压缩是投影，不销毁数据。** 产出一份 manifest，构造请求时按它投影；
+ *    **Message / Step / 正文库一个字节不动**。所以压缩可撤销、可重放、历史面板
+ *    永远显示完整会话。做成「删掉旧消息换成摘要」的话，用户翻历史会发现前面的
+ *    对话凭空消失。
+ * 2. **摘要失败不能把整轮 run 带崩。** 摘要本身是一次模型调用，它也会失败
+ *    （正是上下文超限时更容易失败）。所以有 `localSummary()` 这条确定性降级路径：
+ *    不调模型，纯截取拼装。质量差得多，但远好于「压缩失败 → 请求还是超限 → run 挂掉」。
  */
 
 import type { CompactionFacts, CompactionManifest, MessageId } from '@qywork/core'
@@ -83,7 +66,7 @@ function looksLikeConstraint(text: string): boolean {
   )
 }
 
-/** 单条 segment 的截断长度。原版用 320。 */
+/** 单条 segment 的截断长度。 */
 const SEGMENT_EXCERPT = 320
 
 export interface CompactionInput {
@@ -253,16 +236,11 @@ function extractFacts(
     filesTouched: [...filesTouched].slice(-80),
     openItems: dedupeTail(openItems, 40),
     /*
-     * 约束**按身份去重，不设条数上限**。
+     * 约束**按逐字内容去重，不设条数上限**。
      *
-     * 这里原来是 `dedupeTail(userConstraints, 24)`——只保最近 24 条，第 25 条
-     * 进来时**最早的那条无声消失**。而同一个文件 `extractFacts` 的注释写着
-     * 「早期定下的约束不能随着一次新压缩消失」，两句直接自相矛盾。
-     * 长会话里「永远不要 force-push」这类第一天定下的铁律，正是最先被挤掉的。
-     *
-     * 去重按逐字内容（青研魔盒用 `fact_hash`，同一个意思）。规模算得出来：
-     * 约束来自用户键入，40 轮会话上限约 40×320 字符 ≈ 6K token——
-     * 为了不反转一条约束，这个代价是对的。
+     * 加条数上限就是让最早的那条无声消失——长会话里「永远不要 force-push」这类
+     * 第一天定下的铁律，正是最先被挤掉的。规模算得出来：约束来自用户键入，
+     * 40 轮会话上限约 40×320 字符 ≈ 6K token，为了不丢一条约束这个代价是对的。
      */
     userConstraints: [...new Set(userConstraints)],
     ...(resources.size ? { resources: [...resources].slice(-40) } : {}),
@@ -283,18 +261,15 @@ function dedupeTail(list: string[], keep: number): string[] {
 }
 
 /**
- * 摘要提示。**分节，不是一段自由要求。**
+ * 摘要提示。**分节，不是一段并列的自由要求。**
  *
- * 原来是五条并列的要求，模型会把它们当成风格建议——第一条「约束用原话」
- * 在一段长会话里几乎必然被概括掉，而约束一旦被概括就可能反转含义。
+ * 并列要求会被模型当成风格建议，「约束用原话」在长会话里几乎必然被概括掉，
+ * 而约束一旦被概括就可能反转含义。分节的关键在头两节：**逐条列出全部用户消息**、
+ * **用原文引用**交代下一步——这把「保真」变成可检查的结构，少列一条用户消息
+ * 是看得出来的，而「概括得不够准」看不出来。
  *
- * 分节的关键在第 1、2 两节：**逐条列出全部用户消息**，以及**用原文引用**
- * 交代下一步。cc-haha 的压缩提示（`services/compact/prompt.ts:61-143`）
- * 就是这个形状，它把「保真」从一句要求变成了一个可检查的结构——
- * 少列一条用户消息是看得出来的，而「概括得不够准」看不出来。
- *
- * 机械提取的事实包（`extractFacts`）仍然是第二道保险：正则漏掉的靠这里的
- * 结构兜住，这里概括掉的靠事实包逐字兜住。两道都不完美，但它们的失效方式不同。
+ * 机械提取的事实包（`extractFacts`）是第二道保险：正则漏掉的靠这里的结构兜住，
+ * 这里概括掉的靠事实包逐字兜住。两道都不完美，但它们的失效方式不同。
  */
 function buildSummaryPrompt(segments: string[], previousSummary: string | null): string {
   const head = previousSummary
@@ -316,7 +291,7 @@ function buildSummaryPrompt(segments: string[], previousSummary: string | null):
 /**
  * 本地确定性摘要：不调模型的降级路径。
  *
- * 选取策略沿用原版：**第一条用户消息** + **尽可能多的末尾片段**。
+ * 选取策略：**第一条用户消息** + **尽可能多的末尾片段**。
  * 理由是两头最重要——开头是任务本身（丢了模型就不知道在干什么），
  * 末尾是当前进度（丢了模型会重做已经做完的事）。中间的探索过程最可省。
  */

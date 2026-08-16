@@ -1,10 +1,9 @@
 /**
  * 领域标识符。
  *
- * 全部用带前缀的字符串 ID，不用自增整数——移植自 Python 版的一条教训：
- * agent_* 五张表都有删除路径，自增主键会复用被删的最高 id，导致 retry_of_run_id /
- * step.artifact_id 这类跨引用悄悄指到别人身上（Python 版靠 sqlite_autoincrement 兜底）。
- * 带前缀的随机 ID 从结构上消灭这个问题，顺带让日志里一眼看出这是什么东西。
+ * 全部用带前缀的字符串 ID，不用自增整数：这几张表都有删除路径，自增主键会复用
+ * 被删的最高 id，导致 retry_of_run_id / step.artifact_id 这类跨引用悄悄指到
+ * 别人身上。带前缀的随机 ID 从结构上消灭这个问题，顺带让日志里一眼看出这是什么。
  */
 
 const ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'

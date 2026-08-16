@@ -1,5 +1,5 @@
 /**
- * 联网工具。移植自原版 `plugins/web_fetch.py` + `plugins/web_search.py`。
+ * 联网工具。
  *
  * 两条与本地工具不同的约束：
  *

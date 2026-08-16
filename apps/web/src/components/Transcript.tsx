@@ -190,7 +190,7 @@ const REPARSE_MS = 60
  * assistant 正文。
  *
  * 只有「运行中且是最后一条」才按流式渲染（关闭语言自动检测）；定稿后重渲染一次
- * 并开启检测。这是原版踩出来的性能取舍，见 markdown.ts 的说明。
+ * 并开启检测。这是性能取舍，见 markdown.ts 的说明。
  *
  * ## 为什么要给重解析限速
  *
@@ -254,10 +254,9 @@ function Prose(props: { item: TranscriptItem }) {
 /**
  * 折叠：思考、工具、工具组共用的**同一个**形状。
  *
- * 之前它们长成三样——思考是「左边框 + 自写按钮」，工具是「带边框的卡片」，
- * 工具组是另一张更大的卡片。三种形状在同一列里交替出现，而它们在语义上
- * 是同一类东西：**这一轮里发生了一件可以展开看的事**。参照物（青研魔盒）
- * 用的就是一套 `.v2-fold`。
+ * 不要让它们长成三样（思考一个左边框、工具一张卡片、工具组另一张更大的卡片）：
+ * 三种形状在同一列里交替出现，而它们在语义上是同一类东西——**这一轮里发生了
+ * 一件可以展开看的事**。
  *
  * 用原生 `<details>` 而不是自己管 open 状态：键盘语义、`Enter`/`Space` 展开、
  * 屏幕阅读器的展开态播报全是白拿的，自写 button + signal 每一样都要补。
@@ -372,7 +371,7 @@ function ThinkingFold(props: { item: TranscriptItem }) {
  * 它原来读 `state.usage` / `state.stopReason` / `state.runStartedAt` 那几个全局字段，
  * 于是整个会话只有一条：第二轮跑完把第一轮的读数冲掉，刷新更是一条不剩。
  * 而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，
- * 才是它本来的形状（参照物青研魔盒也是一个 run 一个容器）。
+ * 才是它本来的形状。
  *
  * 跑完的那一轮走 `props.run`；还在跑的那一轮没有 run 行可读，
  * 由 `<LiveRunBar />` 拿实时状态渲染同一个外壳。
@@ -577,33 +576,22 @@ function ToolCard(props: { item: TranscriptItem }) {
 }
 
 /**
- * 展开体。**必须给出标题行没有的东西**。
+ * 展开体。**必须给出标题行没有的东西**，而且**一种动作一种主体**，
+ * 不是把所有可能的块堆在一起。
  *
- * 之前这里只渲染 `outcome.message`，而那句话就是标题行的复述——
- * 「读取 packages/server/src/git.ts」展开后看到「读取 packages/server/src/git.ts（278 行）」，
- * 用户点了一下，什么也没多知道。真正有信息的是参数：改的 diff、跑的命令、
- * 读的范围，全在 `args` 里。
+ * 只渲染 `outcome.message` 等于复述标题行：「读取 packages/server/src/git.ts」
+ * 展开后看到「读取 packages/server/src/git.ts（278 行）」，用户点了一下什么也没多
+ * 知道。真正有信息的是参数——改的 diff、跑的命令、读的范围，全在 `args` 里。
  *
- * 按动作类型分四种呈现，和参照物（青研魔盒 `StepBody`）同一套口径。
- */
-/**
- * 展开体。**结构一比一照参照物（青研魔盒 `StepBody`）：一种动作一种主体，
- * 不是把所有可能的块堆在一起。**
- *
- * 上一版我自己拼了一个「失败块 + diff + 命令 + 正文 + stdout + stderr + 列表 +
- * 参数表 + 摘要」的堆栈，一次展开吐出三四个盒子——那不是还原，是另造一套。
- *
- * 参照物的分法：
+ * 分法：
  *   失败  错误正文 →（分隔线）→ 参数表
  *   编辑  diff →（分隔线）→ 结果
  *   运行  命令原文 →（分隔线）→「输出」标签 + 输出
  *   创建  新内容全文 → 结果
  *   其余  参数表 →（分隔线）→ 结果
  *
- * 唯一的本地差异：参照物那边 `outcome.message` 本身就是结果正文，
- * qywork 的 message 只是一句摘要，真正的正文在 `outcome.data`
- * （`content` / `stdout` / `entries` / `matches`）。所以「结果」这一格取 data，
- * 取不到才回落到 message——**位置不变，只换取值的地方**。
+ * 「结果」这一格取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
+ * 取不到才回落到 `message`——message 只是一句摘要，不是正文。
  */
 function StepBody(props: { item: TranscriptItem }) {
   const args = () => props.item.args ?? {}
@@ -681,8 +669,8 @@ function Generic(props: { item: TranscriptItem }) {
  * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → 列表型 → `outcome.message`，
  * **失败时把 `stderr` 提到最前**：报错基本只写在错误流里，而 stdout 常常另有内容
  * （测试的进度输出、服务器的启动日志），按成功时的顺序取就会拿到它、把真正的
- * 报错挡在后面。空的时候整格不渲染——参照物的 `MessageBlock` 也是
- * `if (!raw.trim()) return null`，一个空 `<pre>` 只会在展开体里留一道没有内容的边框。
+ * 报错挡在后面。空的时候整格不渲染——一个空 `<pre>` 只会在展开体里留一道
+ * 没有内容的边框。
  */
 function Result(props: {
   item: TranscriptItem

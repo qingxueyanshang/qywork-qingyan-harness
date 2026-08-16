@@ -420,7 +420,6 @@ describe('搜索与命令', () => {
    * **没有 bash 就没有 `run_command`**，而不是有一个必然失败的工具。
    *
    * 锁的是注册这一步本身：探测返回 null 时那一格从工具表里消失。
-   * 同样的做法见 cc-haha 的 `isBashToolEnabled()`——它决定 Bash 工具暴不暴露。
    */
   test('探测不到 bash 时不注册 run_command', () => {
     expect(

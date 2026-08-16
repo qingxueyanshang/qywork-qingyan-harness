@@ -1,8 +1,7 @@
 /**
  * 渲染投影：把线性的 transcript 折成可读的分组。
  *
- * 移植自原版 `RunRenderer.buildRenderItems`。分组规则是这套 UI 里最有价值的一条
- * 经验，照搬不改：
+ * 分组规则三条，改动前先想清楚代价：
  *
  * - **只有 assistant 正文（text）打断分组。** 连续的工具调用——不管什么 kind、
  *   不管属不属于同一个 provider batch——折成一张组卡。一轮跑几十个工具是常态，

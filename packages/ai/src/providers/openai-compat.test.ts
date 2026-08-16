@@ -96,8 +96,7 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
  * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档，
  * 而这里原来把 `effort` 原样发出去，判据只有「有没有给」。
  *
- * 单厂商工具（Codex 的 `model_reasoning_effort`、Claude Code 的 `effortLevel`）
- * 不需要它，因为它们只调自家模型、档位面一致。本仓不是：档位选定值挂在
+ * 只调一家模型时档位面一致，用不上这道闸；本仓不是：档位选定值挂在
  * 「接口 × 模型」那一格，同一个模型换条协议档位面就变，Agent Team 的角色还
  * 各带各的模型。越界值到这里不拦，就是发给 provider 的一个 400。
  */

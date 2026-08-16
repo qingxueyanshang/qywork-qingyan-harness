@@ -186,21 +186,20 @@ export class OpenAICompatAdapter implements LlmAdapter {
  * 一个字节都不会多发；自建端点和中转站不会因为这个函数收到没见过的键。
  *
  * DeepSeek 那支要**两个字段一起发**：只发 `reasoning_effort` 而不开 `thinking`，
- * 思考根本没打开，档位当然没有效果。线格式抄自青研魔盒 `reasoning_probe.py:297`。
+ * 思考根本没打开，档位当然没有效果。
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
   if (!effort) return {}
   /*
    * **不在这个模型档位面里的档，一个字节都不发。**
    *
-   * 三条协议里只有这条没有这道闸：`openai-responses` 是
+   * 另两条协议各有各的写法：`openai-responses` 是
    * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档。
-   * 这里原来把 `effort` 原样发出去，判据只有「有没有给」。
+   * 这条别只判「有没有给」就把 `effort` 原样发出去。
    *
-   * 单厂商工具（Codex / Claude Code）不需要这道闸，因为它们只调自家模型、
-   * 档位面一致。本仓不是：档位选定值挂在「接口 × 模型」那一格，可同一个模型
-   * 换条协议档位面就变（DeepSeek 走 chat/completions 是 high/max，走 Responses
-   * 一档都没有），Agent Team 的角色还各带各的模型。越界值到这里必须被拦下，
+   * 档位选定值挂在「接口 × 模型」那一格，同一个模型换条协议档位面就变
+   * （DeepSeek 走 chat/completions 是 high/max，走 Responses 一档都没有），
+   * Agent Team 的角色还各带各的模型。越界值到这里必须被拦下，
    * 否则就是发给 provider 的一个 400，而错误信息里只有它的原话。
    *
    * 拦下而不是降档：本仓的目录没有「默认档」这个概念，替它挑一档是猜。

@@ -1,7 +1,7 @@
 /**
  * 核心领域模型。
  *
- * 移植口径（对应 Python 版 harness/models.py）：
+ * 口径：
  * - run  = 一次用户回合（一次 agent loop）
  * - step = loop 内可回放的 text / tool_action / compaction
  * - 一次工具调用 = 一行 tool_action，原地从 running 更新到终态；没有 tool_call / tool_result 两行。
@@ -374,9 +374,8 @@ export interface FileChange {
 /**
  * 上下文占用的分组口径。**这是唯一一份**，面板、装配层、账本都用它。
  *
- * 十个键逐字对应青研魔盒 `harness/llm/adapter.py` 的 `_CONTEXT_CATEGORY_KEYS`。
- * 照抄不是偷懒：那份口径是产品上验证过的，而「分组该怎么切」本身没有更优解——
- * 切法一变，两边的面板数字就再也没法对照，排查时连「谁和谁应该一样」都说不清。
+ * 十个键是固定的：改切法就等于换一把尺，历史会话的面板数字与新会话再也没法对照，
+ * 排查时连「谁和谁应该一样」都说不清。要加类目就加，别把已有的合并或改名。
  *
  * 定义在 `core` 而不是 `ai`：`ai` 的 `WireMessage._group` 与 `core` 的事件协议
  * 必须是同一个类型。放在 `ai` 里的话 `core` 引不到（依赖只能朝下层走），
@@ -426,8 +425,8 @@ export type ContextBreakdown = Record<ContextGroup, number>
  * 是半张账，用户看到占用下降却不知道降在哪里。
  *
  * 能报出这个数的前提是**压缩是投影、不销毁原文**：原文还在 Step / 正文库里，
- * 装配时用同一把尺量两次相减就得到它。cc-haha 没有这一行不是漏了——
- * 它的旧结果正文被直接改写成占位串，原文不在任何可测处，算不出诚实的数。
+ * 装配时用同一把尺量两次相减就得到它。一旦哪天改成直接改写正文，原文就不在
+ * 任何可测处，这两个数只能瞎报——届时该删掉它们，不是估一个填上。
  */
 export interface ContextOmitted {
   /** 被摘要替代掉的历史消息原文。 */

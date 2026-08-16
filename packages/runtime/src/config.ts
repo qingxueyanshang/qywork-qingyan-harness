@@ -21,7 +21,7 @@ import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
  *
  * - `auto`：不弹窗，由硬边界 + 静态规则 + 分类器裁决。**被拒不是弹窗，
  *   是把理由作为工具失败返回给模型**，让它换个做法。
- * - `full`：不裁决，全放行。等价 Codex 的「完全访问权限」。
+ * - `full`：不裁决，全放行。
  *
  * 注意 `full` **不豁免硬边界**（凭证剥离、禁止改权限配置本身）——
  * 那一层防的是凭证泄漏与自我提权，不是越权。
@@ -138,13 +138,8 @@ export interface StoredModel {
    * ```
    *
    * 一个全局值装不下这件事：在 Claude 上选的 `xhigh` 换到 DeepSeek 就是个
-   * 它词表里没有的值。Codex 与 Claude Code 能用一个全局字段
-   * （`model_reasoning_effort` / `effortLevel`），前提是它们只调自家模型；
-   * 本仓同时接多家，还允许 Agent Team 的每个角色各带一个模型
-   * （`team-run.ts` 的 `backend.model`），那个前提不成立。
-   *
-   * 同样多厂商的青研魔盒也是这么存的（`reasoning_level` 挂模型条目，
-   * 原话：「档位集合逐模型不同，故存在模型条目上」）。
+   * 它词表里没有的值。只调一家模型时全局字段够用，本仓同时接多家，还允许
+   * Agent Team 的每个角色各带一个模型（`team-run.ts` 的 `backend.model`）。
    *
    * 注意这**不是第二条线**：真源仍然只有 config.json 这一处，只是键从全局
    * 变成了「接口 × 模型」。真正的第二条线是会话表上那一列，已经删掉。

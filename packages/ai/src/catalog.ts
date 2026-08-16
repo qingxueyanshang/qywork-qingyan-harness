@@ -54,10 +54,8 @@ export type ThinkingMode =
   /**
    * DeepSeek 自己的那套：**`thinking` 开关和 `reasoning_effort` 档位要一起发**。
    *
-   * 只发 `reasoning_effort` 不发 `thinking` 时思考根本没开，档位自然没有效果——
-   * 这正是本仓之前测出「effort 被接受但不被采纳」的原因，结论对（那个发法确实没用），
-   * 但归因错了（不是模型不支持，是少发了一半）。线格式抄自青研魔盒的
-   * `reasoning_probe.py:297`，那边是实测跑通过的。
+   * 只发 `reasoning_effort` 不发 `thinking` 时思考根本没开，档位自然没有效果。
+   * 那个现象容易被归因成「模型不支持 effort」，实际是少发了一半。
    */
   | 'deepseek_thinking'
   | 'none'
@@ -326,15 +324,13 @@ function deepseekCatalog(): ModelSpec[] {
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
     /**
-     * 订正过一次，**但只订正 chat/completions 这一支**（Responses 那支见下面）。
+     * 只描述模型，不描述本适配器发不发思考字段——填 `'none'` 是后者，那是错的。
      *
-     * 原来写 `'none'`，理由是「本适配器不发思考字段」——那是在描述我们自己，
-     * 不是在描述模型。青研魔盒的 `model_catalog.py:237` 把它记成
-     * `deepseek_thinking` 两档（high / max），`reasoning_probe.py:297` 里
-     * `thinking:{type:'enabled'}` 和 `reasoning_effort` 是**一起发**的。
+     * 这一支是 chat/completions（Responses 那支见下面）：`thinking:{type:'enabled'}`
+     * 和 `reasoning_effort` 必须**一起发**，两档 high / max。
      *
-     * **这两档没有在本仓实测过**，依据是另一个仓库的目录与探测代码。
-     * 要坐实就跑 `qy probe`——它会把实际接受的档位写回档案覆盖这里。
+     * **这两档没有在本仓实测过。** 要坐实就跑 `qy probe`——它会把实际接受的档位
+     * 写回档案覆盖这里。
      */
     thinking: 'deepseek_thinking' as const,
     effortLevels: ['high', 'max'] as EffortLevel[],
@@ -453,15 +449,14 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
 /**
  * 其余七家。
  *
- * 数据源是青研魔盒的 `services/sidecar/qybox/harness/model_catalog.py`
- * （2026-07-30 seed，逐条对照抄的：窗口、默认最大输出、四档价、思考档位）。
- * 那份是它的产品真源，不是我这里重新查的——所以要改价先去核那边，别凭印象改。
+ * 窗口、默认最大输出、四档价、思考档位是 2026-07-30 的一份 seed，**没有在本仓
+ * 逐条实测过**。改价要拿厂商当时的价目表核，别凭印象改。
  *
  * `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
  * 多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
  *
  * `minCacheablePrefix`：兼容协议的前缀缓存由服务端自动做、不需要显式断点，
- * 这个数在那条路上没有消费者；填魔盒缓存画像里的 `minimumCacheTokens: 1024` 只是占位。
+ * 这个数在那条路上没有消费者，1024 只是占位。
  * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
  * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
  *
@@ -547,9 +542,9 @@ function openAiCompatCatalog(): ModelSpec[] {
     },
 
     // ── Google Gemini ──
-    // 魔盒给 flash 两款的档位是 minimal/low/medium/high。`minimal` 不在
-    // qywork 的 EffortLevel 词表里，**不为它扩词表**——扩了就得让所有
-    // 消费方都认一个只有一家用的档，而少这一档只是少一个更省的选项。
+    // flash 两款厂商还给了一档 `minimal`。它不在 EffortLevel 词表里，
+    // **不为它扩词表**——扩了就得让所有消费方都认一个只有一家用的档，
+    // 而少这一档只是少一个更省的选项。
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
