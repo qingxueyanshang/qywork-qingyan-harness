@@ -656,3 +656,75 @@ describe('按 ?ws= 解析项目', () => {
     expect(list.workspaces.length).toBe(1)
   })
 })
+
+/*
+ * 工具清单下发什么。
+ *
+ * 锁的是「设置页拿不拿得到底层名与参数」——`ToolSpec` 上的东西被丢在服务端时，
+ * 前端写了也显示不出来，而那种缺失在界面上只表现为「少了一栏」，不报任何错。
+ *
+ * `QYWORK_HOME` 指到临时目录：插件与 MCP 是三层作用域的，不隔离的话这条测试
+ * 会去连开发者本机全局装的那些 server。
+ */
+describe('工具清单', () => {
+  interface Row {
+    name: string
+    category: string
+    facet: string
+    objectLabel: string
+    summary: string
+    actionKind: string
+    permissionEffect: string
+    params: { name: string; required: boolean }[]
+    source: string
+  }
+
+  let home = ''
+  const prev = process.env.QYWORK_HOME
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'qywork-tools-'))
+    process.env.QYWORK_HOME = home
+  })
+  afterEach(async () => {
+    if (prev === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = prev
+    await rm(home, { recursive: true, force: true }).catch(() => {})
+  })
+
+  const tools = async (): Promise<Row[]> => {
+    const res = await call('/api/tools')
+    return ((await res?.json()) as { tools: Row[] }).tools
+  }
+
+  test('每行带底层名、动作、权限与来源，不是只有中文用途', async () => {
+    const row = (await tools()).find((t) => t.name === 'read_file')
+    expect(row).toBeDefined()
+    expect(row?.actionKind).toBe('read')
+    expect(row?.permissionEffect).toBe('read')
+    expect(row?.objectLabel).toBe('文件')
+    expect(row?.source).toBe('builtin')
+  })
+
+  test('参数只报名字与必填，整份 schema 不下发', async () => {
+    const row = (await tools()).find((t) => t.name === 'read_file')
+    expect(row?.params).toEqual([
+      { name: 'path', required: true },
+      { name: 'offset', required: false },
+      { name: 'limit', required: false },
+    ])
+    // 整份 schema 的体积由第三方 server 决定，不受控——一个键都不该漏出去
+    expect(row).not.toHaveProperty('parameters')
+    expect(row).not.toHaveProperty('description')
+  })
+
+  test('没有参数的工具报空数组，不是缺这个键', async () => {
+    const row = (await tools()).find((t) => t.name === 'list_schedules')
+    expect(row?.params).toEqual([])
+  })
+
+  test('函数型的动作与权限一个都没有 —— 有的话这里会报「随参数变」', async () => {
+    for (const row of await tools()) {
+      expect([row.actionKind, row.objectLabel, row.permissionEffect]).not.toContain('随参数变')
+    }
+  })
+})

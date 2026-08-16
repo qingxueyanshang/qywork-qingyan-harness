@@ -2,6 +2,7 @@
 
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
+import type { ToolSpec } from '@qywork/agent'
 import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
@@ -53,6 +54,44 @@ async function freshDir(root: string, folder: string): Promise<string> {
   for (let i = 1; ; i++) {
     const candidate = join(root, i === 1 ? folder : `${folder}-${i}`)
     if (!(await stat(candidate).catch(() => null))) return candidate
+  }
+}
+
+/**
+ * 参数清单：只要名字与必填，**不下发整份 JSON Schema**。
+ *
+ * MCP 工具的 schema 由第三方 server 决定，大小不受控——把它整份塞进设置页那趟
+ * 请求里，界面用不上，流量却随装了哪些 server 浮动。
+ */
+function paramsOf(schema: Record<string, unknown>): { name: string; required: boolean }[] {
+  const props = schema.properties
+  if (!props || typeof props !== 'object') return []
+  const required = new Set(
+    (Array.isArray(schema.required) ? schema.required : []).filter(
+      (x): x is string => typeof x === 'string',
+    ),
+  )
+  return Object.keys(props).map((name) => ({ name, required: required.has(name) }))
+}
+
+/**
+ * 工具清单里的一行。`source` 由调用方给——它是「哪来的」，规格本身不带这个事实。
+ *
+ * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数（按参数变）。
+ * **不许无参调用它们**：那会得到一个撒谎的常量。真是函数时如实报「随参数变」。
+ */
+function toolRow(s: ToolSpec, source: string) {
+  const VARIES = '随参数变'
+  return {
+    name: s.name,
+    category: s.category,
+    facet: s.facet,
+    objectLabel: typeof s.objectLabel === 'function' ? VARIES : s.objectLabel,
+    summary: s.summary,
+    actionKind: typeof s.actionKind === 'function' ? VARIES : s.actionKind,
+    permissionEffect: typeof s.permissionEffect === 'function' ? VARIES : s.permissionEffect,
+    params: paramsOf(s.parameters),
+    source,
   }
 }
 
@@ -219,45 +258,48 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 这个 agent 会做什么：全部工具按「能力大类 → 功能方向」两层列出来。
+   * 这个 agent 会做什么：全部工具一行一条，带底层名、参数、动作与权限。
    *
    * **这是分类轴（`ToolCategory`）的消费者。** 没有它那条轴就是 C1 第 1 款的死链路
    * ——注册期校验着、schema 里写着、没有任何人读。
    *
-   * 只回**中文的用途**（`summary`）、类目与功能方向，**不回工具名**：
-   * 桌面端一律中文，`read_file` 这种机制字段只在 CLI 里露面。
+   * 三个来源，`source` 区分：内置工具从注册表取（零成本，就是这一份真源）；
+   * 插件与 MCP 的工具都取 `toolSpecs`——加载扩展本来就会把插件进程与 server 全连上，
+   * 这两份清单是那趟连接的产物，列它不额外花钱。**取的是注册成功的那批**，
+   * 不是清单里声明的那批：这一页回答「它到底能调什么」，装了却起不来的不算。
    *
-   * 三个来源：内置工具从注册表取（零成本，就是这一份真源）；插件贡献的工具从清单取
-   * （清单本来就已经读进来了，不用把插件跑起来）；MCP 的工具取
-   * `ext.mcp.toolSpecs`——加载扩展本来就会把 server 全连上，这份清单是那趟连接的
-   * 产物，列它不额外花钱，不列反而是白连一串外部进程再把结果扔掉。
+   * 归属按**注册名前缀**反查，前缀必须由 `pluginToolPrefix` / `toolNamePrefix` 生成
+   * ——注册名是消毒过的（`my.server` → `mcp__my_server__x`），拿原名拼一条都匹配不上。
    *
    * 扩展走引用计数，配对 release，理由同 `/api/capabilities`。
    */
   if (p === '/api/tools') {
-    const { ToolRegistry } = await import('@qywork/agent')
+    const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')
     const { registerBuiltinTools } = await import('@qywork/tools')
-    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const { acquireExtensions, releaseExtensions, pluginToolPrefix, toolNamePrefix } = await import(
+      '@qywork/runtime'
+    )
 
     const registry = new ToolRegistry()
     registerBuiltinTools(registry)
-    const rows = registry
-      .list()
-      .map((s) => ({ category: s.category, facet: s.facet, summary: s.summary }))
+    const rows = registry.list().map((s) => toolRow(s, 'builtin'))
 
     const ext = await acquireExtensions(d.workspaceRoot)
     try {
       for (const plugin of ext.plugins.plugins) {
-        for (const t of plugin.manifest.contributes?.tools ?? []) {
-          rows.push({ category: 'external', facet: plugin.manifest.id, summary: t.description })
+        const prefix = pluginToolPrefix(plugin.manifest.id)
+        for (const spec of ext.plugins.toolSpecs) {
+          if (spec.name.startsWith(prefix)) rows.push(toolRow(spec, `plugin:${plugin.manifest.id}`))
         }
       }
-      for (const spec of ext.mcp.toolSpecs) {
-        rows.push({ category: 'external', facet: spec.facet, summary: spec.summary })
+      for (const server of ext.mcp.servers) {
+        const prefix = toolNamePrefix(server.name)
+        for (const spec of ext.mcp.toolSpecs) {
+          if (spec.name.startsWith(prefix)) rows.push(toolRow(spec, `mcp:${server.name}`))
+        }
       }
 
       // 确定性排序：类目按枚举顺序，其后按功能方向与用途字典序。
-      const { TOOL_CATEGORIES } = await import('@qywork/agent')
       rows.sort(
         (a, b) =>
           TOOL_CATEGORIES.indexOf(a.category) - TOOL_CATEGORIES.indexOf(b.category) ||
