@@ -78,9 +78,10 @@ export { SKILLS_SUBDIR, type SkillMeta, scanSkills } from './skills.ts'
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
  *
- * **`run_command` 按能力注册**：这台机器上没有 bash 就根本不给模型这个工具，
- * 而不是给一个必然失败的工具（B5）。探测每次重新跑，而这个函数每条消息都会被
- * 调一次（`runtime/session.ts`），所以装完 git **下一条消息就有了**，不用重启。
+ * **`run_command` 按能力注册**：这台机器上 bash / pwsh / powershell 一个都没有，
+ * 就根本不给模型这个工具，而不是给一个必然失败的工具（B5）。探测每次重新跑，
+ * 而这个函数每条消息都会被调一次（`runtime/session.ts`），所以装完 git
+ * **下一条消息就有了**，不用重启。
  */
 export function registerBuiltinTools(registry: ToolRegistry): void {
   const shell = commandShell()

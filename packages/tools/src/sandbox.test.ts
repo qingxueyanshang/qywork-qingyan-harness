@@ -9,6 +9,7 @@ import {
   detectSandbox,
   killTree,
   resolveBashPath,
+  resolveCommandShell,
 } from './sandbox.ts'
 
 /** 把 argv 里 `flag src dst` 这种三元组抽出来，方便按语义断言而不是按下标。 */
@@ -87,8 +88,8 @@ describe('bash 路径解析', () => {
     ).toBe('/bin/bash')
   })
 
-  test('找不到 bash 就报 null 加原因，不落回 PowerShell 也不落回 sh', () => {
-    // 两件事一起锁：**没有第二种 shell**（兜底回来方言就是两套），
+  test('找不到 bash 就报 null 加原因，这一层不落回 sh 也不落回 PowerShell', () => {
+    // 锁两件事：**这一层只回答「有没有 bash」**（落回哪个 shell 归 resolveCommandShell），
     // 以及**「没有」是一种可上报的状态而不是崩溃**——服务得起得来才能把这句话说给用户听。
     const win = resolveBashPath({ env: {}, platform: 'win32', exists: never, gitBash: noGitBash })
     expect(win.path).toBeNull()
@@ -96,6 +97,120 @@ describe('bash 路径解析', () => {
     const linux = resolveBashPath({ env: {}, platform: 'linux', exists: never, gitBash: noGitBash })
     expect(linux.path).toBeNull()
     expect(linux.reason).toContain('/bin/bash')
+  })
+})
+
+/**
+ * 三档 shell 探测。
+ *
+ * **本机只可能命中其中一档**（这台开发机装着 Git Bash，第一步就返回），
+ * 所以顺序、每档的 argv 与方言提示全部靠注入来测——真机上跑不到的那两档，
+ * 漏了也不会有任何东西红。
+ */
+describe('命令 shell 三档探测', () => {
+  const foundBash = (p: string) => () => ({ path: p, reason: '' })
+  const noBash = () => ({ path: null, reason: '这台机器没装 Git for Windows' })
+  const noWhich = () => null
+  const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' }
+  /** 5.1 是系统组件，按固定位置找；pwsh 7 的候选以 `pwsh.exe` 结尾，不会被它误命中。 */
+  const has51 = (p: string) => p.toLowerCase().endsWith('powershell.exe')
+  const hasPwsh7 = (p: string) => p.toLowerCase().endsWith('pwsh.exe')
+
+  test('有 bash 就用 bash，另外两档一眼都不看', () => {
+    const shell = resolveCommandShell({
+      bash: foundBash('C:/Program Files/Git/bin/bash.exe'),
+      // 三个都装着也一样：POSIX 是模型的默认方言，换 shell 一处，纠正它每一条命令是无穷次。
+      which: () => 'C:/Program Files/PowerShell/7/pwsh.exe',
+      exists: () => true,
+      env,
+    })
+    expect(shell?.path).toBe('C:/Program Files/Git/bin/bash.exe')
+    expect(shell?.argv).toEqual(['C:/Program Files/Git/bin/bash.exe', '-c'])
+    expect(shell?.hint).toContain('bash -c')
+  })
+
+  test('没有 bash 时落到 PATH 上的 pwsh 7', () => {
+    const shell = resolveCommandShell({
+      bash: noBash,
+      which: (n) => (n === 'pwsh.exe' ? 'D:/tools/pwsh.exe' : null),
+      exists: never,
+      env,
+    })
+    expect(shell?.path).toBe('D:/tools/pwsh.exe')
+  })
+
+  test('pwsh 7 没进 PATH 也认默认安装位置', () => {
+    const shell = resolveCommandShell({ bash: noBash, which: noWhich, exists: hasPwsh7, env })
+    expect(shell?.path.toLowerCase()).toContain('pwsh.exe')
+    expect(shell?.path).toContain('PowerShell')
+  })
+
+  /**
+   * **7 优先于 5.1 是硬差别，不是偏好。** 5.1 上 `&&` / `||` 是解析错误，
+   * 三元、`??`、`?.`、`ConvertFrom-Json -AsHashtable` 一个都没有——
+   * 两个都装着却挑了 5.1 的话，模型每写一条组合命令就废一条。
+   */
+  test('两个都在时挑 7', () => {
+    const shell = resolveCommandShell({ bash: noBash, which: noWhich, exists: () => true, env })
+    expect(shell?.path.toLowerCase()).toContain('pwsh.exe')
+  })
+
+  test('只有 5.1 时用它，位置跟着 SystemRoot 走', () => {
+    // 系统盘不一定是 C:，写死 C:\Windows 的机器上会判成「一个 shell 都没有」。
+    const shell = resolveCommandShell({
+      bash: noBash,
+      which: noWhich,
+      exists: has51,
+      env: { SystemRoot: 'D:\\Windows' },
+    })
+    expect(shell?.path).toContain('D:')
+    expect(shell?.path.toLowerCase()).toContain('powershell.exe')
+  })
+
+  test('三档全落空返回 null —— run_command 因此整个不注册', () => {
+    expect(resolveCommandShell({ bash: noBash, which: noWhich, exists: never, env })).toBeNull()
+  })
+
+  /** 用户 profile 会改别名、函数、`$ErrorActionPreference`，而它在别人机器上长什么样我们不知道。 */
+  test('两档 PowerShell 的 argv 都带 -NoProfile 与 -NonInteractive', () => {
+    const seven = resolveCommandShell({ bash: noBash, which: noWhich, exists: hasPwsh7, env })
+    const five = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })
+    for (const shell of [seven, five]) {
+      expect(shell?.argv).toContain('-NoProfile')
+      expect(shell?.argv).toContain('-NonInteractive')
+      expect(shell?.argv.at(-1)).toBe('-Command')
+      expect(shell?.argv[0]).toBe(shell?.path)
+    }
+  })
+
+  /**
+   * **非 bash 时第一句就得说「不是 bash」。**
+   *
+   * `run_command` 这个名字不携带方言，模型的默认输出是 bash，所以方言信息只剩
+   * 描述这一个来源——而描述是从头读的。
+   */
+  test('非 bash 的方言提示开头就否掉 bash', () => {
+    for (const exists of [hasPwsh7, has51]) {
+      const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists, env })?.hint ?? ''
+      expect(hint.slice(0, 40)).toContain('没有 bash')
+      expect(hint).toContain('不是 bash')
+    }
+  })
+
+  /**
+   * 5.1 的限制要**逐条**写出来。
+   *
+   * 不写清的表现不是「偶尔出错」，是模型按 PowerShell 7 的语法写，
+   * 每条组合命令都在解析阶段整条废掉。
+   */
+  test('5.1 的方言提示逐条列出 7 上有而它没有的东西', () => {
+    const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })?.hint
+    expect(hint).toContain('5.1')
+    for (const missing of ['&&', '||', '? :', '??', '?.', 'ConvertFrom-Json -AsHashtable']) {
+      expect(hint).toContain(missing)
+    }
+    // 只说「不能用」不够，得给出替代写法，否则模型只能猜。
+    expect(hint).toContain('if ($?)')
   })
 })
 

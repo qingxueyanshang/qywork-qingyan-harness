@@ -26,16 +26,31 @@
  *
  * ## 组合命令不需要单独处理
  *
- * 硬拒绝的模式要么锚在**命令位**（`CMD_POS` 认 `;` `&&` `|` 换行之后的每一段），
+ * 硬拒绝的模式要么锚在**命令位**（`CMD_POS` 认 `;` `&&` `|` `{` 换行之后的每一段），
  * 要么扫**整个原始串**（路径、凭证那几条）。所以 `ls && rm -rf ~` 里的第二段照样
  * 被抓到，不必先判「这是不是单条命令」。
  *
- * 本项目只跑 `bash -c`（Windows 上是 Git for Windows 自带的那个，
- * 见 `tools/sandbox.ts` 的 `commandShell()`），没有第二种 shell。
- * **PowerShell 语法的模式仍然留在表里**：命令串里随时可以写
- * `powershell.exe -Command "Remove-Item ..."`，那条路和外层 shell 是什么无关。
- * 判断时不看 process.platform：一条命令完全可能在一台机器上被裁决、
- * 在另一台上被执行。
+ * ## 两种方言都认，而且不看 process.platform
+ *
+ * 外层 shell 是 bash 还是 PowerShell，由本机装了什么定（`tools/sandbox.ts` 的
+ * `resolveCommandShell`）。这一层两种都认，三条理由各自独立成立：
+ *
+ * 1. 没装 Git Bash 的机器上外层就是 PowerShell，POSIX 写法在那里根本不出现；
+ * 2. 有 bash 的机器上，命令串里随时可以写 `powershell.exe -Command "Remove-Item …"`；
+ * 3. 一条命令完全可能在一台机器上被裁决、在另一台上被执行。
+ *
+ * ## 明知没挡住的几种写法（不要假装覆盖了）
+ *
+ * - **`icacls C:\ /grant Everyone:F`、`Set-Acl`**：`chmod 777 /` 的 Windows 等价物，
+ *   表里只有 POSIX 那一半。
+ * - **写裸设备 `\\.\PhysicalDrive0`**：`dd of=/dev/sda` 的 Windows 等价物。
+ * - **PowerShell 的 fork 炸弹**（`while ($true) { Start-Process pwsh }`）：
+ *   表里那条只认 bash 的 `:(){ :|:& };:` 那个形状。
+ * - **拼接与转义**：反引号、`-join`、`Invoke-Expression $x`——把命令拆成变量再拼回来，
+ *   任何静态模式都看不见。这与 bash 侧的 `$(echo rm)` 是同一类，从来不在这层的射程内。
+ *
+ * 前三条不补，是因为补进去的是「又一种写法」而不是「这件事本身」，而按写法枚举
+ * 永远漏一种；第四条根本补不了。真正的防线仍然是沙箱与「每条命令用户都看得见」。
  */
 
 import { homedir } from 'node:os'
@@ -65,8 +80,13 @@ export interface PolicyContext {
  * 硬拒绝的模式必须锚在命令位上，否则 `git log --grep="shutdown"` 会因为字符串里
  * 出现了 shutdown 就被拒。deny 是终局判决，没有分类器兜底，它的误伤代价比 undecided
  * 高一个数量级——宁可锚窄。
+ *
+ * **`{` 也算命令位**，这条是 Windows PowerShell 5.1 逼出来的：那边 `&&` 是解析错误，
+ * 「上一条成功才继续」的标准写法是 `if ($?) { … }`——而那正是我们自己在 `run_command`
+ * 的描述里教它写的。不认 `{` 的话，`if ($?) { Stop-Computer }` 会让每一条锚在命令位上
+ * 的规则从块里溜过去，**旁路是我们自己的提示造出来的**。bash 的 `{ cmd; }` 同理。
  */
-const CMD_POS = String.raw`(?:^|[;&|(\n\r]|\$\()\s*(?:sudo\s+|env\s+\S+=\S+\s+)*`
+const CMD_POS = String.raw`(?:^|[;&|({\n\r]|\$\()\s*(?:sudo\s+|env\s+\S+=\S+\s+)*`
 
 const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
 
@@ -78,8 +98,12 @@ const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
  * 那条更准：它盯的是文件本身，不管你用什么动词去碰它。
  *
  * 读类动词（`cat` / `type` / `Get-Content`）刻意不在其中。
+ *
+ * **每个 POSIX 动词都要配上它的 PowerShell 对应物**（`mv` ↔ `Move-Item`/`Rename-Item`、
+ * `truncate` ↔ `Clear-Content`、`>` ↔ `Out-File`）：少配一个，在没有 bash、外层就是
+ * PowerShell 的那台机器上就是少一条规则，而那台机器上模型只会写这一半。
  */
-const WRITE_VERB = String.raw`(?:>>?|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Remove-Item|\brm\b|\bmv\b|\bcp\b|\btee\b|\bdd\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|\btruncate\b|sed\s+-i)`
+const WRITE_VERB = String.raw`(?:>>?|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Remove-Item|\brm\b|\bmv\b|\bcp\b|\btee\b|\bdd\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|\btruncate\b|sed\s+-i)`
 
 /**
  * 家目录/系统目录那条规则的标记。
@@ -95,12 +119,51 @@ const WRITE_VERB = String.raw`(?:>>?|Set-Content|Add-Content|Out-File|New-Item|C
 const OUTSIDE_LOCATION_RULE = 'outside-location'
 
 /**
+ * 工作区之外那些位置的**符号写法**：写法 → 它在本机上展开成什么。
+ *
+ * ## 一张表，两个用途，必须同源
+ *
+ * 它既拼进 `OUTSIDE_LOCATION`（判「这条命令碰了工作区外」），又在
+ * `locationCoveredByExtras` 里被展开成真实路径（判「用户授权过这个位置没有」）。
+ * **只往拒绝那半边加写法会开出一个口子**：一条同时引用了 `~/data`（已授权）与
+ * `$env:APPDATA`（没授权）的命令，会因为后者不在覆盖检查的视野里而让 `.every()`
+ * 判成「全部被覆盖」，于是整条放行——加规则的动作反而放松了规则。
+ *
+ * ## PowerShell 那几个是同一批位置的另一种拼法
+ *
+ * `$env:APPDATA` / `$env:LOCALAPPDATA` 落在家目录里（`C:\Users\x\AppData\…`），
+ * `$env:windir` / `$env:SystemRoot` 就是 `C:\Windows`。没有 bash 的机器上模型只会
+ * 写这一批，`~/` 和 `$HOME` 在那里一次都不会出现。
+ *
+ * 值取不到就留空串：展开结果落不进任何 extras，规则保持拒绝（fail-closed）。
+ */
+const OUTSIDE_SYMBOLS: readonly { re: string; value: () => string }[] = [
+  { re: String.raw`\$\{?HOME\}?`, value: homedir },
+  { re: String.raw`\$env:USERPROFILE`, value: homedir },
+  { re: String.raw`\$env:HOMEPATH`, value: homedir },
+  { re: '%USERPROFILE%', value: homedir },
+  { re: '%HOMEPATH%', value: homedir },
+  { re: String.raw`\$env:LOCALAPPDATA`, value: () => process.env.LOCALAPPDATA ?? '' },
+  { re: '%LOCALAPPDATA%', value: () => process.env.LOCALAPPDATA ?? '' },
+  { re: String.raw`\$env:APPDATA`, value: () => process.env.APPDATA ?? '' },
+  { re: '%APPDATA%', value: () => process.env.APPDATA ?? '' },
+  { re: String.raw`\$env:SystemRoot`, value: () => process.env.SystemRoot ?? '' },
+  { re: '%SystemRoot%', value: () => process.env.SystemRoot ?? '' },
+  { re: String.raw`\$env:windir`, value: () => process.env.windir ?? '' },
+  { re: '%windir%', value: () => process.env.windir ?? '' },
+  // PowerShell 的启动脚本。字面上看不出它在家目录里，而写它 = 之后每开一个 shell 都跑一遍。
+  { re: String.raw`\$PROFILE\b`, value: () => '' },
+]
+
+const OUTSIDE_SYMBOL_RE = OUTSIDE_SYMBOLS.map((s) => s.re).join('|')
+
+/**
  * 指向工作区之外的位置：家目录的各种写法、`/etc`、`C:\Windows`。
  *
  * `~` 必须带分隔符。裸 `~` 不行——`git diff HEAD~1` 里就有一个，
  * 这条差点写错，而写错的后果是把最常用的 git 命令之一拒掉。
  */
-const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|\$\{?HOME\}?|\$env:USERPROFILE|\$env:HOMEPATH|%USERPROFILE%|%HOMEPATH%|(?:^|[\s"'=(])\/etc\/|[A-Za-z]:[\\/]Windows[\\/]`
+const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|${OUTSIDE_SYMBOL_RE}|(?:^|[\s"'=(])\/etc\/|[A-Za-z]:[\\/]Windows[\\/]`
 
 /*
  * **工作区里的 `.qy/` 与 `.agents/` 不在这张表里，这是有意的。**
@@ -116,6 +179,9 @@ const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|\$\{?HOME\}?|\$env:USER
  * 真正需要保护的是**本程序自己的**全局目录 `~/.qywork/`（明文 apiKey、权限模式、
  * 全部会话历史）——而它躺在家目录，写由「工作区外」那条挡、读由凭证那条挡，
  * 不需要单开一条。这两个东西名字像，位置和含义完全不同。
+ *
+ * 换成 PowerShell 也不加：上面两条理由与外层跑哪个 shell 无关，
+ * 而 `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一件事。
  */
 
 /**
@@ -174,8 +240,15 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
     reason: 'rm 只有在删根目录被拦下时才需要这个开关，它出现即意图明确',
   },
   {
-    pattern: /\bRemove-Item\b[^\n]*-Recurse\b[^\n]*\s(?:[A-Za-z]:[\\/]|\/)[*\\/]*(?=\s|$)/i,
-    reason: '递归删除盘符根目录，与 rm -rf / 是同一件事',
+    /*
+     * `-Recurse` 用**前视**找，不按位置找：PowerShell 的参数与位置参数可以任意穿插，
+     * `Remove-Item C:\ -Recurse -Force` 和 `Remove-Item -Recurse C:\` 是同一条命令，
+     * 而只认后者的话，把开关挪到后面就绕过了这条规则。
+     *
+     * 目标里带上 `~`：PowerShell 认它，而 `rm -rf ~` 那条只认 POSIX 的 `rm`。
+     */
+    pattern: /\bRemove-Item\b(?=[^\n]*-Recurse\b)[^\n]*\s(?:[A-Za-z]:[\\/]|~|\/)[*\\/]*(?=\s|$)/i,
+    reason: '递归删除盘符根目录或家目录，与 rm -rf / 是同一件事',
   },
   {
     pattern: /\b(?:del|rd|rmdir)\b[^\n]*\s\/[sS]\b[^\n]*\s[A-Za-z]:\\[*\\]*(?=\s|$)/,
@@ -396,25 +469,45 @@ function locationCoveredByExtras(command: string, ctx: PolicyContext): boolean {
 
   const home = normalizeSeparators(homedir())
 
-  // 把每一处引用连同它后面的路径尾巴整个抓出来。
-  // 结束于空白、引号、或 shell 组合符号——那些位置之后不再属于这个路径。
-  const refs =
-    /(?:^|(?<=[\s"'=(]))(?:~|\$\{?HOME\}?|\$env:USERPROFILE|\$env:HOMEPATH|%USERPROFILE%|%HOMEPATH%|\/etc\/|[A-Za-z]:[\\/]Windows[\\/])[^\s"'`;&|)]*/gi
-
-  const found = command.match(refs)
+  const found = command.match(OUTSIDE_REFS)
   if (found === null || found.length === 0) return false
 
   return found.every((raw) => {
-    const expanded = normalizeSeparators(
-      raw.replace(
-        /^(?:~|\$\{?HOME\}?|\$env:USERPROFILE|\$env:HOMEPATH|%USERPROFILE%|%HOMEPATH%)/i,
-        home,
-      ),
-    )
+    const expanded = normalizeSeparators(expandOutsideRef(raw, home))
     // 展开后仍带 `$` / `%` 说明里面还有别的变量，静态看不见它指向哪儿。
     if (/[$%]/.test(expanded)) return false
     return extras.some((root) => expanded === root || expanded.startsWith(`${root}/`))
   })
+}
+
+/** 路径尾巴的终止符：空白、引号、反引号、shell 组合符号——那之后不再属于这个路径。 */
+const PATH_TAIL = '[^\\s"\'`;&|)]*'
+
+/**
+ * 命令里每一处「工作区之外」的引用，连同它后面的路径尾巴。
+ *
+ * 写法清单与 `OUTSIDE_LOCATION` 同源（见 `OUTSIDE_SYMBOLS`）：两边一旦不等，
+ * 少的那边如果是这里，结果就是**多认一种写法反而放松了规则**。
+ */
+const OUTSIDE_REFS = new RegExp(
+  String.raw`(?:^|(?<=[\s"'=(]))(?:~|${OUTSIDE_SYMBOL_RE}|\/etc\/|[A-Za-z]:[\\/]Windows[\\/])` +
+    PATH_TAIL,
+  'gi',
+)
+
+/**
+ * 把一处引用的**头部**换成本机上的真实路径，尾巴原样保留。
+ *
+ * 换不出值的（`$PROFILE`，或者这台机器上压根没有 `APPDATA`）留下空串或原样的
+ * `$` / `%`，调用方按 fail-closed 处理——这条规则是终局判决，拿不准的方向是拒绝。
+ */
+function expandOutsideRef(raw: string, home: string): string {
+  if (raw.startsWith('~')) return home + raw.slice(1)
+  for (const sym of OUTSIDE_SYMBOLS) {
+    const m = new RegExp(`^(?:${sym.re})`, 'i').exec(raw)
+    if (m !== null) return sym.value() + raw.slice(m[0].length)
+  }
+  return raw
 }
 
 function normalizeSeparators(p: string): string {
