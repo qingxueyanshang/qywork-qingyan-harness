@@ -17,6 +17,8 @@ export { Store } from './db.ts'
 export { type ExtraKey, listDisabledExtras, setExtraEnabled } from './extras.ts'
 // 目标与自动续起：runtime 用端口喂给工具，server 在 run 收尾处判续起
 export { advanceGoalRound, createGoal, currentGoal, updateGoal } from './goals.ts'
+// 按需加载的外部工具：runtime 在装配工具表时读回、在 load_tool 成功后写入
+export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,

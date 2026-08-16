@@ -10,14 +10,16 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext } from '@qywork/agent'
+import type { ToolContext, ToolRegistry } from '@qywork/agent'
 import {
   createConversation,
   fileReadHash,
   listConversations,
+  listDisabledExtras,
   listRecentConversations,
   listWorkspaces,
   Store,
+  setExtraEnabled,
   upsertWorkspace,
 } from '@qywork/store'
 import type { QyConfig } from './config.ts'
@@ -140,6 +142,54 @@ describe('被拒的裁决怎么说话', () => {
 })
 
 /**
+ * 一个真的能握手的 MCP server，工具表由调用方给。
+ *
+ * 两个 describe 共用：一个测 allowedTools 的过滤，一个测 schema 按量转按需。
+ * 两边都要一个真实的 stdio server——照抄一份的代价是它们迟早只有一份被改。
+ */
+async function workspaceWithMcp(
+  server = 'demo',
+  tools: { name: string; description: string }[] = [
+    { name: 'ping', description: 'p' },
+    { name: 'pong', description: 'q' },
+  ],
+): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
+  await mkdir(join(root, '.agents'), { recursive: true })
+  const NL = String.fromCharCode(10)
+  const defs = JSON.stringify(
+    tools.map((t) => ({ ...t, inputSchema: { type: 'object' } })),
+  ).replaceAll(NL, ' ')
+  await writeFile(
+    join(root, '.agents', 'server.mjs'),
+    [
+      "let buf = ''",
+      'const NL = String.fromCharCode(10)',
+      'const send = (o) => process.stdout.write(JSON.stringify(o) + NL)',
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (c) => { buf += c; for(;;){ const i = buf.indexOf(NL); if (i < 0) break; const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line) } catch { continue }; handle(m) } })",
+      'function handle(m) {',
+      `  if (m.method === 'initialize') return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: '${server}' } } })`,
+      "  if (m.method === 'notifications/initialized') return",
+      `  if (m.method === 'tools/list') return send({ jsonrpc: '2.0', id: m.id, result: { tools: ${defs} } })`,
+      "  send({ jsonrpc: '2.0', id: m.id, result: { content: [] } })",
+      '}',
+    ].join(NL),
+    'utf8',
+  )
+  await writeFile(
+    join(root, '.agents', 'mcp.json'),
+    JSON.stringify({
+      mcpServers: {
+        [server]: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
+      },
+    }),
+    'utf8',
+  )
+  return root
+}
+
+/**
  * allowedTools 必须同时管得住扩展工具，也必须**认得出**它们。
  *
  * 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具；
@@ -147,39 +197,6 @@ describe('被拒的裁决怎么说话', () => {
  * `mcp__demo__ping` 会被报成未知——让人去查一个不存在的问题。
  */
 describe('allowedTools 与扩展工具', () => {
-  async function workspaceWithMcp(): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
-    await mkdir(join(root, '.agents'), { recursive: true })
-    const NL = String.fromCharCode(10)
-    await writeFile(
-      join(root, '.agents', 'server.mjs'),
-      [
-        "let buf = ''",
-        'const NL = String.fromCharCode(10)',
-        'const send = (o) => process.stdout.write(JSON.stringify(o) + NL)',
-        "process.stdin.setEncoding('utf8')",
-        "process.stdin.on('data', (c) => { buf += c; for(;;){ const i = buf.indexOf(NL); if (i < 0) break; const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line) } catch { continue }; handle(m) } })",
-        'function handle(m) {',
-        "  if (m.method === 'initialize') return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'demo' } } })",
-        "  if (m.method === 'notifications/initialized') return",
-        "  if (m.method === 'tools/list') return send({ jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'ping', description: 'p', inputSchema: { type: 'object' } }, { name: 'pong', description: 'q', inputSchema: { type: 'object' } }] } })",
-        "  send({ jsonrpc: '2.0', id: m.id, result: { content: [] } })",
-        '}',
-      ].join(NL),
-      'utf8',
-    )
-    await writeFile(
-      join(root, '.agents', 'mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          demo: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
-        },
-      }),
-      'utf8',
-    )
-    return root
-  }
-
   test('allowedTools 里可以点名 MCP 工具，且只放行点到的那个', async () => {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp()
@@ -198,6 +215,132 @@ describe('allowedTools 与扩展工具', () => {
     expect(names).toEqual(['mcp__demo__ping', 'read_file'])
     // 同一个 server 的另一个工具没被点名，就不该出现。
     expect(names).not.toContain('mcp__demo__pong')
+    s.dispose()
+    store.close()
+  }, 20_000)
+})
+
+/**
+ * 外部工具的 schema 按量转按需。
+ *
+ * 锁的是**超预算时那些 schema 真的没进请求**：这一条反过来不会报错，
+ * 只会表现为账单照旧——按需加载做了等于没做，谁都不会发现。
+ *
+ * 阈值与实测的量在 `tools/tool-pool.ts`。这里的胖 server 用长描述凑量，
+ * 不依赖具体阈值取值，只依赖「它超了」。
+ */
+describe('外部工具按量转按需', () => {
+  const fatTools = Array.from({ length: 8 }, (_, i) => ({
+    name: `t${i}`,
+    description: 'x'.repeat(800),
+  }))
+
+  async function assemble(over: { disabled?: string[] } = {}) {
+    const store = new Store({ path: ':memory:' })
+    const root = await workspaceWithMcp('fat', fatTools)
+    const ws = upsertWorkspace(store, root, 'ws')
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    for (const key of over.disabled ?? []) setExtraEnabled(store, conv.id, key, false)
+
+    const s = new Session({
+      store,
+      config,
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+    })
+    await (
+      s as unknown as {
+        loadExtensionTools(d: ReadonlySet<string>, c: string): Promise<void>
+      }
+    ).loadExtensionTools(listDisabledExtras(store, conv.id), conv.id)
+
+    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const tail = () =>
+      (
+        (s as unknown as { makeLoop(m: string, c: string): unknown }).makeLoop('m', conv.id) as {
+          deps: { tailNotes(): { content: string; group: string }[] }
+        }
+      ).deps
+        .tailNotes()
+        .find((n) => n.group === 'mcpTools')?.content ?? ''
+    return { store, s, conv, registry, tail }
+  }
+
+  test('超预算时那批工具不进 schemas，只出现一个 load_tool', async () => {
+    const { store, s, registry, tail } = await assemble()
+    const names = registry.schemas().map((t) => t.name)
+
+    expect(names).toContain('load_tool')
+    expect(names.filter((n) => n.startsWith('mcp__fat__'))).toEqual([])
+    // 但模型得知道它们存在——清单在尾区，不在冻结前缀里。
+    expect(tail()).toContain('mcp__fat__t0')
+    s.dispose()
+    store.close()
+  }, 20_000)
+
+  test('load_tool 装完就进 schemas，同时从清单里消失', async () => {
+    const { store, s, registry, tail } = await assemble()
+    const out = await registry.execute(
+      'load_tool',
+      { names: ['mcp__fat__t0'] },
+      (
+        s as unknown as { makeToolContext(r: string, e: () => void, m: string, c: string): unknown }
+      ).makeToolContext('rn_x', () => {}, 'm', 'cv_x') as never,
+    )
+
+    expect(out.status).toBe('success')
+    expect(registry.schemas().map((t) => t.name)).toContain('mcp__fat__t0')
+    expect(tail()).not.toContain('mcp__fat__t0：')
+    s.dispose()
+    store.close()
+  }, 20_000)
+
+  /**
+   * Session 每条消息新建一个，进程内的「已加载」集合活不过这条消息。
+   * 落账本才有意义——不然模型每轮都得重装一遍。
+   */
+  test('装过的下一条消息直接在工具表里', async () => {
+    const { store, s, conv, registry } = await assemble()
+    await registry.execute(
+      'load_tool',
+      { names: ['mcp__fat__t0'] },
+      (
+        s as unknown as { makeToolContext(r: string, e: () => void, m: string, c: string): unknown }
+      ).makeToolContext('rn_x', () => {}, 'm', 'cv_x') as never,
+    )
+    const root = s as unknown as { opts: { workspaceRoot: string } }
+
+    const next = new Session({
+      store,
+      config,
+      workspaceRoot: root.opts.workspaceRoot,
+      signal: new AbortController().signal,
+    })
+    await (
+      next as unknown as {
+        loadExtensionTools(d: ReadonlySet<string>, c: string): Promise<void>
+      }
+    ).loadExtensionTools(listDisabledExtras(store, conv.id), conv.id)
+
+    const names = (next as unknown as { registry: ToolRegistry }).registry
+      .schemas()
+      .map((t) => t.name)
+    expect(names).toContain('mcp__fat__t0')
+    // 只把装过的那个放回去，其余照旧待加载。
+    expect(names).not.toContain('mcp__fat__t1')
+    next.dispose()
+    s.dispose()
+    store.close()
+  }, 20_000)
+
+  /**
+   * 会话级开关的语义不能因为转按需就丢：被关掉的工具**连清单里都不该出现**，
+   * 否则模型会去 load_tool 一个必然失败的名字。
+   */
+  test('会话级关掉的 server 连清单都不进', async () => {
+    const { store, s, registry, tail } = await assemble({ disabled: ['mcp:fat'] })
+    expect(tail()).toBe('')
+    expect(registry.schemas().map((t) => t.name)).not.toContain('load_tool')
     s.dispose()
     store.close()
   }, 20_000)

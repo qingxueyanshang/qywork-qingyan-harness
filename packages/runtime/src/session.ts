@@ -49,12 +49,14 @@ import {
   getRun,
   latestAnchoredProviderRequest,
   listDisabledExtras,
+  listLoadedTools,
   markProviderRequestSent,
   markRunRunning,
   markRunSuperseded,
   markStepExecuting,
   openProviderRequest,
   recordFileRead,
+  recordLoadedTools,
   recordUsage,
   type Store,
   settleProviderRequest,
@@ -66,8 +68,12 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import {
+  EXTERNAL_SCHEMA_BUDGET_TOKENS,
+  externalSchemaTokens,
   listScopedEntries,
+  makeLoadToolTool,
   normalizeAdditionalDirectories,
+  PendingToolPool,
   registerBuiltinTools,
   resolveInWorkspace,
   scanSkills,
@@ -168,6 +174,13 @@ export class Session {
   private extensions: Extensions | null = null
 
   /**
+   * 外部工具的待加载池。null = 本会话的外置 schema 总量在预算内，全部常驻。
+   *
+   * 池子里的工具不在注册表里，所以不进请求；模型用 `load_tool` 取出来。
+   */
+  private pendingTools: PendingToolPool | null = null
+
+  /**
    * 规范化后的额外根目录。**只算一次**：三个消费者（路径层、静态规则、沙箱）
    * 必须拿到逐字节相同的一份，各自现算迟早会分叉——而分叉的表现是
    * 「某一层放行了，另一层拒绝了」，报错信息互不相干。
@@ -248,6 +261,9 @@ export class Session {
           platform: process.platform,
           skills: this.skillIndex,
           memories: this.memoryIndex,
+          // 每次现取而不是缓存：`load_tool` 装走一个，清单就少一条，
+          // 而缓存下来的那份会一直劝模型再装一遍已经装好的工具。
+          externalTools: this.pendingTools?.index() ?? [],
         }),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, model, conversationId as ConversationId),
@@ -426,7 +442,7 @@ export class Session {
     // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
     // 重起一遍既慢又会丢掉它们的进程内状态。会话只负责把工具规格注册进自己的表。
     if (!this.extensions) {
-      await this.loadExtensionTools(disabled)
+      await this.loadExtensionTools(disabled, conversationId)
     }
 
     // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
@@ -517,12 +533,19 @@ export class Session {
   }
 
   /**
-   * 取扩展并把它们贡献的工具注册进本会话的表。
+   * 取扩展并把它们贡献的工具接进本会话的表。
+   *
+   * **按量分两档**：外置 schema 总量在预算内就全部注册（省掉一次往返），
+   * 超了就全部进待加载池、只注册一个 `load_tool`，清单进尾区。
+   * 阈值与实测的量见 `tools/tool-pool.ts`。
    *
    * 注册失败（重名）只跳过那一个工具：让整个会话因为一个撞名的插件工具起不来，
    * 代价完全不成比例。
    */
-  private async loadExtensionTools(disabled: ReadonlySet<string> = new Set()): Promise<void> {
+  private async loadExtensionTools(
+    disabled: ReadonlySet<string> = new Set(),
+    conversationId?: ConversationId,
+  ): Promise<void> {
     const ext = await acquireExtensions(this.opts.workspaceRoot, (line) =>
       process.stderr.write(`${line}
 `),
@@ -532,23 +555,52 @@ export class Session {
     // 角色的 allowedTools 同样约束插件与 MCP 工具。
     // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
     const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
-    // 会话级开关关掉的那些**根本不注册**，而不是注册完再拦。
-    // 注册完再拦的话模型仍然在 schema 里看得见它，会反复去调一个必然失败的工具。
+    // 会话级开关关掉的那些**根本不进这一步**，而不是接进来再拦。
+    // 接进来再拦的话模型仍然看得见它（工具表里、或者尾区那份清单里），
+    // 会反复去调、去装一个必然失败的名字。
     const off = (spec: { name: string }) => {
       const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(spec.name)
       if (mcp) return disabled.has(`mcp:${mcp[1]}`)
       const plugin = /^(.+?)__/.exec(spec.name)
       return plugin ? disabled.has(`plugin:${plugin[1]}`) : false
     }
-    for (const spec of ext.toolSpecs) {
-      if (allow && !allow.has(spec.name)) continue
-      if (off(spec)) continue
-      if (this.registry.has(spec.name)) continue
-      try {
-        this.registry.register(spec)
-      } catch (err) {
-        process.stderr.write(`[qy] 工具注册失败 ${spec.name}：${String(err)}
+    const eligible = ext.toolSpecs.filter(
+      (spec) => !(allow && !allow.has(spec.name)) && !off(spec) && !this.registry.has(spec.name),
+    )
+
+    /*
+     * **角色点名的那一套不进池子。**
+     *
+     * `allowedTools` 是人挑过的一小把工具，把它们塞进池子有两个后果：模型要多花
+     * 一轮把角色本来就该有的工具装回来；而且下面那条未知名检查会把池子里的名字
+     * 全报成「未知工具名，已忽略」——让人去查一个不存在的问题。
+     */
+    const onDemand = !allow && externalSchemaTokens(eligible) > EXTERNAL_SCHEMA_BUDGET_TOKENS
+
+    if (onDemand) {
+      const pool = new PendingToolPool({
+        registry: this.registry,
+        onLoaded: (names) => {
+          // 没有会话就没有会话级存储。只有 `capabilities()` 那条路是这样——
+          // 它只为报一份能力清单，不跑模型，也就没有「下一轮」要记给谁。
+          if (conversationId) recordLoadedTools(this.opts.store, conversationId, names)
+        },
+      })
+      for (const spec of eligible) pool.add(spec)
+      this.registry.register(makeLoadToolTool(pool))
+      // 上几轮已经装过的直接放回工具表：模型在 transcript 里看得见自己装过，
+      // 工具表里却没有的话它会反复去试。池子里没有的（server 拆了、开关关了）
+      // 自然落空，不必另外清理账本——那张表记的是「装过」，不是「还在」。
+      if (conversationId) pool.load([...listLoadedTools(this.opts.store, conversationId)])
+      this.pendingTools = pool
+    } else {
+      for (const spec of eligible) {
+        try {
+          this.registry.register(spec)
+        } catch (err) {
+          process.stderr.write(`[qy] 工具注册失败 ${spec.name}：${String(err)}
 `)
+        }
       }
     }
 

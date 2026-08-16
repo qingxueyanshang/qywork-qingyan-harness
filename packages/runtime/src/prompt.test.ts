@@ -4,8 +4,9 @@
  * 覆盖范围：`prompt.ts` 的 `buildTailNotes`（`buildSystemPrompt` 由
  * `agent/prefix-audit.test.ts` 审）。
  *
- * 锁的是**技能与记忆都只进标题**：正文一旦被塞回尾区，每轮都要全量重发一遍，
- * 而这件事不会有任何报错——只会表现为账单变高、缓存命中变低。
+ * 锁的是**技能、记忆、外部工具都只进标题**：正文（外部工具是完整参数说明）
+ * 一旦被塞回尾区，每轮都要全量重发一遍，而这件事不会有任何报错——
+ * 只会表现为账单变高、缓存命中变低。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -41,11 +42,42 @@ describe('尾区注记', () => {
     expect(skills).toContain('read_skill')
   })
 
+  test('待加载的外部工具同理：工具名 + 一句话，参数说明靠 load_tool', () => {
+    const notes = buildTailNotes({
+      ...base,
+      externalTools: [{ name: 'mcp__github__search', summary: '搜仓库' }],
+    })
+    const tools = note(notes, 'mcpTools')?.content ?? ''
+    expect(tools).toContain('- mcp__github__search：搜仓库')
+    expect(tools).toContain('load_tool')
+  })
+
+  /**
+   * MCP 与插件的 summary 就是第三方给的 description 原文，可以是好几段。
+   * 不截的话这份「省 token 的清单」自己就能涨到几千 token——实测四个真实
+   * server 共 41 个工具，原样拼 2620 token，截到 100 字 1187 token。
+   */
+  test('外部工具的一句话只取首行并截断，不把整段 description 搬进来', () => {
+    const notes = buildTailNotes({
+      ...base,
+      externalTools: [{ name: 'mcp__x__fat', summary: `第一行\n第二行\n${'长'.repeat(500)}` }],
+    })
+    const tools = note(notes, 'mcpTools')?.content ?? ''
+    expect(tools).toContain('- mcp__x__fat：第一行')
+    expect(tools).not.toContain('第二行')
+
+    const long = buildTailNotes({
+      ...base,
+      externalTools: [{ name: 'mcp__x__fat', summary: '长'.repeat(500) }],
+    })
+    expect((note(long, 'mcpTools')?.content ?? '').length).toBeLessThan(200)
+  })
+
   /**
    * 分组必须带出来。一律标 `workspaceState` 的话，面板上「记忆内容」与
    * 「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
-  test('三个桶各归各的，没有内容的桶不产出注记', () => {
+  test('四个桶各归各的，没有内容的桶不产出注记', () => {
     const empty = buildTailNotes(base)
     expect(empty.map((n) => n.group)).toEqual(['workspaceState'])
 
@@ -53,7 +85,8 @@ describe('尾区注记', () => {
       ...base,
       skills: [{ name: 'a', description: 'x' }],
       memories: [{ key: 'b', preview: 'y' }],
+      externalTools: [{ name: 'mcp__d__c', summary: 'z' }],
     })
-    expect(full.map((n) => n.group)).toEqual(['workspaceState', 'skills', 'memory'])
+    expect(full.map((n) => n.group)).toEqual(['workspaceState', 'skills', 'memory', 'mcpTools'])
   })
 })
