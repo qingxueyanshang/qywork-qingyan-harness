@@ -8,8 +8,8 @@ import { SettingsNav } from './SettingsNav.tsx'
 
 // 内容类目各自带着自己的请求和列表，进设置才下载。
 // 只想换个主题的用户不该为「定时任务」付首屏成本。
-const ToolsSettings = lazy(() =>
-  import('./ToolsSettings.tsx').then((m) => ({ default: m.ToolsSettings })),
+const ModulesSettings = lazy(() =>
+  import('./ModulesSettings.tsx').then((m) => ({ default: m.ModulesSettings })),
 )
 const AgentsSettings = lazy(() => import('./AgentsSettings.tsx'))
 const MemorySettings = lazy(() => import('./MemorySettings.tsx'))
@@ -21,7 +21,6 @@ const PluginsPanel = lazy(() =>
 const SchedulesPanel = lazy(() =>
   import('../SchedulesPanel.tsx').then((m) => ({ default: m.SchedulesPanel })),
 )
-const PairPanel = lazy(() => import('../PairPanel.tsx'))
 
 /**
  * 每一页的标题与边界说明。
@@ -32,18 +31,18 @@ const PairPanel = lazy(() => import('../PairPanel.tsx'))
  * 这两句必须写进 `note`——只写在源码注释里等于界面上没说。
  */
 const META: Record<Page, { title: string; note?: string }> = {
-  general: { title: '系统设置' },
+  general: { title: '通用' },
   models: {
     title: '模型',
     note: 'API Key 只存在服务端，界面上没有任何一条路能把它读回来——删掉即不可恢复。',
   },
-  access: {
-    title: '权限与沙箱',
-    note: '自动审批 / 完全访问的开关不在这里，在输入区那个盾牌 chip 上。',
+  modules: {
+    title: '模块',
+    note: '带 * 的是必填参数。MCP server 起不来，它的工具就不在这里。',
   },
-  tools: {
-    title: '工具',
-    note: '按能力大类列出它会做什么。MCP 提供的工具要连上 server 才知道，不在这里。',
+  access: {
+    title: '命令与进程',
+    note: '自动审批 / 完全访问的开关不在这里，在输入区那个盾牌 chip 上。',
   },
   team: { title: '智能体' },
   memory: { title: '记忆' },
@@ -51,7 +50,6 @@ const META: Record<Page, { title: string; note?: string }> = {
   mcp: { title: 'MCP' },
   plugins: { title: '插件' },
   schedules: { title: '定时任务' },
-  mobile: { title: '手机接入' },
 }
 
 /**
@@ -126,11 +124,11 @@ export function SettingsDialog() {
                   <Match when={settingsPage() === 'models'}>
                     <ModelSettings />
                   </Match>
+                  <Match when={settingsPage() === 'modules'}>
+                    <ModulesSettings />
+                  </Match>
                   <Match when={settingsPage() === 'access'}>
                     <AccessSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'tools'}>
-                    <ToolsSettings />
                   </Match>
                   <Match when={settingsPage() === 'team'}>
                     <AgentsSettings />
@@ -149,9 +147,6 @@ export function SettingsDialog() {
                   </Match>
                   <Match when={settingsPage() === 'schedules'}>
                     <SchedulesPanel />
-                  </Match>
-                  <Match when={settingsPage() === 'mobile'}>
-                    <PairPanel />
                   </Match>
                 </Switch>
               </div>

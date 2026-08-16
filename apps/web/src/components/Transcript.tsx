@@ -25,6 +25,8 @@ import {
   clamp,
   compact,
   diffFrom,
+  displayTarget,
+  fileDelta,
   firstString,
   hitRate,
   listOf,
@@ -286,6 +288,11 @@ function Fold(props: {
    * 单张工具卡不能开这个：它展开后里面是参数和输出，没有第二个转圈接手。
    */
   quietWhenOpen?: boolean
+  /**
+   * 改了多少行。**钉在行尾，不进文本槽**——文本槽负责单行省略，
+   * 目标一长这两个数就会跟着被截掉，而它们是定宽的事实。
+   */
+  changes?: { additions: number; deletions: number }
   /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
@@ -322,6 +329,14 @@ function Fold(props: {
             </span>
           </Show>
         </span>
+        <Show when={props.changes}>
+          {(c) => (
+            <span class="fold-diff">
+              <span class="fold-add">+{c().additions}</span>
+              <span class="fold-del">−{c().deletions}</span>
+            </span>
+          )}
+        </Show>
         <Show when={props.running && !(props.quietWhenOpen && open())}>
           <span class="fold-spin" />
         </Show>
@@ -561,6 +576,7 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
 }
 
 function ToolCard(props: { item: TranscriptItem }) {
+  const changes = () => fileDelta(props.item.outcome?.fileChanges)
   return (
     <Fold
       failed={props.item.status === 'failure'}
@@ -568,7 +584,8 @@ function ToolCard(props: { item: TranscriptItem }) {
       running={props.item.status === 'running'}
       label={actionLabel(props.item)}
       statusWord={statusWord(props.item.status)}
-      {...(props.item.action?.target ? { target: props.item.action.target } : {})}
+      {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}
+      {...(changes() ? { changes: changes()! } : {})}
     >
       <StepBody item={props.item} />
     </Fold>

@@ -81,9 +81,42 @@ export function sanitizeTarget(target: string): string {
     : `${clean.slice(0, TARGET_MAX - 1)}…`
 }
 
+/**
+ * 外置工具的目标去掉 `mcp:` / `plugin:` 前缀。**只在显示时剥。**
+ *
+ * 后端那份必须带前缀：权限 scope 是 `${effect}:${target}`，target 是它唯一的载体，
+ * 剥掉之后一个 id 叫 `github` 的插件的 `search` 和那个 MCP server 的 `search`
+ * 会撞出同一个 scope 串。而卡片上对象名已经写着「MCP」/「插件」，
+ * 目标里再说一遍就成了「调用 MCP · mcp:github/search」。
+ */
+export function displayTarget(target: string): string {
+  return target.replace(/^(?:mcp|plugin):/, '')
+}
+
 /** 终态字样。**成功是空字符串**——一屏几十行全写「成功」等于没有信息。 */
 export function statusWord(status: 'running' | 'success' | 'failure' | undefined): string {
   return status === 'failure' ? '失败' : ''
+}
+
+/**
+ * 一次调用改了多少行：`+N −M`。
+ *
+ * 两个数早就随 `ToolOutcome.fileChanges` 进了账本（`tools/src/files.ts` 的
+ * `countDiff` 算的），只是一直没有人渲染。一次调用可能动多个文件，所以求和。
+ *
+ * **两个数都是 0 就不给角标**：`+0 −0` 占着行尾却什么也没说。
+ */
+export function fileDelta(
+  changes: readonly { additions: number; deletions: number }[] | undefined,
+): { additions: number; deletions: number } | null {
+  if (!changes || changes.length === 0) return null
+  let additions = 0
+  let deletions = 0
+  for (const c of changes) {
+    additions += c.additions
+    deletions += c.deletions
+  }
+  return additions === 0 && deletions === 0 ? null : { additions, deletions }
 }
 
 /** 列表型结果：目录项、命中行、匹配文件——形状都是 string[]，渲染方式也一样。 */

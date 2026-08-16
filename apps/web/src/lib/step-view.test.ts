@@ -13,6 +13,8 @@ import {
   clamp,
   compact,
   diffFrom,
+  displayTarget,
+  fileDelta,
   firstString,
   hitRate,
   listOf,
@@ -58,6 +60,38 @@ describe('target 截断方向', () => {
     expect(cut2.length).toBe(TARGET_MAX)
     expect(cut2.endsWith('…')).toBe(true)
     expect(cut2.startsWith('8888')).toBe(true)
+  })
+})
+
+describe('外置工具的目标剥前缀', () => {
+  test('只剥开头那一段，路径里的冒号不动', () => {
+    expect(displayTarget('mcp:github/search')).toBe('github/search')
+    expect(displayTarget('plugin:demo/count')).toBe('demo/count')
+    // 剥的是前缀不是子串：文件名里带 `mcp:` 的不该被削掉。
+    expect(displayTarget('src/mcp:notes.ts')).toBe('src/mcp:notes.ts')
+    expect(displayTarget('bun test')).toBe('bun test')
+    // 只剥一层——`mcp:` 开头的 server 名本身仍要留在目标里。
+    expect(displayTarget('mcp:mcp:x')).toBe('mcp:x')
+  })
+})
+
+describe('改了多少行', () => {
+  test('多个文件求和，两个数都是 0 就不给角标', () => {
+    expect(fileDelta(undefined)).toBeNull()
+    expect(fileDelta([])).toBeNull()
+    expect(fileDelta([{ additions: 0, deletions: 0 }])).toBeNull()
+    expect(fileDelta([{ additions: 1, deletions: 2 }])).toEqual({ additions: 1, deletions: 2 })
+    expect(
+      fileDelta([
+        { additions: 1, deletions: 2 },
+        { additions: 3, deletions: 0 },
+      ]),
+    ).toEqual({ additions: 4, deletions: 2 })
+  })
+
+  /** 删空一个文件：加了 0 行，但角标必须出现，否则那次调用看起来什么都没做。 */
+  test('只有一侧非零也要出角标', () => {
+    expect(fileDelta([{ additions: 0, deletions: 12 }])).toEqual({ additions: 0, deletions: 12 })
   })
 })
 
