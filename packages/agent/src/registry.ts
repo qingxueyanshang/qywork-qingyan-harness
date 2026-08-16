@@ -250,7 +250,7 @@ export interface ToolOutcome {
 // ─────────────────────────────── 工具声明 ───────────────────────────────
 
 /**
- * 工具能力大类。**六个内置 + 一个类外的 `external`，没有「其他」。**
+ * 工具能力大类。**七个内置 + 一个类外的 `external`，没有「其他」。**
  *
  * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
  * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
@@ -273,6 +273,7 @@ export type ToolCategory =
   | 'knowledge'
   | 'planning'
   | 'session'
+  | 'schedule'
   | 'external'
 
 /**
@@ -288,6 +289,7 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'knowledge',
   'planning',
   'session',
+  'schedule',
   'external',
 ]
 
