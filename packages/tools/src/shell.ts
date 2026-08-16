@@ -60,20 +60,29 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
 }
 
 /**
- * `run_command` 的规格。**方言提示由传进来的 shell 说了算。**
+ * `run_command` 的规格。**方言提示由传进来的 shell 说了算，而且排在描述第一句。**
  *
- * 做成工厂而不是常量，是因为「有没有 bash」现在是一种能力状态（`commandShell()`
- * 可以返回 null）：没有 shell 就不该造出这个 spec，注册处直接跳过它。
+ * 做成工厂而不是常量，是因为「跑哪个 shell」现在是一种能力状态（`commandShell()`
+ * 三选一或者返回 null）：没有 shell 就不该造出这个 spec，注册处直接跳过它。
  * 参数是 shell 对象本身而不是让这里再取一次——再取一次就是两本账，
  * 而漂移的表现是「说明里写的 shell 和真正执行的不是同一个」。
+ *
+ * ## 为什么方言在第一句，而且 bash 也不例外
+ *
+ * `run_command` 这个名字不携带方言，模型的默认输出是 bash，所以方言信息只剩描述
+ * 一个来源——**埋在第三句等于没说**（前两句先讲了「执行一条 shell 命令」「用于构建、
+ * 测试、包管理」，读到那里方言已经在脑子里定死了）。
+ *
+ * 不写成「非 bash 才前置」：那是一条按方言分叉的排版规则，而分叉的表现是某一档
+ * 忘了前置，且只在那台机器上才看得见。一份排版，三档共用。
  */
 export function makeShellTool(shell: CommandShell): ToolSpec {
   return {
     name: 'run_command',
     description:
-      '在工作区里执行一条 shell 命令并返回 stdout/stderr 与退出码。' +
-      '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       `${shell.hint}` +
+      '在工作区里执行一条命令并返回 stdout/stderr 与退出码。' +
+      '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',
     parameters: {
       type: 'object',
@@ -96,7 +105,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
     objectLabel: '命令',
     category: 'code',
     facet: '执行',
-    summary: '在工作区里跑一条 bash 命令',
+    summary: '在工作区里跑一条命令',
     targetExtractor: (a) => (typeof a.command === 'string' ? a.command : null),
     permissionEffect: 'execute',
     // 永不并行：命令之间的顺序几乎总是携带意图（先装依赖再构建）。

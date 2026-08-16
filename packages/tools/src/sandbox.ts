@@ -640,8 +640,10 @@ export const BASH_PATH_ENV = 'QYWORK_BASH_PATH'
  *
  * 坑：不要在模块加载时抛。没有 bash 的机器上那会让整个 `qy serve` 起不来，
  * 用户在浏览器里只看到「连不上」。终端程序可以 `exit(1)` 打一行了事，带界面的
- * 服务端不行——它得能起来，然后如实说「这台机器没有 bash，所以模型手里没有
- * run_command」。
+ * 服务端不行——它得能起来，然后如实说「这台机器没有 bash」。
+ *
+ * 这里只回答「有没有 bash」这一件事。没有的时候命令落到哪个 shell，
+ * 由 `resolveCommandShell` 定。
  */
 export interface BashResolution {
   /** 找到的 bash 可执行文件；`null` = 这台机器上没有可用的 bash。 */
@@ -650,7 +652,7 @@ export interface BashResolution {
   reason: string
 }
 
-/** 命令交给哪个 shell。`null` = 没有 bash，`run_command` 因此不会被注册。 */
+/** 命令交给哪个 shell。`null` = 一个可用的 shell 都没有，`run_command` 因此不会被注册。 */
 export interface CommandShell {
   readonly path: string
   readonly argv: readonly string[]
@@ -658,12 +660,14 @@ export interface CommandShell {
 }
 
 /**
- * 本机的 bash。**找不到就抛**，不落回任何别的 shell。
+ * 本机的 bash。找不到返回 `null` 加原因，**这一层不落回任何别的 shell**——
+ * 落回哪个由 `resolveCommandShell` 定，那里才看得见全部三档。
  *
  * ## 为什么必须有环境变量这个口
  *
- * 没有落回，就必须有一个**用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 /
- * Cygwin / 自定义盘符的机器一律没救——而「没救」的表现是整个服务起不来。
+ * 落回的 PowerShell 方言和 bash 差得远，所以「bash 装在别处」必须有一个
+ * **用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 / Cygwin / 自定义盘符的
+ * 机器上会被判成没有 bash，然后拿到一个它本来不需要的方言。
  *
  * **指了但不存在照样抛，不悄悄回到搜索**：回搜索会把「我指错了」变成
  * 「跑起来了，但跑的不是我指的那个」，而后者要靠对比输出才能发现。
@@ -676,7 +680,8 @@ export interface CommandShell {
  * 而模型写的是 bash 4+ 的方言。
  *
  * 不用 `/bin/sh`：那在 Debian 系是 dash，`[[ ]]`、数组、`<(...)` 全部散架。
- * 判据和删掉 PowerShell 那次一样——模型的默认方言要和真正执行的 shell 对得上。
+ * 判据是模型的默认方言要和真正执行的 shell 对得上——同一条判据让 PowerShell
+ * 只在**一个 bash 都找不到**时才轮得到，见 `resolveCommandShell`。
  *
  * 参数全部注入，是为了能直接测顺序和逃生口，不必重载模块。
  */
@@ -732,41 +737,128 @@ export function probeBash(): BashResolution {
 }
 
 /**
+ * 三档探测的注入口。
+ *
+ * 参数全部注入，理由同 `resolveBashPath`：**本机只可能命中其中一档**
+ * （装了 Git Bash 的机器第一步就返回），顺序与另外两档的落点只能这么测。
+ */
+export interface ShellProbeDeps {
+  bash: () => BashResolution
+  /** PATH 上找一个可执行文件。 */
+  which: (name: string) => string | null
+  exists: (p: string) => boolean
+  env: Record<string, string | undefined>
+}
+
+/** PowerShell 7 的默认安装位置。装在别处时靠 PATH 上的 `pwsh.exe` 找到。 */
+function pwsh7Install(env: Record<string, string | undefined>): string {
+  return joinNative(env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe')
+}
+
+/**
+ * Windows PowerShell 5.1 的固定位置。**系统盘不一定是 C:**，所以跟着 `SystemRoot` 走；
+ * 它是系统组件，不查 PATH——PATH 上叫 `powershell` 的可能是别人放的同名东西。
+ */
+function windowsPowerShellInstall(env: Record<string, string | undefined>): string {
+  return joinNative(
+    env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  )
+}
+
+/**
  * 命令交给哪个 shell，以及**模型必须知道的那条语法差异**。
  *
- * ## 只有 bash 一种，没有落回
+ * ## 顺序：bash → pwsh 7 → Windows PowerShell 5.1 → 一个都没有
  *
- * Windows 上不能走 `powershell.exe -Command`：`&&` 在 Windows PowerShell 5.1 里是
- * **解析错误**（实测 `标记「&&」不是此版本中的有效语句分隔符`），而模型只被告知
- * 「平台：win32」时写的就是 POSIX 写法——整条命令一个字都不执行，账本里有过这么
- * 废掉的调用（`node --version & python --version`）。那不是模型不会写 PowerShell，
- * 是**它的默认方言和这里跑的 shell 对不上**，而两边只有一边能改：换 shell 一处，
- * 纠正模型每一条命令是无穷次。
+ * **bash 永远排第一。** 模型的默认方言是 POSIX——「跑一条命令」这个语境在训练
+ * 数据里绝大多数是 bash，账本里有过只被告知「平台：win32」就写出 POSIX 写法、
+ * 在 PowerShell 上一个字都没执行的调用（`node --version & python --version`）。
+ * 有 bash 的机器上行为与只有 bash 那时完全一致。
  *
- * 也不要留「没装 Git Bash 就落回 PowerShell」。理由不是那条路跑不通，
- * 是**它把方言变成两套**：`policy.ts` 的拒绝规则要同时认两种语法、测试每一条
- * 涉及命令的都要按 shell 分叉、模型拿到的提示也分叉。而落回的那台机器上，
- * 模型该写不对的还是写不对——第二条路的收益是「跑得起来」，代价是每一处
- * 用到 shell 的地方都多一本账。没有 bash 就明确报错，比给一个方言对不上的
- * shell 更早、更准。
+ * **pwsh 7 排在 5.1 前面是硬差别，不是偏好。** 5.1 上 `&&` / `||` 是解析错误
+ * （实测 `标记「&&」不是此版本中的有效语句分隔符`），三元 `? :`、`??`、`?.`、
+ * `ConvertFrom-Json -AsHashtable` 一个都没有——同一条命令在 7 上跑得通、在 5.1 上
+ * 整条废掉。两个都在就必须挑 7。
  *
- * `hint` 会原样进 `run_command` 的工具说明，与下面 `spawnGuarded` 用的是同一份
- * argv：两处各写一遍必然漂移，而漂移的表现是**告诉模型的那个 shell 和真正执行
- * 的不是同一个**，比不告诉更糟。
+ * `-NoProfile` 两档都要：用户 profile 会改变行为（别名、函数、`$ErrorActionPreference`），
+ * 而它在别人机器上长什么样我们不知道。
  *
- * 返回 `null` 时 `run_command` **不会被注册**（`tools/index.ts`）——模型手里
- * 根本没有这个工具，而不是有一个必然失败的工具。
+ * ## 方言分叉的代价，付在三个地方
+ *
+ * `policy.ts` 的拒绝规则要同时认两种语法、涉及命令的测试要按 shell 分叉、
+ * 模型拿到的提示也分叉。前两条是死账，只能付。第三条靠**方言提示前置**缓解：
+ * `hint` 是 `run_command` 描述的第一句，且非 bash 时第一句就说「不是 bash」。
+ * 缓解不是消除——`run_command` 这个名字本身不携带方言，而名字的信号比描述强。
+ *
+ * 换来的是：没装 Git Bash 的 Windows 机器上，agent 从「一条命令都跑不了」变成能跑。
+ *
+ * `hint` 会原样进 `run_command` 的工具说明，与 `spawnGuarded` 用的是同一份 argv：
+ * 两处各写一遍必然漂移，而漂移的表现是**告诉模型的那个 shell 和真正执行的不是
+ * 同一个**，比不告诉更糟。
+ *
+ * 三档全落空返回 `null`，`run_command` **不会被注册**（`tools/index.ts`）——
+ * 模型手里根本没有这个工具，而不是有一个必然失败的工具。
+ */
+export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
+  const bash = deps.bash().path
+  if (bash !== null) {
+    return {
+      path: bash,
+      argv: [bash, '-c'],
+      hint:
+        '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
+        '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
+    }
+  }
+
+  // pwsh 7 装在哪都行，所以 PATH 优先；默认安装位置兜住「装了但没进 PATH」。
+  const installed = pwsh7Install(deps.env)
+  const pwsh7 = deps.which('pwsh.exe') ?? (deps.exists(installed) ? installed : null)
+  if (pwsh7 !== null) {
+    return {
+      path: pwsh7,
+      argv: [pwsh7, '-NoProfile', '-NonInteractive', '-Command'],
+      hint:
+        '**这台机器没有 bash：命令由 PowerShell 7（`pwsh -NoProfile -NonInteractive -Command`）' +
+        '执行，不是 bash。** 按 PowerShell 写：`&&`、`||`、管道可用，但管道里流的是对象不是文本；' +
+        '`2>/dev/null` 写成 `2>$null`；环境变量是 `$env:NAME`；`ls`/`cat`/`rm` 是 cmdlet 的别名，' +
+        '参数写法与 POSIX 不同（`ls -Recurse`、`rm -Recurse -Force`）。',
+    }
+  }
+
+  const ps51 = windowsPowerShellInstall(deps.env)
+  if (deps.exists(ps51)) {
+    return {
+      path: ps51,
+      argv: [ps51, '-NoProfile', '-NonInteractive', '-Command'],
+      hint:
+        '**这台机器没有 bash 也没有 PowerShell 7：命令由 Windows PowerShell 5.1' +
+        '（`powershell -NoProfile -NonInteractive -Command`）执行，不是 bash。** ' +
+        '5.1 上这几样不存在，照 PowerShell 7 的写法写会整条命令废掉：' +
+        '`&&` / `||`（解析错误——顺序执行用 `;`，「上一条成功才继续」用 `if ($?) { … }`）、' +
+        '三元 `? :`、null 合并 `??`、null 条件 `?.`、`ConvertFrom-Json -AsHashtable`。' +
+        '其余按 PowerShell 写：`2>$null`、`$env:NAME`、`ls -Recurse`。',
+    }
+  }
+
+  return null
+}
+
+/**
+ * 本机的 shell。**每次调用重新探测**，理由同 `probeBash`：装完之后
+ * 下一条消息就该有 `run_command`，而不是要用户重启服务。
  */
 export function commandShell(): CommandShell | null {
-  const { path } = probeBash()
-  if (path === null) return null
-  return {
-    path,
-    argv: [path, '-c'],
-    hint:
-      '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
-      '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
-  }
+  return resolveCommandShell({
+    bash: probeBash,
+    which: whichSync,
+    exists: existsSync,
+    env: process.env,
+  })
 }
 
 /**
@@ -778,10 +870,16 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
   const status = detectSandbox()
   const isWindows = process.platform === 'win32'
 
-  // `run_command` 在没有 bash 时压根不注册，所以正常路径到不了这里；
+  // `run_command` 在一个 shell 都没有时压根不注册，所以正常路径到不了这里；
   // 插件的 `exec.run` 走的是同一个函数，它需要一个说得清的错而不是崩在 argv 上。
   const shell = commandShell()
-  if (shell === null) throw new Error(`没有可用的 bash，命令跑不了：${probeBash().reason}`)
+  if (shell === null) {
+    // 说 bash 那一档的原因：三档里只有它给得出「下一步怎么办」（装 Git for Windows），
+    // 而另外两档是「这台机器上就是没有」，没有可操作的下一步。
+    throw new Error(
+      `没有可用的 shell（bash / pwsh / powershell 都没找到），命令跑不了：${probeBash().reason}`,
+    )
+  }
 
   // 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
   // 转义黑名单挡不住构造，真正的边界在内核那一层。

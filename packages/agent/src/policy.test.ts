@@ -181,6 +181,94 @@ describe('凭证文件', () => {
 })
 
 /**
+ * PowerShell 方言。
+ *
+ * 没装 Git Bash 的机器上外层 shell 就是 PowerShell（`tools/sandbox.ts` 的
+ * `resolveCommandShell`），那台机器上模型**只会**写这一半——POSIX 的写法一次都不出现。
+ * 所以这不是「顺手多认几种写法」，是那台机器上的全部防线。
+ */
+describe('PowerShell 写法', () => {
+  /**
+   * **`{` 之后是命令位。**
+   *
+   * Windows PowerShell 5.1 上 `&&` 是解析错误（本机实测：`The token '&&' is not a
+   * valid statement separator in this version.`），所以「上一条成功才继续」只能写
+   * `if ($?) { … }`——而那正是 `run_command` 的描述里教它写的。不认 `{` 的话，
+   * 每一条锚在命令位上的规则都从块里溜过去，**旁路是我们自己的提示造出来的**。
+   */
+  test('语句块里的每一段照样扫到', () => {
+    for (const cmd of [
+      'npm test; if ($?) { Stop-Computer }',
+      'if ($?) { Remove-Item -Recurse -Force ~ }',
+      'if ($?) { sudo rm -rf /var }',
+      'bun run build; if ($?) { diskpart }',
+    ]) {
+      expect(kind(cmd)).toBe('deny')
+    }
+  })
+
+  /** 块里装的是本职工作就照常放行——`{` 只是锚点，不是新的拒绝理由。 */
+  test('语句块本身不构成拒绝', () => {
+    expect(kind('if ($?) { npm run build }')).toBe('allow')
+    expect(kind('Get-ChildItem | ForEach-Object { $_.Name }')).toBe('allow')
+  })
+
+  /**
+   * 工作区外的位置，PowerShell 的拼法。
+   *
+   * `$env:APPDATA` / `$env:LOCALAPPDATA` 在家目录里，`$env:windir` 就是 `C:\Windows`
+   * ——和 `~/`、`$HOME` 是同一批位置，只是那台机器上模型写的是这一批。
+   */
+  test('往工作区外写', () => {
+    for (const cmd of [
+      'Set-Content -Path $env:APPDATA\\x.txt -Value 1',
+      'Remove-Item $env:LOCALAPPDATA\\qy -Recurse',
+      'Copy-Item build.js %APPDATA%\\x',
+      'Out-File -FilePath $env:windir\\x.txt',
+      'Clear-Content $HOME\\.bashrc',
+      'Rename-Item ~/notes.txt old.txt',
+    ]) {
+      expect(kind(cmd)).toBe('deny')
+    }
+  })
+
+  /** PowerShell 的启动脚本：字面上看不出它在家目录里，写它 = 之后每开一个 shell 都跑一遍。 */
+  test('写 $PROFILE', () => {
+    expect(kind('Set-Content $PROFILE -Value "whoami"')).toBe('deny')
+  })
+
+  /** 读**不拦**，与 POSIX 侧同一条判据：读不改变任何东西，凭证那条单独管。 */
+  test('读工作区外不拦', () => {
+    expect(kind('Get-ChildItem $env:APPDATA')).toBe('allow')
+    expect(kind('Get-Content $HOME\\.gitconfig')).toBe('allow')
+  })
+
+  /**
+   * 参数与位置参数可以任意穿插，所以 `-Recurse` 用前视找。
+   * 只认「`-Recurse` 在路径前面」的话，把开关挪到后面就绕过去了。
+   */
+  test('Remove-Item 的开关放哪都算', () => {
+    expect(kind('Remove-Item C:\\ -Recurse -Force')).toBe('deny')
+    expect(kind('Remove-Item -Recurse -Force ~')).toBe('deny')
+    expect(kind('Remove-Item -Recurse dist')).toBe('allow')
+  })
+
+  /**
+   * **`.qy/` 与 `.agents/` 在这里同样不拦，这是有意的，不是漏了。**
+   *
+   * 理由与 POSIX 侧一字不差（见 `policy.ts` 里 `OUTSIDE_LOCATION` 上方那段）：
+   * 模型手里已经有 `run_command`，给自己加个工具并没有多出任何能力；而
+   * `.agents/memory/` 本来就是 `memory` 工具在写，shell 拦、工具不拦就是两套账。
+   * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一件事，
+   * 换个方言不改变上面两条。
+   */
+  test('项目里的 .qy / .agents 照常可写', () => {
+    expect(kind('Set-Content .qy\\mcp.json -Value x')).toBe('allow')
+    expect(kind('Remove-Item .agents\\memory\\note.md')).toBe('allow')
+  })
+})
+
+/**
  * **不该拦的一律放行。**
  *
  * 「起服务器」「读工作区外」「装新包」全是编码 agent 的本职工作，一条都不许进
@@ -263,6 +351,25 @@ describe('additionalDirectories', () => {
   test('清单外的位置仍然拒', () => {
     expect(decideCommand(`echo x > ${join(H, 'other', 'out.txt')}`, withExtra).kind).toBe('deny')
     expect(decideCommand('rm -rf ~/other', withExtra).kind).toBe('deny')
+  })
+
+  /** PowerShell 的写法一样能用这份授权，否则「配了却不管用」。 */
+  test('清单内的位置，PowerShell 写法同样可写', () => {
+    expect(
+      decideCommand(`Set-Content ${join(H, 'data', 'out.txt')} -Value 1`, withExtra).kind,
+    ).toBe('allow')
+  })
+
+  /**
+   * **一条命令里只要有一处没被授权，整条就拒。**
+   *
+   * 覆盖检查扫的写法必须与拒绝规则认的写法同源：只往拒绝那边加一种写法的话，
+   * 覆盖检查看不见它，`.every()` 判成「全部被覆盖」，于是这条整个放行——
+   * 多认一种写法反而放松了规则。
+   */
+  test('一处授权盖不住另一处没授权的', () => {
+    const cmd = `Copy-Item a.txt $env:APPDATA\\b.txt; Set-Content ${join(H, 'data', 'o.txt')} -Value x`
+    expect(decideCommand(cmd, withExtra).kind).toBe('deny')
   })
 
   /** 凭证那条不受它影响——把 `~/.ssh` 加进可写目录清单也不该放开私钥。 */

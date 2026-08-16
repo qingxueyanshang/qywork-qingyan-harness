@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
 import { registerBuiltinTools } from './index.ts'
@@ -46,19 +46,21 @@ function registry(): ToolRegistry {
 }
 
 /**
- * 「这台机器没有 bash」时注册出来的工具名。
+ * 在「这台机器没有 bash」的状态里跑一段。
  *
  * 用 `QYWORK_BASH_PATH` 指到一个不存在的位置来制造这个状态——那是探测的第一顺位，
  * 所以它同时验了两件事：**指错即无**，以及**探测是每次现跑的**（缓存的话这里拿到的
  * 还是上一轮的结果）。
+ *
+ * **整段执行都要留在这个状态里**，所以它是 async 的：`spawnGuarded` 起进程时会自己
+ * 重新探一次 shell，提前把环境变量还回去的话，注册按 PowerShell 算、真正执行的却是
+ * bash——而那种测试永远是绿的，测的却不是它声称的那件事。
  */
-function builtinNamesWithoutShell(): string[] {
+async function withoutBash<T>(fn: () => T | Promise<T>): Promise<T> {
   const prev = process.env[BASH_PATH_ENV]
   process.env[BASH_PATH_ENV] = join(tmpdir(), 'qywork-there-is-no-bash-here')
   try {
-    const r = new ToolRegistry()
-    registerBuiltinTools(r)
-    return r.list().map((t) => t.name)
+    return await fn()
   } finally {
     if (prev === undefined) delete process.env[BASH_PATH_ENV]
     else process.env[BASH_PATH_ENV] = prev
@@ -396,53 +398,81 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 工具说明里必须写明**真正在跑的那个 shell**。
+   * 工具说明里必须写明**真正在跑的那个 shell**，而且写在第一句。
    *
-   * 模型只被告知「平台：win32」时会写 cmd/bash 的写法，而 Windows 上真跑
-   * `powershell.exe` 的话 `&&` 是解析错误，整条命令一个字都不执行
-   * （实测 `node --version & python --version` 就这么废掉）。
+   * `run_command` 这个名字不携带方言，模型的默认输出是 bash——方言只剩描述这一个
+   * 来源，而描述是从头读的。埋在第三句等于没说：账本里有过只被告知「平台：win32」
+   * 就写出 POSIX 组合命令、在 PowerShell 上一个字都没执行的调用。
    * 锁的是「说的和跑的是同一个」，不是某句文案。
    */
-  test('run_command 的说明写明真正在用的 shell', () => {
+  test('run_command 的说明第一句就是方言提示，且点到真正那个可执行文件', () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器没有 bash，这条测不了')
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const spec = registry()
       .list()
       .find((t) => t.name === 'run_command')
-    expect(spec?.description).toContain(shell.hint)
-    // shell 只有 bash 一种，所以这里是定值比对，不按平台分叉。
-    expect(shell.path.toLowerCase()).toContain('bash')
-    expect(shell.hint).toContain('bash')
+    expect(spec?.description.startsWith(shell.hint)).toBe(true)
+    // 三档共用一条断言：提示里必须出现真正被 spawn 的那个可执行文件的名字。
+    const exe = basename(shell.path).toLowerCase().replace('.exe', '')
+    expect(shell.hint.toLowerCase()).toContain(exe)
   })
 
   /**
-   * **没有 bash 就没有 `run_command`**，而不是有一个必然失败的工具。
+   * **一个 shell 都没有才不给 `run_command`**，而不是有一个必然失败的工具。
    *
-   * 锁的是注册这一步本身：探测返回 null 时那一格从工具表里消失。
+   * 藏起 bash 之后这台机器落到哪一档，由它自己装了什么定，所以两条路都断言：
+   * - 落到 PowerShell → 照样注册，**而且真跑得通一条命令**。注册了却跑不了比不注册更糟。
+   * - 一档都没有 → 工具表里少那一格，其余一个不少。
    */
-  test('探测不到 bash 时不注册 run_command', () => {
+  test('藏起 bash 之后：有 PowerShell 就照样注册并跑得通，一档都没有才不注册', async () => {
+    const root = await workspace()
     expect(
       registry()
         .list()
         .map((t) => t.name),
     ).toContain('run_command')
-    const names = builtinNamesWithoutShell()
-    expect(names).not.toContain('run_command')
-    // 其余工具一个都不能少——缺 bash 只影响这一个。
+
+    const shell = await withoutBash(() => commandShell())
+    const names = await withoutBash(() =>
+      registry()
+        .list()
+        .map((t) => t.name),
+    )
+    // 其余工具一个都不能少——shell 那一格只影响这一个。
     expect(names).toContain('read_file')
     expect(names).toContain('grep')
-  })
+
+    if (shell === null) {
+      expect(names).not.toContain('run_command')
+      return
+    }
+    expect(names).toContain('run_command')
+    // 非 bash 的方言提示必须自己否掉 bash，否则模型照 POSIX 写。
+    expect(shell.hint).toContain('不是 bash')
+    const out = await withoutBash(() =>
+      registry().execute('run_command', { command: 'echo qywork-shell-ok' }, ctx(root)),
+    )
+    expect(out.status).toBe('success')
+    expect(String(out.data?.stdout)).toContain('qywork-shell-ok')
+  }, 20_000)
 
   /**
-   * `&&` 必须真的能跑。
+   * 顺序执行两条命令，用**当前这个 shell 的写法**。
    *
-   * Windows 上跑 PowerShell 5.1 的话 `&&` 是解析错误，模型每写一条 POSIX 组合
-   * 命令就废一次。**测的是原始失败形状**（一条带 `&&` 的命令），
-   * 不是「选中了 bash」这个中间量。
+   * 测的是原始失败形状：bash 与 pwsh 7 上是 `&&`，而 Windows PowerShell 5.1 上
+   * `&&` 是解析错误、整条命令一个字都不执行，那一档的写法只能是 `;`。
+   * 分叉按可执行文件名判——那正是 `resolveCommandShell` 挑中它用的同一把钥匙。
    */
-  test('POSIX 组合命令能跑通', async () => {
+  test('当前 shell 的组合命令能跑通', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
-    const out = await registry().execute('run_command', { command: 'echo a && echo b' }, ctx(root))
+    const sep = basename(shell.path).toLowerCase().startsWith('powershell') ? ';' : '&&'
+    const out = await registry().execute(
+      'run_command',
+      { command: `echo a ${sep} echo b` },
+      ctx(root),
+    )
     expect(out.status).toBe('success')
     expect(String(out.data?.stdout)).toContain('a')
     expect(String(out.data?.stdout)).toContain('b')
