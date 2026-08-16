@@ -101,29 +101,35 @@ export function closeOverlay(): void {
  *
  * 最早那版是六个平行浮层（定时、记忆、插件、团队、手机、设置），每个自己一套
  * 开关——「设置和配对同时开着」在类型上完全合法。类目导航就是解药：一个弹窗，
- * 左边一栏列类目，十个类目共用同一个状态。
+ * 左边一栏列类目，全部类目共用同一个状态。
  *
  * ## 为什么不是整页
  *
  * 中间试过整页：打开设置时左栏换成类目导航、主区换成设置内容。代价是「改一格
  * 就走」被做成了一次场景切换——顶栏的搜索和面板开关得跟着藏，回来还要点一次
  * 「返回」。类目导航塞得进弹窗，所以整页那一层没有存在的理由。
+ *
+ * ## 横线上下是两类东西
+ *
+ * 上面三项（`general` / `models` / `modules`）是「这个 agent 是什么」，其中
+ * `modules` 是说明书——只读，不配置；横线下面每一项都是一个模块的操作台，
+ * 有真实的表单。**没有可配项的模块不给独立页**，它在 `modules` 里有条目就够了，
+ * 开一个空页就是空壳。
  */
 export type SettingsPage =
   | 'general'
   | 'models'
+  | 'modules'
   | 'access'
-  | 'tools'
-  | 'team'
   | 'memory'
   | 'skills'
+  | 'team'
   | 'mcp'
   | 'plugins'
   | 'schedules'
-  | 'mobile'
 export const [settingsPage, setSettingsPage] = createSignal<SettingsPage | null>(null)
 
-/** 打开设置。不带参数回到「系统设置」——它是唯一不需要前置知识的类目。 */
+/** 打开设置。不带参数回到「通用」——它是唯一不需要前置知识的类目。 */
 export function openSettings(page: SettingsPage = 'general'): void {
   setSettingsPage(page)
 }

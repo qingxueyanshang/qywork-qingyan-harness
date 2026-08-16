@@ -380,6 +380,22 @@
 .fold-target {
   white-space: nowrap;
 }
+/* 改了多少行。**在文本槽外面**：槽里那一串负责单行省略，路径一长这两个数就
+   跟着被截掉，而它们是定宽的事实，该钉在行尾。等宽数字，行与行之间对得齐。 */
+.fold-diff {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.fold-add {
+  color: var(--success);
+}
+.fold-del {
+  color: var(--danger);
+}
 .fold.failed > .fold-head {
   color: var(--danger);
 }

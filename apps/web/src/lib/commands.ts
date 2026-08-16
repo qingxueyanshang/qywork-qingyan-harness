@@ -69,7 +69,7 @@ export function buildCommands(): Command[] {
     { id: 'team', label: '智能体', icon: IconUsers, run: () => openSettings('team') },
     { id: 'schedules', label: '定时任务', icon: IconClock, run: () => openSettings('schedules') },
     { id: 'plugins', label: '插件', icon: IconPlug, run: () => openSettings('plugins') },
-    { id: 'settings', label: '系统设置', icon: IconSettings, run: () => openSettings() },
+    { id: 'settings', label: '设置', icon: IconSettings, run: () => openSettings() },
   ]
 }
 

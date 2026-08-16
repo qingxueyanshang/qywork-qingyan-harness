@@ -2,10 +2,10 @@ import { For, type JSX } from 'solid-js'
 import { type SettingsPage, setSettingsPage, settingsPage } from '../../lib/store/index.ts'
 import {
   IconBrain,
+  IconCanvas,
   IconClock,
   IconFile,
   IconPackage,
-  IconPhone,
   IconPlug,
   IconSettings,
   IconShield,
@@ -17,10 +17,14 @@ import {
  * 设置的类目导航。**它是弹窗里的左边一栏**，不带出口——关闭在弹窗头部那个 ×，
  * 一个浮层只该有一条关法。
  *
- * 分两组，中间一条分隔线，判据是「改的是谁」：
- * 上组是这台机器怎么跑（外观、模型、能碰哪些路径），下组是 agent 带着什么
- * （团队、记忆、插件、定时、手机）。下组那五项不要平铺到左栏底部和「设置」并排——
- * 它们是设置的子项，不是它的兄弟。
+ * 分两组，中间一条分隔线，判据是**说明书还是操作台**：
+ * 上组三项回答「这个 agent 是什么」——长什么样、用哪个模型、由哪些模块组成；
+ * 「模块」那一页只读，全部读数与说明都在里面。下组每一项是一个模块的操作台，
+ * 都有真实的表单。
+ *
+ * 上一版的判据是「这台机器怎么跑 / agent 带着什么」，**分不开**：
+ * 「权限与沙箱」两边都算，而「工具」在上组、同样产出工具的 MCP 与插件在下组。
+ * 「手机接入」现在并进「通用」——它是应用怎么被访问，不是 agent 的能力模块。
  */
 interface Item {
   id: SettingsPage
@@ -30,19 +34,18 @@ interface Item {
 
 const GROUPS: Item[][] = [
   [
-    { id: 'general', label: '系统设置', icon: IconSettings },
+    { id: 'general', label: '通用', icon: IconSettings },
     { id: 'models', label: '模型', icon: IconPackage },
-    { id: 'access', label: '权限与沙箱', icon: IconShield },
-    { id: 'tools', label: '工具', icon: IconTerminal },
+    { id: 'modules', label: '模块', icon: IconCanvas },
   ],
   [
-    { id: 'team', label: '智能体', icon: IconUsers },
+    { id: 'access', label: '命令与进程', icon: IconShield },
     { id: 'memory', label: '记忆', icon: IconBrain },
     { id: 'skills', label: '技能', icon: IconFile },
+    { id: 'team', label: '智能体', icon: IconUsers },
     { id: 'mcp', label: 'MCP', icon: IconTerminal },
     { id: 'plugins', label: '插件', icon: IconPlug },
     { id: 'schedules', label: '定时任务', icon: IconClock },
-    { id: 'mobile', label: '手机接入', icon: IconPhone },
   ],
 ]
 

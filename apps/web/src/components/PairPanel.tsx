@@ -25,10 +25,12 @@ interface PairingInfo {
  * 候选地址全部列出并各配一个二维码：自动判断在装了 VPN / Hyper-V / Docker 的
  * 机器上没有可靠解（实测会选中 VPN 隧道或虚拟交换机），扫不通要能一键换一个。
  *
- * 标题与那句边界说明归 `SettingsDialog` 的 `META` 管，这里只出内容。
+ * 它是「通用」页里的一节（配对改的是这个应用怎么被访问，不是 agent 的能力模块），
+ * 小标题由那一页给，这里只出内容。
  */
 export default function PairPanel() {
-  // 组件只在这一页被选中时才渲染，所以这里不需要「开着才拉」的门闩。
+  // 「通用」一打开就渲染，这一趟请求跟着发。不加「开着才拉」的门闩：
+  // `/api/pairing` 只读本机网卡与令牌，和同一页上的配置、能力两趟请求同量级。
   const [info, { refetch }] = createResource(() => client.api<PairingInfo>('/api/pairing'))
   const [picked, setPicked] = createSignal(0)
   const [busy, setBusy] = createSignal(false)

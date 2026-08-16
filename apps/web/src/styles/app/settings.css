@@ -210,17 +210,62 @@
   font-weight: 500;
 }
 
-/* 「它会做什么」那一页：一个功能方向下若干条用途。
-   列的是中文用途，不是工具名——机制字段只在 CLI 里露面。 */
-.tool-uses {
-  margin: 0;
-  padding-left: 1.1em;
+/* ── 「模块」那一页 ──
+ *
+ * 一行给全四样：底层名 + 一句话 + 权限 + 参数。名字用等宽，它是模型看到的那个串，
+ * 和正文用同一种字形就没法一眼扫出来。
+ *
+ * 权限钉在行尾右缘：找「哪些会动我的机器」时眼睛只扫右缘，不用逐行读完中文。 */
+.module-tool {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: baseline;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.module-name {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+/* 外置工具才有：注册名是消毒过的（`my.server` → `mcp__my_server__x`），
+   真正的来源只有这一格说得出。内置工具不显示——那是默认，写出来只是噪声。 */
+.module-src {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.module-summary {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: 1.5;
+}
+.module-perm {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* 参数另起一行，跟着名字缩进。挤进上面那行的话，名字长一点就把中文用途挤没了。 */
+.module-params {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+/* 组头右侧的跳转。**只有真有操作台的组才出现**——指向空页比不指更糟。 */
+.module-consoles {
+  margin-left: auto;
+  display: flex;
+  gap: var(--s-2);
+}
+.module-console {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 /* 三态分段控件。用一排按钮而不是下拉：三个选项全部可见时，
