@@ -1,10 +1,11 @@
 import type { EditorView } from '@codemirror/view'
 import type { JSX } from 'solid-js'
-import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js'
+import { createResource, createSignal, For, lazy, Match, onCleanup, Show, Switch } from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import {
   client,
   closePanel,
+  isDesktopShell,
   type PanelView,
   panelMaximized,
   previewPath,
@@ -28,6 +29,10 @@ import {
 } from './Icons.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
+// 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本选不到这个视图，
+// 静态引入等于让它们白背一份永远不执行的代码。
+const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
+
 interface FileNode {
   name: string
   path: string
@@ -50,20 +55,29 @@ interface PreviewResult {
 }
 
 /**
- * 三个固定视图。顺序即优先级。
+ * 固定视图。顺序即优先级。
  *
- * 写成一份清单而不是三段 JSX：标签页的外观改一次要改三处，改漏一处的表现是
+ * 写成一份清单而不是几段 JSX：标签页的外观改一次要改每一处，改漏一处的表现是
  * 「有一格长得不一样」，而 CSS 不会为此报错。
  *
- * **这块面板只回答「这一轮在干什么」**：待办、文件、改动。配置类的东西
- * （角色编排、逐条能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
+ * **这块面板只回答「这一轮在干什么」**：待办、文件、改动、以及你自己动手的那个
+ * 终端。配置类的东西（角色编排、逐条能力开关）不进来——它们和「现在跑到哪了」
+ * 不是同一个问题。
+ *
+ * `desktopOnly` 的那一格在别的端**根本不渲染**，不是渲染出来点了报错：PTY 是本机
+ * 进程和一对系统句柄，手机和浏览器不可能有（CLAUDE.md B5）。
  */
-const VIEWS: { view: PanelView; label: string }[] = [
+const VIEWS: { view: PanelView; label: string; desktopOnly?: true }[] = [
   // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
   { view: 'git', label: '变更' },
+  { view: 'terminal', label: '终端', desktopOnly: true },
 ]
+
+/** 桌面外壳判定一次就够：它在一次运行里不会变。 */
+const DESKTOP = isDesktopShell()
+const VISIBLE_VIEWS = VIEWS.filter((v) => DESKTOP || !v.desktopOnly)
 
 /**
  * 「新开预览」看板上有哪几行。
@@ -72,11 +86,10 @@ const VIEWS: { view: PanelView; label: string }[] = [
  * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
  * 看板那段 JSX 一行不用改。
  *
- * 现状（核过码，别照着标签猜）：只有「文件」有后端。终端在全项目都不存在
- * （`packages/core/src/protocol/transport.ts` 的说明），浏览器与无限画布没有服务端，
- * Word / PPT 不在 `packages/server/src/files.ts` 的分类表里，
- * Excel 虽然分到 `tabular`，但 xlsx 是二进制、走到 `looksBinary` 就退成
- * 「无法以文本预览」——真能开的只有 csv / tsv，那条路文件预览本来就有。
+ * 现状（核过码，别照着标签猜）：文件和终端有后端，终端只在桌面端有。
+ * 浏览器与无限画布没有服务端；Word / PPT 不在 `packages/server/src/files.ts`
+ * 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是二进制、走到 `looksBinary`
+ * 就退成「无法以文本预览」——真能开的只有 csv / tsv，那条路文件预览本来就有。
  */
 const PREVIEW_SOURCES: {
   key: string
@@ -84,6 +97,8 @@ const PREVIEW_SOURCES: {
   icon: (p: { size?: number }) => JSX.Element
   /** 缺席 = 这一项还没有后端。 */
   open?: () => void
+  /** 这一端不可能有，整行不渲染——和「以后会接上」的置灰是两回事。 */
+  desktopOnly?: true
 }[] = [
   {
     key: 'file',
@@ -96,13 +111,21 @@ const PREVIEW_SOURCES: {
       setSidePanel('files')
     },
   },
-  { key: 'terminal', label: '终端', icon: IconTerminal },
+  {
+    key: 'terminal',
+    label: '终端',
+    icon: IconTerminal,
+    desktopOnly: true,
+    open: () => setSidePanel('terminal'),
+  },
   { key: 'browser', label: '浏览器', icon: IconGlobe },
   { key: 'word', label: 'Word', icon: IconFile },
   { key: 'ppt', label: 'PPT', icon: IconFile },
   { key: 'excel', label: 'Excel', icon: IconFile },
   { key: 'canvas', label: '无限画布', icon: IconCanvas },
 ]
+
+const BOARD_ROWS = PREVIEW_SOURCES.filter((s) => DESKTOP || !s.desktopOnly)
 
 /**
  * 右侧面板容器。`VIEWS` 那几个视图共用同一块区域，互斥显示。
@@ -122,7 +145,7 @@ export default function SidePanel() {
       <aside class="side-panel">
         <header class="side-head">
           <div class="side-tabs" role="tablist">
-            <For each={VIEWS}>
+            <For each={VISIBLE_VIEWS}>
               {(t) => (
                 <button
                   class="side-tab"
@@ -192,6 +215,11 @@ export default function SidePanel() {
               <Match when={sidePanel() === 'git'}>
                 <GitChanges />
               </Match>
+              {/* 桌面之外这个视图选不到（页签和看板都不渲染它），
+                  留着这个 Match 只是让「视图值 ↔ 渲染」这张表保持完整。 */}
+              <Match when={sidePanel() === 'terminal'}>
+                <TerminalPanel />
+              </Match>
             </Switch>
           </Show>
         </div>
@@ -214,7 +242,7 @@ export default function SidePanel() {
 function PreviewBoard(props: { onPick: () => void }) {
   return (
     <div class="preview-board">
-      <For each={PREVIEW_SOURCES}>
+      <For each={BOARD_ROWS}>
         {(s) => (
           <button
             class="board-item"
