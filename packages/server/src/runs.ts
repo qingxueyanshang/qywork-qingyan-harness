@@ -45,6 +45,27 @@ export interface ActiveRun {
 }
 
 /**
+ * 待续起标记：这条会话正在自动循环里，下一轮该按这个目标的这个版本发起。
+ *
+ * ## 为什么挂在这里，而且**绝不落盘**
+ *
+ * 「循环开着」是**进程内**的事实，不是账本里的事实。落盘的话，一个跑飞之后
+ * 崩掉的循环会在下次启动时自己复活——而没有人再点过「继续」。
+ * 挂在 `RunManager` 上恰好等价于「不持久化」：进程重启即空表，账本里那个
+ * `active` 的目标就静静躺着，等用户明确点继续（`goal.resume`）。
+ *
+ * **不挂 Session**：服务端每条消息新建一个 Session，它活不过这一条消息，
+ * 挂上去的话循环最多跑一轮。
+ *
+ * `revision` 是这次续起的**预留**：真正发起之前要重读目标，对不上就丢弃这次
+ * 排队且不增加轮数——中间被人改过的目标不该按旧版本继续跑。
+ */
+export interface GoalArm {
+  goalId: string
+  revision: number
+}
+
+/**
  * 已授予的范围。
  *
  * `once` 不进这张表——它按定义只对当次调用生效，记下来反而会误放行下一次。
@@ -65,6 +86,8 @@ export class RunManager {
   /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
   private readonly reserved = new Set<string>()
   private readonly grants = new Map<string, Grant>()
+  /** 每个会话最多一条待续起标记。见 `GoalArm`。 */
+  private readonly armed = new Map<string, GoalArm>()
 
   /**
    * 判断已有授权是否覆盖本次请求。
@@ -151,6 +174,25 @@ export class RunManager {
         this.pending.delete(id)
       }
     }
+  }
+
+  /** 记下（或刷新）待续起标记。目标每变一次版本都要重记，见 `GoalArm`。 */
+  arm(conversationId: ConversationId, arm: GoalArm): void {
+    this.armed.set(conversationId, arm)
+  }
+
+  /**
+   * 解除待续起标记。
+   *
+   * 用户发消息、目标进终态、这一轮被中断——三种情况都走这里。
+   * **人类消息优先**就是这条：他一说话，排着的那次自动续起就作废。
+   */
+  disarm(conversationId: ConversationId): void {
+    this.armed.delete(conversationId)
+  }
+
+  armedOf(conversationId: ConversationId): GoalArm | null {
+    return this.armed.get(conversationId) ?? null
   }
 
   interrupt(runId: RunId): boolean {

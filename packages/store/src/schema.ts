@@ -745,6 +745,41 @@ SET tool_name = CASE json_extract(payload, '$.args.action')
 WHERE tool_name = 'memory';
 `,
   },
+  {
+    id: 22,
+    name: 'goals',
+    /**
+     * 目标与自动续起的账本。
+     *
+     * **每次变更一行，带完整快照。** 不是「一行目标就地 UPDATE」：目标要回答
+     * 「它为什么停在这」，而就地更新只留得下最后那一次状态，中间的暂停、改写、
+     * 轮次推进全部丢失——而那正是用户回头要看的东西。
+     *
+     * **`conversation_extras` 装不下它**：那是「会话关掉了哪几项」的两列成员表，
+     * 没有版本、没有顺序、没有快照。
+     *
+     * **主键就是 `(goal_id, revision)`，不另发一个事件 id。** 复合主键把
+     * 「同一个 revision 不许写两次」变成数据库层的约束，两个写入方撞车时
+     * 后到的那个直接抛，而不是静默追加出第二条同版本的记录。
+     *
+     * **「这条会话最新的目标」靠 `ORDER BY goal_id DESC` 取**：`gl_` 前缀后面
+     * 是定宽单调 id（`core/domain/ids.ts`），字典序严格等于创建顺序。
+     * 所以这里不需要自增列，也就不会有自增列被删后复用的老问题。
+     *
+     * 索引带 `conversation_id`：FK 的级联删除要靠它，无索引即全表扫描。
+     */
+    sql: /* sql */ `
+CREATE TABLE goal_events (
+  goal_id         TEXT NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  revision        INTEGER NOT NULL,
+  snapshot        TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  PRIMARY KEY (goal_id, revision)
+);
+CREATE INDEX idx_goal_events_conv ON goal_events(conversation_id, goal_id);
+`,
+  },
 ]
 
 /**

@@ -82,12 +82,15 @@ export interface ServerCapabilities {
   // 别往这里加没人读的布尔（`pty` / `git` / `fileWatch` 那三个就是这么删掉的），
   // 理由各不相同但结论一样：**声明一个没有消费者的能力位等于没声明**。
   //
-  // - `pty` 恒 false，而全项目就没有终端功能，声明一个不存在能力的「不存在」
+  // - `pty` 恒 false，而当时全项目没有终端功能，声明一个不存在能力的「不存在」
   //   等于什么都没说；
   // - `git` 恒 true，而 git 面板实际上是靠 `/api/git/status` 的返回判断的；
   // - `fileWatch` 恒 true，**而它是假的**——全仓一个文件监视器都没有。
   //
-  // 以后真做了终端，连同它的消费者一起加回来。
+  // 终端后来做了，但**仍然不该回到这里**：PTY 在桌面外壳的 Rust 侧
+  // （`apps/desktop/src-tauri/src/terminal.rs`），服务端根本不参与，
+  // 前端按 `isDesktopShell()` 判有没有。握手是服务端对客户端的声明，
+  // 拿它去报一件服务端不知情的事，报出来的必然是猜的。
   // 插件 / 编排后端 / MCP 三份清单也不在这里了，理由是**它们不是进程级的**：
   // 三者都配在项目目录下（`.qy/plugins`、`.qy/team.json`、`.qy/mcp.json`），
   // 而一条连接横跨用户同时开着的所有项目。报在握手里等于「A 项目的插件显示在
@@ -190,6 +193,7 @@ export type ClientCommand =
   | SubscribeCommand
   | SetModelCommand
   | CompactCommand
+  | GoalResumeCommand
 
 export interface SendMessageCommand {
   type: 'message.send'
@@ -235,6 +239,22 @@ export interface SetModelCommand {
 /** 用户显式触发上下文压缩。 */
 export interface CompactCommand {
   type: 'conversation.compact'
+  conversationId: ConversationId
+}
+
+/**
+ * 用户在界面上点「继续」——把停下来的目标重新跑起来。
+ *
+ * **它必须自己发起一轮**，不能只把状态改回 `active` 等下一次别的 run 收尾时
+ * 才动：那时候用户已经等了不知道多久，而界面上什么都没发生。
+ * 服务端因此走的是与自动续起完全同一个排队入口（`run-control.ts`）。
+ *
+ * **没有对应的「暂停」指令。** 循环跑起来之后停它的动作就是中断这一轮
+ * （`run.interrupt`），run 收尾时会把目标置回 `paused` 并解除续起标记——
+ * 再开一条指令等于给同一件事开第二个入口。
+ */
+export interface GoalResumeCommand {
+  type: 'goal.resume'
   conversationId: ConversationId
 }
 

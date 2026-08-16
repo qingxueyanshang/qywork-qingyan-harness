@@ -15,6 +15,9 @@ import type {
   ActionDescriptor,
   ActionKind,
   FileChange,
+  Goal,
+  GoalAction,
+  GoalWriteResult,
   IntermediateResourceRef,
   ResourceCoverage,
   TodoItem,
@@ -66,6 +69,45 @@ export interface FileReadPort {
   seen(path: string): string | null
   /** 记下刚读到（或刚写出）的内容哈希。 */
   mark(path: string, hash: string): void
+}
+
+/**
+ * 目标端口 —— 「立一个目标，一轮接一轮做下去」的那个目标。
+ *
+ * ## 为什么是端口
+ *
+ * 与 `SinkPort` 同一条理由：目标落**账本**（`@qywork/store`），而 tools 在依赖图上
+ * **低于** store，工具直接引它就是一条反向边。所以接口定义在这里（agent），
+ * 实现由 runtime 注入——它同时握着账本和事件通道。
+ *
+ * **不要改用 `ctx.resources`。** 那个 Map 的唯一产地是 `runtime/session.ts` 里的
+ * `new Map()`，全仓没有任何键被注入过；走它等于让这条链路一出生就是死的。
+ *
+ * ## 写入结果是返回值，不是异常
+ *
+ * 三种拒绝（revision 过期、状态不允许、缺理由）都要**原样交给模型**——它得知道
+ * 是哪一种才能换个做法。异常会被注册表压成一句「工具执行出错」。
+ *
+ * ## 变更事件由实现方发
+ *
+ * 写成功之后 `goal` 事件由端口实现负责广播，不由工具再调一次 `emitXxx`：
+ * 「目标变了」和「把它写下去」是同一件事，拆成两步就会有人只做一半。
+ * （待办那条通道是另一回事——待办不落账本，工具是它唯一的真源。）
+ *
+ * `undefined` 是合法值：`qy exec` 这类一次性执行没有会话，也就没有目标。
+ * 工具必须能降级——明确报「这里没有目标账本」，不能假装记下了。
+ */
+export interface GoalPort {
+  /** 当前会话的目标；没立过就是 null。 */
+  read(): Goal | null
+  create(input: { objective: string; maxRounds?: number }): GoalWriteResult
+  update(input: {
+    goalId: string
+    revision: number
+    action: GoalAction
+    objective?: string
+    blockedReason?: string
+  }): GoalWriteResult
 }
 
 /**
@@ -144,6 +186,13 @@ export interface ToolContext {
    * 那是**更严**的一侧（每轮要求重读一次），漏接不会放宽任何边界。
    */
   reads?: FileReadPort
+  /**
+   * 会话级的目标与自动续起。见 `GoalPort`。
+   *
+   * 可选而不是必填可空：没接上时目标工具明确报「本次执行没有目标账本」，
+   * 那是**更严**的一侧（循环起不来），漏接不会让任何东西自己跑起来。
+   */
+  goals?: GoalPort
   /** 长工具的中途输出回传通道（shell stdout、下载进度）。 */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**
@@ -250,7 +299,7 @@ export interface ToolOutcome {
 // ─────────────────────────────── 工具声明 ───────────────────────────────
 
 /**
- * 工具能力大类。**七个内置 + 一个类外的 `external`，没有「其他」。**
+ * 工具能力大类。**八个内置 + 一个类外的 `external`，没有「其他」。**
  *
  * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
  * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
@@ -272,6 +321,7 @@ export type ToolCategory =
   | 'web'
   | 'knowledge'
   | 'planning'
+  | 'goal'
   | 'session'
   | 'schedule'
   | 'external'
@@ -288,6 +338,7 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'web',
   'knowledge',
   'planning',
+  'goal',
   'session',
   'schedule',
   'external',

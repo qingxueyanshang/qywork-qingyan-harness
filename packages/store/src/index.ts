@@ -15,6 +15,8 @@ export { ContentStore, contentPathFor } from './content.ts'
 export { Store } from './db.ts'
 // 三层作用域里被单独关掉的记忆/技能条目
 export { type ExtraKey, listDisabledExtras, setExtraEnabled } from './extras.ts'
+// 目标与自动续起：runtime 用端口喂给工具，server 在 run 收尾处判续起
+export { advanceGoalRound, createGoal, currentGoal, updateGoal } from './goals.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,

@@ -9,7 +9,7 @@ import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@
 import { getConversation, setConversationModel } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
-import { compactConversation, retryRun, startRun } from './run-control.ts'
+import { compactConversation, resumeGoal, retryRun, startRun } from './run-control.ts'
 import { runTeam } from './team-run.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
@@ -52,6 +52,15 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         },
         cmd.conversationId,
       )
+      return
+    }
+
+    case 'goal.resume': {
+      // 停下来的目标重新跑起来，并**当场**发起一轮——不能等下一次别的 run 收尾。
+      // 没有对应的 pause 指令：跑起来之后要停它就是中断这一轮（`run.interrupt`），
+      // run 收尾时会把目标置回 paused。
+      const result = resumeGoal(cmd.conversationId, deps)
+      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
       return
     }
 

@@ -20,9 +20,11 @@
 // id 与构造器：账本、事件、协议三处都按它们对齐类型
 export {
   type ConversationId,
+  type GoalId,
   type MessageId,
   newBatchId,
   newConversationId,
+  newGoalId,
   newMessageId,
   newProviderRequestId,
   newResourceId,
@@ -55,6 +57,10 @@ export {
   type FileChange,
   formatCosts,
   formatMoney,
+  type Goal,
+  type GoalAction,
+  type GoalStatus,
+  type GoalWriteResult,
   type IntermediateResourceRef,
   type Message,
   type PermissionMode,

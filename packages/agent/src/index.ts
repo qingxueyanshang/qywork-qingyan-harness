@@ -31,6 +31,7 @@ export {
   BATCH_BUDGET_RATIO,
   chargeBatchBudget,
   type FileReadPort,
+  type GoalPort,
   type PermissionVerdict,
   RESULT_BUDGET_RATIO,
   resetBatchBudget,
