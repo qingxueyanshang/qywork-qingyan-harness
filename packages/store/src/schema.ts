@@ -646,6 +646,37 @@ SET payload = json_set(
 WHERE json_extract(payload, '$.outcome.message') LIKE '计划已更新%';
 `,
   },
+  {
+    id: 19,
+    name: 'external_tools_action_call',
+    /**
+     * MCP 与插件的工具落到动作轴上的新值 `call`，**已经落盘的行跟着转**。
+     *
+     * 不转的表现不是报错：回放历史会话时，同一个 MCP 工具的老行写着「运行」
+     * （destructive 的写着「删除」、resource 那两个写着「读取」），
+     * 而它今天调一次记的是「调用」——同一件事在同一条时间线上有两种说法。
+     *
+     * **判据是工具名里的 `__`。** 双下划线只由两条产名路径造出来：
+     * `mcp__<server>__<tool>` 与插件的 `<id>__<tool>`；内置工具名一个都不含它
+     * （`read_file` / `write_todos` / `run_command` 这些是单下划线）。
+     * 所以「含 `__`」等价于「这是一个外置工具的调用」，不需要另外维护一份内置名单
+     * ——那会是第二本账，加一个内置工具就得记得回来改它。
+     *
+     * **不按旧值挑，一律改写。** 外置工具历史上记过 run（普通 MCP 工具）、
+     * delete（destructive hint）、read（resource 那两个）、以及插件清单自己声明的
+     * 任意一个值；今天它们全归 call，所以转换的目标只由「谁产生的」决定。
+     *
+     * 幂等：转完之后再跑一次命中同样的行，写进去的还是 `call`。
+     * 没有 `action` 的行被 WHERE 挡在外面——`json_set` 会给它凭空长出一个键。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(payload, '$.action.kind', 'call')
+WHERE tool_name IS NOT NULL
+  AND instr(tool_name, '__') > 0
+  AND json_extract(payload, '$.action.kind') IS NOT NULL;
+`,
+  },
 ]
 
 /**

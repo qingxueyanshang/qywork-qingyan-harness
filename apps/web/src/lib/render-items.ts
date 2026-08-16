@@ -140,15 +140,17 @@ export function groupTitle(members: TranscriptItem[]): string {
  * 动作动词。**一个 kind 一个词，一个不多。**
  *
  * 没有「其他 / 未知」这一档，也不需要有：动作由工具在注册期声明，注册表是唯一权威，
- * 这张表覆盖全部六个合法值。查不到的情况怎么被逐条堵死，见 `actionLabel`。
+ * 这张表覆盖全部七个合法值。查不到的情况怎么被逐条堵死，见 `actionLabel`。
  */
 const VERBS: Record<ActionKind, string> = {
   query: '查询',
   read: '读取',
   write: '创建',
-  edit: '编辑',
+  // 「创建 — 修改 — 删除」是一套；「编辑」是 UI 操作的说法，不是数据变更的说法。
+  edit: '修改',
   delete: '删除',
   run: '运行',
+  call: '调用',
 }
 
 export function verb(kind: ActionKind): string {

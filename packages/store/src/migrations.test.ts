@@ -195,3 +195,66 @@ describe('迁移 18：再扫一遍待办回执的旧文案', () => {
     expect(payloadOf(db, 'other').outcome?.message).toBe('命令执行成功')
   })
 })
+
+/**
+ * 外置工具（MCP / 插件）的动作转成 `call`。
+ *
+ * 不转的表现是同一件事在时间线上有两种说法：老行写着「运行 mcp:github/create_issue」，
+ * 今天调同一个工具记的是「调用」。判据是工具名里的 `__`——只有 `mcp__<server>__<tool>`
+ * 与插件的 `<id>__<tool>` 会带它，内置工具名一个都不含。
+ */
+describe('迁移 19：外置工具的动作转成 call', () => {
+  const kindOf = (db: Database, id: string) => payloadOf(db, id).action.kind
+
+  test('MCP 与插件的行一律转成 call，不管旧值是什么', () => {
+    const db = dbBefore(19)
+    const rows: [string, string, string][] = [
+      // id, tool_name, 旧 kind
+      ['m_run', 'mcp__github__create_issue', 'run'],
+      ['m_del', 'mcp__github__delete_repo', 'delete'],
+      ['m_res', 'mcp__demo__fetch_resource', 'read'],
+      ['p_write', 'com_example_mytool__count_lines', 'write'],
+      ['p_query', 'demo_lines__scan', 'query'],
+    ]
+    for (const [id, tool, kind] of rows) {
+      insertStep(db, id, tool, {
+        kind: 'tool_result',
+        action: { kind, objectLabel: 'mcp:github/create_issue', target: null },
+      })
+    }
+    applyOne(db, 19)
+    for (const [id] of rows) expect(kindOf(db, id)).toBe('call')
+    // 对象名不动：换的是动作，不是被操作的东西。
+    expect(payloadOf(db, 'm_run').action.objectLabel).toBe('mcp:github/create_issue')
+  })
+
+  test('内置工具的行原样不动 —— 判据是名字里的双下划线', () => {
+    const db = dbBefore(19)
+    const builtin: [string, string, string][] = [
+      ['b_run', 'run_command', 'run'],
+      ['b_read', 'read_file', 'read'],
+      ['b_todos', 'write_todos', 'edit'],
+      ['b_res', 'read_resource', 'read'],
+      ['b_skill', 'read_skill', 'read'],
+    ]
+    for (const [id, tool, kind] of builtin) {
+      insertStep(db, id, tool, {
+        kind: 'tool_result',
+        action: { kind, objectLabel: '文件', target: 'a.ts' },
+      })
+    }
+    applyOne(db, 19)
+    for (const [id, , kind] of builtin) expect(kindOf(db, id)).toBe(kind)
+  })
+
+  /** `json_set` 会给没有 action 的行凭空长出一个键，WHERE 必须把它们挡在外面。 */
+  test('没有 action 的行不长出 action', () => {
+    const db = dbBefore(19)
+    insertStep(db, 'noaction', 'mcp__demo__echo', { kind: 'tool_result', args: { text: 'x' } })
+    applyOne(db, 19)
+    const row = db
+      .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
+      .get('noaction')!
+    expect(JSON.parse(row.payload).action).toBeUndefined()
+  })
+})

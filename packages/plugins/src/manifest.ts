@@ -50,13 +50,17 @@ export type PluginPermission =
   /** 读写自己的私有存储 */
   | 'storage'
 
+/**
+ * 一个工具贡献。
+ *
+ * **动作语义不在这里声明。** 插件工具一律记 `call`（外置调用），那是宿主的判定；
+ * 清单里写 `actionKind` 不会被读，也不会报错。
+ */
 export interface ToolContribution {
   /** 实际注册名会加 `<pluginId>__` 前缀，防止与内置工具或其他插件撞名。 */
   name: string
   description: string
   parameters: Record<string, unknown>
-  /** 与内置工具同一套动作语义轴（`ActionKind` 的六个真动作，不含降级值 unknown）。 */
-  actionKind: 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run'
   objectLabel: string
   permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network'
 }

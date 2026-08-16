@@ -66,9 +66,9 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // 模型按我们改过的形状传参，server 按它自己的形状校验，两边对不上。
     parameters: normalizeSchema(def.inputSchema),
 
-    // 动作语义只用于展示与并行判定。destructive 的 hint 采纳（更严），
-    // readOnly 的 hint 不采纳（会更松）。
-    actionKind: destructive ? 'delete' : 'run',
+    // 恒为 call。MCP 工具是外部 server 提供的能力，不是我们在本机执行的东西——
+    // 这条轴说的是「做了什么动作」，与下面的权限轴各管各的，不互相推导。
+    actionKind: 'call',
     objectLabel: permissionLabel(server, def.name),
     // 一律归「外部扩展」：这一类的存在理由就是不与内置分类学混排——
     // 第三方 server 提供什么、算哪个领域，我们并不知道，猜一个填进去更糟。
@@ -77,9 +77,9 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     summary: def.description?.trim() || def.name,
     targetExtractor: () => permissionLabel(server, def.name),
 
-    // 恒为 execute（destructive 时 resolvePermissionEffect 会因 actionKind
-    // 自动升级成 delete）。**不因为 readOnlyHint 降级。**
-    permissionEffect: 'execute',
+    // 权限效果**直接声明**：destructive 的 hint 采纳（更严，走 delete 闸），
+    // readOnlyHint **不采纳**（那会更松）。默认 execute，交给裁决层。
+    permissionEffect: destructive ? 'delete' : 'execute',
 
     // 不并行。MCP server 是外部进程，它对并发的处理我们一无所知，
     // 而并行带来的收益远小于「两个调用互相踩」的排查成本。
