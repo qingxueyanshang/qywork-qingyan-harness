@@ -20,14 +20,12 @@ import { IconCheck, IconSpinner } from './Icons.tsx'
  */
 export function TodoPanel() {
   const todos = () => state.todos
-  const done = () => todos().filter((t) => t.status === 'completed').length
 
   return (
     <div class="todo-panel">
       <Show when={todos().length > 0}>
-        <div class="todo-progress">
-          {done()}/{todos().length}
-        </div>
+        {/* 这里不报「几分之几」。清单本身就摆在下面，勾了几条一眼数得出来；
+            而「还剩多久」由输入区那条状态条回答，两处都报就是同一个数说两遍。 */}
         <ol class="todo-list">
           <For each={todos()}>
             {(t) => (

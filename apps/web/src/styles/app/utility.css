@@ -153,12 +153,6 @@
 .todo-panel {
   padding: var(--s-3);
 }
-.todo-progress {
-  margin-bottom: var(--s-2);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
 .todo-list {
   list-style: none;
   margin: 0;
