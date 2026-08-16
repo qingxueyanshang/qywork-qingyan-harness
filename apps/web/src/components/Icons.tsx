@@ -173,6 +173,14 @@ export const IconTerminal = (p: IconProps) => (
   </Svg>
 )
 
+/** 无限画布：一个画框，四角向外挑出去，表示边界之外还有。 */
+export const IconCanvas = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="7.2" y="7.2" width="9.6" height="9.6" rx="1.6" />
+    <path d="M4 7.2V4h3.2M16.8 4H20v3.2M20 16.8V20h-3.2M7.2 20H4v-3.2" />
+  </Svg>
+)
+
 export const IconSearch = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="10.8" cy="10.8" r="6.4" />

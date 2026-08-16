@@ -258,8 +258,7 @@
 }
 /* 用自己的类，不拿 `.truncate` 当钩子。
  * 组件去改一个工具类的表现，会让「这个工具类到底是什么」取决于它在谁里面；
- * 而 `.truncate` 全仓有二十来处在用。TeamPanel 早就是这么写的
- * （`team-member-summary truncate`），这里跟上。 */
+ * 而 `.truncate` 全仓有二十来处在用。 */
 .model-name {
   flex: 1;
 }

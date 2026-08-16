@@ -15,10 +15,10 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
  *
  * **这里的每个值都必须在 `SidePanel` 的 `<Switch>` 里有对应的 `Match`**，
  * 否则设成它的结果是面板展开、内容空白。预览是「文件」视图的一个子状态
- * （由 `previewPath` 决定），不是并列的第五个视图：它本来就是从文件树点进去的，
+ * （由 `previewPath` 决定），不是并列的第四个视图：它本来就是从文件树点进去的，
  * 做成并列项会让「返回文件树」没有自然的落点。
  */
-export type PanelView = 'todos' | 'files' | 'git' | 'team' | 'extras'
+export type PanelView = 'todos' | 'files' | 'git'
 export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
 
 /**

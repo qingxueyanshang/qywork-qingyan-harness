@@ -71,20 +71,20 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
   test('换过几次视图后，记住的是最后那个', () => {
     openPanel('files')
     openPanel('git')
-    openPanel('team')
+    openPanel('todos')
     togglePanel()
     togglePanel()
-    expect(sidePanel()).toBe('team')
+    expect(sidePanel()).toBe('todos')
   })
 
   test('反复开合不漂移 —— 偶数次回到展开，奇数次收起，视图始终是那一个', () => {
-    openPanel('team')
+    openPanel('todos')
     for (let i = 0; i < 6; i++) togglePanel()
-    expect(sidePanel()).toBe('team')
+    expect(sidePanel()).toBe('todos')
     togglePanel()
     expect(sidePanel()).toBe(null)
     togglePanel()
-    expect(sidePanel()).toBe('team')
+    expect(sidePanel()).toBe('todos')
   })
 
   test('面板头上的 × 也记住当前视图 —— 它和顶栏开关走同一条收起路径', () => {

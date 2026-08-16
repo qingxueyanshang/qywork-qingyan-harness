@@ -14,17 +14,18 @@ import {
   state,
   togglePanelMax,
 } from '../lib/store/index.ts'
-import { ExtrasPanel } from './ExtrasPanel.tsx'
 import {
   IconBranch,
+  IconCanvas,
   IconChevron,
   IconExpand,
   IconFile,
   IconFolder,
+  IconGlobe,
   IconPlus,
+  IconTerminal,
   IconX,
 } from './Icons.tsx'
-import { TeamPanel } from './TeamPanel.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
 interface FileNode {
@@ -49,40 +50,44 @@ interface PreviewResult {
 }
 
 /**
- * 五个固定视图。顺序即优先级。
+ * 三个固定视图。顺序即优先级。
  *
- * 写成一份清单而不是五段 JSX：标签页的外观改一次要改五处，改漏一处的表现是
+ * 写成一份清单而不是三段 JSX：标签页的外观改一次要改三处，改漏一处的表现是
  * 「有一格长得不一样」，而 CSS 不会为此报错。
+ *
+ * **这块面板只回答「这一轮在干什么」**：待办、文件、改动。配置类的东西
+ * （角色编排、逐条能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
  */
 const VIEWS: { view: PanelView; label: string }[] = [
   // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
   { view: 'git', label: '变更' },
-  // 「协作」会被读成多人同时看同一份东西。这里是多个 agent 按角色分工跑一件事，
-  // 一个人都不涉及——名字必须把这件事说对。
-  { view: 'team', label: 'Agent' },
-  // 「这一轮用什么」。设置页只管内容，开关全在这儿——两处都放开关的话，
-  // 用户分不清自己关掉的是这一轮还是所有会话。
-  { view: 'extras', label: '能力' },
 ]
 
 /**
- * 「新开预览」能开出什么。
+ * 「新开预览」看板上有哪几行。
  *
- * **这份清单只收真的能打开的东西。** 浏览器预览、表格预览这些插件的后端还没
- * 接进来，接进来之前不在这里占一行——一个点了没反应的菜单项比没有这一项更坏
- * （CLAUDE.md B5）。接进来时往这里加一条，`AddPreview` 一行不用改。
+ * **没有 `open` 的那几行是后端还没接上的**，看板上置灰、点不动、行尾标「未接入」。
+ * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
+ * 看板那段 JSX 一行不用改。
+ *
+ * 现状（核过码，别照着标签猜）：只有「文件」有后端。终端在全项目都不存在
+ * （`packages/core/src/protocol/transport.ts` 的说明），浏览器与无限画布没有服务端，
+ * Word / PPT 不在 `packages/server/src/files.ts` 的分类表里，
+ * Excel 虽然分到 `tabular`，但 xlsx 是二进制、走到 `looksBinary` 就退成
+ * 「无法以文本预览」——真能开的只有 csv / tsv，那条路文件预览本来就有。
  */
 const PREVIEW_SOURCES: {
   key: string
   label: string
   icon: (p: { size?: number }) => JSX.Element
-  open: () => void
+  /** 缺席 = 这一项还没有后端。 */
+  open?: () => void
 }[] = [
   {
     key: 'file',
-    label: '文件预览',
+    label: '文件',
     icon: IconFile,
     // 先清掉上一次看的那个文件再切过去：不清的话点开「新开一个预览」，
     // 出来的是上次那份内容，看着像没生效。
@@ -91,6 +96,12 @@ const PREVIEW_SOURCES: {
       setSidePanel('files')
     },
   },
+  { key: 'terminal', label: '终端', icon: IconTerminal },
+  { key: 'browser', label: '浏览器', icon: IconGlobe },
+  { key: 'word', label: 'Word', icon: IconFile },
+  { key: 'ppt', label: 'PPT', icon: IconFile },
+  { key: 'excel', label: 'Excel', icon: IconFile },
+  { key: 'canvas', label: '无限画布', icon: IconCanvas },
 ]
 
 /**
@@ -100,6 +111,12 @@ const PREVIEW_SOURCES: {
  * 放进首屏等于让「只想聊天的用户」为文件预览付费。
  */
 export default function SidePanel() {
+  /**
+   * 看板是否盖在正文上。**局部信号，不进 `sidePanel`**：它不是第四个视图，
+   * 收起面板再展开该回到用户上次看的那个视图，而不是回到「你想开点什么」。
+   */
+  const [board, setBoard] = createSignal(false)
+
   return (
     <Show when={sidePanel()}>
       <aside class="side-panel">
@@ -109,11 +126,16 @@ export default function SidePanel() {
               {(t) => (
                 <button
                   class="side-tab"
-                  classList={{ active: sidePanel() === t.view }}
+                  classList={{ active: sidePanel() === t.view && !board() }}
                   type="button"
                   role="tab"
-                  aria-selected={sidePanel() === t.view}
-                  onClick={() => setSidePanel(t.view)}
+                  aria-selected={sidePanel() === t.view && !board()}
+                  onClick={() => {
+                    // 点页签即离开看板：不收的话页签亮了、正文还是看板，
+                    // 看起来像这一下没生效。
+                    setBoard(false)
+                    setSidePanel(t.view)
+                  }}
                 >
                   {t.label}
                 </button>
@@ -122,7 +144,16 @@ export default function SidePanel() {
           </div>
 
           <div class="side-actions">
-            <AddPreview />
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="新开预览"
+              title="新开预览"
+              aria-pressed={board()}
+              onClick={() => setBoard((v) => !v)}
+            >
+              <IconPlus size={15} />
+            </button>
             {/* 放大：正文让位，只留输入框和这块面板。窄屏不显示——那里的面板
                 本来就盖满全屏，没有「放大」可言（样式见 utility.css）。 */}
             <button
@@ -150,23 +181,19 @@ export default function SidePanel() {
         </header>
 
         <div class="side-body">
-          <Switch>
-            <Match when={sidePanel() === 'todos'}>
-              <TodoPanel />
-            </Match>
-            <Match when={sidePanel() === 'files'}>
-              <FileBrowser />
-            </Match>
-            <Match when={sidePanel() === 'git'}>
-              <GitChanges />
-            </Match>
-            <Match when={sidePanel() === 'team'}>
-              <TeamPanel />
-            </Match>
-            <Match when={sidePanel() === 'extras'}>
-              <ExtrasPanel />
-            </Match>
-          </Switch>
+          <Show when={!board()} fallback={<PreviewBoard onPick={() => setBoard(false)} />}>
+            <Switch>
+              <Match when={sidePanel() === 'todos'}>
+                <TodoPanel />
+              </Match>
+              <Match when={sidePanel() === 'files'}>
+                <FileBrowser />
+              </Match>
+              <Match when={sidePanel() === 'git'}>
+                <GitChanges />
+              </Match>
+            </Switch>
+          </Show>
         </div>
       </aside>
     </Show>
@@ -174,61 +201,38 @@ export default function SidePanel() {
 }
 
 /**
- * 新开预览。菜单内容由 `PREVIEW_SOURCES` 说了算，这里只管开合。
+ * 新开预览看板。行由 `PREVIEW_SOURCES` 说了算。
  *
- * 点到别处就收起，捕获阶段监听，免得被内部的 stopPropagation 吃掉——
- * 和项目行的 `⋯` 菜单同一套做法。
+ * **长在面板正文里，不是浮层。** 浮层菜单只塞得下三四行、还盖住下面的内容；
+ * 这块清单是「这块面板能开出什么」的全景，值得占满整块地方。
+ *
+ * 没有后端的那几行照样画出来，但 `disabled` 且标「未接入」——这是用户点名要的
+ * 路线图式清单。注意它是本仓 B5「不做空壳」的一个例外，例外的边界就是
+ * **必须点不动、必须标出来**：一个看起来能点、点下去没反应的行才是那条规则真正
+ * 要挡的东西。
  */
-function AddPreview() {
-  const [open, setOpen] = createSignal(false)
-  const close = () => setOpen(false)
-
-  const onDocDown = (e: MouseEvent) => {
-    if (!(e.target as HTMLElement | null)?.closest?.('.panel-add')) close()
-  }
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') close()
-  }
-  document.addEventListener('mousedown', onDocDown, true)
-  document.addEventListener('keydown', onKey)
-  onCleanup(() => {
-    document.removeEventListener('mousedown', onDocDown, true)
-    document.removeEventListener('keydown', onKey)
-  })
-
+function PreviewBoard(props: { onPick: () => void }) {
   return (
-    <div class="panel-add">
-      <button
-        class="icon-btn"
-        type="button"
-        aria-label="新开预览"
-        title="新开预览"
-        aria-expanded={open()}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <IconPlus size={15} />
-      </button>
-
-      <Show when={open()}>
-        <div class="panel-add-menu" role="menu">
-          <For each={PREVIEW_SOURCES}>
-            {(s) => (
-              <button
-                class="menu-item"
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  s.open()
-                  close()
-                }}
-              >
-                <s.icon size={14} />
-                {s.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
+    <div class="preview-board">
+      <For each={PREVIEW_SOURCES}>
+        {(s) => (
+          <button
+            class="board-item"
+            type="button"
+            disabled={!s.open}
+            onClick={() => {
+              s.open?.()
+              props.onPick()
+            }}
+          >
+            <s.icon size={15} />
+            <span class="board-label truncate">{s.label}</span>
+            <Show when={!s.open}>
+              <span class="board-tag">未接入</span>
+            </Show>
+          </button>
+        )}
+      </For>
     </div>
   )
 }
