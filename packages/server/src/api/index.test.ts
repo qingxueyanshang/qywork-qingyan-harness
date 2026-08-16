@@ -722,6 +722,19 @@ describe('工具清单', () => {
     expect(row?.params).toEqual([])
   })
 
+  test('load_tool 列得出来 —— 它不在 registerBuiltinTools 里，漏了这一页就少一行', async () => {
+    const row = (await tools()).find((t) => t.name === 'load_tool')
+    expect(row?.source).toBe('builtin')
+    expect(row?.params).toEqual([{ name: 'names', required: true }])
+    // 它不是常驻工具，用途里必须带上这条边界，否则这一页在说谎
+    expect(row?.summary).toContain('超过阈值')
+  })
+
+  test('只回 tools 一个键 —— mcpServers 没有任何消费者', async () => {
+    const res = await call('/api/tools')
+    expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])
+  })
+
   test('函数型的动作与权限一个都没有 —— 有的话这里会报「随参数变」', async () => {
     for (const row of await tools()) {
       expect([row.actionKind, row.objectLabel, row.permissionEffect]).not.toContain('随参数变')

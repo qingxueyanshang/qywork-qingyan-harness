@@ -80,7 +80,7 @@ function paramsOf(schema: Record<string, unknown>): { name: string; required: bo
  * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数（按参数变）。
  * **不许无参调用它们**：那会得到一个撒谎的常量。真是函数时如实报「随参数变」。
  */
-function toolRow(s: ToolSpec, source: string) {
+function toolRow(s: Omit<ToolSpec, 'fn'>, source: string) {
   const VARIES = '随参数变'
   return {
     name: s.name,
@@ -275,14 +275,20 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    */
   if (p === '/api/tools') {
     const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')
-    const { registerBuiltinTools } = await import('@qywork/tools')
+    const { registerBuiltinTools, LOAD_TOOL_SPEC } = await import('@qywork/tools')
     const { acquireExtensions, releaseExtensions, pluginToolPrefix, toolNamePrefix } = await import(
       '@qywork/runtime'
     )
 
     const registry = new ToolRegistry()
     registerBuiltinTools(registry)
-    const rows = registry.list().map((s) => toolRow(s, 'builtin'))
+    /*
+     * `load_tool` 要手动补一行：它只在会话建待加载池时注册，不在 `registerBuiltinTools`
+     * 里，这个裸注册表列不出它。**不要在这里重算一遍分档**（量 schema 总量、超阈值才列）
+     * ——那个判断的真源在建池那一处，算两遍就是两本账。它的规格因此是不带实现的那一份，
+     * 「只在超过阈值时才注册」这条边界写在它的用途里。
+     */
+    const rows = [...registry.list(), LOAD_TOOL_SPEC].map((s) => toolRow(s, 'builtin'))
 
     const ext = await acquireExtensions(d.workspaceRoot)
     try {
@@ -306,7 +312,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
           a.facet.localeCompare(b.facet, 'zh') ||
           a.summary.localeCompare(b.summary, 'zh'),
       )
-      return json({ tools: rows, mcpServers: ext.mcp.servers.map((m) => m.name) })
+      return json({ tools: rows })
     } finally {
       releaseExtensions(d.workspaceRoot)
     }
