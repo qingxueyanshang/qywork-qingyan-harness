@@ -7,14 +7,15 @@
  *
  * | | 调用点 | 缺了会怎样 |
  * |---|---|---|
- * | bash | `tools/sandbox.ts` 的 `commandShell()` | `run_command` 整个不注册 |
+ * | bash | `tools/sandbox.ts` 的 `commandShell()` | **只是换方言**，落到 PowerShell；三档全空才是 `run_command` 不注册 |
  * | git | `server/git.ts:77` | 版本面板读不到状态与差异 |
  * | rg | `tools/search.ts:164` | **只是慢**，内置遍历顶上（那条路已经写好了） |
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
  *
  * 「装了更好」「同类工具都列一下」不进表。那种清单的后果是用户第一次点开设置页
  * 看到一片红，而真正坏掉的那条淹在里面。同理 `required` 必须分档：
- * rg 和 node 缺了不影响主线，标成「需要安装」就是假警报。
+ * rg 和 node 缺了不影响主线，标成「需要安装」就是假警报——bash 自批 4 起也归这一档，
+ * 但它的档位随机器变，见 `resolveBashRow`。
  *
  * 沙箱（bwrap / seatbelt）**不在这里**：它已经在权限页报了，报两处就是两本账。
  *
@@ -33,11 +34,28 @@
  */
 
 import type { EnvDependency } from '@qywork/core'
-import { BASH_PATH_ENV, probeBash } from '@qywork/tools'
+import type { CommandShell } from '@qywork/tools'
+import { BASH_PATH_ENV, commandShell, probeBash } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 一条依赖的定义。`probe` 返回路径与「没装时说什么」。
+ * 一条依赖随这台机器变的那三格。
+ *
+ * `required` 也在里面而不是写死在 `DepSpec` 上：bash 缺了算不算硬伤，
+ * 取决于这台机器还有没有别的 shell（`resolveBashRow`）。其余三条是常量，
+ * 照样从这里出——两种写法并存的话，读表的人得先分辨哪条是哪种。
+ */
+interface DepState {
+  /** 找到的可执行文件；`null` = 没装。 */
+  path: string | null
+  /** 缺了就有功能不能用。前端只在 `path` 为 `null` 时消费它（标红 + 「需要安装」）。 */
+  required: boolean
+  /** 没装时的下一步。装了是空串。 */
+  hint: string
+}
+
+/**
+ * 一条依赖的定义。`probe` 返回它在这台机器上的当前状态。
  *
  * `winget` 为 `null` = 我们不知道它的包 id，界面上就没有按钮（B5：
  * 能力不存在就不显示入口）。
@@ -46,10 +64,9 @@ interface DepSpec {
   id: string
   label: string
   impact: string
-  required: boolean
   /** winget 包 id。null = 不提供一键装。 */
   winget: string | null
-  probe: () => { path: string | null; hint: string }
+  probe: () => DepState
 }
 
 /**
@@ -104,28 +121,74 @@ export function wingetUsable(): boolean {
   }
 }
 
+/**
+ * bash 那一行的当前状态。**「装没装」与「缺了算不算硬伤」在这一行是两个问题。**
+ *
+ * 批 4 之前它们是同一个：没有 bash 就没有 `run_command`，所以 `required` 恒为真。
+ * 批 4 之后 `commandShell()` 按 bash → pwsh 7 → PowerShell 5.1 三档落，
+ * **三档任一命中模型就跑得了命令**——再恒标必需的话，只有 PowerShell 的机器上
+ * 设置页会报一条必需依赖缺失，而模型手里明明有 `run_command`，
+ * 用户于是去装一个他并不需要的东西。
+ *
+ * 三格各自的判据：
+ *
+ * - `path` 仍然是 **bash 自己**的路径。这一行的标签写着 bash，把 powershell.exe
+ *   填进去只是把一句谎换成另一句；而「装了 bash」与「只有 PowerShell」是两种状态，
+ *   不能显示成同一种（前者 POSIX，后者不是）。
+ * - `required` 只在**一个 shell 都没有**时为真——那时 `run_command` 真的不注册
+ *   （Alpine 这类不带 bash 的镜像会走到），标红是对的。
+ * - `hint` 把差别说全：现在真正在跑的是哪个可执行文件、方言差在哪
+ *   （B7 的例外——能力边界声明必须留全，不能只说一句「装了更好」）。
+ *
+ * 注入是为了能测另外两档：本机只可能命中其中一档，而这一批要修的失败形状
+ * （没 bash、有 PowerShell）恰恰不在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
+ */
+export function resolveBashRow(deps: {
+  bash: () => { path: string | null; reason: string }
+  shell: () => CommandShell | null
+}): DepState {
+  const bash = deps.bash()
+  // 装了就没有「缺了会怎样」这个问题：它自己就是第一档，`commandShell()` 必然命中它。
+  if (bash.path !== null) return { path: bash.path, required: false, hint: '' }
+
+  const shell = deps.shell()
+  if (shell === null) {
+    // 下一步照 bash 那一档说：三档里只有它给得出可操作的下一步（另外两档是
+    // 「这台机器上就是没有」）。判据与 `spawnGuarded` 抛的那句一致。
+    return {
+      path: null,
+      required: true,
+      hint: `bash、pwsh、powershell 都没有，模型手里根本没有 run_command：${bash.reason}`,
+    }
+  }
+  return {
+    path: null,
+    required: false,
+    hint:
+      `命令照样跑得了，但方言换了：现在交给 ${shell.path}，模型按 PowerShell 写而不是 POSIX` +
+      '（2>/dev/null 要写成 2>$null）；落在 Windows PowerShell 5.1（System32 里那个）时，' +
+      '&& 与 || 更是解析错误，只能用 ; 与 if ($?) { }。装上 bash 就切回 POSIX。',
+  }
+}
+
 const DEPS: DepSpec[] = [
   {
     id: 'bash',
     label: 'bash',
-    impact: '模型执行命令（构建、测试、git 操作）',
-    required: true,
+    impact: '模型执行命令（构建、测试、git 操作）：有 bash 才是 POSIX 方言',
     winget: 'Git.Git',
     // bash **不查 PATH**，理由见 `tools/sandbox.ts` 的 `findGitBash`：
     // 这台机器上 PATH 第一条是 WSL 启动器，命令会跑进另一个文件系统。
-    probe: () => {
-      const r = probeBash()
-      return { path: r.path, hint: r.reason }
-    },
+    probe: () => resolveBashRow({ bash: probeBash, shell: commandShell }),
   },
   {
     id: 'git',
     label: 'git',
     impact: '版本面板：分支、改动、差异',
-    required: true,
     winget: 'Git.Git',
     probe: () => ({
       path: onPath('git'),
+      required: true,
       hint: '装上之后版本面板才读得到状态；Git for Windows 同时带上面那个 bash。',
     }),
   },
@@ -133,10 +196,10 @@ const DEPS: DepSpec[] = [
     id: 'ripgrep',
     label: 'ripgrep',
     impact: '全文搜索加速',
-    required: false,
     winget: 'BurntSushi.ripgrep.MSVC',
     probe: () => ({
       path: onPath('rg'),
+      required: false,
       hint: '不装也能搜——内置遍历顶上，大仓库慢一些。',
     }),
   },
@@ -144,10 +207,10 @@ const DEPS: DepSpec[] = [
     id: 'node',
     label: 'Node.js',
     impact: '插件运行时',
-    required: false,
     winget: 'OpenJS.NodeJS.LTS',
     probe: () => ({
       path: onPath('node'),
+      required: false,
       hint: '只有装插件时才需要；出网闸要 Node 22.15 / 23.5 以上。',
     }),
   },
@@ -171,13 +234,13 @@ function canInstall(dep: DepSpec): boolean {
  */
 export function probeEnvironment(): EnvDependency[] {
   return DEPS.map((d) => {
-    const { path, hint } = d.probe()
+    const { path, required, hint } = d.probe()
     return {
       id: d.id,
       label: d.label,
       path,
       impact: d.impact,
-      required: d.required,
+      required,
       hint: path === null ? hint : '',
       canInstall: path === null && canInstall(d),
     }

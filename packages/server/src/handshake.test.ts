@@ -12,8 +12,9 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
+import type { CommandShell } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import { wingetUsable } from './api/host.ts'
+import { resolveBashRow, wingetUsable } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
@@ -121,7 +122,7 @@ describe('能力上报', () => {
    */
   test('environment 逐条报路径、影响与能不能一键装', () => {
     const env = shake(new EventBus(), {}).ok().capabilities.environment
-    // 表里每一条都对应代码里一处真实的 spawn；bash 与 git 是必需的那两条。
+    // 表里每一条都对应代码里一处真实的 spawn。
     expect(env.map((d) => d.id)).toEqual(['bash', 'git', 'ripgrep', 'node'])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)
@@ -131,7 +132,9 @@ describe('能力上报', () => {
       // 装上了就没什么可装的——按钮不该在已拥有的那一行出现。
       else expect(d.canInstall).toBe(false)
     }
-    expect(env.filter((d) => d.required).map((d) => d.id)).toEqual(['bash', 'git'])
+    // bash 不在这里：批 4 之后它缺了只是方言换成 PowerShell，只有一个 shell
+    // 都没有时才是硬伤，而本机有（下一条锁的就是这个前提）。
+    expect(env.filter((d) => d.required).map((d) => d.id)).toEqual(['git'])
   })
 
   test('本机装了 Git，所以 bash 与 git 都报得出路径', () => {
@@ -154,6 +157,45 @@ describe('能力上报', () => {
    * 断言写成「与 `where.exe` 的结论一致」而不是写死 true：没装 winget 的机器上
    * 两边都该是假，这条测试在那种机器上依然成立。
    */
+  /**
+   * bash 那一行的三档。**注入着测**：本机装着 Git Bash，只可能命中第一档，
+   * 而这一批要修的失败形状（没 bash、有 PowerShell）恰恰在开发机上复现不出来。
+   */
+  describe('bash 那一行随机器落在哪一档', () => {
+    const noBash = {
+      path: null,
+      reason: '没找到 Git for Windows 自带的 bash。装 Git for Windows。',
+    }
+    const shell = (path: string): CommandShell => ({ path, argv: [path], hint: '' })
+
+    test('有 bash —— 报它自己的路径，没有下一步要说', () => {
+      const row = resolveBashRow({
+        bash: () => ({ path: '/usr/bin/bash', reason: '' }),
+        shell: () => shell('/usr/bin/bash'),
+      })
+      expect(row).toEqual({ path: '/usr/bin/bash', required: false, hint: '' })
+    })
+
+    /**
+     * **原始失败形状**：只有 PowerShell 的机器上，模型明明有 `run_command`，
+     * 设置页却报一条必需依赖缺失——用户于是去装一个他并不需要的东西。
+     */
+    test('没 bash 但有 PowerShell —— 不报必需，且说清现在跑的是哪个、方言差在哪', () => {
+      const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+      const row = resolveBashRow({ bash: () => noBash, shell: () => shell(ps) })
+      expect(row.required).toBe(false)
+      // 用户得知道自己机器上跑的到底是什么，以及 5.1 上 && 为什么不能写。
+      expect(row.hint).toContain(ps)
+      expect(row.hint).toContain('&&')
+    })
+
+    test('三档全空 —— 这才是必需依赖缺失，下一步照 bash 那一档说', () => {
+      const row = resolveBashRow({ bash: () => noBash, shell: () => null })
+      expect(row.required).toBe(true)
+      expect(row.hint).toContain('装 Git for Windows')
+    })
+  })
+
   test('winget 探测认得应用执行别名（Bun.which 认不出的那种）', () => {
     if (process.platform !== 'win32') return
     const found =
