@@ -101,7 +101,6 @@ async function workspaceWith(extra: string[]) {
             name: 'probe',
             description: '调一次宿主能力',
             parameters: { type: 'object', properties: {}, additionalProperties: true },
-            objectLabel: '宿主能力',
             permissionEffect: 'read',
           },
         ],
@@ -132,6 +131,19 @@ describe('插件端到端', () => {
   test('插件工具的动作恒为 call', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.toolSpecs.find((t) => t.name === 'test_probe__probe')?.actionKind).toBe('call')
+    stop()
+  })
+
+  /**
+   * 卡片是动词 + 对象 + 目标三层。对象名填类名、目标填具体的那个，两处不能同串——
+   * 同串的表现是标题和目标一字不差，目标那一格白占。
+   * 目标同时是权限 scope 的载体，所以带 `plugin:` 前缀且用未消毒的 id。
+   */
+  test('对象名恒为「插件」，具体是哪个工具归 target', async () => {
+    const { ext, stop } = await workspaceWith(['workspace:read'])
+    const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__probe')
+    expect(spec?.objectLabel).toBe('插件')
+    expect(spec?.targetExtractor?.({})).toBe('plugin:test.probe/probe')
     stop()
   })
 

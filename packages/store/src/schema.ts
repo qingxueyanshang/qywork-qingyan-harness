@@ -677,6 +677,41 @@ WHERE tool_name IS NOT NULL
   AND json_extract(payload, '$.action.kind') IS NOT NULL;
 `,
   },
+  {
+    id: 20,
+    name: 'external_tools_object_label',
+    /**
+     * 外置工具的对象名收成「MCP」/「插件」两个类名，**已经落盘的行跟着转**。
+     *
+     * 工具卡是**动词 + 对象 + 目标**三层。外置工具原先把具体的
+     * `mcp:<server>/<tool>`（插件是清单自己声明的那个词）填进对象名，
+     * 于是标题和目标写着一模一样的东西，目标那一层白占一格。今天对象名填的是类名，
+     * 具体那个串归 `action.target`。
+     *
+     * 不转的表现不是报错：回放历史时老卡片写着「调用mcp:github/search」，
+     * 新卡片写着「调用MCP · mcp:github/search」——同一件事两种说法。
+     *
+     * 判据与迁移 19 同一条：**工具名里的 `__`**，只由 `mcp__<server>__<tool>` 与
+     * 插件的 `<id>__<tool>` 两条产名路径造出来，内置工具名一个都不含。
+     * 两者的区分是**是否以 `mcp__` 开头**。
+     *
+     * **`action.target` 不动**——它本来就该是具体的那个，这次改的是对象名那一层。
+     *
+     * 幂等：转完之后再跑一次写进去的还是同样两个类名。
+     * 没有 `action` 的行被 WHERE 挡在外面——`json_set` 会给它凭空长出一个键。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(
+  payload,
+  '$.action.objectLabel',
+  CASE WHEN instr(tool_name, 'mcp__') = 1 THEN 'MCP' ELSE '插件' END
+)
+WHERE tool_name IS NOT NULL
+  AND instr(tool_name, '__') > 0
+  AND json_extract(payload, '$.action.objectLabel') IS NOT NULL;
+`,
+  },
 ]
 
 /**

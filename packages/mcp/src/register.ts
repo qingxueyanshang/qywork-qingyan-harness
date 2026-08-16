@@ -69,12 +69,17 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // 恒为 call。MCP 工具是外部 server 提供的能力，不是我们在本机执行的东西——
     // 这条轴说的是「做了什么动作」，与下面的权限轴各管各的，不互相推导。
     actionKind: 'call',
-    objectLabel: permissionLabel(server, def.name),
+    // 对象名是「MCP」这一类，不是具体哪个工具——卡片是「动词 + 对象 + 目标」三层，
+    // 对象与目标填同一个串等于把目标那一层浪费掉（标题与目标一字不差）。
+    objectLabel: 'MCP',
     // 一律归「外部扩展」：这一类的存在理由就是不与内置分类学混排——
     // 第三方 server 提供什么、算哪个领域，我们并不知道，猜一个填进去更糟。
     category: 'external',
     facet: `MCP ${server}`,
     summary: def.description?.trim() || def.name,
+    // target 同时是权限 scope 的载体（scope = `<effect>:<target>`）。
+    // **不要为了卡片好看去掉 `mcp:` 前缀**：去掉之后一个叫 `github` 的插件的
+    // `search` 与这个 server 的 `search` 会产生同一个 scope 串。
     targetExtractor: () => permissionLabel(server, def.name),
 
     // 权限效果**直接声明**：destructive 的 hint 采纳（更严，走 delete 闸），
