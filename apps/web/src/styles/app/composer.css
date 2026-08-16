@@ -64,7 +64,9 @@
   top: 0;
   left: 0;
   right: 0;
-  transform: translateY(calc(-100% - var(--s-2)));
+  /* `+ 2px`：整条往下压两像素。它悬在输入框卡片上沿之上，间距按 --s-2 算出来
+     偏松，读起来像是浮在半空而不是贴着框——这是看出来的两像素，不是算出来的。 */
+  transform: translateY(calc(-100% - var(--s-2) + 2px));
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -88,7 +90,7 @@
 .changes-chip .sep {
   color: var(--text-tertiary);
 }
-/* 步数是个按钮（点开完整计划），但不画成按钮：它在一条状态里，
+/* 步数是个按钮（点开完整待办），但不画成按钮：它在一条状态里，
    画个边框或底色会让整条读成「一个控件旁边挂了些数字」。 */
 .todo-jump {
   color: inherit;

@@ -153,3 +153,45 @@ describe('迁移 17：update_plan → write_todos', () => {
     expect(JSON.parse(row.payload).args.todos[0].content).toBe('甲')
   })
 })
+
+/**
+ * 迁移 16 已经转过这句话，这里再转一遍——针对的是**它执行之后**才写进来的行。
+ *
+ * 那批行的来历：动作轴与回执文案分两批改，中间跑过真实轮次，于是落下
+ * 「新动作 + 旧文案」的组合（标题读作「创建待办」，展开体写着「计划已更新」）。
+ */
+describe('迁移 18：再扫一遍待办回执的旧文案', () => {
+  test('新动作 + 旧文案的行，文案转掉，动作不动', () => {
+    const db = dbBefore(18)
+    insertStep(db, 'mixed', 'write_todos', {
+      kind: 'tool_result',
+      action: { kind: 'write', objectLabel: '待办', target: null },
+      outcome: { message: '计划已更新（1/3）：正在「甲」' },
+    })
+    applyOne(db, 18)
+
+    const p = payloadOf(db, 'mixed')
+    expect(p.outcome?.message).toBe('待办已更新（1/3）：正在「甲」')
+    expect(p.action.kind).toBe('write')
+    expect(p.action.objectLabel).toBe('待办')
+  })
+
+  /** 幂等：已经是新文案的行不该被再改一次，别的工具的回执一个字都不能动。 */
+  test('新文案与无关回执原样不动', () => {
+    const db = dbBefore(18)
+    insertStep(db, 'done', 'write_todos', {
+      kind: 'tool_result',
+      action: { kind: 'edit', objectLabel: '待办', target: null },
+      outcome: { message: '待办已更新（2/3）：正在「乙」' },
+    })
+    insertStep(db, 'other', 'run_command', {
+      kind: 'tool_result',
+      action: { kind: 'run', objectLabel: '命令', target: 'ls' },
+      outcome: { message: '命令执行成功' },
+    })
+    applyOne(db, 18)
+
+    expect(payloadOf(db, 'done').outcome?.message).toBe('待办已更新（2/3）：正在「乙」')
+    expect(payloadOf(db, 'other').outcome?.message).toBe('命令执行成功')
+  })
+})

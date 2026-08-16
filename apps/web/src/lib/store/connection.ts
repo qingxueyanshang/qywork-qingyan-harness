@@ -132,7 +132,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
     case 'todos':
       // 整表替换而不是合并：工具那边就是整表提交的，
-      // 在这里做增量合并会让两端对「计划是什么」产生两种理解。
+      // 在这里做增量合并会让两端对「待办清单是什么」产生两种理解。
       setState('todos', ev.todos)
       return
 

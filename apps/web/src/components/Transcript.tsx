@@ -157,21 +157,30 @@ export function Transcript() {
 /**
  * 这一轮此刻在**哪个阶段**。
  *
- * 三态，句式平齐：正在思考 / 正在执行 / 正在回复。原来第三档写的是
- * 「模型响应中…」——同一格里两种句式，读起来像是另一套东西冒出来的。
+ * 四态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复。
  *
- * 这一格说的是阶段，不是动作。工具组头那句「正在<动词>…」说的才是这一批工具
- * 在做什么（查询 / 读取 / 创建 / 编辑 / 删除 / 运行），两者粒度不同、不重复——
+ * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
+ * （查询 / 读取 / 创建 / 编辑 / 删除 / 运行），两者粒度不同、不重复——
  * 动作轴里也没有「执行」这个词，不会撞。
  *
  * 按**流的位置**判断，而不是按快照推：从时间线快照反推会慢半拍，
  * 而这行字的全部意义就是「它现在有反应」。
+ *
+ * ## 为什么必须有「正在请求」这一档
+ *
+ * 之前只有三档，「正在回复」是**兜底**。而刚发出消息那一刻，流的最后一条是用户
+ * 自己那句话——于是回车之后立刻显示「正在回复…」，紧接着冒出来的却是思考内容。
+ * 那句话在它为真之前就说了：请求刚发出，模型一个字都还没吐。
+ *
+ * 现在四档各自对应流尾的一种真实条目，兜底的是「请求已发出、还没有任何回应」
+ * ——那也是唯一一种没有条目可指的状态。
  */
 function liveStatus(): string {
   const last = state.transcript[state.transcript.length - 1]
   if (last?.kind === 'thinking') return '正在思考…'
   if (last?.kind === 'tool') return '正在执行…'
-  return '正在回复…'
+  if (last?.kind === 'text') return '正在回复…'
+  return '正在请求…'
 }
 
 /** 流式期两次重解析之间的最小间隔。见 `Prose` 的说明。 */
@@ -269,6 +278,15 @@ function Fold(props: {
    * 不给这个 prop 的折叠维持原样：默认收起、全靠手点。
    */
   autoOpen?: boolean
+  /**
+   * 展开之后组头**不再转圈**。
+   *
+   * 只给工具组用：展开后正在跑的那张卡自己在转，组头再转一个说的是同一件事，
+   * 而下面那个还指明了是哪一条。收起时组头仍要转——那时组内看不见，它是唯一的信号。
+   *
+   * 单张工具卡不能开这个：它展开后里面是参数和输出，没有第二个转圈接手。
+   */
+  quietWhenOpen?: boolean
   /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
@@ -305,7 +323,7 @@ function Fold(props: {
             </span>
           </Show>
         </span>
-        <Show when={props.running}>
+        <Show when={props.running && !(props.quietWhenOpen && open())}>
           <span class="fold-spin" />
         </Show>
       </summary>
@@ -322,9 +340,26 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   const verb = () => (streaming() ? '思考中' : '已思考')
   const preview = () => props.item.text.replace(/\s+/g, ' ').trim().slice(0, 80)
 
+  /*
+   * 思考块自己滚到底。
+   *
+   * `.fold-pre` 是**内层滚动容器**（max-height 200px），会话流那个「贴着底就跟随」
+   * 的效果只作用在外层。于是跑着的时候它自动展开了，但停在第一屏——新来的字
+   * 一直往下堆在看不见的地方，看起来像卡住了。
+   *
+   * 只在流式期跟随：停下来之后用户往回翻，不该被拽回底部（那正是外层刻意避免的）。
+   */
+  let pre: HTMLPreElement | undefined
+  createEffect(() => {
+    void props.item.text
+    if (streaming() && pre) pre.scrollTop = pre.scrollHeight
+  })
+
   return (
     <Fold dim autoOpen={streaming()} label={preview() ? `${verb()} — ${preview()}` : verb()}>
-      <pre class="fold-pre">{props.item.text}</pre>
+      <pre class="fold-pre" ref={pre}>
+        {props.item.text}
+      </pre>
     </Fold>
   )
 }
@@ -510,6 +545,7 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
       failed={failed()}
       running={running()}
       autoOpen={running()}
+      quietWhenOpen
       label={groupTitle(props.members)}
     >
       <div class="fold-group">
@@ -578,6 +614,15 @@ function StepBody(props: { item: TranscriptItem }) {
     <Switch fallback={<Generic item={props.item} />}>
       <Match when={props.item.status === 'failure'}>
         <pre class="fold-out err">{props.item.outcome?.message || '（没有错误正文）'}</pre>
+        {/*
+         * **失败也要把输出带出来。** 这里原来只有一句 message 加一张参数表，
+         * 而 qywork 的 message 只是摘要——命令失败时它就是「命令退出码 1」这七个字。
+         * 于是用户展开一张失败的命令卡，看到的是「跑了什么」和「失败了」，
+         * 唯独没有「它到底吐了什么」，也就无从判断是命令不对还是被测的东西不对。
+         *
+         * `noMessage` 是因为上面那行已经把 message 显示过了，回落会原样重复一遍。
+         */}
+        <Result item={props.item} label="输出" withDivider noMessage />
         <Show when={rows().length > 0}>
           <div class="fold-divider" />
           <ArgsTable rows={rows()} />
@@ -633,19 +678,31 @@ function Generic(props: { item: TranscriptItem }) {
 /**
  * 结果那一格。
  *
- * 取值顺序：`data.content` → `data.stdout` → 列表型 → `outcome.message`。
- * 空的时候整格不渲染——参照物的 `MessageBlock` 也是 `if (!raw.trim()) return null`，
- * 一个空 `<pre>` 只会在展开体里留一道没有内容的边框。
+ * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → 列表型 → `outcome.message`，
+ * **失败时把 `stderr` 提到最前**：报错基本只写在错误流里，而 stdout 常常另有内容
+ * （测试的进度输出、服务器的启动日志），按成功时的顺序取就会拿到它、把真正的
+ * 报错挡在后面。空的时候整格不渲染——参照物的 `MessageBlock` 也是
+ * `if (!raw.trim()) return null`，一个空 `<pre>` 只会在展开体里留一道没有内容的边框。
  */
-function Result(props: { item: TranscriptItem; label?: string; withDivider?: boolean }) {
+function Result(props: {
+  item: TranscriptItem
+  label?: string
+  withDivider?: boolean
+  /** 取不到正文时不要回落到 `outcome.message`——调用方自己已经显示过它了。 */
+  noMessage?: boolean
+}) {
   const text = () => {
     const data = (props.item.outcome?.data ?? {}) as Record<string, unknown>
-    for (const k of ['content', 'stdout']) {
+    const keys =
+      props.item.status === 'failure'
+        ? ['stderr', 'content', 'stdout']
+        : ['content', 'stdout', 'stderr']
+    for (const k of keys) {
       if (typeof data[k] === 'string' && (data[k] as string).trim()) return data[k] as string
     }
     const list = listOf(data)
     if (list) return list.join(NEWLINE)
-    return props.item.outcome?.message ?? ''
+    return props.noMessage ? '' : (props.item.outcome?.message ?? '')
   }
 
   return (
