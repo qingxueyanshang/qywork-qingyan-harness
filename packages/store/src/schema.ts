@@ -712,6 +712,39 @@ WHERE tool_name IS NOT NULL
   AND json_extract(payload, '$.action.objectLabel') IS NOT NULL;
 `,
   },
+  {
+    id: 21,
+    name: 'memory_tool_split',
+    /**
+     * `memory` 一个名字四个动作，拆成 `read_memory` / `write_memory` /
+     * `delete_memory` 三个，**落库的老行按它当时的 `args.action` 分流**。
+     *
+     * 不转的表现不是报错：回放历史时模型看到一个当前工具表里不存在的名字
+     * （`transcript.ts` 把账本里的 `tool_name` 与 `args` 原样重放成一次工具调用）。
+     *
+     * `list` 归 `read_memory`——语义最接近，而且那个动作已经不是工具了：
+     * 全部 key 每轮都在尾区列着。缺 `action` 或值非法的一并归它：那些行本来就
+     * 分不出动作，落到读上最保守。
+     *
+     * **`args.action` 一并清掉。** 名字改了之后这一行已经不是当时那次调用的
+     * 逐字记录，留着反而给出一个今天不合法的调用形状——三个新 schema 都是
+     * `additionalProperties: false`，模型照着历史仿一个 `action` 出来就是废一轮。
+     * 一条 UPDATE 里两个 SET：SQL 的赋值右侧读的是改动前的行，所以名字仍由老
+     * `action` 算出。
+     *
+     * 幂等：转完之后没有 `tool_name = 'memory'` 的行，重复执行命中零行。
+     */
+    sql: `
+UPDATE steps
+SET tool_name = CASE json_extract(payload, '$.args.action')
+    WHEN 'write'  THEN 'write_memory'
+    WHEN 'delete' THEN 'delete_memory'
+    ELSE 'read_memory'
+  END,
+  payload = json_remove(payload, '$.args.action')
+WHERE tool_name = 'memory';
+`,
+  },
 ]
 
 /**

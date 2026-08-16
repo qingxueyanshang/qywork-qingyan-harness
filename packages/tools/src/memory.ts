@@ -18,8 +18,8 @@
  *
  * ## 三层作用域：列表和读跨层，写和删只在用户层
  *
- * `list` / `read` 看得到全局层的记忆（跨工作区那几条常用事实），
- * 但 `write` / `delete` **只动工作区 `.agents/memory/`**。
+ * 索引与 `read_memory` 看得到全局层的记忆（跨工作区那几条常用事实），
+ * 但 `write_memory` / `delete_memory` **只动工作区 `.agents/memory/`**。
  *
  * 不对称是刻意的：让模型在一次任务里改掉一条「所有项目都生效」的记忆，
  * 影响范围远远超出它当时看到的上下文。全局那几条由人在设置页管。
@@ -58,129 +58,158 @@ function safeName(key: string): string | null {
   return cleaned || null
 }
 
-export const memoryTool: ToolSpec = {
-  name: 'memory',
+/*
+ * **三个名字，不是一个带 `action` 的门面。** 三个动作的必填参数各不相同
+ * （读删要 key，写要 key + content），合成一个的话 `required` 只剩下那个分派字段，
+ * schema 层等于没有约束：模型可以合法发出一个「写记忆但没给 key」的调用，
+ * 要跑完一整轮往返才由工具体报错。拆开之后必填由参数层拦住，
+ * 每个工具的动作与权限也各自是一个常量，不必再从参数里现算。
+ *
+ * **不做 `list_memory`**：全部记忆的 key 每轮都在尾区列着
+ * （`runtime/prompt.ts` 装配），列一遍拿回的是模型已经看得见的东西。
+ */
+
+/** 三个工具共用的记忆标识校验。key 由模型给，先安全化再用。 */
+function requireKey(args: Record<string, unknown>): string | null {
+  return safeName(String(args.key ?? ''))
+}
+
+export const readMemoryTool: ToolSpec = {
+  name: 'read_memory',
+  description: '读一条长期记忆的全文。尾区已经列出全部记忆的 key，按 key 取一条没展开的。',
+  parameters: {
+    type: 'object',
+    properties: { key: { type: 'string', description: '记忆标识' } },
+    required: ['key'],
+    additionalProperties: false,
+  },
+  actionKind: 'read',
+  objectLabel: '记忆',
+  category: 'knowledge',
+  facet: '记忆',
+  summary: '读一条长期记忆',
+  targetExtractor: (a) => (typeof a.key === 'string' ? a.key : null),
+  // 读记忆不需要授权：就在工作区里，用户自己写的。
+  permissionEffect: 'internal_control',
+  parallelSafe: true,
+  resourceKeys: (a) => [`memory:${String(a.key ?? '*')}`],
+
+  async fn(args, ctx) {
+    const key = requireKey(args)
+    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    // 读跨层：用户层没有就往全局找。找不到才算 not_found。
+    const found = await readScoped(scopeRoots(ctx.workspaceRoot), key)
+    return found === null
+      ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
+      : { status: 'success', message: found.content, data: { key, content: found.content } }
+  },
+}
+
+export const writeMemoryTool: ToolSpec = {
+  name: 'write_memory',
   description:
-    '读写长期记忆。用于记住跨会话有效的事实：项目约定、用户偏好、踩过的坑。' +
-    'action=list 列出全部；read 读一条；write 写入或覆盖；delete 删除。' +
+    '写入或覆盖一条长期记忆。用于记住跨会话有效的事实：项目约定、用户偏好、踩过的坑。' +
     '只记「下次还用得上」的东西，一次性的上下文不要记。',
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'read', 'write', 'delete'] },
-      key: { type: 'string', description: '记忆标识，write/read/delete 必填' },
-      content: { type: 'string', description: 'write 时的正文' },
+      key: { type: 'string', description: '记忆标识' },
+      content: { type: 'string', description: '正文，整条覆盖' },
     },
-    required: ['action'],
+    required: ['key', 'content'],
     additionalProperties: false,
   },
-  // 动作语义从**显式参数**解析，不按工具名猜——这是 registry 的既有约定。
-  actionKind: (a) => {
-    const action = String(a.action ?? '')
-    if (action === 'write') return 'write'
-    if (action === 'delete') return 'delete'
-    return 'read'
-  },
+  actionKind: 'write',
   objectLabel: '记忆',
   category: 'knowledge',
   facet: '记忆',
-  summary: '读写这个工作区的长期记忆',
+  summary: '写入或覆盖一条长期记忆',
   targetExtractor: (a) => (typeof a.key === 'string' ? a.key : null),
-  permissionEffect: (a) => {
-    const action = String(a.action ?? '')
-    // 读记忆不需要授权（就在工作区里，用户自己写的）；写和删要。
-    if (action === 'write') return 'write'
-    if (action === 'delete') return 'delete'
-    return 'internal_control'
-  },
-  parallelSafe: (a) => String(a.action ?? '') !== 'write',
+  permissionEffect: 'write',
+  parallelSafe: false,
   resourceKeys: (a) => [`memory:${String(a.key ?? '*')}`],
 
   async fn(args, ctx) {
-    const action = String(args.action ?? '')
-    const roots = scopeRoots(ctx.workspaceRoot)
-    const dir = join(ctx.workspaceRoot, MEMORY_DIR)
-
-    if (action === 'list') {
-      const entries = await listScopedEntries(roots)
+    const key = requireKey(args)
+    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    const content = String(args.content ?? '').trim()
+    if (!content) return { status: 'failure', message: 'content 为空' }
+    if (content.length > MAX_ENTRY_CHARS) {
       return {
-        status: 'success',
-        message: entries.length
-          ? `${entries.length} 条记忆：\n${entries.map((e) => `- ${e.key}：${e.preview}`).join('\n')}`
-          : '暂无记忆',
-        data: { entries },
+        status: 'failure',
+        message: `单条记忆最多 ${MAX_ENTRY_CHARS} 字符，当前 ${content.length}——这么长的内容该写成文档`,
       }
     }
 
-    const key = safeName(String(args.key ?? ''))
-    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    const dir = join(ctx.workspaceRoot, MEMORY_DIR)
+    const existing = await listEntries(dir)
+    if (existing.length >= MAX_ENTRIES && !existing.some((e) => e.key === key)) {
+      return { status: 'failure', message: `记忆已达 ${MAX_ENTRIES} 条上限，先删掉不再需要的` }
+    }
     // 即使已经安全化过也再走一遍工作区边界：安全化的规则将来可能被改宽。
     const file = await resolveInWorkspace(ctx.workspaceRoot, join(MEMORY_DIR, `${key}.md`), {
       mustExist: false,
     })
-
-    if (action === 'read') {
-      // 读跨层：用户层没有就往全局找。找不到才算 not_found。
-      const found = await readScoped(roots, key)
-      return found === null
-        ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
-        : { status: 'success', message: found.content, data: { key, content: found.content } }
+    await mkdir(dir, { recursive: true })
+    await writeFile(file, `${content}\n`, 'utf8')
+    return {
+      status: 'success',
+      message: `已记住 ${key}`,
+      fileChanges: [
+        {
+          path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
+          changeType: existing.some((e) => e.key === key) ? 'modified' : 'created',
+          additions: content.split('\n').length,
+          deletions: 0,
+        },
+      ],
     }
+  },
+}
 
-    if (action === 'write') {
-      const content = String(args.content ?? '').trim()
-      if (!content) return { status: 'failure', message: 'write 需要 content' }
-      if (content.length > MAX_ENTRY_CHARS) {
-        return {
-          status: 'failure',
-          message: `单条记忆最多 ${MAX_ENTRY_CHARS} 字符，当前 ${content.length}——这么长的内容该写成文档`,
+export const deleteMemoryTool: ToolSpec = {
+  name: 'delete_memory',
+  description: '删除一条长期记忆。只能删这个工作区的，全局那几条由用户在设置页管。',
+  parameters: {
+    type: 'object',
+    properties: { key: { type: 'string', description: '记忆标识' } },
+    required: ['key'],
+    additionalProperties: false,
+  },
+  actionKind: 'delete',
+  objectLabel: '记忆',
+  category: 'knowledge',
+  facet: '记忆',
+  summary: '删除一条长期记忆',
+  targetExtractor: (a) => (typeof a.key === 'string' ? a.key : null),
+  permissionEffect: 'delete',
+  parallelSafe: true,
+  resourceKeys: (a) => [`memory:${String(a.key ?? '*')}`],
+
+  async fn(args, ctx) {
+    const key = requireKey(args)
+    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    const file = await resolveInWorkspace(ctx.workspaceRoot, join(MEMORY_DIR, `${key}.md`), {
+      mustExist: false,
+    })
+    const ok = await unlink(file).then(
+      () => true,
+      () => false,
+    )
+    return ok
+      ? {
+          status: 'success',
+          message: `已删除记忆 ${key}`,
+          fileChanges: [
+            {
+              path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
+              changeType: 'deleted',
+              additions: 0,
+              deletions: 0,
+            },
+          ],
         }
-      }
-      const existing = await listEntries(dir)
-      if (existing.length >= MAX_ENTRIES && !existing.some((e) => e.key === key)) {
-        return {
-          status: 'failure',
-          message: `记忆已达 ${MAX_ENTRIES} 条上限，先删掉不再需要的`,
-        }
-      }
-      await mkdir(dir, { recursive: true })
-      await writeFile(file, `${content}\n`, 'utf8')
-      return {
-        status: 'success',
-        message: `已记住 ${key}`,
-        fileChanges: [
-          {
-            path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
-            changeType: existing.some((e) => e.key === key) ? 'modified' : 'created',
-            additions: content.split('\n').length,
-            deletions: 0,
-          },
-        ],
-      }
-    }
-
-    if (action === 'delete') {
-      const ok = await unlink(file).then(
-        () => true,
-        () => false,
-      )
-      return ok
-        ? {
-            status: 'success',
-            message: `已删除记忆 ${key}`,
-            fileChanges: [
-              {
-                path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
-                changeType: 'deleted',
-                additions: 0,
-                deletions: 0,
-              },
-            ],
-          }
-        : { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
-    }
-
-    return { status: 'failure', message: `未知 action：${action}` }
+      : { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
   },
 }
 
@@ -307,7 +336,7 @@ export interface SelectedMemory {
  *
  * ## 装不下的怎么办
  *
- * 转按需：`memory(action=read)` 仍然读得到全文。所以超预算不是丢失，
+ * 转按需：`read_memory` 仍然读得到全文。所以超预算不是丢失，
  * 是降级——降级路径必须存在，否则记忆一多就变成随机丢几条。
  */
 export function selectMemories(

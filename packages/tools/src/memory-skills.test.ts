@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { listEntries, MEMORY_DIR, memoryTool } from './memory.ts'
+import {
+  deleteMemoryTool,
+  listEntries,
+  MEMORY_DIR,
+  readMemoryTool,
+  writeMemoryTool,
+} from './memory.ts'
 import {
   listSkillsTool,
   parseFrontmatter,
@@ -36,10 +42,10 @@ describe('记忆', () => {
   test('写入后能读回，并落成工作区里的普通文件', async () => {
     const root = await workspace()
     const c = ctx(root)
-    const w = await memoryTool.fn({ action: 'write', key: '包管理器', content: '本项目用 pnpm' }, c)
+    const w = await writeMemoryTool.fn({ key: '包管理器', content: '本项目用 pnpm' }, c)
     expect(w.status).toBe('success')
 
-    const r = await memoryTool.fn({ action: 'read', key: '包管理器' }, c)
+    const r = await readMemoryTool.fn({ key: '包管理器' }, c)
     expect(r.message).toContain('本项目用 pnpm')
 
     // 用户能直接看、直接改、直接删——这是不放 SQLite 的全部理由。
@@ -47,31 +53,26 @@ describe('记忆', () => {
     expect(raw).toContain('本项目用 pnpm')
   })
 
-  test('list 只给首行摘要，不给全文', async () => {
+  test('索引只给首行摘要，不给全文', async () => {
     const root = await workspace()
-    const c = ctx(root)
-    await memoryTool.fn(
-      { action: 'write', key: 'k', content: '第一行摘要\n第二行不该出现在索引里' },
-      c,
-    )
-    const l = await memoryTool.fn({ action: 'list' }, c)
-    expect(l.message).toContain('第一行摘要')
+    await writeMemoryTool.fn({ key: 'k', content: '第一行摘要\n第二行不该出现在索引里' }, ctx(root))
+    const entries = await listEntries(join(root, MEMORY_DIR))
+    expect(entries[0]!.preview).toBe('第一行摘要')
     // 索引每轮都进尾区，塞全文就是每轮都付一次全文的钱。
-    expect(l.message).not.toContain('第二行不该出现')
+    expect(entries[0]!.preview).not.toContain('第二行不该出现')
   })
 
   test('删除后读不到', async () => {
     const root = await workspace()
     const c = ctx(root)
-    await memoryTool.fn({ action: 'write', key: 'tmp', content: 'x' }, c)
-    expect((await memoryTool.fn({ action: 'delete', key: 'tmp' }, c)).status).toBe('success')
-    expect((await memoryTool.fn({ action: 'read', key: 'tmp' }, c)).errorKind).toBe('not_found')
+    await writeMemoryTool.fn({ key: 'tmp', content: 'x' }, c)
+    expect((await deleteMemoryTool.fn({ key: 'tmp' }, c)).status).toBe('success')
+    expect((await readMemoryTool.fn({ key: 'tmp' }, c)).errorKind).toBe('not_found')
   })
 
   test('key 里的路径穿越被消掉', async () => {
     const root = await workspace()
-    const c = ctx(root)
-    const r = await memoryTool.fn({ action: 'write', key: '../../../etc/passwd', content: 'x' }, c)
+    const r = await writeMemoryTool.fn({ key: '../../../etc/passwd', content: 'x' }, ctx(root))
     // 安全化后剩下的是普通文件名，不会写到工作区外。
     expect(r.status).toBe('success')
     const entries = await listEntries(join(root, MEMORY_DIR))
@@ -80,34 +81,39 @@ describe('记忆', () => {
 
   test('全是非法字符的 key 被拒', async () => {
     const root = await workspace()
-    expect(
-      (await memoryTool.fn({ action: 'write', key: '///', content: 'x' }, ctx(root))).status,
-    ).toBe('failure')
+    expect((await writeMemoryTool.fn({ key: '///', content: 'x' }, ctx(root))).status).toBe(
+      'failure',
+    )
   })
 
   test('超长内容被拒 —— 该写成文档而不是记忆', async () => {
     const root = await workspace()
-    const r = await memoryTool.fn(
-      { action: 'write', key: 'big', content: 'x'.repeat(5000) },
-      ctx(root),
-    )
+    const r = await writeMemoryTool.fn({ key: 'big', content: 'x'.repeat(5000) }, ctx(root))
     expect(r.status).toBe('failure')
     expect(r.message).toContain('文档')
   })
 
-  test('读记忆不走权限闸，写和删走', () => {
-    const effect = memoryTool.permissionEffect as (a: Record<string, unknown>) => string
-    expect(effect({ action: 'read' })).toBe('internal_control')
-    expect(effect({ action: 'list' })).toBe('internal_control')
-    expect(effect({ action: 'write' })).toBe('write')
-    expect(effect({ action: 'delete' })).toBe('delete')
+  /**
+   * 拆成三个名字的全部意义：必填参数由 schema 拦住。合成一个 `action` 门面时
+   * `required` 只剩那个分派字段，「写记忆但没给 key」要跑完一整轮往返才报错。
+   */
+  test('必填参数写在 schema 里，不是跑到工具体里才报错', () => {
+    const required = (s: { parameters: Record<string, unknown> }) => s.parameters.required
+    expect(required(readMemoryTool)).toEqual(['key'])
+    expect(required(writeMemoryTool)).toEqual(['key', 'content'])
+    expect(required(deleteMemoryTool)).toEqual(['key'])
   })
 
-  test('动作语义从显式参数解析，不按工具名猜', () => {
-    const kind = memoryTool.actionKind as (a: Record<string, unknown>) => string
-    expect(kind({ action: 'write' })).toBe('write')
-    expect(kind({ action: 'delete' })).toBe('delete')
-    expect(kind({ action: 'list' })).toBe('read')
+  test('读记忆不走权限闸，写和删各走各的闸', () => {
+    expect(readMemoryTool.permissionEffect).toBe('internal_control')
+    expect(writeMemoryTool.permissionEffect).toBe('write')
+    expect(deleteMemoryTool.permissionEffect).toBe('delete')
+  })
+
+  test('动作是常量 —— 一个名字一个动作，不用从参数里现算', () => {
+    expect(readMemoryTool.actionKind).toBe('read')
+    expect(writeMemoryTool.actionKind).toBe('write')
+    expect(deleteMemoryTool.actionKind).toBe('delete')
   })
 
   test('空目录返回空列表而不是抛', async () => {

@@ -108,7 +108,7 @@ export function buildTailNotes(input: {
   if (input.memories?.length || input.deferredMemories?.length) {
     const bodies = (input.memories ?? []).map((m) => `### ${m.key}\n${m.body}`).join('\n\n')
     const rest = input.deferredMemories?.length
-      ? `\n\n（另有 ${input.deferredMemories.join('、')} 未展开，需要时用 memory(action=read) 读）`
+      ? `\n\n（另有 ${input.deferredMemories.join('、')} 未展开，需要时用 read_memory 读）`
       : ''
     notes.push({ content: `## 已记住的事实\n\n${bodies}${rest}`, group: 'memory' })
   }

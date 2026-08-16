@@ -173,7 +173,7 @@ const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|${OUTSIDE_SYMBOL_RE}|(?
  * 1. **它拦不到任何能力。** `.agents/mcp.json` 决定模型拿到哪些工具，可模型手里
  *    已经有 `run_command`——MCP 服务器本身就是个它能直接启动的进程。给自己加一个
  *    工具，没有获得任何它现在没有的能力，只是换了个调用方式。
- * 2. **`.agents/` 本来就该写。** `memory` 工具正往 `.agents/memory/` 里写。
+ * 2. **`.agents/` 本来就该写。** `write_memory` 正往 `.agents/memory/` 里写。
  *    shell 拦、工具不拦，就是同一件事两套账。
  *
  * 真正需要保护的是**本程序自己的**全局目录 `~/.qywork/`（明文 apiKey、权限模式、

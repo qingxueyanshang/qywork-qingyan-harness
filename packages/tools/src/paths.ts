@@ -243,8 +243,8 @@ function decodeSafely(input: string): string {
  * 用户层的技能 / MCP / 插件搬到了 `.agents/`（跨客户端约定的那条路径）。
  * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。
  *
- * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而 `memory`
- * 工具走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
+ * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而
+ * `write_memory` 走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
  * 只是必须走那一条唯一的写入路径，而不是拿 `write_file` 直接改。
  */
 export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents']
