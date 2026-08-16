@@ -1,6 +1,16 @@
 import type { EditorView } from '@codemirror/view'
 import type { JSX } from 'solid-js'
-import { createResource, createSignal, For, lazy, Match, onCleanup, Show, Switch } from 'solid-js'
+import {
+  createResource,
+  createSignal,
+  For,
+  lazy,
+  Match,
+  onCleanup,
+  Show,
+  Suspense,
+  Switch,
+} from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import {
   client,
@@ -216,9 +226,13 @@ export default function SidePanel() {
                 <GitChanges />
               </Match>
               {/* 桌面之外这个视图选不到（页签和看板都不渲染它），
-                  留着这个 Match 只是让「视图值 ↔ 渲染」这张表保持完整。 */}
+                  留着这个 Match 只是让「视图值 ↔ 渲染」这张表保持完整。
+                  自带 `Suspense`：xterm 那一包三百多 K，没有边界的话它挂起时
+                  整棵树跟着空一下（同 `App.tsx` 里那段）。 */}
               <Match when={sidePanel() === 'terminal'}>
-                <TerminalPanel />
+                <Suspense fallback={<div class="terminal-panel" />}>
+                  <TerminalPanel />
+                </Suspense>
               </Match>
             </Switch>
           </Show>

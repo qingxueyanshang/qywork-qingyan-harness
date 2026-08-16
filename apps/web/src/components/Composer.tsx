@@ -192,6 +192,13 @@ function goalNote(goal: Goal, running: boolean): string {
  * 与待办进度同一条判据：它回答的是「还要跑多久」，`completed` 之后没有「还要」。
  * 而 `completed` 是终态，一条出边都没有——留一颗点了必然被服务端回绝的
  * 「继续」按钮，比不留更坏。
+ *
+ * ## 一行，且比输入框窄
+ *
+ * 状态（自动续行中 / 受阻理由 / 已暂停）**排在轮数前面**：连起来读是
+ * 「自动续行中 · 第 0 / 8 轮」一句话，拆到第二行去就得来回看两眼才拼得出
+ * 「它现在在不在跑」。挤不下的先截目标正文，再截状态，两处都有 title。
+ * 高度仍然是定死的（B9）——状态文字长短不一，让它撑高的话「停止」会跑位。
  */
 function GoalChip() {
   const goal = () => state.goal
@@ -211,6 +218,15 @@ function GoalChip() {
             <span class="goal-text truncate" title={g().objective}>
               {g().objective}
             </span>
+            {/* 状态紧挨在轮数前面：「自动续行中 · 第 0 / 8 轮」连起来是一句话，
+                中间隔着别的东西就得来回看两眼才拼得出「它现在在不在跑」。 */}
+            <span
+              class="goal-note truncate"
+              classList={{ blocked: g().status === 'blocked' }}
+              title={goalNote(g(), state.running)}
+            >
+              {goalNote(g(), state.running)}
+            </span>
             <span class="goal-round">
               第 {g().round} / {g().maxRounds} 轮
             </span>
@@ -226,15 +242,6 @@ function GoalChip() {
                 停止
               </button>
             </Show>
-          </div>
-          {/* 第二行恒在（高度固定，B9）：受阻理由、暂停、续行没开着，
-              说的都是「现在为什么是这个样子」，它们共用这一格。 */}
-          <div
-            class="goal-note truncate"
-            classList={{ blocked: g().status === 'blocked' }}
-            title={goalNote(g(), state.running)}
-          >
-            {goalNote(g(), state.running)}
           </div>
         </div>
       )}
