@@ -118,35 +118,48 @@ export class PendingToolPool {
   }
 }
 
+/**
+ * `load_tool` 除 `fn` 之外的全部字段。
+ *
+ * **单独导出是给「这个 agent 能调什么」那份清单用的**（`server/api/workspace.ts`）：
+ * 这个工具只在建池时注册，不在 `registerBuiltinTools` 里，那份清单建的是一个裸注册表，
+ * 不单列就永远缺这一行。**不要让清单侧自己算一遍分档**（量 schema 总量、超阈值才列）
+ * ——那个判断的真源是建池那一处，算两遍就是两本账，迟早分叉。
+ *
+ * 所以「只在超过阈值时才注册」这条边界写在 `summary` 里，由清单如实说出来。
+ */
+export const LOAD_TOOL_SPEC: Omit<ToolSpec, 'fn'> = {
+  name: 'load_tool',
+  description:
+    '把外部工具（MCP server 与插件提供的）的参数说明装进工具表，装完就能直接调用它们。' +
+    '名字从尾区那份「可加载的外部工具」清单里取，一次可以传多个。' +
+    '不在那份清单里的工具本来就在工具表里，直接调即可，不需要装。',
+  parameters: {
+    type: 'object',
+    properties: {
+      names: {
+        type: 'array',
+        description: '要装的工具名，取自尾区清单',
+        items: { type: 'string' },
+      },
+    },
+    required: ['names'],
+    additionalProperties: false,
+  },
+  actionKind: 'read',
+  objectLabel: '工具',
+  category: 'session',
+  facet: '外部工具',
+  summary: '按需把外部工具的参数说明装进工具表；只在外部工具的 schema 总量超过阈值时才注册',
+  targetExtractor: (a) => (Array.isArray(a.names) ? a.names.map(String).join('、') || null : null),
+  // 只动本进程的工具表，不碰工作区也不出网，没有需要用户批准的副作用。
+  permissionEffect: 'internal_control',
+  parallelSafe: true,
+}
+
 export function makeLoadToolTool(pool: PendingToolPool): ToolSpec {
   return {
-    name: 'load_tool',
-    description:
-      '把外部工具（MCP server 与插件提供的）的参数说明装进工具表，装完就能直接调用它们。' +
-      '名字从尾区那份「可加载的外部工具」清单里取，一次可以传多个。' +
-      '不在那份清单里的工具本来就在工具表里，直接调即可，不需要装。',
-    parameters: {
-      type: 'object',
-      properties: {
-        names: {
-          type: 'array',
-          description: '要装的工具名，取自尾区清单',
-          items: { type: 'string' },
-        },
-      },
-      required: ['names'],
-      additionalProperties: false,
-    },
-    actionKind: 'read',
-    objectLabel: '工具',
-    category: 'session',
-    facet: '外部工具',
-    summary: '按需把外部工具的参数说明装进工具表',
-    targetExtractor: (a) =>
-      Array.isArray(a.names) ? a.names.map(String).join('、') || null : null,
-    // 只动本进程的工具表，不碰工作区也不出网，没有需要用户批准的副作用。
-    permissionEffect: 'internal_control',
-    parallelSafe: true,
+    ...LOAD_TOOL_SPEC,
 
     async fn(args) {
       const names = Array.isArray(args.names)

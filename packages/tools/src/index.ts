@@ -85,10 +85,12 @@ export { scrubEnv } from './secrets.ts'
 export { resolveCommandTimeout } from './shell.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页
 export { SKILLS_SUBDIR, type SkillMeta, scanSkills } from './skills.ts'
-// 外部工具按需加载：runtime/session.ts 量一次决定全量常驻还是进池子
+// 外部工具按需加载：runtime/session.ts 量一次决定全量常驻还是进池子；
+// server/api 只取静态规格，它不建池
 export {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
+  LOAD_TOOL_SPEC,
   makeLoadToolTool,
   PendingToolPool,
 } from './tool-pool.ts'
