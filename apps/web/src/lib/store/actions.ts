@@ -195,8 +195,13 @@ function ownerProvider(config: RedactedConfig, model: string): string | undefine
 /**
  * 手动压缩当前会话上下文。
  *
- * 与「provider 拒绝后自动压缩」并列的第二条入口。用户在长会话里主动点它，
- * 是为了在下一轮之前先把上下文腾出来，而不是等撞上限。
+ * 与「发送前检查触发的自动压缩」并列的第二个**触发点**，但压缩本身只有一份实现
+ * ——两边都是 `RuntimeCompaction.run()`，这里走的是 `conversation.compact` 指令
+ * （`server/run-control.ts`）。用户在长会话里主动点它，是为了在下一轮之前先把
+ * 上下文腾出来，而不是等占用逼近阈值。
+ *
+ * （原来这句写的是「provider 拒绝后自动压缩」，那条路已经不触发压缩了，只如实报错，
+ * 见 `agent/loop.ts` 发送前检查那段。）
  *
  * 结果通过 compaction 事件回来（done / failed 都会回），所以这里不做乐观更新。
  */
