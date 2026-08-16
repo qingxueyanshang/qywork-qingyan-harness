@@ -104,6 +104,42 @@ describe('角色约束', () => {
 })
 
 /**
+ * 被拦命令回给模型的那句话。
+ *
+ * 锁的是**这句话把模型推向哪里**，不是逐字文案（逐字断言改一个字就红，
+ * 锁的是文案不是行为）。教它「换一条命令」的代价是具体的：`rm -rf ~/x`
+ * 被拦就改写成 `python -c "import shutil; shutil.rmtree(...)"`，
+ * 而后者不在 HARD_DENY 表里，于是同一件事照样发生。
+ */
+describe('被拒的裁决怎么说话', () => {
+  type Deny = { allowed: false; reason: string }
+  const denyFor = async (command: string) => {
+    const { s, store } = await session()
+    const v = await (
+      s as unknown as {
+        decide(m: { toolName: string; args: Record<string, unknown> }): Promise<Deny>
+      }
+    ).decide({ toolName: 'run_command', args: { command } })
+    store.close()
+    return v
+  }
+
+  test('给的是「让用户提权」和「跳过」两条出路', async () => {
+    const v = await denyFor('rm -rf ~/')
+    expect(v.allowed).toBe(false)
+    expect(v.reason).toContain('完全访问')
+    expect(v.reason).toContain('跳过')
+  })
+
+  test('不引导换写法：提到「换」的地方必须都是否定句', async () => {
+    const { reason } = await denyFor('rm -rf ~/')
+    const mentions = (reason.match(/换/g) ?? []).length
+    const negated = (reason.match(/不要换|不能换|别换/g) ?? []).length
+    expect(mentions).toBe(negated)
+  })
+})
+
+/**
  * allowedTools 必须同时管得住扩展工具，也必须**认得出**它们。
  *
  * 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具；

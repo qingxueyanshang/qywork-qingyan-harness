@@ -752,7 +752,7 @@ function errorHint(code: string): string {
     model_not_found: '模型 ID 或接口地址对不上：在模型选择器里换一个。',
     context_overflow: '上下文超出窗口：压缩这轮对话，或换一个窗口更大的模型。',
     network_error: '连不上接口地址：检查网络与代理，以及 baseUrl 是否写对。',
-    permission_denied: '有操作被权限规则拒绝了：看工具卡片上的拒绝理由，改写这一步或调整权限规则。',
+    permission_denied: '「自动审批」模式挡下了这一步：切到「完全访问」就能跑，不放开就让它跳过。',
   }
   return map[code] ?? ''
 }

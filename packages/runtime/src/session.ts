@@ -685,7 +685,6 @@ export class Session {
    *   （命令字符串里的路径不经过我们的参数解析）。只有它需要真正的裁决。
    */
   private async decide(
-    scope: string,
     meta: { toolName: string; args: Record<string, unknown> } | undefined,
   ): Promise<PermissionVerdict> {
     if ((this.opts.config.mode ?? 'auto') === 'full') return { allowed: true }
@@ -700,7 +699,23 @@ export class Session {
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
     })
     if (d.kind === 'allow') return { allowed: true }
-    return { allowed: false, reason: `${d.reason}（scope ${scope}）。换一条不做这件事的命令。` }
+    /*
+     * 这句话是模型在 `auto` 模式下唯一能拿到的信号，所以它必须给出**正当的**出路。
+     *
+     * 旧文案是「换一条不做这件事的命令」——那等于教它绕过：`rm -rf ~/x` 被拦
+     * 就改写成 `python -c "import shutil; shutil.rmtree(...)"`，而后者不在
+     * `HARD_DENY` 表里就过了。规则挡的是这件事本身，不是这个写法。
+     *
+     * 不带 scope：`execute:<目标>` 这个串对模型没有信息量，它既不知道 scope 是
+     * 什么，命令也是它自己刚发出来的。
+     */
+    return {
+      allowed: false,
+      reason:
+        `这条命令被权限规则拦下：${d.reason}。当前是「自动审批」模式，它只放行确定安全的命令。` +
+        `你有两条路：① 告诉用户这一步需要更高权限，请他切到「完全访问」；② 跳过这一步，先做别的。` +
+        `不要换一种写法再试——规则挡的是这件事本身，不是这个写法。`,
+    }
   }
 
   private makeToolContext(
@@ -746,7 +761,7 @@ export class Session {
       secrets,
       ...(this.opts.config.envAllowList ? { envAllowList: this.opts.config.envAllowList } : {}),
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
-      requestPermission: async (scope, _preview, meta) => this.decide(scope, meta),
+      requestPermission: async (_scope, _preview, meta) => this.decide(meta),
     }
   }
 }
