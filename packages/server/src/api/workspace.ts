@@ -199,15 +199,23 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * **不在握手里报。** 扩展是按工作区的（`.qy/plugins`、`.qy/mcp.json`、
    * `.qy/team.json` 全在项目目录下），而一条 WebSocket 连接横跨用户开着的所有项目。
    * 握手报一份就等于「A 项目的插件显示在 B 项目上」，且它只在重连时才更新。
+   *
+   * **取扩展一律走引用计数**（`acquireExtensions` / `releaseExtensions`）：
+   * 直接 `loadExtensions` 会给每一次请求新起一批插件与 MCP 子进程，且没有人关。
+   * 一次 acquire 必须配一次 release，异常路径也要——所以是 try/finally。
    */
   if (p === '/api/capabilities') {
-    const { loadExtensions } = await import('@qywork/runtime')
-    const ext = await loadExtensions(d.workspaceRoot)
-    return json({
-      plugins: ext.plugins.plugins.map((x) => x.manifest.id),
-      teamBackends: Object.keys(ext.team.backends),
-      mcpServers: ext.mcp.servers.map((m) => m.name),
-    })
+    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const ext = await acquireExtensions(d.workspaceRoot)
+    try {
+      return json({
+        plugins: ext.plugins.plugins.map((x) => x.manifest.id),
+        teamBackends: Object.keys(ext.team.backends),
+        mcpServers: ext.mcp.servers.map((m) => m.name),
+      })
+    } finally {
+      releaseExtensions(d.workspaceRoot)
+    }
   }
 
   /*
@@ -219,15 +227,17 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 只回**中文的用途**（`summary`）、类目与功能方向，**不回工具名**：
    * 桌面端一律中文，`read_file` 这种机制字段只在 CLI 里露面。
    *
-   * 内置工具直接从注册表取（零成本，就是这一份真源）；插件贡献的工具从清单取
-   * （清单本来就已经读进来了，不用把插件跑起来）。**MCP 不在这里列** ——
-   * 它的工具清单要连上 server 才知道，为了一个设置页去连一串外部进程不划算，
-   * 而「装了几个 server」`/api/capabilities` 已经在回答。这条边界写在界面上。
+   * 三个来源：内置工具从注册表取（零成本，就是这一份真源）；插件贡献的工具从清单取
+   * （清单本来就已经读进来了，不用把插件跑起来）；MCP 的工具取
+   * `ext.mcp.toolSpecs`——加载扩展本来就会把 server 全连上，这份清单是那趟连接的
+   * 产物，列它不额外花钱，不列反而是白连一串外部进程再把结果扔掉。
+   *
+   * 扩展走引用计数，配对 release，理由同 `/api/capabilities`。
    */
   if (p === '/api/tools') {
     const { ToolRegistry } = await import('@qywork/agent')
     const { registerBuiltinTools } = await import('@qywork/tools')
-    const { loadExtensions } = await import('@qywork/runtime')
+    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
 
     const registry = new ToolRegistry()
     registerBuiltinTools(registry)
@@ -235,22 +245,29 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       .list()
       .map((s) => ({ category: s.category, facet: s.facet, summary: s.summary }))
 
-    const ext = await loadExtensions(d.workspaceRoot)
-    for (const plugin of ext.plugins.plugins) {
-      for (const t of plugin.manifest.contributes?.tools ?? []) {
-        rows.push({ category: 'external', facet: plugin.manifest.id, summary: t.description })
+    const ext = await acquireExtensions(d.workspaceRoot)
+    try {
+      for (const plugin of ext.plugins.plugins) {
+        for (const t of plugin.manifest.contributes?.tools ?? []) {
+          rows.push({ category: 'external', facet: plugin.manifest.id, summary: t.description })
+        }
       }
-    }
+      for (const spec of ext.mcp.toolSpecs) {
+        rows.push({ category: 'external', facet: spec.facet, summary: spec.summary })
+      }
 
-    // 确定性排序：类目按枚举顺序，其后按功能方向与用途字典序。
-    const { TOOL_CATEGORIES } = await import('@qywork/agent')
-    rows.sort(
-      (a, b) =>
-        TOOL_CATEGORIES.indexOf(a.category) - TOOL_CATEGORIES.indexOf(b.category) ||
-        a.facet.localeCompare(b.facet, 'zh') ||
-        a.summary.localeCompare(b.summary, 'zh'),
-    )
-    return json({ tools: rows, mcpServers: ext.mcp.servers.map((m) => m.name) })
+      // 确定性排序：类目按枚举顺序，其后按功能方向与用途字典序。
+      const { TOOL_CATEGORIES } = await import('@qywork/agent')
+      rows.sort(
+        (a, b) =>
+          TOOL_CATEGORIES.indexOf(a.category) - TOOL_CATEGORIES.indexOf(b.category) ||
+          a.facet.localeCompare(b.facet, 'zh') ||
+          a.summary.localeCompare(b.summary, 'zh'),
+      )
+      return json({ tools: rows, mcpServers: ext.mcp.servers.map((m) => m.name) })
+    } finally {
+      releaseExtensions(d.workspaceRoot)
+    }
   }
 
   return null
