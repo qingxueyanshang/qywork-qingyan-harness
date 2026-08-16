@@ -6,6 +6,7 @@ import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
 import { contextPanel, resolveModel } from '@qywork/runtime'
 import {
   createConversation,
+  currentGoal,
   getConversation,
   listConversations,
   listMessages,
@@ -157,6 +158,18 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
     const spec = lookupModel(conv.model, kind ?? 'openai_compatible')
     return json({ context: contextPanel(d.store, id, spec.contextWindow) })
+  }
+
+  // 当前目标。**按会话读账本，和上下文面板同一条理由**——`goal` 事件只在变更
+  // 那一刻发一次，界面刷新、切走再切回来就什么都没有了。而目标恰恰是跨轮、
+  // 跨进程存在的东西：续起标记不落盘，重启之后账本里那个 `active` 的目标
+  // 静静躺着等人点继续，界面看不见它就等于那个循环凭空消失了。
+  const goalMatch = /^\/api\/conversations\/([^/]+)\/goal$/.exec(p)
+  if (goalMatch) {
+    const id = goalMatch[1] as ConversationId
+    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    // 没立过目标就是 null，不是 404——「这条会话没有目标」是正常状态。
+    return json({ goal: currentGoal(d.store, id) })
   }
 
   const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)

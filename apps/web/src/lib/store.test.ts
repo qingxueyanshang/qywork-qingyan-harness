@@ -342,3 +342,72 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(state.transcript.at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
 })
+
+/**
+ * 当前目标（`store/connection.ts` 里 `goal` 事件与重拉时的读回）。
+ *
+ * 两条路都要锁，因为**它们各自补的是对方的盲区**：事件那条只在目标变更的那一刻
+ * 发一次，读回那条只在打开会话时跑一次。少了读回，进程重启之后账本里那个目标
+ * 在界面上凭空消失——而续起标记不落盘，它恰恰是**不会自己再跑**的那一个，
+ * 只能等用户点继续。看不见的自动循环是最坏的一种。
+ */
+describe('当前目标：事件推过来，刷新之后还得在', () => {
+  const goal = {
+    id: 'gl_1',
+    conversationId: 'cv_1',
+    objective: '把门禁跑绿',
+    status: 'active',
+    round: 3,
+    maxRounds: 12,
+    revision: 4,
+    blockedCode: null,
+    blockedReason: null,
+    createdAt: 1,
+    updatedAt: 2,
+  }
+
+  test('目标变更实时落进 state', () => {
+    setState({ activeConversation: 'cv_1', goal: null })
+    applyEvent({ seq: 1, at: 0, conversationId: 'cv_1', event: { type: 'goal', goal } } as never)
+    expect(state.goal?.round).toBe(3)
+  })
+
+  test('别的会话的目标不落到当前会话上', () => {
+    setState({ activeConversation: 'cv_now', goal: null })
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_other',
+      event: { type: 'goal', goal },
+    } as never)
+    expect(state.goal).toBeNull()
+  })
+
+  /**
+   * **原始失败形状**：目标撞上轮数上限停了，用户刷新一次页面——目标、第几轮、
+   * 为什么停，界面上一样都没有，只剩一条看起来正常结束的会话。
+   */
+  test('重拉会话时从账本读回来，理由跟着一起回来', async () => {
+    setState({ activeConversation: 'cv_1', goal: null, transcript: [] })
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/messages')) return { messages: [] }
+      if (p.includes('/goal')) {
+        return {
+          goal: {
+            ...goal,
+            status: 'blocked',
+            blockedCode: 'max_rounds',
+            blockedReason: '已经自动跑满 12 轮还没达成，停下来等你决定。',
+          },
+        }
+      }
+      if (p.includes('/steps')) return { steps: [] }
+      if (p.includes('/runs')) return { runs: [] }
+      throw new Error('没有上下文面板')
+    }
+    await reloadActiveConversation()
+
+    expect(state.goal?.status).toBe('blocked')
+    expect(state.goal?.blockedReason).toContain('跑满 12 轮')
+  })
+})

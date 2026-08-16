@@ -108,6 +108,66 @@
   color: var(--danger);
 }
 
+/* 当前目标。**占流，不悬浮**——它跨轮存在（一轮接一轮自己跑下去的那个东西），
+ * 而上面那条整轮状态条是这一轮的临时读数。两块都悬浮的话它们会互相盖住，
+ * 而且常驻的一块悬在正文上等于永久糊掉最底下那一行。
+ *
+ * 占流的代价是会话流少一截高度，但**输入框不会被往下挤**：`.composer-wrap`
+ * 贴着底边，长高只往上长。
+ *
+ * **两行都锁死高度**（B9）：目标正文长度不定、受阻理由长度不定，随内容变高的话
+ * 用户瞄着「停止」按下去，那个位置已经换成了别的东西。长了就截断，title 里有全文。 */
+.goal-chip {
+  margin-bottom: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-size: var(--fs-sm);
+}
+.goal-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 20px;
+}
+.goal-label {
+  flex: none;
+  color: var(--text-tertiary);
+}
+/* 正文吃掉剩余宽度并在这里截断：`min-width: 0` 由 `.truncate` 给。 */
+.goal-text {
+  flex: 1 1 auto;
+  color: var(--text-primary);
+}
+.goal-round {
+  flex: none;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.goal-act {
+  flex: none;
+  padding: 1px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.goal-act:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 第二行恒在：受阻理由 / 已暂停 / 续行没开着共用这一格，所以高度是定的。 */
+.goal-note {
+  height: 18px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+/* 受阻不压暗：它是「循环为什么停了」，是这一格里唯一需要被追问的一种。 */
+.goal-note.blocked {
+  color: var(--danger);
+}
+
 .composer {
   border: 1px solid var(--border-default);
   border-radius: var(--r-xl);

@@ -1,5 +1,5 @@
 /**
- * 用户驱动的动作：切会话、发消息、打断、重试、切模型、压缩、跑 team。
+ * 用户驱动的动作：切会话、发消息、打断、重试、切模型、压缩、续起目标、跑 team。
  *
  * 与 `connection.ts` 的分工：那边处理**服务端说了什么**，这边处理
  * **用户点了什么**。两边都只经 `setState` 改同一份 store，没有第二本账。
@@ -110,6 +110,25 @@ export function interrupt(): void {
   const runId = state.lastRunId
   if (!runId) return
   client.send({ type: 'run.interrupt', runId: runId as never })
+}
+
+/**
+ * 让停下来的目标接着自动跑。
+ *
+ * **它不只是把状态改回 `active`，是重新启用「一轮接一轮」这件事本身。**
+ * 服务端的续起标记挂在进程里、不落盘（`server/runs.ts` 的 `GoalArm`），所以
+ * 进程重启、会话恢复之后目标还在账本里，却不会自己再起一轮——那时候点这个按钮
+ * 是唯一能把循环接上的动作。
+ *
+ * 停止不在这里：跑起来之后停它就是中断这一轮（`interrupt`），run 收尾时服务端
+ * 会把目标置回 `paused` 并解除标记。再开一条「暂停目标」的指令等于给同一件事
+ * 开第二个入口。
+ */
+export function resumeGoal(): void {
+  const id = state.activeConversation
+  // 正在跑的时候服务端会回 conflict，前端这层只是不让按钮白点。
+  if (!id || state.running) return
+  client.send({ type: 'goal.resume', conversationId: id as never })
 }
 
 /**
