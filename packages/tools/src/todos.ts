@@ -26,9 +26,6 @@
 import type { ToolSpec } from '@qywork/agent'
 import type { TodoItem } from '@qywork/core'
 
-/** ctx.state 里存当前待办清单的键。整个 run 共用一份。 */
-export const TODOS_STATE_KEY = 'qywork.todos'
-
 /** 待办条目上限。超过这个数说明该拆任务了，而不是把清单当笔记本用。 */
 const MAX_ITEMS = 40
 
@@ -63,21 +60,17 @@ export const writeTodosTool: ToolSpec = {
     additionalProperties: false,
   },
   /*
-   * **首建是创建，改已有的才是编辑。**
+   * **恒为「编辑」。** 整表替换本质就是「把清单改成这样」，第一次提交也是改
+   * （从无到有），而「创建 / 修改」这个区分对用户的信息量约等于零——有用的那句
+   * 是展开体里的进度。
    *
-   * 不为它专造一个 `plan` 动作：配上对象「计划」，界面上读出来是「规划计划」，
-   * 动宾同义反复。动作轴只表达做了什么动作——从无到有是创建，改一份已经在的
-   * 是编辑。判据取**当前有没有一份没做完的清单**：全做完之后再提交一份，
-   * 那是新一轮的清单。
+   * 不要改回按「手上有没有一份未完成的清单」判：那个事实只存在于 `ctx.state`，
+   * 而 state 是 **run 级**的（一条消息一个 run，Map 新建），跨轮判不出来——
+   * 下一轮的第一次提交会一律说成「创建」，而同一张卡片的回执写着「待办已更新」。
    *
-   * 拿不到 ctx 时按 write，不按 edit：说「创建」最多是把一次修订说小了，
-   * 说「编辑」却可能在根本没有清单时声称改过一份不存在的东西。
+   * 也不要为它造一个 `plan` 动作：配上对象「待办」读作「规划待办」，动宾同义反复。
    */
-  actionKind: (_args, ctx) => {
-    const todos = ctx?.state.get(TODOS_STATE_KEY)
-    if (!Array.isArray(todos) || todos.length === 0) return 'write'
-    return (todos as TodoItem[]).every((t) => t.status === 'completed') ? 'write' : 'edit'
-  },
+  actionKind: 'edit',
   objectLabel: '待办',
   category: 'planning',
   facet: '待办账本',
@@ -95,7 +88,6 @@ export const writeTodosTool: ToolSpec = {
     }
 
     const todos = parsed.todos
-    ctx.state.set(TODOS_STATE_KEY, todos)
 
     // 事件从工具里发出去，而不是由 loop 猜——只有这里知道清单的确切内容。
     ctx.emitTodos?.(todos)

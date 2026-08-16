@@ -308,10 +308,9 @@ export interface ToolSpec {
   /**
    * 动作语义。多动作门面从**显式参数**解析，禁止按工具名或结果文案猜。
    *
-   * 第二个参数是可选的 `ctx`：有些动作光看参数分不出创建还是编辑——同一份
-   * `write_todos(todos)`，第一次提交是「创建待办」，之后是「编辑待办」，
-   * 差别在**当前有没有一份未完成的待办清单**，那是 `ctx.state` 里的事实。
-   * 拿不到 ctx 时（权限预检那条路）必须能只靠 args 给出一个不撒谎的答案。
+   * 第二个参数是可选的 `ctx`，但**别拿 `ctx.state` 当判据**：它是 run 级的
+   * （一条消息一个 run，Map 新建），跨轮的事实在里面查不到，而权限预检那条路
+   * 根本拿不到 ctx。只靠 args 给不出答案的，说明这个动作该是个常量。
    */
   actionKind: ActionKind | ((args: Record<string, unknown>, ctx?: ToolContext) => ActionKind)
   objectLabel: string | ((args: Record<string, unknown>) => string)

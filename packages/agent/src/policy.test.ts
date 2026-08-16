@@ -165,7 +165,7 @@ describe('凭证文件', () => {
    *
    * 那是项目自己的 agent 配置，与程序全局目录 `~/.qywork/` 是两回事。
    * 拦它没有安全收益——模型有 `run_command`，给自己加不加工具能做的事一样多；
-   * 而且 `.agents/memory/` 本来就是 `memory` 工具在写，shell 拦就成了两套账。
+   * 而且 `.agents/memory/` 本来就是 `write_memory` 在写，shell 拦就成了两套账。
    */
   test('项目里的 .agents / .qy 不算凭证，照常可写', () => {
     expect(kind('cat .agents/mcp.json')).toBe('allow')
@@ -258,7 +258,7 @@ describe('PowerShell 写法', () => {
    *
    * 理由与 POSIX 侧一字不差（见 `policy.ts` 里 `OUTSIDE_LOCATION` 上方那段）：
    * 模型手里已经有 `run_command`，给自己加个工具并没有多出任何能力；而
-   * `.agents/memory/` 本来就是 `memory` 工具在写，shell 拦、工具不拦就是两套账。
+   * `.agents/memory/` 本来就是 `write_memory` 在写，shell 拦、工具不拦就是两套账。
    * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一件事，
    * 换个方言不改变上面两条。
    */

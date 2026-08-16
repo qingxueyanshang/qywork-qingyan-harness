@@ -322,3 +322,74 @@ describe('迁移 20：外置工具的对象名收成类名', () => {
     expect(JSON.parse(row.payload).action).toBeUndefined()
   })
 })
+
+/**
+ * `memory` 门面拆成三个名字，老行按当时的 `args.action` 分流。
+ *
+ * 不转的表现是回放历史时模型看到一个当前工具表里不存在的名字——账本里的
+ * `tool_name` 与 `args` 会被原样重放成一次工具调用。
+ */
+describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
+  const nameOf = (db: Database, id: string) =>
+    db.query<{ n: string }, [string]>('SELECT tool_name AS n FROM steps WHERE id = ?').get(id)!.n
+  const argsOf = (db: Database, id: string) =>
+    JSON.parse(
+      db.query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?').get(id)!
+        .payload,
+    ).args as Record<string, unknown>
+
+  test('四个动作各自分流，list 归读', () => {
+    const db = dbBefore(21)
+    const rows: [string, Record<string, unknown>, string][] = [
+      // id, 老 args, 期望的新名字
+      ['m_read', { action: 'read', key: '包管理器' }, 'read_memory'],
+      ['m_write', { action: 'write', key: '包管理器', content: 'pnpm' }, 'write_memory'],
+      ['m_del', { action: 'delete', key: '包管理器' }, 'delete_memory'],
+      ['m_list', { action: 'list' }, 'read_memory'],
+    ]
+    for (const [id, args] of rows) insertStep(db, id, 'memory', { kind: 'tool_result', args })
+    applyOne(db, 21)
+    for (const [id, , want] of rows) expect(nameOf(db, id)).toBe(want)
+  })
+
+  /** 名字改了之后这行已不是逐字记录，留着 `action` 只会给出一个今天不合法的调用形状。 */
+  test('args.action 被清掉，别的参数原样保留', () => {
+    const db = dbBefore(21)
+    insertStep(db, 'm_write', 'memory', {
+      kind: 'tool_result',
+      args: { action: 'write', key: '包管理器', content: 'pnpm' },
+    })
+    applyOne(db, 21)
+    expect(argsOf(db, 'm_write')).toEqual({ key: '包管理器', content: 'pnpm' })
+  })
+
+  test('缺 action 与值非法的都归读 —— 分不出动作时落到最保守的那个', () => {
+    const db = dbBefore(21)
+    insertStep(db, 'm_bare', 'memory', { kind: 'tool_result', args: { key: 'k' } })
+    insertStep(db, 'm_junk', 'memory', {
+      kind: 'tool_result',
+      args: { action: '瞎写的', key: 'k' },
+    })
+    insertStep(db, 'm_noargs', 'memory', { kind: 'tool_call' })
+    applyOne(db, 21)
+    expect(nameOf(db, 'm_bare')).toBe('read_memory')
+    expect(nameOf(db, 'm_junk')).toBe('read_memory')
+    expect(nameOf(db, 'm_noargs')).toBe('read_memory')
+    expect(argsOf(db, 'm_junk')).toEqual({ key: 'k' })
+  })
+
+  test('别的工具一个字节都不动', () => {
+    const db = dbBefore(21)
+    insertStep(db, 'other', 'read_file', { kind: 'tool_result', args: { path: 'a.ts' } })
+    // 同名前缀的行也不能被顺手带走——判据是整个名字相等。
+    insertStep(db, 'mcp', 'mcp__demo__memory', {
+      kind: 'tool_result',
+      args: { action: 'write', key: 'k' },
+    })
+    applyOne(db, 21)
+    expect(nameOf(db, 'other')).toBe('read_file')
+    expect(argsOf(db, 'other')).toEqual({ path: 'a.ts' })
+    expect(nameOf(db, 'mcp')).toBe('mcp__demo__memory')
+    expect(argsOf(db, 'mcp')).toEqual({ action: 'write', key: 'k' })
+  })
+})
