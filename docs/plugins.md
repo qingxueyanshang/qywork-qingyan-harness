@@ -118,7 +118,6 @@ ode.exe
           "required": ["path"],
           "additionalProperties": false
         },
-        "actionKind": "read",
         "objectLabel": "文件",
         "permissionEffect": "read"
       }
@@ -136,6 +135,8 @@ ode.exe
 - `permissions` 必须覆盖你所有工具的 `permissionEffect`——声明 `read` 的工具而清单里
   没有 `workspace:read`，加载期直接拒绝。用户在安装提示里看到的权限清单必须和插件
   实际能做的事自洽。
+- **动作语义不在清单里声明。** 插件工具在会话里一律显示成「调用」——它是跨进程请来的
+  外置能力，这件事由宿主判定。清单里写 `actionKind` 不报错，但不会被读。
 - 只贡献预览器、角色或供应商的插件不需要 `main`，也不会起进程。
 
 ## `previewers` / `roles` / `providers` 当前不生效
@@ -247,7 +248,6 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
       "name": "count",
       "description": "统计一个文件有多少行",
       "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] },
-      "actionKind": "read",
       "objectLabel": "文件",
       "permissionEffect": "read"
     }]

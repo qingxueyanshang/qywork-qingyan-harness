@@ -75,7 +75,9 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
         `[MCP ${server}] 列出该 server 提供的 resource（uri、名称、类型），` +
         `不返回正文。拿到 uri 之后用 mcp__${server}__fetch_resource 读正文。`,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-      actionKind: 'read',
+      // 动作是 call：正文在外部 server 那边，这一步是一次跨进程调用。
+      // 权限轴另算，是 read——两条轴正交，见文件头第 3 条。
+      actionKind: 'call',
       objectLabel: label,
       // MCP 的工具一律归「外部扩展」：类目由第三方决定，混进内置分类学会让
       // 「文件与草稿」那一栏突然冒出别人家的工具。
@@ -122,7 +124,7 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
         required: ['uri'],
         additionalProperties: false,
       },
-      actionKind: 'read',
+      actionKind: 'call',
       objectLabel: label,
       category: 'external',
       facet: `MCP ${server}`,

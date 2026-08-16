@@ -101,7 +101,6 @@ async function workspaceWith(extra: string[]) {
             name: 'probe',
             description: '调一次宿主能力',
             parameters: { type: 'object', properties: {}, additionalProperties: true },
-            actionKind: 'read',
             objectLabel: '宿主能力',
             permissionEffect: 'read',
           },
@@ -126,6 +125,13 @@ describe('插件端到端', () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.plugins.failures).toEqual([])
     expect(ext.toolSpecs.map((t) => t.name)).toContain('test_probe__probe')
+    stop()
+  })
+
+  /** 动作是宿主判定的：清单里没有、也不该有这个字段，插件工具一律记「调用」。 */
+  test('插件工具的动作恒为 call', async () => {
+    const { ext, stop } = await workspaceWith(['workspace:read'])
+    expect(ext.toolSpecs.find((t) => t.name === 'test_probe__probe')?.actionKind).toBe('call')
     stop()
   })
 

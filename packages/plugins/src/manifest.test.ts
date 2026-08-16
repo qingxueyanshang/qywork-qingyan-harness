@@ -43,7 +43,6 @@ describe('插件清单校验', () => {
             name: 'do_write',
             description: 'x',
             parameters: {},
-            actionKind: 'write',
             objectLabel: '文件',
             permissionEffect: 'write',
           },

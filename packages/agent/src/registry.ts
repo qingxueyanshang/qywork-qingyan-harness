@@ -356,19 +356,21 @@ export function resolveAction(
   }
 }
 
+/**
+ * 权限效果**只取工具自己声明的那个值，不从动作轴推导**。
+ *
+ * 两条轴正交（见 `ToolCategory` 上那段）：动作说「做了什么」，权限说「有什么副作用」。
+ * 拿 `kind === 'delete'` 反推权限就是把一条轴接到另一条上——同一个工具的权限会随
+ * 参数在两条规则之间跳，而声明的那个值反倒不作数。要走 delete 闸的工具，
+ * `permissionEffect` 里直接写 `delete`（门面工具就写成按参数返回的函数）。
+ */
 export function resolvePermissionEffect(
   spec: ToolSpec,
   args: Record<string, unknown>,
 ): PermissionEffect {
-  const effect =
-    typeof spec.permissionEffect === 'function'
-      ? spec.permissionEffect(args)
-      : spec.permissionEffect
-  if (effect === 'internal_control') return effect
-  // delete 动作强制叠加 delete 权限，无论工具自己声明的是什么——
-  // 一个声明 write 的门面工具在 delete 分支上必须走 delete 闸。
-  const kind = typeof spec.actionKind === 'function' ? spec.actionKind(args) : spec.actionKind
-  return kind === 'delete' ? 'delete' : effect
+  return typeof spec.permissionEffect === 'function'
+    ? spec.permissionEffect(args)
+    : spec.permissionEffect
 }
 
 export function isParallelSafe(spec: ToolSpec, args: Record<string, unknown>): boolean {

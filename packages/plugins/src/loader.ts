@@ -194,7 +194,9 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       name,
       description: t.description,
       parameters: t.parameters,
-      actionKind: t.actionKind,
+      // 恒为 call，清单说了不算：插件工具是第三方代码通过 RPC 提供的能力，
+      // 「这是一次外置调用」是宿主知道的事实，不该由插件自称成读/写/运行。
+      actionKind: 'call',
       objectLabel: t.objectLabel,
       permissionEffect: t.permissionEffect,
       // 插件工具同 MCP，归「外部扩展」——清单里不让插件自己声明类目，

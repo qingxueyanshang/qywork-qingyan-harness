@@ -190,7 +190,11 @@ export interface ActionDescriptor {
 }
 
 /**
- * 一次工具调用对用户表达的**唯一动作语义**。六个，就这六个。
+ * 一次工具调用对用户表达的**唯一动作语义**。七个，就这七个。
+ *
+ * `run` 与 `call` 的分界是**本机执行还是跨进程/跨网络调用**：`run_command` 直接在
+ * 用户这台机器上执行，是 `run`；MCP server 与插件贡献的工具是外部进程提供的能力，
+ * 一律是 `call`——它们能干什么不由我们决定，界面上也不该说成「运行」。
  *
  * 这条轴**只表达「做了什么动作」，不表达「属于哪个领域」**。别把
  * `search / fetch / plan / delegate` 这类值加回来——它们全是领域不是动作
@@ -203,11 +207,11 @@ export interface ActionDescriptor {
  * 变成一条 step——所以这条轴上不存在「不知道是什么动作」的行。
  *
  * **这些值会落盘**（`steps.payload.action.kind`），所以改这个联合类型不是改一个
- * 类型别名：删掉或改名一个值，同一次改动里必须带一条数据迁移把老行转过去
+ * 类型别名：删掉、改名，或把某一类工具改归到别的值，同一次改动里必须带一条数据迁移
  * （样例 `store/schema.ts` 的迁移 16）。不转的表现不是报错，是回放历史会话时
  * 卡片标题查不到动词——上一次就这么在界面上露出了 `undefined`。
  */
-export type ActionKind = 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run'
+export type ActionKind = 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run' | 'call'
 
 /** 长工具的中途输出（shell stdout、下载进度、子 agent 的流）。 */
 export interface ToolDeltaEvent {

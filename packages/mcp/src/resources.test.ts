@@ -201,6 +201,8 @@ describe('resource 工具', () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     for (const s of reg.toolSpecs) {
       expect(s.permissionEffect).toBe('read')
+      // 动作轴与权限轴正交：正文来自外部 server，动作是 call，副作用仍然只是读。
+      expect(s.actionKind).toBe('call')
       expect(s.targetExtractor?.({})).toBe('mcp:demo/resource')
     }
     reg.stopAll()

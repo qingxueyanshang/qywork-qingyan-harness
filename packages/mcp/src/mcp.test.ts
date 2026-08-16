@@ -240,7 +240,6 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
     expect(spec.permissionEffect).toBe('execute')
-    expect(spec.actionKind).not.toBe('read')
     c.stop()
   })
 
@@ -248,7 +247,10 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     const { dir, entry } = await fixture({ annotations: { destructiveHint: true } })
     const c = client(entry, dir)
     await c.start()
-    expect(specFor(c, (await c.listTools())[0]!).actionKind).toBe('delete')
+    const spec = specFor(c, (await c.listTools())[0]!)
+    expect(spec.permissionEffect).toBe('delete')
+    // 收紧的是权限轴。动作轴与它正交，恒为 call——外部 server 的能力不是本机执行。
+    expect(spec.actionKind).toBe('call')
     c.stop()
   })
 
