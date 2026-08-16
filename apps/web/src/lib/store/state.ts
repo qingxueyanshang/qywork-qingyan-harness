@@ -125,7 +125,7 @@ export interface AppState {
     breakdown: ContextBreakdown
     omitted: ContextOmitted
   } | null
-  /** 当前计划清单。整表快照语义——每次 todos 事件整体替换。 */
+  /** 当前待办清单。整表快照语义——每次 todos 事件整体替换。 */
   todos: TodoItem[]
   /** Agent Team 成员进展。按 memberId 去重、原地更新。 */
   teamMembers: TeamMemberState[]

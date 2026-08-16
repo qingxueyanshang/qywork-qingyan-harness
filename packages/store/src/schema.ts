@@ -652,6 +652,35 @@ WHERE json_extract(payload, '$.outcome.message') LIKE '计划已更新%';
 UPDATE steps SET tool_name = 'write_todos' WHERE tool_name = 'update_plan';
 `,
   },
+  {
+    id: 18,
+    name: 'todos_message_wording_again',
+    /**
+     * 再扫一遍待办回执里的「计划已更新」。
+     *
+     * 迁移 16 已经转过同一句话，为什么还要转第二遍——**因为迁移只转它执行那一刻
+     * 之前的行**，而这次文案改动分了两批落地：动作轴（`plan`→`write`、对象「计划」
+     * →「待办」）先改，回执文案后改。中间那段时间里跑过真实的轮次，写进去的行
+     * 是「新动作 + 旧文案」的组合：卡片标题读作「创建待办」，展开体里却写着
+     * 「计划已更新（1/3）」。实测确认过是这个形状——
+     * `action.kind='write' / objectLabel='待办'`，`outcome.message` 以「计划已更新」开头，
+     * 而这些行的时间戳晚于 `_migrations` 里 16 的落库时间。
+     *
+     * 教训写在这里而不是别处：**同一件事的文案与语义必须一次改完**，
+     * 分两批的代价就是要为中间那一批再写一条迁移。
+     *
+     * 幂等：转完之后不存在以「计划已更新」开头的回执，重复执行命中零行。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(
+  payload,
+  '$.outcome.message',
+  replace(json_extract(payload, '$.outcome.message'), '计划已更新', '待办已更新')
+)
+WHERE json_extract(payload, '$.outcome.message') LIKE '计划已更新%';
+`,
+  },
 ]
 
 /**
