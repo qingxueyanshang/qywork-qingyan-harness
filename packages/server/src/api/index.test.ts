@@ -529,7 +529,7 @@ describe('模型目录', () => {
     expect(list.find((m: any) => m.id === 'claude-opus-5').effort).toBeNull()
   })
 
-  /** 九家厂商、19 条内置模型都在——这是从青研魔盒那份目录整体搬过来的。 */
+  /** 内置目录不能被改小：少一家厂商，界面上那一整组模型就没了。 */
   test('内置库覆盖九家厂商', async () => {
     const d = withConfig('anthropic', 'claude-opus-5')
     const body = (await (await call('/api/models', undefined, d))!.json()) as any

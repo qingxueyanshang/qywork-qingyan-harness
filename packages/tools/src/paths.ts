@@ -233,9 +233,6 @@ function decodeSafely(input: string): string {
  * 这是自我提权，不是越权——两种模式都必须挡，`full` 也不例外，
  * 因为「完全访问」的意思是「不裁决这次操作」，不是「可以修改裁决规则本身」。
  *
- * 这一条抄的是 Claude Code：它的沙箱 `denyWrite` 里明确包含 `settings.json`
- * 和 `skills/`，理由完全一样。
- *
  * ## 它挡不住什么
  *
  * `run_command` 里的路径不经过这里（`rm .qy/mcp.json` 照样能跑）。

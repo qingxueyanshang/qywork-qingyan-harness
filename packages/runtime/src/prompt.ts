@@ -66,7 +66,7 @@ export interface TailNote {
  * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的：记忆放在历史之前，
  * 记忆一变其后整段历史全部失配；而召回按当轮查询做、几乎每 run 都变，
  * 于是每 run 打掉一次整段历史缓存。放在历史之后，新一轮的历史是上一轮的前缀，
- * 缓存一路命中到旧历史末尾。青研魔盒 `run_stream.py:257-262` 是同一个结论。
+ * 缓存一路命中到旧历史末尾。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string

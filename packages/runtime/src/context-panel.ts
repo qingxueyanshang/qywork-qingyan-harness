@@ -12,8 +12,7 @@
  * `total` 取**最近一次带 usage 回报的请求**的 provider 真值。
  * 这里刻意不做 `max(全量估算, provider真值)`——那两个数出自两把尺，
  * 锚点一失效显示值就从真值尺跌到估算尺，会话内容没变而数字掉三分之一，
- * 界面上没有任何东西能解释它。参照实现（青研魔盒 `context/panel.py:460`、
- * cc-haha `contextBudget.ts:149`）都栽在这一条上，不要抄过来。
+ * 界面上没有任何东西能解释它。
  *
  * 没有任何带 usage 的请求时才退回本地测得值，并把 `source` 标成 `estimated`。
  * **标签必须跟着数走**：用户要能一眼看出这个数能不能拿来做决定。
@@ -63,9 +62,10 @@ function anchorTokens(r: {
  * 会随对话增长的那三个桶。差额只往这里归。
  *
  * 其余桶（系统提示词、工具 schema、记忆、技能、工作区）在装配时是**逐字可数**的，
- * 估算误差极小；把差额摊到它们头上等于把最准的数改错。魔盒的
- * `_scale_categories`（`panel.py:82-109`）缩放全部类目，它敢缩是因为
- * 全部类目出自 tiktoken 同一把尺、误差均匀——qywork 是估算，误差不均匀。
+ * 估算误差极小；把差额摊到它们头上等于把最准的数改错。
+ *
+ * 坑：不要改成「按占比缩放全部类目」。那要求全部类目出自同一把尺、误差均匀，
+ * 而这里是估算，误差集中在会变的那几个桶上。
  */
 const VARIABLE: readonly (keyof ContextBreakdown)[] = [
   'historyMessages',
@@ -88,8 +88,8 @@ const VARIABLE: readonly (keyof ContextBreakdown)[] = [
  *
  * ## 吸收法，不是缩放法
  *
- * 照 cc-haha `analyzeContext.ts:1179-1197`：固定类目保实测值，差额归到
- * **误差实际所在的桶**。三个可变桶按各自占比分摊；全为零（新会话还没跑过工具）
+ * 固定类目保实测值，差额归到**误差实际所在的桶**。
+ * 三个可变桶按各自占比分摊；全为零（新会话还没跑过工具）
  * 时整块给 `historyMessages`。
  */
 function reconcile(breakdown: ContextBreakdown, total: number): ContextBreakdown {

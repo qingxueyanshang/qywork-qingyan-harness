@@ -118,18 +118,12 @@ export interface LoopPersistence {
     /**
      * 本轮的思考正文，**只在一个 batch 的第一条上给**（其余传空串）。
      *
-     * 它属于整个 assistant 轮而不是某一次调用，挂在首条上是最省的编码方式，
-     * 与青研魔盒 `agent_transcript.py:571-574` 的读法对齐。
+     * 它属于整个 assistant 轮而不是某一次调用，挂在首条上是最省的编码方式。
      *
-     * ## 为什么必须落库——这推翻了一条既有不变量
-     *
-     * 本文件原来写着「思考只做实时状态，不落库回放」。那条对**给用户看**成立，
-     * 对**给模型看**不成立：`ai/types.ts` 与 `openai-compat.ts` 都记着
-     * DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传
-     * `reasoning_content`，**否则后续轮次 400**，并标注「这不是可选优化」。
-     * 历史一旦从 steps 投影回去（跨轮记忆），缺这一段就是必然的 400。
-     *
-     * 不额外花上下文：活的 transcript 本来就在发它，落库只是让下一轮还能发。
+     * 坑：这段必须落库。DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息
+     * 原样回传 `reasoning_content`，**否则后续轮次 400**；历史一旦从 steps 投影
+     * 回去（跨轮记忆），缺这一段就是必然的 400。不额外花上下文——活的 transcript
+     * 本来就在发它，落库只是让下一轮还能发。
      */
     reasoning: string,
   ): string
@@ -357,10 +351,8 @@ export class AgentLoop {
     /*
      * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 仅对其后新增内容的估算。
      *
-     * 这里刻意不做 `max(全量估算, 真值)`。那个形状是青研魔盒
-     * （`context/panel.py:460`）与 cc-haha（`contextBudget.ts:149`）共有的毛病：
-     * 两个数出自两把尺，锚点一失效显示值就从真值尺跌到系统性偏低的估算尺，
-     * 会话内容没变而数字掉三成——用户实测报的 33%→20% 就是它。
+     * 坑：不要写成 `max(全量估算, 真值)`。两个数出自两把尺，锚点一失效显示值就从
+     * 真值尺跌到系统性偏低的估算尺，会话内容一个字没变而数字掉三成（实测 33%→20%）。
      *
      * `uncovered` 是锚点之后新增的历史消息（本轮的新用户消息）。锚点覆盖到
      * 上一轮为止，不减掉这一块就会漏算。
@@ -430,19 +422,13 @@ export class AgentLoop {
         /*
          * ── 压缩触发：**只有这一个入口** ──
          *
-         * 这里原来是「先发、被 provider 拒了再压、然后重发」，配着
-         * `MAX_COMPACTION_ATTEMPTS` 与 `implausibleCapacity` 两道补丁。三条问题：
+         * 发送前按占用检查。容量拒绝那条路保留，但**不触发压缩**——它只如实报错。
+         * 两个触发就是两个执行入口，A2 第五问过不去。
          *
-         * 1. **每次触发都先烧掉一次注定失败的长请求**——长 prompt 上是几秒到
-         *    几十秒外加计费。
-         * 2. 那条注释声称「原版三句话一句不能改」，但青研魔盒主线**不是**纯拒绝
-         *    驱动：它在发送前有真实载荷投影闸（`projection/apply.py:784-838`），
-         *    容量拒绝只是保底。qywork 只搬了保底、丢了前闸——**移植本身是残缺的**。
-         * 3. 反对阈值的论据是「本地估算永远不准」。那个前提在锚定尺下不成立：
-         *    占用 = provider 真值 + 仅一轮尾巴的估算，误差被限制在单轮增量内。
-         *
-         * 所以现在是**发送前检查**这一个入口。容量拒绝那条路保留，但**不再触发
-         * 压缩**——它只如实报错。两个触发就是两个执行入口，A2 第五问过不去。
+         * 不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要先
+         * 烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
+         * 锚定尺（provider 真值 + 仅一轮尾巴的估算），误差被限制在单轮增量内，
+         * 够做发送前判断。
          *
          * 代价说清楚：估算失误时不再自动救回，直接报错。可接受——报错是诚实的，
          * 而单次/单批投递预算（`RESULT_BUDGET_RATIO` / `BATCH_BUDGET_RATIO`）
@@ -555,7 +541,7 @@ export class AgentLoop {
             }
             case 'thinking_delta': {
               thinkingText += ev.delta
-              // 思考只做实时状态，不落库回放——与 Python 版口径一致。
+              // delta 只做实时状态；整段思考在开这一批的首条工具步时随 reasoning 落库。
               yield { type: 'thinking.delta', runId: input.runId, delta: ev.delta, redacted: false }
               break
             }
@@ -822,7 +808,7 @@ export class AgentLoop {
         // 原地打转：同样的调用、同样的结果、没有副作用，连着两个周期。
         // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
         // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
-        // provider 直接 400。代价是比参照物晚一轮，仍然远好过烧满 maxSteps。
+        // provider 直接 400。代价是晚一轮才停，仍然远好过烧满 maxSteps。
 
         if (repeatsNoProgress(progress)) {
           stopReason = 'no_progress'
@@ -897,8 +883,8 @@ export class AgentLoop {
    *
    * 省略量不是事后统计出来的，是装配时**同尺两测相减**——原文一直在
    * Message/Step 里躺着（压缩是投影、不销毁数据），所以量得到。
-   * cc-haha 没有这一行不是漏了：它的旧结果正文被直接改写成占位串，
-   * 原文不在任何可测处，算不出诚实的数。qywork 与青研魔盒同架构，配得上这一行。
+   * 前提就是这个：一旦哪天把旧结果正文改写成占位串，原文不在任何可测处，
+   * 这个数就只能瞎报，届时该删掉它而不是估一个。
    */
   private buildRequest(input: RunInput, transcript: WireMessage[]): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
@@ -1069,23 +1055,6 @@ function mergeUsage(
 }
 
 /**
- * 上下文占用按组分解。
- *
- * ## 桶的口径只有一份
- *
- * 键来自 `core` 的 `ContextGroup`，与青研魔盒 `harness/llm/adapter.py` 的
- * `_CONTEXT_CATEGORY_KEYS` 逐字对应。这里曾经另立过一套七个桶
- * （`toolSchemas` 一个桶顶掉 `systemTools`+`mcpTools`，没有 `memory`、
- * 没有 `intermediateContent`），而完整的十个键其实一直躺在 `ai/types.ts` 里没人用。
- * 面板建在那七个上，于是修得越勤离目标形态越远。**那一套已删，不留别名。**
- *
- * ## 各组之和与总数的关系
- *
- * 两者由 `context-meter.ts` 的对账步骤保证恒等：固定类目保实测值，
- * 差额归到消息类目。不要在这里追求「加起来正好」——这个函数只负责量，
- * 对账是另一件事。
- */
-/**
  * 请求体指纹。用来在账本上认出「同一份内容发了两遍」。
  *
  * 非加密哈希是够的：它回答的是「这两行是不是同一次请求的重复」，
@@ -1103,8 +1072,8 @@ function payloadHashOf(req: ChatRequest): string {
  * 不同——正文可以落 sink、可以在压缩时换成定位符，信封不能动。合成一个桶，
  * 面板就答不了「上下文是被工具输出吃掉的，还是被模型自己的话吃掉的」。
  *
- * 量法照搬魔盒 `llm/adapter.py:170-215`：把同一份记录**去掉正文再量一次**，
- * 两次之差就是正文。tokenization 不可加，所以不能分别量两段再相加。
+ * 量法：把同一份记录**去掉正文再量一次**，两次之差就是正文。
+ * tokenization 不可加，所以不能分别量两段再相加。
  */
 function splitToolResult(content: string, total: number): { envelope: number; body: number } {
   try {
@@ -1119,6 +1088,12 @@ function splitToolResult(content: string, total: number): { envelope: number; bo
   }
 }
 
+/**
+ * 上下文占用按组分解。桶的口径只有一份：`core` 的 `ContextGroup`。
+ *
+ * 这里只负责量，不负责对账——各组之和与总数的恒等由 `context-meter.ts` 保证
+ * （固定类目保实测值，差额归到消息类目）。不要在这个函数里追求「加起来正好」。
+ */
 function breakdownOf(req: ChatRequest): ContextBreakdown {
   const out = emptyBreakdown()
   out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text), 0)

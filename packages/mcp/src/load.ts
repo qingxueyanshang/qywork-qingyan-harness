@@ -61,8 +61,8 @@ export function parseMcpConfig(raw: string): McpConfig {
   }
 
   const obj = (parsed ?? {}) as Record<string, unknown>
-  // 同时认 `servers` 和 `mcpServers`：后者是 Claude Desktop / Cursor 的键名，
-  // 用户多半是从那边复制过来的。为一个键名让人重打一遍配置不值得。
+  // 同时认 `servers` 和 `mcpServers`：后者是别的 MCP 客户端普遍用的键名，
+  // 用户多半是从那边整段复制过来的。为一个键名让人重打一遍配置不值得。
   const rawServers = (obj.servers ?? obj.mcpServers ?? {}) as Record<string, unknown>
 
   const servers: McpConfig['servers'] = {}

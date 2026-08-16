@@ -1,21 +1,14 @@
 /**
  * 上下文容量拒绝的**窄**分类。
  *
- * 移植自原版 `execution/provider_capacity_rejection.py`。原版 docstring 的第一句话
- * 是整个模块的设计意图，照抄不改：
+ * **只认真实的 4xx + provider 原生容量码，或者一条强的、带 token 数的消息。**
+ * 泛化的 `invalid_request_error` 和输出 token 的参数校验一律不算输入容量。
  *
- * > Only a real 4xx response plus a provider-native capacity code or a strong,
- * > token-specific message is accepted. This deliberately does not classify a
- * > generic `invalid_request_error` or output-token validation as input capacity.
- *
- * 为什么必须这么窄：这个判定是**压缩并重发**的触发器。判宽了，一个普通的参数校验
- * 错误会触发压缩——压缩本身要花一次模型调用，压完重发还是同样的参数错误，
- * 于是变成「烧钱的死循环」。宁可漏判走原来的失败路径，也不能误判。
+ * 为什么必须这么窄：判宽了，一个普通的参数校验错误会被报成上下文超限，
+ * 用户拿到的是「上下文满了」而真实原因在别处，查不下去。宁可漏判走通用失败路径。
  *
  * 特别注意 `max_tokens` 这个词：它出现在 4xx 里绝大多数时候指的是
  * **输出**上限的参数校验（"max_tokens must be less than…"），不是输入超限。
- * 现有 `errors.ts` 里 `m.includes('max_tokens')` 就判 `context_overflow` 是错的，
- * 本模块落地后由 `classifyProviderError` 改调这里。
  */
 
 /** 各家 provider 原生的容量错误码（归一化成 snake_case 后比对）。 */

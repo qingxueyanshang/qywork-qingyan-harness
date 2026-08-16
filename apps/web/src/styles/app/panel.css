@@ -91,7 +91,7 @@
  * 第三件用向下的 box-shadow，不用 `margin-bottom: -1px`——负外边距会把这一格
  * 整体往下拽 1px，五格的文字基线随之错开一档。
  * 线用 `--text-primary` 而不是 `--accent`：这条横带上已经有底色在说「选中」，
- * 再上一个彩色就是第二处彩，参照物（qoder）用的也是中性的近黑。
+ * 再上一个彩色就是第二处彩。
  */
 .side-tab.active {
   background: var(--bg-app);

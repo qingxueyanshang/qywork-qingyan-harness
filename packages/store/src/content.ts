@@ -1,11 +1,8 @@
 /**
- * 内容寻址正文库。移植自原版 `content_store.py`。
+ * 内容寻址正文库：`agent_content.sqlite3`，与 `agent.sqlite3` 并列。
  *
- * 原版 docstring 的两句话就是全部设计：
- *
- * > Content-addressed body store: agent_content.sqlite3 next to agent.sqlite3.
- * > Write path: pending_writes(write_id) -> append chunks -> finalize immutable
- * > content_blobs(content_hash). **Main DB must only reference complete blobs.**
+ * 写入路径是 `pending_writes(write_id)` → 追加分片 → 定稿进不可变的
+ * `content_blobs(content_hash)`。**主账本只准引用已定稿的 blob。**
  *
  * ### 为什么单独一个数据库文件
  *
@@ -34,7 +31,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-/** 分片大小。太小则行数爆炸，太大则单次读放大明显。原版用 256 KB。 */
+/** 分片大小。太小则行数爆炸，太大则单次读放大明显。 */
 export const CHUNK_BYTES = 256 * 1024
 
 export const CONTENT_SCHEMA_VERSION = 1

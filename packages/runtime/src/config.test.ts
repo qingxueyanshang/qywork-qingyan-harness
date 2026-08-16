@@ -332,21 +332,12 @@ describe('配置提醒', () => {
 })
 
 /**
- * 思考档位的词表校验。
- *
- * 这条校验原来住在 `conversation.setEffort` 那条 WebSocket 指令上。档位收回成
- * config.json 里那**一个**字段之后指令没了，校验必须跟着搬到配置这道闸门——
- * 否则任何客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider，
- * 换来一个 400，而错误信息里只有 provider 的原话。
- */
-/**
  * 档位挂在「接口 × 模型」那一格。
  *
- * **本仓不能用一个全局值**，理由是 Codex / Claude Code 那个前提在这里不成立：
- * 它们只调自家模型、档位面一致，所以一个 `model_reasoning_effort` /
- * `effortLevel` 够用。这里同时接多家（Claude 五档、DeepSeek 两档、Qwen 一档没有、
- * 同一个模型换条协议档位面还会变），而且 Agent Team 的每个角色各带一个模型
- * （`team-run.ts` 的 `backend.model`）——一个全局值套上去必然错配。
+ * **不能用一个全局值**：只调一家模型时档位面一致，一个全局字段够用；这里同时
+ * 接多家（Claude 五档、DeepSeek 两档、Qwen 一档没有，同一个模型换条协议档位面
+ * 还会变），而且 Agent Team 的每个角色各带一个模型（`team-run.ts` 的
+ * `backend.model`）——一个全局值套上去必然错配。
  */
 describe('按「接口 × 模型」取档位', () => {
   const two = cfg({
@@ -383,6 +374,12 @@ describe('按「接口 × 模型」取档位', () => {
   })
 })
 
+/**
+ * 词表校验必须落在**配置这道闸门**上。
+ *
+ * 不拦的话，任何客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider，
+ * 换来一个 400，而错误信息里只有 provider 的原话。
+ */
 describe('思考档位校验', () => {
   // 只看档位这一条：夹具没有 key，别的问题与这里无关。
   const effortProblems = (c: QyConfig) => diagnoseConfig(c).filter((p) => p.includes('思考强度'))

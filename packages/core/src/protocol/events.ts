@@ -147,7 +147,7 @@ export interface TextDeltaEvent {
   delta: string
 }
 
-/** 思考内容只做实时展示，不落库回放——与 Python 版口径一致。 */
+/** 只做实时展示；整段思考另由 tool_action 首条随 `reasoning` 落库。 */
 export interface ThinkingDeltaEvent {
   type: 'thinking.delta'
   runId: RunId

@@ -35,8 +35,8 @@ qy mcp --tools    # 连带列出它们提供哪些工具
 }
 ```
 
-`servers` 和 `mcpServers` 两个键名都认——后者是 Claude Desktop / Cursor 的写法，
-配置多半是从那边复制过来的，为一个键名让人重打一遍不值得。
+`servers` 和 `mcpServers` 两个键名都认——后者是别的 MCP 客户端普遍用的写法，
+配置多半是从那边整段复制过来的，为一个键名让人重打一遍不值得。
 
 **不透传宿主环境变量。** server 拿不到你的 `ANTHROPIC_API_KEY`——它需要什么凭证，
 就在 `env` 里显式给。这样「这个 server 能拿到什么」是写在配置里、看得见的。

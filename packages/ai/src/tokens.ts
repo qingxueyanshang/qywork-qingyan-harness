@@ -1,29 +1,16 @@
 /**
  * Token 估算。**只用于面板与预算判断**，精确值一律以 provider 回报的 usage 为准。
  *
- * ## 为什么不是一个 `length / N`
+ * 这个数是压缩判断的输入，低估的代价是真正超限的请求被判成「不可能超」。四个坑：
  *
- * 原来这里是 `ceil(text.length / 3.5)`，对整个序列化请求体调用一次。三处错：
- *
- * 1. **中文被严重低估。** 中文约 1～1.5 token/字，除以 3.5 等于按 1/4 计，
- *    低估三到五倍。而这个数字是压缩判断的输入——低估到一定程度，
- *    真正超限的请求会被判成「不可能超」。
- * 2. **base64 被当成正文数。** 一张 1 MB 的图片是约 137 万个 base64 字符，
- *    按字符估就是**39 万 token**，而 provider 实际按约 2000 计。贴一张图，
- *    面板从 2% 跳到 39%。cc-haha 的 `tokenEstimation.ts:419-431` 为这件事
- *    专门写了注释：「Must NOT reach the jsonStringify catch-all」。
- * 3. **tool call 的参数一个都没数。** `write_file` 的整份文件正文就在
- *    tool call 的 arguments 里，而按 `m.content` 数的话它是 0。
- *
- * ## 口径
- *
- * - **除法基底，不按词计数。** 按词在压缩 JSON、长标识符、base64 残片上会
- *   空白坍缩：一段 10 KB 的压缩 JSON 真值约 5000 token，按词只有几十——
- *   低两个数量级。魔盒的「中文 ×1.5 + 英文词 ×1.3」是它 tiktoken 缺失时的
- *   **应急回退**（`token_counter.py:63-64` 原话），不是主口径，不要拿来当主口径。
- * - 中文按 1.5/字，其余按 4 字符/token；**JSON 上下文按 2 字符/token**——
- *   稠密 JSON 里 `{`/`}`/`:`/`,`/`"` 大量是单字符 token（cc-haha `:216-225`）。
- * - 图片与文档按固定值，**不看 base64 长度**。
+ * - **除法基底，不按词计数。** 按词在压缩 JSON、长标识符、base64 残片上会空白坍缩：
+ *   一段 10 KB 的压缩 JSON 真值约 5000 token，按词只有几十，低两个数量级。
+ * - 中文约 1～1.5 token/字，按 1.5 计；其余按 4 字符/token。
+ * - **JSON 上下文按 2 字符/token**——稠密 JSON 里 `{`/`}`/`:`/`,`/`"` 大量是单字符 token。
+ * - **图片与文档按固定值，绝不看 base64 长度**：一张 1 MB 的图片是约 137 万个
+ *   base64 字符，按字符估就是 39 万 token，而 provider 实际按约 2000 计。
+ * - **tool call 的参数要单独数**：`write_file` 的整份文件正文在 arguments 里，
+ *   只数 `m.content` 的话它是 0。
  */
 
 import type { ChatRequest, ContentBlock, ToolSchema, WireMessage } from './types.ts'
@@ -34,8 +21,7 @@ const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/g
 /**
  * 一张图片 / 一份文档按多少算。
  *
- * 取 cc-haha 的 2000（`tokenEstimation.ts:430`）而不是魔盒的 1000：
- * 前者覆盖 PDF（一份 1 MB 的 PDF 实际约 2000），后者只按图片估。
+ * 按 PDF 取值（一份 1 MB 的 PDF 实际约 2000），只按图片估会偏小一半。
  * 宁可高估——这个数进的是压缩判断，低估的代价是该压不压然后撞墙。
  */
 export const MEDIA_TOKENS = 2000
@@ -43,8 +29,7 @@ export const MEDIA_TOKENS = 2000
 /**
  * 每条消息的固定协议开销：role、分隔符、消息骨架。
  *
- * 不算它的话，一段几十条短消息的历史会被系统性低估。魔盒同口径
- * （`context/manager.py:93` 的 `+ 4`）。
+ * 不算它的话，一段几十条短消息的历史会被系统性低估。
  */
 const PER_MESSAGE_OVERHEAD = 4
 
@@ -90,7 +75,7 @@ export function estimateContent(content: string | ContentBlock[] | undefined): n
 /**
  * 一条 wire 消息的全部占用。
  *
- * 三部分缺一不可：正文、**工具调用参数**、**思考正文**。后两者原来一个都没数。
+ * 三部分缺一不可：正文、**工具调用参数**、**思考正文**。
  */
 export function estimateMessage(m: WireMessage): number {
   let total = PER_MESSAGE_OVERHEAD + estimateContent(m.content)

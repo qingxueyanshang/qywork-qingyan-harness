@@ -178,7 +178,7 @@ describe('组头文案', () => {
 })
 
 describe('动词与单条文案', () => {
-  /** 六个真动作，一个 kind 一个词，和青研魔盒 `StepCard.ACTION_VERBS` 同一套。 */
+  /** 六个真动作，一个 kind 一个词——缺一个，卡片标题就掉回原始工具名。 */
   test('六个动作各有动词', () => {
     expect(verb('query')).toBe('查询')
     expect(verb('read')).toBe('读取')

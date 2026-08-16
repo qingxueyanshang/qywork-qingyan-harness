@@ -1,5 +1,5 @@
 /**
- * 技能。移植自原版 `plugins/skills.py` + `skill_loader.py`。
+ * 技能。
  *
  * 技能 = 一个目录里的 `SKILL.md`，前置元信息声明 name/description，正文是操作指南。
  * 与记忆的区别：**记忆是事实，技能是流程**。「这个项目用 pnpm」是记忆，

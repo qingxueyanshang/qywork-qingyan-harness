@@ -416,13 +416,6 @@ export function appendMessage(
 }
 
 /**
- * 读取会话历史。
- *
- * `upperBound` 是 run 创建时定格的消息高水位：执行锁在 run 创建之后才拿到，
- * 排队期间用户可能又发了几条消息——那些消息**不属于**本 run 的历史，
- * 让它们穿越进来会让模型看到「未来」。
- */
-/**
  * 所有被消息引用过的附件路径。
  *
  * 给附件目录的 GC 用：**没有任何消息引用的文件就是孤儿**——用户选了图、
@@ -480,6 +473,13 @@ export function fileReadHash(
   return row?.hash ?? null
 }
 
+/**
+ * 读取会话历史。
+ *
+ * `upperBound` 是 run 创建时定格的消息高水位：执行锁在 run 创建之后才拿到，
+ * 排队期间用户可能又发了几条消息——那些消息**不属于**本 run 的历史，
+ * 让它们穿越进来会让模型看到「未来」。
+ */
 export function listMessages(
   store: Store,
   conversationId: ConversationId,
