@@ -14,8 +14,12 @@ import { IconChevron } from './Icons.tsx'
  * 模型选择器 + 思考强度。
  *
  * 模型是**会话级**属性：同一个工作区里一个会话用重模型改代码、另一个用轻模型
- * 快速问答是常态，所以入口放在输入区而不是全局设置里。思考强度同理，且必须
- * 挨着模型——它是模型的旋钮，改一个常常要跟着改另一个。
+ * 快速问答是常态，所以入口放在输入区而不是全局设置里。
+ *
+ * **两个 chip 的作用域不一样，别按「都是会话级」理解。** 思考强度写的是
+ * 配置里「接口 × 模型」那一格（`setEffort`），换句话说它是这个模型的档位，
+ * 所有会话共用。挨着模型放是因为它是模型的旋钮，改一个常常要跟着改另一个；
+ * 作用域的差别由 chip 的 `title` 说出来，不能只写在这里。
  *
  * 列表按需拉取——不是每个会话都会点开它。
  */
@@ -171,7 +175,9 @@ export function EffortPicker() {
           class="mode-chip"
           type="button"
           disabled={state.running || !state.activeConversation}
-          title={state.running ? '执行中不能改思考强度' : '思考强度'}
+          title={
+            state.running ? '执行中不能改思考强度' : '思考强度：改的是这个模型的档位，所有会话通用'
+          }
           onClick={toggle}
         >
           <span class="truncate">{selected() ?? '思考'}</span>
@@ -180,6 +186,21 @@ export function EffortPicker() {
 
         <Show when={open()}>
           <div class="model-menu" role="listbox">
+            {/* 「不指定」这一项不能省：`setEffort(null)` 本来就把配置里那一格删掉，
+                没有这个入口的话，档位选过一次就再也回不到默认。 */}
+            <button
+              class="model-item"
+              classList={{ active: selected() === null }}
+              type="button"
+              role="option"
+              aria-selected={selected() === null}
+              onClick={() => {
+                void pick(null)
+                setOpen(false)
+              }}
+            >
+              <span class="model-name truncate">不指定</span>
+            </button>
             <For each={levels()}>
               {(lv) => (
                 <button
