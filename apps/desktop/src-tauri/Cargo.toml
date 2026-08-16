@@ -33,6 +33,7 @@ notify = "8"
 notify-debouncer-full = "0.5"
 parking_lot = "0.12"
 anyhow = "1"
+portable-pty = "0.9"
 
 # 只有 Windows 需要：无装饰窗口的投影要自己向 DWM 要，见 lib.rs 的
 # `extend_frame_for_shadow`。版本跟 tauri 传递依赖的那份对齐（0.61），

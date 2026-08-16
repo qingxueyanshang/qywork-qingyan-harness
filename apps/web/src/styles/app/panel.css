@@ -136,14 +136,19 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
+  align-items: center;
   gap: 2px;
   padding: var(--s-3) var(--s-2);
 }
+/* **行宽有上限，不跟着面板长。** 面板可以被拉宽、还能放大到大半屏，行不封顶的话
+   标签留在最左、右尾的「未接入」被推到几百像素之外，中间是一条空白——
+   眼睛要横扫过去才能把两者对上。 */
 .board-item {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   width: 100%;
+  max-width: 420px;
   padding: var(--s-2) var(--s-3);
   border: none;
   border-radius: var(--r-sm);
@@ -176,6 +181,66 @@
   background: var(--bg-hover);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+}
+
+/* ── 终端 ──
+   底色与前景由 xterm 自己按主题设（见 TerminalPanel 的 applyTheme），这里只管
+   撑满与滚动。**不要在这里写 background**：写了就是第二处主题来源，
+   切主题时会出现「外框已经暗了、字符网格还白着」的一圈边。 */
+.terminal-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.term-slot {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-2);
+  overflow: hidden;
+}
+/* 只给宿主满高。**不要再往 `.xterm` / `.xterm-screen` 上加 `height: 100%`**：
+   那两层的高度由 xterm 按 行数 × 行高 自己算，强行拉满之后字符网格之外会多出
+   一块余数——而 xterm 自带的 `.xterm-viewport { background-color: #000 }`
+   正好把那块余数画成一条黑带。行数由 `fit()` 决定，容器满高就够了。 */
+.term-host {
+  height: 100%;
+}
+/* 那条黑底是 xterm 给 macOS 滚动条留的老补丁，在亮色主题下就是一条黑边。
+   透明即可：字符网格的底色由主题画在 screen 上，露出来的是面板底色。
+
+   **别在这里写 `::-webkit-scrollbar`。** xterm 6 的滚动条不是原生的，是搬过来的
+   VS Code 浮层滚动条（`.xterm-scrollable-element > .scrollbar > .slider`），
+   写在视口上的原生滚动条规则一行都不会生效。滑块颜色由 xterm 主题的
+   `scrollbarSlider*` 三档决定，默认就是前景色的 20% / 40% / 50%，和本仓的边框色
+   基本重合，所以不另外指定——多指定一次就是第二处主题来源。 */
+.term-host .xterm-viewport {
+  background-color: transparent;
+}
+/* 滚动条常驻，不淡出。
+ *
+ * xterm 6 搬的是 VS Code 那套浮层滚动条，默认 `Auto`——停手 800ms 就淡到
+ * opacity 0，于是它「一会有一会没有」，而侧边这块面板正是用来来回翻历史的。
+ *
+ * **判据必须是 `.fade` 而不是「一律常驻」。** 实测：有回滚时滑块 78px，
+ * 无条件常驻看着正好；但**没有回滚可翻**时滑块被算成整条轨道（574px），
+ * 会画出一条从头到尾的灰块——那是在说一件不成立的事。而 `.fade` 只在
+ * 「本来该显示、现在正在淡出」时才挂上，没内容可滚的那种压根不带它。
+ */
+.term-host .xterm-scrollable-element > .scrollbar.vertical.fade,
+.term-host .xterm-scrollable-element > .scrollbar.vertical.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.term-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 
 /* ── 文件树 ── */
