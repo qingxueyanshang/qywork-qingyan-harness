@@ -14,6 +14,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   EventEnvelope,
+  Goal,
   RunUsage,
   StopReason,
   TodoItem,
@@ -134,6 +135,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       // 整表替换而不是合并：工具那边就是整表提交的，
       // 在这里做增量合并会让两端对「待办清单是什么」产生两种理解。
       setState('todos', ev.todos)
+      return
+
+    case 'goal':
+      // 整体替换：事件带的是账本刚变成的那个完整快照（revision 单调递增），
+      // 挑字段合并会在这里造出第二种「目标现在是什么」的说法。
+      setState('goal', ev.goal)
       return
 
     case 'run.started':
@@ -444,7 +451,7 @@ export async function reloadActiveConversation(): Promise<void> {
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
 
-  const [{ messages }, { runs }, ctx] = await Promise.all([
+  const [{ messages }, { runs }, ctx, goal] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
     client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
     // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
@@ -453,6 +460,13 @@ export async function reloadActiveConversation(): Promise<void> {
     client
       .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
       .then((r) => r.context)
+      .catch(() => null),
+    // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
+    // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
+    // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
+    client
+      .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
+      .then((r) => r.goal)
       .catch(() => null),
   ])
 
@@ -555,6 +569,9 @@ export async function reloadActiveConversation(): Promise<void> {
       // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
       // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
       s.todos = todosFromSteps(runs, stepsByRun)
+      // 目标有自己的账本（`goal_events`），所以是读回来的，不像待办那样从
+      // steps 里反推——反推等于给「目标现在是什么」造第二个真源。
+      s.goal = goal
       // 上下文不在这一批里——它有账本可依（`provider_requests`），
       // 不是「run 内的易失投影」。
       // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。

@@ -17,6 +17,7 @@ import type {
   ContextOmitted,
   Conversation,
   GitStateEvent,
+  Goal,
   PermissionScope,
   RunUsage,
   ServerCapabilities,
@@ -127,6 +128,14 @@ export interface AppState {
   } | null
   /** 当前待办清单。整表快照语义——每次 todos 事件整体替换。 */
   todos: TodoItem[]
+  /**
+   * 当前目标。**同时只有一个**，null = 这条会话没立过目标。
+   *
+   * 它比 run 活得久：一轮跑完自动再起一轮就是照着它跑的。所以既由 `goal` 事件
+   * 实时更新，也在重拉会话时从账本读回来——只靠事件的话刷新一次就看不见了，
+   * 而一个看不见的自动循环是最坏的一种。
+   */
+  goal: Goal | null
   /** Agent Team 成员进展。按 memberId 去重、原地更新。 */
   teamMembers: TeamMemberState[]
   /** 当前会话最后一个 run，重试的目标。 */
@@ -170,6 +179,7 @@ const initial: AppState = {
   permission: null,
   error: null,
   todos: [],
+  goal: null,
   teamMembers: [],
   lastRunId: null,
   runStartedAt: null,

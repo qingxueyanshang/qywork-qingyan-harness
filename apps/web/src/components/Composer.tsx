@@ -1,10 +1,11 @@
-import type { Attachment, ContextGroup } from '@qywork/core'
+import type { Attachment, ContextGroup, Goal } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { type Command, matchSlash } from '../lib/commands.ts'
 import {
   interrupt,
   openPanel,
+  resumeGoal,
   sendMessage,
   setOverlay,
   setPermissionMode,
@@ -155,6 +156,93 @@ function RunStatusChip() {
 }
 
 /**
+ * 停在这里的说法。**每一种状态都要有话说**，尤其两种：
+ *
+ * - `blocked` 必须把理由原样端出来。后端强制每一次 blocked 都带理由
+ *   （`run-control.ts` 的 `STOP_NOTE`、撞上轮数上限那条），界面不显示等于白存——
+ *   循环不动了，而用户只看见「受阻」两个字。
+ * - `active` 却没有一轮在跑，说的是「续行没开着」。**续起标记不落盘**
+ *   （`server/runs.ts` 的 `GoalArm`：落盘的话一个跑飞之后崩掉的循环会在下次
+ *   启动时自己复活），所以进程重启、会话恢复之后目标还在账本里躺着，但不会
+ *   自己再起一轮。这句话不说清楚，用户看到「目标还在、什么都没发生」只会以为它坏了。
+ */
+function goalNote(goal: Goal, running: boolean): string {
+  if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '没给理由'}`
+  if (goal.status === 'paused') return '已暂停'
+  return running ? '自动续行中' : '没在自动跑：续行不跨进程重启，点继续接上'
+}
+
+/**
+ * 当前目标：做的是什么、跑到第几轮、能不能停。
+ *
+ * **看不见的自动循环是最坏的一种**——一轮接一轮自己跑下去，而界面上只有正文在长。
+ * 所以它常驻在输入框正上方，和这一轮的待办进度同一片区域：目标回答「一轮接一轮
+ * 要做到什么」，待办回答「这一轮进行到哪了」，用户抬眼就该同时看到这两句。
+ *
+ * ## 两个按钮各走哪条路
+ *
+ * - **停止 = 中断这一轮**（`interrupt`）。run 收尾时服务端把目标置回 `paused`
+ *   并解除续起标记，所以停这一轮就是停这个循环。**不另开一条「暂停目标」指令**：
+ *   同一件事的第二个入口，两条路迟早对「现在到底停没停」给出两种答案。
+ * - **继续 = `goal.resume`**（`resumeGoal`）。它不只是把状态改回 `active`，
+ *   是重新启用续行本身，并当场发起一轮。
+ *
+ * ## 做完就不显示了
+ *
+ * 与待办进度同一条判据：它回答的是「还要跑多久」，`completed` 之后没有「还要」。
+ * 而 `completed` 是终态，一条出边都没有——留一颗点了必然被服务端回绝的
+ * 「继续」按钮，比不留更坏。
+ */
+function GoalChip() {
+  const goal = () => state.goal
+  const live = () => {
+    const g = goal()
+    return g && g.status !== 'completed' ? g : null
+  }
+
+  return (
+    <Show when={live()}>
+      {(g) => (
+        <div class="goal-chip">
+          <div class="goal-line">
+            <span class="goal-label">目标</span>
+            {/* 正文长就截断 + title，不做悬停卡片：那张卡片承载的信息这一行本来
+                就有，唯一的效果是鼠标划过时糊住下面那一行。 */}
+            <span class="goal-text truncate" title={g().objective}>
+              {g().objective}
+            </span>
+            <span class="goal-round">
+              第 {g().round} / {g().maxRounds} 轮
+            </span>
+            <Show
+              when={state.running}
+              fallback={
+                <button class="goal-act" type="button" onClick={resumeGoal}>
+                  继续
+                </button>
+              }
+            >
+              <button class="goal-act" type="button" onClick={interrupt}>
+                停止
+              </button>
+            </Show>
+          </div>
+          {/* 第二行恒在（高度固定，B9）：受阻理由、暂停、续行没开着，
+              说的都是「现在为什么是这个样子」，它们共用这一格。 */}
+          <div
+            class="goal-note truncate"
+            classList={{ blocked: g().status === 'blocked' }}
+            title={goalNote(g(), state.running)}
+          >
+            {goalNote(g(), state.running)}
+          </div>
+        </div>
+      )}
+    </Show>
+  )
+}
+
+/**
  * 输入区。
  *
  * 两条交互决定：
@@ -293,6 +381,10 @@ export function Composer() {
           </Show>
         </div>
       </Show>
+
+      {/* 目标在进度条之下、输入框之上：它是常驻的（跨轮存在），所以占流，
+          不像那条整轮状态条那样悬浮——悬浮的东西一多就会互相盖住。 */}
+      <GoalChip />
 
       <RunStatusChip />
 
