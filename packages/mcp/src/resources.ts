@@ -65,7 +65,9 @@ export interface McpResourceContents {
 export function resourceToolsFor(client: McpClient): ToolSpec[] {
   if (client.capabilities.resources === undefined) return []
   const server = client.name
-  const label = permissionLabel(server, 'resource')
+  // 权限 scope 的载体（scope = `<effect>:<target>`），也是卡片上的目标。
+  // 对象名那一层填的是「MCP」，见下面两处 `objectLabel`。
+  const target = permissionLabel(server, 'resource')
 
   return [
     {
@@ -78,13 +80,13 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       // 动作是 call：正文在外部 server 那边，这一步是一次跨进程调用。
       // 权限轴另算，是 read——两条轴正交，见文件头第 3 条。
       actionKind: 'call',
-      objectLabel: label,
+      objectLabel: 'MCP',
       // MCP 的工具一律归「外部扩展」：类目由第三方决定，混进内置分类学会让
       // 「文件与草稿」那一栏突然冒出别人家的工具。
       category: 'external',
       facet: `MCP ${server}`,
       summary: `列出 ${server} 提供的 resource`,
-      targetExtractor: () => label,
+      targetExtractor: () => target,
       permissionEffect: 'read',
       // 纯只读、无状态，可以与别的读操作同波次。
       parallelSafe: true,
@@ -125,11 +127,11 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
         additionalProperties: false,
       },
       actionKind: 'call',
-      objectLabel: label,
+      objectLabel: 'MCP',
       category: 'external',
       facet: `MCP ${server}`,
       summary: `读 ${server} 的一个 resource 正文`,
-      targetExtractor: (a) => (typeof a.uri === 'string' ? a.uri : label),
+      targetExtractor: (a) => (typeof a.uri === 'string' ? a.uri : target),
       permissionEffect: 'read',
       parallelSafe: true,
       async fn(args, ctx) {

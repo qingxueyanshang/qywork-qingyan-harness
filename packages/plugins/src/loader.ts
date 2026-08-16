@@ -197,7 +197,13 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       // 恒为 call，清单说了不算：插件工具是第三方代码通过 RPC 提供的能力，
       // 「这是一次外置调用」是宿主知道的事实，不该由插件自称成读/写/运行。
       actionKind: 'call',
-      objectLabel: t.objectLabel,
+      // 对象名恒为「插件」，清单说了不算——同 `actionKind`：卡片的对象那一层说的是
+      // 「这是哪一类能力」，具体是哪个插件的哪个工具归下面的 target。
+      objectLabel: '插件',
+      // target 同时是权限 scope 的载体（scope = `<effect>:<target>`），所以带
+      // `plugin:` 前缀并且用**未消毒**的 id——与 MCP 的 `mcp:<server>/<tool>` 对齐，
+      // 两类外置工具的 scope 才不会撞成同一个串。
+      targetExtractor: () => `plugin:${manifest.id}/${t.name}`,
       permissionEffect: t.permissionEffect,
       // 插件工具同 MCP，归「外部扩展」——清单里不让插件自己声明类目，
       // 否则一个插件就能把自己塞进「文件与草稿」，和内置工具混在一栏里。

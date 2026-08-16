@@ -259,6 +259,22 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     expect(permissionLabel('github', 'x').startsWith('mcp:github/')).toBe(true)
   })
 
+  /**
+   * 卡片是动词 + 对象 + 目标三层。对象名填类名、目标填具体的那个，两处不能同串——
+   * 同串的表现是标题和目标一字不差，目标那一格白占。
+   */
+  test('对象名恒为「MCP」，具体是哪个工具归 target', async () => {
+    const { dir, entry } = await fixture()
+    const c = client(entry, dir)
+    await c.start()
+    const def = (await c.listTools())[0]!
+    const spec = specFor(c, def)
+    expect(spec.objectLabel).toBe('MCP')
+    expect(spec.targetExtractor?.({})).toBe(permissionLabel(c.name, def.name))
+    expect(spec.objectLabel).not.toBe(spec.targetExtractor?.({}))
+    c.stop()
+  })
+
   test('不并行 —— 外部进程的并发行为我们一无所知', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)

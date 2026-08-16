@@ -33,7 +33,10 @@ function insertStep(db: Database, id: string, toolName: string, payload: unknown
 function payloadOf(
   db: Database,
   id: string,
-): { action: { kind: string; objectLabel: string }; outcome?: { message: string } } {
+): {
+  action: { kind: string; objectLabel: string; target: string | null }
+  outcome?: { message: string }
+} {
   const row = db
     .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
     .get(id)!
@@ -252,6 +255,67 @@ describe('迁移 19：外置工具的动作转成 call', () => {
     const db = dbBefore(19)
     insertStep(db, 'noaction', 'mcp__demo__echo', { kind: 'tool_result', args: { text: 'x' } })
     applyOne(db, 19)
+    const row = db
+      .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
+      .get('noaction')!
+    expect(JSON.parse(row.payload).action).toBeUndefined()
+  })
+})
+
+/**
+ * 外置工具的对象名收成「MCP」/「插件」两个类名。
+ *
+ * 卡片是动词 + 对象 + 目标三层；老行把具体的 `mcp:<server>/<tool>` 填进对象名，
+ * 标题和目标于是一字不差。不转的表现是回放时老卡片写「调用mcp:github/search」、
+ * 新卡片写「调用MCP · mcp:github/search」。
+ */
+describe('迁移 20：外置工具的对象名收成类名', () => {
+  const labelOf = (db: Database, id: string) => payloadOf(db, id).action.objectLabel
+
+  test('MCP 转成「MCP」、插件转成「插件」，目标不动', () => {
+    const db = dbBefore(20)
+    const rows: [string, string, string, string][] = [
+      // id, tool_name, 旧对象名, 期望的新对象名
+      ['m_tool', 'mcp__github__search', 'mcp:github/search', 'MCP'],
+      ['m_res', 'mcp__demo__fetch_resource', 'mcp:demo/resource', 'MCP'],
+      ['p_lines', 'demo_lines__count', '文件', '插件'],
+      ['p_probe', 'test_probe__probe', '宿主能力', '插件'],
+    ]
+    for (const [id, tool, old] of rows) {
+      insertStep(db, id, tool, {
+        kind: 'tool_result',
+        action: { kind: 'call', objectLabel: old, target: 'tgt' },
+      })
+    }
+    applyOne(db, 20)
+    for (const [id, , , want] of rows) expect(labelOf(db, id)).toBe(want)
+    // 目标那一层本来就该是具体的那个，这次一个字节都不碰。
+    for (const [id] of rows) expect(payloadOf(db, id).action.target).toBe('tgt')
+  })
+
+  test('内置工具的行原样不动 —— 判据是名字里的双下划线', () => {
+    const db = dbBefore(20)
+    const builtin: [string, string, string][] = [
+      ['b_read', 'read_file', '文件'],
+      ['b_run', 'run_command', '命令'],
+      ['b_todos', 'write_todos', '待办'],
+      ['b_res', 'read_resource', '资源'],
+    ]
+    for (const [id, tool, label] of builtin) {
+      insertStep(db, id, tool, {
+        kind: 'tool_result',
+        action: { kind: 'read', objectLabel: label, target: 'a.ts' },
+      })
+    }
+    applyOne(db, 20)
+    for (const [id, , label] of builtin) expect(labelOf(db, id)).toBe(label)
+  })
+
+  /** `json_set` 会给没有 action 的行凭空长出一个键，WHERE 必须把它们挡在外面。 */
+  test('没有 action 的行不长出 action', () => {
+    const db = dbBefore(20)
+    insertStep(db, 'noaction', 'mcp__demo__echo', { kind: 'tool_result', args: { text: 'x' } })
+    applyOne(db, 20)
     const row = db
       .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
       .get('noaction')!
