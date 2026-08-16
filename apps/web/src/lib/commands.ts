@@ -64,9 +64,9 @@ export function buildCommands(): Command[] {
     },
     { id: 'review', label: '审阅改动', icon: IconEye, run: () => openPanel('git') },
     { id: 'files', label: '文件', icon: IconFile, run: () => openPanel('files') },
-    { id: 'team', label: 'Agent 团队', icon: IconUsers, run: () => openPanel('team') },
-    // 这三条现在是设置里的类目，命令面板直接跳到那一页——
+    // 这四条现在是设置里的类目，命令面板直接跳到那一页——
     // 让用户「先进设置再自己找」等于把命令面板的价值抵消掉。
+    { id: 'team', label: '智能体', icon: IconUsers, run: () => openSettings('team') },
     { id: 'schedules', label: '定时任务', icon: IconClock, run: () => openSettings('schedules') },
     { id: 'plugins', label: '插件', icon: IconPlug, run: () => openSettings('plugins') },
     { id: 'settings', label: '系统设置', icon: IconSettings, run: () => openSettings() },

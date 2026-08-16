@@ -117,29 +117,6 @@
   display: none;
 }
 
-/* ── 新开预览 ──
-   定位容器必须是 relative：菜单相对这颗按钮的右端展开。
-   属性写全在下面这一条里，**不和别的浮层共用选择器**——共用过一次，代价是
-   删掉其中一个浮层时把另一个的定位、边框、底色、投影一起带走了。 */
-.panel-add {
-  position: relative;
-  display: flex;
-}
-.panel-add-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  min-width: 160px;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow-md);
-}
-
 .side-body {
   flex: 1;
   /* 同 .transcript：不写 0 的话这一块会把整个面板撑破，overflow 形同虚设。 */
@@ -147,6 +124,58 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* ── 新开预览看板 ──
+   长在面板正文里，不是浮层，所以这里没有定位、边框、投影那一套。
+   竖直居中：清单只有几行，顶头贴着页签会读成第二排页签。 */
+.preview-board {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--s-3) var(--s-2);
+}
+.board-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.board-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 后端还没接上的那几行：点不动，而且**看起来就点不动**。
+   只压暗不禁用的话，用户会去点它然后以为是自己哪里没配对。 */
+.board-item:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.board-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.board-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
 }
 
 /* ── 文件树 ── */
@@ -346,35 +375,6 @@
 .git-flag[data-status="!"] {
   color: var(--danger);
   font-weight: 700;
-}
-
-/* ── 能力开关 ──
- *
- * 「这一轮用什么」。分组沿用 git 面板那套小标题（`.git-section`），
- * 这里只多一个行式的复选行——分两套小标题会让同一块面板里出现两种层级感。 */
-.extras-panel {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--s-2);
-}
-.extra-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: 3px var(--s-2);
-  border-radius: var(--r-xs);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  min-width: 0;
-}
-.extra-row:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.extra-label {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 /* ── diff ── */
