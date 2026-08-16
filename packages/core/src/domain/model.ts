@@ -14,6 +14,7 @@
 import type { ActionDescriptor } from '../protocol/events.ts'
 import type {
   ConversationId,
+  GoalId,
   MessageId,
   ProviderRequestId,
   ResourceId,
@@ -251,6 +252,70 @@ export interface TodoItem {
   content: string
   status: 'pending' | 'in_progress' | 'completed'
 }
+
+// ─────────────────────────────── 目标 ───────────────────────────────
+
+/**
+ * 目标的生命周期。**四个，不再多。**
+ *
+ * 「provider 报错」「要人工输入」「撞上轮数上限」不各占一个状态——全部走
+ * `blocked`，靠 `blockedCode` + `blockedReason` 区分。状态越多转移矩阵越大，
+ * 而它们对用户的意义是同一件事：停了，等你。
+ */
+export type GoalStatus = 'active' | 'paused' | 'completed' | 'blocked'
+
+/**
+ * 一条会话的当前目标。**同时只有一个**，不做并行目标。
+ *
+ * 待办（`TodoItem`）回答「这一轮进行到哪了」，目标回答「一轮接一轮要做到什么」：
+ * 目标 `active` 时，每轮 run 收尾会自动再起一轮（`server/run-control.ts`），
+ * 直到 `completed`、被暂停，或撞上 `maxRounds`。
+ */
+export interface Goal {
+  id: GoalId
+  conversationId: ConversationId
+  objective: string
+  status: GoalStatus
+  /**
+   * 已经自动续起过几轮。**人类轮次不计**——用户自己发的消息不消耗额度。
+   */
+  round: number
+  /**
+   * 轮数上限。**这是唯一的护栏，不是资源预算**：不计 token、不计钱、不计时间。
+   * 那三样各自是另一本账，混进来只会让「为什么停了」有四个可能的答案。
+   */
+  maxRounds: number
+  /**
+   * 从 1 开始单调递增，每次变更 +1。
+   *
+   * 写入方必须带上自己读到的那个 revision，对不上直接拒——模型手里的目标可能
+   * 是几轮之前读的，静默覆盖会把中间那次暂停或改写抹掉。
+   */
+  revision: number
+  /** `blocked` 专有：机器可读的短代码，供界面分类。其余状态为 null。 */
+  blockedCode: string | null
+  /** `blocked` 专有：一句人话说明卡在哪。**必填**，否则没人知道它为什么停。 */
+  blockedReason: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * 目标上的五个动作。**`update_goal` 一个工具全包**（见 §4.1 的第二档门面判据）：
+ * 五个动作共享必填的 `goal_id` + `revision`，差异只在两条条件必填。
+ */
+export type GoalAction = 'edit' | 'pause' | 'resume' | 'complete' | 'blocked'
+
+/**
+ * 一次目标变更的结果。
+ *
+ * **失败是返回值不是异常**：绝大多数调用方是工具，而工具要把「为什么被拒」
+ * 原样交给模型（revision 过期、状态不允许、缺理由），异常在那条路上会被
+ * 注册表压成一句「工具执行出错」。
+ */
+export type GoalWriteResult =
+  | { ok: true; goal: Goal }
+  | { ok: false; code: string; message: string }
 
 // ─────────────────────────────── Step ───────────────────────────────
 

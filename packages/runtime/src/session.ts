@@ -30,6 +30,7 @@ import type {
   Attachment,
   Conversation,
   ConversationId,
+  GoalWriteResult,
   MessageId,
   RunId,
 } from '@qywork/core'
@@ -39,7 +40,9 @@ import {
   appendTextToStep,
   type ContentStore,
   createConversation,
+  createGoal,
   createRun,
+  currentGoal,
   fileReadHash,
   finishRun,
   getConversation,
@@ -58,6 +61,7 @@ import {
   settleRunningSteps,
   settleToolStep,
   touchRun,
+  updateGoal,
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
@@ -751,6 +755,18 @@ export class Session {
         seen: (path) => fileReadHash(store, conversationId, path),
         mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
       },
+      /*
+       * 目标同样绑到**会话**：它的寿命就是这条会话，跨轮才有意义。
+       *
+       * 事件在这里发，不在工具里发（对比 `emitTodos`）：目标的真源是账本，
+       * 「写下去」和「说出去」是同一件事的两半，交给工具就会有人只做一半。
+       * 事件不带 runId——目标是会话级的，服务端在 run 之外也会改它。
+       */
+      goals: {
+        read: () => currentGoal(store, conversationId),
+        create: (input) => announce(createGoal(store, { conversationId, ...input }), emit),
+        update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
+      },
       signal: this.opts.signal,
       emit: (channel, delta) => {
         emit({ type: 'tool.delta', runId, stepId: '' as never, channel, delta })
@@ -764,6 +780,17 @@ export class Session {
       requestPermission: async (_scope, _preview, meta) => this.decide(meta),
     }
   }
+}
+
+/**
+ * 目标写成功就广播一次。
+ *
+ * 失败的原样返回、**不发事件**：那是给模型看的拒绝理由（revision 过期之类），
+ * 账本一个字节都没变，广播出去会让界面上的目标凭空闪一下。
+ */
+function announce(result: GoalWriteResult, emit: (e: AgentEvent) => void): GoalWriteResult {
+  if (result.ok) emit({ type: 'goal', goal: result.goal })
+  return result
 }
 
 /** 心跳间隔。回收那边按 60 秒判过期（`store/repos.ts`），六倍余量。 */

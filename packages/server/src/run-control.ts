@@ -1,13 +1,30 @@
 /**
- * run 的起、重试与压缩。
+ * run 的起、重试、压缩，以及**目标的自动续起**。
  *
- * 三条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试。
- * 给任何一条单开一套装配就是三套会漂移的行为。
+ * 四条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试、目标续起。
+ * 给任何一条单开一套装配就是四套会漂移的行为。
+ *
+ * ## 续起为什么判在 `startRun` 的 `finally`
+ *
+ * 那里已经在做 `runs.unregister` / `release` / `session.dispose()`，是「这一轮
+ * 干完了」的**唯一汇合处**——正常结束、抛错、被中断三条路都要经过它。
+ *
+ * **不是 `recoverStaleRuns`**：那个只在 `createServer` 启动时跑一次（开服之前），
+ * 把目标判定放进进程启动，正是「崩溃之后自动复活」——`GoalArm` 上那段注释
+ * 要防的第一件事。两处差着一整个生命周期。
  */
 
 import type { Summarizer } from '@qywork/agent'
 import { buildAdapter, computeCost, ProviderError, type ProviderUsage } from '@qywork/ai'
-import type { AgentEvent, Attachment, ConversationId, Run, RunId } from '@qywork/core'
+import type {
+  AgentEvent,
+  Attachment,
+  ConversationId,
+  Goal,
+  Run,
+  RunId,
+  StopReason,
+} from '@qywork/core'
 import {
   configPath,
   RuntimeCompaction,
@@ -15,10 +32,20 @@ import {
   resolveModel,
   Session,
 } from '@qywork/runtime'
-import { getConversation, getRun, listMessages, recordUsage, workspaceOf } from '@qywork/store'
+import {
+  advanceGoalRound,
+  currentGoal,
+  getConversation,
+  getRun,
+  listMessages,
+  recordUsage,
+  updateGoal,
+  workspaceOf,
+} from '@qywork/store'
 import { reject } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
+import type { GoalArm } from './runs.ts'
 
 /**
  * 重试一个已结束的 run。
@@ -78,6 +105,14 @@ export async function startRun(
   deps: Omit<CommandDeps, 'ws'>,
   retry?: { retryOf: Run; clientRequestId: string },
   attachments?: Attachment[],
+  /**
+   * 这一轮是**目标自动续起**的那一轮，带着发起时的预留。
+   *
+   * 唯一的作用是把这一轮和「人在说话」区分开：其余三条入口都代表人的动作，
+   * 一进来就把待续起标记清掉（人类消息优先）；续起自己那一轮不能清，
+   * 清了循环最多跑一轮。
+   */
+  goalRound?: GoalArm,
 ): Promise<void> {
   // 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
   // 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
@@ -94,6 +129,15 @@ export async function startRun(
     )
     return
   }
+
+  /*
+   * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
+   * 续起就作废——他插的这一句才是这条会话现在该干的事。这一轮也不计进轮数：
+   * 轮数只在 `advanceGoalRound` 那一处加，而那条路只有续起走。
+   *
+   * 放在 reserve 成功之后：被回绝的消息根本没有发生，不该动任何状态。
+   */
+  if (!goalRound) deps.runs.disarm(conversationId)
 
   /*
    * 这一轮跑在哪个目录下，**按会话查，不问进程**。
@@ -131,6 +175,18 @@ export async function startRun(
     signal: controller.signal,
   })
 
+  /*
+   * 这一轮怎么收的场，只在续起判定里用。
+   *
+   * **两个都要收，因为报错有两条路**：loop 内部的 provider 错误**不会抛出来**，
+   * 它被就地转成 `run.error` + `run.finished{stopReason:'provider_error'}`
+   * （`agent/loop.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
+   * 只认 catch 的话，一次 provider 报错会被判成「这一轮正常跑完了」然后接着续起
+   * ——那正是「不自动重试异常」要防的形状。
+   */
+  let stopReason: StopReason | null = null
+  let failure: string | null = null
+
   // 后台跑，不阻塞 WebSocket 消息循环——否则一轮 agent 跑十分钟，
   // 这十分钟里连中断指令都收不到。
   void (async () => {
@@ -160,6 +216,22 @@ export async function startRun(
             startedAt: Date.now(),
           })
         }
+        if (ev.type === 'run.finished') stopReason = ev.stopReason
+        if (ev.type === 'run.error') failure = ev.message
+        /*
+         * **续起标记只由目标事件驱动**，不由「谁调过目标工具」推。
+         *
+         * 目标的真源在账本，而这条事件是账本刚刚变成什么样的如实广播
+         * （`runtime/session.ts` 的 `announce`）。模型在同一轮里立了目标又
+         * 自己 complete 掉时，后一条事件把标记解除，循环不会白起一轮。
+         */
+        if (ev.type === 'goal') {
+          if (ev.goal.status === 'active') {
+            deps.runs.arm(conversationId, { goalId: ev.goal.id, revision: ev.goal.revision })
+          } else {
+            deps.runs.disarm(conversationId)
+          }
+        }
         deps.bus.publish(ev, conversationId)
       }
     } catch (err) {
@@ -176,6 +248,7 @@ export async function startRun(
         pe?.code === 'no_api_key' || pe?.code === 'auth_failed'
           ? `${base}\n配置文件：${configPath()}`
           : base
+      failure = message
       deps.bus.publish(
         {
           type: 'run.error',
@@ -194,9 +267,284 @@ export async function startRun(
       // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
       session.dispose()
+      // 判定放在 dispose **之后**：占位放了、扩展也放了，这一轮才算真的干完，
+      // 下一轮起来时不会和上一轮的子进程叠在一起。
+      settleGoalAfterRun({
+        conversationId,
+        deps,
+        interrupted: controller.signal.aborted || stopReason === 'user_interrupt',
+        stopReason,
+        failure,
+      })
       void publishGitState(ws.rootPath, ws.id, deps.bus)
     }
   })()
+}
+
+// ───────────────────────── 目标的自动续起 ─────────────────────────
+
+/**
+ * **只有这两种收尾算「这一轮正常跑完了」。** 其余一律停下等人。
+ *
+ * 白名单而不是黑名单：漏了一种停止原因时，白名单的表现是「停下来问一句」，
+ * 黑名单的表现是「按一个没人想过的状态接着自动跑」。
+ */
+const CONTINUABLE: StopReason[] = ['completed', 'max_steps']
+
+/**
+ * 停下来的说法。**每一种都要有话说**——没理由的 blocked 是最坏的一种停：
+ * 循环不动了，而界面上只有「受阻」两个字。
+ */
+const STOP_NOTE: Record<string, string> = {
+  provider_error: '上一轮出错停了',
+  permission_denied: '上一轮有动作被权限规则挡下了，需要你决定要不要放行',
+  no_progress: '上一轮在原地打转：同样的调用、同样的结果',
+  output_truncated: '上一轮的输出被截断了',
+}
+
+/**
+ * 一轮跑完，决定要不要再起一轮。
+ *
+ * 三条出口，**没有第四条**：
+ * - 被中断 → 目标置 `paused`，解除标记。取消之后不自动重启，这是硬规则；
+ * - 非正常收尾（provider 报错、权限被拒、原地打转…）→ 目标置 `blocked`，
+ *   解除标记。**不重试**——隐式重试会把一次故障放大成一串一模一样的失败，
+ *   而用户只看到会话在那儿自己转；
+ * - 正常收尾 → 排队起下一轮。
+ *
+ * 没有待续起标记就直接走人：那说明这条会话根本不在自动循环里
+ * （或者进程重启过——标记不落盘，见 `GoalArm`）。
+ */
+function settleGoalAfterRun(input: {
+  conversationId: ConversationId
+  deps: Omit<CommandDeps, 'ws'>
+  interrupted: boolean
+  stopReason: StopReason | null
+  failure: string | null
+}): void {
+  const { conversationId, deps } = input
+  const armed = deps.runs.armedOf(conversationId)
+  if (!armed) return
+
+  try {
+    if (input.interrupted) {
+      stopGoal(deps, conversationId, armed, { action: 'pause' })
+      return
+    }
+    if (!input.stopReason || !CONTINUABLE.includes(input.stopReason)) {
+      const note = (input.stopReason && STOP_NOTE[input.stopReason]) ?? '上一轮没有正常收尾'
+      stopGoal(deps, conversationId, armed, {
+        action: 'blocked',
+        code: input.stopReason ?? 'internal_error',
+        reason: input.failure ? `${note}：${input.failure}` : `${note}。`,
+      })
+      return
+    }
+    queueGoalRound(conversationId, deps, armed)
+  } catch (err) {
+    abortGoalLoop(conversationId, deps, err)
+  }
+}
+
+/**
+ * 把目标停在某个状态上并解除标记。
+ *
+ * 用**刚读到的** revision 而不是标记里那个：模型可能在这一轮里改过目标，
+ * 那些改动是真的，不该被一次中断按旧版本覆盖回去。
+ */
+function stopGoal(
+  deps: Omit<CommandDeps, 'ws'>,
+  conversationId: ConversationId,
+  armed: GoalArm,
+  how: { action: 'pause' } | { action: 'blocked'; code: string; reason: string },
+): void {
+  deps.runs.disarm(conversationId)
+  const goal = currentGoal(deps.store, conversationId)
+  // 目标已经被换掉或者进了终态，就没有什么可停的了。
+  if (!goal || goal.id !== armed.goalId || goal.status === 'completed') return
+
+  const result = updateGoal(deps.store, {
+    conversationId,
+    goalId: goal.id,
+    revision: goal.revision,
+    ...(how.action === 'pause'
+      ? { action: 'pause' as const }
+      : { action: 'blocked' as const, blockedCode: how.code, blockedReason: how.reason }),
+  })
+  if (result.ok) publishGoal(deps, result.goal)
+}
+
+/**
+ * 排下一轮。**异步排队，不是同步递归调 `startRun`**——同步调会把下一轮的执行栈
+ * 叠在这一轮的 `finally` 里：栈越叠越深，而且下一轮开跑时上一轮还没收完尾。
+ *
+ * 用户点「继续」走的也是这里（`resumeGoal`），不另开一条起轮的路。
+ */
+function queueGoalRound(
+  conversationId: ConversationId,
+  deps: Omit<CommandDeps, 'ws'>,
+  reserved: GoalArm,
+): void {
+  setTimeout(() => {
+    void fireGoalRound(conversationId, deps, reserved).catch((err) => {
+      abortGoalLoop(conversationId, deps, err)
+    })
+  }, 0)
+}
+
+/**
+ * 真的起下一轮。
+ *
+ * **发起之前重读目标**：排队到现在这段时间里，用户可能插了一句话（标记已被清）、
+ * 模型可能已经把目标改了或做完了。预留（goalId + revision）对不上就**丢弃这次
+ * 排队且不增加轮数**——按一个几秒前的版本继续跑，跑的就不是用户现在要的那件事。
+ */
+async function fireGoalRound(
+  conversationId: ConversationId,
+  deps: Omit<CommandDeps, 'ws'>,
+  reserved: GoalArm,
+): Promise<void> {
+  const armed = deps.runs.armedOf(conversationId)
+  if (!armed || armed.goalId !== reserved.goalId || armed.revision !== reserved.revision) return
+
+  const goal = currentGoal(deps.store, conversationId)
+  if (
+    !goal ||
+    goal.id !== reserved.goalId ||
+    goal.revision !== reserved.revision ||
+    goal.status !== 'active'
+  ) {
+    deps.runs.disarm(conversationId)
+    return
+  }
+
+  if (goal.round >= goal.maxRounds) {
+    // 撞上唯一那道护栏。**必须把理由写进目标**——否则界面上只剩「受阻」两个字，
+    // 用户得自己去数跑了多少轮才明白发生了什么。
+    deps.runs.disarm(conversationId)
+    const blocked = updateGoal(deps.store, {
+      conversationId,
+      goalId: goal.id,
+      revision: goal.revision,
+      action: 'blocked',
+      blockedCode: 'max_rounds',
+      blockedReason: `已经自动跑满 ${goal.maxRounds} 轮还没达成，停下来等你决定。`,
+    })
+    if (blocked.ok) publishGoal(deps, blocked.goal)
+    return
+  }
+
+  // 先记账再发起：中间任何一步失败都会让「跑了几轮」比实际少，而这个数是唯一的护栏。
+  const advanced = advanceGoalRound(deps.store, {
+    conversationId,
+    goalId: goal.id,
+    revision: goal.revision,
+  })
+  if (!advanced.ok) {
+    deps.runs.disarm(conversationId)
+    return
+  }
+  publishGoal(deps, advanced.goal)
+  // 记一次轮次版本就变了，预留跟着换——不换的话下一轮起手就把自己判成陈旧。
+  const next: GoalArm = { goalId: advanced.goal.id, revision: advanced.goal.revision }
+  deps.runs.arm(conversationId, next)
+
+  await startRun(
+    conversationId,
+    goalRoundPrompt(advanced.goal),
+    undefined,
+    deps,
+    undefined,
+    undefined,
+    next,
+  )
+}
+
+/**
+ * 用户在界面上点「继续」。
+ *
+ * **它自己发起一轮**，不等下一次别的 run 收尾——那时候用户已经等了不知道多久，
+ * 而界面上什么都没发生。走的是与自动续起同一个 `queueGoalRound`。
+ */
+export function resumeGoal(
+  conversationId: ConversationId,
+  deps: Omit<CommandDeps, 'ws'>,
+): { ok: true } | { ok: false; message: string } {
+  if (deps.runs.isBusy(conversationId)) {
+    return { ok: false, message: '该会话已有任务在执行' }
+  }
+  try {
+    const goal = currentGoal(deps.store, conversationId)
+    if (!goal) return { ok: false, message: '这条会话没有目标' }
+
+    let live = goal
+    if (goal.status !== 'active') {
+      const result = updateGoal(deps.store, {
+        conversationId,
+        goalId: goal.id,
+        revision: goal.revision,
+        action: 'resume',
+      })
+      if (!result.ok) return { ok: false, message: result.message }
+      live = result.goal
+      publishGoal(deps, live)
+    }
+
+    const arm: GoalArm = { goalId: live.id, revision: live.revision }
+    deps.runs.arm(conversationId, arm)
+    queueGoalRound(conversationId, deps, arm)
+    return { ok: true }
+  } catch (err) {
+    abortGoalLoop(conversationId, deps, err)
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * 目标账本读坏了（revision 断号、非法转移）时的收敛动作：**停循环并说出来**。
+ *
+ * 回放是 fail-closed 的（`store/goals.ts` 直接抛）。这里不重试也不吞：
+ * 重试只会把一次破损变成一串一模一样的报错，吞掉则是一个自己停了、
+ * 谁也不知道为什么的循环。
+ */
+function abortGoalLoop(
+  conversationId: ConversationId,
+  deps: Omit<CommandDeps, 'ws'>,
+  err: unknown,
+): void {
+  deps.runs.disarm(conversationId)
+  process.stderr.write(`[qy] 目标续起中止：${err instanceof Error ? err.message : String(err)}\n`)
+}
+
+function publishGoal(deps: Omit<CommandDeps, 'ws'>, goal: Goal): void {
+  deps.bus.publish({ type: 'goal', goal }, goal.conversationId)
+}
+
+/**
+ * 自动续起那一轮发给模型的话。
+ *
+ * 措辞是这个功能里最容易做坏的一处：说轻了模型草率宣布完成，一个没做完的目标
+ * 被 `complete` 掉；说重了它明明卡住也不肯 `blocked`，白白转满轮数。
+ * 所以这段话必须做到四件事——**引用完整目标**、**报清第几轮**、
+ * **点明谁才是权威**（工作区里的文件、这一轮工具跑出来的结果、落库的会话状态，
+ * 而不是前几轮自己说过的话）、**要求完成前先拿证据**。
+ */
+function goalRoundPrompt(goal: Goal): string {
+  return [
+    `[自动续起] 第 ${goal.round}/${goal.maxRounds} 轮。这条消息由系统发出，不是用户在说话。`,
+    '',
+    `目标（goal_id=${goal.id}，revision=${goal.revision}）：`,
+    goal.objective,
+    '',
+    '权威只有三样：工作区里文件当前的样子、这一轮工具跑出来的结果、以及会话里已经落下的状态。',
+    '前几轮说过「已经改好了」不作数——要用就自己重新核一遍。',
+    '',
+    '接着往下做。宣布完成之前先拿到证据（跑一次命令、读一次文件），不要只凭印象：',
+    '- 确认达成了：调 update_goal(action="complete")，并把证据写在回答里。',
+    '- 需要用户拍板，或者缺东西做不下去：调 update_goal(action="blocked")，写清卡在哪、要什么才能继续。',
+    '- 还没做完：什么都不用调，目标保持 active，这一轮结束后会自动再来一轮。',
+    'goal_id 与 revision 以 read_goal 读到的为准。',
+  ].join('\n')
 }
 
 /**

@@ -68,6 +68,7 @@ export type ResourceId = string & { readonly __brand: 'ResourceId' }
 export type ProviderRequestId = string & { readonly __brand: 'ProviderRequestId' }
 export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' }
 export type SessionId = string & { readonly __brand: 'SessionId' }
+export type GoalId = string & { readonly __brand: 'GoalId' }
 
 export const newConversationId = () => `cv_${monotonicId()}` as ConversationId
 export const newMessageId = () => `ms_${monotonicId()}` as MessageId
@@ -77,6 +78,12 @@ export const newResourceId = () => `rs_${monotonicId()}` as ResourceId
 export const newProviderRequestId = () => `pr_${monotonicId()}` as ProviderRequestId
 export const newWorkspaceId = () => `ws_${monotonicId()}` as WorkspaceId
 export const newSessionId = () => `sn_${monotonicId()}` as SessionId
+/**
+ * 目标 id。**字典序即创建顺序这条在这里是被依赖的**：
+ * `goal_events` 表没有自增列，「这条会话最新的那个目标」正是靠
+ * `ORDER BY goal_id DESC` 取出来的。
+ */
+export const newGoalId = () => `gl_${monotonicId()}` as GoalId
 
 /** 账本条目。不是领域实体，没有品牌类型——它只是一行记账。 */
 export const newUsageId = () => `ug_${monotonicId()}`

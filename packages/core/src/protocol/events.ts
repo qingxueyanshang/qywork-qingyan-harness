@@ -15,6 +15,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   FileChange,
+  Goal,
   RunUsage,
   StopReason,
   TodoItem,
@@ -61,6 +62,7 @@ export type AgentEvent =
   | UsageEvent
   | ContextEvent
   | TodosEvent
+  | GoalEvent
   | CompactionEvent
   // ── 工作区实时性 ──
   | FileChangedEvent
@@ -266,6 +268,19 @@ export interface TodosEvent {
   type: 'todos'
   runId: RunId
   todos: TodoItem[]
+}
+
+/**
+ * 目标变更。**两个生产者，都必须发**：模型调三个目标工具时由端口发
+ * （`runtime/session.ts`），服务端自动续起时由 `run-control.ts` 发。
+ *
+ * **不带 runId。** 目标是会话级的，改它的动作有一半发生在任何 run 之外
+ * （续起前把轮次 +1、用户在界面上点继续），塞一个空 runId 进来只会让
+ * 消费方以为它属于某一轮。归属会话由信封上的 `conversationId` 表达。
+ */
+export interface GoalEvent {
+  type: 'goal'
+  goal: Goal
 }
 
 export interface CompactionEvent {

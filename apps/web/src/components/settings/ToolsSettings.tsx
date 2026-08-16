@@ -7,7 +7,7 @@ import { LoadState } from './LoadState.tsx'
  *
  * ## 它是分类轴的消费者
  *
- * `ToolCategory` 那条轴（七个内置大类 + 外部扩展，各自再分功能方向）如果没有这一页，就是
+ * `ToolCategory` 那条轴（八个内置大类 + 外部扩展，各自再分功能方向）如果没有这一页，就是
  * C1 第 1 款的死链路：注册期校验着、每个工具都打了标、没有任何人读。
  *
  * **加类目要同时改三处**：`registry.ts` 的联合类型、同处的 `TOOL_CATEGORIES` 数组、
@@ -40,6 +40,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   web: '网络',
   knowledge: '记忆与技能',
   planning: '计划与任务',
+  goal: '目标',
   session: '会话管理',
   schedule: '调度',
   external: '外部扩展',
