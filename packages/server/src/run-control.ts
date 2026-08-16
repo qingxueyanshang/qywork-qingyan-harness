@@ -98,8 +98,8 @@ export async function startRun(
   /*
    * 这一轮跑在哪个目录下，**按会话查，不问进程**。
    *
-   * 服务进程曾经拿着一个 `workspaceRoot` 常量（启动时的 `--cwd`），于是一个进程
-   * 只服务得了一个项目。那个常量是 `workspaces` 表的一份缓存，已经删掉。
+   * 服务进程不许拿一个 `workspaceRoot` 常量（启动时的 `--cwd`）：那样一个进程
+   * 只服务得了一个项目，而那个常量本身就是 `workspaces` 表的一份缓存。
    *
    * 查不到就停：回落到某个默认根等于拿着 A 项目的会话去 B 项目的目录里跑命令，
    * 而工具的路径约束、shell 的沙箱边界全部以这个根为界。
@@ -165,9 +165,9 @@ export async function startRun(
     } catch (err) {
       // 在 loop 之外抛出的错误（装配 adapter、解析档案）走这里。
       //
-      // 这里曾经硬编码 `internal_error`——于是「没配 key」在 CLI 里报 no_api_key、
+      // 别硬编码 `internal_error`：那样「没配 key」在 CLI 里报 no_api_key、
       // 在桌面端却报 internal_error，前端的「去配置」引导永远不触发。
-      // 错误码是给前端决定引导动作用的，一旦压平成 internal_error 就等于没有分类。
+      // 错误码是给前端决定引导动作用的，压平成 internal_error 就等于没有分类。
       const pe = err instanceof ProviderError ? err : null
       const base = pe?.message ?? (err instanceof Error ? err.message : String(err))
       // 桌面端用户手边不一定有终端，「运行 qy init」对他们只是一句空话。
@@ -234,8 +234,8 @@ export async function compactConversation(
       emit({ type: 'compaction', runId, phase: 'failed', reasonCode: outcome.reasonCode })
     }
   } catch (err) {
-    // `reasonCode` 是**码**，不是消息。这里曾经塞 `err.message.slice(0, 80)`——
-    // 前端把这个字段直接括号显示，于是异常原文（英文、半截、带内部标识）
+    // `reasonCode` 是**码**，不是消息。塞 `err.message.slice(0, 80)` 的话，
+    // 前端把这个字段直接括号显示，异常原文（英文、半截、带内部标识）
     // 就成了给用户看的界面文案。分类和 run.error 那条一个口径：
     // 认得的走 ProviderError 的码，其余一律 internal_error。
     emit({

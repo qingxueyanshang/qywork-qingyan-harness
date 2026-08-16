@@ -64,7 +64,7 @@ export async function loadSchedules(): Promise<Schedule[]> {
   } catch {
     // 文件坏了不能让服务起不来，但也**不能静默当成空**——
     // 静默的话用户会以为自己的定时任务被删了，然后再建一遍，
-    // 而下一次写入会把坏文件覆盖掉，原来的内容彻底消失。
+    // 而下一次写入会把坏文件覆盖掉，里面的内容彻底消失。
     process.stderr.write(`[qy] 定时任务文件解析失败，本次按空处理：${schedulesPath()}\n`)
     return []
   }

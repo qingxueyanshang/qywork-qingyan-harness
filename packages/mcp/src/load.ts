@@ -172,8 +172,8 @@ export async function loadMcpServers(
          *   就是这样（`extensions.test.ts` / `session.test.ts` 的 fixture 只回
          *   `protocolVersion` 和 `serverInfo`）。按声明去卡的话，
          *   它们的工具会被**静默丢光**——那正是这次要修的那类失败，
-         *   只是换了个方向，而且更难查：原来至少注册了 0 个工具是因为
-         *   server 真的没有，现在是因为我们没问。
+         *   只是换了个方向，而且更难查：注册 0 个工具不是因为 server 真的没有，
+         *   而是因为我们没问。
          *
          * 所以：调用失败时，只有在 server **没有**声明 tools 的情况下才咽下去
          * （那说明它本来就不提供工具，比如一个 resource-only 的 server）。

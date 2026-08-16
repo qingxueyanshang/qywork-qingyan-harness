@@ -112,9 +112,8 @@ export async function runInit(args: string[]): Promise<number> {
   /*
    * 这一格**留空**。
    *
-   * 这里原来灌一个 `maxOutputTokens: 8192` 的预置值，字段注释说它「描述的是
-   * 端点的限制」——而 DeepSeek 的真实上限是 384000（`catalog.ts:335`），
-   * 小了 47 倍，且上面一句解释都没有。
+   * **不要灌一个预置值**（比如 `maxOutputTokens: 8192`）：DeepSeek 的真实上限是
+   * 384000（见 `catalog.ts`），差 47 倍。
    *
    * 它是硬上限：`factory.ts:80-84` 拿它与目录值取 min，`loop.ts:708` 每次请求
    * 都用它。实测的失败形状：DeepSeek 开 max 思考档，一轮光思考就 8493 token，

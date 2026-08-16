@@ -590,10 +590,8 @@ export interface GuardedSpawn {
    * 不写死的话 `proc.stdout` 的类型是 `number | ReadableStream | undefined`，
    * 每个调用方都得自己断言一次——而断言的地方就是将来改错了也不报错的地方。
    *
-   * 这里一度抽象成过一个四成员的 `GuardedProcess` 接口，为的是让 Windows 的
-   * AppContainer 那条路（走 `CreateProcessW`，拿不到 `Bun.Subprocess`）也能塞进来。
-   * 那条路已经撤掉（ROADMAP §42），于是这个接口只剩一个实现——
-   * **只有一个实现的接口是另一种过度设计**，退回具体类型。
+   * 别为了「将来可能有别的进程实现」把它抽象成接口：
+   * **只有一个实现的接口是另一种过度设计**。
    */
   proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
   sandbox: SandboxStatus
@@ -738,14 +736,14 @@ export function probeBash(): BashResolution {
  *
  * ## 只有 bash 一种，没有落回
  *
- * 起因是 Windows 上原来无条件走 `powershell.exe -Command`：`&&` 在 Windows
- * PowerShell 5.1 里是**解析错误**（实测 `标记「&&」不是此版本中的有效语句分隔符`），
- * 而模型只被告知「平台：win32」时写的就是 POSIX 写法——整条命令一个字都不执行，
- * 账本里已经有这么废掉的调用（`node --version & python --version`）。
- * 那不是模型不会写 PowerShell，是**它的默认方言和这里跑的 shell 对不上**，
- * 而两边只有一边能改：换 shell 一处，纠正模型每一条命令是无穷次。
+ * Windows 上不能走 `powershell.exe -Command`：`&&` 在 Windows PowerShell 5.1 里是
+ * **解析错误**（实测 `标记「&&」不是此版本中的有效语句分隔符`），而模型只被告知
+ * 「平台：win32」时写的就是 POSIX 写法——整条命令一个字都不执行，账本里有过这么
+ * 废掉的调用（`node --version & python --version`）。那不是模型不会写 PowerShell，
+ * 是**它的默认方言和这里跑的 shell 对不上**，而两边只有一边能改：换 shell 一处，
+ * 纠正模型每一条命令是无穷次。
  *
- * 上一版留了「没装 Git Bash 就落回 PowerShell」。删掉它的理由不是那条路跑不通，
+ * 也不要留「没装 Git Bash 就落回 PowerShell」。理由不是那条路跑不通，
  * 是**它把方言变成两套**：`policy.ts` 的拒绝规则要同时认两种语法、测试每一条
  * 涉及命令的都要按 shell 分叉、模型拿到的提示也分叉。而落回的那台机器上，
  * 模型该写不对的还是写不对——第二条路的收益是「跑得起来」，代价是每一处

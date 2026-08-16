@@ -28,7 +28,7 @@
  * | 输出条目 | `reasoning.summary[]` | `reasoning.content[].reasoning_text` |
  * | 要不要回传 | 不要求 | **要求，不传就 400** |
  *
- * 这两条最初都写错了，而且**错法不一样**：
+ * 这两条各有各的坑，**错法不一样**：
  *
  * - 只认 `reasoning_summary_text` 的后果是**静默的**——流跑完、正文正常、
  *   一个 `thinking_delta` 都没有。没有报错，只是思考过程凭空消失。
@@ -281,7 +281,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    *
    * ## 「不思考」必须是 `none`，不能是 `minimal`
    *
-   * 这里原来把 `disabled` 映射成 `{effort:'minimal'}`。实测
+   * **不能把「不思考」映射成 `{effort:'minimal'}`。** 实测
    * （deepseek-v4-flash，`max_output_tokens=900`，各三次）：
    *
    * ```

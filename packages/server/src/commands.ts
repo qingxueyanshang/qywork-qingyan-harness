@@ -31,8 +31,8 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       return
 
     case 'message.send':
-      // 附件随消息一起转发。协议、存储、模型侧本来就都支持，缺的只是这一手传递
-      // ——之前这里把 `cmd.attachments` 丢在地上，于是整条链路有类型没数据。
+      // 附件随消息一起转发。协议、存储、模型侧都支持，漏掉 `cmd.attachments`
+      // 这一手的话，整条链路就是有类型没数据。
       await startRun(cmd.conversationId, cmd.content, cmd.model, deps, undefined, cmd.attachments)
       return
 

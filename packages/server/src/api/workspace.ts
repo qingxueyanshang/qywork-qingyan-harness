@@ -77,7 +77,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      *
      * **路径已经在账本里时复用那一行**（`root_path` 是 UNIQUE），
      * `upsertWorkspace` 顺带清掉 `removed_at`——移除过的项目重新添加，
-     * 它原来的会话跟着回来。会话挂的是 id，不是路径。
+     * 它的会话跟着回来。会话挂的是 id，不是路径。
      */
     if (req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as { path?: string; name?: string }
@@ -111,8 +111,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       return json({ workspace: upsertWorkspace(d.store, path, rawName) })
     }
     /*
-     * 每条带上会话数。它曾经的用途是「删之前说清会丢多少」——移除不再删数据之后
-     * 那个用途没了，但计数本身仍是项目卡片上要显示的信息。
+     * 每条带上会话数：项目卡片上要显示它。
      */
     return json({
       workspaces: listWorkspaces(d.store).map((w) => ({
@@ -134,8 +133,8 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     /*
      * **当前项目也能移除**，只要还剩别的可切。
      *
-     * 原来一律回 409（「不能移除脚下这块地板」）。那条规则挡住的是真实需求：
-     * 开发这个仓库时它自己就是当前项目，于是那一行的 `⋯` 里永远没有「移除」。
+     * 不要一律回 409（「不能移除脚下这块地板」）：那挡住的是真实需求——
+     * 开发这个仓库时它自己就是当前项目，那一行的 `⋯` 里就永远没有「移除」，
      * 而「先切到别的项目再回来移除它」不是用户该被要求做的编排。
      *
      * 只有它是**最后一个**时才拒绝——移除完界面没有任何项目可服务，

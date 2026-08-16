@@ -140,8 +140,7 @@ export class PluginHost {
       permissions: this.permissions,
     })
     this.runtime = rt
-    // 两个维度分开说。合成一句「已沙箱」会让人以为网络也关上了——
-    // 那正是这份文档以前犯过的错（见文件头「之前这里写的是…」那一段）。
+    // 两个维度分开说。合成一句「已沙箱」会让人以为网络也关上了。
     this.opts.onLog?.(
       `[${this.opts.manifest.id}] 运行时 ${rt.command}` +
         `（沙箱 ${rt.sandboxed ? '有' : '无'} · 出网闸 ${rt.netGuarded ? '有' : '无'}）：${rt.note}`,
@@ -167,7 +166,7 @@ export class PluginHost {
     // stdin 上必须挂 error 监听。插件进程崩掉的瞬间我们可能正在往它的管道里写，
     // 而**没有监听者的 stream error 事件会直接掀掉整个宿主进程**——
     // 一个装错的插件不该有能力做到这件事，那正是本文件开头承诺过的边界。
-    // MCP 那条传输链上同款问题已经修过（`mcp/src/transport.ts`），这里当时漏了。
+    // MCP 那条传输链上是同一件事，见 `mcp/src/transport.ts`。
     proc.stdin?.on('error', (err: Error) => {
       this.opts.onLog?.(`[${this.opts.manifest.id}] 写入失败：${err.message}`)
     })

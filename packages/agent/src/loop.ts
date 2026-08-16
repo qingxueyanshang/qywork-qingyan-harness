@@ -67,8 +67,8 @@ export interface LoopDeps {
   /**
    * 尾区注记：日期、工作区状态、技能索引、**本轮召回的记忆正文**。
    *
-   * 每条自带分组——原来全部标 `workspaceState`，于是面板上「记忆内容」
-   * 与「技能清单」两行永远是 0：数据一直在发，只是没人按组去量。
+   * 每条自带分组，**不要一律标成 `workspaceState`**：那样面板上「记忆内容」
+   * 与「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
   tailNotes: () => { content: string; group: 'workspaceState' | 'skills' | 'memory' }[]
   makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContext
@@ -153,8 +153,8 @@ export interface LoopPersistence {
   /**
    * 逐请求账。**装配完成、发出之前**记一行，返回 id 供后续回填。
    *
-   * 这里曾经是 `saveContext(runId, tokens, limit, percent)`——三个标量写在 run 上、
-   * 每个 step 覆盖一次。一个 run 有 N 次请求，账只剩最后一次的读数，
+   * **不能写成挂在 run 上的三个标量**（tokens / limit / percent）：那样每个 step
+   * 覆盖一次，一个 run 有 N 次请求而账只剩最后一次的读数，
    * 「这一轮上下文怎么长起来的」在账本里根本不存在。
    */
   openRequest(input: {
@@ -652,8 +652,8 @@ export class AgentLoop {
 
           // 没有工具调用 = 模型认为任务结束。
           // 唯一例外是 provider 报 max_tokens：那是**输出**被截断，模型话没说完，
-          // 不是它认为结束了。曾经这里判成 context_exhausted（输入超限），
-          // 会把用户引向「精简上下文」——那条路解决不了输出截断。
+          // 不是它认为结束了。判成输入超限会把用户引向「精简上下文」，
+          // 而那条路解决不了输出截断。
           stopReason = providerStop === 'max_tokens' ? 'output_truncated' : 'completed'
           break
         }
@@ -663,10 +663,9 @@ export class AgentLoop {
          * **名字不在注册表里的，一律不进执行链。**
          *
          * 注册表是工具的唯一权威——名字不在表里的东西不是工具，它是 provider
-         * 违反了我们下发的工具表（模型胡诌了一个名字）。这种调用曾经照样开一条
-         * tool step、发一条 `tool.started`，于是界面上多出一张既没有动作、
-         * 也什么都没做的卡片，标题只能编一个（先后编过「读取 xxx」和「未知工具」，
-         * 两个都是在给不存在的东西造词条）。
+         * 违反了我们下发的工具表（模型胡诌了一个名字）。放它进去就会开出一条
+         * tool step、发一条 `tool.started`，界面上多一张既没有动作、也什么都没做的
+         * 卡片，而标题只能编（「读取 xxx」或「未知工具」都是在给不存在的东西造词条）。
          *
          * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
          * 渲染那侧不再需要任何兜底分支。

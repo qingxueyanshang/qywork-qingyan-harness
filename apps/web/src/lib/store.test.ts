@@ -310,7 +310,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   /**
    * **原始失败形状**：一轮跑了十分钟，大半时间产出的是思考；进程被掐断、界面重拉
    * 之后，思考一条不剩。它落在批次首条工具 step 的 `content` 上（后端
-   * `session.ts` 的 `openToolStep`），而这里曾经只读 `payload`。
+   * `session.ts` 的 `openToolStep`），只读 `payload` 的话就会漏掉。
    */
   test('思考正文跟着工具 step 折回来，位置在工具卡之前', async () => {
     setState({ activeConversation: 'cv_1', transcript: [], running: true })

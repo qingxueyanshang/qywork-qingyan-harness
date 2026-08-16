@@ -159,7 +159,7 @@ function RunRow(props: { run: Run }) {
           <Show when={r().supersededBy}>
             <span class="run-row-tag">已被重试接替</span>
           </Show>
-          {/* 中文说法和会话流里的收尾条共用一张表——这里曾经直接贴英文码。 */}
+          {/* 中文说法和会话流里的收尾条共用一张表，别在这里直接贴英文码。 */}
           <Show when={r().stopReason && r().stopReason !== 'completed'}>
             <span class="run-row-tag bad">{stopReasonLabel(r().stopReason!)}</span>
           </Show>

@@ -45,10 +45,9 @@ export async function loadConversations(): Promise<void> {
 /**
  * 切到另一个项目。**不重启任何东西。**
  *
- * 这条路以前是「换掉整个 sidecar」：换项目要重启服务、断掉 WebSocket、
- * 打断正在跑的那一轮，而且只有桌面端做得到。根因是服务端把「哪个根」
- * 存成了进程级常量；那份常量已经删了，现在它按会话 / 按请求查表
- * （`workspaceOf` 与 `?ws=`），所以切项目就只是换一个参数。
+ * 切项目只是换一个参数，因为服务端按会话 / 按请求查表（`workspaceOf` 与 `?ws=`），
+ * 不存进程级的「当前根」。一旦把根存成进程级常量，这条路就变成「换掉整个
+ * sidecar」——重启服务、断掉 WebSocket、打断正在跑的那一轮，而且只有桌面端做得到。
  *
  * 顺序有讲究：**先把活动项目改掉，再拉数据**——`client.api` 按当前活动项目
  * 拼 `?ws=`，反过来的话拉回来的还是上一个项目的会话。
@@ -75,11 +74,11 @@ export async function activateWorkspace(path: string): Promise<void> {
 /**
  * 切到另一条会话。
  *
- * **两处以前会静默失败，都补上了终态：**
+ * **两处必须有终态，否则都是静默失败：**
  *
- * 1. `discardPace()` 和清空 transcript 在同一处。以前只在 `reloadActiveConversation`
- *    里丢积压，而那是 await 之后的事——这中间到达的 delta 会落在新会话的正文末尾，
- *    表现成「切过去，开头多了半句上一条会话的话」。
+ * 1. `discardPace()` 和清空 transcript 必须在同一处。只在 `reloadActiveConversation`
+ *    里丢积压的话，那是 await 之后的事——这中间到达的 delta 会落在新会话的正文
+ *    末尾，表现成「切过去，开头多了半句上一条会话的话」。
  * 2. 拉取失败落 `state.error`。调用点写的是 `void selectConversation(id)`，
  *    里面任何一条 `client.api` 抛错都会变成 unhandled rejection：transcript 已经
  *    清空、新的没加载上，界面停在一个空会话上，一个字的解释都没有。
@@ -103,10 +102,9 @@ export async function selectConversation(id: string): Promise<void> {
 /**
  * 中断当前 run。
  *
- * 曾经这里发的是 `transcript.find(status === 'running').id`——那是**步骤 id**，
- * 不是 run id。服务端拿它查 run 查不到，于是静默什么也不做：
- * 中断按钮从来没生效过，而 UI 上完全看不出来。
- * 现在用 `run.started` 事件带回来的真实 runId。
+ * 发的必须是 `run.started` 事件带回来的**真实 runId**。
+ * 拿 `transcript.find(status === 'running').id` 是**步骤 id**，服务端查 run 查不到，
+ * 于是静默什么也不做——中断按钮从来不生效，而 UI 上完全看不出来。
  */
 export function interrupt(): void {
   const runId = state.lastRunId
@@ -199,8 +197,8 @@ function ownerProvider(config: RedactedConfig, model: string): string | undefine
  * （`server/run-control.ts`）。用户在长会话里主动点它，是为了在下一轮之前先把
  * 上下文腾出来，而不是等占用逼近阈值。
  *
- * （原来这句写的是「provider 拒绝后自动压缩」，那条路已经不触发压缩了，只如实报错，
- * 见 `agent/loop.ts` 发送前检查那段。）
+ * 自动那条是发送前按占用检查（见 `agent/loop.ts`）；provider 的容量拒绝不触发压缩，
+ * 只如实报错。
  *
  * 结果通过 compaction 事件回来（done / failed 都会回），所以这里不做乐观更新。
  */

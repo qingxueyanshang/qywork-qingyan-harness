@@ -127,7 +127,7 @@ describe('capabilities 不再被丢掉', () => {
   })
 
   test('声明了我们没接的能力要说出来', async () => {
-    // 一个只提供 prompts 的 server 原来的表现是：连上、握手成功、
+    // 不说出来的话，一个只提供 prompts 的 server 表现是：连上、握手成功、
     // 注册 0 个工具、**没有任何错误**。用户看到「配了但什么都没发生」。
     const { reg, logs } = await load({ capabilities: { prompts: {} } })
     expect(reg.servers[0]?.unsupported).toEqual(['prompts'])

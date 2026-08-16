@@ -25,9 +25,9 @@ export interface Subscriber {
    * `null` = 还没声明过，会话事件全收（首连时界面还不知道自己要看哪一条）；
    * 空 `Set` = 明确声明「一条会话事件都不要」。
    *
-   * 上一版写的是「空集 = 全订阅」，代价是真实的：前端切项目时发
-   * `subscribe([])`，本意是退订，服务端把它当成全订阅——于是所有会话的事件
-   * 一起涌向这个客户端，而客户端无条件把它们写进当前 transcript。
+   * **别把空集当成全订阅**：前端切项目时发 `subscribe([])`，本意是退订，
+   * 当成全订阅的话所有会话的事件会一起涌向这个客户端，
+   * 而客户端无条件把它们写进当前 transcript。
    *
    * 两种状态都不影响工作区级事件（帧上没有 conversationId 的那些），它们人人可见。
    */
@@ -38,8 +38,8 @@ export interface Subscriber {
 /**
  * 这一帧对这个订阅者可见吗。
  *
- * **实时推送和断线补发必须走同一个判据**，所以它是模块级函数而不是方法——
- * 上一版补发路径上压根没有这一步，等于按会话隔离只在一半的路上成立。
+ * **实时推送和断线补发必须走同一个判据**，所以它是模块级函数而不是方法：
+ * 补发路径上少了这一步，按会话隔离就只在一半的路上成立。
  */
 function visibleTo(sub: Subscriber, frame: EventEnvelope): boolean {
   if (!frame.conversationId) return true // 工作区级事件（git 状态等）人人可见
@@ -78,9 +78,8 @@ export class EventBus {
   /**
    * 归属**写进帧里**，不再只活在这次调用的参数上。
    *
-   * 上一版把它存进一个 `WeakMap<AgentEvent, ConversationId>`，而那个 map 全仓
-   * 没有任何读取方——真正需要它的两处（断线补发、客户端）都拿不到。
-   * 现在它随帧走，三处用的是同一份事实。
+   * **不要存进一个 `WeakMap<AgentEvent, ConversationId>`**：真正需要它的两处
+   * （断线补发、客户端）都够不着那个 map。随帧走，三处才是同一份事实。
    */
   publish(event: AgentEvent, conversationId?: ConversationId): EventEnvelope {
     const frame: EventEnvelope = {
@@ -108,8 +107,8 @@ export class EventBus {
   /**
    * 断线补发。
    *
-   * **按订阅过滤。** 上一版这条路上完全没有过滤：环里留着 5000 帧，重连一次就把
-   * 窗口内所有会话的事件灌给这个客户端，而它正开着其中某一条——那不是「多收了几条」，
+   * **按订阅过滤。** 这条路上没有过滤的话，环里留着 5000 帧，重连一次就把窗口内
+   * 所有会话的事件灌给这个客户端，而它正开着其中某一条——那不是「多收了几条」，
    * 是内容串台，而且看起来完全合理。
    *
    * 返回 null 表示缺口补不上，客户端必须重新拉全量。

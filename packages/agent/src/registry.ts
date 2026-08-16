@@ -254,8 +254,8 @@ export interface ToolOutcome {
  *
  * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
  * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
- * 三条轴分开的直接好处是动作轴不必再兼职领域——`search` / `fetch` / `plan` /
- * `delegate` 曾经挤在动作轴上，正是因为没有这条轴。
+ * 三条轴分开的直接好处是动作轴不必兼职领域：没有这条轴，`search` / `fetch` /
+ * `plan` / `delegate` 这类词就会挤到动作轴上去。
  *
  * 分类是三层：`category`（大类）+ `facet`（类内功能方向）+ `summary`（一句话用途），
  * 注册期必填，缺一即注册失败。

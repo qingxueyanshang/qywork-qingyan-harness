@@ -52,7 +52,7 @@ export function buildSystemPrompt(): string {
 /**
  * 一条尾区注记及它归哪个桶。
  *
- * 分组必须带出来：原来全部标 `workspaceState`，于是面板上「记忆内容」
+ * 分组必须带出来，**不能一律标成 `workspaceState`**：那样面板上「记忆内容」
  * 与「技能清单」两行**永远是 0**——数据一直在发，只是没人按组去量。
  */
 export interface TailNote {

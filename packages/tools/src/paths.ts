@@ -254,8 +254,8 @@ export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents']
  *
  * ## 为什么必须是一份
  *
- * 这份清单原来抄了三份：`server/files.ts`（界面文件树）、`tools/search.ts`
- * （glob / grep）、`tools/files.ts`（list_dir）。到发现时已经漂成 13 / 12 / 11 条：
+ * 三处消费它：`server/files.ts`（界面文件树）、`tools/search.ts`（glob / grep）、
+ * `tools/files.ts`（list_dir）。各抄一份的话会漂——实测漂到过 13 / 12 / 11 条，
  * `coverage` 和 `.svelte-kit` 只有界面那份有。**后果不是不整洁，是三方对
  * 「这个目录存不存在」给出不同答案**——用户在文件树里看不到 `coverage/`，
  * 模型 `list_dir` 却把它列出来，然后 `grep` 又搜不进去。模型据此去读一份

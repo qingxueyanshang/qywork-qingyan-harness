@@ -26,7 +26,7 @@ import type {
 //
 // 配置、协议、界面三方都要说的那几个词。放在 core 是因为**只有它三方都够得着**：
 // `ai` 在 L1、`runtime` 在 L5，而界面只依赖 core，写在任何一个更高层都会逼出
-// 第二份拷贝。这两个词表原来正是这么散成六份和五份的。
+// 第二份拷贝，而拷贝之间会漂。
 
 /**
  * 思考强度档位，**弱到强有序**。
@@ -121,10 +121,9 @@ export type StopReason =
   /**
    * **输出**被 max_tokens 截断。答案不完整但已发生的部分是有效的。
    *
-   * 曾经这里还并列着一个 `context_exhausted`（输入超窗），两者被混成过一个值，
-   * 导致输出截断时提示用户去清理历史——清了也没用。现在输入超窗**不占一个停止原因**：
-   * 它由 `run.error.code = 'context_overflow'` 表达，停止原因是 `provider_error`。
-   * 一件事一本账，两处都记的结果是两处会漂。
+   * **不要在这条轴上再并列一个「输入超窗」。** 两者混成一个值的后果是输出截断时
+   * 提示用户去清理历史，而清了也没用。输入超窗由 `run.error.code = 'context_overflow'`
+   * 表达，停止原因是 `provider_error`——一件事一本账。
    */
   | 'output_truncated'
   | 'provider_error'
@@ -222,10 +221,9 @@ export interface RunUsage {
   /**
    * 累计花费，**单位是下面那个 `currency`，不是恒定美元**。
    *
-   * 原来这个字段叫 `costUsd`。阿里 / 月之暗面 / 智谱三家官网按人民币标价，
-   * 把 ¥6 装进一个叫 usd 的字段，差的是七倍，而且界面上完全看不出来
-   * ——它只是一个数字。改名连同落盘的列名一起（迁移 7），
-   * 留一个名字说谎的字段比改名危险。
+   * **不要叫它 `costUsd`。** 阿里 / 月之暗面 / 智谱三家官网按人民币标价，
+   * 把 ¥6 装进一个叫 usd 的字段差的是七倍，而界面上完全看不出来——它只是一个数字。
+   * 落盘的列名同名（迁移 7）。
    */
   cost: number
   /** 上面那个数字的币种。**不做汇率换算**：换算出来的是一个我们编的数字。 */
@@ -303,8 +301,8 @@ export type StepPayload =
        * 整体替换 payload 时 `args` 与 `action` 会被抹掉——那一刻我们只知道
        * 「这次调用没有终态」，重建不出它当时的参数。
        *
-       * 这里原来声明成必填，而写入侧早就在写不带它的行：类型说的和库里躺的
-       * 不是一回事。历史投影按类型写就会在孤儿行上拿到 undefined 再展开。
+       * **不能声明成必填**：写入侧确实在写不带它的行，声明必填就是类型说的和库里
+       * 躺的不是一回事，历史投影会在孤儿行上拿到 undefined 再展开。
        * 消费方（`runtime/transcript.ts`）的口径是 `args ?? {}`，
        * 且那种行的 status 必然是 failure——模型看到「调用失败、参数已不可考」，
        * 而不是一次「参数为空却自称成功」的记录。
@@ -461,11 +459,10 @@ export function emptyOmitted(): ContextOmitted {
  *
  * ## 为什么账要落到「请求」这一层，而不是「run」这一层
  *
- * `runs` 上曾经有三列 `context_tokens/limit/percent`，每个 step 覆盖一次——
- * 于是一个 run 只剩最后一次请求的读数，而「这一轮上下文怎么长起来的」
- * 在账本里根本不存在。面板刷新后只能显示一个孤零零的数字，
- * 更查不出「为什么第三轮比第二轮还低」。一个 run 有 N 次请求，
- * 账就该有 N 行。
+ * 挂在 `runs` 上（`context_tokens/limit/percent` 那种三列）会被每个 step 覆盖一次，
+ * 一个 run 只剩最后一次请求的读数，「这一轮上下文怎么长起来的」在账本里根本不存在。
+ * 面板刷新后只能显示一个孤零零的数字，更查不出「为什么第三轮比第二轮还低」。
+ * 一个 run 有 N 次请求，账就该有 N 行。
  *
  * ## `status` 的五态是 provider 交互的真实形状
  *
@@ -520,9 +517,9 @@ export interface CompactionManifest {
   /**
    * 累计被摘要替代掉的消息条数。
    *
-   * 这里曾经是 `compactedRunSteps: Record<runId, 步数>`——**没有任何投影消费它**
-   * （投影只按 `compactedThroughMessageId` 过滤），唯一的读者是前端，
-   * 而它拿 `Object.keys(...).length`（run 个数）当消息数显示，数字本身是错的。
+   * 记**消息条数**，不要记成按 run 分组的步数：投影只按 `compactedThroughMessageId`
+   * 过滤，按 run 分组的那份没有任何投影消费，而前端拿它的键个数当消息数显示，
+   * 数字本身就是错的。
    */
   compactedMessageCount: number
   summary: string

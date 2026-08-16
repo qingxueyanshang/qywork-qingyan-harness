@@ -42,9 +42,9 @@ export function hashFrozen(system: SystemBlock[]): string {
     /*
      * 分隔符不能省：["ab",""] 与 ["a","b"] 拼起来一样，但它们是不同的前缀。
      *
-     * 写成转义 \0 而不是**裸的 NUL 字节**。原来那里是一个真的 0x00：
-     * 源码里完全看不见，而且它让整个文件被 grep 当成二进制
-     * （`Binary file matches`）——于是在这个文件里搜任何东西都搜不到。
+     * 必须写成转义 `\0`，**不能是裸的 NUL 字节**：真的 0x00 在源码里完全看不见，
+     * 而且它让整个文件被 grep 当成二进制（`Binary file matches`）——
+     * 于是在这个文件里搜任何东西都搜不到。
      */
     h.update('\0')
   }
