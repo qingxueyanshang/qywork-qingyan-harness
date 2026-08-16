@@ -18,6 +18,7 @@ import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.
 import { deleteMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
 import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
+import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
 import { makeShellTool } from './shell.ts'
 import { readSkillTool } from './skills.ts'
@@ -56,6 +57,17 @@ export {
   probeBash,
   spawnGuarded,
 } from './sandbox.ts'
+// 定时任务：server 的调度 tick 与 HTTP 面读写的是同一张表。
+// 它落在这个包而不是 runtime，是因为模型侧的三个工具必须在这里，
+// 而 tools(L3) 不许依赖 runtime(L5)——理由写在 `schedules.ts` 顶部。
+export {
+  diagnoseSchedule,
+  isDue,
+  loadSchedules,
+  nextRunAt,
+  type Schedule,
+  updateSchedules,
+} from './schedules.ts'
 // 作用域：runtime 与 server 都要按同一份规则算三层的根
 export {
   AGENTS_DIR,
@@ -99,6 +111,9 @@ export function registerBuiltinTools(registry: ToolRegistry): void {
     writeMemoryTool,
     deleteMemoryTool,
     readSkillTool,
+    createScheduleTool,
+    listSchedulesTool,
+    deleteScheduleTool,
   ]) {
     registry.register(spec)
   }

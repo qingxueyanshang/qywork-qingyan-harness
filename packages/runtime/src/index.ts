@@ -53,14 +53,5 @@ export {
 } from './extensions.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
-// 定时任务
-export {
-  diagnoseSchedule,
-  isDue,
-  loadSchedules,
-  nextRunAt,
-  type Schedule,
-  updateSchedules,
-} from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口
 export { Session } from './session.ts'
