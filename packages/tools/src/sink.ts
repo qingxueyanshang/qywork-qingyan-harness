@@ -41,7 +41,6 @@ export const LOCAL_AUTHORITY_TOOLS: ReadonlySet<string> = new Set([
   'grep',
   'read_memory',
   'read_skill',
-  'list_skills',
 ])
 
 /**

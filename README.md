@@ -177,7 +177,7 @@ QYWORK_BASH_PATH=D:\msys64\usr\bin\bash.exe qy serve
 
 **工具**：`read_file` `write_file` `edit_file` `list_dir` `glob` `grep`
 `run_command` `read_resource` `write_todos` `web_fetch` `web_search`
-`read_memory` `write_memory` `delete_memory` `list_skills` `read_skill`
+`read_memory` `write_memory` `delete_memory` `read_skill`
 
 **权限**只有两种模式，没有逐次审批弹窗：`auto`（默认，**只有一张静态拒绝清单**——
 没有允许清单，也没有分类器）和 `full`（全放行）。`auto` 拦的是「不可逆且越出工作区」

@@ -224,7 +224,7 @@ describe('HTTP 面', () => {
     }
     expect(list.entries?.some((e) => e.key === 'build-commands')).toBe(true)
 
-    // 校验先于落盘：超长直接 422，不写一半。上限与 memoryTool **共用同一个常数**
+    // 校验先于落盘：超长直接 422，不写一半。上限与 `write_memory` **共用同一个常数**
     // （`@qywork/tools` 导出），两处各写一个数迟早漂成两个。
     const tooLong = await fetch(`${base()}/api/memory/build-commands`, {
       method: 'PUT',

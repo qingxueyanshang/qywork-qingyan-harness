@@ -10,13 +10,7 @@ import {
   readMemoryTool,
   writeMemoryTool,
 } from './memory.ts'
-import {
-  listSkillsTool,
-  parseFrontmatter,
-  readSkillTool,
-  SKILLS_DIR,
-  scanSkills,
-} from './skills.ts'
+import { parseFrontmatter, readSkillTool, SKILLS_DIR, scanSkills } from './skills.ts'
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'qywork-ms-'))
@@ -163,12 +157,11 @@ describe('技能扫描', () => {
     expect(skills[0]!.name).toBe('发版')
   })
 
-  test('list_skills 只列索引不列正文', async () => {
-    const r = await listSkillsTool.fn({}, ctx(await withSkills()))
-    expect(r.message).toContain('发版')
-    expect(r.message).toContain('怎么发一个版本')
-    // 正文（"打 tag"）必须要等 read_skill 才出现。
-    expect(r.message).not.toContain('打 tag')
+  test('索引只有 name 与 description，正文不在里面', async () => {
+    const skills = await scanSkills(await withSkills())
+    // 索引每轮都进尾区。正文（"打 tag"）必须要等 read_skill 才出现。
+    expect(JSON.stringify(skills)).not.toContain('打 tag')
+    expect(skills[0]!.description).toBe('怎么发一个版本')
   })
 
   test('read_skill 才给全文', async () => {

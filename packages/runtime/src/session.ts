@@ -62,13 +62,12 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import {
-  loadScopedMemories,
+  listScopedEntries,
   normalizeAdditionalDirectories,
   registerBuiltinTools,
   resolveInWorkspace,
   scanSkills,
   scopeRoots,
-  selectMemories,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
 import { collectSecrets, type QyConfig, resolveApiKey, resolveModel } from './config.ts'
@@ -154,13 +153,12 @@ export class Session {
    */
   private skillIndex: { name: string; description: string }[] = []
   /**
-   * 本轮选中的记忆**正文**，以及超预算转按需的那些 key。
+   * 记忆索引：`key` + 首行摘要，正文由模型按需 `read_memory` 拉。
    *
-   * 每 run 选一次（`ask()` 里按当轮 user 文本召回），run 内多次模型调用共用
-   * 同一份——否则尾区字节每次请求都变，缓存白丢。
+   * 每 run 扫一次，run 内多次模型调用共用同一份——否则尾区字节每次请求都可能变，
+   * 缓存白丢。
    */
-  private memoryBodies: { key: string; body: string }[] = []
-  private deferredMemories: string[] = []
+  private memoryIndex: { key: string; preview: string }[] = []
 
   /** 已加载的扩展。null = 还没加载过（首次 ask 时加载）。 */
   private extensions: Extensions | null = null
@@ -245,8 +243,7 @@ export class Session {
           workspaceRoot: this.opts.workspaceRoot,
           platform: process.platform,
           skills: this.skillIndex,
-          memories: this.memoryBodies,
-          deferredMemories: this.deferredMemories,
+          memories: this.memoryIndex,
         }),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, model, conversationId as ConversationId),
@@ -437,21 +434,11 @@ export class Session {
     this.skillIndex = (await scanSkills(roots).catch(() => [])).filter(
       (s) => !disabled.has(`skill:${s.name}`),
     )
-    /*
-     * 记忆按**当轮 user 文本**召回正文，每 run 选一次。
-     *
-     * 改成正文的理由见 `prompt.ts`：目录制下模型得自己判断哪条相关，
-     * 判断错了那条记忆这一轮就等于不存在，而且不报错、看不出来。
-     *
-     * 选一次而不是每次请求选：召回结果随查询变，run 内每次重选会让尾区字节
-     * 每次请求都变一遍，缓存白丢。
-     */
-    const memories = (await loadScopedMemories(roots).catch(() => [])).filter(
+    // 记忆同技能：只扫索引不读正文，哪条要展开由模型看着首行摘要自己判断
+    // （见 `tools/memory.ts` 的模块注释）。关掉的那些同样从索引里拿掉。
+    this.memoryIndex = (await listScopedEntries(roots).catch(() => [])).filter(
       (m) => !disabled.has(`memory:${m.key}`),
     )
-    const picked = selectMemories(memories, prompt)
-    this.memoryBodies = picked.selected.map((m) => ({ key: m.key, body: m.body }))
-    this.deferredMemories = picked.deferred
 
     /*
      * 心跳：**告诉别的进程「这一轮还有人在跑」。**
