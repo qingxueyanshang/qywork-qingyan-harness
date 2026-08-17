@@ -995,39 +995,30 @@ interface GitBranch {
 }
 
 function GitChanges() {
-  const [status, { refetch: refetchStatus }] = createResource(
+  const [status] = createResource(
     () => state.fileChanges.length,
     () => client.api<{ repo: boolean; status: GitStatus | null }>('/api/git/status'),
   )
-  const [branches, { refetch: refetchBranches }] = createResource(() =>
+  const [branches] = createResource(() =>
     client.api<{ branches: GitBranch[] }>('/api/git/branches'),
   )
   const [selected, setSelected] = createSignal<string | null>(null)
   const [branchOpen, setBranchOpen] = createSignal(false)
-  const [switching, setSwitching] = createSignal<string | null>(null)
-  const [branchError, setBranchError] = createSignal<string | null>(null)
-
   /**
-   * 切到另一条分支。
+   * 在看哪条分支的改动。`null` = 我这边未提交的改动（默认那一档）。
    *
-   * 失败**留在菜单里显示 git 的原话**（最常见的是本地改动会被覆盖），不关菜单——
-   * 关掉的话用户只看到分支没变、没有任何解释。成功了才关，并把状态与分支列表重取。
+   * **它只换看的对象**：不动 HEAD、不动工作区、不合并、也不是拿那条分支和我这边
+   * 对比（口径见服务端 `branchChanges`：三点差异，只有那条分支自己做的事）。
+   * 这个选择器最早被做成 `git checkout`，那是错的——切分支会改工作区，
+   * 攒着改动的仓库直接被 git 拦住，而用户只是想看看那条分支上改了什么。
    */
-  const switchBranch = async (name: string) => {
-    setSwitching(name)
-    setBranchError(null)
-    try {
-      await client.api('/api/git/checkout', { method: 'POST', body: JSON.stringify({ name }) })
-      setBranchOpen(false)
-      setSelected(null)
-      refetchStatus()
-      refetchBranches()
-    } catch (err) {
-      setBranchError(err instanceof ApiError ? err.detail : String(err))
-    } finally {
-      setSwitching(null)
-    }
-  }
+  const [branchView, setBranchView] = createSignal<string | null>(null)
+
+  /** 选了分支才有这一份；`null` 时用 `status()` 里的工作区改动。 */
+  const [viewed] = createResource(branchView, (ref) =>
+    client.api<{ files: GitFileEntry[] }>(`/api/git/changes?ref=${encodeURIComponent(ref)}`),
+  )
+  const files = () => (branchView() ? (viewed()?.files ?? []) : (status()?.status?.files ?? []))
 
   return (
     <div class="git-panel">
@@ -1035,22 +1026,16 @@ function GitChanges() {
         <Show when={status()?.status}>
           {(s) => (
             <>
-              {/* 分支落在这里，而不是侧边栏。
-                  它曾经是左侧导航的一个顶级项（且是个死按钮）——那个位置回答的是
-                  「我要去哪个页面」，而分支回答的是「这次改动在哪条线上」。
-                  后者是审阅的语境，所以它属于变更视图的顶部。
+              {/* 分支落在这里，而不是侧边栏：那个位置回答的是「我要去哪个页面」，
+                  而分支回答的是「这次改动在哪条线上」——后者是审阅的语境。
 
-                  **这一行同时报「这次动静多大」**：改了几个文件、一共增删多少行。
-                  另起一行标题去说同一件事，等于把最要紧的两个数排到第二眼。 */}
+                  **这一行同时是「跟谁比」的选择器**，以及「这次动静多大」的读数。 */}
               <div class="branch-bar">
                 <button
                   class="branch-chip"
                   type="button"
                   aria-expanded={branchOpen()}
-                  onClick={() => {
-                    setBranchError(null)
-                    setBranchOpen((v) => !v)
-                  }}
+                  onClick={() => setBranchOpen((v) => !v)}
                 >
                   <IconBranch size={13} />
                   <span class="truncate">{s().branch || 'detached'}</span>
@@ -1063,8 +1048,11 @@ function GitChanges() {
                   <IconChevron size={11} dir={branchOpen() ? 'down' : 'right'} />
                 </button>
                 <span class="branch-stat">
-                  <span>改动 {s().files.length}</span>
-                  <Show when={sumDelta(s().files)}>
+                  {/* 在看哪条分支：默认那档不写字（我这边未提交的改动是这块面板的
+                      常态），选了别的分支才说出来——否则常态下多一句废话。 */}
+                  <Show when={branchView()}>{(ref) => <span>分支 {ref()}</span>}</Show>
+                  <span>改动 {files().length}</span>
+                  <Show when={sumDelta(files())}>
                     {(d) => (
                       <span class="git-delta">
                         <span class="add">+{d().additions}</span>
@@ -1075,46 +1063,59 @@ function GitChanges() {
                 </span>
 
                 {/*
-                 * 分支列表是**浮层**，不是往下顶开的一段。
+                 * 「看哪条分支的改动」的浮层：第一项是我这边未提交的改动（默认），
+                 * 其余是各条分支。**当前分支不列**：它自己的改动就是第一项那个，
+                 * 列出来点进去是一份空清单。
                  *
-                 * 顶开的那版把「改了哪些文件」整列推下去，而用户点开分支只是想扫一眼
-                 * 有哪些分支；浮层盖在上面，关掉之后下面一行都没动过。
-                 * 自带一条完整规则（`.branch-menu`），不与别的浮层共用选择器（B8）。
+                 * 浮层而不是往下顶开一段：顶开会把「改了哪些文件」整列推下去，而这里
+                 * 只是扫一眼有哪些分支。自带一条完整规则（`.branch-menu`），
+                 * 不与别的浮层共用选择器（B8）。
                  */}
                 <Show when={branchOpen()}>
                   <div class="branch-menu" role="menu">
-                    <For each={branches()?.branches ?? []}>
+                    <button
+                      class="branch-item"
+                      classList={{ current: branchView() === null }}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setBranchView(null)
+                        setSelected(null)
+                        setBranchOpen(false)
+                      }}
+                    >
+                      <span class="branch-mark">
+                        <Show when={branchView() === null}>
+                          <IconCheck size={12} />
+                        </Show>
+                      </span>
+                      <span class="truncate">我这边未提交的改动</span>
+                    </button>
+                    <For each={(branches()?.branches ?? []).filter((b) => !b.current)}>
                       {(b) => (
                         <button
                           class="branch-item"
-                          classList={{ current: b.current }}
+                          classList={{ current: branchView() === b.name }}
                           type="button"
                           role="menuitem"
-                          disabled={b.current || switching() !== null}
                           title={b.lastCommitSubject}
-                          onClick={() => void switchBranch(b.name)}
+                          onClick={() => {
+                            setBranchView(b.name)
+                            setSelected(null)
+                            setBranchOpen(false)
+                          }}
                         >
-                          {/* 当前那条用一个勾，**不画选中底色**：这里是「去哪儿」的菜单，
-                              而灰底在别处的含义是「我点的那一行」。图标位恒定，
-                              没勾的那些也占一格，名字才对齐成一列。 */}
+                          {/* 勾表示「现在看的是它」。位置恒定，没勾的也占一格，
+                              名字才对齐成一列。 */}
                           <span class="branch-mark">
-                            <Show when={b.current}>
+                            <Show when={branchView() === b.name}>
                               <IconCheck size={12} />
                             </Show>
                           </span>
                           <span class="truncate">{b.name}</span>
-                          <Show when={b.ahead > 0}>
-                            <span class="git-count">↑{b.ahead}</span>
-                          </Show>
-                          <Show when={b.behind > 0}>
-                            <span class="git-count">↓{b.behind}</span>
-                          </Show>
                         </button>
                       )}
                     </For>
-                    <Show when={branchError()}>
-                      {(msg) => <div class="branch-error">{msg()}</div>}
-                    </Show>
                   </div>
                 </Show>
               </div>
@@ -1129,7 +1130,7 @@ function GitChanges() {
 
                 <section class="git-section">
                   <ul class="git-files">
-                    <For each={s().files}>
+                    <For each={files()}>
                       {(f) => (
                         <li>
                           <button
@@ -1163,7 +1164,9 @@ function GitChanges() {
                   </ul>
                 </section>
 
-                <Show when={selected()}>{(p) => <DiffView path={p()} />}</Show>
+                <Show when={selected()}>
+                  {(p) => <DiffView path={p()} branch={branchView()} />}
+                </Show>
               </div>
             </>
           )}
@@ -1173,10 +1176,17 @@ function GitChanges() {
   )
 }
 
-function DiffView(props: { path: string }) {
+function DiffView(props: { path: string; branch: string | null }) {
   const [diff] = createResource(
-    () => props.path,
-    (path) => client.api<{ diff: string }>(`/api/git/diff?path=${encodeURIComponent(path)}`),
+    () => [props.path, props.branch] as const,
+    ([path, branch]) =>
+      client.api<{ diff: string }>(
+        // 看某条分支的改动时，diff 也得按同一个口径取，否则列表说「那条分支改了 3 行」、
+        // 点进去看到的是我这边未提交的那份。
+        `/api/git/diff?path=${encodeURIComponent(path)}${
+          branch ? `&branch=${encodeURIComponent(branch)}` : ''
+        }`,
+      ),
   )
   return (
     <div class="diff">
