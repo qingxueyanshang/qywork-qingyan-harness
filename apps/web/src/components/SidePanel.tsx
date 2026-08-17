@@ -1,6 +1,8 @@
+import type { FileChange } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import {
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   For,
@@ -15,13 +17,17 @@ import {
 import { ApiError } from '../lib/client.ts'
 import {
   absPath,
+  activePanelTab,
   client,
   closePanel,
+  closePanelTab,
   isDesktopShell,
   openFile,
   openFileInPanel,
+  openPanelTab,
   type PanelView,
   panelMaximized,
+  panelTabs,
   panelWidth,
   resizePanel,
   revealWorkspace,
@@ -34,9 +40,7 @@ import {
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
 import {
-  IconBranch,
   IconCanvas,
-  IconCheck,
   IconChevron,
   IconCollapseAll,
   IconExpand,
@@ -52,9 +56,12 @@ import {
 } from './Icons.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
-// 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本选不到这个视图，
+// 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本开不出这一页，
 // 静态引入等于让它们白背一份永远不执行的代码。
 const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
+
+// 同样懒加载：不开浏览器页的人不必为它付首屏成本。
+const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
 
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
@@ -69,41 +76,40 @@ interface FileNode {
 }
 
 /**
- * 固定视图。顺序即优先级。
+ * 固定的那几页。顺序即优先级。**这三格关不掉，永远在页签条最前面。**
  *
  * 写成一份清单而不是几段 JSX：标签页的外观改一次要改每一处，改漏一处的表现是
  * 「有一格长得不一样」，而 CSS 不会为此报错。
  *
- * **这块面板只回答「这一轮在干什么」**：待办、文件、改动、以及你自己动手的那个
- * 终端。配置类的东西（角色编排、逐条能力开关）不进来——它们和「现在跑到哪了」
- * 不是同一个问题。
+ * **它们回答「这一轮在干什么」**：待办、文件、改动。配置类的东西（角色编排、逐条
+ * 能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
  *
- * `desktopOnly` 的那一格在别的端**根本不渲染**，不是渲染出来点了报错：PTY 是本机
- * 进程和一对系统句柄，手机和浏览器不可能有（CLAUDE.md B5）。
+ * 终端和浏览器不在这里：那两种是**可多开、可关掉**的页，由 `+` 新开、页签上带 ×，
+ * 清单在 `panelTabs`。
  */
-const VIEWS: { view: PanelView; label: string; desktopOnly?: true }[] = [
+const VIEWS: { view: PanelView; label: string }[] = [
   // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
   { view: 'git', label: '变更' },
-  { view: 'terminal', label: '终端', desktopOnly: true },
 ]
 
 /** 桌面外壳判定一次就够：它在一次运行里不会变。 */
 const DESKTOP = isDesktopShell()
-const VISIBLE_VIEWS = VIEWS.filter((v) => DESKTOP || !v.desktopOnly)
 
 /**
- * 「新开预览」看板上有哪几行。
+ * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那三格不在这里
+ * ——它们一直在页签条上，列进来点了也不新开任何东西。
  *
  * **没有 `open` 的那几行是后端还没接上的**，看板上置灰、点不动、行尾标「未接入」。
  * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
  * 看板那段 JSX 一行不用改。
  *
- * 现状（核过码，别照着标签猜）：文件和终端有后端，终端只在桌面端有。
- * 浏览器与无限画布没有服务端；Word / PPT 不在 `packages/server/src/files.ts`
- * 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是二进制、走到 `looksBinary`
- * 就退成「无法以文本预览」——真能开的只有 csv / tsv，那条路文件预览本来就有。
+ * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；浏览器就是一个
+ * iframe，每一端都有。无限画布没有实现；Word / PPT 不在
+ * `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
+ * 二进制、走到 `looksBinary` 就退成「无法以文本预览」——真能开的只有 csv / tsv，
+ * 那条路文件那一页本来就有。
  */
 const PREVIEW_SOURCES: {
   key: string
@@ -115,19 +121,13 @@ const PREVIEW_SOURCES: {
   desktopOnly?: true
 }[] = [
   {
-    key: 'file',
-    label: '文件',
-    icon: IconFile,
-    open: () => setSidePanel('files'),
-  },
-  {
     key: 'terminal',
     label: '终端',
     icon: IconTerminal,
     desktopOnly: true,
-    open: () => setSidePanel('terminal'),
+    open: () => openPanelTab('terminal'),
   },
-  { key: 'browser', label: '浏览器', icon: IconGlobe },
+  { key: 'browser', label: '浏览器', icon: IconGlobe, open: () => openPanelTab('browser') },
   { key: 'word', label: 'Word', icon: IconFile },
   { key: 'ppt', label: 'PPT', icon: IconFile },
   { key: 'excel', label: 'Excel', icon: IconFile },
@@ -137,7 +137,8 @@ const PREVIEW_SOURCES: {
 const BOARD_ROWS = PREVIEW_SOURCES.filter((s) => DESKTOP || !s.desktopOnly)
 
 /**
- * 右侧面板容器。`VIEWS` 那几个视图共用同一块区域，互斥显示。
+ * 右侧面板容器。固定的三格（`VIEWS`）和可多开的那些页（`panelTabs`）共用同一块区域，
+ * 互斥显示。
  *
  * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
  * 放进首屏等于让「只想聊天的用户」为文件预览付费。
@@ -148,6 +149,10 @@ export default function SidePanel() {
    * 收起面板再展开该回到用户上次看的那个视图，而不是回到「你想开点什么」。
    */
   const [board, setBoard] = createSignal(false)
+
+  /** 页签亮不亮。看板盖着时哪一格都不亮——那时正文不是它们任何一个。 */
+  const onView = (view: PanelView) => sidePanel() === view && !board()
+  const onTab = (id: string) => activePanelTab() === id && !board()
 
   return (
     <Show when={sidePanel()}>
@@ -186,14 +191,14 @@ export default function SidePanel() {
         />
         <header class="side-head">
           <div class="side-tabs" role="tablist">
-            <For each={VISIBLE_VIEWS}>
+            <For each={VIEWS}>
               {(t) => (
                 <button
                   class="side-tab"
-                  classList={{ active: sidePanel() === t.view && !board() }}
+                  classList={{ active: onView(t.view) }}
                   type="button"
                   role="tab"
-                  aria-selected={sidePanel() === t.view && !board()}
+                  aria-selected={onView(t.view)}
                   onClick={() => {
                     // 点页签即离开看板：不收的话页签亮了、正文还是看板，
                     // 看起来像这一下没生效。
@@ -203,6 +208,43 @@ export default function SidePanel() {
                 >
                   {t.label}
                 </button>
+              )}
+            </For>
+            {/*
+             * 可多开的那些页接在固定三格后面，各自带一颗 ×。
+             *
+             * 外面套一个 div 而不是把 × 塞进页签那颗按钮里：**button 套 button 是
+             * 非法 HTML**，浏览器会把内层那颗提到外面去，于是点页签名字变成点关闭。
+             * 外层只是个盒子（`role="presentation"`），`role="tab"` 落在名字那颗上。
+             */}
+            <For each={panelTabs()}>
+              {(t) => (
+                <div
+                  class="side-tab closable"
+                  classList={{ active: onTab(t.id) }}
+                  role="presentation"
+                >
+                  <button
+                    class="tab-name"
+                    type="button"
+                    role="tab"
+                    aria-selected={onTab(t.id)}
+                    onClick={() => {
+                      setBoard(false)
+                      setSidePanel({ tab: t.id })
+                    }}
+                  >
+                    <span class="truncate">{t.title}</span>
+                  </button>
+                  <button
+                    class="icon-btn tab-close"
+                    type="button"
+                    aria-label={`关闭 ${t.title}`}
+                    onClick={() => closePanelTab(t.id)}
+                  >
+                    <IconX size={11} />
+                  </button>
+                </div>
               )}
             </For>
           </div>
@@ -249,15 +291,23 @@ export default function SidePanel() {
            * **换项目就把这一整块重挂一遍**（`keyed` 的 Show 按项目 id）。
            *
            * 面板里到处是「按路径记的东西」：树展开了哪些目录、子层缓存、选中的那一行、
-           *正在看哪个 diff、终端里那个跑在旧目录上的 PTY。它们都是局部状态，换项目后
-           * 每一条都指着上一个项目——表现是树是新的、旁边那半还是旧的，点谁都没反应。
+           * 正在看哪个 diff。它们都是局部状态，换项目后每一条都指着上一个项目——
+           * 表现是树是新的、旁边那半还是旧的，点谁都没反应。
            *
            * 逐个清一遍是行不通的：那是一份「所有局部状态」的清单，加一个 signal 就漏一条。
-           * 重挂是唯一不会漏的做法。`openFile` 不在这里——它在 store 里，
-           * 由 `activateWorkspace` 清（那边有注释）。
+           * 重挂是唯一不会漏的做法。`openFile` 与可多开的那些页不在这里——它们在 store
+           * 里，由 `activateWorkspace` 清（那边有注释）。终端尤其不能靠重挂收：
+           * PTY 在 Rust 侧，只认显式关闭。
            */}
           <Show when={workspace()?.id} keyed>
-            <Show when={!board()} fallback={<PreviewBoard onPick={() => setBoard(false)} />}>
+            {/*
+             * 看板打开时这一叠只是**藏起来，不卸载**。
+             *
+             * 卸载的代价是真的：终端页卸载会把 xterm 实例摘出面板（见那边的模块级
+             * `panes`），浏览器页的 iframe 一从 DOM 里出去就要重新加载。而看板只是
+             * 「想开点什么」的一张清单，不该顺手把已经开着的东西动一遍。
+             */}
+            <div class="side-stack" classList={{ hidden: board() }}>
               <Switch>
                 <Match when={sidePanel() === 'todos'}>
                   <TodoPanel />
@@ -266,18 +316,33 @@ export default function SidePanel() {
                   <FileBrowser />
                 </Match>
                 <Match when={sidePanel() === 'git'}>
-                  <GitChanges />
-                </Match>
-                {/* 桌面之外这个视图选不到（页签和看板都不渲染它），
-                  留着这个 Match 只是让「视图值 ↔ 渲染」这张表保持完整。
-                  自带 `Suspense`：xterm 那一包三百多 K，没有边界的话它挂起时
-                  整棵树跟着空一下（同 `App.tsx` 里那段）。 */}
-                <Match when={sidePanel() === 'terminal'}>
-                  <Suspense fallback={<div class="terminal-panel" />}>
-                    <TerminalPanel />
-                  </Suspense>
+                  <ChangeRecord />
                 </Match>
               </Switch>
+
+              {/*
+               * 可多开的那些页**全都挂着，只有当前那一页显示**（`.tab-pane.active`）。
+               *
+               * 不做成「只挂当前那一页」：终端里的命令要接着跑、滚动历史要留着，
+               * iframe 里的页面不该因为切了一下页签就重新加载。
+               *
+               * 每一页自带 `Suspense`：xterm 那一包三百多 K，没有边界的话它挂起时
+               * 整棵树跟着空一下（同 `App.tsx` 里那段）。
+               */}
+              <For each={panelTabs()}>
+                {(t) => (
+                  <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
+                    <Suspense fallback={<div class="pane-loading" />}>
+                      <Show when={t.kind === 'terminal'} fallback={<BrowserPanel id={t.id} />}>
+                        <TerminalPanel id={t.id} />
+                      </Show>
+                    </Suspense>
+                  </div>
+                )}
+              </For>
+            </div>
+            <Show when={board()}>
+              <PreviewBoard onPick={() => setBoard(false)} />
             </Show>
           </Show>
         </div>
@@ -307,8 +372,11 @@ function PreviewBoard(props: { onPick: () => void }) {
             type="button"
             disabled={!s.open}
             onClick={() => {
-              s.open?.()
+              // **先收看板，再开那一页。** 反过来的话新那一页会在 `display: none`
+              // 的容器里挂载，而 xterm 一挂上就去量字符宽高——量到 0 就得等下一次
+              // 尺寸变化才缓过来。
               props.onPick()
+              s.open?.()
             }}
           >
             <s.icon size={15} />
@@ -967,344 +1035,121 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
   )
 }
 
-// ───────────────────────── git 变更 ─────────────────────────
+// ───────────────────────── 会话变更记录 ─────────────────────────
 
-interface GitFileEntry {
+/** 这条会话在一个文件上写了多少。路径同账本：工作区相对、posix 分隔符。 */
+interface ChangedFile {
   path: string
-  indexStatus: string
-  worktreeStatus: string
-  /** 缺席 = 没有这个数（未跟踪、二进制、或者仓库还没有提交），不是 0。 */
-  additions?: number
-  deletions?: number
-}
-interface GitStatus {
-  branch: string
-  upstream: string | null
-  ahead: number
-  behind: number
-  conflicted: number
-  files: GitFileEntry[]
-}
-interface GitCommit {
-  hash: string
-  shortHash: string
-  subject: string
-  author: string
-  at: number
-}
-interface GitBranch {
-  name: string
-  current: boolean
-  upstream: string | null
-  ahead: number
-  behind: number
-  lastCommitSubject: string
+  additions: number
+  deletions: number
+  /** 最后一次对它做的是什么。`deleted` 那一档没有行数、也打不开。 */
+  changeType: FileChange['changeType']
 }
 
-function GitChanges() {
-  const [status] = createResource(
-    () => state.fileChanges.length,
-    () => client.api<{ repo: boolean; status: GitStatus | null }>('/api/git/status'),
-  )
-  const [branches] = createResource(() =>
-    client.api<{ branches: GitBranch[] }>('/api/git/branches'),
-  )
-  const [branchOpen, setBranchOpen] = createSignal(false)
+/**
+ * 这条会话改过哪些文件。**不接 git。**
+ *
+ * 真源是 step 账本：每个写类工具的回执自带 `fileChanges`（改了谁、增删多少行），
+ * 它随 step 落库，会话重载时原样折回 transcript（`store/connection.ts` 的
+ * `stepToItems`）。所以这是一份永久记录——刷新、重启、进程换掉之后都还在
+ * （账本是本机那份 sqlite），**而且在没有 git 的目录里照样有内容**。
+ *
+ * 不接 git 不是因为拿不到，是因为 git 回答的是另一个问题：「工作区相对 HEAD
+ * 有什么差别」里混着用户自己在编辑器里改的、上一条会话改的、以及一堆没跟踪的
+ * 文件。这一页只回答「这条会话干了什么」。两个问题摆进同一块面板就是两本账。
+ *
+ * 四条口径：
+ * - **一个文件只占一行**，多次改动累加行数。它说的是「这条会话在它上面写了多少」，
+ *   不是「它现在和最初差多少」——后者要 patch 正文，账本里只有行数。
+ * - **顺序是第一次被改到的先后**，不排字典序：记录读的就是先后。
+ * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
+ * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
+ *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的东西这里看不到。
+ */
+function ChangeRecord() {
+  const rows = createMemo(() => {
+    const byPath = new Map<string, ChangedFile>()
+    for (const item of state.transcript) {
+      for (const c of item.outcome?.fileChanges ?? []) {
+        const cur = byPath.get(c.path)
+        if (cur) {
+          cur.additions += c.additions
+          cur.deletions += c.deletions
+          // 后一次说了算：删掉又重建的文件，最后那次是「建」。
+          cur.changeType = c.changeType
+        } else {
+          byPath.set(c.path, {
+            path: c.path,
+            additions: c.additions,
+            deletions: c.deletions,
+            changeType: c.changeType,
+          })
+        }
+      }
+    }
+    return [...byPath.values()]
+  })
+  const additions = () => rows().reduce((n, r) => n + r.additions, 0)
+  const deletions = () => rows().reduce((n, r) => n + r.deletions, 0)
 
-  /**
-   * 在看哪条分支。`null` = 当前所在的那条（默认）。
-   *
-   * **只换看的对象，不动 HEAD**：选了别的分支就列它的提交（`git log <分支>`），
-   * 点一条提交看它自己改了什么（`<提交>^!`）。整条路径只读。
-   *
-   * 前两版都做歪了，记在这里免得再来一遍：`git checkout` 会改工作区，攒着改动的
-   * 仓库直接被 git 拦住；三点差异（`HEAD...<分支>`）在分支合并之后恒为空。
-   * 用户要的是「看那条分支上做了什么」，那就是它的提交。
-   */
-  const [viewBranch, setViewBranch] = createSignal<string | null>(null)
-  /** 当前在看的分支名：没选就是 HEAD 所在的那条。 */
-  const branchName = () => viewBranch() ?? status()?.status?.branch ?? ''
-  /** 看的是不是当前所在的分支——只有它才有「未提交的改动」这一段。 */
-  const onCurrent = () => viewBranch() === null || viewBranch() === status()?.status?.branch
-
-  const [commits] = createResource(branchName, (ref) =>
-    ref
-      ? client.api<{ commits: GitCommit[] }>(`/api/git/log?limit=50&ref=${encodeURIComponent(ref)}`)
-      : Promise.resolve({ commits: [] }),
-  )
-
-  const files = () => (onCurrent() ? (status()?.status?.files ?? []) : [])
-
-  /**
-   * 下面开着哪一份 diff。两种来源共用一个信号：工作区里的某个文件，或者某一个提交。
-   * 分成两个信号的话必须再写一条「同时只能有一个」的规则，而它们本来就是互斥的。
-   */
-  const [selected, setSelected] = createSignal<
-    { kind: 'file'; path: string } | { kind: 'commit'; hash: string } | null
-  >(null)
-  // 两个投影：`<Match>` 要的是「有没有」加「是什么」，在 JSX 里现场收窄类型很难读。
-  const pickedFile = () => {
-    const cur = selected()
-    return cur?.kind === 'file' ? cur.path : null
-  }
-  const pickedCommit = () => {
-    const cur = selected()
-    return cur?.kind === 'commit' ? cur.hash : null
-  }
-
+  // 一条都没有就整页留白：空态不写引导语。
   return (
-    <div class="git-panel">
-      <Show when={status()?.repo} fallback={<div class="preview-note">不是 git 仓库</div>}>
-        <Show when={status()?.status}>
-          {(s) => (
-            <>
-              {/* 分支落在这里，而不是侧边栏：那个位置回答的是「我要去哪个页面」，
-                  而分支回答的是「这次改动在哪条线上」——后者是审阅的语境。
-
-                  **这一行同时是「跟谁比」的选择器**，以及「这次动静多大」的读数。 */}
-              <div class="branch-bar">
+    <Show when={rows().length > 0}>
+      <div class="change-panel">
+        <div class="change-head">
+          <span>变更 {rows().length} 个文件</span>
+          <span class="change-delta">
+            <span class="add">+{additions()}</span>
+            <span class="del">−{deletions()}</span>
+          </span>
+        </div>
+        <ul class="change-list">
+          <For each={rows()}>
+            {(r) => (
+              <li>
+                {/* 点一行 = 去「文件」那一页打开它。**这里不画 diff**：账本里只有
+                    增删行数、没有 patch 正文，画出来的只能是假的。
+                    删掉的那些点不动——没有正文可开。 */}
                 <button
-                  class="branch-chip"
+                  class="change-row"
+                  classList={{ selected: openFile() === r.path }}
                   type="button"
-                  aria-expanded={branchOpen()}
-                  onClick={() => setBranchOpen((v) => !v)}
+                  disabled={r.changeType === 'deleted'}
+                  title={nativePath(r.path)}
+                  onClick={() => openFileInPanel(r.path)}
                 >
-                  <IconBranch size={13} />
-                  <span class="truncate">{s().branch || 'detached'}</span>
-                  <Show when={s().ahead > 0}>
-                    <span class="git-count">↑{s().ahead}</span>
+                  <IconFile size={13} />
+                  <span class="change-path truncate-left">
+                    <span dir="ltr">{nativePath(r.path)}</span>
+                  </span>
+                  {/* 删掉的不报行数：`delete_memory` 给的是 0/0，画成 +0 −0
+                      会被读成「什么都没改」。 */}
+                  <Show
+                    when={r.changeType !== 'deleted'}
+                    fallback={<span class="change-gone">已删除</span>}
+                  >
+                    <span class="change-delta">
+                      <span class="add">+{r.additions}</span>
+                      <span class="del">−{r.deletions}</span>
+                    </span>
                   </Show>
-                  <Show when={s().behind > 0}>
-                    <span class="git-count">↓{s().behind}</span>
-                  </Show>
-                  <IconChevron size={11} dir={branchOpen() ? 'down' : 'right'} />
                 </button>
-                <span class="branch-stat">
-                  {/* 在看哪条分支：默认那档不写字（我这边未提交的改动是这块面板的
-                      常态），选了别的分支才说出来——否则常态下多一句废话。 */}
-                  {/* 看的不是当前那条分支时说出来——否则常态下多一句废话。 */}
-                  <Show when={!onCurrent()}>
-                    <span>看 {branchName()}</span>
-                  </Show>
-                  <span>改动 {files().length}</span>
-                  <Show when={sumDelta(files())}>
-                    {(d) => (
-                      <span class="git-delta">
-                        <span class="add">+{d().additions}</span>
-                        <span class="del">−{d().deletions}</span>
-                      </span>
-                    )}
-                  </Show>
-                </span>
-
-                {/*
-                 * 「看哪条分支的改动」的浮层：第一项是我这边未提交的改动（默认），
-                 * 其余是各条分支。**当前分支不列**：它自己的改动就是第一项那个，
-                 * 列出来点进去是一份空清单。
-                 *
-                 * 浮层而不是往下顶开一段：顶开会把「改了哪些文件」整列推下去，而这里
-                 * 只是扫一眼有哪些分支。自带一条完整规则（`.branch-menu`），
-                 * 不与别的浮层共用选择器（B8）。
-                 */}
-                <Show when={branchOpen()}>
-                  <div class="branch-menu" role="menu">
-                    {/* **全部分支都列**，包括当前所在这条（它旁边标「当前」）。
-                        漏掉当前那条的话，从别的分支看回来就没有入口。 */}
-                    <For each={branches()?.branches ?? []}>
-                      {(b) => (
-                        <button
-                          class="branch-item"
-                          classList={{ current: branchName() === b.name }}
-                          type="button"
-                          role="menuitem"
-                          title={b.lastCommitSubject}
-                          onClick={() => {
-                            setViewBranch(b.name)
-                            setSelected(null)
-                            setBranchOpen(false)
-                          }}
-                        >
-                          {/* 勾表示「现在看的是它」。位置恒定，没勾的也占一格，
-                              名字才对齐成一列。 */}
-                          <span class="branch-mark">
-                            <Show when={branchName() === b.name}>
-                              <IconCheck size={12} />
-                            </Show>
-                          </span>
-                          <span class="truncate">{b.name}</span>
-                          <Show when={b.current}>
-                            <span class="git-count">当前</span>
-                          </Show>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </div>
-
-              {/* 分支条之下的全部内容自己滚，**分支条不跟着走**：它是这一块的头部，
-                  滚走之后既看不到在哪条分支上，也点不到切换。 */}
-              <div class="git-scroll">
-                {/* 冲突挡在改动列表之前：让 agent 在未解决冲突的树上继续改是在制造更大麻烦 */}
-                <Show when={s().conflicted > 0}>
-                  <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
-                </Show>
-
-                {/* 未提交的改动**只有当前分支有**：别的分支没有工作区，
-                    看它就是看它的提交。 */}
-                <Show when={onCurrent() && files().length > 0}>
-                  <section class="git-section">
-                    <div class="git-section-head">未提交的改动</div>
-                    <ul class="git-files">
-                      <For each={files()}>
-                        {(f) => (
-                          <li>
-                            <button
-                              class="git-file"
-                              classList={{ selected: pickedFile() === f.path }}
-                              type="button"
-                              title={absPath(f.path)}
-                              onClick={() =>
-                                setSelected((cur) =>
-                                  cur?.kind === 'file' && cur.path === f.path
-                                    ? null
-                                    : { kind: 'file', path: f.path },
-                                )
-                              }
-                            >
-                              {/* 左边是**文件图标**，和文件树同一个；状态字母钉在行尾，
-                                  颜色由它自己带。 */}
-                              <IconFile size={13} />
-                              {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
-                              <span class="git-path truncate-left">
-                                <span dir="ltr">{absPath(f.path)}</span>
-                              </span>
-                              <Show when={f.additions !== undefined && f.deletions !== undefined}>
-                                <span class="git-delta">
-                                  <span class="add">+{f.additions}</span>
-                                  <span class="del">−{f.deletions}</span>
-                                </span>
-                              </Show>
-                              <span class="git-flag" data-status={statusOf(f)}>
-                                {statusOf(f)}
-                              </span>
-                            </button>
-                          </li>
-                        )}
-                      </For>
-                    </ul>
-                  </section>
-                </Show>
-
-                {/* 那条分支的提交。点一条看它自己改了什么。 */}
-                <section class="git-section">
-                  <div class="git-section-head">提交</div>
-                  <ul class="git-files">
-                    <For each={commits()?.commits ?? []}>
-                      {(c) => (
-                        <li>
-                          <button
-                            class="git-file"
-                            classList={{ selected: pickedCommit() === c.hash }}
-                            type="button"
-                            title={`${c.subject} · ${c.author}`}
-                            onClick={() =>
-                              setSelected((cur) =>
-                                cur?.kind === 'commit' && cur.hash === c.hash
-                                  ? null
-                                  : { kind: 'commit', hash: c.hash },
-                              )
-                            }
-                          >
-                            <span class="git-hash">{c.shortHash}</span>
-                            <span class="git-path truncate">{c.subject}</span>
-                          </button>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </section>
-
-                <Switch>
-                  <Match when={pickedFile()}>{(path) => <DiffView path={path()} />}</Match>
-                  <Match when={pickedCommit()}>{(hash) => <DiffView commit={hash()} />}</Match>
-                </Switch>
-              </div>
-            </>
-          )}
-        </Show>
-      </Show>
-    </div>
+              </li>
+            )}
+          </For>
+        </ul>
+      </div>
+    </Show>
   )
 }
 
 /**
- * 一份 diff。两种来源：工作区里某个文件（`path`），或者某一个提交（`commit`）。
+ * 账本里的路径 → 本机绝对路径。
  *
- * 两个都不给等于没东西可看，调用方保证给一个——它由 `selected` 那个联合类型决定，
- * 这里不再补一层判断。
+ * **账本里也躺着本来就是绝对路径的条目**：写到工作区外面时（`full` 模式、
+ * 额外目录）`displayPath` 回的就是绝对路径。不认这一档会拼出
+ * `C:\项目\C:\别处\x.ts`。
  */
-function DiffView(props: { path?: string; commit?: string }) {
-  const [diff] = createResource(
-    () => [props.path, props.commit] as const,
-    ([path, commit]) =>
-      client.api<{ diff: string }>(
-        commit
-          ? `/api/git/diff?ref=${encodeURIComponent(commit)}`
-          : `/api/git/diff?path=${encodeURIComponent(path ?? '')}`,
-      ),
-  )
-  return (
-    <div class="diff">
-      <Show when={diff()} fallback={<div class="preview-loading" />}>
-        {(d) => (
-          <pre class="diff-body">
-            <For each={d().diff.split('\n')}>
-              {(line) => (
-                <div class="diff-line" data-kind={diffKind(line)}>
-                  {line}
-                </div>
-              )}
-            </For>
-          </pre>
-        )}
-      </Show>
-    </div>
-  )
-}
-
-function diffKind(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta'
-  if (line.startsWith('@@')) return 'hunk'
-  if (line.startsWith('+')) return 'add'
-  if (line.startsWith('-')) return 'del'
-  return 'ctx'
-}
-
-/** porcelain v2 的状态码取更显著的一位显示；'?' 是未跟踪。 */
-/**
- * 这一批改动一共增删多少行。
- *
- * **只累加有数的那些**：未跟踪的文件和二进制文件没有 numstat（见服务端
- * `GitFileEntry` 的说明）。全是这类时返回 `null`，界面整个不显示这两个数——
- * 显示 +0 −0 会被读成「什么都没改」。
- */
-function sumDelta(files: GitFileEntry[]): { additions: number; deletions: number } | null {
-  let additions = 0
-  let deletions = 0
-  let known = false
-  for (const f of files) {
-    if (f.additions === undefined || f.deletions === undefined) continue
-    additions += f.additions
-    deletions += f.deletions
-    known = true
-  }
-  return known ? { additions, deletions } : null
-}
-
-function statusOf(f: GitFileEntry): string {
-  if (f.indexStatus === '?') return '?'
-  if (f.indexStatus === 'U' || f.worktreeStatus === 'U') return '!'
-  if (f.indexStatus !== '.') return f.indexStatus
-  return f.worktreeStatus
+function nativePath(p: string): string {
+  return /^([A-Za-z]:[\\/]|[\\/])/.test(p) ? p : absPath(p)
 }

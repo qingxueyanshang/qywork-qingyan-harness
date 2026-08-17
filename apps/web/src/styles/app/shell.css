@@ -426,15 +426,6 @@
   min-width: 0;
   margin-bottom: 4px;
 }
-.git-count {
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-.git-count.danger {
-  color: var(--danger);
-  font-weight: 600;
-}
-
 /* ── 主区 ──
  *
  * 内容纸的左上角是整个界面唯一的圆角：灰壳（侧栏 + 顶栏）在外，白纸在内，

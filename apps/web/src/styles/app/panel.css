@@ -1,4 +1,4 @@
-/* 右侧面板：文件树、预览、git、diff。
+/* 右侧面板：文件树、预览、变更记录。
  *
  * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
 
@@ -60,10 +60,18 @@
   flex: none;
 }
 
+/* 页签条：固定三格 + 可多开的那些页。
+   开多了横向滚，**不换行**：这条横带的高度是 `--header-h`，换行会把它顶开、
+   把下面的内容整块推下去。滚动条不画——它只有一行高，画出来占掉的正是文字的地方。 */
 .side-tabs {
   display: flex;
   flex: 1;
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.side-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 /*
@@ -127,6 +135,37 @@
     0 1px 0 var(--bg-app);
 }
 
+/* 可关掉的那些页签：名字一颗按钮、× 一颗按钮，外面套一个盒子（button 套 button
+   是非法 HTML）。选中态与 hover 仍然画在外层，所以这里只改内距——
+   `.side-tab` 那份左右各 var(--s-3) 会把 × 推到离页签右沿很远的地方。 */
+.side-tab.closable {
+  padding: 0 2px 0 0;
+  gap: 2px;
+}
+/* 名字那颗：颜色、字重跟着外层走，它只负责点击区和截断。
+   **文字要套一层 span 才截得断**：这颗是 flex 容器，直接放的文字是匿名 flex item，
+   `text-overflow` 对它不生效。 */
+.tab-name {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  max-width: 128px;
+  padding: 0 var(--s-2) 0 var(--s-3);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: inherit;
+}
+/* × 比通用的 icon-btn 小一圈：出厂 28px 在 36px 高的横带里几乎顶满，
+   看起来像页签里嵌了一颗独立的按钮。常驻不淡入——只在 hover 时出现的话，
+   触屏上根本没有那一下。 */
+.tab-close {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
 /* 右侧的按钮：新开预览 / 放大（/ 窄屏的关闭）。
    它们竖直居中，**不跟着页签撑满整条**——按钮撑满会读成第六、第七个页签。 */
 .side-actions {
@@ -149,6 +188,38 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* 固定三格与可多开的那些页共用的一叠。
+   看板打开时整叠**藏起来而不卸载**（理由见 SidePanel 里那段注释），所以它需要一个
+   自己的容器——直接把 hidden 挂到 `.side-body` 上会把看板也一起藏了。 */
+.side-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-stack.hidden {
+  display: none;
+}
+/* 可多开的那些页：**全都在 DOM 里，只有当前那一页显示。**
+   藏起来的那几页里 xterm 量不到字符宽高，`syncSize` 会自己跳过，切回来时
+   ResizeObserver 补上。**不要为了「让它们都量得到」改成绝对定位堆叠**：那样每一页
+   都在后台按整块面板的尺寸排版，开几页就是几倍的重排。 */
+.tab-pane {
+  display: none;
+  flex: 1;
+  min-height: 0;
+}
+.tab-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+/* 那一页的代码还在下载时的占位。**同样尺寸的空壳**，不是转圈也不是文案：
+   这一格的位置已经留好了，占位块只要把它占住（同 App.tsx 里那段）。 */
+.pane-loading {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── 新开预览看板 ──
@@ -266,6 +337,44 @@
   border-top: 1px solid var(--border-subtle);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
+}
+
+/* ── 浏览器预览 ── */
+
+.web-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 地址栏。**高度写死，不由内容撑**（B9）：里面那颗刷新键的出没不能把下面的页面
+   顶上顶下——用户正瞄着页面里的东西。 */
+.web-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 var(--s-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.web-url {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  font-size: var(--fs-sm);
+}
+/* **不给它 background。** 被预览的页面自己画底色，浏览器对没画底色的文档默认铺白；
+   这里补一层的话，深色主题下会把那种页面的黑字压在深色底上，直接读不出来。
+   iframe 出厂带一圈边框，去掉——这块地方左右已经有面板的分隔线。 */
+.web-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
 }
 
 /* ── 文件：内容 + 树 ── */
@@ -495,7 +604,7 @@
 /* ── 打开的文件 ──
  *
  * 这一族样式给的是**主内容区**那块文件视图（`FileView`），不是这块面板；
- * 它留在这个文件里是因为 `.preview-note` / `.preview-loading` 同时被 git 面板与
+ * 它留在这个文件里是因为 `.preview-note` / `.preview-loading` 同时被这块面板与
  * 配对面板用着，把家族拆到两个文件反而更难找。
  *
  * `.preview` 是 `.main` 这个纵向 flex 的一个子项，和输入区上下排：
@@ -584,57 +693,45 @@
   height: 100%;
 }
 
-/* ── git 面板 ──
+/* ── 会话变更记录 ──
  *
- * 密度和文件树对齐：同一块面板里的两张列表，行高不一样会读成两套控件。
+ * 密度跟文件树对齐：同一块面板里的两张列表，行高不一样会被读成两套控件。
  * 行高 20px、图标与文字 4px、行之间不留缝。 */
-/* 分支条固定在顶上，只有它下面那块滚——滚走了就既看不到在哪条分支上，
-   也点不到切换。 */
-.git-panel {
+.change-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.git-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 4px var(--s-2);
-}
-.git-conflict {
-  margin: 4px 0;
-  padding: 4px var(--s-2);
-  border-radius: var(--r-xs);
-  background: var(--danger-soft);
-  color: var(--danger);
-  font-size: var(--fs-sm);
-}
-.git-section {
-  margin-bottom: var(--s-2);
-}
-/* 表头一行：左边「改动 N」，右边这一批的增删合计。 */
-.git-section-head {
+/* 表头固定，只有清单滚：滚走之后「一共改了多少」就看不见了。
+   高度取 31px，和文件那一页的路径条同一档——两页切来切去不跳。 */
+.change-head {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding: 4px var(--s-1);
+  flex: none;
+  height: 31px;
+  padding: 0 var(--s-2);
+  border-bottom: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-weight: 600;
 }
-.git-section-head .git-delta {
+.change-head .change-delta {
   margin-left: auto;
 }
-.git-files {
+.change-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--s-1) 4px var(--s-2);
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
-.git-file {
+.change-row {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -646,91 +743,43 @@
   line-height: 1.5;
   text-align: left;
 }
-.git-file svg {
+.change-row svg {
   flex: none;
 }
+/* 已删除的行：点不动，而且看起来就点不动。 */
+.change-row:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.change-gone {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 /* 选中的行不吃 hover 底色（同文件树那条）。 */
-.git-file:not(.selected):hover {
+.change-row:not(.selected):hover {
   background: var(--bg-hover);
 }
-/* 选中 = 下面正开着这个文件的 diff。灰与文件树、会话列表同一档。 */
-.git-file.selected {
+/* 选中 = 文件那一页正开着它。灰与文件树、会话列表同一档。 */
+.change-row.selected {
   background: var(--bg-active);
   color: var(--text-primary);
 }
-/* 路径占满中间，增删数与状态字母钉在行尾不收缩。 */
-.git-path {
+/* 路径占满中间，增删数钉在行尾不收缩。 */
+.change-path {
   flex: 1 1 auto;
   min-width: 0;
 }
-.git-delta {
+.change-delta {
   flex: none;
   display: inline-flex;
   gap: 4px;
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
-.git-delta .add {
+.change-delta .add {
   color: var(--success);
 }
-.git-delta .del {
+.change-delta .del {
   color: var(--danger);
-}
-/* 提交行的短 hash：等宽、压暗，宽度固定成 7 个字符——`git log` 的短 hash 就是这个
-   长度，定宽之后一列标题从同一个位置起排。 */
-.git-hash {
-  flex: none;
-  width: 7ch;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-.git-flag {
-  flex: none;
-  width: 12px;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-}
-.git-flag[data-status="M"] {
-  color: var(--warning);
-}
-.git-flag[data-status="A"] {
-  color: var(--success);
-}
-.git-flag[data-status="D"] {
-  color: var(--danger);
-}
-.git-flag[data-status="!"] {
-  color: var(--danger);
-  font-weight: 700;
-}
-
-/* ── diff ── */
-.diff-body {
-  margin: 0;
-  padding: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.55;
-  overflow-x: auto;
-}
-.diff-line {
-  padding: 0 var(--s-3);
-  white-space: pre;
-}
-.diff-line[data-kind="add"] {
-  background: var(--diff-add-bg);
-  color: var(--success);
-}
-.diff-line[data-kind="del"] {
-  background: var(--diff-del-bg);
-  color: var(--danger);
-}
-.diff-line[data-kind="hunk"] {
-  color: var(--accent);
-  background: var(--bg-inset);
-}
-.diff-line[data-kind="meta"] {
-  color: var(--text-tertiary);
 }
