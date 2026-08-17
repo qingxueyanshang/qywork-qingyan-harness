@@ -36,6 +36,7 @@ import { ConfirmDialog } from './ConfirmDialog.tsx'
 import {
   IconBranch,
   IconCanvas,
+  IconCheck,
   IconChevron,
   IconCollapseAll,
   IconExpand,
@@ -1093,6 +1094,14 @@ function GitChanges() {
                           title={b.lastCommitSubject}
                           onClick={() => void switchBranch(b.name)}
                         >
+                          {/* 当前那条用一个勾，**不画选中底色**：这里是「去哪儿」的菜单，
+                              而灰底在别处的含义是「我点的那一行」。图标位恒定，
+                              没勾的那些也占一格，名字才对齐成一列。 */}
+                          <span class="branch-mark">
+                            <Show when={b.current}>
+                              <IconCheck size={12} />
+                            </Show>
+                          </span>
                           <span class="truncate">{b.name}</span>
                           <Show when={b.ahead > 0}>
                             <span class="git-count">↑{b.ahead}</span>
@@ -1110,48 +1119,52 @@ function GitChanges() {
                 </Show>
               </div>
 
-              {/* 冲突挡在改动列表之前：让 agent 在未解决冲突的树上继续改是在制造更大麻烦 */}
-              <Show when={s().conflicted > 0}>
-                <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
-              </Show>
+              {/* 分支条之下的全部内容自己滚，**分支条不跟着走**：它是这一块的头部，
+                  滚走之后既看不到在哪条分支上，也点不到切换。 */}
+              <div class="git-scroll">
+                {/* 冲突挡在改动列表之前：让 agent 在未解决冲突的树上继续改是在制造更大麻烦 */}
+                <Show when={s().conflicted > 0}>
+                  <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
+                </Show>
 
-              <section class="git-section">
-                <ul class="git-files">
-                  <For each={s().files}>
-                    {(f) => (
-                      <li>
-                        <button
-                          class="git-file"
-                          classList={{ selected: selected() === f.path }}
-                          type="button"
-                          title={absPath(f.path)}
-                          onClick={() => setSelected(selected() === f.path ? null : f.path)}
-                        >
-                          {/* 左边是**文件图标**，和文件树同一个——原来这里画的是状态字母，
+                <section class="git-section">
+                  <ul class="git-files">
+                    <For each={s().files}>
+                      {(f) => (
+                        <li>
+                          <button
+                            class="git-file"
+                            classList={{ selected: selected() === f.path }}
+                            type="button"
+                            title={absPath(f.path)}
+                            onClick={() => setSelected(selected() === f.path ? null : f.path)}
+                          >
+                            {/* 左边是**文件图标**，和文件树同一个——原来这里画的是状态字母，
                               一列小写字母糊在最左边读不出是什么。状态改用行尾那个字母，
                               颜色由它自己带。 */}
-                          <IconFile size={13} />
-                          {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
-                          <span class="git-path truncate-left">
-                            <span dir="ltr">{absPath(f.path)}</span>
-                          </span>
-                          <Show when={f.additions !== undefined && f.deletions !== undefined}>
-                            <span class="git-delta">
-                              <span class="add">+{f.additions}</span>
-                              <span class="del">−{f.deletions}</span>
+                            <IconFile size={13} />
+                            {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
+                            <span class="git-path truncate-left">
+                              <span dir="ltr">{absPath(f.path)}</span>
                             </span>
-                          </Show>
-                          <span class="git-flag" data-status={statusOf(f)}>
-                            {statusOf(f)}
-                          </span>
-                        </button>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </section>
+                            <Show when={f.additions !== undefined && f.deletions !== undefined}>
+                              <span class="git-delta">
+                                <span class="add">+{f.additions}</span>
+                                <span class="del">−{f.deletions}</span>
+                              </span>
+                            </Show>
+                            <span class="git-flag" data-status={statusOf(f)}>
+                              {statusOf(f)}
+                            </span>
+                          </button>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </section>
 
-              <Show when={selected()}>{(p) => <DiffView path={p()} />}</Show>
+                <Show when={selected()}>{(p) => <DiffView path={p()} />}</Show>
+              </div>
             </>
           )}
         </Show>

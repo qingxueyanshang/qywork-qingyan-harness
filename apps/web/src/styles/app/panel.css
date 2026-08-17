@@ -588,8 +588,18 @@
  *
  * 密度和文件树对齐：同一块面板里的两张列表，行高不一样会读成两套控件。
  * 行高 20px、图标与文字 4px、行之间不留缝。 */
+/* 分支条固定在顶上，只有它下面那块滚——滚走了就既看不到在哪条分支上，
+   也点不到切换。 */
 .git-panel {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.git-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 4px var(--s-2);
 }
