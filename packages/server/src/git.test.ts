@@ -2,8 +2,8 @@
  * git 面板数据源的边界。
  *
  * 覆盖 `git.ts` 的 revision 参数校验、每个文件的增删行数（「没有这个数」与「零」
- * 必须分开）、**看另一条分支的改动是只读的三点差异**（那个选择器换的是看哪条分支，
- * 不是 HEAD，也不是拿它和我这边对比），
+ * 必须分开）、**分支预览是只读的 log + 单提交 diff**（那个选择器换的是看哪条分支，
+ * 不动 HEAD），
  * 以及**这台机器上没装 git 时的形状**。
  * 其余读操作的正确性由 git 自己保证，复刻一遍它的行为没有意义。
  */
@@ -12,7 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { branchChanges, diff, isRepo, log, status } from './git.ts'
+import { diff, isRepo, log, status } from './git.ts'
 
 async function emptyRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -103,62 +103,38 @@ describe('每个文件改了多少行', () => {
   })
 })
 
-describe('看另一条分支的改动', () => {
-  async function repoWithBranches(): Promise<string> {
+describe('看某条分支的提交', () => {
+  /**
+   * 分支预览走的是 `log(ref)` + `diff({ ref })` 这两条**只读**路径：列出那条分支上的
+   * 提交，点一条看它自己改了什么（`<提交>^!`）。
+   *
+   * 这里锁住的是「**看谁就得是谁的**」：`other` 上那个提交必须出现在它的清单里、
+   * 且不出现在 master 的清单里。中间试过两条歪路——`git checkout`（会动工作区，
+   * 攒着改动就被 git 拦住）和三点差异（合并之后恒为空），都不是「看那条分支」。
+   */
+  test('列的是那条分支的提交，不是当前分支的', async () => {
     const dir = await emptyRepo()
     Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
     Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
     await Bun.write(join(dir, 'a.txt'), 'base\n')
-    await Bun.write(join(dir, 'keep.txt'), 'same\n')
     Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
-    // other 上改 a.txt 并提交，然后回 master
     Bun.spawnSync(['git', 'checkout', '-q', '-b', 'other'], { cwd: dir })
-    await Bun.write(join(dir, 'a.txt'), 'base\nfrom other\n')
-    Bun.spawnSync(['git', 'commit', '-q', '-am', 'other side'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'base\nfrom-other\n')
+    Bun.spawnSync(['git', 'commit', '-q', '-am', 'other-work'], { cwd: dir })
     Bun.spawnSync(['git', 'checkout', '-q', 'master'], { cwd: dir })
-    return dir
-  }
 
-  /**
-   * **列的是那条分支自己做的事，不是「它和我的差异」。**
-   *
-   * 判据就在这个用例里：我这边本地改了 `keep.txt` 且没提交，而 `other` 没碰过它——
-   * 所以 `keep.txt` **不该出现**。用两点差异（`git diff other`）实现的话它会出现，
-   * 那就成了「对比」，而用户要的是「看那条分支的改动情况」。
-   *
-   * 顺带锁住只读：跑完还在 master 上，本地那行还在。
-   */
-  test('只列那条分支自己改的文件，不掺我这边的改动', async () => {
-    const dir = await repoWithBranches()
-    await Bun.write(join(dir, 'keep.txt'), 'my local edit\n')
+    const mine = await log(dir, { ref: 'master' })
+    const theirs = await log(dir, { ref: 'other' })
+    expect(mine.map((c) => c.subject)).toEqual(['init'])
+    expect(theirs.map((c) => c.subject)).toEqual(['other-work', 'init'])
 
-    const files = await branchChanges(dir, 'other')
-    expect(files.map((f) => f.path)).toEqual(['a.txt'])
-    expect(files[0]).toMatchObject({ indexStatus: 'M', additions: 1, deletions: 0 })
+    // 点那条提交看到的是它自己改的那一行
+    const patch = await diff(dir, { ref: theirs[0]!.hash })
+    expect(patch).toContain('from-other')
 
+    // 只读：还在 master 上
     expect((await status(dir))?.branch).toBe('master')
-    expect(await Bun.file(join(dir, 'keep.txt')).text()).toBe('my local edit\n')
-  })
-
-  test('新增与删除也带状态字母', async () => {
-    const dir = await repoWithBranches()
-    Bun.spawnSync(['git', 'checkout', '-q', 'other'], { cwd: dir })
-    Bun.spawnSync(['git', 'rm', '-q', 'keep.txt'], { cwd: dir })
-    await Bun.write(join(dir, 'added-on-other.txt'), 'new\n')
-    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
-    Bun.spawnSync(['git', 'commit', '-q', '-m', 'more on other'], { cwd: dir })
-    Bun.spawnSync(['git', 'checkout', '-q', 'master'], { cwd: dir })
-
-    const byPath = new Map((await branchChanges(dir, 'other')).map((f) => [f.path, f]))
-    expect(byPath.get('keep.txt')?.indexStatus).toBe('D')
-    expect(byPath.get('added-on-other.txt')?.indexStatus).toBe('A')
-  })
-
-  /** 分支名同样是不可信输入：以 `-` 开头的一律拒（理由见 `assertSafeRef`）。 */
-  test('以 - 开头的 ref 被拒', async () => {
-    const dir = await emptyRepo()
-    expect(branchChanges(dir, '--output=x')).rejects.toThrow(/非法的 git ref/)
   })
 })
 

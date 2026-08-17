@@ -676,6 +676,15 @@
 .git-delta .del {
   color: var(--danger);
 }
+/* 提交行的短 hash：等宽、压暗，宽度固定成 7 个字符——`git log` 的短 hash 就是这个
+   长度，定宽之后一列标题从同一个位置起排。 */
+.git-hash {
+  flex: none;
+  width: 7ch;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
 .git-flag {
   flex: none;
   width: 12px;

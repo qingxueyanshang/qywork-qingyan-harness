@@ -985,6 +985,13 @@ interface GitStatus {
   conflicted: number
   files: GitFileEntry[]
 }
+interface GitCommit {
+  hash: string
+  shortHash: string
+  subject: string
+  author: string
+  at: number
+}
 interface GitBranch {
   name: string
   current: boolean
@@ -1002,23 +1009,48 @@ function GitChanges() {
   const [branches] = createResource(() =>
     client.api<{ branches: GitBranch[] }>('/api/git/branches'),
   )
-  const [selected, setSelected] = createSignal<string | null>(null)
   const [branchOpen, setBranchOpen] = createSignal(false)
-  /**
-   * 在看哪条分支的改动。`null` = 我这边未提交的改动（默认那一档）。
-   *
-   * **它只换看的对象**：不动 HEAD、不动工作区、不合并、也不是拿那条分支和我这边
-   * 对比（口径见服务端 `branchChanges`：三点差异，只有那条分支自己做的事）。
-   * 这个选择器最早被做成 `git checkout`，那是错的——切分支会改工作区，
-   * 攒着改动的仓库直接被 git 拦住，而用户只是想看看那条分支上改了什么。
-   */
-  const [branchView, setBranchView] = createSignal<string | null>(null)
 
-  /** 选了分支才有这一份；`null` 时用 `status()` 里的工作区改动。 */
-  const [viewed] = createResource(branchView, (ref) =>
-    client.api<{ files: GitFileEntry[] }>(`/api/git/changes?ref=${encodeURIComponent(ref)}`),
+  /**
+   * 在看哪条分支。`null` = 当前所在的那条（默认）。
+   *
+   * **只换看的对象，不动 HEAD**：选了别的分支就列它的提交（`git log <分支>`），
+   * 点一条提交看它自己改了什么（`<提交>^!`）。整条路径只读。
+   *
+   * 前两版都做歪了，记在这里免得再来一遍：`git checkout` 会改工作区，攒着改动的
+   * 仓库直接被 git 拦住；三点差异（`HEAD...<分支>`）在分支合并之后恒为空。
+   * 用户要的是「看那条分支上做了什么」，那就是它的提交。
+   */
+  const [viewBranch, setViewBranch] = createSignal<string | null>(null)
+  /** 当前在看的分支名：没选就是 HEAD 所在的那条。 */
+  const branchName = () => viewBranch() ?? status()?.status?.branch ?? ''
+  /** 看的是不是当前所在的分支——只有它才有「未提交的改动」这一段。 */
+  const onCurrent = () => viewBranch() === null || viewBranch() === status()?.status?.branch
+
+  const [commits] = createResource(branchName, (ref) =>
+    ref
+      ? client.api<{ commits: GitCommit[] }>(`/api/git/log?limit=50&ref=${encodeURIComponent(ref)}`)
+      : Promise.resolve({ commits: [] }),
   )
-  const files = () => (branchView() ? (viewed()?.files ?? []) : (status()?.status?.files ?? []))
+
+  const files = () => (onCurrent() ? (status()?.status?.files ?? []) : [])
+
+  /**
+   * 下面开着哪一份 diff。两种来源共用一个信号：工作区里的某个文件，或者某一个提交。
+   * 分成两个信号的话必须再写一条「同时只能有一个」的规则，而它们本来就是互斥的。
+   */
+  const [selected, setSelected] = createSignal<
+    { kind: 'file'; path: string } | { kind: 'commit'; hash: string } | null
+  >(null)
+  // 两个投影：`<Match>` 要的是「有没有」加「是什么」，在 JSX 里现场收窄类型很难读。
+  const pickedFile = () => {
+    const cur = selected()
+    return cur?.kind === 'file' ? cur.path : null
+  }
+  const pickedCommit = () => {
+    const cur = selected()
+    return cur?.kind === 'commit' ? cur.hash : null
+  }
 
   return (
     <div class="git-panel">
@@ -1050,7 +1082,10 @@ function GitChanges() {
                 <span class="branch-stat">
                   {/* 在看哪条分支：默认那档不写字（我这边未提交的改动是这块面板的
                       常态），选了别的分支才说出来——否则常态下多一句废话。 */}
-                  <Show when={branchView()}>{(ref) => <span>分支 {ref()}</span>}</Show>
+                  {/* 看的不是当前那条分支时说出来——否则常态下多一句废话。 */}
+                  <Show when={!onCurrent()}>
+                    <span>看 {branchName()}</span>
+                  </Show>
                   <span>改动 {files().length}</span>
                   <Show when={sumDelta(files())}>
                     {(d) => (
@@ -1073,34 +1108,18 @@ function GitChanges() {
                  */}
                 <Show when={branchOpen()}>
                   <div class="branch-menu" role="menu">
-                    <button
-                      class="branch-item"
-                      classList={{ current: branchView() === null }}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setBranchView(null)
-                        setSelected(null)
-                        setBranchOpen(false)
-                      }}
-                    >
-                      <span class="branch-mark">
-                        <Show when={branchView() === null}>
-                          <IconCheck size={12} />
-                        </Show>
-                      </span>
-                      <span class="truncate">我这边未提交的改动</span>
-                    </button>
-                    <For each={(branches()?.branches ?? []).filter((b) => !b.current)}>
+                    {/* **全部分支都列**，包括当前所在这条（它旁边标「当前」）。
+                        漏掉当前那条的话，从别的分支看回来就没有入口。 */}
+                    <For each={branches()?.branches ?? []}>
                       {(b) => (
                         <button
                           class="branch-item"
-                          classList={{ current: branchView() === b.name }}
+                          classList={{ current: branchName() === b.name }}
                           type="button"
                           role="menuitem"
                           title={b.lastCommitSubject}
                           onClick={() => {
-                            setBranchView(b.name)
+                            setViewBranch(b.name)
                             setSelected(null)
                             setBranchOpen(false)
                           }}
@@ -1108,11 +1127,14 @@ function GitChanges() {
                           {/* 勾表示「现在看的是它」。位置恒定，没勾的也占一格，
                               名字才对齐成一列。 */}
                           <span class="branch-mark">
-                            <Show when={branchView() === b.name}>
+                            <Show when={branchName() === b.name}>
                               <IconCheck size={12} />
                             </Show>
                           </span>
                           <span class="truncate">{b.name}</span>
+                          <Show when={b.current}>
+                            <span class="git-count">当前</span>
+                          </Show>
                         </button>
                       )}
                     </For>
@@ -1128,35 +1150,74 @@ function GitChanges() {
                   <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
                 </Show>
 
+                {/* 未提交的改动**只有当前分支有**：别的分支没有工作区，
+                    看它就是看它的提交。 */}
+                <Show when={onCurrent() && files().length > 0}>
+                  <section class="git-section">
+                    <div class="git-section-head">未提交的改动</div>
+                    <ul class="git-files">
+                      <For each={files()}>
+                        {(f) => (
+                          <li>
+                            <button
+                              class="git-file"
+                              classList={{ selected: pickedFile() === f.path }}
+                              type="button"
+                              title={absPath(f.path)}
+                              onClick={() =>
+                                setSelected((cur) =>
+                                  cur?.kind === 'file' && cur.path === f.path
+                                    ? null
+                                    : { kind: 'file', path: f.path },
+                                )
+                              }
+                            >
+                              {/* 左边是**文件图标**，和文件树同一个；状态字母钉在行尾，
+                                  颜色由它自己带。 */}
+                              <IconFile size={13} />
+                              {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
+                              <span class="git-path truncate-left">
+                                <span dir="ltr">{absPath(f.path)}</span>
+                              </span>
+                              <Show when={f.additions !== undefined && f.deletions !== undefined}>
+                                <span class="git-delta">
+                                  <span class="add">+{f.additions}</span>
+                                  <span class="del">−{f.deletions}</span>
+                                </span>
+                              </Show>
+                              <span class="git-flag" data-status={statusOf(f)}>
+                                {statusOf(f)}
+                              </span>
+                            </button>
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </section>
+                </Show>
+
+                {/* 那条分支的提交。点一条看它自己改了什么。 */}
                 <section class="git-section">
+                  <div class="git-section-head">提交</div>
                   <ul class="git-files">
-                    <For each={files()}>
-                      {(f) => (
+                    <For each={commits()?.commits ?? []}>
+                      {(c) => (
                         <li>
                           <button
                             class="git-file"
-                            classList={{ selected: selected() === f.path }}
+                            classList={{ selected: pickedCommit() === c.hash }}
                             type="button"
-                            title={absPath(f.path)}
-                            onClick={() => setSelected(selected() === f.path ? null : f.path)}
+                            title={`${c.subject} · ${c.author}`}
+                            onClick={() =>
+                              setSelected((cur) =>
+                                cur?.kind === 'commit' && cur.hash === c.hash
+                                  ? null
+                                  : { kind: 'commit', hash: c.hash },
+                              )
+                            }
                           >
-                            {/* 左边是**文件图标**，和文件树同一个——原来这里画的是状态字母，
-                              一列小写字母糊在最左边读不出是什么。状态改用行尾那个字母，
-                              颜色由它自己带。 */}
-                            <IconFile size={13} />
-                            {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
-                            <span class="git-path truncate-left">
-                              <span dir="ltr">{absPath(f.path)}</span>
-                            </span>
-                            <Show when={f.additions !== undefined && f.deletions !== undefined}>
-                              <span class="git-delta">
-                                <span class="add">+{f.additions}</span>
-                                <span class="del">−{f.deletions}</span>
-                              </span>
-                            </Show>
-                            <span class="git-flag" data-status={statusOf(f)}>
-                              {statusOf(f)}
-                            </span>
+                            <span class="git-hash">{c.shortHash}</span>
+                            <span class="git-path truncate">{c.subject}</span>
                           </button>
                         </li>
                       )}
@@ -1164,9 +1225,10 @@ function GitChanges() {
                   </ul>
                 </section>
 
-                <Show when={selected()}>
-                  {(p) => <DiffView path={p()} branch={branchView()} />}
-                </Show>
+                <Switch>
+                  <Match when={pickedFile()}>{(path) => <DiffView path={path()} />}</Match>
+                  <Match when={pickedCommit()}>{(hash) => <DiffView commit={hash()} />}</Match>
+                </Switch>
               </div>
             </>
           )}
@@ -1176,16 +1238,20 @@ function GitChanges() {
   )
 }
 
-function DiffView(props: { path: string; branch: string | null }) {
+/**
+ * 一份 diff。两种来源：工作区里某个文件（`path`），或者某一个提交（`commit`）。
+ *
+ * 两个都不给等于没东西可看，调用方保证给一个——它由 `selected` 那个联合类型决定，
+ * 这里不再补一层判断。
+ */
+function DiffView(props: { path?: string; commit?: string }) {
   const [diff] = createResource(
-    () => [props.path, props.branch] as const,
-    ([path, branch]) =>
+    () => [props.path, props.commit] as const,
+    ([path, commit]) =>
       client.api<{ diff: string }>(
-        // 看某条分支的改动时，diff 也得按同一个口径取，否则列表说「那条分支改了 3 行」、
-        // 点进去看到的是我这边未提交的那份。
-        `/api/git/diff?path=${encodeURIComponent(path)}${
-          branch ? `&branch=${encodeURIComponent(branch)}` : ''
-        }`,
+        commit
+          ? `/api/git/diff?ref=${encodeURIComponent(commit)}`
+          : `/api/git/diff?path=${encodeURIComponent(path ?? '')}`,
       ),
   )
   return (
