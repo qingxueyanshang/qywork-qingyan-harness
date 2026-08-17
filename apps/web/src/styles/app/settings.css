@@ -4,8 +4,13 @@
 
 /* ───────────────────────── 分支条 ───────────────────────── */
 
-/* 密度跟着变更列表走：同一块面板里，这一条比下面的文件行高一档就会读成两套控件。 */
+/* 密度跟着变更列表走：同一块面板里，这一条比下面的文件行高一档就会读成两套控件。
+   `position: relative` 是分支浮层的定位基准。 */
 .branch-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
   padding: 4px var(--s-1);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -13,20 +18,84 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 1px 4px;
   border-radius: var(--r-xs);
   font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--text-secondary);
-  min-width: 0;
 }
 .branch-chip:hover {
   background: var(--bg-hover);
 }
 .branch-chip svg:last-child {
-  margin-left: auto;
   flex: none;
+}
+/* 「改了几个文件、一共增删多少行」跟在分支后面，同一行读完。 */
+.branch-stat {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding-right: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+/*
+ * 分支浮层。**自带一整条规则**，不与项目行菜单、树的右键菜单共用选择器（B8）。
+ *
+ * 贴着分支行的下沿铺开，最多一屏三分之一高、超了自己滚：分支多的仓库有几十条，
+ * 不封顶就会盖住整块面板。
+ */
+.branch-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: var(--s-1);
+  right: var(--s-1);
+  z-index: 30;
+  max-height: 33vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.branch-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 4px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: left;
+}
+.branch-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 当前分支：底色说明「就是这一条」，同时 disabled——切到自己身上没有意义。 */
+.branch-item.current {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.branch-item:disabled {
+  cursor: default;
+}
+/* 切不过去时 git 的原话留在菜单里，不弹别的东西：那句话就是下一步要做什么。 */
+.branch-error {
+  padding: 4px;
+  color: var(--danger);
+  font-size: var(--fs-xs);
 }
 
 /* ───────────────────────── 设置弹窗 ───────────────────────── */

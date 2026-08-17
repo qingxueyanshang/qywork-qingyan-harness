@@ -244,27 +244,40 @@ export default function SidePanel() {
         </header>
 
         <div class="side-body">
-          <Show when={!board()} fallback={<PreviewBoard onPick={() => setBoard(false)} />}>
-            <Switch>
-              <Match when={sidePanel() === 'todos'}>
-                <TodoPanel />
-              </Match>
-              <Match when={sidePanel() === 'files'}>
-                <FileBrowser />
-              </Match>
-              <Match when={sidePanel() === 'git'}>
-                <GitChanges />
-              </Match>
-              {/* 桌面之外这个视图选不到（页签和看板都不渲染它），
+          {/*
+           * **换项目就把这一整块重挂一遍**（`keyed` 的 Show 按项目 id）。
+           *
+           * 面板里到处是「按路径记的东西」：树展开了哪些目录、子层缓存、选中的那一行、
+           *正在看哪个 diff、终端里那个跑在旧目录上的 PTY。它们都是局部状态，换项目后
+           * 每一条都指着上一个项目——表现是树是新的、旁边那半还是旧的，点谁都没反应。
+           *
+           * 逐个清一遍是行不通的：那是一份「所有局部状态」的清单，加一个 signal 就漏一条。
+           * 重挂是唯一不会漏的做法。`openFile` 不在这里——它在 store 里，
+           * 由 `activateWorkspace` 清（那边有注释）。
+           */}
+          <Show when={workspace()?.id} keyed>
+            <Show when={!board()} fallback={<PreviewBoard onPick={() => setBoard(false)} />}>
+              <Switch>
+                <Match when={sidePanel() === 'todos'}>
+                  <TodoPanel />
+                </Match>
+                <Match when={sidePanel() === 'files'}>
+                  <FileBrowser />
+                </Match>
+                <Match when={sidePanel() === 'git'}>
+                  <GitChanges />
+                </Match>
+                {/* 桌面之外这个视图选不到（页签和看板都不渲染它），
                   留着这个 Match 只是让「视图值 ↔ 渲染」这张表保持完整。
                   自带 `Suspense`：xterm 那一包三百多 K，没有边界的话它挂起时
                   整棵树跟着空一下（同 `App.tsx` 里那段）。 */}
-              <Match when={sidePanel() === 'terminal'}>
-                <Suspense fallback={<div class="terminal-panel" />}>
-                  <TerminalPanel />
-                </Suspense>
-              </Match>
-            </Switch>
+                <Match when={sidePanel() === 'terminal'}>
+                  <Suspense fallback={<div class="terminal-panel" />}>
+                    <TerminalPanel />
+                  </Suspense>
+                </Match>
+              </Switch>
+            </Show>
           </Show>
         </div>
       </aside>
@@ -981,15 +994,39 @@ interface GitBranch {
 }
 
 function GitChanges() {
-  const [status] = createResource(
+  const [status, { refetch: refetchStatus }] = createResource(
     () => state.fileChanges.length,
     () => client.api<{ repo: boolean; status: GitStatus | null }>('/api/git/status'),
   )
-  const [branches] = createResource(() =>
+  const [branches, { refetch: refetchBranches }] = createResource(() =>
     client.api<{ branches: GitBranch[] }>('/api/git/branches'),
   )
   const [selected, setSelected] = createSignal<string | null>(null)
   const [branchOpen, setBranchOpen] = createSignal(false)
+  const [switching, setSwitching] = createSignal<string | null>(null)
+  const [branchError, setBranchError] = createSignal<string | null>(null)
+
+  /**
+   * 切到另一条分支。
+   *
+   * 失败**留在菜单里显示 git 的原话**（最常见的是本地改动会被覆盖），不关菜单——
+   * 关掉的话用户只看到分支没变、没有任何解释。成功了才关，并把状态与分支列表重取。
+   */
+  const switchBranch = async (name: string) => {
+    setSwitching(name)
+    setBranchError(null)
+    try {
+      await client.api('/api/git/checkout', { method: 'POST', body: JSON.stringify({ name }) })
+      setBranchOpen(false)
+      setSelected(null)
+      refetchStatus()
+      refetchBranches()
+    } catch (err) {
+      setBranchError(err instanceof ApiError ? err.detail : String(err))
+    } finally {
+      setSwitching(null)
+    }
+  }
 
   return (
     <div class="git-panel">
@@ -1002,14 +1039,17 @@ function GitChanges() {
                   「我要去哪个页面」，而分支回答的是「这次改动在哪条线上」。
                   后者是审阅的语境，所以它属于变更视图的顶部。
 
-                  收起态只显示当前分支与领先/落后，展开才列全部：一个常驻展开的
-                  分支列表会把真正要看的「改了哪些文件」挤到屏幕外。 */}
+                  **这一行同时报「这次动静多大」**：改了几个文件、一共增删多少行。
+                  另起一行标题去说同一件事，等于把最要紧的两个数排到第二眼。 */}
               <div class="branch-bar">
                 <button
                   class="branch-chip"
                   type="button"
                   aria-expanded={branchOpen()}
-                  onClick={() => setBranchOpen((v) => !v)}
+                  onClick={() => {
+                    setBranchError(null)
+                    setBranchOpen((v) => !v)
+                  }}
                 >
                   <IconBranch size={13} />
                   <span class="truncate">{s().branch || 'detached'}</span>
@@ -1021,36 +1061,7 @@ function GitChanges() {
                   </Show>
                   <IconChevron size={11} dir={branchOpen() ? 'down' : 'right'} />
                 </button>
-              </div>
-
-              <Show when={branchOpen()}>
-                <ul class="git-branches">
-                  <For each={branches()?.branches ?? []}>
-                    {(b) => (
-                      <li class="git-branch" classList={{ current: b.current }}>
-                        <span class="truncate">{b.name}</span>
-                        <Show when={b.ahead > 0}>
-                          <span class="git-count">↑{b.ahead}</span>
-                        </Show>
-                        <Show when={b.behind > 0}>
-                          <span class="git-count">↓{b.behind}</span>
-                        </Show>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </Show>
-
-              {/* 冲突挡在改动列表之前：让 agent 在未解决冲突的树上继续改是在制造更大麻烦 */}
-              <Show when={s().conflicted > 0}>
-                <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
-              </Show>
-
-              <section class="git-section">
-                {/* 表头带上**这一轮总共改了多少行**：一个「339 个文件」回答不了
-                    「这次动静多大」。没有增删数的那些（未跟踪、二进制）不参与求和，
-                    所以两个数是「已知的那部分」——`sumDelta` 上写了这条口径。 */}
-                <div class="git-section-head">
+                <span class="branch-stat">
                   <span>改动 {s().files.length}</span>
                   <Show when={sumDelta(s().files)}>
                     {(d) => (
@@ -1060,7 +1071,51 @@ function GitChanges() {
                       </span>
                     )}
                   </Show>
-                </div>
+                </span>
+
+                {/*
+                 * 分支列表是**浮层**，不是往下顶开的一段。
+                 *
+                 * 顶开的那版把「改了哪些文件」整列推下去，而用户点开分支只是想扫一眼
+                 * 有哪些分支；浮层盖在上面，关掉之后下面一行都没动过。
+                 * 自带一条完整规则（`.branch-menu`），不与别的浮层共用选择器（B8）。
+                 */}
+                <Show when={branchOpen()}>
+                  <div class="branch-menu" role="menu">
+                    <For each={branches()?.branches ?? []}>
+                      {(b) => (
+                        <button
+                          class="branch-item"
+                          classList={{ current: b.current }}
+                          type="button"
+                          role="menuitem"
+                          disabled={b.current || switching() !== null}
+                          title={b.lastCommitSubject}
+                          onClick={() => void switchBranch(b.name)}
+                        >
+                          <span class="truncate">{b.name}</span>
+                          <Show when={b.ahead > 0}>
+                            <span class="git-count">↑{b.ahead}</span>
+                          </Show>
+                          <Show when={b.behind > 0}>
+                            <span class="git-count">↓{b.behind}</span>
+                          </Show>
+                        </button>
+                      )}
+                    </For>
+                    <Show when={branchError()}>
+                      {(msg) => <div class="branch-error">{msg()}</div>}
+                    </Show>
+                  </div>
+                </Show>
+              </div>
+
+              {/* 冲突挡在改动列表之前：让 agent 在未解决冲突的树上继续改是在制造更大麻烦 */}
+              <Show when={s().conflicted > 0}>
+                <div class="git-conflict">{s().conflicted} 个文件存在冲突，先解决再继续</div>
+              </Show>
+
+              <section class="git-section">
                 <ul class="git-files">
                   <For each={s().files}>
                     {(f) => (

@@ -617,28 +617,12 @@
 .git-section-head .git-delta {
   margin-left: auto;
 }
-.git-branches,
 .git-files {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-}
-.git-branch {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 4px;
-  border-radius: var(--r-xs);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-}
-.git-branch.current {
-  color: var(--text-primary);
-  font-weight: 500;
-  background: var(--bg-active);
 }
 .git-file {
   display: flex;

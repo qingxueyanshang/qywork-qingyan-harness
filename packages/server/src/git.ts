@@ -255,6 +255,22 @@ async function numstat(
   return out
 }
 
+/**
+ * 切分支。**这是 git 面板唯一会改工作区的操作。**
+ *
+ * 名字走 `assertSafeRef`：它最终是独立 argv，而 git 会把以 `-` 开头的值当选项解析
+ * （同 `log` / `diff` 那条，理由写在那个函数上）。
+ *
+ * 失败原样回 git 的话（`ok: false` + `err`），**不做任何补救**：切不过去最常见的原因
+ * 是本地改动会被覆盖，那时候 git 自己那句话就是用户需要看的；替他 stash 或
+ * `--force` 都是拿他的改动去换一次成功。
+ */
+export async function checkout(cwd: string, name: string): Promise<{ ok: boolean; err: string }> {
+  assertSafeRef(name)
+  const r = await git(cwd, ['checkout', name])
+  return { ok: r.ok, err: r.err.trim() || r.out.trim() }
+}
+
 export async function branches(cwd: string): Promise<GitBranch[]> {
   const fmt = [
     '%(refname:short)',
