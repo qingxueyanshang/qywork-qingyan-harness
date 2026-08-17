@@ -266,9 +266,11 @@
   flex-direction: column;
   gap: 2px;
 }
-.file-browser > .tree {
+/* 树自己滚，根目录行和搜索框不跟着走——它们是这块面板的常驻头部。 */
+.tree.tree-top {
+  flex: 1;
   overflow-y: auto;
-  padding: var(--s-2) var(--s-1);
+  padding: 0 var(--s-1) var(--s-2);
 }
 
 .tree-item {
@@ -292,20 +294,47 @@
   background: var(--bg-inset);
   color: var(--text-primary);
 }
+/*
+ * 键盘焦点画在**行内侧**，1px。
+ *
+ * 不要落到 base.css 那条全局 `:focus-visible`（2px 描边 + 2px 外扩）：树行是整宽的，
+ * 外扩的那圈左右两边被面板裁掉，只剩上下两道蓝线夹着一行字——看起来像这一行
+ * 裂成了两半。这里是同一个信号的另一种画法，不是取消它。
+ */
+.tree-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 
-/* 工具条：新建文件 / 新建文件夹 / 刷新 / 全部折叠。**贴着树的上沿**，
-   不进面板头部——那一行是标签页与面板级操作，混进来就分不清哪颗按钮管哪一块。 */
-.tree-tools {
+/*
+ * 根目录行：项目名 + 四颗按钮（新建文件 / 新建文件夹 / 刷新 / 全部折叠）。
+ *
+ * **四颗按钮长在这一行上，不另起一条工具条。** 单独一条细带子会在搜索框和树之间
+ * 插一层横条，而这四颗做的事全都发生在这个根之下——它们属于这一行。
+ */
+.tree-root {
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: var(--s-1) var(--s-1) 0;
+  padding: 0 var(--s-1);
+}
+.tree-root-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tree-root-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0;
 }
 
 .tree-search {
   flex: none;
-  margin: var(--s-1) var(--s-2) 0;
+  margin: var(--s-2) var(--s-2) var(--s-1);
   padding: 3px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
@@ -313,36 +342,72 @@
   font-size: var(--fs-sm);
 }
 
-/* 新建那一行。**高度不定是可以的**（它不是浮层，见 B9 的适用范围），
-   但错误正文要留在行内，不另开提示条。 */
-.tree-new {
-  flex: none;
-  padding: var(--s-1) var(--s-2) 0;
-}
-.tree-new-line {
+/*
+ * 就地输入名字的那一行（新建、改名共用）。
+ *
+ * 它**占据树里的一行**，缩进和同层的行一致：建在哪里，输入框就出现在哪里。
+ * 错误正文接在输入框后面，不另开提示条——那会把下面的树整体推下去。
+ */
+.tree-edit {
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-width: 0;
+  gap: 6px;
+  padding: 3px var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
 }
-.tree-new-dir {
-  flex: 0 1 auto;
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-}
-.tree-new-input {
+.tree-edit-input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 2px var(--s-2);
+  padding: 1px var(--s-1);
   border: 1px solid var(--accent);
   border-radius: var(--r-xs);
   background: var(--bg-app);
   font-size: var(--fs-sm);
 }
-.tree-new-error {
-  padding: 2px 0 0;
+.tree-edit-error {
+  flex: 0 1 auto;
   color: var(--danger);
   font-size: var(--fs-xs);
+}
+
+/*
+ * 右键菜单。**自带一整条规则**，不与项目行那个菜单共用选择器（B8）——共用过一次，
+ * 代价是删掉其中一个浮层时把另一个的定位、边框、底色、投影一起带走。
+ *
+ * `position: fixed` + 指针坐标：它跟着鼠标，不跟着某个容器。
+ */
+.tree-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 176px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.tree-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.tree-menu-item:hover {
+  background: var(--bg-hover);
+}
+.tree-menu-item.danger {
+  color: var(--danger);
+}
+.tree-menu-sep {
+  margin: 4px 2px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* 搜索命中：扁平一列，整条路径可见（树里显示的是名字，这里必须是路径，

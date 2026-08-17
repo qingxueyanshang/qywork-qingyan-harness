@@ -7,6 +7,7 @@ import {
   lazy,
   Match,
   onCleanup,
+  onMount,
   Show,
   Suspense,
   Switch,
@@ -20,11 +21,15 @@ import {
   openFileInMain,
   type PanelView,
   panelMaximized,
+  revealWorkspace,
+  setOpenFile,
   setSidePanel,
   sidePanel,
   state,
   togglePanelMax,
+  workspace,
 } from '../lib/store/index.ts'
+import { ConfirmDialog } from './ConfirmDialog.tsx'
 import {
   IconBranch,
   IconCanvas,
@@ -269,8 +274,9 @@ function PreviewBoard(props: { onPick: () => void }) {
 // ───────────────────────── 文件浏览 ─────────────────────────
 
 /**
- * 树的共享操作。**展开态与子层缓存不在节点里**，理由是「全部折叠」和「刷新」
- * 要能一次管到所有节点——散在每个 `TreeNode` 的局部信号里，这两颗按钮谁都指挥不动。
+ * 树的共享操作。**展开态、子层缓存、正在编辑的那一行都不在节点里**——
+ * 「全部折叠」「刷新」要一次管到所有节点，而新建那一行要能出现在任意目录下面；
+ * 散在每个 `TreeNode` 的局部信号里，这几件事谁都指挥不动。
  */
 interface TreeCtx {
   expanded(): ReadonlySet<string>
@@ -280,6 +286,15 @@ interface TreeCtx {
   load(path: string): void
   selected(): string | null
   pick(node: FileNode): void
+  menu(node: FileNode, x: number, y: number): void
+  /** 正在这个目录下面新建。`dir` 是工作区相对路径，根是空串。 */
+  creating(): { kind: 'file' | 'dir'; dir: string } | null
+  /** 正在给这个路径改名。 */
+  renaming(): string | null
+  submitName(name: string): void
+  cancelName(): void
+  /** 上一次提交名字撞上的回话（重名等）。 */
+  nameError(): string | null
 }
 
 const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
@@ -296,20 +311,43 @@ function FileBrowser() {
   const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
   /** 选中的那一行。它同时是「新建到哪里」的落点，所以文件和目录都记。 */
   const [selected, setSelected] = createSignal<FileNode | null>(null)
-  const [creating, setCreating] = createSignal<'file' | 'dir' | null>(null)
+  const [creating, setCreating] = createSignal<{ kind: 'file' | 'dir'; dir: string } | null>(null)
+  const [renaming, setRenaming] = createSignal<FileNode | null>(null)
+  const [nameError, setNameError] = createSignal<string | null>(null)
+  const [menuAt, setMenuAt] = createSignal<{ node: FileNode; x: number; y: number } | null>(null)
+  const [doomed, setDoomed] = createSignal<FileNode | null>(null)
   const [query, setQuery] = createSignal('')
+  const [rootOpen, setRootOpen] = createSignal(true)
+
+  // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
+  // 也在里面），而用户通常只展开一两层。
+  const loadDir = (path: string) => {
+    void client
+      .api<{ nodes: FileNode[] }>(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`)
+      .then((res) => setKids((m) => new Map(m).set(path, res.nodes)))
+  }
+
+  /**
+   * 新建 / 改名 / 删除之后，那一层要**当场重取并覆盖缓存**。
+   *
+   * 不是「从缓存里删掉、等它自己重取」：`TreeNode` 取不到缓存时会回落到根那次
+   * `depth=2` 带回来的 `node.children`，那份是旧的——删掉缓存的结果是树纹丝不动，
+   * 看起来像新建没生效。根那一层没有上一级可取，走 `refetch()`。
+   */
+  const invalidate = (dir: string) => {
+    if (!dir) {
+      void refetch()
+      return
+    }
+    setExpanded((s) => new Set(s).add(dir))
+    loadDir(dir)
+  }
 
   const ctx: TreeCtx = {
     expanded,
     childrenOf: (path) => kids().get(path) ?? null,
-    selected: () => openFile() ?? selected()?.path ?? null,
-    // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
-    // 也在里面），而用户通常只展开一两层。
-    load: (path) => {
-      void client
-        .api<{ nodes: FileNode[] }>(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`)
-        .then((res) => setKids((m) => new Map(m).set(path, res.nodes)))
-    },
+    selected: () => renaming()?.path ?? openFile() ?? selected()?.path ?? null,
+    load: loadDir,
     toggle: (node) => {
       setSelected(node)
       setExpanded((s) => {
@@ -322,54 +360,82 @@ function FileBrowser() {
       setSelected(node)
       openFileInMain(node.path)
     },
+    menu: (node, x, y) => {
+      setSelected(node)
+      setMenuAt({ node, x, y })
+    },
+    creating,
+    renaming: () => renaming()?.path ?? null,
+    nameError,
+    cancelName: () => {
+      setCreating(null)
+      setRenaming(null)
+      setNameError(null)
+    },
+    submitName: (raw) => {
+      const name = raw.trim()
+      if (!name) return
+      const job = renaming()
+      const make = creating()
+      void (async () => {
+        try {
+          if (job) {
+            const { node } = await client.api<{ node: FileNode }>('/api/files/rename', {
+              method: 'POST',
+              body: JSON.stringify({ path: job.path, name }),
+            })
+            setRenaming(null)
+            setNameError(null)
+            invalidate(parentDir(node.path))
+            setSelected(node)
+            // 改的正是主区开着的那个文件：路径变了，跟着换过去，不然它指向一个没了的路径。
+            if (openFile() === job.path && node.kind === 'file') openFileInMain(node.path)
+          } else if (make) {
+            const path = make.dir ? `${make.dir}/${name}` : name
+            const { node } = await client.api<{ node: FileNode }>('/api/files/create', {
+              method: 'POST',
+              body: JSON.stringify({ path, kind: make.kind }),
+            })
+            setCreating(null)
+            setNameError(null)
+            invalidate(make.dir)
+            setSelected(node)
+            if (node.kind === 'file') openFileInMain(node.path)
+          }
+        } catch (err) {
+          // `detail` 是服务端那一句话（「x 已存在」），不是带状态码和路径的整行。
+          setNameError(err instanceof ApiError ? err.detail : String(err))
+        }
+      })()
+    },
   }
 
   /** 新建落在选中的目录里；选中的是文件就落在它旁边；什么都没选就落在根。 */
-  const target = () => {
+  const newIn = (kind: 'file' | 'dir') => {
     const s = selected()
-    if (!s) return ''
-    return s.kind === 'dir' ? s.path : parentDir(s.path)
+    const dir = !s ? '' : s.kind === 'dir' ? s.path : parentDir(s.path)
+    setRenaming(null)
+    setNameError(null)
+    setCreating({ kind, dir })
+    // 要新建的那一行在这个目录下面，先把它展开，不然输入框在收起的层里。
+    if (dir) setExpanded((s2) => new Set(s2).add(dir))
+    setRootOpen(true)
   }
 
-  const afterCreate = (node: FileNode) => {
-    const dir = parentDir(node.path)
-    // 目标目录那一层的缓存作废并展开，新建出来的东西才看得见。
-    setKids((m) => {
-      const next = new Map(m)
-      next.delete(dir)
-      return next
-    })
-    if (dir) setExpanded((s) => new Set(s).add(dir))
-    else void refetch()
-    setSelected(node)
-    if (node.kind === 'file') openFileInMain(node.path)
+  const remove = (node: FileNode) => {
+    void client
+      .api('/api/files/delete', { method: 'POST', body: JSON.stringify({ path: node.path }) })
+      .then(() => {
+        invalidate(parentDir(node.path))
+        if (openFile() === node.path) setOpenFile(null)
+        if (selected()?.path === node.path) setSelected(null)
+      })
+      .finally(() => setDoomed(null))
   }
 
   return (
     <div class="file-browser">
-      <FileTools
-        creating={creating()}
-        onCreate={setCreating}
-        onRefresh={() => {
-          // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
-          setKids(new Map())
-          void refetch()
-        }}
-        onCollapse={() => setExpanded(new Set())}
-      />
-      <Show when={creating()}>
-        {(kind) => (
-          <NewEntryRow
-            kind={kind()}
-            dir={target()}
-            onDone={(node) => {
-              setCreating(null)
-              afterCreate(node)
-            }}
-            onCancel={() => setCreating(null)}
-          />
-        )}
-      </Show>
+      {/* 搜索在最上面一行，和 Qoder 一样：它是这块面板的入口，不该排在树的操作后面。 */}
       <input
         class="tree-search"
         type="search"
@@ -377,120 +443,237 @@ function FileBrowser() {
         value={query()}
         onInput={(e) => setQuery(e.currentTarget.value)}
       />
+
+      {/*
+       * 根目录行。**四颗按钮长在这一行上，不另起一条工具条**——工具条那种细带子
+       * 会在搜索框和树之间多插一层横条，而这四颗做的事全都发生在这个根之下。
+       */}
+      <div class="tree-root">
+        <button
+          class="tree-item tree-root-name"
+          type="button"
+          onClick={() => {
+            setSelected(null)
+            setRootOpen((v) => !v)
+          }}
+        >
+          <IconChevron size={11} dir={rootOpen() ? 'down' : 'right'} />
+          <IconFolder size={13} />
+          <span class="truncate">{workspace()?.name ?? '工作区'}</span>
+        </button>
+        <div class="tree-root-acts">
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="新建文件"
+            title="新建文件"
+            onClick={() => newIn('file')}
+          >
+            <IconFilePlus size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="新建文件夹"
+            title="新建文件夹"
+            onClick={() => newIn('dir')}
+          >
+            <IconFolderPlus size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="刷新"
+            title="刷新"
+            onClick={() => {
+              // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
+              setKids(new Map())
+              void refetch()
+            }}
+          >
+            <IconRefresh size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="全部折叠"
+            title="全部折叠"
+            onClick={() => setExpanded(new Set())}
+          >
+            <IconCollapseAll size={14} />
+          </button>
+        </div>
+      </div>
+
       <Show
         when={query().trim()}
-        fallback={<Tree ctx={ctx} nodes={tree()?.nodes ?? []} depth={0} />}
+        fallback={
+          <Show when={rootOpen()}>
+            <Tree ctx={ctx} dir="" nodes={tree()?.nodes ?? []} depth={1} />
+          </Show>
+        }
       >
         {(q) => <SearchHits ctx={ctx} query={q()} />}
       </Show>
-    </div>
-  )
-}
 
-function FileTools(props: {
-  creating: 'file' | 'dir' | null
-  onCreate: (kind: 'file' | 'dir' | null) => void
-  onRefresh: () => void
-  onCollapse: () => void
-}) {
-  return (
-    <div class="tree-tools">
-      <button
-        class="icon-btn"
-        type="button"
-        aria-label="新建文件"
-        title="新建文件"
-        aria-pressed={props.creating === 'file'}
-        onClick={() => props.onCreate(props.creating === 'file' ? null : 'file')}
-      >
-        <IconFilePlus size={15} />
-      </button>
-      <button
-        class="icon-btn"
-        type="button"
-        aria-label="新建文件夹"
-        title="新建文件夹"
-        aria-pressed={props.creating === 'dir'}
-        onClick={() => props.onCreate(props.creating === 'dir' ? null : 'dir')}
-      >
-        <IconFolderPlus size={15} />
-      </button>
-      <button
-        class="icon-btn"
-        type="button"
-        aria-label="刷新"
-        title="刷新"
-        onClick={props.onRefresh}
-      >
-        <IconRefresh size={15} />
-      </button>
-      <button
-        class="icon-btn"
-        type="button"
-        aria-label="全部折叠"
-        title="全部折叠"
-        onClick={props.onCollapse}
-      >
-        <IconCollapseAll size={15} />
-      </button>
+      <Show when={menuAt()}>
+        {(at) => (
+          <TreeMenu
+            node={at().node}
+            x={at().x}
+            y={at().y}
+            onClose={() => setMenuAt(null)}
+            onRename={() => {
+              setCreating(null)
+              setNameError(null)
+              setRenaming(at().node)
+            }}
+            onDelete={() => setDoomed(at().node)}
+          />
+        )}
+      </Show>
+
+      <ConfirmDialog
+        open={doomed() !== null}
+        title={doomed()?.kind === 'dir' ? '删除文件夹' : '删除文件'}
+        message={
+          doomed()?.kind === 'dir'
+            ? `${doomed()?.path} 连同里面的内容一起删掉，删了拿不回来。`
+            : `${doomed()?.path} 删了拿不回来。`
+        }
+        confirmLabel="删除"
+        danger
+        onConfirm={() => {
+          const node = doomed()
+          if (node) remove(node)
+        }}
+        onCancel={() => setDoomed(null)}
+      />
     </div>
   )
 }
 
 /**
- * 新建那一行。**不是弹窗**：为输入一个名字造浮层，要跟着补定高、遮罩、
- * 焦点归还三样；也不插在树里当幽灵节点——那要在子层缓存和展开集合里各记一笔，
- * 而它只活几秒。
+ * 右键菜单。**自己的一层浮层，不复用项目行那个菜单的选择器**（B8）：
+ * 那条规则被两个浮层共用过一次，删掉其中一个把另一个的定位、边框、投影一起带走。
  *
- * 目标目录写在输入框前面，用户看得见东西建在哪。重名由服务端回 409，
- * 原话直接显示——「已存在」是他下一步唯一需要知道的事。
+ * 位置钉在指针上（`position: fixed`），并往回收一点，免得贴着窗口右下沿被裁掉。
+ *
+ * 只列**真的能用**的项。Qoder 那份菜单里的剪切 / 复制 / 粘贴不进来：文件级剪贴板
+ * 需要一套「待粘贴的东西」的状态，没有它的话那三项点了什么也不会发生（B5）。
+ * 「在文件资源管理器中显示」只有桌面外壳有，别的端整项不渲染。
  */
-function NewEntryRow(props: {
-  kind: 'file' | 'dir'
-  dir: string
-  onDone: (node: FileNode) => void
-  onCancel: () => void
+function TreeMenu(props: {
+  node: FileNode
+  x: number
+  y: number
+  onClose: () => void
+  onRename: () => void
+  onDelete: () => void
 }) {
-  const [name, setName] = createSignal('')
-  const [error, setError] = createSignal<string | null>(null)
-
-  const submit = async () => {
-    const trimmed = name().trim()
-    if (!trimmed) return
-    const path = props.dir ? `${props.dir}/${trimmed}` : trimmed
-    try {
-      const res = await client.api<{ node: FileNode }>('/api/files/create', {
-        method: 'POST',
-        body: JSON.stringify({ path, kind: props.kind }),
-      })
-      props.onDone(res.node)
-    } catch (err) {
-      // `detail` 是服务端那一句话（「x 已存在」），不是带状态码和路径的整行。
-      setError(err instanceof ApiError ? err.detail : String(err))
+  createEffect(() => {
+    /*
+     * 点在菜单**外面**才关。
+     *
+     * 不能无条件关：`pointerdown` 排在 `click` 前面，菜单项自己的 click 还没跑，
+     * 这一层就把它从 DOM 里摘了——于是每一项都点不动。
+     */
+    const onDown = (e: Event) => {
+      if (!(e.target as HTMLElement | null)?.closest?.('.tree-menu')) props.onClose()
     }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') props.onClose()
+    }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    onCleanup(() => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    })
+  })
+
+  const abs = () => {
+    const root = workspace()?.root ?? ''
+    return root ? `${root.replace(/[\\/]+$/, '')}/${props.node.path}` : props.node.path
+  }
+  const run = (fn: () => void) => {
+    fn()
+    props.onClose()
   }
 
+  /*
+   * 贴着窗口右下沿右键时把菜单收回来。
+   *
+   * **量出来再摆，不用估的数**：菜单高度随项数变（桌面端多一项），写死一个
+   * 常量迟早和实际项数对不上。`onMount` 在插入 DOM 之后、这一帧绘制之前跑，
+   * 所以摆位不会闪一下。
+   */
+  let el!: HTMLDivElement
+  onMount(() => {
+    const box = el.getBoundingClientRect()
+    const x = Math.min(props.x - 4, window.innerWidth - box.width - 8)
+    const y = Math.min(props.y - 4, window.innerHeight - box.height - 8)
+    el.style.left = `${Math.max(8, x)}px`
+    el.style.top = `${Math.max(8, y)}px`
+  })
+
   return (
-    <div class="tree-new">
-      <div class="tree-new-line">
-        <Show when={props.dir}>
-          <span class="tree-new-dir truncate">{props.dir}/</span>
-        </Show>
-        <input
-          class="tree-new-input"
-          // biome-ignore lint/a11y/noAutofocus: 这一行是点了按钮才出现的，
-          // 出现就该能直接打字；不给焦点等于让用户再点一次。
-          autofocus
-          placeholder={props.kind === 'file' ? '文件名' : '文件夹名'}
-          value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void submit()
-            if (e.key === 'Escape') props.onCancel()
-          }}
-        />
-      </div>
-      <Show when={error()}>{(msg) => <div class="tree-new-error">{msg()}</div>}</Show>
+    <div
+      class="tree-menu"
+      role="menu"
+      ref={el}
+      style={{ left: `${Math.max(8, props.x - 4)}px`, top: `${Math.max(8, props.y - 4)}px` }}
+    >
+      <Show when={DESKTOP}>
+        <button
+          class="tree-menu-item"
+          type="button"
+          role="menuitem"
+          onClick={() =>
+            run(() => {
+              // 外壳那条命令只收目录（它 `is_dir` 校验过），所以文件给它父目录
+              // ——用户要的是「在资源管理器里看到它在哪」。
+              const dir = props.node.kind === 'dir' ? abs() : parentDir(abs())
+              void revealWorkspace(dir)
+            })
+          }
+        >
+          在文件资源管理器中显示
+        </button>
+      </Show>
+      <button
+        class="tree-menu-item"
+        type="button"
+        role="menuitem"
+        onClick={() => run(() => void navigator.clipboard?.writeText(abs()))}
+      >
+        复制路径
+      </button>
+      <button
+        class="tree-menu-item"
+        type="button"
+        role="menuitem"
+        onClick={() => run(() => void navigator.clipboard?.writeText(props.node.path))}
+      >
+        复制相对路径
+      </button>
+      <div class="tree-menu-sep" />
+      <button
+        class="tree-menu-item"
+        type="button"
+        role="menuitem"
+        onClick={() => run(props.onRename)}
+      >
+        重命名
+      </button>
+      <button
+        class="tree-menu-item danger"
+        type="button"
+        role="menuitem"
+        onClick={() => run(props.onDelete)}
+      >
+        删除
+      </button>
     </div>
   )
 }
@@ -526,6 +709,10 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
             title={hit.path}
             disabled={hit.kind === 'dir'}
             onClick={() => props.ctx.pick(hit)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              props.ctx.menu(hit, e.clientX, e.clientY)
+            }}
           >
             <Show when={hit.kind === 'dir'} fallback={<IconFile size={13} />}>
               <IconFolder size={13} />
@@ -544,9 +731,29 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
   )
 }
 
-function Tree(props: { ctx: TreeCtx; nodes: FileNode[]; depth: number }) {
+function Tree(props: { ctx: TreeCtx; dir: string; nodes: FileNode[]; depth: number }) {
+  const making = () => {
+    const m = props.ctx.creating()
+    return m && m.dir === props.dir ? m : null
+  }
+
   return (
-    <ul class="tree" style={{ '--depth': String(props.depth) }}>
+    <ul class="tree" classList={{ 'tree-top': props.depth === 1 }}>
+      {/* 新建那一行**就在这个目录的第一个孩子的位置**，和 Qoder 一样：
+          它建在哪里，输入框就出现在哪里。 */}
+      <Show when={making()}>
+        {(m) => (
+          <li>
+            <NameRow
+              ctx={props.ctx}
+              kind={m().kind}
+              depth={props.depth}
+              value=""
+              placeholder={m().kind === 'file' ? '文件名' : '文件夹名'}
+            />
+          </li>
+        )}
+      </Show>
       <For each={props.nodes}>
         {(node) => <TreeNode ctx={props.ctx} node={node} depth={props.depth} />}
       </For>
@@ -554,9 +761,51 @@ function Tree(props: { ctx: TreeCtx; nodes: FileNode[]; depth: number }) {
   )
 }
 
+/**
+ * 就地输入名字的那一行——新建和改名共用**同一个形状**：同样的缩进、同样的图标位、
+ * 输入框接在图标后面。两份写法会长成两个样子，而它们在用户眼里是同一件事。
+ */
+function NameRow(props: {
+  ctx: TreeCtx
+  kind: 'file' | 'dir'
+  depth: number
+  value: string
+  placeholder?: string
+}) {
+  const [name, setName] = createSignal(props.value)
+
+  return (
+    <div class="tree-edit" style={{ 'padding-left': `${props.depth * 12 + 8}px` }}>
+      <Show when={props.kind === 'dir'} fallback={<IconFile size={13} />}>
+        <IconFolder size={13} />
+      </Show>
+      <input
+        class="tree-edit-input"
+        // 这一行是点了按钮才出现的，出现就该能直接打字——不给焦点等于让用户再点一次。
+        autofocus
+        placeholder={props.placeholder}
+        value={name()}
+        onInput={(e) => setName(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') props.ctx.submitName(name())
+          if (e.key === 'Escape') props.ctx.cancelName()
+        }}
+        onBlur={() => {
+          // 失焦即取消，但**报错时不取消**：那一句话得留在屏幕上让人看完。
+          if (!props.ctx.nameError()) props.ctx.cancelName()
+        }}
+      />
+      <Show when={props.ctx.nameError()}>
+        {(msg) => <span class="tree-edit-error truncate">{msg()}</span>}
+      </Show>
+    </div>
+  )
+}
+
 function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
   const open = () => props.ctx.expanded().has(props.node.path)
   const children = () => props.ctx.childrenOf(props.node.path) ?? props.node.children ?? null
+  const editing = () => props.ctx.renaming() === props.node.path
 
   // 展开着而这一层还没取回来就去取。**取数的触发条件是「展开且缺数据」**，
   // 不是点击那一下——刷新把缓存清空之后，展开着的目录靠这条自己重取。
@@ -564,37 +813,55 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
     if (open() && children() === null) props.ctx.load(props.node.path)
   })
 
+  const row = (onClick: () => void, chevron: boolean) => (
+    <button
+      class="tree-item"
+      classList={{ selected: props.ctx.selected() === props.node.path }}
+      type="button"
+      style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
+      onClick={onClick}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        props.ctx.menu(props.node, e.clientX, e.clientY)
+      }}
+    >
+      <Show when={chevron}>
+        <IconChevron size={11} dir={open() ? 'down' : 'right'} />
+      </Show>
+      <Show when={props.node.kind === 'dir'} fallback={<IconFile size={13} />}>
+        <IconFolder size={13} />
+      </Show>
+      <span class="truncate">{props.node.name}</span>
+    </button>
+  )
+
   return (
     <li>
       <Show
-        when={props.node.kind === 'dir'}
+        when={editing()}
         fallback={
-          <button
-            class="tree-item"
-            classList={{ selected: props.ctx.selected() === props.node.path }}
-            type="button"
-            style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
-            onClick={() => props.ctx.pick(props.node)}
+          <Show
+            when={props.node.kind === 'dir'}
+            fallback={row(() => props.ctx.pick(props.node), false)}
           >
-            <IconFile size={13} />
-            <span class="truncate">{props.node.name}</span>
-          </button>
+            {row(() => props.ctx.toggle(props.node), true)}
+          </Show>
         }
       >
-        <button
-          class="tree-item"
-          classList={{ selected: props.ctx.selected() === props.node.path }}
-          type="button"
-          style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
-          onClick={() => props.ctx.toggle(props.node)}
-        >
-          <IconChevron size={11} dir={open() ? 'down' : 'right'} />
-          <IconFolder size={13} />
-          <span class="truncate">{props.node.name}</span>
-        </button>
-        <Show when={open()}>
-          <Tree ctx={props.ctx} nodes={children() ?? []} depth={props.depth + 1} />
-        </Show>
+        <NameRow
+          ctx={props.ctx}
+          kind={props.node.kind}
+          depth={props.depth}
+          value={props.node.name}
+        />
+      </Show>
+      <Show when={props.node.kind === 'dir' && open()}>
+        <Tree
+          ctx={props.ctx}
+          dir={props.node.path}
+          nodes={children() ?? []}
+          depth={props.depth + 1}
+        />
       </Show>
     </li>
   )

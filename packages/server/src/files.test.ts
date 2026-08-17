@@ -1,16 +1,26 @@
 /**
- * 覆盖 `files.ts` 的 `listTree` / `createEntry` / `findByName` / `classify`。
+ * 覆盖 `files.ts`：`listTree` / `createEntry` / `renameEntry` / `deleteEntry` /
+ * `findByName` / `classify`。
  *
- * 锁四件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
- * 用户就以为它不存在）、**新建不覆盖**、**搜索跳噪音目录**（与树口径不同，
- * 是有意的），以及分类的回落口径。预览的字节截断不在这里测。
+ * 锁五件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
+ * 用户就以为它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
+ * **搜索跳噪音目录**（与树口径不同，是有意的），以及分类的回落口径。
+ * 预览的字节截断不在这里测。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { classify, createEntry, EntryExistsError, findByName, listTree } from './files.ts'
+import {
+  classify,
+  createEntry,
+  deleteEntry,
+  EntryExistsError,
+  findByName,
+  listTree,
+  renameEntry,
+} from './files.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-tree-'))
@@ -87,6 +97,29 @@ describe('新建', () => {
     expect(createEntry(dir, 'src', 'dir')).rejects.toThrow(EntryExistsError)
     // 原内容没被动过
     expect(await readFile(join(dir, 'a.ts'), 'utf8')).toBe('export const a = 1\n')
+  })
+})
+
+describe('改名与删除', () => {
+  test('改名只换名字，路径留在原来那一层', async () => {
+    const dir = await workspace()
+    const node = await renameEntry(dir, 'src/main.ts', 'entry.ts')
+    expect(node).toMatchObject({ name: 'entry.ts', path: 'src/entry.ts', kind: 'file' })
+    expect(await readFile(join(dir, 'src/entry.ts'), 'utf8')).toBe('export const b = 2\n')
+  })
+
+  test('改成一个已经存在的名字要报错，不覆盖', async () => {
+    const dir = await workspace()
+    await createEntry(dir, 'src/entry.ts', 'file')
+    expect(renameEntry(dir, 'src/main.ts', 'entry.ts')).rejects.toThrow(EntryExistsError)
+    expect(await readFile(join(dir, 'src/main.ts'), 'utf8')).toBe('export const b = 2\n')
+  })
+
+  test('删目录连里面一起删；删不存在的要抛，不静默', async () => {
+    const dir = await workspace()
+    await deleteEntry(dir, 'src')
+    expect((await listTree(dir, '', 1)).map((n) => n.name)).not.toContain('src')
+    expect(deleteEntry(dir, 'src')).rejects.toThrow()
   })
 })
 
