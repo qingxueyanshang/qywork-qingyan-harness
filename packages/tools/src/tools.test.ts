@@ -10,8 +10,10 @@ import {
   isProtectedPath,
   normalizeAdditionalDirectories,
   PathEscapeError,
+  ProtectedPathError,
   resolveInWorkspace,
   resolveWritablePath,
+  rootsOf,
 } from './paths.ts'
 import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
 
@@ -93,13 +95,71 @@ describe('越界拒绝是判定，不是崩溃', () => {
     expect(out.executed).toBe(false)
   })
 
-  /** 三件事缺一不可：为什么、哪条路真走得通、别去绕。 */
-  test('回话给得出下一步，且不诱导绕过', async () => {
+  /**
+   * 两条出路都要给全：切「完全访问」是真的能解开（那个模式下路径边界整个不设），
+   * 加 `additionalDirectories` 则是不放开全部权限、只开这一个目录。
+   * 少说一条就是把用户往另一条上逼。
+   */
+  test('回话给得出两条出路，且不诱导绕过', async () => {
     const out = await denial()
-    expect(out.message).toContain('additionalDirectories')
-    // 权限模式管不着路径边界，说「切成完全访问」只会让用户白切一次。
     expect(out.message).toContain('完全访问')
+    expect(out.message).toContain('additionalDirectories')
     expect(out.message).toContain('不要改用 run_command')
+  })
+})
+
+/**
+ * 「完全访问」= 全部权限，**路径边界也归它管**。
+ *
+ * 原始失败形状（会话 `cv_0msw3jst9`）：用户开着完全访问，`read_file` 桌面上的
+ * 项目被路径层拒，而同一个模式下 `run_command` 是全放行的——模型于是
+ * `cd /c/Users/.../qywork && head -c 6000 README.md` 读到了同一个文件，
+ * 全程没告诉用户。只放开权限闸、留着路径层，得到的不是更安全，是两套账。
+ */
+describe('完全访问：路径边界跟着一起放开', () => {
+  test('工作区外的绝对路径照读', async () => {
+    const root = await workspace()
+    const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
+    await writeFile(join(outside, 'note.md'), '界外的正文\n', 'utf8')
+
+    // 走 `rootsOf`，顺带覆盖 ToolContext 的 `unrestrictedPaths` → 根目录清单那一跳。
+    const roots = rootsOf({ workspaceRoot: root, unrestrictedPaths: true })
+    await expect(
+      resolveInWorkspace(roots, join(outside, 'note.md'), { mustExist: true }),
+    ).resolves.toContain('note.md')
+    // 同一个路径在自动审批下仍然拒——放开的是模式，不是这条判定本身。
+    await expect(
+      resolveInWorkspace({ workspaceRoot: root }, join(outside, 'note.md'), { mustExist: true }),
+    ).rejects.toBeInstanceOf(PathEscapeError)
+  })
+
+  /**
+   * `.agents/` 那条挡的是「给自己加工具」，而完全访问下模型手里的 `run_command`
+   * 是全放行的，`echo > .agents/x` 一行就写进去了。留着只会变成又一处
+   * 「文件工具拦、shell 不拦」。
+   */
+  test('受保护目录的写入也跟着放开', async () => {
+    const root = await workspace()
+    await expect(
+      resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.agents/tools.json'),
+    ).resolves.toBeDefined()
+    await expect(resolveWritablePath(root, '.agents/tools.json')).rejects.toBeInstanceOf(
+      ProtectedPathError,
+    )
+  })
+
+  /**
+   * 放开的是**归属判定**，不是解析本身：返回的仍然是 realpath 之后那一个路径。
+   * 返回字面路径的话，调用方拿它记「本轮读过没有」，软链根下的新鲜度判定会恒错。
+   */
+  test('仍然返回 realpath 之后的路径，不是字面路径', async () => {
+    const root = await workspace()
+    const resolved = await resolveInWorkspace(
+      { workspaceRoot: root, unrestricted: true },
+      'src/../src/main.ts',
+      { mustExist: true },
+    )
+    expect(resolved).toBe(await realpath(join(root, 'src', 'main.ts')))
   })
 })
 
