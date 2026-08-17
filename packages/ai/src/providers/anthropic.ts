@@ -187,6 +187,7 @@ export class AnthropicAdapter implements LlmAdapter {
         req.messages,
         this.spec.minCacheablePrefix,
         estimateSchemas(req.tools) + req.system.reduce((n, b) => n + estimateText(b.text), 0),
+        this.spec.midConversationSystem,
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
@@ -322,6 +323,8 @@ function buildMessages(
   messages: WireMessage[],
   minPrefix = 0,
   prefixTokens = 0,
+  /** 这条模型收不收会话中间的 `role:'system'`。见 `ModelSpec.midConversationSystem`。 */
+  midSystem = false,
 ): Anthropic.MessageParam[] {
   const out: Record<string, any>[] = []
   // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
@@ -358,6 +361,37 @@ function buildMessages(
         content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments })
       }
       out.push({ role: 'assistant', content })
+      if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
+      continue
+    }
+
+    /*
+     * **会话中间的 `role:'system'` 是分模型的能力，不是通用角色。**
+     *
+     * loop 的尾区注记（日期、工作区、技能与记忆索引、待加载的外部工具）是故意压在
+     * 历史之后的 system 消息——挪进顶层 `system` 就等于挪进冻结前缀，装一个插件、
+     * 改一条记忆就把整段缓存打掉，而那正是按需加载要治的病。所以这个位置是对的。
+     *
+     * 但**只有一部分模型收它**（Opus 4.8/5 这一档，无需 beta 头）。其余的一律回
+     * 400 `role 'system' is not supported on this model`——不是「格式错了」，
+     * 是这条会话在那个模型上整个发不出去。所以不支持的落地成 user 轮里的
+     * `<system-reminder>`：位置不变、缓存前缀不变，只是换了个承载角色。
+     *
+     * **两条路都自成一条消息，绝不并进前一条。** 前一条通常就是历史的末尾，
+     * 而缓存断点之二正落在那儿——并进去的话 `cache_control` 会挂到追加的注记上，
+     * 而注记跨轮必变，于是那个断点每轮失配，等于没打。
+     */
+    if (m.role === 'system') {
+      const text = typeof m.content === 'string' ? m.content : ''
+      if (!text.trim()) continue
+      out.push(
+        midSystem
+          ? { role: 'system', content: text }
+          : {
+              role: 'user',
+              content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }],
+            },
+      )
       if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }

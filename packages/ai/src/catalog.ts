@@ -91,6 +91,20 @@ export interface ModelSpec {
    * Opus 5：thinking:{type:'disabled'} 配 xhigh/max 直接 400。
    */
   disableThinkingMaxEffort: EffortLevel | null
+  /**
+   * 会话**中间**收不收 `role:'system'` 的消息。
+   *
+   * 尾区注记（日期、技能与记忆索引…）就压在历史之后，不能挪进顶层 `system`——
+   * 那等于挪进冻结前缀，改一条记忆就把整段缓存打掉。收它的模型直接发 system 轮
+   * （那是不可伪造的操作方通道）；不收的回 400 `role 'system' is not supported
+   * on this model`，只能退化成 user 轮里的 `<system-reminder>`。
+   *
+   * **省略即 false**：漏标一条的表现是「少了个操作方通道」，标错成 true 的表现是
+   * 那个模型上每一条请求都发不出去。往安全那侧默认。
+   *
+   * 只有 anthropic 协议读它——OpenAI 兼容那侧 mid-message system 是通用合法的。
+   */
+  midConversationSystem?: boolean
   /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
   /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
   minCacheablePrefix: number
@@ -231,6 +245,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
     {
       ...CLAUDE_BASE,
       id: 'claude-opus-5',
+      midConversationSystem: true,
       displayName: 'Claude Opus 5',
       pricing: anthropicPricing(5, 25),
       thinksByDefault: true,
@@ -250,6 +265,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
     {
       ...CLAUDE_BASE,
       id: 'claude-fable-5',
+      midConversationSystem: true,
       displayName: 'Claude Fable 5',
       pricing: anthropicPricing(10, 50),
       // 思考恒开：连 {type:'disabled'} 都 400，只能整个省略 thinking 字段。
@@ -261,6 +277,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
     {
       ...CLAUDE_BASE,
       id: 'claude-opus-4-8',
+      midConversationSystem: true,
       displayName: 'Claude Opus 4.8',
       pricing: anthropicPricing(5, 25),
       // 4.8 省略 thinking = 不思考，与 Opus 5 相反。
