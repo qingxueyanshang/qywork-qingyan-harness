@@ -271,7 +271,7 @@
 /* ── 文件：内容 + 树 ── */
 
 /*
- * 一块面板里两块东西：**内容在左，树在右**（参照物就是这个形状）。
+ * 一块面板里两块东西：**树在左，文件内容在右**。
  *
  * 树宽度固定，内容占剩下的全部——树是索引，内容才是要看的东西。整块面板的宽度
  * 由用户拖左边沿改（`.panel-grip`），两块并排必然要求这个。
@@ -291,9 +291,9 @@
   flex-direction: column;
   overflow: hidden;
 }
-/* 只有内容那块在的时候才画分隔线：只有树时那条线会贴在面板左沿上，
-   和面板自己的边框叠成两道。 */
-.file-browser > .preview + .file-tree-col {
+/* 分隔线画在内容那块的左沿——它只在开着文件时存在，所以不会出现一条
+   孤零零贴在面板边上的线。 */
+.file-browser > .file-tree-col + .preview {
   border-left: 1px solid var(--border-subtle);
 }
 /* 没开文件时树占满整块面板——固定 208px 会在左边留一大片空白。 */
@@ -351,12 +351,12 @@
 /*
  * 选中 = **最后点过的那一行**（`FileBrowser` 的 `selected`），一直亮着。
  *
- * 底色走 `--bg-selected`（灰，不是彩色）。那个 token 存在的理由就写在它自己头上：
- * 它必须比 `--bg-hover` 深明显一档，否则选中的行和指针底下那一行糊成一块。
+ * 底色是 `--bg-active`，**和左栏会话选中的那一档是同一个灰**——「我点的那一行」
+ * 全应用一种灰，不为这棵树另调一档（更深的那档实测偏重，整列读起来发灰）。
  */
 .tree-item.selected,
 .tree-root.selected {
-  background: var(--bg-selected);
+  background: var(--bg-active);
   color: var(--text-primary);
 }
 
