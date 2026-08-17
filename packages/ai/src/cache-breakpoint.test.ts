@@ -112,6 +112,70 @@ describe('Anthropic 缓存断点', () => {
   })
 })
 
+/**
+ * 尾区注记是**故意**压在历史之后的 `role:'system'` 消息——挪进顶层 `system`
+ * 等于挪进冻结前缀，改一条记忆就把整段缓存打掉。位置是对的，问题在于
+ * **会话中间的 system 轮是分模型的能力**：Opus 4.8/5 这一档收，其余回 400
+ * `role 'system' is not supported on this model`——那不是格式错，是整条会话
+ * 在那个模型上发不出去。
+ */
+describe('尾区注记按模型能力落地', () => {
+  const bodyFor = (model: string, messages: WireMessage[]) => {
+    const adapter = buildAdapter({ kind: 'anthropic', apiKey: 'sk-x', model }) as unknown as {
+      buildBody(req: ChatRequest): Record<string, any>
+    }
+    return adapter.buildBody({ ...req(messages), model })
+  }
+
+  test('收 system 轮的模型：原样发出去，不换角色', () => {
+    const body = bodyFor('claude-opus-5', [
+      { role: 'user', content: '帮我改一下' },
+      { role: 'system', content: '当前日期：2026-08-16' },
+    ])
+    expect(body.messages.map((m: Record<string, unknown>) => m.role)).toEqual(['user', 'system'])
+    expect(body.messages[1].content).toBe('当前日期：2026-08-16')
+  })
+
+  /**
+   * 不收的那些落成 user 轮里的 `<system-reminder>`：位置不变、缓存前缀不变，
+   * 只是换了个承载角色。
+   */
+  test('不收 system 轮的模型：换成 user 轮里的 system-reminder', () => {
+    const body = bodyFor('claude-sonnet-5', [
+      { role: 'user', content: '帮我改一下' },
+      { role: 'system', content: '当前日期：2026-08-16' },
+    ])
+    expect(body.messages.map((m: Record<string, unknown>) => m.role)).toEqual(['user', 'user'])
+    expect(body.messages[1].content[0].text).toBe(
+      '<system-reminder>\n当前日期：2026-08-16\n</system-reminder>',
+    )
+  })
+
+  /**
+   * **绝不并进前一条。** 前一条通常是历史的末尾，缓存断点之二正落在那儿——
+   * 并进去的话 `cache_control` 会挂到跨轮必变的注记上，那个断点每轮失配。
+   */
+  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上注记自成一条，不并进历史末尾', (model) => {
+    const body = bodyFor(model, [
+      { role: 'user', content: long(8000), cacheBreakpoint: true },
+      { role: 'system', content: '工作区：/tmp/ws' },
+    ])
+    expect(body.messages).toHaveLength(2)
+    // 断点仍然落在历史那一条上，不是注记那一条。
+    expect(cacheMarks(body)).toEqual([0])
+    expect(JSON.stringify(body.messages)).toContain('工作区：/tmp/ws')
+  })
+
+  /** 空注记不该在历史里留一条空消息，两条路都是。 */
+  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上空注记整条丢掉', (model) => {
+    const body = bodyFor(model, [
+      { role: 'assistant', content: '好的' },
+      { role: 'system', content: '   ' },
+    ])
+    expect(body.messages).toHaveLength(1)
+  })
+})
+
 describe('兼容协议上这个字段是惰性的', () => {
   /**
    * **给 DeepSeek 打断点不能有任何副作用。** 它的前缀缓存由服务端自动做，
