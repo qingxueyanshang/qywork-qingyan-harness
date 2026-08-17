@@ -21,6 +21,7 @@ import {
   sanitizeTarget,
   statusWord,
   TARGET_MAX,
+  todosOf,
 } from './step-view.ts'
 
 /** 命中率的入参只用到这几格，其余字段测里一律不造。 */
@@ -221,5 +222,55 @@ describe('diff 提取', () => {
   test('什么都取不到返回 null', () => {
     expect(diffFrom({})).toBeNull()
     expect(diffFrom({ path: 'a.ts' })).toBeNull()
+  })
+})
+
+describe('待办清单参数识别', () => {
+  /**
+   * **原始失败形状**：`write_todos` 的展开体落到通用参数表里，整表 JSON
+   * 挤在一格中，状态埋在 `"status":"in_progress"` 的引号里——问「哪几条做完了」
+   * 得自己数引号。认出来才能走行渲染那一支。
+   */
+  test('认出整表待办，逐条带状态', () => {
+    const list = todosOf({
+      todos: [
+        { content: '搭页面', status: 'completed' },
+        { content: '写样式', status: 'in_progress' },
+        { content: '写脚本', status: 'pending' },
+      ],
+    })
+    expect(list?.map((t) => t.status)).toEqual(['completed', 'in_progress', 'pending'])
+    expect(list?.[0]?.content).toBe('搭页面')
+  })
+
+  /** 落库的 args 里没有 id（那是工具补的），行渲染要稳定 key，所以按位置补。 */
+  test('缺 id 时按位置补，带 id 时原样用', () => {
+    expect(todosOf({ todos: [{ content: '甲', status: 'pending' }] })?.[0]?.id).toBe('todo_1')
+    expect(todosOf({ todos: [{ id: 'x', content: '甲', status: 'pending' }] })?.[0]?.id).toBe('x')
+  })
+
+  /**
+   * 认不出返回 null 而不是空数组：空数组会让展开体画出一个空的清单框，
+   * 而「这一步不是待办」应该走通用参数表那一支。
+   */
+  test('形状不对一律 null——空表、缺字段、状态是别的词', () => {
+    expect(todosOf({})).toBeNull()
+    expect(todosOf({ todos: [] })).toBeNull()
+    expect(todosOf({ todos: 'a,b' })).toBeNull()
+    expect(todosOf({ todos: [{ content: '甲' }] })).toBeNull()
+    expect(todosOf({ todos: [{ content: '甲', status: 'doing' }] })).toBeNull()
+    expect(todosOf({ todos: [{ status: 'pending' }] })).toBeNull()
+  })
+
+  /** 一条不合格就整体不认：半张清单比不渲染更误导。 */
+  test('混着一条坏的就整体 null', () => {
+    expect(
+      todosOf({
+        todos: [
+          { content: '甲', status: 'completed' },
+          { content: '乙', status: 'unknown' },
+        ],
+      }),
+    ).toBeNull()
   })
 })

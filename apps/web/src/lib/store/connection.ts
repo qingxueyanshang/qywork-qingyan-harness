@@ -380,8 +380,19 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
               usage: ev.usage,
               startedAt: s.runStartedAt ?? Date.now(),
               endedAt: Date.now(),
+              // 刚刚那条 `run.error` 的正文（恒在 finished 之前到）。服务端同时
+              // 把它写进了 `runs.error_message`，刷新后由投影层原样折回来。
+              errorMessage: s.error?.message ?? null,
             },
           })
+          /*
+           * **正文交接给了这一轮的条目，全局那份就得放下。**
+           *
+           * 不放的话同一句话同时挂在读数条和错误卡上——用户看到的是两遍。
+           * 剩下的错误卡只服务「没有 run 收尾条可挂」的那一半（没配 key、
+           * 档案解析失败），那些恰恰不会走到这里。
+           */
+          s.error = null
           s.usage = null
           s.runStartedAt = null
         }),
@@ -419,6 +430,7 @@ interface StoredRun {
   status: string
   usage: RunUsage | null
   supersededBy: string | null
+  errorMessage: string | null
 }
 interface StoredStep {
   id: string
@@ -520,6 +532,7 @@ export async function reloadActiveConversation(): Promise<void> {
               usage: r.usage,
               startedAt: r.createdAt,
               endedAt: r.finishedAt,
+              errorMessage: r.errorMessage,
             },
           })
         }

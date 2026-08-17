@@ -1,6 +1,6 @@
-import { For, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { state } from '../lib/store/index.ts'
-import { IconCheck, IconSpinner } from './Icons.tsx'
+import { TodoList } from './TodoList.tsx'
 
 /**
  * 任务清单。**住在右侧面板里，不在会话流上方。**
@@ -11,7 +11,7 @@ import { IconCheck, IconSpinner } from './Icons.tsx'
  *
  * 现在按信息密度分层：
  *
- * - **输入区那条状态条**只报「第 N / M 步」——一眼扫到，不占地方，不带正文。
+ * - **输入区那条状态条**只报「已完成 N / M」——一眼扫到，不占地方，不带正文。
  * - **完整清单收进这里**，要看细节才点开面板。
  *
  * 全部完成后仍然显示：面板是用户主动点开的，这时候把内容抽走，
@@ -23,31 +23,10 @@ export function TodoPanel() {
 
   return (
     <div class="todo-panel">
+      {/* 这里不报「几分之几」。清单本身就摆在下面，勾了几条一眼数得出来；
+          而「还剩多久」由输入区那条状态条回答，两处都报就是同一个数说两遍。 */}
       <Show when={todos().length > 0}>
-        {/* 这里不报「几分之几」。清单本身就摆在下面，勾了几条一眼数得出来；
-            而「还剩多久」由输入区那条状态条回答，两处都报就是同一个数说两遍。 */}
-        <ol class="todo-list">
-          <For each={todos()}>
-            {(t) => (
-              <li
-                class="todo-item"
-                classList={{ done: t.status === 'completed', now: t.status === 'in_progress' }}
-              >
-                <span class="todo-mark">
-                  <Show
-                    when={t.status !== 'pending'}
-                    fallback={<span class="todo-dot" aria-hidden="true" />}
-                  >
-                    <Show when={t.status === 'completed'} fallback={<IconSpinner size={12} />}>
-                      <IconCheck size={12} />
-                    </Show>
-                  </Show>
-                </span>
-                <span class="todo-text">{t.content}</span>
-              </li>
-            )}
-          </For>
-        </ol>
+        <TodoList todos={todos()} />
       </Show>
     </div>
   )

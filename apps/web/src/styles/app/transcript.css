@@ -490,6 +490,12 @@
   color: var(--danger);
 }
 
+/* 展开体里的待办清单。行的样式由 .todo-* 那套负责（面板和这里同一个组件），
+   这里只给它一点内边距——不给的话清单会贴着折叠卡的左边框。 */
+.fold-todos {
+  padding: var(--s-1) var(--s-2) var(--s-2);
+}
+
 /* 分隔线：同一个展开体里两格之间的界，1px 极浅，不是边框也不是留白。 */
 .fold-divider {
   height: 1px;
@@ -561,25 +567,19 @@
   opacity: 0.8;
 }
 
-/* 竖排而不是横排：message 里可能带配置文件路径这种换行内容，
-   横排 + baseline 对齐会把第二行挤到重试按钮下面去。 */
+/* 没有 run 收尾条可挂的那些错误（没配 key、档案解析失败）。
+   **自带一整条规则，不与 .notice-card 共用选择器**：两者形状确实像，
+   共用的代价是删掉其中一个时把另一个的底色、内边距、圆角一起带走，
+   而 CSS 不会为此报任何错。
+   `pre-wrap`：正文可能带第二行（配置文件路径），压成一行就看不出路径在哪。 */
 .error-card {
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-2) var(--s-3);
   border-radius: var(--r-md);
+  background: var(--bg-inset);
   color: var(--danger);
   font-size: var(--fs-sm);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  align-items: flex-start;
-}
-.error-card strong {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.error-card .hint {
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
 }
 
 /* 指令被拒绝的回执：比错误轻，但必须看得见——静默吞掉正是要修的问题 */

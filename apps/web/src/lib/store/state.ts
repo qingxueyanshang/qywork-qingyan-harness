@@ -49,6 +49,12 @@ export interface TranscriptItem {
     startedAt: number
     /** null = 还在跑，读数条自己按帧走。 */
     endedAt: number | null
+    /**
+     * 报错正文。**读数条上「为什么停」那一格就用它**，没有才回落到停止原因的
+     * 通用说法。落库在 `runs.error_message`，所以刷新之后还在——错误卡是活的
+     * 全局单份状态，重连即丢，不能拿它当唯一落点。
+     */
+    errorMessage: string | null
   }
   /** kind='compaction' 专有 */
   compaction?: {
