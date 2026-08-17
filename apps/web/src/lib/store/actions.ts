@@ -113,6 +113,22 @@ export function interrupt(): void {
 }
 
 /**
+ * 立一个目标（`/goal`），或改写现在这个。**立目标的唯一入口。**
+ *
+ * 空正文在这里就挡掉：一条空的 `/goal` 发上去只会换回一句服务端的拒绝，
+ * 而用户看到的是自己刚打的字消失了、界面上多一条红字。
+ *
+ * 不在这里判「已经有目标了」——那是账本的规则（改写在跑的那个是合法的），
+ * 前端抄一份判定就是两处会漂的规矩。
+ */
+export function setGoal(objective: string): void {
+  const id = state.activeConversation
+  const text = objective.trim()
+  if (!id || !text) return
+  client.send({ type: 'goal.set', conversationId: id as never, objective: text })
+}
+
+/**
  * 让停下来的目标接着自动跑。
  *
  * **它不只是把状态改回 `active`，是重新启用「一轮接一轮」这件事本身。**

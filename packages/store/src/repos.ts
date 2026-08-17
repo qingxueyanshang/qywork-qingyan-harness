@@ -739,7 +739,10 @@ export function recoverStaleRuns(store: Store): {
       if (isAmbiguous) ambiguous++
       settleRunningSteps(store, r.id)
       finishStmt.run(
-        isAmbiguous ? 'internal_guard' : 'user_interrupt',
+        // 干净那条是 `process_exit`，**不是 `user_interrupt`**——上面那段注释要求的
+        // 「事后分得出崩了和用户点了停止」，写成 user_interrupt 就当场作废：
+        // 界面上只剩一句「已中断」，而用户根本没点过任何东西。
+        isAmbiguous ? 'internal_guard' : 'process_exit',
         isAmbiguous ? 'internal_error' : null,
         // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
         // 完全兼容一个已经跑了几十步、恰好停在等模型回复那一刻的 run。

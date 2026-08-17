@@ -735,9 +735,17 @@ describe('工具清单', () => {
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])
   })
 
-  test('函数型的动作与权限一个都没有 —— 有的话这里会报「随参数变」', async () => {
+  /**
+   * 函数型字段**只允许 `write_todos` 的动作**这一个：它首建报「创建」、
+   * 之后报「修改」，那是用户两次点名要的行为，页面上如实报「不固定」。
+   * 再多一个就要先问「这一栏还答不答得了问题」——一页全是「不固定」等于没有这一栏。
+   * 权限效果一个都不许是函数：那一栏是安全边界，不固定就是没说。
+   */
+  test('只有 write_todos 的动作是函数型，权限效果一个都不是', async () => {
     for (const row of await tools()) {
-      expect([row.actionKind, row.objectLabel, row.permissionEffect]).not.toContain('随参数变')
+      expect(row.permissionEffect).not.toBe('不固定')
+      expect(row.objectLabel).not.toBe('不固定')
+      if (row.actionKind === '不固定') expect(row.name).toBe('write_todos')
     }
   })
 })

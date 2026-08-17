@@ -77,11 +77,13 @@ function paramsOf(schema: Record<string, unknown>): { name: string; required: bo
 /**
  * 工具清单里的一行。`source` 由调用方给——它是「哪来的」，规格本身不带这个事实。
  *
- * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数（按参数变）。
- * **不许无参调用它们**：那会得到一个撒谎的常量。真是函数时如实报「随参数变」。
+ * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数——有的按参数变
+ * （多动作门面），有的按会话状态变（`write_todos` 首建报「创建」、之后报「修改」）。
+ * **不许无参调用它们**：那会得到一个撒谎的常量。所以如实报「不固定」，
+ * 而不是「随参数变」——后者对会话态那一类是假的。
  */
 function toolRow(s: Omit<ToolSpec, 'fn'>, source: string) {
-  const VARIES = '随参数变'
+  const VARIES = '不固定'
   return {
     name: s.name,
     category: s.category,

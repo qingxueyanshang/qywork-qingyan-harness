@@ -97,15 +97,39 @@ export interface FileReadPort {
  * `undefined` 是合法值：`qy exec` 这类一次性执行没有会话，也就没有目标。
  * 工具必须能降级——明确报「这里没有目标账本」，不能假装记下了。
  */
+/**
+ * 待办端口 —— **只读**，因为待办没有第二个写入方。
+ *
+ * 写入就是 `write_todos` 那次调用本身：loop 把它的 `args` 连同 step 落进账本，
+ * 整表语义下最后一次成功提交即全部事实。再开一个 `write()` 就是同一份清单
+ * 两处存，两本账迟早对不上。
+ *
+ * 存在的理由只有一个：**「这是第一份清单，还是在改已有的」是会话级事实**，
+ * 而 `ctx.state` 是 run 级的（一条消息一个 run，Map 新建），在里面永远查不到
+ * 上一轮的清单——那正是动作词从「永远说创建」荡到「永远说修改」的原因。
+ *
+ * 可选：`qy exec` 这类一次性执行没有会话，也就读不回上一份。工具必须能降级，
+ * 见 `write_todos` 的 `actionKind`——读不到时说「创建」，那是把一次修订说小了；
+ * 反过来说「修改」会在根本没有清单时声称改过一份不存在的东西。
+ */
+export interface TodoPort {
+  /** 这条会话最近一次成功提交的清单；没提交过就是 null。 */
+  read(): TodoItem[] | null
+}
+
 export interface GoalPort {
   /** 当前会话的目标；没立过就是 null。 */
   read(): Goal | null
-  create(input: { objective: string; maxRounds?: number }): GoalWriteResult
+  /**
+   * **没有 `create`。** 立目标是用户的动作（`/goal`），不经过工具这条路。
+   *
+   * `action` 也只到得了 `complete` / `blocked` 两个出口——账本层还认
+   * `edit` / `pause` / `resume`，但那三个的生产者在服务端与用户那一侧。
+   */
   update(input: {
     goalId: string
     revision: number
     action: GoalAction
-    objective?: string
     blockedReason?: string
   }): GoalWriteResult
 }
@@ -193,6 +217,13 @@ export interface ToolContext {
    * 那是**更严**的一侧（循环起不来），漏接不会让任何东西自己跑起来。
    */
   goals?: GoalPort
+  /**
+   * 会话级的「上一份待办清单」。见 `TodoPort`。
+   *
+   * 只读，且只用于判动作词。没接上时 `write_todos` 一律报「创建」——
+   * 那是更保守的一侧，不会声称改过一份不存在的清单。
+   */
+  todos?: TodoPort
   /** 长工具的中途输出回传通道（shell stdout、下载进度）。 */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**
@@ -520,7 +551,22 @@ export class ToolRegistry {
         ...(out.errorKind ? { errorKind: out.errorKind } : {}),
       }
     } catch (err) {
-      // 工具抛异常不能把整轮 run 带崩：转成结构化失败交给模型，让它自己决定重试或换路。
+      /*
+       * **自带 `errorKind` 的异常是判定，不是崩溃。**
+       *
+       * 路径越界这类边界拒绝走的也是 throw（每个文件工具各写一遍 try/catch 就是
+       * B4 那种特判堆叠），但套上「执行出错」的壳之后，模型读到的是一次偶发故障
+       * ——它会重试，或者去找绕路。账本里就有一次：越界被拒之后模型改用
+       * `run_command` 绕过去，还没告诉用户。所以这类原样端出去：
+       * 消息就是那条判定本身，`executed: false`（什么都没发生过）。
+       */
+      if (err instanceof Error) {
+        const declared = (err as Error & { errorKind?: unknown }).errorKind
+        if (typeof declared === 'string' && declared) {
+          return { status: 'failure', executed: false, message: err.message, errorKind: declared }
+        }
+      }
+      // 真异常不能把整轮 run 带崩：转成结构化失败交给模型，让它自己决定重试或换路。
       return {
         status: 'failure',
         executed: true,

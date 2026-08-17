@@ -19,3 +19,21 @@ export function slashQuery(draft: string): string | null {
   if (/\s/.test(rest)) return null
   return rest
 }
+
+/**
+ * 把一整段草稿拆成「命令名 + 后面那串话」。
+ *
+ * 和 `slashQuery` 是两件事，别合并：那个管**补全面板弹不弹**（打到一半就要判，
+ * 所以带空格就收起来）；这个管**回车时这句话是不是一条命令**（那时候参数已经
+ * 打完了，带空格才是常态）。合成一个函数的话，`/goal 把测试跑绿` 要么让面板
+ * 一直挂着，要么根本不被当成命令。
+ *
+ * 不解析第二个参数。`/goal 3 个 bug 都修掉` 里的 3 是轮数还是正文？
+ * 猜错一次就是按一个用户没说过的数开跑——所以只切第一个词，其余整段是参数。
+ */
+export function slashCall(draft: string): { name: string; arg: string } | null {
+  if (!draft.startsWith('/')) return null
+  const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(draft.trim())
+  if (!m) return null
+  return { name: m[1]!, arg: (m[2] ?? '').trim() }
+}

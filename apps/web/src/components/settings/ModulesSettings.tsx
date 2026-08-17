@@ -238,7 +238,7 @@ const PERMS: Record<string, { label: string; warn?: number }> = {
   internal_control: { label: '不走权限闸' },
 }
 
-/** 后端真遇到函数型字段会下发「随参数变」，那时原样显示——编一个具体值才是撒谎。 */
+/** 后端遇到函数型字段会下发「不固定」，那时原样显示——编一个具体值才是撒谎。 */
 function permText(effect: string): string {
   const p = PERMS[effect]
   if (!p) return effect

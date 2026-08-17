@@ -15,7 +15,7 @@
 
 import type { ToolRegistry } from '@qywork/agent'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
-import { createGoalTool, readGoalTool, updateGoalTool } from './goals.ts'
+import { readGoalTool, updateGoalTool } from './goals.ts'
 import { deleteMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
 import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
@@ -116,7 +116,6 @@ export function registerBuiltinTools(registry: ToolRegistry): void {
     readResourceTool,
     writeTodosTool,
     readGoalTool,
-    createGoalTool,
     updateGoalTool,
     webFetchTool,
     webSearchTool,

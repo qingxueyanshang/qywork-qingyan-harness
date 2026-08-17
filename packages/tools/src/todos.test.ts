@@ -49,13 +49,24 @@ describe('todos 事件终于有了生产者', () => {
     expect((r.data as { todos: TodoItem[] }).todos[0]!.content).toBe('第一步')
   })
 
-  test('message 里带进度与当前步骤 —— 模型读的是 message', async () => {
+  /**
+   * 口径与输入框上那条状态条一致：数的是「正在做第几步」，不是「做完了几步」。
+   * 两处各数各的话，同一屏上卡片写「0/5」而状态条写「第 1 / 5 步」。
+   */
+  test('message 报的是正在做第几步 —— 与状态条同一个数', async () => {
     const { r } = await run([
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'in_progress' },
     ])
-    expect(r.message).toContain('1/2')
-    expect(r.message).toContain('乙')
+    expect(r.message).toBe('第 2/2 步：乙')
+  })
+
+  test('没有进行中的那条时说出来 —— 打完勾不认领下一条正是停在半路的样子', async () => {
+    const { r } = await run([
+      { content: '甲', status: 'completed' },
+      { content: '乙', status: 'pending' },
+    ])
+    expect(r.message).toBe('已完成 1/2 步，下一步还没认领')
   })
 })
 
@@ -148,7 +159,7 @@ describe('硬约束：拒绝而不是静默纠正', () => {
       { content: '乙', status: 'completed' },
     ])
     expect(r.status).toBe('success')
-    expect(r.message).toContain('2/2')
+    expect(r.message).toBe('2 步全部完成')
   })
 })
 
@@ -165,17 +176,46 @@ describe('权限', () => {
 /**
  * 动作语义。别为它专造一个 `plan` 动作：配上对象「待办」，界面上读出来是
  * 「规划待办」——动宾同义反复。
+ *
+ * 判据走 `ctx.todos`（会话级端口，读的是账本里上一条 `write_todos` step），
+ * **不是** `ctx.state`：那个 Map 是 run 级的，跨轮查不到上一份清单，
+ * 表现是每轮的第一次提交都说「创建」。拍成常量是反过来的同一个毛病。
  */
-describe('动作语义：整表替换恒为编辑', () => {
+describe('动作语义：首建是创建，改已有的才是编辑', () => {
+  const kindWith = (prev: TodoItem[] | null) =>
+    (writeTodosTool.actionKind as (a: Record<string, unknown>, c?: ToolContext) => string)({}, {
+      todos: { read: () => prev },
+    } as ToolContext)
+
+  test('没有上一份清单 —— 创建', () => {
+    expect(kindWith(null)).toBe('write')
+  })
+
+  test('上一份还没做完 —— 修改', () => {
+    expect(
+      kindWith([
+        { id: 'todo_1', content: '甲', status: 'completed' },
+        { id: 'todo_2', content: '乙', status: 'in_progress' },
+      ]),
+    ).toBe('edit')
+  })
+
+  /** 上一份全做完了，再提交一份是**下一件事**的清单，说「创建」才对。 */
+  test('上一份全做完 —— 又是创建', () => {
+    expect(kindWith([{ id: 'todo_1', content: '甲', status: 'completed' }])).toBe('write')
+  })
+
   /**
-   * 常量而不是函数。按「手上有没有未完成的清单」判要读 `ctx.state`，而 state 是
-   * run 级的：下一轮的第一次提交会说成「创建」，同一张卡的回执却写着「待办已更新」。
+   * 端口没接上（`qy exec` 这类一次性执行没有会话）时按「创建」。
+   * 反过来说「修改」是在根本没有清单时声称改过一份不存在的东西。
    */
-  test('动作恒为「编辑」，不随有没有上一份清单变', async () => {
-    expect(writeTodosTool.actionKind).toBe('edit')
-    const { c } = await run([{ content: '甲', status: 'in_progress' }])
-    await run([{ content: '甲', status: 'completed' }], c)
-    expect(writeTodosTool.actionKind).toBe('edit')
+  test('端口没接上 —— 按创建，不按修改', () => {
+    const spec = writeTodosTool.actionKind as (
+      a: Record<string, unknown>,
+      c?: ToolContext,
+    ) => string
+    expect(spec({}, undefined)).toBe('write')
+    expect(spec({}, {} as ToolContext)).toBe('write')
   })
 
   /** 对象是「待办」不是「计划」：计划（方案）是另一件东西，这个工具不产出它。 */

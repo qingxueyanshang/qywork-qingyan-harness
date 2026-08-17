@@ -1,7 +1,8 @@
 import type { Attachment, ContextGroup, Goal } from '@qywork/core'
-import { CONTEXT_GROUPS } from '@qywork/core'
+import { CONTEXT_GROUPS, todoProgress } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
-import { type Command, matchSlash } from '../lib/commands.ts'
+import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
+import { slashCall } from '../lib/slash.ts'
 import {
   interrupt,
   openPanel,
@@ -91,21 +92,16 @@ function ModeChip() {
  * 居中是跟着这条来的：它不属于任何一侧的控件，是整轮的状态。左对齐时
  * 它看起来像输入框长出来的一个附件。
  *
- * 步数取**正在做的那一条**（1-based），不是已完成数：进行中的第 3 步
- * 报成「第 2 步」会让人以为它卡住了。中间没有进行中的那条（刚打完勾、还没认领
- * 下一条）才回落到已完成数。
+ * 步数由 `todoProgress` 算（core），**与 `write_todos` 的回执是同一个函数**：
+ * 各算各的时，同一屏上工具卡写「0/5」、这里写「第 1 / 5 步」，说的是同一份清单
+ * 的同一时刻。要改口径改那一个函数，不要在这里重写一遍。
  *
  * **全部做完之后这一段整个不显示**：进度条回答的是「还要多久」，没有「还要」
  * 就没有它。做完了要回看清单，右侧面板一直在。
  */
 function RunStatusChip() {
   const todos = () => state.todos
-  const total = () => todos().length
-  const done = () => todos().filter((t) => t.status === 'completed').length
-  const step = () => {
-    const i = todos().findIndex((t) => t.status === 'in_progress')
-    return i >= 0 ? i + 1 : done()
-  }
+  const progress = () => todoProgress(todos())
   /**
    * **全做完就不报进度了。**
    *
@@ -135,7 +131,7 @@ function RunStatusChip() {
               title="查看完整待办"
               onClick={() => openPanel('todos')}
             >
-              第 {step()} / {total()} 步
+              第 {progress().step} / {progress().total} 步
             </button>
           </Show>
           {/* 两段都在时才要分隔点——只有一段时它会变成一个悬空的符号。 */}
@@ -173,7 +169,7 @@ function goalNote(goal: Goal, running: boolean): string {
 }
 
 /**
- * 当前目标：做的是什么、跑到第几轮、能不能停。
+ * 当前目标：做的是什么、在不在跑、能不能停。
  *
  * **看不见的自动循环是最坏的一种**——一轮接一轮自己跑下去，而界面上只有正文在长。
  * 所以它常驻在输入框正上方，和这一轮的待办进度同一片区域：目标回答「一轮接一轮
@@ -189,16 +185,20 @@ function goalNote(goal: Goal, running: boolean): string {
  *
  * ## 做完就不显示了
  *
- * 与待办进度同一条判据：它回答的是「还要跑多久」，`completed` 之后没有「还要」。
- * 而 `completed` 是终态，一条出边都没有——留一颗点了必然被服务端回绝的
- * 「继续」按钮，比不留更坏。
+ * 它回答的是「还在跑吗」，`completed` 之后没有「还在」。而 `completed` 是终态，
+ * 一条出边都没有——留一颗点了必然被服务端回绝的「继续」按钮，比不留更坏。
+ *
+ * ## 不显示轮数
+ *
+ * 这个循环没有轮数上限（见 `core` 里 `Goal` 的注释），所以没有「第几 / 共几」
+ * 可显示。**也不显示已经跑了几轮**：那个数不影响用户的任何决定，摆出来只会把
+ * 「做到没有」换成「跑了多久」——而循环该不该停，答案在目标本身，不在计数器。
+ * 用户要的两件事这一行都有：它在不在跑，以及怎么让它停。
  *
  * ## 一行，且比输入框窄
  *
- * 状态（自动续行中 / 受阻理由 / 已暂停）**排在轮数前面**：连起来读是
- * 「自动续行中 · 第 0 / 8 轮」一句话，拆到第二行去就得来回看两眼才拼得出
- * 「它现在在不在跑」。挤不下的先截目标正文，再截状态，两处都有 title。
- * 高度仍然是定死的（B9）——状态文字长短不一，让它撑高的话「停止」会跑位。
+ * 挤不下的先截目标正文，再截状态，两处都有 title。高度是定死的（B9）——
+ * 状态文字长短不一，让它撑高的话「停止」会跑位。
  */
 function GoalChip() {
   const goal = () => state.goal
@@ -218,17 +218,13 @@ function GoalChip() {
             <span class="goal-text truncate" title={g().objective}>
               {g().objective}
             </span>
-            {/* 状态紧挨在轮数前面：「自动续行中 · 第 0 / 8 轮」连起来是一句话，
-                中间隔着别的东西就得来回看两眼才拼得出「它现在在不在跑」。 */}
+            {/* 状态紧挨着「停止」：用户读到「在跑」的下一眼就该是让它停的那颗按钮。 */}
             <span
               class="goal-note truncate"
               classList={{ blocked: g().status === 'blocked' }}
               title={goalNote(g(), state.running)}
             >
               {goalNote(g(), state.running)}
-            </span>
-            <span class="goal-round">
-              第 {g().round} / {g().maxRounds} 轮
             </span>
             <Show
               when={state.running}
@@ -301,6 +297,16 @@ export function Composer() {
    */
   const slashHits = () => matchSlash(text())
   const runSlash = (cmd: Command) => {
+    // 要跟一段话的命令（`/goal`）在面板里选中**不执行**，只把命令名填进草稿——
+    // 这时候用户还没说要做什么，跑起来只能跑一个空目标。
+    if (cmd.arg) {
+      setText(`/${cmd.slash} `)
+      queueMicrotask(() => {
+        autosize()
+        ta.focus()
+      })
+      return
+    }
     // 先清草稿再执行：命令可能会开浮层或换会话，那之后 setText 未必还落在这个组件上。
     setText('')
     queueMicrotask(() => {
@@ -319,6 +325,25 @@ export function Composer() {
     const files = pending()
     // 只有附件没有文字也能发——「看这张图」这种意图不该逼用户再打几个字。
     if ((!v && files.length === 0) || state.running) return
+
+    /*
+     * 带参数的斜杠命令在这里被截下来，**不发成一条消息**。
+     *
+     * 只截「确实是命令名 + 确实带了参数」这一种：`/goal` 光杆走的是补全面板
+     * （`runSlash` 把它填回草稿），认不出的 `/xxx` 原样当正文发出去——
+     * 悄悄吞掉一句用户打的话，比把它当消息发出去坏得多。
+     */
+    const call = slashCall(v)
+    const cmd = call ? buildCommands().find((c) => c.slash === call.name && c.arg) : null
+    if (cmd && call?.arg) {
+      setText('')
+      queueMicrotask(() => {
+        ta.style.height = 'auto'
+        cmd.run(call.arg)
+      })
+      return
+    }
+
     sendMessage(v, files.length ? files : undefined)
     setText('')
     setPending([])

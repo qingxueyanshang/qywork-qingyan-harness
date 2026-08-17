@@ -33,7 +33,7 @@ import {
   Session,
 } from '@qywork/runtime'
 import {
-  advanceGoalRound,
+  createGoal,
   currentGoal,
   getConversation,
   getRun,
@@ -132,8 +132,7 @@ export async function startRun(
 
   /*
    * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
-   * 续起就作废——他插的这一句才是这条会话现在该干的事。这一轮也不计进轮数：
-   * 轮数只在 `advanceGoalRound` 那一处加，而那条路只有续起走。
+   * 续起就作废——他插的这一句才是这条会话现在该干的事。
    *
    * 放在 reserve 成功之后：被回绝的消息根本没有发生，不该动任何状态。
    */
@@ -396,8 +395,8 @@ function queueGoalRound(
  * 真的起下一轮。
  *
  * **发起之前重读目标**：排队到现在这段时间里，用户可能插了一句话（标记已被清）、
- * 模型可能已经把目标改了或做完了。预留（goalId + revision）对不上就**丢弃这次
- * 排队且不增加轮数**——按一个几秒前的版本继续跑，跑的就不是用户现在要的那件事。
+ * 模型可能已经把目标改了或做完了。预留（goalId + revision）对不上就**丢弃这次排队**
+ * ——按一个几秒前的版本继续跑，跑的就不是用户现在要的那件事。
  */
 async function fireGoalRound(
   conversationId: ConversationId,
@@ -418,46 +417,59 @@ async function fireGoalRound(
     return
   }
 
-  if (goal.round >= goal.maxRounds) {
-    // 撞上唯一那道护栏。**必须把理由写进目标**——否则界面上只剩「受阻」两个字，
-    // 用户得自己去数跑了多少轮才明白发生了什么。
-    deps.runs.disarm(conversationId)
-    const blocked = updateGoal(deps.store, {
-      conversationId,
-      goalId: goal.id,
-      revision: goal.revision,
-      action: 'blocked',
-      blockedCode: 'max_rounds',
-      blockedReason: `已经自动跑满 ${goal.maxRounds} 轮还没达成，停下来等你决定。`,
-    })
-    if (blocked.ok) publishGoal(deps, blocked.goal)
-    return
-  }
-
-  // 先记账再发起：中间任何一步失败都会让「跑了几轮」比实际少，而这个数是唯一的护栏。
-  const advanced = advanceGoalRound(deps.store, {
-    conversationId,
+  /*
+   * **没有轮数上限，所以这里不再有配额判定。** 循环的出口只有三个：模型自检
+   * `complete`、模型 `blocked`、用户中断转 `paused`；外加这一轮没正常收尾时
+   * （`CONTINUABLE` 之外的停止原因）由 `settleGoalAfterRun` 转 `blocked`。
+   *
+   * 也不再有「轮次 +1」这一步：没有计数器要记，`revision` 保持不变，
+   * 预留（goalId + revision）因此天然还对得上——模型一旦 complete / blocked，
+   * revision 就变了，下一次排队自己判成陈旧退出。
+   */
+  await startRun(conversationId, goalRoundPrompt(goal), undefined, deps, undefined, undefined, {
     goalId: goal.id,
     revision: goal.revision,
   })
-  if (!advanced.ok) {
-    deps.runs.disarm(conversationId)
-    return
-  }
-  publishGoal(deps, advanced.goal)
-  // 记一次轮次版本就变了，预留跟着换——不换的话下一轮起手就把自己判成陈旧。
-  const next: GoalArm = { goalId: advanced.goal.id, revision: advanced.goal.revision }
-  deps.runs.arm(conversationId, next)
+}
 
-  await startRun(
-    conversationId,
-    goalRoundPrompt(advanced.goal),
-    undefined,
-    deps,
-    undefined,
-    undefined,
-    next,
-  )
+/**
+ * 用户用 `/goal` 立目标，或改写现在这个。**立目标的唯一入口。**
+ *
+ * 模型手里没有 `create_goal`（见 `tools/goals.ts` 顶部）。这条路要么建新的，
+ * 要么改写在跑的那个正文——两者之后一律交给 `resumeGoal` 去转 active、上标记、
+ * 起第一轮。**不自己再写一遍那三步**：同一件事的第二条实现迟早给出两种答案。
+ *
+ */
+export function setGoal(
+  conversationId: ConversationId,
+  objective: string,
+  deps: Omit<CommandDeps, 'ws'>,
+): { ok: true } | { ok: false; message: string } {
+  if (deps.runs.isBusy(conversationId)) {
+    return { ok: false, message: '该会话已有任务在执行，先停下这一轮再立目标' }
+  }
+  try {
+    const existing = currentGoal(deps.store, conversationId)
+    // 已完成的目标是终态，一条出边都没有——那时候只能立新的。
+    const written =
+      !existing || existing.status === 'completed'
+        ? createGoal(deps.store, { conversationId, objective })
+        : updateGoal(deps.store, {
+            conversationId,
+            goalId: existing.id,
+            revision: existing.revision,
+            action: 'edit',
+            objective,
+          })
+    // 校验（空正文、轮数越界）在账本里，回绝原样带回给用户——
+    // 服务端再抄一份判定就是两处会漂的规则。
+    if (!written.ok) return { ok: false, message: written.message }
+    publishGoal(deps, written.goal)
+    return resumeGoal(conversationId, deps)
+  } catch (err) {
+    abortGoalLoop(conversationId, deps, err)
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /**
@@ -531,7 +543,7 @@ function publishGoal(deps: Omit<CommandDeps, 'ws'>, goal: Goal): void {
  */
 function goalRoundPrompt(goal: Goal): string {
   return [
-    `[自动续起] 第 ${goal.round}/${goal.maxRounds} 轮。这条消息由系统发出，不是用户在说话。`,
+    '[自动续起] 这条消息由系统发出，不是用户在说话。',
     '',
     `目标（goal_id=${goal.id}，revision=${goal.revision}）：`,
     goal.objective,
@@ -543,6 +555,7 @@ function goalRoundPrompt(goal: Goal): string {
     '- 确认达成了：调 update_goal(action="complete")，并把证据写在回答里。',
     '- 需要用户拍板，或者缺东西做不下去：调 update_goal(action="blocked")，写清卡在哪、要什么才能继续。',
     '- 还没做完：什么都不用调，目标保持 active，这一轮结束后会自动再来一轮。',
+    '这个循环没有轮数上限：不宣布收尾它就一直跑下去，所以做到了要说，做不下去也要说。',
     'goal_id 与 revision 以 read_goal 读到的为准。',
   ].join('\n')
 }

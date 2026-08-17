@@ -16,7 +16,7 @@ export { Store } from './db.ts'
 // 三层作用域里被单独关掉的记忆/技能条目
 export { type ExtraKey, listDisabledExtras, setExtraEnabled } from './extras.ts'
 // 目标与自动续起：runtime 用端口喂给工具，server 在 run 收尾处判续起
-export { advanceGoalRound, createGoal, currentGoal, updateGoal } from './goals.ts'
+export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读回、在 load_tool 成功后写入
 export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
 // 读写：会话、消息、run、step、工作区
@@ -73,5 +73,7 @@ export {
 } from './resources.ts'
 // 落盘 schema 版本。**真源就在 schema.ts，不设中心登记表**（CLAUDE.md D2）
 export { SCHEMA_VERSION } from './schema.ts'
+// 待办：只读回，不写入——真源是 `write_todos` 那条 step 的 args
+export { latestTodos } from './todos.ts'
 // 花费账本
 export { type GroupBy, recordUsage, usageBy, usageTotals } from './usage.ts'

@@ -196,6 +196,9 @@ export function stopReasonLabel(reason: string): string {
     // 与 max_steps 分开说：那是步数不够，这是多给步数也没用。
     no_progress: '在原地重复，已停下',
     user_interrupt: '已中断',
+    // 与「已中断」分开说：用户没点过任何东西，是服务进程没了（热重载、崩溃、关机）。
+    // 两句都说「已中断」的话，用户看到的是一个自己没做过的动作。
+    process_exit: '服务进程退出，本轮到此为止（已完成的步骤有效）',
     permission_denied: '授权被拒绝，已停止',
     output_truncated: '输出被截断，回答不完整',
     provider_error: '模型服务出错',
