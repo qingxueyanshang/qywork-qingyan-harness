@@ -33,12 +33,18 @@ g.sessionStorage = {
 g.matchMedia = () => ({ matches: false })
 
 const {
+  activePanelTab,
   applyEvent,
   client,
+  closeAllPanelTabs,
   closePanel,
+  closePanelTab,
   explainApiError,
+  holdPanelTab,
   openPanel,
+  openPanelTab,
   panelMaximized,
+  panelTabs,
   reloadActiveConversation,
   setSidePanel,
   setState,
@@ -113,6 +119,118 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
     expect(panelMaximized()).toBe(true)
     closePanel()
     expect(panelMaximized()).toBe(false)
+  })
+})
+
+/**
+ * 可多开的那些页（终端、浏览器）。
+ *
+ * 测的是**关掉一页之后停在哪、什么被收掉**——这两条错了的表现分别是「面板莫名收起」
+ * 和「PTY 留在后台，工作区里的文件句柄被攥着」，都不会报错。
+ */
+describe('可多开的页：+ 开出来，× 关掉', () => {
+  const reset = () => {
+    closeAllPanelTabs()
+    setSidePanel('files')
+  }
+
+  test('新开一页就翻到它', () => {
+    reset()
+    openPanelTab('terminal')
+    expect(panelTabs().length).toBe(1)
+    expect(activePanelTab()).toBe(panelTabs()[0]!.id)
+  })
+
+  test('关掉当前那一页 —— 落到右边那页，不收起面板', () => {
+    reset()
+    openPanelTab('terminal')
+    openPanelTab('browser')
+    const [first, second] = panelTabs()
+    setSidePanel({ tab: first!.id })
+    closePanelTab(first!.id)
+    expect(activePanelTab()).toBe(second!.id)
+  })
+
+  test('关掉最右那一页 —— 落到左边那页', () => {
+    reset()
+    openPanelTab('terminal')
+    openPanelTab('browser')
+    const [first, second] = panelTabs()
+    setSidePanel({ tab: second!.id })
+    closePanelTab(second!.id)
+    expect(activePanelTab()).toBe(first!.id)
+  })
+
+  test('关掉最后一页 —— 回文件视图而不是把面板收起来', () => {
+    reset()
+    openPanelTab('browser')
+    closePanelTab(panelTabs()[0]!.id)
+    expect(panelTabs().length).toBe(0)
+    expect(sidePanel()).toBe('files')
+  })
+
+  test('关掉的不是当前那一页 —— 当前这页不动', () => {
+    reset()
+    openPanelTab('terminal')
+    openPanelTab('browser')
+    const [first, second] = panelTabs()
+    setSidePanel({ tab: second!.id })
+    closePanelTab(first!.id)
+    expect(activePanelTab()).toBe(second!.id)
+  })
+
+  test('关一页收一次它登记的资源，只收自己那一份', () => {
+    reset()
+    openPanelTab('terminal')
+    openPanelTab('terminal')
+    const [first, second] = panelTabs()
+    let closed = ''
+    holdPanelTab(first!.id, () => {
+      closed += 'a'
+    })
+    holdPanelTab(second!.id, () => {
+      closed += 'b'
+    })
+    closePanelTab(first!.id)
+    expect(closed).toBe('a')
+    // 已经关掉的再关一次不该再收一遍：那一侧是 kill 进程。
+    closePanelTab(first!.id)
+    expect(closed).toBe('a')
+  })
+
+  test('换项目把每一页都收掉', () => {
+    reset()
+    openPanelTab('terminal')
+    openPanelTab('browser')
+    let closed = 0
+    for (const t of panelTabs()) {
+      holdPanelTab(t.id, () => {
+        closed += 1
+      })
+    }
+    closeAllPanelTabs()
+    expect(closed).toBe(2)
+    expect(panelTabs().length).toBe(0)
+    expect(sidePanel()).toBe('files')
+  })
+
+  test('收起再展开回到那一页 —— 和固定视图同一条路', () => {
+    reset()
+    openPanelTab('terminal')
+    const id = panelTabs()[0]!.id
+    togglePanel()
+    expect(sidePanel()).toBe(null)
+    togglePanel()
+    expect(activePanelTab()).toBe(id)
+  })
+
+  test('记着的那一页在收起期间没了 —— 展开回文件视图，不是一块点不掉的空白', () => {
+    reset()
+    openPanelTab('terminal')
+    togglePanel()
+    closeAllPanelTabs()
+    togglePanel()
+    expect(sidePanel()).toBe('files')
   })
 })
 

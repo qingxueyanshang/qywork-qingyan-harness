@@ -1,40 +1,50 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { theme, workspace } from '../lib/store/index.ts'
-import { openTerminal, resizeTerminal, writeTerminal } from '../lib/terminal.ts'
+import {
+  type Accessor,
+  createEffect,
+  createRoot,
+  createSignal,
+  onCleanup,
+  onMount,
+  type Setter,
+  Show,
+} from 'solid-js'
+import { activePanelTab, holdPanelTab, theme, workspace } from '../lib/store/index.ts'
+import { closeTerminal, openTerminal, resizeTerminal, writeTerminal } from '../lib/terminal.ts'
 
 /**
- * 终端面板。渲染在 xterm.js 里，进程在 Rust 侧的 PTY 里（见 `src-tauri/src/terminal.rs`）。
+ * 终端页。渲染在 xterm.js 里，进程在 Rust 侧的 PTY 里（见 `src-tauri/src/terminal.rs`）。
  *
- * ## 实例是模块级的，不随页签生死
+ * ## 实例挂在模块上，按页签 id 存
  *
- * 切去看文件再切回来，命令还得在跑、滚动历史还得在。而页签切换会把这个组件整个
- * 卸载——所以 xterm 实例和它的宿主 div 挂在模块上，组件挂载时把宿主搬进来、
- * 卸载时搬出去。**不要改成每次挂载新建一个 Terminal**：新实例没有历史，
+ * 切去看文件、甚至把整块面板收起来，命令都还得在跑、滚动历史还得在。而这两件事都会
+ * 把组件整个卸载——所以 xterm 实例和它的宿主 div 存在模块级的 `panes` 里，组件挂载时
+ * 把宿主搬进来、卸载时搬出去。**不要改成每次挂载新建一个 Terminal**：新实例没有历史，
  * 用户看到的是一块空白，而 PTY 那边其实还在跑。
  *
- * ## 一条会话就够
- *
- * 多标签终端是另一件事（要有标签条、要有关掉哪一条的语义）。现在只有一条，
- * id 写死；真需要多条时把 `SESSION` 换成参数，Rust 那边本来就是按 id 存的。
+ * 因此**卸载不销毁**。真正的销毁只发生在这一页被关掉时，入口是 store 的
+ * `holdPanelTab`（页签上的 × 和换项目都走它），见 `disposePane`。
  */
-
-/** 唯一那条会话的 id。Rust 侧按 id 存 PTY，改成多条时这里换成参数即可。 */
-const SESSION = 'main'
 
 /** 滚轮一格翻几行。三行是各家终端的通行值，再多会在窄面板里一下子翻过头。 */
 const WHEEL_LINES = 3
 
-let term: Terminal | null = null
-let fit: FitAddon | null = null
-/** 常驻宿主。切页签只是把它从面板里摘下来，xterm 的 DOM 和滚动历史都留在上面。 */
-let host: HTMLDivElement | null = null
-let started = false
+interface Pane {
+  term: Terminal
+  fit: FitAddon
+  /** 常驻宿主。组件卸载只是把它摘下来，xterm 的 DOM 与滚动历史都留在上面。 */
+  host: HTMLDivElement
+  /** PTY 那条会话开着没有。子进程退出后回 `false`，「重开」据此再开一条。 */
+  started: boolean
+  /** 子进程的终态。`null` = 还活着。`code` 为 null 表示拿不到退出码。 */
+  exit: Accessor<{ code: number | null } | null>
+  setExit: Setter<{ code: number | null } | null>
+}
 
-/** 子进程的终态。`null` = 还活着。`code` 为 null 表示拿不到退出码。 */
-const [exit, setExit] = createSignal<{ code: number | null } | null>(null)
+/** 开着的终端，按页签 id 存。id 就是传给 Rust 的会话 id。 */
+const panes = new Map<string, Pane>()
 
 /**
  * ANSI 十六色。**不走设计令牌**：那套是给应用界面的，而 ANSI 是终端自己的约定，
@@ -96,10 +106,9 @@ function cssVar(name: string, fallback: string): string {
   return v || fallback
 }
 
-function applyTheme(): void {
-  if (!term) return
+function applyTheme(pane: Pane): void {
   const dark = isDark()
-  term.options.theme = {
+  pane.term.options.theme = {
     background: cssVar('--bg-app', dark ? '#16161a' : '#ffffff'),
     foreground: cssVar('--text-primary', dark ? '#f2f2f3' : '#16161a'),
     // **光标用前景色，不用 `--accent`。** 强调色在这个仓库里只归「当前选中」和
@@ -114,20 +123,49 @@ function applyTheme(): void {
 }
 
 /**
- * 建实例。**必须传一个已经在文档里的容器**：`term.open()` 一挂上就去量字符宽高，
- * 而游离节点量出来是 0——后面任何一次按尺寸算行列的代码都会拿 0 当除数。
+ * 主题跟着走，**挂在模块上而不是组件里**，而且一次管所有实例。
+ *
+ * 挂在组件里的话：收起面板期间切主题，实例还活着但没人给它换色，切回来是旧配色。
+ * 两条路都要有——显式切换走 `theme()`，`system` 档没有 `data-theme` 属性，只能听
+ * 系统偏好；缺一条就有一半情况不跟随。
+ *
+ * `createRoot` 只为给这个 effect 一个所有者。它随模块常驻，没有该销毁的时机，
+ * 所以不接 dispose。
  */
-function ensureTerm(slot: HTMLElement): { term: Terminal; host: HTMLDivElement } {
-  if (term && host) {
-    slot.appendChild(host)
-    return { term, host }
+let themeWatched = false
+function watchTheme(): void {
+  if (themeWatched) return
+  themeWatched = true
+  const applyAll = () => {
+    for (const pane of panes.values()) applyTheme(pane)
+  }
+  createRoot(() =>
+    createEffect(() => {
+      theme()
+      applyAll()
+    }),
+  )
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyAll)
+}
+
+/**
+ * 建实例，已经有就把宿主搬回 `slot`。
+ *
+ * **必须传一个已经在文档里的容器**：`term.open()` 一挂上就去量字符宽高，而游离节点
+ * 量出来是 0——后面任何一次按尺寸算行列的代码都会拿 0 当除数。
+ */
+function ensurePane(id: string, slot: HTMLElement): Pane {
+  const existing = panes.get(id)
+  if (existing) {
+    slot.appendChild(existing.host)
+    return existing
   }
 
-  host = document.createElement('div')
+  const host = document.createElement('div')
   host.className = 'term-host'
   slot.appendChild(host)
 
-  term = new Terminal({
+  const term = new Terminal({
     // **写字面字体栈，不要写 var(--font-mono)。** xterm 用 canvas 量字符宽度，
     // 量的时候不解析 CSS 变量，拿到的是一个非法字体名 → 回落到比例字体 →
     // 每一列都对不齐。
@@ -141,14 +179,19 @@ function ensureTerm(slot: HTMLElement): { term: Terminal; host: HTMLDivElement }
     // 回滚缓冲。再大就是拿内存换一段用户几乎不会翻到的历史。
     scrollback: 5000,
   })
-  fit = new FitAddon()
+  const fit = new FitAddon()
   term.loadAddon(fit)
   term.open(host)
-  applyTheme()
+
+  const [exit, setExit] = createSignal<{ code: number | null } | null>(null)
+  const pane: Pane = { term, fit, host, started: false, exit, setExit }
+  panes.set(id, pane)
+  applyTheme(pane)
+  watchTheme()
 
   // 键盘输入原样送进 PTY。**不在这里解释按键**——回车、Ctrl-C、方向键都是字节，
   // 由 shell 自己认；前端插一层翻译就会和真终端的行为对不上。
-  term.onData((d) => void writeTerminal(SESSION, d).catch(() => {}))
+  term.onData((d) => void writeTerminal(id, d).catch(() => {}))
 
   /*
    * 滚轮由我们接管，不交给程序。
@@ -169,7 +212,7 @@ function ensureTerm(slot: HTMLElement): { term: Terminal; host: HTMLDivElement }
   host.addEventListener(
     'wheel',
     (ev) => {
-      if (!term || term.buffer.active.type === 'alternate') return
+      if (term.buffer.active.type === 'alternate') return
       ev.preventDefault()
       ev.stopPropagation()
       term.scrollLines(Math.sign(ev.deltaY) * WHEEL_LINES)
@@ -177,90 +220,105 @@ function ensureTerm(slot: HTMLElement): { term: Terminal; host: HTMLDivElement }
     { capture: true, passive: false },
   )
 
-  return { term, host }
+  // 这一页被关掉时才收，组件卸载不算——理由见文件头与 store 的 `holdPanelTab`。
+  holdPanelTab(id, () => disposePane(id))
+
+  return pane
+}
+
+/** 收掉一条终端：杀进程、销毁实例、摘掉 DOM。只由 `holdPanelTab` 那条路调。 */
+function disposePane(id: string): void {
+  const pane = panes.get(id)
+  if (!pane) return
+  panes.delete(id)
+  pane.host.remove()
+  pane.term.dispose()
+  // 关不掉也没有下一步可给：页签已经没了，这条 shell 最迟在应用退出时被 `shutdown` 收掉。
+  void closeTerminal(id).catch(() => {})
 }
 
 /**
  * 把 xterm 量出来的行列数同步给 PTY，尺寸算不出来就整个跳过。
  *
  * **不要直接调 `fit.fit()`。** 它只挡 `NaN` 不挡 `Infinity`：字符宽度还没量到时
- * （容器刚进 DOM、面板正被折叠）单元格宽是 0，`可用宽度 / 0` 得到 `Infinity`，
+ * （容器刚进 DOM、这一页正被藏起来）单元格宽是 0，`可用宽度 / 0` 得到 `Infinity`，
  * 它照样交给 `term.resize()`，一次就把实例打废——之后不滚动、不回显、不响应键盘，
  * 而且控制台不一定有报错。所以自己取 `proposeDimensions()` 并逐项校验。
  *
  * 会话还没建好时只改本地不发给 PTY：那时候发过去必然是「会话不存在」。
  * 开完之后 `ensureStarted` 会自己补一次。
  */
-function syncSize(): void {
-  if (!term || !fit) return
-  const dims = fit.proposeDimensions()
+function syncSize(id: string, pane: Pane): void {
+  const dims = pane.fit.proposeDimensions()
   if (!dims) return
   const { cols, rows } = dims
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) return
-  if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows)
-  if (!started) return
-  void resizeTerminal(SESSION, term.cols, term.rows).catch(() => {})
+  if (cols !== pane.term.cols || rows !== pane.term.rows) pane.term.resize(cols, rows)
+  if (!pane.started) return
+  void resizeTerminal(id, pane.term.cols, pane.term.rows).catch(() => {})
 }
 
-async function ensureStarted(): Promise<void> {
-  if (started || !term) return
-  started = true
-  setExit(null)
+async function ensureStarted(id: string, pane: Pane): Promise<void> {
+  if (pane.started) return
+  pane.started = true
+  pane.setExit(null)
   try {
-    await openTerminal(SESSION, workspace()?.root ?? '', term.cols, term.rows, {
-      output: (d) => term?.write(d),
+    await openTerminal(id, workspace()?.root ?? '', pane.term.cols, pane.term.rows, {
+      output: (d) => pane.term.write(d),
       exit: (code) => {
-        started = false
-        setExit({ code })
+        pane.started = false
+        pane.setExit({ code })
       },
     })
     // 开完再对一次：从调用到会话建好这段时间里，面板可能已经被拖宽或放大了。
-    syncSize()
+    syncSize(id, pane)
   } catch (e) {
-    started = false
+    pane.started = false
     // 起不来要说在终端里，不是静默留一块黑：用户盯着的就是这块地方。
-    term.write(`\r\n\x1b[31m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`)
+    pane.term.write(`\r\n\x1b[31m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`)
   }
 }
 
-export default function TerminalPanel() {
+export default function TerminalPanel(props: { id: string }) {
   const [slot, setSlot] = createSignal<HTMLDivElement>()
+  /** 拿到实例之后才画得出退出那一条。首帧还没有，所以是信号而不是 `panes.get()`。 */
+  const [pane, setPane] = createSignal<Pane>()
 
   onMount(() => {
     const el = slot()
     if (!el) return
-    // 容器先进 DOM 再建实例，理由见 `ensureTerm`。
-    const { host: h, term: t } = ensureTerm(el)
-    syncSize()
-    void ensureStarted()
-    // 切到这个页签就是要用它，焦点得跟过来。**不聚焦的代价不止是要多点一下**：
-    // xterm 只在聚焦时让光标闪，失焦时画一个不闪的光标——那看起来就像终端死了。
-    t.focus()
+    const id = props.id
+    // 容器先进 DOM 再建实例，理由见 `ensurePane`。
+    const p = ensurePane(id, el)
+    setPane(p)
+    syncSize(id, p)
+    void ensureStarted(id, p)
 
     // 尺寸跟着容器走：面板可以拖宽、可以放大到大半屏，而 PTY 那边必须同步收到
     // 新的行列数，否则 less / vim 会按旧宽度排版。
     // 首帧那次量不到字符宽高，`syncSize` 会自己跳过；观察器随后立刻会再来一次。
-    const ro = new ResizeObserver(() => syncSize())
+    const ro = new ResizeObserver(() => syncSize(id, p))
     ro.observe(el)
 
     onCleanup(() => {
       ro.disconnect()
       // 只把宿主摘下来，不销毁：进程还在跑，下次切回来要接着看。
-      h.remove()
+      p.host.remove()
     })
   })
 
-  // 主题跟着走。依赖写成 `theme()` 是为了让显式切换也触发；`system` 档由下面那个
-  // matchMedia 监听补上——两条路缺一条就会有一半情况不跟随。
+  /*
+   * 翻到这一页就把焦点给它。
+   *
+   * **必须是 effect，不能只在 `onMount` 里做一次**：切页签不重挂这个组件（那些页
+   * 一直挂着，只是被藏起来），只在挂载时聚焦的话，从别的页切回来光标不闪——
+   * 而 xterm 失焦时画的就是一个不闪的光标，看起来像这块终端死了。
+   *
+   * 藏起来的那一页不抢焦点：`display: none` 里的元素聚焦本来就是空操作，而这一条
+   * 会在每次切页签时对每一页各跑一次。
+   */
   createEffect(() => {
-    theme()
-    applyTheme()
-  })
-  onMount(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => applyTheme()
-    mq.addEventListener('change', onChange)
-    onCleanup(() => mq.removeEventListener('change', onChange))
+    if (activePanelTab() === props.id) pane()?.term.focus()
   })
 
   return (
@@ -268,7 +326,7 @@ export default function TerminalPanel() {
       <div class="term-slot" ref={setSlot} />
       {/* 进程退出要有终态，还要给得出下一步。只显示「已退出」而不给重开，
           用户唯一的出路是切走再切回来——那是让人自己去猜的交互。 */}
-      <Show when={exit()}>
+      <Show when={pane()?.exit()}>
         {(e) => (
           <footer class="term-foot">
             <span>{e().code === null ? '进程已结束' : `进程已退出（${e().code}）`}</span>
@@ -276,8 +334,10 @@ export default function TerminalPanel() {
               class="btn-ghost"
               type="button"
               onClick={() => {
-                term?.clear()
-                void ensureStarted()
+                const p = pane()
+                if (!p) return
+                p.term.clear()
+                void ensureStarted(props.id, p)
               }}
             >
               重开

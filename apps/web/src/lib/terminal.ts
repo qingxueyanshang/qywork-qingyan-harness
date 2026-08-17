@@ -51,3 +51,15 @@ export function writeTerminal(id: string, data: string): Promise<void> {
 export function resizeTerminal(id: string, cols: number, rows: number): Promise<void> {
   return tauriInvoke<void>('terminal_resize', { id, cols, rows })
 }
+
+/**
+ * 关掉一条终端：先摘监听，再让 Rust 杀掉 shell。
+ *
+ * **顺序不能反。** kill 会让收尸线程 emit 一次 `terminal:exit`，反过来的话那条事件
+ * 会打进一个已经销毁的 xterm 实例。
+ */
+export function closeTerminal(id: string): Promise<void> {
+  outputs.delete(id)
+  exits.delete(id)
+  return tauriInvoke<void>('terminal_close', { id })
+}
