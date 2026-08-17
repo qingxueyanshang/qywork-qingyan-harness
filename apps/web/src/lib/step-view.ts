@@ -142,6 +142,33 @@ export function argsRows(args: Record<string, unknown>): [string, string][] {
   return rows
 }
 
+/**
+ * 待办清单型参数：`{ todos: [{ content, status }, …] }`。
+ *
+ * **按形状认，不按工具名认**——同文件的 `listOf` / `diffFrom` 是同一个路子，
+ * 展开体里那个 Switch 从来不问「这一步是谁调的」。
+ *
+ * 认不出就返回 null（不是空数组）：空数组会让调用方渲染出一个空的清单框，
+ * 而「没有清单」应该走通用参数表那一支。
+ */
+export function todosOf(
+  args: Record<string, unknown>,
+): { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }[] | null {
+  const raw = args.todos
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const out: { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i] as Record<string, unknown> | null
+    if (!t || typeof t !== 'object') return null
+    if (typeof t.content !== 'string') return null
+    const status = t.status
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') return null
+    // 落库的 args 里没有 id（那是工具补的），行渲染又要一个稳定 key，所以按位置补。
+    out.push({ id: typeof t.id === 'string' ? t.id : `todo_${i + 1}`, content: t.content, status })
+  }
+  return out
+}
+
 export function firstString(args: Record<string, unknown>, ...keys: string[]): string {
   for (const k of keys) {
     const v = args[k]

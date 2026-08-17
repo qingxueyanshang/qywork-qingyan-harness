@@ -33,9 +33,11 @@ import {
   sanitizeTarget,
   statusWord,
   stopReasonLabel,
+  todosOf,
 } from '../lib/step-view.ts'
-import { retryLastRun, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import { setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
+import { TodoList } from './TodoList.tsx'
 
 /**
  * 会话流。
@@ -114,21 +116,22 @@ export function Transcript() {
           )}
         </For>
 
+        {/*
+         * 没有 run 收尾条可挂的那些错误。
+         *
+         * **报错正文的正常落点是读数条**（`run.finished` 时并进那一轮的条目里），
+         * 一句话一个地方。这里只收另一半：`run.error` 之后没有 `run.finished`
+         * 的那些——没配 key、档案解析失败、会话已有任务在跑、找不到项目目录。
+         * 它们连 run 行都没有，不在这儿说就一个字都看不到。
+         *
+         * 不给引导文案、不给重试按钮：正文本身已经说了该干什么
+         * （`ai/src/errors.ts` 的分类文案就是按「用户的下一步动作」写的），
+         * 再挂一句是同一件事说两遍；要重发，输入框一直在。
+         */}
         <Show when={state.error}>
           {(e) => (
             <div class="error-card" role="alert">
-              <strong>{e().message}</strong>
-              {/* 错误码存在的全部意义就是决定「用户下一步该做什么」。
-                  只渲染 message 等于把分类结果丢掉——同一句「请求失败」下面，
-                  该去配 key 和该等一分钟是两种完全不同的处境。 */}
-              <Show when={errorHint(e().code)}>{(h) => <span class="hint">{h()}</span>}</Show>
-              {/* 「可以重试」必须带一个真的能点的按钮：告诉用户可以做某件事
-                  却不给做的入口，比不提更让人恼火。 */}
-              <Show when={e().retryable && state.lastRunId && !state.running}>
-                <button class="ghost-btn" type="button" onClick={retryLastRun}>
-                  重试
-                </button>
-              </Show>
+              {e().message}
             </div>
           )}
         </Show>
@@ -407,8 +410,24 @@ function RunStatusBar(props: {
   /** 秒。null = 没有可信的起止时刻，不显示这一格。 */
   elapsed: number | null
   running: boolean
+  /** 报错正文，没有就是 null。有它时它**取代**停止原因那句话，不是并列多说一句。 */
+  errorMessage?: string | null
 }) {
   const normal = () => !props.stopReason || props.stopReason === 'completed'
+  /**
+   * 停下来的说法。
+   *
+   * **有正文就说正文**：「模型服务出错」只说了是谁的错，而「网络不可达：检查接口
+   * 地址与代理」才说得出该干什么——两句一起显示是同一件事说两遍，而这一格
+   * 排在读数条末位，本来就是留给「为什么停」的。
+   *
+   * 只取第一行：个别正文会带上配置文件路径那种第二行，读数条是一行的东西，
+   * 整段贴进来会把这一行撑开、把前面几格挤走。
+   */
+  const reason = () => {
+    const detail = props.errorMessage?.split(NEWLINE)[0]?.trim()
+    return detail || stopReasonLabel(props.stopReason!)
+  }
 
   return (
     <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>
@@ -455,7 +474,7 @@ function RunStatusBar(props: {
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
             于是出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
         <Show when={!normal()}>
-          <span class="run-reason">{stopReasonLabel(props.stopReason!)}</span>
+          <span class="run-reason">{reason()}</span>
         </Show>
       </span>
     </div>
@@ -503,6 +522,7 @@ function RunCard(props: { item: TranscriptItem }) {
           stopReason={r().stopReason}
           elapsed={elapsed()}
           running={false}
+          errorMessage={r().errorMessage}
         />
       )}
     </Show>
@@ -605,6 +625,7 @@ function ToolCard(props: { item: TranscriptItem }) {
  *
  * 分法：
  *   失败  错误正文 →（分隔线）→ 参数表
+ *   待办  清单逐行（勾 / 转圈 / 空心点）
  *   编辑  diff →（分隔线）→ 结果
  *   运行  命令原文 →（分隔线）→「输出」标签 + 输出
  *   创建  新内容全文 → 结果
@@ -640,6 +661,20 @@ function StepBody(props: { item: TranscriptItem }) {
           <div class="fold-divider" />
           <ArgsTable rows={rows()} />
         </Show>
+      </Match>
+
+      {/*
+       * 待办清单。**不能落到通用参数表那一支**：整表 JSON 挤在一格里，
+       * 状态埋在 `"status":"in_progress"` 的引号中间，问「哪几条做完了」
+       * 得自己数引号。这一支给的是标题行没有的东西——每条的状态。
+       *
+       * `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单里那一条正带着
+       * 转圈的记号，同一件事说两遍。
+       */}
+      <Match when={todosOf(args()) !== null}>
+        <div class="fold-todos">
+          <TodoList todos={todosOf(args())!} />
+        </div>
       </Match>
 
       <Match when={kind() === 'edit' && diffFrom(args()) !== null}>
@@ -755,24 +790,4 @@ function ArgsTable(props: { rows: [string, string][] }) {
       </tbody>
     </table>
   )
-}
-
-/**
- * 错误码 → 用户的下一步动作。
- *
- * 只写「动作」，不复述错误本身——message 已经说了发生了什么，再重复一遍
- * 只是把卡片撑长。没有明确动作的码返回空串，宁可不显示也不写正确的废话。
- */
-function errorHint(code: string): string {
-  const map: Record<string, string> = {
-    no_api_key: '还没配 API Key：设置 → 模型，在对应接口下填。',
-    auth_failed: 'Key 存在但不被接受：确认没抄错、没过期、账号有该模型的权限。',
-    insufficient_quota: '账户额度用完了，重试不会好转。',
-    rate_limited: '触发限速，等一会儿再重试。',
-    model_not_found: '模型 ID 或接口地址对不上：在模型选择器里换一个。',
-    context_overflow: '上下文超出窗口：压缩这轮对话，或换一个窗口更大的模型。',
-    network_error: '连不上接口地址：检查网络与代理，以及 baseUrl 是否写对。',
-    permission_denied: '「自动审批」模式挡下了这一步：切到「完全访问」就能跑，不放开就让它跳过。',
-  }
-  return map[code] ?? ''
 }

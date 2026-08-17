@@ -409,3 +409,65 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     expect(state.goal?.blockedReason).toContain('原地打转')
   })
 })
+
+/**
+ * 报错正文的落点。覆盖 `store/connection.ts` 的 `run.error` / `run.finished` 两支。
+ *
+ * **原始失败形状**：一轮因为连不上接口而停了，读数条上只有「模型服务出错」
+ * 五个字，真正说得出该干什么的那句（「网络不可达：检查接口地址与代理」）
+ * 挂在另一张卡上——同一件事两个地方说，而那张卡刷新一次就没了。
+ */
+describe('报错正文并进这一轮的读数条', () => {
+  const errorFrame = (message: string) =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'run.error', runId: 'run_1', code: 'network_error', message, retryable: true },
+    }) as never
+
+  const finishedFrame = () =>
+    ({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.finished',
+        runId: 'run_1',
+        status: 'failed',
+        stopReason: 'provider_error',
+        usage: null,
+        stepCount: 0,
+        durationMs: 1,
+        fileChanges: [],
+      },
+    }) as never
+
+  test('收尾时正文进条目，全局那份放下——不能两处都说', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    applyEvent(errorFrame('网络不可达：检查接口地址与代理'))
+    applyEvent(finishedFrame())
+
+    const item = state.transcript.find((t) => t.kind === 'run')
+    expect(item?.run?.errorMessage).toBe('网络不可达：检查接口地址与代理')
+    expect(state.error).toBe(null)
+  })
+
+  /** 正常收尾没有正文，读数条回落到停止原因的通用说法。 */
+  test('没出错的那一轮 errorMessage 是 null', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    applyEvent(finishedFrame())
+    expect(state.transcript.find((t) => t.kind === 'run')?.run?.errorMessage).toBe(null)
+  })
+
+  /**
+   * 另一半：`run.error` 之后**没有** `run.finished`（没配 key、档案解析失败）。
+   * 那一半没有 run 行可挂，全局那份必须留着，否则一个字都看不到。
+   */
+  test('没有收尾事件时全局那份留着', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    applyEvent(errorFrame('未配置 API Key'))
+    expect(state.error?.message).toBe('未配置 API Key')
+    expect(state.transcript.some((t) => t.kind === 'run')).toBe(false)
+  })
+})
