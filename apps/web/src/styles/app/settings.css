@@ -26,8 +26,10 @@
   line-height: 1.5;
   color: var(--text-secondary);
 }
+/* 悬停**只提亮文字，不铺底色**：这一行是整块面板的头部，一块灰底压上来会读成
+   「这一行被选中了」——而那块灰在别处的含义正是「我点的那一行」。 */
 .branch-chip:hover {
-  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .branch-chip svg:last-child {
   flex: none;
