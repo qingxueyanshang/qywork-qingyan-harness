@@ -1,7 +1,8 @@
 /**
  * git 面板数据源的边界。
  *
- * 覆盖 `git.ts` 的 revision 参数校验，以及**这台机器上没装 git 时的形状**。
+ * 覆盖 `git.ts` 的 revision 参数校验、每个文件的增删行数（「没有这个数」与「零」
+ * 必须分开），以及**这台机器上没装 git 时的形状**。
  * 其余读操作的正确性由 git 自己保证，复刻一遍它的行为没有意义。
  */
 
@@ -9,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { diff, isRepo, log } from './git.ts'
+import { diff, isRepo, log, status } from './git.ts'
 
 async function emptyRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -59,6 +60,44 @@ describe('revision 参数不是可信输入', () => {
       // 关键是**没有抛出「非法的 git ref」**，说明它过了校验这一关。
       expect(await log(dir, { ref: ok })).toEqual([])
     }
+  })
+})
+
+describe('每个文件改了多少行', () => {
+  /**
+   * 「没有这个数」和「零」是两件事。
+   *
+   * 跟踪中的文件按 `git diff --numstat HEAD` 给出真实增删；未跟踪的文件不在 diff 里
+   * （它没有可比的旧版本），此时两个字段**缺席**——界面据此决定不显示，而不是
+   * 画一个 +0 −0 出来说「没改动」。
+   */
+  test('跟踪中的给出增删，未跟踪的两个字段都不给', async () => {
+    const dir = await emptyRepo()
+    Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
+    Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'one\ntwo\nthree\n')
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
+
+    // 改一行、加两行；再放一个未跟踪的文件。
+    await Bun.write(join(dir, 'a.txt'), 'ONE\ntwo\nthree\nfour\nfive\n')
+    await Bun.write(join(dir, 'new.txt'), 'x\n')
+
+    const s = await status(dir)
+    const a = s?.files.find((f) => f.path === 'a.txt')
+    const n = s?.files.find((f) => f.path === 'new.txt')
+    expect(a).toMatchObject({ additions: 3, deletions: 1 })
+    expect(n?.additions).toBeUndefined()
+    expect(n?.deletions).toBeUndefined()
+  })
+
+  /** 空仓库里 `HEAD` 解析不了，整条 numstat 失败——不能因此让 status 也失败。 */
+  test('还没有提交时 status 照常返回，只是没有增删数', async () => {
+    const dir = await emptyRepo()
+    await Bun.write(join(dir, 'a.txt'), 'x\n')
+    const s = await status(dir)
+    expect(s?.files.map((f) => f.path)).toEqual(['a.txt'])
+    expect(s?.files[0]?.additions).toBeUndefined()
   })
 })
 

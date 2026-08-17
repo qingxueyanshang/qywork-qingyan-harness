@@ -959,6 +959,9 @@ interface GitFileEntry {
   path: string
   indexStatus: string
   worktreeStatus: string
+  /** 缺席 = 没有这个数（未跟踪、二进制、或者仓库还没有提交），不是 0。 */
+  additions?: number
+  deletions?: number
 }
 interface GitStatus {
   branch: string
@@ -1044,21 +1047,48 @@ function GitChanges() {
               </Show>
 
               <section class="git-section">
-                <div class="git-section-head">改动 {s().files.length}</div>
+                {/* 表头带上**这一轮总共改了多少行**：一个「339 个文件」回答不了
+                    「这次动静多大」。没有增删数的那些（未跟踪、二进制）不参与求和，
+                    所以两个数是「已知的那部分」——`sumDelta` 上写了这条口径。 */}
+                <div class="git-section-head">
+                  <span>改动 {s().files.length}</span>
+                  <Show when={sumDelta(s().files)}>
+                    {(d) => (
+                      <span class="git-delta">
+                        <span class="add">+{d().additions}</span>
+                        <span class="del">−{d().deletions}</span>
+                      </span>
+                    )}
+                  </Show>
+                </div>
                 <ul class="git-files">
                   <For each={s().files}>
                     {(f) => (
                       <li>
                         <button
                           class="git-file"
-                          classList={{ active: selected() === f.path }}
+                          classList={{ selected: selected() === f.path }}
                           type="button"
+                          title={absPath(f.path)}
                           onClick={() => setSelected(selected() === f.path ? null : f.path)}
                         >
+                          {/* 左边是**文件图标**，和文件树同一个——原来这里画的是状态字母，
+                              一列小写字母糊在最左边读不出是什么。状态改用行尾那个字母，
+                              颜色由它自己带。 */}
+                          <IconFile size={13} />
+                          {/* 完整本机路径，挤不下从左边截：尾部的文件名比盘符要紧。 */}
+                          <span class="git-path truncate-left">
+                            <span dir="ltr">{absPath(f.path)}</span>
+                          </span>
+                          <Show when={f.additions !== undefined && f.deletions !== undefined}>
+                            <span class="git-delta">
+                              <span class="add">+{f.additions}</span>
+                              <span class="del">−{f.deletions}</span>
+                            </span>
+                          </Show>
                           <span class="git-flag" data-status={statusOf(f)}>
                             {statusOf(f)}
                           </span>
-                          <span class="truncate">{f.path}</span>
                         </button>
                       </li>
                     )}
@@ -1108,6 +1138,26 @@ function diffKind(line: string): string {
 }
 
 /** porcelain v2 的状态码取更显著的一位显示；'?' 是未跟踪。 */
+/**
+ * 这一批改动一共增删多少行。
+ *
+ * **只累加有数的那些**：未跟踪的文件和二进制文件没有 numstat（见服务端
+ * `GitFileEntry` 的说明）。全是这类时返回 `null`，界面整个不显示这两个数——
+ * 显示 +0 −0 会被读成「什么都没改」。
+ */
+function sumDelta(files: GitFileEntry[]): { additions: number; deletions: number } | null {
+  let additions = 0
+  let deletions = 0
+  let known = false
+  for (const f of files) {
+    if (f.additions === undefined || f.deletions === undefined) continue
+    additions += f.additions
+    deletions += f.deletions
+    known = true
+  }
+  return known ? { additions, deletions } : null
+}
+
 function statusOf(f: GitFileEntry): string {
   if (f.indexStatus === '?') return '?'
   if (f.indexStatus === 'U' || f.worktreeStatus === 'U') return '!'
