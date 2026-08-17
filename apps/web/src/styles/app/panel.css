@@ -709,6 +709,7 @@
 .change-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--s-2);
   flex: none;
   height: 31px;
@@ -717,9 +718,6 @@
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-weight: 600;
-}
-.change-head .change-delta {
-  margin-left: auto;
 }
 .change-list {
   list-style: none;
@@ -746,15 +744,71 @@
 .change-row svg {
   flex: none;
 }
-/* 已删除的行：点不动，而且看起来就点不动。 */
-.change-row:disabled {
-  color: var(--text-tertiary);
-  cursor: default;
-}
 .change-gone {
   flex: none;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+}
+/* 「改了几次」压暗：它是次要读数，不该和增删数抢眼。 */
+.change-times {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 展开之后：这个文件的每一次改动，按先后。缩进对齐上面那行的文件名。 */
+.change-edits {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0 0 0 21px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.change-edit {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--s-2);
+}
+.edit-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.edit-no {
+  font-variant-numeric: tabular-nums;
+}
+/* 工具名占满中间，增删数就落在行尾——不用后代选择器去推那一段。 */
+.edit-tool {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/*
+ * 那一次的红绿正文。**自带一条完整规则**，不与会话流里那份 diff 共用选择器——
+ * 共用过一次的代价是删掉一处把另一处的底色、边框、字号一起带走。
+ *
+ * 高度封顶后自己滚：一次编辑可以是几百行，撑开的话上面那些行全被顶出视野。
+ */
+.change-diff {
+  margin: 2px 0 4px;
+  padding: 4px var(--s-2);
+  max-height: 200px;
+  overflow: auto;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.change-diff .add {
+  color: var(--success);
+}
+.change-diff .del {
+  color: var(--danger);
 }
 /* 选中的行不吃 hover 底色（同文件树那条）。 */
 .change-row:not(.selected):hover {
