@@ -15,6 +15,7 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
+import { diffFrom } from '../lib/step-view.ts'
 import {
   absPath,
   activePanelTab,
@@ -1037,6 +1038,20 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
 
 // ───────────────────────── 会话变更记录 ─────────────────────────
 
+/**
+ * 对一个文件的**一次**改动。
+ *
+ * `diff` 是那一次的红绿正文，来自这一步落库的入参（`edit_file` 的
+ * old_string / new_string）。**整份写出没有 diff**：`write_file` 的入参里只有新内容，
+ * 没有旧内容，硬画出来的红绿是编的。
+ */
+interface ChangeEdit {
+  tool: string
+  additions: number
+  deletions: number
+  diff: { removed: string; added: string } | null
+}
+
 /** 这条会话在一个文件上写了多少。路径同账本：工作区相对、posix 分隔符。 */
 interface ChangedFile {
   path: string
@@ -1044,6 +1059,8 @@ interface ChangedFile {
   deletions: number
   /** 最后一次对它做的是什么。`deleted` 那一档没有行数、也打不开。 */
   changeType: FileChange['changeType']
+  /** 每一次改动，按先后。**同一个文件改十次就是十条**，这才是「记录」。 */
+  edits: ChangeEdit[]
 }
 
 /**
@@ -1059,8 +1076,8 @@ interface ChangedFile {
  * 文件。这一页只回答「这条会话干了什么」。两个问题摆进同一块面板就是两本账。
  *
  * 四条口径：
- * - **一个文件只占一行**，多次改动累加行数。它说的是「这条会话在它上面写了多少」，
- *   不是「它现在和最初差多少」——后者要 patch 正文，账本里只有行数。
+ * - **一个文件一行，展开是它的每一次改动**。行上的数是这条会话在它上面写了多少
+ *   （多次累加），不是「它现在和最初差多少」——后者要整份前后文，账本里没有。
  * - **顺序是第一次被改到的先后**，不排字典序：记录读的就是先后。
  * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
  * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
@@ -1071,18 +1088,27 @@ function ChangeRecord() {
     const byPath = new Map<string, ChangedFile>()
     for (const item of state.transcript) {
       for (const c of item.outcome?.fileChanges ?? []) {
+        // 这一步的入参就在账本里，红绿正文从它来；`write_file` 取不出（只有新内容）。
+        const edit: ChangeEdit = {
+          tool: item.toolName ?? '',
+          additions: c.additions,
+          deletions: c.deletions,
+          diff: item.args ? diffFrom(item.args) : null,
+        }
         const cur = byPath.get(c.path)
         if (cur) {
           cur.additions += c.additions
           cur.deletions += c.deletions
           // 后一次说了算：删掉又重建的文件，最后那次是「建」。
           cur.changeType = c.changeType
+          cur.edits.push(edit)
         } else {
           byPath.set(c.path, {
             path: c.path,
             additions: c.additions,
             deletions: c.deletions,
             changeType: c.changeType,
+            edits: [edit],
           })
         }
       }
@@ -1091,6 +1117,15 @@ function ChangeRecord() {
   })
   const additions = () => rows().reduce((n, r) => n + r.additions, 0)
   const deletions = () => rows().reduce((n, r) => n + r.deletions, 0)
+
+  /** 展开了哪几个文件。默认全收——一屏先看清改了哪些文件，再点开要看的那个。 */
+  const [open, setOpen] = createSignal<ReadonlySet<string>>(new Set())
+  const toggle = (path: string) =>
+    setOpen((cur) => {
+      const next = new Set(cur)
+      if (!next.delete(path)) next.add(path)
+      return next
+    })
 
   // 一条都没有就整页留白：空态不写引导语。
   return (
@@ -1107,21 +1142,25 @@ function ChangeRecord() {
           <For each={rows()}>
             {(r) => (
               <li>
-                {/* 点一行 = 去「文件」那一页打开它。**这里不画 diff**：账本里只有
-                    增删行数、没有 patch 正文，画出来的只能是假的。
-                    删掉的那些点不动——没有正文可开。 */}
+                {/* 点一行 = 展开它的每一次改动。**不做成「打开文件」**：文件正文在
+                    「文件」那一页，这一页要回答的是「这条会话对它做了什么」。 */}
                 <button
                   class="change-row"
-                  classList={{ selected: openFile() === r.path }}
+                  classList={{ selected: open().has(r.path) }}
                   type="button"
-                  disabled={r.changeType === 'deleted'}
+                  aria-expanded={open().has(r.path)}
                   title={nativePath(r.path)}
-                  onClick={() => openFileInPanel(r.path)}
+                  onClick={() => toggle(r.path)}
                 >
+                  <IconChevron size={11} dir={open().has(r.path) ? 'down' : 'right'} />
                   <IconFile size={13} />
                   <span class="change-path truncate-left">
                     <span dir="ltr">{nativePath(r.path)}</span>
                   </span>
+                  {/* 改了几次只在重复改过时说：写一次的文件标「1 次」是废话。 */}
+                  <Show when={r.edits.length > 1}>
+                    <span class="change-times">{r.edits.length} 次</span>
+                  </Show>
                   {/* 删掉的不报行数：`delete_memory` 给的是 0/0，画成 +0 −0
                       会被读成「什么都没改」。 */}
                   <Show
@@ -1134,6 +1173,36 @@ function ChangeRecord() {
                     </span>
                   </Show>
                 </button>
+                <Show when={open().has(r.path)}>
+                  <ol class="change-edits">
+                    <For each={r.edits}>
+                      {(e, i) => (
+                        <li class="change-edit">
+                          <div class="edit-head">
+                            <span class="edit-no">#{i() + 1}</span>
+                            <span class="edit-tool">{editLabel(e.tool)}</span>
+                            <span class="change-delta">
+                              <span class="add">+{e.additions}</span>
+                              <span class="del">−{e.deletions}</span>
+                            </span>
+                          </div>
+                          <Show when={e.diff}>
+                            {(d) => (
+                              <pre class="change-diff">
+                                <Show when={d().removed}>
+                                  <span class="del">{d().removed}</span>
+                                </Show>
+                                <Show when={d().added}>
+                                  <span class="add">{d().added}</span>
+                                </Show>
+                              </pre>
+                            )}
+                          </Show>
+                        </li>
+                      )}
+                    </For>
+                  </ol>
+                </Show>
               </li>
             )}
           </For>
@@ -1141,6 +1210,20 @@ function ChangeRecord() {
       </div>
     </Show>
   )
+}
+
+/**
+ * 这一次改动是怎么做的。
+ *
+ * 认不出的工具名原样显示——写类工具是可以增加的（插件也能给），
+ * 回落成「编辑」会把一次整份覆盖说成一次小改。
+ */
+function editLabel(tool: string): string {
+  if (tool === 'edit_file') return '编辑'
+  if (tool === 'write_file') return '整份写出'
+  if (tool === 'save_memory') return '记忆'
+  if (tool === 'delete_memory') return '删除记忆'
+  return tool
 }
 
 /**
