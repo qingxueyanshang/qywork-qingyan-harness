@@ -122,6 +122,20 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/git/branches') {
     return json({ branches: await git.branches(d.workspaceRoot) })
   }
+  /*
+   * 切分支。git 这一侧唯一会改工作区的接口。
+   *
+   * 切不过去（最常见：本地改动会被覆盖）回 409 + git 的原话——那句话就是用户
+   * 需要看的东西。**不替他 stash、不加 --force**：那是拿他的改动换一次成功。
+   */
+  if (p === '/api/git/checkout' && req.method === 'POST') {
+    const body = (await req.json().catch(() => null)) as { name?: string } | null
+    const name = body?.name?.trim()
+    if (!name) return json({ error: 'invalid', message: '要切到哪个分支' }, 422)
+    const r = await git.checkout(d.workspaceRoot, name)
+    if (!r.ok) return json({ error: 'checkout_failed', message: r.err || '切换失败' }, 409)
+    return json({ ok: true })
+  }
   if (p === '/api/git/log') {
     return json({
       commits: await git.log(d.workspaceRoot, {

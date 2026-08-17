@@ -18,7 +18,7 @@ import {
   watchWorkspace,
 } from './settings.ts'
 import { setState, state } from './state.ts'
-import { setWorkspace } from './ui.ts'
+import { setOpenFile, setWorkspace } from './ui.ts'
 
 /**
  * 拉这个项目的会话列表，并保证**总有一条是活动的**。
@@ -54,11 +54,17 @@ export async function loadConversations(): Promise<void> {
  *
  * 会话选择要清空：那个 id 属于上一个项目，留着会让界面去订阅一条
  * 在新项目里不存在的会话。
+ *
+ * **打开的文件也要清空**，理由同上：那是上一个项目里的相对路径。留着的话新项目里
+ * 大概率没有这个文件，面板会给一块取不到内容的空白，而它旁边的树已经是新项目的了。
+ * 面板里那些「展开了哪些目录 / 选中了哪一行 / 正在看哪个 diff」不在这里清——
+ * 它们是面板的局部状态，由 `SidePanel` 按项目 id 整块重挂负责（见那边的注释）。
  */
 export async function activateWorkspace(path: string): Promise<void> {
   // 切过去用的是同一条 upsert：只给路径，名字由服务端沿用账本里那一行的。
   const { workspace: ws } = await addWorkspace({ path })
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
+  setOpenFile(null)
   setState({ activeConversation: null, transcript: [], fileChanges: [], error: null, git: null })
   client.subscribe([])
   await loadConversations()
