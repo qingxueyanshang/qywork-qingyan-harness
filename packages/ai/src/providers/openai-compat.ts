@@ -27,6 +27,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
+import { PROVIDER_HTTP } from '../types.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_compatible' as const
@@ -59,6 +60,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
     this.spec = spec
     this.client = new OpenAI({
       apiKey: profile.apiKey || 'unset',
+      ...PROVIDER_HTTP,
       ...(profile.baseUrl ? { baseURL: profile.baseUrl } : {}),
       ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
     })

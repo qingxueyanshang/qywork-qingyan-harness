@@ -59,6 +59,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
+import { PROVIDER_HTTP } from '../types.ts'
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 
@@ -109,16 +110,40 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     /** 按 output_index 累积的工具调用。参数是分片到达的。 */
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
+    /*
+     * 连接超时：**只管到响应头到达为止**，之后必须撤掉。
+     *
+     * 直接 `AbortSignal.timeout()` 会把正文流一起掐了——一次长生成跑过这个数
+     * 就断在半路。所以自己起一个定时器，`fetch` 一 resolve 就清掉，
+     * 与两个官方 SDK 的做法一致（它们在 fetch 的 finally 里 clearTimeout）。
+     *
+     * 用户按停止走的是 `req.signal`，与这条超时是两回事，所以下面要分开认：
+     * 混起来会把「连不上」报成「已取消」。
+     */
+    const connect = new AbortController()
+    const timer = setTimeout(() => connect.abort(), PROVIDER_HTTP.timeout)
+    const signal = req.signal ? AbortSignal.any([req.signal, connect.signal]) : connect.signal
+
     let res: Response
     try {
       res = await fetch(`${this.baseUrl}/responses`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ ...body, stream: true }),
-        ...(req.signal ? { signal: req.signal } : {}),
+        signal,
       })
     } catch (err) {
+      if (connect.signal.aborted) {
+        throw new ProviderError({
+          code: 'network_error',
+          message: `连接超时：${PROVIDER_HTTP.timeout / 1000} 秒内没有收到响应`,
+          retryable: true,
+          provider: 'openai_responses',
+        })
+      }
       throw classifyProviderError('openai_responses', err)
+    } finally {
+      clearTimeout(timer)
     }
 
     if (!res.ok) {

@@ -74,3 +74,43 @@ describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => 
     )
   })
 })
+
+/**
+ * 传输参数：**两个 SDK 的出厂值必须被覆盖掉。**
+ *
+ * `@anthropic-ai/sdk` 与 `openai` 都是 `timeout: 600_000` + `maxRetries: 2`。
+ * 网络断掉时那组值的表现是：界面挂着「正在执行」好几分钟，然后才报网络不可达
+ * （实测一条 381.9s 的 run，最后一次模型回包之后干等了 301s，三次连接尝试）。
+ *
+ * 读的是客户端实例上的字段，不是「我传了这个对象」——中间少写一层展开、
+ * 或者被后面的 `...profile` 覆盖掉，都是这条断言抓得住而参数快照抓不住的。
+ */
+describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', () => {
+  const clientOf = (a: unknown) => (a as { client: { timeout: number; maxRetries: number } }).client
+
+  test('openai 兼容协议：60 秒、不自动重试', () => {
+    const c = clientOf(buildAdapter({ ...base, apiKey: 'sk-x' }))
+    expect(c.timeout).toBe(60_000)
+    expect(c.maxRetries).toBe(0)
+  })
+
+  test('anthropic 原生同一套值', () => {
+    const c = clientOf(buildAdapter({ kind: 'anthropic', model: 'claude-opus-5', apiKey: 'sk-x' }))
+    expect(c.timeout).toBe(60_000)
+    expect(c.maxRetries).toBe(0)
+  })
+
+  /** baseUrl / headers 排在展开之后，不能把这两个值挤掉。 */
+  test('自定义端点与请求头不会覆盖掉它', () => {
+    const c = clientOf(
+      buildAdapter({
+        ...base,
+        apiKey: 'sk-x',
+        baseUrl: 'https://gateway.example.com/v1',
+        headers: { 'x-foo': 'bar' },
+      }),
+    )
+    expect(c.timeout).toBe(60_000)
+    expect(c.maxRetries).toBe(0)
+  })
+})
