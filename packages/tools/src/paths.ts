@@ -11,9 +11,35 @@
 import { readlink, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
+/**
+ * 越界被拒。
+ *
+ * ## 这条回话必须说清「接下来怎么办」
+ *
+ * 账本里留下过一次实证：模型读桌面上的某个项目被拒，只拿到一句
+ * 「工具 read_file 执行出错: 路径越界」，于是它把这当成偶发故障，转头用
+ * `run_command` 绕过去（shell 只锁 cwd，命令正文里 `cd` 得出去），也没告诉用户
+ * 发生了什么。**一条被当成崩溃的策略判定，模型只会去找绕路。**
+ *
+ * 所以这里三件事一起说：为什么、哪条路真的能走通、以及别去绕。
+ * 「切成完全访问」不在其中——那个开关管的是权限闸（要不要弹窗），
+ * 路径边界不归它管（CLAUDE.md E），写进去只会让用户白切一次。
+ *
+ * `errorKind` 让注册表把它当**判定**而不是异常端出去（见 `agent/registry.ts`
+ * 的 catch）：`executed: false`，且不套「执行出错」的壳。
+ */
 export class PathEscapeError extends Error {
+  readonly errorKind = 'path_out_of_workspace'
+
   constructor(readonly attempted: string) {
-    super(`路径越界，已拒绝：${attempted}`)
+    super(
+      `路径越界，已拒绝：${attempted}\n` +
+        '这个路径不在工作区（以及配置里显式放行的额外目录）之内。' +
+        '路径边界不受权限模式影响——切成「完全访问」也不会放开它。\n' +
+        '要么改用工作区内的路径继续，要么停下来告诉用户：' +
+        '需要把这个目录加进配置的 additionalDirectories 才能读写它。' +
+        '不要改用 run_command 去绕过这条边界。',
+    )
     this.name = 'PathEscapeError'
   }
 }

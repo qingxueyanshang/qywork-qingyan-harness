@@ -7,7 +7,7 @@
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 
@@ -89,19 +89,40 @@ export const grepTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   async fn(args, ctx) {
-    const root = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
+    const target = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
       mustExist: true,
     })
     const pattern = String(args.pattern)
     const ci = args.case_insensitive === true
     const fileGlob = typeof args.glob === 'string' ? args.glob : undefined
 
-    const viaRg = await runRipgrep(root, pattern, { ci, ...(fileGlob ? { glob: fileGlob } : {}) })
+    /*
+     * **起点可以是一个文件，不只是目录。** 模型很自然会写
+     * `grep(pattern, path="js/game.js")`——rg 本来就支持，而两条实现路径都曾把
+     * 起点当目录用：rg 那条拿文件当 `cwd` 去 spawn（直接抛，落到降级），
+     * 降级那条对文件 `readdir`（抛，被 catch 成空数组）。合起来的表现是
+     * **一次 `success` 的 0 命中**——比报错坏得多，模型会当成「这个符号不存在」。
+     *
+     * 所以起点在这里拆成「在哪搜」和「搜什么」：目录搜整棵树，文件只搜它自己。
+     */
+    const info = await stat(target)
+    const isDir = info.isDirectory()
+    const cwd = isDir ? target : dirname(target)
+    const needle = isDir ? '.' : basename(target)
+
+    const viaRg = await runRipgrep(cwd, needle, pattern, {
+      ci,
+      ...(fileGlob ? { glob: fileGlob } : {}),
+    })
     if (viaRg) {
       return {
         status: 'success',
         message: `命中 ${viaRg.lines.length} 行（ripgrep）`,
-        data: { matches: viaRg.lines, truncated: viaRg.truncated, engine: 'ripgrep' },
+        data: {
+          matches: viaRg.lines.map((l) => rebaseLine(l, cwd, ctx.workspaceRoot)),
+          truncated: viaRg.truncated,
+          engine: 'ripgrep',
+        },
       }
     }
 
@@ -110,6 +131,19 @@ export const grepTool: ToolSpec = {
     const globMatcher = fileGlob ? new Bun.Glob(fileGlob) : null
     const lines: string[] = []
     let truncated = false
+
+    const scanFile = async (abs: string): Promise<void> => {
+      if (globMatcher && !globMatcher.match(basename(abs))) return
+      const stats = await stat(abs).catch(() => null)
+      if (!stats || stats.size > 2 * 1024 * 1024) return
+      const text = await readFile(abs, 'utf8').catch(() => null)
+      if (text === null) return
+      const rel = toPosix(relative(ctx.workspaceRoot, abs))
+      text.split('\n').forEach((line, i) => {
+        if (lines.length >= MAX_RESULTS) return
+        if (re.test(line)) lines.push(`${rel}:${i + 1}:${line.trim().slice(0, 400)}`)
+      })
+    }
 
     const walk = async (dir: string): Promise<void> => {
       if (lines.length >= MAX_RESULTS) {
@@ -127,20 +161,11 @@ export const grepTool: ToolSpec = {
           await walk(join(dir, e.name))
           continue
         }
-        if (globMatcher && !globMatcher.match(e.name)) continue
-        const abs = join(dir, e.name)
-        const info = await stat(abs).catch(() => null)
-        if (!info || info.size > 2 * 1024 * 1024) continue
-        const text = await readFile(abs, 'utf8').catch(() => null)
-        if (text === null) continue
-        const rel = toPosix(relative(ctx.workspaceRoot, abs))
-        text.split('\n').forEach((line, i) => {
-          if (lines.length >= MAX_RESULTS) return
-          if (re.test(line)) lines.push(`${rel}:${i + 1}:${line.trim().slice(0, 400)}`)
-        })
+        await scanFile(join(dir, e.name))
       }
     }
-    await walk(root)
+    if (isDir) await walk(target)
+    else await scanFile(target)
 
     return {
       status: 'success',
@@ -152,13 +177,25 @@ export const grepTool: ToolSpec = {
 
 async function runRipgrep(
   cwd: string,
+  needle: string,
   pattern: string,
   opts: { ci: boolean; glob?: string },
 ): Promise<{ lines: string[]; truncated: boolean } | null> {
-  const argv = ['rg', '--line-number', '--no-heading', '--color', 'never', '--max-count', '50']
+  // `--with-filename` 不能省：只给一个文件当搜索起点时 rg 默认不打印文件名，
+  // 输出会退化成 `行号:内容`，重挂路径那一步就无从下手，模型拿到的命中不带位置。
+  const argv = [
+    'rg',
+    '--line-number',
+    '--with-filename',
+    '--no-heading',
+    '--color',
+    'never',
+    '--max-count',
+    '50',
+  ]
   if (opts.ci) argv.push('--ignore-case')
   if (opts.glob) argv.push('--glob', opts.glob)
-  argv.push('--regexp', pattern, '.')
+  argv.push('--regexp', pattern, needle)
 
   try {
     const proc = Bun.spawn(argv, { cwd, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
@@ -166,10 +203,7 @@ async function runRipgrep(
     const code = await proc.exited
     // rg 的退出码 1 = 没有命中，不是错误。>1 才是真失败。
     if (code > 1) return null
-    // rg 输出的是相对 cwd 的原生路径（Windows 上带反斜杠、且以 ./ 开头）。
-    // 必须归一成与降级路径一致的 posix 相对路径——同一个工具在两条实现路径上
-    // 返回不同的路径格式，模型会照着拼出打不开的路径。
-    const all = stdout.split('\n').filter(Boolean).map(normalizeRgLine)
+    const all = stdout.split('\n').filter(Boolean)
     return { lines: all.slice(0, MAX_RESULTS), truncated: all.length > MAX_RESULTS }
   } catch {
     return null
@@ -178,10 +212,16 @@ async function runRipgrep(
 
 const toPosix = (p: string) => p.split(sep).join('/')
 
-/** `.\src\main.ts:1:内容` → `src/main.ts:1:内容`，只动路径段，不碰内容里的分隔符。 */
-function normalizeRgLine(line: string): string {
+/**
+ * `路径:行号:内容` 里的路径重挂到工作区根上，只动路径段，不碰内容里的冒号。
+ *
+ * **rg 的路径是相对搜索起点的，不是相对工作区的。** 只剥 `./` 前缀的话，
+ * `path="js"` 搜出来的 `game.js:486` 会原样端给模型，而它照着去 `read_file`
+ * 只会拿到「文件不存在」——真实路径是 `js/game.js`。降级遍历那条一直是按
+ * 工作区算的，两条路必须给出同一种路径，否则同一个工具会随 rg 装没装而变。
+ */
+function rebaseLine(line: string, cwd: string, workspaceRoot: string): string {
   const m = /^(.*?):(\d+):(.*)$/s.exec(line)
   if (!m) return line
-  const path = toPosix(m[1]!).replace(/^\.\//, '')
-  return `${path}:${m[2]}:${m[3]}`
+  return `${toPosix(relative(workspaceRoot, resolve(cwd, m[1]!)))}:${m[2]}:${m[3]}`
 }

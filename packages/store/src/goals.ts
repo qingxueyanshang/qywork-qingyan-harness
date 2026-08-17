@@ -3,10 +3,10 @@
  *
  * ## 为什么规则在这里，不在工具里
  *
- * 三个写入方：模型的 `create_goal` / `update_goal`（经端口下来）、服务端的自动
- * 续起（轮次 +1）、用户在界面上点继续。**生命周期转移和 revision 递增是账本的
- * 一致性规则**，散到三个调用方去守就是三份会漂移的判断——这一条与本包其余部分
- * 同一口径（见 `repos.ts` 顶部）。
+ * 三个写入方：用户（`/goal` 立或改写、点继续）、服务端（中断转 paused、
+ * 异常转 blocked）、模型（只有 `complete` / `blocked` 两个出口，经端口下来）。**生命周期转移和 revision 递增是账本的一致性规则**，
+ * 散到三个调用方去守就是三份会漂移的判断——这一条与本包其余部分同一口径
+ * （见 `repos.ts` 顶部）。
  *
  * ## 事件溯源，回放时校验
  *
@@ -26,15 +26,6 @@
 import type { ConversationId, Goal, GoalAction, GoalStatus, GoalWriteResult } from '@qywork/core'
 import { newGoalId } from '@qywork/core'
 import type { Store } from './db.ts'
-
-/**
- * 轮数上限的默认值与硬顶。
- *
- * 硬顶那个数还出现在 `create_goal` 的参数描述里（`tools/goals.ts`）——那句话是
- * 给模型看的，改这里要顺手改它，否则模型会按一个已经不成立的范围填参数。
- */
-const DEFAULT_MAX_ROUNDS = 12
-export const MAX_MAX_ROUNDS = 50
 
 /**
  * 合法的生命周期转移。**`completed` 是终态**，从它出发一条边都没有——
@@ -61,25 +52,16 @@ export function currentGoal(store: Store, conversationId: ConversationId): Goal 
 /**
  * 立一个目标。
  *
- * `maxRounds` 越界不静默夹到边界值——模型给 200 时它想要的是 200，
- * 悄悄改成 50 之后它会按 200 规划工作量。说出来让它自己重来。
+ * **没有轮数参数。** 循环的出口是模型自检（`complete` / `blocked`）与用户点停止，
+ * 不是配额——理由见 `core` 里 `Goal` 的注释。
  */
 export function createGoal(
   store: Store,
-  input: { conversationId: ConversationId; objective: string; maxRounds?: number },
+  input: { conversationId: ConversationId; objective: string },
 ): GoalWriteResult {
   const objective = input.objective.trim()
   if (!objective) {
     return { ok: false, code: 'invalid_objective', message: 'objective 不能为空' }
-  }
-
-  const maxRounds = input.maxRounds ?? DEFAULT_MAX_ROUNDS
-  if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > MAX_MAX_ROUNDS) {
-    return {
-      ok: false,
-      code: 'invalid_max_rounds',
-      message: `max_rounds 只能是 1–${MAX_MAX_ROUNDS} 的整数，收到 ${String(input.maxRounds)}`,
-    }
   }
 
   const existing = currentGoal(store, input.conversationId)
@@ -99,8 +81,6 @@ export function createGoal(
     conversationId: input.conversationId,
     objective,
     status: 'active',
-    round: 0,
-    maxRounds,
     revision: 1,
     blockedCode: null,
     blockedReason: null,
@@ -178,37 +158,6 @@ export function updateGoal(
   }
 
   return commit(store, goal, patch)
-}
-
-/**
- * 轮次 +1，由服务端在真正发起下一轮之前调。
- *
- * **先记账再发起**，不是发起之后再补：中间任何一步失败都会让「跑了几轮」
- * 比实际少，而这个数是唯一的护栏。
- */
-export function advanceGoalRound(
-  store: Store,
-  input: { conversationId: ConversationId; goalId: string; revision: number },
-): GoalWriteResult {
-  const found = load(store, input.conversationId, input.goalId, input.revision)
-  if (!found.ok) return found
-  const goal = found.goal
-
-  if (goal.status !== 'active') {
-    return {
-      ok: false,
-      code: 'not_active',
-      message: `目标当前是 ${goal.status}，不能续起`,
-    }
-  }
-  if (goal.round >= goal.maxRounds) {
-    return {
-      ok: false,
-      code: 'max_rounds',
-      message: `已经跑满 ${goal.maxRounds} 轮`,
-    }
-  }
-  return commit(store, goal, { round: goal.round + 1 })
 }
 
 // ─────────────────────────────── 内部 ───────────────────────────────

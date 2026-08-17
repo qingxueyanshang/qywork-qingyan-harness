@@ -194,6 +194,7 @@ export type ClientCommand =
   | SetModelCommand
   | CompactCommand
   | GoalResumeCommand
+  | GoalSetCommand
 
 export interface SendMessageCommand {
   type: 'message.send'
@@ -256,6 +257,25 @@ export interface CompactCommand {
 export interface GoalResumeCommand {
   type: 'goal.resume'
   conversationId: ConversationId
+}
+
+/**
+ * 用户用 `/goal` 立一个目标，或改写现在这个。**这是立目标的唯一入口。**
+ *
+ * 模型手里没有 `create_goal`：它得在第二步就判「这活要不要跨轮」，而那个信息
+ * 它当时没有。账本里留下过一次实证——模型开局立了个目标，同一个 run 里
+ * 自己 complete 掉，自动续起一轮没起，用户全程只看见一条没动过的目标条。
+ *
+ * **立完当场起一轮**，和「继续」走同一个排队入口。
+ *
+ * 只有 `objective` 一个参数：这个循环没有轮数上限（见 `Goal` 的注释），
+ * 出口是模型自检与用户点停止，所以没有第二个数要用户去填。
+ */
+export interface GoalSetCommand {
+  type: 'goal.set'
+  conversationId: ConversationId
+  /** 要做到什么。空字符串由服务端拒绝，不静默忽略。 */
+  objective: string
 }
 
 /**

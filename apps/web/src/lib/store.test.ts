@@ -357,8 +357,6 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     conversationId: 'cv_1',
     objective: '把门禁跑绿',
     status: 'active',
-    round: 3,
-    maxRounds: 12,
     revision: 4,
     blockedCode: null,
     blockedReason: null,
@@ -369,7 +367,7 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
   test('目标变更实时落进 state', () => {
     setState({ activeConversation: 'cv_1', goal: null })
     applyEvent({ seq: 1, at: 0, conversationId: 'cv_1', event: { type: 'goal', goal } } as never)
-    expect(state.goal?.round).toBe(3)
+    expect(state.goal?.objective).toBe('把门禁跑绿')
   })
 
   test('别的会话的目标不落到当前会话上', () => {
@@ -384,8 +382,8 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
   })
 
   /**
-   * **原始失败形状**：目标撞上轮数上限停了，用户刷新一次页面——目标、第几轮、
-   * 为什么停，界面上一样都没有，只剩一条看起来正常结束的会话。
+   * **原始失败形状**：目标停在受阻上，用户刷新一次页面——目标是什么、为什么停，
+   * 界面上一样都没有，只剩一条看起来正常结束的会话。
    */
   test('重拉会话时从账本读回来，理由跟着一起回来', async () => {
     setState({ activeConversation: 'cv_1', goal: null, transcript: [] })
@@ -396,8 +394,8 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
           goal: {
             ...goal,
             status: 'blocked',
-            blockedCode: 'max_rounds',
-            blockedReason: '已经自动跑满 12 轮还没达成，停下来等你决定。',
+            blockedCode: 'no_progress',
+            blockedReason: '上一轮在原地打转：同样的调用、同样的结果。',
           },
         }
       }
@@ -408,6 +406,6 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     await reloadActiveConversation()
 
     expect(state.goal?.status).toBe('blocked')
-    expect(state.goal?.blockedReason).toContain('跑满 12 轮')
+    expect(state.goal?.blockedReason).toContain('原地打转')
   })
 })

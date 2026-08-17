@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
-import { advanceGoalRound, createGoal, currentGoal, MAX_MAX_ROUNDS, updateGoal } from './goals.ts'
+import { createGoal, currentGoal, updateGoal } from './goals.ts'
 import { createConversation, upsertWorkspace } from './repos.ts'
 
 function fresh() {
@@ -20,17 +20,16 @@ function fresh() {
 
 /** 立一个目标并断言成功，省掉每个用例里的三行解包。 */
 function seed(store: Store, conversationId: ReturnType<typeof fresh>['conversationId']) {
-  const r = createGoal(store, { conversationId, objective: '把测试跑绿', maxRounds: 3 })
+  const r = createGoal(store, { conversationId, objective: '把测试跑绿' })
   if (!r.ok) throw new Error(r.message)
   return r.goal
 }
 
 describe('立目标', () => {
-  test('立完就能读回来，revision 从 1 起、轮次从 0 起', () => {
+  test('立完就能读回来，revision 从 1 起', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     expect(goal.revision).toBe(1)
-    expect(goal.round).toBe(0)
     expect(goal.status).toBe('active')
     expect(currentGoal(store, conversationId)).toEqual(goal)
     store.close()
@@ -65,15 +64,6 @@ describe('立目标', () => {
     const third = createGoal(store, { conversationId, objective: '另一件事' })
     expect(third.ok).toBe(true)
     if (third.ok) expect(third.goal.id).not.toBe(first.id)
-    store.close()
-  })
-
-  test('max_rounds 越界直接拒，不静默夹到边界值', () => {
-    const { store, conversationId } = fresh()
-    const r = createGoal(store, { conversationId, objective: 'x', maxRounds: MAX_MAX_ROUNDS + 1 })
-    expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.code).toBe('invalid_max_rounds')
-    expect(currentGoal(store, conversationId)).toBeNull()
     store.close()
   })
 })
@@ -206,57 +196,6 @@ describe('改目标', () => {
     expect(resumed.goal.status).toBe('active')
     expect(resumed.goal.blockedReason).toBeNull()
     expect(resumed.goal.blockedCode).toBeNull()
-    store.close()
-  })
-})
-
-describe('轮次', () => {
-  test('每续起一轮 +1，版本跟着走；跑满就拒', () => {
-    const { store, conversationId } = fresh()
-    let goal = seed(store, conversationId) // maxRounds = 3
-
-    for (let i = 1; i <= 3; i++) {
-      const r = advanceGoalRound(store, {
-        conversationId,
-        goalId: goal.id,
-        revision: goal.revision,
-      })
-      expect(r.ok).toBe(true)
-      if (!r.ok) return
-      expect(r.goal.round).toBe(i)
-      expect(r.goal.revision).toBe(goal.revision + 1)
-      goal = r.goal
-    }
-
-    const over = advanceGoalRound(store, {
-      conversationId,
-      goalId: goal.id,
-      revision: goal.revision,
-    })
-    expect(over.ok).toBe(false)
-    if (!over.ok) expect(over.code).toBe('max_rounds')
-    store.close()
-  })
-
-  test('暂停中的目标不许续起', () => {
-    const { store, conversationId } = fresh()
-    const goal = seed(store, conversationId)
-    const paused = updateGoal(store, {
-      conversationId,
-      goalId: goal.id,
-      revision: goal.revision,
-      action: 'pause',
-    })
-    expect(paused.ok).toBe(true)
-    if (!paused.ok) return
-
-    const r = advanceGoalRound(store, {
-      conversationId,
-      goalId: goal.id,
-      revision: paused.goal.revision,
-    })
-    expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.code).toBe('not_active')
     store.close()
   })
 })

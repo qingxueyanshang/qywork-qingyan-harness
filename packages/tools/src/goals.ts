@@ -1,39 +1,43 @@
 /**
- * 目标：立一个跨轮次的目标，让 agent 一轮接一轮做下去。
+ * 目标：一个跨轮次的目标，让 agent 一轮接一轮做下去。
+ *
+ * ## 立目标是用户的动作，不是模型的
+ *
+ * **模型手里没有 `create_goal`。** 目标只能由用户用 `/goal` 立
+ * （`server/commands.ts` 的 `goal.set` → `run-control.ts` 的 `setGoal`）。
+ * 理由是决策时机：模型要在第二步就判「这活要不要跨轮」，而那个信息它当时没有。
+ * 账本里留下过一次实证——模型开局立了个 8 轮的目标，同一个 run 里就自己
+ * complete 掉了，自动续起一轮没起，用户全程只看到界面上挂着「第 0 / 8 轮」。
+ *
+ * 所以模型侧只剩**循环的出口**：做到了 → `complete`，做不下去 → `blocked`。
+ * 立、改、暂停、继续都在用户那侧。少了出口的话，每个目标都得耗满轮数才停。
  *
  * ## 它和待办是两件事
  *
- * `write_todos` 管**这一轮**的清单，一轮结束就没人再看它。目标管的是**轮与轮之间**：
- * 目标是 `active` 的时候，每一轮 run 收尾都会自动再起一轮
- * （`server/run-control.ts` 的 `startRun` finally），直到做完、被暂停，或撞上轮数上限。
+ * `write_todos` 管**这一轮**的清单。目标管的是**轮与轮之间**：目标是 `active`
+ * 的时候，每一轮 run 收尾都会自动再起一轮（`run-control.ts` 的 `startRun` finally）。
  *
- * ## 边界（三条都写进了 description，不是只在这里说说）
+ * ## 边界
  *
- * - **同时只有一个目标**，不做并行目标。
- * - **只有轮数上限，不是资源预算**：不计 token、不计钱、不计时间。
+ * - **没有轮数上限，也没有资源预算**：出口只有模型自检（`complete` / `blocked`）
+ *   和用户点停止。所以那两个动作是这个循环唯一的正常刹车，描述里必须说清。
  * - **不自动重试异常**：provider 报错、落盘失败之后目标转 `blocked` 停下等人，
  *   隐式重试会把一次故障放大成一串。
- *
- * ## 三个工具，不是五个
- *
- * 暂停 / 继续 / 完成 / 受阻 / 改写共享同一组必填参数（`goal_id` + `revision`），
- * 差异只在两条条件必填，所以它们是**一个 `update_goal` 门面**（见方案 §4.1 第二档）。
- * 而 `read_goal`（无参、只读）与 `create_goal`（不需要 revision）跟它们不同形，
- * 各自独立。
  */
 
 import type { ToolOutcome, ToolSpec } from '@qywork/agent'
 import type { Goal, GoalAction } from '@qywork/core'
 
 /**
- * 三个工具都要说的那两句：一个目标、轮数是唯一护栏。
+ * 两个工具都要说的那句：**循环不会自己停**。
  *
- * 它们不是补充说明，是**能力边界**（CLAUDE.md B7）——不写的话模型会立第二个目标、
- * 或者以为跑不完是因为没钱了。
+ * 它不是补充说明，是**能力边界**（CLAUDE.md B7）。不写的话模型会以为有个轮数
+ * 或预算在兜底，于是「还没做完就先不管了」——而实际上除了它自己宣布收尾，
+ * 只剩用户手动点停止。
  */
 const BOUNDARY =
-  '同一条会话同时只能有一个目标。' +
-  '唯一的护栏是轮数上限（max_rounds）：不计 token、不计费用、不计时间。'
+  '这个循环没有轮数上限，也不计 token、费用、时间：' +
+  '除非你宣布完成或受阻，它会一直自动续起下去，直到用户手动停止。'
 
 /** 端口没接上时的统一回话。降级要说得出**为什么**，不能只说失败。 */
 function noPort(): ToolOutcome {
@@ -44,9 +48,9 @@ function noPort(): ToolOutcome {
   }
 }
 
-/** 给模型看的目标全文。三个工具的回执共用一份，各写一遍必然漂。 */
+/** 给模型看的目标全文。两个工具的回执共用一份，各写一遍必然漂。 */
 function describe(goal: Goal): string {
-  const head = `目标 ${goal.id}（revision ${goal.revision}，状态 ${goal.status}，第 ${goal.round}/${goal.maxRounds} 轮）`
+  const head = `目标 ${goal.id}（revision ${goal.revision}，状态 ${goal.status}）`
   const blocked = goal.blockedReason
     ? `\n受阻原因（${goal.blockedCode}）：${goal.blockedReason}`
     : ''
@@ -55,9 +59,15 @@ function describe(goal: Goal): string {
 
 export const readGoalTool: ToolSpec = {
   name: 'read_goal',
+  /*
+   * 别以为续起提示词已经带了目标全文就能删掉它：**用户插话的那一轮没有那段提示词**
+   * （人类消息会解除续起标记，`run-control.ts` 的 `disarm`），而目标还活着。
+   * 用户说「行了，把目标结掉」时，模型只有这里够得到 goal_id 与 revision。
+   * revision 撞车之后的恢复也只有这一条路。
+   */
   description:
-    '读回当前会话的目标：目标正文、状态、已经自动跑了第几轮、以及改它要用的 revision。' +
-    '改目标之前先读一次——revision 对不上会被拒。' +
+    '读回当前会话的目标：目标正文、状态、以及 goal_id 与 revision。' +
+    '宣布完成或受阻之前先读一次——revision 对不上会被拒。' +
     BOUNDARY,
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
@@ -79,74 +89,28 @@ export const readGoalTool: ToolSpec = {
   },
 }
 
-export const createGoalTool: ToolSpec = {
-  name: 'create_goal',
-  description:
-    '立一个跨轮次的目标：目标是 active 状态时，这一轮做完之后系统会自动再起一轮，' +
-    '直到你调 update_goal 宣布完成 / 受阻，或者跑满 max_rounds。' +
-    '只有多轮才做得完的任务才立目标；一轮就能做完的直接做，别立。' +
-    BOUNDARY,
-  parameters: {
-    type: 'object',
-    properties: {
-      objective: {
-        type: 'string',
-        description: '要做到什么。写成可验证的样子——「测试全绿」而不是「改进测试」',
-      },
-      max_rounds: {
-        type: 'integer',
-        description: '最多自动跑几轮，1–50，不给按默认值。人类自己发的消息不算轮次',
-      },
-    },
-    required: ['objective'],
-    additionalProperties: false,
-  },
-  actionKind: 'write',
-  objectLabel: '目标',
-  category: 'goal',
-  facet: '目标账本',
-  summary: '立一个跨轮次自动续起的目标',
-  targetExtractor: () => null,
-  // 纯内部记账：续起走的是与手动发消息完全相同的 `startRun` 与同一份 config，
-  // 立一个目标不会拿到任何当前拿不到的权限。
-  permissionEffect: 'internal_control',
-  parallelSafe: false,
-
-  async fn(args, ctx) {
-    const port = ctx.goals
-    if (!port) return noPort()
-
-    const maxRounds = args.max_rounds === undefined ? undefined : Number(args.max_rounds)
-    const result = port.create({
-      objective: String(args.objective ?? ''),
-      ...(maxRounds === undefined ? {} : { maxRounds }),
-    })
-    if (!result.ok) {
-      return { status: 'failure', message: result.message, errorKind: result.code }
-    }
-    return {
-      status: 'success',
-      message: `已立目标，做完这一轮会自动继续。\n${describe(result.goal)}`,
-      data: { goal: result.goal },
-    }
-  },
-}
-
-const ACTIONS: GoalAction[] = ['edit', 'pause', 'resume', 'complete', 'blocked']
+/**
+ * 模型能对目标做的**两个**动作，就是循环的两个出口。
+ *
+ * `edit` / `pause` / `resume` 不在这里：目标是用户下的令，改它、停它、接着跑
+ * 都是用户的动作（`/goal` 与目标条上那两个按钮）。模型 resume 一个用户刚停掉的
+ * 循环，是把用户的决定推翻；模型 edit 目标正文，是把用户下的令改成别的。
+ * 账本层仍留着这三个动作——它们的生产者在服务端与用户那一侧，不是死代码。
+ */
+const ACTIONS: GoalAction[] = ['complete', 'blocked']
 
 export const updateGoalTool: ToolSpec = {
   name: 'update_goal',
   description:
-    '改当前目标的状态或正文。五个动作：' +
-    'edit=改目标正文（**必须同时给 objective**）；' +
-    'pause=先停下，之后能继续；' +
-    'resume=接着做，下一轮会自动起来；' +
-    'complete=已经做到了，循环结束；' +
+    '给这个循环收尾。两个动作：' +
+    'complete=目标已经做到了，循环结束；' +
     'blocked=做不下去了（**必须同时给 blocked_reason**，写清卡在哪、需要什么才能继续）。' +
     'goal_id 与 revision 必填，先用 read_goal 读到最新的那一对——' +
     'revision 对不上会被拒，那说明目标在你读到之后被改过了。' +
     '目标没达成就别调 complete：宣布完成之前先给出证据（跑一次命令、读一次文件）。' +
-    'provider 报错、工具连续失败这类异常一律走 blocked，不要自己一轮轮重试。',
+    'provider 报错、工具连续失败这类异常一律走 blocked，不要自己一轮轮重试。' +
+    '目标是用户立的，你改不了它的正文，也停不了它——只能宣布做完或者做不下去。' +
+    BOUNDARY,
   parameters: {
     type: 'object',
     properties: {
@@ -155,9 +119,8 @@ export const updateGoalTool: ToolSpec = {
       action: {
         type: 'string',
         enum: ACTIONS,
-        description: 'edit / pause / resume / complete / blocked',
+        description: 'complete / blocked',
       },
-      objective: { type: 'string', description: 'action=edit 必填：改写后的目标正文' },
       blocked_reason: {
         type: 'string',
         description: 'action=blocked 必填：卡在哪、需要用户做什么才能继续',
@@ -170,7 +133,7 @@ export const updateGoalTool: ToolSpec = {
   objectLabel: '目标',
   category: 'goal',
   facet: '目标账本',
-  summary: '暂停 / 继续 / 完成 / 标记受阻 / 改写目标',
+  summary: '宣布目标完成或受阻，给自动续起收尾',
   targetExtractor: () => null,
   permissionEffect: 'internal_control',
   parallelSafe: false,
@@ -200,7 +163,6 @@ export const updateGoalTool: ToolSpec = {
       goalId: String(args.goal_id ?? ''),
       revision,
       action,
-      ...(typeof args.objective === 'string' ? { objective: args.objective } : {}),
       ...(typeof args.blocked_reason === 'string' ? { blockedReason: args.blocked_reason } : {}),
     })
     if (!result.ok) {
@@ -211,11 +173,7 @@ export const updateGoalTool: ToolSpec = {
     // 终态要把「循环到此为止」说出来。只回一句「已更新」的话，模型会以为
     // 下一轮照样会来，然后把该说给用户的话留到一个不会发生的轮次里。
     const tail =
-      goal.status === 'active'
-        ? '这一轮做完会自动继续。'
-        : goal.status === 'completed'
-          ? '目标已完成，不会再自动续起。'
-          : '自动续起已停止，等用户决定。'
+      goal.status === 'completed' ? '目标已完成，不会再自动续起。' : '自动续起已停止，等用户决定。'
     return {
       status: 'success',
       message: `${tail}\n${describe(goal)}`,

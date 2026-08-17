@@ -26,10 +26,18 @@ import {
   IconPlug,
   IconSettings,
   IconSpinner,
+  IconTarget,
   IconUsers,
 } from '../components/Icons.tsx'
 import { slashQuery } from './slash.ts'
-import { compactContext, newConversation, openPanel, openSettings, state } from './store/index.ts'
+import {
+  compactContext,
+  newConversation,
+  openPanel,
+  openSettings,
+  setGoal,
+  state,
+} from './store/index.ts'
 
 export interface Command {
   id: string
@@ -39,7 +47,13 @@ export interface Command {
   /** 一句话说清代价或去处。斜杠弹层里显示，命令面板里也显示。 */
   hint?: string
   icon: (p: { size?: number }) => JSX.Element
-  run(): void
+  /**
+   * 这条命令后面要跟一段话。给了它的命令**不能从面板直接执行**——
+   * 在面板里选中只把 `/名字 ` 填进草稿，等用户把话打完再回车。
+   * 没有它的命令点一下就跑，那是今天的行为。
+   */
+  arg?: { placeholder: string }
+  run(arg?: string): void
 }
 
 export function buildCommands(): Command[] {
@@ -61,6 +75,16 @@ export function buildCommands(): Command[] {
       hint: '把早期轮次折成摘要，腾出上下文；折过的原文模型就看不到了',
       icon: IconSpinner,
       run: compactContext,
+    },
+    {
+      id: 'goal',
+      label: '立目标',
+      slash: 'goal',
+      // 边界写全（B7）：说清它会自己一轮轮跑下去，以及怎么让它停。
+      hint: '一轮接一轮做下去，直到做完或你按停止；/goal 后面写要做到什么',
+      arg: { placeholder: '要做到什么' },
+      icon: IconTarget,
+      run: (objective) => setGoal(objective ?? ''),
     },
     { id: 'review', label: '审阅改动', icon: IconEye, run: () => openPanel('git') },
     { id: 'files', label: '文件', icon: IconFile, run: () => openPanel('files') },

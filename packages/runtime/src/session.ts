@@ -40,7 +40,6 @@ import {
   appendTextToStep,
   type ContentStore,
   createConversation,
-  createGoal,
   createRun,
   currentGoal,
   fileReadHash,
@@ -48,6 +47,7 @@ import {
   getConversation,
   getRun,
   latestAnchoredProviderRequest,
+  latestTodos,
   listDisabledExtras,
   listLoadedTools,
   markProviderRequestSent,
@@ -808,15 +808,23 @@ export class Session {
         mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
       },
       /*
+       * 待办同样绑到**会话**，而且**只读**：写入就是 `write_todos` 那次调用本身，
+       * 它的 args 随 step 落进账本，整表语义下最后一次成功提交即全部事实。
+       * 这里读回来只为回答「这是第一份清单还是在改已有的」——那是会话级事实，
+       * run 级的 `ctx.state` 里永远查不到。
+       */
+      todos: { read: () => latestTodos(store, conversationId) },
+      /*
        * 目标同样绑到**会话**：它的寿命就是这条会话，跨轮才有意义。
        *
        * 事件在这里发，不在工具里发（对比 `emitTodos`）：目标的真源是账本，
        * 「写下去」和「说出去」是同一件事的两半，交给工具就会有人只做一半。
        * 事件不带 runId——目标是会话级的，服务端在 run 之外也会改它。
+       *
+       * **没有 create**：立目标是用户的动作，走 `goal.set` 指令，不经过工具。
        */
       goals: {
         read: () => currentGoal(store, conversationId),
-        create: (input) => announce(createGoal(store, { conversationId, ...input }), emit),
         update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
       },
       signal: this.opts.signal,

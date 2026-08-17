@@ -118,6 +118,15 @@ export type StopReason =
    */
   | 'no_progress'
   | 'user_interrupt'
+  /**
+   * 进程退出，本轮到此为止，但**没有工具停在执行中**，已完成的步骤结果可信
+   * （`store` 的 `recoverStaleRuns`）。
+   *
+   * **不要并进 `user_interrupt`。** 那是「用户按了停止」，这是「进程没了」——
+   * 事后分不出这两件事，界面上就只剩一句「已中断」，而用户根本没点过任何东西。
+   * 与 `internal_guard` 的区别是结果可不可信：那条有工具停在执行中。
+   */
+  | 'process_exit'
   | 'permission_denied'
   /**
    * **输出**被 max_tokens 截断。答案不完整但已发生的部分是有效的。
@@ -253,12 +262,41 @@ export interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+/**
+ * 待办进度。**这是「第几步」的唯一算法**，工具回执与输入框上那条状态条共用它。
+ *
+ * 各算各的代价已经付过一次：同一屏上工具卡写着「（0/5）」（数已完成），
+ * 状态条写着「第 1 / 5 步」（数正在做的那条），说的是同一份清单的同一时刻。
+ * 口径靠共享这一个函数统一，不靠两边约定。
+ *
+ * `step` 取**正在做的那一条**（1-based），不是已完成数——进行中的第 3 步报成
+ * 「第 2 步」会让人以为它卡住了。没有进行中的那条（刚打完勾、还没认领下一条）
+ * 才回落到已完成数。
+ */
+export function todoProgress(todos: readonly TodoItem[]): {
+  /** 1-based；没有进行中的那条时等于已完成数。 */
+  step: number
+  total: number
+  done: number
+  /** 正在做的那一条；没有就是 null（全做完，或者打完勾还没认领下一条）。 */
+  current: TodoItem | null
+} {
+  const done = todos.filter((t) => t.status === 'completed').length
+  const at = todos.findIndex((t) => t.status === 'in_progress')
+  return {
+    step: at >= 0 ? at + 1 : done,
+    total: todos.length,
+    done,
+    current: at >= 0 ? todos[at]! : null,
+  }
+}
+
 // ─────────────────────────────── 目标 ───────────────────────────────
 
 /**
  * 目标的生命周期。**四个，不再多。**
  *
- * 「provider 报错」「要人工输入」「撞上轮数上限」不各占一个状态——全部走
+ * 「provider 报错」「要人工输入」「原地打转」不各占一个状态——全部走
  * `blocked`，靠 `blockedCode` + `blockedReason` 区分。状态越多转移矩阵越大，
  * 而它们对用户的意义是同一件事：停了，等你。
  */
@@ -268,23 +306,23 @@ export type GoalStatus = 'active' | 'paused' | 'completed' | 'blocked'
  * 一条会话的当前目标。**同时只有一个**，不做并行目标。
  *
  * 待办（`TodoItem`）回答「这一轮进行到哪了」，目标回答「一轮接一轮要做到什么」：
- * 目标 `active` 时，每轮 run 收尾会自动再起一轮（`server/run-control.ts`），
- * 直到 `completed`、被暂停，或撞上 `maxRounds`。
+ * 目标 `active` 时，每轮 run 收尾会自动再起一轮（`server/run-control.ts`）。
+ *
+ * ## 没有轮数上限
+ *
+ * 循环的出口只有三个：**模型自检达成 → `complete`**、模型做不下去 →
+ * `blocked`、用户点停止 → `paused`。此外服务端还会在这一轮没正常收尾时
+ * （provider 报错、权限被拒、原地打转）转 `blocked`——那是异常出口，不是配额。
+ *
+ * 不设「最多跑 N 轮」：那个数用户没有依据去定，而它一旦露在界面上就变成了
+ * 循环的主要说法，把「做到没有」换成了「还剩几轮」。达没达成由目标本身判，
+ * 不由计数器判。
  */
 export interface Goal {
   id: GoalId
   conversationId: ConversationId
   objective: string
   status: GoalStatus
-  /**
-   * 已经自动续起过几轮。**人类轮次不计**——用户自己发的消息不消耗额度。
-   */
-  round: number
-  /**
-   * 轮数上限。**这是唯一的护栏，不是资源预算**：不计 token、不计钱、不计时间。
-   * 那三样各自是另一本账，混进来只会让「为什么停了」有四个可能的答案。
-   */
-  maxRounds: number
   /**
    * 从 1 开始单调递增，每次变更 +1。
    *

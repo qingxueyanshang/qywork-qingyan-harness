@@ -75,6 +75,7 @@ export {
   type TodoItem,
   type ToolActionStatus,
   type ToolOutcomeWire,
+  todoProgress,
   type Workspace,
 } from './domain/model.ts'
 

@@ -67,6 +67,42 @@ async function withoutBash<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * 越界被拒之后，模型手里那条回话决定它下一步干什么。
+ *
+ * 复现的原始失败形状：读桌面上某个项目被拒，回话只有一句「工具 read_file
+ * 执行出错: 路径越界」——模型把它当成偶发故障，转头用 `run_command` 绕过去
+ * （shell 只锁 cwd，命令正文里 `cd` 得出去），全程没告诉用户发生了什么。
+ */
+describe('越界拒绝是判定，不是崩溃', () => {
+  const denial = async () => {
+    const root = await workspace()
+    return registry().execute(
+      'read_file',
+      { path: join(tmpdir(), 'somewhere-else', 'README.md') },
+      ctx(root),
+    )
+  }
+
+  test('不套「执行出错」的壳，errorKind 说清是哪一类', async () => {
+    const out = await denial()
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('path_out_of_workspace')
+    expect(out.message).not.toContain('执行出错')
+    // 什么都没发生过——`executed: true` 会让崩溃恢复以为可能有副作用。
+    expect(out.executed).toBe(false)
+  })
+
+  /** 三件事缺一不可：为什么、哪条路真走得通、别去绕。 */
+  test('回话给得出下一步，且不诱导绕过', async () => {
+    const out = await denial()
+    expect(out.message).toContain('additionalDirectories')
+    // 权限模式管不着路径边界，说「切成完全访问」只会让用户白切一次。
+    expect(out.message).toContain('完全访问')
+    expect(out.message).toContain('不要改用 run_command')
+  })
+})
+
 describe('路径约束', () => {
   test('拒绝 .. 回溯', async () => {
     const root = await workspace()
@@ -388,6 +424,57 @@ describe('搜索与命令', () => {
     const out = await registry().execute('grep', { pattern: 'answer' }, ctx(root))
     expect(out.status).toBe('success')
     expect((out.data?.matches as string[]).join('\n')).toContain('src/main.ts')
+  })
+
+  /**
+   * 起点是一个**文件**时照样搜得到。
+   *
+   * 原始失败形状：`grep(pattern, path="js/game.js")` 回 `success` + 0 命中——
+   * rg 那条拿文件当 `cwd` 去 spawn 直接抛、降级那条对文件 `readdir` 也抛被吞掉，
+   * 两条一起落空。模型据此判定「这个符号不存在」，然后去读整个文件。
+   */
+  test('grep 的起点可以是一个文件，不只是目录', async () => {
+    const root = await workspace()
+    const out = await registry().execute(
+      'grep',
+      { pattern: 'answer', path: 'src/main.ts' },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect(out.data?.matches).toEqual(['src/main.ts:1:export const answer = 42'])
+  })
+
+  /**
+   * 命中路径**永远相对工作区根**，不随搜索起点变。
+   *
+   * rg 打印的是相对搜索起点的路径：`path="src"` 时它给的是 `main.ts`，
+   * 而模型只会照着这个字符串去 `read_file`，拿到的是「文件不存在」。
+   * 两条实现路径也必须给出同一种路径——否则同一个工具会随 rg 装没装而变。
+   */
+  test('grep 的命中路径相对工作区根，与搜索起点无关', async () => {
+    const root = await workspace()
+    for (const path of ['.', 'src', 'src/main.ts']) {
+      const out = await registry().execute('grep', { pattern: 'answer', path }, ctx(root))
+      expect((out.data?.matches as string[])[0]).toStartWith('src/main.ts:1:')
+    }
+  })
+
+  /**
+   * 降级遍历给出与 rg **同一种**结果，起点是文件时也一样。
+   *
+   * 触发方式是前瞻断言：rg 的引擎不支持 look-around，会以退出码 2 失败，
+   * 而 JS 的 `RegExp` 认它——所以这条在装了 rg 和没装 rg 的机器上都走降级路径。
+   * 装没装 rg 是机器差异，而一个工具的返回格式不该随机器变。
+   */
+  test('rg 跑不了的正则降级到内置遍历，路径格式不变', async () => {
+    const root = await workspace()
+    const out = await registry().execute(
+      'grep',
+      { pattern: '(?=export)export const answer', path: 'src/main.ts' },
+      ctx(root),
+    )
+    expect(out.data?.engine).toBe('builtin')
+    expect(out.data?.matches).toEqual(['src/main.ts:1:export const answer = 42'])
   })
 
   test('glob 能按模式找文件', async () => {

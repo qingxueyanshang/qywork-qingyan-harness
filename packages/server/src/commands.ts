@@ -9,7 +9,7 @@ import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@
 import { getConversation, setConversationModel } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
-import { compactConversation, resumeGoal, retryRun, startRun } from './run-control.ts'
+import { compactConversation, resumeGoal, retryRun, setGoal, startRun } from './run-control.ts'
 import { runTeam } from './team-run.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
@@ -52,6 +52,14 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         },
         cmd.conversationId,
       )
+      return
+    }
+
+    case 'goal.set': {
+      // 立目标的唯一入口——模型手里没有 create_goal。空正文之类的校验在账本里，
+      // 这里只把回绝理由原样端回去。
+      const result = setGoal(cmd.conversationId, cmd.objective, deps)
+      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
       return
     }
 

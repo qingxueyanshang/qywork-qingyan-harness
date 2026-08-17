@@ -120,6 +120,14 @@ export const IconClock = (p: IconProps) => (
   </Svg>
 )
 
+/** 目标：靶心。别换成旗子——旗子在这套界面里已经是「标记」的意思。 */
+export const IconTarget = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="3.4" />
+  </Svg>
+)
+
 export const IconBranch = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="7" cy="5.5" r="2.2" />

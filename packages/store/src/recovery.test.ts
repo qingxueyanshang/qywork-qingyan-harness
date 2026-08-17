@@ -110,7 +110,13 @@ describe('崩溃恢复', () => {
 
     const after = getRun(store, run.id)!
     expect(after.status).toBe('interrupted')
-    expect(after.stopReason).toBe('user_interrupt')
+    /*
+     * **不是 `user_interrupt`。** 用户没点过任何东西，是服务进程没了。
+     * 两件事共用一个停止原因的话，事后分不出来，而界面上只会说「已中断」——
+     * 用户看到的是一个自己没做过的动作。`recoverStaleRuns` 顶上的注释
+     * 一直这么要求，代码之前没照做。
+     */
+    expect(after.stopReason).toBe('process_exit')
     store.close()
   })
 
