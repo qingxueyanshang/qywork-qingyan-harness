@@ -106,6 +106,14 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   // 归属不是当前会话的一律丢弃。没有归属的是工作区级事件（git 状态那类），放行。
   if (frame.conversationId && frame.conversationId !== state.activeConversation) return
 
+  /*
+   * **「有动静」的唯一落点，就是这里。**
+   *
+   * 判在入口而不是给三十个 case 各补一句：那是三十次忘记的机会（同下面归属校验
+   * 那条理由）。语义也正好——一帧到了就是有动静，与它是哪种事件无关。
+   */
+  setState('lastEventAt', Date.now())
+
   // 正文之外的一切都意味着「这一刻的界面要是完整的」——读数条、错误卡、
   // 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
   if (ev.type !== 'text.delta') pacer.flush()
@@ -395,6 +403,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           s.error = null
           s.usage = null
           s.runStartedAt = null
+          s.lastEventAt = null
         }),
       )
       return
@@ -572,6 +581,9 @@ export async function reloadActiveConversation(): Promise<void> {
       s.running = live !== null
       s.lastRunId = live?.id ?? null
       s.runStartedAt = live ? live.createdAt : null
+      // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
+      // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
+      s.lastEventAt = live ? Date.now() : null
       // 以下几项是 run 内的易失投影，账本里没有，重拉之后一律清空，
       // 等这条会话自己的事件把它们填回来。
       s.teamMembers = []

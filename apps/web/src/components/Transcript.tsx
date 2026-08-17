@@ -175,9 +175,22 @@ export function Transcript() {
 }
 
 /**
+ * 静默多久就改口说实话。
+ *
+ * **这个数是保守选择，不是测量结果。** 账本里有整轮往返的分布（p90 约 32 秒），
+ * 但那是**整轮**的数，不是**两个事件之间**的数，拿它当间隔阈值是偷换——
+ * 后者本仓目前测不出来（`provider_requests` 只记 `sent_at`，不记首个事件何时到）。
+ *
+ * 取宽只影响这句话出现的早晚；它替掉的那句在任何时长下都是假的，
+ * 所以宁可晚说，也不要继续说假的。
+ */
+const SILENT_MS = 30_000
+
+/**
  * 这一轮此刻在**哪个阶段**。
  *
- * 四态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复。
+ * 四态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复；外加一档「已 N 秒没有
+ * 新数据」——它不是第五种阶段，是**前四种全都不再为真**时唯一诚实的说法。
  *
  * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
  * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、不重复——
@@ -192,13 +205,27 @@ export function Transcript() {
  * 自己那句话——于是回车之后立刻显示「正在回复…」，紧接着冒出来的却是思考内容。
  * 那句话在它为真之前就说了：请求刚发出，模型一个字都还没吐。
  *
- * 现在四档各自对应流尾的一种真实条目，兜底的是「请求已发出、还没有任何回应」
- * ——那也是唯一一种没有条目可指的状态。
+ * ## 为什么「正在执行」要看 `status`
+ *
+ * 只看 `kind === 'tool'` 的话，工具跑完之后到模型回包之间这一整段都在说「正在执行…」
+ * ——而那段恰恰是最容易出事的一段（实测一次断流就断在这之后的 262 秒里）。
+ * 工具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。
+ *
+ * ## 静默那一档为什么要绕开两种情形
+ *
+ * 工具还在跑（一次构建十分钟很正常，而它自己会出 stdout）、以及有权限请求挂着
+ * （那是在等人，不是在等网络）——这两种下面报静默同样是假话。
  */
-function liveStatus(): string {
+function liveStatus(now: number): string {
   const last = state.transcript[state.transcript.length - 1]
+  if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
+
+  const since = state.lastEventAt ?? state.runStartedAt
+  if (!state.permission && since !== null && now - since >= SILENT_MS) {
+    return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
+  }
+
   if (last?.kind === 'thinking') return '正在思考…'
-  if (last?.kind === 'tool') return '正在执行…'
   if (last?.kind === 'text') return '正在回复…'
   return '正在请求…'
 }
@@ -425,6 +452,13 @@ function RunStatusBar(props: {
   /** 秒。null = 没有可信的起止时刻，不显示这一格。 */
   elapsed: number | null
   running: boolean
+  /**
+   * 跑着的时候这一格说什么。
+   *
+   * 由调用方给而不是这里现算：它要按**当下**判静默，而只有 `LiveRunBar` 那层
+   * 挂着走秒的定时器——在这里读 `Date.now()` 的话，画面不会自己更新。
+   */
+  liveNote?: string
   /** 报错正文，没有就是 null。有它时它**取代**停止原因那句话，不是并列多说一句。 */
   errorMessage?: string | null
 }) {
@@ -483,8 +517,8 @@ function RunStatusBar(props: {
          * 也就是 B9 说的「尺寸随内容变」。而这一格本来就是给「这一轮怎么样了」用的：
          * 跑着的时候说在干什么，跑完了说为什么停，同一个位置、同一种语义。
          */}
-        <Show when={props.running}>
-          <span class="run-live">{liveStatus()}</span>
+        <Show when={props.running && props.liveNote}>
+          <span class="run-live">{props.liveNote}</span>
         </Show>
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
             于是出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
@@ -518,7 +552,15 @@ function LiveRunBar() {
     return from === null ? null : (now() - from) / 1000
   }
 
-  return <RunStatusBar usage={state.usage} stopReason={null} elapsed={elapsed()} running={true} />
+  return (
+    <RunStatusBar
+      usage={state.usage}
+      stopReason={null}
+      elapsed={elapsed()}
+      running={true}
+      liveNote={liveStatus(now())}
+    />
+  )
 }
 
 /** 跑完那一轮的条目。耗时用落库的起止时刻算，和实时那条是同一个含义。 */

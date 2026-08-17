@@ -471,3 +471,60 @@ describe('报错正文并进这一轮的读数条', () => {
     expect(state.transcript.some((t) => t.kind === 'run')).toBe(false)
   })
 })
+
+/**
+ * 「多久没动静了」。
+ *
+ * 起因是一次真实断流：服务端 262 秒一个字节都没收到，而界面上只有一个越走越大的
+ * 总耗时配一句「正在思考…」——两者都没说出真相，用户直到最后报错才知道断了。
+ *
+ * 静默时长本身不需要新协议字段：每一帧什么时候到的，客户端自己就知道。
+ * 这一组锁的就是「它真的知道」。
+ */
+describe('事件到达时刻按帧记下来', () => {
+  const frame = (type: string, extra: Record<string, unknown> = {}) =>
+    ({
+      seq: 9,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type, runId: 'run_1', ...extra },
+    }) as never
+
+  test('任何一帧到达都刷新「上一次有动静」', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], lastEventAt: null })
+    applyEvent(frame('todos', { todos: [] }))
+    const first = state.lastEventAt
+    expect(first).not.toBe(null)
+  })
+
+  /**
+   * 归属不是当前会话的帧不能刷新它——否则后台会话每动一下，
+   * 前台这条就被判成「刚有动静」，静默永远不会显示出来。
+   */
+  test('别的会话的帧不刷新它', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], lastEventAt: 1 })
+    applyEvent({
+      seq: 10,
+      at: 0,
+      conversationId: 'cv_other',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+    expect(state.lastEventAt).toBe(1)
+  })
+
+  /** 收尾之后清掉：留着的话下一轮开头会拿上一轮的时刻算，一开口就谎报静默。 */
+  test('run 收尾后清空', () => {
+    setState({ activeConversation: 'cv_now', transcript: [], running: true, lastEventAt: 1 })
+    applyEvent(
+      frame('run.finished', {
+        status: 'done',
+        stopReason: 'completed',
+        usage: null,
+        stepCount: 1,
+        durationMs: 1,
+        fileChanges: [],
+      }),
+    )
+    expect(state.lastEventAt).toBe(null)
+  })
+})

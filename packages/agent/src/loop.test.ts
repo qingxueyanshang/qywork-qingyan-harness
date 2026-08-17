@@ -953,3 +953,150 @@ describe('注册表是工具的唯一权威', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 })
+
+/**
+ * 传输断了怎么收场。
+ *
+ * 起因是一次真实断流（`docs/plans/2026-08-17-断流的形状与无痕重发.md` §1）：
+ * 第 4 次请求发出后 262 秒一个字节都没回来，run 就此终结，账本里那行到现在还是
+ * `in_flight`，而系统没有替用户试第二次——他只能自己把那句话重打一遍。
+ *
+ * 这一组锁三件事：**账本必须落终态**、**零输出才重发**、**重发过要说出来**。
+ */
+describe('传输断了：落终态、无痕重发一次、说清形状', () => {
+  interface Recorded {
+    opened: number[]
+    settled: { status: string; errorCode: string | null }[]
+  }
+
+  function recordingPersistence(rec: Recorded): LoopPersistence {
+    const base = noopPersistence()
+    return {
+      ...base,
+      openRequest: (input) => {
+        rec.opened.push(input.retryIndex)
+        return `pr_${input.retryIndex}`
+      },
+      settleRequest: (_id, status, _usage, errorCode) => {
+        rec.settled.push({ status, errorCode })
+      },
+    }
+  }
+
+  /**
+   * 按脚本决定每次 `stream()` 怎么收场。
+   *
+   * `'break'` 与 `'break-after-text'` 的区别就是重发的那条判据：前者 provider
+   * 一个事件都没回来（重发无痕），后者已经吐了字（重发会让用户看到两段不一样的话）。
+   */
+  function scriptedAdapter(script: ('break' | 'break-after-text' | 'reject' | 'ok')[]): LlmAdapter {
+    let i = 0
+    return {
+      kind: 'anthropic',
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('claude-opus-5', 'anthropic'),
+      measure: async () => 0,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        const act = script[i++] ?? 'ok'
+        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        if (act === 'break' || act === 'break-after-text') {
+          if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
+          throw new ProviderError({
+            code: 'network_error',
+            message: '连接被断开',
+            retryable: true,
+            provider: 'anthropic',
+            cause: Object.assign(new Error('The socket connection was closed unexpectedly.'), {
+              code: 'ECONNRESET',
+            }),
+          })
+        }
+        if (act === 'reject') {
+          throw new ProviderError({
+            code: 'provider_unavailable',
+            message: '服务端暂时不可用',
+            retryable: true,
+            provider: 'anthropic',
+            status: 503,
+          })
+        }
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn' }
+      },
+    }
+  }
+
+  function run(adapter: LlmAdapter, rec: Recorded) {
+    return new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 's',
+      tailNotes: () => [],
+      persist: recordingPersistence(rec),
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    }).run({ runId: 'rn_net' as never, history: [], signal: new AbortController().signal })
+  }
+
+  async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
+    const rec: Recorded = { opened: [], settled: [] }
+    const events: AgentEvent[] = []
+    for await (const ev of run(adapter, rec)) events.push(ev)
+    return { rec, events }
+  }
+
+  test('零输出的断流：原样重发一次，第二次成功就当无事发生', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['break', 'ok']))
+
+    // 两行账，`retry_index` 0 和 1。顶掉上一行的话「真的发过两次」就不见了。
+    expect(rec.opened).toEqual([0, 1])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('断流必须落终态：不知道 provider 收没收到就记 uncertain', async () => {
+    const { rec } = await collect(scriptedAdapter(['break', 'ok']))
+
+    // 第一行是断掉那次。以前这条路径压根不 settle，账本里 9 行永久 in_flight。
+    expect(rec.settled[0]).toEqual({ status: 'uncertain', errorCode: 'network_error' })
+    expect(rec.settled[1]?.status).toBe('received')
+  })
+
+  test('provider 明确答复过就是 rejected，不是 uncertain', async () => {
+    const { rec } = await collect(scriptedAdapter(['reject']))
+
+    // 有 HTTP 状态码 = 它回绝了，我们知道请求到了。这条与「连不上」必须分开记，
+    // 两者差的是计费责任。
+    expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
+    // 且不重发：provider 答复过的失败不在重发窗口里。
+    expect(rec.opened).toEqual([0])
+  })
+
+  test('已经吐过字就不重发——重发是重新生成，用户会看到两段不一样的话', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['break-after-text', 'ok']))
+
+    expect(rec.opened).toEqual([0])
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('network_error')
+  })
+
+  test('重发过还是断：正文要带现场读数，并说出重发过', async () => {
+    const { events } = await collect(scriptedAdapter(['break', 'break']))
+
+    const err = events.find((e) => e.type === 'run.error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    // 分类短语来自 errors.ts，读数与「重发过」由 loop 补——三段都要在。
+    expect(message).toContain('连接被断开')
+    expect(message).toMatch(/没有收到任何数据/)
+    expect(message).toContain('已自动重发一次')
+  })
+
+  test('吐过字的断流：读数报的是「多久没动静」，不是「一个字节都没有」', async () => {
+    const { events } = await collect(scriptedAdapter(['break-after-text']))
+
+    const err = events.find((e) => e.type === 'run.error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    expect(message).toMatch(/最后一次收到数据在 \d+ 秒前/)
+    expect(message).toContain('本次共收到 4 字')
+  })
+})

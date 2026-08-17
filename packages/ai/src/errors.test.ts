@@ -83,6 +83,70 @@ describe('传输层失败必须可重试', () => {
   })
 })
 
+/**
+ * 三支的分界。
+ *
+ * 这一组锁的是**每个码落哪一支**，不是文案好不好看。分错的代价很具体：
+ * 「连不上」会把用户支去改接口地址（而问题是链路抖动），「被断开」会让他坐等重发
+ * （而 key 根本没配对端口）。
+ *
+ * 尤其看住 `ECONNREFUSED`（压根没连上）与 `ECONNRESET`（连上了被重置）——
+ * 它们长得像、含义相反，原来在同一条正则里，是这次拆分最容易修一头坏一头的地方。
+ */
+describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
+  const shapeOf = (err: unknown) => classifyProviderError(P, err).message
+
+  test('没连上 → 连不上接口', () => {
+    for (const err of [
+      transport('ECONNREFUSED', 'connect'),
+      transport('ENOTFOUND', 'dns'),
+      transport('EHOSTUNREACH', ''),
+      transport('EAI_AGAIN', ''),
+      new Error('getaddrinfo ENOTFOUND api.deepseek.com'),
+      new Error('fetch failed'),
+      new Error('Connection error.'),
+    ]) {
+      expect(shapeOf(err)).toMatch(/连不上/)
+    }
+  })
+
+  test('连上了又断 → 连接被断开', () => {
+    for (const err of [
+      transport('ECONNRESET', 'read'),
+      transport('EPIPE', ''),
+      transport('ERR_SOCKET_CLOSED', ''),
+      // Bun 实测的那句，`code` 是空的，只能靠文案认。
+      new Error('The socket connection was closed unexpectedly.'),
+      new Error('socket hang up'),
+    ]) {
+      expect(shapeOf(err)).toMatch(/断开/)
+    }
+  })
+
+  test('超时 → 请求超时', () => {
+    for (const err of [
+      transport('ETIMEDOUT', 'The operation timed out.'),
+      transport('UND_ERR_HEADERS_TIMEOUT', ''),
+      // SDK 自己那 60 秒掐的就是这一句，没有 code。
+      new Error('Request timed out.'),
+    ]) {
+      expect(shapeOf(err)).toMatch(/超时/)
+    }
+  })
+
+  test('三支都可重试，也都归到 network_error', () => {
+    for (const err of [
+      transport('ECONNREFUSED', ''),
+      transport('ECONNRESET', ''),
+      transport('ETIMEDOUT', ''),
+    ]) {
+      const e = classifyProviderError(P, err)
+      expect(e.code).toBe('network_error')
+      expect(e.retryable).toBe(true)
+    }
+  })
+})
+
 describe('用户中断不是错误', () => {
   test('AbortError 不报网络问题也不重试', () => {
     const err = new Error('aborted')

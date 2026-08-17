@@ -155,6 +155,17 @@ export interface AppState {
    */
   runStartedAt: number | null
   /**
+   * 这一轮最后一次收到事件的时刻（本地时钟，毫秒）。
+   *
+   * 它与 `runStartedAt` 回答的是两件事：那个说「这轮跑了多久」，这个说
+   * 「多久没动静了」。**只有后者能区分「还在想」和「链路断了」**——实测一次断流里
+   * 服务端 262 秒一个字节都没收到，而界面靠总耗时只能显示一个越走越大的数字，
+   * 配着一句「正在思考…」，两者都没说出真相。
+   *
+   * 不需要新协议字段：每一帧什么时候到的，客户端自己就知道。
+   */
+  lastEventAt: number | null
+  /**
    * 服务端拒绝指令的提示。
    *
    * 这是 fail-closed 在 UI 上的落点：拒绝必须被看见。只存最后一条——
@@ -189,6 +200,7 @@ const initial: AppState = {
   teamMembers: [],
   lastRunId: null,
   runStartedAt: null,
+  lastEventAt: null,
   notice: null,
 }
 

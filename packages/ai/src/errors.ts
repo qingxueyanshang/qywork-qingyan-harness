@@ -168,57 +168,67 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
 }
 
 /**
- * 传输层失败：连不上、连上了又断、握手失败、超时。
+ * 传输层失败的四种形状。**顺序即优先级**：先认具体的，泛码（`CONNECTION`、
+ * `UND_ERR_`）兜在最后一支。
  *
- * ## 为什么不能只匹配 `fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network`
+ * ## 为什么必须分开，而不是一句「网络中断或超时」
  *
- * 那串是 Node/undici 的文案，而**运行时是 Bun**，它自己的 fetch 报的是另一套话。
- * 2026-08 在一台网络抖动的机器上对 DeepSeek 连打，三种真实失败一条都匹配不上：
+ * 三种失败的下一步动作完全不同：**连不上**要去改接口地址或代理，**被断开**重发一次
+ * 大概率就过去了，**超时**要先看是不是自己那 60 秒掐的。塞进同一句话等于三件事一起说，
+ * 用户读完不知道该干什么——这正是「连接在完成前断开」看不懂的原因。
  *
- * - `The operation timed out.`
- * - `The socket connection was closed unexpectedly.`
- * - `unknown certificate verification error`
+ * **判据按语义分，不按 errno 表分。** `ECONNREFUSED` 是压根没连上，`ECONNRESET`
+ * 是连上了被重置；两个码长得像，含义相反，落进同一支就等于没分类。
  *
- * 三条全部落到最后的 `internal_error` + `retryable: false`。后果不是「报错文案难看」，
- * 是**一次网络抖动直接终结整轮 run**，而它本该重试一次就过去。
+ * ## 为什么不能只匹配 Node/undici 那串
  *
- * 所以这里先看 `err.code`（Bun 与 Node 都挂在错误对象上，比文案稳），
- * 文案匹配只作兜底。
+ * 运行时是 Bun，它自己的 fetch 报的是另一套话。2026-08 在一台网络抖动的机器上对
+ * DeepSeek 连打，三种真实失败一条都匹配不上 Node 那套：`The operation timed out.` /
+ * `The socket connection was closed unexpectedly.` / `unknown certificate verification error`。
+ * 全部落进 `internal_error` + `retryable: false`——后果不是文案难看，
+ * 是**一次抖动直接终结整轮 run**。
+ *
+ * 所以每一支都带两条正则：`code` 上是整串（锚定），文案里是夹在句子中间的一个词
+ * （不锚定）。用同一条会漏掉 `getaddrinfo ENOTFOUND api.x.com` 这种把 errno 拼进
+ * 文案、不设 `code` 的库。
  *
  * ## 证书错误也算可重试
  *
  * 它有两种成因：握手撞上抖动（重试就好），和代理/自签名证书配错了（重试没用）。
  * 判成可重试的代价是多打几次白工，判成不可重试的代价是一次抖动打断用户的任务。
  * 后者贵得多，所以选前者——但文案要**同时点出**这两种可能，
- * 别让一个配错代理的人对着「网络不可达」查半天网。
+ * 别让一个配错代理的人对着「连不上」查半天网。
  */
+const TRANSPORT_SHAPES: { code: RegExp; message: RegExp; text: string }[] = [
+  {
+    code: /CERT|SSL|TLS|SELF_SIGNED|LEAF_SIGNATURE/,
+    message: /certificate|ssl|tls handshake/i,
+    text: 'TLS 握手失败：可能是网络抖动，也可能是代理或自签名证书未被信任',
+  },
+  {
+    code: /^(ECONNRESET|ECONNABORTED|EPIPE|ERR_SOCKET_CLOSED|UND_ERR_SOCKET|CONNECTION(CLOSED|RESET|ABORTED))/,
+    message:
+      /socket connection was closed|socket hang up|premature close|connection (closed|reset|aborted)|\b(ECONNRESET|ECONNABORTED|EPIPE)\b/i,
+    text: '连接被断开',
+  },
+  {
+    code: /^(ETIMEDOUT|ERR_TIMEOUT|TIMEOUT|CONNECTIONTIMEOUT|UND_ERR_(HEADERS|BODY)_TIMEOUT)/,
+    message: /timed out|timeout|\bETIMEDOUT\b/i,
+    text: '请求超时',
+  },
+  {
+    code: /^(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN|ERR_NETWORK|UND_ERR_|CONNECTION)/,
+    message:
+      /fetch failed|unable to connect|connection (refused|error)|network|\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN)\b/i,
+    text: '连不上接口：检查接口地址与代理',
+  },
+]
+
 function classifyTransport(err: unknown, message: string): string | null {
   const code = String((err as { code?: unknown })?.code ?? '').toUpperCase()
-
-  const tls =
-    /CERT|SSL|TLS|SELF_SIGNED|LEAF_SIGNATURE/.test(code) ||
-    /certificate|ssl|tls handshake/i.test(message)
-  if (tls) return 'TLS 握手失败：可能是网络抖动，也可能是代理或自签名证书未被信任'
-
-  // errno / 库自定义码。`code` 上是整串，文案里是夹在句子中间的一个词，
-  // 所以锚定与不锚定要各写一条——用同一条会漏掉
-  // `getaddrinfo ENOTFOUND api.x.com` 这种把 errno 拼进文案、不设 `code` 的库。
-  const ERRNO =
-    'ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EPIPE|EAI_AGAIN|ERR_SOCKET_CLOSED|ERR_NETWORK|UND_ERR_|CONNECTION'
-  if (new RegExp(`^(${ERRNO})`).test(code)) return '网络不可达：检查接口地址与代理'
-  if (new RegExp(`\\b(${ERRNO})`).test(message.toUpperCase())) {
-    return '网络不可达：检查接口地址与代理'
+  for (const shape of TRANSPORT_SHAPES) {
+    if (shape.code.test(code) || shape.message.test(message)) return shape.text
   }
-
-  // Bun 自己的几句人话。这几条是实测抄来的，不是猜的。
-  if (
-    /fetch failed|network|socket connection was closed|operation timed out|unable to connect|connection (closed|refused|reset)/i.test(
-      message,
-    )
-  ) {
-    return '网络中断或超时：连接在完成前断开'
-  }
-
   return null
 }
 
