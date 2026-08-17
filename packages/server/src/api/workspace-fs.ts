@@ -128,13 +128,11 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   /*
    * 切分支。git 这一侧唯一会改工作区的接口。
    *
-   * 切不过去回 409 + **一句话**，不是 git 那一整段。
+   * 失败时**回 git 自己的话**（第一行），不翻译、不改写：这是 git 的判定，
+   * 把它换成自己的说法只会让用户去查一句 git 从没说过的话。整段不端出来是因为
+   * 它会把几十个文件名连成一段，而那些文件本来就在下面的改动列表里逐行摆着。
    *
-   * 最常见的那种（本地改动会被覆盖）git 会把几十个文件名连成一段列出来——那段话
-   * 塞进界面就是六行英文，而那几十个文件本来就在下面的改动列表里逐行摆着。
-   * 这里翻成一句「先提交或贮藏」，其余情况只取第一行。
-   *
-   * **不替用户 stash、不加 --force**：那是拿他的改动换一次成功。
+   * 不替用户 stash、不加 `--force`：那是拿他的改动换一次成功。
    */
   if (p === '/api/git/checkout' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { name?: string } | null
@@ -142,13 +140,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (!name) return json({ error: 'invalid', message: '要切到哪个分支' }, 422)
     const r = await git.checkout(d.workspaceRoot, name)
     if (r.ok) return json({ ok: true })
-
-    // `git()` 固定 `LC_ALL=C`，所以这句英文是稳定的，可以按它判。
-    const dirty = /would be overwritten by (checkout|merge)/i.test(r.err)
-    const message = dirty
-      ? '本地有未提交的改动，切过去会被覆盖。先提交或贮藏，再切分支。'
-      : firstLine(r.err) || '切换失败'
-    return json({ error: 'checkout_failed', message }, 409)
+    return json({ error: 'checkout_failed', message: firstLine(r.err) || '切换失败' }, 409)
   }
   if (p === '/api/git/log') {
     return json({

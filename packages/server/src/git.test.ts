@@ -104,11 +104,11 @@ describe('每个文件改了多少行', () => {
 
 describe('切分支', () => {
   /**
-   * 本地有改动时 git 自己会拦住，`checkout` 要把这件事如实回上去（`ok: false` + 原话）。
+   * 本地有改动、而目标分支上同一个文件不一样时，**git 自己会拦住**——它不会用另一条
+   * 分支的版本盖掉没提交的改动。`checkout` 要把这件事如实回上去：`ok: false` +
+   * git 的原话，界面照原话显示（不翻译，见 `api/workspace-fs.ts` 那条路由）。
    *
-   * 这条同时锁住 **API 那层据以翻译的那句英文**：`git()` 固定 `LC_ALL=C`，所以
-   * 「would be overwritten by checkout」是稳定的判据，界面上那句「先提交或贮藏」
-   * 就是按它翻的。git 换了说法，这个测试会先红。
+   * 反过来那种（改的文件在两条分支上一样）git 会把改动带过去，见下一条。
    */
   test('本地改动会被覆盖时切不过去，并回 git 的原话', async () => {
     const dir = await emptyRepo()
@@ -133,7 +133,12 @@ describe('切分支', () => {
     expect(await Bun.file(join(dir, 'a.txt')).text()).toBe('local edit\n')
   })
 
-  test('干净的树上切得过去', async () => {
+  /**
+   * **有未提交的改动也照样切得过去**，只要目标分支上那个文件和现在这条一样——
+   * git 会把改动带过去。这条是拿来说明「切分支不等于会覆盖」的那一半：
+   * 会被拦住的只有「改的文件在两条分支上内容不同」这一种。
+   */
+  test('目标分支上文件相同时，带着未提交的改动也切得过去', async () => {
     const dir = await emptyRepo()
     Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
     Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
@@ -141,9 +146,13 @@ describe('切分支', () => {
     Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
     Bun.spawnSync(['git', 'branch', 'other'], { cwd: dir })
+    // 改了不提交：other 上这个文件和 master 一样，所以这不构成冲突。
+    await Bun.write(join(dir, 'a.txt'), 'local edit\n')
 
     expect((await checkout(dir, 'other')).ok).toBe(true)
     expect((await status(dir))?.branch).toBe('other')
+    // 改动跟着过来了，没丢也没被覆盖。
+    expect(await Bun.file(join(dir, 'a.txt')).text()).toBe('local edit\n')
   })
 
   /** 分支名同样是不可信输入：以 `-` 开头的一律拒（理由见 `assertSafeRef`）。 */
