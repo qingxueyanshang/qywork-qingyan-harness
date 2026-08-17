@@ -2,7 +2,8 @@
  * git 面板数据源的边界。
  *
  * 覆盖 `git.ts` 的 revision 参数校验、每个文件的增删行数（「没有这个数」与「零」
- * 必须分开），以及**这台机器上没装 git 时的形状**。
+ * 必须分开）、切分支的两种结局（含 API 那层据以翻译的那句英文），
+ * 以及**这台机器上没装 git 时的形状**。
  * 其余读操作的正确性由 git 自己保证，复刻一遍它的行为没有意义。
  */
 
@@ -10,7 +11,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { diff, isRepo, log, status } from './git.ts'
+import { checkout, diff, isRepo, log, status } from './git.ts'
 
 async function emptyRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -98,6 +99,57 @@ describe('每个文件改了多少行', () => {
     const s = await status(dir)
     expect(s?.files.map((f) => f.path)).toEqual(['a.txt'])
     expect(s?.files[0]?.additions).toBeUndefined()
+  })
+})
+
+describe('切分支', () => {
+  /**
+   * 本地有改动时 git 自己会拦住，`checkout` 要把这件事如实回上去（`ok: false` + 原话）。
+   *
+   * 这条同时锁住 **API 那层据以翻译的那句英文**：`git()` 固定 `LC_ALL=C`，所以
+   * 「would be overwritten by checkout」是稳定的判据，界面上那句「先提交或贮藏」
+   * 就是按它翻的。git 换了说法，这个测试会先红。
+   */
+  test('本地改动会被覆盖时切不过去，并回 git 的原话', async () => {
+    const dir = await emptyRepo()
+    Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
+    Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'base\n')
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
+    // 另一条分支上把同一个文件改掉并提交
+    Bun.spawnSync(['git', 'checkout', '-q', '-b', 'other'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'other side\n')
+    Bun.spawnSync(['git', 'commit', '-q', '-am', 'other'], { cwd: dir })
+    Bun.spawnSync(['git', 'checkout', '-q', 'master'], { cwd: dir })
+    // 回到 master 之后再改同一个文件、不提交
+    await Bun.write(join(dir, 'a.txt'), 'local edit\n')
+
+    const r = await checkout(dir, 'other')
+    expect(r.ok).toBe(false)
+    expect(r.err).toContain('would be overwritten by checkout')
+    // 没切过去：还在 master 上，本地那行也还在。
+    expect((await status(dir))?.branch).toBe('master')
+    expect(await Bun.file(join(dir, 'a.txt')).text()).toBe('local edit\n')
+  })
+
+  test('干净的树上切得过去', async () => {
+    const dir = await emptyRepo()
+    Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
+    Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'base\n')
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
+    Bun.spawnSync(['git', 'branch', 'other'], { cwd: dir })
+
+    expect((await checkout(dir, 'other')).ok).toBe(true)
+    expect((await status(dir))?.branch).toBe('other')
+  })
+
+  /** 分支名同样是不可信输入：以 `-` 开头的一律拒（理由见 `assertSafeRef`）。 */
+  test('以 - 开头的分支名被拒', async () => {
+    const dir = await emptyRepo()
+    expect(checkout(dir, '--orphan=x')).rejects.toThrow(/非法的 git ref/)
   })
 })
 

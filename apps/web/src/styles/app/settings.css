@@ -47,15 +47,20 @@
 /*
  * 分支浮层。**自带一整条规则**，不与项目行菜单、树的右键菜单共用选择器（B8）。
  *
- * 贴着分支行的下沿铺开，最多一屏三分之一高、超了自己滚：分支多的仓库有几十条，
- * 不封顶就会盖住整块面板。
+ * **宽度按内容算，不铺满整条**（`width: max-content`）：菜单的宽度该由最长的那个
+ * 分支名决定；铺满整块面板的话，三条分支的菜单也横跨整屏，读起来像另开了一页。
+ * 上限收在面板宽度内、下限 160px——太窄的菜单点起来要瞄。
+ *
+ * 最多一屏三分之一高、超了自己滚：分支多的仓库有几十条，不封顶会盖住整块面板。
  */
 .branch-menu {
   position: absolute;
   top: calc(100% + 2px);
   left: var(--s-1);
-  right: var(--s-1);
   z-index: 30;
+  width: max-content;
+  min-width: 160px;
+  max-width: calc(100% - var(--s-2));
   max-height: 33vh;
   overflow-y: auto;
   display: flex;
@@ -82,11 +87,23 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-/* 当前分支：底色说明「就是这一条」，同时 disabled——切到自己身上没有意义。 */
+/*
+ * 当前分支：**一个勾 + 主文字色，不画底色**。
+ *
+ * 灰底在这套界面里已经有确定的含义——「我点的那一行」（文件树、变更列表、
+ * 会话列表都是它）。菜单里的当前项不是「我点的」，是「我已经在这儿」，
+ * 借那块灰会把两件事混成一件。同时 disabled：切到自己身上没有意义。
+ */
 .branch-item.current {
-  background: var(--bg-active);
   color: var(--text-primary);
   font-weight: 500;
+}
+/* 勾的位置恒定：没勾的那些也占这一格，名字才对齐成一列。 */
+.branch-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 12px;
 }
 .branch-item:disabled {
   cursor: default;
