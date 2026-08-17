@@ -14,9 +14,10 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
  * 右侧面板当前视图。`null` = 收起。
  *
  * **这里的每个值都必须在 `SidePanel` 的 `<Switch>` 里有对应的 `Match`**，
- * 否则设成它的结果是面板展开、内容空白。预览是「文件」视图的一个子状态
- * （由 `previewPath` 决定），不是并列的第四个视图：它本来就是从文件树点进去的，
- * 做成并列项会让「返回文件树」没有自然的落点。
+ * 否则设成它的结果是面板展开、内容空白。
+ *
+ * 打开的文件**不是这里的一个值**：它长在主内容区（`openFile` + `FileView`），
+ * 和这块面板同时看得见。文件树因此常驻，不会被内容顶掉。
  */
 export type PanelView = 'todos' | 'files' | 'git' | 'terminal'
 export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
@@ -137,7 +138,25 @@ export function closeSettings(): void {
   setSettingsPage(null)
 }
 
-export const [previewPath, setPreviewPath] = createSignal<string | null>(null)
+/**
+ * 主内容区正在看哪个文件（工作区相对路径）。`null` = 看会话。
+ *
+ * 这是「看文件还是看会话」的唯一权威，两处消费：主区渲染哪一块（`App.tsx`），
+ * 以及文件树里哪一行是选中的（`SidePanel`）。别再在面板里存第二份「当前预览」
+ * ——那会让两块地方对「现在开着哪个文件」给出两个答案。
+ */
+export const [openFile, setOpenFile] = createSignal<string | null>(null)
+
+/**
+ * 打开一个文件。**必须走这里**：它顺手把面板放大态收掉。
+ *
+ * 放大态下主内容区整块不渲染（`App.tsx` 那段），直接设 `openFile` 的结果是
+ * 文件开在一块看不见的地方——用户点了一下，什么都没发生。
+ */
+export function openFileInMain(path: string): void {
+  setPanelMaximized(false)
+  setOpenFile(path)
+}
 
 /**
  * **当前项目**。
