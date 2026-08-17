@@ -242,6 +242,30 @@ function idleTimeoutFor(effort: ChatRequest['effort']): number {
 }
 
 /**
+ * 会原样重发一次的失败。
+ *
+ * **只有传输层。** 429 与 5xx 的 `retryable` 也是 true，但那两类 provider 明确答复过
+ * ——我们知道请求到了，立刻重发就是在无退避地捶它，而 429 的正确动作是等。
+ * 传输层不一样：连接坏了，我们连「它收没收到」都不知道，原样再发一次是唯一的答案。
+ */
+const RESENDABLE: ReadonlySet<string> = new Set(['network_error', 'stream_idle_timeout'])
+
+/**
+ * 传输失败的现场读数。
+ *
+ * 分类短语（「连接被断开」「请求超时」「模型响应中断」）由 `ai/src/errors.ts` 与
+ * `openStream` 给，它们都拿不到这两个数；而这两个数才是「是网络断了还是还在等」的答案
+ * ——**一个字节都没收到过**说明请求根本没落地，**收到过又停了**说明是传输被掐。
+ *
+ * 所以这句只在这里拼，**全项目只有这一个拼装处**。
+ */
+function transportReading(providerEvents: number, silentMs: number, chars: number): string {
+  const secs = Math.round(silentMs / 1000)
+  if (providerEvents === 0) return `发出后 ${secs} 秒内没有收到任何数据`
+  return `最后一次收到数据在 ${secs} 秒前，本次共收到 ${chars} 字`
+}
+
+/**
  * 压缩的软阈值：占用超过它就在**发出之前**压一次。
  *
  * 三段相减，每一段都有理由：
@@ -278,11 +302,14 @@ export class AgentLoop {
   constructor(private readonly deps: LoopDeps) {}
 
   /**
-   * 打开流并**把第一个事件拉出来**。
+   * 给整条流套上空闲计时器，并**把第一个事件先拉出来**。
    *
-   * adapter.stream() 是异步生成器，请求要到第一次 next() 才真正发出——
-   * 直接返回可迭代对象的话，4xx 会在 `for await` 里抛，那时已经出了压缩重试的作用域。
-   * 所以这里先拉一次，让容量拒绝在能被处理的地方浮出来，再把拉出来的那个事件补回流首。
+   * 先拉一次是为了把「压根没发出去」和「发出去了没回」分开：装配阶段抛出的错
+   * （`buildBody` 拼请求体失败）在这里就浮出来，账本行还没被标成 sent。
+   *
+   * **不要以为这一拉就把网络错误拿到了。** 三个适配器都在发请求之前先 yield
+   * `request_prepared`，所以这里拉到的恒是它，真正的网络往返发生在调用方的
+   * `for await` 里——重发与终态判定因此必须写在那一侧，不能写在这。
    */
   private async openStream(
     adapter: LlmAdapter,
@@ -304,7 +331,9 @@ export class AgentLoop {
           reject(
             new ProviderError({
               code: 'stream_idle_timeout',
-              message: `模型响应中断：${Math.round(idleMs / 1000)} 秒没有收到任何数据`,
+              // 只给分类短语，不带数字。「收到了多少 / 多久没动静」由 `run()` 统一补
+              // （`transportReading`）——两处各拼一半的话，同一句话就有了两个作者。
+              message: '模型响应中断',
               retryable: true,
               provider,
             }),
@@ -437,10 +466,9 @@ export class AgentLoop {
          * 而单次/单批投递预算（`RESULT_BUDGET_RATIO` / `BATCH_BUDGET_RATIO`）
          * 给了跳变上界，不存在无预警的跃迁。
          */
-        const attemptAbort = new AbortController()
-        const signal = AbortSignal.any([input.signal, attemptAbort.signal])
-        const build = () => ({ ...this.buildRequest(input, transcript), signal })
-        let req = build()
+        // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
+        // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
+        let req = this.buildRequest(input, transcript)
 
         if (this.deps.compaction) {
           const occupancy = anchor ? meter(0).tokens : estimateRequest(req)
@@ -463,7 +491,7 @@ export class AgentLoop {
                 manifest: outcome.manifest,
               }
               // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
-              req = build()
+              req = this.buildRequest(input, transcript)
             } else {
               // 压不动不是致命错：照常发出去，让 provider 来判。
               persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'failure', {
@@ -489,99 +517,195 @@ export class AgentLoop {
           process.stderr.write(`[qy] ${describeDrift(drift)}
 `)
 
-        // 账本行在**发出之前**落。这一刻我们已经知道要发什么（分组、指纹都算得出），
-        // 但还不知道 provider 会不会收——两件事分开记，「发出去了没回」
-        // 和「压根没发出去」在账本上才可区分。
-        const requestId = persist.openRequest({
-          runId: input.runId,
-          turnIndex: step,
-          retryIndex: 0,
-          model: adapter.spec.id,
-          measuredInputTokens: estimateRequest(req),
-          measurementExact: false,
-          sentCategories: breakdown,
-          omittedCategories: this.lastOmitted,
-          payloadHash: payloadHashOf(req),
-        })
+        /*
+         * ── 发送与消费：一次尝试，断了原样再来一次 ──
+         *
+         * **重发的窗口只有一个：provider 一个事件都没回来。** 重发是重新生成，
+         * 模型不会接着上次那半截往下写；已经吐过字再重发，界面上就得表达
+         * 「刚才那段作废」，而 `superseded` 是 run 级语义（靠一条新 run 行接替旧的），
+         * 轮内重发没有第二条 run 行可挂。零输出时重发完全无痕，这是唯一不需要
+         * 新显示语义的窗口。
+         *
+         * `request_prepared` 不算 provider 事件——三个适配器都在发请求**之前**
+         * 先 yield 它（见各 `stream()` 首行），所以「只收到过它」就等于
+         * 「一个字节都没回来」。网络失败因此**全部落在下面这个 `for await` 里**，
+         * 不在 `openStream` 里。
+         */
+        let requestId = ''
+        let attempt = 0
+        for (;;) {
+          // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
+          // 复用上一次那个等于新连接一开就已经是 aborted。
+          const attemptAbort = new AbortController()
+          req = { ...req, signal: AbortSignal.any([input.signal, attemptAbort.signal]) }
 
-        let stream: AsyncIterable<ProviderEvent>
-        try {
-          stream = await this.openStream(adapter, req, () => attemptAbort.abort())
-          persist.markRequestSent(requestId)
-        } catch (err) {
-          const code = err instanceof ProviderError ? err.code : 'internal_error'
-          // 超时/断流与被拒不是一回事：前者我们不知道 provider 收没收到，
-          // 按「拒了」记会把一次可能已计费的请求记成没发生。
-          persist.settleRequest(
-            requestId,
-            code === 'stream_idle_timeout' ? 'uncertain' : 'rejected',
-            null,
-            code,
-          )
-          throw err
-        }
+          // 账本行在**发出之前**落。这一刻我们已经知道要发什么（分组、指纹都算得出），
+          // 但还不知道 provider 会不会收——两件事分开记，「发出去了没回」
+          // 和「压根没发出去」在账本上才可区分。
+          requestId = persist.openRequest({
+            runId: input.runId,
+            turnIndex: step,
+            // 同一轮的第 N 次发送。`uq_provider_run_turn` 靠它区分，
+            // 重发因此不会顶掉上一次那行——两次都真实发生过，账要分开记。
+            retryIndex: attempt,
+            model: adapter.spec.id,
+            measuredInputTokens: estimateRequest(req),
+            measurementExact: false,
+            sentCategories: breakdown,
+            omittedCategories: this.lastOmitted,
+            payloadHash: payloadHashOf(req),
+          })
 
-        for await (const ev of stream) {
-          if (input.signal.aborted) break
+          /**
+           * 最后一次收到事件的时刻。**起点是「发出」而不是 0**——一个事件都没收到时，
+           * 它与此刻的差正好是「发出去之后干等了多久」，不需要另记一个发送时刻。
+           */
+          let lastEventAt = Date.now()
+          /** provider 真的回过来的事件数（不含 `request_prepared`）。 */
+          let providerEvents = 0
 
-          switch (ev.type) {
-            case 'request_prepared': {
-              const limit = adapter.spec.contextWindow
-              const m = meter(ev.measuredInputTokens)
-              // 保留一位小数：1M 窗口下 2139 token 取整就是 0%，那一位有信息量。
-              const pct = limit ? Math.round((m.tokens / limit) * 1000) / 10 : 0
-              yield {
-                type: 'context',
-                runId: input.runId,
-                tokens: m.tokens,
-                limit,
-                percent: pct,
-                source: m.source,
-                breakdown: breakdown ?? emptyBreakdown(),
-                omitted: this.lastOmitted,
+          try {
+            const stream = await this.openStream(adapter, req, () => attemptAbort.abort())
+            persist.markRequestSent(requestId)
+
+            for await (const ev of stream) {
+              lastEventAt = Date.now()
+              if (ev.type !== 'request_prepared') providerEvents++
+              if (input.signal.aborted) break
+
+              switch (ev.type) {
+                case 'request_prepared': {
+                  const limit = adapter.spec.contextWindow
+                  const m = meter(ev.measuredInputTokens)
+                  // 保留一位小数：1M 窗口下 2139 token 取整就是 0%，那一位有信息量。
+                  const pct = limit ? Math.round((m.tokens / limit) * 1000) / 10 : 0
+                  yield {
+                    type: 'context',
+                    runId: input.runId,
+                    tokens: m.tokens,
+                    limit,
+                    percent: pct,
+                    source: m.source,
+                    breakdown: breakdown ?? emptyBreakdown(),
+                    omitted: this.lastOmitted,
+                  }
+                  break
+                }
+                case 'thinking_delta': {
+                  thinkingText += ev.delta
+                  // delta 只做实时状态；整段思考在开这一批的首条工具步时随 reasoning 落库。
+                  yield {
+                    type: 'thinking.delta',
+                    runId: input.runId,
+                    delta: ev.delta,
+                    redacted: false,
+                  }
+                  break
+                }
+                case 'text_delta': {
+                  if (textStepId === null) {
+                    textStepId = persist.openTextStep(input.runId, persist.nextSeq(input.runId))
+                  }
+                  assistantText += ev.delta
+                  persist.appendText(textStepId, ev.delta)
+                  yield {
+                    type: 'text.delta',
+                    runId: input.runId,
+                    stepId: textStepId as never,
+                    delta: ev.delta,
+                  }
+                  break
+                }
+                case 'tool_calls': {
+                  calls.push(...ev.calls)
+                  break
+                }
+                case 'usage': {
+                  turnUsage = ev.usage
+                  mergeUsage(usage, ev.usage, adapter, turnIndex)
+                  persist.saveUsage(input.runId, usage)
+                  yield { type: 'usage', runId: input.runId, usage: structuredClone(usage) }
+                  break
+                }
+                case 'done': {
+                  providerStop = ev.stopReason
+                  if (ev.stopReason === 'refusal') {
+                    refusalNote = ev.refusal?.explanation ?? '模型出于安全策略拒绝了该请求'
+                  }
+                  break
+                }
+                default:
+                  break
               }
-              break
             }
-            case 'thinking_delta': {
-              thinkingText += ev.delta
-              // delta 只做实时状态；整段思考在开这一批的首条工具步时随 reasoning 落库。
-              yield { type: 'thinking.delta', runId: input.runId, delta: ev.delta, redacted: false }
-              break
+            break
+          } catch (err) {
+            const pe = err instanceof ProviderError ? err : null
+            const code = pe?.code ?? 'internal_error'
+
+            /*
+             * 终态判据是**「provider 有没有答复过」**，不是错误码。
+             *
+             * 有 HTTP 状态码 = 它明确回绝了，`rejected`；没有 = 连接层面就没成，
+             * 我们不知道它收没收到、计没计费，只能记 `uncertain`。
+             * 原来按 `code === 'stream_idle_timeout'` 判，于是一次「压根没连上」
+             * 被记成「provider 拒了」——那是编出来的确定性。
+             */
+            persist.settleRequest(
+              requestId,
+              pe?.status !== undefined ? 'rejected' : 'uncertain',
+              null,
+              code,
+            )
+
+            // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
+            if (input.signal.aborted) throw err
+            // 其余非传输失败（4xx、容量拒绝）原样上抛：provider 已经说清是什么了，
+            // 补读数、重发都无从谈起。
+            if (!pe || !RESENDABLE.has(code)) throw err
+
+            const silentMs = Date.now() - lastEventAt
+            /*
+             * 原始错误形状只写日志。
+             *
+             * `errno` 与英文原文对排查是全部，对界面是噪音——归类之后那句中文说的是
+             * 「哪一类」，说不出「是哪个码」。少了这行，账本里只剩中文，
+             * 回头分不出 `ECONNRESET`（对端重置）和我们自己那 60 秒掐的。
+             *
+             * 取的是 `cause` 而不是 `err`：走到这里 `err` 已经是归类后的
+             * `ProviderError`，它的 `code` 是 `network_error` 这种分类码，
+             * 真正的 errno 挂在被它包住的那个原始错误上。
+             */
+            const raw = (err as { cause?: unknown }).cause
+            process.stderr.write(
+              `[qy] 传输失败 turn=${step} retry=${attempt} code=${code} errno=${String(
+                (raw as { code?: unknown })?.code ?? '-',
+              )} events=${providerEvents} silent=${Math.round(silentMs / 1000)}s | ${
+                raw instanceof Error ? raw.message : pe.message
+              }\n`,
+            )
+
+            if (attempt === 0 && providerEvents === 0) {
+              attempt++
+              continue
             }
-            case 'text_delta': {
-              if (textStepId === null) {
-                textStepId = persist.openTextStep(input.runId, persist.nextSeq(input.runId))
-              }
-              assistantText += ev.delta
-              persist.appendText(textStepId, ev.delta)
-              yield {
-                type: 'text.delta',
-                runId: input.runId,
-                stepId: textStepId as never,
-                delta: ev.delta,
-              }
-              break
-            }
-            case 'tool_calls': {
-              calls.push(...ev.calls)
-              break
-            }
-            case 'usage': {
-              turnUsage = ev.usage
-              mergeUsage(usage, ev.usage, adapter, turnIndex)
-              persist.saveUsage(input.runId, usage)
-              yield { type: 'usage', runId: input.runId, usage: structuredClone(usage) }
-              break
-            }
-            case 'done': {
-              providerStop = ev.stopReason
-              if (ev.stopReason === 'refusal') {
-                refusalNote = ev.refusal?.explanation ?? '模型出于安全策略拒绝了该请求'
-              }
-              break
-            }
-            default:
-              break
+
+            // 分类短语 + 现场读数 + 有没有替他试过，一行说完。
+            throw new ProviderError({
+              code: pe.code,
+              message: [
+                pe.message,
+                transportReading(
+                  providerEvents,
+                  silentMs,
+                  thinkingText.length + assistantText.length,
+                ),
+                ...(attempt > 0 ? ['已自动重发一次，仍然中断'] : []),
+              ].join('，'),
+              retryable: pe.retryable,
+              provider: pe.provider,
+              cause: err,
+            })
           }
         }
 
@@ -589,14 +713,12 @@ export class AgentLoop {
 
         // 流跑完了就给这一行落终态。中途被用户打断算 `uncertain`——
         // provider 那边收没收全我们不知道，而这正是 `uncertain` 存在的意义。
-        if (requestId) {
-          persist.settleRequest(
-            requestId,
-            input.signal.aborted ? 'uncertain' : 'received',
-            turnUsage,
-            null,
-          )
-        }
+        persist.settleRequest(
+          requestId,
+          input.signal.aborted ? 'uncertain' : 'received',
+          turnUsage,
+          null,
+        )
 
         if (input.signal.aborted) {
           stopReason = 'user_interrupt'
