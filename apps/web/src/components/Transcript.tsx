@@ -57,22 +57,30 @@ export function Transcript() {
     reconcileRenderItems(prev, buildRenderItems(state.transcript)),
   )
 
+  /*
+   * 判据是**真的贴在底**，不是「离底不到 80px」。
+   *
+   * 下面那个跟随在流式期每秒要写几十次 `scrollTop`，而 80px 的容差把「用户主动往上
+   * 滚了几十像素」和「贴着底」判成同一件事：用户在底部这一段里的每一次手势都会在
+   * 下一帧被覆盖，表现就是划不动、卡在那儿，流一停又能划了。容差只留给分数像素。
+   */
   const onScroll = () => {
     const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-    setPinned(gap < 80)
+    setPinned(gap <= 2)
   }
 
   /*
-   * 跟随的触发条件是**内容的真实高度变了**，不是「store 里某几个字段变了」。
-   *
-   * 会改高度的路径远不止「又来了一段正文」：折叠随状态自动开合（`.fold-pre`
-   * 一次就是 200px）、markdown 限速重解析要晚 60ms 才落地、工具卡跑完才填进
-   * 参数表和输出。盯着 `transcript.length` 加末条 `text.length` 的话，这些变化
-   * 全都没有补偿——内容把末尾那条读数条挤到输入框底下，直到下一个 delta 到达
-   * 才弹回来，于是它一直在那个位置上下跳。
+   * 贴着底时让新内容跟着走。触发条件是**内容的真实高度变了**，不是「store 里某几个
+   * 字段变了」：折叠随状态自动开合（`.fold-pre` 一次就是 200px）、markdown 限速重解析
+   * 要晚 60ms 才落地、工具卡跑完才填进参数表和输出——盯字段的话这些全都追不上，
+   * 新来的字停在视口下面看不见。
    *
    * ResizeObserver 的回调在布局之后、绘制之前跑，所以补偿这一帧就完成，
    * 中间那一帧不会画出去。
+   *
+   * **它不负责读数条的位置**：那条由 CSS 钉在底边（`transcript.css` 里的
+   * `.transcript-inner > .run-strip:not(.done)`）。滚动补偿追不住一个每帧都在变的
+   * 高度，追出来的就是上下跳。
    */
   onMount(() => {
     const ro = new ResizeObserver(() => {
