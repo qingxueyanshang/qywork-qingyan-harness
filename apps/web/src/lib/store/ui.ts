@@ -22,6 +22,46 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
 export type PanelView = 'todos' | 'files' | 'git' | 'terminal'
 export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
 
+/** 面板最窄：树 + 一列内容还看得见的最窄。 */
+const PANEL_MIN = 280
+/** 拖到最宽时留给会话区的宽度。拖到只剩一条缝的对话框不是用户想要的结果。 */
+const PANEL_KEEP_FOR_CHAT = 480
+const PANEL_KEY = 'qywork.panelWidth'
+
+function readPanelWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(PANEL_KEY))
+    return Number.isFinite(v) && v >= PANEL_MIN ? v : 380
+  } catch {
+    // 隐私模式下 localStorage 直接抛。记不住宽度不该让应用起不来。
+    return 380
+  }
+}
+
+/**
+ * 右侧面板的宽度（像素）。**由用户拖左边沿改，记在 localStorage 里。**
+ *
+ * 真源是这个信号，不是 `tokens.css` 的 `--panel-w`：那条只是首次启动的默认值。
+ * `App.tsx` 把它写成 `.app` 上的行内 `--panel-w`，于是网格那一列跟着变，
+ * 布局规则一行不用改。
+ *
+ * 面板里现在是「内容 + 树」两块并排，所以可拖不是锦上添花：不给拖的话内容那半
+ * 永远只剩一百多像素。
+ */
+export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
+
+/** 拖动中每一帧都会调。**夹在可用范围内**，并顺手记下来。 */
+export function resizePanel(px: number): void {
+  const max = Math.max(PANEL_MIN, window.innerWidth - PANEL_KEEP_FOR_CHAT)
+  const next = Math.round(Math.min(max, Math.max(PANEL_MIN, px)))
+  setPanelWidthSignal(next)
+  try {
+    localStorage.setItem(PANEL_KEY, String(next))
+  } catch {
+    // 同上：这一次的拖动已经生效了，存不下只影响下次启动。
+  }
+}
+
 /**
  * 面板放大：会话正文让位，只留输入框和这块面板（布局见 `shell.css` 的
  * `.app.panel-max`）。
@@ -139,23 +179,27 @@ export function closeSettings(): void {
 }
 
 /**
- * 主内容区正在看哪个文件（工作区相对路径）。`null` = 看会话。
+ * 面板里正在看哪个文件（工作区相对路径）。`null` = 只有树。
  *
- * 这是「看文件还是看会话」的唯一权威，两处消费：主区渲染哪一块（`App.tsx`），
- * 以及文件树里哪一行是选中的（`SidePanel`）。别再在面板里存第二份「当前预览」
- * ——那会让两块地方对「现在开着哪个文件」给出两个答案。
+ * **内容和树在同一块面板里并排**：树在右、内容在左（`FileBrowser`）。会话正文
+ * 不让位——看文件和看对话是两块地方的事，不该互相顶掉。
+ *
+ * 这是「开着哪个文件」的唯一权威。别在面板里再存一份，两份必然对不上。
+ * 注意它**不负责高亮哪一行**：那是 `FileBrowser` 里的 `selected`
+ * （最后点过的那一行），两者混用过一次，症状是点文件夹不亮。
  */
 export const [openFile, setOpenFile] = createSignal<string | null>(null)
 
 /**
- * 打开一个文件。**必须走这里**：它顺手把面板放大态收掉。
+ * 打开一个文件。**必须走这里**：它顺手保证面板是开着的、且停在文件那一页。
  *
- * 放大态下主内容区整块不渲染（`App.tsx` 那段），直接设 `openFile` 的结果是
- * 文件开在一块看不见的地方——用户点了一下，什么都没发生。
+ * 直接设 `openFile` 的话，从别的地方（命令面板、将来的「在文件里打开」）触发时
+ * 面板可能收着或停在「变更」页，用户点一下什么都看不到。
+ * 放大态**不动**：那个模式下面板占满内容区，正好是看文件最舒服的形状。
  */
-export function openFileInMain(path: string): void {
-  setPanelMaximized(false)
+export function openFileInPanel(path: string): void {
   setOpenFile(path)
+  openPanel('files')
 }
 
 /**

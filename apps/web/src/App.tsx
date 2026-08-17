@@ -17,9 +17,6 @@ const SettingsDialog = lazy(() =>
 
 const RunDetails = lazy(() => import('./components/RunDetails.tsx'))
 
-// 懒加载同 SidePanel：它里面的 CodeView 拖着 CodeMirror 核心。
-const FileView = lazy(() => import('./components/FileView.tsx'))
-
 import { IconChevron, IconPanel, IconSearch } from './components/Icons.tsx'
 import { Sheet } from './components/Sheet.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
@@ -28,9 +25,9 @@ import {
   loadConversations,
   loadWorkspace,
   loadWorkspaceExtensions,
-  openFile,
   overlay,
   panelMaximized,
+  panelWidth,
   setPaletteOpen,
   setState,
   settingsPage,
@@ -95,6 +92,10 @@ export function App() {
         'panel-max': panelMaximized(),
         'sidebar-collapsed': sidebarCollapsed(),
       }}
+      // 面板宽度的真源是 `panelWidth`（用户拖出来的，记在 localStorage）。
+      // 写成 `.app` 上的行内变量：网格那一列本来就是 `var(--panel-w)`，
+      // tokens.css 里那条只当默认值，布局规则一行不用改。
+      style={{ '--panel-w': `${panelWidth()}px` }}
     >
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>
@@ -179,16 +180,7 @@ export function App() {
             滚动容器的 scrollTop 清成 0，还原时用户落在几百条之前的开头，而
             重新挂载会走一遍「贴底」的初始态，还原就停在最新那条上。 */}
         <Show when={!panelMaximized()}>
-          {/* 主区两种内容互斥：会话，或者打开的那个文件。**输入区在两种下都留着**
-              ——看着文件让模型改它，输入框正好在手边。
-              `Suspense` 的占位是同尺寸空壳，理由同下面那块面板。 */}
-          <Show when={openFile()} fallback={<Transcript />}>
-            {(path) => (
-              <Suspense fallback={<div class="preview" />}>
-                <FileView path={path()} />
-              </Suspense>
-            )}
-          </Show>
+          <Transcript />
         </Show>
         <Composer />
       </main>
