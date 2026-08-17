@@ -1,11 +1,16 @@
-/** 文件树、预览与 git 只读视图。右侧面板的三个标签页都从这里取数。 */
+/**
+ * 文件树、按名搜索、预览、新建，以及 git 只读视图。右侧面板的几个标签页都从这里取数。
+ *
+ * git 那几条只读；文件这边**只有一条会写盘**（`/api/files/create`），
+ * 口径写在它自己头上。
+ */
 
 import { resolveInWorkspace } from '@qywork/tools'
-import { listTree, preview } from '../files.ts'
+import { createEntry, EntryExistsError, findByName, listTree, preview } from '../files.ts'
 import * as git from '../git.ts'
 import { type ApiHandler, json } from './types.ts'
 
-export const handleWorkspaceFsApi: ApiHandler = async (url, _req, d) => {
+export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
   const q = url.searchParams
 
@@ -15,6 +20,39 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, _req, d) => {
     await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
     const depth = Math.min(6, Math.max(1, Number(q.get('depth') ?? 2)))
     return json({ nodes: await listTree(d.workspaceRoot, rel === '.' ? '' : rel, depth) })
+  }
+
+  if (p === '/api/files/find') {
+    // 空查询由 `findByName` 判（它回空结果，不回整棵树）——这里不重复一遍。
+    return json(await findByName(d.workspaceRoot, q.get('q') ?? ''))
+  }
+
+  /*
+   * 新建文件 / 目录。**面板这一侧唯一的写入口**。
+   *
+   * 三条硬口径：不合法不落盘（422）、已存在不覆盖（409）、路径越界由
+   * `resolveInWorkspace` 挡。越界翻成 422 而不是让它抛成 500——这是入参问题，
+   * 用户要看到的是「这个路径不在项目里」，不是「服务器错误」。
+   */
+  if (p === '/api/files/create' && req.method === 'POST') {
+    const body = (await req.json().catch(() => null)) as { path?: string; kind?: string } | null
+    const rel = body?.path?.trim()
+    const kind = body?.kind
+    if (!rel || (kind !== 'file' && kind !== 'dir')) {
+      return json({ error: 'invalid', message: '要建的路径和类型都得给' }, 422)
+    }
+    try {
+      await resolveInWorkspace(d.workspaceRoot, rel)
+    } catch {
+      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+    }
+    try {
+      return json({ node: await createEntry(d.workspaceRoot, rel, kind) })
+    } catch (err) {
+      if (err instanceof EntryExistsError)
+        return json({ error: 'exists', message: err.message }, 409)
+      throw err
+    }
   }
 
   if (p === '/api/files/preview') {

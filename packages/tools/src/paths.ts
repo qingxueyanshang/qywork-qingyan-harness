@@ -300,19 +300,22 @@ function decodeSafely(input: string): string {
 export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents']
 
 /**
- * 遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
+ * **模型**遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
  *
  * ## 为什么必须是一份
  *
- * 三处消费它：`server/files.ts`（界面文件树）、`tools/search.ts`（glob / grep）、
- * `tools/files.ts`（list_dir）。各抄一份的话会漂——实测漂到过 13 / 12 / 11 条，
- * `coverage` 和 `.svelte-kit` 只有界面那份有。**后果不是不整洁，是三方对
- * 「这个目录存不存在」给出不同答案**——用户在文件树里看不到 `coverage/`，
- * 模型 `list_dir` 却把它列出来，然后 `grep` 又搜不进去。模型据此去读一份
- * 构建产物当源码，或者报告「在 coverage/lcov-report/x.html 里找到了」。
+ * 两处消费它：`tools/search.ts`（glob / grep）与 `tools/files.ts`（list_dir）。
+ * 各抄一份的话会漂——实测漂到过 13 / 12 / 11 条。**后果不是不整洁，是两处对
+ * 「这个目录存不存在」给出不同答案**：`list_dir` 把 `coverage/` 列出来、`grep`
+ * 又搜不进去，模型据此去读一份构建产物当源码，或者报告「在
+ * coverage/lcov-report/x.html 里找到了」。
+ *
+ * **界面文件树不用它**（`server/files.ts`）：那是用户自己的文件浏览器，磁盘上
+ * 有什么就列什么。不一致的方向只允许是「界面比模型看得多」——反过来用户就
+ * 没法核对模型说的话。
  *
  * 它和 `PROTECTED_DIRS` 不是一回事，别合并：那份是**安全边界**（挡自我提权），
- * 这份是**噪音过滤**（省 token、省眼睛）。跳过噪音目录不构成任何保护。
+ * 这份是**噪音过滤**（省 token）。跳过噪音目录不构成任何保护。
  */
 export const IGNORED_DIRS: ReadonlySet<string> = new Set([
   'node_modules',

@@ -7,8 +7,8 @@
  * 永远追不上现实，而族是有限的。
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { extname, join, relative, sep } from 'node:path'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, join, relative, sep } from 'node:path'
 import { IGNORED_DIRS } from '@qywork/tools'
 
 export type PreviewKind =
@@ -171,6 +171,20 @@ export function classify(path: string): { kind: PreviewKind; mime: string; langu
   return { kind, mime, ...(language ? { language } : {}) }
 }
 
+/**
+ * 界面文件树。**磁盘上有什么就列什么，一条都不过滤。**
+ *
+ * 不跳 `node_modules` / `.git` / 构建产物，也不跳点开头的条目。这棵树是用户
+ * 自己的文件浏览器，回答的问题是「工作区里到底有什么」——按名字藏掉一部分，
+ * 用户就以为它不存在，而 `preview` 照样读得到、模型照样改得到。
+ *
+ * 模型侧的 `list_dir` / `glob` / `grep` **仍然**按 `IGNORED_DIRS` 跳噪音目录，
+ * 那是 token 预算，不是「这个目录不存在」。两边不一致的方向只允许是这一个：
+ * **界面比模型看得多**。反过来（界面藏、模型列）用户就没法核对模型说的话。
+ *
+ * 按 depth 懒展开，所以列全不等于一次遍历整棵树：`node_modules` 也只有点开
+ * 才会往里走一层。
+ */
 export async function listTree(
   workspaceRoot: string,
   relPath: string,
@@ -185,9 +199,6 @@ async function walk(dir: string, root: string, depth: number): Promise<FileNode[
   const out: FileNode[] = []
 
   for (const e of entries) {
-    if (e.isDirectory() && IGNORED_DIRS.has(e.name)) continue
-    if (e.name.startsWith('.') && e.name !== '.github' && e.name !== '.env.example') continue
-
     const abs = join(dir, e.name)
     const info = await stat(abs).catch(() => null)
     if (!info) continue
@@ -208,6 +219,108 @@ async function walk(dir: string, root: string, depth: number): Promise<FileNode[
   // 目录在前，同类按名排。和资源管理器/编辑器的直觉一致。
   out.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1))
   return out
+}
+
+/** 目标已存在。调用方要把它翻成 409——**不覆盖**是这条接口的硬口径。 */
+export class EntryExistsError extends Error {
+  constructor(readonly relPath: string) {
+    super(`${relPath} 已存在`)
+    this.name = 'EntryExistsError'
+  }
+}
+
+/**
+ * 新建文件或目录。空文件、空目录，不带模板。
+ *
+ * 先判存在再落盘：`mkdir` 的 `recursive` 对已存在的目录**静默成功**，靠它兜底
+ * 等于「新建」和「什么都没做」给出同一个回音。文件那一支再叠一个 `wx`，
+ * 挡住判定与写入之间被人抢先建出来的那一瞬。
+ *
+ * 中间目录顺带建出来（`docs/a/b.md` 里的 `docs/a`）：这是用户在输入框里
+ * 打出来的路径，缺一层就报错等于让他一层一层建。
+ */
+export async function createEntry(
+  workspaceRoot: string,
+  relPath: string,
+  kind: 'file' | 'dir',
+): Promise<FileNode> {
+  const abs = join(workspaceRoot, relPath)
+  const taken = await stat(abs).catch(() => null)
+  if (taken) throw new EntryExistsError(relPath)
+
+  if (kind === 'dir') await mkdir(abs, { recursive: true })
+  else {
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, '', { flag: 'wx' })
+  }
+
+  const info = await stat(abs)
+  return {
+    name: basename(abs),
+    path: toPosix(relPath),
+    kind,
+    size: info.size,
+    mtime: info.mtimeMs,
+  }
+}
+
+export interface FindHit {
+  path: string
+  kind: 'file' | 'dir'
+}
+
+/** 一次搜索最多回这么多命中，以及最多翻这么多条目。两个上限都到了就算截断。 */
+const FIND_MAX_HITS = 300
+const FIND_MAX_ENTRIES = 20_000
+
+/**
+ * 按名字找文件。子串匹配，大小写不敏感。
+ *
+ * **这里跳 `IGNORED_DIRS`，和文件树不一样**，理由是搜得到才有用：树不过滤，
+ * 于是工作区第一层就有 `node_modules`；按字典序铺开的话遍历预算会在依赖树里
+ * 烧光，用户搜 `launch` 一个命中都拿不到。界面必须把这条边界说出来
+ * （空结果那一行），否则用户会以为文件不存在。
+ *
+ * 广度优先：浅的先出来。用户要找的东西通常在前两三层，而深处那些同名文件
+ * 排在前面等于把结果列表占满。
+ *
+ * 只 `readdir` 不 `stat`：命中列表不显示大小与时间，为两万条各取一次元数据
+ * 是白花的几百毫秒。
+ */
+export async function findByName(
+  workspaceRoot: string,
+  query: string,
+): Promise<{ matches: FindHit[]; truncated: boolean }> {
+  // 空查询回空结果，**判定放在这里而不是调用方**：空串是「谁都匹配」，
+  // 由 HTTP 那层挡的话，第二个调用方一来就会拿到整棵树。
+  const needle = query.trim().toLowerCase()
+  if (!needle) return { matches: [], truncated: false }
+
+  const matches: FindHit[] = []
+  let scanned = 0
+  let truncated = false
+  const queue: string[] = [workspaceRoot]
+
+  while (queue.length > 0) {
+    const dir = queue.shift()!
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const e of entries) {
+      if (matches.length >= FIND_MAX_HITS || scanned >= FIND_MAX_ENTRIES) {
+        truncated = true
+        return { matches, truncated }
+      }
+      scanned++
+      const abs = join(dir, e.name)
+      if (e.name.toLowerCase().includes(needle)) {
+        matches.push({
+          path: toPosix(relative(workspaceRoot, abs)),
+          kind: e.isDirectory() ? 'dir' : 'file',
+        })
+      }
+      if (e.isDirectory() && !IGNORED_DIRS.has(e.name)) queue.push(abs)
+    }
+  }
+  return { matches, truncated }
 }
 
 export async function preview(workspaceRoot: string, relPath: string): Promise<PreviewResult> {
