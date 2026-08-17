@@ -18,9 +18,11 @@ import {
   closePanel,
   isDesktopShell,
   openFile,
-  openFileInMain,
+  openFileInPanel,
   type PanelView,
   panelMaximized,
+  panelWidth,
+  resizePanel,
   revealWorkspace,
   setOpenFile,
   setSidePanel,
@@ -51,6 +53,9 @@ import { TodoPanel } from './TodoPanel.tsx'
 // 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本选不到这个视图，
 // 静态引入等于让它们白背一份永远不执行的代码。
 const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
+
+// 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
+const FileView = lazy(() => import('./FileView.tsx'))
 
 interface FileNode {
   name: string
@@ -145,6 +150,38 @@ export default function SidePanel() {
   return (
     <Show when={sidePanel()}>
       <aside class="side-panel">
+        {/*
+         * 拖左边沿改整块面板的宽度。
+         *
+         * `setPointerCapture` 是必须的：不捕获的话指针一滑到 iframe / CodeMirror
+         * 上面，`pointermove` 就断给了那一层，拖动会在半路停住。
+         *
+         * 用 `<button>` 而不是 `role="separator"` 的 div：焦点、键盘语义、
+         * 屏幕阅读器播报全是白拿的，而那个 role 还要求自己补 `tabindex` 与
+         * `aria-valuenow`，补齐了 lint 也照样要抑制两条规则。
+         * 左右方向键一档 24px——拿得到焦点就得能用键盘改。
+         * 窄屏不显示（那里的面板盖满全屏，见 utility.css）。
+         */}
+        <button
+          class="panel-grip"
+          type="button"
+          aria-label="拖动改变面板宽度"
+          title="拖动改变宽度"
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId)
+            e.preventDefault()
+          }}
+          onPointerMove={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              resizePanel(window.innerWidth - e.clientX)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+            e.preventDefault()
+            resizePanel(panelWidth() + (e.key === 'ArrowLeft' ? 24 : -24))
+          }}
+        />
         <header class="side-head">
           <div class="side-tabs" role="tablist">
             <For each={VISIBLE_VIEWS}>
@@ -299,6 +336,15 @@ interface TreeCtx {
 
 const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
 
+/**
+ * 工作区根**也是一个可选中的节点**，路径是空串。
+ *
+ * 不给它一个节点的话，「选中根、然后新建」就得靠「什么都没选」来表达，而那和
+ * 「刚打开面板、还没点过任何东西」是同一个状态——用户点了一下根，界面上什么都
+ * 不该发生就说不通了。名字由 `workspace()` 给，这里只当占位。
+ */
+const ROOT_NODE: FileNode = { name: '', path: '', kind: 'dir', size: 0, mtime: 0 }
+
 function FileBrowser() {
   const [tree, { refetch }] = createResource(
     // 依赖 fileChanges 长度：agent 改了文件后自动刷新树，
@@ -346,7 +392,15 @@ function FileBrowser() {
   const ctx: TreeCtx = {
     expanded,
     childrenOf: (path) => kids().get(path) ?? null,
-    selected: () => renaming()?.path ?? openFile() ?? selected()?.path ?? null,
+    /*
+     * 高亮哪一行**只由 `selected` 说了算**。
+     *
+     * 别把「主区开着哪个文件」（`openFile`）也算进来：那是两个权威抢一个高亮，
+     * 表现是点文件夹不亮（开着的文件把高亮占着），而点文件看着像「选中没留住」。
+     * 现在的口径和资源管理器一致：**最后点的那一行是选中的行**，一直亮着，
+     * 直到点别的行。
+     */
+    selected: () => renaming()?.path ?? selected()?.path ?? null,
     load: loadDir,
     toggle: (node) => {
       setSelected(node)
@@ -358,7 +412,7 @@ function FileBrowser() {
     },
     pick: (node) => {
       setSelected(node)
-      openFileInMain(node.path)
+      openFileInPanel(node.path)
     },
     menu: (node, x, y) => {
       setSelected(node)
@@ -389,7 +443,7 @@ function FileBrowser() {
             invalidate(parentDir(node.path))
             setSelected(node)
             // 改的正是主区开着的那个文件：路径变了，跟着换过去，不然它指向一个没了的路径。
-            if (openFile() === job.path && node.kind === 'file') openFileInMain(node.path)
+            if (openFile() === job.path && node.kind === 'file') openFileInPanel(node.path)
           } else if (make) {
             const path = make.dir ? `${make.dir}/${name}` : name
             const { node } = await client.api<{ node: FileNode }>('/api/files/create', {
@@ -400,7 +454,7 @@ function FileBrowser() {
             setNameError(null)
             invalidate(make.dir)
             setSelected(node)
-            if (node.kind === 'file') openFileInMain(node.path)
+            if (node.kind === 'file') openFileInPanel(node.path)
           }
         } catch (err) {
           // `detail` 是服务端那一句话（「x 已存在」），不是带状态码和路径的整行。
@@ -434,87 +488,107 @@ function FileBrowser() {
   }
 
   return (
+    /*
+     * 内容在左、树在右，**同一块面板里**（参照物就是这个形状）。
+     *
+     * 树不占满整块：它是索引，宽度固定；内容才是要看的东西，占剩下的全部。
+     * 整块面板的宽度由用户拖左边沿改（`.panel-grip`）——两块并排必然要求这个，
+     * 不给拖的话内容那半永远只有一百多像素。
+     */
     <div class="file-browser">
-      {/* 搜索在最上面一行，和 Qoder 一样：它是这块面板的入口，不该排在树的操作后面。 */}
-      <input
-        class="tree-search"
-        type="search"
-        placeholder="搜索名称"
-        value={query()}
-        onInput={(e) => setQuery(e.currentTarget.value)}
-      />
+      <Show when={openFile()}>
+        {(path) => (
+          <Suspense fallback={<div class="preview" />}>
+            <FileView path={path()} />
+          </Suspense>
+        )}
+      </Show>
 
-      {/*
-       * 根目录行。**四颗按钮长在这一行上，不另起一条工具条**——工具条那种细带子
-       * 会在搜索框和树之间多插一层横条，而这四颗做的事全都发生在这个根之下。
-       */}
-      <div class="tree-root">
-        <button
-          class="tree-item tree-root-name"
-          type="button"
-          onClick={() => {
-            setSelected(null)
-            setRootOpen((v) => !v)
-          }}
-        >
-          <IconChevron size={11} dir={rootOpen() ? 'down' : 'right'} />
-          <IconFolder size={13} />
-          <span class="truncate">{workspace()?.name ?? '工作区'}</span>
-        </button>
-        <div class="tree-root-acts">
+      <div class="file-tree-col">
+        {/* 搜索在最上面一行：它是这块树的入口，不该排在树的操作后面。 */}
+        <input
+          class="tree-search"
+          type="search"
+          placeholder="搜索名称"
+          value={query()}
+          onInput={(e) => setQuery(e.currentTarget.value)}
+        />
+
+        {/*
+         * 根目录行。**四颗按钮长在这一行上，不另起一条工具条**——工具条那种细带子
+         * 会在搜索框和树之间多插一层横条，而这四颗做的事全都发生在这个根之下。
+         *
+         * 选中态与 hover 画在**整行**上，不是画在名字那颗按钮上：按钮只占到四颗
+         * 图标之前，高亮跟着它就只框住半行，看起来像只选中了标题。
+         */}
+        <div class="tree-root" classList={{ selected: ctx.selected() === '' }}>
           <button
-            class="icon-btn"
+            class="tree-item tree-root-name"
             type="button"
-            aria-label="新建文件"
-            title="新建文件"
-            onClick={() => newIn('file')}
-          >
-            <IconFilePlus size={14} />
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="新建文件夹"
-            title="新建文件夹"
-            onClick={() => newIn('dir')}
-          >
-            <IconFolderPlus size={14} />
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="刷新"
-            title="刷新"
             onClick={() => {
-              // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
-              setKids(new Map())
-              void refetch()
+              setSelected(ROOT_NODE)
+              setRootOpen((v) => !v)
             }}
           >
-            <IconRefresh size={14} />
+            <IconChevron size={11} dir={rootOpen() ? 'down' : 'right'} />
+            <IconFolder size={13} />
+            <span class="truncate">{workspace()?.name ?? '工作区'}</span>
           </button>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="全部折叠"
-            title="全部折叠"
-            onClick={() => setExpanded(new Set())}
-          >
-            <IconCollapseAll size={14} />
-          </button>
+          <div class="tree-root-acts">
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="新建文件"
+              title="新建文件"
+              onClick={() => newIn('file')}
+            >
+              <IconFilePlus size={14} />
+            </button>
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="新建文件夹"
+              title="新建文件夹"
+              onClick={() => newIn('dir')}
+            >
+              <IconFolderPlus size={14} />
+            </button>
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="刷新"
+              title="刷新"
+              onClick={() => {
+                // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
+                setKids(new Map())
+                void refetch()
+              }}
+            >
+              <IconRefresh size={14} />
+            </button>
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="全部折叠"
+              title="全部折叠"
+              onClick={() => setExpanded(new Set())}
+            >
+              <IconCollapseAll size={14} />
+            </button>
+          </div>
         </div>
-      </div>
 
-      <Show
-        when={query().trim()}
-        fallback={
-          <Show when={rootOpen()}>
-            <Tree ctx={ctx} dir="" nodes={tree()?.nodes ?? []} depth={1} />
-          </Show>
-        }
-      >
-        {(q) => <SearchHits ctx={ctx} query={q()} />}
-      </Show>
+        <Show
+          when={query().trim()}
+          fallback={
+            <Show when={rootOpen()}>
+              <Tree ctx={ctx} dir="" nodes={tree()?.nodes ?? []} depth={1} />
+            </Show>
+          }
+        >
+          {(q) => <SearchHits ctx={ctx} query={q()} />}
+        </Show>
+      </div>
 
       <Show when={menuAt()}>
         {(at) => (
@@ -774,6 +848,21 @@ function NameRow(props: {
 }) {
   const [name, setName] = createSignal(props.value)
 
+  /*
+   * **自己抢焦点，不靠 `autofocus`。**
+   *
+   * `autofocus` 只在文档解析那一刻管用；这一行是点了按钮之后动态插进来的，属性
+   * 挂上了也没人给它焦点。后果不止「不能直接打字」——**下面那条失焦即取消
+   * 也跟着失效**（从没得到焦点，就不会失焦），于是点别处这一行赖在树里不走。
+   *
+   * 改名时连着全选：进来就是原名，用户要的通常是整个换掉。
+   */
+  let input!: HTMLInputElement
+  onMount(() => {
+    input.focus()
+    input.select()
+  })
+
   return (
     <div class="tree-edit" style={{ 'padding-left': `${props.depth * 12 + 8}px` }}>
       <Show when={props.kind === 'dir'} fallback={<IconFile size={13} />}>
@@ -781,8 +870,7 @@ function NameRow(props: {
       </Show>
       <input
         class="tree-edit-input"
-        // 这一行是点了按钮才出现的，出现就该能直接打字——不给焦点等于让用户再点一次。
-        autofocus
+        ref={input}
         placeholder={props.placeholder}
         value={name()}
         onInput={(e) => setName(e.currentTarget.value)}

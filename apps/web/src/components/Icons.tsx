@@ -3,10 +3,10 @@
  *
  * 自己画而不用图标库，为的是三条能统一的规则——套用现成库时这三条几乎必然被打破：
  *
- * 1. **统一 24 网格、2.0 描边、round 端点与拐角。** 「圆润」是通过
+ * 1. **统一 24 网格、1.5 描边、round 端点与拐角。** 「圆润」是通过
  *    `stroke-linecap/linejoin: round` 落实的结构属性，不是靠给容器加圆角。
- *    描边取 2.0：1.6 在 13/14px 的实际显示尺寸下明显偏细，和旁边 500 字重的
- *    文字放在一起像是没加载完。
+ *    描边取 1.5：这套界面是细线语言（1px 描边、1px 分隔线），2.0 的图标摆在里面
+ *    重一档，而 13px 显示尺寸下那么粗的线在拐角处会糊成一团。
  * 2. **描边不随尺寸缩放**（`vector-effect: non-scaling-stroke`），
  *    16px 和 20px 下视觉粗细一致。
  * 3. **颜色恒为 currentColor**，由父级文字色决定，不在图标里写死颜色。
@@ -28,7 +28,7 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="2"
+      stroke-width="1.5"
       stroke-linecap="round"
       stroke-linejoin="round"
       vector-effect="non-scaling-stroke"
