@@ -9,6 +9,7 @@ import {
   Match,
   on,
   onCleanup,
+  onMount,
   Show,
   Switch,
 } from 'solid-js'
@@ -47,6 +48,7 @@ import { TodoList } from './TodoList.tsx'
  */
 export function Transcript() {
   let scroller!: HTMLDivElement
+  let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
 
   // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
@@ -60,16 +62,29 @@ export function Transcript() {
     setPinned(gap < 80)
   }
 
-  createEffect(() => {
-    const last = state.transcript[state.transcript.length - 1]
-    void state.transcript.length
-    void last?.text.length
-    if (pinned()) queueMicrotask(() => scroller?.scrollTo({ top: scroller.scrollHeight }))
+  /*
+   * 跟随的触发条件是**内容的真实高度变了**，不是「store 里某几个字段变了」。
+   *
+   * 会改高度的路径远不止「又来了一段正文」：折叠随状态自动开合（`.fold-pre`
+   * 一次就是 200px）、markdown 限速重解析要晚 60ms 才落地、工具卡跑完才填进
+   * 参数表和输出。盯着 `transcript.length` 加末条 `text.length` 的话，这些变化
+   * 全都没有补偿——内容把末尾那条读数条挤到输入框底下，直到下一个 delta 到达
+   * 才弹回来，于是它一直在那个位置上下跳。
+   *
+   * ResizeObserver 的回调在布局之后、绘制之前跑，所以补偿这一帧就完成，
+   * 中间那一帧不会画出去。
+   */
+  onMount(() => {
+    const ro = new ResizeObserver(() => {
+      if (pinned()) scroller.scrollTop = scroller.scrollHeight
+    })
+    ro.observe(inner)
+    onCleanup(() => ro.disconnect())
   })
 
   return (
     <div class="transcript" ref={scroller} onScroll={onScroll}>
-      <div class="transcript-inner">
+      <div class="transcript-inner" ref={inner}>
         <For each={items()}>
           {(node) => (
             <Switch>

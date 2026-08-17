@@ -40,6 +40,10 @@
   /* 底部留白比顶部大：它同时是「最后一条离输入框多远」。放在这里而不是输入区的
      padding-top——理由写在 `.composer-wrap` 上。 */
   padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
+  /* 内容不满一屏时也撑满视口高度：跑着的那条读数条靠上方的剩余空间钉在底部，
+     没有剩余空间就没得钉（见 `.transcript-inner > .run-strip:not(.done)`）。
+     border-box 下 100% 已含上下内边距，所以撑满**不产生**滚动。 */
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -647,6 +651,24 @@
   line-height: 16px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/*
+ * 还在跑的那一条钉在会话流底部：它的位置**不由上面的内容高度决定**。
+ *
+ * 思考折叠跑起来自动展开、跑完自动收起，`.fold-pre` 一次开合就是 200px；而等结果
+ * 的时候用户看的就是这一条（秒数在跳、阶段在变）。位置跟着内容走的话，每次开合它
+ * 就在离输入框一个内边距的地方上下弹一次，秒数还没读完位置已经换了。
+ *
+ * `margin-top: auto` 吃掉上方的剩余空间（剩余空间由 `.transcript-inner` 的
+ * `min-height: 100%` 保证）：内容不满一屏时它贴底，超过一屏时由自动滚动贴底
+ * （见 `Transcript`）。两种情形下它离输入框是同一个距离，内容长过一屏的那一刻
+ * 也不跳——那条界线两侧的落点必须重合，否则每次跨过去都是一次跳动。
+ *
+ * **跑完的那些条目不许加**：读数要留在它那一轮的最后一步下面，不是留在屏幕底下。
+ */
+.transcript-inner > .run-strip:not(.done) {
+  margin-top: auto;
 }
 
 .run-galaxy {
