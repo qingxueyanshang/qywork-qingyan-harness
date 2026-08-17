@@ -2,7 +2,8 @@
  * git 面板数据源的边界。
  *
  * 覆盖 `git.ts` 的 revision 参数校验、每个文件的增删行数（「没有这个数」与「零」
- * 必须分开）、切分支的两种结局（含 API 那层据以翻译的那句英文），
+ * 必须分开）、**看另一条分支的改动是只读的三点差异**（那个选择器换的是看哪条分支，
+ * 不是 HEAD，也不是拿它和我这边对比），
  * 以及**这台机器上没装 git 时的形状**。
  * 其余读操作的正确性由 git 自己保证，复刻一遍它的行为没有意义。
  */
@@ -11,7 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkout, diff, isRepo, log, status } from './git.ts'
+import { branchChanges, diff, isRepo, log, status } from './git.ts'
 
 async function emptyRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -102,63 +103,62 @@ describe('每个文件改了多少行', () => {
   })
 })
 
-describe('切分支', () => {
-  /**
-   * 本地有改动、而目标分支上同一个文件不一样时，**git 自己会拦住**——它不会用另一条
-   * 分支的版本盖掉没提交的改动。`checkout` 要把这件事如实回上去：`ok: false` +
-   * git 的原话，界面照原话显示（不翻译，见 `api/workspace-fs.ts` 那条路由）。
-   *
-   * 反过来那种（改的文件在两条分支上一样）git 会把改动带过去，见下一条。
-   */
-  test('本地改动会被覆盖时切不过去，并回 git 的原话', async () => {
+describe('看另一条分支的改动', () => {
+  async function repoWithBranches(): Promise<string> {
     const dir = await emptyRepo()
     Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
     Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
     await Bun.write(join(dir, 'a.txt'), 'base\n')
+    await Bun.write(join(dir, 'keep.txt'), 'same\n')
     Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
-    // 另一条分支上把同一个文件改掉并提交
+    // other 上改 a.txt 并提交，然后回 master
     Bun.spawnSync(['git', 'checkout', '-q', '-b', 'other'], { cwd: dir })
-    await Bun.write(join(dir, 'a.txt'), 'other side\n')
-    Bun.spawnSync(['git', 'commit', '-q', '-am', 'other'], { cwd: dir })
+    await Bun.write(join(dir, 'a.txt'), 'base\nfrom other\n')
+    Bun.spawnSync(['git', 'commit', '-q', '-am', 'other side'], { cwd: dir })
     Bun.spawnSync(['git', 'checkout', '-q', 'master'], { cwd: dir })
-    // 回到 master 之后再改同一个文件、不提交
-    await Bun.write(join(dir, 'a.txt'), 'local edit\n')
+    return dir
+  }
 
-    const r = await checkout(dir, 'other')
-    expect(r.ok).toBe(false)
-    expect(r.err).toContain('would be overwritten by checkout')
-    // 没切过去：还在 master 上，本地那行也还在。
+  /**
+   * **列的是那条分支自己做的事，不是「它和我的差异」。**
+   *
+   * 判据就在这个用例里：我这边本地改了 `keep.txt` 且没提交，而 `other` 没碰过它——
+   * 所以 `keep.txt` **不该出现**。用两点差异（`git diff other`）实现的话它会出现，
+   * 那就成了「对比」，而用户要的是「看那条分支的改动情况」。
+   *
+   * 顺带锁住只读：跑完还在 master 上，本地那行还在。
+   */
+  test('只列那条分支自己改的文件，不掺我这边的改动', async () => {
+    const dir = await repoWithBranches()
+    await Bun.write(join(dir, 'keep.txt'), 'my local edit\n')
+
+    const files = await branchChanges(dir, 'other')
+    expect(files.map((f) => f.path)).toEqual(['a.txt'])
+    expect(files[0]).toMatchObject({ indexStatus: 'M', additions: 1, deletions: 0 })
+
     expect((await status(dir))?.branch).toBe('master')
-    expect(await Bun.file(join(dir, 'a.txt')).text()).toBe('local edit\n')
+    expect(await Bun.file(join(dir, 'keep.txt')).text()).toBe('my local edit\n')
   })
 
-  /**
-   * **有未提交的改动也照样切得过去**，只要目标分支上那个文件和现在这条一样——
-   * git 会把改动带过去。这条是拿来说明「切分支不等于会覆盖」的那一半：
-   * 会被拦住的只有「改的文件在两条分支上内容不同」这一种。
-   */
-  test('目标分支上文件相同时，带着未提交的改动也切得过去', async () => {
-    const dir = await emptyRepo()
-    Bun.spawnSync(['git', 'config', 'user.email', 't@qywork.dev'], { cwd: dir })
-    Bun.spawnSync(['git', 'config', 'user.name', 'qywork'], { cwd: dir })
-    await Bun.write(join(dir, 'a.txt'), 'base\n')
+  test('新增与删除也带状态字母', async () => {
+    const dir = await repoWithBranches()
+    Bun.spawnSync(['git', 'checkout', '-q', 'other'], { cwd: dir })
+    Bun.spawnSync(['git', 'rm', '-q', 'keep.txt'], { cwd: dir })
+    await Bun.write(join(dir, 'added-on-other.txt'), 'new\n')
     Bun.spawnSync(['git', 'add', '-A'], { cwd: dir })
-    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir })
-    Bun.spawnSync(['git', 'branch', 'other'], { cwd: dir })
-    // 改了不提交：other 上这个文件和 master 一样，所以这不构成冲突。
-    await Bun.write(join(dir, 'a.txt'), 'local edit\n')
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'more on other'], { cwd: dir })
+    Bun.spawnSync(['git', 'checkout', '-q', 'master'], { cwd: dir })
 
-    expect((await checkout(dir, 'other')).ok).toBe(true)
-    expect((await status(dir))?.branch).toBe('other')
-    // 改动跟着过来了，没丢也没被覆盖。
-    expect(await Bun.file(join(dir, 'a.txt')).text()).toBe('local edit\n')
+    const byPath = new Map((await branchChanges(dir, 'other')).map((f) => [f.path, f]))
+    expect(byPath.get('keep.txt')?.indexStatus).toBe('D')
+    expect(byPath.get('added-on-other.txt')?.indexStatus).toBe('A')
   })
 
   /** 分支名同样是不可信输入：以 `-` 开头的一律拒（理由见 `assertSafeRef`）。 */
-  test('以 - 开头的分支名被拒', async () => {
+  test('以 - 开头的 ref 被拒', async () => {
     const dir = await emptyRepo()
-    expect(checkout(dir, '--orphan=x')).rejects.toThrow(/非法的 git ref/)
+    expect(branchChanges(dir, '--output=x')).rejects.toThrow(/非法的 git ref/)
   })
 })
 

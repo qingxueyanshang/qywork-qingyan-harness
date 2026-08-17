@@ -20,9 +20,6 @@ import {
 import * as git from '../git.ts'
 import { type ApiHandler, json } from './types.ts'
 
-/** 只取第一行。界面上的错误是一句话，不是一段（B7）。 */
-const firstLine = (text: string) => text.split(String.fromCharCode(10))[0]?.trim() ?? ''
-
 export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
   const q = url.searchParams
@@ -126,21 +123,15 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     return json({ branches: await git.branches(d.workspaceRoot) })
   }
   /*
-   * 切分支。git 这一侧唯一会改工作区的接口。
+   * **那条分支自己改了什么。** 只读——不切分支、不动工作区、不合并。
    *
-   * 失败时**回 git 自己的话**（第一行），不翻译、不改写：这是 git 的判定，
-   * 把它换成自己的说法只会让用户去查一句 git 从没说过的话。整段不端出来是因为
-   * 它会把几十个文件名连成一段，而那些文件本来就在下面的改动列表里逐行摆着。
-   *
-   * 不替用户 stash、不加 `--force`：那是拿他的改动换一次成功。
+   * 界面上那个分支选择器换的是「看哪条分支的改动」，HEAD 一动不动，所以这条是 GET，
+   * 也不存在「先提交再来」这种失败。口径（三点差异）写在 `git.branchChanges` 上。
    */
-  if (p === '/api/git/checkout' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as { name?: string } | null
-    const name = body?.name?.trim()
-    if (!name) return json({ error: 'invalid', message: '要切到哪个分支' }, 422)
-    const r = await git.checkout(d.workspaceRoot, name)
-    if (r.ok) return json({ ok: true })
-    return json({ error: 'checkout_failed', message: firstLine(r.err) || '切换失败' }, 409)
+  if (p === '/api/git/changes') {
+    const ref = q.get('ref')?.trim()
+    if (!ref) return json({ error: 'invalid', message: '要看哪条分支' }, 422)
+    return json({ files: await git.branchChanges(d.workspaceRoot, ref) })
   }
   if (p === '/api/git/log') {
     return json({
@@ -154,7 +145,10 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     return json({
       diff: await git.diff(d.workspaceRoot, {
         ...(q.get('path') ? { path: q.get('path')! } : {}),
+        // `ref` = 那一个提交自己改了什么；`branch` = 那条分支自己改了什么（三点）。
+        // 含义不同，别让调用方同时给（给了就按 `ref` 走，它更具体）。
         ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
+        ...(q.get('branch') ? { branch: q.get('branch')! } : {}),
         staged: q.get('staged') === '1',
       }),
     })
