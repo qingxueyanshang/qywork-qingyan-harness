@@ -10,6 +10,23 @@
   min-width: 0;
 }
 
+/*
+ * 从**左边**截的省略号。给长路径用：要留住尾巴（文件名），头上的盘符可以省。
+ *
+ * `direction: rtl` 把省略号挪到左边。**里面的文本必须自己带 `dir="ltr"`**
+ * （见 `FileView` 的标题栏）：只写这一层的话整串会被反向排版，`C:\` 跑到右边去。
+ * 也不要拿 `unicode-bidi: plaintext` 代替那个 `dir`——它按首字符把段落判成 ltr，
+ * 省略号又回到右边，这条规则就白写了。
+ */
+.truncate-left {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+}
+
 .icon-spin {
   animation: spin 900ms linear infinite;
 }

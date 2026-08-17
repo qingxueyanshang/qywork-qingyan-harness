@@ -215,3 +215,20 @@ export interface WorkspaceInfo {
   name: string
 }
 export const [workspace, setWorkspace] = createSignal<WorkspaceInfo | null>(null)
+
+/**
+ * 工作区相对路径 → **本机绝对路径**。
+ *
+ * 分隔符跟着项目根走：根用反斜杠就拼反斜杠，用斜杠就拼斜杠。后端一律回 posix
+ * 风格的相对路径（`server/files.ts` 的 `toPosix`），直接拼出来的混合写法
+ * （`C:\ws/src/a.ts`）复制到别处用不了。
+ *
+ * 一处定义：文件视图的标题栏和右键菜单的「复制路径」必须拼出同一个字符串，
+ * 各写一遍必然分叉。
+ */
+export function absPath(rel: string): string {
+  const root = workspace()?.root ?? ''
+  if (!root) return rel
+  const sep = root.includes('\\') ? '\\' : '/'
+  return `${root.replace(/[\\/]+$/, '')}${sep}${rel.split('/').join(sep)}`
+}

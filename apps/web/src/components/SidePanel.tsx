@@ -14,6 +14,7 @@ import {
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
 import {
+  absPath,
   client,
   closePanel,
   isDesktopShell,
@@ -666,10 +667,7 @@ function TreeMenu(props: {
     })
   })
 
-  const abs = () => {
-    const root = workspace()?.root ?? ''
-    return root ? `${root.replace(/[\\/]+$/, '')}/${props.node.path}` : props.node.path
-  }
+  const abs = () => absPath(props.node.path)
   const run = (fn: () => void) => {
     fn()
     props.onClose()

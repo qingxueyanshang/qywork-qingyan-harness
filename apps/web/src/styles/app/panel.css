@@ -509,15 +509,28 @@
   /* 它和树是横向并排的 flex 兄弟：不写 0 的话里面的代码块能把它顶得比面板还宽。 */
   min-width: 0;
 }
+/*
+ * 标题条 31px，**底沿和树那一列的搜索框对齐**（搜索框 6px 上外边距 + 25px 高 = 31，
+ * 那 25 是 2+2 内距 + 上下 1px 边框 + 19px 行盒，实测出来的，别按 24 算）。
+ * 两块并排，头部不齐会读成两个错层的窗口。
+ *
+ * 高度原来是被里面那颗关闭键顶起来的：`.icon-btn` 出厂 28px，加上下内距就是 44。
+ * 所以这里把它按到 20px——**只在这一条里按**，那颗尺寸别处还在用。
+ */
 .preview-head {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3);
+  height: 31px;
+  padding: 0 var(--s-1) 0 var(--s-2);
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   flex: none;
+}
+.preview-head .icon-btn {
+  width: 20px;
+  height: 20px;
 }
 .preview-body {
   flex: 1;
