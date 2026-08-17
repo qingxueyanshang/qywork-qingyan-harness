@@ -11,16 +11,126 @@ import { createSignal } from 'solid-js'
 export const [paletteOpen, setPaletteOpen] = createSignal(false)
 
 /**
- * 右侧面板当前视图。`null` = 收起。
+ * 右侧面板**固定的那几页**。关不掉，永远在页签条最前面。
  *
  * **这里的每个值都必须在 `SidePanel` 的 `<Switch>` 里有对应的 `Match`**，
  * 否则设成它的结果是面板展开、内容空白。
  *
- * 打开的文件**不是这里的一个值**：它长在主内容区（`openFile` + `FileView`），
- * 和这块面板同时看得见。文件树因此常驻，不会被内容顶掉。
+ * 打开的文件**不是这里的一个值**：它长在文件那一页里（`openFile` + `FileView`），
+ * 和文件树并排。
+ *
+ * 终端不在这里：它是可多开、可关掉的一页，见 `PanelTabKind`。
  */
-export type PanelView = 'todos' | 'files' | 'git' | 'terminal'
-export const [sidePanel, setSidePanel] = createSignal<PanelView | null>(null)
+export type PanelView = 'todos' | 'files' | 'git'
+
+/**
+ * 可多开的那几种页。
+ *
+ * `terminal` 只有桌面端有（PTY 是本机进程和一对系统句柄），`browser` 每一端都有
+ * （就是一个 iframe）。**这一层不判端**：判在入口那边（`SidePanel` 的看板按
+ * `isDesktopShell()` 决定列不列），这里只管开了哪几页。
+ */
+export type PanelTabKind = 'terminal' | 'browser'
+
+export interface PanelTab {
+  id: string
+  kind: PanelTabKind
+  /**
+   * 页签上的字。**建出来就不再改。**
+   *
+   * 不要改成「跟着内容走」（终端里的当前命令、浏览器页的站点名）：标题一变页签就变宽，
+   * 用户正瞄着的那颗 × 会跑到别的地方去。
+   */
+  title: string
+}
+
+/**
+ * 面板现在翻开的是哪一页。`null` = 收起。
+ *
+ * 固定视图用它自己的名字，可多开的页用 `{ tab: id }`——**一个信号，不是「固定视图」
+ * 加「当前页签」两个**：两个信号的时候「翻开文件页」和「翻开终端页」在类型上可以
+ * 同时成立，谁盖过谁只能靠每个调用点自觉，那就是第二本账。
+ */
+export type PanelPage = PanelView | { tab: string }
+export const [sidePanel, setSidePanel] = createSignal<PanelPage | null>(null)
+
+const [tabs, setTabs] = createSignal<readonly PanelTab[]>([])
+
+/** 开着哪几页可多开的页。顺序即页签条上的顺序。 */
+export const panelTabs = tabs
+
+/** 当前翻开的那一页的 id；停在固定视图上时是 `null`。派生量，不是第二份状态。 */
+export function activePanelTab(): string | null {
+  const page = sidePanel()
+  return page !== null && typeof page === 'object' ? page.tab : null
+}
+
+/**
+ * 关掉一页时要收的本机资源：终端的 PTY 与 xterm 实例、浏览器页记着的地址。
+ *
+ * **为什么不放在组件的 `onCleanup` 里**：收起面板会把整块面板卸载，而那时终端必须
+ * 活着——用户收起去看会话，切回来命令还得在跑、滚动历史还得在。所以「组件卸载」和
+ * 「这一页被关掉」是两件不同的事，只有后者该收资源，而后者唯一的入口在这里。
+ */
+const tabDisposers = new Map<string, () => void>()
+
+/** 登记「这一页被关掉时收什么」。同一个 id 重复登记以最后一次为准。 */
+export function holdPanelTab(id: string, dispose: () => void): void {
+  tabDisposers.set(id, dispose)
+}
+
+function disposeTab(id: string): void {
+  const dispose = tabDisposers.get(id)
+  tabDisposers.delete(id)
+  dispose?.()
+}
+
+/**
+ * 每种页各自的序号。**只增不减**：关掉「终端 1」之后剩下那页仍然叫「终端 2」，
+ * 不在用户眼皮底下改名。
+ */
+const tabSeq: Record<PanelTabKind, number> = { terminal: 0, browser: 0 }
+const TAB_LABEL: Record<PanelTabKind, string> = { terminal: '终端', browser: '浏览器' }
+
+/** 新开一页并翻到它。 */
+export function openPanelTab(kind: PanelTabKind): void {
+  tabSeq[kind] += 1
+  const n = tabSeq[kind]
+  const id = `${kind}-${n}`
+  setTabs((list) => [...list, { id, kind, title: `${TAB_LABEL[kind]} ${n}` }])
+  setSidePanel({ tab: id })
+}
+
+/**
+ * 关掉一页。**这是收资源的唯一入口**（见 `tabDisposers`）。
+ *
+ * 关掉的正是当前那一页时，落到右边那页，没有就落到左边那页，一页都不剩就回文件视图
+ * ——**不顺手把面板收起来**：用户点的是这一页的 ×，不是面板的 ×。
+ */
+export function closePanelTab(id: string): void {
+  const list = panelTabs()
+  const i = list.findIndex((t) => t.id === id)
+  if (i < 0) return
+  const current = activePanelTab() === id
+  setTabs(list.filter((t) => t.id !== id))
+  disposeTab(id)
+  if (!current) return
+  const next = list[i + 1] ?? list[i - 1]
+  setSidePanel(next ? { tab: next.id } : 'files')
+}
+
+/**
+ * 换项目时把可多开的页全关掉。
+ *
+ * 不留着：终端里那个 shell 跑在上一个项目的目录里，浏览器那页指着上一个项目起的服务。
+ * 留下来的表现是页签还在、点进去内容全是上一个项目的。
+ */
+export function closeAllPanelTabs(): void {
+  const current = activePanelTab()
+  for (const t of panelTabs()) disposeTab(t.id)
+  setTabs([])
+  if (current) setSidePanel('files')
+}
 
 /** 面板最窄：树 + 一列内容还看得见的最窄。 */
 const PANEL_MIN = 280
@@ -75,32 +185,44 @@ export function togglePanelMax(): void {
 }
 
 /**
- * 上一次看的视图。
+ * 上一次翻开的那一页。
  *
  * 顶栏只有一个按钮负责「展开 / 收起」，展开时要回到用户上次待的地方而不是
  * 一律跳回文件——否则在变更视图里手滑收起，再展开就得重新点一次 tab。
  */
-const [lastPanelView, setLastPanelView] = createSignal<PanelView>('files')
+const [lastPage, setLastPage] = createSignal<PanelPage>('files')
+
+/**
+ * 这一页还在不在。**收起期间它可能已经没了**：换项目会把可多开的那些页全关掉，
+ * 而记着的可能正是其中一页——不判一下的话展开出来是一块谁也点不掉的空白。
+ */
+function pageAlive(page: PanelPage): boolean {
+  return typeof page === 'string' || panelTabs().some((t) => t.id === page.tab)
+}
 
 /**
  * 收起面板。**唯一的收起入口**——顶栏那个开关和面板头上的 × 都走这里。
  *
- * 两处各写各的时候，× 只做了 `setSidePanel(null)`：它既不记「上次看的是哪个
- * 视图」，将来也不会复位放大态。同一个动作两本账，差异只会越拉越大。
+ * 两处各写各的时候，× 只做了 `setSidePanel(null)`：它既不记「上次看的是哪一页」，
+ * 将来也不会复位放大态。同一个动作两本账，差异只会越拉越大。
  */
 export function closePanel(): void {
-  const view = sidePanel()
-  if (view) setLastPanelView(view)
+  const page = sidePanel()
+  if (page) setLastPage(page)
   setSidePanel(null)
   setPanelMaximized(false)
 }
 
 export function togglePanel(): void {
-  if (sidePanel()) closePanel()
-  else setSidePanel(lastPanelView())
+  if (sidePanel()) {
+    closePanel()
+    return
+  }
+  const page = lastPage()
+  setSidePanel(pageAlive(page) ? page : 'files')
 }
 export function openPanel(view: PanelView): void {
-  setLastPanelView(view)
+  setLastPage(view)
   setSidePanel(view)
 }
 

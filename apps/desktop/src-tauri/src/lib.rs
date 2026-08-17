@@ -246,6 +246,7 @@ pub fn run() {
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,
+            terminal::terminal_close,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

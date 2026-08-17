@@ -6,8 +6,10 @@
 //! 放进 sidecar 就等于把「在这台机器上跑任意命令」开到局域网上（CLAUDE.md E）。
 //! 所以终端是桌面独有能力，握手之外由 `isDesktopShell()` 判定，别的端不显示入口。
 //!
-//! 会话不随面板切换销毁：用户切去看文件再切回来，命令还得在跑。销毁只发生在
-//! 显式关闭、子进程自己退出、以及应用退出时。
+//! 会话不随面板切换销毁：用户切去看文件、甚至把整块面板收起来，命令还得在跑。
+//! 销毁只发生在显式关闭（页签上的 ×、换项目）、子进程自己退出、以及应用退出时。
+//!
+//! 一条 id 一条会话，前端可以同时开几条（页签由 `panelTabs` 管）。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -160,6 +162,22 @@ pub fn terminal_resize(
             pixel_height: 0,
         })
         .map_err(|e| e.to_string())
+}
+
+/// 关掉一条会话：杀掉 shell 并从表里摘掉。
+///
+/// **不存在的 id 直接返回成功。** 子进程可能自己先退了（收尸线程已经把它摘掉），
+/// 而用户随后点了页签上的 ×——那时报「会话不在了」，界面上就是一颗关不掉页签的按钮。
+///
+/// 杀掉之后收尸线程会照常 emit 一次 `terminal:exit`。前端那一侧在杀之前就把这个 id
+/// 的监听摘了（见 `apps/web/src/lib/terminal.ts` 的 `closeTerminal`），
+/// 所以那条事件落地即丢，不会打到一个已经销毁的 xterm 上。
+#[tauri::command]
+pub fn terminal_close(state: State<TerminalHandle>, id: String) -> Result<(), String> {
+    if let Some(mut session) = state.0.lock().remove(&id) {
+        session.killer.kill().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// 应用退出时收干净。同 sidecar 那条理由：Windows 上父进程退出不带走子进程，
