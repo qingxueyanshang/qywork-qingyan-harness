@@ -355,14 +355,28 @@ bun run gate
 - **只接受本机已存在的路径。** 不做 `git clone <任意 URL>` 式安装——那等于从网上取
   一段代码、下次加载就跑它。沙箱管的是插件能碰什么，不管它是不是你想要的东西。
 - **路径参数拒绝含 `..` / `/` / `\` 的 id**，重名返回 409，**不静默覆盖**。
-- **真正的边界是 `~/.qywork/`**（明文 key、权限模式、全部会话历史），由「工作区外
-  路径」与「凭证文件」两条硬规则挡着——它躺在家目录，不需要单开一条规则。
-- **工作区里的 `.agents/` 由文件工具拦，shell 有意不拦**：`PROTECTED_DIRS` 挡住
-  `write_file` / `edit_file`；shell 那侧**不加**「写它等于自我提权」这条，
-  理由写在 `policy.ts` 里——它拦不到任何能力（模型手里已有 `run_command`，
-  MCP server 本身就是它能直接启动的进程，给自己加个工具没有获得新能力），
-  而 `.agents/memory/` 本来就该由 `memory` 工具写，shell 拦就是两套账。
-  这两个目录名字像，位置和含义完全不同，别混。
+- **「完全访问」就是全部权限，路径边界也归它管。** `full` 的定义是「不裁决」，
+  所以路径层跟着一起不设（`resolveInWorkspace` 的 `unrestricted`）。
+  **只放开权限闸而留着路径层是错的**：同一个模式下 `run_command` 已经全放行、
+  shell 里一个 `cd` 就出得去，于是变成「`read_file` 被拒、`run_command` 读到」的
+  两套账——账本里真发生过（会话 `cv_0msw3jst9`，模型转头用 shell 读到了同一个文件，
+  全程没告诉用户）。也不新增暴露面：`full` 下能用 shell 读到的，本来就一样能读到。
+- **模式内的边界必须两侧同宽。** 文件工具与 shell 用**同一份根目录清单**：
+  `auto` 下文件工具走 `resolveInWorkspace`、shell 走 `policy.ts` 的
+  `literalOutsideHome`，两处都从 `workspaceRoot + additionalDirectories` 取。
+  加新边界前先问「shell 那侧拦不拦得住同一件事」——只拦得住一侧的边界不是边界，
+  是给模型指了条绕路。
+- **凭证剥离与模式无关。** `scrubEnv` 两种模式一视同仁——它不是裁决，
+  是「明文 key 不进子进程」这条事实。`~/.qywork/`（明文 key、权限模式、会话历史）
+  在 `auto` 下由「工作区外路径」与「凭证文件」两条硬规则挡着；`full` 下不挡，
+  那是这个模式的定义。
+- **工作区里的 `.agents/` 在 `auto` 下由文件工具拦，shell 有意不拦**：
+  `PROTECTED_DIRS` 挡住 `write_file` / `edit_file`；shell 那侧**不加**
+  「写它等于自我提权」这条，理由写在 `policy.ts` 里——它拦不到任何能力
+  （模型手里已有 `run_command`，MCP server 本身就是它能直接启动的进程，
+  给自己加个工具没有获得新能力），而 `.agents/memory/` 本来就该由 `memory` 工具写，
+  shell 拦就是两套账。`full` 下这一层同样不设，理由同上。
+  它与 `~/.qywork/` 名字像，位置和含义完全不同，别混。
 
 ---
 

@@ -21,9 +21,11 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
  * `run_command` 绕过去（shell 只锁 cwd，命令正文里 `cd` 得出去），也没告诉用户
  * 发生了什么。**一条被当成崩溃的策略判定，模型只会去找绕路。**
  *
- * 所以这里三件事一起说：为什么、哪条路真的能走通、以及别去绕。
- * 「切成完全访问」不在其中——那个开关管的是权限闸（要不要弹窗），
- * 路径边界不归它管（CLAUDE.md E），写进去只会让用户白切一次。
+ * 所以这里三件事一起说：为什么、哪两条路真的能走通、以及别去绕。
+ *
+ * **两条出路都要给全**，因为这条拒绝只发生在「自动审批」下：切「完全访问」
+ * 是真的能解开（那个模式下路径边界整个不设），加 `additionalDirectories`
+ * 则是在不放开全部权限的前提下只开这一个目录。少说一条就是把用户往另一条上逼。
  *
  * `errorKind` 让注册表把它当**判定**而不是异常端出去（见 `agent/registry.ts`
  * 的 catch）：`executed: false`，且不套「执行出错」的壳。
@@ -34,11 +36,12 @@ export class PathEscapeError extends Error {
   constructor(readonly attempted: string) {
     super(
       `路径越界，已拒绝：${attempted}\n` +
-        '这个路径不在工作区（以及配置里显式放行的额外目录）之内。' +
-        '路径边界不受权限模式影响——切成「完全访问」也不会放开它。\n' +
-        '要么改用工作区内的路径继续，要么停下来告诉用户：' +
-        '需要把这个目录加进配置的 additionalDirectories 才能读写它。' +
-        '不要改用 run_command 去绕过这条边界。',
+        '这个路径不在工作区（以及配置里显式放行的额外目录）之内，' +
+        '而当前是「自动审批」模式。\n' +
+        '要么改用工作区内的路径继续，要么停下来告诉用户，让他二选一：' +
+        '切到「完全访问」（放开全部权限，包括路径），' +
+        '或者把这个目录加进配置的 additionalDirectories（只开这一个）。' +
+        '不要改用 run_command 去绕——同一个模式下它也会被同一份根目录清单拦。',
     )
     this.name = 'PathEscapeError'
   }
@@ -59,6 +62,18 @@ export class PathEscapeError extends Error {
  */
 export interface WorkspaceRoots {
   workspaceRoot: string
+  /**
+   * 「完全访问」模式：**边界整个不设**，任何路径都放行。
+   *
+   * 这不是给路径层开的后门，是让它和别的层用同一个定义。`full` 的语义就是
+   * 「不裁决」——同一个模式下 `run_command` 早就是全放行的（`session.ts` 的
+   * `decide` 一进来就返回 allowed，静态规则那层根本不跑），而 shell 里一个 `cd`
+   * 就出得去。路径层单独硬拦的结果不是「更安全」，是**两套边界**：
+   * 模型 `read_file` 被拒、转头 `run_command` 读到了，账本里真发生过一次。
+   *
+   * 也不新增暴露面：`full` 下能用 shell 读到的东西，本来就一样能读到。
+   */
+  unrestricted?: boolean
   /**
    * 额外可读写的根目录，**必须是绝对路径**。
    *
@@ -85,10 +100,12 @@ export type RootsInput = string | WorkspaceRoots
 export function rootsOf(ctx: {
   workspaceRoot: string
   additionalDirectories?: readonly string[]
+  unrestrictedPaths?: boolean
 }): WorkspaceRoots {
   return {
     workspaceRoot: ctx.workspaceRoot,
     ...(ctx.additionalDirectories?.length ? { additional: ctx.additionalDirectories } : {}),
+    ...(ctx.unrestrictedPaths ? { unrestricted: true } : {}),
   }
 }
 
@@ -149,7 +166,7 @@ export async function resolveInWorkspace(
   candidate: string,
   opts: { mustExist?: boolean } = {},
 ): Promise<string> {
-  const { workspaceRoot, additional } = normalizeRoots(roots)
+  const { workspaceRoot, additional, unrestricted } = normalizeRoots(roots)
   const raw = decodeSafely(candidate)
 
   // 相对路径的基准永远是工作区，不是额外根目录——额外根目录只能用绝对路径够到。
@@ -162,6 +179,13 @@ export async function resolveInWorkspace(
         throw new PathEscapeError(candidate)
       })
     : await resolveForWrite(joined)
+
+  /*
+   * 「完全访问」下不设边界。**解析照做、只跳过归属判定**——返回的仍然是
+   * realpath 之后的那一个路径，因为「判的和写的是同一个路径」这条与边界无关：
+   * 调用方拿它去记「本轮读过没有」，返回字面路径会让软链根下的新鲜度判定恒错。
+   */
+  if (unrestricted) return targetReal
 
   // 工作区根解析不了是**装配错误**，让它原样抛：那条 ENOENT 指向真正的问题，
   // 换成「路径越界」只会把排查方向引到用户输入上去。
@@ -334,15 +358,21 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
  *
  * `.qy/` 的保护**只按工作区判**，与额外根目录无关——它是一条工作区内的
  * 路径判定。额外根目录再多也不会让 `<工作区>/.qy/` 变得可写。
+ *
+ * 「完全访问」下这一层也不设：它挡的是「给自己加工具」，而同一个模式下模型
+ * 手里的 `run_command` 是全放行的，`echo > .agents/x` 一行就写进去了。
+ * 留着只会变成又一处「文件工具拦、shell 不拦」的两套账。
  */
 export async function resolveWritablePath(
   roots: RootsInput,
   candidate: string,
   opts: { mustExist?: boolean } = {},
 ): Promise<string> {
-  const { workspaceRoot } = normalizeRoots(roots)
+  const { workspaceRoot, unrestricted } = normalizeRoots(roots)
   const resolved = await resolveInWorkspace(roots, candidate, opts)
-  if (isProtectedPath(workspaceRoot, resolved)) throw new ProtectedPathError(candidate)
+  if (!unrestricted && isProtectedPath(workspaceRoot, resolved)) {
+    throw new ProtectedPathError(candidate)
+  }
   return resolved
 }
 

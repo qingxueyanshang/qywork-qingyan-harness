@@ -722,11 +722,16 @@ export class Session {
   /**
    * 授权裁决。**只有两种模式，不弹窗。**
    *
-   * ## `full` 也不豁免的那一条
+   * ## `full` 也不豁免的那一条：只剩凭证剥离
    *
-   * 硬边界（凭证剥离、路径约束）不在这里——它们分别由 `scrubEnv` 和
-   * `resolveInWorkspace` 在更靠下的地方强制执行，两种模式一视同仁。
-   * 这里裁决的是「这次调用要不要放行」，而 `full` 的定义就是「不裁决」。
+   * `scrubEnv` 两种模式一视同仁——它不是裁决，是「明文 key 不进子进程」这条
+   * 与模式无关的事实。**路径约束不在此列**：`full` 的语义是「全部权限」，
+   * 路径边界跟着一起放开（`makeToolContext` 的 `unrestrictedPaths`）。
+   *
+   * 只放开权限闸、留着路径层，得到的不是更安全，是**两套账**：同一个模式下
+   * `run_command` 全放行、shell 里一个 `cd` 就出得去，而 `read_file` 还在拦
+   * ——模型于是转头用 shell 读到了同一个文件，账本里真发生过一次
+   * （会话 `cv_0msw3jst9`）。
    *
    * ## `auto` 下谁走哪条路
    *
@@ -837,6 +842,10 @@ export class Session {
       secrets,
       ...(this.opts.config.envAllowList ? { envAllowList: this.opts.config.envAllowList } : {}),
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
+      // 「完全访问」= 全部权限，路径边界也归它管。与下面 `decide` 里那句
+      // `full` 的定义就是「不裁决」是同一件事的两面——只放开权限闸而留着路径层，
+      // 就是「read_file 被拒、run_command 读到」那种两套账。
+      ...((this.opts.config.mode ?? 'auto') === 'full' ? { unrestrictedPaths: true } : {}),
       requestPermission: async (_scope, _preview, meta) => this.decide(meta),
     }
   }

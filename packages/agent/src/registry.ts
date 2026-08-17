@@ -282,6 +282,19 @@ export interface ToolContext {
    */
   additionalDirectories?: string[]
   /**
+   * 「完全访问」模式：路径边界整个不设。
+   *
+   * **它不是 `additionalDirectories` 的替代品**——那份是「在受限模式下额外开几个
+   * 目录」，这个是「这一档根本不设边界」。两者同时存在时后者赢，因为
+   * `full` 的定义就是不裁决。
+   *
+   * 与权限闸是同一个模式的两面：`session.ts` 的 `decide` 在 `full` 下一进来就
+   * 返回 allowed，所以 `run_command` 早就全放行了。路径层不跟着放开的结果不是
+   * 「更安全」，是模型 `read_file` 被拒、转头 `run_command` 读到——账本里
+   * 真发生过一次（会话 `cv_0msw3jst9`）。
+   */
+  unrestrictedPaths?: boolean
+  /**
    * 断掉 shell 命令的出网。来自配置的 `sandboxNetwork: "deny"`。
    *
    * **只有内核沙箱能兑现它**——没有沙箱的平台上这个字段传下去也没有效果，
