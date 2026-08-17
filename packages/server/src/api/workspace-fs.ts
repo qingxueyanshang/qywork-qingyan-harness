@@ -122,17 +122,6 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/git/branches') {
     return json({ branches: await git.branches(d.workspaceRoot) })
   }
-  /*
-   * **那条分支自己改了什么。** 只读——不切分支、不动工作区、不合并。
-   *
-   * 界面上那个分支选择器换的是「看哪条分支的改动」，HEAD 一动不动，所以这条是 GET，
-   * 也不存在「先提交再来」这种失败。口径（三点差异）写在 `git.branchChanges` 上。
-   */
-  if (p === '/api/git/changes') {
-    const ref = q.get('ref')?.trim()
-    if (!ref) return json({ error: 'invalid', message: '要看哪条分支' }, 422)
-    return json({ files: await git.branchChanges(d.workspaceRoot, ref) })
-  }
   if (p === '/api/git/log') {
     return json({
       commits: await git.log(d.workspaceRoot, {
@@ -145,10 +134,8 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     return json({
       diff: await git.diff(d.workspaceRoot, {
         ...(q.get('path') ? { path: q.get('path')! } : {}),
-        // `ref` = 那一个提交自己改了什么；`branch` = 那条分支自己改了什么（三点）。
-        // 含义不同，别让调用方同时给（给了就按 `ref` 走，它更具体）。
+        // `ref` 给的是**一个提交**：看它自己改了什么（`<ref>^!`）。
         ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
-        ...(q.get('branch') ? { branch: q.get('branch')! } : {}),
         staged: q.get('staged') === '1',
       }),
     })

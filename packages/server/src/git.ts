@@ -227,8 +227,7 @@ export async function status(cwd: string): Promise<GitStatus | null> {
 }
 
 /**
- * 每个文件相对某个基准改了多少行。基准默认是 `HEAD`（工作区未提交的改动），
- * 也可以是一段范围，例如 `HEAD...<分支>`（那条分支自己的改动）。
+ * 每个文件相对 `HEAD` 改了多少行——也就是工作区里未提交的那些。
  *
  * 一次 `git diff --numstat` 拿全部，**不是每个文件跑一次**：几百个文件就是
  * 几百次进程启动，那比读 diff 本身贵得多。
@@ -241,10 +240,9 @@ export async function status(cwd: string): Promise<GitStatus | null> {
  */
 async function numstat(
   cwd: string,
-  base = 'HEAD',
 ): Promise<Map<string, { additions: number; deletions: number }>> {
   const out = new Map<string, { additions: number; deletions: number }>()
-  const r = await git(cwd, ['diff', '--numstat', '-M', base])
+  const r = await git(cwd, ['diff', '--numstat', '-M', 'HEAD'])
   if (!r.ok) return out
 
   for (const line of r.out.split('\n')) {
@@ -254,52 +252,6 @@ async function numstat(
     if (!path || add === '-' || del === '-') continue
     out.set(path, { additions: Number(add), deletions: Number(del) })
   }
-  return out
-}
-
-/**
- * **那条分支自己改了什么。** 用三点差异 `HEAD...<分支>`。
- *
- * ## 三件事都不是它
- *
- * - **不是切分支。** 整条路径只有 `git diff`，不动 HEAD、不动工作区，所以没有
- *   「本地改动会被覆盖」这回事。用 `git checkout` 实现那个选择器是错的：攒着改动的
- *   仓库会被 git 直接拦住，而用户只是想看看那条分支上做了什么。
- * - **不是对比。** 两点（`git diff <分支>`）算「我这边和它的全部差异」，会把我这边
- *   的改动也算进去；三点从共同祖先算起，只有它自己那部分。
- * - **不是合并。** 什么都不写。
- *
- * 两条 `git diff` 拿两样东西：`--name-status` 给状态字母（含重命名），
- * `--numstat` 给增删行数。合并到与 `status()` 同一个 `GitFileEntry` 形状上，
- * 界面那一列因此不需要分两种渲染。
- */
-export async function branchChanges(cwd: string, ref: string): Promise<GitFileEntry[]> {
-  assertSafeRef(ref)
-  const range = `HEAD...${ref}`
-  const named = await git(cwd, ['diff', '--name-status', '-M', range])
-  if (!named.ok) return []
-
-  const delta = await numstat(cwd, range)
-  const out: GitFileEntry[] = []
-  for (const line of named.out.split('\n')) {
-    if (!line.trim()) continue
-    const [code, a, b] = line.split('\t')
-    // 重命名 / 复制那两种给的是三列：`R100\t旧\t新`，路径取新的那个。
-    const path = (code?.startsWith('R') || code?.startsWith('C') ? b : a) ?? ''
-    if (!path) continue
-    const letter = code?.[0] ?? 'M'
-    const d = delta.get(path)
-    out.push({
-      path,
-      // 与另一条分支的差异没有「暂存 / 未暂存」之分，两列同值——
-      // 界面的 `statusOf` 按 indexStatus 优先取，这样两处口径一致。
-      indexStatus: letter,
-      worktreeStatus: letter,
-      ...(code?.startsWith('R') && a ? { renamedFrom: a } : {}),
-      ...(d ? { additions: d.additions, deletions: d.deletions } : {}),
-    })
-  }
-  out.sort((x, y) => x.path.localeCompare(y.path))
   return out
 }
 
@@ -383,28 +335,13 @@ export async function log(
  */
 export async function diff(
   cwd: string,
-  opts: { path?: string; ref?: string; branch?: string; staged?: boolean } = {},
+  opts: { path?: string; ref?: string; staged?: boolean } = {},
 ): Promise<string> {
   const args = ['diff', '--no-color', '--no-ext-diff']
   if (opts.ref) {
     assertSafeRef(opts.ref)
     // 单个提交的改动：与它的父提交比。根提交没有父，git 会自己处理。
     args.push(`${opts.ref}^!`)
-  } else if (opts.branch) {
-    /*
-     * **那条分支自己改了什么**，用三点：`HEAD...<分支>`。
-     *
-     * 三点 = 从共同祖先到那条分支，也就是「它自己做的事」。两点（`git diff <分支>`）
-     * 算的是「我这边和它的全部差异」，会把我这边的改动也算成它的——那是对比，
-     * 不是「看那条分支的改动情况」。
-     *
-     * 和上面那个 `ref` 也不是一回事：`ref` 问的是「那一个提交自己改了什么」（`^!`）。
-     * 三个含义各有各的问题，混成一个参数就会出现「传了分支名却看到别的东西」。
-     *
-     * **只读**：不动 HEAD、不动工作区。
-     */
-    assertSafeRef(opts.branch)
-    args.push(`HEAD...${opts.branch}`)
   } else if (opts.staged) {
     args.push('--cached')
   }
