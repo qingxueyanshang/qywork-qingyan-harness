@@ -432,3 +432,25 @@ describe('思考开关', () => {
     expect(lastBody.reasoning?.effort).toBeUndefined()
   })
 })
+
+/**
+ * 连接超时与「用户按了停止」是两个信号，**认错了就把连不上报成已取消**。
+ *
+ * 这条适配器手写 fetch（没有 SDK 的超时层），所以自己起了一个定时器 controller。
+ * 它和 `req.signal` 合成同一个信号交给 fetch——合成之后再区分，
+ * 靠的是「谁真的 abort 了」，不是 fetch 抛出来的错误长什么样（两边都是 AbortError）。
+ */
+describe('停止与超时分开认', () => {
+  test('用户按停止报「已取消」，不报连接超时', async () => {
+    const ctl = new AbortController()
+    ctl.abort()
+    try {
+      await run(TEXT_RUN, { signal: ctl.signal })
+      throw new Error('应当抛出')
+    } catch (err) {
+      const message = (err as Error).message
+      expect(message).toBe('已取消')
+      expect(message).not.toContain('超时')
+    }
+  })
+})

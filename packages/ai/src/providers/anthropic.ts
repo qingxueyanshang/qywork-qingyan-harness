@@ -1,8 +1,9 @@
 /**
  * Anthropic 原生适配器。
  *
- * 用官方 SDK（@anthropic-ai/sdk），不手搓 HTTP——SDK 负责重试、超时缩放、SSE 解析
- * 和 beta 头，手搓这些只会重复造轮子并且随协议演进腐烂。
+ * 用官方 SDK（@anthropic-ai/sdk），不手搓 HTTP——SDK 负责 SSE 解析、鉴权头和 beta 头，
+ * 手搓这些只会重复造轮子并且随协议演进腐烂。超时与重试**由这边指定**
+ * （`PROVIDER_HTTP`），不用它的出厂值。
  *
  * 这一层的职责是把 ChatRequest 的通用形状翻译成 provider-native 形状，并且**在装配期
  * 就消灭会 400 的组合**——不是发出去挨一个错误再兜底：
@@ -31,6 +32,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
+import { PROVIDER_HTTP } from '../types.ts'
 
 /**
  * 思考开启时给输出留的最小预算。低于这个数，思考稍微长一点正文就没地方写了，
@@ -56,6 +58,7 @@ export class AnthropicAdapter implements LlmAdapter {
       // 真正没 key 的错误在首次发请求时抛，由 classifyProviderError 归类成
       // no_api_key，前端据此引导去设置页。
       apiKey: profile.apiKey || 'unset',
+      ...PROVIDER_HTTP,
       ...(profile.baseUrl ? { baseURL: profile.baseUrl } : {}),
       ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
     })
