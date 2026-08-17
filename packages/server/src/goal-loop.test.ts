@@ -3,7 +3,8 @@
  *
  * **覆盖范围**：`run-control.ts` 的续起判定（`startRun` 的 finally、排队、
  * 陈旧拒绝、停下的三条出口）、用户立目标那条路（`setGoal`）、`commands.ts` 的
- * `goal.set` 分支，以及 `runs.ts` 的待续起标记。
+ * `goal.set` 分支、`runs.ts` 的待续起标记，以及 `runtime/session.ts` 把
+ * `run.error` 的正文写进 run 行那一手（这里有现成的真链路 + 会失败的假 provider）。
  * 目标本身的生命周期规则在 `store/goals.test.ts`，工具那一层在 `tools/goals.test.ts`。
  *
  * ## 为什么必须走真链路
@@ -26,6 +27,7 @@ import {
   createConversation,
   createGoal,
   currentGoal,
+  listRuns,
   Store,
   updateGoal,
   upsertWorkspace,
@@ -587,4 +589,39 @@ describe('用户点继续', () => {
     const r = resumeGoal(cv, deps())
     expect(r).toEqual({ ok: false, message: '这条会话没有目标' })
   })
+})
+
+/**
+ * 报错正文落账本。覆盖 `runtime/session.ts` 收 `run.error` 那一手。
+ *
+ * **原始失败形状**：一条 `stop_reason = 'provider_error'` 的 run，账本里的
+ * `error_message` 是 `null`——两列从建表起就在、`RunRecord` 也一直转出去，
+ * 只是从来没有人写过。表现是刷新之后「为什么停」只剩「模型服务出错」，
+ * 连不上、key 错了、上下文满了，看起来一模一样。
+ */
+describe('报错正文落账本', () => {
+  test('provider 报错的那一轮，error_message 与 error_code 都读得回来', async () => {
+    const cv = conversation()
+    // 脚本留空 = 假 provider 回 500，正是一次真实的 provider 失败。
+    await startRun(cv, '随便说点什么', undefined, deps())
+    await waitFor((e) => e.type === 'run.finished')
+
+    const run = listRuns(store, cv).at(-1)
+    expect(run?.stopReason).toBe('provider_error')
+    expect(run?.errorCode).toBe('provider_unavailable')
+    expect(run?.errorMessage).toBeTruthy()
+  }, 20_000)
+
+  /** 正常收尾不留报错正文——留了的话每一轮读数条上都挂着上一次的错。 */
+  test('正常收尾的那一轮两列都是 null', async () => {
+    const cv = conversation()
+    script = [ok(textTurn('好了。'))]
+    await startRun(cv, '随便说点什么', undefined, deps())
+    await waitFor((e) => e.type === 'run.finished')
+
+    const run = listRuns(store, cv).at(-1)
+    expect(run?.stopReason).toBe('completed')
+    expect(run?.errorMessage).toBe(null)
+    expect(run?.errorCode).toBe(null)
+  }, 20_000)
 })

@@ -474,6 +474,16 @@ export class Session {
     heartbeat.unref?.()
 
     let finished = false
+    /*
+     * 报错正文。**必须落库**——`runs.error_message` / `error_code` 两列从建表起
+     * 就在，`RunRecord` 也一直转出去，但没有人写过：一条 `stop_reason` 为
+     * `provider_error` 的 run，账本里的报错正文是 `null`，界面刷新之后
+     * 「为什么停」只剩「模型服务出错」五个字，连不上还是 key 错了看不出来。
+     *
+     * `run.error` 恒在 `run.finished` 之前（`agent/loop.ts` 连着 yield 两条），
+     * 所以在这里接一手就够，不需要另开一条持久化路径。
+     */
+    let failure: { message: string; code: string } | null = null
     try {
       for await (const ev of this.makeLoop(model, conversationId, compaction).run({
         runId: run.id,
@@ -487,9 +497,15 @@ export class Session {
         // 用户看到的就是每轮开头掉一次。
         ...(anchor ? { anchor } : {}),
       })) {
+        if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
         if (ev.type === 'run.finished') {
           finished = true
-          finishRun(store, run.id, { status: ev.status, stopReason: ev.stopReason })
+          finishRun(store, run.id, {
+            status: ev.status,
+            stopReason: ev.stopReason,
+            errorMessage: failure?.message ?? null,
+            errorCode: failure?.code ?? null,
+          })
           // 账本在**收尾时记一次**。中途的 usage 是累计值，每次都记会把同一笔钱
           // 记很多遍；而 run 上那份 usage 会随会话删除一起消失，答不了
           // 「这个月花了多少」。
