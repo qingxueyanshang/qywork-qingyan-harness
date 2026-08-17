@@ -45,11 +45,21 @@ button {
   appearance: none;
 }
 
-/* 焦点环：只在键盘导航时出现，鼠标点击不显示。 */
+/*
+ * 焦点环：只在键盘导航时出现，鼠标点击不显示。
+ *
+ * **画在元素里面（负 offset），不往外扩。** 这一层的使用者大量是「整宽的一行」
+ * ——文件树的行、会话列表的行、待办的行——它们左右两边正贴着一个 `overflow` 容器
+ * 的内沿。往外扩 2px 的话左右那两段被容器裁掉，只剩上下两道蓝线夹着一行字，
+ * 看起来像这一行裂成了两半（用户报过一次）。负 offset 之后整圈都在行内，裁不掉。
+ *
+ * **不要再写 `border-radius`。** 描边自己会跟着元素的圆角走；这里再写一条是在
+ * 「元素获得焦点」时**改元素的形状**——`.send-btn` 是个圆形按钮，键盘走到它上面
+ * 会当场变成圆角方块。
+ */
 :focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--r-xs);
+  outline-offset: -2px;
 }
 :focus:not(:focus-visible) {
   outline: none;
