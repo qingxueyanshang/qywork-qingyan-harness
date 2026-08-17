@@ -107,7 +107,7 @@
   }
   /* 窄屏就一列，树和内容并排会各剩一半。内容占满，树让位——
      要看树就把文件关掉（头上那颗 × 一直在）。 */
-  .file-browser > .preview ~ .file-tree-col {
+  .file-browser > .file-tree-col:not(:only-child) {
     display: none;
   }
   .side-head {

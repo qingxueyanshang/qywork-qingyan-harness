@@ -21,13 +21,8 @@
   --bg-sunken: #f7f7f8;
   --bg-raised: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.04);
+  /* 「我点的那一行」也用它——会话列表和文件树共用同一档灰，见 `.nav-item.active`。 */
   --bg-active: rgba(0, 0, 0, 0.07);
-  /*
-   * 列表里「我点的那一行」。**必须比 `--bg-hover` 深明显一档**：两者接近时，
-   * 选中的行和指针底下那一行长得一样，紧邻着看就是一块两行高的灰块。
-   * 灰的，不带色相——强调色那条注释解释了为什么这套界面里不出现第二种彩。
-   */
-  --bg-selected: rgba(0, 0, 0, 0.11);
   --bg-inset: #f2f2f3;
 
   --border-subtle: rgba(0, 0, 0, 0.06);
@@ -156,7 +151,6 @@
     --bg-raised: #1b1b1e;
     --bg-hover: rgba(255, 255, 255, 0.06);
     --bg-active: rgba(255, 255, 255, 0.1);
-    --bg-selected: rgba(255, 255, 255, 0.16);
     --bg-inset: #202024;
 
     --border-subtle: rgba(255, 255, 255, 0.07);
@@ -194,7 +188,6 @@
   --bg-raised: #1b1b1e;
   --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-active: rgba(255, 255, 255, 0.1);
-  --bg-selected: rgba(255, 255, 255, 0.16);
   --bg-inset: #202024;
 
   --border-subtle: rgba(255, 255, 255, 0.07);

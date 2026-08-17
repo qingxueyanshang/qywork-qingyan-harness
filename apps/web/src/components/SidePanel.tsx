@@ -489,21 +489,13 @@ function FileBrowser() {
 
   return (
     /*
-     * 内容在左、树在右，**同一块面板里**（参照物就是这个形状）。
+     * **树在左、文件内容在右**，同一块面板里。
      *
      * 树不占满整块：它是索引，宽度固定；内容才是要看的东西，占剩下的全部。
      * 整块面板的宽度由用户拖左边沿改（`.panel-grip`）——两块并排必然要求这个，
      * 不给拖的话内容那半永远只有一百多像素。
      */
     <div class="file-browser">
-      <Show when={openFile()}>
-        {(path) => (
-          <Suspense fallback={<div class="preview" />}>
-            <FileView path={path()} />
-          </Suspense>
-        )}
-      </Show>
-
       <div class="file-tree-col">
         {/* 搜索在最上面一行：它是这块树的入口，不该排在树的操作后面。 */}
         <input
@@ -589,6 +581,14 @@ function FileBrowser() {
           {(q) => <SearchHits ctx={ctx} query={q()} />}
         </Show>
       </div>
+
+      <Show when={openFile()}>
+        {(path) => (
+          <Suspense fallback={<div class="preview" />}>
+            <FileView path={path()} />
+          </Suspense>
+        )}
+      </Show>
 
       <Show when={menuAt()}>
         {(at) => (
