@@ -174,6 +174,40 @@ export const IconFile = (p: IconProps) => (
   </Svg>
 )
 
+/* 文件树工具条那四颗。加号一律画在右下角，和图形本体分开——叠在中间的话
+   14px 下加号的两笔会和文件夹的折角糊成一团。 */
+export const IconFilePlus = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13.4 3.8H7.6A2.6 2.6 0 0 0 5 6.4v11.2a2.6 2.6 0 0 0 2.6 2.6h4" />
+    <path d="M13.4 3.8v3.8a1.6 1.6 0 0 0 1.6 1.6H19v3" />
+    <path d="M15.6 17.4h4.8M18 15v4.8" />
+  </Svg>
+)
+
+export const IconFolderPlus = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 7.6A2.6 2.6 0 0 1 6.6 5h2.5a2 2 0 0 1 1.5.7l1 1.2h5.8A2.6 2.6 0 0 1 20 9.5v2M4 9.5v6.9A2.6 2.6 0 0 0 6.6 19h5.4" />
+    <path d="M15.6 17.4h4.8M18 15v4.8" />
+  </Svg>
+)
+
+export const IconRefresh = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M19.6 11.2a7.6 7.6 0 1 0-2.3 5.6" />
+    <path d="M19.6 5.6v5.6h-5.2" />
+  </Svg>
+)
+
+/** 全部折叠：两条向内合的箭头。和 `IconExpand` 的对角箭头不是一回事——
+    那个说的是「这块面板放大 / 还原」，这个说的是「树收起来」。 */
+export const IconCollapseAll = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 4.8l4 4 4-4" />
+    <path d="M8 19.2l4-4 4 4" />
+    <path d="M4.8 12h14.4" />
+  </Svg>
+)
+
 export const IconTerminal = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3.2" y="4.6" width="17.6" height="14.8" rx="3.2" />

@@ -1,6 +1,6 @@
-import type { EditorView } from '@codemirror/view'
 import type { JSX } from 'solid-js'
 import {
+  createEffect,
   createResource,
   createSignal,
   For,
@@ -11,15 +11,15 @@ import {
   Suspense,
   Switch,
 } from 'solid-js'
-import { createReadonlyEditor } from '../lib/editor.ts'
+import { ApiError } from '../lib/client.ts'
 import {
   client,
   closePanel,
   isDesktopShell,
+  openFile,
+  openFileInMain,
   type PanelView,
   panelMaximized,
-  previewPath,
-  setPreviewPath,
   setSidePanel,
   sidePanel,
   state,
@@ -29,11 +29,15 @@ import {
   IconBranch,
   IconCanvas,
   IconChevron,
+  IconCollapseAll,
   IconExpand,
   IconFile,
+  IconFilePlus,
   IconFolder,
+  IconFolderPlus,
   IconGlobe,
   IconPlus,
+  IconRefresh,
   IconTerminal,
   IconX,
 } from './Icons.tsx'
@@ -50,18 +54,6 @@ interface FileNode {
   size: number
   mtime: number
   children?: FileNode[]
-}
-
-interface PreviewResult {
-  path: string
-  kind: 'text' | 'image' | 'pdf' | 'audio' | 'video' | 'tabular' | 'archive' | 'binary'
-  mime: string
-  size: number
-  content?: string
-  language?: string
-  dataUri?: string
-  truncated: boolean
-  note?: string
 }
 
 /**
@@ -114,12 +106,7 @@ const PREVIEW_SOURCES: {
     key: 'file',
     label: '文件',
     icon: IconFile,
-    // 先清掉上一次看的那个文件再切过去：不清的话点开「新开一个预览」，
-    // 出来的是上次那份内容，看着像没生效。
-    open: () => {
-      setPreviewPath(null)
-      setSidePanel('files')
-    },
+    open: () => setSidePanel('files'),
   },
   {
     key: 'terminal',
@@ -281,46 +268,301 @@ function PreviewBoard(props: { onPick: () => void }) {
 
 // ───────────────────────── 文件浏览 ─────────────────────────
 
+/**
+ * 树的共享操作。**展开态与子层缓存不在节点里**，理由是「全部折叠」和「刷新」
+ * 要能一次管到所有节点——散在每个 `TreeNode` 的局部信号里，这两颗按钮谁都指挥不动。
+ */
+interface TreeCtx {
+  expanded(): ReadonlySet<string>
+  toggle(node: FileNode): void
+  /** `null` = 这一层还没取回来（刷新会把它清成 `null`，展开着的目录自己重取）。 */
+  childrenOf(path: string): FileNode[] | null
+  load(path: string): void
+  selected(): string | null
+  pick(node: FileNode): void
+}
+
+const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
+
 function FileBrowser() {
-  const [tree] = createResource(
+  const [tree, { refetch }] = createResource(
     // 依赖 fileChanges 长度：agent 改了文件后自动刷新树，
     // 不需要用户手动点刷新。
     () => state.fileChanges.length,
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
   )
 
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
+  /** 选中的那一行。它同时是「新建到哪里」的落点，所以文件和目录都记。 */
+  const [selected, setSelected] = createSignal<FileNode | null>(null)
+  const [creating, setCreating] = createSignal<'file' | 'dir' | null>(null)
+  const [query, setQuery] = createSignal('')
+
+  const ctx: TreeCtx = {
+    expanded,
+    childrenOf: (path) => kids().get(path) ?? null,
+    selected: () => openFile() ?? selected()?.path ?? null,
+    // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
+    // 也在里面），而用户通常只展开一两层。
+    load: (path) => {
+      void client
+        .api<{ nodes: FileNode[] }>(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`)
+        .then((res) => setKids((m) => new Map(m).set(path, res.nodes)))
+    },
+    toggle: (node) => {
+      setSelected(node)
+      setExpanded((s) => {
+        const next = new Set(s)
+        if (!next.delete(node.path)) next.add(node.path)
+        return next
+      })
+    },
+    pick: (node) => {
+      setSelected(node)
+      openFileInMain(node.path)
+    },
+  }
+
+  /** 新建落在选中的目录里；选中的是文件就落在它旁边；什么都没选就落在根。 */
+  const target = () => {
+    const s = selected()
+    if (!s) return ''
+    return s.kind === 'dir' ? s.path : parentDir(s.path)
+  }
+
+  const afterCreate = (node: FileNode) => {
+    const dir = parentDir(node.path)
+    // 目标目录那一层的缓存作废并展开，新建出来的东西才看得见。
+    setKids((m) => {
+      const next = new Map(m)
+      next.delete(dir)
+      return next
+    })
+    if (dir) setExpanded((s) => new Set(s).add(dir))
+    else void refetch()
+    setSelected(node)
+    if (node.kind === 'file') openFileInMain(node.path)
+  }
+
   return (
     <div class="file-browser">
-      <Show when={previewPath()} fallback={<Tree nodes={tree()?.nodes ?? []} depth={0} />}>
-        {(p) => <FilePreview path={p()} />}
+      <FileTools
+        creating={creating()}
+        onCreate={setCreating}
+        onRefresh={() => {
+          // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
+          setKids(new Map())
+          void refetch()
+        }}
+        onCollapse={() => setExpanded(new Set())}
+      />
+      <Show when={creating()}>
+        {(kind) => (
+          <NewEntryRow
+            kind={kind()}
+            dir={target()}
+            onDone={(node) => {
+              setCreating(null)
+              afterCreate(node)
+            }}
+            onCancel={() => setCreating(null)}
+          />
+        )}
+      </Show>
+      <input
+        class="tree-search"
+        type="search"
+        placeholder="搜索名称"
+        value={query()}
+        onInput={(e) => setQuery(e.currentTarget.value)}
+      />
+      <Show
+        when={query().trim()}
+        fallback={<Tree ctx={ctx} nodes={tree()?.nodes ?? []} depth={0} />}
+      >
+        {(q) => <SearchHits ctx={ctx} query={q()} />}
       </Show>
     </div>
   )
 }
 
-function Tree(props: { nodes: FileNode[]; depth: number }) {
+function FileTools(props: {
+  creating: 'file' | 'dir' | null
+  onCreate: (kind: 'file' | 'dir' | null) => void
+  onRefresh: () => void
+  onCollapse: () => void
+}) {
+  return (
+    <div class="tree-tools">
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="新建文件"
+        title="新建文件"
+        aria-pressed={props.creating === 'file'}
+        onClick={() => props.onCreate(props.creating === 'file' ? null : 'file')}
+      >
+        <IconFilePlus size={15} />
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="新建文件夹"
+        title="新建文件夹"
+        aria-pressed={props.creating === 'dir'}
+        onClick={() => props.onCreate(props.creating === 'dir' ? null : 'dir')}
+      >
+        <IconFolderPlus size={15} />
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="刷新"
+        title="刷新"
+        onClick={props.onRefresh}
+      >
+        <IconRefresh size={15} />
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="全部折叠"
+        title="全部折叠"
+        onClick={props.onCollapse}
+      >
+        <IconCollapseAll size={15} />
+      </button>
+    </div>
+  )
+}
+
+/**
+ * 新建那一行。**不是弹窗**：为输入一个名字造浮层，要跟着补定高、遮罩、
+ * 焦点归还三样；也不插在树里当幽灵节点——那要在子层缓存和展开集合里各记一笔，
+ * 而它只活几秒。
+ *
+ * 目标目录写在输入框前面，用户看得见东西建在哪。重名由服务端回 409，
+ * 原话直接显示——「已存在」是他下一步唯一需要知道的事。
+ */
+function NewEntryRow(props: {
+  kind: 'file' | 'dir'
+  dir: string
+  onDone: (node: FileNode) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = createSignal('')
+  const [error, setError] = createSignal<string | null>(null)
+
+  const submit = async () => {
+    const trimmed = name().trim()
+    if (!trimmed) return
+    const path = props.dir ? `${props.dir}/${trimmed}` : trimmed
+    try {
+      const res = await client.api<{ node: FileNode }>('/api/files/create', {
+        method: 'POST',
+        body: JSON.stringify({ path, kind: props.kind }),
+      })
+      props.onDone(res.node)
+    } catch (err) {
+      // `detail` 是服务端那一句话（「x 已存在」），不是带状态码和路径的整行。
+      setError(err instanceof ApiError ? err.detail : String(err))
+    }
+  }
+
+  return (
+    <div class="tree-new">
+      <div class="tree-new-line">
+        <Show when={props.dir}>
+          <span class="tree-new-dir truncate">{props.dir}/</span>
+        </Show>
+        <input
+          class="tree-new-input"
+          // biome-ignore lint/a11y/noAutofocus: 这一行是点了按钮才出现的，
+          // 出现就该能直接打字；不给焦点等于让用户再点一次。
+          autofocus
+          placeholder={props.kind === 'file' ? '文件名' : '文件夹名'}
+          value={name()}
+          onInput={(e) => setName(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void submit()
+            if (e.key === 'Escape') props.onCancel()
+          }}
+        />
+      </div>
+      <Show when={error()}>{(msg) => <div class="tree-new-error">{msg()}</div>}</Show>
+    </div>
+  )
+}
+
+/**
+ * 按名字搜出来的命中，扁平一列，替代树显示。
+ *
+ * **搜索跳依赖树与构建产物**（服务端 `findByName`），而树不跳。这条边界必须
+ * 说出来，否则用户搜不到 `node_modules` 里的东西会以为文件不存在。
+ */
+function SearchHits(props: { ctx: TreeCtx; query: string }) {
+  const [debounced, setDebounced] = createSignal(props.query)
+  createEffect(() => {
+    const q = props.query
+    const t = setTimeout(() => setDebounced(q), 300)
+    onCleanup(() => clearTimeout(t))
+  })
+
+  const [hits] = createResource(debounced, (q) =>
+    client.api<{ matches: FileNode[]; truncated: boolean }>(
+      `/api/files/find?q=${encodeURIComponent(q)}`,
+    ),
+  )
+
+  return (
+    <div class="tree-hits">
+      <For each={hits()?.matches ?? []}>
+        {(hit) => (
+          <button
+            class="tree-item"
+            classList={{ selected: props.ctx.selected() === hit.path }}
+            type="button"
+            title={hit.path}
+            disabled={hit.kind === 'dir'}
+            onClick={() => props.ctx.pick(hit)}
+          >
+            <Show when={hit.kind === 'dir'} fallback={<IconFile size={13} />}>
+              <IconFolder size={13} />
+            </Show>
+            <span class="truncate">{hit.path}</span>
+          </button>
+        )}
+      </For>
+      <Show when={hits() && hits()!.matches.length === 0}>
+        <div class="tree-hint">没有匹配的名称。不搜依赖树与构建产物。</div>
+      </Show>
+      <Show when={hits()?.truncated}>
+        <div class="tree-hint">命中过多，只显示前一部分。</div>
+      </Show>
+    </div>
+  )
+}
+
+function Tree(props: { ctx: TreeCtx; nodes: FileNode[]; depth: number }) {
   return (
     <ul class="tree" style={{ '--depth': String(props.depth) }}>
-      <For each={props.nodes}>{(node) => <TreeNode node={node} depth={props.depth} />}</For>
+      <For each={props.nodes}>
+        {(node) => <TreeNode ctx={props.ctx} node={node} depth={props.depth} />}
+      </For>
     </ul>
   )
 }
 
-function TreeNode(props: { node: FileNode; depth: number }) {
-  const [open, setOpen] = createSignal(false)
-  const [children, setChildren] = createSignal<FileNode[] | null>(null)
+function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
+  const open = () => props.ctx.expanded().has(props.node.path)
+  const children = () => props.ctx.childrenOf(props.node.path) ?? props.node.children ?? null
 
-  const toggle = async () => {
-    const next = !open()
-    setOpen(next)
-    // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒，而用户通常只展开一两层。
-    if (next && children() === null) {
-      const res = await client.api<{ nodes: FileNode[] }>(
-        `/api/files/tree?path=${encodeURIComponent(props.node.path)}&depth=1`,
-      )
-      setChildren(res.nodes)
-    }
-  }
+  // 展开着而这一层还没取回来就去取。**取数的触发条件是「展开且缺数据」**，
+  // 不是点击那一下——刷新把缓存清空之后，展开着的目录靠这条自己重取。
+  createEffect(() => {
+    if (open() && children() === null) props.ctx.load(props.node.path)
+  })
 
   return (
     <li>
@@ -329,9 +571,10 @@ function TreeNode(props: { node: FileNode; depth: number }) {
         fallback={
           <button
             class="tree-item"
+            classList={{ selected: props.ctx.selected() === props.node.path }}
             type="button"
             style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
-            onClick={() => setPreviewPath(props.node.path)}
+            onClick={() => props.ctx.pick(props.node)}
           >
             <IconFile size={13} />
             <span class="truncate">{props.node.name}</span>
@@ -340,97 +583,20 @@ function TreeNode(props: { node: FileNode; depth: number }) {
       >
         <button
           class="tree-item"
+          classList={{ selected: props.ctx.selected() === props.node.path }}
           type="button"
           style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
-          onClick={toggle}
+          onClick={() => props.ctx.toggle(props.node)}
         >
           <IconChevron size={11} dir={open() ? 'down' : 'right'} />
           <IconFolder size={13} />
           <span class="truncate">{props.node.name}</span>
         </button>
         <Show when={open()}>
-          <Tree nodes={children() ?? props.node.children ?? []} depth={props.depth + 1} />
+          <Tree ctx={props.ctx} nodes={children() ?? []} depth={props.depth + 1} />
         </Show>
       </Show>
     </li>
-  )
-}
-
-// ───────────────────────── 文件预览 ─────────────────────────
-
-function FilePreview(props: { path: string }) {
-  const [result] = createResource(
-    () => props.path,
-    (path) => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(path)}`),
-  )
-
-  return (
-    <div class="preview">
-      <header class="preview-head">
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="返回"
-          onClick={() => setPreviewPath(null)}
-        >
-          <IconChevron size={14} dir="right" style={{ transform: 'rotate(180deg)' }} />
-        </button>
-        <code class="truncate">{props.path}</code>
-      </header>
-
-      <div class="preview-body">
-        <Show when={result()} fallback={<div class="preview-loading" />}>
-          {(r) => (
-            <Switch fallback={<div class="preview-note">{r().note ?? '无法预览'}</div>}>
-              <Match when={r().kind === 'text' || r().kind === 'tabular'}>
-                <CodeView content={r().content ?? ''} path={r().path} />
-              </Match>
-              <Match when={r().kind === 'image'}>
-                <img class="preview-media" src={r().dataUri} alt={r().path} />
-              </Match>
-              <Match when={r().kind === 'pdf'}>
-                {/* WKWebView 和 WebView2 都内建 PDF 渲染，不需要额外的 JS 阅读器 */}
-                <iframe class="preview-frame" src={r().dataUri} title={r().path} />
-              </Match>
-              <Match when={r().kind === 'video'}>
-                <video class="preview-media" src={r().dataUri} controls />
-              </Match>
-              <Match when={r().kind === 'audio'}>
-                <audio class="preview-audio" src={r().dataUri} controls />
-              </Match>
-            </Switch>
-          )}
-        </Show>
-      </div>
-
-      <Show when={result()?.truncated}>
-        <footer class="preview-foot">内容已截断</footer>
-      </Show>
-    </div>
-  )
-}
-
-function CodeView(props: { content: string; path: string }) {
-  let host!: HTMLDivElement
-  let view: EditorView | null = null
-
-  // 路径或内容变了就整块重建：CodeMirror 换语言包需要重建 state，
-  // 增量更新反而更复杂且容易漏掉语言切换。
-  const mount = async () => {
-    view?.destroy()
-    view = await createReadonlyEditor(host, props.content, props.path)
-  }
-
-  onCleanup(() => view?.destroy())
-
-  return (
-    <div
-      class="code-view"
-      ref={(el) => {
-        host = el
-        void mount()
-      }}
-    />
   )
 }
 

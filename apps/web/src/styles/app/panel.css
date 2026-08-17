@@ -286,19 +286,98 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+/* 选中 = 主区正开着这个文件（或上一次点过的那一行）。底色比 hover 重一档，
+   否则鼠标一移过去就分不出「我点开的是哪个」。 */
+.tree-item.selected {
+  background: var(--bg-inset);
+  color: var(--text-primary);
+}
 
-/* ── 预览 ── */
+/* 工具条：新建文件 / 新建文件夹 / 刷新 / 全部折叠。**贴着树的上沿**，
+   不进面板头部——那一行是标签页与面板级操作，混进来就分不清哪颗按钮管哪一块。 */
+.tree-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--s-1) var(--s-1) 0;
+}
+
+.tree-search {
+  flex: none;
+  margin: var(--s-1) var(--s-2) 0;
+  padding: 3px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  font-size: var(--fs-sm);
+}
+
+/* 新建那一行。**高度不定是可以的**（它不是浮层，见 B9 的适用范围），
+   但错误正文要留在行内，不另开提示条。 */
+.tree-new {
+  flex: none;
+  padding: var(--s-1) var(--s-2) 0;
+}
+.tree-new-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tree-new-dir {
+  flex: 0 1 auto;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.tree-new-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  font-size: var(--fs-sm);
+}
+.tree-new-error {
+  padding: 2px 0 0;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+/* 搜索命中：扁平一列，整条路径可见（树里显示的是名字，这里必须是路径，
+   否则五个同名文件分不出哪个是哪个）。 */
+.tree-hits {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-2) var(--s-1);
+}
+.tree-hint {
+  padding: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* ── 打开的文件 ──
+ *
+ * 这一族样式给的是**主内容区**那块文件视图（`FileView`），不是这块面板；
+ * 它留在这个文件里是因为 `.preview-note` / `.preview-loading` 同时被 git 面板与
+ * 配对面板用着，把家族拆到两个文件反而更难找。
+ *
+ * `.preview` 是 `.main` 这个纵向 flex 的一个子项，和输入区上下排：
+ * **必须是 `flex: 1` + `min-height: 0`**，写 `height: 100%` 会把输入区顶出窗口。
+ */
 .preview {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 .preview-head {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-1);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3);
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--fs-xs);
   color: var(--text-secondary);

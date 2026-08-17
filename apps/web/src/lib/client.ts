@@ -139,6 +139,37 @@ function isMobileViewport(): boolean {
   return matchMedia('(max-width: 820px)').matches
 }
 
+/**
+ * REST 调用失败。
+ *
+ * **`detail` 是给用户看的那一句，`message` 是给日志看的那一行。** 服务端的错误体
+ * 是 `{ error, message }`，整段 JSON 贴到界面上就是「409 /api/files/create:
+ * {"error":"exists","message":"notes.md 已存在"}」——用户要看的只有最后四个字。
+ * 所以这里当场把 `message` 抠出来；不是 JSON 就退回原文。
+ */
+export class ApiError extends Error {
+  readonly detail: string
+
+  constructor(
+    readonly status: number,
+    path: string,
+    body: string,
+  ) {
+    const parsed = (() => {
+      try {
+        const obj = JSON.parse(body) as { message?: unknown; error?: unknown }
+        const m = obj.message ?? obj.error
+        return typeof m === 'string' && m ? m : ''
+      } catch {
+        return ''
+      }
+    })()
+    super(`${status} ${path}${body ? `: ${body.slice(0, 200)}` : ''}`)
+    this.name = 'ApiError'
+    this.detail = parsed || body.slice(0, 200) || `请求失败（${status}）`
+  }
+}
+
 export class QyClient {
   private ws: SocketLike | null = null
   private lastSeq = 0
@@ -353,8 +384,7 @@ export class QyClient {
       headers: given,
     })
     if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`${res.status} ${path}${detail ? `: ${detail.slice(0, 200)}` : ''}`)
+      throw new ApiError(res.status, path, await res.text().catch(() => ''))
     }
     return (await res.json()) as T
   }
