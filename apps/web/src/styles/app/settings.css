@@ -4,18 +4,20 @@
 
 /* ───────────────────────── 分支条 ───────────────────────── */
 
+/* 密度跟着变更列表走：同一块面板里，这一条比下面的文件行高一档就会读成两套控件。 */
 .branch-bar {
-  padding: var(--s-2) var(--s-3);
+  padding: 4px var(--s-1);
   border-bottom: 1px solid var(--border-subtle);
 }
 .branch-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  padding: 4px var(--s-2);
+  padding: 1px 4px;
   border-radius: var(--r-xs);
   font-size: var(--fs-sm);
+  line-height: 1.5;
   color: var(--text-secondary);
   min-width: 0;
 }

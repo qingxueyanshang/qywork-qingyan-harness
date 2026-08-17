@@ -37,6 +37,13 @@ export interface GitFileEntry {
   indexStatus: string
   worktreeStatus: string
   renamedFrom?: string
+  /**
+   * 相对 HEAD 改了多少行。**缺席是「没有这个数」，不是 0**：未跟踪的文件不在
+   * `git diff` 里（它没有可比的旧版本），二进制文件 numstat 回的是 `-`。
+   * 界面据此决定「显示不显示这两个数」，而不是显示成 +0 −0。
+   */
+  additions?: number
+  deletions?: number
 }
 
 /** 读 git 读出来的东西。**不含 workspaceId**——那是「谁在问」，由 `toStateEvent` 补。 */
@@ -196,6 +203,15 @@ export async function status(cwd: string): Promise<GitStatus | null> {
     }
   }
 
+  const delta = await numstat(cwd)
+  for (const f of files) {
+    const d = delta.get(f.path)
+    if (d) {
+      f.additions = d.additions
+      f.deletions = d.deletions
+    }
+  }
+
   return {
     branch,
     upstream,
@@ -208,6 +224,35 @@ export async function status(cwd: string): Promise<GitStatus | null> {
     detached,
     files,
   }
+}
+
+/**
+ * 每个文件相对 HEAD 改了多少行。
+ *
+ * 一次 `git diff --numstat HEAD` 拿全部，**不是每个文件跑一次**：几百个文件就是
+ * 几百次进程启动，那比读 diff 本身贵得多。
+ *
+ * 三种拿不到数的情况都返回「没有这一项」而不是 0：仓库还没有提交（`HEAD` 解析
+ * 不了，整条命令失败）、文件未跟踪（不在 diff 里）、二进制（numstat 那两列是 `-`）。
+ * 显示成 0 会让「没改动」和「不知道改了多少」变成同一句话。
+ *
+ * `-M` 让重命名合成一条，路径与 porcelain v2 的 `2` 型条目对得上。
+ */
+async function numstat(
+  cwd: string,
+): Promise<Map<string, { additions: number; deletions: number }>> {
+  const out = new Map<string, { additions: number; deletions: number }>()
+  const r = await git(cwd, ['diff', '--numstat', '-M', 'HEAD'])
+  if (!r.ok) return out
+
+  for (const line of r.out.split('\n')) {
+    if (!line.trim()) continue
+    const [add, del, ...rest] = line.split('\t')
+    const path = rest.join('\t')
+    if (!path || add === '-' || del === '-') continue
+    out.set(path, { additions: Number(add), deletions: Number(del) })
+  }
+  return out
 }
 
 export async function branches(cwd: string): Promise<GitBranch[]> {
