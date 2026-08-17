@@ -108,7 +108,7 @@ function applyTheme(): void {
     // 光标底下那个字符的颜色。程序可以用 DECSCUSR 把光标切回实心块，
     // 那时不给这个值，字会和光标同色、直接看不见。
     cursorAccent: cssVar('--bg-app', dark ? '#16161a' : '#ffffff'),
-    selectionBackground: cssVar('--accent-soft', 'rgba(47, 111, 235, 0.25)'),
+    selectionBackground: cssVar('--accent-soft', 'rgba(128, 128, 128, 0.25)'),
     ...(dark ? ANSI_DARK : ANSI_LIGHT),
   }
 }

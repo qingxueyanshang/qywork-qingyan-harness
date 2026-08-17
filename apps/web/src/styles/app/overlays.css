@@ -168,10 +168,12 @@
   color: var(--text-secondary);
   margin-right: auto;
 }
+/* 前景色走 `--text-inverted`，**不写死 #fff**：强调色是墨色，暗色主题下它是近白，
+   白底白字就没了。 */
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text-inverted);
 }
 .btn.primary:hover {
   background: var(--accent-hover);

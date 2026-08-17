@@ -22,6 +22,12 @@
   --bg-raised: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.04);
   --bg-active: rgba(0, 0, 0, 0.07);
+  /*
+   * 列表里「我点的那一行」。**必须比 `--bg-hover` 深明显一档**：两者接近时，
+   * 选中的行和指针底下那一行长得一样，紧邻着看就是一块两行高的灰块。
+   * 灰的，不带色相——强调色那条注释解释了为什么这套界面里不出现第二种彩。
+   */
+  --bg-selected: rgba(0, 0, 0, 0.11);
   --bg-inset: #f2f2f3;
 
   --border-subtle: rgba(0, 0, 0, 0.06);
@@ -33,10 +39,17 @@
   --text-tertiary: #9a9aa2;
   --text-inverted: #ffffff;
 
-  /* 唯一强调色。克制使用。 */
-  --accent: #2f6feb;
-  --accent-hover: #2560d6;
-  --accent-soft: rgba(47, 111, 235, 0.1);
+  /*
+   * 唯一强调色，**没有色相**——就是同一档墨色。
+   *
+   * 这套界面通身是黑白灰（正文墨色、边框 1px 淡灰、发送键纯黑），一个蓝色强调
+   * 摆进来是唯一的一块彩，选中、焦点环、主按钮、光标条各处都跟着蓝一下。
+   * 要强调就靠深浅，不靠颜色。红/绿/橙那三档留着——它们表达的是**状态**
+   * （危险、成功、警告），不是强调。
+   */
+  --accent: #16161a;
+  --accent-hover: #35353b;
+  --accent-soft: rgba(0, 0, 0, 0.06);
 
   --success: #1a7f47;
   --success-soft: rgba(26, 127, 71, 0.1);
@@ -143,6 +156,7 @@
     --bg-raised: #1b1b1e;
     --bg-hover: rgba(255, 255, 255, 0.06);
     --bg-active: rgba(255, 255, 255, 0.1);
+    --bg-selected: rgba(255, 255, 255, 0.16);
     --bg-inset: #202024;
 
     --border-subtle: rgba(255, 255, 255, 0.07);
@@ -154,9 +168,9 @@
     --text-tertiary: #6e6e78;
     --text-inverted: #16161a;
 
-    --accent: #5b8dff;
-    --accent-hover: #7aa2ff;
-    --accent-soft: rgba(91, 141, 255, 0.16);
+    --accent: #f2f2f4;
+    --accent-hover: #d6d6da;
+    --accent-soft: rgba(255, 255, 255, 0.1);
 
     --success: #4ec98a;
     --success-soft: rgba(78, 201, 138, 0.14);
@@ -180,6 +194,7 @@
   --bg-raised: #1b1b1e;
   --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-selected: rgba(255, 255, 255, 0.16);
   --bg-inset: #202024;
 
   --border-subtle: rgba(255, 255, 255, 0.07);
@@ -191,9 +206,9 @@
   --text-tertiary: #6e6e78;
   --text-inverted: #16161a;
 
-  --accent: #5b8dff;
-  --accent-hover: #7aa2ff;
-  --accent-soft: rgba(91, 141, 255, 0.16);
+  --accent: #f2f2f4;
+  --accent-hover: #d6d6da;
+  --accent-soft: rgba(255, 255, 255, 0.1);
 
   --success: #4ec98a;
   --success-soft: rgba(78, 201, 138, 0.14);

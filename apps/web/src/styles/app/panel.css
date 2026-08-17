@@ -351,12 +351,12 @@
 /*
  * 选中 = **最后点过的那一行**（`FileBrowser` 的 `selected`），一直亮着。
  *
- * 底色用 `--accent-soft` 而不是 `--bg-inset`：后者和 `--bg-hover` 几乎同色，
- * 鼠标一移开就看不出哪一行是选中的——「选中留不住」说的就是这个。
+ * 底色走 `--bg-selected`（灰，不是彩色）。那个 token 存在的理由就写在它自己头上：
+ * 它必须比 `--bg-hover` 深明显一档，否则选中的行和指针底下那一行糊成一块。
  */
 .tree-item.selected,
 .tree-root.selected {
-  background: var(--accent-soft);
+  background: var(--bg-selected);
   color: var(--text-primary);
 }
 
