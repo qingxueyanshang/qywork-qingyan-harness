@@ -7,7 +7,7 @@
  * 永远追不上现实，而族是有限的。
  */
 
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
 import { IGNORED_DIRS } from '@qywork/tools'
 
@@ -262,6 +262,47 @@ export async function createEntry(
     size: info.size,
     mtime: info.mtimeMs,
   }
+}
+
+/**
+ * 改名。**只换名字，不搬家**——目标恒定是同一个父目录下的另一个名字。
+ *
+ * 名字合法性由调用方先判（不能带分隔符、不能是 `.` / `..`）：那是入参校验，
+ * 属于边界那一层。这里只管「新名字已经被占了」这一件事，和 `createEntry` 同一个口径。
+ */
+export async function renameEntry(
+  workspaceRoot: string,
+  relPath: string,
+  name: string,
+): Promise<FileNode> {
+  const abs = join(workspaceRoot, relPath)
+  const nextRel = toPosix(join(dirname(relPath), name))
+  const nextAbs = join(workspaceRoot, nextRel)
+
+  const taken = await stat(nextAbs).catch(() => null)
+  // 同一个名字改成同一个名字：Windows 上不区分大小写，`a.ts` → `A.ts` 会被
+  // 判成「已存在」而拒掉，所以只有真的换了目标才算冲突。
+  if (taken && nextAbs !== abs) throw new EntryExistsError(nextRel)
+
+  await rename(abs, nextAbs)
+  const info = await stat(nextAbs)
+  return {
+    name,
+    path: nextRel,
+    kind: info.isDirectory() ? 'dir' : 'file',
+    size: info.size,
+    mtime: info.mtimeMs,
+  }
+}
+
+/**
+ * 删除。目录连着里面一起删。
+ *
+ * `force: false` 是有意的：不存在时要抛，让上面回 404。`force: true` 会把
+ * 「删掉了」和「本来就没有」说成同一句话，而用户点的是删除，他需要知道到底删没删。
+ */
+export async function deleteEntry(workspaceRoot: string, relPath: string): Promise<void> {
+  await rm(join(workspaceRoot, relPath), { recursive: true, force: false })
 }
 
 export interface FindHit {

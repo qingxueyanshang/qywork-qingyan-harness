@@ -1,12 +1,22 @@
 /**
- * 文件树、按名搜索、预览、新建，以及 git 只读视图。右侧面板的几个标签页都从这里取数。
+ * 文件树、按名搜索、预览、新建 / 改名 / 删除，以及 git 只读视图。
+ * 右侧面板的几个标签页都从这里取数。
  *
- * git 那几条只读；文件这边**只有一条会写盘**（`/api/files/create`），
- * 口径写在它自己头上。
+ * git 那几条只读。会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
+ * 入参不合法回 422 且不落盘、目标已存在回 409 不覆盖、路径越界翻成 422
+ * （那是入参问题，不该以 500 的面貌出现在界面上）。每条的特殊之处写在它自己头上。
  */
 
 import { resolveInWorkspace } from '@qywork/tools'
-import { createEntry, EntryExistsError, findByName, listTree, preview } from '../files.ts'
+import {
+  createEntry,
+  deleteEntry,
+  EntryExistsError,
+  findByName,
+  listTree,
+  preview,
+  renameEntry,
+} from '../files.ts'
 import * as git from '../git.ts'
 import { type ApiHandler, json } from './types.ts'
 
@@ -53,6 +63,49 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
         return json({ error: 'exists', message: err.message }, 409)
       throw err
     }
+  }
+
+  /*
+   * 改名。名字只能是**一个名字**：带分隔符就是搬家，而这颗菜单项写的是「重命名」，
+   * 两件事混在一个接口里，用户在输入框里打个 `../x` 就把文件挪出了他以为的位置。
+   */
+  if (p === '/api/files/rename' && req.method === 'POST') {
+    const body = (await req.json().catch(() => null)) as { path?: string; name?: string } | null
+    const rel = body?.path?.trim()
+    const name = body?.name?.trim()
+    if (!rel || !name) return json({ error: 'invalid', message: '路径和新名字都得给' }, 422)
+    if (/[/\\]/.test(name) || name === '.' || name === '..') {
+      return json({ error: 'invalid', message: '名字里不能带路径分隔符' }, 422)
+    }
+    try {
+      await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
+    } catch {
+      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+    }
+    try {
+      return json({ node: await renameEntry(d.workspaceRoot, rel, name) })
+    } catch (err) {
+      if (err instanceof EntryExistsError)
+        return json({ error: 'exists', message: err.message }, 409)
+      throw err
+    }
+  }
+
+  /*
+   * 删除。目录连着里面一起删——**确认在界面那一侧**（`ConfirmDialog`），
+   * 这里不再问一遍。空路径直接拒：那指的是工作区根本身。
+   */
+  if (p === '/api/files/delete' && req.method === 'POST') {
+    const body = (await req.json().catch(() => null)) as { path?: string } | null
+    const rel = body?.path?.trim()
+    if (!rel) return json({ error: 'invalid', message: '要删的路径得给' }, 422)
+    try {
+      await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
+    } catch {
+      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+    }
+    await deleteEntry(d.workspaceRoot, rel)
+    return json({ ok: true })
   }
 
   if (p === '/api/files/preview') {
