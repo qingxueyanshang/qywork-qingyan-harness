@@ -7,10 +7,12 @@ import {
   commandShell,
   defaultMaskPaths,
   detectSandbox,
+  collectProcess,
   killTree,
   makeOutputDecoder,
   resolveBashPath,
   resolveCommandShell,
+  spawnGuarded,
 } from './sandbox.ts'
 
 /** 把 argv 里 `flag src dst` 这种三元组抽出来，方便按语义断言而不是按下标。 */
@@ -656,4 +658,42 @@ describe('子进程输出解码', () => {
     decode(GBK)
     expect(decode(new Uint8Array([0x6f, 0x6b]))).toBe('ok')
   })
+})
+/**
+ * 命令正文必须逐字节到达 shell。
+ *
+ * Windows 上 argv 要经一次命令行字符串的往返，MSYS 那侧按自己的规则解回来，
+ * 成对的反斜杠被折掉一半（实测发 1/2/3/4 个到达 1/1/2/2 个）。账本里真实撞到过：
+ * 模型写的 `if ch == '\\':` 到 python 手里成了 `'\'`，一条 unterminated string
+ * literal，而没有任何人知道命令在路上被改过。
+ *
+ * 这条测试真的起进程——纯函数测不出这个洞，它恰恰发生在进程边界上。
+ */
+describe('命令正文逐字节到达', () => {
+  test('成对的反斜杠不被折半', async () => {
+    const bs = String.fromCharCode(92)
+    // 发 4 个反斜杠，数到达了几个。折半的话是 2。
+    const { proc } = await spawnGuarded({
+      command: `printf '%s' '${bs.repeat(4)}' | wc -c`,
+      cwd: process.cwd(),
+      policy: null,
+      env: process.env as Record<string, string>,
+    })
+    const got = await collectProcess(proc, { timeoutMs: 20_000 })
+    expect(got.stdout.trim()).toBe('4')
+  }, 30_000)
+
+  test('原始失败形状：python 源码里的一个反斜杠字符', async () => {
+    const bs = String.fromCharCode(92)
+    const { proc } = await spawnGuarded({
+      command: [`python - <<'PYEOF'`, `print(len('${bs}${bs}'))`, 'PYEOF'].join('\n'),
+      cwd: process.cwd(),
+      policy: null,
+      env: process.env as Record<string, string>,
+    })
+    const got = await collectProcess(proc, { timeoutMs: 20_000 })
+    // 折半时这里是一条 SyntaxError；到达完整时 python 数出 1 个字符。
+    expect(got.stderr).not.toContain('SyntaxError')
+    expect(got.stdout.trim()).toBe('1')
+  }, 30_000)
 })
