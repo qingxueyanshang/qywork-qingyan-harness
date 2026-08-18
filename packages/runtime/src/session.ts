@@ -84,7 +84,7 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import { collectSecrets, type QyConfig, resolveApiKey, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
-import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+import { buildSystemPrompt, buildTailNotes, buildTodoNote } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
 import { buildHistory } from './transcript.ts'
 
@@ -267,6 +267,9 @@ export class Session {
           // 而缓存下来的那份会一直劝模型再装一遍已经装好的工具。
           externalTools: this.pendingTools?.index() ?? [],
         }),
+      // 与 `ToolContext` 里那条 `todos.read` 同一个权威、同一次读法。
+      // 现取而不是缓存：清单每提交一次就变，缓存下来的那份会把模型钉在旧进度上。
+      liveTodos: () => buildTodoNote(latestTodos(this.opts.store, conversationId) ?? []),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, model, conversationId as ConversationId),
       persist: this.makePersistence(),

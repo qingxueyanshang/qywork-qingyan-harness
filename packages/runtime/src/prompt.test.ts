@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { buildTailNotes } from './prompt.ts'
+import { buildTailNotes, buildTodoNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux' }
 const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
@@ -77,6 +77,31 @@ describe('尾区注记', () => {
    * 分组必须带出来。一律标 `workspaceState` 的话，面板上「记忆内容」与
    * 「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
+  /**
+   * 清单在历史里只有快照，一轮任务会留下好几份，最新那份埋在几万 token 的执行记录
+   * 中间，没有标记说明哪份是现在的。实测一轮 59 步的任务在第 33 步之后再没更新过
+   * 清单，收尾时账本停在 5/7 而回答宣布做完了。
+   *
+   * 锁的是它**不在尾区**：尾区在 transcript 之前，而缓存断点之三建立在「一个 run 内
+   * 尾区逐字节不变」这条上，清单每提交一次就变。位置由 `agent/loop.test.ts` 锁。
+   */
+  test('待办渲染：逐条状态 + 与工具回执同一个进度口径', () => {
+    const text = buildTodoNote([
+      { id: 'todo_1', content: '审计注入面', status: 'completed' },
+      { id: 'todo_2', content: '查运行态日志', status: 'in_progress' },
+      { id: 'todo_3', content: '汇总报告', status: 'pending' },
+    ])
+    expect(text).toContain('当前待办（1/3）')
+    expect(text).toContain('[x] 审计注入面')
+    expect(text).toContain('[>] 查运行态日志')
+    expect(text).toContain('[ ] 汇总报告')
+  })
+
+  test('空清单不产出这一段，也不混进尾区', () => {
+    expect(buildTodoNote([])).toBeNull()
+    for (const n of buildTailNotes(base)) expect(n.content).not.toContain('当前待办')
+  })
+
   test('四个桶各归各的，没有内容的桶不产出注记', () => {
     const empty = buildTailNotes(base)
     expect(empty.map((n) => n.group)).toEqual(['workspaceState'])

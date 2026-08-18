@@ -1100,3 +1100,90 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     expect(message).toContain('本次共收到 4 字')
   })
 })
+/**
+ * 当前待办的位置。
+ *
+ * 锁的是**它在最后一个缓存断点之后**。断点之三建立在「一个 run 内尾区逐字节不变」
+ * 这条上，而待办每提交一次就变——混进尾区就把 run 内那段不断变长的稳定前缀从中间
+ * 切断，已产生的整段 transcript 全价重付。这种回归不报任何错，只表现为账单变高、
+ * 缓存命中变低，所以只能靠这条测试拦。
+ */
+describe('当前待办压在断点之后', () => {
+  const captured: ChatRequest[] = []
+
+  function capturing(): LlmAdapter {
+    const inner = fakeAdapter([null])
+    return {
+      ...inner,
+      async *stream(req: ChatRequest) {
+        captured.push(req)
+        yield* inner.stream(req)
+      },
+    }
+  }
+
+  function build(liveTodos?: () => string | null): AgentLoop {
+    const registry = new ToolRegistry()
+    return new AgentLoop({
+      adapter: capturing(),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [{ content: '工作区：/tmp', group: 'workspaceState' as const }],
+      ...(liveTodos ? { liveTodos } : {}),
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        contextWindow: 200_000,
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        emit: (channel, delta) =>
+          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+        requestPermission: async () => true,
+      }),
+    })
+  }
+
+  async function drain(loop: AgentLoop): Promise<void> {
+    for await (const _ of loop.run({
+      runId: 'rn_todo' as never,
+      history: [{ role: 'user', content: '历史一条', _group: 'historyMessages' }],
+      signal: new AbortController().signal,
+    })) {
+      // 只为把生成器跑到底
+    }
+  }
+
+  test('有清单时它是最后一条，且排在最后一个断点后面', async () => {
+    captured.length = 0
+    await drain(build(() => '## 当前待办（1/2）\n[x] 甲\n[ ] 乙'))
+    const msgs = captured[0]?.messages ?? []
+    const last = msgs.at(-1)
+    expect(last?.content).toContain('当前待办（1/2）')
+    expect(last?.cacheBreakpoint).toBeUndefined()
+    const lastBreak = msgs.findLastIndex((m) => m.cacheBreakpoint === true)
+    expect(lastBreak).toBeGreaterThanOrEqual(0)
+    expect(lastBreak).toBeLessThan(msgs.length - 1)
+    // 它要被计量，否则面板上这段开销无人认领。
+    expect(last?._group).toBe('workspaceState')
+  })
+
+  test('没有清单时一条都不加，断点仍落在整串的末尾', async () => {
+    captured.length = 0
+    await drain(build(() => null))
+    const msgs = captured[0]?.messages ?? []
+    expect(msgs.some((m) => String(m.content).includes('当前待办'))).toBe(false)
+    expect(msgs.at(-1)?.cacheBreakpoint).toBe(true)
+  })
+
+  test('没接这个回调时行为不变', async () => {
+    captured.length = 0
+    await drain(build())
+    const msgs = captured[0]?.messages ?? []
+    expect(msgs.at(-1)?.cacheBreakpoint).toBe(true)
+  })
+})
