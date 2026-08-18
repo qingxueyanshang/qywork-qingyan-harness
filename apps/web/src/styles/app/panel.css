@@ -805,12 +805,13 @@
   min-width: 0;
 }
 /*
- * 那一次的红绿正文。**自带一条完整规则**，不与会话流里那份 diff 共用选择器——
+ * 那一次的正文：编辑是红绿两段，整份写出是写进去的那份内容。
+ * **自带一条完整规则**，不与会话流里那份 diff 共用选择器——
  * 共用过一次的代价是删掉一处把另一处的底色、边框、字号一起带走。
  *
- * 高度封顶后自己滚：一次编辑可以是几百行，撑开的话上面那些行全被顶出视野。
+ * 高度封顶后自己滚：一次改动可以是几百行，撑开的话上面那些行全被顶出视野。
  */
-.change-diff {
+.change-body {
   margin: 2px 0 4px;
   padding: 4px var(--s-2);
   max-height: 200px;
@@ -822,10 +823,10 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-.change-diff .add {
+.change-body .add {
   color: var(--success);
 }
-.change-diff .del {
+.change-body .del {
   color: var(--danger);
 }
 /* 选中的行不吃 hover 底色（同文件树那条）。 */
