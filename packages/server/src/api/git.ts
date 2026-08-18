@@ -24,17 +24,12 @@ export const handleGitApi: ApiHandler = async (url, req, d) => {
     if (!name) return json({ error: '要切到哪条分支' }, 422)
 
     /*
-     * **跑着的时候不许切。** 切分支会当场换掉工作区里的文件，而模型正拿着它读过的
-     * 内容在写——切完之后它的 `old_string` 对不上，写回去的是两条分支的混合体。
-     *
-     * 界面上那颗 chip 在 `state.running` 时是禁用的，但**只拦界面不算拦**：
-     * 这条路径 curl 得到，而它改的是用户的磁盘。
+     * **跑着的时候照切，不拦。** 文件在模型读过之后变了这件事，权威在文件工具那边：
+     * `edit_file` / `write_file` 落笔前会拿读取时记下的哈希重算一遍，对不上就以
+     * `stale_write` 拒绝并要求重新 `read_file`（`packages/tools/src/files.ts`）。
+     * 在这里再拦一次是在同一件事上加第二个裁决者，而它挡住的是用户明确要做的动作。
+     * 用户在编辑器里改同一个文件是一模一样的情形，那边也没有谁拦着。
      */
-    const busy = new Set(d.runs.conversationsOf(d.workspaceId))
-    if (d.runs.listActive().some((r) => busy.has(r.conversationId))) {
-      return json({ error: '这个项目里有正在执行的会话，先停下来再切分支' }, 409)
-    }
-
     const r = await git.switchTo(d.workspaceRoot, name)
     if (!r.ok) return json({ error: r.message }, 409)
     // 立刻广播新分支。等 4 秒那次轮询的话，chip 会在切完之后还挂着旧名字。

@@ -23,9 +23,12 @@ function said(e: unknown, fallback: string): string {
 /**
  * 当前分支 + 切到别条。
  *
- * **这是界面上唯一一个会改用户磁盘文件的按钮。** 切分支会当场换掉工作区里的内容，
- * 所以：跑着的时候禁用（服务端也拦，见 `api/git.ts`），失败时把 git 的原话原样贴出来
+ * **这是界面上唯一一个会改用户磁盘文件的按钮。** 失败时把 git 的原话原样贴出来
  * ——本地改动会被覆盖时它列的正是哪几个文件，那句话就是用户要看的东西。
+ *
+ * **跑着的时候不禁用。** 文件在模型读过之后变了这件事由文件工具裁决
+ * （`edit_file` 落笔前比哈希，对不上就 `stale_write` 要求重读），这里再拦一次
+ * 是第二个裁决者，挡的还是用户明确要做的动作。
  *
  * 清单点开才拉：不是每次开会话都会切分支，而 `for-each-ref` 是要起进程的。
  * 每次点开都重拉一遍——分支是用户在终端里随时会加的东西，缓存住的清单
@@ -74,18 +77,9 @@ export function BranchPicker() {
   document.addEventListener('click', onDocClick)
   onCleanup(() => document.removeEventListener('click', onDocClick))
 
-  // 跑着的时候不许切：模型正拿着它读过的内容在写，切完之后写回去的是两条分支的混合体。
-  const locked = () => state.running
-
   return (
     <div class="branch-picker">
-      <button
-        class="mode-chip"
-        type="button"
-        disabled={locked()}
-        title={locked() ? '执行中不能切分支' : '切换分支'}
-        onClick={toggle}
-      >
+      <button class="mode-chip" type="button" title="切换分支" onClick={toggle}>
         <IconBranch size={13} />
         <span class="truncate">{state.git?.branch}</span>
         <IconChevron size={11} dir={open() ? 'up' : 'down'} />
