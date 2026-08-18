@@ -1,8 +1,8 @@
 /**
- * 文件树、按名搜索、预览、新建 / 改名 / 删除，以及 git 只读视图。
+ * 文件树、按名搜索、预览、新建 / 改名 / 删除。
  * 右侧面板的几个标签页都从这里取数。
  *
- * git 那几条只读。会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
+ * 会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
  * 入参不合法回 422 且不落盘、目标已存在回 409 不覆盖、路径越界翻成 422
  * （那是入参问题，不该以 500 的面貌出现在界面上）。每条的特殊之处写在它自己头上。
  */
@@ -17,7 +17,6 @@ import {
   preview,
   renameEntry,
 } from '../files.ts'
-import * as git from '../git.ts'
 import { type ApiHandler, json } from './types.ts'
 
 export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
@@ -113,32 +112,6 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (!rel) return json({ error: 'path required' }, 400)
     await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
     return json(await preview(d.workspaceRoot, rel))
-  }
-
-  if (p === '/api/git/status') {
-    if (!(await git.isRepo(d.workspaceRoot))) return json({ repo: false })
-    return json({ repo: true, status: await git.status(d.workspaceRoot) })
-  }
-  if (p === '/api/git/branches') {
-    return json({ branches: await git.branches(d.workspaceRoot) })
-  }
-  if (p === '/api/git/log') {
-    return json({
-      commits: await git.log(d.workspaceRoot, {
-        limit: Number(q.get('limit') ?? 50),
-        ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
-      }),
-    })
-  }
-  if (p === '/api/git/diff') {
-    return json({
-      diff: await git.diff(d.workspaceRoot, {
-        ...(q.get('path') ? { path: q.get('path')! } : {}),
-        // `ref` 给的是**一个提交**：看它自己改了什么（`<ref>^!`）。
-        ...(q.get('ref') ? { ref: q.get('ref')! } : {}),
-        staged: q.get('staged') === '1',
-      }),
-    })
   }
 
   return null

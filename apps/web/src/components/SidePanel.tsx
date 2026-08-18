@@ -92,7 +92,7 @@ const VIEWS: { view: PanelView; label: string }[] = [
   // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
-  { view: 'git', label: '变更' },
+  { view: 'changes', label: '变更' },
 ]
 
 /** 桌面外壳判定一次就够：它在一次运行里不会变。 */
@@ -316,7 +316,7 @@ export default function SidePanel() {
                 <Match when={sidePanel() === 'files'}>
                   <FileBrowser />
                 </Match>
-                <Match when={sidePanel() === 'git'}>
+                <Match when={sidePanel() === 'changes'}>
                   <ChangeRecord />
                 </Match>
               </Switch>

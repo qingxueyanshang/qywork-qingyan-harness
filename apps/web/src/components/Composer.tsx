@@ -388,7 +388,7 @@ export function Composer() {
               等于告诉用户「这里本该有东西」。 */}
           <Show when={state.git?.branch}>
             {(b) => (
-              <button class="mode-chip" type="button" onClick={() => openPanel('git')}>
+              <button class="mode-chip" type="button" onClick={() => openPanel('changes')}>
                 <IconBranch size={13} />
                 {b()}
               </button>

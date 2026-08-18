@@ -85,21 +85,21 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
   })
 
   test('展开状态下点，收起', () => {
-    openPanel('git')
+    openPanel('changes')
     togglePanel()
     expect(sidePanel()).toBe(null)
   })
 
   test('收起再展开，回到上次待的地方而不是一律跳回文件', () => {
-    openPanel('git')
+    openPanel('changes')
     togglePanel()
     togglePanel()
-    expect(sidePanel()).toBe('git')
+    expect(sidePanel()).toBe('changes')
   })
 
   test('换过几次视图后，记住的是最后那个', () => {
     openPanel('files')
-    openPanel('git')
+    openPanel('changes')
     openPanel('todos')
     togglePanel()
     togglePanel()
@@ -117,10 +117,10 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
   })
 
   test('面板头上的 × 也记住当前视图 —— 它和顶栏开关走同一条收起路径', () => {
-    openPanel('git')
+    openPanel('changes')
     closePanel()
     togglePanel()
-    expect(sidePanel()).toBe('git')
+    expect(sidePanel()).toBe('changes')
   })
 })
 
@@ -138,7 +138,7 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
   test('换视图不影响放大 —— 放大的是这块面板，不是某一个视图', () => {
     openPanel('files')
     togglePanelMax()
-    setSidePanel('git')
+    setSidePanel('changes')
     expect(panelMaximized()).toBe(true)
     closePanel()
     expect(panelMaximized()).toBe(false)

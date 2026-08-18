@@ -15,9 +15,8 @@ export async function publishGitState(
   workspaceId: string,
   bus: EventBus,
 ): Promise<void> {
-  if (!(await git.isRepo(root))) return
-  const s = await git.status(root)
-  if (s) bus.publish(git.toStateEvent(s, workspaceId))
+  const branch = await git.currentBranch(root)
+  if (branch) bus.publish({ type: 'git.state', workspaceId, branch })
 }
 
 /**

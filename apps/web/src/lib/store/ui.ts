@@ -21,7 +21,7 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
  *
  * 终端不在这里：它是可多开、可关掉的一页，见 `PanelTabKind`。
  */
-export type PanelView = 'todos' | 'files' | 'git'
+export type PanelView = 'todos' | 'files' | 'changes'
 
 /**
  * 可多开的那几种页。
