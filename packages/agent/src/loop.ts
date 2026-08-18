@@ -74,15 +74,6 @@ export interface LoopDeps {
     content: string
     group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
   }[]
-  /**
-   * 当前待办清单的正文，压在整串消息的最末尾。没有清单时返回 null。
-   *
-   * **与 `tailNotes` 分开，因为位置不同，而位置是缓存决定的。** 尾区在 transcript
-   * 之前，缓存断点之三建立在「一个 run 内尾区逐字节不变」这条上；清单每提交一次
-   * 就变，混进尾区会把 run 内那条稳定前缀从中间切断。放在断点之后，
-   * 每次重付的只有它自己这一百来个 token。
-   */
-  liveTodos?: () => string | null
   makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContext
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence
@@ -1093,22 +1084,6 @@ export class AgentLoop {
     const lastMessage = messages.length - 1
     if (lastMessage > lastHistory) {
       messages[lastMessage] = { ...messages[lastMessage]!, cacheBreakpoint: true }
-    }
-
-    /*
-     * 当前待办，压在**断点之后**——上面那条不变量因此原样成立。
-     *
-     * 它每提交一次就变，所以不能进尾区（尾区在 transcript 之前，一变就把 run 内
-     * 那段稳定前缀从中间切断，已产生的整段 transcript 全价重付）。压在最后一条
-     * 缓存断点之外，每次重付的只有它自己。
-     *
-     * 位置同时也是它存在的理由：清单在历史里只有快照，最新那份埋在几万 token 的
-     * 执行记录中间；贴着生成位置放一份当前状态，模型在决定收尾的那一刻才看得见
-     * 「还有几条没做完」。
-     */
-    const todoNote = this.deps.liveTodos?.()
-    if (todoNote?.trim()) {
-      messages.push({ role: 'system', content: todoNote, _group: 'workspaceState' })
     }
 
     return {
