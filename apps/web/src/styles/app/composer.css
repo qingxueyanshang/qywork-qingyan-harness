@@ -712,12 +712,10 @@
   background: var(--bg-active);
   cursor: default;
 }
-/* git 的原话可以是好几行（「以下文件的本地改动会被覆盖：」+ 文件清单）。
-   在列表**下面**，不在上面：追加在上面会把列表整体推下去。 */
+/* 一句话，挤不下就折行。在列表**下面**，不在上面：追加在上面会把列表整体推下去。
+   `pre-wrap` 留着是为了服务端认不出的那一档——那时贴回来的是 git 的多行原文。 */
 .branch-error {
-  margin-top: 2px;
   padding: var(--s-2) var(--s-3);
-  border-top: 1px solid var(--border-subtle);
   color: var(--danger);
   font-size: var(--fs-xs);
   line-height: 1.5;
