@@ -261,7 +261,7 @@ async function runScrubbed(
 ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
   const isWindows = process.platform === 'win32'
 
-  const { proc } = spawnGuarded({
+  const { proc } = await spawnGuarded({
     command,
     cwd,
     policy: { workspaceRoot, readOnlySubdirs: PROTECTED_DIRS },

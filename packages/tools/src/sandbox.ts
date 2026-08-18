@@ -69,6 +69,7 @@ import { join as joinNative } from 'node:path'
  * 只会在有人把它当真拿去调试时才发现。固定用 posix 版本。
  */
 import { isAbsolute, join, normalize } from 'node:path/posix'
+import type { CommandRunner, ProcessLike } from './runner.ts'
 
 /*
  * bwrap 与 seatbelt 都只在类 Unix 上跑，路径一律 POSIX 形式，所以上面那条
@@ -586,14 +587,13 @@ export interface GuardedSpawnInput {
 
 export interface GuardedSpawn {
   /**
-   * 三个流的形态写死在类型里（`stdin: 'ignore'`、两条输出 `'pipe'`）。
-   * 不写死的话 `proc.stdout` 的类型是 `number | ReadableStream | undefined`，
-   * 每个调用方都得自己断言一次——而断言的地方就是将来改错了也不报错的地方。
+   * 两条输出流 + 退出码 + pid，够 `collectProcess` 和 `killTree` 用。
    *
-   * 别为了「将来可能有别的进程实现」把它抽象成接口：
-   * **只有一个实现的接口是另一种过度设计**。
+   * **这里确实有两个实现**：本进程直接 spawn 的 `Bun.Subprocess`，以及由 runner
+   * 代跑的那一份（`runner.ts`）。后者存在的理由是「谁是父进程」——命令必须挂在一个
+   * 比监听端口先出生的进程底下，否则它派生的后台服务会把端口攥走。
    */
-  proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  proc: ProcessLike
   sandbox: SandboxStatus
 }
 
@@ -866,7 +866,22 @@ export function commandShell(): CommandShell | null {
  *
  * 新增调用方之前先想清楚：绕开这里就等于绕开沙箱，而且不会有任何报错。
  */
-export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
+/**
+ * 命令挂在谁底下。
+ *
+ * **进程级的事实，所以是进程级的变量**：一个进程要么绑了监听端口（那就必须借
+ * runner），要么没绑（直接 spawn 就对）。它不随调用方、会话、工作区变化，
+ * 穿成参数一路传下去只是把同一个事实抄很多遍。
+ *
+ * `qy serve` 在**绑端口之前**注册；`qy exec`、测试进程不注册，走直接 spawn。
+ */
+let runner: CommandRunner | null = null
+
+export function setCommandRunner(next: CommandRunner | null): void {
+  runner = next
+}
+
+export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpawn> {
   const status = detectSandbox()
   const isWindows = process.platform === 'win32'
 
@@ -899,14 +914,25 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
       ? { ...status, active: false, reason: '本次调用显式不套沙箱（插件 exec 走独立隔离）' }
       : status
 
-  return {
-    proc: Bun.spawn(argv, {
-      cwd: input.cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      // 关掉 stdin：交互式提示在这里等不到人，只会挂到超时。
-      stdin: 'ignore',
-      env: input.env,
+  // 有 runner 就由它来当父进程（理由见 `runner.ts` 的模块注释）。
+  if (runner) {
+    return {
+      proc: await runner.spawn({ argv, cwd: input.cwd, env: input.env, detached: !isWindows }),
+      sandbox: effective,
+    }
+  }
+
+  /*
+   * 三个流的形态写在类型里，不靠推断：带 spread 的字面量会把它推成
+   * `'inherit'`，于是 `proc.stderr` 变成可能 undefined，而真正读它的地方在别的文件。
+   */
+  const opts = {
+    cwd: input.cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    // 关掉 stdin：交互式提示在这里等不到人，只会挂到超时。
+    stdin: 'ignore',
+    env: input.env,
       /*
        * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
        *
@@ -917,10 +943,10 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
        * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
        * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
        */
-      ...(isWindows ? {} : { detached: true }),
-    } as never),
-    sandbox: effective,
-  }
+    ...(isWindows ? {} : { detached: true }),
+  } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
+
+  return { proc: Bun.spawn(argv, opts), sandbox: effective }
 }
 
 /**
@@ -1079,7 +1105,7 @@ export interface CollectOptions {
  * 写端，取消读端并如实报 `backgroundHeld`。
  */
 export async function collectProcess(
-  proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  proc: ProcessLike,
   opts: CollectOptions = {},
 ): Promise<CollectedProcess> {
   const text: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' }

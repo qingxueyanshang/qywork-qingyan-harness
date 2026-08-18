@@ -61,8 +61,17 @@ export {
   commandShell,
   detectSandbox,
   probeBash,
+  setCommandRunner,
   spawnGuarded,
 } from './sandbox.ts'
+// 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
+// 隐藏的 `runner` 子命令是它那一侧的入口。
+export {
+  type CommandRunner,
+  type ProcessLike,
+  runCommandRunner,
+  startCommandRunner,
+} from './runner.ts'
 // 定时任务：server 的调度 tick 与 HTTP 面读写的是同一张表。
 // 它落在这个包而不是 runtime，是因为模型侧的三个工具必须在这里，
 // 而 tools(L3) 不许依赖 runtime(L5)——理由写在 `schedules.ts` 顶部。
