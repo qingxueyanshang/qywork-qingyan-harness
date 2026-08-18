@@ -1,4 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../lib/resource.ts'
 import {
   createSchedule,
   deleteSchedule,
@@ -8,6 +9,7 @@ import {
   updateSchedule,
 } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
+import { LoadState } from './settings/LoadState.tsx'
 
 /**
  * 定时任务。
@@ -47,7 +49,13 @@ export function SchedulesPanel() {
 
   return (
     <div class="settings-form">
-      <Show when={data()} fallback={<div class="settings-loading">读取定时任务…</div>}>
+      {/* `loaded()` 而不是 `data()`：增删改之后要重取，重取期间留住上一份；
+          出错时给 undefined，由 `LoadState` 说明原因并给一条重试的路——
+          写成 `data()` 的话它会先抛，`fallback` 永远轮不到。 */}
+      <Show
+        when={loaded(data)}
+        fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+      >
         {(d) => (
           <>
             {/* 前提写在最前面，不折叠、不淡化。 */}

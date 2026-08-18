@@ -46,6 +46,55 @@ button {
 }
 
 /*
+ * 原生控件里那几个「系统自己画的部件」。
+ *
+ * 上面 `button` 已经清过一次，这里补 input 那几类。它们都不受本仓任何样式管辖，
+ * 表现是同一行里一半是自己的控件、一半是系统部件。
+ * `select` 不在这里——它要连箭头一起重画，跟着它的其他规则放在 `settings.css`。
+ */
+
+/* 勾选框不自己重画，只把它染成本仓的强调色。`appearance: none` 之后要靠
+   `::after` 补一个勾，而 `<input>` 是替换元素，伪元素在哪些引擎上生效是不保证的
+   ——`accent-color` 是标准属性，配上 `color-scheme` 亮暗两套都对。 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* 数字框右侧的上下箭头。它只在悬停时出现，于是那一格的内容会随鼠标横跳。 */
+input[type="number"] {
+  appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/* Edge/Chromium 给密码框加的「眼睛」。**必须去掉**：这一栏填的是 API Key，
+   而本仓的口径是明文 key 不出服务端、界面上没有一条把它读回来的路
+   （CLAUDE.md E 节）。留着一颗一键显形的按钮就是自己给它开了一条。 */
+input[type="password"]::-ms-reveal {
+  display: none;
+}
+
+/* 搜索框的清除叉：系统那颗是深色实心的，在暗色底上直接消失。按本仓的灰重画。 */
+input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+  background-color: var(--text-tertiary);
+  mask:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 2.5l7 7M9.5 2.5l-7 7' stroke='%23000' stroke-width='1.6' stroke-linecap='round' fill='none'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+input[type="search"]::-webkit-search-cancel-button:hover {
+  background-color: var(--text-secondary);
+}
+
+/*
  * 焦点环：只在键盘导航时出现，鼠标点击不显示。
  *
  * **画在元素里面（负 offset），不往外扩。** 这一层的使用者大量是「整宽的一行」

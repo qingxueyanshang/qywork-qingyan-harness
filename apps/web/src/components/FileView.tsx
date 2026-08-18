@@ -1,7 +1,8 @@
 import type { EditorView } from '@codemirror/view'
 import { createResource, Match, onCleanup, Show, Switch } from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
-import { absPath, client, setOpenFile } from '../lib/store/index.ts'
+import { loaded } from '../lib/resource.ts'
+import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 
 interface PreviewResult {
@@ -51,7 +52,17 @@ export default function FileView(props: { path: string }) {
       </header>
 
       <div class="preview-body">
-        <Show when={result()} fallback={<div class="preview-loading" />}>
+        {/* 取不回来要给一句话。`loaded()` 而不是 `result()`：后者出错时是 `throw`，
+            而这一层外面只有给 `lazy()` 用的 Suspense，接不住抛出来的错——
+            表现是这块地方永远停在加载态。 */}
+        <Show
+          when={loaded(result)}
+          fallback={
+            <Show when={result.error} fallback={<div class="preview-loading" />}>
+              {(e) => <div class="preview-note">{explainApiError(e(), '打不开这个文件')}</div>}
+            </Show>
+          }
+        >
           {(r) => (
             <Switch fallback={<div class="preview-note">{r().note ?? '无法预览'}</div>}>
               <Match when={r().kind === 'text' || r().kind === 'tabular'}>
@@ -75,7 +86,7 @@ export default function FileView(props: { path: string }) {
         </Show>
       </div>
 
-      <Show when={result()?.truncated}>
+      <Show when={loaded(result)?.truncated}>
         <footer class="preview-foot">内容已截断</footer>
       </Show>
     </div>

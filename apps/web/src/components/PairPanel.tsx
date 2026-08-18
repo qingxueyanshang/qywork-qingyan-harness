@@ -1,5 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { client } from '../lib/store/index.ts'
+import { loaded } from '../lib/resource.ts'
+import { client, explainApiError } from '../lib/store/index.ts'
 
 interface Candidate {
   name: string
@@ -48,8 +49,16 @@ export default function PairPanel() {
     }
   }
 
+  // `loaded()` 而不是 `info()`：后者出错时 `throw`，接不住就整块停在加载态。
   return (
-    <Show when={info()} fallback={<div class="preview-loading" />}>
+    <Show
+      when={loaded(info)}
+      fallback={
+        <Show when={info.error} fallback={<div class="preview-loading" />}>
+          {(e) => <p class="pair-hint">{explainApiError(e(), '读不到接入信息')}</p>}
+        </Show>
+      }
+    >
       {(d) => (
         <div class="pair-body">
           <label class="pair-toggle">
