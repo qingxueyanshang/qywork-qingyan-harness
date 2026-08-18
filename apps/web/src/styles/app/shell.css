@@ -56,7 +56,7 @@
 /* ── 连接状态条 ── */
 .conn-bar {
   position: fixed;
-  top: calc(var(--safe-top) + var(--s-2));
+  top: calc(var(--safe-top) + var(--s-2) - 5px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 60;
@@ -228,9 +228,28 @@
   background: var(--bg-active);
   color: var(--text-primary);
 }
-/* 会话选中**不转深色**：底色已经说明了选中，再加深就比上面的项目名还黑。 */
-.nav-item.conv.active {
+/* 会话行是容器 div，**自己不带内距**——内距在 `.conv-open` 上（两个 button 不能
+   嵌套）。与 `.project-head` 同一套路，两处各写各的规则。 */
+.conv-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: var(--r-xs);
   color: var(--text-secondary);
+  /* 比项目行小两档：14px 的项目名旁边放 13px 分不出来，12px 才读得出主次。 */
+  font-size: var(--fs-sm);
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+/* 底色盖**整行**，不是只盖标题那一段。 */
+.conv-row:hover {
+  background: var(--bg-hover);
+}
+/* 选中只靠底色，**不加粗也不转深色**：会话是项目的子项，
+   加重会让它比上面的项目名还重，层级正好读反。 */
+.conv-row.active {
+  background: var(--bg-active);
 }
 /* 会话缩进挂在项目名下面：缩进本身就是「它属于这个项目」，
    不需要再加一个分组标题去说。
@@ -238,10 +257,111 @@
    `var(--s-2)` 内边距 + 15px 文件夹图标 + `var(--s-2)` 间隙。
    15 写死是因为它由 `<IconFolder size={15}>` 决定，不是 token——
    改图标尺寸时这两处要一起改。 */
-.nav-item.conv {
+.conv-open {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 1;
+  min-width: 0;
+  padding: 6px var(--s-2);
   padding-left: calc(var(--s-2) * 2 + 15px);
-  /* 比项目行小两档：14px 的项目名旁边放 13px 分不出来，12px 才读得出主次。 */
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+/* 最近修改时间。等宽数字：字宽不一致时列宽随分钟变化。 */
+.conv-time {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* 行内改名。**高度必须与 `.conv-open` 相等**（内距 5px + 1px 边框 = 那边的 6px），
+   否则改名时行高变化，列表整体位移。 */
+.conv-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 0 var(--s-2) 0 calc(var(--s-2) * 2 + 15px);
+  padding: 5px var(--s-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-raised);
+  color: var(--text-primary);
   font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+/* ── 会话行的 `⋯` 菜单 ──
+   定位容器必须是 relative：菜单相对这一行的右端展开，挂到 body 上就要自己
+   跟着滚动位置重算，而这一栏是会滚的。 */
+.conv-menu-wrap {
+  position: relative;
+  flex: none;
+  display: flex;
+}
+/*
+ * `⋯` 默认不显示：悬停、键盘焦点进入本行、或菜单展开时才可见。
+ *
+ * - 用 `visibility` 而不是 `display: none`：后者不占位，悬停时会改变行内布局。
+ * - 用 `:has(:focus-visible)` 而不是 `:focus-within`：后者对鼠标点击留下的焦点同样
+ *   成立，切换会话后该行的 `⋯` 会持续可见。
+ * - 不能只写 `.conv-more:focus-visible`：`visibility: hidden` 的元素不在 tab 序里，
+ *   焦点在标题上时它必须已可见，否则键盘到不了它。
+ */
+.conv-more {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  visibility: hidden;
+}
+.conv-row:hover .conv-more,
+.conv-row:has(:focus-visible) .conv-more,
+.conv-more[aria-expanded="true"] {
+  visibility: visible;
+}
+/* 没有 hover 的设备（手机）上恒显——藏在悬停后面等于这个入口不存在。 */
+@media (hover: none) {
+  .conv-more {
+    visibility: visible;
+  }
+}
+
+/* 属性写全在这一条里，**不和 `.project-menu` 共用选择器**（B8）。
+   共用过一次，代价是删掉其中一个浮层时把另一个的定位、边框、底色、投影
+   一起带走了——菜单退化成一堆裸文字，而 CSS 不会为此报任何错。 */
+.conv-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.conv-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease);
+}
+.conv-menu-item:hover {
+  background: var(--bg-hover);
+}
+.conv-menu-item.danger {
+  color: var(--danger);
 }
 
 /*

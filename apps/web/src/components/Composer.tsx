@@ -1,6 +1,6 @@
 import type { Attachment, ContextGroup, Goal } from '@qywork/core'
 import { CONTEXT_GROUPS, todoProgress } from '@qywork/core'
-import { createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
@@ -703,6 +703,21 @@ function ContextRing(props: { percent: number }) {
  */
 function ContextMeter() {
   const [open, setOpen] = createSignal(false)
+
+  /*
+   * 点在外面就关。判据取 `.ctx-wrap`（含按钮）而不是 `.ctx-pop`：`pointerdown` 排在
+   * `click` 前面，只圈浮层的话点按钮会先关一次、它自己的 click 又切回开，永远关不掉。
+   */
+  createEffect(() => {
+    if (!open()) return
+    const onDown = (e: Event) => {
+      if (!(e.target as HTMLElement | null)?.closest?.('.ctx-wrap')) setOpen(false)
+    }
+    window.addEventListener('pointerdown', onDown)
+    onCleanup(() => {
+      window.removeEventListener('pointerdown', onDown)
+    })
+  })
 
   const rows = () => {
     const c = state.context
