@@ -17,6 +17,7 @@ import { handleAttachmentsApi } from './attachments.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
 import { handleExtrasApi } from './extras.ts'
+import { handleGitApi } from './git.ts'
 import { handleHostApi } from './host.ts'
 import { handleMcpApi } from './mcp.ts'
 import { handleMemoryApi } from './memory.ts'
@@ -70,6 +71,7 @@ const HANDLERS: ApiHandler[] = [
   handleUsageApi,
   handleConversationsApi,
   handleWorkspaceFsApi,
+  handleGitApi,
 ]
 
 /** 返回 `null` = 没有任何一域认领这条路径，交给调用方去走静态托管或 404。 */

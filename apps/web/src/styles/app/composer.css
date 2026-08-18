@@ -652,3 +652,75 @@
     max-width: 96px;
   }
 }
+
+/* ── 分支选择器 ──
+ *
+ * **自带一整套规则，不与 `.model-menu` 共用选择器。** 共用过一次的代价是删掉其中
+ * 一个浮层时把另一个的定位、边框、底色、投影一起带走——菜单退化成一堆裸文字，
+ * 而 CSS 不会为此报任何错。 */
+.branch-picker {
+  position: relative;
+}
+/*
+ * **往下弹，不往上弹。**
+ *
+ * 上弹（`bottom: 100%`）钉住的是下边沿，切换失败时那段 git 原话追加进来会把整个
+ * 列表往上顶——用户刚点过的那一行跑到别的位置去了。往下弹钉住上边沿，追加什么
+ * 都不会动到已经画出来的行（B9）。代价是盖住输入框上沿，而选分支的那一刻
+ * 用户不在打字。
+ */
+.branch-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: var(--s-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.branch-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.branch-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+/* 当前那条：底色标出来 + 点不动。
+ *
+ * **不要用 `color: var(--accent)` 标它**——那两个 token 在明暗两套主题下是同一个
+ * 色值（`tokens.css`），标了等于没标，三行长得一模一样。底色是这个仓库标
+ * 「当前这一条」的既有写法（文件树的行、会话列表的行）。
+ * 点不动是因为切到自己身上什么也不会发生，而一颗点了没反应的按钮会被读成
+ * 「这次没生效」。 */
+.branch-item.active {
+  background: var(--bg-active);
+  cursor: default;
+}
+/* git 的原话可以是好几行（「以下文件的本地改动会被覆盖：」+ 文件清单）。
+   在列表**下面**，不在上面：追加在上面会把列表整体推下去。 */
+.branch-error {
+  margin-top: 2px;
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
