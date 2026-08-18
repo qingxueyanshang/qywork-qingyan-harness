@@ -1,11 +1,10 @@
 import type { Attachment, ContextGroup, Goal } from '@qywork/core'
-import { CONTEXT_GROUPS, todoProgress } from '@qywork/core'
+import { CONTEXT_GROUPS } from '@qywork/core'
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
   interrupt,
-  openPanel,
   resumeGoal,
   sendMessage,
   setOverlay,
@@ -22,11 +21,11 @@ import {
   IconPlus,
   IconSend,
   IconShield,
-  IconSpinner,
   IconStop,
   IconX,
 } from './Icons.tsx'
 import { EffortPicker, ModelPicker } from './ModelPicker.tsx'
+import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
 
 /**
@@ -79,83 +78,6 @@ function ModeChip() {
       <IconShield size={13} />
       {full() ? '完全访问' : '自动审批'}
     </button>
-  )
-}
-
-/**
- * 这一轮跑到哪了：进度 + 改了多少。
- *
- * **一条居中的状态条，不是两块各自贴边的东西。** 「已完成 2 / 6」和
- * 「35 个文件已更改 +227 -2139」回答的是同一个问题——这一轮进行得怎么样了，
- * 所以同处一枚胶囊。拆成两处的话眼睛要在输入区上方来回找，而它们本来就该一起读。
- *
- * 居中是跟着这条来的：它不属于任何一侧的控件，是整轮的状态。左对齐时
- * 它看起来像输入框长出来的一个附件。
- *
- * ## 这里报的是**已完成数**，不是「第几步」
- *
- * 「第 3 / 4 步」不带条目名时会被读成「4 步做完了 3 步」，而 `step` 取的是
- * **正在做**的那一条——第 3 步一个字都还没写就先显示成了进度。真实发生过：
- * 一轮停在第 3 步上，界面写着「第 3 / 4 步」，而那一步的文件根本没建出来。
- * 同一屏上待办面板只勾着 2 条，两个数对不上。
- *
- * 「第几步」不是不能说，是**不能没有名字地说**：`write_todos` 的回执写的是
- * 「第 3/4 步：编写 main.js」，带着条目名，读不出歧义——那一句留在原处。
- *
- * 口径仍然只有 `todoProgress` 一个（core），别在这里重算。
- *
- * **全部做完之后这一段整个不显示**：进度条回答的是「还要多久」，没有「还要」
- * 就没有它。做完了要回看清单，右侧面板一直在。
- */
-function RunStatusChip() {
-  const todos = () => state.todos
-  const progress = () => todoProgress(todos())
-  /**
-   * **全做完就不报进度了。**
-   *
-   * 判据是「还剩没剩」，不是「清单有没有条目」：按后者判的话三条全打勾之后
-   * 它照样挂着一句「已完成 3 / 3」，说的是一件已经结束的事。进度条的存在理由是
-   * 「还要多久」，没有「还要」就没有它。做完了要看清单，右侧面板一直在。
-   */
-  const inProgress = () => todos().some((t) => t.status !== 'completed')
-  const files = () => state.fileChanges
-  const additions = () => files().reduce((s, c) => s + c.additions, 0)
-  const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
-
-  return (
-    <Show when={inProgress() || files().length > 0}>
-      <div class="run-status">
-        <div class="changes-chip">
-          <Show when={inProgress()}>
-            {/* 转圈只在真的还在跑时给：停下来之后它还在转，是在说一件不成立的事。 */}
-            <Show when={state.running}>
-              <IconSpinner size={12} />
-            </Show>
-            {/* 点它打开待办面板。完整清单收在那边，这里只报进度——
-                不给入口的话，用户得自己去右侧翻出「待办」这个标签页。 */}
-            <button
-              class="todo-jump"
-              type="button"
-              title="查看完整待办"
-              onClick={() => openPanel('todos')}
-            >
-              已完成 {progress().done} / {progress().total}
-            </button>
-          </Show>
-          {/* 两段都在时才要分隔点——只有一段时它会变成一个悬空的符号。 */}
-          <Show when={inProgress() && files().length > 0}>
-            <span class="sep" aria-hidden="true">
-              ·
-            </span>
-          </Show>
-          <Show when={files().length > 0}>
-            <strong>{files().length} 个文件已更改</strong>
-            <span class="add">+{additions()}</span>
-            <span class="del">-{deletions()}</span>
-          </Show>
-        </div>
-      </div>
-    </Show>
   )
 }
 
@@ -421,7 +343,7 @@ export function Composer() {
           不像那条整轮状态条那样悬浮——悬浮的东西一多就会互相盖住。 */}
       <GoalChip />
 
-      <RunStatusChip />
+      <RunStatus />
 
       {/* 斜杠弹层向上开：输入区贴着窗口底部。 */}
       <Show when={slashHits().length > 0}>
@@ -576,7 +498,7 @@ export function Composer() {
             }}
           />
 
-          {/* 这里不放金额：会话流末尾那条运行状态（Transcript 的 `.run-status`）
+          {/* 这里不放金额：会话流末尾那条运行读数（Transcript 的 `.run-strip`）
               已经在显示同一笔钱。同源同值显示两遍，只会让人以为是两笔账。
               留在那边是因为它和「这一轮跑成什么样」在一起，
               而输入区的工具栏是给下一轮用的。 */}

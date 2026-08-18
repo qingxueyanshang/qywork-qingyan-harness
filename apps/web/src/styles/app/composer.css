@@ -48,41 +48,41 @@
  * 居中是因为它不属于左右任何一侧的控件，是这一轮的状态——左对齐时看起来像
  * 输入框长出来的一个附件。居中交给外层，chip 自己仍然按内容宽度收缩。
  *
- * 不占流是实测逼出来的：占流时 `.composer-wrap` 在输入框上方多出一条 35px
- * 的**整宽**带子（27 的行 + 8 的间距），而会话流的裁切边就落在那条带子的顶上
+ * 不占流是实测逼出来的：占流时 `.composer-wrap` 在输入框上方多出一条 35px 的
+ * **整宽**带子（27 的行 + 8 的间距），而会话流的裁切边就落在那条带子的顶上
  * ——量出来 `.transcript` 底边 744、输入框卡片上沿 779。于是正文在离框 35px 的
- * 半空中被齐刷刷切断，看起来像那儿摆着一个看不见的盒子。这正是本文件开头
- * `.composer-wrap` 那条「padding-top 必须是 0」在拦的同一个坑，状态条是后来
- * 加的，又把它踩了一遍。
+ * 半空中被齐刷刷切断。这与本文件开头 `.composer-wrap` 那条「padding-top 必须是 0」
+ * 拦的是同一个坑。
  *
- * 悬浮之后裁切边回到卡片上沿（实测 clipGap 0），chip 挡住的只剩正文最底下
- * 那一小截、一百多像素宽的一块。**整条不吃指针**，否则输入框上方那 35px
- * 会挡住正文的选中和点击。
+ * 悬浮之后裁切边回到卡片上沿（实测 clipGap 0），chip 挡住的只剩正文最底下那一小截。
+ * **整条不吃指针**，否则输入框上方那 35px 会挡住正文的选中和点击。
  */
 .run-status {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  /* `+ 3px`：整条往下压三像素。它悬在输入框卡片上沿之上，间距按 --s-2 算出来
-     偏松，读起来像是浮在半空而不是贴着框——这是看出来的三像素，不是算出来的。 */
-  transform: translateY(calc(-100% - var(--s-2) + 3px));
+  /* `+ 3.5px`：整条往下压三个半像素。它悬在输入框卡片上沿之上，间距按 --s-2
+     算出来偏松，读起来像浮在半空而不是贴着框——这是看出来的量，不是算出来的。 */
+  transform: translateY(calc(-100% - var(--s-2) + 3.5px));
   display: flex;
   justify-content: center;
   pointer-events: none;
 }
 .changes-chip {
   /* 指针在 `.run-status` 那一层被关掉了，这里单独开回来：关掉的是整宽那条带子
-     （它悬在正文上面），开回来的是 chip 自己——里面的步数是个按钮。 */
+     （它悬在正文上面），开回来的是 chip 自己——里面两段读数都是按钮。 */
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
   padding: 4px var(--s-3);
-  /* 不做药丸形：tokens.css 的圆角阶梯写死了「带文字的标签一律不用 --r-full」。
-     与工具栏上的 chip 同阶。 */
+  /* 与工具栏上的 chip 同阶。不做药丸形：tokens.css 的圆角阶梯写死了
+     「带文字的标签一律不用 `--r-full`」。 */
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  /* 最淡的一档中性叠加。它是相对底色的百分比，明暗两套都只抬一档，
+     不像 `--bg-inset` 那样在暗色下比正文纸还亮。 */
+  background: var(--bg-hover);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
@@ -90,14 +90,17 @@
 .changes-chip .sep {
   color: var(--text-tertiary);
 }
-/* 步数是个按钮（点开完整待办），但不画成按钮：它在一条状态里，
-   画个边框或底色会让整条读成「一个控件旁边挂了些数字」。 */
-.todo-jump {
+/* 两段读数都是按钮（点开对应面板），但不画成按钮：画边框或底色会让整条读成
+   「一个控件旁边挂了些数字」。 */
+.run-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: inherit;
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
-.todo-jump:hover {
+.run-jump:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
