@@ -834,40 +834,37 @@ function pidAlive(pid: number): boolean {
  *
  * **两种必须分开 UPDATE**：用同一份 payload 一起盖掉的话，「确定没跑」会被记成
  * 「可能跑过」。
+ *
+ * ## 只落 outcome，不许整份换掉 payload
+ *
+ * 两条都走 `json_set`，动的只有 `$.kind` 和 `$.outcome`；`$.action` 与 `$.args`
+ * 原封不动留着。**`action` 是前端唯一的标题来源**（落库时那句注释已经写明：
+ * 它由 ToolSpec 按参数解析，前端回猜不出来），整份 payload 换成只有 outcome 的
+ * 那份，这条 step 在会话流里就只剩一个红色的「失败」——没有动词、没有对象、
+ * 没有目标，和旁边每一行都不一样，而用户根本看不出它是哪一步崩的。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
-  store.db
-    .query(
-      `UPDATE steps SET status = 'failure', payload = ?
-       WHERE run_id = ? AND status = 'running' AND execution_started_at IS NOT NULL`,
-    )
-    .run(
-      JSON.stringify({
-        kind: 'tool_result',
-        outcome: {
-          status: 'failure',
-          executed: true,
-          message: '执行期间进程退出或被中断，结果未知；需要时请核实后再决定是否重做',
-        },
-      }),
-      runId,
-    )
-  store.db
-    .query(
-      `UPDATE steps SET status = 'failure', payload = ?
-       WHERE run_id = ? AND status = 'running' AND execution_started_at IS NULL`,
-    )
-    .run(
-      JSON.stringify({
-        kind: 'tool_result',
-        outcome: {
-          status: 'failure',
-          executed: false,
-          message: '未开始执行即被中断',
-        },
-      }),
-      runId,
-    )
+  const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
+    store.db
+      .query(
+        `UPDATE steps
+         SET status = 'failure',
+             payload = json_set(coalesce(payload, '{}'), '$.kind', 'tool_result', '$.outcome', json(?))
+         WHERE run_id = ? AND status = 'running'
+           AND execution_started_at IS ${executionStarted ? 'NOT NULL' : 'NULL'}`,
+      )
+      .run(JSON.stringify(outcome), runId)
+
+  settle(true, {
+    status: 'failure',
+    executed: true,
+    message: '执行期间进程退出或被中断，结果未知；需要时请核实后再决定是否重做',
+  })
+  settle(false, {
+    status: 'failure',
+    executed: false,
+    message: '未开始执行即被中断',
+  })
 }
 
 export function listRuns(store: Store, conversationId: ConversationId): Run[] {

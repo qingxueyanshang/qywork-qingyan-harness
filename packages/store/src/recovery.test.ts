@@ -165,6 +165,62 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
+  test('落终态只写 outcome —— action 和 args 必须原样留着', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    markRunRunning(store, run.id)
+    const started = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'run_command',
+      status: 'running',
+      payload: {
+        kind: 'tool_call',
+        args: { command: 'docker start sqhj-postgres' },
+        action: { kind: 'run', objectLabel: '命令', target: 'docker start sqhj-postgres' },
+      } as never,
+    })
+    markStepExecuting(store, started.id)
+    const notStarted = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      status: 'running',
+      payload: {
+        kind: 'tool_call',
+        args: { path: 'run.ps1' },
+        action: { kind: 'read', objectLabel: '文件', target: 'run.ps1' },
+      } as never,
+    })
+
+    recoverStaleRuns(store)
+
+    const payloadOf = (id: string) =>
+      listSteps(store, run.id).find((x) => x.id === id)!.payload as Record<string, any>
+
+    // action 一丢，这条 step 在会话流里就只剩一个没有主语的「失败」——
+    // 标题（动词 + 对象 + 目标）全部由它提供，前端回猜不出来。
+    for (const id of [started.id, notStarted.id]) {
+      const p = payloadOf(id)
+      expect(p.kind).toBe('tool_result')
+      expect(p.action).toBeDefined()
+      expect(p.args).toBeDefined()
+      expect(p.outcome.status).toBe('failure')
+    }
+
+    const one = payloadOf(started.id)
+    expect(one.action.objectLabel).toBe('命令')
+    expect(one.args.command).toBe('docker start sqhj-postgres')
+    // 两种情况的判据不能被这次合并抹平。
+    expect(one.outcome.executed).toBe(true)
+    const two = payloadOf(notStarted.id)
+    expect(two.outcome.executed).toBe(false)
+    expect(two.action.objectLabel).toBe('文件')
+    store.close()
+  })
+
   test('已终结的 run 不受影响', () => {
     const { store, ws, conv } = fresh()
     const done = newRun(store, ws, conv)
