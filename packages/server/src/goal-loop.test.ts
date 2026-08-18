@@ -535,6 +535,55 @@ describe('goal.set 指令', () => {
   })
 })
 
+/**
+ * 停止按钮那一格。
+ *
+ * `runs.interrupt` 一直返回 `boolean`，而指令入口把它丢了。丢掉的表现是这一整类
+ * 里最难查的一种：用户点了停止，按钮没反应、转圈继续转、一条日志都没有，
+ * 「服务端在处理」和「这条指令根本没人接」在界面上完全一样。
+ */
+describe('run.interrupt 指令', () => {
+  function socket() {
+    const sent: Record<string, unknown>[] = []
+    return {
+      sent,
+      ws: {
+        data: { authed: true, id: 'c1', origin: 'cli' },
+        send: (raw: string) => sent.push(JSON.parse(raw)),
+      } as never,
+    }
+  }
+
+  test('注册表里没有这条 run 时必须回绝，不能静默', async () => {
+    const sock = socket()
+    await handleCommand({ type: 'run.interrupt', runId: 'rn_not_running' } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+    expect(sock.sent).toHaveLength(1)
+    expect(sock.sent[0]?.type).toBe('command.rejected')
+    expect(sock.sent[0]?.command).toBe('run.interrupt')
+  })
+
+  test('真的中断到了就不发回执 —— 回执只在拒绝时发', async () => {
+    const sock = socket()
+    const d = deps()
+    const controller = new AbortController()
+    d.runs.register({
+      runId: 'rn_live' as never,
+      conversationId: 'cv_live' as never,
+      controller,
+    } as never)
+
+    await handleCommand({ type: 'run.interrupt', runId: 'rn_live' } as never, {
+      ...d,
+      ws: sock.ws,
+    })
+    expect(controller.signal.aborted).toBe(true)
+    expect(sock.sent).toHaveLength(0)
+  })
+})
+
 describe('用户点继续', () => {
   /**
    * resume **自己发起一轮**，不能等下一次别的 run 收尾——那时候用户已经等了
