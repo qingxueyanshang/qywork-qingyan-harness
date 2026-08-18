@@ -313,7 +313,8 @@
 .fold-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  /* 箭头按它定位。 */
+  position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -337,10 +338,23 @@
   /* 直接写字面量，不用 CSS 的 a 转义：转义序列经过任何一层字符串处理都可能
      被当成八进制解释掉，页面上就变成一个豆腐块加一个 a。实测踩到过。 */
   content: "›";
-  flex: 0 0 auto;
-  align-self: center;
-  position: relative;
-  top: -1px;
+  /*
+   * **不占流。** 当成 flex 子项时它吃掉 11.5px（gap 6 + 字形 5.5），而这一格
+   * 在 opacity 为 0 时根本不画：同一列里正文和读数条切在列边界上，折叠行却
+   * 切在往里 11.5px 的地方，三种文本三条右边界，那道空白看着像有块看不见的
+   * 东西拦在行尾。
+   *
+   * 不要改回 flex 子项，也不要改成 `display: none` + hover 时才显示——后者
+   * 会让鼠标划过时整行文字横挪 11.5px。绝对定位两头都占：不占位，也不重排。
+   * 代价是 hover / 展开时它压在行尾那 5.5px 上，压住的恰好是省略号，或是
+   * 已经被切掉一半的那个字。
+   *
+   * `-1px` 是视觉居中的微调。展开态那条规则必须把这个位移一并写上，
+   * 只写 `rotate(90deg)` 会把它整个覆掉，箭头当场掉半行。 */
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(calc(-50% - 1px));
   font-size: var(--fs-lg);
   font-weight: 700;
   line-height: 1;
@@ -354,7 +368,7 @@
   opacity: 1;
 }
 .fold[open] > .fold-head::after {
-  transform: rotate(90deg);
+  transform: translateY(calc(-50% - 1px)) rotate(90deg);
   opacity: 1;
 }
 
@@ -732,8 +746,6 @@
 .run-metric {
   flex: 0 0 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 /* 耗时预留 ch 位宽：配合固定一位小数与 tabular-nums，秒数逐跳时右侧读数零位移。 */
 .run-elapsed {
