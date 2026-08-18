@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Show } from 'solid-js'
+import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
 import {
   activateWorkspace,
   isDesktopShell,
@@ -74,6 +74,32 @@ export function Sidebar(props: { onClose?: () => void }) {
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
 
+  /*
+   * 连接一恢复就重拉项目清单。
+   *
+   * `createResource` 只在挂载时取一次，而**那一次很容易取不到**：桌面端是外壳先
+   * 起 WebView 再起 sidecar，首屏这一发 REST 可能打在服务还没监听的那半秒里；
+   * 开发时 sidecar 会热重载，同样掐断在途请求。取不到之后没有任何人再去取——
+   * WebSocket 自己重连、界面其它部分照常，唯独这一栏永远空着。
+   * 症状是「项目一个都不剩」，而账本里五条原封不动（实测：`workspaces` 表 5 行）。
+   *
+   * 判的是**从断到通的那一次翻转**，不是「现在通着」：后者每次连接状态抖动都会重拉。
+   * 第二个参数给初值，避免挂载时已经是 ready 还白取一次。
+   */
+  /**
+   * 清单本身。**先看有没有出错再读值**——`createResource` 的取数函数一旦抛出，
+   * 读 `known()` 会把那个错**再抛一次**，抛在 `<For>` 的响应式计算里：整棵左栏的
+   * 更新链从此断掉，连「取不到」那句话都渲染不出来（实测：请求被拦下之后，
+   * 页面只剩一个 `Failed to fetch`，侧栏一个字都不再更新）。
+   */
+  const workspaces = () => (known.error ? [] : (known()?.workspaces ?? []))
+
+  createEffect((wasReady: boolean) => {
+    const ready = state.connection === 'ready'
+    if (ready && !wasReady) void refetchWorkspaces()
+    return ready
+  }, state.connection === 'ready')
+
   const go = async (path: string) => {
     if (path === workspace()?.root) return
     setError(null)
@@ -144,13 +170,23 @@ export function Sidebar(props: { onClose?: () => void }) {
 
         {/* 失败要有终态：选目录被拒、切换失败，都在这里说出来，不静默吞掉。 */}
         <Show when={error()}>{(e) => <div class="side-error">{e()}</div>}</Show>
+        {/* 清单没取到必须说出来。**空列表和「一个项目都没有」长得一模一样**，
+            而这两件事该做的下一步完全相反——上一次就是这样，用户看到的是项目全没了。 */}
+        <Show when={known.error}>
+          <div class="side-error">
+            项目清单没取到
+            <button class="ghost-btn" type="button" onClick={() => void refetchWorkspaces()}>
+              重试
+            </button>
+          </div>
+        </Show>
       </div>
 
       {/* **一条列表，顺序稳定。** 当前项目不被提到最上面——那样切一次它就跳到
           顶部，而位置跳动比「当前项目在哪」更难用。它原地展开自己的会话，
           由高亮和缩进说明「现在在这个项目里」。 */}
       <div class="sidebar-scroll">
-        <For each={known()?.workspaces ?? []}>
+        <For each={workspaces()}>
           {(w: KnownWorkspace) => {
             const isCurrent = () => w.rootPath === workspace()?.root
             return (
@@ -188,6 +224,24 @@ export function Sidebar(props: { onClose?: () => void }) {
                             }}
                           >
                             <span class="truncate">{c.title || '新对话'}</span>
+                            {/*
+                             * 这条会话正在跑。**只有当前那条亮得起来**：客户端只订阅
+                             * 当前会话的事件（`client.subscribe([id])`），别的会话在跑
+                             * 前端收不到任何消息。要让所有会话都能亮，得先改订阅口径，
+                             * 不是在这里补一个猜出来的状态。
+                             *
+                             * `aria-hidden`：它是会话流那条读数条的余光重复，
+                             * 屏幕阅读器已经从那边听到了。
+                             */}
+                            <Show when={c.id === state.activeConversation && state.running}>
+                              <span class="conv-run" aria-hidden="true">
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                              </span>
+                            </Show>
                           </button>
                         </li>
                       )}
