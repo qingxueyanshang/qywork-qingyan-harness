@@ -57,8 +57,10 @@
  * 这件事推翻了「Windows 上没有内核边界的实现」这个说法，单独记在 ROADMAP §32。
  */
 
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join as joinNative } from 'node:path'
 /*
  * bwrap 只在 Linux 上跑，所以它的路径**永远是 POSIX 形式**。
@@ -657,6 +659,20 @@ export interface CommandShell {
   readonly path: string
   readonly argv: readonly string[]
   readonly hint: string
+  /**
+   * 把命令写成脚本文件之后怎么跑它。给了这个的档，在 Windows 上走文件交付。
+   *
+   * **只有 bash 档给。** Windows 上 argv 要经一次命令行字符串的往返，而 MSYS
+   * 那侧按自己的规则解回来，成对的反斜杠会被折掉一半——实测发 1/2/3/4 个到达
+   * 1/2/2 个（`ceil(n/2)`）。后果是模型写的 `'\\'` 到 python 手里成了 `'\'`，
+   * 一条 `SyntaxError` 而没人知道命令被改过；正则的 `\\d`、Windows 路径同理。
+   * 走文件之后 1/2/3/4 个原样到达 1/2/3/4 个。
+   *
+   * **PowerShell 两档不给，这是实测结论不是省事**：它们的 argv 本来就不丢反斜杠
+   * （`-Command` 与 `-File` 都拿到 4 个），而改用 `-File` 会弄丢原生命令的非零
+   * 退出码（`cmd /c exit 7` 下 `-Command` 回 1、`-File` 回 0）——那比反斜杠严重。
+   */
+  readonly scriptArgv?: (scriptPath: string) => readonly string[]
 }
 
 /**
@@ -809,6 +825,8 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
     return {
       path: bash,
       argv: [bash, '-c'],
+      // 路径用正斜杠交给 MSYS：反斜杠形式本身也要过那道会折反斜杠的解析。
+      scriptArgv: (scriptPath) => [bash, scriptPath.replaceAll('\\', '/')],
       hint:
         '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
         '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
@@ -896,9 +914,19 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     )
   }
 
-  // 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
-  // 转义黑名单挡不住构造，真正的边界在内核那一层。
-  const inner = [...shell.argv, input.command]
+  /*
+   * 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
+   * 转义黑名单挡不住构造，真正的边界在内核那一层。
+   *
+   * **原样的前提是它真能原样送到。** Windows 上 argv 要经一次命令行字符串的往返，
+   * 成对的反斜杠在 MSYS 那侧被折掉一半（见 `CommandShell.scriptArgv`）。所以那一档
+   * 改走脚本文件：命令正文不再进 argv，逐字节到达。
+   */
+  const scriptRun = isWindows ? shell.scriptArgv : undefined
+  const scriptPath = scriptRun ? joinNative(tmpdir(), `qy-cmd-${randomUUID()}.sh`) : null
+  if (scriptPath) await writeFile(scriptPath, input.command, 'utf8')
+  const inner =
+    scriptRun && scriptPath ? [...scriptRun(scriptPath)] : [...shell.argv, input.command]
 
   const policy = input.policy
 
@@ -914,12 +942,27 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
       ? { ...status, active: false, reason: '本次调用显式不套沙箱（插件 exec 走独立隔离）' }
       : status
 
+  /**
+   * 脚本文件跟着进程走：它退出了就删。
+   *
+   * 不在返回前删——那时命令还没开始读它。删失败也不抛：临时目录里留一个几百字节
+   * 的文件，比因为清理失败把一次成功的命令报成失败要好。
+   */
+  const sweep = (proc: { exited: Promise<unknown> }): void => {
+    if (!scriptPath) return
+    void proc.exited.then(() => rm(scriptPath, { force: true }).catch(() => {}))
+  }
+
   // 有 runner 就由它来当父进程（理由见 `runner.ts` 的模块注释）。
   if (runner) {
-    return {
-      proc: await runner.spawn({ argv, cwd: input.cwd, env: input.env, detached: !isWindows }),
-      sandbox: effective,
-    }
+    const proc = await runner.spawn({
+      argv,
+      cwd: input.cwd,
+      env: input.env,
+      detached: !isWindows,
+    })
+    sweep(proc)
+    return { proc, sandbox: effective }
   }
 
   /*
@@ -946,7 +989,9 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     ...(isWindows ? {} : { detached: true }),
   } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
 
-  return { proc: Bun.spawn(argv, opts), sandbox: effective }
+  const proc = Bun.spawn(argv, opts)
+  sweep(proc)
+  return { proc, sandbox: effective }
 }
 
 /**
