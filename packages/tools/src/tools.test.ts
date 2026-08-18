@@ -348,6 +348,69 @@ describe('文件工具', () => {
   })
 
   /**
+   * 增删数按**位置**算。
+   *
+   * 每一条都是「按文本出现过没有」那种算法会数错的形状——它们全部会被算成 0。
+   */
+  describe('行级增删', () => {
+    const rewrite = async (before: string, after: string) => {
+      const root = await workspace()
+      const r = registry()
+      const c = ctx(root)
+      await writeFile(join(root, 'f.txt'), before, 'utf8')
+      await r.execute('read_file', { path: 'f.txt' }, c)
+      const out = await r.execute('write_file', { path: 'f.txt', content: after }, c)
+      expect(out.status).toBe('success')
+      return out.fileChanges?.[0]
+    }
+
+    test('插进去的空行算新增', async () => {
+      expect(await rewrite('a\n\nb\n', 'a\n\n\n\nb\n')).toMatchObject({
+        additions: 2,
+        deletions: 0,
+      })
+    })
+
+    test('旧文件里别处有同一行，照样算新增', async () => {
+      // `}` 在旧文件里已经有一个；新增的那一段自带一个，它是真新增。
+      expect(await rewrite('f()\n}\n', 'f()\n}\ng()\n}\n')).toMatchObject({
+        additions: 2,
+        deletions: 0,
+      })
+    })
+
+    test('整块搬家两头都算', async () => {
+      expect(await rewrite('a\nb\nc\nd\n', 'c\nd\na\nb\n')).toMatchObject({
+        additions: 2,
+        deletions: 2,
+      })
+    })
+
+    test('一个字没动就是 0', async () => {
+      expect(await rewrite('a\nb\nc\n', 'a\nb\nc\n')).toMatchObject({
+        additions: 0,
+        deletions: 0,
+      })
+    })
+
+    test('整份换掉：新的全算增、旧的全算删', async () => {
+      expect(await rewrite('a\nb\nc\n', 'x\ny\n')).toMatchObject({ additions: 2, deletions: 3 })
+    })
+
+    /**
+     * 封顶那一档。差得比 MAX_EDIT 还远时报满——**不是回落到别的算法**。
+     * 一万行全不一样，报 10000/10000 就是对的。
+     */
+    test('差到封顶之外报满，且不会跑很久', async () => {
+      const old = Array.from({ length: 10_000 }, (_, i) => `旧 ${i}`).join('\n')
+      const now = Array.from({ length: 10_000 }, (_, i) => `新 ${i}`).join('\n')
+      const started = performance.now()
+      expect(await rewrite(old, now)).toMatchObject({ additions: 10_000, deletions: 10_000 })
+      expect(performance.now() - started).toBeLessThan(3000)
+    })
+  })
+
+  /**
    * **读记录的寿命由装配方定，这里只验两端。**
    *
    * 上一轮读过、这一轮直接改，是完全正常的用法。记录挂在 run 内的便签上时
