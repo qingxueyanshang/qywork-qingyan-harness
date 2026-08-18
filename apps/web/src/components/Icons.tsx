@@ -276,6 +276,14 @@ export const IconMore = (p: IconProps) => (
   </Svg>
 )
 
+/** 重命名：一支笔。不带方框——带框的是 `IconNewChat`，两者在同一栏里同时出现。 */
+export const IconPencil = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M16.8 3.9a1.9 1.9 0 0 1 2.7 2.7L9.4 16.7l-3.6.8.8-3.6z" />
+    <path d="M5 20.1h14" />
+  </Svg>
+)
+
 /** 置顶。图钉朝左上斜，和「固定在顶部」这个动作方向一致。 */
 export const IconPin = (p: IconProps) => (
   <Svg {...p}>

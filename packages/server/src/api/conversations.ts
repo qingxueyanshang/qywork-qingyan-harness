@@ -5,13 +5,16 @@ import { builtinCatalog, effortIsTransmittable, lookupModel, VENDORS } from '@qy
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
 import { contextPanel, resolveModel } from '@qywork/runtime'
 import {
+  archiveConversation,
   createConversation,
   currentGoal,
+  deleteConversation,
   getConversation,
   listConversations,
   listMessages,
   listRuns,
   listSteps,
+  setConversationTitle,
 } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
@@ -134,6 +137,66 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       return json({ conversation: conv })
     }
     return json({ conversations: listConversations(d.store, d.workspaceId as never) })
+  }
+
+  /*
+   * 归档一条会话：只从列表里去掉，数据一条不动。形状与字段都对齐项目级的
+   * `POST /api/workspaces/:id/archive`，只是范围缩到一条。
+   *
+   * **正在跑的不拦**：归档不删任何东西，那一轮照常跑完。（删除必须拦，见下。）
+   */
+  const archiveMatch = /^\/api\/conversations\/([^/]+)\/archive$/.exec(p)
+  if (archiveMatch && req.method === 'POST') {
+    const id = archiveMatch[1] as ConversationId
+    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    // 已经归档过的回 false。这里当成功处理：用户要的终态（不在列表里）已经成立。
+    archiveConversation(d.store, id)
+    return json({ ok: true })
+  }
+
+  const oneMatch = /^\/api\/conversations\/([^/]+)$/.exec(p)
+  if (oneMatch) {
+    const id = oneMatch[1] as ConversationId
+
+    /*
+     * 重命名。PATCH 而不是 `POST /rename`：改的是这一行上的一个字段，与项目行
+     * 的置顶同形状。空标题回 422 且不落盘——它在侧栏会被兜底成「新对话」，
+     * 看起来像改名没生效。
+     */
+    if (req.method === 'PATCH') {
+      const body = (await req.json().catch(() => ({}))) as { title?: unknown }
+      const title = typeof body.title === 'string' ? body.title.trim() : ''
+      if (!title) return json({ error: '标题不能为空' }, 422)
+      const conv = setConversationTitle(d.store, id, title)
+      if (!conv) return json({ error: 'conversation not found' }, 404)
+      // 广播而不是只回发起方：手机和桌面可能同时开着这个会话，
+      // 与 `conversation.setModel` 同一条理由。
+      d.bus.publish(
+        {
+          type: 'conversation.updated',
+          conversationId: conv.id,
+          model: conv.model,
+          title: conv.title,
+          updatedAt: conv.updatedAt,
+        },
+        id,
+      )
+      return json({ conversation: conv })
+    }
+
+    /*
+     * 硬删：消息、run、步骤等随 FK 级联一起走，不是打标记让它从列表消失
+     * （那是上面那条「归档」）。
+     *
+     * **正在跑的回 409**，判据与 `conversation.compact` 同一个：级联删掉的
+     * run / step 那一轮还在往里写。
+     */
+    if (req.method === 'DELETE') {
+      if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+      if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
+      deleteConversation(d.store, id)
+      return json({ ok: true })
+    }
   }
 
   const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs)$/.exec(p)

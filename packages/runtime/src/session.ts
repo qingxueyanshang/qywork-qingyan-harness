@@ -34,6 +34,7 @@ import type {
   MessageId,
   RunId,
 } from '@qywork/core'
+import { deriveConversationTitle } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -59,6 +60,7 @@ import {
   recordLoadedTools,
   recordUsage,
   type Store,
+  setConversationTitle,
   settleProviderRequest,
   settleRunningSteps,
   settleToolStep,
@@ -333,7 +335,6 @@ export class Session {
       createConversation(store, {
         workspaceId: this.workspaceId as never,
         model: options?.model ?? config.active.model,
-        title: prompt.slice(0, 60),
         ...(options?.source ? { source: options.source } : {}),
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
       }).id
@@ -358,6 +359,17 @@ export class Session {
           content: prompt,
           ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
         }).id
+
+    /*
+     * 标题在第一条用户消息落库之后产生，**全项目只有这一处产生点**。
+     * 建会话时不取：界面端先建会话、后发第一句话，那时正文还不存在。
+     *
+     * 只在标题空着时写——用户改过的名字不许被下一句话盖掉；重试不参与。
+     */
+    if (!retryOf && !conversation?.title) {
+      const derived = deriveConversationTitle(prompt)
+      if (derived) setConversationTitle(store, conversationId, derived)
+    }
 
     const run = createRun(store, {
       conversationId,
@@ -413,6 +425,23 @@ export class Session {
           throughMessageId: anchorRun?.messageIdUpperBound ?? null,
         }
       : null
+
+    /*
+     * 标题与 `updated_at` 刚被写过，广播出去——不发的话侧栏要等下次重拉才更新。
+     *
+     * **读回账本再发，不发局部变量**：`model` 是「这一轮用哪个模型」，可被单轮
+     * 覆盖，而这条事件说的是会话属性，拿它发会显示一个会话没切过去的模型。
+     */
+    const announced = getConversation(store, conversationId)
+    if (announced) {
+      yield {
+        type: 'conversation.updated',
+        conversationId,
+        model: announced.model,
+        title: announced.title,
+        updatedAt: announced.updatedAt,
+      }
+    }
 
     // run.started 必须由这里发：协议早就定义了它，但一直没有发送方——
     // 于是客户端拿不到真实 runId，中断和重试都在拿步骤 id 当 run id 用，

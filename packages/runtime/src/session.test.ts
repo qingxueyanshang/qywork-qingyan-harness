@@ -19,6 +19,7 @@ import {
   listRecentConversations,
   listWorkspaces,
   Store,
+  setConversationTitle,
   setExtraEnabled,
   upsertWorkspace,
 } from '@qywork/store'
@@ -435,6 +436,54 @@ describe('工具上下文的读记录', () => {
 
     expect(second.reads?.seen('C:/ws/a.ts')).toBe('h1')
     expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBe('h1')
+    store.close()
+  })
+})
+
+/*
+ * 会话标题。
+ *
+ * **产生点只有这一处**：第一条用户消息落库之后。建会话的时候不取——那一刻正文
+ * 还不存在（界面端是先建会话、后发第一句话），于是取到的只能是空串，
+ * 侧栏里一整列「新对话」就是这么来的。
+ *
+ * 这里只吃 `ask()` 的第一条事件就停：标题在那之前就写好了，而再往下走要真的
+ * 连 provider。停在这儿测的正好是「不发一次请求也该有标题」。
+ */
+describe('会话标题', () => {
+  const firstEvent = async (s: Session, prompt: string, existing?: string) => {
+    for await (const ev of s.ask(prompt, existing as never)) return ev
+    return null
+  }
+
+  test('第一句话定标题，并当场广播出去', async () => {
+    const { s, store } = await session()
+    const ev = await firstEvent(s, '帮我把侧栏的时间显示出来\n第二行是细节')
+    expect(ev?.type).toBe('conversation.updated')
+    const conv = listRecentConversations(store, 1)[0]
+    expect(conv?.title).toBe('帮我把侧栏的时间显示出来')
+    expect((ev as { title: string }).title).toBe('帮我把侧栏的时间显示出来')
+    store.close()
+  })
+
+  /* 第二句话不许盖掉第一句定下的名字——列表里那一行会随每次发言变来变去。 */
+  test('第二句话不覆盖已有标题', async () => {
+    const { s, store } = await session()
+    await firstEvent(s, '第一句')
+    const conv = listRecentConversations(store, 1)[0]
+    await firstEvent(s, '第二句', conv?.id)
+    expect(listRecentConversations(store, 1)[0]?.title).toBe('第一句')
+    store.close()
+  })
+
+  /* 用户改过的名字更不许被下一句话盖掉。 */
+  test('用户改过的名字不被覆盖', async () => {
+    const { s, store } = await session()
+    await firstEvent(s, '第一句')
+    const conv = listRecentConversations(store, 1)[0]
+    setConversationTitle(store, conv?.id as never, '我自己起的名字')
+    await firstEvent(s, '第二句', conv?.id)
+    expect(listRecentConversations(store, 1)[0]?.title).toBe('我自己起的名字')
     store.close()
   })
 })

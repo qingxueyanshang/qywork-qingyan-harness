@@ -3,13 +3,18 @@ import { Store } from './db.ts'
 import {
   appendMessage,
   appendStep,
+  archiveConversation,
   createConversation,
   createRun,
+  deleteConversation,
   findRunByClientRequest,
   finishRun,
+  getConversation,
+  getRun,
   listConversations,
   listMessages,
   listSteps,
+  setConversationTitle,
   settleToolStep,
   upsertWorkspace,
   workspaceOf,
@@ -199,6 +204,88 @@ describe('会话所属项目', () => {
     const store = new Store({ path: ':memory:' })
     upsertWorkspace(store, '/tmp/a', 'a')
     expect(workspaceOf(store, 'cv_nope' as never)).toBeNull()
+    store.close()
+  })
+})
+
+/*
+ * 「最近修改」这一列的口径。
+ *
+ * 它是侧栏那一行显示的时间，也是 `listConversations` 的排序键——写错了不会报错，
+ * 只会安静地显示一个假数（这正是它此前的状态：发消息不推进，显示出来的是建会话时间）。
+ */
+describe('会话的最近修改时间', () => {
+  test('发一条消息就推进 updated_at', async () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    // Date.now() 的分辨率是毫秒，同一毫秒内写两次就分不出先后。
+    await Bun.sleep(2)
+    appendMessage(store, { conversationId: conv.id, role: 'user', content: '在吗' })
+    const after = getConversation(store, conv.id)
+    expect(after?.updatedAt).toBeGreaterThan(conv.updatedAt)
+    store.close()
+  })
+
+  /* 改个名字不是「这条会话有了新内容」。推进它会让列表重排，
+     而那一行显示出来的时间会当场开始撒谎。 */
+  test('重命名不推进 updated_at', async () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    await Bun.sleep(2)
+    const renamed = setConversationTitle(store, conv.id, '改过的名字')
+    expect(renamed?.title).toBe('改过的名字')
+    expect(renamed?.updatedAt).toBe(conv.updatedAt)
+    store.close()
+  })
+
+  test('会话不存在时重命名返回 null，不静默成功', () => {
+    const { store } = fresh()
+    expect(setConversationTitle(store, 'cv_nope' as never, 'x')).toBeNull()
+    store.close()
+  })
+})
+
+describe('归档与硬删', () => {
+  /* 归档只改「显不显示」：列表里没有了，按 id 仍然读得回。 */
+  test('归档之后不进列表，但数据还在', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: '要归档的' })
+    expect(archiveConversation(store, conv.id)).toBe(true)
+    expect(listConversations(store, ws.id).map((c) => c.id)).not.toContain(conv.id)
+    expect(getConversation(store, conv.id)?.title).toBe('要归档的')
+    // 已经归档过的回 false——「0 条」和「成功」在界面上必须能分开。
+    expect(archiveConversation(store, conv.id)).toBe(false)
+    store.close()
+  })
+
+  /*
+   * 硬删是**真删**。这条锁的是级联：消息与 run 跟着一起没。
+   * 只断言 conversations 表少了一行的话，一条断掉的 FK 会让残骸永远留在库里，
+   * 而界面上完全看不出来。
+   */
+  test('删掉会话，消息与 run 一并没了', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const msg = appendMessage(store, { conversationId: conv.id, role: 'user', content: '喂' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'req-del',
+      userMessageId: msg.id,
+      messageIdUpperBound: msg.id,
+    })
+
+    expect(deleteConversation(store, conv.id)).toBe(true)
+    expect(getConversation(store, conv.id)).toBeNull()
+    expect(listMessages(store, conv.id)).toEqual([])
+    expect(getRun(store, run.id)).toBeNull()
+    store.close()
+  })
+
+  test('删一条不存在的会话回 false，不抛', () => {
+    const { store } = fresh()
+    expect(deleteConversation(store, 'cv_nope' as never)).toBe(false)
     store.close()
   })
 })

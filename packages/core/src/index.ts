@@ -50,6 +50,7 @@ export {
   type ContextOmitted,
   type Conversation,
   type Currency,
+  deriveConversationTitle,
   EFFORT_ORDER,
   type EffortLevel,
   emptyBreakdown,

@@ -332,6 +332,43 @@ export function archiveWorkspaceConversations(store: Store, workspaceId: Workspa
     .run(Date.now(), workspaceId).changes
 }
 
+/**
+ * 归档一条会话：只写标记，数据一条不动。`listConversations` 不再列它，
+ * `getConversation` 按 id 仍读得回。返回 false = 不存在，或本来就已归档。
+ */
+export function archiveConversation(store: Store, id: ConversationId): boolean {
+  return (
+    store.db
+      .query('UPDATE conversations SET archived_at = ? WHERE id = ? AND archived_at IS NULL')
+      .run(Date.now(), id).changes > 0
+  )
+}
+
+/**
+ * 硬删一条会话。消息、run、步骤、provider 请求等随 FK 级联一起没
+ * （`schema.ts` 各表的 `ON DELETE CASCADE`）。附件由 `referencedAttachmentPaths`
+ * 那条 GC 顺带收走，不在这里删。
+ *
+ * **调用方必须先确认没有在跑的 run**：级联删掉的行那一轮还在往里写。
+ */
+export function deleteConversation(store: Store, id: ConversationId): boolean {
+  return store.db.query('DELETE FROM conversations WHERE id = ?').run(id).changes > 0
+}
+
+/**
+ * 重命名。**不动 `updated_at`**：改名不是「有了新内容」，推进它会让列表重排、
+ * 侧栏那个时间开始撒谎。返回 null = 会话不存在。
+ */
+export function setConversationTitle(
+  store: Store,
+  id: ConversationId,
+  title: string,
+): Conversation | null {
+  const changed = store.db.query('UPDATE conversations SET title = ? WHERE id = ?').run(title, id)
+  if (changed.changes === 0) return null
+  return getConversation(store, id)
+}
+
 export function touchConversation(store: Store, id: ConversationId, title?: string): void {
   if (title === undefined) {
     store.db.query('UPDATE conversations SET updated_at = ? WHERE id = ?').run(Date.now(), id)
@@ -412,6 +449,14 @@ export function appendMessage(
       writeJson(msg.attachments),
       msg.createdAt,
     )
+  /*
+   * 会话的「最近修改」跟着消息走，**这是它唯一一次因内容而推进**：这张表只有
+   * user 行（assistant 的回合由 steps 投影），所以「有人说话」就等于走到这里。
+   * 不推进的话，列表排序与侧栏时间都停在建会话那一刻。
+   */
+  store.db
+    .query('UPDATE conversations SET updated_at = ? WHERE id = ?')
+    .run(msg.createdAt, msg.conversationId)
   return msg
 }
 
