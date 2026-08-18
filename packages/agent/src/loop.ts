@@ -266,6 +266,34 @@ function transportReading(providerEvents: number, silentMs: number, chars: numbe
 }
 
 /**
+ * 让一个 await 能被停止拽回来。
+ *
+ * **abort 只是置一个信号，等的人不看它就等于没停。** provider 那侧的等待本来就和
+ * 卡死检测赛跑（见 `openStream` 里的 `Promise.race`），工具与压缩这两侧没有：
+ * 其中任何一个不返回，整轮就停在那个 await 上，用户点停止**毫无反应**——
+ * 按钮不报错、转圈不停、日志一个字没有，唯一的出路是重启应用。
+ *
+ * 拽回来之后那批工作还在后台跑。这是有意的：`ctx.signal` 已经 abort，守规矩的
+ * 工具自己收手；收不了的由会话收尾时把它们的 step 落成「执行期间被中断，结果未知」
+ * ——那正是崩溃恢复给这种情形定的说法，不是新造一套。
+ *
+ * 不要改成「abort 之后还等它跑完再退」：那等于把停止的时限交给卡住的那一方决定。
+ */
+function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const fail = () => reject(new DOMException('已中断', 'AbortError'))
+    if (signal.aborted) {
+      fail()
+      return
+    }
+    signal.addEventListener('abort', fail, { once: true })
+    // 附上 then 而不是丢开：被放弃的那份若稍后抛错，没有处理器就是一条
+    // unhandledRejection，而它会把整个进程带下去。
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', fail))
+  })
+}
+
+/**
  * 压缩的软阈值：占用超过它就在**发出之前**压一次。
  *
  * 三段相减，每一段都有理由：
@@ -478,7 +506,9 @@ export class AgentLoop {
 `,
             )
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
-            const outcome = await this.deps.compaction.run()
+            // 同工具波次：压缩要调一次模型，卡住的话整轮停在这里，而且它不写
+            // `provider_requests`，账本上连"卡在哪"都看不出来。
+            const outcome = await untilAborted(input.signal, this.deps.compaction.run())
             if (outcome.status === 'compacted') {
               persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'success', {
                 manifestRevision: outcome.manifest.revision,
@@ -863,14 +893,19 @@ export class AgentLoop {
             }
           }
 
-          const settled = await Promise.all(
-            results.map(async (r) => {
-              const started = Date.now()
-              // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
-              persist.markExecuting(r.stepId)
-              const outcome = await registry.execute(r.call.name, r.call.arguments, ctx)
-              return { ...r, outcome, durationMs: Date.now() - started }
-            }),
+          // 与停止赛跑。裸 `Promise.all` 的话，一个不返回的工具就把整轮钉死在这里，
+          // 而停止按钮只是置了个信号，没人看。
+          const settled = await untilAborted(
+            input.signal,
+            Promise.all(
+              results.map(async (r) => {
+                const started = Date.now()
+                // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
+                persist.markExecuting(r.stepId)
+                const outcome = await registry.execute(r.call.name, r.call.arguments, ctx)
+                return { ...r, outcome, durationMs: Date.now() - started }
+              }),
+            ),
           )
 
           // 排空本波的中途输出（shell stdout 等），下一波复用同一个缓冲区。

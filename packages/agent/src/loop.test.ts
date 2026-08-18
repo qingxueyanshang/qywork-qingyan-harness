@@ -1100,3 +1100,86 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     expect(message).toContain('本次共收到 4 字')
   })
 })
+/**
+ * 停止必须能把一轮从**卡住的工具**上拽回来。
+ *
+ * abort 只是置一个信号，等的人不看它就等于没停。这条锁的是：即使工具永远不返回，
+ * 点停止之后这一轮也在毫秒级落终态、并且落的是 `user_interrupt` 而不是红色的
+ * `internal_error`。没有这条的表现是用户点了停止毫无反应，唯一出路是重启应用。
+ */
+describe('停止能拽回卡住的工具', () => {
+  function hangingRegistry(): { registry: ToolRegistry; entered: Promise<void> } {
+    const registry = new ToolRegistry()
+    let announce: () => void = () => {}
+    const entered = new Promise<void>((r) => {
+      announce = r
+    })
+    registry.register({
+      name: 'hang',
+      description: '永不返回',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '夹具',
+      category: 'code',
+      facet: '执行',
+      summary: '永不返回的工具',
+      targetExtractor: () => null,
+      permissionEffect: 'internal_control',
+      async fn() {
+        announce()
+        // 故意不看 ctx.signal：这条测试要验的正是「等的人不看信号时也停得掉」。
+        return new Promise(() => {}) as never
+      },
+    })
+    return { registry, entered }
+  }
+
+  test('工具永不返回时，点停止仍在毫秒级落 user_interrupt', async () => {
+    const { registry, entered } = hangingRegistry()
+    const controller = new AbortController()
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('hang')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        contextWindow: 200_000,
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: controller.signal,
+        emit: (channel, delta) =>
+          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
+        requestPermission: async () => true,
+      }),
+    })
+
+    // 工具一进去就按停止。
+    void entered.then(() => controller.abort())
+
+    const t0 = Date.now()
+    const events: string[] = []
+    let finished: { status: string; stopReason: string } | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_hang' as never,
+      history: [],
+      signal: controller.signal,
+    })) {
+      events.push(ev.type)
+      if (ev.type === 'run.finished') finished = { status: ev.status, stopReason: ev.stopReason }
+    }
+    const ms = Date.now() - t0
+
+    expect(finished?.status).toBe('interrupted')
+    expect(finished?.stopReason).toBe('user_interrupt')
+    // 「毫秒级」——不是等那个工具（它永远不返回）。给 5 秒余量足够宽。
+    expect(ms).toBeLessThan(5_000)
+    // 中断不是错误：不该报红。
+    expect(events).not.toContain('run.error')
+  }, 10_000)
+})
