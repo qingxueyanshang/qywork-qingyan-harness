@@ -24,6 +24,7 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
+  collectProcess,
   displayPath,
   PROTECTED_DIRS,
   resolveInWorkspace,
@@ -275,37 +276,27 @@ async function runScrubbed(
     },
   })
 
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    proc.kill()
-  }, timeoutMs)
-
-  try {
-    const [stdout, stderr] = await Promise.all([readCapped(proc.stdout), readCapped(proc.stderr)])
-    const exitCode = await proc.exited
-    return { exitCode, stdout, stderr, timedOut }
-  } finally {
-    clearTimeout(timer)
+  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时走**树杀**。
+  // 这里 spawn 出来的是一个 shell，只 kill 它自己的话，真正干活的那个还活着。
+  const got = await collectProcess(proc, { timeoutMs, maxChars: MAX_EXEC_OUTPUT })
+  return {
+    exitCode: got.exitCode,
+    stdout: capped(got.stdout),
+    stderr: capped(got.stderr),
+    timedOut: got.timedOut,
   }
 }
 
 /**
- * 读到上限就停。
+ * 到界了就说一声。
  *
- * 不是读完再截断——那样一条 `yes` 就能在截断生效之前把内存吃光。
- * 上限是**读取行为的上限**，不是返回值的上限。
+ * 真正的「读到上限就停」在 `collectProcess` 里——**上限是读取行为的上限，不是
+ * 返回值的上限**：读完再截的话，一条 `yes` 能在截断生效之前把内存吃光。
+ * 这里只负责把「你看到的不是全部」告诉插件。
  */
-async function readCapped(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const decoder = new TextDecoder()
-  let text = ''
-  for await (const chunk of stream) {
-    text += decoder.decode(chunk, { stream: true })
-    if (text.length >= MAX_EXEC_OUTPUT) {
-      return `${text.slice(0, MAX_EXEC_OUTPUT)}\n…（输出超过 ${MAX_EXEC_OUTPUT} 字符，已截断）`
-    }
-  }
-  return text
+function capped(text: string): string {
+  if (text.length < MAX_EXEC_OUTPUT) return text
+  return `${text.slice(0, MAX_EXEC_OUTPUT)}\n…（输出超过 ${MAX_EXEC_OUTPUT} 字符，已截断）`
 }
 
 // ───────────────────────── 插件私有存储 ─────────────────────────

@@ -37,7 +37,13 @@ import { estimateText } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
-import { type CommandShell, killTree, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
+import {
+  type CommandShell,
+  collectProcess,
+  killTree,
+  type SandboxPolicy,
+  spawnGuarded,
+} from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
 
@@ -45,10 +51,22 @@ const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 600_000
 
 /**
+ * 命令退出了，但它留下的后代进程还握着输出管道。
+ *
+ * 必须说出来：模型据此才知道后台留了个进程（起服务的脚本就是这个形状），
+ * 以及那个进程之后的输出**不会**再进这次结果——要看只能去它自己的日志。
+ * 不说的话，这件事在回话里完全不可见，而它恰恰是这类命令唯一要紧的事实。
+ */
+const BACKGROUND_HELD =
+  '。注意：命令已退出，但它留下的后台进程仍在运行并持有输出管道——' +
+  '本次结果只含命令自身的输出，那个进程此后的输出不在其中。'
+
+/**
  * 这条调用实际会在多少毫秒后被强制终止。
  *
- * **导出是因为裁决层要用同一个数。** `run_command` 的超时到点是无条件
- * `proc.kill()`，所以「这条命令会不会一直挂着」在这个工具里有个确定答案——
+ * **导出是因为裁决层要用同一个数。** 超时到点是无条件树杀，而完成判据是进程退出、
+ * 不是管道 EOF（见 `collectProcess`），所以「这条命令会不会一直挂着」在这个工具里
+ * 有个确定答案——
  * 裁决层看不到这个数的话只能按命令字面判，于是把带 3 秒超时的
  * `python -m http.server` 按「不会自己退出的服务器」拒掉。
  *
@@ -167,94 +185,63 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         },
       })
 
-      let out = ''
-      let err = ''
-      let timedOut = false
-
-      /*
-       * 超时与中断都走**树杀**，不是 `proc.kill()`。
-       *
-       * 我们 spawn 的是一个 shell，真正干活的是它的子进程；只杀 shell 的话
-       * 孙进程不但活着，还握着 stdout —— 下面那个 `pump` 永远等不到 EOF，
-       * 这次调用就再也不返回了。详见 `killTree` 的注释（含本机实测）。
-       */
-      const timer = setTimeout(() => {
-        timedOut = true
-        killTree(proc)
-      }, timeout)
-
-      // 中断信号要能真正杀掉子进程，否则用户点了停止但构建还在跑。
-      const onAbort = () => killTree(proc)
-      ctx.signal.addEventListener('abort', onAbort, { once: true })
-
       // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
-      const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
-        const decoder = new TextDecoder()
-        const redactor = createStreamRedactor(secrets)
-        const take = (text: string) => {
-          if (!text) return
-          if (channel === 'stdout') out += text
-          else err += text
-          ctx.emit(channel, text)
-        }
-        for await (const chunk of stream) {
-          take(redactor.push(decoder.decode(chunk, { stream: true })))
-        }
-        // 不调 flush 会静默吞掉输出末尾——那比泄露更难发现，因为没人会去数字节。
-        take(redactor.flush())
+      const redactors = {
+        stdout: createStreamRedactor(secrets),
+        stderr: createStreamRedactor(secrets),
+      }
+      // 回传发生在脱敏**之后**：先发再脱等于把明文送出去了再补救。
+      const emit = (channel: 'stdout' | 'stderr', text: string): string => {
+        if (text) ctx.emit(channel, text)
+        return text
       }
 
-      // 两条流一直在后台读。**不能先 await 它们再等进程**——探测模式下服务器
-      // 根本不会退出，先读完流就是先挂死。树杀之后管道自然 EOF，这个 promise
-      // 也就跟着结束了（`killTree` 的注释里有实测）。
-      const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
+      // 等待与收尾的规则收在 `collectProcess` 里：完成判据是进程退出而不是管道 EOF，
+      // 超时与中断都走树杀。这里只管字节怎么变成结果。
+      const collecting = collectProcess(proc, {
+        timeoutMs: timeout,
+        signal: ctx.signal,
+        onText: (channel, text) => emit(channel, redactors[channel].push(text)),
+        // 不 flush 会静默吞掉输出末尾——那比泄露更难发现，因为没人会去数字节。
+        onEnd: (channel) => emit(channel, redactors[channel].flush()),
+      })
 
-      try {
-        if (probeUrl !== null) {
-          const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
-          await pumping
-          await proc.exited
-          clearTimeout(timer)
-          ctx.signal.removeEventListener('abort', onAbort)
-
-          const delivered = deliverStreams(ctx, command, out, err)
-          return {
-            status: probe.ok ? 'success' : 'failure',
-            message: probe.message,
-            data: { ...probe.data, ...delivered.data },
-            ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-            ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
-          }
-        }
-
-        await pumping
-        const code = await proc.exited
-        clearTimeout(timer)
-        ctx.signal.removeEventListener('abort', onAbort)
-
-        const delivered = deliverStreams(ctx, command, out, err)
-
-        if (timedOut) {
-          return {
-            status: 'failure',
-            message: `命令超时（${timeout}ms）已终止`,
-            data: { ...delivered.data, timedOut: true },
-            ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-            errorKind: 'timeout',
-          }
-        }
-
+      if (probeUrl !== null) {
+        const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
+        const got = await collecting
+        const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
         return {
-          // 非零退出码是**事实**不是异常：模型需要看到失败输出才能修。
-          status: code === 0 ? 'success' : 'failure',
-          message:
-            code === 0 ? '命令执行成功' : `命令退出码 ${code}${sandboxHint(sandbox.active, err)}`,
-          data: { exitCode: code, ...delivered.data },
+          status: probe.ok ? 'success' : 'failure',
+          message: probe.message + (got.backgroundHeld ? BACKGROUND_HELD : ''),
+          data: { ...probe.data, ...delivered.data },
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+          ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
         }
-      } finally {
-        clearTimeout(timer)
-        ctx.signal.removeEventListener('abort', onAbort)
+      }
+
+      const got = await collecting
+      const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
+
+      if (got.timedOut) {
+        return {
+          status: 'failure',
+          message: `命令超时（${timeout}ms）已终止${got.backgroundHeld ? BACKGROUND_HELD : ''}`,
+          data: { ...delivered.data, timedOut: true },
+          ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+          errorKind: 'timeout',
+        }
+      }
+
+      return {
+        // 非零退出码是**事实**不是异常：模型需要看到失败输出才能修。
+        status: got.exitCode === 0 ? 'success' : 'failure',
+        message:
+          (got.exitCode === 0
+            ? '命令执行成功'
+            : `命令退出码 ${got.exitCode}${sandboxHint(sandbox.active, got.stderr)}`) +
+          (got.backgroundHeld ? BACKGROUND_HELD : ''),
+        data: { exitCode: got.exitCode, ...delivered.data },
+        ...(delivered.resources.length ? { resources: delivered.resources } : {}),
       }
     },
   }

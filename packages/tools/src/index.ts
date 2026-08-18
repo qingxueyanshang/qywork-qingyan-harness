@@ -49,10 +49,15 @@ export {
 // 沙箱：cli 的 doctor/config、server 的握手都要报它
 // `commandShell` / `probeBash` 一并出去：命令跑哪个 shell 由它说了算，判 platform 就是第二本账；
 // 握手要报「这台机器有没有 bash」，没有时还要把原因说给用户听
+// `collectProcess` 与 `spawnGuarded` 是一对：起子进程一个出口，等子进程一个出口。
+// 各处自己写等待就是各写一遍完成判据，而写错的那处不报错，只会安静地永远挂着。
 export {
   BASH_PATH_ENV,
   type BashResolution,
+  type CollectedProcess,
+  type CollectOptions,
   type CommandShell,
+  collectProcess,
   commandShell,
   detectSandbox,
   probeBash,

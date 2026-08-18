@@ -10,6 +10,7 @@
  */
 
 import type { GitStateEvent } from '@qywork/core'
+import { collectProcess } from '@qywork/tools'
 
 export interface GitBranch {
   name: string
@@ -108,17 +109,12 @@ async function git(
      */
     return { ok: false, out: '', err: e instanceof Error ? e.message : String(e) }
   }
-  const timer = setTimeout(() => proc.kill(), timeoutMs)
-  try {
-    const [out, err] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
-    const code = await proc.exited
-    return { ok: code === 0, out, err }
-  } finally {
-    clearTimeout(timer)
-  }
+  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时走**树杀**。
+  // 这里跑的几条（rev-parse / status / diff / for-each-ref）都不触发 hook、不联网、
+  // 也不会起 pager，所以孤儿扣管道那条路当前走不到；`core.fsmonitor` 一旦开着就走得到，
+  // 那时 git 会留下一个常驻守护进程。改它是为了让「等子进程」只有一种写法。
+  const got = await collectProcess(proc, { timeoutMs })
+  return { ok: got.exitCode === 0, out: got.stdout, err: got.stderr }
 }
 
 export async function isRepo(cwd: string): Promise<boolean> {

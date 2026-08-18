@@ -940,8 +940,8 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
  * pump:     3 秒没等到 EOF          ← 孙进程握着 stdout，管道永不关闭
  * ```
  *
- * **第二行比第一行严重得多。** `shell.ts` 是先 `await` 读完两条流、再等
- * `proc.exited`；管道不 EOF，那次 `registry.execute` 就永不返回，而
+ * **第二行比第一行严重得多。** 孙进程握着 stdout，于是谁要是拿管道 EOF 当
+ * 「命令结束了」的判据，那次 `registry.execute` 就永不返回，而
  * `loop.ts:546` 外面没有任何超时。后果一路传导到 `run-control.ts` 的 finally
  * 不执行、`runs.unregister` 不执行——**这条会话从此永远回绝「已有任务在执行」，
  * 直到重启 `qy serve`**。触发它不需要「起服务器」这种边角：任何经 shell 派生了
@@ -955,7 +955,10 @@ export function spawnGuarded(input: GuardedSpawnInput): GuardedSpawn {
  * pump:     EOF
  * ```
  *
- * 两个症状一次消失——它们本来就是同一个根因。
+ * 两个症状在**孙进程还留在树里**时一次消失。树杀够不着已经脱离父子关系的孤儿
+ * ——实测：shell 正常退出之后再补一次 `taskkill /F /T`，回的是
+ * `ERROR: The process not found`，而管道照旧不 EOF。所以「命令结束了没有」
+ * 不能靠管道 EOF 判，那条判据归 `shell.ts` 的 `settle()`：进程退出才是权威。
  *
  * ## 平台
  *
@@ -994,4 +997,152 @@ export function killTree(proc: { pid: number; kill(): void }): void {
     }
   }
   proc.kill()
+}
+
+/**
+ * 进程退出之后，把管道里的残余字节取干净所留的时间。
+ *
+ * 这**不是**超时兜底：正常命令上它的代价是 0——EOF 紧跟退出到达，下面那个 race
+ * 立刻就赢了。只有当有后代进程扣着写端时才付这一次固定小额。
+ *
+ * 这个数从哪来：写端在管道写满时阻塞，所以进程退出前它的输出已经被读走了
+ * （本机实测 `seq 1 200000` 加一个后台孙进程，退出时 1288895 字节一个不少，
+ * 最后一个 chunk 比退出还早 9ms）；退出后残留的至多是一个内核缓冲区
+ * （Windows 默认 64KB），读它是本地内存拷贝。留 200ms 是给调度抖动的余量，
+ * 不是给命令的。
+ */
+const DRAIN_AFTER_EXIT_MS = 200
+
+export interface CollectedProcess {
+  exitCode: number
+  stdout: string
+  stderr: string
+  /** 超时到点，进程树已被杀。 */
+  timedOut: boolean
+  /**
+   * 进程已经退出，但仍有后代扣着输出管道，读取是我们主动收手的。
+   *
+   * 调用方该据此告诉上游「后台还留着东西在跑，它之后的输出不在这份结果里」——
+   * 起后台服务的脚本就是这个形状，而那件事在结果里没有别的痕迹。
+   */
+  backgroundHeld: boolean
+}
+
+export interface CollectOptions {
+  /** 到点树杀。不给就不设超时——只有形状上不可能长跑的命令才该这么用。 */
+  timeoutMs?: number
+  /** 中断信号。abort 即树杀，这样用户点停止时子进程真的会停。 */
+  signal?: AbortSignal
+  /** 每片解码后的文本先过它，**返回值**才计入结果。脱敏与流式回传都在这里做。 */
+  onText?: (channel: 'stdout' | 'stderr', text: string) => string
+  /** 流收尾时补一段（典型是脱敏器的跨片缓冲）。返回值不再过 `onText`。 */
+  onEnd?: (channel: 'stdout' | 'stderr') => string
+  /**
+   * 每条流的字符上限。**上限是读取行为的上限，不是返回值的上限**——
+   * 读完再截的话，一条 `yes` 能在截断生效之前把内存吃光。
+   * 触到上限的判断留给调用方（长度到界即是），这里只负责不再往下读。
+   */
+  maxChars?: number
+}
+
+/**
+ * 等一个子进程跑完，并把它写出的字节收回来。
+ *
+ * **这是「等子进程」的唯一出口**，与 `spawnGuarded` 是「起子进程」的唯一出口同一条
+ * 理由：散在各处的等待意味着完成判据要各写一遍，而写错的那一处不会报错，
+ * 只会安静地永远挂着。
+ *
+ * ## 完成判据是进程退出，不是管道 EOF
+ *
+ * EOF 的含义是「所有继承了写端的进程都关掉了它」——那是一群**不属于这次调用**的
+ * 进程共同决定的事。任何经 shell 派生、又脱离父子关系活下去的进程都能永久扣住它，
+ * 而起后台服务的脚本正是这个形状，且那是脚本**正确**的行为：服务本来就该留下。
+ *
+ * 本机实测（Windows / Git Bash，`bash -c 'echo hello; sleep 20 &'`）：
+ *
+ * ```
+ * [19ms]   stdout: "hello\n"
+ * [26ms]   proc.exited -> 0
+ * [2178ms] taskkill /F /T /PID → ERROR: The process not found   ← 树已散，够不着孤儿
+ * [6014ms] EOF 仍未到达
+ * ```
+ *
+ * 拿 EOF 当判据的代价不止这一次调用：调用方不返回 → `run-control` 的 finally
+ * 不执行 → `runs.unregister` 不执行 → **整条会话此后回绝所有新任务，
+ * 而且用户点停止也停不下来**（停止只是 abort，停不掉一个不返回的 await），
+ * 直到重启服务。
+ *
+ * ## 退出之后为什么还要再等一小会儿
+ *
+ * 反过来「退出即收手」会静默吞字节：内核缓冲里可能还压着最后一截。
+ * 所以退出后给 `DRAIN_AFTER_EXIT_MS` 把它捞干净，到点仍无 EOF 就认定有后代扣着
+ * 写端，取消读端并如实报 `backgroundHeld`。
+ */
+export async function collectProcess(
+  proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  opts: CollectOptions = {},
+): Promise<CollectedProcess> {
+  const text: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' }
+  let timedOut = false
+  let backgroundHeld = false
+  // 类型从 `getReader()` 本身推：直接写 `ReadableStreamDefaultReader` 会取到
+  // Bun 的那个全局声明（多一个 `readMany`），与 `node:stream/web` 的那个对不上。
+  const readers: ReturnType<ReadableStream<Uint8Array>['getReader']>[] = []
+
+  // 用显式 reader 而不是 `for await`：后者把流锁在循环里，收尾时外面调
+  // `stream.cancel()` 直接抛 `locked`；而不 cancel、只是丢开这个 promise 的话，
+  // 孤儿进程往管道里写多少，这里就涨多少——那是内存泄漏。
+  const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
+    const reader = stream.getReader()
+    readers.push(reader)
+    const decoder = new TextDecoder()
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const decoded = decoder.decode(value, { stream: true })
+        text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
+        if (opts.maxChars !== undefined && text[channel].length >= opts.maxChars) {
+          // **必须 cancel，不能只 break。** 读端还开着的话写端写满就阻塞，
+          // 进程永远退不出——那等于把输出上限变成一个新的挂死点。
+          await reader.cancel().catch(() => {})
+          break
+        }
+      }
+    } finally {
+      const tail = opts.onEnd?.(channel)
+      if (tail) text[channel] += tail
+    }
+  }
+
+  const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
+
+  // 超时与中断都走**树杀**：我们起的是一个 shell 或一个会派生子进程的程序，
+  // 只杀它自己的话，干活的那个还活着（详见 `killTree`）。
+  const timer =
+    opts.timeoutMs === undefined
+      ? null
+      : setTimeout(() => {
+          timedOut = true
+          killTree(proc)
+        }, opts.timeoutMs)
+  const onAbort = () => killTree(proc)
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+
+  try {
+    const exitCode = await proc.exited
+    const drained = await Promise.race([
+      pumping.then(() => true),
+      Bun.sleep(DRAIN_AFTER_EXIT_MS).then(() => false),
+    ])
+    if (!drained) {
+      backgroundHeld = true
+      for (const reader of readers) await reader.cancel().catch(() => {})
+      await pumping
+    }
+    return { exitCode, stdout: text.stdout, stderr: text.stderr, timedOut, backgroundHeld }
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onAbort)
+  }
 }
