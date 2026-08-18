@@ -230,6 +230,64 @@
   font-size: var(--fs-sm);
 }
 
+/*
+ * 这条会话在跑：五个小方块排成一条，一个接一个提亮扫过去。
+ *
+ * **不用转圈。** 转圈是「请等一下」，而这里要说的是「它还在动」——余光里能看见
+ * 有东西在走就够了，不该在一列文字旁边多一个占位的图标（会话流里那颗刚拿掉）。
+ * 方块比圆点更像「进度」，也和读数条那条星河条是同一族形状，只是小一号。
+ *
+ * 钉在行尾（`margin-left: auto`），不占标题的位置：标题该截断就截断，
+ * 这条不收缩。**尺寸写死**——它出现和消失时行高不能变，否则每跑一轮左栏抖一下。
+ */
+.conv-run {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  height: 4px;
+}
+.conv-run > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: currentcolor;
+  opacity: 0.25;
+  animation: conv-run 1.2s ease-in-out infinite;
+}
+.conv-run > span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.conv-run > span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.conv-run > span:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.conv-run > span:nth-child(5) {
+  animation-delay: 0.48s;
+}
+/* 亮的那一档只占整个周期的一小段：五个方块同时半亮的话读成一条静止的虚线，
+   而不是有东西在走。 */
+@keyframes conv-run {
+  0%,
+  55%,
+  100% {
+    opacity: 0.25;
+  }
+  25% {
+    opacity: 1;
+  }
+}
+/* 关掉动效时不留一条忽明忽暗的虚线：整条恒定半亮，仍然说明「这条在跑」。 */
+@media (prefers-reduced-motion: reduce) {
+  .conv-run > span {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
 /* 项目行和它下面的会话之间、以及项目与项目之间，都留 2px。
    不留的话高亮底色会连成一整块，看不出这是几条独立的行——
    `.nav-list` 里本来就是这个间距，这里只是把同一条规矩补到外面这一层。 */
@@ -409,6 +467,11 @@
   color: var(--danger);
   font-size: var(--fs-xs);
   line-height: 1.5;
+}
+/* 「重试」跟在那句话后面，同一行。它是这一栏取不到清单时唯一的出路——
+   不给的话用户只能重启应用。 */
+.side-error .ghost-btn {
+  margin-left: var(--s-2);
 }
 
 /* 左内距与 lead / scroll 一致（`--s-2`），否则齿轮图标比上面那些偏右 4px。 */
