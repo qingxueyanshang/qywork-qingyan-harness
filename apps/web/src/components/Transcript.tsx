@@ -7,7 +7,6 @@ import {
   createSignal,
   For,
   Match,
-  on,
   onCleanup,
   onMount,
   Show,
@@ -43,13 +42,21 @@ import { TodoList } from './TodoList.tsx'
 /**
  * 会话流。
  *
- * 自动滚动只在用户本来就贴着底部时才跟随——往上翻历史时被强行拽回底部是最恼人的
- * 交互之一，而模型输出期间这会每秒发生几十次。
+ * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
+ * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
+ * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠下面那条贴底跟随。
  */
 export function Transcript() {
   let scroller!: HTMLDivElement
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
+  /**
+   * 我们自己写下去的那个 scrollTop（写完读回来的值）。`-1` = 还没写过。
+   *
+   * **必须读回来**：写下去的目标会被浏览器夹到 `scrollHeight - clientHeight`，
+   * 记着没夹过的那个数，下面那句「这次滚动是我自己写的」永远判不成立。
+   */
+  let followTop = -1
 
   // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
   // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
@@ -57,36 +64,51 @@ export function Transcript() {
     reconcileRenderItems(prev, buildRenderItems(state.transcript)),
   )
 
+  const stickToBottom = () => {
+    scroller.scrollTop = scroller.scrollHeight
+    followTop = scroller.scrollTop
+  }
+
   /*
-   * 判据是**真的贴在底**，不是「离底不到 80px」。
+   * 跟不跟随，**只由用户的手势改，不由某一次滚动事件里的几何决定**。
    *
-   * 下面那个跟随在流式期每秒要写几十次 `scrollTop`，而 80px 的容差把「用户主动往上
-   * 滚了几十像素」和「贴着底」判成同一件事：用户在底部这一段里的每一次手势都会在
-   * 下一帧被覆盖，表现就是划不动、卡在那儿，流一停又能划了。容差只留给分数像素。
+   * 这是这块面板修过三次都没修掉的那个根因：判据原来只是「这次事件里离底多少」，
+   * 而滚动事件不保证在几何稳定的那一刻到达——我们补偿完写下去的那次滚动，它的事件
+   * 排在下一帧，而那一帧可能已经又落了一段内容。于是处理器读到的是
+   * 「新的 scrollHeight ＋ 旧的 scrollTop」= 离底几十像素，被判成「用户往上翻了」，
+   * 跟随就此关掉；关掉之后离底只会越来越大，**再也不会自己回来**。
+   *
+   * 实测（真服务真前端，假 provider 驱动一轮四步：`.probe-ws`）：跟随在第 5 秒关掉，
+   * 之后 379 个安静帧稳定停在离底 253px——新来的内容全在视口下面，读数条被顶出屏幕。
+   * 上一版拿 `position: sticky` 把读数条粘住，粘住的只是那一条：滚动位置照旧漂在
+   * 离底两百多像素，正文照旧看不见，而「跳」换成了「每次内容变矮时猛地对回来一下」。
+   *
+   * 所以先认出自己写的那次滚动并放过它（`mine`），剩下的才是用户真的动了手。
+   * 容差 2px 只留给分数像素（scrollTop 是小数，另两个是整数）。
    */
   const onScroll = () => {
+    const mine = Math.abs(scroller.scrollTop - followTop) < 1
     const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-    setPinned(gap <= 2)
+    setPinned(mine || gap <= 2)
   }
 
   /*
    * 贴着底时让新内容跟着走。触发条件是**内容的真实高度变了**，不是「store 里某几个
-   * 字段变了」：折叠随状态自动开合（`.fold-pre` 一次就是 200px）、markdown 限速重解析
-   * 要晚 60ms 才落地、工具卡跑完才填进参数表和输出——盯字段的话这些全都追不上，
-   * 新来的字停在视口下面看不见。
+   * 字段变了」：markdown 限速重解析要晚 60ms 才落地、工具卡跑完才填进参数表和输出、
+   * 图片解码完才占位——盯字段的话这些全都追不上，新来的字停在视口下面看不见。
    *
    * ResizeObserver 的回调在布局之后、绘制之前跑，所以补偿这一帧就完成，
    * 中间那一帧不会画出去。
    *
-   * **它不负责读数条的位置**：那条由 CSS 钉在底边（`transcript.css` 里的
-   * `.transcript-inner > .run-strip:not(.done)`）。滚动补偿追不住一个每帧都在变的
-   * 高度，追出来的就是上下跳。
+   * **两个盒子都要盯。** 内容长高是一件事，而滚动区自己变矮（窗口缩了、输入框长高）
+   * 同样把末尾内容推到视口下面，那时 `inner` 的高度一个像素都没动，只盯它就漏了。
    */
   onMount(() => {
     const ro = new ResizeObserver(() => {
-      if (pinned()) scroller.scrollTop = scroller.scrollHeight
+      if (pinned()) stickToBottom()
     })
     ro.observe(inner)
+    ro.observe(scroller)
     onCleanup(() => ro.disconnect())
   })
 
@@ -321,26 +343,6 @@ function Fold(props: {
   /** 终态字样。**成功不写字**——一屏几十行全是「成功」等于没有信息。 */
   statusWord?: string
   target?: string
-  running?: boolean
-  /**
-   * 跟着状态自动开合：跑起来展开、跑完收起。
-   *
-   * **不是 `open={props.running}` 直绑。** 直绑的话用户在跑的过程中点不动它——
-   * 每次重渲染都会被拉回去。这里只在**状态翻转的那一刻**写一次，
-   * 中间用户自己点开或点合，以用户的为准，直到下一次翻转。
-   *
-   * 不给这个 prop 的折叠维持原样：默认收起、全靠手点。
-   */
-  autoOpen?: boolean
-  /**
-   * 展开之后组头**不再转圈**。
-   *
-   * 只给工具组用：展开后正在跑的那张卡自己在转，组头再转一个说的是同一件事，
-   * 而下面那个还指明了是哪一条。收起时组头仍要转——那时组内看不见，它是唯一的信号。
-   *
-   * 单张工具卡不能开这个：它展开后里面是参数和输出，没有第二个转圈接手。
-   */
-  quietWhenOpen?: boolean
   /**
    * 改了多少行。**钉在行尾，不进文本槽**——文本槽负责单行省略，
    * 目标一长这两个数就会跟着被截掉，而它们是定宽的事实。
@@ -352,24 +354,26 @@ function Fold(props: {
   superseded?: boolean
   children: JSX.Element
 }) {
-  const [open, setOpen] = createSignal(props.autoOpen === true)
-  createEffect(
-    on(
-      () => props.autoOpen,
-      (v) => {
-        if (v !== undefined) setOpen(v)
-      },
-    ),
-  )
-
+  /*
+   * **开合只由用户点，谁都不许替他开、替他合。**
+   *
+   * 原来这里有个 `autoOpen`：思考跑起来自动展开、跑完自动收起，工具组同理。它是会话流
+   * 「一直上下跳动」的根——`.fold-pre` 一次开合就是 200px，而一轮里有好几段思考、
+   * 好几组命令，于是内容高度在跑的过程中反复变矮又变高。实测一轮四步：会话流高度
+   * 变矮 5 次，幅度 58 / 82 / 122 / 146 / 191px（`.probe-ws` 那份探针）。
+   * 贴着底看的人被这几百像素来回甩，而他一个字都没点。
+   *
+   * 收起态并不少信息：思考那条的标签里带着**实时更新的正文摘要**，工具组的标题写着
+   * 干了什么。要看全的自己点开——点开之后也不会被自动合上。
+   *
+   * 开合完全归 `<details>` 自己管：这里不留 open 信号，也就没有第二本账。
+   */
   return (
     <details
       class="fold"
-      open={open()}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
       classList={{ 'fold-dim': props.dim, failed: props.failed, superseded: props.superseded }}
     >
-      {/* 一整行不换行：文本槽负责省略，右侧的箭头与转圈不收缩。 */}
+      {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
       <summary class="fold-head">
         <span class="fold-summary">
           <span class="fold-label">{props.label}</span>
@@ -393,9 +397,6 @@ function Fold(props: {
             )}
           </Show>
         </span>
-        <Show when={props.running && !(props.quietWhenOpen && open())}>
-          <span class="fold-spin" />
-        </Show>
       </summary>
       <div class="fold-body">{props.children}</div>
     </details>
@@ -414,8 +415,8 @@ function ThinkingFold(props: { item: TranscriptItem }) {
    * 思考块自己滚到底。
    *
    * `.fold-pre` 是**内层滚动容器**（max-height 200px），会话流那个「贴着底就跟随」
-   * 的效果只作用在外层。于是跑着的时候它自动展开了，但停在第一屏——新来的字
-   * 一直往下堆在看不见的地方，看起来像卡住了。
+   * 只作用在外层。用户在思考还在流的时候点开它，不跟随的话它停在第一屏——
+   * 新来的字一直往下堆在看不见的地方，看起来像卡住了。
    *
    * 只在流式期跟随：停下来之后用户往回翻，不该被拽回底部（那正是外层刻意避免的）。
    */
@@ -426,7 +427,7 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   })
 
   return (
-    <Fold dim autoOpen={streaming()} label={preview() ? `${verb()} — ${preview()}` : verb()}>
+    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()}>
       <pre class="fold-pre" ref={pre}>
         {props.item.text}
       </pre>
@@ -637,19 +638,12 @@ function compactionFailureLabel(code: string | undefined): string {
 
 function ToolGroup(props: { members: TranscriptItem[] }) {
   const tools = () => props.members.filter((m) => m.kind === 'tool')
-  const running = () => tools().some((t) => t.status === 'running')
   const failed = () => tools().some((t) => t.status === 'failure')
 
   // 组头文案里已经带了「，N 个失败」，右侧不再挂一个计数——
   // 那个数字回答不了任何问题，只是把行尾占满。
   return (
-    <Fold
-      failed={failed()}
-      running={running()}
-      autoOpen={running()}
-      quietWhenOpen
-      label={groupTitle(props.members)}
-    >
+    <Fold failed={failed()} label={groupTitle(props.members)}>
       <div class="fold-group">
         <For each={props.members}>
           {(m) => (
@@ -669,7 +663,6 @@ function ToolCard(props: { item: TranscriptItem }) {
     <Fold
       failed={props.item.status === 'failure'}
       superseded={props.item.superseded === true}
-      running={props.item.status === 'running'}
       label={actionLabel(props.item)}
       statusWord={statusWord(props.item.status)}
       {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}

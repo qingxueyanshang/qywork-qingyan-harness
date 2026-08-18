@@ -37,13 +37,10 @@
   margin: 0 auto;
   /* 横向边距 = 输入区的 s-5 再加 `--composer-text-inset`：对齐的是输入框里的
      文字列，不是它的边框（理由写在 tokens.css 那个变量上）。 */
-  /* 底部留白比顶部大：它同时是「最后一条离输入框多远」。放在这里而不是输入区的
-     padding-top——理由写在 `.composer-wrap` 上。 */
+  /* 底部留白比顶部大：它同时是「最后一条离输入框多远」，也就是贴到底的时候读数条
+     和输入框之间那段距离。放在这里而不是输入区的 padding-top——理由写在
+     `.composer-wrap` 上。 */
   padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
-  /* 内容不满一屏时也撑满视口高度：跑着的那条读数条靠上方的剩余空间钉在底部，
-     没有剩余空间就没得钉（见 `.transcript-inner > .run-strip:not(.done)`）。
-     border-box 下 100% 已含上下内边距，所以撑满**不产生**滚动。 */
-  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -412,22 +409,6 @@
   color: var(--danger);
 }
 
-/* 运行中的转圈：12px 圆环，0.7s 匀速。停在行尾，不占文本槽。 */
-.fold-spin {
-  flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid currentcolor;
-  border-top-color: transparent;
-  border-radius: var(--r-full);
-  animation: fold-spin 0.7s linear infinite;
-}
-@keyframes fold-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* 思考这类背景信息压暗一档，hover 恢复。 */
 .fold-dim > .fold-head {
   opacity: 0.5;
@@ -653,41 +634,17 @@
   white-space: nowrap;
 }
 
-/* 跑着的时候，底部留白改由读数条自己带（见下一条）。总高不变，读数条离输入框的
-   距离也不变——只是那段留白归进了读数条的盒子，它粘住时背景才铺得到滚动区底边。 */
-.transcript-inner:has(> .run-strip:not(.done)) {
-  padding-bottom: 0;
-}
-
 /*
- * 还在跑的那一条钉在会话流底边：它的屏幕位置**既不由内容高度决定，也不由滚动位置
- * 决定**。
+ * 还在跑的那一条**没有自己的定位规则**，它就是流里的最后一条内容。
  *
- * 思考折叠跑起来自动展开、跑完自动收起，`.fold-pre` 一次开合就是 200px；而等结果
- * 的时候用户看的就是这一条（秒数在跳、阶段在变）。位置跟着内容走的话，每次开合它
- * 就上下弹一次，秒数还没读完位置已经换了。
+ * 不要再往它身上加 `position: sticky` / `margin-top: auto` / 自带的下内边距。
+ * 那三样都试过，试出来的是同一类毛病：读数条被钉在屏幕底边，而滚动位置照旧漂在
+ * 离底两百多像素——粘住的只是这一条，新来的正文还在视口下面看不见（实测数据写在
+ * `Transcript.tsx` 的 `onScroll` 上面）。
  *
- * 两条缺一不可：
- * - `margin-top: auto` 吃掉上方剩余空间（由 `.transcript-inner` 的 `min-height: 100%`
- *   保证）——内容不满一屏时它就已经在底边。
- * - `position: sticky` 管内容超过一屏之后：新内容再长也把它推不下视口底边，用户往回
- *   翻历史时它也留在原地。**不要改成靠滚动补偿去追**——补偿总要等高度已经变完才
- *   发生，中间那一帧就是一次跳动，这条修过一次没修掉。
- *
- * 粘停位置与自然位置必须重合，差多少就跳多少：下内边距（= 原来的 2px 外边距 +
- * `.transcript-inner` 的底部留白）让它的下边缘正好压在滚动区底边上，`bottom: 0`
- * 的位移于是恒为 0。背景铺满整个盒子——粘住时上面的内容会从它下面穿过去。
- *
- * **跑完的那些条目不许加**：读数要留在它那一轮的最后一步下面，不是留在屏幕底下。
+ * 「内容长了不把它顶出视口」由那边的贴底跟随负责；它离输入框那段固定距离由
+ * `.transcript-inner` 的下内边距给。位置的事归 JS，留白的事归 CSS，不要换手。
  */
-.transcript-inner > .run-strip:not(.done) {
-  position: sticky;
-  bottom: 0;
-  margin-top: auto;
-  margin-bottom: 0;
-  padding-bottom: calc(var(--s-8) + 2px);
-  background: var(--bg-app);
-}
 
 .run-galaxy {
   position: relative;
