@@ -318,20 +318,10 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
     case 'git.state':
       // 这是**工作区级**事件，走全局广播（没有会话可归属，总线对它一律放行）。
-      // 同时开着多个项目时，别的项目那份状态到了这里必须丢掉——
-      // 它的分支名和改动数看起来完全合理，盖上去没人会怀疑它是别人的。
+      // 同时开着多个项目时，别的项目那份分支名到了这里必须丢掉——
+      // 它看起来完全合理，盖上去没人会怀疑它是别人的。
       if (ev.workspaceId !== workspace()?.id) return
-      setState('git', {
-        workspaceId: ev.workspaceId,
-        branch: ev.branch,
-        upstream: ev.upstream,
-        ahead: ev.ahead,
-        behind: ev.behind,
-        staged: ev.staged,
-        unstaged: ev.unstaged,
-        untracked: ev.untracked,
-        conflicted: ev.conflicted,
-      })
+      setState('git', { workspaceId: ev.workspaceId, branch: ev.branch })
       return
 
     case 'permission.request':
@@ -704,28 +694,16 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     // 思考在这批工具**之前**发生，位置就在工具卡上面。id 由 step id 派生：
     // 每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
     if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
-    /*
-     * **没有 action 就不出这一行。**
-     *
-     * action 是这张卡的全部标题（动词 + 对象 + 目标），`ToolSpec` 上
-     * `actionKind` / `objectLabel` 都是必填，所以注册过的工具一定给得出来。
-     * 拼不出的只有一种：**崩溃恢复落终态时把 payload 整份盖掉的那些旧行**
-     * （store 的 `settleRunningSteps` 现在只写 outcome，新的不会再有）。
-     *
-     * 那种行渲染出来是一个空标题加一个红「失败」——既看不出是哪一步，
-     * 又和这一轮末尾读数条上那句「上次进程在工具执行期间退出」说的是同一件事。
-     * 一件事两处说，而其中一处什么也没说清。所以这里不出行，那句话由读数条负责。
-     *
-     * **不要在这里回落成工具名或「未知动作」**：那是给同一件事再造一套显示，
-     * 而它唯一能表达的东西读数条已经表达过了。
-     */
-    if (!s.payload?.action) return out
+    // action 来自后端落库的解析结果，是这张卡的全部标题（动词 + 对象 + 目标）。
+    // **`ToolSpec` 上 `actionKind` / `objectLabel` 都是必填，所以它一定在**——
+    // 别为「万一没有」加回落：回落成 `execute` 的话，刷新一次页面一整轮的读文件
+    // 全变成「执行」；回落成工具名则是给同一件事再造一套显示。
     out.push({
       id: s.id,
       kind: 'tool',
       text: '',
       toolName: s.toolName ?? '',
-      action: s.payload.action,
+      ...(s.payload?.action ? { action: s.payload.action } : {}),
       ...(s.payload?.args ? { args: s.payload.args } : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),
