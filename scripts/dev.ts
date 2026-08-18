@@ -31,14 +31,15 @@
 
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
+import { killTree } from '../packages/tools/src/sandbox.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
 /** 每次开发会话现生成一个。不写死在仓库里——那就是一个入库的凭证。 */
 const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
 
-/** 端口被占就直接说，不偷偷换一个——换了 WebView 手里那份 base 就是错的。 */
-async function portTaken(port: number): Promise<boolean> {
+/** 那个端口上有没有一个**能应答的** qywork。用来等就绪，不用来判占用。 */
+async function answers(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
       signal: AbortSignal.timeout(800),
@@ -49,9 +50,31 @@ async function portTaken(port: number): Promise<boolean> {
   }
 }
 
-if (await portTaken(PORT)) {
+/**
+ * 端口绑不绑得上。
+ *
+ * **判占用只能按「绑得上吗」，不能按「有没有人应答」。** 两者只在一种情况下不同，
+ * 而那种情况天天发生：上一次跑留下的子进程**继承了监听句柄**——它不应答任何请求，
+ * 但端口攥在它手里。按应答判会认为端口是空的，于是一路走到 `Bun.serve` 抛
+ * EADDRINUSE，糊一屏栈；`netstat` 里显示的还是那个已经退出的 PID，看着像
+ * 「没人占着却起不来」。
+ */
+async function bindable(port: number): Promise<boolean> {
+  try {
+    Bun.listen({ hostname: '127.0.0.1', port, socket: { data() {} } }).stop(true)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 端口被占就直接说，不偷偷换一个——换了 WebView 手里那份 base 就是错的。 */
+if (!(await bindable(PORT))) {
   process.stderr.write(
-    `端口 ${PORT} 上已经有东西在跑。先把它停掉，或用 QYWORK_PORT=<别的端口> 重来。\n`,
+    (await answers(PORT))
+      ? `端口 ${PORT} 上已经有一个 qywork 在跑。先把它停掉，或用 QYWORK_PORT=<别的端口> 重来。\n`
+      : `端口 ${PORT} 被一个不应答的进程占着——多半是上一次跑留下的子进程继承了监听句柄，` +
+          `netstat 里那个 PID 可能已经不存在了。把它收掉，或用 QYWORK_PORT=<别的端口> 重来。\n`,
   )
   process.exit(1)
 }
@@ -78,6 +101,10 @@ const agent = Bun.spawn(
     // 只绑本机：局域网接入由应用内显式开启，开发脚本不替用户做这个决定。
     '--host',
     '127.0.0.1',
+    // 这个脚本被硬关（关窗口、任务管理器）时它自己也退。少了这条，
+    // 下面那个 stopAll 根本没机会跑，sidecar 会带着一串后台进程活下来。
+    '--parent-pid',
+    String(process.pid),
     // **不传 --cwd**：传了就等于把这个仓库登记成项目，而开发时那正是我们不想要的
     // 默认（用户拿到的第一个项目会是 qywork 的源码树）。不传则由服务端决定——
     // 账本里有项目就用最近打开的，一个都没有才建默认工作区。
@@ -87,14 +114,14 @@ const agent = Bun.spawn(
 
 /** 等它真的能应答再拉外壳——否则 WebView 首屏会先闪一个「未配对」。 */
 const deadline = Date.now() + 30_000
-while (!(await portTaken(PORT))) {
+while (!(await answers(PORT))) {
   if (agent.exitCode !== null) {
     process.stderr.write('[dev] sidecar 启动失败，见上面的输出\n')
     process.exit(1)
   }
   if (Date.now() > deadline) {
     process.stderr.write('[dev] sidecar 30 秒内没起来\n')
-    agent.kill()
+    killTree(agent)
     process.exit(1)
   }
   await Bun.sleep(200)
@@ -118,14 +145,20 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
   stdin: 'inherit',
 })
 
-/** 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。 */
+/**
+ * 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。
+ *
+ * **杀整棵树，不是只杀那一个进程。** sidecar 底下挂着模型用 `run_command` 起的
+ * 后台进程（`run.ps1 start` 那类），它们继承了 sidecar 的监听句柄：只杀 sidecar
+ * 的话端口攥在孙子手里不放，下次启动就是一句 EADDRINUSE。
+ */
 const stopAll = () => {
-  agent.kill()
-  shell.kill()
+  killTree(agent)
+  killTree(shell)
 }
 process.on('SIGINT', stopAll)
 process.on('SIGTERM', stopAll)
 
 const code = await shell.exited
-agent.kill()
+killTree(agent)
 process.exit(code)
