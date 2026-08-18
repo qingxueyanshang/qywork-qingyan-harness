@@ -587,8 +587,19 @@ export async function reloadActiveConversation(): Promise<void> {
       // 以下几项是 run 内的易失投影，账本里没有，重拉之后一律清空，
       // 等这条会话自己的事件把它们填回来。
       s.teamMembers = []
-      s.usage = null
       s.permission = null
+      /*
+       * **用量跟着那一轮走，不清空。**
+       *
+       * 它不属于上面那几项：`runs` 行有这一列，而且是每收到一次 provider 的
+       * usage 就写一次（`agent/loop.ts` 的 `saveUsage`），所以正在跑的那一轮
+       * 此刻累计了多少，这里读得到。
+       *
+       * 清成 null 的表现是：跑了一半重连或切回来，读数条上的 `↓入 ↑出 / 命中 /
+       * 金额` 整组消失，要等下一次模型调用回报 usage 才凭空长回来——一轮里
+       * 这一等可能是几分钟，用户看到的是「数字自己丢了又自己回来」。
+       */
+      s.usage = live?.usage ?? null
       // **待办从账本投影回来，不新增持久化路径。**
       // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。真源现成的：
       // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
