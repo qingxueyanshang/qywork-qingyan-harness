@@ -15,9 +15,9 @@ import {
   uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
+import { BranchPicker } from './BranchPicker.tsx'
 import {
   IconActivity,
-  IconBranch,
   IconFolder,
   IconPlus,
   IconSend,
@@ -387,12 +387,7 @@ export function Composer() {
           {/* 分支只在真是 git 仓库时出现——不是仓库的时候显示一个空分支
               等于告诉用户「这里本该有东西」。 */}
           <Show when={state.git?.branch}>
-            {(b) => (
-              <button class="mode-chip" type="button" onClick={() => openPanel('changes')}>
-                <IconBranch size={13} />
-                {b()}
-              </button>
-            )}
+            <BranchPicker />
           </Show>
         </div>
       </Show>

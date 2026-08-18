@@ -67,3 +67,47 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   const name = r.out.trim()
   return name || null
 }
+
+/** 本地分支。**只有名字和是不是当前那条**——界面上没有别的东西在问。 */
+export interface Branch {
+  name: string
+  current: boolean
+}
+
+/** 本地分支清单，不含远程分支：切到远程分支要先建本地跟踪分支，那是另一件事。 */
+export async function branches(cwd: string): Promise<Branch[]> {
+  const r = await git(cwd, ['for-each-ref', '--format=%(HEAD)%09%(refname:short)', 'refs/heads'])
+  if (!r.ok) return []
+  const out: Branch[] = []
+  for (const line of r.out.split('\n')) {
+    const [head, name] = line.split('\t')
+    if (!name) continue
+    out.push({ name, current: head === '*' })
+  }
+  return out
+}
+
+/**
+ * 切到另一条本地分支。
+ *
+ * **先在清单里核一遍名字再执行。** `name` 来自 HTTP，最终作为独立 argv 传给 git；
+ * 这不是 shell 注入（`git()` 收的是数组），但 git 自己会把以 `-` 开头的值按选项
+ * 解析——`--output=<path>` 那一档能让 git 往任意路径写文件。按清单核比按字符集
+ * 正面校验更严：能切过去的只有此刻真实存在的本地分支。
+ *
+ * 用 `switch` 而不是 `checkout`：后者的参数既可以是分支也可以是路径，
+ * 一个正好和分支同名的文件会让它去还原文件而不是切分支。
+ *
+ * **失败必须把 git 的原话带回去。** 本地改动会被覆盖时 git 会拒绝并列出是哪几个
+ * 文件——那句话就是用户要看的东西，翻译成「切换失败」等于把唯一的线索丢掉。
+ */
+export async function switchTo(
+  cwd: string,
+  name: string,
+): Promise<{ ok: boolean; message: string }> {
+  if (!(await branches(cwd)).some((b) => b.name === name)) {
+    return { ok: false, message: `没有这条本地分支：${name}` }
+  }
+  const r = await git(cwd, ['switch', name])
+  return r.ok ? { ok: true, message: '' } : { ok: false, message: r.err.trim() || '切换失败' }
+}
