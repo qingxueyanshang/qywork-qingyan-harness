@@ -9,6 +9,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
 
@@ -140,7 +141,9 @@ export const grepTool: ToolSpec = {
       const text = await readFile(abs, 'utf8').catch(() => null)
       if (text === null) return
       const rel = toPosix(relative(ctx.workspaceRoot, abs))
-      text.split('\n').forEach((line, i) => {
+      // 先去 CR：CRLF 文件里每行尾巴都拖着一个 `\r`，`foo$` 这类锚定模式会全部落空。
+      const rows = toLf(text).split('\n')
+      rows.forEach((line, i) => {
         if (lines.length >= MAX_RESULTS) return
         if (re.test(line)) lines.push(`${rel}:${i + 1}:${line.trim().slice(0, 400)}`)
       })
