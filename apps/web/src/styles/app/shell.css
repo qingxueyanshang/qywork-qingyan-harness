@@ -138,6 +138,10 @@
 .icon-btn {
   display: grid;
   place-items: center;
+  /* **不许被压。** 28px 是这颗按钮的定义，而 flex 子项默认 `flex-shrink: 1`——
+     放进输入区那条工具栏里，一挤就连图标一起缩，一排按钮各自变形。
+     该让的是旁边的 `.spacer` 和会得截断的模型名，不是它。 */
+  flex: none;
   width: 28px;
   height: 28px;
   border-radius: var(--r-xs);

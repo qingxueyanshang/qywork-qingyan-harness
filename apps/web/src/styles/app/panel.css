@@ -181,6 +181,24 @@
   display: none;
 }
 
+/*
+ * 面板里所有「一列行」的滚动容器**都要预留滚动条的槽**。
+ *
+ * 不预留的代价是：内容一超过一屏，那条 12px 的经典滚动条就地从内容宽里切走
+ * ——行被压窄、右对齐的读数（变更列表的 `+N −M`）被压进滚动条底下，而滚动条
+ * 出现/消失那一下整列还会横向跳一格。
+ *
+ * 用 `stable` 而不是 `stable both-edges`：这几列都是左对齐的行，左边再留一道
+ * 空槽只是白占面板本来就不宽的横向空间。会话流那边用 both-edges 是因为它的正文
+ * 居中，两侧不对称会把中线推歪（见 transcript.css）。
+ */
+.tree.tree-top,
+.tree-hits,
+.change-list,
+.preview-board {
+  scrollbar-gutter: stable;
+}
+
 .side-body {
   flex: 1;
   /* 同 .transcript：不写 0 的话这一块会把整个面板撑破，overflow 形同虚设。 */
