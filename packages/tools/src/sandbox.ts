@@ -1039,6 +1039,93 @@ export function killTree(proc: { pid: number; kill(): void }): void {
  */
 const DRAIN_AFTER_EXIT_MS = 200
 
+/**
+ * 代码页号 → `TextDecoder` 认得的标签。
+ *
+ * 只列需要改名的那几个：Bun 不认 `windows-936` / `x-cp936`，认 `gb18030`。
+ * 没列的按 `windows-<页号>` 拼（1250–1258 那一族），拼不出来的落回 UTF-8。
+ */
+const CODE_PAGE_LABELS: Record<string, string> = {
+  '932': 'shift_jis',
+  '936': 'gb18030',
+  '949': 'euc-kr',
+  '950': 'big5',
+  '65001': 'utf-8',
+}
+
+/** 探测结果只算一次：代码页是机器属性，不随调用变。 */
+let cachedCharset: string | null = null
+
+/**
+ * 按运行时算出来的标签造解码器。
+ *
+ * Bun 把标签类型窄成了一个字面量联合，而代码页是现算的，落不进那个联合。
+ * **断言的正当性由构造本身提供**：认不出的标签在这里当场抛，调用方接住后落回 UTF-8，
+ * 不会有一个假标签活到解码那一步。
+ */
+function decoderFor(label: string): TextDecoder {
+  return new TextDecoder(label as ConstructorParameters<typeof TextDecoder>[0])
+}
+
+/**
+ * 本机原生程序按哪个字符集往管道里写字节。
+ *
+ * Windows 下读注册表的 ACP——`chcp` 拿到的是控制台代码页，而 sidecar 被外壳拉起时
+ * 根本没有控制台，那条路会时灵时不灵。探不到、拼不出、或者不是 Windows，
+ * 一律当 UTF-8：那是改动之前的行为，不会比现在更差。
+ */
+function consoleCharset(): string {
+  if (cachedCharset !== null) return cachedCharset
+  cachedCharset = 'utf-8'
+  if (process.platform !== 'win32') return cachedCharset
+  try {
+    const out = Bun.spawnSync([
+      'reg',
+      'query',
+      'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage',
+      '/v',
+      'ACP',
+    ])
+    const page = new TextDecoder().decode(out.stdout).match(/ACP\s+REG_SZ\s+(\d+)/)?.[1]
+    if (!page) return cachedCharset
+    const label = CODE_PAGE_LABELS[page] ?? `windows-${page}`
+    // 认不认由 TextDecoder 自己说了算，别在这里维护第二份「支持哪些」的清单。
+    decoderFor(label)
+    cachedCharset = label
+  } catch {
+    // 保持 utf-8
+  }
+  return cachedCharset
+}
+
+/**
+ * 子进程输出的解码器。
+ *
+ * **不许钉死 UTF-8。** Windows 上原生程序按系统代码页出字节（实测 `powershell`、
+ * mingw 的 `curl` 都是 GBK），按 UTF-8 解出来是一屏 U+FFFD——而模型会拿那屏东西
+ * 当事实用，据此做出错误判断再花一整轮去证伪。**也不许钉死代码页**：
+ * 同一台机器上 node、带 `PYTHONIOENCODING` 的 python 出的是 UTF-8。
+ *
+ * 判据是字节本身：严格 UTF-8 解码器对跨片的半个字符不抛（`{ stream: true }` 会把
+ * 它留在内部缓冲里），只对真正非法的序列抛。抛了就说明这条流不是 UTF-8。
+ *
+ * **判定之后不再回头。** 两种编码在一条流里交替不是真实场景，而来回切换会把跨片
+ * 字符切碎。代价是切换那一刻缓冲里至多三个字节的半个字符会丢——不为它加第二套缓冲。
+ */
+export function makeOutputDecoder(): (chunk: Uint8Array) => string {
+  const utf8 = new TextDecoder('utf-8', { fatal: true })
+  let fallback: TextDecoder | null = null
+  return (chunk) => {
+    if (fallback) return fallback.decode(chunk, { stream: true })
+    try {
+      return utf8.decode(chunk, { stream: true })
+    } catch {
+      fallback = decoderFor(consoleCharset())
+      return fallback.decode(chunk, { stream: true })
+    }
+  }
+}
+
 export interface CollectedProcess {
   exitCode: number
   stdout: string
@@ -1121,12 +1208,12 @@ export async function collectProcess(
   const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
     const reader = stream.getReader()
     readers.push(reader)
-    const decoder = new TextDecoder()
+    const decode = makeOutputDecoder()
     try {
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
-        const decoded = decoder.decode(value, { stream: true })
+        const decoded = decode(value)
         text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
         if (opts.maxChars !== undefined && text[channel].length >= opts.maxChars) {
           // **必须 cancel，不能只 break。** 读端还开着的话写端写满就阻塞，
