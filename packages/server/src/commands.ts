@@ -49,6 +49,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
           conversationId: updated.id,
           model: updated.model,
           title: updated.title,
+          updatedAt: updated.updatedAt,
         },
         cmd.conversationId,
       )

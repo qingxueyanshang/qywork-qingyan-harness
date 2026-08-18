@@ -325,6 +325,48 @@ export function activeModel(): string | null {
   return state.conversations.find((c) => c.id === id)?.model ?? null
 }
 
+/** 重命名。空标题的校验只在服务端（422 且不落盘），两边各写一份必然漂移。 */
+export async function renameConversation(id: string, title: string): Promise<void> {
+  const { conversation } = await client.api<{ conversation: Conversation }>(
+    `/api/conversations/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify({ title }) },
+  )
+  setState(
+    produce((s) => {
+      const conv = s.conversations.find((c) => c.id === id)
+      if (conv) conv.title = conversation.title
+    }),
+  )
+}
+
+/** 归档：只从列表里去掉，服务端一条数据不删。 */
+export async function archiveConversation(id: string): Promise<void> {
+  await client.api(`/api/conversations/${encodeURIComponent(id)}/archive`, { method: 'POST' })
+  await dropConversation(id)
+}
+
+/** 删除：服务端是硬删，消息、run、步骤一并没了。 */
+export async function deleteConversation(id: string): Promise<void> {
+  await client.api(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  await dropConversation(id)
+}
+
+/**
+ * 从列表里摘掉一条，并保证还有一条是活动的。
+ *
+ * 摘掉的正是当前那条时，**必须先把 `activeConversation` 置空再重拉**：
+ * `loadConversations` 见有活动会话就直接返回，不置空的话界面停在一条
+ * 已经不存在的会话上，随后每条请求都 404。
+ */
+async function dropConversation(id: string): Promise<void> {
+  const wasActive = state.activeConversation === id
+  setState('conversations', (list) => list.filter((c) => c.id !== id))
+  if (!wasActive) return
+  setState({ activeConversation: null, transcript: [], fileChanges: [], error: null })
+  client.subscribe([])
+  await loadConversations()
+}
+
 export async function newConversation(): Promise<void> {
   const { conversation } = await client.api<{ conversation: Conversation }>('/api/conversations', {
     method: 'POST',

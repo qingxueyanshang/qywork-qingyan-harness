@@ -82,6 +82,21 @@ export interface Conversation {
   updatedAt: number
 }
 
+/** 侧栏那一行放得下的字数。 */
+const TITLE_MAX = 30
+
+/**
+ * 从第一条用户消息派生标题：取首行、压空白、截断。
+ *
+ * 空正文回空串，**不要造假标题**（「图片」之类）——空串由界面兜底成「新对话」。
+ */
+export function deriveConversationTitle(prompt: string): string {
+  const line = (prompt.split('\n', 1)[0] ?? '').replace(/\s+/g, ' ').trim()
+  // 按字符截：slice 会把代理对（emoji）劈成半个字符。
+  const chars = [...line]
+  return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX).join('')}…` : line
+}
+
 export interface Message {
   id: MessageId
   conversationId: ConversationId

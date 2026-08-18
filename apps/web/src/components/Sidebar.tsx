@@ -12,6 +12,7 @@ import {
   toggleSidebar,
   workspace,
 } from '../lib/store/index.ts'
+import { ConversationRow } from './ConversationRow.tsx'
 import { IconPanel, IconPlus, IconSettings } from './Icons.tsx'
 import { NewProjectDialog } from './NewProjectDialog.tsx'
 import { ProjectRow } from './ProjectRow.tsx'
@@ -214,35 +215,22 @@ export function Sidebar(props: { onClose?: () => void }) {
                     <For each={state.conversations}>
                       {(c) => (
                         <li>
-                          <button
-                            class="nav-item conv"
-                            classList={{ active: c.id === state.activeConversation }}
-                            type="button"
-                            onClick={() => {
+                          <ConversationRow
+                            conversation={c}
+                            active={c.id === state.activeConversation}
+                            /*
+                             * **只有当前那条亮得起来**：客户端只订阅当前会话的事件
+                             * （`client.subscribe([id])`），别的会话在跑前端收不到任何
+                             * 消息。要让所有会话都能亮，得先改订阅口径，不是在这里补一个
+                             * 猜出来的状态。
+                             */
+                            running={c.id === state.activeConversation && state.running}
+                            onOpen={() => {
                               void selectConversation(c.id)
                               props.onClose?.()
                             }}
-                          >
-                            <span class="truncate">{c.title || '新对话'}</span>
-                            {/*
-                             * 这条会话正在跑。**只有当前那条亮得起来**：客户端只订阅
-                             * 当前会话的事件（`client.subscribe([id])`），别的会话在跑
-                             * 前端收不到任何消息。要让所有会话都能亮，得先改订阅口径，
-                             * 不是在这里补一个猜出来的状态。
-                             *
-                             * `aria-hidden`：它是会话流那条读数条的余光重复，
-                             * 屏幕阅读器已经从那边听到了。
-                             */}
-                            <Show when={c.id === state.activeConversation && state.running}>
-                              <span class="conv-run" aria-hidden="true">
-                                <span />
-                                <span />
-                                <span />
-                                <span />
-                                <span />
-                              </span>
-                            </Show>
-                          </button>
+                            onError={setError}
+                          />
                         </li>
                       )}
                     </For>

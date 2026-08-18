@@ -76,16 +76,21 @@ export type AgentEvent =
 // ─────────────────────────────── 会话 ───────────────────────────────
 
 /**
- * 会话属性变更（目前只有模型和标题）。
+ * 会话属性变更：模型、标题、最近修改时间。
  *
  * 必须走事件总线广播，不能只回给发起方：手机和桌面可能同时开着同一个会话，
  * 一端切了模型另一端还显示旧的，下一轮的实际用量和计价就对不上界面。
+ *
+ * **没有「会话被删 / 被归档」的事件**：没有消费端，加了就是死链路（C1 第 1 款）。
+ * 代价是另一端要刷新一次列表才看得到。
  */
 export interface ConversationUpdatedEvent {
   type: 'conversation.updated'
   conversationId: ConversationId
   model: string
   title: string
+  /** 账本里的 `updated_at`，侧栏那一行显示的就是它。 */
+  updatedAt: number
 }
 
 // ─────────────────────────────── run 生命周期 ───────────────────────────────

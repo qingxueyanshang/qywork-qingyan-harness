@@ -27,6 +27,7 @@ import {
   listConversations,
   listWorkspaces,
   Store,
+  setConversationTitle,
   upsertWorkspace,
 } from '@qywork/store'
 import { type ApiDeps, handleApi } from './index.ts'
@@ -38,6 +39,11 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
   return {
     store,
     wsId: ws.id,
+    // 会话那几条动作要用到这两个：删除前问一句「在跑吗」，重命名后广播一条。
+    // 只给这两个方法，不造一个真的 RunManager / EventBus——那会把这里变成集成测试，
+    // 而集成部分 `e2e.test.ts` 已经覆盖了。
+    runs: { isBusy: () => false },
+    bus: { publish: () => {} },
     enableLan: () => {
       lan = true
       return { port: 7788 }
@@ -747,5 +753,95 @@ describe('工具清单', () => {
       expect(row.objectLabel).not.toBe('不固定')
       if (row.actionKind === '不固定') expect(row.name).toBe('write_todos')
     }
+  })
+})
+
+/*
+ * 会话行上的三个动作：重命名 / 归档 / 硬删。
+ *
+ * 三条都会改账本，所以每一条的**拒绝路径**也要锁住——静默成功的写接口，
+ * 在界面上和「成功了但什么都没变」完全一样。
+ */
+describe('会话的重命名 / 归档 / 删除', () => {
+  const conv = (d: ApiDeps & { wsId: string }) =>
+    createConversation(d.store, { workspaceId: d.wsId as never, model: 'm' })
+
+  test('PATCH 改标题，回的是改完那一行', async () => {
+    const d = deps()
+    const c = conv(d)
+    const res = await call(
+      `/api/conversations/${c.id}`,
+      { method: 'PATCH', body: JSON.stringify({ title: '改过的名字' }) },
+      d,
+    )
+    expect(res?.status).toBe(200)
+    expect(getConversation(d.store, c.id)?.title).toBe('改过的名字')
+  })
+
+  /* 空名字在侧栏里会被兜底成「新对话」，用户会以为改名没生效。
+     所以回 422 且**不落盘**（校验先于落盘）。 */
+  test('空标题回 422 且不落盘', async () => {
+    const d = deps()
+    const c = conv(d)
+    setConversationTitle(d.store, c.id, '原来的名字')
+    const res = await call(
+      `/api/conversations/${c.id}`,
+      { method: 'PATCH', body: JSON.stringify({ title: '   ' }) },
+      d,
+    )
+    expect(res?.status).toBe(422)
+    expect(getConversation(d.store, c.id)?.title).toBe('原来的名字')
+  })
+
+  test('改一条不存在的会话回 404', async () => {
+    const res = await call('/api/conversations/cv_nope', {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'x' }),
+    })
+    expect(res?.status).toBe(404)
+  })
+
+  /* 归档只写标记：列表里没有了，按 id 仍然读得回。 */
+  test('归档之后不进列表，数据还在', async () => {
+    const d = deps()
+    const c = conv(d)
+    const res = await call(`/api/conversations/${c.id}/archive`, { method: 'POST' }, d)
+    expect(res?.status).toBe(200)
+    expect(listConversations(d.store, d.wsId as never).map((x) => x.id)).not.toContain(c.id)
+    expect(getConversation(d.store, c.id)).not.toBeNull()
+  })
+
+  /* 硬删是真删——这条锁的就是「删了就不在了」，不是「从列表里消失」。 */
+  test('DELETE 是硬删，账本里那一行没了', async () => {
+    const d = deps()
+    const c = conv(d)
+    const res = await call(`/api/conversations/${c.id}`, { method: 'DELETE' }, d)
+    expect(res?.status).toBe(200)
+    expect(getConversation(d.store, c.id)).toBeNull()
+  })
+
+  /*
+   * 正在跑的会话删不得：级联会把 run / step 删掉，而那一轮还在往里写。
+   * 这是唯一一种会留下悬空引用的形状，所以必须是拒绝，不是「尽力而为」。
+   */
+  test('正在执行的会话回 409，且那一行还在', async () => {
+    const d = deps()
+    const c = conv(d)
+    ;(d as { runs: unknown }).runs = { isBusy: () => true }
+    const res = await call(`/api/conversations/${c.id}`, { method: 'DELETE' }, d)
+    expect(res?.status).toBe(409)
+    expect(getConversation(d.store, c.id)).not.toBeNull()
+  })
+
+  test('删一条不存在的会话回 404，不静默成功', async () => {
+    const res = await call('/api/conversations/cv_nope', { method: 'DELETE' })
+    expect(res?.status).toBe(404)
+  })
+
+  /* GET 同一条路径不归这几条管：方法参与匹配，否则「读」会命中「写」的分支。 */
+  test('GET /api/conversations/:id 没人认领', async () => {
+    const d = deps()
+    const c = conv(d)
+    expect(await call(`/api/conversations/${c.id}`, undefined, d)).toBe(null)
   })
 })
