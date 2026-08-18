@@ -8,6 +8,7 @@ import {
   defaultMaskPaths,
   detectSandbox,
   killTree,
+  makeOutputDecoder,
   resolveBashPath,
   resolveCommandShell,
 } from './sandbox.ts'
@@ -626,4 +627,33 @@ describe('killTree', () => {
       killTree(proc)
     }
   }, 20_000)
+})
+describe('子进程输出解码', () => {
+  /** 「首页」两种编码的字节。GBK 那份是本机实测 `powershell` / mingw 的 `curl` 出的形状。 */
+  const GBK = new Uint8Array([0xca, 0xd7, 0xd2, 0xb3])
+  const UTF8 = new Uint8Array([0xe9, 0xa6, 0x96, 0xe9, 0xa1, 0xb5])
+
+  test('UTF-8 流原样解出', () => {
+    expect(makeOutputDecoder()(UTF8)).toBe('首页')
+  })
+
+  test('跨片的半个字符不被切碎 —— 半片不能触发切换', () => {
+    const decode = makeOutputDecoder()
+    expect(decode(UTF8.slice(0, 2))).toBe('')
+    expect(decode(UTF8.slice(2))).toBe('首页')
+  })
+
+  test('非法 UTF-8 不抛也不吞，切到本机代码页继续', () => {
+    const decode = makeOutputDecoder()
+    const got = decode(GBK)
+    expect(got.length).toBeGreaterThan(0)
+    // Windows 上代码页解得出真字符；别的平台落回改动前的行为（U+FFFD），不断言字形。
+    if (process.platform === 'win32') expect(got).not.toContain('\uFFFD')
+  })
+
+  test('判定之后不回头，后续片照常出字', () => {
+    const decode = makeOutputDecoder()
+    decode(GBK)
+    expect(decode(new Uint8Array([0x6f, 0x6b]))).toBe('ok')
+  })
 })

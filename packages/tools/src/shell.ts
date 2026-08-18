@@ -292,6 +292,17 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
   TERM: 'dumb',
   npm_config_yes: 'true',
   DEBIAN_FRONTEND: 'noninteractive',
+  /*
+   * python 的 stdout 编码器。
+   *
+   * 不设的话 Windows 上它按系统代码页编码（实测本机出 GBK），而模型写的脚本里
+   * 一个 `✓` 就会抛 `UnicodeEncodeError` 把整条命令打挂——不是输出难看，是那一步
+   * 的产出全没了。**这条只管 python 自己往 stdout 写什么，不碰 argv 语义。**
+   *
+   * 不要顺手加 `LC_ALL=C.UTF-8`：那改的是 MSYS 把 argv 转给原生程序时用的字符集，
+   * 设成 UTF-8 会让 `cmd /c type 中文.txt` 这类调用拿到原生程序读不懂的字节。
+   */
+  PYTHONIOENCODING: 'utf-8',
 }
 
 /**
