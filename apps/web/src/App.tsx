@@ -28,6 +28,7 @@ import {
   overlay,
   panelMaximized,
   panelWidth,
+  resizePanel,
   setPaletteOpen,
   setState,
   settingsPage,
@@ -67,6 +68,17 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     onCleanup(() => window.removeEventListener('keydown', onKey))
+
+    /*
+     * 窗口一变窄就把面板宽度重新夹一遍。
+     *
+     * 宽度是存下来的、窗口尺寸不是：在大屏上拖宽过的面板，换到小窗口就比整块
+     * 内容区还宽——网格那一列排不下，会话区被压成 0，顶栏横跨出窗口右沿，
+     * 右上角那排按钮一起出界。夹一遍就是这里唯一要做的事，布局规则不用动。
+     */
+    const onResize = () => resizePanel(panelWidth())
+    window.addEventListener('resize', onResize)
+    onCleanup(() => window.removeEventListener('resize', onResize))
 
     /*
      * 空闲时先把面板那块代码取回来。

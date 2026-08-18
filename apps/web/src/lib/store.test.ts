@@ -10,9 +10,16 @@
  * `store.ts` 顶层 `new QyClient(...)`，而 `QyClient` 有个**字段初始化器**
  * `private readonly endpoint = resolveEndpoint()`——构造函数体是空的，但字段
  * 在实例化时就跑，它要读 `location` / `sessionStorage` / `matchMedia`。
- * 所以这里先把这三样补上再动态 import，而不是去改产品代码加
+ * 所以这里先把这几样补上再动态 import，而不是去改产品代码加
  * `typeof location === 'undefined'` 的判断：那种判断只为测试存在，
  * 生产路径上永远走不到，属于 CLAUDE.md B5 说的空壳分支。
+ *
+ * `window.innerWidth` 与 `localStorage` 是同样的理由：面板宽度按当前窗口宽度夹取，
+ * 并把结果记下来，两样缺一它就整条走进 catch。
+ *
+ * **别在这里断言「模块加载时读出来的宽度」**：`bun test` 一次跑多个文件共用一份
+ * 模块表，`client.test.ts` 先一步 import 过 `client.ts`，`store/ui.ts` 在这几行
+ * 补全局之前就已经求值完了。断言它的结果，单跑这个文件是绿的，跑全量是红的。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -31,6 +38,19 @@ g.sessionStorage = {
   removeItem: () => {},
 }
 g.matchMedia = () => ({ matches: false })
+// 面板宽度那几条要用：innerWidth 是夹取的上界，localStorage 是它落盘的地方。
+const stored = new Map<string, string>()
+g.localStorage = {
+  getItem: (k: string) => stored.get(k) ?? null,
+  setItem: (k: string, v: string) => {
+    stored.set(k, v)
+  },
+  removeItem: (k: string) => {
+    stored.delete(k)
+  },
+}
+const win = { innerWidth: 1280, addEventListener: () => {}, removeEventListener: () => {} }
+g.window = win
 
 const {
   activePanelTab,
@@ -45,7 +65,9 @@ const {
   openPanelTab,
   panelMaximized,
   panelTabs,
+  panelWidth,
   reloadActiveConversation,
+  resizePanel,
   setSidePanel,
   setState,
   sidePanel,
@@ -128,6 +150,32 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
  * 测的是**关掉一页之后停在哪、什么被收掉**——这两条错了的表现分别是「面板莫名收起」
  * 和「PTY 留在后台，工作区里的文件句柄被攥着」，都不会报错。
  */
+describe('面板宽度：窗口放不下就得夹回去', () => {
+  test('大屏上拖出来的宽度，换到窄窗口不能照排', () => {
+    // 原始失败形状：2560 的窗口里拖到 1632，换到 1280 的窗口再打开。
+    // 不夹的话网格那一列照排 1632——会话区被压成 0，顶栏横跨出窗口右沿，
+    // 右上角那排按钮一起出界，看起来就像样式没加载。
+    win.innerWidth = 2560
+    resizePanel(1632)
+    expect(panelWidth()).toBe(1632)
+
+    win.innerWidth = 1280
+    // App.tsx 的 resize 监听做的就是这一下。
+    resizePanel(panelWidth())
+    expect(panelWidth()).toBe(800)
+    // 夹回来的值同样要落盘，否则下次启动读到的还是那个放不下的旧值。
+    expect(stored.get('qywork.panelWidth')).toBe('800')
+  })
+
+  test('拖过头夹在上界，拖不足夹在下界', () => {
+    win.innerWidth = 1280
+    resizePanel(1600)
+    expect(panelWidth()).toBe(800)
+    resizePanel(100)
+    expect(panelWidth()).toBe(280)
+  })
+})
+
 describe('可多开的页：+ 开出来，× 关掉', () => {
   const reset = () => {
     closeAllPanelTabs()
