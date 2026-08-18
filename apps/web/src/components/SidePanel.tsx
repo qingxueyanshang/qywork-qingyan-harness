@@ -15,7 +15,7 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
-import { diffFrom } from '../lib/step-view.ts'
+import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
   absPath,
   activePanelTab,
@@ -1041,15 +1041,29 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
 /**
  * 对一个文件的**一次**改动。
  *
- * `diff` 是那一次的红绿正文，来自这一步落库的入参（`edit_file` 的
- * old_string / new_string）。**整份写出没有 diff**：`write_file` 的入参里只有新内容，
- * 没有旧内容，硬画出来的红绿是编的。
+ * `body` 是那一次的正文，整个来自这一步落库的入参——和会话流里展开那一步看到的
+ * 是同一份东西（`Transcript.tsx` 的 `StepBody`）：编辑给的是 old/new 两段，
+ * 整份写出给的是写进去的那份内容。
  */
 interface ChangeEdit {
   tool: string
   additions: number
   deletions: number
-  diff: { removed: string; added: string } | null
+  body: { removed: string; added: string } | { written: string } | null
+}
+
+/**
+ * 这一步的正文。**按入参形状认，不按工具名认**（同 `step-view.ts` 的 `diffFrom`）。
+ *
+ * 两档不会互相抢：整份写出的入参里没有 old/new，编辑的入参里没有 content。
+ * 不要给整份写出编一份红绿——旧内容只在工具执行的那一瞬间存在，没落过库。
+ */
+function bodyOf(args: Record<string, unknown> | undefined): ChangeEdit['body'] {
+  if (!args) return null
+  const diff = diffFrom(args)
+  if (diff) return diff
+  const written = firstString(args, 'content', 'text')
+  return written ? { written: clamp(written) } : null
 }
 
 /** 这条会话在一个文件上写了多少。路径同账本：工作区相对、posix 分隔符。 */
@@ -1088,12 +1102,12 @@ function ChangeRecord() {
     const byPath = new Map<string, ChangedFile>()
     for (const item of state.transcript) {
       for (const c of item.outcome?.fileChanges ?? []) {
-        // 这一步的入参就在账本里，红绿正文从它来；`write_file` 取不出（只有新内容）。
+        // 这一步的入参就在账本里，正文从它来——不另存一份。
         const edit: ChangeEdit = {
           tool: item.toolName ?? '',
           additions: c.additions,
           deletions: c.deletions,
-          diff: item.args ? diffFrom(item.args) : null,
+          body: bodyOf(item.args),
         }
         const cur = byPath.get(c.path)
         if (cur) {
@@ -1186,18 +1200,23 @@ function ChangeRecord() {
                               <span class="del">−{e.deletions}</span>
                             </span>
                           </div>
-                          <Show when={e.diff}>
-                            {(d) => (
-                              <pre class="change-diff">
-                                <Show when={d().removed}>
-                                  <span class="del">{d().removed}</span>
-                                </Show>
-                                <Show when={d().added}>
-                                  <span class="add">{d().added}</span>
-                                </Show>
-                              </pre>
-                            )}
-                          </Show>
+                          <Switch>
+                            <Match when={e.body && 'written' in e.body ? e.body : null}>
+                              {(w) => <pre class="change-body">{w().written}</pre>}
+                            </Match>
+                            <Match when={e.body && 'removed' in e.body ? e.body : null}>
+                              {(d) => (
+                                <pre class="change-body">
+                                  <Show when={d().removed}>
+                                    <span class="del">{d().removed}</span>
+                                  </Show>
+                                  <Show when={d().added}>
+                                    <span class="add">{d().added}</span>
+                                  </Show>
+                                </pre>
+                              )}
+                            </Match>
+                          </Switch>
                         </li>
                       )}
                     </For>
