@@ -365,6 +365,8 @@
 .send-btn {
   display: grid;
   place-items: center;
+  /* 同 `.icon-btn`：尺寸是它的定义，不参与工具栏挤压。 */
+  flex: none;
   width: 30px;
   height: 30px;
   border-radius: var(--r-full);
@@ -620,6 +622,8 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
+  /* 同 `.icon-btn`：里面装的就是一颗按钮，不参与工具栏挤压。 */
+  flex: none;
 }
 .icon-btn.bad {
   color: var(--danger);
