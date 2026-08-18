@@ -46,6 +46,14 @@ export {
   PROTECTED_DIRS,
   resolveInWorkspace,
 } from './paths.ts'
+// 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
+// 隐藏的 `runner` 子命令是它那一侧的入口。
+export {
+  type CommandRunner,
+  type ProcessLike,
+  runCommandRunner,
+  startCommandRunner,
+} from './runner.ts'
 // 沙箱：cli 的 doctor/config、server 的握手都要报它
 // `commandShell` / `probeBash` 一并出去：命令跑哪个 shell 由它说了算，判 platform 就是第二本账；
 // 握手要报「这台机器有没有 bash」，没有时还要把原因说给用户听
@@ -64,14 +72,6 @@ export {
   setCommandRunner,
   spawnGuarded,
 } from './sandbox.ts'
-// 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
-// 隐藏的 `runner` 子命令是它那一侧的入口。
-export {
-  type CommandRunner,
-  type ProcessLike,
-  runCommandRunner,
-  startCommandRunner,
-} from './runner.ts'
 // 定时任务：server 的调度 tick 与 HTTP 面读写的是同一张表。
 // 它落在这个包而不是 runtime，是因为模型侧的三个工具必须在这里，
 // 而 tools(L3) 不许依赖 runtime(L5)——理由写在 `schedules.ts` 顶部。
