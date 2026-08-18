@@ -510,6 +510,37 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(state.running).toBe(false)
     expect(state.transcript.at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
+
+  /**
+   * 原始失败形状：一轮跑到一半重连，读数条上的 `↓入 ↑出 / 命中 / 金额` 整组消失，
+   * 要等下一次模型调用回报 usage 才凭空长回来。它不是易失量——`runs` 行有这一列，
+   * 每收到一次 provider 的 usage 就写一次。
+   */
+  test('正在跑的那一轮，用量跟着重拉一起回来，不清空', async () => {
+    const liveRun = {
+      ...interruptedRun,
+      finishedAt: null,
+      stopReason: null,
+      status: 'running',
+      usage: {
+        inputTokens: 30_000,
+        outputTokens: 27_000,
+        cachedTokens: 900_000,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        cost: 0.02,
+        currency: 'USD',
+        turns: [],
+      },
+    }
+    setState({ activeConversation: 'cv_1', transcript: [], running: false, usage: null })
+    stub([toolStep('思考')], [liveRun])
+    await reloadActiveConversation()
+
+    expect(state.running).toBe(true)
+    expect(state.usage?.inputTokens).toBe(30_000)
+    expect(state.usage?.cost).toBe(0.02)
+  })
 })
 
 /**
