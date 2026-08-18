@@ -22,7 +22,13 @@ import type {
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createPacer } from '../stream-pace.ts'
-import { setState, state, type TeamMemberState, type TranscriptItem } from './state.ts'
+import {
+  type PermissionAsk,
+  setState,
+  state,
+  type TeamMemberState,
+  type TranscriptItem,
+} from './state.ts'
 import { workspace } from './ui.ts'
 
 export const client = new QyClient({
@@ -472,7 +478,7 @@ export async function reloadActiveConversation(): Promise<void> {
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
 
-  const [{ messages }, { runs }, ctx, goal] = await Promise.all([
+  const [{ messages }, { runs }, ctx, goal, ask] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
     client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
     // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
@@ -488,6 +494,14 @@ export async function reloadActiveConversation(): Promise<void> {
     client
       .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
       .then((r) => r.goal)
+      .catch(() => null),
+    // 正在等拍板的那一次授权。同理，而且这一条不读回来的代价最重：
+    // `permission.request` 只在发起那一刻广播一次，界面重建之后卡就没了，
+    // 服务端那个 promise 还在等——一轮卡着不动、没有任何可点的东西，
+    // 五分钟后按拒绝超时。
+    client
+      .api<{ permission: PermissionAsk | null }>(`/api/conversations/${id}/permission`)
+      .then((r) => r.permission)
       .catch(() => null),
   ])
 
@@ -587,7 +601,9 @@ export async function reloadActiveConversation(): Promise<void> {
       // 以下几项是 run 内的易失投影，账本里没有，重拉之后一律清空，
       // 等这条会话自己的事件把它们填回来。
       s.teamMembers = []
-      s.permission = null
+      // 授权请求活在服务端内存里，不在账本里——但它**读得到**，所以照读，
+      // 不是清空了等下一次事件（那一次永远不会再来，请求只发一次）。
+      s.permission = ask
       /*
        * **用量跟着那一轮走，不清空。**
        *
@@ -681,15 +697,28 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     // 思考在这批工具**之前**发生，位置就在工具卡上面。id 由 step id 派生：
     // 每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
     if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
-    // action 来自后端落库的解析结果。**没有就是没有，不补**——
-    // 回落成 `execute` 的后果是：刷新一次页面，一整轮的读文件全变成「执行」。
-    // 拼不出动作时卡片显示工具名（见 `actionLabel`），那比一个假动词诚实。
+    /*
+     * **没有 action 就不出这一行。**
+     *
+     * action 是这张卡的全部标题（动词 + 对象 + 目标），`ToolSpec` 上
+     * `actionKind` / `objectLabel` 都是必填，所以注册过的工具一定给得出来。
+     * 拼不出的只有一种：**崩溃恢复落终态时把 payload 整份盖掉的那些旧行**
+     * （store 的 `settleRunningSteps` 现在只写 outcome，新的不会再有）。
+     *
+     * 那种行渲染出来是一个空标题加一个红「失败」——既看不出是哪一步，
+     * 又和这一轮末尾读数条上那句「上次进程在工具执行期间退出」说的是同一件事。
+     * 一件事两处说，而其中一处什么也没说清。所以这里不出行，那句话由读数条负责。
+     *
+     * **不要在这里回落成工具名或「未知动作」**：那是给同一件事再造一套显示，
+     * 而它唯一能表达的东西读数条已经表达过了。
+     */
+    if (!s.payload?.action) return out
     out.push({
       id: s.id,
       kind: 'tool',
       text: '',
       toolName: s.toolName ?? '',
-      ...(s.payload?.action ? { action: s.payload.action } : {}),
+      action: s.payload.action,
       ...(s.payload?.args ? { args: s.payload.args } : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),

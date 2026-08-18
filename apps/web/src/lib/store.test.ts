@@ -512,6 +512,42 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
+   * 原始失败形状：进程在工具执行期间退出，那一行原本是「运行命令 · nvidia-smi -L」，
+   * 恢复落终态时 payload 被整份盖掉，剩下一个空标题加一个红「失败」——而这一轮
+   * 末尾的读数条已经写着「上次进程在工具执行期间退出」。同一件事两处说，
+   * 其中一处什么也没说清。
+   */
+  test('账本里那条没有 action 的 step 不出行，理由由读数条那一句负责', async () => {
+    const settled = {
+      ...toolStep(''),
+      status: 'failure',
+      // 恢复流程盖出来的形状：只有 outcome，没有 action / args。
+      payload: {
+        kind: 'tool_result',
+        outcome: { status: 'failure', executed: true, message: '执行期间进程退出或被中断' },
+      },
+    }
+    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    stub([settled], [interruptedRun])
+    await reloadActiveConversation()
+
+    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'run'])
+  })
+
+  test('思考还在的话照出——没被盖掉的东西不许跟着一起丢', async () => {
+    const settled = {
+      ...toolStep('先看看这台机器的显卡'),
+      status: 'failure',
+      payload: { kind: 'tool_result', outcome: { status: 'failure', executed: true } },
+    }
+    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    stub([settled], [interruptedRun])
+    await reloadActiveConversation()
+
+    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'thinking', 'run'])
+  })
+
+  /**
    * 原始失败形状：一轮跑到一半重连，读数条上的 `↓入 ↑出 / 命中 / 金额` 整组消失，
    * 要等下一次模型调用回报 usage 才凭空长回来。它不是易失量——`runs` 行有这一列，
    * 每收到一次 provider 的 usage 就写一次。

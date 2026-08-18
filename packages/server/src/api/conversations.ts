@@ -172,6 +172,22 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     return json({ goal: currentGoal(d.store, id) })
   }
 
+  /*
+   * 现在有没有一次授权在等这条会话拍板。
+   *
+   * **和上面两条同一个理由，但代价更大**：`permission.request` 只在发起那一刻广播
+   * 一次，界面一重建（切走再切回、断线补不上缺口整条重拉）那张卡就没了，而服务端
+   * 那个 promise 还在等——用户看到的是一轮卡着不动、没有任何可点的东西，
+   * 五分钟后按拒绝超时。真源是 `RunManager` 内存里的那张表，这里只是把它读出来。
+   */
+  const permMatch = /^\/api\/conversations\/([^/]+)\/permission$/.exec(p)
+  if (permMatch) {
+    const id = permMatch[1] as ConversationId
+    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    // 没人在等就是 null，不是 404——「这条会话现在不需要拍板」是正常状态。
+    return json({ permission: d.runs.pendingFor(id) })
+  }
+
   const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)
   if (stepMatch) {
     return json({ steps: listSteps(d.store, stepMatch[1] as RunId) })
