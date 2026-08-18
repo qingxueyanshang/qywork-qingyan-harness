@@ -314,16 +314,14 @@ export interface GitStateEvent {
    * 会盖在正在看 A 的界面上——而那个数字看起来完全合理，没人会怀疑它是别人的。
    */
   workspaceId: string
+  /**
+   * 当前分支名。**只有这一个字段。**
+   *
+   * 改动数、暂存数、领先落后曾经都在这里，一个消费者都没有——界面上唯一在问 git 的
+   * 是输入框上方那颗分支牌。「这条会话改了哪些文件」由 step 账本的 `fileChanges` 回答，
+   * 不走这条事件。
+   */
   branch: string
-  /** 上游分支，detached HEAD 时为 null。 */
-  upstream: string | null
-  ahead: number
-  behind: number
-  staged: number
-  unstaged: number
-  untracked: number
-  /** 冲突文件数，>0 时 UI 要挡住继续执行。 */
-  conflicted: number
 }
 
 // ─────────────────────────────── 权限 ───────────────────────────────

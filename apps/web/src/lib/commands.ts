@@ -86,7 +86,7 @@ export function buildCommands(): Command[] {
       icon: IconTarget,
       run: (objective) => setGoal(objective ?? ''),
     },
-    { id: 'review', label: '审阅改动', icon: IconEye, run: () => openPanel('git') },
+    { id: 'review', label: '审阅改动', icon: IconEye, run: () => openPanel('changes') },
     { id: 'files', label: '文件', icon: IconFile, run: () => openPanel('files') },
     // 这四条现在是设置里的类目，命令面板直接跳到那一页——
     // 让用户「先进设置再自己找」等于把命令面板的价值抵消掉。
