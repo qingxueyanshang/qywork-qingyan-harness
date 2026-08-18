@@ -15,6 +15,7 @@ import { dirname } from 'node:path'
 import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { estimateText } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
+import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import {
   displayPath,
   IGNORED_DIRS,
@@ -120,9 +121,11 @@ export const readFileTool: ToolSpec = {
       return { status: 'failure', message: '二进制文件，无法作为文本读取' }
     }
 
+    // 哈希按**磁盘原文**算：它回答的是「磁盘现在是什么」，换成归一后的那份，
+    // 文件行尾被别人改过就查不出来了。交给模型的正文才归一。
     readHashes(ctx).set(abs, hash(text))
 
-    const lines = text.split('\n')
+    const lines = toLf(text).split('\n')
     const offset = Math.max(1, Number(args.offset ?? 1))
     const limit = Math.max(1, Number(args.limit ?? DEFAULT_READ_LINES))
     const slice = lines.slice(offset - 1, offset - 1 + limit)
@@ -226,14 +229,21 @@ export const writeFileTool: ToolSpec = {
       }
     }
 
+    // 按既有文件的行尾落盘。模型给的整份内容一律是 LF，原样写下去就是把一个
+    // CRLF 文件整份改成 LF——而回执是「写入成功」，git diff 里每一行都变了，
+    // 没有任何人会去数字节。新文件按 LF。
+    const bytes = fromLf(content, existing === null ? '\n' : dominantEol(existing))
+
     await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
-    readHashes(ctx).set(abs, hash(content))
+    await writeFile(abs, bytes, 'utf8')
+    // 记的必须是**落盘那一份**：记 content 的话下一次 edit_file 立刻判定「被人改过」。
+    readHashes(ctx).set(abs, hash(bytes))
 
     const change: FileChange = {
       path: displayPath(ctx.workspaceRoot, abs),
       changeType: existing === null ? 'created' : 'modified',
-      ...countDiff(existing ?? '', content),
+      // 两侧都归一再比：否则整份行尾变化会被报成「每一行都改了」。
+      ...countDiff(toLf(existing ?? ''), toLf(bytes)),
     }
     return {
       status: 'success',
@@ -292,19 +302,42 @@ export const editFileTool: ToolSpec = {
       }
     }
 
-    const occurrences = countOccurrences(current, oldStr)
-    if (occurrences === 0) {
+    /*
+     * 定位**行尾不敏感**，在原文上做。
+     *
+     * 模型看到的正文是归一过的（`read_file` 交出去时去了 CR），它复述回来的
+     * `old_string` 必然是 LF；而 CRLF 文件里那几行之间是 `\r\n`。拿原串精确匹配的话，
+     * 跨行的 old_string 在 CRLF 文件上**永远**找不到，而 agent 干活的仓库不归我们管。
+     *
+     * 只替换命中的那一段、其余字节逐字节留着：混合行尾的文件不会因为一次单行编辑
+     * 被整份重写。
+     */
+    const hits = oldStr
+      ? [...current.matchAll(new RegExp(eolInsensitivePattern(oldStr), 'g'))].map((m) => ({
+          at: m.index,
+          len: m[0].length,
+        }))
+      : []
+    if (hits.length === 0) {
       return { status: 'failure', message: 'old_string 未在文件中找到', errorKind: 'no_match' }
     }
-    if (occurrences > 1 && !replaceAll) {
+    if (hits.length > 1 && !replaceAll) {
       return {
         status: 'failure',
-        message: `old_string 命中 ${occurrences} 处，不唯一。请加长上下文，或设 replace_all=true。`,
+        message: `old_string 命中 ${hits.length} 处，不唯一。请加长上下文，或设 replace_all=true。`,
         errorKind: 'ambiguous_match',
       }
     }
+    const occurrences = hits.length
 
-    const next = replaceAll ? current.split(oldStr).join(newStr) : current.replace(oldStr, newStr)
+    // 替换段按文件主导行尾编码。从后往前拼——从前往后的话前一次替换会把后面的下标全带偏。
+    const replacement = fromLf(newStr, dominantEol(current))
+    let next = current
+    for (let i = (replaceAll ? hits.length : 1) - 1; i >= 0; i--) {
+      const hit = hits[i]
+      if (!hit) continue
+      next = next.slice(0, hit.at) + replacement + next.slice(hit.at + hit.len)
+    }
     await writeFile(abs, next, 'utf8')
     readHashes(ctx).set(abs, hash(next))
 
@@ -364,17 +397,6 @@ export const listDirTool: ToolSpec = {
       data: { entries: rows },
     }
   },
-}
-
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0
-  let count = 0
-  let idx = haystack.indexOf(needle)
-  while (idx !== -1) {
-    count++
-    idx = haystack.indexOf(needle, idx + needle.length)
-  }
-  return count
 }
 
 /**
