@@ -20,7 +20,13 @@
  * 静默超时（5 分钟后按拒绝），所以**别把它当成死代码清掉**。
  */
 
-import type { AgentEvent, ConversationId, PermissionScope, RunId } from '@qywork/core'
+import type {
+  ActionDescriptor,
+  AgentEvent,
+  ConversationId,
+  PermissionScope,
+  RunId,
+} from '@qywork/core'
 import type { Store } from '@qywork/store'
 import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
@@ -30,8 +36,26 @@ export interface PendingPermission {
   runId: RunId
   conversationId: ConversationId
   scope: string
+  /**
+   * 事件里发过的那一份原样留着。
+   *
+   * **不是冗余**：请求只广播一次，而界面会重建（切走再切回、断线补不上缺口整条重拉）。
+   * 重建的那一侧只能来问「现在有没有人在等应答」，问到了还得能把那张卡原样画出来
+   * ——少一个字段就是一张画不全的卡，而这一轮正卡在这里等人点。
+   */
+  ask: PermissionAsk
   resolve(granted: boolean, by: 'desktop' | 'mobile' | 'policy' | 'timeout', scopeId?: string): void
   timer: ReturnType<typeof setTimeout>
+}
+
+/** 一次待应答的授权请求，字段与 `permission.request` 事件逐一对应。 */
+export interface PermissionAsk {
+  requestId: string
+  toolName: string
+  action: ActionDescriptor
+  preview: string
+  scopes: PermissionScope[]
+  expiresAt: number
 }
 
 /** 授权等待上限。超过按拒绝处理，绝不无限期挂着。 */
@@ -241,6 +265,15 @@ export class RunManager {
 
     const requestId = crypto.randomUUID()
     const expiresAt = Date.now() + PERMISSION_TIMEOUT_MS
+    // 一份 ask，事件和「回头来问」读的是同一个对象——分两处各拼一次就是两本账。
+    const ask: PermissionAsk = {
+      requestId,
+      toolName: input.toolName,
+      action: input.action,
+      preview: input.preview,
+      scopes: DEFAULT_SCOPES,
+      expiresAt,
+    }
 
     return new Promise<boolean>((resolve) => {
       let settled = false
@@ -277,21 +310,13 @@ export class RunManager {
         runId: input.runId,
         conversationId: input.conversationId,
         scope: input.scope,
+        ask,
         resolve: finish,
         timer,
       })
 
       this.bus.publish(
-        {
-          type: 'permission.request',
-          runId: input.runId,
-          requestId,
-          toolName: input.toolName,
-          action: input.action,
-          preview: input.preview,
-          scopes: DEFAULT_SCOPES,
-          expiresAt,
-        },
+        { type: 'permission.request', runId: input.runId, ...ask },
         input.conversationId,
       )
     })
@@ -310,12 +335,17 @@ export class RunManager {
     return true
   }
 
-  listPending(): { requestId: string; runId: RunId; scope: string }[] {
-    return [...this.pending.values()].map((p) => ({
-      requestId: p.requestId,
-      runId: p.runId,
-      scope: p.scope,
-    }))
+  /**
+   * 这条会话现在有没有人在等应答。
+   *
+   * 同一时刻只可能有一条：界面那侧 `state.permission` 就是一个单值，
+   * 发第二条也没地方画。取最早的那一条——先来的先答。
+   */
+  pendingFor(conversationId: ConversationId): PermissionAsk | null {
+    for (const p of this.pending.values()) {
+      if (p.conversationId === conversationId) return p.ask
+    }
+    return null
   }
 
   conversationsOf(workspaceId: string): ConversationId[] {
