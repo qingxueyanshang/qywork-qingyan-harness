@@ -31,10 +31,10 @@
 
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import { killTree } from '../packages/tools/src/sandbox.ts'
 
 const ROOT = join(import.meta.dir, '..')
-const PORT = Number(process.env.QYWORK_PORT ?? 7717)
+/** 想要的那个端口；真正用哪个由 `pickPort` 定。 */
+const WANT_PORT = Number(process.env.QYWORK_PORT ?? 7717)
 /** 每次开发会话现生成一个。不写死在仓库里——那就是一个入库的凭证。 */
 const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
 
@@ -68,16 +68,40 @@ async function bindable(port: number): Promise<boolean> {
   }
 }
 
-/** 端口被占就直接说，不偷偷换一个——换了 WebView 手里那份 base 就是错的。 */
-if (!(await bindable(PORT))) {
-  process.stderr.write(
-    (await answers(PORT))
-      ? `端口 ${PORT} 上已经有一个 qywork 在跑。先把它停掉，或用 QYWORK_PORT=<别的端口> 重来。\n`
-      : `端口 ${PORT} 被一个不应答的进程占着——多半是上一次跑留下的子进程继承了监听句柄，` +
-          `netstat 里那个 PID 可能已经不存在了。把它收掉，或用 QYWORK_PORT=<别的端口> 重来。\n`,
-  )
+/**
+ * 这次用哪个端口。**只在启动时挑一次**，挑定之后灌给两边；会话中途绝不换
+ * （换了 WebView 手里那份 base 就是错的）。
+ *
+ * 两种占用要分开处理，它们的正确做法相反：
+ *
+ * - **有一个能应答的 qywork 在跑** → 停下。再起一个不是端口问题，是两个进程抢
+ *   同一份 SQLite 的 WAL 锁。
+ * - **绑不上但没人应答** → 往上挪一个。这种占用来自「上一次跑留下的后台进程
+ *   继承了监听句柄」：那些进程是模型用 `run_command` 起的服务，本来就该活着，
+ *   不该为了让开一个端口去杀它们。
+ */
+async function pickPort(want: number): Promise<number> {
+  if (await bindable(want)) return want
+  if (await answers(want)) {
+    process.stderr.write(
+      `端口 ${want} 上已经有一个 qywork 在跑。先把它停掉，或用 QYWORK_PORT=<别的端口> 重来。\n`,
+    )
+    process.exit(1)
+  }
+  for (let p = want + 1; p <= want + 20; p++) {
+    if (await bindable(p)) {
+      process.stderr.write(
+        `[dev] ${want} 被一个不应答的进程占着（上次留下的后台进程继承了监听句柄，` +
+          `netstat 里那个 PID 可能已经不在了），这次改用 ${p}\n`,
+      )
+      return p
+    }
+  }
+  process.stderr.write(`${want} 往上 20 个端口都绑不上。用 QYWORK_PORT=<别的端口> 重来。\n`)
   process.exit(1)
 }
+
+const PORT = await pickPort(WANT_PORT)
 
 const env = { ...process.env, QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) }
 
@@ -121,7 +145,7 @@ while (!(await answers(PORT))) {
   }
   if (Date.now() > deadline) {
     process.stderr.write('[dev] sidecar 30 秒内没起来\n')
-    killTree(agent)
+    agent.kill()
     process.exit(1)
   }
   await Bun.sleep(200)
@@ -148,17 +172,20 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
 /**
  * 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。
  *
- * **杀整棵树，不是只杀那一个进程。** sidecar 底下挂着模型用 `run_command` 起的
- * 后台进程（`run.ps1 start` 那类），它们继承了 sidecar 的监听句柄：只杀 sidecar
- * 的话端口攥在孙子手里不放，下次启动就是一句 EADDRINUSE。
+ * 杀的是 `bun --watch` 那个壳，内层的 sidecar 跟着一起走（实测：壳被杀之后内层
+ * 进程也没了）。
+ *
+ * **不杀更深的那一层。** sidecar 底下挂着模型用 `run_command` 起的后台进程
+ * （`run.ps1 start` 那类服务），那是用户要的东西，不该因为开发环境退出而被收掉。
+ * 代价是它们继承的监听句柄会把端口攥住——那件事由 `pickPort` 让开，不靠杀进程解决。
  */
 const stopAll = () => {
-  killTree(agent)
-  killTree(shell)
+  agent.kill()
+  shell.kill()
 }
 process.on('SIGINT', stopAll)
 process.on('SIGTERM', stopAll)
 
 const code = await shell.exited
-killTree(agent)
+agent.kill()
 process.exit(code)
