@@ -136,8 +136,27 @@ async function waitReady(): Promise<boolean> {
   return true
 }
 
+/** 收尾中：这时候的退出是我们自己杀的，不该被当成崩溃补起来。 */
+let stopping = false
+let agent!: ReturnType<typeof Bun.spawn>
+
+/**
+ * 起一个 sidecar 并盯着它的退出。
+ *
+ * **每起一个都要盯**：不盯的话它崩了就没人知道，界面变成一个连不上后端的空壳
+ * ——前端只会数「已 N 秒没有新数据」，停止按钮点下去没有对端接，而窗口看起来
+ * 一切正常，用户不知道该重启。换代码时是我们自己杀的，supervisor 认得出来
+ * （它正在 restart），不会重复补起。
+ */
+function startAgent(): void {
+  agent = spawnAgent()
+  void agent.exited.then((code) => {
+    if (!stopping) supervisor.onExit(code)
+  })
+}
+
 process.stderr.write(`[dev] sidecar 从源码跑，:${PORT}\n`)
-let agent = spawnAgent()
+startAgent()
 if (!(await waitReady())) {
   process.stderr.write(
     agent.exitCode !== null
@@ -180,7 +199,7 @@ const supervisor = createReloadSupervisor({
   restart: async () => {
     agent.kill()
     await agent.exited
-    agent = spawnAgent()
+    startAgent()
     if (!(await waitReady())) throw new Error('30 秒内没起来，见上面的输出')
   },
   debounceMs: 300,
@@ -221,6 +240,7 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
  * 手里根本没有监听句柄（`tools/runner.ts`）。
  */
 const stopAll = () => {
+  stopping = true
   agent.kill()
   shell.kill()
 }
@@ -228,5 +248,6 @@ process.on('SIGINT', stopAll)
 process.on('SIGTERM', stopAll)
 
 const code = await shell.exited
+stopping = true
 agent.kill()
 process.exit(code)

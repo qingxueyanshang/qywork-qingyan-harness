@@ -175,3 +175,78 @@ describe('哪些文件算源码变了', () => {
     expect(isSourceChange(undefined)).toBe(false)
   })
 })
+describe('sidecar 自己没了', () => {
+  test('崩了就重新起一个 —— 否则界面变成连不上后端的空壳', async () => {
+    const { c, sup, restarts } = harness()
+    sup.onExit(1)
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+    expect(restarts.length).toBe(1)
+    // 崩溃重起不走防抖：不是「攒一下」，是立刻补上。
+    expect(c.waiting()).toBeNull()
+  })
+
+  /** 换代码时是我们自己杀的，那不是崩溃——再补一次就成了双起。 */
+  test('换代码期间的退出不算崩溃', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    let started = 0
+    const { c, sup } = harness({
+      restart: async () => {
+        started++
+        await gate
+      },
+    })
+    sup.onChange()
+    await c.fire()
+    expect(started).toBe(1)
+
+    sup.onExit(0)
+    await Bun.sleep(0)
+    expect(started).toBe(1)
+    release()
+  })
+
+  test('连着起不来就停手，并说清楚', async () => {
+    const { sup, logs } = harness({
+      restart: async () => {
+        throw new Error('端口被占着')
+      },
+    })
+    for (let i = 0; i < 6; i++) {
+      sup.onExit(1)
+      await Bun.sleep(0)
+      await Bun.sleep(0)
+    }
+    expect(logs.some((l) => l.includes('不再重试'))).toBe(true)
+  })
+
+  test('成功换过一次代码之后，崩溃计数清零', async () => {
+    let fail = true
+    let starts = 0
+    const { c, sup, logs } = harness({
+      restart: async () => {
+        starts++
+        if (fail) throw new Error('起不来')
+      },
+    })
+    for (let i = 0; i < 4; i++) {
+      sup.onExit(1)
+      await Bun.sleep(0)
+      await Bun.sleep(0)
+    }
+    expect(logs.some((l) => l.includes('不再重试'))).toBe(true)
+
+    // 改一次代码并成功换上去，计数清零，之后崩溃还会再被接住。
+    fail = false
+    sup.onChange()
+    await c.fire()
+    const before = starts
+    sup.onExit(1)
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+    expect(starts).toBe(before + 1)
+  })
+})
