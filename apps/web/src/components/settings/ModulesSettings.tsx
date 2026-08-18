@@ -1,4 +1,5 @@
 import { createResource, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { client, type SettingsPage, setSettingsPage, state } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
@@ -260,7 +261,7 @@ export function ModulesSettings() {
   /** 后端已按类目排好序，这里只分组不重排；只有说明没有工具的模块补在末尾。 */
   const groups = () => {
     const out: { mod: Module; rows: ToolRow[] }[] = []
-    for (const row of data()?.tools ?? []) {
+    for (const row of loaded(data)?.tools ?? []) {
       let g = out[out.length - 1]
       if (!g || g.mod.id !== row.category) {
         g = {
@@ -282,7 +283,10 @@ export function ModulesSettings() {
   }
 
   return (
-    <Show when={data()} fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}>
+    <Show
+      when={loaded(data)}
+      fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+    >
       <For each={groups()}>
         {(g) => (
           <section class="settings-block">

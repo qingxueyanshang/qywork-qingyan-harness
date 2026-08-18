@@ -93,9 +93,16 @@ export function explainApiError(e: unknown, fallback: string): string {
   const at = raw.indexOf('{')
   if (at >= 0) {
     try {
-      const body = JSON.parse(raw.slice(at)) as { problems?: string[]; message?: string }
+      const body = JSON.parse(raw.slice(at)) as {
+        problems?: string[]
+        message?: string
+        error?: string
+      }
       if (body.problems?.length) return body.problems.join('；')
       if (body.message) return body.message
+      // 服务端多数错误只带 `error` 一个键（`api/types.ts` 的 `json`）。不认它的话
+      // 界面上显示的是「422 /api/xxx: {"error":"标题不能为空"}」这种原样回显。
+      if (body.error) return body.error
     } catch {
       // 响应体被 client.api 截断到 200 字时会解析失败，走回落。
     }

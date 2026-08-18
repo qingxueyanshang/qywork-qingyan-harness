@@ -613,7 +613,14 @@
   overflow-y: auto;
   padding: 0 4px var(--s-2);
 }
+/* 树上方的一句话：搜索没命中、命中过多、树取不回来。
+   横排是给最后那一种用的——它后面跟着一颗「重试」，不排成一行的话按钮会掉到
+   下一行的最左边，看着像和这句话没关系。 */
 .tree-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
   padding: 4px;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);

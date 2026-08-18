@@ -14,6 +14,9 @@
  */
 
 :root {
+  /* 只在「跟随系统」下才是两可。显式选了亮/暗的两个分支各自把它钉死——
+     不钉的话原生控件（下拉展开后的列表、时间选择器、autofill 底色、
+     滚动条）跟的是系统偏好，系统亮色 + 应用切深色时它们仍按亮色画。 */
   color-scheme: light dark;
 
   /* ── 中性色阶：亮色 ── */
@@ -189,8 +192,14 @@
   }
 }
 
+/* 显式选亮色：颜色令牌用 :root 那份，这里只把原生控件的配色钉住。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 /* 显式选暗色时同样生效，且优先级压过 media query。 */
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg-app: #0c0c0d;
   --bg-sunken: #151517;
   --bg-raised: #1b1b1e;

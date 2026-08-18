@@ -1,4 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { loadMcp, loadMcpRaw, type Scope, saveMcpRaw } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { ScopeBar, ScopeTag } from './ScopeBar.tsx'
@@ -21,19 +22,58 @@ import { ScopeBar, ScopeTag } from './ScopeBar.tsx'
 export default function McpSettings() {
   const [data, { refetch }] = createResource(loadMcp)
   const [scope, setScope] = createSignal<Scope>('user')
-  const [raw] = createResource(scope, loadMcpRaw)
+  const [raw, { refetch: refetchRaw }] = createResource(scope, loadMcpRaw)
   const [draft, setDraft] = createSignal<string | null>(null)
-  const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-  const [saved, setSaved] = createSignal(false)
 
-  const text = () => draft() ?? raw()?.raw ?? ''
+  /**
+   * 编辑框里的原文。草稿优先，没有草稿就取服务端那份。
+   *
+   * **只认 `ready`，不认 `refreshing`**，所以这里不用 `loaded()`：`raw` 的 source
+   * 是 scope，切层重取的是另一个文件。留住上一份等于把上一层的正文摆在这一层名下，
+   * 而这一页失焦即存——点进去再点出来就把用户级的内容存进了全局。
+   */
+  const text = () => draft() ?? (raw.state === 'ready' ? (raw.latest?.raw ?? '') : '')
+
+  /**
+   * 失焦即存，和这个应用里其他每一格一样。
+   *
+   * **先本地解析一次**：这一份要整体合法，不合法就只报错、不发请求。
+   * 这是「随改随生效」在 JSON 编辑框上成立的唯一条件——没有这道闸，
+   * 敲到一半失焦就是一次必然的 422。
+   */
+  const commit = async () => {
+    const body = draft()
+    if (body === null) return
+    try {
+      JSON.parse(body)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return
+    }
+    try {
+      await saveMcpRaw(scope(), body)
+      setError(null)
+      // 两个都要重取：`data` 是解析出来的 server 列表，`raw` 是编辑框回落的那份原文。
+      // **草稿要等重取完再清**——先清的话编辑框会瞬间回落到重取前的旧原文，
+      // 看起来像这次保存把内容改回去了。
+      await Promise.all([refetch(), refetchRaw()])
+      setDraft(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
   /** 这一轮配了但没连上的：配置里有、servers 里没有。它们不能凭空消失。 */
   const missing = () =>
-    (data()?.configured ?? []).filter((c) => !data()?.servers.some((s) => s.name === c.name))
+    (loaded(data)?.configured ?? []).filter(
+      (c) => !loaded(data)?.servers.some((s) => s.name === c.name),
+    )
 
   return (
-    <Show when={data()} fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}>
+    <Show
+      when={loaded(data)}
+      fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+    >
       {(d) => (
         <>
           {/* 这条是**能力边界**，不折叠也不降对比度：用户据它决定要不要在这里加
@@ -121,7 +161,7 @@ export default function McpSettings() {
                 setScope(s)
                 // 切层等于换一个文件，草稿不能跟过去——跟过去就是把 A 的内容存进 B。
                 setDraft(null)
-                setSaved(false)
+                setError(null)
               }}
               dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
             />
@@ -130,40 +170,13 @@ export default function McpSettings() {
               rows={12}
               value={text()}
               placeholder={'{\n  "mcpServers": {}\n}'}
-              onInput={(e) => {
-                setDraft(e.currentTarget.value)
-                setSaved(false)
-              }}
+              onInput={(e) => setDraft(e.currentTarget.value)}
+              onBlur={() => void commit()}
             />
-            {/* JSON 编辑框保留显式保存：它要整体合法，逐 blur 提交必然频繁 422。 */}
+            {/* 「重启后生效」是边界不是解释——不写的话用户会以为改完就连上了。
+                它常驻，不挂在某一次保存上：那条边界一直成立。 */}
             <div class="row-actions">
-              <button
-                class="btn-primary"
-                type="button"
-                disabled={busy() || draft() === null}
-                onClick={() =>
-                  void (async () => {
-                    setBusy(true)
-                    try {
-                      await saveMcpRaw(scope(), text())
-                      setError(null)
-                      setSaved(true)
-                      setDraft(null)
-                      await refetch()
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : String(e))
-                    } finally {
-                      setBusy(false)
-                    }
-                  })()
-                }
-              >
-                保存
-              </button>
-              {/* 「重启后生效」是边界不是解释——不写的话用户会以为存了就连上了。 */}
-              <Show when={saved()}>
-                <span class="save-msg">已保存 · 重启应用后重新连接</span>
-              </Show>
+              <span class="save-msg">重启应用后重新连接</span>
               <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
             </div>
           </section>

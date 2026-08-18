@@ -1,4 +1,5 @@
 import { createResource, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { loadSkills } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { ScopeTag } from './ScopeBar.tsx'
@@ -17,7 +18,10 @@ export default function SkillsSettings() {
   const [data, { refetch }] = createResource(loadSkills)
 
   return (
-    <Show when={data()} fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}>
+    <Show
+      when={loaded(data)}
+      fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+    >
       {(d) => (
         <>
           <Show when={d().skills.length > 0}>

@@ -60,6 +60,9 @@
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
+  /* 槽位常留。类目之间内容长度差好几屏，滚动条出没一次内容就横移一整条轨道宽
+     （`base.css` 定的 12px）——切类目时看到的那一下横向抖动就是它。 */
+  scrollbar-gutter: stable;
 }
 /* 左对齐而不是居中——设置是逐条读下来的表单，居中会让第一列的标签飘到中间。
    不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。 */
@@ -445,10 +448,34 @@
   padding: 6px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
-  background: var(--bg-app);
+  /* 写 `background-color` 而不是 `background` 简写：下面的 `select` 要往
+     `background-image` 上挂自绘箭头，简写会把它清掉。 */
+  background-color: var(--bg-app);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-family: inherit;
+}
+/*
+ * 下拉框整个重画。不清掉 `appearance` 的话，Windows 上它是一颗系统控件——
+ * 自带边框、自带按钮式的箭头，和旁边的输入框不是一套东西。
+ *
+ * 箭头用两道 `linear-gradient` 拼，**不用 SVG 的 data URI**：data URI 里取不到
+ * CSS 变量，颜色只能写死一个灰，而本仓只有一条中性色阶（`tokens.css` 开头那段）。
+ * 渐变认 `currentColor`，亮暗两套自动跟着走。
+ * 右内距是给箭头让的位置，改箭头的 `background-position` 要同步改它。
+ */
+.field select,
+.setting-row select {
+  appearance: none;
+  padding-right: 26px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    right 13px center,
+    right 9px center;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
 }
 /* 铺满只给「宽度无界」的那类格子。行式里的下拉宽度由内容定
    （见上面 `.setting-row-control select`），铺满会把一个三选项的下拉拉成一条横杠。 */
@@ -634,15 +661,6 @@
   word-break: break-word;
 }
 
-.settings-save {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  position: sticky;
-  bottom: 0;
-  padding-top: var(--s-2);
-  background: var(--bg-raised);
-}
 .save-msg {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);

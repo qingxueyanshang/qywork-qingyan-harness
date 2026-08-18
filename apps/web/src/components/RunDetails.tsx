@@ -1,8 +1,10 @@
 import type { Run, RunUsage } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../lib/resource.ts'
 import { stopReasonLabel } from '../lib/step-view.ts'
 import { client, state } from '../lib/store/index.ts'
+import { LoadState } from './settings/LoadState.tsx'
 
 /**
  * 运行详情：这个会话到目前为止花了多少，以及每一轮各花了多少。
@@ -67,12 +69,13 @@ function addCost(acc: Record<string, number>, usage: RunUsage | undefined): Reco
 }
 
 export default function RunDetails() {
-  const [data] = createResource(
+  const [data, { refetch }] = createResource(
     () => state.activeConversation,
     (id) => client.api<{ runs: Run[] }>(`/api/conversations/${id}/runs`),
   )
 
-  const runs = () => data()?.runs ?? []
+  // `loaded()` 而不是 `data()`：后者出错时 `throw`，而这个应用没有 `ErrorBoundary`。
+  const runs = () => loaded(data)?.runs ?? []
   const total = () =>
     runs().reduce(
       (acc, r) => ({
@@ -92,7 +95,10 @@ export default function RunDetails() {
 
   return (
     <div class="settings-form">
-      <Show when={data()} fallback={<div class="settings-loading">读取中…</div>}>
+      <Show
+        when={loaded(data)}
+        fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+      >
         <Show
           when={runs().length > 0}
           fallback={<div class="field-hint">这个会话还没有跑过任何一轮。</div>}
@@ -248,7 +254,7 @@ function RunRow(props: { run: Run }) {
 function UsageHistory() {
   const [days, setDays] = createSignal<number>(30)
   const [by, setBy] = createSignal<string>('model')
-  const [data] = createResource(
+  const [data, { refetch }] = createResource(
     () => ({ days: days(), by: by() }),
     (q) => client.api<UsageResponse>(`/api/usage?days=${q.days}&by=${q.by}`),
   )
@@ -287,7 +293,10 @@ function UsageHistory() {
         </For>
       </div>
 
-      <Show when={data()} fallback={<div class="settings-loading">读取中…</div>}>
+      <Show
+        when={loaded(data)}
+        fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+      >
         {(u) => (
           <Show
             when={u().totals.entries > 0}

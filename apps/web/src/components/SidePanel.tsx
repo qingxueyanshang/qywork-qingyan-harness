@@ -15,6 +15,7 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
+import { loaded } from '../lib/resource.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
   absPath,
@@ -22,6 +23,7 @@ import {
   client,
   closePanel,
   closePanelTab,
+  explainApiError,
   isDesktopShell,
   openFile,
   openFileInPanel,
@@ -437,6 +439,14 @@ function FileBrowser() {
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
   )
 
+  /**
+   * 树取不回来时的那句话。
+   *
+   * **不要换回 `tree()` 或 `tree.latest`**：两者在出错时都是 `throw`，而这个应用
+   * 没有 `ErrorBoundary`，抛出去没人接。`loaded()` 只给值，错误从 `tree.error` 单独读。
+   */
+  const treeError = () => (tree.error ? explainApiError(tree.error, '读取失败') : null)
+
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
   /** 选中的那一行。它同时是「新建到哪里」的落点，所以文件和目录都记。 */
@@ -654,11 +664,24 @@ function FileBrowser() {
           </div>
         </div>
 
+        {/* 取不回来要说出来，并且给一条再来一次的路。
+            静默留一棵空树的话，「这个项目怎么一个文件都没有」查不出原因。 */}
+        <Show when={treeError()}>
+          {(msg) => (
+            <div class="tree-hint">
+              {msg()}
+              <button class="btn-ghost sm" type="button" onClick={() => void refetch()}>
+                重试
+              </button>
+            </div>
+          )}
+        </Show>
+
         <Show
           when={query().trim()}
           fallback={
             <Show when={rootOpen()}>
-              <Tree ctx={ctx} dir="" nodes={tree()?.nodes ?? []} depth={1} />
+              <Tree ctx={ctx} dir="" nodes={loaded(tree)?.nodes ?? []} depth={1} />
             </Show>
           }
         >
@@ -853,9 +876,14 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
     ),
   )
 
+  // 用 `loaded()`：改一次搜索词就换一次 source，`hits()` 会在每一批之间进 Suspense
+  // ——那会把这块面板连同上面的搜索框一起摘出 DOM，打第二个字时框已经不在了。
+  // 重取期间留住上一批命中，新的到位再换。
+  const matches = () => loaded(hits)
+
   return (
     <div class="tree-hits">
-      <For each={hits()?.matches ?? []}>
+      <For each={matches()?.matches ?? []}>
         {(hit) => (
           <button
             class="tree-item"
@@ -876,10 +904,10 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
           </button>
         )}
       </For>
-      <Show when={hits() && hits()!.matches.length === 0}>
+      <Show when={matches() && matches()!.matches.length === 0}>
         <div class="tree-hint">没有匹配的名称。不搜依赖树与构建产物。</div>
       </Show>
-      <Show when={hits()?.truncated}>
+      <Show when={matches()?.truncated}>
         <div class="tree-hint">命中过多，只显示前一部分。</div>
       </Show>
     </div>

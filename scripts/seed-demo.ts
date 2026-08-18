@@ -25,6 +25,12 @@ if (!dbPath || !workspaceRoot) {
   process.exit(2)
 }
 
+/**
+ * 会话记的是**接口 + 模型**一对，不是单一个模型名。接口名取 `qy init` 的预置键，
+ * 种出来的数据形状才和真实运行一致（模型选择的第一层就是接口）。
+ */
+const REF = { provider: 'deepseek', model: 'deepseek-v4-flash' } as const
+
 const store = new Store({ path: dbPath })
 const ws = upsertWorkspace(store, workspaceRoot, 'qywork')
 
@@ -39,12 +45,12 @@ for (const title of [
   '检查未提交内容',
   '排查启动卡住问题',
 ]) {
-  createConversation(store, { workspaceId: ws.id, model: 'deepseek-v4-flash', title })
+  createConversation(store, { workspaceId: ws.id, ...REF, title })
 }
 
 const conv = createConversation(store, {
   workspaceId: ws.id,
-  model: 'deepseek-v4-flash',
+  ...REF,
   title: '修复工具上传发布归属',
 })
 
@@ -57,7 +63,7 @@ const user = appendMessage(store, {
 const run = createRun(store, {
   conversationId: conv.id,
   workspaceId: ws.id,
-  model: 'deepseek-v4-flash',
+  model: REF.model,
   clientRequestId: crypto.randomUUID(),
   userMessageId: user.id,
   messageIdUpperBound: user.id,

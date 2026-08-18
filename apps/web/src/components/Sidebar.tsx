@@ -1,4 +1,5 @@
 import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../lib/resource.ts'
 import {
   activateWorkspace,
   isDesktopShell,
@@ -88,12 +89,12 @@ export function Sidebar(props: { onClose?: () => void }) {
    * 第二个参数给初值，避免挂载时已经是 ready 还白取一次。
    */
   /**
-   * 清单本身。**先看有没有出错再读值**——`createResource` 的取数函数一旦抛出，
-   * 读 `known()` 会把那个错**再抛一次**，抛在 `<For>` 的响应式计算里：整棵左栏的
-   * 更新链从此断掉，连「取不到」那句话都渲染不出来（实测：请求被拦下之后，
-   * 页面只剩一个 `Failed to fetch`，侧栏一个字都不再更新）。
+   * 清单本身。**用 `loaded()` 读，不要换回 `known()`**——`createResource` 的取数
+   * 函数一旦抛出，读 `known()` 会把那个错再抛一次，抛在 `<For>` 的响应式计算里：
+   * 整棵左栏的更新链从此断掉，连「取不到」那句话都渲染不出来（实测：请求被拦下
+   * 之后，页面只剩一个 `Failed to fetch`，侧栏一个字都不再更新）。
    */
-  const workspaces = () => (known.error ? [] : (known()?.workspaces ?? []))
+  const workspaces = () => loaded(known)?.workspaces ?? []
 
   createEffect((wasReady: boolean) => {
     const ready = state.connection === 'ready'

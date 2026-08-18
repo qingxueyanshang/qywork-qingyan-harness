@@ -1,4 +1,5 @@
 import { Show } from 'solid-js'
+import { explainApiError } from '../../lib/store/index.ts'
 
 /**
  * 读取中 / 读取失败。
@@ -12,7 +13,7 @@ export function LoadState(props: { error: unknown; onRetry: () => void }) {
   return (
     <Show when={props.error} fallback={<div class="settings-loading">读取中…</div>}>
       <div class="settings-error">
-        <span>{props.error instanceof Error ? props.error.message : String(props.error)}</span>
+        <span>{explainApiError(props.error, '读取失败')}</span>
         <button class="btn-ghost" type="button" onClick={props.onRetry}>
           重试
         </button>

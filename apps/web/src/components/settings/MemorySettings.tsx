@@ -1,4 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import {
   deleteMemory,
   loadMemory,
@@ -23,10 +24,20 @@ import { ScopeBar, ScopeTag } from './ScopeBar.tsx'
  *
  * 列表接口只回首行摘要。拿摘要填编辑框的话，用户不改任何字点一下保存，
  * 正文就被截成一行——静默、不可恢复。
+ *
+ * ## 已有的失焦即存，新建要一次显式提交
+ *
+ * 改一条已有记忆和改「工作区之外额外可读写的目录」是同一个形状，没有理由两样。
+ * 新建不同：它建的是一个还不存在的条目，标识敲到一半就落盘会在库里留下一串
+ * 半截的键，所以那一次保留一颗「创建」。
  */
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
-  const [editing, setEditing] = createSignal<string | null>(null)
+  /**
+   * 正在编辑哪一条。`isNew` **不能从 key 是不是空串推出来**——用户敲下第一个字
+   * key 就非空了，靠它判断的话标识框会在打第二个字之前自己变成只读。
+   */
+  const [editing, setEditing] = createSignal<{ key: string; isNew: boolean } | null>(null)
   const [draft, setDraft] = createSignal('')
   /** 编辑已有条目时是它自己那一层；新建时由上面的选择条决定。 */
   const [scope, setScope] = createSignal<Scope>('user')
@@ -46,19 +57,34 @@ export default function MemorySettings() {
   }
 
   const open = (key: string, from: Scope) => {
-    setEditing(key)
+    setEditing({ key, isNew: false })
     setScope(from)
     setDraft('')
     void loadMemoryEntry(key)
       .then((full) => {
         // 拉回来时用户可能已经切去编辑别的了，别把他正在打的字盖掉。
-        if (editing() === key) setDraft(full.content)
+        if (editing()?.key === key) setDraft(full.content)
       })
       .catch(() => setEditing(null))
   }
 
+  /** 已有条目失焦即存。正文空着不发——那是一次误清空，不是一条空记忆。 */
+  const commit = () => {
+    const e = editing()
+    if (!e || e.isNew || !draft().trim()) return
+    void run(async () => {
+      await saveMemory(e.key, draft(), scope())
+      await refetch()
+    })
+  }
+
+  // `loaded()` 而不是 `mem()`：重取期间留住上一份（存一条、删一条之后都要重取，
+  // 正在编辑的输入框不该被摘出 DOM），出错时给 undefined 让下面那条 `LoadState` 接住。
   return (
-    <Show when={mem()} fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}>
+    <Show
+      when={loaded(mem)}
+      fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}
+    >
       {(m) => (
         <>
           <section class="settings-block">
@@ -106,7 +132,7 @@ export default function MemorySettings() {
                   class="btn-ghost"
                   type="button"
                   onClick={() => {
-                    setEditing('')
+                    setEditing({ key: '', isNew: true })
                     setDraft('')
                     setScope('user')
                   }}
@@ -117,7 +143,7 @@ export default function MemorySettings() {
             >
               {/* 层只在新建时能选：改一条已有的记忆时换层等于「移到另一层」，
                   那是两次操作（新建 + 删除），装成一个下拉会让人以为原来那条也没了。 */}
-              <Show when={editing() === ''} fallback={<ScopeTag scope={scope()} />}>
+              <Show when={editing()?.isNew} fallback={<ScopeTag scope={scope()} />}>
                 <ScopeBar value={scope()} onChange={setScope} dirs={m().dirs} />
               </Show>
 
@@ -126,12 +152,14 @@ export default function MemorySettings() {
                   <div class="setting-row-text">
                     <span class="setting-row-label">标识</span>
                   </div>
+                  {/* 标识只在新建时可改：改一条已有记忆的键等于换一条记忆，
+                      那是新建 + 删除两次操作。 */}
                   <input
                     type="text"
-                    value={editing() ?? ''}
-                    disabled={editing() !== ''}
+                    value={editing()?.key ?? ''}
+                    disabled={!editing()?.isNew}
                     placeholder="如 build-commands"
-                    onInput={(e) => setEditing(e.currentTarget.value)}
+                    onInput={(e) => setEditing({ key: e.currentTarget.value, isNew: true })}
                   />
                 </div>
                 <div class="setting-row stack">
@@ -143,28 +171,31 @@ export default function MemorySettings() {
                     rows={8}
                     value={draft()}
                     onInput={(e) => setDraft(e.currentTarget.value)}
+                    onBlur={commit}
                   />
                 </div>
               </div>
 
-              {/* 这一格保留显式保存：正文是自由文本，逐 blur 提交会把写到一半的
-                  内容当成最终值发出去，而记忆是整条覆盖的。 */}
               <div class="row-actions">
-                <button
-                  class="btn-primary"
-                  type="button"
-                  disabled={busy() || !editing()?.trim() || !draft().trim()}
-                  onClick={() =>
-                    void run(async () => {
-                      await saveMemory(editing()!, draft(), scope())
-                      setEditing(null)
-                      setDraft('')
-                      await refetch()
-                    })
-                  }
-                >
-                  保存
-                </button>
+                {/* 只有新建那一次有提交键：它建的是一个还不存在的条目。
+                    已有条目在上面的正文框失焦时就已经存了。 */}
+                <Show when={editing()?.isNew}>
+                  <button
+                    class="btn-primary"
+                    type="button"
+                    disabled={busy() || !editing()?.key.trim() || !draft().trim()}
+                    onClick={() =>
+                      void run(async () => {
+                        await saveMemory(editing()!.key, draft(), scope())
+                        setEditing(null)
+                        setDraft('')
+                        await refetch()
+                      })
+                    }
+                  >
+                    创建
+                  </button>
+                </Show>
                 <button
                   class="btn-ghost"
                   type="button"
@@ -173,7 +204,7 @@ export default function MemorySettings() {
                     setDraft('')
                   }}
                 >
-                  取消
+                  {editing()?.isNew ? '取消' : '关闭'}
                 </button>
                 <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
               </div>

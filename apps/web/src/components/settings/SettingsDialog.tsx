@@ -1,4 +1,4 @@
-import { createEffect, lazy, Match, onCleanup, Show, Switch } from 'solid-js'
+import { createEffect, lazy, Match, onCleanup, Show, Suspense, Switch } from 'solid-js'
 import { closeSettings, type SettingsPage as Page, settingsPage } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
@@ -117,38 +117,51 @@ export function SettingsDialog() {
                 而类目栏是用来来回切的。 */}
             <div class="settings-scroll">
               <div class="settings-inner">
-                <Switch>
-                  <Match when={settingsPage() === 'general'}>
-                    <GeneralSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'models'}>
-                    <ModelSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'modules'}>
-                    <ModulesSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'access'}>
-                    <AccessSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'team'}>
-                    <AgentsSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'memory'}>
-                    <MemorySettings />
-                  </Match>
-                  <Match when={settingsPage() === 'skills'}>
-                    <SkillsSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'mcp'}>
-                    <McpSettings />
-                  </Match>
-                  <Match when={settingsPage() === 'plugins'}>
-                    <PluginsPanel />
-                  </Match>
-                  <Match when={settingsPage() === 'schedules'}>
-                    <SchedulesPanel />
-                  </Match>
-                </Switch>
+                {/*
+                 * **内容区自带 Suspense，边界不许再往外借。**
+                 *
+                 * 每一页都靠 `createResource` 取数，而 Solid 的 Suspense 对子树里
+                 * 任何一个在飞的 resource 一视同仁。不在这里画边界的话，最近的
+                 * 边界是 `App.tsx` 那个给 `lazy()` 用的——切一次类目，整个弹窗
+                 * 连同遮罩的模糊层一起被摘出 DOM 再挂回来。
+                 *
+                 * 没有 fallback 是有意的：内容区空一下即可，摆一句「读取中…」
+                 * 反而会闪一下就没。
+                 */}
+                <Suspense>
+                  <Switch>
+                    <Match when={settingsPage() === 'general'}>
+                      <GeneralSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'models'}>
+                      <ModelSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'modules'}>
+                      <ModulesSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'access'}>
+                      <AccessSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'team'}>
+                      <AgentsSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'memory'}>
+                      <MemorySettings />
+                    </Match>
+                    <Match when={settingsPage() === 'skills'}>
+                      <SkillsSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'mcp'}>
+                      <McpSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'plugins'}>
+                      <PluginsPanel />
+                    </Match>
+                    <Match when={settingsPage() === 'schedules'}>
+                      <SchedulesPanel />
+                    </Match>
+                  </Switch>
+                </Suspense>
               </div>
             </div>
           </div>

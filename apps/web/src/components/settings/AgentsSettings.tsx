@@ -1,4 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 
@@ -30,14 +31,41 @@ export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
   const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
   const [draft, setDraft] = createSignal<string | null>(null)
-  const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
-  const text = () => draft() ?? file()?.raw ?? ''
+  // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份，
+  // 编辑框才不会闪空。
+  const text = () => draft() ?? loaded(file)?.raw ?? ''
+
+  /**
+   * 失焦即存。**先本地解析一次**：这一份要整体合法，不合法就只报错、不发请求
+   * ——没有这道闸，敲到一半失焦就是一次必然的 422。
+   * 本地解析同时能指出出错的位置，往返一次只会得到一句话。
+   */
+  const commit = async () => {
+    const body = draft()
+    if (body === null || !body.trim()) return
+    try {
+      JSON.parse(body)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return
+    }
+    try {
+      await saveTeamRaw(body)
+      setError(null)
+      // **草稿要等重取完再清**：先清的话编辑框会瞬间回落到重取前的旧原文，
+      // 看起来像这次保存把内容改回去了。
+      await Promise.all([refetchRaw(), refetchTeam()])
+      setDraft(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   return (
     <Show
-      when={team()}
+      when={loaded(team)}
       fallback={<LoadState error={team.error} onRetry={() => void refetchTeam()} />}
     >
       {(t) => (
@@ -97,7 +125,7 @@ export default function AgentsSettings() {
               <h3>高级：直接改 team.json</h3>
             </div>
             <Show
-              when={file()}
+              when={loaded(file)}
               fallback={<LoadState error={file.error} onRetry={() => void refetchRaw()} />}
             >
               {(f) => (
@@ -109,6 +137,7 @@ export default function AgentsSettings() {
                     spellcheck={false}
                     value={text()}
                     onInput={(e) => setDraft(e.currentTarget.value)}
+                    onBlur={() => void commit()}
                   />
                   <div class="row-actions">
                     <Show when={!f().exists && draft() === null}>
@@ -116,32 +145,6 @@ export default function AgentsSettings() {
                         插入空模板
                       </button>
                     </Show>
-                    {/* JSON 编辑框保留显式保存：它要整体合法，逐 blur 提交必然频繁 422。 */}
-                    <button
-                      class="btn-primary"
-                      type="button"
-                      disabled={busy() || !text().trim()}
-                      onClick={() =>
-                        void (async () => {
-                          setBusy(true)
-                          try {
-                            // 先本地解析一次再发：同样的错误让服务端回 422 也行，
-                            // 但本地解析能立刻指出出错的位置，往返一次只会得到一句话。
-                            JSON.parse(text())
-                            await saveTeamRaw(text())
-                            setDraft(null)
-                            setError(null)
-                            await Promise.all([refetchRaw(), refetchTeam()])
-                          } catch (e) {
-                            setError(e instanceof Error ? e.message : String(e))
-                          } finally {
-                            setBusy(false)
-                          }
-                        })()
-                      }
-                    >
-                      保存
-                    </button>
                     <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
                   </div>
                 </>
