@@ -26,11 +26,23 @@ export interface ReloadDeps {
 export interface ReloadSupervisor {
   /** 有源码变了。反复调用只会合并成一次。 */
   onChange(): void
+  /**
+   * sidecar 自己没了（崩溃、被别的东西杀掉、内部走到 `process.exit`）。
+   *
+   * **不拉起来的代价是一个连不上后端的空壳界面**：WebSocket 断了，前端只会数
+   * 「已 N 秒没有新数据」，停止按钮点下去没有对端接，用户唯一的出路是重启应用
+   * ——而他并不知道该重启，因为窗口看起来一切正常。
+   *
+   * 连着起不来就不再试：起不来通常是端口还被占着或者代码本身编译不过，
+   * 无限重试只会把终端刷满，而真正的原因在第一条报错里。
+   */
+  onExit(code: number | null): void
 }
 
 export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   let timer: unknown = null
   let reloading = false
+  let crashes = 0
 
   const schedule = (ms: number): void => {
     if (timer !== null) deps.clearTimer(timer)
@@ -47,6 +59,8 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     deps.log('源码变了且手上没有 run，换代码')
     try {
       await deps.restart()
+      // 换成功了说明这棵源码树是能跑起来的，之前那几次崩溃不再计入。
+      crashes = 0
     } catch (err) {
       deps.log(`换代码失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -56,8 +70,35 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     }
   }
 
-  return { onChange: () => schedule(deps.debounceMs) }
+  const onExit = (code: number | null): void => {
+    // 换代码时是我们自己把它杀掉的，那不是崩溃。
+    if (reloading) return
+    crashes++
+    if (crashes > MAX_CRASH_RESTARTS) {
+      deps.log(`sidecar 连着 ${crashes} 次起不来（最后退出码 ${code}），不再重试，见上面的报错`)
+      return
+    }
+    deps.log(`sidecar 退出了（退出码 ${code}），重新起一个`)
+    reloading = true
+    void deps
+      .restart()
+      .catch((err) => deps.log(`重起失败：${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => {
+        reloading = false
+      })
+  }
+
+  return { onChange: () => schedule(deps.debounceMs), onExit }
 }
+
+/**
+ * 连着起不来几次就放弃。
+ *
+ * 起不来的原因通常是端口还被占着或者代码本身跑不起来——无限重试只会把终端刷满，
+ * 而真正的原因在第一条报错里。数字重置在**成功换过一次代码之后**，不是按时间：
+ * 按时间的话一个每 30 秒崩一次的 sidecar 会永远重试下去。
+ */
+const MAX_CRASH_RESTARTS = 3
 
 /**
  * 这个文件变了算不算「源码变了」。

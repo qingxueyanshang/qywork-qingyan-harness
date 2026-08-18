@@ -250,6 +250,16 @@ function liveStatus(now: number): string {
   const last = state.transcript[state.transcript.length - 1]
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
+  /*
+   * 连接不在 ready 上时**这一格什么都不说**。
+   *
+   * 下面那句「已 N 秒没有新数据」在字面上仍然为真，但它把「对端没了」说成了
+   * 「数据慢」——用户会继续等，而实际上服务端已经不在，停止按钮也没人接。
+   * 真正的答案由顶部那条连接横幅给（它还带重试倒计时），这里再说一遍就是两处
+   * 各写一份、迟早漂成两句话。
+   */
+  if (state.connection !== 'ready') return ''
+
   const since = state.lastEventAt ?? state.runStartedAt
   if (!state.permission && since !== null && now - since >= SILENT_MS) {
     return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
