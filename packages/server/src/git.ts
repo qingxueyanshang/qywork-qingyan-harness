@@ -98,8 +98,8 @@ export async function branches(cwd: string): Promise<Branch[]> {
  * 用 `switch` 而不是 `checkout`：后者的参数既可以是分支也可以是路径，
  * 一个正好和分支同名的文件会让它去还原文件而不是切分支。
  *
- * **失败必须把 git 的原话带回去。** 本地改动会被覆盖时 git 会拒绝并列出是哪几个
- * 文件——那句话就是用户要看的东西，翻译成「切换失败」等于把唯一的线索丢掉。
+ * **失败必须把「是哪几个文件挡着」带回去**（`refusal`）——那是用户唯一能动手的地方，
+ * 缩成一句「切换失败」等于把线索删掉。
  */
 export async function switchTo(
   cwd: string,
@@ -109,5 +109,36 @@ export async function switchTo(
     return { ok: false, message: `没有这条本地分支：${name}` }
   }
   const r = await git(cwd, ['switch', name])
-  return r.ok ? { ok: true, message: '' } : { ok: false, message: r.err.trim() || '切换失败' }
+  return r.ok ? { ok: true, message: '' } : { ok: false, message: refusal(r.err) }
+}
+
+/**
+ * git 拒绝切换时的那句话，翻成一句中文。
+ *
+ * **认得住是因为 `git()` 钉了 `LC_ALL=C`**，输出永远是这两种英文形状；哪天有人去掉
+ * 那个环境变量，这里就会全部落到原样返回那一支——不会翻错，只会不翻。
+ *
+ * **认不出的原样返回英文。** 编一句「切换失败」出来等于把用户唯一的线索删掉：
+ * git 在这里说的是「是哪几个文件挡着」，那正是他要动手的地方。
+ */
+function refusal(stderr: string): string {
+  const raw = stderr.trim()
+  // 被点名的文件是缩进那几行；git 用制表符缩进。
+  const files = raw
+    .split('\n')
+    .filter((l) => l.startsWith('\t'))
+    .map((l) => l.trim())
+  if (files.length === 0) return raw || '切换失败'
+  const list =
+    files.length > 3
+      ? `${files.slice(0, 3).join('、')} 等 ${files.length} 个文件`
+      : files.join('、')
+
+  if (raw.includes('local changes to the following files')) {
+    return `${list} 有未提交的改动，先提交再切`
+  }
+  if (raw.includes('untracked working tree files')) {
+    return `${list} 没跟踪，先挪走再切`
+  }
+  return raw
 }

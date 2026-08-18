@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { currentBranch } from './git.ts'
+import { currentBranch, switchTo } from './git.ts'
 
 async function repoWithCommit(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -68,5 +68,48 @@ describe('这台机器上没装 git', () => {
     } finally {
       process.env.PATH = prev
     }
+  })
+})
+
+/**
+ * 被拒时的那句话。**只测形状不测措辞**：断言里出现的是文件名和「未提交」这类关键字，
+ * 换个说法不该让测试红。
+ */
+describe('切不过去时说人话', () => {
+  async function dirtyBlocked(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-git-sw-'))
+    const run = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
+    run('init', '-q', '-b', 'main', '.')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    await Bun.write(join(dir, 'a.txt'), 'main')
+    run('add', '.')
+    run('commit', '-qm', 'main')
+    run('switch', '-qc', 'dev')
+    await Bun.write(join(dir, 'a.txt'), 'dev')
+    run('commit', '-qam', 'dev')
+    run('switch', '-q', 'main')
+    // 这一份既没提交、又正好是两条分支不一样的那个文件——git 一定拒。
+    await Bun.write(join(dir, 'a.txt'), '我自己改的')
+    const r = await switchTo(dir, 'dev')
+    expect(r.ok).toBe(false)
+    return r.message
+  }
+
+  test('点名是哪个文件，且不吐英文', async () => {
+    const msg = await dirtyBlocked()
+    expect(msg).toContain('a.txt')
+    expect(msg).toContain('未提交')
+    // 原来是四行英文加缩进，现在必须是一行。
+    expect(msg).not.toContain('\n')
+    expect(msg).not.toContain('overwritten')
+  })
+
+  test('没有这条分支时不去跑 git', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-git-none-'))
+    Bun.spawnSync(['git', 'init', '-q', '-b', 'main', '.'], { cwd: dir })
+    const r = await switchTo(dir, '--output=pwned')
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('没有这条本地分支')
   })
 })
