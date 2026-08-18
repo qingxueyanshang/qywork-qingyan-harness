@@ -933,16 +933,16 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     // 关掉 stdin：交互式提示在这里等不到人，只会挂到超时。
     stdin: 'ignore',
     env: input.env,
-      /*
-       * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
-       *
-       * 不这么做的话它和 `qy serve` 同组，而 `process.kill(-pid)` 打的是**组**
-       * ——那一下会连自己一起杀掉。`killTree` 因此还要再验一次组长身份，
-       * 见那边的注释：这里只是把「能安全整组杀」这个前提创造出来。
-       *
-       * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
-       * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
-       */
+    /*
+     * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
+     *
+     * 不这么做的话它和 `qy serve` 同组，而 `process.kill(-pid)` 打的是**组**
+     * ——那一下会连自己一起杀掉。`killTree` 因此还要再验一次组长身份，
+     * 见那边的注释：这里只是把「能安全整组杀」这个前提创造出来。
+     *
+     * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
+     * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
+     */
     ...(isWindows ? {} : { detached: true }),
   } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
 
