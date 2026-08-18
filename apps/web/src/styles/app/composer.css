@@ -83,6 +83,9 @@
   /* 最淡的一档中性叠加。它是相对底色的百分比，明暗两套都只抬一档，
      不像 `--bg-inset` 那样在暗色下比正文纸还亮。 */
   background: var(--bg-hover);
+  /* 次级文字色：它是余光里的读数，不是要被读出来的一句话。
+     正文色会让这一枚小 chip 比它上面那条读数条还重。 */
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }

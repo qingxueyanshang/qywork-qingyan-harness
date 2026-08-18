@@ -16,11 +16,16 @@ import { IconSpinner } from './Icons.tsx'
  * 「第 3 / 4 步」不带条目名又会被读成「4 步做完了 3 步」。带条目名的说法留在
  * `write_todos` 的回执里。口径只有 `todoProgress` 一个（core），别在这里重算。
  *
- * ## 两段各有各的出现条件
+ * ## 只在跑着时挂
+ *
+ * 判据是 `state.running`，跑完整条就撤掉——停着的时候它是一枚常驻的浮层，
+ * 而它说的两件事都另有去处：清单在右侧「待办」页，变更在「变更」页。
+ * 每轮开始时按当下状态重新决定挂不挂，所以「上一轮没做完的待办」下一轮照样显示。
+ *
+ * 两段各自的条件：
  *
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
- * - **文件**：这一轮的读数，`run.started` 时清空。整条会话改过哪些文件另有右侧
- *   「变更」页，那是从 step 账本投影的永久记录。
+ * - **文件**：这一轮的读数，`run.started` 时清空。
  */
 export function RunStatus() {
   const todos = () => state.todos
@@ -31,14 +36,11 @@ export function RunStatus() {
   const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
 
   return (
-    <Show when={inProgress() || files().length > 0}>
+    <Show when={state.running && (inProgress() || files().length > 0)}>
       <div class="run-status">
         <div class="changes-chip">
           <Show when={inProgress()}>
-            {/* 转圈只在真的还在跑时给：停下来之后它还在转，是在说一件不成立的事。 */}
-            <Show when={state.running}>
-              <IconSpinner size={12} />
-            </Show>
+            <IconSpinner size={12} />
             {/* 完整清单在右侧面板，这里只报进度：给出的数必须有去处。 */}
             <button
               class="run-jump"
