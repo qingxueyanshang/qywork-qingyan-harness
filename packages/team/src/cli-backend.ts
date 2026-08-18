@@ -20,7 +20,7 @@
  */
 
 import { join } from 'node:path'
-import { scrubEnv } from '@qywork/tools'
+import { collectProcess, scrubEnv } from '@qywork/tools'
 import type { CliBackend } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
@@ -76,32 +76,18 @@ export async function runCli(
     },
   })
 
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    proc.kill()
-  }, timeout)
-  const onAbort = () => proc.kill()
-  input.signal.addEventListener('abort', onAbort, { once: true })
+  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时与中断都走**树杀**。
+  // 被调度的 CLI 自己也在跑一个 agent，必然派生子进程；只杀它一个的话那些还活着，
+  // 于是用户点了停止、这里却还在等一个永远不会到的 EOF。
+  const got = await collectProcess(proc, { timeoutMs: timeout, signal: input.signal })
 
-  try {
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
-    const exitCode = await proc.exited
-
-    return {
-      ok: exitCode === 0 && !timedOut,
-      output: extract(stdout, backend),
-      exitCode,
-      timedOut,
-      // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
-      stderr: stderr.length > 4000 ? stderr.slice(-4000) : stderr,
-    }
-  } finally {
-    clearTimeout(timer)
-    input.signal.removeEventListener('abort', onAbort)
+  return {
+    ok: got.exitCode === 0 && !got.timedOut,
+    output: extract(got.stdout, backend),
+    exitCode: got.exitCode,
+    timedOut: got.timedOut,
+    // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
+    stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
   }
 }
 

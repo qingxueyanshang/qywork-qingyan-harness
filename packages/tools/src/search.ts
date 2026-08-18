@@ -10,6 +10,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
+import { collectProcess } from './sandbox.ts'
 
 const MAX_RESULTS = 200
 
@@ -199,10 +200,13 @@ async function runRipgrep(
 
   try {
     const proc = Bun.spawn(argv, { cwd, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
-    const stdout = await new Response(proc.stdout).text()
-    const code = await proc.exited
+    // 走同一个收口：完成判据是进程退出，不是管道 EOF。
+    //
+    // **这条路上的 EOF 挂死不可达**：rg 不派生子进程，没人能在它退出后还扣着写端。
+    // 改它是为了让「等子进程」只有一种写法——五处各写一遍的代价已经付过一次了。
+    const { exitCode, stdout } = await collectProcess(proc)
     // rg 的退出码 1 = 没有命中，不是错误。>1 才是真失败。
-    if (code > 1) return null
+    if (exitCode > 1) return null
     const all = stdout.split('\n').filter(Boolean)
     return { lines: all.slice(0, MAX_RESULTS), truncated: all.length > MAX_RESULTS }
   } catch {

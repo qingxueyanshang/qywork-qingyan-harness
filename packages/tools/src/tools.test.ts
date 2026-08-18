@@ -631,6 +631,72 @@ describe('搜索与命令', () => {
     expect(out.status).toBe('failure')
     expect(out.data?.exitCode).toBe(3)
   })
+
+  /**
+   * **原始失败形状**：命令跑完了、shell 也正常退出了，但它留下的后台进程继承了
+   * stdout 的写端还活着，于是管道永远不 EOF。账本里那次是 `run.ps1 start`
+   * （起了个 node 服务留在后台，而那正是脚本该做的事）：界面上那条 `run_command`
+   * 停在「正在执行」371 秒不动，超过默认超时 120 秒两倍还多——超时到点的树杀够不着
+   * 已经脱离父子关系的孙进程，而超时那条返回分支又排在等 EOF 之后，于是永远走不到。
+   * 后果不止这一次调用：`runs.unregister` 不执行，整条会话此后回绝所有新任务。
+   *
+   * 锁两件事：**它按时回传**，以及**它说出了后台还留着进程**。只锁前者的话，
+   * 一条压根没复现出这个形状的命令也能让这条测试全绿。
+   *
+   * PowerShell 那一档的写法**本机没验过**（这台机器有 bash，走的是另一条）。
+   */
+  test('留下后台进程扣住管道时，命令仍按时回传并说明情况', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    // 按 argv 分叉而不是按可执行文件名：`-Command` 是两档 PowerShell 共有的，
+    // 而名字要同时认 powershell.exe 和 pwsh.exe。
+    const command = shell.argv.includes('-Command')
+      ? "Write-Output started; Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 21 127.0.0.1'"
+      : 'echo started; sleep 20 &'
+
+    const started = Date.now()
+    const out = await registry().execute('run_command', { command }, ctx(root))
+    const elapsed = Date.now() - started
+
+    expect(out.status).toBe('success')
+    expect(String(out.data?.stdout)).toContain('started')
+    // 挂死的话这里是 20 秒起步，改回等 EOF 就永远回不来。
+    expect(elapsed).toBeLessThan(5_000)
+    expect(out.message).toContain('后台进程仍在运行并持有输出管道')
+  }, 30_000)
+
+  /**
+   * **用户点了停止，它就得停。**
+   *
+   * 这是上一条的同一个根因在另一面的表现：中断只是 abort 一个信号，它停不掉一个
+   * 不返回的 `await`。命令派生了脱离进程树的后台进程时，树杀杀得掉前台那半、
+   * 杀不掉那个孤儿，于是等 EOF 的调用继续挂着——界面上就是「点了停止但它不停」。
+   *
+   * 前台那半故意留长（30 秒），孤儿也留着：**两半都得停，测试才算数**。
+   */
+  test('中断时立刻收手，哪怕有孤儿进程扣着管道', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    const command = shell.argv.includes('-Command')
+      ? "Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 31 127.0.0.1'; Start-Sleep -Seconds 30"
+      : 'sleep 30 & sleep 30'
+
+    const controller = new AbortController()
+    const started = Date.now()
+    setTimeout(() => controller.abort(), 300)
+    const out = await registry().execute(
+      'run_command',
+      { command },
+      { ...ctx(root), signal: controller.signal },
+    )
+    const elapsed = Date.now() - started
+
+    // 不断言状态：被杀掉的进程退出码由平台定。要锁的是「它回来了」。
+    expect(out).toBeTruthy()
+    expect(elapsed).toBeLessThan(5_000)
+  }, 30_000)
 })
 
 /**
