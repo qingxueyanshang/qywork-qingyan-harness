@@ -173,7 +173,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
       }
 
-      const { proc, sandbox } = spawnGuarded({
+      const { proc, sandbox } = await spawnGuarded({
         command,
         cwd,
         policy,

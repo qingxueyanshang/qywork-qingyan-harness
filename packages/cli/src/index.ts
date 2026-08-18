@@ -28,7 +28,7 @@ import {
 } from '@qywork/runtime'
 import { lanCandidates, serve } from '@qywork/server'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
-import { detectSandbox } from '@qywork/tools'
+import { detectSandbox, runCommandRunner, setCommandRunner, startCommandRunner } from '@qywork/tools'
 import { runDoctor } from './doctor.ts'
 import { runExport } from './export.ts'
 import { runInit } from './init.ts'
@@ -141,6 +141,16 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'export') return runExport(rest)
   if (cmd === 'probe') return runProbe(rest)
   if (cmd === 'exec') return runExec(rest)
+  /*
+   * 命令 runner 那一侧。**不写进 USAGE**：它不是给人用的子命令，是
+   * `qy serve` 自己再执行一次这个二进制、把它当作「跑命令的那个父进程」。
+   * 理由见 `tools/runner.ts` 的模块注释。
+   */
+  if (cmd === 'runner') {
+    runCommandRunner()
+    // 靠 IPC 通道钉住事件循环；父进程一退，这一侧的 stdin 关闭，随之退出。
+    return new Promise<number>(() => {})
+  }
   if (cmd === 'serve') return runServe(rest)
 
   process.stderr.write(`未知命令：${cmd}\n\n${USAGE}`)
@@ -247,6 +257,22 @@ async function runServe(args: string[]): Promise<number> {
   const problems = [...diagnoseConfig(config), ...configNotices(config)]
 
   const store = new Store({ path: dataPath() })
+
+  /*
+   * **必须在 `serve()` 之前**。
+   *
+   * Windows 上句柄是继承的：端口绑好之后再 spawn 出去的进程都会拿到那个监听
+   * socket，而命令自己派生的后台服务活得比 sidecar 久——于是 sidecar 退出之后
+   * 端口仍然被攥着（实测与推理都在 `tools/runner.ts` 的模块注释里）。
+   * runner 出生在绑端口之前，它和它的子孙手里都没有那份句柄。
+   *
+   * 源码直跑时要把入口脚本带上（`bun <入口>.ts runner`），打包之后只有二进制
+   * 自己（`qy runner`）——判据是「这个进程是不是 bun 在跑一个脚本」。
+   */
+  const runnerArgv = Bun.main.endsWith('.ts')
+    ? [process.execPath, Bun.main, 'runner']
+    : [process.execPath, 'runner']
+  setCommandRunner(startCommandRunner(runnerArgv))
 
   const handle = serve({
     store,
