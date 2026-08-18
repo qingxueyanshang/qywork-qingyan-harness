@@ -137,14 +137,28 @@ const PANEL_MIN = 280
 /** 拖到最宽时留给会话区的宽度。拖到只剩一条缝的对话框不是用户想要的结果。 */
 const PANEL_KEEP_FOR_CHAT = 480
 const PANEL_KEY = 'qywork.panelWidth'
+const PANEL_DEFAULT = 380
+
+/**
+ * 夹进当前窗口容得下的范围。
+ *
+ * **上界跟着窗口走，所以每一次拿到这个值都要重新夹一遍**——宽度是存下来的，
+ * 窗口尺寸不是。只在拖动那一刻夹一次的话，在大屏上拖到 1632、换到 1280 的窗口
+ * 再打开，网格那一列照样排 1632：会话区被压成 0，顶栏（横跨到最后一列）伸出窗口外，
+ * 右上角那排按钮跟着出界，看起来就像样式没加载。
+ */
+function clampPanelWidth(px: number): number {
+  const max = Math.max(PANEL_MIN, window.innerWidth - PANEL_KEEP_FOR_CHAT)
+  return Math.round(Math.min(max, Math.max(PANEL_MIN, px)))
+}
 
 function readPanelWidth(): number {
   try {
     const v = Number(localStorage.getItem(PANEL_KEY))
-    return Number.isFinite(v) && v >= PANEL_MIN ? v : 380
+    return clampPanelWidth(Number.isFinite(v) && v > 0 ? v : PANEL_DEFAULT)
   } catch {
     // 隐私模式下 localStorage 直接抛。记不住宽度不该让应用起不来。
-    return 380
+    return PANEL_DEFAULT
   }
 }
 
@@ -160,10 +174,16 @@ function readPanelWidth(): number {
  */
 export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
 
-/** 拖动中每一帧都会调。**夹在可用范围内**，并顺手记下来。 */
+/**
+ * 改宽度的**唯一入口**：拖动、方向键、窗口变尺寸后的重新夹都走它。
+ * 夹在可用范围内，并顺手记下来。
+ *
+ * 值没变就直接返回：拖到头了还在拉、以及窗口拖动中的每一帧都会调到这里，
+ * 不拦的话就是每秒几十次无意义的 localStorage 写入。
+ */
 export function resizePanel(px: number): void {
-  const max = Math.max(PANEL_MIN, window.innerWidth - PANEL_KEEP_FOR_CHAT)
-  const next = Math.round(Math.min(max, Math.max(PANEL_MIN, px)))
+  const next = clampPanelWidth(px)
+  if (next === panelWidth()) return
   setPanelWidthSignal(next)
   try {
     localStorage.setItem(PANEL_KEY, String(next))
