@@ -9,8 +9,6 @@
  * 「CRITICAL / YOU MUST / 如有疑问就用 X」会造成过度触发。说清楚该做什么就够了。
  */
 
-import { type TodoItem, todoProgress } from '@qywork/core'
-
 export const SYSTEM_LAYER = `你是 qywork 的编码 agent，在用户的本地工作区里直接读写代码、执行命令、完成任务。
 
 你的输出会被渲染在一个图形界面里，用户能看到你调用的每一个工具和它的结果。
@@ -137,37 +135,4 @@ export function buildTailNotes(input: {
     })
   }
   return notes
-}
-
-/** 状态标记。符号比中文短，一行一条时也对得齐。 */
-const MARK: Record<TodoItem['status'], string> = {
-  completed: '[x]',
-  in_progress: '[>]',
-  pending: '[ ]',
-}
-
-/**
- * 当前待办清单，渲染成一段给模型看的正文。空清单返回 null。
- *
- * ## 为什么要有这一段
- *
- * 清单在历史里只以快照形式存在：一轮任务会留下好几份 `write_todos` 的调用记录，
- * 最新那份埋在几万 token 的执行记录中间，没有任何标记说明哪一份是现在的。
- * 实测一轮 59 步的任务在第 33 步之后再没更新过清单，收尾时账本停在 5/7，
- * 而模型的回答宣布全做完了。
- *
- * ## 位置：断点之后，不进尾区
- *
- * **不要把它挪进 `buildTailNotes`。** 尾区在 transcript 之前，而缓存断点之三
- * 正建立在「一个 run 内尾区逐字节不变」这条上（见 `agent/loop.ts`）。清单每提交
- * 一次就变，进了尾区就把 run 内那条不断变长的稳定前缀从中间切断，已产生的整段
- * transcript 全价重付——而这种回归不报任何错，只表现为账单变高、缓存命中变低。
- *
- * 进度口径走 `todoProgress`，与工具回执、界面状态条是同一个函数。
- */
-export function buildTodoNote(todos: readonly TodoItem[]): string | null {
-  if (!todos.length) return null
-  const progress = todoProgress(todos)
-  const list = todos.map((t) => `${MARK[t.status]} ${t.content}`).join('\n')
-  return `## 当前待办（${progress.done}/${progress.total}）\n${list}`
 }
