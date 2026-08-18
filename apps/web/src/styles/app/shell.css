@@ -38,9 +38,19 @@
   height: 100%;
   background: var(--bg-sunken);
 }
-/* 开右侧面板时让出一列。宽度固定，会话区自适应剩余空间。 */
+/*
+ * 开右侧面板时让出一列。
+ *
+ * **面板那一格是上限不是定长，会话那一格有下限**——两条缺一，`--panel-w` 就是
+ * 一个能撑破整个布局的外部值：定长轨道不会缩，网格照排，会话区被压成 0，
+ * 顶栏（横跨到最后一列）连着右上角那排按钮一起伸出窗口外。
+ * 值从 localStorage 来，窗口尺寸却是当下的，所以「存的时候放得下」根本不作数。
+ *
+ * 写成 minmax 之后，面板最多只能拿走「窗口 − 左栏 − `--chat-min`」，
+ * 布局的正确性不再取决于谁记得在 JS 里夹一下。
+ */
 .app.with-panel {
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--panel-w);
+  grid-template-columns: var(--sidebar-w) minmax(var(--chat-min), 1fr) minmax(0, var(--panel-w));
 }
 
 /* ── 连接状态条 ── */
@@ -606,7 +616,7 @@
     grid-template-columns: 0 minmax(0, 1fr);
   }
   .app.sidebar-collapsed.with-panel {
-    grid-template-columns: 0 minmax(0, 1fr) var(--panel-w);
+    grid-template-columns: 0 minmax(var(--chat-min), 1fr) minmax(0, var(--panel-w));
   }
   .app.sidebar-collapsed .sidebar-slot {
     display: none;

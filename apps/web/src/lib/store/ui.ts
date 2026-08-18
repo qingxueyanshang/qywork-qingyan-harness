@@ -132,24 +132,22 @@ export function closeAllPanelTabs(): void {
   if (current) setSidePanel('files')
 }
 
-/** 面板最窄：树 + 一列内容还看得见的最窄。 */
+/**
+ * 面板最窄：树 + 一列内容还看得见的最窄。
+ *
+ * **这里只有下限，没有上限。** 上限是布局的事，由 `.app.with-panel` 的
+ * `minmax(var(--chat-min), 1fr)` 说了算——网格知道窗口现在多宽、左栏收没收起，
+ * 这里不知道。在这儿再算一遍就是同一件事的第二本账，而那本账只在拖动那一刻对：
+ * 大屏上拖出来的宽度换到小窗口就成了一个撑破布局的定长。
+ */
 const PANEL_MIN = 280
-/** 拖到最宽时留给会话区的宽度。拖到只剩一条缝的对话框不是用户想要的结果。 */
-const PANEL_KEEP_FOR_CHAT = 480
 const PANEL_KEY = 'qywork.panelWidth'
 const PANEL_DEFAULT = 380
 
-/**
- * 夹进当前窗口容得下的范围。
- *
- * **上界跟着窗口走，所以每一次拿到这个值都要重新夹一遍**——宽度是存下来的，
- * 窗口尺寸不是。只在拖动那一刻夹一次的话，在大屏上拖到 1632、换到 1280 的窗口
- * 再打开，网格那一列照样排 1632：会话区被压成 0，顶栏（横跨到最后一列）伸出窗口外，
- * 右上角那排按钮跟着出界，看起来就像样式没加载。
- */
+/** 负数和 0 不只是难看：`minmax(0, -50px)` 会让整条 `grid-template-columns` 失效，
+ *  网格退回隐式的 auto 列，那正是要防的那种崩法。 */
 function clampPanelWidth(px: number): number {
-  const max = Math.max(PANEL_MIN, window.innerWidth - PANEL_KEEP_FOR_CHAT)
-  return Math.round(Math.min(max, Math.max(PANEL_MIN, px)))
+  return Math.max(PANEL_MIN, Math.round(px))
 }
 
 function readPanelWidth(): number {
@@ -163,11 +161,15 @@ function readPanelWidth(): number {
 }
 
 /**
- * 右侧面板的宽度（像素）。**由用户拖左边沿改，记在 localStorage 里。**
+ * 右侧面板**要多宽**（像素）。由用户拖左边沿改，记在 localStorage 里。
  *
  * 真源是这个信号，不是 `tokens.css` 的 `--panel-w`：那条只是首次启动的默认值。
  * `App.tsx` 把它写成 `.app` 上的行内 `--panel-w`，于是网格那一列跟着变，
  * 布局规则一行不用改。
+ *
+ * **它是「要多宽」，不是「实际多宽」**：窗口放不下时网格只给到上限，这个数照旧
+ * 是用户拖出来的那个。窗口再变宽就还它——反过来（拖窄窗口时把它改小）等于
+ * 拿一次临时的窗口尺寸抹掉用户的设置。
  *
  * 面板里现在是「内容 + 树」两块并排，所以可拖不是锦上添花：不给拖的话内容那半
  * 永远只剩一百多像素。
@@ -175,10 +177,9 @@ function readPanelWidth(): number {
 export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
 
 /**
- * 改宽度的**唯一入口**：拖动、方向键、窗口变尺寸后的重新夹都走它。
- * 夹在可用范围内，并顺手记下来。
+ * 改宽度的**唯一入口**：拖动和方向键都走它。夹住下限，并顺手记下来。
  *
- * 值没变就直接返回：拖到头了还在拉、以及窗口拖动中的每一帧都会调到这里，
+ * 值没变就直接返回：拖到头了还在拉，每一帧都会调到这里，
  * 不拦的话就是每秒几十次无意义的 localStorage 写入。
  */
 export function resizePanel(px: number): void {

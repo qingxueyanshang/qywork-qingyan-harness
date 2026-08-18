@@ -28,7 +28,6 @@ import {
   overlay,
   panelMaximized,
   panelWidth,
-  resizePanel,
   setPaletteOpen,
   setState,
   settingsPage,
@@ -70,17 +69,6 @@ export function App() {
     onCleanup(() => window.removeEventListener('keydown', onKey))
 
     /*
-     * 窗口一变窄就把面板宽度重新夹一遍。
-     *
-     * 宽度是存下来的、窗口尺寸不是：在大屏上拖宽过的面板，换到小窗口就比整块
-     * 内容区还宽——网格那一列排不下，会话区被压成 0，顶栏横跨出窗口右沿，
-     * 右上角那排按钮一起出界。夹一遍就是这里唯一要做的事，布局规则不用动。
-     */
-    const onResize = () => resizePanel(panelWidth())
-    window.addEventListener('resize', onResize)
-    onCleanup(() => window.removeEventListener('resize', onResize))
-
-    /*
      * 空闲时先把面板那块代码取回来。
      *
      * 它是首屏之外最可能被点开的一块，而**点开它的时机偏偏最忙**——用户通常是
@@ -107,6 +95,8 @@ export function App() {
       // 面板宽度的真源是 `panelWidth`（用户拖出来的，记在 localStorage）。
       // 写成 `.app` 上的行内变量：网格那一列本来就是 `var(--panel-w)`，
       // tokens.css 里那条只当默认值，布局规则一行不用改。
+      // 这里**不夹**：窗口放不下由网格自己收（`.app.with-panel` 的 minmax），
+      // 在这儿再夹一次就是把布局知识抄进 JS，而它只在写的那一刻是对的。
       style={{ '--panel-w': `${panelWidth()}px` }}
     >
       <Show when={state.connection !== 'ready'}>
