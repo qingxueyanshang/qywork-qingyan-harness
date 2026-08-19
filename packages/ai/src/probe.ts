@@ -247,7 +247,7 @@ export async function probeModel(
       name: 'effort',
       ok: false,
       skipped: true,
-      detail: '内置库里这个模型没有 effort 档位，不试',
+      detail: '内置库未声明该模型的思考档位',
     })
   } else {
     let accepted = false
@@ -267,7 +267,7 @@ export async function probeModel(
       probes.push({
         name: 'effort 控制面',
         ok: false,
-        detail: `内置库声明这个模型有 ${declared.join(' / ')}，但这条链路把它拒了`,
+        detail: `内置库声明该模型有 ${declared.join(' / ')}，本链路拒绝该字段`,
       })
     }
   }
