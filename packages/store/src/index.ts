@@ -79,4 +79,10 @@ export { SCHEMA_VERSION } from './schema.ts'
 // 待办：只读回，不写入——真源是 `write_todos` 那条 step 的 args
 export { latestTodos } from './todos.ts'
 // 花费账本
-export { type GroupBy, recordUsage, usageBy, usageTotals } from './usage.ts'
+export {
+  type GroupBy,
+  recordUsage,
+  summaryOutputPercentile,
+  usageBy,
+  usageTotals,
+} from './usage.ts'

@@ -160,7 +160,8 @@ async function streamOnce(
     messages,
     tools: opts.tools ? [WEATHER] : [],
     maxOutputTokens: 2048,
-    ...(opts.noThink ? { thinking: { mode: 'disabled' as const } } : {}),
+    // `ThinkingRequest` 只有 adaptive / budget 两档，**没有关闭档**：
+    // 不发这个字段就是不请求思考，`noThink` 因此只影响下面几条断言的期望值。
     ...(opts.cacheKey ? { cacheKey: opts.cacheKey } : {}),
   })) {
     apply(out, ev)

@@ -30,6 +30,7 @@
  * （见 `session.ts`），本文件只管把给定的 steps 折平。
  */
 
+import { stepStamp } from '@qywork/agent'
 import type { ContentBlock, WireMessage, WireToolCall } from '@qywork/ai'
 import type { ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
 import { listMessages, listRuns, listSteps, type Store } from '@qywork/store'
@@ -67,6 +68,7 @@ interface ToolPayload {
     executed?: boolean
     message?: string
     data?: unknown
+    resources?: { resourceId?: string }[]
   }
 }
 
@@ -85,35 +87,60 @@ function toolPayloadOf(step: Step): ToolPayload {
 function toolContent(step: Step): string {
   const payload = toolPayloadOf(step)
   const outcome = payload.outcome ?? {}
+  const resources = (outcome.resources ?? []).map((r) => r.resourceId).filter(Boolean)
   return JSON.stringify({
     call_id: step.toolCallId ?? '',
     tool: step.toolName ?? 'unknown',
     status: outcome.status ?? (step.status === 'success' ? 'success' : 'failure'),
     executed: outcome.executed ?? false,
     summary: outcome.message ?? '',
+    ...(resources.length ? { resources } : {}),
     ...(outcome.data ? { result: outcome.data } : {}),
   })
 }
 
 /**
- * 折平一个 run 的 steps。
+ * 一个可折单元：同一个执行波次的 assistant 消息与它的全部 tool 结果。
+ *
+ * 压缩按单元切界，**共戳即同进同出**——tool_call 与它的 tool_result 因此永远
+ * 不会被切开。这是结构保证，不是事后修补。
+ */
+export interface StepUnit {
+  /** `stepStamp(runId, 单元里最后一个 step 的 seq)`。 */
+  stamp: string
+  messages: WireMessage[]
+  /** 这个单元里的 tool_action step。纯文本单元为空。 */
+  steps: Step[]
+}
+
+/**
+ * 折平一个 run 的 steps，按可折单元分组。
  *
  * 顺序即 `seq` 顺序（`listSteps` 已按它排）。同一 `providerBatchId` 的
  * tool_action 属于同一个 assistant 轮，合成一条带 `toolCalls` 的消息，
- * 随后每个调用一条 `role:'tool'`。
+ * 随后每个调用一条 `role:'tool'`；它们与被并进来的前置文本共用一个戳。
+ *
+ * **戳必须与 `agent/loop.ts` 里活的 transcript 逐字相同**：同一个单元在
+ * 「本 run 活跃时」与「跨 run 投影回历史后」定位不一致的话，压缩会按两条不同的
+ * 线去切同一段内容。
  */
-export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): WireMessage[] {
-  const out: WireMessage[] = []
-  const stamp = <T extends WireMessage>(m: T): T =>
-    opts.messageId ? ({ ...m, _messageId: opts.messageId } as T) : m
+export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit[] {
+  const units: StepUnit[] = []
+  const mark = <T extends WireMessage>(m: T, stamp: string): T =>
+    ({ ...m, ...(opts.messageId ? { _messageId: opts.messageId } : {}), _step: stamp }) as T
 
   let pendingText = ''
+  let pendingStamp = ''
   const flushText = () => {
     if (!pendingText.trim()) {
       pendingText = ''
       return
     }
-    out.push(stamp({ role: 'assistant', content: pendingText, _group: GROUP }))
+    units.push({
+      stamp: pendingStamp,
+      messages: [mark({ role: 'assistant', content: pendingText, _group: GROUP }, pendingStamp)],
+      steps: [],
+    })
     pendingText = ''
   }
 
@@ -122,6 +149,7 @@ export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): W
     const step = steps[i]!
     if (step.kind === 'text') {
       pendingText += step.content ?? ''
+      pendingStamp = stepStamp(step.runId, step.seq)
       i += 1
       continue
     }
@@ -160,32 +188,41 @@ export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): W
     // 思考正文挂在批次首条的 `content` 上（见 `LoopPersistence.openToolStep`）。
     // 缺它的话 DeepSeek 类兼容端点在第二轮就 400，而那正是本批要修的东西。
     const reasoning = batch[0]?.content ?? ''
+    // 戳取批次里最大的 seq：活的 transcript 那侧是「一波跑完时的高水位」，同一个数。
+    const stamp = stepStamp(batch[0]!.runId, Math.max(...batch.map((s) => s.seq)))
 
-    out.push(
-      stamp({
-        role: 'assistant',
-        content: pendingText,
-        toolCalls: calls,
-        ...(reasoning ? { reasoningContent: reasoning } : {}),
-        _group: GROUP,
-      }),
-    )
+    const messages: WireMessage[] = [
+      mark(
+        {
+          role: 'assistant',
+          content: pendingText,
+          toolCalls: calls,
+          ...(reasoning ? { reasoningContent: reasoning } : {}),
+          _group: GROUP,
+        },
+        stamp,
+      ),
+    ]
     pendingText = ''
 
     for (const s of ordered) {
-      out.push(
-        stamp({
-          role: 'tool',
-          toolCallId: s.toolCallId ?? '',
-          content: toolContent(s),
-          _group: GROUP,
-        }),
+      messages.push(
+        mark(
+          { role: 'tool', toolCallId: s.toolCallId ?? '', content: toolContent(s), _group: GROUP },
+          stamp,
+        ),
       )
     }
+    units.push({ stamp, messages, steps: ordered })
   }
 
   flushText()
-  return out
+  return units
+}
+
+/** 折平一个 run 的 steps。单元边界见 `stepsToUnits`。 */
+export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): WireMessage[] {
+  return stepsToUnits(steps, opts).flatMap((u) => u.messages)
 }
 
 /**

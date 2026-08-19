@@ -43,6 +43,7 @@ import type {
 } from '@qywork/core'
 import { emptyBreakdown, emptyOmitted, newBatchId } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
+import { stepStamp } from './compaction.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
 import {
   actionFingerprint,
@@ -77,8 +78,11 @@ export interface LoopDeps {
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence
   /**
-   * 上下文压缩。不给 = 本次执行不支持压缩，容量拒绝直接上报为 run 错误。
-   * 由 runtime 装配（它才知道怎么从账本取历史、往哪写 manifest）。
+   * 上下文压缩。由 runtime 装配（它才知道怎么从账本取历史、往哪写 manifest）。
+   *
+   * 不给的话由构造函数补一个透传实现，**调用点因此不必判空**。这不是给缺失
+   * 留后路：可缺性只服务测试夹具，而让它泄漏到每个调用点的代价是三处
+   * `if (compaction)`，其中任何一处漏判都是一次静默的「压缩没发生」。
    */
   compaction?: CompactionPort
   /**
@@ -97,17 +101,26 @@ export interface LoopDeps {
  */
 export interface CompactionPort {
   /**
-   * 把历史投影成实际要发的消息。未压缩时原样返回。
+   * 把整串待发消息投影成实际要发的那份。未压缩时原样返回。
    * 每次构造请求都调用——压缩发生在两次请求之间，投影必须跟着变。
    */
-  project(history: WireMessage[]): WireMessage[]
+  project(messages: WireMessage[]): WireMessage[]
   /**
    * 执行一次压缩并落库。**不抛异常**，失败以 outcome 表达。
    *
    * 信号必须传下去并一路带到落库点前：`untilAborted` 只把 loop 从等待里拽回来，
    * 压缩那一侧还在后台跑，跑完的那份要靠同一个信号在落库前被丢弃。
    */
-  run(signal: AbortSignal): Promise<CompactionOutcome>
+  run(input: CompactionRunInput): Promise<CompactionOutcome>
+}
+
+export interface CompactionRunInput {
+  /** 中断信号。**可缺**：手动压缩不属于任何 run，没有 run 信号。 */
+  signal?: AbortSignal
+  /** 当前占用读数。**必须与触发判定同一把尺**，两处各量一次就是两本账。 */
+  occupancy: number
+  /** 模型窗口。软阈值与保留预算都从它推导，不另传现成的数字。 */
+  contextWindow: number
 }
 
 export interface LoopPersistence {
@@ -162,7 +175,7 @@ export interface LoopPersistence {
       phase: 'done' | 'skipped' | 'failed'
       manifestRevision: number
       compactedMessages: number
-      /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+      /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
       summarized?: boolean
       reasonCode?: string
     },
@@ -180,7 +193,6 @@ export interface LoopPersistence {
     retryIndex: number
     model: string
     measuredInputTokens: number
-    measurementExact: boolean
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
@@ -222,7 +234,17 @@ export interface RunInput {
    * 锚点没算过的，要另外估。
    */
   anchor?: { tokens: number; throughMessageId: string | null }
+  /**
+   * 本轮 transcript 归属的用户消息。
+   *
+   * 不带它的话本 run 内新产生的执行记录没有归属，压缩投影认不出它们的位置，
+   * 于是 run 内涨起来的那部分永远压不掉——而涨的正是那部分。
+   */
+  userMessageId?: string
 }
+
+/** 换行。日志里用，避免转义在工具链上被折半。 */
+const NEWLINE = String.fromCharCode(10)
 
 const DEFAULT_MAX_STEPS = 120
 
@@ -359,7 +381,20 @@ export class AgentLoop {
   /** 上一次装配丢掉了多少原文。由 `buildRequest` 写，`context` 事件与账本读。 */
   private lastOmitted: ContextOmitted = emptyOmitted()
 
-  constructor(private readonly deps: LoopDeps) {}
+  /**
+   * 压缩端口。**恒非空**——缺省时是下面那个透传实现。
+   *
+   * 透传的语义与「没有压缩」逐字相同：投影原样返回、压缩报「没什么可折」，
+   * 于是容量拒绝照旧上报为 run 错误。差别只在调用点少了三处判空。
+   */
+  private readonly compaction: CompactionPort
+
+  constructor(private readonly deps: LoopDeps) {
+    this.compaction = deps.compaction ?? {
+      project: (messages) => messages,
+      run: async () => ({ status: 'skipped', reasonCode: 'nothing_to_fold' }),
+    }
+  }
 
   /**
    * 给整条流套上空闲计时器，并**把第一个事件先拉出来**。
@@ -440,6 +475,32 @@ export class AgentLoop {
     // transcript = 本 run 内新产生的对话，与传入的 history 拼接后发给模型。
     const transcript: WireMessage[] = []
 
+    /** 本 run 已分配到的最大 step seq。单元戳取它，见 `stampUnit`。 */
+    let lastSeq = 0
+    const nextSeq = (): number => {
+      lastSeq = persist.nextSeq(input.runId)
+      return lastSeq
+    }
+
+    /**
+     * 给 transcript 尾部这一段盖上单元戳。
+     *
+     * 一个执行波次（assistant 消息 + 它的全部 tool 结果）共用一个戳，压缩因此
+     * 只能在戳之间切界，**tool_call 与 tool_result 永远同进同出**。
+     * 戳的口径必须与 `runtime/transcript.ts` 投影历史时那一份逐字相同：
+     * 取单元里最后一个 step 的 seq。
+     */
+    const stampUnit = (from: number): void => {
+      const stamp = stepStamp(input.runId, lastSeq)
+      for (let i = from; i < transcript.length; i++) {
+        transcript[i] = {
+          ...transcript[i]!,
+          _step: stamp,
+          ...(input.userMessageId ? { _messageId: input.userMessageId } : {}),
+        }
+      }
+    }
+
     /*
      * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 仅对其后新增内容的估算。
      *
@@ -486,14 +547,22 @@ export class AgentLoop {
 
     let stopReason: StopReason = 'completed'
     /**
-     * 本 run 是否已经压过一次。
+     * 溢出恢复用过没有。**状态机，不是重试计数。**
      *
-     * 压缩投影只作用于 `input.history`，而 history 在一个 run 内不变——涨的是
-     * `transcript`，那部分压缩碰不到。所以第一次的结论对后面每一步都成立：
-     * 压不动就是压不动。不加这个闸，占用一旦越过软阈值，**每一步**都会再触发
-     * 一次压缩：一次模型调用、一条会话流提示，而占用一个 token 都不会少。
+     * 计数常量要回答「几次算够」，而这里根本没有第二次的意义：撞窗之后压一次
+     * 是有效的，压完还撞说明压缩已经压不动了，再压一次的输入与上一次逐字相同。
+     * 收到一次带回执的成功响应即复位——那说明请求已经装得下，此后再撞是新情况。
      */
-    let compacted = false
+    let overflowRecovered = false
+    /**
+     * 上次尝试压缩时的 transcript 高水位。**进展判据，不是次数闸。**
+     *
+     * run 内 `input.history` 不变，新的可折单元只可能来自 transcript 追加，
+     * 所以「有没有新东西可压」就等于「transcript 有没有变长」。
+     * 不判进展的话，占用一旦越过软阈值就是每一步再压一次；
+     * 判成「一个 run 只压一次」的话，run 内涨出来的那几十波工具结果永远压不掉。
+     */
+    let compactedAt = -1
     /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
     const progress: ProgressEvidence[] = []
     let turnIndex = 0
@@ -548,18 +617,25 @@ export class AgentLoop {
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
         let req = this.buildRequest(input, transcript, occupancyOf)
 
-        if (this.deps.compaction && !compacted) {
+        if (transcript.length > compactedAt) {
           const occupancy = occupancyOf(req)
           if (occupancy > softLimit(adapter.spec)) {
-            compacted = true
+            compactedAt = transcript.length
             process.stderr.write(
               `[qy] 发送前检查触发压缩：占用约 ${occupancy}，软阈值 ${softLimit(adapter.spec)}
 `,
             )
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
-            // 同工具波次：压缩要调一次模型，卡住的话整轮停在这里，而且它不写
+            // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
             // `provider_requests`，账本上连"卡在哪"都看不出来。
-            const outcome = await untilAborted(input.signal, this.deps.compaction.run(input.signal))
+            const outcome = await untilAborted(
+              input.signal,
+              this.compaction.run({
+                signal: input.signal,
+                occupancy,
+                contextWindow: adapter.spec.contextWindow,
+              }),
+            )
             if (outcome.status === 'aborted') {
               /*
                * 中断的压缩什么都没落库，所以这里什么都不发、什么都不记：
@@ -570,11 +646,12 @@ export class AgentLoop {
               break
             }
             if (outcome.status === 'compacted') {
-              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), {
+              persist.recordCompaction(input.runId, nextSeq(), {
                 phase: 'done',
                 manifestRevision: outcome.manifest.revision,
                 compactedMessages: outcome.manifest.compactedMessageCount,
                 summarized: outcome.summarized,
+                ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
               })
               yield {
                 type: 'compaction',
@@ -582,7 +659,16 @@ export class AgentLoop {
                 phase: 'done',
                 manifest: outcome.manifest,
                 summarized: outcome.summarized,
+                ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
               }
+              /*
+               * 锚点作废。
+               *
+               * 锚点描述的是**折叠前**那个前缀，折完还拿它算就是读数不降，
+               * 下一步又越线、又压一次——压缩变成每步一次的死循环。
+               * 退回估算尺一轮，下一个 provider 真值到来即重锚。
+               */
+              anchor = null
               // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
               req = this.buildRequest(input, transcript, occupancyOf)
             } else {
@@ -590,7 +676,7 @@ export class AgentLoop {
               // **skipped 与 failed 分开报**：「没什么可压」不是失败，
               // 把它显示成红色的压缩失败会让用户去查一个并不存在的故障。
               const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
-              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), {
+              persist.recordCompaction(input.runId, nextSeq(), {
                 phase,
                 manifestRevision: 0,
                 compactedMessages: 0,
@@ -648,7 +734,6 @@ export class AgentLoop {
             retryIndex: attempt,
             model: adapter.spec.id,
             measuredInputTokens: estimateRequest(req),
-            measurementExact: false,
             sentCategories: breakdown,
             omittedCategories: this.lastOmitted,
             payloadHash: payloadHashOf(req),
@@ -703,7 +788,7 @@ export class AgentLoop {
                 }
                 case 'text_delta': {
                   if (textStepId === null) {
-                    textStepId = persist.openTextStep(input.runId, persist.nextSeq(input.runId))
+                    textStepId = persist.openTextStep(input.runId, nextSeq())
                   }
                   assistantText += ev.delta
                   persist.appendText(textStepId, ev.delta)
@@ -760,7 +845,97 @@ export class AgentLoop {
 
             // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
             if (input.signal.aborted) throw err
-            // 其余非传输失败（4xx、容量拒绝）原样上抛：provider 已经说清是什么了，
+
+            /*
+             * ── 容量拒绝：压一次再重发 ──
+             *
+             * 这是压缩的**第二个调用点**，不是第二个权威：调的是同一个
+             * `CompactionPort.run()`、落同一份 manifest、走同一条落库路径、
+             * 失败仍报 `context_overflow`。
+             *
+             * 为什么必须有它：占用读数对附件按固定值估（`ai/tokens.ts` 的
+             * `MEDIA_TOKENS`），一份大附件能低估两个数量级。那时发送前检查恒放行、
+             * provider 恒拒绝、重试拿到的还是同一个估算——**会话就此卡死，
+             * 而手动压缩也救不回来**（附件在保留区里）。失败路径必须有终态。
+             *
+             * 凭证收得很窄：光看 `code` 不够，必须同时有 `capacity`
+             * （`ai/capacity.ts` 的窄分类：provider 原生容量码或强消息匹配），
+             * 泛化的 400 不触发。宁可不救，也不能把一次参数错误当成容量问题
+             * 反复压缩。
+             */
+            if (code === 'context_overflow' && pe?.capacity && !overflowRecovered) {
+              overflowRecovered = true
+              const cap = pe.capacity
+              /*
+               * 用 provider 自报的输入量校正锚点——它是真值，而我们本地那个数
+               * 刚刚被证明是错的。拿不到就把锚点作废退回估算，**不要用本地估算
+               * 去填这个位置**：那正是撞窗的原因，填进去等于确认一遍错误。
+               */
+              if (cap.reportedInputTokens !== null) {
+                anchor = {
+                  tokens: cap.reportedInputTokens,
+                  uncovered: 0,
+                  transcriptIndex: transcript.length,
+                }
+              } else {
+                anchor = null
+              }
+              // 压缩前后用**同一把尺**量请求本身。判据不是「压缩返回成功」——
+              // 收纳段可能落了库却一个 token 没省。
+              const sizeBefore = estimateRequest(req)
+              yield { type: 'compaction', runId: input.runId, phase: 'started' }
+              const outcome = await untilAborted(
+                input.signal,
+                this.compaction.run({
+                  signal: input.signal,
+                  occupancy: cap.reportedInputTokens ?? occupancyOf(req),
+                  contextWindow: adapter.spec.contextWindow,
+                }),
+              )
+              if (outcome.status === 'aborted') {
+                stopReason = 'user_interrupt'
+                throw err
+              }
+              if (outcome.status === 'compacted') {
+                const rebuilt = this.buildRequest(input, transcript, occupancyOf)
+                if (estimateRequest(rebuilt) < sizeBefore) {
+                  persist.recordCompaction(input.runId, nextSeq(), {
+                    phase: 'done',
+                    manifestRevision: outcome.manifest.revision,
+                    compactedMessages: outcome.manifest.compactedMessageCount,
+                    summarized: outcome.summarized,
+                  })
+                  yield {
+                    type: 'compaction',
+                    runId: input.runId,
+                    phase: 'done',
+                    manifest: outcome.manifest,
+                    summarized: outcome.summarized,
+                  }
+                  compactedAt = transcript.length
+                  anchor = null
+                  req = rebuilt
+                  continue
+                }
+              }
+              /*
+               * **没变小就不重发。** 同一份字节再发一次只会拿到同一个拒绝，
+               * 而那一次要付全额的长 prompt 费用。
+               */
+              const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
+              const reasonCode =
+                outcome.status === 'compacted' ? 'no_reduction' : outcome.reasonCode
+              persist.recordCompaction(input.runId, nextSeq(), {
+                phase,
+                manifestRevision: 0,
+                compactedMessages: 0,
+                reasonCode,
+              })
+              yield { type: 'compaction', runId: input.runId, phase, reasonCode }
+              throw err
+            }
+
+            // 其余非传输失败（4xx）原样上抛：provider 已经说清是什么了，
             // 补读数、重发都无从谈起。
             if (!pe || !RESENDABLE.has(code)) throw err
 
@@ -827,6 +1002,8 @@ export class AgentLoop {
 
         // 把本轮 assistant 输出写回 transcript：模型下一轮必须看到自己刚说过什么、
         // 调了哪些工具，否则会重复调用。
+        /** 本轮这个可折单元在 transcript 里的起点。工具结果随后追加到它后面。 */
+        const unitStart = transcript.length
         if (assistantText || calls.length) {
           transcript.push({
             role: 'assistant',
@@ -836,6 +1013,7 @@ export class AgentLoop {
             ...(thinkingText && calls.length ? { reasoningContent: thinkingText } : {}),
             _group: 'executionRecords',
           })
+          stampUnit(unitStart)
         }
 
         /*
@@ -854,6 +1032,31 @@ export class AgentLoop {
             turnUsage.outputTokens
           if (total > 0)
             anchor = { tokens: total, uncovered: 0, transcriptIndex: transcript.length }
+          /*
+           * ── 静默溢出 ──
+           *
+           * 有的 provider 撞窗**不报错**，悄悄把超出的部分丢掉照常回话
+           * （实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
+           * 而窗口正好 1,000,000，全程没有任何错误）。这种 provider 上靠错误分类
+           * 拿不到恢复凭证，而会话已经在无声地丢历史——比撞窗报错更坏，
+           * 那至少还有个终态。
+           *
+           * 判据从**两个真值**反推：provider 自报的输入量顶到了模型自带的窗口。
+           * 没有阈值可调，也不需要——顶到窗口就是顶到了。
+           *
+           * 处理是**放开压缩闸**而不是作废这一轮：回答已经拿到了，作废没有意义；
+           * 把进展判据清零，下一次发送前检查就会重新折一次。
+           */
+          if (total >= adapter.spec.contextWindow) {
+            process.stderr.write(
+              `[qy] provider 静默截断：自报输入 ${total} 顶到窗口 ${adapter.spec.contextWindow}` +
+                NEWLINE,
+            )
+            compactedAt = -1
+          } else {
+            // 装得下了。此后再撞窗是新情况，恢复通道重新可用。
+            overflowRecovered = false
+          }
         }
 
         if (refusalNote) {
@@ -934,7 +1137,7 @@ export class AgentLoop {
               const action = resolveAction(registry.get(call.name)!, call.arguments, ctx)
               const stepId = persist.openToolStep(
                 input.runId,
-                persist.nextSeq(input.runId),
+                nextSeq(),
                 call,
                 batchId,
                 callIndex,
@@ -1002,6 +1205,7 @@ export class AgentLoop {
 
             // 工具结果必须原样回传给模型——这是不可改写的事实，
             // 装配层不得摘要、截断或"美化"。
+            const landed = (s.outcome.resources ?? []).map((r) => r.resourceId)
             transcript.push({
               role: 'tool',
               toolCallId: s.call.id,
@@ -1011,6 +1215,10 @@ export class AgentLoop {
                 status: s.outcome.status,
                 executed: s.outcome.executed,
                 summary: s.outcome.message,
+                // 落盘定位符**要单独成键**，不能只留在正文里：收纳把正文换成信封时
+                // 正文里那行 `[完整输出已保存：rs_xxx]` 一起没了，`read_resource`
+                // 就再也无从调起。
+                ...(landed.length ? { resources: landed } : {}),
                 ...(s.outcome.data ? { result: s.outcome.data } : {}),
               }),
               _group: 'executionRecords',
@@ -1027,6 +1235,9 @@ export class AgentLoop {
             })
           }
         }
+
+        // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
+        stampUnit(unitStart)
 
         if (denied) {
           // 用户拒了授权：不要装作无事发生继续跑，也不要重试。
@@ -1125,59 +1336,68 @@ export class AgentLoop {
     // 冻结前缀。缓存断点打在这里的末尾——它之后的所有内容都是易变的。
     const system: ChatRequest['system'] = [{ text: systemPrompt, cacheBreakpoint: true }]
 
-    // 历史先过压缩投影：压缩发生在两次请求之间，每次构造都要重新投影，
-    // 拿旧投影会把刚压掉的内容又发一遍——那次压缩就白花了。
-    const projected = this.deps.compaction
-      ? this.deps.compaction.project(input.history)
-      : input.history
+    /*
+     * 请求的形状是 `[tools][system] [history] [tailNotes] [transcript]`。
+     *
+     * 三段先拼完整，**再整串过一次压缩投影**。不要只投影 history：run 内涨起来的
+     * 全是 transcript 里的工具结果，把它留在投影之外就等于压缩碰不到大头。
+     * 尾区注记没有单元戳，投影按「无戳恒保留」原样让它过。
+     */
+    const notes: WireMessage[] = []
+    for (const note of this.deps.tailNotes()) {
+      if (note.content.trim()) {
+        notes.push({ role: 'system', content: note.content, _group: note.group })
+      }
+    }
+    const assembledRaw: WireMessage[] = [...input.history, ...notes, ...transcript]
+    const projected = this.compaction.project(assembledRaw)
     const messages: WireMessage[] = [...projected]
 
     /*
-     * 缓存断点之二：**投影后历史的末尾**。
+     * 被投影丢掉的那部分原文，按分组分开记：历史消息一份、工具结果一份。
      *
-     * 位置是被布局逼出来的。请求的形状是
-     * `[tools][system] [history] [tailNotes] [transcript]`：
+     * 同尺两测相减——原文一直在 Message/Step 里躺着（压缩是投影、不销毁数据），
+     * 所以量得到。整条被折掉和只被换成信封在这里是同一件事：差额都算省略。
+     * 面板的「省略上下文」两行就是它；只回答「被谁占的」是半张账，
+     * 用户看到占用下降却不知道降在哪里。
+     */
+    const omitted = emptyOmitted()
+    const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
+      for (const m of list) {
+        // 无戳的（尾区注记、投影出的摘要两条）不参与——它们不是被折的原文。
+        if (!m._messageId) continue
+        const n = sign * estimateMessage(m)
+        if (m.role === 'tool' || m._group === 'intermediateContent')
+          omitted.intermediateOriginal += n
+        else omitted.historyOriginal += n
+      }
+    }
+    account(assembledRaw, 1)
+    account(projected, -1)
+    omitted.historyOriginal = Math.max(0, omitted.historyOriginal)
+    omitted.intermediateOriginal = Math.max(0, omitted.intermediateOriginal)
+    this.lastOmitted = omitted
+
+    /*
+     * 缓存断点之二：**尾区注记之前的那条消息**。
      *
-     * - `history` 跨轮**只追加不改写**（新一轮的历史是上一轮的前缀），
+     * 位置是被布局逼出来的：
+     *
+     * - 投影后的历史跨轮**只追加不改写**（新一轮的历史是上一轮的前缀），
      *   所以这里是跨请求逐字节稳定的最远点——断点打在这儿，
      *   上一轮缓存的那段这一轮直接命中。
      * - `tailNotes` 里有日期和按当轮查询召回的记忆，**跨轮必变**。
      *   断点打在它之后，每轮都会整体失配，等于没打。
      *
-     * 在此之前 qywork 只有一个断点、打在系统提示词末尾，所以缓存住的只有
-     * 工具 schema + 系统提示词（约 1.8k）——**消息历史每一轮都在全价重付**。
+     * 找位置认 `role === 'system'`：整串消息里只有尾区注记是这个角色。
      * 这条只对 Anthropic 有效；兼容协议的前缀缓存由服务端自动做，不需要标记
      * （`openai-compat.ts` 从不读这个字段，上线字节一个不变）。
      */
-    const lastHistory = messages.length - 1
+    const noteStart = messages.findIndex((m) => m.role === 'system')
+    const lastHistory = (noteStart < 0 ? messages.length : noteStart) - 1
     if (lastHistory >= 0) {
       messages[lastHistory] = { ...messages[lastHistory]!, cacheBreakpoint: true }
     }
-
-    // 被投影丢掉的那部分原文，按分组分开记：历史消息一份、工具结果一份。
-    // 面板的「省略上下文」两行就是它——只回答「被谁占的」是半张账，
-    // 用户看到占用下降却不知道降在哪里。
-    const kept = new Set(projected)
-    this.lastOmitted = emptyOmitted()
-    for (const m of input.history) {
-      if (kept.has(m)) continue
-      const n = estimateMessage(m)
-      if (m.role === 'tool' || m._group === 'intermediateContent') {
-        this.lastOmitted.intermediateOriginal += n
-      } else {
-        this.lastOmitted.historyOriginal += n
-      }
-    }
-
-    // 尾区注记：日期、技能索引、工作区状态。放在 transcript **之前**但在冻结前缀
-    // **之后**，这样它们变化时不会冲掉前缀缓存，同时又足够靠近生成位置。
-    for (const note of this.deps.tailNotes()) {
-      if (note.content.trim()) {
-        messages.push({ role: 'system', content: note.content, _group: note.group })
-      }
-    }
-
-    messages.push(...transcript)
 
     /*
      * 缓存断点之三：**整串消息的末尾**。

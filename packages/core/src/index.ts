@@ -43,6 +43,7 @@ export {
 export {
   type Attachment,
   CONTEXT_GROUPS,
+  type CompactionCut,
   type CompactionFacts,
   type CompactionManifest,
   type ContextBreakdown,

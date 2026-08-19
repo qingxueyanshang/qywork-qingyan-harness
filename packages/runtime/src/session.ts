@@ -53,6 +53,9 @@ import {
   latestTodos,
   listDisabledExtras,
   listLoadedTools,
+  listMessages,
+  listRuns,
+  listSteps,
   markProviderRequestSent,
   markRunRunning,
   markRunSuperseded,
@@ -494,6 +497,7 @@ export class Session {
         ...(effort ? { effort } : {}),
         ...(this.opts.maxSteps ? { maxSteps: this.opts.maxSteps } : {}),
         cacheKey: conversationId,
+        ...(userMessageId ? { userMessageId } : {}),
         signal: this.opts.signal,
         // 上一轮的真值带进来，这一轮开头就用同一把尺。不带的话每个 run 的
         // 第一次请求只能报估算（系统性偏低），第二次起弹回真值——
@@ -854,6 +858,71 @@ export class Session {
         read: () => currentGoal(store, conversationId),
         update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
       },
+      /*
+       * 被折叠历史的回读。**压缩是投影不是删除**，所以原文一直在账本里，
+       * 这条通道只是把它接给模型——没有它，摘要里的 `[message:…]` 标记指向
+       * 一个模型够不到的地方，压缩就真成了「丢信息」。
+       *
+       * 用 list + find 而不是给 store 加按 id 取的函数：这是模型主动发起的
+       * 低频调用，而会话消息与单 run 的 step 都是小集合。
+       */
+      history: {
+        message: (id) => {
+          const m = listMessages(store, conversationId, null).find((x) => x.id === id)
+          return m ? { role: m.role, content: m.content } : null
+        },
+        step: (id) => {
+          // 摘要里的 id 是 `<runId>:<stepId>` 复合形式：单独一个 step id
+          // 跨 run 不唯一，而摘要引用的恰恰是远期记录。
+          const cut = id.indexOf(':')
+          if (cut <= 0) return null
+          const runId = id.slice(0, cut) as RunId
+          const stepId = id.slice(cut + 1)
+          const st = listSteps(store, runId).find((x) => String(x.id) === stepId)
+          if (!st) return null
+          const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
+          return {
+            tool: st.toolName ?? 'unknown',
+            status: st.status,
+            args: JSON.stringify(payload.args ?? {}),
+            outcome: JSON.stringify(payload.outcome ?? {}),
+          }
+        },
+        byCallId: (callId) => {
+          for (const run of listRuns(store, conversationId)) {
+            const st = listSteps(store, run.id).find((x) => x.toolCallId === callId)
+            if (!st) continue
+            const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
+            return {
+              tool: st.toolName ?? 'unknown',
+              status: st.status,
+              args: JSON.stringify(payload.args ?? {}),
+              outcome: JSON.stringify(payload.outcome ?? {}),
+            }
+          }
+          return null
+        },
+        search: (query, limit) => {
+          const hits: { id: string; kind: 'message' | 'step'; line: string }[] = []
+          const needle = query.toLowerCase()
+          for (const m of listMessages(store, conversationId, null)) {
+            if (hits.length >= limit) return hits
+            if (m.content.toLowerCase().includes(needle)) {
+              hits.push({ id: m.id, kind: 'message', line: m.content })
+            }
+          }
+          for (const run of listRuns(store, conversationId)) {
+            for (const st of listSteps(store, run.id)) {
+              if (hits.length >= limit) return hits
+              const body = `${st.toolName ?? ''} ${JSON.stringify(st.payload ?? {})}`
+              if (body.toLowerCase().includes(needle)) {
+                hits.push({ id: `${run.id}:${st.id}`, kind: 'step', line: body })
+              }
+            }
+          }
+          return hits
+        },
+      },
       signal: this.opts.signal,
       emit: (channel, delta) => {
         emit({ type: 'tool.delta', runId, stepId: '' as never, channel, delta })
@@ -897,12 +966,18 @@ export interface SummarizerOptions {
  * 超时判的是**流停了多久**（与主请求同一个 `STREAM_IDLE_TIMEOUT_MS`），不是总共
  * 跑了多久。不要换成总时长上限：正在逐字产出的慢摘要不是卡死，掐掉它等于把
  * 一次已经付过费的正常调用作废。
+ *
+ * 预算是 **token**，直接当 `max_tokens` 申报。以 `max_tokens` 收尾的那次返回
+ * null：半份摘要比没有更坏——它看起来完整。
  */
 export function makeSummarizer(opts: SummarizerOptions): Summarizer {
-  return async (prompt, budgetChars) => {
+  return async (prompt, budgetTokens) => {
     const profile = opts.profile()
     const adapter = buildAdapter(profile)
     const effort = EFFORT_ORDER.find((level) => adapter.spec.effortLevels.includes(level))
+    // 档位里没有低档的模型（deepseek 只有 high/max）关不掉思考，`thinksByDefault`
+    // 为真时更是一开口就思考。两者任一成立就得给思考留出输出空间。
+    const willThink = effort !== undefined || adapter.spec.thinksByDefault
 
     // 空闲判定要能中止底层请求，所以走自己的控制器，外部信号挂在它上面。
     const ac = new AbortController()
@@ -920,6 +995,8 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     }
 
     let text = ''
+    /** 摘要被输出上限截断。**截断的摘要一律不采用**——半份摘要看起来完整。 */
+    let truncated = false
     // 摘要也花钱。它不属于任何一个 run 的 usage，所以在账本出现之前
     // **这笔钱是完全看不见的**——压缩越频繁，账单和界面上的数字差得越多。
     let spent: { cost: number; u: ProviderUsage } | null = null
@@ -931,13 +1008,26 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
         messages: [{ role: 'user', content: prompt }],
         tools: [],
-        // 摘要的输出上限按字符预算折算，留一倍余量。
-        maxOutputTokens: Math.min(adapter.spec.maxOutputTokens, Math.ceil(budgetChars / 2)),
+        /*
+         * **会思考的模型不能拿正文预算当 `max_tokens`。**
+         *
+         * 思考与正文共用这一个上限，而思考**不进投影**——压成正文预算的话，
+         * 模型在思考阶段就把额度耗尽，正文没写完即被截断，整份作废
+         * （实测 deepseek-v4-flash：一句话摘要花 259 个思考 token，
+         * 正文只有 10 个字）。于是摘要段恒失败，压缩退化成只有收纳段。
+         *
+         * 正文长度由提示词里那句字数要求约束，这里只负责让模型有地方把话说完。
+         * 不思考的模型上正文就是全部输出，直申预算即可。
+         */
+        maxOutputTokens: willThink
+          ? adapter.spec.maxOutputTokens
+          : Math.min(adapter.spec.maxOutputTokens, budgetTokens),
         ...(effort ? { effort } : {}),
         signal: ac.signal,
       })) {
         bump()
         if (ev.type === 'text_delta') text += ev.delta
+        else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
         else if (ev.type === 'usage') {
           spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
         }
@@ -974,7 +1064,8 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         currency: adapter.spec.pricing.currency ?? 'USD',
       })
     }
-    return text.trim() || null
+    // 截断作废与空摘要同一个终态：调用方据此判摘要段没做成，收纳段照常落库。
+    return truncated ? null : text.trim() || null
   }
 }
 

@@ -37,6 +37,14 @@ const DB = join(WS_DIR, 'smoke.sqlite3')
  */
 const RUN_TIMEOUT_MS = 300_000
 
+/**
+ * `Response.json()` 回的是 unknown。冒烟脚本只关心回没回对那几个键，
+ * 统一在这里断言一次，调用点不再各自 `as`——各自断言就会各断各的形状。
+ */
+async function json<T = Record<string, unknown>>(res: Response): Promise<T> {
+  return (await res.json()) as T
+}
+
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown): void {
   process.stdout.write(`${ok ? '  ✓' : '  ✗'} ${label}\n`)
@@ -74,7 +82,9 @@ async function main(): Promise<number> {
     // ── HTTP ──
     process.stdout.write('HTTP API\n')
 
-    const health = await (await fetch(`${base}/api/health`)).json()
+    // `Response.json()` 回的是 unknown：断言到用得着的那几个键，
+    // 不引整份响应类型——冒烟脚本只关心它有没有回对。
+    const health = (await json(await fetch(`${base}/api/health`))) as { ok?: boolean }
     check('健康检查免鉴权', health.ok === true)
 
     const noAuth = await fetch(`${base}/api/workspaces`)
@@ -85,16 +95,16 @@ async function main(): Promise<number> {
     })
     check('错误令牌返回 401', badAuth.status === 401, badAuth.status)
 
-    const tree = await (await fetch(`${base}/api/files/tree?depth=2`, { headers: auth })).json()
+    const tree = await json(await fetch(`${base}/api/files/tree?depth=2`, { headers: auth }))
     check(
       '文件树列出 calc.js',
       Array.isArray(tree.nodes) && tree.nodes.some((n: any) => n.name === 'calc.js'),
       tree,
     )
 
-    const prev = await (
-      await fetch(`${base}/api/files/preview?path=calc.js`, { headers: auth })
-    ).json()
+    const prev = await json(
+      await fetch(`${base}/api/files/preview?path=calc.js`, { headers: auth }),
+    )
     check('文件预览返回文本与语言', prev.kind === 'text' && prev.language === 'javascript', {
       kind: prev.kind,
       language: prev.language,
@@ -105,17 +115,17 @@ async function main(): Promise<number> {
     })
     check('预览接口挡住路径穿越', escapeAttempt.status >= 400, escapeAttempt.status)
 
-    const gitStatus = await (await fetch(`${base}/api/git/status`, { headers: auth })).json()
+    const gitStatus = await json(await fetch(`${base}/api/git/status`, { headers: auth }))
     check('git 状态可查（非仓库时 repo=false）', typeof gitStatus.repo === 'boolean', gitStatus)
 
-    const created = await (
+    const created = await json<{ conversation?: { id?: string; model?: string } }>(
       await fetch(`${base}/api/conversations`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ title: '冒烟' }),
-      })
-    ).json()
-    const conversationId: string = created.conversation?.id
+      }),
+    )
+    const conversationId = created.conversation?.id ?? ''
     check('创建会话', typeof conversationId === 'string' && conversationId.startsWith('cv_'))
 
     // ── WebSocket ──
@@ -233,16 +243,18 @@ async function main(): Promise<number> {
     check('手动压缩有明确回执（started + 终态）', compactEvents.length >= 2, compactEvents)
     check(
       '空会话压缩回 skipped 而不是假装成功',
-      compactEvents.some((e) => e.phase === 'failed' && e.reasonCode === 'too_few_messages'),
+      compactEvents.some((e) => e.phase === 'skipped' && e.reasonCode === 'nothing_to_fold'),
       compactEvents,
     )
 
     // ── 会话级模型切换 ──
     process.stdout.write('\n会话级模型切换\n')
-    const before = await (await fetch(`${base}/api/conversations`, { headers: auth })).json()
+    const before = await json<{ conversations: { id: string; model?: string }[] }>(
+      await fetch(`${base}/api/conversations`, { headers: auth }),
+    )
     const originalModel = before.conversations.find((c: any) => c.id === conversationId)?.model
 
-    const models = await (await fetch(`${base}/api/models`, { headers: auth })).json()
+    const models = await json(await fetch(`${base}/api/models`, { headers: auth }))
     check('模型列表非空', Array.isArray(models.models) && models.models.length > 0)
 
     ws.send(
@@ -259,7 +271,9 @@ async function main(): Promise<number> {
       frames.filter((f) => f.event.type === 'conversation.updated').map((f) => f.event),
     )
 
-    const afterSwitch = await (await fetch(`${base}/api/conversations`, { headers: auth })).json()
+    const afterSwitch = await json<{ conversations: { id: string; model?: string }[] }>(
+      await fetch(`${base}/api/conversations`, { headers: auth }),
+    )
     const newModel = afterSwitch.conversations.find((c: any) => c.id === conversationId)?.model
     check('模型确实落库（不是静默假成功）', newModel === 'deepseek-v4-pro', {
       originalModel,
@@ -362,7 +376,9 @@ async function main(): Promise<number> {
       { type: 'run.finished' }
     >
     check(`run 正常收尾（${finished.stopReason}）`, finished.status === 'done', finished.stopReason)
-    check('计费非零', finished.usage.costUsd > 0, finished.usage.costUsd)
+    // `RunUsage` 上是 `cost` 不是 `costUsd`：单位由同结构的 `currency` 决定，
+    // 三家国内厂商按人民币标价，装进一个叫 usd 的字段差七倍而界面看不出来。
+    check('计费非零', finished.usage.cost > 0, finished.usage.cost)
 
     // seq 必须严格单调递增，否则断线补发的缺口计算全是错的。
     const seqs = frames.map((f) => f.seq)
@@ -374,14 +390,21 @@ async function main(): Promise<number> {
     // ── 断线补发 ──
     process.stdout.write('\n断线补发\n')
     const midSeq = seqs[Math.floor(seqs.length / 2)]!
-    const replay = h.bus.replayFrom(midSeq)
+    // 补发要带**流身份**：新总线的 seq 从 0 重新数，只比大小会把
+    // 「你落后了多少」和「你说的落后是不是我这条流上的事」混成一个判断。
+    const at = (lastSeq: number) => ({ streamId: h.bus.streamId, lastSeq })
+    const watcher = { id: 'smoke', origin: 'cli' as const, conversations: null, send: () => {} }
+    const replay = h.bus.replayFrom(at(midSeq), watcher)
     check(
       '从中途 seq 补发缺口',
       replay !== null && replay.length > 0 && replay.every((f) => f.seq > midSeq),
       { asked: midSeq, got: replay?.length },
     )
-    check('已同步的客户端补发为空', h.bus.replayFrom(h.bus.currentSeq)?.length === 0)
-    check('超出保留窗口返回 null（触发全量重拉）', h.bus.replayFrom(-999_999) === null)
+    check('已同步的客户端补发为空', h.bus.replayFrom(at(h.bus.currentSeq), watcher)?.length === 0)
+    check(
+      '换了流身份返回 null（触发全量重拉）',
+      h.bus.replayFrom({ streamId: 'another-stream', lastSeq: 0 }, watcher) === null,
+    )
 
     // ── 文件确实被改了 ──
     const after = await Bun.file(join(WS_DIR, 'calc.js')).text()
@@ -432,9 +455,9 @@ async function main(): Promise<number> {
         .map((f) => (f.event as any).runId),
     })
 
-    const runsAfter = await (
-      await fetch(`${base}/api/conversations/${conversationId}/runs`, { headers: auth })
-    ).json()
+    const runsAfter = await json<{
+      runs: { id: string; messageIdUpperBound?: string; supersededBy?: string | null }[]
+    }>(await fetch(`${base}/api/conversations/${conversationId}/runs`, { headers: auth }))
     const original = runsAfter.runs.find((r: any) => r.id === firstRunId)
     check('原 run 被标记接替', original?.supersededBy === retryStarted?.runId, {
       supersededBy: original?.supersededBy,
@@ -498,6 +521,7 @@ async function main(): Promise<number> {
     const ws2 = upsertWorkspace(store2, WS_DIR, 'smoke')
     const conv2 = createConversation(store2, {
       workspaceId: ws2.id,
+      provider: 'deepseek',
       model: 'deepseek-v4-flash',
       title: '崩溃遗留',
     })
@@ -562,13 +586,13 @@ async function main(): Promise<number> {
       host: '127.0.0.1',
     })
     try {
-      const created = await (
+      const created = await json<{ conversation?: { id?: string; model?: string } }>(
         await fetch(`http://127.0.0.1:${h3.port}/api/conversations`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${h3.token}` },
           body: JSON.stringify({ title: '首次运行' }),
-        })
-      ).json()
+        }),
+      )
 
       const sock = new WebSocket(`ws://127.0.0.1:${h3.port}/stream?token=${h3.token}`)
       await new Promise<void>((res, rej) => {
@@ -585,14 +609,14 @@ async function main(): Promise<number> {
           type: 'hello',
           token: h3.token,
           origin: 'desktop',
-          subscribe: [created.conversation.id],
+          subscribe: [created.conversation?.id ?? ''],
         }),
       )
       await Bun.sleep(200)
       sock.send(
         JSON.stringify({
           type: 'message.send',
-          conversationId: created.conversation.id,
+          conversationId: created.conversation?.id ?? '',
           content: '你好',
           clientRequestId: crypto.randomUUID(),
         }),

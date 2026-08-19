@@ -41,3 +41,4 @@ packages/*/dist/
 
 # agent 运行态（.claude/memory/ 是项目记忆，要入库）
 .claude/*.lock
+scripts/dist/

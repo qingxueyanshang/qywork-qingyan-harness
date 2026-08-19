@@ -200,6 +200,52 @@ export function chargeBatchBudget(
   return { ok, perCall, batchRemaining: Math.max(0, batchCap - spent) }
 }
 
+/**
+ * 被折叠掉的会话历史的回读通道。
+ *
+ * ## 为什么必须有它
+ *
+ * 压缩是投影不是删除——manifest 只描述「发请求时怎么折」，`messages` / `steps`
+ * 一个字节不动。但折叠之后模型手里只剩摘要，**没有任何工具能顺着摘要里的
+ * `[message:…]` / `[action:…]` 标记回到原文**，于是数据在库里躺着而没有消费者。
+ * 有了它，压缩的语义才是「把内容从常驻上下文挪到按需读取」，而不是「丢掉」。
+ *
+ * 与 `SinkPort` 的分工：那条读**工具产出的正文**（落盘的 `rs_xxx`），
+ * 这条读**会话历史本身**（消息与执行记录）。两者不重叠，也不互相兜底。
+ *
+ * `undefined` 是合法值。工具在册但端口没接时如实报「读不了历史」，**不要退化成
+ * 「找不到」**——后者会让模型以为 id 写错，然后拿几轮去猜一个根本取不到的东西。
+ */
+export interface HistoryPort {
+  /** 按消息 id 取回原文。不存在返回 null。 */
+  message(id: string): { role: 'user' | 'assistant'; content: string } | null
+  /**
+   * 按执行记录 id 取回原文。
+   *
+   * id 用摘要里那种 `<runId>:<stepId>` 复合形式——单独一个 step id 在跨 run 的
+   * 会话里不唯一，而摘要正文引用的恰恰是跨 run 的远期记录。
+   */
+  step(id: string): { tool: string; status: string; args: string; outcome: string } | null
+  /**
+   * 按工具调用 id 取回那次调用的执行记录。
+   *
+   * 收纳段把工具结果的正文换成信封，信封里留着 `call_id`——**它就是地址**。
+   * 落盘的那些走 `resources` + `read_resource`，没落盘的中小结果只能靠这条：
+   * 没有它，收纳等于把它们删了。
+   *
+   * 不往信封里加新键正是为此：信封每多一个字段，所有历史请求的字节都变，
+   * 前缀缓存全失配。
+   */
+  byCallId(callId: string): { tool: string; status: string; args: string; outcome: string } | null
+  /**
+   * 在本会话的全部历史里搜子串，返回命中项与它的定位符。
+   *
+   * 存在的理由与 `read_resource` 的 `query` 一样：知道要找什么时，
+   * 搜比让模型去猜 id 快得多，也省得多。
+   */
+  search(query: string, limit: number): { id: string; kind: 'message' | 'step'; line: string }[]
+}
+
 export interface ToolContext {
   workspaceRoot: string
   conversationId: string
@@ -244,6 +290,12 @@ export interface ToolContext {
    * 那是更保守的一侧，不会声称改过一份不存在的清单。
    */
   todos?: TodoPort
+  /**
+   * 被折叠历史的回读通道。见 `HistoryPort`。
+   *
+   * 装配方握着账本时总该接上；没接时工具如实报，不伪装成「找不到」。
+   */
+  history?: HistoryPort
   /** 长工具的中途输出回传通道（shell stdout、下载进度）。 */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**

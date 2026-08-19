@@ -107,6 +107,14 @@ export interface WireMessage {
   /** 内部记账用，绝不上线。 */
   _group?: ContextGroup
   _messageId?: string
+  /**
+   * 可折单元的戳记，形如 `<runId>:<定宽 seq>`。**同一个执行波次的
+   * assistant 消息与它的全部 tool 结果共用一个戳**——压缩按戳切界，
+   * 共戳即同进同出，tool_call 与 tool_result 因此永远不会被切开。
+   *
+   * 与 `_messageId` 合起来才是完整位置：先比消息 id，同一条消息内再比戳。
+   */
+  _step?: string
 }
 
 export type ContentBlock =
@@ -140,7 +148,7 @@ export interface ToolSchema {
 // ─────────────────────────────── 流式事件 ───────────────────────────────
 
 export type ProviderEvent =
-  | { type: 'request_prepared'; measuredInputTokens: number; exact: boolean }
+  | { type: 'request_prepared'; measuredInputTokens: number }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_calls'; calls: WireToolCall[] }
@@ -191,6 +199,4 @@ export interface LlmAdapter {
    */
   readonly transmits: { thinking: boolean; effort: boolean }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
-  /** 不开网络请求，测量 provider-native prompt 的 token 数。 */
-  measure(req: ChatRequest): Promise<number>
 }

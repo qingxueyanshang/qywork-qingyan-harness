@@ -1,8 +1,8 @@
 /**
  * steps → 历史消息的投影。
  *
- * 覆盖范围：`transcript.ts` 全部（`stepsToWireMessages` + `buildHistory`），
- * 以及 `store/repos.ts` 的 `settleRunningSteps`。
+ * 覆盖范围：`transcript.ts` 全部（`stepsToUnits` + `stepsToWireMessages` +
+ * `buildHistory`），以及 `store/repos.ts` 的 `settleRunningSteps`。
  *
  * ## 这一组要证伪的是什么
  *
@@ -18,6 +18,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { stepStamp } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
 import type { MessageId, Step } from '@qywork/core'
 import {
@@ -34,7 +35,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
-import { buildHistory, stepsToWireMessages } from './transcript.ts'
+import { buildHistory, stepsToUnits, stepsToWireMessages } from './transcript.ts'
 
 const noAttachments = async (content: string) => content
 
@@ -80,6 +81,59 @@ function assertPairs(messages: WireMessage[]): void {
     if (m.role === 'tool') expect(declared.has(m.toolCallId ?? '')).toBe(true)
   }
 }
+
+/**
+ * 单元戳。
+ *
+ * 压缩按戳切界，所以这里钉两件事：**一个执行波次的全部消息共用一个戳**
+ * （共戳即同进同出，tool_call 与 tool_result 永远不会被切开），
+ * **戳取单元里最后一个 step 的 seq**（活的 transcript 那侧盖的是波次跑完时的
+ * 高水位，两处必须是同一个数）。
+ */
+describe('可折单元的戳', () => {
+  test('一个波次的 assistant 与它的 tool 结果共用一个戳', () => {
+    const units = stepsToUnits([
+      step({ seq: 1, kind: 'text', content: '先读两个文件。', toolName: null, toolCallId: null }),
+      step({ seq: 2, toolCallId: 'A', callIndex: 0 }),
+      step({ seq: 3, toolCallId: 'B', callIndex: 1 }),
+    ])
+    expect(units).toHaveLength(1)
+    expect(units[0]!.stamp).toBe(stepStamp('rn', 3))
+    expect(units[0]!.messages.map((m) => m._step)).toEqual([
+      stepStamp('rn', 3),
+      stepStamp('rn', 3),
+      stepStamp('rn', 3),
+    ])
+  })
+
+  test('不同波次各自一个戳，且按 seq 递增', () => {
+    const units = stepsToUnits([
+      step({ seq: 1, providerBatchId: 'b1', toolCallId: 'A' }),
+      step({ seq: 2, providerBatchId: 'b2', toolCallId: 'B' }),
+    ])
+    expect(units.map((u) => u.stamp)).toEqual([stepStamp('rn', 1), stepStamp('rn', 2)])
+    expect(units[0]!.stamp < units[1]!.stamp).toBe(true)
+  })
+
+  test('尾部的纯文本自成一个单元，戳取它自己的 seq', () => {
+    const units = stepsToUnits([
+      step({ seq: 1, toolCallId: 'A', callIndex: 0 }),
+      step({ seq: 2, kind: 'text', content: '说完了。', toolName: null, toolCallId: null }),
+    ])
+    expect(units).toHaveLength(2)
+    expect(units[1]!.stamp).toBe(stepStamp('rn', 2))
+  })
+
+  test('归属消息 id 与戳一起盖上，跨 run 投影回历史后定位不变', () => {
+    const units = stepsToUnits([step({ seq: 5, toolCallId: 'A', callIndex: 0 })], {
+      messageId: 'ms_001' as MessageId,
+    })
+    for (const m of units[0]!.messages) {
+      expect(m._messageId).toBe('ms_001')
+      expect(m._step).toBe(stepStamp('rn', 5))
+    }
+  })
+})
 
 describe('steps 投影', () => {
   test('结构与精确条数：user 之后是 assistant(toolCalls) + 每个调用一条 tool', () => {

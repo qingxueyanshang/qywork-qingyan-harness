@@ -7,11 +7,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ChatRequest, LlmAdapter, ProviderEvent } from '@qywork/ai'
+import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { classifyProviderError, lookupModel } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
-import type { CompactionPort, LoopPersistence, ToolContext } from './index.ts'
+import { stepStamp } from './compaction.ts'
+import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
 import { AgentLoop, softLimit } from './loop.ts'
 import { ToolRegistry } from './registry.ts'
 
@@ -116,19 +117,64 @@ const okOutcome: CompactionOutcome = {
   },
 }
 
+/**
+ * 真的会让请求变小的假压缩。
+ *
+ * `fakeCompaction` 的投影是原样返回，用它测不出溢出恢复——恢复的判据正是
+ * 「压完请求有没有变小」，不变小就不重发。
+ */
+function shrinkingCompaction(outcome: CompactionOutcome = okOutcome) {
+  const state = { runs: 0, folded: false }
+  const port: CompactionPort = {
+    project: (messages) =>
+      state.folded ? messages.map((m) => ({ ...m, content: '折' })) : messages,
+    run: async () => {
+      state.runs++
+      state.folded = true
+      return outcome
+    },
+  }
+  return { port, state }
+}
+
 function fakeCompaction(outcome: CompactionOutcome) {
-  const state = { runs: 0, projects: 0 }
+  const state = { runs: 0, projects: 0, seen: [] as CompactionRunInput[] }
   const port: CompactionPort = {
     project: (h) => {
       state.projects++
       return h
     },
-    run: async (_signal: AbortSignal) => {
+    run: async (runInput: CompactionRunInput) => {
       state.runs++
+      state.seen.push(runInput)
       return outcome
     },
   }
   return { port, state }
+}
+
+/** 一段够大的历史：投影把它砍掉之后请求才真的变小，恢复判据才有意义。 */
+function bulkyHistory() {
+  return Array.from({ length: 20 }, (_, i) => ({
+    role: 'user' as const,
+    content: `第 ${i} 段历史`.repeat(200),
+  }))
+}
+
+async function collectWith(
+  loop: AgentLoop,
+  runId: string,
+  history: { role: 'user'; content: string }[],
+): Promise<AgentEvent[]> {
+  const out: AgentEvent[] = []
+  for await (const ev of loop.run({
+    runId: runId as never,
+    history,
+    signal: new AbortController().signal,
+  })) {
+    out.push(ev)
+  }
+  return out
 }
 
 async function collect(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
@@ -215,7 +261,7 @@ describe('发送前检查：唯一的压缩触发', () => {
    * 并不存在的故障。
    */
   test('压不动时照常发送，不把 run 掐死', async () => {
-    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'too_few_messages' })
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     const loop = new AgentLoop({
       adapter: okAdapter(),
       registry: new ToolRegistry(),
@@ -241,29 +287,128 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * **容量拒绝不再触发压缩，只如实报错。**
+   * **容量拒绝先压一次再重发。**
    *
-   * 两个触发就是两个执行入口。保留拒绝那条路做保底看着更稳，实际是把
-   * A2 第五问的「否」变成「不是明确的否」，而它换来的只是一次注定失败的
-   * 长请求外加一套重试状态。
+   * 原始失败形状：占用读数对附件按固定值估，一份大附件低估两个数量级 →
+   * 发送前检查恒放行 → provider 恒拒绝 → 重试拿到同一个估算 → 会话永久卡死，
+   * 手动压缩也救不回（附件在保留区里）。这条锁的就是那个形状有终态。
    */
-  test('容量拒绝直接上报，不再触发压缩重发', async () => {
+  test('容量拒绝：压一次让请求变小之后重发成功', async () => {
+    const comp = shrinkingCompaction()
+    const { adapter, state } = rejectingAdapter(1)
+    const events = await collectWith(build(adapter, comp.port), 'rn_overflow', bulkyHistory())
+
+    expect(comp.state.runs).toBe(1)
+    // 发了两次：撞窗那次 + 压完重发那次。
+    expect(state.attempts).toBe(2)
+    expect(events.some((e) => e.type === 'run.error')).toBe(false)
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.status).toBe('done')
+  })
+
+  /**
+   * **压不小就不重发。**
+   *
+   * 同一份字节再发一次只会拿到同一个拒绝，而那一次要付全额的长 prompt 费用。
+   * 判据是「请求有没有变小」，不是「压缩返回成功」——收纳段可能落了库却一个
+   * token 没省。
+   */
+  test('压缩没让请求变小时不重发，如实上报容量拒绝', async () => {
+    // `fakeCompaction` 的投影原样返回：压缩「成功」但请求一个字节没少。
     const comp = fakeCompaction(okOutcome)
     const { adapter, state } = rejectingAdapter(1)
-    const events = await collect(build(adapter, comp.port), 'rn_reject')
+    const events = await collect(build(adapter, comp.port), 'rn_noshrink')
 
-    expect(comp.state.runs).toBe(0)
-    // 只发了一次——没有「压完再来一次」。
+    expect(comp.state.runs).toBe(1)
     expect(state.attempts).toBe(1)
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
   })
 
+  /**
+   * **一个 run 内只恢复一次。**
+   *
+   * 用状态机而不是重试计数：没有「几次算够」这个问题——压完还撞说明压缩已经
+   * 压不动了，再压一次的输入与上一次逐字相同。
+   */
+  test('连续撞窗只恢复一次，不进死循环', async () => {
+    const comp = shrinkingCompaction()
+    // 两次都拒绝：第一次触发恢复，重发那次仍被拒 → 直接上报，不再压第三次。
+    const { adapter, state } = rejectingAdapter(2)
+    const events = await collectWith(build(adapter, comp.port), 'rn_twice', bulkyHistory())
+
+    expect(comp.state.runs).toBe(1)
+    expect(state.attempts).toBe(2)
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
+  })
+
+  /**
+   * 端口缺省时由构造函数补一个透传实现，语义与「没有压缩」逐字相同：
+   * 投影原样返回、压缩报「没什么可折」，于是容量拒绝照旧上报。
+   */
   test('没有压缩端口时容量拒绝照样上报，不静默卡住', async () => {
     const { adapter } = rejectingAdapter(1)
     const events = await collect(build(adapter), 'rn_nocomp')
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
+  })
+
+  /**
+   * **静默截断：provider 不报错，悄悄把超出的部分丢了。**
+   *
+   * 实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
+   * 窗口正好 1,000,000，全程无错误。错误分类在这种 provider 上拿不到凭证，
+   * 判据只能从两个真值反推——自报输入顶到了模型自带的窗口。
+   */
+  test('自报输入顶到窗口时放开压缩闸，下一步重折', async () => {
+    const comp = shrinkingCompaction()
+    const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'anthropic_messages',
+      transmits: { thinking: true, effort: true },
+      spec,
+      measure: async () => 0,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        if (turn++ === 0) {
+          // 第一轮：provider 自报输入顶到窗口——它把超出的丢了，却没报错。
+          yield {
+            type: 'usage',
+            usage: {
+              inputTokens: spec.contextWindow,
+              outputTokens: 5,
+              cachedTokens: 0,
+              cacheWriteTokens: null,
+              reasoningTokens: 0,
+              source: 'provider',
+            },
+          }
+          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield { type: 'done', stopReason: 'tool_use' }
+        } else {
+          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'done', stopReason: 'end_turn' }
+        }
+      },
+    }
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noop',
+      description: '什么都不做',
+      parameters: { type: 'object', properties: {} },
+      actionKind: 'read',
+      objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => ({ status: 'success', message: 'ok' }),
+    })
+    await collectWith(build(adapter, comp.port, registry), 'rn_silent', bulkyHistory())
+    // 静默截断被认出来了：压缩闸放开，第二步真的折了一次。
+    expect(comp.state.runs).toBeGreaterThan(0)
   })
 
   test('非容量错误照常上报', async () => {
@@ -317,29 +462,173 @@ describe('投影时机', () => {
   })
 })
 
-describe('一个 run 只压一次', () => {
-  /**
-   * 占用越过软阈值之后，**后续每一步不再重复触发**。
-   *
-   * 压缩投影只作用于 history，而 history 在一个 run 内不变。压不动的话，
-   * 不加闸就是每一步再调一次摘要模型、再往会话流里插一条提示，而占用一个
-   * token 都不会少——用户看到的是「一直在压，一直没用」。
-   */
-  test('压不动之后不再逐步重试', async () => {
-    const registry = new ToolRegistry()
-    registry.register({
-      name: 'noop',
-      description: '什么都不做',
-      parameters: { type: 'object', properties: {} },
-      actionKind: 'read',
-      objectLabel: '空',
-      category: 'session',
-      facet: '测试',
-      summary: '测试夹具',
-      permissionEffect: 'internal_control',
-      fn: async () => ({ status: 'success', message: 'ok' }),
-    })
+function noopRegistry(): ToolRegistry {
+  const registry = new ToolRegistry()
+  registry.register({
+    name: 'noop',
+    description: '什么都不做',
+    parameters: { type: 'object', properties: {} },
+    actionKind: 'read',
+    objectLabel: '空',
+    category: 'session',
+    facet: '测试',
+    summary: '测试夹具',
+    permissionEffect: 'internal_control',
+    fn: async () => ({ status: 'success', message: 'ok' }),
+  })
+  return registry
+}
 
+/** 第一轮调一次工具，第二轮收尾。两轮之间 transcript 会长出一个新单元。 */
+function twoTurnAdapter(): LlmAdapter {
+  let turn = 0
+  return {
+    kind: 'anthropic_messages',
+    transmits: { thinking: true, effort: true },
+    spec: lookupModel('claude-opus-5', 'anthropic_messages'),
+    measure: async () => 0,
+    async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      if (turn++ === 0) {
+        yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+        yield { type: 'done', stopReason: 'tool_use' }
+      } else {
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn' }
+      }
+    },
+  }
+}
+
+async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
+  const out: AgentEvent[] = []
+  for await (const ev of loop.run({
+    runId: runId as never,
+    history: [],
+    // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接顶到线上。
+    anchor: { tokens: 900_000, throughMessageId: null },
+    signal: new AbortController().signal,
+  })) {
+    out.push(ev)
+  }
+  return out
+}
+
+/**
+ * 进展判据。
+ *
+ * 取代的是「一个 run 只压一次」那条闸：它的前提（run 内没有新的可折内容）随
+ * transcript 进投影一起消失了——run 内涨起来的正是工具结果，压不到它就等于
+ * 压了个寂寞。判据换成「transcript 有没有长出新单元」，两个方向各锁一条：
+ * 压太多（每步一次）和永远不再压都是回归。
+ */
+describe('有新可折单元才再压', () => {
+  test('压不动但长出了新单元：下一步再试一次', async () => {
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
+    await runHigh(build(twoTurnAdapter(), comp.port, noopRegistry()), 'rn_again')
+    expect(comp.state.projects).toBe(2)
+    expect(comp.state.runs).toBe(2)
+  })
+
+  test('折叠成功之后不连环触发 —— 锚点跟着作废，读数真的降了', async () => {
+    const comp = fakeCompaction(okOutcome)
+    const events = await runHigh(build(twoTurnAdapter(), comp.port, noopRegistry()), 'rn_chain')
+    expect(comp.state.runs).toBe(1)
+    expect(events.filter((e) => e.type === 'compaction' && e.phase === 'started').length).toBe(1)
+  })
+
+  test('transcript 没长东西就不重试', async () => {
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'anthropic_messages',
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
+      measure: async () => 0,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        // 服务端把这一轮切开了：没有正文也没有调用，transcript 一个字没长。
+        yield { type: 'done', stopReason: turn++ === 0 ? 'pause_turn' : 'end_turn' }
+      },
+    }
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
+    await runHigh(build(adapter, comp.port), 'rn_nogrowth')
+    expect(comp.state.projects).toBe(2)
+    expect(comp.state.runs).toBe(1)
+  })
+
+  test('压缩端口拿到的占用与窗口就是触发判定用的那两个数', async () => {
+    const comp = fakeCompaction(okOutcome)
+    await runHigh(build(okAdapter(), comp.port), 'rn_args')
+    expect(comp.state.seen[0]!.occupancy).toBe(900_000)
+    expect(comp.state.seen[0]!.contextWindow).toBe(1_000_000)
+  })
+})
+
+/**
+ * 缺陷 E：run 内的执行记录必须真的能被折掉。
+ *
+ * 改造前 `project()` 只作用于 `input.history`，transcript 在投影**之后**才拼上去，
+ * 于是 run 内涨起来的那几十波工具结果压缩一条也碰不到——而涨的正是那部分。
+ */
+describe('run 内 transcript 参与投影', () => {
+  test('投影丢掉带戳的消息时，请求里就真的没有它们', async () => {
+    const registry = noopRegistry()
+    const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
+    let turn = 0
+    const twoTurn: LlmAdapter = {
+      ...adapter,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        for await (const ev of adapter.stream(req)) {
+          if (ev.type !== 'request_prepared') continue
+          yield ev
+        }
+        if (turn++ === 0) {
+          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield { type: 'done', stopReason: 'tool_use' }
+        } else {
+          yield { type: 'done', stopReason: 'end_turn' }
+        }
+      },
+    }
+    // 把「折掉本 run 的执行记录」这件事做到底：带戳的一律不发。
+    const port: CompactionPort = {
+      project: (messages) => messages.filter((m) => !m._step),
+      run: async () => okOutcome,
+    }
+    const loop = new AgentLoop({
+      adapter: twoTurn,
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: makeCtx,
+      compaction: port,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_fold_transcript' as never,
+      history: [],
+      userMessageId: 'ms_001',
+      signal: new AbortController().signal,
+    })) {
+      // 只看装配结果
+    }
+
+    expect(seen).toHaveLength(2)
+    expect(seen[1]!.messages.some((m) => m.role === 'tool')).toBe(false)
+  })
+})
+
+/**
+ * 单元戳。
+ *
+ * 活的 transcript 与「跨 run 从 steps 投影回历史」必须盖出同一个戳，否则同一个
+ * 单元在两个时刻定位不同，压缩会按两条线切同一段内容。这一侧钉的是规则本身：
+ * 一个波次共用一个戳，取值是波次末 step 的 seq；另一侧在
+ * `runtime/transcript.test.ts` 的「可折单元的戳」。
+ */
+describe('transcript 的可折单元', () => {
+  test('assistant 与它的 tool 结果共用一个戳，取波次末 step 的 seq', async () => {
+    const registry = noopRegistry()
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
@@ -358,21 +647,41 @@ describe('一个 run 只压一次', () => {
       },
     }
 
-    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'too_few_messages' })
-    const events: AgentEvent[] = []
-    for await (const ev of build(adapter, comp.port, registry).run({
-      runId: 'rn_once' as never,
+    const seen: WireMessage[][] = []
+    const port: CompactionPort = {
+      project: (messages) => {
+        seen.push(messages)
+        return messages
+      },
+      run: async () => okOutcome,
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: makeCtx,
+      compaction: port,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_stamp' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      userMessageId: 'ms_001',
       signal: new AbortController().signal,
     })) {
-      events.push(ev)
+      // 只看装配出来的那份
     }
 
-    // 两轮请求（工具一轮 + 收尾一轮），压缩只跑一次。
-    expect(comp.state.projects).toBe(2)
-    expect(comp.state.runs).toBe(1)
-    expect(events.filter((e) => e.type === 'compaction' && e.phase === 'started').length).toBe(1)
+    // 第二次装配时，第一轮的执行波次已经在 transcript 里。
+    const second = seen[1]!
+    const assistant = second.find((m) => m.role === 'assistant' && m.toolCalls?.length)!
+    const result = second.find((m) => m.role === 'tool')!
+    // 工具 step 拿的是本 run 第一个 seq（这一轮没有文本 step）。
+    expect(assistant._step).toBe(stepStamp('rn_stamp', 1))
+    expect(result._step).toBe(assistant._step)
+    expect(assistant._messageId).toBe('ms_001')
+    expect(result._messageId).toBe('ms_001')
   })
 })
 
@@ -421,6 +730,41 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
   }
   return { adapter, seen }
 }
+
+/**
+ * 缓存断点的位置随「整串一次投影」一起变了：断点二不再是「history 数组的末尾」，
+ * 而是**尾区注记之前那条**——整串消息里只有尾区注记是 system 角色。
+ * 位置错了不会有任何报错，只会每一轮全价重付。
+ */
+describe('缓存断点', () => {
+  test('断点二落在尾区注记之前，断点三落在整串末尾', async () => {
+    const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [{ content: '今天是周三', group: 'workspaceState' }],
+      persist: noopPersistence(),
+      makeToolContext: makeCtx,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_brk' as never,
+      history: [
+        { role: 'user', content: '第一句', _messageId: 'ms_001' },
+        { role: 'assistant', content: '好的', _messageId: 'ms_001' },
+      ],
+      signal: new AbortController().signal,
+    })) {
+      // 只看装配结果
+    }
+
+    const messages = seen[0]!.messages
+    const noteAt = messages.findIndex((m) => m.role === 'system')
+    expect(noteAt).toBeGreaterThan(0)
+    expect(messages[noteAt - 1]!.cacheBreakpoint).toBe(true)
+    expect(messages[messages.length - 1]!.cacheBreakpoint).toBe(true)
+  })
+})
 
 describe('申报按占用钳位', () => {
   const spec = lookupModel('claude-opus-5', 'anthropic_messages')
@@ -515,8 +859,8 @@ describe('结果形态对用户可见', () => {
     ])
   })
 
-  /** 降级也要说出来：不说的话用户看到的和一次正常压缩一模一样。 */
-  test('本地降级时 summarized 为 false', async () => {
+  /** 只收纳没摘要也要说出来：不说的话用户看到的和一次完整压缩一模一样。 */
+  test('只收纳时 summarized 为 false', async () => {
     const comp = fakeCompaction({ ...okOutcome, summarized: false })
     const recorded: RecordedCompaction[] = []
     const loop = new AgentLoop({
@@ -540,7 +884,7 @@ describe('结果形态对用户可见', () => {
   })
 
   test('skipped 落库时带 skipped，不伪装成失败', async () => {
-    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_new' })
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     const recorded: RecordedCompaction[] = []
     const loop = new AgentLoop({
       adapter: okAdapter(),
@@ -560,6 +904,6 @@ describe('结果形态对用户可见', () => {
       // 只看落库结果
     }
     expect(recorded[0]?.phase).toBe('skipped')
-    expect(recorded[0]?.reasonCode).toBe('nothing_new')
+    expect(recorded[0]?.reasonCode).toBe('nothing_to_fold')
   })
 })
