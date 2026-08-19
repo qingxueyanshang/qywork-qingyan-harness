@@ -46,7 +46,7 @@ export default function SkillsSettings() {
               一个目录，不说清楚放哪儿，这一页就只能看不能用。 */}
           <section class="settings-block">
             <div class="settings-block-head">
-              <h3>放这两个目录里的会被扫到</h3>
+              <h3>技能从这两个目录扫描</h3>
             </div>
             <div class="setting-rows">
               <For each={d().dirs}>

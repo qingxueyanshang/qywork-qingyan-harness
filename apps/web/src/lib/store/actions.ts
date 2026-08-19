@@ -303,6 +303,10 @@ export interface LibraryModel {
   maxOutputTokens: number
   input: number
   output: number
+  /** 缓存命中价。 */
+  cacheRead: number
+  /** 缓存写入价（5 分钟档）。计价只按这一档算。 */
+  cacheWrite: number
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
   source: 'seed' | 'user'

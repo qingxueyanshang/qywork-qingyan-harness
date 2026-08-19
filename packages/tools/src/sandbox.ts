@@ -235,9 +235,7 @@ function probe(): SandboxStatus {
       return {
         backend: 'none',
         active: false,
-        reason:
-          'WSL1 没有独立内核，namespace 不可用，bubblewrap 给不出真实边界。' +
-          '升级到 WSL2（wsl --set-version <发行版> 2）后本项目会自动启用沙箱。',
+        reason: 'WSL1 无独立内核，bubblewrap 不可用，shell 命令不受内核级路径约束。',
         platform,
         wsl,
       }
@@ -247,9 +245,7 @@ function probe(): SandboxStatus {
       return {
         backend: 'none',
         active: false,
-        reason:
-          '未安装 bubblewrap，shell 命令没有内核级边界。' +
-          '装上即可启用：apt-get install bubblewrap / dnf install bubblewrap / pacman -S bubblewrap',
+        reason: '未安装 bubblewrap，shell 命令不受内核级路径约束。',
         platform,
         wsl,
       }
@@ -263,10 +259,7 @@ function probe(): SandboxStatus {
       return {
         backend: 'none',
         active: false,
-        reason:
-          `bubblewrap 已安装（${bwrap}）但**跑不起来**，因此没有内核级边界：${check}\n` +
-          '  最常见的原因是内核禁掉了无特权用户命名空间（Ubuntu 24.04+ 默认如此）。\n' +
-          '  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0',
+        reason: `bubblewrap 已安装但不可用，shell 命令不受内核级路径约束：${check}`,
         platform,
         wsl,
       }
@@ -274,7 +267,7 @@ function probe(): SandboxStatus {
     return {
       backend: 'bwrap',
       active: true,
-      reason: `bubblewrap（${bwrap}），已实测可用：工作区之外只读、凭证目录不可见、网络不受限`,
+      reason: `bubblewrap 已验证可用：工作区之外只读，凭证目录不可见，网络不受限。`,
       platform,
       wsl,
     }
@@ -286,9 +279,7 @@ function probe(): SandboxStatus {
       return {
         backend: 'none',
         active: false,
-        reason:
-          `seatbelt（sandbox-exec）跑不起来，因此没有内核级边界：${check}\n` +
-          '  shell 命令目前只受静态规则与分类器约束，两者都是文本判断。',
+        reason: `seatbelt 不可用，shell 命令不受内核级路径约束：${check}`,
         platform,
         wsl,
       }
@@ -296,9 +287,7 @@ function probe(): SandboxStatus {
     return {
       backend: 'seatbelt',
       active: true,
-      reason:
-        'sandbox-exec，已实测可用：工作区之外只读、凭证目录不可读、网络不受限。' +
-        '（`sandbox-exec` 被 Apple 标记为 deprecated，但目前没有可替代的用户态接口。）',
+      reason: 'seatbelt 已验证可用：工作区之外只读，凭证目录不可读，网络不受限。',
       platform,
       wsl,
     }
@@ -318,14 +307,12 @@ function probe(): SandboxStatus {
        *
        * 这段话会原样出现在设置页里，所以**不写内部文档的编号**——用户打不开
        * ROADMAP，那行字对他只是噪音。（为什么不在原生 Windows 上做：ROADMAP §42。）
+       *
+       * **只写边界，不写机制。** 曾经是四行：解释静态规则与分类器是文本判断、
+       * 分列「确定性拦得住的」与「拦不住的」两串枚举、再给一条 WSL2 的出路。
+       * 用户据以决策的只有一句——工作区外且家目录外的路径拦不住。
        */
-      reason:
-        '原生 Windows 上没有内核级边界：shell 命令只受硬边界 + 静态规则 + 分类器约束，' +
-        '而后两者是**文本判断**。\n' +
-        '  确定性拦得住的：家目录与系统目录（符号写法和字面绝对路径都认）、' +
-        '写 .qy/、提权、毁盘、下载即执行、写 SSH 凭据。\n' +
-        '  **拦不住的**：工作区外**且**家目录外的路径（另一块盘、ProgramData、网络共享）。\n' +
-        '  要那一层也有边界，现成的办法是在 WSL2 里运行 qy——会自动启用 bubblewrap。',
+      reason: '原生 Windows 无内核沙箱后端，工作区与家目录之外的路径不受约束。',
       platform,
       wsl,
     }

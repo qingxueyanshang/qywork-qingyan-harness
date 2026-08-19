@@ -1,4 +1,4 @@
-import { createEffect, lazy, Match, onCleanup, Show, Suspense, Switch } from 'solid-js'
+import { createEffect, lazy, Match, onCleanup, Suspense, Switch } from 'solid-js'
 import { closeSettings, type SettingsPage as Page, settingsPage } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
@@ -23,27 +23,18 @@ const SchedulesPanel = lazy(() =>
 )
 
 /**
- * 每一页的标题与边界说明。
+ * 每一页的标题。
  *
- * `note` 只在**不写就会做错事**时才有。「按角色分工不是远程协作」「手机和桌面同一套协议」
- * 这类是介绍不是边界，删掉用户照样会用——按 B7 一律删掉。剩下两条是真边界，
- * 就在下面：填 key 前要知道它不出服务端，找审批模式的人要知道该去哪找。
- * 这两句必须写进 `note`——只写在源码注释里等于界面上没说。
+ * **只有标题，没有页级说明。** 曾经每页挂一句话（key 存在哪、带 * 的是必填、
+ * 审批开关在哪），三句都是控件本身已经说过或者猜得到的事——
+ * key 那格的占位符写着「已设置（留空则保持不变）」，必填项旁边就有个 `*`，
+ * 而「去哪找某个开关」是枚举操作路径（B7）。控件说得清的，标题上面不再说一遍。
  */
-const META: Record<Page, { title: string; note?: string }> = {
+const META: Record<Page, { title: string }> = {
   general: { title: '通用' },
-  models: {
-    title: '模型',
-    note: 'API Key 只存在服务端，界面上没有任何一条路能把它读回来——删掉即不可恢复。',
-  },
-  modules: {
-    title: '模块',
-    note: '带 * 的是必填参数。MCP server 起不来，它的工具就不在这里。',
-  },
-  access: {
-    title: '命令与进程',
-    note: '自动审批 / 完全访问的开关不在这里，在输入区那个盾牌 chip 上。',
-  },
+  models: { title: '模型' },
+  modules: { title: '模块' },
+  access: { title: '权限' },
   team: { title: '智能体' },
   memory: { title: '记忆' },
   skills: { title: '技能' },
@@ -110,7 +101,6 @@ export function SettingsDialog() {
                 滚走了等于没写，而它正是用户据以决定要不要在这一页填东西的事实。 */}
             <header class="settings-pane-head">
               <h2 class="settings-page-title">{meta().title}</h2>
-              <Show when={meta().note}>{(n) => <p class="settings-page-note">{n()}</p>}</Show>
             </header>
 
             {/* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，

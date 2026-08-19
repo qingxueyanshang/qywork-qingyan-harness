@@ -76,13 +76,6 @@ export default function McpSettings() {
     >
       {(d) => (
         <>
-          {/* 这条是**能力边界**，不折叠也不降对比度：用户据它决定要不要在这里加
-              server（B7 的例外条款）。 */}
-          <p class="settings-page-note">
-            mcp.json 决定模型拿到哪些工具。所以 agent 不能用 shell 写它——那等于自我提权，
-            只能由你在这里改。
-          </p>
-
           <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
           <Show when={d().servers.length > 0}>

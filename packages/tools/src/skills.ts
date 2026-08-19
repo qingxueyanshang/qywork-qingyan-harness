@@ -129,7 +129,7 @@ export const readSkillTool: ToolSpec = {
   },
   actionKind: 'read',
   objectLabel: '技能',
-  category: 'knowledge',
+  category: 'skills',
   facet: '技能',
   summary: '读一个技能的完整操作步骤',
   targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),

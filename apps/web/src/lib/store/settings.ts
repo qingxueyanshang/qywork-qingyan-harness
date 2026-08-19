@@ -68,6 +68,8 @@ export interface CatalogEntry {
   maxOutputTokens?: number
   input?: number
   output?: number
+  cacheRead?: number
+  cacheWrite?: number
   currency?: 'USD' | 'CNY'
 }
 

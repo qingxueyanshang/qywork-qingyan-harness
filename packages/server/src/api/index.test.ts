@@ -617,6 +617,24 @@ describe('模型目录', () => {
   })
 
   /**
+   * 缓存两档也要下发。
+   *
+   * 少了它们，界面上只有输入/输出两个数，而缓存价决定的是长会话的实际账单
+   * ——Anthropic 写入是 input 的 1.25 倍，DeepSeek 写入不收费，
+   * 这个差别在只看输入/输出时完全看不见。
+   */
+  test('库里带缓存命中与写入两档', async () => {
+    const all = (await body(withConfig('anthropic', 'claude-opus-5'))).library.flatMap(
+      (v: any) => v.models,
+    )
+    const opus = all.find((m: any) => m.id === 'claude-opus-5')
+    expect(opus.cacheRead).toBe(0.5)
+    expect(opus.cacheWrite).toBe(6.25)
+    // DeepSeek 的自动前缀缓存写入不收费，那是个真值不是缺值。
+    expect(all.find((m: any) => m.id === 'deepseek-v4-flash').cacheWrite).toBe(0)
+  })
+
+  /**
    * **同一个模型在库里只出现一次。**
    *
    * 目录里同 id 多条是给 `lookupModel` 按协议查能力用的（DeepSeek 有兼容和
