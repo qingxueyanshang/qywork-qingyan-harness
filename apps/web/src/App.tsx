@@ -3,6 +3,7 @@ import { Composer } from './components/Composer.tsx'
 import { Palette } from './components/Palette.tsx'
 import { PermissionSheet } from './components/PermissionSheet.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
+import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
 
 // 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
@@ -142,7 +143,7 @@ export function App() {
             class="icon-btn sidebar-expand"
             type="button"
             aria-label="展开会话面板"
-            title="展开会话面板"
+            data-tip="展开会话面板"
             onClick={toggleSidebar}
           >
             <IconPanel size={15} />
@@ -168,7 +169,7 @@ export function App() {
           type="button"
           aria-label={sidePanel() ? '收起侧面板' : '展开侧面板'}
           aria-expanded={sidePanel() !== null}
-          title={sidePanel() ? '收起侧面板' : '展开侧面板'}
+          data-tip={sidePanel() ? '收起侧面板' : '展开侧面板'}
           onClick={togglePanel}
         >
           <IconPanel size={15} />
@@ -204,6 +205,7 @@ export function App() {
         </Suspense>
       </Show>
       <Palette />
+      <Tooltip />
       <PermissionSheet />
       {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
       <Show when={settingsPage()}>

@@ -152,7 +152,7 @@ export function Sidebar(props: { onClose?: () => void }) {
             class="icon-btn"
             type="button"
             aria-label="收起会话面板"
-            title="收起会话面板"
+            data-tip="收起会话面板"
             onClick={toggleSidebar}
           >
             <IconPanel size={15} />
@@ -248,7 +248,7 @@ export function Sidebar(props: { onClose?: () => void }) {
             目录下，握手报一份就成了「A 项目的插件显示在 B 项目上」。 */}
         <Show when={extensionSummary()}>
           {(text) => (
-            <div class="ext-chip" title={text()}>
+            <div class="ext-chip" data-tip={text()}>
               <span class="truncate">{text()}</span>
             </div>
           )}

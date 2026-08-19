@@ -68,10 +68,8 @@ function ModeChip() {
       type="button"
       disabled={busy()}
       aria-pressed={full()}
-      title={
-        full()
-          ? '完全访问：不再逐条询问。凭证不进子进程、输出屏蔽凭证、禁止写 .qy/ 这三条硬边界仍然生效。'
-          : '自动审批：由硬边界 + 静态规则 + 分类器裁决，拿不准的会问你。'
+      data-tip={
+        full() ? '完全访问：不再逐条询问；凭证与 .qy/ 的硬边界仍然生效' : '自动审批：拿不准的会问你'
       }
       onClick={() => void toggle()}
     >
@@ -95,7 +93,7 @@ function ModeChip() {
 function goalNote(goal: Goal, running: boolean): string {
   if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '没给理由'}`
   if (goal.status === 'paused') return '已暂停'
-  return running ? '自动续行中' : '没在自动跑：续行不跨进程重启，点继续接上'
+  return running ? '自动续行中' : '没在自动跑，点继续接上'
 }
 
 /**
@@ -145,14 +143,14 @@ function GoalChip() {
             <span class="goal-label">目标</span>
             {/* 正文长就截断 + title，不做悬停卡片：那张卡片承载的信息这一行本来
                 就有，唯一的效果是鼠标划过时糊住下面那一行。 */}
-            <span class="goal-text truncate" title={g().objective}>
+            <span class="goal-text truncate" data-tip={g().objective}>
               {g().objective}
             </span>
             {/* 状态紧挨着「停止」：用户读到「在跑」的下一眼就该是让它停的那颗按钮。 */}
             <span
               class="goal-note truncate"
               classList={{ blocked: g().status === 'blocked' }}
-              title={goalNote(g(), state.running)}
+              data-tip={goalNote(g(), state.running)}
             >
               {goalNote(g(), state.running)}
             </span>
@@ -300,7 +298,7 @@ export function Composer() {
               而那个浮层已经删了。 */}
           <Show when={workspace()}>
             {(w) => (
-              <span class="mode-chip static" title={w().root}>
+              <span class="mode-chip static" data-tip={w().root}>
                 <IconFolder size={13} />
                 {w().name}
               </span>
@@ -320,7 +318,7 @@ export function Composer() {
         <div class="attach-row">
           <For each={pending()}>
             {(a, i) => (
-              <span class="attach-chip" title={a.path}>
+              <span class="attach-chip" data-tip={a.path}>
                 <span class="truncate">{a.name}</span>
                 <button
                   class="attach-x"
@@ -457,7 +455,7 @@ export function Composer() {
             class="icon-btn"
             type="button"
             aria-label="添加附件"
-            title="添加附件（也可直接粘贴或拖入）"
+            data-tip="添加附件（也可直接粘贴或拖入）"
             onClick={() => filePicker.click()}
           >
             <IconPlus size={16} />
@@ -481,7 +479,7 @@ export function Composer() {
             class="icon-btn"
             type="button"
             aria-label="运行详情"
-            title="运行详情（会话累计与逐轮账目）"
+            data-tip="运行详情（会话累计与逐轮账目）"
             onClick={() => setOverlay('runs')}
           >
             <IconActivity size={15} />
@@ -677,7 +675,7 @@ function ContextMeter() {
             classList={{ warn: c().percent > 75 }}
             type="button"
             aria-expanded={open()}
-            title={`${c().tokens.toLocaleString()} / ${c().limit.toLocaleString()} tokens`}
+            data-tip={`${c().tokens.toLocaleString()} / ${c().limit.toLocaleString()} tokens`}
             onClick={() => setOpen((v) => !v)}
           >
             <ContextRing percent={c().percent} />

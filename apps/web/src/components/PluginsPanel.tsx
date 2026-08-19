@@ -129,7 +129,7 @@ export function PluginsPanel() {
                       class="icon-btn"
                       type="button"
                       aria-label={`卸载 ${p.id}`}
-                      title="卸载"
+                      data-tip="卸载"
                       disabled={busy() === p.id}
                       onClick={() =>
                         void act(

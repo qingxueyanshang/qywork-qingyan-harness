@@ -375,3 +375,33 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
+
+/* ── 悬停提示 ── */
+/*
+ * 自带一条完整规则，不与菜单、面板共用选择器（改一处不会牵到另一处）。
+ *
+ * 反白实心、无描边：这一层要的是「浮在界面之上的一小块注解」，
+ * 描边加投影会让它读成又一个卡片，和菜单撞在一起。
+ * 位置由 `Tooltip.tsx` 写进 transform，这里不设 top/left 之外的定位。
+ */
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 95;
+  max-width: 300px;
+  padding: 5px var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--text-primary);
+  color: var(--bg-app);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.tooltip.show {
+  opacity: 1;
+}

@@ -40,7 +40,7 @@ export default function FileView(props: { path: string }) {
       <header class="preview-head">
         {/* **完整的本机路径**，不是工作区相对路径：根目录下的文件相对路径就只剩一个
             文件名，看不出它在哪个项目里。挤不下时从左边截——尾部的文件名比盘符要紧。 */}
-        <code class="truncate-left" title={absPath(props.path)}>
+        <code class="truncate-left" data-tip={absPath(props.path)}>
           {/* `dir="ltr"` 是这一对里不能省的一半：外层 `rtl` 把省略号挪到左边，
               内层 `ltr` 保证路径本身还是正着读的。只写外层，`C:\` 会跑到右边去。 */}
           <span dir="ltr">{absPath(props.path)}</span>

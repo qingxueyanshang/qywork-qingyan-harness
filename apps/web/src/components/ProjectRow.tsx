@@ -129,7 +129,7 @@ export function ProjectRow(props: {
           class="icon-btn project-new"
           type="button"
           aria-label="新建对话"
-          title="在这个项目里新建对话"
+          data-tip="在这个项目里新建对话"
           onClick={() => props.onNewChat?.()}
         >
           <IconNewChat size={14} />
@@ -205,9 +205,7 @@ export function ProjectRow(props: {
         open={armed() !== null}
         title={armed() === 'remove' ? `移除 ${props.workspace.name}？` : '归档现有会话？'}
         message={
-          armed() === 'remove'
-            ? '这会把项目从列表里移除。你电脑上的文件和已有的聊天记录都不会被删除，重新添加同一个文件夹就会回来。'
-            : '这个项目现有的会话不再显示在列表里。数据不会被删除，之后新建的会话照常显示。'
+          armed() === 'remove' ? '只从列表里移除，本机文件不动。' : '现有会话不再显示，数据不删。'
         }
         confirmLabel={armed() === 'remove' ? '移除项目' : '归档'}
         danger={armed() === 'remove'}

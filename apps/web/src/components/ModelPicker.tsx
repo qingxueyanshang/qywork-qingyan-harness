@@ -101,7 +101,7 @@ export function ModelPicker() {
         class="mode-chip"
         type="button"
         disabled={locked() || !state.activeConversation}
-        title={locked() ? '执行中不能切换模型' : '切换模型'}
+        data-tip="切换模型"
         onClick={toggle}
       >
         <span class="truncate">{activeModel()?.model ?? '选择模型'}</span>
@@ -229,9 +229,7 @@ export function EffortPicker() {
           class="mode-chip"
           type="button"
           disabled={state.running || !state.activeConversation}
-          title={
-            state.running ? '执行中不能改思考强度' : '思考强度：改的是这个模型的档位，所有会话通用'
-          }
+          data-tip="思考强度：改的是这个模型的档位，所有会话通用"
           onClick={toggle}
         >
           <span class="truncate">{selected() ?? '思考'}</span>

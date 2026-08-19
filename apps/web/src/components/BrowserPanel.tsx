@@ -99,7 +99,7 @@ export default function BrowserPanel(props: { id: string }) {
           class="icon-btn"
           type="button"
           aria-label="刷新"
-          title="刷新"
+          data-tip="刷新"
           disabled={!url()}
           onClick={() => setReloads((n) => n + 1)}
         >
