@@ -26,7 +26,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
-import { configPath, type QyConfig } from '@qywork/runtime'
+import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { MAX_ENTRY_CHARS } from '@qywork/tools'
 import { serve } from './server.ts'
@@ -121,9 +121,15 @@ beforeAll(async () => {
   }
 
   /*
-   * **配置要落到一个真的文件上。** 设置接口以 `~/.qywork/config.json` 为准
-   * （见 `api/config.ts` 的 GET 分支），只在内存里造一份的话，这里读到的是
-   * 开发机上那份真配置——测试会按开发者本人配的接口发请求。
+   * **配置只有一个真源：`configPath()` 那个文件。**
+   *
+   * 先写文件，再 `loadConfig()` 读回来交给 `serve` ——和 `qy serve` 一模一样。
+   * 直接把上面那个对象递进去也能跑，但那样测试手里就有两份（一份在内存、
+   * 一份在盘上），改一处漏一处时的表现是「界面读到 A、请求发去 B」。
+   *
+   * `QYWORK_HOME` 指到临时目录，不是另开一条路径——`configPath()` 全仓只有
+   * 一处实现，这里换的是它的落点。跑在开发机那份真配置上的话，测试会按
+   * 开发者本人配的接口发请求，配置那几条用例还会写他的文件。
    */
   prevHome = process.env.QYWORK_HOME
   process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-e2e-home-'))
@@ -131,7 +137,7 @@ beforeAll(async () => {
 
   handle = serve({
     store,
-    config,
+    config: await loadConfig(),
     workspaceRoot: ws_dir,
     content,
     port: 0,
