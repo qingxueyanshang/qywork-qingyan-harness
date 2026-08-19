@@ -35,7 +35,7 @@ const META: Record<Page, { title: string }> = {
   models: { title: '模型' },
   modules: { title: '模块' },
   access: { title: '权限' },
-  team: { title: '智能体' },
+  team: { title: 'Agent Team' },
   memory: { title: '记忆' },
   skills: { title: '技能' },
   mcp: { title: 'MCP' },

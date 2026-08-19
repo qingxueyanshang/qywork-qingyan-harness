@@ -11,7 +11,7 @@ const TEMPLATE = `{
 `
 
 /**
- * 智能体。
+ * Agent Team。
  *
  * ## 角色在前，原文在后
  *
