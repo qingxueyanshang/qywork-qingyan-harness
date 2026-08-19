@@ -16,12 +16,17 @@
 export type { CapacityRejection } from './capacity.ts'
 // 模型目录与计价：装配、读数、探测三处都要
 export {
+  applySpecOverride,
   builtinCatalog,
   computeCost,
   effortIsTransmittable,
   lookupModel,
   type ModelSpec,
+  type OffPeakDiscount,
   type ProviderKind,
+  priceAt,
+  type SpecOverride,
+  unknownModel,
   VENDORS,
 } from './catalog.ts'
 // 错误归类：agent 判可否重试，server 决定前端引导动作

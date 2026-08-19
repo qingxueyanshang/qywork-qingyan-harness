@@ -17,7 +17,12 @@ function fresh() {
   const store = new Store({ path: ':memory:' })
   const content = new ContentStore(':memory:')
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: 't' })
+  const conv = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'p',
+    model: 'm',
+    title: 't',
+  })
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,

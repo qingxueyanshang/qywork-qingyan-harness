@@ -43,7 +43,7 @@ export async function runCli(
      * qywork 自己的凭证。按值剥掉——后端用不上，也就没有理由拿到。
      * 不传等于「没有已知凭证」，不等于「不用剥」。
      */
-    secrets?: { values: string[]; envNames: string[] }
+    secrets?: { values: string[] }
   },
 ): Promise<CliRunResult> {
   const args = backend.args.map((a) => a.replaceAll('{prompt}', input.prompt))
@@ -58,11 +58,12 @@ export async function runCli(
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
-      // 只按**值**剥：envNames 留空，否则会把后端自己要用的
-      // ANTHROPIC_API_KEY / OPENAI_API_KEY 一起剥掉，后端直接不能干活。
+      // 只按**值**剥。名字模式那条会把后端自己要用的
+      // ANTHROPIC_API_KEY / OPENAI_API_KEY 一起剥掉，后端直接不能干活，
+      // 所以下面把整份环境放进 allow。
       ...scrubEnv(
         process.env,
-        { values: input.secrets?.values ?? [], envNames: [] },
+        { values: input.secrets?.values ?? [] },
         {
           // 名字模式匹配同样会误伤后端需要的 key，这里靠值匹配就够。
           allow: Object.keys(process.env),

@@ -27,7 +27,7 @@
  */
 
 import { type ProbeOutcome, probeModel, toCapabilities } from '@qywork/ai'
-import { collectSecrets, resolveApiKey, resolveModel } from '@qywork/runtime'
+import { collectSecrets, resolveModel } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
 /**
@@ -71,7 +71,7 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
   const outcome = await probeModel(
     {
       kind: target.kind,
-      apiKey: resolveApiKey(target),
+      apiKey: target.apiKey ?? '',
       model: target.model,
       ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
       ...(target.headers ? { headers: target.headers } : {}),

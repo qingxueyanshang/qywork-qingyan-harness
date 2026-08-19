@@ -34,7 +34,6 @@ export interface RedactedModel {
 /** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
 export interface RedactedProvider {
   kind: string
-  apiKeyEnv?: string
   baseUrl?: string
   headers?: Record<string, string>
   models: Record<string, RedactedModel>
@@ -61,9 +60,22 @@ export interface RedactedProvider {
  * 不认识的键。那条语义由 `server/src/api/config.test.ts`「客户端不认识的顶层
  * 字段不会被抹掉」钉住——改这里之前先看那条。
  */
+/** 用户在模型库里改过的模型参数。键是模型 id——参数是模型的属性，与接口无关。 */
+export interface CatalogEntry {
+  displayName?: string
+  vendor?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  input?: number
+  output?: number
+  currency?: 'USD' | 'CNY'
+}
+
 export interface RedactedConfig {
   active: ModelRef
   providers: Record<string, RedactedProvider>
+  /** 模型库里改过的那些条目。没改过的不在这里——它们的真源是内置目录。 */
+  catalog?: Record<string, CatalogEntry>
   // 思考档位**不在顶层**：它是「接口 × 模型」那一格的属性，见 `RedactedModel.effort`。
   mode?: PermissionMode
   additionalDirectories?: string[]

@@ -18,7 +18,7 @@ import {
 function conv() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-  const c = createConversation(store, { workspaceId: ws.id, model: 'm' })
+  const c = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
   return { store, id: c.id }
 }
 
@@ -60,8 +60,8 @@ describe('会话级开关', () => {
   test('只影响这一条会话，另一条不受牵连', () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-    const a = createConversation(store, { workspaceId: ws.id, model: 'm' })
-    const b = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const a = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const b = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
 
     setExtraEnabled(store, a.id, 'mcp:github', false)
     expect(listDisabledExtras(store, a.id).has('mcp:github')).toBe(true)

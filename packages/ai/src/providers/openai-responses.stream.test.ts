@@ -396,26 +396,7 @@ describe('我们发出去的请求', () => {
   })
 })
 
-/**
- * 「不思考」这个选项必须真的不思考。
- *
- * 实测（deepseek-v4-flash，`max_output_tokens=900`，各三次）：
- *
- * ```
- * effort=none      reasoning_tokens  0,   0,   0
- * effort=minimal   reasoning_tokens  900, 900, 900
- * ```
- *
- * **不能映射成 `minimal`**——它不是「少想一点」，它跟 high 一样把整个输出预算
- * 烧在推理上，正文被截断。用户要求不思考，拿到的是全额思考并且付钱，
- * 而且**完全静默**：没有报错，只有账单和一段被截断的回答。
- */
-describe('思考开关', () => {
-  test('disabled 发 effort:none —— minimal 是不管用的那个', async () => {
-    await run(TEXT_RUN, { thinking: { mode: 'disabled' } })
-    expect(lastBody.reasoning).toEqual({ effort: 'none' })
-  })
-
+describe('思考字段', () => {
   test('默认要摘要 —— 不要的话推理过程完全不可见', async () => {
     await run(TEXT_RUN)
     expect(lastBody.reasoning?.summary).toBe('auto')

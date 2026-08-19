@@ -14,7 +14,12 @@ import { latestTodos } from './todos.ts'
 function fresh() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: 't' })
+  const conv = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'p',
+    model: 'm',
+    title: 't',
+  })
   return { store, ws, conversationId: conv.id as ConversationId }
 }
 
@@ -89,7 +94,12 @@ describe('待办读回', () => {
   /** 别的会话的清单不能串进来。 */
   test('按会话隔离', () => {
     const { store, ws, conversationId } = fresh()
-    const other = createConversation(store, { workspaceId: ws.id, model: 'm', title: 'x' })
+    const other = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'm',
+      title: 'x',
+    })
     const run = newRun(store, other.id as ConversationId, ws.id, 'r-other')
     submit(store, run.id, 1, ['别人的'])
     expect(latestTodos(store, conversationId)).toBeNull()

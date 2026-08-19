@@ -635,10 +635,151 @@
   color: var(--accent);
   cursor: default;
 }
-/* 最后一行是「加一个」：主操作和空区同位，接口一个模型都没有时它就是唯一那行。 */
+/* 最后一行是「加一个」：主操作和空区同位，接口一个模型都没有时它就是唯一那行。
+   **输入框要自己写一条**：上面那套表单样式挂在 `.setting-row` / `.field` 下，
+   这一行两者都不是，不写就是浏览器原生外观。 */
 .model-row.add {
   flex-direction: row;
   align-items: center;
+  gap: var(--s-2);
+}
+.model-row.add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+.model-row.add input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 模型库那个 tab 和接口不是一类东西，隔开一点，别读成「又一个接口」。 */
+.tab-chip.lib {
+  margin-left: auto;
+}
+
+/* ── 模型库 ──
+ *
+ * 一张模型参数表，和接口无关：库回答「这个模型多大、多贵」，接口回答
+ * 「用谁的端点和 key」。所以这一族样式里没有任何接口相关的东西。 */
+.lib-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.lib-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  /* 库比左边那栏长得多。固定高度 + 内部滚动，不把整页撑成两屏。 */
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.lib-vendor {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.lib-vendor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-inset);
+}
+.lib-vendor-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.lib-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-2);
+  padding: 6px var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.lib-model-name {
+  font-size: var(--fs-sm);
+}
+.lib-model-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.lib-spec {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 改过的那些要看得出来——「还原」按钮只对它们出现，看不出来就没法解释
+   为什么这一行比别行多一个按钮。 */
+.lib-spec.edited {
+  color: var(--accent);
+}
+/* 「上面那个是标准价」这类话是能力边界，各占一整行、不降对比度。
+   压成小灰标签的话，它就和旁边那几个规格标签一样容易被略过，
+   而略过它的代价是账单上差两倍。 */
+.lib-pricenote {
+  width: 100%;
+  color: var(--warning);
+  font-size: var(--fs-xs);
+}
+
+/* 改一条参数。留空 = 照内置值，所以每格都可以是空的。 */
+.lib-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-inset);
+}
+.lib-field {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.lib-field span {
+  flex: 0 0 88px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+.lib-field input,
+.lib-field select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+.lib-field input:focus,
+.lib-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.lib-form-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: var(--s-2);
 }
 

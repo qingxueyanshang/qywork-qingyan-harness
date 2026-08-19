@@ -103,6 +103,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
     if (!s) return json({ error: 'not found' }, 404)
     const conv = createConversation(d.store, {
       workspaceId: d.workspaceId as never,
+      provider: d.config.active.provider,
       model: d.config.active.model,
       title: s.title,
     })

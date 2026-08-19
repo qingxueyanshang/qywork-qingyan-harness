@@ -48,7 +48,16 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       return
 
     case 'conversation.setModel': {
-      const updated = setConversationModel(deps.store, cmd.conversationId, cmd.model)
+      // 接口必须在配置里真的存在。放行一个不存在的接口名，会话就指向了一个
+      // 发不出请求的地方，而报错要等到下一轮才出现。
+      if (!deps.config.providers[cmd.provider]) {
+        reject(deps.ws, cmd.type, 'invalid_payload', `配置里没有名为 "${cmd.provider}" 的接口`)
+        return
+      }
+      const updated = setConversationModel(deps.store, cmd.conversationId, {
+        provider: cmd.provider,
+        model: cmd.model,
+      })
       if (!updated) {
         reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
         return
@@ -58,6 +67,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         {
           type: 'conversation.updated',
           conversationId: updated.id,
+          provider: updated.provider,
           model: updated.model,
           title: updated.title,
           updatedAt: updated.updatedAt,

@@ -101,6 +101,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       produce((s) => {
         const conv = s.conversations.find((c) => c.id === ev.conversationId)
         if (conv) {
+          conv.provider = ev.provider
           conv.model = ev.model
           conv.title = ev.title
           conv.updatedAt = ev.updatedAt

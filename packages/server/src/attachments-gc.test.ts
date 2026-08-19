@@ -40,6 +40,7 @@ describe('附件回收', () => {
     const w = upsertWorkspace(store, ws, 'ws')
     const conv = createConversation(store, {
       workspaceId: w.id as never,
+      provider: 'p',
       model: 'm',
       title: 't',
     })

@@ -183,7 +183,7 @@ export const readFileTool: ToolSpec = {
 }
 
 /** 没有配置任何 secret 时的空集合。形状脱敏与它无关，照常生效。 */
-const EMPTY_SECRETS = { values: [], envNames: [] }
+const EMPTY_SECRETS = { values: [] }
 
 export const writeFileTool: ToolSpec = {
   name: 'write_file',

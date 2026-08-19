@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
   collectSecrets,
   configNotices,
   diagnoseConfig,
   type QyConfig,
-  resolveApiKey,
   resolveModel,
 } from './config.ts'
 
@@ -15,32 +14,13 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
       ds: {
         kind: 'openai_compatible',
         baseUrl: 'https://api.deepseek.com/v1',
-        apiKeyEnv: 'QYWORK_TEST_KEY',
+        apiKey: 'sk-deepseek-configured',
         models: { 'deepseek-v4-flash': {} },
       },
     },
     ...over,
   }
 }
-
-afterEach(() => {
-  delete process.env.QYWORK_TEST_KEY
-})
-
-describe('key 解析', () => {
-  test('环境变量优先于配置文件明文', () => {
-    process.env.QYWORK_TEST_KEY = 'from-env'
-    expect(resolveApiKey({ apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' })).toBe('from-env')
-  })
-
-  test('环境变量为空时回落明文', () => {
-    expect(resolveApiKey({ apiKeyEnv: 'QYWORK_TEST_KEY', apiKey: 'p' })).toBe('p')
-  })
-
-  test('都没有时是空串而不是 undefined', () => {
-    expect(resolveApiKey({})).toBe('')
-  })
-})
 
 /**
  * 「接口 → 模型」两层之后的解析。
@@ -116,18 +96,27 @@ describe('模型解析', () => {
 })
 
 describe('配置体检', () => {
+  const noKey = () =>
+    cfg({
+      providers: {
+        ds: {
+          kind: 'openai_compatible',
+          baseUrl: 'https://api.deepseek.com/v1',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+    })
+
   test('没配 key 时给出配置文件路径与最小示例', () => {
-    const [p] = diagnoseConfig(cfg())
+    const [p] = diagnoseConfig(noKey())
     expect(p).toBeDefined()
     expect(p).toContain('config.json')
     expect(p).toContain('qy init')
     // 光说「没配」不够——用户得知道往里写什么形状的东西。
     expect(p).toContain('"apiKey"')
-    expect(p).toContain('QYWORK_TEST_KEY')
   })
 
-  test('环境变量配上了就没问题', () => {
-    process.env.QYWORK_TEST_KEY = 'sk-x'
+  test('配了 key 就没问题', () => {
     expect(diagnoseConfig(cfg())).toEqual([])
   })
 
@@ -156,8 +145,20 @@ describe('配置体检', () => {
   })
 
   test('不验证 key 是否有效 —— 那只有 provider 能回答', () => {
-    process.env.QYWORK_TEST_KEY = '显然不是一个真 key'
-    expect(diagnoseConfig(cfg())).toEqual([])
+    expect(
+      diagnoseConfig(
+        cfg({
+          providers: {
+            ds: {
+              kind: 'openai_compatible',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKey: '显然不是一个真 key',
+              models: { 'deepseek-v4-flash': {} },
+            },
+          },
+        }),
+      ),
+    ).toEqual([])
   })
 })
 
@@ -168,11 +169,6 @@ describe('配置体检', () => {
  * 脱敏层再对也拦不住它。所以这一组测的全是「有没有收全」。
  */
 describe('收集凭证', () => {
-  afterEach(() => {
-    delete process.env.QYWORK_TEST_KEY
-    delete process.env.OTHER_KEY
-  })
-
   /**
    * 只收 active 那个档案是不够的：用户配了三家就有三把 key 躺在环境里，
    * 而模型能读到哪一把跟当前用哪个模型毫无关系。
@@ -190,45 +186,16 @@ describe('收集凭证', () => {
     expect(s.values).toContain('sk-anthropic-plaintext')
   })
 
-  /**
-   * `resolveApiKey` 在两者都有时只返回一个，另一个照样躺在环境里
-   * 等着被 `env` 打印出来。所以这里必须两处都取。
-   */
-  test('明文与环境变量两处都取，不是二选一', () => {
-    process.env.QYWORK_TEST_KEY = 'sk-from-environment'
-    const s = collectSecrets(
-      cfg({
-        providers: {
-          ds: {
-            kind: 'openai_compatible',
-            apiKey: 'sk-from-config-file',
-            apiKeyEnv: 'QYWORK_TEST_KEY',
-            models: { m: {} },
-          },
-        },
-      }),
-    )
-    expect(s.values).toContain('sk-from-config-file')
-    expect(s.values).toContain('sk-from-environment')
-  })
-
-  /** 变量名这条判据抓的是「明文我们不知道」的情况：key 只在环境里，配置里没写。 */
-  test('变量名单独收，用来抓明文未知的那些', () => {
-    const s = collectSecrets(cfg())
-    expect(s.envNames).toContain('QYWORK_TEST_KEY')
-  })
-
-  test('环境变量没设时不收一个空串 —— 空串会让按值匹配命中一切', () => {
-    const s = collectSecrets(cfg())
+  test('没配 key 的接口不收一个空串 —— 空串会让按值匹配命中一切', () => {
+    const s = collectSecrets(cfg({ providers: { ds: { kind: 'anthropic', models: { m: {} } } } }))
     expect(s.values).not.toContain('')
   })
 
-  test('同一把 key 配在多处只出现一次', () => {
-    process.env.QYWORK_TEST_KEY = 'sk-same-key-everywhere'
+  test('同一把 key 配在多个接口下只出现一次', () => {
     const s = collectSecrets(
       cfg({
         providers: {
-          a: { kind: 'anthropic', apiKeyEnv: 'QYWORK_TEST_KEY', models: { m: {} } },
+          a: { kind: 'anthropic', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
           b: { kind: 'anthropic', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
         },
       }),
@@ -415,5 +382,32 @@ describe('思考档位校验', () => {
   /** 报错要点名是哪个接口下的哪个模型——多家模型并存时，不点名等于没说。 */
   test('报错点名接口与模型', () => {
     expect(effortProblems(withEffort('ultra'))[0]).toContain('ds / deepseek-v4-flash')
+  })
+})
+
+/**
+ * 模型库的覆盖要**取得到**。
+ *
+ * 只有一个能编辑的界面、改完到不了 `resolveModel`，那就是一条有产出没有消费者的
+ * 链路——改完的价格永远不会出现在任何一次请求或账本里。
+ */
+describe('模型库覆盖', () => {
+  const withCatalog = () =>
+    cfg({
+      catalog: { 'deepseek-v4-flash': { input: 9, output: 19 } },
+    })
+
+  test('按模型 id 取，与接口无关', () => {
+    expect(resolveModel(withCatalog())?.spec).toEqual({ input: 9, output: 19 })
+  })
+
+  /** 模型没在这个接口下声明过也要取得到：参数是模型的属性，不是接口的。 */
+  test('接口下没声明过这个模型也取得到', () => {
+    const r = resolveModel(withCatalog(), 'deepseek-v4-flash')
+    expect(r?.spec?.input).toBe(9)
+  })
+
+  test('库里没这一条就不带 spec，不塞一个空对象', () => {
+    expect(resolveModel(cfg())?.spec).toBeUndefined()
   })
 })

@@ -13,23 +13,13 @@ const ANTHROPIC = 'sk-ant-api03-0123456789abcdef'
 const DEEPSEEK = 'sk-deepseek-fedcba9876543210'
 
 function secretsOf(over: Partial<SecretSet> = {}): SecretSet {
-  return {
-    values: [ANTHROPIC, DEEPSEEK],
-    envNames: ['ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY'],
-    ...over,
-  }
+  return { values: [ANTHROPIC, DEEPSEEK], ...over }
 }
 
-describe('scrubEnv 的三条判据', () => {
-  test('点名的变量被剥掉', () => {
-    const out = scrubEnv({ ANTHROPIC_API_KEY: 'whatever', HOME: '/home/u' }, secretsOf())
-    expect(out.ANTHROPIC_API_KEY).toBeUndefined()
-    expect(out.HOME).toBe('/home/u')
-  })
-
+describe('scrubEnv 的两条判据', () => {
   test('值命中就剥，哪怕变量名毫无嫌疑', () => {
     // 这是最可靠的一条：用户把 key 复制进了一个叫 MY_STUFF 的变量，
-    // 名字和 envNames 都指望不上，只有按值才抓得到。
+    // 名字模式指望不上，只有按值才抓得到。
     const out = scrubEnv({ MY_STUFF: ANTHROPIC, NOTES: 'hello' }, secretsOf())
     expect(out.MY_STUFF).toBeUndefined()
     expect(out.NOTES).toBe('hello')
@@ -50,14 +40,14 @@ describe('scrubEnv 的三条判据', () => {
       SOME_CREDENTIAL: 'd',
       OPENAI_API_KEY: 'e',
     }
-    expect(Object.keys(scrubEnv(env, { values: [], envNames: [] }))).toEqual([])
+    expect(Object.keys(scrubEnv(env, { values: [] }))).toEqual([])
   })
 
   test('名字模式不能裸做子串匹配', () => {
     // KEY 命中 MONKEY_ISLAND、AUTH 命中 AUTHORS 的话，用户的命令会丢掉它要的变量，
     // 而且现场没有任何线索指向脱敏模块。
     const env = { MONKEY_ISLAND: '1', KEYBOARD_LAYOUT: 'us', AUTHORS: 'a,b', TOKENIZER: 'bpe' }
-    expect(scrubEnv(env, { values: [], envNames: [] })).toEqual(env)
+    expect(scrubEnv(env, { values: [] })).toEqual(env)
     expect(CREDENTIAL_NAME_PATTERN.test('MONKEY_ISLAND')).toBe(false)
     expect(CREDENTIAL_NAME_PATTERN.test('ANTHROPIC_API_KEY')).toBe(true)
   })
@@ -77,26 +67,23 @@ describe('短 secret 的下限保护', () => {
     // 配置写错、apiKey 是占位符时 values 里可能就是 "1"。按值匹配是 includes()，
     // "1" 能命中半个环境——症状是「所有命令都莫名其妙地挂了」，最难查。
     const env = { PATH: '/usr/bin', PORT: '1234', LANG: 'en_US.UTF-8', NOTE: 'v1' }
-    expect(scrubEnv(env, { values: ['1'], envNames: [] })).toEqual(env)
+    expect(scrubEnv(env, { values: ['1'] })).toEqual(env)
   })
 
   test('空串 secret 同样不参与 —— 它能命中任何字符串', () => {
     const env = { PATH: '/usr/bin', FOO: 'bar' }
-    expect(scrubEnv(env, { values: [''], envNames: [] })).toEqual(env)
+    expect(scrubEnv(env, { values: [''] })).toEqual(env)
   })
 
   test('恰好达到阈值的 secret 要生效 —— 保护不能宽到把真 key 放过去', () => {
     const short = 'a'.repeat(MIN_SECRET_VALUE_LENGTH - 1)
     const atLimit = 'a'.repeat(MIN_SECRET_VALUE_LENGTH)
-    expect(scrubEnv({ X: short }, { values: [short], envNames: [] })).toEqual({ X: short })
-    expect(scrubEnv({ X: atLimit }, { values: [atLimit], envNames: [] })).toEqual({})
+    expect(scrubEnv({ X: short }, { values: [short] })).toEqual({ X: short })
+    expect(scrubEnv({ X: atLimit }, { values: [atLimit] })).toEqual({})
   })
 
   test('短 secret 仍然按名字剥 —— 下限只关掉按值那条判据', () => {
-    const out = scrubEnv(
-      { MY_KEY_HOLDER: '1', DB_PASSWORD: '1' },
-      { values: ['1'], envNames: ['MY_KEY_HOLDER'] },
-    )
+    const out = scrubEnv({ MY_KEY_HOLDER: '1', DB_PASSWORD: '1' }, { values: ['1'] })
     expect(out).toEqual({})
   })
 })
@@ -120,12 +107,6 @@ describe('allow 白名单的边界', () => {
     // 而那个变量里躺着的是 DeepSeek 的 key。
     const out = scrubEnv({ GITHUB_TOKEN: DEEPSEEK }, secretsOf(), { allow: ['GITHUB_TOKEN'] })
     expect(out.GITHUB_TOKEN).toBeUndefined()
-  })
-
-  test('放行不了 envNames 点名的变量', () => {
-    // 点名是配置里最明确的一次表态，比白名单更具体。
-    const out = scrubEnv({ ANTHROPIC_API_KEY: 'x' }, secretsOf(), { allow: ['ANTHROPIC_API_KEY'] })
-    expect(out.ANTHROPIC_API_KEY).toBeUndefined()
   })
 })
 
@@ -175,7 +156,7 @@ describe('scrubEnv 的健壮性', () => {
 
   test('空 secrets 不抛，也不误剥', () => {
     const env = { FOO: 'bar', PATH: '/bin' }
-    expect(scrubEnv(env, { values: [], envNames: [] })).toEqual(env)
+    expect(scrubEnv(env, { values: [] })).toEqual(env)
   })
 
   test('空字符串值原样保留', () => {
@@ -195,7 +176,7 @@ describe('redactSecrets', () => {
     // 短的先替换会把长 secret 切成 "[REDACTED]-and-more"，尾巴照样泄露。
     const short = 'sk-live-abcdef12'
     const long = `${short}-and-more`
-    const out = redactSecrets(`token=${long} done`, { values: [short, long], envNames: [] })
+    const out = redactSecrets(`token=${long} done`, { values: [short, long] })
     expect(out).toBe(`token=${REDACTED} done`)
     expect(out).not.toContain('and-more')
   })
@@ -203,7 +184,7 @@ describe('redactSecrets', () => {
   test('secret 里的正则特殊字符按字面量处理', () => {
     // 明文里出现 . * + $ ( ) 很正常。当成正则会既漏网又误伤别的文本。
     const weird = 'a.b*c+d$e^f(g)'
-    const out = redactSecrets(`raw ${weird} and aXb*c+d$e^f(g)`, { values: [weird], envNames: [] })
+    const out = redactSecrets(`raw ${weird} and aXb*c+d$e^f(g)`, { values: [weird] })
     expect(out).toBe(`raw ${REDACTED} and aXb*c+d$e^f(g)`)
     // 未转义的正则里 "." 会把 aXb... 也吃掉，这条断言就是用来钉死这一点的。
     expect(out).toContain('aXb*c+d$e^f(g)')
@@ -211,13 +192,13 @@ describe('redactSecrets', () => {
 
   test('短 secret 不参与替换，否则输出会被打成筛子', () => {
     const text = 'exit code 1, 1 file changed'
-    expect(redactSecrets(text, { values: ['1'], envNames: [] })).toBe(text)
+    expect(redactSecrets(text, { values: ['1'] })).toBe(text)
   })
 
   test('空文本 / 空 secrets / 无命中都不抛', () => {
     expect(redactSecrets('', secretsOf())).toBe('')
-    expect(redactSecrets('hello', { values: [], envNames: [] })).toBe('hello')
-    expect(redactSecrets('hello', { values: [''], envNames: [] })).toBe('hello')
+    expect(redactSecrets('hello', { values: [] })).toBe('hello')
+    expect(redactSecrets('hello', { values: [''] })).toBe('hello')
     expect(redactSecrets('hello', secretsOf())).toBe('hello')
   })
 
@@ -253,7 +234,7 @@ describe('redactSecrets', () => {
  */
 describe('流式脱敏', () => {
   const KEY = 'sk-f16382f2a0194dfc93d55e10ff3d61a7'
-  const secrets = { values: [KEY], envNames: [] }
+  const secrets = { values: [KEY] }
 
   /** 把一段文本按给定切点切开喂进去，返回拼接后的结果。 */
   function stream(text: string, cuts: number[]): string {
@@ -306,13 +287,13 @@ describe('流式脱敏', () => {
    * 代价是普通输出会晚一点吐出来，所以这里同时钉住「一个字节都不少」。
    */
   test('没有已知 secret 也不直通，但内容一个字节不少', () => {
-    const r = createStreamRedactor({ values: [], envNames: [] })
+    const r = createStreamRedactor({ values: [] })
     const text = '立刻出来'
     expect(r.push(text) + r.flush()).toBe(text)
   })
 
   test('没有已知 secret 时照样吃掉私钥', () => {
-    const r = createStreamRedactor({ values: [], envNames: [] })
+    const r = createStreamRedactor({ values: [] })
     const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAABBBB\n-----END RSA PRIVATE KEY-----'
     expect(r.push(pem) + r.flush()).toBe(REDACTED)
   })
@@ -320,7 +301,7 @@ describe('流式脱敏', () => {
   test('多个 secret 时按最长的那个留尾巴', () => {
     const long = 'sk-verylongsecretvalue0123456789'
     const short = 'sk-shortish1'
-    const r = createStreamRedactor({ values: [short, long], envNames: [] })
+    const r = createStreamRedactor({ values: [short, long] })
     const text = `x${long}y${short}z`
     let out = ''
     for (let i = 0; i < text.length; i += 3) out += r.push(text.slice(i, i + 3))
@@ -333,13 +314,13 @@ describe('流式脱敏', () => {
  * 按形状脱敏。
  *
  * 与按明文匹配是两件互补的事：按明文只认得 `collectSecrets` 收到的东西
- * （配置里的 apiKey、apiKeyEnv 指向的环境变量），所以 `cat ~/.ssh/id_rsa`、
+ * （配置里的那几把 apiKey），所以 `cat ~/.ssh/id_rsa`、
  * `cat .env` 的输出一个字都不会被脱敏——我们不知道那些明文，结构上就抓不到。
  *
  * 形状不需要事先知道值，这正是它存在的理由。
  */
 describe('按形状脱敏', () => {
-  const bare: SecretSet = { values: [], envNames: [] }
+  const bare: SecretSet = { values: [] }
 
   test('私钥整块吃掉，不是只打包头', () => {
     const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF'

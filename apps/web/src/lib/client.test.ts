@@ -156,7 +156,12 @@ describe('指令发不出去要有回执', () => {
    */
   test('连接还没建立时发指令，回 not_ready 而不是静默吞掉', () => {
     const { c, rejected } = client()
-    c.send({ type: 'conversation.setModel', conversationId: 'cv_1' as never, model: 'm' })
+    c.send({
+      type: 'conversation.setModel',
+      conversationId: 'cv_1' as never,
+      provider: 'p',
+      model: 'm',
+    })
     expect(rejected).toHaveLength(1)
     expect(rejected[0]?.reason).toBe('not_ready')
     expect(rejected[0]?.command).toBe('conversation.setModel')

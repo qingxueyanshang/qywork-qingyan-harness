@@ -222,6 +222,8 @@ export function createConversation(
   store: Store,
   input: {
     workspaceId: WorkspaceId
+    /** 接口名。与 `model` 一对，建会话时就定死，不留给下游去猜。 */
+    provider: string
     model: string
     title?: string
     source?: Conversation['source']
@@ -233,6 +235,7 @@ export function createConversation(
     id: newConversationId(),
     workspaceId: input.workspaceId,
     title: input.title ?? '',
+    provider: input.provider,
     model: input.model,
     compactionManifest: null,
     cacheGeneration: 0,
@@ -244,13 +247,14 @@ export function createConversation(
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, model, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
       conv.workspaceId,
       conv.title,
+      conv.provider,
       conv.model,
       null,
       0,
@@ -380,23 +384,26 @@ export function touchConversation(store: Store, id: ConversationId, title?: stri
 }
 
 /**
- * 切换会话模型。
+ * 切换会话的「接口 × 模型」。
  *
  * 模型是**会话级**属性，不是全局配置项——同一个工作区里一个会话用 Opus 深度改代码、
  * 另一个用 Haiku 快速问答是常态。**这条写入路径不能没有**：少了它
  * `conversation.setModel` 就是个静默返回的空分支——切换看起来成功了，实际每一轮
  * 还在用配置文件里的模型，而界面按新模型的价目表显示费用。
  *
+ * **两列一起写。** 只写 `model` 的话，同一个模型 id 挂在两个接口下时，
+ * 这条会话归谁取决于枚举顺序，而错的表现是端点、key、价目表三样一起换掉且不报错。
+ *
  * 返回 null 表示会话不存在（客户端拿的是过期的 id）。
  */
 export function setConversationModel(
   store: Store,
   id: ConversationId,
-  model: string,
+  ref: { provider: string; model: string },
 ): Conversation | null {
   const changed = store.db
-    .query('UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?')
-    .run(model, Date.now(), id)
+    .query('UPDATE conversations SET provider = ?, model = ?, updated_at = ? WHERE id = ?')
+    .run(ref.provider, ref.model, Date.now(), id)
   if (changed.changes === 0) return null
   return getConversation(store, id)
 }
@@ -791,10 +798,7 @@ export function recoverStaleRuns(store: Store): {
         isAmbiguous ? 'internal_error' : null,
         // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
         // 完全兼容一个已经跑了几十步、恰好停在等模型回复那一刻的 run。
-        // 实测就撞上了：一条 40 步的 run 被这句话描述成从没开始过。
-        isAmbiguous
-          ? '上次进程在工具执行期间退出，本轮结果不可信'
-          : '上次进程退出，本轮中断；没有工具停在执行中，已完成的步骤结果可信',
+        isAmbiguous ? '上次进程在工具执行期间退出，结果不可信' : '上次进程退出，本轮中断',
         now,
         r.id,
       )
@@ -903,7 +907,7 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
   settle(true, {
     status: 'failure',
     executed: true,
-    message: '执行期间进程退出或被中断，结果未知；需要时请核实后再决定是否重做',
+    message: '执行期间被中断，结果未知',
   })
   settle(false, {
     status: 'failure',
@@ -1222,6 +1226,7 @@ function rowToConversation(r: Record<string, any>): Conversation {
     id: r.id,
     workspaceId: r.workspace_id,
     title: r.title,
+    provider: r.provider,
     model: r.model,
     compactionManifest: readJson(r.compaction_manifest, null),
     cacheGeneration: r.cache_generation,

@@ -18,6 +18,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
   const conv = createConversation(store, {
     workspaceId: ws.id,
+    provider: 'p',
     model: 'deepseek-v4-flash',
     title: '导出用会话',
   })

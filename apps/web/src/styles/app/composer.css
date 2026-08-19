@@ -299,6 +299,13 @@
   background: var(--bg-raised);
   box-shadow: var(--shadow-lg);
 }
+/* 接口名当分组标题。选择器里第一层是接口不是模型——凭证和端点挂在接口上，
+   「切模型」实质是「切接口 + 切模型」。 */
+.model-group-name {
+  padding: var(--s-2) var(--s-3) 4px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 .model-menu-error {
   padding: var(--s-2) var(--s-3);
   color: var(--danger);
