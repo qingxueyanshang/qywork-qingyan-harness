@@ -62,17 +62,16 @@ export function buildCommands(): Command[] {
       id: 'new',
       label: '新对话',
       slash: 'clear',
-      hint: '开一轮新的，当前这轮留在列表里',
+      hint: '当前对话留在列表里',
       icon: IconNewChat,
       run: () => void newConversation(),
     },
     {
       id: 'compact',
-      // 文案说清代价：压缩不可见地改变模型能看到的东西，
-      // 只写「压缩上下文」的话用户不知道自己按下去会发生什么。
+      // 标题带上当前占用：这个数决定按不按，藏在别处等于让用户先去查一次。
       label: state.context ? `压缩上下文（当前 ${state.context.percent}%）` : '压缩上下文',
       slash: 'compact',
-      hint: '把早期轮次折成摘要，腾出上下文；折过的原文模型就看不到了',
+      hint: '早期轮次折成摘要，原文模型看不到',
       icon: IconSpinner,
       run: compactContext,
     },
@@ -80,8 +79,8 @@ export function buildCommands(): Command[] {
       id: 'goal',
       label: '立目标',
       slash: 'goal',
-      // 边界写全（B7）：说清它会自己一轮轮跑下去，以及怎么让它停。
-      hint: '一轮接一轮做下去，直到做完或你按停止；/goal 后面写要做到什么',
+      // 边界：它会自己一轮轮跑下去。
+      hint: '一轮接一轮做下去，直到做完或你按停止',
       arg: { placeholder: '要做到什么' },
       icon: IconTarget,
       run: (objective) => setGoal(objective ?? ''),
@@ -90,7 +89,7 @@ export function buildCommands(): Command[] {
     { id: 'files', label: '文件', icon: IconFile, run: () => openPanel('files') },
     // 这四条现在是设置里的类目，命令面板直接跳到那一页——
     // 让用户「先进设置再自己找」等于把命令面板的价值抵消掉。
-    { id: 'team', label: '智能体', icon: IconUsers, run: () => openSettings('team') },
+    { id: 'team', label: 'Agent Team', icon: IconUsers, run: () => openSettings('team') },
     { id: 'schedules', label: '定时任务', icon: IconClock, run: () => openSettings('schedules') },
     { id: 'plugins', label: '插件', icon: IconPlug, run: () => openSettings('plugins') },
     { id: 'settings', label: '设置', icon: IconSettings, run: () => openSettings() },
