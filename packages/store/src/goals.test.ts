@@ -14,7 +14,12 @@ import { createConversation, upsertWorkspace } from './repos.ts'
 function fresh() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: 't' })
+  const conv = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'p',
+    model: 'm',
+    title: 't',
+  })
   return { store, conversationId: conv.id }
 }
 

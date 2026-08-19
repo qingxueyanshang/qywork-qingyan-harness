@@ -240,7 +240,7 @@ describe('外部工具按量转按需', () => {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp('fat', fatTools)
     const ws = upsertWorkspace(store, root, 'ws')
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     for (const key of over.disabled ?? []) setExtraEnabled(store, conv.id, key, false)
 
     const s = new Session({
@@ -423,7 +423,7 @@ describe('工具上下文的读记录', () => {
   test('两个 run 共用同一份，且落在账本里按会话归属', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const make = (
       s as unknown as {
         makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext

@@ -145,7 +145,7 @@ describe('移除项目', () => {
 
   test('移除项目只是从列表里拿掉，会话一条不少', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
 
     const res = await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d)
@@ -158,7 +158,7 @@ describe('移除项目', () => {
 
   test('重新添加同一路径 —— 项目和它的会话一起回来', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
 
     const again = upsertWorkspace(d.store, 'C:/ws/old', 'old')
@@ -209,8 +209,8 @@ describe('移除项目', () => {
 
   test('归档把现有会话从列表里拿掉，新建的照常显示', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(2)
 
     const res = await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
@@ -219,20 +219,24 @@ describe('移除项目', () => {
     expect(listConversations(d.store, oldId as never)).toHaveLength(0)
 
     // 归档之后新建的一条照常出现——归档的是「当时那些」，不是这个项目本身
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
   })
 
   test('归档不删数据：按 id 仍然读得回来', async () => {
     const { d, oldId } = twoWorkspaces()
-    const c = createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    const c = createConversation(d.store, {
+      workspaceId: oldId as never,
+      provider: 'p',
+      model: 'm',
+    })
     await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
     expect(getConversation(d.store, c.id)).not.toBeNull()
   })
 
   test('重复归档回 0 条 —— 「0 条」和「成功」在界面上要能分开', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
     const again = await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
     expect(await again?.json()).toEqual({ archived: 0 })
@@ -299,7 +303,7 @@ describe('移除项目', () => {
     test('给的路径已在账本里 —— 复用那一行，移除过的会话跟着回来', async () => {
       const d = deps('C:/ws/demo')
       const id = (d as unknown as { wsId: string }).wsId
-      createConversation(d.store, { workspaceId: id as never, model: 'm' })
+      createConversation(d.store, { workspaceId: id as never, provider: 'p', model: 'm' })
       upsertWorkspace(d.store, 'C:/ws/other', 'other') // 留一个，不然移除会被 409 挡住
       expect((await call(`/api/workspaces/${id}`, { method: 'DELETE' }, d))?.status).toBe(200)
       expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(id)
@@ -318,7 +322,7 @@ describe('移除项目', () => {
 
   test('列表里的会话数与列表口径一致 —— 归档后一起归零', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     const list = async () =>
       (
         (await (await call('/api/workspaces', undefined, d))?.json()) as {
@@ -361,8 +365,8 @@ describe('移除项目', () => {
 
   test('列表带上会话数 —— 界面要能在删之前说出代价', async () => {
     const { d, oldId } = twoWorkspaces()
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
-    createConversation(d.store, { workspaceId: oldId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
+    createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     const res = await call('/api/workspaces', undefined, d)
     const { workspaces } = (await res?.json()) as {
       workspaces: { id: string; conversations: number }[]
@@ -381,9 +385,12 @@ describe('出参形状', () => {
 /**
  * 模型目录端点（`api/conversations.ts` 的 `/api/models` 分支）。
  *
- * 它现在同时喂两处界面：输入区的模型选择器，和设置里「从内置库选」那个下拉。
- * 后者要靠 `vendors` 才能把端点和环境变量名填出来——`provider` 是**协议**，
- * 协议里没有端点，所以少了厂商这一维，「选个模型就配好」根本无从做起。
+ * 它同时喂两处界面，而两处要的东西不一样：
+ * - 输入区的选择器要 `providers` —— **配置里真有的接口 × 模型**，第一层是接口。
+ * - 设置页要 `library` —— 内置库，用来决定「加哪个模型」。
+ *
+ * 两者不能合成一个扁平表：合了就等于把「世上有哪些模型」当成「我能选哪些」，
+ * 而选中一个没挂在任何接口下的模型，请求会按当前接口发出去。
  */
 describe('模型目录', () => {
   /** 一个接口一个模型就够了：这一组测的是「协议怎么算」，不是接口表怎么组。 */
@@ -396,15 +403,51 @@ describe('模型目录', () => {
     return d
   }
 
-  const models = async (d: ApiDeps) =>
-    ((await (await call('/api/models', undefined, d))!.json()) as any).models
+  const body = async (d: ApiDeps) =>
+    (await (await call('/api/models', undefined, d))!.json()) as any
+  /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
+  const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p: any) => p.models)
 
-  test('内置模型带厂商，未收录的是 null', async () => {
-    const d = withConfig('openai_compatible', '中转站上的某个模型')
+  /**
+   * **只列配置里有的**。
+   *
+   * 并入内置目录那版列的是「世上有哪些模型」：用户选一个没挂在任何接口下的，
+   * 请求按当前接口发出去，端点、key、价目表全是另一家的，而且不报错。
+   */
+  test('只列接口下挂着的模型，不并入内置目录', async () => {
+    const list = await models(withConfig('openai_compatible', 'deepseek-v4-flash'))
+    expect(list.map((m: any) => m.id)).toEqual(['deepseek-v4-flash'])
+  })
+
+  /** 第一层是接口。名字是用户起的，界面按它分组——没有它就没法切接口。 */
+  test('按接口分组，接口名原样带出', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: '官方', model: 'deepseek-v4-flash' },
+      providers: {
+        官方: { kind: 'openai_compatible', models: { 'deepseek-v4-flash': {} } },
+        中转站: { kind: 'openai_compatible', models: { 'deepseek-v4-flash': {} } },
+      },
+    }
+    const b = await body(d)
+    expect(b.providers.map((p: any) => p.name)).toEqual(['官方', '中转站'])
+    // 同一个模型 id 挂在两个接口下是常态，两条都要在，各归各的组。
+    expect(b.providers.every((p: any) => p.models[0].id === 'deepseek-v4-flash')).toBe(true)
+    expect(b.active).toEqual({ provider: '官方', model: 'deepseek-v4-flash' })
+  })
+
+  test('内置目录里有的用显示名，没有的用 id 本身', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'p', model: 'claude-opus-5' },
+      providers: {
+        p: { kind: 'anthropic', models: { 'claude-opus-5': {}, 中转站上的某个模型: {} } },
+      },
+    }
     const list = await models(d)
-    expect(list.find((m: any) => m.id === 'claude-opus-5').vendor).toBe('anthropic')
-    expect(list.find((m: any) => m.id === 'deepseek-v4-flash').vendor).toBe('deepseek')
-    expect(list.find((m: any) => m.id === '中转站上的某个模型').vendor).toBeNull()
+    expect(list.find((m: any) => m.id === 'claude-opus-5').label).toBe('Claude Opus 5')
+    expect(list.find((m: any) => m.id === '中转站上的某个模型').label).toBe('中转站上的某个模型')
+    expect(list.find((m: any) => m.id === '中转站上的某个模型').known).toBe(false)
   })
 
   /**
@@ -412,14 +455,20 @@ describe('模型目录', () => {
    * budget_tokens，没有 effort 档；报成五档就是一个选了没反应的控件。
    */
   test('effortLevels 照实报，没有档位的就是空数组', async () => {
-    const list = await models(withConfig('anthropic', 'claude-opus-5'))
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'p', model: 'claude-opus-5' },
+      providers: {
+        p: { kind: 'anthropic', models: { 'claude-opus-5': {}, 'claude-haiku-4-5': {} } },
+      },
+    }
+    const list = await models(d)
     expect(list.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBeGreaterThan(0)
     expect(list.find((m: any) => m.id === 'claude-haiku-4-5').effortLevels).toEqual([])
-    expect(list.find((m: any) => m.id === 'qwen3.7-max').effortLevels).toEqual([])
   })
 
   /**
-   * **档位按这个模型实际会走的协议算。**
+   * **档位按这个接口的协议算。**
    *
    * 复现的是一个只在某些配置下才犯的形状：接口是「以 OpenAI 兼容协议经中转站调
    * Claude」，目录里 claude-opus-5 的原生条目声明五档 effort，但兼容协议根本不发
@@ -430,9 +479,7 @@ describe('模型目录', () => {
     expect(native.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBe(5)
 
     const relay = await models(withConfig('openai_compatible', 'claude-opus-5'))
-    const row = relay.find((m: any) => m.id === 'claude-opus-5')
-    expect(row.provider).toBe('openai_compatible')
-    expect(row.effortLevels).toEqual([])
+    expect(relay.find((m: any) => m.id === 'claude-opus-5').effortLevels).toEqual([])
   })
 
   /** DeepSeek 两条协议的档位不一样，报的必须是接口实际用的那条。 */
@@ -531,15 +578,12 @@ describe('模型目录', () => {
     expect(flash.effortLevels).toEqual(['high', 'max'])
     // 同接口的另一个模型没选过就是 null，不跟着变。
     expect(list.find((m: any) => m.id === 'deepseek-v4-pro').effort).toBeNull()
-    // 没在配置里声明过的内置模型同样是 null。
-    expect(list.find((m: any) => m.id === 'claude-opus-5').effort).toBeNull()
   })
 
-  /** 内置目录不能被改小：少一家厂商，界面上那一整组模型就没了。 */
+  /** 内置库不能被改小：少一家厂商，设置页上那一整组模型就没了。 */
   test('内置库覆盖九家厂商', async () => {
-    const d = withConfig('anthropic', 'claude-opus-5')
-    const body = (await (await call('/api/models', undefined, d))!.json()) as any
-    expect(body.vendors.map((v: any) => v.id).sort()).toEqual([
+    const b = await body(withConfig('anthropic', 'claude-opus-5'))
+    expect(b.library.map((v: any) => v.id).sort()).toEqual([
       'alibaba',
       'anthropic',
       'deepseek',
@@ -550,8 +594,9 @@ describe('模型目录', () => {
       'xai',
       'zhipu',
     ])
-    for (const id of ['gpt-5.6-sol', 'gemini-3.1-pro', 'grok-4.5', 'kimi-k3', 'glm-5.2']) {
-      expect(body.models.some((m: any) => m.id === id)).toBe(true)
+    const all = b.library.flatMap((v: any) => v.models)
+    for (const id of ['gpt-5.6-sol', 'gemini-3.1-pro-preview', 'grok-4.6', 'kimi-k3', 'glm-5.2']) {
+      expect(all.some((m: any) => m.id === id)).toBe(true)
     }
   })
 
@@ -559,12 +604,30 @@ describe('模型目录', () => {
    * 人民币标价的三家要带出币种。少了它，¥6 会被当成 $6 显示，差七倍——
    * 而这个错误在界面上完全看不出来，它只是一个数字。
    */
-  test('人民币标价的模型带币种', async () => {
-    const d = withConfig('anthropic', 'claude-opus-5')
-    const body = (await (await call('/api/models', undefined, d))!.json()) as any
-    expect(body.models.find((m: any) => m.id === 'qwen3.7-max').currency).toBe('CNY')
-    expect(body.models.find((m: any) => m.id === 'kimi-k3').currency).toBe('CNY')
-    expect(body.models.find((m: any) => m.id === 'gpt-5.6-sol').currency).toBe('USD')
+  test('内置库带单价与币种', async () => {
+    const all = (await body(withConfig('anthropic', 'claude-opus-5'))).library.flatMap(
+      (v: any) => v.models,
+    )
+    expect(all.find((m: any) => m.id === 'qwen3.7-max').currency).toBe('CNY')
+    expect(all.find((m: any) => m.id === 'kimi-k3').currency).toBe('CNY')
+    const sol = all.find((m: any) => m.id === 'gpt-5.6-sol')
+    expect(sol.currency).toBe('USD')
+    expect(sol.input).toBe(5)
+    expect(sol.output).toBe(30)
+  })
+
+  /**
+   * **同一个模型在库里只出现一次。**
+   *
+   * 目录里同 id 多条是给 `lookupModel` 按协议查能力用的（DeepSeek 有兼容和
+   * Responses 两条）。协议是接口的属性，摆进模型列表就是让用户在两条看起来
+   * 一样的模型之间选，而他手里没有判据。
+   */
+  test('内置库里同一个 id 只出一条', async () => {
+    const ds = (await body(withConfig('anthropic', 'claude-opus-5'))).library.find(
+      (v: any) => v.id === 'deepseek',
+    )
+    expect(ds.models.map((m: any) => m.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
   })
 
   test('未收录的模型不假装支持 effort', async () => {
@@ -572,24 +635,59 @@ describe('模型目录', () => {
     expect(list.find((m: any) => m.id === '自建的').effortLevels).toEqual([])
   })
 
-  /** 厂商表要带出端点与环境变量名，否则设置页只能继续让用户手填。 */
-  test('厂商表带默认端点与环境变量名', async () => {
-    const d = withConfig('anthropic', 'claude-opus-5')
-    const body = (await (await call('/api/models', undefined, d))!.json()) as any
-    const ds = body.vendors.find((v: any) => v.id === 'deepseek')
-    expect(ds.defaultBaseUrl).toBe('https://api.deepseek.com/v1')
-    expect(ds.apiKeyEnv).toBe('DEEPSEEK_API_KEY')
-    expect(ds.defaultKind).toBe('openai_compatible')
-    // Anthropic 走 SDK 自带默认，不编一个端点出来。
-    expect(body.vendors.find((v: any) => v.id === 'anthropic').defaultBaseUrl).toBeUndefined()
+  /**
+   * **库里不带任何接口字段。**
+   *
+   * 端点和协议是接口的属性。摆进模型库，「改一条模型参数」就会顺带改掉端点，
+   * 而那是另一件事——上一版正是这么把「加个模型」变成「别的模型突然连不上」的。
+   */
+  test('库里没有端点、协议这类接口字段', async () => {
+    const b = await body(withConfig('anthropic', 'claude-opus-5'))
+    const ds = b.library.find((v: any) => v.id === 'deepseek')
+    expect(ds.defaultBaseUrl).toBeUndefined()
+    expect(ds.defaultKind).toBeUndefined()
+    expect(Object.keys(ds).sort()).toEqual(['displayName', 'id', 'models'])
   })
 
-  test('每个内置厂商都至少有一个模型能挂上去', async () => {
+  /** 改过的条目要标出来，否则界面没法判断这一条能不能还原、还原成什么。 */
+  test('改过的条目标 user，没改过的标 seed', async () => {
     const d = withConfig('anthropic', 'claude-opus-5')
-    const body = (await (await call('/api/models', undefined, d))!.json()) as any
-    for (const v of body.vendors) {
-      expect(body.models.some((m: any) => m.vendor === v.id)).toBe(true)
+    ;(d.config as { catalog?: unknown }).catalog = { 'claude-opus-5': { input: 99, output: 199 } }
+    const all = (await body(d)).library.flatMap((v: any) => v.models)
+    const opus = all.find((m: any) => m.id === 'claude-opus-5')
+    expect(opus.source).toBe('user')
+    expect(opus.input).toBe(99)
+    expect(all.find((m: any) => m.id === 'claude-sonnet-5').source).toBe('seed')
+  })
+
+  /**
+   * 目录里没有的模型，用户自己加一条参数之后要出现在库里。
+   *
+   * 不出现的话，「未收录模型计价按 0 算、用量报 $0」就仍然没有出口——
+   * 而那正是加这一层的理由。
+   */
+  test('用户自己加的模型进库，按 vendor 归组', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    ;(d.config as { catalog?: unknown }).catalog = {
+      中转站上的某个模型: { vendor: 'deepseek', input: 1, output: 2, contextWindow: 65_536 },
     }
+    const ds = (await body(d)).library.find((v: any) => v.id === 'deepseek')
+    const row = ds.models.find((m: any) => m.id === '中转站上的某个模型')
+    expect(row.source).toBe('user')
+    expect(row.contextWindow).toBe(65_536)
+  })
+
+  /** 没写 vendor 的归到「自定义」，不静默丢掉。 */
+  test('没挂厂商的落到自定义那一组', async () => {
+    const d = withConfig('anthropic', 'claude-opus-5')
+    ;(d.config as { catalog?: unknown }).catalog = { 自建的: { input: 1, output: 2 } }
+    const custom = (await body(d)).library.find((v: any) => v.displayName === '自定义')
+    expect(custom.models.map((m: any) => m.id)).toEqual(['自建的'])
+  })
+
+  test('每个厂商都至少有一个模型', async () => {
+    const b = await body(withConfig('anthropic', 'claude-opus-5'))
+    for (const v of b.library) expect(v.models.length).toBeGreaterThan(0)
   })
 })
 
@@ -764,7 +862,7 @@ describe('工具清单', () => {
  */
 describe('会话的重命名 / 归档 / 删除', () => {
   const conv = (d: ApiDeps & { wsId: string }) =>
-    createConversation(d.store, { workspaceId: d.wsId as never, model: 'm' })
+    createConversation(d.store, { workspaceId: d.wsId as never, provider: 'p', model: 'm' })
 
   test('PATCH 改标题，回的是改完那一行', async () => {
     const d = deps()

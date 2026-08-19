@@ -25,13 +25,7 @@ import type {
   RunId,
   StopReason,
 } from '@qywork/core'
-import {
-  configPath,
-  RuntimeCompaction,
-  resolveApiKey,
-  resolveModel,
-  Session,
-} from '@qywork/runtime'
+import { configPath, RuntimeCompaction, resolveModel, Session } from '@qywork/runtime'
 import {
   createGoal,
   currentGoal,
@@ -296,9 +290,9 @@ const CONTINUABLE: StopReason[] = ['completed', 'max_steps']
  */
 const STOP_NOTE: Record<string, string> = {
   provider_error: '上一轮出错停了',
-  permission_denied: '上一轮有动作被权限规则挡下了，需要你决定要不要放行',
-  no_progress: '上一轮在原地打转：同样的调用、同样的结果',
-  output_truncated: '上一轮的输出被截断了',
+  permission_denied: '上一轮有动作被权限挡下',
+  no_progress: '上一轮在原地打转',
+  output_truncated: '上一轮输出被截断',
 }
 
 /**
@@ -620,11 +614,12 @@ export function makeServerSummarizer(
   return async (prompt, budgetChars) => {
     const adapter = buildAdapter({
       kind: stored.kind,
-      apiKey: resolveApiKey(stored),
+      apiKey: stored.apiKey ?? '',
       model: stored.model,
       ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
       ...(stored.headers ? { headers: stored.headers } : {}),
       ...(stored.capabilities ? { capabilities: stored.capabilities } : {}),
+      ...(stored.spec ? { spec: stored.spec } : {}),
     })
     let text = ''
     /*

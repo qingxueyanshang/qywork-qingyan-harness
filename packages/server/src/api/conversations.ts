@@ -1,9 +1,16 @@
 /** 模型目录、会话、消息、run。前端进来第一屏要的全在这。 */
 
 import type { ModelSpec, ProviderProfile } from '@qywork/ai'
-import { builtinCatalog, effortIsTransmittable, lookupModel, VENDORS } from '@qywork/ai'
+import {
+  applySpecOverride,
+  builtinCatalog,
+  effortIsTransmittable,
+  lookupModel,
+  unknownModel,
+  VENDORS,
+} from '@qywork/ai'
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
-import { contextPanel, resolveModel } from '@qywork/runtime'
+import { contextPanel, resolveModel, type StoredCatalogEntry } from '@qywork/runtime'
 import {
   archiveConversation,
   createConversation,
@@ -18,11 +25,12 @@ import {
 } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
+/** 一个接口下挂着的一个模型。**只列配置里真有的**——没配的选了也发不出去。 */
 interface ModelRow {
   id: string
+  /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
-  provider: string
-  vendor: string | null
+  /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示开关。 */
   effortLevels: EffortLevel[]
   /**
    * 用户为这个模型选定的档。`null` = 没选过，不发思考字段。
@@ -35,18 +43,65 @@ interface ModelRow {
   effort: EffortLevel | null
   /** 计价币种。缺省是 USD，阿里 / 月之暗面 / 智谱三家官网按人民币标价。 */
   currency: 'USD' | 'CNY'
+  /** false = 内置目录里没有，计价与能力都只能按保守值算。 */
   known: boolean
+}
+
+/** 一个接口。名字是用户自己起的，界面上就按它分组。 */
+interface ProviderRow {
+  name: string
+  models: ModelRow[]
+}
+
+/**
+ * 模型库里的一条 = **一个模型的参数**。
+ *
+ * 它和接口是两件事，库里一个接口字段都没有：库回答「这个模型多大、多贵、
+ * 吃哪几档思考」，接口回答「用谁的端点和哪把 key」。两者唯一的接点是接口下
+ * 那一行模型 id——参数照着 id 从库里查（`lookupModel` + `applySpecOverride`）。
+ *
+ * `source` 分两种，与「改过没有」一一对应：`seed` 是源码里的内置值，
+ * `user` 是用户在库里改过或自己加的。分开报是为了让「还原成内置值」有依据——
+ * 不报的话，界面没法判断这一条能不能还原、还原成什么。
+ */
+interface LibraryModel {
+  id: string
+  label: string
+  contextWindow: number
+  maxOutputTokens: number
+  input: number
+  output: number
+  currency: 'USD' | 'CNY'
+  effortLevels: EffortLevel[]
+  source: 'seed' | 'user'
+  /**
+   * 这条价目的偏离说明：分时段折扣、长上下文换档。**没有偏离就不带这个键。**
+   *
+   * 一个数组而不是几个并列的可选字符串：界面对它们的处置完全一样（原样列出来），
+   * 分成几个键只会让渲染那边多一段拼接，而且下一种偏离又要再加一个键。
+   *
+   * **上面那几个价是厂商公布的标准价**，界面必须把这些一起显示出来——
+   * 只画一个数字的话，用户对着账单会发现「怎么和这里写的不一样」，而差价是两倍。
+   * 这属于能力边界，不许折叠也不许降对比度（CLAUDE.md B7）。
+   */
+  priceNotes?: string[]
+}
+
+interface LibraryVendor {
+  id: string
+  displayName: string
+  models: LibraryModel[]
 }
 
 /**
  * 把 `qy probe --save` 实测出来的能力叠到目录条目上。
  *
- * **与 `buildAdapter` 是同一件事**（`ai/src/factory.ts:68-78`），必须同一个口径：
+ * **与 `buildAdapter` 是同一件事**（`ai/src/factory.ts`），必须同一个口径：
  * 那边决定请求里真的发哪几档，这里决定界面上能选哪几档。这里不叠的话，
  * **校准过的档位决定得了发出去的请求，却决定不了界面上的选项**——探测器写回的
  * capabilities 有生产者没消费者，用户探完一看界面纹丝不动。
  *
- * 顺序与那边一致：目录是猜的，探测是实测的，越往后越权威。
+ * 顺序与那边一致：目录 seed → 库里改过的参数 → 探测，越往后越权威。
  */
 function withProbed(
   spec: ModelSpec,
@@ -62,76 +117,114 @@ function withProbed(
   }
 }
 
+/**
+ * 模型库：**参数表**，按厂商分组。
+ *
+ * 三条口径：
+ *
+ * - **同一个 id 只出一条。** 目录里同 id 多条是给 `lookupModel` 按协议查能力用的
+ *   （DeepSeek 有兼容和 Responses 两条）。协议是接口的属性，摆进参数表就是让
+ *   用户在两条看起来一样的模型之间选，而他手里没有判据。
+ * - **用户加的模型也在表里**，按它的 `vendor` 归组；没写 vendor 的归到「自定义」。
+ *   不列的话，「未收录模型计价按 0 算、账本报 $0」就仍然没有出口。
+ * - **档位按厂商默认协议算。** 这一条还没挂到任何接口上，真正能调哪几档由
+ *   接口那侧说了算。
+ */
+function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVendor[] {
+  const rows = new Map<string, { spec: ModelSpec; source: 'seed' | 'user' }>()
+  for (const m of builtinCatalog()) {
+    if (rows.has(m.id)) continue
+    const o = overrides[m.id]
+    rows.set(m.id, { spec: applySpecOverride(m, o), source: o ? 'user' : 'seed' })
+  }
+  // 目录里没有的（用户自己加的一条）补进来：`unknownModel` 给一组保守默认值，
+  // 覆盖里写了什么就显示什么。
+  for (const [id, o] of Object.entries(overrides)) {
+    if (rows.has(id)) continue
+    rows.set(id, {
+      spec: applySpecOverride(unknownModel(id, 'openai_compatible'), o),
+      source: 'user',
+    })
+  }
+
+  const groups = new Map<string, LibraryVendor>()
+  for (const v of VENDORS) groups.set(v.id, { id: v.id, displayName: v.displayName, models: [] })
+  // 「自定义」不是一家厂商，是「没挂到任何一家名下」的那些。放最后。
+  const custom: LibraryVendor = { id: '', displayName: '自定义', models: [] }
+
+  for (const { spec, source } of rows.values()) {
+    const notes = [spec.offPeak?.note, spec.longContext?.note].filter((n) => n !== undefined)
+    const row: LibraryModel = {
+      id: spec.id,
+      label: spec.displayName,
+      contextWindow: spec.contextWindow,
+      maxOutputTokens: spec.maxOutputTokens,
+      input: spec.pricing.input,
+      output: spec.pricing.output,
+      currency: spec.pricing.currency ?? 'USD',
+      effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
+      source,
+      ...(notes.length ? { priceNotes: notes } : {}),
+    }
+    const group = (spec.vendor && groups.get(spec.vendor)) || custom
+    group.models.push(row)
+  }
+
+  return [...groups.values(), custom].filter((v) => v.models.length > 0)
+}
+
 export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
   if (p === '/api/models') {
-    // 可选模型 = 内置目录 ∪ 用户档案里声明的模型。
-    // 并集是必须的：用户接自建端点或中转时，模型 id 内置目录里根本没有，
-    // 只列内置的会让「切模型」在最需要它的场景下没有选项。
-    const seen = new Set<string>()
-    const models: ModelRow[] = []
-    for (const spec of builtinCatalog()) {
-      if (seen.has(spec.id)) continue
-      seen.add(spec.id)
-      // **按这个模型实际会走哪条协议查目录，不是按目录里那条的原生协议。**
-      //
-      // 同一个模型在两条协议下的思考控制面是两套（DeepSeek 就是活例子）。
-      // 用原生那条报出去，经中转站以兼容协议调 Claude 的用户会看到五档
-      // 思考强度，而那条协议根本不发 Anthropic 的思考字段——又一个
-      // 选了没反应的控件，且只在某些配置下才犯，最难被当成 bug 报出来。
-      const stored = resolveModel(d.config, spec.id)
-      const actual = withProbed(lookupModel(spec.id, stored?.kind ?? spec.provider), stored)
-      models.push({
-        id: spec.id,
-        label: spec.displayName,
-        provider: actual.provider,
-        vendor: spec.vendor,
-        // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上
-        // 调不了思考，显示出来就是一个选了没反应的控件。
-        effortLevels: effortIsTransmittable(actual) ? actual.effortLevels : [],
-        effort: stored?.effort ?? null,
-        currency: spec.pricing.currency ?? 'USD',
-        known: true,
-      })
-    }
-    for (const [name, provider] of Object.entries(d.config.providers)) {
-      for (const id of Object.keys(provider.models)) {
-        if (seen.has(id)) continue
-        seen.add(id)
-        const actual = withProbed(lookupModel(id, provider.kind), {
-          capabilities: provider.models[id]?.capabilities,
-        })
-        models.push({
+    /*
+     * 可选模型 = **用户配置里的接口 × 它挂着的模型**，模型库不并进来。
+     *
+     * 并集那版列的是「世上有哪些模型」，而用户要选的是「我配好的哪一个」——
+     * 选一个没挂在任何接口下的模型，请求会按当前接口发出去，端点、key、价目表
+     * 全是另一家的，且不报错。接口这一层不出现在选择器里，配了三个接口也没法切。
+     */
+    const overrides = d.config.catalog ?? {}
+    const providers: ProviderRow[] = Object.entries(d.config.providers).map(([name, provider]) => ({
+      name,
+      models: Object.keys(provider.models).map((id) => {
+        const declared = provider.models[id]
+        const spec = withProbed(
+          applySpecOverride(lookupModel(id, provider.kind), overrides[id]),
+          declared,
+        )
+        return {
           id,
-          label: `${id}（${name}）`,
-          provider: provider.kind,
-          vendor: null,
-          // 未收录的模型目录里查不到档位，**但探过就算数**：`qy probe --save`
-          // 写回的 capabilities 是实测事实，比「按 unknownModel() 给空」准。
-          // 写死 `[]` 的话，自建端点探完了界面上照样没有档位可选。
-          effortLevels: effortIsTransmittable(actual) ? actual.effortLevels : [],
-          effort: provider.models[id]?.effort ?? null,
-          // 未收录的计价本来就是 0，币种给 USD 只是占位——前端按「未知计价」显示。
-          currency: 'USD',
-          known: false,
-        })
-      }
-    }
-    return json({
-      models,
-      // 厂商表给设置页填表用：选了厂商就能带出协议、端点、key 的环境变量名。
-      vendors: VENDORS,
-      active: d.config.active.model,
-    })
+          label: spec.catalogued === false ? id : spec.displayName,
+          // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上
+          // 调不了思考，显示出来就是一个选了没反应的控件。
+          effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
+          effort: declared?.effort ?? null,
+          currency: spec.pricing.currency ?? 'USD',
+          known: spec.catalogued !== false,
+        }
+      }),
+    }))
+    return json({ providers, active: d.config.active, library: buildLibrary(overrides) })
   }
 
   if (p === '/api/conversations') {
     if (req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { title?: string; model?: string }
+      const body = (await req.json().catch(() => ({}))) as {
+        title?: string
+        provider?: string
+        model?: string
+      }
+      // 接口和模型是一对：给了模型没给接口就退回整对默认值，
+      // 而不是把新模型挂到默认接口下——那个组合用户从没配过。
+      const ref =
+        body.provider && body.model
+          ? { provider: body.provider, model: body.model }
+          : d.config.active
       const conv = createConversation(d.store, {
         workspaceId: d.workspaceId as never,
-        model: body.model ?? d.config.active.model,
+        provider: ref.provider,
+        model: ref.model,
         ...(body.title ? { title: body.title } : {}),
       })
       return json({ conversation: conv })
@@ -175,6 +268,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         {
           type: 'conversation.updated',
           conversationId: conv.id,
+          provider: conv.provider,
           model: conv.model,
           title: conv.title,
           updatedAt: conv.updatedAt,
@@ -215,9 +309,12 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     const id = ctxMatch[1] as ConversationId
     const conv = getConversation(d.store, id)
     if (!conv) return json({ error: 'conversation not found' }, 404)
-    // 窗口按**这条会话的模型**解析。`active.provider` 是接口名不是协议名，
+    // 窗口按**这条会话的接口 × 模型**解析。`active.provider` 是接口名不是协议名，
     // 拿它当 kind 会让中转站上的 claude 走错目录条目。
-    const stored = resolveModel(d.config, conv.model)
+    const stored = resolveModel(
+      d.config,
+      conv.provider ? { provider: conv.provider, model: conv.model } : conv.model,
+    )
     const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
     const spec = lookupModel(conv.model, kind ?? 'openai_compatible')
     return json({ context: contextPanel(d.store, id, spec.contextWindow) })

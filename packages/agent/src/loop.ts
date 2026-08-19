@@ -444,6 +444,15 @@ export class AgentLoop {
         : { tokens: fallback, source: 'estimated' }
 
     let stopReason: StopReason = 'completed'
+    /**
+     * 本 run 是否已经压过一次。
+     *
+     * 压缩投影只作用于 `input.history`，而 history 在一个 run 内不变——涨的是
+     * `transcript`，那部分压缩碰不到。所以第一次的结论对后面每一步都成立：
+     * 压不动就是压不动。不加这个闸，占用一旦越过软阈值，**每一步**都会再触发
+     * 一次压缩：一次模型调用、一条会话流提示，而占用一个 token 都不会少。
+     */
+    let compacted = false
     /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
     const progress: ProgressEvidence[] = []
     let turnIndex = 0
@@ -498,9 +507,10 @@ export class AgentLoop {
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
         let req = this.buildRequest(input, transcript)
 
-        if (this.deps.compaction) {
+        if (this.deps.compaction && !compacted) {
           const occupancy = anchor ? meter(0).tokens : estimateRequest(req)
           if (occupancy > softLimit(adapter.spec)) {
+            compacted = true
             process.stderr.write(
               `[qy] 发送前检查触发压缩：占用约 ${occupancy}，软阈值 ${softLimit(adapter.spec)}
 `,
@@ -668,6 +678,7 @@ export class AgentLoop {
                   break
               }
             }
+
             break
           } catch (err) {
             const pe = err instanceof ProviderError ? err : null

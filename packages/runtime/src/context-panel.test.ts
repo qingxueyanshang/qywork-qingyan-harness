@@ -34,7 +34,7 @@ const sum = (b: Record<string, number>) => Object.values(b).reduce((n, v) => n +
 function fixture() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+  const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,

@@ -1,11 +1,14 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import {
+  type CatalogEntry,
   loadModels,
   type ProbeResult,
   probeModel,
   type RedactedConfig,
   type RedactedProvider,
 } from '../../lib/store/index.ts'
+import { ConfirmDialog } from '../ConfirmDialog.tsx'
 import { IconX } from '../Icons.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
@@ -17,6 +20,7 @@ import {
   replaceConfig,
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
+import { ModelLibrary } from './ModelLibrary.tsx'
 import { Field, Row } from './Row.tsx'
 
 const PROVIDER_KINDS = ['anthropic', 'openai_compatible', 'openai_responses'] as const
@@ -29,6 +33,12 @@ const PROVIDER_KINDS = ['anthropic', 'openai_compatible', 'openai_responses'] as
  * 扁平档案（一条档案一个模型）的话，同一家的三个模型要把同一把 key 和同一个
  * baseUrl 各抄三份。改一次端点得改三处，漏一处的表现是「有的模型好使有的不好使」，
  * 而界面上三条卡片长得一模一样，看不出哪条漏了。
+ *
+ * ## 协议只在这一页选
+ *
+ * 协议（`kind`）是**接口**的属性：同一个模型经中转站以 OpenAI 协议调 Claude 是
+ * 常见配置。所以模型列表里一个协议字样都不出现——摆进去就是让用户在两条
+ * 「看起来一样的模型」之间选，而他手里没有判据。
  *
  * ## 明文 key 不回传
  *
@@ -48,6 +58,13 @@ export function ModelSettings() {
 
   /** 正在编辑哪个接口。null = 跟随 active。 */
   const [picked, setPicked] = createSignal<string | null>(null)
+  /**
+   * 模型库和接口**共用下面那一整块内容区**，由上面那排 tab 切换。
+   *
+   * 不做成左右两栏：一分栏，接口那侧的 Base URL、Key、模型列表全被挤成一条缝。
+   * 而这两块本来也不需要同时看——配接口时看接口，查参数时看库。
+   */
+  const [showLibrary, setShowLibrary] = createSignal(false)
   /** 每个模型最近一次探测的结果，键是模型 id。**不落盘**——它描述的是「刚才那一下」。 */
   const [probes, setProbes] = createSignal<Record<string, ProbeResult | { error: string }>>({})
   const [probing, setProbing] = createSignal<string | null>(null)
@@ -83,17 +100,30 @@ export function ModelSettings() {
     })
   }
 
-  const removeProvider = (name: string) => {
+  /**
+   * 写一条模型参数，或删掉一条覆盖还原成内置值。
+   *
+   * 落在 `config.catalog`，键是模型 id——**不落在接口下**。窗口和价格是模型的
+   * 属性，换个中转站不会变；落到接口下就得每个接口各存一份，改一处漏三处。
+   */
+  const saveCatalog = (id: string, entry: CatalogEntry | null) => {
     const base = config()
     if (!base) return
-    // **删掉即不可恢复**：明文 key 从不回传前端，界面上没有任何一条路能把它拿回来。
-    // 即时生效之后误点会立刻落盘，所以这道确认不是可选的。
-    const warn = base.providers[name]?.hasApiKey
-      ? `
+    const { [id]: _drop, ...rest } = base.catalog ?? {}
+    void replaceConfig({
+      ...base,
+      catalog: entry ? { ...rest, [id]: entry } : rest,
+    })
+  }
 
-它的 API Key 会一并删除，且无法找回。`
-      : ''
-    if (!confirm(`删除接口「${name}」？${warn}`)) return
+  // **删掉即不可恢复**：明文 key 从不回传前端，界面上没有任何一条路能把它拿回来。
+  // 即时生效之后误点会立刻落盘，所以这道确认不是可选的。
+  const [doomed, setDoomed] = createSignal<string | null>(null)
+
+  const removeProvider = (name: string) => {
+    const base = config()
+    setDoomed(null)
+    if (!base) return
     const { [name]: _drop, ...rest } = base.providers
     setPicked(null)
     // 删掉的正好是当前接口时要顺手改 active，否则保存会被服务端顶回来，
@@ -117,6 +147,12 @@ export function ModelSettings() {
     })
   }
 
+  /**
+   * 往这个接口下挂一个模型。**只写模型 id。**
+   *
+   * 参数不在这里写——它们照着 id 从模型库查（`lookupModel` + 库里的覆盖）。
+   * 在这里再存一份窗口和价格，就是同一件事记两本账。
+   */
   const addModel = (provider: string, id: string) => {
     const base = config()
     const p = base?.providers[provider]
@@ -139,7 +175,7 @@ export function ModelSettings() {
       ...base,
       providers: { ...base.providers, [provider]: { ...p, models } },
     }
-    // 删掉的正好是当前生效的那一格，就近换一个，别留一个指向空处的 active。
+    // 删掉的正好是默认那一格，就近换一个，别留一个指向空处的 active。
     if (base.active.provider === provider && base.active.model === id) {
       const fallback = Object.keys(models)[0]
       next.active = fallback
@@ -147,38 +183,6 @@ export function ModelSettings() {
         : (firstModelRef(next.providers) ?? base.active)
     }
     void replaceConfig(next)
-  }
-
-  /**
-   * 从内置库挑一个模型，把这个接口的协议和端点一次填好。
-   *
-   * **它只是填表，不是第二套状态。** 落盘的仍然是 kind / baseUrl / apiKeyEnv
-   * 那几个字段，每一格照常可改——中转站以 OpenAI 协议调 Claude 是常见配置，
-   * 锁死协议会把这条路堵掉。存一个 `vendor` 才是第二本账：用户改了端点之后
-   * 它还写着原厂，两边立刻开始漂移。
-   *
-   * key 一个字都不碰：换模型不该把已经配好的凭证洗掉。
-   */
-  const applyCatalogModel = (provider: string, modelId: string) => {
-    const base = config()
-    const p = base?.providers[provider]
-    const model = catalog()?.models.find((m) => m.id === modelId)
-    if (!base || !p || !model) return
-    const vendor = catalog()?.vendors.find((v) => v.id === model.vendor)
-    void replaceConfig({
-      ...base,
-      providers: {
-        ...base.providers,
-        [provider]: {
-          ...p,
-          kind: model.provider,
-          ...(vendor?.defaultBaseUrl ? { baseUrl: vendor.defaultBaseUrl } : {}),
-          ...(vendor?.apiKeyEnv ? { apiKeyEnv: vendor.apiKeyEnv } : {}),
-          models: { ...p.models, [model.id]: p.models[model.id] ?? {} },
-        },
-      },
-      ...(Object.keys(p.models).length === 0 ? { active: { provider, model: model.id } } : {}),
-    })
   }
 
   const runProbe = async (provider: string, model: string, mode: 'reachability' | 'full') => {
@@ -230,21 +234,44 @@ export function ModelSettings() {
                 {(n) => (
                   <button
                     class="tab-chip"
-                    classList={{ active: current() === n, live: c().active.provider === n }}
+                    classList={{
+                      active: !showLibrary() && current() === n,
+                      live: c().active.provider === n,
+                    }}
                     type="button"
-                    onClick={() => setPicked(n)}
+                    onClick={() => {
+                      setShowLibrary(false)
+                      setPicked(n)
+                    }}
                   >
                     {n}
                   </button>
                 )}
               </For>
-              <button class="tab-chip add" type="button" onClick={addProvider}>
+              <button
+                class="tab-chip add"
+                type="button"
+                onClick={() => {
+                  setShowLibrary(false)
+                  addProvider()
+                }}
+              >
                 添加接口
+              </button>
+              {/* 模型库和接口不是一类东西（一个是模型参数，一个是端点与凭证），
+                      所以隔开放在这一排的末尾，而不是混在接口中间。 */}
+              <button
+                class="tab-chip lib"
+                classList={{ active: showLibrary() }}
+                type="button"
+                onClick={() => setShowLibrary(true)}
+              >
+                模型库
               </button>
             </div>
           </section>
 
-          <Show when={current()}>
+          <Show when={!showLibrary() && current()}>
             {(name) => {
               const p = () => c().providers[name()]!
               const models = () => Object.keys(p().models)
@@ -257,7 +284,7 @@ export function ModelSettings() {
                         class="icon-btn"
                         type="button"
                         aria-label={`删除接口 ${name()}`}
-                        onClick={() => removeProvider(name())}
+                        onClick={() => setDoomed(name())}
                       >
                         <IconX size={13} />
                       </button>
@@ -290,17 +317,6 @@ export function ModelSettings() {
                         />
                       </Field>
 
-                      <Field label="API Key 环境变量名" hint="环境变量优先于下面的明文">
-                        <input
-                          type="text"
-                          placeholder="如 DEEPSEEK_API_KEY"
-                          value={p().apiKeyEnv ?? ''}
-                          onBlur={(e) =>
-                            patchProvider(name(), { apiKeyEnv: e.currentTarget.value })
-                          }
-                        />
-                      </Field>
-
                       <Field label="API Key">
                         <input
                           type="password"
@@ -328,16 +344,18 @@ export function ModelSettings() {
                     <div class="model-list">
                       <For each={models()}>
                         {(id) => {
-                          const live = () =>
+                          const isDefault = () =>
                             c().active.provider === name() && c().active.model === id
                           const result = () => probes()[id]
                           return (
-                            <div class="model-row" classList={{ active: live() }}>
+                            <div class="model-row" classList={{ active: isDefault() }}>
                               <div class="model-row-main">
+                                {/* 「默认」= 新会话开在哪一格。已开的会话各自记着自己那一对，
+                                    改这里不会把它们挪走。 */}
                                 <button
                                   class="model-pick"
                                   type="button"
-                                  disabled={live()}
+                                  disabled={isDefault()}
                                   onClick={() =>
                                     void replaceConfig({
                                       ...c(),
@@ -345,7 +363,7 @@ export function ModelSettings() {
                                     })
                                   }
                                 >
-                                  {live() ? '当前' : '设为当前'}
+                                  {isDefault() ? '默认' : '设为默认'}
                                 </button>
                                 <span class="model-id">{id}</span>
                                 <button
@@ -390,33 +408,6 @@ export function ModelSettings() {
                             e.currentTarget.value = ''
                           }}
                         />
-                        <select
-                          value=""
-                          disabled={!catalog()}
-                          onChange={(e) => {
-                            applyCatalogModel(name(), e.currentTarget.value)
-                            // 选完复位：这个下拉是个动作，不是当前值。
-                            e.currentTarget.value = ''
-                          }}
-                        >
-                          <option value="">{catalog() ? '从内置库选…' : '读取中…'}</option>
-                          <For each={catalog()?.vendors ?? []}>
-                            {(v) => (
-                              <optgroup label={v.displayName}>
-                                <For
-                                  each={(catalog()?.models ?? []).filter((m) => m.vendor === v.id)}
-                                >
-                                  {(m) => (
-                                    <option value={m.id}>
-                                      {m.label}
-                                      {m.provider === v.defaultKind ? '' : ` · ${m.provider}`}
-                                    </option>
-                                  )}
-                                </For>
-                              </optgroup>
-                            )}
-                          </For>
-                        </select>
                       </div>
                     </div>
                   </section>
@@ -425,7 +416,30 @@ export function ModelSettings() {
             }}
           </Show>
 
+          <Show when={showLibrary()}>
+            <ModelLibrary
+              vendors={loaded(catalog)?.library ?? []}
+              loading={catalog.loading}
+              error={catalog.error}
+              onSave={saveCatalog}
+            />
+          </Show>
+
           <ConfigStatus />
+
+          <ConfirmDialog
+            open={doomed() !== null}
+            title={`删除接口「${doomed()}」`}
+            message={
+              c().providers[doomed() ?? '']?.hasApiKey
+                ? '它的 API Key 一并删除，删了拿不回来。'
+                : '删了拿不回来。'
+            }
+            confirmLabel="删除"
+            danger
+            onConfirm={() => removeProvider(doomed()!)}
+            onCancel={() => setDoomed(null)}
+          />
         </>
       )}
     </Show>

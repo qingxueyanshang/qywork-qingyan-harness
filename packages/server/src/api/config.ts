@@ -25,10 +25,7 @@ export type RedactedConfig = Omit<QyConfig, 'providers'> & {
 }
 
 /**
- * 明文 key 不出进程。
- *
- * 只脱 `apiKey`，`apiKeyEnv` 照常回——它是变量名不是值，而用户在界面上
- * 需要看到自己配的是哪个变量名，否则「为什么没读到 key」无从排查。
+ * 明文 key 不出进程。只脱 `apiKey`，换成一个「有没有」的布尔。
  */
 export function redactConfig(cfg: QyConfig): RedactedConfig {
   const providers: Record<string, RedactedProvider> = {}

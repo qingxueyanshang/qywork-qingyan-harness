@@ -43,6 +43,8 @@ export interface QyConfig {
   /** 当前生效的「接口 × 模型」。 */
   active: ModelRef
   providers: Record<string, StoredProvider>
+  /** 用户改过的模型参数，键是模型 id。见 `StoredCatalogEntry`。 */
+  catalog?: Record<string, StoredCatalogEntry>
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
@@ -100,13 +102,56 @@ export interface QyConfig {
  */
 export interface StoredProvider {
   kind: ProviderKind
-  /** 环境变量名，或直接明文。优先读环境变量——明文 key 不该躺在配置文件里。 */
-  apiKeyEnv?: string
+  /**
+   * 明文 key。**取 key 只有这一条路。**
+   *
+   * 曾经并排还有一个 `apiKeyEnv`（环境变量名，优先级更高）。两格意味着两条取值
+   * 路径：界面上看到的和实际发出去的可以是两把不同的 key，而两边都显示「已配置」。
+   * 剥离不依赖它——按值剥认的是这里的明文，按名字剥认的是
+   * `CREDENTIAL_NAME_PATTERN`，两条都还在。
+   */
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
   /** 键是模型 id。 */
   models: Record<string, StoredModel>
+}
+
+/**
+ * 用户改过的**模型参数**。键是模型 id。
+ *
+ * ## 它和接口无关
+ *
+ * 库回答的是「这个模型本身是什么样」：窗口多大、最大能输出多少、多少钱、
+ * 吃哪几档思考。接口回答的是「用谁的端点和哪把 key」。两者唯一的接点是
+ * 接口下那一行模型 id ——参数照着 id 从库里查。
+ *
+ * 所以覆盖挂在模型 id 上，**不挂在「接口 × 模型」那一格**。挂到那一格的是
+ * `StoredModel.capabilities`：那是「这条链路实测出来的思考能力」，同一个模型
+ * 经不同中转站可以不一样，是另一个轴。价格和窗口不是——它们是模型的属性，
+ * 换个中转站不会变。
+ *
+ * ## 为什么要能改
+ *
+ * 内置目录是源码里的一份 seed，其中七家的窗口 / 价格是 2026-07-30 抄的、
+ * 没有逐条实测（`catalog.ts` 里写明了）。厂商调价之后目录就在说谎，而说谎的
+ * 出口只有账本上那个数——用户没有任何办法在不改源码的情况下纠正它。
+ *
+ * 字段全部可选：只写改过的那几个，其余照 seed。目录里根本没有的 id 也能写一条
+ * （`vendor` 决定它在界面上归到哪个分组），那正好补上「未收录模型计价按 0 算、
+ * 账本报 $0」这个洞。
+ */
+export interface StoredCatalogEntry {
+  displayName?: string
+  /** 归到哪个厂商分组。目录里已有的条目不必写——按 seed 走。 */
+  vendor?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  /** 每百万 token 的输入 / 输出单价。 */
+  input?: number
+  output?: number
+  currency?: 'USD' | 'CNY'
+  effortLevels?: EffortLevel[]
 }
 
 /**
@@ -157,13 +202,14 @@ export interface ResolvedModel {
   provider: string
   kind: ProviderKind
   model: string
-  apiKeyEnv?: string
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
   maxOutputTokens?: number
   /** **模型没在这个接口下声明过就是 undefined**，不会套用别的模型的实测结果。 */
   capabilities?: ProviderProfile['capabilities']
+  /** 用户在模型库里改过的参数。按模型 id 取，与接口无关。 */
+  spec?: StoredCatalogEntry
   /** 用户为这个模型选定的思考档。undefined = 没选过，不发思考字段。 */
   effort?: EffortLevel
 }
@@ -192,7 +238,6 @@ const DEFAULT_CONFIG: QyConfig = {
   providers: {
     anthropic: {
       kind: 'anthropic',
-      apiKeyEnv: 'ANTHROPIC_API_KEY',
       models: { 'claude-opus-5': {} },
     },
   },
@@ -292,7 +337,6 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     provider: name,
     kind: provider.kind,
     model: wanted,
-    ...(provider.apiKeyEnv ? { apiKeyEnv: provider.apiKeyEnv } : {}),
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
@@ -301,48 +345,28 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     // 等于拿 A 的实测事实去描述 B。旧结构下这是静默发生的。
     ...(declared?.capabilities ? { capabilities: declared.capabilities } : {}),
     ...(declared?.effort ? { effort: declared.effort } : {}),
+    // 库里的覆盖按**模型 id**取，不看接口——窗口和价格是模型的属性，
+    // 换个中转站不会变。声不声明过这个模型都取得到。
+    ...(cfg.catalog?.[wanted] ? { spec: cfg.catalog[wanted] } : {}),
   }
-}
-
-/** 解析出真正要用的 key：环境变量优先于配置文件里的明文。 */
-export function resolveApiKey(p: { apiKeyEnv?: string; apiKey?: string }): string {
-  if (p.apiKeyEnv) {
-    const fromEnv = process.env[p.apiKeyEnv]
-    if (fromEnv) return fromEnv
-  }
-  return p.apiKey ?? ''
 }
 
 /**
- * 收集本机所有已知凭证，交给起子进程的工具去剥。
+ * 收集本机所有已知凭证明文，交给起子进程的工具去剥。
  *
- * ## 三条都要收，少一条就有洞
- *
- * 1. **所有接口**的 key，不只是 `active` 那个。用户配了三家就有三把 key，
- *    模型能读到哪一把跟当前用哪个模型毫无关系。
- * 2. **明文 `apiKey` 和 `apiKeyEnv` 指向的环境变量值都要取**，
- *    而不是只取 `resolveApiKey` 的结果——后者在两者都有时只返回一个，
- *    另一个照样躺在环境里等着被 `env` 打印出来。
- * 3. **变量名也收**（`envNames`）。名字这条判据抓的是「我们不知道明文」的情况，
- *    比如 key 只存在于环境变量里、而配置文件里根本没写。
+ * **所有接口**的 key 都要收，不只是 `active` 那个：用户配了三家就有三把 key，
+ * 模型能读到哪一把跟当前用哪个模型毫无关系。
  *
  * 按值剥是唯一不依赖命名习惯的一条：用户把 key 复制进 `MY_STUFF`，
  * 只有按值才抓得到。所以这个函数存在的意义就是**把明文都找齐**。
+ * 名字那条判据由 `CREDENTIAL_NAME_PATTERN` 兜，与配置无关。
  */
-export function collectSecrets(cfg: QyConfig): { values: string[]; envNames: string[] } {
+export function collectSecrets(cfg: QyConfig): { values: string[] } {
   const values = new Set<string>()
-  const envNames = new Set<string>()
-
   for (const p of Object.values(cfg.providers ?? {})) {
     if (p.apiKey) values.add(p.apiKey)
-    if (p.apiKeyEnv) {
-      envNames.add(p.apiKeyEnv)
-      const fromEnv = process.env[p.apiKeyEnv]
-      if (fromEnv) values.add(fromEnv)
-    }
   }
-
-  return { values: [...values], envNames: [...envNames] }
+  return { values: [...values] }
 }
 
 /**
@@ -390,12 +414,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   }
 
   const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i.test(stored.baseUrl ?? '')
-  if (!resolveApiKey(stored) && !local) {
-    const where = stored.apiKeyEnv
-      ? `环境变量 ${stored.apiKeyEnv} 是空的，配置文件里也没有 apiKey。`
-      : `接口 "${cfg.active.provider}" 既没有 apiKey 也没有 apiKeyEnv。`
+  if (!stored.apiKey && !local) {
     problems.push(
-      `未配置 API Key。${where}\n` +
+      `未配置 API Key。接口 "${cfg.active.provider}" 的 apiKey 是空的。\n` +
         `  配置文件：${configPath()}\n` +
         `  最快的办法：qy init\n` +
         `  或者手动改成：\n${indent(exampleProvider(cfg.active, stored))}`,

@@ -87,11 +87,6 @@ export interface ModelSpec {
    */
   thinksByDefault: boolean
   /**
-   * 关闭思考所允许的最高 effort 档。null = 不允许关闭。
-   * Opus 5：thinking:{type:'disabled'} 配 xhigh/max 直接 400。
-   */
-  disableThinkingMaxEffort: EffortLevel | null
-  /**
    * 会话**中间**收不收 `role:'system'` 的消息。
    *
    * 尾区注记（日期、技能与记忆索引…）就压在历史之后，不能挪进顶层 `system`——
@@ -108,7 +103,19 @@ export interface ModelSpec {
   /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
   /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
   minCacheablePrefix: number
-  /** 提示缓存断点上限。 */
+  /**
+   * 分时段折扣。没有就是「一天一个价」，绝大多数模型都是这样。
+   *
+   * **`pricing` 是基准价（高峰价），这一条只描述什么时候打折。**
+   * 存两套完整价目会立刻长出「改了高峰忘了改空闲」这种漂移，
+   * 而两套数字看起来都像是对的。
+   */
+  offPeak?: OffPeakDiscount
+  /**
+   * 长上下文阶梯价。没有就是「多大的请求都一个价」。
+   * 与 `offPeak` 一样，`pricing` 是标准价，这一条只描述什么时候换档。
+   */
+  longContext?: LongContextTier
   /**
    * 这条 spec 是不是来自内置目录。
    *
@@ -128,8 +135,8 @@ export type ProviderKind = 'anthropic' | 'openai_responses' | 'openai_compatible
  *
  * **和 `ProviderKind` 是两个轴，不能合并。** `ProviderKind` 说的是协议——
  * DeepSeek、OpenAI、任何中转站都可以是 `openai_compatible`。厂商回答的是
- * 另外三个问题：端点在哪、key 惯例上叫什么名字、旗下有哪些模型。
- * 合成一个的话「选了模型自动带出端点」就无从做起，因为协议里没有端点。
+ * 另外两个问题：端点在哪、旗下有哪些模型。
+ * 合成一个的话「选了厂商自动带出端点」就无从做起，因为协议里没有端点。
  *
  * **它不落盘。** 配置文件里存的仍然是 `kind` / `model` / `baseUrl` / `apiKey`
  * 那几个字段，这张表只是填表时的默认值来源。多存一个 `vendor` 就会和 `baseUrl`
@@ -141,8 +148,6 @@ export interface Vendor {
   defaultKind: ProviderKind
   /** 官方端点。省略 = 用 SDK 自带的默认值（Anthropic 就是这种情况）。 */
   defaultBaseUrl?: string
-  /** 惯例上的环境变量名。 */
-  apiKeyEnv: string
 }
 
 /**
@@ -158,14 +163,12 @@ export const VENDORS: readonly Vendor[] = [
     id: 'anthropic',
     displayName: 'Anthropic',
     defaultKind: 'anthropic',
-    apiKeyEnv: 'ANTHROPIC_API_KEY',
   },
   {
     id: 'openai',
     displayName: 'OpenAI',
     defaultKind: 'openai_compatible',
     defaultBaseUrl: 'https://api.openai.com/v1',
-    apiKeyEnv: 'OPENAI_API_KEY',
   },
   {
     id: 'deepseek',
@@ -173,40 +176,177 @@ export const VENDORS: readonly Vendor[] = [
     defaultKind: 'openai_compatible',
     // 带 `/v1`：DeepSeek 的 OpenAI 兼容端点在这一层，少了它是 404。
     defaultBaseUrl: 'https://api.deepseek.com/v1',
-    apiKeyEnv: 'DEEPSEEK_API_KEY',
   },
   {
     id: 'google',
     displayName: 'Google',
     defaultKind: 'openai_compatible',
-    apiKeyEnv: 'GEMINI_API_KEY',
   },
-  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_compatible', apiKeyEnv: 'XAI_API_KEY' },
+  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_compatible' },
   {
     id: 'alibaba',
     displayName: '阿里云百炼',
     defaultKind: 'openai_compatible',
-    apiKeyEnv: 'DASHSCOPE_API_KEY',
   },
   {
     id: 'moonshot',
     displayName: '月之暗面',
     defaultKind: 'openai_compatible',
-    apiKeyEnv: 'MOONSHOT_API_KEY',
   },
   {
     id: 'zhipu',
     displayName: '智谱',
     defaultKind: 'openai_compatible',
-    apiKeyEnv: 'ZHIPU_API_KEY',
   },
   {
     id: 'minimax',
     displayName: 'MiniMax',
     defaultKind: 'openai_compatible',
-    apiKeyEnv: 'MINIMAX_API_KEY',
   },
 ]
+
+/**
+ * 长上下文阶梯价。
+ *
+ * **达到阈值之后整条请求都按高档算，不是只算超出的那部分。**
+ * xAI 的原话：一条 21 万 token 的请求不是「20 万按标准价 + 1 万按高价」，
+ * 而是整条按高价。按超出部分算会把账记少一半，而少记的方向没有任何东西会报错。
+ *
+ * **高档单价逐字抄厂商的第二行，不按倍率推算。** 各家的倍率不统一：
+ * OpenAI 与 Google 的输入是 2 倍而输出只有 1.5 倍，xAI 才是整齐的 2 倍。
+ * 存一个倍率就得自己算比值，算错了没有任何东西会提示。
+ *
+ * 阈值比的是**提示词**大小（未命中输入 + 命中输入），不含输出——
+ * 计价发生在请求发出之后，那时输出还没产生，厂商也是按提示词分档的。
+ */
+export interface LongContextTier {
+  /**
+   * **第一个进入高档的提示词 token 数**（含）。
+   *
+   * 各家的边界写法不一样：xAI 写「≥200k」，Google 写「>200k」。
+   * 统一成「第一个进高档的数」而不是另加一个比较符——多一个字段就多一处
+   * 写反的机会，而写反的表现是整整一档的钱记错。
+   */
+  thresholdTokens: number
+  input: number
+  output: number
+  cacheRead: number
+  /** 一句话，界面直接显示。 */
+  note: string
+}
+
+/**
+ * 分时段折扣。**窗口按 UTC 小时给，不按本机时区。**
+ *
+ * 厂商公布的是当地时间（DeepSeek 写的是北京时间），但这台机器可能在任何时区，
+ * 用 `getHours()` 算等于把用户的时区当成了厂商的时区——在美国跑就整天算错档，
+ * 而错的表现只是账本上一个偏低或偏高的数字，没有任何地方会报错。
+ * 所以录进来的时候就换算成 UTC，`priceAt` 只认 `getUTCHours()`。
+ *
+ * ## 为什么记「高峰窗口」而不是「折扣窗口」
+ *
+ * 照抄厂商的说法。DeepSeek 的原话是「高峰时段为北京时间 9:00-12:00、14:00-18:00
+ * （其余为空闲时段）」——记高峰是逐字转录，记折扣就得自己把补集算一遍，
+ * 而那一步算错了没有任何东西会提示。
+ */
+export interface OffPeakDiscount {
+  /** 折扣系数，乘在每一档单价上。DeepSeek 空闲时段恰好是高峰的一半，即 0.5。 */
+  rate: number
+  /**
+   * 高峰时段（不打折），`[起, 止)` 半开区间，UTC 小时，可带小数（`9.5` = 09:30）。
+   * 跨零点的窗口拆成两段写，不做环形判断——环形判断只有这一个用户，
+   * 而写错的方向是「整段时间收错价」。
+   */
+  peakWindowsUtc: readonly (readonly [number, number])[]
+  /** 一句话，界面直接显示，不再自己拼。 */
+  note: string
+}
+
+/**
+ * DeepSeek 的高峰时段：北京时间 9:00-12:00、14:00-18:00（UTC+8）。
+ *
+ * 换算成 UTC 就是 01:00-04:00 与 06:00-10:00。
+ * 口径来源：官方文档「模型 & 价格」页（2026-08-17 生效的新价目）。
+ */
+const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
+  rate: 0.5,
+  peakWindowsUtc: [
+    [1, 4],
+    [6, 10],
+  ],
+  note: '空闲时段 5 折（高峰＝北京时间 9:00-12:00、14:00-18:00）',
+}
+
+/**
+ * Gemini 3.1 Pro 的长上下文档：官方写「>200k」，所以第一个进高档的是 200001。
+ * 注意输入是 2 倍而输出只有 1.5 倍——倍率不统一，逐字抄。
+ */
+const GEMINI_31_PRO_LONG: LongContextTier = {
+  thresholdTokens: 200_001,
+  input: 4,
+  output: 18,
+  cacheRead: 0.4,
+  note: '提示词超过 20 万 token 后整条请求按 $4 / $18（缓存 $0.4）计价',
+}
+
+/** xAI 官方价目表：提示词满 20 万，整条请求按 $4 / $12 / 缓存 $1 算。 */
+const GROK_46_LONG: LongContextTier = {
+  thresholdTokens: 200_000,
+  input: 4,
+  output: 12,
+  cacheRead: 1,
+  note: '提示词满 20 万 token 后整条请求按 $4 / $12（缓存 $1）计价',
+}
+
+/** 同上，4.5 的缓存档是 $0.60 而不是 $1。 */
+const GROK_45_LONG: LongContextTier = {
+  thresholdTokens: 200_000,
+  input: 4,
+  output: 12,
+  cacheRead: 0.6,
+  note: '提示词满 20 万 token 后整条请求按 $4 / $12（缓存 $0.6）计价',
+}
+
+/**
+ * 这一刻、这么大的一条请求，实际单价是多少。
+ *
+ * **目录里那组数字是厂商公布的标准价**，这个函数把偏离标准价的两种情况叠上去：
+ * 分时段折扣（按钟点）和长上下文档（按提示词大小）。两者互相独立，
+ * 直接连乘——没有哪家同时有这两种，但代码不必为此多一个分支。
+ *
+ * 两种都没有就返回 `spec.pricing` 本身、**同一个对象引用**：
+ * 绝大多数模型走这条路，不为它们每次都新建一个对象。
+ */
+export function priceAt(
+  spec: ModelSpec,
+  ctx: { now?: number; promptTokens?: number } = {},
+): Pricing {
+  let rate = 1
+  if (spec.offPeak) {
+    const d = new Date(ctx.now ?? Date.now())
+    const hour = d.getUTCHours() + d.getUTCMinutes() / 60
+    const peak = spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
+    if (!peak) rate *= spec.offPeak.rate
+  }
+  const long =
+    spec.longContext && (ctx.promptTokens ?? 0) >= spec.longContext.thresholdTokens
+      ? spec.longContext
+      : undefined
+  if (rate === 1 && !long) return spec.pricing
+  const p = spec.pricing
+  const base = long
+    ? { ...p, input: long.input, output: long.output, cacheRead: long.cacheRead }
+    : p
+  if (rate === 1) return base
+  return {
+    ...base,
+    input: round(base.input * rate),
+    output: round(base.output * rate),
+    cacheRead: round(base.cacheRead * rate),
+    cacheWrite5m: round(base.cacheWrite5m * rate),
+    cacheWrite1h: round(base.cacheWrite1h * rate),
+  }
+}
 
 function anthropicPricing(input: number, output: number): Pricing {
   return {
@@ -230,6 +370,20 @@ function sonnet5Pricing(now = Date.now()): Pricing {
   return now <= SONNET_5_INTRO_ENDS ? anthropicPricing(2, 10) : anthropicPricing(3, 15)
 }
 
+/**
+ * Gemini 3.6 / 3.7 Flash 的促销价，2026-12-31 之后回到 $1.50 / $7.50 / $0.15。
+ *
+ * 与 `sonnet5Pricing` 同一个形状、同一条理由：**按当前时间取值，不写死**，
+ * 否则账单会在一月一号那天悄悄算错。
+ */
+const GEMINI_FLASH_PROMO_ENDS = Date.UTC(2026, 11, 31, 23, 59, 59)
+
+function geminiFlashPromo(now: number): Pricing {
+  return now <= GEMINI_FLASH_PROMO_ENDS
+    ? { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite5m: 0, cacheWrite1h: 0 }
+    : { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite5m: 0, cacheWrite1h: 0 }
+}
+
 const CLAUDE_BASE = {
   provider: 'anthropic' as const,
   vendor: 'anthropic',
@@ -249,8 +403,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       displayName: 'Claude Opus 5',
       pricing: anthropicPricing(5, 25),
       thinksByDefault: true,
-      // 关思考只允许到 high；配 xhigh/max 是 400。
-      disableThinkingMaxEffort: 'high',
       minCacheablePrefix: 512,
     },
     {
@@ -259,7 +411,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       displayName: 'Claude Sonnet 5',
       pricing: sonnet5Pricing(now),
       thinksByDefault: true,
-      disableThinkingMaxEffort: 'max',
       minCacheablePrefix: 1024,
     },
     {
@@ -271,7 +422,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       // 思考恒开：连 {type:'disabled'} 都 400，只能整个省略 thinking 字段。
       thinking: 'always_on',
       thinksByDefault: true,
-      disableThinkingMaxEffort: null,
       minCacheablePrefix: 512,
     },
     {
@@ -282,7 +432,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       pricing: anthropicPricing(5, 25),
       // 4.8 省略 thinking = 不思考，与 Opus 5 相反。
       thinksByDefault: false,
-      disableThinkingMaxEffort: 'max',
       minCacheablePrefix: 1024,
     },
     {
@@ -291,7 +440,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       displayName: 'Claude Opus 4.7',
       pricing: anthropicPricing(5, 25),
       thinksByDefault: false,
-      disableThinkingMaxEffort: 'max',
       minCacheablePrefix: 2048,
     },
     {
@@ -302,7 +450,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       thinking: 'adaptive_only',
       effortLevels: ['low', 'medium', 'high', 'max'],
       thinksByDefault: false,
-      disableThinkingMaxEffort: 'max',
       // 4.6 的采样参数仍然可用。
       minCacheablePrefix: 1024,
     },
@@ -316,7 +463,6 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       thinking: 'budget_tokens',
       effortLevels: [],
       thinksByDefault: false,
-      disableThinkingMaxEffort: 'max',
       minCacheablePrefix: 4096,
     },
   ]
@@ -325,14 +471,27 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
 /**
  * DeepSeek。
  *
- * 口径与 Anthropic 有两处实质差异，都体现在下面的数字里：
+ * 口径与 Anthropic 有三处实质差异，都体现在下面的数字里：
+ * - **按人民币标价**（官方价目页就是 ¥）。上一版把它记成美元，数字差着七倍。
  * - 缓存**写入不收费**（自动前缀缓存，没有 Anthropic 那样的 1.25x 写入溢价），
  *   所以 cacheWrite 两档都是 0。
  * - `input` 填的是**缓存未命中**单价；命中部分走 cacheRead。适配器已把
  *   `prompt_tokens` 归一成排他口径，两者不会重复计。
+ * - **分高峰 / 空闲两档**，见 `DEEPSEEK_OFF_PEAK`。下面填的是高峰价。
+ *
+ * 价目来源：官方文档「模型 & 价格」页，2026-08-17 生效的那版：
+ *
+ * | 模型 | 时段 | 命中输入 | 未命中输入 | 输出 |
+ * |---|---|---|---|---|
+ * | v4-flash | 高峰 | ¥0.10 | ¥3.0 | ¥9.0 |
+ * | v4-flash | 空闲 | ¥0.05 | ¥1.5 | ¥4.5 |
+ * | v4-pro | 高峰 | ¥0.30 | ¥9.0 | ¥27.0 |
+ * | v4-pro | 空闲 | ¥0.15 | ¥4.5 | ¥13.5 |
  *
  * 实测（2026-08）：`deepseek-chat` 与 `deepseek-reasoner` 都被服务端解析成
- * `deepseek-v4-flash`。别名随时可能改指向，生产配置建议直接写具体 id。
+ * `deepseek-v4-flash`。**别名不进目录**——指向哪个模型由服务端说了算、随时可改，
+ * 而目录里一条别名对用户就是「多一个看起来不一样的模型」。真要用别名就自己填 id，
+ * 届时按未收录处理（`configNotices` 会点名说清）。
  */
 function deepseekCatalog(): ModelSpec[] {
   const base = {
@@ -352,21 +511,35 @@ function deepseekCatalog(): ModelSpec[] {
     thinking: 'deepseek_thinking' as const,
     effortLevels: ['high', 'max'] as EffortLevel[],
     thinksByDefault: false,
-    disableThinkingMaxEffort: 'max' as EffortLevel,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
     minCacheablePrefix: 0,
+    offPeak: DEEPSEEK_OFF_PEAK,
   }
   const flash: ModelSpec = {
     ...base,
     id: 'deepseek-v4-flash',
     displayName: 'DeepSeek V4 Flash',
-    pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite5m: 0, cacheWrite1h: 0 },
+    pricing: {
+      input: 3,
+      output: 9,
+      currency: 'CNY',
+      cacheRead: 0.1,
+      cacheWrite5m: 0,
+      cacheWrite1h: 0,
+    },
   }
   const pro: ModelSpec = {
     ...base,
     id: 'deepseek-v4-pro',
     displayName: 'DeepSeek V4 Pro',
-    pricing: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite5m: 0, cacheWrite1h: 0 },
+    pricing: {
+      input: 9,
+      output: 27,
+      currency: 'CNY',
+      cacheRead: 0.3,
+      cacheWrite5m: 0,
+      cacheWrite1h: 0,
+    },
   }
   /**
    * Responses 协议下的同一批模型，**能力不同所以单独一条**。
@@ -397,26 +570,8 @@ function deepseekCatalog(): ModelSpec[] {
   return [
     { ...flash, thinksByDefault: true },
     { ...pro, thinksByDefault: true },
-    {
-      ...flash,
-      thinksByDefault: true,
-      id: 'deepseek-chat',
-      displayName: 'DeepSeek Chat（→ V4 Flash）',
-    },
-    {
-      ...flash,
-      thinksByDefault: true,
-      id: 'deepseek-reasoner',
-      displayName: 'DeepSeek Reasoner（→ V4 Flash）',
-    },
     responses(flash),
     responses(pro),
-    responses({ ...flash, id: 'deepseek-chat', displayName: 'DeepSeek Chat（→ V4 Flash）' }),
-    responses({
-      ...flash,
-      id: 'deepseek-reasoner',
-      displayName: 'DeepSeek Reasoner（→ V4 Flash）',
-    }),
   ]
 }
 
@@ -456,7 +611,6 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     thinking: 'none',
     effortLevels: [],
     thinksByDefault: false,
-    disableThinkingMaxEffort: 'max',
     minCacheablePrefix: 1024,
   }
 }
@@ -488,10 +642,9 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * 那是**协议常量**不是模型能力，而我们只用 2 个断点——一个逐模型不变的字段，
  * 放在逐模型的目录里就是误导。断点数写在用它的那个适配器里。
  */
-function openAiCompatCatalog(): ModelSpec[] {
+function openAiCompatCatalog(now: number): ModelSpec[] {
   const base = {
     provider: 'openai_compatible' as const,
-    disableThinkingMaxEffort: 'max' as EffortLevel,
     minCacheablePrefix: 1024,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
@@ -523,14 +676,35 @@ function openAiCompatCatalog(): ModelSpec[] {
   const FIVE: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
   return [
-    // ── OpenAI GPT-5.6 ──
+    /*
+     * ── OpenAI GPT-5.6 ──
+     *
+     * 官方价目页（2026-08）的短上下文档，逐字：
+     *
+     * | 模型 | 输入 | 缓存输入 | 输出 |
+     * |---|---|---|---|
+     * | sol | $5.00 | $0.50 | $30.00 |
+     * | terra | $2.00 | $0.20 | $12.00 |
+     * | luna | $0.20 | $0.02 | $1.20 |
+     * | cyber | $12.50 | $1.25 | $75.00 |
+     *
+     * 窗口 1.05M、最大输出 128K（官方模型页）。
+     *
+     * **长上下文档没有填**：官方价目页给了第二行价（sol $10/$1/$45、
+     * terra $4/$0.4/$18、luna $0.4/$0.04/$1.8），但**没有公布切档的 token 阈值**，
+     * 而 `LongContextTier` 少了阈值就无从判断。宁可不填——填一个猜的阈值，
+     * 错的方向是「长请求按短价记账」，而那是静默少记钱。
+     * 拿到阈值就把这三条补上。
+     *
+     * `cacheWrite` 那一档官方页没有单列，沿用原有的估算值。
+     */
     {
       ...base,
       ...effort(FIVE),
       id: 'gpt-5.6-sol',
       displayName: 'GPT-5.6 Sol',
       vendor: 'openai',
-      contextWindow: 1_000_000,
+      contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(5, 30, 0.5, 6.25),
     },
@@ -540,9 +714,9 @@ function openAiCompatCatalog(): ModelSpec[] {
       id: 'gpt-5.6-terra',
       displayName: 'GPT-5.6 Terra',
       vendor: 'openai',
-      contextWindow: 1_000_000,
+      contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
-      pricing: usd(2.5, 15, 0.25, 3.125),
+      pricing: usd(2, 12, 0.2, 2.5),
     },
     {
       ...base,
@@ -550,24 +724,62 @@ function openAiCompatCatalog(): ModelSpec[] {
       id: 'gpt-5.6-luna',
       displayName: 'GPT-5.6 Luna',
       vendor: 'openai',
-      contextWindow: 1_000_000,
+      contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
-      pricing: usd(1, 6, 0.1, 1.25),
+      pricing: usd(0.2, 1.2, 0.02, 0.25),
+    },
+    {
+      ...base,
+      ...effort(FIVE),
+      id: 'gpt-5.6-cyber',
+      displayName: 'GPT-5.6 Cyber',
+      vendor: 'openai',
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(12.5, 75, 1.25, 15.625),
     },
 
-    // ── Google Gemini ──
-    // flash 两款厂商还给了一档 `minimal`。它不在 EffortLevel 词表里，
-    // **不为它扩词表**——扩了就得让所有消费方都认一个只有一家用的档，
-    // 而少这一档只是少一个更省的选项。
+    /*
+     * ── Google Gemini ──
+     *
+     * 官方定价页（2026-08）逐字，单位 $/百万：
+     *
+     * | 模型 | 输入 | 输出 | 缓存 | 备注 |
+     * |---|---|---|---|---|
+     * | gemini-3.1-pro-preview | 2.00 | 12.00 | 0.20 | >200k：4.00 / 18.00 / 0.40 |
+     * | gemini-3.7-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
+     * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
+     * | gemini-3.5-flash | 1.50 | 9.00 | 0.15 | |
+     *
+     * **上一版这三条价格全是错的**（3.5/3.6 Flash 记成 0.3/2.5，Pro 缺长上下文档），
+     * 而且 id 也不对：官方叫 `gemini-3.1-pro-preview`。
+     *
+     * flash 两款厂商还给了一档 `minimal`。它不在 EffortLevel 词表里，
+     * **不为它扩词表**——扩了就得让所有消费方都认一个只有一家用的档，
+     * 而少这一档只是少一个更省的选项。
+     *
+     * **窗口与最大输出官方定价页没写**，沿用这批 seed 原有的值，两者都没实测过。
+     */
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
-      id: 'gemini-3.1-pro',
-      displayName: 'Gemini 3.1 Pro',
+      id: 'gemini-3.1-pro-preview',
+      displayName: 'Gemini 3.1 Pro Preview',
       vendor: 'google',
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: usd(2, 12, 0.2),
+      longContext: GEMINI_31_PRO_LONG,
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-3.7-flash',
+      displayName: 'Gemini 3.7 Flash',
+      vendor: 'google',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      pricing: geminiFlashPromo(now),
     },
     {
       ...base,
@@ -577,7 +789,7 @@ function openAiCompatCatalog(): ModelSpec[] {
       vendor: 'google',
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
-      pricing: usd(0.3, 2.5, 0.03),
+      pricing: geminiFlashPromo(now),
     },
     {
       ...base,
@@ -587,10 +799,34 @@ function openAiCompatCatalog(): ModelSpec[] {
       vendor: 'google',
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
-      pricing: usd(0.3, 2.5, 0.03),
+      pricing: usd(1.5, 9, 0.15),
     },
 
     // ── xAI ──
+    /*
+     * xAI 官方价目表（2026-08）。两条都是 500K 窗口、**提示词满 20 万整条翻倍**：
+     *
+     * | 模型 | <200K | ≥200K |
+     * |---|---|---|
+     * | grok-4.6 | $2 / 缓存 $0.50 / 出 $6 | $4 / $1.00 / $12 |
+     * | grok-4.5 | $2 / 缓存 $0.30 / 出 $6 | $4 / $0.60 / $12 |
+     *
+     * 目录里填 <200K 那一档（厂商公布的标准价），高档由 `GROK_LONG_CONTEXT` 描述。
+     *
+     * `maxOutputTokens` 与思考档位官方页面**没写**，沿用这批 seed 原有的值，
+     * 两者都没有在本仓实测过。要坐实跑 `qy probe --save`。
+     */
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh']),
+      id: 'grok-4.6',
+      displayName: 'Grok 4.6',
+      vendor: 'xai',
+      contextWindow: 500_000,
+      maxOutputTokens: 64_000,
+      pricing: usd(2, 6, 0.5),
+      longContext: GROK_46_LONG,
+    },
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
@@ -599,10 +835,35 @@ function openAiCompatCatalog(): ModelSpec[] {
       vendor: 'xai',
       contextWindow: 500_000,
       maxOutputTokens: 64_000,
-      pricing: usd(2, 6, 0.2),
+      pricing: usd(2, 6, 0.3),
+      longContext: GROK_45_LONG,
     },
 
     // ── 阿里云百炼 Qwen（人民币标价）──
+    /**
+     * 官方规格页（2026-08）：窗口 1000000、最大输出 131072、
+     * ¥12 输入 / ¥36 输出 / ¥1.5 命中。
+     *
+     * **思考控制面没测**：规格页写着「最大输出长度（思考模式下）131072」与
+     * 「最大思维链长度 262144」，所以它会思考，但用哪个字段控制、有哪几档，
+     * 官方页面没说。照保守填 `effortLevels: []`——多声明一个档位的代价是
+     * 一个选了没反应的控件。要坐实跑 `qy probe --save`。
+     *
+     * `thinksByDefault` 填 `true`：思考和正文共用输出上限，多留是保守，
+     * 少留会把回答从中间截断，两个方向的代价不对等。
+     */
+    {
+      ...base,
+      thinking: 'none',
+      effortLevels: [],
+      thinksByDefault: true,
+      id: 'qwen3.8-max',
+      displayName: 'Qwen3.8 Max',
+      vendor: 'alibaba',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      pricing: cny(12, 36, 1.5),
+    },
     {
       ...base,
       ...noThinking,
@@ -682,9 +943,58 @@ function openAiCompatCatalog(): ModelSpec[] {
   ]
 }
 
+/**
+ * 用户对某个模型参数的覆盖。字段全部可选，只写改过的那几个。
+ *
+ * 落盘形状见 `runtime` 的 `StoredCatalogEntry`；这里之所以再声明一次，是因为
+ * 合并要发生在 `@qywork/ai`（适配器和计价都在这一层），而它引不到 runtime。
+ * 两处字段必须一致，改一处务必看另一处。
+ */
+export interface SpecOverride {
+  displayName?: string
+  vendor?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  input?: number
+  output?: number
+  currency?: 'USD' | 'CNY'
+  effortLevels?: EffortLevel[]
+}
+
+/**
+ * 把用户改过的参数叠到目录条目上。**seed → 用户覆盖**，只有这一个顺序。
+ *
+ * 两条边界：
+ *
+ * - **只覆盖写了的字段。** 缓存档单价（`cacheRead` / `cacheWrite*`）跟着 seed 走，
+ *   不按 input 等比例推算——推算出来的是个看起来精确的假数字，而各家缓存定价
+ *   的比例本来就不一样（Anthropic 写入是 1.25x，DeepSeek 写入不要钱）。
+ * - **`catalogued` 只有在覆盖里带了单价时才翻成 true。** 只改个显示名就宣布
+ *   「已收录」的话，计价仍然是 0 而提醒没了——账本继续报 $0，且再没有人说它。
+ */
+export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
+  if (!o) return spec
+  const priced = o.input !== undefined || o.output !== undefined
+  return {
+    ...spec,
+    ...(o.displayName ? { displayName: o.displayName } : {}),
+    ...(o.vendor ? { vendor: o.vendor } : {}),
+    ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
+    ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
+    ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
+    pricing: {
+      ...spec.pricing,
+      ...(o.input !== undefined ? { input: o.input } : {}),
+      ...(o.output !== undefined ? { output: o.output } : {}),
+      ...(o.currency ? { currency: o.currency } : {}),
+    },
+    ...(priced ? { catalogued: true } : {}),
+  }
+}
+
 /** 全部内置模型。仅用于能力约束与计价，不是可用模型的白名单。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [...claudeCatalog(now), ...deepseekCatalog(), ...openAiCompatCatalog()]
+  return [...claudeCatalog(now), ...deepseekCatalog(), ...openAiCompatCatalog(now)]
 }
 
 /**
@@ -740,7 +1050,12 @@ export function effortIsTransmittable(spec: ModelSpec): boolean {
   return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
 }
 
-/** 按 usage 算这一轮的花费（美元）。 */
+/**
+ * 按 usage 算这一轮的花费。
+ *
+ * **币种是 `spec.pricing.currency`，不恒是美元**——阿里 / 月之暗面 / 智谱 /
+ * DeepSeek 都按人民币标价。这个函数只返回数字，币种由调用方一起记进账本。
+ */
 export function computeCost(
   spec: ModelSpec,
   usage: {
@@ -749,8 +1064,21 @@ export function computeCost(
     cachedTokens?: number | null
     cacheWriteTokens?: number | null
   },
+  now = Date.now(),
 ): number {
-  const p = spec.pricing
+  // 单价**按算钱这一刻、按这一条请求的大小取**，不是按建 adapter 那一刻。
+  //
+  // adapter 是一个 run 建一次，而 run 可以跑很久：DeepSeek 的高峰窗口一天有两段，
+  // 一个 08:55 开始、跑过 09:00 的 run，按建 adapter 那一刻取价会把整轮都按空闲价记。
+  // 算钱是逐波次调的（`agent/loop.ts` 每收完一次 usage 就算一次），
+  // 在这里取时间正好落在那一次请求刚结束的时候。
+  //
+  // 提示词大小同理：它逐波次增长，长上下文档必须按**这一次**的大小判，
+  // 按整个 run 的最大值或第一次的值判都会算错一半的波次。
+  const p = priceAt(spec, {
+    now,
+    promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0),
+  })
   // 只按 5 分钟档算：全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是
   // **参考数据**（它是真实价格），不是可达的代码分支。别为它加一个 cacheTtl 参数：
   // 没有调用方会传，那条 1h 分支永远走不到。

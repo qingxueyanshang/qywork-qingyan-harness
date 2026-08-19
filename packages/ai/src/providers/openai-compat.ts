@@ -14,7 +14,7 @@
 
 import OpenAI from 'openai'
 import type { ModelSpec } from '../catalog.ts'
-import { classifyProviderError } from '../errors.ts'
+import { classifyProviderError, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
   ChatRequest,
@@ -61,7 +61,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
     this.client = new OpenAI({
       apiKey: profile.apiKey || 'unset',
       ...PROVIDER_HTTP,
-      ...(profile.baseUrl ? { baseURL: profile.baseUrl } : {}),
+      baseURL: normalizeBaseUrl(profile.baseUrl),
       ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
     })
   }
@@ -100,7 +100,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
         req.signal ? { signal: req.signal } : {},
       )) as unknown as AsyncIterable<Record<string, any>>
 
+      let chunks = 0
       for await (const chunk of stream) {
+        chunks++
         if (chunk.usage) applyUsage(usage, chunk.usage)
 
         const choice = chunk.choices?.[0]
@@ -146,6 +148,30 @@ export class OpenAICompatAdapter implements LlmAdapter {
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls }
       }
+
+      /*
+       * **一个 chunk 都没有 = 这不是一次模型答复，必须报错。**
+       *
+       * 判据放在这里而不是上层：只有这里知道「SSE 流是空的」这个事实。
+       * 出了这个函数，`usage` 和 `done` 是无条件 yield 的，上层数事件永远数不出 0。
+       *
+       * 实测形状：Base URL 少了 `/v1` 时中转站对错误路径回 **200 + 一个 HTML 首页**，
+       * 解析器读不出任何 chunk 也不抛错，于是那一轮 0 token、0 步骤、`completed`
+       * ——界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
+       * `normalizeBaseUrl` 已经把这个成因消掉了，但别的成因（反代吞流、
+       * 网关返回空 200）还在，而**静默是比任何一个具体成因都严重的问题**。
+       */
+      if (chunks === 0) {
+        throw new ProviderError({
+          code: 'provider_unavailable',
+          message:
+            '端点回了 200，但响应里没有任何 SSE 数据。常见于 Base URL 指向了非 API 路径' +
+            '（中转站对错误路径往往回一个网页而不是报错），或反代把流吞掉了。',
+          retryable: false,
+          provider: 'openai_compatible',
+          detail: { model: req.model },
+        })
+      }
     } catch (err) {
       throw classifyProviderError('openai_compatible', err)
     }
@@ -172,6 +198,28 @@ export class OpenAICompatAdapter implements LlmAdapter {
       ...buildReasoning(this.spec, req.effort),
     }
   }
+}
+
+/**
+ * 把用户填的 Base URL 归一成带 `/v1` 的 OpenAI 兼容根。
+ *
+ * **这不是「兼容代码」，是消灭一个静默故障。** 实测形状：用户填
+ * `https://中转站/`（少了 `/v1`），SDK 于是请求 `https://中转站/chat/completions`，
+ * 而中转站对这种错误路径返回 **200 + 一个 HTML 首页**。SSE 解析器从 HTML 里
+ * 解析不出任何事件、也不报错，于是那一轮 0 token、0 步骤、`completed`——
+ * 界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
+ *
+ * 补 `/v1` 有一个反例：中转站把 API 挂在别的路径下（`/api` 之类）。那种情况下
+ * 用户填的就已经是完整根，而完整根**几乎总是以 `/v1` 结尾**（OpenAI 协议本身的
+ * 版本段），所以判据取「结尾是不是 `/v1`」而不是「有没有路径」。落到反例上时
+ * 失败是响亮的（404 / 401），不是这次这种静默——两种错的代价不对等。
+ *
+ * 空值走官方根：`openai_responses` 那侧也是同一个常量。
+ */
+export function normalizeBaseUrl(raw: string | undefined): string {
+  const url = (raw ?? '').trim().replace(/\/+$/, '')
+  if (!url) return 'https://api.openai.com/v1'
+  return url.endsWith('/v1') ? url : `${url}/v1`
 }
 
 /**

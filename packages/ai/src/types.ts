@@ -7,7 +7,7 @@
 // `ContextGroup` 的真源在 `core/domain/model.ts`。这里只转出去给 `_group` 用——
 // 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
 import type { ContextGroup, EffortLevel } from '@qywork/core'
-import type { ModelSpec, ProviderKind } from './catalog.ts'
+import type { ModelSpec, ProviderKind, SpecOverride } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
 
@@ -50,6 +50,14 @@ export interface ProviderProfile {
     effortLevels?: ModelSpec['effortLevels']
     thinksByDefault?: boolean
   }
+  /**
+   * 用户在模型库里改过的参数（窗口、上限、单价、档位）。
+   *
+   * 与上面的 `capabilities` 是**两个轴**：这一条是模型本身的属性，换个中转站
+   * 不会变，所以它按模型 id 存；`capabilities` 是「这条链路实测出来的思考能力」，
+   * 同一个模型经不同中转站可以不一样，所以它按「接口 × 模型」存。
+   */
+  spec?: SpecOverride
 }
 
 // ─────────────────────────────── 请求 ───────────────────────────────
@@ -74,9 +82,15 @@ export interface SystemBlock {
   cacheBreakpoint?: boolean
 }
 
+/**
+ * 思考请求。**没有「关掉思考」这一档。**
+ *
+ * 关不关得掉是逐模型不同的产品事实（Fable 5、Grok、Kimi 都关不掉），而这个项目
+ * 从来不需要关它——需要的是「这个模型能不能思考」和「档位字段怎么发」两件事。
+ * 留一个关不掉的开关只会长出「关了没生效」和「关了就 400」两种坏法。
+ */
 export type ThinkingRequest =
   | { mode: 'adaptive'; display?: 'summarized' | 'omitted' }
-  | { mode: 'disabled' }
   | { mode: 'budget'; budgetTokens: number }
 
 export interface WireMessage {

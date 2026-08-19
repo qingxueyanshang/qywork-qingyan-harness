@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
 import type { ProviderProfile } from '../types.ts'
-import { OpenAICompatAdapter } from './openai-compat.ts'
+import { normalizeBaseUrl, OpenAICompatAdapter } from './openai-compat.ts'
 
 const bodies: Record<string, unknown>[] = []
 let server: ReturnType<typeof Bun.serve>
@@ -85,7 +85,7 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
   })
 
   test('Gemini 同样走这条', async () => {
-    expect((await send('gemini-3.1-pro', 'low')).reasoning_effort).toBe('low')
+    expect((await send('gemini-3.1-pro-preview', 'low')).reasoning_effort).toBe('low')
   })
 })
 
@@ -149,5 +149,30 @@ describe('不该发的时候一个字节都不多发', () => {
     expect('reasoning_effort' in body).toBe(false)
     expect('thinking' in body).toBe(false)
     expect('output_config' in body).toBe(false)
+  })
+})
+
+/**
+ * Base URL 归一。
+ *
+ * 复现过的故障：用户填 `https://中转站/`（少了 `/v1`），SDK 于是请求
+ * `https://中转站/chat/completions`，中转站对这种错误路径回 **200 + 一个 HTML 首页**。
+ * 解析器读不出任何 chunk 也不报错，那一轮 0 token、0 步骤、`completed`
+ * ——界面上是「消息发出去了，什么也没发生」。
+ */
+describe('Base URL 归一', () => {
+  test('少了 /v1 就补上', () => {
+    expect(normalizeBaseUrl('https://direct.example.xyz/')).toBe('https://direct.example.xyz/v1')
+    expect(normalizeBaseUrl('https://direct.example.xyz')).toBe('https://direct.example.xyz/v1')
+  })
+
+  test('已经带了就原样，不会补成 /v1/v1', () => {
+    expect(normalizeBaseUrl('https://api.deepseek.com/v1')).toBe('https://api.deepseek.com/v1')
+    expect(normalizeBaseUrl('https://api.deepseek.com/v1/')).toBe('https://api.deepseek.com/v1')
+  })
+
+  test('空值走官方根', () => {
+    expect(normalizeBaseUrl(undefined)).toBe('https://api.openai.com/v1')
+    expect(normalizeBaseUrl('   ')).toBe('https://api.openai.com/v1')
   })
 })

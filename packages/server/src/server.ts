@@ -247,6 +247,7 @@ export function serve(opts: ServeOptions) {
       try {
         const conv = createConversation(opts.store, {
           workspaceId: workspace.id as never,
+          provider: opts.config.active.provider,
           model: opts.config.active.model,
           title: s.title,
         })

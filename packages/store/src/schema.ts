@@ -815,6 +815,22 @@ CREATE TABLE conversation_loaded_tools (
 );
 `,
   },
+  {
+    id: 24,
+    name: 'conversation_provider',
+    /**
+     * 会话记住「发给哪个接口」。
+     *
+     * `model` 一直只是 ModelRef 的一半。另一半靠 `resolveModel` 现猜：
+     * 找哪个接口声明了这个模型，多个则当前接口优先。两家中转站都转
+     * `claude-opus-5` 时这个猜必错一半，而错的表现是请求发去了另一个端点、
+     * 用了另一把 key、按另一份价目表记账——三样都不报错。
+     *
+     * 空串 = 本次迁移之前建的会话，没有记过接口，仍按模型 id 反查。
+     * 新建会话一律写实名，所以空串只存在于存量行，不会再产生。
+     */
+    sql: `ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT '';`,
+  },
 ]
 
 /**

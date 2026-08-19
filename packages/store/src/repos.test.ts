@@ -36,7 +36,7 @@ describe('会话列表排序', () => {
     const { store, ws } = fresh()
     const titles = ['第一个', '第二个', '第三个', '第四个']
     for (const title of titles) {
-      createConversation(store, { workspaceId: ws.id, model: 'm', title })
+      createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm', title })
     }
     const listed = listConversations(store, ws.id).map((c) => c.title)
     expect(listed).toEqual([...titles].reverse())
@@ -45,9 +45,10 @@ describe('会话列表排序', () => {
 
   test('机器会话不进列表', () => {
     const { store, ws } = fresh()
-    createConversation(store, { workspaceId: ws.id, model: 'm', title: '用户的' })
+    createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm', title: '用户的' })
     createConversation(store, {
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       title: '子代理的',
       source: 'workflow',
@@ -60,7 +61,7 @@ describe('会话列表排序', () => {
 describe('run 幂等', () => {
   test('同一 clientRequestId 只对应一个 run', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const key = 'req-1'
     const run = createRun(store, {
       conversationId: conv.id,
@@ -93,7 +94,7 @@ describe('消息高水位', () => {
    */
   test('upperBound 之后的消息不进历史', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const m1 = appendMessage(store, { conversationId: conv.id, role: 'user', content: '第一条' })
     const m2 = appendMessage(store, { conversationId: conv.id, role: 'user', content: '第二条' })
     appendMessage(store, { conversationId: conv.id, role: 'user', content: '排队期间发的' })
@@ -108,7 +109,7 @@ describe('消息高水位', () => {
 describe('工具 step 原地更新', () => {
   test('一次调用只有一行，从 running 更新到终态', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
@@ -144,7 +145,7 @@ describe('工具 step 原地更新', () => {
 describe('run 收尾', () => {
   test('stopReason 必须落库，不存在静默完成', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
@@ -163,7 +164,7 @@ describe('run 收尾', () => {
 
   test('cachedTokens 为 null 表示未回报，不被压成 0', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
@@ -190,8 +191,8 @@ describe('会话所属项目', () => {
     const store = new Store({ path: ':memory:' })
     const a = upsertWorkspace(store, '/tmp/a', 'a')
     const b = upsertWorkspace(store, '/tmp/b', 'b')
-    const ca = createConversation(store, { workspaceId: a.id, model: 'm' })
-    const cb = createConversation(store, { workspaceId: b.id, model: 'm' })
+    const ca = createConversation(store, { workspaceId: a.id, provider: 'p', model: 'm' })
+    const cb = createConversation(store, { workspaceId: b.id, provider: 'p', model: 'm' })
 
     expect(workspaceOf(store, ca.id)?.rootPath).toBe('/tmp/a')
     expect(workspaceOf(store, cb.id)?.rootPath).toBe('/tmp/b')
@@ -217,7 +218,7 @@ describe('会话所属项目', () => {
 describe('会话的最近修改时间', () => {
   test('发一条消息就推进 updated_at', async () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     // Date.now() 的分辨率是毫秒，同一毫秒内写两次就分不出先后。
     await Bun.sleep(2)
     appendMessage(store, { conversationId: conv.id, role: 'user', content: '在吗' })
@@ -230,7 +231,7 @@ describe('会话的最近修改时间', () => {
      而那一行显示出来的时间会当场开始撒谎。 */
   test('重命名不推进 updated_at', async () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     await Bun.sleep(2)
     const renamed = setConversationTitle(store, conv.id, '改过的名字')
     expect(renamed?.title).toBe('改过的名字')
@@ -249,7 +250,12 @@ describe('归档与硬删', () => {
   /* 归档只改「显不显示」：列表里没有了，按 id 仍然读得回。 */
   test('归档之后不进列表，但数据还在', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: '要归档的' })
+    const conv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'm',
+      title: '要归档的',
+    })
     expect(archiveConversation(store, conv.id)).toBe(true)
     expect(listConversations(store, ws.id).map((c) => c.id)).not.toContain(conv.id)
     expect(getConversation(store, conv.id)?.title).toBe('要归档的')
@@ -265,7 +271,7 @@ describe('归档与硬删', () => {
    */
   test('删掉会话，消息与 run 一并没了', () => {
     const { store, ws } = fresh()
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const msg = appendMessage(store, { conversationId: conv.id, role: 'user', content: '喂' })
     const run = createRun(store, {
       conversationId: conv.id,

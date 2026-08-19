@@ -234,6 +234,8 @@ export interface SubscribeCommand {
 export interface SetModelCommand {
   type: 'conversation.setModel'
   conversationId: ConversationId
+  /** 接口名。切模型实质是「切接口 + 切模型」，两个一起发，不许只发一半。 */
+  provider: string
   model: string
 }
 

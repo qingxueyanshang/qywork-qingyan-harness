@@ -46,12 +46,6 @@ describe('脱敏', () => {
     expect(redactConfig(c).providers.main?.hasApiKey).toBe(false)
   })
 
-  test('apiKeyEnv 照常回 —— 它是变量名不是值', () => {
-    const c = cfg()
-    c.providers.main = { kind: 'anthropic', apiKeyEnv: 'ANTHROPIC_API_KEY', models: { m: {} } }
-    expect(redactConfig(c).providers.main?.apiKeyEnv).toBe('ANTHROPIC_API_KEY')
-  })
-
   test('非密钥字段原样保留', () => {
     const r = redactConfig(cfg())
     expect(r.mode).toBe('auto')

@@ -5,7 +5,7 @@
  * 经中转站以 OpenAI 协议调 Claude 是常见配置，按名字猜会把它路由到错误的协议上。
  */
 
-import { lookupModel } from './catalog.ts'
+import { applySpecOverride, lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { AnthropicAdapter } from './providers/anthropic.ts'
 import { OpenAICompatAdapter } from './providers/openai-compat.ts'
@@ -56,12 +56,14 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
     })
   }
 
-  const spec = lookupModel(profile.model, profile.kind, now)
+  // 顺序是「目录 seed → 模型库里改过的参数 → 探测 → 用户显式的 maxOutputTokens」。
+  // 库那一层在探测之前：它是用户手填的模型属性（窗口、价格），而探测是这条链路
+  // 实测出来的思考能力，后者更具体。
+  const spec = applySpecOverride(lookupModel(profile.model, profile.kind, now), profile.spec)
 
   // 探测出来的能力**覆盖**目录里的猜测。
   //
-  // 顺序是「目录 → 探测 → 用户显式的 maxOutputTokens」：目录是猜的，
-  // 探测是实测的，用户写死的是他自己要的。越往后越权威。
+  // 目录是猜的，探测是实测的，用户写死的是他自己要的。越往后越权威。
   //
   // 没有这一步的话 `qy probe` 就只是打印一份报告——探得再准也不影响任何请求，
   // 又是一条「有产出没有消费者」的链路。

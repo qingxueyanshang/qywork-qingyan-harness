@@ -17,7 +17,7 @@
  *   所以这里根本不碰它们。探测的价值在于它报的每一条都是实测的。
  */
 
-import { EFFORT_ORDER, type EffortLevel } from '@qywork/core'
+import type { EffortLevel } from '@qywork/core'
 import type { ProviderKind, ThinkingMode } from './catalog.ts'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, ProviderProfile } from './types.ts'
@@ -211,31 +211,30 @@ export async function probeModel(
       if (budget.step.ok) thinking = 'budget_tokens'
     }
 
-    // ── 3. 能不能关掉思考 ──
-    //
-    // 关不掉是一种**能力事实**（Fable 5 就是这样），不是失败。
-    // 报成 `always_on` 而不是「不支持思考」——两者对装配的影响完全相反。
-    if (thinking === null && thinksByDefault) {
-      thinking = 'always_on'
-    } else if (thinking !== null) {
-      await pause()
-      const off = await attempt(
-        profile,
-        'thinking=disabled',
-        { thinking: { mode: 'disabled' } },
-        opts.signal,
-      )
-      probes.push(off.step)
-      if (!off.step.ok) thinking = 'always_on'
-    }
+    // 两种形态都被拒 = 这个端点不吃思考字段。省略字段时它自己会思考的话，
+    // 那是「恒开」而不是「不支持」——两者对装配的影响完全相反。
     if (thinking === null) thinking = thinksByDefault ? 'always_on' : 'none'
   }
 
-  // ── 4. effort 档位 ──
-  //
-  // 逐档试。不是「试一个通了就假设全通」——实测过 Opus 5 关思考时
-  // 只到 high，xhigh/max 会 400，这种半支持只有逐档试才看得出来。
-  const effortLevels: EffortLevel[] = []
+  /*
+   * ── 4. effort 档位 ──
+   *
+   * **档位表只从内置库取，探测只回答「这条链路接不接受这个控制面」。**
+   *
+   * 「端点没有 400」永远证明不了一个档存在：OpenAI 兼容端点对不认识的
+   * `reasoning_effort` 一律照收后忽略，中转站更是什么都收。遍历全量词表逐档试
+   * 的结果是探一次就写回五档，而 grok-4.6 官方只有 low/medium/high/xhigh——
+   * 界面照着画出一个厂商根本没有的档，选了不会有任何反应。
+   *
+   * 所以：库声明哪几档就试哪几档，**试通一档就整份采纳库的档位**；
+   * 连试两档都被拒 = 这条中转不接受这个控制面，报空数组并说清是谁拒的。
+   * 不逐档打满还有一个实际好处——请求数从五降到一两次。
+   *
+   * 库里是空数组（Haiku 4.5、Qwen 那些）= 这个模型本来就没有 effort，
+   * 一个请求都不用发。
+   */
+  const declared = buildAdapter(profile).spec.effortLevels
+  let effortLevels: EffortLevel[] = []
   if (!transmits.effort) {
     probes.push({
       name: 'effort',
@@ -243,15 +242,44 @@ export async function probeModel(
       skipped: true,
       detail: '本协议下客户端不发送 effort 字段，无从探测',
     })
-  } else
-    for (const level of EFFORT_ORDER) {
+  } else if (declared.length === 0) {
+    probes.push({
+      name: 'effort',
+      ok: false,
+      skipped: true,
+      detail: '内置库里这个模型没有 effort 档位，不试',
+    })
+  } else {
+    let accepted = false
+    // 只试前两档：一档通了就够（控制面成立），两档都被拒就是真不接受。
+    for (const level of declared.slice(0, 2)) {
       await pause()
       const r = await attempt(profile, `effort=${level}`, { effort: level }, opts.signal)
       probes.push(r.step)
-      if (r.step.ok) effortLevels.push(level)
+      if (r.step.ok) {
+        accepted = true
+        break
+      }
     }
+    if (accepted) {
+      effortLevels = [...declared]
+    } else {
+      probes.push({
+        name: 'effort 控制面',
+        ok: false,
+        detail: `内置库声明这个模型有 ${declared.join(' / ')}，但这条链路把它拒了`,
+      })
+    }
+  }
 
-  return { reachable: true, thinking, untested, effortLevels, thinksByDefault, probes }
+  return {
+    reachable: true,
+    thinking,
+    untested,
+    effortLevels,
+    thinksByDefault,
+    probes,
+  }
 }
 
 /**

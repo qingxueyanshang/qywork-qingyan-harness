@@ -22,7 +22,7 @@ export interface OrchestratorDeps {
    * 但用户配在 qywork 里的那几把它一把都用不上，没有理由拿到。
    * 不传等于「没有已知凭证」，不等于「不用剥」——装配方应当始终提供。
    */
-  secrets?: { values: string[]; envNames: string[] }
+  secrets?: { values: string[] }
   /** 内置后端的执行入口：跑一个子会话并返回最终文本。 */
   runBuiltin(input: {
     role: Role

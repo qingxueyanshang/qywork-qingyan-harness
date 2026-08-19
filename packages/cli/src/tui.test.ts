@@ -145,7 +145,12 @@ describe('用量与导出', () => {
   test('有会话时 /export 能导出', async () => {
     const { c: base, store } = ctx()
     const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: 't' })
+    const conv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'm',
+      title: 't',
+    })
     const { c } = { c: { ...base, conversationId: conv.id } as CommandContext }
     expect(await handleCommand('/export', c)).toBe('ok')
     store.close()

@@ -87,6 +87,8 @@ export type AgentEvent =
 export interface ConversationUpdatedEvent {
   type: 'conversation.updated'
   conversationId: ConversationId
+  /** 接口名。与 `model` 一起发——两端显示的「当前用谁」是这一对，不是模型一个。 */
+  provider: string
   model: string
   title: string
   /** 账本里的 `updated_at`，侧栏那一行显示的就是它。 */

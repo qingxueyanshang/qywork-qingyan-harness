@@ -22,7 +22,12 @@ import {
 function fresh() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'claude-opus-5', title: 't' })
+  const conv = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'p',
+    model: 'claude-opus-5',
+    title: 't',
+  })
   return { store, ws, conv }
 }
 
@@ -40,15 +45,24 @@ function newRun(store: Store, ws: { id: string }, conv: { id: string }) {
 describe('会话级模型切换', () => {
   test('写入后 getConversation 读到新模型', () => {
     const { store, conv } = fresh()
-    const updated = setConversationModel(store, conv.id, 'deepseek-v4-pro')
+    const updated = setConversationModel(store, conv.id, {
+      provider: 'mirror',
+      model: 'deepseek-v4-pro',
+    })
     expect(updated?.model).toBe('deepseek-v4-pro')
-    expect(getConversation(store, conv.id)?.model).toBe('deepseek-v4-pro')
+    expect(updated?.provider).toBe('mirror')
+    const back = getConversation(store, conv.id)
+    expect(back?.model).toBe('deepseek-v4-pro')
+    // 接口跟着一起换：只写模型的话，同名模型挂在两个接口下时会话归谁靠猜。
+    expect(back?.provider).toBe('mirror')
     store.close()
   })
 
   test('会话不存在时返回 null，不静默成功', () => {
     const { store } = fresh()
-    expect(setConversationModel(store, 'conv_nope' as never, 'm')).toBeNull()
+    expect(
+      setConversationModel(store, 'conv_nope' as never, { provider: 'p', model: 'm' }),
+    ).toBeNull()
     store.close()
   })
 })
@@ -341,7 +355,7 @@ describe('会话级读记录', () => {
 
   test('按会话隔离 —— 另一条会话读过不算你读过', () => {
     const { store, ws, conv } = fresh()
-    const other = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const other = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     recordFileRead(store, conv.id, 'C:/ws/a.ts', 'h1')
     expect(fileReadHash(store, other.id, 'C:/ws/a.ts')).toBeNull()
     store.close()
@@ -363,7 +377,7 @@ describe('终态 run 底下的孤儿 step', () => {
   test('没有任何 stale run 时，孤儿 step 照样被收尾', () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,

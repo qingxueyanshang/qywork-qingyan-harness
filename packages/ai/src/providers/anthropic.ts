@@ -17,7 +17,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import { EFFORT_ORDER, type EffortLevel } from '@qywork/core'
+import type { EffortLevel } from '@qywork/core'
 import type { ModelSpec } from '../catalog.ts'
 import { classifyProviderError } from '../errors.ts'
 import { estimateMessage, estimateRequest, estimateSchemas, estimateText } from '../tokens.ts'
@@ -179,7 +179,7 @@ export class AnthropicAdapter implements LlmAdapter {
 
   private buildBody(req: ChatRequest) {
     const thinking = this.resolveThinking(req)
-    const effort = this.resolveEffort(req, thinking)
+    const effort = this.resolveEffort(req)
 
     return {
       model: req.model,
@@ -211,18 +211,13 @@ export class AnthropicAdapter implements LlmAdapter {
         // 恒开：任何显式配置都 400，省略即可。
         return undefined
       case 'adaptive_only': {
-        if (want?.mode === 'disabled') {
-          // 允不允许关、关到哪一档，由 spec 说了算。
-          if (this.spec.disableThinkingMaxEffort === null) return undefined
-          return { type: 'disabled' as const }
-        }
         return {
           type: 'adaptive' as const,
           display: want?.mode === 'adaptive' ? (want.display ?? 'summarized') : 'summarized',
         }
       }
       case 'budget_tokens': {
-        if (!want || want.mode === 'disabled') return undefined
+        if (!want) return undefined
         if (want.mode === 'budget') {
           return { type: 'enabled' as const, budget_tokens: want.budgetTokens }
         }
@@ -235,27 +230,15 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 
   /**
-   * effort 档位。关键约束：思考被显式关闭时，effort 不能超过 spec 允许的上限
-   * （Opus 5 是 high），否则 400。这里静默降档而不是报错——用户的意图是
-   * 「快一点」，为此拒绝整个请求没有意义。
+   * effort 档位。越界值降到这个模型的最高可用档而不是报错——各家档位面不同
+   * （Sonnet 4.6 没有 xhigh），为一个能降的值拒绝整个请求没有意义。
    */
-  private resolveEffort(
-    req: ChatRequest,
-    thinking: { type: string } | undefined,
-  ): EffortLevel | undefined {
+  private resolveEffort(req: ChatRequest): EffortLevel | undefined {
     if (!this.spec.effortLevels.length) return undefined
-    let effort = req.effort
+    const effort = req.effort
     if (!effort) return undefined
-    if (!this.spec.effortLevels.includes(effort)) {
-      effort = this.spec.effortLevels[this.spec.effortLevels.length - 1]!
-    }
-    if (thinking?.type === 'disabled' && this.spec.disableThinkingMaxEffort) {
-      const cap = this.spec.disableThinkingMaxEffort
-      if (EFFORT_ORDER.indexOf(effort) > EFFORT_ORDER.indexOf(cap)) {
-        effort = cap
-      }
-    }
-    return effort
+    if (this.spec.effortLevels.includes(effort)) return effort
+    return this.spec.effortLevels[this.spec.effortLevels.length - 1]!
   }
 
   /**
@@ -269,8 +252,7 @@ export class AnthropicAdapter implements LlmAdapter {
   private resolveMaxTokens(req: ChatRequest, thinking: { type: string } | undefined): number {
     const ceiling = this.spec.maxOutputTokens
     let want = Math.min(req.maxOutputTokens, ceiling)
-    const willThink =
-      thinking?.type !== 'disabled' && (thinking !== undefined || this.spec.thinksByDefault)
+    const willThink = thinking !== undefined || this.spec.thinksByDefault
     if (willThink) {
       want = Math.max(want, Math.min(MIN_TOKENS_WHEN_THINKING, ceiling))
     }

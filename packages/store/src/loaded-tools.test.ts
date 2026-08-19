@@ -18,7 +18,7 @@ import {
 function conv() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-  const c = createConversation(store, { workspaceId: ws.id, model: 'm' })
+  const c = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
   return { store, id: c.id }
 }
 
@@ -48,8 +48,8 @@ describe('已加载的外部工具', () => {
   test('只影响这一条会话', () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-    const a = createConversation(store, { workspaceId: ws.id, model: 'm' })
-    const b = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const a = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const b = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
 
     recordLoadedTools(store, a.id, ['mcp__github__search'])
     expect(listLoadedTools(store, a.id).size).toBe(1)

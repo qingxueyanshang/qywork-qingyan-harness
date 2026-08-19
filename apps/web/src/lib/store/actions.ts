@@ -13,7 +13,6 @@ import {
   isDesktopShell,
   loadServerConfig,
   loadWorkspaceExtensions,
-  type RedactedConfig,
   saveServerConfig,
   watchWorkspace,
 } from './settings.ts'
@@ -181,10 +180,10 @@ export function retryLastRun(): void {
  * 乐观更新在这里是错的——切换可能失败（会话已删），而模型显示错了会直接
  * 导致费用估算和能力预期都对不上。
  */
-export function setModel(model: string): void {
+export function setModel(provider: string, model: string): void {
   const id = state.activeConversation
   if (!id) return
-  client.send({ type: 'conversation.setModel', conversationId: id as never, model })
+  client.send({ type: 'conversation.setModel', conversationId: id as never, provider, model })
 }
 
 /**
@@ -198,40 +197,24 @@ export function setModel(model: string): void {
  * 只负责落盘。界面那一行由调用方就地更新——模型目录的 signal 住在选择器组件里，
  * 从这里去改它要反向依赖组件，那条边一加就成环。
  */
-export async function setEffort(effort: EffortLevel | null): Promise<void> {
-  const model = activeModel()
-  if (!model) return
+export async function setEffort(
+  provider: string,
+  model: string,
+  effort: EffortLevel | null,
+): Promise<void> {
   const payload = await loadServerConfig()
-  const owner = ownerProvider(payload.config, model)
+  const owner = payload.config.providers[provider]
   if (!owner) return
-  const providers = payload.config.providers
-  const entry = { ...providers[owner]?.models[model] }
+  const entry = { ...owner.models[model] }
   if (effort) entry.effort = effort
   else delete entry.effort
   await saveServerConfig({
     ...payload.config,
     providers: {
-      ...providers,
-      [owner]: {
-        ...providers[owner]!,
-        models: { ...providers[owner]!.models, [model]: entry },
-      },
+      ...payload.config.providers,
+      [provider]: { ...owner, models: { ...owner.models, [model]: entry } },
     },
   })
-}
-
-/**
- * 这个模型挂在哪个接口下。
- *
- * 规则与服务端的 `resolveModel` 一致：**先找哪个接口声明了它，当前接口优先**，
- * 都没有就落到当前接口。两处答案不一致的话，写进去的那一格和读出来的不是同一格。
- */
-function ownerProvider(config: RedactedConfig, model: string): string | undefined {
-  const owners = Object.keys(config.providers).filter((n) => config.providers[n]?.models[model])
-  if (owners.includes(config.active.provider)) return config.active.provider
-  return (
-    owners[0] ?? (config.providers[config.active.provider] ? config.active.provider : undefined)
-  )
 }
 
 /**
@@ -283,34 +266,66 @@ export function runTeam(goal: string): void {
   })
 }
 
+/** 一个接口下挂着的一个模型。 */
 export interface ModelOption {
   id: string
+  /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
-  /** **协议**，不是厂商。 */
-  provider: string
-  /** 厂商 id；null = 未收录。 */
-  vendor: string | null
   /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */
   effortLevels: EffortLevel[]
   /** 用户为这个模型选定的档。null = 没选过，不发思考字段。与上一行同源。 */
   effort: EffortLevel | null
   /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
   currency: 'USD' | 'CNY'
-  /** false = 内置目录里没有，来自用户自己配的档案（自建端点 / 中转）。 */
+  /** false = 内置目录里没有，来自用户自己配的模型 id（自建端点 / 中转）。 */
   known: boolean
 }
 
-export interface VendorOption {
+/** 一个接口。名字是用户在设置里起的，选择器就按它分组。 */
+export interface ProviderModels {
+  name: string
+  models: ModelOption[]
+}
+
+/**
+ * 模型库里的一条 = **一个模型的参数**。
+ *
+ * 库和接口是两件事：库回答「这个模型多大、多贵、吃哪几档思考」，接口回答
+ * 「用谁的端点和哪把 key」。所以这个类型里一个接口字段都没有。
+ *
+ * `source` 分 `seed`（源码里的内置值）和 `user`（改过或自己加的），
+ * 界面据此决定能不能「还原」。
+ */
+export interface LibraryModel {
+  id: string
+  label: string
+  contextWindow: number
+  maxOutputTokens: number
+  input: number
+  output: number
+  currency: 'USD' | 'CNY'
+  effortLevels: EffortLevel[]
+  source: 'seed' | 'user'
+  /**
+   * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。
+   * 它是能力边界，必须显示——只画一个数字的话，用户对着账单会发现对不上，
+   * 而差价是两倍。
+   */
+  priceNotes?: string[]
+}
+
+export interface LibraryVendor {
   id: string
   displayName: string
-  defaultKind: string
-  defaultBaseUrl?: string
-  apiKeyEnv: string
+  models: LibraryModel[]
 }
 
 export interface ModelCatalog {
-  models: ModelOption[]
-  vendors: VendorOption[]
+  /** 可选的：配置里真有的接口 × 模型。 */
+  providers: ProviderModels[]
+  active: { provider: string; model: string }
+  /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，参数才照着 id 从这里查。 */
+  library: LibraryVendor[]
 }
 
 /** 模型列表按需拉取：不是每个会话都会点开选择器，没必要开屏就请求。 */
@@ -318,11 +333,17 @@ export async function loadModels(): Promise<ModelCatalog> {
   return client.api<ModelCatalog>('/api/models')
 }
 
-/** 当前会话正在用的模型。会话不存在时返回 null，不编一个默认值糊弄。 */
-export function activeModel(): string | null {
+/**
+ * 当前会话正在用的「接口 × 模型」。会话不存在时返回 null，不编一个默认值糊弄。
+ *
+ * **两个一起返回。** 只回模型名的话，两个接口挂同一个 id 时选择器高亮的是
+ * 两条，而用户切过去的只有一条。
+ */
+export function activeModel(): { provider: string; model: string } | null {
   const id = state.activeConversation
   if (!id) return null
-  return state.conversations.find((c) => c.id === id)?.model ?? null
+  const conv = state.conversations.find((c) => c.id === id)
+  return conv ? { provider: conv.provider, model: conv.model } : null
 }
 
 /** 重命名。空标题的校验只在服务端（422 且不落盘），两边各写一份必然漂移。 */

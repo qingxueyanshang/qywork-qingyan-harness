@@ -13,7 +13,7 @@
  */
 
 import { describeProbe, probeModel, toCapabilities } from '@qywork/ai'
-import { loadConfig, resolveApiKey, resolveModel, saveConfig } from '@qywork/runtime'
+import { loadConfig, resolveModel, saveConfig } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -39,7 +39,7 @@ export async function runProbe(args: string[]): Promise<number> {
 
   const outcome = await probeModel({
     kind: stored.kind,
-    apiKey: resolveApiKey(stored),
+    apiKey: stored.apiKey ?? '',
     model: stored.model,
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),

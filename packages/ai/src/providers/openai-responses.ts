@@ -60,8 +60,7 @@ import type {
   WireToolCall,
 } from '../types.ts'
 import { PROVIDER_HTTP } from '../types.ts'
-
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+import { normalizeBaseUrl } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
@@ -79,7 +78,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
-    this.baseUrl = (profile.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '')
+    // 与兼容协议同一条归一：少了 `/v1` 的地址在多数中转站上会回一个 200 的网页，
+    // 而那种失败是静默的（0 事件、0 token、当成正常完成）。
+    this.baseUrl = normalizeBaseUrl(profile.baseUrl)
     this.headers = {
       'content-type': 'application/json',
       ...(profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : {}),
@@ -320,10 +321,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    */
   private buildReasoning(req: ChatRequest): Record<string, unknown> {
     if (this.spec.thinking === 'none') return {}
-    if (req.thinking?.mode === 'disabled') {
-      // `always_on` 是「连关的字段都不接受」，只能整个省略。
-      return this.spec.thinking === 'always_on' ? {} : { reasoning: { effort: 'none' } }
-    }
     const effort =
       req.effort && this.spec.effortLevels.includes(req.effort) ? req.effort : undefined
     return {

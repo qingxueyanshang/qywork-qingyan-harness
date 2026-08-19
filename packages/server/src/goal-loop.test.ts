@@ -172,6 +172,7 @@ function conversation(): ConversationId {
   events = []
   return createConversation(store, {
     workspaceId: workspaceId as never,
+    provider: 'fake',
     model: 'deepseek-v4-flash',
   }).id
 }

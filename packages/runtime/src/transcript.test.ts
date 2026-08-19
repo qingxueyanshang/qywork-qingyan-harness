@@ -151,7 +151,7 @@ describe('历史装配', () => {
   function fixture() {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
-    const conv = createConversation(store, { workspaceId: ws.id, model: 'm' })
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const ask = (text: string) =>
       appendMessage(store, { conversationId: conv.id, role: 'user', content: text }).id
     const run = (userMessageId: MessageId) =>

@@ -82,7 +82,7 @@ import {
   scopeRoots,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
-import { collectSecrets, type QyConfig, resolveApiKey, resolveModel } from './config.ts'
+import { collectSecrets, type ModelRef, type QyConfig, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
@@ -211,17 +211,18 @@ export class Session {
   }
 
   /**
-   * 按模型解析出该走哪个接口。
+   * 解析出这一轮该走哪个接口、带什么凭证。
    *
-   * 模型是会话级的，而 API Key / baseUrl 挂在接口上，所以「切模型」实质是
-   * 「切接口 + 切模型」。规则见 `resolveModel`——解析只有那一份，
-   * 界面上列出来的协议和这一轮真的发出去的必须是同一个结论。
+   * 入参是 `ModelRef` 时**接口是指定死的**（会话自己记着归谁），是裸模型名时
+   * 按模型 id 反查接口——后者留给 `qy ask --model x` 那种用户点名模型不点名接口
+   * 的入口。规则只有 `resolveModel` 那一份：界面上列出来的协议和这一轮真的
+   * 发出去的必须是同一个结论。
    *
    * **每次用时现解析**：在构造函数里做一次就固定的话，会话级模型切换无从生效。
    */
-  private resolveProfile(model?: string): ProviderProfile {
+  private resolveProfile(target?: string | ModelRef): ProviderProfile {
     const { providers, active } = this.opts.config
-    const stored = resolveModel(this.opts.config, model)
+    const stored = resolveModel(this.opts.config, target)
     if (!stored) {
       throw new Error(
         `配置里没有名为 "${active.provider}" 的接口。可用：${Object.keys(providers).join(', ') || '（空）'}`,
@@ -229,12 +230,13 @@ export class Session {
     }
     return {
       kind: stored.kind,
-      apiKey: resolveApiKey(stored),
+      apiKey: stored.apiKey ?? '',
       model: stored.model,
       ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
       ...(stored.maxOutputTokens ? { maxOutputTokens: stored.maxOutputTokens } : {}),
       ...(stored.headers ? { headers: stored.headers } : {}),
       ...(stored.capabilities ? { capabilities: stored.capabilities } : {}),
+      ...(stored.spec ? { spec: stored.spec } : {}),
     }
   }
 
@@ -245,12 +247,12 @@ export class Session {
    * 不能每波次重建（会丢读文件状态），run 之间重建是必须的。
    */
   private makeLoop(
-    model: string,
+    target: string | ModelRef,
     conversationId: ConversationId,
     compaction?: CompactionPort,
   ): AgentLoop {
     return new AgentLoop({
-      adapter: buildAdapter(this.resolveProfile(model)),
+      adapter: buildAdapter(this.resolveProfile(target)),
       registry: this.registry,
       systemPrompt: this.opts.extraSystem
         ? `${buildSystemPrompt()}\n\n## 角色\n\n${this.opts.extraSystem}`
@@ -268,7 +270,7 @@ export class Session {
           externalTools: this.pendingTools?.index() ?? [],
         }),
       makeToolContext: (runId, emit) =>
-        this.makeToolContext(runId, emit, model, conversationId as ConversationId),
+        this.makeToolContext(runId, emit, target, conversationId as ConversationId),
       persist: this.makePersistence(),
       ...(compaction ? { compaction } : {}),
     })
@@ -280,9 +282,9 @@ export class Session {
    * 刻意不带工具、不带冻结前缀——摘要任务只需要文本进文本出，
    * 带上工具 schema 只会让这次调用也逼近容量上限，而它恰恰是在容量已经超了的时候发的。
    */
-  private makeSummarizer(model: string): Summarizer {
+  private makeSummarizer(target: string | ModelRef): Summarizer {
     return async (prompt, budgetChars) => {
-      const profile = this.resolveProfile(model)
+      const profile = this.resolveProfile(target)
       const adapter = buildAdapter(profile)
       let text = ''
       // 摘要也花钱。它不属于任何一个 run 的 usage，所以在账本出现之前
@@ -334,6 +336,8 @@ export class Session {
       existing ??
       createConversation(store, {
         workspaceId: this.workspaceId as never,
+        // 单轮显式指定的只是模型名，指不出接口，所以新会话一律记默认那一对。
+        provider: config.active.provider,
         model: options?.model ?? config.active.model,
         ...(options?.source ? { source: options.source } : {}),
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
@@ -344,10 +348,21 @@ export class Session {
     // 下一轮又被配置文件里的默认值悄悄改回去。
     const conversation = getConversation(store, conversationId)
     const model = options?.model ?? conversation?.model ?? config.active.model
+    /*
+     * 这一轮发给哪个接口。
+     *
+     * 会话记着接口名就按那一对发，**不再按模型 id 反查**——两个接口挂同一个
+     * 模型 id 时反查的结果取决于枚举顺序，而错了是换端点换 key 换价目表，不报错。
+     *
+     * 两种情况退回裸模型名：单轮显式 `--model`（用户点的是模型，不是接口），
+     * 以及迁移 24 之前建的会话（`provider` 是空串）。
+     */
+    const target: string | ModelRef =
+      !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
     // 思考强度**按这一轮真正要用的那个模型解析**，真源是配置里
     // 「接口 × 模型」那一格。不存会话级的第二份，也不共用一个全局值——
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
-    const effort = resolveModel(config, model)?.effort
+    const effort = resolveModel(config, target)?.effort
 
     // 重试不新增消息：要重现的是「当时那个上下文」。新写一条会让同一句话
     // 在历史里出现两遍，模型看到的输入和第一次就不一样了。
@@ -437,6 +452,7 @@ export class Session {
       yield {
         type: 'conversation.updated',
         conversationId,
+        provider: announced.provider,
         model: announced.model,
         title: announced.title,
         updatedAt: announced.updatedAt,
@@ -461,7 +477,7 @@ export class Session {
       store,
       conversationId,
       messageIdUpperBound: run.messageIdUpperBound,
-      summarize: this.makeSummarizer(model),
+      summarize: this.makeSummarizer(target),
     })
 
     // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
@@ -514,7 +530,7 @@ export class Session {
      */
     let failure: { message: string; code: string } | null = null
     try {
-      for await (const ev of this.makeLoop(model, conversationId, compaction).run({
+      for await (const ev of this.makeLoop(target, conversationId, compaction).run({
         runId: run.id,
         history,
         ...(effort ? { effort } : {}),
@@ -544,7 +560,7 @@ export class Session {
             conversationId,
             workspaceId: this.workspaceId,
             model,
-            provider: this.resolveProfile(model).kind,
+            provider: this.resolveProfile(target).kind,
             inputTokens: ev.usage.inputTokens,
             outputTokens: ev.usage.outputTokens,
             cachedTokens: ev.usage.cachedTokens,
@@ -827,9 +843,10 @@ export class Session {
   private makeToolContext(
     runId: RunId,
     emit: (e: AgentEvent) => void,
-    model: string,
+    target: string | ModelRef,
     conversationId: ConversationId,
   ): ToolContext {
+    const model = typeof target === 'string' ? target : target.model
     const secrets = collectSecrets(this.opts.config)
     const store = this.opts.store
     return {
@@ -839,7 +856,7 @@ export class Session {
       model,
       // 投递预算按窗口算，且**在执行时**应用——换模型只影响之后的读取，
       // 已落库的 step 一个字节不改（投影因此仍是纯函数）。
-      contextWindow: buildAdapter(this.resolveProfile(model)).spec.contextWindow,
+      contextWindow: buildAdapter(this.resolveProfile(target)).spec.contextWindow,
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，

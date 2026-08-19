@@ -15,7 +15,12 @@ import { RuntimeCompaction } from './compaction.ts'
 function fresh(messageCount = 8) {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
-  const conv = createConversation(store, { workspaceId: ws.id, model: 'm', title: 't' })
+  const conv = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'p',
+    model: 'm',
+    title: 't',
+  })
   const ids: MessageId[] = []
   for (let i = 0; i < messageCount; i++) {
     ids.push(

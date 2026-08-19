@@ -256,16 +256,16 @@ export interface ToolContext {
   /**
    * 已知凭证，交给子进程之前要剥掉的东西。
    *
-   * `values` 是 key 明文，`envNames` 是配置里 `apiKeyEnv` 点名的变量名。
-   * 起子进程的工具（目前只有 `run_command`）**必须**用它过一遍环境变量与输出。
+   * `values` 是 key 明文。起子进程的工具（目前只有 `run_command`）**必须**
+   * 用它过一遍环境变量与输出。
    *
    * 这里刻意写成结构类型而不是 `import type { SecretSet } from '@qywork/tools'`：
-   * tools 依赖 agent，反向 import 会成环。为一个两字段的对象引一条循环依赖不划算。
+   * tools 依赖 agent，反向 import 会成环。为一个单字段的对象引一条循环依赖不划算。
    *
    * 可选是为了让现有的测试装配不必全部改；**但工具侧不能因为它缺失就跳过脱敏**，
    * 缺失时按空集合处理即可（那是「没有已知凭证」，不是「不用剥」）。
    */
-  secrets?: { values: string[]; envNames: string[] }
+  secrets?: { values: string[] }
   /** 显式放行的环境变量名。只豁免「名字像凭证」这条判据，豁免不了值命中。 */
   envAllowList?: string[]
   /**

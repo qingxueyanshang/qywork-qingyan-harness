@@ -27,7 +27,7 @@ const PRESETS: Preset[] = [
   {
     key: 'anthropic',
     label: 'Anthropic（Claude）',
-    provider: { kind: 'anthropic', apiKeyEnv: 'ANTHROPIC_API_KEY', models: {} },
+    provider: { kind: 'anthropic', models: {} },
     model: 'claude-opus-5',
     keyUrl: 'https://console.anthropic.com/settings/keys',
   },
@@ -37,7 +37,6 @@ const PRESETS: Preset[] = [
     provider: {
       kind: 'openai_compatible',
       baseUrl: 'https://api.deepseek.com/v1',
-      apiKeyEnv: 'DEEPSEEK_API_KEY',
       models: {},
     },
     model: 'deepseek-v4-flash',
@@ -49,7 +48,6 @@ const PRESETS: Preset[] = [
     provider: {
       kind: 'openai_compatible',
       baseUrl: 'https://api.openai.com/v1',
-      apiKeyEnv: 'OPENAI_API_KEY',
       models: {},
     },
     model: 'gpt-5',
@@ -133,17 +131,10 @@ export async function runInit(args: string[]): Promise<number> {
 
   // 本机服务不需要 key，别逼用户对着一个不需要填的输入框想「我是不是漏了什么」。
   if (preset.key !== 'local') {
-    const fromEnv = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined
-    if (fromEnv) {
-      process.stderr.write(
-        `\n${DIM}检测到环境变量 ${provider.apiKeyEnv} 已设置，直接用它（配置文件里不存明文）。${RESET}\n`,
-      )
-    } else {
-      if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
-      process.stderr.write(`API Key（直接回车则跳过，之后设 ${provider.apiKeyEnv} 也行）：`)
-      const key = (await readLine()).trim()
-      if (key) provider.apiKey = key
-    }
+    if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
+    process.stderr.write('API Key（直接回车则跳过，之后可以在设置页里补）：')
+    const key = (await readLine()).trim()
+    if (key) provider.apiKey = key
   }
 
   const existing = existsSync(configPath()) ? await loadConfig() : null
@@ -158,13 +149,9 @@ export async function runInit(args: string[]): Promise<number> {
   }
   await saveConfig(cfg)
 
-  const keyed =
-    Boolean(provider.apiKey) || Boolean(provider.apiKeyEnv && process.env[provider.apiKeyEnv])
   process.stderr.write(`\n${BOLD}已写入${RESET} ${configPath()}\n`)
-  if (!keyed && preset.key !== 'local') {
-    process.stderr.write(
-      `${DIM}还差 key：设置环境变量 ${provider.apiKeyEnv}，或往配置文件里加 "apiKey"。${RESET}\n`,
-    )
+  if (!provider.apiKey && preset.key !== 'local') {
+    process.stderr.write(`${DIM}还差 key：往配置文件里加 "apiKey"，或在设置页里填。${RESET}\n`)
   } else {
     process.stderr.write(`${DIM}试一下：qy exec "介绍一下这个目录里的代码"${RESET}\n`)
   }

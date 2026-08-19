@@ -59,6 +59,17 @@ export interface Conversation {
   /** 所属工作区（一个本地目录）。业务路径必须显式绑定，不做隐式全局回退。 */
   workspaceId: WorkspaceId
   title: string
+  /**
+   * 这条会话发给哪个接口（`config.providers` 的键）。
+   *
+   * **和 `model` 是一对，不能只存一半。** 两个接口挂同一个模型 id 是常态
+   * （两家中转站都转 `claude-opus-5`），只存模型的话「这条会话归谁」在落盘那一刻
+   * 就不存在了，后面每一层都只能按 id 反查，查出哪个取决于对象键的枚举顺序。
+   *
+   * 空串 = 迁移 24 之前建的会话，没记过接口；按模型 id 反查，与迁移前行为一致。
+   * 新建会话一律写实名。
+   */
+  provider: string
   model: string
   /** 上下文压缩的唯一投影权威。有界 JSON，正文仍只存在 messages/steps 里。 */
   compactionManifest: CompactionManifest | null

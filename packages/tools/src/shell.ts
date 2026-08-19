@@ -155,7 +155,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       // 缺 secrets 时按空集合处理——那是「没有已知凭证」，不是「不用剥」。
-      const secrets = ctx.secrets ?? { values: [], envNames: [] }
+      const secrets = ctx.secrets ?? { values: [] }
 
       /*
        * 沙箱策略与路径层用**同一份根目录清单**。
