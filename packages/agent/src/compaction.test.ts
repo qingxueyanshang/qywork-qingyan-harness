@@ -77,7 +77,7 @@ describe('摘要生成', () => {
       async () => '模型写的摘要',
     )
     expect(r.status).toBe('compacted')
-    expect(r.status === 'compacted' && r.usedModel).toBe(true)
+    expect(r.status === 'compacted' && r.summarized).toBe(true)
     expect(r.status === 'compacted' && r.manifest.summary).toBe('模型写的摘要')
   })
 
@@ -86,13 +86,13 @@ describe('摘要生成', () => {
       throw new Error('上下文超限')
     })
     expect(r.status).toBe('compacted')
-    expect(r.status === 'compacted' && r.usedModel).toBe(false)
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
     expect(r.status === 'compacted' && r.manifest.summary).toContain('本地确定性摘要')
   })
 
   test('摘要返回空串时同样降级', async () => {
     const r = await compact({ messages: longHistory, actions, previous: null }, async () => '   ')
-    expect(r.status === 'compacted' && r.usedModel).toBe(false)
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
   })
 
   test('没有摘要器时直接走本地路径', async () => {

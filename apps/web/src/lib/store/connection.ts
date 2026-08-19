@@ -281,6 +281,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
             existing.compaction = {
               phase: ev.phase,
               ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
+              ...(ev.summarized === undefined ? {} : { summarized: ev.summarized }),
               ...(ev.manifest
                 ? {
                     revision: ev.manifest.revision,
@@ -313,6 +314,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
         limit: ev.limit,
         percent: ev.percent,
         source: ev.source,
+        compactAt: ev.compactAt,
         breakdown: ev.breakdown,
         omitted: ev.omitted,
       })
@@ -424,6 +426,7 @@ interface StoredContextPanel {
   limit: number
   percent: number
   source: 'actual' | 'estimated'
+  compactAt: number
   breakdown: ContextBreakdown
   omitted: ContextOmitted
 }
@@ -450,6 +453,11 @@ interface StoredStep {
     args?: Record<string, unknown>
     outcome?: any
     action?: ActionDescriptor
+    /** kind='compaction' 专有，见 `StepPayload`。 */
+    phase?: 'done' | 'skipped' | 'failed'
+    summarized?: boolean
+    reasonCode?: string
+    compactedMessages?: number
   } | null
   status: string
   createdAt: number
@@ -633,6 +641,7 @@ export async function reloadActiveConversation(): Promise<void> {
             limit: ctx.limit,
             percent: ctx.percent,
             source: ctx.source,
+            compactAt: ctx.compactAt,
             breakdown: ctx.breakdown,
             omitted: ctx.omitted,
           }
@@ -681,12 +690,20 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
   // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
   if (s.kind === 'compaction') {
+    const p = s.payload
     return [
       {
         id: s.id,
         kind: 'compaction',
         text: '',
-        compaction: { phase: s.status === 'failure' ? 'failed' : 'done' },
+        compaction: {
+          // 终态取 payload 的 `phase`。旧行没有这个键，按 status 列回落——
+          // 那时 skipped 与 failed 还共用一条通道，分不出来是历史事实。
+          phase: p?.phase ?? (s.status === 'failure' ? 'failed' : 'done'),
+          ...(p?.reasonCode ? { reasonCode: p.reasonCode } : {}),
+          ...(p?.summarized === undefined ? {} : { summarized: p.summarized }),
+          ...(p?.compactedMessages ? { compactedMessages: p.compactedMessages } : {}),
+        },
       },
     ]
   }

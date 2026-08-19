@@ -30,7 +30,7 @@ import type {
 import { PROVIDER_HTTP } from '../types.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
-  readonly kind = 'openai_compatible' as const
+  readonly kind = 'openai_chat_completions' as const
   /**
    * effort 发不发，**由目录里那条模型的 `effortLevels` 决定**，不是由协议决定。
    *
@@ -166,12 +166,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
           code: 'provider_unavailable',
           message: '响应为 200 但不含任何 SSE 数据',
           retryable: false,
-          provider: 'openai_compatible',
+          provider: 'openai_chat_completions',
           detail: { model: req.model },
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_compatible', err)
+      throw classifyProviderError('openai_chat_completions', err)
     }
 
     yield { type: 'usage', usage }

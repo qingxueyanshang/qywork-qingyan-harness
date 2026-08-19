@@ -1,6 +1,9 @@
 /**
  * 配置脱敏与回填。
  *
+ * **覆盖范围**：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
+ * `GET /api/config` 的读盘时机。
+ *
  * 这两个函数是**明文 key 不出进程**这条边界的全部实现，所以这里测得比别处细。
  * 最要命的一条不是「key 泄漏了」——那种一眼能看出来；是**「打开设置页看一眼再保存」
  * 把 key 静默清掉**：保存那一刻没有任何反馈，要到下一次调用模型才炸，
@@ -8,19 +11,23 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
-import { mergeConfig, type RedactedConfig, redactConfig } from './config.ts'
+import { handleConfigApi, mergeConfig, type RedactedConfig, redactConfig } from './config.ts'
+import type { ApiDeps } from './types.ts'
 
 const cfg = (): QyConfig => ({
   active: { provider: 'main', model: 'claude-opus-5' },
   providers: {
     main: {
-      kind: 'anthropic',
+      kind: 'anthropic_messages',
       apiKey: 'sk-real-secret-value',
       models: { 'claude-opus-5': {} },
     },
     local: {
-      kind: 'openai_compatible',
+      kind: 'openai_chat_completions',
       baseUrl: 'http://127.0.0.1:11434/v1',
       models: { qwen: {} },
     },
@@ -104,7 +111,7 @@ describe('回填', () => {
   test('新增接口带明文 key 的话照收', () => {
     const out = roundTrip((r) => {
       r.providers.added = {
-        kind: 'anthropic',
+        kind: 'anthropic_messages',
         models: { m: {} },
         hasApiKey: false,
         apiKey: 'sk-added',
@@ -167,5 +174,49 @@ describe('回填', () => {
     let c = cfg()
     for (let i = 0; i < 5; i++) c = mergeConfig(c, redactConfig(c))
     expect(c.providers.main?.apiKey).toBe('sk-real-secret-value')
+  })
+})
+
+describe('读盘时机', () => {
+  const get = async (d: ApiDeps) => {
+    const url = new URL('http://127.0.0.1/api/config')
+    const res = await handleConfigApi(url, new Request(url.href, { method: 'GET' }), d as never)
+    return (await res!.json()) as { config: RedactedConfig }
+  }
+
+  /**
+   * 进程外改过的配置，不能被下一次保存整份盖掉。
+   *
+   * 形状是这样的：保存走「读回整份 → 改一格 → 整份写回」，所以 GET 回什么，
+   * 下一次 PUT 就把什么写进文件。GET 回启动时那份的话，`qy probe` 落下的校准
+   * 结果、手编的 JSON、另一个实例写的改动，都会在用户随手改一格设置时消失。
+   */
+  test('每次 GET 都按文件回答，进程里那份跟着换', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    const write = (kind: string) =>
+      writeFile(
+        join(home, 'config.json'),
+        JSON.stringify({
+          active: { provider: 'main', model: 'claude-opus-5' },
+          providers: { main: { kind, models: { 'claude-opus-5': {} } } },
+        }),
+        'utf8',
+      )
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+
+      // 起手就和 `cfg()` 里那份不同，第一条断言才证明得了「读的是盘」。
+      await write('openai_chat_completions')
+      expect((await get(d)).config.providers.main?.kind).toBe('openai_chat_completions')
+
+      await write('openai_responses')
+      expect((await get(d)).config.providers.main?.kind).toBe('openai_responses')
+      expect(d.config.providers.main?.kind).toBe('openai_responses')
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
   })
 })

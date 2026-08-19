@@ -139,8 +139,8 @@ export const readFileTool: ToolSpec = {
      * 错误回执，截断产生的是满额正文，而那份正文往往并不是模型要的那一段——
      * 工具错误率是降了，平均 token 反而上升。
      *
-     * 预算随模型窗口走（`RESULT_BUDGET_RATIO`），不是硬编码；判据与建议范围
-     * 一起给回去，否则模型只知道「太大了」，只能靠二分去猜。
+     * 预算取「窗口比例」与绝对封顶的较小者（`deliveryBudget`），不是硬编码；
+     * 判据与建议范围一起给回去，否则模型只知道「太大了」，只能靠二分去猜。
      */
     const tokens = estimateText(numbered)
     const charged = chargeBatchBudget(ctx, tokens)

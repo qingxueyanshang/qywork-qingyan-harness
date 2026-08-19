@@ -84,7 +84,7 @@ describe('报告要能区分三种状态', () => {
         untested: ['thinking', 'effort'],
         probes: [{ name: 'thinking', ok: false, skipped: true, detail: '不发该字段' }],
       }),
-      'openai_compatible',
+      'openai_chat_completions',
       'x',
     )
     expect(t).toContain('– thinking')
@@ -93,14 +93,14 @@ describe('报告要能区分三种状态', () => {
   })
 
   test('实测不支持时说「不支持」，不说「未探测」', () => {
-    const t = describeProbe(outcome({ effortLevels: [] }), 'anthropic', 'x')
+    const t = describeProbe(outcome({ effortLevels: [] }), 'anthropic_messages', 'x')
     expect(t).toContain('（不支持）')
   })
 
   test('端点不通时说清是没能判定，而不是给一个结论', () => {
     const t = describeProbe(
       outcome({ reachable: false, thinking: null, thinksByDefault: false }),
-      'anthropic',
+      'anthropic_messages',
       'x',
     )
     expect(t).toContain('未能判定')
@@ -114,7 +114,7 @@ describe('报告要能区分三种状态', () => {
           { name: 'effort=max', ok: false, detail: '400 unsupported' },
         ],
       }),
-      'anthropic',
+      'anthropic_messages',
       'x',
     )
     expect(t).toContain('不带 thinking 字段')
@@ -126,8 +126,8 @@ describe('适配器如实声明自己发不发这些字段', () => {
   test('anthropic 两条都发', async () => {
     const { AnthropicAdapter } = await import('./providers/anthropic.ts')
     const a = new AnthropicAdapter(
-      { kind: 'anthropic', apiKey: 'sk-x', model: 'claude-opus-5' },
-      lookupModel('claude-opus-5', 'anthropic'),
+      { kind: 'anthropic_messages', apiKey: 'sk-x', model: 'claude-opus-5' },
+      lookupModel('claude-opus-5', 'anthropic_messages'),
     )
     expect(a.transmits).toEqual({ thinking: true, effort: true })
   })
@@ -142,47 +142,39 @@ describe('适配器如实声明自己发不发这些字段', () => {
    * `thinking` 仍然是 false：思考内容是从流里读出来的（`reasoning_content`），
    * 我们从不主动声明它。探测器据此仍然跳过 thinking 那一项。
    */
-  test('openai_compatible 发 effort 不发 thinking', async () => {
+  test('openai_chat_completions 发 effort 不发 thinking', async () => {
     const { OpenAICompatAdapter } = await import('./providers/openai-compat.ts')
     const a = new OpenAICompatAdapter(
-      { kind: 'openai_compatible', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
-      lookupModel('deepseek-v4-flash', 'openai_compatible'),
+      { kind: 'openai_chat_completions', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
+      lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
     )
     expect(a.transmits).toEqual({ thinking: false, effort: true })
   })
 })
 
+/**
+ * `toCapabilities` 的输出就是模型库那一条覆盖，中间不再有第二种形状。
+ * 这一条断的是整链：探测结论 → 模型库 → adapter 手里的 spec。
+ */
 describe('探测结果真的会影响请求装配', () => {
-  test('capabilities 覆盖目录里的猜测', async () => {
+  test('探测结论作为模型库那一条，覆盖目录里的猜测', async () => {
     const { buildAdapter } = await import('./factory.ts')
-    const withoutProbe = buildAdapter({
-      kind: 'openai_compatible',
+    const base = {
+      kind: 'openai_chat_completions' as const,
       apiKey: 'sk-x',
       model: '某个中转站的模型',
-    })
-    expect(withoutProbe.spec.thinking).toBe('none')
+    }
+    expect(buildAdapter(base).spec.thinking).toBe('none')
 
-    // 没有这一步，`qy probe` 就只是打印一份报告——探得再准也不影响任何请求。
-    const withProbe = buildAdapter({
-      kind: 'openai_compatible',
-      apiKey: 'sk-x',
-      model: '某个中转站的模型',
-      capabilities: { thinking: 'adaptive_only', effortLevels: ['high'], thinksByDefault: true },
+    // 没有这一步，`qy probe --save` 就只是打印一份报告——探得再准也不影响任何请求。
+    const probed = buildAdapter({
+      ...base,
+      spec: toCapabilities(
+        outcome({ thinking: 'adaptive_only', effortLevels: ['high'], thinksByDefault: true }),
+      ),
     })
-    expect(withProbe.spec.thinking).toBe('adaptive_only')
-    expect(withProbe.spec.effortLevels).toEqual(['high'])
-    expect(withProbe.spec.thinksByDefault).toBe(true)
-  })
-
-  test('用户写死的 maxOutputTokens 仍然最高优先', async () => {
-    const { buildAdapter } = await import('./factory.ts')
-    const a = buildAdapter({
-      kind: 'openai_compatible',
-      apiKey: 'sk-x',
-      model: 'deepseek-v4-flash',
-      maxOutputTokens: 512,
-      capabilities: { thinking: 'adaptive_only' },
-    })
-    expect(a.spec.maxOutputTokens).toBe(512)
+    expect(probed.spec.thinking).toBe('adaptive_only')
+    expect(probed.spec.effortLevels).toEqual(['high'])
+    expect(probed.spec.thinksByDefault).toBe(true)
   })
 })

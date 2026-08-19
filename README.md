@@ -99,7 +99,7 @@ qy config               显示当前配置与配置文件路径
   "active": { "provider": "deepseek", "model": "deepseek-v4-flash" },
   "providers": {
     "deepseek": {
-      "kind": "openai_compatible",
+      "kind": "openai_chat_completions",
       "baseUrl": "https://api.deepseek.com/v1",
       "apiKeyEnv": "DEEPSEEK_API_KEY",
       "models": {

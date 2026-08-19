@@ -58,8 +58,10 @@ export interface TranscriptItem {
   }
   /** kind='compaction' 专有 */
   compaction?: {
-    phase: 'started' | 'done' | 'failed'
+    phase: 'started' | 'done' | 'skipped' | 'failed'
     reasonCode?: string
+    /** phase='done' 专有：摘要是模型写的还是本地降级拼的。 */
+    summarized?: boolean
     compactedMessages?: number
     revision?: number
   }
@@ -129,6 +131,8 @@ export interface AppState {
     limit: number
     percent: number
     source: 'actual' | 'estimated'
+    /** 越过它就会在下一次发送前压一次。读数条上那道刻度。 */
+    compactAt: number
     breakdown: ContextBreakdown
     omitted: ContextOmitted
   } | null

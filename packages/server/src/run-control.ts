@@ -14,8 +14,7 @@
  * 要防的第一件事。两处差着一整个生命周期。
  */
 
-import type { Summarizer } from '@qywork/agent'
-import { buildAdapter, computeCost, ProviderError, type ProviderUsage } from '@qywork/ai'
+import { ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
   Attachment,
@@ -25,14 +24,19 @@ import type {
   RunId,
   StopReason,
 } from '@qywork/core'
-import { configPath, RuntimeCompaction, resolveModel, Session } from '@qywork/runtime'
+import {
+  configPath,
+  makeSummarizer,
+  RuntimeCompaction,
+  resolveModel,
+  Session,
+} from '@qywork/runtime'
 import {
   createGoal,
   currentGoal,
   getConversation,
   getRun,
   listMessages,
-  recordUsage,
   updateGoal,
   workspaceOf,
 } from '@qywork/store'
@@ -557,8 +561,8 @@ function goalRoundPrompt(goal: Goal): string {
 /**
  * 手动压缩一个会话。
  *
- * 与自动路径共用同一个 ，所以两条入口产出的 manifest 完全一致——
- * 两套压缩实现迟早会漂移，且漂移了很难发现。
+ * 与自动路径共用同一个 `RuntimeCompaction` 和同一份摘要装配（`makeSummarizer`），
+ * 两条入口只差一个发起理由——两套实现迟早会漂移，且漂移了很难发现。
  *
  * 事件走总线广播而不是只回发起方：压缩改变了会话的后续行为，
  * 另一端开着同一个会话的人必须看到。
@@ -578,14 +582,29 @@ export async function compactConversation(
       store: deps.store,
       conversationId,
       messageIdUpperBound: null,
-      summarize: makeServerSummarizer(deps, conversationId),
+      summarize: makeSummarizer({
+        store: deps.store,
+        workspaceId: workspaceOf(deps.store, conversationId)?.id ?? '',
+        profile: () => summaryProfile(deps, conversationId),
+      }),
     })
     const outcome = await compaction.run()
     if (outcome.status === 'compacted') {
-      emit({ type: 'compaction', runId, phase: 'done', manifest: outcome.manifest })
+      emit({
+        type: 'compaction',
+        runId,
+        phase: 'done',
+        manifest: outcome.manifest,
+        summarized: outcome.summarized,
+      })
+    } else if (outcome.status === 'aborted') {
+      // 手动压缩不往 `run()` 传信号，这条终态走不到。留着是因为静默吞掉一个终态
+      // 与「按钮点了没反应」在用户那边是同一件事。
+      emit({ type: 'compaction', runId, phase: 'failed', reasonCode: 'aborted' })
+    } else if (outcome.status === 'skipped') {
+      // 「没什么可压」不是失败：用户点了按钮，必须有回音，但不能报错。
+      emit({ type: 'compaction', runId, phase: 'skipped', reasonCode: outcome.reasonCode })
     } else {
-      // skipped 也走 failed 通道并带上 reasonCode：用户点了按钮，
-      // 「没什么可压的」也是必须回答的结果，静默等于按钮坏了。
       emit({ type: 'compaction', runId, phase: 'failed', reasonCode: outcome.reasonCode })
     }
   } catch (err) {
@@ -602,63 +621,23 @@ export async function compactConversation(
   }
 }
 
-/** 手动压缩用会话当前模型生成摘要，与自动路径口径一致。 */
-export function makeServerSummarizer(
-  deps: CommandDeps,
-  conversationId: ConversationId,
-): Summarizer {
+/**
+ * 手动压缩这一轮用哪个模型：会话当前模型，没有就用配置默认。
+ *
+ * 字段集必须与 `Session.resolveProfile` 逐项相同——少给一项（`maxOutputTokens`
+ * 就漏过一次）的表现是手动摘要按另一套上限发出去，两条入口的产出从此不可比。
+ */
+function summaryProfile(deps: CommandDeps, conversationId: ConversationId): ProviderProfile {
   const model = getConversation(deps.store, conversationId)?.model ?? deps.config.active.model
   const stored = resolveModel(deps.config, model)
-  if (!stored) return async () => null
-
-  return async (prompt, budgetChars) => {
-    const adapter = buildAdapter({
-      kind: stored.kind,
-      apiKey: stored.apiKey ?? '',
-      model: stored.model,
-      ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-      ...(stored.headers ? { headers: stored.headers } : {}),
-      ...(stored.capabilities ? { capabilities: stored.capabilities } : {}),
-      ...(stored.spec ? { spec: stored.spec } : {}),
-    })
-    let text = ''
-    /*
-     * 摘要也花钱，而且这条路**从来没有记过账**。
-     *
-     * `usage_ledger` 的 CHECK 里早就有 `'summary'` 这个 kind，schema 注释也亲口
-     * 说压缩摘要的钱要单记——但生产代码零写入，只有测试在写它。
-     * 结果是手动压缩越频繁，账单和界面上的数字差得越多，而用户查不出是谁花的。
-     * （会话内自动压缩那条路一直在记，见 `runtime/session.ts` 的 `makeSummarizer`。）
-     */
-    let spent: { cost: number; u: ProviderUsage } | null = null
-    for await (const ev of adapter.stream({
-      model: adapter.spec.id,
-      system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
-      messages: [{ role: 'user', content: prompt }],
-      tools: [],
-      maxOutputTokens: Math.min(adapter.spec.maxOutputTokens, Math.ceil(budgetChars / 2)),
-      signal: AbortSignal.timeout(120_000),
-    })) {
-      if (ev.type === 'text_delta') text += ev.delta
-      else if (ev.type === 'usage')
-        spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
-    }
-    if (spent) {
-      recordUsage(deps.store, {
-        kind: 'summary',
-        workspaceId: workspaceOf(deps.store, conversationId)?.id ?? '',
-        model: adapter.spec.id,
-        provider: stored.kind,
-        inputTokens: spent.u.inputTokens,
-        outputTokens: spent.u.outputTokens,
-        cachedTokens: spent.u.cachedTokens,
-        cacheWriteTokens: spent.u.cacheWriteTokens,
-        reasoningTokens: spent.u.reasoningTokens,
-        cost: spent.cost,
-        currency: adapter.spec.pricing.currency ?? 'USD',
-      })
-    }
-    return text.trim() || null
+  if (!stored) throw new Error(`配置里没有模型 "${model}"`)
+  return {
+    kind: stored.kind,
+    apiKey: stored.apiKey ?? '',
+    model: stored.model,
+    ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
+    ...(stored.headers ? { headers: stored.headers } : {}),
+    ...(stored.spec ? { spec: stored.spec } : {}),
   }
 }
 

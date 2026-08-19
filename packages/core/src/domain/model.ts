@@ -447,7 +447,21 @@ export type StepPayload =
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
     }
-  | { kind: 'compaction'; manifestRevision: number; compactedMessages: number }
+  | {
+      kind: 'compaction'
+      /**
+       * 压缩终态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡按它重建。
+       *
+       * **可缺**：这个键之前不存在，旧行读出 `undefined`。历史事实不回改，
+       * 消费方按「已压缩」显示。
+       */
+      phase?: 'done' | 'skipped' | 'failed'
+      manifestRevision: number
+      compactedMessages: number
+      /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+      summarized?: boolean
+      reasonCode?: string
+    }
 
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
 export interface ToolOutcomeWire {

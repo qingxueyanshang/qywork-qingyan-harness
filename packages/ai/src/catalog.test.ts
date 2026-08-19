@@ -31,14 +31,14 @@ describe('同一模型在不同协议下能力不同', () => {
   })
 
   test('chat/completions 下是 DeepSeek 自己那一套', () => {
-    const spec = lookupModel('deepseek-v4-flash', 'openai_compatible')
-    expect(spec.provider).toBe('openai_compatible')
+    const spec = lookupModel('deepseek-v4-flash', 'openai_chat_completions')
+    expect(spec.provider).toBe('openai_chat_completions')
     expect(spec.thinking).toBe('deepseek_thinking')
   })
 
   /** 两条协议的档位必须各记各的——合并过一次，代价是其中一边一定在说谎。 */
   test('两条协议的档位互不覆盖', () => {
-    expect(lookupModel('deepseek-v4-flash', 'openai_compatible').effortLevels).toEqual([
+    expect(lookupModel('deepseek-v4-flash', 'openai_chat_completions').effortLevels).toEqual([
       'high',
       'max',
     ])
@@ -48,7 +48,7 @@ describe('同一模型在不同协议下能力不同', () => {
   /** 别名不进目录：指向哪个模型由服务端说了算，随时可改。填了就按未收录处理。 */
   test('别名（deepseek-chat / deepseek-reasoner）不在目录里', () => {
     for (const id of ['deepseek-chat', 'deepseek-reasoner']) {
-      expect(lookupModel(id, 'openai_compatible').catalogued).toBe(false)
+      expect(lookupModel(id, 'openai_chat_completions').catalogued).toBe(false)
     }
   })
 })
@@ -59,7 +59,7 @@ describe('实测修正过的字段', () => {
    * 在目录里放一个与实测相反的事实。
    */
   test('deepseek 省略字段时自己思考', () => {
-    for (const p of ['openai_compatible', 'openai_responses'] as const) {
+    for (const p of ['openai_chat_completions', 'openai_responses'] as const) {
       expect(lookupModel('deepseek-v4-flash', p).thinksByDefault).toBe(true)
       expect(lookupModel('deepseek-v4-pro', p).thinksByDefault).toBe(true)
     }
@@ -83,7 +83,7 @@ describe('实测修正过的字段', () => {
 
   /** Haiku 4.5 走 budget_tokens，没有 effort 档——这条没被上面那次订正影响。 */
   test('haiku-4-5 仍然没有 effort 档', () => {
-    expect(lookupModel('claude-haiku-4-5', 'anthropic').effortLevels).toEqual([])
+    expect(lookupModel('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 })
 
@@ -93,14 +93,16 @@ describe('provider 不符时的兜底', () => {
    * 但这**只是兜底**——它描述的是另一种协议下的行为，要准就得单独建条目。
    */
   test('目录里没有该协议的条目时，保留能力改写 provider', () => {
-    const spec = lookupModel('claude-opus-5', 'openai_compatible')
-    expect(spec.provider).toBe('openai_compatible')
-    expect(spec.contextWindow).toBe(lookupModel('claude-opus-5', 'anthropic').contextWindow)
+    const spec = lookupModel('claude-opus-5', 'openai_chat_completions')
+    expect(spec.provider).toBe('openai_chat_completions')
+    expect(spec.contextWindow).toBe(
+      lookupModel('claude-opus-5', 'anthropic_messages').contextWindow,
+    )
   })
 
   /** 完全不认识的模型给保守默认，且计价为 0——前端显示「未知计价」而不是一个错数字。 */
   test('未知模型不编造计价', () => {
-    const spec = lookupModel('明天才发布的模型', 'anthropic')
+    const spec = lookupModel('明天才发布的模型', 'anthropic_messages')
     expect(spec.pricing.input).toBe(0)
     expect(spec.thinking).toBe('none')
     expect(spec.effortLevels).toEqual([])
@@ -128,7 +130,7 @@ describe('计价', () => {
  * 任何一次调用，就又是一条「有产出没有消费者」的链路。
  */
 describe('模型库覆盖', () => {
-  const opus = () => lookupModel('claude-opus-5', 'anthropic')
+  const opus = () => lookupModel('claude-opus-5', 'anthropic_messages')
 
   test('只覆盖写了的字段，没写的照 seed', () => {
     const s = applySpecOverride(opus(), { contextWindow: 200_000 })
@@ -162,7 +164,7 @@ describe('模型库覆盖', () => {
    * 账本继续报 $0，且再没有人说它。
    */
   test('填了单价才算收录，只改名字不算', () => {
-    const unknown = lookupModel('中转站上的某个模型', 'openai_compatible')
+    const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(unknown.catalogued).toBe(false)
     expect(applySpecOverride(unknown, { displayName: '某个模型' }).catalogued).toBe(false)
     expect(applySpecOverride(unknown, { input: 1, output: 2 }).catalogued).toBe(true)
@@ -170,6 +172,27 @@ describe('模型库覆盖', () => {
 
   test('不传覆盖时原样返回', () => {
     expect(applySpecOverride(opus(), undefined)).toEqual(opus())
+  })
+
+  /**
+   * 思考三项也在库里。它们曾经只存在于接口下那一格、界面上看不见也改不动，
+   * 于是「库里显示的」和「真正发出去的」是两个值。
+   */
+  test('思考三项覆盖 seed', () => {
+    const s = applySpecOverride(lookupModel('中转站上的某个模型', 'openai_chat_completions'), {
+      thinking: 'reasoning_effort',
+      effortLevels: ['low', 'high'],
+      thinksByDefault: true,
+    })
+    expect(s.thinking).toBe('reasoning_effort')
+    expect(s.effortLevels).toEqual(['low', 'high'])
+    expect(s.thinksByDefault).toBe(true)
+  })
+
+  /** `false` 是有效覆盖：按 falsy 判缺省的话，「它自己不思考」这条实测写不进去。 */
+  test('thinksByDefault 写 false 也算覆盖', () => {
+    expect(applySpecOverride(opus(), { thinksByDefault: false }).thinksByDefault).toBe(false)
+    expect(applySpecOverride(opus(), {}).thinksByDefault).toBe(opus().thinksByDefault)
   })
 })
 
@@ -184,7 +207,7 @@ describe('模型库覆盖', () => {
  * （填空闲价时折扣没生效就少记一半钱，账本往便宜的方向说谎）。
  */
 describe('分时段定价', () => {
-  const flash = () => lookupModel('deepseek-v4-flash', 'openai_compatible')
+  const flash = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
   /** 给定 UTC 小时的那一刻。日期取哪天都一样——窗口只看小时。 */
   const at = (utcHour: number, utcMinute = 0) => Date.UTC(2026, 7, 18, utcHour, utcMinute)
 
@@ -234,7 +257,7 @@ describe('分时段定价', () => {
   })
 
   test('没有分时段的模型原样返回，不新建对象', () => {
-    const opus = lookupModel('claude-opus-5', 'anthropic')
+    const opus = lookupModel('claude-opus-5', 'anthropic_messages')
     expect(priceAt(opus, { now: at(2) })).toBe(opus.pricing)
   })
 
@@ -245,7 +268,7 @@ describe('分时段定价', () => {
   })
 
   test('v4-pro 的两档', () => {
-    const pro = lookupModel('deepseek-v4-pro', 'openai_compatible')
+    const pro = lookupModel('deepseek-v4-pro', 'openai_chat_completions')
     expect(pro.pricing.input).toBe(9)
     expect(pro.pricing.output).toBe(27)
     expect(priceAt(pro, { now: at(5) }).input).toBe(4.5)
@@ -263,8 +286,8 @@ describe('分时段定价', () => {
  * 而少记的方向没有任何东西会报错。
  */
 describe('长上下文阶梯价', () => {
-  const g46 = () => lookupModel('grok-4.6', 'openai_compatible')
-  const g45 = () => lookupModel('grok-4.5', 'openai_compatible')
+  const g46 = () => lookupModel('grok-4.6', 'openai_chat_completions')
+  const g45 = () => lookupModel('grok-4.5', 'openai_chat_completions')
 
   test('目录里填的是标准价（<200K 那一档）', () => {
     expect(g46().pricing.input).toBe(2)
@@ -308,7 +331,7 @@ describe('长上下文阶梯价', () => {
   })
 
   test('没有阶梯价的模型不受影响', () => {
-    const opus = lookupModel('claude-opus-5', 'anthropic')
+    const opus = lookupModel('claude-opus-5', 'anthropic_messages')
     expect(priceAt(opus, { promptTokens: 900_000 })).toBe(opus.pricing)
   })
 
@@ -317,7 +340,7 @@ describe('长上下文阶梯价', () => {
    * 存一个倍率去乘就会把 Gemini 的输出算成 $24 而不是 $18。
    */
   test('高档单价逐字抄，不是按倍率乘出来的', () => {
-    const pro = lookupModel('gemini-3.1-pro-preview', 'openai_compatible')
+    const pro = lookupModel('gemini-3.1-pro-preview', 'openai_chat_completions')
     expect(pro.pricing.output).toBe(12)
     const long = priceAt(pro, { promptTokens: 200_001 })
     expect(long.input).toBe(4) // 2 倍
@@ -327,7 +350,7 @@ describe('长上下文阶梯价', () => {
 
   /** Google 写的是「>200k」，xAI 写的是「≥200k」，边界差一个 token。 */
   test('两家的阈值边界各按各的', () => {
-    const pro = lookupModel('gemini-3.1-pro-preview', 'openai_compatible')
+    const pro = lookupModel('gemini-3.1-pro-preview', 'openai_chat_completions')
     expect(priceAt(pro, { promptTokens: 200_000 }).output).toBe(12)
     expect(priceAt(pro, { promptTokens: 200_001 }).output).toBe(18)
     expect(priceAt(g46(), { promptTokens: 200_000 }).output).toBe(12)
@@ -341,8 +364,10 @@ describe('长上下文阶梯价', () => {
  * 而账本正是用来回答「怎么突然变贵了」的那个东西。
  */
 describe('目录里的价格与档位', () => {
-  const spec = (id: string, kind: 'anthropic' | 'openai_compatible' = 'openai_compatible') =>
-    lookupModel(id, kind)
+  const spec = (
+    id: string,
+    kind: 'anthropic_messages' | 'openai_chat_completions' = 'openai_chat_completions',
+  ) => lookupModel(id, kind)
 
   test('OpenAI GPT-5.6 三档 + Cyber', () => {
     expect(spec('gpt-5.6-sol').pricing.input).toBe(5)
@@ -372,20 +397,20 @@ describe('目录里的价格与档位', () => {
 
   /** effort 支持名单里没有 Haiku 4.5；Sonnet 4.6 有 max 但没有 xhigh。 */
   test('Claude 的档位面逐条对官方名单', () => {
-    expect(spec('claude-opus-5', 'anthropic').effortLevels).toEqual([
+    expect(spec('claude-opus-5', 'anthropic_messages').effortLevels).toEqual([
       'low',
       'medium',
       'high',
       'xhigh',
       'max',
     ])
-    expect(spec('claude-sonnet-4-6', 'anthropic').effortLevels).toEqual([
+    expect(spec('claude-sonnet-4-6', 'anthropic_messages').effortLevels).toEqual([
       'low',
       'medium',
       'high',
       'max',
     ])
-    expect(spec('claude-haiku-4-5', 'anthropic').effortLevels).toEqual([])
+    expect(spec('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 
   /** 智谱的官方价目是美元（Z.ai 国际站）；上一版填的是一组没有出处的人民币数字。 */

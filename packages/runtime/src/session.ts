@@ -13,6 +13,7 @@ import {
   decideCommand,
   type LoopPersistence,
   type PermissionVerdict,
+  STREAM_IDLE_TIMEOUT_MS,
   type Summarizer,
   type ToolContext,
   ToolRegistry,
@@ -21,6 +22,7 @@ import {
   buildAdapter,
   type ContentBlock,
   computeCost,
+  ProviderError,
   type ProviderProfile,
   type ProviderUsage,
   type WireToolCall,
@@ -34,7 +36,7 @@ import type {
   MessageId,
   RunId,
 } from '@qywork/core'
-import { deriveConversationTitle } from '@qywork/core'
+import { deriveConversationTitle, EFFORT_ORDER } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -233,9 +235,7 @@ export class Session {
       apiKey: stored.apiKey ?? '',
       model: stored.model,
       ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-      ...(stored.maxOutputTokens ? { maxOutputTokens: stored.maxOutputTokens } : {}),
       ...(stored.headers ? { headers: stored.headers } : {}),
-      ...(stored.capabilities ? { capabilities: stored.capabilities } : {}),
       ...(stored.spec ? { spec: stored.spec } : {}),
     }
   }
@@ -274,53 +274,6 @@ export class Session {
       persist: this.makePersistence(),
       ...(compaction ? { compaction } : {}),
     })
-  }
-
-  /**
-   * 摘要生成器：用**同一个 provider 档案**，但独立于主循环发一次请求。
-   *
-   * 刻意不带工具、不带冻结前缀——摘要任务只需要文本进文本出，
-   * 带上工具 schema 只会让这次调用也逼近容量上限，而它恰恰是在容量已经超了的时候发的。
-   */
-  private makeSummarizer(target: string | ModelRef): Summarizer {
-    return async (prompt, budgetChars) => {
-      const profile = this.resolveProfile(target)
-      const adapter = buildAdapter(profile)
-      let text = ''
-      // 摘要也花钱。它不属于任何一个 run 的 usage，所以在账本出现之前
-      // **这笔钱是完全看不见的**——压缩越频繁，账单和界面上的数字差得越多。
-      let spent: { cost: number; u: ProviderUsage } | null = null
-      for await (const ev of adapter.stream({
-        model: adapter.spec.id,
-        system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
-        messages: [{ role: 'user', content: prompt }],
-        tools: [],
-        // 摘要的输出上限按字符预算折算，留一倍余量。
-        maxOutputTokens: Math.min(adapter.spec.maxOutputTokens, Math.ceil(budgetChars / 2)),
-        signal: this.opts.signal,
-      })) {
-        if (ev.type === 'text_delta') text += ev.delta
-        else if (ev.type === 'usage') {
-          spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
-        }
-      }
-      if (spent) {
-        recordUsage(this.opts.store, {
-          kind: 'summary',
-          workspaceId: this.workspaceId,
-          model: adapter.spec.id,
-          provider: profile.kind,
-          inputTokens: spent.u.inputTokens,
-          outputTokens: spent.u.outputTokens,
-          cachedTokens: spent.u.cachedTokens,
-          cacheWriteTokens: spent.u.cacheWriteTokens,
-          reasoningTokens: spent.u.reasoningTokens,
-          cost: spent.cost,
-          currency: adapter.spec.pricing.currency ?? 'USD',
-        })
-      }
-      return text.trim() || null
-    }
   }
 
   /** 新建或续跑一个会话。返回事件流，调用方自己决定怎么渲染。 */
@@ -477,7 +430,12 @@ export class Session {
       store,
       conversationId,
       messageIdUpperBound: run.messageIdUpperBound,
-      summarize: this.makeSummarizer(target),
+      summarize: makeSummarizer({
+        store,
+        workspaceId: this.workspaceId,
+        profile: () => this.resolveProfile(target),
+        signal: this.opts.signal,
+      }),
     })
 
     // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
@@ -764,12 +722,14 @@ export class Session {
           action,
         }),
       saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
-      recordCompaction: (runId, seq, status, payload) => {
+      recordCompaction: (runId, seq, payload) => {
         appendStep(store, {
           runId,
           seq,
           kind: 'compaction',
-          status,
+          // 列值由 phase 导出，不让调用方再报一次——两处各报一次就是两本账，
+          // 而它们会漂移。终态的细分（skipped 与 failed）在 payload 里。
+          status: payload.phase === 'done' ? 'success' : 'failure',
           payload: { kind: 'compaction', ...payload },
         })
       },
@@ -910,6 +870,111 @@ export class Session {
       ...((this.opts.config.mode ?? 'auto') === 'full' ? { unrestrictedPaths: true } : {}),
       requestPermission: async (_scope, _preview, meta) => this.decide(meta),
     }
+  }
+}
+
+export interface SummarizerOptions {
+  store: Store
+  workspaceId: string
+  /** 每次调用现解析：摘要发起时会话模型可能已经被切过。 */
+  profile: () => ProviderProfile
+  /** 调用方的中断信号。不传 = 只受流空闲判定约束。 */
+  signal?: AbortSignal
+}
+
+/**
+ * 摘要生成器：用会话当前的 provider 档案，独立于主循环发一次请求。
+ *
+ * **自动触发与手动 `/compact` 共用这一份。** 两份装配会各自漂移，而漂移了很难
+ * 发现——两条路都产出摘要，看不出口径已经不同。
+ *
+ * 刻意不带工具、不带冻结前缀：摘要任务只需要文本进文本出，带上工具 schema
+ * 只会让这次调用也逼近容量上限，而它恰恰是在容量已经超了的时候发的。
+ *
+ * 思考档位取模型声明的最低档，模型没声明档位就不发这个字段。摘要是结构化转写
+ * 不是推理任务，继承主档位会让一次转写先等上分钟级的思考。
+ *
+ * 超时判的是**流停了多久**（与主请求同一个 `STREAM_IDLE_TIMEOUT_MS`），不是总共
+ * 跑了多久。不要换成总时长上限：正在逐字产出的慢摘要不是卡死，掐掉它等于把
+ * 一次已经付过费的正常调用作废。
+ */
+export function makeSummarizer(opts: SummarizerOptions): Summarizer {
+  return async (prompt, budgetChars) => {
+    const profile = opts.profile()
+    const adapter = buildAdapter(profile)
+    const effort = EFFORT_ORDER.find((level) => adapter.spec.effortLevels.includes(level))
+
+    // 空闲判定要能中止底层请求，所以走自己的控制器，外部信号挂在它上面。
+    const ac = new AbortController()
+    const followOuter = () => ac.abort()
+    if (opts.signal?.aborted) ac.abort()
+    else opts.signal?.addEventListener('abort', followOuter, { once: true })
+    let stalled = false
+    let idle: ReturnType<typeof setTimeout> | undefined
+    const bump = () => {
+      clearTimeout(idle)
+      idle = setTimeout(() => {
+        stalled = true
+        ac.abort()
+      }, STREAM_IDLE_TIMEOUT_MS)
+    }
+
+    let text = ''
+    // 摘要也花钱。它不属于任何一个 run 的 usage，所以在账本出现之前
+    // **这笔钱是完全看不见的**——压缩越频繁，账单和界面上的数字差得越多。
+    let spent: { cost: number; u: ProviderUsage } | null = null
+    try {
+      // 首个事件之前就要起计时：压根没回过一个字节是最典型的卡死形状。
+      bump()
+      for await (const ev of adapter.stream({
+        model: adapter.spec.id,
+        system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
+        messages: [{ role: 'user', content: prompt }],
+        tools: [],
+        // 摘要的输出上限按字符预算折算，留一倍余量。
+        maxOutputTokens: Math.min(adapter.spec.maxOutputTokens, Math.ceil(budgetChars / 2)),
+        ...(effort ? { effort } : {}),
+        signal: ac.signal,
+      })) {
+        bump()
+        if (ev.type === 'text_delta') text += ev.delta
+        else if (ev.type === 'usage') {
+          spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
+        }
+      }
+    } catch (err) {
+      // 掐流与用户按停止在适配器那侧是同一个 AbortError，`stalled` 是唯一的区分依据。
+      if (stalled) {
+        throw new ProviderError({
+          code: 'stream_idle_timeout',
+          message: '模型响应中断',
+          retryable: true,
+          provider: adapter.spec.provider,
+          cause: err,
+        })
+      }
+      throw err
+    } finally {
+      clearTimeout(idle)
+      opts.signal?.removeEventListener('abort', followOuter)
+    }
+
+    if (spent) {
+      recordUsage(opts.store, {
+        kind: 'summary',
+        workspaceId: opts.workspaceId,
+        model: adapter.spec.id,
+        provider: profile.kind,
+        inputTokens: spent.u.inputTokens,
+        outputTokens: spent.u.outputTokens,
+        cachedTokens: spent.u.cachedTokens,
+        cacheWriteTokens: spent.u.cacheWriteTokens,
+        reasoningTokens: spent.u.reasoningTokens,
+        cost: spent.cost,
+        currency: adapter.spec.pricing.currency ?? 'USD',
+      })
+    }
+    return text.trim() || null
   }
 }
 

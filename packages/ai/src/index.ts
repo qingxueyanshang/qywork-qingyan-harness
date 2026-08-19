@@ -26,6 +26,7 @@ export {
   type ProviderKind,
   priceAt,
   type SpecOverride,
+  type ThinkingMode,
   unknownModel,
   VENDORS,
 } from './catalog.ts'

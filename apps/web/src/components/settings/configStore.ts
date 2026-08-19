@@ -76,19 +76,33 @@ export async function reloadConfig(): Promise<void> {
  * 而每一次 patch 都会真的写盘。
  */
 export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
-  const base = config()
-  if (!base) return Promise.resolve()
-  return replaceConfig({ ...base, ...p })
+  return replaceConfig((cur) => ({ ...cur, ...p }))
 }
 
-export async function replaceConfig(next: RedactedConfig): Promise<void> {
+/**
+ * 改配置。**传的是改法，不是改完的那份。**
+ *
+ * 保存走整份 PUT，写进文件的就是这里交出去的整份。传一份算好的结果，
+ * 那它算在什么之上就定死了——页面打开时拉的那一份。这中间 `qy probe`、
+ * 手编 JSON、另一个实例往文件里写的东西，全会被这一次保存整份盖掉。
+ *
+ * 传改法就能在写之前重新拿一次服务端真值、在它之上再算一遍。
+ * 返回 `null` 表示放弃这次写（前提在新数据上不再成立）。
+ */
+export async function replaceConfig(
+  edit: (cur: RedactedConfig) => RedactedConfig | null,
+): Promise<void> {
   const prev = payload()
   if (!prev) return
+  const optimistic = edit(prev.config)
+  if (!optimistic) return
   // 乐观：控件先反映用户的操作，不然点一下要等一个来回才动。
-  setPayload({ ...prev, config: next })
+  setPayload({ ...prev, config: optimistic })
   setBusy(true)
   try {
-    setPayload(await saveServerConfig(next))
+    const fresh = await loadServerConfig()
+    const next = edit(fresh.config)
+    setPayload(next ? await saveServerConfig(next) : fresh)
     setWriteError(null)
   } catch (e) {
     // 失败必须回滚到服务端真值，否则界面显示的是一个从未落盘的值。

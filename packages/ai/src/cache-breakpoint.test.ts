@@ -19,7 +19,7 @@ import { describe, expect, test } from 'bun:test'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, WireMessage } from './types.ts'
 
-const profile = { kind: 'anthropic' as const, apiKey: 'sk-x', model: 'claude-opus-5' }
+const profile = { kind: 'anthropic_messages' as const, apiKey: 'sk-x', model: 'claude-opus-5' }
 
 /** 够长的一段正文——短于 `minCacheablePrefix` 的断点不生效，那是另一条断言。 */
 const long = (n: number) => 'x'.repeat(n)
@@ -121,7 +121,11 @@ describe('Anthropic 缓存断点', () => {
  */
 describe('尾区注记按模型能力落地', () => {
   const bodyFor = (model: string, messages: WireMessage[]) => {
-    const adapter = buildAdapter({ kind: 'anthropic', apiKey: 'sk-x', model }) as unknown as {
+    const adapter = buildAdapter({
+      kind: 'anthropic_messages',
+      apiKey: 'sk-x',
+      model,
+    }) as unknown as {
       buildBody(req: ChatRequest): Record<string, any>
     }
     return adapter.buildBody({ ...req(messages), model })
@@ -183,7 +187,7 @@ describe('兼容协议上这个字段是惰性的', () => {
    */
   test('标与不标产出完全相同的请求体', () => {
     const compat = {
-      kind: 'openai_compatible' as const,
+      kind: 'openai_chat_completions' as const,
       apiKey: 'sk-x',
       model: 'deepseek-v4-flash',
     }

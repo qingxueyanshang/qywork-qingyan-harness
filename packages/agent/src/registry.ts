@@ -135,25 +135,46 @@ export interface GoalPort {
 }
 
 /**
- * 一次工具调用的结果最多占窗口的几分之一。
+ * 一次工具调用能投递多少 token。
  *
- * **不是拍的百分比，是从已有的界推出来的。** `read_file` 的默认行数上限是 2000
- * 行（`tools/files.ts`），2000 行普通代码约 20~25k token。token 上限必须容得下
- * 这个默认读法，否则工具描述里写的「默认 2000 行」就是假的——模型照描述调用，
- * 结果被截，而它不知道为什么。
+ * **依据是工具接口的承诺，不是窗口。** `read_file` 的默认行数上限是 2000 行
+ * （`tools/files.ts`），2000 行普通代码约 20~25k token。预算必须容得下这个默认
+ * 读法，否则工具描述里写的「默认 2000 行」就是假的——模型照描述调用，结果被截，
+ * 而它不知道为什么。承诺随产品定，**跟着窗口线性放大是错的**：1M 窗口按比例
+ * 会给到 125K，等于一次读取就把上下文吃掉八分之一。
+ */
+export const READ_DELIVERY_CAP = 25_000
+
+/**
+ * 小窗口下单次投递不得超过的窗口份额。
  *
- * 1/8 在 200k 窗口上恰好是 25k，正好容得下这个默认读法。
+ * 只在 W < 200K 时生效——200K 档它与 `READ_DELIVERY_CAP` 恰好相等（25K），
+ * 那正是上面那个承诺的标定点。
  */
 export const RESULT_BUDGET_RATIO = 1 / 8
 
 /**
- * 一个执行波次内**全部**结果之和的上限。
+ * 一个执行波次的上限是单次的几倍。
  *
- * 限单次没有上界：工具按波次并行，一波五个 `read_file` 各自都在 1/8 以内，
- * 加起来就是 5/8。而「压缩只留发送前检查一个入口」的前提正是
- * **两次检查之间的跳变有上界**——没有批级预算，那个前提不成立。
+ * 限单次没有上界：工具按波次并行，一波五个 `read_file` 各自都在单次预算以内，
+ * 加起来就是五份。批级预算同时是压缩的保留预算（「刚进来的那一波必然完整保留」），
+ * 所以它不能被拆成两个数。
+ *
+ * 取 2 的判据是 200K 档行为逐点不变（原先是窗口的 1/4 对 1/8）。不推导：
+ * 并行度由模型给出，没有上界。
  */
-export const BATCH_BUDGET_RATIO = 1 / 4
+export const BATCH_TO_CALL_RATIO = 2
+
+/**
+ * 这一轮的投递预算。**单次与整波两个上界的唯一算处。**
+ *
+ * 它不再参与压缩阈值——阈值只有窗口比例一项（`loop.ts` 的 `softLimit`）。
+ * 批预算只管投递上界与可折单元的体积上界。
+ */
+export function deliveryBudget(contextWindow: number): { perCall: number; batchCap: number } {
+  const perCall = Math.min(Math.floor(contextWindow * RESULT_BUDGET_RATIO), READ_DELIVERY_CAP)
+  return { perCall, batchCap: perCall * BATCH_TO_CALL_RATIO }
+}
 
 const BATCH_SPENT_KEY = 'ctx.batchSpent'
 
@@ -172,8 +193,7 @@ export function chargeBatchBudget(
   ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
   tokens: number,
 ): { ok: boolean; perCall: number; batchRemaining: number } {
-  const perCall = Math.floor(ctx.contextWindow * RESULT_BUDGET_RATIO)
-  const batchCap = Math.floor(ctx.contextWindow * BATCH_BUDGET_RATIO)
+  const { perCall, batchCap } = deliveryBudget(ctx.contextWindow)
   const spent = (ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0
   const ok = tokens <= perCall && spent + tokens <= batchCap
   if (ok) ctx.state.set(BATCH_SPENT_KEY, spent + tokens)

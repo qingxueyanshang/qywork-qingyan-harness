@@ -1,8 +1,20 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
+  applySpecOverride,
+  buildAdapter,
+  lookupModel,
+  type ModelSpec,
+  type ProviderKind,
+} from '@qywork/ai'
+import {
+  catalogKey,
   collectSecrets,
   configNotices,
   diagnoseConfig,
+  loadConfig,
   type QyConfig,
   resolveModel,
 } from './config.ts'
@@ -12,7 +24,7 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
     active: { provider: 'ds', model: 'deepseek-v4-flash' },
     providers: {
       ds: {
-        kind: 'openai_compatible',
+        kind: 'openai_chat_completions',
         baseUrl: 'https://api.deepseek.com/v1',
         apiKey: 'sk-deepseek-configured',
         models: { 'deepseek-v4-flash': {} },
@@ -32,16 +44,16 @@ describe('模型解析', () => {
   const two = cfg({
     providers: {
       ds: {
-        kind: 'openai_compatible',
+        kind: 'openai_chat_completions',
         baseUrl: 'https://api.deepseek.com/v1',
         apiKey: 'sk-ds',
         models: {
-          'deepseek-v4-flash': { capabilities: { thinking: 'none' } },
+          'deepseek-v4-flash': { effort: 'high' },
           'deepseek-v4-pro': {},
         },
       },
       mirror: {
-        kind: 'openai_compatible',
+        kind: 'openai_chat_completions',
         baseUrl: 'https://mirror.example/v1',
         apiKey: 'sk-mirror',
         models: { 'deepseek-v4-flash': {} },
@@ -57,14 +69,13 @@ describe('模型解析', () => {
   })
 
   /*
-   * 旧结构把 capabilities 挂在档案上，于是「档案里没声明的模型」会**套上**
-   * 同档案另一个模型的实测结果——探过 flash 支持思考，换到 pro 就当 pro 也支持。
-   * 那是拿 A 的实测事实去描述 B，而且完全静默。
+   * 思考档是**偏好**，逐「接口 × 模型」存。没在这一格选过的模型不会套上
+   * 同接口另一个模型选的那一档——那是拿 A 的选择去描述 B，而且完全静默。
    */
-  test('没在这个接口下声明过的能力不会被套到别的模型上', () => {
-    expect(resolveModel(two, 'deepseek-v4-flash')?.capabilities).toEqual({ thinking: 'none' })
-    expect(resolveModel(two, 'deepseek-v4-pro')?.capabilities).toBeUndefined()
-    expect(resolveModel(two, '完全没配过的模型')?.capabilities).toBeUndefined()
+  test('没在这一格选过的思考档不会被套到别的模型上', () => {
+    expect(resolveModel(two, 'deepseek-v4-flash')?.effort).toBe('high')
+    expect(resolveModel(two, 'deepseek-v4-pro')?.effort).toBeUndefined()
+    expect(resolveModel(two, '完全没配过的模型')?.effort).toBeUndefined()
   })
 
   /*
@@ -100,7 +111,7 @@ describe('配置体检', () => {
     cfg({
       providers: {
         ds: {
-          kind: 'openai_compatible',
+          kind: 'openai_chat_completions',
           baseUrl: 'https://api.deepseek.com/v1',
           models: { 'deepseek-v4-flash': {} },
         },
@@ -135,7 +146,7 @@ describe('配置体检', () => {
       active: { provider: 'ds', model: 'qwen3' },
       providers: {
         ds: {
-          kind: 'openai_compatible',
+          kind: 'openai_chat_completions',
           baseUrl: 'http://127.0.0.1:11434/v1',
           models: { qwen3: {} },
         },
@@ -150,7 +161,7 @@ describe('配置体检', () => {
         cfg({
           providers: {
             ds: {
-              kind: 'openai_compatible',
+              kind: 'openai_chat_completions',
               baseUrl: 'https://api.deepseek.com/v1',
               apiKey: '显然不是一个真 key',
               models: { 'deepseek-v4-flash': {} },
@@ -177,8 +188,12 @@ describe('收集凭证', () => {
     const s = collectSecrets(
       cfg({
         providers: {
-          ds: { kind: 'openai_compatible', apiKey: 'sk-deepseek-plaintext', models: { m: {} } },
-          cl: { kind: 'anthropic', apiKey: 'sk-anthropic-plaintext', models: { m: {} } },
+          ds: {
+            kind: 'openai_chat_completions',
+            apiKey: 'sk-deepseek-plaintext',
+            models: { m: {} },
+          },
+          cl: { kind: 'anthropic_messages', apiKey: 'sk-anthropic-plaintext', models: { m: {} } },
         },
       }),
     )
@@ -187,7 +202,9 @@ describe('收集凭证', () => {
   })
 
   test('没配 key 的接口不收一个空串 —— 空串会让按值匹配命中一切', () => {
-    const s = collectSecrets(cfg({ providers: { ds: { kind: 'anthropic', models: { m: {} } } } }))
+    const s = collectSecrets(
+      cfg({ providers: { ds: { kind: 'anthropic_messages', models: { m: {} } } } }),
+    )
     expect(s.values).not.toContain('')
   })
 
@@ -195,8 +212,8 @@ describe('收集凭证', () => {
     const s = collectSecrets(
       cfg({
         providers: {
-          a: { kind: 'anthropic', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
-          b: { kind: 'anthropic', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
+          a: { kind: 'anthropic_messages', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
+          b: { kind: 'anthropic_messages', apiKey: 'sk-same-key-everywhere', models: { m: {} } },
         },
       }),
     )
@@ -254,31 +271,45 @@ describe('配置提醒', () => {
       cfg({
         active: { provider: 'x', model: 'claude-opus-5' },
         providers: {
-          x: { kind: 'anthropic', apiKey: 'sk-a', models: { 'claude-opus-5': {} } },
+          x: { kind: 'anthropic_messages', apiKey: 'sk-a', models: { 'claude-opus-5': {} } },
         },
       }),
     ).join('\n')
     expect(n).not.toContain('不在内置目录')
   })
 
-  test('已经有实测能力时不提醒——那说明用户跑过 qy probe 了', () => {
+  test('模型库里已经有这一条时不提醒——那说明用户跑过 qy probe --save 了', () => {
     const n = configNotices(
       cfg({
         active: { provider: 'x', model: '某个没收录的模型' },
         providers: {
-          x: {
-            kind: 'openai_responses',
-            apiKey: 'sk-a',
-            models: {
-              某个没收录的模型: {
-                capabilities: { thinking: 'reasoning_effort', effortLevels: ['low', 'high'] },
-              },
-            },
+          x: { kind: 'openai_responses', apiKey: 'sk-a', models: { 某个没收录的模型: {} } },
+        },
+        catalog: {
+          [catalogKey('某个没收录的模型', 'openai_responses')]: {
+            thinking: 'reasoning_effort',
+            effortLevels: ['low', 'high'],
           },
         },
       }),
     ).join('\n')
     expect(n).not.toContain('不在内置目录')
+  })
+
+  /** 键的第二维是协议：探过 responses 那条链路，不等于兼容协议那条也探过。 */
+  test('另一条协议下的那一条不算数', () => {
+    const n = configNotices(
+      cfg({
+        active: { provider: 'x', model: '某个没收录的模型' },
+        providers: {
+          x: { kind: 'openai_responses', apiKey: 'sk-a', models: { 某个没收录的模型: {} } },
+        },
+        catalog: {
+          [catalogKey('某个没收录的模型', 'openai_chat_completions')]: { thinking: 'none' },
+        },
+      }),
+    ).join('\n')
+    expect(n).toContain('不在内置目录')
   })
 
   /*
@@ -287,7 +318,10 @@ describe('配置提醒', () => {
    * 先例是 autoApprove——一律忽略，但必须说出来。
    */
   test('检出旧的扁平 profiles 时点名说清楚，并指出 key 要重填', () => {
-    const legacy = { ...cfg(), profiles: { ds: { kind: 'anthropic', model: 'm' } } } as QyConfig
+    const legacy = {
+      ...cfg(),
+      profiles: { ds: { kind: 'anthropic_messages', model: 'm' } },
+    } as QyConfig
     const n = configNotices(legacy).join('\n')
     expect(n).toContain('profiles')
     expect(n).toContain('API Key')
@@ -311,12 +345,12 @@ describe('按「接口 × 模型」取档位', () => {
     active: { provider: 'ds', model: 'deepseek-v4-flash' },
     providers: {
       ds: {
-        kind: 'openai_compatible',
+        kind: 'openai_chat_completions',
         apiKey: 'sk-ds',
         models: { 'deepseek-v4-flash': { effort: 'max' }, 'deepseek-v4-pro': {} },
       },
       claude: {
-        kind: 'anthropic',
+        kind: 'anthropic_messages',
         apiKey: 'sk-c',
         models: { 'claude-opus-5': { effort: 'xhigh' } },
       },
@@ -355,7 +389,7 @@ describe('思考档位校验', () => {
     cfg({
       providers: {
         ds: {
-          kind: 'openai_compatible',
+          kind: 'openai_chat_completions',
           apiKey: 'sk-x',
           models: { 'deepseek-v4-flash': { effort: effort as never } },
         },
@@ -394,14 +428,16 @@ describe('思考档位校验', () => {
 describe('模型库覆盖', () => {
   const withCatalog = () =>
     cfg({
-      catalog: { 'deepseek-v4-flash': { input: 9, output: 19 } },
+      catalog: {
+        [catalogKey('deepseek-v4-flash', 'openai_chat_completions')]: { input: 9, output: 19 },
+      },
     })
 
-  test('按模型 id 取，与接口无关', () => {
+  test('按「模型 id × 接口的协议」取', () => {
     expect(resolveModel(withCatalog())?.spec).toEqual({ input: 9, output: 19 })
   })
 
-  /** 模型没在这个接口下声明过也要取得到：参数是模型的属性，不是接口的。 */
+  /** 模型没在这个接口下声明过也要取得到：参数是模型在这条协议上的属性。 */
   test('接口下没声明过这个模型也取得到', () => {
     const r = resolveModel(withCatalog(), 'deepseek-v4-flash')
     expect(r?.spec?.input).toBe(9)
@@ -409,5 +445,303 @@ describe('模型库覆盖', () => {
 
   test('库里没这一条就不带 spec，不塞一个空对象', () => {
     expect(resolveModel(cfg())?.spec).toBeUndefined()
+  })
+
+  /**
+   * 同一个模型 id 在两种协议下各取自己那份。
+   *
+   * 一维键会把一份参数套到两条 seed 上——而目录里 deepseek 同 id 就是两条，
+   * 走 chat/completions 时思考无从控制，走 Responses 时 `effort:'none'` 关得掉。
+   */
+  test('同一个模型 id 在两种协议下各取自己那份', () => {
+    const both = cfg({
+      active: { provider: 'compat', model: 'deepseek-v4-flash' },
+      providers: {
+        compat: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-a',
+          models: { 'deepseek-v4-flash': {} },
+        },
+        resp: {
+          kind: 'openai_responses',
+          apiKey: 'sk-b',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+      catalog: {
+        [catalogKey('deepseek-v4-flash', 'openai_chat_completions')]: { maxOutputTokens: 111 },
+        [catalogKey('deepseek-v4-flash', 'openai_responses')]: { maxOutputTokens: 222 },
+      },
+    })
+    expect(resolveModel(both)?.spec?.maxOutputTokens).toBe(111)
+    expect(
+      resolveModel(both, { provider: 'resp', model: 'deepseek-v4-flash' })?.spec?.maxOutputTokens,
+    ).toBe(222)
+  })
+})
+
+/**
+ * 一次性迁移：模型库的旧形状 → `catalogKey(id, kind)` 两维键。
+ *
+ * 判据不是「迁移函数返回了什么」，而是**迁移前后 `buildAdapter` 解析出的
+ * `ModelSpec` 逐字段相等**：旧配置不许因为换了形状就静默变哑。
+ * 本机的 `config.json` 三种旧键一个都没有，迁移对它是空操作——正因如此，
+ * 这条路径除了这里没有任何人走过。
+ */
+describe('模型库一次性迁移', () => {
+  interface LegacyModel {
+    maxOutputTokens?: number
+    capabilities?: { thinking?: string; effortLevels?: string[]; thinksByDefault?: boolean }
+    effort?: string
+  }
+  interface LegacyConfig {
+    active: { provider: string; model: string }
+    providers: Record<
+      string,
+      { kind: ProviderKind; apiKey?: string; models: Record<string, LegacyModel> }
+    >
+    catalog?: Record<string, Record<string, unknown>>
+  }
+
+  /**
+   * 迁移前那条四层解析，逐字复刻：
+   * 目录 seed → 模型库（一维键） → 探测出来的 capabilities → 接口下写死的上限取小。
+   */
+  function legacySpec(raw: LegacyConfig, providerName: string, model: string): ModelSpec {
+    const p = raw.providers[providerName]!
+    const declared = p.models[model]
+    const base = applySpecOverride(lookupModel(model, p.kind), raw.catalog?.[model])
+    const caps = declared?.capabilities
+    const probed = caps
+      ? {
+          ...base,
+          ...(caps.thinking ? { thinking: caps.thinking as ModelSpec['thinking'] } : {}),
+          ...(caps.effortLevels
+            ? { effortLevels: caps.effortLevels as ModelSpec['effortLevels'] }
+            : {}),
+          ...(caps.thinksByDefault !== undefined ? { thinksByDefault: caps.thinksByDefault } : {}),
+        }
+      : base
+    return declared?.maxOutputTokens
+      ? { ...probed, maxOutputTokens: Math.min(declared.maxOutputTokens, probed.maxOutputTokens) }
+      : probed
+  }
+
+  /** 迁移后那条两层解析：`resolveModel` 取到库里那一条，`buildAdapter` 叠上去。 */
+  function currentSpec(cfg: QyConfig, providerName: string, model: string): ModelSpec {
+    const r = resolveModel(cfg, { provider: providerName, model })!
+    return buildAdapter({
+      kind: r.kind,
+      apiKey: r.apiKey ?? 'sk-x',
+      model: r.model,
+      ...(r.spec ? { spec: r.spec } : {}),
+    }).spec
+  }
+
+  let home: string
+  const prevHome = process.env.QYWORK_HOME
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'qy-catalog-migrate-'))
+    process.env.QYWORK_HOME = home
+  })
+  afterEach(async () => {
+    if (prevHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = prevHome
+    await rm(home, { recursive: true, force: true }).catch(() => {})
+  })
+
+  async function load(raw: LegacyConfig): Promise<QyConfig> {
+    await writeFile(join(home, 'config.json'), JSON.stringify(raw), 'utf8')
+    return loadConfig()
+  }
+
+  test('无 catalog 段：空操作，也不凭空造一个 catalog', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': { effort: 'high' } },
+        },
+      },
+    }
+    const migrated = await load(raw)
+    expect(migrated.catalog).toBeUndefined()
+    expect(migrated.providers.ds?.models['deepseek-v4-flash']?.effort).toBe('high')
+    expect(currentSpec(migrated, 'ds', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'ds', 'deepseek-v4-flash'),
+    )
+  })
+
+  test('一维键 + 单 kind：改写成两维键，解析结果逐字段不变', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+      catalog: { 'deepseek-v4-flash': { input: 9, output: 19, contextWindow: 123_000 } },
+    }
+    const migrated = await load(raw)
+    expect(Object.keys(migrated.catalog ?? {})).toEqual([
+      catalogKey('deepseek-v4-flash', 'openai_chat_completions'),
+    ])
+    expect(currentSpec(migrated, 'ds', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'ds', 'deepseek-v4-flash'),
+    )
+  })
+
+  /** 一维键的旧语义就是「一份套到所有协议」，所以每个 kind 各写一份。 */
+  test('一维键 + 多 kind：每个协议各写一份，两侧解析结果都不变', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'compat', model: 'deepseek-v4-flash' },
+      providers: {
+        compat: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-a',
+          models: { 'deepseek-v4-flash': {} },
+        },
+        resp: { kind: 'openai_responses', apiKey: 'sk-b', models: { 'deepseek-v4-flash': {} } },
+      },
+      catalog: { 'deepseek-v4-flash': { input: 9, output: 19 } },
+    }
+    const migrated = await load(raw)
+    expect(Object.keys(migrated.catalog ?? {}).sort()).toEqual(
+      [
+        catalogKey('deepseek-v4-flash', 'openai_chat_completions'),
+        catalogKey('deepseek-v4-flash', 'openai_responses'),
+      ].sort(),
+    )
+    expect(currentSpec(migrated, 'compat', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'compat', 'deepseek-v4-flash'),
+    )
+    expect(currentSpec(migrated, 'resp', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'resp', 'deepseek-v4-flash'),
+    )
+  })
+
+  test('接口下的旧字段并进同一个键，且原地删干净', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'gw', model: '中转站上的某个模型' },
+      providers: {
+        gw: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-gw',
+          models: {
+            中转站上的某个模型: {
+              maxOutputTokens: 512,
+              capabilities: {
+                thinking: 'reasoning_effort',
+                effortLevels: ['low', 'high'],
+                thinksByDefault: true,
+              },
+            },
+          },
+        },
+      },
+    }
+    const migrated = await load(raw)
+    const key = catalogKey('中转站上的某个模型', 'openai_chat_completions')
+    expect(migrated.catalog?.[key]).toEqual({
+      maxOutputTokens: 512,
+      thinking: 'reasoning_effort',
+      effortLevels: ['low', 'high'],
+      thinksByDefault: true,
+    })
+    // 旧字段就地删掉，不留第二条读取路径。
+    expect(migrated.providers.gw?.models.中转站上的某个模型).toEqual({})
+    expect(currentSpec(migrated, 'gw', '中转站上的某个模型')).toEqual(
+      legacySpec(raw, 'gw', '中转站上的某个模型'),
+    )
+  })
+
+  /**
+   * 同协议的两个接口撞同一个键：不猜，留接口名字典序靠前的那份。
+   * 「留后一个」会让结果跟着对象键的枚举顺序走，重新保存一次就变。
+   */
+  test('两接口冲突：保留字典序靠前的那份', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'aaa', model: 'deepseek-v4-flash' },
+      providers: {
+        zzz: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-z',
+          models: { 'deepseek-v4-flash': { maxOutputTokens: 999 } },
+        },
+        aaa: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-a',
+          models: { 'deepseek-v4-flash': { maxOutputTokens: 111 } },
+        },
+      },
+    }
+    const migrated = await load(raw)
+    const key = catalogKey('deepseek-v4-flash', 'openai_chat_completions')
+    expect(migrated.catalog?.[key]?.maxOutputTokens).toBe(111)
+    expect(currentSpec(migrated, 'aaa', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'aaa', 'deepseek-v4-flash'),
+    )
+  })
+
+  /** 接口下那两个字段排在模型库之后，优先级不变。 */
+  test('一维键与接口下的字段撞键时，接口下的赢', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': { maxOutputTokens: 512 } },
+        },
+      },
+      catalog: { 'deepseek-v4-flash': { maxOutputTokens: 4096, input: 9 } },
+    }
+    const migrated = await load(raw)
+    const entry = migrated.catalog?.[catalogKey('deepseek-v4-flash', 'openai_chat_completions')]
+    expect(entry?.maxOutputTokens).toBe(512)
+    expect(entry?.input).toBe(9)
+    expect(currentSpec(migrated, 'ds', 'deepseek-v4-flash')).toEqual(
+      legacySpec(raw, 'ds', 'deepseek-v4-flash'),
+    )
+  })
+
+  /** 幂等判据是键的形状：跑完一次旧形状就不存在，再跑一次原样返回。 */
+  test('跑两次同果', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': { maxOutputTokens: 512 } },
+        },
+      },
+      catalog: { 'deepseek-v4-flash': { input: 9 } },
+    }
+    const once = await load(raw)
+    await writeFile(join(home, 'config.json'), JSON.stringify(once), 'utf8')
+    expect(await loadConfig()).toEqual(once)
+  })
+
+  /** 一维键指向一个哪个接口都没挂的模型：判不出协议，不猜——丢弃并点名。 */
+  test('一维键指向没挂在任何接口下的模型时丢弃', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+      catalog: { 谁都没挂过的模型: { input: 9 } },
+    }
+    const migrated = await load(raw)
+    expect(migrated.catalog).toBeUndefined()
   })
 })

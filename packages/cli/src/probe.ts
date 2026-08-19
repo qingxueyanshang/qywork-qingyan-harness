@@ -13,7 +13,7 @@
  */
 
 import { describeProbe, probeModel, toCapabilities } from '@qywork/ai'
-import { loadConfig, resolveModel, saveConfig } from '@qywork/runtime'
+import { catalogKey, loadConfig, resolveModel, saveConfig } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -43,7 +43,7 @@ export async function runProbe(args: string[]): Promise<number> {
     model: stored.model,
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),
-    // **不带已有的 capabilities**：带上等于让上一次的探测结果影响这一次，
+    // **不带模型库里那条覆盖**：带上等于让上一次的探测结果影响这一次，
     // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
   })
 
@@ -78,14 +78,11 @@ export async function runProbe(args: string[]): Promise<number> {
     return 0
   }
 
-  // 写回**这个接口下这个模型**那一格，不是整个接口。同一个接口下另一个模型
-  // 的能力是另一件事，套上去就是拿 A 的实测事实去描述 B。
-  const provider = config.providers[stored.provider]
-  if (!provider) return 2
-  provider.models[stored.model] = { ...provider.models[stored.model], capabilities: caps }
+  // 落进模型库那一格：探的是「这条模型在这条协议上」的行为，键的两维正好是它。
+  // 协议从当前接口取，不从模型名猜。
+  const key = catalogKey(stored.model, stored.kind)
+  config.catalog = { ...config.catalog, [key]: { ...config.catalog?.[key], ...caps } }
   await saveConfig(config)
-  process.stderr.write(
-    `\n已写回 ${stored.provider} / ${stored.model} 的能力：${Object.keys(caps).join('、')}\n`,
-  )
+  process.stderr.write(`\n已写回模型库 ${key} 的能力：${Object.keys(caps).join('、')}\n`)
   return 0
 }

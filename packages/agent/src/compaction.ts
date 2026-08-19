@@ -13,6 +13,10 @@
  * 2. **摘要失败不能把整轮 run 带崩。** 摘要本身是一次模型调用，它也会失败
  *    （正是上下文超限时更容易失败）。所以有 `localSummary()` 这条确定性降级路径：
  *    不调模型，纯截取拼装。质量差得多，但远好于「压缩失败 → 请求还是超限 → run 挂掉」。
+ * 3. **中断即丢弃，不设例外。** 信号 abort 之后一律返回 `aborted`——包括摘要
+ *    已经生成完的那种。压缩不可逆地改写模型可见历史，中断之后落库等于用用户
+ *    没等到的那份摘要替换掉他的会话。**不要给「反正已经算出来了」开口子**：
+ *    加一条例外就是两条规则，而重算一次压缩的成本是零次模型调用。
  */
 
 import type { CompactionFacts, CompactionManifest, MessageId } from '@qywork/core'
@@ -93,13 +97,30 @@ export interface CompactionInput {
 }
 
 export type CompactionOutcome =
-  | { status: 'compacted'; manifest: CompactionManifest; usedModel: boolean }
+  /** `summarized` = 这份摘要是模型写的还是本地降级拼的。调用方据它决定怎么显示。 */
+  | { status: 'compacted'; manifest: CompactionManifest; summarized: boolean }
   /** 没到值得压缩的量，或者已经压到头了。**不是失败**——调用方不该报错。 */
   | { status: 'skipped'; reasonCode: 'too_few_messages' | 'nothing_new' }
   | { status: 'failed'; reasonCode: string; message: string }
+  /**
+   * 执行期间被中断，整次丢弃，没有任何持久副作用。
+   *
+   * **调用方不得把它当失败上报**：中断是用户自己的动作，停止时刻多一张红卡是噪音。
+   */
+  | { status: 'aborted' }
 
 /** 由调用方注入的摘要生成器。返回 null = 走本地降级。 */
 export type Summarizer = (prompt: string, budgetChars: number) => Promise<string | null>
+
+/**
+ * 摘要调用是不是被中断掐掉的。
+ *
+ * 认 `name` 而不是 `instanceof DOMException`：中断可能由 `AbortSignal` 原生抛出，
+ * 也可能由适配器层包一层再抛，跨 realm 时 `instanceof` 不成立而 `name` 恒成立。
+ */
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: unknown } | null | undefined)?.name === 'AbortError'
+}
 
 /**
  * 执行一次压缩，产出新的 manifest。
@@ -110,6 +131,7 @@ export type Summarizer = (prompt: string, budgetChars: number) => Promise<string
 export async function compact(
   input: CompactionInput,
   summarize: Summarizer | null,
+  signal?: AbortSignal,
 ): Promise<CompactionOutcome> {
   const { messages, actions, previous } = input
 
@@ -128,16 +150,19 @@ export async function compact(
 
   const budget = summaryBudget(segments)
   let summary = ''
-  let usedModel = false
+  let summarized = false
   if (summarize) {
     try {
       const out = await summarize(buildSummaryPrompt(segments, previous?.summary ?? null), budget)
       if (out?.trim()) {
         summary = out.trim()
-        usedModel = true
+        summarized = true
       }
-    } catch {
-      // 摘要调用失败走降级，不上抛。上下文超限时这条路径尤其容易命中——
+    } catch (err) {
+      // 中断与 provider 失败必须分开：**降级只对后者成立**。把中断也降级，
+      // 用户按停止之后拿到的就是一份机械截取的 manifest，而它不可逆。
+      if (isAbortError(err)) return { status: 'aborted' }
+      // provider 失败走降级，不上抛。上下文超限时这条路径尤其容易命中——
       // 而那正是最需要压缩成功的时刻。
     }
   }
@@ -147,9 +172,13 @@ export async function compact(
     return { status: 'failed', reasonCode: 'empty_summary', message: '摘要为空，未产出可用投影' }
   }
 
+  // 摘要期间信号被拉起（摘要器自己吞掉了中断、或压根没有摘要器）时，
+  // 这一次的产物同样作废。落库端还有一道守卫，两道的判据是同一个信号。
+  if (signal?.aborted) return { status: 'aborted' }
+
   return {
     status: 'compacted',
-    usedModel,
+    summarized,
     manifest: {
       revision: (previous?.revision ?? 0) + 1,
       compactedThroughMessageId: through,

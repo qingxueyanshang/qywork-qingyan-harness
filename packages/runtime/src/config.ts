@@ -7,7 +7,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { lookupModel, type ProviderKind, type ProviderProfile } from '@qywork/ai'
+import { lookupModel, type ProviderKind, type ThinkingMode } from '@qywork/ai'
 import { EFFORT_ORDER, type EffortLevel, type PermissionMode } from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
@@ -43,7 +43,7 @@ export interface QyConfig {
   /** 当前生效的「接口 × 模型」。 */
   active: ModelRef
   providers: Record<string, StoredProvider>
-  /** 用户改过的模型参数，键是模型 id。见 `StoredCatalogEntry`。 */
+  /** 用户改过的模型参数，键由 `catalogKey` 造。见 `StoredCatalogEntry`。 */
   catalog?: Record<string, StoredCatalogEntry>
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
@@ -121,18 +121,32 @@ export interface StoredProvider {
 }
 
 /**
- * 用户改过的**模型参数**。键是模型 id。
+ * 模型库的键：**模型 id + 协议**。
+ *
+ * 两维是因为同一个模型换条协议能力就不同（DeepSeek 走 chat/completions 时
+ * 思考无从控制，走 Responses 时 `reasoning.effort:'none'` 能真的关掉），
+ * 内置目录本来就按这两维索引（`lookupModel`）。一维覆盖会把一份参数
+ * 套到两条 seed 上。
+ *
+ * 分隔符取 `|`：模型 id 含斜杠（openrouter 的 `anthropic/claude-3`）但不含它。
+ * **不要改成 `/`**，改了就没法无歧义地拆回去，一次性迁移的幂等判据也跟着失效。
+ */
+export function catalogKey(model: string, kind: ProviderKind): string {
+  return `${model}|${kind}`
+}
+
+/**
+ * 用户改过的**模型参数**，也是内置目录之上**唯一的覆盖层**。
+ *
+ * 窗口、上限、单价是模型本身的属性；思考三项（`thinking` / `effortLevels` /
+ * `thinksByDefault`）是这个模型在这条协议上的能力，`qy probe --save` 落的就是
+ * 这里。两类都由键的第二维（协议）区分开，不再各存一处。
  *
  * ## 它和接口无关
  *
- * 库回答的是「这个模型本身是什么样」：窗口多大、最大能输出多少、多少钱、
- * 吃哪几档思考。接口回答的是「用谁的端点和哪把 key」。两者唯一的接点是
- * 接口下那一行模型 id ——参数照着 id 从库里查。
- *
- * 所以覆盖挂在模型 id 上，**不挂在「接口 × 模型」那一格**。挂到那一格的是
- * `StoredModel.capabilities`：那是「这条链路实测出来的思考能力」，同一个模型
- * 经不同中转站可以不一样，是另一个轴。价格和窗口不是——它们是模型的属性，
- * 换个中转站不会变。
+ * 库回答的是「这个模型在这条协议上是什么样」，接口回答的是「用谁的端点和
+ * 哪把 key」。两者唯一的接点是接口下那一行模型 id ——参数照着
+ * `catalogKey(id, 接口的 kind)` 从库里查。
  *
  * ## 为什么要能改
  *
@@ -143,6 +157,8 @@ export interface StoredProvider {
  * 字段全部可选：只写改过的那几个，其余照 seed。目录里根本没有的 id 也能写一条
  * （`vendor` 决定它在界面上归到哪个分组），那正好补上「未收录模型计价按 0 算、
  * 账本报 $0」这个洞。
+ *
+ * 字段必须与 `@qywork/ai` 的 `SpecOverride` 一致——合并发生在那一层。
  */
 export interface StoredCatalogEntry {
   displayName?: string
@@ -158,26 +174,24 @@ export interface StoredCatalogEntry {
   /** 缓存写入价。只覆盖 5 分钟那一档——`computeCost` 只按它算。 */
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
+  thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
+  thinksByDefault?: boolean
 }
 
 /**
- * 一个模型在**这个接口下**的实测结论。
+ * 一个模型挂在**这个接口下**的那一格。
  *
- * `capabilities` 挂在「接口 × 模型」这一格是这次改动的要点：同一个模型经不同
- * 中转站走的协议可能不同，能力也就不同。挂在接口上会让一次探测的结论套到
- * 同接口的其它模型头上——那正是旧结构下 `session.ts` 的错配来源。
+ * 只放**偏好**（我要用哪一档），不放**能力**（这个模型能发哪几档）——
+ * 能力全在模型库里，按「模型 × 协议」索引。往这里再加一个能力字段就是第二本账：
+ * 界面显示的是库里那份，发出去的是这里这份。
  */
 export interface StoredModel {
-  maxOutputTokens?: number
-  /** `qy probe` 实测写入的能力覆盖。手改也行——它只是配置。 */
-  capabilities?: ProviderProfile['capabilities']
   /**
    * 用户为这个模型选定的思考档。`undefined` = 没选过，不发思考字段。
    *
-   * **和 `capabilities` 一样挂在「接口 × 模型」这一格，理由是同一条：
-   * 档位集合逐模型不同。** 不能是全局一个 `config.effort`——
-   * 本仓的模型档位面从 0 档到 5 档都有：
+   * **挂在「接口 × 模型」这一格，理由是档位集合逐模型不同。**
+   * 不能是全局一个 `config.effort`——本仓的模型档位面从 0 档到 5 档都有：
    *
    * ```
    * claude-opus-5        low medium high xhigh max
@@ -212,10 +226,7 @@ export interface ResolvedModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
-  maxOutputTokens?: number
-  /** **模型没在这个接口下声明过就是 undefined**，不会套用别的模型的实测结果。 */
-  capabilities?: ProviderProfile['capabilities']
-  /** 用户在模型库里改过的参数。按模型 id 取，与接口无关。 */
+  /** 模型库里这一条。按「模型 id × 接口的 kind」取，库里没有就是 undefined。 */
   spec?: StoredCatalogEntry
   /** 用户为这个模型选定的思考档。undefined = 没选过，不发思考字段。 */
   effort?: EffortLevel
@@ -244,7 +255,7 @@ const DEFAULT_CONFIG: QyConfig = {
   active: { provider: 'anthropic', model: 'claude-opus-5' },
   providers: {
     anthropic: {
-      kind: 'anthropic',
+      kind: 'anthropic_messages',
       models: { 'claude-opus-5': {} },
     },
   },
@@ -257,6 +268,112 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function isModelRef(v: unknown): v is ModelRef {
   return isRecord(v) && typeof v.provider === 'string' && typeof v.model === 'string'
+}
+
+/**
+ * 迁移前挂在 `StoredModel` 上的两个字段。**只有 `migrateModelLibrary` 读它们**，
+ * 解析链一处都不碰——留第二条读取路径就是两本账。
+ */
+interface LegacyStoredModel {
+  maxOutputTokens?: number
+  capabilities?: {
+    thinking?: ThinkingMode
+    effortLevels?: EffortLevel[]
+    thinksByDefault?: boolean
+  }
+}
+
+/**
+ * 一次性迁移：模型库的旧形状 → `catalogKey(id, kind)` 两维键。
+ *
+ * 三条来源，接口下那两个字段优先（旧解析链里它们本就排在模型库之后）：
+ * 一维 `catalog[id]` 的语义是「一份套到所有协议」，所以按该 id 在 `providers`
+ * 里出现过的每个 kind 各写一份；`models[id].maxOutputTokens` 与 `.capabilities`
+ * 的协议由所在接口直接给出，并进同一个键。
+ *
+ * 幂等判据是键的形状——一维键与那两个字段跑完一次就不复存在，**不引入版本号**。
+ * 同一个键被同协议的多个接口写成不同值时不猜：留接口名字典序靠前的那份，
+ * 其余逐条返回给调用方点名。
+ *
+ * **只改内存里这份，不落盘**：下一次保存配置时旧键随整份写回一起消失。
+ */
+function migrateModelLibrary(cfg: QyConfig): string[] {
+  const providers = cfg.providers ?? {}
+  const flatKeys = Object.keys(cfg.catalog ?? {}).filter((k) => !k.includes('|'))
+  const hasLegacyFields = Object.values(providers).some((p) =>
+    Object.values(p.models ?? {}).some((m) => 'maxOutputTokens' in m || 'capabilities' in m),
+  )
+  if (flatKeys.length === 0 && !hasLegacyFields) return []
+
+  const notices: string[] = []
+  const catalog: Record<string, StoredCatalogEntry> = {}
+  for (const [key, entry] of Object.entries(cfg.catalog ?? {})) {
+    if (key.includes('|')) catalog[key] = entry
+  }
+
+  const kindsOf = new Map<string, Set<ProviderKind>>()
+  for (const p of Object.values(providers)) {
+    for (const id of Object.keys(p.models ?? {})) {
+      const set = kindsOf.get(id) ?? new Set<ProviderKind>()
+      set.add(p.kind)
+      kindsOf.set(id, set)
+    }
+  }
+
+  for (const id of flatKeys) {
+    const entry = cfg.catalog?.[id]
+    if (!entry) continue
+    const kinds = kindsOf.get(id)
+    if (!kinds) {
+      notices.push(`模型库里的 ${id} 没有挂在任何接口下，判不出协议，这一条已丢弃。`)
+      continue
+    }
+    for (const kind of kinds) {
+      const key = catalogKey(id, kind)
+      catalog[key] = { ...catalog[key], ...entry }
+    }
+  }
+
+  const owner = new Map<string, string>()
+  for (const name of Object.keys(providers).sort()) {
+    const p = providers[name]
+    if (!p) continue
+    for (const [id, model] of Object.entries(p.models ?? {})) {
+      const legacy = model as StoredModel & LegacyStoredModel
+      const caps = legacy.capabilities
+      const entry: StoredCatalogEntry = {
+        ...(legacy.maxOutputTokens ? { maxOutputTokens: legacy.maxOutputTokens } : {}),
+        ...(caps?.thinking ? { thinking: caps.thinking } : {}),
+        ...(caps?.effortLevels ? { effortLevels: caps.effortLevels } : {}),
+        ...(caps?.thinksByDefault !== undefined ? { thinksByDefault: caps.thinksByDefault } : {}),
+      }
+      delete legacy.maxOutputTokens
+      delete legacy.capabilities
+
+      const fields = Object.keys(entry)
+      if (fields.length === 0) continue
+      const key = catalogKey(id, p.kind)
+      const held = owner.get(key)
+      if (held === undefined) {
+        owner.set(key, name)
+        catalog[key] = { ...catalog[key], ...entry }
+        continue
+      }
+      const kept = catalog[key] as Record<string, unknown>
+      const source = entry as Record<string, unknown>
+      const differing = fields.filter((f) => JSON.stringify(kept[f]) !== JSON.stringify(source[f]))
+      if (differing.length > 0) {
+        notices.push(
+          `模型 ${id} 在接口 ${name} 与 ${held} 下的 ${differing.join('、')} 取值不同；` +
+            `两个接口协议相同，模型库里只有一格，已按 ${held} 那份写入。`,
+        )
+      }
+    }
+  }
+
+  if (Object.keys(catalog).length > 0) cfg.catalog = catalog
+  else delete cfg.catalog
+  return notices
 }
 
 export async function loadConfig(): Promise<QyConfig> {
@@ -273,6 +390,10 @@ export async function loadConfig(): Promise<QyConfig> {
   }
 
   const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
+
+  // 模型库的旧形状就地迁成两维键。冲突点名走 stderr：这一步在解析阶段，
+  // 而 `configNotices` 拿到的已经是迁完的配置，看不见旧键了。
+  for (const n of migrateModelLibrary(cfg)) process.stderr.write(`[qy] ${n}\n`)
 
   /*
    * 接口表**不与默认值合并**。
@@ -339,6 +460,9 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
   const provider = cfg.providers[name]
   if (!provider) return undefined
   const declared = provider.models[wanted]
+  // 库里的覆盖按「模型 id × 这个接口的协议」取。声不声明过这个模型都取得到——
+  // 参数是模型在这条协议上的属性，不是接口下那一格的属性。
+  const spec = cfg.catalog?.[catalogKey(wanted, provider.kind)]
 
   return {
     provider: name,
@@ -347,14 +471,8 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
-    ...(declared?.maxOutputTokens ? { maxOutputTokens: declared.maxOutputTokens } : {}),
-    // 没声明过这个模型就**不给** capabilities：套用同接口另一个模型的实测结果，
-    // 等于拿 A 的实测事实去描述 B。旧结构下这是静默发生的。
-    ...(declared?.capabilities ? { capabilities: declared.capabilities } : {}),
     ...(declared?.effort ? { effort: declared.effort } : {}),
-    // 库里的覆盖按**模型 id**取，不看接口——窗口和价格是模型的属性，
-    // 换个中转站不会变。声不声明过这个模型都取得到。
-    ...(cfg.catalog?.[wanted] ? { spec: cfg.catalog[wanted] } : {}),
+    ...(spec ? { spec } : {}),
   }
 }
 
@@ -506,7 +624,8 @@ export function configNotices(cfg: QyConfig): string[] {
   }
 
   const active = resolveModel(cfg)
-  if (active && !active.capabilities) {
+  // 模型库里已经有这一条就不提醒：那说明用户跑过 `qy probe --save` 或自己补过参数。
+  if (active && !active.spec) {
     const spec = lookupModel(active.model, active.kind)
     if (spec.catalogued === false) {
       notices.push(

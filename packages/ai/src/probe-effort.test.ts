@@ -56,7 +56,7 @@ beforeAll(() => {
 afterAll(() => server.stop(true))
 
 const profile = (model = 'grok-4.6'): ProviderProfile => ({
-  kind: 'openai_compatible',
+  kind: 'openai_chat_completions',
   apiKey: 'sk-x',
   model,
   baseUrl: base,

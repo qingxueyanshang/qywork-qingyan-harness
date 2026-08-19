@@ -555,7 +555,7 @@ async function main(): Promise<number> {
       store: store4,
       config: {
         active: { provider: 'anthropic', model: 'claude-opus-5' },
-        providers: { anthropic: { kind: 'anthropic', models: { 'claude-opus-5': {} } } },
+        providers: { anthropic: { kind: 'anthropic_messages', models: { 'claude-opus-5': {} } } },
       },
       workspaceRoot: WS_DIR,
       port: 0,

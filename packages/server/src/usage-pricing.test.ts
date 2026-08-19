@@ -96,7 +96,9 @@ beforeAll(async () => {
      * 这条断言的期望值会随这台机器跑测试的钟点变，是一条会随机红的测试。
      * 未收录模型没有 offPeak，价钱只由覆盖决定。
      */
-    catalog: { 中转站上的某个模型: { input: 1000, output: 2000 } },
+    catalog: {
+      '中转站上的某个模型|openai_responses': { input: 1000, output: 2000 },
+    },
     mode: 'auto',
   }
   workspaceId = upsertWorkspace(store, dir, 'pricing-ws').id

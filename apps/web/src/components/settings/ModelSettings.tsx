@@ -23,7 +23,30 @@ import { LoadState } from './LoadState.tsx'
 import { ModelLibrary } from './ModelLibrary.tsx'
 import { Field, Row } from './Row.tsx'
 
-const PROVIDER_KINDS = ['anthropic', 'openai_compatible', 'openai_responses'] as const
+const PROVIDER_KINDS = [
+  'anthropic_messages',
+  'openai_chat_completions',
+  'openai_responses',
+] as const
+
+/**
+ * 下拉里显示的短名。**底层值不动**——它直指端点（`/v1/chat/completions`），
+ * 而官方的 `completions` 是另一个已弃用的补全接口，短名只在界面上用。
+ */
+const KIND_LABEL: Record<(typeof PROVIDER_KINDS)[number], string> = {
+  anthropic_messages: 'anthropic_messages',
+  openai_chat_completions: 'openai_chat',
+  openai_responses: 'openai_responses',
+}
+
+/**
+ * 模型库的键：模型 id + 协议。服务端 `runtime/config.ts` 的 `catalogKey` 是真源，
+ * 这里抄一份是因为界面只依赖 `@qywork/core`，够不着 runtime。**两处必须一致。**
+ * 分隔符是 `|`：模型 id 含斜杠但不含它。
+ */
+function catalogKey(model: string, kind: string): string {
+  return `${model}|${kind}`
+}
 
 /**
  * 模型配置：**接口一层，模型一层**。
@@ -78,10 +101,11 @@ export function ModelSettings() {
   }
 
   const patchProvider = (name: string, p: Partial<RedactedProvider>) => {
-    const base = config()
-    const prev = base?.providers[name]
-    if (!base || !prev) return
-    void replaceConfig({ ...base, providers: { ...base.providers, [name]: { ...prev, ...p } } })
+    void replaceConfig((cur) => {
+      const prev = cur.providers[name]
+      if (!prev) return null
+      return { ...cur, providers: { ...cur.providers, [name]: { ...prev, ...p } } }
+    })
   }
 
   const addProvider = () => {
@@ -91,28 +115,43 @@ export function ModelSettings() {
     let i = 2
     while (name in base.providers) name = `新接口 ${i++}`
     setPicked(name)
-    void replaceConfig({
-      ...base,
+    void replaceConfig((cur) => ({
+      ...cur,
       providers: {
-        ...base.providers,
-        [name]: { kind: 'openai_compatible', hasApiKey: false, models: {} },
+        ...cur.providers,
+        [name]: { kind: 'openai_chat_completions', hasApiKey: false, models: {} },
       },
-    })
+    }))
   }
 
   /**
    * 写一条模型参数，或删掉一条覆盖还原成内置值。
    *
-   * 落在 `config.catalog`，键是模型 id——**不落在接口下**。窗口和价格是模型的
-   * 属性，换个中转站不会变；落到接口下就得每个接口各存一份，改一处漏三处。
+   * 落在 `config.catalog`，键是「模型 id | 协议」——**不落在接口下**。窗口和价格
+   * 是模型的属性，换个中转站不会变；落到接口下就得每个接口各存一份，改一处漏三处。
+   *
+   * 库里一行只认模型 id，而落盘带协议这一维，所以一次保存写进这个模型已经用到的
+   * 每一种协议；一个接口都还没挂时写进全部协议，等它被挂上去时参数就已经在了。
    */
   const saveCatalog = (id: string, entry: CatalogEntry | null) => {
-    const base = config()
-    if (!base) return
-    const { [id]: _drop, ...rest } = base.catalog ?? {}
-    void replaceConfig({
-      ...base,
-      catalog: entry ? { ...rest, [id]: entry } : rest,
+    void replaceConfig((cur) => {
+      const used = [
+        ...new Set(
+          Object.values(cur.providers)
+            .filter((p) => id in p.models)
+            .map((p) => p.kind),
+        ),
+      ]
+      const kinds = used.length > 0 ? used : [...PROVIDER_KINDS]
+      const rest = Object.fromEntries(
+        Object.entries(cur.catalog ?? {}).filter(([k]) => k.slice(0, k.lastIndexOf('|')) !== id),
+      )
+      return {
+        ...cur,
+        catalog: entry
+          ? { ...rest, ...Object.fromEntries(kinds.map((k) => [catalogKey(id, k), entry])) }
+          : rest,
+      }
     })
   }
 
@@ -121,16 +160,15 @@ export function ModelSettings() {
   const [doomed, setDoomed] = createSignal<string | null>(null)
 
   const removeProvider = (name: string) => {
-    const base = config()
     setDoomed(null)
-    if (!base) return
-    const { [name]: _drop, ...rest } = base.providers
     setPicked(null)
-    // 删掉的正好是当前接口时要顺手改 active，否则保存会被服务端顶回来，
-    // 而报错说的是「active 指向不存在的接口」——用户不会把它和刚才那次删除联系起来。
-    const active =
-      base.active.provider === name ? (firstModelRef(rest) ?? base.active) : base.active
-    void replaceConfig({ ...base, providers: rest, active })
+    void replaceConfig((cur) => {
+      const { [name]: _drop, ...rest } = cur.providers
+      // 删掉的正好是当前接口时要顺手改 active，否则保存会被服务端顶回来，
+      // 而报错说的是「active 指向不存在的接口」——用户不会把它和刚才那次删除联系起来。
+      const active = cur.active.provider === name ? (firstModelRef(rest) ?? cur.active) : cur.active
+      return { ...cur, providers: rest, active }
+    })
   }
 
   /** 接口改名：键就是名字，所以这是「删旧建新」，顺带把指向它的 active 一起挪。 */
@@ -138,12 +176,16 @@ export function ModelSettings() {
     const base = config()
     const p = base?.providers[from]
     if (!base || !p || !to || to === from || to in base.providers) return
-    const { [from]: _drop, ...rest } = base.providers
     setPicked(to)
-    void replaceConfig({
-      ...base,
-      providers: { ...rest, [to]: p },
-      ...(base.active.provider === from ? { active: { ...base.active, provider: to } } : {}),
+    void replaceConfig((cur) => {
+      const moved = cur.providers[from]
+      if (!moved || to in cur.providers) return null
+      const { [from]: _drop, ...rest } = cur.providers
+      return {
+        ...cur,
+        providers: { ...rest, [to]: moved },
+        ...(cur.active.provider === from ? { active: { ...cur.active, provider: to } } : {}),
+      }
     })
   }
 
@@ -157,32 +199,40 @@ export function ModelSettings() {
     const base = config()
     const p = base?.providers[provider]
     if (!base || !p || !id || id in p.models) return
-    void replaceConfig({
-      ...base,
-      providers: { ...base.providers, [provider]: { ...p, models: { ...p.models, [id]: {} } } },
-      // 这个接口本来一个模型都没有 = 它还没法用。挂上第一个就顺手切过去，
-      // 省掉一次「加完了怎么还没生效」。
-      ...(Object.keys(p.models).length === 0 ? { active: { provider, model: id } } : {}),
+    void replaceConfig((cur) => {
+      const owner = cur.providers[provider]
+      if (!owner || id in owner.models) return null
+      return {
+        ...cur,
+        providers: {
+          ...cur.providers,
+          [provider]: { ...owner, models: { ...owner.models, [id]: {} } },
+        },
+        // 这个接口本来一个模型都没有 = 它还没法用。挂上第一个就顺手切过去，
+        // 省掉一次「加完了怎么还没生效」。
+        ...(Object.keys(owner.models).length === 0 ? { active: { provider, model: id } } : {}),
+      }
     })
   }
 
   const removeModel = (provider: string, id: string) => {
-    const base = config()
-    const p = base?.providers[provider]
-    if (!base || !p) return
-    const { [id]: _drop, ...models } = p.models
-    const next: RedactedConfig = {
-      ...base,
-      providers: { ...base.providers, [provider]: { ...p, models } },
-    }
-    // 删掉的正好是默认那一格，就近换一个，别留一个指向空处的 active。
-    if (base.active.provider === provider && base.active.model === id) {
-      const fallback = Object.keys(models)[0]
-      next.active = fallback
-        ? { provider, model: fallback }
-        : (firstModelRef(next.providers) ?? base.active)
-    }
-    void replaceConfig(next)
+    void replaceConfig((cur) => {
+      const owner = cur.providers[provider]
+      if (!owner) return null
+      const { [id]: _drop, ...models } = owner.models
+      const next: RedactedConfig = {
+        ...cur,
+        providers: { ...cur.providers, [provider]: { ...owner, models } },
+      }
+      // 删掉的正好是默认那一格，就近换一个，别留一个指向空处的 active。
+      if (cur.active.provider === provider && cur.active.model === id) {
+        const fallback = Object.keys(models)[0]
+        next.active = fallback
+          ? { provider, model: fallback }
+          : (firstModelRef(next.providers) ?? cur.active)
+      }
+      return next
+    })
   }
 
   const runProbe = async (provider: string, model: string, mode: 'reachability' | 'full') => {
@@ -190,26 +240,19 @@ export function ModelSettings() {
     try {
       const r = await probeModel(provider, model, mode)
       setProbes((prev) => ({ ...prev, [model]: r }))
-      // 探到的能力**写回配置**走既有的整份 PUT，不新开写入路径。
+      // 探到的能力**写进模型库**，走既有的整份 PUT，不新开写入路径。
+      // 协议这一维从当前接口取：探的就是「这条链路」的行为。
       // 只在真探出东西时写：空结论会盖掉目录里正确的保守值。
       if (mode === 'full' && Object.keys(r.capabilities).length > 0) {
-        const base = config()
-        const p = base?.providers[provider]
-        if (base && p) {
-          void replaceConfig({
-            ...base,
-            providers: {
-              ...base.providers,
-              [provider]: {
-                ...p,
-                models: {
-                  ...p.models,
-                  [model]: { ...p.models[model], capabilities: r.capabilities },
-                },
-              },
-            },
-          })
-        }
+        void replaceConfig((cur) => {
+          const owner = cur.providers[provider]
+          if (!owner) return null
+          const key = catalogKey(model, owner.kind)
+          return {
+            ...cur,
+            catalog: { ...cur.catalog, [key]: { ...cur.catalog?.[key], ...r.capabilities } },
+          }
+        })
       }
     } catch (e) {
       setProbes((prev) => ({
@@ -304,7 +347,9 @@ export function ModelSettings() {
                           value={p().kind}
                           onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
                         >
-                          <For each={PROVIDER_KINDS}>{(k) => <option value={k}>{k}</option>}</For>
+                          <For each={PROVIDER_KINDS}>
+                            {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+                          </For>
                         </select>
                       </Row>
 
@@ -357,10 +402,10 @@ export function ModelSettings() {
                                   type="button"
                                   disabled={isDefault()}
                                   onClick={() =>
-                                    void replaceConfig({
-                                      ...c(),
+                                    void replaceConfig((cur) => ({
+                                      ...cur,
                                       active: { provider: name(), model: id },
-                                    })
+                                    }))
                                   }
                                 >
                                   {isDefault() ? '默认' : '设为默认'}

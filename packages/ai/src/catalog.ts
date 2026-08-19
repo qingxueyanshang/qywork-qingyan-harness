@@ -128,13 +128,13 @@ export interface ModelSpec {
   catalogued?: boolean
 }
 
-export type ProviderKind = 'anthropic' | 'openai_responses' | 'openai_compatible'
+export type ProviderKind = 'anthropic_messages' | 'openai_responses' | 'openai_chat_completions'
 
 /**
  * 厂商。
  *
  * **和 `ProviderKind` 是两个轴，不能合并。** `ProviderKind` 说的是协议——
- * DeepSeek、OpenAI、任何中转站都可以是 `openai_compatible`。厂商回答的是
+ * DeepSeek、OpenAI、任何中转站都可以是 `openai_chat_completions`。厂商回答的是
  * 另外两个问题：端点在哪、旗下有哪些模型。
  * 合成一个的话「选了厂商自动带出端点」就无从做起，因为协议里没有端点。
  *
@@ -162,46 +162,46 @@ export const VENDORS: readonly Vendor[] = [
   {
     id: 'anthropic',
     displayName: 'Anthropic',
-    defaultKind: 'anthropic',
+    defaultKind: 'anthropic_messages',
   },
   {
     id: 'openai',
     displayName: 'OpenAI',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
     defaultBaseUrl: 'https://api.openai.com/v1',
   },
   {
     id: 'deepseek',
     displayName: 'DeepSeek',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
     // 带 `/v1`：DeepSeek 的 OpenAI 兼容端点在这一层，少了它是 404。
     defaultBaseUrl: 'https://api.deepseek.com/v1',
   },
   {
     id: 'google',
     displayName: 'Google',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
   },
-  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_compatible' },
+  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_chat_completions' },
   {
     id: 'alibaba',
     displayName: '阿里云百炼',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
   },
   {
     id: 'moonshot',
     displayName: '月之暗面',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
   },
   {
     id: 'zhipu',
     displayName: '智谱',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
   },
   {
     id: 'minimax',
     displayName: 'MiniMax',
-    defaultKind: 'openai_compatible',
+    defaultKind: 'openai_chat_completions',
   },
 ]
 
@@ -385,7 +385,7 @@ function geminiFlashPromo(now: number): Pricing {
 }
 
 const CLAUDE_BASE = {
-  provider: 'anthropic' as const,
+  provider: 'anthropic_messages' as const,
   vendor: 'anthropic',
   contextWindow: 1_000_000,
   maxOutputTokens: 128_000,
@@ -495,7 +495,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
  */
 function deepseekCatalog(): ModelSpec[] {
   const base = {
-    provider: 'openai_compatible' as const,
+    provider: 'openai_chat_completions' as const,
     vendor: 'deepseek',
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
@@ -644,7 +644,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  */
 function openAiCompatCatalog(now: number): ModelSpec[] {
   const base = {
-    provider: 'openai_compatible' as const,
+    provider: 'openai_chat_completions' as const,
     minCacheablePrefix: 1024,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
@@ -994,7 +994,13 @@ export interface SpecOverride {
    */
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
+  /**
+   * 思考三项。它们既是用户手填的参数，也是 `qy probe --save` 的落点——
+   * 探测得到的就是「这条模型在这条协议上的思考能力」，与窗口、价格同属模型库。
+   */
+  thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
+  thinksByDefault?: boolean
 }
 
 /**
@@ -1017,7 +1023,10 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
     ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
+    ...(o.thinking ? { thinking: o.thinking } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
+    // `thinksByDefault` 是布尔，`false` 是有效覆盖，只能按 `undefined` 判缺省。
+    ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
     pricing: {
       ...spec.pricing,
       ...(o.input !== undefined ? { input: o.input } : {}),
@@ -1075,7 +1084,7 @@ export function lookupModel(id: string, provider: ProviderKind, now = Date.now()
  * 判据按协议分：
  * - `anthropic`：适配器只看 `effortLevels` 非空就发 `output_config.effort`。
  * - `openai_responses`：只有 `reasoning.effort` 一条路。
- * - `openai_compatible`：`reasoning_effort`（OpenAI 那套）或 `deepseek_thinking`
+ * - `openai_chat_completions`：`reasoning_effort`（OpenAI 那套）或 `deepseek_thinking`
  *   （DeepSeek 要两个字段一起发），其余一律发不出去。
  *
  * 与 `openai-compat.ts` 的 `buildReasoning` 是同一份判断的两个用途：
@@ -1083,7 +1092,7 @@ export function lookupModel(id: string, provider: ProviderKind, now = Date.now()
  */
 export function effortIsTransmittable(spec: ModelSpec): boolean {
   if (spec.effortLevels.length === 0) return false
-  if (spec.provider === 'anthropic') return true
+  if (spec.provider === 'anthropic_messages') return true
   if (spec.provider === 'openai_responses') return spec.thinking === 'reasoning_effort'
   return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
 }

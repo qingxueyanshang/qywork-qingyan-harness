@@ -5,7 +5,7 @@
  * 待压缩的消息与动作怎么取，全在这一层。
  */
 
-import type { CompactionPort, Summarizer } from '@qywork/agent'
+import type { CompactionOutcome, CompactionPort, Summarizer } from '@qywork/agent'
 import { compact, projectManifest } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
 import type { CompactionManifest, ConversationId, MessageId } from '@qywork/core'
@@ -74,7 +74,13 @@ export class RuntimeCompaction implements CompactionPort {
     ]
   }
 
-  async run() {
+  /**
+   * 跑一次压缩并落库。
+   *
+   * `signal` 一路带到落库点前。**可缺**：手动压缩不属于任何 run，没有 run 信号，
+   * 它的中断由摘要器自己的信号表达（`compact()` 认 AbortError）。
+   */
+  async run(signal?: AbortSignal): Promise<CompactionOutcome> {
     const { store, conversationId, messageIdUpperBound } = this.deps
 
     const all = listMessages(store, conversationId, messageIdUpperBound)
@@ -120,11 +126,21 @@ export class RuntimeCompaction implements CompactionPort {
         previous: this.manifest,
       },
       this.deps.summarize,
+      signal,
     )
 
     if (outcome.status === 'compacted') {
-      // 先落库再更新内存：反过来的话中途崩溃会留下「内存说压过了、库里没有」的状态，
-      // 下次启动投影就丢了，而模型会突然又看到全部历史。
+      /*
+       * 落库前最后一次查信号。
+       *
+       * **检查点必须紧贴这条 UPDATE**：中间再插一个 await 就又留出一个窗口，
+       * 而这条 UPDATE 是不可逆的——它改写模型此后看到的全部历史。用户按下停止
+       * 之后落库的那份 manifest，是他没有等到、也无从撤销的。
+       *
+       * 落库与内存的顺序不能反：反过来中途崩溃会留下「内存说压过了、库里没有」，
+       * 下次启动投影就丢了，而模型会突然又看到全部历史。
+       */
+      if (signal?.aborted) return { status: 'aborted' }
       setCompactionManifest(store, conversationId, outcome.manifest)
       this.manifest = outcome.manifest
     }

@@ -265,6 +265,13 @@ export interface ContextEvent {
    * 而界面上没有任何东西解释这件事。
    */
   source: 'actual' | 'estimated'
+  /**
+   * 越过它就会在下一次发送前压一次。
+   *
+   * 读数条上画这一刻度，是为了让「什么时候会压」可见——没有它，用户只能从
+   * 「压缩卡突然出现」倒推触发点在哪。
+   */
+  compactAt: number
   /** 分组占用，供上下文面板画堆叠条。 */
   breakdown: ContextBreakdown
   /** 没有发给模型的那部分原文。 */
@@ -290,11 +297,22 @@ export interface GoalEvent {
   goal: Goal
 }
 
+/**
+ * 一次压缩的结果。
+ *
+ * **四个 phase 不能合并成三个。** `skipped`（没什么可压）与 `failed`（压缩坏了）
+ * 对用户是两件事：前者不需要任何动作，后者意味着上下文还是满的、下一轮很可能
+ * 直接报错。合并之后界面只能一律显示成失败。
+ *
+ * 被中断的压缩**不发事件**：它什么都没落库，而 run 随即以 `user_interrupt` 收尾。
+ */
 export interface CompactionEvent {
   type: 'compaction'
   runId: RunId
-  phase: 'started' | 'done' | 'failed'
+  phase: 'started' | 'done' | 'skipped' | 'failed'
   manifest?: CompactionManifest
+  /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+  summarized?: boolean
   reasonCode?: string
 }
 

@@ -29,7 +29,7 @@ import { Session } from './session.ts'
 const config: QyConfig = {
   active: { provider: 'p', model: 'deepseek-v4-flash' },
   providers: {
-    p: { kind: 'openai_compatible', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+    p: { kind: 'openai_chat_completions', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
   },
 }
 
@@ -359,7 +359,7 @@ describe('新建会话的来源', () => {
     active: { provider: 'p', model: 'deepseek-v4-flash' },
     providers: {
       p: {
-        kind: 'openai_compatible',
+        kind: 'openai_chat_completions',
         apiKey: 'sk-x',
         // 端口 1 上不会有人在听，连接立刻被拒——不出网、不等超时。
         baseUrl: 'http://127.0.0.1:1/v1',

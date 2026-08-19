@@ -51,7 +51,6 @@ import {
   repeatsNoProgress,
 } from './progress.ts'
 import {
-  BATCH_BUDGET_RATIO,
   isParallelSafe,
   resetBatchBudget,
   resolveAction,
@@ -102,8 +101,13 @@ export interface CompactionPort {
    * 每次构造请求都调用——压缩发生在两次请求之间，投影必须跟着变。
    */
   project(history: WireMessage[]): WireMessage[]
-  /** 执行一次压缩并落库。**不抛异常**，失败以 outcome 表达。 */
-  run(): Promise<CompactionOutcome>
+  /**
+   * 执行一次压缩并落库。**不抛异常**，失败以 outcome 表达。
+   *
+   * 信号必须传下去并一路带到落库点前：`untilAborted` 只把 loop 从等待里拽回来，
+   * 压缩那一侧还在后台跑，跑完的那份要靠同一个信号在落库前被丢弃。
+   */
+  run(signal: AbortSignal): Promise<CompactionOutcome>
 }
 
 export interface LoopPersistence {
@@ -150,8 +154,18 @@ export interface LoopPersistence {
   recordCompaction(
     runId: RunId,
     seq: number,
-    status: 'success' | 'failure',
-    payload: { manifestRevision: number; compactedMessages: number },
+    payload: {
+      /**
+       * 终态的**唯一**记法，与 `CompactionEvent.phase` 同源。
+       * 行上的 `status` 列由它导出，不要反过来让调用方各报一次。
+       */
+      phase: 'done' | 'skipped' | 'failed'
+      manifestRevision: number
+      compactedMessages: number
+      /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+      summarized?: boolean
+      reasonCode?: string
+    },
   ): void
   /**
    * 逐请求账。**装配完成、发出之前**记一行，返回 id 供后续回填。
@@ -294,23 +308,41 @@ function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
 }
 
 /**
+ * 触发线在窗口里的位置。**压缩链路唯一的阈值常数。**
+ *
+ * 留两成给「这一轮还要发生的事」：模型这一轮的输出、下一波工具结果、
+ * 估算与真值之间的残差。取 0.8 是通用做法，与模型无关——每一档都是 80%。
+ *
+ * **不要把输出上限或投递预算再减一遍。** 那样阈值会随模型的 `maxOutputTokens`
+ * 漂移（同为 1M 窗口的两个模型会得到 36.6% 与 62.2% 两条线），而请求合法性
+ * 由申报钳位（`declaredMaxOutput`）保证，不由阈值保证。
+ */
+const TRIGGER_RATIO = 0.8
+
+/**
  * 压缩的软阈值：占用超过它就在**发出之前**压一次。
  *
- * 三段相减，每一段都有理由：
- *
- * - **减 `maxOutputTokens`**：那块空间是这一轮的输出要用的，provider 会按
- *   `输入 + max_output > 窗口` 直接拒。不减它，检查放行的请求照样会被拒。
- * - **减一个批级投递预算**：两次检查之间最多再进一个执行波次的结果，
- *   而那一波的上界正是 `BATCH_BUDGET_RATIO`。不留这块余量，跳变就会跨过阈值——
- *   而「只留一个触发入口」的全部前提就是跳变有上界。
- *
- * 所以这个阈值不是拍的百分比，是「还能安全装下多少」的算术结果。
+ * 具名导出是因为上下文面板要画同一条线——两处算出不同的数，用户看到的刻度
+ * 就不是真正会触发的那个点。
  */
-function softLimit(spec: { contextWindow: number; maxOutputTokens: number }): number {
-  return Math.max(
-    0,
-    spec.contextWindow - spec.maxOutputTokens - Math.floor(spec.contextWindow * BATCH_BUDGET_RATIO),
-  )
+export function softLimit(spec: { contextWindow: number }): number {
+  return Math.floor(spec.contextWindow * TRIGGER_RATIO)
+}
+
+/**
+ * 这一轮申报多少输出上限。
+ *
+ * 兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，所以申报回答的是「这一轮还装得下
+ * 多少输出」，不是「这个模型最多能输出多少」。**静态按规格上限申报**会让
+ * 高占用请求被 provider 直接拒——1M 档上那是每次都挂着 384K 的申报。
+ *
+ * `max(1, …)` 是除零保护，不是可调的余量。
+ */
+function declaredMaxOutput(
+  spec: { contextWindow: number; maxOutputTokens: number },
+  occupancy: number,
+): number {
+  return Math.min(spec.maxOutputTokens, Math.max(1, spec.contextWindow - occupancy))
 }
 
 export class AgentLoop {
@@ -443,6 +475,15 @@ export class AgentLoop {
           }
         : { tokens: fallback, source: 'estimated' }
 
+    /**
+     * 这一轮的占用读数。**触发判定与申报钳位共用它。**
+     *
+     * 两处各量一次就是两把尺：会出现「检查说没超阈值」和「申报按已经超了算」
+     * 同时成立，而这两个结论都会被写进请求。
+     */
+    const occupancyOf = (req: ChatRequest): number =>
+      anchor ? meter(0).tokens : estimateRequest(req)
+
     let stopReason: StopReason = 'completed'
     /**
      * 本 run 是否已经压过一次。
@@ -500,15 +541,15 @@ export class AgentLoop {
          * 够做发送前判断。
          *
          * 代价说清楚：估算失误时不再自动救回，直接报错。可接受——报错是诚实的，
-         * 而单次/单批投递预算（`RESULT_BUDGET_RATIO` / `BATCH_BUDGET_RATIO`）
-         * 给了跳变上界，不存在无预警的跃迁。
+         * 而单次/单批投递预算（`deliveryBudget`）给了跳变上界，
+         * 不存在无预警的跃迁。
          */
         // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
-        let req = this.buildRequest(input, transcript)
+        let req = this.buildRequest(input, transcript, occupancyOf)
 
         if (this.deps.compaction && !compacted) {
-          const occupancy = anchor ? meter(0).tokens : estimateRequest(req)
+          const occupancy = occupancyOf(req)
           if (occupancy > softLimit(adapter.spec)) {
             compacted = true
             process.stderr.write(
@@ -518,30 +559,47 @@ export class AgentLoop {
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩要调一次模型，卡住的话整轮停在这里，而且它不写
             // `provider_requests`，账本上连"卡在哪"都看不出来。
-            const outcome = await untilAborted(input.signal, this.deps.compaction.run())
+            const outcome = await untilAborted(input.signal, this.deps.compaction.run(input.signal))
+            if (outcome.status === 'aborted') {
+              /*
+               * 中断的压缩什么都没落库，所以这里什么都不发、什么都不记：
+               * run 随即以 `user_interrupt` 收尾，停止时刻多一张红卡是噪音，
+               * 而账本上无痕正是「它没有产生任何副作用」这件事的如实记法。
+               */
+              stopReason = 'user_interrupt'
+              break
+            }
             if (outcome.status === 'compacted') {
-              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'success', {
+              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), {
+                phase: 'done',
                 manifestRevision: outcome.manifest.revision,
                 compactedMessages: outcome.manifest.compactedMessageCount,
+                summarized: outcome.summarized,
               })
               yield {
                 type: 'compaction',
                 runId: input.runId,
                 phase: 'done',
                 manifest: outcome.manifest,
+                summarized: outcome.summarized,
               }
               // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
-              req = this.buildRequest(input, transcript)
+              req = this.buildRequest(input, transcript, occupancyOf)
             } else {
               // 压不动不是致命错：照常发出去，让 provider 来判。
-              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), 'failure', {
+              // **skipped 与 failed 分开报**：「没什么可压」不是失败，
+              // 把它显示成红色的压缩失败会让用户去查一个并不存在的故障。
+              const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
+              persist.recordCompaction(input.runId, persist.nextSeq(input.runId), {
+                phase,
                 manifestRevision: 0,
                 compactedMessages: 0,
+                reasonCode: outcome.reasonCode,
               })
               yield {
                 type: 'compaction',
                 runId: input.runId,
-                phase: 'failed',
+                phase,
                 reasonCode: outcome.reasonCode,
               }
             }
@@ -626,6 +684,7 @@ export class AgentLoop {
                     limit,
                     percent: pct,
                     source: m.source,
+                    compactAt: softLimit(adapter.spec),
                     breakdown: breakdown ?? emptyBreakdown(),
                     omitted: this.lastOmitted,
                   }
@@ -1056,7 +1115,11 @@ export class AgentLoop {
    * 前提就是这个：一旦哪天把旧结果正文改写成占位串，原文不在任何可测处，
    * 这个数就只能瞎报，届时该删掉它而不是估一个。
    */
-  private buildRequest(input: RunInput, transcript: WireMessage[]): ChatRequest {
+  private buildRequest(
+    input: RunInput,
+    transcript: WireMessage[],
+    occupancyOf: (req: ChatRequest) => number,
+  ): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
 
     // 冻结前缀。缓存断点打在这里的末尾——它之后的所有内容都是易变的。
@@ -1132,7 +1195,7 @@ export class AgentLoop {
       messages[lastMessage] = { ...messages[lastMessage]!, cacheBreakpoint: true }
     }
 
-    return {
+    const assembled: ChatRequest = {
       model: adapter.spec.id,
       system,
       messages,
@@ -1141,6 +1204,11 @@ export class AgentLoop {
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
       signal: input.signal,
+    }
+    // 申报值要量过装配结果才算得出来，所以先装配、再钳位覆盖同一个字段。
+    return {
+      ...assembled,
+      maxOutputTokens: declaredMaxOutput(adapter.spec, occupancyOf(assembled)),
     }
   }
 }

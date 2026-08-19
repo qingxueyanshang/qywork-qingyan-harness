@@ -27,7 +27,7 @@ const PRESETS: Preset[] = [
   {
     key: 'anthropic',
     label: 'Anthropic（Claude）',
-    provider: { kind: 'anthropic', models: {} },
+    provider: { kind: 'anthropic_messages', models: {} },
     model: 'claude-opus-5',
     keyUrl: 'https://console.anthropic.com/settings/keys',
   },
@@ -35,7 +35,7 @@ const PRESETS: Preset[] = [
     key: 'deepseek',
     label: 'DeepSeek',
     provider: {
-      kind: 'openai_compatible',
+      kind: 'openai_chat_completions',
       baseUrl: 'https://api.deepseek.com/v1',
       models: {},
     },
@@ -46,7 +46,7 @@ const PRESETS: Preset[] = [
     key: 'openai',
     label: 'OpenAI 或任意 OpenAI 兼容中转站',
     provider: {
-      kind: 'openai_compatible',
+      kind: 'openai_chat_completions',
       baseUrl: 'https://api.openai.com/v1',
       models: {},
     },
@@ -57,7 +57,7 @@ const PRESETS: Preset[] = [
     key: 'local',
     label: '本机模型服务（ollama / LM Studio / vLLM）',
     provider: {
-      kind: 'openai_compatible',
+      kind: 'openai_chat_completions',
       baseUrl: 'http://127.0.0.1:11434/v1',
       models: {},
     },

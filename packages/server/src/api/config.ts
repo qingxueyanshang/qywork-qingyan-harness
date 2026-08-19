@@ -12,6 +12,7 @@ import {
   configNotices,
   configPath,
   diagnoseConfig,
+  loadConfig,
   type QyConfig,
   type StoredProvider,
   saveConfig,
@@ -70,6 +71,19 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
   if (p === '/api/config' && req.method === 'GET') {
+    /*
+     * **每次都从盘读，不回进程启动时那份。**
+     *
+     * 保存走的是「读回整份 → 改一格 → 整份写回」，所以这里回什么，下一次 PUT
+     * 就把什么写进文件。回启动时那份的话，进程活着期间由别人写进文件的改动
+     * （`qy probe` 落校准结果、手编 JSON、另一个 qywork 实例）会在用户下一次
+     * 改任何一格设置时被整份盖掉，全程没有提示。
+     *
+     * 就地改而不是换引用：`d.config` 被 run、权限、模型解析各处按引用持有。
+     * 进程内没有「只在内存里、盘上没有」的配置状态——除了这个文件的 PUT 分支，
+     * 全仓没有第二处写 `d.config`，所以整份换掉不会丢东西。
+     */
+    Object.assign(d.config, await loadConfig())
     return json({
       path: configPath(),
       config: redactConfig(d.config),

@@ -36,26 +36,14 @@ export interface ProviderProfile {
   /** 自定义端点（中转站、自建网关、ollama）。 */
   baseUrl?: string
   model: string
-  maxOutputTokens?: number
   /** 额外请求头，给需要特殊鉴权的中转站用。 */
   headers?: Record<string, string>
   /**
-   * 实测出来的能力覆盖（`qy probe` 写入）。
+   * 模型库里这一条（窗口、上限、单价、思考档位）。**唯一的覆盖层**：
+   * 目录 seed 之上只有它，`buildAdapter` 不再接第二条覆盖通道。
    *
-   * 只覆盖**探得出来的**几项。上下文窗口和计价探不出来，所以这里没有它们——
-   * 写一个猜的值进去，会把「未知计价」变成一个看起来确定的错数字。
-   */
-  capabilities?: {
-    thinking?: ModelSpec['thinking']
-    effortLevels?: ModelSpec['effortLevels']
-    thinksByDefault?: boolean
-  }
-  /**
-   * 用户在模型库里改过的参数（窗口、上限、单价、档位）。
-   *
-   * 与上面的 `capabilities` 是**两个轴**：这一条是模型本身的属性，换个中转站
-   * 不会变，所以它按模型 id 存；`capabilities` 是「这条链路实测出来的思考能力」，
-   * 同一个模型经不同中转站可以不一样，所以它按「接口 × 模型」存。
+   * 落盘按「模型 id × 协议」两维索引（`runtime` 的 `QyConfig.catalog`），
+   * 因为同一个模型换条协议能力就不同；这里拿到的已经是选中的那一条。
    */
   spec?: SpecOverride
 }

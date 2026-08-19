@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { softLimit } from '@qywork/agent'
 import { emptyBreakdown, emptyOmitted } from '@qywork/core'
 import {
   createConversation,
@@ -248,5 +249,29 @@ describe('上下文面板', () => {
     expect(panel.breakdown.memory).toBe(823)
     // 落库走 JSON，读回来必须补齐全部十个键——缺键会让面板某一行是 undefined。
     expect(Object.keys(panel.breakdown).sort()).toEqual(Object.keys(emptyBreakdown()).sort())
+  })
+})
+
+/**
+ * 触发线。
+ *
+ * 面板与 loop 必须给出同一个数：面板上画一条不会触发的刻度，比不画更坏。
+ */
+describe('压缩触发线', () => {
+  test('与 loop 的软阈值同源', () => {
+    const { store, conversationId, runId } = fixture()
+    const id = send(store, runId, { measured: 100 })
+    settleProviderRequest(store, id, 'received', null, null)
+
+    expect(contextPanel(store, conversationId, 1_000_000).compactAt).toBe(
+      softLimit({ contextWindow: 1_000_000 }),
+    )
+    expect(contextPanel(store, conversationId, 200_000).compactAt).toBe(160_000)
+  })
+
+  /** 一条请求都没发过的会话也知道线在哪——窗口是模型的属性，不是请求的属性。 */
+  test('新会话也给出触发线', () => {
+    const { store, conversationId } = fixture()
+    expect(contextPanel(store, conversationId, 200_000).compactAt).toBe(160_000)
   })
 })

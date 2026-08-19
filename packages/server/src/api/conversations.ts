@@ -1,6 +1,6 @@
 /** 模型目录、会话、消息、run。前端进来第一屏要的全在这。 */
 
-import type { ModelSpec, ProviderProfile } from '@qywork/ai'
+import type { ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
   builtinCatalog,
@@ -10,7 +10,7 @@ import {
   VENDORS,
 } from '@qywork/ai'
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
-import { contextPanel, resolveModel, type StoredCatalogEntry } from '@qywork/runtime'
+import { catalogKey, contextPanel, resolveModel, type StoredCatalogEntry } from '@qywork/runtime'
 import {
   archiveConversation,
   createConversation,
@@ -98,30 +98,6 @@ interface LibraryVendor {
 }
 
 /**
- * 把 `qy probe --save` 实测出来的能力叠到目录条目上。
- *
- * **与 `buildAdapter` 是同一件事**（`ai/src/factory.ts`），必须同一个口径：
- * 那边决定请求里真的发哪几档，这里决定界面上能选哪几档。这里不叠的话，
- * **校准过的档位决定得了发出去的请求，却决定不了界面上的选项**——探测器写回的
- * capabilities 有生产者没消费者，用户探完一看界面纹丝不动。
- *
- * 顺序与那边一致：目录 seed → 库里改过的参数 → 探测，越往后越权威。
- */
-function withProbed(
-  spec: ModelSpec,
-  stored: { capabilities?: ProviderProfile['capabilities'] } | undefined,
-): ModelSpec {
-  const probed = stored?.capabilities
-  if (!probed) return spec
-  return {
-    ...spec,
-    ...(probed.thinking ? { thinking: probed.thinking } : {}),
-    ...(probed.effortLevels ? { effortLevels: probed.effortLevels } : {}),
-    ...(probed.thinksByDefault !== undefined ? { thinksByDefault: probed.thinksByDefault } : {}),
-  }
-}
-
-/**
  * 模型库：**参数表**，按厂商分组。
  *
  * 三条口径：
@@ -138,15 +114,19 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   const rows = new Map<string, { spec: ModelSpec; source: 'seed' | 'user' }>()
   for (const m of builtinCatalog()) {
     if (rows.has(m.id)) continue
-    const o = overrides[m.id]
+    // 覆盖按「模型 + 协议」两维存（`catalogKey`），而这张表一个模型只出一行——
+    // 取该模型在目录里的首条协议。写回时由保存侧套到这个 id 的全部协议上，
+    // 读写两侧的口径差**只在这一处**，不要在别处再各自换算一次。
+    const o = overrides[catalogKey(m.id, m.provider)]
     rows.set(m.id, { spec: applySpecOverride(m, o), source: o ? 'user' : 'seed' })
   }
   // 目录里没有的（用户自己加的一条）补进来：`unknownModel` 给一组保守默认值，
-  // 覆盖里写了什么就显示什么。
-  for (const [id, o] of Object.entries(overrides)) {
+  // 覆盖里写了什么就显示什么。键的第二维在这里丢掉——自加模型只可能有一条协议。
+  for (const [key, o] of Object.entries(overrides)) {
+    const id = key.split('|')[0] ?? key
     if (rows.has(id)) continue
     rows.set(id, {
-      spec: applySpecOverride(unknownModel(id, 'openai_compatible'), o),
+      spec: applySpecOverride(unknownModel(id, 'openai_chat_completions'), o),
       source: 'user',
     })
   }
@@ -195,9 +175,11 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       name,
       models: Object.keys(provider.models).map((id) => {
         const declared = provider.models[id]
-        const spec = withProbed(
-          applySpecOverride(lookupModel(id, provider.kind), overrides[id]),
-          declared,
+        // 能力（思考三项）与参数（窗口、上限、单价）同在模型库这一个覆盖层里，
+        // 按「模型 + 协议」取——`qy probe --save` 落的就是这个键。
+        const spec = applySpecOverride(
+          lookupModel(id, provider.kind),
+          overrides[catalogKey(id, provider.kind)],
         )
         return {
           id,
@@ -322,7 +304,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       conv.provider ? { provider: conv.provider, model: conv.model } : conv.model,
     )
     const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
-    const spec = lookupModel(conv.model, kind ?? 'openai_compatible')
+    const spec = lookupModel(conv.model, kind ?? 'openai_chat_completions')
     return json({ context: contextPanel(d.store, id, spec.contextWindow) })
   }
 
