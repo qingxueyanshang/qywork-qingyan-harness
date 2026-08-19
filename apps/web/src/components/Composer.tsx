@@ -24,7 +24,7 @@ import {
   IconStop,
   IconX,
 } from './Icons.tsx'
-import { EffortPicker, ModelPicker } from './ModelPicker.tsx'
+import { ModelPicker } from './ModelPicker.tsx'
 import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
 
@@ -463,13 +463,7 @@ export function Composer() {
 
           <ModeChip />
 
-          {/* 模型和思考装在同一个盒子里：它是模型的旋钮，两者是一组，不是两个
-              并列控件。装进盒子之后这一对的间距由盒子自己说了算，与工具栏其余
-              控件的间距互不影响——之前靠负边距去抵消工具栏 gap，改一处动全身。 */}
-          <div class="model-group">
-            <ModelPicker />
-            <EffortPicker />
-          </div>
+          <ModelPicker />
 
           <ContextMeter />
 
@@ -696,20 +690,31 @@ function ContextMeter() {
                   {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
                 </span>
               </div>
-              <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
-                <For each={rows()}>
-                  {(r) => (
-                    <Show when={r.tokens > 0}>
-                      <span
-                        class="ctx-stack-seg"
-                        style={{
-                          width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
-                          background: r.color,
-                        }}
-                      />
-                    </Show>
-                  )}
-                </For>
+              {/* 刻度画在条外的包裹层上：`.ctx-stack` 自己 `overflow: hidden`，
+                  放进去会被裁掉一半。位置由后端给的 `compactAt` 定，不在这里重算。 */}
+              <div class="ctx-stack-wrap">
+                <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
+                  <For each={rows()}>
+                    {(r) => (
+                      <Show when={r.tokens > 0}>
+                        <span
+                          class="ctx-stack-seg"
+                          style={{
+                            width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
+                            background: r.color,
+                          }}
+                        />
+                      </Show>
+                    )}
+                  </For>
+                </div>
+                <Show when={c().compactAt > 0 && c().compactAt < c().limit}>
+                  <span
+                    class="ctx-stack-tick"
+                    style={{ left: `${(c().compactAt / Math.max(1, c().limit)) * 100}%` }}
+                    title={`超过 ${fmtTok(c().compactAt)} 自动压缩`}
+                  />
+                </Show>
               </div>
               <ul class="ctx-rows">
                 <For each={rows()}>

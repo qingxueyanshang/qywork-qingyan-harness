@@ -38,12 +38,12 @@ afterAll(() => server.stop(true))
 async function send(model: string, effort?: string): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
-    kind: 'openai_compatible',
+    kind: 'openai_chat_completions',
     apiKey: 'sk-x',
     model,
     baseUrl: base,
   }
-  const adapter = new OpenAICompatAdapter(profile, lookupModel(model, 'openai_compatible'))
+  const adapter = new OpenAICompatAdapter(profile, lookupModel(model, 'openai_chat_completions'))
   for await (const _ of adapter.stream({
     model,
     system: [],

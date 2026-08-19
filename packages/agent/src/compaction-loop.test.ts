@@ -12,10 +12,13 @@ import { classifyProviderError, lookupModel } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import type { CompactionPort, LoopPersistence, ToolContext } from './index.ts'
-import { AgentLoop } from './loop.ts'
+import { AgentLoop, softLimit } from './loop.ts'
 import { ToolRegistry } from './registry.ts'
 
-function noopPersistence(): LoopPersistence {
+/** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读。 */
+type RecordedCompaction = Parameters<LoopPersistence['recordCompaction']>[2]
+
+function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
   let seq = 0
   return {
     nextSeq: () => ++seq,
@@ -25,7 +28,9 @@ function noopPersistence(): LoopPersistence {
     markExecuting: () => {},
     settleTool: () => {},
     saveUsage: () => {},
-    recordCompaction: () => {},
+    recordCompaction: (_runId, _seq, payload) => {
+      recorded.push(payload)
+    },
     openRequest: () => 'pr_test',
     markRequestSent: () => {},
     settleRequest: () => {},
@@ -53,7 +58,7 @@ function capacityError(): unknown {
     status: number
   }
   err.status = 400
-  return classifyProviderError('anthropic', err)
+  return classifyProviderError('anthropic_messages', err)
 }
 
 function paramError(): unknown {
@@ -61,16 +66,16 @@ function paramError(): unknown {
     status: number
   }
   err.status = 400
-  return classifyProviderError('anthropic', err)
+  return classifyProviderError('anthropic_messages', err)
 }
 
 /** 前 N 次以给定错误失败，之后正常。用来验证「压缩后重发」真的发生。 */
 function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
   const state = { attempts: 0 }
   const adapter: LlmAdapter = {
-    kind: 'anthropic',
+    kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
-    spec: lookupModel('claude-opus-5', 'anthropic'),
+    spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       state.attempts++
@@ -86,9 +91,9 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
 /** 一路正常的 adapter。 */
 function okAdapter(): LlmAdapter {
   return {
-    kind: 'anthropic',
+    kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
-    spec: lookupModel('claude-opus-5', 'anthropic'),
+    spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
@@ -100,7 +105,7 @@ function okAdapter(): LlmAdapter {
 
 const okOutcome: CompactionOutcome = {
   status: 'compacted',
-  usedModel: false,
+  summarized: false,
   manifest: {
     revision: 1,
     compactedThroughMessageId: null,
@@ -118,7 +123,7 @@ function fakeCompaction(outcome: CompactionOutcome) {
       state.projects++
       return h
     },
-    run: async () => {
+    run: async (_signal: AbortSignal) => {
       state.runs++
       return outcome
     },
@@ -159,7 +164,7 @@ describe('发送前检查：唯一的压缩触发', () => {
    * 占用没到软阈值就**一次也不压**。
    *
    * 这是「不在根本不需要的时候损失信息」那条原则的落点：靠阈值本身足够高
-   * （窗口 − 输出预留 − 一个批级预算）。
+   * （窗口的 80%）。
    */
   test('占用远低于阈值时不压缩', async () => {
     const comp = fakeCompaction(okOutcome)
@@ -191,8 +196,8 @@ describe('发送前检查：唯一的压缩触发', () => {
       runId: 'rn_high' as never,
       history: [],
       // 锚点直接把占用顶到阈值之上——不用真造一段几十万字的历史。
-      // 1M 窗口、128k 输出预留、1/4 批级余量 → 软阈值 622,000。
-      anchor: { tokens: 700_000, throughMessageId: null },
+      // 1M 窗口 × 0.8 → 软阈值 800,000。
+      anchor: { tokens: 900_000, throughMessageId: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -203,7 +208,12 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
   })
 
-  /** 压不动不是致命错：照常发出去，让 provider 来判。 */
+  /**
+   * 压不动不是致命错：照常发出去，让 provider 来判。
+   *
+   * 「没什么可压」走 `skipped` 而不是 `failed`——显示成失败会让用户去查一个
+   * 并不存在的故障。
+   */
   test('压不动时照常发送，不把 run 掐死', async () => {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'too_few_messages' })
     const loop = new AgentLoop({
@@ -219,12 +229,13 @@ describe('发送前检查：唯一的压缩触发', () => {
     for await (const ev of loop.run({
       runId: 'rn_skip' as never,
       history: [],
-      anchor: { tokens: 700_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
     }
-    expect(events.some((e) => e.type === 'compaction' && e.phase === 'failed')).toBe(true)
+    expect(events.some((e) => e.type === 'compaction' && e.phase === 'skipped')).toBe(true)
+    expect(events.some((e) => e.type === 'compaction' && e.phase === 'failed')).toBe(false)
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.status).toBe('done')
   })
@@ -282,9 +293,9 @@ describe('投影时机', () => {
 
     let turn = 0
     const adapter: LlmAdapter = {
-      kind: 'anthropic',
+      kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic'),
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
@@ -303,5 +314,252 @@ describe('投影时机', () => {
 
     // 两轮请求 = 两次投影。缓存一次投影结果重复用，压缩生效后第一轮仍会发全量历史。
     expect(comp.state.projects).toBe(2)
+  })
+})
+
+describe('一个 run 只压一次', () => {
+  /**
+   * 占用越过软阈值之后，**后续每一步不再重复触发**。
+   *
+   * 压缩投影只作用于 history，而 history 在一个 run 内不变。压不动的话，
+   * 不加闸就是每一步再调一次摘要模型、再往会话流里插一条提示，而占用一个
+   * token 都不会少——用户看到的是「一直在压，一直没用」。
+   */
+  test('压不动之后不再逐步重试', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noop',
+      description: '什么都不做',
+      parameters: { type: 'object', properties: {} },
+      actionKind: 'read',
+      objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => ({ status: 'success', message: 'ok' }),
+    })
+
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'anthropic_messages',
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
+      measure: async () => 0,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        if (turn++ === 0) {
+          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield { type: 'done', stopReason: 'tool_use' }
+        } else {
+          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'done', stopReason: 'end_turn' }
+        }
+      },
+    }
+
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'too_few_messages' })
+    const events: AgentEvent[] = []
+    for await (const ev of build(adapter, comp.port, registry).run({
+      runId: 'rn_once' as never,
+      history: [],
+      anchor: { tokens: 900_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    // 两轮请求（工具一轮 + 收尾一轮），压缩只跑一次。
+    expect(comp.state.projects).toBe(2)
+    expect(comp.state.runs).toBe(1)
+    expect(events.filter((e) => e.type === 'compaction' && e.phase === 'started').length).toBe(1)
+  })
+})
+
+/**
+ * 触发线。
+ *
+ * 复现的原始失败形状是 §0.1 那条：1M 窗口的 deepseek 档，软阈值只有 366,000
+ * （36.6%）——阈值把模型的输出**规格上限**整块减掉了，于是同为 1M 窗口的两个
+ * 模型会得到两条完全不同的线。
+ */
+describe('软阈值只由窗口决定', () => {
+  test('1M / 384K 档：触发线是 800,000，不是 366,000', () => {
+    expect(softLimit(lookupModel('deepseek-v4-flash', 'openai_chat_completions'))).toBe(800_000)
+  })
+
+  test('每一档都是窗口的 80%', () => {
+    expect(softLimit(lookupModel('claude-opus-5', 'anthropic_messages'))).toBe(800_000)
+    expect(softLimit(lookupModel('claude-haiku-4-5', 'anthropic_messages'))).toBe(160_000)
+    expect(softLimit({ contextWindow: 128_000 })).toBe(102_400)
+    expect(softLimit({ contextWindow: 32_000 })).toBe(25_600)
+  })
+
+  /** 触发线不许随模型的输出上限漂移——那正是 366,000 与 622,000 并存的成因。 */
+  test('同一窗口下换输出上限，线不动', () => {
+    const a = lookupModel('deepseek-v4-flash', 'openai_chat_completions')
+    const b = lookupModel('claude-opus-5', 'anthropic_messages')
+    expect(a.maxOutputTokens).not.toBe(b.maxOutputTokens)
+    expect(softLimit(a)).toBe(softLimit(b))
+  })
+})
+
+/** 装配时捕获实际发出的请求，用来验申报值。 */
+function capturingAdapter(spec: LlmAdapter['spec']) {
+  const seen: ChatRequest[] = []
+  const adapter: LlmAdapter = {
+    kind: 'anthropic_messages',
+    transmits: { thinking: true, effort: true },
+    spec,
+    measure: async () => 0,
+    async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+      seen.push(req)
+      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    },
+  }
+  return { adapter, seen }
+}
+
+describe('申报按占用钳位', () => {
+  const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+
+  test('低占用时申报规格上限', async () => {
+    const { adapter, seen } = capturingAdapter(spec)
+    await collect(build(adapter), 'rn_declare_low')
+    expect(seen[0]!.maxOutputTokens).toBe(spec.maxOutputTokens)
+  })
+
+  /**
+   * 高占用下静态申报规格上限就是 `输入 + max_tokens > 窗口`，provider 直接拒。
+   * 申报回答的是「这一轮还装得下多少输出」。
+   */
+  test('高占用时申报随剩余空间收缩', async () => {
+    const { adapter, seen } = capturingAdapter(spec)
+    const events: AgentEvent[] = []
+    for await (const ev of build(adapter).run({
+      runId: 'rn_declare_high' as never,
+      history: [],
+      anchor: { tokens: 950_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    expect(seen[0]!.maxOutputTokens).toBe(50_000)
+  })
+})
+
+describe('压缩被中断', () => {
+  /**
+   * 中断的压缩什么都没落库，所以事件流与账本上都不该留下终态。
+   * 停止时刻多一张红卡是噪音，而记一条 step 会让「什么都没发生」看起来像发生过。
+   */
+  test('不发终态事件、不记 step，run 以中断收尾', async () => {
+    const comp = fakeCompaction({ status: 'aborted' })
+    const recorded: RecordedCompaction[] = []
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(recorded),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_abort' as never,
+      history: [],
+      anchor: { tokens: 900_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
+    expect(events.filter((e) => e.type === 'compaction' && e.phase !== 'started')).toHaveLength(0)
+    expect(recorded).toHaveLength(0)
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.status).toBe('interrupted')
+  })
+})
+
+describe('结果形态对用户可见', () => {
+  test('done 带 summarized，step payload 与事件同源', async () => {
+    const comp = fakeCompaction({ ...okOutcome, summarized: true })
+    const recorded: RecordedCompaction[] = []
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(recorded),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_summarized' as never,
+      history: [],
+      anchor: { tokens: 900_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const done = events.find((e) => e.type === 'compaction' && e.phase === 'done')
+    expect(done?.type === 'compaction' && done.summarized).toBe(true)
+    expect(recorded).toEqual([
+      { phase: 'done', manifestRevision: 1, compactedMessages: 0, summarized: true },
+    ])
+  })
+
+  /** 降级也要说出来：不说的话用户看到的和一次正常压缩一模一样。 */
+  test('本地降级时 summarized 为 false', async () => {
+    const comp = fakeCompaction({ ...okOutcome, summarized: false })
+    const recorded: RecordedCompaction[] = []
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(recorded),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_local' as never,
+      history: [],
+      anchor: { tokens: 900_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      // 只看落库结果
+    }
+    expect(recorded[0]?.summarized).toBe(false)
+  })
+
+  test('skipped 落库时带 skipped，不伪装成失败', async () => {
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_new' })
+    const recorded: RecordedCompaction[] = []
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(recorded),
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_skip_step' as never,
+      history: [],
+      anchor: { tokens: 900_000, throughMessageId: null },
+      signal: new AbortController().signal,
+    })) {
+      // 只看落库结果
+    }
+    expect(recorded[0]?.phase).toBe('skipped')
+    expect(recorded[0]?.reasonCode).toBe('nothing_new')
   })
 })

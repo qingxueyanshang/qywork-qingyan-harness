@@ -92,7 +92,7 @@ export interface ProviderContribution {
   id: string
   displayName: string
   /** 走哪套协议。自定义协议需要插件自己实现 adapter 导出。 */
-  protocol: 'anthropic' | 'openai_compatible' | 'openai_responses' | 'custom'
+  protocol: 'anthropic_messages' | 'openai_chat_completions' | 'openai_responses' | 'custom'
   defaultBaseUrl?: string
   models?: { id: string; contextWindow: number; maxOutputTokens: number }[]
 }

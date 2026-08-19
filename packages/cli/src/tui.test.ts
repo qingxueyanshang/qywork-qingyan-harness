@@ -15,8 +15,8 @@ import { type CommandContext, handleCommand } from './tui.ts'
 const config: QyConfig = {
   active: { provider: 'ds', model: 'deepseek-v4-flash' },
   providers: {
-    ds: { kind: 'openai_compatible', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
-    cl: { kind: 'anthropic', apiKey: 'sk-y', models: { 'claude-opus-5': {} } },
+    ds: { kind: 'openai_chat_completions', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+    cl: { kind: 'anthropic_messages', apiKey: 'sk-y', models: { 'claude-opus-5': {} } },
   },
 }
 
@@ -127,7 +127,7 @@ describe('用量与导出', () => {
     recordUsage(store, {
       kind: 'run',
       model: 'm',
-      provider: 'openai_compatible',
+      provider: 'openai_chat_completions',
       inputTokens: 10,
       outputTokens: 5,
       cost: 0.01,

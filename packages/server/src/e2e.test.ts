@@ -26,7 +26,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
-import type { QyConfig } from '@qywork/runtime'
+import { configPath, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { MAX_ENTRY_CHARS } from '@qywork/tools'
 import { serve } from './server.ts'
@@ -98,6 +98,7 @@ let ws_dir = ''
 let handle: ReturnType<typeof serve>
 let store: Store
 let content: ContentStore
+let prevHome: string | undefined
 
 beforeAll(async () => {
   ws_dir = await mkdtemp(join(tmpdir(), 'qywork-e2e-'))
@@ -119,6 +120,15 @@ beforeAll(async () => {
     mode: 'auto',
   }
 
+  /*
+   * **配置要落到一个真的文件上。** 设置接口以 `~/.qywork/config.json` 为准
+   * （见 `api/config.ts` 的 GET 分支），只在内存里造一份的话，这里读到的是
+   * 开发机上那份真配置——测试会按开发者本人配的接口发请求。
+   */
+  prevHome = process.env.QYWORK_HOME
+  process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-e2e-home-'))
+  await writeFile(configPath(), JSON.stringify(config), 'utf8')
+
   handle = serve({
     store,
     config,
@@ -130,6 +140,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // 同一个进程里跑着别的测试文件，QYWORK_HOME 不还回去会跟着漏过去。
+  if (prevHome === undefined) delete process.env.QYWORK_HOME
+  else process.env.QYWORK_HOME = prevHome
   handle?.stop()
   provider.stop(true)
   store?.close()

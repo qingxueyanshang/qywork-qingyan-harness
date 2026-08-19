@@ -41,7 +41,7 @@ import { PROVIDER_HTTP } from '../types.ts'
 const MIN_TOKENS_WHEN_THINKING = 16_000
 
 export class AnthropicAdapter implements LlmAdapter {
-  readonly kind = 'anthropic' as const
+  readonly kind = 'anthropic_messages' as const
   get transmits(): { thinking: boolean; effort: boolean } {
     // always_on / none 在 resolveThinking 里返回 undefined = 整个省略 thinking 字段。
     const thinking =
@@ -168,7 +168,7 @@ export class AnthropicAdapter implements LlmAdapter {
       const calls = collectToolCalls(partial)
       if (calls.length) yield { type: 'tool_calls', calls }
     } catch (err) {
-      throw classifyProviderError('anthropic', err)
+      throw classifyProviderError('anthropic_messages', err)
     }
 
     yield { type: 'usage', usage }

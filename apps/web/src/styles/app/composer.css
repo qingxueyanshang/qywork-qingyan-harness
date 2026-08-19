@@ -271,23 +271,84 @@
 .model-picker {
   position: relative;
 }
+/* 模型名 + 档位两截共用这个上限。合成一个 chip 之前是 190（只有模型名）加上
+   旁边那个档位 chip，总量比现在大。 */
 .model-picker .mode-chip {
-  max-width: 190px;
+  max-width: 240px;
 }
-/* 模型 + 思考是一组。盒子内部的间距只管这一对，工具栏的 gap 只管盒子与
-   别的控件之间——两个数各管各的，改一个不会带动另一个。 */
-.model-group {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
+/* chip 上「模型 + 档位」两截。档位压到三级色：它是模型的旋钮，
+   读的顺序是先模型后档位。 */
+.model-chip-effort {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
 }
+
+/* 一级面板：模型 / 推理等级两行。**尺寸不随内容变**（B9）——两行都是定值，
+   列表在二级面板里，撑不到这一层。 */
 .model-menu {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
   z-index: 30;
-  min-width: 240px;
+  width: 212px;
+  padding: var(--s-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.model-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+/* 展开的那一行保持高亮：二级面板开在旁边，不这样标就看不出它属于哪一行。 */
+.model-entry:hover,
+.model-entry.open {
+  background: var(--bg-hover);
+}
+.model-entry:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.model-entry:disabled:hover {
+  background: transparent;
+}
+.model-entry-label {
+  flex-shrink: 0;
+}
+.model-entry-value {
+  flex: 1;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+/*
+ * 二级面板：模型列表 / 档位列表。
+ *
+ * **自带一整套规则，不与 `.model-menu` 共用选择器**（B8）。
+ *
+ * 开在一级旁边而不是替换掉它：替换会让那一层的高度跟着列表长度变，
+ * 用户刚点过的那一行当场跑位（B9）。下沿对齐一级面板，往上长。
+ */
+.model-sub {
+  position: absolute;
+  left: calc(100% + 4px);
+  /* 下沿与一级面板的外边沿齐平：抵掉它的内边距和边框。 */
+  bottom: calc(-1px - var(--s-1));
+  z-index: 31;
+  min-width: 220px;
+  max-width: 280px;
   max-height: 320px;
   overflow-y: auto;
   padding: var(--s-1);
@@ -451,6 +512,18 @@
 }
 .ctx-stack-seg {
   height: 100%;
+}
+/* 压缩触发线的刻度。定位基准放在包裹层上，因为 `.ctx-stack` 自己
+   `overflow: hidden`，刻度画在它里面会被裁掉伸出条外的那两端。 */
+.ctx-stack-wrap {
+  position: relative;
+}
+.ctx-stack-tick {
+  position: absolute;
+  top: calc(var(--s-2) - 2px);
+  width: 1px;
+  height: 10px;
+  background: var(--text-tertiary);
 }
 .ctx-rows {
   list-style: none;
@@ -662,7 +735,15 @@
     gap: 0;
   }
   .model-picker .mode-chip {
-    max-width: 96px;
+    max-width: 140px;
+  }
+  /* 并排两栏在这个宽度下会伸出窗口。改成叠在一级面板正上方，左边沿对齐。 */
+  .model-sub {
+    left: 0;
+    bottom: calc(100% + 4px);
+    min-width: 0;
+    max-width: none;
+    width: 100%;
   }
 }
 

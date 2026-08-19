@@ -23,12 +23,18 @@ export {
   type Summarizer,
 } from './compaction.ts'
 // 主循环：runtime/session.ts 是唯一装配方
-export { AgentLoop, type CompactionPort, type LoopPersistence } from './loop.ts'
+// `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
+export {
+  AgentLoop,
+  type CompactionPort,
+  type LoopPersistence,
+  STREAM_IDLE_TIMEOUT_MS,
+  softLimit,
+} from './loop.ts'
 // 静态规则：runtime 在分类器之前先问它
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
-  BATCH_BUDGET_RATIO,
   chargeBatchBudget,
   type FileReadPort,
   type GoalPort,

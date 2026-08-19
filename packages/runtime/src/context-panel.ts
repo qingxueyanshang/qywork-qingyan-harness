@@ -18,6 +18,7 @@
  * **标签必须跟着数走**：用户要能一眼看出这个数能不能拿来做决定。
  */
 
+import { softLimit } from '@qywork/agent'
 import type { ContextBreakdown, ContextOmitted, ConversationId } from '@qywork/core'
 import { emptyBreakdown, emptyOmitted } from '@qywork/core'
 import { latestAnchoredProviderRequest, latestSentProviderRequest, type Store } from '@qywork/store'
@@ -28,6 +29,13 @@ export interface ContextPanel {
   /** 一位小数。1M 窗口下取整会把 2139 显示成 0%。 */
   percent: number
   source: 'actual' | 'estimated'
+  /**
+   * 越过它就会在下一次发送前压一次。
+   *
+   * **必须调 `softLimit` 而不是在这里照抄那个算式**：两处各写一遍，改了一处
+   * 面板上的刻度就指向一个不会发生的位置，而没有任何东西会报错。
+   */
+  compactAt: number
   breakdown: ContextBreakdown
   omitted: ContextOmitted
   freeSpace: number
@@ -136,6 +144,7 @@ export function contextPanel(
       limit,
       percent: 0,
       source: 'estimated',
+      compactAt: softLimit({ contextWindow: limit }),
       breakdown: emptyBreakdown(),
       omitted: emptyOmitted(),
       freeSpace: limit,
@@ -155,6 +164,7 @@ export function contextPanel(
     limit,
     percent: Math.round((total / limit) * 1000) / 10,
     source,
+    compactAt: softLimit({ contextWindow: limit }),
     breakdown: reconcile(sent.sentCategories, total),
     omitted: sent.omittedCategories,
     freeSpace: Math.max(0, limit - total),

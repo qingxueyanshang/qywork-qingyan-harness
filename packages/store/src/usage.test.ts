@@ -8,7 +8,7 @@ function entry(over: Partial<UsageEntry> = {}): UsageEntry {
   return {
     kind: 'run',
     model: 'deepseek-v4-flash',
-    provider: 'openai_compatible',
+    provider: 'openai_chat_completions',
     inputTokens: 100,
     outputTokens: 50,
     cachedTokens: 10,
@@ -235,7 +235,7 @@ describe('记账失败要说出来', () => {
     const ok = recordUsage(store, {
       kind: 'classifier',
       model: 'm',
-      provider: 'openai_compatible',
+      provider: 'openai_chat_completions',
       inputTokens: 10,
       outputTokens: 2,
       cost: 0.0001,

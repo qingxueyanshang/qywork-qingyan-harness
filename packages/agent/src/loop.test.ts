@@ -10,9 +10,12 @@ import { ToolRegistry, type ToolSpec } from './registry.ts'
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0
   return {
-    kind: 'anthropic',
+    kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
-    spec: lookupModel(model, model === 'claude-opus-5' ? 'anthropic' : 'openai_compatible'),
+    spec: lookupModel(
+      model,
+      model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
+    ),
     measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
@@ -276,9 +279,9 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   /** 吐第一个事件之后就沉默，直到被 abort。 */
   function stallingAdapter(opts: { stallAfterFirst: boolean }): LlmAdapter & { aborted: boolean } {
     const self = {
-      kind: 'anthropic' as const,
+      kind: 'anthropic_messages' as const,
       transmits: { thinking: true, effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic'),
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       measure: async () => 0,
       aborted: false,
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
@@ -765,9 +768,9 @@ describe('用户中断不是错误', () => {
    */
   function abortingAdapter(controller: AbortController): LlmAdapter {
     return {
-      kind: 'anthropic' as const,
+      kind: 'anthropic_messages' as const,
       transmits: { thinking: true, effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic'),
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
@@ -777,7 +780,7 @@ describe('用户中断不是错误', () => {
           code: 'internal_error',
           message: '已取消',
           retryable: false,
-          provider: 'anthropic',
+          provider: 'anthropic_messages',
         })
       },
     }
@@ -992,9 +995,9 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
   function scriptedAdapter(script: ('break' | 'break-after-text' | 'reject' | 'ok')[]): LlmAdapter {
     let i = 0
     return {
-      kind: 'anthropic',
+      kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic'),
+      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         const act = script[i++] ?? 'ok'
@@ -1005,7 +1008,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
             code: 'network_error',
             message: '连接被断开',
             retryable: true,
-            provider: 'anthropic',
+            provider: 'anthropic_messages',
             cause: Object.assign(new Error('The socket connection was closed unexpectedly.'), {
               code: 'ECONNRESET',
             }),
@@ -1016,7 +1019,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
             code: 'provider_unavailable',
             message: '服务端暂时不可用',
             retryable: true,
-            provider: 'anthropic',
+            provider: 'anthropic_messages',
             status: 503,
           })
         }

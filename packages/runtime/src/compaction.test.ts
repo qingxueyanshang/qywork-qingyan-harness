@@ -244,7 +244,7 @@ describe('降级', () => {
       throw new Error('上下文超限')
     }).run()
     expect(r.status).toBe('compacted')
-    expect(r.status === 'compacted' && r.usedModel).toBe(false)
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
     store.close()
   })
 
@@ -253,6 +253,68 @@ describe('降级', () => {
     // 8 条里末尾 2 条不压；3 条里只剩 1 条可压，低于门槛。
     const r = await port(store, conv.id).run()
     expect(r.status).toBe('skipped')
+    store.close()
+  })
+})
+
+/**
+ * 中断安全。
+ *
+ * 复现的原始失败形状：用户按停止之后 8 毫秒，一份机械截取的 manifest 落了库，
+ * 32 万 token 的上下文在下一轮变成 4.5 万——不可逆，用户也看不出发生过什么。
+ */
+describe('中断即丢弃', () => {
+  test('摘要已经写完但信号被拉起：manifest 未变更', async () => {
+    const { store, conv } = fresh()
+    const ac = new AbortController()
+    const before = getConversation(store, conv.id)!.compactionManifest
+    // 摘要返回的同一刻用户按下停止——正是账本里那 8 毫秒的形状。
+    const r = await port(store, conv.id, async () => {
+      ac.abort()
+      return '一份没人等到的摘要'
+    }).run(ac.signal)
+
+    expect(r.status).toBe('aborted')
+    expect(getConversation(store, conv.id)!.compactionManifest).toEqual(before)
+    store.close()
+  })
+
+  test('摘要调用被中断掐掉时不走本地降级', async () => {
+    const { store, conv } = fresh()
+    const ac = new AbortController()
+    const r = await port(store, conv.id, async () => {
+      throw new DOMException('已中断', 'AbortError')
+    }).run(ac.signal)
+
+    expect(r.status).toBe('aborted')
+    expect(getConversation(store, conv.id)!.compactionManifest).toBeNull()
+    store.close()
+  })
+
+  /** 中断之后投影必须与中断前逐条相等——占用跳水就是从这里发生的。 */
+  test('中断之后投影不变，历史一条不少', async () => {
+    const { store, conv, ids } = fresh()
+    const ac = new AbortController()
+    const p = port(store, conv.id, async () => {
+      ac.abort()
+      return '摘要'
+    })
+    const history = ids.map((id) => ({ role: 'user' as const, content: 'x', _messageId: id }))
+
+    await p.run(ac.signal)
+    expect(p.project(history as never)).toHaveLength(history.length)
+    store.close()
+  })
+
+  /** provider 失败仍旧降级落库：中断与失败是两件事，只有前者一律丢弃。 */
+  test('provider 失败不受影响，照旧降级落库', async () => {
+    const { store, conv } = fresh()
+    const r = await port(store, conv.id, async () => {
+      throw new Error('上下文超限')
+    }).run(new AbortController().signal)
+
+    expect(r.status).toBe('compacted')
+    expect(getConversation(store, conv.id)!.compactionManifest).not.toBeNull()
     store.close()
   })
 })

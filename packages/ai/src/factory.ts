@@ -56,43 +56,18 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
     })
   }
 
-  // 顺序是「目录 seed → 模型库里改过的参数 → 探测 → 用户显式的 maxOutputTokens」。
-  // 库那一层在探测之前：它是用户手填的模型属性（窗口、价格），而探测是这条链路
-  // 实测出来的思考能力，后者更具体。
+  // 两层，一个真源：目录 seed → 模型库这一条覆盖。**不要再叠第三层**——
+  // 并列的覆盖通道会让模型库界面上显示的值不是真正发出去的值。
+  // 探测结论也落在模型库里（`qy probe --save`），走的就是这一层。
   const spec = applySpecOverride(lookupModel(profile.model, profile.kind, now), profile.spec)
 
-  // 探测出来的能力**覆盖**目录里的猜测。
-  //
-  // 目录是猜的，探测是实测的，用户写死的是他自己要的。越往后越权威。
-  //
-  // 没有这一步的话 `qy probe` 就只是打印一份报告——探得再准也不影响任何请求，
-  // 又是一条「有产出没有消费者」的链路。
-  const probed = profile.capabilities
-  const withProbe = probed
-    ? {
-        ...spec,
-        ...(probed.thinking ? { thinking: probed.thinking } : {}),
-        ...(probed.effortLevels ? { effortLevels: probed.effortLevels } : {}),
-        ...(probed.thinksByDefault !== undefined
-          ? { thinksByDefault: probed.thinksByDefault }
-          : {}),
-      }
-    : spec
-
-  const resolved = profile.maxOutputTokens
-    ? {
-        ...withProbe,
-        maxOutputTokens: Math.min(profile.maxOutputTokens, withProbe.maxOutputTokens),
-      }
-    : withProbe
-
   switch (profile.kind) {
-    case 'anthropic':
-      return new AnthropicAdapter(profile, resolved)
-    case 'openai_compatible':
-      return new OpenAICompatAdapter(profile, resolved)
+    case 'anthropic_messages':
+      return new AnthropicAdapter(profile, spec)
+    case 'openai_chat_completions':
+      return new OpenAICompatAdapter(profile, spec)
     case 'openai_responses':
-      return new OpenAIResponsesAdapter(profile, resolved)
+      return new OpenAIResponsesAdapter(profile, spec)
     default: {
       const never: never = profile.kind
       throw new Error(`未知 provider: ${String(never)}`)

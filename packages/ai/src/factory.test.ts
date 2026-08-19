@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
 
-const base = { kind: 'openai_compatible' as const, model: 'deepseek-v4-flash' }
+const base = { kind: 'openai_chat_completions' as const, model: 'deepseek-v4-flash' }
 
 function grab(fn: () => unknown): ProviderError {
   try {
@@ -33,7 +34,8 @@ describe('空 key 在本地就判定，不发请求', () => {
 
   test('anthropic 同样适用', () => {
     expect(
-      grab(() => buildAdapter({ kind: 'anthropic', model: 'claude-opus-5', apiKey: '' })).code,
+      grab(() => buildAdapter({ kind: 'anthropic_messages', model: 'claude-opus-5', apiKey: '' }))
+        .code,
     ).toBe('no_api_key')
   })
 
@@ -95,7 +97,9 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
   })
 
   test('anthropic 原生同一套值', () => {
-    const c = clientOf(buildAdapter({ kind: 'anthropic', model: 'claude-opus-5', apiKey: 'sk-x' }))
+    const c = clientOf(
+      buildAdapter({ kind: 'anthropic_messages', model: 'claude-opus-5', apiKey: 'sk-x' }),
+    )
     expect(c.timeout).toBe(60_000)
     expect(c.maxRetries).toBe(0)
   })
@@ -112,5 +116,35 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
     )
     expect(c.timeout).toBe(60_000)
     expect(c.maxRetries).toBe(0)
+  })
+})
+
+/**
+ * 目录 seed 之上**只有模型库这一层**。并列的第二条覆盖通道（探测结论、
+ * 接口下写死的上限）会让模型库界面上显示的值不是真正发出去的那个值。
+ */
+describe('两层解析：目录 seed → 模型库', () => {
+  const seed = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
+
+  test('库里写的上限直接生效，不与目录取小', () => {
+    expect(
+      buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: 512 } }).spec
+        .maxOutputTokens,
+    ).toBe(512)
+  })
+
+  /** 比目录大也照写：目录是抄来的 seed，厂商放宽之后只有用户改得动它。 */
+  test('库里的值比目录大也照写', () => {
+    const bigger = seed().maxOutputTokens + 1000
+    expect(
+      buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: bigger } }).spec
+        .maxOutputTokens,
+    ).toBe(bigger)
+  })
+
+  test('库里没写的字段照 seed', () => {
+    const a = buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: 512 } })
+    expect(a.spec.contextWindow).toBe(seed().contextWindow)
+    expect(a.spec.thinking).toBe(seed().thinking)
   })
 })

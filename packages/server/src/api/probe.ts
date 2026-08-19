@@ -22,7 +22,7 @@
  * 3. **只探落盘配置，不收草稿。** 允许探草稿就得让这个端点接收临时明文 key，
  *    等于多开一条 key 上行路径。界面上按钮置灰、提示先保存，比多一条路径便宜。
  *
- * 探测结果**不落盘**：写回 capabilities 走既有的 `PUT /api/config`，
+ * 探测结果**不落盘**：写回模型库那一格走既有的 `PUT /api/config`，
  * 不在这里开第二个写入点。
  */
 
@@ -75,7 +75,7 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
       model: target.model,
       ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
       ...(target.headers ? { headers: target.headers } : {}),
-      // **不带已有的 capabilities**：带上等于让上一次的结论影响这一次，
+      // **不带模型库里那条覆盖**：带上等于让上一次的结论影响这一次，
       // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
     },
     body.mode === 'full' ? {} : { reachabilityOnly: true },
@@ -84,7 +84,7 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
   const { values } = collectSecrets(d.config)
   return json({
     outcome: scrubOutcome(outcome, values),
-    // 可以安全写回配置的那一部分。**没探过的轴一条都不含**——
+    // 可以安全写进模型库的那一部分。**没探过的轴一条都不含**——
     // 写一个「探针都通过了」的空结论会覆盖目录里正确的保守值。
     capabilities: toCapabilities(outcome),
   })

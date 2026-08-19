@@ -613,13 +613,15 @@
   background: var(--bg-hover);
 }
 
-/* 压缩事件：默认极轻，失败时才醒目 */
+/* 压缩事件：与折叠行同一列同一号字，失败时才醒目。
+ *
+ * 不要改成居中：会话流里所有过程记录都靠左对齐在同一条竖线上，居中的那一条
+ * 会被读成另一种东西。 */
 .compaction {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  padding: var(--s-1) 0;
+  margin: 4px 0 2px;
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
 }
