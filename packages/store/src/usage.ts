@@ -267,3 +267,30 @@ export function pruneUsage(store: Store, before: number): number {
   const r = store.db.query('DELETE FROM usage_ledger WHERE occurred_at < ?').run(before)
   return Number(r.changes ?? 0)
 }
+
+/**
+ * 摘要调用**实际写了多长**的分位数（输出 token）。
+ *
+ * 压缩的摘要预算取「装得下多少」与「实际需要多少」的较小者，这个函数回答后半句：
+ * 该留多长由分布决定，不由拍一个上限决定。取 p95 而不是极大值——硬上界另有
+ * `headroom` 一层，这里只需要覆盖常态；写超了的那次会被「截断作废」闸捕获，
+ * 并作为一个更大的样本进入下一次的分布。
+ *
+ * 一笔观测都没有时返回 null（冷启动），调用方退回纯 headroom。
+ */
+export function summaryOutputPercentile(
+  store: Store,
+  workspaceId: string,
+  percentile: number,
+): number | null {
+  const rows = store.db
+    .query<{ output_tokens: number }, [string]>(
+      `SELECT output_tokens FROM usage_ledger
+        WHERE kind = 'summary' AND workspace_id = ? AND output_tokens > 0
+        ORDER BY output_tokens ASC`,
+    )
+    .all(workspaceId)
+  if (rows.length === 0) return null
+  const index = Math.min(rows.length - 1, Math.floor(rows.length * percentile))
+  return rows[index]!.output_tokens
+}

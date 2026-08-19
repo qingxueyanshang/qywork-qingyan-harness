@@ -1,4 +1,13 @@
+/**
+ * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接线 / 三区投影 / 落库守卫）。
+ * 压缩算法本身在 `agent/compaction.test.ts`，与主循环的接线在
+ * `agent/compaction-loop.test.ts`。
+ */
+
 import { describe, expect, test } from 'bun:test'
+import type { Summarizer } from '@qywork/agent'
+import type { WireMessage } from '@qywork/ai'
+import { estimateMessages } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
 import {
   appendMessage,
@@ -11,6 +20,10 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { RuntimeCompaction } from './compaction.ts'
+import { buildHistory } from './transcript.ts'
+
+/** 助手消息垫长一点，单元之间才有体积差，选界不至于一刀切到底。 */
+const PAD = 'x'.repeat(1000)
 
 function fresh(messageCount = 8) {
   const store = new Store({ path: ':memory:' })
@@ -27,20 +40,89 @@ function fresh(messageCount = 8) {
       appendMessage(store, {
         conversationId: conv.id,
         role: i % 2 === 0 ? 'user' : 'assistant',
-        content: i === 0 ? '重构认证模块，不要动 legacy/' : `第 ${i} 条消息`,
+        content:
+          i === 0
+            ? '重构认证模块，不要动 legacy/'
+            : i % 2 === 0
+              ? `第 ${i} 条消息`
+              : `第 ${i} 条 ${PAD}`,
       }).id,
     )
   }
   return { store, ws, conv, ids }
 }
 
-function port(store: Store, conversationId: string, summarize: any = null) {
+const summary: Summarizer = async () => '模型写的摘要'
+
+function port(store: Store, conversationId: string, summarize: Summarizer = summary) {
   return new RuntimeCompaction({
     store,
     conversationId: conversationId as never,
     messageIdUpperBound: null,
     summarize,
   })
+}
+
+/**
+ * 造出「刚刚越线」的压力：占用取会话装配后的真实估算，窗口取同一个数。
+ *
+ * 于是软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）留住尾巴——
+ * 不用去猜某个模型档的具体数字，也不会因为估算系数微调就整片红。
+ */
+async function pressure(
+  store: Store,
+  conversationId: string,
+): Promise<{ occupancy: number; contextWindow: number }> {
+  const history = await buildHistory(store, conversationId as never, null, async (c) => c)
+  const total = estimateMessages(history)
+  return { occupancy: total, contextWindow: total }
+}
+
+async function history(store: Store, conversationId: string): Promise<WireMessage[]> {
+  return buildHistory(store, conversationId as never, null, async (c) => c)
+}
+
+/** 给一条 run 挂 n 个工具波次，每个波次一条调用，结果正文按 payloadChars 撑大。 */
+function addToolWaves(
+  store: Store,
+  runId: string,
+  waves: number,
+  payloadChars: number,
+  startSeq = 1,
+): void {
+  for (let w = 0; w < waves; w++) {
+    const step = appendStep(store, {
+      runId: runId as never,
+      seq: startSeq + w,
+      kind: 'tool_action',
+      toolName: 'run_command',
+      toolCallId: `call_${w}`,
+      providerBatchId: `bt_${w}`,
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: {},
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: `第 ${w} 波跑完`,
+        data: { stdout: 'y'.repeat(payloadChars) },
+        resources: [
+          {
+            resourceId: `rs_${w}` as never,
+            status: 'partial',
+            contentHash: null,
+            sizeBytes: payloadChars,
+            mimeType: 'text/plain',
+            coverage: { deliveredBytes: 100, totalBytes: payloadChars, truncated: true },
+          },
+        ],
+      },
+      action: { kind: 'run', objectLabel: '命令', target: `npm test --scope=pkg${w}` },
+    })
+  }
 }
 
 describe('压缩是投影，不销毁数据', () => {
@@ -52,8 +134,7 @@ describe('压缩是投影，不销毁数据', () => {
       )
       .get(conv.id)!.n
 
-    const p = port(store, conv.id)
-    const r = await p.run()
+    const r = await port(store, conv.id).run(await pressure(store, conv.id))
     expect(r.status).toBe('compacted')
 
     const after = store.db
@@ -67,83 +148,198 @@ describe('压缩是投影，不销毁数据', () => {
 
   test('manifest 落在 conversations 上，可跨进程恢复', async () => {
     const { store, conv } = fresh()
-    await port(store, conv.id).run()
+    await port(store, conv.id).run(await pressure(store, conv.id))
 
     const reloaded = getConversation(store, conv.id)!.compactionManifest
     expect(reloaded).not.toBeNull()
     expect(reloaded!.revision).toBe(1)
-    expect(reloaded!.compactedThroughMessageId).not.toBeNull()
+    expect(reloaded!.condensedThrough).toBeDefined()
     store.close()
   })
 })
 
-describe('投影', () => {
-  test('未压缩时原样返回历史', () => {
-    const { store, conv, ids } = fresh()
-    const history = ids.map((id) => ({ role: 'user' as const, content: 'x', _messageId: id }))
-    expect(port(store, conv.id).project(history as never)).toHaveLength(history.length)
+describe('投影三区', () => {
+  test('未压缩时原样返回', async () => {
+    const { store, conv } = fresh()
+    const h = await history(store, conv.id)
+    expect(port(store, conv.id).project(h)).toHaveLength(h.length)
     store.close()
   })
 
-  test('压缩后被压掉的消息换成摘要 + 事实清单两条', async () => {
-    const { store, conv, ids } = fresh()
+  test('摘要线以内换成摘要 + 事实清单两条，尾部原样', async () => {
+    const { store, conv } = fresh()
     const p = port(store, conv.id)
-    await p.run()
+    await p.run(await pressure(store, conv.id))
 
-    const history = ids.map((id) => ({ role: 'user' as const, content: 'x', _messageId: id }))
-    const projected = p.project(history as never)
-
-    // 8 条消息，末尾 2 条不压 → 压掉 6 条，换成 2 条投影，剩 2 条原样。
-    expect(projected.length).toBeLessThan(history.length)
+    const h = await history(store, conv.id)
+    const projected = p.project(h)
+    expect(projected.length).toBeLessThan(h.length)
     expect(projected[0]!.content).toContain('被压缩的早期对话摘要')
     expect(projected[1]!.content).toContain('事实清单')
-    store.close()
-  })
-
-  test('末尾两条不压 —— 压掉它模型就忘了自己刚被问了什么', async () => {
-    const { store, conv, ids } = fresh()
-    const p = port(store, conv.id)
-    await p.run()
-
-    const history = ids.map((id) => ({
-      role: 'user' as const,
-      content: `msg-${id}`,
-      _messageId: id,
-    }))
-    const projected = p.project(history as never)
-    const tail = projected.slice(-2).map((m) => m.content)
-    expect(tail).toEqual([`msg-${ids[6]}`, `msg-${ids[7]}`])
+    // 最后一条永远保留：压掉它模型就忘了自己刚被问了什么。
+    expect(projected[projected.length - 1]!.content).toBe(h[h.length - 1]!.content as string)
     store.close()
   })
 
   test('没有 _messageId 的消息（尾区注记）一律保留', async () => {
-    const { store, conv, ids } = fresh()
+    const { store, conv } = fresh()
     const p = port(store, conv.id)
-    await p.run()
+    await p.run(await pressure(store, conv.id))
 
-    const history = [
-      ...ids.map((id) => ({ role: 'user' as const, content: 'x', _messageId: id })),
+    const h = [
+      ...(await history(store, conv.id)),
       { role: 'system' as const, content: '尾区注记：当前分支 main' },
     ]
-    const projected = p.project(history as never)
-    expect(projected.some((m) => String(m.content).includes('尾区注记'))).toBe(true)
+    expect(p.project(h).some((m) => String(m.content).includes('尾区注记'))).toBe(true)
     store.close()
   })
 
-  test('manifest 与当前历史对不上时原样返回，不平白多两条', async () => {
+  test('manifest 与当前历史对不上时不平白多两条', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)
-    await p.run()
+    await p.run(await pressure(store, conv.id))
 
-    // 换一批完全不同的消息 id（模拟切了会话）。
     const alien = [{ role: 'user' as const, content: 'x', _messageId: 'ms_zzzzzzzz' }]
-    expect(p.project(alien as never)).toHaveLength(1)
+    expect(p.project(alien)).toHaveLength(1)
+    store.close()
+  })
+
+  test('收纳区的工具结果只剩信封与定位符，正文不再上线', async () => {
+    const { store, ws, conv, ids } = fresh(4)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+    })
+    addToolWaves(store, run.id, 12, 4000)
+
+    const p = port(store, conv.id)
+    const before = await history(store, conv.id)
+    await p.run(await pressure(store, conv.id))
+    const projected = p.project(before)
+
+    const tools = projected.filter((m) => m.role === 'tool')
+    expect(tools.length).toBeGreaterThan(0)
+    const condensed = tools.filter((m) => (m.content as string).includes('result_omitted'))
+    expect(condensed.length).toBeGreaterThan(0)
+    // 定位符必须活下来，否则 sink 里那份正文再也调不起来。
+    expect(condensed.some((m) => (m.content as string).includes('rs_'))).toBe(true)
+    expect(estimateMessages(projected)).toBeLessThan(estimateMessages(before) / 2)
+    store.close()
+  })
+})
+
+/**
+ * 复现原始失败形状。
+ *
+ * 账本里那条会话是 2 条 user 消息 + 287 条工具 step：按「user 消息条数」判门槛
+ * 时它恒回 `too_few_messages`，一次也压不动，而真正吃掉 66 万字符的正是那些
+ * 工具结果。压缩单元改成「执行波次」之后，它有几十个可折单元。
+ */
+describe('长 run 少消息的会话必须压得动', () => {
+  test('2 条用户消息 + 大量工具波次：折得动，不再回跳过', async () => {
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
+    const conv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'm',
+      title: 't',
+    })
+    const m1 = appendMessage(store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '把这个仓库过一遍',
+    }).id
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: m1,
+      messageIdUpperBound: m1,
+    })
+    addToolWaves(store, run.id, 60, 2000)
+    appendMessage(store, { conversationId: conv.id, role: 'user', content: '继续' })
+
+    const r = await port(store, conv.id).run(await pressure(store, conv.id))
+    expect(r.status).toBe('compacted')
+    store.close()
+  })
+})
+
+describe('切界永不切开 tool_call 与 tool_result', () => {
+  test('任意保留预算下投影里都没有孤儿工具消息', async () => {
+    const { store, ws, conv, ids } = fresh(4)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+    })
+    addToolWaves(store, run.id, 20, 800)
+
+    const before = await history(store, conv.id)
+    const total = estimateMessages(before)
+    // 从「几乎全折」到「几乎全留」扫一遍窗口，每一档都要求配对完整。
+    for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
+      const p = port(store, conv.id)
+      await p.run({ occupancy: total, contextWindow: window })
+      const projected = p.project(before)
+
+      const declared = new Set<string>()
+      for (const m of projected) for (const c of m.toolCalls ?? []) declared.add(c.id)
+      const answered = new Set<string>()
+      for (const m of projected) {
+        if (m.role !== 'tool') continue
+        expect(declared.has(m.toolCallId ?? '')).toBe(true)
+        answered.add(m.toolCallId ?? '')
+      }
+      expect(answered.size).toBe(declared.size)
+    }
+    store.close()
+  })
+})
+
+describe('收纳段单独够用时零模型调用', () => {
+  test('工具正文占大头：不调摘要器，占用照样降下来', async () => {
+    const { store, ws, conv, ids } = fresh(4)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+    })
+    addToolWaves(store, run.id, 30, 6000)
+
+    let calls = 0
+    const p = port(store, conv.id, async () => {
+      calls++
+      return '不该被调用'
+    })
+    const before = await history(store, conv.id)
+    const r = await p.run(await pressure(store, conv.id))
+
+    expect(r.status).toBe('compacted')
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
+    // 没有失败码 = 压根没走摘要段，不是摘要段失败后的兜底。
+    expect(r.status === 'compacted' && r.reasonCode).toBeUndefined()
+    expect(calls).toBe(0)
+    // 被折区的工具正文全换成信封；余下的是保留预算里那一段尾巴。
+    expect(estimateMessages(p.project(before))).toBeLessThan(estimateMessages(before) * 0.4)
     store.close()
   })
 })
 
 describe('事实提取', () => {
-  test('用户约束逐字进 facts，工具目标进 filesTouched', async () => {
+  test('文件类动作的 target 进清单，命令串不进', async () => {
     const { store, ws, conv, ids } = fresh()
     const run = createRun(store, {
       conversationId: conv.id,
@@ -153,28 +349,33 @@ describe('事实提取', () => {
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
     })
-    const step = appendStep(store, {
+    const edit = appendStep(store, {
       runId: run.id,
       seq: 1,
       kind: 'tool_action',
       toolName: 'edit_file',
+      toolCallId: 'c_edit',
+      providerBatchId: 'bt_edit',
+      callIndex: 0,
       status: 'running',
     })
-    settleToolStep(store, step.id, 'success', {
+    settleToolStep(store, edit.id, 'success', {
       kind: 'tool_result',
       args: {},
       outcome: { status: 'success', executed: true, message: '改了 3 处' },
       action: { kind: 'edit', objectLabel: '文件', target: 'src/auth/token.ts' },
     })
+    // 正文压得小，收纳段单独不够，摘要段必定跑起来——事实包才有产出。
+    addToolWaves(store, run.id, 4, 100, 2)
 
-    const r = await port(store, conv.id).run()
+    const r = await port(store, conv.id).run(await pressure(store, conv.id))
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
-    expect(r.manifest.facts.userConstraints.join('\n')).toContain('不要动 legacy/')
     expect(r.manifest.facts.filesTouched).toContain('src/auth/token.ts')
+    expect(r.manifest.facts.filesTouched.join('')).not.toContain('npm test')
     store.close()
   })
 
-  test('还在 running 的 step 不进事实包 —— 结果未知不能当已完成', async () => {
+  test('还在 running 的波次不进事实包 —— 结果未知不能当已完成', async () => {
     const { store, ws, conv, ids } = fresh()
     const run = createRun(store, {
       conversationId: conv.id,
@@ -188,71 +389,79 @@ describe('事实提取', () => {
       runId: run.id,
       seq: 1,
       kind: 'tool_action',
-      toolName: 'run_command',
+      toolName: 'read_file',
+      toolCallId: 'c_run',
+      providerBatchId: 'bt_run',
+      callIndex: 0,
       status: 'running',
       payload: {
         kind: 'tool_call',
         args: {},
-        action: { kind: 'run', objectLabel: '命令', target: '还没跑完.sh' },
+        action: { kind: 'read', objectLabel: '文件', target: '还没读完.ts' },
       },
     })
 
-    const r = await port(store, conv.id).run()
+    const r = await port(store, conv.id).run(await pressure(store, conv.id))
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
-    expect(r.manifest.facts.filesTouched).not.toContain('还没跑完.sh')
+    expect(r.manifest.facts.filesTouched).not.toContain('还没读完.ts')
     store.close()
   })
 })
 
 describe('增量压缩', () => {
-  test('第二次压缩只处理新增部分，revision 递增', async () => {
+  test('第二次只处理新增部分，revision 递增', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)
-    const first = await p.run()
+    const first = await p.run(await pressure(store, conv.id))
     expect(first.status === 'compacted' && first.manifest.revision).toBe(1)
 
     for (let i = 0; i < 4; i++) {
-      appendMessage(store, { conversationId: conv.id, role: 'user', content: `新消息 ${i}` })
+      appendMessage(store, {
+        conversationId: conv.id,
+        role: 'assistant',
+        content: `新消息 ${i} ${PAD}`,
+      })
     }
 
-    const second = await p.run()
+    const second = await p.run(await pressure(store, conv.id))
     expect(second.status === 'compacted' && second.manifest.revision).toBe(2)
     store.close()
   })
 
-  test('没有新东西时跳过，不白花一次摘要调用', async () => {
+  test('没有新单元时跳过，不白花一次摘要调用', async () => {
     const { store, conv } = fresh()
     let calls = 0
     const p = port(store, conv.id, async () => {
       calls++
       return '摘要'
     })
-    await p.run()
+    const load = await pressure(store, conv.id)
+    await p.run(load)
     expect(calls).toBe(1)
 
-    const again = await p.run()
+    const again = await p.run(load)
     expect(again.status).toBe('skipped')
+    expect(again.status === 'skipped' && again.reasonCode).toBe('nothing_to_fold')
     expect(calls).toBe(1)
     store.close()
   })
 })
 
-describe('降级', () => {
-  test('摘要器抛异常时仍产出 manifest', async () => {
+describe('摘要段失败不回退收纳段', () => {
+  test('摘要器抛错：收纳照常落库，结果对用户可见', async () => {
     const { store, conv } = fresh()
     const r = await port(store, conv.id, async () => {
       throw new Error('上下文超限')
-    }).run()
+    }).run(await pressure(store, conv.id))
+
     expect(r.status).toBe('compacted')
     expect(r.status === 'compacted' && r.summarized).toBe(false)
-    store.close()
-  })
-
-  test('消息太少时跳过而不是失败', async () => {
-    const { store, conv } = fresh(3)
-    // 8 条里末尾 2 条不压；3 条里只剩 1 条可压，低于门槛。
-    const r = await port(store, conv.id).run()
-    expect(r.status).toBe('skipped')
+    expect(r.status === 'compacted' && r.reasonCode).toBe('summary_error')
+    const landed = getConversation(store, conv.id)!.compactionManifest
+    expect(landed).not.toBeNull()
+    // 摘要线不动，收纳线前移。
+    expect(landed!.compactedThroughMessageId).toBeNull()
+    expect(landed!.condensedThrough).toBeDefined()
     store.close()
   })
 })
@@ -268,23 +477,22 @@ describe('中断即丢弃', () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const before = getConversation(store, conv.id)!.compactionManifest
-    // 摘要返回的同一刻用户按下停止——正是账本里那 8 毫秒的形状。
     const r = await port(store, conv.id, async () => {
       ac.abort()
       return '一份没人等到的摘要'
-    }).run(ac.signal)
+    }).run({ ...(await pressure(store, conv.id)), signal: ac.signal })
 
     expect(r.status).toBe('aborted')
     expect(getConversation(store, conv.id)!.compactionManifest).toEqual(before)
     store.close()
   })
 
-  test('摘要调用被中断掐掉时不走本地降级', async () => {
+  test('摘要调用被中断掐掉时不落任何东西', async () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const r = await port(store, conv.id, async () => {
       throw new DOMException('已中断', 'AbortError')
-    }).run(ac.signal)
+    }).run({ ...(await pressure(store, conv.id)), signal: ac.signal })
 
     expect(r.status).toBe('aborted')
     expect(getConversation(store, conv.id)!.compactionManifest).toBeNull()
@@ -293,28 +501,16 @@ describe('中断即丢弃', () => {
 
   /** 中断之后投影必须与中断前逐条相等——占用跳水就是从这里发生的。 */
   test('中断之后投影不变，历史一条不少', async () => {
-    const { store, conv, ids } = fresh()
+    const { store, conv } = fresh()
     const ac = new AbortController()
     const p = port(store, conv.id, async () => {
       ac.abort()
       return '摘要'
     })
-    const history = ids.map((id) => ({ role: 'user' as const, content: 'x', _messageId: id }))
+    const h = await history(store, conv.id)
 
-    await p.run(ac.signal)
-    expect(p.project(history as never)).toHaveLength(history.length)
-    store.close()
-  })
-
-  /** provider 失败仍旧降级落库：中断与失败是两件事，只有前者一律丢弃。 */
-  test('provider 失败不受影响，照旧降级落库', async () => {
-    const { store, conv } = fresh()
-    const r = await port(store, conv.id, async () => {
-      throw new Error('上下文超限')
-    }).run(new AbortController().signal)
-
-    expect(r.status).toBe('compacted')
-    expect(getConversation(store, conv.id)!.compactionManifest).not.toBeNull()
+    await p.run({ ...(await pressure(store, conv.id)), signal: ac.signal })
+    expect(p.project(h)).toHaveLength(h.length)
     store.close()
   })
 })

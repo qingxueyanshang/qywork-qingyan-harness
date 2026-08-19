@@ -618,11 +618,13 @@ function CompactionCard(props: { item: TranscriptItem }) {
     if (phase === 'started') return '正在压缩上下文'
     if (phase === 'skipped') return compactionSkipLabel(c()?.reasonCode)
     if (phase === 'failed') return compactionFailureLabel(c()?.reasonCode)
+    // 三种形态要能分辨：只收纳（没调模型）/ 压缩完成 / 收纳了但摘要没做成。
+    // 都说成「已压缩」的话，一次没调模型的收纳和一次完整压缩在用户那边一模一样。
+    if (c()?.summarized === false) {
+      return c()?.reasonCode ? '上下文已收纳，摘要未完成' : '上下文已收纳，未调用模型'
+    }
     const n = c()?.compactedMessages
-    const head = n ? `上下文已压缩，折叠 ${n} 轮` : '上下文已压缩'
-    // `summarized === false` 是本地降级：摘要没调成模型，质量差得多。
-    // 不说出来的话，用户看到的和一次正常压缩一模一样。
-    return c()?.summarized === false ? `${head}（摘要未完成）` : head
+    return n ? `上下文已压缩，折叠 ${n} 轮` : '上下文已压缩'
   }
   return (
     <div class="compaction" classList={{ failed: c()?.phase === 'failed' }}>
@@ -636,10 +638,7 @@ function CompactionCard(props: { item: TranscriptItem }) {
 
 /** 没什么可压。**不是失败**，所以不走红字通道，措辞也不带「失败」。 */
 function compactionSkipLabel(code: string | undefined): string {
-  const map: Record<string, string> = {
-    too_few_messages: '无可压缩内容',
-    nothing_new: '无新增内容',
-  }
+  const map: Record<string, string> = { nothing_to_fold: '无可压缩内容' }
   return (code && map[code]) || '无可压缩内容'
 }
 
@@ -649,7 +648,10 @@ function compactionSkipLabel(code: string | undefined): string {
  */
 function compactionFailureLabel(code: string | undefined): string {
   const map: Record<string, string> = {
-    empty_summary: '压缩失败：摘要为空',
+    summary_empty: '压缩失败：摘要为空',
+    summary_error: '压缩失败：摘要调用出错',
+    no_headroom: '压缩失败：没有可用空间',
+    not_smaller: '压缩失败：摘要没有更小',
   }
   return (code && map[code]) || '压缩失败'
 }

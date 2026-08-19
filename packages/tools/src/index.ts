@@ -109,6 +109,8 @@ export {
   PendingToolPool,
 } from './tool-pool.ts'
 
+import { readHistoryTool } from './history.ts'
+
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
  *
@@ -128,6 +130,7 @@ export function registerBuiltinTools(registry: ToolRegistry): void {
     grepTool,
     ...(shell ? [makeShellTool(shell)] : []),
     readResourceTool,
+    readHistoryTool,
     writeTodosTool,
     readGoalTool,
     updateGoalTool,

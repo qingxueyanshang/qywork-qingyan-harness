@@ -1,6 +1,23 @@
+/**
+ * 覆盖范围：`compaction.ts` 全部——单元键与边界、收纳段、摘要段的预算与闸、
+ * 事实包、投影。接线（发送前检查 → 压缩 → 重新装配）在 `compaction-loop.test.ts`。
+ */
+
 import { describe, expect, test } from 'bun:test'
+import type { WireMessage } from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
-import { compact, localSummary, projectManifest } from './compaction.ts'
+import {
+  type CompactionAction,
+  type CompactionInput,
+  compact,
+  condenseCutOf,
+  condenseMessage,
+  cutKey,
+  projectManifest,
+  stepStamp,
+  summaryCutOf,
+  unitKey,
+} from './compaction.ts'
 
 const msg = (i: number, role: 'user' | 'assistant', content: string) => ({
   id: `ms_${String(i).padStart(3, '0')}` as MessageId,
@@ -15,11 +32,12 @@ const longHistory = [
   msg(4, 'assistant', '已完成 auth/token.ts 的改写'),
 ]
 
-const actions = [
+const actions: CompactionAction[] = [
   {
     stepId: 'rn_1:1',
     tool: 'read_file',
     status: 'success',
+    actionKind: 'read',
     target: 'src/auth/token.ts',
     summary: '读取 120 行',
   },
@@ -27,6 +45,7 @@ const actions = [
     stepId: 'rn_1:2',
     tool: 'edit_file',
     status: 'success',
+    actionKind: 'edit',
     target: 'src/auth/token.ts',
     summary: '替换 3 处',
   },
@@ -34,96 +53,324 @@ const actions = [
     stepId: 'rn_1:3',
     tool: 'run_command',
     status: 'failure',
-    target: 'npm test',
+    actionKind: 'run',
+    target: 'npm test -- --reporter=verbose src/**/*.test.ts',
     summary: '2 个用例失败',
     errorCode: 'exit_1',
   },
 ]
 
-describe('触发门槛', () => {
-  test('消息太少不压缩 —— 摘要的信息损失比省下的 token 更贵', async () => {
-    const r = await compact(
-      { messages: longHistory.slice(0, 2), actions: [], previous: null },
-      null,
-    )
-    expect(r.status).toBe('skipped')
-    expect(r.status === 'skipped' && r.reasonCode).toBe('too_few_messages')
+/** 折叠线默认落在最后一条消息上，预算给足；单项测试按需覆盖。 */
+function input(over: Partial<CompactionInput> = {}): CompactionInput {
+  return {
+    messages: longHistory,
+    actions,
+    previous: null,
+    fold: { messageId: 'ms_004' as MessageId },
+    condenseOnly: false,
+    projectionBudget: 20_000,
+    typicalSummaryTokens: null,
+    condensedRegionTokens: 5_000,
+    foldedMessageCount: 4,
+    ...over,
+  }
+}
+
+const ok = async () => '模型写的摘要'
+
+describe('单元键与边界', () => {
+  test('消息本体排在它的执行记录之前', () => {
+    const body = unitKey({ role: 'user', content: 'x', _messageId: 'ms_002' })!
+    const record = unitKey({
+      role: 'tool',
+      content: 'x',
+      _messageId: 'ms_002',
+      _step: stepStamp('rn_a', 3),
+    })!
+    expect(body < record).toBe(true)
   })
 
-  test('已经压到头且没有新动作时跳过，不白花一次模型调用', async () => {
-    const previous: CompactionManifest = {
+  test('跨消息按消息 id 排，戳不参与', () => {
+    const early = unitKey({
+      role: 'tool',
+      content: 'x',
+      _messageId: 'ms_002',
+      _step: stepStamp('rn_z', 999),
+    })!
+    const late = unitKey({ role: 'user', content: 'x', _messageId: 'ms_003' })!
+    expect(early < late).toBe(true)
+  })
+
+  test('同一 run 内 seq 按数值排，定宽补零不会让 10 排在 2 之前', () => {
+    expect(stepStamp('rn_a', 2) < stepStamp('rn_a', 10)).toBe(true)
+  })
+
+  test('无 _messageId 的消息不参与折叠', () => {
+    expect(unitKey({ role: 'system', content: '尾区注记' })).toBeNull()
+  })
+
+  test('缺 condensedThrough 的 manifest：收纳线与摘要线重合', () => {
+    const m: CompactionManifest = {
       revision: 1,
       compactedThroughMessageId: 'ms_004' as MessageId,
-      compactedMessageCount: 0,
-      summary: '之前的摘要',
+      compactedMessageCount: 4,
+      summary: 's',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       createdAt: 0,
     }
-    const r = await compact({ messages: longHistory, actions: [], previous }, null)
-    expect(r.status).toBe('skipped')
-    expect(r.status === 'skipped' && r.reasonCode).toBe('nothing_new')
-  })
-
-  test('skipped 不是 failed —— 调用方不该据此报错', async () => {
-    const r = await compact({ messages: [], actions: [], previous: null }, null)
-    expect(r.status).not.toBe('failed')
+    expect(cutKey(condenseCutOf(m)!)).toBe(cutKey(summaryCutOf(m)!))
   })
 })
 
-describe('摘要生成', () => {
-  test('模型摘要可用时采用它', async () => {
-    const r = await compact(
-      { messages: longHistory, actions, previous: null },
-      async () => '模型写的摘要',
-    )
-    expect(r.status).toBe('compacted')
-    expect(r.status === 'compacted' && r.summarized).toBe(true)
-    expect(r.status === 'compacted' && r.manifest.summary).toBe('模型写的摘要')
+describe('收纳段：换信封，不改字节', () => {
+  const toolMsg: WireMessage = {
+    role: 'tool',
+    toolCallId: 'c1',
+    content: JSON.stringify({
+      call_id: 'c1',
+      tool: 'run_command',
+      status: 'success',
+      executed: true,
+      summary: '跑完了',
+      resources: ['rs_abc'],
+      result: { stdout: 'x'.repeat(8000) },
+    }),
+  }
+
+  test('工具结果去正文，留信封与落盘定位符', () => {
+    const out = condenseMessage(toolMsg)
+    const env = JSON.parse(out.content as string)
+    expect(env.result).toBeUndefined()
+    expect(env.result_omitted).toBe(true)
+    expect(env.summary).toBe('跑完了')
+    expect(env.resources).toEqual(['rs_abc'])
+    expect((out.content as string).length).toBeLessThan((toolMsg.content as string).length / 10)
   })
 
-  test('摘要调用抛异常时降级到本地，不把整轮带崩', async () => {
-    const r = await compact({ messages: longHistory, actions, previous: null }, async () => {
+  test('正文型调用参数折成摘录 + 标记', () => {
+    const out = condenseMessage({
+      role: 'assistant',
+      content: '',
+      toolCalls: [
+        { id: 'c1', name: 'write_file', arguments: { path: 'a.ts', content: 'z'.repeat(5000) } },
+      ],
+    })
+    const args = out.toolCalls![0]!.arguments as { path: string; content: string }
+    expect(args.path).toBe('a.ts')
+    expect(args.content).toContain('已折叠')
+    expect(args.content.length).toBeLessThan(400)
+  })
+
+  test('思考正文原样保留 —— 缺它 DeepSeek 兼容端点下一轮 400', () => {
+    const out = condenseMessage({
+      role: 'assistant',
+      content: '',
+      reasoningContent: '想了很久',
+      toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
+    })
+    expect(out.reasoningContent).toBe('想了很久')
+  })
+
+  test('用户与助手正文原样', () => {
+    const m: WireMessage = { role: 'user', content: '别改 legacy/' }
+    expect(condenseMessage(m)).toBe(m)
+  })
+
+  test('投影幂等：同一条收纳两次逐字相等', () => {
+    const once = condenseMessage(toolMsg)
+    expect(condenseMessage(once).content).toBe(once.content)
+  })
+})
+
+describe('收纳够用时不调模型', () => {
+  test('condenseOnly：摘要器零次调用，只前移收纳线', async () => {
+    let calls = 0
+    const r = await compact(input({ condenseOnly: true }), async () => {
+      calls++
+      return '不该被调用'
+    })
+    expect(calls).toBe(0)
+    if (r.status !== 'compacted') throw new Error('应当落库')
+    expect(r.summarized).toBe(false)
+    expect(r.reasonCode).toBeUndefined()
+    expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
+    // 摘要线不动。
+    expect(r.manifest.compactedThroughMessageId).toBeNull()
+  })
+
+  test('收纳线已经在折叠线上时跳过 —— 不白涨一个修订号', async () => {
+    const previous: CompactionManifest = {
+      revision: 1,
+      compactedThroughMessageId: null,
+      condensedThrough: { messageId: 'ms_004' as MessageId },
+      compactedMessageCount: 0,
+      summary: '',
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      createdAt: 0,
+    }
+    // 收纳线不前移时摘要段仍可推进摘要线，所以这里走的是摘要段。
+    const r = await compact(input({ previous }), ok)
+    expect(r.status).toBe('compacted')
+    if (r.status !== 'compacted') return
+    expect(r.summarized).toBe(true)
+  })
+})
+
+describe('摘要段失败不回退收纳段', () => {
+  test('摘要器抛错：收纳线照常前移，带失败码', async () => {
+    const r = await compact(input(), async () => {
       throw new Error('上下文超限')
     })
-    expect(r.status).toBe('compacted')
-    expect(r.status === 'compacted' && r.summarized).toBe(false)
-    expect(r.status === 'compacted' && r.manifest.summary).toContain('本地确定性摘要')
+    if (r.status !== 'compacted') throw new Error('收纳应当落库')
+    expect(r.summarized).toBe(false)
+    expect(r.reasonCode).toBe('summary_error')
+    expect(r.manifest.compactedThroughMessageId).toBeNull()
+    expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
   })
 
-  test('摘要返回空串时同样降级', async () => {
-    const r = await compact({ messages: longHistory, actions, previous: null }, async () => '   ')
-    expect(r.status === 'compacted' && r.summarized).toBe(false)
+  test('摘要为空（含被截断）同样算段失败', async () => {
+    const r = await compact(input(), async () => null)
+    expect(r.status === 'compacted' && r.reasonCode).toBe('summary_empty')
   })
 
-  test('没有摘要器时直接走本地路径', async () => {
-    const r = await compact({ messages: longHistory, actions, previous: null }, null)
-    expect(r.status).toBe('compacted')
+  test('收纳也推不动时才算彻底失败', async () => {
+    const previous: CompactionManifest = {
+      revision: 1,
+      compactedThroughMessageId: 'ms_001' as MessageId,
+      condensedThrough: { messageId: 'ms_004' as MessageId },
+      compactedMessageCount: 1,
+      summary: '旧摘要',
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      createdAt: 0,
+    }
+    const r = await compact(input({ previous }), async () => null)
+    expect(r.status).toBe('failed')
+    expect(r.status === 'failed' && r.reasonCode).toBe('summary_empty')
+  })
+
+  test('没有摘要空间时不发请求', async () => {
+    let calls = 0
+    const r = await compact(input({ projectionBudget: 0 }), async () => {
+      calls++
+      return '摘要'
+    })
+    expect(calls).toBe(0)
+    expect(r.status === 'compacted' && r.reasonCode).toBe('no_headroom')
+  })
+})
+
+describe('摘要预算：两头取小，全程 token 计', () => {
+  test('有观测时取 min(headroom, p95)', async () => {
+    const seen: number[] = []
+    await compact(input({ typicalSummaryTokens: 300 }), async (_p, b) => {
+      seen.push(b)
+      return '摘要'
+    })
+    expect(seen[0]).toBe(300)
+  })
+
+  test('无观测时退回 headroom，不套固定比例', async () => {
+    const seen: number[] = []
+    await compact(input({ projectionBudget: 900, typicalSummaryTokens: null }), async (_p, b) => {
+      seen.push(b)
+      return '摘要'
+    })
+    // 事实清单先占，摘要拿剩下的：一定小于总预算但远大于旧的 4000 字符上限折算。
+    expect(seen[0]!).toBeGreaterThan(0)
+    expect(seen[0]!).toBeLessThan(900)
+  })
+
+  test('预算随输入的可用空间走，不随原文长度定死', async () => {
+    const seen: number[] = []
+    const capture = async (_p: string, b: number) => {
+      seen.push(b)
+      return '摘要'
+    }
+    await compact(input({ projectionBudget: 1_000 }), capture)
+    await compact(input({ projectionBudget: 50_000 }), capture)
+    expect(seen[1]!).toBeGreaterThan(seen[0]!)
+  })
+})
+
+describe('「必须更小」闸', () => {
+  test('新投影不比被替换的内容小就作废摘要段', async () => {
+    const r = await compact(input({ condensedRegionTokens: 1 }), async () => '摘'.repeat(5_000))
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
+    expect(r.status === 'compacted' && r.reasonCode).toBe('not_smaller')
+  })
+
+  test('小得下来就采用，摘要线推到折叠线', async () => {
+    const r = await compact(input({ condensedRegionTokens: 5_000 }), ok)
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.summarized).toBe(true)
+    expect(r.manifest.compactedThroughMessageId).toBe('ms_004' as MessageId)
+    expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
+  })
+})
+
+describe('中断即丢弃', () => {
+  test('摘要调用抛 AbortError → aborted，不落任何东西', async () => {
+    const r = await compact(input(), async () => {
+      throw new DOMException('已中断', 'AbortError')
+    })
+    expect(r.status).toBe('aborted')
+  })
+
+  test('摘要写完的同一刻信号被拉起 → 照样丢弃', async () => {
+    const ac = new AbortController()
+    const r = await compact(
+      input(),
+      async () => {
+        ac.abort()
+        return '一份没人等到的摘要'
+      },
+      ac.signal,
+    )
+    expect(r.status).toBe('aborted')
   })
 })
 
 describe('事实包必须逐字保留，不经模型', () => {
-  test('用户约束原话进 facts，即使模型摘要完全跑偏', async () => {
-    const r = await compact(
-      { messages: longHistory, actions, previous: null },
-      async () => '这份摘要故意什么都没说',
-    )
-    expect(r.status).toBe('compacted')
-    if (r.status !== 'compacted') return
-    const constraints = r.manifest.facts.userConstraints.join('\n')
-    expect(constraints).toContain('不要动 legacy/ 目录')
-    expect(constraints).toContain('迁移必须可回滚')
+  test('文件路径按动作类别收，命令串不进清单', async () => {
+    const r = await compact(input(), ok)
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.filesTouched).toEqual(['src/auth/token.ts'])
+    expect(r.manifest.facts.filesTouched.join('')).not.toContain('npm test')
   })
 
-  test('文件路径从动作目标提取，不靠模型转述', async () => {
-    const r = await compact({ messages: longHistory, actions, previous: null }, null)
-    expect(r.status === 'compacted' && r.manifest.facts.filesTouched).toContain('src/auth/token.ts')
+  test('全部用户消息逐字进事实包，约束排在前面', async () => {
+    const r = await compact(
+      input({
+        messages: [
+          msg(1, 'user', '继续，看看 src/a.ts'),
+          msg(2, 'user', '不要动 legacy/ 目录'),
+          msg(3, 'assistant', '好'),
+        ],
+        actions: [],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    const kept = r.manifest.facts.userConstraints
+    expect(kept).toEqual(['不要动 legacy/ 目录', '继续，看看 src/a.ts'])
   })
 
   test('失败的动作进未解决清单', async () => {
-    const r = await compact({ messages: longHistory, actions, previous: null }, null)
+    const r = await compact(input(), ok)
     const open = r.status === 'compacted' ? r.manifest.facts.openItems.join('\n') : ''
     expect(open).toContain('run_command')
     expect(open).toContain('exit_1')
+  })
+
+  test('落盘定位符逐条收，压缩之后 read_resource 仍调得起来', async () => {
+    const r = await compact(
+      input({
+        actions: [{ ...actions[0]!, resourceId: 'rs_abc' }],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.resources?.join('')).toContain('rs_abc')
   })
 
   test('增量压缩合并旧事实 —— 早期约束不能随新压缩消失', async () => {
@@ -139,35 +386,42 @@ describe('事实包必须逐字保留，不经模型', () => {
       },
       createdAt: 0,
     }
-    const r = await compact({ messages: longHistory, actions, previous }, null)
+    const r = await compact(input({ previous }), ok)
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
     expect(r.manifest.facts.filesTouched).toContain('src/legacy/keep.ts')
     expect(r.manifest.facts.userConstraints).toContain('第一轮就定下的约束')
     expect(r.manifest.revision).toBe(2)
   })
-})
 
-describe('本地降级摘要', () => {
-  test('保住第一条用户消息与末尾片段 —— 两头最重要', () => {
-    const segs = [
-      '[message:ms_001] 用户：这是最初的任务',
-      ...Array.from({ length: 60 }, (_, i) => `[action:st_${i}] 工具=read_file；状态=success`),
-      '[message:ms_099] 助手：这是当前进度',
-    ]
-    const out = localSummary(segs, 1200)
-    expect(out).toContain('这是最初的任务')
-    expect(out).toContain('这是当前进度')
-    // 中间的探索过程应当被挤掉大部分。
-    expect(out.length).toBeLessThanOrEqual(1200)
+  test('逐字相同的重复约束只留一条', async () => {
+    const r = await compact(
+      input({
+        messages: Array.from({ length: 5 }, (_, i) => msg(i, 'user', '不要 force-push')),
+        actions: [],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.userConstraints).toEqual(['不要 force-push'])
   })
 
-  test('预算极小时不返回空 —— 空摘要等于压缩失败', () => {
-    const out = localSummary(['[message:ms_001] 用户：任务'], 10)
-    expect(out.length).toBeGreaterThan(0)
-  })
-
-  test('没有片段时返回空串（调用方据此判 failed）', () => {
-    expect(localSummary([], 1000)).toBe('')
+  test('预算不够时先裁文件、再裁未解决，约束最后裁', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      ...actions[0]!,
+      stepId: `rn_1:${i}`,
+      target: `src/very/long/nested/path/module${i}.ts`,
+    }))
+    const r = await compact(
+      input({
+        messages: [msg(1, 'user', '不要动 legacy/ 目录')],
+        actions: many,
+        projectionBudget: 200,
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.userConstraints).toContain('不要动 legacy/ 目录')
+    expect(r.manifest.facts.filesTouched.length).toBeLessThan(many.length)
   })
 })
 
@@ -205,113 +459,5 @@ describe('投影', () => {
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
     })
     expect(empty[1]!.content.trim().length).toBeGreaterThan(0)
-  })
-})
-
-describe('压缩必须真的变小', () => {
-  /**
-   * 回归用例：「所有用户消息逐字保留 + 固定 4000 字符摘要预算」那组参数下，
-   * 一段 2574 字符的会话被"压"成 5478 字符的投影——**压缩把上下文变大了**。
-   * 实测由 `scripts/compaction-fidelity.ts` 抓到（报 213%）。
-   */
-  test('长会话的投影明显短于原文', async () => {
-    const messages = Array.from({ length: 40 }, (_, i) =>
-      msg(
-        i + 1,
-        i % 2 === 0 ? 'user' : 'assistant',
-        i === 0
-          ? '重构认证模块，不要动 legacy/ 目录'
-          : `第 ${i} 轮：继续，看看 src/mod${i}.ts 里还有什么要改的`,
-      ),
-    )
-    const original = messages.reduce((n, m) => n + m.content.length, 0)
-
-    // 摘要器按预算截断，模拟真实模型会填满预算的行为。
-    const r = await compact({ messages, actions: [], previous: null }, async (_p, budget) =>
-      '摘'.repeat(budget),
-    )
-    if (r.status !== 'compacted') throw new Error('应当压缩成功')
-
-    const projected = projectManifest(r.manifest)
-      .map((p) => p.content)
-      .join('\n')
-    expect(projected.length).toBeLessThan(original)
-  })
-
-  test('摘要预算随输入缩放，不是固定值', async () => {
-    const budgets: number[] = []
-    const capture = async (_p: string, b: number) => {
-      budgets.push(b)
-      return '摘要'
-    }
-
-    const short = Array.from({ length: 5 }, (_, i) => msg(i + 1, 'user', '短'))
-    const long = Array.from({ length: 5 }, (_, i) => msg(i + 1, 'user', 'x'.repeat(4000)))
-
-    await compact({ messages: short, actions: [], previous: null }, capture)
-    await compact({ messages: long, actions: [], previous: null }, capture)
-
-    expect(budgets[1]!).toBeGreaterThan(budgets[0]!)
-  })
-
-  test('普通过程性消息不进事实包，带约束的进', async () => {
-    const r = await compact(
-      {
-        messages: [
-          msg(1, 'user', '继续，看看 src/a.ts'),
-          msg(2, 'assistant', '看过了'),
-          msg(3, 'user', '不要动 legacy/ 目录'),
-          msg(4, 'user', '令牌有效期定为 15 分钟'),
-          msg(5, 'user', '然后呢'),
-        ],
-        actions: [],
-        previous: null,
-      },
-      null,
-    )
-    if (r.status !== 'compacted') throw new Error('应当压缩成功')
-    const c = r.manifest.facts.userConstraints.join('\n')
-
-    expect(c).toContain('legacy')
-    // 带单位的数字必须逐字留下：模型概括时最爱丢的就是具体数值，
-    // 而一个数字被改写整条约束就错了。
-    expect(c).toContain('15 分钟')
-    expect(c).not.toContain('然后呢')
-    expect(c).not.toContain('看看 src/a.ts')
-  })
-})
-
-describe('约束不许被静默逐出', () => {
-  /**
-   * **第一天定下的铁律最先被挤掉**——这是原实现的形状。
-   *
-   * `dedupeTail(userConstraints, 24)` 只保最近 24 条，第 25 条进来时最早那条
-   * 无声消失。而同一个文件的注释写着「早期定下的约束不能随着一次新压缩消失」，
-   * 两句直接自相矛盾。约束一旦丢失，模型会做出它已经被明确禁止的事。
-   */
-  test('三十条约束全部保留，最早那条还在', async () => {
-    const messages = Array.from({ length: 30 }, (_, i) => ({
-      id: `ms_${String(i).padStart(3, '0')}` as never,
-      role: 'user' as const,
-      content: `第 ${i} 条：不要动 config/${i}.json`,
-    }))
-    const out = await compact({ messages, actions: [], previous: null }, null)
-    expect(out.status).toBe('compacted')
-    if (out.status !== 'compacted') return
-    const kept = out.manifest.facts.userConstraints
-    expect(kept.length).toBe(30)
-    expect(kept.some((c) => c.includes('第 0 条'))).toBe(true)
-    expect(kept.some((c) => c.includes('第 29 条'))).toBe(true)
-  })
-
-  test('逐字相同的重复约束只留一条', async () => {
-    const messages = Array.from({ length: 5 }, (_, i) => ({
-      id: `ms_${i}` as never,
-      role: 'user' as const,
-      content: '不要 force-push',
-    }))
-    const out = await compact({ messages, actions: [], previous: null }, null)
-    if (out.status !== 'compacted') throw new Error('应当压缩成功')
-    expect(out.manifest.facts.userConstraints).toHaveLength(1)
   })
 })

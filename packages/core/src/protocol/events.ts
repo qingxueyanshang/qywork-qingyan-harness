@@ -311,7 +311,7 @@ export interface CompactionEvent {
   runId: RunId
   phase: 'started' | 'done' | 'skipped' | 'failed'
   manifest?: CompactionManifest
-  /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+  /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
   summarized?: boolean
   reasonCode?: string
 }

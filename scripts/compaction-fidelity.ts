@@ -21,13 +21,13 @@
  *   bun run scripts/compaction-fidelity.ts
  */
 
-import { projectManifest } from '@qywork/agent'
-import { buildAdapter } from '@qywork/ai'
-import { loadConfig, RuntimeCompaction, resolveApiKey, resolveModel } from '@qywork/runtime'
+import { buildAdapter, estimateText } from '@qywork/ai'
+import { loadConfig, makeSummarizer, RuntimeCompaction, resolveModel } from '@qywork/runtime'
 import {
   appendMessage,
   ContentStore,
   createConversation,
+  listMessages,
   Store,
   upsertWorkspace,
 } from '@qywork/store'
@@ -69,6 +69,11 @@ const FACTS = [
 /** 会话总轮数。要足够长，让上面那些事实真的被压进摘要。 */
 const TOTAL_TURNS = 40
 
+/** 只有 message 类标记能在这个夹具里对账——它没有真实 step。 */
+function mk_isMessage(id: string): boolean {
+  return id.startsWith('ms_')
+}
+
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown): void {
   process.stdout.write(`${ok ? '  ✓' : '  ✗'} ${label}\n`)
@@ -91,6 +96,7 @@ async function main(): Promise<number> {
   const ws = upsertWorkspace(store, process.cwd(), 'fidelity')
   const conv = createConversation(store, {
     workspaceId: ws.id,
+    provider: profile.provider,
     model: profile.model,
     title: '保真度验证',
   })
@@ -110,25 +116,29 @@ async function main(): Promise<number> {
       role: 'assistant',
       content: planted
         ? `明白，我记下了。`
-        : `我看过 src/mod${i}.ts 了，调整了几处类型标注，没有行为变化。`,
+        : `我看过 src/mod${i}.ts 了，调整了几处类型标注，没有行为变化。` +
+          // 噪音要有真实体积：几十字符的夹具里，摘要与事实清单的固定开销
+          // 就超过被折内容，压缩率断言必然失败而线上不会——两者不是一个数量级。
+          `具体来说，把 ${i} 处隐式 any 补成了显式类型，${i} 个可选参数补了默认值，` +
+          `顺带核对了导出边界。这一轮没有改动运行时行为，测试全绿。`.repeat(4),
     })
   }
 
   const adapter = buildAdapter({
     kind: profile.kind,
-    apiKey: resolveApiKey(profile),
+    apiKey: profile.apiKey ?? '',
     model: profile.model,
     ...(profile.baseUrl ? { baseUrl: profile.baseUrl } : {}),
   })
 
-  const ask = async (system: string, question: string): Promise<string> => {
+  const ask = async (system: string, question: string, maxOut = 500): Promise<string> => {
     let text = ''
     for await (const ev of adapter.stream({
       model: adapter.spec.id,
       system: [{ text: system }],
       messages: [{ role: 'user', content: question }],
       tools: [],
-      maxOutputTokens: 500,
+      maxOutputTokens: maxOut,
       signal: AbortSignal.timeout(120_000),
     })) {
       if (ev.type === 'text_delta') text += ev.delta
@@ -139,28 +149,84 @@ async function main(): Promise<number> {
   process.stdout.write(`\n造了 ${TOTAL_TURNS} 轮会话，埋入 ${FACTS.length} 条可判定事实\n\n`)
 
   // ── 压缩 ──
+  const realSummarizer = makeSummarizer({
+    store,
+    workspaceId: ws.id,
+    profile: () => ({
+      kind: profile.kind,
+      apiKey: profile.apiKey ?? '',
+      model: profile.model,
+      ...(profile.baseUrl ? { baseUrl: profile.baseUrl } : {}),
+    }),
+  })
   const compaction = new RuntimeCompaction({
     store,
     conversationId: conv.id,
     messageIdUpperBound: null,
-    summarize: async (prompt, budget) => {
-      const out = await ask('你是会话摘要器。只输出摘要正文。', prompt)
-      return out.slice(0, budget) || null
+    /*
+     * **走真实装配**，不要在这里自己拼一个摘要器。
+     *
+     * 自拼的那个不降思考档：配了 `effort: max` 的模型会把输出预算全花在思考上，
+     * 正文一个字吐不出来，于是脚本量到的是 `summary_empty` 而线上不是——
+     * 验证工具与被验证的东西走两条路，验出来的结论不作数。
+     */
+    summarize: async (prompt, budgetTokens) => {
+      process.stdout.write(
+        `  [摘要预算 ${budgetTokens} token · 提示词 ${prompt.length} 字符]
+`,
+      )
+      const out = await realSummarizer(prompt, budgetTokens)
+      process.stdout.write(`  [摘要器返回 ${out === null ? 'null' : `${out.length} 字符`}]
+`)
+      return out
     },
   })
 
-  const outcome = await compaction.run()
+  /*
+   * 造一个刚好越线、但摘要仍放得下的窗口。
+   *
+   * **不要把窗口设成等于占用**：那样软阈值（80%）扣掉保留预算之后几乎不剩空间，
+   * 摘要段拿到一个几十 token 的预算，模型一个字都吐不出来，结果是
+   * `summary_empty`——而线上 1M 窗口占用 80 万时触发，预算是六位数。
+   * 夹具与线上走不同的数量级，验出来的结论不作数。
+   *
+   * 取 1.2 倍：软阈值 = 0.96×占用（仍越线），保留预算 = 窗口的 1/4，
+   * 摘要还剩约六成占用可用。
+   */
+  const occupancy = listMessages(store, conv.id, null).reduce(
+    (n, m) => n + estimateText(m.content),
+    0,
+  )
+  const contextWindow = Math.round(occupancy * 1.2)
+  const outcome = await compaction.run({ occupancy, contextWindow })
   if (outcome.status !== 'compacted') {
     process.stderr.write(`压缩未执行：${outcome.status}\n`)
     return 1
   }
 
-  const projected = projectManifest(outcome.manifest)
-  const projectedText = projected.map((p) => p.content).join('\n\n')
-  const originalChars = FACTS.reduce((n, f) => n + f.text.length, 0) + TOTAL_TURNS * 60
+  /*
+   * **走真实投影**，不要自己拼 `projectManifest`。
+   *
+   * manifest 现在有两条边界：摘要线与收纳线。只收纳没摘要时摘要线不动，
+   * 而 `projectManifest` 无条件产出「摘要 + 事实清单」两条——直接调它，
+   * 量到的是一份根本不会发给模型的东西。
+   */
+  const history = listMessages(store, conv.id, null).map((m) => ({
+    role: m.role,
+    content: m.content,
+    _messageId: m.id,
+  }))
+  const projected = compaction.project(history)
+  const projectedText = projected.map((p) => String(p.content)).join('\n\n')
+  const originalChars = FACTS.reduce((n, f) => n + f.text.length, 0) + TOTAL_TURNS * 480
+  // 替换物 = 摘要 + 事实清单，即 `projectManifest` 产出的那两条。
+  const replacementChars =
+    outcome.manifest.summary.length + JSON.stringify(outcome.manifest.facts).length
 
   process.stdout.write(
-    `压缩完成：修订 ${outcome.manifest.revision}，摘要 ${outcome.manifest.summary.length} 字符，` +
+    `压缩完成：修订 ${outcome.manifest.revision}，` +
+      `摘要段${outcome.summarized ? '跑了' : `没跑（${outcome.reasonCode ?? '未给原因'}）`}，` +
+      `摘要 ${outcome.manifest.summary.length} 字符，` +
       `事实包 ${outcome.manifest.facts.userConstraints.length} 条约束\n` +
       `投影总长 ${projectedText.length} 字符（原会话约 ${originalChars} 字符，压到 ${Math.round((projectedText.length / originalChars) * 100)}%）\n\n`,
   )
@@ -178,12 +244,49 @@ async function main(): Promise<number> {
     check(`${fact.probe} → ${fact.expect.join(' / ')}`, hit, hit ? undefined : answer)
   }
 
-  // ── 压缩率必须是真的省了 ──
-  process.stdout.write('\n压缩率\n')
+  /*
+   * ── 定位符必须活着穿过摘要 ──
+   *
+   * 提示词要求模型把 `[message:…]` / `[action:…]` 原样带上，因为那是原文的地址，
+   * 模型之后靠它用 `read_history` 回到原文。**提示词写了不等于模型照做**，
+   * 而这一条恰恰只有真实调用能验——单测里的假摘要器想输出什么就输出什么。
+   *
+   * 标记丢了不判失败（与保真度同理，模型有随机性），但必须打出来：
+   * 它是「压缩是不是真的可回溯」的唯一实测信号。
+   */
+  process.stdout.write('\n定位符保留\n')
+  /*
+   * 两种形式都算数：`[message:ms_x]` 与模型常写的简写 `[ms_x]`。
+   * 判据是 **id 完不完整**，不是前缀在不在——`read_history` 要的就是那个 id，
+   * 前缀只是给人读的。要求模型逐字照抄前缀反而会让它把 id 也一起改写。
+   */
+  const marks = [
+    ...outcome.manifest.summary.matchAll(/\[(?:(?:message|action):)?((?:ms|rn)_[a-z0-9:]+)\]/gi),
+  ].map((m) => m[1] ?? '')
   check(
-    '投影确实比原会话短',
-    projectedText.length < originalChars,
-    `${projectedText.length} vs ${originalChars}`,
+    `摘要里带回了 ${marks.length} 个定位符`,
+    marks.length > 0,
+    `摘要前 300 字符：${outcome.manifest.summary.slice(0, 300)}`,
+  )
+  // 带回来的标记必须指向真实存在的 id，编出来的标记比没有更坏：
+  // 模型会拿它去调 read_history，然后拿到一串 not_found。
+  const realIds = new Set<string>(listMessages(store, conv.id, null).map((m) => String(m.id)))
+  const fabricated = marks.filter((id) => mk_isMessage(id) && !realIds.has(id))
+  check('没有编造的定位符', fabricated.length === 0, fabricated.slice(0, 5).join(', '))
+
+  /*
+   * ── 压缩率 ──
+   *
+   * 比的是**被折掉那一段**与替换它的东西，不是「投影 vs 整条原会话」：
+   * 保留区原样留在投影里，拿它去比会把一份正常的压缩判成变大了。
+   * 这也正是 `compact()` 里「必须更小」闸的口径。
+   */
+  process.stdout.write('\n压缩率\n')
+  const foldedChars = originalChars - projectedText.length + replacementChars
+  check(
+    '折叠区确实被压小了',
+    replacementChars < foldedChars,
+    `替换物 ${replacementChars} vs 被折 ${foldedChars}`,
   )
 
   store.close()

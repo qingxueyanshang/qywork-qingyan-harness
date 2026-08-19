@@ -60,7 +60,7 @@ export interface TranscriptItem {
   compaction?: {
     phase: 'started' | 'done' | 'skipped' | 'failed'
     reasonCode?: string
-    /** phase='done' 专有：摘要是模型写的还是本地降级拼的。 */
+    /** phase='done' 专有：摘要线跟着前移了，还是只收纳了工具正文。 */
     summarized?: boolean
     compactedMessages?: number
     revision?: number

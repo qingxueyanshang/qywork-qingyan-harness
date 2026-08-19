@@ -458,7 +458,7 @@ export type StepPayload =
       phase?: 'done' | 'skipped' | 'failed'
       manifestRevision: number
       compactedMessages: number
-      /** `phase='done'` 专有：摘要是模型写的（true）还是本地降级拼的（false）。 */
+      /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
       summarized?: boolean
       reasonCode?: string
     }
@@ -636,10 +636,12 @@ export interface ProviderRequest {
   retryIndex: number
   model: string
   status: ProviderRequestStatus
-  /** 发送前本地测得的输入量。除非适配器明说，否则它是估算。 */
+  /**
+   * 发送前本地测得的输入量。**一律是字符估算**——三条协议都没有在热路径上
+   * 实测 token 的通道。真值由 `providerInputTokens` 那几列给，读数以它们为准，
+   * 这一列只在一条回报都还没有时兜底（`context-panel.ts`）。
+   */
   measuredInputTokens: number
-  /** 上一条到底是不是精确值。面板据此决定标「实际统计」还是「估算统计」。 */
-  measurementExact: boolean
   providerInputTokens: number | null
   providerOutputTokens: number | null
   providerCachedTokens: number | null
@@ -660,10 +662,29 @@ export type ProviderRequestStatus = 'pending' | 'in_flight' | 'received' | 'unce
 
 // ─────────────────────────────── 上下文压缩 ───────────────────────────────
 
+/**
+ * 一条折叠边界。
+ *
+ * 排序按「先消息 id、同一条消息内再按 step 戳」。`step` 缺省表示边界只到消息
+ * 本体，该消息的执行记录不在边界以内。
+ */
+export interface CompactionCut {
+  messageId: MessageId
+  step?: string
+}
+
 export interface CompactionManifest {
   revision: number
-  /** 该 id 及之前的消息已被摘要替代。 */
+  /** 摘要线：该 id 及之前的消息已被摘要替代。 */
   compactedThroughMessageId: MessageId | null
+  /** 摘要线在归属消息内推进到的 step 戳。 */
+  compactedThroughStep?: string
+  /**
+   * 收纳线：这一条及之前的工具结果只发信封，不发正文。
+   *
+   * 不变量 **收纳线 ≥ 摘要线**，由构造点保证。缺这个键 = 与摘要线重合。
+   */
+  condensedThrough?: CompactionCut
   /**
    * 累计被摘要替代掉的消息条数。
    *

@@ -11,6 +11,7 @@
     { "path": "./packages/team" },
     { "path": "./packages/runtime" },
     { "path": "./packages/server" },
-    { "path": "./packages/cli" }
+    { "path": "./packages/cli" },
+    { "path": "./scripts" }
   ]
 }

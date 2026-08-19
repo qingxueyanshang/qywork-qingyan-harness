@@ -17,16 +17,25 @@
 // CompactionOutcome 没有被谁 import，但它出现在 runtime 的公开签名的推断类型里——
 // 不导出会让那个类型无法命名（TS2742）。这类「隐式对外」同样是承诺。
 export {
+  type CompactionAction,
+  type CompactionInput,
   type CompactionOutcome,
   compact,
+  condenseCutOf,
+  condenseMessage,
+  cutKey,
   projectManifest,
   type Summarizer,
+  stepStamp,
+  summaryCutOf,
+  unitKey,
 } from './compaction.ts'
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
 export {
   AgentLoop,
   type CompactionPort,
+  type CompactionRunInput,
   type LoopPersistence,
   STREAM_IDLE_TIMEOUT_MS,
   softLimit,
@@ -36,8 +45,10 @@ export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
   chargeBatchBudget,
+  deliveryBudget,
   type FileReadPort,
   type GoalPort,
+  type HistoryPort,
   type PermissionVerdict,
   RESULT_BUDGET_RATIO,
   resetBatchBudget,

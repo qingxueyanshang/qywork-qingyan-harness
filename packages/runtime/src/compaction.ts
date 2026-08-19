@@ -2,13 +2,41 @@
  * `CompactionPort` 的实际装配。
  *
  * loop 只知道「投影历史」和「跑一次压缩」两个动作；manifest 存在哪张表、
- * 待压缩的消息与动作怎么取，全在这一层。
+ * 可折单元怎么从账本里取、摘要预算的观测从哪查，全在这一层。
+ *
+ * 单元序**必须与 loop 装配出来的那一份逐字对齐**：两边都靠 `stepsToUnits` /
+ * `stepStamp` 造戳，戳不同形就会按两条不同的线去切同一段内容。
  */
 
-import type { CompactionOutcome, CompactionPort, Summarizer } from '@qywork/agent'
-import { compact, projectManifest } from '@qywork/agent'
+import type {
+  CompactionAction,
+  CompactionInput,
+  CompactionOutcome,
+  CompactionPort,
+  CompactionRunInput,
+  Summarizer,
+} from '@qywork/agent'
+import {
+  compact,
+  condenseCutOf,
+  condenseMessage,
+  cutKey,
+  deliveryBudget,
+  projectManifest,
+  softLimit,
+  summaryCutOf,
+  unitKey,
+} from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
-import type { CompactionManifest, ConversationId, MessageId } from '@qywork/core'
+import { estimateMessage, estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
+import type {
+  ActionKind,
+  CompactionCut,
+  CompactionManifest,
+  ConversationId,
+  MessageId,
+  Step,
+} from '@qywork/core'
 import {
   getConversation,
   listMessages,
@@ -16,15 +44,36 @@ import {
   listSteps,
   type Store,
   setCompactionManifest,
+  summaryOutputPercentile,
 } from '@qywork/store'
+import { stepsToUnits } from './transcript.ts'
+
+/**
+ * 摘要输出的观测分位。
+ *
+ * 取 p95 而不是极大值：硬上界由 headroom 给，这个数只需要覆盖常态；
+ * 写超了的那一次被「截断作废」闸捕获，并作为更大的样本进入下一次的分布。
+ */
+const SUMMARY_PERCENTILE = 0.95
 
 export interface CompactionDeps {
   store: Store
   conversationId: ConversationId
   /** run 创建时定格的消息高水位，压缩范围不得越过它。 */
   messageIdUpperBound: MessageId | null
-  /** 摘要生成器。null = 只用本地确定性降级。 */
-  summarize: Summarizer | null
+  /** 摘要生成器。 */
+  summarize: Summarizer
+}
+
+/** 一个可折单元在账本侧的形态。切界只落在单元之间。 */
+interface Unit {
+  key: string
+  cut: CompactionCut
+  tokens: number
+  messages: WireMessage[]
+  /** 会话消息行；执行记录单元为 null。 */
+  row: CompactionInput['messages'][number] | null
+  actions: CompactionAction[]
 }
 
 export class RuntimeCompaction implements CompactionPort {
@@ -41,28 +90,42 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
-   * 投影历史。
+   * 投影，分三区。
    *
-   * 被压掉的那段换成「摘要 + 事实清单」两条消息，未压的部分原样保留。
+   * 摘要线以内 → 换成「摘要 + 事实清单」两条；摘要线到收纳线之间 → 消息原样、
+   * 工具正文换信封；收纳线之后 → 逐字原样。模型因此看到一个保真度梯度。
    *
-   * 判断边界用 `_messageId` 而不是数组下标：history 里除了会话消息还可能夹着
-   * 尾区注记，按下标切会把它们一起切掉。
+   * 判断边界用单元键而不是数组下标：history 里除了会话消息还夹着尾区注记与
+   * 本 run 的 transcript，按下标切会把它们一起切掉。无键的消息（尾区注记）
+   * 一律保留——它们不属于会话历史。
    */
   project(history: WireMessage[]): WireMessage[] {
     const m = this.manifest
-    if (!m?.compactedThroughMessageId) return history
+    if (!m) return history
 
-    const through = m.compactedThroughMessageId
-    const kept = history.filter((msg) => {
-      const id = (msg as { _messageId?: string })._messageId
-      // 没有消息 id 的（尾区注记等）一律保留——它们不属于被压缩的会话历史。
-      if (!id) return true
-      return id > through
-    })
+    const summary = summaryCutOf(m)
+    const condense = condenseCutOf(m)
+    const summaryKey = summary ? cutKey(summary) : null
+    const condenseKey = condense ? cutKey(condense) : null
 
-    // 一条都没压掉说明 manifest 与当前历史对不上（换了会话、消息被删）。
-    // 这时投影只会平白多两条消息，原样返回更安全。
-    if (kept.length === history.length) return history
+    let folded = 0
+    const out: WireMessage[] = []
+    for (const msg of history) {
+      const key = unitKey(msg)
+      if (key === null) {
+        out.push(msg)
+        continue
+      }
+      if (summaryKey !== null && key <= summaryKey) {
+        folded++
+        continue
+      }
+      out.push(condenseKey !== null && key <= condenseKey ? condenseMessage(msg) : msg)
+    }
+
+    // 一条都没折掉说明摘要线与当前历史对不上（换了会话、消息被删）。
+    // 这时插两条摘要只会平白多两条消息。
+    if (folded === 0) return out
 
     return [
       ...projectManifest(m).map((p) => ({
@@ -70,63 +133,93 @@ export class RuntimeCompaction implements CompactionPort {
         content: p.content,
         _group: 'summary' as const,
       })),
-      ...kept,
+      ...out,
     ]
   }
 
   /**
    * 跑一次压缩并落库。
    *
-   * `signal` 一路带到落库点前。**可缺**：手动压缩不属于任何 run，没有 run 信号，
-   * 它的中断由摘要器自己的信号表达（`compact()` 认 AbortError）。
+   * 顺序是固定的：选界 → 可行性 → 收纳 → 够了就落库 → 不够才调模型 → 落库前查信号。
+   * `signal` 一路带到落库点前。**可缺**：手动压缩不属于任何 run。
    */
-  async run(signal?: AbortSignal): Promise<CompactionOutcome> {
-    const { store, conversationId, messageIdUpperBound } = this.deps
+  async run(input: CompactionRunInput): Promise<CompactionOutcome> {
+    const { store, conversationId } = this.deps
+    const previous = this.manifest
+    const summary = summaryCutOf(previous)
+    const condense = condenseCutOf(previous)
+    const summaryKey = summary ? cutKey(summary) : ''
+    const condenseKey = condense ? cutKey(condense) : ''
 
-    const all = listMessages(store, conversationId, messageIdUpperBound)
-    // 末尾两条不压：最近一次问答是模型当前正在处理的东西，压掉它等于让模型
-    // 忘记自己刚被问了什么。压缩要削的是**远期**历史。
-    const target = all.slice(0, Math.max(0, all.length - 2))
-    const through = this.manifest?.compactedThroughMessageId
-    const fresh = through ? target.filter((m) => m.id > through) : target
+    // 选界：从尾部逐单元累加到保留预算为止。**保留预算 = 批级投递预算**，
+    // 给出的不变量是「上一次检查以来刚进来的那一波必然完整保留」。
+    const units = this.collectUnits()
+    const foldIndex = foldIndexOf(units, deliveryBudget(input.contextWindow).batchCap)
+    if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
+    const fold = units[foldIndex]!
+
+    // 收纳段：折叠线以内的工具正文换信封。**零模型调用**，回收量当场估得出。
+    const messages: CompactionInput['messages'] = []
+    const actions: CompactionAction[] = []
+    let foldedMessageCount = 0
+    let originalNew = 0
+    let condensedNew = 0
+    let condensedRegion = 0
+    for (let i = 0; i <= foldIndex; i++) {
+      const u = units[i]!
+      // 摘要线以内的已经不在投影里了，既不用再收纳也不用再摘要。
+      if (u.key <= summaryKey) continue
+      if (u.row) {
+        messages.push(u.row)
+        foldedMessageCount++
+      }
+      for (const m of u.messages) {
+        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
+          messages.push({ id: u.cut.messageId, role: 'assistant', content: m.content })
+        }
+      }
+      actions.push(...u.actions)
+
+      const condensed = estimateMessages(u.messages.map(condenseMessage))
+      condensedRegion += condensed
+      if (u.key <= condenseKey) continue
+      originalNew += u.tokens
+      condensedNew += condensed
+    }
+
+    const limit = softLimit({ contextWindow: input.contextWindow })
+    const afterCondense = input.occupancy - originalNew + condensedNew
+    const condenseOnly = afterCondense <= limit
+
+    // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
+    if (fold.key <= summaryKey || (condenseOnly && fold.key <= condenseKey)) {
+      return { status: 'skipped', reasonCode: 'nothing_to_fold' }
+    }
 
     /*
-     * 摘要输入 = 用户消息 + **模型自己说过的话**。
+     * 投影总预算：摘要线推到折叠线之后，还能往里放多少。
      *
-     * **只喂 `listMessages` 不够**：那张表只有 user 行，于是一次压缩之后模型保住了
-     * 「调过哪些工具」的一行式事实（`collectActions` 给的），却丢光了自己历轮说过的
-     * 所有结论——跨轮记忆就此塌掉一半，而且塌得无声。
-     *
-     * 正文取 text step。
-     * id 沿用归属的那条 user 消息：`through` 由最后一条 user 决定，
-     * 插进来的 assistant 条目不参与边界计算，只参与摘要正文。
+     * 被摘要替换掉的是「收纳后的被折区」加「上一份摘要投影」，两者都腾出来；
+     * 事实清单逐字优先占，摘要拿剩下的（`compact()` 里分）。全程 token 计。
      */
-    const assistantText = this.collectAssistantText(fresh)
-    const segments: {
-      id: MessageId
-      role: 'user' | 'assistant'
-      content: string
-      hasAttachments?: boolean
-    }[] = []
-    for (const m of fresh) {
-      segments.push({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        hasAttachments: m.attachments.length > 0,
-      })
-      const said = assistantText.get(m.id)
-      if (said?.trim()) segments.push({ id: m.id, role: 'assistant', content: said })
-    }
+    const oldProjection = summary ? estimateMessages(projectManifest(previous!)) : 0
+    const projectionBudget = limit - afterCondense + condensedRegion + oldProjection
+    const workspaceId = getConversation(store, conversationId)?.workspaceId ?? ''
 
     const outcome = await compact(
       {
-        messages: segments,
-        actions: this.collectActions(fresh),
-        previous: this.manifest,
+        messages,
+        actions,
+        previous,
+        fold: fold.cut,
+        condenseOnly,
+        projectionBudget,
+        typicalSummaryTokens: summaryOutputPercentile(store, workspaceId, SUMMARY_PERCENTILE),
+        condensedRegionTokens: condensedRegion,
+        foldedMessageCount,
       },
       this.deps.summarize,
-      signal,
+      input.signal,
     )
 
     if (outcome.status === 'compacted') {
@@ -140,7 +233,7 @@ export class RuntimeCompaction implements CompactionPort {
        * 落库与内存的顺序不能反：反过来中途崩溃会留下「内存说压过了、库里没有」，
        * 下次启动投影就丢了，而模型会突然又看到全部历史。
        */
-      if (signal?.aborted) return { status: 'aborted' }
+      if (input.signal?.aborted) return { status: 'aborted' }
       setCompactionManifest(store, conversationId, outcome.manifest)
       this.manifest = outcome.manifest
     }
@@ -148,76 +241,94 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
-   * 待压缩范围内模型说过的话，按归属的 user 消息聚合。
+   * 把整条会话拉平成可折单元序列。
    *
-   * 只取 `text` step——`tool_action` 的事实由 `collectActions` 单独收，
-   * 两边都收会让同一次调用在摘要输入里出现两遍。
-   *
-   * **被接替的 run 不收**，口径与历史投影一致：失败尝试说过的话不该进摘要，
-   * 否则压缩会把一段作废的推理固化成「已确认的事实」。
+   * 口径与 `buildHistory` 一致：被接替的 run 不收（失败尝试说过的话不该进摘要），
+   * 还在 running 的批次不收（结果未知不能当已完成，`stepsToUnits` 整批跳过）。
+   * **本 run 已终结的 step 在内**——run 内涨起来的正是它们，压不到就等于压了个寂寞。
    */
-  private collectAssistantText(messages: { id: MessageId }[]): Map<MessageId, string> {
-    const out = new Map<MessageId, string>()
-    if (messages.length === 0) return out
-    const wanted = new Set(messages.map((m) => m.id))
-
-    for (const run of listRuns(this.deps.store, this.deps.conversationId)) {
-      if (!run.userMessageId || run.supersededBy) continue
-      if (!wanted.has(run.userMessageId)) continue
-      const said = listSteps(this.deps.store, run.id)
-        .filter((s) => s.kind === 'text' && s.content)
-        .map((s) => s.content)
-        .join('')
-      if (!said) continue
-      out.set(run.userMessageId, (out.get(run.userMessageId) ?? '') + said)
+  private collectUnits(): Unit[] {
+    const { store, conversationId, messageIdUpperBound } = this.deps
+    const byUser = new Map<string, ReturnType<typeof listRuns>>()
+    for (const r of listRuns(store, conversationId)) {
+      if (!r.userMessageId || r.supersededBy) continue
+      const list = byUser.get(r.userMessageId) ?? []
+      list.push(r)
+      byUser.set(r.userMessageId, list)
     }
-    return out
-  }
 
-  /**
-   * 收集待压缩范围内的工具动作。
-   *
-   * 只取已终结的 step：还在 running 的动作结果未知，把「未知」写进事实包
-   * 会让模型以为它已经完成了。
-   */
-  private collectActions(messages: { id: MessageId }[]): {
-    stepId: string
-    tool: string
-    status: string
-    target: string | null
-    summary: string
-    errorCode?: string | null
-    resourceId?: string | null
-  }[] {
-    if (messages.length === 0) return []
-    const lastId = messages[messages.length - 1]!.id
-    const out: ReturnType<RuntimeCompaction['collectActions']> = []
-
-    for (const run of listRuns(this.deps.store, this.deps.conversationId)) {
-      // 只要高水位在压缩范围内的 run。
-      if (run.userMessageId && run.userMessageId > lastId) continue
-      for (const step of listSteps(this.deps.store, run.id)) {
-        if (step.kind !== 'tool_action') continue
-        if (step.status === 'running') continue
-        const payload = step.payload as {
-          action?: { target?: string | null }
-          outcome?: {
-            message?: string
-            errorKind?: string
-            resources?: { resourceId?: string }[]
-          }
-        } | null
-        out.push({
-          stepId: `${run.id}:${step.id}`,
-          tool: step.toolName ?? 'unknown',
-          status: step.status,
-          target: payload?.action?.target ?? null,
-          summary: payload?.outcome?.message ?? '',
-          errorCode: payload?.outcome?.errorKind ?? null,
-          resourceId: payload?.outcome?.resources?.[0]?.resourceId ?? null,
-        })
+    const units: Unit[] = []
+    for (const m of listMessages(store, conversationId, messageIdUpperBound)) {
+      const cut: CompactionCut = { messageId: m.id }
+      const wire: WireMessage = {
+        role: m.role,
+        content: m.content,
+        _group: 'historyMessages',
+        _messageId: m.id,
+      }
+      units.push({
+        key: cutKey(cut),
+        cut,
+        // 附件按固定值计，与装配那侧同一口径；按 base64 长度估会高出两个数量级。
+        tokens: estimateMessage(wire) + m.attachments.length * MEDIA_TOKENS,
+        messages: [wire],
+        row: {
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          ...(m.attachments.length ? { hasAttachments: true } : {}),
+        },
+        actions: [],
+      })
+      for (const r of byUser.get(m.id) ?? []) {
+        for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id })) {
+          const stepCut: CompactionCut = { messageId: m.id, step: u.stamp }
+          units.push({
+            key: cutKey(stepCut),
+            cut: stepCut,
+            tokens: estimateMessages(u.messages),
+            messages: u.messages,
+            row: null,
+            actions: u.steps.map((s) => actionOf(r.id, s)),
+          })
+        }
       }
     }
-    return out
+    return units
+  }
+}
+
+/**
+ * 折叠线：最后一个**不**保留的单元的下标。`-1` = 尾部还没攒够保留预算，无可折。
+ *
+ * 先加后判，所以把总量顶过预算的那个单元自己也留着——至少保留最后一个单元。
+ */
+function foldIndexOf(units: Unit[], retain: number): number {
+  let spent = 0
+  for (let i = units.length - 1; i >= 0; i--) {
+    spent += units[i]!.tokens
+    if (spent >= retain) return i - 1
+  }
+  return -1
+}
+
+function actionOf(runId: string, step: Step): CompactionAction {
+  const payload = step.payload as {
+    action?: { kind?: ActionKind; target?: string | null }
+    outcome?: {
+      message?: string
+      errorKind?: string
+      resources?: { resourceId?: string }[]
+    }
+  } | null
+  return {
+    stepId: `${runId}:${step.id}`,
+    tool: step.toolName ?? 'unknown',
+    status: step.status,
+    actionKind: payload?.action?.kind ?? null,
+    target: payload?.action?.target ?? null,
+    summary: payload?.outcome?.message ?? '',
+    errorCode: payload?.outcome?.errorKind ?? null,
+    resourceId: payload?.outcome?.resources?.[0]?.resourceId ?? null,
   }
 }

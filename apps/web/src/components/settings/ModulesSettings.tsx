@@ -188,9 +188,10 @@ const MODULES: Module[] = [
     id: 'session',
     label: '上下文',
     notes: [
+      { label: '压缩触发', text: () => '发请求前判一次，占用越过窗口的 80% 就折一次。' },
       {
-        label: 'RuntimeCompaction',
-        text: () => '发请求前判一次，一轮最多压一次。阈值 = 上下文窗口 − 最大输出 − 四分之一窗口。',
+        label: '折掉的取得回来',
+        text: () => '原文留在账本里，模型按摘要里的标记用 read_history 取回。',
       },
     ],
   },
