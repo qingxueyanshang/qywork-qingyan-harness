@@ -164,9 +164,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       if (chunks === 0) {
         throw new ProviderError({
           code: 'provider_unavailable',
-          message:
-            '端点回了 200，但响应里没有任何 SSE 数据。常见于 Base URL 指向了非 API 路径' +
-            '（中转站对错误路径往往回一个网页而不是报错），或反代把流吞掉了。',
+          message: '响应为 200 但不含任何 SSE 数据',
           retryable: false,
           provider: 'openai_compatible',
           detail: { model: req.model },

@@ -92,7 +92,7 @@ describe('effort 校准', () => {
     rejects = (e) => e !== undefined
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual([])
-    expect(r.probes.find((p) => p.name === 'effort 控制面')?.detail).toContain('这条链路把它拒了')
+    expect(r.probes.find((p) => p.name === 'effort 控制面')?.detail).toContain('本链路拒绝')
     // 只试前两档，不把库里的档全打一遍。
     expect(seen.filter((e) => e !== undefined)).toEqual(['low', 'medium'])
   })

@@ -471,26 +471,31 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
     >
       {(r) => {
         const o = () => r().outcome
-        const untested = () => new Set(o().untested)
+        /**
+         * 思考那一格只说**用户能拿它做什么**：有哪几档可选，或者为什么一档都没有。
+         *
+         * 不显示 `thinking`（协议枚举）和 `thinksByDefault`（给输出预算留空间的
+         * 标志位）：两者都是内部实现，用户看到也做不了任何事，而它们占的正是
+         * 「这个模型到底能不能调思考」该占的位置。
+         */
+        const effort = () => {
+          const levels = o().effortLevels
+          if (levels.length > 0) return `思考档位　${levels.join(' / ')}`
+          if (o().untested.includes('effort')) return '本协议不发思考档位'
+          return '无思考档位'
+        }
         return (
           <div class="probe-line" classList={{ bad: !o().reachable }}>
-            <Show when={o().reachable} fallback={<span>端点不通，先确认 key、模型名和地址</span>}>
-              <span>通</span>
-              <span>
-                思考：
-                {untested().has('thinking') ? '未探测（本协议不发该字段）' : (o().thinking ?? '—')}
-              </span>
-              <span>省略字段时自己思考：{o().thinksByDefault ? '是' : '否'}</span>
-              <Show when={!untested().has('effort')}>
-                <span>effort：{o().effortLevels.join(' / ') || '不支持'}</span>
-              </Show>
+            {/* 不通时只报状态，成因由下面那几条探针原文给。
+                在这里再写一句「先检查 key 和地址」是枚举操作路径，而且它说的
+                永远比原文含糊。 */}
+            <Show when={o().reachable} fallback={<span>连接失败</span>}>
+              <span>连接正常</span>
+              <span>{effort()}</span>
             </Show>
+            {/* 失败那几步给原文：结论错了要能查，只给一句「不支持」查不出任何东西。 */}
             <For each={o().probes.filter((s) => !s.ok && !s.skipped)}>
-              {(s) => (
-                <span class="probe-fail">
-                  {s.name}：{s.detail}
-                </span>
-              )}
+              {(s) => <span class="probe-fail">{s.detail}</span>}
             </For>
           </div>
         )
