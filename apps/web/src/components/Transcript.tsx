@@ -126,7 +126,7 @@ export function Transcript() {
                       <div class="attach-row sent">
                         <For each={(node as { item: TranscriptItem }).item.attachments}>
                           {(a) => (
-                            <span class="attach-chip" title={a.path}>
+                            <span class="attach-chip" data-tip={a.path}>
                               <span class="truncate">{a.name}</span>
                             </span>
                           )}
@@ -391,7 +391,7 @@ function Fold(props: {
             <span class="fold-word">{props.statusWord}</span>
           </Show>
           <Show when={props.target}>
-            <span class="fold-target" title={props.target}>
+            <span class="fold-target" data-tip={props.target}>
               · {sanitizeTarget(props.target!)}
             </span>
           </Show>
@@ -505,19 +505,19 @@ function RunStatusBar(props: {
 
       <span class="run-readout">
         <Show when={props.elapsed !== null}>
-          <span class="run-metric run-elapsed" title="本轮耗时">
+          <span class="run-metric run-elapsed" data-tip="本轮耗时">
             {props.elapsed!.toFixed(1)}s
           </span>
         </Show>
         <Show when={props.usage}>
           {(usage) => (
             <>
-              <span class="run-metric" title="输入 / 输出 token">
+              <span class="run-metric" data-tip="输入 / 输出 token">
                 ↓{compact(usage().inputTokens)} ↑{compact(usage().outputTokens)}
               </span>
               {/* 口径（分母是输入总量、优先取最后一次调用、null 与 0 的区别）
                   全在 `hitRate` 上，这里不复述——两处各写一遍必然漂移。 */}
-              <span class="run-metric" title="最后一次模型调用的缓存命中占输入总量的比例">
+              <span class="run-metric" data-tip="最后一次模型调用的缓存命中占输入总量的比例">
                 命中 {hitRate(usage())}
               </span>
               {/* 计价为 0 时不显示金额：未知计价冒充免费更误导。 */}
@@ -639,11 +639,11 @@ function CompactionCard(props: { item: TranscriptItem }) {
  */
 function compactionFailureLabel(code: string | undefined): string {
   const map: Record<string, string> = {
-    too_few_messages: '没什么可压缩的，对话还太短',
-    nothing_new: '没什么可压缩的，上次压缩后没有新内容',
-    empty_summary: '上下文压缩失败：摘要为空',
+    too_few_messages: '无可压缩内容',
+    nothing_new: '无新增内容',
+    empty_summary: '压缩失败：摘要为空',
   }
-  return (code && map[code]) || '上下文压缩失败'
+  return (code && map[code]) || '压缩失败'
 }
 
 function ToolGroup(props: { members: TranscriptItem[] }) {

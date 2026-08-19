@@ -45,7 +45,7 @@ export function RunStatus() {
             <button
               class="run-jump"
               type="button"
-              title="查看完整待办"
+              data-tip="查看完整待办"
               onClick={() => openPanel('todos')}
             >
               已完成 {progress().done} / {progress().total}
@@ -61,7 +61,7 @@ export function RunStatus() {
             <button
               class="run-jump"
               type="button"
-              title="查看这条会话的变更"
+              data-tip="查看这条会话的变更"
               onClick={() => openPanel('changes')}
             >
               {files().length} 个文件

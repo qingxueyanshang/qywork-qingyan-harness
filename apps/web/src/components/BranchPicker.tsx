@@ -79,7 +79,7 @@ export function BranchPicker() {
 
   return (
     <div class="branch-picker">
-      <button class="mode-chip" type="button" title="切换分支" onClick={toggle}>
+      <button class="mode-chip" type="button" data-tip="切换分支" onClick={toggle}>
         <IconBranch size={13} />
         <span class="truncate">{state.git?.branch}</span>
         <IconChevron size={11} dir={open() ? 'up' : 'down'} />

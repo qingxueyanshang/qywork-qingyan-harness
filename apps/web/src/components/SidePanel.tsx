@@ -176,7 +176,7 @@ export default function SidePanel() {
           class="panel-grip"
           type="button"
           aria-label="拖动改变面板宽度"
-          title="拖动改变宽度"
+          data-tip="拖动改变宽度"
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId)
             e.preventDefault()
@@ -257,7 +257,7 @@ export default function SidePanel() {
               class="icon-btn"
               type="button"
               aria-label="新开预览"
-              title="新开预览"
+              data-tip="新开预览"
               aria-pressed={board()}
               onClick={() => setBoard((v) => !v)}
             >
@@ -270,7 +270,7 @@ export default function SidePanel() {
               type="button"
               aria-label={panelMaximized() ? '还原面板' : '放大面板'}
               aria-pressed={panelMaximized()}
-              title={panelMaximized() ? '还原面板' : '放大面板'}
+              data-tip={panelMaximized() ? '还原面板' : '放大面板'}
               onClick={togglePanelMax}
             >
               <IconExpand size={15} collapse={panelMaximized()} />
@@ -625,7 +625,7 @@ function FileBrowser() {
               class="icon-btn"
               type="button"
               aria-label="新建文件"
-              title="新建文件"
+              data-tip="新建文件"
               onClick={() => newIn('file')}
             >
               <IconFilePlus size={14} />
@@ -634,7 +634,7 @@ function FileBrowser() {
               class="icon-btn"
               type="button"
               aria-label="新建文件夹"
-              title="新建文件夹"
+              data-tip="新建文件夹"
               onClick={() => newIn('dir')}
             >
               <IconFolderPlus size={14} />
@@ -643,7 +643,7 @@ function FileBrowser() {
               class="icon-btn"
               type="button"
               aria-label="刷新"
-              title="刷新"
+              data-tip="刷新"
               onClick={() => {
                 // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
                 setKids(new Map())
@@ -656,7 +656,7 @@ function FileBrowser() {
               class="icon-btn"
               type="button"
               aria-label="全部折叠"
-              title="全部折叠"
+              data-tip="全部折叠"
               onClick={() => setExpanded(new Set())}
             >
               <IconCollapseAll size={14} />
@@ -889,7 +889,7 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
             class="tree-item"
             classList={{ selected: props.ctx.selected() === hit.path }}
             type="button"
-            title={hit.path}
+            data-tip={hit.path}
             disabled={hit.kind === 'dir'}
             onClick={() => props.ctx.pick(hit)}
             onContextMenu={(e) => {
@@ -1191,7 +1191,7 @@ function ChangeRecord() {
                   classList={{ selected: open().has(r.path) }}
                   type="button"
                   aria-expanded={open().has(r.path)}
-                  title={nativePath(r.path)}
+                  data-tip={nativePath(r.path)}
                   onClick={() => toggle(r.path)}
                 >
                   <IconChevron size={11} dir={open().has(r.path) ? 'down' : 'right'} />

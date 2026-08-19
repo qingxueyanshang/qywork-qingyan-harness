@@ -86,7 +86,7 @@ export function VoiceButton(props: { draft: string; onText: (next: string) => vo
           type="button"
           aria-pressed={recording()}
           aria-label={failure() || (recording() ? '停止语音输入' : '语音输入')}
-          title={failure() || (recording() ? '停止' : '语音输入')}
+          data-tip={failure() || (recording() ? '停止' : '语音输入')}
           onClick={() => (recording() ? rec?.stop() : start())}
         >
           <IconMic size={15} />
