@@ -71,6 +71,10 @@ interface LibraryModel {
   maxOutputTokens: number
   input: number
   output: number
+  /** 缓存命中价。 */
+  cacheRead: number
+  /** 缓存写入价（5 分钟档）。`computeCost` 只按这一档算。 */
+  cacheWrite: number
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
   source: 'seed' | 'user'
@@ -161,6 +165,8 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       maxOutputTokens: spec.maxOutputTokens,
       input: spec.pricing.input,
       output: spec.pricing.output,
+      cacheRead: spec.pricing.cacheRead,
+      cacheWrite: spec.pricing.cacheWrite5m,
       currency: spec.pricing.currency ?? 'USD',
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
       source,

@@ -416,6 +416,7 @@ export function ModelSettings() {
             }}
           </Show>
 
+          {/* 上面那排 tab 已经写着「模型库」，这里不再来一个同名标题。 */}
           <Show when={showLibrary()}>
             <ModelLibrary
               vendors={loaded(catalog)?.library ?? []}

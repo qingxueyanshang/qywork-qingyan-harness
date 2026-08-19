@@ -4,10 +4,10 @@ import {
   buildBwrapArgv,
   buildSeatbeltArgv,
   buildSeatbeltProfile,
+  collectProcess,
   commandShell,
   defaultMaskPaths,
   detectSandbox,
-  collectProcess,
   killTree,
   makeOutputDecoder,
   resolveBashPath,
@@ -332,23 +332,25 @@ describe('平台判定', () => {
     if (s.active) expect(['bwrap', 'seatbelt']).toContain(s.backend)
   })
 
-  test('每个平台要么给出后端，要么给出下一步', () => {
+  test('每个平台都说清约束状况，不只丢一句「不支持」', () => {
     /*
      * **不要把某个平台今天的实现进度写进断言**（「原生 Windows 一律报没有内核
      * 边界」那种）：实现一往前走它就红，而红的原因是好事；实现退回去又得再改一次。
      *
      * 真正该锁的是**如实上报**这条不变量，它跟哪个平台有没有沙箱无关：
-     * 有边界就说清是哪个后端，没有就说清下一步怎么办——
-     * 两种情况都不能只丢一句「不支持」。
+     * 有边界就说清验过哪几条，没有就说清缺的是哪一层约束。
+     *
+     * **不再要求带「下一步怎么办」。** 这段话原样出现在设置页里，而那里
+     * 不枚举操作路径（CLAUDE.md B7）——装 bubblewrap 的三条命令、
+     * `wsl --set-version`、`sysctl` 那行都不属于状态描述。
      */
     const s = detectSandbox()
     if (s.active) {
       expect(s.backend).not.toBe('none')
-      expect(s.reason).toContain('实测')
+      expect(s.reason).toContain('已验证')
     } else {
       expect(s.backend).toBe('none')
-      // 「没有」必须带着可操作的下一步：装什么、开什么、或者去哪儿跑。
-      expect(s.reason).toMatch(/装|升级|WSL2|运行|启用/)
+      expect(s.reason).toMatch(/约束/)
     }
   })
 

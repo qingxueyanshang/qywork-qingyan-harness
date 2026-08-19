@@ -63,10 +63,13 @@ export interface QyConfig {
    * 沙箱 bind 清单（`sandbox.ts`）。**少接一层这个字段就是只声明没消费**，
    * 测试覆盖「清单内可写 / 清单外仍拒 / 软链逃逸 / 相对路径被拒」四条。
    *
-   * ## `full` 不豁免它
+   * ## `full` 下这一层整个不设
    *
-   * 它是路径边界不是裁决，与凭证剥离同级。「完全访问」的意思是「不裁决这次调用」，
-   * 不是「边界作废」。
+   * **不要写成「`full` 不豁免它」**——那与代码相反：`Session.makeToolContext` 在
+   * `full` 下传 `unrestrictedPaths: true`，`resolveInWorkspace` 直接返回目标路径。
+   * 「完全访问」的定义就是不裁决，路径层跟着一起不设；只放开权限闸而留着路径层，
+   * 会变成「`read_file` 被拒、`run_command` 读到」的两套账（见 CLAUDE.md E）。
+   * 真正不受模式影响的是凭证剥离。
    *
    * 只接受绝对路径——相对路径的基准是启动 qy 时所在的目录，换个地方启动含义就变。
    */
@@ -150,6 +153,10 @@ export interface StoredCatalogEntry {
   /** 每百万 token 的输入 / 输出单价。 */
   input?: number
   output?: number
+  /** 缓存命中价。 */
+  cacheRead?: number
+  /** 缓存写入价。只覆盖 5 分钟那一档——`computeCost` 只按它算。 */
+  cacheWrite?: number
   currency?: 'USD' | 'CNY'
   effortLevels?: EffortLevel[]
 }

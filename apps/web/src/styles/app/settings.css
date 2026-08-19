@@ -79,14 +79,6 @@
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-/* 边界说明跟着标题，**不折叠也不降对比度**：「明文 key 不出服务端」不是解释，
-   是用户据以决定要不要在这里填 key 的事实（B7 的例外条款）。 */
-.settings-page-note {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
 
 /* 一页内的分组。用小标题分段而不是再套一层卡片——设置页最容易长成
    一堆嵌套的圆角盒子，而分组要表达的只是「这几格是一类」。 */
@@ -666,103 +658,132 @@
 
 /* ── 模型库 ──
  *
- * 一张模型参数表，和接口无关：库回答「这个模型多大、多贵」，接口回答
- * 「用谁的端点和 key」。所以这一族样式里没有任何接口相关的东西。 */
-.lib-hint {
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
+ * 一张模型参数表：这一屏要回答的是**横向比较**（这个比那个贵多少、窗口大多少），
+ * 而横排小标签让同一项落在不同横坐标上，眼睛得逐条读。表格把每项钉在一列上。
+ *
+ * **这一节不设自己的 max-height。** 上一版给列表加了 `max-height: 60vh` 又用
+ * flex 竖排，于是每个厂商块被 flex 压缩、内容被裁——界面上是「每家只剩一行，
+ * 后面几家整个是空的」。设置面板本来就有一条滚动轴，这里再加一条就是两条。 */
+/* 一个厂商一张卡，各自带表头。竖排用普通 flow：**不给容器设高度**，
+   上一版的 `max-height` + flex 竖排把每张卡压扁，内容被裁掉。 */
+.lib > * + * {
+  margin-top: var(--s-4);
 }
-.lib-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-  /* 库比左边那栏长得多。固定高度 + 内部滚动，不把整页撑成两屏。 */
-  max-height: 60vh;
-  overflow-y: auto;
-}
-.lib-vendor {
-  display: flex;
-  flex-direction: column;
+.lib-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   overflow: hidden;
 }
-.lib-vendor-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: var(--s-2) var(--s-3);
-  background: var(--bg-inset);
+.lib-state {
+  padding: var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
 }
-.lib-vendor-name {
-  flex: 1 1 auto;
-  min-width: 0;
+/* 窄窗口下表格自己横向滚，不把整页撑宽。 */
+.lib-scroll {
+  overflow-x: auto;
+}
+.lib-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.lib-table th,
+.lib-table td {
+  padding: 4px var(--s-3);
+  text-align: left;
+  vertical-align: middle;
+}
+/* **只有这一行标题**：厂商名坐在第一列，其余是列名。
+   再单开一条灰色的厂商栏就是同一件事写两遍，上下各占一行。 */
+.lib-table thead th {
+  padding: 5px var(--s-3);
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  white-space: nowrap;
+}
+/* 厂商名是这一行里唯一的「名字」，不是列名，所以按正文的字号和颜色给。 */
+.lib-table thead .vendor {
+  color: var(--text-primary);
   font-size: var(--fs-sm);
   font-weight: 500;
 }
-.lib-model {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-1) var(--s-2);
-  padding: 6px var(--s-3);
+/* 档位那一列不换行：换行会把整行撑成两行高，而一屏里十几行都跟着变高。
+   撑不下时整张表横向滚（`.lib-scroll`）。 */
+.lib-table .lv {
+  white-space: nowrap;
+}
+/* 数字列右对齐 + 等宽数字：不对齐的话 `$0.2` 和 `$12.5` 的小数点错位，
+   量级差看着像不差。 */
+.lib-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.lib-table .act {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+.lib-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
 }
-.lib-model-name {
-  font-size: var(--fs-sm);
+.lib-name {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
-.lib-model-id {
-  flex: 1 1 auto;
-  min-width: 0;
+.lib-id {
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
   word-break: break-all;
 }
-.lib-spec {
-  flex: none;
+.lib-tag {
   padding: 1px 6px;
   border-radius: var(--r-sm);
   background: var(--bg-inset);
-  color: var(--text-tertiary);
+  color: var(--accent);
   font-size: var(--fs-xs);
 }
-/* 改过的那些要看得出来——「还原」按钮只对它们出现，看不出来就没法解释
-   为什么这一行比别行多一个按钮。 */
-.lib-spec.edited {
-  color: var(--accent);
-}
-/* 「上面那个是标准价」这类话是能力边界，各占一整行、不降对比度。
-   压成小灰标签的话，它就和旁边那几个规格标签一样容易被略过，
-   而略过它的代价是账单上差两倍。 */
-.lib-pricenote {
-  width: 100%;
+/* 「上面那个是标准价」这类话是能力边界，占满一整行、不降对比度。
+   压成小标签的话它和旁边的规格一样容易被略过，而略过它的代价是账单上差两倍。 */
+.lib-note td {
+  padding-top: 0;
   color: var(--warning);
   font-size: var(--fs-xs);
 }
 
 /* 改一条参数。留空 = 照内置值，所以每格都可以是空的。 */
+.lib-form-row td {
+  padding: var(--s-3);
+  background: var(--bg-inset);
+}
 .lib-form {
   display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  padding: var(--s-3);
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+  align-items: flex-end;
 }
 .lib-field {
   display: flex;
-  align-items: center;
-  gap: var(--s-2);
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 132px;
+}
+/* id 和显示名是自由文本，给它们整行里更宽的一格。 */
+.lib-field.wide {
+  flex: 1 1 220px;
 }
 .lib-field span {
-  flex: 0 0 88px;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
 .lib-field input,
 .lib-field select {
-  flex: 1 1 auto;
   min-width: 0;
   padding: 4px var(--s-2);
   border: 1px solid var(--border-default);
@@ -779,8 +800,8 @@
 }
 .lib-form-actions {
   display: flex;
-  justify-content: flex-end;
   gap: var(--s-2);
+  margin-left: auto;
 }
 
 /* 探测结论。

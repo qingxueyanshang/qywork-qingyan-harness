@@ -388,6 +388,18 @@ describe('目录里的价格与档位', () => {
     expect(spec('claude-haiku-4-5', 'anthropic').effortLevels).toEqual([])
   })
 
+  /** 智谱的官方价目是美元（Z.ai 国际站）；上一版填的是一组没有出处的人民币数字。 */
+  test('GLM 三条按官方美元价，5.3 已收录', () => {
+    for (const id of ['glm-5.3', 'glm-5.2']) {
+      expect(spec(id).pricing.input).toBe(1.4)
+      expect(spec(id).pricing.output).toBe(4.4)
+      expect(spec(id).pricing.cacheRead).toBe(0.26)
+      expect(spec(id).pricing.currency).toBeUndefined()
+    }
+    expect(spec('glm-4.7').pricing.input).toBe(0.6)
+    expect(spec('glm-5.3').effortLevels).toEqual(['low', 'high', 'max'])
+  })
+
   test('Kimi K3 三档，Qwen3.8 Max 已收录', () => {
     expect(spec('kimi-k3').effortLevels).toEqual(['low', 'high', 'max'])
     expect(spec('qwen3.8-max').pricing.input).toBe(12)

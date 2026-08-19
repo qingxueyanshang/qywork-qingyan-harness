@@ -750,9 +750,9 @@ describe('花费带币种', () => {
     expect((await usageOf('claude-opus-5'))?.currency).toBe('USD')
   })
 
-  /** GLM 官网按人民币标价。目录里记的是 ¥，这一轮的花费就得是 ¥。 */
+  /** 月之暗面官网按人民币标价。目录里记的是 ¥，这一轮的花费就得是 ¥。 */
   test('人民币标价的模型记 CNY', async () => {
-    expect((await usageOf('glm-5.2'))?.currency).toBe('CNY')
+    expect((await usageOf('kimi-k3'))?.currency).toBe('CNY')
   })
 })
 

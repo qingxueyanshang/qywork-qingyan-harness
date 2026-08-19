@@ -85,7 +85,9 @@ function EnvironmentRows() {
       </For>
       <Show when={deps().some((d) => d.canInstall)}>
         <div class="setting-row stack">
-          <span class="setting-row-hint">安装会开一个终端窗口跑 winget；装完请重启 qywork。</span>
+          <span class="setting-row-hint">
+            安装会打开一个终端窗口执行 winget；完成后需重启 qywork。
+          </span>
         </div>
       </Show>
       <Show when={result()}>
@@ -163,7 +165,7 @@ export function GeneralSettings() {
               {(w) => (
                 /* 会话按工作区分表——用户在两个客户端看到两份会话时，
                    唯一能自己诊断出来的线索就是这一句。 */
-                <PathRow label="当前工作区" value={w().root} hint="会话按工作区分开存放" />
+                <PathRow label="当前工作区" value={w().root} />
               )}
             </Show>
           </div>

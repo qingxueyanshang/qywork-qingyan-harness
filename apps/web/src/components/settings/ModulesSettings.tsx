@@ -58,9 +58,9 @@ const sandbox = () => state.capabilities?.sandbox ?? null
 function shellNote(): string {
   const row = state.capabilities?.environment.find((d) => d.id === 'bash')
   if (!row) return '读取中…'
-  if (row.path) return '这台机器有 bash，命令按 POSIX 方言写。'
-  if (row.required) return '三种 shell 一个都没探到，run_command 没有注册。'
-  return '这台机器没有 bash，命令落到 PowerShell 方言——`&&` 这类 POSIX 写法用不了。'
+  if (row.path) return '有 bash，命令按 POSIX 方言写。'
+  if (row.required) return '三种 shell 都未探测到，run_command 未注册。'
+  return '无 bash，命令按 PowerShell 方言写。'
 }
 
 const MODULES: Module[] = [
@@ -69,39 +69,58 @@ const MODULES: Module[] = [
     label: '工作区文件',
     notes: [
       {
-        label: '写前必读',
-        text: () =>
-          '改一个已存在的文件之前必须先读过它；读完之后文件又被动过，这次写入会被挡回去要求重读。',
-      },
-      {
-        label: '路径边界',
-        text: () =>
-          '只能碰工作区，加上「命令与进程」里额外开的目录；软链接按真实路径判，.qy 与 .agents 一律不许写。',
+        label: 'read_before_write',
+        text: () => '改已存在的文件前必须先读过；读完又被动过会挡回重读。',
       },
     ],
   },
+  /*
+   * 「命令怎么跑」与「准不准跑」是两件事，两个分类。
+   *
+   * 合在一个「命令与进程」里的时候，`run_command`、`sandbox`、`shell` 讲的是
+   * 这条命令落到哪个 shell、跑在什么边界里，而 `mode` 讲的是它该不该被放行——
+   * 用户要改审批模式时得在一堆 shell 探测结果里找。
+   */
   {
     id: 'code',
-    label: '命令与进程',
-    consoles: [{ page: 'access', label: '去配置' }],
+    label: '终端',
+    // 终端这一组能配的只有 shell 本身（装 bash / 看探测到哪个），那在「通用 →
+    // 运行环境」。指向「权限」是错的：那一页管的是能碰哪些路径，不管命令怎么跑。
+    consoles: [{ page: 'general', label: '去配置' }],
     notes: [
       {
-        label: '权限模式',
-        text: () =>
-          state.capabilities?.mode === 'full'
-            ? '完全访问：命令不再逐条裁决。路径边界与沙箱照旧生效。'
-            : '自动审批：逐条裁决 run_command，确定安全的才放行。MCP 与插件的工具是你自己装的，不过这道闸。',
-      },
-      {
-        label: '沙箱',
+        label: 'sandbox',
         text: () => {
           const sb = sandbox()
           if (!sb) return '读取中…'
-          return sb.active ? `已启用 · ${sb.backend}` : '无内核沙箱，命令直接跑在这台机器上'
+          return sb.active ? `已启用 · ${sb.backend}` : '无内核沙箱，命令直接在本机执行'
         },
         warn: () => sandbox()?.active === false,
       },
-      { label: '命令方言', text: shellNote },
+      { label: 'shell', text: shellNote },
+    ],
+  },
+  {
+    id: 'permission',
+    label: '权限',
+    consoles: [{ page: 'access', label: '去配置' }],
+    notes: [
+      {
+        label: 'mode',
+        text: () =>
+          state.capabilities?.mode === 'full'
+            ? '完全访问：不逐条裁决，路径边界一并放开。凭证剥离与沙箱不受影响。'
+            : '自动审批：逐条裁决 run_command。MCP 与插件的工具不过这道闸。',
+      },
+      {
+        label: 'additionalDirectories',
+        text: () =>
+          '工作区之外额外可读写的目录，软链接按真实路径判。.qy 与 .agents 由文件工具拦，shell 不拦；full 模式下这一层不设。',
+      },
+      {
+        label: 'envAllowList',
+        text: () => '显式放行的环境变量名。只豁免「名字像凭证」这一条，值命中已知 key 的仍然剥。',
+      },
     ],
   },
   {
@@ -109,49 +128,59 @@ const MODULES: Module[] = [
     label: '网络',
     notes: [
       {
-        label: 'SSRF 闸',
-        text: () =>
-          '私网与云元数据地址、非 http(s) 协议、非常规端口一律拒；重定向每跳重新判，最多 5 跳，并按解析出的 IP 直连以防 DNS 重绑定。',
+        label: 'ssrf_guard',
+        text: () => '私网与云元数据地址、非 http(s) 协议、非常规端口一律拒；重定向最多 5 跳。',
       },
-      { label: '出网策略', text: () => '只有默认这一档，没有可调的策略。' },
+      {
+        label: 'sandboxNetwork',
+        text: () => '配置文件里两档 allow / deny。deny 只在有内核沙箱的平台上生效，界面不给开关。',
+      },
+    ],
+  },
+  /*
+   * 记忆和技能是两个类目，不是一个「记忆与技能」。
+   *
+   * 合着的时候这一组的说明行只能起中文名（「标题常驻，正文按需」「条数上限」）——
+   * 因为它描述的是两件东西的共同点，代码里没有哪个标识对得上。拆开之后各自都有：
+   * 上限是 `MAX_ENTRIES`（`tools/src/memory.ts`），进尾区的索引是
+   * `buildTailNotes` 的 `memory` / `skills` 两个分组（`runtime/src/prompt.ts`）。
+   */
+  {
+    id: 'memory',
+    label: '记忆',
+    consoles: [{ page: 'memory', label: '去配置' }],
+    notes: [
+      { label: 'memory', text: () => '记忆的 key 与首行常驻上下文尾区，正文按需读。' },
+      { label: 'MAX_ENTRIES', text: () => '最多 200 条，满了之后写入失败。' },
     ],
   },
   {
-    id: 'knowledge',
-    label: '记忆与技能',
-    consoles: [
-      { page: 'memory', label: '去记忆' },
-      { page: 'skills', label: '去技能' },
-    ],
-    notes: [
-      {
-        label: '标题常驻，正文按需',
-        text: () =>
-          '每条记忆的 key 加首行、每个技能的名字加一句话，每一轮都在上下文里；正文由它自己去读。',
-      },
-      { label: '条数上限', text: () => '记忆最多 200 条，写满了写不进去。' },
-    ],
+    id: 'skills',
+    label: '技能',
+    consoles: [{ page: 'skills', label: '去配置' }],
+    notes: [{ label: 'skills', text: () => '技能名与一句话描述常驻上下文尾区，正文按需读。' }],
   },
   {
     id: 'planning',
     label: '待办',
     notes: [
-      { label: '整表替换', text: () => '每次提交的是整张清单，不是增删一条；最多 40 条。' },
-      { label: '同时最多一条进行中', text: () => '多于一条当场判失败，不会替它纠正。' },
+      { label: 'MAX_ITEMS', text: () => '每次提交的是整张清单，不是增删一条；最多 40 条。' },
+      { label: 'in_progress', text: () => '同时最多一条；多于一条当场判失败，不会替它纠正。' },
     ],
   },
   {
     id: 'goal',
     label: '目标',
     notes: [
+      /*
+       * **没有轮数上限。** 这里原来写着「默认 12 轮，最多 50 轮」——那个数在代码里
+       * 根本不存在（`core/domain/model.ts` 的 `Goal` 注释写明了不设配额），
+       * 是一条过期断言：用户照着它算能跑多久，算出来的全是假的。
+       */
       {
-        label: '轮数上限',
-        text: () => '默认 12 轮，最多 50 轮；撞上就停下来标记受阻，带一句理由。',
-      },
-      {
-        label: '自动续起',
+        label: 'CONTINUABLE',
         text: () =>
-          '挂在每一轮收尾：只有「正常收完」和「撞步数上限」才接着跑，报错、被中止、被权限拦下一律停。开关只在内存里，重启即失效——崩了不会自己复活。',
+          '只有正常收尾或撞上步数上限才续起下一轮，其余一律停。没有轮数上限：出口是模型宣布做完、做不下去，或用户停止。',
       },
     ],
   },
@@ -160,13 +189,8 @@ const MODULES: Module[] = [
     label: '上下文',
     notes: [
       {
-        label: '压缩',
-        text: () =>
-          '触发点只有一个：发请求之前。阈值不是百分比——上下文窗口减掉最大输出，再留出四分之一给这一批工具结果。也可以自己按 /compact。',
-      },
-      {
-        label: '占用分布',
-        text: () => '哪一项占了多少、省略了什么，在输入框上方那条读数条上，这一页不列第二份。',
+        label: 'RuntimeCompaction',
+        text: () => '发请求前判一次，一轮最多压一次。阈值 = 上下文窗口 − 最大输出 − 四分之一窗口。',
       },
     ],
   },
@@ -175,8 +199,11 @@ const MODULES: Module[] = [
     label: '调度',
     consoles: [{ page: 'schedules', label: '去配置' }],
     notes: [
-      { label: '触发', text: () => '到点新开一条会话跑给定的提示词，最小粒度 1 分钟。' },
-      { label: '边界', text: () => '应用关着就不跑，关闭期间错过的也不补。' },
+      {
+        label: 'isDue',
+        text: () =>
+          '触发时新开一条会话执行给定的提示词，最小粒度 1 分钟。应用未运行时不触发，错过的不补跑。',
+      },
     ],
   },
   {
@@ -189,9 +216,8 @@ const MODULES: Module[] = [
     ],
     notes: [
       {
-        label: '按需加载',
-        text: () =>
-          '外部工具多到一定量之后不再常驻工具表：模型先看到一行摘要，要用哪个自己装进来再调。量小的时候照旧全量常驻。',
+        label: 'PendingToolPool',
+        text: () => '外部工具超过一定数量后不再常驻：模型只看到一行摘要，需要时用 load_tool 加载。',
       },
     ],
   },
@@ -199,25 +225,20 @@ const MODULES: Module[] = [
     id: 'loop',
     label: '执行循环',
     notes: [
-      { label: '步数上限', text: () => '一轮最多 120 步；模型不再要工具就收工。' },
+      { label: 'DEFAULT_MAX_STEPS', text: () => '一轮最多 120 步；模型不再请求工具即结束本轮。' },
       {
-        label: '并行波次',
-        text: () =>
-          '连着的调用里，工具自己声明可并行、且互相不碰同一份资源的，才会并成一波同时跑。',
+        label: 'isParallelSafe',
+        text: () => '声明了可并行、且不涉及同一份资源的连续调用才并成一波。',
       },
-      {
-        label: '停下来的时候',
-        text: () =>
-          '正常收完、撞步数上限、原地打转、你按了停、权限拒绝、输出被截断、模型报错、异常收尾——收尾那一行会写明是哪一种。',
-      },
+      { label: 'StopReason', text: () => '收尾那一行标明本轮的停止原因。' },
     ],
   },
   {
     id: 'vcs',
     label: '版本控制',
     notes: [
-      { label: '改动统计', text: () => '工作区的改动实时统计在输入框上方，侧面板里可以逐份审阅。' },
-      { label: '提交与分支', text: () => '由它自己跑 git 命令完成，不是单独的工具。' },
+      { label: 'FileChange', text: () => '改动实时统计在输入框上方，侧面板里逐份审阅。' },
+      { label: 'git', text: () => '提交与分支由模型执行 git 命令完成，没有单独的工具。' },
     ],
   },
 ]
@@ -279,7 +300,19 @@ export function ModulesSettings() {
       if (!m.notes || m.hideWhenEmpty) continue
       if (!out.some((g) => g.mod.id === m.id)) out.push({ mod: m, rows: [] })
     }
-    return out
+    /*
+     * 顺序按 `MODULES` 写的来。
+     *
+     * 原来是「先按后端的类目顺序排带工具的，纯说明的一律甩到最后」——于是
+     * 「权限」这种没有工具的模块会掉到页尾，离它对应的「终端」隔着半屏。
+     * 后端认得的类目在 `MODULES` 里都有一条，所以这一次排序对它们是恒等；
+     * 真排不到的（后端加了类目而这里漏登记）留在末尾，那正好是需要被看见的位置。
+     */
+    const rank = (id: string) => {
+      const i = MODULES.findIndex((m) => m.id === id)
+      return i === -1 ? MODULES.length : i
+    }
+    return out.sort((a, b) => rank(a.mod.id) - rank(b.mod.id))
   }
 
   return (
@@ -331,10 +364,12 @@ export function ModulesSettings() {
                   </div>
                 )}
               </For>
+              {/* 说明行的名字取的是代码里那个标识（`mode`、`sandbox`…），
+                  所以和工具名同一种写法——一个用等宽一个用正文，那本身就是中英混排。 */}
               <For each={g.mod.notes}>
                 {(n) => (
                   <div class="setting-row stack" classList={{ warn: n.warn?.() === true }}>
-                    <span class="setting-row-label">{n.label}</span>
+                    <code class="module-name">{n.label}</code>
                     <span class="setting-row-hint">{n.text()}</span>
                   </div>
                 )}

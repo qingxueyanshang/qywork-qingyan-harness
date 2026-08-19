@@ -39,7 +39,7 @@ const GROUPS: Item[][] = [
     { id: 'modules', label: '模块', icon: IconCanvas },
   ],
   [
-    { id: 'access', label: '命令与进程', icon: IconShield },
+    { id: 'access', label: '权限', icon: IconShield },
     { id: 'memory', label: '记忆', icon: IconBrain },
     { id: 'skills', label: '技能', icon: IconFile },
     { id: 'team', label: '智能体', icon: IconUsers },

@@ -907,7 +907,35 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       pricing: cny(21, 105, 2.1),
     },
 
-    // ── 智谱（人民币标价）──
+    /*
+     * ── 智谱 ──
+     *
+     * 价目来源：`docs.z.ai` 的价目表（2026-08），逐字，单位 $/百万：
+     *
+     * | 模型 | 输入 | 缓存命中 | 输出 |
+     * |---|---|---|---|
+     * | glm-5.3 | 1.4 | 0.26 | 4.4 |
+     * | glm-5.2 | 1.4 | 0.26 | 4.4 |
+     * | glm-4.7 | 0.6 | 0.11 | 2.2 |
+     *
+     * **这是国际站（Z.ai）的美元价目。** 智谱国内站（open.bigmodel.cn）按人民币
+     * 另有一套，那个页面是前端渲染的，抓不到正文。上一版这里填的是一组
+     * 没有出处的人民币数字——有出处的美元价至少对一个端点是准的，
+     * 用国内站的人可以在模型库里改成自己那套。
+     *
+     * glm-5.3 的窗口 1M / 最大输出 128K 与三档 `reasoning_effort`（默认 max、
+     * 思考关不掉）来自它的模型规格页。5.2 的档位面没有出处，原样保留。
+     */
+    {
+      ...base,
+      ...effort(['low', 'high', 'max']),
+      id: 'glm-5.3',
+      displayName: 'GLM-5.3',
+      vendor: 'zhipu',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(1.4, 4.4, 0.26),
+    },
     {
       ...base,
       ...effort(['high', 'max']),
@@ -916,7 +944,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'zhipu',
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
-      pricing: cny(10, 30, 2),
+      pricing: usd(1.4, 4.4, 0.26),
     },
     {
       ...base,
@@ -926,7 +954,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'zhipu',
       contextWindow: 200_000,
       maxOutputTokens: 128_000,
-      pricing: cny(2, 8, 0.4),
+      pricing: usd(0.6, 2.2, 0.11),
     },
 
     // ── MiniMax ──
@@ -957,6 +985,14 @@ export interface SpecOverride {
   maxOutputTokens?: number
   input?: number
   output?: number
+  /** 缓存命中价。 */
+  cacheRead?: number
+  /**
+   * 缓存写入价。**只覆盖 5 分钟那一档**——`computeCost` 只按它算，
+   * 全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是参考数据，
+   * 没有可达的代码分支，所以也没有让人改它的理由。
+   */
+  cacheWrite?: number
   currency?: 'USD' | 'CNY'
   effortLevels?: EffortLevel[]
 }
@@ -966,9 +1002,9 @@ export interface SpecOverride {
  *
  * 两条边界：
  *
- * - **只覆盖写了的字段。** 缓存档单价（`cacheRead` / `cacheWrite*`）跟着 seed 走，
- *   不按 input 等比例推算——推算出来的是个看起来精确的假数字，而各家缓存定价
- *   的比例本来就不一样（Anthropic 写入是 1.25x，DeepSeek 写入不要钱）。
+ * - **只覆盖写了的字段。** 缓存两档要改就单独填，**不按 input 等比例推算**——
+ *   推算出来的是个看起来精确的假数字，而各家缓存定价的比例本来就不一样
+ *   （Anthropic 写入是 1.25x，DeepSeek 写入不要钱）。
  * - **`catalogued` 只有在覆盖里带了单价时才翻成 true。** 只改个显示名就宣布
  *   「已收录」的话，计价仍然是 0 而提醒没了——账本继续报 $0，且再没有人说它。
  */
@@ -986,6 +1022,8 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
       ...spec.pricing,
       ...(o.input !== undefined ? { input: o.input } : {}),
       ...(o.output !== undefined ? { output: o.output } : {}),
+      ...(o.cacheRead !== undefined ? { cacheRead: o.cacheRead } : {}),
+      ...(o.cacheWrite !== undefined ? { cacheWrite5m: o.cacheWrite } : {}),
       ...(o.currency ? { currency: o.currency } : {}),
     },
     ...(priced ? { catalogued: true } : {}),

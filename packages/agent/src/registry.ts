@@ -363,7 +363,8 @@ export type ToolCategory =
   | 'files'
   | 'code'
   | 'web'
-  | 'knowledge'
+  | 'memory'
+  | 'skills'
   | 'planning'
   | 'goal'
   | 'session'
@@ -380,7 +381,8 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'files',
   'code',
   'web',
-  'knowledge',
+  'memory',
+  'skills',
   'planning',
   'goal',
   'session',
