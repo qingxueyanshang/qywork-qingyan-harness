@@ -1,4 +1,4 @@
-import type { ProviderRequest, Run } from '@qywork/core'
+import type { Currency, ProviderRequest, Run } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
@@ -8,40 +8,49 @@ import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 
 /**
- * 运行：这条会话花了多少，以及每一轮里面发生了什么。
+ * 运行：这条会话花了多少，以及每一笔花在哪。
  *
  * ## 只做对话流做不到的两件事：合计与下钻
  *
  * 对话流每一轮末尾那条读数条（`.run-strip`）已经逐轮显示耗时、入出 token、命中率、
  * 金额、停止原因。这一页凡是重印那些字段的地方都是废话。对话流给不出的只有两样：
- * 跨轮的合计（滚多少屏也加不出来），和一轮里面逐次请求的账（一行装不下）。
+ * 跨轮的合计（滚多少屏也加不出来），和一轮里逐次请求的账（一行装不下）。
  *
- * ## 收起的行只放挑选轴
+ * ## 合计取账本，不取 runs 相加
  *
- * 用户在清单上做的动作是「挑出那一轮」，挑选轴只有三个：什么时候、出没出事、贵不贵。
- * 模型名、步数、耗时、token 全部只在展开区出现——它们是选中之后才要的。
- * 金额是唯一与对话流重复的字段，理由是竖着可扫的金额列是「哪一轮贵」的唯一载体。
- *
- * ## 一页一个尺度
- *
- * 机器账本（30 天、四种分组）不在这里，它在设置的「用量」页。底部那一行给出 30 天
- * 合计并通向那一页——把两个尺度摆在同一页的代价是两套筛选钮先于任何数字。
+ * 账本（`usage_ledger`）按会话 id 收着这条会话引发的**每一笔**：每一轮，以及夹在
+ * 轮次之间的压缩摘要调用。把 run 加起来必然少算压缩那几笔——那不是口径选择，是漏账。
+ * 清单里同样把非轮次的那几笔列出来，所以合计与清单对得上，不需要任何一句解释差额的话。
  */
 export default function RunDetails() {
-  const [data, { refetch }] = createResource(
-    // 刷新键带上轮次：这一页常驻在面板里，只按会话 id 取一次的话新跑完的那一轮
-    // 永远进不来。`lastRunId` 管「又起了一轮」，`isRunning()` 管「那一轮跑完了」。
-    () => ({ id: state.activeConversation, run: state.lastRunId, busy: isRunning() }),
-    async (k) =>
-      k.id === null
-        ? { runs: [] as Run[] }
-        : await client.api<{ runs: Run[] }>(`/api/conversations/${k.id}/runs`),
+  const key = () => ({ id: state.activeConversation, run: state.lastRunId, busy: isRunning() })
+
+  const [runData, { refetch: refetchRuns }] = createResource(key, async (k) =>
+    k.id === null
+      ? { runs: [] as Run[] }
+      : await client.api<{ runs: Run[] }>(`/api/conversations/${k.id}/runs`),
   )
+  const [ledger, { refetch: refetchLedger }] = createResource(key, async (k) =>
+    k.id === null
+      ? { totals: emptyTotals(), entries: [] as LedgerRow[] }
+      : await client.api<ConversationUsage>(`/api/conversations/${k.id}/usage`),
+  )
+
   // `loaded()` 而不是 `data()`：后者出错时 `throw`，而这个应用没有 `ErrorBoundary`。
-  const runs = createMemo(() => [...(loaded(data)?.runs ?? [])].reverse())
+  const runs = createMemo(() => [...(loaded(runData)?.runs ?? [])].reverse())
+  /** 账本里非轮次的那几笔（压缩摘要等）。轮次那几笔由 `runs` 提供，它带得动展开区。 */
+  const extras = createMemo(() => (loaded(ledger)?.entries ?? []).filter((e) => e.kind !== 'run'))
+
+  /** 清单：轮次与非轮次按时间倒序并成一列。 */
+  const rows = createMemo(() =>
+    [
+      ...runs().map((r) => ({ at: r.createdAt, run: r, extra: null as LedgerRow | null })),
+      ...extras().map((e) => ({ at: e.occurredAt, run: null as Run | null, extra: e })),
+    ].sort((a, b) => b.at - a.at),
+  )
 
   /**
-   * 当前那一轮。**窄宽两态共用这一个状态**：窄态它是「展开的那一条」，宽态是
+   * 当前那一轮。**窄宽两态共用这一个信号**：窄态它是「展开的那一条」，宽态是
    * 「选中的那一条」。两个信号的话，拖宽面板时选中会跳到别处。
    */
   const [picked, setPicked] = createSignal<string | null>(null)
@@ -67,29 +76,42 @@ export default function RunDetails() {
     onCleanup(() => ro.disconnect())
   })
 
+  const retry = () => {
+    void refetchRuns()
+    void refetchLedger()
+  }
+
   return (
     <div class="run-panel" classList={{ wide: wide() }} ref={root}>
       <div class="run-col">
         <Show
-          when={loaded(data)}
+          when={loaded(runData) && loaded(ledger)}
           fallback={
             <div class="run-load">
-              <LoadState error={data.error} onRetry={() => void refetch()} />
+              <LoadState error={runData.error ?? ledger.error} onRetry={retry} />
             </div>
           }
         >
-          {/* 一轮都没跑过就空着：摆一排 0 和「—」是把「还没开始」说成「花了零元」。 */}
-          <Show when={runs().length > 0}>
-            <Summary runs={runs()} />
+          {/* 一笔都没有就空着：摆一排 0 是把「还没开始」说成「花了零元」。 */}
+          <Show when={rows().length > 0}>
+            <Summary runs={runs()} ledger={loaded(ledger)!.totals} />
             <ul class="run-list">
-              <For each={runs()}>
-                {(r) => (
-                  <RunRow
-                    run={r}
-                    wide={wide()}
-                    active={current()?.id === r.id}
-                    onPick={() => setPicked((cur) => (!wide() && cur === r.id ? null : r.id))}
-                  />
+              <For each={rows()}>
+                {(row) => (
+                  <Show
+                    when={row.run}
+                    fallback={<ExtraRow entry={row.extra!} wide={wide()} />}
+                    keyed
+                  >
+                    {(r) => (
+                      <RunRow
+                        run={r}
+                        wide={wide()}
+                        active={current()?.id === r.id}
+                        onPick={() => setPicked((cur) => (!wide() && cur === r.id ? null : r.id))}
+                      />
+                    )}
+                  </Show>
                 )}
               </For>
             </ul>
@@ -120,13 +142,7 @@ function Stat(props: { label: string; value: string }) {
 }
 
 /**
- * 会话合计：一笔钱 + 一张六格读数卡。
- *
- * ## 两层，不是一层也不是六层
- *
- * 钱是 20px 的大字，六格读数是 16px——「烧了多少」每次瞥一眼都在问，
- * 「入了多少出了多少、缓存吃到没有」是接着要看的那一层。六个数字彼此同级，
- * 所以同字号平铺；把它们和钱拉成同一档，这块就没有主角了。
+ * 会话合计：金额跟在「本会话」右边，下面一张六格读数卡。
  *
  * ## 六格是一份完整的账
  *
@@ -134,63 +150,67 @@ function Stat(props: { label: string; value: string }) {
  * 少任何一格都会让「这条会话到底怎么花的」缺一块：命中率答「缓存生效没有」，
  * 命中与写入答「省下多少、又为建缓存付了多少」。
  *
+ * ## 正在跑的那一轮单独加
+ *
+ * 账本在**收尾时**才记一笔，所以正在跑的那一轮还不在里面。判据取
+ * `finishedAt === null`——未结算的轮次一定不在账本里，两边不会重复计。
+ * 不加的话，清单里那一行的金额在涨而上面的合计不动。
+ *
  * ## 收成 K/M
  *
  * 这里回答量级，逐位对账在展开区那张逐请求表里——一格 110px 装不下九位数字。
  */
-function Summary(props: { runs: Run[] }) {
+function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
   const totals = createMemo(() =>
-    props.runs.reduce(
-      (acc, r) => ({
-        input: acc.input + (r.usage?.inputTokens ?? 0),
-        output: acc.output + (r.usage?.outputTokens ?? 0),
-        // 按币种分桶。同一个会话里换过模型就可能混币种，加成一个数字要汇率，
-        // 而我们不做换算。
-        cost: addCost(acc.cost, r),
-        cached: addMaybe(acc.cached, r.usage?.cachedTokens),
-        cacheWrite: addMaybe(acc.cacheWrite, r.usage?.cacheWriteTokens),
-      }),
-      {
-        input: 0,
-        output: 0,
-        cost: {} as Record<string, number>,
-        cached: null as number | null,
-        cacheWrite: null as number | null,
-      },
-    ),
+    props.runs
+      .filter((r) => r.finishedAt === null)
+      .reduce(
+        (acc, r) => ({
+          input: acc.input + (r.usage?.inputTokens ?? 0),
+          output: acc.output + (r.usage?.outputTokens ?? 0),
+          cost: addCost(acc.cost, r.usage?.cost, r.usage?.currency),
+          cached: addMaybe(acc.cached, r.usage?.cachedTokens),
+          cacheWrite: addMaybe(acc.cacheWrite, r.usage?.cacheWriteTokens),
+        }),
+        {
+          input: props.ledger.inputTokens,
+          output: props.ledger.outputTokens,
+          cost: { ...props.ledger.cost },
+          cached: props.ledger.cachedTokens,
+          cacheWrite: props.ledger.cacheWriteTokens,
+        },
+      ),
   )
 
   /**
-   * 会话累计命中率。分母是「未命中 + 命中 + 写入」——`inputTokens` 只装未命中的
-   * 那部分，拿它当分母算出来的比例恒偏高，命中高时能超过 100%。
+   * 缓存命中率。分母是「未命中 + 命中 + 写入」——`inputTokens` 只装未命中的那部分，
+   * 拿它当分母算出来的比例恒偏高，命中高时能超过 100%。
    *
    * 与读数条那一格问的不是同一件事：那里看最后一次调用，答「现在缓存生效了吗」；
    * 这里看整条会话，答「这条会话总共省下多少」。
    */
   const hit = () => {
     const t = totals()
-    if (t.cached === null) return '未回报'
+    if (t.cached === null) return DASH
     const denom = t.input + t.cached + (t.cacheWrite ?? 0)
-    return denom > 0 ? `${((t.cached / denom) * 100).toFixed(1)}%` : '—'
+    return denom > 0 ? `${((t.cached / denom) * 100).toFixed(1)}%` : DASH
   }
 
   return (
     <header class="run-sum">
-      <span class="run-sum-scope">本会话</span>
-      <span class="run-sum-cost">{money(totals().cost)}</span>
+      <div class="run-sum-top">
+        <span class="run-sum-scope">本会话</span>
+        <span class="run-sum-cost">{money(totals().cost)}</span>
+      </div>
       <div class="run-stats">
         <Stat label="轮次" value={String(props.runs.length)} />
         {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
         <Stat label="输入" value={compact(totals().input + (totals().cached ?? 0))} />
         <Stat label="输出" value={compact(totals().output)} />
         <Stat label="命中率" value={hit()} />
-        {/* 「没回报」和「回报了是 0」是两回事，不能都写成 0。 */}
         <Stat label="缓存命中" value={maybeCount(totals().cached)} />
         <Stat label="缓存写入" value={maybeCount(totals().cacheWrite)} />
       </div>
-      {/* 能力边界，不折叠：压缩摘要那次调用也计费，但它不属于任何一轮，
-          所以这个合计会小于账本。不写的话「对不上」会被当成 bug。 */}
-      <span class="run-sum-note">压缩摘要的调用不计在内。</span>
     </header>
   )
 }
@@ -226,6 +246,29 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
       <Show when={!props.wide && props.active}>
         <RunDetail run={props.run} />
       </Show>
+    </li>
+  )
+}
+
+/**
+ * 不属于任何一轮的那一笔（压缩摘要）。
+ *
+ * **列出来不是为了好看，是为了合计对得上**：这笔钱真花了，只是它发生在两轮之间。
+ * 它没有 run，所以没有展开区，也不给折叠符号——占位空格保证时间列还在同一条竖线上。
+ */
+function ExtraRow(props: { entry: LedgerRow; wide: boolean }) {
+  return (
+    <li>
+      <div class="run-row static">
+        <Show when={!props.wide}>
+          <span class="run-gap" />
+        </Show>
+        <span class="run-when">{clockOf(props.entry.occurredAt)}</span>
+        <span class="run-mark">{KIND_LABEL[props.entry.kind] ?? props.entry.kind}</span>
+        <span class="run-money">
+          {props.entry.cost > 0 ? formatMoney(props.entry.cost, props.entry.currency) : DASH}
+        </span>
+      </div>
     </li>
   )
 }
@@ -324,11 +367,9 @@ function RequestLedger(props: { run: Run }) {
                     </td>
                     <td>{num(input)}</td>
                     <td>{num(q.providerOutputTokens)}</td>
-                    {/* null 是「没回报」，写成 0 会让「缓存根本没生效」
-                        看起来像「生效了但没命中」。 */}
                     <td>{num(q.providerCachedTokens)}</td>
                     <td>{num(q.providerCacheWriteTokens)}</td>
-                    <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : '—'}</td>
+                    <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : DASH}</td>
                     {/* 原话长度不可控（`completed:max_output_tokens`），截断，全文留 title。 */}
                     <td class="run-req-out" title={outcome}>
                       {outcome}
@@ -362,7 +403,7 @@ function LedgerLink() {
   )
   const cost = () => {
     const c = loaded(data)?.totals.cost
-    return c ? money(c) : '—'
+    return c ? money(c) : DASH
   }
 
   return (
@@ -412,32 +453,91 @@ function clockOf(at: number): string {
 /** 这一轮的金额。计价为 0 时给「—」：未知计价冒充免费更误导。 */
 function runCost(r: Run): string {
   const u = r.usage
-  return u && u.cost > 0 ? formatMoney(u.cost, u.currency) : '—'
+  return u && u.cost > 0 ? formatMoney(u.cost, u.currency) : DASH
 }
 
 /** 金额合计。一笔计价都没有时给「—」——写成 $0.00 是把「不知道」说成「免费」。 */
 function money(cost: Record<string, number>): string {
-  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : '—'
+  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : DASH
 }
 
-/** 读数卡里的计数。`null` 是「没回报」，写成 0 会把「缓存没生效」说成「生效了但没命中」。 */
+/**
+ * 没有这个数时统一写它。
+ *
+ * 缓存那几格的 `null` 是「模型这次没给这个数」，与「给了，是 0」不是一回事，所以不能
+ * 写成 0；也不写「未回报」这种黑话——表里的空格早就是这一横，同一个意思两处该同一个写法。
+ */
+const DASH = '—'
+
+/** 读数卡里的计数。 */
 function maybeCount(n: number | null): string {
-  return n === null ? '未回报' : compact(n)
+  return n === null ? DASH : compact(n)
 }
 
-/** 表格里的计数。`null` 是「没回报」，给「—」不给 0。 */
+/** 表格里的计数。 */
 function num(n: number | null): string {
-  return n === null ? '—' : n.toLocaleString()
+  return n === null ? DASH : n.toLocaleString()
 }
 
-/** 把一轮的花费并进按币种分的桶里。**不跨币种相加。** */
-function addCost(acc: Record<string, number>, r: Run): Record<string, number> {
-  const u = r.usage
-  if (!u?.cost) return acc
-  return { ...acc, [u.currency]: (acc[u.currency] ?? 0) + u.cost }
+/** 把一笔花费并进按币种分的桶里。**不跨币种相加。** */
+function addCost(
+  acc: Record<string, number>,
+  cost: number | undefined,
+  currency: Currency | undefined,
+): Record<string, number> {
+  if (!cost) return acc
+  const cur = currency ?? 'USD'
+  return { ...acc, [cur]: (acc[cur] ?? 0) + cost }
 }
 
-/** 累加一个「可能没回报」的计数。两边都没回报过时保持 `null`。 */
+/** 累加一个「可能没给」的计数。两边都没给过时保持 `null`。 */
 function addMaybe(acc: number | null, v: number | null | undefined): number | null {
   return v === null || v === undefined ? acc : (acc ?? 0) + v
+}
+
+/** 账本里非轮次那几笔的中文名。键与 `UsageKind` 一一对应。 */
+const KIND_LABEL: Record<string, string> = {
+  summary: '压缩摘要',
+  classifier: '权限裁决',
+  team: '协作成员',
+}
+
+interface LedgerTotals {
+  entries: number
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number | null
+  cacheWriteTokens: number | null
+  reasoningTokens: number
+  cost: Record<string, number>
+}
+interface LedgerRow {
+  id: string
+  kind: string
+  runId: string | null
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number | null
+  cacheWriteTokens: number | null
+  cost: number
+  currency: Currency
+  occurredAt: number
+}
+interface ConversationUsage {
+  totals: LedgerTotals
+  entries: LedgerRow[]
+}
+
+/** 没有活动会话时的空账。给一份而不是不取，界面才有恒定的形状。 */
+function emptyTotals(): LedgerTotals {
+  return {
+    entries: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: 0,
+    cost: {},
+  }
 }

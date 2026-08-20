@@ -23,6 +23,8 @@ import {
   listRuns,
   listSteps,
   setConversationTitle,
+  usageEntries,
+  usageTotals,
 } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
@@ -295,13 +297,19 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     }
   }
 
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs)$/.exec(p)
+  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs|usage)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
-    return convMatch[2] === 'messages'
-      ? json({ messages: listMessages(d.store, id) })
-      : json({ runs: listRuns(d.store, id) })
+    if (convMatch[2] === 'messages') return json({ messages: listMessages(d.store, id) })
+    if (convMatch[2] === 'runs') return json({ runs: listRuns(d.store, id) })
+    // 这条会话的**完整**花费。真源是账本而不是 `runs` 上的 usage：压缩摘要那次调用
+    // 也是这条会话引发的、也计费，但它不属于任何一轮，把 run 加起来必然少算。
+    // 不设时间窗——问的是「这条会话花了多少」，它从建起来那天算。
+    return json({
+      totals: usageTotals(d.store, { conversationId: id }),
+      entries: usageEntries(d.store, { conversationId: id }),
+    })
   }
 
   // 上下文面板。**按会话现算，不靠事件残留**——事件只在 run 跑着时流，

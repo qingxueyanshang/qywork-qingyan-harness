@@ -135,9 +135,10 @@ export default function UsageSettings() {
                           {/* 汇总量到亿位，逐位对账在运行页的逐请求表，这里收成 K/M。 */}
                           <td class="num">{compact(input(r))}</td>
                           <td class="num">{compact(r.outputTokens)}</td>
-                          {/* null 是「没回报」，写成 0 会让「缓存没生效」看起来像「生效了但没命中」。 */}
+                          {/* null 是「模型没给这个数」，写成 0 会让「缓存没生效」
+                              看起来像「生效了但没命中」。空着写一横，与别处同一个写法。 */}
                           <td class="num">
-                            {r.cachedTokens === null ? '未回报' : compact(r.cachedTokens)}
+                            {r.cachedTokens === null ? '—' : compact(r.cachedTokens)}
                           </td>
                           <td class="num">{money(r.cost)}</td>
                         </tr>

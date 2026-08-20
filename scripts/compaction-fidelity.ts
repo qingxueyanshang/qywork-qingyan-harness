@@ -151,6 +151,7 @@ async function main(): Promise<number> {
   // ── 压缩 ──
   const realSummarizer = makeSummarizer({
     store,
+    conversationId: conv.id,
     workspaceId: ws.id,
     profile: () => ({
       kind: profile.kind,

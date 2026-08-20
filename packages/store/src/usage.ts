@@ -105,6 +105,12 @@ export interface UsageQuery {
   /** 结束时间（不含）。不传 = 到现在。 */
   until?: number
   workspaceId?: string
+  /**
+   * 只看这一条会话。**它包含这条会话引发的全部开销**，不只是对话轮次——
+   * 压缩摘要那次调用同样带着会话 id 落账（`makeSummarizer`），
+   * 「这条会话花了多少」要的就是这个口径。
+   */
+  conversationId?: string
   kind?: UsageKind
 }
 
@@ -114,6 +120,8 @@ export interface UsageTotals {
   outputTokens: number
   /** null = 这段区间里没有任何一笔回报过缓存。不要显示成 0。 */
   cachedTokens: number | null
+  /** 同上。缓存写入与命中分开记，两者计价不同。 */
+  cacheWriteTokens: number | null
   reasoningTokens: number
   /**
    * **按币种分开，不合计也不换算。**
@@ -145,6 +153,10 @@ function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
     parts.push('workspace_id = ?')
     args.push(q.workspaceId)
   }
+  if (q.conversationId) {
+    parts.push('conversation_id = ?')
+    args.push(q.conversationId)
+  }
   if (q.kind) {
     parts.push('kind = ?')
     args.push(q.kind)
@@ -158,6 +170,8 @@ interface RawTotals {
   output_tokens: number | null
   cached_tokens: number | null
   cached_reports: number
+  cache_write_tokens: number | null
+  cache_write_reports: number
   reasoning_tokens: number | null
 }
 
@@ -166,6 +180,8 @@ const TOTAL_COLS = `COUNT(*) AS n,
    SUM(output_tokens) AS output_tokens,
    SUM(cached_tokens) AS cached_tokens,
    COUNT(cached_tokens) AS cached_reports,
+   SUM(cache_write_tokens) AS cache_write_tokens,
+   COUNT(cache_write_tokens) AS cache_write_reports,
    SUM(reasoning_tokens) AS reasoning_tokens`
 
 function shape(r: RawTotals): UsageTotals {
@@ -177,6 +193,9 @@ function shape(r: RawTotals): UsageTotals {
     // 一笔都没回报时必须是 null，否则界面上会显示「缓存命中 0」，
     // 而那是个具体但错误的结论。
     cachedTokens: r.cached_reports > 0 ? (r.cached_tokens ?? 0) : null,
+    // 同上：一笔都没回报过时是 null，不是 0。缓存写入按「建缓存付了多少」计价，
+    // 和命中是两笔，界面上分开显示。
+    cacheWriteTokens: r.cache_write_reports > 0 ? (r.cache_write_tokens ?? 0) : null,
     reasoningTokens: r.reasoning_tokens ?? 0,
     // 金额单独查（见 `costsOf`）：一行 SUM 出不来「按币种分开」。
     cost: {},
@@ -208,7 +227,7 @@ export function usageTotals(store: Store, q: UsageQuery = {}): UsageTotals {
     .query<RawTotals, (string | number)[]>(`SELECT ${TOTAL_COLS} FROM usage_ledger ${w.sql}`)
     .get(...w.args)
   return {
-    ...shape(row ?? ({ n: 0, cached_reports: 0 } as RawTotals)),
+    ...shape(row ?? ({ n: 0, cached_reports: 0, cache_write_reports: 0 } as RawTotals)),
     cost: costsOf(store, w.sql, w.args),
   }
 }
@@ -260,6 +279,66 @@ export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBuc
   }
 
   return rows.map((r) => ({ key: r.key, ...shape(r), cost: costs.get(r.key) ?? {} }))
+}
+
+/**
+ * 逐笔列出账目。**分组统计答不了「这一笔是什么时候发生的」**，而「这条会话花在哪」
+ * 要按时间把每一笔摆出来：哪一轮、以及夹在轮次之间的那次压缩摘要。
+ *
+ * 只给界面真要用的列。请求体、指纹这类排查用的东西不在账本里，它们在
+ * `provider_requests`。
+ */
+export function usageEntries(store: Store, q: UsageQuery = {}): UsageLedgerRow[] {
+  const w = where(q)
+  return store.db
+    .query<RawEntry, (string | number)[]>(
+      `SELECT id, kind, run_id, model, input_tokens, output_tokens, cached_tokens,
+              cache_write_tokens, cost, currency, occurred_at
+         FROM usage_ledger ${w.sql} ORDER BY occurred_at DESC, id DESC`,
+    )
+    .all(...w.args)
+    .map((r) => ({
+      id: r.id,
+      kind: r.kind as UsageKind,
+      runId: r.run_id,
+      model: r.model,
+      inputTokens: r.input_tokens ?? 0,
+      outputTokens: r.output_tokens ?? 0,
+      cachedTokens: r.cached_tokens,
+      cacheWriteTokens: r.cache_write_tokens,
+      cost: r.cost ?? 0,
+      currency: (r.currency ?? 'USD') as Currency,
+      occurredAt: r.occurred_at,
+    }))
+}
+
+interface RawEntry {
+  id: string
+  kind: string
+  run_id: string | null
+  model: string
+  input_tokens: number | null
+  output_tokens: number | null
+  cached_tokens: number | null
+  cache_write_tokens: number | null
+  cost: number | null
+  currency: string | null
+  occurred_at: number
+}
+
+/** 账本里的一行。`runId` 为空即这笔不属于任何一轮（压缩摘要就是这种）。 */
+export interface UsageLedgerRow {
+  id: string
+  kind: UsageKind
+  runId: string | null
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number | null
+  cacheWriteTokens: number | null
+  cost: number
+  currency: Currency
+  occurredAt: number
 }
 
 /** 删掉某个时间点之前的账目。用户要清账时用，不是自动 GC。 */

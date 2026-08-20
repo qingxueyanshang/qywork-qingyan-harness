@@ -292,7 +292,6 @@ const CONTINUABLE: StopReason[] = ['completed', 'max_steps']
  */
 const STOP_NOTE: Record<string, string> = {
   provider_error: '上一轮出错停了',
-  permission_denied: '上一轮有动作被权限挡下',
   no_progress: '上一轮在原地打转',
   output_truncated: '上一轮输出被截断',
 }
@@ -582,6 +581,7 @@ export async function compactConversation(
       messageIdUpperBound: null,
       summarize: makeSummarizer({
         store: deps.store,
+        conversationId,
         workspaceId: workspaceOf(deps.store, conversationId)?.id ?? '',
         profile: () => summaryProfile(deps, conversationId),
       }),
