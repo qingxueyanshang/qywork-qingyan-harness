@@ -52,6 +52,23 @@ export const RATE_SMOOTH = 0.3
 /** 到达间隔超过这个数就是卡顿，不拿它更新流速估计。 */
 export const STALL_MS = 3_000
 
+/**
+ * 一次 markdown 重解析该占掉多少档。
+ *
+ * 渲染层按**档数**降频，不按时间。独立的定时器与这里的 50ms 是两个不同步的周期，
+ * 串起来会拍频——表现是字一撮一撮往外蹦，不是流出来的；数档数则永远落在同一个节拍上。
+ *
+ * 判据是**上一次实测的耗时**，不是猜的文本长度：`renderMarkdown` 的成本超线性
+ * （2026-08-20 实测，`marked` 占其中 99%：3000 字 3.3ms、6000 字 8.9ms、
+ * 12000 字 28.5ms、20000 字 71.3ms），固定频率在长短两头都是错的。
+ *
+ * 留四成给解析，其余给渲染与布局。返回 1 就是每档都跟——短回复必须落在这一档，
+ * 那是「完全匀速」的唯一形态。
+ */
+export function reparseSkip(lastCostMs: number): number {
+  return Math.max(1, Math.ceil(lastCostMs / (TICK_MS * 0.4)))
+}
+
 export interface PaceState {
   /** 已收到、还没显示出去的字。 */
   pending: string

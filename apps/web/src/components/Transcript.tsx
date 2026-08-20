@@ -11,6 +11,7 @@ import {
   onMount,
   Show,
   Switch,
+  untrack,
 } from 'solid-js'
 import { renderMarkdown } from '../lib/markdown.ts'
 import {
@@ -36,6 +37,7 @@ import {
   todosOf,
 } from '../lib/step-view.ts'
 import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import { reparseSkip } from '../lib/stream-pace.ts'
 import { IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
@@ -94,8 +96,8 @@ export function Transcript() {
 
   /*
    * 贴着底时让新内容跟着走。触发条件是**内容的真实高度变了**，不是「store 里某几个
-   * 字段变了」：markdown 限速重解析要晚 60ms 才落地、工具卡跑完才填进参数表和输出、
-   * 图片解码完才占位——盯字段的话这些全都追不上，新来的字停在视口下面看不见。
+   * 字段变了」：工具卡跑完才填进参数表和输出、图片解码完才占位、代码块要等高亮
+   * 落地——盯字段的话这些全都追不上，新来的字停在视口下面看不见。
    *
    * ResizeObserver 的回调在布局之后、绘制之前跑，所以补偿这一帧就完成，
    * 中间那一帧不会画出去。
@@ -270,21 +272,21 @@ function liveStatus(now: number): string {
   return '正在请求…'
 }
 
-/** 流式期两次重解析之间的最小间隔。见 `Prose` 的说明。 */
-const REPARSE_MS = 60
-
 /**
  * assistant 正文。
  *
  * 只有「运行中且是最后一条」才按流式渲染（关闭语言自动检测）；定稿后重渲染一次
  * 并开启检测。这是性能取舍，见 markdown.ts 的说明。
  *
- * ## 为什么要给重解析限速
+ * ## 这里不许再加一层限速
  *
- * **不是**因为 Solid 更新慢——那正好相反：一个 delta 只改一条 step 的 text 字段，
- * 只更新一个文本节点。贵的是 markdown **整篇重解析**，而它和文档长度成正比。
+ * 正文进 store 的节奏**已经由 `stream-pace.ts` 定死**：50ms 一档，每档按上游流速
+ * 放几个字。在这之上再套一个自己的定时器，两级串起来是这样的——第一次变化排一个
+ * 60ms 的 timer，期间的变化被合并，落地后 timer 清空，下一次变化再排 60ms：
+ * **稳态变成每 100ms 落地一次、每次蹦出两档的量**。20Hz 的匀速被压成 10Hz 的跳变，
+ * 看起来就是字一撮一撮往外蹦，不是流出来的。
  *
- * 实测（`renderMarkdown`，切片覆盖到全文尾部）：
+ * 重解析确实和文档长度成正比（实测 `renderMarkdown`，切片覆盖到全文尾部）：
  *
  * ```
  *  1330 字   平均 0.8ms/次   尾部最慢 1.0ms
@@ -292,43 +294,44 @@ const REPARSE_MS = 60
  * 15960 字   平均 15.7ms/次  尾部最慢 39.6ms   ← 一帧才 16.7ms
  * ```
  *
- * 也就是说：短回复毫无问题，**长回复的后半段每来一个 delta 就掉两帧以上**。
- * 所以限的是重解析的频率，不是状态更新的频率——文字照常按原速进 store，
- * 一个字都不会丢，只是画面每 60ms 才追一次。
- *
- * 定稿时**必须立刻用最新全文重渲染一次**：否则最后 60ms 内到达的尾巴会永远
- * 停在上一帧，用户看到的是一段被截断的回答。
+ * 但**限流频率救不了这个**：60ms 一次和 50ms 一次都远大于 16.7ms 一帧，长文尾部
+ * 照样掉帧，代价却是全程的节奏被打乱。真要治长文，得让 `renderMarkdown` 增量化，
+ * 不是在这里少解析几次。
  */
 function Prose(props: { item: TranscriptItem }) {
   const streaming = () =>
     isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id
 
-  const [paced, setPaced] = createSignal(props.item.text)
-  let timer: ReturnType<typeof setTimeout> | null = null
-  onCleanup(() => {
-    if (timer) clearTimeout(timer)
-  })
+  // 解析闸门：`reparseSkip` 说了算，判据与理由都在它那里。
+  const [gate, setGate] = createSignal(0)
+  let sinceParse = 0
+  let lastCost = 0
 
   createEffect(() => {
     const text = props.item.text
     if (!streaming()) {
-      // 定稿：清掉待跑的节流，立刻对齐到全文。
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
-      setPaced(text)
+      // 定稿：立刻对齐到全文，否则最后几档会永远停在上一帧。
+      sinceParse = 0
+      setGate(text.length)
       return
     }
-    if (timer) return
-    timer = setTimeout(() => {
-      timer = null
-      // 读的是**当下最新**的 text，不是排队时那一份——中间到达的 delta 一次补齐。
-      setPaced(props.item.text)
-    }, REPARSE_MS)
+    sinceParse++
+    if (sinceParse >= reparseSkip(lastCost)) {
+      sinceParse = 0
+      setGate(text.length)
+    }
   })
 
-  const html = createMemo(() => renderMarkdown(paced(), { streaming: streaming() }))
+  const html = createMemo(() => {
+    gate()
+    // 只认闸门：直接读 text 会让 memo 依赖它，降频就失效了。
+    return untrack(() => {
+      const t0 = performance.now()
+      const out = renderMarkdown(props.item.text, { streaming: streaming() })
+      lastCost = performance.now() - t0
+      return out
+    })
+  })
 
   return (
     <div class="row assistant" classList={{ superseded: props.item.superseded }}>

@@ -14,6 +14,7 @@ import {
   MAX_LAG_TICKS,
   observe,
   RESERVE_TICKS,
+  reparseSkip,
   sliceSize,
   TICK_MS,
   takeAll,
@@ -190,6 +191,37 @@ describe('批量到达也要匀速', () => {
       win.push(tail.slice(k, k + 10).reduce((a, b) => a + b, 0))
     }
     expect(Math.max(...win) - Math.min(...win)).toBeLessThanOrEqual(4)
+  })
+})
+
+/**
+ * 渲染层的降频判据。
+ *
+ * 原始失败形状：渲染层自己挂了个 60ms 的定时器给 markdown 重解析限速，和这里的
+ * 50ms 一档串起来是两个不同步的周期——稳态变成每 100ms 落地一次、每次蹦两档的量。
+ * 匀速播放被压成跳变，看起来就是字一撮一撮往外蹦。改成数档数之后不会再拍频，
+ * 但**短回复必须落在「每档都跟」这一档**，否则匀速依然是假的。
+ */
+describe('重解析降频', () => {
+  test('便宜就每档都跟 —— 短回复要完全匀速', () => {
+    expect(reparseSkip(0)).toBe(1)
+    expect(reparseSkip(3.3)).toBe(1) // 实测 3000 字
+    expect(reparseSkip(8.9)).toBe(1) // 实测 6000 字
+    expect(reparseSkip(TICK_MS * 0.4)).toBe(1) // 正好占满预算，仍然每档都跟
+  })
+
+  test('贵了才跳档，跳几档跟着成本走', () => {
+    expect(reparseSkip(28.5)).toBe(2) // 实测 12000 字
+    expect(reparseSkip(71.3)).toBe(4) // 实测 20000 字
+  })
+
+  test('单调不减 —— 越贵不许跳得越少', () => {
+    let prev = 0
+    for (const cost of [0, 1, 5, 20, 40, 100, 400]) {
+      const n = reparseSkip(cost)
+      expect(n).toBeGreaterThanOrEqual(prev)
+      prev = n
+    }
   })
 })
 
