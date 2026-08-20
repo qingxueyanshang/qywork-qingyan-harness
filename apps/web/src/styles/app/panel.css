@@ -60,7 +60,7 @@
   flex: none;
 }
 
-/* 页签条：固定三格 + 可多开的那些页。
+/* 页签条：固定的那几格 + 可多开的那些页。
    开多了横向滚，**不换行**：这条横带的高度是 `--header-h`，换行会把它顶开、
    把下面的内容整块推下去。滚动条不画——它只有一行高，画出来占掉的正是文字的地方。 */
 .side-tabs {
@@ -77,7 +77,7 @@
 /*
  * 浏览器式页签：选中靠**顶上那条线**加换回正文底色，不靠一块圆角高亮。
  *
- * 圆角高亮读起来是「一颗被按下去的按钮」，而这五格是并排的页——形状要说的是
+ * 圆角高亮读起来是「一颗被按下去的按钮」，而这几格是并排的页——形状要说的是
  * 「现在翻开的是这一页」。方角是同一件事的另一半：圆角一上，页签和它下面的
  * 内容之间就断开了，选中态白给。
  */
@@ -96,7 +96,7 @@
     color var(--t-fast) var(--ease);
 }
 /* 相邻两格之间一条短竖线，上下各留 8px——不留的话它和横带的下边框接上，
-   五格看着像被框成了一排格子。 */
+   几格看着像被框成了一排格子。 */
 .side-tab + .side-tab::before {
   content: "";
   position: absolute;
@@ -122,7 +122,7 @@
  * 选中态三件事：顶上 2px 的线、换回正文底色、把横带的下边框在这一格盖掉。
  *
  * 第三件用向下的 box-shadow，不用 `margin-bottom: -1px`——负外边距会把这一格
- * 整体往下拽 1px，五格的文字基线随之错开一档。
+ * 整体往下拽 1px，各格的文字基线随之错开一档。
  * 线用 `--text-primary` 而不是 `--accent`：这条横带上已经有底色在说「选中」，
  * 再上一个彩色就是第二处彩。
  */
@@ -208,7 +208,7 @@
   flex-direction: column;
 }
 
-/* 固定三格与可多开的那些页共用的一叠。
+/* 固定的那几格与可多开的那些页共用的一叠。
    看板打开时整叠**藏起来而不卸载**（理由见 SidePanel 里那段注释），所以它需要一个
    自己的容器——直接把 hidden 挂到 `.side-body` 上会把看板也一起藏了。 */
 .side-stack {
@@ -862,4 +862,259 @@
 }
 .change-delta .del {
   color: var(--danger);
+}
+
+/* ── 运行 ──
+ *
+ * 三段：合计钉在顶、轮次清单独占滚动、账本入口钉在底。中间那段滚多远，
+ * 「一共多少钱」都还在眼前——同 `.change-head` 固定表头的理由。 */
+.run-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.run-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 面板拖到足够宽时改成左右两栏：左边挑，右边看。
+   左栏定宽——清单里最长的一行就那么宽，跟着面板一起变宽只会把金额推到几百像素外，
+   而右边那张逐请求表正是拖宽面板的理由，宽度该全给它。 */
+.run-panel.wide .run-col {
+  flex: none;
+  width: 320px;
+}
+.run-detail-col {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: var(--s-3) var(--s-4);
+  border-left: 1px solid var(--border-subtle);
+}
+.run-load {
+  padding: var(--s-4);
+}
+
+/* 合计。**全页唯一的大字是那笔钱**，其余三行都是它的定语——字号层级按提问频率给。 */
+.run-sum {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-4) var(--s-4) var(--s-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.run-sum-scope {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.run-sum-cost {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.run-sum-meta,
+.run-sum-note {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 轮次清单。**行间不画分隔线**：密度对齐同一块面板里的文件树与变更清单，
+   一行一条 hover 高亮就够，横线会把二十行切成二十格。 */
+.run-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  list-style: none;
+  margin: 0;
+  padding: var(--s-1) var(--s-1) var(--s-2);
+}
+/* 被接替的那一轮压暗：产出不算数，但钱算数，所以照常列出来。 */
+.run-list > li.superseded {
+  opacity: 0.55;
+}
+/* 收起的行只有三样东西：什么时候、出没出事、贵不贵。模型名、步数、耗时、token
+   都在展开区——它们是选中之后才要的，印在这里就是把档案摊在目录页上。 */
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--s-1);
+  border: none;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.run-row:hover {
+  background: var(--bg-hover);
+}
+/* 宽态的选中态：和会话列表、文件树同一档灰——「我点的那一行」全应用只有一种样子。 */
+.run-row.active {
+  background: var(--bg-active);
+}
+.run-row > svg {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.run-when {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.run-mark {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 全页唯一的彩就在这里：出事的那一轮。正常态不给绿色，命中低也不给橙色。 */
+.run-mark.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.run-money {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 展开区。窄态挂在行下面，左边缩进对齐时间列；宽态整块搬进右栏，缩进由栏内距给。 */
+.run-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-1) var(--s-3) 22px;
+}
+/* 宽栏里给内容一个阅读宽度上限：表宽跟着面板一路涨的话，`输入` 和 `结果` 之间
+   隔出几百像素空白，眼睛要横扫过去才能把一行读完。 */
+.run-panel.wide .run-detail {
+  padding: 0;
+  max-width: 640px;
+}
+.run-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* 模型名是这一行唯一长度不可控的东西，所以只有它让位。 */
+.run-detail-meta > :not(.truncate) {
+  flex: none;
+}
+.run-err {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  max-height: 160px;
+  overflow-y: auto;
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+.run-err code {
+  font-family: var(--font-mono);
+}
+/* 异常原文里常有不带空格的长串（URL、堆栈），不断行会把面板横向撑破。 */
+.run-err-msg {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 表比这一格宽时**只有表自己横向滚**：滚整块展开区会把上面的错误块一起拖走。 */
+.run-req-scroll {
+  overflow-x: auto;
+}
+/* 数字列右对齐并等宽。这张表是拿来和中转站后台逐行对的，位数对不齐就没法扫。 */
+.run-req {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.run-req th,
+.run-req td {
+  padding: 3px 4px;
+  text-align: right;
+  white-space: nowrap;
+}
+.run-req th {
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.run-req th:first-child,
+.run-req td:first-child {
+  padding-left: 0;
+  text-align: left;
+  color: var(--text-tertiary);
+}
+/* provider 的原话长度不可控（`completed:max_output_tokens`），截断，全文留在 title 里。 */
+.run-req-out {
+  max-width: 9ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+/* 边界说明：压到最小一档，但不折叠也不降到看不清。 */
+.run-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+/* 账本入口。高度对齐文件页与变更页的那条横带——同一块面板里的几条横带不该各一个高。 */
+.run-ledger {
+  flex: none;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 31px;
+  padding: 0 var(--s-4);
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.run-ledger:hover {
+  background: var(--bg-hover);
+}
+.run-ledger-label {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.run-ledger-cost {
+  margin-left: auto;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.run-ledger > svg {
+  flex: none;
+  color: var(--text-tertiary);
 }

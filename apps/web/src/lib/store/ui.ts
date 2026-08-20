@@ -21,7 +21,7 @@ export const [paletteOpen, setPaletteOpen] = createSignal(false)
  *
  * 终端不在这里：它是可多开、可关掉的一页，见 `PanelTabKind`。
  */
-export type PanelView = 'todos' | 'files' | 'changes'
+export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
 
 /**
  * 可多开的那几种页。
@@ -262,23 +262,6 @@ export function toggleSidebar(): void {
 }
 
 /**
- * 当前浮层。`null` = 没有浮层。
- *
- * 一个信号，而不是每个浮层一个布尔。三个布尔的时候「设置和配对同时开着」
- * 在类型上完全合法，互斥只能靠每个调用点自觉——那就是第二本账。
- *
- * **只剩一个。** `runs` 回答「这一个会话花了多少」。原先并列在这里的
- * settings / schedules / plugins / team / memory / mobile 六个是**机器配置**，
- * 已经整体搬进设置弹窗（见 `settingsPage`）；`workspace` 那个是「换项目」的浮层，
- * 换项目现在就在左栏点一下的事，浮层整个删了，不留第二条路。
- */
-export type Overlay = 'runs'
-export const [overlay, setOverlay] = createSignal<Overlay | null>(null)
-export function closeOverlay(): void {
-  setOverlay(null)
-}
-
-/**
  * 设置弹窗当前看的类目。`null` = 没在看设置。
  *
  * ## 为什么是一个弹窗，不是十个平行浮层
@@ -295,14 +278,15 @@ export function closeOverlay(): void {
  *
  * ## 横线上下是两类东西
  *
- * 上面三项（`general` / `models` / `modules`）是「这个 agent 是什么」，其中
- * `modules` 是说明书——只读，不配置；横线下面每一项都是一个模块的操作台，
+ * 横线上面是「这个 agent 是什么、花了多少」，其中 `modules` 是说明书——只读，
+ * 不配置，`usage` 是账本——只读，不配置；横线下面每一项都是一个模块的操作台，
  * 有真实的表单。**没有可配项的模块不给独立页**，它在 `modules` 里有条目就够了，
  * 开一个空页就是空壳。
  */
 export type SettingsPage =
   | 'general'
   | 'models'
+  | 'usage'
   | 'modules'
   | 'access'
   | 'memory'

@@ -322,32 +322,11 @@
 
 /* ───────────────────────── 浮层 ───────────────────────── */
 
-/* 浮层默认 520px 就够；带表单的那几个要宽一档：模型档案是一组并排字段，
-   520px 下每个输入框只剩半行，编辑 baseUrl 这类长值时看不到自己在改什么。 */
+/* 内容比视口高时自己滚，不把弹窗撑出屏幕。 */
 .sheet {
   max-height: min(82vh, 900px);
   display: flex;
   flex-direction: column;
-}
-.sheet-wide {
-  width: min(720px, 100%);
-}
-.sheet-title {
-  font-size: var(--fs-md);
-  font-weight: 500;
-}
-/* 边界说明跟在标题后面，比标题低一级但不折叠：「不是远程协作」这类话
-   是能力边界，折起来等于没说。 */
-.sheet-note {
-  font-size: var(--fs-xs);
-  font-weight: 400;
-  color: var(--text-tertiary);
-  min-width: 0;
-}
-.sheet-body {
-  overflow-y: auto;
-  padding: var(--s-4);
-  min-height: 0;
 }
 
 .settings-form {
@@ -1233,81 +1212,35 @@ textarea.code-area::placeholder {
   gap: var(--s-2);
 }
 
-/* ── 运行详情 ── */
-.run-total {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-3);
-}
-.run-total-cost {
-  font-size: var(--fs-xl);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.run-row-top {
+/* ── 用量账本 ── */
+/* 两组筛选并排一行：时间范围在左、分组在右。分两行的话，光是「看哪段时间、
+   按什么分」就要占掉两行才轮到数字。 */
+.usage-bar {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: var(--s-4);
   flex-wrap: wrap;
 }
-.run-row-tag {
-  padding: 0 5px;
-  border-radius: var(--r-xs);
-  background: var(--bg-inset);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-}
-.run-row-tag.bad {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-/* 被接替的那几轮压暗——产出不算数，但钱算数，所以照常列出来。 */
-.args-table tr.superseded {
-  opacity: 0.55;
-}
-/* 逐请求账本与失败诊断：默认收起。一轮几十次调用平铺开会把这张表淹掉，
-   而它们是「查账时才看」的东西，不是每次都要读的。 */
-.run-fold {
-  margin-top: var(--s-1);
-}
-.run-fold > summary {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  cursor: pointer;
-}
-.run-fold > summary:hover {
-  color: var(--text-secondary);
-}
-/* 数字列右对齐并等宽：账本是拿来和中转站后台逐行对的，位数对不齐就没法扫。 */
-.args-table.ledger td:not(:first-child),
-.args-table.ledger th:not(:first-child) {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.args-table.ledger {
-  margin-top: var(--s-1);
-  font-size: var(--fs-xs);
-}
-/* 异常原文可能很长，且里面常有不带空格的长串（URL、堆栈）。 */
-.run-error-raw {
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-/* 账本的两排切换钮。
- *
- * 别去借 `.side-tab` 的外观：那个类是浏览器式页签（方角、顶上一条选中线、
- * 撑满整条横带），它一改，账本这两排就跟着变成一排贴死的方块，
- * 而 CSS 不会为此报任何错。长得像不等于是同一个东西，各写各的。 */
-.usage-controls {
+.usage-chips {
   display: flex;
-  gap: var(--s-1);
-  flex-wrap: wrap;
+  gap: 2px;
 }
+/* 分组那一组推到右沿：两组挨着的话，七颗钮读成一排同类选项，而它们是两条互不相干
+   的轴（看哪段时间 / 按什么分）。 */
+.usage-bar > .usage-chips + .usage-chips {
+  margin-left: auto;
+}
+/* 这几颗**自带一整套规则，不与设置里别处的按钮共用选择器**：它们是同一组里的
+   互斥选项，靠底色说「选中」，而 `.btn-ghost` 那套是独立动作。 */
 .usage-chip {
-  padding: 4px var(--s-3);
+  padding: 3px var(--s-3);
+  border: none;
   border-radius: var(--r-xs);
+  background: none;
   color: var(--text-secondary);
+  font: inherit;
   font-size: var(--fs-sm);
+  cursor: pointer;
 }
 .usage-chip:hover {
   background: var(--bg-hover);
@@ -1316,4 +1249,54 @@ textarea.code-area::placeholder {
   background: var(--bg-active);
   color: var(--text-primary);
   font-weight: 500;
+}
+
+/* 合计。这一页唯一的大字。 */
+.usage-total {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+.usage-total-cost {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.usage-total-meta {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 窄窗口下表格自己横向滚，不把整页撑宽。 */
+.usage-scroll {
+  overflow-x: auto;
+}
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.usage-table th,
+.usage-table td {
+  padding: 4px var(--s-3);
+  text-align: left;
+  white-space: nowrap;
+}
+.usage-table thead th {
+  padding: 5px var(--s-3);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+/* 数字列右对齐 + 等宽数字：不对齐的话 `$0.2` 和 `$12.5` 的小数点错位，
+   量级差看着像不差。 */
+.usage-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.usage-table tbody tr + tr td {
+  border-top: 1px solid var(--border-subtle);
 }

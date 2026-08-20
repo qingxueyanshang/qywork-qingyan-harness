@@ -11,6 +11,7 @@ import { SettingsNav } from './SettingsNav.tsx'
 const ModulesSettings = lazy(() =>
   import('./ModulesSettings.tsx').then((m) => ({ default: m.ModulesSettings })),
 )
+const UsageSettings = lazy(() => import('./UsageSettings.tsx'))
 const AgentsSettings = lazy(() => import('./AgentsSettings.tsx'))
 const MemorySettings = lazy(() => import('./MemorySettings.tsx'))
 const SkillsSettings = lazy(() => import('./SkillsSettings.tsx'))
@@ -99,6 +100,9 @@ export function SettingsDialog() {
                     </Match>
                     <Match when={settingsPage() === 'models'}>
                       <ModelSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'usage'}>
+                      <UsageSettings />
                     </Match>
                     <Match when={settingsPage() === 'modules'}>
                       <ModulesSettings />
