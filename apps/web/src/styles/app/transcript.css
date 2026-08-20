@@ -545,6 +545,26 @@
   word-break: break-word;
 }
 
+/*
+ * 运行中的中途输出。**高度固定，不随输出增长。**
+ *
+ * 跟着命令一路长高的话，就是 `.fold` 那条注释测过的「会话流上下跳」，
+ * 而这次是命令跑多久跳多久——一次 `npm test` 五十秒。
+ * 八行够看出它在动，又不至于把一屏占掉一半；行数用自己的字号行高算，
+ * 改字号不用回来改这里。
+ */
+.fold-live {
+  margin: 0;
+  height: calc(8 * 1.5 * var(--fs-xs));
+  overflow-y: auto;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 组内成员：同样一条左竖线，比展开体少一点内边距。 */
 .fold-group {
   min-width: 0;

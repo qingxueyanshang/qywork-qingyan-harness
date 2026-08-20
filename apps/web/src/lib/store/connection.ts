@@ -196,12 +196,14 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       pacer.push(ev.stepId, ev.delta)
       return
 
+    // 与 `text.delta` 同构：按 stepId 认自己那一条，不按「末条是不是思考」认。
+    // 后者在同一次调用里出现第二段思考时会把它并进第一段，而那两段是分开到达的。
     case 'thinking.delta':
       setState(
         produce((s) => {
           const last = s.transcript[s.transcript.length - 1]
-          if (last?.kind === 'thinking') last.text += ev.delta
-          else s.transcript.push({ id: `think_${Date.now()}`, kind: 'thinking', text: ev.delta })
+          if (last?.kind === 'thinking' && last.id === ev.stepId) last.text += ev.delta
+          else s.transcript.push({ id: ev.stepId, kind: 'thinking', text: ev.delta })
         }),
       )
       return

@@ -156,10 +156,16 @@ export interface TextDeltaEvent {
   delta: string
 }
 
-/** 只做实时展示；整段思考另由 tool_action 首条随 `reasoning` 落库。 */
+/**
+ * 思考增量。与 `text.delta` 同构，`stepId` 指向 `steps` 里那条 `kind='thinking'` 的行。
+ *
+ * **这个字段不是可选的。** 没有它客户端只能自己造 id，于是实时条目的 id
+ * 与刷新后按 step 重放出来的 id 永不相等，同一段思考在两种路径下是两个东西。
+ */
 export interface ThinkingDeltaEvent {
   type: 'thinking.delta'
   runId: RunId
+  stepId: StepId
   delta: string
   /** 部分 provider 只给摘要级思考。 */
   redacted: boolean

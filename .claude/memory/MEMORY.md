@@ -6,6 +6,7 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 整台机器都成立的陷阱（Windows 编码、Playwright 不可用、npm shim）和跨项目的工作偏好，
 写全局 `~/.claude/projects/.../memory/`。写新记忆前先读本文件，避免重复。
 
+- [命中率只看最后一次调用](hit-rate-shows-latest-call.md) — 用户定过的口径，别改成整轮累计；可以动的只有「没回报按 0 算」那一处
 - [排查先查账本](diagnose-from-the-ledger.md) — `~/.qywork/qywork.sqlite3` 有每次工具调用的完整 args 与 outcome；`permission_audit` 空表 = 一次权限裁决都没发生过
 - [dev server 必须显式绑 IPv4](dev-server-must-bind-ipv4.md) — vite 不写 host 只听 `::1`，Tauri/PowerShell 探 localhost 走 IPv4，表现为 `tauri dev` 卡 180 秒；`strictPort` 同样必须开
 - [桌面端 WebView 够不到 CDP](tauri-webview-no-cdp.md) — Tauri 用自己的 `additional_browser_args` 覆盖环境变量，`switch_workspace` 的那次点击至今未验，见 ROADMAP §37.4/§38.6
