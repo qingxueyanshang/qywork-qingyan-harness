@@ -239,6 +239,44 @@ describe('事件交出的是整个信封', () => {
   })
 })
 
+/**
+ * 投递必须幂等。
+ *
+ * 原始失败形状：一整轮的正文每个 token 显示两遍（「语法检查检查通过、通过」），
+ * 同一轮出现两条读数条，第二条 0.0s——因为第一条已经把 `runStartedAt` 清掉了。
+ * 两条来源都会造成它：断线补发与实时流交叠，以及同一个 client 建了两条连接。
+ */
+describe('同一个位置只交出去一次', () => {
+  const deliverAt = (s: (typeof FakeSocket)['prototype'], seq: number, delta: string) =>
+    s.deliver({
+      seq,
+      at: 1,
+      conversationId: 'cv_a',
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta },
+    })
+
+  test('见过的 seq 直接丢掉', () => {
+    const { c, sockets, frames } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    deliverAt(sockets[0]!, 1, '甲')
+    deliverAt(sockets[0]!, 2, '乙')
+    // 补发窗口与实时流交叠，这两条是重合的那一段。
+    deliverAt(sockets[0]!, 1, '甲')
+    deliverAt(sockets[0]!, 2, '乙')
+    expect(frames.map((f) => (f.event as { delta: string }).delta)).toEqual(['甲', '乙'])
+    c.close()
+  })
+
+  test('已经连上了就不再建第二条连接', () => {
+    const { c, sockets } = client()
+    c.connect()
+    c.connect()
+    expect(sockets).toHaveLength(1)
+    c.close()
+  })
+})
+
 describe('订阅在重连时原样带回去', () => {
   const helloOf = (s: FakeSocket) => JSON.parse(s.sent.find((x) => x.includes('"hello"')) as string)
 

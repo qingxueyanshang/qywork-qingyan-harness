@@ -235,6 +235,15 @@ export class QyClient {
 
   connect(): void {
     if (this.closed) return
+    /*
+     * 已经有一条连接就不再建。
+     *
+     * 服务端按连接注册订阅者，两条连接就是两份同样的事件流，而它们回调的是同一个
+     * `onEvent`：正文每个 token 显示两遍，同一轮出现两条读数条（第二条 0.0s，
+     * 因为 `runStartedAt` 已被第一条清掉）。断开由 `close` 把 `ws` 置回 null，
+     * 重连走 `scheduleReconnect`，所以这条不会挡住正常的重连。
+     */
+    if (this.ws) return
     if (!this.endpoint.token) {
       this.opts.onState('unauthorized', '未配对：请在桌面端扫码')
       return
@@ -301,7 +310,17 @@ export class QyClient {
       }
       if (typeof msg.seq === 'number' && msg.event) {
         const frame = msg as EventEnvelope<AgentEvent>
-        this.lastSeq = Math.max(this.lastSeq, frame.seq)
+        /*
+         * 见过的位置直接丢。**投递必须是幂等的**：断线补发的窗口与实时流可能交叠
+         * （`bus.replayFrom` 算的缺口是按握手那一刻的 `lastSeq`），补发那几条会和
+         * 已经收到的重合。重复投递不会报错，它的表现是正文每个 token 出现两遍、
+         * 同一轮出现两条读数条——看起来像模型说了两遍。
+         *
+         * 服务端 `seq` 从 1 开始（`bus.publish` 是 `++this.seq`），所以初值 0 不会
+         * 把第一帧误判成重复。
+         */
+        if (frame.seq <= this.lastSeq) return
+        this.lastSeq = frame.seq
         this.opts.onEvent(frame)
       }
     })
