@@ -984,6 +984,17 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+/* 条目上的一枚中性标签（角色跑在哪个后端、条目属于哪一类）。
+   不用颜色区分——颜色在这套界面里只留给状态（危险 / 成功 / 警告）。 */
+.entry-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
 .entry-actions {
   flex: none;
   display: flex;
@@ -1004,6 +1015,21 @@
 }
 .entry-extra.bad {
   color: var(--danger);
+}
+
+/* 折叠开关。表单覆盖不到的兜底入口（原文编辑）挂在它下面：
+   摊开摆着会让整页看起来仍然只能手写配置。 */
+.disclosure {
+  align-self: flex-start;
+  padding: 4px var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.disclosure:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 /* ── 空态框 ──
