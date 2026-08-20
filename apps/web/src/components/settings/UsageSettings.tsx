@@ -46,9 +46,16 @@ const GROUPS = [
   { by: 'workspace', label: '按工作区' },
 ] as const
 
-/** 金额。一笔计价都没有时给「—」——写成 $0.00 是把「不知道」说成「免费」。 */
+/**
+ * 「此处无可用值」。**与运行页同一个术语**，同一个含义：这个数不存在，而不是它等于 0。
+ * 两处各写一个词的话，同一件事在界面上会有两种说法。
+ */
+const NA = 'N/A'
+const NA_NOTE = 'N/A：接口没有回报这个数，与回报了 0 不是一回事。'
+
+/** 金额。一笔计价都没有即这个模型没有价目，写成 $0.00 是把「不知道」说成「免费」。 */
 function money(cost: Record<string, number>): string {
-  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : '—'
+  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : NA
 }
 
 /** 「输入」给含缓存命中的口径：中转站后台账单就是这个数，两边同口径才能对账。 */
@@ -135,10 +142,10 @@ export default function UsageSettings() {
                           {/* 汇总量到亿位，逐位对账在运行页的逐请求表，这里收成 K/M。 */}
                           <td class="num">{compact(input(r))}</td>
                           <td class="num">{compact(r.outputTokens)}</td>
-                          {/* null 是「模型没给这个数」，写成 0 会让「缓存没生效」
-                              看起来像「生效了但没命中」。空着写一横，与别处同一个写法。 */}
+                          {/* `null` 是「接口没回报这个字段」，写成 0 会让「缓存没生效」
+                              看起来像「生效了但没命中」。术语与运行页同一个。 */}
                           <td class="num">
-                            {r.cachedTokens === null ? '—' : compact(r.cachedTokens)}
+                            {r.cachedTokens === null ? NA : compact(r.cachedTokens)}
                           </td>
                           <td class="num">{money(r.cost)}</td>
                         </tr>
@@ -147,6 +154,10 @@ export default function UsageSettings() {
                   </tbody>
                 </table>
               </div>
+              {/* 术语释义，跟着术语走：表里没有 N/A 就不占这一行。 */}
+              <Show when={u().rows.some((r) => r.cachedTokens === null || money(r.cost) === NA)}>
+                <p class="usage-note">{NA_NOTE}</p>
+              </Show>
             </Show>
           </>
         )}

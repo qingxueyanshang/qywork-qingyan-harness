@@ -191,10 +191,20 @@ function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
    */
   const hit = () => {
     const t = totals()
-    if (t.cached === null) return DASH
+    if (t.cached === null) return NA
     const denom = t.input + t.cached + (t.cacheWrite ?? 0)
-    return denom > 0 ? `${((t.cached / denom) * 100).toFixed(1)}%` : DASH
+    return denom > 0 ? `${((t.cached / denom) * 100).toFixed(1)}%` : NA
   }
+
+  const cells = () => [
+    { label: '轮次', value: String(props.runs.length) },
+    // 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。
+    { label: '输入', value: compact(totals().input + (totals().cached ?? 0)) },
+    { label: '输出', value: compact(totals().output) },
+    { label: '命中率', value: hit() },
+    { label: '缓存命中', value: maybeCount(totals().cached) },
+    { label: '缓存写入', value: maybeCount(totals().cacheWrite) },
+  ]
 
   return (
     <header class="run-sum">
@@ -203,14 +213,12 @@ function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
         <span class="run-sum-cost">{money(totals().cost)}</span>
       </div>
       <div class="run-stats">
-        <Stat label="轮次" value={String(props.runs.length)} />
-        {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
-        <Stat label="输入" value={compact(totals().input + (totals().cached ?? 0))} />
-        <Stat label="输出" value={compact(totals().output)} />
-        <Stat label="命中率" value={hit()} />
-        <Stat label="缓存命中" value={maybeCount(totals().cached)} />
-        <Stat label="缓存写入" value={maybeCount(totals().cacheWrite)} />
+        <For each={cells()}>{(c) => <Stat label={c.label} value={c.value} />}</For>
       </div>
+      {/* 术语释义，跟着术语走：卡里没有 N/A 就不占这一行。 */}
+      <Show when={cells().some((c) => c.value === NA) || money(totals().cost) === NA}>
+        <span class="run-sum-note">{NA_NOTE}</span>
+      </Show>
     </header>
   )
 }
@@ -266,7 +274,7 @@ function ExtraRow(props: { entry: LedgerRow; wide: boolean }) {
         <span class="run-when">{clockOf(props.entry.occurredAt)}</span>
         <span class="run-mark">{KIND_LABEL[props.entry.kind] ?? props.entry.kind}</span>
         <span class="run-money">
-          {props.entry.cost > 0 ? formatMoney(props.entry.cost, props.entry.currency) : DASH}
+          {props.entry.cost > 0 ? formatMoney(props.entry.cost, props.entry.currency) : NA}
         </span>
       </div>
     </li>
@@ -369,7 +377,7 @@ function RequestLedger(props: { run: Run }) {
                     <td>{num(q.providerOutputTokens)}</td>
                     <td>{num(q.providerCachedTokens)}</td>
                     <td>{num(q.providerCacheWriteTokens)}</td>
-                    <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : DASH}</td>
+                    <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : NA}</td>
                     {/* 原话长度不可控（`completed:max_output_tokens`），截断，全文留 title。 */}
                     <td class="run-req-out" title={outcome}>
                       {outcome}
@@ -403,7 +411,7 @@ function LedgerLink() {
   )
   const cost = () => {
     const c = loaded(data)?.totals.cost
-    return c ? money(c) : DASH
+    return c ? money(c) : NA
   }
 
   return (
@@ -450,33 +458,40 @@ function clockOf(at: number): string {
   return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
-/** 这一轮的金额。计价为 0 时给「—」：未知计价冒充免费更误导。 */
+/** 这一轮的金额。计价为 0 即这个模型没有价目，写 $0.00 是把「不知道」说成「免费」。 */
 function runCost(r: Run): string {
   const u = r.usage
-  return u && u.cost > 0 ? formatMoney(u.cost, u.currency) : DASH
+  return u && u.cost > 0 ? formatMoney(u.cost, u.currency) : NA
 }
 
-/** 金额合计。一笔计价都没有时给「—」——写成 $0.00 是把「不知道」说成「免费」。 */
+/** 金额合计。同上：一笔计价都没有时不是零元，是没有价目。 */
 function money(cost: Record<string, number>): string {
-  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : DASH
+  return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : NA
 }
 
 /**
- * 没有这个数时统一写它。
+ * 没有这个数时写它。
  *
- * 缓存那几格的 `null` 是「模型这次没给这个数」，与「给了，是 0」不是一回事，所以不能
- * 写成 0；也不写「未回报」这种黑话——表里的空格早就是这一横，同一个意思两处该同一个写法。
+ * **是术语，不是符号**：一根横线读者认不出它在说什么——是零、是省略、还是没取到。
+ * `N/A` 是数据表里「此处无可用值」的通用写法，含义唯一。它出现时，`NA_NOTE` 那一句
+ * 跟着出现，把这个词是什么说清楚。
+ *
+ * 它盖着两种情形，两种都是「这个数不存在」而不是「这个数是 0」：
+ * 接口没有回报这个字段（缓存那几格的 `null`），以及这个模型没有计价（金额为 0）。
  */
-const DASH = '—'
+const NA = 'N/A'
+
+/** `N/A` 的释义。**只在屏幕上真出现 `N/A` 时才显示**，恒显就是常驻噪声。 */
+const NA_NOTE = 'N/A：接口没有回报这个数，与回报了 0 不是一回事。'
 
 /** 读数卡里的计数。 */
 function maybeCount(n: number | null): string {
-  return n === null ? DASH : compact(n)
+  return n === null ? NA : compact(n)
 }
 
 /** 表格里的计数。 */
 function num(n: number | null): string {
-  return n === null ? DASH : n.toLocaleString()
+  return n === null ? NA : n.toLocaleString()
 }
 
 /** 把一笔花费并进按币种分的桶里。**不跨币种相加。** */
