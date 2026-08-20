@@ -83,6 +83,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
     // provider 的原话，只进账本不参与判断。空串 = 流断在 finish_reason 之前。
     let rawFinish = ''
     const partial = new Map<number, { id: string; name: string; json: string }>()
+    const splitter = createThinkingSplitter()
 
     try {
       // 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等
@@ -109,7 +110,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
         }
 
         if (typeof delta.content === 'string' && delta.content) {
-          yield { type: 'text_delta', delta: delta.content }
+          const split = splitter.push(delta.content)
+          if (split.thinking) yield { type: 'thinking_delta', delta: split.thinking }
+          if (split.text) yield { type: 'text_delta', delta: split.text }
         }
 
         for (const tc of delta.tool_calls ?? []) {
@@ -131,6 +134,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
           stopReason = normalizeFinishReason(choice.finish_reason)
         }
       }
+
+      // 攒着没等到闭合标签的，原样当正文吐出去。放在工具调用之前：
+      // 它是正文的一部分，顺序不能倒。
+      const tail = splitter.flush()
+      if (tail) yield { type: 'text_delta', delta: tail }
 
       const calls = collectToolCalls(partial, req.model)
       if (calls.length) {
@@ -349,6 +357,68 @@ function normalizeFinishReason(raw: string): ProviderStopReason {
       return 'refusal'
     default:
       return 'end_turn'
+  }
+}
+
+// ───────────────────────── 正文里的思考标签 ─────────────────────────
+
+const THINKING_OPEN = '<thinking>'
+const THINKING_CLOSE = '</thinking>'
+
+/**
+ * 正文通道开头那个 `<thinking>…</thinking>` 块改判给思考通道。
+ *
+ * 这是中转站的第三种方言。前两种是字段名（`reasoning_content` / `reasoning`），
+ * 这一种把推理摘要塞进 `content` 再自己加上标签——实测 gpt-5.6-terra 经 OpenAI
+ * 协议中转，一个 run 的 12 次调用里 3 次这样发，其余走 `reasoning_content`。
+ * 通道归属的权威是适配器，所以在这里认；让它混进回答再由下游擦，擦的是症状。
+ *
+ * **只认这一种形状：本次调用正文的第 0 个字符起、成对闭合、只认一次。**
+ * 不要放宽。放宽就会吞掉模型正当输出的这个字面量（例如它在讨论这段代码），
+ * 而那是静默的内容丢失。
+ *
+ * **一个字节都不删也不丢。** 认出来的整块送思考通道；形状对不上的原样送正文；
+ * 流在闭合之前就结束，攒着的连同开标签一起原样当正文吐出。
+ * 所以判错的最坏结果是显示在错的区，不会是内容消失。
+ *
+ * 代价：块内内容攒到闭合标签才吐，那一段不是逐字出现的。这种块实测是一行摘要，
+ * 而流空闲看门狗的下限是 180 秒（`agent/loop.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），够不着。
+ */
+export function createThinkingSplitter(): {
+  push(delta: string): { thinking: string; text: string }
+  flush(): string
+} {
+  let phase: 'head' | 'inside' | 'body' = 'head'
+  let held = ''
+  return {
+    push(delta) {
+      if (phase === 'body') return { thinking: '', text: delta }
+      held += delta
+      if (phase === 'head') {
+        // 还看不出来是不是这个开头，继续攒。攒的上界是开标签本身的长度。
+        if (THINKING_OPEN.startsWith(held)) return { thinking: '', text: '' }
+        if (!held.startsWith(THINKING_OPEN)) {
+          const text = held
+          held = ''
+          phase = 'body'
+          return { thinking: '', text }
+        }
+        phase = 'inside'
+      }
+      const at = held.indexOf(THINKING_CLOSE)
+      if (at < 0) return { thinking: '', text: '' }
+      const thinking = held.slice(THINKING_OPEN.length, at)
+      const text = held.slice(at + THINKING_CLOSE.length)
+      held = ''
+      phase = 'body'
+      return { thinking, text }
+    },
+    flush() {
+      const out = held
+      held = ''
+      phase = 'body'
+      return out
+    },
   }
 }
 

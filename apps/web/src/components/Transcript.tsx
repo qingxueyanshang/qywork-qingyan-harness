@@ -446,6 +446,27 @@ function ThinkingFold(props: { item: TranscriptItem }) {
 }
 
 /**
+ * 运行中的中途输出。
+ *
+ * 只在工具还在跑的时候出现；跑完由展开体那几个终态分支接手，不会两块并存。
+ *
+ * 自己滚到底的理由与思考块相同：`.fold-live` 是**内层滚动容器**，
+ * 会话流那个「贴着底就跟随」只作用在外层，不跟随的话新来的行一直堆在看不见的地方。
+ */
+function LiveOutput(props: { item: TranscriptItem }) {
+  let pre: HTMLPreElement | undefined
+  createEffect(() => {
+    void props.item.stdout
+    if (pre) pre.scrollTop = pre.scrollHeight
+  })
+  return (
+    <pre class="fold-live" ref={pre}>
+      {props.item.stdout}
+    </pre>
+  )
+}
+
+/**
  * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
  *
  * ## 为什么收数据靠 props 而不是读 store
@@ -461,8 +482,8 @@ function ThinkingFold(props: { item: TranscriptItem }) {
  * 三条口径必须守住：
  * - **停止原因永远显示**，正常完成也显示（只是低调）。废除「静默 done」的意义
  *   就在于用户不用追问「它怎么停了」。
- * - **缓存命中为 null 时显示「未回报」而不是 0**：provider 没回报和真实零命中
- *   是两回事，显示成 0 会让人以为缓存配置错了。
+ * - **缓存命中显示「未回报」的门槛只有一条**：那一次连 usage 都没回来。
+ *   回了 usage 但没有缓存字段的算 0——那一次的钱就是按零命中付的。
  * - 计价为 0 时不显示金额，而不是显示 $0.0000——未知计价冒充免费更误导。
  */
 function RunStatusBar(props: {
@@ -515,8 +536,8 @@ function RunStatusBar(props: {
               <span class="run-metric" data-tip="输入 / 输出 token">
                 ↓{compact(usage().inputTokens)} ↑{compact(usage().outputTokens)}
               </span>
-              {/* 口径（分母是输入总量、优先取最后一次调用、null 与 0 的区别）
-                  全在 `hitRate` 上，这里不复述——两处各写一遍必然漂移。 */}
+              {/* 口径（分母是输入总量、取最后一次调用、什么时候算 0）全在 `hitRate` 上，
+                  这里不复述——两处各写一遍必然漂移。 */}
               <span class="run-metric" data-tip="最后一次模型调用的缓存命中占输入总量的比例">
                 命中 {hitRate(usage())}
               </span>
@@ -724,6 +745,15 @@ function StepBody(props: { item: TranscriptItem }) {
 
   return (
     <Switch fallback={<Generic item={props.item} />}>
+      {/*
+       * 中途输出排在最前。跑着的时候 `outcome` 还不存在，落到下面任何一支
+       * 都是一张空卡片；而这一支只在 `status === 'running'` 时成立，
+       * 终态一到自动让位，不需要谁去清它。
+       */}
+      <Match when={props.item.status === 'running' && props.item.stdout}>
+        <LiveOutput item={props.item} />
+      </Match>
+
       <Match when={props.item.status === 'failure'}>
         <pre class="fold-out err">{props.item.outcome?.message || '（没有错误正文）'}</pre>
         {/*

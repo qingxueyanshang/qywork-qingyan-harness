@@ -1,5 +1,6 @@
 /**
- * 兼容协议实际发出去的思考控制字段。覆盖 `openai-compat.ts` 的 `buildReasoning`。
+ * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发出去的思考控制字段）
+ * 与 `createThinkingSplitter`（正文里的思考标签改判通道）。
  *
  * **必须看真实请求体**，不能只测那个纯函数：这条链路上一次出问题正是
  * 「目录里声明了档位、界面也画了控件、请求里一个字段都没有」——
@@ -11,7 +12,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
 import type { ProviderProfile } from '../types.ts'
-import { normalizeBaseUrl, OpenAICompatAdapter } from './openai-compat.ts'
+import { createThinkingSplitter, normalizeBaseUrl, OpenAICompatAdapter } from './openai-compat.ts'
 
 const bodies: Record<string, unknown>[] = []
 let server: ReturnType<typeof Bun.serve>
@@ -298,5 +299,117 @@ describe('缓存路由亲和键', () => {
       // 只看请求体
     }
     expect('prompt_cache_key' in bodies[0]!).toBe(false)
+  })
+})
+
+describe('正文里的思考标签', () => {
+  /** SSE 的事件分隔符是两个换行。写成常量而不是字面量：源码里两个空行看不出是它。 */
+  const SEP = String.fromCharCode(10, 10)
+
+  /** 把一串分片喂进去，收敛成两个通道各自的全文。 */
+  function feed(chunks: string[]): { thinking: string; text: string } {
+    const sp = createThinkingSplitter()
+    let thinking = ''
+    let text = ''
+    for (const c of chunks) {
+      const r = sp.push(c)
+      thinking += r.thinking
+      text += r.text
+    }
+    text += sp.flush()
+    return { thinking, text }
+  }
+
+  /**
+   * 复现原始形状：会话 `cv_0mt10yhy20000vace5y` 的 step 32、43、57。
+   * 中转站把一部分推理摘要放进了 `content` 并自己加了标签。
+   */
+  test('开头的成对标签整块判给思考，后面的正文照常是正文', () => {
+    expect(feed(['<thinking>**Updating inspection checklist**</thinking>'])).toEqual({
+      thinking: '**Updating inspection checklist**',
+      text: '',
+    })
+    expect(feed(['<thinking>**Finalizing summary**</thinking>项目检查已经完成'])).toEqual({
+      thinking: '**Finalizing summary**',
+      text: '项目检查已经完成',
+    })
+  })
+
+  /** 标签被切在任意位置都要认得——SSE 分片边界与内容无关。 */
+  test('标签跨分片切开仍然认得', () => {
+    expect(feed(['<thin', 'king>', '想', '一', '</think', 'ing>说'])).toEqual({
+      thinking: '想一',
+      text: '说',
+    })
+  })
+
+  /**
+   * 这条是这个函数最要紧的边界：**收宽一点就会吞掉模型正当输出的字面量**。
+   * 只认第 0 字符起的那一个，之后出现多少次都是正文。
+   */
+  test('不在开头的同样字符串留在正文里', () => {
+    expect(feed(['这段代码会输出 <thinking>x</thinking> 标签'])).toEqual({
+      thinking: '',
+      text: '这段代码会输出 <thinking>x</thinking> 标签',
+    })
+    // 认过一次之后就不再认，第二个块是正文。
+    expect(feed(['<thinking>一</thinking>正文 <thinking>二</thinking>'])).toEqual({
+      thinking: '一',
+      text: '正文 <thinking>二</thinking>',
+    })
+  })
+
+  /** 判错的最坏结果只能是「显示在错的区」，不能是内容消失。 */
+  test('流在闭合之前结束，攒着的连同开标签原样退回正文', () => {
+    expect(feed(['<thinking>没等到闭合就断了'])).toEqual({
+      thinking: '',
+      text: '<thinking>没等到闭合就断了',
+    })
+    expect(feed(['<thin'])).toEqual({ thinking: '', text: '<thin' })
+  })
+
+  /** 接线也要测：纯函数对了但没挂上去，表现和没修一样。 */
+  test('适配器真的按两个通道分发', async () => {
+    const sse = (payload: string) => `data: ${payload}${SEP}`
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          sse('{"choices":[{"delta":{"content":"<thinking>想"},"finish_reason":null}]}') +
+            sse('{"choices":[{"delta":{"content":"法</thinking>答案"},"finish_reason":null}]}') +
+            sse('{"choices":[{"delta":{},"finish_reason":"stop"}]}') +
+            sse('[DONE]'),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    try {
+      const model = 'gpt-5.6-terra'
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model,
+          baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        },
+        lookupModel(model, 'openai_chat_completions'),
+      )
+      let thinking = ''
+      let text = ''
+      for await (const ev of adapter.stream({
+        model,
+        system: [],
+        messages: [{ role: 'user', content: '嗨' }],
+        tools: [],
+        maxOutputTokens: 64,
+        signal: new AbortController().signal,
+      })) {
+        if (ev.type === 'thinking_delta') thinking += ev.delta
+        if (ev.type === 'text_delta') text += ev.delta
+      }
+      expect(thinking).toBe('想法')
+      expect(text).toBe('答案')
+    } finally {
+      server.stop(true)
+    }
   })
 })

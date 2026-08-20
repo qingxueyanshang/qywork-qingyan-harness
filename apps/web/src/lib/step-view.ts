@@ -27,6 +27,8 @@ interface UsageLike {
     input: number
     cached: number | null
     cacheWrite: number | null
+    /** provider = 模型真回报；estimated = 本地估算兜底。 */
+    source: 'provider' | 'estimated'
   }[]
 }
 
@@ -34,8 +36,6 @@ interface UsageLike {
  * 缓存命中率。
  *
  * **报比例不报绝对值**：绝对值要和输入量对着看才有意义，那个除法不该让用户做。
- * `null` 是「provider 没回报」，和「真实零命中」是两回事——显示成 0 会让人
- * 以为缓存配置错了。
  *
  * ## 分母是「这次请求的输入总量」，不是 `inputTokens`
  *
@@ -46,20 +46,33 @@ interface UsageLike {
  * 794K 命中 / 2K 未命中会打印成 39700%。
  * 正确的分母是 `未命中 + 命中 + 写入`。
  *
- * ## 优先看**最后一次**模型调用
+ * ## 看**最后一次**模型调用，不看整轮累计
  *
  * 一轮里第一次调用必然没有命中，累计口径把它摊进去，长轮次的率会被压低；
- * 而用户盯着这个数字想知道的是「现在缓存生效了吗」。所以有逐轮记录时取最后一条
- * 可观测的，没有（老数据、断流）才回落到整轮累计——**回落不能显示 `—`**：
- * 「有缓存但没逐轮记录」和「没有缓存」是两回事，这和 null 那条是同一个道理。
+ * 而用户盯着这个数字想知道的是「现在缓存生效了吗」。
+ * **不要改成整轮累计**——这一格的语义就是最新那一次，同一行上其余几格是累计
+ * 不构成改它的理由。没有逐轮记录（老数据、断流）才回落到整轮累计，
+ * **回落不能显示 `—`**：「有缓存但没逐轮记录」和「没有缓存」是两回事。
+ *
+ * ## 最后一次没回报缓存字段就是 0，不是跳过
+ *
+ * 跳过它去找更早那条报过的，屏幕上就会挂着一个几轮之前的数——最新这次
+ * 全价重付了，读数却还写着 93%。计费那侧早就把「没回报」按 0 命中算
+ * （`ai/catalog.ts` 的 `computeCost`：`cachedTokens ?? 0` 走全价输入），
+ * 读数跟着同一个口径才只有一本账。
+ *
+ * 「未回报」只留给**这一次连 usage 都没到**的情形（`source === 'estimated'`）：
+ * 那时候我们不知道命中多少，也不知道输入多少，写 0 是编的。
  */
 export function hitRate(usage: UsageLike): string {
-  const last = [...usage.turns].reverse().find((t) => t.cached !== null)
-  const cached = last ? last.cached : usage.cachedTokens
+  const last = usage.turns[usage.turns.length - 1]
+  // 这一次连 usage 都没回来：命中多少、输入多少都不知道，写 0 是编的。
+  if (last && last.source !== 'provider') return '未回报'
+  const cached = last ? (last.cached ?? 0) : usage.cachedTokens
   if (cached === null) return '未回报'
 
   const denom = last
-    ? last.input + (last.cached ?? 0) + (last.cacheWrite ?? 0)
+    ? last.input + cached + (last.cacheWrite ?? 0)
     : usage.inputTokens + cached + (usage.cacheWriteTokens ?? 0)
   if (denom <= 0) return '—'
   return `${((cached / denom) * 100).toFixed(2)}%`

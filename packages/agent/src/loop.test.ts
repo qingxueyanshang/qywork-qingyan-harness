@@ -80,6 +80,238 @@ function baseCtx(runId: string, emit: (e: AgentEvent) => void): ToolContext {
   }
 }
 
+describe('工具中途输出', () => {
+  /**
+   * 回归：工具还在跑的时候，它吐的东西就要交出去。
+   *
+   * 这条测的是**活性**不是顺序：光断言「delta 排在 tool.finished 之前」在
+   * 攒到整波结束再排空的写法下同样成立。所以让工具吐完就卡住，
+   * 由测试看到那条 delta 之后才放行——攒批的写法在这里会直接停住，
+   * 表现为超时失败。
+   */
+  test('工具执行期间产出的事件立刻交出去，不等这一波结束', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noisy',
+      description: '先吐一行，再等外面放行。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn(_args, ctx) {
+        ctx.emit('stdout', '第一行')
+        await gate
+        return { status: 'success', message: 'ok' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('noisy')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+
+    const types: string[] = []
+    const it = loop
+      .run({
+        runId: 'rn_test' as never,
+        history: [],
+        signal: new AbortController().signal,
+      })
+      [Symbol.asyncIterator]()
+    for (;;) {
+      const n = await it.next()
+      if (n.done) break
+      types.push(n.value.type)
+      // 看到中途输出才放行。收不到就永远走不到这里。
+      if (n.value.type === 'tool.delta') release()
+    }
+
+    const delta = types.indexOf('tool.delta')
+    const finished = types.indexOf('tool.finished')
+    expect(delta).toBeGreaterThan(types.indexOf('tool.started'))
+    expect(delta).toBeLessThan(finished)
+  })
+
+  /** 中止仍然要抛出去，且抛之前先把已经吐出来的排空——那些是真发生过的输出。 */
+  test('中止不吞掉已经产出的中途输出', async () => {
+    const abort = new AbortController()
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noisy',
+      description: '吐一行然后永不返回。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn(_args, ctx) {
+        ctx.emit('stdout', '第一行')
+        await new Promise<void>(() => {})
+        return { status: 'success' as const, message: '到不了' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('noisy')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+
+    const types: string[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: abort.signal,
+    })) {
+      types.push(ev.type)
+      if (ev.type === 'tool.delta') abort.abort()
+    }
+
+    expect(types).toContain('tool.delta')
+    const finished = types.filter((t) => t === 'run.finished')
+    expect(finished).toHaveLength(1)
+  })
+})
+
+describe('流式通道的顺序', () => {
+  /**
+   * 回归：一次调用里「思考 → 正文 → 思考 → 正文」必须落成四条 step。
+   *
+   * 并成「一条思考 + 一条正文」的后果不是少两行，是 `seq` 表达不出真实顺序——
+   * 实测形状：中转站分三次给推理摘要，落库出来是
+   * `**Inspecting…****Running tests…**` 两段粘在一起，而它们本来分开到达。
+   * 前端据 `seq` 重放，于是刷新一次顺序就和刚才看到的不一样。
+   */
+  test('通道来回切换就来回开新 step，正文与思考各自成段', async () => {
+    const opened: string[] = []
+    const written = new Map<string, string>()
+    let seq = 0
+    const persist: LoopPersistence = {
+      ...noopPersistence(),
+      nextSeq: () => ++seq,
+      openTextStep: () => {
+        const id = `st_text_${seq}`
+        opened.push(id)
+        return id
+      },
+      openThinkingStep: () => {
+        const id = `st_think_${seq}`
+        opened.push(id)
+        return id
+      },
+      appendText: (stepId, delta) => written.set(stepId, (written.get(stepId) ?? '') + delta),
+    }
+
+    const adapter: LlmAdapter = {
+      kind: 'openai_chat_completions',
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        yield { type: 'thinking_delta', delta: '想一' }
+        yield { type: 'text_delta', delta: '说一' }
+        yield { type: 'thinking_delta', delta: '想二' }
+        yield { type: 'text_delta', delta: '说二' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+      },
+    }
+
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist,
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+
+    const deltas: { type: string; stepId: string }[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'text.delta' || ev.type === 'thinking.delta') {
+        deltas.push({ type: ev.type, stepId: ev.stepId })
+      }
+    }
+
+    // 四段内容 = 四条 step，顺序就是到达顺序。
+    expect(opened).toHaveLength(4)
+    expect(written.get(opened[0]!)).toBe('想一')
+    expect(written.get(opened[1]!)).toBe('说一')
+    expect(written.get(opened[2]!)).toBe('想二')
+    expect(written.get(opened[3]!)).toBe('说二')
+
+    // 事件带的 stepId 与落库的一一对应，客户端不需要自己造 id。
+    expect(deltas.map((d) => d.stepId)).toEqual(opened)
+    expect(deltas.map((d) => d.type)).toEqual([
+      'thinking.delta',
+      'text.delta',
+      'thinking.delta',
+      'text.delta',
+    ])
+  })
+
+  /** 同一通道连续到达不开新 step——否则一句话会被拆成几十条。 */
+  test('同一通道连续增量只开一条 step', async () => {
+    const opened: string[] = []
+    let seq = 0
+    const persist: LoopPersistence = {
+      ...noopPersistence(),
+      nextSeq: () => ++seq,
+      openTextStep: () => {
+        const id = `st_text_${seq}`
+        opened.push(id)
+        return id
+      },
+    }
+    const adapter: LlmAdapter = {
+      kind: 'openai_chat_completions',
+      transmits: { thinking: true, effort: true },
+      spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        for (const d of ['a', 'b', 'c']) yield { type: 'text_delta', delta: d }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist,
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 只关心开了几条 step。
+    }
+    expect(opened).toHaveLength(1)
+  })
+})
+
 describe('ToolContext 生命周期', () => {
   /**
    * 回归测试：ctx.state 必须跨轮、跨波次保持同一个对象。

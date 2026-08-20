@@ -44,6 +44,7 @@ import type {
 import { emptyBreakdown, emptyOmitted, newBatchId } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
+import { drainUntil, EventQueue } from './event-queue.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
 import {
   actionFingerprint,
@@ -601,8 +602,8 @@ export class AgentLoop {
     // （files 插件记录的「哪些文件本轮读过」、目录大小缓存等）要跨调用可见；
     // 每波新建一个 = 状态永远是空的，写入守卫会把模型刚读过的文件判成没读过，
     // 模型随后会绕道用 shell 手写文件。这条已经实测踩中过一次。
-    const emitBuffer: AgentEvent[] = []
-    const ctx = this.deps.makeToolContext(input.runId, (e) => emitBuffer.push(e))
+    const emitQueue = new EventQueue()
+    const ctx = this.deps.makeToolContext(input.runId, (e) => emitQueue.push(e))
 
     try {
       for (let step = 0; step < maxSteps; step++) {
@@ -614,8 +615,28 @@ export class AgentLoop {
 
         const batchId = newBatchId()
 
-        let textStepId: string | null = null
-        let thinkingStepId: string | null = null
+        /**
+         * 当前正在写的那条 step，**跟通道切换开闭，不跟一轮闩死**。
+         *
+         * 一次调用里模型可以先思考、再说话、再思考。闩死的话这三段会被并进
+         * 「一条思考 + 一条正文」，`seq` 就再也表达不出真实顺序——
+         * 实时看到的顺序与刷新后按 seq 重放出来的顺序会不一样。
+         *
+         * 端点若逐 chunk 交替两个通道，这里就逐 chunk 开新 step。
+         * **不要为此加防抖**：那等于为顺序再记一本账，而顺序的真源只能有一份。
+         */
+        let open: { kind: 'text' | 'thinking'; id: string } | null = null
+        /** 拿到该写的 step；通道换了就先封上旧的、开一条新的。**懒开**，不产生空 step。 */
+        const stepFor = (kind: 'text' | 'thinking'): string => {
+          if (open?.kind !== kind) {
+            const id =
+              kind === 'text'
+                ? persist.openTextStep(input.runId, nextSeq())
+                : persist.openThinkingStep(input.runId, nextSeq())
+            open = { kind, id }
+          }
+          return open.id
+        }
         let assistantText = ''
         let thinkingText = ''
         const calls: WireToolCall[] = []
@@ -819,30 +840,25 @@ export class AgentLoop {
                 }
                 case 'thinking_delta': {
                   thinkingText += ev.delta
-                  // 与文本行同构：流到就开一行，逐段追加。这样它在 seq 上天然落在
-                  // 本轮的文本与工具之前，不需要预留序号。
-                  if (thinkingStepId === null) {
-                    thinkingStepId = persist.openThinkingStep(input.runId, nextSeq())
-                  }
-                  persist.appendText(thinkingStepId, ev.delta)
+                  const stepId = stepFor('thinking')
+                  persist.appendText(stepId, ev.delta)
                   yield {
                     type: 'thinking.delta',
                     runId: input.runId,
+                    stepId: stepId as never,
                     delta: ev.delta,
                     redacted: false,
                   }
                   break
                 }
                 case 'text_delta': {
-                  if (textStepId === null) {
-                    textStepId = persist.openTextStep(input.runId, nextSeq())
-                  }
+                  const stepId = stepFor('text')
                   assistantText += ev.delta
-                  persist.appendText(textStepId, ev.delta)
+                  persist.appendText(stepId, ev.delta)
                   yield {
                     type: 'text.delta',
                     runId: input.runId,
-                    stepId: textStepId as never,
+                    stepId: stepId as never,
                     delta: ev.delta,
                   }
                   break
@@ -1244,23 +1260,29 @@ export class AgentLoop {
             }
           }
 
-          // 与停止赛跑。裸 `Promise.all` 的话，一个不返回的工具就把整轮钉死在这里，
-          // 而停止按钮只是置了个信号，没人看。
-          const settled = await untilAborted(
-            input.signal,
-            Promise.all(
-              results.map(async (r) => {
-                const started = Date.now()
-                // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
-                persist.markExecuting(r.stepId)
-                const outcome = await registry.execute(r.call.name, r.call.arguments, ctx)
-                return { ...r, outcome, durationMs: Date.now() - started }
-              }),
+          /*
+           * 与停止赛跑，并且**边等边把中途输出交出去**。
+           *
+           * 裸 `Promise.all` 有两个坏：一个不返回的工具把整轮钉死在这里，
+           * 而停止按钮只是置了个信号没人看；以及这一波跑多久，shell 的 stdout
+           * 就在内存里压多久（实测 `npm test` 50.7 秒，界面全程不动）。
+           * `drainUntil` 两件都管——它的返回值就是这一波的执行结果。
+           */
+          const settled = yield* drainUntil(
+            emitQueue,
+            untilAborted(
+              input.signal,
+              Promise.all(
+                results.map(async (r) => {
+                  const started = Date.now()
+                  // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
+                  persist.markExecuting(r.stepId)
+                  const outcome = await registry.execute(r.call.name, r.call.arguments, ctx)
+                  return { ...r, outcome, durationMs: Date.now() - started }
+                }),
+              ),
             ),
           )
-
-          // 排空本波的中途输出（shell stdout 等），下一波复用同一个缓冲区。
-          while (emitBuffer.length) yield emitBuffer.shift()!
 
           for (const s of settled) {
             const status = s.outcome.status === 'success' ? 'success' : 'failure'

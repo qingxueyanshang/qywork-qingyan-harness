@@ -29,13 +29,18 @@ function usage(over: {
   inputTokens?: number
   cachedTokens?: number | null
   cacheWriteTokens?: number | null
-  turns?: { input: number; cached: number | null; cacheWrite: number | null }[]
+  turns?: {
+    input: number
+    cached: number | null
+    cacheWrite: number | null
+    source?: 'provider' | 'estimated'
+  }[]
 }) {
   return {
     inputTokens: over.inputTokens ?? 0,
     cachedTokens: over.cachedTokens === undefined ? 0 : over.cachedTokens,
     cacheWriteTokens: over.cacheWriteTokens ?? null,
-    turns: over.turns ?? [],
+    turns: (over.turns ?? []).map((t) => ({ source: 'provider' as const, ...t })),
   }
 }
 
@@ -104,7 +109,7 @@ describe('读数格式', () => {
     expect(compact(1_430_000)).toBe('1.43M')
   })
 
-  /** null 是「provider 没回报」，与真实零命中是两回事——显示成 0 会让人以为配置错了。 */
+  /** 没有逐轮记录时回落到整轮累计；`null` 在那条路上仍然是「没回报」。 */
   test('命中率：null 与 0 必须区分', () => {
     expect(hitRate(usage({ cachedTokens: null }))).toBe('未回报')
     expect(hitRate(usage({ inputTokens: 1000, cachedTokens: 0 }))).toBe('0.00%')
@@ -131,9 +136,9 @@ describe('读数格式', () => {
 
   /*
    * 一轮里第一次调用必然未命中，累计口径会把它摊进去，长轮次的率被压低。
-   * 用户看这个数字是想知道「现在缓存生效了吗」，所以取最后一次可观测的调用。
+   * 用户看这个数字是想知道「现在缓存生效了吗」，所以取最后一次调用。
    */
-  test('命中率：有逐轮记录时取最后一次可观测的调用', () => {
+  test('命中率：有逐轮记录时取最后一次调用', () => {
     const u = usage({
       inputTokens: 1_100,
       cachedTokens: 900,
@@ -144,6 +149,37 @@ describe('读数格式', () => {
     })
     // 累计是 900/2000 = 45%，最后一次是 900/1000 = 90%。
     expect(hitRate(u)).toBe('90.00%')
+  })
+
+  /*
+   * 复现原始失败形状：会话 `cv_0mt10yhy20000vace5y`，最后一次调用的回包里
+   * 连 `cached_tokens` 字段都没有。跳过它去找更早那条报过的（第 10 次，
+   * 37376/(18056+37376)），屏幕上就挂着 67.43%——而这一次是全价重付的。
+   * 计费那侧本来就把「没回报」按 0 命中算，读数跟着它。
+   */
+  test('命中率：最后一次没回报缓存字段就是 0，不往前找', () => {
+    const u = usage({
+      inputTokens: 74_220,
+      cachedTokens: 37_376,
+      turns: [
+        { input: 18_056, cached: 37_376, cacheWrite: null },
+        { input: 56_164, cached: null, cacheWrite: null },
+      ],
+    })
+    expect(hitRate(u)).toBe('0.00%')
+  })
+
+  /** 这一次连 usage 都没到（估算兜底）时不能写 0——那是编的。 */
+  test('命中率：最后一次没有 usage 才叫未回报', () => {
+    const u = usage({
+      inputTokens: 1_000,
+      cachedTokens: 900,
+      turns: [
+        { input: 100, cached: 900, cacheWrite: null },
+        { input: 900, cached: null, cacheWrite: null, source: 'estimated' },
+      ],
+    })
+    expect(hitRate(u)).toBe('未回报')
   })
 
   /** 老数据没有逐轮记录。回落到累计，**不能显示 `—`**——那读起来像「没有缓存」。 */
