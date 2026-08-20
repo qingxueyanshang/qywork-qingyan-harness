@@ -71,6 +71,18 @@ const pacer = createPacer({
   now: () => Date.now(),
 })
 
+/**
+ * 不落 transcript 的事件——它们不该冲正文缓冲。
+ *
+ * `git.state` 由服务端每 4 秒轮询广播一次，且**无条件发**：新连上的客户端只能从
+ * 这条广播拿到分支名，没有别的取法，所以那边不能改成「变了才发」。让它冲缓冲的话，
+ * 正文攒着的几十个字每 4 秒被瞬间倒出一次，界面上就是匀速吐一阵、蹦一下。
+ *
+ * **这份名单宁可短。** 漏一条只是多冲一次（顿一下）；多写一条会让真正要落
+ * transcript 的事件看到一段放了一半的正文，那是顺序错乱，比顿挫严重得多。
+ */
+const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
+
 /** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
 export function discardPace(): void {
   pacer.discard()
@@ -137,9 +149,9 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    */
   setState('lastEventAt', Date.now())
 
-  // 正文之外的一切都意味着「这一刻的界面要是完整的」——读数条、错误卡、
+  // 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
   // 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
-  if (ev.type !== 'text.delta') pacer.flush()
+  if (ev.type !== 'text.delta' && !OFF_TRANSCRIPT.has(ev.type)) pacer.flush()
 
   switch (ev.type) {
     case 'team.member':

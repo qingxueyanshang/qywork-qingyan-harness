@@ -371,6 +371,30 @@ describe('事件按会话归属过滤', () => {
     expect(state.transcript.map((t) => t.text).join('')).toContain('我的话')
   })
 
+  /**
+   * `git.state` 由服务端每 4 秒无条件广播一次。它不进 transcript，冲缓冲毫无必要，
+   * 而冲了的表现是：正文匀速吐一阵、每 4 秒把攒着的几十个字瞬间蹦出来一次。
+   */
+  test('git 轮询不冲正文缓冲', () => {
+    reset('cv_now')
+    applyEvent(deltaFrame('cv_now', '正在写的一段话'))
+    applyEvent({
+      seq: 2,
+      at: 0,
+      event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
+    } as never)
+    expect(state.transcript).toHaveLength(0)
+
+    // 真要落 transcript 的事件照旧冲——否则读数条会排在半段正文后面。
+    applyEvent({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+    expect(state.transcript.map((t) => t.text).join('')).toContain('正在写的一段话')
+  })
+
   test('没有归属的是工作区级事件，照样放行', () => {
     reset('cv_now')
     applyEvent({
