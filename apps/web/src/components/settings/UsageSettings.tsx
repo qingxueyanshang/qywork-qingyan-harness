@@ -51,7 +51,6 @@ const GROUPS = [
  * 两处各写一个词的话，同一件事在界面上会有两种说法。
  */
 const NA = 'N/A'
-const NA_NOTE = 'N/A：接口没有回报这个数，与回报了 0 不是一回事。'
 
 /** 金额。一笔计价都没有即这个模型没有价目，写成 $0.00 是把「不知道」说成「免费」。 */
 function money(cost: Record<string, number>): string {
@@ -154,10 +153,6 @@ export default function UsageSettings() {
                   </tbody>
                 </table>
               </div>
-              {/* 术语释义，跟着术语走：表里没有 N/A 就不占这一行。 */}
-              <Show when={u().rows.some((r) => r.cachedTokens === null || money(r.cost) === NA)}>
-                <p class="usage-note">{NA_NOTE}</p>
-              </Show>
             </Show>
           </>
         )}
