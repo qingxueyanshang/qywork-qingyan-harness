@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
-import { lookupModel, ProviderError } from '@qywork/ai'
+import { classifyProviderError, lookupModel, ProviderError } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext } from './index.ts'
+import { UNAVAILABLE_BACKOFF_MS } from './loop.ts'
 import { ToolRegistry, type ToolSpec } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 吐出预设的一轮。 */
@@ -546,21 +547,15 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   test('首个事件就迟迟不来 —— 报 stream_idle_timeout 并收尾', async () => {
     const events: string[] = []
     let code: string | undefined
-    let retryable: boolean | undefined
     for await (const ev of loopWith(stallingAdapter({ stallAfterFirst: false })).run({
       runId: 'rn_1' as never,
       history: [],
       signal: new AbortController().signal,
     })) {
       events.push(ev.type)
-      if (ev.type === 'run.error') {
-        code = ev.code
-        retryable = ev.retryable
-      }
+      if (ev.type === 'run.error') code = ev.code
     }
     expect(code).toBe('stream_idle_timeout')
-    // 卡死通常是一过性的，重试有意义——前端据此给重试按钮。
-    expect(retryable).toBe(true)
     // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
@@ -1009,7 +1004,6 @@ describe('用户中断不是错误', () => {
         throw new ProviderError({
           code: 'internal_error',
           message: '已取消',
-          retryable: false,
           provider: 'anthropic_messages',
         })
       },
@@ -1197,6 +1191,21 @@ describe('注册表是工具的唯一权威', () => {
  * 这一组锁三件事：**账本必须落终态**、**零输出才重发**、**重发过要说出来**。
  */
 describe('传输断了：落终态、无痕重发一次、说清形状', () => {
+  /*
+   * 退避是真的在等，`reject` 那几条会让这个文件多跑十秒。
+   *
+   * 只把退避那一档改成立即触发，别的定时器原样放行——全量替换会让卡死检测
+   * （`STREAM_IDLE_TIMEOUT_MS`）立刻开火，成功用例会被判成断流。
+   */
+  const realSetTimeout = globalThis.setTimeout
+  beforeAll(() => {
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(fn, ms === UNAVAILABLE_BACKOFF_MS ? 0 : ms, ...rest)) as typeof setTimeout
+  })
+  afterAll(() => {
+    globalThis.setTimeout = realSetTimeout
+  })
+
   interface Recorded {
     opened: number[]
     settled: { status: string; errorCode: string | null }[]
@@ -1222,7 +1231,9 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
    * `'break'` 与 `'break-after-text'` 的区别就是重发的那条判据：前者 provider
    * 一个事件都没回来（重发无痕），后者已经吐了字（重发会让用户看到两段不一样的话）。
    */
-  function scriptedAdapter(script: ('break' | 'break-after-text' | 'reject' | 'ok')[]): LlmAdapter {
+  function scriptedAdapter(
+    script: ('break' | 'break-after-text' | 'reject' | 'reject-relay' | 'ok')[],
+  ): LlmAdapter {
     let i = 0
     return {
       kind: 'anthropic_messages',
@@ -1236,7 +1247,6 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
           throw new ProviderError({
             code: 'network_error',
             message: '连接被断开',
-            retryable: true,
             provider: 'anthropic_messages',
             cause: Object.assign(new Error('The socket connection was closed unexpectedly.'), {
               code: 'ECONNRESET',
@@ -1247,10 +1257,19 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
           throw new ProviderError({
             code: 'provider_unavailable',
             message: '服务端暂时不可用',
-            retryable: true,
             provider: 'anthropic_messages',
             status: 503,
           })
+        }
+        if (act === 'reject-relay') {
+          // 中转站不发 5xx，把「后端暂时不可用」塞进 400。这条要走真的分类器，
+          // 手写 ProviderError 就绕开了「400 归哪个码」——那正是要锁的一环。
+          throw classifyProviderError(
+            'anthropic_messages',
+            Object.assign(new Error('{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'), {
+              status: 400,
+            }),
+          )
         }
         yield { type: 'text_delta', delta: '完成' }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
@@ -1300,8 +1319,37 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     // 有 HTTP 状态码 = 它回绝了，我们知道请求到了。这条与「连不上」必须分开记，
     // 两者差的是计费责任。
     expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
-    // 且不重发：provider 答复过的失败不在重发窗口里。
-    expect(rec.opened).toEqual([0])
+  })
+
+  test('上游自报暂时不可用：等一下重发一次，第二次成功就当无事发生', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['reject']))
+
+    // 不重发的代价不是省钱：用户照样要手动继续，那一次付的是同一笔长 prompt 的钱，
+    // 而且 run 已经落成 failed，新消息还得让模型重新理解上一轮做到哪。
+    expect(rec.opened).toEqual([0, 1])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('中转站用 400 报「暂时不可用」：照样重发，整轮不该就此终结', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['reject-relay']))
+
+    expect(rec.opened).toEqual([0, 1])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('重发后还是不可用：正文不许带传输读数——上游明确答复过，请求落地了', async () => {
+    const { events } = await collect(scriptedAdapter(['reject', 'reject']))
+
+    const err = events.find((e) => e.type === 'run.error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    expect(message).toContain('服务端暂时不可用')
+    expect(message).toContain('已自动重发一次')
+    // 「发出后 N 秒内没有收到任何数据」是传输层的读数，给它拼上等于告诉用户请求没发出去。
+    expect(message).not.toMatch(/没有收到任何数据/)
   })
 
   test('已经吐过字就不重发——重发是重新生成，用户会看到两段不一样的话', async () => {

@@ -163,7 +163,6 @@ export class OpenAICompatAdapter implements LlmAdapter {
         throw new ProviderError({
           code: 'provider_unavailable',
           message: '响应为 200 但不含任何 SSE 数据',
-          retryable: false,
           provider: 'openai_chat_completions',
           detail: { model: req.model },
         })

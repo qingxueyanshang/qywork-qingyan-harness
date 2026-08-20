@@ -297,13 +297,34 @@ function idleTimeoutFor(effort: ChatRequest['effort']): number {
 }
 
 /**
- * 会原样重发一次的失败。
+ * 上游自报「暂时不可用」后的等待。
  *
- * **只有传输层。** 429 与 5xx 的 `retryable` 也是 true，但那两类 provider 明确答复过
- * ——我们知道请求到了，立刻重发就是在无退避地捶它，而 429 的正确动作是等。
- * 传输层不一样：连接坏了，我们连「它收没收到」都不知道，原样再发一次是唯一的答案。
+ * 这类故障的恢复是秒级，而重发期间界面上没有任何反馈，等更久用户会当成卡死。
  */
-const RESENDABLE: ReadonlySet<string> = new Set(['network_error', 'stream_idle_timeout'])
+export const UNAVAILABLE_BACKOFF_MS = 3_000
+
+/**
+ * 会自动重发一次的失败，值是重发前的等待毫秒。
+ *
+ * **传输层等 0，上游明确答复的不可用要等。** 连接坏了，我们连「它收没收到」都不知道，
+ * 原样立刻再发是唯一的答案；`provider_unavailable` 是上游亲口说的「暂时不行」，
+ * 不等就是在无退避地捶它。
+ *
+ * 不要以「重发要多付一次长 prompt 的钱」为由把 `provider_unavailable` 摘掉：
+ * 不重发时用户要手动继续，那一次付的是同一笔钱，而且 run 已经落成 failed，
+ * 新消息还得让模型重新理解上一轮做到哪。
+ *
+ * `rate_limited` 不在表里：429 该按 provider 给的 `Retry-After` 等，不是固定值。
+ *
+ * 已知代价：`provider_unavailable` 同时装着 4xx 参数错误（`errors.ts` 的 400/422 一支），
+ * 那类重发必然拿回同一个拒绝，白等一次退避、白付一次长 prompt。接受它是因为参数错误
+ * 由配置决定，改一次就不再出现；而临时不可用是随机的，不救就是丢掉整轮已完成的工作。
+ */
+const RESENDABLE: ReadonlyMap<string, number> = new Map([
+  ['network_error', 0],
+  ['stream_idle_timeout', 0],
+  ['provider_unavailable', UNAVAILABLE_BACKOFF_MS],
+])
 
 /**
  * 传输失败的现场读数。
@@ -346,6 +367,11 @@ function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
     // unhandledRejection，而它会把整个进程带下去。
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', fail))
   })
+}
+
+/** 单纯的等待。**它自己不认中止信号**，要能被停止就套 `untilAborted`。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
@@ -448,7 +474,6 @@ export class AgentLoop {
               // 只给分类短语，不带数字。「收到了多少 / 多久没动静」由 `run()` 统一补
               // （`transportReading`）——两处各拼一半的话，同一句话就有了两个作者。
               message: '模型响应中断',
-              retryable: true,
               provider,
             }),
           )
@@ -1001,9 +1026,11 @@ export class AgentLoop {
               throw err
             }
 
-            // 其余非传输失败（4xx）原样上抛：provider 已经说清是什么了，
-            // 补读数、重发都无从谈起。
-            if (!pe || !RESENDABLE.has(code)) throw err
+            // 不在重发表里的原样上抛：provider 已经说清是什么了（参数错、没权限、
+            // 模型不存在），重发拿回来的是同一个拒绝。
+            if (!pe) throw err
+            const backoffMs = RESENDABLE.get(code)
+            if (backoffMs === undefined) throw err
 
             const silentMs = Date.now() - lastEventAt
             /*
@@ -1019,7 +1046,7 @@ export class AgentLoop {
              */
             const raw = (err as { cause?: unknown }).cause
             process.stderr.write(
-              `[qy] 传输失败 turn=${step} retry=${attempt} code=${code} errno=${String(
+              `[qy] 请求失败 turn=${step} retry=${attempt} code=${code} errno=${String(
                 (raw as { code?: unknown })?.code ?? '-',
               )} events=${providerEvents} silent=${Math.round(silentMs / 1000)}s | ${
                 raw instanceof Error ? raw.message : pe.message
@@ -1028,22 +1055,32 @@ export class AgentLoop {
 
             if (attempt === 0 && providerEvents === 0) {
               attempt++
+              // 等待必须可中断：干等的这几秒里用户点停止，不拽回来就是按钮没反应。
+              if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue
             }
 
-            // 分类短语 + 现场读数 + 有没有替他试过，一行说完。
+            /*
+             * 分类短语 + 现场读数 + 有没有替他试过，一行说完。
+             *
+             * 现场读数只给传输层。`provider_unavailable` 是上游明确答复的，
+             * 给它拼「发出后 N 秒内没有收到任何数据」等于告诉用户请求没落地。
+             */
             throw new ProviderError({
               code: pe.code,
               message: [
                 pe.message,
-                transportReading(
-                  providerEvents,
-                  silentMs,
-                  thinkingText.length + assistantText.length,
-                ),
-                ...(attempt > 0 ? ['已自动重发一次，仍然中断'] : []),
+                ...(code === 'provider_unavailable'
+                  ? []
+                  : [
+                      transportReading(
+                        providerEvents,
+                        silentMs,
+                        thinkingText.length + assistantText.length,
+                      ),
+                    ]),
+                ...(attempt > 0 ? ['已自动重发一次，仍然失败'] : []),
               ].join('，'),
-              retryable: pe.retryable,
               provider: pe.provider,
               cause: err,
             })
@@ -1138,7 +1175,6 @@ export class AgentLoop {
             runId: input.runId,
             code: 'provider_unavailable',
             message: refusalNote,
-            retryable: false,
           }
           break
         }
@@ -1169,7 +1205,6 @@ export class AgentLoop {
               runId: input.runId,
               code: 'provider_unavailable',
               message: '模型声明要调用工具，但返回里没有可解析的调用',
-              retryable: true,
             }
             break
           }
@@ -1386,7 +1421,6 @@ export class AgentLoop {
         runId: input.runId,
         code: pe?.code ?? 'internal_error',
         message: pe?.message ?? (err instanceof Error ? err.message : String(err)),
-        retryable: pe?.retryable ?? false,
       }
       yield {
         type: 'run.finished',

@@ -122,7 +122,6 @@ export async function startRun(
         runId: '' as RunId,
         code: 'internal_error',
         message: '该会话已有任务在执行，请先中断',
-        retryable: false,
       },
       conversationId,
     )
@@ -155,7 +154,6 @@ export async function startRun(
         runId: '' as RunId,
         code: 'internal_error',
         message: '这个会话找不到对应的项目目录，无法执行',
-        retryable: false,
       },
       conversationId,
     )
@@ -253,7 +251,6 @@ export async function startRun(
           runId: (currentRunId ?? '') as RunId,
           code: pe?.code ?? 'internal_error',
           message,
-          retryable: pe?.retryable ?? false,
         },
         conversationId,
       )

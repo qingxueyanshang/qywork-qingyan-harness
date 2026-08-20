@@ -133,7 +133,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         throw new ProviderError({
           code: 'network_error',
           message: `连接超时：${PROVIDER_HTTP.timeout / 1000} 秒内没有收到响应`,
-          retryable: true,
           provider: 'openai_responses',
         })
       }
@@ -152,7 +151,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       throw new ProviderError({
         code: 'provider_unavailable',
         message: '响应没有 body',
-        retryable: true,
         provider: 'openai_responses',
         status: res.status,
       })

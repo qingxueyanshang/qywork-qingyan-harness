@@ -96,14 +96,17 @@ const provider = Bun.serve({
     bodies.push(body)
     const next = script.shift()
     /*
-     * **脚本用完 = 500，不是再给一句无害的文本。**
+     * **脚本用完 = 401，不是再给一句无害的文本。**
      *
      * 循环没有轮数上限，而一句正常收尾的文本会让服务端接着起下一轮——脚本一空，
      * 那条会话就在后台一路转下去，吃掉后面用例的脚本，断言全成赛跑。
-     * 500 会被判成 `provider_error`（不在 `CONTINUABLE` 里）→ 目标转 blocked →
-     * 循环停下。用例要多跑几轮就多写几条脚本。
+     * 401 判成 `auth_failed`，是个**当场终结**的答复（不在 `CONTINUABLE` 里）→
+     * 目标转 blocked → 循环停下。用例要多跑几轮就多写几条脚本。
+     *
+     * 不要换成 5xx 或 400：那一档归 `provider_unavailable`，agent 循环会退避后
+     * 自动重发一次，于是脚本用完还会再打一次请求，`bodies` 平白多一条。
      */
-    if (!next) return new Response('脚本已用完', { status: 500 })
+    if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
   },
 })
@@ -652,13 +655,13 @@ describe('用户点继续', () => {
 describe('报错正文落账本', () => {
   test('provider 报错的那一轮，error_message 与 error_code 都读得回来', async () => {
     const cv = conversation()
-    // 脚本留空 = 假 provider 回 500，正是一次真实的 provider 失败。
+    // 脚本留空 = 假 provider 回 401，正是一次真实的 provider 失败。
     await startRun(cv, '随便说点什么', undefined, deps())
     await waitFor((e) => e.type === 'run.finished')
 
     const run = listRuns(store, cv).at(-1)
     expect(run?.stopReason).toBe('provider_error')
-    expect(run?.errorCode).toBe('provider_unavailable')
+    expect(run?.errorCode).toBe('auth_failed')
     expect(run?.errorMessage).toBeTruthy()
   }, 20_000)
 

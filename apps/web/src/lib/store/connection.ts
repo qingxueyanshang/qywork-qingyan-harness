@@ -353,7 +353,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     case 'run.error':
       setState(
         produce((s) => {
-          s.error = { code: ev.code, message: ev.message, retryable: ev.retryable }
+          s.error = { code: ev.code, message: ev.message }
           /*
            * **`run.error` 也是终态，必须把 running 放下来。**
            *

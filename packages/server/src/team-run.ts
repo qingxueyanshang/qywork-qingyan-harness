@@ -159,7 +159,6 @@ export async function runTeam(
         runId,
         code: 'internal_error',
         message: err instanceof Error ? err.message : String(err),
-        retryable: false,
       })
     } finally {
       deps.runs.unregister(runId)

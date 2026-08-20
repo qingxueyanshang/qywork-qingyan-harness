@@ -126,8 +126,6 @@ export interface RunErrorEvent {
   /** 归类后的错误码，前端据此决定提示（如去配 key、去充值、换模型）。 */
   code: ErrorCode
   message: string
-  /** true = 用户可以直接重试；false = 需要先改配置。 */
-  retryable: boolean
   detail?: Record<string, unknown>
 }
 

@@ -1030,7 +1030,6 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         throw new ProviderError({
           code: 'stream_idle_timeout',
           message: '模型响应中断',
-          retryable: true,
           provider: adapter.spec.provider,
           cause: err,
         })

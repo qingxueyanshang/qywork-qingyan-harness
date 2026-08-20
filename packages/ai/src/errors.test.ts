@@ -34,13 +34,11 @@ describe('传输层失败必须可重试', () => {
   test('Bun 实测：The operation timed out.', () => {
     const e = classifyProviderError(P, transport('ETIMEDOUT', 'The operation timed out.'))
     expect(e.code).toBe('network_error')
-    expect(e.retryable).toBe(true)
   })
 
   test('Bun 实测：The socket connection was closed unexpectedly.', () => {
     const e = classifyProviderError(P, new Error('The socket connection was closed unexpectedly.'))
     expect(e.code).toBe('network_error')
-    expect(e.retryable).toBe(true)
   })
 
   /**
@@ -54,14 +52,12 @@ describe('传输层失败必须可重试', () => {
       transport('UNKNOWN_CERTIFICATE_VERIFICATION_ERROR', 'unknown certificate verification error'),
     )
     expect(e.code).toBe('network_error')
-    expect(e.retryable).toBe(true)
     expect(e.message).toMatch(/证书|代理/)
   })
 
   test('code 优先于文案：文案没线索也能靠 code 认出来', () => {
     const e = classifyProviderError(P, transport('ECONNRESET', 'read'))
     expect(e.code).toBe('network_error')
-    expect(e.retryable).toBe(true)
   })
 
   test('Node 那套文案继续认，别修一头坏一头', () => {
@@ -79,7 +75,6 @@ describe('传输层失败必须可重试', () => {
   test('无关的错误不被误判成网络问题', () => {
     const e = classifyProviderError(P, new Error('Cannot read properties of undefined'))
     expect(e.code).toBe('internal_error')
-    expect(e.retryable).toBe(false)
   })
 })
 
@@ -142,17 +137,17 @@ describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
     ]) {
       const e = classifyProviderError(P, err)
       expect(e.code).toBe('network_error')
-      expect(e.retryable).toBe(true)
     }
   })
 })
 
 describe('用户中断不是错误', () => {
-  test('AbortError 不报网络问题也不重试', () => {
+  test('AbortError 不报网络问题也不重发', () => {
     const err = new Error('aborted')
     err.name = 'AbortError'
     const e = classifyProviderError(P, err)
-    expect(e.retryable).toBe(false)
+    // internal_error 不在 loop.ts 的重发表里——用户按的停止不该被自动重发。
+    expect(e.code).toBe('internal_error')
     expect(e.message).toBe('已取消')
   })
 })
@@ -167,20 +162,18 @@ describe('按用户的下一步动作分类', () => {
   test('429 分限速与额度耗尽', () => {
     const limited = classifyProviderError(P, http(429, 'Rate limit reached'))
     expect(limited.code).toBe('rate_limited')
-    expect(limited.retryable).toBe(true)
 
     const broke = classifyProviderError(P, http(429, 'You exceeded your current quota'))
     expect(broke.code).toBe('insufficient_quota')
-    expect(broke.retryable).toBe(false)
   })
 
   test('404 指向模型名或接口地址，而不是「服务不可用」', () => {
     expect(classifyProviderError(P, http(404)).code).toBe('model_not_found')
   })
 
-  test('5xx 可重试', () => {
+  test('5xx 归 provider_unavailable —— 这个码在 loop.ts 的重发表里', () => {
     for (const s of [500, 502, 503, 529]) {
-      expect(classifyProviderError(P, http(s)).retryable).toBe(true)
+      expect(classifyProviderError(P, http(s)).code).toBe('provider_unavailable')
     }
   })
 
@@ -192,6 +185,20 @@ describe('按用户的下一步动作分类', () => {
     const e = classifyProviderError(P, http(400, 'max_tokens must be less than or equal to 8192'))
     expect(e.capacity).toBeUndefined()
     expect(e.code).toBe('provider_unavailable')
+  })
+
+  /**
+   * 中转站会把「后端暂时不可用」发成 400 而不是 5xx。归 `provider_unavailable`
+   * 才进得了 `loop.ts` 的重发表；判成别的码，一次上游抖动就终结整轮。
+   */
+  test('中转站用 400 报「暂时不可用」，仍归 provider_unavailable', () => {
+    const e = classifyProviderError(
+      P,
+      http(400, '{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'),
+    )
+    expect(e.code).toBe('provider_unavailable')
+    // 带上 capacity 会触发一次压缩重发，而这跟上下文长短无关。
+    expect(e.capacity).toBeUndefined()
   })
 
   /** 413 走到这里说明容量分类器已经否掉它了 —— 那是网关体积限制，不是上下文超限。 */
@@ -207,7 +214,6 @@ describe('已经分好类的不再动它', () => {
     const original = new ProviderError({
       code: 'context_overflow',
       message: '超了',
-      retryable: false,
       provider: P,
     })
     expect(classifyProviderError(P, original)).toBe(original)

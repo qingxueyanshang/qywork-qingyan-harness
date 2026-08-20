@@ -21,7 +21,6 @@ describe('空 key 在本地就判定，不发请求', () => {
     expect(e.code).toBe('no_api_key')
     // auth_failed 会把新用户引向「检查 key 抄错没抄错」，而它根本还不存在。
     expect(e.code).not.toBe('auth_failed')
-    expect(e.retryable).toBe(false)
   })
 
   test('只有空白也算没配', () => {
