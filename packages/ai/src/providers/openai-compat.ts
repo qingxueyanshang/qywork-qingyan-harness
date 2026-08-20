@@ -13,7 +13,7 @@
  */
 
 import OpenAI from 'openai'
-import type { ModelSpec } from '../catalog.ts'
+import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
@@ -45,13 +45,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
    * 不会因为这个改动开始收到它不认识的字段。
    */
-  get transmits(): { thinking: boolean; effort: boolean } {
-    // effort 真正上线的判据是 `buildReasoning`：只有这两种 thinking 会带
-    // `reasoning_effort`，其余（含未收录模型的 'none'）一个字节都不发。
-    // 恒 true 会让 `qy probe` 的 effort 探针在这些模型上全部假通过。
-    const sendsEffort =
-      this.spec.thinking === 'deepseek_thinking' || this.spec.thinking === 'reasoning_effort'
-    return { thinking: false, effort: sendsEffort }
+  get transmits(): { effort: boolean } {
+    // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
+    // 恒 true 会让 `qy probe` 的 effort 探针在发不出该字段的模型上全部假通过。
+    return { effort: effortIsTransmittable(this.spec) }
   }
   readonly spec: ModelSpec
   private readonly client: OpenAI
@@ -253,20 +250,18 @@ export function normalizeBaseUrl(raw: string | undefined): string {
 /**
  * 兼容协议下的思考控制字段。
  *
- * **判据是 `spec.thinking`（用哪套字段），不是 `spec.effortLevels`（有哪几档）。**
+ * **「发不发」由 `effortIsTransmittable` 一处裁决**，这里只决定「用哪套字段」。
+ * 两件事各判一遍的代价实测付过：`transmits` 说发得出去而这里按方言省掉，
+ * 于是探针恒通过，把一个凭空的结论写回目录。
  *
- * 拿档位表当门禁很自然，但会把 `qy probe` 废掉：探测器的工作正是去试目录里
- * 还没写的档位，用档位表挡住它，它就只能确认已知的东西，永远发现不了新的。
- * 档位是否合法由**发起方**保证——界面只列这个模型声明的档位。
- *
- * 不认识的模型 `thinking` 是 `'none'`，落到最后一行返回 `{}`，
- * 一个字节都不会多发；自建端点和中转站不会因为这个函数收到没见过的键。
+ * 不认识的模型 `thinking` 是 `'none'`，被门禁挡在外面，一个字节都不会多发；
+ * 自建端点和中转站不会因为这个函数收到没见过的键。
  *
  * DeepSeek 那支要**两个字段一起发**：只发 `reasoning_effort` 而不开 `thinking`，
  * 思考根本没打开，档位当然没有效果。
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
-  if (!effort) return {}
+  if (!effort || !effortIsTransmittable(spec)) return {}
   /*
    * **不在这个模型档位面里的档，一个字节都不发。**
    *
@@ -283,11 +278,9 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
    * 不发 = 模型走自己的默认，这与「没选过」是同一个行为，可预期。
    */
   if (!spec.effortLevels.includes(effort as never)) return {}
-  if (spec.thinking === 'deepseek_thinking') {
-    return { thinking: { type: 'enabled' }, reasoning_effort: effort }
-  }
-  if (spec.thinking === 'reasoning_effort') return { reasoning_effort: effort }
-  return {}
+  return spec.thinking === 'deepseek_thinking'
+    ? { thinking: { type: 'enabled' }, reasoning_effort: effort }
+    : { reasoning_effort: effort }
 }
 
 function buildTools(tools: ToolSchema[]) {

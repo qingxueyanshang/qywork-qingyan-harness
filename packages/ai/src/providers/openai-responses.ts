@@ -45,7 +45,7 @@
  * - 只有**最后**一轮工具调用被检查；但我们每一轮都带上，不去赌它的实现细节。
  */
 
-import type { ModelSpec } from '../catalog.ts'
+import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
@@ -64,13 +64,12 @@ import { normalizeBaseUrl } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
-  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按模型的 spec 算**：
-  // 未收录的模型两个字段都省略，声明成恒 true 会让探针恒通过。
-  get transmits(): { thinking: boolean; effort: boolean } {
-    return {
-      thinking: this.spec.thinking !== 'none',
-      effort: this.spec.effortLevels.length > 0,
-    }
+  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按模型的方言算**：
+  // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
+  // 各写一份的代价实测付过：这里说「发得出去」而那边按方言省掉，
+  // 于是探针恒通过，把凭空的结论写回目录。
+  get transmits(): { effort: boolean } {
+    return { effort: effortIsTransmittable(this.spec) }
   }
   readonly spec: ModelSpec
   private readonly baseUrl: string
@@ -322,8 +321,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    */
   private buildReasoning(req: ChatRequest): Record<string, unknown> {
     if (this.spec.thinking === 'none') return {}
+    // 带不带 effort 只由 `effortIsTransmittable` 裁决，不在这里另判一遍。
     const effort =
-      req.effort && this.spec.effortLevels.includes(req.effort) ? req.effort : undefined
+      req.effort && effortIsTransmittable(this.spec) && this.spec.effortLevels.includes(req.effort)
+        ? req.effort
+        : undefined
     return {
       reasoning: {
         ...(effort ? { effort } : {}),

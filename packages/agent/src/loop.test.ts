@@ -11,7 +11,7 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
   let turn = 0
   return {
     kind: 'anthropic_messages',
-    transmits: { thinking: true, effort: true },
+    transmits: { effort: true },
     spec: lookupModel(
       model,
       model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
@@ -221,7 +221,7 @@ describe('流式通道的顺序', () => {
 
     const adapter: LlmAdapter = {
       kind: 'openai_chat_completions',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -285,7 +285,7 @@ describe('流式通道的顺序', () => {
     }
     const adapter: LlmAdapter = {
       kind: 'openai_chat_completions',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -512,7 +512,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   function stallingAdapter(opts: { stallAfterFirst: boolean }): LlmAdapter & { aborted: boolean } {
     const self = {
       kind: 'anthropic_messages' as const,
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       aborted: false,
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
@@ -1000,7 +1000,7 @@ describe('用户中断不是错误', () => {
   function abortingAdapter(controller: AbortController): LlmAdapter {
     return {
       kind: 'anthropic_messages' as const,
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -1226,7 +1226,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     let i = 0
     return {
       kind: 'anthropic_messages',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         const act = script[i++] ?? 'ok'
@@ -1434,7 +1434,7 @@ describe('provider 说要调工具但一条都没解析出来', () => {
     const loop = new AgentLoop({
       adapter: {
         kind: 'openai_chat_completions',
-        transmits: { thinking: false, effort: false },
+        transmits: { effort: false },
         spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
         // provider 说 tool_calls，但整轮没有一个 tool_calls 事件——
         // 中转站把非流式响应硬转成 SSE、或名字分片丢了都是这个形状。

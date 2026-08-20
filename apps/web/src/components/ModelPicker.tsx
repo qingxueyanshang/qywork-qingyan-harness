@@ -2,9 +2,10 @@ import type { EffortLevel } from '@qywork/core'
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import {
   activeModel,
-  loadModels,
-  type ModelCatalog,
+  ensureModelCatalog,
   type ModelOption,
+  modelCatalog,
+  modelCatalogError,
   setEffort,
   setModel,
   state,
@@ -35,28 +36,6 @@ import { IconChevron } from './Icons.tsx'
  * 刚点过的那一行就跑位了（B9）。
  */
 
-/** 目录全局只拉一次。并发调用共用同一个在途请求。 */
-const [catalog, setCatalog] = createSignal<ModelCatalog | null>(null)
-const [catalogError, setCatalogError] = createSignal<string | null>(null)
-let inflight: Promise<void> | null = null
-
-function ensureCatalog(): Promise<void> {
-  if (catalog()) return Promise.resolve()
-  inflight ??= loadModels()
-    .then((c) => {
-      setCatalog(c)
-      setCatalogError(null)
-    })
-    .catch((e: unknown) => {
-      // 拉不到就说拉不到。留一个空列表会让用户以为「没有别的模型可选」。
-      setCatalogError(e instanceof Error ? e.message : '模型列表加载失败')
-    })
-    .finally(() => {
-      inflight = null
-    })
-  return inflight
-}
-
 /**
  * 当前这一对在目录里对应哪一行。
  *
@@ -65,7 +44,7 @@ function ensureCatalog(): Promise<void> {
  * 两处答案不一致的话，界面上的档位面属于 A 接口，而请求发给了 B。
  */
 function activeRow(): ModelOption | null {
-  const c = catalog()
+  const c = modelCatalog()
   const ref = activeModel()
   if (!c || !ref) return null
   const owners = c.providers.filter((p) => p.models.some((m) => m.id === ref.model))
@@ -89,7 +68,7 @@ export function ModelPicker() {
    * 「没有档位」画出来，点一下才补上——一个控件在被点的瞬间变形，比它一开始
    * 就是完整的糟得多。
    */
-  onMount(() => void ensureCatalog())
+  onMount(() => void ensureModelCatalog())
 
   const close = () => {
     setOpen(false)
@@ -128,30 +107,15 @@ export function ModelPicker() {
   }
 
   /**
-   * 选一档：先落盘，成功了再改目录里那一行。
+   * 选一档：只落盘，不在这里改目录。
    *
-   * 顺序反过来的话，写盘失败时界面显示的是一个从未落盘的档，而下一轮实际发出去
-   * 的还是旧值——那种不一致用户没有任何办法看出来。
+   * 目录由 `saveServerConfig` 落盘成功后统一重算，**这里再补一笔就是第二本账**：
+   * 写盘失败时界面会显示一个从未落盘的档，而下一轮实际发出去的还是旧值。
    */
   const pickEffort = async (lv: EffortLevel) => {
     const ref = activeModel()
     if (!ref) return
     await setEffort(ref.provider, ref.model, lv)
-    setCatalog((c) =>
-      c
-        ? {
-            ...c,
-            providers: c.providers.map((p) =>
-              p.name === ref.provider
-                ? {
-                    ...p,
-                    models: p.models.map((m) => (m.id === ref.model ? { ...m, effort: lv } : m)),
-                  }
-                : p,
-            ),
-          }
-        : c,
-    )
   }
 
   return (
@@ -207,10 +171,10 @@ export function ModelPicker() {
 
           <Show when={sub() === 'model'}>
             <div class="model-sub" role="listbox">
-              <Show when={catalogError()}>
-                <div class="model-menu-error">{catalogError()}</div>
+              <Show when={modelCatalogError()}>
+                <div class="model-menu-error">{modelCatalogError()}</div>
               </Show>
-              <For each={catalog()?.providers ?? []}>
+              <For each={modelCatalog()?.providers ?? []}>
                 {(p) => (
                   <>
                     {/* 接口名就是分组名。它是用户自己起的，比协议名有用得多。 */}
@@ -246,7 +210,7 @@ export function ModelPicker() {
                 )}
               </For>
               {/* 一个模型都没配 = 这个选择器无事可做。说清出口，别留一个空框。 */}
-              <Show when={catalog() && catalog()?.providers.every((p) => p.models.length === 0)}>
+              <Show when={modelCatalog()?.providers.every((p) => p.models.length === 0)}>
                 <div class="model-menu-error">先在设置 → 模型里给接口挂一个模型</div>
               </Show>
             </div>

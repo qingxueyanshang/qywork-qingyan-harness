@@ -57,6 +57,7 @@ const {
   activePanelTab,
   applyEvent,
   client,
+  modelCatalog,
   closeAllPanelTabs,
   closePanel,
   closePanelTab,
@@ -69,6 +70,7 @@ const {
   panelWidth,
   reloadActiveConversation,
   resizePanel,
+  saveServerConfig,
   setSidePanel,
   setState,
   sidePanel,
@@ -726,5 +728,47 @@ describe('事件到达时刻按帧记下来', () => {
       }),
     )
     expect(state.lastEventAt).toBe(null)
+  })
+})
+
+/**
+ * 模型目录是配置的派生态，**失效点只有一个**：配置落盘那一处。
+ *
+ * 各个组件自己持一份缓存的代价实测付过：设置页校准完思考写回了配置，
+ * 输入区那份目录还是开屏时拉的，档位要整页重载才出现。
+ */
+describe('配置一落盘，模型目录跟着重算', () => {
+  test('保存之后目录是保存后的那一份', async () => {
+    const calls: string[] = []
+    let levels = ['low']
+    // 与上面几组同样直接替换 `client.api`：这一条测的是「谁在什么时候重算」，
+    // 不是 HTTP 那一层。
+    ;(client as unknown as { api: (p: string, init?: RequestInit) => Promise<unknown> }).api =
+      async (p: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${p}`)
+        if (p.startsWith('/api/models')) {
+          return {
+            providers: [{ name: 'p', models: [{ id: 'm', label: 'm', effortLevels: levels }] }],
+            active: { provider: 'p', model: 'm' },
+            library: [],
+          }
+        }
+        if (p.startsWith('/api/config')) {
+          return {
+            config: { active: { provider: 'p', model: 'm' }, providers: {} },
+            path: '',
+            notices: [],
+            problems: [],
+          }
+        }
+        throw new Error(`没桩这条：${p}`)
+      }
+
+    levels = ['low', 'high']
+    await saveServerConfig({ active: { provider: 'p', model: 'm' }, providers: {} } as never)
+
+    expect(modelCatalog()?.providers[0]?.models[0]?.effortLevels).toEqual(['low', 'high'])
+    // 目录是保存**之后**取的：反过来取到的是落盘前那一份，看起来像没生效。
+    expect(calls.indexOf('GET /api/models')).toBeGreaterThan(calls.indexOf('PUT /api/config'))
   })
 })

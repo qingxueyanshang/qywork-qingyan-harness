@@ -18,7 +18,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
-import type { ModelSpec } from '../catalog.ts'
+import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall } from '../errors.ts'
 import { estimateMessage, estimateRequest, estimateSchemas, estimateText } from '../tokens.ts'
 import type {
@@ -42,11 +42,8 @@ const MIN_TOKENS_WHEN_THINKING = 16_000
 
 export class AnthropicAdapter implements LlmAdapter {
   readonly kind = 'anthropic_messages' as const
-  get transmits(): { thinking: boolean; effort: boolean } {
-    // always_on / none 在 resolveThinking 里返回 undefined = 整个省略 thinking 字段。
-    const thinking =
-      this.spec.thinking === 'adaptive_only' || this.spec.thinking === 'budget_tokens'
-    return { thinking, effort: this.spec.effortLevels.length > 0 }
+  get transmits(): { effort: boolean } {
+    return { effort: effortIsTransmittable(this.spec) }
   }
   readonly spec: ModelSpec
   private readonly client: Anthropic
@@ -171,7 +168,7 @@ export class AnthropicAdapter implements LlmAdapter {
   // ───────────────────────── 装配 ─────────────────────────
 
   private buildBody(req: ChatRequest) {
-    const thinking = this.resolveThinking(req)
+    const thinking = this.resolveThinking()
     const effort = this.resolveEffort(req)
 
     return {
@@ -195,30 +192,16 @@ export class AnthropicAdapter implements LlmAdapter {
   /**
    * 思考配置。返回 undefined 表示**整个省略 thinking 字段**——这对 Fable 5 是唯一
    * 合法写法，对 Opus 5 / Sonnet 5 则等价于 adaptive（它们默认就思考）。
+   *
+   * 只按 `spec.thinking` 分派：调用方不请求思考形态，强度由 `output_config.effort`
+   * 走。**不要改成从请求里读形态**——`budget_tokens` 那套老形态在 Opus 5 /
+   * Sonnet 5 上一律 400。
    */
-  private resolveThinking(req: ChatRequest) {
-    const want = req.thinking
-    switch (this.spec.thinking) {
-      case 'always_on':
-        // 恒开：任何显式配置都 400，省略即可。
-        return undefined
-      case 'adaptive_only': {
-        return {
-          type: 'adaptive' as const,
-          display: want?.mode === 'adaptive' ? (want.display ?? 'summarized') : 'summarized',
-        }
-      }
-      case 'budget_tokens': {
-        if (!want) return undefined
-        if (want.mode === 'budget') {
-          return { type: 'enabled' as const, budget_tokens: want.budgetTokens }
-        }
-        // 老模型收不到 adaptive，退回一个合理预算（必须小于 max_tokens）。
-        return { type: 'enabled' as const, budget_tokens: 8_192 }
-      }
-      default:
-        return undefined
-    }
+  private resolveThinking() {
+    // adaptive_only 之外（always_on / budget_tokens / none）一律省略：
+    // 恒开的模型收到任何显式配置都 400，老形态本项目不请求。
+    if (this.spec.thinking !== 'adaptive_only') return undefined
+    return { type: 'adaptive' as const, display: 'summarized' as const }
   }
 
   /**

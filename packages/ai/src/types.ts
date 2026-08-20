@@ -58,7 +58,6 @@ export interface ChatRequest {
   tools: ToolSchema[]
   maxOutputTokens: number
   effort?: EffortLevel
-  thinking?: ThinkingRequest
   /** 缓存路由亲和键；同一会话稳定。 */
   cacheKey?: string
   signal?: AbortSignal
@@ -69,17 +68,6 @@ export interface SystemBlock {
   /** true = 在这里放一个缓存断点。 */
   cacheBreakpoint?: boolean
 }
-
-/**
- * 思考请求。**没有「关掉思考」这一档。**
- *
- * 关不关得掉是逐模型不同的产品事实（Fable 5、Grok、Kimi 都关不掉），而这个项目
- * 从来不需要关它——需要的是「这个模型能不能思考」和「档位字段怎么发」两件事。
- * 留一个关不掉的开关只会长出「关了没生效」和「关了就 400」两种坏法。
- */
-export type ThinkingRequest =
-  | { mode: 'adaptive'; display?: 'summarized' | 'omitted' }
-  | { mode: 'budget'; budgetTokens: number }
 
 export interface WireMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
@@ -199,17 +187,14 @@ export interface LlmAdapter {
   readonly kind: ProviderKind
   readonly spec: ModelSpec
   /**
-   * 本适配器**实际会发送**哪些可选轴。
+   * 本适配器**实际会发送** effort 档位吗。
    *
-   * 探测器靠它区分「端点接受了」和「我们压根没发」。没有这个声明的话，
-   * 一个根本不传 thinking 的协议会让每一个探针都「通过」，
-   * 于是探测报告说「支持思考」——而那是把没验过的说成验过了。
+   * 探测器靠它区分「端点接受了」和「我们压根没发」：一个不发 effort 的链路上，
+   * 探针每一发都会「通过」，而 `--save` 会把这份凭空的结论覆盖回目录。
    *
-   * **必须按 `spec` 算，不能是类级常量。** 协议支持不等于这条模型会发：
-   * 未收录的模型 `thinking='none'`、`effortLevels=[]`，三个适配器在装配期就把
-   * 这两个字段整个省掉，请求里一个字节都没有——此时若声明成 true，
-   * 每个探针都会「通过」，`--save` 再把这份凭空的结论覆盖回目录。
+   * **必须按 `spec` 算，不能是类级常量**，且判据只有 `effortIsTransmittable`
+   * 一份——协议支持不等于这条模型的方言发得出去。
    */
-  readonly transmits: { thinking: boolean; effort: boolean }
+  readonly transmits: { effort: boolean }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
 }

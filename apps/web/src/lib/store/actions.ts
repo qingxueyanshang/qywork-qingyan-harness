@@ -236,9 +236,20 @@ export function compactContext(): void {
   client.send({ type: 'conversation.compact', conversationId: id as never })
 }
 
+export interface TeamRoleRow {
+  id: string
+  name: string
+  description: string
+  backend: string
+  /** `builtin` = 随程序发布的专家团；`project` = 这个仓库自己写的。 */
+  source: 'builtin' | 'project'
+  /** 内置角色被项目里同 id 的那条盖掉了。删掉覆盖就回到内置那份。 */
+  overridden: boolean
+}
+
 export interface TeamInfo {
   backends: string[]
-  roles: { id: string; name: string; description: string; backend: string }[]
+  roles: TeamRoleRow[]
   plan: { id: string; roleId: string; task: string; needs?: string[] }[]
   error: string | null
 }
@@ -264,88 +275,6 @@ export function runTeam(goal: string): void {
     goal,
     clientRequestId: crypto.randomUUID(),
   })
-}
-
-/** 一个接口下挂着的一个模型。 */
-export interface ModelOption {
-  id: string
-  /** 内置目录里的显示名；目录里没有就是 id 本身。 */
-  label: string
-  /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */
-  effortLevels: EffortLevel[]
-  /** 用户为这个模型选定的档。null = 没选过，不发思考字段。与上一行同源。 */
-  effort: EffortLevel | null
-  /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
-  currency: 'USD' | 'CNY'
-  /** false = 内置目录里没有，来自用户自己配的模型 id（自建端点 / 中转）。 */
-  known: boolean
-}
-
-/** 一个接口。名字是用户在设置里起的，选择器就按它分组。 */
-export interface ProviderModels {
-  name: string
-  models: ModelOption[]
-}
-
-/**
- * 模型库里的一条 = **一个模型的参数**。
- *
- * 库和接口是两件事：库回答「这个模型多大、多贵、吃哪几档思考」，接口回答
- * 「用谁的端点和哪把 key」。所以这个类型里一个接口字段都没有。
- *
- * `source` 分 `seed`（源码里的内置值）和 `user`（改过或自己加的），
- * 界面据此决定能不能「还原」。
- */
-export interface LibraryModel {
-  id: string
-  label: string
-  contextWindow: number
-  maxOutputTokens: number
-  input: number
-  output: number
-  /** 缓存命中价。 */
-  cacheRead: number
-  /** 缓存写入价（5 分钟档）。计价只按这一档算。 */
-  cacheWrite: number
-  currency: 'USD' | 'CNY'
-  effortLevels: EffortLevel[]
-  /** 思考怎么发（协议标识）。`none` = 这条链路上根本发不出思考。 */
-  thinking: string
-  /** 不选档时发不发思考。 */
-  thinksByDefault: boolean
-  /**
-   * 缓存路由亲和键发不发。`none` = 不发。
-   *
-   * 它是「端点 × 模型」那一格的属性：同一个模型换个中转站就是另一条结论，
-   * 所以这一格必须能改——内置值只是 seed。
-   */
-  cacheRouting: string
-  source: 'seed' | 'user'
-  /**
-   * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。
-   * 它是能力边界，必须显示——只画一个数字的话，用户对着账单会发现对不上，
-   * 而差价是两倍。
-   */
-  priceNotes?: string[]
-}
-
-export interface LibraryVendor {
-  id: string
-  displayName: string
-  models: LibraryModel[]
-}
-
-export interface ModelCatalog {
-  /** 可选的：配置里真有的接口 × 模型。 */
-  providers: ProviderModels[]
-  active: { provider: string; model: string }
-  /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，参数才照着 id 从这里查。 */
-  library: LibraryVendor[]
-}
-
-/** 模型列表按需拉取：不是每个会话都会点开选择器，没必要开屏就请求。 */
-export async function loadModels(): Promise<ModelCatalog> {
-  return client.api<ModelCatalog>('/api/models')
 }
 
 /**

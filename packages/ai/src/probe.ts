@@ -14,11 +14,13 @@
  * - **只由用户显式触发**（`qy probe`）。自动探测意味着有人在不知情的情况下被扣钱，
  *   而且探测结果会在他没改任何配置的时候悄悄改变行为。
  * - 探不出来的维度**不猜**：上下文窗口、计价、视觉都没法用一个小请求问出来，
- *   所以这里根本不碰它们。探测的价值在于它报的每一条都是实测的。
+ *   思考形态（adaptive / budget_tokens）同样没有观测面——本项目从不请求它，
+ *   探针发的 body 与不发时一模一样。所以这里根本不碰它们。
+ *   探测的价值在于它报的每一条都是实测的。
  */
 
 import type { EffortLevel } from '@qywork/core'
-import type { ProviderKind, ThinkingMode } from './catalog.ts'
+import type { ProviderKind } from './catalog.ts'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, ProviderProfile } from './types.ts'
 
@@ -26,26 +28,26 @@ export interface ProbeOutcome {
   /**
    * 最朴素的那个请求通没通。
    *
-   * 与「有没有探出能力」是两码事：一个完全可用但不传 thinking 字段的端点，
+   * 与「有没有探出能力」是两码事：一个完全可用但发不出 effort 的端点，
    * 能力一条都探不出来，但它显然是通的。把这两件事混成一个判断，
    * 报出来的就是「端点不通」——而用户会去查一个根本没坏的东西。
    */
   reachable: boolean
   /**
-   * 实测可用的思考模式。
-   * `null` = 每种都被拒；`undefined` 语义不同，见 `untested`。
-   */
-  thinking: ThinkingMode | null
-  /**
    * 本协议下客户端根本不发送、因而**无从探测**的轴。
    *
    * 与「探了、被拒了」是两件完全不同的事，绝不能合并成一个 false——
    * 合并的结果是把「没验过」写成了结论。
+   *
+   * **思考模式不在这里。** 它没有观测面：本项目从不请求思考形态
+   * （`ChatRequest` 里没有那个字段），探针改不了发出去的 body，
+   * 于是「端点接受了 adaptive」永远只是 `spec.thinking` 的回声。
+   * 把回声写回覆盖层会把方言改错，进而把 effort 判死。
    */
-  untested: ('thinking' | 'effort')[]
+  untested: 'effort'[]
   /** 实测被接受的 effort 档。 */
   effortLevels: EffortLevel[]
-  /** 实测省略 thinking 字段时是否仍然返回了思考内容。 */
+  /** 实测什么控制字段都不发时，它是否仍然返回了思考内容。 */
   thinksByDefault: boolean
   /** 每个探针的原始结果，供人核对。**不要只给结论**——结论错了要能查。 */
   probes: ProbeStep[]
@@ -126,98 +128,30 @@ export async function probeModel(
   const gap = opts.gapMs ?? 300
   const pause = () => new Promise((r) => setTimeout(r, gap))
 
-  // ── 1. 省略 thinking 字段能不能跑通，以及它自己会不会思考 ──
-  const bare = await attempt(profile, '不带 thinking 字段', {}, opts.signal)
+  // ── 1. 最朴素的一发能不能跑通，以及它自己会不会思考 ──
+  const bare = await attempt(profile, '最小请求', {}, opts.signal)
   probes.push(bare.step)
   const thinksByDefault = bare.thought
 
   // 连最朴素的请求都被拒 = 这个端点根本不通（key 错、模型名错、地址错）。
   // 继续探下去只会得到一串同样的错误，而真正该说的是「先把连通性弄好」。
   if (!bare.step.ok) {
-    return {
-      reachable: false,
-      thinking: null,
-      untested: [],
-      effortLevels: [],
-      thinksByDefault: false,
-      probes,
-    }
+    return { reachable: false, untested: [], effortLevels: [], thinksByDefault: false, probes }
   }
 
   if (opts.reachabilityOnly) {
-    return {
-      reachable: true,
-      thinking: null,
-      untested: ['thinking', 'effort'],
-      effortLevels: [],
-      thinksByDefault,
-      probes,
-    }
+    return { reachable: true, untested: ['effort'], effortLevels: [], thinksByDefault, probes }
   }
 
-  // ── 客户端到底发不发这些字段 ──
+  // ── 客户端到底发不发 effort ──
   //
-  // OpenAI 兼容协议下本客户端不发 thinking / effort，所以那些探针**恒通过**——
-  // 不是因为端点支持，而是因为请求里压根没有那个字段。
-  // 把这种「通过」写进配置，会用一个凭空的结论覆盖目录里正确的保守值。
+  // 不发的链路上探针**恒通过**——不是因为端点支持，而是因为请求里压根没有那个
+  // 字段。把这种「通过」写进配置，会用一个凭空的结论覆盖目录里正确的保守值。
   const transmits = buildAdapter(profile).transmits
-  const untested: ('thinking' | 'effort')[] = []
-  if (!transmits.thinking) untested.push('thinking')
-  if (!transmits.effort) untested.push('effort')
-
-  if (!transmits.thinking && !transmits.effort) {
-    probes.push({
-      name: 'thinking / effort',
-      ok: false,
-      skipped: true,
-      detail: '本协议下客户端不发送这两个字段，无从探测',
-    })
-    return { reachable: true, thinking: null, untested, effortLevels: [], thinksByDefault, probes }
-  }
-
-  // ── 2. 思考模式：从新到旧试 ──
-  //
-  // 顺序不能反。`adaptive` 是当前形态，`budget_tokens` 是老形态；
-  // 先试老的会在新模型上拿到一个 400，然后误判成「不支持思考」。
-  let thinking: ThinkingMode | null = null
-  if (!transmits.thinking) {
-    probes.push({
-      name: 'thinking',
-      ok: false,
-      skipped: true,
-      detail: '本协议下客户端不发送 thinking 字段，无从探测',
-    })
-  } else {
-    await pause()
-    const adaptive = await attempt(
-      profile,
-      'thinking=adaptive',
-      { thinking: { mode: 'adaptive' } },
-      opts.signal,
-    )
-    probes.push(adaptive.step)
-
-    if (adaptive.step.ok) {
-      thinking = 'adaptive_only'
-    } else {
-      await pause()
-      const budget = await attempt(
-        profile,
-        'thinking=budget_tokens',
-        { thinking: { mode: 'budget', budgetTokens: 1024 } },
-        opts.signal,
-      )
-      probes.push(budget.step)
-      if (budget.step.ok) thinking = 'budget_tokens'
-    }
-
-    // 两种形态都被拒 = 这个端点不吃思考字段。省略字段时它自己会思考的话，
-    // 那是「恒开」而不是「不支持」——两者对装配的影响完全相反。
-    if (thinking === null) thinking = thinksByDefault ? 'always_on' : 'none'
-  }
+  const untested: 'effort'[] = transmits.effort ? [] : ['effort']
 
   /*
-   * ── 4. effort 档位 ──
+   * ── 2. effort 档位 ──
    *
    * **档位表只从内置库取，探测只回答「这条链路接不接受这个控制面」。**
    *
@@ -235,19 +169,21 @@ export async function probeModel(
    */
   const declared = buildAdapter(profile).spec.effortLevels
   let effortLevels: EffortLevel[] = []
-  if (!transmits.effort) {
-    probes.push({
-      name: 'effort',
-      ok: false,
-      skipped: true,
-      detail: '本协议下客户端不发送 effort 字段，无从探测',
-    })
-  } else if (declared.length === 0) {
+  if (declared.length === 0) {
     probes.push({
       name: 'effort',
       ok: false,
       skipped: true,
       detail: '内置库未声明该模型的思考档位',
+    })
+  } else if (!transmits.effort) {
+    // 顺序不能反：档位为空时 `transmits.effort` 也是 false，先判它的话
+    // 「库里没有档位」会被报成「方言发不出去」，用户会去改一个没错的方言。
+    probes.push({
+      name: 'effort',
+      ok: false,
+      skipped: true,
+      detail: '这条协议上该模型的思考方言发不出 effort 字段，无从探测',
     })
   } else {
     let accepted = false
@@ -272,14 +208,7 @@ export async function probeModel(
     }
   }
 
-  return {
-    reachable: true,
-    thinking,
-    untested,
-    effortLevels,
-    thinksByDefault,
-    probes,
-  }
+  return { reachable: true, untested, effortLevels, thinksByDefault, probes }
 }
 
 /**
@@ -289,7 +218,6 @@ export async function probeModel(
  * 它会让「未知计价」变成一个看起来确定的错数字。
  */
 export interface ProbedCapabilities {
-  thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
 }
@@ -300,13 +228,12 @@ export interface ProbedCapabilities {
  * 没探过的一律不写——留空让目录里的保守默认值继续生效，
  * 比写一个「探针都通过了」的空结论安全得多。
  *
- * 但「没探过」要按轴分清楚。`thinksByDefault` 与另外两轴**不是一回事**：
- * 它是从**回包**里观测出来的（什么都不发，看它自己吐不吐思考内容），
- * 跟我们发不发 `thinking` 字段毫无关系。之前它被绑在 `thinking` 轴上一起丢掉，
- * 后果在 DeepSeek 上就能看见：探针明明测出「省略字段时自己思考：是」，
- * `--save` 却什么都不写，目录里那条错误的 `thinksByDefault: false` 原样留着。
+ * 两轴的「没探过」判据不同。`thinksByDefault` 是从**回包**里观测出来的
+ * （什么都不发，看它自己吐不吐思考内容），跟我们发不发什么字段无关，
+ * 所以只要端点通，它永远有结论。
  *
- * 一个测出来了却被扔掉的事实，和一个没测的事实，不该受同样的待遇。
+ * **思考方言（`spec.thinking`）不在写回范围内**：它决定 effort 用哪套字段发，
+ * 而探测没有观测它的手段。写一个猜的方言回去会把 effort 判死。
  */
 export function toCapabilities(o: ProbeOutcome): ProbedCapabilities {
   // 端点不通时这份结果里**没有一项是观测**：`effortLevels: []` 不是
@@ -314,10 +241,8 @@ export function toCapabilities(o: ProbeOutcome): ProbedCapabilities {
   // 全是连不上时的占位。整个丢掉，一项都不写。
   if (!o.reachable) return {}
 
-  const untested = new Set(o.untested)
   return {
-    ...(o.thinking && !untested.has('thinking') ? { thinking: o.thinking } : {}),
-    ...(untested.has('effort') ? {} : { effortLevels: o.effortLevels }),
+    ...(o.untested.includes('effort') ? {} : { effortLevels: o.effortLevels }),
     thinksByDefault: o.thinksByDefault,
   }
 }
@@ -329,14 +254,12 @@ export function describeProbe(o: ProbeOutcome, provider: ProviderKind, model: st
     const mark = p.skipped ? '–' : p.ok ? '✓' : '✗'
     lines.push(`  ${mark} ${p.name}${p.ok && !p.skipped ? '' : `  ${p.detail}`}`)
   }
-  const untested = new Set(o.untested)
   lines.push(
     '',
-    `  思考模式：${untested.has('thinking') ? '未探测（本协议不发该字段）' : (o.thinking ?? '（端点不通，未能判定）')}`,
     `  省略字段时自己思考：${o.thinksByDefault ? '是' : '否'}`,
     `  可用 effort：${
-      untested.has('effort')
-        ? '未探测（本协议不发该字段）'
+      o.untested.includes('effort')
+        ? '未探测（这条链路不发该字段）'
         : o.effortLevels.length
           ? o.effortLevels.join(' / ')
           : '（不支持）'
