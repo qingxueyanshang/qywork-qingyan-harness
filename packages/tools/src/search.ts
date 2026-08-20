@@ -8,12 +8,44 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import { chargeBatchBudget, type ToolSpec } from '@qywork/agent'
+import { estimateText } from '@qywork/ai'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
 
 const MAX_RESULTS = 200
+
+/**
+ * 一条命中最多带回多少字符的正文。
+ *
+ * **两条引擎共用这一个数。** 从前只有内置遍历那条路截（一个内联的 400），
+ * ripgrep 那条只限条数不限长度——而两条路对模型是同一个工具，
+ * 于是同一次调用走哪条引擎决定了结果有没有上界，这是两本账。
+ *
+ * 上界不是保守起见：压缩过的产物是**一整个文件一行**。实测一次不限文件类型的
+ * `grep "TODO|bug"` 命中 152 行，其中 151 行都不到 600 字符，
+ * 剩下那一行是 `three.min.js` 的第 6 行——**603,378 个字符**，约 17 万 token。
+ * 它随工具结果进上下文之后再也不会出去，此后每一轮都重付一遍，
+ * 还把请求顶过了长上下文档的价钱。
+ *
+ * 截的是**这一行的正文**，不是命中条数：路径与行号一个字节不能少，
+ * 模型要靠它们去 read_file 取原文。
+ */
+const MAX_MATCH_CHARS = 400
+
+/**
+ * 把 `路径:行号:正文` 里的正文截到上界，路径与行号原样留着。
+ *
+ * 整串一起截是错的：路径长的时候会把行号先切掉，那条命中就再也定位不回去。
+ */
+function clipMatch(line: string): string {
+  const m = /^(.*?):(\d+):(.*)$/s.exec(line)
+  if (!m) return line.length > MAX_MATCH_CHARS ? `${line.slice(0, MAX_MATCH_CHARS)}…` : line
+  const body = m[3]!.trim()
+  const clipped = body.length > MAX_MATCH_CHARS ? `${body.slice(0, MAX_MATCH_CHARS)}…` : body
+  return `${m[1]}:${m[2]}:${clipped}`
+}
 
 export const globTool: ToolSpec = {
   name: 'glob',
@@ -117,14 +149,13 @@ export const grepTool: ToolSpec = {
       ...(fileGlob ? { glob: fileGlob } : {}),
     })
     if (viaRg) {
+      const matches = viaRg.lines.map((l) => clipMatch(rebaseLine(l, cwd, ctx.workspaceRoot)))
+      const over = tooLarge(ctx, matches)
+      if (over) return over
       return {
         status: 'success',
-        message: `命中 ${viaRg.lines.length} 行（ripgrep）`,
-        data: {
-          matches: viaRg.lines.map((l) => rebaseLine(l, cwd, ctx.workspaceRoot)),
-          truncated: viaRg.truncated,
-          engine: 'ripgrep',
-        },
+        message: `命中 ${matches.length} 行（ripgrep）`,
+        data: { matches, truncated: viaRg.truncated, engine: 'ripgrep' },
       }
     }
 
@@ -145,7 +176,7 @@ export const grepTool: ToolSpec = {
       const rows = toLf(text).split('\n')
       rows.forEach((line, i) => {
         if (lines.length >= MAX_RESULTS) return
-        if (re.test(line)) lines.push(`${rel}:${i + 1}:${line.trim().slice(0, 400)}`)
+        if (re.test(line)) lines.push(clipMatch(`${rel}:${i + 1}:${line}`))
       })
     }
 
@@ -171,12 +202,41 @@ export const grepTool: ToolSpec = {
     if (isDir) await walk(target)
     else await scanFile(target)
 
+    const over = tooLarge(ctx, lines)
+    if (over) return over
     return {
       status: 'success',
       message: `命中 ${lines.length} 行（内置遍历，未找到 ripgrep）`,
       data: { matches: lines, truncated, engine: 'builtin' },
     }
   },
+}
+
+/**
+ * 投递预算：这一次调用最多往上下文里放多少。
+ *
+ * grep 从前是唯一一个绕开预算的工具（`read_file` 走 `files.ts`、`run_command`
+ * 走 `shell.ts`），而它恰恰是最容易一次带回一大坨的那个。
+ *
+ * **超了拒绝，不截断**——立场同 `read_file`：截断产生的是满额正文，
+ * 而那份正文往往不是模型要的那一段，工具错误率降了、平均 token 反而上升。
+ * 建议给的是**收窄搜索**而不是分段读：grep 没有 offset，能收的只有模式与范围。
+ */
+function tooLarge(
+  ctx: Parameters<NonNullable<ToolSpec['fn']>>[1],
+  matches: string[],
+): { status: 'failure'; message: string; errorKind: 'result_too_large' } | null {
+  const tokens = estimateText(matches.join('\n'))
+  const charged = chargeBatchBudget(ctx, tokens)
+  if (charged.ok) return null
+  return {
+    status: 'failure',
+    message:
+      `命中 ${matches.length} 行约 ${tokens} token，超出单次投递预算 ${charged.perCall}` +
+      `（本批还剩 ${charged.batchRemaining}）。` +
+      '收窄再试：把 pattern 写具体、用 glob 限定文件类型、或把 path 指到子目录。',
+    errorKind: 'result_too_large',
+  }
 }
 
 async function runRipgrep(
