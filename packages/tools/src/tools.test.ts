@@ -16,7 +16,8 @@ import {
   resolveWritablePath,
   rootsOf,
 } from './paths.ts'
-import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
+import { startCommandRunner } from './runner.ts'
+import { BASH_PATH_ENV, commandShell, setCommandRunner } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))
@@ -789,6 +790,42 @@ describe('搜索与命令', () => {
     // 挂死的话这里是 20 秒起步，改回等 EOF 就永远回不来。
     expect(elapsed).toBeLessThan(5_000)
     expect(out.message).toContain('后台进程仍在运行并持有输出管道')
+  }, 30_000)
+
+  /**
+   * 同一件事在 **runner 路径**上也要成立——那才是产品实际走的那条。
+   *
+   * `qy serve` 的命令一律由 runner 代跑（它是那个「先于监听端口出生」的父进程），
+   * 上一条测的却是直接 spawn。两条路的差别恰好落在这句话上：runner 那侧一旦在
+   * 收到退出码时就把流关掉，读端立刻拿到 EOF，`backgroundHeld` 恒为 false——
+   * 于是这句提示在真正跑着的产品里一次也发不出来，而两条路的测试都是绿的。
+   */
+  test('runner 代跑时同样说得出后台进程', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    const command = shell.argv.includes('-Command')
+      ? "Write-Output started; Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 21 127.0.0.1'"
+      : 'echo started; sleep 20 &'
+
+    const runner = startCommandRunner([
+      process.execPath,
+      '-e',
+      `import { runCommandRunner } from ${JSON.stringify(Bun.fileURLToPath(new URL('./runner.ts', import.meta.url)))}; runCommandRunner()`,
+    ])
+    setCommandRunner(runner)
+    try {
+      const started = Date.now()
+      const out = await registry().execute('run_command', { command }, ctx(root))
+      expect(out.status).toBe('success')
+      expect(String(out.data?.stdout)).toContain('started')
+      expect(Date.now() - started).toBeLessThan(5_000)
+      expect(out.message).toContain('后台进程仍在运行并持有输出管道')
+    } finally {
+      // 这是个进程级变量，留着会让本文件后面的命令都改走 runner。
+      setCommandRunner(null)
+      runner.stop()
+    }
   }, 30_000)
 
   /**

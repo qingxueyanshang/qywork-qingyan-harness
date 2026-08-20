@@ -56,19 +56,39 @@ interface KillRequest {
   t: 'kill'
   id: number
 }
-type Request = SpawnRequest | KillRequest
+/**
+ * 读端不要这条流了。**runner 收到后只是不再转发，仍旧把管道读空**——
+ * 停读会让还扣着写端的后台进程在管道写满时卡死，而那些进程正是用户要留下的。
+ */
+interface DetachRequest {
+  t: 'detach'
+  id: number
+  ch: 'out' | 'err'
+}
+type Request = SpawnRequest | KillRequest | DetachRequest
 
 type Reply =
   | { t: 'pid'; id: number; pid: number }
   | { t: 'out'; id: number; d: string }
   | { t: 'err'; id: number; d: string }
+  /** 这条管道真的关了（所有继承过写端的进程都撒手了）。 */
+  | { t: 'eof'; id: number; ch: 'out' | 'err' }
   | { t: 'exit'; id: number; code: number }
   | { t: 'fail'; id: number; message: string }
 
 /** 一个还没结束的调用：两条流的写端 + 退出的解析器。 */
 interface Pending {
-  out: ReadableStreamDefaultController<Uint8Array>
-  err: ReadableStreamDefaultController<Uint8Array>
+  /**
+   * 两条流的写端。收到 EOF、或读端自己 cancel 之后置 `null`。
+   *
+   * **置 null 之后不能再入队**：往已关闭或已弃用的 controller 里 `enqueue` 会抛，
+   * 而这里是 IPC 回调，抛出去没有人接。
+   */
+  streams: {
+    out: ReadableStreamDefaultController<Uint8Array> | null
+    err: ReadableStreamDefaultController<Uint8Array> | null
+  }
+  exited: boolean
   settle: (code: number) => void
   reject: (e: Error) => void
   pid: (n: number) => void
@@ -101,6 +121,11 @@ export function startCommandRunner(argv: string[]): CommandRunner {
   let next = 1
   let dead: Error | null = null
 
+  /** 退出码和两条流都到齐了才丢掉这一条，不然后到的消息就没有着落了。 */
+  const reap = (id: number, p: Pending): void => {
+    if (p.exited && !p.streams.out && !p.streams.err) pending.delete(id)
+  }
+
   const child = Bun.spawn(argv, {
     stdin: 'ignore',
     stdout: 'inherit',
@@ -110,21 +135,36 @@ export function startCommandRunner(argv: string[]): CommandRunner {
       const p = pending.get(msg.id)
       if (!p) return
       if (msg.t === 'pid') p.pid(msg.pid)
-      else if (msg.t === 'out') p.out.enqueue(B64.decode(msg.d))
-      else if (msg.t === 'err') p.err.enqueue(B64.decode(msg.d))
-      else if (msg.t === 'fail') {
+      else if (msg.t === 'out' || msg.t === 'err') p.streams[msg.t]?.enqueue(B64.decode(msg.d))
+      else if (msg.t === 'eof') {
+        closeQuietly(p.streams[msg.ch])
+        p.streams[msg.ch] = null
+        reap(msg.id, p)
+      } else if (msg.t === 'fail') {
         pending.delete(msg.id)
         p.reject(new Error(msg.message))
       } else {
-        pending.delete(msg.id)
-        closeQuietly(p.out)
-        closeQuietly(p.err)
+        /*
+         * **退出不关流。**
+         *
+         * 关掉的话读端立刻拿到 EOF，于是「进程退出了但后代仍扣着写端」这件事
+         * 在直接 spawn 那条路上看得见、在 runner 这条路上永远看不见——
+         * `collectProcess` 的 `backgroundHeld` 因此恒为 false，
+         * 而它是「后台还留着进程在跑」这句话唯一的来源。
+         * 收手由读端决定（`collectProcess` 排空到点就 cancel），这里只如实转发。
+         */
+        p.exited = true
         p.settle(msg.code)
+        reap(msg.id, p)
       }
     },
     onExit() {
       dead = new Error('命令 runner 已退出')
-      for (const [, p] of pending) p.reject(dead)
+      for (const [, p] of pending) {
+        closeQuietly(p.streams.out)
+        closeQuietly(p.streams.err)
+        p.reject(dead)
+      }
       pending.clear()
     },
   })
@@ -135,24 +175,33 @@ export function startCommandRunner(argv: string[]): CommandRunner {
     async spawn(input) {
       if (dead) throw dead
       const id = next++
-      let outCtl!: ReadableStreamDefaultController<Uint8Array>
-      let errCtl!: ReadableStreamDefaultController<Uint8Array>
-      const stdout = new ReadableStream<Uint8Array>({
-        start: (c) => {
-          outCtl = c
-        },
-      })
-      const stderr = new ReadableStream<Uint8Array>({
-        start: (c) => {
-          errCtl = c
-        },
-      })
+      const streams: Pending['streams'] = { out: null, err: null }
+      // 读端撒手就通知 runner 别再转发这条。**只发一次**：置 null 之后
+      // 这条流不会再有第二次 cancel。
+      const pipe = (ch: 'out' | 'err') =>
+        new ReadableStream<Uint8Array>({
+          start: (c) => {
+            streams[ch] = c
+          },
+          cancel: () => {
+            const p = pending.get(id)
+            if (!p) return
+            p.streams[ch] = null
+            send({ t: 'detach', id, ch })
+            reap(id, p)
+          },
+        })
+      const stdout = pipe('out')
+      const stderr = pipe('err')
       let exitCode: number | null = null
       const pidReady = Promise.withResolvers<number>()
       const exited = Promise.withResolvers<number>()
+      // 退出码不是每个调用方都会等（起完就不管的那种）。runner 挂掉时这里会 reject，
+      // 而没有处理器的 rejection 会把整个进程带下去，所以先挂一个空的。
+      void exited.promise.catch(() => {})
       pending.set(id, {
-        out: outCtl,
-        err: errCtl,
+        streams,
+        exited: false,
         pid: pidReady.resolve,
         reject: (e) => {
           pidReady.reject(e)
@@ -190,7 +239,8 @@ export function startCommandRunner(argv: string[]): CommandRunner {
   }
 }
 
-function closeQuietly(c: ReadableStreamDefaultController<Uint8Array>): void {
+function closeQuietly(c: ReadableStreamDefaultController<Uint8Array> | null): void {
+  if (!c) return
   try {
     c.close()
   } catch {
@@ -203,7 +253,20 @@ function closeQuietly(c: ReadableStreamDefaultController<Uint8Array>): void {
  * 打包之后没有独立的脚本可跑，只有那一个二进制。
  */
 export function runCommandRunner(): void {
-  const live = new Map<number, { pid: number; kill(): void }>()
+  /**
+   * 还没收完的调用。
+   *
+   * **退出之后不立刻丢**：管道可能还被后代扣着，那时读端要么等到真 EOF、
+   * 要么撒手（`detach`），这两件事都发生在退出之后。
+   */
+  interface Call {
+    proc: { pid: number; kill(): void }
+    /** 读端已撒手的那条流：不再转发，但继续读空——停读会把还在写的进程卡死。 */
+    dropped: { out: boolean; err: boolean }
+    exited: boolean
+    open: number
+  }
+  const live = new Map<number, Call>()
   const reply = (msg: Reply) => process.send?.(msg)
 
   /*
@@ -225,11 +288,20 @@ export function runCommandRunner(): void {
   }, 3000)
   watch.unref?.()
 
+  const reap = (id: number, c: Call): void => {
+    if (c.exited && c.open === 0) live.delete(id)
+  }
+
   process.on('message', (raw: unknown) => {
     const req = raw as Request
     if (req.t === 'kill') {
-      const p = live.get(req.id)
-      if (p) killTreeHere(p)
+      const c = live.get(req.id)
+      if (c) killTreeHere(c.proc)
+      return
+    }
+    if (req.t === 'detach') {
+      const c = live.get(req.id)
+      if (c) c.dropped[req.ch] = true
       return
     }
     try {
@@ -247,13 +319,26 @@ export function runCommandRunner(): void {
        * runner 退出只该带走那份监听句柄，不该带走任何进程。
        */
       proc.unref()
-      live.set(req.id, proc)
+      const call: Call = { proc, dropped: { out: false, err: false }, exited: false, open: 2 }
+      live.set(req.id, call)
       reply({ t: 'pid', id: req.id, pid: proc.pid })
-      void relay(proc.stdout, (d) => reply({ t: 'out', id: req.id, d }))
-      void relay(proc.stderr, (d) => reply({ t: 'err', id: req.id, d }))
+      for (const ch of ['out', 'err'] as const) {
+        void relay(
+          ch === 'out' ? proc.stdout : proc.stderr,
+          (d) => {
+            if (!call.dropped[ch]) reply({ t: ch, id: req.id, d })
+          },
+          () => {
+            call.open -= 1
+            if (!call.dropped[ch]) reply({ t: 'eof', id: req.id, ch })
+            reap(req.id, call)
+          },
+        )
+      }
       void proc.exited.then((code) => {
-        live.delete(req.id)
+        call.exited = true
         reply({ t: 'exit', id: req.id, code })
+        reap(req.id, call)
       })
     } catch (e) {
       reply({ t: 'fail', id: req.id, message: e instanceof Error ? e.message : String(e) })
@@ -261,12 +346,21 @@ export function runCommandRunner(): void {
   })
 }
 
-async function relay(stream: ReadableStream<Uint8Array>, send: (d: string) => void): Promise<void> {
+/** 一条流转发到底。`end` 在真 EOF 时调一次——那是「没人再扣着写端了」的唯一信号。 */
+async function relay(
+  stream: ReadableStream<Uint8Array>,
+  send: (d: string) => void,
+  end: () => void,
+): Promise<void> {
   const reader = stream.getReader()
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    if (value?.length) send(B64.encode(value))
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value?.length) send(B64.encode(value))
+    }
+  } finally {
+    end()
   }
 }
 

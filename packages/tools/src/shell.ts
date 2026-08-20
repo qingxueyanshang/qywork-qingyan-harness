@@ -105,7 +105,13 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       '执行别的解释器的脚本要显式调用那个解释器。' +
       '在工作区里执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
-      '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',
+      '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。' +
+      // 限长本来就由本工具做，这一句是为了掐掉模型自己接 `| tail` 的理由——
+      // 那类命令要等输入 EOF，而后台进程扣着管道时 EOF 永不到达：
+      // 顶层 shell 也跟着不退出，整条命令挂到超时，且一个字节都拿不到。
+      '输出会自动限长，超出的部分落盘并在结果里给出 resource id（用 read_resource 取回），' +
+      '所以不要为了限长在末尾接 `| tail` / `| head`：这类命令要等输入 EOF 才出结果，' +
+      '而命令派生的后台进程会一直扣着管道，EOF 不来就一路挂到超时，且一个字节都拿不到。',
     parameters: {
       type: 'object',
       properties: {

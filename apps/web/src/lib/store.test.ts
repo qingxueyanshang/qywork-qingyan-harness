@@ -874,3 +874,58 @@ describe('配置一落盘，模型目录跟着重算', () => {
     expect(calls.indexOf('GET /api/models')).toBeGreaterThan(calls.indexOf('PUT /api/config'))
   })
 })
+
+/**
+ * 工具卡的实时输出（`store/connection.ts` 的 `tool.delta`）。
+ *
+ * 断言形状是原始失败形状：`tool.delta` 的 stepId 一度是空串（服务端装配执行上下文
+ * 时还没有 step），这里 `find` 一条也匹配不上，`if (!item) return` 把整条通道
+ * 静默丢掉——命令跑多久，卡片就空多久，而事件一直在发。
+ */
+describe('工具卡按 stepId 认领实时输出', () => {
+  const started = (stepId: string) =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'tool.started',
+        runId: 'run_1',
+        stepId,
+        toolCallId: 'call_1',
+        toolName: 'run_command',
+        batchId: 'b_1',
+        callIndex: 0,
+        waveIndex: 0,
+        args: { command: 'npm test' },
+        action: { kind: 'run', objectLabel: '命令', target: 'npm test' },
+      },
+    }) as never
+
+  const delta = (stepId: string, text: string) =>
+    ({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'tool.delta', runId: 'run_1', stepId, channel: 'stdout', delta: text },
+    }) as never
+
+  test('落到 tool.started 开出来的那张卡上', () => {
+    setState({ activeConversation: 'cv_now', transcript: [] })
+    applyEvent(started('st_tool_1'))
+    applyEvent(delta('st_tool_1', '第一行\n'))
+    applyEvent(delta('st_tool_1', '第二行\n'))
+    expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
+  })
+
+  /**
+   * 认不出归属就丢掉，**不要退化成「贴到最后一张正在跑的卡上」**：
+   * 一波里可以有多个工具同时在跑，贴错的输出比没有输出更难查。
+   */
+  test('认不出 stepId 的一律不落卡', () => {
+    setState({ activeConversation: 'cv_now', transcript: [] })
+    applyEvent(started('st_tool_1'))
+    applyEvent(delta('', '认不出归属的一行\n'))
+    expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBeUndefined()
+  })
+})

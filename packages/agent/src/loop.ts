@@ -57,6 +57,7 @@ import {
   resetBatchBudget,
   resolveAction,
   type ToolContext,
+  type ToolContextBase,
   type ToolRegistry,
 } from './registry.ts'
 
@@ -75,7 +76,11 @@ export interface LoopDeps {
     content: string
     group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
   }[]
-  makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContext
+  /**
+   * 除 `emit` 外的执行上下文。**`emit` 不在这里**——它要带的 stepId 只有 loop 有，
+   * 理由写在 `ToolContext.emit` 上方。
+   */
+  makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContextBase
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence
   /**
@@ -355,6 +360,31 @@ function transportReading(providerEvents: number, silentMs: number, chars: numbe
  *
  * 不要改成「abort 之后还等它跑完再退」：那等于把停止的时限交给卡住的那一方决定。
  */
+/**
+ * 给这一次调用配一个带 stepId 的 `emit`。
+ *
+ * 中途输出的事件必须认得出属于哪张卡片——前端拿 stepId 在 transcript 里找那一条，
+ * 找不到就整条丢弃。而 stepId 是开 step 时才产生的，装配方造不出来，
+ * 所以这条通道只能在这里绑（见 `ToolContext.emit`）。
+ *
+ * **其余字段原样带过去**：`state` / `resources` 传的是同一个 Map 引用，
+ * 「ToolContext 整个 run 只建一个」那条不变量护的是这几本账跨调用可见，
+ * 外面套一层壳不动它们。
+ */
+function withStep(
+  base: ToolContextBase,
+  runId: RunId,
+  stepId: string,
+  queue: EventQueue,
+): ToolContext {
+  return {
+    ...base,
+    emit: (channel, delta) => {
+      queue.push({ type: 'tool.delta', runId, stepId: stepId as never, channel, delta })
+    },
+  }
+}
+
 function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const fail = () => reject(new DOMException('已中断', 'AbortError'))
@@ -1253,7 +1283,6 @@ export class AgentLoop {
           calls.filter((c) => registry.has(c.name)),
           this.deps.registry,
         )
-        let denied = false
 
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
           const wave = waves[waveIndex]!
@@ -1312,7 +1341,11 @@ export class AgentLoop {
                   const started = Date.now()
                   // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
                   persist.markExecuting(r.stepId)
-                  const outcome = await registry.execute(r.call.name, r.call.arguments, ctx)
+                  const outcome = await registry.execute(
+                    r.call.name,
+                    r.call.arguments,
+                    withStep(ctx, input.runId, r.stepId, emitQueue),
+                  )
                   return { ...r, outcome, durationMs: Date.now() - started }
                 }),
               ),
@@ -1359,8 +1392,6 @@ export class AgentLoop {
               _group: 'executionRecords',
             })
 
-            if (s.outcome.errorKind === 'permission_denied') denied = true
-
             // 进展证据：**`noProgress` 取执行器给出的事实，不猜**。
             // 报错不算证据——写了一半再抛也是错，那时副作用已经发生了。
             progress.push({
@@ -1373,12 +1404,6 @@ export class AgentLoop {
 
         // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
         stampUnit(unitStart)
-
-        if (denied) {
-          // 用户拒了授权：不要装作无事发生继续跑，也不要重试。
-          stopReason = 'permission_denied'
-          break
-        }
 
         // 原地打转：同样的调用、同样的结果、没有副作用，连着两个周期。
         // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下

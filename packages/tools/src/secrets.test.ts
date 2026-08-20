@@ -298,6 +298,34 @@ describe('流式脱敏', () => {
     expect(r.push(pem) + r.flush()).toBe(REDACTED)
   })
 
+  /**
+   * 写完的行现在就交出去。
+   *
+   * 原始失败形状：`hold` 是 256 字节，而一条命令一秒吐一行七个字节——跑完之前
+   * 一个字都交不出去，界面上就是一张空卡片跑满全程（实测一条 12 行 87 字节的命令，
+   * 全部输出攒成一条 `tool.delta` 在结束时才到）。判据是**一个 secret 不跨行**，
+   * 所以最后一个换行之前的部分现在就安全。
+   */
+  test('已经写完的行不必等够 256 字节', () => {
+    const r = createStreamRedactor({ values: [] })
+    expect(r.push('line 1\n')).toBe('line 1\n')
+    expect(r.push('line 2\n')).toBe('line 2\n')
+    // 还没写完的那半行照旧扣着——它可能是某个 token 的开头。
+    expect(r.push('line 3 还没写完')).toBe('')
+    expect(r.flush()).toBe('line 3 还没写完')
+  })
+
+  /** 行末即安全的前提是 secret 不跨行；明文自己带换行时退回按字节扣。 */
+  test('已知明文跨行时不用行边界这条捷径', () => {
+    const multi = 'sk-line-one\nline-two-secret'
+    const r = createStreamRedactor({ values: [multi] })
+    let out = ''
+    const text = `头${multi}尾`
+    for (let i = 0; i < text.length; i += 5) out += r.push(text.slice(i, i + 5))
+    out += r.flush()
+    expect(out).toBe(`头${REDACTED}尾`)
+  })
+
   test('多个 secret 时按最长的那个留尾巴', () => {
     const long = 'sk-verylongsecretvalue0123456789'
     const short = 'sk-shortish1'

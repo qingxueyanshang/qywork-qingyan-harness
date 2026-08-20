@@ -15,7 +15,7 @@ import {
   type PermissionVerdict,
   STREAM_IDLE_TIMEOUT_MS,
   type Summarizer,
-  type ToolContext,
+  type ToolContextBase,
   ToolRegistry,
 } from '@qywork/agent'
 import {
@@ -802,7 +802,7 @@ export class Session {
     emit: (e: AgentEvent) => void,
     target: string | ModelRef,
     conversationId: ConversationId,
-  ): ToolContext {
+  ): ToolContextBase {
     const model = typeof target === 'string' ? target : target.model
     const secrets = collectSecrets(this.opts.config)
     const store = this.opts.store
@@ -917,9 +917,6 @@ export class Session {
         },
       },
       signal: this.opts.signal,
-      emit: (channel, delta) => {
-        emit({ type: 'tool.delta', runId, stepId: '' as never, channel, delta })
-      },
       emitTodos: (todos) => {
         emit({ type: 'todos', runId, todos })
       },
