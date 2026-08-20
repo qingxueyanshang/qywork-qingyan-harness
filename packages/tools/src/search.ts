@@ -8,7 +8,8 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { estimateText } from '@qywork/ai'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
@@ -38,6 +39,37 @@ const MAX_MATCH_CHARS = 400
  *
  * 整串一起截是错的：路径长的时候会把行号先切掉，那条命中就再也定位不回去。
  */
+/**
+ * 按投递预算把命中列表裁到装得下，并把实际用量记账。
+ *
+ * **grep 从前完全不计入这本账**，而 `loop.ts` 下发每一波之前 `resetBatchBudget`
+ * 的理由写得很清楚：「压缩只留一个入口」的前提正是两次检查之间的跳变有上界。
+ * 单次上界 25,000 token，而 200 条 × 400 字符最坏约 32,000——**单次就越了**；
+ * 它又是 `parallelSafe`，一波五个就是整波上界的三倍多。那个前提于是不成立。
+ *
+ * **裁而不是拒。** 这个工具本来就有截断契约（`MAX_RESULTS` + `truncated`），
+ * 按预算少给几条走的是同一条路；改成失败则是新增一种失败模式，
+ * 而 grep 没有 offset，模型只能靠猜一个更窄的模式重来。
+ */
+function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; trimmed: boolean } {
+  const total = estimateText(matches.join('\n'))
+  const charged = chargeBatchBudget(ctx, total)
+  if (charged.ok) return { matches, trimmed: false }
+
+  const room = Math.min(charged.perCall, charged.batchRemaining)
+  const kept: string[] = []
+  let used = 0
+  for (const m of matches) {
+    // +1 是行分隔符：不算它的话，条数多时累计误差正好朝着超预算的方向。
+    const n = estimateText(m) + 1
+    if (used + n > room) break
+    kept.push(m)
+    used += n
+  }
+  chargeBatchBudget(ctx, used)
+  return { matches: kept, trimmed: true }
+}
+
 function clipMatch(line: string): string {
   const m = /^(.*?):(\d+):(.*)$/s.exec(line)
   if (!m) return line.length > MAX_MATCH_CHARS ? `${line.slice(0, MAX_MATCH_CHARS)}…` : line
@@ -148,11 +180,18 @@ export const grepTool: ToolSpec = {
       ...(fileGlob ? { glob: fileGlob } : {}),
     })
     if (viaRg) {
-      const matches = viaRg.lines.map((l) => clipMatch(rebaseLine(l, cwd, ctx.workspaceRoot)))
+      const clipped = viaRg.lines.map((l) => clipMatch(rebaseLine(l, cwd, ctx.workspaceRoot)))
+      const fit = fitBudget(ctx, clipped)
       return {
         status: 'success',
-        message: `命中 ${matches.length} 行（ripgrep）`,
-        data: { matches, truncated: viaRg.truncated, engine: 'ripgrep' },
+        message:
+          `命中 ${fit.matches.length} 行（ripgrep）` +
+          (fit.trimmed ? '，已按投递预算截断，收窄模式或范围可看到更多' : ''),
+        data: {
+          matches: fit.matches,
+          truncated: viaRg.truncated || fit.trimmed,
+          engine: 'ripgrep',
+        },
       }
     }
 
@@ -199,10 +238,13 @@ export const grepTool: ToolSpec = {
     if (isDir) await walk(target)
     else await scanFile(target)
 
+    const fit = fitBudget(ctx, lines)
     return {
       status: 'success',
-      message: `命中 ${lines.length} 行（内置遍历，未找到 ripgrep）`,
-      data: { matches: lines, truncated, engine: 'builtin' },
+      message:
+        `命中 ${fit.matches.length} 行（内置遍历，未找到 ripgrep）` +
+        (fit.trimmed ? '，已按投递预算截断，收窄模式或范围可看到更多' : ''),
+      data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'builtin' },
     }
   },
 }
