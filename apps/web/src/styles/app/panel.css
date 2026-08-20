@@ -907,7 +907,6 @@
   flex-direction: column;
   gap: var(--s-2);
   padding: var(--s-3) var(--s-4);
-  border-bottom: 1px solid var(--border-subtle);
 }
 .run-sum-top {
   display: flex;
@@ -1019,10 +1018,23 @@
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
-.run-mark {
+/* 模型名与步数耗时：与时间同一行，低一档字号——同一层级不等于同一份分量。
+   模型名是唯一长度不可控的一段，所以只有它可以被压缩。 */
+.run-model {
   flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.run-meta {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* **不让位**：它只有几个字，而且是这一行里唯一说「出事了」的东西，截成「模型…」
+   等于没说。这一行的压缩额度全给模型名。 */
+.run-mark {
+  flex: none;
   white-space: nowrap;
   padding: 0 5px;
   border-radius: var(--r-xs);
@@ -1064,18 +1076,6 @@
   padding: 0;
   max-width: 640px;
   background: none;
-}
-.run-detail-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-/* 模型名是这一行唯一长度不可控的东西，所以只有它让位。 */
-.run-detail-meta > :not(.truncate) {
-  flex: none;
 }
 .run-err {
   display: flex;
