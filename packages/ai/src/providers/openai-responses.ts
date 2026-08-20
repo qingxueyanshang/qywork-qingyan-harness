@@ -60,7 +60,7 @@ import type {
   WireToolCall,
 } from '../types.ts'
 import { PROVIDER_HTTP } from '../types.ts'
-import { normalizeBaseUrl } from './openai-compat.ts'
+import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
@@ -453,7 +453,8 @@ export function buildTools(tools: ToolSchema[]): Record<string, unknown>[] {
       type: 'function',
       name: t.name,
       description: t.description,
-      parameters: t.parameters,
+      parameters: t.strict ? strictify(t.parameters) : t.parameters,
+      ...(t.strict ? { strict: true } : {}),
     }))
 }
 

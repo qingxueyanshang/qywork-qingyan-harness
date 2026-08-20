@@ -12,6 +12,7 @@
 import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { estimateText } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
+import { badIntMessage, intArg } from './args.ts'
 import { type SafetyOptions, safeFetch } from './net-safety.ts'
 import { deliver } from './sink.ts'
 
@@ -205,7 +206,17 @@ export const webSearchTool: ToolSpec = {
   async fn(args, ctx) {
     const query = String(args.query ?? '').trim()
     if (!query) return { status: 'failure', message: '缺少 query' }
-    const limit = Math.min(20, Math.max(1, Number(args.limit ?? 8)))
+    // 读不出整数就终止：`Math.min(20, NaN)` 是 NaN，`slice(0, NaN)` 是空数组，
+    // 那一路走完是一次「成功搜索，0 条结果」。
+    const rawLimit = intArg(args.limit, 8)
+    if (rawLimit === null) {
+      return {
+        status: 'failure',
+        message: badIntMessage('limit', args.limit),
+        errorKind: 'invalid_args',
+      }
+    }
+    const limit = Math.min(20, Math.max(1, rawLimit))
 
     const endpoint = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
     let res: Awaited<ReturnType<typeof safeFetch>>

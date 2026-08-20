@@ -65,6 +65,8 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // inputSchema 原样交给模型。不做「修正」——改动一个第三方 schema 的结果是
     // 模型按我们改过的形状传参，server 按它自己的形状校验，两边对不上。
     parameters: normalizeSchema(def.inputSchema),
+    // 同一条理由：适配器不得把它重排成 strict 形状。
+    strict: false,
 
     // 恒为 call。MCP 工具是外部 server 提供的能力，不是我们在本机执行的东西——
     // 这条轴说的是「做了什么动作」，与下面的权限轴各管各的，不互相推导。

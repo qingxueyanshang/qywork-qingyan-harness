@@ -16,6 +16,7 @@
  */
 
 import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
+import { badIntMessage, intArg } from './args.ts'
 import { clampBody } from './sink.ts'
 
 /** 单次读取的上限。与 sink 的投递预算一致，翻倍是因为这次是模型**主动**要的。 */
@@ -83,7 +84,19 @@ export const readResourceTool: ToolSpec = {
     const query = typeof args.query === 'string' ? args.query : ''
     if (query) return searchResource(ctx.sink, resourceId, stat.sizeBytes, query)
 
-    const offset = Math.max(0, Number(args.offset ?? 0))
+    // 两个数都必须先读得出整数：`NaN >= sizeBytes` 为假，越界那道闸门会被 NaN 穿过去。
+    const rawOffset = intArg(args.offset, 0)
+    const rawLength = intArg(args.length, MAX_READ_BYTES)
+    if (rawOffset === null || rawLength === null) {
+      const bad = rawOffset === null ? 'offset' : 'length'
+      return {
+        status: 'failure',
+        message: badIntMessage(bad, args[bad]),
+        errorKind: 'invalid_args',
+      }
+    }
+
+    const offset = Math.max(0, rawOffset)
     if (offset >= stat.sizeBytes) {
       return {
         status: 'failure',
@@ -92,12 +105,7 @@ export const readResourceTool: ToolSpec = {
       }
     }
 
-    const requested = Number(args.length ?? MAX_READ_BYTES)
-    const length = Math.min(
-      MAX_READ_BYTES,
-      Math.max(1, Number.isFinite(requested) ? requested : MAX_READ_BYTES),
-      stat.sizeBytes - offset,
-    )
+    const length = Math.min(MAX_READ_BYTES, Math.max(1, rawLength), stat.sizeBytes - offset)
 
     const raw = ctx.sink.read(resourceId, offset, length)
     if (!raw) {

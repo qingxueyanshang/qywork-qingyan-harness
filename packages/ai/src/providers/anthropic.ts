@@ -253,6 +253,13 @@ function buildSystem(req: ChatRequest) {
  * **按名字排序**：渲染顺序是 tools → system → messages，工具排在最前面，
  * 所以工具数组的任何顺序抖动都会让整个前缀缓存失效。Set/对象迭代顺序不稳定的
  * 语言里这是最经典的静默失效源。
+ *
+ * **不要在这里发 `strict`。** 这套协议的 strict 不要求全部属性进 `required`，
+ * 本仓的 schema 直接合格，所以「顺手也开上」看着零成本。实测（2026-08-20，
+ * 经中转调 claude-opus-5）收益是零：发与不发各五次采样，参数都正确；
+ * 而代价不是零——同一条路上一次回了 schema 里没有的键，另一次对不合格的
+ * strict schema 回 HTTP 500 而不是 400。OpenAI 那两条协议发它，因为那里
+ * 实测有收益（见 `openai-compat.ts` 的 `strictify`）。
  */
 function buildTools(tools: ToolSchema[]) {
   return [...tools]
