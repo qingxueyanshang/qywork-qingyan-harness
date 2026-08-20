@@ -17,6 +17,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { buildAdapter } from './factory.ts'
+import type { AnthropicOutMessage } from './providers/anthropic.ts'
 import type { ChatRequest, WireMessage } from './types.ts'
 
 const profile = { kind: 'anthropic_messages' as const, apiKey: 'sk-x', model: 'claude-opus-5' }
@@ -34,19 +35,27 @@ function req(messages: WireMessage[]): ChatRequest {
   }
 }
 
-/** 从适配器内部取出即将上线的 body。`buildBody` 是私有的，走同一条装配路径。 */
-function bodyOf(r: ChatRequest): Record<string, any> {
+/**
+ * 从适配器内部取出即将上线的 body。`buildBody` 是私有的，走同一条装配路径。
+ *
+ * 只声明这份测试真的读的那一格（`messages`），且它的元素类型直接取适配器那边的
+ * `AnthropicOutMessage`——本文件断言的正是那条协议的装配结果，另编一个形状的话，
+ * 装配那边改了字段名这里不会红。
+ */
+type BodyShape = { messages: AnthropicOutMessage[] }
+
+function bodyOf(r: ChatRequest): BodyShape {
   const adapter = buildAdapter(profile) as unknown as {
-    buildBody(req: ChatRequest): Record<string, any>
+    buildBody(req: ChatRequest): BodyShape
   }
   return adapter.buildBody(r)
 }
 
-function cacheMarks(body: Record<string, any>): number[] {
+function cacheMarks(body: BodyShape): number[] {
   const out: number[] = []
-  body.messages.forEach((m: Record<string, any>, i: number) => {
+  body.messages.forEach((m, i) => {
     if (!Array.isArray(m.content)) return
-    if (m.content.some((b: Record<string, any>) => b.cache_control)) out.push(i)
+    if (m.content.some((b) => b.cache_control)) out.push(i)
   })
   return out
 }
@@ -108,7 +117,7 @@ describe('Anthropic 缓存断点', () => {
 
   test('字符串正文会被摊成内容块才挂 cache_control', () => {
     const body = bodyOf(req([{ role: 'user', content: long(8000), cacheBreakpoint: true }]))
-    expect(Array.isArray(body.messages[0].content)).toBe(true)
+    expect(Array.isArray(body.messages[0]?.content)).toBe(true)
   })
 })
 
@@ -127,7 +136,7 @@ describe('尾区注记按模型能力落地', () => {
       apiKey: 'sk-x',
       model,
     }) as unknown as {
-      buildBody(req: ChatRequest): Record<string, any>
+      buildBody(req: ChatRequest): BodyShape
     }
     return adapter.buildBody({ ...req(messages), model })
   }
@@ -141,8 +150,11 @@ describe('尾区注记按模型能力落地', () => {
       { role: 'user', content: '帮我改一下' },
       { role: 'system', content: '当前日期：2026-08-16' },
     ])
-    expect(body.messages.map((m: Record<string, unknown>) => m.role)).toEqual(['user', 'user'])
-    expect(body.messages[1].content[0].text).toBe(
+    expect(body.messages.map((m) => m.role)).toEqual(['user', 'user'])
+    // 注记那条自成一条消息，正文摊成块——两层下标各自可能没有，取不到时断言拿到
+    // undefined 干净地红，比读 undefined 的属性当场抛更像测试。
+    const note = body.messages[1]?.content
+    expect(Array.isArray(note) ? note[0]?.text : undefined).toBe(
       '<system-reminder>\n当前日期：2026-08-16\n</system-reminder>',
     )
   })

@@ -23,7 +23,7 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
-import type { ProviderEvent } from '../types.ts'
+import type { ProviderEvent, ProviderUsage } from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
 // ───────────────────────── 实测报文 ─────────────────────────
@@ -211,12 +211,20 @@ let script: { status: number; body: string; contentType: string } = {
   contentType: 'text/event-stream',
 }
 /** 最近一次收到的请求体。用来断言我们**发出去**的东西，不只是收回来的。 */
-let lastBody: Record<string, any> = {}
+/** 上一次发出去的请求体。只声明这份测试真的读的那几格。 */
+interface SentBody {
+  input?: { type: string }[]
+  store?: boolean
+  prompt_cache_key?: string
+  reasoning?: { summary?: string; effort?: string }
+}
+
+let lastBody: SentBody = {}
 
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
-    lastBody = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, any>
+    lastBody = ((await req.json().catch(() => ({}))) ?? {}) as SentBody
     return new Response(script.body, {
       status: script.status,
       headers: { 'content-type': script.contentType },
@@ -336,7 +344,7 @@ describe('工具调用', () => {
 describe('用量与终态', () => {
   test('缓存命中从 input_tokens 里减掉', async () => {
     const events = await run(TEXT_RUN)
-    const usage = (events.find((e) => e.type === 'usage') as { usage: any }).usage
+    const usage = (events.find((e) => e.type === 'usage') as { usage: ProviderUsage }).usage
     expect(usage.cachedTokens).toBe(1280)
     expect(usage.inputTokens).toBe(8)
     expect(usage.reasoningTokens).toBe(20)
@@ -389,7 +397,7 @@ describe('我们发出去的请求', () => {
         { role: 'tool', toolCallId: 'c1', content: '晴 28 度' },
       ],
     })
-    const types = (lastBody.input as { type: string }[]).map((i) => i.type)
+    const types = (lastBody.input ?? []).map((i) => i.type)
     expect(types).toEqual(['message', 'reasoning', 'function_call', 'function_call_output'])
   })
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { StepPayload } from '@qywork/core'
 import { Store } from './db.ts'
 import {
   appendStep,
@@ -175,7 +176,7 @@ describe('崩溃恢复', () => {
     const settled = listSteps(store, run.id)[0]!
     expect(settled.status).toBe('failure')
     // executed 取保守值 true：无法判定时不能向模型断言「没有副作用」。
-    expect((settled.payload as Record<string, any>).outcome.executed).toBe(true)
+    expect((settled.payload as { outcome: { executed: boolean } }).outcome.executed).toBe(true)
     store.close()
   })
 
@@ -211,8 +212,13 @@ describe('崩溃恢复', () => {
 
     recoverStaleRuns(store)
 
+    // 接 `StepPayload` 里 tool_result 那一支，不另编形状：这条测的正是收尾之后
+    // 那个 payload 长什么样，编一份的话写入侧改了字段名这里不会红。
     const payloadOf = (id: string) =>
-      listSteps(store, run.id).find((x) => x.id === id)!.payload as Record<string, any>
+      listSteps(store, run.id).find((x) => x.id === id)!.payload as Extract<
+        StepPayload,
+        { kind: 'tool_result' }
+      >
 
     // action 一丢，这条 step 在会话流里就只剩一个没有主语的「失败」——
     // 标题（动词 + 对象 + 目标）全部由它提供，前端回猜不出来。
@@ -225,13 +231,13 @@ describe('崩溃恢复', () => {
     }
 
     const one = payloadOf(started.id)
-    expect(one.action.objectLabel).toBe('命令')
-    expect(one.args.command).toBe('docker start sqhj-postgres')
+    expect(one.action?.objectLabel).toBe('命令')
+    expect(one.args?.command).toBe('docker start sqhj-postgres')
     // 两种情况的判据不能被这次合并抹平。
     expect(one.outcome.executed).toBe(true)
     const two = payloadOf(notStarted.id)
     expect(two.outcome.executed).toBe(false)
-    expect(two.action.objectLabel).toBe('文件')
+    expect(two.action?.objectLabel).toBe('文件')
     store.close()
   })
 

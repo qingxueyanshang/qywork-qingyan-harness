@@ -333,7 +333,7 @@ interface AnthropicFinalMessage {
 }
 
 /** 内容块。一个块只会长成其中一种，字段因此全是可选的。 */
-interface AnthropicBlock {
+export interface AnthropicBlock {
   type: string
   text?: string
   /** 装配时可能还没有（`WireMessage.toolCallId` 可缺），JSON 里的 undefined 等同不带这个键。 */
@@ -353,7 +353,7 @@ interface AnthropicBlock {
  * `_toolBatch` 不是协议字段，是「同一轮的多个工具结果要并进同一条 user 消息」时的
  * 自用标记，发出去之前一定删掉——留着会进请求体，破坏缓存前缀。
  */
-interface AnthropicOutMessage {
+export interface AnthropicOutMessage {
   role: 'user' | 'assistant'
   content: string | AnthropicBlock[]
   _toolBatch?: boolean
