@@ -8,7 +8,7 @@
  * 绝不允许把原始 path 直接交给 open/readFile/unlink——那是这类工具最常见的破口。
  */
 
-import { readlink, realpath } from 'node:fs/promises'
+import { readlink, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /**
@@ -30,6 +30,30 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
  * `errorKind` 让注册表把它当**判定**而不是异常端出去（见 `agent/registry.ts`
  * 的 catch）：`executed: false`，且不套「执行出错」的壳。
  */
+/**
+ * 路径在允许范围内，但那个位置上没有东西。
+ *
+ * **必须与「越界」分开。** 从前两者共用 `PathEscapeError`：`realpath` 对
+ * ENOENT 和真正的越界抛的是同一个错，`mustExist` 那条把它一律 catch 成越界。
+ * 于是模型读一个不存在的文件，收到的是「路径越界，已拒绝……要么让用户切到
+ * 完全访问，要么把这个目录加进 additionalDirectories」——**一句都不可执行**：
+ * 那个路径明明是工作区内的相对路径，模型没法据此判断「文件不存在、我记错了名字」。
+ *
+ * 实测代价（会话 `cv_0mt0x92q10000mx0dff`）：模型读一个不存在的
+ * `client/src/battle/battle-snapshot.js`，拿到这句权限话术之后绕开了这个工具，
+ * 却在回话里把那个文件写进了「已用 read_file 校验最新版」的清单——
+ * 用户看见的是「读取 2 个文件、1 个失败」，模型说的是「5 个核心文件都已确认」。
+ */
+export class PathNotFoundError extends Error {
+  readonly errorKind = 'path_not_found'
+
+  constructor(readonly attempted: string) {
+    super(`路径不存在：${attempted}
+用 list_dir 或 glob 确认它的真实位置再试。`)
+    this.name = 'PathNotFoundError'
+  }
+}
+
 export class PathEscapeError extends Error {
   readonly errorKind = 'path_out_of_workspace'
 
@@ -174,18 +198,26 @@ export async function resolveInWorkspace(
   // 而命中哪一个取决于目录内容，同一句话两次可能读到不同的文件。
   const joined = isAbsolute(raw) ? resolve(raw) : resolve(workspaceRoot, raw)
 
-  const targetReal = opts.mustExist
-    ? await realpath(joined).catch(() => {
-        throw new PathEscapeError(candidate)
-      })
-    : await resolveForWrite(joined)
+  /*
+   * **存在性不在这里判。** `realpath` 对「不存在」和「越界」抛的是同一个错，
+   * 在这里 catch 成 `PathEscapeError` 就是把「文件不存在」报成「你没权限」。
+   * 这条与下面几行给工作区根写的理由是同一条：那条 ENOENT 指向真正的问题，
+   * 换成「路径越界」只会把排查方向引到别处。
+   *
+   * 两条路因此都走 `resolveForWrite`——它对不存在的目标解析到最近的已存在祖先，
+   * 中间目录的软链照样解开，逃逸挡得住。存在性等边界判完再回答。
+   */
+  const targetReal = await resolveForWrite(joined)
 
   /*
    * 「完全访问」下不设边界。**解析照做、只跳过归属判定**——返回的仍然是
    * realpath 之后的那一个路径，因为「判的和写的是同一个路径」这条与边界无关：
    * 调用方拿它去记「本轮读过没有」，返回字面路径会让软链根下的新鲜度判定恒错。
    */
-  if (unrestricted) return targetReal
+  if (unrestricted) {
+    if (opts.mustExist) await assertExists(targetReal, candidate)
+    return targetReal
+  }
 
   // 工作区根解析不了是**装配错误**，让它原样抛：那条 ENOENT 指向真正的问题，
   // 换成「路径越界」只会把排查方向引到用户输入上去。
@@ -198,6 +230,13 @@ export async function resolveInWorkspace(
 
   for (const rootReal of rootReals) {
     if (isInside(rootReal, targetReal)) {
+      /*
+       * **先判边界，再判存在。顺序是安全属性，不是风格。**
+       *
+       * 反过来的话，「这个文件不存在」这句话本身就泄露了工作区外某个路径存不存在
+       * ——而挡住界外正是这一层的全部工作。
+       */
+      if (opts.mustExist) await assertExists(targetReal, candidate)
       // **判定用的和返回的是同一个路径。** 两者不同的话，判的是 A、写的是 B，
       // 边界就只是看起来在那里；调用方按返回值记账时也会与读路径对不上
       // （`files.ts` 的「本轮读过没有」曾因此在软链根下恒判 stale）。
@@ -227,6 +266,15 @@ async function resolveForWrite(target: string): Promise<string> {
 
   const { real: ancestor, rest } = await nearestExisting(target)
   return rest.length ? resolve(ancestor, ...rest) : ancestor
+}
+
+/** 目标真的在那儿吗。`mustExist` 的调用方靠它拿到「不存在」而不是「没权限」。 */
+async function assertExists(target: string, candidate: string): Promise<void> {
+  const ok = await stat(target).then(
+    () => true,
+    () => false,
+  )
+  if (!ok) throw new PathNotFoundError(candidate)
 }
 
 /** 已存在的最近祖先目录，以及从它到目标之间被消耗掉的路径段。 */

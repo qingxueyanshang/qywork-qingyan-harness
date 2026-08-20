@@ -87,6 +87,7 @@ interface LibraryModel {
    */
   thinking: string
   thinksByDefault: boolean
+  cacheRouting: string
   source: 'seed' | 'user'
   /**
    * 这条价目的偏离说明：分时段折扣、长上下文换档。**没有偏离就不带这个键。**
@@ -161,6 +162,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
       thinking: spec.thinking,
       thinksByDefault: spec.thinksByDefault,
+      cacheRouting: spec.cacheRouting,
       source,
       ...(notes.length ? { priceNotes: notes } : {}),
     }
