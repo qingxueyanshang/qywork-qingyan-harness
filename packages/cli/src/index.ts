@@ -71,7 +71,7 @@ const USAGE = `qy —— qywork 编码 agent
     --tools               连带列出每个 server 提供的工具
     --cwd <路径>          指定工作区
 
-  qy plugins              检查 .qy/plugins 里的插件装没装上、隔离到什么程度
+  qy plugins              检查装了哪些插件、隔离到什么程度
     --tools               连带列出每个插件提供的工具与启动日志
     --cwd <路径>          指定工作区
 

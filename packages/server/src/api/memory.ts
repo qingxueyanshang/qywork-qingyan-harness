@@ -22,18 +22,18 @@
  * 不做一个只能改标题的假编辑器。
  */
 
-import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
+  listAllScopedEntries,
   listScopedEntries,
   MAX_ENTRIES,
   MAX_ENTRY_CHARS,
   MEMORY_DIR,
   MEMORY_SUBDIR,
-  readScoped,
   resolveInWorkspace,
   type Scope,
-  scanSkills,
+  scanAllSkills,
   scopeDir,
   scopePaths,
   scopeRoots,
@@ -61,13 +61,13 @@ function safeKey(raw: string): string | null {
 /**
  * 写哪一层。
  *
- * 默认用户层——AI 和「随手记一条」都该落在跟着项目走的那份。全局层要显式指定，
+ * 默认项目层——AI 和「随手记一条」都该落在跟着项目走的那份。全局层要显式指定，
  * 因为它对所有工作区生效，那个决定不该由默认值替用户做。
  *
  * **内置层不可写**：它随程序发布，写进去下次升级就没了，而用户会以为存住了。
  */
 function writableScope(raw: string | null): Scope | null {
-  if (raw === null || raw === 'user') return 'user'
+  if (raw === null || raw === 'project') return 'project'
   if (raw === 'global') return 'global'
   return null
 }
@@ -86,7 +86,13 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     return json({
       // 每一层的目录都报出来，有没有内容都报——「该去哪儿加」比「这里是空的」有用。
       dirs: scopePaths(roots, MEMORY_SUBDIR),
-      entries: await listScopedEntries(roots),
+      // **全部层的全部条目，被盖住的也回**：设置页按层分列，去重之后被项目层
+      // 盖住的那条全局记忆会从界面上消失，而用户正是要在全局那一栏里找到它、
+      // 并知道它为什么不生效。哪条生效由 `shadowedBy === null` 判定。
+      entries: (await listAllScopedEntries(roots)).map((x) => ({
+        ...x.item,
+        shadowedBy: x.shadowedBy,
+      })),
     })
   }
 
@@ -97,12 +103,12 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
 
     const scope = writableScope(url.searchParams.get('scope'))
     if (!scope) {
-      return json({ error: 'bad request', message: '只能写用户层或全局层' }, 400)
+      return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
     }
-    // 用户层多过一遍工作区边界：安全化规则将来可能被放宽，这是最后一道。
+    // 项目层多过一遍工作区边界：安全化规则将来可能被放宽，这是最后一道。
     // 全局层不在工作区里，靠的是 `safeKey` 已经把分隔符和 `..` 全清掉了。
     const file =
-      scope === 'user'
+      scope === 'project'
         ? await resolveInWorkspace(d.workspaceRoot, join(MEMORY_DIR, `${key}.md`), {
             mustExist: false,
           })
@@ -120,12 +126,13 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
      * 不存在回 404 而不是空串：空串会被编辑器当成「这条是空的」照常保存下去。
      */
     if (req.method === 'GET') {
-      // 读**不认作用域参数**：按优先级找，找到哪层就回哪层——这必须和模型
-      // `memory read` 看到的是同一条，否则编辑器改的是另一份文件。
-      const found = await readScoped(scopeRoots(d.workspaceRoot), key)
-      return found === null
-        ? json({ error: 'not found' }, 404)
-        : json({ key, content: found.content, scope: found.scope })
+      // 读**认作用域**，读的就是下面 PUT / DELETE 要写的那个文件。
+      //
+      // 不能按优先级找：设置页按层分列，被项目层盖住的那条全局记忆照样列在
+      // 全局那一栏里、照样点得开。按优先级找会把项目层那份的正文填进编辑框，
+      // 用户不改任何字点一下保存，全局那条就被项目那条的内容覆盖了。
+      const text = await readFile(file, 'utf8').catch(() => null)
+      return text === null ? json({ error: 'not found' }, 404) : json({ key, content: text, scope })
     }
 
     if (req.method === 'PUT') {
@@ -170,7 +177,11 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/skills' && req.method === 'GET') {
     const roots = scopeRoots(d.workspaceRoot)
-    return json({ dirs: scopePaths(roots, 'skills'), skills: await scanSkills(roots) })
+    return json({
+      dirs: scopePaths(roots, 'skills'),
+      // 同 `/api/memory`：全部层全部条目，被同名盖住的标出来。
+      skills: (await scanAllSkills(roots)).map((x) => ({ ...x.item, shadowedBy: x.shadowedBy })),
+    })
   }
 
   return null

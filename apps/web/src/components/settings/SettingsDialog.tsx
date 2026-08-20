@@ -1,5 +1,5 @@
 import { createEffect, lazy, Match, onCleanup, Suspense, Switch } from 'solid-js'
-import { closeSettings, type SettingsPage as Page, settingsPage } from '../../lib/store/index.ts'
+import { closeSettings, settingsPage } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
 import { GeneralSettings } from './GeneralSettings.tsx'
@@ -23,27 +23,6 @@ const SchedulesPanel = lazy(() =>
 )
 
 /**
- * 每一页的标题。
- *
- * **只有标题，没有页级说明。** 曾经每页挂一句话（key 存在哪、带 * 的是必填、
- * 审批开关在哪），三句都是控件本身已经说过或者猜得到的事——
- * key 那格的占位符写着「已设置（留空则保持不变）」，必填项旁边就有个 `*`，
- * 而「去哪找某个开关」是枚举操作路径（B7）。控件说得清的，标题上面不再说一遍。
- */
-const META: Record<Page, { title: string }> = {
-  general: { title: '通用' },
-  models: { title: '模型' },
-  modules: { title: '模块' },
-  access: { title: '权限' },
-  team: { title: 'Agent Team' },
-  memory: { title: '记忆' },
-  skills: { title: '技能' },
-  mcp: { title: 'MCP' },
-  plugins: { title: '插件' },
-  schedules: { title: '定时任务' },
-}
-
-/**
  * 系统设置弹窗。左边类目、右边内容，盖在会话上面。
  *
  * ## 为什么类目导航在弹窗里，不在左栏
@@ -54,17 +33,18 @@ const META: Record<Page, { title: string }> = {
  *
  * ## 没有横贯整条的标题栏
  *
- * 类目栏直接通到弹窗顶部，标题和关闭都在右边内容区那一行。**弹窗的名字就是
- * 当前类目的名字**——横一条「设置」在最上面，等于把同一件事说两遍，
- * 还把类目栏往下压了一格。
+ * 类目栏直接通到弹窗顶部。**弹窗的名字就是当前类目的名字**——横一条「设置」
+ * 在最上面等于把同一件事说两遍，还把类目栏往下压了一格。
+ *
+ * **标题也不在这里画。** 标题、页级说明、右上角的动作按钮是同一块（`PageHead`），
+ * 由每一页自己给：拆成「固定的标题 + 跟着滚的动作按钮」时，两者会在滚动之后
+ * 错开一整段，而它们本来是一行。
  *
  * ## 尺寸写死
  *
  * 见 `settings.css` 里 `.settings-dialog` 那段：切类目不许改变对话框尺寸。
  */
 export function SettingsDialog() {
-  const meta = () => META[settingsPage() ?? 'general']
-
   createEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -96,12 +76,6 @@ export function SettingsDialog() {
             >
               <IconX size={15} />
             </button>
-
-            {/* 标题这一行不进滚动区：那句边界说明（「明文 key 不出服务端」）
-                滚走了等于没写，而它正是用户据以决定要不要在这一页填东西的事实。 */}
-            <header class="settings-pane-head">
-              <h2 class="settings-page-title">{meta().title}</h2>
-            </header>
 
             {/* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，
                 而类目栏是用来来回切的。 */}

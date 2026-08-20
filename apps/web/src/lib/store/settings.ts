@@ -333,16 +333,15 @@ export function loadWorkspaceExtensions(): Promise<WorkspaceExtensions> {
  * 那等于「从网上取一段代码，下次加载就跑它」。用户先自己 clone、看过内容，
  * 再把目录指给这里，中间那一步「你看到了自己装的是什么」值这条命令的成本。
  */
-export function installPlugin(path: string, scope: Scope): Promise<{ ok: boolean; id: string }> {
-  return scheduleWrite(`/api/plugins/install?scope=${scope}`, {
+/** 插件只有全局一个目录，所以装 / 卸都不带层。 */
+export function installPlugin(path: string): Promise<{ ok: boolean; id: string }> {
+  return scheduleWrite('/api/plugins/install', {
     method: 'POST',
     body: JSON.stringify({ path }),
   })
 }
-export function uninstallPlugin(id: string, scope: Scope): Promise<{ ok: boolean }> {
-  return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}?scope=${scope}`, {
-    method: 'DELETE',
-  })
+export function uninstallPlugin(id: string): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 // ───────────────────────── 桌面外壳 ─────────────────────────
@@ -492,17 +491,22 @@ export async function saveTeamRaw(raw: string): Promise<{ ok: boolean }> {
  * 一条记忆 / 技能 / MCP / 插件来自哪一层。
  *
  * - `builtin` 随程序发布，只读，**用户看不到**（服务端现在也还没有内容）。
- * - `user` 是工作区 `.agents/`，跟着这个仓库走，别的 CLI 也读得到。
+ * - `project` 是工作区 `.agents/`，跟着这个仓库走，别的 CLI 也读得到。
  * - `global` 是 `~/.qywork/`，跨工作区。
  *
- * 优先级 `builtin > user > global`，同名先认领的赢。**解析在服务端做**——
+ * 优先级 `builtin > project > global`，同名先认领的赢。**解析在服务端做**——
  * 界面上列出来的那条必须就是模型真的加载的那条，前端不许自己再算一遍。
  */
-export type Scope = 'builtin' | 'user' | 'global'
+export type Scope = 'builtin' | 'project' | 'global'
 
-/** 可写的两层。内置随程序发布，写进去下次升级就没了。 */
+/**
+ * 可写的两层，顺序即界面上标签页的顺序。内置随程序发布，写进去下次升级就没了。
+ *
+ * **标签只有这一份**：写死在各页里的话，同一个层在记忆页叫一个名字、
+ * 在 MCP 页叫另一个名字，而用户没法知道它们是同一层。
+ */
 export const WRITABLE_SCOPES: { id: Scope; label: string }[] = [
-  { id: 'user', label: '用户级' },
+  { id: 'project', label: '项目' },
   { id: 'global', label: '全局' },
 ]
 
@@ -515,6 +519,13 @@ export interface MemoryEntry {
   key: string
   preview: string
   scope: Scope
+  /**
+   * 盖住它的那一层，没被盖住时是 null。
+   *
+   * 列表回的是**全部层的全部条目**，不是去重后的那一份——设置页按层分列，
+   * 去重会让被项目层盖住的那条全局记忆从界面上消失。哪条真正生效看这个字段。
+   */
+  shadowedBy: Scope | null
 }
 export function loadMemory(): Promise<{ dirs: ScopeDir[]; entries: MemoryEntry[] }> {
   return client.api<{ dirs: ScopeDir[]; entries: MemoryEntry[] }>('/api/memory')
@@ -524,12 +535,16 @@ export function loadMemory(): Promise<{ dirs: ScopeDir[]; entries: MemoryEntry[]
  *
  * 列表只回首行摘要，够渲染列表、不够编辑。编辑器必须走这条——
  * 拿摘要去填编辑框，用户不改字点一下保存就把正文截成一行了。
+ *
+ * **必须带层**：同一个 key 在两层里各有一份，不带层拿到的是优先级高的那份，
+ * 而编辑框接着会把它存回用户点开的那一层。
  */
 export function loadMemoryEntry(
   key: string,
+  scope: Scope,
 ): Promise<{ key: string; content: string; scope: Scope }> {
   return client.api<{ key: string; content: string; scope: Scope }>(
-    `/api/memory/${encodeURIComponent(key)}`,
+    `/api/memory/${encodeURIComponent(key)}?scope=${scope}`,
   )
 }
 export function saveMemory(key: string, content: string, scope: Scope): Promise<{ ok: boolean }> {
@@ -550,6 +565,8 @@ export interface SkillMeta {
   /** 技能目录的绝对路径。技能只读，用户得知道去哪儿改。 */
   dir: string
   scope: Scope
+  /** 盖住它的那一层。同名技能只有优先级最高的那个会被加载。 */
+  shadowedBy: Scope | null
 }
 export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }> {
   return client.api<{ dirs: ScopeDir[]; skills: SkillMeta[] }>('/api/skills')

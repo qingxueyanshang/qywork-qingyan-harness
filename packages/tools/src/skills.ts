@@ -17,7 +17,7 @@
  *
  * ## 三层作用域，技能全程只读
  *
- * 工作区 `.agents/skills/`（用户层）和 `~/.qywork/skills/`（全局层）都扫，
+ * 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`（全局层）都扫，
  * 同名先到的赢。技能没有任何写接口——它是一个目录（`SKILL.md` + 附带脚本），
  * 在网页上编辑一个目录需要一整套文件管理界面，而那是编辑器该干的事。
  */
@@ -25,11 +25,18 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { type Scope, type ScopeRoots, scanScoped, scopeRoots } from './scopes.ts'
+import {
+  type Scope,
+  type ScopedItem,
+  type ScopeRoots,
+  scanAllScopes,
+  scanScoped,
+  scopeRoots,
+} from './scopes.ts'
 
 /** 各层根目录下装技能的那个子目录。`.agents/skills` 是跨客户端约定的那条。 */
 export const SKILLS_SUBDIR = 'skills'
-/** 用户层技能相对工作区的路径。 */
+/** 项目层技能相对工作区的路径。 */
 export const SKILLS_DIR = `.agents/${SKILLS_SUBDIR}`
 
 export interface SkillMeta {
@@ -88,6 +95,16 @@ export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<Skill
   const roots =
     typeof rootsOrWorkspace === 'string' ? scopeRoots(rootsOrWorkspace) : rootsOrWorkspace
   return scanScoped(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
+}
+
+/**
+ * 每一层各自装了哪些技能，被同名盖住的也在里面。
+ *
+ * 设置页按层分列要的是这一份。去重之后被盖住的那个直接消失，而「我在全局装了
+ * 一个同名技能，怎么用的还是项目里那个」正是靠它才答得出来。
+ */
+export function scanAllSkills(roots: ScopeRoots): Promise<ScopedItem<SkillMeta>[]> {
+  return scanAllScopes(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
 }
 
 /**

@@ -11,16 +11,15 @@
  *
  * ## 列表由服务端合并，前端不自己拼
  *
- * 可开关的条目 = 三层解析之后、**用户看得见的那两层**（用户级 + 全局）。
+ * 可开关的条目 = 三层解析之后、**用户看得见的那两层**（项目 + 全局）。
  * 内置层不出现：用户看不到它，也就没有开关可言。这份清单必须和 agent 真正
  * 加载的那份来自同一个解析——前端自己扫一遍就会出现「面板上关掉了，模型还在用」。
  */
 
-import { resolve } from 'node:path'
 import type { ConversationId } from '@qywork/core'
-import { loadScopedMcpConfig, PLUGINS_SUBDIR } from '@qywork/runtime'
+import { loadScopedMcpConfig } from '@qywork/runtime'
 import { getConversation, listDisabledExtras, setExtraEnabled } from '@qywork/store'
-import { listScopedEntries, type Scope, scanSkills, scopePaths, scopeRoots } from '@qywork/tools'
+import { listScopedEntries, type Scope, scanSkills, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 export interface ExtraRow {
@@ -71,16 +70,14 @@ export const handleExtrasApi: ApiHandler = async (url, req, d) => {
 
   const mcp = await loadScopedMcpConfig(d.workspaceRoot)
   for (const name of Object.keys(mcp.servers)) {
-    push(`mcp:${name}`, name, '', mcp.scopeOf[name] ?? 'user')
+    push(`mcp:${name}`, name, '', mcp.scopeOf[name] ?? 'project')
   }
 
   const { loadExtensions } = await import('@qywork/runtime')
   const ext = await loadExtensions(d.workspaceRoot)
-  const pluginDirs = scopePaths(roots, PLUGINS_SUBDIR)
+  // 插件只有全局一个目录，层不用从路径反推。
   for (const pl of ext.plugins.plugins) {
-    const scope =
-      pluginDirs.find((x) => resolve(pl.dir).startsWith(resolve(x.dir)))?.scope ?? 'user'
-    push(`plugin:${pl.manifest.id}`, pl.manifest.id, pl.manifest.name, scope)
+    push(`plugin:${pl.manifest.id}`, pl.manifest.id, pl.manifest.name, 'global')
   }
 
   return json({ extras: rows })

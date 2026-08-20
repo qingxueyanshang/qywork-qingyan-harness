@@ -25,7 +25,7 @@
  *
  * 成立的前提是**第一行就是摘要**，所以 `write_memory` 的描述里这么要求。
  *
- * ## 三层作用域：列表和读跨层，写和删只在用户层
+ * ## 三层作用域：列表和读跨层，写和删只在项目层
  *
  * 索引与 `read_memory` 看得到全局层的记忆（跨工作区那几条常用事实），
  * 但 `write_memory` / `delete_memory` **只动工作区 `.agents/memory/`**。
@@ -38,11 +38,19 @@ import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { resolveInWorkspace } from './paths.ts'
-import { type Scope, type ScopeRoots, scanScoped, scopePaths, scopeRoots } from './scopes.ts'
+import {
+  type Scope,
+  type ScopedItem,
+  type ScopeRoots,
+  scanAllScopes,
+  scanScoped,
+  scopePaths,
+  scopeRoots,
+} from './scopes.ts'
 
 /** 各层根目录下装记忆的那个子目录。 */
 export const MEMORY_SUBDIR = 'memory'
-/** 用户层记忆相对工作区的路径。写入、fileChanges 用它。 */
+/** 项目层记忆相对工作区的路径。写入、fileChanges 用它。 */
 export const MEMORY_DIR = `.agents/${MEMORY_SUBDIR}`
 
 /**
@@ -105,7 +113,7 @@ export const readMemoryTool: ToolSpec = {
   async fn(args, ctx) {
     const key = requireKey(args)
     if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
-    // 读跨层：用户层没有就往全局找。找不到才算 not_found。
+    // 读跨层：项目层没有就往全局找。找不到才算 not_found。
     const found = await readScoped(scopeRoots(ctx.workspaceRoot), key)
     return found === null
       ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
@@ -241,7 +249,7 @@ export interface MemoryEntry {
  * 摘要就是首行原文，这里不做任何加工——加工出来的一句话和文件里写着的那句
  * 不一致时，用户在设置页看到的和模型看到的就是两回事。
  */
-export async function listEntries(dir: string, scope: Scope = 'user'): Promise<MemoryEntry[]> {
+export async function listEntries(dir: string, scope: Scope = 'project'): Promise<MemoryEntry[]> {
   const names = await readdir(dir).catch(() => [] as string[])
   const out: MemoryEntry[] = []
   for (const name of names.sort()) {
@@ -261,10 +269,20 @@ export async function listEntries(dir: string, scope: Scope = 'user'): Promise<M
  * 三层合起来的记忆索引。同 key 只留优先级最高的那条。
  *
  * **加载器和设置页共用这一个函数**：界面上列出来的那条，必须就是模型真的看到的
- * 那条。两边各扫一遍的话，界面显示全局那份、模型读到用户层那份，而两者内容不同。
+ * 那条。两边各扫一遍的话，界面显示全局那份、模型读到项目层那份，而两者内容不同。
  */
 export function listScopedEntries(roots: ScopeRoots): Promise<MemoryEntry[]> {
   return scanScoped(roots, MEMORY_SUBDIR, listEntries, (e) => e.key)
+}
+
+/**
+ * 每一层各自有哪些记忆，被盖住的也在里面。
+ *
+ * 设置页按层分列要的是这一份：`listScopedEntries` 去重之后，被项目层盖住的那条
+ * 全局记忆直接消失，用户在全局那一栏看不到它，也就无从知道自己改的那条为什么没生效。
+ */
+export function listAllScopedEntries(roots: ScopeRoots): Promise<ScopedItem<MemoryEntry>[]> {
+  return scanAllScopes(roots, MEMORY_SUBDIR, listEntries, (e) => e.key)
 }
 
 /** 按优先级找一条记忆的全文。找不到回 null。 */

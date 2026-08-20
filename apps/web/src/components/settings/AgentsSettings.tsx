@@ -2,6 +2,7 @@ import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import { loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
+import { EmptyBox, EntryCard, PageHead, PathLine, Section } from './Page.tsx'
 
 const TEMPLATE = `{
   "backends": {},
@@ -22,7 +23,7 @@ const TEMPLATE = `{
  * 所以：角色卡列表在上，原文编辑降到底部的「高级」。原文不删——
  * 后端和编排图确实只有 JSON 表达得了，做成表单是把一个通用结构塞进固定几格。
  *
- * ## 不分层
+ * ## 不分层，所以没有作用域标签页
  *
  * 编排跟着仓库走：角色、后端、编排图全是项目属性，跟到别的仓库去只会派错人。
  * 所以它留在工作区的 `.qy/team.json`，没有全局那一层。
@@ -64,73 +65,63 @@ export default function AgentsSettings() {
   }
 
   return (
-    <Show
-      when={loaded(team)}
-      fallback={<LoadState error={team.error} onRetry={() => void refetchTeam()} />}
-    >
-      {(t) => (
-        <>
-          {/* 配置坏了要说出来，不能静默当作「没配 team」——那会让用户以为
+    <>
+      {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
+      <PageHead
+        title="Agent Team"
+        desc="按角色分工的编排，只属于当前项目。角色可以跑在本进程里，也可以是本机上另一个 CLI。"
+      />
+      <Show
+        when={loaded(team)}
+        fallback={<LoadState error={team.error} onRetry={() => void refetchTeam()} />}
+      >
+        {(t) => (
+          <>
+            {/* 配置坏了要说出来，不能静默当作「没配 team」——那会让用户以为
               这个功能不存在。 */}
-          <Show when={t().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+            <Show when={t().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
-          <Show when={t().roles.length > 0}>
-            <section class="settings-block">
-              <div class="settings-block-head">
-                <h3>{t().roles.length} 个角色</h3>
-              </div>
-              <div class="model-list">
-                <For each={t().roles}>
-                  {(r) => (
-                    <div class="model-row">
-                      <div class="model-row-main">
-                        <span class="model-id">{r.name}</span>
+            <Section title="角色">
+              <Show when={t().roles.length > 0} fallback={<EmptyBox label="还没有配角色" />}>
+                <div class="entry-list">
+                  <For each={t().roles}>
+                    {(r) => (
+                      <EntryCard name={r.name} desc={r.description}>
                         {/* 后端是 builtin 还是某个外部 CLI，是这一行最要紧的事实：
-                            外部 CLI 的那些跑在本机另一个进程里，凭证和沙箱都是另一套。 */}
-                        <span class="probe-line">{r.backend}</span>
-                      </div>
-                      <div class="probe-line">{r.description}</div>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </section>
-          </Show>
+                          外部 CLI 的那些跑在本机另一个进程里，凭证和沙箱都是另一套。 */}
+                        <div class="entry-extra">
+                          <code>{r.backend}</code>
+                        </div>
+                      </EntryCard>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </Section>
 
-          <Show when={t().plan.length > 0}>
-            <section class="settings-block">
-              <div class="settings-block-head">
-                <h3>编排</h3>
-              </div>
-              <div class="model-list">
-                <For each={t().plan}>
-                  {(n) => (
-                    <div class="model-row">
-                      <div class="model-row-main">
-                        <span class="model-id">{n.roleId}</span>
+            <Show when={t().plan.length > 0}>
+              <Section title="编排">
+                <div class="entry-list">
+                  <For each={t().plan}>
+                    {(n) => (
+                      <EntryCard name={n.roleId} desc={n.task}>
                         <Show when={n.needs?.length}>
-                          <span class="probe-line">依赖 {n.needs!.join(' / ')}</span>
+                          <div class="entry-extra">依赖 {n.needs!.join(' / ')}</div>
                         </Show>
-                      </div>
-                      <div class="probe-line">{n.task}</div>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </section>
-          </Show>
+                      </EntryCard>
+                    )}
+                  </For>
+                </div>
+              </Section>
+            </Show>
 
-          <section class="settings-block">
-            <div class="settings-block-head">
-              <h3>高级：直接改 team.json</h3>
-            </div>
             <Show
               when={loaded(file)}
               fallback={<LoadState error={file.error} onRetry={() => void refetchRaw()} />}
             >
               {(f) => (
-                <>
-                  <code class="field-path">{f().path}</code>
+                <Section title="高级：直接改 team.json">
+                  <PathLine path={f().path} />
                   <textarea
                     class="code-area"
                     rows={14}
@@ -147,12 +138,12 @@ export default function AgentsSettings() {
                     </Show>
                     <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
                   </div>
-                </>
+                </Section>
               )}
             </Show>
-          </section>
-        </>
-      )}
-    </Show>
+          </>
+        )}
+      </Show>
+    </>
   )
 }

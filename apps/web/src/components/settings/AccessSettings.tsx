@@ -2,6 +2,7 @@ import { Show } from 'solid-js'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import { config, configError, ensureConfig, patchConfig, reloadConfig } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
+import { PageHead } from './Page.tsx'
 import { Field } from './Row.tsx'
 
 /**
@@ -19,6 +20,7 @@ export function AccessSettings() {
 
   return (
     <>
+      <PageHead title="权限" />
       <Show
         when={config()}
         fallback={<LoadState error={configError()} onRetry={() => void reloadConfig()} />}

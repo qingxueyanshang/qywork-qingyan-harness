@@ -42,13 +42,13 @@ export { type ContextPanel, contextPanel } from './context-panel.ts'
 // 而自己拼未消毒的前缀会一条都匹配不上。
 export {
   acquireExtensions,
+  globalPluginsDir,
   loadExtensions,
   loadScopedMcpConfig,
   loadTeamConfig,
   loadWorkspaceMcp,
   MCP_CONFIG,
   MCP_FILE,
-  PLUGINS_SUBDIR,
   pluginToolPrefix,
   releaseExtensions,
   toolNamePrefix,

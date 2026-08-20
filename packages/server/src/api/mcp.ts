@@ -25,9 +25,9 @@ import { loadScopedMcpConfig, MCP_CONFIG, MCP_FILE } from '@qywork/runtime'
 import { type Scope, scopeDir, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
-/** 只有用户层和全局层可写。内置随程序发布，写进去下次升级就没了。 */
+/** 只有项目层和全局层可写。内置随程序发布，写进去下次升级就没了。 */
 function writableScope(raw: string | null): Scope | null {
-  if (raw === null || raw === 'user') return 'user'
+  if (raw === null || raw === 'project') return 'project'
   if (raw === 'global') return 'global'
   return null
 }
@@ -51,7 +51,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
       files: config.files,
       servers: ext.mcp.servers.map((s) => ({
         name: s.name,
-        scope: config.scopeOf[s.name] ?? 'user',
+        scope: config.scopeOf[s.name] ?? 'project',
         serverInfo: s.serverInfo,
         protocolVersion: s.protocolVersion,
         unsupported: s.unsupported,
@@ -61,7 +61,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
       /** 配好了但这一轮没连上的那些，也要列出来——否则它们凭空消失。 */
       configured: Object.keys(config.servers).map((name) => ({
         name,
-        scope: config.scopeOf[name] ?? 'user',
+        scope: config.scopeOf[name] ?? 'project',
       })),
       error: config.error,
     })
@@ -69,7 +69,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/mcp/raw') {
     const scope = writableScope(url.searchParams.get('scope'))
-    if (!scope) return json({ error: 'bad request', message: '只能读写用户层或全局层' }, 400)
+    if (!scope) return json({ error: 'bad request', message: '只能读写项目层或全局层' }, 400)
     const dir = scopeDir(scopeRoots(d.workspaceRoot), scope, '')
     if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
     const file = join(dir, MCP_FILE)

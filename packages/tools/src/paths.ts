@@ -338,7 +338,7 @@ function decodeSafely(input: string): string {
  *
  * ## 为什么 `.agents/` 也在里面
  *
- * 用户层的技能 / MCP / 插件搬到了 `.agents/`（跨客户端约定的那条路径）。
+ * 项目层的技能 / MCP 搬到了 `.agents/`（跨客户端约定的那条路径）。
  * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。
  *
  * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而

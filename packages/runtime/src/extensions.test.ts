@@ -12,11 +12,29 @@ import { join } from 'node:path'
 import { ToolRegistry } from '@qywork/agent'
 import {
   acquireExtensions,
+  globalPluginsDir,
   loadExtensions,
   MCP_CONFIG,
-  PLUGINS_DIR,
   releaseExtensions,
 } from './extensions.ts'
+
+/**
+ * 插件装在全局目录里，所以要给这一轮一个临时的 `QYWORK_HOME`。
+ *
+ * **加载完就还回去**：`globalScopeRoot()` 每次调用都现读环境变量，留着不还会把
+ * 同一个进程里后面那些测试的配置目录也指到这个临时目录上。
+ */
+async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const home = await mkdtemp(join(tmpdir(), 'qywork-home-'))
+  const before = process.env.QYWORK_HOME
+  process.env.QYWORK_HOME = home
+  try {
+    return await fn(home)
+  } finally {
+    if (before === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = before
+  }
+}
 
 /**
  * 插件本体。
@@ -82,41 +100,43 @@ send({ type: 'ready' })
 async function workspaceWith(extra: string[]) {
   const permissions = ['workspace:read', ...extra.filter((p) => p !== 'workspace:read')]
   const root = await mkdtemp(join(tmpdir(), 'qywork-ext-'))
-  const dir = join(root, PLUGINS_DIR, 'probe')
-  await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'index.mjs'), PLUGIN_SOURCE, 'utf8')
-  await writeFile(
-    join(dir, 'qywork.plugin.json'),
-    JSON.stringify({
-      manifestVersion: 1,
-      id: 'test.probe',
-      name: '探针',
-      version: '1.0.0',
-      description: '端到端测试用',
-      main: 'index.mjs',
-      permissions,
-      contributes: {
-        tools: [
-          {
-            name: 'probe',
-            description: '调一次宿主能力',
-            parameters: { type: 'object', properties: {}, additionalProperties: true },
-            permissionEffect: 'read',
-          },
-        ],
-      },
-    }),
-    'utf8',
-  )
-  await writeFile(join(root, 'hello.txt'), '你好', 'utf8')
+  return withTempHome(async () => {
+    const dir = join(globalPluginsDir(), 'probe')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'index.mjs'), PLUGIN_SOURCE, 'utf8')
+    await writeFile(
+      join(dir, 'qywork.plugin.json'),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: 'test.probe',
+        name: '探针',
+        version: '1.0.0',
+        description: '端到端测试用',
+        main: 'index.mjs',
+        permissions,
+        contributes: {
+          tools: [
+            {
+              name: 'probe',
+              description: '调一次宿主能力',
+              parameters: { type: 'object', properties: {}, additionalProperties: true },
+              permissionEffect: 'read',
+            },
+          ],
+        },
+      }),
+      'utf8',
+    )
+    await writeFile(join(root, 'hello.txt'), '你好', 'utf8')
 
-  const ext = await loadExtensions(root)
-  // 注册名是消毒过的：插件 id 是 `test.probe`（反向域名风格），
-  // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`——点会被换成下划线。
-  const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__probe')
-  const probe = async (method: string, params: Record<string, unknown> = {}) =>
-    tool!.fn({ method, params }, {} as never)
-  return { root, ext, probe, stop: () => ext.stop() }
+    const ext = await loadExtensions(root)
+    // 注册名是消毒过的：插件 id 是 `test.probe`（反向域名风格），
+    // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`——点会被换成下划线。
+    const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__probe')
+    const probe = async (method: string, params: Record<string, unknown> = {}) =>
+      tool!.fn({ method, params }, {} as never)
+    return { root, ext, probe, stop: () => ext.stop() }
+  })
 }
 
 describe('插件端到端', () => {
@@ -222,11 +242,57 @@ describe('插件端到端', () => {
 
   test('坏插件不影响整体加载 —— 记进 failures 而不是抛', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-ext-bad-'))
-    await mkdir(join(root, PLUGINS_DIR, 'broken'), { recursive: true })
-    await writeFile(join(root, PLUGINS_DIR, 'broken', 'qywork.plugin.json'), '{ 坏的', 'utf8')
-    const ext = await loadExtensions(root)
+    const ext = await withTempHome(async () => {
+      const dir = join(globalPluginsDir(), 'broken')
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, 'qywork.plugin.json'), '{ 坏的', 'utf8')
+      return loadExtensions(root)
+    })
     expect(ext.plugins.failures).toHaveLength(1)
     expect(ext.plugins.plugins).toHaveLength(0)
+  })
+
+  /*
+   * 插件**只从全局目录加载**，工作区里那个位置不再是插件目录。
+   *
+   * 这条不能只靠「全局那份装上了」反证：两个目录都扫时全局那份照样装得上，
+   * 表现完全一样。所以只往工作区里放一个，断言它一个都没装上、也不报 failure
+   * ——它根本不在扫描范围里，报 failure 反而是错的。
+   */
+  test('工作区 .agents/plugins 里的插件不再被加载', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-ext-ws-plugin-'))
+    const dir = join(root, '.agents', 'plugins', 'probe')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'index.mjs'), PLUGIN_SOURCE, 'utf8')
+    await writeFile(
+      join(dir, 'qywork.plugin.json'),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: 'test.probe',
+        name: '探针',
+        version: '1.0.0',
+        description: '端到端测试用',
+        main: 'index.mjs',
+        permissions: ['workspace:read'],
+        contributes: {
+          tools: [
+            {
+              name: 'probe',
+              description: '调一次宿主能力',
+              parameters: { type: 'object', properties: {}, additionalProperties: true },
+              permissionEffect: 'read',
+            },
+          ],
+        },
+      }),
+      'utf8',
+    )
+
+    const ext = await withTempHome(() => loadExtensions(root))
+    expect(ext.plugins.plugins).toHaveLength(0)
+    expect(ext.plugins.failures).toHaveLength(0)
+    expect(ext.toolSpecs.map((t) => t.name)).not.toContain('test_probe__probe')
+    ext.stop()
   })
 })
 

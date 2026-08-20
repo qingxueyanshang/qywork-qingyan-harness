@@ -1,6 +1,8 @@
 # 写一个 qywork 插件
 
-插件放在工作区的 `.qy/plugins/<任意目录名>/`，至少要有一个 `qywork.plugin.json`。
+插件放在 `~/.qywork/plugins/<任意目录名>/`，至少要有一个 `qywork.plugin.json`。
+**插件不分层，只有这一个目录**——它贡献的是工具、预览器、供应商，那些是这个 agent
+的能力，不是某个仓库的内容，所以装一次对所有项目生效。
 加载顺序按目录名字典序——插件之间存在先到先得的资源（工具名、预览器扩展名归属），
 随机顺序会让同一份安装在不同机器上表现不同。
 
@@ -79,7 +81,7 @@ qy plugins --tools    # 连带列出每个插件提供的工具，以及启动�
 odejs
 ode.exe
     文件系统与子进程已强制隔离；直接出网通道已拆除，出网只能走 host.net.fetch
-✗ .qy/plugins/broken  清单缺少必填字段：main
+✗ broken  清单缺少必填字段：main
 ```
 
 有插件装不上时退非零，可以直接当 CI 里的一条检查（与 `qy mcp` 一致）。
@@ -233,7 +235,7 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 
 ## 一个能跑的最小例子
 
-`.qy/plugins/lines/qywork.plugin.json`：
+`~/.qywork/plugins/lines/qywork.plugin.json`：
 
 ```json
 {
@@ -257,7 +259,7 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 
 注册名是 `demo_lines__count`（`demo.lines` 里的点被消毒成了下划线）。
 
-`.qy/plugins/lines/index.mjs`：
+`~/.qywork/plugins/lines/index.mjs`：
 
 ```js
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\n')

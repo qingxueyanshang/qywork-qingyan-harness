@@ -138,10 +138,10 @@ export function serve(opts: ServeOptions) {
   /**
    * 预热启动那个项目的扩展，并全程持有一份引用。
    *
-   * **扩展清单不在这里存一份给握手用了。** 扩展是按工作区的
-   * （`.qy/plugins`、`.qy/mcp.json`、`.qy/team.json` 都在项目目录下），
-   * 而一条 WebSocket 连接横跨用户开着的所有项目——存一份就等于「A 项目的插件
-   * 显示在 B 项目上」，而且只在重连时才更新。清单改由 `/api/capabilities?ws=` 回答。
+   * **扩展清单不在这里存一份给握手用了。** 扩展里的 MCP 与编排是按工作区的
+   * （`.agents/mcp.json`、`.qy/team.json` 在项目目录下），而一条 WebSocket 连接
+   * 横跨用户开着的所有项目——存一份就等于「A 项目的 MCP 显示在 B 项目上」，
+   * 而且只在重连时才更新。清单改由 `/api/capabilities?ws=` 回答。
    *
    * 这里仍然 acquire：各个 Session 再各自 acquire / release，引用计数保证
    * 子进程只起一套；服务持有一份让启动项目的插件不会在两轮之间被反复拉起又杀掉。
