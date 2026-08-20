@@ -18,6 +18,7 @@ import type {
   RunUsage,
   StopReason,
   TodoItem,
+  ToolOutcomeWire,
 } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
@@ -485,7 +486,7 @@ interface StoredStep {
   payload: {
     kind: string
     args?: Record<string, unknown>
-    outcome?: any
+    outcome?: ToolOutcomeWire
     action?: ActionDescriptor
     /** kind='compaction' 专有，见 `StepPayload`。 */
     phase?: 'done' | 'skipped' | 'failed'

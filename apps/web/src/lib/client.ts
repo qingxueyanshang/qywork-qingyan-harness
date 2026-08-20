@@ -19,7 +19,9 @@ import type {
   CommandRejectedFrame,
   ConversationId,
   EventEnvelope,
+  HelloErrFrame,
   HelloFrame,
+  HelloOkFrame,
   ServerCapabilities,
 } from '@qywork/core'
 import { decodePairingUrl } from '@qywork/core'
@@ -107,7 +109,7 @@ export interface ClientDeps {
  * 被浏览器历史记录留存。
  */
 export function resolveEndpoint(): Endpoint {
-  const injected = (globalThis as Record<string, any>).__QYWORK__ as
+  const injected = (globalThis as Record<string, unknown>).__QYWORK__ as
     | { token?: string; base?: string }
     | undefined
 
@@ -271,7 +273,9 @@ export class QyClient {
     })
 
     ws.addEventListener('message', (e) => {
-      let msg: any
+      // 这一帧还没判过形状：只声明分发要看的那两处判据（`type` 与事件信封的
+      // `seq`/`event`），认出是哪一种之后各分支再接协议里那份真类型。
+      let msg: { type?: string; seq?: number; event?: unknown }
       try {
         msg = JSON.parse(String(e.data))
       } catch {
@@ -279,21 +283,22 @@ export class QyClient {
       }
 
       if (msg.type === 'hello.ok') {
+        const ok = msg as HelloOkFrame
         // 握手成功才重置退避计数——open 事件不代表服务端接受了我们。
         this.attempt = 0
         // 换了一条流（服务端重启过）与服务端放弃补发，两种情形下手里那个 seq
         // 都不再是有效位置，一律对齐到服务端当前值。
-        const sameStream = msg.streamId === this.streamId
-        this.streamId = msg.streamId
-        if (!sameStream || msg.resync) this.lastSeq = msg.currentSeq
-        this.opts.onCapabilities(msg.capabilities)
-        this.opts.onBusy(msg.busyConversations)
+        const sameStream = ok.streamId === this.streamId
+        this.streamId = ok.streamId
+        if (!sameStream || ok.resync) this.lastSeq = ok.currentSeq
+        this.opts.onCapabilities(ok.capabilities)
+        this.opts.onBusy(ok.busyConversations)
         this.opts.onState('ready')
-        if (msg.resync) this.opts.onResync()
+        if (ok.resync) this.opts.onResync()
         return
       }
       if (msg.type === 'hello.err') {
-        this.opts.onState('unauthorized', msg.message)
+        this.opts.onState('unauthorized', (msg as HelloErrFrame).message)
         this.terminalReported = true
         // **握手被拒是终态**，不按 reason 分支。
         //
