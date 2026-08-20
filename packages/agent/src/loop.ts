@@ -648,11 +648,6 @@ export class AgentLoop {
     const progress: ProgressEvidence[] = []
     let turnIndex = 0
 
-    // `run.finished` 上这两个字段一直写死 0。协议里有、渲染层认得、值是假的，
-    // 比没有更坏——所以要么填真，要么删字段；这里填真。
-    const startedAt = Date.now()
-    let stepsRun = 0
-
     // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的东西
     // （files 插件记录的「哪些文件本轮读过」、目录大小缓存等）要跨调用可见；
     // 每波新建一个 = 状态永远是空的，写入守卫会把模型刚读过的文件判成没读过，
@@ -666,8 +661,6 @@ export class AgentLoop {
           stopReason = 'user_interrupt'
           break
         }
-        stepsRun++
-
         const batchId = newBatchId()
 
         /**
@@ -1432,8 +1425,6 @@ export class AgentLoop {
           status: 'interrupted',
           stopReason: 'user_interrupt',
           usage,
-          stepCount: stepsRun,
-          durationMs: Date.now() - startedAt,
           fileChanges,
         }
         return
@@ -1453,8 +1444,6 @@ export class AgentLoop {
         status: 'failed',
         stopReason,
         usage,
-        stepCount: stepsRun,
-        durationMs: Date.now() - startedAt,
         fileChanges,
       }
       return
@@ -1471,8 +1460,6 @@ export class AgentLoop {
             : 'failed',
       stopReason,
       usage,
-      stepCount: stepsRun,
-      durationMs: Date.now() - startedAt,
       fileChanges,
     }
   }

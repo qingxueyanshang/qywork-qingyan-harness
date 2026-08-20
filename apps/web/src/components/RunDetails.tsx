@@ -349,7 +349,10 @@ function RequestLedger(props: { run: Run }) {
         <table class="run-req">
           <thead>
             <tr>
-              <th>#</th>
+              {/* 列名写「请求」而不是 `#`：行上那个「N 步」数的是 steps 表的行数
+                  （每段思考、每段正文、每次工具调用各一条），这里数的是模型往返次数，
+                  两个数不该、也不会相等。列名把单位说出来，省掉一次「为什么对不上」。 */}
+              <th>请求</th>
               <th>输入</th>
               <th>输出</th>
               <th>命中</th>

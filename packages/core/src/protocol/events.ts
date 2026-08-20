@@ -132,9 +132,14 @@ export interface RunFinishedEvent {
   /** 永远非空——不存在「静默完成」。 */
   stopReason: StopReason
   usage: RunUsage
-  stepCount: number
-  durationMs: number
-  /** 本 run 累计的文件变更汇总，供「N 个文件已更改 +x -y」条展示。 */
+  /**
+   * 本 run 累计的文件变更汇总，供「N 个文件已更改 +x -y」条展示。
+   *
+   * **这里没有步数与耗时。** 步数在这个事件上是「循环轮次」，而 `Run.stepCount` 是
+   * 「steps 表里的行数」，同名不同义；耗时客户端按自己那块表算（收到 `run.started`
+   * 到收到这条的间隔），因为用户问的是「我等了多久」。两个都没有消费者，所以删掉——
+   * 协议里留着一个没人读、还和别处同名不同义的字段，比没有更坏。
+   */
   fileChanges: FileChange[]
 }
 
@@ -158,7 +163,6 @@ export type ErrorCode =
   | 'network_error'
   | 'stream_idle_timeout'
   | 'tool_execution_failed'
-  | 'permission_denied'
   | 'workspace_unavailable'
   | 'internal_error'
 
