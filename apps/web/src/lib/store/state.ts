@@ -181,7 +181,7 @@ export interface AppState {
   git: Omit<GitStateEvent, 'type'> | null
 
   permission: PermissionAsk | null
-  error: { code: string; message: string; retryable: boolean } | null
+  error: { code: string; message: string } | null
 }
 
 const initial: AppState = {

@@ -103,7 +103,6 @@ export async function selectConversation(id: string): Promise<void> {
     setState('error', {
       code: 'internal_error',
       message: `打不开这条会话：${e instanceof Error ? e.message : String(e)}`,
-      retryable: true,
     })
   }
 }

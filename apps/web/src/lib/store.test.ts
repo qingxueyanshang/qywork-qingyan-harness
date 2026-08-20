@@ -380,7 +380,6 @@ describe('事件按会话归属过滤', () => {
         runId: 'run_1',
         code: 'internal_error',
         message: '工作区级错误',
-        retryable: false,
       },
     } as never)
     expect(state.error?.message).toBe('工作区级错误')
@@ -625,7 +624,7 @@ describe('报错正文并进这一轮的读数条', () => {
       seq: 1,
       at: 0,
       conversationId: 'cv_now',
-      event: { type: 'run.error', runId: 'run_1', code: 'network_error', message, retryable: true },
+      event: { type: 'run.error', runId: 'run_1', code: 'network_error', message },
     }) as never
 
   const finishedFrame = () =>
