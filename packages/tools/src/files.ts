@@ -15,6 +15,7 @@ import { dirname } from 'node:path'
 import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { estimateText } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
+import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import {
   displayPath,
@@ -126,8 +127,20 @@ export const readFileTool: ToolSpec = {
     readHashes(ctx).set(abs, hash(text))
 
     const lines = toLf(text).split('\n')
-    const offset = Math.max(1, Number(args.offset ?? 1))
-    const limit = Math.max(1, Number(args.limit ?? DEFAULT_READ_LINES))
+    // 读不出整数就在这里终止。`Math.max` 是下界钳位（`offset: 0` 取 1），它挡不住 NaN：
+    // `Math.max(1, NaN)` 还是 NaN，一路走下去就是一次「成功读取 0 行」。
+    const rawOffset = intArg(args.offset, 1)
+    const rawLimit = intArg(args.limit, DEFAULT_READ_LINES)
+    if (rawOffset === null || rawLimit === null) {
+      const bad = rawOffset === null ? 'offset' : 'limit'
+      return {
+        status: 'failure',
+        message: badIntMessage(bad, args[bad]),
+        errorKind: 'invalid_args',
+      }
+    }
+    const offset = Math.max(1, rawOffset)
+    const limit = Math.max(1, rawLimit)
     const slice = lines.slice(offset - 1, offset - 1 + limit)
     const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
     const truncated = offset - 1 + slice.length < lines.length

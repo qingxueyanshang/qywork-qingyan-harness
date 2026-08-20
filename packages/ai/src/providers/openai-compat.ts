@@ -289,8 +289,52 @@ function buildTools(tools: ToolSchema[]) {
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((t) => ({
       type: 'function' as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.strict ? strictify(t.parameters) : t.parameters,
+        ...(t.strict ? { strict: true } : {}),
+      },
     }))
+}
+
+/**
+ * 把本仓写的工具 schema 重排成 strict 形状。
+ *
+ * strict 让端点按 schema 约束采样，模型**生成不出**不合形状的参数。OpenAI 协议对它
+ * 有两条硬要求：每个 object 都要 `additionalProperties: false`，且 `properties` 里
+ * 每个键都要进 `required`；可选参数靠 `type` 里加 `null` 表达。
+ *
+ * **两条要少一条就等于没开。** 实测（2026-08-20，grok-4.6）：只加 `strict: true`
+ * 而留着可选属性，端点不报错、静默降级成尽力而为，`offset` 照样回字符串 `"1.0"`；
+ * 两条都做之后三次采样全是整数。所以这里不能只发标志位。
+ *
+ * 只对 `ToolSchema.strict` 为真的（本仓自己写的）用。第三方 schema 不转，理由在那个字段上。
+ */
+export function strictify(schema: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...schema }
+  const props = schema.properties as Record<string, Record<string, unknown>> | undefined
+  if (props) {
+    const required = new Set((schema.required as string[] | undefined) ?? [])
+    const next: Record<string, Record<string, unknown>> = {}
+    for (const [key, value] of Object.entries(props)) {
+      const child = strictify(value)
+      next[key] = required.has(key) ? child : nullable(child)
+    }
+    out.properties = next
+    out.required = Object.keys(props)
+    out.additionalProperties = false
+  }
+  const items = schema.items as Record<string, unknown> | undefined
+  if (items) out.items = strictify(items)
+  return out
+}
+
+/** 可选参数在 strict 下的表达方式：类型里加一个 `null`，不是从 `required` 里拿掉。 */
+function nullable(node: Record<string, unknown>): Record<string, unknown> {
+  const type = node.type
+  if (typeof type !== 'string' || type === 'null') return node
+  return { ...node, type: [type, 'null'] }
 }
 
 function buildMessages(messages: WireMessage[]) {

@@ -319,6 +319,37 @@ describe('文件工具', () => {
     expect(String(out.data?.content)).toContain('1\thello')
   })
 
+  /**
+   * 读不出整数的 offset 是**失败**，不是一次读到 0 行的成功。
+   *
+   * 原始失败形状：模型把行区间写成一个串（`offset: "1,4000"`），
+   * `Math.max(1, Number(...))` 得到 NaN，`slice(NaN, NaN)` 是空数组，
+   * `truncated` 拿 NaN 去比也为假——回给模型的是
+   * 「success / 0 行 / 没截断 / 文件有 349 行」四条互相矛盾的事实。
+   */
+  test('offset 读不出整数时失败，而不是成功读到 0 行', async () => {
+    const root = await workspace()
+    const out = await registry().execute(
+      'read_file',
+      { path: 'a.txt', offset: '1,4000' },
+      ctx(root),
+    )
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('invalid_args')
+    expect(out.message).toContain('1,4000')
+  })
+
+  test('字符串写的整数照收，越界的整数仍然钳到第一行', async () => {
+    const root = await workspace()
+    const r = registry()
+    const asText = await r.execute('read_file', { path: 'a.txt', offset: '2' }, ctx(root))
+    expect(asText.status).toBe('success')
+    expect(String(asText.data?.content)).toStartWith('2\tworld')
+    const clamped = await r.execute('read_file', { path: 'a.txt', offset: 0 }, ctx(root))
+    expect(clamped.status).toBe('success')
+    expect(String(clamped.data?.content)).toStartWith('1\thello')
+  })
+
   test('未读先写：拒绝覆盖已存在文件', async () => {
     const root = await workspace()
     const out = await registry().execute(
@@ -554,6 +585,30 @@ describe('搜索与命令', () => {
     const out = await registry().execute('grep', { pattern: 'answer' }, ctx(root))
     expect(out.status).toBe('success')
     expect((out.data?.matches as string[]).join('\n')).toContain('src/main.ts')
+  })
+
+  /**
+   * 单个文件命中过多时**必须报截断**，而且两条引擎给同一个上界。
+   *
+   * 原始失败形状：ripgrep 那条带每文件上限，而 `truncated` 只按总条数（200）算——
+   * 实测本仓 `packages/ai` 搜 `cache`：真实 168 行、拿回 159 行、报 `truncated: false`。
+   * 丢了 9 行，模型据此认为搜全了。降级那条则完全没有每文件上限，
+   * 同一个查询在装没装 rg 的机器上结果不同。
+   *
+   * 第二个模式带前瞻断言：rg 的引擎不认（退出码 2），因此必然走降级遍历。
+   */
+  test('单个文件命中超过每文件上限时报截断，两条引擎同一个上界', async () => {
+    const root = await workspace()
+    const many = Array.from({ length: 60 }, (_, i) => `needle ${i}`).join('\n')
+    await writeFile(join(root, 'many.txt'), many, 'utf8')
+    const sizes: number[] = []
+    for (const pattern of ['needle', 'needle(?= )']) {
+      const out = await registry().execute('grep', { pattern, path: 'many.txt' }, ctx(root))
+      expect(out.status).toBe('success')
+      expect(out.data?.truncated).toBe(true)
+      sizes.push((out.data?.matches as string[]).length)
+    }
+    expect(sizes[0]).toBe(sizes[1])
   })
 
   /**

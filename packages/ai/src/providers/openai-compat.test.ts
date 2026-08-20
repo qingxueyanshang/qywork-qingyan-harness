@@ -11,8 +11,13 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
-import type { ProviderProfile } from '../types.ts'
-import { createThinkingSplitter, normalizeBaseUrl, OpenAICompatAdapter } from './openai-compat.ts'
+import type { ProviderProfile, ToolSchema } from '../types.ts'
+import {
+  createThinkingSplitter,
+  normalizeBaseUrl,
+  OpenAICompatAdapter,
+  strictify,
+} from './openai-compat.ts'
 
 const bodies: Record<string, unknown>[] = []
 let server: ReturnType<typeof Bun.serve>
@@ -36,7 +41,11 @@ beforeAll(() => {
 
 afterAll(() => server.stop(true))
 
-async function send(model: string, effort?: string): Promise<Record<string, unknown>> {
+async function send(
+  model: string,
+  effort?: string,
+  tools: ToolSchema[] = [],
+): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
     kind: 'openai_chat_completions',
@@ -49,7 +58,7 @@ async function send(model: string, effort?: string): Promise<Record<string, unkn
     model,
     system: [],
     messages: [{ role: 'user', content: '嗨' }],
-    tools: [],
+    tools,
     maxOutputTokens: 64,
     ...(effort ? { effort: effort as never } : {}),
     signal: new AbortController().signal,
@@ -411,5 +420,102 @@ describe('正文里的思考标签', () => {
     } finally {
       server.stop(true)
     }
+  })
+})
+
+describe('strict 工具定义', () => {
+  const readFile: ToolSchema = {
+    name: 'read_file',
+    description: '读文件',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '工作区相对路径' },
+        offset: { type: 'integer', description: '起始行号（1 起），默认 1' },
+        limit: { type: 'integer', description: '最多读取行数' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }
+
+  /**
+   * 复现原始失败形状：非 strict 下模型把 `offset` 回成字符串
+   * （实测 grok-4.6 三次采样三次都是 `"1.0"`，其中一次还把工具模板漏进了值里），
+   * `read_file` 于是读到 0 行还报 success。
+   *
+   * strict 的两条硬要求少一条就等于没开——**只加标志位而留着可选属性时端点静默降级**，
+   * 所以这里两条都断言：可选属性进 `required`，类型里补 `null`。
+   */
+  test('可选属性进 required，类型里补 null', () => {
+    const out = strictify(readFile.parameters)
+    expect(out.required).toEqual(['path', 'offset', 'limit'])
+    expect(out.additionalProperties).toBe(false)
+    const props = out.properties as Record<string, Record<string, unknown>>
+    expect(props.path?.type).toBe('string')
+    expect(props.offset?.type).toEqual(['integer', 'null'])
+    expect(props.limit?.type).toEqual(['integer', 'null'])
+    // 描述原样留着——模型靠它知道这个参数是干什么的。
+    expect(props.offset?.description).toBe('起始行号（1 起），默认 1')
+  })
+
+  test('数组的 items 也要转，嵌套对象同样补齐 required', () => {
+    const out = strictify({
+      type: 'object',
+      properties: {
+        todos: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { content: { type: 'string' }, note: { type: 'string' } },
+            required: ['content'],
+          },
+        },
+      },
+      required: ['todos'],
+    })
+    const items = (out.properties as Record<string, Record<string, unknown>>).todos
+      ?.items as Record<string, unknown>
+    expect(items.required).toEqual(['content', 'note'])
+    expect(items.additionalProperties).toBe(false)
+    const inner = items.properties as Record<string, Record<string, unknown>>
+    expect(inner.note?.type).toEqual(['string', 'null'])
+  })
+
+  test('同一份输入给出同一份输出——前缀缓存的前提', () => {
+    expect(JSON.stringify(strictify(readFile.parameters))).toBe(
+      JSON.stringify(strictify(readFile.parameters)),
+    )
+  })
+
+  test('请求体里带 strict，且发的是重排后的 schema', async () => {
+    const body = await send('grok-4.6', undefined, [readFile])
+    const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
+    expect(tool.strict).toBe(true)
+    expect((tool.parameters as Record<string, unknown>).required).toEqual([
+      'path',
+      'offset',
+      'limit',
+    ])
+  })
+
+  /**
+   * 第三方 schema 原样发，一个字节都不改。
+   *
+   * 改动一个我们没写的 schema，模型按改过的形状传参、server 按原形状校验，
+   * 两边对不上；而它是不是恰好合格并不构成改它的理由——判据是谁写的。
+   */
+  test('strict 为假的工具原样发，不带标志位也不重排', async () => {
+    const third: ToolSchema = {
+      name: 'mcp_thing',
+      description: '第三方',
+      parameters: { type: 'object', properties: { a: { type: 'string' } }, required: [] },
+      strict: false,
+    }
+    const body = await send('grok-4.6', undefined, [third])
+    const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
+    expect('strict' in tool).toBe(false)
+    expect(tool.parameters).toEqual(third.parameters)
   })
 })

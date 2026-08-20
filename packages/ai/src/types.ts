@@ -129,6 +129,14 @@ export interface ToolSchema {
   description: string
   /** JSON Schema object。序列化必须确定性（键排序），否则前缀缓存永远不命中。 */
   parameters: Record<string, unknown>
+  /**
+   * 这份 schema 是本仓写的，适配器可以按协议要求的 strict 形状重排它。
+   *
+   * 判据是**谁写的**，不是它长什么样。第三方 schema（MCP server、插件清单）恒为
+   * false：改动一个我们没写的 schema，模型会按改过的形状传参，而 server 按它自己的
+   * 形状校验，两边对不上。
+   */
+  strict?: boolean
   /** 声明但先不载入上下文，等 tool_addition 再浮出。 */
   deferLoading?: boolean
 }

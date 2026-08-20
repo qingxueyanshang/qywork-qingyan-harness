@@ -17,6 +17,23 @@ import { collectProcess } from './sandbox.ts'
 const MAX_RESULTS = 200
 
 /**
+ * 单个文件最多带回多少条命中。
+ *
+ * 存在的理由：一个巨型文件不能吃光 `MAX_RESULTS` 的名额，否则「搜整棵树」的结果
+ * 退化成「搜了一个文件」。
+ *
+ * **两条引擎共用这一个数，而且截了必须报 `truncated`。** 从前只有 ripgrep 那条
+ * 有上限（`--max-count 50`），内置遍历那条没有，于是同一个查询在装没装 rg 的机器上
+ * 结果不同；更要命的是 rg 那一刀不进 `truncated`——`truncated` 只按总条数算，
+ * 实测本仓 `packages/ai` 搜 `cache`：真实命中 168 行、带上限拿回 159 行、
+ * 159 ≤ 200 于是报 `truncated: false`。**丢了 9 行，还告诉模型搜全了。**
+ *
+ * rg 没有任何开关能说出「这个文件被截过」，所以判据只能靠多要一条：
+ * 向它要 `MAX_PER_FILE + 1`，某个文件真回了这么多就说明它至少还有更多。
+ */
+const MAX_PER_FILE = 50
+
+/**
  * 一条命中最多带回多少字符的正文。
  *
  * **两条引擎共用这一个数。** 从前只有内置遍历那条路截（一个内联的 400），
@@ -210,9 +227,17 @@ export const grepTool: ToolSpec = {
       const rel = toPosix(relative(ctx.workspaceRoot, abs))
       // 先去 CR：CRLF 文件里每行尾巴都拖着一个 `\r`，`foo$` 这类锚定模式会全部落空。
       const rows = toLf(text).split('\n')
+      let inFile = 0
       rows.forEach((line, i) => {
         if (lines.length >= MAX_RESULTS) return
-        if (re.test(line)) lines.push(clipMatch(`${rel}:${i + 1}:${line}`))
+        if (!re.test(line)) return
+        // 每文件上限与 ripgrep 那条同一个数，截了同样要报 truncated。
+        if (inFile >= MAX_PER_FILE) {
+          truncated = true
+          return
+        }
+        inFile++
+        lines.push(clipMatch(`${rel}:${i + 1}:${line}`))
       })
     }
 
@@ -264,8 +289,9 @@ async function runRipgrep(
     '--no-heading',
     '--color',
     'never',
+    // 多要一条，用来判断这个文件是不是还有更多——见 `MAX_PER_FILE`。
     '--max-count',
-    '50',
+    String(MAX_PER_FILE + 1),
   ]
   if (opts.ci) argv.push('--ignore-case')
   if (opts.glob) argv.push('--glob', opts.glob)
@@ -280,8 +306,23 @@ async function runRipgrep(
     const { exitCode, stdout } = await collectProcess(proc)
     // rg 的退出码 1 = 没有命中，不是错误。>1 才是真失败。
     if (exitCode > 1) return null
-    const all = stdout.split('\n').filter(Boolean)
-    return { lines: all.slice(0, MAX_RESULTS), truncated: all.length > MAX_RESULTS }
+    const kept: string[] = []
+    const seen = new Map<string, number>()
+    let capped = false
+    for (const line of stdout.split('\n')) {
+      if (!line) continue
+      const at = line.indexOf(':')
+      const path = at < 0 ? line : line.slice(0, at)
+      const n = (seen.get(path) ?? 0) + 1
+      seen.set(path, n)
+      // 第 MAX_PER_FILE + 1 条只用来作证「还有更多」，不进结果。
+      if (n > MAX_PER_FILE) {
+        capped = true
+        continue
+      }
+      kept.push(line)
+    }
+    return { lines: kept.slice(0, MAX_RESULTS), truncated: capped || kept.length > MAX_RESULTS }
   } catch {
     return null
   }

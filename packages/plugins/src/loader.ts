@@ -193,7 +193,10 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
     const spec: ToolSpec = {
       name,
       description: t.description,
+      // 清单里的 schema 是插件写的，适配器不得把它重排成 strict 形状——
+      // 模型按改过的形状传参，插件按它自己的形状校验，两边对不上。
       parameters: t.parameters,
+      strict: false,
       // 恒为 call，清单说了不算：插件工具是第三方代码通过 RPC 提供的能力，
       // 「这是一次外置调用」是宿主知道的事实，不该由插件自称成读/写/运行。
       actionKind: 'call',

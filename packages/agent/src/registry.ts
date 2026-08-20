@@ -477,6 +477,14 @@ export interface ToolSpec {
   description: string
   parameters: Record<string, unknown>
   /**
+   * `parameters` 是不是本仓自己写的。默认是——**第三方 schema 必须显式填 `false`**。
+   *
+   * 适配器据此决定要不要把它重排成协议要求的 strict 形状（`ToolSchema.strict`）。
+   * 判据是「谁写的」而不是「长什么样」：一份第三方 schema 就算形状恰好合格，
+   * 也不该被我们改写后发出去。
+   */
+  strict?: boolean
+  /**
    * 动作语义。多动作门面从**显式参数**解析，禁止按工具名或结果文案猜。
    *
    * 第二个参数是可选的 `ctx`，但**别拿 `ctx.state` 当判据**：它是 run 级的
@@ -583,7 +591,12 @@ export class ToolRegistry {
     if (this.schemaCache) return this.schemaCache
     this.schemaCache = [...this.tools.values()]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-      .map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+        strict: t.strict !== false,
+      }))
     return this.schemaCache
   }
 
