@@ -415,6 +415,7 @@ export function serve(opts: ServeOptions) {
             token,
             unsubscribers,
             config: opts.config,
+            runs,
           })
           return
         }

@@ -219,13 +219,7 @@ export function Sidebar(props: { onClose?: () => void }) {
                           <ConversationRow
                             conversation={c}
                             active={c.id === state.activeConversation}
-                            /*
-                             * **只有当前那条亮得起来**：客户端只订阅当前会话的事件
-                             * （`client.subscribe([id])`），别的会话在跑前端收不到任何
-                             * 消息。要让所有会话都能亮，得先改订阅口径，不是在这里补一个
-                             * 猜出来的状态。
-                             */
-                            running={c.id === state.activeConversation && state.running}
+                            running={state.busyConversations.includes(c.id)}
                             onOpen={() => {
                               void selectConversation(c.id)
                               props.onClose?.()

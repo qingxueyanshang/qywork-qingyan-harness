@@ -23,6 +23,7 @@ import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createPacer } from '../stream-pace.ts'
 import {
+  markBusy,
   type PermissionAsk,
   setState,
   state,
@@ -34,6 +35,8 @@ import { workspace } from './ui.ts'
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
   onCapabilities: (caps) => setState('capabilities', caps),
+  // 握手带的忙闲快照直接整表替换：它是服务端此刻的全部，不是一条增量。
+  onBusy: (ids) => setState('busyConversations', [...ids]),
   onResync: () => {
     // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
     void reloadActiveConversation()
@@ -111,6 +114,17 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
+  /*
+   * 忙闲同样在归属校验之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
+   *
+   * **也在 `lastEventAt` 之前**：别的会话开跑不是这条会话「有动静」，
+   * 算进去的话，静默检测会被后台会话一路刷新，「链路断了」永远报不出来。
+   */
+  if (ev.type === 'conversation.busy') {
+    markBusy(ev.conversationId, ev.busy)
+    return
+  }
+
   // 归属不是当前会话的一律丢弃。没有归属的是工作区级事件（git 状态那类），放行。
   if (frame.conversationId && frame.conversationId !== state.activeConversation) return
 
@@ -162,7 +176,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     case 'run.started':
       setState(
         produce((s) => {
-          s.running = true
           s.usage = null
           s.error = null
           s.notice = null
@@ -355,19 +368,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
         produce((s) => {
           s.error = { code: ev.code, message: ev.message }
           /*
-           * **`run.error` 也是终态，必须把 running 放下来。**
-           *
-           * loop 内的错误后面跟着 `run.finished`，只看那一条也够；但 loop **之外**
-           * 抛出的错误没有 run.finished——`run-control.ts` 的 catch 只 publish 了
-           * run.error（没配 API key、档案解析失败都走那里），而那时 run 行可能
-           * 根本没建出来，服务端没有「结束」可发。
-           * 客户端的 running 是 `sendMessage` 乐观置上去的，这条 run.error 就是
-           * 它唯一的终态信号。不放下来的表现是：错误卡说「还没配 API Key」，
-           * 而发送按钮永久变成停止按钮，配好 key 也发不出下一条，只能刷新。
-           *
-           * 与 run.finished 同时到达也无妨——两者都置 false，幂等。
+           * **不要在这里把「在跑」放下来。** 终态由服务端的 `conversation.busy`
+           * 给：loop 之外抛出的错误（没配 API key、档案解析失败）没有
+           * `run.finished`，但 `run-control.ts` 的 finally 一定会走 unregister /
+           * release，那两处就是忙闲的唯一裁决点。在这里补一个客户端判断，
+           * 「谁在跑」就有了第二本账。
            */
-          s.running = false
           s.permission = null
         }),
       )
@@ -376,7 +382,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     case 'run.finished':
       setState(
         produce((s) => {
-          s.running = false
           s.permission = null
           // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
           // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
@@ -578,23 +583,25 @@ export async function reloadActiveConversation(): Promise<void> {
   /*
    * **run 作用域的状态一律从这里派生，不靠事件残留。**
    *
-   * 这些字段（running / lastRunId / runStartedAt / todos / teamMembers /
-   * usage / context / permission）是扁平的全局量，没有「属于哪条会话」这一维。
-   * 切会话时若只重置 transcript，它们会连同上一条会话的 run 一起留在界面上；
-   * 而 `applyEvent` 现在按 conversationId 丢弃非当前会话的事件，
-   * 那条 run 的 `run.finished`——唯一把 running 置回 false 的地方——
-   * **结构性地永远到不了**。表现是新会话里输入框永久卡在停止按钮上，
-   * 点停止发出去的还是上一条会话的 runId，只能刷新页面。
+   * 这些字段（lastRunId / runStartedAt / todos / teamMembers / usage / context /
+   * permission）是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
+   * transcript，它们会连同上一条会话的 run 一起留在界面上；而 `applyEvent`
+   * 按 conversationId 丢弃非当前会话的事件，那条 run 的 `run.finished`
+   * **结构性地永远到不了**，于是它们再也不会被放下来。
    *
    * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
    * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
+   *
+   * **「在不在跑」不在这张单子上**：`busyConversations` 本来就带着会话这一维，
+   * 换一条会话读的就是另一格，没有什么需要重置。这里也不许照 runs 表补写一份
+   * ——账本那行在服务进程崩过之后可能还挂着 `running`，照它写就会把界面永久
+   * 钉在执行中，而 `RunManager` 早就没有这条 run 了。
    */
   const live = runs.find((r) => r.status === 'running') ?? null
 
   setState(
     produce((s) => {
       s.transcript = items
-      s.running = live !== null
       s.lastRunId = live?.id ?? null
       s.runStartedAt = live ? live.createdAt : null
       // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，

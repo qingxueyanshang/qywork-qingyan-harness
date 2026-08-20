@@ -3,6 +3,7 @@ import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import {
   activeModel,
   ensureModelCatalog,
+  isRunning,
   type ModelOption,
   modelCatalog,
   modelCatalogError,
@@ -124,7 +125,7 @@ export function ModelPicker() {
       <button
         class="mode-chip"
         type="button"
-        disabled={state.running || !state.activeConversation}
+        disabled={isRunning() || !state.activeConversation}
         aria-expanded={open()}
         data-tip="模型与推理等级"
         onClick={toggle}

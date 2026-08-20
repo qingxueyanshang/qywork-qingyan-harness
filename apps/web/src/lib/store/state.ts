@@ -114,7 +114,16 @@ export interface AppState {
   activeConversation: string | null
 
   transcript: TranscriptItem[]
-  running: boolean
+  /**
+   * 正在跑的会话 id。**「谁在跑」全仓只有这一份账**，当前那条在不在跑由
+   * `isRunning()` 从这里派生，不另记一个布尔。
+   *
+   * 记的是**一张表而不是一个布尔**：左栏要为列表里每一条画状态，而客户端只订阅
+   * 当前会话的事件——布尔只答得了「我正开着的这条」，别的会话在跑与否，
+   * 界面上无从得知。这张表由工作区级的 `conversation.busy` 事件维持，
+   * 快照在握手里给（`HelloOkFrame.busyConversations`）。
+   */
+  busyConversations: string[]
   /**
    * 运行中那一轮的实时用量。**只在运行期有意义**——跑完由 `run.finished`
    * 落进那一轮的条目里，这里清空。收尾读数不再有第二份全局账。
@@ -192,7 +201,7 @@ const initial: AppState = {
   conversations: [],
   activeConversation: null,
   transcript: [],
-  running: false,
+  busyConversations: [],
   usage: null,
   context: null,
   fileChanges: [],
@@ -209,6 +218,24 @@ const initial: AppState = {
 }
 
 export const [state, setState] = createStore<AppState>(initial)
+
+/**
+ * 当前会话在不在跑。**派生量**——真源是 `busyConversations`。
+ *
+ * 不要为它加一个 store 字段：一个乐观置上去的布尔和一张服务端维持的表，
+ * 谁盖过谁只能靠每个写点自觉，那就是第二本账。
+ */
+export function isRunning(): boolean {
+  const id = state.activeConversation
+  return id !== null && state.busyConversations.includes(id)
+}
+
+/** 记下 / 抹掉「这条会话在跑」。幂等，重复到达的忙闲事件不会写出两行。 */
+export function markBusy(id: string, busy: boolean): void {
+  setState('busyConversations', (list) =>
+    busy ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id),
+  )
+}
 
 /** team 运行时的成员状态。事件驱动写入，所以和 store 的形状放在一起。 */
 export interface TeamMemberState {

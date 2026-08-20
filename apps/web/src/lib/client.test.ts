@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { AgentEvent, CommandRejectedFrame, EventEnvelope } from '@qywork/core'
+import type { AgentEvent, CommandRejectedFrame, ConversationId, EventEnvelope } from '@qywork/core'
 import { QyClient, type SocketLike } from './client.ts'
 
 class FakeSocket implements SocketLike {
@@ -45,12 +45,14 @@ function client(token = 'tk') {
   const frames: EventEnvelope<AgentEvent>[] = []
   const rejected: CommandRejectedFrame[] = []
   const resyncs: number[] = []
+  const busy: ConversationId[][] = []
   const c = new QyClient(
     {
       onEvent: (f) => frames.push(f),
       onState: (state, detail) => states.push({ state, ...(detail ? { detail } : {}) }),
       onResync: () => resyncs.push(1),
       onCapabilities: () => {},
+      onBusy: (ids) => busy.push(ids),
       onRejected: (f) => rejected.push(f),
     },
     {
@@ -62,7 +64,7 @@ function client(token = 'tk') {
       },
     },
   )
-  return { c, sockets, states, frames, rejected, resyncs }
+  return { c, sockets, states, frames, rejected, resyncs, busy }
 }
 
 describe('握手', () => {
@@ -80,6 +82,36 @@ describe('握手', () => {
     c.connect()
     expect(sockets).toHaveLength(0)
     expect(states.at(-1)?.state).toBe('unauthorized')
+  })
+})
+
+describe('握手报的忙闲要交出去', () => {
+  /**
+   * 原始失败形状：sidecar 被杀之后重连，客户端手里那份忙闲还是断线前的——
+   * 那几轮早跑完了，左栏对应的行会一直转下去。**每次握手都整表交出**，
+   * 缺口补不上（resync）的那次也不例外。
+   */
+  test('每次 hello.ok 都交出一份完整的在跑清单', () => {
+    const { c, sockets, busy } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    sockets[0]!.deliver({
+      type: 'hello.ok',
+      capabilities: {},
+      currentSeq: 0,
+      resync: false,
+      busyConversations: ['cv_a', 'cv_b'],
+    })
+    expect(busy).toEqual([['cv_a', 'cv_b'] as ConversationId[]])
+
+    sockets[0]!.deliver({
+      type: 'hello.ok',
+      capabilities: {},
+      currentSeq: 9,
+      resync: true,
+      busyConversations: [],
+    })
+    expect(busy.at(-1)).toEqual([])
   })
 })
 

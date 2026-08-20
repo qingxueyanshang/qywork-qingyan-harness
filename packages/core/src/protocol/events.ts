@@ -47,6 +47,7 @@ export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
 export type AgentEvent =
   // ── 会话 ──
   | ConversationUpdatedEvent
+  | ConversationBusyEvent
   // ── run 生命周期 ──
   | RunStartedEvent
   | RunFinishedEvent
@@ -93,6 +94,23 @@ export interface ConversationUpdatedEvent {
   title: string
   /** 账本里的 `updated_at`，侧栏那一行显示的就是它。 */
   updatedAt: number
+}
+
+/**
+ * 这条会话在不在跑。
+ *
+ * **工作区级事件：信封上不带 `conversationId`，所有客户端都收得到。**
+ * run 生命周期那三条按订阅过滤，只有开着这条会话的客户端收得到；而左栏要为
+ * 列表里**每一条**画状态，取不到别人的 run 事件就只能给当前那条画，
+ * 于是「哪条在跑」这个问题在界面上无解。
+ *
+ * 与 run 生命周期不是两本账：两者都出自 `RunManager` 的占位 / 登记 / 注销，
+ * 那是「这条会话在不在跑」唯一的裁决点。**不要在别处补发这条事件。**
+ */
+export interface ConversationBusyEvent {
+  type: 'conversation.busy'
+  conversationId: ConversationId
+  busy: boolean
 }
 
 // ─────────────────────────────── run 生命周期 ───────────────────────────────
