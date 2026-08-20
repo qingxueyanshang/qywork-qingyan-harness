@@ -17,6 +17,7 @@ import type {
   ClientCommand,
   ClientOrigin,
   CommandRejectedFrame,
+  ConversationId,
   EventEnvelope,
   HelloFrame,
   ServerCapabilities,
@@ -57,6 +58,11 @@ export interface ClientOptions {
   /** 服务端补发不上时触发，调用方须重拉全量。 */
   onResync(): void
   onCapabilities(caps: ServerCapabilities): void
+  /**
+   * 握手报的「此刻哪几条会话在跑」。**每次握手都要照单整表替换**：
+   * 重连补不上缺口时，客户端手里那份是断线前的，跑完的那几轮会一直转下去。
+   */
+  onBusy(conversations: ConversationId[]): void
   /**
    * 指令被服务端拒绝。**必须实现**——不处理就等同于回到从前的静默吞掉：
    * 用户点了按钮，什么都没发生，也没有任何解释。
@@ -272,6 +278,7 @@ export class QyClient {
         this.streamId = msg.streamId
         if (!sameStream || msg.resync) this.lastSeq = msg.currentSeq
         this.opts.onCapabilities(msg.capabilities)
+        this.opts.onBusy(msg.busyConversations)
         this.opts.onState('ready')
         if (msg.resync) this.opts.onResync()
         return

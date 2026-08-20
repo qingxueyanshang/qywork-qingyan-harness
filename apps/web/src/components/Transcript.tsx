@@ -35,7 +35,7 @@ import {
   stopReasonLabel,
   todosOf,
 } from '../lib/step-view.ts'
-import { setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
@@ -196,7 +196,7 @@ export function Transcript() {
 
         {/* 还在跑的那一轮没有 run 行可读，挂在流尾；跑完由 `run.finished`
             落成条目，位置就在它那一轮的最后一步之后。 */}
-        <Show when={state.running}>
+        <Show when={isRunning()}>
           <LiveRunBar />
         </Show>
       </div>
@@ -301,7 +301,7 @@ const REPARSE_MS = 60
  */
 function Prose(props: { item: TranscriptItem }) {
   const streaming = () =>
-    state.running && state.transcript[state.transcript.length - 1]?.id === props.item.id
+    isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id
 
   const [paced, setPaced] = createSignal(props.item.text)
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -415,7 +415,7 @@ function Fold(props: {
 
 function ThinkingFold(props: { item: TranscriptItem }) {
   const streaming = () =>
-    state.running && state.transcript[state.transcript.length - 1]?.id === props.item.id
+    isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
   // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
   const verb = () => (streaming() ? '思考中' : '已思考')
@@ -582,7 +582,7 @@ function RunStatusBar(props: {
 function LiveRunBar() {
   const [now, setNow] = createSignal(Date.now())
   createEffect(() => {
-    if (!state.running) return
+    if (!isRunning()) return
     const t = setInterval(() => setNow(Date.now()), 100)
     onCleanup(() => clearInterval(t))
   })

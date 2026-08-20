@@ -5,6 +5,7 @@ import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
   interrupt,
+  isRunning,
   resumeGoal,
   sendMessage,
   setOverlay,
@@ -150,12 +151,12 @@ function GoalChip() {
             <span
               class="goal-note truncate"
               classList={{ blocked: g().status === 'blocked' }}
-              data-tip={goalNote(g(), state.running)}
+              data-tip={goalNote(g(), isRunning())}
             >
-              {goalNote(g(), state.running)}
+              {goalNote(g(), isRunning())}
             </span>
             <Show
-              when={state.running}
+              when={isRunning()}
               fallback={
                 <button class="goal-act" type="button" onClick={resumeGoal}>
                   继续
@@ -252,7 +253,7 @@ export function Composer() {
     const v = text().trim()
     const files = pending()
     // 只有附件没有文字也能发——「看这张图」这种意图不该逼用户再打几个字。
-    if ((!v && files.length === 0) || state.running) return
+    if ((!v && files.length === 0) || isRunning()) return
 
     /*
      * 带参数的斜杠命令在这里被截下来，**不发成一条消息**。
@@ -499,7 +500,7 @@ export function Composer() {
               （见 submit 里那条注释）。只看文字的话，粘一张图不打字的用户点发送
               没反应，只有知道按 Enter 的人发得出去。 */}
           <Show
-            when={state.running}
+            when={isRunning()}
             fallback={
               <button
                 class="send-btn"

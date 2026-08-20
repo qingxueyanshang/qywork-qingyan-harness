@@ -157,6 +157,31 @@ export class RunManager {
     return this.byConversation.has(conversationId) || this.reserved.has(conversationId)
   }
 
+  /** 此刻在跑的全部会话。握手快照读它，见 `HelloOkFrame.busyConversations`。 */
+  busyConversations(): ConversationId[] {
+    return [...new Set([...this.byConversation.keys(), ...this.reserved])] as ConversationId[]
+  }
+
+  /**
+   * 把「这条会话在不在跑」播出去。**下面四个改点各调一次，别处不许发这条事件。**
+   *
+   * 两个约束：
+   *
+   * - **不带 `conversationId` 发**（第二个参数留空）：它是工作区级事件，
+   *   所有客户端都要收到。带上就成了按订阅过滤，只有开着这条会话的那个客户端
+   *   收得到——而要这条事件的正是没开着它的那些。
+   * - **现算 `isBusy()`，不接受调用方传进来的值**：占位与登记是两个集合，
+   *   `release()` 在 run 已经 register 之后也会被调到，传字面量必然报出
+   *   一个此刻不成立的 false。
+   */
+  private announce(conversationId: ConversationId): void {
+    this.bus.publish({
+      type: 'conversation.busy',
+      conversationId,
+      busy: this.isBusy(conversationId),
+    })
+  }
+
   /**
    * 占住一个会话，**同步**完成检查与登记。
    *
@@ -171,24 +196,28 @@ export class RunManager {
   reserve(conversationId: ConversationId): boolean {
     if (this.isBusy(conversationId)) return false
     this.reserved.add(conversationId)
+    this.announce(conversationId)
     return true
   }
 
   /** 释放占位。run 已经 register 过就交给 unregister 收，这里只管没跑起来的那些。 */
   release(conversationId: ConversationId): void {
     this.reserved.delete(conversationId)
+    this.announce(conversationId)
   }
 
   register(run: ActiveRun): void {
     this.active.set(run.runId, run)
     this.byConversation.set(run.conversationId, run.runId)
     this.reserved.delete(run.conversationId)
+    this.announce(run.conversationId)
   }
 
   unregister(runId: RunId): void {
     const run = this.active.get(runId)
     if (run) this.byConversation.delete(run.conversationId)
     this.active.delete(runId)
+    if (run) this.announce(run.conversationId)
     this.expireRunGrants(runId)
     // run 结束时把它名下所有未决授权按拒绝收敛，避免留下永远等不到应答的 promise。
     for (const [id, p] of this.pending) {

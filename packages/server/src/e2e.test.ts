@@ -460,6 +460,36 @@ describe('WebSocket 协议与一轮完整 run', () => {
     await Bun.sleep(150)
     expect(rejections.some((r) => r.reason === 'unknown_command')).toBe(true)
 
+    /*
+     * **另开一个客户端，明确一条会话事件都不订阅。**
+     *
+     * 左栏那一行的转圈就靠它：客户端只订阅当前会话，别的会话在跑时它一条 run
+     * 事件都收不到——原始失败形状是「只有点开的那条会话才转得起来」。
+     * 忙闲必须是工作区级的（信封不带归属），而正文仍然按订阅拦住。
+     */
+    const peer = new WebSocket(
+      `ws://127.0.0.1:${handle.port}/stream?token=${handle.token}&origin=mobile`,
+    )
+    const peerFrames: EventEnvelope<AgentEvent>[] = []
+    let peerHello: { busyConversations?: string[] } | null = null
+    peer.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data))
+      if (msg.type === 'hello.ok') {
+        peerHello = msg
+        return
+      }
+      if (msg.seq && msg.event) peerFrames.push(msg)
+    })
+    await new Promise<void>((res, rej) => {
+      peer.addEventListener('open', () => res(), { once: true })
+      peer.addEventListener('error', () => rej(new Error('peer ws 连接失败')), { once: true })
+    })
+    peer.send(
+      JSON.stringify({ type: 'hello', token: handle.token, origin: 'mobile', subscribe: [] }),
+    )
+    await Bun.sleep(200)
+    expect((peerHello as { busyConversations?: string[] } | null)?.busyConversations).toEqual([])
+
     ws.send(
       JSON.stringify({
         type: 'message.send',
@@ -495,6 +525,18 @@ describe('WebSocket 协议与一轮完整 run', () => {
      * 而且它只会红在「要真 key 才跑」的脚本里，很久没人看得见。
      */
     expect(permissionAsks).toBe(0)
+
+    // 收尾那一下（`runs.unregister`）在 run.finished 之后，等它到齐再看。
+    await Bun.sleep(300)
+    const peerBusy = peerFrames
+      .filter((f) => f.event.type === 'conversation.busy')
+      .map((f) => f.event as Extract<AgentEvent, { type: 'conversation.busy' }>)
+    // 一开一收，两头都要有：只有开头的话左栏那一行会永远转下去。
+    expect(peerBusy.map((e) => e.busy)).toEqual([true, true, false])
+    expect(peerBusy.every((e) => e.conversationId === conversationId)).toBe(true)
+    // 正文仍然按订阅拦住——退订了还收到正文，那是另一个方向的串台。
+    expect(peerFrames.some((f) => f.event.type === 'text.delta')).toBe(false)
+    peer.close()
 
     // seq 严格单调递增：断线补发的缺口计算全靠它。
     const seqs = frames.map((f) => f.seq)

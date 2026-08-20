@@ -34,7 +34,7 @@ function fmtWhen(t: number): string {
 export function ConversationRow(props: {
   conversation: Conversation
   active: boolean
-  /** 这条会话正在跑。只有当前会话亮得起来——客户端只订阅当前那条的事件。 */
+  /** 这条会话正在跑。**列表里每一条都判得出**，判据是 `state.busyConversations`。 */
   running: boolean
   onOpen: () => void
   onError?: (message: string) => void

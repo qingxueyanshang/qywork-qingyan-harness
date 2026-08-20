@@ -63,6 +63,7 @@ const {
   closePanelTab,
   explainApiError,
   holdPanelTab,
+  isRunning,
   openPanel,
   openPanelTab,
   panelMaximized,
@@ -340,7 +341,7 @@ describe('接口错误还原成人话', () => {
  */
 describe('事件按会话归属过滤', () => {
   const reset = (activeConversation: string | null) => {
-    setState({ activeConversation, transcript: [], conversations: [], running: false })
+    setState({ activeConversation, transcript: [], conversations: [], busyConversations: [] })
   }
 
   const deltaFrame = (conversationId: string | undefined, delta: string) =>
@@ -385,8 +386,9 @@ describe('事件按会话归属过滤', () => {
     expect(state.error?.message).toBe('工作区级错误')
   })
 
-  test('别的会话的 run.started 不会把当前会话点亮成「执行中」', () => {
+  test('别的会话的 run.started 不会写进当前会话的 run 投影', () => {
     reset('cv_now')
+    setState({ lastRunId: null })
     applyEvent({
       seq: 4,
       at: 0,
@@ -400,7 +402,44 @@ describe('事件按会话归属过滤', () => {
         retryOfRunId: null,
       },
     } as never)
-    expect(state.running).toBe(false)
+    expect(state.lastRunId).toBe(null)
+    // 中断按钮发的是 lastRunId，串台的表现是「点停止停掉了别人那一轮」。
+    expect(state.runStartedAt).toBe(null)
+  })
+
+  /**
+   * 忙闲反过来：它是**工作区级事件**，别的会话那条必须收下——左栏要为列表里
+   * 每一条画状态。原始失败形状是「只有点开的那条会话才转圈，别的在跑也看不出来」。
+   */
+  test('别的会话的忙闲照收，左栏据此点亮那一行', () => {
+    reset('cv_now')
+    applyEvent({
+      seq: 5,
+      at: 0,
+      event: { type: 'conversation.busy', conversationId: 'cv_other', busy: true },
+    } as never)
+    expect(state.busyConversations).toEqual(['cv_other'])
+    // 当前这条没在跑，输入框不能跟着变成停止按钮。
+    expect(isRunning()).toBe(false)
+
+    applyEvent({
+      seq: 6,
+      at: 0,
+      event: { type: 'conversation.busy', conversationId: 'cv_other', busy: false },
+    } as never)
+    expect(state.busyConversations).toEqual([])
+  })
+
+  /** 别的会话开跑不算这条会话「有动静」——算进去的话静默检测永远报不出来。 */
+  test('别的会话的忙闲不刷新「上一次有动静」', () => {
+    reset('cv_now')
+    setState({ lastEventAt: 1 })
+    applyEvent({
+      seq: 7,
+      at: 0,
+      event: { type: 'conversation.busy', conversationId: 'cv_other', busy: true },
+    } as never)
+    expect(state.lastEventAt).toBe(1)
   })
 
   /**
@@ -483,7 +522,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
    * `session.ts` 的 `openToolStep`），只读 `payload` 的话就会漏掉。
    */
   test('思考正文跟着工具 step 折回来，位置在工具卡之前', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: ['cv_1'] })
     stub([toolStep('先看看这台机器的显卡')], [interruptedRun])
     await reloadActiveConversation()
 
@@ -492,7 +531,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   test('没有思考的工具 step 不平白多出一条空折叠', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: ['cv_1'] })
     stub([toolStep('')], [interruptedRun])
     await reloadActiveConversation()
 
@@ -500,16 +539,30 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
-   * 后台进程被杀之后，账本里那一轮已经是 `interrupted`。**界面必须据此放下
-   * 「执行中」**——这是重连后唯一能纠正它的地方，事件那条路已经随进程一起没了。
+   * 后台进程被杀之后，账本里那一轮已经是 `interrupted`，界面要据此把那一轮的收尾
+   * 画出来。**「在不在跑」不从这里读**：账本那行在进程崩过之后可能还挂着
+   * `running`，照它写就会把界面永久钉在执行中，而新进程的 `RunManager` 里
+   * 根本没有这条 run。放下它的是握手报的那份忙闲快照。
    */
-  test('账本里那一轮是中断态，重拉之后输入框不再卡在执行中', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], running: true })
+  test('账本里那一轮是中断态，重拉之后收尾条目在，执行中不再由账本决定', async () => {
+    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [] })
     stub([toolStep('思考')], [interruptedRun])
     await reloadActiveConversation()
 
-    expect(state.running).toBe(false)
+    expect(isRunning()).toBe(false)
     expect(state.transcript.at(-1)?.run?.stopReason).toBe('user_interrupt')
+  })
+
+  /** 反过来的那一半：账本那行还挂着 `running`，重拉也不许把界面点回执行中。 */
+  test('账本里还挂着在跑，忙闲快照说没跑 —— 以快照为准', async () => {
+    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [] })
+    stub(
+      [toolStep('思考')],
+      [{ ...interruptedRun, finishedAt: null, stopReason: null, status: 'running' }],
+    )
+    await reloadActiveConversation()
+
+    expect(isRunning()).toBe(false)
   })
 
   /**
@@ -534,11 +587,17 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
         turns: [],
       },
     }
-    setState({ activeConversation: 'cv_1', transcript: [], running: false, usage: null })
+    setState({
+      activeConversation: 'cv_1',
+      transcript: [],
+      busyConversations: ['cv_1'],
+      usage: null,
+    })
     stub([toolStep('思考')], [liveRun])
     await reloadActiveConversation()
 
-    expect(state.running).toBe(true)
+    // 重拉不许把忙闲那张表洗掉：它由握手快照与 `conversation.busy` 维持。
+    expect(isRunning()).toBe(true)
     expect(state.usage?.inputTokens).toBe(30_000)
     expect(state.usage?.cost).toBe(0.02)
   })
@@ -645,7 +704,12 @@ describe('报错正文并进这一轮的读数条', () => {
     }) as never
 
   test('收尾时正文进条目，全局那份放下——不能两处都说', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    setState({
+      activeConversation: 'cv_now',
+      transcript: [],
+      error: null,
+      busyConversations: ['cv_now'],
+    })
     applyEvent(errorFrame('网络不可达：检查接口地址与代理'))
     applyEvent(finishedFrame())
 
@@ -656,7 +720,12 @@ describe('报错正文并进这一轮的读数条', () => {
 
   /** 正常收尾没有正文，读数条回落到停止原因的通用说法。 */
   test('没出错的那一轮 errorMessage 是 null', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    setState({
+      activeConversation: 'cv_now',
+      transcript: [],
+      error: null,
+      busyConversations: ['cv_now'],
+    })
     applyEvent(finishedFrame())
     expect(state.transcript.find((t) => t.kind === 'run')?.run?.errorMessage).toBe(null)
   })
@@ -666,7 +735,12 @@ describe('报错正文并进这一轮的读数条', () => {
    * 那一半没有 run 行可挂，全局那份必须留着，否则一个字都看不到。
    */
   test('没有收尾事件时全局那份留着', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], error: null, running: true })
+    setState({
+      activeConversation: 'cv_now',
+      transcript: [],
+      error: null,
+      busyConversations: ['cv_now'],
+    })
     applyEvent(errorFrame('未配置 API Key'))
     expect(state.error?.message).toBe('未配置 API Key')
     expect(state.transcript.some((t) => t.kind === 'run')).toBe(false)
@@ -715,7 +789,12 @@ describe('事件到达时刻按帧记下来', () => {
 
   /** 收尾之后清掉：留着的话下一轮开头会拿上一轮的时刻算，一开口就谎报静默。 */
   test('run 收尾后清空', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], running: true, lastEventAt: 1 })
+    setState({
+      activeConversation: 'cv_now',
+      transcript: [],
+      busyConversations: ['cv_now'],
+      lastEventAt: 1,
+    })
     applyEvent(
       frame('run.finished', {
         status: 'done',

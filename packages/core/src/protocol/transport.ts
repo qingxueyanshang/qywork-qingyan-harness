@@ -75,6 +75,14 @@ export interface HelloOkFrame {
   currentSeq: number
   /** true = 缺口太大已放弃补发，客户端必须重新拉全量。 */
   resync: boolean
+  /**
+   * 此刻正在跑的会话。**进程级快照**，之后由 `conversation.busy` 事件维持。
+   *
+   * 必须在握手里给，而不是挂在某个 REST 列表上：缺口补不上（`resync`）时，
+   * 客户端手里那份是断线前的——那一轮早跑完了，左栏那一行却会永远转下去。
+   * 快照与增量走同一条连接，才不存在「谁先谁后」的窗口。
+   */
+  busyConversations: ConversationId[]
   capabilities: ServerCapabilities
 }
 

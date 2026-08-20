@@ -1,6 +1,6 @@
 import { todoProgress } from '@qywork/core'
 import { Show } from 'solid-js'
-import { openPanel, state } from '../lib/store/index.ts'
+import { isRunning, openPanel, state } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
 
 /**
@@ -18,7 +18,7 @@ import { IconSpinner } from './Icons.tsx'
  *
  * ## 只在跑着时挂
  *
- * 判据是 `state.running`，跑完整条就撤掉——停着的时候它是一枚常驻的浮层，
+ * 判据是 `isRunning()`，跑完整条就撤掉——停着的时候它是一枚常驻的浮层，
  * 而它说的两件事都另有去处：清单在右侧「待办」页，变更在「变更」页。
  * 每轮开始时按当下状态重新决定挂不挂，所以「上一轮没做完的待办」下一轮照样显示。
  *
@@ -36,7 +36,7 @@ export function RunStatus() {
   const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
 
   return (
-    <Show when={state.running && (inProgress() || files().length > 0)}>
+    <Show when={isRunning() && (inProgress() || files().length > 0)}>
       <div class="run-status">
         <div class="changes-chip">
           <Show when={inProgress()}>

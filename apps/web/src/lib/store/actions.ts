@@ -16,7 +16,7 @@ import {
   saveServerConfig,
   watchWorkspace,
 } from './settings.ts'
-import { setState, state } from './state.ts'
+import { isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
 
 /**
@@ -151,7 +151,7 @@ export function setGoal(objective: string): void {
 export function resumeGoal(): void {
   const id = state.activeConversation
   // 正在跑的时候服务端会回 conflict，前端这层只是不让按钮白点。
-  if (!id || state.running) return
+  if (!id || isRunning()) return
   client.send({ type: 'goal.resume', conversationId: id as never })
 }
 
@@ -163,7 +163,7 @@ export function resumeGoal(): void {
  */
 export function retryLastRun(): void {
   const runId = state.lastRunId
-  if (!runId || state.running) return
+  if (!runId || isRunning()) return
   setState('error', null)
   client.send({
     type: 'run.retry',
@@ -231,7 +231,7 @@ export async function setEffort(
  */
 export function compactContext(): void {
   const id = state.activeConversation
-  if (!id || state.running) return
+  if (!id || isRunning()) return
   client.send({ type: 'conversation.compact', conversationId: id as never })
 }
 
@@ -239,11 +239,8 @@ export interface TeamRoleRow {
   id: string
   name: string
   description: string
+  /** 它引用的后端在 `backends` 里的**键名**，不是展示串。 */
   backend: string
-  /** `builtin` = 随程序发布的专家团；`project` = 这个仓库自己写的。 */
-  source: 'builtin' | 'project'
-  /** 内置角色被项目里同 id 的那条盖掉了。删掉覆盖就回到内置那份。 */
-  overridden: boolean
 }
 
 export interface TeamInfo {
@@ -260,14 +257,14 @@ export function loadTeam(): Promise<TeamInfo> {
 /** 启动一轮编排。目标之外的一切来自工作区的 .qy/team.json —— 配置只有一个来源。 */
 export function runTeam(goal: string): void {
   const id = state.activeConversation
-  if (!id || state.running) return
+  if (!id || isRunning()) return
   setState(
     produce((s) => {
       s.teamMembers = []
-      s.running = true
       s.error = null
     }),
   )
+  markBusy(id, true)
   client.send({
     type: 'team.run',
     conversationId: id as never,
@@ -354,10 +351,16 @@ export function sendMessage(content: string, attachments?: Attachment[]): void {
         text: content,
         ...(attachments?.length ? { attachments } : {}),
       })
-      s.running = true
       s.error = null
     }),
   )
+  /*
+   * 乐观置忙：用户按下回车，左栏那一行和输入框立刻进入执行态，不等服务端回执。
+   *
+   * **写的是同一张表**，不是给「当前这条」另记一个布尔——服务端占位成功后会用
+   * `conversation.busy` 覆盖同一格，被回绝时也由它把这格放下来。
+   */
+  markBusy(id, true)
   client.send({
     type: 'message.send',
     clientRequestId: crypto.randomUUID(),

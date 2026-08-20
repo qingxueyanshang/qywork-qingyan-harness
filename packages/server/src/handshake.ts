@@ -17,6 +17,7 @@ import pkg from '../package.json' with { type: 'json' }
 import { probeEnvironment } from './api/host.ts'
 import type { EventBus, Subscriber } from './bus.ts'
 import type { SocketData } from './deps.ts'
+import type { RunManager } from './runs.ts'
 
 /**
  * 本包版本。**真源是根 `VERSION`**，由 `bun run scripts/sync-version.ts` 灌进
@@ -33,6 +34,8 @@ export function handleHello(
     unsubscribers: Map<string, () => void>
     /** 传的是运行中的那一份（`/api/config` 的 PUT 会就地改它），不是启动时的快照。 */
     config: QyConfig
+    /** 报「此刻哪几条会话在跑」的那份权威，见 `busyConversations`。 */
+    runs: RunManager
   },
 ) {
   if (frame.token !== deps.token) {
@@ -78,6 +81,12 @@ export function handleHello(
     streamId: deps.bus.streamId,
     currentSeq: deps.bus.currentSeq,
     resync,
+    /*
+     * 在跑的会话**逐条报出来**，此后由 `conversation.busy` 事件维持。
+     * 少了这一份，缺口补不上（`resync`）的那次重连之后，客户端手里还是断线前
+     * 那份——那几轮早跑完了，左栏却会一直转下去。
+     */
+    busyConversations: deps.runs.busyConversations(),
     /*
      * **只报进程级的能力。** 插件 / MCP / 编排后端是按工作区的，而这条连接
      * 横跨用户开着的所有项目——报在这里就等于「A 项目的插件显示在 B 项目上」，

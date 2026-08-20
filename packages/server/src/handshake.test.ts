@@ -18,6 +18,7 @@ import { resolveBashRow, wingetUsable } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
+import { RunManager } from './runs.ts'
 
 const c1 = 'cv_one' as ConversationId
 const delta = (s: string): AgentEvent =>
@@ -28,6 +29,7 @@ interface HelloOk {
   streamId: string
   currentSeq: number
   resync: boolean
+  busyConversations: string[]
   capabilities: {
     environment: {
       id: string
@@ -57,7 +59,11 @@ function fakeSocket() {
   }
 }
 
-function shake(bus: EventBus, frame: Omit<HelloFrame, 'type' | 'token' | 'origin'>) {
+function shake(
+  bus: EventBus,
+  frame: Omit<HelloFrame, 'type' | 'token' | 'origin'>,
+  runs = new RunManager(null as never, bus),
+) {
   const sock = fakeSocket()
   handleHello(
     sock.ws,
@@ -67,10 +73,32 @@ function shake(bus: EventBus, frame: Omit<HelloFrame, 'type' | 'token' | 'origin
       token: 'tk',
       unsubscribers: new Map(),
       config: { active: { provider: 'p', model: 'm' }, providers: {} },
+      runs,
     },
   )
   return sock
 }
+
+/**
+ * 在跑的会话要**在握手里报出来**。
+ *
+ * 原始失败形状：sidecar 被杀之后重连，客户端手里那份忙闲还是断线前的——那几轮
+ * 早跑完了，左栏对应的行会一直转下去。缺口补不上（resync）时事件那条路补不回来，
+ * 这份快照是唯一的纠正机会。
+ */
+describe('握手报此刻谁在跑', () => {
+  test('报的是 RunManager 手里那份，不是账本', () => {
+    const bus = new EventBus()
+    const runs = new RunManager(null as never, bus)
+    runs.reserve(c1)
+    expect(shake(bus, {}, runs).ok().busyConversations).toEqual([c1])
+  })
+
+  test('一条都没在跑就是空表，不是缺这个字段', () => {
+    const bus = new EventBus()
+    expect(shake(bus, {}).ok().busyConversations).toEqual([])
+  })
+})
 
 describe('断线重连的位置', () => {
   test('同一条流、缺口在窗口内 —— 逐条补，不 resync', () => {
