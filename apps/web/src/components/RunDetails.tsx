@@ -215,10 +215,21 @@ function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
   )
 }
 
-/** 一轮一行。只有时间、异常、金额三样——其余进展开区。 */
+/**
+ * 一轮一行。**这一行就是这一轮的全部标题**：什么时候、哪个模型、跑了几步多久、
+ * 出没出事、多少钱。
+ *
+ * 模型名与步数耗时不进展开区——放进去等于给同一轮做两个标题，上面一个时间、
+ * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的东西：失败原文与逐请求账。
+ */
 function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () => void }) {
   const r = () => props.run
   const mark = () => runMark(r())
+  /** 跑完才给耗时。还在跑的那一轮由「进行中」标记说，两处都说就是同一件事说两遍。 */
+  const elapsed = () => {
+    const end = r().finishedAt
+    return end === null ? null : `${((end - r().createdAt) / 1000).toFixed(1)}s`
+  }
 
   return (
     <li classList={{ superseded: !!r().supersededBy }}>
@@ -234,6 +245,10 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
           <IconChevron size={10} dir={props.active ? 'down' : 'right'} />
         </Show>
         <span class="run-when">{clockOf(r().createdAt)}</span>
+        {/* 模型名是这一行唯一长度不可控的东西，所以只有它让位。 */}
+        <span class="run-model truncate">{r().model}</span>
+        <span class="run-meta">{r().stepCount} 步</span>
+        <Show when={elapsed()}>{(e) => <span class="run-meta">{e()}</span>}</Show>
         <Show when={mark()}>
           {(m) => (
             <span class="run-mark" classList={{ bad: m().bad }}>
@@ -273,22 +288,17 @@ function ExtraRow(props: { entry: LedgerRow; wide: boolean }) {
   )
 }
 
-/** 选中那一轮的全部：元信息、失败原文、逐请求账。窄态在行下面，宽态在右栏。 */
+/**
+ * 展开之后才看的那些：失败原文与逐请求账。
+ *
+ * **不再重复行上那几样**（模型名、步数、耗时）——它们在行上，展开区里再摆一遍就是
+ * 同一轮的第二个标题。
+ */
 function RunDetail(props: { run: Run }) {
   const r = () => props.run
-  const elapsed = () => {
-    const end = r().finishedAt
-    return end === null ? '进行中' : `${((end - r().createdAt) / 1000).toFixed(1)}s`
-  }
 
   return (
     <div class="run-detail">
-      <div class="run-detail-meta">
-        <span class="truncate">{r().model}</span>
-        <span>{r().stepCount} 步</span>
-        <span>{elapsed()}</span>
-      </div>
-
       {/* 失败原文：错误码与原文一直在落库，选中就直接给，不套折叠。 */}
       <Show when={r().errorCode || r().errorMessage}>
         <div class="run-err">
