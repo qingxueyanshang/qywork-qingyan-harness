@@ -831,6 +831,72 @@ CREATE TABLE conversation_loaded_tools (
      */
     sql: `ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    id: 25,
+    name: 'provider_finish_reason',
+    /**
+     * 账本记下 provider 的**原话**，并删掉一个永远说不出真话的标志位。
+     *
+     * 加 `finish_reason`：`runs.stop_reason` 存的是本仓自己的词表
+     * （`completed` / `output_truncated` / …），是归一化之后的结论。
+     * 于是「模型说完了」（`stop`）与「模型要调工具但我们一条都没解析出来」
+     * （`tool_calls` + 零调用）在账本上长得一模一样，事后分不出是哪一种。
+     * 空串 = 本次迁移之前的行，或流断在拿到 finish_reason 之前。
+     *
+     * 删 `measurement_exact`：三条协议都不在热路径上实测 token，写入端是常量
+     * `false`，读出来之后没有任何消费者。一个永远为假的能力位比没有更坏——
+     * 下一个人会以为它在工作。真值一直由 `provider_*_tokens` 那几列给。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN finish_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE provider_requests DROP COLUMN measurement_exact;
+`,
+  },
+  {
+    id: 26,
+    name: 'thinking_step_kind',
+    /**
+     * 思考有自己的行，不再寄生在工具行的 `content` 上。
+     *
+     * 寄生的推论就是它的失效形状：这一轮没有工具调用 → 没有 `tool_action` 行 →
+     * 思考无处可放 → 直接丢弃。纯文本轮的思考因此从来没有落过盘。
+     *
+     * **重建表而不是 ALTER**：SQLite 改不了 CHECK 约束，只能建新表搬数据
+     * （同迁移 3 的做法）。既然要搬，索引一并重建。
+     *
+     * 顺带把 `artifact` 与 `progress` 从 CHECK 里去掉：`StepKind` 里没有它们，
+     * 没有任何生产者能写出这两个值，留着只是给下一个人一个误用的机会（同迁移 5）。
+     *
+     * **存量行的思考留在 `tool_action.content` 里，不搬。** seq 是密排的，
+     * 没有空位插新行；重排 seq 会打断 `compaction_manifest` 里已经持久化的单元戳。
+     * 投影侧因此保留一条只读旧行的回落，见 `runtime/transcript.ts`。
+     */
+    sql: `
+CREATE TABLE steps_new (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('text','tool_action','compaction','thinking')),
+  tool_name   TEXT,
+  tool_call_id TEXT,
+  provider_batch_id TEXT,
+  call_index  INTEGER,
+  execution_wave_index INTEGER,
+  execution_started_at INTEGER,
+  content     TEXT,
+  payload     TEXT,
+  status      TEXT NOT NULL DEFAULT 'done',
+  created_at  INTEGER NOT NULL
+);
+INSERT INTO steps_new SELECT
+  id, run_id, seq, kind, tool_name, tool_call_id, provider_batch_id, call_index,
+  execution_wave_index, execution_started_at, content, payload, status, created_at
+FROM steps;
+DROP TABLE steps;
+ALTER TABLE steps_new RENAME TO steps;
+CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
+`,
+  },
 ]
 
 /**

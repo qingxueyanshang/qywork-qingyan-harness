@@ -89,4 +89,23 @@ describe('尾区注记', () => {
     })
     expect(full.map((n) => n.group)).toEqual(['workspaceState', 'skills', 'memory', 'mcpTools'])
   })
+
+  /**
+   * 复现的是原始失败形状：`平台：win32` 曾让模型对用户复述成「Windows 32 位」。
+   * 断言原值**不出现**，而不只是断言新值出现——只测新值的话，
+   * 哪天有人把两个都写进去，这个测试照样绿。
+   */
+  test('平台给人读名，Node 的原值不进提示词', () => {
+    const state = (platform: string) =>
+      note(buildTailNotes({ ...base, platform }), 'workspaceState')?.content ?? ''
+
+    expect(state('win32')).toContain('平台：Windows')
+    expect(state('win32')).not.toContain('win32')
+    expect(state('darwin')).toContain('平台：macOS')
+    expect(state('darwin')).not.toContain('darwin')
+    expect(state('linux')).toContain('平台：Linux')
+
+    // 没收录的取值原样带过去：编一个名字比给出原值更糟。
+    expect(state('freebsd')).toContain('平台：freebsd')
+  })
 })

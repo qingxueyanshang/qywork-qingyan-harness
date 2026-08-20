@@ -360,3 +360,41 @@ describe('历史装配', () => {
     expect(JSON.parse(String(out[1]!.content)).executed).toBe(false)
   })
 })
+
+describe('思考的投影', () => {
+  /**
+   * 复现的是原始失败形状：迁移 26 之前思考寄生在批次首条工具行的 `content` 上，
+   * 于是纯文本轮的思考无处可放、直接丢弃。
+   *
+   * 模型侧与界面侧口径**刻意不同**，这里锁的是模型侧：
+   * 纯文本轮不带 `reasoningContent`——活的 transcript 只在有工具调用时才挂它
+   * （`agent/loop.ts`），投影多带一份就与活的不同形，缓存前缀从那里断掉。
+   */
+  test('有工具调用时带上思考，纯文本轮不带', () => {
+    const withTools = stepsToWireMessages([
+      step({ id: 'st1' as never, seq: 1, kind: 'thinking', content: '先看文件' }),
+      step({ id: 'st2' as never, seq: 2, kind: 'text', content: '我读一下' }),
+      step({ id: 'st3' as never, seq: 3 }),
+    ])
+    expect(withTools[0]?.reasoningContent).toBe('先看文件')
+    expect(withTools[0]?.content).toBe('我读一下')
+
+    const textOnly = stepsToWireMessages([
+      step({ id: 'st1' as never, seq: 1, kind: 'thinking', content: '想了想' }),
+      step({ id: 'st2' as never, seq: 2, kind: 'text', content: '结论是这样' }),
+    ])
+    expect(textOnly).toHaveLength(1)
+    expect(textOnly[0]?.content).toBe('结论是这样')
+    expect(textOnly[0]?.reasoningContent).toBeUndefined()
+  })
+
+  /**
+   * 迁移 26 之前的行没有独立的 thinking step，思考在首条工具行的 `content` 里。
+   * 这条回落删掉的后果不是显示问题：DeepSeek 类兼容端点对带 tool_calls 却没有
+   * `reasoning_content` 的历史消息在第二轮直接 400。
+   */
+  test('存量行的思考仍从首条工具行读得回来', () => {
+    const legacy = stepsToWireMessages([step({ id: 'st1' as never, seq: 1, content: '旧的思考' })])
+    expect(legacy[0]?.reasoningContent).toBe('旧的思考')
+  })
+})

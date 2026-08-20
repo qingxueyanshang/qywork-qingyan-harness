@@ -943,7 +943,6 @@ export function openProviderRequest(
     retryIndex: number
     model: string
     measuredInputTokens: number
-    measurementExact: boolean
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
@@ -958,11 +957,11 @@ export function openProviderRequest(
     model: input.model,
     status: 'pending',
     measuredInputTokens: input.measuredInputTokens,
-    measurementExact: input.measurementExact,
     providerInputTokens: null,
     providerOutputTokens: null,
     providerCachedTokens: null,
     providerCacheWriteTokens: null,
+    finishReason: '',
     sentCategories: input.sentCategories,
     omittedCategories: input.omittedCategories,
     errorCode: null,
@@ -974,11 +973,11 @@ export function openProviderRequest(
   store.db
     .query(
       `INSERT INTO provider_requests
-       (id, run_id, turn_index, retry_index, model, status, measured_input_tokens, measurement_exact,
+       (id, run_id, turn_index, retry_index, model, status, measured_input_tokens,
         provider_input_tokens, provider_output_tokens, provider_cached_tokens, provider_cache_write_tokens,
         sent_categories, omitted_categories, error_code, payload_hash, cache_route_fingerprint,
         sent_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,NULL,?)`,
+       VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,NULL,?)`,
     )
     .run(
       row.id,
@@ -988,7 +987,6 @@ export function openProviderRequest(
       row.model,
       row.status,
       row.measuredInputTokens,
-      row.measurementExact ? 1 : 0,
       writeJson(row.sentCategories),
       writeJson(row.omittedCategories),
       row.payloadHash,
@@ -1022,12 +1020,14 @@ export function settleProviderRequest(
     cacheWriteTokens: number | null
   } | null,
   errorCode: string | null = null,
+  finishReason = '',
 ): void {
   store.db
     .query(
       `UPDATE provider_requests
        SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
-           provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?
+           provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?,
+           finish_reason = ?
        WHERE id = ?`,
     )
     .run(
@@ -1037,6 +1037,7 @@ export function settleProviderRequest(
       usage?.cachedTokens ?? null,
       usage?.cacheWriteTokens ?? null,
       errorCode,
+      finishReason,
       id,
     )
 }
@@ -1098,7 +1099,6 @@ function rowToProviderRequest(r: Record<string, any>): ProviderRequest {
     model: r.model,
     status: r.status,
     measuredInputTokens: r.measured_input_tokens,
-    measurementExact: r.measurement_exact === 1,
     providerInputTokens: r.provider_input_tokens,
     providerOutputTokens: r.provider_output_tokens,
     providerCachedTokens: r.provider_cached_tokens,
@@ -1107,6 +1107,7 @@ function rowToProviderRequest(r: Record<string, any>): ProviderRequest {
     omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
     errorCode: r.error_code,
     payloadHash: r.payload_hash,
+    finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,
     sentAt: r.sent_at,
     createdAt: r.created_at,

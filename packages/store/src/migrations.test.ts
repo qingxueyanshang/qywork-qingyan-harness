@@ -393,3 +393,58 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
     expect(argsOf(db, 'mcp')).toEqual({ action: 'write', key: 'k' })
   })
 })
+
+describe('迁移 26：steps 重建，思考有自己的 kind', () => {
+  /**
+   * 这条是**重建表**——SQLite 改不了 CHECK 约束，只能建新表搬数据。
+   * 搬漏一列、搬漏一批行都是静默的：库还在、查询还能跑，只是历史没了。
+   * 所以断言逐行逐列比对，不是只数一个总数。
+   */
+  test('每一行每一列原样搬过去，索引跟着重建', () => {
+    const db = dbBefore(26)
+    const rows: [string, string, string | null, string | null, string | null][] = [
+      ['s1', 'text', null, null, '正文'],
+      ['s2', 'tool_action', 'read_file', 'c1', '旧的思考'],
+      ['s3', 'compaction', null, null, null],
+    ]
+    for (const [id, kind, tool, callId, content] of rows) {
+      db.query(
+        `INSERT INTO steps (id, run_id, seq, kind, tool_name, tool_call_id, content, status, created_at)
+         VALUES (?, 'rn', 1, ?, ?, ?, ?, 'done', 7)`,
+      ).run(id, kind, tool, callId, content)
+    }
+
+    applyOne(db, 26)
+
+    const after = db.query('SELECT * FROM steps ORDER BY id').all() as Record<string, unknown>[]
+    expect(after.map((r) => r.id)).toEqual(['s1', 's2', 's3'])
+    expect(after.map((r) => r.kind)).toEqual(['text', 'tool_action', 'compaction'])
+    // 存量行的思考仍在原处——投影侧那条只读回落靠它。
+    expect(after[1]!.content).toBe('旧的思考')
+    expect(after[1]!.tool_call_id).toBe('c1')
+    expect(after[2]!.created_at).toBe(7)
+
+    // 新 kind 收得下。
+    db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, content, status, created_at)
+       VALUES ('s4', 'rn', 0, 'thinking', '想了想', 'done', 8)`,
+    ).run()
+    expect(db.query("SELECT COUNT(*) n FROM steps WHERE kind = 'thinking'").get()).toEqual({ n: 1 })
+
+    // 退役的两个值不再收：留着只是给下一个人一个误用的机会。
+    expect(() =>
+      db
+        .query(
+          `INSERT INTO steps (id, run_id, seq, kind, status, created_at)
+           VALUES ('s5', 'rn', 9, 'artifact', 'done', 9)`,
+        )
+        .run(),
+    ).toThrow()
+
+    // 索引必须跟着重建，否则删一个长会话会退化成全表扫。
+    const idx = db
+      .query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='steps'")
+      .all() as { name: string }[]
+    expect(idx.map((i) => i.name)).toContain('idx_step_run_seq')
+  })
+})

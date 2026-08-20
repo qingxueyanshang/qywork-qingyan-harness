@@ -131,7 +131,18 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
 
   let pendingText = ''
   let pendingStamp = ''
+  /**
+   * 本轮的思考正文，等这一轮的工具批次来取。
+   *
+   * **纯文本轮不带它。** 活的 transcript 只在 `calls.length` 时才挂
+   * `reasoningContent`（`agent/loop.ts`），投影多带一份就与活的不同形，
+   * 同一次调用在本轮和下一轮长得不一样，缓存前缀从那里断掉。
+   * 界面那侧另有投影，思考照常显示，两者是不同的消费者。
+   */
+  let pendingReasoning = ''
   const flushText = () => {
+    // 见 `pendingReasoning` 的注释：纯文本轮的思考不进模型视图。
+    pendingReasoning = ''
     if (!pendingText.trim()) {
       pendingText = ''
       return
@@ -147,6 +158,11 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
   let i = 0
   while (i < steps.length) {
     const step = steps[i]!
+    if (step.kind === 'thinking') {
+      pendingReasoning += step.content ?? ''
+      i += 1
+      continue
+    }
     if (step.kind === 'text') {
       pendingText += step.content ?? ''
       pendingStamp = stepStamp(step.runId, step.seq)
@@ -185,9 +201,18 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
       arguments: toolPayloadOf(s).args ?? {},
     }))
 
-    // 思考正文挂在批次首条的 `content` 上（见 `LoopPersistence.openToolStep`）。
-    // 缺它的话 DeepSeek 类兼容端点在第二轮就 400，而那正是本批要修的东西。
-    const reasoning = batch[0]?.content ?? ''
+    /*
+     * 思考正文来自本轮的 `thinking` step。
+     *
+     * `batch[0].content` 是**只读旧行的回落**：迁移 26 之前思考寄生在批次首条
+     * 工具行的 `content` 上，那些行的 seq 是密排的、没有空位插新行，重排 seq
+     * 又会打断 `compaction_manifest` 里已经持久化的单元戳，所以不搬。
+     * 缺这一段的后果不是显示问题——DeepSeek 类兼容端点对带 tool_calls 却没有
+     * `reasoning_content` 的历史消息在第二轮就 400。
+     * 存量会话清空后这条回落可以删掉。
+     */
+    const reasoning = pendingReasoning || (batch[0]?.content ?? '')
+    pendingReasoning = ''
     // 戳取批次里最大的 seq：活的 transcript 那侧是「一波跑完时的高水位」，同一个数。
     const stamp = stepStamp(batch[0]!.runId, Math.max(...batch.map((s) => s.seq)))
 

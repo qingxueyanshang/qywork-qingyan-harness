@@ -19,7 +19,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
 import type { ModelSpec } from '../catalog.ts'
-import { classifyProviderError } from '../errors.ts'
+import { classifyProviderError, namelessToolCall } from '../errors.ts'
 import { estimateMessage, estimateRequest, estimateSchemas, estimateText } from '../tokens.ts'
 import type {
   ChatRequest,
@@ -64,27 +64,12 @@ export class AnthropicAdapter implements LlmAdapter {
     })
   }
 
-  async measure(req: ChatRequest): Promise<number> {
-    const body = this.buildBody(req)
-    const res = await this.client.messages.countTokens({
-      model: body.model,
-      system: body.system,
-      messages: body.messages,
-      ...(body.tools.length ? { tools: body.tools } : {}),
-    })
-    return res.input_tokens
-  }
-
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
     const body = this.buildBody(req)
 
-    // 逐字节稳定的前缀是缓存命中的前提，所以测量用的是**即将发送的同一个 body**，
-    // 不是重新拼一遍的近似物。
-    yield {
-      type: 'request_prepared',
-      measuredInputTokens: estimateRequest(req),
-      exact: false,
-    }
+    // 这个数是字符估算，不是实测：Anthropic 有 count_tokens，但热路径不调它——
+    // 每轮多一次往返，而上下文读数在第一次回报之后就锚在 provider 真值上了。
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
 
     const usage: ProviderUsage = {
       inputTokens: 0,
@@ -95,6 +80,8 @@ export class AnthropicAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
+    // provider 的原话，只进账本不参与判断。空串 = 流断在终态之前。
+    let rawStop = ''
     let refusal: { category: string | null; explanation?: string } | undefined
 
     // 累积工具调用：SDK 把参数按 input_json_delta 分片流下来，要自己拼回 JSON。
@@ -137,7 +124,10 @@ export class AnthropicAdapter implements LlmAdapter {
           case 'message_delta': {
             if (ev.usage) applyUsage(usage, ev.usage)
             const raw = ev.delta?.stop_reason
-            if (raw) stopReason = normalizeStopReason(raw)
+            if (raw) {
+              rawStop = String(raw)
+              stopReason = normalizeStopReason(raw)
+            }
             // stop_details 只在 refusal 时非空，其余 stop_reason 下恒为 null——
             // 必须先看 stop_reason 再读它，反过来会漏判。
             if (raw === 'refusal' && ev.delta?.stop_details) {
@@ -157,7 +147,10 @@ export class AnthropicAdapter implements LlmAdapter {
         stream as { finalMessage(): Promise<Record<string, any>> }
       ).finalMessage()
       if (final.usage) applyUsage(usage, final.usage)
-      if (final.stop_reason) stopReason = normalizeStopReason(final.stop_reason)
+      if (final.stop_reason) {
+        rawStop = String(final.stop_reason)
+        stopReason = normalizeStopReason(final.stop_reason)
+      }
       if (final.stop_reason === 'refusal' && final.stop_details) {
         refusal = {
           category: final.stop_details.category ?? null,
@@ -165,14 +158,14 @@ export class AnthropicAdapter implements LlmAdapter {
         }
       }
 
-      const calls = collectToolCalls(partial)
+      const calls = collectToolCalls(partial, req.model)
       if (calls.length) yield { type: 'tool_calls', calls }
     } catch (err) {
       throw classifyProviderError('anthropic_messages', err)
     }
 
     yield { type: 'usage', usage }
-    yield { type: 'done', stopReason, ...(refusal ? { refusal } : {}) }
+    yield { type: 'done', stopReason, rawStopReason: rawStop, ...(refusal ? { refusal } : {}) }
   }
 
   // ───────────────────────── 装配 ─────────────────────────
@@ -190,7 +183,6 @@ export class AnthropicAdapter implements LlmAdapter {
         req.messages,
         this.spec.minCacheablePrefix,
         estimateSchemas(req.tools) + req.system.reduce((n, b) => n + estimateText(b.text), 0),
-        this.spec.midConversationSystem,
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
@@ -308,8 +300,6 @@ function buildMessages(
   messages: WireMessage[],
   minPrefix = 0,
   prefixTokens = 0,
-  /** 这条模型收不收会话中间的 `role:'system'`。见 `ModelSpec.midConversationSystem`。 */
-  midSystem = false,
 ): Anthropic.MessageParam[] {
   const out: Record<string, any>[] = []
   // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
@@ -351,32 +341,25 @@ function buildMessages(
     }
 
     /*
-     * **会话中间的 `role:'system'` 是分模型的能力，不是通用角色。**
+     * 尾区注记（日期、工作区、技能与记忆索引、待加载的外部工具）在这条协议上
+     * **一律落成 user 轮里的 `<system-reminder>`**。
      *
-     * loop 的尾区注记（日期、工作区、技能与记忆索引、待加载的外部工具）是故意压在
-     * 历史之后的 system 消息——挪进顶层 `system` 就等于挪进冻结前缀，装一个插件、
-     * 改一条记忆就把整段缓存打掉，而那正是按需加载要治的病。所以这个位置是对的。
+     * 不要按模型分叉去发 `role:'system'` 消息。理由不只是「有的模型不收」——
+     * 注记排在整串消息的**末尾**（见 `agent/loop.ts` 的装配顺序），而「尾部
+     * system 且其后无内容」这个形状一档都没有实测过，赌错的代价是那些模型上
+     * 每一条请求都发不出去。user 轮这条路三档共用、一直在跑，没有要赌的部分。
      *
-     * 但**只有一部分模型收它**（Opus 4.8/5 这一档，无需 beta 头）。其余的一律回
-     * 400 `role 'system' is not supported on this model`——不是「格式错了」，
-     * 是这条会话在那个模型上整个发不出去。所以不支持的落地成 user 轮里的
-     * `<system-reminder>`：位置不变、缓存前缀不变，只是换了个承载角色。
-     *
-     * **两条路都自成一条消息，绝不并进前一条。** 前一条通常就是历史的末尾，
-     * 而缓存断点之二正落在那儿——并进去的话 `cache_control` 会挂到追加的注记上，
+     * **自成一条消息，绝不并进前一条。** 前一条通常是 transcript 的末尾，
+     * 而缓存断点正落在那儿——并进去的话 `cache_control` 会挂到追加的注记上，
      * 而注记跨轮必变，于是那个断点每轮失配，等于没打。
      */
     if (m.role === 'system') {
       const text = typeof m.content === 'string' ? m.content : ''
       if (!text.trim()) continue
-      out.push(
-        midSystem
-          ? { role: 'system', content: text }
-          : {
-              role: 'user',
-              content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }],
-            },
-      )
+      out.push({
+        role: 'user',
+        content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }],
+      })
       if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }
@@ -456,9 +439,11 @@ function applyUsage(acc: ProviderUsage, u: Record<string, any>) {
 
 function collectToolCalls(
   partial: Map<number, { id: string; name: string; json: string }>,
+  model: string,
 ): WireToolCall[] {
   const calls: WireToolCall[] = []
   for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
+    if (!slot.name) throw namelessToolCall('anthropic_messages', model)
     let args: Record<string, unknown> = {}
     let argsError: string | null = null
     if (slot.json.trim()) {

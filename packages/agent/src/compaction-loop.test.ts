@@ -24,6 +24,7 @@ function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
   return {
     nextSeq: () => ++seq,
     openTextStep: () => `st_${seq}`,
+    openThinkingStep: () => `st_think_${seq}`,
     appendText: () => {},
     openToolStep: () => `st_${seq}`,
     markExecuting: () => {},
@@ -77,13 +78,12 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
     kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-    measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       state.attempts++
       if (state.attempts <= rejectTimes) throw makeError()
-      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
       yield { type: 'text_delta', delta: '压缩后完成' }
-      yield { type: 'done', stopReason: 'end_turn' }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
   return { adapter, state }
@@ -95,11 +95,10 @@ function okAdapter(): LlmAdapter {
     kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-    measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
       yield { type: 'text_delta', delta: '完成' }
-      yield { type: 'done', stopReason: 'end_turn' }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
 }
@@ -243,7 +242,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       history: [],
       // 锚点直接把占用顶到阈值之上——不用真造一段几十万字的历史。
       // 1M 窗口 × 0.8 → 软阈值 800,000。
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -275,7 +274,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     for await (const ev of loop.run({
       runId: 'rn_skip' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -369,9 +368,8 @@ describe('发送前检查：唯一的压缩触发', () => {
       kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
       spec,
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
           // 第一轮：provider 自报输入顶到窗口——它把超出的丢了，却没报错。
           yield {
@@ -386,10 +384,10 @@ describe('发送前检查：唯一的压缩触发', () => {
             },
           }
           yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
-          yield { type: 'done', stopReason: 'tool_use' }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
           yield { type: 'text_delta', delta: '完成' }
-          yield { type: 'done', stopReason: 'end_turn' }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
     }
@@ -441,15 +439,14 @@ describe('投影时机', () => {
       kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
           yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
-          yield { type: 'done', stopReason: 'tool_use' }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
           yield { type: 'text_delta', delta: '完成' }
-          yield { type: 'done', stopReason: 'end_turn' }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
     }
@@ -486,15 +483,14 @@ function twoTurnAdapter(): LlmAdapter {
     kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-    measure: async () => 0,
     async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
       if (turn++ === 0) {
         yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
-        yield { type: 'done', stopReason: 'tool_use' }
+        yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
       } else {
         yield { type: 'text_delta', delta: '完成' }
-        yield { type: 'done', stopReason: 'end_turn' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       }
     },
   }
@@ -506,7 +502,7 @@ async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
     runId: runId as never,
     history: [],
     // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接顶到线上。
-    anchor: { tokens: 900_000, throughMessageId: null },
+    anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
     signal: new AbortController().signal,
   })) {
     out.push(ev)
@@ -543,11 +539,14 @@ describe('有新可折单元才再压', () => {
       kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         // 服务端把这一轮切开了：没有正文也没有调用，transcript 一个字没长。
-        yield { type: 'done', stopReason: turn++ === 0 ? 'pause_turn' : 'end_turn' }
+        yield {
+          type: 'done',
+          stopReason: turn++ === 0 ? 'pause_turn' : 'end_turn',
+          rawStopReason: '',
+        }
       },
     }
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
@@ -584,9 +583,9 @@ describe('run 内 transcript 参与投影', () => {
         }
         if (turn++ === 0) {
           yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
-          yield { type: 'done', stopReason: 'tool_use' }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
-          yield { type: 'done', stopReason: 'end_turn' }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
     }
@@ -634,15 +633,14 @@ describe('transcript 的可折单元', () => {
       kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
           yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
-          yield { type: 'done', stopReason: 'tool_use' }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
           yield { type: 'text_delta', delta: '完成' }
-          yield { type: 'done', stopReason: 'end_turn' }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
     }
@@ -720,12 +718,11 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
     kind: 'anthropic_messages',
     transmits: { thinking: true, effort: true },
     spec,
-    measure: async () => 0,
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       seen.push(req)
-      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
       yield { type: 'text_delta', delta: '完成' }
-      yield { type: 'done', stopReason: 'end_turn' }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
   return { adapter, seen }
@@ -737,7 +734,7 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
  * 位置错了不会有任何报错，只会每一轮全价重付。
  */
 describe('缓存断点', () => {
-  test('断点二落在尾区注记之前，断点三落在整串末尾', async () => {
+  test('注记排在末尾；断点落在 history 末尾与注记之前', async () => {
     const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
     const loop = new AgentLoop({
       adapter,
@@ -759,10 +756,127 @@ describe('缓存断点', () => {
     }
 
     const messages = seen[0]!.messages
+    // 注记是最后一段：它之后不许再有任何东西，否则前缀里就夹着易变的一块。
     const noteAt = messages.findIndex((m) => m.role === 'system')
-    expect(noteAt).toBeGreaterThan(0)
+    expect(noteAt).toBe(messages.length - 1)
+    // 断点之二：history 末尾（跨 run 稳定点）。
+    expect(messages[1]!.cacheBreakpoint).toBe(true)
+    // 断点之三：注记之前（run 内稳定点）。首轮 transcript 为空，两者重合。
     expect(messages[noteAt - 1]!.cacheBreakpoint).toBe(true)
-    expect(messages[messages.length - 1]!.cacheBreakpoint).toBe(true)
+  })
+
+  /**
+   * 复现的是原始失败形状：会话 `cv_0mszld8o60000yi2u5m` 的 rn_0mszqkz8d 产出约
+   * 1.4 万 token 的 grep 结果，下一轮 rn_0mszqmhqh 只命中 192。
+   *
+   * 成因是装配顺序：注记夹在 history 与 transcript 之间时，跨 run 的公共前缀
+   * 在上一轮 history 末尾就断了——上一轮跑出来的全部工具结果必然全价重付。
+   *
+   * 所以断言的是**字节**：下一轮首请求与上一轮末请求的最长公共前缀，
+   * 必须长过上一轮那些工具结果。旧布局下这个断言必然失败。
+   */
+  test('跨 run 的公共前缀覆盖上一轮的全部工具结果', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'grep',
+      description: '假 grep，回一大坨结果。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'query',
+      objectLabel: '内容',
+      category: 'code',
+      facet: '搜索',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      fn: async () => ({ status: 'success', message: 'hit', data: { lines: 'x'.repeat(4000) } }),
+    })
+
+    const seen: ChatRequest[] = []
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'openai_chat_completions',
+      transmits: { thinking: false, effort: false },
+      spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        seen.push(req)
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        // 第一轮：调一次 grep，产出一大段工具结果；之后只说话。
+        if (turn++ === 0) {
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: 'c1', name: 'grep', arguments: {} }],
+          }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_calls' }
+          return
+        }
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'stop' }
+      },
+    }
+
+    const build = () =>
+      new AgentLoop({
+        adapter,
+        registry,
+        systemPrompt: 'sys',
+        tailNotes: () => [{ content: '工作区：/tmp/ws', group: 'workspaceState' }],
+        persist: noopPersistence(),
+        makeToolContext: makeCtx,
+      })
+
+    const history: WireMessage[] = [{ role: 'user', content: '找 bug', _messageId: 'ms_001' }]
+    for await (const _ of build().run({
+      runId: 'rn_a' as never,
+      history,
+      signal: new AbortController().signal,
+    })) {
+      // 跑完第一轮
+    }
+
+    // 第一轮的产出折进历史，第二轮开一个新 run——这正是账本里那两轮的关系。
+    const carried: WireMessage[] = [
+      ...history,
+      ...seen[seen.length - 1]!.messages.filter((m) => m._group === 'executionRecords'),
+      { role: 'user', content: '全部都做一下', _messageId: 'ms_002' },
+    ]
+    const before = seen.length
+    for await (const _ of build().run({
+      runId: 'rn_b' as never,
+      history: carried,
+      signal: new AbortController().signal,
+    })) {
+      // 跑完第二轮
+    }
+
+    /*
+     * 比的是**上线字节**，所以内部标记要剥掉：`cacheBreakpoint` 在兼容协议上
+     * 一个字节都不上线（`openai-compat.ts` 从不读它），`_group` / `_messageId` /
+     * `_step` 同理。不剥的话断言测的是内部结构而不是缓存看到的东西——
+     * 而 history 末尾那个断点本来就该随历史增长往后走。
+     */
+    const wire = (req: ChatRequest) =>
+      JSON.stringify(
+        req.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
+          ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+          ...(m.reasoningContent ? { reasoningContent: m.reasoningContent } : {}),
+        })),
+      )
+    const lastOfA = wire(seen[before - 1]!)
+    const firstOfB = wire(seen[before]!)
+    let common = 0
+    while (
+      common < lastOfA.length &&
+      common < firstOfB.length &&
+      lastOfA[common] === firstOfB[common]
+    ) {
+      common++
+    }
+    // 那一大坨工具结果必须落在公共前缀之内。旧布局下公共前缀止于 history 末尾。
+    const toolResult = seen[before - 1]!.messages.find((m) => m.role === 'tool')
+    expect(toolResult).toBeDefined()
+    expect(common).toBeGreaterThan(JSON.stringify(toolResult).length)
   })
 })
 
@@ -785,7 +899,7 @@ describe('申报按占用钳位', () => {
     for await (const ev of build(adapter).run({
       runId: 'rn_declare_high' as never,
       history: [],
-      anchor: { tokens: 950_000, throughMessageId: null },
+      anchor: { tokens: 950_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -815,7 +929,7 @@ describe('压缩被中断', () => {
     for await (const ev of loop.run({
       runId: 'rn_abort' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -846,7 +960,7 @@ describe('结果形态对用户可见', () => {
     for await (const ev of loop.run({
       runId: 'rn_summarized' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -875,7 +989,7 @@ describe('结果形态对用户可见', () => {
     for await (const _ of loop.run({
       runId: 'rn_local' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       // 只看落库结果
@@ -898,7 +1012,7 @@ describe('结果形态对用户可见', () => {
     for await (const _ of loop.run({
       runId: 'rn_skip_step' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null },
+      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       // 只看落库结果

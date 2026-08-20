@@ -298,7 +298,11 @@ describe('工具调用', () => {
     expect(calls?.calls).toEqual([
       { id: CALL_ID, name: 'get_weather', arguments: { city: '北京' } },
     ])
-    expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'tool_use' })
+    expect(events.at(-1)).toEqual({
+      type: 'done',
+      stopReason: 'tool_use',
+      rawStopReason: 'completed',
+    })
   })
 
   /**
@@ -341,12 +345,16 @@ describe('用量与终态', () => {
 
   test('输出截断报 max_tokens，不报 end_turn', async () => {
     const events = await run(TRUNCATED)
-    expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'max_tokens' })
+    expect(events.at(-1)).toEqual({
+      type: 'done',
+      stopReason: 'max_tokens',
+      rawStopReason: 'incomplete:max_output_tokens',
+    })
   })
 
   test('请求前先报一次估算量，并标明它是估算', async () => {
     const events = await run(TEXT_RUN)
-    expect(events[0]).toMatchObject({ type: 'request_prepared', exact: false })
+    expect(events[0]).toMatchObject({ type: 'request_prepared' })
   })
 })
 

@@ -394,6 +394,8 @@ export class Session {
             (anchored.providerCacheWriteTokens ?? 0) +
             (anchored.providerOutputTokens ?? 0),
           throughMessageId: anchorRun?.messageIdUpperBound ?? null,
+          // 指纹不匹配时由 loop 作废这个锚点——只有装配完才知道本轮的信封。
+          envelopeFingerprint: anchored.cacheRouteFingerprint,
         }
       : null
 
@@ -690,17 +692,10 @@ export class Session {
     return {
       nextSeq: (runId) => this.nextSeq(runId),
       openTextStep: (runId, seq) => appendStep(store, { runId, seq, kind: 'text', content: '' }).id,
+      openThinkingStep: (runId, seq) =>
+        appendStep(store, { runId, seq, kind: 'thinking', content: '' }).id,
       appendText: (stepId, delta) => appendTextToStep(store, stepId as never, delta),
-      openToolStep: (
-        runId,
-        seq,
-        call: WireToolCall,
-        batchId,
-        callIndex,
-        waveIndex,
-        action,
-        reasoning,
-      ) =>
+      openToolStep: (runId, seq, call: WireToolCall, batchId, callIndex, waveIndex, action) =>
         appendStep(store, {
           runId,
           seq,
@@ -711,9 +706,6 @@ export class Session {
           callIndex,
           executionWaveIndex: waveIndex,
           status: 'running',
-          // 思考正文借 `content` 落库——tool_action 行的这一列本来就是空的，
-          // 为它单开一列等于给同一件事建第二个位置。读法见投影函数。
-          ...(reasoning ? { content: reasoning } : {}),
           // action 必须落库：它由 ToolSpec 按参数解析，前端回猜不出来。
           payload: { kind: 'tool_call', args: call.arguments, action },
         }).id,
@@ -739,8 +731,8 @@ export class Session {
       },
       openRequest: (input) => openProviderRequest(store, input).id,
       markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
-      settleRequest: (requestId, status, usage, errorCode) =>
-        settleProviderRequest(store, requestId as never, status, usage, errorCode),
+      settleRequest: (requestId, status, usage, errorCode, finishReason) =>
+        settleProviderRequest(store, requestId as never, status, usage, errorCode, finishReason),
     }
   }
 

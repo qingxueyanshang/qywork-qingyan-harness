@@ -22,6 +22,7 @@ import {
   createRun,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
+  listProviderRequests,
   markProviderRequestSent,
   openProviderRequest,
   Store,
@@ -59,7 +60,6 @@ function send(
     retryIndex: 0,
     model: 'm',
     measuredInputTokens: opts.measured,
-    measurementExact: false,
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
     omittedCategories: emptyOmitted(),
     payloadHash: `h${turn}`,
@@ -77,7 +77,6 @@ describe('逐请求账', () => {
       retryIndex: 0,
       model: 'm',
       measuredInputTokens: 1234,
-      measurementExact: false,
       sentCategories: emptyBreakdown(),
       omittedCategories: emptyOmitted(),
       payloadHash: 'h',
@@ -273,5 +272,61 @@ describe('压缩触发线', () => {
   test('新会话也给出触发线', () => {
     const { store, conversationId } = fixture()
     expect(contextPanel(store, conversationId, 200_000).compactAt).toBe(160_000)
+  })
+})
+
+describe('逐请求账本读得出重发', () => {
+  /**
+   * 复现的是面板上的原始失败形状：`usage.turns` 只在拿到 usage 回报时才 push，
+   * 于是「连接层失败 → 重发 → 成功」这两次在它里面只剩一次，面板显示「1 次调用」。
+   *
+   * 真源是 `provider_requests`——它在发出之前就落行，重发是独立一行。
+   */
+  test('同一轮的失败与重发是两行，各带各的终态与 provider 原话', () => {
+    const { store, runId } = fixture()
+    const first = openProviderRequest(store, {
+      runId,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'm',
+      measuredInputTokens: 30_000,
+      sentCategories: emptyBreakdown(),
+      omittedCategories: emptyOmitted(),
+      payloadHash: 'h0',
+    })
+    markProviderRequestSent(store, first.id)
+    settleProviderRequest(store, first.id, 'uncertain', null, 'network_error')
+
+    const retry = openProviderRequest(store, {
+      runId,
+      turnIndex: 0,
+      retryIndex: 1,
+      model: 'm',
+      measuredInputTokens: 30_000,
+      sentCategories: emptyBreakdown(),
+      omittedCategories: emptyOmitted(),
+      payloadHash: 'h0',
+    })
+    markProviderRequestSent(store, retry.id)
+    settleProviderRequest(
+      store,
+      retry.id,
+      'received',
+      { inputTokens: 8539, outputTokens: 298, cachedTokens: 16_576, cacheWriteTokens: null },
+      null,
+      'stop',
+    )
+
+    const rows = listProviderRequests(store, runId)
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => `${r.turnIndex}.${r.retryIndex}:${r.status}`)).toEqual([
+      '0.0:uncertain',
+      '0.1:received',
+    ])
+    // 结果不明的那次不许被填成 0：收没收到、计没计费都不知道。
+    expect(rows[0]!.providerInputTokens).toBeNull()
+    expect(rows[0]!.finishReason).toBe('')
+    // provider 的原话进账本——没有它就分不出「说完了」和「要调工具」。
+    expect(rows[1]!.finishReason).toBe('stop')
   })
 })
