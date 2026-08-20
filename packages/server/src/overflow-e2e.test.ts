@@ -92,8 +92,6 @@ function textTurn(id: string, text: string): Response {
 }
 
 let rejected = 0
-let summaries = 0
-let normals = 0
 /**
  * 摘要请求靠**请求体里有没有摘要提示词**认出来，不靠调用序号：压缩那一步排第几
  * 取决于 loop 内部顺序，按序号写的话顺序一改测试就悄悄测了别的东西。
@@ -103,14 +101,12 @@ const provider = Bun.serve({
   async fetch(req) {
     const body = await req.text()
     if (body.includes('交接摘要')) {
-      summaries++
       return textTurn('resp_sum', '## 用户要求\n- 先前的若干轮。\n## 下一步\n继续。')
     }
     if (rejected === 0) {
       rejected++
       return capacityRejection()
     }
-    normals++
     return textTurn('resp_ok', '压缩之后重发成功。')
   },
 })

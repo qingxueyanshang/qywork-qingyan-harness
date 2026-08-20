@@ -689,7 +689,7 @@ export default function AgentsSettings() {
                                   if (used.length) {
                                     return `还有 ${used.length} 个角色在用它，先改掉那些角色的后端`
                                   }
-                                  delete (cfg.backends ?? {})[id]
+                                  delete cfg.backends?.[id]
                                   if (backendForm()?.id === id) setBackendForm(null)
                                   return null
                                 })
