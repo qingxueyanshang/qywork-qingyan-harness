@@ -3,7 +3,7 @@
  *
  * 这三段跨 run 逐字节稳定，是提示缓存能命中的前提。**日期、技能清单、记忆、
  * 工作区文件列表一律不进这里**——它们随时间和用户操作而变，放进来等于每次请求
- * 都把整个缓存前缀作废。那些内容由 loop 的 tailNotes 压到 transcript 之后。
+ * 都把整个缓存前缀作废。那些内容由 loop 的 tailNotes 排在整串消息的最后一段。
  *
  * 措辞刻意克制：当前模型对系统提示的服从度很高，为老模型写的
  * 「CRITICAL / YOU MUST / 如有疑问就用 X」会造成过度触发。说清楚该做什么就够了。
@@ -36,6 +36,8 @@ export const RULES_LAYER = `## 边界
 如果你认为需求有问题或有更好的做法，用一句话说出来，然后按要求继续做——不要悄悄地缩小、扩大或改变它。
 
 把整个任务做完再报告完成。确实有做不了的部分，就把其余部分做完，然后明确说清楚缺了什么、为什么。
+
+只报告真的发生过的事。工具调用是执行的唯一形式——没有调用工具就没有执行过，不要把计划复述成结果。
 
 会改变系统状态的操作——删除、重启、改配置、推送——执行前先确认证据确实支持这个具体动作。一个看起来像已知故障的现象，可能有别的原因。
 
@@ -78,14 +80,35 @@ function oneLine(text: string): string {
 }
 
 /**
- * 尾区注记。每次请求重算，压在 transcript 之后靠近生成位置。
+ * `process.platform` 的人读名。
  *
- * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的：这一段放在历史之前的话，
- * 用户改一条记忆、装一个技能，其后整段历史全部失配。放在历史之后，新一轮的历史
- * 是上一轮的前缀，缓存一路命中到旧历史末尾。
+ * **不要把 `process.platform` 原样写进提示词。** 它是 Node 的内部常量，
+ * `win32` 会被读成「Windows 32 位」——实测模型照着它对用户复述过一次。
+ * 未收录的取值原样返回：编一个名字比给出原值更糟。
+ */
+function osName(platform: string): string {
+  if (platform === 'win32') return 'Windows'
+  if (platform === 'darwin') return 'macOS'
+  if (platform === 'linux') return 'Linux'
+  return platform
+}
+
+/**
+ * 尾区注记。每次请求重算，排在**整串消息的最后一段**（装配见 `agent/loop.ts`）。
+ *
+ * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的，而兼容协议没有显式断点，
+ * 命中完全靠前缀逐字节相同：
+ *
+ * - 放在历史**之前**：用户改一条记忆、装一个技能，其后整段历史全部失配。
+ * - 夹在历史与 transcript **之间**：跨 run 时上一轮的 transcript 折进历史，
+ *   位置从注记之后挪到注记之前，公共前缀在上一轮历史末尾就断——
+ *   上一轮跑出来的全部工具结果每开一个新 run 都要全价重付一遍。
+ * - 排在**最后**：`历史 + transcript` 成为一条跨 run 只追加的稳定前缀，
+ *   注记是唯一的易变尾巴。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string
+  /** `process.platform` 的原值。人读名由 `osName` 在这里换，调用方不必先翻译。 */
   platform: string
   gitBranch?: string | null
   /** 技能索引：只有 name + description，正文由模型按需 read_skill 拉取。 */
@@ -101,7 +124,11 @@ export function buildTailNotes(input: {
   externalTools?: { name: string; summary: string }[]
 }): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
-  const lines = [`工作区：${input.workspaceRoot}`, `平台：${input.platform}`, `当前日期：${today}`]
+  const lines = [
+    `工作区：${input.workspaceRoot}`,
+    `平台：${osName(input.platform)}`,
+    `当前日期：${today}`,
+  ]
   if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
 
   const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]

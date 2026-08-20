@@ -16,10 +16,9 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
       model,
       model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
     ),
-    measure: async () => 0,
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
-      yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
       if (calls) {
         yield { type: 'tool_calls', calls }
       } else {
@@ -36,7 +35,7 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
           source: 'provider',
         },
       }
-      yield { type: 'done', stopReason: calls ? 'tool_use' : 'end_turn' }
+      yield { type: 'done', stopReason: calls ? 'tool_use' : 'end_turn', rawStopReason: '' }
     },
   }
 }
@@ -46,6 +45,7 @@ function noopPersistence(): LoopPersistence {
   return {
     nextSeq: () => ++seq,
     openTextStep: () => `st_text_${seq}`,
+    openThinkingStep: () => `st_think_${seq}`,
     appendText: () => {},
     openToolStep: () => `st_tool_${seq}`,
     markExecuting: () => {},
@@ -282,11 +282,10 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       kind: 'anthropic_messages' as const,
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       aborted: false,
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         if (opts.stallAfterFirst) {
-          yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+          yield { type: 'request_prepared', measuredInputTokens: 10 }
         }
         await new Promise<void>((resolve) => {
           req.signal?.addEventListener('abort', () => {
@@ -771,9 +770,8 @@ describe('用户中断不是错误', () => {
       kind: 'anthropic_messages' as const,
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         // 在「两个事件之间」之外的地方中断，并像真实 SDK 那样抛出。
         controller.abort()
         throw new ProviderError({
@@ -850,7 +848,7 @@ describe('上下文读数：一把尺', () => {
     for await (const ev of loop.run({
       runId: 'rn_anchor' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
-      anchor: { tokens: 33_000, throughMessageId: 'ms_8' },
+      anchor: { tokens: 33_000, throughMessageId: 'ms_8', envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -998,10 +996,9 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
       kind: 'anthropic_messages',
       transmits: { thinking: true, effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      measure: async () => 0,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         const act = script[i++] ?? 'ok'
-        yield { type: 'request_prepared', measuredInputTokens: 10, exact: false }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (act === 'break' || act === 'break-after-text') {
           if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
           throw new ProviderError({
@@ -1024,7 +1021,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
           })
         }
         yield { type: 'text_delta', delta: '完成' }
-        yield { type: 'done', stopReason: 'end_turn' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
   }
@@ -1185,4 +1182,96 @@ describe('停止能拽回卡住的工具', () => {
     // 中断不是错误：不该报红。
     expect(events).not.toContain('run.error')
   }, 10_000)
+})
+
+describe('provider 说要调工具但一条都没解析出来', () => {
+  /**
+   * 复现的是原始失败形状（会话 `cv_0mszld8o60000yi2u5m`）：一轮零工具调用、
+   * `run` 记成正常完成、账本里查不出原因，界面上只剩模型自称做完了。
+   *
+   * 反向断言比正向断言重要：**旧结局必须不可再现**。只断言新分支命中的话，
+   * 哪天有人把 `completed` 加回去当兜底，这个测试照样绿。
+   */
+  test('记成故障而不是完成，且 provider 的原话进账本', async () => {
+    const settled: { status: string; finishReason: string | undefined }[] = []
+    const persist = noopPersistence()
+    persist.settleRequest = (_id, status, _usage, _code, finishReason) => {
+      settled.push({ status, finishReason })
+    }
+
+    const loop = new AgentLoop({
+      adapter: {
+        kind: 'openai_chat_completions',
+        transmits: { thinking: false, effort: false },
+        spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+        // provider 说 tool_calls，但整轮没有一个 tool_calls 事件——
+        // 中转站把非流式响应硬转成 SSE、或名字分片丢了都是这个形状。
+        async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+          yield { type: 'request_prepared', measuredInputTokens: 10 }
+          yield { type: 'text_delta', delta: '我这就去执行' }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_calls' }
+        },
+      },
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist,
+      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+    })
+
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_nocalls' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const finished = events.find((e) => e.type === 'run.finished')
+    // 旧结局：completed。它必须不可再现。
+    expect(finished && 'stopReason' in finished && finished.stopReason).not.toBe('completed')
+    expect(finished && 'stopReason' in finished && finished.stopReason).toBe('provider_error')
+    // 故障对用户可见，不是只有账本知道。
+    expect(events.some((e) => e.type === 'run.error')).toBe(true)
+    // provider 的原话进账本：没有它就分不出「说完了」和「要调工具」。
+    expect(settled.at(-1)?.finishReason).toBe('tool_calls')
+  })
+})
+
+describe('锚点的信封校验', () => {
+  /**
+   * 复现的是账本里查不出来的那种偏差：装完一个大 MCP 之后的第一次发送，
+   * 占用还按上一次真值算，于是压缩该触发而没触发。
+   *
+   * 判据是**工具表变了锚点就作废**，作废的表现是读数从 `actual` 掉回 `estimated`。
+   */
+  test('工具表变了就退回估算尺，没变则继续用真值', async () => {
+    const runOnce = async (registry: ToolRegistry, fingerprint: string | null) => {
+      const sources: string[] = []
+      const loop = new AgentLoop({
+        adapter: fakeAdapter([null]),
+        registry,
+        systemPrompt: 'sys',
+        tailNotes: () => [],
+        persist: noopPersistence(),
+        makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      })
+      for await (const ev of loop.run({
+        runId: 'rn_env' as never,
+        history: [],
+        signal: new AbortController().signal,
+        anchor: { tokens: 12_345, throughMessageId: null, envelopeFingerprint: fingerprint },
+      })) {
+        if (ev.type === 'context') sources.push(ev.source)
+      }
+      return sources
+    }
+
+    const empty = new ToolRegistry()
+    // 指纹对不上（装过工具、换过模型都是这个形状）→ 锚点作废，退回估算尺。
+    expect(await runOnce(empty, 'not-the-current-envelope')).toEqual(['estimated'])
+    // 没记过指纹的存量行不作为「变了」的证据，锚点照用。
+    expect(await runOnce(empty, null)).toEqual(['actual'])
+  })
 })

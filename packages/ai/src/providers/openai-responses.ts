@@ -46,7 +46,7 @@
  */
 
 import type { ModelSpec } from '../catalog.ts'
-import { classifyProviderError, ProviderError } from '../errors.ts'
+import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
   ChatRequest,
@@ -88,16 +88,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     }
   }
 
-  async measure(req: ChatRequest): Promise<number> {
-    // 没有免费的 count_tokens 端点。给字符估算，并在事件里标 exact=false——
-    // 面板必须能区分「实测」和「估算」，否则用户会拿估算值去对账单。
-    return estimateRequest(req)
-  }
-
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
     const body = this.buildBody(req)
 
-    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req), exact: false }
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
 
     const usage: ProviderUsage = {
       inputTokens: 0,
@@ -108,6 +102,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
+    // provider 的原话，只进账本不参与判断。空串 = 流断在终态事件之前。
+    let rawFinish = ''
     /** 按 output_index 累积的工具调用。参数是分片到达的。 */
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
@@ -233,7 +229,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           }
           // 没见过 added 事件也要能收下这条调用——中转站漏发增量事件时，
           // 丢掉它等于模型调了工具而我们当作没调，然后模型下一轮重复调用。
-          if (!name) continue
+          // 名字没来也照样建槽：能不能执行由 `collectToolCalls` 统一裁决，
+          // 在这里 `continue` 掉的话它就从账本上彻底消失了。
           partial.set(idx, {
             id,
             name,
@@ -245,6 +242,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         if (type === 'response.completed' || type === 'response.incomplete') {
           const response = (event.response ?? {}) as Record<string, unknown>
           applyUsage(usage, response.usage as Record<string, unknown> | undefined)
+          rawFinish = rawStatusOf(response)
           stopReason = normalizeStatus(response)
           continue
         }
@@ -266,7 +264,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       throw classifyProviderError('openai_responses', err)
     }
 
-    const calls = collectToolCalls(partial)
+    const calls = collectToolCalls(partial, req.model)
     if (calls.length) {
       // 截断优先，别把 max_tokens 覆盖成 tool_use——理由同 openai-compat：
       // 参数拼到一半被截断时，抹掉截断信号 = 上层拿着残缺参数照常执行工具。
@@ -275,7 +273,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     }
 
     yield { type: 'usage', usage }
-    yield { type: 'done', stopReason }
+    yield { type: 'done', stopReason, rawStopReason: rawFinish }
   }
 
   private buildBody(req: ChatRequest): Record<string, unknown> {
@@ -504,6 +502,19 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
   acc.source = 'provider'
 }
 
+/**
+ * provider 的原话：`status` 加上不完整时的具体原因。
+ *
+ * Responses 协议的终态分两层——`status` 说完没完，`incomplete_details.reason`
+ * 说为什么没完。只记一层的话，`incomplete` 这个词说不出是撞了输出上限还是被过滤。
+ */
+function rawStatusOf(response: Record<string, unknown>): string {
+  const status = typeof response.status === 'string' ? response.status : ''
+  const incomplete = response.incomplete_details as Record<string, unknown> | undefined
+  const reason = typeof incomplete?.reason === 'string' ? incomplete.reason : ''
+  return reason ? `${status}:${reason}` : status
+}
+
 function normalizeStatus(response: Record<string, unknown>): ProviderStopReason {
   const incomplete = response.incomplete_details as Record<string, unknown> | undefined
   if (incomplete?.reason === 'max_output_tokens') return 'max_tokens'
@@ -513,10 +524,12 @@ function normalizeStatus(response: Record<string, unknown>): ProviderStopReason 
 
 function collectToolCalls(
   partial: Map<number, { id: string; name: string; json: string }>,
+  model: string,
 ): WireToolCall[] {
   return [...partial.entries()]
     .sort(([a], [b]) => a - b)
     .map(([, slot]) => {
+      if (!slot.name) throw namelessToolCall('openai_responses', model)
       // 参数解析失败**不能吞**：交一个空对象上去，模型会以为工具收到了它给的参数。
       const parsed = parseArgs(slot.json)
       return {
@@ -526,7 +539,6 @@ function collectToolCalls(
         ...(parsed.error === null ? {} : { argumentsError: parsed.error }),
       }
     })
-    .filter((c) => c.name !== '')
 }
 
 function parseArgs(json: string): { args: Record<string, unknown>; error: string | null } {

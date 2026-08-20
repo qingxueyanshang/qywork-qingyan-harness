@@ -99,6 +99,10 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
     name: 'run_command',
     description:
       `${shell.hint}` +
+      // 这一句**放在这里而不是三档 hint 里**：它与是哪个 shell 无关，
+      // 三档各写一遍必然漂移。bash 直接跑 `.ps1`、PowerShell 直接跑 `.sh`、
+      // 两者直接跑 `.py`，失败形状都是命令找不到。
+      '执行别的解释器的脚本要显式调用那个解释器。' +
       '在工作区里执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。',

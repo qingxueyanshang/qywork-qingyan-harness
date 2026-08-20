@@ -176,3 +176,54 @@ describe('Base URL 归一', () => {
     expect(normalizeBaseUrl('   ')).toBe('https://api.openai.com/v1')
   })
 })
+
+describe('无名工具调用', () => {
+  /**
+   * 复现的是原始失败形状：中转站把工具名那一片丢了，旧代码 `continue` 掉整条调用，
+   * 于是 provider 报 `tool_calls` 而我们一条都没有——run 记成正常完成、账本无痕。
+   *
+   * 这里断言的是**响亮地失败**：不再有「悄悄少一条调用」这种中间状态。
+   */
+  test('名字分片没到齐就报错，不静默丢弃', async () => {
+    const drop = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          // 只有 id 与参数，从头到尾没有 function.name。
+          [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",' +
+              '"function":{"arguments":"{}"}}]},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    try {
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model: 'deepseek-v4-flash',
+          baseUrl: `http://127.0.0.1:${drop.port}/v1`,
+        },
+        lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+      )
+      const run = async () => {
+        for await (const _ of adapter.stream({
+          model: 'deepseek-v4-flash',
+          system: [],
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [],
+          maxOutputTokens: 64,
+        })) {
+          // 只关心它抛不抛，事件本身不看。
+        }
+      }
+      expect(run()).rejects.toThrow(/没有名字的工具调用/)
+    } finally {
+      drop.stop(true)
+    }
+  })
+})

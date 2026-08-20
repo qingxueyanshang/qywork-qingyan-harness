@@ -677,15 +677,17 @@ function todosFromSteps(runs: StoredRun[], stepsByRun: Map<string, StoredStep[]>
 /**
  * 一条 step 折成界面上的若干条。
  *
- * **一条 step 不等于一条界面条目**：批次首条工具 step 的 `content` 里落着这一批
- * 之前的思考正文（后端 `session.ts` 的 `openToolStep` 借了这一列，理由写在那里），
- * 它在界面上是独立的一条。**只读 `payload` 的话，刷新一次页面、切一次会话，
- * 整轮思考就没了**——而思考恰恰是「模型为什么做了这些」的唯一现场，
- * 一轮跑十分钟、绝大部分时间产出的就是它。
+ * **一条 step 不等于一条界面条目**：`tool_action` 一条要展开成「思考 + 工具卡」两条。
+ * 思考本身有自己的 step（`kind: 'thinking'`），但迁移 26 之前它寄生在批次首条工具行的
+ * `content` 上，那些存量行只能从这里读——**漏掉任何一条的表现都是刷新一次页面、
+ * 切一次会话，整轮思考就没了**，而思考恰恰是「模型为什么做了这些」的唯一现场。
  */
 function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'text') {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
+  }
+  if (s.kind === 'thinking') {
+    return s.content ? [{ id: s.id, kind: 'thinking', text: s.content }] : []
   }
   // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
   // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
@@ -710,8 +712,9 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'tool_action') {
     const outcome = s.payload?.outcome
     const out: TranscriptItem[] = []
-    // 思考在这批工具**之前**发生，位置就在工具卡上面。id 由 step id 派生：
-    // 每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
+    // 迁移 26 之前的存量行：思考在这批工具**之前**发生，位置就在工具卡上面。
+    // id 由 step id 派生——每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
+    // 新行走上面的 `kind === 'thinking'` 分支，这里恒为空。
     if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
     // action 来自后端落库的解析结果，是这张卡的全部标题（动词 + 对象 + 目标）。
     // **`ToolSpec` 上 `actionKind` / `objectLabel` 都是必填，所以它一定在**——

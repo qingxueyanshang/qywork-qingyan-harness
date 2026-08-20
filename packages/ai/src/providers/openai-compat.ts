@@ -14,7 +14,7 @@
 
 import OpenAI from 'openai'
 import type { ModelSpec } from '../catalog.ts'
-import { classifyProviderError, ProviderError } from '../errors.ts'
+import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
   ChatRequest,
@@ -66,20 +66,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
     })
   }
 
-  async measure(req: ChatRequest): Promise<number> {
-    // 兼容端点普遍没有 count_tokens。给字符估算，并在事件里标 exact=false——
-    // 面板必须能区分「实测」和「估算」，否则用户会拿估算值去对账单。
-    return estimateRequest(req)
-  }
-
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
     const body = this.buildBody(req)
 
-    yield {
-      type: 'request_prepared',
-      measuredInputTokens: estimateRequest(req),
-      exact: false,
-    }
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
 
     const usage: ProviderUsage = {
       inputTokens: 0,
@@ -90,6 +80,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
+    // provider 的原话，只进账本不参与判断。空串 = 流断在 finish_reason 之前。
+    let rawFinish = ''
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
     try {
@@ -135,11 +127,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
         }
 
         if (choice.finish_reason) {
+          rawFinish = String(choice.finish_reason)
           stopReason = normalizeFinishReason(choice.finish_reason)
         }
       }
 
-      const calls = collectToolCalls(partial)
+      const calls = collectToolCalls(partial, req.model)
       if (calls.length) {
         // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
         // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
@@ -175,7 +168,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
     }
 
     yield { type: 'usage', usage }
-    yield { type: 'done', stopReason }
+    yield { type: 'done', stopReason, rawStopReason: rawFinish }
   }
 
   private buildBody(req: ChatRequest) {
@@ -370,10 +363,11 @@ function applyUsage(acc: ProviderUsage, u: Record<string, any>) {
 
 function collectToolCalls(
   partial: Map<number, { id: string; name: string; json: string }>,
+  model: string,
 ): WireToolCall[] {
   const calls: WireToolCall[] = []
   for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
-    if (!slot.name) continue
+    if (!slot.name) throw namelessToolCall('openai_chat_completions', model)
     let args: Record<string, unknown> = {}
     let argsError: string | null = null
     if (slot.json.trim()) {

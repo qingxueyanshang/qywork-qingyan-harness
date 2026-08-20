@@ -1,4 +1,4 @@
-import type { Run, RunUsage } from '@qywork/core'
+import type { ProviderRequest, Run, RunUsage } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
@@ -106,9 +106,9 @@ export default function RunDetails() {
           <div class="run-total">
             <span class="run-total-cost">{formatCosts(total().cost)}</span>
             <span class="field-hint">
-              {runs().length} 轮 · 入 {total().input.toLocaleString()} / 出{' '}
-              {total().output.toLocaleString()} · 命中{' '}
-              {total().cached === null ? '未回报' : total().cached!.toLocaleString()}
+              {runs().length} 轮 · 输入 {(total().input + (total().cached ?? 0)).toLocaleString()}
+              （其中缓存命中 {total().cached === null ? '未回报' : total().cached!.toLocaleString()}
+              ） · 输出 {total().output.toLocaleString()}
             </span>
           </div>
 
@@ -149,7 +149,6 @@ export default function RunDetails() {
  */
 function RunRow(props: { run: Run }) {
   const r = () => props.run
-  const turns = () => r().usage?.turns ?? []
   const elapsed = () => {
     const end = r().finishedAt
     return end == null ? null : (end - r().createdAt) / 1000
@@ -171,8 +170,8 @@ function RunRow(props: { run: Run }) {
           </Show>
         </div>
         <div class="field-hint">
-          入 {(r().usage?.inputTokens ?? 0).toLocaleString()} / 出{' '}
-          {(r().usage?.outputTokens ?? 0).toLocaleString()} · {r().stepCount} 步
+          输入 {((r().usage?.inputTokens ?? 0) + (r().usage?.cachedTokens ?? 0)).toLocaleString()} /
+          输出 {(r().usage?.outputTokens ?? 0).toLocaleString()} · {r().stepCount} 步
           <Show when={elapsed() !== null}>
             {' · '}
             {elapsed()!.toFixed(1)}s
@@ -201,45 +200,7 @@ function RunRow(props: { run: Run }) {
           </details>
         </Show>
 
-        <Show when={turns().length > 0}>
-          <details class="run-fold">
-            <summary>逐请求账本（{turns().length} 次调用）</summary>
-            <table class="args-table ledger">
-              <thead>
-                {/* 列序对齐中转站后台：输入 → 输出 → 命中(读) → 写入。 */}
-                <tr>
-                  <th>#</th>
-                  <th>输入</th>
-                  <th>输出</th>
-                  <th>命中</th>
-                  <th>写入</th>
-                  <th>金额</th>
-                  <th>来源</th>
-                </tr>
-              </thead>
-              <tbody>
-                <For each={turns()}>
-                  {(t) => (
-                    <tr>
-                      <td>#{t.turnIndex + 1}</td>
-                      <td>{t.input.toLocaleString()}</td>
-                      <td>{t.output.toLocaleString()}</td>
-                      {/* null 是「没回报」，写成 0 会让「缓存根本没生效」
-                          看起来像「生效了但没命中」。 */}
-                      <td>{t.cached === null ? '—' : t.cached.toLocaleString()}</td>
-                      <td>{t.cacheWrite === null ? '—' : t.cacheWrite.toLocaleString()}</td>
-                      {/* 字段名叫 `costUsd`，但它和 `usage.cost` 是同一次计算的产物，
-                          币种由模型决定（阿里 / 月之暗面 / 智谱按人民币标价）。
-                          所以按这一轮的币种显示，不按字段名显示。 */}
-                      <td>{t.costUsd > 0 ? formatMoney(t.costUsd, r().usage!.currency) : '—'}</td>
-                      <td>{t.source === 'provider' ? 'provider' : '估算'}</td>
-                    </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
-          </details>
-        </Show>
+        <RequestLedger run={props.run} />
       </td>
     </tr>
   )
@@ -342,4 +303,95 @@ function UsageHistory() {
       </Show>
     </div>
   )
+}
+
+/**
+ * 逐请求账本。
+ *
+ * ## 为什么真源是 `provider_requests` 而不是 `usage.turns`
+ *
+ * 「这一轮发了几次」只有 `provider_requests` 答得出来：它在**发出之前**就落行，
+ * 连接层失败后的重发是独立一行（`retry_index`）。`usage.turns` 只在拿到 usage
+ * 回报时才 push，所以发出去没回执的那几次在它里面根本不存在——实测一条会话里
+ * 两轮各真发了两次，面板都显示成一次。
+ *
+ * ## 金额为什么还是从 `usage.turns` 取
+ *
+ * 计价发生在拿到 usage 之后，`provider_requests` 上没有这个事实。两者按
+ * `turnIndex` 对齐：同一轮的成功那次能对上，重发失败的那次对不上——
+ * 而对不上正是实话，那一次**收没收费我们不知道**（`uncertain` 的定义）。
+ */
+function RequestLedger(props: { run: Run }) {
+  const [data] = createResource(
+    () => props.run.id,
+    (id) => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${id}/requests`),
+  )
+  const requests = () => loaded(data)?.requests ?? []
+  const costOf = (turnIndex: number) =>
+    (props.run.usage?.turns ?? []).find((t) => t.turnIndex === turnIndex)?.costUsd ?? 0
+
+  return (
+    <Show when={requests().length > 0}>
+      <details class="run-fold">
+        <summary>逐请求账本（{requests().length} 次请求）</summary>
+        <table class="args-table ledger">
+          <thead>
+            {/* 列序对齐中转站后台：输入 → 输出 → 缓存命中 → 缓存写入。 */}
+            <tr>
+              <th>#</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>缓存命中</th>
+              <th>缓存写入</th>
+              <th>金额</th>
+              <th>结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={requests()}>
+              {(q) => {
+                const input =
+                  q.providerInputTokens === null
+                    ? null
+                    : q.providerInputTokens + (q.providerCachedTokens ?? 0)
+                const cost = costOf(q.turnIndex)
+                return (
+                  <tr>
+                    {/* 重发是同一轮的第 N 次，编号要看得出来，否则两行长得一样。 */}
+                    <td>
+                      #{q.turnIndex + 1}
+                      {q.retryIndex > 0 ? `.${q.retryIndex + 1}` : ''}
+                    </td>
+                    {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，
+                        两边同口径才能逐行对账。 */}
+                    <td>{input === null ? '—' : input.toLocaleString()}</td>
+                    <td>{q.providerOutputTokens?.toLocaleString() ?? '—'}</td>
+                    {/* null 是「没回报」，写成 0 会让「缓存根本没生效」
+                        看起来像「生效了但没命中」。 */}
+                    <td>{q.providerCachedTokens?.toLocaleString() ?? '—'}</td>
+                    <td>{q.providerCacheWriteTokens?.toLocaleString() ?? '—'}</td>
+                    <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : '—'}</td>
+                    <td>{requestOutcome(q)}</td>
+                  </tr>
+                )
+              }}
+            </For>
+          </tbody>
+        </table>
+        {/* 能力边界，不折叠：连接层失败的那次**我们不知道对端收没收到、计没计费**，
+            所以它的 token 与金额是空的。不写这一句，空格子会被当成 bug。 */}
+        <div class="field-hint">
+          「结果不明」是发出去之后连接就断了：对端有没有收到、有没有计费，无从确定。
+        </div>
+      </details>
+    </Show>
+  )
+}
+
+/** 一次请求的结局。`finish_reason` 是 provider 的原话，能给就给原话。 */
+function requestOutcome(q: ProviderRequest): string {
+  if (q.status === 'received') return q.finishReason || '已回报'
+  if (q.status === 'uncertain') return '结果不明'
+  if (q.status === 'rejected') return q.errorCode || '被拒绝'
+  return q.status === 'in_flight' ? '进行中' : '未发出'
 }

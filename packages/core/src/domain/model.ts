@@ -390,7 +390,7 @@ export type GoalWriteResult =
 
 // ─────────────────────────────── Step ───────────────────────────────
 
-export type StepKind = 'text' | 'tool_action' | 'compaction'
+export type StepKind = 'text' | 'tool_action' | 'compaction' | 'thinking'
 
 export type ToolActionStatus = 'running' | 'success' | 'failure'
 
@@ -646,6 +646,14 @@ export interface ProviderRequest {
   providerOutputTokens: number | null
   providerCachedTokens: number | null
   providerCacheWriteTokens: number | null
+  /**
+   * provider 的原话（`stop` / `tool_calls` / `completed:max_output_tokens` …）。
+   *
+   * **不是 `runs.stop_reason`。** 那一列存的是归一化之后的本仓词表，
+   * 而归一化把「说完了」和「要调工具」压成了同一批词——两者在账本上因此
+   * 分不出来。空串 = 流断在拿到终态之前，或本次迁移之前的行。
+   */
+  finishReason: string
   /** 本次请求各分组的占用。 */
   sentCategories: ContextBreakdown
   /** 本次请求**没有**发出去的那部分原文。 */

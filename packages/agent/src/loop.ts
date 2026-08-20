@@ -126,6 +126,17 @@ export interface CompactionRunInput {
 export interface LoopPersistence {
   nextSeq(runId: RunId): number
   openTextStep(runId: RunId, seq: number): string
+  /**
+   * 思考正文的行。**与文本行同构**：流到就开，逐段追加，`appendText` 共用。
+   *
+   * 单开一种 step 而不是挂在工具行上：挂上去的推论是「这一轮没有工具调用就没有
+   * 地方放」，于是纯文本轮的思考直接丢弃——刷新一次页面它就不存在了。
+   *
+   * 它同时是 DeepSeek 类兼容端点的必需品：带 tool_calls 的 assistant 消息要原样
+   * 回传 `reasoning_content`，否则后续轮次 400；历史从 steps 投影回去时缺这一段
+   * 就是必然的 400。
+   */
+  openThinkingStep(runId: RunId, seq: number): string
   appendText(stepId: string, delta: string): void
   openToolStep(
     runId: RunId,
@@ -135,17 +146,6 @@ export interface LoopPersistence {
     callIndex: number,
     waveIndex: number,
     action: ActionDescriptor,
-    /**
-     * 本轮的思考正文，**只在一个 batch 的第一条上给**（其余传空串）。
-     *
-     * 它属于整个 assistant 轮而不是某一次调用，挂在首条上是最省的编码方式。
-     *
-     * 坑：这段必须落库。DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息
-     * 原样回传 `reasoning_content`，**否则后续轮次 400**；历史一旦从 steps 投影
-     * 回去（跨轮记忆），缺这一段就是必然的 400。不额外花上下文——活的 transcript
-     * 本来就在发它，落库只是让下一轮还能发。
-     */
-    reasoning: string,
   ): string
   markExecuting(stepId: string): void
   settleTool(
@@ -196,6 +196,8 @@ export interface LoopPersistence {
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
+    /** 本次请求的信封指纹。跨 run 复用锚点时靠它判「还是同一份上下文吗」。 */
+    cacheRouteFingerprint: string
   }): string
   /** 请求真的发出去了。sent_at 只在这里置。 */
   markRequestSent(requestId: string): void
@@ -213,6 +215,8 @@ export interface LoopPersistence {
       cacheWriteTokens: number | null
     } | null,
     errorCode: string | null,
+    /** provider 的原话。拿不到就空串——编一个是给账本注水。 */
+    finishReason?: string,
   ): void
 }
 
@@ -233,7 +237,21 @@ export interface RunInput {
    * `throughMessageId`：这个回执覆盖到哪条消息为止。它之后的历史消息是
    * 锚点没算过的，要另外估。
    */
-  anchor?: { tokens: number; throughMessageId: string | null }
+  anchor?: {
+    tokens: number
+    throughMessageId: string | null
+    /**
+     * 产生这个真值的那次请求的信封指纹（`envelopeHashOf`）。
+     *
+     * 与本轮不一致就作废——拿旧信封的真值配新信封的上下文是两把尺。
+     *
+     * **`null` 不算「变了」。** 它是「这一行没记过指纹」（本次迁移之前建的），
+     * 而把「不知道」当成「变了」和当成「没变」一样是编出来的确定性——
+     * 同 `cachedTokens` 的立场：未回报不等于 0。新行一律带指纹，
+     * 所以 null 只存在于存量行，保护对此后的每一次请求都成立。
+     */
+    envelopeFingerprint: string | null
+  }
   /**
    * 本轮 transcript 归属的用户消息。
    *
@@ -510,8 +528,15 @@ export class AgentLoop {
      * `uncovered` 是锚点之后新增的历史消息（本轮的新用户消息）。锚点覆盖到
      * 上一轮为止，不减掉这一块就会漏算。
      */
-    let anchor: { tokens: number; uncovered: number; transcriptIndex: number } | null = input.anchor
+    let anchor: {
+      tokens: number
+      uncovered: number
+      transcriptIndex: number
+      /** 产生这个真值的那次请求的信封指纹。信封一换它就作废。 */
+      envelope: string | null
+    } | null = input.anchor
       ? {
+          envelope: input.anchor.envelopeFingerprint,
           tokens: input.anchor.tokens,
           uncovered: estimateMessages(
             input.history.filter(
@@ -590,10 +615,13 @@ export class AgentLoop {
         const batchId = newBatchId()
 
         let textStepId: string | null = null
+        let thinkingStepId: string | null = null
         let assistantText = ''
         let thinkingText = ''
         const calls: WireToolCall[] = []
         let providerStop: string = 'end_turn'
+        /** provider 的原话，只进账本不参与判断。 */
+        let rawStop = ''
         let refusalNote: string | null = null
         /** 本次请求 provider 回报的 usage。null = 它没报——不要拿累计值代替。 */
         let turnUsage: ProviderUsage | null = null
@@ -616,6 +644,19 @@ export class AgentLoop {
         // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
         let req = this.buildRequest(input, transcript, occupancyOf)
+
+        /*
+         * **信封变了就不能再用旧锚点。**
+         *
+         * 锚点是「上一次 provider 真值描述的那个上下文」。装卸一个 MCP、装个技能、
+         * `load_tool` 装一个工具、换条模型，冻结前缀或工具表就换了一份，那个真值
+         * 描述的已经不是这一次的上下文——而它是显示、压缩触发、`max_tokens` 钳位
+         * 三处共用的那把尺。作废之后退回估算尺一轮，本轮回报一到即重锚。
+         *
+         * 判在这里而不是取锚点的地方：只有装配完才知道这一次的信封长什么样，
+         * 两处各算一遍就是两份指纹。
+         */
+        if (anchor?.envelope && anchor.envelope !== envelopeHashOf(req)) anchor = null
 
         if (transcript.length > compactedAt) {
           const occupancy = occupancyOf(req)
@@ -737,6 +778,7 @@ export class AgentLoop {
             sentCategories: breakdown,
             omittedCategories: this.lastOmitted,
             payloadHash: payloadHashOf(req),
+            cacheRouteFingerprint: envelopeHashOf(req),
           })
 
           /**
@@ -777,7 +819,12 @@ export class AgentLoop {
                 }
                 case 'thinking_delta': {
                   thinkingText += ev.delta
-                  // delta 只做实时状态；整段思考在开这一批的首条工具步时随 reasoning 落库。
+                  // 与文本行同构：流到就开一行，逐段追加。这样它在 seq 上天然落在
+                  // 本轮的文本与工具之前，不需要预留序号。
+                  if (thinkingStepId === null) {
+                    thinkingStepId = persist.openThinkingStep(input.runId, nextSeq())
+                  }
+                  persist.appendText(thinkingStepId, ev.delta)
                   yield {
                     type: 'thinking.delta',
                     runId: input.runId,
@@ -813,6 +860,7 @@ export class AgentLoop {
                 }
                 case 'done': {
                   providerStop = ev.stopReason
+                  rawStop = ev.rawStopReason
                   if (ev.stopReason === 'refusal') {
                     refusalNote = ev.refusal?.explanation ?? '模型出于安全策略拒绝了该请求'
                   }
@@ -841,6 +889,7 @@ export class AgentLoop {
               pe?.status !== undefined ? 'rejected' : 'uncertain',
               null,
               code,
+              rawStop,
             )
 
             // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
@@ -876,6 +925,7 @@ export class AgentLoop {
                   tokens: cap.reportedInputTokens,
                   uncovered: 0,
                   transcriptIndex: transcript.length,
+                  envelope: envelopeHashOf(req),
                 }
               } else {
                 anchor = null
@@ -993,6 +1043,7 @@ export class AgentLoop {
           input.signal.aborted ? 'uncertain' : 'received',
           turnUsage,
           null,
+          rawStop,
         )
 
         if (input.signal.aborted) {
@@ -1031,7 +1082,12 @@ export class AgentLoop {
             (turnUsage.cacheWriteTokens ?? 0) +
             turnUsage.outputTokens
           if (total > 0)
-            anchor = { tokens: total, uncovered: 0, transcriptIndex: transcript.length }
+            anchor = {
+              tokens: total,
+              uncovered: 0,
+              transcriptIndex: transcript.length,
+              envelope: envelopeHashOf(req),
+            }
           /*
            * ── 静默溢出 ──
            *
@@ -1077,6 +1133,30 @@ export class AgentLoop {
           // 既不报错也不续写。本轮 assistant 输出已经在上面进了 transcript，
           // 直接进下一步就是官方要的那个「原样重发」。maxSteps 兜住反复暂停的情形。
           if (providerStop === 'pause_turn') continue
+
+          /*
+           * **provider 说要调工具，而我们一条都没解析出来 = 故障，不是完成。**
+           *
+           * 这两种情况长得一样但性质相反：`end_turn` 是模型说完了，
+           * `tool_use` 是它要调工具而调用在解析链上丢了（流里少了名字分片、
+           * 中转站把非流式响应硬转成 SSE）。记成 `completed` 是编出来的确定性——
+           * 界面上是「跑完了、零步骤」，账本里查不出原因，而这正是
+           * 「说做了却没做」最难查的那种形状。
+           *
+           * 判据用 provider 的归一化终态，不用它的原话：原话每家一套词，
+           * 拿它做判断等于每多一个端点就多一条分支。
+           */
+          if (providerStop === 'tool_use') {
+            stopReason = 'provider_error'
+            yield {
+              type: 'run.error',
+              runId: input.runId,
+              code: 'provider_unavailable',
+              message: '模型声明要调用工具，但返回里没有可解析的调用',
+              retryable: true,
+            }
+            break
+          }
 
           // 没有工具调用 = 模型认为任务结束。
           // 唯一例外是 provider 报 max_tokens：那是**输出**被截断，模型话没说完，
@@ -1143,8 +1223,6 @@ export class AgentLoop {
                 callIndex,
                 waveIndex,
                 action,
-                // 整个 batch 的思考只落一份，挂在首条上。
-                callIndex === 0 ? thinkingText : '',
               )
               return { call, callIndex, stepId, action }
             }),
@@ -1337,11 +1415,29 @@ export class AgentLoop {
     const system: ChatRequest['system'] = [{ text: systemPrompt, cacheBreakpoint: true }]
 
     /*
-     * 请求的形状是 `[tools][system] [history] [tailNotes] [transcript]`。
+     * 请求的形状是 `[tools][system] [history] [transcript] [tailNotes]`。
+     *
+     * **注记必须排在最后一段，这是约束不是偏好。** 缓存是前缀匹配的，而
+     * 兼容协议没有显式断点（`openai-compat.ts` 文件头第 2 条），命中完全靠
+     * 前缀逐字节相同。注记夹在 history 与 transcript 之间的话，跨 run 时
+     * 上一轮的 transcript 折进 history，位置从「注记之后」挪到「注记之前」：
+     *
+     *   上一轮：S + H + Notes + T
+     *   这一轮：S + H + T'    + Notes + …     ← 在 |S+H| 处分叉
+     *
+     * 于是**每开一个新 run，上一轮跑出来的全部工具结果必然全价重付**
+     * （实测一次 grep 产出约 1.4 万 token，下一轮可命中上限因此从约 2.6 万
+     * 掉到约 1.2 万）。排在最后之后，`history + transcript` 是一条跨 run
+     * 只追加的稳定前缀，注记是唯一的易变尾巴。
+     *
+     * 代价是注记从「每 run 付一次」变成「每轮付一次」：本机实测注记 40 token
+     * （技能/记忆/外部工具全空），装满 MCP 的极端约 1200–1500。两笔账相比，
+     * 净值仍然强正向；而且 `load_tool` 装走一个工具、清单少一条时，
+     * 旧布局下它一变整段 transcript 缓存全废，新布局下只废注记自己。
      *
      * 三段先拼完整，**再整串过一次压缩投影**。不要只投影 history：run 内涨起来的
      * 全是 transcript 里的工具结果，把它留在投影之外就等于压缩碰不到大头。
-     * 尾区注记没有单元戳，投影按「无戳恒保留」原样让它过。
+     * 尾区注记没有单元戳，投影按「无戳恒保留」原样让它过，位置无关。
      */
     const notes: WireMessage[] = []
     for (const note of this.deps.tailNotes()) {
@@ -1349,7 +1445,20 @@ export class AgentLoop {
         notes.push({ role: 'system', content: note.content, _group: note.group })
       }
     }
-    const assembledRaw: WireMessage[] = [...input.history, ...notes, ...transcript]
+    /*
+     * 缓存断点之二：**history 的最后一条**（跨 run 稳定点）。
+     *
+     * 标在装配之前，随投影一起流下来——投影之后 history 与 transcript 之间
+     * 没有任何分界标记，事后再找不出来。投影若把这条折掉，断点跟着没，
+     * 退化成少一个断点，正确性无损。
+     */
+    const history = input.history.length
+      ? [
+          ...input.history.slice(0, -1),
+          { ...input.history[input.history.length - 1]!, cacheBreakpoint: true },
+        ]
+      : input.history
+    const assembledRaw: WireMessage[] = [...history, ...transcript, ...notes]
     const projected = this.compaction.project(assembledRaw)
     const messages: WireMessage[] = [...projected]
 
@@ -1379,40 +1488,24 @@ export class AgentLoop {
     this.lastOmitted = omitted
 
     /*
-     * 缓存断点之二：**尾区注记之前的那条消息**。
+     * 缓存断点之三：**尾区注记之前的那条消息**（run 内稳定点）。
      *
-     * 位置是被布局逼出来的：
+     * run 内 `transcript` 只追加，所以「历史 + 已产生的 transcript」是一个不断
+     * 变长的稳定前缀：每一步读上一步缓存的那段（0.1×）、只写新增的那点（1.25×），
+     * 而不是每一步把整串 transcript 全价重付一遍。
      *
-     * - 投影后的历史跨轮**只追加不改写**（新一轮的历史是上一轮的前缀），
-     *   所以这里是跨请求逐字节稳定的最远点——断点打在这儿，
-     *   上一轮缓存的那段这一轮直接命中。
-     * - `tailNotes` 里有日期和按当轮查询召回的记忆，**跨轮必变**。
-     *   断点打在它之后，每轮都会整体失配，等于没打。
+     * 找位置认 `role === 'system'`：整串消息里只有尾区注记是这个角色
+     * （压缩投影出的摘要两条是 user/assistant，见 `compaction.ts` 的
+     * `projectManifest`）。注记为空时它落在最后一条上，与断点之二可能重合，
+     * 下面的 `>` 挡住重复标记。
      *
-     * 找位置认 `role === 'system'`：整串消息里只有尾区注记是这个角色。
      * 这条只对 Anthropic 有效；兼容协议的前缀缓存由服务端自动做，不需要标记
      * （`openai-compat.ts` 从不读这个字段，上线字节一个不变）。
      */
     const noteStart = messages.findIndex((m) => m.role === 'system')
-    const lastHistory = (noteStart < 0 ? messages.length : noteStart) - 1
-    if (lastHistory >= 0) {
-      messages[lastHistory] = { ...messages[lastHistory]!, cacheBreakpoint: true }
-    }
-
-    /*
-     * 缓存断点之三：**整串消息的末尾**。
-     *
-     * 一个 run 内 `tailNotes` 逐字节不变（日期不跨天、记忆每 run 只选一次、
-     * 技能索引每轮只刷一次），而 `transcript` 只追加。所以 run 内
-     * 「历史 + 尾区 + 已产生的 transcript」是一个不断变长的稳定前缀：
-     * 每一步读上一步缓存的那段（0.1×）、只写新增的那点（1.25×），
-     * 而不是每一步把整串 transcript 全价重付一遍。
-     *
-     * 跨 run 它必然失配（尾区变了），那时退回断点之二，历史那段照样命中。
-     */
-    const lastMessage = messages.length - 1
-    if (lastMessage > lastHistory) {
-      messages[lastMessage] = { ...messages[lastMessage]!, cacheBreakpoint: true }
+    const beforeNotes = (noteStart < 0 ? messages.length : noteStart) - 1
+    if (beforeNotes >= 0 && !messages[beforeNotes]!.cacheBreakpoint) {
+      messages[beforeNotes] = { ...messages[beforeNotes]!, cacheBreakpoint: true }
     }
 
     const assembled: ChatRequest = {
@@ -1520,6 +1613,21 @@ function mergeUsage(
  */
 function payloadHashOf(req: ChatRequest): string {
   return Bun.hash(JSON.stringify([req.system, req.messages, req.tools])).toString(36)
+}
+
+/**
+ * 请求信封的指纹：冻结前缀 + 工具表，**不含消息**。
+ *
+ * 锚点的语义是「上一次真值描述的那个上下文」。两次请求之间用户可以装卸 MCP、
+ * 装技能、`load_tool` 装工具、换模型——信封换了，那个真值描述的就不是这一次
+ * 的上下文了，而它仍然是三处共用的那把尺（显示、压缩触发、`max_tokens` 钳位）。
+ *
+ * **不要复用 `payloadHashOf`**：它含 messages，每轮必变，当不了信封。
+ * 也不要复用 `prefix-audit` 的 `hashFrozen`：它只覆盖到最后一个缓存断点，
+ * 不含工具表，而工具表正是最常变的那一半。
+ */
+function envelopeHashOf(req: ChatRequest): string {
+  return Bun.hash(JSON.stringify([req.system, req.tools])).toString(36)
 }
 
 /**

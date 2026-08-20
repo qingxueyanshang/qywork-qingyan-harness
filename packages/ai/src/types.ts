@@ -153,7 +153,20 @@ export type ProviderEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_calls'; calls: WireToolCall[] }
   | { type: 'usage'; usage: ProviderUsage }
-  | { type: 'done'; stopReason: ProviderStopReason; refusal?: RefusalDetail }
+  /**
+   * `stopReason` 是归一化结论，`rawStopReason` 是 provider 的原话。
+   *
+   * **两个都要。** 归一化把 `stop` 与 `tool_calls` 压成同一批词，于是
+   * 「模型说完了」和「模型要调工具但一条都没解析出来」在账本上分不出来。
+   * 原话只进账本，不参与任何判断——参与判断就等于让每个端点的词表
+   * 各自成为一条分支。
+   */
+  | {
+      type: 'done'
+      stopReason: ProviderStopReason
+      rawStopReason: string
+      refusal?: RefusalDetail
+    }
 
 export type ProviderStopReason =
   | 'end_turn'

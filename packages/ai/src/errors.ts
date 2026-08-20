@@ -247,3 +247,26 @@ function capacityMessage(c: CapacityRejection): string {
   if (limit !== null) return `上下文超出模型窗口（上限 ${limit.toLocaleString()} token）`
   return '上下文超出模型窗口'
 }
+
+/**
+ * 工具调用少了名字。
+ *
+ * **不许静默丢弃。** 流式返回里工具名与参数分片到达，名字那一片没来时
+ * （中转站丢片、或它把非流式响应硬转成 SSE），丢掉这条调用的表现是
+ * 「模型说要调工具、我们当作它什么都没说」——run 记成正常完成、账本无痕，
+ * 而这正是「说做了却没做」最难查的那种形状。
+ *
+ * 也不许留着空名往下走：那条调用会随 assistant 消息原样回传给端点，
+ * 校验严格的端点对空名 400，于是一次可恢复的丢片变成整条会话余下轮次全部失败。
+ *
+ * 三条协议共用这一个出口，措辞只有一份。
+ */
+export function namelessToolCall(provider: ProviderKind, model: string): ProviderError {
+  return new ProviderError({
+    code: 'provider_unavailable',
+    message: '返回里有一条没有名字的工具调用，无法执行——通常是流式分片丢失',
+    retryable: true,
+    provider,
+    detail: { model },
+  })
+}
