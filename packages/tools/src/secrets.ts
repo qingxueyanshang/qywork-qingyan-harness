@@ -33,8 +33,16 @@ export const MIN_SECRET_VALUE_LENGTH = 8
  */
 const SHAPE_HOLD = 256
 
-/** 未闭合的 PEM 包头。看到它就得一直扣到 END。 */
-const PEM_OPEN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?![\s\S]*-----END )/
+/**
+ * 未闭合的 PEM 包头。看到它就得一直扣到 END。
+ *
+ * 否定环视里的收尾标记必须写**完整那一条**，与按形状脱敏用的是同一个形状
+ * （见 SHAPES 里的 PEM 那条）。只写 `-----END ` 的话，`-----EN` 这一片刚到、
+ * 收尾行还没写完时它就不再匹配，扣住的整块私钥当场放行，
+ * 而这时脱敏还吃不到那一块（它要完整的 BEGIN…END 才替换）。
+ */
+const PEM_OPEN =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?![\s\S]*-----END [A-Z0-9 ]*PRIVATE KEY-----)/
 
 /**
  * PEM 块最多扣住多少。
@@ -282,6 +290,13 @@ export function createStreamRedactor(secrets: SecretSet): {
   // 有界形状（sk-…、ghp_…）的最长可能长度。扣住这么多才不会让一个 token
   // 正好卡在两片之间：前片留个头、后片留个尾，两片各自都不命中。
   const hold = Math.max(valueHold, SHAPE_HOLD)
+  /*
+   * 已知明文里有没有跨行的那种。
+   *
+   * 有的话不能用下面「写完的行现在就能发」那条捷径——那条捷径的前提正是
+   * 「一个 secret 不会跨过换行」。有界形状都不跨行，已知明文按值现算。
+   */
+  const spansLines = values.some((v) => v.includes('\n'))
   let carry = ''
 
   return {
@@ -304,12 +319,23 @@ export function createStreamRedactor(secrets: SecretSet): {
         return buf.slice(0, open)
       }
 
-      // 尾巴不够长时整段扣住：还无法判断它是不是某个 secret 的开头。
-      if (buf.length <= hold) {
+      /*
+       * 扣住的是**还可能是某个 secret 一半**的那一段，而一条已经写完的行不可能是
+       * ——有界形状与已知明文都不跨行（`spansLines` 为真时这条不成立，退回按字节扣）。
+       * 所以切点取「最后一个换行之后」与「末尾 hold 字节之前」里更靠后的那个。
+       *
+       * **不要退回成只按字节扣**：`hold` 是 256 字节，而一条命令一秒吐一行七个字节，
+       * 于是跑完之前一个字都交不出去——中途输出那条通道整个不成立，
+       * 界面上看到的就是一张空卡片跑满全程（实测：12 行 87 字节的命令，
+       * 全部输出攒成一条 `tool.delta` 在结束时才到）。
+       */
+      const nl = spansLines ? -1 : buf.lastIndexOf('\n')
+      const cut = Math.max(nl + 1, buf.length - hold)
+      // 还没有写完的行，长度也不够判断：整段扣住等下一片。
+      if (cut <= 0) {
         carry = buf
         return ''
       }
-      const cut = buf.length - hold
       carry = buf.slice(cut)
       return buf.slice(0, cut)
     },

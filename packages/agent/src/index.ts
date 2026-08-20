@@ -57,6 +57,7 @@ export {
   TOOL_CATEGORIES,
   type ToolCategory,
   type ToolContext,
+  type ToolContextBase,
   type ToolOutcome,
   ToolRegistry,
   type ToolSpec,

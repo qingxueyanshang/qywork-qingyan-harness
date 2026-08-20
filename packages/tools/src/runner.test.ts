@@ -63,6 +63,46 @@ describe('命令由 runner 代跑', () => {
     }
   })
 
+  /**
+   * 退出不等于收完。
+   *
+   * 后代还扣着写端时，这两条流必须继续开着：关掉的话读端立刻拿到 EOF，
+   * `collectProcess` 的 `backgroundHeld` 就恒为 false——而它是「命令退出了，
+   * 但后台进程还在跑，它之后的输出不在这份结果里」这句话唯一的来源。
+   */
+  test('进程退出后仍有后代扣着管道时，流不跟着关', async () => {
+    const runner = startCommandRunner(RUNNER_ARGV)
+    try {
+      const proc = await runner.spawn({
+        /*
+         * 起一个继承了 stdout 的孙进程，自己写一行就退出。
+         *
+         * **`detached` 不能省**：不带它 Bun 会在中间那个进程退出时把孙进程一并
+         * 带走（`unref` 也留不住，本机实测），于是管道照常 EOF，这条断言就恒真了。
+         */
+        argv: [
+          process.execPath,
+          '-e',
+          `Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 3000)'], { stdout: 'inherit', detached: true }).unref(); process.stdout.write('hi')`,
+        ],
+        detached: false,
+      })
+      expect(await proc.exited).toBe(0)
+
+      const reader = proc.stdout.getReader()
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('hi')
+      const state = await Promise.race([
+        reader.read().then(() => 'eof'),
+        Bun.sleep(500).then(() => 'open'),
+      ])
+      expect(state).toBe('open')
+      // 读端撒手之后这条流才结束——收手是读端的决定，不是退出码的副作用。
+      await reader.cancel()
+    } finally {
+      runner.stop()
+    }
+  })
+
   /** 杀是 runner 做的（它才是父进程），调用方只发一句「杀掉」。 */
   test('kill 之后进程会结束', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)

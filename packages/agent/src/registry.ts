@@ -296,7 +296,15 @@ export interface ToolContext {
    * 装配方握着账本时总该接上；没接时工具如实报，不伪装成「找不到」。
    */
   history?: HistoryPort
-  /** 长工具的中途输出回传通道（shell stdout、下载进度）。 */
+  /**
+   * 长工具的中途输出回传通道（shell stdout、下载进度）。
+   *
+   * **只能由 loop 按 step 绑定**：这条通道产出的 `tool.delta` 要带 stepId 才认得出
+   * 是哪张卡片的输出，而 stepId 是 loop 在开 step 时才拿到的。装配方（runtime）
+   * 造不出这个字段，也不许自己造一个空值顶上——前端按 stepId 找卡片，
+   * 找不到就是整条通道静默丢弃。所以装配方交出的是 `ToolContextBase`，
+   * emit 由 loop 在每次调用前补上。
+   */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**
    * 待办变更广播。可选：装配方没接就没有待办面板，工具仍能正常记账。
@@ -374,6 +382,15 @@ export interface ToolContext {
    */
   denyNetwork?: boolean
 }
+
+/**
+ * 装配方能交出的那一半：除 `emit` 之外的全部。
+ *
+ * 分成两半是因为 `emit` 的事实来源与其余字段不同——其余的在 run 开始时就定了，
+ * 而 `emit` 要带的 stepId 每次工具调用才产生。装配方拿不到它，
+ * 所以它不出现在这个类型里，由 loop 在调用前补齐。
+ */
+export type ToolContextBase = Omit<ToolContext, 'emit'>
 
 /**
  * 授权裁决。
@@ -491,7 +508,7 @@ export interface ToolSpec {
    * （一条消息一个 run，Map 新建），跨轮的事实在里面查不到，而权限预检那条路
    * 根本拿不到 ctx。只靠 args 给不出答案的，说明这个动作该是个常量。
    */
-  actionKind: ActionKind | ((args: Record<string, unknown>, ctx?: ToolContext) => ActionKind)
+  actionKind: ActionKind | ((args: Record<string, unknown>, ctx?: ToolContextBase) => ActionKind)
   objectLabel: string | ((args: Record<string, unknown>) => string)
   /** 从参数提取稳定目标（通常是文件路径），供进度判定与并行冲突检测使用。 */
   targetExtractor?: (args: Record<string, unknown>) => string | null
@@ -523,7 +540,7 @@ export interface ToolSpec {
 export function resolveAction(
   spec: ToolSpec,
   args: Record<string, unknown>,
-  ctx?: ToolContext,
+  ctx?: ToolContextBase,
 ): ActionDescriptor {
   const kind = typeof spec.actionKind === 'function' ? spec.actionKind(args, ctx) : spec.actionKind
   const label = typeof spec.objectLabel === 'function' ? spec.objectLabel(args) : spec.objectLabel

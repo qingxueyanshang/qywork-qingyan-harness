@@ -3,7 +3,7 @@ import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywo
 import { classifyProviderError, lookupModel, ProviderError } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
-import { AgentLoop, type LoopPersistence, type ToolContext } from './index.ts'
+import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
 import { UNAVAILABLE_BACKOFF_MS } from './loop.ts'
 import { ToolRegistry, type ToolSpec } from './registry.ts'
 
@@ -64,7 +64,7 @@ function call(name: string, args: Record<string, unknown> = {}): WireToolCall {
 }
 
 /** 最小可用的 ToolContext。测试只关心 loop 的编排，工具本身不碰这些字段。 */
-function baseCtx(runId: string, emit: (e: AgentEvent) => void): ToolContext {
+function baseCtx(runId: string): ToolContextBase {
   return {
     workspaceRoot: '/tmp',
     conversationId: 'cv',
@@ -75,8 +75,6 @@ function baseCtx(runId: string, emit: (e: AgentEvent) => void): ToolContext {
     state: new Map(),
     sink: null,
     signal: new AbortController().signal,
-    emit: (channel, delta) =>
-      emit({ type: 'tool.delta', runId: runId as never, stepId: 'st' as never, channel, delta }),
     requestPermission: async () => true,
   }
 }
@@ -120,7 +118,7 @@ describe('工具中途输出', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
     const types: string[] = []
@@ -143,6 +141,55 @@ describe('工具中途输出', () => {
     const finished = types.indexOf('tool.finished')
     expect(delta).toBeGreaterThan(types.indexOf('tool.started'))
     expect(delta).toBeLessThan(finished)
+  })
+
+  /**
+   * 回归：中途输出要认得出是哪张卡片的。
+   *
+   * 前端拿 stepId 在 transcript 里找那一条工具卡（`connection.ts` 的
+   * `find(t => t.id === ev.stepId)`），空串谁也匹配不上——整条通道于是静默丢弃，
+   * 而事件照发、界面照旧空白，看起来像命令没有输出。
+   */
+  test('中途输出带的 stepId 就是这次调用那一条', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noisy',
+      description: '吐一行就结束。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn(_args, ctx) {
+        ctx.emit('stdout', '第一行')
+        return { status: 'success', message: 'ok' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('noisy')], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const started = events.find((e) => e.type === 'tool.started')
+    const delta = events.find((e) => e.type === 'tool.delta')
+    expect(started?.stepId).toBeTruthy()
+    expect(delta?.stepId).toBe(started!.stepId)
   })
 
   /** 中止仍然要抛出去，且抛之前先把已经吐出来的排空——那些是真发生过的输出。 */
@@ -172,7 +219,7 @@ describe('工具中途输出', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
     const types: string[] = []
@@ -240,7 +287,7 @@ describe('流式通道的顺序', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist,
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
     const deltas: { type: string; stepId: string }[] = []
@@ -300,7 +347,7 @@ describe('流式通道的顺序', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist,
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
     for await (const _ of loop.run({
       runId: 'rn_test' as never,
@@ -343,15 +390,15 @@ describe('ToolContext 生命周期', () => {
       },
     })
 
-    let captured: ToolContext | null = null
+    let captured: ToolContextBase | null = null
     const loop = new AgentLoop({
       adapter: fakeAdapter([[call('remember'), call('remember')], [call('remember')], null]),
       registry,
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => {
-        const ctx: ToolContext = {
+      makeToolContext: (runId) => {
+        const ctx: ToolContextBase = {
           workspaceRoot: '/tmp',
           conversationId: 'cv',
           runId,
@@ -361,8 +408,6 @@ describe('ToolContext 生命周期', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          emit: (channel, delta) =>
-            emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
           requestPermission: async () => true,
         }
         captured = ctx
@@ -413,7 +458,7 @@ describe('ToolContext 生命周期', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => {
+      makeToolContext: (runId) => {
         created++
         return {
           workspaceRoot: '/tmp',
@@ -425,8 +470,6 @@ describe('ToolContext 生命周期', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          emit: (channel, delta) =>
-            emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
           requestPermission: async () => true,
         }
       },
@@ -445,7 +488,7 @@ describe('ToolContext 生命周期', () => {
 })
 
 describe('权限拒绝', () => {
-  test('被拒后停止本 run，stopReason=permission_denied', async () => {
+  test('被拒的调用不执行，理由回到模型手里，循环继续', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -464,13 +507,23 @@ describe('权限拒绝', () => {
       },
     })
 
+    const inner = fakeAdapter([[call('danger')], null])
+    const requests: ChatRequest[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests.push(req)
+        yield* inner.stream(req)
+      },
+    }
+
     const loop = new AgentLoop({
-      adapter: fakeAdapter([[call('danger')], null]),
+      adapter,
       registry,
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => ({
+      makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
@@ -480,9 +533,7 @@ describe('权限拒绝', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        emit: (channel, delta) =>
-          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
-        requestPermission: async () => false,
+        requestPermission: async () => ({ allowed: false as const, reason: '权限规则拦下：夹具' }),
       }),
     })
 
@@ -497,8 +548,14 @@ describe('权限拒绝', () => {
 
     // 被拒的调用绝不能真的执行。
     expect(executed).toBe(0)
+
+    // 拒绝是一条工具失败结果，不是 run 的终点。裁决方给的理由必须随下一轮请求
+    // 发出去——`auto` 模式下那是模型唯一能拿到的信号，收不到它就只能原样重试。
+    expect(requests.length).toBe(2)
+    expect(JSON.stringify(requests[1]?.messages)).toContain('权限规则拦下：夹具')
+
     const finished = events.find((e) => e.type === 'run.finished')
-    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('permission_denied')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 })
 
@@ -627,7 +684,7 @@ describe('上下文分组占用', () => {
               : history,
           run: async () => ({ status: 'skipped', reasonCode: 'nothing_to_compact' }) as never,
         },
-        makeToolContext: (runId, emit) => ({
+        makeToolContext: (runId) => ({
           workspaceRoot: '/tmp',
           conversationId: 'cv',
           runId,
@@ -637,8 +694,6 @@ describe('上下文分组占用', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          emit: (channel, delta) =>
-            emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
           requestPermission: async () => true,
         }),
       })
@@ -702,7 +757,7 @@ describe('上下文分组占用', () => {
         { content: '当前工作区状态：分支 main，无未提交改动。', group: 'workspaceState' as const },
       ],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => ({
+      makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
@@ -712,8 +767,6 @@ describe('上下文分组占用', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        emit: (channel, delta) =>
-          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
         requestPermission: async () => true,
       }),
     })
@@ -1054,7 +1107,7 @@ describe('上下文读数：一把尺', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => ({
+      makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
@@ -1064,8 +1117,6 @@ describe('上下文读数：一把尺', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        emit: (channel, delta) =>
-          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
         requestPermission: async () => true,
       }),
     })
@@ -1093,7 +1144,7 @@ describe('上下文读数：一把尺', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => ({
+      makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
@@ -1103,8 +1154,6 @@ describe('上下文读数：一把尺', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        emit: (channel, delta) =>
-          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
         requestPermission: async () => true,
       }),
     })
@@ -1157,7 +1206,7 @@ describe('注册表是工具的唯一权威', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
     const events = []
@@ -1284,7 +1333,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
       systemPrompt: 's',
       tailNotes: () => [],
       persist: recordingPersistence(rec),
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     }).run({ runId: 'rn_net' as never, history: [], signal: new AbortController().signal })
   }
 
@@ -1423,7 +1472,7 @@ describe('停止能拽回卡住的工具', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist: noopPersistence(),
-      makeToolContext: (runId, emit) => ({
+      makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
         conversationId: 'cv',
         runId,
@@ -1433,8 +1482,6 @@ describe('停止能拽回卡住的工具', () => {
         state: new Map(),
         sink: null,
         signal: controller.signal,
-        emit: (channel, delta) =>
-          emit({ type: 'tool.delta', runId, stepId: 'st' as never, channel, delta }),
         requestPermission: async () => true,
       }),
     })
@@ -1496,7 +1543,7 @@ describe('provider 说要调工具但一条都没解析出来', () => {
       systemPrompt: 'sys',
       tailNotes: () => [],
       persist,
-      makeToolContext: (runId, emit) => baseCtx(runId, emit),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
     const events: AgentEvent[] = []
@@ -1535,7 +1582,7 @@ describe('锚点的信封校验', () => {
         systemPrompt: 'sys',
         tailNotes: () => [],
         persist: noopPersistence(),
-        makeToolContext: (runId, emit) => baseCtx(runId, emit),
+        makeToolContext: (runId) => baseCtx(runId),
       })
       for await (const ev of loop.run({
         runId: 'rn_env' as never,
