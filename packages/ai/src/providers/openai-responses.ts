@@ -290,8 +290,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       max_output_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
       ...this.buildReasoning(req),
-      // 兼容端点的隐式前缀缓存同样怕抖动，但 Responses 有显式的会话亲和键。
-      ...(req.cacheKey ? { prompt_cache_key: req.cacheKey } : {}),
+      // 亲和键发不发由目录里那条模型说了算，判据与 chat/completions 那支同一个
+      // 字段——两条协议各写一套判定，就会出现「同一个模型换条协议就不发了」。
+      ...(req.cacheKey && this.spec.cacheRouting === 'prompt_cache_key'
+        ? { prompt_cache_key: req.cacheKey }
+        : {}),
       store: false,
     }
   }

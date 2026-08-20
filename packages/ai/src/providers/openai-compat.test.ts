@@ -227,3 +227,76 @@ describe('无名工具调用', () => {
     }
   })
 })
+
+describe('缓存路由亲和键', () => {
+  /**
+   * 复现的是一次真账：同一个中转站的 grok，前缀逐字节稳定（字节级测试证过），
+   * 命中却在 192 与 16576 之间跳，随后整段会话连 `cached_tokens` 字段都不回。
+   *
+   * 成因是中转站在多个上游节点之间轮询，而隐式前缀缓存是按分片存的——
+   * 不带 `prompt_cache_key` 就是每次随机落一个分片。这个字段本仓早就有、
+   * `openai-responses` 也一直在发，只有这条路径漏了，而各家中转全走这条。
+   *
+   * 断言的是**上线字节**：装配层填了值不算数，要它真的出现在请求体里。
+   */
+  test('cacheKey 落成请求体里的 prompt_cache_key', async () => {
+    bodies.length = 0
+    const adapter = new OpenAICompatAdapter(
+      {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-x',
+        model: 'deepseek-v4-flash',
+        baseUrl: base,
+      },
+      lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+    )
+    for await (const _ of adapter.stream({
+      model: 'deepseek-v4-flash',
+      system: [],
+      messages: [{ role: 'user', content: '嗨' }],
+      tools: [],
+      maxOutputTokens: 64,
+      cacheKey: 'cv_0mt0x92q10000mx0dff',
+      signal: new AbortController().signal,
+    })) {
+      // 只看请求体
+    }
+    expect(bodies[0]!.prompt_cache_key).toBe('cv_0mt0x92q10000mx0dff')
+  })
+
+  /** 没有键就一个字节都不发——自建端点不该因为这个开始收到它不认识的字段。 */
+  test('没有 cacheKey 时不出现这个字段', async () => {
+    const body = await send('deepseek-v4-flash')
+    expect('prompt_cache_key' in body).toBe(false)
+  })
+
+  /**
+   * **发不发由目录里那条模型说了算，不是协议说了算。**
+   *
+   * 未收录的模型（自建端点、中转站上那些没人探过的名字）落在 `cacheRouting: 'none'`
+   * ——那是「没测过」不是「不支持」。往那些端点乱发未知字段，失败形状是
+   * 「昨天还好好的，今天每条请求都 400」。要开就在模型库那一格改，或 `qy probe --save`。
+   */
+  test('未收录的模型不发亲和键', async () => {
+    bodies.length = 0
+    const model = '某个中转站上的模型'
+    const spec = lookupModel(model, 'openai_chat_completions')
+    expect(spec.cacheRouting).toBe('none')
+    const adapter = new OpenAICompatAdapter(
+      { kind: 'openai_chat_completions', apiKey: 'sk-x', model, baseUrl: base },
+      spec,
+    )
+    for await (const _ of adapter.stream({
+      model,
+      system: [],
+      messages: [{ role: 'user', content: '嗨' }],
+      tools: [],
+      maxOutputTokens: 64,
+      cacheKey: 'cv_x',
+      signal: new AbortController().signal,
+    })) {
+      // 只看请求体
+    }
+    expect('prompt_cache_key' in bodies[0]!).toBe(false)
+  })
+})

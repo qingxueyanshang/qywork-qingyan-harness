@@ -8,8 +8,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { chargeBatchBudget, type ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
+import type { ToolSpec } from '@qywork/agent'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
@@ -150,8 +149,6 @@ export const grepTool: ToolSpec = {
     })
     if (viaRg) {
       const matches = viaRg.lines.map((l) => clipMatch(rebaseLine(l, cwd, ctx.workspaceRoot)))
-      const over = tooLarge(ctx, matches)
-      if (over) return over
       return {
         status: 'success',
         message: `命中 ${matches.length} 行（ripgrep）`,
@@ -202,41 +199,12 @@ export const grepTool: ToolSpec = {
     if (isDir) await walk(target)
     else await scanFile(target)
 
-    const over = tooLarge(ctx, lines)
-    if (over) return over
     return {
       status: 'success',
       message: `命中 ${lines.length} 行（内置遍历，未找到 ripgrep）`,
       data: { matches: lines, truncated, engine: 'builtin' },
     }
   },
-}
-
-/**
- * 投递预算：这一次调用最多往上下文里放多少。
- *
- * grep 从前是唯一一个绕开预算的工具（`read_file` 走 `files.ts`、`run_command`
- * 走 `shell.ts`），而它恰恰是最容易一次带回一大坨的那个。
- *
- * **超了拒绝，不截断**——立场同 `read_file`：截断产生的是满额正文，
- * 而那份正文往往不是模型要的那一段，工具错误率降了、平均 token 反而上升。
- * 建议给的是**收窄搜索**而不是分段读：grep 没有 offset，能收的只有模式与范围。
- */
-function tooLarge(
-  ctx: Parameters<NonNullable<ToolSpec['fn']>>[1],
-  matches: string[],
-): { status: 'failure'; message: string; errorKind: 'result_too_large' } | null {
-  const tokens = estimateText(matches.join('\n'))
-  const charged = chargeBatchBudget(ctx, tokens)
-  if (charged.ok) return null
-  return {
-    status: 'failure',
-    message:
-      `命中 ${matches.length} 行约 ${tokens} token，超出单次投递预算 ${charged.perCall}` +
-      `（本批还剩 ${charged.batchRemaining}）。` +
-      '收窄再试：把 pattern 写具体、用 glob 限定文件类型、或把 path 指到子目录。',
-    errorKind: 'result_too_large',
-  }
 }
 
 async function runRipgrep(

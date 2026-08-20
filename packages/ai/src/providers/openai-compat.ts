@@ -187,6 +187,28 @@ export class OpenAICompatAdapter implements LlmAdapter {
       max_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
       ...buildReasoning(this.spec, req.effort),
+      /*
+       * **缓存路由亲和键。不发它，前缀再稳缓存也可能恒不命中。**
+       *
+       * 中转站普遍在多个上游 key / 节点之间轮询，而隐式前缀缓存是**按分片**存的：
+       * 不带键就是每次随机落一个分片，落到没写过这段前缀的那个就是全价。
+       * 实测形状（同一个中转站的 grok，同前缀、间隔 66 秒）：一次命中 192、
+       * 一次命中 16576、之后整段会话 `cached_tokens` 字段直接不回。
+       *
+       * 这个字段本仓早就有（`ChatRequest.cacheKey`，会话 id），`openai-responses`
+       * 也一直在发——只有这条路径漏了，而 grok / deepseek / 各家中转全走这条。
+       *
+       * **发不发由目录里那条模型说了算**（`spec.cacheRouting`），不是协议说了算，
+       * 也不是这里写死。缓存能力是「端点 × 模型」那一格的属性：同一个 grok
+       * 换个中转站就是另一条结论，所以内置值只是 seed，端点侧由配置覆盖、
+       * 探测结论由 `qy probe --save` 写回同一处——与思考三项完全同构。
+       *
+       * 未收录的模型是 `'none'`，一个字节都不多发：自建端点（ollama / vLLM）
+       * 对未知字段的容忍度没验过，而它们恰恰全都落在未收录那一档。
+       */
+      ...(req.cacheKey && this.spec.cacheRouting === 'prompt_cache_key'
+        ? { prompt_cache_key: req.cacheKey }
+        : {}),
     }
   }
 }

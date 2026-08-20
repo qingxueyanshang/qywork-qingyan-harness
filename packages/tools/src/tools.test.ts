@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
@@ -10,6 +10,7 @@ import {
   isProtectedPath,
   normalizeAdditionalDirectories,
   PathEscapeError,
+  PathNotFoundError,
   ProtectedPathError,
   resolveInWorkspace,
   resolveWritablePath,
@@ -235,12 +236,18 @@ describe('额外根目录', () => {
   test('相对路径的基准永远是工作区，不会落到额外目录里', async () => {
     // 否则 `read_file("notes.md")` 变成「在几个根里挨个碰运气」，
     // 命中哪一个取决于目录内容——同一句话两次可能读到不同的文件。
+    //
+    // 报的是**不存在**而不是**越界**：这个相对路径解析出来就在工作区里，
+    // 只是那儿没有这个文件。报成越界的话，模型收到的是一句它无法执行的权限话术
+    // （「让用户切到完全访问」），而真相是它把文件名记错了。
     const { root, extra } = await withExtra()
     await expect(
       resolveInWorkspace({ workspaceRoot: root, additional: [extra] }, 'notes.md', {
         mustExist: true,
       }),
-    ).rejects.toBeInstanceOf(PathEscapeError)
+    ).rejects.toBeInstanceOf(PathNotFoundError)
+    // 额外目录里那一份没有被拿来顶替——这才是这条测试真正要锁的东西。
+    expect(await stat(join(extra, 'notes.md')).then(() => true)).toBe(true)
   })
 
   test('额外目录里的软链逃不出去', async () => {
@@ -1099,24 +1106,5 @@ describe('grep 的单条上界', () => {
       // 路径与行号一个字节不能少——模型要靠它们去 read_file 取原文。
       expect(matches[0], name).toMatch(/^vendor\.min\.js:\d+:/)
     }
-  })
-
-  /**
-   * 超预算时**拒绝而不是截断**，立场同 `read_file`：截断产生的是满额正文，
-   * 而那份正文往往不是模型要的那一段。
-   */
-  test('命中总量超出投递预算时拒绝，并给出可执行的收窄建议', async () => {
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-budget-')))
-    // 每行都命中、每行都吃满上界，堆到超预算为止。
-    const line = `bug ${'y'.repeat(500)}`
-    await writeFile(join(root, 'noisy.txt'), Array.from({ length: 200 }, () => line).join('\n'))
-
-    const { grepTool } = await import('./search.ts')
-    const tiny = { ...ctx(root), contextWindow: 4_000 }
-    const out = await grepTool.fn!({ pattern: 'bug', path: '.' }, tiny)
-
-    expect(out.status).toBe('failure')
-    expect(out.errorKind).toBe('result_too_large')
-    expect(out.message).toContain('收窄再试')
   })
 })

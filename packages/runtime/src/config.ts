@@ -7,7 +7,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { lookupModel, type ProviderKind, type ThinkingMode } from '@qywork/ai'
+import { type CacheRouting, lookupModel, type ProviderKind, type ThinkingMode } from '@qywork/ai'
 import { EFFORT_ORDER, type EffortLevel, type PermissionMode } from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
@@ -177,6 +177,14 @@ export interface StoredCatalogEntry {
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
+  /**
+   * 缓存路由亲和键发不发。与思考三项同属「这条模型在这条协议上的能力」，
+   * 落点也是同一处（手填或 `qy probe --save` 写回）。
+   *
+   * 它比思考更需要按端点填：缓存是「端点 × 模型」那一格的属性，
+   * 同一个模型换个中转站就是另一条结论。
+   */
+  cacheRouting?: CacheRouting
 }
 
 /**
@@ -280,6 +288,7 @@ interface LegacyStoredModel {
     thinking?: ThinkingMode
     effortLevels?: EffortLevel[]
     thinksByDefault?: boolean
+    cacheRouting?: CacheRouting
   }
 }
 
@@ -346,6 +355,7 @@ function migrateModelLibrary(cfg: QyConfig): string[] {
         ...(caps?.thinking ? { thinking: caps.thinking } : {}),
         ...(caps?.effortLevels ? { effortLevels: caps.effortLevels } : {}),
         ...(caps?.thinksByDefault !== undefined ? { thinksByDefault: caps.thinksByDefault } : {}),
+        ...(caps?.cacheRouting ? { cacheRouting: caps.cacheRouting } : {}),
       }
       delete legacy.maxOutputTokens
       delete legacy.capabilities

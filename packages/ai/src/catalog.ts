@@ -30,6 +30,14 @@ export interface Pricing {
   cacheWrite1h: number
 }
 
+/**
+ * 缓存路由亲和键的发法。
+ *
+ * `prompt_cache_key` 是 OpenAI 协议的标准字段。中转站普遍在多个上游 key /
+ * 节点之间轮询，而隐式前缀缓存按分片存——不带键就是每次随机落一个分片。
+ */
+export type CacheRouting = 'prompt_cache_key' | 'none'
+
 export type ThinkingMode =
   /** 只接受 {type:'adaptive'}；budget_tokens 会 400。 */
   | 'adaptive_only'
@@ -88,6 +96,19 @@ export interface ModelSpec {
   thinksByDefault: boolean
   /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
   /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
+  /**
+   * 这条模型在这条协议上，靠什么把请求钉到同一个缓存分片。
+   *
+   * **它是「接口 × 模型」那一格的属性，不是模型的属性。** 同一个 grok
+   * 在两个中转站上表现完全不同：一个真实长会话能滚到 62,976 命中，
+   * 另一个前缀再稳 `cached_tokens` 也可以恒为 0——差别只在发没发这个键。
+   * 所以内置值只是 seed，端点侧由配置里那一格覆盖（`SpecOverride`），
+   * 探测结论由 `qy probe --save` 写回同一处。
+   *
+   * `'none'` 是**未测**不是不支持：未收录的模型一律落在这一档，
+   * 一个字节都不多发——自建端点不会因为这条开始收到它不认识的字段。
+   */
+  cacheRouting: CacheRouting
   minCacheablePrefix: number
   /**
    * 分时段折扣。没有就是「一天一个价」，绝大多数模型都是这样。
@@ -375,6 +396,8 @@ const CLAUDE_BASE = {
   vendor: 'anthropic',
   contextWindow: 1_000_000,
   maxOutputTokens: 128_000,
+  // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
+  cacheRouting: 'none' as const,
   thinking: 'adaptive_only' as const,
   // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
@@ -496,6 +519,7 @@ function deepseekCatalog(): ModelSpec[] {
     thinksByDefault: false,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
     minCacheablePrefix: 0,
+    cacheRouting: 'prompt_cache_key' as const,
     offPeak: DEEPSEEK_OFF_PEAK,
   }
   const flash: ModelSpec = {
@@ -588,6 +612,12 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 错的是不说。`configNotices` 据这个字段提醒，出口是 `qy probe --save`。
      */
     catalogued: false,
+    /*
+     * 未收录 = **没测过**，不是不支持。所以不发亲和键：自建端点（ollama / vLLM）
+     * 对未知字段的容忍度没验过，而它们全都落在这一档。
+     * 想开就在配置里那一格填 `cacheRouting`，或者跑 `qy probe --save`。
+     */
+    cacheRouting: 'none',
     contextWindow: 128_000,
     maxOutputTokens: 8_192,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
@@ -629,6 +659,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
   const base = {
     provider: 'openai_chat_completions' as const,
     minCacheablePrefix: 1024,
+    cacheRouting: 'prompt_cache_key' as const,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
@@ -984,6 +1015,13 @@ export interface SpecOverride {
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
+  /**
+   * 缓存路由。与思考三项同属「探测得到、也可手填」的那一类，落点也是同一处。
+   *
+   * 它比思考更需要按端点覆盖：缓存能力是「端点 × 模型」那一格的属性，
+   * 换个中转站同一个模型就是另一条结论，内置表只能给 seed。
+   */
+  cacheRouting?: CacheRouting
 }
 
 /**
@@ -1008,6 +1046,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
     ...(o.thinking ? { thinking: o.thinking } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
+    ...(o.cacheRouting ? { cacheRouting: o.cacheRouting } : {}),
     // `thinksByDefault` 是布尔，`false` 是有效覆盖，只能按 `undefined` 判缺省。
     ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
     pricing: {

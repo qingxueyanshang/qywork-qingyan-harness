@@ -100,6 +100,7 @@ export function ModelLibrary(props: {
                       <th class="num">缓存命中</th>
                       <th class="num">缓存写入</th>
                       <th>思考</th>
+                      <th>缓存路由</th>
                       <th class="act">
                         <button class="btn-ghost sm" type="button" onClick={() => openAdd(v.id)}>
                           添加模型
@@ -149,6 +150,11 @@ export function ModelLibrary(props: {
                                 ? '不发'
                                 : (m.effortLevels.join('/') || '默认') +
                                   (m.thinksByDefault ? ' · 默认开' : '')}
+                            </td>
+                            {/* 中转站按分片存隐式缓存，不发亲和键就是每次随机落一个。
+                                这一格答的是「这条模型在这条接口上发不发」。 */}
+                            <td class="lv">
+                              {m.cacheRouting === 'prompt_cache_key' ? '亲和键' : '不发'}
                             </td>
                             <td class="act">
                               <button
@@ -229,6 +235,7 @@ function ModelForm(props: {
   let curRef: HTMLSelectElement | undefined
   let thinkRef: HTMLSelectElement | undefined
   let defaultThinkRef: HTMLInputElement | undefined
+  let cacheRoutingRef: HTMLSelectElement | undefined
 
   /** 留空 = 照内置值。0 在窗口、上限、单价上都不是有意义的值，一律当没填。 */
   const num = (el: HTMLInputElement | undefined) => {
@@ -271,6 +278,7 @@ function ModelForm(props: {
       // 思考两项：`thinking` 空串 = 没改过，照内置值；勾选框有明确的两态，
       // 只在与内置值不同时才写进覆盖，否则一条没动过的记录也会被标成 user。
       ...(thinkRef?.value ? { thinking: thinkRef.value } : {}),
+      ...(cacheRoutingRef?.value ? { cacheRouting: cacheRoutingRef.value } : {}),
       ...(defaultThinkRef && defaultThinkRef.checked !== props.model?.thinksByDefault
         ? { thinksByDefault: defaultThinkRef.checked }
         : {}),
@@ -316,6 +324,16 @@ function ModelForm(props: {
           checked={props.model?.thinksByDefault ?? false}
         />
         <span>不选档时也思考</span>
+      </label>
+      {/* 缓存路由。中转站多上游轮询时不发这个键，前缀再稳也可能恒不命中；
+          而自建端点对未知字段的容忍度没验过，所以两态都要能选。 */}
+      <label class="lib-field">
+        <span>缓存路由</span>
+        <select ref={cacheRoutingRef}>
+          <option value="">照内置值（{props.model?.cacheRouting ?? '未知'}）</option>
+          <option value="prompt_cache_key">发 prompt_cache_key</option>
+          <option value="none">不发</option>
+        </select>
       </label>
       <label class="lib-field">
         <span>输入价</span>

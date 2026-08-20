@@ -18,6 +18,7 @@ export type { CapacityRejection } from './capacity.ts'
 export {
   applySpecOverride,
   builtinCatalog,
+  type CacheRouting,
   computeCost,
   effortIsTransmittable,
   lookupModel,
