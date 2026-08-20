@@ -2,7 +2,7 @@ import type { ProviderRequest, Run } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
-import { stopReasonLabel } from '../lib/step-view.ts'
+import { compact, stopReasonLabel } from '../lib/step-view.ts'
 import { client, isRunning, openSettings, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
@@ -109,15 +109,41 @@ export default function RunDetails() {
   )
 }
 
+/** 读数卡里的一格。名字在上、值在下——每个数都自带标签，不靠位置去猜它是什么。 */
+function Stat(props: { label: string; value: string }) {
+  return (
+    <div class="run-stat">
+      <span class="run-stat-label">{props.label}</span>
+      <span class="run-stat-value">{props.value}</span>
+    </div>
+  )
+}
+
 /**
- * 会话合计。**全页唯一的大字是那笔钱**——字号层级按提问频率给：
- * 「烧了多少」每次瞥一眼都在问，「哪一轮」偶尔问，「逐请求对账」排查时才问。
+ * 会话合计：一笔钱 + 一张六格读数卡。
+ *
+ * ## 两层，不是一层也不是六层
+ *
+ * 钱是 20px 的大字，六格读数是 16px——「烧了多少」每次瞥一眼都在问，
+ * 「入了多少出了多少、缓存吃到没有」是接着要看的那一层。六个数字彼此同级，
+ * 所以同字号平铺；把它们和钱拉成同一档，这块就没有主角了。
+ *
+ * ## 六格是一份完整的账
+ *
+ * 轮次 / 输入 / 输出 / 命中率 / 缓存命中 / 缓存写入，与中转站后台的读数同名同序。
+ * 少任何一格都会让「这条会话到底怎么花的」缺一块：命中率答「缓存生效没有」，
+ * 命中与写入答「省下多少、又为建缓存付了多少」。
+ *
+ * ## 收成 K/M
+ *
+ * 这里回答量级，逐位对账在展开区那张逐请求表里——一格 110px 装不下九位数字。
  */
 function Summary(props: { runs: Run[] }) {
   const totals = createMemo(() =>
     props.runs.reduce(
       (acc, r) => ({
         input: acc.input + (r.usage?.inputTokens ?? 0),
+        output: acc.output + (r.usage?.outputTokens ?? 0),
         // 按币种分桶。同一个会话里换过模型就可能混币种，加成一个数字要汇率，
         // 而我们不做换算。
         cost: addCost(acc.cost, r),
@@ -126,6 +152,7 @@ function Summary(props: { runs: Run[] }) {
       }),
       {
         input: 0,
+        output: 0,
         cost: {} as Record<string, number>,
         cached: null as number | null,
         cacheWrite: null as number | null,
@@ -151,9 +178,16 @@ function Summary(props: { runs: Run[] }) {
     <header class="run-sum">
       <span class="run-sum-scope">本会话</span>
       <span class="run-sum-cost">{money(totals().cost)}</span>
-      <span class="run-sum-meta">
-        {props.runs.length} 轮 · 缓存命中 {hit()}
-      </span>
+      <div class="run-stats">
+        <Stat label="轮次" value={String(props.runs.length)} />
+        {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
+        <Stat label="输入" value={compact(totals().input + (totals().cached ?? 0))} />
+        <Stat label="输出" value={compact(totals().output)} />
+        <Stat label="命中率" value={hit()} />
+        {/* 「没回报」和「回报了是 0」是两回事，不能都写成 0。 */}
+        <Stat label="缓存命中" value={maybeCount(totals().cached)} />
+        <Stat label="缓存写入" value={maybeCount(totals().cacheWrite)} />
+      </div>
       {/* 能力边界，不折叠：压缩摘要那次调用也计费，但它不属于任何一轮，
           所以这个合计会小于账本。不写的话「对不上」会被当成 bug。 */}
       <span class="run-sum-note">压缩摘要的调用不计在内。</span>
@@ -384,6 +418,11 @@ function runCost(r: Run): string {
 /** 金额合计。一笔计价都没有时给「—」——写成 $0.00 是把「不知道」说成「免费」。 */
 function money(cost: Record<string, number>): string {
   return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : '—'
+}
+
+/** 读数卡里的计数。`null` 是「没回报」，写成 0 会把「缓存没生效」说成「生效了但没命中」。 */
+function maybeCount(n: number | null): string {
+  return n === null ? '未回报' : compact(n)
 }
 
 /** 表格里的计数。`null` 是「没回报」，给「—」不给 0。 */
