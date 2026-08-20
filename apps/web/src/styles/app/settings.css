@@ -471,12 +471,37 @@
 .setting-row textarea {
   resize: vertical;
 }
-.code-area {
+/* 代码 / 配置编辑块（mcp.json、team.json、记忆正文、技能正文）。
+ *
+ * **选择器必须带上元素名。** 上面那套输入框样式是 `.setting-row textarea`
+ * 这种「类 + 元素」的形状，特异度比裸 `.code-area` 高；而这些编辑块有一半
+ * 根本不在 `.field` / `.setting-row` 里（MCP 的配置、team.json 都是分区的直接
+ * 子节点），那一半会一路掉回浏览器默认的 textarea——方角、系统边框、纯白底，
+ * 和这一页其余部分不是一套东西。写成 `textarea.code-area` 才两种位置都盖得住。
+ *
+ * 底色取 `--bg-sunken`、圆角取卡片那一档：它和条目卡是同一层「凹进去的内容」，
+ * 不该比卡片更抢眼。 */
+textarea.code-area {
+  width: 100%;
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background-color: var(--bg-sunken);
+  color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  line-height: 1.6;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  /* 配置是逐行读的，不换行——软换行会让缩进对不上，一段 JSON 的层级就没了。 */
   white-space: pre;
   overflow-x: auto;
+  resize: vertical;
+}
+textarea.code-area:focus {
+  outline: none;
+  border-color: var(--border-strong);
+}
+textarea.code-area::placeholder {
+  color: var(--text-tertiary);
 }
 
 /* ── 接口横向切换 ──
