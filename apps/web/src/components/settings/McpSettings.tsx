@@ -106,6 +106,18 @@ export default function McpSettings() {
     editor.focus()
   }
 
+  /**
+   * 「添加」按钮。**区头和空态框共用同一份。**
+   *
+   * 它归「配置」那一段——server 就写在那份原文里。「已连上」空着的时候也放一颗：
+   * 那一刻用户正盯着空框，而唯一的出路在下面那段里，按下去光标就落进编辑框。
+   */
+  const AddButton = () => (
+    <button class="btn-ghost sm" type="button" onClick={addServer}>
+      添加
+    </button>
+  )
+
   const servers = () => (loaded(data)?.servers ?? []).filter((s) => s.scope === scope())
   /** 这一轮配了但没连上的：配置里有、servers 里没有。它们不能凭空消失。 */
   const missing = () =>
@@ -121,15 +133,7 @@ export default function McpSettings() {
   return (
     <>
       {/* 页头在 `Show` 外面：连一批 server 要几秒，这几秒里这一页也该有名字。 */}
-      <PageHead
-        title="MCP"
-        desc="MCP 服务为模型接入外部工具。改完重启应用后重新连接。"
-        actions={
-          <button class="btn-ghost sm" type="button" onClick={addServer}>
-            添加
-          </button>
-        }
-      />
+      <PageHead title="MCP" desc="MCP 服务为模型接入外部工具。改完重启应用后重新连接。" />
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
@@ -152,7 +156,7 @@ export default function McpSettings() {
             <Section title="已连上">
               <Show
                 when={servers().length > 0}
-                fallback={<EmptyBox label="这一层没有连上的服务" />}
+                fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}
               >
                 <div class="entry-list">
                   <For each={servers()}>
@@ -196,7 +200,7 @@ export default function McpSettings() {
               </Section>
             </Show>
 
-            <Section title="配置">
+            <Section title="配置" actions={<AddButton />}>
               <textarea
                 class="code-area"
                 ref={editor}

@@ -89,21 +89,23 @@ export default function MemorySettings() {
     setDraft('')
   }
 
+  /**
+   * 这一段的动作。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
+   * 而空的时候用户看到的恰恰是空态框里那一份。
+   */
+  const Actions = () => (
+    <button class="btn-ghost sm" type="button" onClick={startNew}>
+      新增
+    </button>
+  )
+
   // `loaded()` 而不是 `mem()`：重取期间留住上一份（存一条、删一条之后都要重取，
   // 正在编辑的输入框不该被摘出 DOM），出错时给 undefined 让下面那条 `LoadState` 接住。
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。
           它不依赖任何取回来的数据，摆进去只会让失败态变成一块无名的空白。 */}
-      <PageHead
-        title="记忆"
-        desc="记忆索引每轮都发给模型，正文由它按需读取。"
-        actions={
-          <button class="btn-ghost sm" type="button" onClick={startNew}>
-            新增
-          </button>
-        }
-      />
+      <PageHead title="记忆" desc="记忆索引每轮都发给模型，正文由它按需读取。" />
       <Show
         when={loaded(mem)}
         fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}
@@ -122,8 +124,11 @@ export default function MemorySettings() {
               dirs={m().dirs}
             />
 
-            <Section>
-              <Show when={rows().length > 0} fallback={<EmptyBox label="这一层还没有记忆" />}>
+            <Section title="记忆" actions={<Actions />}>
+              <Show
+                when={rows().length > 0}
+                fallback={<EmptyBox label="这一层还没有记忆" actions={<Actions />} />}
+              >
                 <div class="entry-list">
                   <For each={rows()}>
                     {(e) => (

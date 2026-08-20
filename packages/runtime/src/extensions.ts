@@ -76,9 +76,20 @@ export interface Extensions {
   stop(): void
 }
 
+/** 一条角色，加上它引用的后端键名。 */
+export interface ScopedRole extends Role {
+  /**
+   * 它引用的后端在 `backends` 里的键。
+   *
+   * `Role.backend` 是**解析后的对象**，键名在那一步就丢了；而设置页要按键名
+   * 回填下拉框、也要按键名去 team.json 里找那一条。两者不是一回事。
+   */
+  backendId: string
+}
+
 export interface WorkspaceTeamConfig {
   backends: Record<string, Backend>
-  roles: Role[]
+  roles: ScopedRole[]
   plan: PlanNode[]
   rules: TeamRules
   /** 配置文件解析失败的原因。UI 要显示，不能静默当作「没配」。 */
@@ -355,7 +366,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
     }
   }
 
-  const roles: Role[] = []
+  const roles: ScopedRole[] = []
   for (const value of (obj.roles as unknown[]) ?? []) {
     const r = value as Record<string, unknown>
     const id = String(r.id ?? '').trim()
@@ -374,6 +385,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
       // 所以只在字段真的存在时才写入。
       ...(Array.isArray(r.allowedTools) ? { allowedTools: r.allowedTools.map(String) } : {}),
       ...(r.maxSteps ? { maxSteps: Number(r.maxSteps) } : {}),
+      backendId,
     })
   }
 

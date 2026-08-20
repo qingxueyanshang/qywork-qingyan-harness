@@ -92,6 +92,16 @@ interface BackendForm {
 /** 内置后端的默认键名。新建角色时选「内置模型」就落在它上面。 */
 const BUILTIN_ID = 'builtin'
 
+/** 导入框的占位样例。写成常量是因为它带换行，塞进 JSX 属性里读不出形状。 */
+const IMPORT_PLACEHOLDER = [
+  '{',
+  '  "id": "reviewer",',
+  '  "name": "代码审查员",',
+  '  "description": "负责代码审查、风险识别与检测。",',
+  '  "systemPrompt": "只读。逐条给出文件与行号。"',
+  '}',
+].join('\n')
+
 const emptyRole = (): RoleForm => ({
   id: '',
   isNew: true,
@@ -122,6 +132,8 @@ export default function AgentsSettings() {
   const [showRaw, setShowRaw] = createSignal(false)
   const [roleForm, setRoleForm] = createSignal<RoleForm | null>(null)
   const [backendForm, setBackendForm] = createSignal<BackendForm | null>(null)
+  /** 导入框里那段 JSON。null = 没在导入；空串是合法状态（框开着还没贴）。 */
+  const [importing, setImporting] = createSignal<string | null>(null)
 
   // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份，
   // 编辑框才不会闪空。
@@ -149,10 +161,13 @@ export default function AgentsSettings() {
     return ids.includes(BUILTIN_ID) ? ids : [BUILTIN_ID, ...ids]
   }
 
+  /** 这个后端在 team.json 里的原文。没写进去的（隐式内置那条）回 undefined。 */
+  const backendJson = (id: string): BackendJson | undefined => config()?.backends?.[id]
+
   /** 一个后端跑的是什么。角色卡上贴的是它——「这条角色跑在哪」是那一行最要紧的事实。 */
   const backendLabel = (id: string): string => {
-    const b = config()?.backends?.[id]
-    if (!b) return id
+    const b = backendJson(id)
+    if (!b) return id === BUILTIN_ID ? '内置模型' : id
     if (b.kind === 'builtin') return b.model ? `内置模型 · ${b.model}` : '内置模型'
     return b.command ?? id
   }
@@ -164,7 +179,7 @@ export default function AgentsSettings() {
    * 多数人会把后端标识起成和命令一样的名字，那样卡片就是同一个词上下各一次。
    */
   const backendDetail = (id: string): string => {
-    const b = config()?.backends?.[id]
+    const b = backendJson(id)
     if (!b) return ''
     if (b.kind === 'builtin') {
       return [b.provider, b.model].filter(Boolean).join(' · ')
@@ -203,6 +218,99 @@ export default function AgentsSettings() {
       setBusy(false)
     }
   }
+
+  /** 后端那一段的动作。同样区头和空态框共用一份。 */
+  const BackendActions = () => (
+    <button
+      class="btn-ghost sm"
+      type="button"
+      onClick={() => {
+        setRoleForm(null)
+        setImporting(null)
+        setError(null)
+        setBackendForm(emptyBackend())
+      }}
+    >
+      添加
+    </button>
+  )
+
+  /**
+   * 角色那一段的两个动作。**区头和空态框共用同一份**——两处各写一遍的话，
+   * 迟早只改一处，而空的时候用户看到的恰恰是空态框里那一份。
+   */
+  const RoleActions = () => (
+    <>
+      <button
+        class="btn-ghost sm"
+        type="button"
+        onClick={() => {
+          setRoleForm(null)
+          setBackendForm(null)
+          setError(null)
+          setImporting('')
+        }}
+      >
+        导入
+      </button>
+      <button
+        class="btn-ghost sm"
+        type="button"
+        onClick={() => {
+          setImporting(null)
+          setBackendForm(null)
+          setError(null)
+          setRoleForm(emptyRole())
+        }}
+      >
+        新建
+      </button>
+    </>
+  )
+
+  /**
+   * 贴一段角色 JSON 导进来。
+   *
+   * 只认「是个对象」和「有 id」，其余缺了按空值补——**不做严格校验**：
+   * 导完下一步就是那个表单，缺什么在表单里补比在这里报一串错有用。
+   */
+  const importRole = (body: string) =>
+    void writeConfig((cfg) => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(body)
+      } catch (e) {
+        return `这段不是合法 JSON：${e instanceof Error ? e.message : String(e)}`
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return '要是一个角色对象'
+      }
+      const r = parsed as RoleJson
+      const id = String(r.id ?? '').trim()
+      if (!id) return '这段里没有 id'
+      cfg.roles ??= []
+      const roles = cfg.roles
+      cfg.backends ??= {}
+      const backends = cfg.backends
+      const backend = String(r.backend ?? BUILTIN_ID)
+      if (!backends[backend]) {
+        if (backend !== BUILTIN_ID) return `这段引用了一个不存在的后端 ${backend}`
+        backends[BUILTIN_ID] = { kind: 'builtin' }
+      }
+      const next: RoleJson = {
+        id,
+        name: String(r.name ?? id),
+        description: String(r.description ?? ''),
+        systemPrompt: String(r.systemPrompt ?? ''),
+        backend,
+        ...(typeof r.maxSteps === 'number' ? { maxSteps: r.maxSteps } : {}),
+      }
+      const at = roles.findIndex((x) => x.id === id)
+      if (at >= 0) roles[at] = next
+      else roles.push(next)
+      setImporting(null)
+      return null
+    })
 
   const openRole = (id: string) => {
     const r = config()?.roles?.find((x) => x.id === id)
@@ -256,23 +364,24 @@ export default function AgentsSettings() {
     })
 
   const openBackend = (id: string) => {
-    const b = config()?.backends?.[id]
+    const b = backendJson(id)
     if (!b) {
       setError('这个后端在 team.json 里找不到，原文可能刚被改过')
       return
     }
     setRoleForm(null)
+    setImporting(null)
     setError(null)
     setBackendForm({
       id,
       isNew: false,
-      kind: b.kind === 'builtin' ? 'builtin' : 'cli',
-      provider: b.provider ?? '',
-      model: b.model ?? '',
-      command: b.command ?? '',
-      args: (b.args ?? []).join('\n'),
-      output: b.output === 'jsonl' ? 'jsonl' : 'text',
-      resultField: b.resultField ?? '',
+      kind: b?.kind === 'cli' ? 'cli' : 'builtin',
+      provider: b?.provider ?? '',
+      model: b?.model ?? '',
+      command: b?.command ?? '',
+      args: (b?.args ?? []).join('\n'),
+      output: b?.output === 'jsonl' ? 'jsonl' : 'text',
+      resultField: b?.resultField ?? '',
     })
   }
 
@@ -338,19 +447,6 @@ export default function AgentsSettings() {
       <PageHead
         title="Agent Team"
         desc="按角色分工的编排，只属于当前项目。角色可以跑在本进程里，也可以是本机上另一个 CLI。"
-        actions={
-          <button
-            class="btn-ghost sm"
-            type="button"
-            onClick={() => {
-              setBackendForm(null)
-              setError(null)
-              setRoleForm(emptyRole())
-            }}
-          >
-            新建角色
-          </button>
-        }
       />
       <Show
         when={loaded(team)}
@@ -362,8 +458,11 @@ export default function AgentsSettings() {
                 这个功能不存在。 */}
             <Show when={t().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
-            <Section title="角色">
-              <Show when={t().roles.length > 0} fallback={<EmptyBox label="还没有角色" />}>
+            <Section title="角色" actions={<RoleActions />}>
+              <Show
+                when={t().roles.length > 0}
+                fallback={<EmptyBox label="还没有角色" actions={<RoleActions />} />}
+              >
                 <div class="entry-list">
                   <For each={t().roles}>
                     {(r) => (
@@ -406,6 +505,35 @@ export default function AgentsSettings() {
                 </div>
               </Show>
             </Section>
+
+            {/* 导入 = 贴一段角色 JSON。**不给文件选择器**：外壳那边只有选目录，
+                而一个角色是一段对象不是一个目录，给一个选不中文件的按钮更糟。 */}
+            <Show when={importing() !== null}>
+              <Section title="导入角色">
+                <textarea
+                  class="code-area"
+                  rows={10}
+                  spellcheck={false}
+                  placeholder={IMPORT_PLACEHOLDER}
+                  value={importing() ?? ''}
+                  onInput={(e) => setImporting(e.currentTarget.value)}
+                />
+                <div class="row-actions">
+                  <button
+                    class="btn-primary"
+                    type="button"
+                    disabled={busy() || !(importing() ?? '').trim()}
+                    onClick={() => importRole(importing() ?? '')}
+                  >
+                    导入
+                  </button>
+                  <button class="btn-ghost" type="button" onClick={() => setImporting(null)}>
+                    取消
+                  </button>
+                  <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
+                </div>
+              </Section>
+            </Show>
 
             <Show when={roleForm()}>
               {(f) => (
@@ -514,23 +642,16 @@ export default function AgentsSettings() {
             <Section
               title="后端"
               desc="角色跑在哪里。内置 = 本进程的 agent；外部 CLI 跑在本机另一个进程里，凭证和沙箱是另一套。"
-              actions={
-                <button
-                  class="btn-ghost sm"
-                  type="button"
-                  onClick={() => {
-                    setRoleForm(null)
-                    setError(null)
-                    setBackendForm(emptyBackend())
-                  }}
-                >
-                  添加
-                </button>
-              }
+              actions={<BackendActions />}
             >
               <Show
                 when={t().backends.length > 0}
-                fallback={<EmptyBox label="还没有后端，新建第一个角色时会自动建一个内置的" />}
+                fallback={
+                  <EmptyBox
+                    label="还没有后端，新建第一个角色时会自动建一个内置的"
+                    actions={<BackendActions />}
+                  />
+                }
               >
                 <div class="entry-list">
                   <For each={t().backends}>
@@ -540,7 +661,7 @@ export default function AgentsSettings() {
                         desc={backendDetail(id)}
                         badge={
                           <span class="entry-tag">
-                            {config()?.backends?.[id]?.kind === 'builtin' ? '内置模型' : '外部 CLI'}
+                            {backendJson(id)?.kind === 'cli' ? '外部 CLI' : '内置模型'}
                           </span>
                         }
                         actions={

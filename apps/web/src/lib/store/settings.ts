@@ -473,6 +473,19 @@ export function installPlugin(path: string): Promise<{ ok: boolean; id: string }
 export function uninstallPlugin(id: string): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
+/**
+ * 新建一个插件骨架。
+ *
+ * 落下去的是**一份能跑起来的插件**（清单 + 一个 echo 工具的入口），不是一堆 TODO
+ * ——那样用户拿到的是一个必然报错的东西，而报错的原因和他要写的业务毫无关系。
+ */
+export function createPlugin(input: {
+  id: string
+  name: string
+  description: string
+}): Promise<{ ok: boolean; id: string; dir: string }> {
+  return scheduleWrite('/api/plugins/new', { method: 'POST', body: JSON.stringify(input) })
+}
 
 // ───────────────────────── 桌面外壳 ─────────────────────────
 
@@ -700,6 +713,36 @@ export interface SkillMeta {
 }
 export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }> {
   return client.api<{ dirs: ScopeDir[]; skills: SkillMeta[] }>('/api/skills')
+}
+/**
+ * 建一个技能。
+ *
+ * `name` 是模型在索引里看到的那个词（中文、空格都行），落盘的目录名由服务端
+ * 安全化后决定——**两者不必相同**，所以回执里带回真正的目录名。
+ */
+export function createSkill(input: {
+  scope: Scope
+  name: string
+  description: string
+  body: string
+}): Promise<{ ok: boolean; name: string; dir: string }> {
+  return scheduleWrite('/api/skills', { method: 'POST', body: JSON.stringify(input) })
+}
+/** 把本机上一个已经存在的技能目录整个拷进某一层。 */
+export function importSkill(
+  scope: Scope,
+  path: string,
+): Promise<{ ok: boolean; name: string; dir: string }> {
+  return scheduleWrite('/api/skills/import', {
+    method: 'POST',
+    body: JSON.stringify({ scope, path }),
+  })
+}
+/** 删的是**目录名**不是前置元信息里的 name：那两个可以不一样，而盘上只有目录。 */
+export function deleteSkill(dirName: string, scope: Scope): Promise<{ ok: boolean }> {
+  return scheduleWrite(`/api/skills/${encodeURIComponent(dirName)}?scope=${scope}`, {
+    method: 'DELETE',
+  })
 }
 
 // ───────────────────────── MCP ─────────────────────────

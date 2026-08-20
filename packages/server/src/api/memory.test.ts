@@ -1,8 +1,9 @@
 /**
- * 记忆接口的分层语义。
+ * 记忆与技能接口。
  *
- * 覆盖范围：`api/memory.ts` 的 `/api/memory` 与 `/api/memory/<key>`。
- * 技能那条只读，扫描逻辑由 `tools/src/scopes.test.ts` 钉住，这里不再重复。
+ * 覆盖范围：`api/memory.ts` 全部路由——`/api/memory`、`/api/memory/<key>`、
+ * `/api/skills`、`/api/skills/import`、`/api/skills/<目录名>`。
+ * 扫描逻辑本身由 `tools/src/scopes.test.ts` 钉住，这里不重复。
  *
  * 钉的是**按层分列引入的那条新风险**：列表现在把被盖住的条目也列出来，用户
  * 因此点得开一条不生效的全局记忆。读单条如果还按优先级找，编辑框里装的就是
@@ -11,9 +12,10 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { scanSkills, scopeRoots } from '@qywork/tools'
 import { handleMemoryApi } from './memory.ts'
 import type { ApiRequestDeps } from './types.ts'
 
@@ -124,5 +126,116 @@ describe('写单条认作用域', () => {
       body: JSON.stringify({ content: 'x' }),
     })
     expect(res!.status).toBe(400)
+  })
+})
+
+describe('建一个技能', () => {
+  /*
+   * **建完必须能被扫到。** `scanSkillDir` 对没有 `description` 的目录是静默跳过的，
+   * 所以「接口回了 200」和「这个技能真的存在」是两回事——只断言状态码的话，
+   * 一条建完就消失的技能能一路过测。
+   */
+  test('落盘之后扫得到，name 用填的原文，目录名是安全化过的', async () => {
+    const { root } = await workspace()
+    const res = await call(root, '/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: 'project',
+        name: '冒烟检查',
+        description: '提交前跑一遍门禁。',
+        body: '1. bun run gate\n',
+      }),
+    })
+    expect(res!.status).toBe(200)
+
+    const found = await scanSkills(scopeRoots(root))
+    expect(found.map((s) => s.name)).toEqual(['冒烟检查'])
+    expect(found[0]?.description).toBe('提交前跑一遍门禁。')
+  })
+
+  test('说明为空回 422 且不落盘——缺了它扫描器会静默跳过这个目录', async () => {
+    const { root } = await workspace()
+    const res = await call(root, '/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({ scope: 'project', name: 'x', description: '  ', body: '' }),
+    })
+    expect(res!.status).toBe(422)
+    expect(await scanSkills(scopeRoots(root))).toEqual([])
+  })
+
+  test('同名再建一次回 409，不覆盖——目录里可能已经放了脚本', async () => {
+    const { root } = await workspace()
+    const body = JSON.stringify({
+      scope: 'project',
+      name: 'release',
+      description: '发版',
+      body: '',
+    })
+    expect((await call(root, '/api/skills', { method: 'POST', body }))!.status).toBe(200)
+    expect((await call(root, '/api/skills', { method: 'POST', body }))!.status).toBe(409)
+  })
+
+  test('删的是目录名，删完就扫不到了；删一个不存在的回 404', async () => {
+    const { root } = await workspace()
+    await call(root, '/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({ scope: 'project', name: 'release', description: '发版', body: '' }),
+    })
+    expect(
+      (await call(root, '/api/skills/release?scope=project', { method: 'DELETE' }))!.status,
+    ).toBe(200)
+    expect(await scanSkills(scopeRoots(root))).toEqual([])
+    expect(
+      (await call(root, '/api/skills/release?scope=project', { method: 'DELETE' }))!.status,
+    ).toBe(404)
+  })
+
+  /*
+   * 单独一段 `..` 到不了这里：`new URL()` 在解析阶段就把它连同上一段一起折掉
+   * （`/api/skills/..` → `/api/`），那条路由压根不匹配。编码成 `%2E%2E` 也一样，
+   * WHATWG 先解码再折。**留下来能到达处理器的是这几种**，所以挡的就是它们。
+   */
+  test('目录名里带分隔符或 .. 的删除请求被拒——那是一条任意目录删除', async () => {
+    const { root } = await workspace()
+    for (const name of ['a%2Fb', 'a%5Cb', '%2e%2e%2f', '%2e%2e%5cx']) {
+      const res = await call(root, `/api/skills/${name}?scope=project`, { method: 'DELETE' })
+      expect(res!.status).toBe(400)
+    }
+  })
+})
+
+describe('导入一个技能目录', () => {
+  test('目录里没有 SKILL.md 就拒绝——不然导进来的东西一条都扫不到', async () => {
+    const { root } = await workspace()
+    const src = await mkdtemp(join(tmpdir(), 'qywork-skillsrc-'))
+    dirs.push(src)
+    const res = await call(root, '/api/skills/import', {
+      method: 'POST',
+      body: JSON.stringify({ scope: 'project', path: src }),
+    })
+    expect(res!.status).toBe(422)
+  })
+
+  test('整个目录拷进来，附带的文件一起过去', async () => {
+    const { root } = await workspace()
+    const src = await mkdtemp(join(tmpdir(), 'qywork-skillsrc-'))
+    dirs.push(src)
+    await writeFile(
+      join(src, 'SKILL.md'),
+      '---\nname: deploy\ndescription: 部署流程\n---\n正文',
+      'utf8',
+    )
+    await writeFile(join(src, 'run.sh'), 'echo hi', 'utf8')
+
+    const res = await call(root, '/api/skills/import', {
+      method: 'POST',
+      body: JSON.stringify({ scope: 'project', path: src }),
+    })
+    expect(res!.status).toBe(200)
+
+    const found = await scanSkills(scopeRoots(root))
+    expect(found.map((s) => s.name)).toEqual(['deploy'])
+    // 附带脚本必须一起过去：技能不是单个 markdown，那正是它不能在网页上编辑的原因。
+    expect(await readFile(join(found[0]!.dir, 'run.sh'), 'utf8')).toBe('echo hi')
   })
 })

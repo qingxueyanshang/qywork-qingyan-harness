@@ -35,7 +35,12 @@ export function PageHead(props: { title: string; desc?: string; actions?: JSX.El
   )
 }
 
-/** 一页里的一段。标题可省——只有一段内容的页面不需要给它起名字。 */
+/**
+ * 一页里的一段。标题可省——只有一段内容的页面不需要给它起名字。
+ *
+ * **动作归分区，不归页头。** 一页里可能有好几段各自能加东西（角色 / 后端、
+ * 技能 / 指令），动作全堆在页头的话，用户按下去不知道加到哪一段里。
+ */
 export function Section(props: {
   title?: string
   desc?: string
@@ -122,7 +127,11 @@ export function PathLine(props: { path: string }) {
 /**
  * 这一段是空的。
  *
- * **只写一句「暂无 X」，不写引导文案**（B7）：该干什么由旁边那个按钮说，
+ * **出路要在眼前。** 空的时候用户正盯着这个框，而这一段的「加一个」按钮在
+ * 上面那行区头里——离得远，且空框本身把它推得更远。所以把同一组动作在这里
+ * 再放一次：这不是重复，是这一刻唯一相关的东西。
+ *
+ * **只写一句「暂无 X」，不写引导文案**（B7）：该干什么由按钮说，
  * 多一句「点击新建创建你的第一个…」删掉了用户照样会用。
  */
 export function EmptyBox(props: { label: string; actions?: JSX.Element }) {

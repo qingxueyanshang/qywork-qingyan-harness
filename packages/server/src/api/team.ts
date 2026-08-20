@@ -49,7 +49,9 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
         id: r.id,
         name: r.name,
         description: r.description,
-        backend: r.backend.kind === 'cli' ? r.backend.command : 'builtin',
+        // 回的是**键名**不是展示串：界面要拿它回填下拉框、也要按它去
+        // team.json 里找那一条。展示成什么样由界面自己算。
+        backend: r.backendId,
       })),
       plan: team.plan,
       rules: team.rules,
