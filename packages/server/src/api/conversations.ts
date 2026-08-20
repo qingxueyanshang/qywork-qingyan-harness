@@ -19,6 +19,7 @@ import {
   getConversation,
   listConversations,
   listMessages,
+  listProviderRequests,
   listRuns,
   listSteps,
   setConversationTitle,
@@ -77,6 +78,15 @@ interface LibraryModel {
   cacheWrite: number
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
+  /**
+   * 这条链路上思考**怎么发**（协议标识），以及**不选档时发不发**。
+   *
+   * 与 `effortLevels` 同属「这个模型在这条协议上的思考能力」，一起下发才是完整的
+   * 一格。少给这两个，模型库上就只能看见档位而看不见「它到底会不会思考」——
+   * 而 `qy probe --save` 写回的正是这三项。
+   */
+  thinking: string
+  thinksByDefault: boolean
   source: 'seed' | 'user'
   /**
    * 这条价目的偏离说明：分时段折扣、长上下文换档。**没有偏离就不带这个键。**
@@ -149,6 +159,8 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       cacheWrite: spec.pricing.cacheWrite5m,
       currency: spec.pricing.currency ?? 'USD',
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
+      thinking: spec.thinking,
+      thinksByDefault: spec.thinksByDefault,
       source,
       ...(notes.length ? { priceNotes: notes } : {}),
     }
@@ -339,6 +351,18 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)
   if (stepMatch) {
     return json({ steps: listSteps(d.store, stepMatch[1] as RunId) })
+  }
+
+  /*
+   * 逐请求账本。
+   *
+   * `usage.turns` 回答不了「这一轮到底发了几次」——它只在拿到 usage 回报时
+   * 才 push 一条，连接层失败后重发的那一次在它里面不存在。而这张表是**发出之前**
+   * 就落行的，重发是独立一行（`retry_index`），所以它才是请求次数的真源。
+   */
+  const requestMatch = /^\/api\/runs\/([^/]+)\/requests$/.exec(p)
+  if (requestMatch) {
+    return json({ requests: listProviderRequests(d.store, requestMatch[1] as RunId) })
   }
 
   if (p === '/api/runs/active') {

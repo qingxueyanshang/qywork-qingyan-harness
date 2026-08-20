@@ -99,7 +99,7 @@ export function ModelLibrary(props: {
                       <th class="num">输出</th>
                       <th class="num">缓存命中</th>
                       <th class="num">缓存写入</th>
-                      <th>思考档位</th>
+                      <th>思考</th>
                       <th class="act">
                         <button class="btn-ghost sm" type="button" onClick={() => openAdd(v.id)}>
                           添加模型
@@ -142,7 +142,14 @@ export function ModelLibrary(props: {
                             <td class="num">{price(m.cacheRead, m.currency)}</td>
                             <td class="num">{price(m.cacheWrite, m.currency)}</td>
                             {/* 空的写破折号，不留白：留白读起来像「这一格没加载出来」。 */}
-                            <td class="lv">{m.effortLevels.join('/') || '—'}</td>
+                            {/* 档位与「会不会思考」是一件事的两半：只画档位的话，
+                                一个 thinking=none 的模型看起来和没探过的一样。 */}
+                            <td class="lv">
+                              {m.thinking === 'none'
+                                ? '不发'
+                                : (m.effortLevels.join('/') || '默认') +
+                                  (m.thinksByDefault ? ' · 默认开' : '')}
+                            </td>
                             <td class="act">
                               <button
                                 class="btn-ghost sm"
@@ -220,6 +227,8 @@ function ModelForm(props: {
   let hitRef: HTMLInputElement | undefined
   let writeRef: HTMLInputElement | undefined
   let curRef: HTMLSelectElement | undefined
+  let thinkRef: HTMLSelectElement | undefined
+  let defaultThinkRef: HTMLInputElement | undefined
 
   /** 留空 = 照内置值。0 在窗口、上限、单价上都不是有意义的值，一律当没填。 */
   const num = (el: HTMLInputElement | undefined) => {
@@ -259,6 +268,12 @@ function ModelForm(props: {
       ...(outPrice !== undefined ? { output: outPrice } : {}),
       ...(hit !== undefined ? { cacheRead: hit } : {}),
       ...(write !== undefined ? { cacheWrite: write } : {}),
+      // 思考两项：`thinking` 空串 = 没改过，照内置值；勾选框有明确的两态，
+      // 只在与内置值不同时才写进覆盖，否则一条没动过的记录也会被标成 user。
+      ...(thinkRef?.value ? { thinking: thinkRef.value } : {}),
+      ...(defaultThinkRef && defaultThinkRef.checked !== props.model?.thinksByDefault
+        ? { thinksByDefault: defaultThinkRef.checked }
+        : {}),
       currency: curRef?.value === 'CNY' ? 'CNY' : 'USD',
     })
   }
@@ -282,6 +297,25 @@ function ModelForm(props: {
       <label class="lib-field">
         <span>最大输出</span>
         <input ref={outRef} type="number" min="1" value={props.model?.maxOutputTokens ?? ''} />
+      </label>
+      {/* 思考两项。`qy probe --save` 写的就是这里，探完在这一格看得见、改得动。 */}
+      <label class="lib-field">
+        <span>思考怎么发</span>
+        <select ref={thinkRef}>
+          <option value="">照内置值（{props.model?.thinking ?? '未知'}）</option>
+          <option value="none">不发</option>
+          <option value="reasoning_effort">reasoning_effort</option>
+          <option value="deepseek_thinking">deepseek_thinking</option>
+          <option value="anthropic_effort">anthropic_effort</option>
+        </select>
+      </label>
+      <label class="lib-field lib-check">
+        <input
+          ref={defaultThinkRef}
+          type="checkbox"
+          checked={props.model?.thinksByDefault ?? false}
+        />
+        <span>不选档时也思考</span>
       </label>
       <label class="lib-field">
         <span>输入价</span>

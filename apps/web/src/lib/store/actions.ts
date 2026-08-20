@@ -309,6 +309,10 @@ export interface LibraryModel {
   cacheWrite: number
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
+  /** 思考怎么发（协议标识）。`none` = 这条链路上根本发不出思考。 */
+  thinking: string
+  /** 不选档时发不发思考。 */
+  thinksByDefault: boolean
   source: 'seed' | 'user'
   /**
    * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。

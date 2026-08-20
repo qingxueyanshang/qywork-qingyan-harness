@@ -778,6 +778,19 @@
 .lib-field.wide {
   flex: 1 1 220px;
 }
+/* 勾选框那一格：标签在右、与框同一基线，不走上面那套「标签在上」的竖排。 */
+.lib-field.lib-check {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 0 0 auto;
+  align-self: end;
+  padding-bottom: 5px;
+}
+.lib-field.lib-check input {
+  width: auto;
+  flex: 0 0 auto;
+}
 .lib-field span {
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
