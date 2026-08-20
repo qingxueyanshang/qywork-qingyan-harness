@@ -9,9 +9,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createPacer,
-  DRAIN_TICKS,
   freshPace,
   MAX_CHARS,
+  MAX_LAG_TICKS,
+  observe,
+  RESERVE_TICKS,
   sliceSize,
   TICK_MS,
   takeAll,
@@ -56,65 +58,138 @@ describe('不丢字', () => {
   })
 })
 
+describe('不切半个字符', () => {
+  /** 完整代理对按码点迭代会合成一个字符；孤立代理留下的是单个码元。 */
+  const hasLoneSurrogate = (text: string) =>
+    [...text].some(
+      (ch) => ch.length === 1 && ch.charCodeAt(0) >= 0xd800 && ch.charCodeAt(0) <= 0xdfff,
+    )
+
+  /**
+   * emoji 占两个 UTF-16 码元，切在中间会让界面闪一帧 U+FFFD 方块。
+   * 每档只放一两个字时几乎每个 emoji 都会被切一次——这条锁的就是那一刀。
+   */
+  test('逐档放出的正文里，任何一帧都不含孤立代理', () => {
+    const st = freshPace()
+    st.rate = 1.5
+    const text = '好的🙂我来看看🎉这段👨‍👩‍👧文字'
+    st.pending = text
+    let shown = ''
+    let guard = 0
+    while (st.pending.length > 0) {
+      shown += takeSlice(st)
+      expect(hasLoneSurrogate(shown)).toBe(false)
+      if (++guard > 200) throw new Error('没有收敛')
+    }
+    expect(shown).toBe(text)
+  })
+})
+
 describe('每档放多少', () => {
   test('空的时候是 0 —— 定时器据此停掉自己', () => {
-    expect(sliceSize(0)).toBe(0)
-    expect(sliceSize(-1)).toBe(0)
+    expect(sliceSize(0, 2)).toBe(0)
+    expect(sliceSize(-1, 2)).toBe(0)
   })
 
   /**
-   * 每档没有保底字数，这条锁的是「别加回来」——保底会把按批到达的一批提前排空，
-   * 剩下的时间无字可放。理由与实测见文件头。
+   * 主规则：按估计流速放，不跟着积压走。同一个流速下，积压翻倍每档也不该变——
+   * 变了就说明又退回成比例式了，那正是忽快忽慢的来源。
    */
-  test('少量积压就少放，每档不设下限', () => {
-    expect(sliceSize(1)).toBe(1)
-    expect(sliceSize(DRAIN_TICKS)).toBe(1)
-    expect(sliceSize(DRAIN_TICKS + 1)).toBe(2)
+  test('积压在可控区间内时，每档只由流速决定', () => {
+    // 流速 2 的可控区间是 [2×RESERVE, 2×MAX_LAG] = [20, 80] 字。
+    expect(sliceSize(30, 2)).toBe(2)
+    expect(sliceSize(60, 2)).toBe(2)
   })
 
-  /**
-   * 硬顶是这条里唯一真正挡事的：软目标是「剩余 ÷ 24」，
-   * 积压一万字时那也是一次 417 字——一帧糊出去，正是要避免的那个画面。
-   */
+  /** 上界：积压见底就放慢，把剩下的铺开撑到下一批，而不是放完了空等。 */
+  test('积压见底时按 RESERVE_TICKS 铺开，压过流速', () => {
+    expect(sliceSize(RESERVE_TICKS, 5)).toBe(1)
+    expect(sliceSize(RESERVE_TICKS * 2, 5)).toBe(2)
+  })
+
+  /** 下界：流速估低时不能让积压只增不减，落后到上限就按上限排。 */
+  test('积压超过 MAX_LAG_TICKS 倍流速时，按下界加速', () => {
+    expect(sliceSize(MAX_LAG_TICKS * 3, 1)).toBe(3)
+  })
+
   test('积压再多也不超过硬顶', () => {
-    expect(sliceSize(10_000)).toBe(MAX_CHARS)
-    expect(sliceSize(MAX_CHARS * DRAIN_TICKS * 5)).toBe(MAX_CHARS)
+    expect(sliceSize(10_000, 2)).toBe(MAX_CHARS)
+    expect(sliceSize(MAX_CHARS * MAX_LAG_TICKS * 5, 1)).toBe(MAX_CHARS)
   })
 
-  test('中间区间按剩余量线性放快', () => {
-    const n = sliceSize(DRAIN_TICKS * 10)
-    expect(n).toBe(10)
-    expect(n).toBeLessThanOrEqual(MAX_CHARS)
+  /** 还没算出流速时退回上界——铺开撑住，不是一次放完。 */
+  test('流速未知时用上界', () => {
+    expect(sliceSize(100, 0)).toBe(100 / RESERVE_TICKS)
   })
 
-  /** 积压越多每档越大——不然积压只会越拖越远。 */
-  test('单调不减', () => {
+  test('同一流速下单调不减', () => {
     let prev = 0
     for (const n of [1, 50, 200, 600, 2000, 50_000]) {
-      const s = sliceSize(n)
-      expect(s).toBeGreaterThanOrEqual(prev)
-      prev = s
+      const v = sliceSize(n, 2)
+      expect(v).toBeGreaterThanOrEqual(prev)
+      prev = v
     }
+  })
+})
+
+describe('流速估计', () => {
+  test('首批没有间隔可算，流速仍是 0', () => {
+    const st = freshPace()
+    observe(st, 37, 1000)
+    expect(st.rate).toBe(0)
+  })
+
+  test('第二批起按到达间隔算：960ms 来 37 字约合 1.9 字每档', () => {
+    const st = freshPace()
+    observe(st, 37, 1000)
+    observe(st, 37, 1960)
+    expect(st.rate).toBeCloseTo((37 / 960) * TICK_MS, 2)
+  })
+
+  /**
+   * 卡顿不是流速。把六秒的空档算进去，估计值会被拉到极低，
+   * 恢复之后正文是一个字一个字往外挤的。
+   */
+  test('间隔超过 STALL_MS 的那一次不更新流速', () => {
+    const st = freshPace()
+    observe(st, 37, 1000)
+    observe(st, 37, 1960)
+    const before = st.rate
+    observe(st, 37, 9000)
+    expect(st.rate).toBe(before)
+    // 但时刻要跟上，否则下一批会拿一个跨越卡顿的间隔来算。
+    expect(st.lastPushAt).toBe(9000)
   })
 })
 
 /**
  * 上游按批转发时也要匀速。
  *
- * 原始失败形状：中转站每约 960ms 给 37 字一批（2026-08-20 实测），而每档保底 6 字
- * 会在 350ms 内把一批排空，剩下 650ms 一个字都放不出来——界面一秒顿一次，
- * 六成以上的档是空的。这条锁的是「一批的字要铺到下一批到达」。
+ * 原始失败形状：中转站每约 960ms 给 37 字一批（2026-08-20 实测）。按积压比例放的
+ * 写法在这个序列上是 1↔3 字每档来回跳，500ms 窗口 10↔28 字——肉眼就是忽快忽慢。
+ * 这条锁两件事：**不断档**，以及**窗口速率不忽高忽低**。
  */
 describe('批量到达也要匀速', () => {
-  test('每 960ms 到 37 字：中间不断档', () => {
+  test('每 960ms 到 37 字：不断档，窗口速率也稳', () => {
     const st = freshPace()
-    const ticksPerBatch = Math.round(960 / TICK_MS)
-    let idle = 0
-    for (let batch = 0; batch < 6; batch++) {
+    const perBatch = Math.round(960 / TICK_MS)
+    const out: number[] = []
+    let at = 0
+    for (let batch = 0; batch < 10; batch++) {
+      observe(st, 37, at)
       st.pending += 'x'.repeat(37)
-      for (let k = 0; k < ticksPerBatch; k++) if (takeSlice(st) === '') idle++
+      for (let k = 0; k < perBatch; k++) out.push(takeSlice(st).length)
+      at += 960
     }
-    expect(idle).toBe(0)
+    expect(out.filter((n) => n === 0)).toHaveLength(0)
+
+    // 人眼看的是几百毫秒的平均，不是单档。取后半程（流速已经估准）来比。
+    const tail = out.slice(Math.floor(out.length / 2))
+    const win: number[] = []
+    for (let k = 0; k + 10 <= tail.length; k++) {
+      win.push(tail.slice(k, k + 10).reduce((a, b) => a + b, 0))
+    }
+    expect(Math.max(...win) - Math.min(...win)).toBeLessThanOrEqual(4)
   })
 })
 
@@ -143,6 +218,7 @@ describe('定时器编排', () => {
   function harness() {
     const written: [string, string][] = []
     let fn: (() => void) | null = null
+    let clock = 0
     const pacer = createPacer({
       write: (id, chunk) => written.push([id, chunk]),
       schedule: (f) => {
@@ -151,11 +227,15 @@ describe('定时器编排', () => {
           fn = null
         }
       },
+      now: () => clock,
     })
     return {
       pacer,
       written,
       running: () => fn !== null,
+      advance: (ms: number) => {
+        clock += ms
+      },
       tick: (n = 1) => {
         for (let i = 0; i < n; i++) fn?.()
       },
@@ -174,7 +254,7 @@ describe('定时器编排', () => {
     h.tick()
     expect(h.written).toHaveLength(1)
     expect(h.written[0]![1].length).toBeLessThanOrEqual(MAX_CHARS)
-    // 尾部按 `ceil(剩余 ÷ 24)` 递减到 1 字一档，200 字铺得比硬顶算出来的档数长。
+    // 还没有第二批可以算流速，走的是上界；积压见底时每档降到 1 字，铺得比硬顶长。
     h.tick(200)
     expect(h.text('s1')).toBe('x'.repeat(200))
   })

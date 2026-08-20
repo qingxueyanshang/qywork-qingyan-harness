@@ -68,6 +68,7 @@ const pacer = createPacer({
     const t = setInterval(fn, ms)
     return () => clearInterval(t)
   },
+  now: () => Date.now(),
 })
 
 /** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
