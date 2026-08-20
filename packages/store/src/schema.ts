@@ -12,6 +12,23 @@
  * - **cached_tokens 可空。** null=provider 未回报，与真实 0 命中是两回事。
  */
 
+import type {
+  ConversationId,
+  Currency,
+  MessageId,
+  ProviderRequestId,
+  ProviderRequestStatus,
+  ResourceId,
+  ResourceStatus,
+  RunId,
+  RunStatus,
+  StepId,
+  StepKind,
+  StopReason,
+  ToolActionStatus,
+  WorkspaceId,
+} from '@qywork/core'
+
 export const MIGRATIONS: { id: number; name: string; sql: string }[] = [
   {
     id: 1,
@@ -907,3 +924,254 @@ CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
  * 这个常量没有消费者会去校验它。派生之后它不可能再不一致。
  */
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id
+
+/*
+ * ─────────────────────────────── 落盘行的形状 ───────────────────────────────
+ *
+ * **这是上面那张迁移表跑完之后的镜像，不是第二份定义。** 加列、改列名、改可空性时
+ * 同时改这里；忘了改的话 `schema.test.ts` 里那条按 `PRAGMA table_info` 逐表比对的
+ * 测试会红。没有那条测试的话，这几个接口就是一份没人校验的第二账本。
+ *
+ * **只列映射函数真的读的那几张表。** 写入走 INSERT 的具名参数，不需要行类型。
+ *
+ * 两处「声明即断言」，写在这里而不是散在每个映射函数里：
+ *
+ * - **主键列按非空给。** SQLite 的 `TEXT PRIMARY KEY` 不隐含 NOT NULL，`PRAGMA`
+ *   因此报它可空；但主键写不进 NULL，取出来一定有值。
+ * - **id 列按带牌子的 id 类型给。** 写入侧只可能塞 `newRunId()` 这类值进去，
+ *   所以列里躺的确实是那个类型。在这里断言一次，好过在六个映射函数里断言三十次。
+ */
+
+export interface WorkspaceRow {
+  id: WorkspaceId
+  name: string
+  root_path: string
+  last_opened_at: number
+  created_at: number
+  removed_at: number | null
+  pinned_at: number | null
+}
+
+export interface ConversationRow {
+  id: ConversationId
+  workspace_id: WorkspaceId
+  title: string
+  provider: string
+  model: string
+  compaction_manifest: string | null
+  cache_generation: number
+  /** CHECK 没管这一列，但写入侧只写这两个值中的一个。 */
+  source: 'workflow' | null
+  source_ref: string | null
+  archived_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface MessageRow {
+  id: MessageId
+  conversation_id: ConversationId
+  /** `CHECK (role IN ('user','assistant'))`。 */
+  role: 'user' | 'assistant'
+  content: string
+  attachments: string | null
+  created_at: number
+}
+
+export interface RunRow {
+  id: RunId
+  conversation_id: ConversationId
+  workspace_id: WorkspaceId
+  user_message_id: MessageId | null
+  message_id_upper_bound: MessageId | null
+  assistant_message_id: MessageId | null
+  model: string
+  client_request_id: string
+  /** `CHECK (status IN ('queued','running','done','failed','interrupted'))`。 */
+  status: RunStatus
+  stop_reason: StopReason | null
+  input_tokens: number
+  output_tokens: number
+  /** NULL = provider 未回报，与真实 0 命中是两回事。不要 COALESCE 成 0。 */
+  cached_tokens: number | null
+  cache_write_tokens: number | null
+  reasoning_tokens: number
+  cost: number
+  currency: Currency
+  usage_turns: string
+  step_count: number
+  error_message: string | null
+  error_code: string | null
+  retry_of_run_id: RunId | null
+  superseded_by: RunId | null
+  owner_pid: number | null
+  heartbeat_at: number | null
+  created_at: number
+  finished_at: number | null
+}
+
+export interface StepRow {
+  id: StepId
+  run_id: RunId
+  seq: number
+  /** `CHECK (kind IN ('text','tool_action','compaction','thinking'))`。 */
+  kind: StepKind
+  tool_name: string | null
+  tool_call_id: string | null
+  provider_batch_id: string | null
+  call_index: number | null
+  execution_wave_index: number | null
+  execution_started_at: number | null
+  content: string | null
+  payload: string | null
+  status: ToolActionStatus | 'done'
+  created_at: number
+}
+
+export interface ProviderRequestRow {
+  id: ProviderRequestId
+  run_id: RunId
+  turn_index: number
+  retry_index: number
+  model: string
+  /** `CHECK (status IN ('pending','in_flight','received','uncertain','rejected'))`。 */
+  status: ProviderRequestStatus
+  measured_input_tokens: number
+  provider_input_tokens: number | null
+  provider_output_tokens: number | null
+  provider_cached_tokens: number | null
+  provider_cache_write_tokens: number | null
+  sent_categories: string
+  omitted_categories: string
+  finish_reason: string
+  error_code: string | null
+  payload_hash: string
+  cache_route_fingerprint: string | null
+  sent_at: number | null
+  created_at: number
+}
+
+export interface IntermediateResourceRow {
+  id: ResourceId
+  run_id: RunId
+  step_id: StepId | null
+  tool_name: string
+  source_type: string
+  /** `CHECK (status IN ('complete','partial','failed'))`。 */
+  status: ResourceStatus
+  content_hash: string | null
+  size_bytes: number
+  mime_type: string | null
+  coverage: string
+  created_at: number
+}
+
+/**
+ * 表名 → 这张表的列名。**给比对测试用**——接口的键在运行时取不到，所以列名单独列一份，
+ * 而这份与接口写在同一处、同一次修改里，漏改一处会被测试逮到。
+ */
+export const ROW_COLUMNS: Record<string, readonly string[]> = {
+  workspaces: [
+    'id',
+    'name',
+    'root_path',
+    'last_opened_at',
+    'created_at',
+    'removed_at',
+    'pinned_at',
+  ],
+  conversations: [
+    'id',
+    'workspace_id',
+    'title',
+    'provider',
+    'model',
+    'compaction_manifest',
+    'cache_generation',
+    'source',
+    'source_ref',
+    'archived_at',
+    'created_at',
+    'updated_at',
+  ],
+  messages: ['id', 'conversation_id', 'role', 'content', 'attachments', 'created_at'],
+  runs: [
+    'id',
+    'conversation_id',
+    'workspace_id',
+    'user_message_id',
+    'message_id_upper_bound',
+    'assistant_message_id',
+    'model',
+    'client_request_id',
+    'status',
+    'stop_reason',
+    'input_tokens',
+    'output_tokens',
+    'cached_tokens',
+    'cache_write_tokens',
+    'reasoning_tokens',
+    'cost',
+    'currency',
+    'usage_turns',
+    'step_count',
+    'error_message',
+    'error_code',
+    'retry_of_run_id',
+    'superseded_by',
+    'owner_pid',
+    'heartbeat_at',
+    'created_at',
+    'finished_at',
+  ],
+  steps: [
+    'id',
+    'run_id',
+    'seq',
+    'kind',
+    'tool_name',
+    'tool_call_id',
+    'provider_batch_id',
+    'call_index',
+    'execution_wave_index',
+    'execution_started_at',
+    'content',
+    'payload',
+    'status',
+    'created_at',
+  ],
+  provider_requests: [
+    'id',
+    'run_id',
+    'turn_index',
+    'retry_index',
+    'model',
+    'status',
+    'measured_input_tokens',
+    'provider_input_tokens',
+    'provider_output_tokens',
+    'provider_cache_write_tokens',
+    'provider_cached_tokens',
+    'sent_categories',
+    'omitted_categories',
+    'finish_reason',
+    'error_code',
+    'payload_hash',
+    'cache_route_fingerprint',
+    'sent_at',
+    'created_at',
+  ],
+  intermediate_resources: [
+    'id',
+    'run_id',
+    'step_id',
+    'tool_name',
+    'source_type',
+    'status',
+    'content_hash',
+    'size_bytes',
+    'mime_type',
+    'coverage',
+    'created_at',
+  ],
+}

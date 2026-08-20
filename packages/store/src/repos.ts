@@ -38,6 +38,14 @@ import {
 } from '@qywork/core'
 import type { Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
+import type {
+  ConversationRow,
+  MessageRow,
+  ProviderRequestRow,
+  RunRow,
+  StepRow,
+  WorkspaceRow,
+} from './schema.ts'
 
 const EMPTY_USAGE: RunUsage = {
   inputTokens: 0,
@@ -55,7 +63,7 @@ const EMPTY_USAGE: RunUsage = {
 export function upsertWorkspace(store: Store, rootPath: string, name: string): Workspace {
   const now = Date.now()
   const existing = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
+    .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
     .get(rootPath)
   if (existing) {
     // `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
@@ -95,7 +103,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
  */
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
-    .query<Record<string, any>, []>(
+    .query<WorkspaceRow, []>(
       `SELECT * FROM workspaces WHERE removed_at IS NULL
        ORDER BY pinned_at IS NULL, pinned_at DESC, created_at ASC, id ASC`,
     )
@@ -112,7 +120,7 @@ export function listWorkspaces(store: Store): Workspace[] {
  */
 export function mostRecentWorkspace(store: Store): Workspace | null {
   const row = store.db
-    .query<Record<string, any>, []>(
+    .query<WorkspaceRow, []>(
       `SELECT * FROM workspaces WHERE removed_at IS NULL
        ORDER BY last_opened_at DESC, id DESC LIMIT 1`,
     )
@@ -142,14 +150,14 @@ export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolea
  */
 export function getWorkspaceByPath(store: Store, rootPath: string): Workspace | null {
   const row = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
+    .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
     .get(rootPath)
   return row ? rowToWorkspace(row) : null
 }
 
 export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
   const row = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM workspaces WHERE id = ?')
+    .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE id = ?')
     .get(id)
   return row ? rowToWorkspace(row) : null
 }
@@ -207,7 +215,7 @@ export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
  */
 export function workspaceOf(store: Store, id: ConversationId): Workspace | null {
   const row = store.db
-    .query<Record<string, any>, [string]>(
+    .query<WorkspaceRow, [string]>(
       `SELECT w.* FROM conversations c
        JOIN workspaces w ON w.id = c.workspace_id
        WHERE c.id = ?`,
@@ -268,7 +276,7 @@ export function createConversation(
 
 export function getConversation(store: Store, id: ConversationId): Conversation | null {
   const row = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM conversations WHERE id = ?')
+    .query<ConversationRow, [string]>('SELECT * FROM conversations WHERE id = ?')
     .get(id)
   return row ? rowToConversation(row) : null
 }
@@ -283,7 +291,7 @@ export function getConversation(store: Store, id: ConversationId): Conversation 
  */
 export function listRecentConversations(store: Store, limit = 20): Conversation[] {
   return store.db
-    .query<Record<string, any>, [number]>(
+    .query<ConversationRow, [number]>(
       // `source IS NULL` = 用户会话；编排产生的机器会话不列，
       // 与 listConversations 用同一条判据（不是另发明一个 kind 列）。
       `SELECT * FROM conversations WHERE source IS NULL
@@ -295,7 +303,7 @@ export function listRecentConversations(store: Store, limit = 20): Conversation[
 
 export function listConversations(store: Store, workspaceId: WorkspaceId): Conversation[] {
   return store.db
-    .query<Record<string, any>, [string]>(
+    .query<ConversationRow, [string]>(
       // 只列用户会话：编排产生的机器会话不进会话列表，
       // 它们由父会话的协作视图展示。
       //
@@ -539,12 +547,12 @@ export function listMessages(
 ): Message[] {
   const rows = upperBound
     ? store.db
-        .query<Record<string, any>, [string, string]>(
+        .query<MessageRow, [string, string]>(
           'SELECT * FROM messages WHERE conversation_id = ? AND id <= ? ORDER BY id ASC',
         )
         .all(conversationId, upperBound)
     : store.db
-        .query<Record<string, any>, [string]>(
+        .query<MessageRow, [string]>(
           'SELECT * FROM messages WHERE conversation_id = ? ORDER BY id ASC',
         )
         .all(conversationId)
@@ -637,7 +645,7 @@ export function findRunByClientRequest(
   clientRequestId: string,
 ): Run | null {
   const row = store.db
-    .query<Record<string, any>, [string, string]>(
+    .query<RunRow, [string, string]>(
       'SELECT * FROM runs WHERE conversation_id = ? AND client_request_id = ?',
     )
     .get(conversationId, clientRequestId)
@@ -645,9 +653,7 @@ export function findRunByClientRequest(
 }
 
 export function getRun(store: Store, id: RunId): Run | null {
-  const row = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM runs WHERE id = ?')
-    .get(id)
+  const row = store.db.query<RunRow, [string]>('SELECT * FROM runs WHERE id = ?').get(id)
   return row ? rowToRun(row) : null
 }
 
@@ -758,8 +764,13 @@ export function recoverStaleRuns(store: Store): {
   /** 有归属、且那个归属还活着，本次放过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
   heldByOthers: number
 } {
+  // 这一趟取的是**投影**不是表行：列名改过，`ambiguous` 还是算出来的，
+  // 所以形状就地声明，不去借哪张表的行类型。
   const all = store.db
-    .query<Record<string, any>, []>(
+    .query<
+      { id: RunId; ownerPid: number | null; heartbeatAt: number | null; ambiguous: number },
+      []
+    >(
       `SELECT r.id AS id, r.owner_pid AS ownerPid, r.heartbeat_at AS heartbeatAt,
               EXISTS (
                 SELECT 1 FROM steps s
@@ -918,7 +929,7 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
 
 export function listRuns(store: Store, conversationId: ConversationId): Run[] {
   return store.db
-    .query<Record<string, any>, [string]>(
+    .query<RunRow, [string]>(
       'SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at ASC, id ASC',
     )
     .all(conversationId)
@@ -1048,7 +1059,7 @@ export function latestSentProviderRequest(
   conversationId: ConversationId,
 ): ProviderRequest | null {
   const row = store.db
-    .query<Record<string, any>, [string]>(
+    .query<ProviderRequestRow, [string]>(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
        WHERE r.conversation_id = ? AND pr.sent_at IS NOT NULL
@@ -1070,7 +1081,7 @@ export function latestAnchoredProviderRequest(
   conversationId: ConversationId,
 ): ProviderRequest | null {
   const row = store.db
-    .query<Record<string, any>, [string]>(
+    .query<ProviderRequestRow, [string]>(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
        WHERE r.conversation_id = ? AND pr.provider_input_tokens IS NOT NULL
@@ -1083,14 +1094,14 @@ export function latestAnchoredProviderRequest(
 
 export function listProviderRequests(store: Store, runId: RunId): ProviderRequest[] {
   return store.db
-    .query<Record<string, any>, [string]>(
+    .query<ProviderRequestRow, [string]>(
       'SELECT * FROM provider_requests WHERE run_id = ? ORDER BY turn_index ASC, retry_index ASC',
     )
     .all(runId)
     .map(rowToProviderRequest)
 }
 
-function rowToProviderRequest(r: Record<string, any>): ProviderRequest {
+function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
   return {
     id: r.id,
     runId: r.run_id,
@@ -1202,14 +1213,14 @@ export function appendTextToStep(store: Store, id: StepId, text: string): void {
 
 export function listSteps(store: Store, runId: RunId): Step[] {
   return store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM steps WHERE run_id = ? ORDER BY seq ASC')
+    .query<StepRow, [string]>('SELECT * FROM steps WHERE run_id = ? ORDER BY seq ASC')
     .all(runId)
     .map(rowToStep)
 }
 
 // ─────────────────────────────── 行 → 领域对象 ───────────────────────────────
 
-function rowToWorkspace(r: Record<string, any>): Workspace {
+function rowToWorkspace(r: WorkspaceRow): Workspace {
   return {
     id: r.id,
     name: r.name,
@@ -1222,7 +1233,7 @@ function rowToWorkspace(r: Record<string, any>): Workspace {
   }
 }
 
-function rowToConversation(r: Record<string, any>): Conversation {
+function rowToConversation(r: ConversationRow): Conversation {
   return {
     id: r.id,
     workspaceId: r.workspace_id,
@@ -1238,7 +1249,7 @@ function rowToConversation(r: Record<string, any>): Conversation {
   }
 }
 
-function rowToMessage(r: Record<string, any>): Message {
+function rowToMessage(r: MessageRow): Message {
   return {
     id: r.id,
     conversationId: r.conversation_id,
@@ -1249,7 +1260,7 @@ function rowToMessage(r: Record<string, any>): Message {
   }
 }
 
-function rowToRun(r: Record<string, any>): Run {
+function rowToRun(r: RunRow): Run {
   return {
     id: r.id,
     conversationId: r.conversation_id,
@@ -1282,7 +1293,7 @@ function rowToRun(r: Record<string, any>): Run {
   }
 }
 
-function rowToStep(r: Record<string, any>): Step {
+function rowToStep(r: StepRow): Step {
   return {
     id: r.id,
     runId: r.run_id,
