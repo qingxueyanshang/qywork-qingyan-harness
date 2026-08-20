@@ -196,16 +196,6 @@ function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
     return denom > 0 ? `${((t.cached / denom) * 100).toFixed(1)}%` : NA
   }
 
-  const cells = () => [
-    { label: '轮次', value: String(props.runs.length) },
-    // 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。
-    { label: '输入', value: compact(totals().input + (totals().cached ?? 0)) },
-    { label: '输出', value: compact(totals().output) },
-    { label: '命中率', value: hit() },
-    { label: '缓存命中', value: maybeCount(totals().cached) },
-    { label: '缓存写入', value: maybeCount(totals().cacheWrite) },
-  ]
-
   return (
     <header class="run-sum">
       <div class="run-sum-top">
@@ -213,12 +203,14 @@ function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
         <span class="run-sum-cost">{money(totals().cost)}</span>
       </div>
       <div class="run-stats">
-        <For each={cells()}>{(c) => <Stat label={c.label} value={c.value} />}</For>
+        <Stat label="轮次" value={String(props.runs.length)} />
+        {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
+        <Stat label="输入" value={compact(totals().input + (totals().cached ?? 0))} />
+        <Stat label="输出" value={compact(totals().output)} />
+        <Stat label="命中率" value={hit()} />
+        <Stat label="缓存命中" value={maybeCount(totals().cached)} />
+        <Stat label="缓存写入" value={maybeCount(totals().cacheWrite)} />
       </div>
-      {/* 术语释义，跟着术语走：卡里没有 N/A 就不占这一行。 */}
-      <Show when={cells().some((c) => c.value === NA) || money(totals().cost) === NA}>
-        <span class="run-sum-note">{NA_NOTE}</span>
-      </Show>
     </header>
   )
 }
@@ -473,16 +465,12 @@ function money(cost: Record<string, number>): string {
  * 没有这个数时写它。
  *
  * **是术语，不是符号**：一根横线读者认不出它在说什么——是零、是省略、还是没取到。
- * `N/A` 是数据表里「此处无可用值」的通用写法，含义唯一。它出现时，`NA_NOTE` 那一句
- * 跟着出现，把这个词是什么说清楚。
+ * `N/A` 是数据表里「此处无可用值」的通用写法，含义唯一，也不会被当成数字。
  *
  * 它盖着两种情形，两种都是「这个数不存在」而不是「这个数是 0」：
  * 接口没有回报这个字段（缓存那几格的 `null`），以及这个模型没有计价（金额为 0）。
  */
 const NA = 'N/A'
-
-/** `N/A` 的释义。**只在屏幕上真出现 `N/A` 时才显示**，恒显就是常驻噪声。 */
-const NA_NOTE = 'N/A：接口没有回报这个数，与回报了 0 不是一回事。'
 
 /** 读数卡里的计数。 */
 function maybeCount(n: number | null): string {

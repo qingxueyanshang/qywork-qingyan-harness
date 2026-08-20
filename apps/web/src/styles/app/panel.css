@@ -924,12 +924,6 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-/* 术语释义。压到最小一档，但不折叠也不降到看不清——它是读懂上面那张卡的前提。 */
-.run-sum-note {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-}
 
 /* 读数卡：三列两行，格与格之间只留间距不画线——六个数本来就是一组，
    画上格线就成了一张需要横竖对着读的表。
