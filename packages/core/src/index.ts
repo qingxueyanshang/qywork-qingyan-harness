@@ -109,6 +109,7 @@ export {
   decodePairingUrl,
   type EnvDependency,
   encodePairingUrl,
+  type HelloErrFrame,
   type HelloFrame,
   type HelloOkFrame,
   type PairingPayload,

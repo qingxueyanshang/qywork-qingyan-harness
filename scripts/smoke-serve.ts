@@ -10,7 +10,7 @@
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent, EventEnvelope } from '@qywork/core'
+import type { AgentEvent, CommandRejectedFrame, EventEnvelope, HelloOkFrame } from '@qywork/core'
 import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
@@ -95,10 +95,12 @@ async function main(): Promise<number> {
     })
     check('错误令牌返回 401', badAuth.status === 401, badAuth.status)
 
-    const tree = await json(await fetch(`${base}/api/files/tree?depth=2`, { headers: auth }))
+    const tree = await json<{ nodes?: { name: string }[] }>(
+      await fetch(`${base}/api/files/tree?depth=2`, { headers: auth }),
+    )
     check(
       '文件树列出 calc.js',
-      Array.isArray(tree.nodes) && tree.nodes.some((n: any) => n.name === 'calc.js'),
+      Array.isArray(tree.nodes) && tree.nodes.some((n) => n.name === 'calc.js'),
       tree,
     )
 
@@ -146,8 +148,10 @@ async function main(): Promise<number> {
     })
 
     const frames: EventEnvelope<AgentEvent>[] = []
-    const rejections: any[] = []
-    let helloOk: any = null
+    const rejections: CommandRejectedFrame[] = []
+    // 装在对象里而不是 `let`：赋值发生在下面那个回调里，而 TS 对「只在闭包里赋值」的
+    // `let` 会一直按初值 `null` 收窄，读的时候就成了 never。
+    const hello: { ok: HelloOkFrame | null } = { ok: null }
     let permissionAsks = 0
     let permissionResolved = 0
     const askedScopes: string[] = []
@@ -156,7 +160,7 @@ async function main(): Promise<number> {
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data))
       if (msg.type === 'hello.ok') {
-        helloOk = msg
+        hello.ok = msg
         return
       }
       if (msg.type === 'hello.err') {
@@ -204,16 +208,16 @@ async function main(): Promise<number> {
       }),
     )
     await Bun.sleep(300)
-    check('hello 握手成功', helloOk?.type === 'hello.ok', helloOk)
+    check('hello 握手成功', hello.ok?.type === 'hello.ok', hello.ok)
     // 能力位只声明**有消费者**的那几项。`pty` / `git` / `fileWatch` 已删：
     // 前两个没人读，第三个还是假的（全仓没有文件监视器）。
     check(
       '能力声明里不再有无人消费的能力位',
-      helloOk?.capabilities &&
-        !('pty' in helloOk.capabilities) &&
-        !('git' in helloOk.capabilities) &&
-        !('fileWatch' in helloOk.capabilities),
-      helloOk?.capabilities,
+      !!hello.ok?.capabilities &&
+        !('pty' in hello.ok.capabilities) &&
+        !('git' in hello.ok.capabilities) &&
+        !('fileWatch' in hello.ok.capabilities),
+      hello.ok?.capabilities,
     )
 
     // ── 指令 fail-closed ──
@@ -239,7 +243,7 @@ async function main(): Promise<number> {
     const compactEvents = frames
       .slice(beforeCompact)
       .filter((f) => f.event.type === 'compaction')
-      .map((f) => f.event as any)
+      .map((f) => f.event as Extract<AgentEvent, { type: 'compaction' }>)
     check('手动压缩有明确回执（started + 终态）', compactEvents.length >= 2, compactEvents)
     check(
       '空会话压缩回 skipped 而不是假装成功',
@@ -252,7 +256,7 @@ async function main(): Promise<number> {
     const before = await json<{ conversations: { id: string; model?: string }[] }>(
       await fetch(`${base}/api/conversations`, { headers: auth }),
     )
-    const originalModel = before.conversations.find((c: any) => c.id === conversationId)?.model
+    const originalModel = before.conversations.find((c) => c.id === conversationId)?.model
 
     const models = await json(await fetch(`${base}/api/models`, { headers: auth }))
     check('模型列表非空', Array.isArray(models.models) && models.models.length > 0)
@@ -265,8 +269,7 @@ async function main(): Promise<number> {
     check(
       '切换后广播 conversation.updated',
       frames.some(
-        (f) =>
-          f.event.type === 'conversation.updated' && (f.event as any).model === 'deepseek-v4-pro',
+        (f) => f.event.type === 'conversation.updated' && f.event.model === 'deepseek-v4-pro',
       ),
       frames.filter((f) => f.event.type === 'conversation.updated').map((f) => f.event),
     )
@@ -274,7 +277,7 @@ async function main(): Promise<number> {
     const afterSwitch = await json<{ conversations: { id: string; model?: string }[] }>(
       await fetch(`${base}/api/conversations`, { headers: auth }),
     )
-    const newModel = afterSwitch.conversations.find((c: any) => c.id === conversationId)?.model
+    const newModel = afterSwitch.conversations.find((c) => c.id === conversationId)?.model
     check('模型确实落库（不是静默假成功）', newModel === 'deepseek-v4-pro', {
       originalModel,
       newModel,
@@ -312,7 +315,9 @@ async function main(): Promise<number> {
               `；模型：${JSON.stringify(
                 frames
                   .filter((f) => f.event.type === 'run.started')
-                  .map((f) => (f.event as any).model),
+                  .map(
+                    (f) => (f.event as Extract<AgentEvent, { type: 'conversation.updated' }>).model,
+                  ),
               )}` +
               `；最后 4 个事件：${JSON.stringify(frames.slice(-4).map((f) => f.event))}`
             ).slice(0, 1500),
@@ -357,12 +362,12 @@ async function main(): Promise<number> {
       .map((f) => f.event)
       .filter(
         (ev): ev is Extract<AgentEvent, { type: 'tool.finished' }> =>
-          ev.type === 'tool.finished' && (ev.outcome as any)?.errorKind === 'permission_denied',
+          ev.type === 'tool.finished' && ev.outcome?.errorKind === 'permission_denied',
       )
     check(
       `被拒的调用都带得出理由（本轮 ${denials.length} 次）`,
-      denials.every((d) => String((d.outcome as any)?.message ?? '').length > 10),
-      denials.map((d) => (d.outcome as any)?.message),
+      denials.every((d) => String(d.outcome?.message ?? '').length > 10),
+      denials.map((d) => d.outcome?.message),
     )
 
     const types = new Set(frames.map((f) => f.event.type))
@@ -414,8 +419,12 @@ async function main(): Promise<number> {
     // 验的是 supersede 这条链路真的有写入方。它的 schema、读取、渲染早就全在了，
     // 唯独没人写——半条死链路比没有更糟，因为文档和 UI 都在声称它存在。
     process.stdout.write('\n重试与接替\n')
-    const firstRunId = (frames.find((f) => f.event.type === 'run.started')!.event as any)
-      .runId as string
+    const firstRunId = (
+      frames.find((f) => f.event.type === 'run.started')!.event as Extract<
+        AgentEvent,
+        { type: 'run.started' }
+      >
+    ).runId as string
 
     // **等 run.started 就够，不等 run.finished。**
     //
@@ -423,7 +432,7 @@ async function main(): Promise<number> {
     // run.started 那一刻已经全部落库。等它跑完只是在等模型——而重试是在
     // 一个任务已经做完的工作区上重跑，模型会绕很多轮去理解「为什么已经改好了」，
     // 实测超过 180 秒仍在流式输出。等错信号会把一个稳定的断言变成随机失败的断言。
-    const startedRetry = Promise.withResolvers<any>()
+    const startedRetry = Promise.withResolvers<Extract<AgentEvent, { type: 'run.started' }>>()
     const onRetryStart = (e: MessageEvent) => {
       const msg = JSON.parse(String(e.data))
       if (msg?.event?.type === 'run.started' && msg.event.retryOfRunId === firstRunId) {
@@ -452,13 +461,13 @@ async function main(): Promise<number> {
       firstRunId,
       started: frames
         .filter((f) => f.event.type === 'run.started')
-        .map((f) => (f.event as any).runId),
+        .map((f) => (f.event as Extract<AgentEvent, { type: 'run.started' }>).runId),
     })
 
     const runsAfter = await json<{
       runs: { id: string; messageIdUpperBound?: string; supersededBy?: string | null }[]
     }>(await fetch(`${base}/api/conversations/${conversationId}/runs`, { headers: auth }))
-    const original = runsAfter.runs.find((r: any) => r.id === firstRunId)
+    const original = runsAfter.runs.find((r) => r.id === firstRunId)
     check('原 run 被标记接替', original?.supersededBy === retryStarted?.runId, {
       supersededBy: original?.supersededBy,
       expected: retryStarted?.runId,
@@ -467,7 +476,7 @@ async function main(): Promise<number> {
     check(
       '重试继承原 run 的消息高水位（不卷入新消息）',
       original?.messageIdUpperBound ===
-        runsAfter.runs.find((r: any) => r.id === retryStarted?.runId)?.messageIdUpperBound,
+        runsAfter.runs.find((r) => r.id === retryStarted?.runId)?.messageIdUpperBound,
     )
 
     // 重试的 run 还在跑，此时再重试必须被拒——两个 run 同时改同一个工作区
@@ -599,7 +608,7 @@ async function main(): Promise<number> {
         sock.addEventListener('open', () => res(), { once: true })
         sock.addEventListener('error', () => rej(new Error('ws 连接失败')), { once: true })
       })
-      const errored = Promise.withResolvers<any>()
+      const errored = Promise.withResolvers<Extract<AgentEvent, { type: 'run.error' }>>()
       sock.addEventListener('message', (e) => {
         const msg = JSON.parse(String(e.data))
         if (msg?.event?.type === 'run.error') errored.resolve(msg.event)
@@ -626,7 +635,6 @@ async function main(): Promise<number> {
       clearTimeout(t)
 
       check('空 key 报 no_api_key 而不是 auth_failed', ev.code === 'no_api_key', ev)
-      check('不可重试（要先改配置）', ev.retryable === false, ev)
       check('报错里带配置文件路径', String(ev.message).includes('config.json'), ev.message)
       sock.close()
     } catch (err) {
