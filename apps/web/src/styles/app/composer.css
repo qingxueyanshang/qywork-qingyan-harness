@@ -513,18 +513,6 @@
 .ctx-stack-seg {
   height: 100%;
 }
-/* 压缩触发线的刻度。定位基准放在包裹层上，因为 `.ctx-stack` 自己
-   `overflow: hidden`，刻度画在它里面会被裁掉伸出条外的那两端。 */
-.ctx-stack-wrap {
-  position: relative;
-}
-.ctx-stack-tick {
-  position: absolute;
-  top: calc(var(--s-2) - 2px);
-  width: 1px;
-  height: 10px;
-  background: var(--text-tertiary);
-}
 .ctx-rows {
   list-style: none;
   margin: 0;

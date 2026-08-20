@@ -690,31 +690,20 @@ function ContextMeter() {
                   {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
                 </span>
               </div>
-              {/* 刻度画在条外的包裹层上：`.ctx-stack` 自己 `overflow: hidden`，
-                  放进去会被裁掉一半。位置由后端给的 `compactAt` 定，不在这里重算。 */}
-              <div class="ctx-stack-wrap">
-                <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
-                  <For each={rows()}>
-                    {(r) => (
-                      <Show when={r.tokens > 0}>
-                        <span
-                          class="ctx-stack-seg"
-                          style={{
-                            width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
-                            background: r.color,
-                          }}
-                        />
-                      </Show>
-                    )}
-                  </For>
-                </div>
-                <Show when={c().compactAt > 0 && c().compactAt < c().limit}>
-                  <span
-                    class="ctx-stack-tick"
-                    style={{ left: `${(c().compactAt / Math.max(1, c().limit)) * 100}%` }}
-                    title={`超过 ${fmtTok(c().compactAt)} 自动压缩`}
-                  />
-                </Show>
+              <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
+                <For each={rows()}>
+                  {(r) => (
+                    <Show when={r.tokens > 0}>
+                      <span
+                        class="ctx-stack-seg"
+                        style={{
+                          width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
+                          background: r.color,
+                        }}
+                      />
+                    </Show>
+                  )}
+                </For>
               </div>
               <ul class="ctx-rows">
                 <For each={rows()}>
