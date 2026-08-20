@@ -437,6 +437,7 @@ export class Session {
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
         store,
+        conversationId,
         workspaceId: this.workspaceId,
         profile: () => this.resolveProfile(target),
         signal: this.opts.signal,
@@ -937,6 +938,12 @@ export class Session {
 export interface SummarizerOptions {
   store: Store
   workspaceId: string
+  /**
+   * 这次压缩是为哪条会话做的。**必填**：它是这笔钱与会话之间唯一的连接，
+   * 不带的话账本里这一笔只认得工作区，「这条会话花了多少」就永远少算一块——
+   * 而压缩越频繁少得越多。
+   */
+  conversationId: ConversationId
   /** 每次调用现解析：摘要发起时会话模型可能已经被切过。 */
   profile: () => ProviderProfile
   /** 调用方的中断信号。不传 = 只受流空闲判定约束。 */
@@ -1043,6 +1050,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     if (spent) {
       recordUsage(opts.store, {
         kind: 'summary',
+        conversationId: opts.conversationId,
         workspaceId: opts.workspaceId,
         model: adapter.spec.id,
         provider: profile.kind,

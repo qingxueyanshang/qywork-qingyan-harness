@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
-import { pruneUsage, recordUsage, type UsageEntry, usageBy, usageTotals } from './usage.ts'
+import {
+  pruneUsage,
+  recordUsage,
+  type UsageEntry,
+  usageBy,
+  usageEntries,
+  usageTotals,
+} from './usage.ts'
 
 const DAY = 86_400_000
 
@@ -289,6 +296,40 @@ describe('记账失败要说出来', () => {
       process.stderr.write = original
     }
     expect(said).toContain('记账失败')
+    store.close()
+  })
+})
+
+/**
+ * 「这条会话花了多少」。
+ *
+ * 界面上这个数**必须含压缩摘要那几笔**：摘要是这条会话引发的、也计费，只是它不属于
+ * 任何一轮。把 run 加起来是漏账，压缩越频繁漏得越多，而漏掉的部分在界面上无处可查。
+ */
+describe('按会话结账', () => {
+  test('合计含非轮次的那几笔，且只算这条会话', () => {
+    const store = new Store({ path: ':memory:' })
+    recordUsage(store, entry({ conversationId: 'cv_a', runId: 'run_1', cost: 0.01 }))
+    recordUsage(store, entry({ kind: 'summary', conversationId: 'cv_a', cost: 0.004 }))
+    recordUsage(store, entry({ conversationId: 'cv_b', runId: 'run_2', cost: 0.5 }))
+
+    const a = usageTotals(store, { conversationId: 'cv_a' })
+    expect(a.entries).toBe(2)
+    expect(a.cost.USD).toBeCloseTo(0.014, 6)
+
+    // 清单要能把那一笔单独摆出来，否则合计比清单大而看不出差在哪。
+    const rows = usageEntries(store, { conversationId: 'cv_a' })
+    expect(rows.map((r) => r.kind).sort()).toEqual(['run', 'summary'])
+    expect(rows.find((r) => r.kind === 'summary')?.runId).toBe(null)
+    store.close()
+  })
+
+  test('一笔都没回报过缓存写入时是 null，不是 0', () => {
+    const store = new Store({ path: ':memory:' })
+    recordUsage(store, entry({ conversationId: 'cv_c', cacheWriteTokens: null }))
+    expect(usageTotals(store, { conversationId: 'cv_c' }).cacheWriteTokens).toBe(null)
+    recordUsage(store, entry({ conversationId: 'cv_c', runId: 'run_9', cacheWriteTokens: 7 }))
+    expect(usageTotals(store, { conversationId: 'cv_c' }).cacheWriteTokens).toBe(7)
     store.close()
   })
 })

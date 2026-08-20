@@ -174,7 +174,12 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
     store,
     conversationId: conv.id,
     messageIdUpperBound: null,
-    summarize: makeSummarizer({ store, workspaceId: ws.id, profile: () => profile }),
+    summarize: makeSummarizer({
+      store,
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      profile: () => profile,
+    }),
   })
   // 数一次调用。断言「恢复被触发」只能看这个——看摘要请求数不行，
   // 收纳段够用时压缩本来就不调模型。
