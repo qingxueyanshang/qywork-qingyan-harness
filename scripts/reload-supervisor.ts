@@ -56,13 +56,13 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     if (deps.busy()) return schedule(deps.idlePollMs)
 
     reloading = true
-    deps.log('源码变了且手上没有 run，换代码')
+    deps.log('源码已变更且当前无运行中的 run，重启 sidecar')
     try {
       await deps.restart()
       // 换成功了说明这棵源码树是能跑起来的，之前那几次崩溃不再计入。
       crashes = 0
     } catch (err) {
-      deps.log(`换代码失败：${err instanceof Error ? err.message : String(err)}`)
+      deps.log(`重启 sidecar 失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       // **必须在 finally 里放**：restart 抛出去而这个标志还立着的话，
       // 此后每一次改动都只会被排到后面，再也不会换代码，而且一声不吭。
@@ -75,14 +75,18 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     if (reloading) return
     crashes++
     if (crashes > MAX_CRASH_RESTARTS) {
-      deps.log(`sidecar 连着 ${crashes} 次起不来（最后退出码 ${code}），不再重试，见上面的报错`)
+      deps.log(
+        `sidecar 连续 ${crashes} 次启动失败（最后退出码 ${code}），不再重试，详见上方错误输出`,
+      )
       return
     }
-    deps.log(`sidecar 退出了（退出码 ${code}），重新起一个`)
+    deps.log(`sidecar 已退出（退出码 ${code}），正在重启`)
     reloading = true
     void deps
       .restart()
-      .catch((err) => deps.log(`重起失败：${err instanceof Error ? err.message : String(err)}`))
+      .catch((err) =>
+        deps.log(`重启 sidecar 失败：${err instanceof Error ? err.message : String(err)}`),
+      )
       .finally(() => {
         reloading = false
       })

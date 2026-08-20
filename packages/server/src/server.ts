@@ -172,7 +172,7 @@ export function serve(opts: ServeOptions) {
   const stale = recoverStaleRuns(opts.store)
   if (stale.recovered > 0) {
     process.stderr.write(
-      `[qy] 回收上次残留的 ${stale.recovered} 个执行记录` +
+      `[qy] 已回收上次残留的 ${stale.recovered} 个执行记录` +
         (stale.ambiguous > 0 ? `，其中 ${stale.ambiguous} 个在工具执行期间中断，结果不可信` : '') +
         '\n',
     )
@@ -181,7 +181,7 @@ export function serve(opts: ServeOptions) {
   // 而这两种在排查「为什么那条会话还显示执行中」时是完全不同的方向。
   if (stale.heldByOthers > 0) {
     process.stderr.write(
-      `[qy] 另有 ${stale.heldByOthers} 个执行记录由其它还在跑的进程持有，未回收\n`,
+      `[qy] 另有 ${stale.heldByOthers} 个执行记录由其它运行中的进程持有，未回收\n`,
     )
   }
 
@@ -192,7 +192,7 @@ export function serve(opts: ServeOptions) {
     .then((r) => {
       if (r.removed > 0) {
         process.stderr.write(
-          `[qy] 清理了 ${r.removed} 个没有被任何消息引用的附件（${Math.round(r.bytes / 1024)} KB）
+          `[qy] 已清理 ${r.removed} 个未被任何消息引用的附件（${Math.round(r.bytes / 1024)} KB）
 `,
         )
       }
@@ -465,6 +465,9 @@ export function serve(opts: ServeOptions) {
     content,
     token,
     port: boundPort,
+    // 启动横幅要显示的是**真正生效的**工作区。调用方传进来的可能是 null
+    // （没给 --cwd），那时由 bootstrapWorkspace 决定用哪个，只有这里知道结果。
+    workspaceRoot,
     enableLan,
     disableLan,
     lanEnabled: () => lanServer !== null,

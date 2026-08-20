@@ -84,10 +84,10 @@ async function bindable(port: number): Promise<boolean> {
 if (!(await bindable(PORT))) {
   process.stderr.write(
     (await answers(PORT))
-      ? `端口 ${PORT} 上已经有一个 qywork 在跑。先把它停掉，或用 QYWORK_PORT=<别的端口> 重来。
+      ? `端口 ${PORT} 已被另一个 qywork 实例占用。请先停止该实例，或设置 QYWORK_PORT=<其它端口> 后重试。
 `
-      : `端口 ${PORT} 被一个不应答的进程占着——多半是这次改动之前留下的后台进程还攥着监听句柄，` +
-          `netstat 里那个 PID 可能已经不在了。把它收掉，或用 QYWORK_PORT=<别的端口> 重来。
+      : `端口 ${PORT} 被一个不响应的进程占用，通常是此前遗留的后台进程仍持有监听句柄，` +
+          `netstat 显示的 PID 可能已经不存在。请结束该进程，或设置 QYWORK_PORT=<其它端口> 后重试。
 `,
   )
   process.exit(1)
@@ -155,18 +155,18 @@ function startAgent(): void {
   })
 }
 
-process.stderr.write(`[dev] sidecar 从源码跑，:${PORT}\n`)
+process.stderr.write(`[dev] 从源码启动 sidecar，端口 ${PORT}\n`)
 startAgent()
 if (!(await waitReady())) {
   process.stderr.write(
     agent.exitCode !== null
-      ? '[dev] sidecar 启动失败，见上面的输出\n'
-      : '[dev] sidecar 30 秒内没起来\n',
+      ? '[dev] sidecar 启动失败，详见上方输出\n'
+      : '[dev] sidecar 启动超时（30 秒内未就绪）\n',
   )
   agent.kill()
   process.exit(1)
 }
-process.stderr.write('[dev] sidecar 就绪，拉起桌面外壳\n')
+process.stderr.write('[dev] sidecar 就绪，正在启动桌面外壳\n')
 
 /**
  * 这个 sidecar 手上还有没有没跑完的 run。
@@ -200,7 +200,7 @@ const supervisor = createReloadSupervisor({
     agent.kill()
     await agent.exited
     startAgent()
-    if (!(await waitReady())) throw new Error('30 秒内没起来，见上面的输出')
+    if (!(await waitReady())) throw new Error('启动超时（30 秒内未就绪），详见上方输出')
   },
   debounceMs: 300,
   // 跑一轮动辄几分钟，两秒回看一次够密了。

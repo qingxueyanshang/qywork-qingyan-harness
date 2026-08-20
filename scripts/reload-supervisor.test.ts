@@ -147,7 +147,7 @@ describe('换代码的时机', () => {
     sup.onChange()
     await c.fire()
     expect(calls).toBe(1)
-    expect(logs.some((l) => l.includes('换代码失败'))).toBe(true)
+    expect(logs.some((l) => l.includes('重启 sidecar 失败'))).toBe(true)
 
     fail = false
     sup.onChange()
