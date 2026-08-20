@@ -9,11 +9,10 @@ import { createEffect, onCleanup, Show } from 'solid-js'
  * 把下面的项目挤开；而它盖在列表上，看起来像列表自己坏了。
  * 破坏性动作的确认属于「打断」——它就该是一个夺焦点的弹窗。
  *
- * ## 和 `Sheet` 的区别
+ * ## 开合不进全局状态
  *
- * `Sheet` 走全局 overlay 状态（`closeOverlay`），那套是给「设置」这类页面级浮层用的。
- * 确认框的开合只属于按下按钮的那一行，做成全局状态就要为每个调用点再编一个
- * overlay 名字，还得把上下文塞进全局 store。这里只受 `open` 这一个 prop 控制。
+ * 确认框的开合只属于按下按钮的那一行。做成全局状态就要为每个调用点编一个名字，
+ * 还得把上下文塞进全局 store。这里只受 `open` 这一个 prop 控制。
  */
 export function ConfirmDialog(props: {
   open: boolean

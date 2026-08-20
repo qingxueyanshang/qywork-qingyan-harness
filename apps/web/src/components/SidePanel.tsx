@@ -69,6 +69,9 @@ const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
 
+// 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该付这份代码的钱。
+const RunDetails = lazy(() => import('./RunDetails.tsx'))
+
 interface FileNode {
   name: string
   path: string
@@ -79,13 +82,13 @@ interface FileNode {
 }
 
 /**
- * 固定的那几页。顺序即优先级。**这三格关不掉，永远在页签条最前面。**
+ * 固定的那几页。顺序即优先级。**它们关不掉，永远在页签条最前面。**
  *
  * 写成一份清单而不是几段 JSX：标签页的外观改一次要改每一处，改漏一处的表现是
  * 「有一格长得不一样」，而 CSS 不会为此报错。
  *
- * **它们回答「这一轮在干什么」**：待办、文件、改动。配置类的东西（角色编排、逐条
- * 能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
+ * **它们回答「这一轮在干什么」**：待办、文件、改动、账。配置类的东西（角色编排、
+ * 逐条能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
  *
  * 终端和浏览器不在这里：那两种是**可多开、可关掉**的页，由 `+` 新开、页签上带 ×，
  * 清单在 `panelTabs`。
@@ -95,13 +98,15 @@ const VIEWS: { view: PanelView; label: string }[] = [
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
   { view: 'changes', label: '变更' },
+  // 运行排在末位：查账是事后动作，不与「现在在做什么」争第一眼。
+  { view: 'runs', label: '运行' },
 ]
 
 /** 桌面外壳判定一次就够：它在一次运行里不会变。 */
 const DESKTOP = isDesktopShell()
 
 /**
- * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那三格不在这里
+ * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那几格不在这里
  * ——它们一直在页签条上，列进来点了也不新开任何东西。
  *
  * **没有 `open` 的那几行是后端还没接上的**，看板上置灰、点不动、行尾标「未接入」。
@@ -140,7 +145,7 @@ const PREVIEW_SOURCES: {
 const BOARD_ROWS = PREVIEW_SOURCES.filter((s) => DESKTOP || !s.desktopOnly)
 
 /**
- * 右侧面板容器。固定的三格（`VIEWS`）和可多开的那些页（`panelTabs`）共用同一块区域，
+ * 右侧面板容器。固定的那几格（`VIEWS`）和可多开的那些页（`panelTabs`）共用同一块区域，
  * 互斥显示。
  *
  * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
@@ -214,7 +219,7 @@ export default function SidePanel() {
               )}
             </For>
             {/*
-             * 可多开的那些页接在固定三格后面，各自带一颗 ×。
+             * 可多开的那些页接在固定的那几格后面，各自带一颗 ×。
              *
              * 外面套一个 div 而不是把 × 塞进页签那颗按钮里：**button 套 button 是
              * 非法 HTML**，浏览器会把内层那颗提到外面去，于是点页签名字变成点关闭。
@@ -320,6 +325,12 @@ export default function SidePanel() {
                 </Match>
                 <Match when={sidePanel() === 'changes'}>
                   <ChangeRecord />
+                </Match>
+                <Match when={sidePanel() === 'runs'}>
+                  {/* 自带 Suspense，理由同下面那几页：没有边界的话它挂起时整棵树跟着空一下。 */}
+                  <Suspense fallback={<div class="pane-loading" />}>
+                    <RunDetails />
+                  </Suspense>
                 </Match>
               </Switch>
 

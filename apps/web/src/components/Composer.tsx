@@ -8,7 +8,6 @@ import {
   isRunning,
   resumeGoal,
   sendMessage,
-  setOverlay,
   setPermissionMode,
   setState,
   state,
@@ -16,15 +15,7 @@ import {
   workspace,
 } from '../lib/store/index.ts'
 import { BranchPicker } from './BranchPicker.tsx'
-import {
-  IconActivity,
-  IconFolder,
-  IconPlus,
-  IconSend,
-  IconShield,
-  IconStop,
-  IconX,
-} from './Icons.tsx'
+import { IconFolder, IconPlus, IconSend, IconShield, IconStop, IconX } from './Icons.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
 import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
@@ -464,21 +455,11 @@ export function Composer() {
 
           <ModeChip />
 
-          <ModelPicker />
-
+          {/* 上下文占用排在模型前面：它是「这一轮还装得下多少」，
+              而模型是「拿什么去装」——先看容量再挑模型。 */}
           <ContextMeter />
 
-          {/* 运行详情。挨着上下文占用放：一个回答「上下文被谁占了」，
-              一个回答「钱花在哪一轮」，都是这个会话的账。 */}
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="运行详情"
-            data-tip="运行详情（会话累计与逐轮账目）"
-            onClick={() => setOverlay('runs')}
-          >
-            <IconActivity size={15} />
-          </button>
+          <ModelPicker />
 
           <span class="spacer" />
 

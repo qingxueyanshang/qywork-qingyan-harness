@@ -1,6 +1,7 @@
 import { For, type JSX } from 'solid-js'
 import { type SettingsPage, setSettingsPage, settingsPage } from '../../lib/store/index.ts'
 import {
+  IconActivity,
   IconBrain,
   IconCanvas,
   IconClock,
@@ -18,8 +19,8 @@ import {
  * 一个浮层只该有一条关法。
  *
  * 分两组，中间一条分隔线，判据是**说明书还是操作台**：
- * 上组三项回答「这个 agent 是什么」——长什么样、用哪个模型、由哪些模块组成；
- * 「模块」那一页只读，全部读数与说明都在里面。下组每一项是一个模块的操作台，
+ * 上组回答「这个 agent 是什么、花了多少」——长什么样、用哪个模型、由哪些模块组成、
+ * 账记了多少；「模块」与「用量」那两页只读。下组每一项是一个模块的操作台，
  * 都有真实的表单。
  *
  * 上一版的判据是「这台机器怎么跑 / agent 带着什么」，**分不开**：
@@ -36,6 +37,8 @@ const GROUPS: Item[][] = [
   [
     { id: 'general', label: '通用', icon: IconSettings },
     { id: 'models', label: '模型', icon: IconPackage },
+    // 用量紧挨模型：先看用哪个，再看它花了多少。
+    { id: 'usage', label: '用量', icon: IconActivity },
     { id: 'modules', label: '模块', icon: IconCanvas },
   ],
   [

@@ -16,17 +16,13 @@ const SettingsDialog = lazy(() =>
   import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
 
-const RunDetails = lazy(() => import('./components/RunDetails.tsx'))
-
 import { IconChevron, IconPanel, IconSearch } from './components/Icons.tsx'
-import { Sheet } from './components/Sheet.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
 import {
   client,
   loadConversations,
   loadWorkspace,
   loadWorkspaceExtensions,
-  overlay,
   panelMaximized,
   panelWidth,
   setPaletteOpen,
@@ -212,16 +208,6 @@ export function App() {
         <Suspense>
           <SettingsDialog />
         </Suspense>
-      </Show>
-      {/* 浮层由一个 overlay 信号裁决，同一时刻只可能有一个——见 store/ui.ts。
-          只剩一个，而且是**会话上下文**：这个会话花了多少。机器配置那六个已经
-          整体搬进设置整页；「换项目」那个也没了——换项目在左栏点一下就是。 */}
-      <Show when={overlay() === 'runs'}>
-        <Sheet title="运行详情" note="这个会话累计花了多少，以及每一轮各花了多少" wide>
-          <Suspense>
-            <RunDetails />
-          </Suspense>
-        </Sheet>
       </Show>
     </div>
   )
