@@ -45,6 +45,20 @@ export const client = new QyClient({
   onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
 })
 
+/*
+ * 热更新换掉这个模块之前，把旧连接关干净。
+ *
+ * vite 会重新执行整个模块，于是有了第二个 `QyClient`，而上一份那条 WebSocket 还连着。
+ * 服务端按连接注册订阅者（`handshake.ts` 拿 `ws.data.id` 做 key），两条连接就是两份
+ * 同样的事件流，回调的却是同一个 store——正文每个 token 显示两遍，末尾出现两条读数条。
+ * 改一次代码多一条连接，越用越多。
+ *
+ * 一键脚本起的就是 dev（`scripts/start.ps1` 两种模式都挂 vite dev server），
+ * 所以这条不是只影响改代码的人。**这段没有单元测试能覆盖**：`import.meta.hot`
+ * 只在 vite 下存在，验证得靠真的热更新一次。
+ */
+if (import.meta.hot) import.meta.hot.dispose(() => client.close())
+
 /**
  * 正文的匀速呈现。缓冲区里永远只有当前尾部那一段 text step——
  * **除 `text.delta` 外的任何事件都先冲一次**，所以不需要按 step 记账。
