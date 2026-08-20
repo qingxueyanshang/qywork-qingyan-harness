@@ -66,6 +66,10 @@ export interface CatalogEntry {
   vendor?: string
   contextWindow?: number
   maxOutputTokens?: number
+  /** 思考怎么发。`qy probe --save` 写这里，用户也能在模型库里改。 */
+  thinking?: string
+  /** 不选档时发不发思考。 */
+  thinksByDefault?: boolean
   input?: number
   output?: number
   cacheRead?: number
