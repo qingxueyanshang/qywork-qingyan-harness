@@ -1,4 +1,11 @@
-import type { Currency, ProviderRequest, Run } from '@qywork/core'
+import type {
+  ConversationUsageResponse,
+  Currency,
+  ProviderRequest,
+  Run,
+  UsageLedgerRow,
+  UsageTotals,
+} from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
@@ -32,8 +39,8 @@ export default function RunDetails() {
   )
   const [ledger, { refetch: refetchLedger }] = createResource(key, async (k) =>
     k.id === null
-      ? { totals: emptyTotals(), entries: [] as LedgerRow[] }
-      : await client.api<ConversationUsage>(`/api/conversations/${k.id}/usage`),
+      ? { totals: emptyTotals(), entries: [] as UsageLedgerRow[] }
+      : await client.api<ConversationUsageResponse>(`/api/conversations/${k.id}/usage`),
   )
 
   // `loaded()` 而不是 `data()`：后者出错时 `throw`，而这个应用没有 `ErrorBoundary`。
@@ -44,7 +51,7 @@ export default function RunDetails() {
   /** 清单：轮次与非轮次按时间倒序并成一列。 */
   const rows = createMemo(() =>
     [
-      ...runs().map((r) => ({ at: r.createdAt, run: r, extra: null as LedgerRow | null })),
+      ...runs().map((r) => ({ at: r.createdAt, run: r, extra: null as UsageLedgerRow | null })),
       ...extras().map((e) => ({ at: e.occurredAt, run: null as Run | null, extra: e })),
     ].sort((a, b) => b.at - a.at),
   )
@@ -160,7 +167,7 @@ function Stat(props: { label: string; value: string }) {
  *
  * 这里回答量级，逐位对账在展开区那张逐请求表里——一格 110px 装不下九位数字。
  */
-function Summary(props: { runs: Run[]; ledger: LedgerTotals }) {
+function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
   const totals = createMemo(() =>
     props.runs
       .filter((r) => r.finishedAt === null)
@@ -271,7 +278,7 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
  * **列出来不是为了好看，是为了合计对得上**：这笔钱真花了，只是它发生在两轮之间。
  * 它没有 run，所以没有展开区，也不给折叠符号——占位空格保证时间列还在同一条竖线上。
  */
-function ExtraRow(props: { entry: LedgerRow; wide: boolean }) {
+function ExtraRow(props: { entry: UsageLedgerRow; wide: boolean }) {
   return (
     <li>
       <div class="run-row static">
@@ -518,35 +525,8 @@ const KIND_LABEL: Record<string, string> = {
   team: '协作成员',
 }
 
-interface LedgerTotals {
-  entries: number
-  inputTokens: number
-  outputTokens: number
-  cachedTokens: number | null
-  cacheWriteTokens: number | null
-  reasoningTokens: number
-  cost: Record<string, number>
-}
-interface LedgerRow {
-  id: string
-  kind: string
-  runId: string | null
-  model: string
-  inputTokens: number
-  outputTokens: number
-  cachedTokens: number | null
-  cacheWriteTokens: number | null
-  cost: number
-  currency: Currency
-  occurredAt: number
-}
-interface ConversationUsage {
-  totals: LedgerTotals
-  entries: LedgerRow[]
-}
-
 /** 没有活动会话时的空账。给一份而不是不取，界面才有恒定的形状。 */
-function emptyTotals(): LedgerTotals {
+function emptyTotals(): UsageTotals {
   return {
     entries: 0,
     inputTokens: 0,
