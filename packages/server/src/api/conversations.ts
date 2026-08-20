@@ -10,7 +10,13 @@ import {
   VENDORS,
 } from '@qywork/ai'
 import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
-import { catalogKey, contextPanel, resolveModel, type StoredCatalogEntry } from '@qywork/runtime'
+import {
+  catalogKey,
+  contextPanel,
+  type QyConfig,
+  resolveModel,
+  type StoredCatalogEntry,
+} from '@qywork/runtime'
 import {
   archiveConversation,
   createConversation,
@@ -29,7 +35,7 @@ import {
 import { type ApiHandler, json } from './types.ts'
 
 /** 一个接口下挂着的一个模型。**只列配置里真有的**——没配的选了也发不出去。 */
-interface ModelRow {
+export interface ModelRow {
   id: string
   /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
@@ -51,9 +57,22 @@ interface ModelRow {
 }
 
 /** 一个接口。名字是用户自己起的，界面上就按它分组。 */
-interface ProviderRow {
+export interface ProviderRow {
   name: string
   models: ModelRow[]
+}
+
+/**
+ * `/api/models` 回什么。
+ *
+ * **声明出来是为了让调用方能接上这一份**：不声明的话，测试与前端只能各自照着
+ * 实现再写一遍形状，改字段名时那几处不会红——它们测的是自己编的形状。
+ */
+export interface ModelsResponse {
+  providers: ProviderRow[]
+  /** 当前选中的接口与模型。形状与配置里那一段一致。 */
+  active: QyConfig['active']
+  library: LibraryVendor[]
 }
 
 /**
@@ -67,7 +86,7 @@ interface ProviderRow {
  * `user` 是用户在库里改过或自己加的。分开报是为了让「还原成内置值」有依据——
  * 不报的话，界面没法判断这一条能不能还原、还原成什么。
  */
-interface LibraryModel {
+export interface LibraryModel {
   id: string
   label: string
   contextWindow: number
@@ -104,7 +123,7 @@ interface LibraryModel {
   priceNotes?: string[]
 }
 
-interface LibraryVendor {
+export interface LibraryVendor {
   id: string
   displayName: string
   models: LibraryModel[]
@@ -209,7 +228,12 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         }
       }),
     }))
-    return json({ providers, active: d.config.active, library: buildLibrary(overrides) })
+    const res: ModelsResponse = {
+      providers,
+      active: d.config.active,
+      library: buildLibrary(overrides),
+    }
+    return json(res)
   }
 
   if (p === '/api/conversations') {
