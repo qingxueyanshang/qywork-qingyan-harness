@@ -330,20 +330,34 @@ describe('装配', () => {
   })
 
   /**
-   * `transmits` 必须按 spec 算，不能是类级常量。
+   * `transmits` 必须按 spec 的方言算，不能是类级常量，也不能只看档位表非空。
    *
-   * `gpt-5` 不在目录里 → `thinking:'none'` + `effortLevels:[]` → 装配期把这两个
-   * 字段整个省掉，请求里一个字节都没有。此处若声明成 true，`qy probe` 的每个探针
-   * 都会「通过」（不是端点支持，是我们压根没发），`--save` 再把这份凭空的结论
-   * 覆盖回目录里正确的保守值。
+   * `gpt-5` 不在目录里 → `thinking:'none'` + `effortLevels:[]` → 装配期把 reasoning
+   * 整个省掉，请求里一个字节都没有。此处若声明成 true，`qy probe` 的探针会「通过」
+   * （不是端点支持，是我们压根没发），`--save` 再把这份凭空的结论覆盖回目录。
+   *
+   * `claude-opus-5` 是另一头：`lookupModel` 的兜底只改写协议、保留能力约束，
+   * 于是它带着五档 effort 落到 Responses 上——**但 `output_config.effort` 那套在这条
+   * 协议上发不出去**，声明成会发同样是假通过。
    */
-  test('未收录的模型：一个字节都不发，就不能声明成会发', async () => {
+  test('按方言声明：发不出去的就不能声明成会发', async () => {
     const { buildAdapter } = await import('../factory.ts')
     const unknown = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'gpt-5' })
-    expect(unknown.transmits).toEqual({ thinking: false, effort: false })
+    expect(unknown.transmits).toEqual({ effort: false })
 
-    const known = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'claude-opus-5' })
-    expect(known.transmits).toEqual({ thinking: true, effort: true })
+    const rewritten = buildAdapter({
+      kind: 'openai_responses',
+      apiKey: 'sk-x',
+      model: 'claude-opus-5',
+    })
+    expect(rewritten.transmits).toEqual({ effort: false })
+
+    const native = buildAdapter({
+      kind: 'openai_responses',
+      apiKey: 'sk-x',
+      model: 'gemini-3.7-flash',
+    })
+    expect(native.transmits).toEqual({ effort: true })
   })
 
   test('spec 未知时用保守默认值，不假装认识它', async () => {

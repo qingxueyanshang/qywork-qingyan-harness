@@ -61,12 +61,11 @@ export async function runProbe(args: string[]): Promise<number> {
   const caps = toCapabilities(outcome)
 
   // 探不出来的轴要**点名**说，不能笼统一句「没结论」。
-  // OpenAI 兼容协议下本客户端根本不发 thinking / effort，那些轴无从探测；
-  // 但「省略字段时它自己思不思考」是从回包看出来的，那一条永远有结论。
-  // 报成失败会让用户去查一个没坏的东西。
+  // 模型的思考方言发不出 effort 时那一轴无从探测；但「什么都不发时它自己思不思考」
+  // 是从回包看出来的，那一条永远有结论。报成失败会让用户去查一个没坏的东西。
   if (outcome.untested.length) {
     process.stderr.write(
-      `\n${DIM}未探测的轴：${outcome.untested.join(' / ')}（本协议下客户端不发这些字段），` +
+      `\n${DIM}未探测的轴：${outcome.untested.join(' / ')}（这条链路不发该字段），` +
         `目录里的保守默认值保持不变。${RESET}\n`,
     )
   }

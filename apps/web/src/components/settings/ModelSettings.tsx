@@ -1,8 +1,10 @@
-import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { createSignal, For, Show } from 'solid-js'
 import {
   type CatalogEntry,
-  loadModels,
+  ensureModelCatalog,
+  modelCatalog,
+  modelCatalogError,
+  modelCatalogLoading,
   type ProbeResult,
   probeModel,
   type RedactedConfig,
@@ -78,7 +80,7 @@ function catalogKey(model: string, kind: string): string {
  */
 export function ModelSettings() {
   ensureConfig()
-  const [catalog] = createResource(loadModels)
+  void ensureModelCatalog()
 
   /** 正在编辑哪个接口。null = 跟随 active。 */
   const [picked, setPicked] = createSignal<string | null>(null)
@@ -469,9 +471,9 @@ export function ModelSettings() {
             {/* 上面那排 tab 已经写着「模型库」，这里不再来一个同名标题。 */}
             <Show when={showLibrary()}>
               <ModelLibrary
-                vendors={loaded(catalog)?.library ?? []}
-                loading={catalog.loading}
-                error={catalog.error}
+                vendors={modelCatalog()?.library ?? []}
+                loading={modelCatalogLoading()}
+                error={modelCatalogError()}
                 onSave={saveCatalog}
               />
             </Show>
@@ -526,14 +528,14 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
         /**
          * 思考那一格只说**用户能拿它做什么**：有哪几档可选，或者为什么一档都没有。
          *
-         * 不显示 `thinking`（协议枚举）和 `thinksByDefault`（给输出预算留空间的
-         * 标志位）：两者都是内部实现，用户看到也做不了任何事，而它们占的正是
-         * 「这个模型到底能不能调思考」该占的位置。
+         * 不显示 `thinksByDefault`（给输出预算留空间的标志位）：它是内部实现，
+         * 用户看到也做不了任何事，而它占的正是「这个模型到底能不能调思考」
+         * 该占的位置。
          */
         const effort = () => {
           const levels = o().effortLevels
           if (levels.length > 0) return `思考档位　${levels.join(' / ')}`
-          if (o().untested.includes('effort')) return '本协议不发思考档位'
+          if (o().untested.includes('effort')) return '这条链路发不出思考档位'
           return '无思考档位'
         }
         return (

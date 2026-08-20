@@ -76,7 +76,7 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
   const state = { attempts: 0 }
   const adapter: LlmAdapter = {
     kind: 'anthropic_messages',
-    transmits: { thinking: true, effort: true },
+    transmits: { effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       state.attempts++
@@ -93,7 +93,7 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
 function okAdapter(): LlmAdapter {
   return {
     kind: 'anthropic_messages',
-    transmits: { thinking: true, effort: true },
+    transmits: { effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -366,7 +366,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec,
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -437,7 +437,7 @@ describe('投影时机', () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -481,7 +481,7 @@ function twoTurnAdapter(): LlmAdapter {
   let turn = 0
   return {
     kind: 'anthropic_messages',
-    transmits: { thinking: true, effort: true },
+    transmits: { effort: true },
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -537,7 +537,7 @@ describe('有新可折单元才再压', () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -631,7 +631,7 @@ describe('transcript 的可折单元', () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
-      transmits: { thinking: true, effort: true },
+      transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
@@ -716,7 +716,7 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
   const seen: ChatRequest[] = []
   const adapter: LlmAdapter = {
     kind: 'anthropic_messages',
-    transmits: { thinking: true, effort: true },
+    transmits: { effort: true },
     spec,
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       seen.push(req)
@@ -794,7 +794,7 @@ describe('缓存断点', () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'openai_chat_completions',
-      transmits: { thinking: false, effort: false },
+      transmits: { effort: false },
       spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         seen.push(req)
