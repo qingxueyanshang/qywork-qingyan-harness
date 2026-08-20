@@ -1,5 +1,5 @@
 /**
- * 迁移的行为回归。**覆盖范围**：`schema.ts` 的 `MIGRATIONS`。
+ * 迁移的行为回归。**覆盖范围**：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`。
  *
  * 只测「转换数据」的那几条。纯建表的不测——建错了任何一条查询都会红，
  * 而数据转换错了是静默的：代码全绿、界面上冒出一个 `undefined` 或者一句旧文案。
@@ -7,7 +7,7 @@
 
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
-import { MIGRATIONS } from './schema.ts'
+import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
 
 /** 跑到某一条迁移之前的库。外键默认关着，所以可以只插 steps 不建父行。 */
 function dbBefore(id: number): Database {
@@ -446,5 +446,31 @@ describe('迁移 26：steps 重建，思考有自己的 kind', () => {
       .query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='steps'")
       .all() as { name: string }[]
     expect(idx.map((i) => i.name)).toContain('idx_step_run_seq')
+  })
+})
+
+/**
+ * 行类型是 DDL 的镜像，这条测试是**让它保持是镜像的那个约束**。
+ *
+ * `schema.ts` 里的 `WorkspaceRow` 那几个接口没有任何东西强制它们跟表对齐：迁移加一列
+ * 而接口忘了加，两边不一致不会有人发现——直到某个映射函数读了一个不存在的列，
+ * 拿到 `undefined` 装进领域对象。所以列名单独列一份（`ROW_COLUMNS`，与接口同处同改），
+ * 在这里跟真库比对。
+ *
+ * 比的是**集合**不是顺序：`SELECT *` 取的是名字，列的物理顺序改了不影响任何调用方。
+ */
+describe('行类型与 DDL 对齐', () => {
+  test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
+    const db = new Database(':memory:')
+    for (const m of MIGRATIONS) db.exec(m.sql)
+
+    for (const [table, declared] of Object.entries(ROW_COLUMNS)) {
+      const actual = db
+        .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+        .all()
+        .map((c) => c.name)
+      expect({ [table]: [...actual].sort() }).toEqual({ [table]: [...declared].sort() })
+    }
+    db.close()
   })
 })

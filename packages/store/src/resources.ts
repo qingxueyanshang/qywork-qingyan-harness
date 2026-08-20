@@ -8,6 +8,7 @@
 import { newResourceId, type ResourceId } from '@qywork/core'
 import type { Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
+import type { IntermediateResourceRow } from './schema.ts'
 
 export type ResourceStatus = 'complete' | 'partial' | 'failed'
 
@@ -95,14 +96,14 @@ export function registerResource(
 
 export function getResource(store: Store, id: string): IntermediateResource | null {
   const row = store.db
-    .query<Record<string, any>, [string]>('SELECT * FROM intermediate_resources WHERE id = ?')
+    .query<IntermediateResourceRow, [string]>('SELECT * FROM intermediate_resources WHERE id = ?')
     .get(id)
   return row ? rowToResource(row) : null
 }
 
 export function listResourcesForRun(store: Store, runId: string): IntermediateResource[] {
   return store.db
-    .query<Record<string, any>, [string]>(
+    .query<IntermediateResourceRow, [string]>(
       'SELECT * FROM intermediate_resources WHERE run_id = ? ORDER BY created_at ASC, id ASC',
     )
     .all(runId)
@@ -124,7 +125,7 @@ export function referencedContentHashes(store: Store): string[] {
     .map((r) => r.content_hash)
 }
 
-function rowToResource(r: Record<string, any>): IntermediateResource {
+function rowToResource(r: IntermediateResourceRow): IntermediateResource {
   return {
     id: r.id,
     runId: r.run_id,
