@@ -149,8 +149,6 @@ export async function runTeam(
         status: failed > 0 ? 'failed' : 'done',
         stopReason: failed > 0 ? 'provider_error' : 'completed',
         usage: total,
-        stepCount: results.length,
-        durationMs: 0,
         fileChanges: [],
       })
     } catch (err) {
