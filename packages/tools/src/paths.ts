@@ -155,9 +155,9 @@ export function normalizeAdditionalDirectories(raw: readonly string[] | undefine
     if (!trimmed) continue
     if (!isAbsolute(trimmed)) {
       problems.push(
-        `additionalDirectories 里的 "${trimmed}" 不是绝对路径。` +
-          `相对路径的基准是启动 qy 时所在的目录，换个地方启动含义就变了——` +
-          `请写成绝对路径。`,
+        `additionalDirectories 中的 "${trimmed}" 不是绝对路径。` +
+          `相对路径以启动 qy 时的当前目录为基准，在不同目录启动含义不同，` +
+          `请改为绝对路径。`,
       )
       continue
     }

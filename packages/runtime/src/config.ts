@@ -334,7 +334,7 @@ function migrateModelLibrary(cfg: QyConfig): string[] {
     if (!entry) continue
     const kinds = kindsOf.get(id)
     if (!kinds) {
-      notices.push(`模型库里的 ${id} 没有挂在任何接口下，判不出协议，这一条已丢弃。`)
+      notices.push(`模型库中的 ${id} 未挂在任何接口下，无法判定协议，该条目已丢弃。`)
       continue
     }
     for (const kind of kinds) {
@@ -375,7 +375,7 @@ function migrateModelLibrary(cfg: QyConfig): string[] {
       if (differing.length > 0) {
         notices.push(
           `模型 ${id} 在接口 ${name} 与 ${held} 下的 ${differing.join('、')} 取值不同；` +
-            `两个接口协议相同，模型库里只有一格，已按 ${held} 那份写入。`,
+            `两个接口协议相同、模型库中仅有一格，已按 ${held} 的取值写入。`,
         )
       }
     }
@@ -528,9 +528,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
     for (const [id, m] of Object.entries(p.models)) {
       if (m.effort !== undefined && !EFFORT_ORDER.includes(m.effort)) {
         problems.push(
-          `${name} / ${id} 的思考强度 "${m.effort}" 不认识。\n` +
+          `${name} / ${id} 的思考强度 "${m.effort}" 不是有效值。\n` +
             `  可选：${EFFORT_ORDER.join('、')}\n` +
-            `  这是**档位全集**；这个模型实际支持哪几档看 qy probe 或界面上的选项。`,
+            `  这是**档位全集**；该模型实际支持的档位以 qy probe 或界面选项为准。`,
         )
       }
     }
@@ -541,9 +541,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   if (!stored) {
     const names = Object.keys(cfg.providers)
     problems.push(
-      `配置里没有名为 "${cfg.active.provider}" 的接口。\n` +
-        `  已有接口：${names.length ? names.join('、') : '（一个都没有）'}\n` +
-        `  改 ${configPath()} 里的 "active.provider"，或运行 qy init 重建。`,
+      `配置中不存在名为 "${cfg.active.provider}" 的接口。\n` +
+        `  已有接口：${names.length ? names.join('、') : '（无）'}\n` +
+        `  修改 ${configPath()} 中的 "active.provider"，或运行 qy init 重建配置。`,
     )
     return problems
   }
@@ -551,10 +551,10 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i.test(stored.baseUrl ?? '')
   if (!stored.apiKey && !local) {
     problems.push(
-      `未配置 API Key。接口 "${cfg.active.provider}" 的 apiKey 是空的。\n` +
+      `未配置 API Key：接口 "${cfg.active.provider}" 的 apiKey 为空。\n` +
         `  配置文件：${configPath()}\n` +
-        `  最快的办法：qy init\n` +
-        `  或者手动改成：\n${indent(exampleProvider(cfg.active, stored))}`,
+        `  推荐做法：运行 qy init\n` +
+        `  或手动改为：\n${indent(exampleProvider(cfg.active, stored))}`,
     )
   }
 
@@ -601,10 +601,10 @@ export function configNotices(cfg: QyConfig): string[] {
   // 静默收紧会让用户以为「怎么突然开始拦我了」，而查不到原因。
   if ((cfg as { autoApprove?: unknown }).autoApprove !== undefined) {
     notices.push(
-      `配置里的 autoApprove 已经不再生效，权限改成了两种模式。\n` +
+      `配置中的 autoApprove 已不再生效，权限改为两种模式。\n` +
         `- 当前按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹窗，由规则与分类器裁决）。\n` +
-        `- 想完全放开就在 ${configPath()} 里写 "mode": "full"——那等于放弃全部裁决。\n` +
-        `- 删掉 autoApprove 这一行即可消除本提示。`,
+        `- 如需完全放开，在 ${configPath()} 中设置 "mode": "full"，该模式不做任何裁决。\n` +
+        `- 删除 autoApprove 这一行即可消除本提示。`,
     )
   }
 
@@ -626,10 +626,10 @@ export function configNotices(cfg: QyConfig): string[] {
   // 不说的话用户只会看到「我配好的接口和 key 全没了」，而配置文件里还原样躺着。
   if ((cfg as { profiles?: unknown }).profiles !== undefined) {
     notices.push(
-      `配置里的 profiles 是旧格式，已经不再加载。模型配置改成了「接口 → 模型」两层。\n` +
-        `- 当前用的是默认接口，**API Key 需要重新填一次**（旧的明文还在文件里，可以复制）。\n` +
-        `- 在设置页「模型」里重配，或直接改 ${configPath()} 的 "active" / "providers"。\n` +
-        `- 重配完删掉 profiles 这一段即可消除本提示。`,
+      `配置中的 profiles 为旧格式，已不再加载。模型配置改为「接口 → 模型」两层。\n` +
+        `- 当前使用默认接口，**API Key 需要重新填写**（旧的明文仍在配置文件中，可直接复制）。\n` +
+        `- 在设置页「模型」中重新配置，或直接修改 ${configPath()} 的 "active" / "providers"。\n` +
+        `- 配置完成后删除 profiles 这一段即可消除本提示。`,
     )
   }
 
@@ -639,10 +639,10 @@ export function configNotices(cfg: QyConfig): string[] {
     const spec = lookupModel(active.model, active.kind)
     if (spec.catalogued === false) {
       notices.push(
-        `模型 ${active.model} 不在内置目录里，能力按**最保守**假设处理：\n` +
-          `- 不会请求思考（reasoning_tokens 恒为 0），即使这个模型支持\n` +
-          `- 计价按 0 计算，用量会报 $0\n` +
-          `\n实测一次并写回配置即可消除：qy probe --save`,
+        `模型 ${active.model} 不在内置目录中，能力按**最保守**假设处理：\n` +
+          `- 不请求思考（reasoning_tokens 恒为 0），即使该模型支持\n` +
+          `- 计价按 0 计算，用量显示为 $0\n` +
+          `\n运行 qy probe --save 实测一次并写回配置即可消除本提示。`,
       )
     }
   }
@@ -651,10 +651,10 @@ export function configNotices(cfg: QyConfig): string[] {
     // 配了但这台机器上没有沙箱 = 完全没有生效。**必须说**——
     // 用户配这一条时想的是「模型跑的命令连不上外网」，而实际上一点约束都没有。
     notices.push(
-      '配置里写了 sandboxNetwork: "deny"。它只在有内核沙箱的平台上生效' +
+      '配置中的 sandboxNetwork: "deny" 仅在具备内核沙箱的平台上生效' +
         '（Linux / WSL2 的 bubblewrap、macOS 的 seatbelt）。' +
-        '本机是哪一档见「权限与沙箱」那一节，命令行是 `qy config` 最后那行「shell 沙箱」' +
-        '——报 none 就说明这条没有生效。',
+        '本机档位见「权限与沙箱」一节，或 `qy config` 输出末行的「shell 沙箱」' +
+        '——显示 none 即表示该配置未生效。',
     )
   }
 
@@ -663,7 +663,7 @@ export function configNotices(cfg: QyConfig): string[] {
     // 如果安静地跑，用户会忘记自己开过它。
     notices.push(
       `权限模式为 full：模型可以不经裁决执行任何命令、读写任何位置。\n` +
-        `凭证剥离与「禁止改写权限配置」仍然生效（那两条防的是泄漏与自我提权，不豁免）。`,
+        `凭证剥离与「禁止改写权限配置」仍然生效，这两条防的是凭证泄漏与自我提权，不在豁免范围内。`,
     )
   }
 

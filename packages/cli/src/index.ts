@@ -313,7 +313,7 @@ async function runServe(args: string[]): Promise<number> {
   const local = `http://127.0.0.1:${handle.port}`
   process.stderr.write(`\n${BOLD}qy serve${RESET} 已启动\n`)
   for (const p of problems) process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
-  process.stderr.write(`  工作区  ${workspaceRoot}\n`)
+  process.stderr.write(`  工作区  ${handle.workspaceRoot}\n`)
   process.stderr.write(`  本机    ${local}/#t=${handle.token}\n`)
   if (flags.host !== '127.0.0.1') {
     const candidates = lanCandidates()
@@ -328,7 +328,7 @@ async function runServe(args: string[]): Promise<number> {
     process.stderr.write(`\n${DIM}手机扫码接入：${RESET}\n`)
     process.stderr.write(`${await renderQr(handle.pairingUrl())}\n`)
   }
-  process.stderr.write(`${DIM}Ctrl-C 停止${RESET}\n`)
+  process.stderr.write(`${DIM}按 Ctrl-C 停止服务${RESET}\n`)
 
   await new Promise<void>((done) => {
     const stop = () => {
