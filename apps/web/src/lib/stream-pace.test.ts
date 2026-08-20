@@ -12,8 +12,8 @@ import {
   DRAIN_TICKS,
   freshPace,
   MAX_CHARS,
-  MIN_CHARS,
   sliceSize,
+  TICK_MS,
   takeAll,
   takeSlice,
 } from './stream-pace.ts'
@@ -62,9 +62,14 @@ describe('每档放多少', () => {
     expect(sliceSize(-1)).toBe(0)
   })
 
-  test('少量积压走保底，不至于一个字一个字挤', () => {
-    expect(sliceSize(1)).toBe(MIN_CHARS)
-    expect(sliceSize(MIN_CHARS)).toBe(MIN_CHARS)
+  /**
+   * 每档没有保底字数，这条锁的是「别加回来」——保底会把按批到达的一批提前排空，
+   * 剩下的时间无字可放。理由与实测见文件头。
+   */
+  test('少量积压就少放，每档不设下限', () => {
+    expect(sliceSize(1)).toBe(1)
+    expect(sliceSize(DRAIN_TICKS)).toBe(1)
+    expect(sliceSize(DRAIN_TICKS + 1)).toBe(2)
   })
 
   /**
@@ -77,9 +82,8 @@ describe('每档放多少', () => {
   })
 
   test('中间区间按剩余量线性放快', () => {
-    const mid = MIN_CHARS * DRAIN_TICKS * 2
-    const n = sliceSize(mid)
-    expect(n).toBeGreaterThan(MIN_CHARS)
+    const n = sliceSize(DRAIN_TICKS * 10)
+    expect(n).toBe(10)
     expect(n).toBeLessThanOrEqual(MAX_CHARS)
   })
 
@@ -91,6 +95,26 @@ describe('每档放多少', () => {
       expect(s).toBeGreaterThanOrEqual(prev)
       prev = s
     }
+  })
+})
+
+/**
+ * 上游按批转发时也要匀速。
+ *
+ * 原始失败形状：中转站每约 960ms 给 37 字一批（2026-08-20 实测），而每档保底 6 字
+ * 会在 350ms 内把一批排空，剩下 650ms 一个字都放不出来——界面一秒顿一次，
+ * 六成以上的档是空的。这条锁的是「一批的字要铺到下一批到达」。
+ */
+describe('批量到达也要匀速', () => {
+  test('每 960ms 到 37 字：中间不断档', () => {
+    const st = freshPace()
+    const ticksPerBatch = Math.round(960 / TICK_MS)
+    let idle = 0
+    for (let batch = 0; batch < 6; batch++) {
+      st.pending += 'x'.repeat(37)
+      for (let k = 0; k < ticksPerBatch; k++) if (takeSlice(st) === '') idle++
+    }
+    expect(idle).toBe(0)
   })
 })
 
@@ -109,7 +133,7 @@ describe('收敛', () => {
       ticks++
       if (ticks > 500) throw new Error('放不完')
     }
-    expect(ticks).toBeLessThanOrEqual(2000 / MIN_CHARS)
+    expect(ticks).toBeLessThanOrEqual(250)
     expect(ticks).toBeGreaterThanOrEqual(2000 / MAX_CHARS)
   })
 })
@@ -150,7 +174,8 @@ describe('定时器编排', () => {
     h.tick()
     expect(h.written).toHaveLength(1)
     expect(h.written[0]![1].length).toBeLessThanOrEqual(MAX_CHARS)
-    h.tick(50)
+    // 尾部按 `ceil(剩余 ÷ 24)` 递减到 1 字一档，200 字铺得比硬顶算出来的档数长。
+    h.tick(200)
     expect(h.text('s1')).toBe('x'.repeat(200))
   })
 
@@ -158,7 +183,8 @@ describe('定时器编排', () => {
     const h = harness()
     h.pacer.push('s1', 'abc')
     expect(h.running()).toBe(true)
-    h.tick(3)
+    // 三字三档放完，第四档取到空串才停表。
+    h.tick(4)
     expect(h.running()).toBe(false)
     expect(h.text('s1')).toBe('abc')
   })
