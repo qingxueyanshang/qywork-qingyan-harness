@@ -1,6 +1,12 @@
 /**
  * 插件。
  *
+ * ## 只有全局一个目录
+ *
+ * `~/.qywork/plugins/`。插件贡献的是工具、预览器、供应商——那些是这个 agent 的
+ * 能力，不是某个仓库的内容。所以它不分层，接口上也就没有 `scope` 参数：
+ * 装一次对所有项目生效。「这个项目要不要加载某个插件」是开关，不是第二份拷贝。
+ *
  * 页面叫「插件」，**不叫市场**。这个项目没有中心 registry，也不该现造一个：
  * 一个叫「市场」而里面没有任何可安装内容的页面，就是把这次要删的空壳
  * 换个名字再造一遍（ROADMAP §34.3）。
@@ -14,18 +20,8 @@
 
 import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { PLUGINS_SUBDIR } from '@qywork/runtime'
-import { type Scope, scopeDir, scopePaths, scopeRoots } from '@qywork/tools'
+import { globalPluginsDir } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
-
-/**
- * 装到哪一层。默认用户层（跟着这个仓库走）。
- *
- * 只有这两层可写。内置随程序发布，装进去下次升级就没了，而用户会以为装好了。
- */
-function installScope(url: URL): Scope {
-  return url.searchParams.get('scope') === 'global' ? 'global' : 'user'
-}
 
 export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
@@ -34,19 +30,13 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     const { loadExtensions } = await import('@qywork/runtime')
     const ext = await loadExtensions(d.workspaceRoot)
     const reg = ext.plugins
-    const dirs = scopePaths(scopeRoots(d.workspaceRoot), PLUGINS_SUBDIR)
-    // 层是**从插件所在目录反推**的，不是让插件包多存一个字段：目录已经是事实，
-    // 再存一份就是第二本账，而两本账迟早在某次改路径时对不上。
-    const scopeOf = (dir: string): Scope =>
-      dirs.find((x) => resolve(dir).startsWith(resolve(x.dir)))?.scope ?? 'user'
     return json({
-      dirs,
+      dir: globalPluginsDir(),
       plugins: reg.plugins.map((pl) => {
         const rt = pl.host?.runtime
         return {
           id: pl.manifest.id,
           name: pl.manifest.name,
-          scope: scopeOf(pl.dir),
           version: pl.manifest.version,
           permissions: pl.manifest.permissions ?? [],
           tools: reg.toolSpecs
@@ -97,9 +87,7 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
       return json({ error: 'invalid', message: `清单不合法：${(e as Error).message}` }, 422)
     }
 
-    const destDir = scopeDir(scopeRoots(d.workspaceRoot), installScope(url), PLUGINS_SUBDIR)
-    if (destDir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-    const dest = join(destDir, id)
+    const dest = join(globalPluginsDir(), id)
     // 已经装过同 id 的就拒绝，而不是静默覆盖：覆盖会把用户可能改过的
     // 那一份直接抹掉，且没有任何提示。要换版本先卸载。
     if (await stat(dest).catch(() => null)) {
@@ -120,9 +108,7 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     if (id.includes('/') || id.includes('\\') || id.includes('..')) {
       return json({ error: 'bad request' }, 400)
     }
-    const dir = scopeDir(scopeRoots(d.workspaceRoot), installScope(url), PLUGINS_SUBDIR)
-    if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-    const target = join(dir, id)
+    const target = join(globalPluginsDir(), id)
     if (!(await stat(target).catch(() => null))) return json({ error: 'not found' }, 404)
     await rm(target, { recursive: true, force: true })
     return json({ ok: true })

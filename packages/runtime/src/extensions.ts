@@ -26,16 +26,37 @@ import {
   type Role,
   type TeamRules,
 } from '@qywork/team'
-import { AGENTS_DIR, resolveInWorkspace, type Scope, scopePaths, scopeRoots } from '@qywork/tools'
+import {
+  AGENTS_DIR,
+  globalScopeRoot,
+  resolveInWorkspace,
+  type Scope,
+  scopePaths,
+  scopeRoots,
+} from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
 
-/** 各层根目录下的子路径。三层都按这几个名字找。 */
+/** 全局根下装插件的子目录名。 */
 export const PLUGINS_SUBDIR = 'plugins'
+/** 各层根目录下的 MCP 配置文件名。三层都按这个名字找。 */
 export const MCP_FILE = 'mcp.json'
 
-/** 用户层（工作区 `.agents/`）里的位置。安装、写回、报路径用它们。 */
-export const PLUGINS_DIR = `${AGENTS_DIR}/${PLUGINS_SUBDIR}`
+/** 项目层（工作区 `.agents/`）里 MCP 配置的位置。写回、报路径用它。 */
 export const MCP_CONFIG = `${AGENTS_DIR}/${MCP_FILE}`
+
+/**
+ * 插件的唯一目录：`~/.qywork/plugins/`。
+ *
+ * **插件不分层。** 它贡献的是工具、预览器、供应商——那些是这个 agent 的能力，
+ * 不是某个仓库的内容。分层的代价是同一个插件在两个仓库里各存一份、各自升级，
+ * 而「我在全局装了但没生效」只能靠一条 failure 文案解释。
+ *
+ * 「这个项目要不要加载某个插件」是**开关**，将来由工作区面板控制，
+ * 不是把插件复制两份。
+ */
+export function globalPluginsDir(): string {
+  return join(globalScopeRoot(), PLUGINS_SUBDIR)
+}
 
 /**
  * team 配置**只有工作区一份，不分层**。
@@ -74,7 +95,7 @@ export async function loadExtensions(
   workspaceRoot: string,
   onLog?: (line: string) => void,
 ): Promise<Extensions> {
-  const plugins = await loadScopedPlugins(workspaceRoot, onLog)
+  const plugins = await loadInstalledPlugins(workspaceRoot, onLog)
 
   const mcp = await loadWorkspaceMcp(workspaceRoot, onLog)
 
@@ -161,70 +182,45 @@ export function releaseAllExtensions(): void {
 }
 
 /**
- * 三层的插件目录合起来，同 id 只留优先级最高的那份。
+ * 装在 `~/.qywork/plugins/` 里的插件。
  *
- * `loadPlugins` 一次只认一个目录，所以这里逐层调用再合并。合并按 **id** 去重，
- * 不是按目录——两个层里同名的插件是一个东西的两份，装两遍会让工具名撞车，
- * 而撞车的表现是「有一个插件的工具凭空消失」。
+ * 只有这一个目录，所以没有跨层去重——同一个 id 在同一个目录下不可能出现两次。
+ * 工具名仍然要去重：两个不同的插件可以声明同一个工具名，撞车的表现是
+ * 「有一个插件的工具凭空消失」，所以撞了要记 failure 而不是安静丢掉。
  */
-async function loadScopedPlugins(
+async function loadInstalledPlugins(
   workspaceRoot: string,
   onLog?: (line: string) => void,
 ): Promise<PluginRegistry> {
-  const merged: PluginRegistry = {
-    plugins: [],
-    previewers: new Map(),
-    roles: new Map(),
-    providers: new Map(),
-    toolSpecs: [],
-    failures: [],
-  }
-  const seen = new Set<string>()
-  const takenTools = new Set<string>()
+  const dir = globalPluginsDir()
+  const reg = await loadPlugins(dir, {
+    ...(onLog ? { onLog } : {}),
+    workspaceRoot,
+    onCapability: makeCapabilityHandler({ workspaceRoot }),
+  }).catch(
+    (err): PluginRegistry => ({
+      plugins: [],
+      previewers: new Map(),
+      roles: new Map(),
+      providers: new Map(),
+      toolSpecs: [],
+      failures: [{ dir, reason: err instanceof Error ? err.message : String(err) }],
+    }),
+  )
 
-  for (const { dir } of scopePaths(scopeRoots(workspaceRoot), PLUGINS_SUBDIR)) {
-    const reg = await loadPlugins(dir, {
-      ...(onLog ? { onLog } : {}),
-      workspaceRoot,
-      onCapability: makeCapabilityHandler({ workspaceRoot }),
-    }).catch(
-      (err): PluginRegistry => ({
-        plugins: [],
-        previewers: new Map(),
-        roles: new Map(),
-        providers: new Map(),
-        toolSpecs: [],
-        failures: [{ dir, reason: err instanceof Error ? err.message : String(err) }],
-      }),
-    )
-
-    merged.failures.push(...reg.failures)
-    for (const pl of reg.plugins) {
-      const id = pl.manifest.id
-      if (seen.has(id)) {
-        // 说出来而不是安静丢掉：「我在全局装了但没生效」否则查不出原因。
-        merged.failures.push({ dir, reason: `插件 ${id} 已被更高优先级的层提供，这一份被忽略` })
-        continue
-      }
-      seen.add(id)
-      merged.plugins.push(pl)
+  // 工具按**名字**去重，不按插件 id 前缀：注册名是消毒过的
+  //（`test.probe` → `test_probe__probe`），按 id 拼前缀会一个都匹配不上。
+  const taken = new Set<string>()
+  const toolSpecs: ToolSpec[] = []
+  for (const spec of reg.toolSpecs) {
+    if (taken.has(spec.name)) {
+      reg.failures.push({ dir, reason: `工具名已被另一个插件占用：${spec.name}` })
+      continue
     }
-    // 工具按**名字**去重，不按插件 id 前缀：注册名是消毒过的
-    //（`test.probe` → `test_probe__probe`），按 id 拼前缀会一个都匹配不上。
-    // 名字唯一本来就是硬约束，这里和 `loadExtensions` 合并 MCP 时同一个口径。
-    for (const spec of reg.toolSpecs) {
-      if (takenTools.has(spec.name)) {
-        merged.failures.push({ dir, reason: `工具名已被更高优先级的层占用：${spec.name}` })
-        continue
-      }
-      takenTools.add(spec.name)
-      merged.toolSpecs.push(spec)
-    }
-    for (const [k, v] of reg.previewers) if (!merged.previewers.has(k)) merged.previewers.set(k, v)
-    for (const [k, v] of reg.roles) if (!merged.roles.has(k)) merged.roles.set(k, v)
-    for (const [k, v] of reg.providers) if (!merged.providers.has(k)) merged.providers.set(k, v)
+    taken.add(spec.name)
+    toolSpecs.push(spec)
   }
-  return merged
+  return { ...reg, toolSpecs }
 }
 
 /**

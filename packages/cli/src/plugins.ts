@@ -1,5 +1,5 @@
 /**
- * `qy plugins` —— 看一眼工作区里的插件到底装没装上、被关住了没有。
+ * `qy plugins` —— 看一眼装了哪些插件、被关住了没有。
  *
  * ## 为什么必须有这条命令
  *
@@ -19,7 +19,7 @@
  */
 
 import { relative, resolve } from 'node:path'
-import { loadExtensions, pluginToolPrefix } from '@qywork/runtime'
+import { globalPluginsDir, loadExtensions, pluginToolPrefix } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -33,7 +33,7 @@ export async function runPlugins(args: string[]): Promise<number> {
   const workspaceRoot = resolve(cwdFlag >= 0 ? (args[cwdFlag + 1] ?? '.') : '.')
   const verbose = args.includes('--tools')
 
-  process.stderr.write(`工作区：${workspaceRoot}\n配置：.qy/plugins/<名字>/qywork.plugin.json\n\n`)
+  process.stderr.write(`工作区：${workspaceRoot}\n插件目录：${globalPluginsDir()}\n\n`)
 
   const ext = await loadExtensions(workspaceRoot, (line) => {
     if (verbose) process.stderr.write(`${DIM}${line}${RESET}\n`)
@@ -43,7 +43,7 @@ export async function runPlugins(args: string[]): Promise<number> {
   try {
     if (reg.plugins.length === 0 && reg.failures.length === 0) {
       process.stderr.write(
-        '没有装任何插件。插件放在工作区的 .qy/plugins/<名字>/ 下，\n' +
+        `没有装任何插件。插件放在 ${globalPluginsDir()} 的 <名字>/ 下，\n` +
           `目录里要有 ${BOLD}qywork.plugin.json${RESET}${DIM}（不是 plugin.json）${RESET}和清单里 main 指向的入口。\n` +
           `${DIM}详见 docs/plugins.md${RESET}\n`,
       )

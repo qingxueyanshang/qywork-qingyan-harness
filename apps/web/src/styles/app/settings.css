@@ -41,17 +41,6 @@
   right: var(--s-2);
   z-index: 1;
 }
-/* 标题这一行不进滚动区：那句边界说明滚走了等于没写（B7）。
-   顶内距和类目栏取同一档，标题的第一行和第一个类目落在同一条横线上。
-   右内距给关闭键留出位置——标题短，但边界说明是整行的。 */
-.settings-pane-head {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: var(--s-4) var(--s-8) var(--s-4) var(--s-6);
-}
-
 /* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，
    而类目栏是用来来回切的。 */
 .settings-scroll {
@@ -65,19 +54,13 @@
   scrollbar-gutter: stable;
 }
 /* 左对齐而不是居中——设置是逐条读下来的表单，居中会让第一列的标签飘到中间。
-   不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。 */
+   不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。
+   右内距给关闭键让位：它是绝对定位钉在右上角的，不占任何行。 */
 .settings-inner {
-  padding: var(--s-2) var(--s-6) var(--s-8);
+  padding: var(--s-4) var(--s-8) var(--s-8) var(--s-6);
   display: flex;
   flex-direction: column;
   gap: var(--s-6);
-}
-
-.settings-page-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 /* 一页内的分组。用小标题分段而不是再套一层卡片——设置页最容易长成
@@ -332,11 +315,8 @@
     border-top: none;
     border-left: 1px solid var(--border-subtle);
   }
-  .settings-pane-head {
-    padding: var(--s-3) var(--s-8) var(--s-3) var(--s-3);
-  }
   .settings-inner {
-    padding: var(--s-1) var(--s-3) var(--s-6);
+    padding: var(--s-3) var(--s-8) var(--s-6) var(--s-3);
   }
 }
 
@@ -543,28 +523,77 @@
   color: var(--text-tertiary);
 }
 
-/* ── 作用域 ──
+/* ── 作用域标签页 ──
  *
- * 「加到哪一层」的选择条 + 那一层的落盘位置。只在「加」的时候出现：
- * 列表本身不按层分组（模型看到的是合并去重后的一份），每条自己贴一个标签。 */
-.scope-bar {
+ * 项目 / 全局两栏，选中的那个下面一条粗线。**不用 `.tab-chip` 那套底色块**：
+ * 同一页上接口切换（模型页）已经在用底色块，两处都用的话「选了哪个接口」和
+ * 「看的是哪一层」变成同一个视觉信号。 */
+.scope-tabs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--s-2) var(--s-3);
+  gap: var(--s-2) var(--s-4);
 }
-.scope-tag {
+.scope-tab-strip {
+  display: flex;
+  gap: var(--s-4);
+}
+
+.scope-tab {
+  position: relative;
+  padding: 0 0 7px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-base);
+}
+.scope-tab:hover {
+  color: var(--text-secondary);
+}
+.scope-tab.active {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+/* 下划线画成伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，
+   于是切换时整条文字上下跳一格。 */
+.scope-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+/* 一条落盘路径。**单行、从左边截**（写法同 `.truncate-left`）：绝对路径换行之后
+   比正文还显眼，而它只是「这东西在哪儿」的一条说明；尾巴才带信息。 */
+.path-line {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+/* 作用域标签那一行里，路径压到行尾，且不许把标签挤走。 */
+.scope-tabs .path-line {
+  margin-left: auto;
+  max-width: 62%;
+}
+
+/* 被更高优先级的层盖住的那条。橙色是**警告**不是强调——它说明这条不生效。 */
+.shadow-tag {
   flex: none;
   padding: 1px 7px;
   border-radius: var(--r-xs);
   background: var(--bg-inset);
-  color: var(--text-tertiary);
+  color: var(--warning);
   font-size: var(--fs-xs);
-}
-/* 全局层要看得出来是全局层：改它会影响所有工作区，而这一点从条目本身看不出来。 */
-.scope-tag[data-scope="global"] {
-  background: var(--warning-soft, var(--bg-inset));
-  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* 一行动作按钮 + 结果消息。显式保存只剩三处：记忆正文、team.json、mcp.json。 */
@@ -853,6 +882,155 @@
   color: var(--danger);
 }
 
+/* ───────────────────────── 设置页版面 ─────────────────────────
+ *
+ * 页头 + 作用域标签页 + 分区 + 条目卡 + 空态框。记忆 / 技能 / MCP / 插件 /
+ * Agent Team 五页共用这一套——它们说的是同一件事的五个实例。 */
+
+.page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 标题和右上角动作同一行。动作靠右，标题短的时候不要让它跟着跑到中间去。 */
+.page-head-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.page-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.page-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+/* 页级说明只写边界（B7）。宽度不设上限——对话框那一档已经定死了。 */
+.page-desc,
+.section-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+.section-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* ── 条目卡 ──
+ *
+ * 浅底、无强边框：一页里可能有十几条，每条一个描边框会把整页变成一堆方格。
+ * 底色取 `--bg-sunken`（对话框自己是 `--bg-raised`），所以卡是**凹**下去的，
+ * 亮暗两套都成立。 */
+.entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: 10px var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+}
+/* 装失败的必须显眼：它是用户唯一能据以排查「我明明放进去了」的东西。 */
+.entry-card.failed {
+  border-color: var(--danger);
+}
+.entry-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+/* 名字那一块可点时是 `<button>`，不可点时是 `<div>`，两者共用这条规则——
+   否则可点的那些会因为按钮的默认样式比不可点的矮一档。 */
+.entry-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+.entry-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.entry-name {
+  min-width: 0;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+/* 说明压成一行：条目多的时候，三行的说明会让「有哪些」这个问题要滚三屏才答得出。
+   要看全的那条点开就是。 */
+.entry-desc {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.entry-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+/* 卡下面挂的那一段（工具名、隔离状态、失败原因）。 */
+.entry-extra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.entry-extra code {
+  font-family: var(--font-mono);
+}
+.entry-extra.bad {
+  color: var(--danger);
+}
+
+/* ── 空态框 ──
+ *
+ * 高度写死。空态和有内容时高度差一大截的话，加完第一条整页会往下窜一段（B9）。 */
+.empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 168px;
+  max-height: 168px;
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+.empty-box svg {
+  opacity: 0.5;
+}
+.empty-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
 /* ── 设置内容区对上面这些表单规则的覆盖 ──
    **必须写在被覆盖的规则之后**：这几条特异性更高，写在前面的话「顺序」和
    「特异性」会给出相反的答案，biome 的 noDescendingSpecificity 就是在拦这个。 */
@@ -935,49 +1113,6 @@
 
 /* ───────────────────────── 插件 ───────────────────────── */
 
-.plugins-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-.plugins-section-head {
-  margin-top: var(--s-2);
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-}
-.plugin-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: var(--s-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-}
-/* 装失败的必须显眼：它是用户唯一能据以排查「我明明放进去了」的东西 */
-.plugin-card.failed {
-  border-color: var(--danger);
-}
-.plugin-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-}
-.plugin-id {
-  font-weight: 600;
-  font-size: var(--fs-sm);
-  word-break: break-all;
-}
-.plugin-version {
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-.plugin-isolation {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-2);
-}
 /* 「有」和「无」都照实显示，两者都不是错误状态——
    把「无」画成红色会让「node 版本不够所以没有出网闸」看起来像故障 */
 .iso-flag {
@@ -990,18 +1125,6 @@
 .iso-flag.off {
   background: var(--bg-inset);
   color: var(--text-tertiary);
-}
-.plugin-tools {
-  margin: 0;
-  padding-left: 1.1em;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: var(--fs-xs);
-}
-/* `.markdown` 只包助手正文，不会包住设置页的插件列表，所以这里要自己给等宽字体。 */
-.plugin-tools code {
-  font-family: var(--font-mono);
 }
 .field-hint.bad {
   color: var(--danger);
@@ -1057,65 +1180,6 @@
 .schedule-actions {
   display: flex;
   gap: var(--s-2);
-}
-
-.install-box {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  padding: var(--s-3);
-  border: 1px dashed var(--border-default);
-  border-radius: var(--r-sm);
-}
-.install-box .btn-ghost {
-  align-self: flex-start;
-}
-.plugin-head .icon-btn {
-  margin-left: auto;
-}
-
-/* ── 记忆与技能 ──
-   一行一条：标识 + 首行摘要 + 一个删除。技能那半没有删除，多一列目录路径
-   ——它只读，得让人知道去哪儿改。 */
-.mem-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.mem-item {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  min-width: 0;
-  border-radius: var(--r-sm);
-}
-.mem-item:hover {
-  background: var(--bg-hover);
-}
-.mem-item.static:hover {
-  background: none;
-}
-.mem-open {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px var(--s-2);
-  text-align: left;
-  font-size: var(--fs-sm);
-}
-.mem-key {
-  flex: none;
-  color: var(--text-primary);
-}
-.mem-preview {
-  min-width: 0;
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
 }
 
 /* ── 运行详情 ── */

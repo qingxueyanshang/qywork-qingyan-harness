@@ -4,6 +4,7 @@ import PairPanel from '../PairPanel.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import { config, configError, configPath, ensureConfig, reloadConfig } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
+import { PageHead } from './Page.tsx'
 import { PathRow, Row } from './Row.tsx'
 
 const THEMES: { id: ThemePref; label: string }[] = [
@@ -119,6 +120,7 @@ export function GeneralSettings() {
 
   return (
     <>
+      <PageHead title="通用" />
       <section class="settings-block">
         <h3 class="settings-block-head">外观</h3>
         <div class="setting-rows">

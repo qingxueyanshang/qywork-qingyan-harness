@@ -237,9 +237,10 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   /*
    * 这个项目上装了什么。
    *
-   * **不在握手里报。** 扩展是按工作区的（`.qy/plugins`、`.qy/mcp.json`、
-   * `.qy/team.json` 全在项目目录下），而一条 WebSocket 连接横跨用户开着的所有项目。
-   * 握手报一份就等于「A 项目的插件显示在 B 项目上」，且它只在重连时才更新。
+   * **不在握手里报。** 扩展里的 MCP 与编排是按工作区的（`.agents/mcp.json`、
+   * `.qy/team.json` 在项目目录下），而一条 WebSocket 连接横跨用户开着的所有项目。
+   * 握手报一份就等于「A 项目的 MCP 显示在 B 项目上」，且它只在重连时才更新。
+   * 插件是全局的，但它和那两份一起构成「这个工作区上模型有哪些工具」，所以同路回。
    *
    * **取扩展一律走引用计数**（`acquireExtensions` / `releaseExtensions`）：
    * 直接 `loadExtensions` 会给每一次请求新起一批插件与 MCP 子进程，且没有人关。

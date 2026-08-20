@@ -119,7 +119,7 @@ shell 这条没有。
 
 | 路径 | agent 能不能写 | 为什么 |
 |---|---|---|
-| `.agents/mcp.json`、`.agents/plugins/`、`.agents/skills/`、`.qy/team.json` | **不能** | 它们决定模型拿到哪些工具、跑什么流程、派哪些角色。能写 = 能给自己提权 |
+| `.agents/mcp.json`、`.agents/skills/`、`.qy/team.json` | **不能** | 它们决定模型拿到哪些工具、跑什么流程、派哪些角色。能写 = 能给自己提权 |
 | `.qy/team.json` | **不能** | 同上：它决定编排里跑哪些后端 |
 | `.agents/memory/*.md` | **能，但只能走 `write_memory` / `delete_memory`** | 那条路走 `resolveInWorkspace`（读解析器），写和删各自要过权限闸。记忆是 agent 自己的笔记本，不改变它的能力边界；但用 `write_file` 或 shell 直接写它会被挡——写入路径只能有一条 |
 | `.qy/attachments/` | **不能** | 没有对应的工具；它只由 HTTP 上传接口写，而模型碰不到 HTTP 面 |

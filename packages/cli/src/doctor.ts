@@ -32,6 +32,7 @@ import {
   configPath,
   dataPath,
   diagnoseConfig,
+  globalPluginsDir,
   loadConfig,
   loadExtensions,
   loadWorkspaceMcp,
@@ -258,7 +259,7 @@ async function checkPlugins(workspaceRoot: string): Promise<Line[]> {
 
   try {
     if (reg.plugins.length === 0 && reg.failures.length === 0) {
-      out.push({ level: 'ok', text: '没有安装插件', detail: '.qy/plugins/' })
+      out.push({ level: 'ok', text: '没有安装插件', detail: globalPluginsDir() })
       return out
     }
 
