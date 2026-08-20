@@ -90,7 +90,7 @@ export class AnthropicAdapter implements LlmAdapter {
         req.signal ? { signal: req.signal } : {},
       )
 
-      for await (const ev of stream as AsyncIterable<Record<string, any>>) {
+      for await (const ev of stream as AsyncIterable<AnthropicStreamEvent>) {
         switch (ev.type) {
           case 'message_start': {
             const u = ev.message?.usage
@@ -100,21 +100,27 @@ export class AnthropicAdapter implements LlmAdapter {
           case 'content_block_start': {
             const block = ev.content_block
             if (block?.type === 'tool_use') {
-              partial.set(ev.index, { id: block.id, name: block.name, json: '' })
+              // 缺席按空串收：名字为空由 `collectToolCalls` 的 `!slot.name` 那条统一报错，
+              // 那是「工具调用没有名字」的唯一判定点，这里不再各判一次。
+              partial.set(ev.index, { id: block.id ?? '', name: block.name ?? '', json: '' })
             }
             break
           }
           case 'content_block_delta': {
             const d = ev.delta
             if (d?.type === 'text_delta') {
-              yield { type: 'text_delta', delta: d.text }
+              // 同 `input_json_delta`：缺席按空串收，直接透传 undefined 会让
+              // 字符串 `undefined` 进到正文里。
+              yield { type: 'text_delta', delta: d.text ?? '' }
             } else if (d?.type === 'thinking_delta') {
               // display:'omitted'（默认）时这里是空串——思考照样发生、照样计费，
               // 只是不回传内容。不要据此判断「模型没思考」。
               if (d.thinking) yield { type: 'thinking_delta', delta: d.thinking }
             } else if (d?.type === 'input_json_delta') {
               const slot = partial.get(ev.index)
-              if (slot) slot.json += d.partial_json
+              // **必须兜住缺席**：直接拼接会把字符串 `undefined` 接进 JSON，
+              // 随后 `JSON.parse` 抛，整次工具调用的参数就没了。
+              if (slot) slot.json += d.partial_json ?? ''
             }
             break
           }
@@ -128,9 +134,13 @@ export class AnthropicAdapter implements LlmAdapter {
             // stop_details 只在 refusal 时非空，其余 stop_reason 下恒为 null——
             // 必须先看 stop_reason 再读它，反过来会漏判。
             if (raw === 'refusal' && ev.delta?.stop_details) {
+              // 键不存在与键为 undefined 在 `exactOptionalPropertyTypes` 下不是一回事，
+              // 所以按有没有决定加不加这个键（同 `store` 的 `rowToWorkspace`）。
               refusal = {
                 category: ev.delta.stop_details.category ?? null,
-                explanation: ev.delta.stop_details.explanation,
+                ...(ev.delta.stop_details.explanation === undefined
+                  ? {}
+                  : { explanation: ev.delta.stop_details.explanation }),
               }
             }
             break
@@ -141,7 +151,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }
 
       const final = await (
-        stream as { finalMessage(): Promise<Record<string, any>> }
+        stream as { finalMessage(): Promise<AnthropicFinalMessage> }
       ).finalMessage()
       if (final.usage) applyUsage(usage, final.usage)
       if (final.stop_reason) {
@@ -151,7 +161,9 @@ export class AnthropicAdapter implements LlmAdapter {
       if (final.stop_reason === 'refusal' && final.stop_details) {
         refusal = {
           category: final.stop_details.category ?? null,
-          explanation: final.stop_details.explanation,
+          ...(final.stop_details.explanation === undefined
+            ? {}
+            : { explanation: final.stop_details.explanation }),
         }
       }
 
@@ -272,6 +284,81 @@ function buildTools(tools: ToolSchema[]) {
     }))
 }
 
+/*
+ * ───────────────────────── 这个协议的 wire 形状 ─────────────────────────
+ *
+ * **只声明本文件真的读或真的写的字段。** 协议本身给的比这多得多，没列进来的就是
+ * 我们不依赖的——所以这几个接口同时也是「换一家中转站时，对端至少要提供什么」的清单。
+ *
+ * 放在这个文件里而不是抽一个跨协议的 wire 模块：协议这条轴已经有归属
+ * （`ProviderKind` 三个值、一个适配器一个协议、模型库每条 spec 带着它），
+ * 再起一个登记表就是第二处声明协议轴的地方。谁的协议谁自己描述。
+ */
+
+/** usage 的四个数。**各自可能缺席，缺席与 0 不是一回事**（见 `applyUsage`）。 */
+interface AnthropicUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+/**
+ * 流事件。写成一个带可选字段的接口而不是判别联合：读的时候本来就是
+ * `switch (ev.type)` 之后逐个 `?.` 取，联合类型在这里只会把每个分支都变成一次断言。
+ *
+ * `index` 按必填给：只有 `content_block_*` 两个分支读它，而那两种事件一定带。
+ */
+interface AnthropicStreamEvent {
+  type: string
+  index: number
+  message?: { usage?: AnthropicUsage }
+  content_block?: { type?: string; id?: string; name?: string }
+  delta?: {
+    type?: string
+    text?: string
+    thinking?: string
+    partial_json?: string
+    stop_reason?: string
+    stop_details?: { category?: string | null; explanation?: string } | null
+  }
+  usage?: AnthropicUsage
+}
+
+/** 收尾时问 SDK 要的那份完整消息。`stop_details` 只在 refusal 下非空。 */
+interface AnthropicFinalMessage {
+  usage?: AnthropicUsage
+  stop_reason?: string | null
+  stop_details?: { category?: string | null; explanation?: string } | null
+}
+
+/** 内容块。一个块只会长成其中一种，字段因此全是可选的。 */
+interface AnthropicBlock {
+  type: string
+  text?: string
+  /** 装配时可能还没有（`WireMessage.toolCallId` 可缺），JSON 里的 undefined 等同不带这个键。 */
+  tool_use_id?: string | undefined
+  content?: string | AnthropicBlock[]
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
+  source?: { type: string; media_type: string; data: string }
+  title?: string
+  cache_control?: { type: 'ephemeral' }
+}
+
+/**
+ * 我们发出去的一条消息。
+ *
+ * `_toolBatch` 不是协议字段，是「同一轮的多个工具结果要并进同一条 user 消息」时的
+ * 自用标记，发出去之前一定删掉——留着会进请求体，破坏缓存前缀。
+ */
+interface AnthropicOutMessage {
+  role: 'user' | 'assistant'
+  content: string | AnthropicBlock[]
+  _toolBatch?: boolean
+}
+
 /**
  * 消息形状翻译，顺带落缓存断点。
  *
@@ -291,7 +378,7 @@ function buildMessages(
   minPrefix = 0,
   prefixTokens = 0,
 ): Anthropic.MessageParam[] {
-  const out: Record<string, any>[] = []
+  const out: AnthropicOutMessage[] = []
   // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
   // 所以输入下标和输出下标不是一一对应的——只能边走边记。
   const marks: number[] = []
@@ -318,7 +405,7 @@ function buildMessages(
     }
 
     if (m.role === 'assistant' && m.toolCalls?.length) {
-      const content: Record<string, any>[] = []
+      const content: AnthropicBlock[] = []
       if (typeof m.content === 'string' && m.content) {
         content.push({ type: 'text', text: m.content })
       }
@@ -415,7 +502,7 @@ function normalizeStopReason(raw: string): ProviderStopReason {
  * 把两者混成 0 会让「缓存从来没生效」这个故障看起来像「缓存生效了但没命中」，
  * 是排查缓存问题时最误导人的一步。
  */
-function applyUsage(acc: ProviderUsage, u: Record<string, any>) {
+function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
   if (typeof u.input_tokens === 'number') acc.inputTokens = u.input_tokens
   if (typeof u.output_tokens === 'number') acc.outputTokens = u.output_tokens
   if (typeof u.cache_read_input_tokens === 'number') {

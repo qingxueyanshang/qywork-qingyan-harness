@@ -466,7 +466,7 @@ export function buildTools(tools: ToolSchema[]): Record<string, unknown>[] {
  */
 export async function* readSse(
   body: ReadableStream<Uint8Array>,
-): AsyncGenerator<Record<string, any>, void, unknown> {
+): AsyncGenerator<Record<string, unknown>, void, unknown> {
   const decoder = new TextDecoder()
   let buffer = ''
 

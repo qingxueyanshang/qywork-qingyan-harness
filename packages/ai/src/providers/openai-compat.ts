@@ -88,7 +88,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       const stream = (await this.client.chat.completions.create(
         { ...body, stream: true, stream_options: { include_usage: true } } as never,
         req.signal ? { signal: req.signal } : {},
-      )) as unknown as AsyncIterable<Record<string, any>>
+      )) as unknown as AsyncIterable<CompatChunk>
 
       let chunks = 0
       for await (const chunk of stream) {
@@ -181,7 +181,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       .filter(Boolean)
       .join('\n\n')
 
-    const messages: Record<string, any>[] = []
+    const messages: CompatOutMessage[] = []
     if (systemText) messages.push({ role: 'system', content: systemText })
     messages.push(...buildMessages(req.messages))
 
@@ -336,7 +336,60 @@ function nullable(node: Record<string, unknown>): Record<string, unknown> {
   return { ...node, type: [type, 'null'] }
 }
 
-function buildMessages(messages: WireMessage[]) {
+/*
+ * ───────────────────────── 这个协议的 wire 形状 ─────────────────────────
+ *
+ * **只声明本文件真的读或真的写的字段。** 兼容端点的字段集参差不齐
+ * （`reasoning_content`、`prompt_cache_hit_tokens` 等都不在官方类型里），
+ * 所以这几个接口就是「我们认得哪些方言」的清单——加一家中转的方言时改这里。
+ *
+ * 放在这个文件里而不是抽一个跨协议的 wire 模块：协议这条轴已经有归属
+ * （`ProviderKind` 三个值、一个适配器一个协议、模型库每条 spec 带着它）。
+ */
+
+/**
+ * usage。**各家字段名不统一，能给的都收**，收不到就保持未回报（见 `applyUsage`）。
+ */
+interface CompatUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  /** DeepSeek 的写法。 */
+  prompt_cache_hit_tokens?: number
+  prompt_cache_miss_tokens?: number
+  /** OpenAI 的写法。 */
+  prompt_tokens_details?: { cached_tokens?: number }
+  completion_tokens_details?: { reasoning_tokens?: number }
+}
+
+/** 流里的一个 chunk。字段全可选：一个 chunk 只会带其中一部分。 */
+interface CompatChunk {
+  usage?: CompatUsage
+  choices?: {
+    delta?: {
+      content?: string
+      /** DeepSeek / Kimi 用 `reasoning_content`，部分中转站用 `reasoning`。 */
+      reasoning_content?: string
+      reasoning?: string
+      tool_calls?: {
+        index?: number
+        id?: string
+        function?: { name?: string; arguments?: string }
+      }[]
+    }
+    finish_reason?: string | null
+  }[]
+}
+
+/** 我们发出去的一条消息。四个分支各带一部分字段，所以除 `role` 外全可选。 */
+interface CompatOutMessage {
+  role: string
+  content: string | { type: string; text?: string; image_url?: { url: string } }[] | null
+  tool_call_id?: string | undefined
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  reasoning_content?: string
+}
+
+function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
   return messages.map((m) => {
     if (m.role === 'tool') {
       return {
@@ -468,12 +521,12 @@ export function createThinkingSplitter(): {
  *
  * 这里统一收敛到 Anthropic 的「排他」口径：inputTokens 只装未命中部分。
  */
-function applyUsage(acc: ProviderUsage, u: Record<string, any>) {
+function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   if (typeof u.completion_tokens === 'number') acc.outputTokens = u.completion_tokens
 
   // 各家字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
   // prompt_tokens_details.cached_tokens。都认，认不出就保持 null（未回报）。
-  const details = u.prompt_tokens_details as Record<string, any> | undefined
+  const details = u.prompt_tokens_details
   let cached: number | null = null
   if (typeof u.prompt_cache_hit_tokens === 'number') {
     cached = u.prompt_cache_hit_tokens
@@ -489,7 +542,7 @@ function applyUsage(acc: ProviderUsage, u: Record<string, any>) {
     // 只有总量时自己减。没回报缓存量就按全部未命中处理。
     acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0))
   }
-  const outDetails = u.completion_tokens_details as Record<string, any> | undefined
+  const outDetails = u.completion_tokens_details
   if (outDetails && typeof outDetails.reasoning_tokens === 'number') {
     acc.reasoningTokens = outDetails.reasoning_tokens
   }
