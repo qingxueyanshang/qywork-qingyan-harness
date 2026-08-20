@@ -239,6 +239,8 @@ export function stopReasonLabel(reason: string): string {
     // 与「已中断」分开说：用户没点过任何东西，是服务进程没了（热重载、崩溃、关机）。
     // 两句都说「已中断」的话，用户看到的是一个自己没做过的动作。
     process_exit: '服务进程退出',
+    // 不再产生：权限拒绝是工具级失败，不是 run 的终点。留着认旧记录——
+    // 库里已有的 run 存着这个码，删掉它们的收尾条就显示成英文原码。
     permission_denied: '授权被拒绝',
     output_truncated: '输出被截断',
     provider_error: '模型服务出错',

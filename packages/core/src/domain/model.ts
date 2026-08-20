@@ -153,7 +153,6 @@ export type StopReason =
    * 与 `internal_guard` 的区别是结果可不可信：那条有工具停在执行中。
    */
   | 'process_exit'
-  | 'permission_denied'
   /**
    * **输出**被 max_tokens 截断。答案不完整但已发生的部分是有效的。
    *
