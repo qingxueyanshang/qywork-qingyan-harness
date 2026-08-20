@@ -1,3 +1,4 @@
+import type { UsageResponse, UsageTotals } from '@qywork/core'
 import { formatCosts } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
@@ -20,24 +21,6 @@ import { PageHead } from './Page.tsx'
  * 「按工作区」这个分组本来就把它列出来了，再单给一格就是同一个数两处显示。
  */
 
-interface Totals {
-  entries: number
-  inputTokens: number
-  outputTokens: number
-  cachedTokens: number | null
-  reasoningTokens: number
-  cost: Record<string, number>
-}
-interface Bucket extends Totals {
-  key: string
-}
-interface UsageResponse {
-  days: number
-  by: string
-  totals: Totals
-  rows: Bucket[]
-}
-
 const RANGES = [7, 30, 90] as const
 const GROUPS = [
   { by: 'model', label: '按模型' },
@@ -58,7 +41,7 @@ function money(cost: Record<string, number>): string {
 }
 
 /** 「输入」给含缓存命中的口径：中转站后台账单就是这个数，两边同口径才能对账。 */
-function input(t: Totals): number {
+function input(t: UsageTotals): number {
   return t.inputTokens + (t.cachedTokens ?? 0)
 }
 

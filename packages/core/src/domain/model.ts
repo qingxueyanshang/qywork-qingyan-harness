@@ -281,6 +281,64 @@ export interface UsageTurn {
   at: number
 }
 
+// ─────────────────────────────── 用量账本 ───────────────────────────────
+//
+// **形状放在 core，不放在 store。** 写它的是 store、发它的是 server、画它的是 web，
+// 三边都要认这几个形状；放在 store 里的话，web 够不着（依赖只能朝底层走），
+// 于是只能各抄一份——这三份实际存在过，改一个字段名时另外两份不会红。
+
+/**
+ * 花钱的种类。
+ *
+ * 每一条都是**独立于 run 的一笔开销**，不加进来就意味着那笔钱在界面上不存在。
+ * `summary`（压缩时的摘要调用）就吃过这个亏：它在账本出现之前完全看不见，
+ * 压缩越频繁账单和界面差得越多。
+ *
+ * `classifier` 是权限裁决的那次小模型调用。它按**每条待判命令**计费，
+ * 频次可能比 run 本身高一个量级，所以必须能单独查——
+ * `qy usage --by kind` 才答得出「裁决占了多少」，以及要不要换个更小的模型。
+ */
+export type UsageKind = 'run' | 'summary' | 'team' | 'classifier'
+
+export interface UsageTotals {
+  entries: number
+  inputTokens: number
+  outputTokens: number
+  /** null = 这段区间里没有任何一笔回报过缓存。不要显示成 0。 */
+  cachedTokens: number | null
+  /** 同上。缓存写入与命中分开记，两者计价不同。 */
+  cacheWriteTokens: number | null
+  reasoningTokens: number
+  /**
+   * **按币种分开，不合计也不换算。**
+   *
+   * 只放这段区间里真的出现过的币种——空对象就是「这段区间没花钱」。
+   * 合成一个数字要一个汇率，而汇率天天变，落盘之后那个数字就开始说谎，
+   * 偏偏它看起来仍然是个确切的金额。
+   */
+  cost: Record<string, number>
+}
+
+export interface UsageBucket extends UsageTotals {
+  /** 分组键：模型名 / 日期 / 工作区 id。 */
+  key: string
+}
+
+/** 账本里的一行。`runId` 为空即这笔不属于任何一轮（压缩摘要就是这种）。 */
+export interface UsageLedgerRow {
+  id: string
+  kind: UsageKind
+  runId: string | null
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number | null
+  cacheWriteTokens: number | null
+  cost: number
+  currency: Currency
+  occurredAt: number
+}
+
 export interface TodoItem {
   id: string
   content: string

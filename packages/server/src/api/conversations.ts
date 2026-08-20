@@ -9,7 +9,7 @@ import {
   unknownModel,
   VENDORS,
 } from '@qywork/ai'
-import type { ConversationId, EffortLevel, RunId } from '@qywork/core'
+import type { ConversationId, ConversationUsageResponse, EffortLevel, RunId } from '@qywork/core'
 import {
   catalogKey,
   contextPanel,
@@ -330,10 +330,11 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     // 这条会话的**完整**花费。真源是账本而不是 `runs` 上的 usage：压缩摘要那次调用
     // 也是这条会话引发的、也计费，但它不属于任何一轮，把 run 加起来必然少算。
     // 不设时间窗——问的是「这条会话花了多少」，它从建起来那天算。
-    return json({
+    const usage: ConversationUsageResponse = {
       totals: usageTotals(d.store, { conversationId: id }),
       entries: usageEntries(d.store, { conversationId: id }),
-    })
+    }
+    return json(usage)
   }
 
   // 上下文面板。**按会话现算，不靠事件残留**——事件只在 run 跑着时流，

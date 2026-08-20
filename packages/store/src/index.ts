@@ -83,7 +83,6 @@ export {
   type GroupBy,
   recordUsage,
   summaryOutputPercentile,
-  type UsageLedgerRow,
   usageBy,
   usageEntries,
   usageTotals,

@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { UsageResponse } from '@qywork/core'
 import { recordUsage, Store } from '@qywork/store'
 import type { ApiRequestDeps } from './types.ts'
 import { handleUsageApi } from './usage.ts'
@@ -65,10 +66,10 @@ describe('查账', () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
     const body = (await call('', deps(store)))!
-    const j = (await body.json()) as any
+    const j = (await body.json()) as UsageResponse
     expect(j.totals.entries).toBe(2)
     expect(j.totals.cost.USD).toBeCloseTo(0.501, 6)
-    expect(j.rows.map((r: any) => r.key).sort()).toEqual(['便宜的', '贵的'])
+    expect(j.rows.map((r) => r.key).sort()).toEqual(['便宜的', '贵的'])
     store.close()
   })
 
@@ -76,7 +77,7 @@ describe('查账', () => {
   test('本工作区的那份单独给', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
-    const j = (await (await call('', deps(store, 'ws_a')))!.json()) as any
+    const j = (await (await call('', deps(store, 'ws_a')))!.json()) as UsageResponse
     expect(j.totals.cost.USD).toBeCloseTo(0.501, 6)
     expect(j.workspaceTotals.cost.USD).toBeCloseTo(0.5, 6)
     store.close()
@@ -85,10 +86,10 @@ describe('查账', () => {
   test('按天分组也能出，键是本地日期', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
-    const j = (await (await call('?by=day', deps(store)))!.json()) as any
+    const j = (await (await call('?by=day', deps(store)))!.json()) as UsageResponse
     expect(j.by).toBe('day')
     expect(j.rows).toHaveLength(1)
-    expect(j.rows[0].key).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(j.rows[0]?.key).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     store.close()
   })
 
@@ -110,8 +111,12 @@ describe('查账', () => {
       cost: 9,
       occurredAt: Date.now() - 40 * DAY,
     })
-    expect(((await (await call('?days=30', deps(store)))!.json()) as any).totals.entries).toBe(0)
-    expect(((await (await call('?days=90', deps(store)))!.json()) as any).totals.entries).toBe(1)
+    expect(
+      ((await (await call('?days=30', deps(store)))!.json()) as UsageResponse).totals.entries,
+    ).toBe(0)
+    expect(
+      ((await (await call('?days=90', deps(store)))!.json()) as UsageResponse).totals.entries,
+    ).toBe(1)
     store.close()
   })
 
@@ -132,14 +137,14 @@ describe('查账', () => {
       cost: 3,
       currency: 'CNY',
     })
-    const j = (await (await call('', deps(store)))!.json()) as any
+    const j = (await (await call('', deps(store)))!.json()) as UsageResponse
     expect(j.totals.cost.USD).toBeCloseTo(0.501, 6)
     expect(j.totals.cost.CNY).toBeCloseTo(3, 6)
     store.close()
   })
 
   test('空账本回 0 而不是报错', async () => {
-    const j = (await (await call())!.json()) as any
+    const j = (await (await call())!.json()) as UsageResponse
     expect(j.totals.entries).toBe(0)
     // `{}` 不是 `{USD: 0}`：没花钱不该凭空冒出一个币种。
     expect(j.totals.cost).toEqual({})

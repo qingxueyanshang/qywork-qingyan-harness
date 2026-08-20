@@ -80,6 +80,10 @@ export {
   type ToolActionStatus,
   type ToolOutcomeWire,
   todoProgress,
+  type UsageBucket,
+  type UsageKind,
+  type UsageLedgerRow,
+  type UsageTotals,
   type Workspace,
 } from './domain/model.ts'
 
@@ -93,6 +97,7 @@ export type {
   GitStateEvent,
   PermissionScope,
 } from './protocol/events.ts'
+export type { ConversationUsageResponse, UsageResponse } from './protocol/http.ts'
 
 // 客户端 → 服务端的指令、握手与配对
 export {

@@ -14,6 +14,7 @@
  * 比其中一个报错要难查得多。
  */
 
+import type { UsageResponse } from '@qywork/core'
 import { type GroupBy, usageBy, usageTotals } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
@@ -37,7 +38,7 @@ export const handleUsageApi: ApiHandler = async (url, _req, d) => {
   }
 
   const since = Date.now() - days * 86_400_000
-  return json({
+  const res: UsageResponse = {
     days,
     since,
     by,
@@ -46,5 +47,6 @@ export const handleUsageApi: ApiHandler = async (url, _req, d) => {
     // 本工作区的那一份单独给一次：界面上「这台机器」和「这个工作区」是两个
     // 都会被问到的问题，让前端拿总量自己减是算不出来的。
     workspaceTotals: usageTotals(d.store, { since, workspaceId: d.workspaceId }),
-  })
+  }
+  return json(res)
 }

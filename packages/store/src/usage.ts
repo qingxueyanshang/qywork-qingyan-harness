@@ -8,22 +8,9 @@
  * 所以账本不设外键：`run_id` / `conversation_id` 只是线索，指向的行没了不影响账目成立。
  */
 
-import type { Currency } from '@qywork/core'
+import type { Currency, UsageBucket, UsageKind, UsageLedgerRow, UsageTotals } from '@qywork/core'
 import { newUsageId } from '@qywork/core'
 import type { Store } from './db.ts'
-
-/**
- * 花钱的种类。
- *
- * 每一条都是**独立于 run 的一笔开销**，不加进来就意味着那笔钱在界面上不存在。
- * `summary`（压缩时的摘要调用）就吃过这个亏：它在账本出现之前完全看不见，
- * 压缩越频繁账单和界面差得越多。
- *
- * `classifier` 是权限裁决的那次小模型调用。它按**每条待判命令**计费，
- * 频次可能比 run 本身高一个量级，所以必须能单独查——
- * `qy usage --by kind` 才答得出「裁决占了多少」，以及要不要换个更小的模型。
- */
-export type UsageKind = 'run' | 'summary' | 'team' | 'classifier'
 
 export interface UsageEntry {
   kind: UsageKind
@@ -112,30 +99,6 @@ export interface UsageQuery {
    */
   conversationId?: string
   kind?: UsageKind
-}
-
-export interface UsageTotals {
-  entries: number
-  inputTokens: number
-  outputTokens: number
-  /** null = 这段区间里没有任何一笔回报过缓存。不要显示成 0。 */
-  cachedTokens: number | null
-  /** 同上。缓存写入与命中分开记，两者计价不同。 */
-  cacheWriteTokens: number | null
-  reasoningTokens: number
-  /**
-   * **按币种分开，不合计也不换算。**
-   *
-   * 只放这段区间里真的出现过的币种——空对象就是「这段区间没花钱」。
-   * 合成一个数字要一个汇率，而汇率天天变，落盘之后那个数字就开始说谎，
-   * 偏偏它看起来仍然是个确切的金额。
-   */
-  cost: Record<string, number>
-}
-
-export interface UsageBucket extends UsageTotals {
-  /** 分组键：模型名 / 日期 / 工作区 id。 */
-  key: string
 }
 
 function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
@@ -324,21 +287,6 @@ interface RawEntry {
   cost: number | null
   currency: string | null
   occurred_at: number
-}
-
-/** 账本里的一行。`runId` 为空即这笔不属于任何一轮（压缩摘要就是这种）。 */
-export interface UsageLedgerRow {
-  id: string
-  kind: UsageKind
-  runId: string | null
-  model: string
-  inputTokens: number
-  outputTokens: number
-  cachedTokens: number | null
-  cacheWriteTokens: number | null
-  cost: number
-  currency: Currency
-  occurredAt: number
 }
 
 /** 删掉某个时间点之前的账目。用户要清账时用，不是自动 GC。 */
