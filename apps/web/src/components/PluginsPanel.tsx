@@ -2,6 +2,7 @@ import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import {
   client,
+  createPlugin,
   installPlugin,
   isDesktopShell,
   pickWorkspace,
@@ -73,6 +74,12 @@ export function PluginsPanel() {
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
   const [manual, setManual] = createSignal('')
+  /** 新建表单。null = 没在建。 */
+  const [draft, setDraft] = createSignal<{ id: string; name: string; description: string } | null>(
+    null,
+  )
+  /** 导入框开着没有。分开一个状态是因为两条路各自有各自的取消。 */
+  const [importing, setImporting] = createSignal(false)
 
   const act = async (key: string, fn: () => Promise<unknown>, ok: (r: never) => string) => {
     setBusy(key)
@@ -110,24 +117,58 @@ export function PluginsPanel() {
     }
   }
 
+  /**
+   * 这一段的两个动作。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
+   * 而空的时候用户看到的恰恰是空态框里那一份。
+   */
+  const Actions = () => (
+    <>
+      <button
+        class="btn-ghost sm"
+        type="button"
+        disabled={busy() !== null}
+        onClick={() => {
+          setDraft(null)
+          setError(null)
+          setOkMsg(null)
+          setImporting(true)
+        }}
+      >
+        导入
+      </button>
+      <button
+        class="btn-ghost sm"
+        type="button"
+        disabled={busy() !== null}
+        onClick={() => {
+          setImporting(false)
+          setError(null)
+          setOkMsg(null)
+          setDraft({ id: '', name: '', description: '' })
+        }}
+      >
+        新建
+      </button>
+    </>
+  )
+
+  const create = (d: { id: string; name: string; description: string }) =>
+    act(
+      'new',
+      () => createPlugin(d),
+      (r: { id: string }) => {
+        setDraft(null)
+        // 和安装同一条边界：插件在服务启动时加载，不是热插拔。
+        return `已建好 ${r.id}。改完代码重启后生效。`
+      },
+    )
+
   return (
     <>
       {/* 页头在 `Show` 外面：起插件子进程要几秒，这几秒里这一页也该有名字。 */}
       <PageHead
         title="插件"
         desc="插件为模型贡献工具。只有全局一份，装一次对所有项目生效，重启后加载。"
-        actions={
-          <Show when={isDesktopShell()}>
-            <button
-              class="btn-ghost sm"
-              type="button"
-              disabled={busy() === 'install'}
-              onClick={() => void browse()}
-            >
-              {busy() === 'install' ? '安装中…' : '安装…'}
-            </button>
-          </Show>
-        }
       />
       {/* `loaded()` 而不是 `data()`：装/卸插件之后要重取，重取期间留住上一份；
           出错时给 undefined，由 `LoadState` 说明原因并给一条重试的路——
@@ -138,8 +179,11 @@ export function PluginsPanel() {
       >
         {(d) => (
           <>
-            <Section title="已安装">
-              <Show when={d().plugins.length > 0} fallback={<EmptyBox label="还没有装插件" />}>
+            <Section title="已安装" actions={<Actions />}>
+              <Show
+                when={d().plugins.length > 0}
+                fallback={<EmptyBox label="还没有装插件" actions={<Actions />} />}
+              >
                 <div class="entry-list">
                   <For each={d().plugins}>
                     {(p) => (
@@ -220,35 +264,119 @@ export function PluginsPanel() {
               </Section>
             </Show>
 
-            {/* 安装入口。
+            <Show when={draft()}>
+              {(f) => (
+                <Section title="新建插件">
+                  <div class="setting-rows">
+                    <div class="setting-row stack">
+                      <div class="setting-row-text">
+                        <span class="setting-row-label">标识</span>
+                        <span class="setting-row-hint">
+                          工具名按它拼前缀，反向域名风格，只能用字母数字和 . _ -
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        value={f().id}
+                        placeholder="如 demo.lines"
+                        onInput={(e) => setDraft({ ...f(), id: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="setting-row stack">
+                      <div class="setting-row-text">
+                        <span class="setting-row-label">名称</span>
+                      </div>
+                      <input
+                        type="text"
+                        value={f().name}
+                        placeholder="如 行数统计"
+                        onInput={(e) => setDraft({ ...f(), name: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="setting-row stack">
+                      <div class="setting-row-text">
+                        <span class="setting-row-label">说明</span>
+                      </div>
+                      <input
+                        type="text"
+                        value={f().description}
+                        placeholder="数一个文件有多少行"
+                        onInput={(e) => setDraft({ ...f(), description: e.currentTarget.value })}
+                      />
+                    </div>
+                  </div>
+                  <div class="row-actions">
+                    <button
+                      class="btn-primary"
+                      type="button"
+                      disabled={busy() !== null || !f().id.trim()}
+                      onClick={() => void create(f())}
+                    >
+                      创建
+                    </button>
+                    <button class="btn-ghost" type="button" onClick={() => setDraft(null)}>
+                      取消
+                    </button>
+                  </div>
+                  <span class="field-hint">
+                    会落一份能跑起来的骨架（清单 + 一个 echo 工具），改完重启生效。
+                  </span>
+                </Section>
+              )}
+            </Show>
+
+            {/* 导入。
               只接受**本机已存在的目录**：没有 registry，所以没有「从市场安装」；
               也刻意不做 git clone 任意 URL——那等于从网上取一段代码，下次加载就跑它。 */}
-            <Section title="安装">
+            <Show when={importing()}>
+              <Section title="导入插件目录">
+                <div class="field">
+                  <input
+                    type="text"
+                    placeholder="插件目录的绝对路径"
+                    value={manual()}
+                    onInput={(e) => setManual(e.currentTarget.value)}
+                  />
+                  <span class="field-hint">
+                    目录里要有 <code>qywork.plugin.json</code>；清单不合法会被拒绝，不会装进去一半。
+                  </span>
+                </div>
+                <div class="row-actions">
+                  <Show when={isDesktopShell()}>
+                    <button
+                      class="btn-ghost"
+                      type="button"
+                      disabled={busy() !== null}
+                      onClick={() => void browse()}
+                    >
+                      选择目录…
+                    </button>
+                  </Show>
+                  <button
+                    class="btn-primary"
+                    type="button"
+                    disabled={!manual().trim() || busy() !== null}
+                    onClick={() => void install(manual().trim())}
+                  >
+                    导入
+                  </button>
+                  <button class="btn-ghost" type="button" onClick={() => setImporting(false)}>
+                    取消
+                  </button>
+                </div>
+              </Section>
+            </Show>
+
+            <Section>
               <PathLine path={d().dir} />
-              <div class="field">
-                <input
-                  type="text"
-                  placeholder="插件目录的绝对路径"
-                  value={manual()}
-                  onInput={(e) => setManual(e.currentTarget.value)}
-                />
-                <span class="field-hint">
-                  目录里要有 <code>qywork.plugin.json</code>；清单不合法会被拒绝，不会装进去一半。
-                </span>
-              </div>
-              <div class="row-actions">
-                <button
-                  class="btn-ghost"
-                  type="button"
-                  disabled={!manual().trim() || busy() === 'install'}
-                  onClick={() => void install(manual().trim())}
-                >
-                  安装
-                </button>
-                <Show when={okMsg()}>{(m) => <span class="save-msg">{m()}</span>}</Show>
-                <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-              </div>
             </Section>
+
+            {/* 结果落在页面上，不挂在某一个表单里——建完之后表单就关了，
+              挂在里面的话那句「已建好」跟着一起消失。
+              `error()` / `okMsg()` 必须排在这串 `&&` 的最后：`Show` 把 `when` 的
+              求值结果原样交给子函数，布尔 `true` 渲染出来是一个空框。 */}
+            <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+            <Show when={okMsg()}>{(m) => <p class="settings-notices">{m()}</p>}</Show>
           </>
         )}
       </Show>
