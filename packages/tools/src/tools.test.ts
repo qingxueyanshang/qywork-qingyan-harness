@@ -1049,3 +1049,74 @@ describe('写路径的软链边界', () => {
     expect(write).toBe(read)
   })
 })
+
+/**
+ * grep 的两条引擎必须有同一个上界。
+ *
+ * 复现的是一次真账（会话 `cv_0mt0x92q10000mx0dff`）：一次不限文件类型的 grep
+ * 命中 152 行，151 行都不到 600 字符，剩下那一行是 `three.min.js` 的第 6 行——
+ * **603,378 个字符**，约 17 万 token。它随工具结果进上下文之后再没出去，
+ * 此后每一轮都重付一遍，还把请求顶过了长上下文档的价钱，一轮 $3.49。
+ *
+ * 成因是两条引擎两套口径：内置遍历那条截到 400，ripgrep 那条只限条数不限长度。
+ * 所以断言不能只测「有截断」，要测**两条引擎给出同一个上界**——
+ * 只测一条的话，另一条正是出事的那条。
+ */
+describe('grep 的单条上界', () => {
+  const MINIFIED = `!function(t){"use strict";${'x'.repeat(50_000)}/* bug */}(this)`
+
+  const bothEngines = async (root: string) => {
+    const { grepTool } = await import('./search.ts')
+    const viaRg = await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root))
+    // 把 PATH 清空逼它走内置遍历：找不到 rg 时的降级路径就是这么触发的。
+    const prevPath = process.env.PATH
+    process.env.PATH = ''
+    let viaBuiltin: Awaited<ReturnType<NonNullable<typeof grepTool.fn>>>
+    try {
+      viaBuiltin = await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root))
+    } finally {
+      process.env.PATH = prevPath
+    }
+    return { viaRg, viaBuiltin }
+  }
+
+  test('压缩过的一整行不会整段进上下文，两条引擎同一个上界', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-')))
+    await writeFile(join(root, 'vendor.min.js'), MINIFIED, 'utf8')
+
+    const { viaRg, viaBuiltin } = await bothEngines(root)
+
+    for (const [name, out] of [
+      ['ripgrep', viaRg],
+      ['builtin', viaBuiltin],
+    ] as const) {
+      expect(out.status, name).toBe('success')
+      const matches = (out.data as { matches: string[] }).matches
+      expect(matches.length, name).toBeGreaterThan(0)
+      // 单条正文被截住：旧代码在 ripgrep 这条路上是 50,000+ 字符。
+      const longest = Math.max(...matches.map((m) => m.length))
+      expect(longest, name).toBeLessThan(600)
+      // 路径与行号一个字节不能少——模型要靠它们去 read_file 取原文。
+      expect(matches[0], name).toMatch(/^vendor\.min\.js:\d+:/)
+    }
+  })
+
+  /**
+   * 超预算时**拒绝而不是截断**，立场同 `read_file`：截断产生的是满额正文，
+   * 而那份正文往往不是模型要的那一段。
+   */
+  test('命中总量超出投递预算时拒绝，并给出可执行的收窄建议', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-budget-')))
+    // 每行都命中、每行都吃满上界，堆到超预算为止。
+    const line = `bug ${'y'.repeat(500)}`
+    await writeFile(join(root, 'noisy.txt'), Array.from({ length: 200 }, () => line).join('\n'))
+
+    const { grepTool } = await import('./search.ts')
+    const tiny = { ...ctx(root), contextWindow: 4_000 }
+    const out = await grepTool.fn!({ pattern: 'bug', path: '.' }, tiny)
+
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('result_too_large')
+    expect(out.message).toContain('收窄再试')
+  })
+})
