@@ -30,6 +30,7 @@ import {
   setConversationTitle,
   upsertWorkspace,
 } from '@qywork/store'
+import type { ModelsResponse } from './conversations.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
 function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
@@ -403,10 +404,11 @@ describe('模型目录', () => {
     return d
   }
 
+  // 接服务端那一份契约类型，不在这里另编一个形状——编出来的形状不会因为接口改字段而红。
   const body = async (d: ApiDeps) =>
-    (await (await call('/api/models', undefined, d))!.json()) as any
+    (await (await call('/api/models', undefined, d))!.json()) as ModelsResponse
   /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
-  const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p: any) => p.models)
+  const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
   /**
    * **只列配置里有的**。
@@ -416,7 +418,7 @@ describe('模型目录', () => {
    */
   test('只列接口下挂着的模型，不并入内置目录', async () => {
     const list = await models(withConfig('openai_chat_completions', 'deepseek-v4-flash'))
-    expect(list.map((m: any) => m.id)).toEqual(['deepseek-v4-flash'])
+    expect(list.map((m) => m.id)).toEqual(['deepseek-v4-flash'])
   })
 
   /** 第一层是接口。名字是用户起的，界面按它分组——没有它就没法切接口。 */
@@ -430,9 +432,9 @@ describe('模型目录', () => {
       },
     }
     const b = await body(d)
-    expect(b.providers.map((p: any) => p.name)).toEqual(['官方', '中转站'])
+    expect(b.providers.map((p) => p.name)).toEqual(['官方', '中转站'])
     // 同一个模型 id 挂在两个接口下是常态，两条都要在，各归各的组。
-    expect(b.providers.every((p: any) => p.models[0].id === 'deepseek-v4-flash')).toBe(true)
+    expect(b.providers.every((p) => p.models[0]?.id === 'deepseek-v4-flash')).toBe(true)
     expect(b.active).toEqual({ provider: '官方', model: 'deepseek-v4-flash' })
   })
 
@@ -445,9 +447,9 @@ describe('模型目录', () => {
       },
     }
     const list = await models(d)
-    expect(list.find((m: any) => m.id === 'claude-opus-5').label).toBe('Claude Opus 5')
-    expect(list.find((m: any) => m.id === '中转站上的某个模型').label).toBe('中转站上的某个模型')
-    expect(list.find((m: any) => m.id === '中转站上的某个模型').known).toBe(false)
+    expect(list.find((m) => m.id === 'claude-opus-5')?.label).toBe('Claude Opus 5')
+    expect(list.find((m) => m.id === '中转站上的某个模型')?.label).toBe('中转站上的某个模型')
+    expect(list.find((m) => m.id === '中转站上的某个模型')?.known).toBe(false)
   })
 
   /**
@@ -463,8 +465,8 @@ describe('模型目录', () => {
       },
     }
     const list = await models(d)
-    expect(list.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBeGreaterThan(0)
-    expect(list.find((m: any) => m.id === 'claude-haiku-4-5').effortLevels).toEqual([])
+    expect(list.find((m) => m.id === 'claude-opus-5')?.effortLevels.length).toBeGreaterThan(0)
+    expect(list.find((m) => m.id === 'claude-haiku-4-5')?.effortLevels).toEqual([])
   })
 
   /**
@@ -476,22 +478,19 @@ describe('模型目录', () => {
    */
   test('中转站以兼容协议调 Claude 时不报 Anthropic 的档位', async () => {
     const native = await models(withConfig('anthropic_messages', 'claude-opus-5'))
-    expect(native.find((m: any) => m.id === 'claude-opus-5').effortLevels.length).toBe(5)
+    expect(native.find((m) => m.id === 'claude-opus-5')?.effortLevels.length).toBe(5)
 
     const relay = await models(withConfig('openai_chat_completions', 'claude-opus-5'))
-    expect(relay.find((m: any) => m.id === 'claude-opus-5').effortLevels).toEqual([])
+    expect(relay.find((m) => m.id === 'claude-opus-5')?.effortLevels).toEqual([])
   })
 
   /** DeepSeek 两条协议的档位不一样，报的必须是接口实际用的那条。 */
   test('DeepSeek 按接口协议报档位', async () => {
     const compat = await models(withConfig('openai_chat_completions', 'deepseek-v4-flash'))
-    expect(compat.find((m: any) => m.id === 'deepseek-v4-flash').effortLevels).toEqual([
-      'high',
-      'max',
-    ])
+    expect(compat.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual(['high', 'max'])
 
     const responses = await models(withConfig('openai_responses', 'deepseek-v4-flash'))
-    expect(responses.find((m: any) => m.id === 'deepseek-v4-flash').effortLevels).toEqual([])
+    expect(responses.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual([])
   })
 
   /**
@@ -518,7 +517,7 @@ describe('模型目录', () => {
         },
       },
     }
-    const row = (await models(d)).find((m: any) => m.id === 'deepseek-v4-flash')
+    const row = (await models(d)).find((m) => m.id === 'deepseek-v4-flash')!
     // 内置目录写的是 high/max，实测覆盖成 low/medium。
     expect(row.effortLevels).toEqual(['low', 'medium'])
   })
@@ -548,9 +547,9 @@ describe('模型目录', () => {
       },
     }
     const list = await models(d)
-    expect(list.find((m: any) => m.id === '中转站上的某个模型').effortLevels).toEqual(['high'])
+    expect(list.find((m) => m.id === '中转站上的某个模型')?.effortLevels).toEqual(['high'])
     // 没探过的仍然是空：不能把「没测」说成「不支持」，也不能反过来。
-    expect(list.find((m: any) => m.id === '没探过的').effortLevels).toEqual([])
+    expect(list.find((m) => m.id === '没探过的')?.effortLevels).toEqual([])
   })
 
   /**
@@ -572,17 +571,17 @@ describe('模型目录', () => {
       },
     }
     const list = await models(d)
-    const flash = list.find((m: any) => m.id === 'deepseek-v4-flash')
+    const flash = list.find((m) => m.id === 'deepseek-v4-flash')!
     expect(flash.effort).toBe('max')
     expect(flash.effortLevels).toEqual(['high', 'max'])
     // 同接口的另一个模型没选过就是 null，不跟着变。
-    expect(list.find((m: any) => m.id === 'deepseek-v4-pro').effort).toBeNull()
+    expect(list.find((m) => m.id === 'deepseek-v4-pro')?.effort).toBeNull()
   })
 
   /** 内置库不能被改小：少一家厂商，设置页上那一整组模型就没了。 */
   test('内置库覆盖九家厂商', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
-    expect(b.library.map((v: any) => v.id).sort()).toEqual([
+    expect(b.library.map((v) => v.id).sort()).toEqual([
       'alibaba',
       'anthropic',
       'deepseek',
@@ -593,9 +592,9 @@ describe('模型目录', () => {
       'xai',
       'zhipu',
     ])
-    const all = b.library.flatMap((v: any) => v.models)
+    const all = b.library.flatMap((v) => v.models)
     for (const id of ['gpt-5.6-sol', 'gemini-3.1-pro-preview', 'grok-4.6', 'kimi-k3', 'glm-5.2']) {
-      expect(all.some((m: any) => m.id === id)).toBe(true)
+      expect(all.some((m) => m.id === id)).toBe(true)
     }
   })
 
@@ -605,11 +604,11 @@ describe('模型目录', () => {
    */
   test('内置库带单价与币种', async () => {
     const all = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.flatMap(
-      (v: any) => v.models,
+      (v) => v.models,
     )
-    expect(all.find((m: any) => m.id === 'qwen3.7-max').currency).toBe('CNY')
-    expect(all.find((m: any) => m.id === 'kimi-k3').currency).toBe('CNY')
-    const sol = all.find((m: any) => m.id === 'gpt-5.6-sol')
+    expect(all.find((m) => m.id === 'qwen3.7-max')?.currency).toBe('CNY')
+    expect(all.find((m) => m.id === 'kimi-k3')?.currency).toBe('CNY')
+    const sol = all.find((m) => m.id === 'gpt-5.6-sol')!
     expect(sol.currency).toBe('USD')
     expect(sol.input).toBe(5)
     expect(sol.output).toBe(30)
@@ -624,13 +623,13 @@ describe('模型目录', () => {
    */
   test('库里带缓存命中与写入两档', async () => {
     const all = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.flatMap(
-      (v: any) => v.models,
+      (v) => v.models,
     )
-    const opus = all.find((m: any) => m.id === 'claude-opus-5')
+    const opus = all.find((m) => m.id === 'claude-opus-5')!
     expect(opus.cacheRead).toBe(0.5)
     expect(opus.cacheWrite).toBe(6.25)
     // DeepSeek 的自动前缀缓存写入不收费，那是个真值不是缺值。
-    expect(all.find((m: any) => m.id === 'deepseek-v4-flash').cacheWrite).toBe(0)
+    expect(all.find((m) => m.id === 'deepseek-v4-flash')?.cacheWrite).toBe(0)
   })
 
   /**
@@ -642,14 +641,14 @@ describe('模型目录', () => {
    */
   test('内置库里同一个 id 只出一条', async () => {
     const ds = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.find(
-      (v: any) => v.id === 'deepseek',
-    )
-    expect(ds.models.map((m: any) => m.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+      (v) => v.id === 'deepseek',
+    )!
+    expect(ds.models.map((m) => m.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
   })
 
   test('未收录的模型不假装支持 effort', async () => {
     const list = await models(withConfig('openai_chat_completions', '自建的'))
-    expect(list.find((m: any) => m.id === '自建的').effortLevels).toEqual([])
+    expect(list.find((m) => m.id === '自建的')?.effortLevels).toEqual([])
   })
 
   /**
@@ -660,9 +659,9 @@ describe('模型目录', () => {
    */
   test('库里没有端点、协议这类接口字段', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
-    const ds = b.library.find((v: any) => v.id === 'deepseek')
-    expect(ds.defaultBaseUrl).toBeUndefined()
-    expect(ds.defaultKind).toBeUndefined()
+    const ds = b.library.find((v) => v.id === 'deepseek')!
+    // 比的是**整份键集**，不是逐个点名某几个字段不存在：点名只挡得住想得到的那几个，
+    // 键集连没想到的一起挡。（`LibraryVendor` 现在也从类型上禁掉了多余字段。）
     expect(Object.keys(ds).sort()).toEqual(['displayName', 'id', 'models'])
   })
 
@@ -672,11 +671,11 @@ describe('模型目录', () => {
     ;(d.config as { catalog?: unknown }).catalog = {
       'claude-opus-5|anthropic_messages': { input: 99, output: 199 },
     }
-    const all = (await body(d)).library.flatMap((v: any) => v.models)
-    const opus = all.find((m: any) => m.id === 'claude-opus-5')
+    const all = (await body(d)).library.flatMap((v) => v.models)
+    const opus = all.find((m) => m.id === 'claude-opus-5')!
     expect(opus.source).toBe('user')
     expect(opus.input).toBe(99)
-    expect(all.find((m: any) => m.id === 'claude-sonnet-5').source).toBe('seed')
+    expect(all.find((m) => m.id === 'claude-sonnet-5')?.source).toBe('seed')
   })
 
   /**
@@ -695,8 +694,8 @@ describe('模型目录', () => {
         contextWindow: 65_536,
       },
     }
-    const ds = (await body(d)).library.find((v: any) => v.id === 'deepseek')
-    const row = ds.models.find((m: any) => m.id === '中转站上的某个模型')
+    const ds = (await body(d)).library.find((v) => v.id === 'deepseek')!
+    const row = ds.models.find((m) => m.id === '中转站上的某个模型')!
     expect(row.source).toBe('user')
     expect(row.contextWindow).toBe(65_536)
   })
@@ -705,8 +704,8 @@ describe('模型目录', () => {
   test('没挂厂商的落到自定义那一组', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = { 自建的: { input: 1, output: 2 } }
-    const custom = (await body(d)).library.find((v: any) => v.displayName === '自定义')
-    expect(custom.models.map((m: any) => m.id)).toEqual(['自建的'])
+    const custom = (await body(d)).library.find((v) => v.displayName === '自定义')!
+    expect(custom.models.map((m) => m.id)).toEqual(['自建的'])
   })
 
   test('每个厂商都至少有一个模型', async () => {
