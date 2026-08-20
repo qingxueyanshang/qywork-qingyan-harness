@@ -171,7 +171,7 @@ describe('插件端到端', () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     const r = await probe('fs.read', { path: 'hello.txt' })
     expect(r.status).toBe('success')
-    expect((r.data as any).r.content).toBe('你好')
+    expect((r.data as { r: { content: string } }).r.content).toBe('你好')
     stop()
   })
 
@@ -201,7 +201,7 @@ describe('插件端到端', () => {
     const { root, probe, stop } = await workspaceWith(['storage'])
     expect((await probe('storage.set', { key: 'k', value: 42 })).status).toBe('success')
     const got = await probe('storage.get', { key: 'k' })
-    expect((got.data as any).r.value).toBe(42)
+    expect((got.data as { r: { value: number } }).r.value).toBe(42)
     // 落成用户看得见的普通文件，插件行为异常时能直接翻。
     expect(await Bun.file(join(root, '.qy/plugin-data/test.probe.json')).exists()).toBe(true)
     stop()
@@ -227,7 +227,7 @@ describe('插件端到端', () => {
       const { probe, stop } = await workspaceWith(['process:exec'])
       const r = await probe('exec.run', { command: 'echo "[$QYWORK_EXT_SECRET]"' })
       expect(r.status).toBe('success')
-      expect((r.data as any).r.stdout).not.toContain('leaked-secret')
+      expect((r.data as { r: { stdout: string } }).r.stdout).not.toContain('leaked-secret')
       stop()
     } finally {
       delete process.env.QYWORK_EXT_SECRET

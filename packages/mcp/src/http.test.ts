@@ -73,7 +73,14 @@ function reset(over: Partial<ServerState> = {}): void {
   })
 }
 
-function resultFor(msg: Record<string, any>): unknown {
+/** 夹具收到的 JSON-RPC 报文。只声明夹具真的看的那几格。 */
+interface RpcMessage {
+  id?: number | string | null
+  method?: string
+  params?: { arguments?: { text?: string } }
+}
+
+function resultFor(msg: RpcMessage): unknown {
   if (msg.method === 'initialize') {
     return {
       protocolVersion: '2025-06-18',
@@ -103,7 +110,7 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ error: '强制失败' }), { status: state.forceStatus })
     }
 
-    const msg = (await req.json()) as Record<string, any>
+    const msg = (await req.json()) as RpcMessage
 
     // 通知没有 id，规范里回 202 且无 body。
     if (msg.id === undefined || msg.id === null) {

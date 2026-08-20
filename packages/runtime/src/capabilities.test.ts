@@ -19,6 +19,28 @@ async function fixture() {
   }
 }
 
+/*
+ * 这几条能力回什么。
+ *
+ * `CapabilityHandler` 的返回是 `Promise<unknown>` 且**有意如此**：它是一条 JSON RPC
+ * 边界，每个方法回的形状不同，插件那侧也只拿得到 JSON。所以断言前在这里收窄——
+ * 收窄写错了，下面那条断言就会红，这正是测试该干的事。
+ */
+interface FsRead {
+  content: string
+}
+interface FsList {
+  entries: { name: string; kind: string }[]
+  truncated: boolean
+}
+interface ExecRun {
+  exitCode: number
+  stdout: string
+}
+interface StorageGet {
+  value: unknown
+}
+
 describe('fs 能力', () => {
   test('读文本', async () => {
     const { call } = await fixture()
@@ -30,15 +52,15 @@ describe('fs 能力', () => {
 
   test('读二进制走 base64', async () => {
     const { call } = await fixture()
-    const r = (await call('fs.read', { path: 'a.txt', encoding: 'base64' })) as any
+    const r = (await call('fs.read', { path: 'a.txt', encoding: 'base64' })) as FsRead
     expect(Buffer.from(r.content, 'base64').toString('utf8')).toBe('甲乙丙')
   })
 
   test('列目录标出类型', async () => {
     const { call } = await fixture()
-    const r = (await call('fs.list', { path: '.' })) as any
-    expect(r.entries.find((e: any) => e.name === 'sub').kind).toBe('dir')
-    expect(r.entries.find((e: any) => e.name === 'a.txt').kind).toBe('file')
+    const r = (await call('fs.list', { path: '.' })) as FsList
+    expect(r.entries.find((e) => e.name === 'sub')?.kind).toBe('dir')
+    expect(r.entries.find((e) => e.name === 'a.txt')?.kind).toBe('file')
     expect(r.truncated).toBe(false)
   })
 
@@ -113,14 +135,14 @@ describe('配额', () => {
 describe('exec —— 绝不透传宿主环境变量', () => {
   test('能跑命令并拿到退出码与输出', async () => {
     const { call } = await fixture()
-    const r = (await call('exec.run', { command: 'echo hello' })) as any
+    const r = (await call('exec.run', { command: 'echo hello' })) as ExecRun
     expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('hello')
   })
 
   test('非零退出码如实回报，不当异常抛', async () => {
     const { call } = await fixture()
-    expect(((await call('exec.run', { command: 'exit 3' })) as any).exitCode).toBe(3)
+    expect(((await call('exec.run', { command: 'exit 3' })) as ExecRun).exitCode).toBe(3)
   })
 
   /**
@@ -134,7 +156,7 @@ describe('exec —— 绝不透传宿主环境变量', () => {
     try {
       const { call } = await fixture()
       const cmd = echoEnv('QYWORK_CAP_SECRET')
-      const r = (await call('exec.run', { command: cmd })) as any
+      const r = (await call('exec.run', { command: cmd })) as ExecRun
       expect(r.stdout).not.toContain('super-secret-value')
       expect(r.stdout).toContain('[]')
     } finally {
@@ -174,8 +196,8 @@ describe('插件私有存储', () => {
     const { call } = await fixture()
     await call('storage.set', { key: 'k', value: '甲的' }, 'plugin.a')
     await call('storage.set', { key: 'k', value: '乙的' }, 'plugin.b')
-    expect(((await call('storage.get', { key: 'k' }, 'plugin.a')) as any).value).toBe('甲的')
-    expect(((await call('storage.get', { key: 'k' }, 'plugin.b')) as any).value).toBe('乙的')
+    expect(((await call('storage.get', { key: 'k' }, 'plugin.a')) as StorageGet).value).toBe('甲的')
+    expect(((await call('storage.get', { key: 'k' }, 'plugin.b')) as StorageGet).value).toBe('乙的')
   })
 
   test('list 只列自己的 key', async () => {

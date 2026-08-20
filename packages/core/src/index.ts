@@ -75,6 +75,7 @@ export {
   type RunUsage,
   type Step,
   type StepKind,
+  type StepPayload,
   type StopReason,
   type TodoItem,
   type ToolActionStatus,
