@@ -7,7 +7,13 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { type CacheRouting, lookupModel, type ProviderKind, type ThinkingMode } from '@qywork/ai'
+import {
+  type CacheRouting,
+  lookupModel,
+  type ProviderKind,
+  type ReasoningEcho,
+  type ThinkingMode,
+} from '@qywork/ai'
 import { EFFORT_ORDER, type EffortLevel, type PermissionMode } from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
@@ -177,6 +183,12 @@ export interface StoredCatalogEntry {
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
+  /**
+   * 带 tool_calls 的历史要不要回传推理原文。同属「这条模型在这条协议上的能力」，
+   * 只有 Responses 适配器消费它——保存会把同一条 entry 扇出到该 id 用到的每种协议，
+   * chat 键上那份副本无害。
+   */
+  reasoningEcho?: ReasoningEcho
   /**
    * 缓存路由亲和键发不发。与思考三项同属「这条模型在这条协议上的能力」，
    * 落点也是同一处（手填或 `qy probe --save` 写回）。

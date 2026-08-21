@@ -71,6 +71,8 @@ export interface CatalogEntry {
   thinking?: string
   /** 不选档时发不发思考。 */
   thinksByDefault?: boolean
+  /** 带 tool_calls 的历史要不要回传推理原文。只有 Responses 那条链路消费它。 */
+  reasoningEcho?: string
   input?: number
   output?: number
   cacheRead?: number
@@ -218,6 +220,12 @@ export interface LibraryModel {
   thinking: string
   /** 不选档时发不发思考。 */
   thinksByDefault: boolean
+  /**
+   * 带 tool_calls 的历史要不要回传推理原文。`none` = 不回传。
+   *
+   * 按目录首条协议取值，同一个模型按协议分多条时显示的未必是生效的那条。
+   */
+  reasoningEcho: string
   /**
    * 缓存路由亲和键发不发。`none` = 不发。
    *

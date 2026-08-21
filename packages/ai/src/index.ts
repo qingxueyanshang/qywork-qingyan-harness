@@ -26,6 +26,7 @@ export {
   type OffPeakDiscount,
   type ProviderKind,
   priceAt,
+  type ReasoningEcho,
   type SpecOverride,
   type ThinkingMode,
   unknownModel,

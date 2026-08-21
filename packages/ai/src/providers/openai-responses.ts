@@ -26,16 +26,22 @@
  * |---|---|---|
  * | 流式事件 | `response.reasoning_summary_text.delta` | `response.reasoning_text.delta` |
  * | 输出条目 | `reasoning.summary[]` | `reasoning.content[].reasoning_text` |
- * | 要不要回传 | 不要求 | **要求，不传就 400** |
+ * | 要不要回传 | 不要求，多发就 400 | **要求，不传就 400** |
  *
  * 这两条各有各的坑，**错法不一样**：
  *
  * - 只认 `reasoning_summary_text` 的后果是**静默的**——流跑完、正文正常、
  *   一个 `thinking_delta` 都没有。没有报错，只是思考过程凭空消失。
- * - 不回传的后果是**响亮的**——`The reasoning_text in the thinking mode must be
- *   passed back to the API`，400。而且它只在**第二轮**才发作：
- *   第一轮没有历史可回传，一路正常；模型一旦调了工具，把结果喂回去就炸。
- *   也就是说**任何单轮测试都测不出它**，而 agent 的主循环恰恰全是多轮。
+ *   所以两个事件名都收进 `thinking_delta`：显示这一侧两家都要。
+ * - 回传方向两边都会 400，**方向相反**：不要求回传的那侧多发一个条目，
+ *   得到 `Invalid 'input[N].content': array too long. Expected an array with
+ *   maximum length 0`；要求回传的那侧少发，得到 `The reasoning_text in the
+ *   thinking mode must be passed back to the API`。
+ *   两者都只在**第二轮**才发作：第一轮没有历史可回传，一路正常；模型一旦调了工具、
+ *   把结果喂回去就炸。**任何单轮测试都测不出它**，而 agent 的主循环恰恰全是多轮。
+ *
+ * 所以「要不要回传」不能从流里反推——摘要型端点同样给得出推理文本，反推必然假阳性。
+ * 它是**接收端的要求**，由目录那一格 `spec.reasoningEcho` 声明，`buildInput` 只查不猜。
  *
  * 实测出来的回传规则（见 `buildInput`）：
  * - `reasoning` 条目必须排在它对应的 `function_call` **之前**；插在
@@ -45,7 +51,7 @@
  * - 只有**最后**一轮工具调用被检查；但我们每一轮都带上，不去赌它的实现细节。
  */
 
-import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
+import { effortIsTransmittable, type ModelSpec, type ReasoningEcho } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
 import type {
@@ -282,7 +288,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     return {
       model: req.model,
       ...(instructions ? { instructions } : {}),
-      input: buildInput(req.messages),
+      input: buildInput(req.messages, this.spec.reasoningEcho),
       // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
       max_output_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
@@ -357,24 +363,14 @@ function reasoningItem(text: string): Record<string, unknown> {
  * 不是挂在 assistant message 上的字段。照搬 chat 协议的写法会得到一个
  * 结构合法但语义错误的请求：模型看不到自己调过什么。
  *
- * 带工具调用的 assistant 轮还要**回传思考内容**，见文件头。
+ * 带工具调用的 assistant 轮**要不要回传思考内容由 `echo` 说了算**，见文件头。
  */
-export function buildInput(messages: WireMessage[]): Record<string, unknown>[] {
+export function buildInput(
+  messages: WireMessage[],
+  echo: ReasoningEcho,
+): Record<string, unknown>[] {
   const items: Record<string, unknown>[] = []
-
-  /**
-   * 这个端点说不说「要回传 reasoning_text」这套方言。
-   *
-   * 判据是**证据**不是猜测：这批消息里只要有一条真的带着思考内容，
-   * 就说明我们确实从这个端点收到过 `reasoning_text`，那它多半也要求回传。
-   * 于是那些**缺**思考内容的轮次（压缩投影时掉了、从旧记录里读出来的）
-   * 才补占位条目。
-   *
-   * 反过来，一条思考内容都没有的端点（OpenAI 自家在不给摘要时就是这样）
-   * 一个 reasoning 条目都不会多出来——不拿一个只在 DeepSeek 上验过的行为，
-   * 去改一条没验过的路径。
-   */
-  const speaksReasoningText = messages.some((m) => Boolean(m.reasoningContent?.trim()))
+  const echoesReasoning = echo === 'reasoning_text'
 
   for (const m of messages) {
     if (m.role === 'tool') {
@@ -391,8 +387,7 @@ export function buildInput(messages: WireMessage[]): Record<string, unknown>[] {
       // reasoning 必须排在 function_call **之前**。放到 call 与 output 中间，
       // 会被判成「找不到工具输出」——错误信息指向的地方跟真正的原因无关。
       const reasoning = m.reasoningContent?.trim()
-      if (reasoning) items.push(reasoningItem(reasoning))
-      else if (speaksReasoningText) items.push(reasoningItem(LOST_REASONING))
+      if (echoesReasoning) items.push(reasoningItem(reasoning || LOST_REASONING))
       if (text) {
         items.push({
           type: 'message',

@@ -14,7 +14,7 @@ import { applyUsage, buildInput, buildTools, readSse } from './openai-responses.
 
 describe('input 是条目序列，不是消息序列', () => {
   test('普通用户消息用 input_text', () => {
-    const items = buildInput([{ role: 'user', content: '你好' }])
+    const items = buildInput([{ role: 'user', content: '你好' }], 'none')
     expect(items).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: '你好' }] },
     ])
@@ -22,7 +22,7 @@ describe('input 是条目序列，不是消息序列', () => {
 
   /** 输入侧与输出侧的文本块类型不同。写反了被拒，而错误只说「content 无效」。 */
   test('assistant 正文用 output_text', () => {
-    const items = buildInput([{ role: 'assistant', content: '好的' }])
+    const items = buildInput([{ role: 'assistant', content: '好的' }], 'none')
     expect((items[0]!.content as { type: string }[])[0]!.type).toBe('output_text')
   })
 
@@ -31,13 +31,16 @@ describe('input 是条目序列，不是消息序列', () => {
    * 这是照搬 chat 协议最容易搬错的一处。
    */
   test('工具调用展开成顶层 function_call 条目', () => {
-    const items = buildInput([
-      {
-        role: 'assistant',
-        content: '我来读一下',
-        toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } }],
-      },
-    ])
+    const items = buildInput(
+      [
+        {
+          role: 'assistant',
+          content: '我来读一下',
+          toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        },
+      ],
+      'none',
+    )
     expect(items).toHaveLength(2)
     expect(items[0]!.type).toBe('message')
     expect(items[1]).toEqual({
@@ -49,15 +52,16 @@ describe('input 是条目序列，不是消息序列', () => {
   })
 
   test('没有正文的工具轮只产出 function_call，不塞一条空 message', () => {
-    const items = buildInput([
-      { role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'x', arguments: {} }] },
-    ])
+    const items = buildInput(
+      [{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'x', arguments: {} }] }],
+      'none',
+    )
     expect(items).toHaveLength(1)
     expect(items[0]!.type).toBe('function_call')
   })
 
   test('工具结果是 function_call_output，按 call_id 对上', () => {
-    const items = buildInput([{ role: 'tool', toolCallId: 'call_1', content: '读到了' }])
+    const items = buildInput([{ role: 'tool', toolCallId: 'call_1', content: '读到了' }], 'none')
     expect(items[0]).toEqual({
       type: 'function_call_output',
       call_id: 'call_1',
@@ -73,19 +77,22 @@ describe('input 是条目序列，不是消息序列', () => {
         { type: 'image', mimeType: 'image/png', data: 'AAAA' },
       ],
     }
-    const content = buildInput([msg])[0]!.content as Record<string, string>[]
+    const content = buildInput([msg], 'none')[0]!.content as Record<string, string>[]
     expect(content[0]!.type).toBe('input_text')
     expect(content[1]!.type).toBe('input_image')
     expect(content[1]!.image_url).toBe('data:image/png;base64,AAAA')
   })
 
   test('一整轮对话的条目顺序保持原样', () => {
-    const items = buildInput([
-      { role: 'user', content: '改一下' },
-      { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'edit', arguments: {} }] },
-      { role: 'tool', toolCallId: 'c1', content: '改好了' },
-      { role: 'assistant', content: '完成' },
-    ])
+    const items = buildInput(
+      [
+        { role: 'user', content: '改一下' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'edit', arguments: {} }] },
+        { role: 'tool', toolCallId: 'c1', content: '改好了' },
+        { role: 'assistant', content: '完成' },
+      ],
+      'none',
+    )
     expect(items.map((i) => i.type)).toEqual([
       'message',
       'function_call',
@@ -96,9 +103,11 @@ describe('input 是条目序列，不是消息序列', () => {
 })
 
 /**
- * DeepSeek 在思考模式下**要求**把 `reasoning_text` 原样回传，不传就 400。
+ * 回传由目录那一格（`spec.reasoningEcho`）声明，两个方向各有一个 400：
+ * 声明要回传的端点少发就 `must be passed back to the API`，
+ * 声明不回传的端点多发就 `array too long. Expected an array with maximum length 0`。
  *
- * 这条只在**第二轮**发作：第一轮没有历史可回传，一路正常；模型一旦调了工具、
+ * 两者都只在**第二轮**发作：第一轮没有历史可回传，一路正常；模型一旦调了工具、
  * 把结果喂回去就炸。也就是说任何单轮测试都测不出它，而 agent 主循环全是多轮。
  * 实测规则见适配器文件头。
  */
@@ -115,7 +124,7 @@ describe('思考内容回传', () => {
   ]
 
   test('reasoning 条目排在它对应的 function_call 之前', () => {
-    const items = buildInput(withReasoning)
+    const items = buildInput(withReasoning, 'reasoning_text')
     expect(items.map((i) => i.type)).toEqual([
       'message',
       'reasoning',
@@ -130,14 +139,17 @@ describe('思考内容回传', () => {
 
   /** 有正文的工具轮，顺序是 reasoning → 正文 → 调用。实测这个顺序端点认。 */
   test('带正文时 reasoning 仍在最前', () => {
-    const items = buildInput([
-      {
-        role: 'assistant',
-        content: '我查一下',
-        toolCalls: [{ id: 'c1', name: 'x', arguments: {} }],
-        reasoningContent: '想了想',
-      },
-    ])
+    const items = buildInput(
+      [
+        {
+          role: 'assistant',
+          content: '我查一下',
+          toolCalls: [{ id: 'c1', name: 'x', arguments: {} }],
+          reasoningContent: '想了想',
+        },
+      ],
+      'reasoning_text',
+    )
     expect(items.map((i) => i.type)).toEqual(['reasoning', 'message', 'function_call'])
   })
 
@@ -145,16 +157,19 @@ describe('思考内容回传', () => {
    * 压缩投影或旧记录会让某一轮丢掉思考内容。补一个占位——
    * **空串等于没传**，照样 400，所以占位文本不能为空。
    */
-  test('这个端点给过思考内容时，缺失的轮次补占位而不是留空', () => {
-    const items = buildInput([
-      ...withReasoning,
-      { role: 'user', content: '上海呢？' },
-      {
-        role: 'assistant',
-        content: '',
-        toolCalls: [{ id: 'c2', name: 'get_weather', arguments: {} }],
-      },
-    ])
+  test('声明要回传时，缺失思考内容的轮次补占位而不是留空', () => {
+    const items = buildInput(
+      [
+        ...withReasoning,
+        { role: 'user', content: '上海呢？' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c2', name: 'get_weather', arguments: {} }],
+        },
+      ],
+      'reasoning_text',
+    )
     const reasonings = items.filter((i) => i.type === 'reasoning')
     expect(reasonings).toHaveLength(2)
     const second = reasonings[1] as { content: { text: string }[] }
@@ -163,35 +178,46 @@ describe('思考内容回传', () => {
   })
 
   /**
-   * 反过来：一条思考内容都没有的端点，一个 reasoning 条目都不该多出来。
-   * 不拿一个只在 DeepSeek 上验过的行为，去改一条没验过的路径。
+   * 反方向那个 400 的回归锁。
+   *
+   * 摘要型端点（`reasoning.summary`）照样会给出思考内容，历史里因此**有**
+   * `reasoningContent`——按「历史里有就回传」判就是假阳性，而它的代价是
+   * `Invalid 'input[1].content': array too long. Expected an array with maximum
+   * length 0`：每一轮工具调用之后都发不出去。判据只能来自目录。
    */
-  test('从没给过思考内容的端点，不凭空塞 reasoning 条目', () => {
-    const items = buildInput([
-      { role: 'user', content: 'hi' },
-      { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'x', arguments: {} }] },
-      { role: 'tool', toolCallId: 'c1', content: 'ok' },
-    ])
-    expect(items.some((i) => i.type === 'reasoning')).toBe(false)
+  test('声明不回传时，历史里带着思考内容也不产出 reasoning 条目', () => {
+    const items = buildInput(withReasoning, 'none')
+    expect(items.map((i) => i.type)).toEqual(['message', 'function_call', 'function_call_output'])
   })
 
-  test('空白的 reasoningContent 当作没有，不产出空条目', () => {
-    const items = buildInput([
-      {
-        role: 'assistant',
-        content: '',
-        toolCalls: [{ id: 'c1', name: 'x', arguments: {} }],
-        reasoningContent: '   ',
-      },
-    ])
-    expect(items.some((i) => i.type === 'reasoning')).toBe(false)
+  test('声明要回传时，空白的 reasoningContent 补占位而不是留空', () => {
+    const items = buildInput(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'x', arguments: {} }],
+          reasoningContent: '   ',
+        },
+      ],
+      'reasoning_text',
+    )
+    const reasoning = items.find((i) => i.type === 'reasoning') as { content: { text: string }[] }
+    expect(reasoning.content[0]!.text.trim().length).toBeGreaterThan(0)
   })
 
-  test('没有工具调用的 assistant 轮不需要回传', () => {
-    const items = buildInput([
-      { role: 'user', content: 'hi' },
-      { role: 'assistant', content: '你好', reasoningContent: '打个招呼' },
-    ])
+  /**
+   * 触发点必须留在 `toolCalls` 分支里：纯文本轮在落盘投影那侧本来就不带思考
+   * （`runtime/transcript.ts`），扩到文本轮会跟投影形状打架。
+   */
+  test('没有工具调用的 assistant 轮不回传', () => {
+    const items = buildInput(
+      [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: '你好', reasoningContent: '打个招呼' },
+      ],
+      'reasoning_text',
+    )
     expect(items.some((i) => i.type === 'reasoning')).toBe(false)
   })
 })
