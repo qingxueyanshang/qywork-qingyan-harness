@@ -1,4 +1,3 @@
-import { CACHE_ROUTINGS, REASONING_ECHOES, THINKING_MODES } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   type CatalogEntry,
@@ -98,10 +97,9 @@ export function ModelLibrary(props: {
                       <th class="num">最大输出</th>
                       <th class="num">输入</th>
                       <th class="num">输出</th>
-                      <th class="num">缓存命中</th>
+                      <th class="num">缓存读取</th>
                       <th class="num">缓存写入</th>
-                      <th>思考</th>
-                      <th>缓存路由</th>
+                      <th>思考强度</th>
                       <th class="act">
                         <button class="btn-ghost sm" type="button" onClick={() => openAdd(v.id)}>
                           添加模型
@@ -126,16 +124,15 @@ export function ModelLibrary(props: {
                       {(m) => (
                         <>
                           <tr>
+                            {/* 只给 id：显示名与它是同一件事写两遍（`DeepSeek V4 Flash`
+                                对 `deepseek-v4-flash`），而 id 才是配置里真正要填的那个词。 */}
                             <td>
                               <div class="lib-name">
-                                {m.label}
-                                {/* 改过的标出来——「还原」只对它们出现，不标的话
-                                    没法解释为什么这一行比别行多一个按钮。 */}
+                                <code class="lib-id">{m.id}</code>
                                 <Show when={m.source === 'user'}>
-                                  <span class="lib-tag">已改</span>
+                                  <span class="lib-tag">已修改</span>
                                 </Show>
                               </div>
-                              <code class="lib-id">{m.id}</code>
                             </td>
                             <td class="num">{compact(m.contextWindow)}</td>
                             <td class="num">{compact(m.maxOutputTokens)}</td>
@@ -143,19 +140,14 @@ export function ModelLibrary(props: {
                             <td class="num">{price(m.output, m.currency)}</td>
                             <td class="num">{price(m.cacheRead, m.currency)}</td>
                             <td class="num">{price(m.cacheWrite, m.currency)}</td>
-                            {/* 空的写破折号，不留白：留白读起来像「这一格没加载出来」。 */}
-                            {/* 档位与「会不会思考」是一件事的两半：只画档位的话，
-                                一个 thinking=none 的模型看起来和没探过的一样。 */}
+                            {/* 这个模型支持哪几档。空的写「不支持」而不是留白——
+                                留白读起来像「这一格没加载出来」。 */}
                             <td class="lv">
-                              {m.thinking === 'none'
-                                ? '不发'
-                                : (m.effortLevels.join('/') || '默认') +
-                                  (m.thinksByDefault ? ' · 默认开' : '')}
-                            </td>
-                            {/* 中转站按分片存隐式缓存，不发亲和键就是每次随机落一个。
-                                这一格答的是「这条模型在这条接口上发不发」。 */}
-                            <td class="lv">
-                              {m.cacheRouting === 'prompt_cache_key' ? '亲和键' : '不发'}
+                              {m.effortLevels.length > 0
+                                ? m.effortLevels.join(' / ')
+                                : m.thinksByDefault
+                                  ? '默认开启'
+                                  : '不支持'}
                             </td>
                             <td class="act">
                               <button
@@ -165,15 +157,6 @@ export function ModelLibrary(props: {
                               >
                                 修改
                               </button>
-                              <Show when={m.source === 'user'}>
-                                <button
-                                  class="btn-ghost sm"
-                                  type="button"
-                                  onClick={() => save(m.id, null)}
-                                >
-                                  还原
-                                </button>
-                              </Show>
                             </td>
                           </tr>
 
@@ -193,6 +176,7 @@ export function ModelLibrary(props: {
                                   vendor={v.id}
                                   onCancel={() => setEditing(null)}
                                   onSave={save}
+                                  onRestore={() => save(m.id, null)}
                                 />
                               </td>
                             </tr>
@@ -224,6 +208,8 @@ function ModelForm(props: {
   idEditable?: boolean
   onCancel: () => void
   onSave: (id: string, entry: CatalogEntry) => void
+  /** 丢掉这条覆盖，退回内置值。只有改过的条目给。 */
+  onRestore?: () => void
 }) {
   let idRef: HTMLInputElement | undefined
   let nameRef: HTMLInputElement | undefined
@@ -234,10 +220,7 @@ function ModelForm(props: {
   let hitRef: HTMLInputElement | undefined
   let writeRef: HTMLInputElement | undefined
   let curRef: HTMLSelectElement | undefined
-  let thinkRef: HTMLSelectElement | undefined
   let defaultThinkRef: HTMLInputElement | undefined
-  let echoRef: HTMLSelectElement | undefined
-  let cacheRoutingRef: HTMLSelectElement | undefined
 
   /** 留空 = 照内置值。0 在窗口、上限、单价上都不是有意义的值，一律当没填。 */
   const num = (el: HTMLInputElement | undefined) => {
@@ -277,11 +260,8 @@ function ModelForm(props: {
       ...(outPrice !== undefined ? { output: outPrice } : {}),
       ...(hit !== undefined ? { cacheRead: hit } : {}),
       ...(write !== undefined ? { cacheWrite: write } : {}),
-      // 思考两项：`thinking` 空串 = 没改过，照内置值；勾选框有明确的两态，
-      // 只在与内置值不同时才写进覆盖，否则一条没动过的记录也会被标成 user。
-      ...(thinkRef?.value ? { thinking: thinkRef.value } : {}),
-      ...(echoRef?.value ? { reasoningEcho: echoRef.value } : {}),
-      ...(cacheRoutingRef?.value ? { cacheRouting: cacheRoutingRef.value } : {}),
+      // 勾选框有明确的两态，只在与内置值不同时才写进覆盖，
+      // 否则一条没动过的记录也会被标成 user。
       ...(defaultThinkRef && defaultThinkRef.checked !== props.model?.thinksByDefault
         ? { thinksByDefault: defaultThinkRef.checked }
         : {}),
@@ -309,39 +289,13 @@ function ModelForm(props: {
         <span>最大输出</span>
         <input ref={outRef} type="number" min="1" value={props.model?.maxOutputTokens ?? ''} />
       </label>
-      {/* 思考两项。`qy probe --save` 写的就是这里，探完在这一格看得见、改得动。 */}
-      <label class="lib-field">
-        <span>思考怎么发</span>
-        <select ref={thinkRef}>
-          <option value="">照内置值（{props.model?.thinking ?? '未知'}）</option>
-          <For each={THINKING_MODES}>{(v) => <option value={v}>{v}</option>}</For>
-        </select>
-      </label>
       <label class="lib-field lib-check">
         <input
           ref={defaultThinkRef}
           type="checkbox"
           checked={props.model?.thinksByDefault ?? false}
         />
-        <span>不选档时也思考</span>
-      </label>
-      {/* 回传推理原文。中转站把 DeepSeek 挂在自定义模型名下时内置目录认不出它，
-          这一格是唯一出口——不填的话第二轮工具调用会被对方拒掉。 */}
-      <label class="lib-field">
-        <span>回传推理原文</span>
-        <select ref={echoRef}>
-          <option value="">照内置值（{props.model?.reasoningEcho ?? '未知'}）</option>
-          <For each={REASONING_ECHOES}>{(v) => <option value={v}>{v}</option>}</For>
-        </select>
-      </label>
-      {/* 缓存路由。中转站多上游轮询时不发这个键，前缀再稳也可能恒不命中；
-          而自建端点对未知字段的容忍度没验过，所以两态都要能选。 */}
-      <label class="lib-field">
-        <span>缓存路由</span>
-        <select ref={cacheRoutingRef}>
-          <option value="">照内置值（{props.model?.cacheRouting ?? '未知'}）</option>
-          <For each={CACHE_ROUTINGS}>{(v) => <option value={v}>{v}</option>}</For>
-        </select>
+        <span>未选强度时也思考</span>
       </label>
       <label class="lib-field">
         <span>输入价</span>
@@ -364,7 +318,7 @@ function ModelForm(props: {
         />
       </label>
       <label class="lib-field">
-        <span>缓存命中</span>
+        <span>缓存读取</span>
         <input
           ref={hitRef}
           type="number"
@@ -395,6 +349,13 @@ function ModelForm(props: {
         </select>
       </label>
       <div class="lib-form-actions">
+        {/* 还原只对改过的条目有意义，所以放在改的地方，而不是让表格里那些行
+            比别行多出一个按钮——一行两个动作，读起来就是「这行有什么不一样」。 */}
+        <Show when={props.model?.source === 'user'}>
+          <button class="btn-ghost sm" type="button" onClick={() => props.onRestore?.()}>
+            恢复默认
+          </button>
+        </Show>
         <button class="btn-ghost sm" type="button" onClick={props.onCancel}>
           取消
         </button>

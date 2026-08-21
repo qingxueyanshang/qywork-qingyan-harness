@@ -18,7 +18,7 @@
  * 而这里要处理的字段集本来就得按 Record 断言（推理条目、各家中转站的扩展字段）。
  * 引一层类型再全部 as never，等于既付了依赖又没拿到类型收益。
  *
- * ## 推理内容的两套方言（2026-08 对 DeepSeek v4 flash 实测）
+ * ## 推理内容：同一条协议下的两种实现（2026-08 对 DeepSeek v4 flash 实测）
  *
  * 说 Responses 协议的**不止 OpenAI**，而它们在推理这一块**不是一套东西**：
  *
@@ -71,9 +71,9 @@ import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
-  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按模型的方言算**：
+  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按这条模型的参数格式算**：
   // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
-  // 各写一份的代价实测付过：这里说「发得出去」而那边按方言省掉，
+  // 各写一份的代价实测付过：这里说「发得出去」而那边按参数格式省掉，
   // 于是探针恒通过，把凭空的结论写回目录。
   get transmits(): { effort: boolean } {
     return { effort: effortIsTransmittable(this.spec) }

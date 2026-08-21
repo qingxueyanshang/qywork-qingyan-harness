@@ -67,12 +67,8 @@ export interface CatalogEntry {
   vendor?: string
   contextWindow?: number
   maxOutputTokens?: number
-  /** 思考怎么发。`qy probe --save` 写这里，用户也能在模型库里改。 */
-  thinking?: string
   /** 不选档时发不发思考。 */
   thinksByDefault?: boolean
-  /** 带 tool_calls 的历史要不要回传推理原文。只有 Responses 那条链路消费它。 */
-  reasoningEcho?: string
   input?: number
   output?: number
   cacheRead?: number
@@ -216,23 +212,8 @@ export interface LibraryModel {
   cacheWrite: number
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
-  /** 思考怎么发（协议标识）。`none` = 这条链路上根本发不出思考。 */
-  thinking: string
-  /** 不选档时发不发思考。 */
+  /** 不选强度时会不会思考。 */
   thinksByDefault: boolean
-  /**
-   * 带 tool_calls 的历史要不要回传推理原文。`none` = 不回传。
-   *
-   * 按目录首条协议取值，同一个模型按协议分多条时显示的未必是生效的那条。
-   */
-  reasoningEcho: string
-  /**
-   * 缓存路由亲和键发不发。`none` = 不发。
-   *
-   * 它是「端点 × 模型」那一格的属性：同一个模型换个中转站就是另一条结论，
-   * 所以这一格必须能改——内置值只是 seed。
-   */
-  cacheRouting: string
   source: 'seed' | 'user'
   /**
    * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。

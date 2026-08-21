@@ -100,22 +100,13 @@ export interface LibraryModel {
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
   /**
-   * 这条链路上思考**怎么发**（协议标识），以及**不选档时发不发**。
+   * 不选强度时会不会思考。与 `effortLevels` 一起下发才是完整的一格：
+   * 少了它，一个「一档都没有但默认就思考」的模型看起来和不支持思考的一样。
    *
-   * 与 `effortLevels` 同属「这个模型在这条协议上的思考能力」，一起下发才是完整的
-   * 一格。少给这两个，模型库上就只能看见档位而看不见「它到底会不会思考」——
-   * 而 `qy probe --save` 写回的正是这三项。
+   * **协议内部字段（用哪套参数发思考）不下发**——那是适配器的事，
+   * 用户既判断不了也不该判断。
    */
-  thinking: string
   thinksByDefault: boolean
-  /**
-   * 带 tool_calls 的历史要不要回传推理原文。只有 Responses 那条链路消费它。
-   *
-   * 这一行按目录首条协议取值（见 `buildLibrary` 里的取法），而同一个模型可能
-   * 按协议分了多条——显示的未必是实际生效的那条。`thinking` 同样如此。
-   */
-  reasoningEcho: string
-  cacheRouting: string
   source: 'seed' | 'user'
   /**
    * 这条价目的偏离说明：分时段折扣、长上下文换档。**没有偏离就不带这个键。**
@@ -188,10 +179,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       cacheWrite: spec.pricing.cacheWrite5m,
       currency: spec.pricing.currency ?? 'USD',
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
-      thinking: spec.thinking,
       thinksByDefault: spec.thinksByDefault,
-      reasoningEcho: spec.reasoningEcho,
-      cacheRouting: spec.cacheRouting,
       source,
       ...(notes.length ? { priceNotes: notes } : {}),
     }

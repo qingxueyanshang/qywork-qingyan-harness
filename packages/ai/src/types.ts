@@ -201,7 +201,7 @@ export interface LlmAdapter {
    * 探针每一发都会「通过」，而 `--save` 会把这份凭空的结论覆盖回目录。
    *
    * **必须按 `spec` 算，不能是类级常量**，且判据只有 `effortIsTransmittable`
-   * 一份——协议支持不等于这条模型的方言发得出去。
+   * 一份——协议支持不等于这条模型的参数格式发得出去。
    */
   readonly transmits: { effort: boolean }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>

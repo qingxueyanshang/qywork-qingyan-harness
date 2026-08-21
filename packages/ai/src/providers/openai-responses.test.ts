@@ -356,7 +356,7 @@ describe('装配', () => {
   })
 
   /**
-   * `transmits` 必须按 spec 的方言算，不能是类级常量，也不能只看档位表非空。
+   * `transmits` 必须按 spec 的参数格式算，不能是类级常量，也不能只看档位表非空。
    *
    * `gpt-5` 不在目录里 → `thinking:'none'` + `effortLevels:[]` → 装配期把 reasoning
    * 整个省掉，请求里一个字节都没有。此处若声明成 true，`qy probe` 的探针会「通过」
@@ -366,7 +366,7 @@ describe('装配', () => {
    * 于是它带着五档 effort 落到 Responses 上——**但 `output_config.effort` 那套在这条
    * 协议上发不出去**，声明成会发同样是假通过。
    */
-  test('按方言声明：发不出去的就不能声明成会发', async () => {
+  test('按参数格式声明：发不出去的就不能声明成会发', async () => {
     const { buildAdapter } = await import('../factory.ts')
     const unknown = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'gpt-5' })
     expect(unknown.transmits).toEqual({ effort: false })

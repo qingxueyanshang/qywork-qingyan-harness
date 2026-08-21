@@ -769,11 +769,15 @@ textarea.code-area::placeholder {
   align-items: center;
   gap: var(--s-2);
 }
+/* 模型 id 不断行。**不要用 `word-break: break-all`**：它会在词中间断
+   （`deepseek-v4-flash` → `deepseek-v4-f` / `lash`），而这一列的其余各列都是
+   `nowrap`，于是表格把全部挤压量都摊给唯一能换行的这一列，一个名字能占三行。
+   撑不下时整张表横向滚（`.lib-scroll`）。 */
 .lib-id {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
-  word-break: break-all;
+  white-space: nowrap;
 }
 .lib-tag {
   padding: 1px 6px;

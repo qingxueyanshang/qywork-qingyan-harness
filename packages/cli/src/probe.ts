@@ -61,7 +61,7 @@ export async function runProbe(args: string[]): Promise<number> {
   const caps = toCapabilities(outcome)
 
   // 探不出来的轴要**点名**说，不能笼统一句「没结论」。
-  // 模型的思考方言发不出 effort 时那一轴无从探测；但「什么都不发时它自己思不思考」
+  // 模型的思考参数格式发不出 effort 时那一轴无从探测；但「什么都不发时它自己思不思考」
   // 是从回包看出来的，那一条永远有结论。报成失败会让用户去查一个没坏的东西。
   if (outcome.untested.length) {
     process.stderr.write(

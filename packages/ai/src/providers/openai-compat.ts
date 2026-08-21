@@ -250,7 +250,7 @@ export function normalizeBaseUrl(raw: string | undefined): string {
  * 兼容协议下的思考控制字段。
  *
  * **「发不发」由 `effortIsTransmittable` 一处裁决**，这里只决定「用哪套字段」。
- * 两件事各判一遍的代价实测付过：`transmits` 说发得出去而这里按方言省掉，
+ * 两件事各判一遍的代价实测付过：`transmits` 说发得出去而这里按参数格式省掉，
  * 于是探针恒通过，把一个凭空的结论写回目录。
  *
  * 不认识的模型 `thinking` 是 `'none'`，被门禁挡在外面，一个字节都不会多发；
@@ -341,7 +341,7 @@ function nullable(node: Record<string, unknown>): Record<string, unknown> {
  *
  * **只声明本文件真的读或真的写的字段。** 兼容端点的字段集参差不齐
  * （`reasoning_content`、`prompt_cache_hit_tokens` 等都不在官方类型里），
- * 所以这几个接口就是「我们认得哪些方言」的清单——加一家中转的方言时改这里。
+ * 所以这几个接口就是「我们认得哪些字段名」的清单——接一家新中转站时改这里。
  *
  * 放在这个文件里而不是抽一个跨协议的 wire 模块：协议这条轴已经有归属
  * （`ProviderKind` 三个值、一个适配器一个协议、模型库每条 spec 带着它）。
@@ -468,7 +468,7 @@ const THINKING_CLOSE = '</thinking>'
 /**
  * 正文通道开头那个 `<thinking>…</thinking>` 块改判给思考通道。
  *
- * 这是中转站的第三种方言。前两种是字段名（`reasoning_content` / `reasoning`），
+ * 这是中转站发推理内容的第三种形式。前两种是字段名（`reasoning_content` / `reasoning`），
  * 这一种把推理摘要塞进 `content` 再自己加上标签——实测 gpt-5.6-terra 经 OpenAI
  * 协议中转，一个 run 的 12 次调用里 3 次这样发，其余走 `reasoning_content`。
  * 通道归属的权威是适配器，所以在这里认；让它混进回答再由下游擦，擦的是症状。
