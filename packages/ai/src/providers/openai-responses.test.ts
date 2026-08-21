@@ -277,6 +277,33 @@ describe('用量口径', () => {
     expect(u.inputTokens).toBe(100)
   })
 
+  /**
+   * 写入那项也含在 `input_tokens` 里。不减掉的话它会同时留在 inputTokens 并进
+   * cacheWriteTokens，`computeCost` 按 1.0x 和 1.25x 各算一遍。
+   */
+  test('input_tokens 同时减去命中与新写入', () => {
+    const u = fresh()
+    applyUsage(u, {
+      input_tokens: 2600,
+      input_tokens_details: { cached_tokens: 2000, cache_write_tokens: 400 },
+      output_tokens: 50,
+    })
+    expect(u.cachedTokens).toBe(2000)
+    expect(u.cacheWriteTokens).toBe(400)
+    expect(u.inputTokens).toBe(200)
+  })
+
+  test('没有 cache_write_tokens 时是 null，且不影响 inputTokens', () => {
+    const u = fresh()
+    applyUsage(u, {
+      input_tokens: 1000,
+      input_tokens_details: { cached_tokens: 800 },
+      output_tokens: 10,
+    })
+    expect(u.cacheWriteTokens).toBeNull()
+    expect(u.inputTokens).toBe(200)
+  })
+
   test('推理 token 单独取', () => {
     const u = fresh()
     applyUsage(u, {
