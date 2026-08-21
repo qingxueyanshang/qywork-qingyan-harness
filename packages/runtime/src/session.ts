@@ -271,6 +271,8 @@ export class Session {
           // 每次现取而不是缓存：`load_tool` 装走一个，清单就少一条，
           // 而缓存下来的那份会一直劝模型再装一遍已经装好的工具。
           externalTools: this.pendingTools?.index() ?? [],
+          // 待办每次现取：模型在 run 内提交一次，下一次请求就该看到新的那份。
+          todos: latestTodos(this.opts.store, conversationId),
         }),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, target, conversationId as ConversationId),

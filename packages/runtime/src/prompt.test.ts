@@ -108,4 +108,51 @@ describe('尾区注记', () => {
     // 没收录的取值原样带过去：编一个名字比给出原值更糟。
     expect(state('freebsd')).toContain('平台：freebsd')
   })
+
+  /**
+   * 复现的是原始失败形状：清单剩两条未完成，模型在一次修复之后结束本轮，
+   * 转而询问用户下一条修哪个。成因是清单只在 `write_todos` 那次调用里出现一次，
+   * 之后既不重发，压缩时也进不了事实清单。
+   */
+  test('待办每次请求重发，状态用人读名，未完成时给出继续执行的指令', () => {
+    const notes = buildTailNotes({
+      ...base,
+      todos: [
+        { id: 'todo_1', content: '跑测试套件', status: 'completed' },
+        { id: 'todo_2', content: '做静态巡检', status: 'in_progress' },
+        { id: 'todo_3', content: '汇总 bug 与证据', status: 'pending' },
+      ],
+    })
+    const todo = notes.at(-1)?.content ?? ''
+    expect(todo).toContain('1. [已完成] 跑测试套件')
+    expect(todo).toContain('2. [进行中] 做静态巡检')
+    expect(todo).toContain('3. [未开始] 汇总 bug 与证据')
+    // 枚举原值不进提示词，同「平台：win32」那条。
+    expect(todo).not.toContain('in_progress')
+    expect(todo).toContain('不要结束本轮')
+  })
+
+  test('全部完成时不附继续执行的指令', () => {
+    const notes = buildTailNotes({
+      ...base,
+      todos: [{ id: 'todo_1', content: '做一件事', status: 'completed' }],
+    })
+    expect(notes.at(-1)?.content ?? '').toContain('1. [已完成] 做一件事')
+    expect(notes.at(-1)?.content ?? '').not.toContain('不要结束本轮')
+  })
+
+  test('待办排在最后：它最易变，排前面会把技能与记忆一起挤出缓存', () => {
+    const notes = buildTailNotes({
+      ...base,
+      skills: [{ name: 'a', description: 'x' }],
+      memories: [{ key: 'b', preview: 'y' }],
+      todos: [{ id: 'todo_1', content: '做一件事', status: 'pending' }],
+    })
+    expect(notes.map((n) => n.group)).toEqual([
+      'workspaceState',
+      'skills',
+      'memory',
+      'workspaceState',
+    ])
+  })
 })

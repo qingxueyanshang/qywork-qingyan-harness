@@ -1,3 +1,5 @@
+import type { TodoItem } from '@qywork/core'
+
 /**
  * 三层冻结前缀：system → environment → rules。
  *
@@ -93,6 +95,13 @@ function osName(platform: string): string {
   return platform
 }
 
+/** 待办状态的人读名。 */
+const TODO_LABEL: Record<TodoItem['status'], string> = {
+  pending: '未开始',
+  in_progress: '进行中',
+  completed: '已完成',
+}
+
 /**
  * 尾区注记。每次请求重算，排在**整串消息的最后一段**（装配见 `agent/loop.ts`）。
  *
@@ -122,6 +131,14 @@ export function buildTailNotes(input: {
    * 进前缀等于装一个插件就把整段缓存打掉，而那正是按需加载要治的病。
    */
   externalTools?: { name: string; summary: string }[]
+  /**
+   * 会话账本里最后一份待办清单。**这里是模型侧唯一能看到它的地方。**
+   *
+   * `write_todos` 那次调用本身会随步数沉进 transcript，而它的
+   * `targetExtractor` 返回 `null`，压缩后不进事实清单——不重发的话清单先被
+   * 后面的工具结果埋掉、再被压缩拿掉，表现是模型做着做着就不认领下一条了。
+   */
+  todos?: TodoItem[] | null
 }): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
   const lines = [
@@ -159,6 +176,25 @@ export function buildTailNotes(input: {
     notes.push({
       content: `## 可加载的外部工具（要用先用 load_tool 装，装完直接调）\n${list}`,
       group: 'mcpTools',
+    })
+  }
+  /*
+   * 待办排在**所有注记的最后**：它是尾区里最易变的一条，模型每提交一次
+   * `write_todos` 它就变。排在前面会把技能、记忆、外部工具三条一并挤出缓存
+   * （装满 MCP 时那三条约 1200–1500 token）。
+   */
+  if (input.todos?.length) {
+    const list = input.todos
+      .map((t, i) => `${i + 1}. [${TODO_LABEL[t.status]}] ${t.content}`)
+      .join('\n')
+    // 仅列出状态时模型会把清单读成背景信息；未完成时的这一句是继续执行的指令。
+    const unfinished = input.todos.some((t) => t.status !== 'completed')
+    const tail = unfinished
+      ? '\n\n清单中仍有未完成条目：继续执行下一条，不要结束本轮。每完成一条立即调用 write_todos 提交完整清单。'
+      : ''
+    notes.push({
+      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}${tail}`,
+      group: 'workspaceState',
     })
   }
   return notes
