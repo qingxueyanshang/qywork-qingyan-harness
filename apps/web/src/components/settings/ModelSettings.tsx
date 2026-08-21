@@ -1,7 +1,6 @@
 import { PROVIDER_KINDS, type ProviderKind } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
-  type CatalogEntry,
   ensureModelCatalog,
   modelCatalog,
   modelCatalogError,
@@ -123,37 +122,6 @@ export function ModelSettings() {
         [name]: { kind: 'openai_chat_completions', hasApiKey: false, models: {} },
       },
     }))
-  }
-
-  /**
-   * 写一条模型参数，或删掉一条覆盖还原成内置值。
-   *
-   * 落在 `config.catalog`，键是「模型 id | 协议」——**不落在接口下**。窗口和价格
-   * 是模型的属性，换个中转站不会变；落到接口下就得每个接口各存一份，改一处漏三处。
-   *
-   * 库里一行只认模型 id，而落盘带协议这一维，所以一次保存写进这个模型已经用到的
-   * 每一种协议；一个接口都还没挂时写进全部协议，等它被挂上去时参数就已经在了。
-   */
-  const saveCatalog = (id: string, entry: CatalogEntry | null) => {
-    void replaceConfig((cur) => {
-      const used = [
-        ...new Set(
-          Object.values(cur.providers)
-            .filter((p) => id in p.models)
-            .map((p) => p.kind),
-        ),
-      ]
-      const kinds = used.length > 0 ? used : [...PROVIDER_KINDS]
-      const rest = Object.fromEntries(
-        Object.entries(cur.catalog ?? {}).filter(([k]) => k.slice(0, k.lastIndexOf('|')) !== id),
-      )
-      return {
-        ...cur,
-        catalog: entry
-          ? { ...rest, ...Object.fromEntries(kinds.map((k) => [catalogKey(id, k), entry])) }
-          : rest,
-      }
-    })
   }
 
   // **删掉即不可恢复**：明文 key 从不回传前端，界面上没有任何一条路能把它拿回来。
@@ -472,7 +440,6 @@ export function ModelSettings() {
                 vendors={modelCatalog()?.library ?? []}
                 loading={modelCatalogLoading()}
                 error={modelCatalogError()}
-                onSave={saveCatalog}
               />
             </Show>
 

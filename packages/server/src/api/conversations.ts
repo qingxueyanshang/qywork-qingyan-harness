@@ -82,9 +82,6 @@ export interface ModelsResponse {
  * 吃哪几档思考」，接口回答「用谁的端点和哪把 key」。两者唯一的接点是接口下
  * 那一行模型 id——参数照着 id 从库里查（`lookupModel` + `applySpecOverride`）。
  *
- * `source` 分两种，与「改过没有」一一对应：`seed` 是源码里的内置值，
- * `user` 是用户在库里改过或自己加的。分开报是为了让「还原成内置值」有依据——
- * 不报的话，界面没法判断这一条能不能还原、还原成什么。
  */
 export interface LibraryModel {
   id: string
@@ -107,7 +104,6 @@ export interface LibraryModel {
    * 用户既判断不了也不该判断。
    */
   thinksByDefault: boolean
-  source: 'seed' | 'user'
   /**
    * 这条价目的偏离说明：分时段折扣、长上下文换档。**没有偏离就不带这个键。**
    *
@@ -141,24 +137,21 @@ export interface LibraryVendor {
  *   接口那侧说了算。
  */
 function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVendor[] {
-  const rows = new Map<string, { spec: ModelSpec; source: 'seed' | 'user' }>()
+  const rows = new Map<string, ModelSpec>()
   for (const m of builtinCatalog()) {
     if (rows.has(m.id)) continue
     // 覆盖按「模型 + 协议」两维存（`catalogKey`），而这张表一个模型只出一行——
     // 取该模型在目录里的首条协议。写回时由保存侧套到这个 id 的全部协议上，
     // 读写两侧的口径差**只在这一处**，不要在别处再各自换算一次。
     const o = overrides[catalogKey(m.id, m.provider)]
-    rows.set(m.id, { spec: applySpecOverride(m, o), source: o ? 'user' : 'seed' })
+    rows.set(m.id, applySpecOverride(m, o))
   }
   // 目录里没有的（用户自己加的一条）补进来：`unknownModel` 给一组保守默认值，
   // 覆盖里写了什么就显示什么。键的第二维在这里丢掉——自加模型只可能有一条协议。
   for (const [key, o] of Object.entries(overrides)) {
     const id = key.split('|')[0] ?? key
     if (rows.has(id)) continue
-    rows.set(id, {
-      spec: applySpecOverride(unknownModel(id, 'openai_chat_completions'), o),
-      source: 'user',
-    })
+    rows.set(id, applySpecOverride(unknownModel(id, 'openai_chat_completions'), o))
   }
 
   const groups = new Map<string, LibraryVendor>()
@@ -166,7 +159,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   // 「自定义」不是一家厂商，是「没挂到任何一家名下」的那些。放最后。
   const custom: LibraryVendor = { id: '', displayName: '自定义', models: [] }
 
-  for (const { spec, source } of rows.values()) {
+  for (const spec of rows.values()) {
     const notes = [spec.offPeak?.note, spec.longContext?.note].filter((n) => n !== undefined)
     const row: LibraryModel = {
       id: spec.id,
@@ -180,7 +173,6 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       currency: spec.pricing.currency ?? 'USD',
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
       thinksByDefault: spec.thinksByDefault,
-      source,
       ...(notes.length ? { priceNotes: notes } : {}),
     }
     const group = (spec.vendor && groups.get(spec.vendor)) || custom

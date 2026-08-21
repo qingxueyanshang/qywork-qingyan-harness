@@ -665,17 +665,17 @@ describe('模型目录', () => {
     expect(Object.keys(ds).sort()).toEqual(['displayName', 'id', 'models'])
   })
 
-  /** 改过的条目要标出来，否则界面没法判断这一条能不能还原、还原成什么。 */
-  test('改过的条目标 user，没改过的标 seed', async () => {
+  /**
+   * 覆盖要生效。界面只读，覆盖来自 `qy probe --save` 或手改 config.json——
+   * 不生效的话那两条路等于没有出口。
+   */
+  test('config.catalog 里的覆盖盖在内置值上', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = {
       'claude-opus-5|anthropic_messages': { input: 99, output: 199 },
     }
     const all = (await body(d)).library.flatMap((v) => v.models)
-    const opus = all.find((m) => m.id === 'claude-opus-5')!
-    expect(opus.source).toBe('user')
-    expect(opus.input).toBe(99)
-    expect(all.find((m) => m.id === 'claude-sonnet-5')?.source).toBe('seed')
+    expect(all.find((m) => m.id === 'claude-opus-5')?.input).toBe(99)
   })
 
   /**
@@ -696,7 +696,6 @@ describe('模型目录', () => {
     }
     const ds = (await body(d)).library.find((v) => v.id === 'deepseek')!
     const row = ds.models.find((m) => m.id === '中转站上的某个模型')!
-    expect(row.source).toBe('user')
     expect(row.contextWindow).toBe(65_536)
   })
 
