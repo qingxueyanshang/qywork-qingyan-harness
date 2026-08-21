@@ -145,7 +145,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
     const file = join(dir, MCP_FILE)
     const current = await readFile(file, 'utf8').catch(() => null)
     let root: Record<string, unknown> = {}
-    if (current !== null && current.trim()) {
+    if (current?.trim()) {
       try {
         const parsed: unknown = JSON.parse(current)
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
