@@ -418,11 +418,6 @@
   flex-direction: column;
   overflow: hidden;
 }
-/* 分隔线画在内容那块的左沿——它只在开着文件时存在，所以不会出现一条
-   孤零零贴在面板边上的线。 */
-.file-browser > .file-tree-col + .preview {
-  border-left: 1px solid var(--border-subtle);
-}
 /* 没开文件时树占满整块面板——固定 208px 会在左边留一大片空白。 */
 .file-tree-col:only-child {
   flex: 1;
@@ -642,6 +637,13 @@
   min-height: 0;
   /* 它和树是横向并排的 flex 兄弟：不写 0 的话里面的代码块能把它顶得比面板还宽。 */
   min-width: 0;
+}
+/* 分隔线画在内容那块的左沿——它只在开着文件时存在，所以不会出现一条
+   孤零零贴在面板边上的线。
+   **必须排在上面那条之后**：选择器更具体，写在前面的话「后面的覆盖前面的」这条
+   在读的人眼里就不成立了（biome 的 `noDescendingSpecificity` 拦的正是这个形状）。 */
+.file-browser > .file-tree-col + .preview {
+  border-left: 1px solid var(--border-subtle);
 }
 /*
  * 标题条 31px，**底沿和树那一列的搜索框对齐**（搜索框 6px 上外边距 + 25px 高 = 31，
