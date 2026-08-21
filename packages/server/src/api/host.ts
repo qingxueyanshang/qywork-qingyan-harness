@@ -302,7 +302,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
       {
         error: 'no winget',
         message:
-          '这台机器上没有 winget（Windows 10 1809 之前没有它）。请手动安装；' +
+          '本机没有 winget（Windows 10 1809 之前没有它）。请手动安装；' +
           `bash 装在非常规位置时可以用 ${BASH_PATH_ENV} 指过去。`,
       },
       409,
