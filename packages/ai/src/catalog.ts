@@ -1146,9 +1146,11 @@ export function computeCost(
   //
   // 提示词大小同理：它逐波次增长，长上下文档必须按**这一次**的大小判，
   // 按整个 run 的最大值或第一次的值判都会算错一半的波次。
+  // 三项相加才是这一次的提示词大小：三个数是排他的，漏掉写入那项会让长上下文档
+  // 在一次冷启动上判不到——而冷启动正是写入量最大的那一次。
   const p = priceAt(spec, {
     now,
-    promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0),
+    promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
   })
   // 只按 5 分钟档算：全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是
   // **参考数据**（它是真实价格），不是可达的代码分支。别为它加一个 cacheTtl 参数：

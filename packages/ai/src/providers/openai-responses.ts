@@ -491,12 +491,18 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
   const input = Number(raw.input_tokens ?? 0)
   const details = raw.input_tokens_details as Record<string, unknown> | undefined
   const cached = details?.cached_tokens
+  const written = details?.cache_write_tokens
   const outDetails = raw.output_tokens_details as Record<string, unknown> | undefined
 
-  // Responses 的 input_tokens **含**缓存命中，与 Anthropic 的排他口径相反。
-  // 统一收敛到排他口径：不减的话缓存命中越多，账单错得越离谱。
+  /*
+   * Responses 的 `input_tokens` 是**合计**：命中 + 新写入 + 两者都不是的那部分，
+   * 与 Anthropic 的排他口径相反。两项都要减掉才收敛到排他口径——只减命中的话，
+   * 写入那部分会同时留在 inputTokens 里并进 cacheWriteTokens，按 1.0x 和 1.25x
+   * 各计一遍费。
+   */
   acc.cachedTokens = typeof cached === 'number' ? cached : null
-  acc.inputTokens = Math.max(0, input - (acc.cachedTokens ?? 0))
+  acc.cacheWriteTokens = typeof written === 'number' ? written : null
+  acc.inputTokens = Math.max(0, input - (acc.cachedTokens ?? 0) - (acc.cacheWriteTokens ?? 0))
   acc.outputTokens = Number(raw.output_tokens ?? 0)
   acc.reasoningTokens = Number(outDetails?.reasoning_tokens ?? 0)
   acc.source = 'provider'
