@@ -471,6 +471,8 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
  * | v4-flash | 空闲 | ¥0.05 | ¥1.5 | ¥4.5 |
  * | v4-pro | 高峰 | ¥0.30 | ¥9.0 | ¥27.0 |
  * | v4-pro | 空闲 | ¥0.15 | ¥4.5 | ¥13.5 |
+ * | v4-flash-vision-exp | 高峰 | ¥0.10 | ¥3.0 | ¥9.0 |
+ * | v4-flash-vision-exp | 空闲 | ¥0.05 | ¥1.5 | ¥4.5 |
  *
  * 实测（2026-08）：`deepseek-chat` 与 `deepseek-reasoner` 都被服务端解析成
  * `deepseek-v4-flash`。**别名不进目录**——指向哪个模型由服务端说了算、随时可改，
@@ -530,6 +532,22 @@ function deepseekCatalog(): ModelSpec[] {
     },
   }
   /**
+   * 视觉实验模型。窗口、输出上限、思考控制面、计价与 flash 完全相同，
+   * 唯一差别是接受图片输入。
+   *
+   * 图片缩放后按输入 token 计入，单张上限 384 token，**没有单独的图片价目**——
+   * 不要为它在 `Pricing` 上加一条轴，那会是一个零消费者的字段。
+   *
+   * 边界：只接受 JPEG / PNG / GIF / WebP，不接受 PDF 与文档。
+   */
+  const vision: ModelSpec = {
+    ...base,
+    id: 'deepseek-v4-flash-vision-exp',
+    displayName: 'DeepSeek V4 Flash Vision',
+    pricing: { ...flash.pricing },
+  }
+
+  /**
    * Responses 协议下的同一批模型，**能力不同所以单独一条**。
    *
    * 差别不是「协议名不一样」，是**我们能不能控制它思考**：
@@ -566,8 +584,10 @@ function deepseekCatalog(): ModelSpec[] {
   return [
     { ...flash, thinksByDefault: true },
     { ...pro, thinksByDefault: true },
+    { ...vision, thinksByDefault: true },
     responses(flash),
     responses(pro),
+    responses(vision),
   ]
 }
 

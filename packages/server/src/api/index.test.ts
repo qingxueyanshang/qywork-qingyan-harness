@@ -643,7 +643,11 @@ describe('模型目录', () => {
     const ds = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.find(
       (v) => v.id === 'deepseek',
     )!
-    expect(ds.models.map((m) => m.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(ds.models.map((m) => m.id)).toEqual([
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash-vision-exp',
+    ])
   })
 
   test('未收录的模型不假装支持 effort', async () => {
