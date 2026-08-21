@@ -428,7 +428,7 @@ function LedgerLink() {
 
   return (
     <button class="run-ledger" type="button" onClick={() => openSettings('usage')}>
-      <span class="run-ledger-label">这台机器 · 近 30 天</span>
+      <span class="run-ledger-label">本机运行 · 近 30 天</span>
       <span class="run-ledger-cost">{cost()}</span>
       <IconChevron size={11} dir="right" />
     </button>

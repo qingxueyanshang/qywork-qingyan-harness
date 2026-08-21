@@ -113,7 +113,7 @@ export function NewProjectDialog(props: {
                 <div class="np-folder empty">
                   <Show
                     when={props.canPickFolder}
-                    fallback={<span class="np-hint">在这台机器上会建一个新文件夹</span>}
+                    fallback={<span class="np-hint">在本机新建一个文件夹</span>}
                   >
                     <button class="np-pick" type="button" onClick={() => void pick()}>
                       <IconPlus size={14} />
