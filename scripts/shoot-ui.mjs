@@ -136,6 +136,19 @@ async function startServer() {
   })
 }
 
+/**
+ * 打开右侧面板并翻到某一页。
+ *
+ * 页签是 `role="tab"` 带文字，**没有 `aria-label`**；面板默认收着，不先展开
+ * 一个页签都点不到。这两条只要有一条不成立，翻页就静默失败，拍出来的是
+ * 上一张的界面——所以点不到要往 `errors` 里记一条，不能吞掉。
+ */
+async function openPanelTab(page, label) {
+  const expand = page.locator('[aria-label="展开侧面板"]')
+  if (await expand.count()) await expand.click()
+  await page.getByRole('tab', { name: label, exact: true }).click()
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true })
   const { proc, token, port } = await startServer()
@@ -186,26 +199,35 @@ async function main() {
         await page.keyboard.press('Escape')
 
         // 侧栏面板：文件树和 git 变更各拍一张。
-        await page.click('[aria-label="文件"]').catch(() => {})
+        await openPanelTab(page, '文件').catch((e) =>
+          errors.push(`[${shot.name}] 翻不到文件页：${e.message}`),
+        )
         await page.waitForTimeout(700)
         await page.screenshot({ path: join(OUT, `${shot.name}-files.png`) })
 
-        await page.click('[aria-label="变更"]').catch(() => {})
+        await openPanelTab(page, '变更').catch((e) =>
+          errors.push(`[${shot.name}] 翻不到变更页：${e.message}`),
+        )
         await page.waitForTimeout(900)
         await page.screenshot({ path: join(OUT, `${shot.name}-git.png`) })
 
-        // 手机接入：开局域网监听后应该出二维码。它住在系统设置弹窗里的一个类目下，
-        // 不先把弹窗打开就点不到，而点不到时这一步静默失败——
-        // 拍出来的 `-pair.png` 会是一张普通会话截图。
-        await page.click('[aria-label="变更"]').catch(() => {})
+        // 手机接入：开局域网监听后应该出二维码。它是系统设置弹窗「通用」那一页里的
+        // 一个区块，不是一个类目——按类目找它找不到。找不到时这一步静默失败，
+        // 拍出来的 `-pair.png` 会是一张普通会话截图，所以失败要记进 `errors`。
         await page.getByRole('button', { name: '系统设置' }).click()
-        await page.getByRole('button', { name: '手机接入' }).click()
+        await page.getByRole('button', { name: '通用', exact: true }).click()
         await page.waitForTimeout(500)
         await page
           .locator('.pair-toggle input')
           .check()
-          .catch(() => {})
+          .catch((e) => errors.push(`[${shot.name}] 开不了局域网监听：${e.message}`))
         await page.waitForTimeout(900)
+        // 手机接入是「通用」那一页最末的一块，不滚过去拍到的是页首的外观设置。
+        await page
+          .locator('.pair-qr')
+          .scrollIntoViewIfNeeded()
+          .catch((e) => errors.push(`[${shot.name}] 没出二维码：${e.message}`))
+        await page.waitForTimeout(300)
         await page.screenshot({ path: join(OUT, `${shot.name}-pair.png`) })
       }
       await ctx.close()
