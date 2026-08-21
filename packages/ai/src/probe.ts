@@ -107,16 +107,6 @@ export interface ProbeOptions {
   signal?: AbortSignal
   /** 每个探针之间歇一下，避免撞限速。默认 300ms。 */
   gapMs?: number
-  /**
-   * 只测通不通，第一个探针跑完就返回。
-   *
-   * 「连得上吗」是一个请求的事，「支持哪几档思考」要逐档试、加上退避是好几秒。
-   * 用户填完 key 想立刻知道的是前者，把它绑在后者上等于每次都付全价。
-   *
-   * 停下来的那几轴走 `untested`，**不是报成不支持**——这两件事的差别正是
-   * 这个文件存在的理由。
-   */
-  reachabilityOnly?: boolean
 }
 
 export async function probeModel(
@@ -136,10 +126,6 @@ export async function probeModel(
   // 继续探下去只会得到一串同样的错误，而真正该说的是「先把连通性弄好」。
   if (!bare.step.ok) {
     return { reachable: false, untested: [], effortLevels: [], thinksByDefault: false, probes }
-  }
-
-  if (opts.reachabilityOnly) {
-    return { reachable: true, untested: ['effort'], effortLevels: [], thinksByDefault, probes }
   }
 
   // ── 客户端到底发不发 effort ──

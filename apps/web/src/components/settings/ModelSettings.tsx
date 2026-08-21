@@ -204,15 +204,15 @@ export function ModelSettings() {
     })
   }
 
-  const runProbe = async (provider: string, model: string, mode: 'reachability' | 'full') => {
+  const runProbe = async (provider: string, model: string) => {
     setProbing(model)
     try {
-      const r = await probeModel(provider, model, mode)
+      const r = await probeModel(provider, model)
       setProbes((prev) => ({ ...prev, [model]: r }))
       // 探到的能力**写进模型库**，走既有的整份 PUT，不新开写入路径。
       // 协议这一维从当前接口取：探的就是「这条链路」的行为。
       // 只在真探出东西时写：空结论会盖掉目录里正确的保守值。
-      if (mode === 'full' && Object.keys(r.capabilities).length > 0) {
+      if (Object.keys(r.capabilities).length > 0) {
         void replaceConfig((cur) => {
           const owner = cur.providers[provider]
           if (!owner) return null
@@ -384,21 +384,18 @@ export function ModelSettings() {
                                     {isDefault() ? '默认' : '设为默认'}
                                   </button>
                                   <span class="model-id">{id}</span>
+                                  {/* 结论跟在模型 id 右边，同一行。放到行下面的话，
+                                      每探一次这一行就长高一截，下面几行整体往下跳。 */}
+                                  <Show when={result()}>
+                                    {(r) => <ProbeSummary result={r()} />}
+                                  </Show>
                                   <button
                                     class="btn-ghost sm"
                                     type="button"
                                     disabled={probing() !== null || configBusy()}
-                                    onClick={() => void runProbe(name(), id, 'reachability')}
+                                    onClick={() => void runProbe(name(), id)}
                                   >
-                                    {probing() === id ? '探测中…' : '测连接'}
-                                  </button>
-                                  <button
-                                    class="btn-ghost sm"
-                                    type="button"
-                                    disabled={probing() !== null || configBusy()}
-                                    onClick={() => void runProbe(name(), id, 'full')}
-                                  >
-                                    校准思考
+                                    {probing() === id ? '检测中…' : '检测'}
                                   </button>
                                   <button
                                     class="icon-btn"
@@ -409,8 +406,6 @@ export function ModelSettings() {
                                     <IconX size={12} />
                                   </button>
                                 </div>
-
-                                <Show when={result()}>{(r) => <ProbeSummary result={r()} />}</Show>
                               </div>
                             )
                           }}
@@ -483,42 +478,33 @@ function firstModelRef(
  * 而用户会据此去查一个根本没坏的东西。失败的那几步给出原文，结论错了要能查。
  */
 function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
+  /**
+   * 一行说完，长了截断，完整内容进 `title`。
+   *
+   * 不换行也不折成多行：这一格坐在模型那一行里，一变高下面几行整体往下跳，
+   * 而按钮就在同一行上（CLAUDE.md B9）。
+   */
+  const text = () => {
+    const r = props.result
+    if (!('outcome' in r)) return { text: r.error, bad: true }
+    const o = r.outcome
+    if (!o.reachable) {
+      const why = o.probes.filter((s) => !s.ok && !s.skipped).map((s) => s.detail)
+      return { text: ['连接失败', ...why].join('　'), bad: true }
+    }
+    // 思考那一格只说用户能拿它做什么：有哪几档，或者为什么一档都没有。
+    const levels = o.effortLevels
+    const effort =
+      levels.length > 0
+        ? levels.join(' / ')
+        : o.untested.includes('effort')
+          ? '发不出思考档位'
+          : '无思考档位'
+    return { text: `连接正常　${effort}`, bad: false }
+  }
   return (
-    <Show
-      when={'outcome' in props.result ? props.result : null}
-      fallback={<div class="probe-line bad">{(props.result as { error: string }).error}</div>}
-    >
-      {(r) => {
-        const o = () => r().outcome
-        /**
-         * 思考那一格只说**用户能拿它做什么**：有哪几档可选，或者为什么一档都没有。
-         *
-         * 不显示 `thinksByDefault`（给输出预算留空间的标志位）：它是内部实现，
-         * 用户看到也做不了任何事，而它占的正是「这个模型到底能不能调思考」
-         * 该占的位置。
-         */
-        const effort = () => {
-          const levels = o().effortLevels
-          if (levels.length > 0) return `思考档位　${levels.join(' / ')}`
-          if (o().untested.includes('effort')) return '这条链路发不出思考档位'
-          return '无思考档位'
-        }
-        return (
-          <div class="probe-line" classList={{ bad: !o().reachable }}>
-            {/* 不通时只报状态，成因由下面那几条探针原文给。
-                在这里再写一句「先检查 key 和地址」是枚举操作路径，而且它说的
-                永远比原文含糊。 */}
-            <Show when={o().reachable} fallback={<span>连接失败</span>}>
-              <span>连接正常</span>
-              <span>{effort()}</span>
-            </Show>
-            {/* 失败那几步给原文：结论错了要能查，只给一句「不支持」查不出任何东西。 */}
-            <For each={o().probes.filter((s) => !s.ok && !s.skipped)}>
-              {(s) => <span class="probe-fail">{s.detail}</span>}
-            </For>
-          </div>
-        )
-      }}
-    </Show>
+    <span class="probe-line" classList={{ bad: text().bad }} title={text().text}>
+      {text().text}
+    </span>
   )
 }

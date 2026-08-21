@@ -56,8 +56,6 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
   const body = (await req.json().catch(() => null)) as {
     provider?: string
     model?: string
-    /** `reachability` 只发一个请求；`full` 逐档试思考与 effort，要几秒。 */
-    mode?: 'reachability' | 'full'
   } | null
   if (!body?.provider || !body.model) {
     return json({ error: 'bad request', message: '缺少 provider 或 model' }, 400)
@@ -68,18 +66,15 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
     return json({ error: 'not found', message: `配置里没有名为 "${body.provider}" 的接口` }, 404)
   }
 
-  const outcome = await probeModel(
-    {
-      kind: target.kind,
-      apiKey: target.apiKey ?? '',
-      model: target.model,
-      ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
-      ...(target.headers ? { headers: target.headers } : {}),
-      // **不带模型库里那条覆盖**：带上等于让上一次的结论影响这一次，
-      // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
-    },
-    body.mode === 'full' ? {} : { reachabilityOnly: true },
-  )
+  const outcome = await probeModel({
+    kind: target.kind,
+    apiKey: target.apiKey ?? '',
+    model: target.model,
+    ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
+    ...(target.headers ? { headers: target.headers } : {}),
+    // **不带模型库里那条覆盖**：带上等于让上一次的结论影响这一次，
+    // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
+  })
 
   const { values } = collectSecrets(d.config)
   return json({

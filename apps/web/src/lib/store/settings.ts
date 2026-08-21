@@ -313,14 +313,10 @@ export interface ProbeResult {
  *
  * 会真的发几个请求（每个 ≤16 token），所以只由用户点按钮触发。
  */
-export function probeModel(
-  provider: string,
-  model: string,
-  mode: 'reachability' | 'full',
-): Promise<ProbeResult> {
+export function probeModel(provider: string, model: string): Promise<ProbeResult> {
   return scheduleWrite('/api/probe', {
     method: 'POST',
-    body: JSON.stringify({ provider, model, mode }),
+    body: JSON.stringify({ provider, model }),
   })
 }
 
