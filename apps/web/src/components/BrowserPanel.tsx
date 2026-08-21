@@ -22,6 +22,14 @@ import { IconRefresh } from './Icons.tsx'
  *
  * 桌面端另需 CSP 放行（`tauri.conf.json` 的 `frame-src`），少了它 iframe 直接空白，
  * 而且只在打包后的构建里空白——`tauri dev` 的页面由 vite 提供，不走那份 CSP。
+ *
+ * ## `allow` 与 `sandbox` 管的不是一件事
+ *
+ * `autoplay` 权限策略的默认允许列表是 `self`，跨源 iframe 拿不到——不给它，
+ * 被预览页面里的 `<audio>` / `<video>` 带声播放会被拒（Web Audio 有用户手势时不受此限）。
+ *
+ * **地址栏只接受 http(s)**：`file:` 在 iframe 里被内核直接拒（`Not allowed to load
+ * local resource`），CSP 放行也没用；本地 html 只能起个静态服务器再填它的地址。
  */
 
 /**
@@ -114,6 +122,7 @@ export default function BrowserPanel(props: { id: string }) {
             src={f.src}
             title="预览"
             sandbox="allow-scripts allow-same-origin allow-forms"
+            allow="autoplay; fullscreen"
           />
         )}
       </Show>
