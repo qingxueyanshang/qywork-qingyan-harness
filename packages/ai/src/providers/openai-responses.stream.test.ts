@@ -264,7 +264,7 @@ async function run(
 
 // ───────────────────────── 断言 ─────────────────────────
 
-describe('推理增量：两套方言都要认', () => {
+describe('推理增量：两种事件名都要认', () => {
   /**
    * 这条是这个文件存在的理由。DeepSeek 发 `response.reasoning_text.delta`，
    * 只认 OpenAI 的 `reasoning_summary_text` 时**一个错都不报**，只是思考内容

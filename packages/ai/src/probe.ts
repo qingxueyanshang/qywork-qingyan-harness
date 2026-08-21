@@ -41,7 +41,7 @@ export interface ProbeOutcome {
    * **思考模式不在这里。** 它没有观测面：本项目从不请求思考形态
    * （`ChatRequest` 里没有那个字段），探针改不了发出去的 body，
    * 于是「端点接受了 adaptive」永远只是 `spec.thinking` 的回声。
-   * 把回声写回覆盖层会把方言改错，进而把 effort 判死。
+   * 把回声写回覆盖层会把参数格式改错，进而把 effort 判死。
    */
   untested: 'effort'[]
   /** 实测被接受的 effort 档。 */
@@ -177,12 +177,12 @@ export async function probeModel(
     })
   } else if (!transmits.effort) {
     // 顺序不能反：档位为空时 `transmits.effort` 也是 false，先判它的话
-    // 「库里没有档位」会被报成「方言发不出去」，用户会去改一个没错的方言。
+    // 「库里没有档位」会被报成「参数发不出去」，用户会去改一个没错的字段。
     probes.push({
       name: 'effort',
       ok: false,
       skipped: true,
-      detail: '这条协议上该模型的思考方言发不出 effort 字段，无从探测',
+      detail: '这条协议上该模型发不出 effort 字段，无从探测',
     })
   } else {
     let accepted = false
@@ -231,8 +231,8 @@ export interface ProbedCapabilities {
  * （什么都不发，看它自己吐不吐思考内容），跟我们发不发什么字段无关，
  * 所以只要端点通，它永远有结论。
  *
- * **思考方言（`spec.thinking`）不在写回范围内**：它决定 effort 用哪套字段发，
- * 而探测没有观测它的手段。写一个猜的方言回去会把 effort 判死。
+ * **思考参数的格式（`spec.thinking`）不在写回范围内**：它决定 effort 用哪套字段发，
+ * 而探测没有观测它的手段。写一个猜的格式回去会把 effort 判死。
  */
 export function toCapabilities(o: ProbeOutcome): ProbedCapabilities {
   // 端点不通时这份结果里**没有一项是观测**：`effortLevels: []` 不是

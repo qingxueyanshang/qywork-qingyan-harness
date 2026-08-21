@@ -53,14 +53,14 @@ describe('只写回真的探过的轴', () => {
   })
 
   /**
-   * **思考方言一个字都不写回。**
+   * **思考参数的格式一个字都不写回。**
    *
    * 本项目从不请求思考形态，探针发的 body 与不发时一模一样，所以「端点接受了
    * adaptive」只是 `spec.thinking` 的回声。把回声写回覆盖层，会在 Responses 协议上
-   * 把方言从 `reasoning_effort` 改成 `adaptive_only`，于是 effort 整片消失——
+   * 把格式从 `reasoning_effort` 改成 `adaptive_only`，于是 effort 整片消失——
    * 校准一次思考，反而再也选不出档位。
    */
-  test('写回里没有思考方言这一项', () => {
+  test('写回里没有思考参数格式这一项', () => {
     const spec = lookupModel('gemini-3.7-flash', 'openai_responses')
     expect(effortIsTransmittable(spec)).toBe(true)
 
@@ -134,7 +134,7 @@ describe('适配器如实声明自己发不发 effort', () => {
    * 目录里正好有（`thinking` 说用哪套字段）。一律不发的代价是
    * GPT-5.6 / Gemini / Grok / Kimi / GLM 这些真有档位的模型全都调不了。
    */
-  test('openai_chat_completions 按方言发 effort', async () => {
+  test('openai_chat_completions 按参数格式发 effort', async () => {
     const { OpenAICompatAdapter } = await import('./providers/openai-compat.ts')
     const a = new OpenAICompatAdapter(
       { kind: 'openai_chat_completions', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
@@ -165,7 +165,7 @@ describe('探测结果真的会影响请求装配', () => {
     })
     expect(probed.spec.effortLevels).toEqual(['high'])
     expect(probed.spec.thinksByDefault).toBe(true)
-    // 方言不在写回范围内：探测改不了「用哪套字段发」。
+    // 参数格式不在写回范围内：探测改不了「用哪套字段发」。
     expect(probed.spec.thinking).toBe('none')
   })
 })
