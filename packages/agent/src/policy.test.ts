@@ -181,7 +181,7 @@ describe('凭证文件', () => {
 })
 
 /**
- * PowerShell 方言。
+ * PowerShell 语法。
  *
  * 没装 Git Bash 的机器上外层 shell 就是 PowerShell（`tools/sandbox.ts` 的
  * `resolveCommandShell`），那台机器上模型**只会**写这一半——POSIX 的写法一次都不出现。
@@ -260,7 +260,7 @@ describe('PowerShell 写法', () => {
    * 模型手里已经有 `run_command`，给自己加个工具并没有多出任何能力；而
    * `.agents/memory/` 本来就是 `write_memory` 在写，shell 拦、工具不拦就是两套账。
    * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一件事，
-   * 换个方言不改变上面两条。
+   * 换个语法不改变上面两条。
    */
   test('项目里的 .qy / .agents 照常可写', () => {
     expect(kind('Set-Content .qy\\mcp.json -Value x')).toBe('allow')

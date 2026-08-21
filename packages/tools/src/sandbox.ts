@@ -668,9 +668,9 @@ export interface CommandShell {
  *
  * ## 为什么必须有环境变量这个口
  *
- * 落回的 PowerShell 方言和 bash 差得远，所以「bash 装在别处」必须有一个
+ * 落回的 PowerShell 语法和 bash 差得远，所以「bash 装在别处」必须有一个
  * **用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 / Cygwin / 自定义盘符的
- * 机器上会被判成没有 bash，然后拿到一个它本来不需要的方言。
+ * 机器上会被判成没有 bash，然后拿到一个它本来不需要的语法。
  *
  * **指了但不存在照样抛，不悄悄回到搜索**：回搜索会把「我指错了」变成
  * 「跑起来了，但跑的不是我指的那个」，而后者要靠对比输出才能发现。
@@ -680,10 +680,10 @@ export interface CommandShell {
  * Windows 只认 Git for Windows（见 `findGitBash` 上方为什么不查 PATH）。
  * 其余平台按位置找，**Homebrew 的 bash 5 排在 `/bin/bash` 前面**：macOS 自带的
  * 是 bash 3.2（2007 年，卡在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
- * 而模型写的是 bash 4+ 的方言。
+ * 而模型写的是 bash 4+ 的语法。
  *
  * 不用 `/bin/sh`：那在 Debian 系是 dash，`[[ ]]`、数组、`<(...)` 全部散架。
- * 判据是模型的默认方言要和真正执行的 shell 对得上——同一条判据让 PowerShell
+ * 判据是模型的默认语法要和真正执行的 shell 对得上——同一条判据让 PowerShell
  * 只在**一个 bash 都找不到**时才轮得到，见 `resolveCommandShell`。
  *
  * 参数全部注入，是为了能直接测顺序和逃生口，不必重载模块。
@@ -777,7 +777,7 @@ function windowsPowerShellInstall(env: Record<string, string | undefined>): stri
  *
  * ## 顺序：bash → pwsh 7 → Windows PowerShell 5.1 → 一个都没有
  *
- * **bash 永远排第一。** 模型的默认方言是 POSIX——「跑一条命令」这个语境在训练
+ * **bash 永远排第一。** 模型的默认语法是 POSIX——「跑一条命令」这个语境在训练
  * 数据里绝大多数是 bash，账本里有过只被告知「平台：win32」就写出 POSIX 写法、
  * 在 PowerShell 上一个字都没执行的调用（`node --version & python --version`）。
  * 有 bash 的机器上行为与只有 bash 那时完全一致。
@@ -790,12 +790,12 @@ function windowsPowerShellInstall(env: Record<string, string | undefined>): stri
  * `-NoProfile` 两档都要：用户 profile 会改变行为（别名、函数、`$ErrorActionPreference`），
  * 而它在别人机器上长什么样我们不知道。
  *
- * ## 方言分叉的代价，付在三个地方
+ * ## 语法分叉的代价，付在三个地方
  *
  * `policy.ts` 的拒绝规则要同时认两种语法、涉及命令的测试要按 shell 分叉、
- * 模型拿到的提示也分叉。前两条是死账，只能付。第三条靠**方言提示前置**缓解：
+ * 模型拿到的提示也分叉。前两条是死账，只能付。第三条靠**语法提示前置**缓解：
  * `hint` 是 `run_command` 描述的第一句，且非 bash 时第一句就说「不是 bash」。
- * 缓解不是消除——`run_command` 这个名字本身不携带方言，而名字的信号比描述强。
+ * 缓解不是消除——`run_command` 这个名字本身不携带语法，而名字的信号比描述强。
  *
  * 换来的是：没装 Git Bash 的 Windows 机器上，agent 从「一条命令都跑不了」变成能跑。
  *

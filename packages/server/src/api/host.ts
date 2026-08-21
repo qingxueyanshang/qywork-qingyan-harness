@@ -7,7 +7,7 @@
  *
  * | | 调用点 | 缺了会怎样 |
  * |---|---|---|
- * | bash | `tools/sandbox.ts` 的 `commandShell()` | **只是换方言**，落到 PowerShell；三档全空才是 `run_command` 不注册 |
+ * | bash | `tools/sandbox.ts` 的 `commandShell()` | **只是换语法**，落到 PowerShell；三档全空才是 `run_command` 不注册 |
  * | git | `server/git.ts:77` | 版本面板读不到状态与差异 |
  * | rg | `tools/search.ts:164` | **只是慢**，内置遍历顶上（那条路已经写好了） |
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
@@ -137,7 +137,7 @@ export function wingetUsable(): boolean {
  *   不能显示成同一种（前者 POSIX，后者不是）。
  * - `required` 只在**一个 shell 都没有**时为真——那时 `run_command` 真的不注册
  *   （Alpine 这类不带 bash 的镜像会走到），标红是对的。
- * - `hint` 把差别说全：现在真正在跑的是哪个可执行文件、方言差在哪
+ * - `hint` 把差别说全：现在真正在跑的是哪个可执行文件、语法差在哪
  *   （B7 的例外——能力边界声明必须留全，不能只说一句「装了更好」）。
  *
  * 注入是为了能测另外两档：本机只可能命中其中一档，而这一批要修的失败形状
@@ -165,7 +165,7 @@ export function resolveBashRow(deps: {
     path: null,
     required: false,
     hint:
-      `命令照样跑得了，但方言换了：现在交给 ${shell.path}，模型按 PowerShell 写而不是 POSIX` +
+      `命令照样跑得了，但语法换了：现在交给 ${shell.path}，模型按 PowerShell 写而不是 POSIX` +
       '（2>/dev/null 要写成 2>$null）；落在 Windows PowerShell 5.1（System32 里那个）时，' +
       '&& 与 || 更是解析错误，只能用 ; 与 if ($?) { }。装上 bash 就切回 POSIX。',
   }
@@ -175,7 +175,7 @@ const DEPS: DepSpec[] = [
   {
     id: 'bash',
     label: 'bash',
-    impact: '模型执行命令（构建、测试、git 操作）：有 bash 才是 POSIX 方言',
+    impact: '模型执行命令（构建、测试、git 操作）：有 bash 才是 POSIX 语法',
     winget: 'Git.Git',
     // bash **不查 PATH**，理由见 `tools/sandbox.ts` 的 `findGitBash`：
     // 这台机器上 PATH 第一条是 WSL 启动器，命令会跑进另一个文件系统。

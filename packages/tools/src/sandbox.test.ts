@@ -107,7 +107,7 @@ describe('bash 路径解析', () => {
  * 三档 shell 探测。
  *
  * **本机只可能命中其中一档**（这台开发机装着 Git Bash，第一步就返回），
- * 所以顺序、每档的 argv 与方言提示全部靠注入来测——真机上跑不到的那两档，
+ * 所以顺序、每档的 argv 与语法提示全部靠注入来测——真机上跑不到的那两档，
  * 漏了也不会有任何东西红。
  */
 describe('命令 shell 三档探测', () => {
@@ -122,7 +122,7 @@ describe('命令 shell 三档探测', () => {
   test('有 bash 就用 bash，另外两档一眼都不看', () => {
     const shell = resolveCommandShell({
       bash: foundBash('C:/Program Files/Git/bin/bash.exe'),
-      // 三个都装着也一样：POSIX 是模型的默认方言，换 shell 一处，纠正它每一条命令是无穷次。
+      // 三个都装着也一样：POSIX 是模型的默认语法，换 shell 一处，纠正它每一条命令是无穷次。
       which: () => 'C:/Program Files/PowerShell/7/pwsh.exe',
       exists: () => true,
       env,
@@ -189,10 +189,10 @@ describe('命令 shell 三档探测', () => {
   /**
    * **非 bash 时第一句就得说「不是 bash」。**
    *
-   * `run_command` 这个名字不携带方言，模型的默认输出是 bash，所以方言信息只剩
+   * `run_command` 这个名字不携带语法，模型的默认输出是 bash，所以语法信息只剩
    * 描述这一个来源——而描述是从头读的。
    */
-  test('非 bash 的方言提示开头就否掉 bash', () => {
+  test('非 bash 的语法提示开头就否掉 bash', () => {
     for (const exists of [hasPwsh7, has51]) {
       const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists, env })?.hint ?? ''
       expect(hint.slice(0, 40)).toContain('没有 bash')
@@ -206,7 +206,7 @@ describe('命令 shell 三档探测', () => {
    * 不写清的表现不是「偶尔出错」，是模型按 PowerShell 7 的语法写，
    * 每条组合命令都在解析阶段整条废掉。
    */
-  test('5.1 的方言提示逐条列出 7 上有而它没有的东西', () => {
+  test('5.1 的语法提示逐条列出 7 上有而它没有的东西', () => {
     const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })?.hint
     expect(hint).toContain('5.1')
     for (const missing of ['&&', '||', '? :', '??', '?.', 'ConvertFrom-Json -AsHashtable']) {

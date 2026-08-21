@@ -30,7 +30,7 @@
  * 要么扫**整个原始串**（路径、凭证那几条）。所以 `ls && rm -rf ~` 里的第二段照样
  * 被抓到，不必先判「这是不是单条命令」。
  *
- * ## 两种方言都认，而且不看 process.platform
+ * ## 两种语法都认，而且不看 process.platform
  *
  * 外层 shell 是 bash 还是 PowerShell，由本机装了什么定（`tools/sandbox.ts` 的
  * `resolveCommandShell`）。这一层两种都认，三条理由各自独立成立：

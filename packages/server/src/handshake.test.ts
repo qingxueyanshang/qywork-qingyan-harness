@@ -160,7 +160,7 @@ describe('能力上报', () => {
       // 装上了就没什么可装的——按钮不该在已拥有的那一行出现。
       else expect(d.canInstall).toBe(false)
     }
-    // bash 不在这里：批 4 之后它缺了只是方言换成 PowerShell，只有一个 shell
+    // bash 不在这里：批 4 之后它缺了只是语法换成 PowerShell，只有一个 shell
     // 都没有时才是硬伤，而本机有（下一条锁的就是这个前提）。
     expect(env.filter((d) => d.required).map((d) => d.id)).toEqual(['git'])
   })
@@ -208,7 +208,7 @@ describe('能力上报', () => {
      * **原始失败形状**：只有 PowerShell 的机器上，模型明明有 `run_command`，
      * 设置页却报一条必需依赖缺失——用户于是去装一个他并不需要的东西。
      */
-    test('没 bash 但有 PowerShell —— 不报必需，且说清现在跑的是哪个、方言差在哪', () => {
+    test('没 bash 但有 PowerShell —— 不报必需，且说清现在跑的是哪个、语法差在哪', () => {
       const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
       const row = resolveBashRow({ bash: () => noBash, shell: () => shell(ps) })
       expect(row.required).toBe(false)
