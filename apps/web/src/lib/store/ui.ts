@@ -353,6 +353,23 @@ export const [workspace, setWorkspace] = createSignal<WorkspaceInfo | null>(null
  * 一处定义：文件视图的标题栏和右键菜单的「复制路径」必须拼出同一个字符串，
  * 各写一遍必然分叉。
  */
+/**
+ * 投递给输入框的一条起手指令。
+ *
+ * **一次性，不是第二份正文。** `Composer` 读到就写进自己的 `text`、聚焦、随即把这里
+ * 清空。正文的唯一权威始终是 `Composer` 内部那个 `text`——不要拿这个信号当
+ * 「输入框现在是什么」来读，它绝大多数时候是 `null`。
+ *
+ * 用途：设置页里那些「新增」按钮。建一条记忆 / 一个技能 / 一个定时任务，靠面板里填
+ * 几个格子填不全（技能要写正文和触发条件、插件要写代码），所以改成把话头递给模型。
+ */
+export const [composerSeed, setComposerSeed] = createSignal<string | null>(null)
+
+/** 关掉设置，把一条起手指令送进输入框。设置盖在输入框上面，不关就看不见。 */
+export function askInChat(prompt: string): void {
+  closeSettings()
+  setComposerSeed(prompt)
+}
 export function absPath(rel: string): string {
   const root = workspace()?.root ?? ''
   if (!root) return rel

@@ -33,29 +33,6 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
         runtimeOnly: '仅在应用运行时触发，关闭后不触发，错过的不补',
       })
     }
-
-    if (req.method === 'POST') {
-      const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
-      if (!body) return json({ error: 'bad request' }, 400)
-      const draft: Schedule = {
-        id: `sch_${crypto.randomUUID().slice(0, 12)}`,
-        workspaceRoot: d.workspaceRoot,
-        title: (body.title ?? '').trim(),
-        prompt: (body.prompt ?? '').trim(),
-        kind: body.kind === 'daily' ? 'daily' : 'interval',
-        enabled: body.enabled ?? true,
-        createdAt: now,
-        ...(body.kind === 'daily'
-          ? { atHour: body.atHour ?? 9, atMinute: body.atMinute ?? 0 }
-          : { everyMinutes: body.everyMinutes ?? 60 }),
-      }
-      const problems = diagnoseSchedule(draft)
-      if (problems.length) return json({ error: 'invalid', problems }, 422)
-      // 走 updateSchedules 而不是拿上面那份快照整表覆盖：从 loadSchedules()
-      // 到这里之间调度 tick 可能已经写过 lastRunAt，覆盖会把它抹掉。
-      await updateSchedules((cur) => [...cur, draft])
-      return json({ schedule: draft })
-    }
   }
 
   const schedMatch = /^\/api\/schedules\/([^/]+)$/.exec(p)

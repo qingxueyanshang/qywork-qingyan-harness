@@ -1,8 +1,8 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { loadMcp, loadMcpRaw, type Scope, saveMcpRaw } from '../../lib/store/index.ts'
+import { askInChat, loadMcp, loadMcpRaw, type Scope, saveMcpRaw } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
-import { EmptyBox, EntryCard, PageHead, Section } from './Page.tsx'
+import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs } from './Scope.tsx'
 
 /**
@@ -22,19 +22,24 @@ import { ScopeTabs } from './Scope.tsx'
  * 认不出属于哪一层的失败（整份文件解析失败之类）**两层都显示**：它没有层可归，
  * 藏在另一栏里等于没报。
  *
- * ## 原文编辑而不是表单
+ * ## 面板里只有原文，新增交给模型
  *
- * server 的形状按 transport 分好几种（stdio 要 command/args/env，http 要 url 和
- * headers）。做成表单要么盖不全，要么长成一个通用 JSON 编辑器的劣化版。
- * 这里给原文、存原文，解析结果在上面单独列。
+ * server 的形状按 transport 分两种（stdio 要 command/args/env/cwd，http 要 url 和
+ * headers），还要知道那个包的命令行怎么写。面板表单只盖得住最表层几格，剩下的
+ * 仍然得来这份原文里补。所以「新增」把话头递给模型（`askInChat`），由它写进
+ * `.agents/mcp.json`；这一页负责给出结果：连上了哪些、没连上哪些、原文长什么样。
  */
+
+/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+const NEW_SERVER =
+  '我们一起来接一个 MCP 服务吧。先说明 MCP 服务在 qywork 里怎么配置、连接，配置写在哪个文件；然后问我要接哪一个、走本机命令还是 HTTP。'
+
 export default function McpSettings() {
   const [data, { refetch }] = createResource(loadMcp)
   const [scope, setScope] = createSignal<Scope>('project')
   const [raw, { refetch: refetchRaw }] = createResource(scope, loadMcpRaw)
   const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
-  let editor!: HTMLTextAreaElement
 
   /**
    * 编辑框里的原文。草稿优先，没有草稿就取服务端那份。
@@ -75,46 +80,15 @@ export default function McpSettings() {
   }
 
   /**
-   * 「添加」= 往这一层的原文里插一条 server 骨架，再把光标送到编辑框。
-   *
-   * **解析不了就只报错、不动文本**。重置成模板会把用户敲了一半的内容抹掉，
-   * 而那正是他此刻正在修的东西。
-   */
-  const addServer = () => {
-    const body = text().trim()
-    let parsed: unknown = {}
-    if (body) {
-      try {
-        parsed = JSON.parse(body)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-        return
-      }
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      setError('配置最外层要是一个对象')
-      return
-    }
-    const root = parsed as { mcpServers?: Record<string, unknown> }
-    const servers = root.mcpServers ?? {}
-    let name = '新服务'
-    for (let n = 2; name in servers; n++) name = `新服务${n}`
-    servers[name] = { command: '', args: [] }
-    root.mcpServers = servers
-    setError(null)
-    setDraft(JSON.stringify(root, null, 2))
-    editor.focus()
-  }
-
-  /**
    * 「添加」按钮。**区头和空态框共用同一份。**
    *
-   * 它归「配置」那一段——server 就写在那份原文里。「已连上」空着的时候也放一颗：
-   * 那一刻用户正盯着空框，而唯一的出路在下面那段里，按下去光标就落进编辑框。
+   * 挂在第一段（「已连上」）的区头上，全页只此一颗：三段说的是同一批 server，
+   * 挂在「配置」那一段的话，列表一长它就被推到屏幕外，用户得往下滚才找得到。
+   * 空态框里再放一颗——那一刻用户正盯着空框，与其余几页同一个做法。
    */
   const AddButton = () => (
-    <button class="btn-ghost sm" type="button" onClick={addServer}>
-      添加
+    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SERVER)}>
+      新增
     </button>
   )
 
@@ -133,7 +107,6 @@ export default function McpSettings() {
   return (
     <>
       {/* 页头在 `Show` 外面：连一批 server 要几秒，这几秒里这一页也该有名字。 */}
-      <PageHead title="MCP" desc="MCP 服务为模型接入外部工具。改完重启应用后重新连接。" />
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
@@ -153,7 +126,7 @@ export default function McpSettings() {
 
             <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
-            <Section title="已连上">
+            <Section title="已连上" actions={<AddButton />}>
               <Show
                 when={servers().length > 0}
                 fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}
@@ -200,10 +173,9 @@ export default function McpSettings() {
               </Section>
             </Show>
 
-            <Section title="配置" actions={<AddButton />}>
+            <Section title="配置">
               <textarea
                 class="code-area"
-                ref={editor}
                 rows={12}
                 value={text()}
                 placeholder={'{\n  "mcpServers": {}\n}'}

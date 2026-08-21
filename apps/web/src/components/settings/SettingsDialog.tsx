@@ -4,7 +4,8 @@ import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
 import { GeneralSettings } from './GeneralSettings.tsx'
 import { ModelSettings } from './ModelSettings.tsx'
-import { SettingsNav } from './SettingsNav.tsx'
+import { PageHead } from './Page.tsx'
+import { pageMeta, SettingsNav } from './SettingsNav.tsx'
 
 // 内容类目各自带着自己的请求和列表，进设置才下载。
 // 只想换个主题的用户不该为「定时任务」付首屏成本。
@@ -37,9 +38,9 @@ const SchedulesPanel = lazy(() =>
  * 类目栏直接通到弹窗顶部。**弹窗的名字就是当前类目的名字**——横一条「设置」
  * 在最上面等于把同一件事说两遍，还把类目栏往下压了一格。
  *
- * **标题也不在这里画。** 标题、页级说明、右上角的动作按钮是同一块（`PageHead`），
- * 由每一页自己给：拆成「固定的标题 + 跟着滚的动作按钮」时，两者会在滚动之后
- * 错开一整段，而它们本来是一行。
+ * **标题在这里画，且在滚动区外面。** 放进滚动区的话，滚动条的轨道会从对话框顶边
+ * 一路盖到标题旁边——标题明明不动，旁边却有一条能拖的轨道。
+ * 名字与那句说明取自导航那张表（`pageMeta`），页面组件不再各画一份。
  *
  * ## 尺寸写死
  *
@@ -77,6 +78,8 @@ export function SettingsDialog() {
             >
               <IconX size={15} />
             </button>
+
+            <PageHead title={pageMeta(settingsPage()).label} desc={pageMeta(settingsPage()).desc} />
 
             {/* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，
                 而类目栏是用来来回切的。 */}

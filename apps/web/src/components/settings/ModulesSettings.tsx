@@ -3,7 +3,6 @@ import { loaded } from '../../lib/resource.ts'
 import { client, type SettingsPage, setSettingsPage, state } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
-import { PageHead } from './Page.tsx'
 
 /**
  * 这个 agent 由什么组成。
@@ -319,7 +318,6 @@ export function ModulesSettings() {
 
   return (
     <>
-      <PageHead title="模块" />
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}

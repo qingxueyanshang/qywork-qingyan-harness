@@ -23,7 +23,6 @@ import {
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { ModelLibrary } from './ModelLibrary.tsx'
-import { PageHead } from './Page.tsx'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -235,7 +234,6 @@ export function ModelSettings() {
 
   return (
     <>
-      <PageHead title="模型" />
       <Show
         when={config()}
         fallback={<LoadState error={configError()} onRetry={() => void reloadConfig()} />}

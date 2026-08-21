@@ -5,7 +5,6 @@ import { loaded } from '../../lib/resource.ts'
 import { compact } from '../../lib/step-view.ts'
 import { client } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
-import { PageHead } from './Page.tsx'
 
 /**
  * 用量账本。这台机器最近这些天的全部模型花费。
@@ -56,7 +55,6 @@ export default function UsageSettings() {
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
-      <PageHead title="用量" desc="含压缩摘要、权限分类器与 team 的花费，会话删除后账仍在。" />
 
       <div class="usage-bar">
         <div class="usage-chips">

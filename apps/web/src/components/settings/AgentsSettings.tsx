@@ -3,7 +3,7 @@ import { loaded } from '../../lib/resource.ts'
 import { loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
 import { IconPencil, IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
-import { EmptyBox, EntryCard, PageHead, PathLine, Section } from './Page.tsx'
+import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
 
 /**
  * Agent Team。
@@ -444,10 +444,6 @@ export default function AgentsSettings() {
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
-      <PageHead
-        title="Agent Team"
-        desc="按角色分工的编排，只属于当前项目。角色可以跑在本进程里，也可以是本机上另一个 CLI。"
-      />
       <Show
         when={loaded(team)}
         fallback={<LoadState error={team.error} onRetry={() => void refetchTeam()} />}
@@ -641,7 +637,7 @@ export default function AgentsSettings() {
 
             <Section
               title="后端"
-              desc="角色跑在哪里。内置 = 本进程的 agent；外部 CLI 跑在本机另一个进程里，凭证和沙箱是另一套。"
+              desc="角色的运行位置。内置为本进程内执行；外部 CLI 为本机独立进程，凭证与沙箱各自独立。"
               actions={<BackendActions />}
             >
               <Show

@@ -446,19 +446,6 @@ export function installPlugin(path: string): Promise<{ ok: boolean; id: string }
 export function uninstallPlugin(id: string): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
-/**
- * 新建一个插件骨架。
- *
- * 落下去的是**一份能跑起来的插件**（清单 + 一个 echo 工具的入口），不是一堆 TODO
- * ——那样用户拿到的是一个必然报错的东西，而报错的原因和他要写的业务毫无关系。
- */
-export function createPlugin(input: {
-  id: string
-  name: string
-  description: string
-}): Promise<{ ok: boolean; id: string; dir: string }> {
-  return scheduleWrite('/api/plugins/new', { method: 'POST', body: JSON.stringify(input) })
-}
 
 // ───────────────────────── 桌面外壳 ─────────────────────────
 
@@ -515,6 +502,11 @@ export function pickWorkspace(): Promise<string | null> {
   return tauriInvoke<string | null>('pick_workspace')
 }
 
+/** 打开系统文件选择器，可多选。取消返回空数组——取消不是错误。 */
+export function pickFiles(): Promise<string[]> {
+  return tauriInvoke<string[]>('pick_files')
+}
+
 /**
  * 把文件监听改到这个项目的目录上。
  *
@@ -562,9 +554,6 @@ async function scheduleWrite<T>(path: string, init: RequestInit): Promise<T> {
   }
 }
 
-export function createSchedule(s: Partial<ScheduleItem>): Promise<{ schedule: ScheduleItem }> {
-  return scheduleWrite('/api/schedules', { method: 'POST', body: JSON.stringify(s) })
-}
 export function updateSchedule(
   id: string,
   s: Partial<ScheduleItem>,
@@ -687,20 +676,6 @@ export interface SkillMeta {
 export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }> {
   return client.api<{ dirs: ScopeDir[]; skills: SkillMeta[] }>('/api/skills')
 }
-/**
- * 建一个技能。
- *
- * `name` 是模型在索引里看到的那个词（中文、空格都行），落盘的目录名由服务端
- * 安全化后决定——**两者不必相同**，所以回执里带回真正的目录名。
- */
-export function createSkill(input: {
-  scope: Scope
-  name: string
-  description: string
-  body: string
-}): Promise<{ ok: boolean; name: string; dir: string }> {
-  return scheduleWrite('/api/skills', { method: 'POST', body: JSON.stringify(input) })
-}
 /** 把本机上一个已经存在的技能目录整个拷进某一层。 */
 export function importSkill(
   scope: Scope,
@@ -799,22 +774,53 @@ export function setExtraEnabled(
 // ───────────────────────── 附件 ─────────────────────────
 
 /**
- * 上传一个附件，拿到可直接随消息发出去的 `Attachment`。
+ * 把字节传上去，拿到可直接随消息发出去的 `Attachment`。
+ *
+ * **只有拿不到源路径时才走这里**——剪贴板里只有位图，或浏览器不给绝对路径。
+ * 桌面端拖入和原生选择器给的是源文件路径，那条路在 `Composer` 里就地组装，
+ * 一个字节都不搬。
  *
  * 走原始字节而不是 base64 JSON：base64 会让传输体积涨三分之一，
  * 而这是本机回环，没有任何理由为它多付这一份。
+ *
+ * 带上会话 id：附件落在 `~/.qywork/attachments/<会话id>/`，删会话时整个目录一起删。
  */
-export async function uploadAttachment(file: File): Promise<Attachment> {
-  const res = await client.api<{ attachment: Attachment }>('/api/attachments', {
-    method: 'POST',
-    headers: {
-      'content-type': file.type || 'application/octet-stream',
-      // 文件名可能带中文与空格，必须编码后再进 header。
-      'x-attachment-name': encodeURIComponent(file.name),
+export async function uploadAttachment(file: File, conversationId: string): Promise<Attachment> {
+  const res = await client.api<{ attachment: Attachment }>(
+    `/api/attachments?conversation=${encodeURIComponent(conversationId)}`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'application/octet-stream',
+        // 文件名可能带中文与空格，必须编码后再进 header。
+        'x-attachment-name': encodeURIComponent(file.name),
+      },
+      body: await file.arrayBuffer(),
     },
-    body: await file.arrayBuffer(),
-  })
+  )
   return res.attachment
+}
+
+/**
+ * 按路径取附件的原始字节，交给界面显示。
+ *
+ * 回的是 blob URL，**用完必须 `URL.revokeObjectURL`**，否则这一份解码后的位图
+ * 会一直占着内存直到整页刷新。
+ *
+ * 为什么绕一圈而不是把地址直接给 `<img src>`：`<img>` 带不了 Authorization 头，
+ * 而把令牌塞进 URL 会跟着日志一起留下来。
+ *
+ * 文件不存在、超过预览上限都回 null——两者对界面是同一件事（显示不出来，
+ * 退回文件名），不值得分成两种。
+ */
+export async function attachmentBlobUrl(path: string): Promise<string | null> {
+  try {
+    const res = await client.raw(`/api/attachments/raw?path=${encodeURIComponent(path)}`)
+    if (!res.ok) return null
+    return URL.createObjectURL(await res.blob())
+  } catch {
+    return null
+  }
 }
 
 // ───────────────────────── 窗口控制 ─────────────────────────

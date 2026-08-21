@@ -57,7 +57,7 @@
    不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。
    右内距给关闭键让位：它是绝对定位钉在右上角的，不占任何行。 */
 .settings-inner {
-  padding: var(--s-4) var(--s-8) var(--s-8) var(--s-6);
+  padding: 0 var(--s-8) var(--s-8) var(--s-6);
   display: flex;
   flex-direction: column;
   gap: var(--s-6);
@@ -807,10 +807,13 @@ textarea.code-area::placeholder {
  * 页头 + 作用域标签页 + 分区 + 条目卡 + 空态框。记忆 / 技能 / MCP / 插件 /
  * Agent Team 五页共用这一套——它们说的是同一件事的五个实例。 */
 
+/* 页头在滚动区**外面**（`.settings-pane` 的第一个子节点），所以它天然不动，
+   不需要 `sticky`，滚动条的轨道也不会盖到它旁边。
+   左右内边距与 `.settings-inner` 同值，标题才和下面的内容落在同一条竖线上。
+   不画分隔线：它的底色和内容卡只差一档，一条线在这里比它隔开的东西还显眼。 */
 .page-head {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex: none;
+  padding: var(--s-2) var(--s-8) var(--s-1) var(--s-6);
 }
 /* 标题和右上角动作同一行。动作靠右，标题短的时候不要让它跟着跑到中间去。 */
 .page-head-row {
@@ -830,8 +833,18 @@ textarea.code-area::placeholder {
   align-items: center;
   gap: var(--s-2);
 }
-/* 页级说明只写边界（B7）。宽度不设上限——对话框那一档已经定死了。 */
-.page-desc,
+/* 页级说明跟在标题右边，压一档灰。**单行，放不下自己截断**——
+   它和标题在同一行，换行会把钉住的页头整体抬高一档。 */
+.page-desc {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+/* 段级说明仍是独立一行：它在段标题下面，不和任何东西抢那一行。 */
 .section-desc {
   margin: 0;
   color: var(--text-secondary);
@@ -1184,9 +1197,13 @@ textarea.code-area::placeholder {
   font-variant-numeric: tabular-nums;
 }
 
-/* 窄窗口下表格自己横向滚，不把整页撑宽。 */
+/* 表的外框。与设置页其他成组内容（`.model-list` / `.lib-card`）同一张配方：
+   细边 + 大圆角 + 自身裁切，表头那块底色才会跟着圆角收口。
+   窄窗口下表格自己横向滚，不把整页撑宽。 */
 .usage-scroll {
   overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
 }
 .usage-table {
   width: 100%;

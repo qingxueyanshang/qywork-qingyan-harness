@@ -18,51 +18,10 @@
  * 只回成功的会让「我明明放进去了怎么没有」无从查起。
  */
 
-import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { globalPluginsDir } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
-
-/**
- * 「新建」落下去的那份骨架。
- *
- * **它是能跑的**：装完重启就有一个 `<id>__echo` 工具，调一次能看到回声。
- * 落一堆 `TODO` 下去的话，用户拿到的是一个必然报错的插件，而报错的原因
- * （握手没回 `ready`）和他要写的业务毫无关系。
- *
- * 协议就是 `docs/plugins.md` 写的那一份：一行一个 JSON，`ready` 之后收 `call`。
- */
-const SKELETON = [
-  "const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n')",
-  '',
-  "let buf = ''",
-  "process.stdin.setEncoding('utf8')",
-  "process.stdin.on('data', (chunk) => {",
-  '  buf += chunk',
-  '  let i',
-  "  while ((i = buf.indexOf('\\n')) >= 0) {",
-  '    const line = buf.slice(0, i)',
-  '    buf = buf.slice(i + 1)',
-  '    if (!line.trim()) continue',
-  '    let msg',
-  '    try {',
-  '      msg = JSON.parse(line)',
-  '    } catch {',
-  '      continue',
-  '    }',
-  "    if (msg.type !== 'call') continue",
-  '    // 换成你自己的实现。宿主能力走 host(...)，见 docs/plugins.md。',
-  '    send({',
-  '      id: msg.id,',
-  '      ok: true,',
-  "      result: { status: 'success', message: String(msg.params?.text ?? '') },",
-  '    })',
-  '  }',
-  '})',
-  '',
-  "send({ type: 'ready' })",
-  '',
-].join('\n')
 
 export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
@@ -140,70 +99,6 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     await mkdir(dirname(dest), { recursive: true })
     await cp(src, dest, { recursive: true })
     return json({ ok: true, id })
-  }
-
-  /**
-   * 新建一个插件骨架。
-   *
-   * **落的是一份能跑起来的插件**，不是一堆 TODO：清单 + 一个 echo 工具的入口。
-   * 用户拿到之后改的是业务，不用先跟协议较劲。
-   *
-   * id 是命名空间前缀，工具名按它拼（`demo.echo` → `demo_echo__echo`），
-   * 所以它和目录名一样要挡住分隔符。
-   */
-  if (p === '/api/plugins/new' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as {
-      id?: string
-      name?: string
-      description?: string
-    } | null
-    const id = body?.id?.trim() ?? ''
-    if (!id) return json({ error: 'bad request', message: '缺少 id' }, 400)
-    if (!/^[a-zA-Z0-9._-]+$/.test(id)) {
-      return json({ error: 'invalid', message: 'id 只能用字母、数字、点、下划线、连字符' }, 422)
-    }
-
-    const dest = join(globalPluginsDir(), id)
-    // 已经装过同 id 的就拒绝，而不是静默覆盖：覆盖会把用户写过的代码抹掉。
-    if (await stat(dest).catch(() => null)) {
-      return json({ error: 'conflict', message: `已经有一个 ${id} 了，先卸载或换个 id` }, 409)
-    }
-    await mkdir(dest, { recursive: true })
-    const manifest = {
-      manifestVersion: 1,
-      id,
-      name: body?.name?.trim() || id,
-      version: '0.1.0',
-      description: body?.description?.trim() || '',
-      main: 'index.mjs',
-      // 骨架工具声明 `read`，清单里就必须有 `workspace:read`——`parseManifest`
-      // 把这一对当硬约束（工具能干的事和插件声明的权限必须自洽），少一边整个插件
-      // 加载失败。骨架落地就跑不起来的话，用户看到的第一条信息是一个和他要写的
-      // 业务毫无关系的报错。
-      permissions: ['workspace:read'],
-      contributes: {
-        tools: [
-          {
-            name: 'echo',
-            description: '把参数原样返回。换成你自己的工具。',
-            parameters: {
-              type: 'object',
-              properties: { text: { type: 'string' } },
-              required: ['text'],
-              additionalProperties: false,
-            },
-            permissionEffect: 'read',
-          },
-        ],
-      },
-    }
-    await writeFile(
-      join(dest, 'qywork.plugin.json'),
-      `${JSON.stringify(manifest, null, 2)}\n`,
-      'utf8',
-    )
-    await writeFile(join(dest, 'index.mjs'), SKELETON, 'utf8')
-    return json({ ok: true, id, dir: dest })
   }
 
   const pluginMatch = /^\/api\/plugins\/([^/]+)$/.exec(p)
