@@ -22,7 +22,7 @@ import type {
 } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
-import { createPacer } from '../stream-pace.ts'
+import { createFramer, createPacer } from '../stream-pace.ts'
 import {
   markBusy,
   type PermissionAsk,
@@ -77,14 +77,31 @@ function writeTail(stepId: string, chunk: string): void {
   )
 }
 
-const pacer = createPacer({
-  write: writeTail,
-  schedule: (fn, ms) => {
-    const t = setInterval(fn, ms)
-    return () => clearInterval(t)
-  },
-  now: () => Date.now(),
-})
+const schedule = (fn: () => void, ms: number) => {
+  const t = setInterval(fn, ms)
+  return () => clearInterval(t)
+}
+
+const pacer = createPacer({ write: writeTail, schedule, now: () => Date.now() })
+
+/**
+ * 工具中途输出落进那张卡片。
+ *
+ * **只留尾部**：一次构建可能吐几万行，全存会把内存和渲染都拖垮。
+ * 截断发生在合帧之后——按到达逐段截等于把同一份文本反复重排一遍。
+ */
+function appendStdout(stepId: string, chunk: string): void {
+  setState(
+    produce((s) => {
+      const item = s.transcript.find((t) => t.id === stepId)
+      if (!item) return
+      const next = (item.stdout ?? '') + chunk
+      item.stdout = next.length > 8000 ? next.slice(-8000) : next
+    }),
+  )
+}
+
+const toolFrames = createFramer({ write: appendStdout, schedule })
 
 /**
  * 不落 transcript 的事件——它们不该冲正文缓冲。
@@ -101,6 +118,7 @@ const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
 /** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
 export function discardPace(): void {
   pacer.discard()
+  toolFrames.discard()
 }
 
 /**
@@ -164,9 +182,18 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    */
   setState('lastEventAt', Date.now())
 
-  // 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
-  // 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
-  if (ev.type !== 'text.delta' && !OFF_TRANSCRIPT.has(ev.type)) pacer.flush()
+  /*
+   * 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
+   * 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
+   *
+   * **两种增量事件自己不冲**：正文由节拍器放，工具输出由合帧器放，它们冲自己等于
+   * 把那一层直接关掉。`tool.delta` 尤其不能冲正文——它按 stepId 改的是已经存在的
+   * 那张卡片，不动 transcript 末项，没有顺序风险，而它一秒有几百条。
+   */
+  if (ev.type !== 'text.delta' && ev.type !== 'tool.delta' && !OFF_TRANSCRIPT.has(ev.type)) {
+    pacer.flush()
+    toolFrames.flush()
+  }
 
   switch (ev.type) {
     case 'team.member':
@@ -268,15 +295,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       return
 
     case 'tool.delta':
-      setState(
-        produce((s) => {
-          const item = s.transcript.find((t) => t.id === ev.stepId)
-          if (!item) return
-          // 只留尾部：一次构建可能吐几万行，全存会把内存和渲染都拖垮。
-          const next = (item.stdout ?? '') + ev.delta
-          item.stdout = next.length > 8000 ? next.slice(-8000) : next
-        }),
-      )
+      toolFrames.push(ev.stepId, ev.delta)
       return
 
     case 'tool.finished':

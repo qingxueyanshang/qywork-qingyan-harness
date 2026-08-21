@@ -910,11 +910,32 @@ describe('工具卡按 stepId 认领实时输出', () => {
       event: { type: 'tool.delta', runId: 'run_1', stepId, channel: 'stdout', delta: text },
     }) as never
 
+  const finished = (stepId: string) =>
+    ({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'tool.finished',
+        runId: 'run_1',
+        stepId,
+        toolCallId: 'call_1',
+        status: 'success',
+        outcome: { kind: 'run', status: 'success' },
+        durationMs: 1,
+      },
+    }) as never
+
+  /**
+   * 中途输出是合帧落地的（同一档里的若干段并成一次），所以这里用一个会冲缓冲的
+   * 事件来断言，而不是靠等定时器——**任何要读 transcript 的事件之前一定先落地**。
+   */
   test('落到 tool.started 开出来的那张卡上', () => {
     setState({ activeConversation: 'cv_now', transcript: [] })
     applyEvent(started('st_tool_1'))
     applyEvent(delta('st_tool_1', '第一行\n'))
     applyEvent(delta('st_tool_1', '第二行\n'))
+    applyEvent(finished('st_tool_1'))
     expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
   })
 
@@ -926,6 +947,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
     setState({ activeConversation: 'cv_now', transcript: [] })
     applyEvent(started('st_tool_1'))
     applyEvent(delta('', '认不出归属的一行\n'))
+    applyEvent(finished('st_tool_1'))
     expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBeUndefined()
   })
 })
