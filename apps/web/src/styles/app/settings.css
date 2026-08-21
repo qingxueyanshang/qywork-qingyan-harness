@@ -756,18 +756,8 @@ textarea.code-area::placeholder {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.lib-table .act {
-  width: 1%;
-  white-space: nowrap;
-  text-align: right;
-}
 .lib-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
-}
-.lib-name {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
 }
 /* 模型 id 不断行。**不要用 `word-break: break-all`**：它会在词中间断
    （`deepseek-v4-flash` → `deepseek-v4-f` / `lash`），而这一列的其余各列都是
@@ -779,79 +769,12 @@ textarea.code-area::placeholder {
   font-family: var(--font-mono);
   white-space: nowrap;
 }
-.lib-tag {
-  padding: 1px 6px;
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  color: var(--accent);
-  font-size: var(--fs-xs);
-}
 /* 「上面那个是标准价」这类话是能力边界，占满一整行、不降对比度。
    压成小标签的话它和旁边的规格一样容易被略过，而略过它的代价是账单上差两倍。 */
 .lib-note td {
   padding-top: 0;
   color: var(--warning);
   font-size: var(--fs-xs);
-}
-
-/* 改一条参数。留空 = 照内置值，所以每格都可以是空的。 */
-.lib-form-row td {
-  padding: var(--s-3);
-  background: var(--bg-inset);
-}
-.lib-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-2) var(--s-3);
-  align-items: flex-end;
-}
-.lib-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex: 0 0 132px;
-}
-/* id 和显示名是自由文本，给它们整行里更宽的一格。 */
-.lib-field.wide {
-  flex: 1 1 220px;
-}
-/* 勾选框那一格：标签在右、与框同一基线，不走上面那套「标签在上」的竖排。 */
-.lib-field.lib-check {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--s-2);
-  flex: 0 0 auto;
-  align-self: end;
-  padding-bottom: 5px;
-}
-.lib-field.lib-check input {
-  width: auto;
-  flex: 0 0 auto;
-}
-.lib-field span {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-}
-.lib-field input,
-.lib-field select {
-  min-width: 0;
-  padding: 4px var(--s-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  background: var(--bg-app);
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-  font-family: inherit;
-}
-.lib-field input:focus,
-.lib-field select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.lib-form-actions {
-  display: flex;
-  gap: var(--s-2);
-  margin-left: auto;
 }
 
 /* 探测结论。

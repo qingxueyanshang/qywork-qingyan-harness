@@ -61,26 +61,17 @@ export interface RedactedProvider {
  * 不认识的键。那条语义由 `server/src/api/config.test.ts`「客户端不认识的顶层
  * 字段不会被抹掉」钉住——改这里之前先看那条。
  */
-/** 用户在模型库里改过的模型参数。键是模型 id——参数是模型的属性，与接口无关。 */
-export interface CatalogEntry {
-  displayName?: string
-  vendor?: string
-  contextWindow?: number
-  maxOutputTokens?: number
-  /** 不选档时发不发思考。 */
-  thinksByDefault?: boolean
-  input?: number
-  output?: number
-  cacheRead?: number
-  cacheWrite?: number
-  currency?: 'USD' | 'CNY'
-}
-
 export interface RedactedConfig {
   active: ModelRef
   providers: Record<string, RedactedProvider>
-  /** 模型库里改过的那些条目。没改过的不在这里——它们的真源是内置目录。 */
-  catalog?: Record<string, CatalogEntry>
+  /**
+   * 模型参数的覆盖，键是「模型 id | 协议」。
+   *
+   * **模型库那张表只读**，界面唯一往这里写的是「校准」——它把探测到的能力
+   * 原样合进对应那一格。字段形状的真源在服务端（`StoredCatalogEntry`），
+   * 这里不复述，只保证整份 PUT 时原样带回去，否则会被抹掉。
+   */
+  catalog?: Record<string, Record<string, unknown>>
   // 思考档位**不在顶层**：它是「接口 × 模型」那一格的属性，见 `RedactedModel.effort`。
   mode?: PermissionMode
   additionalDirectories?: string[]
@@ -196,8 +187,6 @@ export interface ProviderModels {
  * 库和接口是两件事：库回答「这个模型多大、多贵、吃哪几档思考」，接口回答
  * 「用谁的端点和哪把 key」。所以这个类型里一个接口字段都没有。
  *
- * `source` 分 `seed`（源码里的内置值）和 `user`（改过或自己加的），
- * 界面据此决定能不能「还原」。
  */
 export interface LibraryModel {
   id: string
@@ -214,7 +203,6 @@ export interface LibraryModel {
   effortLevels: EffortLevel[]
   /** 不选强度时会不会思考。 */
   thinksByDefault: boolean
-  source: 'seed' | 'user'
   /**
    * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。
    * 它是能力边界，必须显示——只画一个数字的话，用户对着账单会发现对不上，

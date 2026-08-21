@@ -1,10 +1,5 @@
-import { createSignal, For, Show } from 'solid-js'
-import {
-  type CatalogEntry,
-  explainApiError,
-  type LibraryModel,
-  type LibraryVendor,
-} from '../../lib/store/index.ts'
+import { For, Show } from 'solid-js'
+import { explainApiError, type LibraryVendor } from '../../lib/store/index.ts'
 
 /**
  * 模型库 —— **一张模型参数表**。
@@ -32,42 +27,21 @@ import {
  * flex 竖排，于是每个厂商块被 flex 压缩、内容被裁掉——界面上是「每家只剩一行，
  * 后面几家整个是空的」。设置面板本来就有一条滚动轴，这里再加一条就是两条。
  *
- * ## 为什么能改
+ * ## 只读
  *
- * 内置值是源码里的一份 seed，其中几家的窗口和价格没有逐条实测
- * （`ai/src/catalog.ts` 里写明了）。厂商调一次价，目录就开始说谎，而说谎的出口
- * 只有账单上那个数。改过的条目标出来，可以还原回内置值。
+ * 这些参数由源码里的目录维护，界面只显示。**不给编辑入口**：一条参数填错的
+ * 后果是账单对不上或请求发不出去，而用户手里没有判据——窗口和上限要查厂商文档，
+ * 价格要对当期价目表。目录里没有的模型同样不在这里加：加一条只影响它自己的
+ * 计价显示，真正决定能不能用的是接口下挂的那个 id。
  *
- * 目录里根本没有的模型也能自己加一条——那是「未收录模型计价按 0 算、
- * 用量报 $0」唯一的出口。
+ * 需要临时纠正某一条时，改 `config.json` 的 `catalog`，或跑 `qy probe --save`。
  */
 export function ModelLibrary(props: {
   vendors: LibraryVendor[]
   loading: boolean
   /** 取不回来时的原因。不写的话这一节只是空着，看起来像「内置库里什么都没有」。 */
   error: unknown
-  /** 写一条参数。传 null = 删掉这条覆盖，还原成内置值。 */
-  onSave: (id: string, entry: CatalogEntry | null) => void
 }) {
-  /** 正在改哪一条模型。同一时刻只展开一条：两条一起改会把表撑得很高。 */
-  const [editing, setEditing] = createSignal<string | null>(null)
-  /** 正在往哪个厂商底下加。与 `editing` 互斥，同上。 */
-  const [adding, setAdding] = createSignal<string | null>(null)
-
-  const openEdit = (id: string) => {
-    setAdding(null)
-    setEditing(editing() === id ? null : id)
-  }
-  const openAdd = (vendor: string) => {
-    setEditing(null)
-    setAdding(adding() === vendor ? null : vendor)
-  }
-  const save = (id: string, entry: CatalogEntry | null) => {
-    props.onSave(id, entry)
-    setEditing(null)
-    setAdding(null)
-  }
-
   return (
     <Show
       when={!props.loading && !props.error}
@@ -100,26 +74,9 @@ export function ModelLibrary(props: {
                       <th class="num">缓存读取</th>
                       <th class="num">缓存写入</th>
                       <th>思考强度</th>
-                      <th class="act">
-                        <button class="btn-ghost sm" type="button" onClick={() => openAdd(v.id)}>
-                          添加模型
-                        </button>
-                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    <Show when={adding() === v.id}>
-                      <tr class="lib-form-row">
-                        <td colSpan={9}>
-                          <ModelForm
-                            idEditable
-                            vendor={v.id}
-                            onCancel={() => setAdding(null)}
-                            onSave={save}
-                          />
-                        </td>
-                      </tr>
-                    </Show>
                     <For each={v.models}>
                       {(m) => (
                         <>
@@ -127,12 +84,7 @@ export function ModelLibrary(props: {
                             {/* 只给 id：显示名与它是同一件事写两遍（`DeepSeek V4 Flash`
                                 对 `deepseek-v4-flash`），而 id 才是配置里真正要填的那个词。 */}
                             <td>
-                              <div class="lib-name">
-                                <code class="lib-id">{m.id}</code>
-                                <Show when={m.source === 'user'}>
-                                  <span class="lib-tag">已修改</span>
-                                </Show>
-                              </div>
+                              <code class="lib-id">{m.id}</code>
                             </td>
                             <td class="num">{compact(m.contextWindow)}</td>
                             <td class="num">{compact(m.maxOutputTokens)}</td>
@@ -149,36 +101,13 @@ export function ModelLibrary(props: {
                                   ? '默认开启'
                                   : '不支持'}
                             </td>
-                            <td class="act">
-                              <button
-                                class="btn-ghost sm"
-                                type="button"
-                                onClick={() => openEdit(m.id)}
-                              >
-                                修改
-                              </button>
-                            </td>
                           </tr>
 
                           {/* 分时段折扣、长上下文换档：上面那个价是标准价，这句必须显示。
                               只画一个数字的话，用户对着账单会发现对不上，而差价是两倍。 */}
                           <Show when={m.priceNotes?.length}>
                             <tr class="lib-note">
-                              <td colSpan={9}>{m.priceNotes?.join('；')}</td>
-                            </tr>
-                          </Show>
-
-                          <Show when={editing() === m.id}>
-                            <tr class="lib-form-row">
-                              <td colSpan={9}>
-                                <ModelForm
-                                  model={m}
-                                  vendor={v.id}
-                                  onCancel={() => setEditing(null)}
-                                  onSave={save}
-                                  onRestore={() => save(m.id, null)}
-                                />
-                              </td>
+                              <td colSpan={8}>{m.priceNotes?.join('；')}</td>
                             </tr>
                           </Show>
                         </>
@@ -192,178 +121,6 @@ export function ModelLibrary(props: {
         </For>
       </div>
     </Show>
-  )
-}
-
-/**
- * 改一条参数，或加一条。
- *
- * **留空 = 照内置值**，不是 0。所以空格子一律不写进覆盖里——写了 0 的话，
- * 窗口会变成 0、价格会变成免费，而这两个数没有任何地方会报错。
- */
-function ModelForm(props: {
-  model?: LibraryModel
-  vendor: string
-  /** 加新条目时 id 可编辑；改已有条目时 id 就是主键，不许改。 */
-  idEditable?: boolean
-  onCancel: () => void
-  onSave: (id: string, entry: CatalogEntry) => void
-  /** 丢掉这条覆盖，退回内置值。只有改过的条目给。 */
-  onRestore?: () => void
-}) {
-  let idRef: HTMLInputElement | undefined
-  let nameRef: HTMLInputElement | undefined
-  let ctxRef: HTMLInputElement | undefined
-  let outRef: HTMLInputElement | undefined
-  let inPriceRef: HTMLInputElement | undefined
-  let outPriceRef: HTMLInputElement | undefined
-  let hitRef: HTMLInputElement | undefined
-  let writeRef: HTMLInputElement | undefined
-  let curRef: HTMLSelectElement | undefined
-  let defaultThinkRef: HTMLInputElement | undefined
-
-  /** 留空 = 照内置值。0 在窗口、上限、单价上都不是有意义的值，一律当没填。 */
-  const num = (el: HTMLInputElement | undefined) => {
-    const v = el?.value.trim()
-    if (!v) return undefined
-    const n = Number(v)
-    return Number.isFinite(n) && n > 0 ? n : undefined
-  }
-
-  /** 缓存两档的 0 是真值（DeepSeek 写入不收费），只有留空才算没填。 */
-  const zeroOk = (el: HTMLInputElement | undefined) => {
-    const v = el?.value.trim()
-    if (!v) return undefined
-    const n = Number(v)
-    return Number.isFinite(n) && n >= 0 ? n : undefined
-  }
-
-  const submit = () => {
-    const id = (props.idEditable ? idRef?.value.trim() : props.model?.id) ?? ''
-    if (!id) return
-    const name = nameRef?.value.trim()
-    const ctx = num(ctxRef)
-    const out = num(outRef)
-    const inPrice = num(inPriceRef)
-    const outPrice = num(outPriceRef)
-    // 缓存两档允许填 0：DeepSeek 的写入就是不收费，那是个真值不是空值。
-    const hit = zeroOk(hitRef)
-    const write = zeroOk(writeRef)
-    // 空格子整个不写进去。`exactOptionalPropertyTypes` 开着，
-    // 写 `x: undefined` 和不写这个键不是一回事，而落盘的是后者。
-    props.onSave(id, {
-      ...(name ? { displayName: name } : {}),
-      ...(props.vendor ? { vendor: props.vendor } : {}),
-      ...(ctx !== undefined ? { contextWindow: ctx } : {}),
-      ...(out !== undefined ? { maxOutputTokens: out } : {}),
-      ...(inPrice !== undefined ? { input: inPrice } : {}),
-      ...(outPrice !== undefined ? { output: outPrice } : {}),
-      ...(hit !== undefined ? { cacheRead: hit } : {}),
-      ...(write !== undefined ? { cacheWrite: write } : {}),
-      // 勾选框有明确的两态，只在与内置值不同时才写进覆盖，
-      // 否则一条没动过的记录也会被标成 user。
-      ...(defaultThinkRef && defaultThinkRef.checked !== props.model?.thinksByDefault
-        ? { thinksByDefault: defaultThinkRef.checked }
-        : {}),
-      currency: curRef?.value === 'CNY' ? 'CNY' : 'USD',
-    })
-  }
-
-  return (
-    <div class="lib-form">
-      <Show when={props.idEditable}>
-        <label class="lib-field wide">
-          <span>模型 ID</span>
-          <input ref={idRef} type="text" placeholder="调用时用的那个名字" />
-        </label>
-      </Show>
-      <label class="lib-field wide">
-        <span>显示名</span>
-        <input ref={nameRef} type="text" value={props.model?.label ?? ''} />
-      </label>
-      <label class="lib-field">
-        <span>上下文窗口</span>
-        <input ref={ctxRef} type="number" min="1" value={props.model?.contextWindow ?? ''} />
-      </label>
-      <label class="lib-field">
-        <span>最大输出</span>
-        <input ref={outRef} type="number" min="1" value={props.model?.maxOutputTokens ?? ''} />
-      </label>
-      <label class="lib-field lib-check">
-        <input
-          ref={defaultThinkRef}
-          type="checkbox"
-          checked={props.model?.thinksByDefault ?? false}
-        />
-        <span>未选强度时也思考</span>
-      </label>
-      <label class="lib-field">
-        <span>输入价</span>
-        <input
-          ref={inPriceRef}
-          type="number"
-          min="0"
-          step="0.001"
-          value={props.model?.input ?? ''}
-        />
-      </label>
-      <label class="lib-field">
-        <span>输出价</span>
-        <input
-          ref={outPriceRef}
-          type="number"
-          min="0"
-          step="0.001"
-          value={props.model?.output ?? ''}
-        />
-      </label>
-      <label class="lib-field">
-        <span>缓存读取</span>
-        <input
-          ref={hitRef}
-          type="number"
-          min="0"
-          step="0.001"
-          value={props.model?.cacheRead ?? ''}
-        />
-      </label>
-      <label class="lib-field">
-        <span>缓存写入</span>
-        <input
-          ref={writeRef}
-          type="number"
-          min="0"
-          step="0.001"
-          value={props.model?.cacheWrite ?? ''}
-        />
-      </label>
-      <label class="lib-field">
-        <span>币种</span>
-        <select ref={curRef}>
-          <option value="USD" selected={props.model?.currency !== 'CNY'}>
-            USD
-          </option>
-          <option value="CNY" selected={props.model?.currency === 'CNY'}>
-            CNY
-          </option>
-        </select>
-      </label>
-      <div class="lib-form-actions">
-        {/* 还原只对改过的条目有意义，所以放在改的地方，而不是让表格里那些行
-            比别行多出一个按钮——一行两个动作，读起来就是「这行有什么不一样」。 */}
-        <Show when={props.model?.source === 'user'}>
-          <button class="btn-ghost sm" type="button" onClick={() => props.onRestore?.()}>
-            恢复默认
-          </button>
-        </Show>
-        <button class="btn-ghost sm" type="button" onClick={props.onCancel}>
-          取消
-        </button>
-        <button class="btn-primary sm" type="button" onClick={submit}>
-          保存
-        </button>
-      </div>
-    </div>
   )
 }
 
