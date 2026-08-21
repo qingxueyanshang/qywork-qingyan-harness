@@ -12,6 +12,12 @@
  * `.agents/` 在写路径上是受保护目录（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。
  * 这条不是解释，是用户据以决定要不要在这里加 server 的事实（B7 的例外条款）。
  *
+ * ## 导入一份现成的配置
+ *
+ * `/api/mcp/import` 读本机上一个文件，把里面的 server 并进本层。用户多半是从别的
+ * MCP 客户端整段拷过来的，让他先另存成文件再指过来，比在编辑框里手拼安全：
+ * 同名冲突这里能报出来，手拼时是静默覆盖。
+ *
  * ## 原文编辑而不是表单
  *
  * server 的配置形状按 transport 分好几种（stdio 要 command/args/env，http 要 url
@@ -21,6 +27,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { parseMcpConfig } from '@qywork/mcp'
 import { loadScopedMcpConfig, MCP_CONFIG, MCP_FILE } from '@qywork/runtime'
 import { type Scope, scopeDir, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
@@ -96,6 +103,81 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
       // 改完要重连才生效。**说出来**——不说的话用户会以为存了就有了。
       return json({ ok: true, path: file, restartRequired: true })
     }
+  }
+
+  /**
+   * 从本机上一份现成的配置里把 server 并进来。
+   *
+   * 用户多半是从别的 MCP 客户端整段拷过来的，那份文件的键名可能是 `servers`
+   * 也可能是 `mcpServers`——`parseMcpConfig` 两个都认，所以这里读它的解析结果，
+   * 不自己再认一遍键名。
+   *
+   * **同名不覆盖**：本层已经有同名 server 时整个请求回 409 并把名字列出来，
+   * 而不是挑一个赢家。覆盖会把用户自己配好的那份直接抹掉，且没有任何提示。
+   *
+   * **写回时用本层已经在用的那个键**：解析器同时认两个键但**只取一份**，
+   * 且 `servers` 优先。本层原文用 `servers` 而这里往 `mcpServers` 里写的话，
+   * 并进来的这几条会被整份忽略，界面上什么都不报。
+   */
+  if (p === '/api/mcp/import' && req.method === 'POST') {
+    const scope = writableScope(url.searchParams.get('scope'))
+    if (!scope) return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
+    const dir = scopeDir(scopeRoots(d.workspaceRoot), scope, '')
+    if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
+
+    const body = (await req.json().catch(() => null)) as { path?: string } | null
+    const src = body?.path?.trim()
+    if (!src) return json({ error: 'bad request', message: '缺少文件路径' }, 400)
+
+    const raw = await readFile(src, 'utf8').catch(() => null)
+    if (raw === null) return json({ error: 'invalid', message: `读不到这个文件：${src}` }, 422)
+    const incoming = parseMcpConfig(raw)
+    const names = Object.keys(incoming.servers)
+    // 一条都解析不出来就拒绝：指错文件会「导入成功」然后列表一条不变，
+    // 而用户完全无从知道为什么。`error` 里装的是被忽略的那几条的原因。
+    if (names.length === 0) {
+      return json(
+        { error: 'invalid', message: incoming.error ?? '这个文件里没有能用的 MCP server' },
+        422,
+      )
+    }
+
+    const file = join(dir, MCP_FILE)
+    const current = await readFile(file, 'utf8').catch(() => null)
+    let root: Record<string, unknown> = {}
+    if (current !== null && current.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(current)
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          return json({ error: 'invalid', message: '本层的配置最外层不是一个对象' }, 422)
+        }
+        root = parsed as Record<string, unknown>
+      } catch (err) {
+        return json(
+          { error: 'invalid', message: `本层的配置解析不了，先修好它：${String(err)}` },
+          422,
+        )
+      }
+    }
+    const key = 'servers' in root ? 'servers' : 'mcpServers'
+    const servers = (root[key] ?? {}) as Record<string, unknown>
+    const clash = names.filter((n) => n in servers)
+    if (clash.length) {
+      return json(
+        {
+          error: 'conflict',
+          message: `这一层已经有同名 server：${clash.join('、')}`,
+          names: clash,
+        },
+        409,
+      )
+    }
+    for (const n of names) servers[n] = incoming.servers[n]
+    root[key] = servers
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, `${JSON.stringify(root, null, 2)}\n`, 'utf8')
+    // 同 PUT：改完要重连才生效，说出来。
+    return json({ ok: true, path: file, names, restartRequired: true })
   }
 
   return null

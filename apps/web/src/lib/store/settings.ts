@@ -735,6 +735,13 @@ export function saveMcpRaw(scope: Scope, raw: string): Promise<{ ok: boolean; pa
     body: JSON.stringify({ raw }),
   })
 }
+/** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
+export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; names: string[] }> {
+  return scheduleWrite(`/api/mcp/import?scope=${scope}`, {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
 
 // ───────────────────────── 会话级开关 ─────────────────────────
 
