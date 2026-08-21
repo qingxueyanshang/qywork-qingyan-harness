@@ -105,10 +105,51 @@ export interface WireMessage {
   _step?: string
 }
 
+/**
+ * 图像块的字节从哪来。**判据是「这是一个引用，还是一次观察」。**
+ *
+ * 两档不是同一件事的两个阶段，是**两种来源**，会同时出现在一次请求里。
+ * `materialize`（`agent/loop.ts`）只把 path 那档换成字节，base64 那档原样通过。
+ */
+export type ImageSource =
+  /**
+   * 用户拖 / 粘 / 选进来的附件。**引用他自己的文件，不复制**——那是他的东西，
+   * 我们没有理由在别处再存一份。语义上是**活引用**：他改了那个文件，历史跟着变。
+   */
+  | { kind: 'path'; path: string }
+  /**
+   * 工具读到的图。字节在**观察的那一刻**就定格进执行记录了
+   * （`tools/files.ts` 的 `read_file` 图片分支）。
+   *
+   * 为什么这条不用路径：模型改完页面会重新截图**覆盖同名文件**，那是「对比改前
+   * 改后」这个工作流的自然动作。存路径的话记的是「去哪看」而不是「看到了什么」，
+   * 覆盖之后历史里那一张就永远取不回来——而捕获只能发生在观察的那一刻。
+   */
+  | { kind: 'base64'; data: string }
+
+/**
+ * 消息正文里的一块。
+ *
+ * **只有文本和图片两种。** 非图片附件不进内容块——装配层只把它的路径写进正文，
+ * 由模型自己 `read_file`（`runtime` 的 `withAttachments`）。加回一个文档块会让
+ * 三条协议各自需要一种降级写法，而其中至少一条（chat/completions）根本没有对应
+ * 的块类型，只能退化成一行占位符——那是内容被静默丢掉。
+ */
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; mimeType: string; data: string }
-  | { type: 'document'; mimeType: string; data: string; title?: string }
+  | { type: 'image'; mimeType: string; source: ImageSource }
+
+/**
+ * 取图像块的 base64。
+ *
+ * **走到这里还是 path 形态就是装配错误**——`materialize` 漏了，或者有人新加了一个
+ * 绕过它的 `adapter.stream` 调用点。当场抛，不要发一个空 data 出去：
+ * 那会变成 provider 那侧一句语焉不详的 400，而真正的原因在几十个调用栈之外。
+ */
+export function imageData(source: ImageSource): string {
+  if (source.kind === 'base64') return source.data
+  throw new Error(`图像块还是路径形态（${source.path}），materialize 没跑到`)
+}
 
 export interface WireToolCall {
   id: string

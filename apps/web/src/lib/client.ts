@@ -419,4 +419,17 @@ export class QyClient {
     }
     return (await res.json()) as T
   }
+
+  /**
+   * 拿原始 `Response`，不解 JSON。
+   *
+   * 给回读二进制用（附件缩略图）。**不在这里判 `res.ok`**：调用方要按状态码
+   * 分情况（404 是文件没了、413 是太大，两者对界面都是「显示不出来」），
+   * 在这里抛掉的话它连状态码都拿不到。
+   */
+  raw(path: string, init?: RequestInit): Promise<Response> {
+    const given = new Headers(init?.headers ?? {})
+    given.set('authorization', `Bearer ${this.endpoint.token}`)
+    return fetch(`${this.endpoint.base}${withWorkspace(path)}`, { ...init, headers: given })
+  }
 }

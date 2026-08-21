@@ -32,7 +32,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { PROVIDER_HTTP } from '../types.ts'
+import { imageData, PROVIDER_HTTP } from '../types.ts'
 
 /**
  * 思考开启时给输出留的最小预算。低于这个数，思考稍微长一点正文就没地方写了，
@@ -465,16 +465,9 @@ function buildMessages(
 function toBlocks(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'text', text: b.text }
-    if (b.type === 'image') {
-      return {
-        type: 'image',
-        source: { type: 'base64', media_type: b.mimeType, data: b.data },
-      }
-    }
     return {
-      type: 'document',
-      source: { type: 'base64', media_type: b.mimeType, data: b.data },
-      ...(b.title ? { title: b.title } : {}),
+      type: 'image',
+      source: { type: 'base64', media_type: b.mimeType, data: imageData(b.source) },
     }
   })
 }

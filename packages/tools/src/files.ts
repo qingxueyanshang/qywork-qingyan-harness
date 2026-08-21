@@ -13,8 +13,9 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
+import { estimateText, MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
+import { isInlineImage, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import {
@@ -71,6 +72,52 @@ function hash(text: string): string {
 const MAX_READ_BYTES = 1024 * 1024
 
 /**
+ * 图片与 PDF 各有自己的上限，**不与 `MAX_READ_BYTES` 合并**。
+ *
+ * 三个数管三件不同的事：文本按 token 成本封顶（1 MB 已经装不进任何窗口），
+ * 图片按 provider 的单请求上限封顶（10 MB base64 约 13 MB），
+ * PDF 按解析时的内存占用封顶（`unpdf` 整份读进内存）。
+ * 合并成一个数之后，调任一边都会误伤另外两边。
+ */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_PDF_BYTES = 20 * 1024 * 1024
+
+/** PDF 抽取结果的 run 内缓存。键带指纹，文件改了自然失效。 */
+const PDF_STATE_KEY = 'files.pdfText'
+
+/**
+ * 抽 PDF 正文，**同一份文件一个 run 内只抽一次**。
+ *
+ * 不缓存的话 offset/limit 分页读是 O(n²)：抽一页要先把整本解析一遍，
+ * 而模型翻页正是它拿到「已截断」之后必然会做的事（实测一页约 550 ms，
+ * 两百页的文档每翻一页都要先付整本）。
+ *
+ * 键里带 `mtimeMs:size`：文件被改过就是另一份内容，缓存自然不命中。
+ * 判据与图像块的指纹（`ai` 的 `ImageSource.stamp`）是同一组，不另发明一套。
+ */
+async function pdfText(ctx: ToolContext, abs: string, stamp: string): Promise<string> {
+  let cache = ctx.state.get(PDF_STATE_KEY) as Map<string, string> | undefined
+  if (!cache) {
+    cache = new Map()
+    ctx.state.set(PDF_STATE_KEY, cache)
+  }
+  const key = `${abs}|${stamp}`
+  const hit = cache.get(key)
+  if (hit !== undefined) return hit
+
+  // 动态 import：`unpdf` 是 2.4 MB，绝大多数会话一个 PDF 都不读，
+  // 顶层引入等于每次起进程都为它付一次解析。
+  const { extractText, getDocumentProxy } = await import('unpdf')
+  const bytes = new Uint8Array(await readFile(abs))
+  const doc = await getDocumentProxy(bytes)
+  // `mergePages: true` 时返回的就是一整段；类型上仍是联合，取窄一次。
+  const { text } = await extractText(doc, { mergePages: true })
+  const out = String(text)
+  cache.set(key, out)
+  return out
+}
+
+/**
  * 二进制嗅探：NUL 字节。
  *
  * 用转义写而不是把控制字符直接嵌进正则字面量——后者在编辑器和 diff 里是不可见的，
@@ -82,7 +129,9 @@ const BINARY_SNIFF = /\x00/
 export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
-    '读取工作区内一个文本文件的内容，返回带行号的正文。修改任何已存在的文件前必须先用它读一次——' +
+    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 直接作为图片交给你看；' +
+    'PDF 抽取正文后当文本返回（丢版式，中文可能出现同形异码，别拿它做逐字匹配）。' +
+    '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
     '支持用 offset/limit 分段读取大文件。',
   parameters: {
@@ -111,13 +160,83 @@ export const readFileTool: ToolSpec = {
     if (info.isDirectory()) {
       return { status: 'failure', message: `${args.path} 是目录，请用 list_dir` }
     }
-    if (info.size > MAX_READ_BYTES) {
+
+    /*
+     * 图片与 PDF 在**大小守卫之前**分派。
+     *
+     * 不能放到下面二进制嗅探那一行：`MAX_READ_BYTES` 是 1 MB，而手机照片和多数
+     * PDF 都比它大，放晚一行它们会先被拒，拿到的话术还是「请用 offset/limit
+     * 分段读取」——对一张图不可执行。这两条各有自己的上限。
+     */
+    // PDF 抽取缓存的键：文件改了就是另一份内容，缓存自然不命中。
+    const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
+    if (isInlineImage(abs)) {
+      if (info.size > MAX_IMAGE_BYTES) {
+        return {
+          status: 'failure',
+          message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
+        }
+      }
+      /*
+       * **记一次读记录。** 图片走不到下面那句 `readHashes(...).set`，不补这一笔的话
+       * 模型读过一张图再 `write_file` 同一个路径，会拿到「已存在但没读取过。
+       * 先 read_file 再覆盖」——而它照做也永远过不去，那句话就成了假的。
+       *
+       * **按 utf8 解码后再哈希，不按原始字节。** 判据是「和校验方算的是不是同一个数」
+       * ——`write_file` 那侧读的就是 utf8（`readFile(abs, 'utf8')`）。
+       * 对二进制来说这个解码是有损的，但它是确定性的，两侧算出来一样就够。
+       */
+      readHashes(ctx).set(abs, hash(await readFile(abs, 'utf8')))
+      const charged = chargeBatchBudget(ctx, MEDIA_TOKENS)
+      if (!charged.ok) {
+        return {
+          status: 'failure',
+          message: `本批投递预算只剩 ${charged.batchRemaining} token，装不下一张图，下一轮再读。`,
+          errorKind: 'result_too_large',
+        }
+      }
+      return {
+        status: 'success',
+        message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（图片）`,
+        /*
+         * **字节就地定格，不给路径。**
+         *
+         * 一次读取是一次**观察**，观察的结果该留在执行记录里——和这个工具读一份
+         * 文本、`run_command` 留一段 stdout 是同一件事。
+         *
+         * 给路径的话记录里存的是「去哪看」而不是「看到了什么」，而那个地方的内容
+         * 会变：模型改完页面重新截图覆盖同名文件（那正是「对比改前改后」这个工作流
+         * 的自然动作），历史里那一张就再也取不回来了。**捕获必须发生在观察的那一刻**，
+         * 之后再想补是物理上做不到的。
+         *
+         * 附件那条**不走这里**，它仍然是路径引用（`runtime` 的 `withAttachments`）：
+         * 那是用户自己的文件，我们没有理由复制它。判据是「这是一次观察，还是一个引用」。
+         */
+        data: { imageData: (await readFile(abs)).toString('base64'), mime: mimeOf(abs) },
+      }
+    }
+
+    let pdf: string | null = null
+    if (abs.toLowerCase().endsWith('.pdf')) {
+      if (info.size > MAX_PDF_BYTES) {
+        return {
+          status: 'failure',
+          message: `PDF 过大（${Math.round(info.size / 1024 / 1024)} MB），上限 20 MB`,
+        }
+      }
+      pdf = await pdfText(ctx, abs, fingerprint).catch(() => null)
+      if (pdf === null) {
+        return { status: 'failure', message: `${args.path} 解析失败，可能不是有效的 PDF` }
+      }
+    }
+
+    if (pdf === null && info.size > MAX_READ_BYTES) {
       return {
         status: 'failure',
         message: `文件过大（${info.size} 字节），请用 offset/limit 分段读取`,
       }
     }
-    const text = await readFile(abs, 'utf8')
+    const text = pdf ?? (await readFile(abs, 'utf8'))
     if (BINARY_SNIFF.test(text.slice(0, 4096))) {
       return { status: 'failure', message: '二进制文件，无法作为文本读取' }
     }

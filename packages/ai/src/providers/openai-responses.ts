@@ -66,7 +66,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { PROVIDER_HTTP } from '../types.ts'
+import { imageData, PROVIDER_HTTP } from '../types.ts'
 import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
@@ -375,10 +375,16 @@ export function buildInput(
 
   for (const m of messages) {
     if (m.role === 'tool') {
+      /*
+       * **工具结果里能放图。** 文档原话：`function_call_output` 的结果「可以是纯
+       * 字符串或 `input_text` / `input_image` 内容块列表」，用视觉模型时按真实图片
+       * 处理、其他模型替换成占位文本——**降级由服务端做，我们无条件发**。
+       * 2026-08 实测确认（`deepseek-v4-flash-vision-exp` 答得出图里的数字与颜色）。
+       */
       items.push({
         type: 'function_call_output',
         call_id: m.toolCallId,
-        output: typeof m.content === 'string' ? m.content : flatten(m.content),
+        output: typeof m.content === 'string' ? m.content : toResponsesContent(m.content),
       })
       continue
     }
@@ -428,14 +434,7 @@ export function buildInput(
 function toResponsesContent(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'input_text', text: b.text }
-    if (b.type === 'image') {
-      return { type: 'input_image', image_url: `data:${b.mimeType};base64,${b.data}` }
-    }
-    return {
-      type: 'input_file',
-      filename: b.title ?? 'file',
-      file_data: `data:${b.mimeType};base64,${b.data}`,
-    }
+    return { type: 'input_image', image_url: `data:${b.mimeType};base64,${imageData(b.source)}` }
   })
 }
 
@@ -559,10 +558,6 @@ function parseArgs(json: string): { args: Record<string, unknown>; error: string
     // 以为参数被接受了，然后对着一个完全不同的结果继续往下走。
     return { args: {}, error: json }
   }
-}
-
-function flatten(content: Exclude<WireMessage['content'], string>): string {
-  return content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('\n')
 }
 
 function asError(status: number, body: string): Error & { status: number } {

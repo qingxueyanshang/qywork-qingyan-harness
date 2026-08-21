@@ -30,7 +30,7 @@
  * （见 `session.ts`），本文件只管把给定的 steps 折平。
  */
 
-import { stepStamp } from '@qywork/agent'
+import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
 import type { ContentBlock, WireMessage, WireToolCall } from '@qywork/ai'
 import type { ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
 import { listMessages, listRuns, listSteps, type Store } from '@qywork/store'
@@ -84,19 +84,30 @@ function toolPayloadOf(step: Step): ToolPayload {
  * 两处不同形的话，同一次调用在本轮和下一轮长得不一样，模型会当成两件事——
  * 而这种不一致不会有任何报错。
  */
-function toolContent(step: Step): string {
+/** 落盘回来的 `data` 只能是 unknown；不是对象就当没有。 */
+function dataOf(outcome: { data?: unknown }): Record<string, unknown> | undefined {
+  const d = outcome.data
+  return d && typeof d === 'object' ? (d as Record<string, unknown>) : undefined
+}
+
+function toolContent(step: Step): string | ContentBlock[] {
   const payload = toolPayloadOf(step)
   const outcome = payload.outcome ?? {}
   const resources = (outcome.resources ?? []).map((r) => r.resourceId).filter(Boolean)
-  return JSON.stringify({
+  const envelope = JSON.stringify({
     call_id: step.toolCallId ?? '',
     tool: step.toolName ?? 'unknown',
     status: outcome.status ?? (step.status === 'success' ? 'success' : 'failure'),
     executed: outcome.executed ?? false,
     summary: outcome.message ?? '',
     ...(resources.length ? { resources } : {}),
-    ...(outcome.data ? { result: outcome.data } : {}),
+    // 图像字节不进信封，只进图像块——与活的那侧同一个判据。
+    ...(envelopeResult(dataOf(outcome)) ? { result: envelopeResult(dataOf(outcome)) } : {}),
   })
+  // 与活的那侧共用同一个构造函数——两处各写一遍必然漂移，而漂移了不会有任何报错。
+  // `data` 是落盘回来的 JSON，类型上只能是 unknown；不是对象就当没有，
+  // `toolResultContent` 自己会退回纯字符串。
+  return toolResultContent(envelope, dataOf(outcome))
 }
 
 /**

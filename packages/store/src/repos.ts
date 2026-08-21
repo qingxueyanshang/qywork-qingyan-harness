@@ -358,8 +358,11 @@ export function archiveConversation(store: Store, id: ConversationId): boolean {
 
 /**
  * 硬删一条会话。消息、run、步骤、provider 请求等随 FK 级联一起没
- * （`schema.ts` 各表的 `ON DELETE CASCADE`）。附件由 `referencedAttachmentPaths`
- * 那条 GC 顺带收走，不在这里删。
+ * （`schema.ts` 各表的 `ON DELETE CASCADE`）。
+ *
+ * 附件目录不在这里删——它在磁盘上不在库里，由 `api/conversations.ts` 的 DELETE
+ * 分支紧接着删掉。**那边只删本会话的目录，绝不按 `Attachment.path` 逐条删**：
+ * 路径型附件指向的是用户自己的文件。
  *
  * **调用方必须先确认没有在跑的 run**：级联删掉的行那一轮还在往里写。
  */
@@ -473,30 +476,6 @@ export function appendMessage(
     .query('UPDATE conversations SET updated_at = ? WHERE id = ?')
     .run(msg.createdAt, msg.conversationId)
   return msg
-}
-
-/**
- * 所有被消息引用过的附件路径。
- *
- * 给附件目录的 GC 用：**没有任何消息引用的文件就是孤儿**——用户选了图、
- * 没发出去就换了话题，那份字节永远不会再被读到。
- *
- * 一次全表扫。附件是低频操作，消息表再大也只需要在**启动时**跑这一次；
- * 为它单开一张索引表等于给自己加一本要维护的账。
- */
-export function referencedAttachmentPaths(store: Store): Set<string> {
-  const rows = store.db
-    .query<{ attachments: string | null }, []>(
-      "SELECT attachments FROM messages WHERE attachments IS NOT NULL AND attachments != ''",
-    )
-    .all()
-  const out = new Set<string>()
-  for (const r of rows) {
-    for (const a of readJson<{ path?: unknown }[]>(r.attachments, [])) {
-      if (typeof a?.path === 'string' && a.path) out.add(a.path)
-    }
-  }
-  return out
 }
 
 /**

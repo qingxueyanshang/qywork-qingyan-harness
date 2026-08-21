@@ -112,7 +112,19 @@ export function condenseMessage(m: WireMessage): WireMessage {
 }
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
-  if (typeof content !== 'string') return content
+  /*
+   * 块数组：**丢掉图像块，只把文本信封收起来**。
+   *
+   * 图片正是最该被收掉的那一类——一张几 MB 的截图跨轮重放一次就是一次满额，
+   * 而收纳的整个用途就是把大东西换成一句话。丢掉之后模型仍拿得到路径
+   * （信封里的 `result.imagePath`），要看重新 `read_file` 一次即可。
+   *
+   * 收纳之前这里是 `return content` 原样放行，于是带图的工具结果**永远收不掉**。
+   */
+  if (Array.isArray(content)) {
+    const text = content.find((b) => b.type === 'text')
+    return text ? condenseToolResult(text.text) : content
+  }
   const env = parseEnvelope(content)
   if (!env) return content
   return JSON.stringify({
