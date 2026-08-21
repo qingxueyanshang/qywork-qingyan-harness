@@ -673,12 +673,12 @@ describe('搜索与命令', () => {
   /**
    * 工具说明里必须写明**真正在跑的那个 shell**，而且写在第一句。
    *
-   * `run_command` 这个名字不携带方言，模型的默认输出是 bash——方言只剩描述这一个
+   * `run_command` 这个名字不携带语法，模型的默认输出是 bash——语法只剩描述这一个
    * 来源，而描述是从头读的。埋在第三句等于没说：账本里有过只被告知「平台：win32」
    * 就写出 POSIX 组合命令、在 PowerShell 上一个字都没执行的调用。
    * 锁的是「说的和跑的是同一个」，不是某句文案。
    */
-  test('run_command 的说明第一句就是方言提示，且点到真正那个可执行文件', () => {
+  test('run_command 的说明第一句就是语法提示，且点到真正那个可执行文件', () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const spec = registry()
@@ -720,7 +720,7 @@ describe('搜索与命令', () => {
       return
     }
     expect(names).toContain('run_command')
-    // 非 bash 的方言提示必须自己否掉 bash，否则模型照 POSIX 写。
+    // 非 bash 的语法提示必须自己否掉 bash，否则模型照 POSIX 写。
     expect(shell.hint).toContain('不是 bash')
     const out = await withoutBash(() =>
       registry().execute('run_command', { command: 'echo qywork-shell-ok' }, ctx(root)),

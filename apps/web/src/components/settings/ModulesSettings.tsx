@@ -55,13 +55,13 @@ interface Module {
 
 const sandbox = () => state.capabilities?.sandbox ?? null
 
-/** 命令方言由探测决定（bash → pwsh 7 → Windows PowerShell 5.1），握手只报 bash 那一格。 */
+/** 命令语法由探测决定（bash → pwsh 7 → Windows PowerShell 5.1），握手只报 bash 那一格。 */
 function shellNote(): string {
   const row = state.capabilities?.environment.find((d) => d.id === 'bash')
   if (!row) return '读取中…'
-  if (row.path) return '有 bash，命令按 POSIX 方言写。'
+  if (row.path) return '有 bash，命令按 POSIX 语法写。'
   if (row.required) return '三种 shell 都未探测到，run_command 未注册。'
-  return '无 bash，命令按 PowerShell 方言写。'
+  return '无 bash，命令按 PowerShell 语法写。'
 }
 
 const MODULES: Module[] = [
