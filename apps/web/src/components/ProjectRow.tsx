@@ -8,6 +8,7 @@ import {
   removeKnownWorkspace,
   revealWorkspace,
 } from '../lib/store/index.ts'
+import { AnchoredMenu } from './AnchoredMenu.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
 import {
   IconArchive,
@@ -58,8 +59,15 @@ export function ProjectRow(props: {
     setArmed(null)
   }
 
+  /** 菜单卡片钉在这颗 `⋯` 上，收起判断也按这一行的容器算。 */
+  let wrapEl: HTMLDivElement | undefined
+  let moreEl!: HTMLButtonElement
+
   /*
-   * 点到别处就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   * 点到本行之外就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   *
+   * **按本行的容器判，不用类选择器**：`closest('.project-menu-wrap')` 对别的项目行
+   * 同样成立，点另一行的 `⋯` 时这一行的菜单不关，两张卡片叠在一起。
    *
    * **确认弹窗立着的时候一律不管**：弹窗渲染在 `.project-menu-wrap` 之外，
    * 按下「移除项目」的那一下 mousedown 会先命中这里、把 `armed` 清掉，
@@ -68,16 +76,29 @@ export function ProjectRow(props: {
    */
   const onDocDown = (e: MouseEvent) => {
     if (armed() !== null) return
-    if (!(e.target as HTMLElement | null)?.closest?.('.project-menu-wrap')) close()
+    const t = e.target as Node | null
+    if (!t || !wrapEl?.contains(t)) close()
   }
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') close()
   }
+  /*
+   * 卡片是 fixed 的，坐标只在展开那一刻算一次——列表滚动或窗口改尺寸之后它会停在
+   * 原地，与那一行脱节，所以收起来让用户重开。确认弹窗立着时不动它：那时菜单在
+   * 弹窗后面。scroll 不冒泡，容器内的滚动只有捕获阶段收得到。
+   */
+  const onReflow = () => {
+    if (armed() === null) setMenuOpen(false)
+  }
   document.addEventListener('mousedown', onDocDown, true)
   document.addEventListener('keydown', onKey)
+  document.addEventListener('scroll', onReflow, true)
+  window.addEventListener('resize', onReflow)
   onCleanup(() => {
     document.removeEventListener('mousedown', onDocDown, true)
     document.removeEventListener('keydown', onKey)
+    document.removeEventListener('scroll', onReflow, true)
+    window.removeEventListener('resize', onReflow)
   })
 
   /**
@@ -136,9 +157,15 @@ export function ProjectRow(props: {
         </button>
       </Show>
 
-      <div class="project-menu-wrap">
+      <div
+        class="project-menu-wrap"
+        ref={(el) => {
+          wrapEl = el
+        }}
+      >
         <button
           class="icon-btn project-more"
+          ref={moreEl}
           type="button"
           aria-label={`${props.workspace.name} 的更多操作`}
           aria-expanded={menuOpen()}
@@ -151,7 +178,7 @@ export function ProjectRow(props: {
         </button>
 
         <Show when={menuOpen()}>
-          <div class="project-menu" role="menu">
+          <AnchoredMenu class="project-menu" anchor={moreEl}>
             <button
               class="menu-item"
               type="button"
@@ -196,7 +223,7 @@ export function ProjectRow(props: {
               <IconX size={14} />
               移除
             </button>
-          </div>
+          </AnchoredMenu>
         </Show>
       </div>
 

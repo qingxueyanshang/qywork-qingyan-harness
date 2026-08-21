@@ -1,6 +1,7 @@
 import type { Conversation } from '@qywork/core'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { archiveConversation, deleteConversation, renameConversation } from '../lib/store/index.ts'
+import { AnchoredMenu } from './AnchoredMenu.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
 import { IconArchive, IconMore, IconPencil, IconX } from './Icons.tsx'
 
@@ -49,24 +50,45 @@ export function ConversationRow(props: {
     setArmed(null)
   }
 
+  /** 菜单卡片钉在这颗 `⋯` 上，收起判断也按这一行的容器算。 */
+  let wrapEl: HTMLDivElement | undefined
+  let moreEl!: HTMLButtonElement
+
   /*
-   * 点到别处就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   * 点到本行之外就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   *
+   * **按本行的容器判，不用类选择器**：`closest('.conv-menu-wrap')` 对别的会话行
+   * 同样成立，点另一行的 `⋯` 时这一行的菜单不关，两张卡片叠在一起。
    *
    * **确认弹窗打开时一律不处理**：它渲染在 `.conv-menu-wrap` 之外，确认键的
    * mousedown 会先命中这里并清掉 `armed`，弹窗随之卸载，click 不再触发。
    */
   const onDocDown = (e: MouseEvent) => {
     if (armed() !== null) return
-    if (!(e.target as HTMLElement | null)?.closest?.('.conv-menu-wrap')) setMenuOpen(false)
+    const t = e.target as Node | null
+    if (!t || !wrapEl?.contains(t)) setMenuOpen(false)
   }
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') close()
   }
+  /*
+   * 卡片是 fixed 的，坐标只在展开那一刻算一次——列表滚动或窗口改尺寸之后它会停在
+   * 原地，与那一行脱节，所以收起来让用户重开。确认弹窗立着时不动它：那时菜单在
+   * 弹窗后面，收掉会连着把弹窗的来源一起抽走。
+   * scroll 不冒泡，容器内的滚动只有捕获阶段收得到。
+   */
+  const onReflow = () => {
+    if (armed() === null) setMenuOpen(false)
+  }
   document.addEventListener('mousedown', onDocDown, true)
   document.addEventListener('keydown', onKey)
+  document.addEventListener('scroll', onReflow, true)
+  window.addEventListener('resize', onReflow)
   onCleanup(() => {
     document.removeEventListener('mousedown', onDocDown, true)
     document.removeEventListener('keydown', onKey)
+    document.removeEventListener('scroll', onReflow, true)
+    window.removeEventListener('resize', onReflow)
   })
 
   /** 每个动作都走这里：统一收起菜单、统一把失败说出来，不静默吞掉。 */
@@ -102,9 +124,15 @@ export function ConversationRow(props: {
 
             <span class="conv-time">{fmtWhen(props.conversation.updatedAt)}</span>
 
-            <div class="conv-menu-wrap">
+            <div
+              class="conv-menu-wrap"
+              ref={(el) => {
+                wrapEl = el
+              }}
+            >
               <button
                 class="icon-btn conv-more"
+                ref={moreEl}
                 type="button"
                 aria-label={`${props.conversation.title || '新对话'} 的更多操作`}
                 aria-expanded={menuOpen()}
@@ -117,7 +145,7 @@ export function ConversationRow(props: {
               </button>
 
               <Show when={menuOpen()}>
-                <div class="conv-menu" role="menu">
+                <AnchoredMenu class="conv-menu" anchor={moreEl}>
                   <button
                     class="conv-menu-item"
                     type="button"
@@ -148,7 +176,7 @@ export function ConversationRow(props: {
                     <IconX size={14} />
                     删除
                   </button>
-                </div>
+                </AnchoredMenu>
               </Show>
             </div>
           </>
