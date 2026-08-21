@@ -1,3 +1,4 @@
+import { PROVIDER_KINDS, type ProviderKind } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   type CatalogEntry,
@@ -26,17 +27,14 @@ import { ModelLibrary } from './ModelLibrary.tsx'
 import { PageHead } from './Page.tsx'
 import { Field, Row } from './Row.tsx'
 
-const PROVIDER_KINDS = [
-  'anthropic_messages',
-  'openai_chat_completions',
-  'openai_responses',
-] as const
-
 /**
  * 下拉里显示的短名。**底层值不动**——它直指端点（`/v1/chat/completions`），
  * 而官方的 `completions` 是另一个已弃用的补全接口，短名只在界面上用。
+ *
+ * 词表本身在 `@qywork/core`：配置、协议、界面三方都要说它，抄一份到这里
+ * 就会漂（模型库那个思考下拉漂过一次，多出过一个不存在的值）。
  */
-const KIND_LABEL: Record<(typeof PROVIDER_KINDS)[number], string> = {
+const KIND_LABEL: Record<ProviderKind, string> = {
   anthropic_messages: 'anthropic_messages',
   openai_chat_completions: 'openai_chat',
   openai_responses: 'openai_responses',

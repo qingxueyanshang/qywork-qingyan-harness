@@ -12,23 +12,22 @@
  * 加新的对外符号时：先确认它真的有包外调用点，再往下面加一行。
  */
 
+// 这四个词表的真源在 core 的「共享词表」段——配置、协议、界面三方都要说它们，
+// 只有 L0 三方都够得着。这里只是具名再导出，方便 ai 的 importer 就近引用。
+export type { CacheRouting, ProviderKind, ReasoningEcho, ThinkingMode } from '@qywork/core'
 // 容量拒绝：agent 的压缩循环按它决定要不要压
 export type { CapacityRejection } from './capacity.ts'
 // 模型目录与计价：装配、读数、探测三处都要
 export {
   applySpecOverride,
   builtinCatalog,
-  type CacheRouting,
   computeCost,
   effortIsTransmittable,
   lookupModel,
   type ModelSpec,
   type OffPeakDiscount,
-  type ProviderKind,
   priceAt,
-  type ReasoningEcho,
   type SpecOverride,
-  type ThinkingMode,
   unknownModel,
   VENDORS,
 } from './catalog.ts'

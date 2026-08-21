@@ -19,8 +19,7 @@
  *   探测的价值在于它报的每一条都是实测的。
  */
 
-import type { EffortLevel } from '@qywork/core'
-import type { ProviderKind } from './catalog.ts'
+import type { EffortLevel, ProviderKind } from '@qywork/core'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, ProviderProfile } from './types.ts'
 

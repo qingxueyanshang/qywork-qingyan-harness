@@ -420,6 +420,67 @@ describe('思考档位校验', () => {
 })
 
 /**
+ * 模型库那几个枚举的校验。
+ *
+ * 与思考档位同一道闸门、同一个理由，但**后果更隐蔽**：档位打错下一轮换来一个
+ * provider 的 400，而这三个打错多半什么都不发生——`thinking` 打错会让
+ * `effortIsTransmittable` 恒 false（这个模型的 effort 从此不再发送），
+ * `cacheRouting` 打错会让亲和键不再发送，两条都不报错。
+ */
+describe('模型库枚举校验', () => {
+  const withEntry = (entry: Record<string, unknown>, key = 'deepseek-v4-flash|openai_responses') =>
+    cfg({
+      providers: {
+        ds: {
+          kind: 'openai_responses',
+          apiKey: 'sk-x',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+      catalog: { [key]: entry as never },
+    })
+
+  test('三个枚举各自的词表外值都算致命问题', () => {
+    expect(diagnoseConfig(withEntry({ thinking: 'anthropic_effort' }))).toHaveLength(1)
+    expect(diagnoseConfig(withEntry({ reasoningEcho: '要' }))).toHaveLength(1)
+    expect(diagnoseConfig(withEntry({ cacheRouting: '发' }))).toHaveLength(1)
+  })
+
+  test('词表里的值放行', () => {
+    expect(
+      diagnoseConfig(
+        withEntry({
+          thinking: 'reasoning_effort',
+          reasoningEcho: 'reasoning_text',
+          cacheRouting: 'prompt_cache_key',
+        }),
+      ),
+    ).toEqual([])
+  })
+
+  /** 没填 = 照内置值，不是问题。 */
+  test('没填的字段不算问题', () => {
+    expect(diagnoseConfig(withEntry({ contextWindow: 1024 }))).toEqual([])
+  })
+
+  /**
+   * 键的第二维写错时，这条覆盖**永远匹配不上任何请求**（`resolveModel` 按
+   * `catalogKey(model, provider.kind)` 取），是另一种静默失效。
+   */
+  test('键里的协议不在词表里也算问题', () => {
+    const [p] = diagnoseConfig(withEntry({ contextWindow: 1024 }, 'deepseek-v4-flash|openai_v2'))
+    expect(p).toContain('openai_v2')
+  })
+
+  /** 挡下来还得说清去哪改——这道闸门会让 `qy exec` 直接退出。 */
+  test('报错带着改哪', () => {
+    const [p] = diagnoseConfig(withEntry({ thinking: 'anthropic_effort' }))
+    expect(p).toContain('模型库')
+    expect(p).toContain('config.json')
+  })
+})
+
+/**
  * 模型库的覆盖要**取得到**。
  *
  * 只有一个能编辑的界面、改完到不了 `resolveModel`，那就是一条有产出没有消费者的

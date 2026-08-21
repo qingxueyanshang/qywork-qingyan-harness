@@ -15,9 +15,8 @@
  * 传输层错误也是——这里没有别的线索可用。规矩写在上面那三档优先级里。
  */
 
-import type { ErrorCode } from '@qywork/core'
+import type { ErrorCode, ProviderKind } from '@qywork/core'
 import { type CapacityRejection, classifyCapacityRejection } from './capacity.ts'
-import type { ProviderKind } from './catalog.ts'
 
 export class ProviderError extends Error {
   readonly code: ErrorCode

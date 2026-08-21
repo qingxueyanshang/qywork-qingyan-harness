@@ -9,6 +9,8 @@
  * （或自带渲染器）即可。
  */
 
+import type { ProviderKind } from '@qywork/core'
+
 export const MANIFEST_VERSION = 1
 
 export interface PluginManifest {
@@ -92,7 +94,7 @@ export interface ProviderContribution {
   id: string
   displayName: string
   /** 走哪套协议。自定义协议需要插件自己实现 adapter 导出。 */
-  protocol: 'anthropic_messages' | 'openai_chat_completions' | 'openai_responses' | 'custom'
+  protocol: ProviderKind | 'custom'
   defaultBaseUrl?: string
   models?: { id: string; contextWindow: number; maxOutputTokens: number }[]
 }
