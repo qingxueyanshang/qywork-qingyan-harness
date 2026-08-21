@@ -45,6 +45,24 @@ describe('同一模型在不同协议下能力不同', () => {
     expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
   })
 
+  /**
+   * 视觉模型两条协议都在目录里。
+   *
+   * 只收录 chat/completions 那一条的话，Responses 下会走到
+   * `lookupModel` 的兑底分支（改写 provider 保留能力约束），
+   * 于是把 chat 那套思考字段当成 Responses 的能力拿出来用。
+   */
+  test('vision 在两条协议下各有一条', () => {
+    const chat = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
+    expect(chat.thinking).toBe('deepseek_thinking')
+    expect(chat.effortLevels).toEqual(['high', 'max'])
+
+    const resp = lookupModel('deepseek-v4-flash-vision-exp', 'openai_responses')
+    expect(resp.thinking).toBe('reasoning_effort')
+    expect(resp.reasoningEcho).toBe('reasoning_text')
+    expect(resp.effortLevels).toEqual([])
+  })
+
   /** 别名不进目录：指向哪个模型由服务端说了算，随时可改。填了就按未收录处理。 */
   test('别名（deepseek-chat / deepseek-reasoner）不在目录里', () => {
     for (const id of ['deepseek-chat', 'deepseek-reasoner']) {
@@ -273,6 +291,22 @@ describe('分时段定价', () => {
     expect(pro.pricing.output).toBe(27)
     expect(priceAt(pro, { now: at(5) }).input).toBe(4.5)
     expect(priceAt(pro, { now: at(5) }).output).toBe(13.5)
+  })
+
+  /**
+   * 视觉模型与 flash 同价，分时段一起打折。
+   *
+   * 逐档断言而不是比整个 `pricing` 对象：漏收录（id 写错）时 `lookupModel`
+   * 返回 `unknownModel`，四档全零而不报错——账本从此报 ¥0。
+   */
+  test('vision 与 flash 同价', () => {
+    const v = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
+    expect(v.catalogued).not.toBe(false)
+    expect(v.pricing.currency).toBe('CNY')
+    expect(v.pricing.input).toBe(3)
+    expect(v.pricing.output).toBe(9)
+    expect(v.pricing.cacheRead).toBe(0.1)
+    expect(priceAt(v, { now: at(5) }).output).toBe(4.5)
   })
 })
 
