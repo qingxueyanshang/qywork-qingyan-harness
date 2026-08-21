@@ -23,6 +23,7 @@ import {
   loadConversations,
   loadWorkspace,
   loadWorkspaceExtensions,
+  PANEL_MIN,
   panelMaximized,
   panelWidth,
   setPaletteOpen,
@@ -94,7 +95,7 @@ export function App() {
       // tokens.css 里那条只当默认值，布局规则一行不用改。
       // 这里**不夹**：窗口放不下由网格自己收（`.app.with-panel` 的 minmax），
       // 在这儿再夹一次就是把布局知识抄进 JS，而它只在写的那一刻是对的。
-      style={{ '--panel-w': `${panelWidth()}px` }}
+      style={{ '--panel-w': `${panelWidth()}px`, '--panel-min-w': `${PANEL_MIN}px` }}
     >
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>

@@ -7,7 +7,7 @@ import type {
   UsageTotals,
 } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
-import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import { createMemo, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import { compact, stopReasonLabel } from '../lib/step-view.ts'
 import { client, isRunning, openSettings, state } from '../lib/store/index.ts'
@@ -56,32 +56,8 @@ export default function RunDetails() {
     ].sort((a, b) => b.at - a.at),
   )
 
-  /**
-   * 当前那一轮。**窄宽两态共用这一个信号**：窄态它是「展开的那一条」，宽态是
-   * 「选中的那一条」。两个信号的话，拖宽面板时选中会跳到别处。
-   */
+  /** 展开的是哪一条。同时只展开一条：一次要读的是一轮的账，不是几轮并排。 */
   const [picked, setPicked] = createSignal<string | null>(null)
-  const current = () => {
-    const list = runs()
-    // 宽态右栏不能空着，没挑过就落在最新那一轮；窄态默认全部收起。
-    return list.find((r) => r.id === picked()) ?? (wide() ? list[0] : undefined)
-  }
-
-  /**
-   * 面板拖到足够宽时改成左右两栏。
-   *
-   * 判据是**这块面板量出来的宽度**，不是窗口宽度也不是 `panelWidth()`：后者是用户
-   * 「想要多宽」，窗口放不下时网格只给到上限，两者能差出好几百像素。
-   */
-  const [wide, setWide] = createSignal(false)
-  let root!: HTMLDivElement
-  onMount(() => {
-    const ro = new ResizeObserver((entries) => {
-      setWide((entries[0]?.contentRect.width ?? 0) >= 640)
-    })
-    ro.observe(root)
-    onCleanup(() => ro.disconnect())
-  })
 
   const retry = () => {
     void refetchRuns()
@@ -89,7 +65,7 @@ export default function RunDetails() {
   }
 
   return (
-    <div class="run-panel" classList={{ wide: wide() }} ref={root}>
+    <div class="run-panel">
       <div class="run-col">
         <Show
           when={loaded(runData) && loaded(ledger)}
@@ -105,17 +81,12 @@ export default function RunDetails() {
             <ul class="run-list">
               <For each={rows()}>
                 {(row) => (
-                  <Show
-                    when={row.run}
-                    fallback={<ExtraRow entry={row.extra!} wide={wide()} />}
-                    keyed
-                  >
+                  <Show when={row.run} fallback={<ExtraRow entry={row.extra!} />} keyed>
                     {(r) => (
                       <RunRow
                         run={r}
-                        wide={wide()}
-                        active={current()?.id === r.id}
-                        onPick={() => setPicked((cur) => (!wide() && cur === r.id ? null : r.id))}
+                        open={picked() === r.id}
+                        onPick={() => setPicked((cur) => (cur === r.id ? null : r.id))}
                       />
                     )}
                   </Show>
@@ -126,14 +97,6 @@ export default function RunDetails() {
         </Show>
         <LedgerLink />
       </div>
-
-      {/* 宽态的右栏。放大面板的真实场景是拿这张表和中转站后台并排对账，
-          所以宽度全给它，而不是让正文停在一个 560px 的框里、右边空一大片。 */}
-      <Show when={wide()}>
-        <div class="run-detail-col">
-          <Show when={current()}>{(r) => <RunDetail run={r()} />}</Show>
-        </div>
-      </Show>
     </div>
   )
 }
@@ -227,9 +190,9 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
  * 出没出事、多少钱。
  *
  * 模型名与步数耗时不进展开区——放进去等于给同一轮做两个标题，上面一个时间、
- * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的东西：失败原文与逐请求账。
+ * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的东西：逐请求的账。
  */
-function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () => void }) {
+function RunRow(props: { run: Run; open: boolean; onPick: () => void }) {
   const r = () => props.run
   const mark = () => runMark(r())
   /** 跑完才给耗时。还在跑的那一轮由「进行中」标记说，两处都说就是同一件事说两遍。 */
@@ -240,17 +203,8 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
 
   return (
     <li classList={{ superseded: !!r().supersededBy }}>
-      <button
-        class="run-row"
-        classList={{ active: props.wide && props.active }}
-        type="button"
-        aria-expanded={props.wide ? undefined : props.active}
-        onClick={props.onPick}
-      >
-        {/* 宽态没有折叠动作，那里的行是「选中」不是「展开」，不给折叠符号。 */}
-        <Show when={!props.wide}>
-          <IconChevron size={10} dir={props.active ? 'down' : 'right'} />
-        </Show>
+      <button class="run-row" type="button" aria-expanded={props.open} onClick={props.onPick}>
+        <IconChevron size={10} dir={props.open ? 'down' : 'right'} />
         <span class="run-when">{clockOf(r().createdAt)}</span>
         {/* 模型名是这一行唯一长度不可控的东西，所以只有它让位。 */}
         <span class="run-model truncate">{r().model}</span>
@@ -265,8 +219,8 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
         </Show>
         <span class="run-money">{runCost(r())}</span>
       </button>
-      <Show when={!props.wide && props.active}>
-        <RunDetail run={props.run} />
+      <Show when={props.open}>
+        <RequestLedger run={props.run} />
       </Show>
     </li>
   )
@@ -278,13 +232,11 @@ function RunRow(props: { run: Run; wide: boolean; active: boolean; onPick: () =>
  * **列出来不是为了好看，是为了合计对得上**：这笔钱真花了，只是它发生在两轮之间。
  * 它没有 run，所以没有展开区，也不给折叠符号——占位空格保证时间列还在同一条竖线上。
  */
-function ExtraRow(props: { entry: UsageLedgerRow; wide: boolean }) {
+function ExtraRow(props: { entry: UsageLedgerRow }) {
   return (
     <li>
       <div class="run-row static">
-        <Show when={!props.wide}>
-          <span class="run-gap" />
-        </Show>
+        <span class="run-gap" />
         <span class="run-when">{clockOf(props.entry.occurredAt)}</span>
         <span class="run-mark">{KIND_LABEL[props.entry.kind] ?? props.entry.kind}</span>
         <span class="run-money">
@@ -296,35 +248,13 @@ function ExtraRow(props: { entry: UsageLedgerRow; wide: boolean }) {
 }
 
 /**
- * 展开之后才看的那些：失败原文与逐请求账。
+ * 展开之后才看的那份账：这一轮逐次请求的明细。
  *
- * **不再重复行上那几样**（模型名、步数、耗时）——它们在行上，展开区里再摆一遍就是
- * 同一轮的第二个标题。
- */
-function RunDetail(props: { run: Run }) {
-  const r = () => props.run
-
-  return (
-    <div class="run-detail">
-      {/* 失败原文：错误码与原文一直在落库，选中就直接给，不套折叠。 */}
-      <Show when={r().errorCode || r().errorMessage}>
-        <div class="run-err">
-          <Show when={r().errorCode}>
-            <code>{r().errorCode}</code>
-          </Show>
-          <Show when={r().errorMessage}>
-            <span class="run-err-msg">{r().errorMessage}</span>
-          </Show>
-        </div>
-      </Show>
-
-      <RequestLedger run={props.run} />
-    </div>
-  )
-}
-
-/**
- * 逐请求账本。
+ * ## 只有这张表
+ *
+ * 行上已经说了什么时候、哪个模型、几步多久、出没出事、多少钱；会话流末尾那条读数条
+ * 说了为什么停、报错正文是什么。在这里再印一遍就是同一件事说两遍。
+ * 出错的是某一次请求，它记在那一行的「结果」列上，不在轮次上另挂一块。
  *
  * ## 真源是 `provider_requests` 而不是 `usage.turns`
  *
@@ -352,7 +282,7 @@ function RequestLedger(props: { run: Run }) {
 
   return (
     <Show when={requests().length > 0}>
-      <div class="run-req-scroll">
+      <div class="run-detail">
         <table class="run-req">
           <thead>
             <tr>
@@ -401,11 +331,6 @@ function RequestLedger(props: { run: Run }) {
           </tbody>
         </table>
       </div>
-      {/* 能力边界，只在真出现时才占地方：连接层失败的那次**我们不知道对端收没收到、
-          计没计费**，所以它那一行的 token 与金额是空的。 */}
-      <Show when={requests().some((q) => q.status === 'uncertain')}>
-        <p class="run-note">结果不明：发出去之后连接就断了，对端收没收到、计没计费无从确定。</p>
-      </Show>
     </Show>
   )
 }

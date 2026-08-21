@@ -23,10 +23,6 @@
 
 import { describe, expect, test } from 'bun:test'
 
-/** 与 `store/ui.ts` 的 `PANEL_MIN` 对齐。它没导出——导出一个常数只为让测试读它，
- *  等于为测试改产品接口。 */
-const PANEL_MIN_PX = 280
-
 const g = globalThis as Record<string, unknown>
 g.location = {
   hash: '',
@@ -66,6 +62,7 @@ const {
   isRunning,
   openPanel,
   openPanelTab,
+  PANEL_MIN,
   panelMaximized,
   panelTabs,
   panelWidth,
@@ -166,11 +163,11 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
 describe('面板宽度：拖出来的数照原样记住', () => {
   test('拖不足夹在下限——再窄这块面板就没法看了', () => {
     resizePanel(100)
-    expect(panelWidth()).toBe(PANEL_MIN_PX)
+    expect(panelWidth()).toBe(PANEL_MIN)
     // 负数尤其要挡：`minmax(0, -50px)` 会让整条 grid-template-columns 失效，
     // 网格退回隐式 auto 列，那正是要防的那种崩法。
     resizePanel(-50)
-    expect(panelWidth()).toBe(PANEL_MIN_PX)
+    expect(panelWidth()).toBe(PANEL_MIN)
   })
 
   test('窗口放不下也不改小它——网格自己会收，设置得留着', () => {

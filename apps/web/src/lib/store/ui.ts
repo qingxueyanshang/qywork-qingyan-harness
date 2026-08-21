@@ -140,7 +140,7 @@ export function closeAllPanelTabs(): void {
  * 这里不知道。在这儿再算一遍就是同一件事的第二本账，而那本账只在拖动那一刻对：
  * 大屏上拖出来的宽度换到小窗口就成了一个撑破布局的定长。
  */
-const PANEL_MIN = 280
+export const PANEL_MIN = 337
 const PANEL_KEY = 'qywork.panelWidth'
 const PANEL_DEFAULT = 380
 

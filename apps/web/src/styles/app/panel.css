@@ -875,26 +875,23 @@
   min-height: 0;
   display: flex;
 }
+/*
+ * **内容定宽，不跟着面板长。**
+ *
+ * 这一页是一张读数卡加一列轮次：拉宽只会把金额推到几百像素外，读一行要横扫过去。
+ * 面板可以拖宽，那是给文件页和变更页用的。
+ *
+ * 宽度取面板能拖到的最窄那一档（`--panel-min-w`，由 `App.tsx` 从 `PANEL_MIN` 写下来）：
+ * 按最窄排，任何更宽的面板都装得下，样式表里也不必再抄一个数。
+ * `max-width` 兜住窗口被挤到比它还窄的情形——那时网格给的宽度小于下限。
+ */
 .run-col {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  width: var(--panel-min-w);
+  max-width: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-/* 面板拖到足够宽时改成左右两栏：左边挑，右边看。
-   左栏定宽——清单里最长的一行就那么宽，跟着面板一起变宽只会把金额推到几百像素外，
-   而右边那张逐请求表正是拖宽面板的理由，宽度该全给它。 */
-.run-panel.wide .run-col {
-  flex: none;
-  width: 320px;
-}
-.run-detail-col {
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-  padding: var(--s-3) var(--s-4);
-  border-left: 1px solid var(--border-subtle);
 }
 .run-load {
   padding: var(--s-4);
@@ -1006,10 +1003,6 @@
   flex: none;
   width: 10px;
 }
-/* 宽态的选中态：和会话列表、文件树同一档灰——「我点的那一行」全应用只有一种样子。 */
-.run-row.active {
-  background: var(--bg-active);
-}
 .run-row > svg {
   flex: none;
   color: var(--text-tertiary);
@@ -1057,57 +1050,36 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 展开区。**自带底色**：不给的话元信息、错误块、表、边界句四种文字直接落在清单里，
-   和上下两行轮次连成一片，看不出它属于哪一行。 */
-.run-detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  margin: var(--s-1) 0;
-  padding: var(--s-3);
-  border-radius: var(--r-md);
-  background: var(--bg-sunken);
-}
-/* 宽栏里给内容一个阅读宽度上限：表宽跟着面板一路涨的话，`输入` 和 `结果` 之间
-   隔出几百像素空白，眼睛要横扫过去才能把一行读完。 */
-/* 宽态右栏里它是整栏的正文，不是清单里的一块，所以退回无底色。
-   宽度上限是阅读宽度：表宽跟着面板一路涨的话，`输入` 和 `结果` 之间隔出几百像素
-   空白，眼睛要横扫过去才能把一行读完。 */
-.run-panel.wide .run-detail {
-  margin: 0;
-  padding: 0;
-  max-width: 640px;
-  background: none;
-}
-.run-err {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-  max-height: 160px;
-  overflow-y: auto;
-  padding: var(--s-2);
-  border-radius: var(--r-sm);
-  background: var(--danger-soft);
-  color: var(--danger);
-  font-size: var(--fs-xs);
-}
-.run-err code {
-  font-family: var(--font-mono);
-}
-/* 异常原文里常有不带空格的长串（URL、堆栈），不断行会把面板横向撑破。 */
-.run-err-msg {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
+/* 展开区。里面只有那张逐请求表。
 
-/* 表比这一格宽时**只有表自己横向滚**：滚整块展开区会把上面的错误块一起拖走。 */
-.run-req-scroll {
+   **形状与会话流里的折叠体（`.fold-body`）一致**：一条左竖线表达从属，不围盒子。
+   同一个应用里「展开看细节」只该有一种样子；在这里砌一个圆角灰块，它就成了这一列
+   里唯一的实心色块。数值也照 `.fold-body` 取：外边距 10 + 竖线 2 + 内边距 10。
+
+   **左缩进 22px 是算出来的，不是描出来的**：轮次行是 4（行内边距）+ 10（折叠符号）
+   + 8（间距）= 22px 起排时间。表比这个数小就会顶在标题左边，看上去不属于这一行。
+
+   **上边不留空**：竖线从轮次行底下就起，表头紧跟着它那一行。上下各留一档的话，
+   行和表之间空出十几个像素，看着像两块不相干的东西。
+
+   横向滚的是它自己：里面只有表，滚它就是滚表。 */
+.run-detail {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 var(--s-1) 10px;
+  padding: 2px 10px 4px;
+  border-left: 2px solid var(--border-subtle);
   overflow-x: auto;
 }
-/* 数字列右对齐并等宽。这张表是拿来和中转站后台逐行对的，位数对不齐就没法扫。 */
+/* 数字列右对齐并等宽。这张表是拿来和中转站后台逐行对的，位数对不齐就没法扫。
+
+   **整张表走次级灰**，和会话流折叠体里的正文一档。不给的话它继承正文色（近黑），
+   而这块面板从标题到读数全是灰的，这几十个数字就成了整列里唯一扎眼的东西。
+   表头再低一档（`--text-tertiary`），列名与账仍分得开。 */
 .run-req {
   width: 100%;
   border-collapse: collapse;
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
@@ -1117,16 +1089,25 @@
   text-align: right;
   white-space: nowrap;
 }
+/* 表头压在最淡一档并加粗半档：它和数据同字号同行高，不这样分层就只是又一行数字。
+   内边距与数据行同值：表头单独加高的话，它和第一行之间会比行距宽出一截。
+   横线画在表头下面，**两端与数据的两端重合**——左端落在「请求」上，
+   右端落在「结果」上；行与行之间不画线，那会把表切成格子。 */
 .run-req th {
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
-  font-weight: 400;
+  font-weight: 500;
 }
+/* 首末两列贴着表的两边，不再往里缩：缩了，横线两端就比数据宽出一截。 */
 .run-req th:first-child,
 .run-req td:first-child {
   padding-left: 0;
   text-align: left;
   color: var(--text-tertiary);
+}
+.run-req th:last-child,
+.run-req td:last-child {
+  padding-right: 0;
 }
 /* provider 的原话长度不可控（`completed:max_output_tokens`），截断，全文留在 title 里。 */
 .run-req-out {
@@ -1135,14 +1116,6 @@
   text-overflow: ellipsis;
   color: var(--text-secondary);
 }
-/* 边界说明：压到最小一档，但不折叠也不降到看不清。 */
-.run-note {
-  margin: 0;
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-}
-
 /* 账本入口。高度对齐文件页与变更页的那条横带——同一块面板里的几条横带不该各一个高。 */
 .run-ledger {
   flex: none;
@@ -1153,7 +1126,6 @@
   height: 31px;
   padding: 0 var(--s-4);
   border: none;
-  border-top: 1px solid var(--border-subtle);
   background: none;
   font: inherit;
   cursor: pointer;
