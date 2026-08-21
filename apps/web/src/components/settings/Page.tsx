@@ -11,26 +11,28 @@ import { IconFile } from '../Icons.tsx'
  * 「这一层装了哪些东西，怎么加一个」。各页自己拼版面的话，同一个「暂无内容」
  * 会长出五种高度、五种底色，而它们本来该是同一个东西。
  *
- * ## 页头在页面里，不在弹窗的固定头里
+ * ## 页头钉在滚动区顶上，且整块一起钉
  *
- * 标题、说明、右上角动作是同一块：拆成「固定的标题 + 跟着滚的动作按钮」时，
- * 两者会在滚动后错开一整段。所以整块进页面，随内容一起滚。
+ * 标题、说明、右上角动作是同一块。只钉标题的话，滚过之后它和动作按钮会错开一整段。
  */
 
 /**
  * 页头。`desc` 只写**别处看不到的边界**——「改完要重启」「装在全局对所有项目生效」
  * 这类。控件本身说得清的事不在这里再说一遍。
+ *
+ * 说明与标题**同一行**：页头是钉住的，另起一行会让每一页都多占一档高度，
+ * 而它承载的信息量配不上那一档。放不下时它自己截断（`.page-desc`）。
  */
 export function PageHead(props: { title: string; desc?: string; actions?: JSX.Element }) {
   return (
     <header class="page-head">
       <div class="page-head-row">
         <h2 class="page-title">{props.title}</h2>
+        <Show when={props.desc}>{(d) => <p class="page-desc">{d()}</p>}</Show>
         <Show when={props.actions}>
           <div class="page-head-actions">{props.actions}</div>
         </Show>
       </div>
-      <Show when={props.desc}>{(d) => <p class="page-desc">{d()}</p>}</Show>
     </header>
   )
 }

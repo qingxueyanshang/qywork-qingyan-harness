@@ -2,7 +2,7 @@
  * 记忆与技能接口。
  *
  * 覆盖范围：`api/memory.ts` 全部路由——`/api/memory`、`/api/memory/<key>`、
- * `/api/skills`、`/api/skills/import`、`/api/skills/<目录名>`。
+ * `/api/skills`（GET）、`/api/skills/import`、`/api/skills/<目录名>`（DELETE）。
  * 扫描逻辑本身由 `tools/src/scopes.test.ts` 钉住，这里不重复。
  *
  * 钉的是**按层分列引入的那条新风险**：列表现在把被盖住的条目也列出来，用户
@@ -129,58 +129,13 @@ describe('写单条认作用域', () => {
   })
 })
 
-describe('建一个技能', () => {
-  /*
-   * **建完必须能被扫到。** `scanSkillDir` 对没有 `description` 的目录是静默跳过的，
-   * 所以「接口回了 200」和「这个技能真的存在」是两回事——只断言状态码的话，
-   * 一条建完就消失的技能能一路过测。
-   */
-  test('落盘之后扫得到，name 用填的原文，目录名是安全化过的', async () => {
-    const { root } = await workspace()
-    const res = await call(root, '/api/skills', {
-      method: 'POST',
-      body: JSON.stringify({
-        scope: 'project',
-        name: '冒烟检查',
-        description: '提交前跑一遍门禁。',
-        body: '1. bun run gate\n',
-      }),
-    })
-    expect(res!.status).toBe(200)
-
-    const found = await scanSkills(scopeRoots(root))
-    expect(found.map((s) => s.name)).toEqual(['冒烟检查'])
-    expect(found[0]?.description).toBe('提交前跑一遍门禁。')
-  })
-
-  test('说明为空回 422 且不落盘——缺了它扫描器会静默跳过这个目录', async () => {
-    const { root } = await workspace()
-    const res = await call(root, '/api/skills', {
-      method: 'POST',
-      body: JSON.stringify({ scope: 'project', name: 'x', description: '  ', body: '' }),
-    })
-    expect(res!.status).toBe(422)
-    expect(await scanSkills(scopeRoots(root))).toEqual([])
-  })
-
-  test('同名再建一次回 409，不覆盖——目录里可能已经放了脚本', async () => {
-    const { root } = await workspace()
-    const body = JSON.stringify({
-      scope: 'project',
-      name: 'release',
-      description: '发版',
-      body: '',
-    })
-    expect((await call(root, '/api/skills', { method: 'POST', body }))!.status).toBe(200)
-    expect((await call(root, '/api/skills', { method: 'POST', body }))!.status).toBe(409)
-  })
-
+describe('删一个技能', () => {
   test('删的是目录名，删完就扫不到了；删一个不存在的回 404', async () => {
     const { root } = await workspace()
-    await call(root, '/api/skills', {
-      method: 'POST',
-      body: JSON.stringify({ scope: 'project', name: 'release', description: '发版', body: '' }),
-    })
+    const dir = join(root, '.agents', 'skills', 'release')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: release\ndescription: 发版\n---\n', 'utf8')
+    expect(await scanSkills(scopeRoots(root))).toHaveLength(1)
     expect(
       (await call(root, '/api/skills/release?scope=project', { method: 'DELETE' }))!.status,
     ).toBe(200)

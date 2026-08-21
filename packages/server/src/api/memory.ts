@@ -189,56 +189,6 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
   }
 
   /**
-   * 建一个技能。
-   *
-   * 落的是 `<层>/skills/<安全名>/SKILL.md`，前置元信息里的 `name` 用用户填的原文
-   * ——**目录名和 name 是两回事**：目录名要能当路径用，name 是模型在索引里看到的
-   * 那个词，中文、空格都合法。
-   *
-   * `description` 是必填。缺了它 `scanSkillDir` 会直接跳过这个目录，表现是
-   * 「建完刷新列表里没有」，而用户完全无从知道为什么。
-   */
-  if (p === '/api/skills' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as {
-      scope?: string
-      name?: string
-      description?: string
-      body?: string
-    } | null
-    const scope = writableScope(body?.scope ?? null)
-    if (!scope) return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
-
-    const name = (body?.name ?? '').trim()
-    const description = (body?.description ?? '').trim()
-    if (!name) return json({ error: 'invalid', message: '名称为空' }, 422)
-    if (!description) {
-      return json(
-        {
-          error: 'invalid',
-          message: '说明为空——模型靠它判断什么时候用这个技能，缺了等于装了也不会被用到',
-        },
-        422,
-      )
-    }
-    const dirName = safeKey(name)
-    if (!dirName) return json({ error: 'invalid', message: '名称里没有可用作目录名的字符' }, 422)
-
-    const root = scopeDir(scopeRoots(d.workspaceRoot), scope, SKILLS_SUBDIR)
-    if (root === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-    const dir = join(root, dirName)
-    // 已经有同名目录就拒绝，不静默覆盖：覆盖会把里面的脚本一起抹掉。
-    if (await stat(dir).catch(() => null)) {
-      return json({ error: 'conflict', message: `这一层已经有一个 ${dirName} 了` }, 409)
-    }
-    await mkdir(dir, { recursive: true })
-    // 前置元信息里的值不加引号，所以名字和说明里都不能有换行——用户填的是单行输入框，
-    // 这里再收一次是因为接口不该指望调用方替它守规矩。
-    const front = `---\nname: ${name.replaceAll('\n', ' ')}\ndescription: ${description.replaceAll('\n', ' ')}\n---\n`
-    await writeFile(join(dir, 'SKILL.md'), `${front}\n${body?.body ?? ''}\n`, 'utf8')
-    return json({ ok: true, name: dirName, dir })
-  }
-
-  /**
    * 导入一个技能目录：把本机上已经存在的那个整个拷进来。
    *
    * 拷之前先确认它里面真有 `SKILL.md`。不确认的话，指错目录会「导入成功」，

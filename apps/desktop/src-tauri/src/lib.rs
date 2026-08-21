@@ -37,6 +37,25 @@ async fn pick_workspace(app: AppHandle) -> Result<Option<String>, String> {
     Ok(picked.map(|p| p.to_string()))
 }
 
+/// 选文件，可多选。
+///
+/// 与 `pick_workspace` 分成两条命令而不是加参数：目录选择器和文件选择器在
+/// 三个平台上是两个不同的系统对话框，调用方读不出它选的是哪一种。
+///
+/// **必须是多选**：浏览器那条 `<input multiple>` 本来就能一次选好几个，
+/// 桌面端给单选就是同一个按钮在两端行为不一样。取消返回空数组——取消不是错误。
+#[tauri::command]
+async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tauri::async_runtime::channel(1);
+    app.dialog().file().pick_files(move |files| {
+        let _ = tx.blocking_send(files);
+    });
+    let mut rx = rx;
+    let picked = rx.recv().await.flatten().unwrap_or_default();
+    Ok(picked.into_iter().map(|p| p.to_string()).collect())
+}
+
 /// 窗口控制。
 ///
 /// 关掉系统装饰之后，最小化 / 最大化 / 关闭三个动作没有别的入口了，
@@ -237,6 +256,7 @@ pub fn run() {
         .manage(terminal::TerminalHandle::default())
         .invoke_handler(tauri::generate_handler![
             pick_workspace,
+            pick_files,
             reveal_workspace,
             watch_workspace,
             window_minimize,

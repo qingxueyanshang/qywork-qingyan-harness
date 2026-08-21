@@ -1,19 +1,32 @@
 import type { Attachment, ContextGroup, Goal } from '@qywork/core'
-import { CONTEXT_GROUPS } from '@qywork/core'
-import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
+import {
+  attachmentTypeOf,
+  baseNameOf,
+  CONTEXT_GROUPS,
+  isInlineImage,
+  mimeOf,
+  toPosixPath,
+} from '@qywork/core'
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
+  composerSeed,
   interrupt,
+  isDesktopShell,
   isRunning,
+  pickFiles,
   resumeGoal,
   sendMessage,
+  setComposerSeed,
   setPermissionMode,
   setState,
   state,
+  tauriListen,
   uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
+import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { BranchPicker } from './BranchPicker.tsx'
 import { IconFolder, IconPlus, IconSend, IconShield, IconStop, IconX } from './Icons.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
@@ -166,6 +179,42 @@ function GoalChip() {
 }
 
 /**
+ * 桌面外壳的拖放接线。
+ *
+ * **HTML5 的 `ondrop` 在桌面端不触发**：Tauri 的 `drag_drop_handler_enabled`
+ * 默认为真，OS 拖放被外壳截获。这不是障碍——被截获之后外壳 emit 的载荷里是
+ * **绝对路径**，而 HTML5 那条永远只能给到 `File`，拿不到路径。
+ *
+ * 注册在模块级且只做一次：`tauriListen` 刻意不提供退订（见它的注释），
+ * 挂进组件的话每次重挂载都会多一份永远摘不掉的监听。挂载点通过 `dropSink`
+ * 换手，卸载时置空——事件照收，只是没有去处。
+ *
+ * 落点要做命中测试：这是**全窗**事件，拖到会话流上松手不该变成附件。
+ */
+type DropSink = {
+  hit: (pos: { x: number; y: number }) => boolean
+  over: (v: boolean) => void
+  paths: (p: string[]) => void
+}
+let dropSink: DropSink | null = null
+let dropWired = false
+
+function wireShellDrop(): void {
+  if (dropWired) return
+  dropWired = true
+  type DropPayload = { paths?: string[]; position?: { x: number; y: number } }
+  void tauriListen<DropPayload>('tauri://drag-over', (pl) => {
+    dropSink?.over(!!pl.position && dropSink.hit(pl.position))
+  })
+  void tauriListen<DropPayload>('tauri://drag-leave', () => dropSink?.over(false))
+  void tauriListen<DropPayload>('tauri://drag-drop', (pl) => {
+    dropSink?.over(false)
+    if (!pl.position || !dropSink?.hit(pl.position)) return
+    dropSink.paths(pl.paths ?? [])
+  })
+}
+
+/**
  * 输入区。
  *
  * 两条交互决定：
@@ -178,22 +227,79 @@ export function Composer() {
   const [slashCursor, setSlashCursor] = createSignal(0)
   const [pending, setPending] = createSignal<Attachment[]>([])
   const [uploading, setUploading] = createSignal(0)
+  const [dragOver, setDragOver] = createSignal(false)
+  /**
+   * 粘贴进来的那一份的本地预览地址，按落盘路径存。
+   *
+   * 只增不减：一次会话里粘几张图是有限的，而按 chip 的生命周期撤销会在
+   * 「删掉再撤销」和「发送后 Transcript 还要显示」之间打架。
+   */
+  const localThumbs = new Map<string, string>()
+  /** 有本地预览就带上，没有就整个键不出现——`exactOptionalPropertyTypes` 不收 undefined。 */
+  const thumbProps = (path: string): { localUrl?: string } => {
+    const u = localThumbs.get(path)
+    return u ? { localUrl: u } : {}
+  }
   let ta!: HTMLTextAreaElement
   let filePicker!: HTMLInputElement
+  let wrap: HTMLDivElement | undefined
+
+  /*
+   * 收下设置页递过来的起手指令。
+   *
+   * **收下就把信号清空**：它是一次性投递，留着的话下一次投同一句话时信号没变化，
+   * effect 不会再跑，按钮看起来就是点了没反应。
+   *
+   * **不覆盖已经敲了一半的内容**：接在后面，中间空一行。用户正打字时被清空，
+   * 丢掉的是他自己写的东西。
+   */
+  createEffect(() => {
+    const seed = composerSeed()
+    if (seed === null) return
+    setComposerSeed(null)
+    setText((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${seed}` : seed))
+    ta.focus()
+    // 光标落到末尾：用户要接着往下写，不是从头改。
+    queueMicrotask(() => ta.setSelectionRange(ta.value.length, ta.value.length))
+  })
 
   /**
-   * 收附件。`+` 号、粘贴、拖入**走同一条路**——三个入口三套逻辑必然漂移成
-   * 「拖进来能用、粘贴进来不能用」，而那种不一致最难被当成 bug 报出来。
+   * 拿得到源路径的那条入口：桌面端拖入、原生选择器。
    *
-   * 上传失败**逐个报**并继续处理其余的：一张图太大不该让另外三张也白选。
+   * **纯前端，一个请求都不打。** 文件已经在磁盘上了，没有任何字节需要搬——
+   * 这就是「不二次存储」的全部实现。
+   *
+   * `size` 填 0：这里拿不到字节数，而这一格没有消费者（约定写在 `Attachment` 上）。
    */
-  const take = async (files: FileList | File[]) => {
+  const takePaths = (paths: string[]) => {
+    const next = paths.filter(Boolean).map((raw) => {
+      const path = toPosixPath(raw)
+      const name = baseNameOf(path)
+      return { type: attachmentTypeOf(name), name, mime: mimeOf(name), size: 0, path }
+    })
+    if (next.length) setPending((prev) => [...prev, ...next])
+  }
+
+  /**
+   * 拿不到源路径的那条：剪贴板里只有位图，或者浏览器不给绝对路径。
+   *
+   * 这一份字节除了内存里没有第二处，所以落盘是**第一次**存储不是第二次。
+   * 落点是 `~/.qywork/attachments/<会话id>/`，删会话时整个目录一起走。
+   *
+   * 失败**逐个报**并继续处理其余的：一张图太大不该让另外三张也白选。
+   */
+  const takeFiles = async (files: FileList | File[]) => {
     const list = Array.from(files)
     if (!list.length) return
+    const conversationId = state.activeConversation
+    // 没有会话就没有归属，和「发送」同一个判据（`sendMessage` 也在这里早退）。
+    if (!conversationId) return
     setUploading((n) => n + list.length)
     for (const f of list) {
       try {
-        const a = await uploadAttachment(f)
+        const a = await uploadAttachment(f, conversationId)
+        // 粘贴的那一份手里就有字节，缩略图直接用它，省掉一次回读。
+        if (isInlineImage(a.path)) localThumbs.set(a.path, URL.createObjectURL(f))
         setPending((prev) => [...prev, a])
       } catch (e) {
         setState('notice', {
@@ -205,6 +311,34 @@ export function Composer() {
       }
     }
   }
+
+  /**
+   * 桌面外壳的拖放。
+   *
+   * **HTML5 的 `ondrop` 在桌面端不触发**：Tauri 的 `drag_drop_handler_enabled`
+   * 默认为真，OS 拖放被外壳截获。这不是障碍——被截获之后外壳 emit 的载荷里是
+   * **绝对路径**，正是 `takePaths` 要的东西，而 HTML5 那条永远只能给到 `File`。
+   *
+   * 按落点命中测试：`tauri://drag-drop` 是全窗事件，拖到会话流上松手不该变成附件。
+   *
+   * 只在挂载时注册一次——`tauriListen` 刻意不提供退订（见它的注释），
+   * 而这个组件是常驻单挂载。
+   */
+  onMount(() => {
+    if (!isDesktopShell()) return
+    dropSink = {
+      hit: (pos) => {
+        const r = wrap?.getBoundingClientRect()
+        return !!r && pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom
+      },
+      over: setDragOver,
+      paths: takePaths,
+    }
+    wireShellDrop()
+    onCleanup(() => {
+      dropSink = null
+    })
+  })
 
   /**
    * 斜杠命令。
@@ -274,7 +408,7 @@ export function Composer() {
   }
 
   return (
-    <div class="composer-wrap">
+    <div class="composer-wrap" classList={{ 'drag-over': dragOver() }} ref={wrap}>
       {/* 空会话时的「这一轮会跑在哪」。**不写标语**——一句口号不携带任何信息，
           而 B7 的判据是「删掉这句用户还能不能用」。留下的 chip 每一个都在
           回答一个真问题，而且每一个都点得动。
@@ -304,13 +438,14 @@ export function Composer() {
         </div>
       </Show>
 
-      {/* 待发附件。只列名字不做缩略图墙：一行一个看得清、删得掉，
-          而缩略图会把输入区顶掉半屏。 */}
+      {/* 待发附件。一行一个看得清、删得掉，**不做缩略图墙**——那会把输入区顶掉半屏。
+          左边那格是定尺的（20px），图片放缩略图、文件放通用图标，行高不随内容变。 */}
       <Show when={pending().length > 0 || uploading() > 0}>
         <div class="attach-row">
           <For each={pending()}>
             {(a, i) => (
               <span class="attach-chip" data-tip={a.path}>
+                <AttachmentThumb path={a.path} name={a.name} box={20} {...thumbProps(a.path)} />
                 <span class="truncate">{a.name}</span>
                 <button
                   class="attach-x"
@@ -378,7 +513,7 @@ export function Composer() {
             if (files.length) {
               // 有文件才拦：拦掉纯文本粘贴会让人没法正常贴代码。
               e.preventDefault()
-              void take(files)
+              void takeFiles(files)
             }
           }}
           onDragOver={(e) => e.preventDefault()}
@@ -386,7 +521,7 @@ export function Composer() {
             const files = Array.from(e.dataTransfer?.files ?? [])
             if (files.length) {
               e.preventDefault()
-              void take(files)
+              void takeFiles(files)
             }
           }}
           value={text()}
@@ -430,7 +565,10 @@ export function Composer() {
 
         <div class="composer-bar">
           {/* 一个 `+` 收所有附件，不做图片/文件两个入口——对用户来说
-              「把这个东西给它看」是同一件事。 */}
+              「把这个东西给它看」是同一件事。
+
+              桌面端走系统对话框：它给的是**绝对路径**，于是这条入口和拖入一样
+              不搬字节。`<input type="file">` 拿不到路径，那是浏览器端唯一的路。 */}
           <input
             ref={filePicker}
             type="file"
@@ -438,7 +576,7 @@ export function Composer() {
             style={{ display: 'none' }}
             onChange={(e) => {
               const fs = e.currentTarget.files
-              if (fs) void take(fs)
+              if (fs) void takeFiles(fs)
               // 清空 value：同一个文件连选两次也要能触发 change。
               e.currentTarget.value = ''
             }}
@@ -448,7 +586,13 @@ export function Composer() {
             type="button"
             aria-label="添加附件"
             data-tip="添加附件（也可直接粘贴或拖入）"
-            onClick={() => filePicker.click()}
+            onClick={() => {
+              if (isDesktopShell()) {
+                void pickFiles().then(takePaths)
+                return
+              }
+              filePicker.click()
+            }}
           >
             <IconPlus size={16} />
           </button>

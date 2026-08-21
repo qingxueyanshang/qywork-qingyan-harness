@@ -1,8 +1,8 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import {
+  askInChat,
   client,
-  createPlugin,
   installPlugin,
   isDesktopShell,
   pickWorkspace,
@@ -10,7 +10,7 @@ import {
 } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
-import { EmptyBox, EntryCard, PageHead, PathLine, Section } from './settings/Page.tsx'
+import { EmptyBox, EntryCard, PathLine, Section } from './settings/Page.tsx'
 
 interface PluginTool {
   name: string
@@ -68,18 +68,18 @@ function dirName(dir: string): string {
   return dir.split(/[\\/]/).pop() ?? dir
 }
 
+/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+const NEW_PLUGIN =
+  '我们一起来做一个插件吧。先说明插件在 qywork 里怎么加载、跑在哪、能拿到什么权限，目录里要有哪些文件；然后问我这个插件要提供什么工具。'
+
 export function PluginsPanel() {
   const [data, { refetch }] = createResource(() => client.api<PluginsPayload>('/api/plugins'))
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
-  const [manual, setManual] = createSignal('')
   /** 新建表单。null = 没在建。 */
-  const [draft, setDraft] = createSignal<{ id: string; name: string; description: string } | null>(
-    null,
-  )
+
   /** 导入框开着没有。分开一个状态是因为两条路各自有各自的取消。 */
-  const [importing, setImporting] = createSignal(false)
 
   const act = async (key: string, fn: () => Promise<unknown>, ok: (r: never) => string) => {
     setBusy(key)
@@ -107,8 +107,11 @@ export function PluginsPanel() {
         `已装入 ${r.id}。插件在服务启动时加载，重启后生效。`,
     )
 
+  /** 选一个本机上已经存在的插件目录，选完就装。 */
   const browse = async () => {
     if (!isDesktopShell()) return
+    setError(null)
+    setOkMsg(null)
     try {
       const picked = await pickWorkspace()
       if (picked) await install(picked)
@@ -123,53 +126,26 @@ export function PluginsPanel() {
    */
   const Actions = () => (
     <>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        disabled={busy() !== null}
-        onClick={() => {
-          setDraft(null)
-          setError(null)
-          setOkMsg(null)
-          setImporting(true)
-        }}
-      >
-        导入
-      </button>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        disabled={busy() !== null}
-        onClick={() => {
-          setImporting(false)
-          setError(null)
-          setOkMsg(null)
-          setDraft({ id: '', name: '', description: '' })
-        }}
-      >
-        新建
+      {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
+          留一个点了没反应的按钮比不给更糟（B5）。 */}
+      <Show when={isDesktopShell()}>
+        <button
+          class="btn-ghost sm"
+          type="button"
+          disabled={busy() !== null}
+          onClick={() => void browse()}
+        >
+          导入
+        </button>
+      </Show>
+      <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_PLUGIN)}>
+        新增
       </button>
     </>
   )
 
-  const create = (d: { id: string; name: string; description: string }) =>
-    act(
-      'new',
-      () => createPlugin(d),
-      (r: { id: string }) => {
-        setDraft(null)
-        // 和安装同一条边界：插件在服务启动时加载，不是热插拔。
-        return `已建好 ${r.id}。改完代码重启后生效。`
-      },
-    )
-
   return (
     <>
-      {/* 页头在 `Show` 外面：起插件子进程要几秒，这几秒里这一页也该有名字。 */}
-      <PageHead
-        title="插件"
-        desc="插件为模型贡献工具。只有全局一份，装一次对所有项目生效，重启后加载。"
-      />
       {/* `loaded()` 而不是 `data()`：装/卸插件之后要重取，重取期间留住上一份；
           出错时给 undefined，由 `LoadState` 说明原因并给一条重试的路——
           写成 `data()` 的话它会先抛，`fallback` 永远轮不到。 */}
@@ -260,109 +236,6 @@ export function PluginsPanel() {
                       </div>
                     )}
                   </For>
-                </div>
-              </Section>
-            </Show>
-
-            <Show when={draft()}>
-              {(f) => (
-                <Section title="新建插件">
-                  <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">标识</span>
-                        <span class="setting-row-hint">
-                          工具名按它拼前缀，反向域名风格，只能用字母数字和 . _ -
-                        </span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().id}
-                        placeholder="如 demo.lines"
-                        onInput={(e) => setDraft({ ...f(), id: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">名称</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().name}
-                        placeholder="如 行数统计"
-                        onInput={(e) => setDraft({ ...f(), name: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">说明</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().description}
-                        placeholder="数一个文件有多少行"
-                        onInput={(e) => setDraft({ ...f(), description: e.currentTarget.value })}
-                      />
-                    </div>
-                  </div>
-                  <div class="row-actions">
-                    <button
-                      class="btn-primary"
-                      type="button"
-                      disabled={busy() !== null || !f().id.trim()}
-                      onClick={() => void create(f())}
-                    >
-                      创建
-                    </button>
-                    <button class="btn-ghost" type="button" onClick={() => setDraft(null)}>
-                      取消
-                    </button>
-                  </div>
-                  <span class="field-hint">
-                    会落一份能跑起来的骨架（清单 + 一个 echo 工具），改完重启生效。
-                  </span>
-                </Section>
-              )}
-            </Show>
-
-            {/* 导入。
-              只接受**本机已存在的目录**：没有 registry，所以没有「从市场安装」；
-              也刻意不做 git clone 任意 URL——那等于从网上取一段代码，下次加载就跑它。 */}
-            <Show when={importing()}>
-              <Section title="导入插件目录">
-                <div class="field">
-                  <input
-                    type="text"
-                    placeholder="插件目录的绝对路径"
-                    value={manual()}
-                    onInput={(e) => setManual(e.currentTarget.value)}
-                  />
-                  <span class="field-hint">
-                    目录里要有 <code>qywork.plugin.json</code>；清单不合法会被拒绝，不会装进去一半。
-                  </span>
-                </div>
-                <div class="row-actions">
-                  <Show when={isDesktopShell()}>
-                    <button
-                      class="btn-ghost"
-                      type="button"
-                      disabled={busy() !== null}
-                      onClick={() => void browse()}
-                    >
-                      选择目录…
-                    </button>
-                  </Show>
-                  <button
-                    class="btn-primary"
-                    type="button"
-                    disabled={!manual().trim() || busy() !== null}
-                    onClick={() => void install(manual().trim())}
-                  >
-                    导入
-                  </button>
-                  <button class="btn-ghost" type="button" onClick={() => setImporting(false)}>
-                    取消
-                  </button>
                 </div>
               </Section>
             </Show>

@@ -1,6 +1,7 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import {
+  askInChat,
   deleteMemory,
   loadMemory,
   loadMemoryEntry,
@@ -9,7 +10,7 @@ import {
 } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
-import { EmptyBox, EntryCard, PageHead, Section } from './Page.tsx'
+import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
 
 /**
@@ -36,13 +37,14 @@ import { ScopeTabs, ShadowTag } from './Scope.tsx'
  * 新建不同：它建的是一个还不存在的条目，标识敲到一半就落盘会在库里留下一串
  * 半截的键，所以那一次保留一颗「创建」。
  */
+/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+const NEW_MEMORY =
+  '我们一起来加一条记忆吧。先说明记忆在 qywork 里怎么工作、分哪几层、写在哪个目录；然后问我要记什么。'
+
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
-  /**
-   * 正在编辑哪一条。`isNew` **不能从 key 是不是空串推出来**——用户敲下第一个字
-   * key 就非空了，靠它判断的话标识框会在打第二个字之前自己变成只读。
-   */
-  const [editing, setEditing] = createSignal<{ key: string; isNew: boolean } | null>(null)
+  /** 正在编辑哪一条记忆的标识。`null` = 没在编辑。 */
+  const [editing, setEditing] = createSignal<string | null>(null)
   const [draft, setDraft] = createSignal('')
   /** 看的是哪一层。新建也落在这一层——用户正看着它。 */
   const [scope, setScope] = createSignal<Scope>('project')
@@ -64,29 +66,24 @@ export default function MemorySettings() {
   }
 
   const open = (key: string, from: Scope) => {
-    setEditing({ key, isNew: false })
+    setEditing(key)
     setDraft('')
     void loadMemoryEntry(key, from)
       .then((full) => {
         // 拉回来时用户可能已经切去编辑别的了，别把他正在打的字盖掉。
-        if (editing()?.key === key) setDraft(full.content)
+        if (editing() === key) setDraft(full.content)
       })
       .catch(() => setEditing(null))
   }
 
-  /** 已有条目失焦即存。正文空着不发——那是一次误清空，不是一条空记忆。 */
+  /** 失焦即存。正文空着不发——那是一次误清空，不是一条空记忆。 */
   const commit = () => {
-    const e = editing()
-    if (!e || e.isNew || !draft().trim()) return
+    const key = editing()
+    if (!key || !draft().trim()) return
     void run(async () => {
-      await saveMemory(e.key, draft(), scope())
+      await saveMemory(key, draft(), scope())
       await refetch()
     })
-  }
-
-  const startNew = () => {
-    setEditing({ key: '', isNew: true })
-    setDraft('')
   }
 
   /**
@@ -94,7 +91,7 @@ export default function MemorySettings() {
    * 而空的时候用户看到的恰恰是空态框里那一份。
    */
   const Actions = () => (
-    <button class="btn-ghost sm" type="button" onClick={startNew}>
+    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_MEMORY)}>
       新增
     </button>
   )
@@ -105,7 +102,6 @@ export default function MemorySettings() {
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。
           它不依赖任何取回来的数据，摆进去只会让失败态变成一块无名的空白。 */}
-      <PageHead title="记忆" desc="记忆索引每轮都发给模型，正文由它按需读取。" />
       <Show
         when={loaded(mem)}
         fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}
@@ -147,7 +143,7 @@ export default function MemorySettings() {
                             onClick={() =>
                               void run(async () => {
                                 await deleteMemory(e.key, e.scope)
-                                if (editing()?.key === e.key) setEditing(null)
+                                if (editing() === e.key) setEditing(null)
                                 await refetch()
                               })
                             }
@@ -164,22 +160,8 @@ export default function MemorySettings() {
 
             <Show when={editing()}>
               {(e) => (
-                <Section title={e().isNew ? '新增记忆' : `编辑 ${e().key}`}>
+                <Section title={`编辑 ${e()}`}>
                   <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">标识</span>
-                      </div>
-                      {/* 标识只在新建时可改：改一条已有记忆的键等于换一条记忆，
-                        那是新建 + 删除两次操作。 */}
-                      <input
-                        type="text"
-                        value={e().key}
-                        disabled={!e().isNew}
-                        placeholder="如 build-commands"
-                        onInput={(ev) => setEditing({ key: ev.currentTarget.value, isNew: true })}
-                      />
-                    </div>
                     <div class="setting-row stack">
                       <div class="setting-row-text">
                         <span class="setting-row-label">内容</span>
@@ -194,26 +176,8 @@ export default function MemorySettings() {
                     </div>
                   </div>
 
+                  {/* 没有提交键：正文框失焦时就已经存了。 */}
                   <div class="row-actions">
-                    {/* 只有新建那一次有提交键：它建的是一个还不存在的条目。
-                      已有条目在上面的正文框失焦时就已经存了。 */}
-                    <Show when={e().isNew}>
-                      <button
-                        class="btn-primary"
-                        type="button"
-                        disabled={busy() || !e().key.trim() || !draft().trim()}
-                        onClick={() =>
-                          void run(async () => {
-                            await saveMemory(e().key, draft(), scope())
-                            setEditing(null)
-                            setDraft('')
-                            await refetch()
-                          })
-                        }
-                      >
-                        创建
-                      </button>
-                    </Show>
                     <button
                       class="btn-ghost"
                       type="button"
@@ -222,7 +186,7 @@ export default function MemorySettings() {
                         setDraft('')
                       }}
                     >
-                      {e().isNew ? '取消' : '关闭'}
+                      关闭
                     </button>
                     <Show when={error()}>{(msg) => <span class="save-msg bad">{msg()}</span>}</Show>
                   </div>

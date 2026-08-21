@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import {
-  createSkill,
+  askInChat,
   deleteSkill,
   importSkill,
   isDesktopShell,
@@ -11,7 +11,7 @@ import {
 } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
-import { EmptyBox, EntryCard, PageHead, Section } from './Page.tsx'
+import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
 
 /**
@@ -39,18 +39,13 @@ function dirName(dir: string): string {
   return dir.split(/[\\/]/).pop() ?? dir
 }
 
-interface Draft {
-  name: string
-  description: string
-  body: string
-}
-const emptyDraft = (): Draft => ({ name: '', description: '', body: '' })
+/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+const NEW_SKILL =
+  '我们一起来做一个技能吧。先说明技能在 qywork 里怎么被索引、什么时候会被加载，目录和 SKILL.md 长什么样；然后问我这个技能要干什么、分几步。'
 
 export default function SkillsSettings() {
   const [data, { refetch }] = createResource(loadSkills)
   const [scope, setScope] = createSignal<Scope>('project')
-  const [draft, setDraft] = createSignal<Draft | null>(null)
-  const [importPath, setImportPath] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
@@ -73,17 +68,9 @@ export default function SkillsSettings() {
     }
   }
 
-  const submit = (d: Draft) =>
-    void run(async () => {
-      const r = await createSkill({ scope: scope(), ...d })
-      setDraft(null)
-      return `已建好 ${r.name}`
-    })
-
   const doImport = (path: string) =>
     void run(async () => {
       const r = await importSkill(scope(), path)
-      setImportPath(null)
       return `已导入 ${r.name}`
     })
 
@@ -93,38 +80,24 @@ export default function SkillsSettings() {
    */
   const Actions = () => (
     <>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        disabled={busy()}
-        onClick={() => {
-          setDraft(null)
-          setError(null)
-          setOkMsg(null)
-          setImportPath('')
-        }}
-      >
-        导入
-      </button>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        disabled={busy()}
-        onClick={() => {
-          setImportPath(null)
-          setError(null)
-          setOkMsg(null)
-          setDraft(emptyDraft())
-        }}
-      >
-        新建
+      {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
+          留一个点了没反应的按钮比不给更糟（B5）。 */}
+      <Show when={isDesktopShell()}>
+        <button class="btn-ghost sm" type="button" disabled={busy()} onClick={() => void browse()}>
+          导入
+        </button>
+      </Show>
+      <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SKILL)}>
+        新增
       </button>
     </>
   )
 
-  /** 桌面外壳才有目录选择器。网页上只能敲路径，所以两条路都留着。 */
+  /** 选一个本机上已经存在的技能目录，选完就导。 */
   const browse = async () => {
     if (!isDesktopShell()) return
+    setError(null)
+    setOkMsg(null)
     try {
       const picked = await pickWorkspace()
       if (picked) doImport(picked)
@@ -136,7 +109,6 @@ export default function SkillsSettings() {
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
-      <PageHead title="技能" desc="技能是按需加载的操作步骤：索引每轮都发，正文由模型自己拉。" />
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
@@ -147,9 +119,7 @@ export default function SkillsSettings() {
               value={scope()}
               onChange={(s) => {
                 setScope(s)
-                // 切层等于换一批目录，正在填的那个不属于新的这一层。
-                setDraft(null)
-                setImportPath(null)
+                // 切层等于换一批目录，上一层那条结果不属于新的这一层。
                 setError(null)
                 setOkMsg(null)
               }}
@@ -202,121 +172,10 @@ export default function SkillsSettings() {
               </Show>
             </Section>
 
-            <Show when={draft()}>
-              {(f) => (
-                <Section title="新建技能">
-                  <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">名称</span>
-                        <span class="setting-row-hint">模型在索引里看到的就是它</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().name}
-                        placeholder="如 发版流程"
-                        onInput={(e) => setDraft({ ...f(), name: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">说明</span>
-                        {/* 这不是解释是边界：缺了它扫描器直接跳过这个目录。 */}
-                        <span class="setting-row-hint">
-                          模型靠它判断什么时候用这个技能，缺了等于装了也不会被用到
-                        </span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().description}
-                        placeholder="改 VERSION、跑 sync-version、打 tag。"
-                        onInput={(e) => setDraft({ ...f(), description: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">正文</span>
-                        <span class="setting-row-hint">操作步骤，模型读到这个技能时看的就是它</span>
-                      </div>
-                      <textarea
-                        class="code-area"
-                        rows={10}
-                        value={f().body}
-                        onInput={(e) => setDraft({ ...f(), body: e.currentTarget.value })}
-                      />
-                    </div>
-                  </div>
-                  <div class="row-actions">
-                    <button
-                      class="btn-primary"
-                      type="button"
-                      disabled={busy() || !f().name.trim() || !f().description.trim()}
-                      onClick={() => submit(f())}
-                    >
-                      创建
-                    </button>
-                    <button class="btn-ghost" type="button" onClick={() => setDraft(null)}>
-                      取消
-                    </button>
-                    <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-                  </div>
-                </Section>
-              )}
-            </Show>
-
-            {/* 导入 = 把本机上一个已经存在的目录整个拷进来。
-                **刻意不做 `git clone <任意 URL>`**：那等于从网上取一段东西、
-                下次加载就用它，和插件那条边界同一个理由。 */}
-            <Show when={importPath() !== null}>
-              <Section title="导入技能目录">
-                <div class="field">
-                  <input
-                    type="text"
-                    placeholder="技能目录的绝对路径"
-                    value={importPath() ?? ''}
-                    onInput={(e) => setImportPath(e.currentTarget.value)}
-                  />
-                  <span class="field-hint">
-                    目录里要有 <code>SKILL.md</code>；没有会被拒绝，不会拷进去一半。
-                  </span>
-                </div>
-                <div class="row-actions">
-                  <Show when={isDesktopShell()}>
-                    <button
-                      class="btn-ghost"
-                      type="button"
-                      disabled={busy()}
-                      onClick={() => void browse()}
-                    >
-                      选择目录…
-                    </button>
-                  </Show>
-                  <button
-                    class="btn-primary"
-                    type="button"
-                    disabled={busy() || !(importPath() ?? '').trim()}
-                    onClick={() => doImport((importPath() ?? '').trim())}
-                  >
-                    导入
-                  </button>
-                  <button class="btn-ghost" type="button" onClick={() => setImportPath(null)}>
-                    取消
-                  </button>
-                  <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-                </div>
-              </Section>
-            </Show>
-
-            {/* 表单没开着时结果也要有地方落——删一条失败的话，
-                否则那句话跟着表单一起消失了。`error()` / `okMsg()` 必须排在
-                这串 `&&` 的最后：`Show` 把 `when` 的求值结果原样交给子函数，
-                布尔 `true` 渲染出来是一个空框。 */}
-            <Show when={!draft() && importPath() === null && error()}>
-              {(e) => <p class="settings-notices bad">{e()}</p>}
-            </Show>
-            <Show when={!draft() && importPath() === null && okMsg()}>
-              {(m) => <p class="settings-notices">{m()}</p>}
-            </Show>
+            {/* 导入和删除的结果都落在这里。**必须排在 `Show` 的 `when` 末位**：
+                它把求值结果原样交给子函数，布尔 `true` 渲染出来是一个空框。 */}
+            <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+            <Show when={okMsg()}>{(m) => <p class="settings-notices">{m()}</p>}</Show>
           </>
         )}
       </Show>
