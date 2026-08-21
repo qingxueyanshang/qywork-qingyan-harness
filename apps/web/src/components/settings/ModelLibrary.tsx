@@ -1,3 +1,4 @@
+import { CACHE_ROUTINGS, REASONING_ECHOES, THINKING_MODES } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   type CatalogEntry,
@@ -313,10 +314,7 @@ function ModelForm(props: {
         <span>思考怎么发</span>
         <select ref={thinkRef}>
           <option value="">照内置值（{props.model?.thinking ?? '未知'}）</option>
-          <option value="none">不发</option>
-          <option value="reasoning_effort">reasoning_effort</option>
-          <option value="deepseek_thinking">deepseek_thinking</option>
-          <option value="anthropic_effort">anthropic_effort</option>
+          <For each={THINKING_MODES}>{(v) => <option value={v}>{v}</option>}</For>
         </select>
       </label>
       <label class="lib-field lib-check">
@@ -333,8 +331,7 @@ function ModelForm(props: {
         <span>回传推理原文</span>
         <select ref={echoRef}>
           <option value="">照内置值（{props.model?.reasoningEcho ?? '未知'}）</option>
-          <option value="none">不回传</option>
-          <option value="reasoning_text">reasoning_text</option>
+          <For each={REASONING_ECHOES}>{(v) => <option value={v}>{v}</option>}</For>
         </select>
       </label>
       {/* 缓存路由。中转站多上游轮询时不发这个键，前缀再稳也可能恒不命中；
@@ -343,8 +340,7 @@ function ModelForm(props: {
         <span>缓存路由</span>
         <select ref={cacheRoutingRef}>
           <option value="">照内置值（{props.model?.cacheRouting ?? '未知'}）</option>
-          <option value="prompt_cache_key">发 prompt_cache_key</option>
-          <option value="none">不发</option>
+          <For each={CACHE_ROUTINGS}>{(v) => <option value={v}>{v}</option>}</For>
         </select>
       </label>
       <label class="lib-field">

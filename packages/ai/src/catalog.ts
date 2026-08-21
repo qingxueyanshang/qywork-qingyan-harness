@@ -8,7 +8,13 @@
  * 口径来源：Anthropic 官方文档（2026-06-24 快照）。改动这里前先核对，别凭记忆写。
  */
 
-import type { EffortLevel } from '@qywork/core'
+import type {
+  CacheRouting,
+  EffortLevel,
+  ProviderKind,
+  ReasoningEcho,
+  ThinkingMode,
+} from '@qywork/core'
 
 /**
  * 每百万 token 的单价。
@@ -29,60 +35,6 @@ export interface Pricing {
   /** 缓存写入（1 小时 TTL），通常是 input 的 2 倍。 */
   cacheWrite1h: number
 }
-
-/**
- * 缓存路由亲和键的发法。
- *
- * `prompt_cache_key` 是 OpenAI 协议的标准字段。中转站普遍在多个上游 key /
- * 节点之间轮询，而隐式前缀缓存按分片存——不带键就是每次随机落一个分片。
- */
-export type CacheRouting = 'prompt_cache_key' | 'none'
-
-/**
- * 带 tool_calls 的历史消息，要不要把上一轮的推理原文回传给端点。
- *
- * 这是**接收请求的那个端点**的要求，不是历史的属性——所以它归目录这一格，
- * 与 `cacheRouting` 同类。不要改回「从历史里有没有推理文本反推」：
- * 摘要型端点（`reasoning.summary`）同样会给出推理文本，反推必然假阳性，
- * 而假阳性的代价是每一轮工具调用之后都发不出去。
- *
- * 只有 Responses 适配器消费它。
- */
-export type ReasoningEcho =
-  /** 不回传。 */
-  | 'none'
-  /** 回传 `{type:'reasoning', content:[{type:'reasoning_text'}]}`。 */
-  | 'reasoning_text'
-
-export type ThinkingMode =
-  /** 只接受 {type:'adaptive'}；budget_tokens 会 400。 */
-  | 'adaptive_only'
-  /** 思考恒开，连 {type:'disabled'} 都会 400——只能省略 thinking 字段。 */
-  | 'always_on'
-  /** 老模型：{type:'enabled', budget_tokens:N}。 */
-  | 'budget_tokens'
-  /**
-   * OpenAI Responses 形态：思考默认开着，靠 `reasoning.effort` 控制，
-   * **`'none'` 是唯一能真的关掉它的值**。
-   *
-   * 与 `always_on` 的区别是「关得掉」，与 `none` 的区别是「本来就在思考」。
-   * 这两条差别都要钱：当成 `always_on` 会让「不思考」这个选项静默失效，
-   * 当成 `none` 会让适配器一个 reasoning 字段都不发、于是同样关不掉。
-   *
-   * 实测（2026-08，deepseek-v4-flash / max_output_tokens=900，各三次）：
-   * `effort:'none'` → reasoning_tokens 0/0/0；其余每一档都是 899~900。
-   * 也就是说除了 `none`，**effort 是被接受但不被采纳的**——
-   * 这类模型的 `effortLevels` 应当照实填 `[]`。
-   */
-  | 'reasoning_effort'
-  /**
-   * DeepSeek 自己的那套：**`thinking` 开关和 `reasoning_effort` 档位要一起发**。
-   *
-   * 只发 `reasoning_effort` 不发 `thinking` 时思考根本没开，档位自然没有效果。
-   * 那个现象容易被归因成「模型不支持 effort」，实际是少发了一半。
-   */
-  | 'deepseek_thinking'
-  | 'none'
 
 export interface ModelSpec {
   id: string
@@ -161,8 +113,6 @@ export interface ModelSpec {
    */
   catalogued?: boolean
 }
-
-export type ProviderKind = 'anthropic_messages' | 'openai_responses' | 'openai_chat_completions'
 
 /**
  * 厂商。

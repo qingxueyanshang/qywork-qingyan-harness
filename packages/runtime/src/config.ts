@@ -7,14 +7,20 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { lookupModel } from '@qywork/ai'
 import {
+  CACHE_ROUTINGS,
   type CacheRouting,
-  lookupModel,
+  EFFORT_ORDER,
+  type EffortLevel,
+  type PermissionMode,
+  PROVIDER_KINDS,
   type ProviderKind,
+  REASONING_ECHOES,
   type ReasoningEcho,
+  THINKING_MODES,
   type ThinkingMode,
-} from '@qywork/ai'
-import { EFFORT_ORDER, type EffortLevel, type PermissionMode } from '@qywork/core'
+} from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
 /**
@@ -543,6 +549,44 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
           `${name} / ${id} 的思考强度 "${m.effort}" 不是有效值。\n` +
             `  可选：${EFFORT_ORDER.join('、')}\n` +
             `  这是**档位全集**；该模型实际支持的档位以 qy probe 或界面选项为准。`,
+        )
+      }
+    }
+  }
+
+  /*
+   * 模型库那几个枚举必须在词表里，键的协议维也是。
+   *
+   * 不验的后果**大多是静默的**：`thinking` 打错 → `effortIsTransmittable` 恒 false
+   * → 这个模型的 effort 从此不再发送；`cacheRouting` 打错 → 亲和键不再发送；
+   * 键的协议维打错 → 这条覆盖永远匹配不上任何请求（取法见 `resolveModel`）。
+   * 三种都不报错，而模型库界面把用户填的字符串原样显示回去，看着像生效了。
+   *
+   * 文案要带**改哪**：这条挡的是 `qy exec` 启动，只说「值不对」而不说去哪改，
+   * 用户手边未必有终端。
+   */
+  const vocabularies = [
+    ['thinking', THINKING_MODES],
+    ['reasoningEcho', REASONING_ECHOES],
+    ['cacheRouting', CACHE_ROUTINGS],
+  ] as const
+  for (const [key, entry] of Object.entries(cfg.catalog ?? {})) {
+    const kind = key.slice(key.lastIndexOf('|') + 1)
+    if (!PROVIDER_KINDS.includes(kind as ProviderKind)) {
+      problems.push(
+        `模型库的键 "${key}" 里的协议 "${kind}" 不是有效值。\n` +
+          `  可选：${PROVIDER_KINDS.join('、')}\n` +
+          `  这条覆盖永远匹配不上任何请求。改 ${configPath()} 里 "catalog" 下的键名。`,
+      )
+    }
+    for (const [field, allowed] of vocabularies) {
+      const value = (entry as Record<string, unknown>)[field]
+      if (value === undefined) continue
+      if (!(allowed as readonly string[]).includes(value as string)) {
+        problems.push(
+          `模型库 "${key}" 的 ${field} "${String(value)}" 不是有效值。\n` +
+            `  可选：${allowed.join('、')}\n` +
+            `  在设置 → 模型库里重选，或改 ${configPath()} 里 "catalog" 下的这一格。`,
         )
       }
     }

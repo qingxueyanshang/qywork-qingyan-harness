@@ -6,8 +6,8 @@
 
 // `ContextGroup` 的真源在 `core/domain/model.ts`。这里只转出去给 `_group` 用——
 // 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
-import type { ContextGroup, EffortLevel } from '@qywork/core'
-import type { ModelSpec, ProviderKind, SpecOverride } from './catalog.ts'
+import type { ContextGroup, EffortLevel, ProviderKind } from '@qywork/core'
+import type { ModelSpec, SpecOverride } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
 

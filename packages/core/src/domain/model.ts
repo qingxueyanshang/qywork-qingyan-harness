@@ -52,6 +52,83 @@ export type EffortLevel = (typeof EFFORT_ORDER)[number]
  */
 export type PermissionMode = 'auto' | 'full'
 
+/**
+ * 接口说哪套协议。**是协议，不是厂商**——DeepSeek、OpenAI、任何中转站都可以是
+ * `openai_chat_completions`。
+ *
+ * 顺序即界面顺序（接口协议下拉、模型库保存扇出的默认清单），改序会改界面。
+ */
+export const PROVIDER_KINDS = [
+  'anthropic_messages',
+  'openai_chat_completions',
+  'openai_responses',
+] as const
+export type ProviderKind = (typeof PROVIDER_KINDS)[number]
+
+/**
+ * 思考强度怎么发到线上。**每条模型在每条协议上各有一个值**，由模型库那一格裁决。
+ *
+ * 派生方向同 `EFFORT_ORDER`：数组在前，因为落盘校验要在运行期逐个比对。
+ */
+export const THINKING_MODES = [
+  /** 只接受 `{type:'adaptive'}`；`budget_tokens` 会 400。 */
+  'adaptive_only',
+  /** 思考恒开，连 `{type:'disabled'}` 都会 400——只能省略 thinking 字段。 */
+  'always_on',
+  /** 老模型：`{type:'enabled', budget_tokens:N}`。 */
+  'budget_tokens',
+  /**
+   * OpenAI Responses 形态：思考默认开着，靠 `reasoning.effort` 控制，
+   * **`'none'` 是唯一能真的关掉它的值**。
+   *
+   * 与 `always_on` 的区别是「关得掉」，与 `none` 的区别是「本来就在思考」。
+   * 这两条差别都要钱：当成 `always_on` 会让「不思考」这个选项静默失效，
+   * 当成 `none` 会让适配器一个 reasoning 字段都不发、于是同样关不掉。
+   *
+   * 实测（2026-08，deepseek-v4-flash / max_output_tokens=900，各三次）：
+   * `effort:'none'` → reasoning_tokens 0/0/0；其余每一档都是 899~900。
+   * 也就是说除了 `none`，**effort 是被接受但不被采纳的**——
+   * 这类模型的 `effortLevels` 应当照实填 `[]`。
+   */
+  'reasoning_effort',
+  /**
+   * DeepSeek 自己的那套：**`thinking` 开关和 `reasoning_effort` 档位要一起发**。
+   *
+   * 只发 `reasoning_effort` 不发 `thinking` 时思考根本没开，档位自然没有效果。
+   * 那个现象容易被归因成「模型不支持 effort」，实际是少发了一半。
+   */
+  'deepseek_thinking',
+  'none',
+] as const
+export type ThinkingMode = (typeof THINKING_MODES)[number]
+
+/**
+ * 缓存路由亲和键的发法。
+ *
+ * `prompt_cache_key` 是 OpenAI 协议的标准字段。中转站普遍在多个上游 key /
+ * 节点之间轮询，而隐式前缀缓存按分片存——不带键就是每次随机落一个分片。
+ */
+export const CACHE_ROUTINGS = ['prompt_cache_key', 'none'] as const
+export type CacheRouting = (typeof CACHE_ROUTINGS)[number]
+
+/**
+ * 带 tool_calls 的历史消息，要不要把上一轮的推理原文回传给端点。
+ *
+ * 这是**接收请求的那个端点**的要求，不是历史的属性——所以它归模型库那一格。
+ * 不要改回「从历史里有没有推理文本反推」：摘要型端点（`reasoning.summary`）
+ * 同样会给出推理文本，反推必然假阳性，而假阳性的代价是每一轮工具调用之后
+ * 都发不出去。
+ *
+ * 只有 Responses 适配器消费它。
+ */
+export const REASONING_ECHOES = [
+  /** 不回传。 */
+  'none',
+  /** 回传 `{type:'reasoning', content:[{type:'reasoning_text'}]}`。 */
+  'reasoning_text',
+] as const
+export type ReasoningEcho = (typeof REASONING_ECHOES)[number]
+
 // ─────────────────────────────── 会话 ───────────────────────────────
 
 export interface Conversation {

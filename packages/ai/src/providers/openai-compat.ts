@@ -407,7 +407,18 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
           type: 'function' as const,
           function: { name: c.name, arguments: JSON.stringify(c.arguments) },
         })),
-        // 见文件头注释第 1 条：不回传这个字段，DeepSeek 思考模式下一轮直接 400。
+        /*
+         * 见文件头注释第 1 条：不回传这个字段，DeepSeek 思考模式下一轮直接 400。
+         *
+         * **这里无条件发，不查目录的 `reasoningEcho`——那一格只管 Responses 那条协议。**
+         * 两侧的不对称有依据：那边多发的是一个**条目**，端点按 schema 直接拒
+         * （`array too long. Expected an array with maximum length 0`）；这边多发的是
+         * 一个**字段**，实测被忽略。改成查目录反而会制造回归：中转站把 DeepSeek 挂在
+         * 自定义模型名下时目录认不出它，于是从「零配置能用」变成确定性 400。
+         *
+         * 边界：`reasoningContent` 是**会话历史**的属性，不是端点的。中途换过接口的话，
+         * 这里发出去的可能是另一个端点录下的思考内容。
+         */
         ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
       }
     }
