@@ -1,12 +1,12 @@
 ---
-name: diagnose-from-the-ledger
+name: diagnose-from-the-local-db
 description: 排查 agent 行为先查 ~/.qywork/qywork.sqlite3，那里有每次工具调用的完整 args 与 outcome；截图和记忆都不够
 metadata:
   node_type: memory
   type: project
 ---
 
-用户报「模型行为不对」时，**账本能把那一轮完整重放出来**，不必靠截图推断。
+用户报「模型行为不对」时，**本地数据库能把那一轮完整重放出来**，不必靠截图推断。
 只读打开 `<home>/.qywork/qywork.sqlite3`（bun:sqlite，
 `{ readonly: true }`；跑着的服务是 WAL 模式，读不影响它）。
 
