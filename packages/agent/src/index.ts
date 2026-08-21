@@ -36,9 +36,11 @@ export {
   AgentLoop,
   type CompactionPort,
   type CompactionRunInput,
+  envelopeResult,
   type LoopPersistence,
   STREAM_IDLE_TIMEOUT_MS,
   softLimit,
+  toolResultContent,
 } from './loop.ts'
 // 静态规则：runtime 在分类器之前先问它
 export { decideCommand } from './policy.ts'

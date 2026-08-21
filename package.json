@@ -33,6 +33,7 @@
     "smoke:compaction": "bun run scripts/compaction-fidelity.ts",
     "seed:demo": "bun run scripts/seed-demo.ts",
     "shoot": "node scripts/shoot-ui.mjs",
+    "check:attachments": "node scripts/check-attachments.mjs",
     "icon": "node scripts/make-icon.mjs"
   },
   "devDependencies": {

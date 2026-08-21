@@ -12,8 +12,10 @@
  * - 工具 schema 按名排序（registry 保证），排在最前，顺序抖动即全量失效。
  */
 
+import { readFile, stat } from 'node:fs/promises'
 import type {
   ChatRequest,
+  ContentBlock,
   LlmAdapter,
   ProviderEvent,
   ProviderUsage,
@@ -488,7 +490,7 @@ export class AgentLoop {
   ): Promise<AsyncIterable<ProviderEvent>> {
     const provider = adapter.spec.provider
     const idleMs = this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(req.effort)
-    const it = adapter.stream(req)[Symbol.asyncIterator]()
+    const it = adapter.stream(await materialize(req))[Symbol.asyncIterator]()
 
     /** 等一个事件，超时就判流卡死并中止本次请求。 */
     const step = async (): Promise<IteratorResult<ProviderEvent>> => {
@@ -1370,18 +1372,24 @@ export class AgentLoop {
             transcript.push({
               role: 'tool',
               toolCallId: s.call.id,
-              content: JSON.stringify({
-                call_id: s.call.id,
-                tool: s.call.name,
-                status: s.outcome.status,
-                executed: s.outcome.executed,
-                summary: s.outcome.message,
-                // 落盘定位符**要单独成键**，不能只留在正文里：收纳把正文换成信封时
-                // 正文里那行 `[完整输出已保存：rs_xxx]` 一起没了，`read_resource`
-                // 就再也无从调起。
-                ...(landed.length ? { resources: landed } : {}),
-                ...(s.outcome.data ? { result: s.outcome.data } : {}),
-              }),
+              content: toolResultContent(
+                JSON.stringify({
+                  call_id: s.call.id,
+                  tool: s.call.name,
+                  status: s.outcome.status,
+                  executed: s.outcome.executed,
+                  summary: s.outcome.message,
+                  // 落盘定位符**要单独成键**，不能只留在正文里：收纳把正文换成信封时
+                  // 正文里那行 `[完整输出已保存：rs_xxx]` 一起没了，`read_resource`
+                  // 就再也无从调起。
+                  ...(landed.length ? { resources: landed } : {}),
+                  // 图像字节不进信封，只进图像块——见 `envelopeResult`。
+                  ...(envelopeResult(s.outcome.data)
+                    ? { result: envelopeResult(s.outcome.data) }
+                    : {}),
+                }),
+                s.outcome.data,
+              ),
               _group: 'executionRecords',
             })
 
@@ -1747,13 +1755,118 @@ function breakdownOf(req: ChatRequest): ContextBreakdown {
     // 没有 `_group` 的一律归 historyMessages，不单开「其他」桶——
     // 一个永远对不上账的「其他」比归错桶更难解释。
     const group = m._group ?? 'historyMessages'
-    if (m.role === 'tool' && typeof m.content === 'string') {
-      const { envelope, body } = splitToolResult(m.content, n)
+    if (m.role === 'tool') {
+      // 带图的工具结果是块数组：信封那一块照旧拆成「执行记录 / 工具结果原文」，
+      // 图片按固定值计进工具结果一侧。不取出文本块的话整条会落进 `_group`，
+      // 面板上那两格从此对不上。
+      const envelopeText =
+        typeof m.content === 'string'
+          ? m.content
+          : (m.content.find((b) => b.type === 'text')?.text ?? '')
+      const media = typeof m.content === 'string' ? 0 : n - estimateText(envelopeText)
+      const { envelope, body } = splitToolResult(envelopeText, n - media)
       out.executionRecords += envelope
-      out.intermediateContent += body
+      out.intermediateContent += body + media
       continue
     }
     out[group] += n
   }
   return out
+}
+
+/**
+ * 工具结果的模型可见内容。
+ *
+ * **信封那段 JSON 一个字不改**——量账（`breakdownOf`）与收纳（`condenseMessage`）
+ * 都靠解析它认路。图片作为**并列的一块**挂在它旁边，不塞进信封里。
+ *
+ * 图像块给的是**路径不是字节**，所以这个函数是同步的，投影那侧
+ * （`runtime/transcript.ts` 的 `toolContent`）才能用同一份形状重建历史——
+ * 那边有一个同步调用方（压缩的单元装配），读盘会把整条链拖成 async。
+ *
+ * **两侧必须逐字同形。** 不同形的话，同一次调用在本轮和下一轮长得不一样，
+ * 模型会当成两件事，而这种不一致不会有任何报错。
+ */
+export function toolResultContent(
+  envelope: string,
+  data: Record<string, unknown> | undefined,
+): string | ContentBlock[] {
+  const bytes = data?.imageData
+  if (typeof bytes !== 'string' || !bytes) return envelope
+  const mime = typeof data?.mime === 'string' ? data.mime : 'image/png'
+  return [
+    { type: 'text', text: envelope },
+    { type: 'image', mimeType: mime, source: { kind: 'base64', data: bytes } },
+  ]
+}
+
+/**
+ * 进信封的那一份 `result`。
+ *
+ * **必须把图像字节摘掉**：信封是一段 JSON 文本，`imageData` 留在里面会让同一份
+ * base64 在请求体里出现两次——一次在图像块里、一次在信封的文本里，而后者对模型
+ * 毫无用处（它读不懂一串 base64），只是照价计费。
+ */
+export function envelopeResult(
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!data || !('imageData' in data)) return data
+  const { imageData: _bytes, ...rest } = data
+  return Object.keys(rest).length ? rest : undefined
+}
+
+/** 图像块进请求体的上限。10 MB 的 base64 约 13 MB，已经贴着多数 provider 的单请求上限。 */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+/**
+ * 把 path 形态的图像块换成 base64，交给适配器。
+ *
+ * ## 产副本，绝不回写
+ *
+ * 原地改会同时坏两件事：
+ *
+ * - 重试循环里 `req = { ...req, signal }` 是浅拷贝、**复用同一个 `messages` 数组**，
+ *   而 `payloadHash` 在每次尝试发出**之前**就落了账。原地改之后第二次尝试会对同一份
+ *   内容算出不同的哈希，而那个字段的职责恰恰是「认出同一份内容发了两遍」。
+ * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
+ *   内存里常驻整个 run。
+ *
+ * ## 只处理附件那一种
+ *
+ * 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻就已经是
+ * 字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，
+ * 那是他自己的文件，这个语义是对的。
+ *
+ * ## 读不到不是致命错
+ *
+ * 文件没了、超了上限、指纹对不上——三种都换成一个文本块，不抛。一张图发不出去
+ * 不该让整轮起不来，而**必须让模型看见这句话**：静默丢掉的话它会以为自己看过了。
+ */
+export async function materialize(req: ChatRequest): Promise<ChatRequest> {
+  if (!req.messages.some((m) => typeof m.content !== 'string')) return req
+  const messages = await Promise.all(
+    req.messages.map(async (m) => {
+      if (typeof m.content === 'string') return m
+      const blocks = await Promise.all(m.content.map(loadBlock))
+      return { ...m, content: blocks }
+    }),
+  )
+  return { ...req, messages }
+}
+
+async function loadBlock(b: ContentBlock): Promise<ContentBlock> {
+  if (b.type !== 'image' || b.source.kind !== 'path') return b
+  const { path } = b.source
+  const note = (why: string): ContentBlock => ({ type: 'text', text: `［图片 ${path}：${why}］` })
+
+  const info = await stat(path).catch(() => null)
+  if (!info?.isFile()) return note('已不存在')
+  if (info.size > MAX_IMAGE_BYTES) return note('超过 10 MB，没有发出去')
+  const bytes = await readFile(path).catch(() => null)
+  if (!bytes) return note('读取失败')
+  return {
+    type: 'image',
+    mimeType: b.mimeType,
+    source: { kind: 'base64', data: bytes.toString('base64') },
+  }
 }

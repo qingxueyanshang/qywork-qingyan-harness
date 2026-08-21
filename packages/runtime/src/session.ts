@@ -5,8 +5,8 @@
  * 不各自再拼一遍——三套装配就是三套会漂移的行为。
  */
 
-import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
   type CompactionPort,
@@ -36,7 +36,13 @@ import type {
   MessageId,
   RunId,
 } from '@qywork/core'
-import { deriveConversationTitle, EFFORT_ORDER } from '@qywork/core'
+import {
+  deriveConversationTitle,
+  EFFORT_ORDER,
+  isInlineImage,
+  mimeOf,
+  toPosixPath,
+} from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -82,7 +88,6 @@ import {
   normalizeAdditionalDirectories,
   PendingToolPool,
   registerBuiltinTools,
-  resolveInWorkspace,
   scanSkills,
   scopeRoots,
 } from '@qywork/tools'
@@ -1084,18 +1089,32 @@ const HEARTBEAT_MS = 10_000
 const NEWLINE = String.fromCharCode(10)
 
 /**
- * 把附件读成 provider 认得的内容块。
+ * 把附件变成 provider 认得的内容。
  *
- * ## 为什么在这里读，而不是在存的时候
+ * ## 图片内联，其余给路径
  *
- * 消息表里只放路径（`Attachment.path`）。存 base64 的话，每次读历史都要把
- * 几 MB 的图片一起拖出来，而绝大多数轮次根本用不到它。
+ * 图片除了内联没有别的路——模型看不到工具读不出来的东西（`read_file` 撞上二进制
+ * 直接拒）。其余附件**只把路径写进正文**，模型要看就自己 `read_file`：省掉每一轮
+ * 重放时那份 base64，也让「用户指给我看这个文件」表达成它本来的样子——一个位置。
  *
- * ## 读不出来不是致命错
+ * ## 路径不按工作区裁决
  *
- * 文件被用户删了、改名了、换了工作区——这些都会发生。**跳过那一个附件并在
- * 文本里留一行说明**，而不是让整轮对话起不来：模型看到「这里原本有张图，
- * 现在读不到了」还能继续干活，看到一个 500 就只能重来。
+ * `resolveInWorkspace` 那道边界约束的是**模型**——它挡的是模型自己构造出来的路径。
+ * 附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质；
+ * 判据是「字节会不会被发出去」，而按下拖放的正是决定这件事的那个人。
+ *
+ * **前提：模型不得构造附件。** 附件只能来自客户端手势，不能由任何工具调用产出
+ * （`Attachment` 现在只从 composer 来）。这条一旦破了，上面整段理由跟着失效，
+ * 这里必须改回按工作区裁决。
+ *
+ * ## 三种读不到都留一行说明，不抛
+ *
+ * 文件被删了、改名了、事后长过了上限——都会发生。**跳过那一个并在正文里留一行**，
+ * 而不是让整轮起不来：模型看到「这里原本有张图，现在读不到了」还能继续干活，
+ * 看到一个 500 就只能重来。
+ *
+ * 大小上限不在这里判，在 `materialize` 那一刻判——路径型附件指向用户自己的文件，
+ * 它在被引用之后还会继续长，而这里只是记下位置。
  */
 async function withAttachments(
   workspaceRoot: string,
@@ -1106,30 +1125,26 @@ async function withAttachments(
   const notes: string[] = []
 
   for (const a of attachments) {
-    // 走同一条工作区边界：附件路径是客户端给的，不能例外。
-    const abs = await resolveInWorkspace(workspaceRoot, a.path, { mustExist: true }).catch(
-      () => null,
-    )
-    if (!abs) {
+    const abs = isAbsolute(a.path) ? resolve(a.path) : resolve(workspaceRoot, a.path)
+    const info = await stat(abs).catch(() => null)
+    if (!info?.isFile()) {
       notes.push(`（附件 ${a.name} 已不存在，跳过）`)
       continue
     }
-    const bytes = await readFile(abs).catch(() => null)
-    if (!bytes) {
-      notes.push(`（附件 ${a.name} 读取失败，跳过）`)
+    // 分类按扩展名，与界面显示缩略图用的是同一份判据（`core` 的 `isInlineImage`）。
+    // 按 `a.type` 判会读到历史行里那个按 mime 算出来的旧值，两处给出不同答案。
+    if (!isInlineImage(a.path)) {
+      // 给位置不给字节。模型读不到时 `read_file` 会明确报越界或不存在，不是静默失败。
+      notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
       continue
     }
-    if (a.type === 'image') {
-      blocks.push({ type: 'image', mimeType: a.mime, data: bytes.toString('base64') })
-    } else {
-      // 非图片按文档块投递；provider 不支持时适配层会自行降级。
-      blocks.push({
-        type: 'document',
-        mimeType: a.mime,
-        data: bytes.toString('base64'),
-        title: a.name,
-      })
-    }
+    // 只给位置，不读字节。读盘由 `agent/loop.ts` 的 `materialize` 在发出前做一次——
+    // 被压缩折掉的那些轮次因此完全不必读盘，而这里读的话它们每一轮都白读一遍。
+    blocks.push({
+      type: 'image',
+      mimeType: mimeOf(a.path),
+      source: { kind: 'path', path: toPosixPath(abs) },
+    })
   }
 
   // 文本块放最后：附件是这句话的**语境**，先看图再读要求更符合阅读顺序。

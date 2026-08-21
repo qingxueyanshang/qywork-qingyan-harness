@@ -53,7 +53,6 @@ export {
   openProviderRequest,
   recordFileRead,
   recoverStaleRuns,
-  referencedAttachmentPaths,
   removeWorkspace,
   setCompactionManifest,
   setConversationModel,

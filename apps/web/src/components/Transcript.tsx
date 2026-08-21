@@ -38,6 +38,7 @@ import {
 } from '../lib/step-view.ts'
 import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
+import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
@@ -129,6 +130,7 @@ export function Transcript() {
                         <For each={(node as { item: TranscriptItem }).item.attachments}>
                           {(a) => (
                             <span class="attach-chip" data-tip={a.path}>
+                              <AttachmentThumb path={a.path} name={a.name} box={44} />
                               <span class="truncate">{a.name}</span>
                             </span>
                           )}

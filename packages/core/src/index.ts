@@ -42,6 +42,8 @@ export {
 // 领域模型：落库形状与读数口径，几乎每个包都要
 export {
   type Attachment,
+  attachmentTypeOf,
+  baseNameOf,
   CACHE_ROUTINGS,
   type CacheRouting,
   CONTEXT_GROUPS,
@@ -66,7 +68,9 @@ export {
   type GoalStatus,
   type GoalWriteResult,
   type IntermediateResourceRef,
+  isInlineImage,
   type Message,
+  mimeOf,
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderKind,
@@ -89,6 +93,7 @@ export {
   type ToolActionStatus,
   type ToolOutcomeWire,
   todoProgress,
+  toPosixPath,
   type UsageBucket,
   type UsageKind,
   type UsageLedgerRow,

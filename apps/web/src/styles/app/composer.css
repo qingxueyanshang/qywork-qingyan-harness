@@ -628,7 +628,9 @@
 }
 
 /* ── 附件 ──
-   只列名字，不做缩略图墙：一行一个看得清、删得掉；缩略图会把输入区顶掉半屏。 */
+   一行一个看得清、删得掉，**不做缩略图墙**——那会把输入区顶掉半屏。
+   左边那格是定尺的，图片放缩略图、文件放通用图标；只给图片留格子的话，
+   两种 chip 高度不同，混排就是锯齿而且行高跟着内容跳。 */
 .attach-row {
   display: flex;
   flex-wrap: wrap;
@@ -656,6 +658,26 @@
 .attach-chip.busy {
   color: var(--text-tertiary);
   border-style: dashed;
+}
+/* 定尺格子。宽高由行内样式给（两处用不同边长），这里只管它不许被内容改形状。 */
+.attach-thumb {
+  display: grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  background: var(--bg-sunken);
+  color: var(--text-tertiary);
+}
+.attach-thumb img {
+  width: 100%;
+  height: 100%;
+  /* cover 而不是 contain：格子是定尺的，contain 会在长图两侧留出空条。 */
+  object-fit: cover;
+}
+/* 已发送的那一列 chip 竖着排：缩略图大一圈，横着排一行放不下两张。 */
+.attach-row.sent .attach-chip {
+  max-width: 260px;
 }
 .attach-x {
   display: grid;
@@ -803,4 +825,10 @@
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 拖着文件悬在输入区上。**只给边框，不加文案**——「拖到这里」是解释性文本，
+   边框已经说完了。 */
+.composer-wrap.drag-over .composer {
+  border-color: var(--accent);
 }

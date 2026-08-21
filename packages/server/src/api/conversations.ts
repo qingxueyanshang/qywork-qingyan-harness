@@ -1,5 +1,6 @@
 /** 模型目录、会话、消息、run。前端进来第一屏要的全在这。 */
 
+import { rm } from 'node:fs/promises'
 import type { ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
@@ -32,6 +33,7 @@ import {
   usageEntries,
   usageTotals,
 } from '@qywork/store'
+import { attachmentsDirOf } from './attachments.ts'
 import { type ApiHandler, json } from './types.ts'
 
 /** 一个接口下挂着的一个模型。**只列配置里真有的**——没配的选了也发不出去。 */
@@ -305,6 +307,15 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
       if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
       deleteConversation(d.store, id)
+      /*
+       * 附件目录跟着会话一起走。**只删这一个目录，不按 `Attachment.path` 逐条删**
+       * ——路径型附件指向的是用户自己的文件（拖进来的那张原图、项目里的那份文档），
+       * 逐条删就是删用户的数据。这条目录里装的全是「除此之外没有别处存着」的字节
+       * （剪贴板位图、浏览器上传），删掉不会影响任何别的东西。
+       *
+       * 删不掉不改变接口结果：回收的是磁盘空间，不是正确性。
+       */
+      await rm(attachmentsDirOf(id), { recursive: true, force: true }).catch(() => {})
       return json({ ok: true })
     }
   }

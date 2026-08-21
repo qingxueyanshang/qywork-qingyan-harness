@@ -28,7 +28,6 @@ import {
 import { isDue, loadSchedules, type Schedule, updateSchedules } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { handleApi, json } from './api/index.ts'
-import { sweepAttachments } from './attachments-gc.ts'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -184,20 +183,6 @@ export function serve(opts: ServeOptions) {
       `[qy] 另有 ${stale.heldByOthers} 个执行记录由其它运行中的进程持有，未回收\n`,
     )
   }
-
-  // 附件目录的回收。只在启动时跑一次，判据是「有没有被消息引用」——
-  // 运行期跑会误删「刚上传、还挂在输入框上没发出去」的那一份。
-  // 失败不阻断启动：它回收的是磁盘空间，不是正确性。
-  void sweepAttachments(opts.store, workspaceRoot)
-    .then((r) => {
-      if (r.removed > 0) {
-        process.stderr.write(
-          `[qy] 已清理 ${r.removed} 个未被任何消息引用的附件（${Math.round(r.bytes / 1024)} KB）
-`,
-        )
-      }
-    })
-    .catch(() => {})
 
   const unsubscribers = new Map<string, () => void>()
 

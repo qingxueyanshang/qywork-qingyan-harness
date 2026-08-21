@@ -74,7 +74,7 @@ describe('input 是条目序列，不是消息序列', () => {
       role: 'user',
       content: [
         { type: 'text', text: '看这个' },
-        { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+        { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'AAAA' } },
       ],
     }
     const content = buildInput([msg], 'none')[0]!.content as Record<string, string>[]

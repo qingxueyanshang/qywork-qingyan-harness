@@ -9,6 +9,7 @@
   "dependencies": {
     "@qywork/agent": "workspace:*",
     "@qywork/ai": "workspace:*",
-    "@qywork/core": "workspace:*"
+    "@qywork/core": "workspace:*",
+    "unpdf": "^1.8.1"
   }
 }

@@ -27,7 +27,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { PROVIDER_HTTP } from '../types.ts'
+import { imageData, PROVIDER_HTTP } from '../types.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
@@ -77,7 +77,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
-    // provider 的原话，只进账本不参与判断。空串 = 流断在 finish_reason 之前。
+    // provider 的原话，只进账本不参与判断。收尾时还是空串 = 流被截断，见下面那条守卫。
     let rawFinish = ''
     const partial = new Map<number, { id: string; name: string; json: string }>()
     const splitter = createThinkingSplitter()
@@ -163,6 +163,32 @@ export class OpenAICompatAdapter implements LlmAdapter {
         throw new ProviderError({
           code: 'provider_unavailable',
           message: '响应为 200 但不含任何 SSE 数据',
+          provider: 'openai_chat_completions',
+          detail: { model: req.model },
+        })
+      }
+
+      /*
+       * **流结束了却一次都没给过 `finish_reason` = 传输被截断，不是「说完了」。**
+       *
+       * 协议要求最后一个 chunk 带 `finish_reason`，用量也在同一个 chunk 里。
+       * 两者一起缺席只有一个成因：连接在模型说完之前断了。默认值 `end_turn`
+       * 会把它记成正常完成——界面上是「思考写到一半就停、run 显示成功」，
+       * 账本上那一轮是 0 token、无从对账，与 `chunks === 0` 是同一类静默。
+       *
+       * 实测形状（2026-08-21，`opencode.ai/zen/go/v1`）：带 tools 的长思考请求
+       * 约一半的次数在 reasoning 中途直接结束响应体，既没有 `finish_reason`
+       * 也没有 `[DONE]`；同样的请求另一半次数能正常收尾。
+       *
+       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它计没计费，
+       * 账本行因此落 `uncertain`。已经收到过事件的那一轮不会被自动重发
+       * （`loop.ts` 的判据是「一个事件都没收到过」），用户拿到的是一条说得出
+       * 「收了多少、断在哪」的错误，而不是一次假的成功。
+       */
+      if (!rawFinish) {
+        throw new ProviderError({
+          code: 'network_error',
+          message: '流在 finish_reason 之前结束',
           provider: 'openai_chat_completions',
           detail: { model: req.model },
         })
@@ -392,10 +418,19 @@ interface CompatOutMessage {
 function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
   return messages.map((m) => {
     if (m.role === 'tool') {
+      /*
+       * **工具结果里能放图。** 官方文档把 tool 消息的 content 写成
+       * `Text content (string)`，而 2026-08 对 `deepseek-v4-flash-vision-exp`
+       * 实测：发 `[{type:'text'},{type:'image_url'}]` 它答得出图里的数字与颜色，
+       * 不带图的对照组答不出来。**这一格照实测填，不照文档填。**
+       *
+       * 不认得多模态的端点会自己拒，那是一条带原文的 400；而压成 `[image]`
+       * 是静默丢——模型以为自己看过了，那比报错坏得多。
+       */
       return {
         role: 'tool',
         tool_call_id: m.toolCallId,
-        content: typeof m.content === 'string' ? m.content : flatten(m.content),
+        content: typeof m.content === 'string' ? m.content : toMultimodal(m.content),
       }
     }
     if (m.role === 'assistant' && m.toolCalls?.length) {
@@ -445,11 +480,10 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
 function toMultimodal(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'text', text: b.text }
-    if (b.type === 'image') {
-      return { type: 'image_url', image_url: { url: `data:${b.mimeType};base64,${b.data}` } }
+    return {
+      type: 'image_url',
+      image_url: { url: `data:${b.mimeType};base64,${imageData(b.source)}` },
     }
-    // 兼容协议没有 document block，降级成文本说明而不是静默丢弃。
-    return { type: 'text', text: `[附件 ${b.title ?? b.mimeType}]` }
   })
 }
 

@@ -39,7 +39,16 @@ export async function publishGitState(
 export const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'access-control-allow-headers': 'authorization, content-type',
+  /*
+   * 附件上传带 `x-attachment-name`（文件名可能含中文与空格，只能编码进头里）。
+   * **它不在 CORS 安全表内，漏掉这一个名字整条上传链路就是 100% 失败**——
+   * 预检不通过，真正那条 POST 根本不会发出，前端拿到的是裸的
+   * `TypeError: Failed to fetch`，不带任何状态码，看不出是被浏览器挡的。
+   *
+   * 不要图省事改成 `*`：它在带凭证的请求里不生效，而且会把「这个接口收哪些头」
+   * 这件事从代码里抹掉。
+   */
+  'access-control-allow-headers': 'authorization, content-type, x-attachment-name',
   'access-control-max-age': '86400',
 }
 

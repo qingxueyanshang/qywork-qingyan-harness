@@ -1,53 +1,68 @@
 /**
- * 附件上传。
+ * 附件。
  *
- * ## 先落盘再引用
+ * ## 只有拿不到源路径时才落盘
  *
- * `Attachment` 是 path 型（`core/domain/model.ts`：「外部粘贴的内容先落盘再引用，
- * 不把字节塞进消息」）。所以这条接口的职责就一个：**把字节写进工作区，
- * 回一个可以直接随消息发出去的 `Attachment`**。消息表里从头到尾只有路径。
+ * 附件在消息里只有一条路径（`core` 的 `Attachment.path`）。桌面端拖入和原生选择器
+ * 给的是**源文件的绝对路径**，那种情况前端直接组装 `Attachment`，根本不经过这里——
+ * 一个字节都不搬。
  *
- * ## 为什么落在 `.qy/attachments/`
+ * 走到这条上传的只剩两种：剪贴板里只有位图（截图没有源文件），以及浏览器出于安全
+ * 不给绝对路径。这两种「唯一的一份就在内存里」，落盘是第一次存储不是第二次。
  *
- * `.qy/` 是权限边界——`resolveWriteInWorkspace` 挡住 agent 写它，但**读不挡**
- * （`paths.ts` 的 `PROTECTED_DIRS` 只作用于写路径）。这正好是附件要的形状：
- * 用户能放进去、会话能读出来、**agent 自己伪造不了一个附件**。
+ * ## 落在 `~/.qywork/attachments/<会话id>/`
  *
- * 放在工作区根目录反而不行：那会把用户随手粘的截图混进他的源码树，
- * 还可能被 agent 的 glob 扫到当成项目文件。
+ * 与会话库（`~/.qywork/qywork.sqlite3`）同一棵树。**这是「附件属于会话」这件事的
+ * 全部实现**：删会话时按目录删（`api/conversations.ts`），不需要「扫目录找没人引用
+ * 的孤儿」那套回收。
  *
- * ## 目录自带 .gitignore
- *
- * **`.qy/` 不是整体忽略的**——`mcp.json` / `team.json` 是项目配置，本来就该入库
- * （见仓库根 `.gitignore` 的注释）。所以附件放进 `.qy/` 之后，用户粘的每一张截图
- * 都会跟着下一次 `git add` 进他的仓库。
- *
- * 修法是**在这个目录里放一个内容为 `*` 的 `.gitignore`**：它忽略自己，
- * 对任何工作区都成立，且不需要去改用户的根 `.gitignore`
- * （那是他的文件，我们没有理由动它）。
+ * 放在工作区里（`.qy/attachments/`）不行：会话在全局库、附件在项目里，删掉项目目录
+ * 或换工作区之后会话还在而附件全断，历史只剩一行「附件已不存在」。
  *
  * ## 大小上限挡在写盘之前
  *
- * 超限直接 413 且**一个字节都不写**。写一半再删的话，中途崩溃就会在
- * `.qy/attachments/` 里留下垃圾，而那个目录没有人会去打扫。
+ * 超限直接 413 且**一个字节都不写**。写一半再删的话，中途崩溃就会留下垃圾，
+ * 而现在没有任何东西会去打扫那种垃圾。
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import type { Attachment } from '@qywork/core'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, resolve } from 'node:path'
+import { type Attachment, attachmentTypeOf, toPosixPath } from '@qywork/core'
+import { configDir } from '@qywork/runtime'
 import type { ApiHandler } from './types.ts'
 import { json } from './types.ts'
-
-export const ATTACHMENT_DIR = '.qy/attachments'
 
 /**
  * 单个附件上限 10 MB。
  *
- * 这个数不是随便定的：图片要整块进模型请求体，10 MB 的 base64 约 13 MB，
- * 已经接近多数 provider 的单请求上限。再大就该让用户先压缩，
- * 而不是让他等一次注定失败的请求。
+ * 图片要整块进模型请求体，10 MB 的 base64 约 13 MB，已经接近多数 provider 的单请求
+ * 上限。再大就该让用户先压缩，而不是让他等一次注定失败的请求。
  */
 const MAX_BYTES = 10 * 1024 * 1024
+
+/**
+ * 预览回读的上限，4 MB。
+ *
+ * 与 `files.ts` 的 `MAX_INLINE_BYTES` 是同一个数：同一张图走文件预览和走这条路
+ * 不该给出两种答案。超过就不给字节，界面退回文件名 chip。
+ */
+const MAX_PREVIEW_BYTES = 4 * 1024 * 1024
+
+/** 这条会话的附件目录。删会话时整个删掉。 */
+export function attachmentsDirOf(conversationId: string): string {
+  return join(configDir(), 'attachments', conversationId)
+}
+
+/**
+ * 会话 id 要进路径，按外部输入校验。
+ *
+ * 分隔符与 `..` 一律拒——它们能把写入点带到目录之外，而这个值是客户端给的。
+ */
+function safeConversationId(raw: string | null): string | null {
+  if (!raw) return null
+  if (raw.includes('/') || raw.includes('\\') || raw.includes('..')) return null
+  return raw
+}
 
 /** 文件名安全化：名字由客户端给，不能让它写到目录外，也不能带控制字符。 */
 function safeName(raw: string): string {
@@ -59,13 +74,30 @@ function safeName(raw: string): string {
   return cleaned || 'attachment'
 }
 
-/** 按 mime 归类。只分「图片」和「文件」两档——协议里也只有这两种用法。 */
-function typeOf(mime: string): Attachment['type'] {
-  return mime.startsWith('image/') ? 'image' : 'file'
+/**
+ * 把附件路径解析成绝对路径。
+ *
+ * **不做工作区归属判定。** 那道边界约束的是模型——它挡的是模型自己构造出来的路径；
+ * 附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质。
+ * 判据是「字节会不会被发出去」，而按下拖放的正是决定这件事的那个人。
+ *
+ * 前提是**模型不得构造附件**：附件只能来自客户端手势，不能由任何工具调用产出。
+ * 这条一旦破了，上面整段理由跟着失效。
+ */
+function resolveAttachmentPath(workspaceRoot: string, p: string): string {
+  return isAbsolute(p) ? resolve(p) : resolve(workspaceRoot, p)
 }
 
 export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
+  if (url.pathname === '/api/attachments/raw' && req.method === 'GET') {
+    return serveRaw(url, d.workspaceRoot)
+  }
   if (url.pathname !== '/api/attachments' || req.method !== 'POST') return null
+
+  const conversationId = safeConversationId(url.searchParams.get('conversation'))
+  if (!conversationId) {
+    return json({ error: 'invalid', message: '附件必须挂在一条会话上' }, 422)
+  }
 
   const mime = req.headers.get('content-type') ?? 'application/octet-stream'
   const name = safeName(decodeURIComponent(req.headers.get('x-attachment-name') ?? ''))
@@ -85,33 +117,45 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
   }
 
   // 前缀去重：同名文件反复粘贴不能互相覆盖，否则上一条消息引用的图会被下一条换掉。
-  const rel = `${ATTACHMENT_DIR}/${crypto.randomUUID().slice(0, 8)}-${name}`
-  const dir = join(d.workspaceRoot, ATTACHMENT_DIR)
+  const dir = attachmentsDirOf(conversationId)
+  const fileName = `${crypto.randomUUID().slice(0, 8)}-${name}`
   await mkdir(dir, { recursive: true })
-  await ensureIgnored(dir)
-  await writeFile(join(d.workspaceRoot, rel), bytes)
+  await writeFile(join(dir, fileName), bytes)
 
   const attachment: Attachment = {
-    type: typeOf(mime),
+    // 分类按扩展名，与「发出去时内联哪些」同一份判据（`core` 的 `attachmentTypeOf`）。
+    // 不按上传时的 mime：路径型附件根本没有 mime，两条入口必须给出同一个答案。
+    type: attachmentTypeOf(name),
     name,
     mime,
     size: bytes.byteLength,
-    // 统一用正斜杠：这个值要跨端传（手机也发得到），Windows 的反斜杠在别处会被当转义。
-    path: rel,
+    path: toPosixPath(join(dir, fileName)),
   }
   return json({ attachment })
 }
 
 /**
- * 让附件目录忽略自己。
+ * 按路径回原始字节，供界面显示缩略图。
  *
- * 只在文件不存在时写——用户如果自己改过它（比如想留几张图入库），
- * 不该被我们覆盖回去。
+ * **回字节不回 base64 JSON**：不涨三分之一，浏览器自己管缓存，前端拿到就能
+ * `createObjectURL`。`/api/files/preview` 那条只吃工作区相对路径且回 dataUri，
+ * 够不着工作区外的源文件。
  */
-async function ensureIgnored(dir: string): Promise<void> {
-  const f = join(dir, '.gitignore')
-  if (await Bun.file(f).exists()) return
-  // `*` 忽略目录内一切，`!.gitignore` 让这个文件本身留下来说明原因。
-  const lines = ['# 粘贴/拖入的附件是本机数据，不入库。', '*', '!.gitignore', '']
-  await writeFile(f, lines.join(String.fromCharCode(10)), 'utf8')
+async function serveRaw(url: URL, workspaceRoot: string): Promise<Response> {
+  const rel = url.searchParams.get('path')
+  if (!rel) return json({ error: 'invalid', message: '要读的路径得给' }, 422)
+
+  const abs = resolveAttachmentPath(workspaceRoot, rel)
+  const info = await stat(abs).catch(() => null)
+  if (!info?.isFile()) return json({ error: 'not_found' }, 404)
+  if (info.size > MAX_PREVIEW_BYTES) return json({ error: 'too_large' }, 413)
+
+  const file = Bun.file(abs)
+  return new Response(file, {
+    headers: {
+      'content-type': file.type || 'application/octet-stream',
+      // 附件内容按路径寻址且不会原地改名，缓存一小时省掉切会话时的重复回读。
+      'cache-control': 'private, max-age=3600',
+    },
+  })
 }

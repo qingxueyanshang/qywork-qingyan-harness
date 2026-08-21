@@ -1243,3 +1243,68 @@ describe('grep 计入投递预算', () => {
     expect(out.message).not.toContain('已按投递预算截断')
   })
 })
+
+/**
+ * `read_file` 的图片与 PDF 两条分派。
+ *
+ * 两条都必须在 **1 MB 大小守卫之前**分派：手机照片和多数 PDF 都比它大，
+ * 放晚一行它们会先被拒，而拿到的话术是「请用 offset/limit 分段读取」——
+ * 对一张图不可执行。这一组盯的就是那个顺序。
+ */
+describe('read_file 认图片', () => {
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+
+  /**
+   * **字节就地定格，不给路径。**
+   *
+   * 给路径的话记录里存的是「去哪看」而不是「看到了什么」，而模型改完页面会重新
+   * 截图覆盖同名文件——那是「对比改前改后」的自然动作，之后历史里那一张就永远
+   * 取不回来了。捕获只能发生在观察的那一刻。
+   */
+  test('返回字节，不返回路径', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img-'))
+    await writeFile(join(root, 'a.png'), PNG)
+    const out = await registry().execute('read_file', { path: 'a.png' }, ctx(root))
+    expect(out.status).toBe('success')
+    const data = out.data as { imageData?: string; mime?: string }
+    expect(data.imageData).toBe(PNG.toString('base64'))
+    expect(data.mime).toBe('image/png')
+
+    // 覆盖同名文件之后，刚才那一份仍然完好——这就是不给路径的全部意义。
+    await writeFile(join(root, 'a.png'), Buffer.concat([PNG, Buffer.from('x')]))
+    expect(data.imageData).toBe(PNG.toString('base64'))
+  })
+
+  /**
+   * 超过 1 MB 的图片必须走图片那条错误，不能落到文本那条。
+   *
+   * 落到文本那条的话用户看到的是「请用 offset/limit 分段读取」——
+   * 而那对一张图既做不到也没意义。
+   */
+  test('大图报的是图片的错，不是「分段读取」', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img2-'))
+    await writeFile(join(root, 'big.png'), Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]))
+    const out = await registry().execute('read_file', { path: 'big.png' }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(typeof (out.data as { imageData?: string }).imageData).toBe('string')
+  })
+
+  /**
+   * 读过图之后必须能覆盖写。
+   *
+   * 图片分支跳过了文本那套流程，不补记一次读记录的话，`write_file` 会回
+   * 「已存在但没读取过。先 read_file 再覆盖」——**而模型照做也永远过不去**。
+   */
+  test('读过的图片能被 write_file 覆盖', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img3-'))
+    await writeFile(join(root, 'c.png'), PNG)
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'c.png' }, c)
+    const w = await r.execute('write_file', { path: 'c.png', content: 'x' }, c)
+    expect(w.status).toBe('success')
+  })
+})

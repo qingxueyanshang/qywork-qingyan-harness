@@ -26,6 +26,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
+import { toPosixPath } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { MAX_ENTRY_CHARS } from '@qywork/tools'
@@ -201,6 +202,26 @@ describe('HTTP 面', () => {
     expect(ok.headers.get('access-control-allow-origin')).toBe('*')
   })
 
+  /**
+   * 附件上传的自定义头必须在预检的放行名单里。
+   *
+   * 漏掉它的表现极具误导性：整条上传链路 100% 失败，而前端拿到的是裸的
+   * `TypeError: Failed to fetch`——没有状态码、没有响应体，看不出是被浏览器
+   * 在发出之前挡下的。这条断言锁的就是那个名字。
+   */
+  test('预检放行附件上传的 x-attachment-name', async () => {
+    const pre = await fetch(`${base()}/api/attachments`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://localhost:5180',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization,content-type,x-attachment-name',
+      },
+    })
+    expect(pre.status).toBe(204)
+    expect(pre.headers.get('access-control-allow-headers')).toContain('x-attachment-name')
+  })
+
   test('不带 providers 的配置 PUT 被挡住，不会把接口清空', async () => {
     /*
      * `mergeConfig` 从 `incoming.providers ?? {}` **重建**接口表——
@@ -280,64 +301,101 @@ describe('HTTP 面', () => {
     expect(again.status).toBe(404)
   })
 
-  test('附件上传：落进 .qy/attachments，回可直接发的 Attachment，超限 413', async () => {
+  /**
+   * 附件的两条出口。
+   *
+   * **只有拿不到源路径时才走上传**——桌面端拖入给的是绝对路径，那条在前端就地
+   * 组装，根本不经过这个接口。所以这里测的是「剪贴板位图 / 浏览器上传」那一条：
+   * 落进会话自己的目录，删会话时整个目录一起走。
+   */
+  test('附件上传：落进会话目录，回可直接发的 Attachment，超限 413', async () => {
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
     )
-    const up = await fetch(`${base()}/api/attachments`, {
+    const created = (await (
+      await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    ).json()) as { conversation: { id: string } }
+    const cid = created.conversation.id
+    const post = (name: string, body: Uint8Array, conversation = cid) =>
+      fetch(`${base()}/api/attachments?conversation=${encodeURIComponent(conversation)}`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': name },
+        body,
+      })
+
+    // 没有会话就没有归属：附件目录按会话删，落一份没人认领的等于造孤儿。
+    const orphan = await fetch(`${base()}/api/attachments`, {
       method: 'POST',
-      headers: {
-        ...auth(),
-        'content-type': 'image/png',
-        'x-attachment-name': encodeURIComponent('截图 1.png'),
-      },
+      headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
       body: png,
     })
+    expect(orphan.status).toBe(422)
+
+    // 会话 id 要进路径，分隔符必须被挡掉，否则写入点能被带到目录之外。
+    const traversal = await post('a.png', png, '../../evil')
+    expect(traversal.status).toBe(422)
+
+    const up = await post(encodeURIComponent('截图 1.png'), png)
     expect(up.status).toBe(200)
     const { attachment } = (await up.json()) as { attachment: import('@qywork/core').Attachment }
-    // 按 mime 归类，不按扩展名猜。
+    // 分类按扩展名，与「发出去时内联哪些」同一份判据。
     expect(attachment.type).toBe('image')
     expect(attachment.mime).toBe('image/png')
     expect(attachment.size).toBe(png.length)
-    // 落在 .qy/attachments/：agent 写不进那里，所以它伪造不出一个附件。
-    expect(attachment.path.startsWith('.qy/attachments/')).toBe(true)
+    // 落在会话自己的目录里，与会话库同一棵树——不是工作区。
+    const home = process.env.QYWORK_HOME as string
+    expect(attachment.path).toContain(`/attachments/${cid}/`)
+    expect(attachment.path.startsWith(toPosixPath(home))).toBe(true)
+    // 一律正斜杠：这个值要跨端传，反斜杠在别处会被当转义。
+    expect(attachment.path).not.toContain(String.fromCharCode(92))
     // 中文名安全化后仍要保留可读的部分，不能被削成空串。
     expect(attachment.path).toContain('.png')
-    expect(await readFile(join(ws_dir, attachment.path))).toEqual(png)
+    expect(await readFile(attachment.path)).toEqual(png)
+
+    // 按路径回读原始字节，供界面显示缩略图——不再存第二份。
+    const raw = await fetch(
+      `${base()}/api/attachments/raw?path=${encodeURIComponent(attachment.path)}`,
+      { headers: auth() },
+    )
+    expect(raw.status).toBe(200)
+    expect(new Uint8Array(await raw.arrayBuffer())).toEqual(new Uint8Array(png))
 
     // 同名再传一次不能覆盖上一份——否则上一条消息引用的图会被下一条换掉。
-    const again = await fetch(`${base()}/api/attachments`, {
-      method: 'POST',
-      headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
-      body: png,
-    })
-    const second = (await again.json()) as { attachment: { path: string } }
-    const third = await fetch(`${base()}/api/attachments`, {
-      method: 'POST',
-      headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
-      body: png,
-    })
-    expect(second.attachment.path).not.toBe(
-      ((await third.json()) as { attachment: { path: string } }).attachment.path,
-    )
-
-    // 目录必须自带 .gitignore：`.qy/` 不是整体忽略的（mcp.json / team.json 要入库），
-    // 不这么做的话用户粘的每张截图都会跟着下一次 git add 进他的仓库。
-    const ignore = await readFile(join(ws_dir, '.qy/attachments/.gitignore'), 'utf8')
-    expect(ignore).toContain('*')
+    const second = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
+    const third = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
+    expect(second.attachment.path).not.toBe(third.attachment.path)
 
     // 超限挡在写盘之前。
-    const tooBig = await fetch(`${base()}/api/attachments`, {
-      method: 'POST',
-      headers: {
-        ...auth(),
-        'content-type': 'application/octet-stream',
-        'x-attachment-name': 'b.bin',
+    const tooBig = await fetch(
+      `${base()}/api/attachments?conversation=${encodeURIComponent(cid)}`,
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          'content-type': 'application/octet-stream',
+          'x-attachment-name': 'b.bin',
+        },
+        body: new Uint8Array(10 * 1024 * 1024 + 1),
       },
-      body: new Uint8Array(10 * 1024 * 1024 + 1),
-    })
+    )
     expect(tooBig.status).toBe(413)
+
+    /*
+     * 删会话把目录一起带走——这就是「附件属于会话」的全部实现，
+     * 不再需要「扫目录找没人引用的孤儿」那套回收。
+     */
+    const del = await fetch(`${base()}/api/conversations/${cid}`, {
+      method: 'DELETE',
+      headers: auth(),
+    })
+    expect(del.status).toBe(200)
+    expect(
+      await readFile(attachment.path).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false)
   })
 
   test('文件接口走同一套路径约束', async () => {
@@ -685,5 +743,78 @@ describe('图片附件', () => {
     ws2.close()
 
     expect(seenBodies.slice(beforeRetry).join('')).toContain(png.toString('base64').slice(0, 40))
+  })
+
+  /**
+   * 回归测试：**非图片附件给的是位置，不是字节**。
+   *
+   * 图片除了内联没有别的路（模型看不到工具读不出来的东西），其余附件只把路径
+   * 写进正文，模型要看自己 `read_file`。省掉的是每一轮重放时那份 base64——
+   * provider 无状态，一份 200 KB 的文档在二十轮的会话里会被发二十次。
+   *
+   * 两个方向都要断言：路径**在**请求体里、内容**不在**。只测前者的话，
+   * 有人把内容也一起塞回去这条仍然是绿的。
+   */
+  test('随消息发出的文档只给路径，不给字节', async () => {
+    const marker = 'MARKER_ONLY_IN_THE_FILE_BODY'
+    await writeFile(
+      join(ws_dir, 'notes.md'),
+      `# 标题
+${marker}
+`,
+      'utf8',
+    )
+
+    const conv = (await (
+      await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    ).json()) as { conversation?: { id?: string } }
+    const conversationId = conv.conversation?.id
+
+    const before = seenBodies.length
+    const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    const settled = Promise.withResolvers<void>()
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
+      if (msg.type === 'hello.ok') {
+        ws.send(
+          JSON.stringify({
+            type: 'message.send',
+            clientRequestId: crypto.randomUUID(),
+            conversationId,
+            content: '看这个文件',
+            attachments: [
+              {
+                type: 'file',
+                name: 'notes.md',
+                mime: 'text/markdown',
+                size: 0,
+                path: 'notes.md',
+              },
+            ],
+          }),
+        )
+      }
+      if (msg.event?.type === 'run.finished') settled.resolve()
+    })
+    ws.addEventListener('open', () => {
+      ws.send(
+        JSON.stringify({
+          type: 'hello',
+          token: handle.token,
+          origin: 'desktop',
+          subscribe: [conversationId],
+        }),
+      )
+    })
+    const timer = setTimeout(() => settled.reject(new Error('run 超时')), 20_000)
+    await settled.promise
+    clearTimeout(timer)
+    ws.close()
+
+    const body = seenBodies.slice(before).join('')
+    expect(body).toContain('notes.md')
+    // 正文里给的是位置，不是内容——文件里那个标记一个字节都不该出现。
+    expect(body).not.toContain(marker)
+    expect(body).not.toContain(Buffer.from(marker).toString('base64'))
   })
 })

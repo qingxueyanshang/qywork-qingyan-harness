@@ -198,9 +198,67 @@ export interface Attachment {
   type: 'image' | 'file'
   name: string
   mime: string
+  /**
+   * 对**路径型**附件不是真值——组装它的是前端，那时候拿不到字节数，填 0。
+   * 要用真实大小就去 `stat`，不要信这一格。
+   */
   size: number
-  /** 工作区相对路径；外部粘贴的内容先落盘再引用，不把字节塞进消息。 */
+  /**
+   * 这个文件在本机的位置：绝对路径，或工作区相对路径。
+   *
+   * **字节不进消息。** 拿得到源路径时（桌面端拖入、原生选择器）这里就是源文件的
+   * 位置，一个字节都不落盘；只有连源文件都不存在（剪贴板里只有位图、浏览器不给
+   * 路径）才先落盘再引用那一份。
+   *
+   * 两种取值由同一条解析规则吃下——相对路径按工作区解，绝对路径直接用
+   * （`tools` 的 `resolveInWorkspace`）。不要为此加第二个字段。
+   *
+   * 一律正斜杠：这个值要跨端传（手机也发得到），反斜杠在别处会被当转义。
+   * Windows 的 `D:/x/y.png` 各 API 都认。
+   */
   path: string
+}
+
+/**
+ * 会被内联成图像块的扩展名。
+ *
+ * **刻意判得窄，且必须与「发出去时内联哪些」严格同源。** 放宽到 `image/*`
+ * 会把 svg、bmp 之类也推成 `type: 'image'`，而多数 provider 拒收它们——
+ * 表现是界面上显示成图片、发出去整条请求 400。
+ *
+ * 按扩展名而不是 mime：路径型附件根本没有 mime，它只有一个路径。
+ */
+const INLINE_IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i
+
+/** 这个路径或文件名算不算可内联的图片。 */
+export function isInlineImage(pathOrName: string): boolean {
+  return INLINE_IMAGE_RE.test(pathOrName)
+}
+
+/** 扩展名 → mime。只覆盖可内联的那几种，其余交给通用二进制类型。 */
+export function mimeOf(pathOrName: string): string {
+  const ext = pathOrName.slice(pathOrName.lastIndexOf('.') + 1).toLowerCase()
+  if (ext === 'png') return 'image/png'
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'webp') return 'image/webp'
+  return 'application/octet-stream'
+}
+
+/** 附件分类。判据与 `isInlineImage` 同一处，不要在别处再判一次。 */
+export function attachmentTypeOf(pathOrName: string): Attachment['type'] {
+  return isInlineImage(pathOrName) ? 'image' : 'file'
+}
+
+/** 路径里的文件名。两种分隔符都要吃——拖放给的是平台原生分隔符。 */
+export function baseNameOf(filePath: string): string {
+  const trimmed = filePath.replace(/[\\/]+$/, '')
+  return trimmed.split(/[\\/]/).filter(Boolean).pop() ?? filePath
+}
+
+/** 反斜杠统一成正斜杠。见 `Attachment.path` 的约定。 */
+export function toPosixPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/')
 }
 
 // ─────────────────────────────── Run ───────────────────────────────

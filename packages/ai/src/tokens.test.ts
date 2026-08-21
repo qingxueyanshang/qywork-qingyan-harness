@@ -62,23 +62,18 @@ describe('内容块', () => {
    */
   test('图片按固定值，不数 base64', () => {
     const huge = 'A'.repeat(1_370_000)
-    const n = estimateContent([{ type: 'image', mimeType: 'image/png', data: huge }])
+    const n = estimateContent([
+      { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: huge } },
+    ])
     expect(n).toBe(MEDIA_TOKENS)
     // 关键是量级：绝不能和 base64 长度同阶。
     expect(n).toBeLessThan(huge.length / 100)
   })
 
-  test('文档同样按固定值', () => {
-    const n = estimateContent([
-      { type: 'document', mimeType: 'application/pdf', data: 'B'.repeat(500_000) },
-    ])
-    expect(n).toBe(MEDIA_TOKENS)
-  })
-
   test('图文混排各算各的', () => {
     const n = estimateContent([
       { type: 'text', text: 'x'.repeat(40) },
-      { type: 'image', mimeType: 'image/png', data: 'zz' },
+      { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'zz' } },
     ])
     expect(n).toBe(10 + MEDIA_TOKENS)
   })
