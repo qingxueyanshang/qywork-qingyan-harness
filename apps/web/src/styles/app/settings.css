@@ -617,9 +617,6 @@ textarea.code-area::placeholder {
   overflow: hidden;
 }
 .model-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   padding: var(--s-2) var(--s-3);
   min-width: 0;
 }
@@ -639,11 +636,10 @@ textarea.code-area::placeholder {
   margin-left: auto;
 }
 .model-id {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: none;
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
-  word-break: break-all;
+  white-space: nowrap;
 }
 .model-pick {
   flex: none;
@@ -777,31 +773,24 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
 }
 
-/* 探测结论。
+/* 探测结论。坐在模型那一行里，占掉 id 右边剩下的宽度。
  *
- * **它是上面那行模型的下属，不是并列的一段。** 不缩进的话它比模型名还靠左
- * （模型名前面有个「默认」按钮把它推开了），读起来像另起一节，
- * 而这一行讲的就是上面那个模型。缩进用固定值不去对齐按钮宽度：
- * 那个按钮的文字在「默认 / 设为默认」之间变，对齐必然是假的。
+ * **一行到底，长了截断**，完整内容在 `title` 里。换行会把这一行撑高，
+ * 而按钮就在同一行上——尺寸一变按钮就跑（CLAUDE.md B9）。
  *
  * **「没探测」和「不支持」分开写**，合并成一个否就是把没验过的事写成了结论
  * ——而用户会据此去查一个根本没坏的东西。 */
 .probe-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-1) var(--s-3);
-  padding-left: var(--s-4);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
 .probe-line.bad {
   color: var(--danger);
-}
-/* 失败那几步给原文：结论错了要能查，只给「不支持」查不出任何东西。 */
-.probe-fail {
-  width: 100%;
-  color: var(--danger);
-  word-break: break-word;
 }
 
 .save-msg {
