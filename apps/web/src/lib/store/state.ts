@@ -230,6 +230,42 @@ export function isRunning(): boolean {
   return id !== null && state.busyConversations.includes(id)
 }
 
+/**
+ * 这条会话的账本走到哪儿了。**只当「该重取了」的信号用，不是要显示的数。**
+ *
+ * 运行面板画的是账本此刻的样子，而账本在一轮之内一直在变：每落一步
+ * `runs.step_count` 加一，每次 provider 回报 usage 就改一次金额、多一行逐请求记录。
+ * 重取判据只报会话与忙闲的话，那一轮跑完之前面板停在开跑那一刻的快照上。
+ *
+ * 四个分量各对应一类落库：`lastRunId` 与忙闲对 `runs` 行的起止，
+ * `transcript.length` 对 `steps` 行（一条 step 一个条目），
+ * `usage.turns.length` 对 provider 的每次 usage 回报。
+ * 不要换成 `lastEventAt`：它每来一帧就动一次，等于把重取拉到 token 频率。
+ */
+export function ledgerRevision(): string {
+  const marks = [
+    state.lastRunId ?? '',
+    isRunning() ? '1' : '0',
+    state.transcript.length,
+    state.usage?.turns.length ?? 0,
+  ]
+  return marks.join(':')
+}
+
+/**
+ * 这个文件被这一轮改过多少。**同样只当「该重取了」的信号用。**
+ *
+ * 主区打开的文件要跟着 agent 的改动重取，判据只报路径的话内容停在打开那一刻。
+ * 取累计而不是 `fileChanges.length`：同一个文件改第二次是原地累加
+ * （见 `applyEvent` 的 `file.changed` 分支），条目数不动。
+ *
+ * 边界：只认写类工具回报的改动，shell 里 sed 改的文件不在里面（同变更页）。
+ */
+export function fileRevision(path: string): string {
+  const c = state.fileChanges.find((f) => f.path === path)
+  return c ? `${c.additions}+${c.deletions}` : ''
+}
+
 /** 记下 / 抹掉「这条会话在跑」。幂等，重复到达的忙闲事件不会写出两行。 */
 export function markBusy(id: string, busy: boolean): void {
   setState('busyConversations', (list) =>

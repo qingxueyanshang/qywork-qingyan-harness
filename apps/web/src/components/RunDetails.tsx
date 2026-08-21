@@ -10,7 +10,7 @@ import { formatCosts, formatMoney } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import { compact, stopReasonLabel } from '../lib/step-view.ts'
-import { client, isRunning, openSettings, state } from '../lib/store/index.ts'
+import { client, ledgerRevision, openSettings, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 
@@ -30,7 +30,7 @@ import { LoadState } from './settings/LoadState.tsx'
  * 清单里同样把非轮次的那几笔列出来，所以合计与清单对得上，不需要任何一句解释差额的话。
  */
 export default function RunDetails() {
-  const key = () => ({ id: state.activeConversation, run: state.lastRunId, busy: isRunning() })
+  const key = () => ({ id: state.activeConversation, rev: ledgerRevision() })
 
   const [runData, { refetch: refetchRuns }] = createResource(key, async (k) =>
     k.id === null
@@ -272,9 +272,11 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
  * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，与账单同序，两边能逐行扫下来。
  */
 function RequestLedger(props: { run: Run }) {
+  // 跑完的那一轮不会再多请求，判据里就不放账本修订号——否则每落一步都要为一张
+  // 不会变的表重取一次。
   const [data] = createResource(
-    () => props.run.id,
-    (id) => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${id}/requests`),
+    () => `${props.run.id}:${props.run.finishedAt === null ? ledgerRevision() : ''}`,
+    () => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${props.run.id}/requests`),
   )
   const requests = () => loaded(data)?.requests ?? []
   const costOf = (turnIndex: number) =>
@@ -342,9 +344,8 @@ function RequestLedger(props: { run: Run }) {
  * ——值位保持「—」，行高恒定；完整的两种状态在它点进去的那一页。
  */
 function LedgerLink() {
-  const [data] = createResource(
-    () => ({ busy: isRunning() }),
-    () => client.api<{ totals: { cost: Record<string, number> } }>('/api/usage?days=30'),
+  const [data] = createResource(ledgerRevision, () =>
+    client.api<{ totals: { cost: Record<string, number> } }>('/api/usage?days=30'),
   )
   const cost = () => {
     const c = loaded(data)?.totals.cost
