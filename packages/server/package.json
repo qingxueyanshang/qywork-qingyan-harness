@@ -10,6 +10,7 @@
     "@qywork/agent": "workspace:*",
     "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*",
+    "@qywork/mcp": "workspace:*",
     "@qywork/plugins": "workspace:*",
     "@qywork/runtime": "workspace:*",
     "@qywork/store": "workspace:*",

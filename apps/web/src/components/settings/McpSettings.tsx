@@ -1,6 +1,15 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { askInChat, loadMcp, loadMcpRaw, type Scope, saveMcpRaw } from '../../lib/store/index.ts'
+import {
+  askInChat,
+  importMcp,
+  isDesktopShell,
+  loadMcp,
+  loadMcpRaw,
+  pickFiles,
+  type Scope,
+  saveMcpRaw,
+} from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs } from './Scope.tsx'
@@ -86,10 +95,39 @@ export default function McpSettings() {
    * 挂在「配置」那一段的话，列表一长它就被推到屏幕外，用户得往下滚才找得到。
    * 空态框里再放一颗——那一刻用户正盯着空框，与其余几页同一个做法。
    */
+  /**
+   * 从本机一份现成的配置里并进来。多半是从别的 MCP 客户端整段拷来的那一份。
+   *
+   * 只取选中的第一个：并两份配置要先解决它们之间的同名冲突，那是另一件事。
+   */
+  const browse = async () => {
+    if (!isDesktopShell()) return
+    setError(null)
+    try {
+      const picked = (await pickFiles())[0]
+      // 取消不是错误。
+      if (!picked) return
+      await importMcp(scope(), picked)
+      await Promise.all([refetch(), refetchRaw()])
+      setDraft(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const AddButton = () => (
-    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SERVER)}>
-      新增
-    </button>
+    <>
+      {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
+          留一个点了没反应的按钮比不给更糟（B5）。 */}
+      <Show when={isDesktopShell()}>
+        <button class="btn-ghost sm" type="button" onClick={() => void browse()}>
+          导入
+        </button>
+      </Show>
+      <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SERVER)}>
+        新增
+      </button>
+    </>
   )
 
   const servers = () => (loaded(data)?.servers ?? []).filter((s) => s.scope === scope())
