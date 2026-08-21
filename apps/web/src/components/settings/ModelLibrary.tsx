@@ -235,6 +235,7 @@ function ModelForm(props: {
   let curRef: HTMLSelectElement | undefined
   let thinkRef: HTMLSelectElement | undefined
   let defaultThinkRef: HTMLInputElement | undefined
+  let echoRef: HTMLSelectElement | undefined
   let cacheRoutingRef: HTMLSelectElement | undefined
 
   /** 留空 = 照内置值。0 在窗口、上限、单价上都不是有意义的值，一律当没填。 */
@@ -278,6 +279,7 @@ function ModelForm(props: {
       // 思考两项：`thinking` 空串 = 没改过，照内置值；勾选框有明确的两态，
       // 只在与内置值不同时才写进覆盖，否则一条没动过的记录也会被标成 user。
       ...(thinkRef?.value ? { thinking: thinkRef.value } : {}),
+      ...(echoRef?.value ? { reasoningEcho: echoRef.value } : {}),
       ...(cacheRoutingRef?.value ? { cacheRouting: cacheRoutingRef.value } : {}),
       ...(defaultThinkRef && defaultThinkRef.checked !== props.model?.thinksByDefault
         ? { thinksByDefault: defaultThinkRef.checked }
@@ -324,6 +326,16 @@ function ModelForm(props: {
           checked={props.model?.thinksByDefault ?? false}
         />
         <span>不选档时也思考</span>
+      </label>
+      {/* 回传推理原文。中转站把 DeepSeek 挂在自定义模型名下时内置目录认不出它，
+          这一格是唯一出口——不填的话第二轮工具调用会被对方拒掉。 */}
+      <label class="lib-field">
+        <span>回传推理原文</span>
+        <select ref={echoRef}>
+          <option value="">照内置值（{props.model?.reasoningEcho ?? '未知'}）</option>
+          <option value="none">不回传</option>
+          <option value="reasoning_text">reasoning_text</option>
+        </select>
       </label>
       {/* 缓存路由。中转站多上游轮询时不发这个键，前缀再稳也可能恒不命中；
           而自建端点对未知字段的容忍度没验过，所以两态都要能选。 */}

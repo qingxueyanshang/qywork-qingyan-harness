@@ -38,6 +38,22 @@ export interface Pricing {
  */
 export type CacheRouting = 'prompt_cache_key' | 'none'
 
+/**
+ * 带 tool_calls 的历史消息，要不要把上一轮的推理原文回传给端点。
+ *
+ * 这是**接收请求的那个端点**的要求，不是历史的属性——所以它归目录这一格，
+ * 与 `cacheRouting` 同类。不要改回「从历史里有没有推理文本反推」：
+ * 摘要型端点（`reasoning.summary`）同样会给出推理文本，反推必然假阳性，
+ * 而假阳性的代价是每一轮工具调用之后都发不出去。
+ *
+ * 只有 Responses 适配器消费它。
+ */
+export type ReasoningEcho =
+  /** 不回传。 */
+  | 'none'
+  /** 回传 `{type:'reasoning', content:[{type:'reasoning_text'}]}`。 */
+  | 'reasoning_text'
+
 export type ThinkingMode =
   /** 只接受 {type:'adaptive'}；budget_tokens 会 400。 */
   | 'adaptive_only'
@@ -84,6 +100,11 @@ export interface ModelSpec {
   maxOutputTokens: number
   pricing: Pricing
   thinking: ThinkingMode
+  /**
+   * 带 tool_calls 的历史要不要回传推理原文。与 `thinking` 正交：DeepSeek 的
+   * Responses 条目与 OpenAI 同为 `reasoning_effort`，那条轴说的是 effort 旋钮。
+   */
+  reasoningEcho: ReasoningEcho
   /**
    * 支持的 effort 档位。空数组=不支持 effort 参数。
    */
@@ -405,6 +426,7 @@ const CLAUDE_BASE = {
   // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
   cacheRouting: 'none' as const,
   thinking: 'adaptive_only' as const,
+  reasoningEcho: 'none' as const,
   // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
 }
@@ -521,6 +543,9 @@ function deepseekCatalog(): ModelSpec[] {
      * 写回档案覆盖这里。
      */
     thinking: 'deepseek_thinking' as const,
+    // chat/completions 那支的回传由 `openai-compat` 无条件发 `reasoning_content`，
+    // 不读这一格。要回传的是下面 Responses 那支。
+    reasoningEcho: 'none' as const,
     effortLevels: ['high', 'max'] as EffortLevel[],
     thinksByDefault: false,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
@@ -571,6 +596,14 @@ function deepseekCatalog(): ModelSpec[] {
     ...m,
     provider: 'openai_responses',
     thinking: 'reasoning_effort',
+    /*
+     * 带 tool_calls 的历史不回传 `reasoning_text` 就 400，实测原话与回传规则
+     * 记在 `providers/openai-responses.ts` 的文件头。
+     *
+     * **`thinking` 与 OpenAI 同为 `reasoning_effort` 不代表这一格也同**：
+     * 那条轴说的是 effort 旋钮，这条说的是回传要求，两者正交。
+     */
+    reasoningEcho: 'reasoning_text',
     thinksByDefault: true,
     // **本仓那次实测是在这条协议下做的，不被上面那条改动覆盖。**
     // Responses 只有 `reasoning.effort` 一个旋钮，没有 DeepSeek 那个 `thinking`
@@ -628,6 +661,12 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     maxOutputTokens: 8_192,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
     thinking: 'none',
+    /*
+     * 未收录 = 没测过。不回传是保守的那一侧：多发一个条目会让不要求回传的端点
+     * 每一轮工具调用之后都 400，而少发只在要求回传的端点上 400，且那个 400
+     * 带着对方的明文原话。想开就在模型库那一格填 `reasoningEcho`。
+     */
+    reasoningEcho: 'none',
     effortLevels: [],
     thinksByDefault: false,
     minCacheablePrefix: 1024,
@@ -666,6 +705,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     provider: 'openai_chat_completions' as const,
     minCacheablePrefix: 1024,
     cacheRouting: 'prompt_cache_key' as const,
+    reasoningEcho: 'none' as const,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
@@ -1022,6 +1062,11 @@ export interface SpecOverride {
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
   /**
+   * 回传推理原文。探针不覆盖这一轴（探不出来的不猜），只能手填——
+   * 中转站把 DeepSeek 挂在自定义模型名下时，内置目录认不出它，这一格是唯一出口。
+   */
+  reasoningEcho?: ReasoningEcho
+  /**
    * 缓存路由。与思考三项同属「探测得到、也可手填」的那一类，落点也是同一处。
    *
    * 它比思考更需要按端点覆盖：缓存能力是「端点 × 模型」那一格的属性，
@@ -1051,6 +1096,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
     ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
     ...(o.thinking ? { thinking: o.thinking } : {}),
+    ...(o.reasoningEcho ? { reasoningEcho: o.reasoningEcho } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
     ...(o.cacheRouting ? { cacheRouting: o.cacheRouting } : {}),
     // `thinksByDefault` 是布尔，`false` 是有效覆盖，只能按 `undefined` 判缺省。

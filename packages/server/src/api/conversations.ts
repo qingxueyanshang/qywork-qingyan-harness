@@ -108,6 +108,13 @@ export interface LibraryModel {
    */
   thinking: string
   thinksByDefault: boolean
+  /**
+   * 带 tool_calls 的历史要不要回传推理原文。只有 Responses 那条链路消费它。
+   *
+   * 这一行按目录首条协议取值（见 `buildLibrary` 里的取法），而同一个模型可能
+   * 按协议分了多条——显示的未必是实际生效的那条。`thinking` 同样如此。
+   */
+  reasoningEcho: string
   cacheRouting: string
   source: 'seed' | 'user'
   /**
@@ -183,6 +190,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
       thinking: spec.thinking,
       thinksByDefault: spec.thinksByDefault,
+      reasoningEcho: spec.reasoningEcho,
       cacheRouting: spec.cacheRouting,
       source,
       ...(notes.length ? { priceNotes: notes } : {}),
