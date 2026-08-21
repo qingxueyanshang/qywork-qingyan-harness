@@ -1,8 +1,8 @@
 import type { EditorView } from '@codemirror/view'
-import { createResource, Match, onCleanup, Show, Switch } from 'solid-js'
+import { createEffect, createResource, Match, onCleanup, Show, Switch } from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
-import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
+import { absPath, client, explainApiError, fileRevision, setOpenFile } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 
 interface PreviewResult {
@@ -30,9 +30,11 @@ interface PreviewResult {
  * 只想聊天的用户不该为它付首屏成本。
  */
 export default function FileView(props: { path: string }) {
+  // 判据带上改动累计：只报路径的话，agent 改了正开着的文件，旁边的树刷新了
+  // （`SidePanel` 依赖 `fileChanges.length`）而这块内容还是旧的。
   const [result] = createResource(
-    () => props.path,
-    (path) => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(path)}`),
+    () => `${props.path}:${fileRevision(props.path)}`,
+    () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
 
   return (
@@ -96,23 +98,30 @@ export default function FileView(props: { path: string }) {
 function CodeView(props: { content: string; path: string }) {
   let host!: HTMLDivElement
   let view: EditorView | null = null
+  /** 只有最后一次装配算数：语言包是动态 import，两次改动挨得近时后发的可能先到。 */
+  let generation = 0
 
   // 路径或内容变了就整块重建：CodeMirror 换语言包需要重建 state，
   // 增量更新反而更复杂且容易漏掉语言切换。
-  const mount = async () => {
-    view?.destroy()
-    view = await createReadonlyEditor(host, props.content, props.path)
-  }
+  //
+  // 装在 `createEffect` 里，不装在 `ref` 回调里：ref 只在建元素那一下跑一次，
+  // 而外层的 `Show` 不是 keyed，内容变了这个组件实例是留着的。
+  createEffect(() => {
+    const content = props.content
+    const path = props.path
+    const mine = ++generation
+    void (async () => {
+      const next = await createReadonlyEditor(host, content, path)
+      if (mine !== generation) {
+        next.destroy()
+        return
+      }
+      view?.destroy()
+      view = next
+    })()
+  })
 
   onCleanup(() => view?.destroy())
 
-  return (
-    <div
-      class="code-view"
-      ref={(el) => {
-        host = el
-        void mount()
-      }}
-    />
-  )
+  return <div class="code-view" ref={host} />
 }

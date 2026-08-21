@@ -59,7 +59,9 @@ const {
   closePanelTab,
   explainApiError,
   holdPanelTab,
+  fileRevision,
   isRunning,
+  ledgerRevision,
   openPanel,
   openPanelTab,
   PANEL_MIN,
@@ -487,6 +489,130 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(state.conversations.find((c) => c.id === 'cv_other')?.title).toBe('改过的标题')
     expect(state.conversations.find((c) => c.id === 'cv_now')?.title).toBe('当前')
+  })
+})
+
+/**
+ * 运行面板的重取判据（`store/state.ts` 的 `ledgerRevision`）。
+ *
+ * 原始失败形状：一轮跑了十分钟，运行面板上的步数、金额、逐请求表停在开跑那一刻
+ * ——判据当时只报会话与忙闲，而账本每落一步、每次 usage 回报都在变。
+ * 所以断言的是「账本变了，号跟着变」，不是「重取了几次」。
+ */
+describe('账本修订号跟着落库走', () => {
+  const startRun = () => {
+    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [], usage: null })
+    applyEvent({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'run.started',
+        runId: 'run_1',
+        conversationId: 'cv_1',
+        model: 'm',
+        userMessageId: null,
+        retryOfRunId: null,
+      },
+    } as never)
+  }
+
+  test('多落一步就换一个号', () => {
+    startRun()
+    const before = ledgerRevision()
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'tool.started',
+        stepId: 'st_1',
+        toolName: 'read_file',
+        action: { kind: 'read', target: 'a.ts' },
+        args: {},
+        batchId: 'b_1',
+        waveIndex: 0,
+      },
+    } as never)
+    expect(ledgerRevision()).not.toBe(before)
+  })
+
+  test('provider 回报一次用量就换一个号', () => {
+    startRun()
+    const before = ledgerRevision()
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'usage',
+        runId: 'run_1',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 2,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: 0,
+          cost: 0.001,
+          currency: 'USD',
+          turns: [{ turnIndex: 0 }],
+        },
+      },
+    } as never)
+    expect(ledgerRevision()).not.toBe(before)
+  })
+
+  /** 只有动静、没有落库的那一类不能换号，否则重取被拉到 token 频率。 */
+  test('「上一次有动静」变了不换号', () => {
+    startRun()
+    const before = ledgerRevision()
+    setState({ lastEventAt: 123456 })
+    expect(ledgerRevision()).toBe(before)
+  })
+})
+
+/**
+ * 打开的文件的重取判据（`store/state.ts` 的 `fileRevision`）。
+ *
+ * 原始失败形状：主区开着一个文件，agent 改了它，旁边的树刷新了而内容还是旧的。
+ * 第二条锁的是同一个文件改第二次——`fileChanges` 是原地累加，条目数不动，
+ * 所以判据不能拿条目数当信号。
+ */
+describe('打开的文件跟着改动重取', () => {
+  const changed = (seq: number, path: string, additions: number, deletions: number) =>
+    applyEvent({
+      seq,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'file.changed',
+        runId: 'run_1',
+        changes: [{ path, additions, deletions, changeType: 'modified' }],
+      },
+    } as never)
+
+  test('改一次就换一个号', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [] })
+    const before = fileRevision('src/main.ts')
+    changed(1, 'src/main.ts', 3, 1)
+    expect(fileRevision('src/main.ts')).not.toBe(before)
+  })
+
+  test('同一个文件改第二次照样换号', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [] })
+    changed(1, 'src/main.ts', 3, 1)
+    const afterFirst = fileRevision('src/main.ts')
+    changed(2, 'src/main.ts', 2, 0)
+    expect(state.fileChanges.length).toBe(1)
+    expect(fileRevision('src/main.ts')).not.toBe(afterFirst)
+  })
+
+  test('改的是别的文件，这个文件的号不动', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [] })
+    changed(1, 'src/main.ts', 3, 1)
+    const mine = fileRevision('src/main.ts')
+    changed(2, 'src/util.ts', 9, 9)
+    expect(fileRevision('src/main.ts')).toBe(mine)
   })
 })
 
