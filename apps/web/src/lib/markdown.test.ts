@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { renderMarkdown } from './markdown.ts'
+import { createStreamRenderer, renderMarkdown } from './markdown.ts'
 
 describe('净化', () => {
   test('script 标签不出现在结果里', () => {
@@ -102,5 +102,85 @@ describe('边界输入', () => {
   test('流式与定稿两种模式对同一段纯文本给出同样的结果', () => {
     const src = '# 标题\n\n一段话。'
     expect(renderMarkdown(src, { streaming: true })).toBe(renderMarkdown(src))
+  })
+})
+
+/**
+ * 流式增量渲染与整段渲染必须逐字相等。
+ *
+ * 这套东西唯一不可接受的失败是**流式期渲染出与定稿不同的结构**——用户会看到列表编号
+ * 从头数、代码块被切成两段，而没有任何报错。所以这里不抽样：**每个用例逐字符喂**，
+ * 每一步都和 `renderMarkdown` 的整段结果比。
+ *
+ * 用例挑的是「跨空行的块」——它们正是「按空行切」那种写法会切错的地方。
+ */
+describe('增量渲染与整段渲染一致', () => {
+  const CASES: [string, string][] = [
+    ['松散列表', '1. 一\n\n2. 二\n\n3. 三\n'],
+    ['有序列表续号', '1. 甲\n\n中间一段\n\n2. 乙\n'],
+    ['列表续行缩进', '1. 装依赖\n\n    bun install\n\n2. 跑\n'],
+    ['缩进代码含空行', '    a\n\n    b\n\n后面一段\n'],
+    ['HTML 块跨空行', '<pre>\n第一行\n\n第二行\n</pre>\n\n之后\n'],
+    ['引用式链接', '见[规范][spec]说明。\n\n[spec]: https://example.com "标题"\n\n后文\n'],
+    ['段落后的分隔线', '一段话\n\n---\n\n另一段\n'],
+    ['围栏含空行', '```ts\nconst a = 1\n\nconst b = 2\n```\n\n后面\n'],
+    ['表格', '| a | b |\n| - | - |\n| 1 | 2 |\n\n后面\n'],
+    ['嵌套引用', '> 引用一\n>\n> 引用二\n\n正文\n'],
+    ['典型混合', '## 标题\n\n正文 `code` **粗**。\n\n- 甲\n- 乙\n\n```js\nx()\n```\n\n收尾。\n'],
+  ]
+
+  for (const [name, doc] of CASES) {
+    test(`逐字符喂：${name}`, () => {
+      const stream = createStreamRenderer()
+      let settledHtml = ''
+      for (let i = 1; i <= doc.length; i++) {
+        const chunk = stream.push(doc.slice(0, i))
+        if (chunk.reset) settledHtml = ''
+        settledHtml += chunk.settled
+        expect(settledHtml + chunk.live).toBe(renderMarkdown(doc.slice(0, i), { streaming: true }))
+      }
+    })
+  }
+
+  /**
+   * 已知偏差：use 已定稿、def 隔两个块以上才到。流式期保持字面文本，
+   * 定稿时的整段渲染纠正它。这条锁的是「偏差只在流式期」，不是「没有偏差」。
+   */
+  test('远隔的前向引用：流式期是字面文本，定稿后是链接', () => {
+    const doc = '见[规范][spec]。\n\n甲段\n\n乙段\n\n丙段\n\n[spec]: https://example.com\n\n尾\n'
+    const stream = createStreamRenderer()
+    let settledHtml = ''
+    for (let i = 1; i <= doc.length; i++) {
+      const chunk = stream.push(doc.slice(0, i))
+      if (chunk.reset) settledHtml = ''
+      settledHtml += chunk.settled
+    }
+    expect(settledHtml).toContain('[规范][spec]')
+    expect(renderMarkdown(doc)).toContain('href="https://example.com"')
+  })
+
+  /** 文本变短说明换了一份，整份重来——否则前缀会永远停在上一份的内容上。 */
+  test('文本变短时整份重来', () => {
+    const stream = createStreamRenderer()
+    stream.push('第一段\n\n第二段\n\n第三段\n')
+    const chunk = stream.push('另一份\n')
+    expect(chunk.reset).toBe(true)
+    expect(chunk.settled + chunk.live).toBe(renderMarkdown('另一份\n', { streaming: true }))
+  })
+
+  /** 半截的 def 不许占住引用表：marked 那张表先到先得，占住了补全的那条就再也进不来。 */
+  test('半截的 def 补全之后仍然解析成链接', () => {
+    const doc = '[spec]: https://example.com\n\n见[规范][spec]。\n\n尾\n'
+    const stream = createStreamRenderer()
+    let settledHtml = ''
+    let whole = ''
+    for (let i = 1; i <= doc.length; i++) {
+      const chunk = stream.push(doc.slice(0, i))
+      if (chunk.reset) settledHtml = ''
+      settledHtml += chunk.settled
+      whole = settledHtml + chunk.live
+      expect(whole).toBe(renderMarkdown(doc.slice(0, i), { streaming: true }))
+    }
+    expect(whole).toContain('href="https://example.com"')
   })
 })

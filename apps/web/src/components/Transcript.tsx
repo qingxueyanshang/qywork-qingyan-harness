@@ -13,7 +13,7 @@ import {
   Switch,
   untrack,
 } from 'solid-js'
-import { renderMarkdown } from '../lib/markdown.ts'
+import { createStreamRenderer, renderMarkdown } from '../lib/markdown.ts'
 import {
   actionLabel,
   buildRenderItems,
@@ -275,8 +275,8 @@ function liveStatus(now: number): string {
 /**
  * assistant 正文。
  *
- * 只有「运行中且是最后一条」才按流式渲染（关闭语言自动检测）；定稿后重渲染一次
- * 并开启检测。这是性能取舍，见 markdown.ts 的说明。
+ * 只有「运行中且是最后一条」才按流式渲染（`createStreamRenderer`，关闭语言自动检测）；
+ * 定稿后整段重渲染一次并开启检测，那一次同时纠正增量渲染的已知偏差。
  *
  * ## 这里不许再加一层限速
  *
@@ -286,17 +286,15 @@ function liveStatus(now: number): string {
  * **稳态变成每 100ms 落地一次、每次蹦出两档的量**。20Hz 的匀速被压成 10Hz 的跳变，
  * 看起来就是字一撮一撮往外蹦，不是流出来的。
  *
- * 重解析确实和文档长度成正比（实测 `renderMarkdown`，切片覆盖到全文尾部）：
+ * ## DOM 只动活动区
  *
- * ```
- *  1330 字   平均 0.8ms/次   尾部最慢 1.0ms
- *  5320 字   平均 3.0ms/次   尾部最慢 7.5ms
- * 15960 字   平均 15.7ms/次  尾部最慢 39.6ms   ← 一帧才 16.7ms
- * ```
+ * 已定稿的块贴进容器就不再碰，每档只删掉它们之后那几个节点再贴一次活动区。
+ * **不要把两个区各包一个 `<div>`**：`transcript.css` 的 `.markdown > :first-child` /
+ * `:last-child` / `p:last-child` 是按容器的直接子元素写的，包一层这三条全部失效
+ * （首尾的外边距塌不掉，两个区之间多出一截）。
  *
- * 但**限流频率救不了这个**：60ms 一次和 50ms 一次都远大于 16.7ms 一帧，长文尾部
- * 照样掉帧，代价却是全程的节奏被打乱。真要治长文，得让 `renderMarkdown` 增量化，
- * 不是在这里少解析几次。
+ * 整段替换 `innerHTML` 的代价不只是重建节点：33KB 的 HTML 实测 7.8ms、66KB 15.5ms
+ * （2026-08-20，真实 Chromium），且流式期用户选中的文字每档被销毁一次，复制不了。
  */
 function Prose(props: { item: TranscriptItem }) {
   const streaming = () =>
@@ -322,21 +320,52 @@ function Prose(props: { item: TranscriptItem }) {
     }
   })
 
-  const html = createMemo(() => {
+  let host: HTMLDivElement | undefined
+  const stream = createStreamRenderer()
+  /** 已定稿区占了容器前面多少个子节点。活动区永远是它之后的那些。 */
+  let settledNodes = 0
+
+  createEffect(() => {
     gate()
-    // 只认闸门：直接读 text 会让 memo 依赖它，降频就失效了。
-    return untrack(() => {
-      const t0 = performance.now()
-      const out = renderMarkdown(props.item.text, { streaming: streaming() })
-      lastCost = performance.now() - t0
-      return out
-    })
+    /*
+     * `streaming()` 必须**订阅**，不能塞进下面的 `untrack`。
+     *
+     * 定稿那一下常常不改变文本长度——末档的字在 `run.finished` 之前就冲进 store 了，
+     * 于是闸门写回同一个值、信号不通知。只认闸门的话整段重渲染永远不会发生，
+     * 而语言自动检测和增量渲染的已知偏差都指着它纠正。
+     * 它自己不会每档变：读的是末项的 id，往末项追加文本不动 id。
+     */
+    const live = streaming()
+    // 只认闸门：直接读 text 会让这个 effect 依赖它，降频就失效了。
+    const text = untrack(() => props.item.text)
+    if (!host) return
+
+    const t0 = performance.now()
+    if (live) {
+      const chunk = stream.push(text)
+      if (chunk.reset) {
+        host.textContent = ''
+        settledNodes = 0
+      }
+      for (let extra = host.childNodes.length; extra > settledNodes; extra--) {
+        host.lastChild?.remove()
+      }
+      // 内容经 markdown.ts 净化后才进 DOM —— 模型输出不可信
+      if (chunk.settled) {
+        host.insertAdjacentHTML('beforeend', chunk.settled)
+        settledNodes = host.childNodes.length
+      }
+      if (chunk.live) host.insertAdjacentHTML('beforeend', chunk.live)
+    } else {
+      host.innerHTML = renderMarkdown(text)
+      settledNodes = host.childNodes.length
+    }
+    lastCost = performance.now() - t0
   })
 
   return (
     <div class="row assistant" classList={{ superseded: props.item.superseded }}>
-      {/* 内容经 markdown.ts 净化后才进 innerHTML —— 模型输出不可信 */}
-      <div class="prose markdown" innerHTML={html()} />
+      <div class="prose markdown" ref={host} />
     </div>
   )
 }
