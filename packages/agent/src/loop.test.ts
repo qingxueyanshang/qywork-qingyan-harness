@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
-import { classifyProviderError, lookupModel, ProviderError } from '@qywork/ai'
-import type { AgentEvent } from '@qywork/core'
+import {
+  classifyProviderError,
+  estimateRequest,
+  estimateText,
+  lookupModel,
+  ProviderError,
+} from '@qywork/ai'
+import type { AgentEvent, ContextBreakdown } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
 import { UNAVAILABLE_BACKOFF_MS } from './loop.ts'
@@ -17,9 +23,12 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
       model,
       model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
     ),
-    async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+    async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
-      yield { type: 'request_prepared', measuredInputTokens: 10 }
+      // 三个真适配器都是 `estimateRequest(req)`，假的必须同口径：没有锚点时
+      // 面板的总数就是这个值，而分组明细是同一次装配的估算，两者相等是恒等式。
+      // 给一个与请求无关的常数，等于让假适配器造出真适配器造不出的状态。
+      yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
       if (calls) {
         yield { type: 'tool_calls', calls }
       } else {
@@ -802,6 +811,121 @@ describe('上下文分组占用', () => {
     expect(Object.values(b!).some((v) => v > 0)).toBe(true)
     // 桶集必须与协议恒等：多一个少一个都说明有人又另立了一套。
     expect(Object.keys(b!).sort()).toEqual([...CONTEXT_GROUPS].sort())
+  })
+
+  /**
+   * 回归测试：**各行加起来必须等于标题上那个数**。
+   *
+   * 复现的是实测形状：`tokens` 走锚定尺（provider 真值 + 一轮尾巴），`breakdown`
+   * 是本地估算，两者天然不等。live 事件不对账时，差额无声地落进「剩余空间」——
+   * 界面上各行加起来只有 36.9%，标题写着 64.2%，而那 271k 的去向没有任何一行指向它。
+   *
+   * 会话面板那侧（`runtime/context-panel.ts`）一直是对过账的，所以不对账的表现
+   * 是同一个面板两条路显示两组数：打开会话看到一组，run 一跑起来换成另一组。
+   */
+  test('锚定尺下各分组之和恒等于读数', async () => {
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        workspaceRoot: '/tmp',
+        conversationId: 'cv',
+        runId,
+        model: 'test',
+        contextWindow: 200_000,
+        resources: new Map(),
+        state: new Map(),
+        sink: null,
+        signal: new AbortController().signal,
+        requestPermission: async () => true,
+      }),
+    })
+
+    const events = []
+    for await (const ev of loop.run({
+      runId: 'rn_reconcile' as never,
+      history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
+      // 真值远大于这点历史的本地估算，差额必须被摊回可变桶而不是消失。
+      anchor: { tokens: 33_000, throughMessageId: 'ms_8', envelopeFingerprint: null },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+
+    const ctx = events.find((e) => e.type === 'context')
+    expect(ctx?.type).toBe('context')
+    if (ctx?.type !== 'context') return
+    expect(ctx.source).toBe('actual')
+    expect(Object.values(ctx.breakdown).reduce((n, v) => n + v, 0)).toBe(ctx.tokens)
+    // 摊法是吸收不是缩放：逐字可数的固定类目保实测值，不许被差额改写。
+    expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys'))
+  })
+
+  /**
+   * 回归测试：**执行记录 / 工具结果的二分要同尺量**。
+   *
+   * 复现的形状取自实测：`write_file` 回一句「创建 src/car.js」、没有 result。
+   * 信封按 `estimateJson`（2 字符/token）量而整条按 `estimateText`（4 字符/token）
+   * 量时，信封虚高一倍，差额从正文里扣到负数、被 `Math.min` 夹成零——面板于是
+   * 读作「这次调用没带回任何正文」。同一条会话 327 次调用里 167 条是这个形状，
+   * 上面这句 summary 就是其中一种。
+   *
+   * **断言落在账本上不是事件上**：事件里的 `breakdown` 已经对过账
+   * （`reconcileBreakdown`），差额会盖住二分本身。`sentCategories` 是原始估算，
+   * 也正是会话面板回头投影时读的那一份。
+   */
+  test('带 summary 的工具结果不会被记成没有正文', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'write_file',
+      description: '回一句话，用于验证工具结果的二分。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '文件',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        return { status: 'success', message: '创建 src/car.js' }
+      },
+    })
+
+    const recorded: ContextBreakdown[] = []
+    const persist = noopPersistence()
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[{ id: 'call_0mt3zi7wa01', name: 'write_file', arguments: {} }], null]),
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: {
+        ...persist,
+        openRequest: (r) => {
+          recorded.push(r.sentCategories)
+          return persist.openRequest(r)
+        },
+      },
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    for await (const _ev of loop.run({
+      runId: 'rn_split' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 只看账本。
+    }
+
+    // 第二次请求才带着工具结果：第一次装配时那条 tool 消息还不存在。
+    const b = recorded.at(-1)
+    expect(recorded).toHaveLength(2)
+    expect(b).toBeDefined()
+    // 信封与正文各占一部分——两个桶都不许是零。
+    expect(b!.executionRecords).toBeGreaterThan(0)
+    expect(b!.intermediateContent).toBeGreaterThan(0)
   })
 })
 

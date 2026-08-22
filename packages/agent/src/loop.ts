@@ -24,7 +24,6 @@ import type {
 } from '@qywork/ai'
 import {
   computeCost,
-  estimateJson,
   estimateMessage,
   estimateMessages,
   estimateRequest,
@@ -43,7 +42,7 @@ import type {
   StopReason,
   ToolOutcomeWire,
 } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted, newBatchId } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, newBatchId, reconcileBreakdown } from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import { drainUntil, EventQueue } from './event-queue.ts'
@@ -892,7 +891,20 @@ export class AgentLoop {
                     percent: pct,
                     source: m.source,
                     compactAt: softLimit(adapter.spec),
-                    breakdown: breakdown ?? emptyBreakdown(),
+                    /*
+                     * **必须对账**：`tokens` 走锚定尺（provider 真值 + 一轮尾巴），
+                     * `breakdown` 是本地估算，两者天然不等。不对账的话面板上各行
+                     * 加起来对不上标题，而差额无声地落进「剩余空间」那一行。
+                     *
+                     * 会话面板那侧（`runtime/context-panel.ts`）一直是对过账的，
+                     * 这里不对就成了同一个面板两条路显示两组数：打开会话看到一组，
+                     * run 一跑起来换成另一组。实测差过 271k。
+                     *
+                     * `m.source === 'estimated'` 时 `m.tokens` 与 `breakdown` 同尺
+                     * 同源（都是 `estimateRequest` 的同一次装配），差额为零，
+                     * 这里是恒等变换。
+                     */
+                    breakdown: reconcileBreakdown(breakdown, m.tokens),
                     omitted: this.lastOmitted,
                   }
                   break
@@ -1725,13 +1737,19 @@ function envelopeHashOf(req: ChatRequest): string {
  *
  * 量法：把同一份记录**去掉正文再量一次**，两次之差就是正文。
  * tokenization 不可加，所以不能分别量两段再相加。
+ *
+ * **两次必须同尺。** 整条走 `estimateText`（`estimateMessage` 对字符串正文的口径），
+ * 所以信封也只能走它——用 `estimateJson` 量信封是 2 字符/token 对 4 字符/token，
+ * 信封虚高一倍、差额从正文里扣。实测一条 327 次调用的会话：执行记录 15.3k 对
+ * 同尺的 8.3k，其中 167 条被下面的 `Math.min` 夹成 `body = 0`，
+ * 面板上读作「这次调用没带回任何正文」，而它带回了一句 summary。
  */
 function splitToolResult(content: string, total: number): { envelope: number; body: number } {
   try {
     const record = JSON.parse(content) as Record<string, unknown>
     if (typeof record !== 'object' || record === null) return { envelope: total, body: 0 }
     const { summary: _s, result: _r, ...envelope } = record
-    const envelopeTokens = Math.min(total, estimateJson(envelope))
+    const envelopeTokens = Math.min(total, estimateText(JSON.stringify(envelope)))
     return { envelope: envelopeTokens, body: total - envelopeTokens }
   } catch {
     // 不是我们那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
@@ -1742,8 +1760,8 @@ function splitToolResult(content: string, total: number): { envelope: number; bo
 /**
  * 上下文占用按组分解。桶的口径只有一份：`core` 的 `ContextGroup`。
  *
- * 这里只负责量，不负责对账——各组之和与总数的恒等由 `context-meter.ts` 保证
- * （固定类目保实测值，差额归到消息类目）。不要在这个函数里追求「加起来正好」。
+ * 这里只负责量，不负责对账——各组之和与总数的恒等由 `core` 的 `reconcileBreakdown`
+ * 保证（固定类目保实测值，差额归到消息类目）。不要在这个函数里追求「加起来正好」。
  */
 function breakdownOf(req: ChatRequest): ContextBreakdown {
   const out = emptyBreakdown()

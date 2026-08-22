@@ -83,6 +83,7 @@ export {
   type Run,
   type RunStatus,
   type RunUsage,
+  reconcileBreakdown,
   type Step,
   type StepKind,
   type StepPayload,
