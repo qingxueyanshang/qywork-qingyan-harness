@@ -29,8 +29,8 @@ import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
  * ## 后端不必先建
  *
  * `roles[].backend` 是 `backends` 里的一个键，指向不存在的后端时这条角色会被
- * 整条丢弃。所以新建角色时「内置模型」永远可选，保存时顺带把 `backends.builtin`
- * 建出来——否则第一个角色必然建不成。
+ * 整条丢弃。所以「内置模型」永远可选，把一条角色改成内置时顺带把 `backends.builtin`
+ * 建出来——不建的话这条角色一落盘就被加载器丢掉。
  *
  * ## 编排图留在原文里
  *
@@ -140,7 +140,7 @@ export default function AgentsSettings() {
 
   const backendIds = (): string[] => {
     const ids = Object.keys(config()?.backends ?? {})
-    // 内置永远可选：一个后端都没有时，第一个角色否则建不出来。
+    // 内置永远可选：一个后端都没有时，角色改不到内置上去。
     return ids.includes(BUILTIN_ID) ? ids : [BUILTIN_ID, ...ids]
   }
 
@@ -218,7 +218,7 @@ export default function AgentsSettings() {
   )
 
   /**
-   * 角色那一段的两个动作。**区头和空态框共用同一份**——两处各写一遍的话，
+   * 角色那一段的动作。**区头和空态框共用同一份**——两处各写一遍的话，
    * 迟早只改一处，而空的时候用户看到的恰恰是空态框里那一份。
    */
   const RoleActions = () => (
@@ -227,12 +227,6 @@ export default function AgentsSettings() {
     </button>
   )
 
-  /**
-   * 贴一段角色 JSON 导进来。
-   *
-   * 只认「是个对象」和「有 id」，其余缺了按空值补——**不做严格校验**：
-   * 导完下一步就是那个表单，缺什么在表单里补比在这里报一串错有用。
-   */
   const openRole = (id: string) => {
     const r = config()?.roles?.find((x) => x.id === id)
     if (!r) {
