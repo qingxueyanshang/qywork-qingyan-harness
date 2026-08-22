@@ -248,11 +248,12 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    */
   if (p === '/api/capabilities') {
     const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const { detectClis } = await import('@qywork/team')
     const ext = await acquireExtensions(d.workspaceRoot)
     try {
       return json({
         plugins: ext.plugins.plugins.map((x) => x.manifest.id),
-        teamBackends: Object.keys(ext.team.backends),
+        cliAgents: (await detectClis()).map((c) => c.id),
         mcpServers: ext.mcp.servers.map((m) => m.name),
       })
     } finally {

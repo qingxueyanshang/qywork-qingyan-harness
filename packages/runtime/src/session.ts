@@ -81,6 +81,7 @@ import {
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
+import { detectClis } from '@qywork/team'
 import {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
@@ -664,13 +665,14 @@ export class Session {
   /** 已装载的扩展，供 server 报真实能力清单。 */
   async capabilities(): Promise<{
     plugins: string[]
-    teamBackends: string[]
+    /** 本机识别到的外部 agent CLI。它不在工作区配置里，所以要现探。 */
+    cliAgents: string[]
     mcpServers: string[]
   }> {
     if (!this.extensions) await this.loadExtensionTools()
     return {
       plugins: this.extensions!.plugins.plugins.map((p) => p.manifest.id),
-      teamBackends: Object.keys(this.extensions!.team.backends),
+      cliAgents: (await detectClis()).map((c) => c.id),
       mcpServers: this.extensions!.mcp.servers.map((s) => s.name),
     }
   }

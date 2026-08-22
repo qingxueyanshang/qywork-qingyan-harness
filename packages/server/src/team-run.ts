@@ -8,8 +8,8 @@
 import type { AgentEvent, ConversationId, RunId, RunUsage } from '@qywork/core'
 import { acquireExtensions, collectSecrets, releaseExtensions, Session } from '@qywork/runtime'
 import { workspaceOf } from '@qywork/store'
-import type { BuiltinBackend, Role } from '@qywork/team'
-import { TeamOrchestrator } from '@qywork/team'
+import type { Role } from '@qywork/team'
+import { detectClis, TeamOrchestrator } from '@qywork/team'
 import { reject } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
 
@@ -64,11 +64,15 @@ export async function runTeam(
       deps.ws,
       'team.run',
       'invalid_payload',
-      team.error ?? '未配置 Agent Team：在工作区 .qy/team.json 里定义 backends 与 roles',
+      team.error ?? '未配置 Agent Team：在工作区 .qy/team.json 里定义 roles',
       clientRequestId,
     )
     return
   }
+
+  // 本机装了哪几家外部 CLI **在整轮开始时探一次**：一轮之内不重探，
+  // 否则同一张图里前后两个 `cli:` 节点可能一个探到一个没探到，结果无法复现。
+  const clis = await detectClis()
 
   const controller = new AbortController()
   const runId = `rn_team_${clientRequestId.slice(0, 8)}` as RunId
@@ -128,6 +132,7 @@ export async function runTeam(
           secrets: collectSecrets(deps.config),
           runId,
           emit,
+          resolveCli: (id) => clis.find((c) => c.id === id),
           runBuiltin: (input) =>
             runBuiltinMember(input, { deps, workspaceRoot, onUsage: addUsage }),
           awaitHumanGate: async (nodeId, summary) =>
@@ -193,28 +198,27 @@ export async function runBuiltinMember(
   },
 ): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
   const { role } = input
-  const backend = role.backend as BuiltinBackend
   const { deps } = ctx
 
   // provider 指定的是「用哪家的 key」。指了一个不存在的接口要**当场失败**——
   // 悄悄回落到当前接口会让「用便宜模型跑审查」这类配置静默失效，而账单在另一边。
-  const pinned = backend.provider ? deps.config.providers[backend.provider] : undefined
-  if (backend.provider && !pinned) {
+  const pinned = role.provider ? deps.config.providers[role.provider] : undefined
+  if (role.provider && !pinned) {
     return {
       ok: false,
       output: '',
-      error: `角色 ${role.id} 指定的接口不存在：${backend.provider}`,
+      error: `角色 ${role.id} 指定的接口不存在：${role.provider}`,
     }
   }
   const config =
-    backend.provider && pinned
+    role.provider && pinned
       ? {
           ...deps.config,
           active: {
-            provider: backend.provider,
+            provider: role.provider,
             // 角色没点名模型时用这个接口下的第一个。**不能沿用当前 active.model**：
             // 那个模型属于另一个接口，拿它去发请求就是「换了 key 没换模型名」。
-            model: backend.model ?? Object.keys(pinned.models)[0] ?? deps.config.active.model,
+            model: role.model ?? Object.keys(pinned.models)[0] ?? deps.config.active.model,
           },
         }
       : deps.config
@@ -236,7 +240,7 @@ export async function runBuiltinMember(
 
   try {
     for await (const ev of session.ask(input.prompt, undefined, {
-      ...(backend.model ? { model: backend.model } : {}),
+      ...(role.model ? { model: role.model } : {}),
       // 成员子会话不进会话列表——`listConversations` 的判据是 `source IS NULL`。
       // 不打这个标记的话，每跑一次 team，用户列表里就多出 N 条以成员 prompt
       // 开头的条目，而点进去只有半截独白。

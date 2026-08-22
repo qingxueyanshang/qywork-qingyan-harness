@@ -239,19 +239,29 @@ export interface TeamRoleRow {
   id: string
   name: string
   description: string
-  /** 它引用的后端在 `backends` 里的**键名**，不是展示串。 */
-  backend: string
+  /** 不填就跟着当前会话的模型。 */
+  model?: string
 }
 
 export interface TeamInfo {
-  backends: string[]
   roles: TeamRoleRow[]
-  plan: { id: string; roleId: string; task: string; needs?: string[] }[]
+  plan: { id: string; agent: string; task: string; needs?: string[] }[]
   error: string | null
 }
 
 export function loadTeam(): Promise<TeamInfo> {
   return client.api<TeamInfo>('/api/team')
+}
+
+/** 本机装了哪几家外部 agent CLI。**只读**：它来自探测，没有对应的写接口。 */
+export interface CliAgentRow {
+  id: string
+  vendor: string
+  path: string
+  connected: boolean
+}
+export function loadTeamClis(): Promise<{ agents: CliAgentRow[] }> {
+  return client.api<{ agents: CliAgentRow[] }>('/api/team/cli')
 }
 
 /** 启动一轮编排。目标之外的一切来自工作区的 .qy/team.json —— 配置只有一个来源。 */

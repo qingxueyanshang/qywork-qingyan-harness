@@ -10,7 +10,8 @@
 
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { runCli } from './cli-backend.ts'
-import type { NodeResult, PlanNode, Role, TeamConfig, TeamRules } from './types.ts'
+import type { CliAgent, NodeResult, PlanNode, Role, TeamConfig, TeamRules } from './types.ts'
+import { CLI_PREFIX } from './types.ts'
 
 export interface OrchestratorDeps {
   workspaceRoot: string
@@ -23,7 +24,12 @@ export interface OrchestratorDeps {
    * 不传等于「没有已知凭证」，不等于「不用剥」——装配方应当始终提供。
    */
   secrets?: { values: string[] }
-  /** 内置后端的执行入口：跑一个子会话并返回最终文本。 */
+  /**
+   * 派给外部 CLI 时，按 id 取那一条识别结果。识别不到返回 undefined——
+   * 节点当场失败，不退回内置跑：那会拿一个模型冒充另一个模型的产出。
+   */
+  resolveCli(id: string): CliAgent | undefined
+  /** 角色的执行入口：跑一个子会话并返回最终文本。 */
   runBuiltin(input: {
     role: Role
     prompt: string
@@ -71,7 +77,7 @@ export class TeamOrchestrator {
         if (upstreamFailed) {
           results.set(id, {
             nodeId: id,
-            roleId: node.roleId,
+            agent: node.agent,
             status: 'skipped',
             output: '',
             error: '上游节点未成功',
@@ -96,7 +102,7 @@ export class TeamOrchestrator {
           const node = plan.find((n) => n.id === id)!
           results.set(id, {
             nodeId: id,
-            roleId: node.roleId,
+            agent: node.agent,
             status: 'failed',
             output: '',
             error: '依赖无法满足（可能成环）',
@@ -113,7 +119,7 @@ export class TeamOrchestrator {
       (n) =>
         results.get(n.id) ?? {
           nodeId: n.id,
-          roleId: n.roleId,
+          agent: n.agent,
           status: 'skipped' as const,
           output: '',
           durationMs: 0,
@@ -127,8 +133,24 @@ export class TeamOrchestrator {
     results: Map<string, NodeResult>,
     gates: Set<string>,
   ): Promise<NodeResult> {
-    const role = this.config.roles.find((r) => r.id === node.roleId)!
+    // 目标要么是角色，要么是 `cli:<id>` 的外部 CLI。两者的配置面不相干，
+    // 所以这里各解析各的，不做「找不到角色就当 CLI」那种回退。
+    const isCli = node.agent.startsWith(CLI_PREFIX)
+    const cli = isCli ? this.deps.resolveCli(node.agent.slice(CLI_PREFIX.length)) : undefined
+    const role = isCli ? undefined : this.config.roles.find((r) => r.id === node.agent)
+    const label = role?.name ?? (cli ? `${cli.vendor} ${cli.id}` : node.agent)
     const started = Date.now()
+
+    if (!role && !cli) {
+      return {
+        nodeId: node.id,
+        agent: node.agent,
+        status: 'failed',
+        output: '',
+        error: isCli ? `本机没有识别到 ${node.agent.slice(CLI_PREFIX.length)}` : '找不到这个角色',
+        durationMs: Date.now() - started,
+      }
+    }
 
     const upstream = (node.needs ?? [])
       .map((dep) => results.get(dep)?.output ?? '')
@@ -148,14 +170,16 @@ export class TeamOrchestrator {
       : wantsInput
         ? `${withGoal}\n\n## 上游产出\n\n${upstream}`
         : withGoal
-    const prompt = this.composePrompt(role, task)
+    // 外部 CLI 拿不到角色的系统提示词——它有自己的一套，也没有地方接收。
+    const prompt = role ? this.composePrompt(role, task) : task
+    const kind = cli ? ('custom' as const) : ('builtin' as const)
 
     this.deps.emit({
       type: 'team.member',
       runId: this.deps.runId,
       memberId: node.id,
-      roleName: role.name,
-      backend: role.backend.kind === 'builtin' ? 'builtin' : 'custom',
+      roleName: label,
+      backend: kind,
       phase: 'spawned',
     })
 
@@ -165,8 +189,8 @@ export class TeamOrchestrator {
         type: 'team.member',
         runId: this.deps.runId,
         memberId: node.id,
-        roleName: role.name,
-        backend: 'builtin',
+        roleName: label,
+        backend: kind,
         phase: 'blocked',
         summary: task.slice(0, 200),
       })
@@ -174,7 +198,7 @@ export class TeamOrchestrator {
       if (!approved) {
         return {
           nodeId: node.id,
-          roleId: role.id,
+          agent: node.agent,
           status: 'skipped',
           output: '',
           error: '人工门禁未通过',
@@ -187,41 +211,40 @@ export class TeamOrchestrator {
       type: 'team.member',
       runId: this.deps.runId,
       memberId: node.id,
-      roleName: role.name,
-      backend: role.backend.kind === 'builtin' ? 'builtin' : 'custom',
+      roleName: label,
+      backend: kind,
       phase: 'working',
     })
 
     try {
-      const res =
-        role.backend.kind === 'cli'
-          ? await runCli(role.backend, {
-              prompt,
-              workspaceRoot: this.deps.workspaceRoot,
-              signal: this.deps.signal,
-              ...(this.deps.secrets ? { secrets: this.deps.secrets } : {}),
-            }).then((r) => ({
-              ok: r.ok,
-              output: r.output,
-              error: r.ok
-                ? undefined
-                : r.timedOut
-                  ? '超时'
-                  : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
-            }))
-          : await this.deps.runBuiltin({ role, prompt, signal: this.deps.signal })
+      const res = cli
+        ? await runCli(cli, {
+            prompt,
+            workspaceRoot: this.deps.workspaceRoot,
+            signal: this.deps.signal,
+            ...(this.deps.secrets ? { secrets: this.deps.secrets } : {}),
+          }).then((r) => ({
+            ok: r.ok,
+            output: r.output,
+            error: r.ok
+              ? undefined
+              : r.timedOut
+                ? '超时'
+                : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
+          }))
+        : await this.deps.runBuiltin({ role: role!, prompt, signal: this.deps.signal })
 
       this.deps.emit({
         type: 'team.member',
         runId: this.deps.runId,
         memberId: node.id,
-        roleName: role.name,
-        backend: role.backend.kind === 'builtin' ? 'builtin' : 'custom',
+        roleName: label,
+        backend: kind,
         phase: res.ok ? 'done' : 'failed',
         summary: res.output.slice(0, 200),
         // 子会话不进会话列表（`source='workflow'`），**这个 id 是它唯一的入口**。
         // 不带出去的话，成员到底读了什么、跑了哪些命令就永远看不到了。
-        // CLI 后端没有子会话，那边这个字段自然缺席。
+        // 外部 CLI 没有子会话，那边这个字段自然缺席。
         ...('conversationId' in res && res.conversationId
           ? { childConversationId: res.conversationId }
           : {}),
@@ -229,7 +252,7 @@ export class TeamOrchestrator {
 
       return {
         nodeId: node.id,
-        roleId: role.id,
+        agent: node.agent,
         status: res.ok ? 'done' : 'failed',
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
@@ -238,7 +261,7 @@ export class TeamOrchestrator {
     } catch (err) {
       return {
         nodeId: node.id,
-        roleId: role.id,
+        agent: node.agent,
         status: 'failed',
         output: '',
         error: err instanceof Error ? err.message : String(err),
@@ -259,7 +282,7 @@ export class TeamOrchestrator {
     if (this.config.plan?.length) return this.config.plan
     const first = this.config.roles[0]
     if (!first) throw new Error('team 配置里没有角色')
-    return [{ id: 'main', roleId: first.id, task: '{goal}' }]
+    return [{ id: 'main', agent: first.id, task: '{goal}' }]
   }
 }
 
@@ -281,8 +304,10 @@ export function validatePlan(plan: PlanNode[], roles: Role[], rules?: TeamRules)
   }
 
   for (const node of plan) {
-    if (!roleIds.has(node.roleId)) {
-      throw new Error(`节点 ${node.id} 引用了不存在的角色 ${node.roleId}`)
+    // 指向外部 CLI 的节点这里不校验：装没装是本机的事实，随时会变，
+    // 校验点在执行时（识别不到就那一个节点失败），不该让整张图起不来。
+    if (!node.agent.startsWith(CLI_PREFIX) && !roleIds.has(node.agent)) {
+      throw new Error(`节点 ${node.id} 引用了不存在的角色 ${node.agent}`)
     }
     for (const dep of node.needs ?? []) {
       if (!nodeIds.has(dep)) throw new Error(`节点 ${node.id} 依赖不存在的节点 ${dep}`)

@@ -1,52 +1,29 @@
 /**
- * Agent Team：多智能体协作（需求 10）。
+ * Agent Team：子 agent 与外部 CLI 的编排（需求 10）。
  *
- * 核心抽象是**后端无关的角色**：一个角色说明「它是谁、能用什么、受什么约束」，
- * 至于它跑在内置 loop 上还是外挂的 codex / claude / grok CLI 上，是配置问题。
+ * **这里是两件事，不是一件事的两种形态。**
  *
- * 这一点的对称性来自拓扑决策：`qy` 自己就是一个 CLI，所以「调度外部 CLI」和
- * 「调度自己」是同一条代码路径，多层嵌套不需要特判。
+ * - **角色（子 agent）**：跑在本进程的 agent 循环上，配置的是「它是谁、能用什么、
+ *   受什么约束」。它没有「跑在哪」这个字段——它只跑在这里。
+ * - **外部 CLI**：本机装着的别家 agent 程序（claude / codex / gemini / qwen）。
+ *   它由识别得到，不由用户填命令与参数；派活给它就是起一个独立进程。
+ *
+ * 两者都能当编排节点的目标（`PlanNode.agent`），但它们的配置面毫不相干：
+ * 把外部 CLI 当成「角色的一种运行位置」写进角色里，代价是建一条角色必须先懂
+ * 后端这个概念，而且删掉一个 CLI 会让引用它的角色整条消失。
  */
 
 import type { EffortLevel } from '@qywork/core'
 
-export type BackendKind = 'builtin' | 'cli'
+/** 目标是外部 CLI 时，`PlanNode.agent` 用这个前缀。角色 id 不带前缀。 */
+export const CLI_PREFIX = 'cli:'
 
 /**
- * 外部 CLI 后端。
+ * 一个角色 = 一个子 agent。
  *
- * 不内置各家 CLI 的参数表——它们各自演进，写死必然过期。改为让用户描述
- * 「怎么调起来、怎么读输出」，把知识放在配置里而不是代码里。
+ * 模型与强度**不填就跟着当前会话**：绝大多数角色关心的是提示词与工具面，
+ * 不是跑在哪个模型上；写死会让「换个接口试试」变成逐个角色改。
  */
-export interface CliBackend {
-  kind: 'cli'
-  /** 可执行文件或命令名。 */
-  command: string
-  /** 参数模板。`{prompt}` 会被替换成任务描述。 */
-  args: string[]
-  /** 工作目录，相对工作区。默认工作区根。 */
-  cwd?: string
-  env?: Record<string, string>
-  /**
-   * 输出解析方式。
-   * - `text`：整个 stdout 就是结果（大多数 CLI 的默认行为）。
-   * - `jsonl`：逐行 JSON，取 `resultField` 指定字段的最后一个非空值。
-   */
-  output: 'text' | 'jsonl'
-  resultField?: string
-  timeoutMs?: number
-}
-
-export interface BuiltinBackend {
-  kind: 'builtin'
-  /** 用哪个接口（config.providers 的键）。不填用当前生效的。 */
-  provider?: string
-  model?: string
-  effort?: EffortLevel
-}
-
-export type Backend = BuiltinBackend | CliBackend
-
 export interface Role {
   id: string
   name: string
@@ -54,7 +31,10 @@ export interface Role {
   description: string
   /** 追加到该角色系统提示词的约束。 */
   systemPrompt: string
-  backend: Backend
+  /** 用哪个接口（config.providers 的键）。不填用当前生效的。 */
+  provider?: string
+  model?: string
+  effort?: EffortLevel
   /**
    * 允许使用的工具名。空数组 = 不给任何工具（纯分析角色）；
    * undefined = 继承全部。**显式的空数组和不填是两回事**，不要合并。
@@ -62,6 +42,31 @@ export interface Role {
   allowedTools?: string[]
   /** 该角色单次任务的步数上限，防止一个角色跑飞拖垮整轮。 */
   maxSteps?: number
+}
+
+/**
+ * 一个识别到的外部 agent CLI。
+ *
+ * **不落用户配置。** 它整条来自内置的厂商表 + 本机探测：装没装、在哪、有没有接入。
+ * 用户能做的只有「派不派活给它」，没有「怎么调它」——那是表的事。
+ */
+export interface CliAgent {
+  /** 表里的键，也是 `PlanNode.agent` 里 `cli:` 后面那一段。 */
+  id: string
+  /** 厂商名，界面上贴在名字旁边。 */
+  vendor: string
+  /** 可执行文件名或已解析出的绝对路径。 */
+  command: string
+  /** 参数模板。`{prompt}` 会被替换成任务描述。 */
+  args: string[]
+  /**
+   * 输出解析方式。
+   * - `text`：整个 stdout 就是结果。
+   * - `jsonl`：逐行 JSON，取 `resultField` 指定字段的最后一个非空值。
+   */
+  output: 'text' | 'jsonl'
+  resultField?: string
+  timeoutMs?: number
 }
 
 /** 规则约束：跨角色生效的硬性纪律。 */
@@ -87,7 +92,8 @@ export interface TeamConfig {
 
 export interface PlanNode {
   id: string
-  roleId: string
+  /** 派给谁：角色 id，或 `cli:<id>` 指一个识别到的外部 CLI。 */
+  agent: string
   /**
    * 任务描述。`{goal}` 替换成用户原始诉求；`{input}` 决定上游产出**插在哪里**。
    * 不写 `{input}` 时上游产出会追加在末尾——声明了 needs 却拿不到产出，
@@ -102,7 +108,8 @@ export interface PlanNode {
 
 export interface NodeResult {
   nodeId: string
-  roleId: string
+  /** 同 `PlanNode.agent`：角色 id 或 `cli:<id>`。 */
+  agent: string
   status: 'done' | 'failed' | 'skipped'
   output: string
   error?: string
