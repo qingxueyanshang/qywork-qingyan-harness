@@ -554,9 +554,16 @@ function RunStatusBar(props: {
 
   return (
     <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>
-      {/* 星河条：运行时星点流动，跑完暂停动画并压暗——「还在跑」和「跑完了」
-          必须在余光里就能分清，光靠文字变化做不到。 */}
-      <span class="run-galaxy" aria-hidden="true" />
+      {/* 星河条：运行时星点流动、五格逐个提亮扫过去，跑完暂停动画并压暗——「还在跑」
+          和「跑完了」必须在余光里就能分清，光靠文字变化做不到。
+          五格分开写：每格自己一条错开延时的动画，也各带各的星点数。 */}
+      <span class="run-galaxy" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+        <span />
+        <span />
+      </span>
 
       <span class="run-readout">
         <Show when={props.elapsed !== null}>

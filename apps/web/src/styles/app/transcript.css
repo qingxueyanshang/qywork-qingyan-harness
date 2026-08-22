@@ -652,12 +652,12 @@
 /* ── 运行读数条 ──
  *
  * 这是「这一轮花了多少」的唯一落点（输入区那份重复的金额已经删掉）。
- * 左边 52×7 的星河条负责"还在不在跑"——文字变化在余光里看不出来，动效能。
+ * 左边五格 8×8 的星河方块条负责"还在不在跑"——文字变化在余光里看不出来，动效能。
  * 跑完不是把它藏掉，而是暂停动画并压暗：读数要留在对应的那一轮下面。
  */
 .run-strip {
   display: grid;
-  grid-template-columns: 52px minmax(0, max-content);
+  grid-template-columns: 56px minmax(0, max-content);
   align-items: center;
   column-gap: 7px;
   min-height: 16px;
@@ -682,78 +682,178 @@
  * `.transcript-inner` 的下内边距给。位置的事归 JS，留白的事归 CSS，不要换手。
  */
 
+/*
+ * 五格 8×8 的方块，紫底 + 星点整条流过去，一格接一格提亮扫过去。
+ *
+ * 每格是独立元素，不是一个元素靠遮罩切出来的：遮罩只有一个 `mask-size`，
+ * 五格只能同时变，扫不出一格接一格。
+ *
+ * 星点贴图比整条胶囊那会儿密一档：四条缝挡掉约三成星河，贴图不加密的话
+ * 看得见的星点就比原来少三成。贴图密度按最密的那一格（第四格）定，
+ * 其余几格靠 `::before` 的透明度往下收，整条看得见的颗数与原来那条 52px 相当。
+ *
+ * 每格的背景按 `--x` 往左挪自己那一段：五格各画各的，但画的是同一条 56px 宽的
+ * 星河，所以星点和那道扫光是连着穿过缝隙的，不是每格各闪各的。
+ * 改格宽或缝宽时 `--x` 的 12px 要跟着改（格宽 + 缝宽）。
+ *
+ * 高度取偶数：这一格在 16px 高的行里居中，7px 会落在 4.5px 上，读数条随正文
+ * 流动时那半像素每帧朝不同方向取整，方块相对文字上下跳。
+ */
 .run-galaxy {
+  display: flex;
+  gap: 4px;
+  height: 8px;
+}
+.run-galaxy > span {
+  --x: calc(var(--i) * 12px);
   position: relative;
   overflow: hidden;
-  width: 52px;
-  height: 7px;
-  flex: none;
-  border-radius: var(--r-full);
-  background: linear-gradient(90deg, #c4b5fd 0%, #8b5cf6 30%, #6d28d9 62%, #4c1d95 100%);
-  opacity: 0.9;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background:
+    linear-gradient(90deg, #ddd6fe 0%, #a78bfa 30%, #7c3aed 62%, #5b21b6 100%) calc(var(--x) * -1) 0
+    / 56px 8px;
+  opacity: 0.6;
+  animation: run-blocks 1.2s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 0.12s);
 }
-.run-galaxy::before,
-.run-galaxy::after {
+/*
+ * `--i` 是这一格的序号：决定它取整条星河的哪一段、动画错开多少。
+ *
+ * 星点数逐格递增 1 1 2 2 3（左疏右密）：每格的星点贴图就是格子本身（8×8），
+ * 一块贴图里画了几颗就永远看得见几颗——**贴图宽必须等于格宽**，
+ * 宽了就会随流动时多时少，那样数不出递减。
+ */
+.run-galaxy > span:nth-child(1) {
+  --i: 0;
+}
+.run-galaxy > span:nth-child(2) {
+  --i: 1;
+}
+.run-galaxy > span:nth-child(3) {
+  --i: 2;
+}
+.run-galaxy > span:nth-child(4) {
+  --i: 3;
+}
+.run-galaxy > span:nth-child(5) {
+  --i: 4;
+}
+/* 亮的那一档只占整个周期的一小段：五格同时亮会读成一条静止的虚线，
+   而不是有东西在走。节奏与左栏会话行的 `.conv-run` 是同一套（1.2s、错开
+   0.12s、亮档四分之一周期），改一处两处一起改。
+   暗档不压到左栏那个 0.25：那边格子是纯色，这边格子里有星点和扫光，
+   压太低就只剩一格看得见星河。 */
+@keyframes run-blocks {
+  0%,
+  55%,
+  100% {
+    opacity: 0.6;
+  }
+  25% {
+    opacity: 1;
+  }
+}
+.run-galaxy > span::before,
+.run-galaxy > span::after {
   content: "";
   position: absolute;
   inset: 0;
   background-repeat: repeat;
 }
-.run-galaxy::before {
-  background-image:
-    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.96) 0 0.65px, transparent 1px),
-    radial-gradient(circle at 50% 72%, rgba(221, 214, 254, 0.92) 0 0.55px, transparent 0.9px),
-    radial-gradient(circle at 50% 43%, rgba(196, 181, 253, 0.9) 0 0.75px, transparent 1.1px);
-  background-size:
-    17px 7px,
-    23px 7px,
-    31px 7px;
+.run-galaxy > span::before {
+  background-size: 8px 8px;
+  background-position: calc(var(--x) * -1) 0;
   animation: run-stars 2.1s linear infinite;
 }
-.run-galaxy::after {
+.run-galaxy > span:nth-child(1)::before {
+  background-image: radial-gradient(
+    circle at 4px 4.2px,
+    rgba(255, 255, 255, 0.92) 0 0.6px,
+    transparent 0.95px
+  );
+}
+.run-galaxy > span:nth-child(2)::before {
+  background-image: radial-gradient(
+    circle at 2.6px 5.4px,
+    rgba(255, 255, 255, 0.93) 0 0.6px,
+    transparent 0.95px
+  );
+}
+.run-galaxy > span:nth-child(3)::before {
   background-image:
-    linear-gradient(
-      90deg,
-      transparent 0%,
-      rgba(237, 233, 254, 0.12) 18%,
-      rgba(255, 255, 255, 0.58) 50%,
-      rgba(221, 214, 254, 0.16) 82%,
-      transparent 100%
-    ), radial-gradient(circle at 50% 68%, rgba(255, 255, 255, 0.7) 0 0.4px, transparent 0.75px),
-    radial-gradient(circle at 50% 24%, rgba(233, 213, 255, 0.72) 0 0.45px, transparent 0.8px);
-  background-repeat: no-repeat, repeat, repeat;
+    radial-gradient(circle at 2.7px 5.5px, rgba(255, 255, 255, 0.95) 0 0.6px, transparent 0.95px),
+    radial-gradient(circle at 6.1px 2.5px, rgba(250, 249, 255, 0.9) 0 0.55px, transparent 0.9px);
+}
+.run-galaxy > span:nth-child(4)::before {
+  background-image:
+    radial-gradient(circle at 2.1px 6.2px, rgba(255, 255, 255, 0.95) 0 0.6px, transparent 0.95px),
+    radial-gradient(circle at 5.6px 2.4px, rgba(250, 249, 255, 0.9) 0 0.55px, transparent 0.9px);
+}
+.run-galaxy > span:nth-child(5)::before {
+  background-image:
+    radial-gradient(circle at 2.3px 2.2px, rgba(255, 255, 255, 0.96) 0 0.65px, transparent 1px),
+    radial-gradient(circle at 4.4px 5.9px, rgba(250, 249, 255, 0.92) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 6.8px 3.4px, rgba(244, 242, 255, 0.9) 0 0.6px, transparent 0.95px);
+}
+.run-galaxy > span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+}
+.run-galaxy > span::before {
+  background-image:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.96) 0 0.65px, transparent 1px),
+    radial-gradient(circle at 50% 72%, rgba(250, 249, 255, 0.92) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 50% 43%, rgba(244, 242, 255, 0.9) 0 0.75px, transparent 1.1px);
   background-size:
-    28px 100%,
-    13px 7px,
-    29px 7px;
+    calc(10px * var(--d)) 8px,
+    calc(14px * var(--d)) 8px,
+    calc(19px * var(--d)) 8px;
   background-position:
-    -30px 0,
-    0 0,
-    0 0;
+    calc(var(--x) * -1) 0,
+    calc(var(--x) * -1) 0,
+    calc(var(--x) * -1) 0;
+  animation: run-stars 2.1s linear infinite;
+}
+.run-galaxy > span::after {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(237, 233, 254, 0.12) 18%,
+    rgba(255, 255, 255, 0.58) 50%,
+    rgba(221, 214, 254, 0.16) 82%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 28px 100%;
+  background-position: calc(var(--x) * -1 - 30px) 0;
   opacity: 0.78;
   animation: run-galaxy-flow 2.6s linear infinite;
 }
+/* 跑完停在五格恒定的静止状态，不是把扫光停在随机一帧上。 */
 .run-strip.done .run-galaxy {
   opacity: 0.58;
 }
-.run-strip.done .run-galaxy::before,
-.run-strip.done .run-galaxy::after {
+.run-strip.done .run-galaxy > span {
+  opacity: 1;
+  animation: none;
+}
+.run-strip.done .run-galaxy > span::before,
+.run-strip.done .run-galaxy > span::after {
   animation-play-state: paused;
 }
+/* 位移量取贴图宽的整数倍（3 × 8px），不整除的话每圈接缝处星点会跳一下。 */
 @keyframes run-stars {
   to {
-    background-position:
-      34px 0,
-      23px 0,
-      31px 0;
+    background-position: calc(var(--x) * -1 + 24px) 0;
   }
 }
 @keyframes run-galaxy-flow {
   to {
-    background-position:
-      66px 0,
-      26px 0,
-      29px 0;
+    background-position: calc(var(--x) * -1 + 66px) 0;
   }
 }
 
@@ -792,9 +892,14 @@
   color: var(--warning);
 }
 
+/* 关掉动效时不留一条忽明忽暗的虚线：五格恒定半亮，仍然说明「这一轮在跑」。 */
 @media (prefers-reduced-motion: reduce) {
-  .run-galaxy::before,
-  .run-galaxy::after {
+  .run-galaxy > span,
+  .run-galaxy > span::before,
+  .run-galaxy > span::after {
     animation: none;
+  }
+  .run-galaxy > span {
+    opacity: 0.5;
   }
 }
