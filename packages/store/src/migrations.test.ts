@@ -30,6 +30,17 @@ function insertStep(db: Database, id: string, toolName: string, payload: unknown
   ).run(id, toolName, JSON.stringify(payload))
 }
 
+/** 整份 payload，用于断言「一个字节都没动」。 */
+function payloadJson(db: Database, id: string): unknown {
+  const row = db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }
+  return JSON.parse(row.payload)
+}
+
+/** `outcome.data`，迁移 27 只动这里。 */
+function dataOf(db: Database, id: string): Record<string, unknown> {
+  return (payloadJson(db, id) as { outcome: { data: Record<string, unknown> } }).outcome.data
+}
+
 function payloadOf(
   db: Database,
   id: string,
@@ -446,6 +457,98 @@ describe('迁移 26：steps 重建，思考有自己的 kind', () => {
       .query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='steps'")
       .all() as { name: string }[]
     expect(idx.map((i) => i.name)).toContain('idx_step_run_seq')
+  })
+})
+
+describe('迁移 27：工具结果里的图像字节改成数组', () => {
+  /** 旧形状：`envelopeResult` / `imagesOf` 都只认 `images`，这两个键对谁都不成立。 */
+  const oldShape = {
+    kind: 'tool_result',
+    args: { path: 'shot.png' },
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: '读取 shot.png（图片）',
+      data: { imageData: 'iVBORw0KGgoAAAANSUhEUg', mime: 'image/png' },
+    },
+  }
+
+  test('imageData + mime 收成 images 数组，两个旧键一并去掉', () => {
+    const db = dbBefore(27)
+    insertStep(db, 's1', 'read_file', oldShape)
+    applyOne(db, 27)
+
+    const data = dataOf(db, 's1')
+    expect(data).toEqual({ images: [{ data: 'iVBORw0KGgoAAAANSUhEUg', mime: 'image/png' }] })
+    db.close()
+  })
+
+  /**
+   * `mime` 必须搬进数组元素，不能留在 `data` 上。
+   *
+   * 留着的话 `envelopeResult` 摘掉 `images` 之后 `data` 仍非空，信封里会多一个
+   * `{"result":{"mime":"image/png"}}`，与今天新落的行不同形——同一次调用在两轮里
+   * 长得不一样，前缀缓存从那里断掉，而这件事不会有任何报错。
+   */
+  test('转完 data 上只剩 images 一个键', () => {
+    const db = dbBefore(27)
+    insertStep(db, 's1', 'read_file', oldShape)
+    applyOne(db, 27)
+
+    expect(Object.keys(dataOf(db, 's1'))).toEqual(['images'])
+    db.close()
+  })
+
+  /**
+   * 认的是 JSON 路径不是文本。实测库里有十条 `write_file` / `grep` 记录的正文
+   * 含 `imageData` 这个标识符——按文本挑会把用户的源码改坏。
+   */
+  test('正文里含 imageData 这个词的记录不受影响', () => {
+    const db = dbBefore(27)
+    const untouched = {
+      kind: 'tool_result',
+      args: { path: 'js/textures.js', content: 'const imageData = ctx.getImageData(0, 0)' },
+      outcome: { status: 'success', executed: true, message: '写入', data: { bytes: 39 } },
+    }
+    insertStep(db, 's2', 'write_file', untouched)
+    applyOne(db, 27)
+
+    expect(payloadJson(db, 's2')).toEqual(untouched)
+    db.close()
+  })
+
+  test('已经是新形状的行原样不动，重复执行也不动', () => {
+    const db = dbBefore(27)
+    const newShape = {
+      kind: 'tool_result',
+      args: { path: 'shot.png' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '读取 shot.png（图片）',
+        data: { images: [{ data: 'AAA', mime: 'image/png' }] },
+      },
+    }
+    insertStep(db, 's3', 'read_file', newShape)
+    insertStep(db, 's1', 'read_file', oldShape)
+
+    applyOne(db, 27)
+    const once = dataOf(db, 's1')
+    applyOne(db, 27)
+
+    expect(payloadJson(db, 's3')).toEqual(newShape)
+    expect(dataOf(db, 's1')).toEqual(once)
+    db.close()
+  })
+
+  /** 多张图的形状（MCP 一次能带回好几张）不在旧行里出现，转换只造一元数组。 */
+  test('旧行只可能有一张图，转出来就是一元数组', () => {
+    const db = dbBefore(27)
+    insertStep(db, 's1', 'read_file', oldShape)
+    applyOne(db, 27)
+
+    expect((dataOf(db, 's1') as { images: unknown[] }).images).toHaveLength(1)
+    db.close()
   })
 })
 

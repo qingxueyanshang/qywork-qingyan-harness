@@ -914,6 +914,50 @@ ALTER TABLE steps_new RENAME TO steps;
 CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
 `,
   },
+  {
+    id: 27,
+    name: 'tool_image_bytes_array',
+    /**
+     * 工具结果里的图像字节改成数组：`data.imageData` + `data.mime`
+     * → `data.images: [{data, mime}]`。
+     *
+     * 不转的后果是实测撞出来的，而且不报错：摘字节的 `envelopeResult` 与产图像块的
+     * `imagesOf`（都在 `agent/loop.ts`）现在都只认 `images`，旧行两边都对不上，
+     * 于是整串 base64 原样进信封当**文本**发出去。同一份会话实测 12 条旧行
+     * 2.79 MB base64：本地按 4 字符/token 记 732k，provider 侧约 1.9M，
+     * 一次请求直接被容量拒绝；压缩收掉大半之后仍有两张留在窗口里，
+     * 占了 1M 窗口的 42%（428k），而它们走图像块的成本实测是每张约 1k。
+     *
+     * **只改键名，不重编码。** 这些图长边 1600，只比 `MAX_EDGE` 大 2%，
+     * 而 `tools/image.ts` 顶上那条实测说明重编码 PNG 会大 2.4 倍；
+     * 作为图像块发出去的成本与像素数有关、与字节数无关，重编码一分钱不省。
+     *
+     * `mime` 一并搬进数组元素：旧形状里它就是这张图的 mime，留在 `data` 上会让
+     * `envelopeResult` 把它当成「除图像之外还有别的结果」而在信封里留一个
+     * `{"mime":"image/png"}`，与新行不同形——同一次调用在两轮里长得不一样，
+     * 前缀缓存从那里断掉。
+     *
+     * 幂等：转完 `$.outcome.data.imageData` 不存在，重复执行命中零行。
+     * WHERE 认的是 JSON 路径不是文本，所以正文里含 `imageData` 这个标识符的
+     * `write_file` / `grep` 记录不会被误伤（实测库里有 10 条这样的行）。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_remove(
+  json_set(
+    payload,
+    '$.outcome.data.images',
+    json_array(json_object(
+      'data', json_extract(payload, '$.outcome.data.imageData'),
+      'mime', json_extract(payload, '$.outcome.data.mime')
+    ))
+  ),
+  '$.outcome.data.imageData',
+  '$.outcome.data.mime'
+)
+WHERE json_extract(payload, '$.outcome.data.imageData') IS NOT NULL;
+`,
+  },
 ]
 
 /**
