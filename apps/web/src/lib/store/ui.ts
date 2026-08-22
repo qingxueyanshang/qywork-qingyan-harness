@@ -6,6 +6,7 @@
  */
 
 import { createSignal } from 'solid-js'
+import { isDesktopShell, tauriInvoke } from './shell.ts'
 
 /** 命令面板开关等纯 UI 状态用 signal，不进 store。 */
 export const [paletteOpen, setPaletteOpen] = createSignal(false)
@@ -99,6 +100,33 @@ export function openPanelTab(kind: PanelTabKind): void {
   const id = `${kind}-${n}`
   setTabs((list) => [...list, { id, kind, title: `${TAB_LABEL[kind]} ${n}` }])
   setSidePanel({ tab: id })
+}
+
+/**
+ * 把外壳那边还活着的终端会话补回页签。
+ *
+ * `panelTabs` 是 Rust 那张会话表的镜像，而整页重载会把镜像清空——开发期改一个
+ * `store/` 或 `packages/` 下的文件，vite 走的就是整页刷新。清空之后 shell 还在跑，
+ * 却没有任何界面碰得到它：页签不是走 `closePanelTab` 没的，`tabDisposers` 一次都
+ * 没被调用，那条会话只能等应用退出时被 `shutdown` 收掉。所以镜像建立时要跟权威
+ * 对一次账，不能只靠 `openPanelTab` 往上加。
+ *
+ * **只补不删。** 认不出的 id 一律不动：浏览器页在外壳那边本来就没有对应物。
+ * 序号也要跟着抬上去，否则下一次新开会撞上一个已经存在的 id。
+ */
+export function restoreTerminalTabs(ids: readonly string[]): void {
+  const known = new Set(panelTabs().map((t) => t.id))
+  const found: { n: number; tab: PanelTab }[] = []
+  for (const id of ids) {
+    if (known.has(id) || !id.startsWith('terminal-')) continue
+    const n = Number(id.slice('terminal-'.length))
+    if (!Number.isInteger(n) || n < 1) continue
+    tabSeq.terminal = Math.max(tabSeq.terminal, n)
+    found.push({ n, tab: { id, kind: 'terminal', title: `${TAB_LABEL.terminal} ${n}` } })
+  }
+  if (!found.length) return
+  found.sort((a, b) => a.n - b.n)
+  setTabs((list) => [...list, ...found.map((f) => f.tab)])
 }
 
 /**
@@ -375,4 +403,18 @@ export function absPath(rel: string): string {
   if (!root) return rel
   const sep = root.includes('\\') ? '\\' : '/'
   return `${root.replace(/[\\/]+$/, '')}${sep}${rel.split('/').join(sep)}`
+}
+
+/*
+ * 模块建立时跟外壳对一次账。
+ *
+ * 放在模块顶层，不挂在某个组件的 `onMount` 上：页签这份镜像随这个模块一起建立，
+ * 对账就跟它在同一处，不引入「谁先跑」这个问题。
+ *
+ * 只有桌面端有 PTY；调不通就算了，那只意味着这一次没能补回页签。
+ */
+if (isDesktopShell()) {
+  void tauriInvoke<string[]>('terminal_list')
+    .then(restoreTerminalTabs)
+    .catch(() => {})
 }
