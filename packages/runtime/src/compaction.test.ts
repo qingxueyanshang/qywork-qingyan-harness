@@ -204,6 +204,77 @@ describe('投影三区', () => {
     store.close()
   })
 
+  /**
+   * **带图的工具结果必须收得掉。**
+   *
+   * 这条修的是一个完全静默的形状：收纳对非字符串 content 曾经是原样放行
+   * （`agent/compaction.ts` 的 `condenseToolResult`），于是一张几 MB 的截图
+   * 在此后每一轮满额重放、一路撞到窗口上限——而压缩机制看着它什么都不做。
+   *
+   * 两半都要断言：图**丢掉**，信封**留下**。只丢不留的话模型连「那一轮读过一张图」
+   * 都不知道，重新取都无从取起。
+   */
+  test('收纳区带图的工具结果丢掉图、留下信封', async () => {
+    const { store, ws, conv, ids } = fresh(4)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+    })
+    // 每一波带一张「图」：内容不重要，体积重要——要撑得起选界。
+    for (let w = 0; w < 12; w++) {
+      const step = appendStep(store, {
+        runId: run.id,
+        seq: 1 + w,
+        kind: 'tool_action',
+        toolName: 'read_file',
+        toolCallId: `call_${w}`,
+        providerBatchId: `bt_${w}`,
+        callIndex: 0,
+        status: 'running',
+      })
+      settleToolStep(store, step.id, 'success', {
+        kind: 'tool_result',
+        args: { path: `shot_${w}.png` },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: `读取 shot_${w}.png（图片）`,
+          data: { images: [{ data: 'A'.repeat(4000), mime: 'image/png' }] },
+        },
+      } as never)
+    }
+
+    const p = port(store, conv.id)
+    const before = await history(store, conv.id)
+    const imagesIn = (msgs: WireMessage[]) =>
+      msgs
+        .filter((m) => typeof m.content !== 'string')
+        .flatMap((m) => (m.content as { type: string }[]).filter((b) => b.type === 'image')).length
+
+    expect(imagesIn(before)).toBe(12)
+    await p.run(await pressure(store, conv.id))
+    const projected = p.project(before)
+
+    // 收纳段里的图没了，保留区那几张还在。
+    expect(imagesIn(projected)).toBeGreaterThan(0)
+    expect(imagesIn(projected)).toBeLessThan(12)
+
+    // 被收掉的那些：信封完整，模型仍然知道那一轮读过哪个文件、成没成功。
+    const condensed = projected.filter((m) => m.role === 'tool' && typeof m.content === 'string')
+    expect(condensed.length).toBeGreaterThan(0)
+    const env = JSON.parse(condensed[0]!.content as string) as Record<string, unknown>
+    expect(env.tool).toBe('read_file')
+    expect(env.status).toBe('success')
+    expect(String(env.summary)).toContain('.png')
+    // 字节一个都不许留在信封里。
+    expect(condensed.every((m) => !(m.content as string).includes('AAAA'))).toBe(true)
+    store.close()
+  })
+
   test('收纳区的工具结果只剩信封与定位符，正文不再上线', async () => {
     const { store, ws, conv, ids } = fresh(4)
     const run = createRun(store, {
