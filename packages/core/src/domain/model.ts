@@ -794,6 +794,103 @@ export function emptyOmitted(): ContextOmitted {
   return { historyOriginal: 0, intermediateOriginal: 0 }
 }
 
+/**
+ * 会随对话增长的那三个桶。对账的差额优先往这里归。
+ *
+ * 其余桶（系统提示词、工具 schema、记忆、技能、工作区）在装配时是逐字可数的，
+ * 估算误差极小；把差额摊到它们头上等于把最准的数改错。
+ */
+const VARIABLE_GROUPS: readonly ContextGroup[] = [
+  'historyMessages',
+  'executionRecords',
+  'intermediateContent',
+]
+
+/** 其余的。顺序沿用 `CONTEXT_GROUPS`，差额摊不进可变桶时才动它们。 */
+const FIXED_GROUPS: readonly ContextGroup[] = CONTEXT_GROUPS.filter(
+  (g) => !VARIABLE_GROUPS.includes(g),
+)
+
+/**
+ * 把 `keys` 这几个桶按现有占比重新分配，使它们之和**精确等于** `want`。
+ *
+ * 余数给其中最大的那个，不留一两个 token 的尾巴。
+ * 全为零时没有占比可依据，整块给第一个键。
+ */
+function allocate(out: ContextBreakdown, keys: readonly ContextGroup[], want: number): void {
+  const base = keys.reduce((n, k) => n + out[k], 0)
+  const first = keys[0]
+  if (!first) return
+  if (base <= 0) {
+    for (const k of keys) out[k] = 0
+    out[first] = want
+    return
+  }
+  let assigned = 0
+  let biggest = first
+  for (const k of keys) {
+    out[k] = Math.trunc((out[k] / base) * want)
+    assigned += out[k]
+    if (out[k] > out[biggest]) biggest = k
+  }
+  out[biggest] += want - assigned
+}
+
+/**
+ * 让分组之和恒等于总数。
+ *
+ * ## 为什么必须对账
+ *
+ * 总数是 provider 真值，分组是本地估算，两者天然不等。差额里还结构性地含着
+ * 上一轮的输出 token——它不属于任何一个桶，但它确实占着窗口，下一轮就是历史的
+ * 一部分。不对账的话，面板上「各行加起来」和「标题上那个数」对不上，而差额会
+ * 无声地落进「剩余空间」那一行。
+ *
+ * 也不要用「各组之和略小于总数：总数含请求体本身的结构开销」这类话糊过去——
+ * 那是错的，差额里有真实内容（tool call 参数、思考正文、被按自然语言口径低估的
+ * base64）。实测过一次代价：两张按文本发出去的 PNG 让总数与分组差了 271k，
+ * 面板上各行加起来只有 36.9%，剩下的全躺在「剩余空间」里，没有任何一行指向它们。
+ *
+ * ## 吸收法，不是缩放法
+ *
+ * 固定类目保实测值，差额归到误差实际所在的桶——三个可变桶按各自占比分摊。
+ *
+ * **不要改成「一律按占比缩放全部类目」。** 那要求全部类目出自同一把尺、误差均匀，
+ * 而这里是估算，误差集中在会变的那几个桶上。
+ *
+ * ## 真值低于固定类目时
+ *
+ * 真值小到连固定类目本身都装不下（会话刚开始、工具表的估算比真值高）时，
+ * 可变桶清零也补不平，这时**才**按占比缩固定类目。
+ * 「各行加起来等于标题」优先于「固定类目保实测值」——前者用户一眼就能验，
+ * 后者他无从验证；而钳到零之后放着不管，等于让面板重新开始说谎。
+ *
+ * ## 边界
+ *
+ * 按占比分摊只保证**和**是对的，不保证差额落在真正出错的那个桶上——误差实际
+ * 集中在某一个桶时，另外两个会跟着被抬高。所以这个函数回答的是「总共被占了多少、
+ * 大致是谁」，不是「哪一个桶算错了」。定位单个桶的误差要看逐请求账。
+ */
+export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): ContextBreakdown {
+  const out = { ...breakdown }
+  const target = Math.max(0, total)
+  const sum = Object.values(out).reduce((n, v) => n + v, 0)
+  if (sum === target) return out
+  if (sum === 0) {
+    out.historyMessages = target
+    return out
+  }
+
+  const fixedSum = FIXED_GROUPS.reduce((n, k) => n + out[k], 0)
+  if (target >= fixedSum) {
+    allocate(out, VARIABLE_GROUPS, target - fixedSum)
+    return out
+  }
+  for (const k of VARIABLE_GROUPS) out[k] = 0
+  allocate(out, FIXED_GROUPS, target)
+  return out
+}
+
 // ─────────────────────────── 逐请求账 ───────────────────────────
 
 /**

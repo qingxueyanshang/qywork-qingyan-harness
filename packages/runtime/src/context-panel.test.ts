@@ -235,10 +235,15 @@ describe('上下文面板', () => {
     expect(contextPanel(store, conversationId, 1_000_000).percent).toBe(0.2)
   })
 
+  /**
+   * `measured` 取各桶之和：两个数出自同一次装配，生产上不可能不等
+   * （`breakdownOf` 与 `estimateRequest` 量的是同一个 `req`）。
+   * 给一个对不上的 `measured`，测的就不再是「桶带得出来」而是对账怎么摊。
+   */
   test('分组桶原样带出，键集与协议恒等', () => {
     const { store, conversationId, runId } = fixture()
     const id = send(store, runId, {
-      measured: 100,
+      measured: 1519 + 6 + 823,
       categories: { systemTools: 1519, historyMessages: 6, memory: 823 },
     })
     settleProviderRequest(store, id, 'received', null, null)

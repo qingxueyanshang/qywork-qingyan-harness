@@ -20,7 +20,7 @@
 
 import { softLimit } from '@qywork/agent'
 import type { ContextBreakdown, ContextOmitted, ConversationId } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, reconcileBreakdown } from '@qywork/core'
 import { latestAnchoredProviderRequest, latestSentProviderRequest, type Store } from '@qywork/store'
 
 export interface ContextPanel {
@@ -66,65 +66,6 @@ function anchorTokens(r: {
   )
 }
 
-/**
- * 会随对话增长的那三个桶。差额只往这里归。
- *
- * 其余桶（系统提示词、工具 schema、记忆、技能、工作区）在装配时是**逐字可数**的，
- * 估算误差极小；把差额摊到它们头上等于把最准的数改错。
- *
- * 坑：不要改成「按占比缩放全部类目」。那要求全部类目出自同一把尺、误差均匀，
- * 而这里是估算，误差集中在会变的那几个桶上。
- */
-const VARIABLE: readonly (keyof ContextBreakdown)[] = [
-  'historyMessages',
-  'executionRecords',
-  'intermediateContent',
-]
-
-/**
- * 让分组之和恒等于总数。
- *
- * ## 为什么必须对账
- *
- * `total` 是 provider 真值，`breakdown` 是本地估算，两者天然不等。差额里还
- * 结构性地含着**上一轮的输出 token**——它不属于任何一个桶，但它确实占着窗口，
- * 下一轮就是历史的一部分。
- *
- * 不对账的话，面板上「各行加起来」和「标题上那个数」对不上。也不要用
- * 「各组之和略小于总数：总数含请求体本身的结构开销」这类话糊过去——那是**错的**，
- * 差额里有真实内容（tool call 参数、思考正文），不只是 JSON 骨架。
- *
- * ## 吸收法，不是缩放法
- *
- * 固定类目保实测值，差额归到**误差实际所在的桶**。
- * 三个可变桶按各自占比分摊；全为零（新会话还没跑过工具）
- * 时整块给 `historyMessages`。
- */
-function reconcile(breakdown: ContextBreakdown, total: number): ContextBreakdown {
-  const out = { ...breakdown }
-  const sum = Object.values(out).reduce((n, v) => n + v, 0)
-  const diff = total - sum
-  if (diff === 0) return out
-
-  const variableSum = VARIABLE.reduce((n, k) => n + out[k], 0)
-  if (variableSum <= 0) {
-    out.historyMessages = Math.max(0, out.historyMessages + diff)
-    return out
-  }
-
-  // 按占比摊，余数给最大的那个桶——保证和精确等于 total，不留一两个 token 的尾巴。
-  let assigned = 0
-  const shares = VARIABLE.map((k) => {
-    const share = Math.trunc((out[k] / variableSum) * diff)
-    assigned += share
-    return { key: k, share }
-  })
-  const biggest = VARIABLE.reduce((a, b) => (out[a] >= out[b] ? a : b))
-  for (const { key, share } of shares) out[key] = Math.max(0, out[key] + share)
-  out[biggest] = Math.max(0, out[biggest] + (diff - assigned))
-  return out
-}
-
 export function contextPanel(
   store: Store,
   conversationId: ConversationId,
@@ -165,7 +106,7 @@ export function contextPanel(
     percent: Math.round((total / limit) * 1000) / 10,
     source,
     compactAt: softLimit({ contextWindow: limit }),
-    breakdown: reconcile(sent.sentCategories, total),
+    breakdown: reconcileBreakdown(sent.sentCategories, total),
     omitted: sent.omittedCategories,
     freeSpace: Math.max(0, limit - total),
   }
