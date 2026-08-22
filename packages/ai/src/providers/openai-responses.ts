@@ -108,8 +108,14 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
-    // provider 的原话，只进账本不参与判断。空串 = 流断在终态事件之前。
+    // provider 的原话，只进账本不参与判断。
     let rawFinish = ''
+    /**
+     * 终态事件到过没有。**不能用 `rawFinish` 是不是空串代替**：
+     * `rawStatusOf` 在 `response` 缺 `status` 字段时就回空串，
+     * 那时终态明明到了，拿空串当判据会把一次正常收尾报成截断。
+     */
+    let settled = false
     /** 按 output_index 累积的工具调用。参数是分片到达的。 */
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
@@ -248,6 +254,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           applyUsage(usage, response.usage as Record<string, unknown> | undefined)
           rawFinish = rawStatusOf(response)
           stopReason = normalizeStatus(response)
+          settled = true
           continue
         }
 
@@ -263,6 +270,25 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             asError(200, JSON.stringify(detail || event)),
           )
         }
+      }
+
+      /*
+       * **流结束了却没到过终态事件 = 传输被截断，不是「说完了」。**
+       *
+       * 与 `openai-compat` 那条守卫同一件事：默认值 `end_turn` 会把连接中途
+       * 断掉记成正常完成——界面上是「写到一半就停、run 显示成功」，
+       * 用量也停在估算值上，那一轮读数无从对账。
+       *
+       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它
+       * 计没计费，账本行因此落 `uncertain`。「收到了多少」由 `loop.ts` 的
+       * 现场读数补，所以这里不再分「一个事件都没有」和「断在半路」两种说法。
+       */
+      if (!settled) {
+        throw new ProviderError({
+          code: 'network_error',
+          message: '流在终态事件之前结束',
+          provider: 'openai_responses',
+        })
       }
     } catch (err) {
       throw classifyProviderError('openai_responses', err)
