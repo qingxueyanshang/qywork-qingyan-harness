@@ -1,6 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
+import { askInChat, loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
 import { IconPencil, IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
@@ -70,7 +70,6 @@ interface TeamJson {
 
 interface RoleForm {
   id: string
-  isNew: boolean
   name: string
   description: string
   systemPrompt: string
@@ -89,28 +88,14 @@ interface BackendForm {
   resultField: string
 }
 
-/** 内置后端的默认键名。新建角色时选「内置模型」就落在它上面。 */
+/** 内置后端的默认键名。角色不选后端时落在它上面。 */
 const BUILTIN_ID = 'builtin'
 
-/** 导入框的占位样例。写成常量是因为它带换行，塞进 JSX 属性里读不出形状。 */
-const IMPORT_PLACEHOLDER = [
-  '{',
-  '  "id": "reviewer",',
-  '  "name": "代码审查员",',
-  '  "description": "负责代码审查、风险识别与检测。",',
-  '  "systemPrompt": "只读。逐条给出文件与行号。"',
-  '}',
-].join('\n')
+/** 「添加」递给模型的话头。角色要写系统提示词、能用哪些工具、步数上限，
+    面板里几个格子填不全——同记忆 / 技能 / MCP / 插件 / 定时任务那五页的路子。 */
+const NEW_ROLE =
+  '我们一起来加一个子 agent 吧。先说明子 agent 在 qywork 里怎么工作、配置写在哪个文件；然后问我要它干什么、能用哪些工具、步数给多少。'
 
-const emptyRole = (): RoleForm => ({
-  id: '',
-  isNew: true,
-  name: '',
-  description: '',
-  systemPrompt: '',
-  backend: BUILTIN_ID,
-  maxSteps: '',
-})
 const emptyBackend = (): BackendForm => ({
   id: '',
   isNew: true,
@@ -132,8 +117,6 @@ export default function AgentsSettings() {
   const [showRaw, setShowRaw] = createSignal(false)
   const [roleForm, setRoleForm] = createSignal<RoleForm | null>(null)
   const [backendForm, setBackendForm] = createSignal<BackendForm | null>(null)
-  /** 导入框里那段 JSON。null = 没在导入；空串是合法状态（框开着还没贴）。 */
-  const [importing, setImporting] = createSignal<string | null>(null)
 
   // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份，
   // 编辑框才不会闪空。
@@ -226,7 +209,6 @@ export default function AgentsSettings() {
       type="button"
       onClick={() => {
         setRoleForm(null)
-        setImporting(null)
         setError(null)
         setBackendForm(emptyBackend())
       }}
@@ -240,32 +222,9 @@ export default function AgentsSettings() {
    * 迟早只改一处，而空的时候用户看到的恰恰是空态框里那一份。
    */
   const RoleActions = () => (
-    <>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        onClick={() => {
-          setRoleForm(null)
-          setBackendForm(null)
-          setError(null)
-          setImporting('')
-        }}
-      >
-        导入
-      </button>
-      <button
-        class="btn-ghost sm"
-        type="button"
-        onClick={() => {
-          setImporting(null)
-          setBackendForm(null)
-          setError(null)
-          setRoleForm(emptyRole())
-        }}
-      >
-        新建
-      </button>
-    </>
+    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_ROLE)}>
+      添加
+    </button>
   )
 
   /**
@@ -274,44 +233,6 @@ export default function AgentsSettings() {
    * 只认「是个对象」和「有 id」，其余缺了按空值补——**不做严格校验**：
    * 导完下一步就是那个表单，缺什么在表单里补比在这里报一串错有用。
    */
-  const importRole = (body: string) =>
-    void writeConfig((cfg) => {
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(body)
-      } catch (e) {
-        return `这段不是合法 JSON：${e instanceof Error ? e.message : String(e)}`
-      }
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        return '要是一个角色对象'
-      }
-      const r = parsed as RoleJson
-      const id = String(r.id ?? '').trim()
-      if (!id) return '这段里没有 id'
-      cfg.roles ??= []
-      const roles = cfg.roles
-      cfg.backends ??= {}
-      const backends = cfg.backends
-      const backend = String(r.backend ?? BUILTIN_ID)
-      if (!backends[backend]) {
-        if (backend !== BUILTIN_ID) return `这段引用了一个不存在的后端 ${backend}`
-        backends[BUILTIN_ID] = { kind: 'builtin' }
-      }
-      const next: RoleJson = {
-        id,
-        name: String(r.name ?? id),
-        description: String(r.description ?? ''),
-        systemPrompt: String(r.systemPrompt ?? ''),
-        backend,
-        ...(typeof r.maxSteps === 'number' ? { maxSteps: r.maxSteps } : {}),
-      }
-      const at = roles.findIndex((x) => x.id === id)
-      if (at >= 0) roles[at] = next
-      else roles.push(next)
-      setImporting(null)
-      return null
-    })
-
   const openRole = (id: string) => {
     const r = config()?.roles?.find((x) => x.id === id)
     if (!r) {
@@ -322,7 +243,6 @@ export default function AgentsSettings() {
     setError(null)
     setRoleForm({
       id: r.id ?? '',
-      isNew: false,
       name: r.name ?? '',
       description: r.description ?? '',
       systemPrompt: r.systemPrompt ?? '',
@@ -338,7 +258,6 @@ export default function AgentsSettings() {
       cfg.roles ??= []
       const roles = cfg.roles
       const at = roles.findIndex((x) => x.id === id)
-      if (f.isNew && at >= 0) return `已经有一个叫 ${id} 的角色了`
 
       // 选了内置而 backends 里还没有它时顺带建出来：不建的话这条角色一落盘
       // 就会被加载器当成「指向不存在的后端」整条丢掉。
@@ -370,7 +289,6 @@ export default function AgentsSettings() {
       return
     }
     setRoleForm(null)
-    setImporting(null)
     setError(null)
     setBackendForm({
       id,
@@ -502,53 +420,18 @@ export default function AgentsSettings() {
               </Show>
             </Section>
 
-            {/* 导入 = 贴一段角色 JSON。**不给文件选择器**：外壳那边只有选目录，
-                而一个角色是一段对象不是一个目录，给一个选不中文件的按钮更糟。 */}
-            <Show when={importing() !== null}>
-              <Section title="导入角色">
-                <textarea
-                  class="code-area"
-                  rows={10}
-                  spellcheck={false}
-                  placeholder={IMPORT_PLACEHOLDER}
-                  value={importing() ?? ''}
-                  onInput={(e) => setImporting(e.currentTarget.value)}
-                />
-                <div class="row-actions">
-                  <button
-                    class="btn-primary"
-                    type="button"
-                    disabled={busy() || !(importing() ?? '').trim()}
-                    onClick={() => importRole(importing() ?? '')}
-                  >
-                    导入
-                  </button>
-                  <button class="btn-ghost" type="button" onClick={() => setImporting(null)}>
-                    取消
-                  </button>
-                  <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-                </div>
-              </Section>
-            </Show>
-
             <Show when={roleForm()}>
               {(f) => (
-                <Section title={f().isNew ? '新建角色' : `编辑 ${f().name || f().id}`}>
+                <Section title={`编辑 ${f().name || f().id}`}>
                   <div class="setting-rows">
                     <div class="setting-row stack">
                       <div class="setting-row-text">
                         <span class="setting-row-label">标识</span>
                         <span class="setting-row-hint">编排图按它引用这个角色</span>
                       </div>
-                      {/* 标识只在新建时可改：改一个已有角色的 id 等于换一个角色，
+                      {/* 标识不可改：改一个已有角色的 id 等于换一个角色，
                           而编排图里引用它的那些节点会当场失效。 */}
-                      <input
-                        type="text"
-                        value={f().id}
-                        disabled={!f().isNew}
-                        placeholder="如 reviewer"
-                        onInput={(e) => setRoleForm({ ...f(), id: e.currentTarget.value })}
-                      />
+                      <input type="text" value={f().id} disabled />
                     </div>
                     <div class="setting-row stack">
                       <div class="setting-row-text">
@@ -636,18 +519,13 @@ export default function AgentsSettings() {
             </Show>
 
             <Section
-              title="后端"
-              desc="角色的运行位置。内置为本进程内执行；外部 CLI 为本机独立进程，凭证与沙箱各自独立。"
+              title="外部 CLI"
+              desc="本机独立进程，凭证与沙箱各自独立。"
               actions={<BackendActions />}
             >
               <Show
                 when={t().backends.length > 0}
-                fallback={
-                  <EmptyBox
-                    label="还没有后端，新建第一个角色时会自动建一个内置的"
-                    actions={<BackendActions />}
-                  />
-                }
+                fallback={<EmptyBox label="还没有外部 CLI" actions={<BackendActions />} />}
               >
                 <div class="entry-list">
                   <For each={t().backends}>
