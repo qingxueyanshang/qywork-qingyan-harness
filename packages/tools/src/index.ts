@@ -112,6 +112,7 @@ export {
 } from './tool-pool.ts'
 
 import { readHistoryTool } from './history.ts'
+import { subagentTool } from './subagent.ts'
 
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
@@ -121,7 +122,10 @@ import { readHistoryTool } from './history.ts'
  * 而这个函数每条消息都会被调一次（`runtime/session.ts`），所以装完 git
  * **下一条消息就有了**，不用重启。
  */
-export function registerBuiltinTools(registry: ToolRegistry): void {
+export function registerBuiltinTools(
+  registry: ToolRegistry,
+  opts: { delegate?: boolean } = {},
+): void {
   const shell = commandShell()
   for (const spec of [
     readFileTool,
@@ -145,6 +149,9 @@ export function registerBuiltinTools(registry: ToolRegistry): void {
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,
+    // 派活工具**按通道注册**：没有派活通道就没有这个工具，
+    // 而不是给一个必然回「派不出去」的（B5，同 run_command 那条）。
+    ...(opts.delegate ? [subagentTool] : []),
   ]) {
     registry.register(spec)
   }

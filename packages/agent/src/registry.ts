@@ -52,6 +52,36 @@ export interface SinkPort {
 }
 
 /**
+ * 派活端口 —— 把一段任务交给一个子 agent（角色）或本机装着的外部 agent CLI。
+ *
+ * ## 为什么是端口
+ *
+ * 同 `SinkPort`：跑一个子会话要 `Session` 与账本，那两样都在依赖图上**高于** tools，
+ * 工具直接引就是反向边。所以接口在这里、实现由装配方注入。
+ *
+ * ## 不注入就没有这个工具
+ *
+ * 与 `sink` 那种「没有就降级」不同：派不出去的派活工具没有任何降级形态，
+ * 所以装配方不注入时**不注册这个工具**（B5：没有数据源就不做入口），
+ * 而不是注册一个必然回失败的。
+ *
+ * ## 子 agent 不得再派活
+ *
+ * 装配方只给顶层会话注入它。成员会话拿不到这个端口，也就不可能递归下去——
+ * 递归派活没有终止条件，一次跑飞会把整台机器的进程数拖垮。
+ */
+export interface DelegatePort {
+  /** 现在能派给谁。角色与外部 CLI 混在一张表里，`id` 直接可用于 `run`。 */
+  targets(): Promise<{ id: string; kind: 'role' | 'cli'; description: string }[]>
+  /** 派出去并等它做完。失败是返回值不是异常——模型要按原因换做法。 */
+  run(input: {
+    target: string
+    task: string
+    signal: AbortSignal
+  }): Promise<{ ok: boolean; output: string; error?: string }>
+}
+
+/**
  * 「这个会话读到那个文件时，它长什么样」。写前的新鲜度校验就靠它。
  *
  * ## 为什么必须是个 port，不能塞进 `state`
@@ -296,6 +326,12 @@ export interface ToolContext {
    * 装配方握着账本时总该接上；没接时工具如实报，不伪装成「找不到」。
    */
   history?: HistoryPort
+  /**
+   * 派活通道。见 `DelegatePort`。
+   *
+   * 没接上时 `subagent` 工具压根不注册，所以工具体里可以断言它在。
+   */
+  delegate?: DelegatePort
   /**
    * 长工具的中途输出回传通道（shell stdout、下载进度）。
    *

@@ -42,6 +42,7 @@ import {
   workspaceOf,
 } from '@qywork/store'
 import { reject } from './commands.ts'
+import { makeDelegate } from './delegate.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
 import type { GoalArm } from './runs.ts'
@@ -169,6 +170,9 @@ export async function startRun(
     content: deps.content,
     workspaceRoot: ws.rootPath,
     signal: controller.signal,
+    // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，于是它那边连
+    // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
+    delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath }),
   })
 
   /*

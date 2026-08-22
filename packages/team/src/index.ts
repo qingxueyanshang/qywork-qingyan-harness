@@ -8,7 +8,9 @@
  * 加新的对外符号时：先确认它真的有包外调用点，再往下面加一行。
  */
 
-// 本机装了哪几家外部 CLI：server 的设置页端点与派活工具按它解析目标
+// 外部 CLI 的执行器：编排器在包内用，server 的派活端口在包外用
+export { runCli } from './cli-backend.ts'
+// 本机装了哪几家外部 CLI：server 的设置页端点与派活端口按它解析目标
 export { type DetectedCli, detectClis, findCli } from './cli-detect.ts'
 // 编排器：server 的 team.run 指令是唯一入口
 export { TeamOrchestrator } from './orchestrator.ts'

@@ -47,6 +47,7 @@ export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
   chargeBatchBudget,
+  type DelegatePort,
   deliveryBudget,
   type FileReadPort,
   type GoalPort,
