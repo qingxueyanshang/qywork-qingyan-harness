@@ -191,7 +191,8 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
 
   // 键盘输入原样送进 PTY。**不在这里解释按键**——回车、Ctrl-C、方向键都是字节，
   // 由 shell 自己认；前端插一层翻译就会和真终端的行为对不上。
-  term.onData((d) => void writeTerminal(id, d).catch(() => {}))
+  // 鼠标报文走的也是这一条（开了鼠标追踪的 TUI），所以写失败等于点击也失败。
+  term.onData((d) => void writeTerminal(id, d).catch(() => markGone(pane)))
 
   /*
    * 滚轮由我们接管，不交给程序。
@@ -226,6 +227,22 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   return pane
 }
 
+/**
+ * 会话在外壳那边已经用不了了：落到和退出事件同一个终态。
+ *
+ * PTY 会话表在 Rust 侧，`started` 只是它在前端的镜像，平时靠 `terminal:exit`
+ * 一条事件同步。事件没送到时镜像会一直停在「开着」，键盘与鼠标报文继续写进一个
+ * 不存在的会话——用户面前是一块画着上一帧、点了没反应的终端。命令被拒是权威
+ * 本身的答复，**要就地消费掉，不能吞**。
+ *
+ * 退出码给 `null`：这条路上读不到子进程的终态，只知道会话不能用了。
+ */
+function markGone(pane: Pane): void {
+  if (pane.exit()) return
+  pane.started = false
+  pane.setExit({ code: null })
+}
+
 /** 收掉一条终端：杀进程、销毁实例、摘掉 DOM。只由 `holdPanelTab` 那条路调。 */
 function disposePane(id: string): void {
   const pane = panes.get(id)
@@ -255,7 +272,7 @@ function syncSize(id: string, pane: Pane): void {
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) return
   if (cols !== pane.term.cols || rows !== pane.term.rows) pane.term.resize(cols, rows)
   if (!pane.started) return
-  void resizeTerminal(id, pane.term.cols, pane.term.rows).catch(() => {})
+  void resizeTerminal(id, pane.term.cols, pane.term.rows).catch(() => markGone(pane))
 }
 
 async function ensureStarted(id: string, pane: Pane): Promise<void> {
@@ -263,13 +280,22 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
   pane.started = true
   pane.setExit(null)
   try {
-    await openTerminal(id, workspace()?.root ?? '', pane.term.cols, pane.term.rows, {
-      output: (d) => pane.term.write(d),
-      exit: (code) => {
-        pane.started = false
-        pane.setExit({ code })
+    const backlog = await openTerminal(
+      id,
+      workspace()?.root ?? '',
+      pane.term.cols,
+      pane.term.rows,
+      {
+        output: (d) => pane.term.write(d),
+        exit: (code) => {
+          pane.started = false
+          pane.setExit({ code })
+        },
       },
-    })
+    )
+    // 接上一条已经在跑的会话时，先把外壳存着的那段重放进来，否则用户接回来
+    // 面对的是一块空屏——shell 还活着，但要敲一下才看得出来。
+    if (backlog) pane.term.write(backlog)
     // 开完再对一次：从调用到会话建好这段时间里，面板可能已经被拖宽或放大了。
     syncSize(id, pane)
   } catch (e) {
@@ -277,6 +303,24 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
     // 起不来要说在终端里，不是静默留一块黑：用户盯着的就是这块地方。
     pane.term.write(`\r\n\x1b[31m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`)
   }
+}
+
+/**
+ * 重开：先收掉旧会话，再开新的。
+ *
+ * **不能只调 `ensureStarted`。** 落到终态的另一条路是命令被拒（见 `markGone`），
+ * 那时 Rust 侧的会话可能还在表里——`terminal_open` 认得这个 id 就直接返回成功，
+ * 什么也不起，按钮点下去没反应。关一个已经不在的 id 是允许的，外壳返回成功。
+ *
+ * 这一步只属于「重开」这颗按钮：挂载时那次 `ensureStarted` 不能先关——
+ * 页面刷新后前端的镜像是空的而 shell 还在跑，先关就把用户手上的进程杀了。
+ */
+async function restart(id: string, pane: Pane): Promise<void> {
+  await closeTerminal(id).catch(() => {})
+  await ensureStarted(id, pane)
+  // 焦点要跟回终端：按钮随终态条一起消失，焦点会掉到 body 上，
+  // 于是新起的 shell 收不到任何按键——和刚才那块死终端一模一样。
+  pane.term.focus()
 }
 
 export default function TerminalPanel(props: { id: string }) {
@@ -337,7 +381,7 @@ export default function TerminalPanel(props: { id: string }) {
                 const p = pane()
                 if (!p) return
                 p.term.clear()
-                void ensureStarted(props.id, p)
+                void restart(props.id, p)
               }}
             >
               重开

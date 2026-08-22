@@ -10,12 +10,12 @@ import { produce } from 'solid-js/store'
 import { client, discardPace, reloadActiveConversation } from './connection.ts'
 import {
   addWorkspace,
-  isDesktopShell,
   loadServerConfig,
   loadWorkspaceExtensions,
   saveServerConfig,
   watchWorkspace,
 } from './settings.ts'
+import { isDesktopShell } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
 

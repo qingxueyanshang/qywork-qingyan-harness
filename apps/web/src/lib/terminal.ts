@@ -29,19 +29,30 @@ function wire(): Promise<void> {
   return wired
 }
 
+/**
+ * 开一条终端，**返回要回放的那段输出**。
+ *
+ * 接上一条已经在跑的会话时返回它的回放缓冲（外壳侧维护，见 `terminal.rs`），
+ * 新起的会话返回空串。调用方要把它原样写进 xterm——那是重建屏幕，不是历史记录。
+ */
 export async function openTerminal(
   id: string,
   cwd: string,
   cols: number,
   rows: number,
   on: { output: OutputHandler; exit: ExitHandler },
-): Promise<void> {
+): Promise<string> {
   outputs.set(id, on.output)
   exits.set(id, on.exit)
   // 先挂监听再开进程：反过来的话 shell 的第一行提示符可能在监听装好之前就吐完了，
   // 表现是终端开出来是空白的，敲一下回车才冒出提示符。
   await wire()
-  await tauriInvoke<void>('terminal_open', { id, cwd, cols, rows })
+  return await tauriInvoke<string>('terminal_open', { id, cwd, cols, rows })
+}
+
+/** 外壳那边还开着哪几条会话。页签据此恢复，见 store 的 `restoreTerminalTabs`。 */
+export function listTerminals(): Promise<string[]> {
+  return tauriInvoke<string[]>('terminal_list')
 }
 
 export function writeTerminal(id: string, data: string): Promise<void> {

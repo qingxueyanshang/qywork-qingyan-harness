@@ -264,6 +264,7 @@ pub fn run() {
             window_close,
             window_is_maximized,
             terminal::terminal_open,
+            terminal::terminal_list,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,

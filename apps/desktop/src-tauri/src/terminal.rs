@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -24,10 +25,22 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// 太大则拖长首字节延迟——8K 是 ConPTY 与 pty 常见的一次写入量级。
 const READ_CHUNK: usize = 8 * 1024;
 
+/// 回放缓冲的上限。**这是屏幕重建用的，不是滚动历史**：够装下一屏全屏 TUI 的
+/// 重绘（清屏 + 定位 + 满屏字符，几十 K 量级）并留出余量即可，翻历史归 xterm
+/// 自己的 5000 行回滚管。再大就是拿常驻内存换一段谁也不会去看的字节。
+const BACKLOG_CAP: usize = 256 * 1024;
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// 最近这些输出的原样副本，供前端重新接上来时回放。
+    ///
+    /// **前端那块 xterm 是随页面走的**：整页刷新之后它是全新的一块空屏，而 shell
+    /// 还在原地跑——不回放的话，用户接回来看到的是一片黑，敲一下才知道它是活的。
+    /// 存原始字节序列（含转义序列）而不是渲染后的文本：回放就是把这段重新喂给
+    /// xterm，模式、颜色、光标位置都跟着一起回来。
+    backlog: Arc<Mutex<String>>,
 }
 
 #[derive(Default)]
@@ -47,10 +60,11 @@ struct Exit {
     code: Option<u32>,
 }
 
-/// 开一条会话。
+/// 开一条会话，**返回要回放的那段输出**。
 ///
-/// 已经存在的 id 直接返回成功：前端在面板重新挂载时会无条件调一次，
-/// 报错的话用户看到的是一个开着的终端配一句「已存在」的红字。
+/// 已经存在的 id 不报错，直接把它的回放缓冲交出去：前端在面板重新挂载时会无条件
+/// 调一次，报错的话用户看到的是一个开着的终端配一句「已存在」的红字。新起的会话
+/// 没有可回放的，回空串。
 #[tauri::command]
 pub fn terminal_open(
     app: AppHandle,
@@ -59,9 +73,9 @@ pub fn terminal_open(
     cwd: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
-    if state.0.lock().contains_key(&id) {
-        return Ok(());
+) -> Result<String, String> {
+    if let Some(session) = state.0.lock().get(&id) {
+        return Ok(session.backlog.lock().clone());
     }
 
     let size = PtySize {
@@ -103,16 +117,18 @@ pub fn terminal_open(
         .try_clone_reader()
         .map_err(|e| format!("拿不到读端：{e}"))?;
 
+    let backlog = Arc::new(Mutex::new(String::new()));
     state.0.lock().insert(
         id.clone(),
         Session {
             master: pair.master,
             writer,
             killer,
+            backlog: backlog.clone(),
         },
     );
 
-    spawn_reader(app.clone(), id.clone(), reader);
+    spawn_reader(app.clone(), id.clone(), reader, backlog);
 
     // 等子进程收尸的线程。**不能和读线程合并**：读端要等 EOF，而 EOF 之后
     // 还得知道退出码；分开之后两件事各自阻塞在自己的句柄上，谁先到都不误事。
@@ -126,7 +142,17 @@ pub fn terminal_open(
         let _ = app.emit("terminal:exit", Exit { id, code });
     });
 
-    Ok(())
+    Ok(String::new())
+}
+
+/// 现在还开着哪几条会话。
+///
+/// **前端的页签是这张表的镜像。** 镜像会因为前端整个重建被清空（整页重载、
+/// 开发期热更换掉那个模块都算），而 shell 还在跑——不对一次账，那条会话就没有
+/// 任何界面碰得到它，只能等应用退出时被 `shutdown` 收掉。
+#[tauri::command]
+pub fn terminal_list(state: State<TerminalHandle>) -> Vec<String> {
+    state.0.lock().keys().cloned().collect()
 }
 
 /// 键盘输入。原样写进 PTY，不做任何解释——回车、Ctrl-C、方向键都是字节，
@@ -193,7 +219,12 @@ pub fn shutdown(state: &TerminalHandle) {
 /// **不能按 chunk 直接 `from_utf8_lossy`。** 一个中文字是三个字节，读到的块随时可能
 /// 从字中间断开，逐块解码会把断口两侧各变成一个替换字符——中文输出会稳定地长出乱码。
 /// 所以未完成的尾巴留在 `carry` 里等下一块。
-fn spawn_reader(app: AppHandle, id: String, mut reader: Box<dyn Read + Send>) {
+fn spawn_reader(
+    app: AppHandle,
+    id: String,
+    mut reader: Box<dyn Read + Send>,
+    backlog: Arc<Mutex<String>>,
+) {
     std::thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
         let mut carry: Vec<u8> = Vec::new();
@@ -205,6 +236,7 @@ fn spawn_reader(app: AppHandle, id: String, mut reader: Box<dyn Read + Send>) {
             carry.extend_from_slice(&buf[..n]);
             let text = take_valid(&mut carry);
             if !text.is_empty() {
+                push_backlog(&mut backlog.lock(), &text);
                 let _ = app.emit(
                     "terminal:output",
                     Output {
@@ -215,6 +247,23 @@ fn spawn_reader(app: AppHandle, id: String, mut reader: Box<dyn Read + Send>) {
             }
         }
     });
+}
+
+/// 往回放缓冲里追加，超出上限就从头切。
+///
+/// **切点必须落在字符边界上**，否则缓冲里会留下半个字符，回放时那个位置是替换字符。
+/// 从头切必然会把某条转义序列切成两半，回放的第一行可能带几个乱码字符——
+/// 不为它加对齐逻辑：全屏程序下一次重绘就盖掉了，而普通输出多的是换行。
+fn push_backlog(buf: &mut String, text: &str) {
+    buf.push_str(text);
+    if buf.len() <= BACKLOG_CAP {
+        return;
+    }
+    let mut cut = buf.len() - BACKLOG_CAP;
+    while cut < buf.len() && !buf.is_char_boundary(cut) {
+        cut += 1;
+    }
+    buf.drain(..cut);
 }
 
 /// 取出 `carry` 前面那段完整的 UTF-8，剩下的半个字符留在原地。
