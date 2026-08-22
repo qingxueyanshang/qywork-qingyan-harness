@@ -310,7 +310,7 @@
 .term-slot {
   flex: 1;
   min-height: 0;
-  padding: var(--s-2);
+  padding: var(--s-2) var(--s-3);
   overflow: hidden;
 }
 /* 只给宿主满高。**不要再往 `.xterm` / `.xterm-screen` 上加 `height: 100%`**：
@@ -373,7 +373,7 @@
   align-items: center;
   gap: 4px;
   height: 32px;
-  padding: 0 var(--s-2);
+  padding: 0 var(--s-3);
   border-bottom: 1px solid var(--border-subtle);
 }
 .web-url {
@@ -456,7 +456,9 @@
   /* 图标紧跟文字：4px。再宽一点点，一列文件名读起来就散成两栏。 */
   gap: 4px;
   width: 100%;
-  padding: 1px 4px;
+  /* 左内距被行内样式按层级覆盖（`depth * 12 + 8`），这里的 8 只落在搜索命中
+     与根目录名上——那两处没有层级。三处同值，整块面板的文字才在一条竖线上。 */
+  padding: 1px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -496,7 +498,6 @@
   display: flex;
   align-items: center;
   margin: 0 4px;
-  padding: 0 2px;
   border-radius: var(--r-xs);
 }
 /* 选中的行不吃 hover 底色：那层半透明比 `--accent-soft` 浅，指针一划过去
@@ -616,7 +617,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--s-2);
-  padding: 4px;
+  padding: 4px var(--s-3);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
@@ -740,7 +741,7 @@
   gap: var(--s-2);
   flex: none;
   height: 31px;
-  padding: 0 var(--s-2);
+  padding: 0 var(--s-3);
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
@@ -761,7 +762,7 @@
   align-items: center;
   gap: 4px;
   width: 100%;
-  padding: 1px 4px;
+  padding: 1px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -784,11 +785,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 展开之后：这个文件的每一次改动，按先后。缩进对齐上面那行的文件名。 */
+/* 展开之后：这个文件的每一次改动，按先后。
+   左缩进 25px = 8（行内边距）+ 13（图标）+ 4（间距），对齐上面那行的文件名。 */
 .change-edits {
   list-style: none;
   margin: 0 0 4px;
-  padding: 0 0 0 21px;
+  padding: 0 0 0 25px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -894,7 +896,7 @@
   flex-direction: column;
 }
 .run-load {
-  padding: var(--s-4);
+  padding: var(--s-3);
 }
 
 /* 合计。金额跟在「本会话」右边同一行，不另起一行也不放大——它和读数卡里那六个数
@@ -905,7 +907,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-3);
 }
 .run-sum-top {
   display: flex;
@@ -965,7 +967,23 @@
   scrollbar-gutter: stable;
   list-style: none;
   margin: 0;
-  padding: var(--s-1) var(--s-1) var(--s-2);
+  /* 右内边距为 0：金额列右缩的 12px 由预留的轨道宽单独凑出，与上面合计那行的
+     12px 右内距同线；左边这 4px 是悬停底色的让位，文字的 12px 由行内边距补齐。 */
+  padding: var(--s-1) 0 var(--s-2) var(--s-1);
+}
+/* 这一栏不画滑块，但轨道宽照留：收掉这 12px 会让金额列随行数多少左右移。
+   滑块只能设成透明，不能把轨道宽归零——`scrollbar-gutter` 预留的就是轨道宽，
+   归零后槽也跟着没了。
+   两套写法必须互斥，理由见 base.css 那段：Chromium 一旦看见 `scrollbar-color`
+   就整套忽略 `::-webkit-scrollbar`，回退成带箭头的系统原生滚动条。 */
+.run-list::-webkit-scrollbar-thumb,
+.run-list::-webkit-scrollbar-thumb:hover {
+  background: transparent;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .run-list {
+    scrollbar-color: transparent transparent;
+  }
 }
 /* 被接替的那一轮压暗：产出不算数，但钱算数，所以照常列出来。 */
 .run-list > li.superseded {
@@ -979,7 +997,7 @@
   gap: var(--s-2);
   width: 100%;
   min-height: 28px;
-  padding: 0 var(--s-1);
+  padding: 0 0 0 var(--s-2);
   border: none;
   border-radius: var(--r-xs);
   background: none;
@@ -1056,8 +1074,8 @@
    同一个应用里「展开看细节」只该有一种样子；在这里砌一个圆角灰块，它就成了这一列
    里唯一的实心色块。数值也照 `.fold-body` 取：外边距 10 + 竖线 2 + 内边距 10。
 
-   **左缩进 22px 是算出来的，不是描出来的**：轮次行是 4（行内边距）+ 10（折叠符号）
-   + 8（间距）= 22px 起排时间。表比这个数小就会顶在标题左边，看上去不属于这一行。
+   **左缩进 26px 是算出来的，不是描出来的**：轮次行是 8（行内边距）+ 10（折叠符号）
+   + 8（间距）= 26px 起排时间。表比这个数小就会顶在标题左边，看上去不属于这一行。
 
    **上边不留空**：竖线从轮次行底下就起，表头紧跟着它那一行。上下各留一档的话，
    行和表之间空出十几个像素，看着像两块不相干的东西。
@@ -1066,7 +1084,7 @@
 .run-detail {
   min-width: 0;
   max-width: 100%;
-  margin: 0 0 var(--s-1) 10px;
+  margin: 0 0 var(--s-1) 14px;
   padding: 2px 10px 4px;
   border-left: 2px solid var(--border-subtle);
   overflow-x: auto;
@@ -1124,7 +1142,7 @@
   align-items: center;
   gap: var(--s-2);
   height: 31px;
-  padding: 0 var(--s-4);
+  padding: 0 var(--s-3);
   border: none;
   background: none;
   font: inherit;

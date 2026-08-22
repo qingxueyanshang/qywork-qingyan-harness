@@ -31,6 +31,9 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* 左内距的唯一真源。页头在滚动区外、内容在滚动区里，两处必须同值才排得成
+     一条竖线；各写各的话窄屏那一档就会漂开（改过内容忘了改页头）。 */
+  --settings-inset: var(--s-6);
 }
 /* 关闭钉在右上角，**不占标题那一行**：它是整个弹窗的出口，不是这一页的动作。
    定位基准是内容区而不是弹窗，所以窄屏（类目栏横在上面）时它会跟着落到
@@ -57,10 +60,13 @@
    不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。
    右内距给关闭键让位：它是绝对定位钉在右上角的，不占任何行。 */
 .settings-inner {
-  padding: 0 var(--s-8) var(--s-8) var(--s-6);
+  padding: 0 var(--s-8) var(--s-8) var(--settings-inset);
   display: flex;
   flex-direction: column;
-  gap: var(--s-6);
+  /* 块与块 16：算上两侧行盒的余量，落到眼里是 20 出头，比块内「分区名→卡」的
+     12 大一档，层级就分得开。给 24 的时候作用域页签那一行还要再加下划线的 7px，
+     那一档空到像少了一块内容。 */
+  gap: var(--s-4);
 }
 
 /* 一页内的分组。用小标题分段而不是再套一层卡片——设置页最容易长成
@@ -111,6 +117,8 @@
   border-radius: var(--r-lg);
   overflow: hidden;
 }
+/* **卡内文字一律从 `--s-4` 起排。** 模型行、条目卡、两张表的首列都按这个数，
+   各给各的话同一页上会排出三条竖线。 */
 .setting-row {
   display: flex;
   align-items: center;
@@ -315,8 +323,11 @@
     border-top: none;
     border-left: 1px solid var(--border-subtle);
   }
+  .settings-pane {
+    --settings-inset: var(--s-3);
+  }
   .settings-inner {
-    padding: var(--s-3) var(--s-8) var(--s-6) var(--s-3);
+    padding: var(--s-3) var(--s-8) var(--s-6) var(--settings-inset);
   }
 }
 
@@ -493,72 +504,45 @@ textarea.code-area::placeholder {
 .tab-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s-1);
-}
-.tab-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px var(--s-3);
-  border-radius: var(--r-sm);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-}
-.tab-chip:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.tab-chip.active {
-  background: var(--bg-active);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-/* 当前生效的那个接口前面点一个圆点。不用颜色区分——`active` 已经占了底色，
-   两种状态叠在同一个视觉通道上会互相盖掉。 */
-.tab-chip.live::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.tab-chip.add {
-  border: 1px dashed var(--border-default);
-  color: var(--text-tertiary);
-}
-
-/* ── 作用域标签页 ──
- *
- * 项目 / 全局两栏，选中的那个下面一条粗线。**不用 `.tab-chip` 那套底色块**：
- * 同一页上接口切换（模型页）已经在用底色块，两处都用的话「选了哪个接口」和
- * 「看的是哪一层」变成同一个视觉信号。 */
-.scope-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-2) var(--s-4);
-}
-.scope-tab-strip {
-  display: flex;
+  align-items: baseline;
   gap: var(--s-4);
 }
 
-.scope-tab {
+/* ── 分段切换 ──
+ *
+ * 三处共用这一套：作用域（项目 / 全局）、接口（上面那一排）、用量的两组筛选。
+ * 它们答的是同一个问题——「现在看的是哪一段」——分成三种控件只会让人以为
+ * 它们是三类东西。
+ *
+ * **选中靠下面一条线，不靠底色块。** 底色块得用内边距把字撑开，于是一行里的
+ * 第一项被推离正文那条竖线整整一档；线画在伪元素上，不占位置，第一项的字
+ * 就落在竖线上。
+ * 伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，切换时整行上下跳。 */
+.scope-tab,
+.tab-chip,
+.usage-chip {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 0 0 7px;
   color: var(--text-tertiary);
   font-size: var(--fs-base);
 }
-.scope-tab:hover {
+.scope-tab:hover,
+.tab-chip:hover,
+.usage-chip:hover {
   color: var(--text-secondary);
 }
-.scope-tab.active {
+.scope-tab.active,
+.tab-chip.active,
+.usage-chip.active {
   color: var(--text-primary);
   font-weight: 500;
 }
-/* 下划线画成伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，
-   于是切换时整条文字上下跳一格。 */
-.scope-tab.active::after {
+.scope-tab.active::after,
+.tab-chip.active::after,
+.usage-chip.active::after {
   content: "";
   position: absolute;
   left: 0;
@@ -567,6 +551,38 @@ textarea.code-area::placeholder {
   height: 2px;
   border-radius: 1px;
   background: var(--accent);
+}
+/* 当前生效的那个接口前面点一个圆点。`active`（正在看）与 `live`（当前生效）
+   各占一个视觉通道：前者是下划线，后者是这个点，叠不到一起去。 */
+.tab-chip.live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* 「添加接口」是动作不是分段，所以不跟着上面那套长：一颗虚线钮，
+   基线与那一排标签对齐（`.tab-strip` 按基线排）。 */
+.tab-chip.add {
+  padding: 2px var(--s-2);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+/* ── 作用域标签页 ──
+ *
+ * 项目 / 全局两栏，样子归上面那套分段切换，这里只管这一行怎么排：
+ * 标签在左，落盘路径压到行尾。 */
+.scope-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-4);
+}
+.scope-tab-strip {
+  display: flex;
+  gap: var(--s-4);
 }
 
 /* 一条落盘路径。**单行、从左边截**（写法同 `.truncate-left`）：绝对路径换行之后
@@ -617,7 +633,7 @@ textarea.code-area::placeholder {
   overflow: hidden;
 }
 .model-row {
-  padding: var(--s-2) var(--s-3);
+  padding: var(--s-2) var(--s-4);
   min-width: 0;
 }
 .model-row + .model-row {
@@ -704,7 +720,7 @@ textarea.code-area::placeholder {
   overflow: hidden;
 }
 .lib-state {
-  padding: var(--s-3);
+  padding: var(--s-3) var(--s-4);
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
@@ -722,6 +738,15 @@ textarea.code-area::placeholder {
   padding: 4px var(--s-3);
   text-align: left;
   vertical-align: middle;
+}
+/* 首末两列贴着卡边，所以外缘按卡内的 `--s-4` 给；列与列之间仍是 `--s-3`。 */
+.lib-table th:first-child,
+.lib-table td:first-child {
+  padding-left: var(--s-4);
+}
+.lib-table th:last-child,
+.lib-table td:last-child {
+  padding-right: var(--s-4);
 }
 /* **只有这一行标题**：厂商名坐在第一列，其余是列名。
    再单开一条灰色的厂商栏就是同一件事写两遍，上下各占一行。 */
@@ -809,11 +834,15 @@ textarea.code-area::placeholder {
 
 /* 页头在滚动区**外面**（`.settings-pane` 的第一个子节点），所以它天然不动，
    不需要 `sticky`，滚动条的轨道也不会盖到它旁边。
-   左右内边距与 `.settings-inner` 同值，标题才和下面的内容落在同一条竖线上。
+   左内距取 `--settings-inset`，与 `.settings-inner` 同一个数，标题才和下面的
+   内容落在同一条竖线上。
+   **上紧下松（4 / 12）**：内容是从这块底下滚过去的，下面那档留白就是滚过来的
+   行与标题之间的唯一间隙，给小了会贴在标题下沿；上面那档只是标题到窗口边，
+   给大了整块头部空着一条。
    不画分隔线：它的底色和内容卡只差一档，一条线在这里比它隔开的东西还显眼。 */
 .page-head {
   flex: none;
-  padding: var(--s-2) var(--s-8) var(--s-1) var(--s-6);
+  padding: var(--s-1) var(--s-8) var(--s-3) var(--settings-inset);
 }
 /* 标题和右上角动作同一行。动作靠右，标题短的时候不要让它跟着跑到中间去。 */
 .page-head-row {
@@ -826,6 +855,10 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
+  /* 左移半格：字框对齐了，看着仍比下面的分区名靠右——20px 的字，字形自带的
+     左侧留白比 12px 那几个分区名多出约 0.5px（量的是渲染出来的像素，不是盒子）。
+     用 `transform` 而不是 margin：它不参与布局，同一行右边的说明不会跟着动。 */
+  transform: translateX(-0.5px);
 }
 .page-head-actions {
   margin-left: auto;
@@ -872,7 +905,7 @@ textarea.code-area::placeholder {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  padding: 10px var(--s-3);
+  padding: 10px var(--s-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--bg-sunken);
@@ -1105,7 +1138,7 @@ textarea.code-area::placeholder {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  padding: var(--s-3);
+  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
 }
@@ -1146,40 +1179,19 @@ textarea.code-area::placeholder {
    按什么分」就要占掉两行才轮到数字。 */
 .usage-bar {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--s-4);
   flex-wrap: wrap;
 }
 .usage-chips {
   display: flex;
-  gap: 2px;
+  gap: var(--s-4);
 }
 /* 分组那一组推到右沿：两组挨着的话，七颗钮读成一排同类选项，而它们是两条互不相干
    的轴（看哪段时间 / 按什么分）。 */
 .usage-bar > .usage-chips + .usage-chips {
   margin-left: auto;
 }
-/* 这几颗**自带一整套规则，不与设置里别处的按钮共用选择器**：它们是同一组里的
-   互斥选项，靠底色说「选中」，而 `.btn-ghost` 那套是独立动作。 */
-.usage-chip {
-  padding: 3px var(--s-3);
-  border: none;
-  border-radius: var(--r-xs);
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-.usage-chip:hover {
-  background: var(--bg-hover);
-}
-.usage-chip.active {
-  background: var(--bg-active);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
 /* 合计。这一页唯一的大字。 */
 .usage-total {
   display: flex;
@@ -1215,6 +1227,14 @@ textarea.code-area::placeholder {
   padding: 4px var(--s-3);
   text-align: left;
   white-space: nowrap;
+}
+.usage-table th:first-child,
+.usage-table td:first-child {
+  padding-left: var(--s-4);
+}
+.usage-table th:last-child,
+.usage-table td:last-child {
+  padding-right: var(--s-4);
 }
 .usage-table thead th {
   padding: 5px var(--s-3);
