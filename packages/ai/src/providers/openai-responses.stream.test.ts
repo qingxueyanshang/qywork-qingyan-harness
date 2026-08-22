@@ -381,6 +381,23 @@ describe('错误路径', () => {
     const body = sse([{ type: 'response.failed', response: { error: { message: '模型过载' } } }])
     await expect(run(body)).rejects.toThrow(/模型过载/)
   })
+
+  /**
+   * 终态事件没到就断流。默认值 `end_turn` 会把它落成正常完成——
+   * 界面上是「写到一半就停、run 显示成功」，账本上那一轮无从对账。
+   */
+  test('没等到终态事件就断流的，报传输失败而不是完成', async () => {
+    const body = sse([
+      { type: 'response.output_text.delta', delta: '写到一半', item_id: 'm1', output_index: 0 },
+    ])
+    await expect(run(body)).rejects.toThrow(/流在终态事件之前结束/)
+  })
+
+  /** 判据是「终态事件到过没有」，不是 `rawStatusOf` 回没回空串。 */
+  test('终态事件里没有 status 字段的不算断流', async () => {
+    const events = await run(sse([{ type: 'response.completed', response: {} }]))
+    expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' })
+  })
 })
 
 describe('我们发出去的请求', () => {
