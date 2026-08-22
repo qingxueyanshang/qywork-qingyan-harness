@@ -1,6 +1,12 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { askInChat, loadTeam, loadTeamRaw, saveTeamRaw } from '../../lib/store/index.ts'
+import {
+  askInChat,
+  loadTeam,
+  loadTeamClis,
+  loadTeamRaw,
+  saveTeamRaw,
+} from '../../lib/store/index.ts'
 import { IconPencil, IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
@@ -8,61 +14,42 @@ import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
 /**
  * Agent Team。
  *
- * ## 为什么必须有表单
+ * ## 这一页是两件事，不是一件事的两种形态
  *
- * 这一页之前只有一个 `team.json` 文本框：角色列表是空的，而唯一的填法是手写
- * JSON。空状态旁边一个出口都没有，比一个点了没反应的按钮更糟。
+ * - **角色**＝子 agent，跑在本进程的 agent 循环上。它的配置是提示词、模型、步数。
+ * - **外部 CLI**＝本机装着的别家 agent 程序。它由探测得到，**没有配置面**——
+ *   用户改不了「怎么调它」，那是厂商表的事（`packages/team/src/cli-detect.ts`）。
+ *
+ * 两者都能当编排节点的目标，但配置面毫不相干。把 CLI 当成「角色的一种运行位置」
+ * 写进角色里，代价是建一条角色必须先懂后端这个概念。
  *
  * ## 表单就是 team.json 的编辑器，不是第二本账
  *
- * 角色和后端由表单增删改，但**落盘仍然只有 `/api/team/raw` 一条路**：表单读当前
- * 原文、改对象、整份写回。另开一条结构化写接口就是第二条落库路径，两条路径迟早
- * 在某次加字段时对不上。代价是写回时格式由 `JSON.stringify` 重排——JSON 没有注释，
- * 重排丢不掉信息。
+ * 角色由表单改，但**落盘仍然只有 `/api/team/raw` 一条路**：表单读当前原文、改对象、
+ * 整份写回。另开一条结构化写接口就是第二条落库路径，两条路径迟早在某次加字段时对不上。
+ * 代价是写回时格式由 `JSON.stringify` 重排——JSON 没有注释，重排不丢信息。
  *
- * ## 列表读 `/api/team`，表单读原文
+ * ## 加一条角色走对话，不在这里填表
  *
- * 列表显示的是**编排器真正会用的那批角色**：指向不存在后端的会被加载器整条丢掉
- * 并记进 `error`，它们不该出现在列表里。表单改的是文件里的原文对象。
- * 两个来源回答的是不同的问题，不是同一件事的两份。
+ * 角色要写的是系统提示词、能用哪些工具、步数上限，面板里几个格子填不全。
+ * 同记忆 / 技能 / MCP / 插件 / 定时任务五页，「添加」把话头递给模型。
  *
- * ## 后端不必先建
+ * ## 编排跟着仓库走
  *
- * `roles[].backend` 是 `backends` 里的一个键，指向不存在的后端时这条角色会被
- * 整条丢弃。所以「内置模型」永远可选，把一条角色改成内置时顺带把 `backends.builtin`
- * 建出来——不建的话这条角色一落盘就被加载器丢掉。
- *
- * ## 编排图留在原文里
- *
- * `plan` 是一张 DAG（节点、依赖、产出插在哪里），做成表单要么盖不全、要么长成
- * 一个通用图编辑器的劣化版。它不是必填：空的就是单角色直跑第一个角色。
- *
- * ## 不分层
- *
- * 编排跟着仓库走：角色、后端、编排图全是项目属性，跟到别的仓库去只会派错人。
- * 所以它留在工作区的 `.qy/team.json`，没有全局那一层，也就没有作用域标签页。
+ * 角色与编排图全是项目属性，跟到别的仓库去只会派错人。所以配置在工作区的
+ * `.qy/team.json`，不在用户全局配置里。
  */
 
-interface BackendJson {
-  kind?: string
-  preset?: string
-  command?: string
-  args?: string[]
-  output?: string
-  resultField?: string
-  provider?: string
-  model?: string
-}
 interface RoleJson {
   id?: string
   name?: string
   description?: string
   systemPrompt?: string
-  backend?: string
+  provider?: string
+  model?: string
   maxSteps?: number
 }
 interface TeamJson {
-  backends?: Record<string, BackendJson>
   roles?: RoleJson[]
   plan?: unknown[]
   rules?: unknown
@@ -73,50 +60,23 @@ interface RoleForm {
   name: string
   description: string
   systemPrompt: string
-  backend: string
+  model: string
   maxSteps: string
 }
-interface BackendForm {
-  id: string
-  isNew: boolean
-  kind: 'builtin' | 'cli'
-  provider: string
-  model: string
-  command: string
-  args: string
-  output: 'text' | 'jsonl'
-  resultField: string
-}
 
-/** 内置后端的默认键名。角色不选后端时落在它上面。 */
-const BUILTIN_ID = 'builtin'
-
-/** 「添加」递给模型的话头。角色要写系统提示词、能用哪些工具、步数上限，
-    面板里几个格子填不全——同记忆 / 技能 / MCP / 插件 / 定时任务那五页的路子。 */
+/** 「添加」递给模型的话头。 */
 const NEW_ROLE =
   '我们一起来加一个子 agent 吧。先说明子 agent 在 qywork 里怎么工作、配置写在哪个文件；然后问我要它干什么、能用哪些工具、步数给多少。'
 
-const emptyBackend = (): BackendForm => ({
-  id: '',
-  isNew: true,
-  kind: 'cli',
-  provider: '',
-  model: '',
-  command: '',
-  args: '',
-  output: 'text',
-  resultField: '',
-})
-
 export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
+  const [clis, { refetch: refetchClis }] = createResource(loadTeamClis)
   const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
   const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [showRaw, setShowRaw] = createSignal(false)
   const [roleForm, setRoleForm] = createSignal<RoleForm | null>(null)
-  const [backendForm, setBackendForm] = createSignal<BackendForm | null>(null)
 
   // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份，
   // 编辑框才不会闪空。
@@ -138,42 +98,10 @@ export default function AgentsSettings() {
     }
   }
 
-  const backendIds = (): string[] => {
-    const ids = Object.keys(config()?.backends ?? {})
-    // 内置永远可选：一个后端都没有时，角色改不到内置上去。
-    return ids.includes(BUILTIN_ID) ? ids : [BUILTIN_ID, ...ids]
-  }
-
-  /** 这个后端在 team.json 里的原文。没写进去的（隐式内置那条）回 undefined。 */
-  const backendJson = (id: string): BackendJson | undefined => config()?.backends?.[id]
-
-  /** 一个后端跑的是什么。角色卡上贴的是它——「这条角色跑在哪」是那一行最要紧的事实。 */
-  const backendLabel = (id: string): string => {
-    const b = backendJson(id)
-    if (!b) return id === BUILTIN_ID ? '内置模型' : id
-    if (b.kind === 'builtin') return b.model ? `内置模型 · ${b.model}` : '内置模型'
-    return b.command ?? id
-  }
-
-  /**
-   * 后端卡下面那一行：它到底会执行什么。
-   *
-   * 外部 CLI 给完整的调用式（命令 + 参数），**不是再把命令名写一遍**——
-   * 多数人会把后端标识起成和命令一样的名字，那样卡片就是同一个词上下各一次。
-   */
-  const backendDetail = (id: string): string => {
-    const b = backendJson(id)
-    if (!b) return ''
-    if (b.kind === 'builtin') {
-      return [b.provider, b.model].filter(Boolean).join(' · ')
-    }
-    return [b.command, ...(b.args ?? [])].filter(Boolean).join(' ')
-  }
-
   /**
    * 改一次对象、整份写回、两个 resource 都重取。
    *
-   * `mutate` 返回一句话表示这次改动被拒（比如后端还有人用），返回 null 表示改成了。
+   * `mutate` 返回一句话表示这次改动被拒，返回 null 表示改成了。
    * **拒绝要在写盘之前**——落盘之后再报错，用户看到的是「报了错但也改了」。
    */
   const writeConfig = async (mutate: (cfg: TeamJson) => string | null) => {
@@ -202,21 +130,6 @@ export default function AgentsSettings() {
     }
   }
 
-  /** 后端那一段的动作。同样区头和空态框共用一份。 */
-  const BackendActions = () => (
-    <button
-      class="btn-ghost sm"
-      type="button"
-      onClick={() => {
-        setRoleForm(null)
-        setError(null)
-        setBackendForm(emptyBackend())
-      }}
-    >
-      添加
-    </button>
-  )
-
   /**
    * 角色那一段的动作。**区头和空态框共用同一份**——两处各写一遍的话，
    * 迟早只改一处，而空的时候用户看到的恰恰是空态框里那一份。
@@ -233,14 +146,13 @@ export default function AgentsSettings() {
       setError('这条角色在 team.json 里找不到，原文可能刚被改过')
       return
     }
-    setBackendForm(null)
     setError(null)
     setRoleForm({
       id: r.id ?? '',
       name: r.name ?? '',
       description: r.description ?? '',
       systemPrompt: r.systemPrompt ?? '',
-      backend: r.backend ?? BUILTIN_ID,
+      model: r.model ?? '',
       maxSteps: r.maxSteps === undefined ? '' : String(r.maxSteps),
     })
   }
@@ -249,26 +161,20 @@ export default function AgentsSettings() {
     void writeConfig((cfg) => {
       const id = f.id.trim()
       if (!id) return '标识不能为空'
+      const steps = Number(f.maxSteps)
+      if (f.maxSteps.trim() && (!Number.isInteger(steps) || steps <= 0)) {
+        return '步数上限要是正整数'
+      }
       cfg.roles ??= []
       const roles = cfg.roles
       const at = roles.findIndex((x) => x.id === id)
-
-      // 选了内置而 backends 里还没有它时顺带建出来：不建的话这条角色一落盘
-      // 就会被加载器当成「指向不存在的后端」整条丢掉。
-      cfg.backends ??= {}
-      const backends = cfg.backends
-      if (f.backend === BUILTIN_ID && !backends[BUILTIN_ID]) {
-        backends[BUILTIN_ID] = { kind: 'builtin' }
-      }
-
-      const steps = Number.parseInt(f.maxSteps, 10)
       const next: RoleJson = {
         id,
         name: f.name.trim() || id,
         description: f.description.trim(),
         systemPrompt: f.systemPrompt,
-        backend: f.backend,
-        ...(Number.isFinite(steps) && steps > 0 ? { maxSteps: steps } : {}),
+        ...(f.model.trim() ? { model: f.model.trim() } : {}),
+        ...(f.maxSteps.trim() ? { maxSteps: steps } : {}),
       }
       if (at >= 0) roles[at] = next
       else roles.push(next)
@@ -276,80 +182,19 @@ export default function AgentsSettings() {
       return null
     })
 
-  const openBackend = (id: string) => {
-    const b = backendJson(id)
-    if (!b) {
-      setError('这个后端在 team.json 里找不到，原文可能刚被改过')
-      return
-    }
-    setRoleForm(null)
-    setError(null)
-    setBackendForm({
-      id,
-      isNew: false,
-      kind: b?.kind === 'cli' ? 'cli' : 'builtin',
-      provider: b?.provider ?? '',
-      model: b?.model ?? '',
-      command: b?.command ?? '',
-      args: (b?.args ?? []).join('\n'),
-      output: b?.output === 'jsonl' ? 'jsonl' : 'text',
-      resultField: b?.resultField ?? '',
-    })
-  }
-
-  const saveBackend = (f: BackendForm) =>
-    void writeConfig((cfg) => {
-      const id = f.id.trim()
-      if (!id) return '标识不能为空'
-      cfg.backends ??= {}
-      const backends = cfg.backends
-      if (f.isNew && backends[id]) return `已经有一个叫 ${id} 的后端了`
-      if (f.kind === 'cli' && !f.command.trim()) return '外部 CLI 要填命令'
-
-      backends[id] =
-        f.kind === 'builtin'
-          ? {
-              kind: 'builtin',
-              ...(f.provider.trim() ? { provider: f.provider.trim() } : {}),
-              ...(f.model.trim() ? { model: f.model.trim() } : {}),
-            }
-          : {
-              kind: 'cli',
-              command: f.command.trim(),
-              args: f.args
-                .split('\n')
-                .map((a) => a.trim())
-                .filter(Boolean),
-              output: f.output,
-              ...(f.output === 'jsonl' && f.resultField.trim()
-                ? { resultField: f.resultField.trim() }
-                : {}),
-            }
-      setBackendForm(null)
-      return null
-    })
-
-  /**
-   * 原文失焦即存。**先本地解析一次**：这一份要整体合法，不合法就只报错、不发请求
-   * ——没有这道闸，敲到一半失焦就是一次必然的 422。
-   * 本地解析同时能指出出错的位置，往返一次只会得到一句话。
-   */
   const commitRaw = async () => {
     const body = draft()
-    if (body === null || !body.trim()) return
+    if (body === null) return
+    setBusy(true)
     try {
-      JSON.parse(body)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return
-    }
-    try {
-      await saveTeamRaw(body)
+      await saveTeamRaw(body.endsWith('\n') ? body : `${body}\n`)
       setError(null)
       await Promise.all([refetchRaw(), refetchTeam()])
       setDraft(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -377,7 +222,6 @@ export default function AgentsSettings() {
                       <EntryCard
                         name={r.name}
                         desc={r.description}
-                        badge={<span class="entry-tag">{backendLabel(r.backend)}</span>}
                         actions={
                           <>
                             <button
@@ -397,6 +241,14 @@ export default function AgentsSettings() {
                               disabled={busy()}
                               onClick={() =>
                                 void writeConfig((cfg) => {
+                                  // 编排图里还引用着就不许删：删了那些节点会在跑到
+                                  // 一半时失败，而用户以为自己只删了一个角色。
+                                  const used = ((cfg.plan ?? []) as { agent?: string }[]).filter(
+                                    (n) => n.agent === r.id,
+                                  )
+                                  if (used.length) {
+                                    return `编排图里还有 ${used.length} 个节点派给它，先改掉那些节点`
+                                  }
                                   cfg.roles = (cfg.roles ?? []).filter((x) => x.id !== r.id)
                                   if (roleForm()?.id === r.id) setRoleForm(null)
                                   return null
@@ -441,28 +293,26 @@ export default function AgentsSettings() {
                     <div class="setting-row stack">
                       <div class="setting-row-text">
                         <span class="setting-row-label">说明</span>
-                        <span class="setting-row-hint">调度者据此决定把什么交给它</span>
+                        <span class="setting-row-hint">调度者按它决定把什么交给这个角色</span>
                       </div>
                       <input
                         type="text"
                         value={f().description}
-                        placeholder="负责代码审查、风险识别，并提出改进建议。"
                         onInput={(e) => setRoleForm({ ...f(), description: e.currentTarget.value })}
                       />
                     </div>
                     <div class="setting-row">
                       <div class="setting-row-text">
-                        <span class="setting-row-label">后端</span>
+                        <span class="setting-row-label">模型</span>
+                        <span class="setting-row-hint">留空跟着当前会话</span>
                       </div>
                       <div class="setting-row-control">
-                        <select
-                          value={f().backend}
-                          onChange={(e) => setRoleForm({ ...f(), backend: e.currentTarget.value })}
-                        >
-                          <For each={backendIds()}>
-                            {(id) => <option value={id}>{backendLabel(id)}</option>}
-                          </For>
-                        </select>
+                        <input
+                          type="text"
+                          value={f().model}
+                          placeholder="跟随会话"
+                          onInput={(e) => setRoleForm({ ...f(), model: e.currentTarget.value })}
+                        />
                       </div>
                     </div>
                     <div class="setting-row">
@@ -472,9 +322,10 @@ export default function AgentsSettings() {
                       </div>
                       <div class="setting-row-control">
                         <input
-                          type="number"
-                          min="1"
+                          type="text"
+                          inputmode="numeric"
                           value={f().maxSteps}
+                          placeholder="不限"
                           onInput={(e) => setRoleForm({ ...f(), maxSteps: e.currentTarget.value })}
                         />
                       </div>
@@ -512,221 +363,46 @@ export default function AgentsSettings() {
               )}
             </Show>
 
-            <Section
-              title="外部 CLI"
-              desc="本机独立进程，凭证与沙箱各自独立。"
-              actions={<BackendActions />}
-            >
+            {/* 外部 CLI 这一段**没有增删改**：它整条来自本机探测。
+                能显示的只有「装在哪、接没接入」，两样都不是用户在这里填的。 */}
+            <Section title="外部 CLI" desc="本机独立进程，凭证与沙箱各自独立。">
               <Show
-                when={t().backends.length > 0}
-                fallback={<EmptyBox label="还没有外部 CLI" actions={<BackendActions />} />}
+                when={loaded(clis)}
+                fallback={<LoadState error={clis.error} onRetry={() => void refetchClis()} />}
               >
-                <div class="entry-list">
-                  <For each={t().backends}>
-                    {(id) => (
-                      <EntryCard
-                        name={id}
-                        desc={backendDetail(id)}
-                        badge={
-                          <span class="entry-tag">
-                            {backendJson(id)?.kind === 'cli' ? '外部 CLI' : '内置模型'}
-                          </span>
-                        }
-                        actions={
-                          <>
-                            <button
-                              class="icon-btn"
-                              type="button"
-                              aria-label={`编辑后端 ${id}`}
-                              data-tip="编辑"
-                              onClick={() => openBackend(id)}
-                            >
-                              <IconPencil size={13} />
-                            </button>
-                            <button
-                              class="icon-btn"
-                              type="button"
-                              aria-label={`删除后端 ${id}`}
-                              data-tip="删除"
-                              disabled={busy()}
-                              onClick={() =>
-                                void writeConfig((cfg) => {
-                                  // 还有人用就不许删：删了那些角色会被加载器整条丢掉，
-                                  // 表现是「角色凭空少了几个」，而用户以为自己只删了一个后端。
-                                  const used = (cfg.roles ?? []).filter((r) => r.backend === id)
-                                  if (used.length) {
-                                    return `还有 ${used.length} 个角色在用它，先改掉那些角色的后端`
-                                  }
-                                  delete cfg.backends?.[id]
-                                  if (backendForm()?.id === id) setBackendForm(null)
-                                  return null
-                                })
-                              }
-                            >
-                              <IconX size={13} />
-                            </button>
-                          </>
-                        }
-                      />
-                    )}
-                  </For>
-                </div>
+                {(c) => (
+                  <Show
+                    when={c().agents.length > 0}
+                    fallback={<EmptyBox label="本机没有识别到外部 CLI" />}
+                  >
+                    <div class="entry-list">
+                      <For each={c().agents}>
+                        {(a) => (
+                          <EntryCard
+                            name={a.id}
+                            desc={a.path}
+                            badge={<span class="entry-tag">{a.vendor}</span>}
+                          >
+                            {/* 「接入」判的是见没见到凭证，不是真的跑通了——
+                                真跑一次要花钱、要几十秒，而这是打开页面就该出的结果。 */}
+                            <div class="entry-extra" classList={{ bad: !a.connected }}>
+                              {a.connected ? '已接入' : '未见凭证'}
+                            </div>
+                          </EntryCard>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                )}
               </Show>
             </Section>
-
-            <Show when={backendForm()}>
-              {(f) => (
-                <Section title={f().isNew ? '添加后端' : `编辑 ${f().id}`}>
-                  <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">标识</span>
-                        <span class="setting-row-hint">角色按它引用这个后端</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().id}
-                        disabled={!f().isNew}
-                        placeholder="如 codex"
-                        onInput={(e) => setBackendForm({ ...f(), id: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">类型</span>
-                      </div>
-                      <div class="setting-row-control">
-                        <select
-                          value={f().kind}
-                          onChange={(e) =>
-                            setBackendForm({
-                              ...f(),
-                              kind: e.currentTarget.value === 'builtin' ? 'builtin' : 'cli',
-                            })
-                          }
-                        >
-                          <option value="builtin">内置模型</option>
-                          <option value="cli">外部 CLI</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <Show when={f().kind === 'builtin'}>
-                      <div class="setting-row stack">
-                        <div class="setting-row-text">
-                          <span class="setting-row-label">接口</span>
-                          <span class="setting-row-hint">留空用当前生效的那个</span>
-                        </div>
-                        <input
-                          type="text"
-                          value={f().provider}
-                          onInput={(e) =>
-                            setBackendForm({ ...f(), provider: e.currentTarget.value })
-                          }
-                        />
-                      </div>
-                      <div class="setting-row stack">
-                        <div class="setting-row-text">
-                          <span class="setting-row-label">模型</span>
-                          <span class="setting-row-hint">留空用当前生效的那个</span>
-                        </div>
-                        <input
-                          type="text"
-                          value={f().model}
-                          onInput={(e) => setBackendForm({ ...f(), model: e.currentTarget.value })}
-                        />
-                      </div>
-                    </Show>
-
-                    <Show when={f().kind === 'cli'}>
-                      <div class="setting-row stack">
-                        <div class="setting-row-text">
-                          <span class="setting-row-label">命令</span>
-                        </div>
-                        <input
-                          type="text"
-                          value={f().command}
-                          placeholder="可执行文件名或路径"
-                          onInput={(e) =>
-                            setBackendForm({ ...f(), command: e.currentTarget.value })
-                          }
-                        />
-                      </div>
-                      <div class="setting-row stack">
-                        <div class="setting-row-text">
-                          <span class="setting-row-label">参数</span>
-                          <span class="setting-row-hint">
-                            一行一个，<code>{'{prompt}'}</code> 会被替换成任务描述
-                          </span>
-                        </div>
-                        <textarea
-                          class="code-area"
-                          rows={4}
-                          value={f().args}
-                          onInput={(e) => setBackendForm({ ...f(), args: e.currentTarget.value })}
-                        />
-                      </div>
-                      <div class="setting-row">
-                        <div class="setting-row-text">
-                          <span class="setting-row-label">输出</span>
-                        </div>
-                        <div class="setting-row-control">
-                          <select
-                            value={f().output}
-                            onChange={(e) =>
-                              setBackendForm({
-                                ...f(),
-                                output: e.currentTarget.value === 'jsonl' ? 'jsonl' : 'text',
-                              })
-                            }
-                          >
-                            <option value="text">整段 stdout</option>
-                            <option value="jsonl">逐行 JSON</option>
-                          </select>
-                        </div>
-                      </div>
-                      <Show when={f().output === 'jsonl'}>
-                        <div class="setting-row stack">
-                          <div class="setting-row-text">
-                            <span class="setting-row-label">取哪个字段</span>
-                            <span class="setting-row-hint">取它最后一个非空值</span>
-                          </div>
-                          <input
-                            type="text"
-                            value={f().resultField}
-                            placeholder="如 result"
-                            onInput={(e) =>
-                              setBackendForm({ ...f(), resultField: e.currentTarget.value })
-                            }
-                          />
-                        </div>
-                      </Show>
-                    </Show>
-                  </div>
-                  <div class="row-actions">
-                    <button
-                      class="btn-primary"
-                      type="button"
-                      disabled={busy() || !f().id.trim()}
-                      onClick={() => saveBackend(f())}
-                    >
-                      保存
-                    </button>
-                    <button class="btn-ghost" type="button" onClick={() => setBackendForm(null)}>
-                      取消
-                    </button>
-                    <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-                  </div>
-                </Section>
-              )}
-            </Show>
 
             <Show when={t().plan.length > 0}>
               <Section title="编排" desc="节点按依赖跑。没有编排图时单角色直跑第一个角色。">
                 <div class="entry-list">
                   <For each={t().plan}>
                     {(n) => (
-                      <EntryCard name={n.roleId} desc={n.task}>
+                      <EntryCard name={n.agent} desc={n.task}>
                         <Show when={n.needs?.length}>
                           <div class="entry-extra">依赖 {n.needs!.join(' / ')}</div>
                         </Show>
@@ -738,7 +414,7 @@ export default function AgentsSettings() {
             </Show>
 
             {/* 原文折起来。它是**兜底不是主路**：编排图这类只有 JSON 表达得了，
-                但上面的表单已经覆盖了日常要改的那两样，摊开摆着只会让这一页
+                但上面的表单已经覆盖了日常要改的那几样，摊开摆着只会让这一页
                 看起来仍然只能手写配置。 */}
             <Section>
               <button class="disclosure" type="button" onClick={() => setShowRaw(!showRaw())}>
@@ -766,13 +442,13 @@ export default function AgentsSettings() {
               </Show>
             </Section>
 
-            {/* 表单没开着时报错也要有地方落——删一条后端被拒的话，
+            {/* 表单没开着时报错也要有地方落——删一条角色被拒的话，
                 否则那句话跟着表单一起消失了。
 
                 **`error()` 必须排在这串 `&&` 的最后。** `Show` 把 `when` 的求值
                 结果原样交给子函数，写成 `error() && !roleForm()` 时那个结果是
                 布尔 `true`，渲染出来是一个空的红框——报错框在，字没了。 */}
-            <Show when={!roleForm() && !backendForm() && error()}>
+            <Show when={!roleForm() && error()}>
               {(e) => <p class="settings-notices bad">{e()}</p>}
             </Show>
           </>

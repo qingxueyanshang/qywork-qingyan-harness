@@ -8,12 +8,11 @@ function role(id: string): Role {
     name: id,
     description: id,
     systemPrompt: `你是 ${id}`,
-    backend: { kind: 'builtin' },
   }
 }
 
 function deps(
-  run: (roleId: string, prompt: string) => Promise<{ ok: boolean; output: string }>,
+  run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>,
   opts: { gate?: boolean } = {},
 ) {
   const order: string[] = []
@@ -27,6 +26,7 @@ function deps(
       runId: 'rn_t' as never,
       emit: () => {},
       awaitHumanGate: async () => opts.gate ?? true,
+      resolveCli: () => undefined,
       runBuiltin: async ({ role: r, prompt }: { role: Role; prompt: string }) => {
         order.push(r.id)
         prompts.push(prompt)
@@ -40,14 +40,14 @@ const ok = async (id: string) => ({ ok: true, output: `${id} 的产出` })
 
 describe('计划校验', () => {
   test('引用不存在的角色直接拒绝', () => {
-    expect(() => validatePlan([{ id: 'a', roleId: 'nope', task: '' }], [role('dev')])).toThrow(
+    expect(() => validatePlan([{ id: 'a', agent: 'nope', task: '' }], [role('dev')])).toThrow(
       /不存在的角色/,
     )
   })
 
   test('依赖不存在的节点直接拒绝', () => {
     expect(() =>
-      validatePlan([{ id: 'a', roleId: 'dev', task: '', needs: ['ghost'] }], [role('dev')]),
+      validatePlan([{ id: 'a', agent: 'dev', task: '', needs: ['ghost'] }], [role('dev')]),
     ).toThrow(/不存在的节点/)
   })
 
@@ -59,9 +59,9 @@ describe('计划校验', () => {
     expect(() =>
       validatePlan(
         [
-          { id: 'a', roleId: 'dev', task: '', needs: ['c'] },
-          { id: 'b', roleId: 'dev', task: '', needs: ['a'] },
-          { id: 'c', roleId: 'dev', task: '', needs: ['b'] },
+          { id: 'a', agent: 'dev', task: '', needs: ['c'] },
+          { id: 'b', agent: 'dev', task: '', needs: ['a'] },
+          { id: 'c', agent: 'dev', task: '', needs: ['b'] },
         ],
         [role('dev')],
       ),
@@ -72,8 +72,8 @@ describe('计划校验', () => {
     expect(() =>
       validatePlan(
         [
-          { id: 'a', roleId: 'dev', task: '' },
-          { id: 'a', roleId: 'dev', task: '' },
+          { id: 'a', agent: 'dev', task: '' },
+          { id: 'a', agent: 'dev', task: '' },
         ],
         [role('dev')],
       ),
@@ -87,8 +87,8 @@ describe('编排执行', () => {
       name: 't',
       roles: [role('设计'), role('实现')],
       plan: [
-        { id: 'design', roleId: '设计', task: '设计：{goal}' },
-        { id: 'impl', roleId: '实现', task: '实现，参考：{input}', needs: ['design'] },
+        { id: 'design', agent: '设计', task: '设计：{goal}' },
+        { id: 'impl', agent: '实现', task: '实现，参考：{input}', needs: ['design'] },
       ],
     }
     const d = deps(ok)
@@ -113,8 +113,8 @@ describe('编排执行', () => {
       name: 't',
       roles: [role('设计'), role('评审')],
       plan: [
-        { id: 'design', roleId: '设计', task: '设计：{goal}' },
-        { id: 'review', roleId: '评审', task: '复核一下', needs: ['design'] },
+        { id: 'design', agent: '设计', task: '设计：{goal}' },
+        { id: 'review', agent: '评审', task: '复核一下', needs: ['design'] },
       ],
     }
     const d = deps(ok)
@@ -128,8 +128,8 @@ describe('编排执行', () => {
       name: 't',
       roles: [role('构建'), role('测试')],
       plan: [
-        { id: 'build', roleId: '构建', task: '构建' },
-        { id: 'test', roleId: '测试', task: '跑测试', needs: ['build'], passInput: false },
+        { id: 'build', agent: '构建', task: '构建' },
+        { id: 'test', agent: '测试', task: '跑测试', needs: ['build'], passInput: false },
       ],
     }
     const d = deps(ok)
@@ -138,11 +138,34 @@ describe('编排执行', () => {
     expect(d.prompts[1]).not.toContain('构建 的产出')
   })
 
+  /**
+   * 复现的失败形状：图里写了一个 `cli:` 节点，而那台机器上没装它。
+   * 整张图不该起不来，也不该退回内置模型冒充它——只有那一个节点失败。
+   */
+  test('指向没识别到的外部 CLI 时只失败那一个节点', async () => {
+    const config: TeamConfig = {
+      name: 't',
+      roles: [role('dev')],
+      plan: [
+        { id: 'a', agent: 'dev', task: '干活' },
+        { id: 'b', agent: 'cli:nope', task: '交给外面那位' },
+      ],
+    }
+    const d = deps(ok)
+    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
+    expect(results.find((r) => r.nodeId === 'a')?.status).toBe('done')
+    const failed = results.find((r) => r.nodeId === 'b')!
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toContain('nope')
+    // 没有落到内置执行上：内置只跑了角色那一个节点。
+    expect(d.order).toEqual(['dev'])
+  })
+
   test('没有上游时不留空的「上游产出」小节', async () => {
     const config: TeamConfig = {
       name: 't',
       roles: [role('dev')],
-      plan: [{ id: 'a', roleId: 'dev', task: '干活' }],
+      plan: [{ id: 'a', agent: 'dev', task: '干活' }],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -154,7 +177,7 @@ describe('编排执行', () => {
       name: 't',
       rules: { shared: '禁止修改 CI 配置' },
       roles: [role('dev')],
-      plan: [{ id: 'a', roleId: 'dev', task: '干活' }],
+      plan: [{ id: 'a', agent: 'dev', task: '干活' }],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -170,8 +193,8 @@ describe('编排执行', () => {
       name: 't',
       roles: [role('a'), role('b')],
       plan: [
-        { id: 'n1', roleId: 'a', task: 'x' },
-        { id: 'n2', roleId: 'b', task: 'y', needs: ['n1'] },
+        { id: 'n1', agent: 'a', task: 'x' },
+        { id: 'n2', agent: 'b', task: 'y', needs: ['n1'] },
       ],
     }
     const d = deps(async (id) =>
@@ -190,7 +213,7 @@ describe('编排执行', () => {
       name: 't',
       rules: { humanGates: ['risky'] },
       roles: [role('dev')],
-      plan: [{ id: 'risky', roleId: 'dev', task: '删库' }],
+      plan: [{ id: 'risky', agent: 'dev', task: '删库' }],
     }
     const d = deps(ok, { gate: false })
     const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -206,10 +229,10 @@ describe('编排执行', () => {
       rules: { maxConcurrent: 2 },
       roles: [role('r')],
       plan: [
-        { id: 'a', roleId: 'r', task: '1' },
-        { id: 'b', roleId: 'r', task: '2' },
-        { id: 'c', roleId: 'r', task: '3' },
-        { id: 'd', roleId: 'r', task: '4' },
+        { id: 'a', agent: 'r', task: '1' },
+        { id: 'b', agent: 'r', task: '2' },
+        { id: 'c', agent: 'r', task: '3' },
+        { id: 'd', agent: 'r', task: '4' },
       ],
     }
     let inFlight = 0
@@ -250,7 +273,7 @@ function byId(results: NodeResult[], id: string): NodeResult {
  * 只是那个成员到底读了什么、跑了哪些命令永远看不到，而且没有任何报错。
  */
 describe('成员子会话', () => {
-  function collect(run: (roleId: string) => Promise<Record<string, unknown>>) {
+  function collect(run: (agent: string) => Promise<Record<string, unknown>>) {
     const events: Record<string, unknown>[] = []
     return {
       events,
@@ -268,7 +291,7 @@ describe('成员子会话', () => {
   const cfg: TeamConfig = {
     name: 't',
     roles: [role('dev')],
-    plan: [{ id: 'n1', roleId: 'dev', task: '干活' }],
+    plan: [{ id: 'n1', agent: 'dev', task: '干活' }],
   }
 
   test('内置后端返回了会话 id，就出现在 done 事件上', async () => {

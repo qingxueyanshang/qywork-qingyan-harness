@@ -421,7 +421,8 @@ export function addWorkspace(input: {
  */
 export interface WorkspaceExtensions {
   plugins: string[]
-  teamBackends: string[]
+  /** 本机识别到的外部 agent CLI，按 id。 */
+  cliAgents: string[]
   mcpServers: string[]
 }
 export function loadWorkspaceExtensions(): Promise<WorkspaceExtensions> {

@@ -17,15 +17,7 @@ import {
   toolNamePrefix,
 } from '@qywork/mcp'
 import { loadPlugins, type PluginRegistry, pluginToolPrefix } from '@qywork/plugins'
-import {
-  type Backend,
-  type BuiltinBackend,
-  CLI_PRESETS,
-  type CliBackend,
-  type PlanNode,
-  type Role,
-  type TeamRules,
-} from '@qywork/team'
+import { CLI_PREFIX, type PlanNode, type Role, type TeamRules } from '@qywork/team'
 import {
   AGENTS_DIR,
   globalScopeRoot,
@@ -76,20 +68,8 @@ export interface Extensions {
   stop(): void
 }
 
-/** 一条角色，加上它引用的后端键名。 */
-export interface ScopedRole extends Role {
-  /**
-   * 它引用的后端在 `backends` 里的键。
-   *
-   * `Role.backend` 是**解析后的对象**，键名在那一步就丢了；而设置页要按键名
-   * 回填下拉框、也要按键名去 team.json 里找那一条。两者不是一回事。
-   */
-  backendId: string
-}
-
 export interface WorkspaceTeamConfig {
-  backends: Record<string, Backend>
-  roles: ScopedRole[]
+  roles: Role[]
   plan: PlanNode[]
   rules: TeamRules
   /** 配置文件解析失败的原因。UI 要显示，不能静默当作「没配」。 */
@@ -314,12 +294,11 @@ export async function loadScopedMcpConfig(workspaceRoot: string): Promise<Scoped
 /**
  * 读工作区的 team 配置。
  *
- * 后端 = 外部 CLI（codex / claude / 自己的 qy）。**不内置各家的参数表**——
- * 它们各自演进，写死必然过期，而过期的表现是「昨天还能用今天报错」。
- * `CLI_PRESETS` 只作为 UI 预填的示例，用户配置才是权威。
+ * 这里只有**角色（子 agent）与编排图**。外部 CLI 不进这个文件：它由本机探测得到
+ * （`@qywork/team` 的 `detectClis`），编排图里用 `cli:<id>` 指向它。
  */
 export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTeamConfig> {
-  const empty: WorkspaceTeamConfig = { backends: {}, roles: [], plan: [], rules: {}, error: null }
+  const empty: WorkspaceTeamConfig = { roles: [], plan: [], rules: {}, error: null }
   const raw = await readFile(join(workspaceRoot, TEAM_CONFIG), 'utf8').catch(() => null)
   if (raw === null) return empty
 
@@ -332,60 +311,25 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   }
 
   const obj = (parsed ?? {}) as Record<string, unknown>
-  const backends: Record<string, Backend> = {}
-  for (const [id, value] of Object.entries((obj.backends as Record<string, unknown>) ?? {})) {
-    const b = value as Record<string, unknown>
 
-    // 内置后端：用本进程的 agent 跑，不需要机器上装任何外部 CLI。
-    // 判据是显式的 kind，不是「没写 command 就当内置」——后者会把
-    // 一条写漏了 command 的 CLI 配置默默变成内置，跑出来的东西完全不是用户要的。
-    if (b.kind === 'builtin') {
-      const builtin: BuiltinBackend = { kind: 'builtin' }
-      if (b.provider) builtin.provider = String(b.provider)
-      if (b.model) builtin.model = String(b.model)
-      if (b.effort) builtin.effort = b.effort as NonNullable<BuiltinBackend['effort']>
-      backends[id] = builtin
-      continue
-    }
-
-    // preset 只做**默认值**，用户写的字段永远覆盖它。
-    const preset = typeof b.preset === 'string' ? CLI_PRESETS[b.preset] : undefined
-    const command = String(b.command ?? preset?.command ?? '')
-    if (!command) continue
-    backends[id] = {
-      kind: 'cli',
-      command,
-      args: (b.args as string[]) ?? preset?.args ?? [],
-      output: (b.output as CliBackend['output']) ?? preset?.output ?? 'text',
-      ...(b.resultField || preset?.resultField
-        ? { resultField: String(b.resultField ?? preset?.resultField) }
-        : {}),
-      ...(b.cwd ? { cwd: String(b.cwd) } : {}),
-      ...(b.env ? { env: b.env as Record<string, string> } : {}),
-      ...(b.timeoutMs ? { timeoutMs: Number(b.timeoutMs) } : {}),
-    }
-  }
-
-  const roles: ScopedRole[] = []
+  const roles: Role[] = []
   for (const value of (obj.roles as unknown[]) ?? []) {
     const r = value as Record<string, unknown>
     const id = String(r.id ?? '').trim()
-    const backendId = String(r.backend ?? '').trim()
-    const backend = backends[backendId]
-    // 角色指向一个不存在的后端时**丢弃并记录**，不静默保留——
-    // 保留下来会在编排时才失败，那时已经跑了一半。
-    if (!id || !backend) continue
+    // 只要有 id 就收：角色不再引用别的东西，也就没有「引用不到」这回事。
+    if (!id) continue
     roles.push({
       id,
       name: String(r.name ?? id),
       description: String(r.description ?? ''),
       systemPrompt: String(r.systemPrompt ?? ''),
-      backend,
+      ...(r.provider ? { provider: String(r.provider) } : {}),
+      ...(r.model ? { model: String(r.model) } : {}),
+      ...(r.effort ? { effort: r.effort as NonNullable<Role['effort']> } : {}),
       // allowedTools 的空数组与不填**语义不同**（前者=不给任何工具，后者=继承全部），
       // 所以只在字段真的存在时才写入。
       ...(Array.isArray(r.allowedTools) ? { allowedTools: r.allowedTools.map(String) } : {}),
       ...(r.maxSteps ? { maxSteps: Number(r.maxSteps) } : {}),
-      backendId,
     })
   }
 
@@ -394,11 +338,14 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   for (const value of (obj.plan as unknown[]) ?? []) {
     const n = value as Record<string, unknown>
     const id = String(n.id ?? '').trim()
-    const roleId = String(n.roleId ?? '').trim()
-    if (!id || !roleIds.has(roleId)) continue
+    const agent = String(n.agent ?? '').trim()
+    // 指向外部 CLI 的节点照收：装没装是本机的事实，随时会变，
+    // 在这里丢掉会让「换台机器就少了半张图」。识别不到由执行时那一个节点失败。
+    if (!id || !agent) continue
+    if (!agent.startsWith(CLI_PREFIX) && !roleIds.has(agent)) continue
     plan.push({
       id,
-      roleId,
+      agent,
       task: String(n.task ?? ''),
       ...(Array.isArray(n.needs) ? { needs: n.needs.map(String) } : {}),
       ...(n.passInput === false ? { passInput: false } : {}),
@@ -411,11 +358,10 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
     (((obj.plan as unknown[]) ?? []).length - plan.length)
 
   return {
-    backends,
     roles,
     plan,
     rules: (obj.rules as TeamRules) ?? {},
-    error: dropped > 0 ? `${dropped} 项配置引用了不存在的后端或角色，已忽略` : null,
+    error: dropped > 0 ? `${dropped} 项配置引用了不存在的角色，已忽略` : null,
   }
 }
 

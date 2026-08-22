@@ -1,9 +1,8 @@
 /**
- * 外部 CLI 后端执行器。
+ * 外部 CLI 的执行器：替换参数、起进程、解析输出。
  *
- * 调度 codex / claude / grok 这类 CLI 的实现。刻意**不内置各家的参数表**：
- * 它们各自演进，写死在代码里必然过期，而过期的表现是「昨天还能用今天报错」。
- * 参数模板由用户配置提供，这里只负责替换、执行、解析。
+ * 调什么、怎么调由 `cli-detect.ts` 的厂商表给（那里也写着表会过期的代价），
+ * 这里只负责执行。
  *
  * ## 凭证：透传但要剥掉**我们自己的**
  *
@@ -15,13 +14,12 @@
  * 用户在 `~/.qywork/config.json` 里配的 DeepSeek key 没有任何理由出现在
  * codex 的进程里。这条剥的是「多余的凭证」，不影响后端正常工作。
  *
- * 另外，后端本身是**用户在 team.json 里显式配置的**，属于知情同意——
+ * 另外，能被调起的只有厂商表里那几家、且用户在设置页允许的那几家，属于知情同意——
  * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
  */
 
-import { join } from 'node:path'
 import { collectProcess, scrubEnv } from '@qywork/tools'
-import type { CliBackend } from './types.ts'
+import type { CliAgent } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
 
@@ -34,7 +32,7 @@ export interface CliRunResult {
 }
 
 export async function runCli(
-  backend: CliBackend,
+  agent: CliAgent,
   input: {
     prompt: string
     workspaceRoot: string
@@ -46,12 +44,13 @@ export async function runCli(
     secrets?: { values: string[] }
   },
 ): Promise<CliRunResult> {
-  const args = backend.args.map((a) => a.replaceAll('{prompt}', input.prompt))
-  const cwd = backend.cwd ? join(input.workspaceRoot, backend.cwd) : input.workspaceRoot
-  const timeout = backend.timeoutMs ?? DEFAULT_TIMEOUT
+  const args = agent.args.map((a) => a.replaceAll('{prompt}', input.prompt))
+  const timeout = agent.timeoutMs ?? DEFAULT_TIMEOUT
 
-  const proc = Bun.spawn([backend.command, ...args], {
-    cwd,
+  // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
+  // 它自己的工作目录不该由这里的配置面再开一个旋钮。
+  const proc = Bun.spawn([agent.command, ...args], {
+    cwd: input.workspaceRoot,
     // 关掉 stdin：被调度的 CLI 若想交互提问，这里没有人能回答，
     // 开着只会让它挂到超时。
     stdin: 'ignore',
@@ -69,8 +68,6 @@ export async function runCli(
           allow: Object.keys(process.env),
         },
       ),
-      // 用户在 team.json 里显式给的照常生效——那是他自己的决定。
-      ...backend.env,
       CI: '1',
       NO_COLOR: '1',
       TERM: 'dumb',
@@ -84,7 +81,7 @@ export async function runCli(
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
-    output: extract(got.stdout, backend),
+    output: extract(got.stdout, agent),
     exitCode: got.exitCode,
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
@@ -98,10 +95,10 @@ export async function runCli(
  * jsonl 模式取**最后一个**非空的目标字段：agent 类 CLI 的 JSONL 流里，
  * 最终答案总在末尾，中间行是过程事件。取第一个会拿到「我开始干活了」。
  */
-function extract(stdout: string, backend: CliBackend): string {
-  if (backend.output !== 'jsonl') return stdout.trim()
+function extract(stdout: string, agent: CliAgent): string {
+  if (agent.output !== 'jsonl') return stdout.trim()
 
-  const field = backend.resultField ?? 'result'
+  const field = agent.resultField ?? 'result'
   let last = ''
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim()
@@ -117,26 +114,4 @@ function extract(stdout: string, backend: CliBackend): string {
   // 一行都没解析出来时回退到整段 stdout——返回空字符串会让调用方
   // 以为任务成功但没产出，比给出原始输出更糟。
   return last || stdout.trim()
-}
-
-/** 常见 CLI 的参数模板，作为配置示例供 UI 预填，不是硬编码的调用方式。 */
-export const CLI_PRESETS: Record<string, Omit<CliBackend, 'kind'>> = {
-  codex: {
-    command: 'codex',
-    args: ['exec', '--json', '{prompt}'],
-    output: 'jsonl',
-    resultField: 'result',
-  },
-  claude: {
-    command: 'claude',
-    args: ['-p', '{prompt}', '--output-format', 'json'],
-    output: 'jsonl',
-    resultField: 'result',
-  },
-  qy: {
-    command: 'qy',
-    args: ['exec', '{prompt}', '--json', '--yes'],
-    output: 'jsonl',
-    resultField: 'content',
-  },
 }

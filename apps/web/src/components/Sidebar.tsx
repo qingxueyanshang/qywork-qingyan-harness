@@ -134,7 +134,7 @@ export function Sidebar(props: { onClose?: () => void }) {
     const parts: string[] = []
     if (ext.plugins.length) parts.push(`${ext.plugins.length} 个插件`)
     if (ext.mcpServers.length) parts.push(`${ext.mcpServers.length} 个 MCP`)
-    if (ext.teamBackends.length) parts.push(`${ext.teamBackends.length} 个编排后端`)
+    if (ext.cliAgents.length) parts.push(`${ext.cliAgents.length} 个外部 CLI`)
     return parts.join(' · ')
   }
 

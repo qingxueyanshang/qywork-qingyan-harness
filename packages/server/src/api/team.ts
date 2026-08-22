@@ -44,18 +44,30 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
     const { loadTeamConfig } = await import('@qywork/runtime')
     const team = await loadTeamConfig(d.workspaceRoot)
     return json({
-      backends: Object.keys(team.backends),
       roles: team.roles.map((r) => ({
         id: r.id,
         name: r.name,
         description: r.description,
-        // 回的是**键名**不是展示串：界面要拿它回填下拉框、也要按它去
-        // team.json 里找那一条。展示成什么样由界面自己算。
-        backend: r.backendId,
+        ...(r.model ? { model: r.model } : {}),
       })),
       plan: team.plan,
       rules: team.rules,
       error: team.error,
+    })
+  }
+
+  // 本机装了哪几家外部 agent CLI。**只读**：这份清单来自探测，不落任何文件，
+  // 所以没有对应的写接口——设置页要做的只是把它显示出来。
+  if (p === '/api/team/cli' && req.method === 'GET') {
+    const { detectClis } = await import('@qywork/team')
+    const found = await detectClis()
+    return json({
+      agents: found.map((c) => ({
+        id: c.id,
+        vendor: c.vendor,
+        path: c.path,
+        connected: c.connected,
+      })),
     })
   }
 
