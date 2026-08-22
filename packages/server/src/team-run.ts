@@ -191,7 +191,8 @@ export async function runTeam(
 export async function runBuiltinMember(
   input: { role: Role; prompt: string; signal: AbortSignal },
   ctx: {
-    deps: CommandDeps
+    // 只要装配三件套：派活端口（`delegate.ts`）在没有 WebSocket 的地方也要调它。
+    deps: Omit<CommandDeps, 'ws'>
     /** 父会话所在的项目目录。成员会话跑在同一个根下——一轮编排不跨项目。 */
     workspaceRoot: string
     onUsage?: (u: RunUsage) => void

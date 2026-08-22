@@ -10,6 +10,7 @@ import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
   type CompactionPort,
+  type DelegatePort,
   decideCommand,
   type LoopPersistence,
   type PermissionVerdict,
@@ -129,6 +130,13 @@ export interface SessionOptions {
    * 少了这一手，那个字段就是**解析了但没有任何人消费**——配了不生效。
    */
   maxSteps?: number
+  /**
+   * 派活通道。见 `DelegatePort`。
+   *
+   * **只给顶层会话传**：成员会话不传，于是它那边连 `subagent` 工具都不注册，
+   * 递归派活在结构上不可能发生。
+   */
+  delegate?: DelegatePort
 }
 
 /** 重试：复用原 run 的用户消息与高水位，不新增消息。 */
@@ -206,13 +214,16 @@ export class Session {
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
 
+    // 派活工具跟着通道走：成员会话拿不到 `delegate`，于是也就没有 `subagent`
+    // ——子 agent 不得再派活，递归没有终止条件。
+    const withDelegate = { delegate: opts.delegate !== undefined }
     if (opts.allowedTools === undefined) {
-      registerBuiltinTools(this.registry)
+      registerBuiltinTools(this.registry, withDelegate)
     } else {
       // 先注册到一个临时表再挑：内置集合是 registerBuiltinTools 的私有知识，
       // 在这里另抄一份工具名列表必然与它漂移。
       const all = new ToolRegistry()
-      registerBuiltinTools(all)
+      registerBuiltinTools(all, withDelegate)
       const allow = new Set(opts.allowedTools)
       for (const spec of all.list()) {
         if (allow.has(spec.name)) this.registry.register(spec)
@@ -870,6 +881,9 @@ export class Session {
        * 用 list + find 而不是给 store 加按 id 取的函数：这是模型主动发起的
        * 低频调用，而会话消息与单 run 的 step 都是小集合。
        */
+      // 派活通道原样透传：能不能派、派给谁由装配方（server）决定，
+      // 这里不做「没有就造一个空的」——那会让 `subagent` 注册进来却派不出去。
+      ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       history: {
         message: (id) => {
           const m = listMessages(store, conversationId, null).find((x) => x.id === id)
