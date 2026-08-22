@@ -18,6 +18,7 @@ import type { FileChange } from '@qywork/core'
 import { isInlineImage, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
+import { shrinkImage } from './image.ts'
 import {
   displayPath,
   IGNORED_DIRS,
@@ -195,9 +196,17 @@ export const readFileTool: ToolSpec = {
           errorKind: 'result_too_large',
         }
       }
+      /*
+       * 超标才缩，在上限内原样通过——**不能读到图就重编码**：
+       * 一张 1440×900 的网页截图重编码之后会变大 2.4 倍（实测，见 `image.ts`）。
+       */
+      const raw = new Uint8Array(await readFile(abs))
+      const fit = await shrinkImage(raw, mimeOf(abs))
+      const shrunk = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
+      const note = fit.bytes.length < raw.length ? '，已缩放' : ''
       return {
         status: 'success',
-        message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（图片）`,
+        message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（图片${note}）`,
         /*
          * **字节就地定格，不给路径。**
          *
@@ -212,7 +221,7 @@ export const readFileTool: ToolSpec = {
          * 附件那条**不走这里**，它仍然是路径引用（`runtime` 的 `withAttachments`）：
          * 那是用户自己的文件，我们没有理由复制它。判据是「这是一次观察，还是一个引用」。
          */
-        data: { imageData: (await readFile(abs)).toString('base64'), mime: mimeOf(abs) },
+        data: { images: [shrunk] },
       }
     }
 

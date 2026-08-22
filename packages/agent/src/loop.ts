@@ -1791,27 +1791,52 @@ export function toolResultContent(
   envelope: string,
   data: Record<string, unknown> | undefined,
 ): string | ContentBlock[] {
-  const bytes = data?.imageData
-  if (typeof bytes !== 'string' || !bytes) return envelope
-  const mime = typeof data?.mime === 'string' ? data.mime : 'image/png'
+  const images = imagesOf(data)
+  if (!images.length) return envelope
   return [
     { type: 'text', text: envelope },
-    { type: 'image', mimeType: mime, source: { kind: 'base64', data: bytes } },
+    ...images.map(
+      (i): ContentBlock => ({
+        type: 'image',
+        mimeType: i.mime,
+        source: { kind: 'base64', data: i.data },
+      }),
+    ),
   ]
+}
+
+/**
+ * `outcome.data.images` 里那几张。
+ *
+ * **是数组不是单张**：MCP 工具一次调用能带回好几张图，取第一张就是把其余的静默丢掉
+ * ——而那正是这一整轮改动在收拾的那类毛病。`read_file` 读一个文件，给一个一元数组。
+ */
+function imagesOf(data: Record<string, unknown> | undefined): { data: string; mime: string }[] {
+  const raw = data?.images
+  if (!Array.isArray(raw)) return []
+  const out: { data: string; mime: string }[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const { data: bytes, mime } = item as { data?: unknown; mime?: unknown }
+    if (typeof bytes === 'string' && bytes) {
+      out.push({ data: bytes, mime: typeof mime === 'string' ? mime : 'image/png' })
+    }
+  }
+  return out
 }
 
 /**
  * 进信封的那一份 `result`。
  *
- * **必须把图像字节摘掉**：信封是一段 JSON 文本，`imageData` 留在里面会让同一份
+ * **必须把图像字节摘掉**：信封是一段 JSON 文本，`images` 留在里面会让同一份
  * base64 在请求体里出现两次——一次在图像块里、一次在信封的文本里，而后者对模型
  * 毫无用处（它读不懂一串 base64），只是照价计费。
  */
 export function envelopeResult(
   data: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  if (!data || !('imageData' in data)) return data
-  const { imageData: _bytes, ...rest } = data
+  if (!data || !('images' in data)) return data
+  const { images: _bytes, ...rest } = data
   return Object.keys(rest).length ? rest : undefined
 }
 
