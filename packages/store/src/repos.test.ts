@@ -7,6 +7,7 @@ import {
   createConversation,
   createRun,
   deleteConversation,
+  failThinkingSteps,
   findRunByClientRequest,
   finishRun,
   getConversation,
@@ -14,7 +15,10 @@ import {
   listConversations,
   listMessages,
   listSteps,
+  openProviderRequest,
+  providerFinishRates,
   setConversationTitle,
+  settleProviderRequest,
   settleToolStep,
   upsertWorkspace,
   workspaceOf,
@@ -292,6 +296,111 @@ describe('归档与硬删', () => {
   test('删一条不存在的会话回 false，不抛', () => {
     const { store } = fresh()
     expect(deleteConversation(store, 'cv_nope' as never)).toBe(false)
+    store.close()
+  })
+})
+
+describe('思考 step 落失败终态', () => {
+  /**
+   * 轮内自动重发用。锁两件事：**只碰思考**（同一批 id 里的工具行不许被顺手改掉），
+   * 以及**不删内容**（那几条已经渲染给用户看过，删掉是让思考凭空消失）。
+   */
+  test('只把 thinking 标失败，内容留着', () => {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: `req_${cv.id}`,
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const think = appendStep(store, { runId: run.id, seq: 1, kind: 'thinking', content: '半截' })
+    const tool = appendStep(store, { runId: run.id, seq: 2, kind: 'tool_action' })
+
+    failThinkingSteps(store, [think.id, tool.id])
+
+    const rows = listSteps(store, run.id)
+    expect(rows[0]?.status).toBe('failure')
+    expect(rows[0]?.content).toBe('半截')
+    // 工具行的终态归 settleToolStep 管，这个函数不许碰。
+    expect(rows[1]?.status).toBe('done')
+    store.close()
+  })
+
+  test('空列表不发语句', () => {
+    const { store } = fresh()
+    expect(() => failThinkingSteps(store, [])).not.toThrow()
+    store.close()
+  })
+})
+
+describe('按模型的请求收尾率', () => {
+  /**
+   * 回答的是「这条端点在我这里稳不稳」。分母是这段时间里开过的全部账本行，
+   * 分子只有 `received`——`uncertain` 是连接没收尾，正是要数出来的那一类。
+   */
+  test('分状态计数，并报出现最多的错误码', () => {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: `req_${cv.id}`,
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const open = (turnIndex: number, model: string) =>
+      openProviderRequest(store, {
+        runId: run.id,
+        turnIndex,
+        retryIndex: 0,
+        model,
+        measuredInputTokens: 1,
+        sentCategories: {} as never,
+        omittedCategories: {} as never,
+        payloadHash: 'h',
+      })
+    settleProviderRequest(store, open(0, 'ox').id, 'received', null)
+    settleProviderRequest(store, open(1, 'ox').id, 'uncertain', null, 'network_error')
+    settleProviderRequest(store, open(2, 'ox').id, 'uncertain', null, 'network_error')
+    settleProviderRequest(store, open(3, 'glm').id, 'received', null)
+
+    const rows = providerFinishRates(store, 0)
+    const ox = rows.find((r) => r.model === 'ox')
+    expect(ox).toMatchObject({ total: 3, received: 1, uncertain: 2, topErrorCode: 'network_error' })
+    expect(rows.find((r) => r.model === 'glm')).toMatchObject({
+      total: 1,
+      received: 1,
+      topErrorCode: null,
+    })
+    store.close()
+  })
+
+  test('窗口之外的行不计入', () => {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: `req_${cv.id}`,
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    openProviderRequest(store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'ox',
+      measuredInputTokens: 1,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'h',
+    })
+    expect(providerFinishRates(store, Date.now() + 60_000)).toHaveLength(0)
     store.close()
   })
 })

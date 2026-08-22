@@ -1186,8 +1186,87 @@ export function settleToolStep(
     .run(status, writeJson(payload), id)
 }
 
+/**
+ * 把一次尝试留下的思考 step 落成失败终态。
+ *
+ * 轮内自动重发时用。思考 step 出生即 `done`，`settleRunningSteps` 只认 `running`，
+ * 两者都覆盖不到这一格。
+ *
+ * **不删除。** 那几条 step 真实发生过、也已经逐 delta 渲染给用户看过；
+ * 删掉是让用户眼看着思考凭空消失。标 `failure` 的用处在投影侧：
+ * `stepsToUnits` 据它把死掉那次的思考排除在模型视图之外，
+ * 否则它会和重发那次的思考拼成一条回传给 provider。
+ */
+export function failThinkingSteps(store: Store, ids: StepId[]): void {
+  if (ids.length === 0) return
+  const marks = ids.map(() => '?').join(',')
+  store.db
+    .query(`UPDATE steps SET status = 'failure' WHERE kind = 'thinking' AND id IN (${marks})`)
+    .run(...ids)
+}
+
 export function appendTextToStep(store: Store, id: StepId, text: string): void {
   store.db.query("UPDATE steps SET content = COALESCE(content,'') || ? WHERE id = ?").run(text, id)
+}
+
+/** 一个模型在一段时间里的请求收尾情况。分母是这段时间里为它开过的全部账本行。 */
+export interface ModelFinishRate {
+  model: string
+  total: number
+  /** 流按协议收完尾的次数。 */
+  received: number
+  /** 连接层面没成，收没收到、计没计费都不确定。 */
+  uncertain: number
+  /** provider 带状态码明确回绝。 */
+  rejected: number
+  /** 这段时间里出现最多的那个错误码；一次错都没有则为 null。 */
+  topErrorCode: string | null
+}
+
+/**
+ * 按模型统计请求收尾率。
+ *
+ * 用途：回答「这条端点在我这里到底稳不稳」。这个问题今天只能靠反复试来回答，
+ * 而账本里逐行记着答案。
+ *
+ * **边界：样本随会话删除**（`provider_requests.run_id` 是 ON DELETE CASCADE），
+ * 所以统计的是现存会话，不是历史全量。
+ */
+export function providerFinishRates(store: Store, since: number): ModelFinishRate[] {
+  return store.db
+    .query<
+      {
+        model: string
+        total: number
+        received: number
+        uncertain: number
+        rejected: number
+        top_error: string | null
+      },
+      [number, number]
+    >(
+      `SELECT model,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'received'  THEN 1 ELSE 0 END) AS received,
+              SUM(CASE WHEN status = 'uncertain' THEN 1 ELSE 0 END) AS uncertain,
+              SUM(CASE WHEN status = 'rejected'  THEN 1 ELSE 0 END) AS rejected,
+              (SELECT p2.error_code FROM provider_requests p2
+                WHERE p2.model = p1.model AND p2.created_at >= ? AND p2.error_code IS NOT NULL
+                GROUP BY p2.error_code ORDER BY COUNT(*) DESC LIMIT 1) AS top_error
+         FROM provider_requests p1
+        WHERE p1.created_at >= ?
+        GROUP BY model
+        ORDER BY total DESC`,
+    )
+    .all(since, since)
+    .map((r) => ({
+      model: r.model,
+      total: r.total,
+      received: r.received,
+      uncertain: r.uncertain,
+      rejected: r.rejected,
+      topErrorCode: r.top_error,
+    }))
 }
 
 export function listSteps(store: Store, runId: RunId): Step[] {

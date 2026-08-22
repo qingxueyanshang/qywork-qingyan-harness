@@ -39,7 +39,7 @@ import {
   resolveModel,
   toolNamePrefix,
 } from '@qywork/runtime'
-import { contentPathFor } from '@qywork/store'
+import { contentPathFor, type ModelFinishRate, providerFinishRates, Store } from '@qywork/store'
 import { detectSandbox } from '@qywork/tools'
 
 const DIM = '\x1b[2m'
@@ -81,6 +81,7 @@ export async function collectDoctorReport(workspaceRoot: string): Promise<Sectio
     { title: '配置', lines: await checkConfig() },
     { title: 'shell 沙箱', lines: checkSandbox() },
     { title: '账本与正文库', lines: await checkStore() },
+    { title: '端点收尾', lines: await checkFinishRates() },
     { title: 'MCP', lines: await checkMcp(workspaceRoot) },
     { title: '插件', lines: await checkPlugins(workspaceRoot) },
   ]
@@ -183,6 +184,58 @@ function checkSandbox(): Line[] {
       detail: s.reason,
     },
   ]
+}
+
+/** 收尾率低于这个数就值得说一句。低于它的端点上，长任务是逐轮连乘着掉的。 */
+const FINISH_WARN_RATIO = 0.9
+/** 样本少于这个数不下结论——三次里错一次说明不了什么。 */
+const FINISH_MIN_SAMPLES = 5
+const FINISH_WINDOW_DAYS = 7
+
+/**
+ * 按模型报请求收尾率。
+ *
+ * 为什么在 doctor 里：这是「这条端点在我这里稳不稳」的唯一本地答案，而账本
+ * 逐行记着它（`provider_requests` 的 `status` / `error_code`）。纯 SELECT，
+ * 不发请求，符合本文件开头第 1 条约束。
+ *
+ * **不做主动探测。** 断流只在长生成上显形，几次小请求要么测不出、要么烧真钱，
+ * 而在不稳的线路上几次采样给出的是随机结果。
+ */
+async function checkFinishRates(): Promise<Line[]> {
+  const db = dataPath()
+  try {
+    await stat(db)
+  } catch {
+    return [{ level: 'ok', text: '账本尚未建立，无样本' }]
+  }
+  const since = Date.now() - FINISH_WINDOW_DAYS * 86_400_000
+  const store = new Store({ path: db })
+  let rows: ModelFinishRate[]
+  try {
+    rows = providerFinishRates(store, since)
+  } finally {
+    store.close()
+  }
+  if (rows.length === 0) {
+    return [{ level: 'ok', text: `最近 ${FINISH_WINDOW_DAYS} 天没有请求记录` }]
+  }
+  return rows.map((r) => {
+    const ratio = r.total === 0 ? 1 : r.received / r.total
+    const shaky = r.total >= FINISH_MIN_SAMPLES && ratio < FINISH_WARN_RATIO
+    const detail = [
+      r.uncertain > 0 ? `连接未收尾 ${r.uncertain}` : '',
+      r.rejected > 0 ? `被回绝 ${r.rejected}` : '',
+      r.topErrorCode ? `最多的错误码 ${r.topErrorCode}` : '',
+    ]
+      .filter(Boolean)
+      .join('，')
+    return {
+      level: shaky ? 'warn' : 'ok',
+      text: `${r.model} ${r.received}/${r.total} 收尾`,
+      ...(detail ? { detail } : {}),
+    }
+  })
 }
 
 async function checkStore(): Promise<Line[]> {

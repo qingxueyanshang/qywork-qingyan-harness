@@ -144,6 +144,13 @@ export interface LoopPersistence {
    * 就是必然的 400。
    */
   openThinkingStep(runId: RunId, seq: number): string
+  /**
+   * 轮内自动重发前，把死掉那次留下的思考 step 落成失败终态。
+   *
+   * 边界：只标不删——那些 step 真实发生过，也已经渲染给用户。投影侧据这个终态
+   * 把它们排除在模型视图之外，不排除就会与重发那次的思考拼成一条回传给 provider。
+   */
+  failThinkingSteps(stepIds: string[]): void
   appendText(stepId: string, delta: string): void
   openToolStep(
     runId: RunId,
@@ -315,6 +322,9 @@ export const UNAVAILABLE_BACKOFF_MS = 3_000
  * **传输层等 0，上游明确答复的不可用要等。** 连接坏了，我们连「它收没收到」都不知道，
  * 原样立刻再发是唯一的答案；`provider_unavailable` 是上游亲口说的「暂时不行」，
  * 不等就是在无退避地捶它。
+ *
+ * 这张表只说「等多久」，**不说「什么时候够格重发」**——那条判据在尝试循环里，
+ * 判的是模型可见输出为零。
  *
  * 不要以「重发要多付一次长 prompt 的钱」为由把 `provider_unavailable` 摘掉：
  * 不重发时用户要手动继续，那一次付的是同一笔钱，而且 run 已经落成 failed，
@@ -675,6 +685,11 @@ export class AgentLoop {
          * **不要为此加防抖**：那等于为顺序再记一本账，而顺序的真源只能有一份。
          */
         let open: { kind: 'text' | 'thinking'; id: string } | null = null
+        /**
+         * 本次尝试开过的思考 step。自动重发时这批要落成失败终态——它们装的是被丢弃
+         * 的那次生成。**每次尝试开头清空**，读它的只有下面那条重发分支。
+         */
+        let attemptThinking: string[] = []
         /** 拿到该写的 step；通道换了就先封上旧的、开一条新的。**懒开**，不产生空 step。 */
         const stepFor = (kind: 'text' | 'thinking'): string => {
           if (open?.kind !== kind) {
@@ -682,6 +697,7 @@ export class AgentLoop {
               kind === 'text'
                 ? persist.openTextStep(input.runId, nextSeq())
                 : persist.openThinkingStep(input.runId, nextSeq())
+            if (kind === 'thinking') attemptThinking.push(id)
             open = { kind, id }
           }
           return open.id
@@ -814,11 +830,15 @@ export class AgentLoop {
         /*
          * ── 发送与消费：一次尝试，断了原样再来一次 ──
          *
-         * **重发的窗口只有一个：provider 一个事件都没回来。** 重发是重新生成，
-         * 模型不会接着上次那半截往下写；已经吐过字再重发，界面上就得表达
-         * 「刚才那段作废」，而 `superseded` 是 run 级语义（靠一条新 run 行接替旧的），
-         * 轮内重发没有第二条 run 行可挂。零输出时重发完全无痕，这是唯一不需要
-         * 新显示语义的窗口。
+         * **重发的窗口是「模型可见输出为零」**：正文一个字都没有、也没有 tool_calls。
+         * 重发是重新生成，模型不会接着上次那半截往下写；半截**正文**已经吐出去再重发，
+         * 界面上就得表达「刚才那段作废」，而 `superseded` 是 run 级语义（靠一条新 run 行
+         * 接替旧的），轮内重发没有第二条 run 行可挂——所以正文出现后不再重发。
+         *
+         * 半截**思考**不在此列：它本来就不进模型视图（活侧只在 `calls.length` 时挂
+         * `reasoningContent`，投影侧 `flushText` 直接清空 `pendingReasoning`），
+         * 丢弃它不改写任何模型可见状态。代价是死掉那次的思考 step 要落失败终态，
+         * 见下面重发分支。
          *
          * `request_prepared` 不算 provider 事件——三个适配器都在发请求**之前**
          * 先 yield 它（见各 `stream()` 首行），所以「只收到过它」就等于
@@ -835,6 +855,7 @@ export class AgentLoop {
          */
         let resentOnNetworkError = false
         for (;;) {
+          attemptThinking = []
           // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
           // 复用上一次那个等于新连接一开就已经是 aborted。
           const attemptAbort = new AbortController()
@@ -970,11 +991,16 @@ export class AgentLoop {
              * 我们不知道它收没收到、计没计费，只能记 `uncertain`。
              * 原来按 `code === 'stream_idle_timeout'` 判，于是一次「压根没连上」
              * 被记成「provider 拒了」——那是编出来的确定性。
+             *
+             * **用量与终态是两件事。** 流在收尾之前断掉时 provider 常常已经把用量
+             * 报过了（实测：断流样本带着 `completion_tokens` 6476/5126）。那一格是实数，
+             * 记 `null` 就是账本在说谎。`uncertain` 说的是「它收没收到我们不知道」，
+             * 不是「没花钱」。`pe.usage` 缺席仍记 `null`——缺席不等于零。
              */
             persist.settleRequest(
               requestId,
               pe?.status !== undefined ? 'rejected' : 'uncertain',
-              null,
+              pe?.usage ?? null,
               code,
               rawStop,
             )
@@ -1099,8 +1125,21 @@ export class AgentLoop {
               }\n`,
             )
 
-            if (!resentOnNetworkError && providerEvents === 0) {
+            if (!resentOnNetworkError && assistantText === '' && calls.length === 0) {
               resentOnNetworkError = true
+              /*
+               * 重发是**重新生成**，不是接着上次那半截写。所以本次尝试的痕迹要一起处置：
+               *
+               * - 思考 step 落失败终态。不落的话它们与重发那次的思考在同一个 run 里
+               *   相邻，投影时被 `pendingReasoning` 拼成一条回传给 provider。
+               * - `open` 必须置空。不置空的话重发后第一个 thinking_delta 经 `stepFor`
+               *   命中旧 id，新生成被 `appendText` 拼进死掉那条 step。
+               * - `thinkingText` 同理，不清就是两次生成首尾相接后一起挂上
+               *   `reasoningContent`。
+               */
+              persist.failThinkingSteps(attemptThinking)
+              open = null
+              thinkingText = ''
               // 等待必须可中断：干等的这几秒里用户点停止，不拽回来就是按钮没反应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue

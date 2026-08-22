@@ -170,7 +170,15 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
   while (i < steps.length) {
     const step = steps[i]!
     if (step.kind === 'thinking') {
-      pendingReasoning += step.content ?? ''
+      /*
+       * 失败的思考不进模型视图。
+       *
+       * 轮内自动重发时，死掉那次的思考 step 与重发那次落在**同一个 run** 里且相邻
+       * （`buildHistory` 逐 run 投影，跨 run 漏不过来，同 run 内会）。不排除就是两段
+       * 无关生成拼成一条 `reasoningContent` 回传，与活侧不同形——违反本文件开头
+       * 那条「必须与活的逐字同形」，缓存前缀也从那里断。
+       */
+      if (step.status !== 'failure') pendingReasoning += step.content ?? ''
       i += 1
       continue
     }

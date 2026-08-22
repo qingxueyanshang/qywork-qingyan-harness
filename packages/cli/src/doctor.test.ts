@@ -42,13 +42,14 @@ afterAll(async () => {
 const all = () => report.flatMap((s) => s.lines)
 
 describe('体检覆盖面', () => {
-  test('五段都在', () => {
+  test('六段都在', () => {
     // 少一段就是少查一类东西，而「少查了」这件事本身是静默的——
     // 输出看起来照样很完整。
     expect(report.map((s) => s.title)).toEqual([
       '配置',
       'shell 沙箱',
       '账本与正文库',
+      '端点收尾',
       'MCP',
       '插件',
     ])
