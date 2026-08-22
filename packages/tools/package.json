@@ -10,6 +10,7 @@
     "@qywork/agent": "workspace:*",
     "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*",
+    "@silvia-odwyer/photon-node": "0.3.4",
     "unpdf": "^1.8.1"
   }
 }

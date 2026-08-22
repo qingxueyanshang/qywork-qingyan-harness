@@ -1269,13 +1269,14 @@ describe('read_file 认图片', () => {
     await writeFile(join(root, 'a.png'), PNG)
     const out = await registry().execute('read_file', { path: 'a.png' }, ctx(root))
     expect(out.status).toBe('success')
-    const data = out.data as { imageData?: string; mime?: string }
-    expect(data.imageData).toBe(PNG.toString('base64'))
-    expect(data.mime).toBe('image/png')
+    const data = out.data as { images?: { data: string; mime: string }[] }
+    expect(data.images?.length).toBe(1)
+    expect(data.images?.[0]?.data).toBe(PNG.toString('base64'))
+    expect(data.images?.[0]?.mime).toBe('image/png')
 
     // 覆盖同名文件之后，刚才那一份仍然完好——这就是不给路径的全部意义。
     await writeFile(join(root, 'a.png'), Buffer.concat([PNG, Buffer.from('x')]))
-    expect(data.imageData).toBe(PNG.toString('base64'))
+    expect(data.images?.[0]?.data).toBe(PNG.toString('base64'))
   })
 
   /**
@@ -1289,7 +1290,7 @@ describe('read_file 认图片', () => {
     await writeFile(join(root, 'big.png'), Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]))
     const out = await registry().execute('read_file', { path: 'big.png' }, ctx(root))
     expect(out.status).toBe('success')
-    expect(typeof (out.data as { imageData?: string }).imageData).toBe('string')
+    expect(typeof (out.data as { images?: { data: string }[] }).images?.[0]?.data).toBe('string')
   })
 
   /**

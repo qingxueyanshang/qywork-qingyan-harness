@@ -34,13 +34,13 @@ const envelope = JSON.stringify({
   status: 'success',
   executed: true,
   summary: '读取 shot.png（图片）',
-  result: { imagePath: 'x', mime: 'image/png' },
+  result: { lines: 1 },
 })
 
 const req = (messages: WireMessage[]) => ({ model: 'm', system: [], messages, tools: [] }) as never
 
 describe('工具结果里的图像块', () => {
-  test('没有 imagePath 时仍然是纯字符串', () => {
+  test('没有 images 时仍然是纯字符串', () => {
     expect(toolResultContent(envelope, { lines: 3 })).toBe(envelope)
   })
 
@@ -51,7 +51,7 @@ describe('工具结果里的图像块', () => {
    * 认路，两者会同时失效——而它们失效不会有任何报错。
    */
   test('有图时信封逐字不变，图片并列成第二块', () => {
-    const out = toolResultContent(envelope, { imageData: 'QUJD', mime: 'image/png' })
+    const out = toolResultContent(envelope, { images: [{ data: 'QUJD', mime: 'image/png' }] })
     expect(Array.isArray(out)).toBe(true)
     const blocks = out as ContentBlock[]
     expect(blocks[0]).toEqual({ type: 'text', text: envelope })
@@ -63,17 +63,39 @@ describe('工具结果里的图像块', () => {
   })
 
   /**
+   * **几张就是几块。**
+   *
+   * MCP 一次调用带回一组截图是常规用法。取第一张就是把其余的静默丢掉——
+   * 而那正是这一整轮改动在收拾的那类毛病。
+   */
+  test('多张图各成一块，一张都不丢', () => {
+    const out = toolResultContent(envelope, {
+      images: [
+        { data: 'QQ==', mime: 'image/png' },
+        { data: 'Qg==', mime: 'image/jpeg' },
+        { data: 'Qw==', mime: 'image/webp' },
+      ],
+    }) as ContentBlock[]
+    expect(out.length).toBe(4)
+    expect(out.slice(1).map((b) => (b.type === 'image' ? b.mimeType : ''))).toEqual([
+      'image/png',
+      'image/jpeg',
+      'image/webp',
+    ])
+  })
+
+  /**
    * **图像字节不许进信封。**
    *
    * 信封是一段 JSON 文本。字节留在里面的话同一份 base64 会在请求体里出现两次——
    * 一次在图像块、一次在信封文本，而后者对模型毫无用处，只是照价计费。
    */
   test('信封里摘掉图像字节，其余字段留着', () => {
-    expect(envelopeResult({ imageData: 'QUJD', mime: 'image/png' })).toEqual({
-      mime: 'image/png',
+    expect(envelopeResult({ images: [{ data: 'QUJD', mime: 'image/png' }], lines: 1 })).toEqual({
+      lines: 1,
     })
     // 摘完什么都不剩就整个不出现，而不是留一个空对象。
-    expect(envelopeResult({ imageData: 'QUJD' })).toBeUndefined()
+    expect(envelopeResult({ images: [{ data: 'QUJD', mime: 'image/png' }] })).toBeUndefined()
     // 没有图的结果原样返回。
     expect(envelopeResult({ lines: 3 })).toEqual({ lines: 3 })
   })

@@ -95,11 +95,21 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     async fn(args, ctx) {
       try {
         const res = await callWithAbort(client, def.name, args, ctx.signal)
+        const images = imagesOf(res)
         const text = renderContent(res)
         const clamped =
           text.length > MAX_RESULT_CHARS
             ? `${text.slice(0, MAX_RESULT_CHARS)}\n…（结果超过 ${MAX_RESULT_CHARS} 字符，已截断）`
             : text
+
+        const data = {
+          ...(res.structuredContent !== undefined
+            ? { structuredContent: res.structuredContent }
+            : {}),
+          // 图片的 base64 直接进工具结果的图像块，**不落盘**——工具结果本来就带得动
+          // 字节（`agent` 的 `toolResultContent`），中间再落一次盘只是多一个存储位置。
+          ...(images.length ? { images } : {}),
+        }
 
         return {
           // isError 是「工具执行失败」，不是协议错误。原样传下去，
@@ -107,9 +117,7 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
           status: res.isError ? 'failure' : 'success',
           executed: true,
           message: clamped || (res.isError ? 'MCP 工具报告失败但没有给出内容' : '完成'),
-          ...(res.structuredContent !== undefined
-            ? { data: { structuredContent: res.structuredContent } }
-            : {}),
+          ...(Object.keys(data).length ? { data } : {}),
           ...(res.isError ? { errorKind: 'mcp_tool_error' } : {}),
         }
       } catch (err) {
@@ -152,10 +160,35 @@ function callWithAbort(
 }
 
 /**
+ * 单张图的上限。超过就不带，只在正文里留那行占位。
+ *
+ * 与 `tools/files.ts` 的图片上限**同一个数**：同一张图经 `read_file` 还是经 MCP
+ * 进来，不该给出两种答案。
+ */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+/**
+ * MCP 结果里的图，交给工具结果的图像块。
+ *
+ * **取全部，不取第一张**：一次调用带回好几张是 MCP 的常规用法（一组截图、一份图表
+ * 的多个视图），只取第一张就是把其余的静默丢掉。
+ */
+function imagesOf(res: McpCallResult): { data: string; mime: string }[] {
+  const out: { data: string; mime: string }[] = []
+  for (const block of res.content) {
+    if (block.type !== 'image' || typeof block.data !== 'string' || !block.data) continue
+    // base64 每 4 个字符 3 字节，够判上限了，不必先解码一遍。
+    if ((block.data.length * 3) / 4 > MAX_IMAGE_BYTES) continue
+    out.push({ data: block.data, mime: block.mimeType ?? 'image/png' })
+  }
+  return out
+}
+
+/**
  * 把 MCP 的内容块渲染成一段文本。
  *
- * 图片/音频只留一行占位：把 base64 塞进 transcript 会瞬间吃掉几万 token，
- * 而模型多半也用不上——需要看图的场景应该走 resource 引用，不是内联字节。
+ * 图片那一行是**占位不是丢弃**：真正的字节走 `imagesOf` 进图像块，这里留一行是让
+ * 模型知道正文的这个位置本来是一张图。音频没有对应的内容块，只有占位。
  */
 export function renderContent(res: McpCallResult): string {
   const parts: string[] = []
