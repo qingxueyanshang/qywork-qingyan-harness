@@ -180,10 +180,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 约一半的次数在 reasoning 中途直接结束响应体，既没有 `finish_reason`
        * 也没有 `[DONE]`；同样的请求另一半次数能正常收尾。
        *
-       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它计没计费，
-       * 账本行因此落 `uncertain`。已经收到过事件的那一轮不会被自动重发
-       * （`loop.ts` 的判据是「一个事件都没收到过」），用户拿到的是一条说得出
-       * 「收了多少、断在哪」的错误，而不是一次假的成功。
+       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它计没计费——
+       * 所以已经攒到的 usage 随错误一起带上去（见 `usage` 字段），账本行落 `uncertain`
+       * 但数是实的。断在思考里的那一轮由 `loop.ts` 自动重发一次（判据是模型可见输出
+       * 为零）；正文已经吐出去的不重发，用户拿到的是一条说得出「收了多少、断在哪」
+       * 的错误，而不是一次假的成功。
        */
       if (!rawFinish) {
         throw new ProviderError({
@@ -191,6 +192,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
           message: '流在 finish_reason 之前结束',
           provider: 'openai_chat_completions',
           detail: { model: req.model },
+          // 用量那一格先到、收尾没到时把实数带上去。`source` 仍是 `estimated` 说明
+          // 它一个字节都没回报过，那种时候不带——带了就是把零当成真值记进账本。
+          ...(usage.source === 'provider' ? { usage } : {}),
         })
       }
     } catch (err) {

@@ -197,6 +197,7 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
       nextSeq: () => 1,
       openTextStep: () => 'st_1',
       openThinkingStep: () => 'st_1',
+      failThinkingSteps: () => {},
       appendText: () => {},
       openToolStep: () => 'st_1',
       markExecuting: () => {},

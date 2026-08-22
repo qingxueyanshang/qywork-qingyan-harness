@@ -27,6 +27,19 @@ function reasoning(text: string): string {
 /** 思考到一半响应体就结束了：没有 finish_reason、没有 usage、没有 [DONE]。 */
 const CUT = reasoning('The user wants a 3D anime') + reasoning(' racing game') + reasoning(' >')
 
+/**
+ * 用量那一格到了、收尾那一格没到。
+ *
+ * 抄自 2026-08-22 对同一端点的实测：断流样本带着 `completion_tokens`
+ * （6476 / 5126 各一次），说明上游多半已经计了费。
+ */
+const CUT_WITH_USAGE =
+  reasoning('The user wants a 3D anime') +
+  `data: {"id":"${ID}","object":"chat.completion.chunk","created":1787333739,"model":"ox-alpha-free","choices":[],"usage":{"prompt_tokens":466,"completion_tokens":6476,"total_tokens":6942,"prompt_tokens_details":{"cached_tokens":256},"completion_tokens_details":{"reasoning_tokens":6476}}}
+
+` +
+  reasoning(' racing game')
+
 /** 正常收尾：输出上限烧完在思考里，正文一个字都没有。 */
 const TRUNCATED =
   reasoning('The user wants a 3D anime') +
@@ -79,6 +92,22 @@ describe('流没按协议收尾', () => {
     expect(events.some((e) => e.type === 'done')).toBe(false)
     // 断之前收到的思考照常吐出去：报错的是这一轮的终态，不是已经读到的字节。
     expect(events.filter((e) => e.type === 'thinking_delta')).toHaveLength(3)
+  })
+
+  test('用量先到收尾没到的，把实数挂在错误上——账本不记零', async () => {
+    const { err } = await run(CUT_WITH_USAGE)
+    expect(err).toBeInstanceOf(ProviderError)
+    // 缺席不等于零：这一格有数就必须传上去，`loop` 据它落账。
+    expect((err as ProviderError).usage).toMatchObject({
+      outputTokens: 6476,
+      cachedTokens: 256,
+      source: 'provider',
+    })
+  })
+
+  test('一个用量字节都没回报的，不编一份零用量出来', async () => {
+    const { err } = await run(CUT)
+    expect((err as ProviderError).usage).toBeUndefined()
   })
 
   test('收到 finish_reason 的照常收尾，输出上限报成截断', async () => {

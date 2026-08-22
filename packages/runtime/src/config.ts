@@ -698,7 +698,8 @@ export function configNotices(cfg: QyConfig): string[] {
         `模型 ${active.model} 不在内置目录中，能力按**最保守**假设处理：\n` +
           `- 不请求思考（reasoning_tokens 恒为 0），即使该模型支持\n` +
           `- 计价按 0 计算，用量显示为 $0\n` +
-          `\n运行 qy probe --save 实测一次并写回配置即可消除本提示。`,
+          `- 上下文按 ${Math.round(spec.contextWindow / 1000)}K 假设，真实窗口更大时压缩会提前触发\n` +
+          `\n运行 qy probe --save 实测一次并写回配置即可消除本提示；窗口一项它探不出来，要准就在模型库那一格填。`,
       )
     }
   }

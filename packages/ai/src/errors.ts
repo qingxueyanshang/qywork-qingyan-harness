@@ -17,6 +17,7 @@
 
 import type { ErrorCode, ProviderKind } from '@qywork/core'
 import { type CapacityRejection, classifyCapacityRejection } from './capacity.ts'
+import type { ProviderUsage } from './types.ts'
 
 export class ProviderError extends Error {
   readonly code: ErrorCode
@@ -31,6 +32,14 @@ export class ProviderError extends Error {
    * 那个码也可能来自别的路径。
    */
   readonly capacity: CapacityRejection | undefined
+  /**
+   * 失败前 provider 已经报过的用量。
+   *
+   * 只有传输被掐断这一类会带：流在 `finish_reason` 之前结束，但用量那一格已经到了。
+   * **不带这个字段不等于没计费**，只等于我们没收到数——落账时区分这两者，
+   * 不要把 `undefined` 当成 0。
+   */
+  readonly usage: ProviderUsage | undefined
 
   constructor(opts: {
     code: ErrorCode
@@ -39,6 +48,7 @@ export class ProviderError extends Error {
     status?: number
     detail?: Record<string, unknown>
     capacity?: CapacityRejection
+    usage?: ProviderUsage
     cause?: unknown
   }) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined)
@@ -48,6 +58,7 @@ export class ProviderError extends Error {
     this.status = opts.status
     this.detail = opts.detail
     this.capacity = opts.capacity
+    this.usage = opts.usage
   }
 }
 

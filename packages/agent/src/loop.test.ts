@@ -56,6 +56,7 @@ function noopPersistence(): LoopPersistence {
     nextSeq: () => ++seq,
     openTextStep: () => `st_text_${seq}`,
     openThinkingStep: () => `st_think_${seq}`,
+    failThinkingSteps: () => {},
     appendText: () => {},
     openToolStep: () => `st_tool_${seq}`,
     markExecuting: () => {},
@@ -1382,12 +1383,23 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
   interface Recorded {
     opened: number[]
     settled: { status: string; errorCode: string | null }[]
+    /** 开过的思考 step，按顺序。 */
+    thinking: string[]
+    /** 被落成失败终态的那几条。 */
+    failed: string[]
   }
 
   function recordingPersistence(rec: Recorded): LoopPersistence {
     const base = noopPersistence()
+    let n = 0
     return {
       ...base,
+      openThinkingStep: () => {
+        const id = `st_think_${n++}`
+        rec.thinking.push(id)
+        return id
+      },
+      failThinkingSteps: (ids) => rec.failed.push(...ids),
       openRequest: (input) => {
         rec.opened.push(input.retryIndex)
         return `pr_${input.retryIndex}`
@@ -1405,7 +1417,14 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
    * 一个事件都没回来（重发无痕），后者已经吐了字（重发会让用户看到两段不一样的话）。
    */
   function scriptedAdapter(
-    script: ('break' | 'break-after-text' | 'reject' | 'reject-relay' | 'ok')[],
+    script: (
+      | 'break'
+      | 'break-after-text'
+      | 'break-after-thinking'
+      | 'reject'
+      | 'reject-relay'
+      | 'ok'
+    )[],
   ): LlmAdapter {
     let i = 0
     return {
@@ -1415,8 +1434,10 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         const act = script[i++] ?? 'ok'
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        if (act === 'break' || act === 'break-after-text') {
+        if (act === 'break' || act === 'break-after-text' || act === 'break-after-thinking') {
           if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
+          if (act === 'break-after-thinking')
+            yield { type: 'thinking_delta', delta: '死掉那段思考' }
           throw new ProviderError({
             code: 'network_error',
             message: '连接被断开',
@@ -1462,7 +1483,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
   }
 
   async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
-    const rec: Recorded = { opened: [], settled: [] }
+    const rec: Recorded = { opened: [], settled: [], thinking: [], failed: [] }
     const events: AgentEvent[] = []
     for await (const ev of run(adapter, rec)) events.push(ev)
     return { rec, events }
@@ -1523,6 +1544,40 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     expect(message).toContain('已自动重发一次')
     // 「发出后 N 秒内没有收到任何数据」是传输层的读数，给它拼上等于告诉用户请求没发出去。
     expect(message).not.toMatch(/没有收到任何数据/)
+  })
+
+  /*
+   * ── 断在思考里 ──
+   *
+   * 原始失败形状抄自 2026-08-22 对 `opencode.ai/zen/go/v1` 的实测：11/11 的断流
+   * 样本正文 0 字、tool_calls 0 片段，全部断在 reasoning 中途。半截思考不进模型
+   * 视图，所以这一档照样属于「模型可见输出为零」，该重发。
+   */
+  test('断在思考里：照样重发一次，第二次成功就当无事发生', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
+
+    expect(rec.opened).toEqual([0, 1])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('死掉那次的思考 step 落失败终态——不落就会被投影回传给 provider', async () => {
+    const { rec } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
+
+    expect(rec.thinking).toHaveLength(1)
+    expect(rec.failed).toEqual(rec.thinking)
+  })
+
+  test('重发后新思考另开一条 step，不拼进死掉那条', async () => {
+    // 两次都断：第二次的思考必须落在一条新 step 上。`open` 不复位的话
+    // `stepFor` 会命中旧 id，两段无关生成被 `appendText` 拼成一条。
+    const { rec } = await collect(scriptedAdapter(['break-after-thinking', 'break-after-thinking']))
+
+    expect(rec.thinking).toHaveLength(2)
+    expect(rec.thinking[0]).not.toBe(rec.thinking[1])
+    // 第二次不再重发（每轮一枚闩），所以只有第一次那条被标失败。
+    expect(rec.failed).toEqual([rec.thinking[0] as string])
   })
 
   test('已经吐过字就不重发——重发是重新生成，用户会看到两段不一样的话', async () => {

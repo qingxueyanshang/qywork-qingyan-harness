@@ -389,6 +389,28 @@ describe('思考的投影', () => {
   })
 
   /**
+   * 轮内自动重发留下的死思考不进模型视图。
+   *
+   * 复现的是原始失败形状：断流重发**不换 run**，死掉那次与重发那次的思考落在
+   * 同一个 run 的 step 表里且相邻。不排除的话两段无关生成会被拼成一条
+   * `reasoningContent` 回传，与活侧不同形。
+   */
+  test('失败的思考 step 不进 reasoningContent', () => {
+    const out = stepsToWireMessages([
+      step({
+        id: 'st1' as never,
+        seq: 1,
+        kind: 'thinking',
+        content: '死掉那段',
+        status: 'failure',
+      }),
+      step({ id: 'st2' as never, seq: 2, kind: 'thinking', content: '重发那段', status: 'done' }),
+      step({ id: 'st3' as never, seq: 3 }),
+    ])
+    expect(out[0]?.reasoningContent).toBe('重发那段')
+  })
+
+  /**
    * 迁移 26 之前的行没有独立的 thinking step，思考在首条工具行的 `content` 里。
    * 这条回落删掉的后果不是显示问题：DeepSeek 类兼容端点对带 tool_calls 却没有
    * `reasoning_content` 的历史消息在第二轮直接 400。

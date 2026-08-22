@@ -51,6 +51,7 @@ import {
   createConversation,
   createRun,
   currentGoal,
+  failThinkingSteps,
   fileReadHash,
   finishRun,
   getConversation,
@@ -702,6 +703,7 @@ export class Session {
       openTextStep: (runId, seq) => appendStep(store, { runId, seq, kind: 'text', content: '' }).id,
       openThinkingStep: (runId, seq) =>
         appendStep(store, { runId, seq, kind: 'thinking', content: '' }).id,
+      failThinkingSteps: (stepIds) => failThinkingSteps(store, stepIds as never),
       appendText: (stepId, delta) => appendTextToStep(store, stepId as never, delta),
       openToolStep: (runId, seq, call: WireToolCall, batchId, callIndex, waveIndex, action) =>
         appendStep(store, {
