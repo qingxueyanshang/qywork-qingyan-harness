@@ -4,12 +4,26 @@
  * `compaction.test.ts` 验的是压缩算法本身；这里验的是**发送前检查 → 压缩 →
  * 重新装配**这条控制流真的走通了。两者分开是因为前者纯函数、后者要造占用压力，
  * 混在一起会让「算法对不对」和「接线对不对」在失败时分不出来。
+ *
+ * 覆盖范围：`loop.ts` 的压缩触发与容量恢复。其中「压缩重发另开一行账」那条接真
+ * `Store`，连带覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送下
+ * 与 `uq_provider_run_turn` 的关系——别的用例都把这个端口打桩成常量。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { classifyProviderError, lookupModel } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
+import {
+  createConversation,
+  createRun,
+  listProviderRequests,
+  markProviderRequestSent,
+  openProviderRequest,
+  Store,
+  settleProviderRequest,
+  upsertWorkspace,
+} from '@qywork/store'
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
@@ -316,6 +330,58 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(events.some((e) => e.type === 'run.error')).toBe(false)
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.status).toBe('done')
+  })
+
+  /**
+   * **压缩重发是账本上的第二行，不是同一行。**
+   *
+   * 这条接真 `Store`：别的用例把 `openRequest` 打桩成常量，唯一索引根本不参与，
+   * 两次发送共用一组键也不会有任何反应。实测形状是撞窗那次与压完重发那次同为
+   * `(run_id, 0, 0)`，第二次插入撞 `uq_provider_run_turn`，异常上抛，整轮死在
+   * 一句 SQLite 约束报错上——压缩白压，模型一次都没答上话。
+   */
+  test('压缩重发另开一行账，不撞唯一索引', async () => {
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, 'C:/ws', 'ws')
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'req-overflow',
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+
+    const comp = shrinkingCompaction()
+    const { adapter, state } = rejectingAdapter(1)
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: {
+        ...noopPersistence(),
+        openRequest: (input) => openProviderRequest(store, input).id,
+        markRequestSent: (id) => markProviderRequestSent(store, id as never),
+        settleRequest: (id, status, usage, errorCode, finishReason) =>
+          settleProviderRequest(store, id as never, status, usage, errorCode, finishReason),
+      },
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events = await collectWith(loop, run.id, bulkyHistory())
+
+    expect(events.some((e) => e.type === 'run.error')).toBe(false)
+    expect(state.attempts).toBe(2)
+    // 同一轮、两个发送序号；第一行是撞窗那次，第二行是压完重发那次。
+    const rows = listProviderRequests(store, run.id)
+    expect(rows.map((r) => [r.turnIndex, r.retryIndex])).toEqual([
+      [0, 0],
+      [0, 1],
+    ])
+    expect(rows.map((r) => r.status)).toEqual(['rejected', 'received'])
+    store.close()
   })
 
   /**

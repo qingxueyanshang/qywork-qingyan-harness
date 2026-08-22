@@ -698,19 +698,18 @@ export class AgentLoop {
         let turnUsage: ProviderUsage | null = null
 
         /*
-         * ── 压缩触发：**只有这一个入口** ──
+         * ── 压缩触发：主入口 ──
          *
-         * 发送前按占用检查。容量拒绝那条路保留，但**不触发压缩**——它只如实报错。
-         * 两个触发就是两个执行入口，A2 第五问过不去。
+         * 发送前按占用检查。下面的容量拒绝分支是第二个**调用点**，不是第二个权威：
+         * 调的是同一个 `CompactionPort.run()`、落同一份 manifest。
          *
-         * 不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要先
-         * 烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
+         * 主路径不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要
+         * 先烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
          * 锚定尺（provider 真值 + 仅一轮尾巴的估算），误差被限制在单轮增量内，
          * 够做发送前判断。
          *
-         * 代价说清楚：估算失误时不再自动救回，直接报错。可接受——报错是诚实的，
-         * 而单次/单批投递预算（`deliveryBudget`）给了跳变上界，
-         * 不存在无预警的跃迁。
+         * 估算失误时这里放行，由容量拒绝那条窄路兜底——凭证收得很窄，
+         * 泛化的 400 不触发（理由写在那个分支上）。
          */
         // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
@@ -828,12 +827,24 @@ export class AgentLoop {
          * 不在 `openStream` 里。
          */
         let requestId = ''
-        let attempt = 0
+        /** 本轮已经开过几行账。`uq_provider_run_turn` 的第三段取的就是它。 */
+        let sendIndex = 0
+        /**
+         * 网络失败已经替他自动重发过一次。**不要拿 `sendIndex` 代替它判断**：
+         * 那个数还会被压缩重发推进，共用一个数等于压完重发就把这条闩扣上，
+         * 重发那次再断线就不再重试，界面上还会多出一句「已自动重发一次」。
+         */
+        let resentOnNetworkError = false
         for (;;) {
           // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
           // 复用上一次那个等于新连接一开就已经是 aborted。
           const attemptAbort = new AbortController()
           req = { ...req, signal: AbortSignal.any([input.signal, attemptAbort.signal]) }
+
+          // 同一轮的第 N 次发送。`uq_provider_run_turn` 靠它区分，重发因此不会顶掉
+          // 上一次那行——两次都真实发生过，账要分开记。**就地自增**，不要挪到各条
+          // 重发分支里去加：漏一条就是拿同一组键再插一次，整轮死在唯一索引上。
+          const retryIndex = sendIndex++
 
           // 账本行在**发出之前**落。这一刻我们已经知道要发什么（分组、指纹都算得出），
           // 但还不知道 provider 会不会收——两件事分开记，「发出去了没回」
@@ -841,9 +852,7 @@ export class AgentLoop {
           requestId = persist.openRequest({
             runId: input.runId,
             turnIndex: step,
-            // 同一轮的第 N 次发送。`uq_provider_run_turn` 靠它区分，
-            // 重发因此不会顶掉上一次那行——两次都真实发生过，账要分开记。
-            retryIndex: attempt,
+            retryIndex,
             model: adapter.spec.id,
             measuredInputTokens: estimateRequest(req),
             sentCategories: breakdown,
@@ -1071,15 +1080,15 @@ export class AgentLoop {
              */
             const raw = (err as { cause?: unknown }).cause
             process.stderr.write(
-              `[qy] 请求失败 turn=${step} retry=${attempt} code=${code} errno=${String(
+              `[qy] 请求失败 turn=${step} retry=${retryIndex} code=${code} errno=${String(
                 (raw as { code?: unknown })?.code ?? '-',
               )} events=${providerEvents} silent=${Math.round(silentMs / 1000)}s | ${
                 raw instanceof Error ? raw.message : pe.message
               }\n`,
             )
 
-            if (attempt === 0 && providerEvents === 0) {
-              attempt++
+            if (!resentOnNetworkError && providerEvents === 0) {
+              resentOnNetworkError = true
               // 等待必须可中断：干等的这几秒里用户点停止，不拽回来就是按钮没反应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue
@@ -1104,7 +1113,7 @@ export class AgentLoop {
                         thinkingText.length + assistantText.length,
                       ),
                     ]),
-                ...(attempt > 0 ? ['已自动重发一次，仍然失败'] : []),
+                ...(resentOnNetworkError ? ['已自动重发一次，仍然失败'] : []),
               ].join('，'),
               provider: pe.provider,
               cause: err,
