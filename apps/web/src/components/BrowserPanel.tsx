@@ -64,6 +64,19 @@ export default function BrowserPanel(props: { id: string }) {
     const next = normalize(draft())
     setDraft(next)
     if (!next) return
+    /*
+     * 别的 scheme 拒在这里，不要交给 iframe。
+     *
+     * 交给它的话地址照样填进去、iframe 照样建出来，然后内核把加载直接拒掉：
+     * 用户面前是一块没有任何解释的空白（实测 `file:` 只在控制台留一句
+     * `Not allowed to load local resource`，`ftp:` 连那句都没有）。
+     * 用输入框自己的校验气泡说一句，不为它另起一块错误区。
+     */
+    if (!/^https?:\/\//i.test(next)) {
+      input.setCustomValidity('只能打开 http / https 地址')
+      input.reportValidity()
+      return
+    }
     // 同一个地址再按回车 = 刷新。什么都不做的话那一下看起来像卡住了。
     if (next === url()) {
       setReloads((n) => n + 1)
@@ -100,7 +113,12 @@ export default function BrowserPanel(props: { id: string }) {
           spellcheck={false}
           placeholder="localhost:3000"
           value={draft()}
-          onInput={(e) => setDraft(e.currentTarget.value)}
+          // **改一个字就要把校验清掉。** 留着非空的 customValidity，原生校验会
+          // 直接拦下提交、`onSubmit` 一次都不再跑——用户改对了地址也按不动。
+          onInput={(e) => {
+            setDraft(e.currentTarget.value)
+            e.currentTarget.setCustomValidity('')
+          }}
         />
         {/* 没有地址时禁用，而不是不渲染：那颗键一出没，地址栏里的输入框就跟着变宽变窄。 */}
         <button
