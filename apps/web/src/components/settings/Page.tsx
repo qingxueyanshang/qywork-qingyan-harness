@@ -46,14 +46,17 @@ export function PageHead(props: { title: string; desc?: string; actions?: JSX.El
 export function Section(props: {
   title?: string
   desc?: string
+  /** 这一段的落盘位置，贴着标题排。不分层的页面用它，分层的走 `ScopeTabs`。 */
+  path?: string
   actions?: JSX.Element
   children: JSX.Element
 }) {
   return (
     <section class="settings-block">
-      <Show when={props.title || props.actions}>
+      <Show when={props.title || props.path || props.actions}>
         <div class="settings-block-head">
           <Show when={props.title}>{(t) => <h3>{t()}</h3>}</Show>
+          <Show when={props.path}>{(p) => <PathLine path={p()} />}</Show>
           <Show when={props.actions}>
             <div class="section-actions">{props.actions}</div>
           </Show>

@@ -5,10 +5,8 @@ import {
   importMcp,
   isDesktopShell,
   loadMcp,
-  loadMcpRaw,
   pickFiles,
   type Scope,
-  saveMcpRaw,
 } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
@@ -17,10 +15,10 @@ import { ScopeTabs } from './Scope.tsx'
 /**
  * MCP。
  *
- * ## 标签页选层，整页跟着走
+ * ## 标签页选层，列表跟着过滤
  *
- * 上面的 server 列表和下面的配置原文是同一层的两个视图。列表不按层过滤的话，
- * 用户会在「项目」这一栏里看到全局配的那些，然后去下面的编辑框里找它们——找不到。
+ * 不按层过滤的话，用户会在「项目」这一栏里看到全局配的那些，而这一栏的路径
+ * 指的是另一个文件。
  *
  * ## 失败和成功一起列
  *
@@ -31,12 +29,12 @@ import { ScopeTabs } from './Scope.tsx'
  * 认不出属于哪一层的失败（整份文件解析失败之类）**两层都显示**：它没有层可归，
  * 藏在另一栏里等于没报。
  *
- * ## 面板里只有原文，新增交给模型
+ * ## 这一页只报结果，不编辑配置
  *
  * server 的形状按 transport 分两种（stdio 要 command/args/env/cwd，http 要 url 和
- * headers），还要知道那个包的命令行怎么写。面板表单只盖得住最表层几格，剩下的
- * 仍然得来这份原文里补。所以「新增」把话头递给模型（`askInChat`），由它写进
- * `.agents/mcp.json`；这一页负责给出结果：连上了哪些、没连上哪些、原文长什么样。
+ * headers），还要知道那个包的命令行怎么写——这几格填什么，用户在界面上判断不了。
+ * 所以「新增」把话头递给模型（`askInChat`）由它写 `.agents/mcp.json`，「导入」并一份
+ * 现成的进来；这一页只回答：连上了哪些、没连上哪些。
  */
 
 /** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
@@ -46,55 +44,8 @@ const NEW_SERVER =
 export default function McpSettings() {
   const [data, { refetch }] = createResource(loadMcp)
   const [scope, setScope] = createSignal<Scope>('project')
-  const [raw, { refetch: refetchRaw }] = createResource(scope, loadMcpRaw)
-  const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
 
-  /**
-   * 编辑框里的原文。草稿优先，没有草稿就取服务端那份。
-   *
-   * **只认 `ready`，不认 `refreshing`**，所以这里不用 `loaded()`：`raw` 的 source
-   * 是 scope，切层重取的是另一个文件。留住上一份等于把上一层的正文摆在这一层名下，
-   * 而这一页失焦即存——点进去再点出来就把项目层的内容存进了全局。
-   */
-  const text = () => draft() ?? (raw.state === 'ready' ? (raw.latest?.raw ?? '') : '')
-
-  /**
-   * 失焦即存，和这个应用里其他每一格一样。
-   *
-   * **先本地解析一次**：这一份要整体合法，不合法就只报错、不发请求。
-   * 这是「随改随生效」在 JSON 编辑框上成立的唯一条件——没有这道闸，
-   * 敲到一半失焦就是一次必然的 422。
-   */
-  const commit = async () => {
-    const body = draft()
-    if (body === null) return
-    try {
-      JSON.parse(body)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return
-    }
-    try {
-      await saveMcpRaw(scope(), body)
-      setError(null)
-      // 两个都要重取：`data` 是解析出来的 server 列表，`raw` 是编辑框回落的那份原文。
-      // **草稿要等重取完再清**——先清的话编辑框会瞬间回落到重取前的旧原文，
-      // 看起来像这次保存把内容改回去了。
-      await Promise.all([refetch(), refetchRaw()])
-      setDraft(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  /**
-   * 「添加」按钮。**区头和空态框共用同一份。**
-   *
-   * 挂在第一段（「已连上」）的区头上，全页只此一颗：三段说的是同一批 server，
-   * 挂在「配置」那一段的话，列表一长它就被推到屏幕外，用户得往下滚才找得到。
-   * 空态框里再放一颗——那一刻用户正盯着空框，与其余几页同一个做法。
-   */
   /**
    * 从本机一份现成的配置里并进来。多半是从别的 MCP 客户端整段拷来的那一份。
    *
@@ -108,13 +59,16 @@ export default function McpSettings() {
       // 取消不是错误。
       if (!picked) return
       await importMcp(scope(), picked)
-      await Promise.all([refetch(), refetchRaw()])
-      setDraft(null)
+      await refetch()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
+  /**
+   * 「新增」/「导入」。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
+   * 而空的时候用户看到的恰恰是空态框里那一份。
+   */
   const AddButton = () => (
     <>
       {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
@@ -155,8 +109,6 @@ export default function McpSettings() {
               value={scope()}
               onChange={(s) => {
                 setScope(s)
-                // 切层等于换一个文件，草稿不能跟过去——跟过去就是把 A 的内容存进 B。
-                setDraft(null)
                 setError(null)
               }}
               dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
@@ -194,6 +146,8 @@ export default function McpSettings() {
                   </For>
                 </div>
               </Show>
+              {/* 导入失败挂在带「导入」按钮的这一段上。 */}
+              <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
             </Section>
 
             <Show when={missing().length > 0 || failures().length > 0}>
@@ -210,24 +164,6 @@ export default function McpSettings() {
                 </div>
               </Section>
             </Show>
-
-            <Section title="配置">
-              <textarea
-                class="code-area"
-                rows={12}
-                value={text()}
-                placeholder={'{\n  "mcpServers": {}\n}'}
-                onInput={(e) => setDraft(e.currentTarget.value)}
-                onBlur={() => void commit()}
-              />
-              <Show when={error()}>
-                {(e) => (
-                  <div class="row-actions">
-                    <span class="save-msg bad">{e()}</span>
-                  </div>
-                )}
-              </Show>
-            </Section>
           </>
         )}
       </Show>

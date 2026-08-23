@@ -604,6 +604,13 @@ textarea.code-area::placeholder {
   margin-left: auto;
   max-width: 62%;
 }
+/* 区头里的路径贴着标题排。区头是 600 字重的标题行，路径要挑回常规字重，
+   否则一串等宽粗体比标题本身还抢。右侧动作靠 `.section-actions` 的
+   `margin-left: auto` 顶到行尾，所以这里限宽只为不把它们挤出去。 */
+.settings-block-head .path-line {
+  max-width: 55%;
+  font-weight: 400;
+}
 
 /* 被更高优先级的层盖住的那条。橙色是**警告**不是强调——它说明这条不生效。 */
 .shadow-tag {
