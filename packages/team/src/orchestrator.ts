@@ -34,6 +34,8 @@ export interface OrchestratorDeps {
     role: Role
     prompt: string
     signal: AbortSignal
+    /** 节点点名的模型，实现方负责解析成一对「接口 × 模型」。 */
+    model?: string
   }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }>
   /** 人工门禁：返回 false 即中止整轮。 */
   awaitHumanGate(nodeId: string, summary: string): Promise<boolean>
@@ -79,6 +81,7 @@ export class TeamOrchestrator {
           results.set(id, {
             nodeId: id,
             agent: node.agent,
+            label: this.labelOf(node.agent),
             status: 'skipped',
             output: '',
             error: '上游节点未成功',
@@ -104,6 +107,7 @@ export class TeamOrchestrator {
           results.set(id, {
             nodeId: id,
             agent: node.agent,
+            label: this.labelOf(node.agent),
             status: 'failed',
             output: '',
             error: '依赖无法满足（可能成环）',
@@ -121,6 +125,7 @@ export class TeamOrchestrator {
         results.get(n.id) ?? {
           nodeId: n.id,
           agent: n.agent,
+          label: this.labelOf(n.agent),
           status: 'skipped' as const,
           output: '',
           durationMs: 0,
@@ -139,13 +144,14 @@ export class TeamOrchestrator {
     const isCli = node.agent.startsWith(CLI_PREFIX)
     const cli = isCli ? this.deps.resolveCli(node.agent.slice(CLI_PREFIX.length)) : undefined
     const role = isCli ? undefined : this.config.roles.find((r) => r.id === node.agent)
-    const label = role?.name ?? (cli ? `${cli.vendor} ${cli.id}` : node.agent)
+    const label = this.labelOf(node.agent)
     const started = Date.now()
 
     if (!role && !cli) {
       return {
         nodeId: node.id,
         agent: node.agent,
+        label,
         status: 'failed',
         output: '',
         error: isCli ? `本机没有识别到 ${node.agent.slice(CLI_PREFIX.length)}` : '找不到这个角色',
@@ -200,6 +206,7 @@ export class TeamOrchestrator {
         return {
           nodeId: node.id,
           agent: node.agent,
+          label,
           status: 'skipped',
           output: '',
           error: '人工门禁未通过',
@@ -233,7 +240,12 @@ export class TeamOrchestrator {
                 ? '超时'
                 : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
           }))
-        : await this.deps.runBuiltin({ role: role!, prompt, signal: this.deps.signal })
+        : await this.deps.runBuiltin({
+            role: role!,
+            prompt,
+            signal: this.deps.signal,
+            ...(node.model ? { model: node.model } : {}),
+          })
 
       this.deps.emit({
         type: 'team.member',
@@ -254,6 +266,7 @@ export class TeamOrchestrator {
       return {
         nodeId: node.id,
         agent: node.agent,
+        label,
         status: res.ok ? 'done' : 'failed',
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
@@ -266,12 +279,26 @@ export class TeamOrchestrator {
       return {
         nodeId: node.id,
         agent: node.agent,
+        label,
         status: 'failed',
         output: '',
         error: err instanceof Error ? err.message : String(err),
         durationMs: Date.now() - started,
       }
     }
+  }
+
+  /**
+   * 节点上显示的名字：角色名，或「厂商 + CLI 名」，两样都认不出就退回 agent 那个 id。
+   *
+   * 事件与结果**共用这一份**：两处各写一遍的话，刷新前后同一个节点会显示两个名字。
+   */
+  private labelOf(agent: string): string {
+    if (agent.startsWith(CLI_PREFIX)) {
+      const cli = this.deps.resolveCli(agent.slice(CLI_PREFIX.length))
+      return cli ? `${cli.vendor} ${cli.id}` : agent
+    }
+    return this.config.roles.find((r) => r.id === agent)?.name ?? agent
   }
 
   /** 角色约束 + 团队公共约束 + 任务。公共规则放最后，压过角色自己的设定。 */

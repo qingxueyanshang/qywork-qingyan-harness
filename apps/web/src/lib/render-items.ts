@@ -10,6 +10,7 @@
  *   组前/组后的单独成条。末尾那段思考尤其不能卷进工具折叠里——它属于「想完了准备说话」，
  *   卷进去用户就找不到了。
  * - **少于 2 个工具不组卡**：为一个工具套一层折叠纯属添乱。
+ * - **派活的那两个不进组**（见 `STANDALONE`）。
  */
 
 import type { ActionKind } from '@qywork/core'
@@ -23,6 +24,15 @@ export type RenderItem =
   | { kind: 'compaction'; id: string; item: TranscriptItem }
   | { kind: 'run'; id: string; item: TranscriptItem }
   | { kind: 'group'; id: string; members: TranscriptItem[] }
+
+/**
+ * 不参与分组的工具：它们各自是一整条子会话的入口，不是一次普通调用。
+ *
+ * `workflow` 那张图和 `subagent` 那段产出正是这一轮里最该一眼看到的东西，
+ * 卷进工具组的折叠里就等于没有——实测过一次：一张四节点的图被并进
+ * 「修改 2 个待办，运行 1 个编排，查询 1 个文件」那一行，图一个节点都看不见。
+ */
+const STANDALONE = new Set(['subagent', 'workflow'])
 
 export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
   const out: RenderItem[] = []
@@ -85,6 +95,11 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
       // 折叠起来就看不见了——而它恰恰是要一眼扫到的那一行。
       flush()
       out.push({ kind: 'run', id: item.id, item })
+      continue
+    }
+    if (item.kind === 'tool' && STANDALONE.has(item.toolName ?? '')) {
+      flush()
+      out.push({ kind: 'tool', id: item.id, item })
       continue
     }
     segment.push(item)

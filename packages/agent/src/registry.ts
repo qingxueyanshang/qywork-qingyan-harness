@@ -77,8 +77,10 @@ export interface DelegatePort {
   run(input: {
     target: string
     task: string
+    /** 用户点名了模型时才有；不给就跟当前会话同一个。 */
+    model?: string
     signal: AbortSignal
-  }): Promise<{ ok: boolean; output: string; error?: string }>
+  }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: string }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
    *
@@ -92,7 +94,14 @@ export interface DelegatePort {
    */
   runGraph(input: {
     goal: string
-    nodes: { id: string; agent: string; task: string; needs?: string[]; passInput?: boolean }[]
+    nodes: {
+      id: string
+      agent: string
+      task: string
+      needs?: string[]
+      passInput?: boolean
+      model?: string
+    }[]
     runId: string
     stepId: string
     signal: AbortSignal

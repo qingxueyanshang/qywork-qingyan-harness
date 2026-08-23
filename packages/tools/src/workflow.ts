@@ -30,6 +30,7 @@ interface NodeArg {
   task: string
   needs?: string[]
   passInput?: boolean
+  model?: string
 }
 
 export const workflowTool: ToolSpec = {
@@ -75,6 +76,12 @@ export const workflowTool: ToolSpec = {
             passInput: {
               type: 'boolean',
               description: 'false = 依赖只管顺序，不把上游产出带给它。默认带。',
+            },
+            model: {
+              type: 'string',
+              description:
+                '**只在用户点名了模型时才填**：写模型 id，同一个 id 挂在多个接口下时写 接口/模型。' +
+                '不填 = 跟当前会话同一个模型。外部 CLI 节点填了会被拒。',
             },
           },
           required: ['id', 'task'],
@@ -132,6 +139,7 @@ export const workflowTool: ToolSpec = {
         task,
         ...(Array.isArray(n.needs) ? { needs: n.needs.map(String) } : {}),
         ...(n.passInput === false ? { passInput: false } : {}),
+        ...(typeof n.model === 'string' && n.model.trim() ? { model: n.model.trim() } : {}),
       })
     }
 

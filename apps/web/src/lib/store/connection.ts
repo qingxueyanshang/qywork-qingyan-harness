@@ -550,48 +550,19 @@ interface StoredStep {
   createdAt: number
 }
 
-/**
- * 重建完整会话投影。
- *
- * 必须把 **run 的 steps 也折回来**，而不是只拉 messages——工具调用只存在于 steps 里，
- * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，用户会以为 agent 什么都没干过。
- *
- * 折叠顺序沿用后端的口径：每条 user 消息之后，插入归属于它的那个 run 的 steps。
- */
-export async function reloadActiveConversation(): Promise<void> {
-  const id = state.activeConversation
-  if (!id) return
-  // 整段重拉之前把积压**丢掉而不是冲出去**：那段字属于重拉之前的那份
-  // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
-  discardPace()
+/** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
+interface Folded {
+  messages: StoredMessage[]
+  runs: StoredRun[]
+  stepsByRun: Map<string, StoredStep[]>
+}
 
-  const [{ messages }, { runs }, ctx, goal, ask] = await Promise.all([
+/** 按会话 id 把那三样拉回来。子会话与当前会话走同一条路——读接口不按 source 过滤。 */
+async function fetchConversation(id: string): Promise<Folded> {
+  const [{ messages }, { runs }] = await Promise.all([
     client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
     client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
-    // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
-    // 切一次会话面板就空了，而用户恰恰是回头看的时候才想知道被谁占的。
-    // 拉失败不影响会话本身能不能打开，退化成没有面板。
-    client
-      .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
-      .then((r) => r.context)
-      .catch(() => null),
-    // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
-    // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
-    // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
-    client
-      .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
-      .then((r) => r.goal)
-      .catch(() => null),
-    // 正在等拍板的那一次授权。同理，而且这一条不读回来的代价最重：
-    // `permission.request` 只在发起那一刻广播一次，界面重建之后卡就没了，
-    // 服务端那个 promise 还在等——一轮卡着不动、没有任何可点的东西，
-    // 五分钟后按拒绝超时。
-    client
-      .api<{ permission: PermissionAsk | null }>(`/api/conversations/${id}/permission`)
-      .then((r) => r.permission)
-      .catch(() => null),
   ])
-
   // 并行取每个 run 的 steps：串行拉在有几十轮的会话上会明显卡顿。
   const stepsByRun = new Map<string, StoredStep[]>()
   await Promise.all(
@@ -600,7 +571,14 @@ export async function reloadActiveConversation(): Promise<void> {
       stepsByRun.set(r.id, steps)
     }),
   )
+  return { messages, runs, stepsByRun }
+}
 
+/**
+ * 折成会话流。**当前会话与右侧面板里那条只读子会话共用这一份**——
+ * 两处各折一遍的话，工具卡的折叠口径迟早在两边漂开。
+ */
+function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[] {
   const runsByUserMessage = new Map<string, StoredRun[]>()
   for (const r of runs) {
     if (!r.userMessageId) continue
@@ -654,6 +632,62 @@ export async function reloadActiveConversation(): Promise<void> {
       if (!alreadyHasText) items.push({ id: m.id, kind: 'text', text: m.content })
     }
   }
+  return items
+}
+
+/**
+ * 只读投影另一条会话，给右侧面板里的子会话页用。
+ *
+ * 子 agent 的会话不在会话列表里（`source='workflow'`），点开它的入口只有工具卡上
+ * 带回来的那个 id；而它一旦跑完就不再有事件，投影一次即可，不需要订阅。
+ */
+export async function projectConversation(id: string): Promise<TranscriptItem[]> {
+  return foldTranscript(await fetchConversation(id))
+}
+
+/**
+ * 重建完整会话投影。
+ *
+ * 必须把 **run 的 steps 也折回来**，而不是只拉 messages——工具调用只存在于 steps 里，
+ * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，用户会以为 agent 什么都没干过。
+ *
+ * 折叠顺序沿用后端的口径：每条 user 消息之后，插入归属于它的那个 run 的 steps。
+ */
+export async function reloadActiveConversation(): Promise<void> {
+  const id = state.activeConversation
+  if (!id) return
+  // 整段重拉之前把积压**丢掉而不是冲出去**：那段字属于重拉之前的那份
+  // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
+  discardPace()
+
+  const [folded, ctx, goal, ask] = await Promise.all([
+    fetchConversation(id),
+    // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
+    // 切一次会话面板就空了，而用户恰恰是回头看的时候才想知道被谁占的。
+    // 拉失败不影响会话本身能不能打开，退化成没有面板。
+    client
+      .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
+      .then((r) => r.context)
+      .catch(() => null),
+    // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
+    // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
+    // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
+    client
+      .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
+      .then((r) => r.goal)
+      .catch(() => null),
+    // 正在等拍板的那一次授权。同理，而且这一条不读回来的代价最重：
+    // `permission.request` 只在发起那一刻广播一次，界面重建之后卡就没了，
+    // 服务端那个 promise 还在等——一轮卡着不动、没有任何可点的东西，
+    // 五分钟后按拒绝超时。
+    client
+      .api<{ permission: PermissionAsk | null }>(`/api/conversations/${id}/permission`)
+      .then((r) => r.permission)
+      .catch(() => null),
+  ])
+
+  const { runs, stepsByRun } = folded
+  const items = foldTranscript(folded)
 
   // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
   // 于是标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的

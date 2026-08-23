@@ -139,7 +139,7 @@ async function main(): Promise<number> {
         conversationId,
         content:
           '这个目录下有 a.txt / b.txt / c.txt / d.txt，每个文件里有一个编号。你自己一个文件都不要读，全部交给子 agent：\n' +
-          '1. 先用 subagent 起一个临时子 agent（不要指定 agent），让它读 a.txt 并报回编号；\n' +
+          `1. 先用 subagent 起一个临时子 agent（不要指定 agent），让它读 a.txt 并报回编号，这一个点名用 ${config.active.model} 模型；\n` +
           '2. 再用 workflow 起三个并行的临时子 agent（节点都不要写 agent），分别读 b.txt、c.txt、d.txt 并各自报回编号；\n' +
           '最后把四个编号写成一行给我。',
       }),
@@ -193,6 +193,20 @@ async function main(): Promise<number> {
       ),
       subagentCalls.map((t) => t.outcome?.message),
     )
+
+    const soloChild = (
+      subagentCalls.at(-1)?.outcome?.data as { conversationId?: string } | undefined
+    )?.conversationId
+    check('单发把子会话 id 带回来了', typeof soloChild === 'string' && soloChild.length > 0)
+    if (soloChild) {
+      // 点名的模型要盖过父会话那一对。这一条与下面「跟着父会话跑」是同一件事的两面：
+      // 两条都在才说明优先级真的成立，而不是两处碰巧取到同一个值。
+      check(
+        `点名的模型压过父会话（${config.active.model}）`,
+        getConversation(store, soloChild as ConversationId)?.model === config.active.model,
+        getConversation(store, soloChild as ConversationId)?.model,
+      )
+    }
 
     process.stdout.write('\n一张图铺三个\n')
     check('workflow 派出去了', workflowCalls.length > 0)
