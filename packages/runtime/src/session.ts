@@ -1026,7 +1026,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
          */
         maxOutputTokens: willThink
           ? adapter.spec.maxOutputTokens
-          : Math.min(adapter.spec.maxOutputTokens, budgetTokens),
+          : Math.min(adapter.spec.maxOutputTokens ?? budgetTokens, budgetTokens),
         ...(effort ? { effort } : {}),
         signal: ac.signal,
       })) {

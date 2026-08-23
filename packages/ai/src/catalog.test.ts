@@ -188,6 +188,18 @@ describe('模型库覆盖', () => {
     expect(applySpecOverride(unknown, { input: 1, output: 2 }).catalogued).toBe(true)
   })
 
+  /**
+   * 未收录模型的窗口默认值。
+   *
+   * 锁的是**方向**不是那个具体的数：给小了每轮提前压缩，白花钱又丢上下文，
+   * 而且完全静默——没有任何东西会报「你压早了」。
+   */
+  test('未收录模型的窗口给 256K，且能被那一格改掉', () => {
+    const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
+    expect(unknown.contextWindow).toBe(256_000)
+    expect(applySpecOverride(unknown, { contextWindow: 1_000_000 }).contextWindow).toBe(1_000_000)
+  })
+
   test('不传覆盖时原样返回', () => {
     expect(applySpecOverride(opus(), undefined)).toEqual(opus())
   })

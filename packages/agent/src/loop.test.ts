@@ -10,7 +10,7 @@ import {
 import type { AgentEvent, ContextBreakdown } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
-import { UNAVAILABLE_BACKOFF_MS } from './loop.ts'
+import { MAX_RESENDS, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
 import { ToolRegistry, type ToolSpec } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 吐出预设的一轮。 */
@@ -1364,7 +1364,7 @@ describe('注册表是工具的唯一权威', () => {
  *
  * 这一组锁三件事：**账本必须落终态**、**零输出才重发**、**重发过要说出来**。
  */
-describe('传输断了：落终态、无痕重发一次、说清形状', () => {
+describe('传输断了：落终态、无痕重发、说清形状', () => {
   /*
    * 退避是真的在等，`reject` 那几条会让这个文件多跑十秒。
    *
@@ -1489,7 +1489,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     return { rec, events }
   }
 
-  test('零输出的断流：原样重发一次，第二次成功就当无事发生', async () => {
+  test('零输出的断流：原样重发，第二次成功就当无事发生', async () => {
     const { rec, events } = await collect(scriptedAdapter(['break', 'ok']))
 
     // 两行账，`retry_index` 0 和 1。顶掉上一行的话「真的发过两次」就不见了。
@@ -1515,7 +1515,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
   })
 
-  test('上游自报暂时不可用：等一下重发一次，第二次成功就当无事发生', async () => {
+  test('上游自报暂时不可用：等一下重发，第二次成功就当无事发生', async () => {
     const { rec, events } = await collect(scriptedAdapter(['reject']))
 
     // 不重发的代价不是省钱：用户照样要手动继续，那一次付的是同一笔长 prompt 的钱，
@@ -1536,12 +1536,12 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
   })
 
   test('重发后还是不可用：正文不许带传输读数——上游明确答复过，请求落地了', async () => {
-    const { events } = await collect(scriptedAdapter(['reject', 'reject']))
+    const { events } = await collect(scriptedAdapter(Array(MAX_RESENDS + 1).fill('reject')))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('服务端暂时不可用')
-    expect(message).toContain('已自动重发一次')
+    expect(message).toContain(`已自动重发 ${MAX_RESENDS} 次`)
     // 「发出后 N 秒内没有收到任何数据」是传输层的读数，给它拼上等于告诉用户请求没发出去。
     expect(message).not.toMatch(/没有收到任何数据/)
   })
@@ -1553,7 +1553,7 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
    * 样本正文 0 字、tool_calls 0 片段，全部断在 reasoning 中途。半截思考不进模型
    * 视图，所以这一档照样属于「模型可见输出为零」，该重发。
    */
-  test('断在思考里：照样重发一次，第二次成功就当无事发生', async () => {
+  test('断在思考里：照样重发，第二次成功就当无事发生', async () => {
     const { rec, events } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
 
     expect(rec.opened).toEqual([0, 1])
@@ -1572,12 +1572,14 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
   test('重发后新思考另开一条 step，不拼进死掉那条', async () => {
     // 两次都断：第二次的思考必须落在一条新 step 上。`open` 不复位的话
     // `stepFor` 会命中旧 id，两段无关生成被 `appendText` 拼成一条。
-    const { rec } = await collect(scriptedAdapter(['break-after-thinking', 'break-after-thinking']))
+    const { rec } = await collect(
+      scriptedAdapter(['break-after-thinking', 'break-after-thinking', 'ok']),
+    )
 
     expect(rec.thinking).toHaveLength(2)
     expect(rec.thinking[0]).not.toBe(rec.thinking[1])
-    // 第二次不再重发（每轮一枚闩），所以只有第一次那条被标失败。
-    expect(rec.failed).toEqual([rec.thinking[0] as string])
+    // 两次都断，两条都属于被丢弃的生成，都要落失败终态。
+    expect(rec.failed).toEqual(rec.thinking)
   })
 
   test('已经吐过字就不重发——重发是重新生成，用户会看到两段不一样的话', async () => {
@@ -1588,15 +1590,53 @@ describe('传输断了：落终态、无痕重发一次、说清形状', () => {
     expect(err?.type === 'run.error' && err.code).toBe('network_error')
   })
 
-  test('重发过还是断：正文要带现场读数，并说出重发过', async () => {
-    const { events } = await collect(scriptedAdapter(['break', 'break']))
+  test('重发过还是断：正文要带现场读数，并说出重发了几次', async () => {
+    const { events } = await collect(scriptedAdapter(Array(MAX_RESENDS + 1).fill('break')))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    // 分类短语来自 errors.ts，读数与「重发过」由 loop 补——三段都要在。
+    // 分类短语来自 errors.ts，读数与「重发了几次」由 loop 补——三段都要在。
     expect(message).toContain('连接被断开')
     expect(message).toMatch(/没有收到任何数据/)
-    expect(message).toContain('已自动重发一次')
+    expect(message).toContain(`已自动重发 ${MAX_RESENDS} 次`)
+  })
+
+  /*
+   * 原始失败形状：`ox-alpha-free` 连断 4 次、第 5 次成功。重发一次接不住的正是
+   * 这种连断——锁的是「第 5 次还在重发」，不是「重发过」。
+   */
+  test(`连断 ${MAX_RESENDS} 次：额度用满之前一直重发，最后一次成功就当无事发生`, async () => {
+    const { rec, events } = await collect(
+      scriptedAdapter([...Array(MAX_RESENDS).fill('break'), 'ok']),
+    )
+
+    // 账本上每一次都单独一行：真的发过 MAX_RESENDS + 1 次。
+    expect(rec.opened).toEqual([...Array(MAX_RESENDS + 1).keys()])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('额度用满就不再重发：第 MAX_RESENDS + 1 次断流直接报错', async () => {
+    const { rec } = await collect(scriptedAdapter(Array(MAX_RESENDS + 2).fill('break')))
+
+    expect(rec.opened).toHaveLength(MAX_RESENDS + 1)
+  })
+
+  // 额度对重发表里每个码一视同仁，上游答复的不可用也走同一个数。
+  test('上游连报不可用：同样重发到额度用满', async () => {
+    const { rec } = await collect(scriptedAdapter(Array(MAX_RESENDS + 2).fill('reject')))
+
+    expect(rec.opened).toHaveLength(MAX_RESENDS + 1)
+  })
+
+  test('每重发一次报一次进度：界面靠它显示「正在重连 N / M」', async () => {
+    const { events } = await collect(scriptedAdapter(['break', 'break', 'ok']))
+
+    const retrying = events.filter((e) => e.type === 'run.retrying')
+    expect(retrying.map((e) => (e.type === 'run.retrying' ? e.attempt : 0))).toEqual([1, 2])
+    // 上限由事件带给界面，前端不自己写死这个数。
+    expect(retrying.every((e) => e.type === 'run.retrying' && e.max === MAX_RESENDS)).toBe(true)
   })
 
   test('吐过字的断流：读数报的是「多久没动静」，不是「一个字节都没有」', async () => {

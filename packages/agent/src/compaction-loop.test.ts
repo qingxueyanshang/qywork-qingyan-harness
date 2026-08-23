@@ -27,7 +27,7 @@ import {
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
-import { AgentLoop, softLimit, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
+import { AgentLoop, MAX_RESENDS, softLimit, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
 import { ToolRegistry } from './registry.ts'
 
 /*
@@ -491,10 +491,10 @@ describe('发送前检查：唯一的压缩触发', () => {
 
   test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
-    // 拒两次：参数错误与「上游暂时不可用」同归 `provider_unavailable`，会被自动重发
-    // 一次（代价写在 `loop.ts` 的 `RESENDABLE` 上）。只拒一次的话第二次就成功了，
-    // 断言的是重发路径而不是上报路径。
-    const { adapter } = rejectingAdapter(2, paramError)
+    // 把重发额度拒满再多拒一次：参数错误与「上游暂时不可用」同归
+    // `provider_unavailable`，会被自动重发（代价写在 `loop.ts` 的 `RESENDABLE` 上）。
+    // 拒的次数不够的话某一次就成功了，断言的是重发路径而不是上报路径。
+    const { adapter } = rejectingAdapter(MAX_RESENDS + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')
     expect(comp.state.runs).toBe(0)
     expect(events.some((e) => e.type === 'run.error')).toBe(true)

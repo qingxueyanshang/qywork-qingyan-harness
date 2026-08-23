@@ -453,6 +453,71 @@ describe('事件按会话归属过滤', () => {
     expect(state.busyConversations).toEqual([])
   })
 
+  /*
+   * ── 断流重发的那句「正在重连 N / M」 ──
+   *
+   * 服务端不发配对的「重发结束」事件（理由在 `RunRetryingEvent` 上），收场全靠
+   * `RESUMED` 那张表 + 入口那一处判断。这一组锁的就是收场：不收场的表现是
+   * 整轮跑完了，阶段那一格还钉在「正在重连 3 / 5」。
+   */
+  const retryFrame = (seq: number, attempt: number) =>
+    ({
+      seq,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'run.retrying', runId: 'run_1', attempt, max: 5 },
+    }) as never
+
+  test('重发的进度照收，界面据此把阶段改口', () => {
+    reset('cv_now')
+    setState({ retry: null })
+    applyEvent(retryFrame(1, 3))
+    expect(state.retry).toEqual({ attempt: 3, max: 5 })
+  })
+
+  test('新那次一出思考就收场——不收场的话整轮跑完还钉在「正在重连」上', () => {
+    reset('cv_now')
+    setState({ retry: null })
+    applyEvent(retryFrame(1, 1))
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_2', delta: '重来一遍' },
+    } as never)
+    expect(state.retry).toBe(null)
+  })
+
+  test('工作区级事件不收场——后台一次文件改动不该把这句话抹掉', () => {
+    reset('cv_now')
+    setState({ retry: null })
+    applyEvent(retryFrame(1, 2))
+    applyEvent({
+      seq: 2,
+      at: 0,
+      event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
+    } as never)
+    expect(state.retry).toEqual({ attempt: 2, max: 5 })
+  })
+
+  test('额度用满整轮报错，也要收场', () => {
+    reset('cv_now')
+    setState({ retry: null })
+    applyEvent(retryFrame(1, 5))
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.error',
+        runId: 'run_1',
+        code: 'network_error',
+        message: '连接被断开，已自动重发 5 次，仍然失败',
+      },
+    } as never)
+    expect(state.retry).toBe(null)
+  })
+
   /** 别的会话开跑不算这条会话「有动静」——算进去的话静默检测永远报不出来。 */
   test('别的会话的忙闲不刷新「上一次有动静」', () => {
     reset('cv_now')

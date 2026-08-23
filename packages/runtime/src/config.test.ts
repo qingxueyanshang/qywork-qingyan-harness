@@ -584,7 +584,13 @@ describe('模型库一次性迁移', () => {
         }
       : base
     return declared?.maxOutputTokens
-      ? { ...probed, maxOutputTokens: Math.min(declared.maxOutputTokens, probed.maxOutputTokens) }
+      ? {
+          ...probed,
+          maxOutputTokens: Math.min(
+            declared.maxOutputTokens,
+            probed.maxOutputTokens ?? declared.maxOutputTokens,
+          ),
+        }
       : probed
   }
 

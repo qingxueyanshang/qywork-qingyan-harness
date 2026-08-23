@@ -32,13 +32,24 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
 
 /**
  * 思考开启时给输出留的最小预算。低于这个数，思考稍微长一点正文就没地方写了，
  * 表现为「回答说到一半没了」而不是一个明确的错误——最难排查的那类故障。
  */
 const MIN_TOKENS_WHEN_THINKING = 16_000
+
+/**
+ * 谁都不申报时这条协议只能自己填的那个数。
+ *
+ * **这条协议的 `max_tokens` 是必填的**，所以「不申报」在这里没有对应写法——
+ * 另两条协议整个不发这个字段，这条不行。取 64K 是 Anthropic 系当前的普遍上限；
+ * 端点真实上限更低时换来的是一个带原话的 400，而不是静默截断。
+ *
+ * 只在未收录模型上用得到。知道确切上限就在模型库那一格填 `maxOutputTokens`。
+ */
+const UNDECLARED_MAX_TOKENS = 64_000
 
 export class AnthropicAdapter implements LlmAdapter {
   readonly kind = 'anthropic_messages' as const
@@ -237,8 +248,8 @@ export class AnthropicAdapter implements LlmAdapter {
    * thinksByDefault 抬高下限来消灭这类静默截断。
    */
   private resolveMaxTokens(req: ChatRequest, thinking: { type: string } | undefined): number {
-    const ceiling = this.spec.maxOutputTokens
-    let want = Math.min(req.maxOutputTokens, ceiling)
+    const ceiling = this.spec.maxOutputTokens ?? UNDECLARED_MAX_TOKENS
+    let want = outputCap(req.maxOutputTokens, this.spec.maxOutputTokens) ?? ceiling
     const willThink = thinking !== undefined || this.spec.thinksByDefault
     if (willThink) {
       want = Math.max(want, Math.min(MIN_TOKENS_WHEN_THINKING, ceiling))

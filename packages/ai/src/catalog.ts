@@ -49,7 +49,15 @@ export interface ModelSpec {
    */
   vendor: string | null
   contextWindow: number
-  maxOutputTokens: number
+  /**
+   * 这个模型单次最多能输出多少 token。**`null` = 没测过，不申报。**
+   *
+   * `null` 与「上限是某个小数字」是两件事，不许合并（同 `catalogued` 那条）：
+   * 编一个数写在这里，模型的长输出会被静默截在那个数上，用户只看到
+   * `stop_reason: max_tokens`。OpenAI 系协议下 `null` 表现为整个不发这个字段，
+   * 由端点用自己的默认；Anthropic 协议要求这个字段，见 `anthropic.ts` 的兜底。
+   */
+  maxOutputTokens: number | null
   pricing: Pricing
   thinking: ThinkingMode
   /**
@@ -627,8 +635,22 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 想开就在配置里那一格填 `cacheRouting`，或者跑 `qy probe --save`。
      */
     cacheRouting: 'none',
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
+    /*
+     * **判错的两个方向代价不对等，所以往大的一侧给。** 给小了每轮提前压缩，
+     * 白花钱又丢上下文，而且完全静默；给大了撞窗拿到的是带 `capacity` 的
+     * `context_overflow`，`loop.ts` 据它压一次再重发，有终态。
+     *
+     * 取 256K 不取 1M：1M 是当前发布里最常见的标称档，但中转站按自己的策略截、
+     * 本地 ollama 按 `num_ctx` 给，实际可用窗口小于标称是常态。
+     * 知道确切窗口就在模型库那一格填 `contextWindow`。
+     */
+    contextWindow: 256_000,
+    /*
+     * **不申报输出上限。** 未收录 = 没测过，而这一格编一个数的代价是静默截断：
+     * 8192 之上的正常回答会在那里断掉，界面上只有一个 `max_tokens` 停止原因。
+     * 想钉死就在模型库那一格填 `maxOutputTokens`。
+     */
+    maxOutputTokens: null,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
     thinking: 'none',
     /*

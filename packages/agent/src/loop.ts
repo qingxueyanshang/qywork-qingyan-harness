@@ -317,7 +317,23 @@ function idleTimeoutFor(effort: ChatRequest['effort']): number {
 export const UNAVAILABLE_BACKOFF_MS = 3_000
 
 /**
- * 会自动重发一次的失败，值是重发前的等待毫秒。
+ * 一轮之内最多原样重发几次。**对表里每个码一视同仁。**
+ *
+ * **这个数只有这一处**，界面上那句「正在重连 N / M」的 M 由 `run.retrying` 事件
+ * 带过去，不许在前端再写一遍。
+ *
+ * 取 5 的依据是 2026-08-22 对 `opencode.ai/zen/go/v1` 的 `ox-alpha-free` 实测：
+ * 长思考请求 11/11 在 `reasoning_content` 中途干净 EOF（无 `finish_reason`、
+ * 无 `[DONE]`、无网络错误），短请求则正常收尾。断的是那条路线不是链路，
+ * 重发一次接不住；而每次尝试本身要跑几十秒到两分钟，5 次也不构成对上游的连打。
+ *
+ * 重发的门槛在尝试循环里，判的是**模型可见输出为零**——正文吐过字就一次都不重发，
+ * 这个上限管不到那种情形。
+ */
+export const MAX_RESENDS = 5
+
+/**
+ * 会自动重发的失败，值是重发前的等待毫秒。次数上限见 `MAX_RESENDS`。
  *
  * **传输层等 0，上游明确答复的不可用要等。** 连接坏了，我们连「它收没收到」都不知道，
  * 原样立刻再发是唯一的答案；`provider_unavailable` 是上游亲口说的「暂时不行」，
@@ -333,8 +349,9 @@ export const UNAVAILABLE_BACKOFF_MS = 3_000
  * `rate_limited` 不在表里：429 该按 provider 给的 `Retry-After` 等，不是固定值。
  *
  * 已知代价：`provider_unavailable` 同时装着 4xx 参数错误（`errors.ts` 的 400/422 一支），
- * 那类重发必然拿回同一个拒绝，白等一次退避、白付一次长 prompt。接受它是因为参数错误
- * 由配置决定，改一次就不再出现；而临时不可用是随机的，不救就是丢掉整轮已完成的工作。
+ * 那类重发必然拿回同一个拒绝——按 `MAX_RESENDS` 就是空等 5 轮退避（15 秒）、
+ * 白付 5 次长 prompt。接受它是因为参数错误由配置决定，改一次就不再出现；
+ * 而临时不可用是随机的，不救就是丢掉整轮已完成的工作。
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['network_error', 0],
@@ -439,18 +456,23 @@ export function softLimit(spec: { contextWindow: number }): number {
 }
 
 /**
- * 这一轮申报多少输出上限。
+ * 这一轮申报多少输出上限。`null` = 不申报。
  *
  * 兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，所以申报回答的是「这一轮还装得下
  * 多少输出」，不是「这个模型最多能输出多少」。**静态按规格上限申报**会让
  * 高占用请求被 provider 直接拒——1M 档上那是每次都挂着 384K 的申报。
  *
+ * 规格上限是 `null`（未收录 = 没测过）时**整轮不申报**，不拿窗口余量顶上去：
+ * 那个数在没测过的端点上一样是编的，发出去换来的是一个 400，而不申报换来的
+ * 是端点自己的默认。
+ *
  * `max(1, …)` 是除零保护，不是可调的余量。
  */
 function declaredMaxOutput(
-  spec: { contextWindow: number; maxOutputTokens: number },
+  spec: { contextWindow: number; maxOutputTokens: number | null },
   occupancy: number,
-): number {
+): number | null {
+  if (spec.maxOutputTokens === null) return null
   return Math.min(spec.maxOutputTokens, Math.max(1, spec.contextWindow - occupancy))
 }
 
@@ -829,7 +851,7 @@ export class AgentLoop {
 `)
 
         /*
-         * ── 发送与消费：一次尝试，断了原样再来一次 ──
+         * ── 发送与消费：一次尝试，断了原样再来，至多 `MAX_RESENDS` 次 ──
          *
          * **重发的窗口是「模型可见输出为零」**：正文一个字都没有、也没有 tool_calls。
          * 重发是重新生成，模型不会接着上次那半截往下写；半截**正文**已经吐出去再重发，
@@ -850,11 +872,12 @@ export class AgentLoop {
         /** 本轮已经开过几行账。`uq_provider_run_turn` 的第三段取的就是它。 */
         let sendIndex = 0
         /**
-         * 网络失败已经替他自动重发过一次。**不要拿 `sendIndex` 代替它判断**：
-         * 那个数还会被压缩重发推进，共用一个数等于压完重发就把这条闩扣上，
-         * 重发那次再断线就不再重试，界面上还会多出一句「已自动重发一次」。
+         * 这一轮自动重发过几次。上限 `MAX_RESENDS`。
+         *
+         * **不要拿 `sendIndex` 代替它计数**：那个数还会被压缩重发推进，共用一个数
+         * 等于压一次就吃掉一次重发额度，界面上报的次数也跟着虚高。
          */
-        let resentOnNetworkError = false
+        let resends = 0
         for (;;) {
           attemptThinking = []
           // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
@@ -1126,8 +1149,12 @@ export class AgentLoop {
               }\n`,
             )
 
-            if (!resentOnNetworkError && assistantText === '' && calls.length === 0) {
-              resentOnNetworkError = true
+            /*
+             * **额度是整轮的，不按码各记一份。** 一轮里先断流再被拒的话，前面用掉的
+             * 次数照算——那一轮已经真的发出去过那么多次，换个码不该把账清零。
+             */
+            if (resends < MAX_RESENDS && assistantText === '' && calls.length === 0) {
+              resends++
               /*
                * 重发是**重新生成**，不是接着上次那半截写。所以本次尝试的痕迹要一起处置：
                *
@@ -1141,6 +1168,13 @@ export class AgentLoop {
               persist.failThinkingSteps(attemptThinking)
               open = null
               thinkingText = ''
+              // 界面此刻的末条是死掉那次的半截思考，不说一声它会一直显示「正在思考…」。
+              yield {
+                type: 'run.retrying',
+                runId: input.runId,
+                attempt: resends,
+                max: MAX_RESENDS,
+              }
               // 等待必须可中断：干等的这几秒里用户点停止，不拽回来就是按钮没反应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue
@@ -1165,7 +1199,7 @@ export class AgentLoop {
                         thinkingText.length + assistantText.length,
                       ),
                     ]),
-                ...(resentOnNetworkError ? ['已自动重发一次，仍然失败'] : []),
+                ...(resends > 0 ? [`已自动重发 ${resends} 次，仍然失败`] : []),
               ].join('，'),
               provider: pe.provider,
               cause: err,

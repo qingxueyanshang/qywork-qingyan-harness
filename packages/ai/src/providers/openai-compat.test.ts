@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { lookupModel } from '../catalog.ts'
+import { lookupModel, unknownModel } from '../catalog.ts'
 import type { ProviderProfile, ToolSchema } from '../types.ts'
 import {
   createThinkingSplitter,
@@ -67,6 +67,58 @@ async function send(
   }
   return bodies[0]!
 }
+
+/** 申报值和规格上限都能单独给的发送口。上面那个 `send` 固定 64，测不到不申报那一档。 */
+async function sendWithCap(
+  model: string,
+  requested: number | null,
+  spec = lookupModel(model, 'openai_chat_completions'),
+): Promise<Record<string, unknown>> {
+  bodies.length = 0
+  const adapter = new OpenAICompatAdapter(
+    { kind: 'openai_chat_completions', apiKey: 'sk-x', model, baseUrl: base },
+    spec,
+  )
+  for await (const _ of adapter.stream({
+    model,
+    system: [],
+    messages: [{ role: 'user', content: '嗨' }],
+    tools: [],
+    maxOutputTokens: requested,
+    signal: new AbortController().signal,
+  })) {
+    // 读完即可。
+  }
+  return bodies[0]!
+}
+
+/*
+ * ── 输出上限：没测过就不申报 ──
+ *
+ * 原始失败形状：未收录模型被灌一个编出来的 8192，长回答在那里静默截断，
+ * 用户只看到一个 `max_tokens` 停止原因，而没有任何地方说过这个数是我们填的。
+ */
+describe('输出上限：没测过就整个字段不发', () => {
+  test('未收录模型不申报，body 里没有 max_tokens', async () => {
+    const spec = unknownModel('中转站上的某个模型', 'openai_chat_completions')
+    const body = await sendWithCap('中转站上的某个模型', null, spec)
+    expect('max_tokens' in body).toBe(false)
+  })
+
+  test('收录的模型照常申报，且按规格上限钳住', async () => {
+    const body = await sendWithCap('deepseek-v4-flash', 999_999_999)
+    expect(body.max_tokens).toBe(
+      lookupModel('deepseek-v4-flash', 'openai_chat_completions').maxOutputTokens,
+    )
+  })
+
+  /** 探针那一档：规格没测过，但调用方明确给了数——照发，否则每次探测都变成一整篇回答。 */
+  test('规格没测过而调用方给了数：照发那个数', async () => {
+    const spec = unknownModel('中转站上的某个模型', 'openai_chat_completions')
+    const body = await sendWithCap('中转站上的某个模型', 16, spec)
+    expect(body.max_tokens).toBe(16)
+  })
+})
 
 describe('DeepSeek 要两个字段一起发', () => {
   /**

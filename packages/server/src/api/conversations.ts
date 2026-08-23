@@ -89,7 +89,8 @@ export interface LibraryModel {
   id: string
   label: string
   contextWindow: number
-  maxOutputTokens: number
+  /** `null` = 这个模型没测过输出上限，请求里整个不发这一项。 */
+  maxOutputTokens: number | null
   input: number
   output: number
   /** 缓存命中价。 */
