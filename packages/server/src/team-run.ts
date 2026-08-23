@@ -1,173 +1,18 @@
 /**
- * Agent Team 编排的服务端侧。
+ * 编排里的一个成员怎么跑：起一条独立子会话，跑完把最终文本交回去。
  *
  * 成员会话的事件**不往父会话广播**——那些 runId 在父会话里不存在，前端会按
  * 陌生 runId 建出一条并不存在的 run。进度只由 `team.member` 事件表达。
+ *
+ * 调用方是派活端口（`delegate.ts`）：`subagent` 派一件、`workflow` 派一张图，
+ * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了，
+ * 理由见 `docs/plans/2026-08-23-workflow-图化编排.md`。
  */
 
-import type { AgentEvent, ConversationId, RunId, RunUsage } from '@qywork/core'
-import { acquireExtensions, collectSecrets, releaseExtensions, Session } from '@qywork/runtime'
-import { workspaceOf } from '@qywork/store'
+import type { ConversationId, RunUsage } from '@qywork/core'
+import { Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
-import { detectClis, TeamOrchestrator } from '@qywork/team'
-import { reject } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
-
-/**
- * 启动一轮 Agent Team 编排。
- *
- * 编排图与角色来自工作区的 `.qy/team.json`。指令只带目标——
- * 让配置只有一个来源，否则「界面上看到的编排」和「实际跑的编排」会分叉。
- *
- * 每个成员的进展通过 `team.member` 事件广播。人工门禁（`humanGates`）走
- * `permission.request` / `permission.resolve` 通道——**两模式改造后它是这条通道
- * 仅剩的生产者**：工具授权已由 `Session.decide()` 就地裁决，不再问用户。
- * 别看到「权限」二字就以为这里也死了。
- */
-export async function runTeam(
-  conversationId: ConversationId,
-  goal: string,
-  clientRequestId: string,
-  deps: CommandDeps,
-): Promise<void> {
-  if (!goal.trim()) {
-    reject(deps.ws, 'team.run', 'invalid_payload', '目标为空', clientRequestId)
-    return
-  }
-  if (deps.runs.isBusy(conversationId)) {
-    reject(deps.ws, 'team.run', 'conflict', '该会话已有任务在执行', clientRequestId)
-    return
-  }
-
-  // 跑在哪个目录下按会话查，理由与 `startRun` 里那段相同。
-  const workspaceRoot = workspaceOf(deps.store, conversationId)?.rootPath
-  if (!workspaceRoot) {
-    reject(
-      deps.ws,
-      'team.run',
-      'invalid_payload',
-      '这个会话找不到对应的项目目录，无法执行',
-      clientRequestId,
-    )
-    return
-  }
-
-  // 只读一下 team 配置就还回去。服务本身全程持有一份引用，
-  // 这里 acquire 只是为了拿到已加载好的那份，不是要延长它的寿命。
-  const ext = await acquireExtensions(workspaceRoot)
-  const team = ext.team
-  releaseExtensions(workspaceRoot)
-
-  if (team.roles.length === 0) {
-    // 没配就明确说没配，并指出配在哪。回一个空跑的成功会让用户以为功能坏了。
-    reject(
-      deps.ws,
-      'team.run',
-      'invalid_payload',
-      team.error ?? '未配置 Agent Team：在工作区 .qy/team.json 里定义 roles',
-      clientRequestId,
-    )
-    return
-  }
-
-  // 本机装了哪几家外部 CLI **在整轮开始时探一次**：一轮之内不重探，
-  // 否则同一张图里前后两个 `cli:` 节点可能一个探到一个没探到，结果无法复现。
-  const clis = await detectClis()
-
-  const controller = new AbortController()
-  const runId = `rn_team_${clientRequestId.slice(0, 8)}` as RunId
-  deps.runs.register({ runId, conversationId, controller, startedAt: Date.now() })
-
-  const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
-
-  // 编排的用量是各成员之和。
-  //
-  // 不能恒为 0：一轮编排可能烧掉比一次普通对话多得多的 token，
-  // 而账面显示 $0.0000 就是在骗人。
-  const total: RunUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedTokens: null,
-    cacheWriteTokens: null,
-    reasoningTokens: 0,
-    cost: 0,
-    // 成员可能跑在不同厂商上，币种未必一致。这里先记 USD，
-    // 下面 addUsage 遇到第一个非 USD 的成员就跟着它——**不换算**。
-    currency: 'USD',
-    turns: [],
-  }
-  const addUsage = (u: RunUsage) => {
-    total.inputTokens += u.inputTokens
-    total.outputTokens += u.outputTokens
-    total.reasoningTokens += u.reasoningTokens
-    // 币种不同就不合并金额：跨币种相加得到的是一个没有意义的数字。
-    // 编排里混用两家厂商时，这里只保留同币种那部分，并把币种钉在第一个非零的那家。
-    if (u.cost > 0) {
-      if (total.cost === 0) total.currency = u.currency
-      if (total.currency === u.currency) total.cost += u.cost
-    }
-    // 缓存命中是「有回报才累加」：全程 null 表示没有一个成员回报过，
-    // 累成 0 会让前端显示「缓存一次没命中」，那是个具体但错误的结论。
-    if (u.cachedTokens !== null) total.cachedTokens = (total.cachedTokens ?? 0) + u.cachedTokens
-    if (u.cacheWriteTokens !== null) {
-      total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + u.cacheWriteTokens
-    }
-    total.turns.push(...u.turns)
-  }
-
-  void (async () => {
-    try {
-      const orchestrator = new TeamOrchestrator(
-        {
-          name: 'workspace',
-          roles: team.roles,
-          rules: team.rules,
-          ...(team.plan.length ? { plan: team.plan } : {}),
-        },
-        {
-          workspaceRoot,
-          signal: controller.signal,
-          // 外部 CLI 后端要它自己的 key 才能干活，但 qywork 配置里那几把它一把用不上。
-          // 按值剥掉——多余的凭证没有理由出现在别人的进程里。
-          secrets: collectSecrets(deps.config),
-          runId,
-          emit,
-          resolveCli: (id) => clis.find((c) => c.id === id),
-          runBuiltin: (input) =>
-            runBuiltinMember(input, { deps, workspaceRoot, onUsage: addUsage }),
-          awaitHumanGate: async (nodeId, summary) =>
-            deps.runs.requestPermission({
-              runId,
-              conversationId,
-              toolName: 'team',
-              scope: `team:gate:${nodeId}`,
-              preview: summary,
-              action: { kind: 'run', objectLabel: '编排节点', target: nodeId } as never,
-            }),
-        },
-      )
-      const results = await orchestrator.run(goal)
-      const failed = results.filter((r) => r.status === 'failed').length
-      emit({
-        type: 'run.finished',
-        runId,
-        status: failed > 0 ? 'failed' : 'done',
-        stopReason: failed > 0 ? 'provider_error' : 'completed',
-        usage: total,
-        fileChanges: [],
-      })
-    } catch (err) {
-      emit({
-        type: 'run.error',
-        runId,
-        code: 'internal_error',
-        message: err instanceof Error ? err.message : String(err),
-      })
-    } finally {
-      deps.runs.unregister(runId)
-    }
-  })()
-}
 
 /**
  * 内置后端：用本进程的 agent 跑一个编排成员。

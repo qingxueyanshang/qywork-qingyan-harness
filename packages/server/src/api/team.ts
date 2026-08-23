@@ -50,7 +50,6 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
         description: r.description,
         ...(r.model ? { model: r.model } : {}),
       })),
-      plan: team.plan,
       rules: team.rules,
       error: team.error,
     })

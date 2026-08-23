@@ -36,7 +36,13 @@ import {
   stopReasonLabel,
   todosOf,
 } from '../lib/step-view.ts'
-import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import {
+  isRunning,
+  setState,
+  state,
+  type TranscriptItem,
+  type WorkflowNodeState,
+} from '../lib/store/index.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
@@ -223,8 +229,9 @@ const SILENT_MS = 30_000
 /**
  * 这一轮此刻在**哪个阶段**。
  *
- * 四态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复；外加一档「已 N 秒没有
- * 新数据」——它不是第五种阶段，是**前四种全都不再为真**时唯一诚实的说法。
+ * 五态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复 / 正在重连 N / M；
+ * 外加一档「已 N 秒没有新数据」——它不是第六种阶段，是**前五种全都不再为真**时
+ * 唯一诚实的说法。
  *
  * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
  * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、不重复——
@@ -263,6 +270,13 @@ function liveStatus(now: number): string {
    * 各写一份、迟早漂成两句话。
    */
   if (state.connection !== 'ready') return ''
+
+  /*
+   * 重发中的那一段：末条是死掉那次留下的半截思考，按流的位置判会说成「正在思考…」
+   * ——而此刻模型一个字都没在写。上限的数由事件带来，不在这里写死。
+   */
+  const retry = state.retry
+  if (retry) return `正在重连 ${retry.attempt} / ${retry.max}…`
 
   const since = state.lastEventAt ?? state.runStartedAt
   if (!state.permission && since !== null && now - since >= SILENT_MS) {
@@ -739,8 +753,96 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
   )
 }
 
+/**
+ * 编排的图卡。
+ *
+ * **形状来自参数，状态来自事件或结果。** 参数（`args.nodes`）随 `tool.started` 就到，
+ * 所以第一帧就能把整张图画全，等着跑的节点也在图上；状态活着的时候来自
+ * `team.member` 事件（`item.nodes`），刷新之后来自这次调用落库的结果
+ * （`outcome.data.nodes`）。两条路各管一段，不互相兜底——进度事件不落库。
+ *
+ * 按依赖分层排：同一层的并排（它们真的在并行跑），层与层之间一条竖线。
+ * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
+ */
+function WorkflowCard(props: { item: TranscriptItem }) {
+  const shape = (): { id: string; agent: string; needs: string[] }[] => {
+    const raw = props.item.args?.nodes
+    if (!Array.isArray(raw)) return []
+    return raw.map((n) => {
+      const o = (n ?? {}) as Record<string, unknown>
+      return {
+        id: String(o.id ?? ''),
+        agent: String(o.agent ?? ''),
+        needs: Array.isArray(o.needs) ? o.needs.map(String) : [],
+      }
+    })
+  }
+
+  const stateOf = (id: string) => {
+    const live = props.item.nodes?.find((n) => n.nodeId === id)
+    if (live) return { phase: live.phase, label: live.label, durationMs: live.durationMs }
+    const done = (props.item.outcome?.data as { nodes?: WorkflowNodeState[] } | undefined)?.nodes
+    const back = done?.find((n) => n.nodeId === id)
+    return back
+      ? { phase: back.phase, label: back.label ?? back.agent, durationMs: back.durationMs }
+      : null
+  }
+
+  /** 按依赖分层：一个节点落在「它所有上游的最深层 + 1」。 */
+  const layers = () => {
+    const nodes = shape()
+    const depth = new Map<string, number>()
+    const of = (id: string, seen: Set<string>): number => {
+      if (depth.has(id)) return depth.get(id)!
+      if (seen.has(id)) return 0
+      seen.add(id)
+      const n = nodes.find((x) => x.id === id)
+      const d = n?.needs.length ? Math.max(...n.needs.map((p) => of(p, seen))) + 1 : 0
+      depth.set(id, d)
+      return d
+    }
+    const out: (typeof nodes)[] = []
+    for (const n of nodes) {
+      const d = of(n.id, new Set())
+      const layer = out[d] ?? []
+      layer.push(n)
+      out[d] = layer
+    }
+    return out.filter(Boolean)
+  }
+
+  return (
+    <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
+      <div class="wf-goal">{String(props.item.args?.goal ?? '')}</div>
+      <For each={layers()}>
+        {(layer, i) => (
+          <>
+            <Show when={i() > 0}>
+              <div class="wf-link" />
+            </Show>
+            <div class="wf-layer">
+              <For each={layer}>
+                {(n) => {
+                  const st = () => stateOf(n.id)
+                  return (
+                    <div class="wf-node" classList={{ [st()?.phase ?? 'waiting']: true }}>
+                      <span class="wf-node-name">{st()?.label || n.agent}</span>
+                      <span class="wf-node-task truncate">{n.id}</span>
+                    </div>
+                  )
+                }}
+              </For>
+            </div>
+          </>
+        )}
+      </For>
+    </div>
+  )
+}
+
 function ToolCard(props: { item: TranscriptItem }) {
   const changes = () => fileDelta(props.item.outcome?.fileChanges)
+  if (props.item.toolName === 'workflow') return <WorkflowCard item={props.item} />
   return (
     <Fold
       failed={props.item.status === 'failure'}

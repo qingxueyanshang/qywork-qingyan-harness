@@ -28,8 +28,8 @@ import {
   type PermissionAsk,
   setState,
   state,
-  type TeamMemberState,
   type TranscriptItem,
+  type WorkflowNodeState,
 } from './state.ts'
 import { workspace } from './ui.ts'
 
@@ -115,6 +115,22 @@ const toolFrames = createFramer({ write: appendStdout, schedule })
  */
 const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
 
+/**
+ * 「正在重连」那句话的收场信号：重发的那一次真的开始出东西了，或者整轮结束了。
+ *
+ * 服务端不发配对的「重发结束」事件，理由在 `RunRetryingEvent` 上。所以收场判据
+ * 只有这一张表 + 入口那一处判断；**不要散到各 case 里**，那是三十次忘记的机会。
+ * 工作区级事件（git 状态、文件变更）不在表里：它们与这一轮的模型输出无关，
+ * 算进去的话后台一次文件改动就把这句话抹掉了。
+ */
+const RESUMED: ReadonlySet<AgentEvent['type']> = new Set([
+  'thinking.delta',
+  'text.delta',
+  'tool.started',
+  'run.error',
+  'run.finished',
+])
+
 /** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
 export function discardPace(): void {
   pacer.discard()
@@ -182,6 +198,9 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    */
   setState('lastEventAt', Date.now())
 
+  // 收场判据的唯一落点，理由见 `RESUMED`。
+  if (state.retry && RESUMED.has(ev.type)) setState('retry', null)
+
   /*
    * 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
    * 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
@@ -197,21 +216,28 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
   switch (ev.type) {
     case 'team.member':
+      // 进度落到那张图卡上。**没带 stepId 就整条丢弃**：一条会话里可能有好几张图卡，
+      // 认不出是哪一张时挂在任意一张上，用户看到的是另一件事的进度。
+      if (!ev.stepId) return
       setState(
         produce((s) => {
-          // 原地更新而不是追加：同一个成员会连发 spawned → working → done，
-          // 追加的话面板上会出现同一个角色的三行。
-          const i = s.teamMembers.findIndex((m) => m.memberId === ev.memberId)
-          const next: TeamMemberState = {
-            memberId: ev.memberId,
-            roleName: ev.roleName,
-            backend: ev.backend,
+          const card = s.transcript.find((t) => t.id === ev.stepId)
+          if (!card) return
+          const nodes = card.nodes ?? []
+          // 原地更新而不是追加：同一个节点会连发 spawned → working → done，
+          // 追加的话图上会出现同一个节点的三份。
+          const i = nodes.findIndex((n) => n.nodeId === ev.memberId)
+          const next: WorkflowNodeState = {
+            nodeId: ev.memberId,
+            agent: nodes[i]?.agent ?? ev.roleName,
+            label: ev.roleName,
             phase: ev.phase,
             ...(ev.summary ? { summary: ev.summary } : {}),
-            ...(ev.childConversationId ? { childConversationId: ev.childConversationId } : {}),
+            ...(ev.childConversationId ? { conversationId: ev.childConversationId } : {}),
           }
-          if (i >= 0) s.teamMembers[i] = next
-          else s.teamMembers.push(next)
+          if (i >= 0) nodes[i] = next
+          else nodes.push(next)
+          card.nodes = nodes
         }),
       )
       return
@@ -240,7 +266,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           // 清单整个消失，等模型下次整表提交才回来（`write_todos` 是整表语义，
           // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的东西
           // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
-          s.teamMembers = []
           s.lastRunId = ev.runId
           s.runStartedAt = Date.now()
           // 重试：把被接替那一轮的条目降透明度，而不是清空重来——
@@ -258,6 +283,14 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           }
         }),
       )
+      return
+
+    /*
+     * 断流后原样重发。这一格只改阶段那句话——死掉那次的思考条目留在原地，
+     * 它是用户判断「模型刚才想到哪了」的现场，抹掉它等于把重发变成一次静默倒带。
+     */
+    case 'run.retrying':
+      setState('retry', { attempt: ev.attempt, max: ev.max })
       return
 
     case 'text.delta':
@@ -630,7 +663,7 @@ export async function reloadActiveConversation(): Promise<void> {
   /*
    * **run 作用域的状态一律从这里派生，不靠事件残留。**
    *
-   * 这些字段（lastRunId / runStartedAt / todos / teamMembers / usage / context /
+   * 这些字段（lastRunId / runStartedAt / todos / usage / context /
    * permission）是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
    * transcript，它们会连同上一条会话的 run 一起留在界面上；而 `applyEvent`
    * 按 conversationId 丢弃非当前会话的事件，那条 run 的 `run.finished`
@@ -655,15 +688,15 @@ export async function reloadActiveConversation(): Promise<void> {
       // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
       s.lastEventAt = live ? Date.now() : null
       /*
-       * 队友进度是这里**唯一**还在清空的一项，因为它确实无处可读：
-       * `team.member` 只走事件，账本里没有表也没有列，编排器把成员状态放在
-       * 一个跑完就消失的局部 Map 里。
+       * 重连计数是这里仅有的一处清空，因为它确实无处可读——它活在 `AgentLoop`
+       * 的调用栈上，账本里没有表也没有列。
        *
-       * 代价是实打实的：Team 跑到一半切走再切回，已经报过进度的那几个成员
-       * 整个消失，只有之后还会再报的那些才长回来。要根治得先让那份状态可读
-       * （同 `RunManager.pendingFor`），不是在这里补一张回落清单。
+       * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
+       * 出来的。重投之后活着的那几个节点回落到 outcome 里的终态（跑完的那些），
+       * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说，见
+       * `docs/plans/2026-08-23-workflow-图化编排.md` §3.2。
        */
-      s.teamMembers = []
+      s.retry = null
       // 授权请求活在服务端内存里，不在账本里——但它**读得到**，所以照读，
       // 不是清空了等下一次事件（那一次永远不会再来，请求只发一次）。
       s.permission = ask

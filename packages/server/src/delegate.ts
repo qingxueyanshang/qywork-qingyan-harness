@@ -15,30 +15,38 @@
  * 两者跑的是同一份角色定义、同一条执行路径，区别只在「谁决定派谁」。
  */
 
+import type { DelegatePort } from '@qywork/agent'
+import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { acquireExtensions, collectSecrets, releaseExtensions } from '@qywork/runtime'
-import { CLI_PREFIX, findCli, runCli } from '@qywork/team'
+import { CLI_PREFIX, detectClis, findCli, runCli, TeamOrchestrator } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 import { runBuiltinMember } from './team-run.ts'
 
 /** 派活只用到装配三件套（账本、正文库、配置），不碰那条 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
 
-export function makeDelegate(ctx: { deps: DelegateDeps; workspaceRoot: string }) {
-  const { deps, workspaceRoot } = ctx
+export function makeDelegate(ctx: {
+  deps: DelegateDeps
+  workspaceRoot: string
+  /** 进度事件发给哪条会话——图卡长在这条会话的那张卡上。 */
+  conversationId: ConversationId
+}): DelegatePort {
+  const { deps, workspaceRoot, conversationId } = ctx
 
-  const roles = async () => {
-    // 每次现读：用户可能刚在设置页改完角色，让他为此重开一条会话不合理。
+  /** 角色与团队规则每次现读：用户可能刚在设置页改完，让他为此重开一条会话不合理。 */
+  const team = async () => {
     const ext = await acquireExtensions(workspaceRoot)
     try {
-      return ext.team.roles
+      return { roles: ext.team.roles, rules: ext.team.rules }
     } finally {
       releaseExtensions(workspaceRoot)
     }
   }
+  const roles = async () => (await team()).roles
 
   return {
     async targets() {
-      const [rs, clis] = await Promise.all([roles(), (await import('@qywork/team')).detectClis()])
+      const [rs, clis] = await Promise.all([roles(), detectClis()])
       return [
         ...rs.map((r) => ({
           id: r.id,
@@ -90,6 +98,53 @@ export function makeDelegate(ctx: { deps: DelegateDeps; workspaceRoot: string })
         ok: res.ok,
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
+      }
+    },
+
+    /**
+     * 跑一整张图。执行与 `team.run` 走**同一个编排器**：依赖就绪才启动、并发闸、
+     * 人工门禁都在那边，这里只负责把图递进去、把进度广播出来、把终态收回来。
+     */
+    async runGraph(input) {
+      const { roles: rs, rules } = await team()
+      const clis = await detectClis()
+      const orchestrator = new TeamOrchestrator(
+        { name: 'workflow', roles: rs, rules, plan: input.nodes },
+        {
+          workspaceRoot,
+          signal: input.signal,
+          secrets: collectSecrets(deps.config),
+          runId: input.runId as RunId,
+          resolveCli: (id) => clis.find((c) => c.id === id),
+          // 进度带上 stepId：前端按它认领是哪一张图卡。不带的话事件到了也无处可落。
+          emit: (ev: AgentEvent) =>
+            deps.bus.publish(
+              ev.type === 'team.member' ? { ...ev, stepId: input.stepId } : ev,
+              conversationId,
+            ),
+          runBuiltin: (member) => runBuiltinMember(member, { deps, workspaceRoot }),
+          // 人工门禁与 `team.run` 同一条通道：授权请求发给用户，等他点。
+          awaitHumanGate: async (nodeId, summary) =>
+            deps.runs.requestPermission({
+              runId: input.runId as RunId,
+              conversationId,
+              toolName: 'workflow',
+              scope: `team:gate:${nodeId}`,
+              preview: summary,
+              action: { kind: 'run', objectLabel: '编排节点', target: nodeId } as never,
+            }),
+        },
+      )
+      try {
+        const results = await orchestrator.run(input.goal)
+        return {
+          ok: results.every((r) => r.status === 'done'),
+          nodes: results,
+        }
+      } catch (err) {
+        // 图本身不合法（成环、悬空依赖、门禁引用不到角色）在这里落地：
+        // 它是模型写错了参数，要原样告诉它，不能压成一句「工具执行出错」。
+        return { ok: false, error: err instanceof Error ? err.message : String(err), nodes: [] }
       }
     },
   }

@@ -235,7 +235,6 @@ export interface TeamRoleRow {
 
 export interface TeamInfo {
   roles: TeamRoleRow[]
-  plan: { id: string; agent: string; task: string; needs?: string[] }[]
   error: string | null
 }
 
@@ -252,25 +251,6 @@ export interface CliAgentRow {
 }
 export function loadTeamClis(): Promise<{ agents: CliAgentRow[] }> {
   return client.api<{ agents: CliAgentRow[] }>('/api/team/cli')
-}
-
-/** 启动一轮编排。目标之外的一切来自工作区的 .qy/team.json —— 配置只有一个来源。 */
-export function runTeam(goal: string): void {
-  const id = state.activeConversation
-  if (!id || isRunning()) return
-  setState(
-    produce((s) => {
-      s.teamMembers = []
-      s.error = null
-    }),
-  )
-  markBusy(id, true)
-  client.send({
-    type: 'team.run',
-    conversationId: id as never,
-    goal,
-    clientRequestId: crypto.randomUUID(),
-  })
 }
 
 /**

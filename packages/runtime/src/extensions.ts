@@ -17,7 +17,7 @@ import {
   toolNamePrefix,
 } from '@qywork/mcp'
 import { loadPlugins, type PluginRegistry, pluginToolPrefix } from '@qywork/plugins'
-import { CLI_PREFIX, type PlanNode, type Role, type TeamRules } from '@qywork/team'
+import type { Role, TeamRules } from '@qywork/team'
 import {
   AGENTS_DIR,
   globalScopeRoot,
@@ -70,7 +70,6 @@ export interface Extensions {
 
 export interface WorkspaceTeamConfig {
   roles: Role[]
-  plan: PlanNode[]
   rules: TeamRules
   /** 配置文件解析失败的原因。UI 要显示，不能静默当作「没配」。 */
   error: string | null
@@ -298,7 +297,7 @@ export async function loadScopedMcpConfig(workspaceRoot: string): Promise<Scoped
  * （`@qywork/team` 的 `detectClis`），编排图里用 `cli:<id>` 指向它。
  */
 export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTeamConfig> {
-  const empty: WorkspaceTeamConfig = { roles: [], plan: [], rules: {}, error: null }
+  const empty: WorkspaceTeamConfig = { roles: [], rules: {}, error: null }
   const raw = await readFile(join(workspaceRoot, TEAM_CONFIG), 'utf8').catch(() => null)
   if (raw === null) return empty
 
@@ -333,35 +332,14 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
     })
   }
 
-  const plan: PlanNode[] = []
-  const roleIds = new Set(roles.map((r) => r.id))
-  for (const value of (obj.plan as unknown[]) ?? []) {
-    const n = value as Record<string, unknown>
-    const id = String(n.id ?? '').trim()
-    const agent = String(n.agent ?? '').trim()
-    // 指向外部 CLI 的节点照收：装没装是本机的事实，随时会变，
-    // 在这里丢掉会让「换台机器就少了半张图」。识别不到由执行时那一个节点失败。
-    if (!id || !agent) continue
-    if (!agent.startsWith(CLI_PREFIX) && !roleIds.has(agent)) continue
-    plan.push({
-      id,
-      agent,
-      task: String(n.task ?? ''),
-      ...(Array.isArray(n.needs) ? { needs: n.needs.map(String) } : {}),
-      ...(n.passInput === false ? { passInput: false } : {}),
-    })
-  }
-
-  const dropped =
-    ((obj.roles as unknown[]) ?? []).length -
-    roles.length +
-    (((obj.plan as unknown[]) ?? []).length - plan.length)
+  // 编排图不在这个文件里：它由模型每次现画（`workflow` 工具），跑完随那次工具调用
+  // 的结果落库。留一个手写的 `plan` 字段就是两个来源同一个执行器。
+  const dropped = ((obj.roles as unknown[]) ?? []).length - roles.length
 
   return {
     roles,
-    plan,
     rules: (obj.rules as TeamRules) ?? {},
-    error: dropped > 0 ? `${dropped} 项配置引用了不存在的角色，已忽略` : null,
+    error: dropped > 0 ? `${dropped} 条角色少了 id，已忽略` : null,
   }
 }
 

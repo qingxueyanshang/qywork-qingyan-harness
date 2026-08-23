@@ -390,6 +390,7 @@ function withStep(
 ): ToolContext {
   return {
     ...base,
+    stepId,
     emit: (channel, delta) => {
       queue.push({ type: 'tool.delta', runId, stepId: stepId as never, channel, delta })
     },

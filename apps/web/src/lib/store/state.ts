@@ -80,6 +80,14 @@ export interface TranscriptItem {
   durationMs?: number
   /** 长工具的中途输出 */
   stdout?: string
+  /**
+   * `toolName='workflow'` 专有：这张图现在跑到哪了。
+   *
+   * **活着的时候来自事件，回放的时候来自 `outcome.data.nodes`。** 进度事件不落库
+   * （见 `docs/plans/2026-08-23-workflow-图化编排.md` 取证 11），所以刷新之后
+   * 这个字段是空的，图由 outcome 里的终态重画——两条路各管一段，不互相兜底。
+   */
+  nodes?: WorkflowNodeState[]
   batchId?: string
   waveIndex?: number
   /**
@@ -90,6 +98,21 @@ export interface TranscriptItem {
    * 到底做了什么，而排查问题恰恰需要这段。
    */
   superseded?: boolean
+}
+
+/** 图卡上的一个节点。 */
+export interface WorkflowNodeState {
+  nodeId: string
+  /** 派给谁：角色 id 或 `cli:<id>`。 */
+  agent: string
+  /** 显示用的名字：角色名或「厂商 + CLI 名」。 */
+  label: string
+  phase: 'spawned' | 'working' | 'blocked' | 'done' | 'failed' | 'skipped'
+  /** done/failed 时那一段产出的开头，卡上只显示这一截。 */
+  summary?: string
+  /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
+  conversationId?: string
+  durationMs?: number
 }
 
 export interface PermissionAsk {
@@ -152,8 +175,6 @@ export interface AppState {
    * 而一个看不见的自动循环是最坏的一种。
    */
   goal: Goal | null
-  /** Agent Team 成员进展。按 memberId 去重、原地更新。 */
-  teamMembers: TeamMemberState[]
   /** 当前会话最后一个 run，重试的目标。 */
   lastRunId: string | null
   /**
@@ -214,7 +235,6 @@ const initial: AppState = {
   error: null,
   todos: [],
   goal: null,
-  teamMembers: [],
   lastRunId: null,
   runStartedAt: null,
   lastEventAt: null,
@@ -276,15 +296,4 @@ export function markBusy(id: string, busy: boolean): void {
   setState('busyConversations', (list) =>
     busy ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id),
   )
-}
-
-/** team 运行时的成员状态。事件驱动写入，所以和 store 的形状放在一起。 */
-export interface TeamMemberState {
-  memberId: string
-  roleName: string
-  backend: string
-  phase: 'spawned' | 'working' | 'blocked' | 'done' | 'failed'
-  summary?: string
-  /** 成员自己那条子会话。只有内置后端有——CLI 后端跑在进程外，没有会话。 */
-  childConversationId?: string
 }
