@@ -1,7 +1,7 @@
 # MCP：接入外部工具
 
 qywork 是 MCP **客户端**：把别人写的 MCP server 提供的工具接进来给模型用。
-配置在工作区的 `.qy/mcp.json`。
+配置在工作区的 `.agents/mcp.json`；全局那份放 `~/.qywork/mcp.json`，同名时项目层赢。
 
 ```bash
 qy mcp            # 看每个 server 连没连上

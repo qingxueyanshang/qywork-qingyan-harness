@@ -1017,8 +1017,8 @@ describe('probe_url', () => {
  * `.qy/` 与 `.agents/` 的写保护。
  *
  * 这一条挡的不是**越权**，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
- * 工具、`.agents/plugins/` 决定装什么插件。模型完全合法地能写工作区内的文件，
- * 于是它可以通过写一个自己有权限写的文件，给自己加工具。
+ * 工具，`.qy/team.json` 决定派活前哪些角色要人点头。模型完全合法地能写工作区内的
+ * 文件，于是它可以通过写一个自己有权限写的文件，给自己加工具。
  *
  * **判据是「会不会给自己加工具」**：技能与记忆同在 `.agents/` 下却不在墙内——
  * 一篇 SKILL.md 是一段提示词，一条记忆是一句事实，两者都不给新能力。
@@ -1035,15 +1035,12 @@ describe('受保护目录', () => {
   })
 
   /*
-   * 用户层的技能 / MCP / 插件搬到 `.agents/` 之后，保护必须跟着搬。
+   * 项目层的 MCP 配置搬到 `.agents/` 之后，保护必须跟着搬。
    * 不搬的话这条防线就只剩一个空目录名——而空目录名看起来和防线一模一样。
    */
-  test('会加工具的那两条被拒：mcp.json 与 plugins/', async () => {
+  test('会加工具的那一条被拒：mcp.json', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.agents/mcp.json')).rejects.toThrow(/权限|扩展配置/)
-    await expect(
-      resolveWritablePath(dir, '.agents/plugins/evil/qywork.plugin.json'),
-    ).rejects.toThrow()
   })
 
   /**
@@ -1059,10 +1056,10 @@ describe('受保护目录', () => {
     await expect(resolveWritablePath(dir, '.agents/memory/x.md')).resolves.toContain('x.md')
   })
 
-  /** 逐段比而不是字符串前缀：`pluginsX` 不是 `plugins` 下面的东西。 */
+  /** 逐段比而不是字符串前缀：`.qyX` 不是 `.qy` 下面的东西。 */
   test('名字撞了前缀的目录不受牵连', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
-    await expect(resolveWritablePath(dir, '.agents/pluginsX/a.md')).resolves.toContain('a.md')
+    await expect(resolveWritablePath(dir, '.qyX/a.md')).resolves.toContain('a.md')
   })
 
   /** 绕过尝试：`..` 回绕、大小写、分隔符混用。判定基于已解析的绝对路径，都该挡住。 */
@@ -1075,7 +1072,7 @@ describe('受保护目录', () => {
       `.qy${backslash}x.json`,
       './.agents/mcp.json',
       'sub/../.agents/mcp.json',
-      `.agents${backslash}plugins${backslash}x.json`,
+      `.agents${backslash}mcp.json`,
     ]
     for (const p of attempts) {
       await expect(resolveWritablePath(dir, p)).rejects.toThrow()

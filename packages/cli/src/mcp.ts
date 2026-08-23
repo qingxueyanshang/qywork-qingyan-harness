@@ -8,7 +8,7 @@
  */
 
 import { resolve } from 'node:path'
-import { loadWorkspaceMcp, toolNamePrefix } from '@qywork/runtime'
+import { loadWorkspaceMcp, MCP_CONFIG, toolNamePrefix } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -22,7 +22,7 @@ export async function runMcp(args: string[]): Promise<number> {
   const workspaceRoot = resolve(cwdFlag >= 0 ? (args[cwdFlag + 1] ?? '.') : '.')
   const verbose = args.includes('--tools')
 
-  process.stderr.write(`工作区：${workspaceRoot}\n配置：.qy/mcp.json\n\n`)
+  process.stderr.write(`工作区：${workspaceRoot}\n配置：${MCP_CONFIG}\n\n`)
 
   const reg = await loadWorkspaceMcp(workspaceRoot, (line) => {
     if (verbose) process.stderr.write(`${DIM}${line}${RESET}\n`)
@@ -31,7 +31,7 @@ export async function runMcp(args: string[]): Promise<number> {
   try {
     if (reg.servers.length === 0 && reg.failures.length === 0) {
       process.stderr.write(
-        '没有配置 MCP server。在工作区建 .qy/mcp.json：\n\n' +
+        `没有配置 MCP server。在工作区建 ${MCP_CONFIG}：\n\n` +
           `${DIM}{\n  "mcpServers": {\n    "filesystem": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]\n    }\n  }\n}${RESET}\n`,
       )
       return 0

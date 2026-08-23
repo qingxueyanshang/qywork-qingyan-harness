@@ -36,6 +36,7 @@ import {
   loadConfig,
   loadExtensions,
   loadWorkspaceMcp,
+  MCP_CONFIG,
   resolveModel,
   toolNamePrefix,
 } from '@qywork/runtime'
@@ -281,7 +282,7 @@ async function checkMcp(workspaceRoot: string): Promise<Line[]> {
   const out: Line[] = []
 
   if (reg.servers.length === 0 && reg.failures.length === 0) {
-    out.push({ level: 'ok', text: '没有配置 MCP server', detail: '.qy/mcp.json' })
+    out.push({ level: 'ok', text: '没有配置 MCP server', detail: MCP_CONFIG })
     reg.stopAll()
     return out
   }
