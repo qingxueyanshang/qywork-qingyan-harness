@@ -5,7 +5,6 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  createUniqueId,
   For,
   Match,
   onCleanup,
@@ -856,9 +855,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
    * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
    * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
    */
-  const [edges, setEdges] = createSignal<{ d: string; head?: boolean }[]>([])
-  // 箭头在文档里按 id 引用，一条会话里可能有好几张图卡，id 不能撞。
-  const arrow = createUniqueId()
+  const [edges, setEdges] = createSignal<string[]>([])
   let box!: HTMLDivElement
   const refs = new Map<string, HTMLElement>()
 
@@ -867,7 +864,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
     const b = box.getBoundingClientRect()
     // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
     const at = (v: number) => Math.round(v) + 0.5
-    const out: { d: string; head?: boolean }[] = []
+    const out: string[] = []
     for (const n of shape()) {
       const to = refs.get(n.id)
       if (!to) continue
@@ -887,13 +884,12 @@ function WorkflowCard(props: { item: TranscriptItem }) {
        * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
        */
       for (const [i, r] of rects.entries()) {
-        out.push({ d: `M${xs[i]} ${at(r.bottom - b.top)}V${bus}` })
+        out.push(`M${xs[i]} ${at(r.bottom - b.top)}V${bus}`)
       }
       const left = Math.min(...xs, tx)
       const right = Math.max(...xs, tx)
-      if (right > left) out.push({ d: `M${left} ${bus}H${right}` })
-      // 箭头只给最后这一段：方向表达一次就够，每段都带就成了一串三角形。
-      out.push({ d: `M${tx} ${bus}V${ty}`, head: true })
+      if (right > left) out.push(`M${left} ${bus}H${right}`)
+      out.push(`M${tx} ${bus}V${ty}`)
     }
     setEdges(out)
   }
@@ -917,22 +913,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
       <div class="wf-goal truncate">{String(props.item.args?.goal ?? '')}</div>
       <div class="wf-graph" ref={box}>
         <svg class="wf-edges" aria-hidden="true">
-          <defs>
-            <marker
-              id={arrow}
-              markerWidth="7"
-              markerHeight="7"
-              refX="6"
-              refY="3.5"
-              orient="auto"
-              markerUnits="userSpaceOnUse"
-            >
-              <path d="M0 0L6 3.5L0 7Z" />
-            </marker>
-          </defs>
-          <For each={edges()}>
-            {(e) => <path d={e.d} marker-end={e.head ? `url(#${arrow})` : undefined} />}
-          </For>
+          <For each={edges()}>{(d) => <path d={d} />}</For>
         </svg>
         <For each={layers()}>
           {(layer) => (
