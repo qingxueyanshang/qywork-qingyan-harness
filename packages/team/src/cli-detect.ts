@@ -75,6 +75,24 @@ const KNOWN: KnownCli[] = [
     envKeys: ['DASHSCOPE_API_KEY', 'QWEN_API_KEY'],
     credentials: ['.qwen/oauth_creds.json'],
   },
+  {
+    id: 'grok',
+    vendor: 'xAI',
+    bin: 'grok',
+    args: ['-p', '{prompt}'],
+    output: 'text',
+    envKeys: ['XAI_API_KEY'],
+    credentials: ['.grok/auth.json'],
+  },
+  {
+    id: 'kimi',
+    vendor: '月之暗面',
+    bin: 'kimi',
+    args: ['-p', '{prompt}'],
+    output: 'text',
+    envKeys: ['KIMI_API_KEY'],
+    credentials: ['.kimi-code/credentials/kimi-code.json'],
+  },
 ]
 
 export interface DetectedCli extends CliAgent {

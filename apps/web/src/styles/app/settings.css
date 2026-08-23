@@ -884,12 +884,18 @@ textarea.code-area::placeholder {
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
 }
-/* 段级说明仍是独立一行：它在段标题下面，不和任何东西抢那一行。 */
+/* 段级说明跟在段标题右边。区头是 600 字重的标题行，说明要挑回常规字重，
+   并且限宽——它长起来会把右侧动作顶出去。 */
 .section-desc {
   margin: 0;
-  color: var(--text-secondary);
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
   font-size: var(--fs-sm);
-  line-height: 1.6;
+  font-weight: 400;
 }
 .section-actions {
   margin-left: auto;
@@ -988,21 +994,6 @@ textarea.code-area::placeholder {
 }
 .entry-extra.bad {
   color: var(--danger);
-}
-
-/* 折叠开关。表单覆盖不到的兜底入口（原文编辑）挂在它下面：
-   摊开摆着会让整页看起来仍然只能手写配置。 */
-.disclosure {
-  align-self: flex-start;
-  padding: 4px var(--s-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-}
-.disclosure:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 /* ── 空态框 ──

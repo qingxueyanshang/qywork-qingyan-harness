@@ -42,6 +42,9 @@ export function PageHead(props: { title: string; desc?: string; actions?: JSX.El
  *
  * **动作归分区，不归页头。** 一页里可能有好几段各自能加东西（角色 / 后端、
  * 技能 / 指令），动作全堆在页头的话，用户按下去不知道加到哪一段里。
+ *
+ * `desc` 与 `path` 都排在区头那一行里，不另起一行：它们各只有一句，
+ * 单独占一档高度会把下面的内容推走。放不下时自己截断。
  */
 export function Section(props: {
   title?: string
@@ -53,16 +56,16 @@ export function Section(props: {
 }) {
   return (
     <section class="settings-block">
-      <Show when={props.title || props.path || props.actions}>
+      <Show when={props.title || props.desc || props.path || props.actions}>
         <div class="settings-block-head">
           <Show when={props.title}>{(t) => <h3>{t()}</h3>}</Show>
+          <Show when={props.desc}>{(d) => <p class="section-desc">{d()}</p>}</Show>
           <Show when={props.path}>{(p) => <PathLine path={p()} />}</Show>
           <Show when={props.actions}>
             <div class="section-actions">{props.actions}</div>
           </Show>
         </div>
       </Show>
-      <Show when={props.desc}>{(d) => <p class="section-desc">{d()}</p>}</Show>
       {props.children}
     </section>
   )
