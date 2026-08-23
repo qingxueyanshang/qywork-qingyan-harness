@@ -53,6 +53,7 @@ export {
   type GoalPort,
   type HistoryPort,
   type PermissionVerdict,
+  type PluginPort,
   RESULT_BUDGET_RATIO,
   resetBatchBudget,
   type SinkPort,

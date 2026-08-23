@@ -112,6 +112,7 @@ export {
 } from './tool-pool.ts'
 
 import { readHistoryTool } from './history.ts'
+import { installPluginTool } from './plugin-install.ts'
 import { subagentTool } from './subagent.ts'
 import { defineSubagentTool } from './subagent-define.ts'
 import { workflowTool } from './workflow.ts'
@@ -126,7 +127,7 @@ import { workflowTool } from './workflow.ts'
  */
 export function registerBuiltinTools(
   registry: ToolRegistry,
-  opts: { delegate?: boolean } = {},
+  opts: { delegate?: boolean; plugins?: boolean } = {},
 ): void {
   const shell = commandShell()
   for (const spec of [
@@ -154,6 +155,8 @@ export function registerBuiltinTools(
     // 派活与编排**按通道注册**：没有派活通道就没有这两个工具，
     // 而不是给必然回「派不出去」的（B5，同 run_command 那条）。
     ...(opts.delegate ? [defineSubagentTool, subagentTool, workflowTool] : []),
+    // 装插件同样按通道注册：装不了插件的装插件工具没有降级形态。
+    ...(opts.plugins ? [installPluginTool] : []),
   ]) {
     registry.register(spec)
   }

@@ -112,6 +112,37 @@ export interface DelegatePort {
 }
 
 /**
+ * 装插件端口 —— 把工作区里写好的一个插件目录装进本机的插件目录。
+ *
+ * ## 为什么是端口
+ *
+ * 清单校验在插件包里，而它与 tools **同层**（依赖图里都是 3），同层不许互依。
+ * 所以工具只声明形状，装配方在更高层实现。
+ *
+ * ## 为什么分两步
+ *
+ * `inspect` 回的是清单摘要，`install` 才真的复制。**摘要必须在用户点头之前拿到**——
+ * 「要注册哪些工具、声明了哪些权限」正是他判断让不让它跑的依据；
+ * 一个调用既装又回摘要的话，他看到的永远是「已经装完了」。
+ */
+export interface PluginPort {
+  /** 只看不装：目录里的清单长什么样。不合法回 `error`，不抛。 */
+  inspect(dir: string): Promise<{
+    ok: boolean
+    error?: string
+    id?: string
+    name?: string
+    version?: string
+    tools?: string[]
+    permissions?: string[]
+    /** 本机已经装过同 id 的了——这次是覆盖。 */
+    replacing?: boolean
+  }>
+  /** 真的装。`replace` 为假且已存在同 id 时拒绝，不静默覆盖。 */
+  install(dir: string, opts: { replace: boolean }): Promise<{ ok: boolean; error?: string }>
+}
+
+/**
  * 「这个会话读到那个文件时，它长什么样」。写前的新鲜度校验就靠它。
  *
  * ## 为什么必须是个 port，不能塞进 `state`
@@ -362,6 +393,13 @@ export interface ToolContext {
    * 没接上时 `subagent` 工具压根不注册，所以工具体里可以断言它在。
    */
   delegate?: DelegatePort
+  /**
+   * 装插件通道。见 `PluginPort`。
+   *
+   * 没接上时 `install_plugin` 压根不注册——同 `delegate` 那条：
+   * 装不了插件的装插件工具没有任何降级形态。
+   */
+  plugins?: PluginPort
   /**
    * 长工具的中途输出回传通道（shell stdout、下载进度）。
    *
