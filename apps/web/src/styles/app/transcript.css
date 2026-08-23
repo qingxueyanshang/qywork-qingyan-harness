@@ -889,7 +889,7 @@
 .wf-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 2px;
   margin: var(--s-2) 0;
   padding: var(--s-3) var(--s-2);
@@ -909,11 +909,12 @@
 .wf-layer {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
   gap: var(--s-2);
 }
-/* 层与层之间那截竖线。高度固定 10px：它只表达顺序，不表达距离。 */
+/* 层与层之间那截竖线。高度固定 10px：它只表达顺序，不表达距离。
+   左移一格对着第一个节点的中线起笔，居中的话节点一多线就飘在半空。 */
 .wf-link {
+  margin-left: 40px;
   width: 1px;
   height: 10px;
   background: var(--border-default);
@@ -957,4 +958,10 @@
   min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+}
+/* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
+.wf-node-time {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
 }
