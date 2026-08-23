@@ -846,15 +846,66 @@ function WorkflowCard(props: { item: TranscriptItem }) {
     return out.filter(Boolean)
   }
 
+  /**
+   * 连线按 `needs` 逐条画，**不是按层画**：跨层的依赖（第 1 层直接连到第 3 层）
+   * 也是真实存在的边，只连相邻层会把它画丢。
+   *
+   * 位置只能量出来——节点宽度随名字与耗时变，算不出来。量的时机交给
+   * `ResizeObserver`：它在布局之后、绘制之前回调，所以线和方块同一帧落地，
+   * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
+   * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
+   */
+  const [edges, setEdges] = createSignal<string[]>([])
+  let box!: HTMLDivElement
+  const refs = new Map<string, HTMLElement>()
+
+  const measure = () => {
+    if (!box) return
+    const b = box.getBoundingClientRect()
+    const out: string[] = []
+    for (const n of shape()) {
+      const to = refs.get(n.id)
+      if (!to) continue
+      const t = to.getBoundingClientRect()
+      for (const dep of n.needs) {
+        const from = refs.get(dep)
+        if (!from) continue
+        const f = from.getBoundingClientRect()
+        const x1 = Math.round(f.left + f.width / 2 - b.left)
+        const y1 = Math.round(f.bottom - b.top)
+        const x2 = Math.round(t.left + t.width / 2 - b.left)
+        const y2 = Math.round(t.top - b.top)
+        const mid = Math.round((y1 + y2) / 2)
+        // 直角折线：竖下来 → 横过去 → 竖进去。曲线在节点一多时互相压着看不清谁连谁。
+        out.push(x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}V${mid}H${x2}V${y2}`)
+      }
+    }
+    setEdges(out)
+  }
+
+  const ro = new ResizeObserver(() => measure())
+  onCleanup(() => ro.disconnect())
+  // 节点的状态变了（跑完了多出一格耗时）宽度会变，重量一次。
+  createEffect(() => {
+    props.item.nodes
+    props.item.outcome
+    queueMicrotask(measure)
+  })
+
+  const hold = (id: string) => (el: HTMLElement) => {
+    refs.set(id, el)
+    ro.observe(el)
+  }
+
   return (
     <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
-      <div class="wf-goal">{String(props.item.args?.goal ?? '')}</div>
-      <For each={layers()}>
-        {(layer, i) => (
-          <>
-            <Show when={i() > 0}>
-              <div class="wf-link" />
-            </Show>
+      <div class="wf-goal truncate">{String(props.item.args?.goal ?? '')}</div>
+      <div class="wf-graph" ref={box}>
+        <svg class="wf-edges" aria-hidden="true">
+          <For each={edges()}>{(d) => <path d={d} />}</For>
+        </svg>
+        <For each={layers()}>
+          {(layer) => (
             <div class="wf-layer">
               <For each={layer}>
                 {(n) => {
@@ -862,7 +913,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
                   // 点节点 = 翻开它那条子会话。外部 CLI 节点没有子会话，那种点不开。
                   const open = () => {
                     const cid = st()?.conversationId
-                    if (cid) openConversationTab(cid, st()?.label || n.agent)
+                    if (cid) openConversationTab(cid, n.id)
                   }
                   return (
                     <button
@@ -871,20 +922,25 @@ function WorkflowCard(props: { item: TranscriptItem }) {
                       classList={{ [st()?.phase ?? 'waiting']: true }}
                       disabled={!st()?.conversationId}
                       onClick={open}
+                      ref={hold(n.id)}
                     >
-                      <span class="wf-node-name">{st()?.label || n.agent}</span>
-                      <span class="wf-node-task truncate">{n.id}</span>
-                      <Show when={st()?.durationMs}>
-                        {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
-                      </Show>
+                      {/* 主行是节点 id：一张图里区分得开谁是谁的就是它。
+                          执行者压一档——同一张图里常常四个节点都是同一个。 */}
+                      <span class="wf-node-name truncate">{n.id}</span>
+                      <span class="wf-node-who truncate">
+                        {st()?.label || n.agent}
+                        <Show when={st()?.durationMs}>
+                          {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
+                        </Show>
+                      </span>
                     </button>
                   )
                 }}
               </For>
             </div>
-          </>
-        )}
-      </For>
+          )}
+        </For>
+      </div>
     </div>
   )
 }

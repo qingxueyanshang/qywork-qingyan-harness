@@ -889,35 +889,50 @@
 .wf-card {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 2px;
   margin: var(--s-2) 0;
-  padding: var(--s-3) var(--s-2);
+  padding: var(--s-3) var(--s-4) var(--s-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
 }
 .wf-card.failed {
   border-color: var(--danger-soft);
 }
-/* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。 */
+/* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。
+   **只给一行**：它是这张图的名字，不是任务书；长了截断，展开体里有全文。 */
 .wf-goal {
-  align-self: stretch;
-  margin-bottom: var(--s-2);
+  margin-bottom: var(--s-3);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+/* 图本体。层竖着排，层间那段空白是留给连线的——连线是绝对定位的 SVG，
+   不占布局，间距小了折线就贴着方块走。 */
+.wf-graph {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+/* 连线。`overflow: visible` 是必需的：折线的横段可能落在盒子边界上。 */
+.wf-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.wf-edges path {
+  fill: none;
+  stroke: var(--border-default);
+  stroke-width: 1;
+}
+/* 同一层的节点并排且居中：它们真的在并行跑，左对齐会让右边空出一大片。 */
 .wf-layer {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s-2);
-}
-/* 层与层之间那截竖线。高度固定 10px：它只表达顺序，不表达距离。
-   左移一格对着第一个节点的中线起笔，居中的话节点一多线就飘在半空。 */
-.wf-link {
-  margin-left: 40px;
-  width: 1px;
-  height: 10px;
-  background: var(--border-default);
+  justify-content: center;
+  gap: var(--s-3);
 }
 /* 一个节点：点开它那条子会话。状态只走底色与边框，不加图标——
    一排小图标读起来像一排开关，而这里每个节点只有「点开」这一个动作。
@@ -925,8 +940,8 @@
 .wf-node {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  min-width: 0;
+  gap: 2px;
+  min-width: 116px;
   max-width: 200px;
   padding: 6px var(--s-3);
   border: 1px solid var(--border-subtle);
@@ -963,11 +978,17 @@
 .wf-node.skipped {
   opacity: 0.5;
 }
+/* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
 .wf-node-name {
+  max-width: 100%;
   font-weight: 500;
 }
-.wf-node-task {
-  min-width: 0;
+/* 次行：执行者 + 耗时。同一张图里常常四个节点都是同一个执行者，压一档。 */
+.wf-node-who {
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+  max-width: 100%;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
@@ -980,7 +1001,6 @@
 
 /* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
 .wf-node-time {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
