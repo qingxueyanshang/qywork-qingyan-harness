@@ -73,7 +73,9 @@ async function main(): Promise<number> {
     const members: Member[] = []
     let permissionAsks = 0
     let text = ''
-    const done = Promise.withResolvers<void>()
+    // 这条脚本要跑两轮（临时子 agent 一轮、外部 CLI 一轮），所以「等这一轮跑完」
+    // 是个可以重新拿一次的东西，不是一个一次性的 promise。
+    let done = Promise.withResolvers<void>()
 
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data))
@@ -96,6 +98,7 @@ async function main(): Promise<number> {
       if (ev.type === 'team.member') members.push(ev)
       else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.finished') done.resolve()
+      else if (ev.type === 'run.error') done.resolve()
     })
 
     ws.send(
@@ -291,6 +294,91 @@ async function main(): Promise<number> {
       )
     }
     check('全程没有弹授权', permissionAsks === 0, permissionAsks)
+
+    // ── 第二轮：派给本机装着的外部 CLI ──
+    //
+    // 这条路与内置子 agent 完全不同：另起一个进程、它自己的凭证、它自己的输出格式，
+    // 而输出格式恰恰是那张厂商表最容易过期的地方（实测 codex 就过期了一次）。
+    const clis = (await (await fetch(`${base}/api/team/cli`, { headers: auth })).json()) as {
+      agents?: { id: string; connected?: boolean }[]
+    }
+    const target = clis.agents?.find((c) => c.connected)?.id ?? 'claude'
+    process.stdout.write(`\n外部 CLI（cli:${target}）\n`)
+
+    const mark = frames.length
+    done = Promise.withResolvers<void>()
+    ws.send(
+      JSON.stringify({
+        type: 'message.send',
+        clientRequestId: crypto.randomUUID(),
+        conversationId,
+        content:
+          `派两件事，都交给外部 CLI，你自己不要动手：\n` +
+          `1. 用 subagent，agent 填 cli:${target}，任务是「只回答两个字：收到」；\n` +
+          `2. 用 workflow 画一张两个节点的图，两个并行：节点 ping 的 agent 填 cli:${target}，` +
+          `任务是「只回答四个字母：PING」；节点 pong 不指定 agent，任务是「只回答四个字母：PONG」。\n` +
+          `最后原样告诉我它们各自回了什么。`,
+      }),
+    )
+    const timer2 = setTimeout(() => done.reject(new Error('第二轮超时')), RUN_TIMEOUT_MS)
+    await done.promise
+    clearTimeout(timer2)
+
+    const round2 = frames.slice(mark)
+    for (const f of round2) {
+      if (f.event.type === 'tool.started') names.set(f.event.toolCallId, f.event.toolName)
+    }
+    const tools2 = round2
+      .map((f) => f.event)
+      .filter((ev): ev is ToolFinished => ev.type === 'tool.finished')
+    const toCli = tools2.filter((t) => names.get(t.toolCallId) === 'subagent')
+    check('subagent 派给了外部 CLI', toCli.length > 0)
+    const cliOut = String(
+      (toCli.at(-1)?.outcome?.data as { output?: string } | undefined)?.output ?? '',
+    )
+    check(
+      `外部 CLI 跑成了（${toCli.at(-1)?.outcome?.status}）`,
+      toCli.at(-1)?.outcome?.status === 'success',
+      toCli.at(-1)?.outcome?.message,
+    )
+    /*
+     * 产出必须是**那句话**，不是它的 JSONL 原始流。
+     *
+     * 复现的失败形状：厂商表里的结果字段过期时 `extract` 一行都取不到，
+     * 回退成整段 stdout——父会话拿到的是一坨 `{"type":"thread.started"…}`，
+     * 而模型会把那坨当成任务产出。长度上限就是这条的判据。
+     */
+    check(
+      '产出是答案本身，不是 JSONL 原始流',
+      cliOut.length > 0 && cliOut.length < 200 && !cliOut.includes('"type"'),
+      cliOut.slice(0, 200),
+    )
+
+    const graph2 = tools2.filter((t) => names.get(t.toolCallId) === 'workflow').at(-1)
+    const nodes2 =
+      (
+        graph2?.outcome?.data as
+          | { nodes?: { nodeId: string; agent: string; status: string; conversationId?: string }[] }
+          | undefined
+      )?.nodes ?? []
+    check(
+      '图里 CLI 节点与临时子 agent 混着跑通',
+      nodes2.length >= 2 && nodes2.every((n) => n.status === 'done'),
+      nodes2,
+    )
+    const cliNode = nodes2.find((n) => n.agent.startsWith('cli:'))
+    check(
+      '图里确实有一个 CLI 节点',
+      !!cliNode,
+      nodes2.map((n) => n.agent),
+    )
+    // 外部 CLI 是本机另一个进程，没有子会话——这个字段缺席是对的，
+    // 前端据此把那种节点画成点不开。
+    check('CLI 节点不带子会话 id', cliNode ? cliNode.conversationId === undefined : false)
+    const cliMembers = members.filter((m) => m.backend !== 'builtin')
+    check('CLI 节点的进度走的是外部后端', cliMembers.length > 0, [
+      ...new Set(members.map((m) => m.backend)),
+    ])
 
     ws.close()
   } finally {

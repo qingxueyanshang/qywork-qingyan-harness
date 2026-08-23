@@ -53,7 +53,8 @@ const KNOWN: KnownCli[] = [
     bin: 'codex',
     args: ['exec', '--json', '{prompt}'],
     output: 'jsonl',
-    resultField: 'result',
+    // 答案在 `item.completed` 那种行的 `item.text` 上，顶层没有 `result`。
+    resultField: 'item.text',
     envKeys: ['OPENAI_API_KEY'],
     credentials: ['.codex/auth.json'],
   },
