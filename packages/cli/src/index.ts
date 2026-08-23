@@ -24,6 +24,7 @@ import {
   dataPath,
   diagnoseConfig,
   loadConfig,
+  MCP_CONFIG,
   Session,
 } from '@qywork/runtime'
 import { lanCandidates, serve } from '@qywork/server'
@@ -67,7 +68,7 @@ const USAGE = `qy —— qywork 编码 agent
     --cwd <路径>          指定工作区
     --json                给脚本用（只有阻断项才退非零）
 
-  qy mcp                  检查 .qy/mcp.json 里的 server 连没连上
+  qy mcp                  检查 ${MCP_CONFIG} 里的 server 连没连上
     --tools               连带列出每个 server 提供的工具
     --cwd <路径>          指定工作区
 

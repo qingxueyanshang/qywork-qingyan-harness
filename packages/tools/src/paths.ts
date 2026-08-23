@@ -327,7 +327,6 @@ function decodeSafely(input: string): string {
  * `resolveInWorkspace`。挡它们是因为写进去等于**自我提权**：
  *
  * - `.agents/mcp.json` —— 配哪些 MCP server，写一行就多一批工具；
- * - `.agents/plugins/` —— 装什么插件，插件是下次加载就会跑的代码；
  * - `.qy/` —— `team.json` 里有 `rules.humanGates`（哪些角色派活前必须人点头），
  *   整份改写就能把这条开关删掉；`plugin-data/` 是插件的私有存储。
  *
@@ -350,14 +349,17 @@ function decodeSafely(input: string): string {
  *
  * ## 为什么 `.agents/` 也在里面
  *
- * 项目层的技能 / MCP 搬到了 `.agents/`（跨客户端约定的那条路径）。
+ * 项目层的 MCP 配置搬到了 `.agents/`（跨客户端约定的那条路径）。
  * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。
+ *
+ * **插件不在这里**：它只从 `~/.qywork/plugins/` 加载，工作区里没有插件目录，
+ * 挡 `.agents/plugins` 是在保护一条没有加载方的路径。
  *
  * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而
  * `write_memory` 走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
  * 只是必须走那一条唯一的写入路径，而不是拿 `write_file` 直接改。
  */
-export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json', '.agents/plugins']
+export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json']
 
 /**
  * **模型**遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
@@ -412,7 +414,7 @@ export class ProtectedPathError extends Error {
 export function isProtectedPath(workspaceRoot: string, resolved: string): boolean {
   const rel = relative(workspaceRoot, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
-  // 逐段比，不用字符串前缀：`.agents/pluginsX` 不是 `.agents/plugins` 下面的东西，
+  // 逐段比，不用字符串前缀：`.qyX` 不是 `.qy` 下面的东西，
   // 而 `startsWith` 会把它一起挡掉。
   const parts = rel.split(sep)
   return PROTECTED_DIRS.some((p) => {
