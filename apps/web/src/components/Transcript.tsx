@@ -36,13 +36,7 @@ import {
   stopReasonLabel,
   todosOf,
 } from '../lib/step-view.ts'
-import {
-  isRunning,
-  setState,
-  state,
-  type TranscriptItem,
-  type WorkflowNodeState,
-} from '../lib/store/index.ts'
+import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
@@ -781,11 +775,15 @@ function WorkflowCard(props: { item: TranscriptItem }) {
   const stateOf = (id: string) => {
     const live = props.item.nodes?.find((n) => n.nodeId === id)
     if (live) return { phase: live.phase, label: live.label, durationMs: live.durationMs }
-    const done = (props.item.outcome?.data as { nodes?: WorkflowNodeState[] } | undefined)?.nodes
-    const back = done?.find((n) => n.nodeId === id)
-    return back
-      ? { phase: back.phase, label: back.label ?? back.agent, durationMs: back.durationMs }
-      : null
+    // 回放这一路读的是落库的结果，**字段名与事件那一路不同**：结果里是
+    // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working/blocked）。
+    // 照着事件的名字去读结果，每个节点都会退化成「等着跑」——刷新一次整张图全灰。
+    const back = (
+      props.item.outcome?.data as
+        | { nodes?: { nodeId: string; agent: string; status: string; durationMs?: number }[] }
+        | undefined
+    )?.nodes?.find((n) => n.nodeId === id)
+    return back ? { phase: back.status, label: back.agent, durationMs: back.durationMs } : null
   }
 
   /** 按依赖分层：一个节点落在「它所有上游的最深层 + 1」。 */
@@ -828,6 +826,9 @@ function WorkflowCard(props: { item: TranscriptItem }) {
                     <div class="wf-node" classList={{ [st()?.phase ?? 'waiting']: true }}>
                       <span class="wf-node-name">{st()?.label || n.agent}</span>
                       <span class="wf-node-task truncate">{n.id}</span>
+                      <Show when={st()?.durationMs}>
+                        {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
+                      </Show>
                     </div>
                   )
                 }}
