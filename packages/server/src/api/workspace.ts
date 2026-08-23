@@ -235,33 +235,6 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 这个项目上装了什么。
-   *
-   * **不在握手里报。** 扩展里的 MCP 与编排是按工作区的（`.agents/mcp.json`、
-   * `.qy/team.json` 在项目目录下），而一条 WebSocket 连接横跨用户开着的所有项目。
-   * 握手报一份就等于「A 项目的 MCP 显示在 B 项目上」，且它只在重连时才更新。
-   * 插件是全局的，但它和那两份一起构成「这个工作区上模型有哪些工具」，所以同路回。
-   *
-   * **取扩展一律走引用计数**（`acquireExtensions` / `releaseExtensions`）：
-   * 直接 `loadExtensions` 会给每一次请求新起一批插件与 MCP 子进程，且没有人关。
-   * 一次 acquire 必须配一次 release，异常路径也要——所以是 try/finally。
-   */
-  if (p === '/api/capabilities') {
-    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
-    const { detectClis } = await import('@qywork/team')
-    const ext = await acquireExtensions(d.workspaceRoot)
-    try {
-      return json({
-        plugins: ext.plugins.plugins.map((x) => x.manifest.id),
-        cliAgents: (await detectClis()).map((c) => c.id),
-        mcpServers: ext.mcp.servers.map((m) => m.name),
-      })
-    } finally {
-      releaseExtensions(d.workspaceRoot)
-    }
-  }
-
-  /*
    * 这个 agent 会做什么：全部工具一行一条，带底层名、参数、动作与权限。
    *
    * **这是分类轴（`ToolCategory`）的消费者。** 没有它那条轴就是 C1 第 1 款的死链路
@@ -275,7 +248,8 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 归属按**注册名前缀**反查，前缀必须由 `pluginToolPrefix` / `toolNamePrefix` 生成
    * ——注册名是消毒过的（`my.server` → `mcp__my_server__x`），拿原名拼一条都匹配不上。
    *
-   * 扩展走引用计数，配对 release，理由同 `/api/capabilities`。
+   * 扩展走引用计数，配对 release：直接 `loadExtensions` 会给每一次请求新起一批
+   * 插件与 MCP 子进程，且没有人关。异常路径也要 release——所以是 try/finally。
    */
   if (p === '/api/tools') {
     const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')

@@ -617,14 +617,6 @@
 }
 
 /* 扩展摘要比 git 分支次要一级：装了什么是背景信息，分支是随时要看的 */
-.ext-chip {
-  display: flex;
-  align-items: center;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  min-width: 0;
-  margin-bottom: 4px;
-}
 /* ── 主区 ──
  *
  * 内容纸的左上角是整个界面唯一的圆角：灰壳（侧栏 + 顶栏）在外，白纸在内，

@@ -22,12 +22,10 @@ import {
   client,
   loadConversations,
   loadWorkspace,
-  loadWorkspaceExtensions,
   PANEL_MIN,
   panelMaximized,
   panelWidth,
   setPaletteOpen,
-  setState,
   settingsPage,
   setWorkspace,
   sidebarCollapsed,
@@ -50,10 +48,6 @@ export function App() {
     // 它是「我的会话为什么是空的」唯一的自诊断线索。
     void loadWorkspace()
       .then(setWorkspace)
-      .catch(() => {})
-    // 扩展清单按项目拉，不再来自握手（三份清单都配在项目目录下）。
-    void loadWorkspaceExtensions()
-      .then((ext) => setState('extensions', ext))
       .catch(() => {})
 
     const onKey = (e: KeyboardEvent) => {

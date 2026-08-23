@@ -88,9 +88,9 @@ export function handleHello(
      */
     busyConversations: deps.runs.busyConversations(),
     /*
-     * **只报进程级的能力。** 插件 / MCP / 编排后端是按工作区的，而这条连接
+     * **只报进程级的能力。** 插件 / MCP / 外部 CLI 是按工作区的，而这条连接
      * 横跨用户开着的所有项目——报在这里就等于「A 项目的插件显示在 B 项目上」，
-     * 而且只有重连时才会更新。它们改由 `/api/capabilities?ws=` 回答。
+     * 而且只有重连时才会更新。它们由各自的设置页按项目现取。
      */
     capabilities: {
       sandbox: sandboxCapability(),
