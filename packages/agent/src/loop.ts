@@ -363,15 +363,15 @@ const RESENDABLE: ReadonlyMap<string, number> = new Map([
  * 传输失败的现场读数。
  *
  * 分类短语（「连接被断开」「请求超时」「模型响应中断」）由 `ai/src/errors.ts` 与
- * `openStream` 给，它们都拿不到这两个数；而这两个数才是「是网络断了还是还在等」的答案
- * ——**一个字节都没收到过**说明请求根本没落地，**收到过又停了**说明是传输被掐。
+ * `openStream` 给，它们拿不到静默时长，也不知道这次收到过数据没有；而这两项区分
+ * 请求未落地（一个字节都没收到）与传输中断（收到过之后停了）。
  *
- * 所以这句只在这里拼，**全项目只有这一个拼装处**。
+ * 这句只在这里拼，全项目只有这一个拼装处。
  */
-function transportReading(providerEvents: number, silentMs: number, chars: number): string {
+function transportReading(providerEvents: number, silentMs: number): string {
   const secs = Math.round(silentMs / 1000)
-  if (providerEvents === 0) return `发出后 ${secs} 秒内没有收到任何数据`
-  return `最后一次收到数据在 ${secs} 秒前，本次共收到 ${chars} 字`
+  if (providerEvents === 0) return `${secs} 秒未收到响应`
+  return `${secs} 秒未收到后续数据`
 }
 
 /**
@@ -1184,7 +1184,7 @@ export class AgentLoop {
              * 分类短语 + 现场读数 + 有没有替他试过，一行说完。
              *
              * 现场读数只给传输层。`provider_unavailable` 是上游明确答复的，
-             * 给它拼「发出后 N 秒内没有收到任何数据」等于告诉用户请求没落地。
+             * 给它拼「N 秒未收到响应」等于告诉用户请求没落地。
              */
             throw new ProviderError({
               code: pe.code,
@@ -1192,14 +1192,8 @@ export class AgentLoop {
                 pe.message,
                 ...(code === 'provider_unavailable'
                   ? []
-                  : [
-                      transportReading(
-                        providerEvents,
-                        silentMs,
-                        thinkingText.length + assistantText.length,
-                      ),
-                    ]),
-                ...(resends > 0 ? [`已自动重发 ${resends} 次，仍然失败`] : []),
+                  : [transportReading(providerEvents, silentMs)]),
+                ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
               ].join('，'),
               provider: pe.provider,
               cause: err,

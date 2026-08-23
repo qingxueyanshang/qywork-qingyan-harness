@@ -1541,9 +1541,9 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('服务端暂时不可用')
-    expect(message).toContain(`已自动重发 ${MAX_RESENDS} 次`)
-    // 「发出后 N 秒内没有收到任何数据」是传输层的读数，给它拼上等于告诉用户请求没发出去。
-    expect(message).not.toMatch(/没有收到任何数据/)
+    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+    // 「N 秒未收到响应」是传输层的读数，给它拼上等于告诉用户请求没发出去。
+    expect(message).not.toMatch(/秒未收到响应/)
   })
 
   /*
@@ -1597,8 +1597,8 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     const message = err?.type === 'run.error' ? err.message : ''
     // 分类短语来自 errors.ts，读数与「重发了几次」由 loop 补——三段都要在。
     expect(message).toContain('连接被断开')
-    expect(message).toMatch(/没有收到任何数据/)
-    expect(message).toContain(`已自动重发 ${MAX_RESENDS} 次`)
+    expect(message).toMatch(/秒未收到响应/)
+    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
   })
 
   /*
@@ -1644,8 +1644,8 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    expect(message).toMatch(/最后一次收到数据在 \d+ 秒前/)
-    expect(message).toContain('本次共收到 4 字')
+    expect(message).toMatch(/\d+ 秒未收到后续数据/)
+    expect(message).not.toMatch(/秒未收到响应/)
   })
 })
 /**

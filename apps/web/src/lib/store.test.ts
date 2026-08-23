@@ -512,7 +512,7 @@ describe('事件按会话归属过滤', () => {
         type: 'run.error',
         runId: 'run_1',
         code: 'network_error',
-        message: '连接被断开，已自动重发 5 次，仍然失败',
+        message: '连接被断开，已重发 5 次',
       },
     } as never)
     expect(state.retry).toBe(null)
