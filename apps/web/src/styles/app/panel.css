@@ -246,8 +246,9 @@
   overflow-y: auto;
 }
 
-/* 外部 CLI 页：一段只读的流。等宽字，横向不换行——CLI 的输出多半是逐行的结构化文本，
-   换行会把一行拆成几行，读起来比横着滚更糟。 */
+/* 外部 CLI 页：一段只读的流。等宽字，长行照样折——面板本来就窄，
+   不折的话跑完之后显示的那段终态产出（一整段话）会齐刷刷跑出右边界，
+   要横着拖才看得到第二个字。 */
 .cli-pane {
   display: flex;
   flex: 1;
@@ -262,7 +263,8 @@
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 1.55;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* 那一页的代码还在下载时的占位。**同样尺寸的空壳**，不是转圈也不是文案：
