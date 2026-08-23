@@ -1,5 +1,6 @@
 /**
- * 覆盖范围：`team-run.ts` 的 `memberModel`——成员会话用哪一对「接口 × 模型」。
+ * 覆盖范围：`team-run.ts` 的 `memberModel`（成员会话用哪一对「接口 × 模型」）
+ * 与 `memberOutcome`（一个成员算不算做成了）。
  *
  * `runBuiltinMember` 本身要一整条 `Session` 才跑得起来，由冒烟脚本
  * `scripts/smoke-delegate.ts` 在真机上覆盖；这里锁的是它的选型规则。
@@ -7,7 +8,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { QyConfig } from '@qywork/runtime'
-import { memberModel, resolveModel } from './team-run.ts'
+import { memberModel, memberOutcome, resolveModel } from './team-run.ts'
 
 const config = {
   active: { provider: '默认接口', model: 'm-default' },
@@ -93,5 +94,36 @@ describe('点名的模型解析成一对', () => {
   test('没配过的模型把能用的列出来', () => {
     const r = resolveModel('查无此模型', config)
     expect('error' in r && r.error).toContain('便宜接口/m-cheap')
+  })
+})
+
+describe('成员算不算做成了', () => {
+  test('跑到自然结束且有产出才算成', () => {
+    expect(memberOutcome({ error: null, stop: 'completed', output: '结论' })).toEqual({ ok: true })
+  })
+
+  /**
+   * 复现的失败形状：子 agent 被步数掐断，但它前面说过话——照「有文字就算成功」判，
+   * 父会话收到的是「做完了」，然后拿着半截产出继续往下走。
+   */
+  test('被掐断时算失败，并把原因带回去', () => {
+    const r = memberOutcome({ error: null, stop: 'max_steps', output: '写了一半' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('步数用尽')
+  })
+
+  test('没有终态一样不算成', () => {
+    expect(memberOutcome({ error: null, stop: null, output: '有话' }).ok).toBe(false)
+  })
+
+  test('跑完了但一个字没产出，算失败不算「没什么可说的」', () => {
+    const r = memberOutcome({ error: null, stop: 'completed', output: '' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('没有产出')
+  })
+
+  test('报错优先于终态：错误原文要原样带回去', () => {
+    const r = memberOutcome({ error: '[no_api_key] 没配 key', stop: null, output: '' })
+    expect(r.error).toContain('no_api_key')
   })
 })

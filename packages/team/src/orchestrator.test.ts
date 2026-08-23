@@ -282,14 +282,6 @@ describe('编排执行', () => {
     expect(results.filter((r) => r.status === 'done')).toHaveLength(4)
     expect(peak).toBeLessThanOrEqual(2)
   })
-
-  test('没有 plan 时退化成单角色直跑', async () => {
-    const config: TeamConfig = { name: 't', roles: [role('solo')] }
-    const d = deps(ok)
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
-    expect(d.order).toEqual(['solo'])
-    expect(results).toHaveLength(1)
-  })
 })
 
 function byId(results: NodeResult[], id: string): NodeResult {

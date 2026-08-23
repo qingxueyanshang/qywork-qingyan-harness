@@ -9,7 +9,7 @@
  * 理由见 `docs/plans/2026-08-23-workflow-图化编排.md`。
  */
 
-import type { ConversationId, RunUsage } from '@qywork/core'
+import type { ConversationId, StopReason } from '@qywork/core'
 import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
@@ -94,6 +94,20 @@ function modelList(config: QyConfig): string {
  * 前端会按那个陌生 runId 建出一条并不存在的 run。进度由编排器的 `team.member`
  * 事件表达，那是**为这件事设计的**通道。
  */
+/**
+ * 子 agent 没跑到自然结束时的原因，原样交回父会话——它据此决定是换做法还是拆小再派。
+ * 压成一句「没做成」的话，模型除了原样重派没有别的选择，而重派必然又撞同一堵墙。
+ */
+const CUT_SHORT: Partial<Record<StopReason, string>> = {
+  max_steps: '步数用尽，任务没做完',
+  no_progress: '连着两轮没有任何进展，自己停了',
+  user_interrupt: '被中断',
+  process_exit: '进程退出',
+  output_truncated: '产出被模型的单次长度上限截断',
+  provider_error: '模型服务出错',
+  internal_guard: '上一轮在工具执行期间中断，这一轮的结果不可信',
+}
+
 export async function runBuiltinMember(
   input: { role: Role; prompt: string; signal: AbortSignal },
   ctx: {
@@ -105,7 +119,6 @@ export async function runBuiltinMember(
     inherit?: ModelRef
     /** 用户这一次点名的那一对，盖过角色与父会话。 */
     explicit?: ModelRef
-    onUsage?: (u: RunUsage) => void
   },
 ): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
   const { role } = input
@@ -132,6 +145,7 @@ export async function runBuiltinMember(
   let text = ''
   let error: string | null = null
   let conversationId: ConversationId | undefined
+  let stop: StopReason | null = null
 
   try {
     for await (const ev of session.ask(input.prompt, undefined, {
@@ -146,7 +160,7 @@ export async function runBuiltinMember(
       if (ev.type === 'run.started') conversationId = ev.conversationId
       else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
-      else if (ev.type === 'run.finished') ctx.onUsage?.(ev.usage)
+      else if (ev.type === 'run.finished') stop = ev.stopReason
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
@@ -156,11 +170,30 @@ export async function runBuiltinMember(
 
   const output = text.trim()
   return {
-    // 没报错但一个字也没产出，算失败。返回 ok + 空串会被下游当成
-    // 「这个角色认真看过，确实没什么可说的」——那是两件完全不同的事。
-    ok: error === null && output.length > 0,
+    ...memberOutcome({ error, stop, output }),
     output,
-    ...(error ? { error } : output ? {} : { error: '该角色没有产出任何内容' }),
     ...(conversationId ? { conversationId } : {}),
   }
+}
+
+/**
+ * 一个成员算不算做成了。
+ *
+ * **权威是这一轮的终态，不是「有没有文字」。** 只看文字的话，步数用尽或原地打转
+ * 被掐断的子 agent——它前面说过的话还在——会被报成「做完了」，父会话据此往下走。
+ * 反过来，没报错但一个字也没产出同样算失败：ok + 空串会被下游当成
+ * 「认真看过，确实没什么可说的」，那是另一件事。
+ */
+export function memberOutcome(input: {
+  error: string | null
+  stop: StopReason | null
+  output: string
+}): { ok: boolean; error?: string } {
+  const { error, stop, output } = input
+  if (error) return { ok: false, error }
+  if (stop !== 'completed') {
+    return { ok: false, error: (stop && CUT_SHORT[stop]) ?? `提前停止（${stop ?? '没有终态'}）` }
+  }
+  if (!output) return { ok: false, error: '该角色没有产出任何内容' }
+  return { ok: true }
 }

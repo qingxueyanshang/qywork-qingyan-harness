@@ -90,8 +90,11 @@ export interface TeamConfig {
   name: string
   rules?: TeamRules
   roles: Role[]
-  /** 编排图。空 = 单角色直跑第一个 role。 */
-  plan?: PlanNode[]
+  /**
+   * 编排图。**每次由调用方交进来**（模型这一次画的那张），不来自 `.qy/team.json`
+   * ——那个字段连同它的解析、回传、显示已经删了，编排图只有一个来源。
+   */
+  plan: PlanNode[]
 }
 
 export interface PlanNode {
