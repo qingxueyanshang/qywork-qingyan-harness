@@ -7,9 +7,13 @@
  * 模型写多少遍都不会有任何东西跑起来。**装**才是那条分界线：装完之后，
  * 那段代码在下一次加载时会真的执行。
  *
- * 所以这个工具**每次调用都问用户**，而且问之前先把清单摘要摆出来：
- * 要注册哪些工具、声明了哪些权限、是不是覆盖已有的那一份。
- * 那三样是他判断「让不让它跑」的全部依据。
+ * 所以**每次装都要真的问到人**，问之前把清单摘要摆出来：要注册哪些工具、
+ * 声明了哪些权限、是不是覆盖已有的那一份——那三样是他判断「让不让它跑」的全部依据。
+ *
+ * **问这一步在端口那边做，不在这里。** 这个仓库里 `ctx.requestPermission` 由会话按
+ * 权限模式就地裁决（`runtime/session.ts` 的 `decide`），除了 `run_command` 之外一律
+ * 直接放行——在这里调它，装插件就成了「自动审批模式下无声安装」。
+ * 实测撞到过：第一版就是这么写的，真机跑通一次，全程没有任何弹窗。
  *
  * ## 装进去的是快照
  *
@@ -79,27 +83,8 @@ export const installPluginTool: ToolSpec = {
       }
     }
 
-    const lines = [
-      `插件 ${found.name ?? found.id}（${found.id}）版本 ${found.version ?? '未标'}`,
-      found.tools?.length ? `注册工具：${found.tools.join('、')}` : '不注册任何工具',
-      found.permissions?.length ? `申请权限：${found.permissions.join('、')}` : '不申请任何权限',
-    ]
-    if (found.replacing) lines.push('这一次是覆盖本机已装的同名插件')
-    // 授权卡上摆的就是这几行。**装之前问**：装完再问等于代码已经落在会被加载的位置上了。
-    const granted = await ctx.requestPermission(
-      `execute:install_plugin:${found.id}`,
-      lines.join('\n'),
-      {
-        toolName: 'install_plugin',
-        args,
-      },
-    )
-    const ok = typeof granted === 'boolean' ? granted : granted.allowed
-    if (!ok) {
-      return { status: 'failure' as const, message: '用户没同意装这个插件', errorKind: 'denied' }
-    }
-
-    const done = await port.install(dir, { replace })
+    // 问用户与复制都在端口那边：那边才够得着授权通道，也才会在问之前把清单重读一次。
+    const done = await port.install(dir, { replace, runId: ctx.runId })
     if (!done.ok) {
       return { status: 'failure' as const, message: done.error ?? '装失败了' }
     }

@@ -11,15 +11,15 @@ import { installPluginTool } from './plugin-install.ts'
 
 type Found = Awaited<ReturnType<NonNullable<ToolContext['plugins']>['inspect']>>
 
-function port(found: Found) {
-  const installs: { dir: string; replace: boolean }[] = []
+function port(found: Found, result: { ok: boolean; error?: string } = { ok: true }) {
+  const installs: { dir: string; replace: boolean; runId: string }[] = []
   return {
     installs,
     port: {
       inspect: async () => found,
-      install: async (dir: string, opts: { replace: boolean }) => {
-        installs.push({ dir, replace: opts.replace })
-        return { ok: true }
+      install: async (dir: string, opts: { replace: boolean; runId: string }) => {
+        installs.push({ dir, replace: opts.replace, runId: opts.runId })
+        return result
       },
     },
   }
@@ -58,44 +58,49 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
 }
 
 describe('装插件', () => {
-  test('点头之前先把清单摘要摆出来：工具与权限', async () => {
+  test('装成功时把这一轮的 runId 带给端口 —— 授权请求要挂在这一轮上', async () => {
     const p = port(good)
-    const c = ctx(p.port)
-    const res = await installPluginTool.fn({ path: 'demo' }, c)
+    const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(res.status).toBe('success')
-    expect(c.asked[0]).toContain('hello')
-    expect(c.asked[0]).toContain('workspace:read')
-    expect(p.installs).toEqual([{ dir: 'demo', replace: false }])
+    expect(p.installs).toEqual([{ dir: 'demo', replace: false, runId: 'rn_test' }])
   })
 
-  test('用户不点头就不装', async () => {
+  /**
+   * 复现的失败形状：第一版在工具里调 `ctx.requestPermission` 问用户，而那条通道
+   * 在这个仓库里由会话按权限模式就地裁决，除 `run_command` 外一律放行——
+   * 真机跑通一次，全程没有任何弹窗。问用户这一步必须落在端口那边。
+   */
+  test('工具自己不问用户 —— 那条通道弹不到人', async () => {
     const p = port(good)
-    const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port, false))
-    expect(res.status).toBe('failure')
-    expect(p.installs).toHaveLength(0)
-  })
-
-  test('清单不合法当场拒，也不问用户', async () => {
-    const p = port({ ok: false, error: '目录里没有 qywork.plugin.json' })
     const c = ctx(p.port)
-    const res = await installPluginTool.fn({ path: 'demo' }, c)
-    expect(res.status).toBe('failure')
+    await installPluginTool.fn({ path: 'demo' }, c)
     expect(c.asked).toHaveLength(0)
+  })
+
+  test('用户不点头时端口回拒，工具如实报失败', async () => {
+    const p = port(good, { ok: false, error: '用户没同意装这个插件' })
+    const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('没同意')
+  })
+
+  test('清单不合法当场拒，也不往下走', async () => {
+    const p = port({ ok: false, error: '目录里没有 qywork.plugin.json' })
+    const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
+    expect(res.status).toBe('failure')
     expect(p.installs).toHaveLength(0)
   })
 
-  /** 覆盖已装的那一份要模型显式说，且授权卡上必须写明这是覆盖。 */
-  test('同 id 已存在：不带 replace 直接拒，带了要在卡上说明是覆盖', async () => {
+  /** 覆盖已装的那一份要模型显式说。授权卡上写明是覆盖由端口那边负责。 */
+  test('同 id 已存在：不带 replace 直接拒，带了才往下走', async () => {
     const p = port({ ...good, replacing: true })
     const first = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(first.status).toBe('failure')
     expect(p.installs).toHaveLength(0)
 
-    const c = ctx(p.port)
-    const second = await installPluginTool.fn({ path: 'demo', replace: true }, c)
+    const second = await installPluginTool.fn({ path: 'demo', replace: true }, ctx(p.port))
     expect(second.status).toBe('success')
-    expect(c.asked[0]).toContain('覆盖')
-    expect(p.installs).toEqual([{ dir: 'demo', replace: true }])
+    expect(p.installs).toEqual([{ dir: 'demo', replace: true, runId: 'rn_test' }])
   })
 
   /** 装完不是当场生效——不说清楚的话，模型会在同一轮里反复找那个新工具。 */

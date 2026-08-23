@@ -116,14 +116,16 @@ export interface DelegatePort {
  *
  * ## 为什么是端口
  *
- * 清单校验在插件包里，而它与 tools **同层**（依赖图里都是 3），同层不许互依。
- * 所以工具只声明形状，装配方在更高层实现。
+ * 清单校验在插件包里，而它与 tools **同层**（依赖图里都是 3），同层不许互依；
+ * 而「问用户」这件事只有服务端够得着——`ToolContext.requestPermission` 在这个仓库里
+ * 由会话按权限模式就地裁决（`runtime/session.ts` 的 `decide`），除了 `run_command`
+ * 之外一律直接放行，**它不会弹给用户**。装插件必须真的问到人，所以这一步在实现方。
  *
  * ## 为什么分两步
  *
- * `inspect` 回的是清单摘要，`install` 才真的复制。**摘要必须在用户点头之前拿到**——
- * 「要注册哪些工具、声明了哪些权限」正是他判断让不让它跑的依据；
- * 一个调用既装又回摘要的话，他看到的永远是「已经装完了」。
+ * `inspect` 只回摘要，给模型判断「这个目录是不是它要装的那个」；`install` 里才
+ * 问用户并复制。摘要在问之前由实现方**再读一次**——从模型看过到用户点头之间
+ * 隔着思考时间，那个目录可能已经不是同一份了。
  */
 export interface PluginPort {
   /** 只看不装：目录里的清单长什么样。不合法回 `error`，不抛。 */
@@ -138,8 +140,15 @@ export interface PluginPort {
     /** 本机已经装过同 id 的了——这次是覆盖。 */
     replacing?: boolean
   }>
-  /** 真的装。`replace` 为假且已存在同 id 时拒绝，不静默覆盖。 */
-  install(dir: string, opts: { replace: boolean }): Promise<{ ok: boolean; error?: string }>
+  /**
+   * 问用户，同意才装。`replace` 为假且已存在同 id 时直接拒绝，不静默覆盖。
+   *
+   * `runId` 是这一轮的 id：授权请求要挂在这一轮上，用户点头之后才回来。
+   */
+  install(
+    dir: string,
+    opts: { replace: boolean; runId: string },
+  ): Promise<{ ok: boolean; error?: string }>
 }
 
 /**
