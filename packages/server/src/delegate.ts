@@ -172,7 +172,9 @@ export function makeDelegate(ctx: {
           // 进度带上 stepId：前端按它认领是哪一张图卡。不带的话事件到了也无处可落。
           emit: (ev: AgentEvent) =>
             deps.bus.publish(
-              ev.type === 'team.member' ? { ...ev, stepId: input.stepId } : ev,
+              ev.type === 'team.member' || ev.type === 'team.output'
+                ? { ...ev, stepId: input.stepId }
+                : ev,
               conversationId,
             ),
           runBuiltin: async (member) => {

@@ -246,6 +246,25 @@
   overflow-y: auto;
 }
 
+/* 外部 CLI 页：一段只读的流。等宽字，横向不换行——CLI 的输出多半是逐行的结构化文本，
+   换行会把一行拆成几行，读起来比横着滚更糟。 */
+.cli-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--s-3) var(--s-4);
+  overflow: auto;
+}
+.cli-out {
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  white-space: pre;
+}
+
 /* 那一页的代码还在下载时的占位。**同样尺寸的空壳**，不是转圈也不是文案：
    这一格的位置已经留好了，占位块只要把它占住（同 App.tsx 里那段）。 */
 .pane-loading {

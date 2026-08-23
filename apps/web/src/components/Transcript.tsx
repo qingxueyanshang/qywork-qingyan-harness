@@ -37,7 +37,7 @@ import {
   todosOf,
 } from '../lib/step-view.ts'
 import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
-import { openConversationTab } from '../lib/store/ui.ts'
+import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
@@ -921,17 +921,23 @@ function WorkflowCard(props: { item: TranscriptItem }) {
               <For each={layer}>
                 {(n) => {
                   const st = () => stateOf(n.id)
-                  // 点节点 = 翻开它那条子会话。外部 CLI 节点没有子会话，那种点不开。
+                  /*
+                   * 点节点 = 翻开它。两种节点翻开的东西不同：内置子 agent 有一条
+                   * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
+                   * 两者都没有时（还没跑到）点不开。
+                   */
+                  const cli = () => n.agent.startsWith('cli:')
                   const open = () => {
                     const cid = st()?.conversationId
                     if (cid) openConversationTab(cid, n.id)
+                    else if (cli()) openCliTab(props.item.id, n.id)
                   }
                   return (
                     <button
                       type="button"
                       class="wf-node"
                       classList={{ [st()?.phase ?? 'waiting']: true }}
-                      disabled={!st()?.conversationId}
+                      disabled={!st()?.conversationId && !(cli() && st())}
                       onClick={open}
                       ref={hold(n.id)}
                     >

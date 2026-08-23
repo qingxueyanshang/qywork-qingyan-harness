@@ -31,10 +31,11 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * （就是一个 iframe）。**这一层不判端**：判在入口那边（`SidePanel` 的看板按
  * `isDesktopShell()` 决定列不列），这里只管开了哪几页。
  *
- * `conversation` 没有看板入口：它只能从工具卡上点开（哪一条子会话由那张卡说了算），
- * 所以也没有序号，标题就是那个子 agent 的名字。
+ * `conversation` 与 `cli` 都没有看板入口：只能从图卡上点开（看哪一条由那张卡说了算），
+ * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的东西不同：
+ * 一个是子会话（有正文、有工具卡），一个是本机另一个进程写出来的一段流。
  */
-export type PanelTabKind = 'terminal' | 'browser' | 'conversation'
+export type PanelTabKind = 'terminal' | 'browser' | 'conversation' | 'cli'
 
 export interface PanelTab {
   id: string
@@ -123,6 +124,28 @@ export function openConversationTab(conversationId: string, title: string): void
 /** 从页 id 反取会话 id。`openConversationTab` 是唯一的生产者。 */
 export function tabConversationId(tabId: string): string {
   return tabId.slice('conversation-'.length)
+}
+
+/**
+ * 打开某个外部 CLI 节点那一页：看它此刻在写什么。
+ *
+ * 页 id 是「哪张卡 + 哪个节点」，与那个节点的输出缓冲同一个键——同一个节点再点一次
+ * 是翻回去，不是并排开出第二页。
+ */
+export function openCliTab(stepId: string, nodeId: string): void {
+  const id = `cli-${stepId}-${nodeId}`
+  if (!panelTabs().some((t) => t.id === id)) {
+    setTabs((list) => [...list, { id, kind: 'cli', title: nodeId }])
+  }
+  setSidePanel({ tab: id })
+}
+
+/** 从页 id 反取「哪张卡 + 哪个节点」。`openCliTab` 是唯一的生产者。 */
+export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
+  const rest = tabId.slice('cli-'.length)
+  // step id 里没有 `-`（`st_` 加一串 base36），所以第一个 `-` 就是分界。
+  const cut = rest.indexOf('-')
+  return { stepId: rest.slice(0, cut), nodeId: rest.slice(cut + 1) }
 }
 
 /**

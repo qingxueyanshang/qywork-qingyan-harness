@@ -380,6 +380,30 @@ async function main(): Promise<number> {
       ...new Set(members.map((m) => m.backend)),
     ])
 
+    /*
+     * 中途输出。**这条是「看得到它在工作」的全部依据**：外部 CLI 是本机另一个进程，
+     * 不像内置子 agent 那样有一条点得开的子会话，不把字节发出来就只能等它跑完。
+     */
+    const outs = round2
+      .map((f) => f.event)
+      .filter((ev): ev is Extract<AgentEvent, { type: 'team.output' }> => ev.type === 'team.output')
+    check(`CLI 跑着的时候有中途输出（${outs.length} 块）`, outs.length > 0)
+    check(
+      '每一块都认得出是哪张卡的哪个节点',
+      outs.length > 0 && outs.every((o) => !!o.stepId && !!o.memberId),
+      outs.slice(0, 2).map((o) => ({ stepId: o.stepId, memberId: o.memberId })),
+    )
+    // 中途输出必须在那个节点报完成**之前**就到，否则「跑着的时候看得见」是假的。
+    const firstOut = round2.findIndex((f) => f.event.type === 'team.output')
+    const cliDone = round2.findIndex(
+      (f) =>
+        f.event.type === 'team.member' && f.event.backend !== 'builtin' && f.event.phase === 'done',
+    )
+    check('中途输出到得比节点完成早', firstOut >= 0 && cliDone >= 0 && firstOut < cliDone, {
+      firstOut,
+      cliDone,
+    })
+
     ws.close()
   } finally {
     h.stop()

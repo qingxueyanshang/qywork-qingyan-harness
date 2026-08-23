@@ -69,6 +69,9 @@ const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
 // 子会话页：只有从工具卡上点开子 agent 才会加载。
 const ConversationPanel = lazy(() => import('./ConversationPanel.tsx'))
 
+// 外部 CLI 页：只有从图卡上点开 CLI 节点才会加载。
+const CliPanel = lazy(() => import('./CliPanel.tsx'))
+
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
 
@@ -356,6 +359,9 @@ export default function SidePanel() {
                         </Match>
                         <Match when={t.kind === 'conversation'}>
                           <ConversationPanel id={t.id} />
+                        </Match>
+                        <Match when={t.kind === 'cli'}>
+                          <CliPanel id={t.id} />
                         </Match>
                       </Switch>
                     </Suspense>

@@ -74,6 +74,7 @@ export type AgentEvent =
   | PermissionResolvedEvent
   // ── 多智能体 ──
   | TeamMemberEvent
+  | TeamOutputEvent
 
 // ─────────────────────────────── 会话 ───────────────────────────────
 
@@ -460,4 +461,31 @@ export interface TeamMemberEvent {
    * 图卡按它认领进度：不带的话事件到了前端也无处可落——一条会话里可能有好几张图卡。
    */
   stepId?: string
+}
+
+/**
+ * 外部 CLI 节点的中途输出。
+ *
+ * **只有外部 CLI 有这条**：内置子 agent 的过程留在它自己那条子会话里，点开节点就能看，
+ * 而外部 CLI 是本机另一个进程，跑完之前它写了什么，不发出来就一个字都看不到。
+ *
+ * 与 `tool.delta` 分开是因为多了一维：一张图里可以有好几个 CLI 节点同时在跑，
+ * 混进同一个 `stepId` 的缓冲就再也分不出哪一段是谁的。
+ *
+ * **不落库**，与 `team.member` 同一条口径：活着的时候看这条，刷新之后看落库的
+ * 逐节点终态（`NodeResult.output`）。
+ */
+export interface TeamOutputEvent {
+  type: 'team.output'
+  runId: RunId
+  /** 哪一张图卡。与 `team.member` 同理，不带的话前端无处可落。 */
+  stepId?: string
+  /** 哪个节点。 */
+  memberId: string
+  /**
+   * 两条流合成一条。**不分 stdout / stderr**：看一个进程干活时它们本来就是交织的，
+   * 而分开要么多一份状态，要么多一个没人读的字段。跑挂了的诊断另有出口——
+   * 节点终态里的 `error` 带着 stderr 的尾巴。
+   */
+  delta: string
 }

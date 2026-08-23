@@ -104,6 +104,28 @@ function appendStdout(stepId: string, chunk: string): void {
 const toolFrames = createFramer({ write: appendStdout, schedule })
 
 /**
+ * 外部 CLI 节点的中途输出，攒在它自己那个节点上。
+ *
+ * 键是「哪张卡 + 哪个节点」两段：一张图里可以有好几个 CLI 节点同时在跑，
+ * 只按卡认的话它们的输出会混成一段，再也分不出谁是谁。
+ */
+const NODE_KEY = String.fromCharCode(0)
+function appendNodeOutput(key: string, chunk: string): void {
+  const [stepId, memberId] = key.split(NODE_KEY)
+  setState(
+    produce((s) => {
+      const card = s.transcript.find((t) => t.id === stepId)
+      const node = card?.nodes?.find((n) => n.nodeId === memberId)
+      if (!node) return
+      const next = (node.output ?? '') + chunk
+      // 与工具卡的 stdout 同一个上限：再多也读不完，只会把内存和渲染都拖住。
+      node.output = next.length > 8000 ? next.slice(-8000) : next
+    }),
+  )
+}
+const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
+
+/**
  * 不落 transcript 的事件——它们不该冲正文缓冲。
  *
  * `git.state` 由服务端每 4 秒轮询广播一次，且**无条件发**：新连上的客户端只能从
@@ -135,6 +157,7 @@ const RESUMED: ReadonlySet<AgentEvent['type']> = new Set([
 export function discardPace(): void {
   pacer.discard()
   toolFrames.discard()
+  nodeFrames.discard()
 }
 
 /**
@@ -212,6 +235,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   if (ev.type !== 'text.delta' && ev.type !== 'tool.delta' && !OFF_TRANSCRIPT.has(ev.type)) {
     pacer.flush()
     toolFrames.flush()
+    nodeFrames.flush()
   }
 
   switch (ev.type) {
@@ -329,6 +353,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
     case 'tool.delta':
       toolFrames.push(ev.stepId, ev.delta)
+      return
+
+    case 'team.output':
+      // 认不出是哪张卡就整条丢弃，与 `team.member` 同一条理由。
+      if (!ev.stepId) return
+      nodeFrames.push(`${ev.stepId}${NODE_KEY}${ev.memberId}`, ev.delta)
       return
 
     case 'tool.finished':

@@ -112,6 +112,13 @@ export interface WorkflowNodeState {
   summary?: string
   /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
   conversationId?: string
+  /**
+   * 外部 CLI 节点跑着的时候写出来的东西（`team.output` 攒起来的）。
+   *
+   * **只有外部 CLI 有**：内置子 agent 的过程在它那条子会话里。**不落库**，
+   * 刷新之后这里是空的，那时看的是落库的终态产出——与图卡的状态同一条口径。
+   */
+  output?: string
   durationMs?: number
 }
 
