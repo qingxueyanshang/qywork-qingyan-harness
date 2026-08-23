@@ -862,23 +862,34 @@ function WorkflowCard(props: { item: TranscriptItem }) {
   const measure = () => {
     if (!box) return
     const b = box.getBoundingClientRect()
+    // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
+    const at = (v: number) => Math.round(v) + 0.5
     const out: string[] = []
     for (const n of shape()) {
       const to = refs.get(n.id)
       if (!to) continue
+      const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
+      if (sources.length === 0) continue
       const t = to.getBoundingClientRect()
-      for (const dep of n.needs) {
-        const from = refs.get(dep)
-        if (!from) continue
-        const f = from.getBoundingClientRect()
-        const x1 = Math.round(f.left + f.width / 2 - b.left)
-        const y1 = Math.round(f.bottom - b.top)
-        const x2 = Math.round(t.left + t.width / 2 - b.left)
-        const y2 = Math.round(t.top - b.top)
-        const mid = Math.round((y1 + y2) / 2)
-        // 直角折线：竖下来 → 横过去 → 竖进去。曲线在节点一多时互相压着看不清谁连谁。
-        out.push(x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}V${mid}H${x2}V${y2}`)
+      const tx = at(t.left + t.width / 2 - b.left)
+      const ty = at(t.top - b.top)
+      const rects = sources.map((el) => el.getBoundingClientRect())
+      const foot = Math.max(...rects.map((r) => r.bottom - b.top))
+      const bus = at((foot + (t.top - b.top)) / 2)
+      const xs = rects.map((r) => at(r.left + r.width / 2 - b.left))
+      /*
+       * 汇进同一个节点的几条边**共用一条横线加一根竖线**，不是各画各的折线。
+       *
+       * 各画各的时候，三条折线的横段与拐角叠在一起，而上游与下游中线差一两个像素
+       * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
+       */
+      for (const [i, r] of rects.entries()) {
+        out.push(`M${xs[i]} ${at(r.bottom - b.top)}V${bus}`)
       }
+      const left = Math.min(...xs, tx)
+      const right = Math.max(...xs, tx)
+      if (right > left) out.push(`M${left} ${bus}H${right}`)
+      out.push(`M${tx} ${bus}V${ty}`)
     }
     setEdges(out)
   }
