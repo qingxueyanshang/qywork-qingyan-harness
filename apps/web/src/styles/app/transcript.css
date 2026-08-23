@@ -911,7 +911,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 26px;
 }
 /* 连线。`overflow: visible` 是必需的：折线的横段可能落在盒子边界上。 */
 .wf-edges {
@@ -922,16 +922,10 @@
   overflow: visible;
   pointer-events: none;
 }
-/* 线比方块的边框重一档：它表达的是「谁等谁」，比盒子本身更要紧。 */
 .wf-edges path {
   fill: none;
-  stroke: var(--border-strong);
+  stroke: var(--border-default);
   stroke-width: 1;
-}
-/* 箭头是实心三角，不是描边——上面那条规则对它不成立。 */
-.wf-edges marker > path {
-  fill: var(--border-strong);
-  stroke: none;
 }
 /* 同一层的节点并排且居中：它们真的在并行跑，左对齐会让右边空出一大片。 */
 .wf-layer {
