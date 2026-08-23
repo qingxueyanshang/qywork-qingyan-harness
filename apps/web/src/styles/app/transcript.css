@@ -879,3 +879,82 @@
     opacity: 0.5;
   }
 }
+
+/* ── 编排图卡 ──
+ *
+ * 一张按依赖分层的图：同一层并排（它们真的在并行跑），层与层之间一条竖线。
+ * **不画箭头**——节点一多，箭头会把图糊成一团线，而「谁等谁」分层已经说清了。
+ *
+ * 卡本身不围盒子，形状与折叠体一致：这一列里唯一的实心色块应该留给别的东西。 */
+.wf-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: var(--s-2) 0;
+  padding: var(--s-3) var(--s-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+}
+.wf-card.failed {
+  border-color: var(--danger-soft);
+}
+/* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。 */
+.wf-goal {
+  align-self: stretch;
+  margin-bottom: var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.wf-layer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-2);
+}
+/* 层与层之间那截竖线。高度固定 10px：它只表达顺序，不表达距离。 */
+.wf-link {
+  width: 1px;
+  height: 10px;
+  background: var(--border-default);
+}
+/* 一个节点。状态只走底色与边框，不加图标——一排小图标会让人以为它们能点。 */
+.wf-node {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  max-width: 200px;
+  padding: 6px var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-app);
+  font-size: var(--fs-sm);
+}
+.wf-node.working,
+.wf-node.spawned {
+  border-color: var(--accent);
+}
+.wf-node.blocked {
+  border-color: var(--warning);
+}
+.wf-node.done {
+  background: var(--bg-inset);
+}
+.wf-node.failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+/* 等着跑的那些压暗：它们在图上是为了让人看见全貌，不是当前的焦点。 */
+.wf-node.waiting,
+.wf-node.skipped {
+  opacity: 0.5;
+}
+.wf-node-name {
+  font-weight: 500;
+}
+.wf-node-task {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}

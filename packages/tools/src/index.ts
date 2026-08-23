@@ -113,6 +113,7 @@ export {
 
 import { readHistoryTool } from './history.ts'
 import { subagentTool } from './subagent.ts'
+import { workflowTool } from './workflow.ts'
 
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
@@ -149,9 +150,9 @@ export function registerBuiltinTools(
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,
-    // 派活工具**按通道注册**：没有派活通道就没有这个工具，
-    // 而不是给一个必然回「派不出去」的（B5，同 run_command 那条）。
-    ...(opts.delegate ? [subagentTool] : []),
+    // 派活与编排**按通道注册**：没有派活通道就没有这两个工具，
+    // 而不是给必然回「派不出去」的（B5，同 run_command 那条）。
+    ...(opts.delegate ? [subagentTool, workflowTool] : []),
   ]) {
     registry.register(spec)
   }

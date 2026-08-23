@@ -241,14 +241,6 @@ export default function AgentsSettings() {
                               disabled={busy()}
                               onClick={() =>
                                 void writeConfig((cfg) => {
-                                  // 编排图里还引用着就不许删：删了那些节点会在跑到
-                                  // 一半时失败，而用户以为自己只删了一个角色。
-                                  const used = ((cfg.plan ?? []) as { agent?: string }[]).filter(
-                                    (n) => n.agent === r.id,
-                                  )
-                                  if (used.length) {
-                                    return `编排图里还有 ${used.length} 个节点派给它，先改掉那些节点`
-                                  }
                                   cfg.roles = (cfg.roles ?? []).filter((x) => x.id !== r.id)
                                   if (roleForm()?.id === r.id) setRoleForm(null)
                                   return null
@@ -396,22 +388,6 @@ export default function AgentsSettings() {
                 )}
               </Show>
             </Section>
-
-            <Show when={t().plan.length > 0}>
-              <Section title="编排" desc="节点按依赖跑。没有编排图时单角色直跑第一个角色。">
-                <div class="entry-list">
-                  <For each={t().plan}>
-                    {(n) => (
-                      <EntryCard name={n.agent} desc={n.task}>
-                        <Show when={n.needs?.length}>
-                          <div class="entry-extra">依赖 {n.needs!.join(' / ')}</div>
-                        </Show>
-                      </EntryCard>
-                    )}
-                  </For>
-                </div>
-              </Section>
-            </Show>
 
             {/* 原文折起来。它是**兜底不是主路**：编排图这类只有 JSON 表达得了，
                 但上面的表单已经覆盖了日常要改的那几样，摊开摆着只会让这一页

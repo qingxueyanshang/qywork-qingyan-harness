@@ -53,6 +53,7 @@ export class TeamOrchestrator {
 
     const results = new Map<string, NodeResult>()
     const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
+    // 门禁按**目标**认（角色 id 或 `cli:<id>`），不按节点 id——理由见 `TeamRules.humanGates`。
     const gates = new Set(this.config.rules?.humanGates ?? [])
 
     const pending = new Set(plan.map((n) => n.id))
@@ -184,7 +185,7 @@ export class TeamOrchestrator {
     })
 
     // 人工门禁在**执行前**问：跑完再问等于钱已经花了、文件已经改了。
-    if (gates.has(node.id)) {
+    if (gates.has(node.agent)) {
       this.deps.emit({
         type: 'team.member',
         runId: this.deps.runId,
@@ -257,6 +258,9 @@ export class TeamOrchestrator {
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
         durationMs: Date.now() - started,
+        ...('conversationId' in res && res.conversationId
+          ? { conversationId: res.conversationId }
+          : {}),
       }
     } catch (err) {
       return {
@@ -294,12 +298,13 @@ export function validatePlan(plan: PlanNode[], roles: Role[], rules?: TeamRules)
   if (nodeIds.size !== plan.length) throw new Error('plan 节点 id 重复')
 
   // 人工门禁是 fail-closed 语义的开关，**它的悬空引用必须报出来**。
-  // 不校验的话，把节点 id 拼错一个字符 = 门禁永远不命中 = 那个「必须人看过」的
-  // 节点直接执行，钱已花、文件已改，而且全程没有任何提示。
-  // 一个开着但不生效的安全开关比没有这个开关更坏。
-  for (const id of rules?.humanGates ?? []) {
-    if (!nodeIds.has(id)) {
-      throw new Error(`rules.humanGates 引用了不存在的节点 ${id}`)
+  // 拼错一个字符 = 门禁永远不命中 = 那个「必须人看过」的节点直接执行，
+  // 钱已花、文件已改，而且全程没有任何提示。
+  // **只校验角色**：`cli:` 那种指向本机装没装，是随时会变的事实，
+  // 拿它拦整张图会让「今天没装 codex，所以整个编排起不来」。
+  for (const target of rules?.humanGates ?? []) {
+    if (!target.startsWith(CLI_PREFIX) && !roleIds.has(target)) {
+      throw new Error(`rules.humanGates 引用了不存在的角色 ${target}`)
     }
   }
 

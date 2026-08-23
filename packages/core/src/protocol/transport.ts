@@ -194,7 +194,6 @@ export interface HelloErrFrame {
 
 export type ClientCommand =
   | SendMessageCommand
-  | TeamRunCommand
   | InterruptRunCommand
   | RetryRunCommand
   | ResolvePermissionCommand
@@ -286,20 +285,6 @@ export interface GoalSetCommand {
   conversationId: ConversationId
   /** 要做到什么。空字符串由服务端拒绝，不静默忽略。 */
   objective: string
-}
-
-/**
- * 启动一轮 Agent Team 编排。
- *
- * 角色与编排图来自工作区的 `.qy/team.json`，指令只带目标——
- * 把整份配置塞进指令会让「界面上看到的编排」和「实际跑的编排」出现两个来源。
- */
-export interface TeamRunCommand {
-  type: 'team.run'
-  conversationId: ConversationId
-  /** 用户的原始诉求，替换编排图里的 `{goal}`。 */
-  goal: string
-  clientRequestId: string
 }
 
 // ───────────────────────── 指令回执 ─────────────────────────

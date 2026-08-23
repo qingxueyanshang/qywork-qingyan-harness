@@ -10,7 +10,6 @@ import { getConversation, setConversationModel } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
 import { compactConversation, resumeGoal, retryRun, setGoal, startRun } from './run-control.ts'
-import { runTeam } from './team-run.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
@@ -96,11 +95,6 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
 
     case 'run.retry': {
       await retryRun(cmd.runId, cmd.clientRequestId, deps)
-      return
-    }
-
-    case 'team.run': {
-      await runTeam(cmd.conversationId, cmd.goal, cmd.clientRequestId, deps)
       return
     }
 

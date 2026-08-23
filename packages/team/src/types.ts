@@ -76,8 +76,12 @@ export interface TeamRules {
   /** 同时最多几个角色在跑。默认 3——再多，用户就看不过来了。 */
   maxConcurrent?: number
   /**
-   * 需要人工确认才能继续的节点 id。
-   * 用于「设计评审必须人看过」这类硬门禁。
+   * 派给这几个**目标**的节点，执行前必须人工确认（角色 id，或 `cli:<id>`）。
+   *
+   * **键是目标不是节点 id。** 图现在由模型现画，节点 id 是它当场拟的，
+   * 用节点 id 当键只有两种结局：引用不到当场炸，或者不校验、那条「必须人看过」
+   * 静默失效——而一个开着但不生效的安全开关比没有这个开关更坏。
+   * 按目标写「派给 deployer 的节点都要我点头」，模型画的图与人画的图都命中。
    */
   humanGates?: string[]
 }
@@ -114,4 +118,11 @@ export interface NodeResult {
   output: string
   error?: string
   durationMs: number
+  /**
+   * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
+   * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，
+   * 而进度事件不落库（见 `docs/plans/2026-08-23-workflow-图化编排.md` 取证 11）。
+   * 外部 CLI 没有子会话，那边这个字段自然缺席。
+   */
+  conversationId?: string
 }

@@ -79,6 +79,36 @@ export interface DelegatePort {
     task: string
     signal: AbortSignal
   }): Promise<{ ok: boolean; output: string; error?: string }>
+  /**
+   * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
+   *
+   * **调度不在这里，在实现方**：依赖就绪才启动、并发上限、人工门禁全由那边的编排器
+   * 按图执行。工具只负责把图交出去、把结果拿回来——把调度搬进工具就等于每次跑的
+   * 形状都由模型当场决定，出问题无法复现也无法归因。
+   *
+   * `stepId` 是这次工具调用的卡片 id，实现方按它广播进度，前端据此认领那张图卡。
+   * 逐节点的终态要原样回来（含子会话 id）：进度事件不落库，刷新之后能重画这张图的
+   * 只有这次调用的返回值。
+   */
+  runGraph(input: {
+    goal: string
+    nodes: { id: string; agent: string; task: string; needs?: string[]; passInput?: boolean }[]
+    runId: string
+    stepId: string
+    signal: AbortSignal
+  }): Promise<{
+    ok: boolean
+    error?: string
+    nodes: {
+      nodeId: string
+      agent: string
+      status: 'done' | 'failed' | 'skipped'
+      output: string
+      error?: string
+      durationMs: number
+      conversationId?: string
+    }[]
+  }>
 }
 
 /**
@@ -343,6 +373,18 @@ export interface ToolContext {
    */
   emit(channel: 'stdout' | 'stderr' | 'progress', delta: string): void
   /**
+   * 这一次工具调用的 step id。**与 `emit` 同一条理由由 loop 补上**：它是开 step 时
+   * 才产生的，装配方造不出来。
+   *
+   * 用途是让工具把「进度事件挂在哪张卡上」交给服务端——`workflow` 的图卡就靠它认领
+   * `team.member`。不要拿它当「这次调用的身份」到处传：卡片之外没有第二个消费者。
+   *
+   * 可选而不是必填：直接构造 `ToolContext` 的地方（测试夹具）不该被迫编一个假 id。
+   * 用它的工具必须自己判空并**如实报错**——挂不上卡的进度事件到了前端也是静默丢弃，
+   * 假装派出去了比直接说「拿不到卡片 id」坏得多。
+   */
+  stepId?: string
+  /**
    * 待办变更广播。可选：装配方没接就没有待办面板，工具仍能正常记账。
    *
    * 单独一条通道而不是复用 emit：emit 是**增量文本**语义（stdout 一段一段来），
@@ -420,13 +462,13 @@ export interface ToolContext {
 }
 
 /**
- * 装配方能交出的那一半：除 `emit` 之外的全部。
+ * 装配方能交出的那一半：除 `emit` 与 `stepId` 之外的全部。
  *
- * 分成两半是因为 `emit` 的事实来源与其余字段不同——其余的在 run 开始时就定了，
- * 而 `emit` 要带的 stepId 每次工具调用才产生。装配方拿不到它，
- * 所以它不出现在这个类型里，由 loop 在调用前补齐。
+ * 分成两半是因为这两样的事实来源与其余字段不同——其余的在 run 开始时就定了，
+ * 而 stepId 每次工具调用才产生（`emit` 要带它，`workflow` 也要拿它挂图卡）。
+ * 装配方拿不到，所以它们不出现在这个类型里，由 loop 在调用前补齐。
  */
-export type ToolContextBase = Omit<ToolContext, 'emit'>
+export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId'>
 
 /**
  * 授权裁决。

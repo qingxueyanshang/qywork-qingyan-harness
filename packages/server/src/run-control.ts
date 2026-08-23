@@ -172,7 +172,7 @@ export async function startRun(
     signal: controller.signal,
     // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，于是它那边连
     // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
-    delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath }),
+    delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath, conversationId }),
   })
 
   /*

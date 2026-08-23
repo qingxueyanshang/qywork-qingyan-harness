@@ -50,6 +50,7 @@ export type AgentEvent =
   | ConversationBusyEvent
   // ── run 生命周期 ──
   | RunStartedEvent
+  | RunRetryingEvent
   | RunFinishedEvent
   | RunErrorEvent
   // ── 模型输出 ──
@@ -150,6 +151,26 @@ export interface RunErrorEvent {
   code: ErrorCode
   message: string
   detail?: Record<string, unknown>
+}
+
+/**
+ * 断流后正在原样重发。
+ *
+ * 只在**模型可见输出为零**时发得出来（判据在 `agent/loop.ts` 的尝试循环），
+ * 所以它恒等于「刚才那次白跑了，同一份字节再发一次」。界面拿它把阶段那一格
+ * 改口成「正在重连 N / M」——不这么说的话，用户看到的是死掉那次留下的半截思考
+ * 配一句「正在思考…」，而模型此刻一个字都没在写。
+ *
+ * **没有配对的「重发结束」事件。** 新那次的第一条输出就是结束信号，
+ * 再发一条等于同一件事两处各说一遍，且两处必然漂移。
+ */
+export interface RunRetryingEvent {
+  type: 'run.retrying'
+  runId: RunId
+  /** 第几次重发，从 1 起。 */
+  attempt: number
+  /** 上限。真源是 `agent` 的 `MAX_RESENDS`，界面不自己写死这个数。 */
+  max: number
 }
 
 export type ErrorCode =
@@ -433,4 +454,10 @@ export interface TeamMemberEvent {
   phase: 'spawned' | 'working' | 'blocked' | 'done' | 'failed'
   summary?: string
   childConversationId?: ConversationId
+  /**
+   * 这一轮编排挂在哪张工具卡上（`workflow` 那次调用的 step id）。
+   *
+   * 图卡按它认领进度：不带的话事件到了前端也无处可落——一条会话里可能有好几张图卡。
+   */
+  stepId?: string
 }
