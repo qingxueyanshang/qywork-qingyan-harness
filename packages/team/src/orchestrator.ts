@@ -50,7 +50,7 @@ export class TeamOrchestrator {
   ) {}
 
   async run(goal: string): Promise<NodeResult[]> {
-    const plan = this.resolvePlan()
+    const plan = this.config.plan
     validatePlan(plan, this.config.roles, this.config.rules)
 
     const results = new Map<string, NodeResult>()
@@ -307,13 +307,6 @@ export class TeamOrchestrator {
     if (this.config.rules?.shared) parts.push(this.config.rules.shared)
     parts.push(task)
     return parts.filter(Boolean).join('\n\n')
-  }
-
-  private resolvePlan(): PlanNode[] {
-    if (this.config.plan?.length) return this.config.plan
-    const first = this.config.roles[0]
-    if (!first) throw new Error('team 配置里没有角色')
-    return [{ id: 'main', agent: first.id, task: '{goal}' }]
   }
 }
 
