@@ -56,11 +56,30 @@ export interface ChatRequest {
   system: SystemBlock[]
   messages: WireMessage[]
   tools: ToolSchema[]
-  maxOutputTokens: number
+  /**
+   * 这一次申报的输出上限。**`null` = 不申报，由端点用自己的默认。**
+   *
+   * 不是「这个模型最多能输出多少」——兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，
+   * 所以它回答的是「这一轮还装得下多少输出」（`agent` 的 `declaredMaxOutput`）。
+   */
+  maxOutputTokens: number | null
   effort?: EffortLevel
   /** 缓存路由亲和键；同一会话稳定。 */
   cacheKey?: string
   signal?: AbortSignal
+}
+
+/**
+ * 这次请求实际申报的输出上限。`null` = 整个字段不发，由端点用自己的默认。
+ *
+ * **`null` 由调用方说了算，不由规格说了算。** 规格没测过（`spec` 为 `null`）
+ * 而调用方给了具体数时，照发那个数——`qy probe` 的探针正是这一档，它靠
+ * `maxOutputTokens: 16` 把每次探测压到几乎不要钱，按规格改判成不申报的话，
+ * 每跑一次探针都会拿到一整篇回答。
+ */
+export function outputCap(requested: number | null, spec: number | null): number | null {
+  if (requested === null) return null
+  return spec === null ? requested : Math.min(requested, spec)
 }
 
 export interface SystemBlock {

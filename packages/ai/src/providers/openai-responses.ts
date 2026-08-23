@@ -66,7 +66,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
 import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
@@ -312,12 +312,14 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       .filter(Boolean)
       .join('\n\n')
 
+    const cap = outputCap(req.maxOutputTokens, this.spec.maxOutputTokens)
     return {
       model: req.model,
       ...(instructions ? { instructions } : {}),
       input: buildInput(req.messages, this.spec.reasoningEcho),
       // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
-      max_output_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
+      // 未收录的模型不申报，让端点用自己的默认。
+      ...(cap === null ? {} : { max_output_tokens: cap }),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
       ...this.buildReasoning(req),
       // 亲和键发不发由目录里那条模型说了算，判据与 chat/completions 那支同一个

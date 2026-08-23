@@ -134,7 +134,7 @@ describe('两层解析：目录 seed → 模型库', () => {
 
   /** 比目录大也照写：目录是抄来的 seed，厂商放宽之后只有用户改得动它。 */
   test('库里的值比目录大也照写', () => {
-    const bigger = seed().maxOutputTokens + 1000
+    const bigger = (seed().maxOutputTokens ?? 0) + 1000
     expect(
       buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: bigger } }).spec
         .maxOutputTokens,

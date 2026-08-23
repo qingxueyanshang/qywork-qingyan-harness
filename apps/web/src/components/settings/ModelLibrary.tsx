@@ -87,7 +87,10 @@ export function ModelLibrary(props: {
                               <code class="lib-id">{m.id}</code>
                             </td>
                             <td class="num">{compact(m.contextWindow)}</td>
-                            <td class="num">{compact(m.maxOutputTokens)}</td>
+                            {/* 没测过就空着：编一个数填进去，用户会照它去判断能不能写长文。 */}
+                            <td class="num">
+                              {m.maxOutputTokens === null ? '—' : compact(m.maxOutputTokens)}
+                            </td>
                             <td class="num">{price(m.input, m.currency)}</td>
                             <td class="num">{price(m.output, m.currency)}</td>
                             <td class="num">{price(m.cacheRead, m.currency)}</td>

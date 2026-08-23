@@ -27,7 +27,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
@@ -215,10 +215,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
     if (systemText) messages.push({ role: 'system', content: systemText })
     messages.push(...buildMessages(req.messages))
 
+    const cap = outputCap(req.maxOutputTokens, this.spec.maxOutputTokens)
     return {
       model: req.model,
       messages,
-      max_tokens: Math.min(req.maxOutputTokens, this.spec.maxOutputTokens),
+      // 未收录的模型不申报上限，让端点用自己的默认——编一个数出去的代价是静默截断。
+      ...(cap === null ? {} : { max_tokens: cap }),
       ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
       ...buildReasoning(this.spec, req.effort),
       /*
