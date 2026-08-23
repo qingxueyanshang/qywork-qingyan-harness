@@ -98,7 +98,9 @@ export interface SandboxPolicy {
   /** 额外可写根目录（`additionalDirectories`），绝对路径。 */
   writableRoots?: readonly string[]
   /**
-   * 工作区内只读的子目录（相对工作区）。目前只有 `.qy`。
+   * 工作区内只读的那几条路径（相对工作区）：`.qy`、`.agents/mcp.json`、
+   * `.agents/plugins`——判据是「写进去会不会给自己加工具」，见 `PROTECTED_DIRS`。
+   * 条目可以是文件也可以是目录（`--ro-bind-try` 两者都吃）。
    *
    * 与文件工具那边的 `PROTECTED_DIRS` 是同一件事的两种实现：
    * 那边挡工具参数，这边挡 shell。两边都要有——**shell 那条路

@@ -143,9 +143,9 @@ describe('完全访问：路径边界跟着一起放开', () => {
   test('受保护目录的写入也跟着放开', async () => {
     const root = await workspace()
     await expect(
-      resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.agents/tools.json'),
+      resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.agents/mcp.json'),
     ).resolves.toBeDefined()
-    await expect(resolveWritablePath(root, '.agents/tools.json')).rejects.toBeInstanceOf(
+    await expect(resolveWritablePath(root, '.agents/mcp.json')).rejects.toBeInstanceOf(
       ProtectedPathError,
     )
   })
@@ -1017,12 +1017,16 @@ describe('probe_url', () => {
  * `.qy/` 与 `.agents/` 的写保护。
  *
  * 这一条挡的不是**越权**，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
- * 工具、`.agents/plugins/` 决定装什么插件、`.agents/skills/` 决定跑什么流程。
- * 模型完全合法地能写工作区内的文件，于是它可以通过写一个自己有权限写的文件，
- * 给自己加工具。
+ * 工具、`.agents/plugins/` 决定装什么插件。模型完全合法地能写工作区内的文件，
+ * 于是它可以通过写一个自己有权限写的文件，给自己加工具。
  *
- * 所以两种权限模式都要挡——`full` 的意思是「不裁决这次操作」，
- * 不是「可以修改裁决规则本身」。
+ * **判据是「会不会给自己加工具」**：技能与记忆同在 `.agents/` 下却不在墙内——
+ * 一篇 SKILL.md 是一段提示词，一条记忆是一句事实，两者都不给新能力。
+ * 按目录一刀切挡过它们的代价实测付过：设置页的「新增技能」把话头递给模型，
+ * 而模型写不了那个文件，那颗按钮等于点了没反应。
+ *
+ * `full` 下这一层不设（`resolveWritablePath` 的 `unrestricted`）：那个模式里
+ * `run_command` 全放行，只拦文件工具就是两套账。
  */
 describe('受保护目录', () => {
   test('.qy 下的写入被拒，且理由说清是为什么', async () => {
@@ -1034,13 +1038,31 @@ describe('受保护目录', () => {
    * 用户层的技能 / MCP / 插件搬到 `.agents/` 之后，保护必须跟着搬。
    * 不搬的话这条防线就只剩一个空目录名——而空目录名看起来和防线一模一样。
    */
-  test('.agents 下的写入同样被拒 —— 它现在装着技能、MCP、插件', async () => {
+  test('会加工具的那两条被拒：mcp.json 与 plugins/', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.agents/mcp.json')).rejects.toThrow(/权限|扩展配置/)
     await expect(
       resolveWritablePath(dir, '.agents/plugins/evil/qywork.plugin.json'),
     ).rejects.toThrow()
-    await expect(resolveWritablePath(dir, '.agents/skills/evil/SKILL.md')).rejects.toThrow()
+  })
+
+  /**
+   * 复现的失败形状：「新增技能」这颗按钮把话头递给模型，而模型一写
+   * `.agents/skills/x/SKILL.md` 就被这道墙拒了——那颗按钮等于点了没反应。
+   * 技能是提示词，不给任何新能力，本来就不该在墙内。
+   */
+  test('技能与记忆不在墙内 —— 它们不给新能力', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
+    await expect(resolveWritablePath(dir, '.agents/skills/发版/SKILL.md')).resolves.toContain(
+      'SKILL.md',
+    )
+    await expect(resolveWritablePath(dir, '.agents/memory/x.md')).resolves.toContain('x.md')
+  })
+
+  /** 逐段比而不是字符串前缀：`pluginsX` 不是 `plugins` 下面的东西。 */
+  test('名字撞了前缀的目录不受牵连', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
+    await expect(resolveWritablePath(dir, '.agents/pluginsX/a.md')).resolves.toContain('a.md')
   })
 
   /** 绕过尝试：`..` 回绕、大小写、分隔符混用。判定基于已解析的绝对路径，都该挡住。 */
@@ -1051,9 +1073,9 @@ describe('受保护目录', () => {
       './.qy/x.json',
       'sub/../.qy/x.json',
       `.qy${backslash}x.json`,
-      './.agents/x.json',
-      'sub/../.agents/x.json',
-      `.agents${backslash}x.json`,
+      './.agents/mcp.json',
+      'sub/../.agents/mcp.json',
+      `.agents${backslash}plugins${backslash}x.json`,
     ]
     for (const p of attempts) {
       await expect(resolveWritablePath(dir, p)).rejects.toThrow()

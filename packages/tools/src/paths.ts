@@ -319,19 +319,28 @@ function decodeSafely(input: string): string {
 }
 
 /**
- * 工作区内**禁止写入**的目录。
+ * 工作区内**禁止写入**的几条路径。
  *
- * ## 为什么单独有这一条
+ * ## 判据是「会不会给自己加工具」，不是「在不在配置目录里」
  *
- * 工作区约束挡的是「越界」，而这两个目录就在工作区**里面**——它们完全合法地
- * 通过了 `resolveInWorkspace`。但里面放的是 `mcp.json`（配哪些 MCP server，
- * 等于配模型能拿到哪些工具）、`plugins/`（装什么插件）和 `skills/`（跑什么流程）。
+ * 工作区约束挡的是「越界」，而这些路径就在工作区**里面**，完全合法地通过了
+ * `resolveInWorkspace`。挡它们是因为写进去等于**自我提权**：
  *
- * 也就是说：**模型可以通过写一个它自己有权限写的文件，给自己加工具。**
- * 这是自我提权，不是越权，所以 `auto` 下必须挡。
+ * - `.agents/mcp.json` —— 配哪些 MCP server，写一行就多一批工具；
+ * - `.agents/plugins/` —— 装什么插件，插件是下次加载就会跑的代码；
+ * - `.qy/` —— `team.json` 里有 `rules.humanGates`（哪些角色派活前必须人点头），
+ *   整份改写就能把这条开关删掉；`plugin-data/` 是插件的私有存储。
+ *
+ * **技能与记忆不在里面**，虽然它们同在 `.agents/` 下：一篇 SKILL.md 是一段提示词，
+ * 一条记忆是一句事实，两者都不给模型任何新能力。按目录一刀切挡过它们，代价是
+ * 实打实的——设置页的「新增技能」把话头递给模型，而模型写不了那个文件，
+ * 那颗按钮等于点了没反应（B5）。
+ *
+ * 角色（`.qy/team.json` 的 `roles`）同理不给新能力，但它和门禁同在一个文件里，
+ * 所以走 `define_subagent` 那条只动 `roles` 的写入路径，不是把整个 `.qy/` 放开。
  *
  * **`full` 下不挡**（判据在 `resolveWritablePath` 的 `unrestricted`）：那个模式下
- * `run_command` 全放行，`echo > .agents/x` 一行就写进去了，只拦文件工具就是
+ * `run_command` 全放行，`echo > .agents/mcp.json` 一行就写进去了，只拦文件工具就是
  * 「文件工具拦、shell 不拦」的两套账。
  *
  * ## 它挡不住什么
@@ -348,7 +357,7 @@ function decodeSafely(input: string): string {
  * `write_memory` 走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
  * 只是必须走那一条唯一的写入路径，而不是拿 `write_file` 直接改。
  */
-export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents']
+export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json', '.agents/plugins']
 
 /**
  * **模型**遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
@@ -403,8 +412,13 @@ export class ProtectedPathError extends Error {
 export function isProtectedPath(workspaceRoot: string, resolved: string): boolean {
   const rel = relative(workspaceRoot, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
-  const first = rel.split(sep)[0]
-  return first !== undefined && PROTECTED_DIRS.includes(first)
+  // 逐段比，不用字符串前缀：`.agents/pluginsX` 不是 `.agents/plugins` 下面的东西，
+  // 而 `startsWith` 会把它一起挡掉。
+  const parts = rel.split(sep)
+  return PROTECTED_DIRS.some((p) => {
+    const want = p.split('/')
+    return want.every((seg, i) => parts[i] === seg)
+  })
 }
 
 /**

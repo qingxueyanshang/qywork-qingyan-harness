@@ -112,8 +112,8 @@ export {
 } from './tool-pool.ts'
 
 import { readHistoryTool } from './history.ts'
-import { defineSubagentTool } from './subagent-define.ts'
 import { subagentTool } from './subagent.ts'
+import { defineSubagentTool } from './subagent-define.ts'
 import { workflowTool } from './workflow.ts'
 
 /**
