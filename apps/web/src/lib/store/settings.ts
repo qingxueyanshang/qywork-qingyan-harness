@@ -413,22 +413,6 @@ export function addWorkspace(input: {
   })
 }
 
-/**
- * 这个项目上装了什么。
- *
- * **按项目拉，不从握手拿**：三份清单都配在项目目录下，而一条连接横跨用户
- * 同时开着的所有项目——握手报一份就等于「A 项目的插件显示在 B 项目上」。
- */
-export interface WorkspaceExtensions {
-  plugins: string[]
-  /** 本机识别到的外部 agent CLI，按 id。 */
-  cliAgents: string[]
-  mcpServers: string[]
-}
-export function loadWorkspaceExtensions(): Promise<WorkspaceExtensions> {
-  return client.api<WorkspaceExtensions>('/api/capabilities')
-}
-
 // ───────────────────────── 插件安装 ─────────────────────────
 
 /**

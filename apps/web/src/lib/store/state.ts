@@ -27,7 +27,6 @@ import type {
 } from '@qywork/core'
 import { createStore } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
-import type { WorkspaceExtensions } from './settings.ts'
 
 export interface TranscriptItem {
   id: string
@@ -107,8 +106,6 @@ export interface AppState {
   connection: ConnectionState
   connectionDetail: string
   capabilities: ServerCapabilities | null
-  /** 当前项目上装了什么。**按项目拉**（`/api/capabilities?ws=`），不来自握手。 */
-  extensions: WorkspaceExtensions | null
 
   conversations: Conversation[]
   activeConversation: string | null
@@ -179,6 +176,14 @@ export interface AppState {
    */
   lastEventAt: number | null
   /**
+   * 正在原样重发第几次，以及上限。`null` = 没在重发。
+   *
+   * **纯显示态，真源在服务端**（`agent/loop.ts` 的尝试循环）。上限也由事件带过来，
+   * 不在前端写第二份。它由新那次的第一条输出收场，收场判据只有 `connection.ts`
+   * 入口那一处——散到各 case 里就是三十次忘记清的机会。
+   */
+  retry: { attempt: number; max: number } | null
+  /**
    * 服务端拒绝指令的提示。
    *
    * 这是 fail-closed 在 UI 上的落点：拒绝必须被看见。只存最后一条——
@@ -197,7 +202,6 @@ const initial: AppState = {
   connection: 'connecting',
   connectionDetail: '',
   capabilities: null,
-  extensions: null,
   conversations: [],
   activeConversation: null,
   transcript: [],
@@ -214,6 +218,7 @@ const initial: AppState = {
   lastRunId: null,
   runStartedAt: null,
   lastEventAt: null,
+  retry: null,
   notice: null,
 }
 

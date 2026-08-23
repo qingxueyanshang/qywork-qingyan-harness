@@ -8,13 +8,7 @@
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { client, discardPace, reloadActiveConversation } from './connection.ts'
-import {
-  addWorkspace,
-  loadServerConfig,
-  loadWorkspaceExtensions,
-  saveServerConfig,
-  watchWorkspace,
-} from './settings.ts'
+import { addWorkspace, loadServerConfig, saveServerConfig, watchWorkspace } from './settings.ts'
 import { isDesktopShell } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
@@ -71,10 +65,6 @@ export async function activateWorkspace(path: string): Promise<void> {
   setState({ activeConversation: null, transcript: [], fileChanges: [], error: null, git: null })
   client.subscribe([])
   await loadConversations()
-  // 扩展清单跟着项目走。失败不阻断切换——它只影响左栏底部那行摘要。
-  await loadWorkspaceExtensions()
-    .then((ext) => setState('extensions', ext))
-    .catch(() => setState('extensions', null))
   // 文件监听的句柄在 Rust 侧，只有桌面端有。失败不阻断切换：
   // 没有监听只是外部编辑器的改动不会实时推，会话本身照常。
   if (isDesktopShell()) await watchWorkspace(ws.rootPath).catch(() => {})

@@ -122,22 +122,6 @@ export function Sidebar(props: { onClose?: () => void }) {
    */
   const [creating, setCreating] = createSignal(false)
 
-  /**
-   * 扩展一句话摘要。
-   *
-   * 只在**真的装了**东西时出现：一条恒显示的「0 个插件 · 0 个 MCP」既占地方
-   * 又不携带任何信息。数量而不是名字——名字放不下，悬停能看全。
-   */
-  const extensionSummary = () => {
-    const ext = state.extensions
-    if (!ext) return ''
-    const parts: string[] = []
-    if (ext.plugins.length) parts.push(`${ext.plugins.length} 个插件`)
-    if (ext.mcpServers.length) parts.push(`${ext.mcpServers.length} 个 MCP`)
-    if (ext.cliAgents.length) parts.push(`${ext.cliAgents.length} 个外部 CLI`)
-    return parts.join(' · ')
-  }
-
   return (
     <nav class="sidebar">
       <header class="sidebar-head">
@@ -238,16 +222,6 @@ export function Sidebar(props: { onClose?: () => void }) {
       </div>
 
       <footer class="sidebar-foot">
-        {/* 扩展清单。**按项目拉**（`/api/capabilities?ws=`）：三份清单都配在项目
-            目录下，握手报一份就成了「A 项目的插件显示在 B 项目上」。 */}
-        <Show when={extensionSummary()}>
-          {(text) => (
-            <div class="ext-chip" data-tip={text()}>
-              <span class="truncate">{text()}</span>
-            </div>
-          )}
-        </Show>
-
         {/* **一个入口。**
             这里曾经是六个并排的 `nav-item`：定时任务 / 记忆与技能 / 插件 /
             Agent 团队 / 手机接入 / 设置。前五个其实是「设置」的子项，却和它
