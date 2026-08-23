@@ -6,23 +6,16 @@
  * 失败**的一块——一个只提供 `prompts` 的 server 会连上、握手成功、注册 0 个工具、
  * 不报任何错，用户看到的是「配了但什么都没发生」。
  *
- * ## 边界必须写在页面上
+ * ## 这里是写 `mcp.json` 的唯一接口
  *
- * `mcp.json` 决定模型拿到哪些工具。agent 用 shell 写它等于自我提权，所以
- * `.agents/` 在写路径上是受保护目录（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。
- * 这条不是解释，是用户据以决定要不要在这里加 server 的事实（B7 的例外条款）。
+ * `mcp.json` 决定模型拿到哪些工具，所以它在 `auto` 下是受保护路径，
+ * `write_file` / `edit_file` 拒写（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。
+ * 界面上没有原文编辑框：那几格填什么要读 server 自己的文档才知道。
  *
  * ## 导入一份现成的配置
  *
  * `/api/mcp/import` 读本机上一个文件，把里面的 server 并进本层。用户多半是从别的
- * MCP 客户端整段拷过来的，让他先另存成文件再指过来，比在编辑框里手拼安全：
- * 同名冲突这里能报出来，手拼时是静默覆盖。
- *
- * ## 原文编辑而不是表单
- *
- * server 的配置形状按 transport 分好几种（stdio 要 command/args/env，http 要 url
- * 和 headers），做成表单要么盖不全要么长成一个通用 JSON 编辑器的劣化版。
- * 照 `/api/team/raw` 的做法：给原文、存原文，解析结果单独回。
+ * MCP 客户端整段拷过来的，让他先另存成文件再指过来：同名冲突这里能报出来。
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -72,37 +65,6 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
       })),
       error: config.error,
     })
-  }
-
-  if (p === '/api/mcp/raw') {
-    const scope = writableScope(url.searchParams.get('scope'))
-    if (!scope) return json({ error: 'bad request', message: '只能读写项目层或全局层' }, 400)
-    const dir = scopeDir(scopeRoots(d.workspaceRoot), scope, '')
-    if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-    const file = join(dir, MCP_FILE)
-
-    if (req.method === 'GET') {
-      const raw = await readFile(file, 'utf8').catch(() => null)
-      // 不存在不是错误：回 `exists: false` 加一个空串，编辑器直接就能写第一条。
-      return json({ path: file, exists: raw !== null, raw: raw ?? '', scope })
-    }
-
-    if (req.method === 'PUT') {
-      const body = (await req.json().catch(() => null)) as { raw?: string } | null
-      const raw = body?.raw
-      if (typeof raw !== 'string') return json({ error: 'bad request', message: '缺少 raw' }, 400)
-      // 校验先于落盘：存进一份解析不了的 JSON，下一次启动会变成一条 error，
-      // 而那时候用户已经不记得自己刚才改了什么。
-      try {
-        JSON.parse(raw)
-      } catch (err) {
-        return json({ error: 'invalid', message: `JSON 解析失败：${String(err)}` }, 422)
-      }
-      await mkdir(dirname(file), { recursive: true })
-      await writeFile(file, raw.endsWith('\n') ? raw : `${raw}\n`, 'utf8')
-      // 改完要重连才生效。**说出来**——不说的话用户会以为存了就有了。
-      return json({ ok: true, path: file, restartRequired: true })
-    }
   }
 
   /**

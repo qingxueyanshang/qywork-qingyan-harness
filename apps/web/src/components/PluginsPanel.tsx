@@ -10,7 +10,7 @@ import {
 } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
-import { EmptyBox, EntryCard, PathLine, Section } from './settings/Page.tsx'
+import { EmptyBox, EntryCard, Section } from './settings/Page.tsx'
 
 interface PluginTool {
   name: string
@@ -155,7 +155,7 @@ export function PluginsPanel() {
       >
         {(d) => (
           <>
-            <Section title="已安装" actions={<Actions />}>
+            <Section title="已安装" path={d().dir} actions={<Actions />}>
               <Show
                 when={d().plugins.length > 0}
                 fallback={<EmptyBox label="还没有装插件" actions={<Actions />} />}
@@ -239,10 +239,6 @@ export function PluginsPanel() {
                 </div>
               </Section>
             </Show>
-
-            <Section>
-              <PathLine path={d().dir} />
-            </Section>
 
             {/* 结果落在页面上，不挂在某一个表单里——建完之后表单就关了，
               挂在里面的话那句「已建好」跟着一起消失。

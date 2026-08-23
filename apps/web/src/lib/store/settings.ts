@@ -548,8 +548,8 @@ export type Scope = 'builtin' | 'project' | 'global'
  * 在 MCP 页叫另一个名字，而用户没法知道它们是同一层。
  */
 export const WRITABLE_SCOPES: { id: Scope; label: string }[] = [
-  { id: 'project', label: '项目' },
   { id: 'global', label: '全局' },
+  { id: 'project', label: '项目' },
 ]
 
 export interface ScopeDir {
@@ -658,19 +658,6 @@ export interface McpPayload {
 }
 export function loadMcp(): Promise<McpPayload> {
   return client.api<McpPayload>('/api/mcp')
-}
-export function loadMcpRaw(
-  scope: Scope,
-): Promise<{ path: string; exists: boolean; raw: string; scope: Scope }> {
-  return client.api<{ path: string; exists: boolean; raw: string; scope: Scope }>(
-    `/api/mcp/raw?scope=${scope}`,
-  )
-}
-export function saveMcpRaw(scope: Scope, raw: string): Promise<{ ok: boolean; path: string }> {
-  return scheduleWrite(`/api/mcp/raw?scope=${scope}`, {
-    method: 'PUT',
-    body: JSON.stringify({ raw }),
-  })
 }
 /** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
 export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; names: string[] }> {
