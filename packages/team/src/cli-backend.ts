@@ -94,18 +94,26 @@ export async function runCli(
  *
  * jsonl 模式取**最后一个**非空的目标字段：agent 类 CLI 的 JSONL 流里，
  * 最终答案总在末尾，中间行是过程事件。取第一个会拿到「我开始干活了」。
+ *
+ * `resultField` 是**点分路径**，因为各家把答案埋的深浅不同：claude 在顶层 `result`，
+ * codex 在 `item.text`（那种行还带着 `item.type: agent_message`，而 `command_execution`
+ * 那类项根本没有 `text`，所以按路径取已经足够精确）。只按顶层键取的代价实测付过：
+ * codex 一行都取不到，回退成整段 stdout，父会话拿到的是一坨 JSONL，
+ * 而模型会把它当成任务产出。
  */
-function extract(stdout: string, agent: CliAgent): string {
+export function extract(stdout: string, agent: Pick<CliAgent, 'output' | 'resultField'>): string {
   if (agent.output !== 'jsonl') return stdout.trim()
 
-  const field = agent.resultField ?? 'result'
+  const path = (agent.resultField ?? 'result').split('.')
   let last = ''
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      const obj = JSON.parse(trimmed) as Record<string, unknown>
-      const v = obj[field]
+      let v: unknown = JSON.parse(trimmed)
+      for (const key of path) {
+        v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
+      }
       if (typeof v === 'string' && v.trim()) last = v
     } catch {
       // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
