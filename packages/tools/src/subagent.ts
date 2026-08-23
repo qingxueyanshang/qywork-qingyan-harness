@@ -1,16 +1,15 @@
 /**
- * 把一段任务交给一个子 agent（角色）或本机装着的外部 agent CLI。
+ * 把一段任务交给一个子 agent。
  *
- * ## 为什么要有它
+ * ## 三类目标，一个工具
  *
- * 没有它的时候，「多角色协作」只有一条入口：用户手动发起一轮编排（`team.run`），
- * 按 `.qy/team.json` 里画好的图跑。模型自己**派不了活**——它知道有哪些角色，
- * 却没有任何办法把一件事交出去。
+ * - **临时子 agent**（不指定 `agent`）：当前模型、全套工具，任务结束即销毁。
+ *   并行铺开去查、去读、去验证时用它——为了几件小事先定义几个角色，没人会这么用。
+ * - **角色**：项目里配置好的那个，有自己的提示词与工具面。
+ * - **外部 CLI**：本机安装的别家 agent 程序。
  *
- * ## 一个工具收两类目标，不做两个
- *
- * 角色与外部 CLI 的配置面毫不相干，但对调用方来说是同一件事：交出去、拿回产出。
- * 拆成两个工具，模型就要先判断「这个名字属于哪一类」——而那正是这里该替它做的。
+ * 三者的配置面毫不相干，但对调用方是同一件事：交出去、拿回产出。拆成三个工具，
+ * 模型就要先判断「这个名字属于哪一类」——而那正是这里该替它做的。
  *
  * ## 失败是返回值
  *
@@ -23,16 +22,21 @@ import type { ToolContext, ToolSpec } from '@qywork/agent'
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
-    '把一段任务交给一个子 agent 或本机的外部 agent CLI，等待其完成并返回产出。' +
-    '不带 agent 参数调用则返回可用目标清单。' +
-    '适合可以独立完成、产出是一段文字的整块工作（查一片代码、写一份评审、跑一轮调研）；' +
+    '把一段任务交给一个子 agent，等待其完成并返回产出。' +
+    '**不指定 agent 则临时起一个**：用当前模型与全套工具，任务结束即销毁；' +
+    '要并行铺开去查、去读、去验证时用这一种，不必先定义角色。' +
+    '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
+    '或 cli:<id> 派给本机安装的外部 agent CLI。' +
+    '适合可以独立完成、产出是一段文字的整块工作；' +
     '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
   parameters: {
     type: 'object',
     properties: {
       agent: {
         type: 'string',
-        description: '派给谁：角色 id，或 cli:<id> 指一个本机识别到的外部 CLI。留空则只列清单。',
+        description:
+          '派给谁。留空 = 临时起一个子 agent（当前模型、全套工具）；' +
+          '填角色 id = 派给配置好的角色；填 cli:<id> = 派给本机的外部 CLI。',
       },
       task: {
         type: 'string',
@@ -59,42 +63,38 @@ export const subagentTool: ToolSpec = {
       return { status: 'failure' as const, message: '本次执行没有派活通道' }
     }
 
-    const targets = await delegate.targets()
     const target = typeof args.agent === 'string' ? args.agent.trim() : ''
-    if (!target) {
-      return {
-        status: 'success' as const,
-        message: targets.length ? `能派给 ${targets.length} 个` : '现在一个都派不出去',
-        data: { targets },
-      }
-    }
-
-    const known = targets.find((t) => t.id === target)
-    if (!known) {
-      return {
-        status: 'failure' as const,
-        message:
-          targets.length === 0
-            ? '这个项目没有角色，本机也没识别到外部 CLI'
-            : `没有 ${target}。现在能派的是：${targets.map((t) => t.id).join('、')}`,
-        errorKind: 'not_found',
-      }
-    }
-
     const task = typeof args.task === 'string' ? args.task.trim() : ''
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
 
+    // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，
+    // 那正是它存在的理由：为了铺开去做几件小事而先建几个角色，没人会这么用。
+    if (target) {
+      const targets = await delegate.targets()
+      if (!targets.some((t) => t.id === target)) {
+        return {
+          status: 'failure' as const,
+          message:
+            targets.length === 0
+              ? `没有 ${target}：这个项目没有配置角色，本机也没识别到外部 CLI。不指定 agent 可以临时起一个。`
+              : `没有 ${target}。现在能派的是：${targets.map((t) => t.id).join('、')}`,
+          errorKind: 'not_found',
+        }
+      }
+    }
+
+    const who = target || '临时子 agent'
     const res = await delegate.run({ target, task, signal: ctx.signal })
     if (!res.ok) {
       return {
         status: 'failure' as const,
-        message: `${target} 没做成：${res.error ?? '没有说明原因'}`,
+        message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
         ...(res.output ? { data: { output: res.output } } : {}),
       }
     }
     return {
       status: 'success' as const,
-      message: `${target} 做完了`,
+      message: `${who} 做完了`,
       data: { output: res.output },
     }
   },
