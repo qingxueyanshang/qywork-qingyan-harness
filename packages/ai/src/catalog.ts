@@ -228,7 +228,7 @@ export interface LongContextTier {
 }
 
 /**
- * 分时段折扣。**窗口按 UTC 小时给，不按本机时区。**
+ * 分时段折扣。**窗口按 UTC 的星期与小时给，不按本机时区。**
  *
  * 厂商公布的是当地时间（DeepSeek 写的是北京时间），但这台机器可能在任何时区，
  * 用 `getHours()` 算等于把用户的时区当成了厂商的时区——在美国跑就整天算错档，
@@ -250,14 +250,21 @@ export interface OffPeakDiscount {
    * 而写错的方向是「整段时间收错价」。
    */
   peakWindowsUtc: readonly (readonly [number, number])[]
+  /**
+   * 高峰只在这几个星期几成立，`getUTCDay()` 口径（0 = 周日）。不在表里的日子
+   * 整天按空闲价。星期与小时必须同为 UTC：混用两个时区会在窗口跨零点时错开一天。
+   */
+  peakWeekdaysUtc: readonly number[]
   /** 一句话，界面直接显示，不再自己拼。 */
   note: string
 }
 
 /**
- * DeepSeek 的高峰时段：北京时间 9:00-12:00、14:00-18:00（UTC+8）。
+ * DeepSeek 的高峰时段：北京时间**周一至周五** 9:00-12:00、14:00-18:00（UTC+8），
+ * 周六周日整天按空闲价。
  *
- * 换算成 UTC 就是 01:00-04:00 与 06:00-10:00。
+ * 换算成 UTC 就是 01:00-04:00 与 06:00-10:00，星期不用挪：两段窗口都落在同一个
+ * UTC 日内。窗口若改到跨零点，星期表要跟着挪一天。
  * 口径来源：官方文档「模型 & 价格」页（2026-08-17 生效的新价目）。
  */
 const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
@@ -266,7 +273,8 @@ const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
     [1, 4],
     [6, 10],
   ],
-  note: '空闲时段 5 折（高峰＝北京时间 9:00-12:00、14:00-18:00）',
+  peakWeekdaysUtc: [1, 2, 3, 4, 5],
+  note: '空闲时段 5 折（高峰＝北京时间周一至周五 9:00-12:00、14:00-18:00）',
 }
 
 /**
@@ -303,7 +311,7 @@ const GROK_45_LONG: LongContextTier = {
  * 这一刻、这么大的一条请求，实际单价是多少。
  *
  * **目录里那组数字是厂商公布的标准价**，这个函数把偏离标准价的两种情况叠上去：
- * 分时段折扣（按钟点）和长上下文档（按提示词大小）。两者互相独立，
+ * 分时段折扣（按星期与钟点）和长上下文档（按提示词大小）。两者互相独立，
  * 直接连乘——没有哪家同时有这两种，但代码不必为此多一个分支。
  *
  * 两种都没有就返回 `spec.pricing` 本身、**同一个对象引用**：
@@ -317,7 +325,9 @@ export function priceAt(
   if (spec.offPeak) {
     const d = new Date(ctx.now ?? Date.now())
     const hour = d.getUTCHours() + d.getUTCMinutes() / 60
-    const peak = spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
+    const peak =
+      spec.offPeak.peakWeekdaysUtc.includes(d.getUTCDay()) &&
+      spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
     if (!peak) rate *= spec.offPeak.rate
   }
   const long =

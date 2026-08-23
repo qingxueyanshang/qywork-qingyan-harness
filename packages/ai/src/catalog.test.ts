@@ -230,7 +230,7 @@ describe('模型库覆盖', () => {
  * DeepSeek 的分时段定价。
  *
  * 口径来源：官方「模型 & 价格」页 2026-08-17 生效的那版——
- * 高峰＝北京时间 9:00-12:00、14:00-18:00（UTC 01:00-04:00、06:00-10:00），
+ * 高峰＝北京时间周一至周五 9:00-12:00、14:00-18:00（UTC 01:00-04:00、06:00-10:00），
  * 空闲价恰好是高峰的一半。
  *
  * 这一组盯着两个容易错且**完全静默**的方向：按本机时区判档、以及基准价填反
@@ -238,7 +238,7 @@ describe('模型库覆盖', () => {
  */
 describe('分时段定价', () => {
   const flash = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
-  /** 给定 UTC 小时的那一刻。日期取哪天都一样——窗口只看小时。 */
+  /** 2026-08-18（周二）的这一刻。星期也参与判档，所以日期不能随便换。 */
   const at = (utcHour: number, utcMinute = 0) => Date.UTC(2026, 7, 18, utcHour, utcMinute)
 
   test('目录里填的是高峰价，人民币', () => {
@@ -272,6 +272,20 @@ describe('分时段定价', () => {
     expect(priceAt(flash(), { now: at(0, 59) }).output).toBe(4.5) // 北京 8:59，还没开始
     expect(priceAt(flash(), { now: at(4) }).output).toBe(4.5) // 北京 12:00 整，已经结束
     expect(priceAt(flash(), { now: at(3, 59) }).output).toBe(9) // 北京 11:59，还在里面
+  })
+
+  /**
+   * 星期这一维：周一至周五才有高峰，周六周日整天空闲。
+   *
+   * 只按小时判的话，周末落在两段窗口里的请求会按原价记——账本往贵的方向说谎，
+   * 没有任何地方会报错。四条断言把星期集合的两端都钉住。
+   */
+  test('高峰只在周一至周五', () => {
+    const hour = (day: number, utcHour: number) => Date.UTC(2026, 7, day, utcHour)
+    expect(priceAt(flash(), { now: hour(22, 2) }).output).toBe(4.5) // 周六，第一段窗口内
+    expect(priceAt(flash(), { now: hour(23, 7) }).output).toBe(4.5) // 周日，第二段窗口内
+    expect(priceAt(flash(), { now: hour(17, 2) }).output).toBe(9) // 周一，在
+    expect(priceAt(flash(), { now: hour(21, 7) }).output).toBe(9) // 周五，在
   })
 
   /**
