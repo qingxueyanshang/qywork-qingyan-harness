@@ -118,7 +118,7 @@ function progressLine(todos: TodoItem[]): string {
   const p = todoProgress(todos)
   if (p.current) return `第 ${p.step}/${p.total} 步：${p.current.content}`
   if (p.done === p.total) return `${p.total} 步全部完成`
-  return `已完成 ${p.done}/${p.total} 步，下一步还没认领`
+  return `已完成 ${p.done}/${p.total} 步，未认领下一条`
 }
 
 type ParseResult = { ok: true; todos: TodoItem[] } | { ok: false; message: string }
@@ -132,9 +132,12 @@ type ParseResult = { ok: true; todos: TodoItem[] } | { ok: false; message: strin
  */
 function parseTodos(raw: unknown): ParseResult {
   if (!Array.isArray(raw)) return { ok: false, message: 'todos 必须是数组' }
-  if (raw.length === 0) return { ok: false, message: '清单不能为空；不需要列清单就别调这个工具' }
+  if (raw.length === 0) return { ok: false, message: '清单不能为空；不需要清单时不要调用本工具' }
   if (raw.length > MAX_ITEMS) {
-    return { ok: false, message: `待办最多 ${MAX_ITEMS} 条，当前 ${raw.length} 条——该拆任务了` }
+    return {
+      ok: false,
+      message: `待办最多 ${MAX_ITEMS} 条，当前 ${raw.length} 条，超出上限，请拆分任务`,
+    }
   }
 
   const todos: TodoItem[] = []
@@ -166,7 +169,7 @@ function parseTodos(raw: unknown): ParseResult {
   if (inProgress > 1) {
     return {
       ok: false,
-      message: `同时只能有一条 in_progress，当前有 ${inProgress} 条。先把其他的标回 pending 或 completed。`,
+      message: `同时只能有一条 in_progress，当前有 ${inProgress} 条。将其余条目标为 pending 或 completed。`,
     }
   }
 

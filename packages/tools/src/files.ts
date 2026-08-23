@@ -130,8 +130,8 @@ const BINARY_SNIFF = /\x00/
 export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
-    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 直接作为图片交给你看；' +
-    'PDF 抽取正文后当文本返回（丢版式，中文可能出现同形异码，别拿它做逐字匹配）。' +
+    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回；' +
+    'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
     '支持用 offset/limit 分段读取大文件。',
@@ -399,7 +399,7 @@ export const editFileTool: ToolSpec = {
   description:
     '在文件中把一段精确文本替换成另一段。old_string 必须在文件中恰好出现一次——' +
     '出现 0 次或多次都会失败并告诉你实际次数，此时请加长 old_string 让它唯一。' +
-    '调用前必须先 read_file。这是修改已有文件的首选方式，比 write_file 安全。',
+    '调用前必须先 read_file。修改已有文件优先使用本工具：替换范围由 old_string 限定，不影响文件其余内容。',
   parameters: {
     type: 'object',
     properties: {
@@ -499,7 +499,7 @@ export const listDirTool: ToolSpec = {
   name: 'list_dir',
   description:
     '列出一个目录下的条目。默认跳过 node_modules/.git/dist 等噪声目录。' +
-    '用于摸清项目结构；找具体文件用 glob，找文件内容用 grep。',
+    '用于了解项目结构；查找具体文件用 glob，查找文件内容用 grep。',
   parameters: {
     type: 'object',
     properties: {

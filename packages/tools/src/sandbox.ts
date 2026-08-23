@@ -699,7 +699,7 @@ export function resolveBashPath(deps: {
     if (deps.exists(pinned)) return { path: pinned, reason: '' }
     return {
       path: null,
-      reason: `${BASH_PATH_ENV} 指向 ${pinned}，但那个位置没有文件。改对，或者不设它、让它自己找。`,
+      reason: `${BASH_PATH_ENV} 指向 ${pinned}，但那个位置没有文件。修正该值，或不设置该变量以启用自动查找。`,
     }
   }
 

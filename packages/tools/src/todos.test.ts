@@ -66,7 +66,7 @@ describe('todos 事件终于有了生产者', () => {
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'pending' },
     ])
-    expect(r.message).toBe('已完成 1/2 步，下一步还没认领')
+    expect(r.message).toBe('已完成 1/2 步，未认领下一条')
   })
 })
 
@@ -145,12 +145,12 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     expect(r.message).toContain('status')
   })
 
-  test('超过上限被拒 —— 该拆任务了', async () => {
+  test('超过上限被拒 —— 提示拆分任务', async () => {
     const { r } = await run(
       Array.from({ length: 41 }, (_, i) => ({ content: `第 ${i}`, status: 'pending' })),
     )
     expect(r.status).toBe('failure')
-    expect(r.message).toContain('拆任务')
+    expect(r.message).toContain('拆分任务')
   })
 
   test('零条 in_progress 是合法的（全做完了）', async () => {

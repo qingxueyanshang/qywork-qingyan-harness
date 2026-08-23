@@ -54,9 +54,9 @@ export const readHistoryTool: ToolSpec = {
   name: 'read_history',
   description:
     '读回被压缩折叠掉的会话历史原文。上下文压缩后的摘要里带着 [message:xxx] 与 ' +
-    '[action:xxx] 标记，把标记里的 id 传进来就能取回那一条的完整内容。' +
-    '不知道 id 就传 query 搜（返回命中行与它的 id）。' +
-    '被收纳过的工具结果只剩信封，信封里的 call_id 传进来就能取回完整的参数与结果。' +
+    '[action:xxx] 标记，传入标记中的 id 返回该条的完整内容。' +
+    'id 未知时传 query 检索（返回命中行与对应 id）。' +
+    '被收纳过的工具结果只剩信封，传入信封里的 call_id 返回完整的参数与结果。' +
     '注意它读的是会话历史；工具落盘的大块输出（rs_xxx）用 read_resource。',
   parameters: {
     type: 'object',
@@ -72,7 +72,7 @@ export const readHistoryTool: ToolSpec = {
       },
       query: {
         type: 'string',
-        description: '在整条会话历史里搜这个子串，返回命中项与各自的 id。不知道 id 时用它。',
+        description: '在整条会话历史里搜这个子串，返回命中项与各自的 id。id 未知时使用。',
       },
     },
     additionalProperties: false,

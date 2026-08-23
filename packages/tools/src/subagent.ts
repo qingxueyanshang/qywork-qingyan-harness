@@ -23,10 +23,10 @@ import type { ToolContext, ToolSpec } from '@qywork/agent'
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
-    '把一段任务交给一个子 agent 或本机的外部 agent CLI，等它做完并拿回产出。' +
-    '不带 agent 参数调用则列出现在能派给谁。' +
+    '把一段任务交给一个子 agent 或本机的外部 agent CLI，等待其完成并返回产出。' +
+    '不带 agent 参数调用则返回可用目标清单。' +
     '适合可以独立完成、产出是一段文字的整块工作（查一片代码、写一份评审、跑一轮调研）；' +
-    '要它接着上下文继续做的事不要派出去——子 agent 看不到这条会话。',
+    '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
   parameters: {
     type: 'object',
     properties: {

@@ -131,15 +131,15 @@ export class PendingToolPool {
 export const LOAD_TOOL_SPEC: Omit<ToolSpec, 'fn'> = {
   name: 'load_tool',
   description:
-    '把外部工具（MCP server 与插件提供的）的参数说明装进工具表，装完就能直接调用它们。' +
-    '名字从尾区那份「可加载的外部工具」清单里取，一次可以传多个。' +
-    '不在那份清单里的工具本来就在工具表里，直接调即可，不需要装。',
+    '把外部工具（MCP server 与插件提供的）的参数说明加载进工具表，加载后即可直接调用。' +
+    '名称取自尾区「可加载的外部工具」清单，一次可以传多个。' +
+    '不在该清单中的工具已在工具表内，直接调用，无需加载。',
   parameters: {
     type: 'object',
     properties: {
       names: {
         type: 'array',
-        description: '要装的工具名，取自尾区清单',
+        description: '要加载的工具名，取自尾区清单',
         items: { type: 'string' },
       },
     },
