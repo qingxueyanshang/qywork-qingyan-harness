@@ -79,11 +79,14 @@ export const defineSubagentTool: ToolSpec = {
     const file = join(ctx.workspaceRoot, ...TEAM_CONFIG.split('/'))
     const raw = await readFile(file, 'utf8').catch(() => null)
     let doc: Record<string, unknown> = {}
-    if (raw !== null && raw.trim()) {
+    if (raw?.trim()) {
       try {
         const parsed: unknown = JSON.parse(raw)
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          return { status: 'failure' as const, message: `${TEAM_CONFIG} 不是一个对象，先修好再建角色` }
+          return {
+            status: 'failure' as const,
+            message: `${TEAM_CONFIG} 不是一个对象，先修好再建角色`,
+          }
         }
         doc = parsed as Record<string, unknown>
       } catch (e) {
