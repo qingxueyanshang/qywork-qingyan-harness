@@ -233,6 +233,19 @@
   display: flex;
   flex-direction: column;
 }
+/* 子会话页：一条跑完的子 agent 会话的回放。会话流那些行的样式是全局的，
+   这里只负责给它一个能滚的盒子与左右留白——不套 `.transcript-inner` 的
+   760px 居中，面板本来就窄，再居中会挤成一条。 */
+.child-cv {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: var(--s-3) var(--s-4) var(--s-6);
+  overflow-y: auto;
+}
+
 /* 那一页的代码还在下载时的占位。**同样尺寸的空壳**，不是转圈也不是文案：
    这一格的位置已经留好了，占位块只要把它占住（同 App.tsx 里那段）。 */
 .pane-loading {

@@ -50,6 +50,27 @@ const tool = (objectLabel: string, actionKind = 'read', extra: ItemOverrides = {
 const kinds = (items: ReturnType<typeof buildRenderItems>) => items.map((r) => r.kind)
 
 describe('分组规则', () => {
+  /** 复现的失败形状：一张四节点的图被并进「运行 1 个编排…」那一行，图看不见了。 */
+  test('派活的那两个不进组，前后的工具照常成组', () => {
+    const out = buildRenderItems([
+      tool('a.ts'),
+      tool('b.ts'),
+      tool('图', 'run', { toolName: 'workflow' }),
+      tool('c.ts'),
+      tool('d.ts'),
+    ])
+    expect(kinds(out)).toEqual(['group', 'tool', 'group'])
+  })
+
+  test('单发也是独立一条', () => {
+    const out = buildRenderItems([
+      tool('子 agent', 'run', { toolName: 'subagent' }),
+      tool('a.ts'),
+      tool('b.ts'),
+    ])
+    expect(kinds(out)).toEqual(['tool', 'group'])
+  })
+
   test('只有 assistant 正文打断分组', () => {
     const out = buildRenderItems([
       tool('a.ts'),

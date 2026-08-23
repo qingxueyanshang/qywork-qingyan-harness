@@ -42,6 +42,12 @@ export const subagentTool: ToolSpec = {
         type: 'string',
         description: '要它做什么。子 agent 看不到这条会话，所以背景要在这里写全。',
       },
+      model: {
+        type: 'string',
+        description:
+          '**只在用户点名了模型时才填**：写模型 id，同一个 id 挂在多个接口下时写 接口/模型。' +
+          '不填 = 跟当前会话同一个模型。外部 CLI 用它自己的模型，填了会被拒。',
+      },
     },
     additionalProperties: false,
   },
@@ -65,6 +71,7 @@ export const subagentTool: ToolSpec = {
 
     const target = typeof args.agent === 'string' ? args.agent.trim() : ''
     const task = typeof args.task === 'string' ? args.task.trim() : ''
+    const model = typeof args.model === 'string' ? args.model.trim() : ''
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
 
     // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，
@@ -84,7 +91,12 @@ export const subagentTool: ToolSpec = {
     }
 
     const who = target || '临时子 agent'
-    const res = await delegate.run({ target, task, signal: ctx.signal })
+    const res = await delegate.run({
+      target,
+      task,
+      ...(model ? { model } : {}),
+      signal: ctx.signal,
+    })
     if (!res.ok) {
       return {
         status: 'failure' as const,
@@ -95,7 +107,11 @@ export const subagentTool: ToolSpec = {
     return {
       status: 'success' as const,
       message: `${who} 做完了`,
-      data: { output: res.output },
+      // 子会话 id 随结果落库：进度事件不落库，刷新之后能点开它的只有这里。
+      data: {
+        output: res.output,
+        ...(res.conversationId ? { conversationId: res.conversationId } : {}),
+      },
     }
   },
 }

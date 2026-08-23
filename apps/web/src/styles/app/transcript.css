@@ -919,7 +919,9 @@
   height: 10px;
   background: var(--border-default);
 }
-/* 一个节点。状态只走底色与边框，不加图标——一排小图标会让人以为它们能点。 */
+/* 一个节点：点开它那条子会话。状态只走底色与边框，不加图标——
+   一排小图标读起来像一排开关，而这里每个节点只有「点开」这一个动作。
+   外部 CLI 节点没有子会话，那种 disabled。 */
 .wf-node {
   display: flex;
   flex-direction: column;
@@ -930,7 +932,17 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: inherit;
   font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.wf-node:not(:disabled):hover {
+  background: var(--bg-hover);
+}
+.wf-node:disabled {
+  cursor: default;
 }
 .wf-node.working,
 .wf-node.spawned {
@@ -959,6 +971,13 @@
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
+/* 单发那张卡底下的「子会话」。跟着展开体走，不在标题行上——
+   标题行是「派了谁、成没成」，这一颗是展开之后才需要的下一步。 */
+.cv-open {
+  align-self: flex-start;
+  margin-top: var(--s-2);
+}
+
 /* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
 .wf-node-time {
   color: var(--text-tertiary);

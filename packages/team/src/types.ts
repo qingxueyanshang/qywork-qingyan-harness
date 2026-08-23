@@ -108,12 +108,25 @@ export interface PlanNode {
   needs?: string[]
   /** 设为 false 则依赖只影响顺序，不传递产出。默认传递。 */
   passInput?: boolean
+  /**
+   * 这个节点点名用哪个模型。不写 = 跟父会话同一个。
+   *
+   * 外部 CLI 节点上不成立：那边用它自己的模型，写了也没地方接。
+   */
+  model?: string
 }
 
 export interface NodeResult {
   nodeId: string
   /** 同 `PlanNode.agent`：角色 id 或 `cli:<id>`。 */
   agent: string
+  /**
+   * 显示用的名字：角色名，或「厂商 + CLI 名」。
+   *
+   * **必须随结果带出来**：刷新之后图卡只能照落库结果重画，那时事件里的名字早没了，
+   * 剩下的只有 `agent` 那个 id——图上每个节点会退化成 `ad-hoc` 这样的内部 id。
+   */
+  label: string
   status: 'done' | 'failed' | 'skipped'
   output: string
   error?: string

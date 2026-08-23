@@ -17,11 +17,11 @@
 
 import type { DelegatePort } from '@qywork/agent'
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
-import { collectSecrets, loadTeamConfig } from '@qywork/runtime'
+import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import { CLI_PREFIX, detectClis, findCli, type Role, runCli, TeamOrchestrator } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
-import { runBuiltinMember } from './team-run.ts'
+import { resolveModel, runBuiltinMember } from './team-run.ts'
 
 /** 派活只用到装配三件套（账本、正文库、配置），不碰那条 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
@@ -74,6 +74,18 @@ export function makeDelegate(ctx: {
     return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
   }
 
+  /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */
+  const pick = (
+    named?: string,
+  ): { explicit: ModelRef } | { inherit: ModelRef } | Record<string, never> | { error: string } => {
+    if (named) {
+      const r = resolveModel(named, deps.config)
+      return 'error' in r ? r : { explicit: r }
+    }
+    const pair = inherited()
+    return pair ? { inherit: pair } : {}
+  }
+
   return {
     async targets() {
       const [rs, clis] = await Promise.all([roles(), detectClis()])
@@ -93,9 +105,14 @@ export function makeDelegate(ctx: {
       ]
     },
 
-    async run(input: { target: string; task: string; signal: AbortSignal }) {
+    async run(input: { target: string; task: string; model?: string; signal: AbortSignal }) {
       if (input.target.startsWith(CLI_PREFIX)) {
         const id = input.target.slice(CLI_PREFIX.length)
+        // 外部 CLI 用它自己的模型，接不了这个参数。当场说出来，
+        // 不是照跑一遍再让用户以为换过了。
+        if (input.model) {
+          return { ok: false, output: '', error: `${id} 用它自己的模型，指定不了 ${input.model}` }
+        }
         const cli = await findCli(id)
         if (!cli) return { ok: false, output: '', error: `本机没有识别到 ${id}` }
         const r = await runCli(cli, {
@@ -120,15 +137,18 @@ export function makeDelegate(ctx: {
 
       const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
-      const pair = inherited()
+      const picked = pick(input.model)
+      if ('error' in picked) return { ok: false, output: '', error: picked.error }
       const res = await runBuiltinMember(
         { role, prompt: input.task, signal: input.signal },
-        { deps, workspaceRoot, ...(pair ? { inherit: pair } : {}) },
+        { deps, workspaceRoot, ...picked },
       )
       return {
         ok: res.ok,
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
+        // 子会话不进会话列表，这个 id 是点开它的唯一入口。
+        ...(res.conversationId ? { conversationId: res.conversationId } : {}),
       }
     },
 
@@ -155,13 +175,10 @@ export function makeDelegate(ctx: {
               ev.type === 'team.member' ? { ...ev, stepId: input.stepId } : ev,
               conversationId,
             ),
-          runBuiltin: (member) => {
-            const pair = inherited()
-            return runBuiltinMember(member, {
-              deps,
-              workspaceRoot,
-              ...(pair ? { inherit: pair } : {}),
-            })
+          runBuiltin: async (member) => {
+            const picked = pick(member.model)
+            if ('error' in picked) return { ok: false, output: '', error: picked.error }
+            return runBuiltinMember(member, { deps, workspaceRoot, ...picked })
           },
           // 人工门禁与 `team.run` 同一条通道：授权请求发给用户，等他点。
           awaitHumanGate: async (nodeId, summary) =>

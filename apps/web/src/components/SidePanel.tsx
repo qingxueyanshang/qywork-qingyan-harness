@@ -66,6 +66,9 @@ const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
 // 同样懒加载：不开浏览器页的人不必为它付首屏成本。
 const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
 
+// 子会话页：只有从工具卡上点开子 agent 才会加载。
+const ConversationPanel = lazy(() => import('./ConversationPanel.tsx'))
+
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
 
@@ -347,9 +350,14 @@ export default function SidePanel() {
                 {(t) => (
                   <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
                     <Suspense fallback={<div class="pane-loading" />}>
-                      <Show when={t.kind === 'terminal'} fallback={<BrowserPanel id={t.id} />}>
-                        <TerminalPanel id={t.id} />
-                      </Show>
+                      <Switch fallback={<BrowserPanel id={t.id} />}>
+                        <Match when={t.kind === 'terminal'}>
+                          <TerminalPanel id={t.id} />
+                        </Match>
+                        <Match when={t.kind === 'conversation'}>
+                          <ConversationPanel id={t.id} />
+                        </Match>
+                      </Switch>
                     </Suspense>
                   </div>
                 )}

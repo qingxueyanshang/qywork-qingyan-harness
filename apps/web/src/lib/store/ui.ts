@@ -30,8 +30,11 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * `terminal` 只有桌面端有（PTY 是本机进程和一对系统句柄），`browser` 每一端都有
  * （就是一个 iframe）。**这一层不判端**：判在入口那边（`SidePanel` 的看板按
  * `isDesktopShell()` 决定列不列），这里只管开了哪几页。
+ *
+ * `conversation` 没有看板入口：它只能从工具卡上点开（哪一条子会话由那张卡说了算），
+ * 所以也没有序号，标题就是那个子 agent 的名字。
  */
-export type PanelTabKind = 'terminal' | 'browser'
+export type PanelTabKind = 'terminal' | 'browser' | 'conversation'
 
 export interface PanelTab {
   id: string
@@ -90,16 +93,36 @@ function disposeTab(id: string): void {
  * 每种页各自的序号。**只增不减**：关掉「终端 1」之后剩下那页仍然叫「终端 2」，
  * 不在用户眼皮底下改名。
  */
-const tabSeq: Record<PanelTabKind, number> = { terminal: 0, browser: 0 }
-const TAB_LABEL: Record<PanelTabKind, string> = { terminal: '终端', browser: '浏览器' }
+const TAB_LABEL = { terminal: '终端', browser: '浏览器' } as const
+type NumberedKind = keyof typeof TAB_LABEL
+const tabSeq: Record<NumberedKind, number> = { terminal: 0, browser: 0 }
 
 /** 新开一页并翻到它。 */
-export function openPanelTab(kind: PanelTabKind): void {
+export function openPanelTab(kind: NumberedKind): void {
   tabSeq[kind] += 1
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
   setTabs((list) => [...list, { id, kind, title: `${TAB_LABEL[kind]} ${n}` }])
   setSidePanel({ tab: id })
+}
+
+/**
+ * 打开某条子会话那一页。
+ *
+ * **页 id 就是会话 id**：同一条子会话再点一次是翻回去，不是并排开出第二页
+ * ——两页看同一条已经跑完的会话，内容逐字相同。
+ */
+export function openConversationTab(conversationId: string, title: string): void {
+  const id = `conversation-${conversationId}`
+  if (!panelTabs().some((t) => t.id === id)) {
+    setTabs((list) => [...list, { id, kind: 'conversation', title }])
+  }
+  setSidePanel({ tab: id })
+}
+
+/** 从页 id 反取会话 id。`openConversationTab` 是唯一的生产者。 */
+export function tabConversationId(tabId: string): string {
+  return tabId.slice('conversation-'.length)
 }
 
 /**

@@ -27,8 +27,10 @@ import type { CommandDeps } from './deps.ts'
 export function memberModel(
   role: Pick<Role, 'id' | 'provider' | 'model'>,
   config: QyConfig,
-  inherit?: ModelRef,
+  pick?: { explicit?: ModelRef; inherit?: ModelRef },
 ): ModelRef | { error: string } {
+  // 用户这一次点名的模型盖过一切，包括角色自己钉的那一对：他要的就是这一次换个模型跑。
+  if (pick?.explicit) return pick.explicit
   if (role.provider) {
     // provider 指定的是「用哪家的 key」。指了一个不存在的接口要**当场失败**——
     // 悄悄回落到当前接口会让「用便宜模型跑审查」这类配置静默失效，而账单在另一边。
@@ -42,7 +44,35 @@ export function memberModel(
     }
   }
   if (role.model) return config.active
-  return inherit ?? config.active
+  return pick?.inherit ?? config.active
+}
+
+/**
+ * 用户点名的模型解析成一对「接口 × 模型」。接受 `模型 id`，也接受 `接口/模型`。
+ *
+ * **同一个模型 id 挂在两个接口下时报错，不按枚举顺序挑一个**：挑错了是端点、key、
+ * 价目表三样一起换掉，而且不报错。
+ */
+export function resolveModel(name: string, config: QyConfig): ModelRef | { error: string } {
+  const hits = Object.entries(config.providers).filter(([, p]) => p.models[name])
+  if (hits.length === 1) return { provider: hits[0]![0], model: name }
+  if (hits.length > 1) {
+    return { error: `${name} 挂在多个接口下（${hits.map(([n]) => n).join('、')}），写成 接口/模型` }
+  }
+  const cut = name.indexOf('/')
+  if (cut > 0) {
+    const provider = name.slice(0, cut)
+    const model = name.slice(cut + 1)
+    const p = config.providers[provider]
+    if (p?.models[model]) return { provider, model }
+  }
+  return { error: `配置里没有模型 ${name}。现在能用的是：${modelList(config)}` }
+}
+
+function modelList(config: QyConfig): string {
+  return Object.entries(config.providers)
+    .flatMap(([name, p]) => Object.keys(p.models).map((m) => `${name}/${m}`))
+    .join('、')
 }
 
 /**
@@ -71,15 +101,20 @@ export async function runBuiltinMember(
     deps: Omit<CommandDeps, 'ws'>
     /** 父会话所在的项目目录。成员会话跑在同一个根下——一轮编排不跨项目。 */
     workspaceRoot: string
-    /** 父会话当前的「接口 × 模型」，角色没点名时成员跟着它跑。 */
+    /** 父会话当前的「接口 × 模型」，谁都没点名时成员跟着它跑。 */
     inherit?: ModelRef
+    /** 用户这一次点名的那一对，盖过角色与父会话。 */
+    explicit?: ModelRef
     onUsage?: (u: RunUsage) => void
   },
 ): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
   const { role } = input
   const { deps } = ctx
 
-  const active = memberModel(role, deps.config, ctx.inherit)
+  const active = memberModel(role, deps.config, {
+    ...(ctx.explicit ? { explicit: ctx.explicit } : {}),
+    ...(ctx.inherit ? { inherit: ctx.inherit } : {}),
+  })
   if ('error' in active) return { ok: false, output: '', error: active.error }
   const config = { ...deps.config, active }
 
@@ -100,7 +135,8 @@ export async function runBuiltinMember(
 
   try {
     for await (const ev of session.ask(input.prompt, undefined, {
-      ...(role.model ? { model: role.model } : {}),
+      // 点名过模型时不再带角色那一个：裸模型名会盖过上面刚定下的那一对。
+      ...(role.model && !ctx.explicit ? { model: role.model } : {}),
       // 成员子会话不进会话列表——`listConversations` 的判据是 `source IS NULL`。
       // 不打这个标记的话，每跑一次 team，用户列表里就多出 N 条以成员 prompt
       // 开头的条目，而点进去只有半截独白。

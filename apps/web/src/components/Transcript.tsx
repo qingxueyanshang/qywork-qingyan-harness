@@ -37,6 +37,7 @@ import {
   todosOf,
 } from '../lib/step-view.ts'
 import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import { openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
@@ -60,12 +61,6 @@ export function Transcript() {
    * 记着没夹过的那个数，下面那句「这次滚动是我自己写的」永远判不成立。
    */
   let followTop = -1
-
-  // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
-  // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
-  const items = createMemo<RenderItem[]>((prev = []) =>
-    reconcileRenderItems(prev, buildRenderItems(state.transcript)),
-  )
 
   const stickToBottom = () => {
     scroller.scrollTop = scroller.scrollHeight
@@ -118,52 +113,7 @@ export function Transcript() {
   return (
     <div class="transcript" ref={scroller} onScroll={onScroll}>
       <div class="transcript-inner" ref={inner}>
-        <For each={items()}>
-          {(node) => (
-            <Switch>
-              <Match when={node.kind === 'user'}>
-                <div class="row user">
-                  <div class="user-col">
-                    {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
-                    <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
-                      <div class="attach-row sent">
-                        <For each={(node as { item: TranscriptItem }).item.attachments}>
-                          {(a) => (
-                            <span class="attach-chip" data-tip={a.path}>
-                              <AttachmentThumb path={a.path} name={a.name} box={44} />
-                              <span class="truncate">{a.name}</span>
-                            </span>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
-                    <Show when={(node as { item: TranscriptItem }).item.text}>
-                      <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
-                    </Show>
-                  </div>
-                </div>
-              </Match>
-              <Match when={node.kind === 'text'}>
-                <Prose item={(node as { item: TranscriptItem }).item} />
-              </Match>
-              <Match when={node.kind === 'thinking'}>
-                <ThinkingFold item={(node as { item: TranscriptItem }).item} />
-              </Match>
-              <Match when={node.kind === 'tool'}>
-                <ToolCard item={(node as { item: TranscriptItem }).item} />
-              </Match>
-              <Match when={node.kind === 'compaction'}>
-                <CompactionCard item={(node as { item: TranscriptItem }).item} />
-              </Match>
-              <Match when={node.kind === 'run'}>
-                <RunCard item={(node as { item: TranscriptItem }).item} />
-              </Match>
-              <Match when={node.kind === 'group'}>
-                <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
-              </Match>
-            </Switch>
-          )}
-        </For>
+        <TranscriptRows items={state.transcript} />
 
         {/*
          * 没有 run 收尾条可挂的那些错误。
@@ -726,6 +676,70 @@ function compactionFailureLabel(code: string | undefined): string {
   return (code && map[code]) || '压缩失败'
 }
 
+/**
+ * 会话流的正文行。父会话与右侧面板里那条只读子会话**共用这一份**——
+ * 各画一遍的话，将来加一种条目必然漏掉其中一处。
+ *
+ * 滚动跟随不在这里：那件事只有父会话要，它在 `Transcript` 里。
+ */
+export function TranscriptRows(props: { items: TranscriptItem[] }) {
+  // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
+  // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
+  const items = createMemo<RenderItem[]>((prev = []) =>
+    reconcileRenderItems(prev, buildRenderItems(props.items)),
+  )
+  return (
+    <>
+      <For each={items()}>
+        {(node) => (
+          <Switch>
+            <Match when={node.kind === 'user'}>
+              <div class="row user">
+                <div class="user-col">
+                  {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
+                  <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
+                    <div class="attach-row sent">
+                      <For each={(node as { item: TranscriptItem }).item.attachments}>
+                        {(a) => (
+                          <span class="attach-chip" data-tip={a.path}>
+                            <AttachmentThumb path={a.path} name={a.name} box={44} />
+                            <span class="truncate">{a.name}</span>
+                          </span>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                  <Show when={(node as { item: TranscriptItem }).item.text}>
+                    <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
+                  </Show>
+                </div>
+              </div>
+            </Match>
+            <Match when={node.kind === 'text'}>
+              <Prose item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'thinking'}>
+              <ThinkingFold item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'tool'}>
+              <ToolCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'compaction'}>
+              <CompactionCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'run'}>
+              <RunCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'group'}>
+              <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
+            </Match>
+          </Switch>
+        )}
+      </For>
+    </>
+  )
+}
+
 function ToolGroup(props: { members: TranscriptItem[] }) {
   const tools = () => props.members.filter((m) => m.kind === 'tool')
   const failed = () => tools().some((t) => t.status === 'failure')
@@ -774,16 +788,39 @@ function WorkflowCard(props: { item: TranscriptItem }) {
 
   const stateOf = (id: string) => {
     const live = props.item.nodes?.find((n) => n.nodeId === id)
-    if (live) return { phase: live.phase, label: live.label, durationMs: live.durationMs }
+    if (live) {
+      return {
+        phase: live.phase,
+        label: live.label,
+        durationMs: live.durationMs,
+        conversationId: live.conversationId,
+      }
+    }
     // 回放这一路读的是落库的结果，**字段名与事件那一路不同**：结果里是
     // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working/blocked）。
     // 照着事件的名字去读结果，每个节点都会退化成「等着跑」——刷新一次整张图全灰。
     const back = (
       props.item.outcome?.data as
-        | { nodes?: { nodeId: string; agent: string; status: string; durationMs?: number }[] }
+        | {
+            nodes?: {
+              nodeId: string
+              agent: string
+              label?: string
+              status: string
+              durationMs?: number
+              conversationId?: string
+            }[]
+          }
         | undefined
     )?.nodes?.find((n) => n.nodeId === id)
-    return back ? { phase: back.status, label: back.agent, durationMs: back.durationMs } : null
+    return back
+      ? {
+          phase: back.status,
+          label: back.label || back.agent,
+          durationMs: back.durationMs,
+          conversationId: back.conversationId,
+        }
+      : null
   }
 
   /** 按依赖分层：一个节点落在「它所有上游的最深层 + 1」。 */
@@ -822,14 +859,25 @@ function WorkflowCard(props: { item: TranscriptItem }) {
               <For each={layer}>
                 {(n) => {
                   const st = () => stateOf(n.id)
+                  // 点节点 = 翻开它那条子会话。外部 CLI 节点没有子会话，那种点不开。
+                  const open = () => {
+                    const cid = st()?.conversationId
+                    if (cid) openConversationTab(cid, st()?.label || n.agent)
+                  }
                   return (
-                    <div class="wf-node" classList={{ [st()?.phase ?? 'waiting']: true }}>
+                    <button
+                      type="button"
+                      class="wf-node"
+                      classList={{ [st()?.phase ?? 'waiting']: true }}
+                      disabled={!st()?.conversationId}
+                      onClick={open}
+                    >
                       <span class="wf-node-name">{st()?.label || n.agent}</span>
                       <span class="wf-node-task truncate">{n.id}</span>
                       <Show when={st()?.durationMs}>
                         {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
                       </Show>
-                    </div>
+                    </button>
                   )
                 }}
               </For>
@@ -854,8 +902,26 @@ function ToolCard(props: { item: TranscriptItem }) {
       {...(changes() ? { changes: changes()! } : {})}
     >
       <StepBody item={props.item} />
+      {/* 派出去那一件事的子会话。产出正文在上面已经有了，这里是「它是怎么做的」。 */}
+      <Show when={childConversation(props.item)}>
+        {(cid) => (
+          <button
+            type="button"
+            class="ghost-btn cv-open"
+            onClick={() => openConversationTab(cid(), String(props.item.args?.agent || '子 agent'))}
+          >
+            子会话
+          </button>
+        )}
+      </Show>
     </Fold>
   )
+}
+
+/** 这张卡上带着的子会话 id。只有 `subagent` 会有——图卡的 id 在每个节点上。 */
+function childConversation(item: TranscriptItem): string | null {
+  const cid = (item.outcome?.data as { conversationId?: unknown } | undefined)?.conversationId
+  return typeof cid === 'string' && cid ? cid : null
 }
 
 /**
