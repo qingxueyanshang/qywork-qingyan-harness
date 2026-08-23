@@ -976,7 +976,10 @@ function Generic(props: { item: TranscriptItem }) {
 /**
  * 结果那一格。
  *
- * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → 列表型 → `outcome.message`，
+ * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → `data.output` → 列表型 →
+ * `outcome.message`。`output` 是子 agent 交回来的正文：不取它，`subagent` 展开后
+ * 只有一句「做完了」。
+ *
  * **失败时把 `stderr` 提到最前**：报错基本只写在错误流里，而 stdout 常常另有内容
  * （测试的进度输出、服务器的启动日志），按成功时的顺序取就会拿到它、把真正的
  * 报错挡在后面。空的时候整格不渲染——一个空 `<pre>` 只会在展开体里留一道
@@ -998,8 +1001,8 @@ function Result(props: {
     const data = (props.item.outcome?.data ?? {}) as Record<string, unknown>
     const keys =
       props.item.status === 'failure'
-        ? ['stderr', 'content', 'stdout']
-        : ['content', 'stdout', 'stderr']
+        ? ['stderr', 'content', 'stdout', 'output']
+        : ['content', 'stdout', 'stderr', 'output']
     for (const k of keys) {
       if (typeof data[k] === 'string' && (data[k] as string).trim()) return data[k] as string
     }
