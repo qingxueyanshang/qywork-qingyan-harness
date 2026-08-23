@@ -231,6 +231,15 @@ export class TeamOrchestrator {
             workspaceRoot: this.deps.workspaceRoot,
             signal: this.deps.signal,
             ...(this.deps.secrets ? { secrets: this.deps.secrets } : {}),
+            // 外部 CLI 的过程只能靠这条看得见：它是本机另一个进程，
+            // 不像内置子 agent 那样有一条点得开的子会话。
+            onChunk: (delta) =>
+              this.deps.emit({
+                type: 'team.output',
+                runId: this.deps.runId,
+                memberId: node.id,
+                delta,
+              }),
           }).then((r) => ({
             ok: r.ok,
             output: r.output,

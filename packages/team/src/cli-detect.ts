@@ -41,7 +41,9 @@ const KNOWN: KnownCli[] = [
     id: 'claude',
     vendor: 'Anthropic',
     bin: 'claude',
-    args: ['-p', '{prompt}', '--output-format', 'json'],
+    // `stream-json` 而不是 `json`：后者跑完才一次性吐一个大对象，右侧面板里
+    // 那一页在它结束之前一个字都没有。`--verbose` 是 stream-json 在打印模式下的前提。
+    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose'],
     output: 'jsonl',
     resultField: 'result',
     envKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],

@@ -42,6 +42,11 @@ export async function runCli(
      * 不传等于「没有已知凭证」，不等于「不用剥」。
      */
     secrets?: { values: string[] }
+    /**
+     * 边跑边给一块。**不给这个回调就等于跑完才有输出**——外部 CLI 是本机另一个进程，
+     * 它写了什么在结束之前一个字都看不到。
+     */
+    onChunk?: (text: string) => void
   },
 ): Promise<CliRunResult> {
   const args = agent.args.map((a) => a.replaceAll('{prompt}', input.prompt))
@@ -77,7 +82,20 @@ export async function runCli(
   // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时与中断都走**树杀**。
   // 被调度的 CLI 自己也在跑一个 agent，必然派生子进程；只杀它一个的话那些还活着，
   // 于是用户点了停止、这里却还在等一个永远不会到的 EOF。
-  const got = await collectProcess(proc, { timeoutMs: timeout, signal: input.signal })
+  const got = await collectProcess(proc, {
+    timeoutMs: timeout,
+    signal: input.signal,
+    // `onText` 的返回值是「真正记进结果的那一段」，所以必须原样回传：
+    // 它是脱敏器的挂点，不是给旁观者用的。这里只顺手抄一份出去。
+    ...(input.onChunk
+      ? {
+          onText: (_channel: 'stdout' | 'stderr', text: string) => {
+            input.onChunk?.(text)
+            return text
+          },
+        }
+      : {}),
+  })
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
