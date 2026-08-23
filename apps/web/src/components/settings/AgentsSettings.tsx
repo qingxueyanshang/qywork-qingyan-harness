@@ -9,7 +9,7 @@ import {
 } from '../../lib/store/index.ts'
 import { IconPencil, IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
-import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
+import { EmptyBox, EntryCard, Section } from './Page.tsx'
 
 /**
  * Agent Team。
@@ -28,6 +28,9 @@ import { EmptyBox, EntryCard, PathLine, Section } from './Page.tsx'
  * 角色由表单改，但**落盘仍然只有 `/api/team/raw` 一条路**：表单读当前原文、改对象、
  * 整份写回。另开一条结构化写接口就是第二条落库路径，两条路径迟早在某次加字段时对不上。
  * 代价是写回时格式由 `JSON.stringify` 重排——JSON 没有注释，重排不丢信息。
+ *
+ * 界面上**没有原文编辑框**：表单盖不住的那几样（编排图、规则）要懂 JSON 结构才填得对，
+ * 那不是用户在设置页里该判断的事。
  *
  * ## 加一条角色走对话，不在这里填表
  *
@@ -72,20 +75,14 @@ export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
   const [clis, { refetch: refetchClis }] = createResource(loadTeamClis)
   const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
-  const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
-  const [showRaw, setShowRaw] = createSignal(false)
   const [roleForm, setRoleForm] = createSignal<RoleForm | null>(null)
 
-  // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份，
-  // 编辑框才不会闪空。
-  const text = () => draft() ?? loaded(file)?.raw ?? ''
+  // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份。
+  const text = () => loaded(file)?.raw ?? ''
 
-  /**
-   * 当前原文解析出来的对象。**草稿优先**——手改了原文还没存就点表单时，
-   * 表单基于的是屏幕上那份，不是盘上那份。解析不了回 null。
-   */
+  /** 当前原文解析出来的对象。解析不了回 null。 */
   const config = (): TeamJson | null => {
     const body = text().trim()
     if (!body) return {}
@@ -107,8 +104,7 @@ export default function AgentsSettings() {
   const writeConfig = async (mutate: (cfg: TeamJson) => string | null) => {
     const cfg = config()
     if (cfg === null) {
-      setError('team.json 解析不了，先在下面「直接改 team.json」里修好再用表单')
-      setShowRaw(true)
+      setError('team.json 解析不了，修好它再用表单')
       return
     }
     const refused = mutate(cfg)
@@ -120,9 +116,7 @@ export default function AgentsSettings() {
     try {
       await saveTeamRaw(`${JSON.stringify(cfg, null, 2)}\n`)
       setError(null)
-      // **草稿要等重取完再清**：先清的话编辑框会瞬间回落到重取前的旧原文。
       await Promise.all([refetchRaw(), refetchTeam()])
-      setDraft(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -182,22 +176,6 @@ export default function AgentsSettings() {
       return null
     })
 
-  const commitRaw = async () => {
-    const body = draft()
-    if (body === null) return
-    setBusy(true)
-    try {
-      await saveTeamRaw(body.endsWith('\n') ? body : `${body}\n`)
-      setError(null)
-      await Promise.all([refetchRaw(), refetchTeam()])
-      setDraft(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
@@ -210,8 +188,13 @@ export default function AgentsSettings() {
             {/* 配置坏了要说出来，不能静默当作「没配 team」——那会让用户以为
                 这个功能不存在。 */}
             <Show when={t().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+            {/* 表单改的是这份原文解析出来的对象。读不到它而不说，下一次保存会把
+                编排图与规则一起写没——所以这条失败必须显形，并给一条重试的路。 */}
+            <Show when={file.error}>
+              <LoadState error={file.error} onRetry={() => void refetchRaw()} />
+            </Show>
 
-            <Section title="角色" actions={<RoleActions />}>
+            <Section title="角色" path={loaded(file)?.path ?? ''} actions={<RoleActions />}>
               <Show
                 when={t().roles.length > 0}
                 fallback={<EmptyBox label="还没有角色" actions={<RoleActions />} />}
@@ -386,35 +369,6 @@ export default function AgentsSettings() {
                     </div>
                   </Show>
                 )}
-              </Show>
-            </Section>
-
-            {/* 原文折起来。它是**兜底不是主路**：编排图这类只有 JSON 表达得了，
-                但上面的表单已经覆盖了日常要改的那几样，摊开摆着只会让这一页
-                看起来仍然只能手写配置。 */}
-            <Section>
-              <button class="disclosure" type="button" onClick={() => setShowRaw(!showRaw())}>
-                {showRaw() ? '收起 team.json' : '直接改 team.json'}
-              </button>
-              <Show when={showRaw()}>
-                <Show
-                  when={loaded(file)}
-                  fallback={<LoadState error={file.error} onRetry={() => void refetchRaw()} />}
-                >
-                  {(fl) => (
-                    <>
-                      <PathLine path={fl().path} />
-                      <textarea
-                        class="code-area"
-                        rows={14}
-                        spellcheck={false}
-                        value={text()}
-                        onInput={(e) => setDraft(e.currentTarget.value)}
-                        onBlur={() => void commitRaw()}
-                      />
-                    </>
-                  )}
-                </Show>
               </Show>
             </Section>
 
