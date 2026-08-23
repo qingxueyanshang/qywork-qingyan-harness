@@ -941,8 +941,16 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 116px;
-  max-width: 200px;
+  /*
+   * **所有节点等宽，这一条不是审美是几何。**
+   *
+   * 一层是 `justify-content: center`，居中的是整行不是行里那个中间的节点：
+   * 中间节点的中线等于容器中线，只在它左右两边等宽时才成立。宽度跟着内容走的话，
+   * 耗时多一位数字（5.5s → 53.0s）就让那一层的中线偏出去几个像素，
+   * 于是上面下来的竖线和下面进节点的竖线错开一截，看起来像线断了。
+   */
+  width: 160px;
+  max-width: 100%;
   padding: 6px var(--s-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
