@@ -112,6 +112,7 @@ export {
 } from './tool-pool.ts'
 
 import { readHistoryTool } from './history.ts'
+import { defineSubagentTool } from './subagent-define.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
 
@@ -152,7 +153,7 @@ export function registerBuiltinTools(
     deleteScheduleTool,
     // 派活与编排**按通道注册**：没有派活通道就没有这两个工具，
     // 而不是给必然回「派不出去」的（B5，同 run_command 那条）。
-    ...(opts.delegate ? [subagentTool, workflowTool] : []),
+    ...(opts.delegate ? [defineSubagentTool, subagentTool, workflowTool] : []),
   ]) {
     registry.register(spec)
   }

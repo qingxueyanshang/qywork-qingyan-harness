@@ -17,7 +17,7 @@
 
 import type { DelegatePort } from '@qywork/agent'
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
-import { acquireExtensions, collectSecrets, releaseExtensions } from '@qywork/runtime'
+import { collectSecrets, loadTeamConfig } from '@qywork/runtime'
 import { CLI_PREFIX, detectClis, findCli, runCli, TeamOrchestrator } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 import { runBuiltinMember } from './team-run.ts'
@@ -33,14 +33,17 @@ export function makeDelegate(ctx: {
 }): DelegatePort {
   const { deps, workspaceRoot, conversationId } = ctx
 
-  /** 角色与团队规则每次现读：用户可能刚在设置页改完，让他为此重开一条会话不合理。 */
+  /**
+   * 角色与团队规则**每次直接读文件**，不走 `acquireExtensions`。
+   *
+   * 那份扩展是引用计数缓存的，服务全程持有一份——于是模型这一轮用 `define_subagent`
+   * 刚建好的角色，在同一轮里派活时根本看不见。实测撞到过：文件写成了、`subagent`
+   * 的清单里却只有外部 CLI，模型反复重试后判定「派活引擎读的是另一份文件」。
+   * 设置页那条接口（`api/team.ts`）出于同样的理由也是直接读。
+   */
   const team = async () => {
-    const ext = await acquireExtensions(workspaceRoot)
-    try {
-      return { roles: ext.team.roles, rules: ext.team.rules }
-    } finally {
-      releaseExtensions(workspaceRoot)
-    }
+    const cfg = await loadTeamConfig(workspaceRoot)
+    return { roles: cfg.roles, rules: cfg.rules }
   }
   const roles = async () => (await team()).roles
 
