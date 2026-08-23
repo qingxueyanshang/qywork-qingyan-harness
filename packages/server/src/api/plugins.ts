@@ -23,6 +23,61 @@ import { dirname, join, resolve } from 'node:path'
 import { globalPluginsDir } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
+/**
+ * 读一个插件目录的清单摘要。**只看不装。**
+ *
+ * 两个调用方：这个文件里的安装接口（用户点导入），以及模型那条装插件工具的端口
+ * （`plugin-port.ts`）。两处各写一份的话，迟早在「同 id 怎么办」这种问题上
+ * 给出两种答案。
+ */
+export async function readPluginDir(src: string): Promise<{
+  ok: boolean
+  error?: string
+  id?: string
+  name?: string
+  version?: string
+  tools?: string[]
+  permissions?: string[]
+  replacing?: boolean
+}> {
+  const manifestPath = join(src, 'qywork.plugin.json')
+  const raw = await readFile(manifestPath, 'utf8').catch(() => null)
+  if (raw === null) return { ok: false, error: `目录里没有 qywork.plugin.json：${src}` }
+  try {
+    const { parseManifest } = await import('@qywork/plugins')
+    const m = parseManifest(JSON.parse(raw), manifestPath)
+    return {
+      ok: true,
+      id: m.id,
+      name: m.name,
+      version: m.version,
+      tools: (m.contributes.tools ?? []).map((t) => t.name),
+      permissions: m.permissions,
+      replacing: (await stat(join(globalPluginsDir(), m.id)).catch(() => null)) !== null,
+    }
+  } catch (e) {
+    return { ok: false, error: `清单不合法：${(e as Error).message}` }
+  }
+}
+
+/** 把校验过的目录复制进全局插件目录。调用方负责先问过用户。 */
+export async function copyPluginDir(
+  src: string,
+  id: string,
+  opts: { replace: boolean },
+): Promise<{ ok: boolean; error?: string }> {
+  const dest = join(globalPluginsDir(), id)
+  const exists = (await stat(dest).catch(() => null)) !== null
+  if (exists && !opts.replace) return { ok: false, error: `已经装了同名插件 ${id}` }
+  // 源目录就是目标目录时直接返回：那说明指的是已经装好的那一个。
+  if (resolve(src) === resolve(dest)) return { ok: true }
+  // 覆盖前先删干净：`cp` 不会移走旧版本多出来的文件，混着的两份代码比哪一份都糟。
+  if (exists) await rm(dest, { recursive: true, force: true })
+  await mkdir(dirname(dest), { recursive: true })
+  await cp(src, dest, { recursive: true })
+  return { ok: true }
+}
+
 export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
@@ -74,31 +129,16 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     const src = body?.path?.trim()
     if (!src) return json({ error: 'bad request', message: '缺少目录路径' }, 400)
 
-    const manifestPath = join(src, 'qywork.plugin.json')
-    const raw = await readFile(manifestPath, 'utf8').catch(() => null)
-    if (raw === null) {
-      return json({ error: 'invalid', message: `目录里没有 qywork.plugin.json：${src}` }, 422)
-    }
-    let id: string
-    try {
-      const { parseManifest } = await import('@qywork/plugins')
-      id = parseManifest(JSON.parse(raw), manifestPath).id
-    } catch (e) {
-      return json({ error: 'invalid', message: `清单不合法：${(e as Error).message}` }, 422)
-    }
-
-    const dest = join(globalPluginsDir(), id)
+    const found = await readPluginDir(src)
+    if (!found.ok) return json({ error: 'invalid', message: found.error }, 422)
     // 已经装过同 id 的就拒绝，而不是静默覆盖：覆盖会把用户可能改过的
     // 那一份直接抹掉，且没有任何提示。要换版本先卸载。
-    if (await stat(dest).catch(() => null)) {
-      return json({ error: 'conflict', message: `已经装了同名插件 ${id}，请先卸载` }, 409)
+    if (found.replacing) {
+      return json({ error: 'conflict', message: `已经装了同名插件 ${found.id}，请先卸载` }, 409)
     }
-    // 源目录就是目标目录时直接返回：那说明用户指的是已经装好的那一个。
-    if (resolve(src) === resolve(dest)) return json({ ok: true, id })
-
-    await mkdir(dirname(dest), { recursive: true })
-    await cp(src, dest, { recursive: true })
-    return json({ ok: true, id })
+    const done = await copyPluginDir(src, found.id!, { replace: false })
+    if (!done.ok) return json({ error: 'invalid', message: done.error }, 422)
+    return json({ ok: true, id: found.id })
   }
 
   const pluginMatch = /^\/api\/plugins\/([^/]+)$/.exec(p)

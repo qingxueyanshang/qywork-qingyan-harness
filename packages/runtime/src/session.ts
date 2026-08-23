@@ -14,6 +14,7 @@ import {
   decideCommand,
   type LoopPersistence,
   type PermissionVerdict,
+  type PluginPort,
   STREAM_IDLE_TIMEOUT_MS,
   type Summarizer,
   type ToolContextBase,
@@ -136,6 +137,12 @@ export interface SessionOptions {
    * 递归派活在结构上不可能发生。
    */
   delegate?: DelegatePort
+  /**
+   * 装插件通道。见 `PluginPort`。
+   *
+   * **只给顶层会话传**：成员会话不传，于是它那边连 `install_plugin` 都不注册。
+   */
+  plugins?: PluginPort
 }
 
 /** 重试：复用原 run 的用户消息与高水位，不新增消息。 */
@@ -213,9 +220,13 @@ export class Session {
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
 
-    // 派活工具跟着通道走：成员会话拿不到 `delegate`，于是也就没有 `subagent`
-    // ——子 agent 不得再派活，递归没有终止条件。
-    const withDelegate = { delegate: opts.delegate !== undefined }
+    // 派活与装插件都跟着各自的通道走：成员会话两条都拿不到，于是它那边既没有
+    // `subagent`（子 agent 不得再派活，递归没有终止条件），也没有 `install_plugin`
+    // （子 agent 不该给整台机器装东西）。
+    const withDelegate = {
+      delegate: opts.delegate !== undefined,
+      plugins: opts.plugins !== undefined,
+    }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)
     } else {
@@ -868,6 +879,7 @@ export class Session {
       // 派活通道原样透传：能不能派、派给谁由装配方（server）决定，
       // 这里不做「没有就造一个空的」——那会让 `subagent` 注册进来却派不出去。
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
+      ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
       history: {
         message: (id) => {
           const m = listMessages(store, conversationId, null).find((x) => x.id === id)
