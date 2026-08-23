@@ -10,9 +10,40 @@
  */
 
 import type { ConversationId, RunUsage } from '@qywork/core'
-import { Session } from '@qywork/runtime'
+import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
+
+/**
+ * 成员会话用哪一对「接口 × 模型」。优先级：角色点名 > 父会话当前那一对 > 配置默认。
+ *
+ * **父会话那一对必须传下来**：模型是会话级属性（`repos.ts` 的 `setConversationModel`），
+ * 用户在界面上切到便宜模型之后派活，不继承就仍然按 `config.active` 发请求——
+ * 而工具描述向模型承诺的是「当前模型」。
+ *
+ * 角色只点了模型没点接口时**保持那一对不动**：那条路径按裸模型名发请求，接口靠反查，
+ * 换一对进去只会让落库的接口名与实际发出去的那家对不上。
+ */
+export function memberModel(
+  role: Pick<Role, 'id' | 'provider' | 'model'>,
+  config: QyConfig,
+  inherit?: ModelRef,
+): ModelRef | { error: string } {
+  if (role.provider) {
+    // provider 指定的是「用哪家的 key」。指了一个不存在的接口要**当场失败**——
+    // 悄悄回落到当前接口会让「用便宜模型跑审查」这类配置静默失效，而账单在另一边。
+    const pinned = config.providers[role.provider]
+    if (!pinned) return { error: `角色 ${role.id} 指定的接口不存在：${role.provider}` }
+    return {
+      provider: role.provider,
+      // 角色没点名模型时用这个接口下的第一个。**不能沿用当前 active.model**：
+      // 那个模型属于另一个接口，拿它去发请求就是「换了 key 没换模型名」。
+      model: role.model ?? Object.keys(pinned.models)[0] ?? config.active.model,
+    }
+  }
+  if (role.model) return config.active
+  return inherit ?? config.active
+}
 
 /**
  * 内置后端：用本进程的 agent 跑一个编排成员。
@@ -40,34 +71,17 @@ export async function runBuiltinMember(
     deps: Omit<CommandDeps, 'ws'>
     /** 父会话所在的项目目录。成员会话跑在同一个根下——一轮编排不跨项目。 */
     workspaceRoot: string
+    /** 父会话当前的「接口 × 模型」，角色没点名时成员跟着它跑。 */
+    inherit?: ModelRef
     onUsage?: (u: RunUsage) => void
   },
 ): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
   const { role } = input
   const { deps } = ctx
 
-  // provider 指定的是「用哪家的 key」。指了一个不存在的接口要**当场失败**——
-  // 悄悄回落到当前接口会让「用便宜模型跑审查」这类配置静默失效，而账单在另一边。
-  const pinned = role.provider ? deps.config.providers[role.provider] : undefined
-  if (role.provider && !pinned) {
-    return {
-      ok: false,
-      output: '',
-      error: `角色 ${role.id} 指定的接口不存在：${role.provider}`,
-    }
-  }
-  const config =
-    role.provider && pinned
-      ? {
-          ...deps.config,
-          active: {
-            provider: role.provider,
-            // 角色没点名模型时用这个接口下的第一个。**不能沿用当前 active.model**：
-            // 那个模型属于另一个接口，拿它去发请求就是「换了 key 没换模型名」。
-            model: role.model ?? Object.keys(pinned.models)[0] ?? deps.config.active.model,
-          },
-        }
-      : deps.config
+  const active = memberModel(role, deps.config, ctx.inherit)
+  if ('error' in active) return { ok: false, output: '', error: active.error }
+  const config = { ...deps.config, active }
 
   const session = new Session({
     store: deps.store,

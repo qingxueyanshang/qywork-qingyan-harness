@@ -108,6 +108,29 @@ async function main(): Promise<number> {
     )
     await Bun.sleep(300)
 
+    /*
+     * 先把父会话切到另一个模型：临时子 agent 该跟着**这一个**跑，而不是配置默认那个。
+     * 只配了一个模型的机器上验不了这条，如实说一句跳过，不装作验过。
+     */
+    const catalog = (await (await fetch(`${base}/api/models`, { headers: auth })).json()) as {
+      providers: { name: string; models: { id: string }[] }[]
+    }
+    // 切模型要**成对**给：只给模型名会被回执拒掉（`commands.ts` 先查接口在不在配置里），
+    // 而拒了以后这一轮照样跑默认模型，看起来像「继承没生效」。
+    const alt = catalog.providers
+      .flatMap((p) => p.models.map((m) => ({ provider: p.name, model: m.id })))
+      .find((r) => r.model !== config.active.model)
+    if (alt) {
+      ws.send(JSON.stringify({ type: 'conversation.setModel', conversationId, ...alt }))
+      await Bun.sleep(300)
+      check(
+        `父会话切到 ${alt.model}`,
+        getConversation(store, conversationId as ConversationId)?.model === alt.model,
+      )
+    } else {
+      process.stdout.write('  … 只配了一个模型，「子 agent 跟父会话」这条跳过未验\n')
+    }
+
     process.stdout.write('  … 正在跑一轮真实 agent\n')
     ws.send(
       JSON.stringify({
@@ -227,6 +250,14 @@ async function main(): Promise<number> {
       '子会话确实落库',
       childIds.length > 0 && childIds.every((id) => getConversation(store, id) !== null),
     )
+    if (alt) {
+      check(
+        `子 agent 跟着父会话的模型跑（${alt.model}）`,
+        childIds.length > 0 &&
+          childIds.every((id) => getConversation(store, id)?.model === alt.model),
+        childIds.map((id) => getConversation(store, id)?.model),
+      )
+    }
     const listed = (await (await fetch(`${base}/api/conversations`, { headers: auth })).json()) as {
       conversations: { id: string }[]
     }

@@ -18,6 +18,7 @@
 import type { DelegatePort } from '@qywork/agent'
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { collectSecrets, loadTeamConfig } from '@qywork/runtime'
+import { getConversation } from '@qywork/store'
 import { CLI_PREFIX, detectClis, findCli, type Role, runCli, TeamOrchestrator } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 import { runBuiltinMember } from './team-run.ts'
@@ -60,6 +61,18 @@ export function makeDelegate(ctx: {
     return { roles: cfg.roles, rules: cfg.rules }
   }
   const roles = async () => (await team()).roles
+
+  /**
+   * 父会话当前的「接口 × 模型」。成员没点名接口时跟着它跑，而不是跟着 `config.active`。
+   *
+   * **每次现读**：模型是会话级属性，用户在界面上随时能切；这一轮开始时读到的那一对
+   * 才是他要的那一对。迁移 24 之前建的会话 `provider` 是空串，这种回 undefined，
+   * 由下游落回配置默认。
+   */
+  const inherited = () => {
+    const c = getConversation(deps.store, conversationId)
+    return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
+  }
 
   return {
     async targets() {
@@ -107,9 +120,10 @@ export function makeDelegate(ctx: {
 
       const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
+      const pair = inherited()
       const res = await runBuiltinMember(
         { role, prompt: input.task, signal: input.signal },
-        { deps, workspaceRoot },
+        { deps, workspaceRoot, ...(pair ? { inherit: pair } : {}) },
       )
       return {
         ok: res.ok,
@@ -141,7 +155,14 @@ export function makeDelegate(ctx: {
               ev.type === 'team.member' ? { ...ev, stepId: input.stepId } : ev,
               conversationId,
             ),
-          runBuiltin: (member) => runBuiltinMember(member, { deps, workspaceRoot }),
+          runBuiltin: (member) => {
+            const pair = inherited()
+            return runBuiltinMember(member, {
+              deps,
+              workspaceRoot,
+              ...(pair ? { inherit: pair } : {}),
+            })
+          },
           // 人工门禁与 `team.run` 同一条通道：授权请求发给用户，等他点。
           awaitHumanGate: async (nodeId, summary) =>
             deps.runs.requestPermission({
