@@ -197,7 +197,7 @@ describe('条件必填写进了 description —— 不能只靠运行期拦', ()
   test('两个工具都写明了「循环不会自己停」', () => {
     for (const tool of [readGoalTool, updateGoalTool]) {
       expect(tool.description).toContain('没有轮数上限')
-      expect(tool.description).toContain('一直自动续起')
+      expect(tool.description).toContain('自动续起')
     }
   })
 })

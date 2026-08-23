@@ -1953,7 +1953,7 @@ async function loadBlock(b: ContentBlock): Promise<ContentBlock> {
 
   const info = await stat(path).catch(() => null)
   if (!info?.isFile()) return note('已不存在')
-  if (info.size > MAX_IMAGE_BYTES) return note('超过 10 MB，没有发出去')
+  if (info.size > MAX_IMAGE_BYTES) return note('超过 10 MB，未发送')
   const bytes = await readFile(path).catch(() => null)
   if (!bytes) return note('读取失败')
   return {

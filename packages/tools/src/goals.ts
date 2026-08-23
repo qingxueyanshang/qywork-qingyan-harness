@@ -37,7 +37,7 @@ import type { Goal, GoalAction } from '@qywork/core'
  */
 const BOUNDARY =
   '这个循环没有轮数上限，也不计 token、费用、时间：' +
-  '除非你宣布完成或受阻，它会一直自动续起下去，直到用户手动停止。'
+  '除非声明完成或受阻，循环将持续自动续起，直到用户手动停止。'
 
 /** 端口没接上时的统一回话。降级要说得出**为什么**，不能只说失败。 */
 function noPort(): ToolOutcome {
@@ -67,7 +67,7 @@ export const readGoalTool: ToolSpec = {
    */
   description:
     '读回当前会话的目标：目标正文、状态、以及 goal_id 与 revision。' +
-    '宣布完成或受阻之前先读一次——revision 对不上会被拒。' +
+    '声明完成或受阻前先读取一次——revision 对不上会被拒。' +
     BOUNDARY,
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
@@ -102,14 +102,14 @@ const ACTIONS: GoalAction[] = ['complete', 'blocked']
 export const updateGoalTool: ToolSpec = {
   name: 'update_goal',
   description:
-    '给这个循环收尾。两个动作：' +
-    'complete=目标已经做到了，循环结束；' +
-    'blocked=做不下去了（**必须同时给 blocked_reason**，写清卡在哪、需要什么才能继续）。' +
+    '结束当前目标循环。两个动作：' +
+    'complete=目标已达成，循环结束；' +
+    'blocked=无法继续（**必须同时给 blocked_reason**，写明受阻位置与解除条件）。' +
     'goal_id 与 revision 必填，先用 read_goal 读到最新的那一对——' +
     'revision 对不上会被拒，那说明目标在你读到之后被改过了。' +
-    '目标没达成就别调 complete：宣布完成之前先给出证据（跑一次命令、读一次文件）。' +
-    'provider 报错、工具连续失败这类异常一律走 blocked，不要自己一轮轮重试。' +
-    '目标是用户立的，你改不了它的正文，也停不了它——只能宣布做完或者做不下去。' +
+    '目标未达成不要调用 complete：声明完成前先给出证据（执行一次命令、读取一次文件）。' +
+    'provider 报错、工具连续失败这类异常一律走 blocked，不要自行重试。' +
+    '目标正文与暂停由用户控制，本工具只能声明达成或受阻。' +
     BOUNDARY,
   parameters: {
     type: 'object',

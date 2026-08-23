@@ -124,15 +124,15 @@ export const readMemoryTool: ToolSpec = {
 export const writeMemoryTool: ToolSpec = {
   name: 'write_memory',
   description:
-    '写入或覆盖一条长期记忆。用于记住跨会话有效的事实：项目约定、用户偏好、踩过的坑。' +
-    '只记「下次还用得上」的东西，一次性的上下文不要记。',
+    '写入或覆盖一条长期记忆。用于记录跨会话有效的事实：项目约定、用户偏好、已知问题。' +
+    '只记录后续仍然适用的内容，一次性上下文不记。',
   parameters: {
     type: 'object',
     properties: {
       key: { type: 'string', description: '记忆标识' },
       content: {
         type: 'string',
-        description: '正文，整条覆盖。第一行写一句话摘要——尾区只列这一行，之后要不要读全文全看它。',
+        description: '正文，整条覆盖。第一行写一句话摘要——尾区只列这一行，它决定是否需要读取全文。',
       },
     },
     required: ['key', 'content'],
@@ -188,7 +188,7 @@ export const writeMemoryTool: ToolSpec = {
 
 export const deleteMemoryTool: ToolSpec = {
   name: 'delete_memory',
-  description: '删除一条长期记忆。只能删这个工作区的，全局那几条由用户在设置页管。',
+  description: '删除一条长期记忆。只能删除当前工作区的记忆；全局记忆由用户在设置页管理。',
   parameters: {
     type: 'object',
     properties: { key: { type: 'string', description: '记忆标识' } },

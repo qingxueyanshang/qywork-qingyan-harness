@@ -102,7 +102,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       // 这一句**放在这里而不是三档 hint 里**：它与是哪个 shell 无关，
       // 三档各写一遍必然漂移。bash 直接跑 `.ps1`、PowerShell 直接跑 `.sh`、
       // 两者直接跑 `.py`，失败形状都是命令找不到。
-      '执行别的解释器的脚本要显式调用那个解释器。' +
+      '执行其他解释器的脚本需显式调用对应解释器。' +
       '在工作区里执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       '需要读文件用 read_file，需要找文件用 glob/grep——它们更快也更省上下文，不要用 cat/find/grep 代替。' +
@@ -110,8 +110,8 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       // 那类命令要等输入 EOF，而后台进程扣着管道时 EOF 永不到达：
       // 顶层 shell 也跟着不退出，整条命令挂到超时，且一个字节都拿不到。
       '输出会自动限长，超出的部分落盘并在结果里给出 resource id（用 read_resource 取回），' +
-      '所以不要为了限长在末尾接 `| tail` / `| head`：这类命令要等输入 EOF 才出结果，' +
-      '而命令派生的后台进程会一直扣着管道，EOF 不来就一路挂到超时，且一个字节都拿不到。',
+      '所以不要为限长在末尾追加 `| tail` / `| head`：这类命令需读到 EOF 才输出，' +
+      '而命令派生的后台进程会持续持有管道，EOF 不到达则命令挂起至超时，且没有任何输出返回。',
     parameters: {
       type: 'object',
       properties: {
@@ -273,7 +273,7 @@ function sandboxHint(active: boolean, stderr: string): string {
   if (!/read-only file system|EROFS|permission denied|EACCES/i.test(stderr)) return ''
   return (
     '。注意：shell 命令跑在内核沙箱里——工作区（及显式配置的额外目录）之外只读，' +
-    '凭证目录不可见。这不是文件权限问题，chmod / sudo 改不了它。' +
+    '凭证目录不可见。这不是文件权限问题，chmod / sudo 无法解除。' +
     '需要写工作区外的路径，请说明用途让用户把该目录加进 additionalDirectories。'
   )
 }

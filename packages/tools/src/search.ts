@@ -149,7 +149,7 @@ export const grepTool: ToolSpec = {
   name: 'grep',
   description:
     '按正则搜索文件内容，返回命中的 文件:行号:内容。' +
-    '这是定位代码的首选方式——比读整个文件快得多也省得多。' +
+    '这是定位代码的首选方式——开销低于读取整个文件。' +
     '可用 glob 参数限定文件类型，如 "*.ts"。',
   parameters: {
     type: 'object',

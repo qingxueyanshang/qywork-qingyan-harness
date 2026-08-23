@@ -260,7 +260,7 @@ export const createScheduleTool: ToolSpec = {
     // 只靠它等于让模型先废一整轮往返才知道该给哪个参数。
     'kind="interval" 时必须给 every_minutes（分钟）；' +
     'kind="daily" 时必须给 at_hour(0–23) 与 at_minute(0–59)，用本机时区。' +
-    '两组参数不能混用，也没有默认值——不给就报错，不会替你挑一个时间。' +
+    '两组参数不能混用，也没有默认值——缺失时报错，不使用默认时间。' +
     BOUNDARY,
   parameters: {
     type: 'object',
@@ -349,7 +349,7 @@ export const listSchedulesTool: ToolSpec = {
     '列出当前工作区已排的定时任务：触发方式、下次预计时刻、上次跑的时间与错误。' +
     // 它不像 list_skills 那样冗余：定时任务不进上下文（它随时在变），
     // 这是模型查当前状态的唯一入口。
-    '定时任务不在上下文里，要知道现在排了什么只能调这个。' +
+    '定时任务不在上下文里，查询当前已排任务只能通过本工具。' +
     BOUNDARY,
   parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
   actionKind: 'query',
@@ -385,7 +385,7 @@ export const listSchedulesTool: ToolSpec = {
             `${r.id}  ${r.title}  ${r.timing}`,
             r.enabled ? '' : '  [已停用]',
             r.nextRunAt === null ? '' : `  下次 ${stamp(r.nextRunAt)}`,
-            r.lastRunAt === null ? '  还没跑过' : `  上次 ${stamp(r.lastRunAt)}`,
+            r.lastRunAt === null ? '  未执行过' : `  上次 ${stamp(r.lastRunAt)}`,
             r.lastError === null ? '' : `  上次报错：${r.lastError}`,
           ].join(''),
         )
@@ -398,8 +398,8 @@ export const listSchedulesTool: ToolSpec = {
 export const deleteScheduleTool: ToolSpec = {
   name: 'delete_schedule',
   description:
-    '删掉一条定时任务，id 从 list_schedules 拿。只能删当前工作区的：' +
-    '任务表是全机共享的，别的工作区排的任务这里既列不出来也删不掉。',
+    '删除一条定时任务，id 取自 list_schedules。只能删除当前工作区的：' +
+    '任务表是全机共享的，其他工作区的任务在此不可见、不可删除。',
   parameters: {
     type: 'object',
     properties: { id: { type: 'string', description: '任务 id，形如 sch_xxx' } },
