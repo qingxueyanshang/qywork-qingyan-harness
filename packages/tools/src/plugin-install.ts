@@ -7,13 +7,9 @@
  * 模型写多少遍都不会有任何东西跑起来。**装**才是那条分界线：装完之后，
  * 那段代码在下一次加载时会真的执行。
  *
- * 所以**每次装都要真的问到人**，问之前把清单摘要摆出来：要注册哪些工具、
- * 声明了哪些权限、是不是覆盖已有的那一份——那三样是他判断「让不让它跑」的全部依据。
- *
- * **问这一步在端口那边做，不在这里。** 这个仓库里 `ctx.requestPermission` 由会话按
- * 权限模式就地裁决（`runtime/session.ts` 的 `decide`），除了 `run_command` 之外一律
- * 直接放行——在这里调它，装插件就成了「自动审批模式下无声安装」。
- * 实测撞到过：第一版就是这么写的，真机跑通一次，全程没有任何弹窗。
+ * **把关在清单校验上，不在弹窗上。** 这个产品只有 `auto` / `full` 两种权限模式，
+ * 没有「逐次询问」那一档；跑到这个工具就是同意。所以形状不对必须当场拒、不落盘：
+ * 清单里认不出的 `permissionEffect`、声明了工具却没声明相应权限，都在装之前挡掉。
  *
  * ## 装进去的是快照
  *
@@ -31,7 +27,7 @@ import type { ToolContext, ToolSpec } from '@qywork/agent'
 export const installPluginTool: ToolSpec = {
   name: 'install_plugin',
   description:
-    '把工作区里已经写好的一个插件目录装进本机的插件目录（需要用户当场点头）。' +
+    '把工作区里已经写好的一个插件目录装进本机的插件目录。' +
     '目录里要有合法的 qywork.plugin.json。装完在下一条消息生效，不是当场。' +
     '改了插件代码要再装一次——装进去的是快照。',
   parameters: {
@@ -83,8 +79,9 @@ export const installPluginTool: ToolSpec = {
       }
     }
 
-    // 问用户与复制都在端口那边：那边才够得着授权通道，也才会在问之前把清单重读一次。
-    const done = await port.install(dir, { replace, runId: ctx.runId })
+    // 复制在端口那边：它装之前会把清单再读一次——中间隔着模型的几步，
+    // 那个目录可能已经不是 inspect 时的那一份了。
+    const done = await port.install(dir, { replace })
     if (!done.ok) {
       return { status: 'failure' as const, message: done.error ?? '装失败了' }
     }

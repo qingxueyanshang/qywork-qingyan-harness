@@ -175,7 +175,7 @@ export async function startRun(
     // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
     delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath, conversationId }),
     // 装插件同样只给顶层会话：成员会话不该给整台机器装东西。
-    plugins: makePluginPort({ deps, workspaceRoot: ws.rootPath, conversationId }),
+    plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
   })
 
   /*

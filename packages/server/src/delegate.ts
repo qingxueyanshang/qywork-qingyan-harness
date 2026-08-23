@@ -18,12 +18,26 @@
 import type { DelegatePort } from '@qywork/agent'
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { collectSecrets, loadTeamConfig } from '@qywork/runtime'
-import { CLI_PREFIX, detectClis, findCli, runCli, TeamOrchestrator } from '@qywork/team'
+import { CLI_PREFIX, detectClis, findCli, type Role, runCli, TeamOrchestrator } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 import { runBuiltinMember } from './team-run.ts'
 
 /** 派活只用到装配三件套（账本、正文库、配置），不碰那条 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
+
+/**
+ * 不指定目标时用的那个临时子 agent。
+ *
+ * **没有系统提示词、不限工具、不限步数**：它要干的事由任务本身说清楚，
+ * 而「铺开去查几件小事」正是它的用途——给它一套约束就成了又一个需要先定义的角色。
+ * 会话仍然是独立的：上下文不与父会话共享，产出只有最终那段文本。
+ */
+const AD_HOC_ROLE: Role = {
+  id: 'ad-hoc',
+  name: '临时子 agent',
+  description: '当前模型、全套工具，任务结束即销毁',
+  systemPrompt: '',
+}
 
 export function makeDelegate(ctx: {
   deps: DelegateDeps
@@ -91,7 +105,7 @@ export function makeDelegate(ctx: {
         }
       }
 
-      const role = (await roles()).find((r) => r.id === input.target)
+      const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
       const res = await runBuiltinMember(
         { role, prompt: input.task, signal: input.signal },
@@ -112,7 +126,9 @@ export function makeDelegate(ctx: {
       const { roles: rs, rules } = await team()
       const clis = await detectClis()
       const orchestrator = new TeamOrchestrator(
-        { name: 'workflow', roles: rs, rules, plan: input.nodes },
+        // 临时子 agent 排在用户的角色**后面**：同 id 时先找到的是用户那条，
+        // 他定义的东西盖过内置的默认。
+        { name: 'workflow', roles: [...rs, AD_HOC_ROLE], rules, plan: input.nodes },
         {
           workspaceRoot,
           signal: input.signal,

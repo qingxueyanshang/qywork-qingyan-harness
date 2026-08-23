@@ -6,6 +6,9 @@
  * 派一件事用 `subagent`；**几件事之间有先后依赖**才用这个。判据是「要不要把上一步的
  * 产出喂给下一步」——要，就是一张图。
  *
+ * 节点的目标与 `subagent` 同一套取值：不写 = 临时子 agent，写角色 id = 配置好的角色，
+ * 写 `cli:<id>` = 本机的外部 CLI。一张图里三种可以混。
+ *
  * ## 调度不在这里
  *
  * 图交出去之后由服务端的编排器按图跑：依赖就绪才启动、并发上限、人工门禁都在那边。
@@ -32,10 +35,12 @@ interface NodeArg {
 export const workflowTool: ToolSpec = {
   name: 'workflow',
   description:
-    '把一件复杂的事拆成一张图交出去执行：每个节点派给一个子 agent 或本机的外部 CLI，' +
-    '节点之间用 needs 表达先后——不写依赖的并行跑，写了的等上游做完并拿到它的产出。' +
-    '整张图跑完一次性回来，逐节点带状态与产出。' +
-    '只派一件事用 subagent；能派给谁用不带参数的 subagent 查。',
+    '把一件复杂的事拆成一张图交出去执行：节点之间用 needs 表达先后——' +
+    '不写依赖的并行跑，写了的等上游做完并拿到它的产出。整张图跑完一次性回来，' +
+    '逐节点带状态与产出。' +
+    '节点不指定 agent 就临时起一个子 agent（当前模型、全套工具），' +
+    '指定则派给配置好的角色或 cli:<id> 的外部 CLI。' +
+    '只派一件事用 subagent。',
   parameters: {
     type: 'object',
     properties: {
@@ -52,7 +57,9 @@ export const workflowTool: ToolSpec = {
             id: { type: 'string', description: '节点 id，图内唯一，被 needs 引用' },
             agent: {
               type: 'string',
-              description: '派给谁：角色 id，或 cli:<id> 指一个本机识别到的外部 CLI',
+              description:
+                '派给谁。留空 = 临时起一个子 agent；角色 id = 配置好的角色；' +
+                'cli:<id> = 本机的外部 CLI。',
             },
             task: {
               type: 'string',
@@ -70,7 +77,7 @@ export const workflowTool: ToolSpec = {
               description: 'false = 依赖只管顺序，不把上游产出带给它。默认带。',
             },
           },
-          required: ['id', 'agent', 'task'],
+          required: ['id', 'task'],
           additionalProperties: false,
         },
       },
@@ -109,11 +116,13 @@ export const workflowTool: ToolSpec = {
     const nodes: NodeArg[] = []
     for (const n of raw) {
       const id = typeof n.id === 'string' ? n.id.trim() : ''
-      const agent = typeof n.agent === 'string' ? n.agent.trim() : ''
       const task = typeof n.task === 'string' ? n.task.trim() : ''
-      if (!id || !agent || !task) {
-        return { status: 'failure' as const, message: '每个节点都要有 id、agent 和 task' }
+      if (!id || !task) {
+        return { status: 'failure' as const, message: '每个节点都要有 id 和 task' }
       }
+      // 没写派给谁 = 临时子 agent。这个 id 在执行侧兜底成一条内置角色，
+      // 用户自己定义了同 id 的角色时以他那条为准。
+      const agent = typeof n.agent === 'string' && n.agent.trim() ? n.agent.trim() : 'ad-hoc'
       if (nodes.some((x) => x.id === id)) {
         return { status: 'failure' as const, message: `节点 id 重复：${id}` }
       }

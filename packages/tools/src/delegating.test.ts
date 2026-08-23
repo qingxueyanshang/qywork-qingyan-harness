@@ -63,11 +63,23 @@ describe('派活工具的注册条件', () => {
 })
 
 describe('派活', () => {
-  test('不带 agent 时列出能派给谁', async () => {
-    const s = stub({ ok: true, output: '' })
-    const res = await subagentTool.fn({}, ctx(s.port))
+  /**
+   * 不指定 agent = 临时起一个子 agent，**不是**列清单。
+   * 为了铺开做几件小事而先定义几个角色，没人会这么用。
+   */
+  test('不带 agent 时临时起一个，直接派出去', async () => {
+    const s = stub({ ok: true, output: '查完了' })
+    const res = await subagentTool.fn({ task: '去查一下' }, ctx(s.port))
     expect(res.status).toBe('success')
-    expect((res.data as { targets: unknown[] }).targets).toHaveLength(2)
+    expect(res.message).toContain('临时子 agent')
+    expect(s.calls).toEqual([{ target: '', task: '去查一下' }])
+  })
+
+  test('指名道姓派给不存在的目标时才拒，并提示可以临时起一个', async () => {
+    const s = stub({ ok: true, output: '' })
+    const res = await subagentTool.fn({ agent: '查无此人', task: '干活' }, ctx(s.port))
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('reviewer')
   })
 
   test('目标不存在时把能派的列出来，不是干巴巴一句没找到', async () => {
@@ -203,5 +215,32 @@ describe('编排', () => {
     )
     expect(res.status).toBe('failure')
     expect(res.message).toContain('依赖不存在的节点')
+  })
+})
+
+describe('临时子 agent 在图里', () => {
+  /** 一张全是临时子 agent 的图是最常见的形状：铺开几件小事，不为它们定义角色。 */
+  test('节点不写 agent 时兜底成内置的那条，不是当场拒', async () => {
+    const seen: { agent: string }[] = []
+    const port = {
+      targets: async () => [],
+      run: async () => ({ ok: true, output: '' }),
+      runGraph: async (input: { nodes: { agent: string }[] }) => {
+        seen.push(...input.nodes.map((n) => ({ agent: n.agent })))
+        return { ok: true, nodes: [] }
+      },
+    }
+    const res = await workflowTool.fn(
+      {
+        goal: '两件小事',
+        nodes: [
+          { id: 'a', task: '查这个' },
+          { id: 'b', task: '查那个' },
+        ],
+      },
+      ctx(port),
+    )
+    expect(res.status).toBe('success')
+    expect(seen).toEqual([{ agent: 'ad-hoc' }, { agent: 'ad-hoc' }])
   })
 })
