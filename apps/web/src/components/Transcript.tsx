@@ -24,6 +24,7 @@ import {
 import {
   argsRows,
   clamp,
+  collapseCarriageReturns,
   compact,
   diffFrom,
   displayTarget,
@@ -453,7 +454,7 @@ function LiveOutput(props: { item: TranscriptItem }) {
   })
   return (
     <pre class="fold-live" ref={pre}>
-      {props.item.stdout}
+      {collapseCarriageReturns(props.item.stdout ?? '')}
     </pre>
   )
 }
@@ -1173,7 +1174,7 @@ function Result(props: {
           <Show when={props.label}>
             <div class="fold-tag">{props.label}</div>
           </Show>
-          <pre class="fold-out">{clamp(body())}</pre>
+          <pre class="fold-out">{clamp(collapseCarriageReturns(body()))}</pre>
         </>
       )}
     </Show>
