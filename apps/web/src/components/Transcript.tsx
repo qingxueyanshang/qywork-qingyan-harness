@@ -198,8 +198,8 @@ const SILENT_MS = 30_000
  *
  * ## 静默那一档为什么要绕开两种情形
  *
- * 工具还在跑（一次构建十分钟很正常，而它自己会出 stdout）、以及有权限请求挂着
- * （那是在等人，不是在等网络）——这两种下面报静默同样是假话。
+ * 工具还在跑时绕开（一次构建十分钟很正常，而它自己会出 stdout）——
+ * 那种情况下报静默是假话。
  */
 function liveStatus(now: number): string {
   const last = state.transcript[state.transcript.length - 1]
@@ -223,7 +223,7 @@ function liveStatus(now: number): string {
   if (retry) return `正在重连 ${retry.attempt} / ${retry.max}…`
 
   const since = state.lastEventAt ?? state.runStartedAt
-  if (!state.permission && since !== null && now - since >= SILENT_MS) {
+  if (since !== null && now - since >= SILENT_MS) {
     return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
   }
 
@@ -797,7 +797,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
       }
     }
     // 回放这一路读的是落库的结果，**字段名与事件那一路不同**：结果里是
-    // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working/blocked）。
+    // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working）。
     // 照着事件的名字去读结果，每个节点都会退化成「等着跑」——刷新一次整张图全灰。
     const back = (
       props.item.outcome?.data as

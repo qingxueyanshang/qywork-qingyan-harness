@@ -71,7 +71,6 @@ async function main(): Promise<number> {
 
     const frames: EventEnvelope<AgentEvent>[] = []
     const members: Member[] = []
-    let permissionAsks = 0
     let text = ''
     // 这条脚本要跑两轮（临时子 agent 一轮、外部 CLI 一轮），所以「等这一轮跑完」
     // 是个可以重新拿一次的东西，不是一个一次性的 promise。
@@ -83,18 +82,6 @@ async function main(): Promise<number> {
       if (!msg.seq || !msg.event) return
       frames.push(msg)
       const ev = msg.event as AgentEvent
-      if (ev.type === 'permission.request') {
-        permissionAsks++
-        ws.send(
-          JSON.stringify({
-            type: 'permission.resolve',
-            requestId: ev.requestId,
-            granted: true,
-            scopeId: 'session',
-          }),
-        )
-        return
-      }
       if (ev.type === 'team.member') members.push(ev)
       else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.finished') done.resolve()
@@ -293,7 +280,6 @@ async function main(): Promise<number> {
         text.slice(-300),
       )
     }
-    check('全程没有弹授权', permissionAsks === 0, permissionAsks)
 
     // ── 第二轮：派给本机装着的外部 CLI ──
     //

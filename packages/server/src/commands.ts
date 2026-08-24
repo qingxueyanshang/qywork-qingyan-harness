@@ -19,12 +19,6 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       deps.bus.setSubscription(deps.ws.data.id, cmd.conversationIds)
       return
 
-    case 'permission.resolve': {
-      const by = deps.ws.data.origin === 'mobile' ? 'mobile' : 'desktop'
-      deps.runs.resolvePermission(cmd.requestId, cmd.granted, by, cmd.scopeId)
-      return
-    }
-
     case 'run.interrupt':
       /*
        * `interrupt` 找不到那条 run 时返回 false，**这个返回值必须答回去**。

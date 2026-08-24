@@ -152,9 +152,6 @@ async function main(): Promise<number> {
     // 装在对象里而不是 `let`：赋值发生在下面那个回调里，而 TS 对「只在闭包里赋值」的
     // `let` 会一直按初值 `null` 收窄，读的时候就成了 never。
     const hello: { ok: HelloOkFrame | null } = { ok: null }
-    let permissionAsks = 0
-    let permissionResolved = 0
-    const askedScopes: string[] = []
     const done = Promise.withResolvers<void>()
 
     ws.addEventListener('message', (e) => {
@@ -176,26 +173,6 @@ async function main(): Promise<number> {
       frames.push(msg)
       const ev = msg.event as AgentEvent
 
-      // 授权请求必须由客户端应答——这正是桌面端弹窗、手机端推送要走的同一条路。
-      // 不答的话 run 会一直等到 5 分钟超时，表现为「卡住」。
-      if (ev.type === 'permission.request') {
-        permissionAsks++
-        askedScopes.push(ev.action.target ?? ev.action.objectLabel)
-        ws.send(
-          JSON.stringify({
-            type: 'permission.resolve',
-            requestId: ev.requestId,
-            granted: true,
-            // 选「本会话都允许」，用来验证范围授权真的能免掉重复询问。
-            scopeId: 'session',
-          }),
-        )
-        return
-      }
-      if (ev.type === 'permission.resolved') {
-        permissionResolved++
-        return
-      }
       if (ev.type === 'run.finished') done.resolve()
     })
 
@@ -339,25 +316,13 @@ async function main(): Promise<number> {
 
     /*
      * 工具授权由 `Session.decide()` 在本地裁决（硬边界 → 静态规则 → 分类器），
-     * **不往 WebSocket 上发 `permission.request`**。所以这里断言两件事：
+     * 被拒的调用以 `tool.finished`（`status: 'failure'`、`errorKind: 'permission_denied'`、
+     * message 里带理由）出现在事件流里。
      *
-     * 1. 一次 `permission.request` 都不该出现；
-     * 2. 被拒的调用以 `tool.finished`（`status: 'failure'`、
-     *    `errorKind: 'permission_denied'`、message 里带理由）出现在事件流里。
-     *
-     * 第 2 条不断言「必须出现过拒绝」——这一轮跑的是正常任务，
-     * 一次拒绝都没有是正常的。断言的是**如果出现，形状必须对**：
-     * 少了理由的话模型除了原样重试没有别的选择，而重试必然又被拒。
+     * 不断言「必须出现过拒绝」——这一轮跑的是正常任务，一次拒绝都没有是正常的。
+     * 断言的是**如果出现，形状必须对**：少了理由的话模型除了原样重试没有别的选择，
+     * 而重试必然又被拒。
      */
-    check(
-      `裁决不再经 WebSocket 往返（permission.request ${permissionAsks} 次，应为 0）`,
-      permissionAsks === 0,
-      { asks: permissionAsks, scopes: askedScopes },
-    )
-    check('没有孤儿 permission.resolved', permissionResolved === 0, {
-      resolved: permissionResolved,
-    })
-
     const denials = frames
       .map((f) => f.event)
       .filter(

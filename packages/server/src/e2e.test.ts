@@ -442,7 +442,6 @@ describe('WebSocket 协议与一轮完整 run', () => {
         sandbox?: { backend?: string; active?: boolean; reason?: string }
       }
     } | null = null
-    let permissionAsks = 0
     const done = Promise.withResolvers<void>()
 
     ws.addEventListener('message', (e) => {
@@ -458,7 +457,6 @@ describe('WebSocket 协议与一轮完整 run', () => {
       if (!msg.seq || !msg.event) return
       frames.push(msg)
       const ev = msg.event as AgentEvent
-      if (ev.type === 'permission.request') permissionAsks++
       if (ev.type === 'run.finished' || ev.type === 'run.error') done.resolve()
     })
 
@@ -575,14 +573,6 @@ describe('WebSocket 协议与一轮完整 run', () => {
       | Extract<AgentEvent, { type: 'run.finished' }>
       | undefined
     expect(finished?.status).toBe('done')
-
-    /*
-     * **两模式的核心事实**：裁决在本地做，不弹窗、不往 WebSocket 上发请求。
-     *
-     * 断言 `permissionAsks > 0` 验的是一条已经不存在的行为，
-     * 而且它只会红在「要真 key 才跑」的脚本里，很久没人看得见。
-     */
-    expect(permissionAsks).toBe(0)
 
     // 收尾那一下（`runs.unregister`）在 run.finished 之后，等它到齐再看。
     await Bun.sleep(300)

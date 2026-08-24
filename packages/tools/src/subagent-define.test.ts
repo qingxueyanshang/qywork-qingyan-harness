@@ -53,12 +53,12 @@ describe('建子 agent', () => {
     await mkdir(join(root, '.qy'), { recursive: true })
     await writeFile(
       join(root, '.qy', 'team.json'),
-      JSON.stringify({ rules: { humanGates: ['deployer'], shared: '别删库' }, roles: [] }),
+      JSON.stringify({ rules: { maxConcurrent: 2, shared: '别删库' }, roles: [] }),
       'utf8',
     )
     await defineSubagentTool.fn(role, ctx(root))
     const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
-    expect(doc.rules).toEqual({ humanGates: ['deployer'], shared: '别删库' })
+    expect(doc.rules).toEqual({ maxConcurrent: 2, shared: '别删库' })
     expect(doc.roles).toHaveLength(1)
   })
 
