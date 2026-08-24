@@ -1,7 +1,6 @@
 import { createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { Composer } from './components/Composer.tsx'
 import { Palette } from './components/Palette.tsx'
-import { PermissionSheet } from './components/PermissionSheet.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
@@ -197,7 +196,6 @@ export function App() {
       </Show>
       <Palette />
       <Tooltip />
-      <PermissionSheet />
       {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
       <Show when={settingsPage()}>
         <Suspense>

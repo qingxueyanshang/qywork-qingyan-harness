@@ -69,9 +69,6 @@ export type AgentEvent =
   // ── 工作区实时性 ──
   | FileChangedEvent
   | GitStateEvent
-  // ── 权限 ──
-  | PermissionRequestEvent
-  | PermissionResolvedEvent
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
@@ -397,51 +394,6 @@ export interface GitStateEvent {
   branch: string
 }
 
-// ─────────────────────────────── 权限 ───────────────────────────────
-
-/**
- * 需要用户拍板才能继续。桌面和手机都能应答，谁先答谁生效。
- *
- * **唯一生产者是 Agent Team 的人工门禁**（`rules.humanGates`）。普通工具授权
- * 在两模式设计下由运行时就地裁决，不发这个事件——被拒的调用以
- * `tool.finished{status:'failure'}` 呈现。
- */
-export interface PermissionRequestEvent {
-  type: 'permission.request'
-  runId: RunId
-  requestId: string
-  toolName: string
-  action: ActionDescriptor
-  /** 给用户看的具体内容：要跑的命令、要写的 diff。 */
-  preview: string
-  /** 可授予的范围粒度。 */
-  scopes: PermissionScope[]
-  expiresAt: number
-}
-
-export interface PermissionScope {
-  id: string
-  label: string
-  /**
-   * once=仅这次；run=本轮；session=本会话。
-   *
-   * **不要加「一直允许」这一档**：授权记在 `RunManager` 的内存 Map 里，进程一重启
-   * 就没了，实际效果和 `session` 完全一样，标签却在说谎。真正的持久授权要写进配置，
-   * 那是另一件事。
-   */
-  duration: 'once' | 'run' | 'session'
-}
-
-export interface PermissionResolvedEvent {
-  type: 'permission.resolved'
-  runId: RunId
-  requestId: string
-  granted: boolean
-  scopeId: string | null
-  /** 谁答的，用于「手机上批准了」这种跨端提示。 */
-  resolvedBy: 'desktop' | 'mobile' | 'policy' | 'timeout'
-}
-
 // ─────────────────────────────── 多智能体 ───────────────────────────────
 
 /** Agent Team 的成员状态。父会话据此画协作视图。 */
@@ -452,7 +404,7 @@ export interface TeamMemberEvent {
   roleName: string
   /** 该成员背后的执行器：内置 loop 或外部 CLI。 */
   backend: 'builtin' | 'codex' | 'claude' | 'grok' | 'custom'
-  phase: 'spawned' | 'working' | 'blocked' | 'done' | 'failed'
+  phase: 'spawned' | 'working' | 'done' | 'failed'
   summary?: string
   childConversationId?: ConversationId
   /**

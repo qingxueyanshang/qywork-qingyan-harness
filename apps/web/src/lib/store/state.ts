@@ -18,7 +18,6 @@ import type {
   Conversation,
   GitStateEvent,
   Goal,
-  PermissionScope,
   RunUsage,
   ServerCapabilities,
   StopReason,
@@ -107,7 +106,7 @@ export interface WorkflowNodeState {
   agent: string
   /** 显示用的名字：角色名或「厂商 + CLI 名」。 */
   label: string
-  phase: 'spawned' | 'working' | 'blocked' | 'done' | 'failed' | 'skipped'
+  phase: 'spawned' | 'working' | 'done' | 'failed' | 'skipped'
   /** done/failed 时那一段产出的开头，卡上只显示这一截。 */
   summary?: string
   /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
@@ -120,16 +119,6 @@ export interface WorkflowNodeState {
    */
   output?: string
   durationMs?: number
-}
-
-export interface PermissionAsk {
-  requestId: string
-  toolName: string
-  action: ActionDescriptor
-  preview: string
-  /** 可授予的范围，**由服务端给**。界面照它渲染按钮，不自己列一套。 */
-  scopes: PermissionScope[]
-  expiresAt: number
 }
 
 export interface AppState {
@@ -222,7 +211,6 @@ export interface AppState {
   fileChanges: { path: string; additions: number; deletions: number; changeType: string }[]
   git: Omit<GitStateEvent, 'type'> | null
 
-  permission: PermissionAsk | null
   error: { code: string; message: string } | null
 }
 
@@ -238,7 +226,6 @@ const initial: AppState = {
   context: null,
   fileChanges: [],
   git: null,
-  permission: null,
   error: null,
   todos: [],
   goal: null,

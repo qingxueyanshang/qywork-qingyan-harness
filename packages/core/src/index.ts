@@ -110,7 +110,6 @@ export type {
   ErrorCode,
   EventEnvelope,
   GitStateEvent,
-  PermissionScope,
 } from './protocol/events.ts'
 export type { ConversationUsageResponse, UsageResponse } from './protocol/http.ts'
 

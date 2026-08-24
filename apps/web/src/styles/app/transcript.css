@@ -971,9 +971,6 @@
 .wf-node.spawned {
   border-color: var(--accent);
 }
-.wf-node.blocked {
-  border-color: var(--warning);
-}
 .wf-node.done {
   background: var(--bg-inset);
 }

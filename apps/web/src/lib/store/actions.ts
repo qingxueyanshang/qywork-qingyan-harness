@@ -349,15 +349,3 @@ export function sendMessage(content: string, attachments?: Attachment[]): void {
     ...(attachments?.length ? { attachments } : {}),
   })
 }
-
-export function resolvePermission(granted: boolean, scopeId: string): void {
-  const ask = state.permission
-  if (!ask) return
-  client.send({
-    type: 'permission.resolve',
-    requestId: ask.requestId,
-    granted,
-    ...(granted ? { scopeId } : {}),
-  })
-  setState('permission', null)
-}

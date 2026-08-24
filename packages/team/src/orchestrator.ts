@@ -1,7 +1,7 @@
 /**
  * 编排器。
  *
- * 按依赖图跑角色，尊重并发上限与人工门禁。
+ * 按依赖图跑角色，尊重并发上限。
  *
  * 一条刻意的设计取舍：**编排是确定性的代码，不是让某个模型自由发挥。**
  * 依赖顺序、并发数、门禁位置都由配置固定。模型只负责节点内的工作，
@@ -10,7 +10,7 @@
 
 import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
 import { runCli } from './cli-backend.ts'
-import type { CliAgent, NodeResult, PlanNode, Role, TeamConfig, TeamRules } from './types.ts'
+import type { CliAgent, NodeResult, PlanNode, Role, TeamConfig } from './types.ts'
 import { CLI_PREFIX } from './types.ts'
 
 export interface OrchestratorDeps {
@@ -37,8 +37,6 @@ export interface OrchestratorDeps {
     /** 节点点名的模型，实现方负责解析成一对「接口 × 模型」。 */
     model?: string
   }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }>
-  /** 人工门禁：返回 false 即中止整轮。 */
-  awaitHumanGate(nodeId: string, summary: string): Promise<boolean>
   emit(event: AgentEvent): void
   runId: RunId
 }
@@ -51,12 +49,10 @@ export class TeamOrchestrator {
 
   async run(goal: string): Promise<NodeResult[]> {
     const plan = this.config.plan
-    validatePlan(plan, this.config.roles, this.config.rules)
+    validatePlan(plan, this.config.roles)
 
     const results = new Map<string, NodeResult>()
     const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
-    // 门禁按**目标**认（角色 id 或 `cli:<id>`），不按节点 id——理由见 `TeamRules.humanGates`。
-    const gates = new Set(this.config.rules?.humanGates ?? [])
 
     const pending = new Set(plan.map((n) => n.id))
     const running = new Map<string, Promise<void>>()
@@ -92,7 +88,7 @@ export class TeamOrchestrator {
 
         running.set(
           id,
-          this.execute(node, goal, results, gates).then((r) => {
+          this.execute(node, goal, results).then((r) => {
             results.set(id, r)
             running.delete(id)
           }),
@@ -137,7 +133,6 @@ export class TeamOrchestrator {
     node: PlanNode,
     goal: string,
     results: Map<string, NodeResult>,
-    gates: Set<string>,
   ): Promise<NodeResult> {
     // 目标要么是角色，要么是 `cli:<id>` 的外部 CLI。两者的配置面不相干，
     // 所以这里各解析各的，不做「找不到角色就当 CLI」那种回退。
@@ -189,31 +184,6 @@ export class TeamOrchestrator {
       backend: kind,
       phase: 'spawned',
     })
-
-    // 人工门禁在**执行前**问：跑完再问等于钱已经花了、文件已经改了。
-    if (gates.has(node.agent)) {
-      this.deps.emit({
-        type: 'team.member',
-        runId: this.deps.runId,
-        memberId: node.id,
-        roleName: label,
-        backend: kind,
-        phase: 'blocked',
-        summary: task.slice(0, 200),
-      })
-      const approved = await this.deps.awaitHumanGate(node.id, task)
-      if (!approved) {
-        return {
-          nodeId: node.id,
-          agent: node.agent,
-          label,
-          status: 'skipped',
-          output: '',
-          error: '人工门禁未通过',
-          durationMs: Date.now() - started,
-        }
-      }
-    }
 
     this.deps.emit({
       type: 'team.member',
@@ -320,22 +290,11 @@ export class TeamOrchestrator {
 }
 
 /** 加载期就把成环和悬空引用挡掉，不留到运行时变成死循环。 */
-export function validatePlan(plan: PlanNode[], roles: Role[], rules?: TeamRules): void {
+export function validatePlan(plan: PlanNode[], roles: Role[]): void {
   const roleIds = new Set(roles.map((r) => r.id))
   const nodeIds = new Set(plan.map((n) => n.id))
 
   if (nodeIds.size !== plan.length) throw new Error('plan 节点 id 重复')
-
-  // 人工门禁是 fail-closed 语义的开关，**它的悬空引用必须报出来**。
-  // 拼错一个字符 = 门禁永远不命中 = 那个「必须人看过」的节点直接执行，
-  // 钱已花、文件已改，而且全程没有任何提示。
-  // **只校验角色**：`cli:` 那种指向本机装没装，是随时会变的事实，
-  // 拿它拦整张图会让「今天没装 codex，所以整个编排起不来」。
-  for (const target of rules?.humanGates ?? []) {
-    if (!target.startsWith(CLI_PREFIX) && !roleIds.has(target)) {
-      throw new Error(`rules.humanGates 引用了不存在的角色 ${target}`)
-    }
-  }
 
   for (const node of plan) {
     // 指向外部 CLI 的节点这里不校验：装没装是本机的事实，随时会变，

@@ -1,65 +1,17 @@
 /**
  * Run 管理器。
  *
- * 三件事：并发控制、中断、以及**跨端权限仲裁**。
+ * 两件事：并发控制与中断。
  *
- * 权限仲裁是这里最微妙的部分：同一个请求会同时推给桌面和手机，谁先答谁生效，
- * 后到的应答直接丢弃（而不是覆盖）。超时按拒绝处理——一个悬而未决的授权请求
- * 会让 run 永远挂着，而「挂着」在 UI 上和「卡死」无法区分。
- *
- * ## 谁还在用它
- *
- * 两模式（`auto` / `full`）改造后，**工具授权不再走这里**——`Session.decide()`
- * 按规则 + 分类器就地裁决，被拒的调用以 `tool.finished{status:'failure',
- * errorKind:'permission_denied'}` 呈现，不问用户。
- *
- * 现在 `requestPermission` 只有一个生产者：Agent Team 的人工门禁
- * （`.qy/team.json` 的 `rules.humanGates`，见 `server.ts` 的 `runTeam`）。
- * 那是一条完整活着的链路——门禁请求发到桌面/手机，用户在 PermissionSheet 上
- * 应答，回执经 `permission.resolve` 回到这里。删掉它等于让编排的人工门禁
- * 静默超时（5 分钟后按拒绝），所以**别把它当成死代码清掉**。
+ * **这里不问用户任何事。** 工具授权由 `Session.decide()` 就地裁决（规则 + 分类器），
+ * 被拒的调用以 `tool.finished{status:'failure', errorKind:'permission_denied'}` 呈现。
+ * 这个产品只有 `auto` / `full` 两档，没有「逐次询问」那一档。
  */
 
-import type {
-  ActionDescriptor,
-  AgentEvent,
-  ConversationId,
-  PermissionScope,
-  RunId,
-} from '@qywork/core'
+import type { ConversationId, RunId } from '@qywork/core'
 import type { Store } from '@qywork/store'
 import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
-
-export interface PendingPermission {
-  requestId: string
-  runId: RunId
-  conversationId: ConversationId
-  scope: string
-  /**
-   * 事件里发过的那一份原样留着。
-   *
-   * **不是冗余**：请求只广播一次，而界面会重建（切走再切回、断线补不上缺口整条重拉）。
-   * 重建的那一侧只能来问「现在有没有人在等应答」，问到了还得能把那张卡原样画出来
-   * ——少一个字段就是一张画不全的卡，而这一轮正卡在这里等人点。
-   */
-  ask: PermissionAsk
-  resolve(granted: boolean, by: 'desktop' | 'mobile' | 'policy' | 'timeout', scopeId?: string): void
-  timer: ReturnType<typeof setTimeout>
-}
-
-/** 一次待应答的授权请求，字段与 `permission.request` 事件逐一对应。 */
-export interface PermissionAsk {
-  requestId: string
-  toolName: string
-  action: ActionDescriptor
-  preview: string
-  scopes: PermissionScope[]
-  expiresAt: number
-}
-
-/** 授权等待上限。超过按拒绝处理，绝不无限期挂着。 */
-const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000
 
 export interface ActiveRun {
   runId: RunId
@@ -89,64 +41,14 @@ export interface GoalArm {
   revision: number
 }
 
-/**
- * 已授予的范围。
- *
- * `once` 不进这张表——它按定义只对当次调用生效，记下来反而会误放行下一次。
- * `run` / `session` 带作用域键，超出作用域即失效；`always` 无界（当前进程内持久，
- * 落盘策略留给 permission_rules 表）。
- */
-interface Grant {
-  duration: 'run' | 'session' | 'always'
-  runId?: RunId
-  conversationId?: ConversationId
-}
-
 export class RunManager {
   private readonly active = new Map<string, ActiveRun>()
-  private readonly pending = new Map<string, PendingPermission>()
   /** 同一会话同时只允许一个 run —— 两个 run 并发改同一批文件必然互相踩。 */
   private readonly byConversation = new Map<string, RunId>()
   /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
   private readonly reserved = new Set<string>()
-  private readonly grants = new Map<string, Grant>()
   /** 每个会话最多一条待续起标记。见 `GoalArm`。 */
   private readonly armed = new Map<string, GoalArm>()
-
-  /**
-   * 判断已有授权是否覆盖本次请求。
-   *
-   * **全等匹配，不做前缀放宽。** scope 形如 `effect:target`，对 execute 来说
-   * target 是整条命令——前缀匹配会让批准过 `execute:ls` 的用户在
-   * `execute:ls && rm -rf /` 上被静默放行。代价是「本会话都允许」对每条新命令
-   * 仍会再问一次；要按模式批量授权（如 `execute:npm *`）需要用户显式选择模式，
-   * 那是另一个功能，不能靠匹配逻辑偷偷实现。
-   */
-  private isGranted(scope: string, runId: RunId, conversationId: ConversationId): boolean {
-    const g = this.grants.get(scope)
-    if (!g) return false
-    if (g.duration === 'run' && g.runId !== runId) return false
-    if (g.duration === 'session' && g.conversationId !== conversationId) return false
-    return true
-  }
-
-  private recordGrant(
-    scope: string,
-    scopeId: string | null,
-    runId: RunId,
-    conversationId: ConversationId,
-  ): void {
-    if (scopeId === 'run' || scopeId === 'session') {
-      this.grants.set(scope, { duration: scopeId, runId, conversationId })
-    }
-  }
-
-  /** run 结束时回收该 run 名下的 run 级授权。 */
-  private expireRunGrants(runId: RunId): void {
-    for (const [scope, g] of this.grants) {
-      if (g.duration === 'run' && g.runId === runId) this.grants.delete(scope)
-    }
-  }
 
   constructor(
     private readonly store: Store,
@@ -218,15 +120,6 @@ export class RunManager {
     if (run) this.byConversation.delete(run.conversationId)
     this.active.delete(runId)
     if (run) this.announce(run.conversationId)
-    this.expireRunGrants(runId)
-    // run 结束时把它名下所有未决授权按拒绝收敛，避免留下永远等不到应答的 promise。
-    for (const [id, p] of this.pending) {
-      if (p.runId === runId) {
-        clearTimeout(p.timer)
-        p.resolve(false, 'timeout')
-        this.pending.delete(id)
-      }
-    }
   }
 
   /** 记下（或刷新）待续起标记。目标每变一次版本都要重记，见 `GoalArm`。 */
@@ -263,131 +156,7 @@ export class RunManager {
     return [...this.active.values()]
   }
 
-  /**
-   * 发起一次授权请求，等待任一端应答。
-   * 返回的 promise 一定会 settle：要么客户端应答，要么超时按拒绝。
-   */
-  requestPermission(input: {
-    runId: RunId
-    conversationId: ConversationId
-    toolName: string
-    scope: string
-    preview: string
-    action: AgentEvent extends { action: infer A } ? A : never
-  }): Promise<boolean> {
-    // 已有覆盖性授权就不再打扰用户。这条必须在发事件之前判——
-    // 否则 UI 会闪一下弹窗再自己消失。
-    if (this.isGranted(input.scope, input.runId, input.conversationId)) {
-      this.bus.publish(
-        {
-          type: 'permission.resolved',
-          runId: input.runId,
-          requestId: `auto_${crypto.randomUUID()}`,
-          granted: true,
-          scopeId: 'policy',
-          resolvedBy: 'policy',
-        },
-        input.conversationId,
-      )
-      return Promise.resolve(true)
-    }
-
-    const requestId = crypto.randomUUID()
-    const expiresAt = Date.now() + PERMISSION_TIMEOUT_MS
-    // 一份 ask，事件和「回头来问」读的是同一个对象——分两处各拼一次就是两本账。
-    const ask: PermissionAsk = {
-      requestId,
-      toolName: input.toolName,
-      action: input.action,
-      preview: input.preview,
-      scopes: DEFAULT_SCOPES,
-      expiresAt,
-    }
-
-    return new Promise<boolean>((resolve) => {
-      let settled = false
-      const finish = (
-        granted: boolean,
-        by: 'desktop' | 'mobile' | 'policy' | 'timeout',
-        scopeId: string | null = null,
-      ) => {
-        // 后到的应答直接丢弃，不覆盖先到的决定。
-        if (settled) return
-        settled = true
-        this.pending.delete(requestId)
-        if (granted) {
-          this.recordGrant(input.scope, scopeId, input.runId, input.conversationId)
-        }
-        this.bus.publish(
-          {
-            type: 'permission.resolved',
-            runId: input.runId,
-            requestId,
-            granted,
-            scopeId: granted ? (scopeId ?? 'once') : null,
-            resolvedBy: by,
-          },
-          input.conversationId,
-        )
-        resolve(granted)
-      }
-
-      const timer = setTimeout(() => finish(false, 'timeout'), PERMISSION_TIMEOUT_MS)
-
-      this.pending.set(requestId, {
-        requestId,
-        runId: input.runId,
-        conversationId: input.conversationId,
-        scope: input.scope,
-        ask,
-        resolve: finish,
-        timer,
-      })
-
-      this.bus.publish(
-        { type: 'permission.request', runId: input.runId, ...ask },
-        input.conversationId,
-      )
-    })
-  }
-
-  resolvePermission(
-    requestId: string,
-    granted: boolean,
-    by: 'desktop' | 'mobile',
-    scopeId?: string,
-  ): boolean {
-    const p = this.pending.get(requestId)
-    if (!p) return false
-    clearTimeout(p.timer)
-    p.resolve(granted, by, scopeId)
-    return true
-  }
-
-  /**
-   * 这条会话现在有没有人在等应答。
-   *
-   * 同一时刻只可能有一条：界面那侧 `state.permission` 就是一个单值，
-   * 发第二条也没地方画。取最早的那一条——先来的先答。
-   */
-  pendingFor(conversationId: ConversationId): PermissionAsk | null {
-    for (const p of this.pending.values()) {
-      if (p.conversationId === conversationId) return p.ask
-    }
-    return null
-  }
-
   conversationsOf(workspaceId: string): ConversationId[] {
     return listConversations(this.store, workspaceId as never).map((c) => c.id)
   }
 }
-
-/**
- * 可授予的范围。**这是唯一一份**——界面按事件里带来的这几项渲染按钮，不在自己
- * 那边另写一套。两套的下场是这里发四档、界面只硬编码两个按钮，另外两个谁也点不到。
- */
-const DEFAULT_SCOPES: PermissionScope[] = [
-  { id: 'once', label: '仅这次', duration: 'once' },
-  { id: 'run', label: '本轮都允许', duration: 'run' },
-  { id: 'session', label: '本会话都允许', duration: 'session' },
-]

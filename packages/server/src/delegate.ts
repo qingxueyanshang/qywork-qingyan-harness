@@ -182,16 +182,6 @@ export function makeDelegate(ctx: {
             if ('error' in picked) return { ok: false, output: '', error: picked.error }
             return runBuiltinMember(member, { deps, workspaceRoot, ...picked })
           },
-          // 人工门禁与 `team.run` 同一条通道：授权请求发给用户，等他点。
-          awaitHumanGate: async (nodeId, summary) =>
-            deps.runs.requestPermission({
-              runId: input.runId as RunId,
-              conversationId,
-              toolName: 'workflow',
-              scope: `team:gate:${nodeId}`,
-              preview: summary,
-              action: { kind: 'run', objectLabel: '编排节点', target: nodeId } as never,
-            }),
         },
       )
       try {

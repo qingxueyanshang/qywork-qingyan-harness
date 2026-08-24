@@ -196,7 +196,6 @@ export type ClientCommand =
   | SendMessageCommand
   | InterruptRunCommand
   | RetryRunCommand
-  | ResolvePermissionCommand
   | SubscribeCommand
   | SetModelCommand
   | CompactCommand
@@ -223,14 +222,6 @@ export interface RetryRunCommand {
   type: 'run.retry'
   runId: RunId
   clientRequestId: string
-}
-
-export interface ResolvePermissionCommand {
-  type: 'permission.resolve'
-  requestId: string
-  granted: boolean
-  /** granted=true 时必填。 */
-  scopeId?: string
 }
 
 export interface SubscribeCommand {

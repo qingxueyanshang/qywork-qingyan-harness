@@ -11,10 +11,7 @@ function role(id: string): Role {
   }
 }
 
-function deps(
-  run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>,
-  opts: { gate?: boolean } = {},
-) {
+function deps(run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>) {
   const order: string[] = []
   const prompts: string[] = []
   return {
@@ -25,7 +22,6 @@ function deps(
       signal: new AbortController().signal,
       runId: 'rn_t' as never,
       emit: () => {},
-      awaitHumanGate: async () => opts.gate ?? true,
       resolveCli: () => undefined,
       runBuiltin: async ({ role: r, prompt }: { role: Role; prompt: string }) => {
         order.push(r.id)
@@ -208,54 +204,6 @@ describe('编排执行', () => {
     expect(d.order).toEqual(['a'])
   })
 
-  test('人工门禁未通过则该节点跳过且不执行', async () => {
-    const config: TeamConfig = {
-      name: 't',
-      // 门禁按**目标**认，不按节点 id：图由模型现画，节点 id 是它当场拟的。
-      rules: { humanGates: ['dev'] },
-      roles: [role('dev')],
-      plan: [{ id: 'risky', agent: 'dev', task: '删库' }],
-    }
-    const d = deps(ok, { gate: false })
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
-
-    expect(byId(results, 'risky').status).toBe('skipped')
-    // 门禁在执行前问：拒绝之后不能已经跑过了。
-    expect(d.order).toEqual([])
-  })
-
-  /**
-   * 复现的失败形状：门禁原来按节点 id 认，而模型现画的图里节点 id 每次都不同——
-   * 于是配了门禁的人要么每次撞「引用了不存在的节点」，要么那条门禁静默失效。
-   * 按目标认之后，同一个角色的每个节点都被拦住，图怎么画都命中。
-   */
-  test('门禁按目标认：同一个角色的每个节点都要过', async () => {
-    const config: TeamConfig = {
-      name: 't',
-      rules: { humanGates: ['deployer'] },
-      roles: [role('dev'), role('deployer')],
-      plan: [
-        { id: 'a', agent: 'dev', task: '写' },
-        { id: 'b', agent: 'deployer', task: '发一次', needs: ['a'] },
-        { id: 'c', agent: 'deployer', task: '再发一次', needs: ['a'] },
-      ],
-    }
-    const d = deps(ok, { gate: false })
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
-    expect(byId(results, 'a').status).toBe('done')
-    expect(byId(results, 'b').status).toBe('skipped')
-    expect(byId(results, 'c').status).toBe('skipped')
-    expect(d.order).toEqual(['dev'])
-  })
-
-  test('门禁引用不存在的角色当场拒绝', () => {
-    expect(() =>
-      validatePlan([{ id: 'a', agent: 'dev', task: '' }], [role('dev')], {
-        humanGates: ['查无此人'],
-      }),
-    ).toThrow(/不存在的角色/)
-  })
-
   test('无依赖的节点可并行，受 maxConcurrent 限制', async () => {
     const config: TeamConfig = {
       name: 't',
@@ -307,7 +255,6 @@ describe('成员子会话', () => {
         signal: new AbortController().signal,
         runId: 'rn_t' as never,
         emit: (e: Record<string, unknown>) => events.push(e),
-        awaitHumanGate: async () => true,
         runBuiltin: async ({ role: r }: { role: Role }) => run(r.id),
       },
     }

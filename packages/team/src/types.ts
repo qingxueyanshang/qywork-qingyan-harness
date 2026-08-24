@@ -75,15 +75,6 @@ export interface TeamRules {
   shared?: string
   /** 同时最多几个角色在跑。默认 3——再多，用户就看不过来了。 */
   maxConcurrent?: number
-  /**
-   * 派给这几个**目标**的节点，执行前必须人工确认（角色 id，或 `cli:<id>`）。
-   *
-   * **键是目标不是节点 id。** 图现在由模型现画，节点 id 是它当场拟的，
-   * 用节点 id 当键只有两种结局：引用不到当场炸，或者不校验、那条「必须人看过」
-   * 静默失效——而一个开着但不生效的安全开关比没有这个开关更坏。
-   * 按目标写「派给 deployer 的节点都要我点头」，模型画的图与人画的图都命中。
-   */
-  humanGates?: string[]
 }
 
 export interface TeamConfig {

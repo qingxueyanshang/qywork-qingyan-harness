@@ -23,14 +23,7 @@ import type {
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
-import {
-  markBusy,
-  type PermissionAsk,
-  setState,
-  state,
-  type TranscriptItem,
-  type WorkflowNodeState,
-} from './state.ts'
+import { markBusy, setState, state, type TranscriptItem, type WorkflowNodeState } from './state.ts'
 import { workspace } from './ui.ts'
 
 export const client = new QyClient({
@@ -453,26 +446,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       setState('git', { workspaceId: ev.workspaceId, branch: ev.branch })
       return
 
-    case 'permission.request':
-      setState('permission', {
-        requestId: ev.requestId,
-        toolName: ev.toolName,
-        action: ev.action,
-        preview: ev.preview,
-        scopes: ev.scopes,
-        expiresAt: ev.expiresAt,
-      })
-      return
-
-    case 'permission.resolved':
-      setState(
-        produce((s) => {
-          // 只有当前挂着的那条被消掉；后到的其他 resolved 不该关掉新弹出的请求。
-          if (s.permission?.requestId === ev.requestId) s.permission = null
-        }),
-      )
-      return
-
     case 'run.error':
       setState(
         produce((s) => {
@@ -484,7 +457,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
            * release，那两处就是忙闲的唯一裁决点。在这里补一个客户端判断，
            * 「谁在跑」就有了第二本账。
            */
-          s.permission = null
         }),
       )
       return
@@ -492,7 +464,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     case 'run.finished':
       setState(
         produce((s) => {
-          s.permission = null
           // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
           // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
           s.transcript.push({
@@ -690,7 +661,7 @@ export async function reloadActiveConversation(): Promise<void> {
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
 
-  const [folded, ctx, goal, ask] = await Promise.all([
+  const [folded, ctx, goal] = await Promise.all([
     fetchConversation(id),
     // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
     // 切一次会话面板就空了，而用户恰恰是回头看的时候才想知道被谁占的。
@@ -706,14 +677,6 @@ export async function reloadActiveConversation(): Promise<void> {
       .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
       .then((r) => r.goal)
       .catch(() => null),
-    // 正在等拍板的那一次授权。同理，而且这一条不读回来的代价最重：
-    // `permission.request` 只在发起那一刻广播一次，界面重建之后卡就没了，
-    // 服务端那个 promise 还在等——一轮卡着不动、没有任何可点的东西，
-    // 五分钟后按拒绝超时。
-    client
-      .api<{ permission: PermissionAsk | null }>(`/api/conversations/${id}/permission`)
-      .then((r) => r.permission)
-      .catch(() => null),
   ])
 
   const { runs, stepsByRun } = folded
@@ -727,8 +690,8 @@ export async function reloadActiveConversation(): Promise<void> {
   /*
    * **run 作用域的状态一律从这里派生，不靠事件残留。**
    *
-   * 这些字段（lastRunId / runStartedAt / todos / usage / context /
-   * permission）是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
+   * 这些字段（lastRunId / runStartedAt / todos / usage / context）
+   * 是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
    * transcript，它们会连同上一条会话的 run 一起留在界面上；而 `applyEvent`
    * 按 conversationId 丢弃非当前会话的事件，那条 run 的 `run.finished`
    * **结构性地永远到不了**，于是它们再也不会被放下来。
@@ -761,9 +724,6 @@ export async function reloadActiveConversation(): Promise<void> {
        * `docs/plans/2026-08-23-workflow-图化编排.md` §3.2。
        */
       s.retry = null
-      // 授权请求活在服务端内存里，不在账本里——但它**读得到**，所以照读，
-      // 不是清空了等下一次事件（那一次永远不会再来，请求只发一次）。
-      s.permission = ask
       /*
        * **用量跟着那一轮走，不清空。**
        *
