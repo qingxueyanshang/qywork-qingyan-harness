@@ -20,7 +20,7 @@
 
 import type { FileChange } from '@qywork/core'
 import { collectProcess, scrubEnv } from '@qywork/tools'
-import { changesSince, snapshotTree, whyUnmeasurable } from './changes.ts'
+import { beginProbe, endProbe, UNMEASURABLE } from './changes.ts'
 import type { CliAgent } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
@@ -90,7 +90,7 @@ export async function runCli(
   const timeout = agent.timeoutMs ?? DEFAULT_TIMEOUT
 
   // 基线必须在起进程之前照：晚一步照就把它已经改过的那部分吃进基线了。
-  const base = await snapshotTree(input.workspaceRoot)
+  const probe = await beginProbe(input.workspaceRoot)
 
   // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
   // 它自己的工作目录不该由这里的配置面再开一个旋钮。
@@ -137,7 +137,7 @@ export async function runCli(
       : {}),
   })
 
-  const changed = base ? await changesSince(input.workspaceRoot, base) : null
+  const changed = probe ? await endProbe(probe, input.workspaceRoot) : null
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
@@ -146,9 +146,7 @@ export async function runCli(
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
     stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
-    ...(changed
-      ? { changes: changed }
-      : { changesUnmeasured: await whyUnmeasurable(input.workspaceRoot) }),
+    ...(changed ? { changes: changed } : { changesUnmeasured: UNMEASURABLE }),
   }
 }
 
