@@ -103,7 +103,7 @@ MCP 工具注册名是 `mcp__<server>__<tool>`，权限 scope 是
 
 ### 为什么不看 `readOnlyHint`
 
-MCP 的工具定义里有 `annotations.readOnlyHint`，看起来正好能拿来决定要不要弹授权。
+MCP 的工具定义里有 `annotations.readOnlyHint`，看起来正好能拿来决定这次调用过哪道闸。
 **这里刻意不用它放宽权限**，因为那个字段是 server 自己填的，而 server 是第三方代码——
 一个恶意（或只是写错了）的 server 声明 `readOnlyHint: true` 的工具照样可以删库。
 拿它决定要不要过闸，等于让被审查者自己签发通行证。MCP 规范自己也写明客户端
