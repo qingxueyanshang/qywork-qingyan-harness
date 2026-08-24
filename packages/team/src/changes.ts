@@ -72,16 +72,17 @@ export async function snapshotTree(root: string): Promise<string | null> {
 /**
  * 从 `base` 那棵树到此刻，改了哪些文件。
  *
- * 返回的 `changes` 最多 `RECEIPT_CAP` 条（按改动量排），`total` 是真实条数。
- * 量不了时返回 null，语义同 `snapshotTree`。
+ * 返回的 `files` 最多 `RECEIPT_CAP` 条（按改动量排），`total` 是真实条数——
+ * **两者必须同行**：只给一截还让人以为是全部，比不给更坏。
+ * 量不了时返回 null，语义同 `snapshotTree`；`total: 0` 是「确定没改」，两者不是一回事。
  */
 export async function changesSince(
   root: string,
   base: string,
-): Promise<{ changes: FileChange[]; total: number } | null> {
+): Promise<{ files: FileChange[]; total: number } | null> {
   const now = await snapshotTree(root)
   if (!now) return null
-  if (now === base) return { changes: [], total: 0 }
+  if (now === base) return { files: [], total: 0 }
 
   // 两趟：numstat 给增删行数，name-status 给动作。git 不会在一次输出里同时给全这两样。
   // `core.quotePath=false`：不然中文路径会被转义成 \344\270\255 那种八进制串。
@@ -111,5 +112,16 @@ export async function changesSince(
   }
 
   all.sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions))
-  return { changes: all.slice(0, RECEIPT_CAP), total: all.length }
+  return { files: all.slice(0, RECEIPT_CAP), total: all.length }
+}
+
+/**
+ * 量不了的时候，为什么量不了。
+ *
+ * **只在真量不了之后才问**：它是给人和模型看的那一句话，不是常规路径上的探测。
+ * 「量不了」与「没有改动」必须分得开——后者是一个具体的结论，把前者说成后者是撒谎。
+ */
+export async function whyUnmeasurable(root: string): Promise<string> {
+  const probe = await git(['rev-parse', '--git-dir'], root)
+  return probe.ok ? 'git 没能读出这个工作区的状态' : '这个工作区不在 git 仓库里'
 }

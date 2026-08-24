@@ -87,12 +87,12 @@ export interface DelegatePort {
     conversationId?: string
     /**
      * 外部 CLI 这一次改了哪些文件——**量出来的一手事实**，不是它自述的那份。
-     * 内置角色没有这个字段（它们的每一次写由写工具逐条上报）；
-     * 工作区不是 git 仓库时同样缺席，**不要回落成空数组**。
+     * 内置角色没有这个字段（它们的每一次写由写工具逐条上报）。
+     * **量不了时整个字段缺席**，那时看 `changesUnmeasured`。
      */
-    changes?: FileChange[]
-    /** 一共改了几个文件。`changes` 只列前几条。 */
-    changedTotal?: number
+    changes?: { files: FileChange[]; total: number }
+    /** 量不了的原因。与 `changes` 互斥——「没量到」不能长得跟「没有改动」一样。 */
+    changesUnmeasured?: string
   }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。

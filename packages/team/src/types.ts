@@ -129,11 +129,11 @@ export interface NodeResult {
    * 这个节点改了哪些文件——**量出来的一手事实**，不是它自己在产出里说的那份。
    *
    * 只有外部 CLI 节点有：内置子 agent 的每一次写都由它自己的写工具逐条上报，
-   * 那条路更准。**工作区不是 git 仓库时这个键缺席**，不是空数组。
+   * 那条路更准。**量不了时整个字段缺席**，那时看 `changesUnmeasured`。
    */
-  changes?: FileChange[]
-  /** 一共改了几个文件。`changes` 只列前几条，这个数说的是全部。 */
-  changedTotal?: number
+  changes?: { files: FileChange[]; total: number }
+  /** 量不了的原因。与 `changes` 互斥——「没量到」不能长得跟「没有改动」一样。 */
+  changesUnmeasured?: string
   /**
    * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
    * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，

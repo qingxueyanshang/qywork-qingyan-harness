@@ -134,7 +134,8 @@ export function makeDelegate(ctx: {
               }),
           // 改了什么与成没成是两件事：失败的那次也要把已经落地的改动交出来，
           // 否则模型只知道它没做成，不知道工作区已经被动过了。
-          ...(r.changes ? { changes: r.changes, changedTotal: r.changedTotal ?? 0 } : {}),
+          ...(r.changes ? { changes: r.changes } : {}),
+          ...(r.changesUnmeasured ? { changesUnmeasured: r.changesUnmeasured } : {}),
         }
       }
 

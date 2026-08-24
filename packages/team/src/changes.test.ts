@@ -10,7 +10,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
-import { changesSince, snapshotTree } from './changes.ts'
+import { changesSince, snapshotTree, whyUnmeasurable } from './changes.ts'
 
 async function repo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-chg-'))
@@ -35,10 +35,17 @@ describe('量改动', () => {
     expect(await changesSince(dir, 'deadbeef')).toBeNull()
   })
 
+  /** 「量不了」与「没有改动」必须分得开，所以量不了的时候要说得出为什么。 */
+  test('量不了时说得出为什么', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-nogit-'))
+    expect(await whyUnmeasurable(dir)).toBe('这个工作区不在 git 仓库里')
+    expect(await whyUnmeasurable(await repo())).toBe('git 没能读出这个工作区的状态')
+  })
+
   test('没动过就是零条', async () => {
     const dir = await repo()
     const base = (await snapshotTree(dir))!
-    expect(await changesSince(dir, base)).toEqual({ changes: [], total: 0 })
+    expect(await changesSince(dir, base)).toEqual({ files: [], total: 0 })
   })
 
   test('新建的文件有真实行数，且算「新增」', async () => {
@@ -47,7 +54,7 @@ describe('量改动', () => {
     await writeFile(join(dir, 'new.txt'), 'x\ny\nz\n')
     const got = (await changesSince(dir, base))!
     expect(got.total).toBe(1)
-    expect(got.changes[0]).toEqual({
+    expect(got.files[0]).toEqual({
       path: 'new.txt',
       changeType: 'created',
       additions: 3,
@@ -60,7 +67,7 @@ describe('量改动', () => {
     const base = (await snapshotTree(dir))!
     Bun.spawnSync(['git', 'rm', '-q', 'keep.txt'], { cwd: dir })
     const got = (await changesSince(dir, base))!
-    expect(find(got.changes, 'keep.txt')?.changeType).toBe('deleted')
+    expect(find(got.files, 'keep.txt')?.changeType).toBe('deleted')
   })
 
   /**
@@ -74,7 +81,7 @@ describe('量改动', () => {
     git(dir, 'add', '.')
     git(dir, 'commit', '-qm', 'cli 自己提交')
     const got = (await changesSince(dir, base))!
-    expect(find(got.changes, 'keep.txt')).toEqual({
+    expect(find(got.files, 'keep.txt')).toEqual({
       path: 'keep.txt',
       changeType: 'modified',
       additions: 1,
@@ -91,8 +98,8 @@ describe('量改动', () => {
     await writeFile(join(dir, 'keep.txt'), 'a\nb\n用户自己加的\nCLI 加的\n')
     const got = (await changesSince(dir, base))!
     expect(got.total).toBe(1)
-    expect(find(got.changes, 'keep.txt')?.additions).toBe(1)
-    expect(find(got.changes, 'user.txt')).toBeUndefined()
+    expect(find(got.files, 'keep.txt')?.additions).toBe(1)
+    expect(find(got.files, 'user.txt')).toBeUndefined()
   })
 
   /** 二进制文件 numstat 那两格是 `-`：报 0，不能报 NaN。 */
@@ -101,7 +108,7 @@ describe('量改动', () => {
     const base = (await snapshotTree(dir))!
     await writeFile(join(dir, 'bin.dat'), Buffer.from([0, 1, 2, 0, 3]))
     const got = (await changesSince(dir, base))!
-    expect(find(got.changes, 'bin.dat')).toEqual({
+    expect(find(got.files, 'bin.dat')).toEqual({
       path: 'bin.dat',
       changeType: 'created',
       additions: 0,
@@ -114,7 +121,7 @@ describe('量改动', () => {
     await writeFile(join(dir, '.gitignore'), 'ignored/\n')
     const base = (await snapshotTree(dir))!
     await Bun.write(join(dir, 'ignored', 'x.log'), '噪声\n')
-    expect(await changesSince(dir, base)).toEqual({ changes: [], total: 0 })
+    expect(await changesSince(dir, base)).toEqual({ files: [], total: 0 })
   })
 
   /** 列不下的时候必须把总数说出来——只给一截还让人以为是全部，比不给更坏。 */
@@ -124,8 +131,8 @@ describe('量改动', () => {
     for (let i = 0; i < 25; i++) await writeFile(join(dir, `f${i}.txt`), 'x\n'.repeat(i + 1))
     const got = (await changesSince(dir, base))!
     expect(got.total).toBe(25)
-    expect(got.changes).toHaveLength(20)
+    expect(got.files).toHaveLength(20)
     // 按改动量排：留下的是改得最多的那些。
-    expect(got.changes[0]?.additions).toBe(25)
+    expect(got.files[0]?.additions).toBe(25)
   })
 })

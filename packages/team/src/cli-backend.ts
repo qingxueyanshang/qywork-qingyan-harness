@@ -20,7 +20,7 @@
 
 import type { FileChange } from '@qywork/core'
 import { collectProcess, scrubEnv } from '@qywork/tools'
-import { changesSince, snapshotTree } from './changes.ts'
+import { changesSince, snapshotTree, whyUnmeasurable } from './changes.ts'
 import type { CliAgent } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
@@ -55,12 +55,17 @@ export interface CliRunResult {
   /**
    * 这一次它改了哪些文件——**由这一侧量出来的一手事实**，不是它自己说的。
    *
-   * **工作区不是 git 仓库时这个键缺席**，不要回落成空数组：空数组的意思是
-   * 「确定没改」，那是一个具体而错误的结论。
+   * `files` 只列改得最多的前几个，`total` 说的是全部，**两者必须同行**。
+   * `total: 0` 是「确定没改」；**量不了时整个字段缺席**，那时看 `changesUnmeasured`。
    */
-  changes?: FileChange[]
-  /** 一共改了几个文件。`changes` 只列前几条，这个数说的是全部。 */
-  changedTotal?: number
+  changes?: { files: FileChange[]; total: number }
+  /**
+   * 量不了的原因。**与 `changes` 互斥**，两者恰好有一个。
+   *
+   * 缺了它，「没量到」在界面和模型眼里都长得跟「没有改动」一样，
+   * 而那是一个具体而错误的结论。
+   */
+  changesUnmeasured?: string
 }
 
 export async function runCli(
@@ -141,7 +146,9 @@ export async function runCli(
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
     stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
-    ...(changed ? { changes: changed.changes, changedTotal: changed.total } : {}),
+    ...(changed
+      ? { changes: changed }
+      : { changesUnmeasured: await whyUnmeasurable(input.workspaceRoot) }),
   }
 }
 
