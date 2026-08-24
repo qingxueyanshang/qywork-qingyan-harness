@@ -18,10 +18,33 @@
  * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
  */
 
+import type { FileChange } from '@qywork/core'
 import { collectProcess, scrubEnv } from '@qywork/tools'
+import { changesSince, snapshotTree } from './changes.ts'
 import type { CliAgent } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
+
+/**
+ * 追加在任务后面的输出格式约定。
+ *
+ * **交付物正文必须在前、回执作尾节**：`extract` 取的是最后一个非空目标字段，
+ * 回执写在前面时，查询型任务的产出会变成一句状态汇报，而不是它的答案。
+ *
+ * 不照格式报只是降级，不是失败：改了哪些文件由这一侧自己量（`changes.ts`），
+ * 成没成看退出码，两样都不依赖它的自述。
+ */
+const REPORT_CONTRACT = `
+
+## 输出格式
+
+先给交付物正文——任务要的答案、结论或改动说明。然后另起一节收尾：
+
+### 回执
+- 改了哪些文件：逐个列路径，每个一句话说明改了什么；没改就写「没有」
+- 怎么解决的：一两句
+- 还剩什么没做：没有就写「没有」
+`
 
 export interface CliRunResult {
   ok: boolean
@@ -29,6 +52,15 @@ export interface CliRunResult {
   exitCode: number
   timedOut: boolean
   stderr: string
+  /**
+   * 这一次它改了哪些文件——**由这一侧量出来的一手事实**，不是它自己说的。
+   *
+   * **工作区不是 git 仓库时这个键缺席**，不要回落成空数组：空数组的意思是
+   * 「确定没改」，那是一个具体而错误的结论。
+   */
+  changes?: FileChange[]
+  /** 一共改了几个文件。`changes` 只列前几条，这个数说的是全部。 */
+  changedTotal?: number
 }
 
 export async function runCli(
@@ -49,8 +81,11 @@ export async function runCli(
     onChunk?: (text: string) => void
   },
 ): Promise<CliRunResult> {
-  const args = agent.args.map((a) => a.replaceAll('{prompt}', input.prompt))
+  const args = agent.args.map((a) => a.replaceAll('{prompt}', input.prompt + REPORT_CONTRACT))
   const timeout = agent.timeoutMs ?? DEFAULT_TIMEOUT
+
+  // 基线必须在起进程之前照：晚一步照就把它已经改过的那部分吃进基线了。
+  const base = await snapshotTree(input.workspaceRoot)
 
   // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
   // 它自己的工作目录不该由这里的配置面再开一个旋钮。
@@ -97,6 +132,8 @@ export async function runCli(
       : {}),
   })
 
+  const changed = base ? await changesSince(input.workspaceRoot, base) : null
+
   return {
     ok: got.exitCode === 0 && !got.timedOut,
     output: extract(got.stdout, agent),
@@ -104,6 +141,7 @@ export async function runCli(
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
     stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
+    ...(changed ? { changes: changed.changes, changedTotal: changed.total } : {}),
   }
 }
 
