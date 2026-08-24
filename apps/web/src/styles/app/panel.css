@@ -907,8 +907,8 @@
   flex: 1;
   min-width: 0;
 }
-/* 被截掉的那些由它说出来。**只在真截了的时候出现**：条数与总数相等时这一行是废话。 */
-.change-more {
+/* 清单旁边的一句小字事实：被截掉了多少、一条都没有、或者这次根本量不了。 */
+.change-note {
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }

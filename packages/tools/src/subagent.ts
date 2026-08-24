@@ -100,12 +100,17 @@ export const subagentTool: ToolSpec = {
     // 改动清单要摆进 `data`：**`ToolOutcome.fileChanges` 不进模型信封**
     // （`loop.ts` 回给模型的只有 call_id/tool/status/executed/summary/resources/result），
     // 而这份清单的第一读者正是模型——它据此决定要不要复核、要不要回退。
-    const receipt = res.changes ? { changes: res.changes, changedTotal: res.changedTotal } : {}
+    const receipt = {
+      ...(res.changes ? { changes: res.changes } : {}),
+      ...(res.changesUnmeasured ? { changesUnmeasured: res.changesUnmeasured } : {}),
+    }
     if (!res.ok) {
       return {
         status: 'failure' as const,
         message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
-        ...(res.output || res.changes ? { data: { output: res.output, ...receipt } } : {}),
+        ...(res.output || Object.keys(receipt).length
+          ? { data: { output: res.output, ...receipt } }
+          : {}),
       }
     }
     return {

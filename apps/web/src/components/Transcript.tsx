@@ -996,7 +996,7 @@ function ToolCard(props: { item: TranscriptItem }) {
         {(c) => (
           <>
             <div class="fold-divider" />
-            <ChangeList changes={c().changes} total={c().total} />
+            <ChangeList {...c()} />
           </>
         )}
       </Show>
@@ -1019,12 +1019,17 @@ function ToolCard(props: { item: TranscriptItem }) {
 /**
  * 这张卡上带着的改动清单。只有派给外部 CLI 的那种会有——图卡的清单在每个节点上。
  *
- * `total` 缺席时按列出的条数算：那说明一条都没被截掉。
+ * 量不了那一支同样要交出来：「没量到」和「没有改动」在界面上必须分得开。
  */
-function cliChanges(item: TranscriptItem): { changes: FileChange[]; total: number } | null {
-  const d = item.outcome?.data as { changes?: FileChange[]; changedTotal?: number } | undefined
-  if (!d?.changes?.length) return null
-  return { changes: d.changes, total: d.changedTotal ?? d.changes.length }
+function cliChanges(item: TranscriptItem): {
+  changes?: { files: FileChange[]; total: number }
+  unmeasured?: string
+} | null {
+  const d = item.outcome?.data as
+    | { changes?: { files: FileChange[]; total: number }; changesUnmeasured?: string }
+    | undefined
+  if (d?.changes) return { changes: d.changes }
+  return d?.changesUnmeasured ? { unmeasured: d.changesUnmeasured } : null
 }
 
 /** 这张卡上带着的子会话 id。只有 `subagent` 会有——图卡的 id 在每个节点上。 */

@@ -18,8 +18,8 @@ import { ChangeList } from './ChangeList.tsx'
 interface Landed {
   nodeId: string
   output?: string
-  changes?: FileChange[]
-  changedTotal?: number
+  changes?: { files: FileChange[]; total: number }
+  changesUnmeasured?: string
 }
 
 export default function CliPanel(props: { id: string }) {
@@ -52,11 +52,11 @@ export default function CliPanel(props: { id: string }) {
 function Receipt(props: { landed: Landed | undefined }) {
   return (
     <>
-      <Show when={props.landed?.changes?.length}>
+      <Show when={props.landed?.changes || props.landed?.changesUnmeasured}>
         <ChangeList
-          changes={props.landed!.changes!}
-          {...(props.landed?.changedTotal !== undefined
-            ? { total: props.landed.changedTotal }
+          {...(props.landed?.changes ? { changes: props.landed.changes } : {})}
+          {...(props.landed?.changesUnmeasured
+            ? { unmeasured: props.landed.changesUnmeasured }
             : {})}
         />
       </Show>

@@ -218,7 +218,8 @@ export class TeamOrchestrator {
               : r.timedOut
                 ? '超时'
                 : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
-            ...(r.changes ? { changes: r.changes, changedTotal: r.changedTotal ?? 0 } : {}),
+            ...(r.changes ? { changes: r.changes } : {}),
+            ...(r.changesUnmeasured ? { changesUnmeasured: r.changesUnmeasured } : {}),
           }))
         : await this.deps.runBuiltin({
             role: role!,
@@ -250,8 +251,9 @@ export class TeamOrchestrator {
         status: res.ok ? 'done' : 'failed',
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
-        ...('changes' in res && res.changes
-          ? { changes: res.changes, changedTotal: res.changedTotal ?? 0 }
+        ...('changes' in res && res.changes ? { changes: res.changes } : {}),
+        ...('changesUnmeasured' in res && res.changesUnmeasured
+          ? { changesUnmeasured: res.changesUnmeasured }
           : {}),
         durationMs: Date.now() - started,
         ...('conversationId' in res && res.conversationId
