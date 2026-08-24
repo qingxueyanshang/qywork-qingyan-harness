@@ -43,7 +43,21 @@ const KNOWN: KnownCli[] = [
     bin: 'claude',
     // `stream-json` 而不是 `json`：后者跑完才一次性吐一个大对象，右侧面板里
     // 那一页在它结束之前一个字都没有。`--verbose` 是 stream-json 在打印模式下的前提。
-    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose'],
+    //
+    // `--permission-mode acceptEdits` 不是可选项：不给的话它在打印模式下**一个字节都写不了**，
+    // 而且照样报「做完了」。实测（2026-08-24）派它建一个文件加改一行，四种写法
+    // （Write / Edit / Bash 重定向 / PowerShell）全被它自己的权限闸拦下，
+    // 回执里写着「改了哪些文件：没有」。stdin 是关的，那道闸没有人能应答。
+    // 它接受的只是**工作目录内的编辑**，边界与派活给它这件事本身同宽。
+    args: [
+      '-p',
+      '{prompt}',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--permission-mode',
+      'acceptEdits',
+    ],
     output: 'jsonl',
     resultField: 'result',
     envKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
