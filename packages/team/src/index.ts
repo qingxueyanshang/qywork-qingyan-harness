@@ -12,7 +12,7 @@
 export { runCli } from './cli-backend.ts'
 // 本机装了哪几家外部 CLI：server 的设置页端点与派活端口按它解析目标
 export { type DetectedCli, detectClis, findCli } from './cli-detect.ts'
-// 编排器：server 的 team.run 指令是唯一入口
+// 编排器：server 的派活端口（`workflow` 工具那条）是唯一入口
 export { TeamOrchestrator } from './orchestrator.ts'
 // 配置形状：runtime 解析、server 消费
 export type { CliAgent, PlanNode, Role, TeamRules } from './types.ts'

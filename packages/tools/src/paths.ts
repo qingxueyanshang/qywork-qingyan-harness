@@ -327,8 +327,8 @@ function decodeSafely(input: string): string {
  * `resolveInWorkspace`。挡它们是因为写进去等于**自我提权**：
  *
  * - `.agents/mcp.json` —— 配哪些 MCP server，写一行就多一批工具；
- * - `.qy/` —— `team.json` 里有 `rules.humanGates`（哪些角色派活前必须人点头），
- *   整份改写就能把这条开关删掉；`plugin-data/` 是插件的私有存储。
+ * - `.qy/` —— `plugins/` 是装进来的插件本体（一段下次加载就会跑的代码），
+ *   `plugin-data/` 是插件的私有存储。
  *
  * **技能与记忆不在里面**，虽然它们同在 `.agents/` 下：一篇 SKILL.md 是一段提示词，
  * 一条记忆是一句事实，两者都不给模型任何新能力。按目录一刀切挡过它们，代价是
