@@ -762,15 +762,19 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
 }
 
 /**
- * 编排的图卡。
+ * 编排卡。
  *
  * **形状来自参数，状态来自事件或结果。** 参数（`args.nodes`）随 `tool.started` 就到，
- * 所以第一帧就能把整张图画全，等着跑的节点也在图上；状态活着的时候来自
- * `team.member` 事件（`item.nodes`），刷新之后来自这次调用落库的结果
- * （`outcome.data.nodes`）。两条路各管一段，不互相兜底——进度事件不落库。
+ * 所以第一帧就能把节点排全，等着跑的也在，状态活着的时候来自 `team.member` 事件
+ * （`item.nodes`），刷新之后来自这次调用落库的结果（`outcome.data.nodes`）。
+ * 两条路各管一段，不互相兜底——进度事件不落库。
  *
- * 按依赖分层排：同一层的并排（它们真的在并行跑），层与层之间一条竖线。
- * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
+ * 节点按依赖顺序竖着排，左边一条线，跑着的那一段流动。**不画连线图**：连线要靠量
+ * 出来的坐标画在绝对定位的层上，容器一变宽（拖面板、缩窗口）坐标就过期，线和方块
+ * 错开。这里的线是行自己的一段，几何由布局负责，宽度怎么变都对得上。
+ *
+ * 并行由「同时有几段在流动」表达，不由并排表达——并排要求同层节点等宽，
+ * 而宽度跟着内容走。
  */
 function WorkflowCard(props: { item: TranscriptItem }) {
   const shape = (): { id: string; agent: string; needs: string[] }[] => {
@@ -823,8 +827,11 @@ function WorkflowCard(props: { item: TranscriptItem }) {
       : null
   }
 
-  /** 按依赖分层：一个节点落在「它所有上游的最深层 + 1」。 */
-  const layers = () => {
+  /**
+   * 按依赖深度排：一个节点排在它所有上游之后。深度相同的是并行的那些，
+   * 它们之间保持模型给的先后。
+   */
+  const ordered = () => {
     const nodes = shape()
     const depth = new Map<string, number>()
     const of = (id: string, seen: Set<string>): number => {
@@ -836,126 +843,50 @@ function WorkflowCard(props: { item: TranscriptItem }) {
       depth.set(id, d)
       return d
     }
-    const out: (typeof nodes)[] = []
-    for (const n of nodes) {
-      const d = of(n.id, new Set())
-      const layer = out[d] ?? []
-      layer.push(n)
-      out[d] = layer
-    }
-    return out.filter(Boolean)
-  }
-
-  /**
-   * 连线按 `needs` 逐条画，**不是按层画**：跨层的依赖（第 1 层直接连到第 3 层）
-   * 也是真实存在的边，只连相邻层会把它画丢。
-   *
-   * 位置只能量出来——节点宽度随名字与耗时变，算不出来。量的时机交给
-   * `ResizeObserver`：它在布局之后、绘制之前回调，所以线和方块同一帧落地，
-   * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
-   * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
-   */
-  const [edges, setEdges] = createSignal<string[]>([])
-  let box!: HTMLDivElement
-  const refs = new Map<string, HTMLElement>()
-
-  const measure = () => {
-    if (!box) return
-    const b = box.getBoundingClientRect()
-    // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
-    const at = (v: number) => Math.round(v) + 0.5
-    const out: string[] = []
-    for (const n of shape()) {
-      const to = refs.get(n.id)
-      if (!to) continue
-      const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
-      if (sources.length === 0) continue
-      const t = to.getBoundingClientRect()
-      const tx = at(t.left + t.width / 2 - b.left)
-      const ty = at(t.top - b.top)
-      const rects = sources.map((el) => el.getBoundingClientRect())
-      const foot = Math.max(...rects.map((r) => r.bottom - b.top))
-      const bus = at((foot + (t.top - b.top)) / 2)
-      const xs = rects.map((r) => at(r.left + r.width / 2 - b.left))
-      /*
-       * 汇进同一个节点的几条边**共用一条横线加一根竖线**，不是各画各的折线。
-       *
-       * 各画各的时候，三条折线的横段与拐角叠在一起，而上游与下游中线差一两个像素
-       * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
-       */
-      for (const [i, r] of rects.entries()) {
-        out.push(`M${xs[i]} ${at(r.bottom - b.top)}V${bus}`)
-      }
-      const left = Math.min(...xs, tx)
-      const right = Math.max(...xs, tx)
-      if (right > left) out.push(`M${left} ${bus}H${right}`)
-      out.push(`M${tx} ${bus}V${ty}`)
-    }
-    setEdges(out)
-  }
-
-  const ro = new ResizeObserver(() => measure())
-  onCleanup(() => ro.disconnect())
-  // 节点的状态变了（跑完了多出一格耗时）宽度会变，重量一次。
-  createEffect(() => {
-    props.item.nodes
-    props.item.outcome
-    queueMicrotask(measure)
-  })
-
-  const hold = (id: string) => (el: HTMLElement) => {
-    refs.set(id, el)
-    ro.observe(el)
+    return nodes
+      .map((n, i) => ({ n, d: of(n.id, new Set()), i }))
+      .sort((a, b) => a.d - b.d || a.i - b.i)
+      .map((x) => x.n)
   }
 
   return (
     <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
       <div class="wf-goal truncate">{String(props.item.args?.goal ?? '')}</div>
-      <div class="wf-graph" ref={box}>
-        <svg class="wf-edges" aria-hidden="true">
-          <For each={edges()}>{(d) => <path d={d} />}</For>
-        </svg>
-        <For each={layers()}>
-          {(layer) => (
-            <div class="wf-layer">
-              <For each={layer}>
-                {(n) => {
-                  const st = () => stateOf(n.id)
-                  /*
-                   * 点节点 = 翻开它。两种节点翻开的东西不同：内置子 agent 有一条
-                   * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
-                   * 两者都没有时（还没跑到）点不开。
-                   */
-                  const cli = () => n.agent.startsWith('cli:')
-                  const open = () => {
-                    const cid = st()?.conversationId
-                    if (cid) openConversationTab(cid, n.id)
-                    else if (cli()) openCliTab(props.item.id, n.id)
-                  }
-                  return (
-                    <button
-                      type="button"
-                      class="wf-node"
-                      classList={{ [st()?.phase ?? 'waiting']: true }}
-                      disabled={!st()?.conversationId && !(cli() && st())}
-                      onClick={open}
-                      ref={hold(n.id)}
-                    >
-                      {/* 主行是节点 id：一张图里区分得开谁是谁的就是它。
-                          执行者压一档——同一张图里常常四个节点都是同一个。 */}
-                      <span class="wf-node-name truncate">{n.id}</span>
-                      <span class="wf-node-who truncate">
-                        {st()?.label || n.agent}
-                        <Show when={st()?.durationMs}>
-                          {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
-                        </Show>
-                      </span>
-                    </button>
-                  )
-                }}
-              </For>
-            </div>
-          )}
+      <div class="wf-flow">
+        <For each={ordered()}>
+          {(n) => {
+            const st = () => stateOf(n.id)
+            /*
+             * 点节点 = 翻开它。两种节点翻开的东西不同：内置子 agent 有一条
+             * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
+             * 两者都没有时（还没跑到）点不开。
+             */
+            const cli = () => n.agent.startsWith('cli:')
+            const open = () => {
+              const cid = st()?.conversationId
+              if (cid) openConversationTab(cid, n.id)
+              else if (cli()) openCliTab(props.item.id, n.id)
+            }
+            return (
+              <div class="wf-step" classList={{ [st()?.phase ?? 'waiting']: true }}>
+                <span class="wf-rail" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="wf-node"
+                  disabled={!st()?.conversationId && !(cli() && st())}
+                  onClick={open}
+                >
+                  {/* 主行是节点 id：这一列里区分得开谁是谁的就是它。
+                      执行者压一档——常常几个节点都是同一个。 */}
+                  <span class="wf-node-name">{n.id}</span>
+                  <span class="wf-node-who truncate">{st()?.label || n.agent}</span>
+                  <Show when={st()?.durationMs}>
+                    {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
+                  </Show>
+                </button>
+              </div>
+            )
+          }}
         </For>
       </div>
     </div>
