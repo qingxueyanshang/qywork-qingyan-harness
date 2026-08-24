@@ -82,7 +82,7 @@ describe('装插件', () => {
     expect(p.installs).toHaveLength(0)
   })
 
-  /** 覆盖已装的那一份要模型显式说。授权卡上写明是覆盖由端口那边负责。 */
+  /** 覆盖已装的那一份要模型显式说：`replace` 不给就是拒绝，不是默认覆盖。 */
   test('同 id 已存在：不带 replace 直接拒，带了才往下走', async () => {
     const p = port({ ...good, replacing: true })
     const first = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
