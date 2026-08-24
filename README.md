@@ -305,4 +305,4 @@ bun run scripts/compaction-fidelity.ts    # 压缩保真度：压完之后模型
 
 ## 许可
 
-Apache-2.0，见 [LICENSE](LICENSE)。
+Apache-2.0，见 [LICENSE](LICENSE)。第三方正常依赖的许可证清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
