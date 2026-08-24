@@ -10,6 +10,7 @@
  */
 
 const NEWLINE = String.fromCharCode(10)
+const CARRIAGE_RETURN = String.fromCharCode(13)
 
 /** 大数收成 12.3K / 1.2M：读数条是一行扫过去的东西，六位数字读不出量级。 */
 export function compact(n: number): string {
@@ -188,6 +189,26 @@ export function firstString(args: Record<string, unknown>, ...keys: string[]): s
     if (typeof v === 'string' && v.trim()) return v
   }
   return ''
+}
+
+/**
+ * 把回车符覆盖掉的中间帧丢掉，每行只留最后一帧。
+ *
+ * 带进度显示的命令（curl、npm、pip、cargo）用裸回车符回到行首重画同一行，
+ * 终端里只显示最后一帧。`<pre>` 把它当普通空白，不折叠就会把全部帧一起排出来。
+ *
+ * **必须先剥掉行尾的回车符**：CRLF 行尾的那个不是覆盖标记，
+ * 按覆盖处理会把整行当成残留丢空。
+ */
+export function collapseCarriageReturns(text: string): string {
+  if (!text.includes(CARRIAGE_RETURN)) return text
+  return text
+    .split(NEWLINE)
+    .map((line) => {
+      const body = line.endsWith(CARRIAGE_RETURN) ? line.slice(0, -1) : line
+      return body.slice(body.lastIndexOf(CARRIAGE_RETURN) + 1)
+    })
+    .join(NEWLINE)
 }
 
 export const CLAMP = 20_000

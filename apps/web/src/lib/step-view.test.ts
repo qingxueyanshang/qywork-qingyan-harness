@@ -11,6 +11,7 @@ import {
   argsRows,
   CLAMP,
   clamp,
+  collapseCarriageReturns,
   compact,
   diffFrom,
   displayTarget,
@@ -213,6 +214,15 @@ describe('结果取值', () => {
     const cut = clamp(long)
     expect(cut.startsWith('y'.repeat(100))).toBe(true)
     expect(cut).toContain('还有 25 字')
+  })
+  test('回车覆盖只留每行最后一帧', () => {
+    const cr = String.fromCharCode(13)
+    const nl = String.fromCharCode(10)
+    expect(collapseCarriageReturns('没有回车')).toBe('没有回车')
+    expect(collapseCarriageReturns(`${cr}第一帧${cr}第二帧${cr}末帧`)).toBe('末帧')
+    // CRLF 行尾不是覆盖标记，按覆盖处理会把整行丢空。
+    expect(collapseCarriageReturns(`甲${cr}${nl}乙${cr}${nl}`)).toBe(`甲${nl}乙${nl}`)
+    expect(collapseCarriageReturns(`头${nl}${cr}旧${cr}新${cr}${nl}尾`)).toBe(`头${nl}新${nl}尾`)
   })
 })
 
