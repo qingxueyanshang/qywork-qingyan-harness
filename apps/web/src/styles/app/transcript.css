@@ -927,6 +927,25 @@
   stroke: var(--border-default);
   stroke-width: 1;
 }
+/* 走向一个正在跑的节点的那几段线在流动：这张图上「进程走到哪了」就靠它。
+   位移必须等于一个虚线周期（4 + 4），否则每圈接不上，看着像抖一下。
+   必须 `linear`：缓动会让它走走停停，读起来像卡住了。 */
+.wf-edges path.live {
+  stroke: var(--accent);
+  stroke-dasharray: 4 4;
+  animation: wf-edge 0.7s linear infinite;
+}
+@keyframes wf-edge {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+/* 关掉动效时线停下，仍是那串虚线：它说的是「这一段在跑」，不是装饰。 */
+@media (prefers-reduced-motion: reduce) {
+  .wf-edges path.live {
+    animation: none;
+  }
+}
 /* 同一层的节点并排且居中：它们真的在并行跑，左对齐会让右边空出一大片。 */
 .wf-layer {
   display: flex;

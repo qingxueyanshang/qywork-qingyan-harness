@@ -855,7 +855,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
    * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
    * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
    */
-  const [edges, setEdges] = createSignal<string[]>([])
+  const [edges, setEdges] = createSignal<{ d: string; live: boolean }[]>([])
   let box!: HTMLDivElement
   const refs = new Map<string, HTMLElement>()
 
@@ -864,12 +864,15 @@ function WorkflowCard(props: { item: TranscriptItem }) {
     const b = box.getBoundingClientRect()
     // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
     const at = (v: number) => Math.round(v) + 0.5
-    const out: string[] = []
+    const out: { d: string; live: boolean }[] = []
     for (const n of shape()) {
       const to = refs.get(n.id)
       if (!to) continue
       const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
       if (sources.length === 0) continue
+      // 这一组边流不流动，看它汇进去的那个节点在不在跑。
+      const phase = stateOf(n.id)?.phase
+      const live = phase === 'spawned' || phase === 'working'
       const t = to.getBoundingClientRect()
       const tx = at(t.left + t.width / 2 - b.left)
       const ty = at(t.top - b.top)
@@ -884,12 +887,12 @@ function WorkflowCard(props: { item: TranscriptItem }) {
        * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
        */
       for (const [i, r] of rects.entries()) {
-        out.push(`M${xs[i]} ${at(r.bottom - b.top)}V${bus}`)
+        out.push({ d: `M${xs[i]} ${at(r.bottom - b.top)}V${bus}`, live })
       }
       const left = Math.min(...xs, tx)
       const right = Math.max(...xs, tx)
-      if (right > left) out.push(`M${left} ${bus}H${right}`)
-      out.push(`M${tx} ${bus}V${ty}`)
+      if (right > left) out.push({ d: `M${left} ${bus}H${right}`, live })
+      out.push({ d: `M${tx} ${bus}V${ty}`, live })
     }
     setEdges(out)
   }
@@ -903,6 +906,16 @@ function WorkflowCard(props: { item: TranscriptItem }) {
     queueMicrotask(measure)
   })
 
+  /**
+   * 容器自己也要观察。**节点定宽，所以拖面板时它们的尺寸一个都不变**——只观察节点的话
+   * 观察器根本不回调，而居中的那一行整体挪了位，线停在上一次的坐标上。
+   * 容器宽度是所有节点位置的唯一变量，观察它就补齐了这一类布局变化。
+   */
+  const holdBox = (el: HTMLDivElement) => {
+    box = el
+    ro.observe(el)
+  }
+
   const hold = (id: string) => (el: HTMLElement) => {
     refs.set(id, el)
     ro.observe(el)
@@ -911,9 +924,9 @@ function WorkflowCard(props: { item: TranscriptItem }) {
   return (
     <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
       <div class="wf-goal truncate">{String(props.item.args?.goal ?? '')}</div>
-      <div class="wf-graph" ref={box}>
+      <div class="wf-graph" ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">
-          <For each={edges()}>{(d) => <path d={d} />}</For>
+          <For each={edges()}>{(e) => <path d={e.d} classList={{ live: e.live }} />}</For>
         </svg>
         <For each={layers()}>
           {(layer) => (
