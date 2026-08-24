@@ -880,10 +880,15 @@
   }
 }
 
-/* ── 编排图卡 ──
+/* ── 编排卡 ──
  *
- * 一张按依赖分层的图：同一层并排（它们真的在并行跑），层与层之间一条竖线。
- * **不画箭头**——节点一多，箭头会把图糊成一团线，而「谁等谁」分层已经说清了。
+ * 节点竖着排一列，左边一条线；跑着的那一段在流动，跑完转成静止的实线。
+ * **不画连线图**：连线的坐标只能量出来，画在绝对定位的层上，而容器一变宽
+ * （拖面板、缩窗口）坐标就过期，线和方块错开。这里的线是每一行自己的一段，
+ * 几何由布局负责，宽度怎么变都对得上。
+ *
+ * 并行由「同时有几段在流动」表达，不由并排表达：并排要求同层节点等宽，
+ * 而宽度跟着内容走（耗时多一位数字就差几个像素）。
  *
  * 卡本身不围盒子，形状与折叠体一致：这一列里唯一的实心色块应该留给别的东西。 */
 .wf-card {
@@ -898,63 +903,63 @@
 .wf-card.failed {
   border-color: var(--danger-soft);
 }
-/* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。
-   **只给一行**：它是这张图的名字，不是任务书；长了截断，展开体里有全文。 */
+/* 目标一行，压一档灰：底下每个节点说的是「谁做什么」，这一行说的是「为了什么」。
+   **只给一行**：它是这一次编排的名字，不是任务书；长了截断，展开体里有全文。 */
 .wf-goal {
   margin-bottom: var(--s-3);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
-/* 图本体。层竖着排，层间那段空白是留给连线的——连线是绝对定位的 SVG，
-   不占布局，间距小了折线就贴着方块走。 */
-.wf-graph {
-  position: relative;
+/* 一列节点。**行与行之间不留空**——留空线就断成一截一截；行的呼吸由行内边距给。 */
+.wf-flow {
   display: flex;
   flex-direction: column;
-  gap: 26px;
 }
-/* 连线。`overflow: visible` 是必需的：折线的横段可能落在盒子边界上。 */
-.wf-edges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-}
-.wf-edges path {
-  fill: none;
-  stroke: var(--border-default);
-  stroke-width: 1;
-}
-/* 同一层的节点并排且居中：它们真的在并行跑，左对齐会让右边空出一大片。 */
-.wf-layer {
+/* 一行 = 一个节点：左边一段线 + 节点本身。线拉满行高，上下两行接得上。 */
+.wf-step {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
   gap: var(--s-3);
+  align-items: stretch;
 }
-/* 一个节点：点开它那条子会话。状态只走底色与边框，不加图标——
-   一排小图标读起来像一排开关，而这里每个节点只有「点开」这一个动作。
-   外部 CLI 节点没有子会话，那种 disabled。 */
+.wf-rail {
+  flex: 0 0 2px;
+  background: var(--border-subtle);
+}
+/* 跑着的那一段：一串短线朝下走，一个周期正好走过一明一暗（6 + 6），
+   接口处对得上。**改格长要连着改位移**，否则每圈跳一下。
+   必须 `linear`：缓动会让它走走停停，读起来像卡住了。 */
+.wf-step.spawned .wf-rail,
+.wf-step.working .wf-rail {
+  background: repeating-linear-gradient(180deg, var(--accent) 0 6px, transparent 6px 12px);
+  animation: wf-rail 0.8s linear infinite;
+}
+@keyframes wf-rail {
+  to {
+    background-position: 0 12px;
+  }
+}
+.wf-step.done .wf-rail {
+  background: var(--border-default);
+}
+.wf-step.failed .wf-rail {
+  background: var(--danger);
+}
+/* 等着跑的和被跳过的压暗：它们在这里是为了让人看见全貌，不是当前的焦点。 */
+.wf-step.waiting,
+.wf-step.skipped {
+  opacity: 0.5;
+}
+/* 一个节点：一行字，点开它那条子会话。外部 CLI 还没跑到时点不开。 */
 .wf-node {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  /*
-   * **所有节点等宽，这一条不是审美是几何。**
-   *
-   * 一层是 `justify-content: center`，居中的是整行不是行里那个中间的节点：
-   * 中间节点的中线等于容器中线，只在它左右两边等宽时才成立。宽度跟着内容走的话，
-   * 耗时多一位数字（5.5s → 53.0s）就让那一层的中线偏出去几个像素，
-   * 于是上面下来的竖线和下面进节点的竖线错开一截，看起来像线断了。
-   */
-  width: 160px;
-  max-width: 100%;
-  padding: 6px var(--s-3);
-  border: 1px solid var(--border-subtle);
+  flex: 1;
+  gap: var(--s-2);
+  align-items: baseline;
+  min-width: 0;
+  padding: 5px var(--s-2);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--bg-app);
+  background: none;
   color: var(--text-primary);
   font-family: inherit;
   font-size: var(--fs-sm);
@@ -967,35 +972,26 @@
 .wf-node:disabled {
   cursor: default;
 }
-.wf-node.working,
-.wf-node.spawned {
-  border-color: var(--accent);
-}
-.wf-node.done {
-  background: var(--bg-inset);
-}
-.wf-node.failed {
-  border-color: var(--danger);
+.wf-step.failed .wf-node {
   color: var(--danger);
 }
-/* 等着跑的那些压暗：它们在图上是为了让人看见全貌，不是当前的焦点。 */
-.wf-node.waiting,
-.wf-node.skipped {
-  opacity: 0.5;
-}
-/* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
+/* 节点 id。这一列里区分得开谁是谁的就是它，所以它是主的，且不参与压缩。 */
 .wf-node-name {
-  max-width: 100%;
+  flex: 0 0 auto;
   font-weight: 500;
 }
-/* 次行：执行者 + 耗时。同一张图里常常四个节点都是同一个执行者，压一档。 */
+/* 执行者压一档：常常几个节点都是同一个。挤不下时截的是它。 */
 .wf-node-who {
-  display: flex;
-  gap: var(--s-2);
-  align-items: baseline;
-  max-width: 100%;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
+}
+/* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
+.wf-node-time {
+  margin-left: auto;
+  padding-left: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
 }
 /* 单发那张卡底下的「子会话」。跟着展开体走，不在标题行上——
    标题行是「派了谁、成没成」，这一颗是展开之后才需要的下一步。 */
@@ -1004,8 +1000,10 @@
   margin-top: var(--s-2);
 }
 
-/* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
-.wf-node-time {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
+/* 关掉动效时线停下，仍是那串短线：它说的是「这一段在跑」，不是装饰。 */
+@media (prefers-reduced-motion: reduce) {
+  .wf-step.spawned .wf-rail,
+  .wf-step.working .wf-rail {
+    animation: none;
+  }
 }
