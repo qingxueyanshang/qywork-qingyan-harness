@@ -80,7 +80,20 @@ export interface DelegatePort {
     /** 用户点名了模型时才有；不给就跟当前会话同一个。 */
     model?: string
     signal: AbortSignal
-  }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: string }>
+  }): Promise<{
+    ok: boolean
+    output: string
+    error?: string
+    conversationId?: string
+    /**
+     * 外部 CLI 这一次改了哪些文件——**量出来的一手事实**，不是它自述的那份。
+     * 内置角色没有这个字段（它们的每一次写由写工具逐条上报）；
+     * 工作区不是 git 仓库时同样缺席，**不要回落成空数组**。
+     */
+    changes?: FileChange[]
+    /** 一共改了几个文件。`changes` 只列前几条。 */
+    changedTotal?: number
+  }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
    *

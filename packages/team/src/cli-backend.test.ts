@@ -1,12 +1,18 @@
 /**
- * 覆盖范围：`cli-backend.ts` 的 `extract`——从外部 CLI 的 stdout 里取那段答案。
+ * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案），
+ * 以及 `runCli` 交出去的两样东西——追加给它的回执约定、跑完量到的改动清单。
+ * 后两条用 `node` 当替身跑，不需要本机装着那几家 CLI。
  *
- * 起进程那一半（`runCli`）由真机冒烟覆盖：它要本机真装着那几家 CLI，
- * 而它们各自的调用参数与输出格式恰恰是这张表最容易过期的地方。
+ * 厂商表本身（调什么、参数长什么样）由真机冒烟覆盖：那是最容易过期的地方，
+ * 而替身证明不了它。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { extract } from './cli-backend.ts'
+import { mkdtemp, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { extract, runCli } from './cli-backend.ts'
+import type { CliAgent } from './types.ts'
 
 const jsonl = (lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join('\n')
 
@@ -45,5 +51,71 @@ describe('取答案', () => {
     expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' })).toBe(
       '横幅\n乱七八糟',
     )
+  })
+})
+
+/** 一个只会回显自己收到的那段提示词的「CLI」。 */
+const echo: CliAgent = {
+  id: 'echo',
+  vendor: '替身',
+  command: 'node',
+  args: ['-e', 'process.stdout.write(process.argv[1])', '{prompt}'],
+  output: 'text',
+}
+
+const run = (agent: CliAgent, root: string) =>
+  runCli(agent, {
+    prompt: '把 a.txt 改成小写',
+    workspaceRoot: root,
+    signal: new AbortController().signal,
+  })
+
+async function repo(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'qy-cli-'))
+  const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
+  git('init', '-q', '-b', 'main', '.')
+  git('config', 'user.email', 't@t')
+  git('config', 'user.name', 't')
+  await Bun.write(join(dir, 'a.txt'), 'A\n')
+  git('add', '.')
+  git('commit', '-qm', 'base')
+  return dir
+}
+
+describe('回执约定', () => {
+  test('任务原样在前，约定追加在后', async () => {
+    const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+    expect(got.output.startsWith('把 a.txt 改成小写')).toBe(true)
+    expect(got.output).toContain('### 回执')
+    // 交付物正文在前是硬要求：`extract` 取的是最后一个非空目标字段，
+    // 回执写在前面时，查询型任务的产出会变成一句状态汇报。
+    expect(got.output.indexOf('把 a.txt 改成小写')).toBeLessThan(got.output.indexOf('### 回执'))
+  })
+})
+
+describe('改动清单', () => {
+  test('它改了什么由这一侧量出来，不看它说了什么', async () => {
+    const dir = await repo()
+    const writer: CliAgent = {
+      ...echo,
+      args: [
+        '-e',
+        "require('fs').writeFileSync('a.txt','a\\n');require('fs').writeFileSync('b.txt','x\\ny\\n');process.stdout.write('干完了')",
+        '{prompt}',
+      ],
+    }
+    const got = await run(writer, dir)
+    expect(got.output).toBe('干完了')
+    expect(got.changedTotal).toBe(2)
+    expect(got.changes?.map((c) => c.path).sort()).toEqual(['a.txt', 'b.txt'])
+    expect(got.changes?.find((c) => c.path === 'b.txt')?.changeType).toBe('created')
+    // 真改了：不是靠它自述，文件内容也确实变了。
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('a\n')
+  })
+
+  test('工作区不是 git 仓库时这个键缺席，不是空数组', async () => {
+    const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+    expect('changes' in got).toBe(false)
+    expect('changedTotal' in got).toBe(false)
   })
 })

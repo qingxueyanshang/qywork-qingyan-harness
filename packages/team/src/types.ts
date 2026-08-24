@@ -13,7 +13,7 @@
  * 后端这个概念，而且删掉一个 CLI 会让引用它的角色整条消失。
  */
 
-import type { EffortLevel } from '@qywork/core'
+import type { EffortLevel, FileChange } from '@qywork/core'
 
 /** 目标是外部 CLI 时，`PlanNode.agent` 用这个前缀。角色 id 不带前缀。 */
 export const CLI_PREFIX = 'cli:'
@@ -125,6 +125,15 @@ export interface NodeResult {
   output: string
   error?: string
   durationMs: number
+  /**
+   * 这个节点改了哪些文件——**量出来的一手事实**，不是它自己在产出里说的那份。
+   *
+   * 只有外部 CLI 节点有：内置子 agent 的每一次写都由它自己的写工具逐条上报，
+   * 那条路更准。**工作区不是 git 仓库时这个键缺席**，不是空数组。
+   */
+  changes?: FileChange[]
+  /** 一共改了几个文件。`changes` 只列前几条，这个数说的是全部。 */
+  changedTotal?: number
   /**
    * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
    * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，

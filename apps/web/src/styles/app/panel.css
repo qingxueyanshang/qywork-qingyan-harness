@@ -889,6 +889,29 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+/* 一份「改了哪些文件」的清单（`ChangeList`）。变更页那张表是可展开的行，
+   这里是只读的几行，所以不共用 `.change-row`——只共用增删数那枚小读数。 */
+.change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-sm);
+}
+.change-line {
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+  color: var(--text-secondary);
+}
+.change-line > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+/* 被截掉的那些由它说出来。**只在真截了的时候出现**：条数与总数相等时这一行是废话。 */
+.change-more {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 .change-delta {
   flex: none;
   display: inline-flex;
