@@ -113,10 +113,19 @@ describe('改动清单', () => {
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('a\n')
   })
 
-  /** 「没量到」不能长得跟「没有改动」一样：前者缺席 + 说明原因，后者是 `total: 0`。 */
-  test('量不了的时候清单缺席，且说得出为什么', async () => {
-    const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
-    expect('changes' in got).toBe(false)
-    expect(got.changesUnmeasured).toBe('这个工作区不在 git 仓库里')
+  /** 工作区不是 git 仓库不影响量测：那一侧自带一个临时仓库。 */
+  test('工作区不是 git 仓库也照样量得到', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-cli-'))
+    const writer: CliAgent = {
+      ...echo,
+      args: [
+        '-e',
+        "require('fs').writeFileSync('bare.txt','x\\n');process.stdout.write('好了')",
+        '{prompt}',
+      ],
+    }
+    const got = await run(writer, dir)
+    expect(got.changesUnmeasured).toBeUndefined()
+    expect(got.changes?.files.map((c) => c.path)).toEqual(['bare.txt'])
   })
 })
