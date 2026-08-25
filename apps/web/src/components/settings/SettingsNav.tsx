@@ -23,7 +23,7 @@ import {
  * 账记了多少；「模块」与「用量」那两页只读。下组每一项是一个模块的操作台，
  * 都有真实的表单。
  *
- * 上一版的判据是「这台机器怎么跑 / agent 带着什么」，**分不开**：
+ * 不要按「这台机器怎么跑 / agent 带着什么」分类，**那条线分不开**：
  * 「权限与沙箱」两边都算，而「工具」在上组、同样产出工具的 MCP 与插件在下组。
  * 「手机接入」现在并进「通用」——它是应用怎么被访问，不是 agent 的能力模块。
  */
@@ -40,16 +40,17 @@ const GROUPS: Item[][] = [
     { id: 'general', label: '通用', icon: IconSettings },
     { id: 'models', label: '模型', icon: IconPackage },
     // 用量紧挨模型：先看用哪个，再看它花了多少。
-    {
-      id: 'usage',
-      label: '用量',
-      icon: IconActivity,
-      desc: '含压缩摘要、权限裁决与协作成员的花费，会话删除后记录保留',
-    },
+    { id: 'usage', label: '用量', icon: IconActivity },
     { id: 'modules', label: '模块', icon: IconCanvas },
   ],
   [
-    { id: 'access', label: '权限', icon: IconShield },
+    {
+      id: 'access',
+      label: '权限',
+      icon: IconShield,
+      // 只说目录：凭证剥离与模式无关，两种模式一视同仁（CLAUDE.md E）。
+      desc: '「完全访问」模式不限制目录',
+    },
     { id: 'memory', label: '记忆', icon: IconBrain, desc: '索引随每轮请求发送，正文按需读取' },
     {
       id: 'skills',

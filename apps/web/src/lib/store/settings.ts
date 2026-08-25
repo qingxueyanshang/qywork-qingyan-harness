@@ -2,7 +2,7 @@
  * 设置面：模型配置、工作区、插件、定时任务、team.json。
  *
  * 全是「打开某个面板才会用到」的请求，与主链路无关，所以单独一块——
- * 它们加起来比会话链路还长，混在一起会让读 store 的人以为这些是热路径。
+ * 它们加起来比会话链路还长，混在一起会让读 store 的人把这些当成热路径。
  */
 
 import type { Attachment, EffortLevel, PermissionMode } from '@qywork/core'
@@ -83,6 +83,8 @@ export interface ConfigPayload {
   config: RedactedConfig
   notices: string[]
   problems: string[]
+  /** `envAllowList` 留空时真正生效的那一份，由服务端下发（真源在 `tools/shell.ts`）。 */
+  defaultEnvAllowList: string[]
 }
 
 export function loadServerConfig(): Promise<ConfigPayload> {
@@ -110,7 +112,7 @@ export function explainApiError(e: unknown, fallback: string): string {
       if (body.problems?.length) return body.problems.join('；')
       if (body.message) return body.message
       // 服务端多数错误只带 `error` 一个键（`api/types.ts` 的 `json`）。不认它的话
-      // 界面上显示的是「422 /api/xxx: {"error":"标题不能为空"}」这种原样回显。
+      // 界面上显示的是「422 /api/xxx: {"error":「标题不能为空」}」这种原样回显。
       if (body.error) return body.error
     } catch {
       // 响应体被 client.api 截断到 200 字时会解析失败，走回落。
@@ -223,7 +225,7 @@ export interface ModelCatalog {
   /** 可选的：配置里真有的接口 × 模型。 */
   providers: ProviderModels[]
   active: { provider: string; model: string }
-  /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，参数才照着 id 从这里查。 */
+  /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，就按它从这里查参数。 */
   library: LibraryVendor[]
 }
 
@@ -239,11 +241,11 @@ export async function loadModels(): Promise<ModelCatalog> {
  * `@qywork/ai` 里，界面够不着，所以只能来自服务端。
  *
  * **失效点挂在唯一那条写入路径上**（`saveServerConfig`），不由各个消费者自己刷。
- * 组件各持一份永不失效的缓存，代价实测付过：设置页校准完思考写回了配置，
+ * 组件各持一份永不失效的缓存，实测后果：设置页校准完思考写回了配置，
  * 输入区那份目录还是开屏时拉的，档位要整页重载才出现。
  */
 const [modelCatalog, setModelCatalog] = createSignal<ModelCatalog | null>(null)
-/** 取不回来的原因。留一个空列表会让用户以为「没有别的模型可选」。 */
+/** 取不回来的原因。留一个空列表，界面上等同于「没有别的模型可选」。 */
 const [modelCatalogError, setModelCatalogError] = createSignal<string | null>(null)
 const [modelCatalogLoading, setModelCatalogLoading] = createSignal(false)
 let catalogSeq = 0
@@ -290,7 +292,7 @@ export interface ProbeStep {
   name: string
   ok: boolean
   detail: string
-  /** true = 这一步没有真的验证任何东西（本协议下客户端不发这个字段）。 */
+  /** true = 这一步没有真的验证任何能力（本协议下客户端不发这个字段）。 */
   skipped?: boolean
 }
 export interface ProbeOutcome {
@@ -349,8 +351,8 @@ export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }>
  * 把一个项目从列表里移除。
  *
  * **这是隐藏，不是删除。** 服务端只打 `removed_at` 标记：文件、会话、消息、run
- * 一条不动，重新添加同一个路径就整个回来。目录本身当然也不动——账本管的是
- * 「我开过哪些项目」，不是那些文件。
+ * 一条不动，重新添加同一个路径就整个回来。目录本身也不动——账本管的是
+ * 「打开过哪些项目」，不是那些文件。
  *
  * **当前项目也能移除**，只要还剩别的可切；服务端会在 `next` 里回「接下来切哪个」。
  * 只有最后一个才移不掉（回 409）——移完没有任何项目可服务，那不是一个有终态的状态。
@@ -421,7 +423,7 @@ export function addWorkspace(input: {
  *
  * 没有 registry，所以没有「从市场安装」；也刻意不做 `git clone <任意 URL>`——
  * 那等于「从网上取一段代码，下次加载就跑它」。用户先自己 clone、看过内容，
- * 再把目录指给这里，中间那一步「你看到了自己装的是什么」值这条命令的成本。
+ * 再把目录指给这里，中间那一步「装的是什么，用户看得到」值这条命令的成本。
  */
 /** 插件只有全局一个目录，所以装 / 卸都不带层。 */
 export function installPlugin(path: string): Promise<{ ok: boolean; id: string }> {
@@ -760,7 +762,7 @@ export async function attachmentBlobUrl(path: string): Promise<string | null> {
  * 最小化 / 最大化 / 关闭。
  *
  * 系统装饰关掉之后这三个动作没有别的入口了。**只有桌面端有窗口**——
- * `isDesktopShell()` 为假时界面根本不渲染这组按钮，而不是渲染出来点了报错。
+ * `isDesktopShell()` 为假时界面不渲染这组按钮，而不是渲染出来点了报错。
  */
 export function windowMinimize(): Promise<void> {
   return tauriInvoke<void>('window_minimize')

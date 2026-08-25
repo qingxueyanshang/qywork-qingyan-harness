@@ -1,7 +1,7 @@
 /**
  * 配置读写。
  *
- * 在此之前改配置只有两条路：手编 JSON，或跑 `qy init` 覆盖重来。
+ * 没有这条接口时，改配置只有两条路：手编 JSON，或跑 `qy init` 覆盖重来。
  *
  * **明文 key 永远不出这个进程**：GET 只回 `hasApiKey` 布尔，PUT 时若某档案
  * 没带 apiKey 但标了 hasApiKey，就沿用库里那一份。否则「打开设置页看一眼再保存」
@@ -17,6 +17,7 @@ import {
   type StoredProvider,
   saveConfig,
 } from '@qywork/runtime'
+import { DEFAULT_ENV_ALLOW } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /** 接口的对外形状：`apiKey` 换成一个布尔。 */
@@ -42,16 +43,16 @@ export function redactConfig(cfg: QyConfig): RedactedConfig {
  *
  * 关键的一条：**接口带 `hasApiKey: true` 但没带 `apiKey` 时，沿用旧的那份**。
  * 不这样做的话，「打开设置页，改个 baseUrl，保存」会把 key 清成 undefined——
- * 而这件事在保存的那一刻完全没有反馈，要等到下一次调用模型才炸，
- * 那时候人已经不会把它和「我刚才改了 baseUrl」联系起来了。
+ * 而这件事在保存的那一刻完全没有反馈，要等到下一次调用模型才失败，
+ * 那时已经很难把它和刚才改过的 baseUrl 联系起来。
  *
  * 显式传空串是「清掉」，与「没带」区分开：前者是意图，后者是脱敏的副作用。
  *
- * `apiKey` **必须从 `rest` 里解构出去**。原先它留在 `rest` 里，末尾那个
- * `...(apiKey ? { apiKey } : {})` 守卫就永远不起作用——想清掉 key 时传空串，
+ * `apiKey` **必须从 `rest` 里解构出去**。留在 `rest` 里的话，末尾那个
+ * `...(apiKey ? { apiKey } : {})` 守卫永远不起作用——想清掉 key 时传空串，
  * 空串照样跟着 `rest` 落进 config.json。功能上没坏（下游把空串当没配），
  * 但那行守卫写了等于没写，而一个不起作用的守卫比没有守卫更容易骗人。
- * 拆出来之后补的单测顶出的。
+ * `config.test.ts` 钉着这一条。
  */
 export function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConfig {
   const providers: Record<string, StoredProvider> = {}
@@ -75,13 +76,13 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
      * **每次都从盘读，不回进程启动时那份。**
      *
      * 保存走的是「读回整份 → 改一格 → 整份写回」，所以这里回什么，下一次 PUT
-     * 就把什么写进文件。回启动时那份的话，进程活着期间由别人写进文件的改动
+     * 就把什么写进文件。回启动时那份的话，进程运行期间由别处写进文件的改动
      * （`qy probe` 落校准结果、手编 JSON、另一个 qywork 实例）会在用户下一次
      * 改任何一格设置时被整份盖掉，全程没有提示。
      *
      * 就地改而不是换引用：`d.config` 被 run、权限、模型解析各处按引用持有。
      * 进程内没有「只在内存里、盘上没有」的配置状态——除了这个文件的 PUT 分支，
-     * 全仓没有第二处写 `d.config`，所以整份换掉不会丢东西。
+     * 全仓没有第二处写 `d.config`，所以整份换掉不会丢字段。
      */
     Object.assign(d.config, await loadConfig())
     return json({
@@ -89,6 +90,9 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
       config: redactConfig(d.config),
       notices: configNotices(d.config),
       problems: diagnoseConfig(d.config),
+      // `envAllowList` 留空时真正生效的那一份。设置页拿它当占位符显示——
+      // 不下发的话界面只能写一句「留空用默认名单」，而那份名单里有什么无从得知。
+      defaultEnvAllowList: DEFAULT_ENV_ALLOW,
     })
   }
 
