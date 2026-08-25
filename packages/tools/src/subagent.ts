@@ -107,7 +107,7 @@ export const subagentTool: ToolSpec = {
     if (!res.ok) {
       return {
         status: 'failure' as const,
-        message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
+        message: `${who} 没做成：${res.error ?? '没有说明原因'}${scale(res)}`,
         ...(res.output || Object.keys(receipt).length
           ? { data: { output: res.output, ...receipt } }
           : {}),
@@ -115,7 +115,9 @@ export const subagentTool: ToolSpec = {
     }
     return {
       status: 'success' as const,
-      message: `${who} 做完了`,
+      // 量级写进 message：它进信封的 `summary`，是模型不展开 data 就能读到的第一行。
+      // 「说做完了却一个文件没动」这种矛盾，靠它一眼就能撞见。
+      message: `${who} 做完了${scale(res)}`,
       // 子会话 id 随结果落库：进度事件不落库，刷新之后能点开它的只有这里。
       data: {
         output: res.output,
@@ -124,4 +126,24 @@ export const subagentTool: ToolSpec = {
       },
     }
   },
+}
+
+/**
+ * 「改了多少」压成一句话，跟在 message 后面。
+ *
+ * **清单被截断时不给行数**：只列了前几条，合计必然不全，给出去就是一个会撒谎的数。
+ * 内置角色没有这一格（它们的每一次写由自己的写工具逐条上报），回空串。
+ */
+function scale(res: {
+  changes?: { files: { additions: number; deletions: number }[]; total: number }
+  changesUnmeasured?: string
+}): string {
+  if (res.changesUnmeasured) return '，改了什么没量到'
+  const c = res.changes
+  if (!c) return ''
+  if (c.total === 0) return '，没有改动'
+  if (c.files.length < c.total) return `，改 ${c.total} 个文件`
+  const add = c.files.reduce((n, f) => n + f.additions, 0)
+  const del = c.files.reduce((n, f) => n + f.deletions, 0)
+  return `，改 ${c.total} 个文件 +${add} −${del}`
 }

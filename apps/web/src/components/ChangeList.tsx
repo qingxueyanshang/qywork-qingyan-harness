@@ -48,7 +48,7 @@ export function ChangeList(props: {
       </Show>
       {/* 能力边界，不是解释：这一次没有一手清单，界面上没有第二处说得出这件事。 */}
       <Show when={props.unmeasured}>
-        <div class="change-note">{props.unmeasured}，改了什么只有它自己说的那份</div>
+        <div class="change-note">{props.unmeasured}</div>
       </Show>
     </div>
   )
