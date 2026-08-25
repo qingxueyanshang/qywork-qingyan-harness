@@ -17,15 +17,15 @@ import { LoadState } from './settings/LoadState.tsx'
  * ## 界面上必须写死一句话
  *
  * 「仅在应用运行时触发」。这不是提示，是这个功能的**前提**：sidecar 的生命周期
- * 挂在窗口上，关掉应用就不会触发，错过的也不补。一个用户以为在后台跑、
- * 实际不跑的定时任务，比没有这个功能坏得多（ROADMAP §34.2）。
+ * 挂在窗口上，关掉应用就不会触发，错过的也不补。一条界面上显示已排期、
+ * 实际不会触发的定时任务，比没有这个功能坏得多（ROADMAP §34.2）。
  *
  * 这句话由服务端下发（`runtimeOnly`），不在前端各写一遍——措辞漂移会让
  * 手机端和桌面端对同一件事给出两种说法。
  *
  * ## 「立刻跑一次」是这里最重要的按钮
  *
- * 定时触发要等到点，而「我配好了到底会不会跑」是用户第一个想知道的。
+ * 定时触发要等到点，而「配好了会不会跑」是用户第一个想知道的。
  * 没有这个按钮的话，验证一条每天 9 点的任务得等到明天早上。
  */
 /** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
@@ -61,8 +61,14 @@ export function SchedulesPanel() {
       >
         {(d) => (
           <>
-            {/* 前提写在最前面，不折叠、不淡化。 */}
-            <div class="schedule-caveat">{d().runtimeOnly}</div>
+            {/* 前提写在最前面，不折叠、不淡化。「新增」并排在这一格右侧：
+                这一页只有它一个动作，单独占一行等于把一颗按钮吊在空白里。 */}
+            <div class="schedule-caveat">
+              <span>{d().runtimeOnly}</span>
+              <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SCHEDULE)}>
+                新增
+              </button>
+            </div>
 
             <Show when={error()}>{(e) => <div class="settings-notices bad">{e()}</div>}</Show>
 
@@ -120,10 +126,6 @@ export function SchedulesPanel() {
                 </div>
               )}
             </For>
-
-            <button class="btn-ghost" type="button" onClick={() => askInChat(NEW_SCHEDULE)}>
-              新增
-            </button>
           </>
         )}
       </Show>

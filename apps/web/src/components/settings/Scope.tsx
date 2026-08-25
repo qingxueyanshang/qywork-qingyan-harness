@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js'
+import { For, type JSX, Show } from 'solid-js'
 import { type Scope, type ScopeDir, WRITABLE_SCOPES } from '../../lib/store/index.ts'
 import { PathLine } from './Page.tsx'
 
@@ -7,8 +7,8 @@ import { PathLine } from './Page.tsx'
  *
  * ## 为什么按层分列，而不是列合并后的那一份
  *
- * 用户要能回答「这条记忆是跟着这个仓库走的，还是我到处都带着的」。合并去重之后
- * 那个事实就没了——被项目层盖住的全局条目直接消失，「我在全局改了怎么没生效」
+ * 用户要能回答「这条记忆是跟着这个仓库走的，还是全局都生效的」。合并去重之后
+ * 那个事实就没了——被项目层盖住的全局条目直接消失，「在全局改了却没生效」
  * 无从查起。分列之后它重新出现在全局那一栏里，所以**必须同时贴 `ShadowTag`**，
  * 否则界面等于宣称一条不生效的内容在生效。
  *
@@ -19,13 +19,17 @@ import { PathLine } from './Page.tsx'
  * ## 这里只管「看哪一层 / 加到哪一层」
  *
  * 不要往这一条里塞逐条启停：层是这条内容住在哪个目录，启停是某一轮用不用它，
- * 两件事的生效范围不同，合到一个控件上，用户会以为取消勾选等于从盘上删掉。
+ * 两件事的生效范围不同，合到一个控件上，取消勾选读起来就是从盘上删掉。
  */
 export function ScopeTabs(props: {
   value: Scope
   onChange: (s: Scope) => void
   /** 每一层的落盘位置。有没有内容都列——「该去哪儿加」比「这里是空的」有用。 */
   dirs?: ScopeDir[]
+  /** 这一页的动作（新增 / 导入），排在路径右边。
+   *  放这一行而不是各自的区头：这三页的区头除了动作只剩一个与页名重复的标题，
+   *  留着就是同一件事印两遍（B7）。 */
+  actions?: JSX.Element
 }) {
   const current = () => props.dirs?.find((d) => d.scope === props.value)
   return (
@@ -44,7 +48,11 @@ export function ScopeTabs(props: {
           )}
         </For>
       </div>
-      <Show when={current()}>{(d) => <PathLine path={d().dir} />}</Show>
+      {/* 路径与动作是右边一组：地方不够时先截路径，动作永远看得见。 */}
+      <div class="scope-tail">
+        <Show when={current()}>{(d) => <PathLine path={d().dir} />}</Show>
+        <Show when={props.actions}>{props.actions}</Show>
+      </div>
     </div>
   )
 }
