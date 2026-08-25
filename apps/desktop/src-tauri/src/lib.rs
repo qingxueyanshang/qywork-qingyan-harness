@@ -117,7 +117,11 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         .decorations(false)
         .shadow(false)
         .inner_size(1280.0, 820.0)
-        .min_inner_size(720.0, 480.0)
+        // 最窄宽度 = 左栏 232（`--sidebar-w`）+ 会话区 510（`--chat-min`）
+        // + 右侧面板 337（`PANEL_MIN`），即三列同时拿到各自下限所需的宽度。
+        // 窗口再窄不会排坏（会话区会先让到 `--chat-hard-min`，见 shell.css 的
+        // `--chat-floor`），但 `--chat-min` 就不再成立。那三个数改了，这里跟着改。
+        .min_inner_size(1079.0, 480.0)
         .center()
         .initialization_script(script)
         .build()?;

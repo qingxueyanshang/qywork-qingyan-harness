@@ -46,11 +46,26 @@
  * 顶栏（横跨到最后一列）连着右上角那排按钮一起伸出窗口外。
  * 值从 localStorage 来，窗口尺寸却是当下的，所以「存的时候放得下」根本不作数。
  *
- * 写成 minmax 之后，面板最多只能拿走「窗口 − 左栏 − `--chat-min`」，
+ * 写成 minmax 之后，面板最多只能拿走「窗口 − 左栏 − 会话区下限」，
  * 布局的正确性不再取决于谁记得在 JS 里夹一下。
  */
 .app.with-panel {
-  grid-template-columns: var(--sidebar-w) minmax(var(--chat-min), 1fr) minmax(0, var(--panel-w));
+  /* 会话区那一格的下限**跟着窗口走**，不是一个定值。
+   *
+   * 够宽时它就是 `--chat-min`；窗口塞不下三段时一路让到 `--chat-hard-min`，
+   * 让出来的宽度归面板。写成定值的代价是窄窗口下只有面板那一列在扣——
+   * 它是 `minmax(0, ...)`，扣到几十像素也不报错，标签页直接排不下。
+   *
+   * `clamp` 三个参数依次是：地板、按当前窗口算出的余量、天花板。
+   * `100%` 在轨道尺寸里就是网格容器（`.app`）的宽度。 */
+  --chat-floor: clamp(
+    var(--chat-hard-min),
+    100% -
+    var(--sidebar-w) -
+    var(--panel-min-w),
+    var(--chat-min)
+  );
+  grid-template-columns: var(--sidebar-w) minmax(var(--chat-floor), 1fr) minmax(0, var(--panel-w));
 }
 
 /* ── 连接状态条 ── */
@@ -734,7 +749,7 @@
     grid-template-columns: 0 minmax(0, 1fr);
   }
   .app.sidebar-collapsed.with-panel {
-    grid-template-columns: 0 minmax(var(--chat-min), 1fr) minmax(0, var(--panel-w));
+    grid-template-columns: 0 minmax(var(--chat-floor), 1fr) minmax(0, var(--panel-w));
   }
   .app.sidebar-collapsed .sidebar-slot {
     display: none;
