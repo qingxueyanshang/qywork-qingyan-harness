@@ -2,7 +2,7 @@
  * 斜杠判定的口径。覆盖 `lib/slash.ts`。
  *
  * 命令表在 `commands.ts`，那个文件 import 图标（.tsx），测试加载它会去找
- * JSX runtime 然后炸掉。判定逻辑不该拖着一堆 SVG 才能被验证，所以拆了出来。
+ * JSX runtime 并失败。判定逻辑不该拖着整批 SVG 才能被验证，所以拆了出来。
  */
 import { describe, expect, test } from 'bun:test'
 import { slashCall, slashQuery } from './slash.ts'

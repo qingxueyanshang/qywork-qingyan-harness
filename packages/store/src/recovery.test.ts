@@ -126,10 +126,9 @@ describe('崩溃恢复', () => {
     const after = getRun(store, run.id)!
     expect(after.status).toBe('interrupted')
     /*
-     * **不是 `user_interrupt`。** 用户没点过任何东西，是服务进程没了。
+     * **不是 `user_interrupt`。** 用户没点过停止，是服务进程退出了。
      * 两件事共用一个停止原因的话，事后分不出来，而界面上只会说「已中断」——
-     * 用户看到的是一个自己没做过的动作。`recoverStaleRuns` 顶上的注释
-     * 一直这么要求，代码之前没照做。
+     * 用户看到的是一个自己没做过的动作。判据写在 `recoverStaleRuns` 顶上。
      */
     expect(after.stopReason).toBe('process_exit')
     store.close()
@@ -262,7 +261,7 @@ describe('崩溃恢复', () => {
  * **只回收没人在跑的那些。**
  *
  * 账本是共享的：两个工作区的 sidecar、开发态热重载、终端里的 `qy exec` 都写它。
- * 无差别回收会把另一个进程正在跑的一轮判死，实测撞到过：那条 run 已经跑了
+ * 无差别回收会把另一个进程正在跑的一轮判死。实测形状：那条 run 已经跑了
  * 40 步，第 27 次请求发出后 257 毫秒被写成 interrupted，写入者是刚起来的进程。
  *
  * 四条判据两两互补，所以四条都要测：pid 会被复用（只看 pid 会漏），
@@ -281,9 +280,9 @@ describe('run 归属', () => {
     return { ...f, run }
   }
 
-  test('归属进程活着、心跳在推 → 放过，这是别人正在跑的那一轮', () => {
+  test('归属进程存活、心跳在推 → 跳过，这是别的进程正在跑的那一轮', () => {
     const { store, run } = running()
-    // 父进程一定活着，而且不是自己——正是「另一个还在跑的进程」的形状。
+    // 父进程一定存活，且不是本进程——正是「另一个仍在跑的进程」的形状。
     setOwner(store, run.id, process.ppid, Date.now())
 
     const r = recoverStaleRuns(store)
@@ -293,7 +292,7 @@ describe('run 归属', () => {
     store.close()
   })
 
-  test('归属进程活着但心跳早停了 → 回收（pid 被复用的兜底）', () => {
+  test('归属进程存活但心跳已停 → 回收（pid 被复用的兜底）', () => {
     const { store, run } = running()
     setOwner(store, run.id, process.ppid, Date.now() - 10 * 60_000)
 
@@ -304,7 +303,7 @@ describe('run 归属', () => {
 
   test('归属进程已经没了 → 回收，哪怕心跳是刚推的', async () => {
     const { store, run } = running()
-    // 真起一个进程再等它退出：拿一个确定死掉的 pid，不靠猜一个大数字。
+    // 真起一个进程再等它退出：拿一个确定已退出的 pid，不靠猜一个大数字。
     const dead = Bun.spawn([process.execPath, '-e', ''], { stdout: 'ignore', stderr: 'ignore' })
     await dead.exited
     setOwner(store, run.id, dead.pid, Date.now())
@@ -317,11 +316,11 @@ describe('run 归属', () => {
   /**
    * **这条是「不要引入新 bug」的那一条。**
    *
-   * 崩溃后立刻重启，Windows 把同一个 pid 发给了新进程。此时 pid 活着（就是我）、
-   * 心跳才过去两秒——只按这两条判都会认定「还有人在跑」，那条 run 于是永远没人
-   * 回收，会话被 isBusy 永久锁死。所以「归属是我自己」必须单独成一条，且在心跳之前。
+   * 崩溃后立刻重启，Windows 把同一个 pid 发给了新进程。此时 pid 存活（就是本进程）、
+   * 心跳才过去两秒——只按这两条判都会认定仍有进程在跑，那条 run 因此永远没人
+   * 回收，会话被 isBusy 永久锁死。所以「归属是本进程」必须单独成一条，且在心跳之前。
    */
-  test('归属是本进程的 pid → 回收：我刚启动，不可能拥有任何 run', () => {
+  test('归属是本进程的 pid → 回收：本进程刚启动，不可能拥有任何 run', () => {
     const { store, run } = running()
     setOwner(store, run.id, process.pid, Date.now())
 
@@ -372,7 +371,7 @@ describe('终态 run 底下的孤儿 step', () => {
   /**
    * **这条是回归测试，挡的是一个真实写错过的形状。**
    *
-   * 孤儿扫描原本写在「有 stale run」的早退之后，于是最常见的情形——
+   * 孤儿扫描原本写在「有 stale run」的早退之后，因此最常见的情形——
    * run 全是终态、底下留着 running step——那趟扫描一次都不会跑。
    * 而这正是它要治的场景：`tool.started` 的 yield 处被生成器 `.return()`
    * 掐断，step 已经 running 但没人收尾，随后 run 被标成 interrupted 终态。

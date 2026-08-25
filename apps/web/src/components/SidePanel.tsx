@@ -60,7 +60,7 @@ import {
 import { TodoPanel } from './TodoPanel.tsx'
 
 // 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本开不出这一页，
-// 静态引入等于让它们白背一份永远不执行的代码。
+// 静态引入会让它们多下载一份永远不执行的代码。
 const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
 
 // 同样懒加载：不开浏览器页的人不必为它付首屏成本。
@@ -75,7 +75,7 @@ const CliPanel = lazy(() => import('./CliPanel.tsx'))
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
 
-// 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该付这份代码的钱。
+// 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该为它付首屏成本。
 const RunDetails = lazy(() => import('./RunDetails.tsx'))
 
 interface FileNode {
@@ -93,7 +93,7 @@ interface FileNode {
  * 写成一份清单而不是几段 JSX：标签页的外观改一次要改每一处，改漏一处的表现是
  * 「有一格长得不一样」，而 CSS 不会为此报错。
  *
- * **它们回答「这一轮在干什么」**：待办、文件、改动、账。配置类的东西（角色编排、
+ * **它们回答「这一轮在干什么」**：待办、文件、改动、账。配置类的页（角色编排、
  * 逐条能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
  *
  * 终端和浏览器不在这里：那两种是**可多开、可关掉**的页，由 `+` 新开、页签上带 ×，
@@ -113,7 +113,7 @@ const DESKTOP = isDesktopShell()
 
 /**
  * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那几格不在这里
- * ——它们一直在页签条上，列进来点了也不新开任何东西。
+ * ——它们一直在页签条上，列进来点了也不会新开一页。
  *
  * **没有 `open` 的那几行是后端还没接上的**，看板上置灰、点不动、行尾标「未接入」。
  * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
@@ -160,7 +160,7 @@ const BOARD_ROWS = PREVIEW_SOURCES.filter((s) => DESKTOP || !s.desktopOnly)
 export default function SidePanel() {
   /**
    * 看板是否盖在正文上。**局部信号，不进 `sidePanel`**：它不是第四个视图，
-   * 收起面板再展开该回到用户上次看的那个视图，而不是回到「你想开点什么」。
+   * 收起面板再展开该回到用户上次看的那个视图，而不是回到新开预览看板。
    */
   const [board, setBoard] = createSignal(false)
 
@@ -178,7 +178,7 @@ export default function SidePanel() {
          * 上面，`pointermove` 就断给了那一层，拖动会在半路停住。
          *
          * 用 `<button>` 而不是 `role="separator"` 的 div：焦点、键盘语义、
-         * 屏幕阅读器播报全是白拿的，而那个 role 还要求自己补 `tabindex` 与
+         * 屏幕阅读器播报都由元素自带，而那个 role 还要求自己补 `tabindex` 与
          * `aria-valuenow`，补齐了 lint 也照样要抑制两条规则。
          * 左右方向键一档 24px——拿得到焦点就得能用键盘改。
          * 窄屏不显示（那里的面板盖满全屏，见 utility.css）。
@@ -228,7 +228,7 @@ export default function SidePanel() {
              * 可多开的那些页接在固定的那几格后面，各自带一颗 ×。
              *
              * 外面套一个 div 而不是把 × 塞进页签那颗按钮里：**button 套 button 是
-             * 非法 HTML**，浏览器会把内层那颗提到外面去，于是点页签名字变成点关闭。
+             * 非法 HTML**，浏览器会把内层那颗提到外面去，因此点页签名字变成点关闭。
              * 外层只是个盒子（`role="presentation"`），`role="tab"` 落在名字那颗上。
              */}
             <For each={panelTabs()}>
@@ -304,9 +304,9 @@ export default function SidePanel() {
           {/*
            * **换项目就把这一整块重挂一遍**（`keyed` 的 Show 按项目 id）。
            *
-           * 面板里到处是「按路径记的东西」：树展开了哪些目录、子层缓存、选中的那一行、
-           * 正在看哪个 diff。它们都是局部状态，换项目后每一条都指着上一个项目——
-           * 表现是树是新的、旁边那半还是旧的，点谁都没反应。
+           * 面板里到处是「按路径记的状态」：树展开了哪些目录、子层缓存、选中的那一行、
+           * 正在看哪个 diff。它们都是局部状态，换项目后每一条都指着上一个项目：
+           * 树是新的、旁边那半还是旧的，点击不产生任何响应。
            *
            * 逐个清一遍是行不通的：那是一份「所有局部状态」的清单，加一个 signal 就漏一条。
            * 重挂是唯一不会漏的做法。`openFile` 与可多开的那些页不在这里——它们在 store
@@ -319,7 +319,7 @@ export default function SidePanel() {
              *
              * 卸载的代价是真的：终端页卸载会把 xterm 实例摘出面板（见那边的模块级
              * `panes`），浏览器页的 iframe 一从 DOM 里出去就要重新加载。而看板只是
-             * 「想开点什么」的一张清单，不该顺手把已经开着的东西动一遍。
+             * 「想开点什么」的一张清单，不该连带重建已经开着的页。
              */}
             <div class="side-stack" classList={{ hidden: board() }}>
               <Switch>
@@ -387,8 +387,8 @@ export default function SidePanel() {
  *
  * 没有后端的那几行照样画出来，但 `disabled` 且标「未接入」——这是用户点名要的
  * 路线图式清单。注意它是本仓 B5「不做空壳」的一个例外，例外的边界就是
- * **必须点不动、必须标出来**：一个看起来能点、点下去没反应的行才是那条规则真正
- * 要挡的东西。
+ * **必须点不动、必须标出来**：那条规则要挡的正是「看起来能点、点下去没反应」
+ * 的行。
  */
 function PreviewBoard(props: { onPick: () => void }) {
   return (
@@ -401,8 +401,8 @@ function PreviewBoard(props: { onPick: () => void }) {
             disabled={!s.open}
             onClick={() => {
               // **先收看板，再开那一页。** 反过来的话新那一页会在 `display: none`
-              // 的容器里挂载，而 xterm 一挂上就去量字符宽高——量到 0 就得等下一次
-              // 尺寸变化才缓过来。
+              // 的容器里挂载，而 xterm 一挂上就去量字符宽高——量到 0 要等下一次
+              // 尺寸变化才会重新量。
               props.onPick()
               s.open?.()
             }}
@@ -424,7 +424,7 @@ function PreviewBoard(props: { onPick: () => void }) {
 /**
  * 树的共享操作。**展开态、子层缓存、正在编辑的那一行都不在节点里**——
  * 「全部折叠」「刷新」要一次管到所有节点，而新建那一行要能出现在任意目录下面；
- * 散在每个 `TreeNode` 的局部信号里，这几件事谁都指挥不动。
+ * 散在每个 `TreeNode` 的局部信号里的话，这几件事没有一处操作得了全部节点。
  */
 interface TreeCtx {
   expanded(): ReadonlySet<string>
@@ -451,7 +451,7 @@ const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
  * 工作区根**也是一个可选中的节点**，路径是空串。
  *
  * 不给它一个节点的话，「选中根、然后新建」就得靠「什么都没选」来表达，而那和
- * 「刚打开面板、还没点过任何东西」是同一个状态——用户点了一下根，界面上什么都
+ * 「刚打开面板、还没点过任何一行」是同一个状态——用户点了一下根，界面上什么都
  * 不该发生就说不通了。名字由 `workspace()` 给，这里只当占位。
  */
 const ROOT_NODE: FileNode = { name: '', path: '', kind: 'dir', size: 0, mtime: 0 }
@@ -514,8 +514,8 @@ function FileBrowser() {
     /*
      * 高亮哪一行**只由 `selected` 说了算**。
      *
-     * 别把「主区开着哪个文件」（`openFile`）也算进来：那是两个权威抢一个高亮，
-     * 表现是点文件夹不亮（开着的文件把高亮占着），而点文件看着像「选中没留住」。
+     * 别把「主区开着哪个文件」（`openFile`）也算进来：那是两个权威争同一处高亮，
+     * 结果是点文件夹不亮（高亮留在打开的文件上），而点文件看着像「选中没留住」。
      * 现在的口径和资源管理器一致：**最后点的那一行是选中的行**，一直亮着，
      * 直到点别的行。
      */
@@ -610,7 +610,7 @@ function FileBrowser() {
     /*
      * **树在左、文件内容在右**，同一块面板里。
      *
-     * 树不占满整块：它是索引，宽度固定；内容才是要看的东西，占剩下的全部。
+     * 树不占满整块：它是索引，宽度固定；正文才是要读的部分，占剩下的全部。
      * 整块面板的宽度由用户拖左边沿改（`.panel-grip`）——两块并排必然要求这个，
      * 不给拖的话内容那半永远只有一百多像素。
      */
@@ -625,13 +625,8 @@ function FileBrowser() {
           onInput={(e) => setQuery(e.currentTarget.value)}
         />
 
-        {/*
-         * 根目录行。**四颗按钮长在这一行上，不另起一条工具条**——工具条那种细带子
-         * 会在搜索框和树之间多插一层横条，而这四颗做的事全都发生在这个根之下。
-         *
-         * 选中态与 hover 画在**整行**上，不是画在名字那颗按钮上：按钮只占到四颗
-         * 图标之前，高亮跟着它就只框住半行，看起来像只选中了标题。
-         */}
+        {/* 根目录行：四颗按钮长在这一行上，选中态与 hover 画在整行上。
+            两条的理由都在 `panel.css` 的 `.tree-root` 上。 */}
         <div class="tree-root" classList={{ selected: ctx.selected() === '' }}>
           <button
             class="tree-item tree-root-name"
@@ -766,7 +761,7 @@ function FileBrowser() {
  * 位置钉在指针上（`position: fixed`），并往回收一点，免得贴着窗口右下沿被裁掉。
  *
  * 只列**真的能用**的项。Qoder 那份菜单里的剪切 / 复制 / 粘贴不进来：文件级剪贴板
- * 需要一套「待粘贴的东西」的状态，没有它的话那三项点了什么也不会发生（B5）。
+ * 需要一套「待粘贴条目」的状态，没有它的话那三项点了什么也不会发生（B5）。
  * 「在文件资源管理器中显示」只有桌面外壳有，别的端整项不渲染。
  */
 function TreeMenu(props: {
@@ -782,7 +777,7 @@ function TreeMenu(props: {
      * 点在菜单**外面**才关。
      *
      * 不能无条件关：`pointerdown` 排在 `click` 前面，菜单项自己的 click 还没跑，
-     * 这一层就把它从 DOM 里摘了——于是每一项都点不动。
+     * 这一层就把它从 DOM 里摘了——因此每一项都点不动。
      */
     const onDown = (e: Event) => {
       if (!(e.target as HTMLElement | null)?.closest?.('.tree-menu')) props.onClose()
@@ -885,7 +880,7 @@ function TreeMenu(props: {
  * 按名字搜出来的命中，扁平一列，替代树显示。
  *
  * **搜索跳依赖树与构建产物**（服务端 `findByName`），而树不跳。这条边界必须
- * 说出来，否则用户搜不到 `node_modules` 里的东西会以为文件不存在。
+ * 说出来，否则搜不到 `node_modules` 里的文件读起来就是它不存在。
  */
 function SearchHits(props: { ctx: TreeCtx; query: string }) {
   const [debounced, setDebounced] = createSignal(props.query)
@@ -987,7 +982,7 @@ function NameRow(props: {
    *
    * `autofocus` 只在文档解析那一刻管用；这一行是点了按钮之后动态插进来的，属性
    * 挂上了也没人给它焦点。后果不止「不能直接打字」——**下面那条失焦即取消
-   * 也跟着失效**（从没得到焦点，就不会失焦），于是点别处这一行赖在树里不走。
+   * 也跟着失效**（从没得到焦点，就不会失焦），因此点别处这一行赖在树里不走。
    *
    * 改名时连着全选：进来就是原名，用户要的通常是整个换掉。
    */
@@ -1095,7 +1090,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
  * 对一个文件的**一次**改动。
  *
  * `body` 是那一次的正文，整个来自这一步落库的入参——和会话流里展开那一步看到的
- * 是同一份东西（`Transcript.tsx` 的 `StepBody`）：编辑给的是 old/new 两段，
+ * 是同一份数据（`Transcript.tsx` 的 `StepBody`）：编辑给的是 old/new 两段，
  * 整份写出给的是写进去的那份内容。
  */
 interface ChangeEdit {
@@ -1139,16 +1134,16 @@ interface ChangedFile {
  * （账本是本机那份 sqlite），**而且在没有 git 的目录里照样有内容**。
  *
  * 不接 git 不是因为拿不到，是因为 git 回答的是另一个问题：「工作区相对 HEAD
- * 有什么差别」里混着用户自己在编辑器里改的、上一条会话改的、以及一堆没跟踪的
+ * 有什么差别」里混着用户自己在编辑器里改的、上一条会话改的、以及全部未跟踪的
  * 文件。这一页只回答「这条会话干了什么」。两个问题摆进同一块面板就是两本账。
  *
  * 四条口径：
  * - **一个文件一行，展开是它的每一次改动**。行上的数是这条会话在它上面写了多少
- *   （多次累加），不是「它现在和最初差多少」——后者要整份前后文，账本里没有。
+ *   （多次累加），不是「它和初始状态差多少」——后者要整份前后文，账本里没有。
  * - **顺序是第一次被改到的先后**，不排字典序：记录读的就是先后。
  * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
  * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
- *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的东西这里看不到。
+ *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的文件这里看不到。
  */
 function ChangeRecord() {
   const rows = createMemo(() => {

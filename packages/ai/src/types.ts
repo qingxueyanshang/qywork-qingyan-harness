@@ -16,7 +16,7 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  *
  * 两个 SDK 的出厂值都是 `timeout: 600_000` + `maxRetries: 2`，在网络断掉时
  * 表现为「界面挂着『正在执行』五分钟，然后才报网络不可达」（实测：一次
- * 381.9s 的 run，最后一次模型回包之后干等了 301s）。
+ * 381.9s 的 run，最后一次模型回包之后空等了 301s）。
  *
  * - `timeout` 只覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里
  *   `clearTimeout`），所以 60 秒不会掐断一次长生成——它只掐「连不上」。
@@ -105,7 +105,7 @@ export interface WireMessage {
    *
    * 这是**协议差异，不是行为分支**：Anthropic 要显式划线
    * （`cache_control`），而兼容协议的前缀缓存由服务端自动做、请求体里
-   * 根本没有这个位置。装配层无条件标注，各适配器自己决定要不要落到线上——
+   * 没有这个位置。装配层无条件标注，各适配器自己决定要不要落到线上——
    * 与 `reasoningContent`、`transmits` 是同一个形状。
    *
    * 标在哪由「这一段跨请求是不是逐字节稳定」决定，见 `agent/loop.ts` 的装配。
@@ -132,8 +132,8 @@ export interface WireMessage {
  */
 export type ImageSource =
   /**
-   * 用户拖 / 粘 / 选进来的附件。**引用他自己的文件，不复制**——那是他的东西，
-   * 我们没有理由在别处再存一份。语义上是**活引用**：他改了那个文件，历史跟着变。
+   * 用户拖 / 粘 / 选进来的附件。**引用他自己的文件，不复制**——那份文件归他所有，
+   * 没有理由在别处再存一份。语义上是**活引用**：他改了那个文件，历史跟着变。
    */
   | { kind: 'path'; path: string }
   /**
@@ -151,7 +151,7 @@ export type ImageSource =
  *
  * **只有文本和图片两种。** 非图片附件不进内容块——装配层只把它的路径写进正文，
  * 由模型自己 `read_file`（`runtime` 的 `withAttachments`）。加回一个文档块会让
- * 三条协议各自需要一种降级写法，而其中至少一条（chat/completions）根本没有对应
+ * 三条协议各自需要一种降级写法，而其中至少一条（chat/completions）没有对应
  * 的块类型，只能退化成一行占位符——那是内容被静默丢掉。
  */
 export type ContentBlock =
@@ -193,7 +193,7 @@ export interface ToolSchema {
    * 这份 schema 是本仓写的，适配器可以按协议要求的 strict 形状重排它。
    *
    * 判据是**谁写的**，不是它长什么样。第三方 schema（MCP server、插件清单）恒为
-   * false：改动一个我们没写的 schema，模型会按改过的形状传参，而 server 按它自己的
+   * false：改动一个第三方 schema，模型会按改过的形状传参，而 server 按它自己的
    * 形状校验，两边对不上。
    */
   strict?: boolean
@@ -212,7 +212,7 @@ export type ProviderEvent =
   /**
    * `stopReason` 是归一化结论，`rawStopReason` 是 provider 的原话。
    *
-   * **两个都要。** 归一化把 `stop` 与 `tool_calls` 压成同一批词，于是
+   * **两个都要。** 归一化把 `stop` 与 `tool_calls` 压成同一批词，因此
    * 「模型说完了」和「模型要调工具但一条都没解析出来」在账本上分不出来。
    * 原话只进账本，不参与任何判断——参与判断就等于让每个端点的词表
    * 各自成为一条分支。
@@ -257,8 +257,8 @@ export interface LlmAdapter {
   /**
    * 本适配器**实际会发送** effort 档位吗。
    *
-   * 探测器靠它区分「端点接受了」和「我们压根没发」：一个不发 effort 的链路上，
-   * 探针每一发都会「通过」，而 `--save` 会把这份凭空的结论覆盖回目录。
+   * 探测器靠它区分「端点接受了」和「客户端没发」：一个不发 effort 的链路上，
+   * 探针每一发都会「通过」，而 `--save` 会把这份没有依据的结论覆盖回目录。
    *
    * **必须按 `spec` 算，不能是类级常量**，且判据只有 `effortIsTransmittable`
    * 一份——协议支持不等于这条模型的参数格式发得出去。

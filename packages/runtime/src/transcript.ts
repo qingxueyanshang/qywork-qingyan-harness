@@ -1,33 +1,26 @@
 /**
  * 把 steps 投影成发给模型的历史消息。
  *
- * ## 这个文件补的是什么洞
- *
- * 在它之前，`session.ts` 装配历史只读 `messages` 表——而那张表**只有 user 行**：
- * 全项目唯一的 `appendMessage` 调用点写的就是 `role:'user'`，assistant 回合
- * 从来没有进过。实测运行库 `SELECT role, COUNT(*) FROM messages GROUP BY role`
- * 只回一行 `user`，同一会话的 `steps` 表却有 20 条 text + 42 条 tool_action。
+ * **这个文件补的是什么洞。** 在它之前，`session.ts` 装配历史只读 `messages` 表——而那张表**只有
+ * user 行**：全项目唯一的 `appendMessage` 调用点写的就是 `role:'user'`，assistant 回合从来没有进
+ * 过。实测运行库 `SELECT role, COUNT(*) FROM messages GROUP BY role` 只回一行 `user`，同一会话的
+ * `steps` 表却有 20 条 text + 42 条 tool_action。
  *
  * 后果是**结构性失忆**：第二轮起模型拿到的输入字面上就是「用户说了三次话，
- * 我一次都没回过」。工具白跑、文件重读、同一个结论反复推导。
+ * 助手一次都没回」。工具重复执行、文件重读、同一个结论反复推导。
  *
- * ## 为什么是投影，不是补写 assistant 消息行
- *
- * `steps` 已经是执行事实的唯一权威。再往 `messages` 写一份 assistant 行就是
- * 第二本账，而且装不下——`messages.role` 的 CHECK 只有 `user`/`assistant`，
- * 工具调用与结果根本没有位置；中断与崩溃恢复路径还得跟着伪造那些行。
+ * **为什么是投影，不是补写 assistant 消息行。** `steps` 已经是执行事实的唯一权威。再往 `messages`
+ * 写一份 assistant 行就是第二本账，而且装不下——`messages.role` 的 CHECK 只有 `user`/`assistant
+ * `，工具调用与结果没有位置；中断与崩溃恢复路径还得跟着伪造那些行。
  *
  * 前端早就是这么干的（`connection.ts` 的 `reloadActiveConversation` 折 steps），
  * 注释原话：「工具调用只存在于 steps 里，单拉 messages 意味着刷新一次页面
  * 就丢掉全部工具卡」。同一句话对模型侧一字不差地成立。
  *
- * ## 与前端那份**刻意不同口径**
- *
- * 前端对被接替（superseded）的 run 照样渲染、只打个标记给人看。模型侧没有
- * 「打标仍渲染」这个选项——`WireMessage` 没有等价标记位，只有折或不折。
- * 照抄前端会让模型看到「失败尝试的全部步骤 + 重试的全部步骤」连排且无标记，
- * 同一件事做了两遍、结论可能互相矛盾。**筛掉 superseded 是调用方的事**
- * （见 `session.ts`），本文件只管把给定的 steps 折平。
+ * **与前端那份**刻意不同口径**。** 前端对被接替（superseded）的 run 照样渲染、只打个标记给人看。模
+ * 型侧没有「打标仍渲染」这个选项——`WireMessage` 没有等价标记位，只有折或不折。照抄前端会让模型
+ * 看到「失败尝试的全部步骤 + 重试的全部步骤」连排且无标记，同一件事做了两遍、结论可能互相矛盾。**
+ * 筛掉 superseded 是调用方的事** （见 `session.ts`），本文件只管把给定的 steps 折平。
  */
 
 import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
@@ -43,7 +36,7 @@ export interface ProjectOptions {
    * 这批 steps 归属的用户消息 id。
    *
    * 压缩投影按 `_messageId` 划边界（`compaction.ts`）。不带的话，被压掉那一段
-   * 历史里的执行记录会被无条件保留下来——压缩明明生效了，真正吃上下文的
+   * 历史里的执行记录会被无条件保留下来——压缩生效了，真正吃上下文的
    * 那部分却一条没少。
    */
   messageId?: MessageId | null
@@ -173,7 +166,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
       /*
        * 失败的思考不进模型视图。
        *
-       * 轮内自动重发时，死掉那次的思考 step 与重发那次落在**同一个 run** 里且相邻
+       * 轮内自动重发时，失败那次的思考 step 与重发那次落在**同一个 run** 里且相邻
        * （`buildHistory` 逐 run 投影，跨 run 漏不过来，同 run 内会）。不排除就是两段
        * 无关生成拼成一条 `reasoningContent` 回传，与活侧不同形——违反本文件开头
        * 那条「必须与活的逐字同形」，缓存前缀也从那里断。
@@ -273,7 +266,7 @@ export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): W
  * 装配一次请求的完整历史：消息 + 由 steps 投影出的执行回合。
  *
  * 独立成函数是为了**能单独测**：内联在 `Session.ask()` 里的话，那条路要跑通得有
- * 真实 provider，于是「第二轮到底看得见什么」这件事没有任何测试能碰到。
+ * 真实 provider，因此「第二轮看得见什么」这件事没有任何测试能碰到。
  *
  * `attachments` 由调用方注入：附件正文要读磁盘，而这个函数不该知道工作区在哪。
  */

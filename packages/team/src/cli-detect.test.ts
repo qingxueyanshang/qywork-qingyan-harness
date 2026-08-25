@@ -22,7 +22,7 @@ async function fakeBin(name: string): Promise<string> {
 describe('外部 CLI 识别', () => {
   /**
    * 表里写了「接着问」用什么参数，识别结果就必须带着它。
-   * 漏抄那两项的表现是静默失效：表里明明写着，跑起来却当那家不支持。
+   * 漏抄那两项的表现是静默失效：表里写着，跑起来却当那家不支持。
    */
   test('接着问要用的两项跟着识别结果出来', async () => {
     const dir = await fakeBin('claude')

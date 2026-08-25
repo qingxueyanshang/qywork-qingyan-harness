@@ -23,10 +23,10 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       /*
        * `interrupt` 找不到那条 run 时返回 false，**这个返回值必须答回去**。
        *
-       * 丢掉它的表现就是本文件头那句话说的形状，而且是最难查的一种：用户点了停止，
+       * 丢掉它的现象就是本文件头那句话说的形状，而且是最难查的一种：用户点了停止，
        * 按钮没反应、转圈还在转、一条日志都没有——他无法区分「服务端在处理」和
-       * 「这条指令根本没人接」。实测撞到过：注册表里已经没有这条 run（收尾跑完了
-       * 或者还停在 reserve 没 register），而账本那行还挂着 running，于是界面一直
+       * 「这条指令没人接」。实测形状：注册表里已经没有这条 run（收尾跑完了
+       * 或者还停在 reserve 没 register），而账本那行还挂着 running，因此界面一直
        * 显示在跑，用户唯一的出路是重启应用。
        */
       if (!deps.runs.interrupt(cmd.runId)) {

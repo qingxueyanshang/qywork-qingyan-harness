@@ -12,7 +12,7 @@
 //! **例外只有一个：终端（`terminal.rs`）。** 它走 IPC 不是图方便——PTY 是本机进程
 //! 和一对操作系统句柄，跨不过网络，手机端不可能有；放进 sidecar 等于把「在这台
 //! 机器上跑任意命令」开到局域网上。再要开例外，先说清楚为什么这件事**在结构上**
-//! 到不了另一端，而不只是这边做起来更省事。
+//! 到不了另一端，而不只是这边实现起来更简单。
 
 mod sidecar;
 mod terminal;
@@ -64,7 +64,7 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
 ///
 /// 走 Tauri 命令而不是前端引 `@tauri-apps/api`：这个项目的前端是
 /// 桌面与手机共用的同一份代码，多引一个只有桌面能用的包，
-/// 手机端的构建里就会多出一坨永远不执行的东西。
+/// 手机端的构建里就会多出一段永远不执行的代码。
 #[tauri::command]
 fn window_minimize(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|e| e.to_string())
@@ -95,21 +95,21 @@ fn window_is_maximized(window: tauri::Window) -> Result<bool, String> {
 
 /// 主窗口的**唯一**构造点。
 ///
-/// 启动和切工作区都要建这个窗口，外壳属性必须逐字一致。分开写过一次，代价是
-/// 切工作区那条漏了 `decorations(false)`——换完工作区系统标题栏自己回来，和前端
-/// 画的顶栏叠成上下两条。这种漂移不会报错，只会长在某一条路径上。
+/// 启动和切工作区都要建这个窗口，外壳属性必须逐字一致。分成两处写的代价：
+/// 切工作区那条漏掉 `decorations(false)` 时，换完工作区系统标题栏回来，和前端
+/// 画的顶栏叠成上下两条。这种漂移不会报错，只出现在其中一条路径上。
 ///
 /// `decorations(false)`：标题栏由前端自己画。
 ///
 /// 系统标题栏的底色由 Windows 决定，应用改不了——而应用内顶栏是灰的，
-/// 于是窗口顶部出现两条颜色不同的带子，比全用系统的更难看。
+/// 因此窗口顶部出现两条颜色不同的带子，比全用系统的更难看。
 ///
 /// 代价说清楚：关掉装饰后**拖动与双击最大化要前端自己接**
 /// （`data-tauri-drag-region`），窗口按钮也要自己画。
 /// 系统的贴边分屏（Win+方向键 / 拖到屏幕边缘）仍然可用，
 /// 因为窗口本身还是普通窗口，只是不画非客户区。
 ///
-/// `shadow(false)`：**投影和那道边框线在 tao 里是同一块东西**，所以这个开关只能
+/// `shadow(false)`：**投影和那道边框线在 tao 里由同一个开关控制**，所以它只能
 /// 用来去线，投影得另外要回来（下面那个函数）。细节见 `extend_frame_for_shadow`。
 fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
     let _window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -181,7 +181,7 @@ fn show_fatal(message: &str) {
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
     let text = HSTRING::from(message);
     let caption = HSTRING::from("qywork 启动失败");
-    // SAFETY: 两个字符串在调用期间都活着；hwnd 传 None = 无父窗口的模态框。
+    // SAFETY: 两个字符串在调用期间都有效；hwnd 传 None = 无父窗口的模态框。
     unsafe {
         MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
     }
@@ -326,9 +326,9 @@ pub fn run() {
              * **起不来也要有终态。**
              *
              * **不能用 `.expect(...)`**：release 下 `panic = "abort"` 且
-             * `windows_subsystem = "windows"`（没有控制台），于是 sidecar 缺失、
+             * `windows_subsystem = "windows"`（没有控制台），因此 sidecar 缺失、
              * 损坏、或在报出令牌前退出时，进程无声消失——没有窗口、没有对话框、
-             * 没有任何可见输出。用户唯一的感知是「双击没反应」，而这恰恰是
+             * 没有任何可见输出。用户唯一的感知是「双击没反应」，而这是
              * 最常见的一类启动故障（`bin/qy-*.exe` 没构建、被杀毒删了）。
              *
              * 弹一个系统对话框再退。它不依赖 WebView，正好覆盖「窗口还没建出来」
@@ -348,7 +348,7 @@ pub fn run() {
             // SQLite 的 WAL 锁，下次启动直接起不来。所以退出路径必须显式收干净。
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 watcher::stop(&app.state::<watcher::WatcherHandle>());
-                // 终端里的 shell 也是子进程，同一条理由要显式杀掉：留下来会攥着
+                // 终端里的 shell 也是子进程，同一条理由要显式杀掉：留下来会持有
                 // 工作区里的文件句柄，用户下一次删目录会被拒。
                 terminal::shutdown(&app.state::<terminal::TerminalHandle>());
                 sidecar::shutdown(app);
@@ -361,15 +361,14 @@ pub fn run() {
 /// 优先级：命令行参数 > 环境变量 > 当前目录 > 用户主目录。
 /// 前两级是为了让 `qywork /path/to/repo` 和从终端直接启动都符合直觉。
 ///
-/// **最后一级是打包之后才发现必须有的。** 从开始菜单快捷方式启动时，
+/// **最后一级不能省。** 从开始菜单快捷方式启动时，
 /// `current_dir()` 是安装目录（perMachine 安装下就是 `C:\Program Files\qywork`）——
-/// 那里既不是用户的代码，又是只读的。之前只跑 `cargo check` 不打包，
-/// 这条路径一次都没走到过，表现会是「装完一打开，工作区是一堆程序自己的文件，
-/// 而且写任何东西都 EPERM」。
+/// 那里既不是用户的代码，又是只读的。只跑 `cargo check` 不打包时这条路径走不到，
+/// 而它的现象是「装完一打开，工作区里全是程序自身的文件，写任何文件都 EPERM」。
 /// 启动时**显式**指定过的工作区。没有就回 `None`，交给服务端决定。
 ///
-/// **不要回落到 cwd / 家目录**：那把「没指定」悄悄变成「就用启动目录」，而桌面端的
-/// 启动目录是安装目录或 `src-tauri`，会被登记成一个谁也没要过的项目。
+/// **不要回落到 cwd / 家目录**：那把「没指定」静默变成「就用启动目录」，而桌面端的
+/// 启动目录是安装目录或 `src-tauri`，会被登记成一个用户从未打开过的项目。
 ///
 /// 没指定就是没指定：`server.ts` 的 `bootstrapWorkspace` 会用最近打开的那个，
 /// 一个都没有才建默认工作区。**「首次挂哪儿」的判断只留一处。**

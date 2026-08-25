@@ -12,7 +12,7 @@
  *
  * `Number('5')` 是 5，所以字符串形式的整数照收——真正要挡的是
  * `Number('1,4000')` 这种读不出数的值：它会变成 `NaN`，而 `NaN` 参与的比较全为假、
- * `slice(NaN, NaN)` 是空数组，一路走下去就是「成功读取 0 行」。
+ * `slice(NaN, NaN)` 是空数组，继续往下走就是「成功读取 0 行」。
  */
 export function intArg(raw: unknown, fallback: number): number | null {
   if (raw === undefined || raw === null) return fallback

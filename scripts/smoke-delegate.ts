@@ -73,7 +73,7 @@ async function main(): Promise<number> {
     const members: Member[] = []
     let text = ''
     // 这条脚本要跑两轮（临时子 agent 一轮、外部 CLI 一轮），所以「等这一轮跑完」
-    // 是个可以重新拿一次的东西，不是一个一次性的 promise。
+    // 是个可以重新取一次的工厂，不是一个一次性的 promise。
     let done = Promise.withResolvers<void>()
 
     ws.addEventListener('message', (e) => {
@@ -284,7 +284,7 @@ async function main(): Promise<number> {
     // ── 第二轮：派给本机装着的外部 CLI ──
     //
     // 这条路与内置子 agent 完全不同：另起一个进程、它自己的凭证、它自己的输出格式，
-    // 而输出格式恰恰是那张厂商表最容易过期的地方（实测 codex 就过期了一次）。
+    // 而输出格式是那张厂商表最容易过期的地方（实测 codex 就过期了一次）。
     const clis = (await (await fetch(`${base}/api/team/cli`, { headers: auth })).json()) as {
       agents?: { id: string; connected?: boolean }[]
     }
@@ -331,7 +331,7 @@ async function main(): Promise<number> {
      * 产出必须是**那句话**，不是它的 JSONL 原始流。
      *
      * 复现的失败形状：厂商表里的结果字段过期时 `extract` 一行都取不到，
-     * 回退成整段 stdout——父会话拿到的是一坨 `{"type":"thread.started"…}`，
+     * 回退成整段 stdout——父会话拿到的是一串 `{"type":"thread.started"…}`，
      * 而模型会把那坨当成任务产出。长度上限就是这条的判据。
      */
     check(

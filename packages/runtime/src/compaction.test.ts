@@ -66,7 +66,7 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
 /**
  * 造出「刚刚越线」的压力：占用取会话装配后的真实估算，窗口取同一个数。
  *
- * 于是软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）留住尾巴——
+ * 因此软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）留住尾巴——
  * 不用去猜某个模型档的具体数字，也不会因为估算系数微调就整片红。
  */
 async function pressure(
@@ -207,9 +207,9 @@ describe('投影三区', () => {
   /**
    * **带图的工具结果必须收得掉。**
    *
-   * 这条修的是一个完全静默的形状：收纳对非字符串 content 曾经是原样放行
-   * （`agent/compaction.ts` 的 `condenseToolResult`），于是一张几 MB 的截图
-   * 在此后每一轮满额重放、一路撞到窗口上限——而压缩机制看着它什么都不做。
+   * 这条盯的是一个完全静默的形状：收纳对非字符串 content 一旦原样放行
+   * （`agent/compaction.ts` 的 `condenseToolResult`），因此一张几 MB 的截图
+   * 在此后每一轮满额重放，直到撞上窗口上限——而压缩机制对它不做任何处理。
    *
    * 两半都要断言：图**丢掉**，信封**留下**。只丢不留的话模型连「那一轮读过一张图」
    * 都不知道，重新取都无从取起。
@@ -307,7 +307,7 @@ describe('投影三区', () => {
  * 复现原始失败形状。
  *
  * 账本里那条会话是 2 条 user 消息 + 287 条工具 step：按「user 消息条数」判门槛
- * 时它恒回 `too_few_messages`，一次也压不动，而真正吃掉 66 万字符的正是那些
+ * 时它恒回 `too_few_messages`，一次也压不动，而真正占掉 66 万字符的正是那些
  * 工具结果。压缩单元改成「执行波次」之后，它有几十个可折单元。
  */
 describe('长 run 少消息的会话必须压得动', () => {
@@ -400,7 +400,7 @@ describe('收纳段单独够用时零模型调用', () => {
 
     expect(r.status).toBe('compacted')
     expect(r.status === 'compacted' && r.summarized).toBe(false)
-    // 没有失败码 = 压根没走摘要段，不是摘要段失败后的兜底。
+    // 没有失败码 = 没走摘要段，不是摘要段失败后的兜底。
     expect(r.status === 'compacted' && r.reasonCode).toBeUndefined()
     expect(calls).toBe(0)
     // 被折区的工具正文全换成信封；余下的是保留预算里那一段尾巴。
@@ -558,7 +558,7 @@ describe('中断即丢弃', () => {
     store.close()
   })
 
-  test('摘要调用被中断掐掉时不落任何东西', async () => {
+  test('摘要调用被中断时不落任何行', async () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const r = await port(store, conv.id, async () => {

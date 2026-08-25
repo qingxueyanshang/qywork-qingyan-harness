@@ -7,15 +7,11 @@
  *
  * 摘要正文里的 `[message:…]` / `[action:…]` 标记就是入口，模型顺着它取回原文。
  *
- * ## 与 `read_resource` 的分界
+ * **与 `read_resource` 的分界。** 那条读**工具产出的正文**（超过投递上限落盘的 `rs_xxx`），这条读**
+ * 会话历史本身** （用户说过什么、模型说过什么、哪一步调了什么工具拿到什么）。两者不重叠，也**不互
+ * 相兜底**：`rs_xxx` 在这里查不到，反过来也一样。
  *
- * 那条读**工具产出的正文**（超过投递上限落盘的 `rs_xxx`），这条读**会话历史本身**
- * （用户说过什么、模型说过什么、哪一步调了什么工具拿到什么）。
- * 两者不重叠，也**不互相兜底**：`rs_xxx` 在这里查不到，反过来也一样。
- *
- * ## 边界
- *
- * 读回来的量走与 `read_file` 同一个投递预算（`chargeBatchBudget`）。
+ * **边界。** 读回来的量走与 `read_file` 同一个投递预算（`chargeBatchBudget`）。
  * 没有这道闸的话，模型可以把刚折掉的内容整段读回来，压缩当场失效。
  */
 
@@ -97,8 +93,8 @@ export const readHistoryTool: ToolSpec = {
   async fn(args, ctx) {
     const history = ctx.history
     if (!history) {
-      // 如实说没有这条通道，不要报「找不到」——那会让模型以为 id 写错了，
-      // 然后拿几轮去猜一个根本取不到的东西。
+      // 如实说没有这条通道，不要报「找不到」——后者会让模型把它当成 id 写错，
+      // 然后拿几轮去猜一个取不到的 id。
       return {
         status: 'failure',
         message: '本次执行没有会话账本，读不了历史',
@@ -168,7 +164,7 @@ export const readHistoryTool: ToolSpec = {
     return {
       status: 'success',
       // 命中数达到上限时说出来：模型据此判断要不要把 query 写得更窄，
-      // 不说的话它会以为这就是全部。
+      // 不说的话这份结果读起来就是全部。
       message: `命中 ${hits.length} 条${hits.length >= MAX_HITS ? '（已达上限，可能还有更多）' : ''}`,
       data: { hits: lines },
     }

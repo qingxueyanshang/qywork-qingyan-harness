@@ -17,12 +17,10 @@ import { closeTerminal, openTerminal, resizeTerminal, writeTerminal } from '../l
 /**
  * 终端页。渲染在 xterm.js 里，进程在 Rust 侧的 PTY 里（见 `src-tauri/src/terminal.rs`）。
  *
- * ## 实例挂在模块上，按页签 id 存
- *
- * 切去看文件、甚至把整块面板收起来，命令都还得在跑、滚动历史还得在。而这两件事都会
- * 把组件整个卸载——所以 xterm 实例和它的宿主 div 存在模块级的 `panes` 里，组件挂载时
- * 把宿主搬进来、卸载时搬出去。**不要改成每次挂载新建一个 Terminal**：新实例没有历史，
- * 用户看到的是一块空白，而 PTY 那边其实还在跑。
+ * **实例挂在模块上，按页签 id 存。** 切去看文件、甚至把整块面板收起来，命令都还得在跑、滚动历史还得
+ * 在。而这两件事都会把组件整个卸载——所以 xterm 实例和它的宿主 div 存在模块级的 `panes` 里，组件
+ * 挂载时把宿主搬进来、卸载时搬出去。**不要改成每次挂载新建一个 Terminal**：新实例没有历史，用户看
+ * 到的是一块空白，而 PTY 那边还在跑。
  *
  * 因此**卸载不销毁**。真正的销毁只发生在这一页被关掉时，入口是 store 的
  * `holdPanelTab`（页签上的 × 和换项目都走它），见 `disposePane`。
@@ -38,7 +36,7 @@ interface Pane {
   host: HTMLDivElement
   /** PTY 那条会话开着没有。子进程退出后回 `false`，「重开」据此再开一条。 */
   started: boolean
-  /** 子进程的终态。`null` = 还活着。`code` 为 null 表示拿不到退出码。 */
+  /** 子进程的终态。`null` = 仍在运行。`code` 为 null 表示拿不到退出码。 */
   exit: Accessor<{ code: number | null } | null>
   setExit: Setter<{ code: number | null } | null>
 }
@@ -125,7 +123,7 @@ function applyTheme(pane: Pane): void {
 /**
  * 主题跟着走，**挂在模块上而不是组件里**，而且一次管所有实例。
  *
- * 挂在组件里的话：收起面板期间切主题，实例还活着但没人给它换色，切回来是旧配色。
+ * 挂在组件里的话：收起面板期间切主题，实例仍存活但没人给它换色，切回来是旧配色。
  * 两条路都要有——显式切换走 `theme()`，`system` 档没有 `data-theme` 属性，只能听
  * 系统偏好；缺一条就有一半情况不跟随。
  *
@@ -172,7 +170,7 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
     fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 12,
     // **竖线 + 闪烁。** 实心方块和「选中一个字符」长得一模一样，不闪就更像——
-    // 用户看不出那是输入位置，会以为这块终端是只读的。
+    // 用户看不出那是输入位置，整块终端读起来像只读的。
     // 这只是默认形状：程序自己发 DECSCUSR 换形状时以程序为准（vim 就会换）。
     cursorStyle: 'bar',
     cursorBlink: true,
@@ -195,7 +193,7 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   term.onData((d) => void writeTerminal(id, d).catch(() => markGone(pane)))
 
   /*
-   * 滚轮由我们接管，不交给程序。
+   * 滚轮由本组件接管，不交给程序。
    *
    * 程序一开鼠标追踪（`CSI ?1002h`，全屏 TUI 的常规做法），xterm 就把滚轮当成
    * 鼠标事件转发过去，终端自己**一行都滚不动**——而且既然从不滚动，那条
@@ -259,7 +257,7 @@ function disposePane(id: string): void {
  *
  * **不要直接调 `fit.fit()`。** 它只挡 `NaN` 不挡 `Infinity`：字符宽度还没量到时
  * （容器刚进 DOM、这一页正被藏起来）单元格宽是 0，`可用宽度 / 0` 得到 `Infinity`，
- * 它照样交给 `term.resize()`，一次就把实例打废——之后不滚动、不回显、不响应键盘，
+ * 它照样交给 `term.resize()`，一次就让实例失效——之后不滚动、不回显、不响应键盘，
  * 而且控制台不一定有报错。所以自己取 `proposeDimensions()` 并逐项校验。
  *
  * 会话还没建好时只改本地不发给 PTY：那时候发过去必然是「会话不存在」。
@@ -294,7 +292,7 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
       },
     )
     // 接上一条已经在跑的会话时，先把外壳存着的那段重放进来，否则用户接回来
-    // 面对的是一块空屏——shell 还活着，但要敲一下才看得出来。
+    // 面对的是一块空屏——shell 仍在运行，但要敲一下才看得出来。
     if (backlog) pane.term.write(backlog)
     // 开完再对一次：从调用到会话建好这段时间里，面板可能已经被拖宽或放大了。
     syncSize(id, pane)
@@ -319,7 +317,7 @@ async function restart(id: string, pane: Pane): Promise<void> {
   await closeTerminal(id).catch(() => {})
   await ensureStarted(id, pane)
   // 焦点要跟回终端：按钮随终态条一起消失，焦点会掉到 body 上，
-  // 于是新起的 shell 收不到任何按键——和刚才那块死终端一模一样。
+  // 因此新起的 shell 收不到任何按键，与退出前那块终端的形状一致。
   pane.term.focus()
 }
 
@@ -356,7 +354,7 @@ export default function TerminalPanel(props: { id: string }) {
    *
    * **必须是 effect，不能只在 `onMount` 里做一次**：切页签不重挂这个组件（那些页
    * 一直挂着，只是被藏起来），只在挂载时聚焦的话，从别的页切回来光标不闪——
-   * 而 xterm 失焦时画的就是一个不闪的光标，看起来像这块终端死了。
+   * 而 xterm 失焦时画的就是一个不闪的光标，与终端不响应时的形状一致。
    *
    * 藏起来的那一页不抢焦点：`display: none` 里的元素聚焦本来就是空操作，而这一条
    * 会在每次切页签时对每一页各跑一次。

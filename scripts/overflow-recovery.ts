@@ -3,14 +3,11 @@
 /**
  * 溢出恢复的真实验证。
  *
- * ## 为什么单测不够
+ * **为什么单测不够。** 恢复路径的**第一道判据是错误分类**：`classifyProviderError` 认不出这家
+ * provider 的容量拒绝，`capacity` 就是 undefined，凭证不成立，整条恢复路径一次都不会走。而单测里的
+ * 假 adapter 抛的是测试自己构造的错误——**分类器必然认得**，因此测试全绿而真实会话照旧卡死。
  *
- * 恢复路径的**第一道判据是错误分类**：`classifyProviderError` 认不出这家 provider
- * 的容量拒绝，`capacity` 就是 undefined，凭证不成立，整条恢复路径一次都不会走。
- * 而单测里的假 adapter 抛的是我们自己构造的错误——**它必然认得**，
- * 于是测试全绿而线上会话照旧卡死。
- *
- * 这个脚本发一个真的超窗请求，看真实 provider 回什么、我们认不认得。
+ * 这个脚本发一个真的超窗请求，看真实 provider 回什么、分类器认不认得。
  *
  *   bun run scripts/overflow-recovery.ts
  */
@@ -81,10 +78,10 @@ async function main(): Promise<number> {
   process.stdout.write('\n错误分类\n')
   if (!caught) {
     /*
-     * 没报错 = **静默溢出**：provider 悄悄截断超出部分，照常返回。
+     * 没报错 = **静默溢出**：provider 直接截断超出部分并照常返回。
      *
      * 这种 provider 上「靠错误分类拿凭证」的恢复路径一次都不会触发，
-     * 而会话已经在丢上下文——模型看到的历史被砍掉一截，它不知道，我们也不知道。
+     * 而会话已经在丢上下文——历史被砍掉一截，模型侧与本地都没有任何信号。
      * 判据只能从 usage 真值反推：自报输入远小于实际发出的量即为截断。
      */
     process.stdout.write(
@@ -120,7 +117,7 @@ async function main(): Promise<number> {
    *
    * `loop.ts` 的判据是 `code === 'context_overflow' && pe.capacity`：
    * 只看 code 不够，泛化的 400 也可能带这个码。缺了 capacity，
-   * 恢复一次都不会触发，会话撞窗即死。
+   * 恢复一次都不会触发，会话撞窗后没有出路。
    */
   check(
     '带上了 capacity 凭证（恢复的判据）',

@@ -1,28 +1,22 @@
 /**
  * 记忆与技能的读写面。
  *
- * ## 为什么必须有这一层
+ * **为什么必须有这一层。** 记忆是 `<层根>/memory/*.md`、技能是 `<层根>/skills/<name>/`——项目层在
+ * 工作区 `.agents/` 下，全局层在 `~/.qywork/` 下。都是普通文件，agent 通过工具随时能写。但**人看不
+ * 到也删不掉**：桌面端用户手边不一定有编辑器，记错一条记忆就会一直错下去。「agent 能写、人不能管」
+ * 是最不该留的不对称。
  *
- * 记忆是 `<层根>/memory/*.md`、技能是 `<层根>/skills/<name>/`——项目层在工作区
- * `.agents/` 下，全局层在 `~/.qywork/` 下。都是普通文件，agent 通过工具随时能写。
- * 但**人看不到也删不掉**：桌面端用户手边不一定有编辑器，记错一条记忆就会一直错
- * 下去。「agent 能写、人不能管」是最不该留的不对称。
- *
- * ## 不重写扫描逻辑
- *
- * 列表直接调 `@qywork/tools` 导出的 `listEntries` / `scanSkills`——
+ * **不重写扫描逻辑。** 列表直接调 `@qywork/tools` 导出的 `listEntries` / `scanSkills`——
  * 和工具走同一个函数。另写一份「给界面用的扫描」必然和工具那份漂移，
  * 而漂移的表现是「界面上有这条记忆，模型却说没有」。
  *
- * ## 技能：能建、能导、能删，但不能在网页上编辑正文
- *
- * 一个技能最少就是 `<目录>/SKILL.md`——建一个不需要文件管理界面，一个表单就够。
- * 所以建和删都在这里。**改正文不在**：技能目录里可以带脚本、附件，在网页上编辑
- * 一个目录需要一整套文件管理器，那是编辑器该干的事。列表回目录的绝对路径，
- * 要改就去那儿改。
+ * **技能：能建、能导、能删，但不能在网页上编辑正文。** 一个技能最少就是 `<目录>/SKILL.md`——建一个
+ * 不需要文件管理界面，一个表单就够。所以建和删都在这里。**改正文不在**：技能目录里可以带脚本、附
+ * 件，在网页上编辑一个目录需要一整套文件管理器，那是编辑器该干的事。列表回目录的绝对路径，要改就
+ * 去那儿改。
  *
  * 「导入」= 把本机上一个已经存在的目录整个拷进来。**不做 `git clone <URL>`**：
- * 那等于从网上取一段东西、下次加载就用它，和插件那条边界同一个理由。
+ * 那等于从网上取一段内容、下次加载就用它，和插件那条边界同一个理由。
  */
 
 import { cp, mkdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
@@ -65,10 +59,10 @@ function safeKey(raw: string): string | null {
 /**
  * 写哪一层。
  *
- * 默认项目层——AI 和「随手记一条」都该落在跟着项目走的那份。全局层要显式指定，
+ * 默认项目层——模型写入与用户手动记录都该落在跟着项目走的那份。全局层要显式指定，
  * 因为它对所有工作区生效，那个决定不该由默认值替用户做。
  *
- * **内置层不可写**：它随程序发布，写进去下次升级就没了，而用户会以为存住了。
+ * **内置层不可写**：它随程序发布，写进去下次升级就没了，而界面会显示保存成功。
  */
 function writableScope(raw: string | null): Scope | null {
   if (raw === null || raw === 'project') return 'project'
@@ -154,8 +148,8 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
         )
       }
       // 条数上限必须和工具那边**同样生效**。只在工具侧拦的话，界面成了绕过它的路：
-      // 尾区索引每轮都发，无上限地涨下去会慢慢吃掉整个上下文，
-      // 而表现是「模型越用越笨」——没人会联想到是记忆条数。
+      // 尾区索引每轮都发，无上限地涨下去会逐步占满上下文，
+      // 而现象是回答质量下降——报错和日志里都没有指向记忆条数的线索。
       const existing = await listScopedEntries(scopeRoots(d.workspaceRoot))
       if (existing.length >= MAX_ENTRIES && !existing.some((e) => e.key === key)) {
         return json(
@@ -170,7 +164,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
 
     if (req.method === 'DELETE') {
       // 删一个本来就不存在的键回 404 而不是静默成功：静默成功会让
-      // 「我明明删了它还在」变成一个查不出原因的问题。
+      // 「删了却还在」变成一个查不出原因的问题。
       const gone = await unlink(file).then(
         () => true,
         () => false,
@@ -232,7 +226,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     if (root === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
     const dir = join(root, dirName)
     // 删一个本来就不存在的回 404 而不是静默成功：静默成功会让
-    // 「我明明删了它还在」变成一个查不出原因的问题。
+    // 「删了却还在」变成一个查不出原因的问题。
     if (!(await stat(dir).catch(() => null))) return json({ error: 'not found' }, 404)
     await rm(dir, { recursive: true, force: true })
     return json({ ok: true })

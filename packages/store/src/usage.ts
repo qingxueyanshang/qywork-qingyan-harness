@@ -68,14 +68,15 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
       )
     return true
   } catch (err) {
-    // 这个 catch 原本写的是 `catch {}`，意图只有一条：**唯一索引冲突 = 这笔已经记过了**
+    // **这个 catch 只吞一种错：唯一索引冲突 = 这笔已经记过了**
     // （收尾逻辑被走两遍时不该让账目翻倍）。
     //
-    // 但它把**所有**错误一起吞了，于是踩过一次很难查的事：给 kind 加了新值
-    // `classifier`，忘了 schema 上有 CHECK 约束，插入直接抛——而这里静默 return false。
+    // 写成 `catch {}` 会把**所有**错误一起吞掉，因此有一类很难查的故障：给 kind 加新值
+    // （如 `classifier`）而 schema 上的 CHECK 约束没跟着改，插入直接抛——
+    // 而这里静默 return false。
     // 现象是分类器正常工作、命令正常放行、账本里一行都没有，任何地方都不报错。
     //
-    // 所以现在只吞它本来要吞的那一种，其余一律说出来。
+    // 所以只吞那一种，其余一律说出来。
     // **仍然不抛**：账本是旁路记账，不该让一次已经跑完的 run 在收尾时失败——
     // 但「不失败」不等于「不吭声」。
     const msg = err instanceof Error ? err.message : String(err)
@@ -248,7 +249,7 @@ export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBuc
  * 逐笔列出账目。**分组统计答不了「这一笔是什么时候发生的」**，而「这条会话花在哪」
  * 要按时间把每一笔摆出来：哪一轮、以及夹在轮次之间的那次压缩摘要。
  *
- * 只给界面真要用的列。请求体、指纹这类排查用的东西不在账本里，它们在
+ * 只给界面真要用的列。请求体、指纹这类排查用的数据不在账本里，它们在
  * `provider_requests`。
  */
 export function usageEntries(store: Store, q: UsageQuery = {}): UsageLedgerRow[] {

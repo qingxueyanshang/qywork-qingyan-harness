@@ -6,27 +6,21 @@ import { IconRefresh } from './Icons.tsx'
  * 浏览器预览页：一条地址栏加一个 iframe。用来看本机起的服务（dev server、
  * 自己写的页面），所以地址由用户给——**不猜端口**，猜出来的地址打不开比空着更费解。
  *
- * ## 只做「看」，不做浏览器的壳
+ * **只做「看」，不做浏览器的壳。** 没有前进 / 后退，也不回读当前地址：iframe 里是另一个源，
+ * `contentWindow.history` 与 `location` 既读不到也调不动（同源策略）。做出来的按钮点了什么也不会发
+ * 生（B5）。因此地址栏显示的是**请求打开的那个地址**——在页面里点链接跳走之后它不跟着变。
  *
- * 没有前进 / 后退，也不回读当前地址：iframe 里是另一个源，`contentWindow.history`
- * 与 `location` 既读不到也调不动（同源策略）。做出来的按钮点了什么也不会发生（B5）。
- * 因此地址栏显示的是**你要求打开的那个地址**——在页面里点链接跳走之后它不跟着变。
- *
- * ## `sandbox` 不是可选的
- *
- * 不带它的话，被预览的页面一句 `top.location = ...` 就能把整个应用窗口导航走，
- * 那时除了重启没有出路。sandbox 默认禁掉顶层导航；`allow-scripts` +
- * `allow-same-origin` 只是让被预览的页面**保持它自己的源**（用得上 localStorage、
- * 调得动自己的接口），拿不到我们这一侧的任何东西。
- * **不要加 `allow-popups`**：新窗口会开在同一个 WebView 里，正好绕过上面那条。
+ * **`sandbox` 不是可选的。** 不带它的话，被预览的页面一句 `top.location = ...` 就能把整个应用窗口导
+ * 航走，那时除了重启没有出路。sandbox 默认禁掉顶层导航；`allow-scripts` + `allow-same-origin` 只是
+ * 让被预览的页面**保持它自己的源**（用得上 localStorage、调得动自己的接口），拿不到宿主这一侧的任
+ * 何数据。**不要加 `allow-popups`**：新窗口会开在同一个 WebView 里，正好绕过上面那条。
  *
  * 桌面端另需 CSP 放行（`tauri.conf.json` 的 `frame-src`），少了它 iframe 直接空白，
  * 而且只在打包后的构建里空白——`tauri dev` 的页面由 vite 提供，不走那份 CSP。
  *
- * ## `allow` 与 `sandbox` 管的不是一件事
- *
- * `autoplay` 权限策略的默认允许列表是 `self`，跨源 iframe 拿不到——不给它，
- * 被预览页面里的 `<audio>` / `<video>` 带声播放会被拒（Web Audio 有用户手势时不受此限）。
+ * **`allow` 与 `sandbox` 管的不是一件事。** `autoplay` 权限策略的默认允许列表是 `self`，跨源 iframe
+ * 拿不到——不给它，被预览页面里的 `<audio>` / `<video>` 带声播放会被拒（Web Audio 有用户手势时不
+ * 受此限）。
  *
  * **地址栏只接受 http(s)**：`file:` 在 iframe 里被内核直接拒（`Not allowed to load
  * local resource`），CSP 放行也没用；本地 html 只能起个静态服务器再填它的地址。
@@ -77,7 +71,7 @@ export default function BrowserPanel(props: { id: string }) {
       input.reportValidity()
       return
     }
-    // 同一个地址再按回车 = 刷新。什么都不做的话那一下看起来像卡住了。
+    // 同一个地址再按回车 = 刷新。不做的话这次回车没有任何反馈。
     if (next === url()) {
       setReloads((n) => n + 1)
       return
@@ -95,7 +89,7 @@ export default function BrowserPanel(props: { id: string }) {
 
   return (
     <div class="web-panel">
-      {/* 用 form 而不是在 input 上接 Enter：提交语义是白拿的，手机虚拟键盘上那颗
+      {/* 用 form 而不是在 input 上接 Enter：提交语义由表单自带，手机虚拟键盘上那颗
           「前往」也跟着能用。 */}
       <form
         class="web-bar"
@@ -108,7 +102,7 @@ export default function BrowserPanel(props: { id: string }) {
           class="web-url"
           ref={input}
           // **不能用 `type="url"`**：那会开浏览器自带的校验，`localhost:3000`
-          // 不带协议直接被判不合法，表单提交被静默拦下——表现是按回车没反应。
+          // 不带协议直接被判不合法，表单提交被静默拦下，按回车没有任何反应。
           type="text"
           spellcheck={false}
           placeholder="localhost:3000"
@@ -120,7 +114,7 @@ export default function BrowserPanel(props: { id: string }) {
             e.currentTarget.setCustomValidity('')
           }}
         />
-        {/* 没有地址时禁用，而不是不渲染：那颗键一出没，地址栏里的输入框就跟着变宽变窄。 */}
+        {/* 没有地址时禁用，而不是不渲染：按钮出现与消失会让地址栏输入框跟着变宽变窄。 */}
         <button
           class="icon-btn"
           type="button"

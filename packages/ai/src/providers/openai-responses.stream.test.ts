@@ -1,23 +1,20 @@
 /**
  * Responses 适配器的**真实 HTTP 路径**：fetch → SSE → 事件 → 用量。
  *
- * ## 为什么单独一个文件，而且要起一个真的 HTTP server
- *
- * 隔壁 `openai-responses.test.ts` 测的是纯函数（`buildInput` / `applyUsage` / `readSse`），
- * 它锁得住形状，锁不住**这条链路真的能跑通**。这两件事之间掉过一次东西：
- * `readSse` 一直是对的，而 `stream()` 只认 `response.reasoning_summary_text.delta`，
- * 于是 DeepSeek 发的 `response.reasoning_text.delta` 一路走到底、一个 `thinking_delta`
- * 都没有——纯函数测试全绿，思考内容全丢。
+ * **为什么单独一个文件，而且要起一个真的 HTTP server。** 隔壁 `openai-responses.test.ts` 测的是纯函
+ * 数（`buildInput` / `applyUsage` / `readSse`），它锁得住形状，锁不住**这条链路真的能跑通**。这两
+ * 件事之间出过一次错：`readSse` 一直是对的，而 `stream()` 只认
+ * `response.reasoning_summary_text.delta`，因此 DeepSeek 发的 `response.reasoning_text.delta` 全程
+ * 不被识别、一个 `thinking_delta` 都没有——纯函数测试全绿，思考内容全丢。
  *
  * 所以这里起 `Bun.serve`，让适配器真的发一次请求、真的收一次 SSE。
  *
- * ## 报文是抄来的，不是编的
+ * **报文取自实测，不得自拟。** 下面的事件字节逐字取自 2026-08 对
+ * `api.deepseek.com/v1/responses` 的一次实测（id 换成了固定值，便于断言）。
+ * 自拟一份报文只能锁住预期形状，锁不住供应商实际发什么——上面那个 bug 正是
+ * 两者不一致造成的。
  *
- * 下面的事件字节**逐字抄自 2026-08 对 `api.deepseek.com/v1/responses` 的实测**
- * （id 换成了固定值，便于断言）。自己编一份「我以为供应商会这么发」的报文，
- * 测出来的只是我的想象——上面那个 bug 恰恰是想象与实际不符造成的。
- *
- * 它验的是**我们的客户端**，不是 DeepSeek 的服务端。对着真实端点的那一次
+ * 它验的是**本仓的客户端**，不是 DeepSeek 的服务端。对着真实端点的那一次
  * 在 `scripts/smoke-responses.ts`，需要 key，不进单测。
  */
 
@@ -210,8 +207,7 @@ let script: { status: number; body: string; contentType: string } = {
   body: TEXT_RUN,
   contentType: 'text/event-stream',
 }
-/** 最近一次收到的请求体。用来断言我们**发出去**的东西，不只是收回来的。 */
-/** 上一次发出去的请求体。只声明这份测试真的读的那几格。 */
+/** 上一次发出去的请求体。用来断言**发出去**的内容，不只是收回来的；只声明这份测试真的读的那几格。 */
 interface SentBody {
   input?: { type: string }[]
   store?: boolean
@@ -315,7 +311,7 @@ describe('工具调用', () => {
 
   /**
    * reasoning 占了 output_index 0，工具调用在 1。按 output_index 建槽位是对的，
-   * 但**不能**假设工具调用从 0 开始——那样会把参数分片喂给一个不存在的槽位，
+   * 但**不能**假设工具调用从 0 开始——那样会把参数分片写进一个不存在的槽位，
    * 结果是一条参数为空的调用。
    */
   test('reasoning 占了 index 0 时工具调用仍然收得到', async () => {
@@ -323,13 +319,13 @@ describe('工具调用', () => {
     const calls = events.find((e) => e.type === 'tool_calls') as
       | { calls: { name: string; arguments: Record<string, unknown> }[] }
       | undefined
-    // 槽位对错的可观察形状是**参数对不对**：喂给不存在的槽位会得到一条空参数的调用。
+    // 槽位对错的可观察形状是**参数对不对**：写进不存在的槽位会得到一条空参数的调用。
     expect(calls?.calls[0]?.name).toBe('get_weather')
     expect(calls?.calls[0]?.arguments).toEqual({ city: '北京' })
   })
 
   /**
-   * 只有收尾事件也要收得下。丢掉它等于「模型调了工具而我们当作没调」，
+   * 只有收尾事件也要收得下。丢掉它等于「模型调了工具而本地当作没调」，
    * 下一轮模型会重复调用——用户看到的是它卡在同一步反复打转。
    */
   test('分片全丢、只有 output_item.done 时照样收得到', async () => {
@@ -400,7 +396,7 @@ describe('错误路径', () => {
   })
 })
 
-describe('我们发出去的请求', () => {
+describe('发出去的请求', () => {
   test('带工具调用的历史会回传 reasoning 条目，且排在 function_call 之前', async () => {
     await run(TEXT_RUN, {
       messages: [

@@ -5,9 +5,7 @@
  * 模型收到 8 KB 摘要和一个 resource_id 之后，如果发现需要中间那段，
  * 必须有办法拿到，否则落盘等于扔进黑洞。
  *
- * ## 为什么按字节偏移而不是按行
- *
- * 落盘的正文可能根本不是文本（下载的二进制、带 ANSI 控制符的输出）。
+ * **为什么按字节偏移而不是按行。** 落盘的正文可能不是文本（下载的二进制、带 ANSI 控制符的输出）。
  * 按行分页要求先扫全文找换行符，那正是分片存储要避免的整块载入。
  * 字节偏移可以直接算出该读哪几个分片。
  *
@@ -63,8 +61,8 @@ export const readResourceTool: ToolSpec = {
     if (!resourceId) return { status: 'failure', message: '缺少 resource_id' }
 
     if (!ctx.sink) {
-      // 没有正文库时如实说，不要编一个「资源不存在」——那会让模型以为 id 写错了，
-      // 然后浪费几轮去猜正确的 id。
+      // 没有正文库时如实说，不要编一个「资源不存在」——后者会让模型把它当成 id
+      // 写错，然后浪费几轮去猜正确的 id。
       return {
         status: 'failure',
         message: '本次执行没有启用正文库，无法读取落盘资源',
@@ -204,7 +202,7 @@ function searchResource(
     return {
       status: 'success',
       // 没命中是**成功**不是失败：「确实不在里面」是有效结论。
-      // 判失败会让模型以为工具坏了，然后重试或换路。
+      // 判失败等于告诉模型这个工具出了故障，它会重试或换路。
       message: `在 ${totalBytes.toLocaleString()} 字节里没有找到「${query}」（共 ${lineNo} 行）`,
       data: { hits: [], totalLines: lineNo, totalBytes },
     }

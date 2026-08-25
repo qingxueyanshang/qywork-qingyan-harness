@@ -50,7 +50,7 @@ describe('成员会话的选型', () => {
     })
   })
 
-  test('点了不存在的接口当场失败，不悄悄回落', () => {
+  test('点了不存在的接口当场失败，不静默回落', () => {
     const r = memberModel({ id: 'r', provider: '查无此接口' }, config, 继承)
     expect('error' in r && r.error).toContain('查无此接口')
   })

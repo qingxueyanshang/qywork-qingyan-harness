@@ -40,10 +40,10 @@ function isLocalEndpoint(baseUrl: string | undefined): boolean {
 /**
  * 没配 key 时**在本地就判定**，不发请求去等 401。
  *
- * 之前是发出去等 401，再由 `classifyProviderError` 猜「是没配还是配错了」——
- * 而猜的依据是 provider 的错误文案，各家写法不同，猜错的方向恰好是最坏的那个：
+ * 不要发出去等 401 再由 `classifyProviderError` 判「是没配还是配错了」——
+ * 那要靠 provider 的错误文案推断，各家写法不同，判错的方向恰好是最坏的那个：
  * 报 `auth_failed / API Key 无效` 会把新用户引向「检查 key 是不是抄错了」，
- * 而正确的动作是「去配一个」。本地明明知道 key 是空串，没有任何理由去问 provider。
+ * 而正确的动作是「去配一个」。本地知道 key 是空串，没有任何理由去问 provider。
  */
 export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAdapter {
   if (!profile.apiKey.trim() && !isLocalEndpoint(profile.baseUrl)) {

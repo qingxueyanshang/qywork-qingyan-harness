@@ -2,9 +2,7 @@
 /**
  * 附件链路的界面检查：粘贴 / 拖入 → chip 与缩略图 → 落盘位置 → 删会话清目录。
  *
- * ## 为什么要有这个脚本
- *
- * 这条链路里**有四件事 `bun test` 一件都碰不到**：浏览器的粘贴与拖放事件、
+ * **为什么要有这个脚本。** 这条链路里**有四件事 `bun test` 一件都碰不到**：浏览器的粘贴与拖放事件、
  * 跨源预检、CSS 定尺、以及「附件目录随会话一起删」这个跨进程的副作用。
  * 它们各自坏掉的表现都不报错——粘贴之后什么都不发生、缩略图把行撑高、
  * 目录留在盘上，全都要人盯着才看得见。
@@ -12,10 +10,8 @@
  * 装配照 `shoot-ui.mjs`：**Node 驱 Playwright、Bun 起服务**。Bun 在 Windows 上
  * 对 `--remote-debugging-pipe` 的 fd 3/4 支持不全，`chromium.launch()` 会挂到超时。
  *
- * ## 两条驱不动的
- *
- * 桌面外壳的拖放（`tauri://drag-drop`）与原生多选（`pick_files`）**只在 Tauri
- * 里存在**，Playwright 驱的是浏览器，那两个事件根本不会发。要验得起桌面 app
+ * **两条驱不动的。** 桌面外壳的拖放（`tauri://drag-drop`）与原生多选（`pick_files`）**只在 Tauri
+ * 里存在**，Playwright 驱的是浏览器，那两个事件不会发。要验得起桌面 app
  * 手动做一次。这里覆盖的是浏览器那条路——它也是手机端唯一的路。
  *
  *   node scripts/check-attachments.mjs
@@ -146,10 +142,10 @@ try {
 
   // ── 粘贴 ──
   // 这一步同时在验 CORS 预检：`x-attachment-name` 不在放行名单里的话，
-  // 上传请求根本不会发出，chip 永远不出现（表现是一句裸的 Failed to fetch）。
+  // 上传请求不会发出，chip 永远不出现（表现是一句裸的 Failed to fetch）。
   await feed(page, 'paste', 'image.png')
   await page.waitForSelector('.attach-chip', { timeout: 15_000 })
-  ok('粘贴：chip 出现（顺带验了预检放行 x-attachment-name）')
+  ok('粘贴：chip 出现（同时验证预检放行 x-attachment-name）')
 
   // ── 拖入（浏览器那条路；桌面外壳走 tauri://drag-drop，这里驱不动）──
   await feed(page, 'drop', 'dropped.png')

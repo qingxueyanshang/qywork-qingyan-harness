@@ -1,19 +1,14 @@
 /**
  * MCP 的两种传输：本地子进程（stdio）与远端 HTTP（streamable HTTP）。
  *
- * ## 为什么要抽这一层
- *
- * JSON-RPC 那一层（握手、游标翻页、id 配对、错误语义）两种传输**完全一样**，
+ * **为什么要抽这一层。** JSON-RPC 那一层（握手、游标翻页、id 配对、错误语义）两种传输**完全一样**，
  * 不一样的只有「消息怎么进出」。不抽的话就是把整个 `McpClient` 复制一份，
  * 然后等着某一次改动只落在其中一份上——那种偏差只会在别人的 server 上暴露。
  *
- * ## 两者的根本差别：失败的种类不同
- *
- * stdio 的对面是我们自己起的进程，它挂了我们立刻知道，而且知道退出码和 stderr。
- * HTTP 的对面**不在本机掌控内**：它可能没部署、可能在重启、可能鉴权过期、
- * 也可能只是网断了一下。所以 HTTP 传输的主要工作不是「发消息」，
- * 是**把失败分清楚**——「你配错了」和「对面挂了」要给出完全不同的引导，
- * 混成一句「连接失败」等于让用户去猜。
+ * **两者的根本差别：失败的种类不同。** stdio 的对面是本进程起的子进程，它退出时本地立刻知道，且拿得
+ * 到退出码和 stderr。HTTP 的对面**不在本机掌控内**：它可能没部署、可能在重启、可能鉴权过期、也可
+ * 能只是网断了一下。所以 HTTP 传输的主要工作不是「发消息」，是**把失败分清楚**——「配置错了」和
+ * 「对端不可用」要给出完全不同的引导，混成一句「连接失败」等于让用户去猜。
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
@@ -52,7 +47,7 @@ export interface McpTransport {
   /** 发一条消息。HTTP 下这是一次真实请求，可能 reject。 */
   send(payload: Record<string, unknown>): Promise<void>
   stop(): void
-  /** 已经断开时返回原因；还活着返回 null。 */
+  /** 已经断开时返回原因；连接正常时返回 null。 */
   deadReason(): string | null
   /** 握手完成后通知传输层。HTTP 之后每一条请求都要带上协议版本头。 */
   afterInitialize?(protocolVersion: string): void
@@ -68,8 +63,8 @@ export class StdioTransport implements McpTransport {
   /**
    * 最近几行 stderr。
    *
-   * Windows 上我们用 `shell: true` 起 server（npx / uvx 都是 .cmd），
-   * 于是「命令不存在」**不会触发 error 事件**——cmd 自己起来了、打一行
+   * Windows 上用 `shell: true` 起 server（npx / uvx 都是 .cmd），
+   * 因此「命令不存在」**不会触发 error 事件**——cmd 自己起来了、打一行
    * 「不是内部或外部命令」到 stderr、退出码 1。只报 `code=1` 的话，
    * 用户看到的是一条完全无从下手的错误，而真正的原因就在那一行里。
    */
@@ -105,8 +100,8 @@ export class StdioTransport implements McpTransport {
     })
     this.proc = proc
 
-    // stdin 上必须挂 error 监听。进程刚起来就死掉时（命令不存在、启动即崩），
-    // 我们那条 `initialize` 很可能已经写出去了，写向一个已经关掉的管道
+    // stdin 上必须挂 error 监听。进程刚起来就退出时（命令不存在、启动即崩），
+    // 那条 `initialize` 很可能已经写出去了，写向一个已经关掉的管道
     // 会抛 EPIPE——而没有监听者的 stream error 事件会**直接掀掉整个宿主进程**。
     // 一个装错的 MCP server 不该有能力做到这件事。
     // 真正的死因由 exit 处理器给出（带 stderr 尾巴），这里只需要不让它炸。
@@ -127,7 +122,7 @@ export class StdioTransport implements McpTransport {
     })
     proc.on('error', (err) => {
       // 命令不存在时 spawn 走这里而不是 exit（仅非 shell 路径；Windows 上
-      // 我们走 shell，那条路要靠 stderr，见 stderrTail 的注释）。
+      // 走 shell，那条路要靠 stderr，见 stderrTail 的注释）。
       this.dead = `启动失败：${err.message}`
       handlers.onClose(this.dead)
     })
@@ -157,7 +152,7 @@ export class StdioTransport implements McpTransport {
    * 停掉 server。
    *
    * **Windows 上必须杀整棵进程树。** 那边 `spawn` 带 `shell: true`（npx / uvx 是
-   * .cmd，不走 shell 起不来），于是 `this.proc` 是 cmd.exe，server 本体是它的孙进程。
+   * .cmd，不走 shell 起不来），因此 `this.proc` 是 cmd.exe，server 本体是它的孙进程。
    * 只 `proc.kill()` 的话 cmd 没了、node 还在——每跑一次 `qy mcp` / `qy doctor`、
    * 每次扩展缓存释放都漏一批常驻进程。`taskkill /T` 是这台机器上唯一能连孙进程一起
    * 收掉的办法（Node 没有跨平台的进程组 API）。
@@ -195,7 +190,7 @@ export class StdioTransport implements McpTransport {
       if (!line) continue
       const msg = tryParse(line)
       if (msg) this.handlers?.onMessage(msg)
-      // 有的 server 启动时往 stdout 打 banner。当协议错误处理会让整个连接白白失败。
+      // 有的 server 启动时往 stdout 打 banner。当协议错误处理会让整个连接失败。
       else this.handlers?.onLog?.(`[mcp:${this.name}] ${line}`)
     }
   }
@@ -206,7 +201,7 @@ export class StdioTransport implements McpTransport {
 /**
  * 单次 HTTP 请求的超时。
  *
- * 比 stdio 短：本地进程慢是它在干活，远端不响应多半是它没了。
+ * 比 stdio 短：本地进程慢是它在执行，远端不响应通常是它已经不可用。
  * 不过 SSE 流一旦开始出数据就不再受这个限制——那是**建立连接**的超时，
  * 不是「整个调用」的超时，否则一个正常的长工具调用会被拦腰掐断。
  */
@@ -291,7 +286,7 @@ export class HttpTransport implements McpTransport {
     if (type.includes('text/event-stream')) {
       // **不 await**：SSE 流会一直开着直到 server 关掉它，而这次 `send` 的语义
       // 是「消息发出去了」。await 的话，一个长流会把调用方钉在这儿，
-      // 而调用方等的其实是那条 id 对应的响应——它会从 onMessage 送达。
+      // 而调用方等的是那条 id 对应的响应——它会从 onMessage 送达。
       void this.pumpSse(res, abort, payload.id as string | number)
       return
     }
@@ -303,7 +298,7 @@ export class HttpTransport implements McpTransport {
       this.handlers?.onMessage(msg)
       return
     }
-    // 200 但内容不是 JSON-RPC——多半撞上了登录页或反代的错误页。
+    // 200 但内容不是 JSON-RPC——通常是撞上了登录页或反代的错误页。
     // 静默丢掉的话，调用方会一直等到超时。合成一条错误比让它挂着强。
     this.handlers?.onMessage({
       jsonrpc: '2.0',
@@ -322,9 +317,9 @@ export class HttpTransport implements McpTransport {
     for (const a of this.inflight) a.abort()
     this.inflight.clear()
 
-    // 显式结束会话。**不等它完成也不报错**：我们正在关，对面记不记得住
-    // 已经不影响本地任何东西；为了一个清理动作把关闭流程搞成可能失败的，
-    // 换来的是「退出时卡住」这种最让人恼火的行为。
+    // 显式结束会话。**不等它完成也不报错**：本端正在关闭，对面是否记住这次结束
+    // 已经不影响本地任何状态；为一个清理动作把关闭流程变成可能失败的，代价是
+    // 退出时卡住。
     if (this.sessionId) {
       void fetch(this.spec.url, {
         method: 'DELETE',
@@ -344,16 +339,14 @@ export class HttpTransport implements McpTransport {
   /**
    * 读一条 SSE 流，把里面的每个 JSON-RPC 消息交出去。
    *
-   * ## 流「悄悄结束」必须当成失败
+   * **流静默结束必须当成失败。** 这条流是为 `requestId` 那次请求开的，正常情况下它至少要送回一条带
+   * 那个 id 的响应。可它也可能**什么都不送就结束**——server 崩了、反代掐了连接、chunked 编码被截
+   * 断。实测（fixture 里 `controller.error()`）表明这种情况下 `for await` **不一定抛异常**，它就是
+   * 正常结束了。
    *
-   * 这条流是为 `requestId` 那次请求开的，正常情况下它至少要送回一条带那个 id
-   * 的响应。可它也可能**什么都不送就结束**——server 崩了、反代掐了连接、
-   * chunked 编码被截断。实测（fixture 里 `controller.error()`）表明这种情况下
-   * `for await` **不一定抛异常**，它就是正常结束了。
-   *
-   * 于是「流结束了」和「流成功了」在传输层长得一模一样，而调用方还在等那条 id。
+   * 因此「流结束了」和「流成功了」在传输层长得一模一样，而调用方还在等那条 id。
    * 后果是整整一个请求超时（握手时是 30 秒）的静默卡顿——
-   * 这是最难排查的一种失败，因为它看起来像还在干活。
+   * 这是最难排查的一种失败，因为它看起来像仍在执行。
    *
    * 所以流结束时必须**回查那条 id 收到答复没有**，没有就自己合成一条错误响应
    * 交上去。合成的错误也比一个永不返回的 promise 强得多。
@@ -410,9 +403,9 @@ export class HttpTransport implements McpTransport {
   }
 
   /**
-   * 把状态码翻译成「你该做什么」。
+   * 把状态码翻译成「下一步该做什么」。
    *
-   * 远端 server 不在本机掌控内，所以**分清「配错了」和「对面挂了」**
+   * 远端 server 不在本机掌控内，所以**分清「配错了」和「对端不可用」**
    * 是这个传输最重要的工作。一句「连接失败」会让用户先去查网络，
    * 而真正的原因可能是 token 过期。
    */
@@ -439,7 +432,7 @@ export class HttpTransport implements McpTransport {
     return `MCP server 返回 HTTP ${status}${tail}`
   }
 
-  /** fetch 抛出来的东西没有状态码，只能从 code / 文案认。 */
+  /** fetch 抛出的错误没有状态码，只能从 code / 文案认。 */
   private describeTransportFailure(err: unknown): string {
     if (err instanceof Error && err.name === 'AbortError') {
       return this.stopped ? '已停止' : `连接超时（${HTTP_CONNECT_TIMEOUT_MS}ms）：${this.spec.url}`

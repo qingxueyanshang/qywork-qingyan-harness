@@ -72,7 +72,7 @@ export interface TailNote {
  * MCP 与插件的 `summary` 就是第三方给的 description 原文，可以是好几段。
  * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼 2620 token，
  * 截到 100 字 1187 token。截的是**清单**不是工具本身——完整说明由
- * `load_tool` 按需拉，清单只负责让模型知道有这么个东西。
+ * `load_tool` 按需拉，清单只负责让模型知道有这么一个工具。
  */
 const SUMMARY_MAX_CHARS = 100
 
@@ -151,7 +151,7 @@ export function buildTailNotes(input: {
   const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]
 
   //
-  // 技能与记忆都**只放标题**：正文全放进来，十来条就能吃掉几万 token，而一次任务
+  // 技能与记忆都**只放标题**：正文全放进来，十来条就能占掉几万 token，而一次任务
   // 通常只用得上其中一两条。标题的成本线性于条数不是内容，全列也装得下，
   // 哪条要展开由模型看着标题自己判断——它手上有当前任务的全部细节，
   // 而任何按当轮文本打分的召回只看得见字面重合度。

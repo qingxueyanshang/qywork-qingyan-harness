@@ -143,7 +143,7 @@ describe('编排执行', () => {
       name: 't',
       roles: [role('dev')],
       plan: [
-        { id: 'a', agent: 'dev', task: '干活' },
+        { id: 'a', agent: 'dev', task: '执行任务' },
         { id: 'b', agent: 'cli:nope', task: '交给外面那位' },
       ],
     }
@@ -161,7 +161,7 @@ describe('编排执行', () => {
     const config: TeamConfig = {
       name: 't',
       roles: [role('dev')],
-      plan: [{ id: 'a', agent: 'dev', task: '干活' }],
+      plan: [{ id: 'a', agent: 'dev', task: '执行任务' }],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -173,7 +173,7 @@ describe('编排执行', () => {
       name: 't',
       rules: { shared: '禁止修改 CI 配置' },
       roles: [role('dev')],
-      plan: [{ id: 'a', agent: 'dev', task: '干活' }],
+      plan: [{ id: 'a', agent: 'dev', task: '执行任务' }],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -200,7 +200,7 @@ describe('编排执行', () => {
 
     expect(byId(results, 'n1').status).toBe('failed')
     expect(byId(results, 'n2').status).toBe('skipped')
-    // 角色 b 根本不该被调用。
+    // 角色 b 不该被调用。
     expect(d.order).toEqual(['a'])
   })
 
@@ -243,7 +243,7 @@ function byId(results: NodeResult[], id: string): NodeResult {
  *
  * 子会话打了 `source: 'workflow'`，不进会话列表——**`team.member` 事件里的这个 id
  * 是它唯一的入口**。断在这一环的表现最难查：面板照常显示「完成」，
- * 只是那个成员到底读了什么、跑了哪些命令永远看不到，而且没有任何报错。
+ * 只是那个成员读了什么、跑了哪些命令永远看不到，而且没有任何报错。
  */
 describe('成员子会话', () => {
   function collect(run: (agent: string) => Promise<Record<string, unknown>>) {
@@ -263,7 +263,7 @@ describe('成员子会话', () => {
   const cfg: TeamConfig = {
     name: 't',
     roles: [role('dev')],
-    plan: [{ id: 'n1', agent: 'dev', task: '干活' }],
+    plan: [{ id: 'n1', agent: 'dev', task: '执行任务' }],
   }
 
   test('内置后端返回了会话 id，就出现在 done 事件上', async () => {

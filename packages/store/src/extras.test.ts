@@ -23,7 +23,7 @@ function conv() {
 }
 
 describe('会话级开关', () => {
-  test('默认没有任何行 —— 新装的东西自动就在', () => {
+  test('默认没有任何行 —— 新装的扩展自动就在', () => {
     const { store, id } = conv()
     expect(listDisabledExtras(store, id).size).toBe(0)
     store.close()
@@ -69,7 +69,7 @@ describe('会话级开关', () => {
     store.close()
   })
 
-  /** 会话删了它也该跟着走，不然留一堆指向不存在会话的行。 */
+  /** 会话删了它也该跟着走，否则留下一批指向不存在会话的行。 */
   test('会话被删时级联清掉', () => {
     const { store, id } = conv()
     setExtraEnabled(store, id, 'memory:style', false)

@@ -46,7 +46,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
             "--host",
             "127.0.0.1",
             "--print-token",
-            // 让 sidecar 自己盯着我们：`shutdown` 只在正常退出路径上跑，
+            // 让 sidecar 自己盯着宿主进程：`shutdown` 只在正常退出路径上跑，
             // 崩溃或被强杀时不会触发（实测 Stop-Process 就会留下孤儿 qy，
             // 它占着端口和 SQLite 的 WAL 锁，下次启动直接起不来）。
             "--parent-pid",
@@ -54,7 +54,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
         ])
         // 空字符串 = 「没有可用的上次工作区」，这时**不传 --cwd**：
         // 传的话服务端会把外壳的启动目录登记成项目（安装目录 / src-tauri），
-        // 那是一个谁也没要过的项目。不传则由服务端自己决定——账本里有项目就用
+        // 那是一个用户从未打开过的项目。不传则由服务端自己决定——账本里有项目就用
         // 最近打开的，一个都没有才建默认工作区（见 server.ts 的 bootstrapWorkspace）。
         .args(if workspace.is_empty() {
             Vec::new()
@@ -77,7 +77,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
      * Terminated、或流关闭才退出。qy 起来了却卡在打印令牌之前（server 初始化阻塞、
      * 端口探测挂住）时，这个循环**永远不返回**——而主窗口是在它之后才建的
      * （`lib.rs` 的 `build_main_window`）。表现是 qywork.exe 和 qy.exe 都在后台
-     * 活着、桌面上什么都没有，任务管理器里就是那条「qy.exe 常驻」。
+     * 都在运行、桌面上没有窗口，任务管理器里只剩一条常驻的 qy.exe。
      *
      * 20 秒：冷启动要读配置、开 SQLite、可能还要预热扩展，给得比感觉上宽一些；
      * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
@@ -125,7 +125,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     match tokio::time::timeout(std::time::Duration::from_secs(20), handshake).await {
         Ok(result) => result,
         Err(_) => {
-            // 超时了就把它收掉再报错，别留一个既不干活又占着端口的进程。
+            // 超时了就把它收掉再报错，别留一个既不服务又占着端口的进程。
             shutdown_handle(&handle);
             Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌，已终止"))
         }
@@ -159,7 +159,7 @@ pub fn from_env() -> Option<SidecarInfo> {
 
     // **必须探活。** 这两个变量是开发时手动 export 的，很容易在那个 qy 早就退出之后
     // 还留在 shell 环境里；打包版从这样的 shell 启动，就会拿着一个死端口直接开窗口，
-    // 界面连不上任何东西。而唯一的提示是 `eprintln!`——release 没有控制台，看不见。
+    // 界面连不上任何后端。而唯一的提示是 `eprintln!`——release 没有控制台，看不见。
     //
     // 探不通就**当作没有这个变量**，落回正常的 spawn 路径。自愈比报一个看不见的错好；
     // 也正因为会自愈，这里不需要再对用户说什么。
@@ -195,7 +195,7 @@ pub fn init_script(info: &SidecarInfo) -> String {
 /// 记住上次打开的工作区。
 ///
 /// 没有这个的话，「切换工作区」只在本次运行有效，下次从开始菜单启动又回到
-/// `current_dir()` 或家目录——用户会以为切换没保存。
+/// `current_dir()` 或家目录——界面上等同于切换没保存。
 ///
 /// 存成一行纯文本而不是 JSON：它只有一个值，加一层结构只会让手动修正变麻烦。
 fn last_workspace_file() -> Option<PathBuf> {
@@ -210,8 +210,8 @@ pub fn read_last_workspace() -> Option<PathBuf> {
     let p = std::fs::read_to_string(last_workspace_file()?).ok()?;
     // 去掉 BOM。这个文件是给人看、也允许人手改的，而 Windows 记事本存 UTF-8
     // 默认就带 BOM——不剥的话路径里会多出一个不可见字符，`is_dir()` 判假，
-    // 于是静默回落到 cwd。表现是「我明明改了这个文件，它就是不认」，
-    // 而且完全没有任何提示。实测踩到过（用 PowerShell 的 Set-Content -Encoding utf8）。
+    // 因此静默回落到 cwd。现象是改了这个文件却不生效，且没有任何提示。
+    // 实测复现方式：PowerShell 的 Set-Content -Encoding utf8。
     let path = PathBuf::from(p.trim_start_matches('\u{feff}').trim());
     // 记下的目录可能已经被删掉或改名了。存在性检查放在这里而不是调用方，
     // 因为「记录失效」的正确反应是**回落到下一级优先级**，不是报错。

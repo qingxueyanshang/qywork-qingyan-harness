@@ -106,7 +106,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  /** 读不回来的旧 payload 只该让动作词退回「创建」，不该让工具调用炸掉。 */
+  /** 读不回来的旧 payload 只该让动作词退回「创建」，不该让工具调用抛错。 */
   test('payload 坏了就当没有，不抛', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')

@@ -6,7 +6,7 @@
  *
  * **不在这里验「端口不被继承」**——那要起一个真的监听 + 让父进程退出 + 事后看端口，
  * 是一次跨进程的手工实测，结论与实测记录写在 `runner.ts` 的模块注释里。
- * 这里锁的是「跑出来的东西和直接 spawn 一样」：输出、退出码、杀得掉。
+ * 这里锁的是「跑出来的结果和直接 spawn 一样」：输出、退出码、杀得掉。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -78,7 +78,7 @@ describe('命令由 runner 代跑', () => {
          * 起一个继承了 stdout 的孙进程，自己写一行就退出。
          *
          * **`detached` 不能省**：不带它 Bun 会在中间那个进程退出时把孙进程一并
-         * 带走（`unref` 也留不住，本机实测），于是管道照常 EOF，这条断言就恒真了。
+         * 带走（`unref` 也留不住，本机实测），因此管道照常 EOF，这条断言就恒真了。
          */
         argv: [
           process.execPath,
@@ -119,7 +119,7 @@ describe('命令由 runner 代跑', () => {
   })
 
   /** runner 死了就说清楚，不假装还能跑——重启一次意味着重建「哪些命令还在跑」那本账。 */
-  test('runner 没了之后再要命令会抛', async () => {
+  test('runner 退出之后再发命令会抛', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)
     runner.stop()
     await Bun.sleep(300)

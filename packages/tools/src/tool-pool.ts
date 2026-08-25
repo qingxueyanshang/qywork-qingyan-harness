@@ -1,17 +1,13 @@
 /**
  * 外部工具的待加载池，与它的取用口 `load_tool`。
  *
- * ## 要治的是什么
- *
- * MCP 与插件的工具原先全部注册，于是每个工具的**完整 JSON Schema** 都进请求，
+ * **要治的是什么。** MCP 与插件的工具若全部注册，每个工具的**完整 JSON Schema** 都进请求，
  * 而且工具表渲染在 prompt 最前面（`agent/registry.ts` 顶部：顺序抖动会让整个
  * 前缀缓存失效）。MCP 那份 `parameters` 是第三方 server 给的，经
  * `mcp/register.ts` 的 `normalizeSchema` 只补 `type`/`properties` 就原样透传——
- * **大小完全不由我们控制**。
+ * **大小完全不受本仓控制**。
  *
- * ## 实测的量（2026-08-16，四个真实 MCP server，本仓 `estimateSchemas` 口径）
- *
- * ```
+ * **实测的量（2026-08-16，四个真实 MCP server，本仓 `estimateSchemas` 口径）。** ```
  * @modelcontextprotocol/server-filesystem           14 个工具   4225 token
  * @modelcontextprotocol/server-everything           15 个工具   3041 token
  * @modelcontextprotocol/server-memory               11 个工具   2537 token
@@ -22,10 +18,8 @@
  * ——**一个工具就能顶一整个 server**，所以按「装了几个 server」拍脑袋定不了档。
  * 同一批工具的一行摘要清单（截到 100 字）是 1187 token，约十分之一。
  *
- * ## 阈值：小的时候全量常驻更划算
- *
- * 总量小时转按需是净亏：省下来的那点 token 抵不掉一次模型往返，而清单本身
- * 还要占约 30 token/条。所以只有超过阈值才转按需，见 `EXTERNAL_SCHEMA_BUDGET_TOKENS`。
+ * **阈值：小的时候全量常驻更划算。** 总量小时转按需是净亏：省下来的那点 token 抵不掉一次模型往返，
+ * 而清单本身还要占约 30 token/条。所以只有超过阈值才转按需，见 `EXTERNAL_SCHEMA_BUDGET_TOKENS`。
  */
 
 import type { ToolRegistry, ToolSpec } from '@qywork/agent'
@@ -91,7 +85,7 @@ export class PendingToolPool {
   /**
    * 尾区清单：一行一条，只有名字和一句话。
    *
-   * 装过的**不再列出来**——它已经在工具表里了，再列一遍会让模型以为还要再装一次。
+   * 装过的**不再列出来**——它已经在工具表里了，再列一遍等于提示模型再装一次。
    */
   index(): { name: string; summary: string }[] {
     return [...this.pending.values()].map((s) => ({ name: s.name, summary: s.summary }))
@@ -176,7 +170,7 @@ export function makeLoadToolTool(pool: PendingToolPool): ToolSpec {
       }
       if (r.already.length) parts.push(`本来就在工具表里：${r.already.join('、')}。`)
       if (r.unknown.length) {
-        // 列出可加载的名字而不是只说「找不到」：模型多半是名字记错了一个字，
+        // 列出可加载的名字而不是只说「找不到」：模型通常是名字记错了一个字，
         // 给它候选它下一轮就能自己修正（同 `read_skill` 的做法）。
         const available = pool.index().map((t) => t.name)
         parts.push(

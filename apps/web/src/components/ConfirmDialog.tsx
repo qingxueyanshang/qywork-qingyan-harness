@@ -3,16 +3,12 @@ import { createEffect, onCleanup, Show } from 'solid-js'
 /**
  * 确认弹窗。
  *
- * ## 为什么不是就地展开
- *
- * 别把确认句塞进侧栏那一行里：左栏只有 232px，一句带边界声明的话要折三行，
+ * **为什么不是就地展开。** 别把确认句塞进侧栏那一行里：左栏只有 232px，一句带边界声明的话要折三行，
  * 把下面的项目挤开；而它盖在列表上，看起来像列表自己坏了。
  * 破坏性动作的确认属于「打断」——它就该是一个夺焦点的弹窗。
  *
- * ## 开合不进全局状态
- *
- * 确认框的开合只属于按下按钮的那一行。做成全局状态就要为每个调用点编一个名字，
- * 还得把上下文塞进全局 store。这里只受 `open` 这一个 prop 控制。
+ * **开合不进全局状态。** 确认框的开合只属于按下按钮的那一行。做成全局状态就要为每个调用点编一个名
+ * 字，还得把上下文塞进全局 store。这里只受 `open` 这一个 prop 控制。
  */
 export function ConfirmDialog(props: {
   open: boolean
@@ -21,7 +17,7 @@ export function ConfirmDialog(props: {
   message: string
   /** 确认按钮的文字。用动词本身（「移除」「归档」），不写「确定」。 */
   confirmLabel: string
-  /** 真的会毁东西时才给 true，按钮转成危险色。 */
+  /** 真的会造成不可逆改动时才给 true，按钮转成危险色。 */
   danger?: boolean
   onConfirm: () => void
   onCancel: () => void

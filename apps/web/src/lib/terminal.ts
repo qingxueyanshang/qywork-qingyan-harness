@@ -44,7 +44,7 @@ export async function openTerminal(
 ): Promise<string> {
   outputs.set(id, on.output)
   exits.set(id, on.exit)
-  // 先挂监听再开进程：反过来的话 shell 的第一行提示符可能在监听装好之前就吐完了，
+  // 先挂监听再开进程：反过来的话 shell 的第一行提示符可能在监听装好之前就输出完了，
   // 表现是终端开出来是空白的，敲一下回车才冒出提示符。
   await wire()
   return await tauriInvoke<string>('terminal_open', { id, cwd, cols, rows })

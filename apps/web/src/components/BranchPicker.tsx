@@ -31,7 +31,7 @@ function said(e: unknown, fallback: string): string {
  * 是第二个裁决者，挡的还是用户明确要做的动作。
  *
  * 清单点开才拉：不是每次开会话都会切分支，而 `for-each-ref` 是要起进程的。
- * 每次点开都重拉一遍——分支是用户在终端里随时会加的东西，缓存住的清单
+ * 每次点开都重拉一遍——分支是用户在终端里随时会加的，缓存住的清单
  * 会让刚建好的分支不在列表里。
  */
 export function BranchPicker() {

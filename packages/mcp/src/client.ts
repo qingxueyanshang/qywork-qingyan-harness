@@ -2,19 +2,15 @@
  * MCP 客户端：JSON-RPC 2.0，传输可换（stdio / streamable HTTP）。
  *
  * 与插件宿主（`@qywork/plugins`）看起来很像，但**刻意不共用一份实现**：
- * 插件协议是我们自己定的、可以随时改；MCP 是外部规范，帧格式、握手、
+ * 插件协议由本仓定义、可以随时改；MCP 是外部规范，帧格式、握手、
  * 错误语义都得照它来。合并成一个「通用 RPC」的结果必然是
  * 某一次改动为了迁就自家协议而破坏了 MCP 的兼容性——那种 bug 只会在
  * 别人的 server 上出现，本地永远复现不了。
  *
- * ## 这个文件只管 JSON-RPC
+ * **这个文件只管 JSON-RPC。** 消息怎么进出交给 `transport.ts`。两种传输在**握手、游标翻页、id 配
+ * 对、错误语义**上一模一样，差别只在失败的种类（见那个文件的头注释）。
  *
- * 消息怎么进出交给 `transport.ts`。两种传输在**握手、游标翻页、id 配对、
- * 错误语义**上一模一样，差别只在失败的种类（见那个文件的头注释）。
- *
- * ## 握手
- *
- * `initialize` → 收到结果 → 发 `notifications/initialized`。**中间那一步不能省**：
+ * **握手。** `initialize` → 收到结果 → 发 `notifications/initialized`。**中间那一步不能省**：
  * 有的 server 在收到 initialized 之前拒绝一切请求，表现是 `tools/list` 一直超时。
  *
  * HTTP 传输还要在这一步之间把**会话 id** 从响应头里取走（`Mcp-Session-Id`）。
@@ -40,7 +36,7 @@ const PKG_VERSION: string = pkg.version
 export type { HttpServerSpec, McpServerSpec, StdioServerSpec } from './transport.ts'
 
 /**
- * 我们声明的协议版本。
+ * 客户端声明的协议版本。
  *
  * MCP 的版本是日期串。server 回一个不同的版本时**只警告不断开**：
  * 规范建议客户端断开，但实际生态里版本参差，为一个次要版本差异让用户的
@@ -66,10 +62,9 @@ const KNOWN_VERSIONS = new Set<string>(KNOWN_VERSION_LIST)
  * 从这一版起，能力声明**不在 `initialize` 的结果里**，改由 `server/discover` 给。
  *
  * 这不是一条可以「以后再说」的版本差异：qywork 是否注册 resource 工具、
- * 是否报「声明了我们没接的能力」，全都读 `capabilities`。
- * 只读 initialize 的话，一个现代 server 上那个字段是空的，于是
- * **resource 工具一个都不注册、也不报任何错**——正是刚修掉的那个静默失败，
- * 换个版本原样复发。
+ * 是否报「声明了但未接入的能力」，全都读 `capabilities`。
+ * 只读 initialize 的话，一个现代 server 上那个字段是空的，因此
+ * **resource 工具一个都不注册、也不报任何错**——同一个静默失败换个版本复发。
  */
 const DISCOVER_SINCE = '2026-07-28'
 
@@ -77,8 +72,8 @@ const REQUEST_TIMEOUT_MS = 60_000
 const INIT_TIMEOUT_MS = 30_000
 
 /**
- * server 声明的能力。**只列我们会去看的那几个**——
- * 把整个对象照抄成类型只会让「我们支持什么」变得看不出来。
+ * server 声明的能力。**只列客户端会去读的那几个**——
+ * 把整个对象照抄成类型只会让「客户端支持什么」变得看不出来。
  */
 export interface McpServerCapabilities {
   tools?: { listChanged?: boolean }
@@ -161,14 +156,12 @@ export class McpClient {
   /**
    * server 在 `initialize` 里声明的能力。
    *
-   * ## 为什么必须留着
-   *
-   * **不能只取 `protocolVersion` 和 `serverInfo`、把 `capabilities` 丢掉。**
+   * **必须留着：不能只取 `protocolVersion` 和 `serverInfo`、把 `capabilities` 丢掉。**
    * 丢掉的后果是：一个只提供 `resources`（不提供 `tools`）的 server 表现为
    * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具、**没有任何错误**。
    * 用户看到的是「配了但什么都没发生」，而日志里干干净净。
    *
-   * 我们目前只消费 `tools`。声明了而我们没接的能力（`resources` / `prompts`）
+   * 客户端目前只消费 `tools`。声明了但未接入的能力（`resources` / `prompts`）
    * 必须在加载时**说出来**——那句话是用户唯一能拿到的线索。
    */
   capabilities: McpServerCapabilities = {}
@@ -229,8 +222,8 @@ export class McpClient {
    * `initialize`，握手被版本拒绝时**逐档回退**。
    *
    * 规范说 server 收到不认识的版本时应当回自己支持的那一版，而不是报错——
-   * 但「应当」和「实际」是两回事，而一个因为我们抬高了版本号就完全连不上的
-   * server，对用户表现为「昨天还好好的今天用不了了」。
+   * 但「应当」和「实际」是两回事，而一个因为客户端抬高了版本号就完全连不上的
+   * server，对用户表现为「昨天正常，今天连不上」。
    *
    * 回退只对**看起来像版本问题**的错误做，且只往旧了走。任何其他错误
    * （命令不存在、鉴权失败）原样抛——对它们重试只会把真正的原因埋掉。
@@ -247,7 +240,7 @@ export class McpClient {
           'initialize',
           {
             protocolVersion: version,
-            // 只声明我们真的实现了的。声明了没实现的能力，server 会据此发我们
+            // 只声明已经实现的。声明了没实现的能力，server 会据此发来
             // 处理不了的请求——那比不声明糟得多。
             capabilities: {},
             clientInfo: { name: 'qywork', version: PKG_VERSION },
@@ -305,7 +298,7 @@ export class McpClient {
   async listTools(): Promise<McpToolDef[]> {
     const out: McpToolDef[] = []
     let cursor: string | undefined
-    // 上限只是防止 server 返回一个自指的游标把我们钉死在这儿。
+    // 上限只是防止 server 返回一个自指的游标让这个循环不结束。
     for (let page = 0; page < 100; page++) {
       const res = (await this.request('tools/list', cursor ? { cursor } : {})) as {
         tools?: McpToolDef[]
@@ -396,8 +389,8 @@ export class McpClient {
       this.pending.set(id, { resolve, reject, timer })
 
       // 发送失败要**立刻**拒掉这一条，不能等超时。
-      // HTTP 下「发不出去」是常态（401、404、对面挂了），而那些错误信息
-      // 恰恰是最有排查价值的——让它烂在一个 60 秒超时里等于把它扔了。
+      // HTTP 下「发不出去」是常态（401、404、对端不可用），而那些错误信息
+      // 是最有排查价值的——压在一个 60 秒超时里等于把它丢掉。
       void Promise.resolve(this.transport?.send({ jsonrpc: '2.0', id, method, params })).catch(
         (err: unknown) => {
           const p = this.pending.get(id)
@@ -423,7 +416,7 @@ export class McpClient {
   }
 
   private dispatch(msg: Record<string, unknown>): void {
-    // server 发来的请求（sampling / roots / elicitation）——我们没声明这些能力，
+    // server 发来的请求（sampling / roots / elicitation）——客户端没声明这些能力，
     // 所以照规范回 method not found，而不是不吭声让对方等到超时。
     if (typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null) {
       void this.transport
@@ -434,7 +427,7 @@ export class McpClient {
         })
         .catch(() => {
           // 回一条「不支持」都失败了，说明连接已经没了。那件事会由 onClose 处理，
-          // 这里再报一次只会刷屏。
+          // 这里再报一次只会重复输出。
         })
       return
     }

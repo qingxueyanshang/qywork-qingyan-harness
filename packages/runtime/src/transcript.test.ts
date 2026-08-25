@@ -4,12 +4,10 @@
  * 覆盖范围：`transcript.ts` 全部（`stepsToUnits` + `stepsToWireMessages` +
  * `buildHistory`），以及 `store/repos.ts` 的 `settleRunningSteps`。
  *
- * ## 这一组要证伪的是什么
- *
- * 原始失败形状是实测出来的：运行库里
+ * **这一组要证伪的是什么。** 原始失败形状是实测出来的：运行库里
  * `SELECT role, COUNT(*) FROM messages GROUP BY role` 只回一行 `user`，
  * 而同一会话的 steps 有 20 条 text + 42 条 tool_action。模型第二轮起看到的
- * 输入字面上是「用户说了三次话，我一次都没回过」。
+ * 输入字面上是「用户说了三次话，助手一次都没回」。
  *
  * 所以断言不能是「投影函数返回了几条消息」——那种断言在顺序错、配对错、
  * 重复注入这三种失败形状下**全都放行**。下面四组是叠加的，缺一放行一类 bug：
@@ -288,7 +286,7 @@ describe('历史装配', () => {
    *
    * 整批跳过是崩溃窗口的窄守卫，但一个 batchId 覆盖整个模型回合——
    * 如果 `settleRunningSteps` 不工作，跳过会连带吞掉波次 1 已经写盘的结果，
-   * 而那正是「工具白跑、文件重读」这个要治的病在中断场景的复发。
+   * 而那正是「工具重复执行、文件重读」这个要治的问题在中断场景的复发。
    */
   test('中断后：孤儿落终态、配对完整、已成功的结果仍在', async () => {
     const { store, conv, ask, run } = fixture()
@@ -364,7 +362,7 @@ describe('历史装配', () => {
 describe('思考的投影', () => {
   /**
    * 复现的是原始失败形状：迁移 26 之前思考寄生在批次首条工具行的 `content` 上，
-   * 于是纯文本轮的思考无处可放、直接丢弃。
+   * 因此纯文本轮的思考无处可放、直接丢弃。
    *
    * 模型侧与界面侧口径**刻意不同**，这里锁的是模型侧：
    * 纯文本轮不带 `reasoningContent`——活的 transcript 只在有工具调用时才挂它
@@ -391,7 +389,7 @@ describe('思考的投影', () => {
   /**
    * 轮内自动重发留下的死思考不进模型视图。
    *
-   * 复现的是原始失败形状：断流重发**不换 run**，死掉那次与重发那次的思考落在
+   * 复现的是原始失败形状：断流重发**不换 run**，失败那次与重发那次的思考落在
    * 同一个 run 的 step 表里且相邻。不排除的话两段无关生成会被拼成一条
    * `reasoningContent` 回传，与活侧不同形。
    */
@@ -401,7 +399,7 @@ describe('思考的投影', () => {
         id: 'st1' as never,
         seq: 1,
         kind: 'thinking',
-        content: '死掉那段',
+        content: '失败那段',
         status: 'failure',
       }),
       step({ id: 'st2' as never, seq: 2, kind: 'thinking', content: '重发那段', status: 'done' }),

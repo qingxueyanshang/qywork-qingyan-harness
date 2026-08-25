@@ -41,7 +41,7 @@ export const MCP_CONFIG = `${AGENTS_DIR}/${MCP_FILE}`
  *
  * **插件不分层。** 它贡献的是工具、预览器、供应商——那些是这个 agent 的能力，
  * 不是某个仓库的内容。分层的代价是同一个插件在两个仓库里各存一份、各自升级，
- * 而「我在全局装了但没生效」只能靠一条 failure 文案解释。
+ * 而「在全局装了却没生效」只能靠一条 failure 文案解释。
  *
  * 「这个项目要不要加载某个插件」是**开关**，将来由工作区面板控制，
  * 不是把插件复制两份。
@@ -305,7 +305,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    // 配置坏了要**说出来**。静默当作「没配 team」会让用户以为功能不存在。
+    // 配置坏了要**说出来**。静默当作「没配 team」，界面上等同于这个功能不存在。
     return { ...empty, error: `${TEAM_CONFIG} 解析失败：${String(err)}` }
   }
 
@@ -315,7 +315,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   for (const value of (obj.roles as unknown[]) ?? []) {
     const r = value as Record<string, unknown>
     const id = String(r.id ?? '').trim()
-    // 只要有 id 就收：角色不再引用别的东西，也就没有「引用不到」这回事。
+    // 只要有 id 就收：角色不再引用别的条目，也就没有「引用不到」这回事。
     if (!id) continue
     roles.push({
       id,

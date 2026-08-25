@@ -89,7 +89,7 @@ describe('整表替换语义', () => {
 
   test('id 由序号生成，不受模型输入影响', async () => {
     const { c } = await run([
-      { content: 'a', status: 'pending', id: '模型瞎给的 id' },
+      { content: 'a', status: 'pending', id: '模型自造的 id' },
       { content: 'b', status: 'pending' },
     ])
     expect(c.emitted[0]!.map((t) => t.id)).toEqual(['todo_1', 'todo_2'])
@@ -207,7 +207,7 @@ describe('动作语义：首建是创建，改已有的才是编辑', () => {
 
   /**
    * 端口没接上（`qy exec` 这类一次性执行没有会话）时按「创建」。
-   * 反过来说「修改」是在根本没有清单时声称改过一份不存在的东西。
+   * 反过来说「修改」是在没有清单时声称改过一份不存在的清单。
    */
   test('端口没接上 —— 按创建，不按修改', () => {
     const spec = writeTodosTool.actionKind as (
@@ -218,7 +218,7 @@ describe('动作语义：首建是创建，改已有的才是编辑', () => {
     expect(spec({}, {} as ToolContext)).toBe('write')
   })
 
-  /** 对象是「待办」不是「计划」：计划（方案）是另一件东西，这个工具不产出它。 */
+  /** 对象是「待办」不是「计划」：计划（方案）是另一类产物，这个工具不产出它。 */
   test('对象恒为「待办」', () => {
     expect(writeTodosTool.objectLabel).toBe('待办')
   })

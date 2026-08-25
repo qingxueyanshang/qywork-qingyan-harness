@@ -2,7 +2,7 @@
  * 应用状态的形状与那一份 store。
  *
  * 用 Solid 的 `createStore` 而不是把整个 transcript 塞进一个 signal——
- * 这正是选 Solid 的理由：模型每吐一个 token，只有那一条 step 的 text 字段变化，
+ * 这正是选 Solid 的理由：模型每产出一个 token，只有那一条 step 的 text 字段变化，
  * 只有绑定它的那个文本节点会更新。长会话（几百条 step）下滚动依然不掉帧，
  * 不需要给列表做 memo 化。
  *
@@ -69,9 +69,9 @@ export interface TranscriptItem {
   toolName?: string
   action?: ActionDescriptor
   /**
-   * 调用参数。`tool.started` 早就带着它，但之前在 `applyEvent` 里被丢掉了——
-   * 于是工具卡展开后只剩一句 `outcome.message`，那句话是标题行的复述，
-   * 等于「展开了什么也没有」。改的 diff、跑的命令、读的范围全在这里面。
+   * 调用参数。`tool.started` 带着它，`applyEvent` 必须留下：丢掉的话工具卡展开后
+   * 只剩一句 `outcome.message`，那句话是标题行的复述，等于「展开了什么也没有」。
+   * 改的 diff、跑的命令、读的范围全在这里面。
    */
   args?: Record<string, unknown>
   status?: 'running' | 'success' | 'failure'
@@ -80,11 +80,12 @@ export interface TranscriptItem {
   /** 长工具的中途输出 */
   stdout?: string
   /**
-   * `toolName='workflow'` 专有：这张图现在跑到哪了。
+   * 派活那两个工具专有：这张图现在跑到哪了。派一件时只有一格。
    *
-   * **活着的时候来自事件，回放的时候来自 `outcome.data.nodes`。** 进度事件不落库
+   * **流式期间来自事件，回放时另有来源。** 进度事件不落库
    * （见 `docs/plans/2026-08-23-workflow-图化编排.md` 取证 11），所以刷新之后
-   * 这个字段是空的，图由 outcome 里的终态重画——两条路各管一段，不互相兜底。
+   * 这个字段是空的：一张图由 `outcome.data.nodes` 重画，一次派活由那条 step
+   * 自己的状态与耗时重画——各管一段，不互相兜底。
    */
   nodes?: WorkflowNodeState[]
   batchId?: string
@@ -94,7 +95,7 @@ export interface TranscriptItem {
    *
    * 这些步骤是**真实发生过的历史**（文件真的改了、命令真的跑了），所以照常完整
    * 渲染，只整段降透明度表达「已被接替」。折叠或隐藏它们会让用户看不到那次失败
-   * 到底做了什么，而排查问题恰恰需要这段。
+   * 做了什么，而排查问题需要这段。
    */
   superseded?: boolean
 }
@@ -112,7 +113,7 @@ export interface WorkflowNodeState {
   /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
   conversationId?: string
   /**
-   * 外部 CLI 节点跑着的时候写出来的东西（`team.output` 攒起来的）。
+   * 外部 CLI 节点运行期间写出来的输出（`team.output` 攒起来的）。
    *
    * **只有外部 CLI 有**：内置子 agent 的过程在它那条子会话里。**不落库**，
    * 刷新之后这里是空的，那时看的是落库的终态产出——与图卡的状态同一条口径。
@@ -135,7 +136,7 @@ export interface AppState {
    * `isRunning()` 从这里派生，不另记一个布尔。
    *
    * 记的是**一张表而不是一个布尔**：左栏要为列表里每一条画状态，而客户端只订阅
-   * 当前会话的事件——布尔只答得了「我正开着的这条」，别的会话在跑与否，
+   * 当前会话的事件——布尔只答得了当前打开的这条，别的会话在跑与否，
    * 界面上无从得知。这张表由工作区级的 `conversation.busy` 事件维持，
    * 快照在握手里给（`HelloOkFrame.busyConversations`）。
    */
@@ -168,7 +169,7 @@ export interface AppState {
    *
    * 它比 run 活得久：一轮跑完自动再起一轮就是照着它跑的。所以既由 `goal` 事件
    * 实时更新，也在重拉会话时从账本读回来——只靠事件的话刷新一次就看不见了，
-   * 而一个看不见的自动循环是最坏的一种。
+   * 而看不见的自动循环，用户无从判断它还在不在跑。
    */
   goal: Goal | null
   /** 当前会话最后一个 run，重试的目标。 */
@@ -176,9 +177,9 @@ export interface AppState {
   /**
    * 运行中那一轮的开始时刻（本地时钟，毫秒）。
    *
-   * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是「我等了多久」，
-   * 而不是「服务端算了多久」，两者在手机走蜂窝网时能差出好几百毫秒，
-   * 而用户看的是自己那块表。跑完之后耗时归条目管，这里清空。
+   * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是用户等待时长，
+   * 而不是服务端计算时长，两者在手机走蜂窝网时能差出好几百毫秒，
+   * 而用户看的是本机时钟。跑完之后耗时归条目管，这里清空。
    */
   runStartedAt: number | null
   /**
@@ -189,7 +190,7 @@ export interface AppState {
    * 服务端 262 秒一个字节都没收到，而界面靠总耗时只能显示一个越走越大的数字，
    * 配着一句「正在思考…」，两者都没说出真相。
    *
-   * 不需要新协议字段：每一帧什么时候到的，客户端自己就知道。
+   * 不需要新协议字段：每一帧的到达时刻，客户端本地就有。
    */
   lastEventAt: number | null
   /**

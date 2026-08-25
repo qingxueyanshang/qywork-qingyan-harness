@@ -123,7 +123,7 @@ describe('配置体检', () => {
     expect(p).toBeDefined()
     expect(p).toContain('config.json')
     expect(p).toContain('qy init')
-    // 光说「没配」不够——用户得知道往里写什么形状的东西。
+    // 光说「没配」不够——用户得知道往里写什么形状的配置。
     expect(p).toContain('"apiKey"')
   })
 
@@ -314,7 +314,7 @@ describe('配置提醒', () => {
 
   /*
    * 旧格式**不迁移**（B3：开发期不留兼容层），但静默丢弃是另一回事：
-   * 用户看到的是「我配好的接口和 key 全没了」，而配置文件里还原样躺着。
+   * 界面上是「配好的接口和 key 全没了」，而配置文件里还原样存着。
    * 先例是 autoApprove——一律忽略，但必须说出来。
    */
   test('检出旧的扁平 profiles 时点名说清楚，并指出 key 要重填', () => {
@@ -359,8 +359,8 @@ describe('按「接口 × 模型」取档位', () => {
 
   test('各取各的那一格', () => {
     expect(resolveModel(two, 'deepseek-v4-flash')?.effort).toBe('max')
-    // xhigh 在 DeepSeek 上根本不存在，而它是 Claude 那一格的合法值——
-    // 这正是全局一个值装不下的东西。
+    // xhigh 在 DeepSeek 上不存在，而它是 Claude 那一格的合法值——
+    // 这正是全局一个值装不下的差异。
     expect(resolveModel(two, 'claude-opus-5')?.effort).toBe('xhigh')
   })
 
@@ -423,7 +423,7 @@ describe('思考档位校验', () => {
  * 模型库那几个枚举的校验。
  *
  * 与思考档位同一道闸门、同一个理由，但**后果更隐蔽**：档位打错下一轮换来一个
- * provider 的 400，而这三个打错多半什么都不发生——`thinking` 打错会让
+ * provider 的 400，而这三个打错通常什么都不发生——`thinking` 打错会让
  * `effortIsTransmittable` 恒 false（这个模型的 effort 从此不再发送），
  * `cacheRouting` 打错会让亲和键不再发送，两条都不报错。
  */

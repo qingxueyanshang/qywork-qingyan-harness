@@ -40,7 +40,7 @@ export interface Role {
    * undefined = 继承全部。**显式的空数组和不填是两回事**，不要合并。
    */
   allowedTools?: string[]
-  /** 该角色单次任务的步数上限，防止一个角色跑飞拖垮整轮。 */
+  /** 该角色单次任务的步数上限，防止一个角色失控拖垮整轮。 */
   maxSteps?: number
 }
 

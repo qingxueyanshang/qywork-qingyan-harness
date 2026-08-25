@@ -57,7 +57,7 @@ describe('消息强匹配', () => {
     expect(r!.providerCode).toBe('invalid_request_error')
   })
 
-  test('OpenAI 措辞里上限在前、请求量在后 —— 顺序不能搞反', () => {
+  test('OpenAI 措辞里上限在前、请求量在后 —— 顺序不能取反', () => {
     const r = classifyCapacityRejection(
       apiError({
         status: 400,

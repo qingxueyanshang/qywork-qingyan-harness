@@ -2,10 +2,10 @@
 /**
  * 把 `VERSION` 里的版本号刷到所有声明了版本的文件里。
  *
- * 版本号散落在 16 个地方（13 个 package.json、Cargo.toml、tauri.conf.json，
- * 外加 sidecar 编译期内联读的 VERSION 本身）。发版时手改必漏一个，而漏掉的那个
- * 通常是 tauri.conf.json——安装包版本和 `qy --version` 对不上，
- * 用户报 bug 时说的版本号是错的。
+ * 版本号散落在多处：每个 package.json、Cargo.toml、tauri.conf.json，外加 sidecar
+ * 编译期内联读的 VERSION 本身。发版时手改必漏一个，而漏掉的那个通常是
+ * tauri.conf.json——安装包版本和 `qy --version` 对不上，用户报 bug 时说的版本号
+ * 是错的。
  *
  *   bun run scripts/sync-version.ts          # 按 VERSION 刷
  *   bun run scripts/sync-version.ts 0.2.0    # 先改 VERSION 再刷
@@ -42,7 +42,7 @@ async function main(argv: string[]): Promise<number> {
   if (explicit) targets.push({ path: versionFile, apply: () => `${target}\n` })
 
   // 三个 pattern 分开扫，不写成一个大括号展开：Bun 的 Glob 不支持 `{a,b}`，
-  // 写成那样会**一个文件都匹配不到而且不报错**——`--check` 于是永远返回「一致」。
+  // 写成那样会**一个文件都匹配不到而且不报错**——`--check` 因此永远返回「一致」。
   // 一个不可能失败的检查比没有检查更危险，因为它会被当成通过。
   const found: string[] = []
   for (const pattern of ['package.json', 'packages/*/package.json', 'apps/*/package.json']) {

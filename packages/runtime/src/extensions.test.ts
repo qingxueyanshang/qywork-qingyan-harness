@@ -1,8 +1,8 @@
 /**
  * 插件端到端：真的起一个子进程，让它走 RPC 调宿主能力。
  *
- * 用 mock 验不出这条链路——要验的恰恰是「插件进程里没有 fs，只有 RPC」，
- * 而 mock 掉进程就把被验的东西替换掉了。
+ * 用 mock 验不出这条链路——要验的是「插件进程里没有 fs，只有 RPC」，
+ * 而 mock 掉进程就把被验的那一层替换掉了。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -41,7 +41,7 @@ async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
  *
  * 它导出一个 `probe` 工具，工具体里通过 `host.*` 调宿主能力，把结果原样返回。
  * 这样一次 `registry.get('...__probe').fn()` 就走完了
- * 工具注册 → 跨进程调用 → 宿主能力 → 结果回传 四段。
+ * 工具注册 → 跨进程调用 → 宿主能力 → 结果回传四段。
  */
 const PLUGIN_SOURCE = `
 let buf = ''
@@ -81,7 +81,7 @@ async function handle(msg) {
   }
 }
 
-// 证明隔离是真的：插件进程里根本没有这些模块可用的路径。
+// 证明隔离是真的：插件进程里没有这些模块可用的路径。
 // 有的话下面这行会成功，测试会看到 leaked=true。
 let leaked = false
 try { require('node:fs').readFileSync('/etc/passwd'); leaked = true } catch {}
@@ -257,7 +257,7 @@ describe('插件端到端', () => {
    *
    * 这条不能只靠「全局那份装上了」反证：两个目录都扫时全局那份照样装得上，
    * 表现完全一样。所以只往工作区里放一个，断言它一个都没装上、也不报 failure
-   * ——它根本不在扫描范围里，报 failure 反而是错的。
+   * ——它不在扫描范围里，报 failure 反而是错的。
    */
   test('工作区 .agents/plugins 里的插件不再被加载', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-ext-ws-plugin-'))

@@ -52,7 +52,7 @@ describe('这台机器上没装 git', () => {
    *
    * 原始失败形状是实测撞出来的：把 PATH 剥到只剩 System32 起一次服务，
    * `Bun.spawn(['git', …])` 同步抛 ENOENT，而 `server.ts` 的 `pollGit` 是
-   * `void publishGitState(...)`——浮动 promise 没人接，于是启动时糊一屏栈、
+   * `void publishGitState(...)`——浮动 promise 没人接，因此启动时糊一屏栈、
    * 之后每 4 秒再来一次。
    *
    * 判据是「git 跑不跑得起来」本来就属于 `git()` 的返回类型（它有 `ok: false` 这一档），
@@ -100,7 +100,7 @@ describe('切不过去时说人话', () => {
     const msg = await dirtyBlocked()
     expect(msg).toContain('a.txt')
     expect(msg).toContain('未提交')
-    // 原来是四行英文加缩进，现在必须是一行。
+    // 必须压成一行：原始输出是四行英文加缩进。
     expect(msg).not.toContain('\n')
     expect(msg).not.toContain('overwritten')
   })

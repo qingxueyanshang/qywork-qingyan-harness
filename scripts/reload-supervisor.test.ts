@@ -186,7 +186,7 @@ describe('sidecar 自己没了', () => {
     expect(c.waiting()).toBeNull()
   })
 
-  /** 换代码时是我们自己杀的，那不是崩溃——再补一次就成了双起。 */
+  /** 换代码时的退出由 supervisor 自己发起，不是崩溃——再补一次就成了双起。 */
   test('换代码期间的退出不算崩溃', async () => {
     let release = () => {}
     const gate = new Promise<void>((r) => {

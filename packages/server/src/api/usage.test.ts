@@ -120,7 +120,7 @@ describe('查账', () => {
     store.close()
   })
 
-  /** 多币种分开报，前端据此各列一行。合起来要汇率，而我们不做换算。 */
+  /** 多币种分开报，前端据此各列一行。合起来要汇率，而本仓不做换算。 */
   test('两种币种分开报，不相加', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
@@ -153,7 +153,7 @@ describe('查账', () => {
 })
 
 describe('参数校验', () => {
-  /** 坏参数要 400 说清楚，不能悄悄回落到默认值——那会让人以为筛选生效了。 */
+  /** 坏参数要 400 说清楚，不能静默回落到默认值——界面上那等同于筛选已生效。 */
   test('days 非法回 400', async () => {
     for (const q of ['?days=0', '?days=-1', '?days=abc', '?days=99999']) {
       expect((await call(q))!.status).toBe(400)

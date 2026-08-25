@@ -66,7 +66,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   /*
    * 改名。名字只能是**一个名字**：带分隔符就是搬家，而这颗菜单项写的是「重命名」，
-   * 两件事混在一个接口里，用户在输入框里打个 `../x` 就把文件挪出了他以为的位置。
+   * 两件事混在一个接口里，用户在输入框里打个 `../x` 就把文件挪出了当前目录。
    */
   if (p === '/api/files/rename' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string; name?: string } | null

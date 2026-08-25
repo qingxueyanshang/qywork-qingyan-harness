@@ -6,7 +6,7 @@
  * 用到的 fd 3/4 管道支持不全，`chromium.launch()` 会挂到超时。所以这里分工——
  * Node 管浏览器，Bun 管服务，各自做自己稳的那部分。
  *
- * 顺带把真实发布路径也验了：它启动的是 `qy serve --static`（静态托管构建产物），
+ * 同时验证真实发布路径：它启动的是 `qy serve --static`（静态托管构建产物），
  * 与开发时的 Vite 代理不是同一条路，那条路不测就等于没测。
  *
  *   node scripts/shoot-ui.mjs
@@ -171,7 +171,7 @@ async function main() {
       })
       page.on('pageerror', (e) => errors.push(`[${shot.name}] pageerror: ${e.message}`))
 
-      // 令牌走 fragment —— 与手机扫码进来的路径完全一致。
+      // 令牌走 fragment——与手机扫码进来的路径完全一致。
       await page.goto(`${base}/#t=${token}`, { waitUntil: 'networkidle' })
       await page.waitForTimeout(800)
 

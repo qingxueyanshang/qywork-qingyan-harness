@@ -1,7 +1,7 @@
 /**
  * 包依赖方向的结构守卫。
  *
- * 依赖图今天是干净的无环 DAG——但**这件事没有任何东西在守着**。加一条
+ * 依赖图今天是干净的无环 DAG——但**这件事没有任何检查在守着**。加一条
  * `core → server` 的回边不会有任何报错，等到发现时通常已经绕不回去了。
  * 这个测试就是那个守卫。
  *
@@ -19,9 +19,9 @@ const ROOT = join(import.meta.dir, '..')
 
 /**
  * 层号越小越底层。**依赖只能朝小的方向走**，同层之间也不许互相依赖
- * （同层互依 = 它们其实是一个包，或者层分错了）。
+ * （同层互依 = 它们是一个包，或者层分错了）。
  *
- * 新增包必须在这里登记，否则测试直接失败——「忘了登记」不能表现为「悄悄放行」。
+ * 新增包必须在这里登记，否则测试直接失败——漏登记不能表现为静默放行。
  */
 const LAYER: Record<string, number> = {
   '@qywork/core': 0,
@@ -72,7 +72,7 @@ function loadPackages(): Pkg[] {
 describe('包依赖方向', () => {
   const pkgs = loadPackages()
 
-  test('每个工作区包都登记了层号 —— 漏登记不能表现为悄悄放行', () => {
+  test('每个工作区包都登记了层号 —— 漏登记不能表现为静默放行', () => {
     const missing = pkgs.filter((p) => LAYER[p.name] === undefined).map((p) => p.name)
     expect(missing).toEqual([])
   })

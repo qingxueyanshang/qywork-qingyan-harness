@@ -13,12 +13,10 @@
  * 3. **配额**（这里）——不限量的读文件和不限量的命令输出都能把宿主撑爆，
  *    而插件不需要写恶意代码就能做到，一个 bug 就够了。
  *
- * ## 一条容易漏的：exec 的环境变量
- *
- * `run_command` 内置工具是把 `process.env` 整个透传给子进程的——那是用户自己的
- * 命令，本来就该看到自己的环境。**插件的 exec 绝不能这样**：宿主费劲把插件进程的
- * env 洗干净（不给 API Key、不给令牌），如果它转手能 `exec.run` 一句
- * `echo $ANTHROPIC_API_KEY`，那道清洗就等于没做。
+ * **一条容易漏的：exec 的环境变量。** `run_command` 内置工具是把 `process.env` 整个透传给子进程的
+ * ——那是用户自己的命令，本来就该看到自己的环境。**插件的 exec 绝不能这样**：宿主费劲把插件进程的
+ * env 洗干净（不给 API Key、不给令牌），如果它转手能 `exec.run` 一句 `echo $ANTHROPIC_API_KEY`，那
+ * 道清洗就等于没做。
  */
 
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -70,7 +68,7 @@ export type CapabilityHandler = (
  * 登记了没实现也会红。`docs/plugins.md` 那张表照着它写。
  *
  * 刻意**不**放进握手的能力声明里：那个字段目前没有任何客户端会读，
- * 加一个没人消费的协议成员正是第 11 节反复在修的那类东西。
+ * 加一个没人消费的协议成员正是第 11 节反复在修的那一类。
  */
 export const HOST_CAPABILITIES = [
   'fs.read',
@@ -118,8 +116,8 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
       case 'fs.list': {
         const path = await inWorkspace(params.path ?? '.', true)
         const entries = await readdir(path, { withFileTypes: true })
-        // 截断要**说出来**。静默截断会让插件以为目录就这么大，
-        // 于是它「处理完了所有文件」的结论是错的。
+        // 截断要**说出来**。静默截断会让插件把这一页当成整个目录，
+        // 它「处理完了所有文件」的结论因此是错的。
         const truncated = entries.length > MAX_LIST_ENTRIES
         return {
           entries: entries.slice(0, MAX_LIST_ENTRIES).map((e) => ({
@@ -235,7 +233,7 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
 
       default:
         // 走到这里说明 requiredPermission() 认了这个前缀但没人实现。
-        // **明确抛出**而不是返回 null——返回 null 会让插件以为调用成功但拿到空结果。
+        // **明确抛出**而不是返回 null——返回 null 在插件侧是一次成功但空结果的调用。
         throw new Error(`宿主能力尚未实现：${method}`)
     }
   }
@@ -277,7 +275,7 @@ async function runScrubbed(
   })
 
   // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时走**树杀**。
-  // 这里 spawn 出来的是一个 shell，只 kill 它自己的话，真正干活的那个还活着。
+  // 这里 spawn 出来的是一个 shell，只 kill 它自己的话，真正执行的那个仍在运行。
   const got = await collectProcess(proc, { timeoutMs, maxChars: MAX_EXEC_OUTPUT })
   return {
     exitCode: got.exitCode,
@@ -292,7 +290,7 @@ async function runScrubbed(
  *
  * 真正的「读到上限就停」在 `collectProcess` 里——**上限是读取行为的上限，不是
  * 返回值的上限**：读完再截的话，一条 `yes` 能在截断生效之前把内存吃光。
- * 这里只负责把「你看到的不是全部」告诉插件。
+ * 这里只负责把「这一页不是全部」告诉插件。
  */
 function capped(text: string): string {
   if (text.length < MAX_EXEC_OUTPUT) return text
@@ -322,7 +320,7 @@ async function readStore(storageRoot: string, pluginId: string): Promise<Record<
     const parsed = JSON.parse(raw)
     return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
   } catch {
-    // 存储坏了不该让插件起不来。当作空的继续——插件会重新写它需要的东西。
+    // 存储坏了不该让插件起不来。当作空的继续——插件会重新写它需要的键。
     return {}
   }
 }

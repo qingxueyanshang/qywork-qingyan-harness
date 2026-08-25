@@ -93,7 +93,7 @@ describe('越界拒绝是判定，不是崩溃', () => {
     expect(out.status).toBe('failure')
     expect(out.errorKind).toBe('path_out_of_workspace')
     expect(out.message).not.toContain('执行出错')
-    // 什么都没发生过——`executed: true` 会让崩溃恢复以为可能有副作用。
+    // 什么都没发生过——`executed: true` 会让崩溃恢复按「可能有副作用」处理。
     expect(out.executed).toBe(false)
   })
 
@@ -114,7 +114,7 @@ describe('越界拒绝是判定，不是崩溃', () => {
  * 「完全访问」= 全部权限，**路径边界也归它管**。
  *
  * 原始失败形状（会话 `cv_0msw3jst9`）：用户开着完全访问，`read_file` 桌面上的
- * 项目被路径层拒，而同一个模式下 `run_command` 是全放行的——模型于是
+ * 项目被路径层拒，而同一个模式下 `run_command` 是全放行的——模型因此
  * `cd /c/Users/.../qywork && head -c 6000 README.md` 读到了同一个文件，
  * 全程没告诉用户。只放开权限闸、留着路径层，得到的不是更安全，是两套账。
  */
@@ -124,7 +124,7 @@ describe('完全访问：路径边界跟着一起放开', () => {
     const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
     await writeFile(join(outside, 'note.md'), '界外的正文\n', 'utf8')
 
-    // 走 `rootsOf`，顺带覆盖 ToolContext 的 `unrestrictedPaths` → 根目录清单那一跳。
+    // 走 `rootsOf`，一并覆盖 ToolContext 的 `unrestrictedPaths` → 根目录清单那一跳。
     const roots = rootsOf({ workspaceRoot: root, unrestrictedPaths: true })
     await expect(
       resolveInWorkspace(roots, join(outside, 'note.md'), { mustExist: true }),
@@ -235,7 +235,7 @@ describe('额外根目录', () => {
   })
 
   test('相对路径的基准永远是工作区，不会落到额外目录里', async () => {
-    // 否则 `read_file("notes.md")` 变成「在几个根里挨个碰运气」，
+    // 否则 `read_file("notes.md")` 变成「在几个根里逐个试探」，
     // 命中哪一个取决于目录内容——同一句话两次可能读到不同的文件。
     //
     // 报的是**不存在**而不是**越界**：这个相对路径解析出来就在工作区里，
@@ -247,7 +247,7 @@ describe('额外根目录', () => {
         mustExist: true,
       }),
     ).rejects.toBeInstanceOf(PathNotFoundError)
-    // 额外目录里那一份没有被拿来顶替——这才是这条测试真正要锁的东西。
+    // 额外目录里那一份没有被拿来顶替——这才是这条测试真正要锁的点。
     expect(await stat(join(extra, 'notes.md')).then(() => true)).toBe(true)
   })
 
@@ -273,7 +273,7 @@ describe('额外根目录', () => {
     ).rejects.toBeInstanceOf(PathEscapeError)
   })
 
-  test('额外目录不存在时只是不生效，不会让整次解析炸掉', async () => {
+  test('额外目录不存在时只是不生效，不会让整次解析抛错', async () => {
     const { root } = await withExtra()
     const roots = { workspaceRoot: root, additional: [join(tmpdir(), 'qywork-not-here-at-all')] }
     await expect(resolveInWorkspace(roots, 'a.txt', { mustExist: true })).resolves.toContain(
@@ -453,7 +453,7 @@ describe('文件工具', () => {
    * **读记录的寿命由装配方定，这里只验两端。**
    *
    * 上一轮读过、这一轮直接改，是完全正常的用法。记录挂在 run 内的便签上时
-   * 每轮清零一次，于是这种用法必然先失败一次「本轮未读取过」。
+   * 每轮清零一次，因此这种用法必然先失败一次「本轮未读取过」。
    *
    * 接上会话级 port 之后不再重来；而**没接上时行为一个字不变**（更严的那一侧），
    * 所以两条都测。
@@ -760,14 +760,14 @@ describe('搜索与命令', () => {
 
   /**
    * **原始失败形状**：命令跑完了、shell 也正常退出了，但它留下的后台进程继承了
-   * stdout 的写端还活着，于是管道永远不 EOF。账本里那次是 `run.ps1 start`
+   * stdout 的写端仍未关闭，因此管道永远不 EOF。账本里那次是 `run.ps1 start`
    * （起了个 node 服务留在后台，而那正是脚本该做的事）：界面上那条 `run_command`
    * 停在「正在执行」371 秒不动，超过默认超时 120 秒两倍还多——超时到点的树杀够不着
-   * 已经脱离父子关系的孙进程，而超时那条返回分支又排在等 EOF 之后，于是永远走不到。
+   * 已经脱离父子关系的孙进程，而超时那条返回分支又排在等 EOF 之后，因此永远走不到。
    * 后果不止这一次调用：`runs.unregister` 不执行，整条会话此后回绝所有新任务。
    *
    * 锁两件事：**它按时回传**，以及**它说出了后台还留着进程**。只锁前者的话，
-   * 一条压根没复现出这个形状的命令也能让这条测试全绿。
+   * 一条没复现出这个形状的命令也能让这条测试全绿。
    *
    * PowerShell 那一档的写法**本机没验过**（这台机器有 bash，走的是另一条）。
    */
@@ -798,7 +798,7 @@ describe('搜索与命令', () => {
    * `qy serve` 的命令一律由 runner 代跑（它是那个「先于监听端口出生」的父进程），
    * 上一条测的却是直接 spawn。两条路的差别恰好落在这句话上：runner 那侧一旦在
    * 收到退出码时就把流关掉，读端立刻拿到 EOF，`backgroundHeld` 恒为 false——
-   * 于是这句提示在真正跑着的产品里一次也发不出来，而两条路的测试都是绿的。
+   * 因此这句提示在真正跑着的产品里一次也发不出来，而两条路的测试都是绿的。
    */
   test('runner 代跑时同样说得出后台进程', async () => {
     const shell = commandShell()
@@ -833,7 +833,7 @@ describe('搜索与命令', () => {
    *
    * 这是上一条的同一个根因在另一面的表现：中断只是 abort 一个信号，它停不掉一个
    * 不返回的 `await`。命令派生了脱离进程树的后台进程时，树杀杀得掉前台那半、
-   * 杀不掉那个孤儿，于是等 EOF 的调用继续挂着——界面上就是「点了停止但它不停」。
+   * 杀不掉那个孤儿，因此等 EOF 的调用继续挂着——界面上就是「点了停止但它不停」。
    *
    * 前台那半故意留长（30 秒），孤儿也留着：**两半都得停，测试才算数**。
    */
@@ -866,7 +866,7 @@ describe('搜索与命令', () => {
  *
  * `read_file` 这条路不接脱敏就是把磁盘字节直接交给模型。一头拦一头不拦等于没拦
  * ——模型拿不到 `cat .env` 的输出，换 `read_file` 就拿到了，
- * 而它并不是在绕过什么，只是选了个更顺手的工具。
+ * 而它并不是在绕过什么，只是换了个工具。
  */
 describe('read_file 的凭证脱敏', () => {
   test('工作区里的私钥读不出明文', async () => {
@@ -1016,13 +1016,13 @@ describe('probe_url', () => {
 /**
  * `.qy/` 与 `.agents/` 的写保护。
  *
- * 这一条挡的不是**越权**，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
+ * 这一条挡的不是越权，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
  * 工具，`.qy/team.json` 决定派活前哪些角色要人点头。模型完全合法地能写工作区内的
- * 文件，于是它可以通过写一个自己有权限写的文件，给自己加工具。
+ * 文件，因此它可以通过写一个自己有权限写的文件，给自己加工具。
  *
  * **判据是「会不会给自己加工具」**：技能与记忆同在 `.agents/` 下却不在墙内——
  * 一篇 SKILL.md 是一段提示词，一条记忆是一句事实，两者都不给新能力。
- * 按目录一刀切挡过它们的代价实测付过：设置页的「新增技能」把话头递给模型，
+ * 按目录一刀切挡住它们的实测后果：设置页的「新增技能」把话头递给模型，
  * 而模型写不了那个文件，那颗按钮等于点了没反应。
  *
  * `full` 下这一层不设（`resolveWritablePath` 的 `unrestricted`）：那个模式里
@@ -1056,7 +1056,7 @@ describe('受保护目录', () => {
     await expect(resolveWritablePath(dir, '.agents/memory/x.md')).resolves.toContain('x.md')
   })
 
-  /** 逐段比而不是字符串前缀：`.qyX` 不是 `.qy` 下面的东西。 */
+  /** 逐段比而不是字符串前缀：`.qyX` 不在 `.qy` 目录下。 */
   test('名字撞了前缀的目录不受牵连', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.qyX/a.md')).resolves.toContain('a.md')
@@ -1224,9 +1224,9 @@ describe('grep 的单条上界', () => {
  * grep 必须计入批级投递预算。
  *
  * `loop.ts` 每下发一波之前 `resetBatchBudget`，理由写在那里：「压缩只留一个入口」
- * 的前提正是**两次检查之间的跳变有上界**。grep 从前完全不进这本账——单次
- * 200 条 × 400 字符最坏约 32,000 token，已经越过单次上界 25,000；
- * 它又是 `parallelSafe`，一波五个就是整波上界的三倍多。
+ * 的前提正是**两次检查之间的跳变有上界**。grep 不记账的话，单次 200 条 × 400 字符
+ * 最坏约 32,000 token，已经越过单次上界 25,000；它又是 `parallelSafe`，
+ * 一波五个就是整波上界的三倍多。
  *
  * 断言的是「裁而不是拒」：这个工具本来就有截断契约，超预算走同一条路。
  */

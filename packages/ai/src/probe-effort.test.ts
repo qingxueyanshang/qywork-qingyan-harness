@@ -4,11 +4,9 @@
  * **覆盖范围**：`probe.ts` 的 effort 那一段。探针的其余部分（只写回真的探过的轴、
  * 报告怎么措辞）在 `probe.test.ts`。
  *
- * ## 要复现的形状
- *
- * OpenAI 兼容端点对 `reasoning_effort` 一律照收，不认识的值直接忽略。
+ * **要复现的形状。** OpenAI 兼容端点对 `reasoning_effort` 一律照收，不认识的值直接忽略。
  * 按「没被 400」逐档打满的话五档全过，探测器就往配置里写一个凭空的能力，
- * 界面照着画出厂商根本没有的档（grok-4.6 官方只有 low/medium/high/xhigh）。
+ * 界面照着画出厂商没有的档（grok-4.6 官方只有 low/medium/high/xhigh）。
  * 那是一个**端点行为**，纯函数测不出来，所以起一个照收不误的假端点。
  */
 
@@ -74,7 +72,7 @@ describe('effort 校准', () => {
     rejects = () => false
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
-    // 而且**没有**试过 max —— 库里没有的档根本不发。
+    // 而且**没有**试过 max —— 库里没有的档不发。
     expect(seen).not.toContain('max')
   })
 

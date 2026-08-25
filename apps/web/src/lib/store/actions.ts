@@ -36,7 +36,7 @@ export async function loadConversations(): Promise<void> {
 }
 
 /**
- * 切到另一个项目。**不重启任何东西。**
+ * 切到另一个项目。**不重启任何进程。**
  *
  * 切项目只是换一个参数，因为服务端按会话 / 按请求查表（`workspaceOf` 与 `?ws=`），
  * 不存进程级的「当前根」。一旦把根存成进程级常量，这条路就变成「换掉整个
@@ -102,7 +102,7 @@ export async function selectConversation(id: string): Promise<void> {
  *
  * 发的必须是 `run.started` 事件带回来的**真实 runId**。
  * 拿 `transcript.find(status === 'running').id` 是**步骤 id**，服务端查 run 查不到，
- * 于是静默什么也不做——中断按钮从来不生效，而 UI 上完全看不出来。
+ * 因此静默什么也不做——中断按钮从来不生效，而 UI 上完全看不出来。
  */
 export function interrupt(): void {
   const runId = state.lastRunId
@@ -254,7 +254,7 @@ export function loadTeamClis(): Promise<{ agents: CliAgentRow[] }> {
 }
 
 /**
- * 当前会话正在用的「接口 × 模型」。会话不存在时返回 null，不编一个默认值糊弄。
+ * 当前会话正在用的「接口 × 模型」。会话不存在时返回 null，不编一个默认值。
  *
  * **两个一起返回。** 只回模型名的话，两个接口挂同一个 id 时选择器高亮的是
  * 两条，而用户切过去的只有一条。

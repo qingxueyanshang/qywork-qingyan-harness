@@ -36,7 +36,7 @@ function Say($msg) { Write-Host "  $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "  $msg" -ForegroundColor Yellow }
 
 # --- 端口清场 -----------------------------------------------------------------
-# 只敢清开发进程（node / bun / vite / qy / qywork）。端口被别的东西占着就停下来
+# 只清开发进程（node / bun / vite / qy / qywork）。端口被别的进程占着就停下来
 # 报给人看——脚本替你猜着杀进程，比端口冲突本身危险得多。
 function Clear-DevPort([int]$Port) {
   $conns = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
@@ -56,7 +56,7 @@ function Clear-DevPort([int]$Port) {
 #
 # 它不占 5180，也不占固定端口（sidecar 走 --port 0），所以端口清场抓不到它。
 # 但它**占着 `target\debug\qy.exe` 的文件句柄**——tauri-build 要把新的 sidecar
-# 复制过去，复制失败后整个 dev 构建以 exit 101 挂掉，报出来的只有一句
+# 复制过去，复制失败后整个 dev 构建以 exit 101 退出，报出来的只有一句
 # 「拒绝访问」，完全看不出和上一个还在跑的窗口有关。实测踩到过。
 #
 # 只清本仓 target 目录下的那两个可执行文件，路径不匹配的同名进程一律不动
@@ -73,7 +73,7 @@ function Clear-StaleShell {
 }
 
 # --- 前置检查 -----------------------------------------------------------------
-# Start-Process 只认真正的可执行文件。npm 装出来的 bun 在 PATH 上有三份同名东西
+# Start-Process 只认真正的可执行文件。npm 装出来的 bun 在 PATH 上有三个同名入口
 # （bun.ps1 / bun.cmd / 无扩展名的 shell 脚本），`-FilePath 'bun'` 会挑到最后那个，
 # 报「%1 is not a valid Win32 application」。所以这里显式挑 .exe，退而求其次挑 .cmd。
 function Resolve-Exe([string]$Name) {
@@ -124,7 +124,7 @@ if ($Mode -eq 'desktop') {
   # 走 scripts/dev.ts，**不要直接 `tauri dev`**。
   #
   # 直接跑 tauri dev 的话，外壳会 spawn `externalBin` 那个预编译的 bin/qy——
-  # 于是改了 packages/server 不重编就完全看不出来，症状还会伪装成前端 bug。
+  # 因此改了 packages/server 不重编就完全看不出来，现象还会表现成前端 bug。
   # 实际踩到过：旧二进制少一条路由，前端抛的是 undefined.id；旧二进制还在按
   # 老规矩报协议版本，新前端已经不发这个字段，界面上是「服务端协议版本 2，
   # 客户端 undefined」。dev.ts 让 sidecar 从源码跑（bun --watch）并把令牌和端口

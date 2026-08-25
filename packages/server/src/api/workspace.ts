@@ -18,7 +18,7 @@ import { type ApiHandler, json } from './types.ts'
 /**
  * 不给源文件夹时，默认工作区建在这里。
  *
- * 跟账本同根（`~/.qywork/`，可由 `QYWORK_HOME` 改）：它们是同一类东西——
+ * 跟账本同根（`~/.qywork/`，可由 `QYWORK_HOME` 改）：它们是同一类数据——
  * 这台机器上 qywork 自己的数据，卸载时一并带走。放进用户主目录会多出一个
  * 谁都不知道能不能删的文件夹。要打开它有菜单里的「在资源管理器中打开」。
  */
@@ -32,8 +32,8 @@ const WINDOWS_RESERVED = '<>:"|?*'
 /**
  * 项目名 → 文件夹名。不合法回 `null`，由调用方回 422。
  *
- * **拒绝而不是清洗**（CLAUDE.md E）：把 `../../etc` 洗成 `etc` 会让用户以为
- * 自己建的就是那个名字，而实际建的是别的——建到一半失败比一开始就说不行难查。
+ * **拒绝而不是清洗**（CLAUDE.md E）：把 `../../etc` 洗成 `etc`，界面上显示的名字
+ * 与实际建出来的不是同一个——建到一半失败比当场拒绝难查。
  *
  * 逐字符判控制字符，不写含控制字符的正则：那种正则要么在源码里塞裸控制字节，
  * 要么得挂一条 biome-ignore，两样都不必要。
@@ -49,7 +49,7 @@ function folderNameFrom(name: string): string | null {
   return name
 }
 
-/** 重名就加后缀。**不复用已有目录**——那可能是上一个同名项目留下的东西。 */
+/** 重名就加后缀。**不复用已有目录**——那可能是上一个同名项目留下的内容。 */
 async function freshDir(root: string, folder: string): Promise<string> {
   for (let i = 1; ; i++) {
     const candidate = join(root, i === 1 ? folder : `${folder}-${i}`)
@@ -79,7 +79,7 @@ function paramsOf(schema: Record<string, unknown>): { name: string; required: bo
  *
  * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数——有的按参数变
  * （多动作门面），有的按会话状态变（`write_todos` 首建报「创建」、之后报「修改」）。
- * **不许无参调用它们**：那会得到一个撒谎的常量。所以如实报「不固定」，
+ * **不许无参调用它们**：那会得到一个与实际不符的常量。所以如实报「不固定」，
  * 而不是「随参数变」——后者对会话态那一类是假的。
  */
 function toolRow(s: Omit<ToolSpec, 'fn'>, source: string) {
@@ -117,7 +117,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      *   重名加后缀，不复用已有目录。
      *
      * **路径已经在账本里时复用那一行**（`root_path` 是 UNIQUE），
-     * `upsertWorkspace` 顺带清掉 `removed_at`——移除过的项目重新添加，
+     * `upsertWorkspace` 一并清掉 `removed_at`——移除过的项目重新添加，
      * 它的会话跟着回来。会话挂的是 id，不是路径。
      */
     if (req.method === 'POST') {
@@ -243,7 +243,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 三个来源，`source` 区分：内置工具从注册表取（零成本，就是这一份真源）；
    * 插件与 MCP 的工具都取 `toolSpecs`——加载扩展本来就会把插件进程与 server 全连上，
    * 这两份清单是那趟连接的产物，列它不额外花钱。**取的是注册成功的那批**，
-   * 不是清单里声明的那批：这一页回答「它到底能调什么」，装了却起不来的不算。
+   * 不是清单里声明的那批：这一页回答「当前能调什么」，装了却起不来的不算。
    *
    * 归属按**注册名前缀**反查，前缀必须由 `pluginToolPrefix` / `toolNamePrefix` 生成
    * ——注册名是消毒过的（`my.server` → `mcp__my_server__x`），拿原名拼一条都匹配不上。

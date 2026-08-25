@@ -1,7 +1,7 @@
 /**
  * 桌面外壳的调用桥：`__TAURI_INTERNALS__` 的唯一封装。
  *
- * **这个模块不许 import 任何本包内的东西。** 它必须是叶子：`ui.ts` 要用它，
+ * **这个模块不许 import 本包内的任何模块。** 它必须是叶子：`ui.ts` 要用它，
  * 而 `connection.ts` 又 import 了 `ui.ts`——桥只要落在 `settings.ts` 那一侧，
  * 这条边就成环，表现是 `Cannot access 'QyClient' before initialization`。
  */
@@ -38,10 +38,10 @@ export function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Pro
  *
  * 走 `plugin:event|listen` 这条内部通道，而不是引 `@tauri-apps/api`：
  * 前端这份代码桌面与手机共用，多引一个只有桌面能用的包，手机端的构建里
- * 就会多出一坨永远不执行的东西（同 `lib.rs` 里那几个窗口命令的理由）。
+ * 就会多出一段永远不执行的代码（同 `lib.rs` 里那几个窗口命令的理由）。
  *
  * **不给退订**：现在的调用方都是「开一次听到进程结束」的常驻订阅，
- * 加一个没人调的退订接口只会让人以为该配对使用。真需要时再补。
+ * 加一个没人调的退订接口等于宣称它该配对使用。真需要时再补。
  */
 export function tauriListen<T>(event: string, handler: (payload: T) => void): Promise<void> {
   const api = internals()

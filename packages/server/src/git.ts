@@ -41,7 +41,7 @@ async function git(
      *
      * 接在这里而不是在 `pollGit` 上加 `.catch`：那是在下游堵症状，而「git 跑不跑得起来」
      * 本来就属于这个函数的返回类型——它已经有 `ok: false` 这一档，调用方在处理。
-     * 于是「没装 git」和「这不是个仓库」走同一条路：分支牌不显示，其余功能照常。
+     * 因此「没装 git」和「这不是个仓库」走同一条路：分支牌不显示，其余功能照常。
      * 界面上要说明的那句由 `api/host.ts` 的环境清单负责。
      */
     return { ok: false, out: '', err: e instanceof Error ? e.message : String(e) }
@@ -68,7 +68,7 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return name || null
 }
 
-/** 本地分支。**只有名字和是不是当前那条**——界面上没有别的东西在问。 */
+/** 本地分支。**只有名字和是不是当前那条**——界面上没有别的字段在问。 */
 export interface Branch {
   name: string
   current: boolean

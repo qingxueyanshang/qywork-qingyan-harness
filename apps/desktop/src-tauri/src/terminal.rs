@@ -1,7 +1,7 @@
 //! 交互式终端：一条会话一个 PTY，输出按事件推给 WebView。
 //!
 //! **为什么这一层破例持有状态。** lib.rs 顶上写着「外壳不持业务状态、WebView 直连
-//! sidecar」——那条针对的是会话、账本、权限这些**两端都该有**的东西。PTY 不是：
+//! sidecar」——那条针对的是会话、账本、权限这些**两端都该有**的状态。PTY 不是：
 //! 它是一个真实的本机子进程和一对操作系统句柄，跨不过网络，手机端也不可能有。
 //! 放进 sidecar 就等于把「在这台机器上跑任意命令」开到局域网上（CLAUDE.md E）。
 //! 所以终端是桌面独有能力，握手之外由 `isDesktopShell()` 判定，别的端不显示入口。
@@ -37,9 +37,9 @@ struct Session {
     /// 最近这些输出的原样副本，供前端重新接上来时回放。
     ///
     /// **前端那块 xterm 是随页面走的**：整页刷新之后它是全新的一块空屏，而 shell
-    /// 还在原地跑——不回放的话，用户接回来看到的是一片黑，敲一下才知道它是活的。
-    /// 存原始字节序列（含转义序列）而不是渲染后的文本：回放就是把这段重新喂给
-    /// xterm，模式、颜色、光标位置都跟着一起回来。
+    /// 还在原地跑——不回放的话，用户接回来看到的是一片黑，敲一下才看得出它仍在运行。
+    /// 存原始字节序列（含转义序列）而不是渲染后的文本：回放就是把这段重新写回
+    /// xterm 重新解析，模式、颜色、光标位置都跟着一起回来。
     backlog: Arc<Mutex<String>>,
 }
 
@@ -95,7 +95,7 @@ pub fn terminal_open(
     if dir.is_dir() {
         cmd.cwd(dir);
     }
-    // 不声明的话大量程序会退化成最笨的输出（无色、无光标定位），
+    // 不声明的话大量程序会退化成最基础的输出（无色、无光标定位），
     // 而 xterm.js 这一侧是按 256 色终端渲染的。
     cmd.env("TERM", "xterm-256color");
 
@@ -207,7 +207,7 @@ pub fn terminal_close(state: State<TerminalHandle>, id: String) -> Result<(), St
 }
 
 /// 应用退出时收干净。同 sidecar 那条理由：Windows 上父进程退出不带走子进程，
-/// 留下的 shell 会攥着工作区里的文件句柄。
+/// 留下的 shell 会持有工作区里的文件句柄。
 pub fn shutdown(state: &TerminalHandle) {
     for (_, mut session) in state.0.lock().drain() {
         let _ = session.killer.kill();
@@ -268,7 +268,7 @@ fn push_backlog(buf: &mut String, text: &str) {
 
 /// 取出 `carry` 前面那段完整的 UTF-8，剩下的半个字符留在原地。
 ///
-/// 真正非法的字节（不是「还没读全」，而是本来就不是 UTF-8）要吃掉并换成替换字符，
+/// 真正非法的字节（不是「还没读全」，而是本来就不是 UTF-8）要丢弃并换成替换字符，
 /// 否则它会永远卡在缓冲区头部，后面所有输出都发不出去。
 fn take_valid(carry: &mut Vec<u8>) -> String {
     match std::str::from_utf8(carry) {

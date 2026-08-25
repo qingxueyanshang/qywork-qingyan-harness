@@ -1,21 +1,17 @@
 /**
  * MCP。
  *
- * 在此之前 MCP 只有 `/api/plugins` 顺带回的一个名字数组：连上了几个、每个给了
- * 哪些工具、失败的那个为什么失败，界面上一概看不到。而 MCP 恰恰是**最需要看到
+ * 在此之前 MCP 只有 `/api/plugins` 附带回的一个名字数组：连上了几个、每个给了
+ * 哪些工具、失败的那个为什么失败，界面上一概看不到。而 MCP 是**最需要看到
  * 失败**的一块——一个只提供 `prompts` 的 server 会连上、握手成功、注册 0 个工具、
  * 不报任何错，用户看到的是「配了但什么都没发生」。
  *
- * ## 这里是写 `mcp.json` 的唯一接口
+ * **这里是写 `mcp.json` 的唯一接口。** `mcp.json` 决定模型拿到哪些工具，所以它在 `auto` 下是受保护
+ * 路径，`write_file` / `edit_file` 拒写（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。界面上没有原
+ * 文编辑框：那几格填什么要读 server 自己的文档才知道。
  *
- * `mcp.json` 决定模型拿到哪些工具，所以它在 `auto` 下是受保护路径，
- * `write_file` / `edit_file` 拒写（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。
- * 界面上没有原文编辑框：那几格填什么要读 server 自己的文档才知道。
- *
- * ## 导入一份现成的配置
- *
- * `/api/mcp/import` 读本机上一个文件，把里面的 server 并进本层。用户多半是从别的
- * MCP 客户端整段拷过来的，让他先另存成文件再指过来：同名冲突这里能报出来。
+ * **导入一份现成的配置。** `/api/mcp/import` 读本机上一个文件，把里面的 server 并进本层。用户通常是
+ * 从别的 MCP 客户端整段拷过来的，让他先另存成文件再指过来：同名冲突这里能报出来。
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -38,7 +34,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
   /**
    * 已连上的 server 与它们给出的工具。
    *
-   * 失败项和成功项一起回：连不上的那个恰恰是用户最需要看到的部分。
+   * 失败项和成功项一起回：连不上的那个是用户最需要看到的部分。
    * `unsupported` 也要回——它存在的意义就是消灭「握手成功但一个工具都没有」
    * 这种静默失败。
    */
@@ -70,7 +66,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
   /**
    * 从本机上一份现成的配置里把 server 并进来。
    *
-   * 用户多半是从别的 MCP 客户端整段拷过来的，那份文件的键名可能是 `servers`
+   * 用户通常是从别的 MCP 客户端整段拷过来的，那份文件的键名可能是 `servers`
    * 也可能是 `mcpServers`——`parseMcpConfig` 两个都认，所以这里读它的解析结果，
    * 不自己再认一遍键名。
    *

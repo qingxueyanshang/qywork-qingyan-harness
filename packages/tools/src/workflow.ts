@@ -1,25 +1,19 @@
 /**
  * 一次交一整张图：拆成哪几件事、每件派给谁、哪些并行、哪些等上一步。
  *
- * ## 与 `subagent` 的分工
- *
- * 派一件事用 `subagent`；**几件事之间有先后依赖**才用这个。判据是「要不要把上一步的
- * 产出喂给下一步」——要，就是一张图。
+ * **与 `subagent` 的分工。** 派一件事用 `subagent`；**几件事之间有先后依赖**才用这个。判据是「要不
+ * 要把上一步的产出传给下一步」——要，就是一张图。
  *
  * 节点的目标与 `subagent` 同一套取值：不写 = 临时子 agent，写角色 id = 配置好的角色，
  * 写 `cli:<id>` = 本机的外部 CLI。一张图里三种可以混。
  *
- * ## 调度不在这里
- *
- * 图交出去之后由服务端的编排器按图跑：依赖就绪才启动、并发上限都在那边。
+ * **调度不在这里。** 图交出去之后由服务端的编排器按图跑：依赖就绪才启动、并发上限都在那边。
  * **模型不参与调度**——每完成一步再回来问「下一步派谁」的话，每次跑出来的形状都不同，
  * 出问题既不能复现也不能归因，界面上也画不出一张固定的图。
  *
- * ## 图卡靠 stepId 认领
- *
- * 进度事件带的是这次调用的 step id（`ctx.stepId`），前端据此把节点状态落到这张卡上。
- * 但**进度事件不落库**：刷新之后能重画这张图的只有这次调用的返回值，
- * 所以逐节点的终态（含子会话 id）必须原样回在 `data.nodes` 里。
+ * **图卡靠 stepId 认领。** 进度事件带的是这次调用的 step id（`ctx.stepId`），前端据此把节点状态落到
+ * 这张卡上。但**进度事件不落库**：刷新之后能重画这张图的只有这次调用的返回值，所以逐节点的终态
+ * （含子会话 id）必须原样回在 `data.nodes` 里。
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
@@ -105,7 +99,7 @@ export const workflowTool: ToolSpec = {
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const delegate = ctx.delegate
     if (!delegate) {
-      // 正常不会走到：没有这条通道时这个工具压根不注册。
+      // 正常不会走到：没有这条通道时这个工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派活通道' }
     }
 
@@ -165,7 +159,7 @@ export const workflowTool: ToolSpec = {
     if (skipped) parts.push(`${skipped} 个跳过`)
 
     return {
-      // 有一个没做成就算这次工具调用失败：回 success 会让模型以为整张图都跑通了，
+      // 有一个没做成就算这次工具调用失败：回 success 等于告诉模型整张图都跑通了，
       // 而它下一步很可能就建立在那个没做成的节点的产出上。
       status: res.ok ? ('success' as const) : ('failure' as const),
       message: `${res.nodes.length} 个节点：${parts.join(' · ')}`,

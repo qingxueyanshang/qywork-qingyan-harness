@@ -189,7 +189,7 @@ describe('定时任务工具', () => {
     expect('atHour' in s).toBe(false)
   })
 
-  test('回执里带着两条边界，模型不会以为关了应用还会跑', async () => {
+  test('回执里带着两条边界：关掉应用不会触发', async () => {
     const r = await create({ title: 't', prompt: 'p', kind: 'daily', at_hour: 9, at_minute: 0 })
     expect(r.message).toContain('应用关着不跑')
     expect(r.message).toContain('1 分钟')

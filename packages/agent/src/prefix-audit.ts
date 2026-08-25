@@ -2,17 +2,17 @@
  * 冻结前缀审计。
  *
  * 提示缓存的命中条件是**前缀逐字节相同**。差一个字节，整段前缀重新计费——
- * 而且这件事**完全静默**：provider 不会说「你的缓存没命中因为第 3 段变了」，
+ * 而且这件事**完全静默**：provider 不会告知「缓存为什么没命中」，
  * 它只是照全价收钱。账单上看到的是「缓存命中率低」，看不到原因。
  *
  * 所以这里做两件事，一件事前一件事后：
  *
- * 1. **静态审计**（`auditFrozenText`）：扫前缀文本里有没有**天生会变**的东西——
+ * 1. **静态审计**（`auditFrozenText`）：扫前缀文本里有没有**天生会变**的字段——
  *    日期、绝对路径、计数、时间戳。这是唯一能在**改动落地前**拦住的检查，
  *    有回归测试盯着。
  * 2. **运行时审计**（`PrefixAudit`）：按会话记住前缀的哈希，变了就报，
  *    并指出**第几段、变成了什么**。静态审计只认得出已知的坏模式，
- *    真正的漂移往往来自「顺手在前缀里拼了个变量」这种没见过的写法。
+ *    真正的漂移往往来自「在前缀里拼了个变量」这种没见过的写法。
  *
  * 两者缺一不可：只有静态的会漏，只有运行时的要等真的花了钱才知道。
  */
@@ -40,11 +40,11 @@ export function hashFrozen(system: SystemBlock[]): string {
   for (const b of frozenBlocks(system)) {
     h.update(b.text)
     /*
-     * 分隔符不能省：["ab",""] 与 ["a","b"] 拼起来一样，但它们是不同的前缀。
+     * 分隔符不能省：`['ab','']` 与 `['a','b']` 拼起来一样，但它们是不同的前缀。
      *
      * 必须写成转义 `\0`，**不能是裸的 NUL 字节**：真的 0x00 在源码里完全看不见，
      * 而且它让整个文件被 grep 当成二进制（`Binary file matches`）——
-     * 于是在这个文件里搜任何东西都搜不到。
+     * 因此在这个文件里 grep 任何内容都搜不到。
      */
     h.update('\0')
   }
@@ -63,7 +63,7 @@ export interface VolatileHit {
 }
 
 /**
- * 天生会变的东西。
+ * 天生会变的字段。
  *
  * 每一条都对应一次真实可能犯的错，不是「理论上可能变」的穷举：
  * 这份清单越长，误报越多，越没人看。
@@ -98,7 +98,7 @@ const VOLATILE_PATTERNS: { kind: string; re: RegExp; why: string }[] = [
   },
 ]
 
-/** 扫一段冻结文本里有没有天生会变的东西。 */
+/** 扫一段冻结文本里有没有天生会变的字段。 */
 export function auditFrozenText(text: string): VolatileHit[] {
   const hits: VolatileHit[] = []
   for (const p of VOLATILE_PATTERNS) {
@@ -132,7 +132,7 @@ export interface DriftReport {
  *
  * 只记哈希与文本**不够**——要指出「第几段、改成了什么」，所以整段留着。
  * 前缀通常几 KB，一个会话一份，代价可以忽略；而没有原文的漂移报告
- * 只能告诉你「有东西变了」，那等于没报。
+ * 只能报出「有内容变了」，那等于没报。
  */
 export class PrefixAudit {
   private readonly seen = new Map<string, { hash: string; blocks: string[]; drifts: number }>()

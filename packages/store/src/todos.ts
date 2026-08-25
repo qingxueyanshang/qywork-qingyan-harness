@@ -2,7 +2,7 @@
  * 待办的读回。**没有写入函数，这里也不该有。**
  *
  * 待办的真源是 `write_todos` 那条 tool step 自己的 `args`——整表语义下，
- * 最后一次成功提交就是全部事实。落盘由 loop 记 step 时顺带完成，
+ * 最后一次成功提交就是全部事实。落盘由 loop 记 step 时一并完成，
  * 另开一张 `todos` 表就是第二本账：同一份清单两处存，迟早对不上。
  *
  * 前端早就在这么读（`apps/web/src/lib/store/connection.ts` 的 `todosFromSteps`）。
@@ -35,7 +35,7 @@ export function latestTodos(store: Store, conversationId: ConversationId): TodoI
     .get(conversationId)
   if (!row?.payload) return null
 
-  // 账本里的 payload 是历史事实，可能来自任何一个旧版本。读不出清单就当没有，
+  // 账本里的 payload 是历史事实，可能由任何一个历史版本写入。读不出清单就当没有，
   // 不抛——一份读不回来的旧清单只该让动作词退回「创建」，不该让工具调用失败。
   try {
     const todos = (JSON.parse(row.payload) as { args?: { todos?: unknown } }).args?.todos

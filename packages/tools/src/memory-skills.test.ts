@@ -159,7 +159,7 @@ describe('技能扫描', () => {
 
   test('索引只有 name 与 description，正文不在里面', async () => {
     const skills = await scanSkills(await withSkills())
-    // 索引每轮都进尾区。正文（"打 tag"）必须要等 read_skill 才出现。
+    // 索引每轮都进尾区。正文（「打 tag」）必须要等 read_skill 才出现。
     expect(JSON.stringify(skills)).not.toContain('打 tag')
     expect(skills[0]!.description).toBe('怎么发一个版本')
   })

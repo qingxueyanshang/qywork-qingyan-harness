@@ -2,7 +2,7 @@
  * MCP `resources/*` 与「握手成功但什么都没注册」这类静默失败。
  *
  * 与 `mcp.test.ts` 一样起**真的** server 子进程：要验的是握手声明与后续请求
- * 之间的配合，把传输换成内存对象就把被验的东西替换掉了。
+ * 之间的配合，把传输换成内存对象就把被验的那一层替换掉了。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -126,7 +126,7 @@ describe('capabilities 不再被丢掉', () => {
     reg.stopAll()
   })
 
-  test('声明了我们没接的能力要说出来', async () => {
+  test('声明了但未接入的能力要说出来', async () => {
     // 不说出来的话，一个只提供 prompts 的 server 表现是：连上、握手成功、
     // 注册 0 个工具、**没有任何错误**。用户看到「配了但什么都没发生」。
     const { reg, logs } = await load({ capabilities: { prompts: {} } })
@@ -177,7 +177,7 @@ describe('resource 工具', () => {
 
   test('没声明 resources 就不注册', async () => {
     // 注册了的话，模型会调、拿到 Method not found、然后重试——
-    // 因为它没法从那条错误看出「这个 server 根本没这个能力」。
+    // 因为它没法从那条错误看出「这个 server 没这个能力」。
     const { reg } = await load({ capabilities: { tools: {} }, serveTools: true })
     expect(reg.toolSpecs.map((s) => s.name)).not.toContain('mcp__demo__list_resources')
     reg.stopAll()
@@ -234,7 +234,7 @@ describe('resource 工具', () => {
   })
 
   test('二进制只留一行占位，不内联 base64', async () => {
-    // 内联会瞬间吃掉几万 token，而模型多半用不上。
+    // 内联会瞬间占掉几万 token，而模型通常用不上。
     const { reg } = await load({
       capabilities: { resources: {} },
       serveResources: true,
@@ -288,7 +288,7 @@ function ctx() {
  * 2026-07-28 把**能力声明从 `initialize` 挪到了 `server/discover`**。
  * 这不是一条可以「以后再说」的版本差异：qywork 是否注册 resource 工具、
  * 是否报「声明了没接的能力」，全都读 `capabilities`。只读 initialize 的话，
- * 一个现代 server 上那个字段是空的——于是**一个工具都不注册、也不报错**，
+ * 一个现代 server 上那个字段是空的——因此**一个工具都不注册、也不报错**，
  * 正是上一组刚修掉的那个静默失败，换个版本原样复发。
  */
 describe('协议版本协商', () => {

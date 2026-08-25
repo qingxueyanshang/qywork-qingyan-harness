@@ -94,8 +94,7 @@ export interface LoopDeps {
   compaction?: CompactionPort
   /**
    * 流空闲超时（毫秒）。不传用 `STREAM_IDLE_TIMEOUT_MS`。
-   * 存在的理由只有一个：让测试能在几百毫秒内验到这条路径，
-   * 而不是让回归测试等三分钟——等三分钟的测试没人会跑。
+   * 存在的理由只有一个：让测试在几百毫秒内验到这条路径。回归测试不能等三分钟。
    */
   streamIdleTimeoutMs?: number
 }
@@ -115,8 +114,8 @@ export interface CompactionPort {
   /**
    * 执行一次压缩并落库。**不抛异常**，失败以 outcome 表达。
    *
-   * 信号必须传下去并一路带到落库点前：`untilAborted` 只把 loop 从等待里拽回来，
-   * 压缩那一侧还在后台跑，跑完的那份要靠同一个信号在落库前被丢弃。
+   * 信号必须逐层传到落库点前：`untilAborted` 只让 loop 从等待中返回，
+   * 压缩仍在后台执行，其结果要靠同一个信号在落库前被丢弃。
    */
   run(input: CompactionRunInput): Promise<CompactionOutcome>
 }
@@ -137,7 +136,7 @@ export interface LoopPersistence {
    * 思考正文的行。**与文本行同构**：流到就开，逐段追加，`appendText` 共用。
    *
    * 单开一种 step 而不是挂在工具行上：挂上去的推论是「这一轮没有工具调用就没有
-   * 地方放」，于是纯文本轮的思考直接丢弃——刷新一次页面它就不存在了。
+   * 地方放」，因此纯文本轮的思考直接丢弃——刷新一次页面它就不存在了。
    *
    * 它同时是 DeepSeek 类兼容端点的必需品：带 tool_calls 的 assistant 消息要原样
    * 回传 `reasoning_content`，否则后续轮次 400；历史从 steps 投影回去时缺这一段
@@ -145,7 +144,7 @@ export interface LoopPersistence {
    */
   openThinkingStep(runId: RunId, seq: number): string
   /**
-   * 轮内自动重发前，把死掉那次留下的思考 step 落成失败终态。
+   * 轮内自动重发前，把失败那次留下的思考 step 落成失败终态。
    *
    * 边界：只标不删——那些 step 真实发生过，也已经渲染给用户。投影侧据这个终态
    * 把它们排除在模型视图之外，不排除就会与重发那次的思考拼成一条回传给 provider。
@@ -173,10 +172,9 @@ export interface LoopPersistence {
   /**
    * 压缩落一条 step。
    *
-   * `steps.kind` 的 CHECK 里一直有 `'compaction'`，`StepKind`、`StepPayload`、
-   * archive 渲染分支也都在——**唯独没有生产者**。前端的压缩条纯由活事件创建，
-   * 刷新一次就消失，而它恰恰是解释「上下文为什么降了」的唯一线索。
-   * 这是 C1 第 1 款的标准死链：协议有、界面认、没人往里写。
+   * **这是 `'compaction'` 这种 step 的唯一生产者。** 少了它，`steps.kind` 的 CHECK、
+   * `StepKind`、archive 渲染分支就都是没有生产者的死链路（C1 第 1 款）：压缩条只由
+   * 活事件创建，刷新即消失，而它是解释「上下文为什么降了」的唯一线索。
    */
   recordCompaction(
     runId: RunId,
@@ -199,7 +197,7 @@ export interface LoopPersistence {
    *
    * **不能写成挂在 run 上的三个标量**（tokens / limit / percent）：那样每个 step
    * 覆盖一次，一个 run 有 N 次请求而账只剩最后一次的读数，
-   * 「这一轮上下文怎么长起来的」在账本里根本不存在。
+   * 「这一轮上下文怎么长起来的」在账本里不存在。
    */
   openRequest(input: {
     runId: RunId
@@ -244,9 +242,8 @@ export interface RunInput {
   /**
    * 上一次 provider 真值回执，从账本取。**决定这一轮开头显示的是不是同一把尺。**
    *
-   * 没有它的话，每个 run 的第一次请求只能报本地估算（系统性偏低），
-   * 第二次请求起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
-   * 那正是「上下文跳了好几次」里跨轮的那一半。
+   * 没有它，每个 run 的第一次请求只能报本地估算（系统性偏低），第二次请求起才切到
+   * 真值：读数在每轮开头掉一次再弹回，而会话内容一个字没变。
    *
    * `throughMessageId`：这个回执覆盖到哪条消息为止。它之后的历史消息是
    * 锚点没算过的，要另外估。
@@ -270,7 +267,7 @@ export interface RunInput {
    * 本轮 transcript 归属的用户消息。
    *
    * 不带它的话本 run 内新产生的执行记录没有归属，压缩投影认不出它们的位置，
-   * 于是 run 内涨起来的那部分永远压不掉——而涨的正是那部分。
+   * 因此 run 内涨起来的那部分永远压不掉——而涨的正是那部分。
    */
   userMessageId?: string
 }
@@ -283,10 +280,9 @@ const DEFAULT_MAX_STEPS = 120
 /**
  * 流空闲超时。**两个事件之间**超过这个时长没有新事件就判定流卡死。
  *
- * 这条之前完全不存在：`stream_idle_timeout` 在 ErrorCode 里躺着，全项目没有生产者——
- * 是「协议里有类型 ≠ 有实现」的第七条，也是唯一一条**靠事件不出现**才能发现的。
- * 后果实测撞到过——provider 侧抖了一下，run 就那么挂着，既不出错也不结束，
- * 用户看到的是一个永远转圈的界面，日志里也没有任何线索。
+ * 没有这条超时，provider 侧断流之后 run 既不出错也不结束：界面持续转圈，日志无输出。
+ * `stream_idle_timeout` 这个码因此必须有生产者——它是少数**只能靠事件不出现**
+ * 才发现得了的死链路。
  *
  * 计的是**间隔**不是总时长：一轮 agent 跑十分钟是正常的，十分钟里一个字节都没有不是。
  * 180 秒给得比较宽，因为首个事件之前要等首 token，长 prompt 上这一段本来就慢；
@@ -322,10 +318,10 @@ export const UNAVAILABLE_BACKOFF_MS = 3_000
  * **这个数只有这一处**，界面上那句「正在重连 N / M」的 M 由 `run.retrying` 事件
  * 带过去，不许在前端再写一遍。
  *
- * 取 5 的依据是 2026-08-22 对 `opencode.ai/zen/go/v1` 的 `ox-alpha-free` 实测：
- * 长思考请求 11/11 在 `reasoning_content` 中途干净 EOF（无 `finish_reason`、
- * 无 `[DONE]`、无网络错误），短请求则正常收尾。断的是那条路线不是链路，
- * 重发一次接不住；而每次尝试本身要跑几十秒到两分钟，5 次也不构成对上游的连打。
+ * 取 5 的依据是 2026-08-22 的一次实测：长思考请求 11/11 在 `reasoning_content`
+ * 中途干净 EOF（无 `finish_reason`、无 `[DONE]`、无网络错误），短请求正常收尾。
+ * 断的是上游的某条路线不是整条链路，重发一次接不住；而每次尝试本身要跑几十秒到
+ * 两分钟，5 次不构成对上游的连打。
  *
  * 重发的门槛在尝试循环里，判的是**模型可见输出为零**——正文吐过字就一次都不重发，
  * 这个上限管不到那种情形。
@@ -335,9 +331,9 @@ export const MAX_RESENDS = 5
 /**
  * 会自动重发的失败，值是重发前的等待毫秒。次数上限见 `MAX_RESENDS`。
  *
- * **传输层等 0，上游明确答复的不可用要等。** 连接坏了，我们连「它收没收到」都不知道，
- * 原样立刻再发是唯一的答案；`provider_unavailable` 是上游亲口说的「暂时不行」，
- * 不等就是在无退避地捶它。
+ * **传输层等 0，上游明确答复的不可用要等。** 连接失败时无从判断请求是否送达，
+ * 原样立刻重发是唯一选择；`provider_unavailable` 是上游明确答复的「暂时不可用」，
+ * 不等就是无退避地重压对端。
  *
  * 这张表只说「等多久」，**不说「什么时候够格重发」**——那条判据在尝试循环里，
  * 判的是模型可见输出为零。
@@ -375,14 +371,14 @@ function transportReading(providerEvents: number, silentMs: number): string {
 }
 
 /**
- * 让一个 await 能被停止拽回来。
+ * 让一个 await 能被中止信号提前结束。
  *
  * **abort 只是置一个信号，等的人不看它就等于没停。** provider 那侧的等待本来就和
  * 卡死检测赛跑（见 `openStream` 里的 `Promise.race`），工具与压缩这两侧没有：
- * 其中任何一个不返回，整轮就停在那个 await 上，用户点停止**毫无反应**——
- * 按钮不报错、转圈不停、日志一个字没有，唯一的出路是重启应用。
+ * 其中任何一个不返回，整轮就停在那个 await 上：停止按钮**无响应**——
+ * 不报错、转圈不停、日志无输出，只能重启应用。
  *
- * 拽回来之后那批工作还在后台跑。这是有意的：`ctx.signal` 已经 abort，守规矩的
+ * 返回之后那批工作仍在后台执行。这是有意的：`ctx.signal` 已经 abort，守规矩的
  * 工具自己收手；收不了的由会话收尾时把它们的 step 落成「执行期间被中断，结果未知」
  * ——那正是崩溃恢复给这种情形定的说法，不是新造一套。
  *
@@ -494,7 +490,7 @@ export class AgentLoop {
    * 压缩端口。**恒非空**——缺省时是下面那个透传实现。
    *
    * 透传的语义与「没有压缩」逐字相同：投影原样返回、压缩报「没什么可折」，
-   * 于是容量拒绝照旧上报为 run 错误。差别只在调用点少了三处判空。
+   * 因此容量拒绝照旧上报为 run 错误。差别只在调用点少了三处判空。
    */
   private readonly compaction: CompactionPort
 
@@ -508,10 +504,10 @@ export class AgentLoop {
   /**
    * 给整条流套上空闲计时器，并**把第一个事件先拉出来**。
    *
-   * 先拉一次是为了把「压根没发出去」和「发出去了没回」分开：装配阶段抛出的错
+   * 先拉一次是为了把「没发出去」和「发出去了没回」分开：装配阶段抛出的错
    * （`buildBody` 拼请求体失败）在这里就浮出来，账本行还没被标成 sent。
    *
-   * **不要以为这一拉就把网络错误拿到了。** 三个适配器都在发请求之前先 yield
+   * **这一拉拿不到网络错误。** 三个适配器都在发请求之前先 yield
    * `request_prepared`，所以这里拉到的恒是它，真正的网络往返发生在调用方的
    * `for await` 里——重发与终态判定因此必须写在那一侧，不能写在这。
    */
@@ -530,7 +526,7 @@ export class AgentLoop {
       const stalled = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           // 先中止底层请求再拒绝：不然连接会一直挂着，
-          // 而它占着的正是我们判定为「已经没救了」的那条流。
+          // 而它占着的正是已被判定为不可恢复的那条流。
           onStall()
           reject(
             new ProviderError({
@@ -664,7 +660,7 @@ export class AgentLoop {
     /**
      * 溢出恢复用过没有。**状态机，不是重试计数。**
      *
-     * 计数常量要回答「几次算够」，而这里根本没有第二次的意义：撞窗之后压一次
+     * 计数常量要回答「几次算够」，而这里没有第二次的意义：撞窗之后压一次
      * 是有效的，压完还撞说明压缩已经压不动了，再压一次的输入与上一次逐字相同。
      * 收到一次带回执的成功响应即复位——那说明请求已经装得下，此后再撞是新情况。
      */
@@ -673,7 +669,7 @@ export class AgentLoop {
      * 上次尝试压缩时的 transcript 高水位。**进展判据，不是次数闸。**
      *
      * run 内 `input.history` 不变，新的可折单元只可能来自 transcript 追加，
-     * 所以「有没有新东西可压」就等于「transcript 有没有变长」。
+     * 所以「有没有新单元可压」就等于「transcript 有没有变长」。
      * 不判进展的话，占用一旦越过软阈值就是每一步再压一次；
      * 判成「一个 run 只压一次」的话，run 内涨出来的那几十波工具结果永远压不掉。
      */
@@ -682,10 +678,10 @@ export class AgentLoop {
     const progress: ProgressEvidence[] = []
     let turnIndex = 0
 
-    // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的东西
+    // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的状态
     // （files 插件记录的「哪些文件本轮读过」、目录大小缓存等）要跨调用可见；
     // 每波新建一个 = 状态永远是空的，写入守卫会把模型刚读过的文件判成没读过，
-    // 模型随后会绕道用 shell 手写文件。这条已经实测踩中过一次。
+    // 模型随后会绕道用 shell 手写文件。
     const emitQueue = new EventQueue()
     const ctx = this.deps.makeToolContext(input.runId, (e) => emitQueue.push(e))
 
@@ -776,7 +772,7 @@ export class AgentLoop {
             )
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
-            // `provider_requests`，账本上连"卡在哪"都看不出来。
+            // `provider_requests`，账本上连「卡在哪」都看不出来。
             const outcome = await untilAborted(
               input.signal,
               this.compaction.run({
@@ -854,13 +850,13 @@ export class AgentLoop {
          * ── 发送与消费：一次尝试，断了原样再来，至多 `MAX_RESENDS` 次 ──
          *
          * **重发的窗口是「模型可见输出为零」**：正文一个字都没有、也没有 tool_calls。
-         * 重发是重新生成，模型不会接着上次那半截往下写；半截**正文**已经吐出去再重发，
+         * 重发是重新生成，模型不会接着上次那半截往下写；半截**正文**已经输出后再重发，
          * 界面上就得表达「刚才那段作废」，而 `superseded` 是 run 级语义（靠一条新 run 行
          * 接替旧的），轮内重发没有第二条 run 行可挂——所以正文出现后不再重发。
          *
          * 半截**思考**不在此列：它本来就不进模型视图（活侧只在 `calls.length` 时挂
          * `reasoningContent`，投影侧 `flushText` 直接清空 `pendingReasoning`），
-         * 丢弃它不改写任何模型可见状态。代价是死掉那次的思考 step 要落失败终态，
+         * 丢弃它不改写任何模型可见状态。代价是失败那次的思考 step 要落失败终态，
          * 见下面重发分支。
          *
          * `request_prepared` 不算 provider 事件——三个适配器都在发请求**之前**
@@ -875,7 +871,7 @@ export class AgentLoop {
          * 这一轮自动重发过几次。上限 `MAX_RESENDS`。
          *
          * **不要拿 `sendIndex` 代替它计数**：那个数还会被压缩重发推进，共用一个数
-         * 等于压一次就吃掉一次重发额度，界面上报的次数也跟着虚高。
+         * 等于压一次就消耗一次重发额度，界面上报的次数也跟着虚高。
          */
         let resends = 0
         for (;;) {
@@ -890,9 +886,9 @@ export class AgentLoop {
           // 重发分支里去加：漏一条就是拿同一组键再插一次，整轮死在唯一索引上。
           const retryIndex = sendIndex++
 
-          // 账本行在**发出之前**落。这一刻我们已经知道要发什么（分组、指纹都算得出），
-          // 但还不知道 provider 会不会收——两件事分开记，「发出去了没回」
-          // 和「压根没发出去」在账本上才可区分。
+          // 账本行在**发出之前**落。此刻要发什么已经确定（分组、指纹都算得出），
+          // provider 是否接收仍未知——两件事分开记，「发出去了没回」
+          // 和「没发出去」在账本上才可区分。
           requestId = persist.openRequest({
             runId: input.runId,
             turnIndex: step,
@@ -907,7 +903,7 @@ export class AgentLoop {
 
           /**
            * 最后一次收到事件的时刻。**起点是「发出」而不是 0**——一个事件都没收到时，
-           * 它与此刻的差正好是「发出去之后干等了多久」，不需要另记一个发送时刻。
+           * 它与此刻的差正好是「发出去之后等了多久」，不需要另记一个发送时刻。
            */
           let lastEventAt = Date.now()
           /** provider 真的回过来的事件数（不含 `request_prepared`）。 */
@@ -1012,14 +1008,14 @@ export class AgentLoop {
              * 终态判据是**「provider 有没有答复过」**，不是错误码。
              *
              * 有 HTTP 状态码 = 它明确回绝了，`rejected`；没有 = 连接层面就没成，
-             * 我们不知道它收没收到、计没计费，只能记 `uncertain`。
-             * 原来按 `code === 'stream_idle_timeout'` 判，于是一次「压根没连上」
-             * 被记成「provider 拒了」——那是编出来的确定性。
+             * 是否送达、是否计费均无从判断，只能记 `uncertain`。
+             * 不要按 `code === 'stream_idle_timeout'` 判：那会把一次「没连上」
+             * 记成「provider 拒了」，是编出来的确定性。
              *
              * **用量与终态是两件事。** 流在收尾之前断掉时 provider 常常已经把用量
              * 报过了（实测：断流样本带着 `completion_tokens` 6476/5126）。那一格是实数，
-             * 记 `null` 就是账本在说谎。`uncertain` 说的是「它收没收到我们不知道」，
-             * 不是「没花钱」。`pe.usage` 缺席仍记 `null`——缺席不等于零。
+             * 记 `null` 会让账本与实际不符。`uncertain` 表示送达状态未知，
+             * 不表示未计费。`pe.usage` 缺席仍记 `null`——缺席不等于零。
              */
             persist.settleRequest(
               requestId,
@@ -1053,7 +1049,7 @@ export class AgentLoop {
               overflowRecovered = true
               const cap = pe.capacity
               /*
-               * 用 provider 自报的输入量校正锚点——它是真值，而我们本地那个数
+               * 用 provider 自报的输入量校正锚点——它是真值，而本地那个估算
                * 刚刚被证明是错的。拿不到就把锚点作废退回估算，**不要用本地估算
                * 去填这个位置**：那正是撞窗的原因，填进去等于确认一遍错误。
                */
@@ -1134,7 +1130,7 @@ export class AgentLoop {
              *
              * `errno` 与英文原文对排查是全部，对界面是噪音——归类之后那句中文说的是
              * 「哪一类」，说不出「是哪个码」。少了这行，账本里只剩中文，
-             * 回头分不出 `ECONNRESET`（对端重置）和我们自己那 60 秒掐的。
+             * 回头分不出 `ECONNRESET`（对端重置）和本地 60 秒空闲超时中止的。
              *
              * 取的是 `cause` 而不是 `err`：走到这里 `err` 已经是归类后的
              * `ProviderError`，它的 `code` 是 `network_error` 这种分类码，
@@ -1161,27 +1157,27 @@ export class AgentLoop {
                * - 思考 step 落失败终态。不落的话它们与重发那次的思考在同一个 run 里
                *   相邻，投影时被 `pendingReasoning` 拼成一条回传给 provider。
                * - `open` 必须置空。不置空的话重发后第一个 thinking_delta 经 `stepFor`
-               *   命中旧 id，新生成被 `appendText` 拼进死掉那条 step。
+               *   命中旧 id，新生成被 `appendText` 拼进已失败的那条 step。
                * - `thinkingText` 同理，不清就是两次生成首尾相接后一起挂上
                *   `reasoningContent`。
                */
               persist.failThinkingSteps(attemptThinking)
               open = null
               thinkingText = ''
-              // 界面此刻的末条是死掉那次的半截思考，不说一声它会一直显示「正在思考…」。
+              // 界面此刻的末条是失败那次的半截思考，不发这条事件它会一直显示「正在思考…」。
               yield {
                 type: 'run.retrying',
                 runId: input.runId,
                 attempt: resends,
                 max: MAX_RESENDS,
               }
-              // 等待必须可中断：干等的这几秒里用户点停止，不拽回来就是按钮没反应。
+              // 等待必须可中断：退避的这几秒内用户点停止，不中断等待就是按钮无响应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue
             }
 
             /*
-             * 分类短语 + 现场读数 + 有没有替他试过，一行说完。
+             * 分类短语 + 现场读数 + 是否自动重发过，一行说完。
              *
              * 现场读数只给传输层。`provider_unavailable` 是上游明确答复的，
              * 给它拼「N 秒未收到响应」等于告诉用户请求没落地。
@@ -1204,7 +1200,7 @@ export class AgentLoop {
         turnIndex++
 
         // 流跑完了就给这一行落终态。中途被用户打断算 `uncertain`——
-        // provider 那边收没收全我们不知道，而这正是 `uncertain` 存在的意义。
+        // provider 是否收全无从判断，这正是 `uncertain` 的语义。
         persist.settleRequest(
           requestId,
           input.signal.aborted ? 'uncertain' : 'received',
@@ -1258,7 +1254,7 @@ export class AgentLoop {
           /*
            * ── 静默溢出 ──
            *
-           * 有的 provider 撞窗**不报错**，悄悄把超出的部分丢掉照常回话
+           * 有的 provider 撞窗**不报错**，静默丢弃超出部分并照常返回
            * （实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
            * 而窗口正好 1,000,000，全程没有任何错误）。这种 provider 上靠错误分类
            * 拿不到恢复凭证，而会话已经在无声地丢历史——比撞窗报错更坏，
@@ -1301,7 +1297,7 @@ export class AgentLoop {
           if (providerStop === 'pause_turn') continue
 
           /*
-           * **provider 说要调工具，而我们一条都没解析出来 = 故障，不是完成。**
+           * **provider 声明要调工具，而一条都没解析出来 = 故障，不是完成。**
            *
            * 这两种情况长得一样但性质相反：`end_turn` 是模型说完了，
            * `tool_use` 是它要调工具而调用在解析链上丢了（流里少了名字分片、
@@ -1335,10 +1331,10 @@ export class AgentLoop {
         /*
          * **名字不在注册表里的，一律不进执行链。**
          *
-         * 注册表是工具的唯一权威——名字不在表里的东西不是工具，它是 provider
-         * 违反了我们下发的工具表（模型胡诌了一个名字）。放它进去就会开出一条
+         * 注册表是工具的唯一权威——名字不在表里的调用不是工具，它是 provider
+         * 违反了下发的工具表（模型编造了一个名字）。放它进去就会开出一条
          * tool step、发一条 `tool.started`，界面上多一张既没有动作、也什么都没做的
-         * 卡片，而标题只能编（「读取 xxx」或「未知工具」都是在给不存在的东西造词条）。
+         * 卡片，而标题只能编（「读取 xxx」或「未知工具」都是在给不存在的工具造词条）。
          *
          * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
          * 渲染那侧不再需要任何兜底分支。
@@ -1411,7 +1407,7 @@ export class AgentLoop {
           /*
            * 与停止赛跑，并且**边等边把中途输出交出去**。
            *
-           * 裸 `Promise.all` 有两个坏：一个不返回的工具把整轮钉死在这里，
+           * 裸 `Promise.all` 有两处问题：一个不返回的工具把整轮钉死在这里，
            * 而停止按钮只是置了个信号没人看；以及这一波跑多久，shell 的 stdout
            * 就在内存里压多久（实测 `npm test` 50.7 秒，界面全程不动）。
            * `drainUntil` 两件都管——它的返回值就是这一波的执行结果。
@@ -1456,7 +1452,7 @@ export class AgentLoop {
             }
 
             // 工具结果必须原样回传给模型——这是不可改写的事实，
-            // 装配层不得摘要、截断或"美化"。
+            // 装配层不得摘要、截断或改写措辞。
             const landed = (s.outcome.resources ?? []).map((r) => r.resourceId)
             transcript.push({
               role: 'tool',
@@ -1567,7 +1563,7 @@ export class AgentLoop {
    * 省略量不是事后统计出来的，是装配时**同尺两测相减**——原文一直在
    * Message/Step 里躺着（压缩是投影、不销毁数据），所以量得到。
    * 前提就是这个：一旦哪天把旧结果正文改写成占位串，原文不在任何可测处，
-   * 这个数就只能瞎报，届时该删掉它而不是估一个。
+   * 这个数就失去依据，届时该删掉它而不是估一个。
    */
   private buildRequest(
     input: RunInput,
@@ -1590,7 +1586,7 @@ export class AgentLoop {
      *   上一轮：S + H + Notes + T
      *   这一轮：S + H + T'    + Notes + …     ← 在 |S+H| 处分叉
      *
-     * 于是**每开一个新 run，上一轮跑出来的全部工具结果必然全价重付**
+     * 因此**每开一个新 run，上一轮跑出来的全部工具结果必然全价重付**
      * （实测一次 grep 产出约 1.4 万 token，下一轮可命中上限因此从约 2.6 万
      * 掉到约 1.2 万）。排在最后之后，`history + transcript` 是一条跨 run
      * 只追加的稳定前缀，注记是唯一的易变尾巴。
@@ -1801,7 +1797,7 @@ function envelopeHashOf(req: ChatRequest): string {
  * 一条 tool 消息里装的是 `{call_id, tool, status, executed, summary, result}`：
  * 前四个是这次调用的**事实信封**，后两个是它**带回来的正文**。两者的处置完全
  * 不同——正文可以落 sink、可以在压缩时换成定位符，信封不能动。合成一个桶，
- * 面板就答不了「上下文是被工具输出吃掉的，还是被模型自己的话吃掉的」。
+ * 面板就答不了「上下文是被工具输出占用的，还是被模型正文占用的」。
  *
  * 量法：把同一份记录**去掉正文再量一次**，两次之差就是正文。
  * tokenization 不可加，所以不能分别量两段再相加。
@@ -1820,7 +1816,7 @@ function splitToolResult(content: string, total: number): { envelope: number; bo
     const envelopeTokens = Math.min(total, estimateText(JSON.stringify(envelope)))
     return { envelope: envelopeTokens, body: total - envelopeTokens }
   } catch {
-    // 不是我们那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
+    // 不是约定的那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
     return { envelope: total, body: 0 }
   }
 }
@@ -1837,7 +1833,7 @@ function breakdownOf(req: ChatRequest): ContextBreakdown {
 
   // 工具 schema 分两桶。判据是 `mcp__` 前缀——`mcp/register.ts` 保证 MCP 工具
   // 一律带它，插件工具走 `<插件id>__` 归内置一侧。这两类的处置完全不同：
-  // MCP 涨了是用户自己装的服务器在涨，内置涨了是我们自己的事。
+  // MCP 涨了是用户装的服务器在涨，内置涨了是内置工具表在涨。
   const mcp = req.tools.filter((t) => t.name.startsWith('mcp__'))
   const builtin = req.tools.filter((t) => !t.name.startsWith('mcp__'))
   if (mcp.length) out.mcpTools = estimateSchemas(mcp)
@@ -1903,8 +1899,8 @@ export function toolResultContent(
 /**
  * `outcome.data.images` 里那几张。
  *
- * **是数组不是单张**：MCP 工具一次调用能带回好几张图，取第一张就是把其余的静默丢掉
- * ——而那正是这一整轮改动在收拾的那类毛病。`read_file` 读一个文件，给一个一元数组。
+ * **是数组不是单张**：MCP 工具一次调用能带回好几张图，取第一张就是把其余的静默丢掉。
+ * `read_file` 读一个文件，给一个一元数组。
  */
 function imagesOf(data: Record<string, unknown> | undefined): { data: string; mime: string }[] {
   const raw = data?.images
@@ -1941,26 +1937,21 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 /**
  * 把 path 形态的图像块换成 base64，交给适配器。
  *
- * ## 产副本，绝不回写
- *
- * 原地改会同时坏两件事：
+ * **产副本，绝不回写。** 原地改会同时坏两件事：
  *
  * - 重试循环里 `req = { ...req, signal }` 是浅拷贝、**复用同一个 `messages` 数组**，
  *   而 `payloadHash` 在每次尝试发出**之前**就落了账。原地改之后第二次尝试会对同一份
- *   内容算出不同的哈希，而那个字段的职责恰恰是「认出同一份内容发了两遍」。
+ *   内容算出不同的哈希，而那个字段的职责是「认出同一份内容发了两遍」。
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
  *   内存里常驻整个 run。
  *
- * ## 只处理附件那一种
+ * **只处理附件那一种。** 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻就已
+ * 经是字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，那是他自己的文
+ * 件，这个语义是对的。
  *
- * 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻就已经是
- * 字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，
- * 那是他自己的文件，这个语义是对的。
- *
- * ## 读不到不是致命错
- *
- * 文件没了、超了上限、指纹对不上——三种都换成一个文本块，不抛。一张图发不出去
- * 不该让整轮起不来，而**必须让模型看见这句话**：静默丢掉的话它会以为自己看过了。
+ * **读不到不是致命错。** 文件没了、超了上限、指纹对不上——三种都换成一个文本块，
+ * 不抛。一张图发不出去不该让整轮起不来，而**必须让模型看见这句话**：静默丢掉时
+ * 模型会把这次读取当成已完成。
  */
 export async function materialize(req: ChatRequest): Promise<ChatRequest> {
   if (!req.messages.some((m) => typeof m.content !== 'string')) return req

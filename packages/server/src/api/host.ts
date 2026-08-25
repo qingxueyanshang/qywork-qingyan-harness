@@ -1,15 +1,13 @@
 /**
  * 宿主机的外部程序依赖：**探测它们在不在，以及在 Windows 上一键装上**。
  *
- * ## 表里为什么只有这四条
- *
- * 入表门槛是**代码里真的有一处 `Bun.spawn` 调它**，逐个核过：
+ * **表里为什么只有这四条。** 入表门槛是**代码里真的有一处 `Bun.spawn` 调它**，逐个核过：
  *
  * | | 调用点 | 缺了会怎样 |
  * |---|---|---|
  * | bash | `tools/sandbox.ts` 的 `commandShell()` | **只是换语法**，落到 PowerShell；三档全空才是 `run_command` 不注册 |
- * | git | `server/git.ts:77` | 版本面板读不到状态与差异 |
- * | rg | `tools/search.ts:164` | **只是慢**，内置遍历顶上（那条路已经写好了） |
+ * | git | `server/git.ts` 的 `git()` | 版本面板读不到状态与差异 |
+ * | rg | `tools/search.ts` 的 `runRipgrep()` | **只是慢**，内置遍历顶上（那条路已经写好了） |
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
  *
  * 「装了更好」「同类工具都列一下」不进表。那种清单的后果是用户第一次点开设置页
@@ -19,8 +17,7 @@
  *
  * 沙箱（bwrap / seatbelt）**不在这里**：它已经在权限页报了，报两处就是两本账。
  *
- * ## 安装那条路的三条边界
- *
+ * **安装那条路的三条边界**：
  * 1. **参数只用来查表，从不进命令。** 请求体只有一个 `id`，拿它在下面这张常量表里
  *    查 argv；查不到回 400。命令串里没有任何一个字节来自请求——这与
  *    「跑一条用户给的命令」是两件事，后者是 `run_command`，它受裁决层管。
@@ -30,7 +27,7 @@
  *    用户自己看见；本项目没有 PTY，闷在管道里的安装过程就是一个转不完的圈。
  *
  * 「应用内装依赖」本身是一条额外的执行入口，由用户明确要求才有
- * （`docs/plans/2026-08-14-bash-能力检测与安装引导.md`）——不要顺手往这里加别的软件。
+ * （`docs/plans/2026-08-14-bash-能力检测与安装引导.md`）——不要往这里追加别的软件。
  */
 
 import type { EnvDependency } from '@qywork/core'
@@ -57,7 +54,7 @@ interface DepState {
 /**
  * 一条依赖的定义。`probe` 返回它在这台机器上的当前状态。
  *
- * `winget` 为 `null` = 我们不知道它的包 id，界面上就没有按钮（B5：
+ * `winget` 为 `null` = 本仓没有收录它的包 id，界面上就没有按钮（B5：
  * 能力不存在就不显示入口）。
  */
 interface DepSpec {
@@ -85,21 +82,12 @@ function onPath(cmd: string): string | null {
 /**
  * winget 能不能用。**必须经 `cmd.exe` 探，不能用 `Bun.which`。**
  *
- * 本机实测（Windows 10，winget v1.12.460 确实装着）：
- *
- * ```
- * where.exe winget            → C:\...\AppData\Local\Microsoft\WindowsApps\winget.exe
- * fs.existsSync(那个路径)      → false      ← ENOENT
- * Bun.which('winget')         → null
- * Bun.spawnSync(['winget',…]) → 抛 Executable not found in $PATH
- * cmd.exe /c winget --version → exit 0, v1.12.460, 82ms
- * ```
- *
- * `WindowsApps` 下那个 winget.exe 是**应用执行别名**（APPEXECLINK 重解析点），
- * 不是真文件：`stat` 认不出这个标签，于是所有基于 `existsSync` 的查找一律说没有，
- * 而 `CreateProcess` 能解析它。**Win10/11 上 winget 一律是这个形状**，所以
- * `Bun.which('winget')` 在任何机器上都返回 null——照它判的话一键装按钮永远不出现，
- * 而这个 bug 只有真起一次服务才撞得到，单测和类型都拦不住。
+ * `WindowsApps` 下那个 winget.exe 是**应用执行别名**（APPEXECLINK 重解析点），不是
+ * 真文件：`stat` 认不出这个标签，因此所有基于 `existsSync` 的查找一律说没有
+ * （`Bun.which` 返回 null、`Bun.spawnSync` 直接抛），而 `CreateProcess` 解析得了它，
+ * `cmd /c winget --version` 是 exit 0。**Win10/11 上 winget 一律是这个形状**——照
+ * `Bun.which` 判的话一键装按钮在任何机器上都不出现，而这个缺陷只有真起一次服务才撞
+ * 得到（实测记录见 `docs/plans/2026-08-14-bash-能力检测与安装引导.md` 批 5）。
  *
  * 判据仍然是本仓一贯的那条（`sandbox.ts` 的 `detectSandbox`）：
  * **「装了」不等于「能用」，所以真跑一次**。而且跑的是**和安装时同一条路**——
@@ -127,8 +115,8 @@ export function wingetUsable(): boolean {
  * 批 4 之前它们是同一个：没有 bash 就没有 `run_command`，所以 `required` 恒为真。
  * 批 4 之后 `commandShell()` 按 bash → pwsh 7 → PowerShell 5.1 三档落，
  * **三档任一命中模型就跑得了命令**——再恒标必需的话，只有 PowerShell 的机器上
- * 设置页会报一条必需依赖缺失，而模型手里明明有 `run_command`，
- * 用户于是去装一个他并不需要的东西。
+ * 设置页会报一条必需依赖缺失，而模型手里有 `run_command`，
+ * 用户因此去装一个他并不需要的依赖。
  *
  * 三格各自的判据：
  *
@@ -141,7 +129,7 @@ export function wingetUsable(): boolean {
  *   （B7 的例外——能力边界声明必须留全，不能只说一句「装了更好」）。
  *
  * 注入是为了能测另外两档：本机只可能命中其中一档，而这一批要修的失败形状
- * （没 bash、有 PowerShell）恰恰不在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
+ * （没 bash、有 PowerShell）不在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
  */
 export function resolveBashRow(deps: {
   bash: () => { path: string | null; reason: string }
@@ -217,7 +205,7 @@ const DEPS: DepSpec[] = [
 ]
 
 /**
- * 这台机器上「一键装」到底可不可行。**握手与安装路由用同一个判据。**
+ * 这台机器上「一键装」是否可行。**握手与安装路由用同一个判据。**
  *
  * 分开算的表现是界面上有个按钮、点下去回 409——而 B5 的原话就是
  * 「能力在某端不存在时，握手里声明 false、界面不显示入口，
@@ -249,9 +237,9 @@ export function probeEnvironment(): EnvDependency[] {
 
 /**
  * 装一个依赖的 argv。**逐段拆开，不拼字符串**：拼字符串就得自己处理引号，
- * 而 `start` 后面那个带空格的标题恰恰需要引号——交给 spawn 去引更可靠。
+ * 而 `start` 后面那个带空格的标题需要引号——交给 spawn 去引更可靠。
  *
- * 标题只用 ASCII：本机控制台代码页是 GBK，中文标题会以乱码显示（踩过）。
+ * 标题只用 ASCII：本机控制台代码页是 GBK，中文标题会以乱码显示。
  * `start` 开一个新控制台窗口，`cmd /k` 让它在 winget 跑完后**留着**——
  * 装失败时那几行输出是用户唯一的线索。
  */
@@ -282,7 +270,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
 
   const body = (await req.json().catch(() => null)) as { id?: string } | null
   const dep = DEPS.find((d) => d.id === body?.id)
-  // 查不到就是查不到——不猜、不模糊匹配。id 是我们自己下发的，对不上说明前后端不同版本。
+  // 查不到就是查不到——不猜、不模糊匹配。id 由服务端下发，对不上说明前后端不同版本。
   if (!dep) return json({ error: 'bad request', message: `没有名为 "${body?.id}" 的依赖` }, 400)
 
   if (dep.winget === null) {
@@ -324,7 +312,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
     started: true,
     command: `winget install --id ${dep.winget} -e --source winget`,
     // **这句必须回给前端显示。** 装完之后 PATH 是这个进程启动时的快照，
-    // 新装的东西不在里面——不重启的话探测照样找不到，而那个失败形状最迷惑人。
+    // 新装的依赖不在里面——不重启的话探测照样找不到，而那个失败形状最难判断。
     note: '安装窗口已经打开。装完请重启 qywork——当前进程的 PATH 是启动时的快照，看不到新装的程序。',
   })
 }

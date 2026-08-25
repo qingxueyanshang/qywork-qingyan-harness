@@ -161,10 +161,10 @@ export class TeamOrchestrator {
 
     // `{input}` 决定上游产出**放在哪儿**，不决定要不要放。
     //
-    // 之前没写 `{input}` 就把上游产出直接丢了——于是 `needs: ["n1"]` 只影响顺序，
-    // 不影响内容，实测的表现是下游角色回「没有上一步的上下文，无法复核」。
+    // 不写 `{input}` 就会把上游产出直接丢掉——`needs: ["n1"]` 只影响顺序、不影响内容，
+    // 实测的表现是下游角色回「没有上一步的上下文，无法复核」。
     // 声明了依赖却拿不到依赖的产出，是最难查的一类配置陷阱：它不报错，
-    // 只是让下游角色显得很蠢。真的只想要顺序，写 `passInput: false`。
+    // 只是让下游角色拿不到上游产出。真的只想要顺序，写 `passInput: false`。
     const withGoal = node.task.replaceAll('{goal}', goal)
     const wantsInput = node.passInput !== false && upstream !== ''
     const task = withGoal.includes('{input}')
@@ -236,7 +236,7 @@ export class TeamOrchestrator {
         phase: res.ok ? 'done' : 'failed',
         summary: res.output.slice(0, 200),
         // 子会话不进会话列表（`source='workflow'`），**这个 id 是它唯一的入口**。
-        // 不带出去的话，成员到底读了什么、跑了哪些命令就永远看不到了。
+        // 不带出去的话，成员读了什么、跑了哪些命令就永远看不到了。
         // 外部 CLI 没有子会话，那边这个字段自然缺席。
         ...('conversationId' in res && res.conversationId
           ? { childConversationId: res.conversationId }

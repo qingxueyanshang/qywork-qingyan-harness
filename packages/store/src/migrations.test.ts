@@ -80,7 +80,7 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     applyOne(db, 16)
     for (const [id, , newKind, label] of cases) {
       expect(payloadOf(db, id).action.kind).toBe(newKind)
-      // 对象名不动：换的是动作，不是被操作的东西。
+      // 对象名不动：换的是动作，不是被操作的对象。
       expect(payloadOf(db, id).action.objectLabel).toBe(label)
     }
   })
@@ -171,7 +171,7 @@ describe('迁移 17：update_plan → write_todos', () => {
 /**
  * 迁移 16 已经转过这句话，这里再转一遍——针对的是**它执行之后**才写进来的行。
  *
- * 那批行的来历：动作轴与回执文案分两批改，中间跑过真实轮次，于是落下
+ * 那批行的来历：动作轴与回执文案分两批改，中间跑过真实轮次，因此落下
  * 「新动作 + 旧文案」的组合（标题读作「创建待办」，展开体写着「计划已更新」）。
  */
 describe('迁移 18：再扫一遍待办回执的旧文案', () => {
@@ -238,7 +238,7 @@ describe('迁移 19：外置工具的动作转成 call', () => {
     }
     applyOne(db, 19)
     for (const [id] of rows) expect(kindOf(db, id)).toBe('call')
-    // 对象名不动：换的是动作，不是被操作的东西。
+    // 对象名不动：换的是动作，不是被操作的对象。
     expect(payloadOf(db, 'm_run').action.objectLabel).toBe('mcp:github/create_issue')
   })
 
@@ -277,7 +277,7 @@ describe('迁移 19：外置工具的动作转成 call', () => {
  * 外置工具的对象名收成「MCP」/「插件」两个类名。
  *
  * 卡片是动词 + 对象 + 目标三层；老行把具体的 `mcp:<server>/<tool>` 填进对象名，
- * 标题和目标于是一字不差。不转的表现是回放时老卡片写「调用mcp:github/search」、
+ * 标题和目标因此一字不差。不转的表现是回放时老卡片写「调用mcp:github/search」、
  * 新卡片写「调用MCP · mcp:github/search」。
  */
 describe('迁移 20：外置工具的对象名收成类名', () => {
@@ -335,7 +335,7 @@ describe('迁移 20：外置工具的对象名收成类名', () => {
 })
 
 /**
- * `memory` 门面拆成三个名字，老行按当时的 `args.action` 分流。
+ * `memory` 门面拆成三个名字，老行按行内的 `args.action` 分流。
  *
  * 不转的表现是回放历史时模型看到一个当前工具表里不存在的名字——账本里的
  * `tool_name` 与 `args` 会被原样重放成一次工具调用。
@@ -379,7 +379,7 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
     insertStep(db, 'm_bare', 'memory', { kind: 'tool_result', args: { key: 'k' } })
     insertStep(db, 'm_junk', 'memory', {
       kind: 'tool_result',
-      args: { action: '瞎写的', key: 'k' },
+      args: { action: '非法值', key: 'k' },
     })
     insertStep(db, 'm_noargs', 'memory', { kind: 'tool_call' })
     applyOne(db, 21)
@@ -392,7 +392,7 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
   test('别的工具一个字节都不动', () => {
     const db = dbBefore(21)
     insertStep(db, 'other', 'read_file', { kind: 'tool_result', args: { path: 'a.ts' } })
-    // 同名前缀的行也不能被顺手带走——判据是整个名字相等。
+    // 同名前缀的行也不能被一并带走——判据是整个名字相等。
     insertStep(db, 'mcp', 'mcp__demo__memory', {
       kind: 'tool_result',
       args: { action: 'write', key: 'k' },
@@ -555,7 +555,7 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
 /**
  * 行类型是 DDL 的镜像，这条测试是**让它保持是镜像的那个约束**。
  *
- * `schema.ts` 里的 `WorkspaceRow` 那几个接口没有任何东西强制它们跟表对齐：迁移加一列
+ * `schema.ts` 里的 `WorkspaceRow` 那几个接口没有任何检查强制它们跟表对齐：迁移加一列
  * 而接口忘了加，两边不一致不会有人发现——直到某个映射函数读了一个不存在的列，
  * 拿到 `undefined` 装进领域对象。所以列名单独列一份（`ROW_COLUMNS`，与接口同处同改），
  * 在这里跟真库比对。

@@ -62,7 +62,7 @@ export function parseMcpConfig(raw: string): McpConfig {
 
   const obj = (parsed ?? {}) as Record<string, unknown>
   // 同时认 `servers` 和 `mcpServers`：后者是别的 MCP 客户端普遍用的键名，
-  // 用户多半是从那边整段复制过来的。为一个键名让人重打一遍配置不值得。
+  // 用户通常是从那边整段复制过来的。为一个键名让人重打一遍配置不值得。
   const rawServers = (obj.servers ?? obj.mcpServers ?? {}) as Record<string, unknown>
 
   const servers: McpConfig['servers'] = {}
@@ -75,7 +75,7 @@ export function parseMcpConfig(raw: string): McpConfig {
     if (url) {
       // `command` 和 `url` 同时给 = 配置有歧义。**报出来而不是挑一个**：
       // 静默挑一个的话，用户改了没被采用的那个字段，然后对着一个没有任何变化的
-      // 现象查半天。
+      // 现象长时间排查。
       if (command) {
         bad.push(`${name}（同时配了 command 与 url，无法判断走哪种传输）`)
         continue
@@ -148,7 +148,7 @@ export async function loadMcpServers(
   const loaded = await Promise.all(
     entries.map(async ([name, spec]) => {
       // HTTP server 没有工作目录这回事。给它解析一个只会在配置里
-      // 写了 cwd 时白白报错。
+      // 写了 cwd 时报错。
       const cwd = isHttpSpec(spec)
         ? workspaceRoot
         : spec.cwd
@@ -173,7 +173,7 @@ export async function loadMcpServers(
          *   `protocolVersion` 和 `serverInfo`）。按声明去卡的话，
          *   它们的工具会被**静默丢光**——那正是这次要修的那类失败，
          *   只是换了个方向，而且更难查：注册 0 个工具不是因为 server 真的没有，
-         *   而是因为我们没问。
+         *   而是因为客户端没问。
          *
          * 所以：调用失败时，只有在 server **没有**声明 tools 的情况下才咽下去
          * （那说明它本来就不提供工具，比如一个 resource-only 的 server）。
@@ -276,7 +276,7 @@ export async function loadMcpServers(
 }
 
 /**
- * server 声明了、我们没接的能力。
+ * server 声明了、本仓未接入的能力。
  *
  * 判据是 `SUPPORTED_CAPABILITIES` 这份清单，而不是在这里另写一遍 if——
  * 另写一遍的话，将来接了 `prompts` 却忘了改这里，用户会一直看到
