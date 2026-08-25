@@ -159,7 +159,7 @@ async function main(): Promise<number> {
       await s.turn(
         '用 subagent 把下面这件事整个交给 cli:claude，**你自己一个文件都不要碰、也不要用任何文件工具**：\n' +
           '在这个目录里新建 report.md，里面写一行「已阅」；再把 README.md 末尾追加一行「已阅」。\n' +
-          '它做完之后，你把它回执里「改了哪些文件」那一段原样转述给我。',
+          '它做完之后，把它的回执原样转述给我，另外说一句这次工具回执里量到几个文件。',
       )
       const solo = s.receiptOf('subagent')
       check('单发：回执带着量出来的清单', !!solo?.changes, solo)
@@ -179,7 +179,7 @@ async function main(): Promise<number> {
       await s.turn(
         '用 workflow 画一张只有一个节点的图，节点 agent 填 cli:codex，任务是：' +
           '把 report.md 的内容改成两行——第一行保持「已阅」，第二行写「codex 到此一游」。' +
-          '**你自己不要动手**。跑完把那个节点回执里「改了哪些文件」原样给我。',
+          '**你自己不要动手**。跑完把那个节点的回执原样给我。',
       )
       const node = s.receiptOf('workflow')?.nodes?.[0]
       check('图节点：回执带着量出来的清单', !!node?.changes, node)
