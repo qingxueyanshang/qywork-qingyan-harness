@@ -153,10 +153,12 @@ const KNOWN: KnownCli[] = [
     // **不要加 `--auto` 或 `-y/--yolo`**：实测（2026-08-25）它当场拒绝，
     // 原话「Cannot combine --prompt with --auto」，于是每一次派活都以退出码 1 收场。
     //
-    // 它**有** `--output-format stream-json` 与 `-S/--session <id>`，所以接着问这条路存在；
-    // 但那两项要填进表里得先看一次成功的输出，而本机这台上它的服务端一直回 500
-    // （`provider.api_error: 500`，retry 9 次后退出码 1），没能采到答案与会话 id 埋在哪个字段。
-    // **采到之前不猜**：猜错的表现是「表里写着能接着问，跑起来取不到 id」。
+    // 它**有** `--output-format stream-json` 与 `-S/--session <id>`，所以接着问这条路存在，
+    // 但那两项要填进表里得先看一次成功的输出。**这台机器上采不到**：它的服务端对
+    // 四个模型别名（kimi-for-coding / -highspeed / k3 / k3-256k）全部回 500
+    // （`APIStatusError`，它自己重试到第 10 次放弃），流里只见得到 `turn.step.retrying`。
+    // 已知的形状只有事件信封是 `{ role, type, … }`。**采到之前不猜**：
+    // 猜错的表现是「表里写着能接着问，跑起来取不到 id」。
     args: ['-p', '{prompt}'],
     output: 'text',
     envKeys: ['KIMI_API_KEY'],
