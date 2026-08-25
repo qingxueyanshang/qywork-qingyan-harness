@@ -20,6 +20,17 @@ async function fakeBin(name: string): Promise<string> {
 }
 
 describe('外部 CLI 识别', () => {
+  /**
+   * 表里写了「接着问」用什么参数，识别结果就必须带着它。
+   * 漏抄那两项的表现是静默失效：表里明明写着，跑起来却当那家不支持。
+   */
+  test('接着问要用的两项跟着识别结果出来', async () => {
+    const dir = await fakeBin('claude')
+    const [claude] = await detectClis({ PATH: dir, PATHEXT: '.CMD' })
+    expect(claude?.sessionField).toBeTruthy()
+    expect(claude?.resumeArgs?.join(' ')).toContain('{session}')
+  })
+
   test('PATH 上有就认出来，没有的不出现', async () => {
     const dir = await fakeBin('claude')
     const found = await detectClis({ PATH: dir, PATHEXT: '.CMD' })

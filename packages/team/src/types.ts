@@ -13,7 +13,7 @@
  * 后端这个概念，而且删掉一个 CLI 会让引用它的角色整条消失。
  */
 
-import type { EffortLevel, FileChange } from '@qywork/core'
+import type { EffortLevel } from '@qywork/core'
 
 /** 目标是外部 CLI 时，`PlanNode.agent` 用这个前缀。角色 id 不带前缀。 */
 export const CLI_PREFIX = 'cli:'
@@ -66,6 +66,14 @@ export interface CliAgent {
    */
   output: 'text' | 'jsonl'
   resultField?: string
+  /**
+   * 会话 id 埋在哪个点分路径上。**认得出它才接得上下一句**——
+   * 回执不清楚时可以接着问它，那条会话还在，它自己记得干过什么。
+   * 没有这一项的那几家只能重新派一次。
+   */
+  sessionField?: string
+  /** 接着问时用的参数模板。`{session}` 换成上一次的会话 id，`{prompt}` 同 `args`。 */
+  resumeArgs?: string[]
   timeoutMs?: number
 }
 
@@ -125,15 +133,6 @@ export interface NodeResult {
   output: string
   error?: string
   durationMs: number
-  /**
-   * 这个节点改了哪些文件——**量出来的一手事实**，不是它自己在产出里说的那份。
-   *
-   * 只有外部 CLI 节点有：内置子 agent 的每一次写都由它自己的写工具逐条上报，
-   * 那条路更准。**量不了时整个字段缺席**，那时看 `changesUnmeasured`。
-   */
-  changes?: { files: FileChange[]; total: number }
-  /** 量不了的原因。与 `changes` 互斥——「没量到」不能长得跟「没有改动」一样。 */
-  changesUnmeasured?: string
   /**
    * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
    * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，

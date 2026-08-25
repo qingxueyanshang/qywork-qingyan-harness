@@ -48,6 +48,13 @@ export const subagentTool: ToolSpec = {
           '**只在用户点名了模型时才填**：写模型 id，同一个 id 挂在多个接口下时写 接口/模型。' +
           '不填 = 跟当前会话同一个模型。外部 CLI 用它自己的模型，填了会被拒。',
       },
+      resume: {
+        type: 'string',
+        description:
+          '接着上一次那条外部 CLI 会话继续问：填上一次结果里的 session。' +
+          '它记得上一轮干了什么，所以回执说不清楚时追问一句，不要重新派一遍——' +
+          '重派会让它把活再做一次。只对外部 CLI 成立。',
+      },
     },
     additionalProperties: false,
   },
@@ -72,6 +79,7 @@ export const subagentTool: ToolSpec = {
     const target = typeof args.agent === 'string' ? args.agent.trim() : ''
     const task = typeof args.task === 'string' ? args.task.trim() : ''
     const model = typeof args.model === 'string' ? args.model.trim() : ''
+    const resume = typeof args.resume === 'string' ? args.resume.trim() : ''
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
 
     // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，
@@ -95,55 +103,28 @@ export const subagentTool: ToolSpec = {
       target,
       task,
       ...(model ? { model } : {}),
+      ...(resume ? { resume } : {}),
       signal: ctx.signal,
     })
-    // 改动清单要摆进 `data`：**`ToolOutcome.fileChanges` 不进模型信封**
-    // （`loop.ts` 回给模型的只有 call_id/tool/status/executed/summary/resources/result），
-    // 而这份清单的第一读者正是模型——它据此决定要不要复核、要不要回退。
-    const receipt = {
-      ...(res.changes ? { changes: res.changes } : {}),
-      ...(res.changesUnmeasured ? { changesUnmeasured: res.changesUnmeasured } : {}),
-    }
+    // 会话 id 无论成败都交出去：**它是接着问的唯一入口**，而回执说不清楚、
+    // 或者它跑挂了卡在哪，恰恰是最该追问的两种时候。
+    const session = res.session ? { session: res.session } : {}
     if (!res.ok) {
       return {
         status: 'failure' as const,
-        message: `${who} 没做成：${res.error ?? '没有说明原因'}${scale(res)}`,
-        ...(res.output || Object.keys(receipt).length
-          ? { data: { output: res.output, ...receipt } }
-          : {}),
+        message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
+        ...(res.output || res.session ? { data: { output: res.output, ...session } } : {}),
       }
     }
     return {
       status: 'success' as const,
-      // 量级写进 message：它进信封的 `summary`，是模型不展开 data 就能读到的第一行。
-      // 「说做完了却一个文件没动」这种矛盾，靠它一眼就能撞见。
-      message: `${who} 做完了${scale(res)}`,
+      message: `${who} 做完了`,
       // 子会话 id 随结果落库：进度事件不落库，刷新之后能点开它的只有这里。
       data: {
         output: res.output,
-        ...receipt,
+        ...session,
         ...(res.conversationId ? { conversationId: res.conversationId } : {}),
       },
     }
   },
-}
-
-/**
- * 「改了多少」压成一句话，跟在 message 后面。
- *
- * **清单被截断时不给行数**：只列了前几条，合计必然不全，给出去就是一个会撒谎的数。
- * 内置角色没有这一格（它们的每一次写由自己的写工具逐条上报），回空串。
- */
-function scale(res: {
-  changes?: { files: { additions: number; deletions: number }[]; total: number }
-  changesUnmeasured?: string
-}): string {
-  if (res.changesUnmeasured) return '，改了什么没量到'
-  const c = res.changes
-  if (!c) return ''
-  if (c.total === 0) return '，没有改动'
-  if (c.files.length < c.total) return `，改 ${c.total} 个文件`
-  const add = c.files.reduce((n, f) => n + f.additions, 0)
-  const del = c.files.reduce((n, f) => n + f.deletions, 0)
-  return `，改 ${c.total} 个文件 +${add} −${del}`
 }

@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案），
- * 以及 `runCli` 交出去的两样东西——追加给它的回执约定、跑完量到的改动清单。
+ * 以及 `runCli` 交出去的两样东西——追加给它的回执约定、接着问要用的会话 id。
  * 后两条用 `node` 当替身跑，不需要本机装着那几家 CLI。
  *
  * 厂商表本身（调什么、参数长什么样）由真机冒烟覆盖：那是最容易过期的地方，
@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { extract, runCli } from './cli-backend.ts'
@@ -70,18 +70,6 @@ const run = (agent: CliAgent, root: string) =>
     signal: new AbortController().signal,
   })
 
-async function repo(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'qy-cli-'))
-  const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
-  git('init', '-q', '-b', 'main', '.')
-  git('config', 'user.email', 't@t')
-  git('config', 'user.name', 't')
-  await Bun.write(join(dir, 'a.txt'), 'A\n')
-  git('add', '.')
-  git('commit', '-qm', 'base')
-  return dir
-}
-
 describe('回执约定', () => {
   test('任务原样在前，约定追加在后', async () => {
     const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
@@ -93,39 +81,48 @@ describe('回执约定', () => {
   })
 })
 
-describe('改动清单', () => {
-  test('它改了什么由这一侧量出来，不看它说了什么', async () => {
-    const dir = await repo()
-    const writer: CliAgent = {
+describe('接着问', () => {
+  /** 会话 id 认得出来才接得上下一句。取最后一个非空值：同一个字段可能出现好几行。 */
+  test('按点分路径取会话 id，取最后一个非空的', async () => {
+    const teller: CliAgent = {
       ...echo,
       args: [
         '-e',
-        "require('fs').writeFileSync('a.txt','a\\n');require('fs').writeFileSync('b.txt','x\\ny\\n');process.stdout.write('干完了')",
+        'process.stdout.write([JSON.stringify({thread_id:"t-1"}),JSON.stringify({thread_id:"t-2"})].join(String.fromCharCode(10)))',
         '{prompt}',
       ],
+      output: 'jsonl',
+      resultField: 'thread_id',
+      sessionField: 'thread_id',
     }
-    const got = await run(writer, dir)
-    expect(got.output).toBe('干完了')
-    expect(got.changes?.total).toBe(2)
-    expect(got.changes?.files.map((c) => c.path).sort()).toEqual(['a.txt', 'b.txt'])
-    expect(got.changes?.files.find((c) => c.path === 'b.txt')?.changeType).toBe('created')
-    // 真改了：不是靠它自述，文件内容也确实变了。
-    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('a\n')
+    const got = await run(teller, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+    expect(got.session).toBe('t-2')
   })
 
-  /** 工作区不是 git 仓库不影响量测：那一侧自带一个临时仓库。 */
-  test('工作区不是 git 仓库也照样量得到', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'qy-cli-'))
-    const writer: CliAgent = {
+  test('表里没写 sessionField 的那几家不给 session', async () => {
+    const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+    expect('session' in got).toBe(false)
+  })
+
+  /** 接着问走的是另一套参数：`{session}` 与 `{prompt}` 都要换掉。 */
+  test('接着问时用 resumeArgs，会话 id 替进去', async () => {
+    const resumable: CliAgent = {
       ...echo,
-      args: [
+      args: ['-e', 'process.stdout.write("新起一条")', '{prompt}'],
+      resumeArgs: [
         '-e',
-        "require('fs').writeFileSync('bare.txt','x\\n');process.stdout.write('好了')",
+        'process.stdout.write(process.argv[1]+"|"+process.argv[2])',
+        '{session}',
         '{prompt}',
       ],
     }
-    const got = await run(writer, dir)
-    expect(got.changesUnmeasured).toBeUndefined()
-    expect(got.changes?.files.map((c) => c.path)).toEqual(['bare.txt'])
+    const got = await runCli(resumable, {
+      prompt: '你刚才改了什么',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: new AbortController().signal,
+      resume: 'sess-7',
+    })
+    expect(got.output.startsWith('sess-7|你刚才改了什么')).toBe(true)
+    expect(got.output).toContain('### 回执')
   })
 })
