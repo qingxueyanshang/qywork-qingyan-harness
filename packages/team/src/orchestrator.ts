@@ -218,6 +218,7 @@ export class TeamOrchestrator {
               : r.timedOut
                 ? '超时'
                 : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
+            ...(r.session ? { session: r.session } : {}),
           }))
         : await this.deps.runBuiltin({
             role: role!,
@@ -250,6 +251,8 @@ export class TeamOrchestrator {
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
         durationMs: Date.now() - started,
+        // 图跑完之后常常还要追一句「你刚才那步具体改了什么」——不带出去就只能重派。
+        ...('session' in res && res.session ? { session: res.session } : {}),
         ...('conversationId' in res && res.conversationId
           ? { conversationId: res.conversationId }
           : {}),
