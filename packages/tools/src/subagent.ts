@@ -51,9 +51,9 @@ export const subagentTool: ToolSpec = {
       resume: {
         type: 'string',
         description:
-          '接着上一次那条外部 CLI 会话继续问：填上一次结果里的 session。' +
-          '它记得上一轮干了什么，所以回执说不清楚时追问一句，不要重新派一遍——' +
-          '重派会让它把活再做一次。只对外部 CLI 成立。',
+          '续接指定的外部 CLI 会话：填上一次调用返回的 session。' +
+          '该会话保留上一轮上下文，可直接就其产出追问；' +
+          '不填则新建会话，任务会被重新执行一遍。仅外部 CLI 支持。',
       },
     },
     additionalProperties: false,
@@ -106,8 +106,8 @@ export const subagentTool: ToolSpec = {
       ...(resume ? { resume } : {}),
       signal: ctx.signal,
     })
-    // 会话 id 无论成败都交出去：**它是接着问的唯一入口**，而回执说不清楚、
-    // 或者它跑挂了卡在哪，恰恰是最该追问的两种时候。
+    // 会话 id 无论成败都交出去：它是续接会话的唯一入口，而回执信息不足与
+    // 执行失败两种情形恰恰最需要追问。
     const session = res.session ? { session: res.session } : {}
     if (!res.ok) {
       return {

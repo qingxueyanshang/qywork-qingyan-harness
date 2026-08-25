@@ -123,7 +123,7 @@ export function makeDelegate(ctx: {
         if (!cli) return { ok: false, output: '', error: `本机没有识别到 ${id}` }
         // 接不上的那几家当场说清楚：照跑一遍会起一条全新会话，而模型以为它记得上一轮。
         if (input.resume && !cli.resumeArgs) {
-          return { ok: false, output: '', error: `${id} 接不了上一条会话，只能重新派一次` }
+          return { ok: false, output: '', error: `${id} 不支持续接会话，只能新建一次调用` }
         }
         const r = await runCli(cli, {
           prompt: input.task,
@@ -143,13 +143,17 @@ export function makeDelegate(ctx: {
                   ? '超时'
                   : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
               }),
-          // 会话 id 无论成败都带回去：跑挂了更要接着问它「卡在哪」。
+          // 会话 id 无论成败都带回去：执行失败时更需要续接会话问清楚断点。
           ...(r.session ? { session: r.session } : {}),
         }
       }
 
       if (input.resume) {
-        return { ok: false, output: '', error: '接着问只对外部 CLI 成立，角色每次都是新的子会话' }
+        return {
+          ok: false,
+          output: '',
+          error: 'resume 仅对外部 CLI 有效：角色每次调用都是新的子会话',
+        }
       }
       const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
