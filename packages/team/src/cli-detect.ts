@@ -122,8 +122,27 @@ const KNOWN: KnownCli[] = [
     id: 'grok',
     vendor: 'xAI',
     bin: 'grok',
-    args: ['-p', '{prompt}'],
-    output: 'text',
+    // `-p` 是它的 `--single`：跑一轮打印结果就退出。默认它是个 TUI。
+    //
+    // `--output-format json` 出来的是**一个**缩进过的对象（不是逐行），所以走 `json` 那一档；
+    // 逐行解析对它一行都取不到。
+    //
+    // **`--always-approve` 不能换成 `--permission-mode acceptEdits`**：实测（2026-08-25）
+    // 后者会让它在第一次工具调用处停下，回来的对象是 `stopReason: "cancelled"`、`num_turns: 1`，
+    // 正文写着「正在创建 g1.txt」而文件根本没有。stdin 是关的，没有人能批准那一次调用。
+    args: ['-p', '{prompt}', '--output-format', 'json', '--always-approve'],
+    output: 'json',
+    resultField: 'text',
+    sessionField: 'sessionId',
+    resumeArgs: [
+      '-p',
+      '{prompt}',
+      '--resume',
+      '{session}',
+      '--output-format',
+      'json',
+      '--always-approve',
+    ],
     envKeys: ['XAI_API_KEY'],
     credentials: ['.grok/auth.json'],
   },
@@ -131,6 +150,13 @@ const KNOWN: KnownCli[] = [
     id: 'kimi',
     vendor: '月之暗面',
     bin: 'kimi',
+    // **不要加 `--auto` 或 `-y/--yolo`**：实测（2026-08-25）它当场拒绝，
+    // 原话「Cannot combine --prompt with --auto」，于是每一次派活都以退出码 1 收场。
+    //
+    // 它**有** `--output-format stream-json` 与 `-S/--session <id>`，所以接着问这条路存在；
+    // 但那两项要填进表里得先看一次成功的输出，而本机这台上它的服务端一直回 500
+    // （`provider.api_error: 500`，retry 9 次后退出码 1），没能采到答案与会话 id 埋在哪个字段。
+    // **采到之前不猜**：猜错的表现是「表里写着能接着问，跑起来取不到 id」。
     args: ['-p', '{prompt}'],
     output: 'text',
     envKeys: ['KIMI_API_KEY'],

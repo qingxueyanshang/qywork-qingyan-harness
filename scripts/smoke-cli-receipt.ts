@@ -179,6 +179,29 @@ async function main(): Promise<number> {
         '图节点：report.md 真的成了两行',
         (await readFile(join(WS_GIT, 'report.md'), 'utf8').catch(() => '')).includes('codex'),
       )
+
+      process.stdout.write('  … 第三轮：单发给 cli:grok，再接着问一句\n')
+      await s.turn(
+        '用 subagent 把这件事整个交给 cli:grok，**你自己一个文件都不要碰**：' +
+          '在这个目录里新建 grok.md，写一行「已阅」。做完把它的回执转述给我。',
+      )
+      const gk = s.receiptOf('subagent')
+      check('grok：产出回来了（不是一坨 JSON）', !!gk?.output && !gk.output.startsWith('{'), gk)
+      check('grok：会话 id 认出来了', !!gk?.session, gk)
+      check(
+        'grok：文件真的写了',
+        (await readFile(join(WS_GIT, 'grok.md'), 'utf8').catch(() => '')).includes('已阅'),
+      )
+      await s.turn(
+        `再用 subagent 接着问 cli:grok：resume 填 ${gk?.session ?? ''}，` +
+          'task 写「你刚才新建了哪个文件？只说文件名」。把回答原样给我。',
+      )
+      const gkAgain = s.receiptOf('subagent')
+      check(
+        'grok：接着问时它记得上一轮',
+        (gkAgain?.output ?? '').includes('grok.md'),
+        gkAgain?.output?.slice(0, 200),
+      )
     } finally {
       s.close()
       h.stop()
@@ -189,7 +212,7 @@ async function main(): Promise<number> {
     const h = serve({ store, config, workspaceRoot: WS_BARE, port: 0, host: '127.0.0.1' })
     const s = await connect(`http://127.0.0.1:${h.port}`, h.token, '没有 git 的工作区')
     try {
-      process.stdout.write('  … 第三轮：非 git 工作区，单发给 cli:claude\n')
+      process.stdout.write('  … 第四轮：非 git 工作区，单发给 cli:claude\n')
       await s.turn(
         '用 subagent 把这件事整个交给 cli:claude，**你自己一个文件都不要碰**：' +
           '在这个目录里新建 hello.txt，写一行「你好」。做完把它的回执转述给我。',

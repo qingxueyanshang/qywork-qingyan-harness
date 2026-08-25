@@ -60,11 +60,12 @@ export interface CliAgent {
   /** 参数模板。`{prompt}` 会被替换成任务描述。 */
   args: string[]
   /**
-   * 输出解析方式。
+   * 输出解析方式。三种，对应三种真实形状：
    * - `text`：整个 stdout 就是结果。
-   * - `jsonl`：逐行 JSON，取 `resultField` 指定字段的最后一个非空值。
+   * - `jsonl`：逐行 JSON，取 `resultField` 那个路径的最后一个非空值。
+   * - `json`：整段 stdout 是**一个**对象（可能缩进成多行），整段解析后按路径取。
    */
-  output: 'text' | 'jsonl'
+  output: 'text' | 'jsonl' | 'json'
   resultField?: string
   /**
    * 会话 id 埋在哪个点分路径上。**认得出它才接得上下一句**——
