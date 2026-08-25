@@ -93,12 +93,16 @@
   gap: var(--s-2);
   margin: 0;
   font-size: var(--fs-sm);
-  font-weight: 600;
   color: var(--text-secondary);
 }
+/* **600 只给标题，不给整条区头。** 挂在区头上的话，路径、说明、动作按钮全都跟着
+   变粗，然后每一个都要写一条 `font-weight: 400` 把自己捞回来——漏掉哪个就哪个
+   与别处的同类控件长得不一样。实测：区头里的「导入 / 新增」是 600，空态框里
+   同一个组件是 400。 */
 .settings-block-head h3 {
   margin: 0;
   font: inherit;
+  font-weight: 600;
   color: inherit;
 }
 .settings-block-head .icon-btn {
@@ -176,7 +180,7 @@
  * 一行给全四样：底层名 + 一句话 + 权限 + 参数。名字用等宽，它是模型看到的那个串，
  * 和正文用同一种字形就没法一眼扫出来。
  *
- * 权限钉在行尾右缘：找「哪些会动我的机器」时眼睛只扫右缘，不用逐行读完中文。 */
+ * 权限钉在行尾右缘：找「哪些会改动本机」时眼睛只扫右缘，不用逐行读完中文。 */
 .module-tool {
   display: flex;
   align-items: baseline;
@@ -289,7 +293,7 @@
  * `.settings-nav` 里面：不限定的话，窄屏的会话抽屉会跟着横过来。
  *
  * **这个断点必须写在这里**，不能放进 `utility.css`：那个文件先于本文件引入，
- * 同名选择器写在那边会被上面几条基准规则原样盖掉（试过，弹窗照旧是 700px 高）。
+ * 同名选择器写在那边会被上面几条基准规则原样盖掉：弹窗仍是 700px 高。
  */
 @media (max-width: 820px) {
   .settings-dialog {
@@ -399,7 +403,7 @@
 
 /* 控件样式要**两种容器都给到**：`.field`（标签包着控件）和 `Row` / `Field`
    渲染的 `.setting-row`。只写一种的代价是实打实的——「权限与沙箱」里那两个
-   多行清单落在 `.setting-row.stack` 里，于是一路掉回浏览器默认样式：
+   多行清单落在 `.setting-row.stack` 里，因此整块掉回浏览器默认样式：
    方角、系统边框、和旁边的输入框长得不是一套东西。 */
 .field input,
 .field select,
@@ -465,8 +469,8 @@
  *
  * **选择器必须带上元素名。** 上面那套输入框样式是 `.setting-row textarea`
  * 这种「类 + 元素」的形状，特异度比裸 `.code-area` 高；而这些编辑块有一半
- * 根本不在 `.field` / `.setting-row` 里（MCP 的配置、team.json 都是分区的直接
- * 子节点），那一半会一路掉回浏览器默认的 textarea——方角、系统边框、纯白底，
+ * 不在 `.field` / `.setting-row` 里（MCP 的配置、team.json 都是分区的直接
+ * 子节点），那一半会掉回浏览器默认的 textarea——方角、系统边框、纯白底，
  * 和这一页其余部分不是一套东西。写成 `textarea.code-area` 才两种位置都盖得住。
  *
  * 底色取 `--bg-sunken`、圆角取卡片那一档：它和条目卡是同一层「凹进去的内容」，
@@ -500,7 +504,7 @@ textarea.code-area::placeholder {
  * 而不是把每个接口铺成一张卡竖着排——竖排时用户要滚很远才知道自己配了几个。
  *
  * `active`（正在看）和 `live`（当前生效）是两件事，各给各的标记：
- * 看着 B 接口却以为 B 在跑，是这一页最容易犯的错，而后果要到账单上才显形。 */
+ * 看的是 B 接口、跑的是另一个，是这一页最容易犯的错，而后果要到账单上才显形。 */
 .tab-strip {
   display: flex;
   flex-wrap: wrap;
@@ -511,10 +515,10 @@ textarea.code-area::placeholder {
 /* ── 分段切换 ──
  *
  * 三处共用这一套：作用域（项目 / 全局）、接口（上面那一排）、用量的两组筛选。
- * 它们答的是同一个问题——「现在看的是哪一段」——分成三种控件只会让人以为
+ * 它们答的是同一个问题——「现在看的是哪一段」——分成三种控件等于宣称
  * 它们是三类东西。
  *
- * **选中靠下面一条线，不靠底色块。** 底色块得用内边距把字撑开，于是一行里的
+ * **选中靠下面一条线，不靠底色块。** 底色块得用内边距把字撑开，因此一行里的
  * 第一项被推离正文那条竖线整整一档；线画在伪元素上，不占位置，第一项的字
  * 就落在竖线上。
  * 伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，切换时整行上下跳。 */
@@ -600,16 +604,20 @@ textarea.code-area::placeholder {
   color: var(--text-tertiary);
 }
 /* 作用域标签那一行里，路径压到行尾，且不许把标签挤走。 */
-.scope-tabs .path-line {
+/* 路径与动作贴行尾。路径 `min-width: 0` 让它先让步，按钮（`.btn-ghost.sm`
+   自带 `flex: none`）不参与挤压。间距与 `.section-actions` / `.empty-actions`
+   同为 `--s-2`：同一排动作按钮在三处的疏密必须一样。 */
+.scope-tail {
+  min-width: 0;
   margin-left: auto;
-  max-width: 62%;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
-/* 区头里的路径贴着标题排。区头是 600 字重的标题行，路径要挑回常规字重，
-   否则一串等宽粗体比标题本身还抢。右侧动作靠 `.section-actions` 的
-   `margin-left: auto` 顶到行尾，所以这里限宽只为不把它们挤出去。 */
+/* 区头里的路径贴着标题排。右侧动作靠 `.section-actions` 的 `margin-left: auto`
+   顶到行尾，所以这里限宽只为不把它们挤出去。 */
 .settings-block-head .path-line {
   max-width: 55%;
-  font-weight: 400;
 }
 
 /* 被更高优先级的层盖住的那条。橙色是**警告**不是强调——它说明这条不生效。 */
@@ -713,11 +721,11 @@ textarea.code-area::placeholder {
  * 一张模型参数表：这一屏要回答的是**横向比较**（这个比那个贵多少、窗口大多少），
  * 而横排小标签让同一项落在不同横坐标上，眼睛得逐条读。表格把每项钉在一列上。
  *
- * **这一节不设自己的 max-height。** 上一版给列表加了 `max-height: 60vh` 又用
- * flex 竖排，于是每个厂商块被 flex 压缩、内容被裁——界面上是「每家只剩一行，
- * 后面几家整个是空的」。设置面板本来就有一条滚动轴，这里再加一条就是两条。 */
+ * **这一节不设自己的 max-height。** `max-height: 60vh` 加上 flex 竖排会让每个
+ * 厂商块被压缩、内容被裁——界面上是「每家只剩一行，后面几家整个是空的」。
+ * 设置面板本来就有一条滚动轴，这里再加一条就是两条。 */
 /* 一个厂商一张卡，各自带表头。竖排用普通 flow：**不给容器设高度**，
-   上一版的 `max-height` + flex 竖排把每张卡压扁，内容被裁掉。 */
+   `max-height` + flex 竖排会把每张卡压扁并裁掉内容。 */
 .lib > * + * {
   margin-top: var(--s-4);
 }
@@ -789,7 +797,7 @@ textarea.code-area::placeholder {
 }
 /* 模型 id 不断行。**不要用 `word-break: break-all`**：它会在词中间断
    （`deepseek-v4-flash` → `deepseek-v4-f` / `lash`），而这一列的其余各列都是
-   `nowrap`，于是表格把全部挤压量都摊给唯一能换行的这一列，一个名字能占三行。
+   `nowrap`，因此表格把全部挤压量都摊给唯一能换行的这一列，一个名字能占三行。
    撑不下时整张表横向滚（`.lib-scroll`）。 */
 .lib-id {
   color: var(--text-secondary);
@@ -811,7 +819,7 @@ textarea.code-area::placeholder {
  * 而按钮就在同一行上——尺寸一变按钮就跑（CLAUDE.md B9）。
  *
  * **「没探测」和「不支持」分开写**，合并成一个否就是把没验过的事写成了结论
- * ——而用户会据此去查一个根本没坏的东西。 */
+ * ——而用户会据此去查一个没坏的东西。 */
 .probe-line {
   flex: 1 1 auto;
   min-width: 0;
@@ -895,7 +903,6 @@ textarea.code-area::placeholder {
   white-space: nowrap;
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
-  font-weight: 400;
 }
 .section-actions {
   margin-left: auto;
@@ -923,7 +930,7 @@ textarea.code-area::placeholder {
   border-radius: var(--r-lg);
   background: var(--bg-sunken);
 }
-/* 装失败的必须显眼：它是用户唯一能据以排查「我明明放进去了」的东西。 */
+/* 装失败的必须显眼：它是用户排查「放进去了却没出现」的唯一依据。 */
 .entry-card.failed {
   border-color: var(--danger);
 }
@@ -1029,7 +1036,7 @@ textarea.code-area::placeholder {
  * 内容区里的控件不铺满整列。
  *
  * 授权那种 520px 的小浮层里输入框铺满正好；设置的内容区有八百来像素宽，
- * 一个只填 `high` 的下拉拉到那么宽会让人以为那里该填一长串东西——
+ * 一个只填 `high` 的下拉拉到那么宽，等于暗示那里要填一长串内容——
  * 控件宽度是对内容长度的暗示。多行文本框放宽一档：它装的是一行一个的绝对路径。
  */
 .settings-inner .field input,
@@ -1123,14 +1130,21 @@ textarea.code-area::placeholder {
 /* ───────────────────────── 定时任务 ───────────────────────── */
 
 /* 前提写在最前面，不折叠、不淡化：
-   一个用户以为在后台跑、实际不跑的定时任务，比没有这个功能坏得多。 */
+   一条界面上显示已排期、实际不会触发的定时任务，比没有这个功能坏得多。 */
 .schedule-caveat {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-xs);
   background: var(--warning-soft, var(--bg-inset));
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   line-height: 1.6;
+}
+/* 「新增」贴右边沿。这一格里只有边界那句话和它，中间的空白全归 auto。 */
+.schedule-caveat .btn-ghost {
+  margin-left: auto;
 }
 .schedule-card {
   display: flex;

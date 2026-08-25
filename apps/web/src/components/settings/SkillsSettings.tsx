@@ -30,7 +30,7 @@ import { ScopeTabs, ShadowTag } from './Scope.tsx'
  *
  * ## 按层分列
  *
- * 「这个技能是跟着这个仓库走的，还是我到处都带着的」是这一页要回答的第一个问题。
+ * 「这个技能是跟着这个仓库走的，还是全局都生效的」是这一页要回答的第一个问题。
  * 被高优先级层同名盖住的那些照样列在自己那一层里，贴一个 `ShadowTag`。
  */
 
@@ -59,7 +59,7 @@ export default function SkillsSettings() {
     try {
       const msg = await fn()
       if (msg) setOkMsg(msg)
-      // 建完 / 删完立刻重拉：列表不刷新的话用户会以为没生效，然后再点一次。
+      // 建完 / 删完立刻重拉：列表不刷新的话界面上等同于没生效，用户会再点一次。
       await refetch()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -75,8 +75,8 @@ export default function SkillsSettings() {
     })
 
   /**
-   * 这一段的两个动作。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
-   * 而空的时候用户看到的恰恰是空态框里那一份。
+   * 这一页的两个动作。**路径那一行和空态框共用同一份**——两处各写一遍的话迟早
+   * 只改一处，而空的时候用户看到的是空态框里那一份。
    */
   const Actions = () => (
     <>
@@ -124,9 +124,10 @@ export default function SkillsSettings() {
                 setOkMsg(null)
               }}
               dirs={d().dirs}
+              actions={<Actions />}
             />
 
-            <Section title="技能" actions={<Actions />}>
+            <Section>
               <Show
                 when={rows().length > 0}
                 fallback={<EmptyBox label="这一层还没有技能" actions={<Actions />} />}

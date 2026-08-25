@@ -22,7 +22,7 @@ import { ScopeTabs } from './Scope.tsx'
  *
  * ## 失败和成功一起列
  *
- * 连不上的那个恰恰是用户最需要看到的部分。而更隐蔽的一种是**握手成功但一个工具
+ * 连不上的那个是用户最需要看到的部分。而更隐蔽的一种是**握手成功但一个工具
  * 都没有**——一个只提供 prompts 的 server 会连上、`tools/list` 返回空、不报任何
  * 错，用户看到「配了但什么都没发生」。所以 `unsupported` 也要显示出来。
  *
@@ -67,7 +67,7 @@ export default function McpSettings() {
 
   /**
    * 「新增」/「导入」。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
-   * 而空的时候用户看到的恰恰是空态框里那一份。
+   * 而空的时候用户看到的是空态框里那一份。
    */
   const AddButton = () => (
     <>
@@ -112,11 +112,12 @@ export default function McpSettings() {
                 setError(null)
               }}
               dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
+              actions={<AddButton />}
             />
 
             <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
-            <Section title="已连上" actions={<AddButton />}>
+            <Section>
               <Show
                 when={servers().length > 0}
                 fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}
@@ -133,7 +134,7 @@ export default function McpSettings() {
                             <For each={s.tools}>{(t) => <code>{t.name}</code>}</For>
                           </div>
                         </Show>
-                        {/* 声明了、我们没实现的能力。不写的话「连上了却没有工具」
+                        {/* 声明了、本仓未实现的能力。不写的话「连上了却没有工具」
                           就是一个查不出原因的现象。 */}
                         <Show when={s.unsupported.length > 0}>
                           <div class="entry-extra bad">

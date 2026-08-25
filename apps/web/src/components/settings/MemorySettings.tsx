@@ -18,11 +18,11 @@ import { ScopeTabs, ShadowTag } from './Scope.tsx'
  *
  * ## 按层分列
  *
- * 「这条是跟着这个仓库走的，还是我到处都带着的」是用户在这一页要回答的第一个问题，
+ * 「这条是跟着这个仓库走的，还是全局都生效的」是用户在这一页要回答的第一个问题，
  * 合并去重之后这个事实就没了。所以标签页选层，列表只列那一层的。
  *
  * 被高优先级层盖住的那些**照样列在自己那一层里**，贴一个 `ShadowTag`——
- * 不列的话「我在全局改了怎么没生效」查不出来；不贴标记的话界面等于宣称
+ * 不列的话「在全局改了却没生效」查不出来；不贴标记的话界面等于宣称
  * 一条不生效的内容在生效。
  *
  * ## 编辑器拉的是全文，而且是这一层的全文
@@ -87,8 +87,8 @@ export default function MemorySettings() {
   }
 
   /**
-   * 这一段的动作。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
-   * 而空的时候用户看到的恰恰是空态框里那一份。
+   * 这一页的动作。**路径那一行和空态框共用同一份**——两处各写一遍的话迟早只改
+   * 一处，而空的时候用户看到的是空态框里那一份。
    */
   const Actions = () => (
     <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_MEMORY)}>
@@ -118,9 +118,10 @@ export default function MemorySettings() {
                 setError(null)
               }}
               dirs={m().dirs}
+              actions={<Actions />}
             />
 
-            <Section title="记忆" actions={<Actions />}>
+            <Section>
               <Show
                 when={rows().length > 0}
                 fallback={<EmptyBox label="这一层还没有记忆" actions={<Actions />} />}
