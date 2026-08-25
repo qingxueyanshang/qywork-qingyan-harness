@@ -105,7 +105,13 @@ export function makeDelegate(ctx: {
       ]
     },
 
-    async run(input: { target: string; task: string; model?: string; signal: AbortSignal }) {
+    async run(input: {
+      target: string
+      task: string
+      model?: string
+      resume?: string
+      signal: AbortSignal
+    }) {
       if (input.target.startsWith(CLI_PREFIX)) {
         const id = input.target.slice(CLI_PREFIX.length)
         // 外部 CLI 用它自己的模型，接不了这个参数。当场说出来，
@@ -115,10 +121,15 @@ export function makeDelegate(ctx: {
         }
         const cli = await findCli(id)
         if (!cli) return { ok: false, output: '', error: `本机没有识别到 ${id}` }
+        // 接不上的那几家当场说清楚：照跑一遍会起一条全新会话，而模型以为它记得上一轮。
+        if (input.resume && !cli.resumeArgs) {
+          return { ok: false, output: '', error: `${id} 接不了上一条会话，只能重新派一次` }
+        }
         const r = await runCli(cli, {
           prompt: input.task,
           workspaceRoot,
           signal: input.signal,
+          ...(input.resume ? { resume: input.resume } : {}),
           // 外部 CLI 要它自己的 key 才能干活，但 qywork 配置里那几把它一把用不上。
           secrets: collectSecrets(deps.config),
         })
@@ -132,13 +143,14 @@ export function makeDelegate(ctx: {
                   ? '超时'
                   : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
               }),
-          // 改了什么与成没成是两件事：失败的那次也要把已经落地的改动交出来，
-          // 否则模型只知道它没做成，不知道工作区已经被动过了。
-          ...(r.changes ? { changes: r.changes } : {}),
-          ...(r.changesUnmeasured ? { changesUnmeasured: r.changesUnmeasured } : {}),
+          // 会话 id 无论成败都带回去：跑挂了更要接着问它「卡在哪」。
+          ...(r.session ? { session: r.session } : {}),
         }
       }
 
+      if (input.resume) {
+        return { ok: false, output: '', error: '接着问只对外部 CLI 成立，角色每次都是新的子会话' }
+      }
       const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
       const picked = pick(input.model)

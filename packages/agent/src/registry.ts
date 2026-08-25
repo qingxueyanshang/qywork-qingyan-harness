@@ -79,6 +79,11 @@ export interface DelegatePort {
     task: string
     /** 用户点名了模型时才有；不给就跟当前会话同一个。 */
     model?: string
+    /**
+     * 接着某条外部 CLI 会话继续问（上一次回执里那个 `session`）。
+     * 它记得上一轮干了什么，所以回执不清楚时追问比重新派一遍便宜。
+     */
+    resume?: string
     signal: AbortSignal
   }): Promise<{
     ok: boolean
@@ -86,13 +91,11 @@ export interface DelegatePort {
     error?: string
     conversationId?: string
     /**
-     * 外部 CLI 这一次改了哪些文件——**量出来的一手事实**，不是它自述的那份。
-     * 内置角色没有这个字段（它们的每一次写由写工具逐条上报）。
-     * **量不了时整个字段缺席**，那时看 `changesUnmeasured`。
+     * 外部 CLI 那条会话的 id，**下一次要接着问就靠它**。
+     * 内置角色没有（那边是子会话，见 `conversationId`）；
+     * 认不出 id 的那几家 CLI 也没有，那种只能重新派一次。
      */
-    changes?: { files: FileChange[]; total: number }
-    /** 量不了的原因。与 `changes` 互斥——「没量到」不能长得跟「没有改动」一样。 */
-    changesUnmeasured?: string
+    session?: string
   }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。

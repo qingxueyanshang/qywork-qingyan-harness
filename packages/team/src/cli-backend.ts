@@ -18,9 +18,7 @@
  * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
  */
 
-import type { FileChange } from '@qywork/core'
 import { collectProcess, scrubEnv } from '@qywork/tools'
-import { beginProbe, endProbe, UNMEASURABLE } from './changes.ts'
 import type { CliAgent } from './types.ts'
 
 const DEFAULT_TIMEOUT = 10 * 60 * 1000
@@ -31,12 +29,8 @@ const DEFAULT_TIMEOUT = 10 * 60 * 1000
  * **交付物正文必须在前、回执作尾节**：`extract` 取的是最后一个非空目标字段，
  * 回执写在前面时，查询型任务的产出会变成一句状态汇报，而不是它的答案。
  *
- * **不要它列文件清单**：改了哪些文件由这一侧自己量（`changes.ts`），那是一手事实。
- * 让它再列一遍是同一件事印两处，而且是会虚报的那一份——实测见过它的写被自己的
- * 权限闸拦下、`Write`/`Edit` 却照样出现在它的自述里。它只报这一侧量不到的东西：
- * 为什么这么做、还剩什么没做。
- *
- * 不照格式报只是降级，不是失败：成没成看退出码，改了什么看清单，两样都不靠自述。
+ * 不照格式报只是降级，不是失败：成没成看退出码；回执不清楚就接着问它
+ * （`runCli` 的 `resume`），那条会话还在，它自己记得干过什么。
  */
 const REPORT_CONTRACT = `
 
@@ -45,6 +39,7 @@ const REPORT_CONTRACT = `
 先给交付物正文——任务要的答案、结论或改动说明。然后另起一节收尾：
 
 ### 回执
+- 改了哪些文件：逐个列路径，每个一句话说明改了什么；没改就写「没有」
 - 怎么解决的：一两句
 - 还剩什么没做：没有就写「没有」
 `
@@ -56,19 +51,12 @@ export interface CliRunResult {
   timedOut: boolean
   stderr: string
   /**
-   * 这一次它改了哪些文件——**由这一侧量出来的一手事实**，不是它自己说的。
+   * 它那条会话的 id，用于**接着问**（`runCli` 的 `resume`）。
    *
-   * `files` 只列改得最多的前几个，`total` 说的是全部，**两者必须同行**。
-   * `total: 0` 是「确定没改」；**量不了时整个字段缺席**，那时看 `changesUnmeasured`。
+   * 认得出 id 的才有：厂商表里没写 `sessionField` 的那几家（`-p` 一把梭那种）
+   * 这个键缺席，那种只能重新派一次。
    */
-  changes?: { files: FileChange[]; total: number }
-  /**
-   * 量不了的原因。**与 `changes` 互斥**，两者恰好有一个。
-   *
-   * 缺了它，「没量到」在界面和模型眼里都长得跟「没有改动」一样，
-   * 而那是一个具体而错误的结论。
-   */
-  changesUnmeasured?: string
+  session?: string
 }
 
 export async function runCli(
@@ -77,6 +65,13 @@ export async function runCli(
     prompt: string
     workspaceRoot: string
     signal: AbortSignal
+    /**
+     * 接着它上一次那条会话问。**它记得上一轮干了什么**，所以回执不清楚时
+     * 追问一句比重新派一遍便宜得多，也不会让它把活重做一遍。
+     *
+     * 只有厂商表里给了 `resumeArgs` 的那几家能接，调用方要先判。
+     */
+    resume?: string
     /**
      * qywork 自己的凭证。按值剥掉——后端用不上，也就没有理由拿到。
      * 不传等于「没有已知凭证」，不等于「不用剥」。
@@ -89,11 +84,13 @@ export async function runCli(
     onChunk?: (text: string) => void
   },
 ): Promise<CliRunResult> {
-  const args = agent.args.map((a) => a.replaceAll('{prompt}', input.prompt + REPORT_CONTRACT))
+  const template = input.resume ? (agent.resumeArgs ?? agent.args) : agent.args
+  const args = template.map((a) =>
+    a
+      .replaceAll('{prompt}', input.prompt + REPORT_CONTRACT)
+      .replaceAll('{session}', input.resume ?? ''),
+  )
   const timeout = agent.timeoutMs ?? DEFAULT_TIMEOUT
-
-  // 基线必须在起进程之前照：晚一步照就把它已经改过的那部分吃进基线了。
-  const probe = await beginProbe(input.workspaceRoot)
 
   // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
   // 它自己的工作目录不该由这里的配置面再开一个旋钮。
@@ -140,7 +137,7 @@ export async function runCli(
       : {}),
   })
 
-  const changed = probe ? await endProbe(probe, input.workspaceRoot) : null
+  const session = agent.sessionField ? pick(got.stdout, agent.sessionField) : ''
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
@@ -149,8 +146,33 @@ export async function runCli(
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
     stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
-    ...(changed ? { changes: changed } : { changesUnmeasured: UNMEASURABLE }),
+    ...(session ? { session } : {}),
   }
+}
+
+/**
+ * 从逐行 JSON 里取一个点分路径上的字符串，取**最后一个**非空值。
+ *
+ * 各家把东西埋的深浅不同（claude 的答案与会话 id 都在顶层，codex 的答案在 `item.text`），
+ * 所以取的是路径而不是键名。
+ */
+function pick(stdout: string, path: string): string {
+  const keys = path.split('.')
+  let last = ''
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      let v: unknown = JSON.parse(trimmed)
+      for (const key of keys) {
+        v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
+      }
+      if (typeof v === 'string' && v.trim()) last = v
+    } catch {
+      // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
+    }
+  }
+  return last
 }
 
 /**
@@ -159,31 +181,10 @@ export async function runCli(
  * jsonl 模式取**最后一个**非空的目标字段：agent 类 CLI 的 JSONL 流里，
  * 最终答案总在末尾，中间行是过程事件。取第一个会拿到「我开始干活了」。
  *
- * `resultField` 是**点分路径**，因为各家把答案埋的深浅不同：claude 在顶层 `result`，
- * codex 在 `item.text`（那种行还带着 `item.type: agent_message`，而 `command_execution`
- * 那类项根本没有 `text`，所以按路径取已经足够精确）。只按顶层键取的代价实测付过：
- * codex 一行都取不到，回退成整段 stdout，父会话拿到的是一坨 JSONL，
- * 而模型会把它当成任务产出。
+ * 一行都没解析出来时回退到整段 stdout——返回空字符串会让调用方
+ * 以为任务成功但没产出，比给出原始输出更糟。
  */
 export function extract(stdout: string, agent: Pick<CliAgent, 'output' | 'resultField'>): string {
   if (agent.output !== 'jsonl') return stdout.trim()
-
-  const path = (agent.resultField ?? 'result').split('.')
-  let last = ''
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    try {
-      let v: unknown = JSON.parse(trimmed)
-      for (const key of path) {
-        v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
-      }
-      if (typeof v === 'string' && v.trim()) last = v
-    } catch {
-      // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
-    }
-  }
-  // 一行都没解析出来时回退到整段 stdout——返回空字符串会让调用方
-  // 以为任务成功但没产出，比给出原始输出更糟。
-  return last || stdout.trim()
+  return pick(stdout, agent.resultField ?? 'result') || stdout.trim()
 }

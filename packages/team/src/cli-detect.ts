@@ -63,6 +63,22 @@ const KNOWN: KnownCli[] = [
     ],
     output: 'jsonl',
     resultField: 'result',
+    // 会话 id 在顶层 `session_id` 上（`system/init` 与 `result` 两行都带）。
+    // **不能写 `result.session_id`**：末行那个 `result` 是答案正文，是字符串不是对象。
+    sessionField: 'session_id',
+    // `--resume` 按它的帮助只在 `--print` 下有效，正是派活这条路。实测接着问
+    // 「你刚才改了哪些文件」，它凭记忆答得出来，没有重新去读文件。
+    resumeArgs: [
+      '-p',
+      '{prompt}',
+      '--resume',
+      '{session}',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--permission-mode',
+      'acceptEdits',
+    ],
     envKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
     credentials: ['.claude/.credentials.json', '.claude.json'],
   },
@@ -78,6 +94,9 @@ const KNOWN: KnownCli[] = [
     output: 'jsonl',
     // 答案在 `item.completed` 那种行的 `item.text` 上，顶层没有 `result`。
     resultField: 'item.text',
+    // 会话 id 在第一行 `thread.started` 的顶层 `thread_id` 上。
+    sessionField: 'thread_id',
+    resumeArgs: ['exec', 'resume', '{session}', '--json', '--skip-git-repo-check', '{prompt}'],
     envKeys: ['OPENAI_API_KEY'],
     credentials: ['.codex/auth.json'],
   },
@@ -144,6 +163,9 @@ export async function detectClis(env: NodeJS.ProcessEnv = process.env): Promise<
       args: k.args,
       output: k.output,
       ...(k.resultField ? { resultField: k.resultField } : {}),
+      // 这两项漏抄的话「接着问」会静默失效：表里写着，跑起来却没有。
+      ...(k.sessionField ? { sessionField: k.sessionField } : {}),
+      ...(k.resumeArgs ? { resumeArgs: k.resumeArgs } : {}),
       ...(k.timeoutMs ? { timeoutMs: k.timeoutMs } : {}),
       path,
       connected: await hasCredentials(k, home, env),

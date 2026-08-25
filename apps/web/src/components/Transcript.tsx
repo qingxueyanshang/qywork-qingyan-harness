@@ -1,4 +1,4 @@
-import type { FileChange, RunUsage, StopReason } from '@qywork/core'
+import type { RunUsage, StopReason } from '@qywork/core'
 import { formatMoney } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import {
@@ -41,7 +41,6 @@ import { isRunning, setState, state, type TranscriptItem } from '../lib/store/in
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
-import { ChangeList } from './ChangeList.tsx'
 import { IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
@@ -990,16 +989,6 @@ function ToolCard(props: { item: TranscriptItem }) {
       {...(changes() ? { changes: changes()! } : {})}
     >
       <StepBody item={props.item} />
-      {/* 外部 CLI 改了哪些文件——量出来的一手事实，与它在产出里自述的那份并列。
-          内置角色没有这一块：它们的每一次写由写工具逐条上报，那条路更准。 */}
-      <Show when={cliChanges(props.item)}>
-        {(c) => (
-          <>
-            <div class="fold-divider" />
-            <ChangeList {...c()} />
-          </>
-        )}
-      </Show>
       {/* 派出去那一件事的子会话。产出正文在上面已经有了，这里是「它是怎么做的」。 */}
       <Show when={childConversation(props.item)}>
         {(cid) => (
@@ -1014,22 +1003,6 @@ function ToolCard(props: { item: TranscriptItem }) {
       </Show>
     </Fold>
   )
-}
-
-/**
- * 这张卡上带着的改动清单。只有派给外部 CLI 的那种会有——图卡的清单在每个节点上。
- *
- * 量不了那一支同样要交出来：「没量到」和「没有改动」在界面上必须分得开。
- */
-function cliChanges(item: TranscriptItem): {
-  changes?: { files: FileChange[]; total: number }
-  unmeasured?: string
-} | null {
-  const d = item.outcome?.data as
-    | { changes?: { files: FileChange[]; total: number }; changesUnmeasured?: string }
-    | undefined
-  if (d?.changes) return { changes: d.changes }
-  return d?.changesUnmeasured ? { unmeasured: d.changesUnmeasured } : null
 }
 
 /** 这张卡上带着的子会话 id。只有 `subagent` 会有——图卡的 id 在每个节点上。 */

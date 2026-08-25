@@ -1,11 +1,10 @@
 #!/usr/bin/env bun
 /**
  * 外部 CLI 回执的端到端冒烟：让真实模型把活派给本机的 claude / codex，
- * 核对回来的那份回执——它自己报的那段，和这一侧量出来的改动清单。
+ * 核对回来的那份回执，再**接着问它一句**。
  *
- * 验的是单元测试验不到的一段：契约真的随任务发出去了、清单真的是量出来的
- * （**跑之前就脏的那些不算在它头上**）、单发与图节点两条路带回来的形状一致，
- * 以及**工作区不是 git 仓库时那一支**——它必须说「量不了」，不能长得像「没有改动」。
+ * 验的是单元测试验不到的一段：契约真的随任务发出去了、会话 id 真的认得出来、
+ * 接着问的时候它**记得上一轮干了什么**（而不是重新去读一遍文件）。
  *
  *   bun run scripts/smoke-cli-receipt.ts
  */
@@ -18,17 +17,10 @@ import { serve } from '@qywork/server'
 import { Store } from '@qywork/store'
 
 const ROOT = join(import.meta.dir, '..', '.smoke-ws')
-/** 有 git 的那个工作区：量得出清单。 */
 const WS_GIT = join(ROOT, 'cli-receipt')
-/** 没有 git 的那个：量不了，回执要如实说。 */
+/** 不是 git 仓库的那个：派活与接着问都不该受影响。 */
 const WS_BARE = join(ROOT, 'cli-receipt-bare')
-/**
- * 账本必须放在工作区**外面**。
- *
- * 放进去的代价实测付过：sqlite 的 WAL/SHM 一直在动，而清单量的是整个工作区，
- * 于是那三个文件出现在「CLI 改了什么」里——这一条同时说明了这份清单的边界，
- * 它认的是工作区在这段时间里变了什么，不是「这个进程改了什么」。
- */
+/** 账本放工作区外面：它一直在写，留在里面只会给这次跑添噪声。 */
 const DB = join(ROOT, 'cli-receipt-db', 'ledger.sqlite3')
 
 /** 一轮里要等一个别家的 agent 从头跑完，比自家一轮慢得多。 */
@@ -47,8 +39,7 @@ function check(label: string, ok: boolean, detail?: unknown): void {
 type ToolFinished = Extract<AgentEvent, { type: 'tool.finished' }>
 interface Receipt {
   output?: string
-  changes?: { files: { path: string; changeType: string; additions: number }[]; total: number }
-  changesUnmeasured?: string
+  session?: string
   nodes?: Receipt[]
 }
 
@@ -125,32 +116,18 @@ async function connect(base: string, token: string, title: string): Promise<Sess
   }
 }
 
-async function gitWorkspace(): Promise<void> {
-  await writeFile(join(WS_GIT, 'README.md'), '# 演示\n\n这个仓库用于验证外部 CLI 的回执。\n')
-  await writeFile(join(WS_GIT, 'notes.md'), '第一行\n')
-  const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: WS_GIT })
-  git('init', '-q', '-b', 'main', '.')
-  git('config', 'user.email', 'demo@qywork.dev')
-  git('config', 'user.name', 'qywork')
-  git('add', '-A')
-  git('commit', '-qm', 'init')
-  // 跑之前就脏一个文件：它是用户自己改到一半的那种，**绝不能出现在 CLI 的清单里**。
-  await writeFile(join(WS_GIT, 'notes.md'), '第一行\n用户自己写的第二行\n')
-}
-
 async function main(): Promise<number> {
   await rm(ROOT, { recursive: true, force: true })
   await mkdir(WS_GIT, { recursive: true })
   await mkdir(WS_BARE, { recursive: true })
   await mkdir(join(DB, '..'), { recursive: true })
-  await gitWorkspace()
+  await writeFile(join(WS_GIT, 'README.md'), '# 演示\n\n这个目录用于验证外部 CLI 的回执。\n')
   await writeFile(join(WS_BARE, 'README.md'), '# 没有 git 的工作区\n')
 
   const store = new Store({ path: DB })
   const config = await loadConfig()
   process.stdout.write(`\n父会话模型 ${config.active.model}\n\n`)
 
-  // ── 有 git 的工作区：清单量得出来 ──
   {
     const h = serve({ store, config, workspaceRoot: WS_GIT, port: 0, host: '127.0.0.1' })
     const s = await connect(`http://127.0.0.1:${h.port}`, h.token, '外部 CLI 回执')
@@ -159,21 +136,36 @@ async function main(): Promise<number> {
       await s.turn(
         '用 subagent 把下面这件事整个交给 cli:claude，**你自己一个文件都不要碰、也不要用任何文件工具**：\n' +
           '在这个目录里新建 report.md，里面写一行「已阅」；再把 README.md 末尾追加一行「已阅」。\n' +
-          '它做完之后，把它的回执原样转述给我，另外说一句这次工具回执里量到几个文件。',
+          '它做完之后，把它的回执原样转述给我。',
       )
       const solo = s.receiptOf('subagent')
-      check('单发：回执带着量出来的清单', !!solo?.changes, solo)
-      check('单发：不是「量不了」', !solo?.changesUnmeasured, solo?.changesUnmeasured)
-      const paths = (solo?.changes?.files ?? []).map((f) => f.path)
-      check('单发：新建的 report.md 在清单里', paths.includes('report.md'), paths)
-      check('单发：改过的 README.md 在清单里', paths.includes('README.md'), paths)
-      // 这条是整份设计的要害：跑之前用户自己改的那一行，不许记到 CLI 头上。
-      check('单发：跑之前就脏的 notes.md 不在清单里', !paths.includes('notes.md'), paths)
       check(
-        '单发：它自己那份回执也在产出里',
+        '单发：它自己那份回执在产出里',
         typeof solo?.output === 'string' && solo.output.includes('回执'),
         solo?.output?.slice(0, 200),
       )
+      check('单发：会话 id 认出来了', !!solo?.session, solo)
+      check(
+        '单发：文件真的写了',
+        (await readFile(join(WS_GIT, 'report.md'), 'utf8').catch(() => '')).includes('已阅'),
+      )
+
+      process.stdout.write('  … 接着问一句（同一条 CLI 会话）\n')
+      await s.turn(
+        `再用 subagent 接着问 cli:claude 一句：resume 参数填 ${solo?.session ?? ''}，` +
+          'task 写「你刚才具体改了哪些文件？只列文件名，别的不要说」。把它的回答原样给我。',
+      )
+      const again = s.receiptOf('subagent')
+      // 它记得上一轮才答得出这两个名字——重新起一条会话是答不出的。
+      check(
+        '接着问：它记得上一轮改了哪两个文件',
+        (again?.output ?? '').includes('report.md') && (again?.output ?? '').includes('README.md'),
+        again?.output?.slice(0, 300),
+      )
+      check('接着问：还是同一条会话', !!again?.session && again.session === solo?.session, {
+        first: solo?.session,
+        again: again?.session,
+      })
 
       process.stdout.write('  … 第二轮：图里一个节点派给 cli:codex\n')
       await s.turn(
@@ -182,25 +174,17 @@ async function main(): Promise<number> {
           '**你自己不要动手**。跑完把那个节点的回执原样给我。',
       )
       const node = s.receiptOf('workflow')?.nodes?.[0]
-      check('图节点：回执带着量出来的清单', !!node?.changes, node)
+      check('图节点：产出回来了', !!node?.output, node)
       check(
-        '图节点：改到的 report.md 在清单里',
-        (node?.changes?.files ?? []).some((f) => f.path === 'report.md'),
-        node?.changes,
+        '图节点：report.md 真的成了两行',
+        (await readFile(join(WS_GIT, 'report.md'), 'utf8').catch(() => '')).includes('codex'),
       )
-      check('图节点：形状与单发一致', !!node?.changes && 'total' in node.changes, node?.changes)
     } finally {
       s.close()
       h.stop()
     }
   }
 
-  /*
-   * ── 不是 git 仓库的工作区 ──
-   *
-   * 而且它还嵌在本仓库里、被 `.gitignore` 挡着——这正是借用外层仓库时答错的那个形状：
-   * 两次快照完全相同，回执上写「没有改动」，而文件真的写了。量测自带仓库之后它才对。
-   */
   {
     const h = serve({ store, config, workspaceRoot: WS_BARE, port: 0, host: '127.0.0.1' })
     const s = await connect(`http://127.0.0.1:${h.port}`, h.token, '没有 git 的工作区')
@@ -211,16 +195,10 @@ async function main(): Promise<number> {
           '在这个目录里新建 hello.txt，写一行「你好」。做完把它的回执转述给我。',
       )
       const bare = s.receiptOf('subagent')
-      check('非 git：照样量得出清单', !!bare?.changes, bare)
-      check('非 git：不是「量不了」', !bare?.changesUnmeasured, bare?.changesUnmeasured)
-      check(
-        '非 git：新建的 hello.txt 在清单里',
-        (bare?.changes?.files ?? []).some((f) => f.path === 'hello.txt'),
-        bare?.changes,
-      )
-      // 清单说改了，文件就得真的在——两份账要能互相对上。
+      check('非 git：照样派得动', !!bare?.output, bare)
+      check('非 git：会话 id 照样认得出来', !!bare?.session, bare)
       const wrote = await readFile(join(WS_BARE, 'hello.txt'), 'utf8').catch(() => '')
-      check('非 git：文件其实真的写了', wrote.includes('你好'), wrote)
+      check('非 git：文件真的写了', wrote.includes('你好'), wrote)
     } finally {
       s.close()
       h.stop()

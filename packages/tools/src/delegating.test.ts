@@ -5,7 +5,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import { type ToolContext, ToolRegistry } from '@qywork/agent'
-import type { FileChange } from '@qywork/core'
 import { registerBuiltinTools } from './index.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
@@ -32,13 +31,12 @@ interface Ran {
   ok: boolean
   output: string
   error?: string
-  changes?: { files: FileChange[]; total: number }
-  changesUnmeasured?: string
+  session?: string
 }
 
 /** 一个假的派活端口：记下派了什么，回一个预设结果。 */
 function stub(result: Ran) {
-  const calls: { target: string; task: string }[] = []
+  const calls: { target: string; task: string; resume?: string }[] = []
   return {
     calls,
     port: {
@@ -46,8 +44,12 @@ function stub(result: Ran) {
         { id: 'reviewer', kind: 'role' as const, description: '代码审查' },
         { id: 'cli:claude', kind: 'cli' as const, description: 'Anthropic · 已接入' },
       ],
-      run: async (input: { target: string; task: string }) => {
-        calls.push({ target: input.target, task: input.task })
+      run: async (input: { target: string; task: string; resume?: string }) => {
+        calls.push({
+          target: input.target,
+          task: input.task,
+          ...(input.resume ? { resume: input.resume } : {}),
+        })
         return result
       },
       runGraph: async () => ({ ok: true, nodes: [] }),
@@ -123,71 +125,27 @@ describe('派活', () => {
   })
 })
 
-/**
- * 「改了多少」跟在标题那一行上。**它进信封的 summary**，是模型不展开 data
- * 就能读到的第一行——「说做完了却一个文件没动」这种矛盾要在这里撞见。
- */
-describe('回执的量级', () => {
-  const one = (path: string, additions: number, deletions: number): FileChange => ({
-    path,
-    changeType: 'modified',
-    additions,
-    deletions,
+/** 回执说不清楚时接着问它——那条会话还在，它记得上一轮干了什么。 */
+describe('接着问', () => {
+  test('resume 原样传给端口，会话 id 随结果回来', async () => {
+    const s = stub({ ok: true, output: '我改了 a.ts', session: 'sess-9' })
+    const first = await subagentTool.fn({ agent: 'cli:claude', task: '改一下' }, ctx(s.port))
+    expect((first.data as { session?: string }).session).toBe('sess-9')
+
+    const again = await subagentTool.fn(
+      { agent: 'cli:claude', task: '你刚才改了哪些文件', resume: 'sess-9' },
+      ctx(s.port),
+    )
+    expect(again.status).toBe('success')
+    expect(s.calls.at(-1)?.resume).toBe('sess-9')
   })
 
-  test('改了几个文件就说几个，带增删合计', async () => {
-    const s = stub({
-      ok: true,
-      output: '好了',
-      changes: { files: [one('a.ts', 4, 1), one('b.ts', 1, 0)], total: 2 },
-    })
+  /** 跑挂了更要接着问「卡在哪」，所以失败那次也得把会话 id 交出去。 */
+  test('失败那次也带回会话 id', async () => {
+    const s = stub({ ok: false, output: '', error: '退出码 1', session: 'sess-3' })
     const res = await subagentTool.fn({ agent: 'cli:claude', task: '改' }, ctx(s.port))
-    expect(res.message).toContain('改 2 个文件 +5 −1')
-  })
-
-  test('一个都没改就明说，不是不吭声', async () => {
-    const s = stub({ ok: true, output: '看完了', changes: { files: [], total: 0 } })
-    const res = await subagentTool.fn({ agent: 'cli:claude', task: '看看' }, ctx(s.port))
-    expect(res.message).toContain('没有改动')
-  })
-
-  /** 清单被截断时合计必然不全，给出去就是一个会撒谎的数。 */
-  test('清单被截断时只给文件数，不给行数', async () => {
-    const s = stub({
-      ok: true,
-      output: '好了',
-      changes: { files: [one('a.ts', 4, 1)], total: 30 },
-    })
-    const res = await subagentTool.fn({ agent: 'cli:claude', task: '改' }, ctx(s.port))
-    expect(res.message).toContain('改 30 个文件')
-    expect(res.message).not.toContain('+4')
-  })
-
-  test('量不到时说量不到——不能长得跟「没有改动」一样', async () => {
-    const s = stub({ ok: true, output: '好了', changesUnmeasured: '这台机器上跑不了 git' })
-    const res = await subagentTool.fn({ agent: 'cli:claude', task: '改' }, ctx(s.port))
-    expect(res.message).toContain('没量到')
-    expect(res.message).not.toContain('没有改动')
-  })
-
-  /** 失败那次也要报量级：它可能已经动过工作区了。 */
-  test('失败也报量级', async () => {
-    const s = stub({
-      ok: false,
-      output: '',
-      error: '退出码 1',
-      changes: { files: [one('a.ts', 2, 0)], total: 1 },
-    })
-    const res = await subagentTool.fn({ agent: 'cli:claude', task: '改' }, ctx(s.port))
-    expect(res.message).toContain('退出码 1')
-    expect(res.message).toContain('改 1 个文件')
-  })
-
-  /** 内置角色没有这一格：它们的每一次写由自己的写工具逐条上报。 */
-  test('内置角色不多这一句', async () => {
-    const s = stub({ ok: true, output: '审完了' })
-    const res = await subagentTool.fn({ agent: 'reviewer', task: '看' }, ctx(s.port))
-    expect(res.message).toBe('reviewer 做完了')
+    expect(res.status).toBe('failure')
+    expect((res.data as { session?: string }).session).toBe('sess-3')
   })
 })
 
