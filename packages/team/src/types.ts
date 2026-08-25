@@ -134,6 +134,14 @@ export interface NodeResult {
   error?: string
   durationMs: number
   /**
+   * 外部 CLI 节点那条会话的 id，**接着问它就靠这个**。
+   *
+   * 图跑完之后模型常常还要追一句「你刚才那步具体改了什么」——不带出来的话
+   * 只能重新派一遍，而重派会让它把活再做一次。内置角色没有这一项（那边看
+   * `conversationId`），认不出 id 的那几家 CLI 也没有。
+   */
+  session?: string
+  /**
    * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
    * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，
    * 而进度事件不落库（见 `docs/plans/2026-08-23-workflow-图化编排.md` 取证 11）。

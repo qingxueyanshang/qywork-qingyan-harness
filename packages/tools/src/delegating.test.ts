@@ -160,6 +160,7 @@ describe('编排', () => {
       output: string
       durationMs: number
       conversationId?: string
+      session?: string
     }[]
   }) => {
     const seen: { goal: string; count: number; stepId: string }[] = []
@@ -175,6 +176,29 @@ describe('编排', () => {
       },
     }
   }
+
+  /** 图跑完之后同样要追问，所以节点的会话 id 必须随结果出来。 */
+  test('图节点的会话 id 随结果回来', async () => {
+    const g = graphPort({
+      ok: true,
+      nodes: [
+        {
+          nodeId: 'a',
+          agent: 'cli:codex',
+          status: 'done',
+          output: '改完了',
+          durationMs: 1,
+          session: 'thread-5',
+        },
+      ],
+    })
+    const res = await workflowTool.fn(
+      { goal: '改一下', nodes: [{ id: 'a', agent: 'cli:codex', task: '改' }] },
+      ctx(g.port),
+    )
+    const nodes = (res.data as { nodes: { session?: string }[] }).nodes
+    expect(nodes[0]?.session).toBe('thread-5')
+  })
 
   test('图交出去时带上这次调用的 stepId', async () => {
     const g = graphPort({ ok: true, nodes: [] })
