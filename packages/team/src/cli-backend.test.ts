@@ -46,6 +46,17 @@ describe('取答案', () => {
     expect(extract(out, { output: 'jsonl', resultField: 'item.text' })).toBe('答案')
   })
 
+  /**
+   * grok 那种：整段 stdout 是**一个**缩进过的对象。
+   * 逐行解析对它一行都取不到，会整段回退成一坨 JSON 交给父会话。
+   */
+  test('整段一个对象（grok 那种）', () => {
+    const out = JSON.stringify({ text: '有三个文件', sessionId: 'gk-1' }, null, 2)
+    expect(extract(out, { output: 'json', resultField: 'text' })).toBe('有三个文件')
+    // 同一段按逐行解析取不到——这正是它需要单独一档的理由。
+    expect(extract(out, { output: 'jsonl', resultField: 'text' })).toBe(out)
+  })
+
   /** 一行都取不到时回退整段：回空串会让调用方以为「跑成了但没产出」。 */
   test('取不到就回退整段 stdout', () => {
     expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' })).toBe(

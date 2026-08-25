@@ -103,9 +103,13 @@ subagent(agent: "cli:claude", task: "你刚才改了哪些文件？只列文件�
 它那条会话还在，记得上一轮干了什么。实测（2026-08-25）追问「你刚才具体改了哪些文件」，
 claude 与 codex 都凭记忆答得出来，没有重新去读文件。
 
-**接不上的那几家当场拒绝**：只有 claude 与 codex 认得出会话 id（表里的 `sessionField`
-与 `resumeArgs`），其余四家填了 `resume` 会被回一句「只能重新派一次」——
+**接不上的那几家当场拒绝**：认得出会话 id 的是 claude、codex、grok（表里的 `sessionField`
+与 `resumeArgs`），其余几家填了 `resume` 会被回一句「只能重新派一次」——
 照跑一遍会起一条全新会话，而模型以为它记得上一轮。
+
+kimi 那条是**能做而没做**：它有 `--output-format stream-json` 与 `-S/--session <id>`，
+但本机这台上它的服务端一直回 500，没能采到「答案与会话 id 埋在哪个字段」，
+所以表里空着——猜一个填进去的表现是「写着能接着问、跑起来取不到 id」。
 
 图里的 CLI 节点同样带 `session` 回来，所以一张图跑完之后照样能追着某个节点问。
 

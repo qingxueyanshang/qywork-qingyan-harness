@@ -137,7 +137,7 @@ export async function runCli(
       : {}),
   })
 
-  const session = agent.sessionField ? pick(got.stdout, agent.sessionField) : ''
+  const session = agent.sessionField ? field(got.stdout, agent, agent.sessionField) : ''
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
@@ -151,23 +151,41 @@ export async function runCli(
 }
 
 /**
- * 从逐行 JSON 里取一个点分路径上的字符串，取**最后一个**非空值。
+ * 按点分路径从 stdout 里取一个字符串。三种输出各有各的取法：
  *
- * 各家把东西埋的深浅不同（claude 的答案与会话 id 都在顶层，codex 的答案在 `item.text`），
- * 所以取的是路径而不是键名。
+ * - `text`：没有结构可取，回空串（调用方自己回退到整段）。
+ * - `jsonl`：逐行 JSON，取**最后一个**非空值——agent 类 CLI 的流里最终答案总在末尾，
+ *   取第一个会拿到「我开始干活了」。
+ * - `json`：整段 stdout 是**一个**对象（grok 那种，而且是缩进过的多行），
+ *   只能整段解析；逐行解析对它一行都取不到。
+ *
+ * 取路径而不是键名，是因为各家埋的深浅不同：claude 的答案与会话 id 都在顶层，
+ * codex 的答案在 `item.text`。
  */
-function pick(stdout: string, path: string): string {
+function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): string {
   const keys = path.split('.')
+  const walk = (root: unknown): string => {
+    let v = root
+    for (const key of keys) {
+      v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
+    }
+    return typeof v === 'string' && v.trim() ? v : ''
+  }
+  if (agent.output === 'text') return ''
+  if (agent.output === 'json') {
+    try {
+      return walk(JSON.parse(stdout))
+    } catch {
+      return ''
+    }
+  }
   let last = ''
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      let v: unknown = JSON.parse(trimmed)
-      for (const key of keys) {
-        v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
-      }
-      if (typeof v === 'string' && v.trim()) last = v
+      const got = walk(JSON.parse(trimmed))
+      if (got) last = got
     } catch {
       // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
     }
@@ -178,13 +196,10 @@ function pick(stdout: string, path: string): string {
 /**
  * 从 stdout 提取结果。
  *
- * jsonl 模式取**最后一个**非空的目标字段：agent 类 CLI 的 JSONL 流里，
- * 最终答案总在末尾，中间行是过程事件。取第一个会拿到「我开始干活了」。
- *
- * 一行都没解析出来时回退到整段 stdout——返回空字符串会让调用方
- * 以为任务成功但没产出，比给出原始输出更糟。
+ * 取不到时回退到整段 stdout——返回空字符串会让调用方以为任务成功但没产出，
+ * 比给出原始输出更糟。
  */
 export function extract(stdout: string, agent: Pick<CliAgent, 'output' | 'resultField'>): string {
-  if (agent.output !== 'jsonl') return stdout.trim()
-  return pick(stdout, agent.resultField ?? 'result') || stdout.trim()
+  if (agent.output === 'text') return stdout.trim()
+  return field(stdout, agent, agent.resultField ?? 'result') || stdout.trim()
 }
