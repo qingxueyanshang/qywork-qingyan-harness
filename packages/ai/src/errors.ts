@@ -4,8 +4,7 @@
  * 归类的目的只有一个：让前端知道**该让用户做什么**。所以分类轴是「用户的下一步动作」
  * （去配 key / 去充值 / 等一会重试 / 换模型 / 缩上下文），不是 HTTP 状态码的镜像。
  *
- * ## 判据的优先级
- *
+ * **判据的优先级**：
  * 1. **异常类与状态码**——最稳，优先用。
  * 2. **错误对象上的 `code`**（`ECONNRESET`、`UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`…）
  *    ——次稳，跨版本基本不动。
@@ -27,7 +26,7 @@ export class ProviderError extends Error {
   /**
    * 只有**被容量分类器证实**的上下文超限才带这个字段。
    *
-   * 要区分「provider 亲口说超了」和「我们从消息里猜它超了」时判
+   * 要区分「provider 明确报了超限」和「从消息里推断出超限」时判
    * `err.capacity !== undefined`——只看 `code === 'context_overflow'` 不够，
    * 那个码也可能来自别的路径。
    */
@@ -36,7 +35,7 @@ export class ProviderError extends Error {
    * 失败前 provider 已经报过的用量。
    *
    * 只有传输被掐断这一类会带：流在 `finish_reason` 之前结束，但用量那一格已经到了。
-   * **不带这个字段不等于没计费**，只等于我们没收到数——落账时区分这两者，
+   * **不带这个字段不等于没计费**，只等于本地没收到数——落账时区分这两者，
    * 不要把 `undefined` 当成 0。
    */
   readonly usage: ProviderUsage | undefined
@@ -80,7 +79,7 @@ function messageOf(err: unknown): string {
   return String(err)
 }
 
-/** 判断是不是「根本没配 key」而不是「key 不对」——两者的引导文案完全不同。 */
+/** 判断是不是「没配 key」而不是「key 不对」——两者的引导文案完全不同。 */
 function looksUnconfigured(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
   return m.includes('unset') || m.includes('missing') || m.includes('no api key')
@@ -175,33 +174,26 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
  * 传输层失败的四种形状。**顺序即优先级**：先认具体的，泛码（`CONNECTION`、
  * `UND_ERR_`）兜在最后一支。
  *
- * ## 为什么必须分开，而不是一句「网络中断或超时」
+ * **为什么必须分开，而不是一句「网络中断或超时」。** 三种失败的下一步动作完全不同：**连不上**要去改
+ * 接口地址或代理，**被断开**重发一次大概率就过去了，**超时**要先看是不是自己那 60 秒掐的。塞进同一
+ * 句话等于三件事一起说，用户读完不知道该干什么——这正是「连接在完成前断开」看不懂的原因。
  *
- * 三种失败的下一步动作完全不同：**连不上**要去改接口地址或代理，**被断开**重发一次
- * 大概率就过去了，**超时**要先看是不是自己那 60 秒掐的。塞进同一句话等于三件事一起说，
- * 用户读完不知道该干什么——这正是「连接在完成前断开」看不懂的原因。
- *
- * **判据按语义分，不按 errno 表分。** `ECONNREFUSED` 是压根没连上，`ECONNRESET`
+ * **判据按语义分，不按 errno 表分。** `ECONNREFUSED` 是没连上，`ECONNRESET`
  * 是连上了被重置；两个码长得像，含义相反，落进同一支就等于没分类。
  *
- * ## 为什么不能只匹配 Node/undici 那串
- *
- * 运行时是 Bun，它自己的 fetch 报的是另一套话。2026-08 在一台网络抖动的机器上对
- * DeepSeek 连打，三种真实失败一条都匹配不上 Node 那套：`The operation timed out.` /
- * `The socket connection was closed unexpectedly.` / `unknown certificate verification error`。
- * 全部落进 `internal_error`——它不在 `loop.ts` 的重发表里，后果不是文案难看，
- * 是**一次抖动直接终结整轮 run**。
+ * **为什么不能只匹配 Node/undici 那串。** 运行时是 Bun，它自己的 fetch 报的是另一套话。2026-08 在一
+ * 台网络抖动的机器上对 DeepSeek 连打，三种真实失败一条都匹配不上 Node 那套：
+ * `The operation timed out.` / `The socket connection was closed unexpectedly.` /
+ * `unknown certificate verification error`。全部落进 `internal_error`——它不在 `loop.ts` 的重发表
+ * 里，后果不是文案难看，是**一次抖动直接终结整轮 run**。
  *
  * 所以每一支都带两条正则：`code` 上是整串（锚定），文案里是夹在句子中间的一个词
  * （不锚定）。用同一条会漏掉 `getaddrinfo ENOTFOUND api.x.com` 这种把 errno 拼进
  * 文案、不设 `code` 的库。
  *
- * ## 证书错误也算可重试
- *
- * 它有两种成因：握手撞上抖动（重试就好），和代理/自签名证书配错了（重试没用）。
- * 判成可重试的代价是多打几次白工，判成不可重试的代价是一次抖动打断用户的任务。
- * 后者贵得多，所以选前者——但文案要**同时点出**这两种可能，
- * 别让一个配错代理的人对着「连不上」查半天网。
+ * **证书错误也算可重试。** 它有两种成因：握手撞上抖动（重试就好），和代理/自签名证书配错了（重试没
+ * 用）。判成可重试的代价是多打几次白工，判成不可重试的代价是一次抖动打断用户的任务。后者贵得多，
+ * 所以选前者——但文案要**同时点出**这两种可能，别让一个配错代理的人对着「连不上」长时间排查网络。
  */
 const TRANSPORT_SHAPES: { code: RegExp; message: RegExp; text: string }[] = [
   {
@@ -257,11 +249,11 @@ function capacityMessage(c: CapacityRejection): string {
  *
  * **不许静默丢弃。** 流式返回里工具名与参数分片到达，名字那一片没来时
  * （中转站丢片、或它把非流式响应硬转成 SSE），丢掉这条调用的表现是
- * 「模型说要调工具、我们当作它什么都没说」——run 记成正常完成、账本无痕，
+ * 「模型说要调工具、本地当作它什么都没说」——run 记成正常完成、账本无痕，
  * 而这正是「说做了却没做」最难查的那种形状。
  *
  * 也不许留着空名往下走：那条调用会随 assistant 消息原样回传给端点，
- * 校验严格的端点对空名 400，于是一次可恢复的丢片变成整条会话余下轮次全部失败。
+ * 校验严格的端点对空名 400，因此一次可恢复的丢片变成整条会话余下轮次全部失败。
  *
  * 三条协议共用这一个出口，措辞只有一份。
  */

@@ -42,7 +42,7 @@ export const client = new QyClient({
 /*
  * 热更新换掉这个模块之前，把旧连接关干净。
  *
- * vite 会重新执行整个模块，于是有了第二个 `QyClient`，而上一份那条 WebSocket 还连着。
+ * vite 会重新执行整个模块，因此有了第二个 `QyClient`，而上一份那条 WebSocket 还连着。
  * 服务端按连接注册订阅者（`handshake.ts` 拿 `ws.data.id` 做 key），两条连接就是两份
  * 同样的事件流，回调的却是同一个 store——正文每个 token 显示两遍，末尾出现两条读数条。
  * 改一次代码多一条连接，越用越多。
@@ -80,7 +80,7 @@ const pacer = createPacer({ write: writeTail, schedule, now: () => Date.now() })
 /**
  * 工具中途输出落进那张卡片。
  *
- * **只留尾部**：一次构建可能吐几万行，全存会把内存和渲染都拖垮。
+ * **只留尾部**：一次构建可能输出几万行，全存会让内存占用与渲染开销都不可接受。
  * 截断发生在合帧之后——按到达逐段截等于把同一份文本反复重排一遍。
  */
 function appendStdout(stepId: string, chunk: string): void {
@@ -111,7 +111,7 @@ function appendNodeOutput(key: string, chunk: string): void {
       const node = card?.nodes?.find((n) => n.nodeId === memberId)
       if (!node) return
       const next = (node.output ?? '') + chunk
-      // 与工具卡的 stdout 同一个上限：再多也读不完，只会把内存和渲染都拖住。
+      // 与工具卡的 stdout 同一个上限：再多也读不完，只会推高内存与渲染开销。
       node.output = next.length > 8000 ? next.slice(-8000) : next
     }),
   )
@@ -123,7 +123,7 @@ const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
  *
  * `git.state` 由服务端每 4 秒轮询广播一次，且**无条件发**：新连上的客户端只能从
  * 这条广播拿到分支名，没有别的取法，所以那边不能改成「变了才发」。让它冲缓冲的话，
- * 正文攒着的几十个字每 4 秒被瞬间倒出一次，界面上就是匀速吐一阵、蹦一下。
+ * 正文攒着的几十个字每 4 秒一次性排空，界面上是匀速输出一阵、再突进一次。
  *
  * **这份名单宁可短。** 漏一条只是多冲一次（顿一下）；多写一条会让真正要落
  * transcript 的事件看到一段放了一半的正文，那是顺序错乱，比顿挫严重得多。
@@ -131,7 +131,7 @@ const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
 const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
 
 /**
- * 「正在重连」那句话的收场信号：重发的那一次真的开始出东西了，或者整轮结束了。
+ * 「正在重连」那句话的收场信号：重发的那一次真的开始出数据了，或者整轮结束了。
  *
  * 服务端不发配对的「重发结束」事件，理由在 `RunRetryingEvent` 上。所以收场判据
  * 只有这一张表 + 入口那一处判断；**不要散到各 case 里**，那是三十次忘记的机会。
@@ -156,21 +156,16 @@ export function discardPace(): void {
 /**
  * 把一帧折进 `state`。
  *
- * ## 归属校验只判一次，就在这里
- *
- * 下面三十个 case 里的绝大多数（`text.delta` / `tool.*` / `usage` / `run.*`）写的都是
- * **当前会话**那一份 transcript 和 run 状态，而事件体自己不带 `conversationId`——
- * 归属在信封上。不能靠「服务端只会推我订阅的」：那个前提有一段物理上消不掉的
- * 窗口——`subscribe` 指令发出到服务端处理之间，旧会话还在推。
- * 表现就是切了会话、正文却是上一条的。
+ * **归属校验只判一次，就在这里。** 下面三十个 case 里的绝大多数（`text.delta` / `tool.*` / `usage`
+ * / `run.*`）写的都是 **当前会话**那一份 transcript 和 run 状态，而事件体自己不带 `conversationId`
+ * ——归属在信封上。不能假定「服务端只推已订阅的会话」：那个前提有一段消不掉的窗口——`subscribe`
+ * 指令发出到服务端处理之间，旧会话还在推。现象是切了会话、正文却是上一条的。
  *
  * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。入口判一次。
  *
- * ## `conversation.updated` 在校验之前处理
- *
- * 它改的是左栏那份**列表**，不是 transcript，对后台会话同样有意义（标题、模型）。
- * 一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。
- * 它自己带着 `conversationId`，本来就该按 id 精确路由。
+ * **`conversation.updated` 在校验之前处理。** 它改的是左栏那份**列表**，不是 transcript，对后台会话
+ * 同样有意义（标题、模型）。一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。它自己带着
+ * `conversationId`，本来就该按 id 精确路由。
  */
 export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   const ev = frame.event
@@ -196,7 +191,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    * 忙闲同样在归属校验之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
    *
    * **也在 `lastEventAt` 之前**：别的会话开跑不是这条会话「有动静」，
-   * 算进去的话，静默检测会被后台会话一路刷新，「链路断了」永远报不出来。
+   * 算进去的话，静默检测会被后台会话持续刷新，「链路断了」永远报不出来。
    */
   if (ev.type === 'conversation.busy') {
     markBusy(ev.conversationId, ev.busy)
@@ -281,7 +276,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           // **待办不清。** 它是这条会话的进度，不是这一轮的临时读数——
           // 一轮做三条、下一轮接着做第四条是常态。清了的表现是：中断再继续，
           // 清单整个消失，等模型下次整表提交才回来（`write_todos` 是整表语义，
-          // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的东西
+          // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的读数
           // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
           s.lastRunId = ev.runId
           s.runStartedAt = Date.now()
@@ -303,7 +298,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       return
 
     /*
-     * 断流后原样重发。这一格只改阶段那句话——死掉那次的思考条目留在原地，
+     * 断流后原样重发。这一格只改阶段那句话——失败那次的思考条目留在原地，
      * 它是用户判断「模型刚才想到哪了」的现场，抹掉它等于把重发变成一次静默倒带。
      */
     case 'run.retrying':
@@ -486,7 +481,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
            *
            * 不放的话同一句话同时挂在读数条和错误卡上——用户看到的是两遍。
            * 剩下的错误卡只服务「没有 run 收尾条可挂」的那一半（没配 key、
-           * 档案解析失败），那些恰恰不会走到这里。
+           * 档案解析失败），那些不会走到这里。
            */
           s.error = null
           s.usage = null
@@ -603,12 +598,12 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
             items.push(r.supersededBy ? { ...item, superseded: true } : item)
           }
         }
-        // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类东西：
+        // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类条目：
         // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
         // 为什么停」在刷新后就只剩最后一轮（而且是活的那一份，重连即丢）。
         //
         // 还没收尾的 run（进程被杀、正在跑）不折：它没有终态，
-        // 造一条 `endedAt: null` 的条目会让读数条以为还在跑，永远滴答下去。
+        // 造一条 `endedAt: null` 的条目会让读数条一直按运行中计时。
         if (r.finishedAt !== null) {
           items.push({
             id: `run_${r.id}`,
@@ -650,7 +645,7 @@ export async function projectConversation(id: string): Promise<TranscriptItem[]>
  * 重建完整会话投影。
  *
  * 必须把 **run 的 steps 也折回来**，而不是只拉 messages——工具调用只存在于 steps 里，
- * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，用户会以为 agent 什么都没干过。
+ * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，界面上等于 agent 什么都没做。
  *
  * 折叠顺序沿用后端的口径：每条 user 消息之后，插入归属于它的那个 run 的 steps。
  */
@@ -664,7 +659,7 @@ export async function reloadActiveConversation(): Promise<void> {
   const [folded, ctx, goal] = await Promise.all([
     fetchConversation(id),
     // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
-    // 切一次会话面板就空了，而用户恰恰是回头看的时候才想知道被谁占的。
+    // 切一次会话面板就空了，而用户是回头看的时候才想知道被谁占的。
     // 拉失败不影响会话本身能不能打开，退化成没有面板。
     client
       .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
@@ -683,7 +678,7 @@ export async function reloadActiveConversation(): Promise<void> {
   const items = foldTranscript(folded)
 
   // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
-  // 于是标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
+  // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
   // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
   if (state.activeConversation !== id) return
 
@@ -694,7 +689,7 @@ export async function reloadActiveConversation(): Promise<void> {
    * 是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
    * transcript，它们会连同上一条会话的 run 一起留在界面上；而 `applyEvent`
    * 按 conversationId 丢弃非当前会话的事件，那条 run 的 `run.finished`
-   * **结构性地永远到不了**，于是它们再也不会被放下来。
+   * **结构性地永远到不了**，因此它们再也不会被放下来。
    *
    * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
    * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
@@ -719,7 +714,7 @@ export async function reloadActiveConversation(): Promise<void> {
        * 的调用栈上，账本里没有表也没有列。
        *
        * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
-       * 出来的。重投之后活着的那几个节点回落到 outcome 里的终态（跑完的那些），
+       * 出来的。重投之后仍在运行的那几个节点回落到 outcome 里的终态（跑完的那些），
        * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说，见
        * `docs/plans/2026-08-23-workflow-图化编排.md` §3.2。
        */
@@ -793,7 +788,7 @@ function todosFromSteps(runs: StoredRun[], stepsByRun: Map<string, StoredStep[]>
  * **一条 step 不等于一条界面条目**：`tool_action` 一条要展开成「思考 + 工具卡」两条。
  * 思考本身有自己的 step（`kind: 'thinking'`），但迁移 26 之前它寄生在批次首条工具行的
  * `content` 上，那些存量行只能从这里读——**漏掉任何一条的表现都是刷新一次页面、
- * 切一次会话，整轮思考就没了**，而思考恰恰是「模型为什么做了这些」的唯一现场。
+ * 切一次会话，整轮思考就没了**，而思考是「模型为什么做了这些」的唯一现场。
  */
 function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'text') {
@@ -803,7 +798,7 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     return s.content ? [{ id: s.id, kind: 'thinking', text: s.content }] : []
   }
   // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
-  // 「这里压缩过」就没了，而它恰恰是解释「上下文为什么降了」的唯一线索。
+  // 「这里压缩过」就没了，而它是解释「上下文为什么降了」的唯一线索。
   if (s.kind === 'compaction') {
     const p = s.payload
     return [

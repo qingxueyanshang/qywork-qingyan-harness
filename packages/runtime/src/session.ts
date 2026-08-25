@@ -126,21 +126,21 @@ export interface SessionOptions {
   /**
    * 本会话单轮的步数上限。不传 = 用 loop 的默认值。
    *
-   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色跑飞会把整轮拖垮。
+   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色失控会把整轮拖垮。
    * 少了这一手，那个字段就是**解析了但没有任何人消费**——配了不生效。
    */
   maxSteps?: number
   /**
    * 派活通道。见 `DelegatePort`。
    *
-   * **只给顶层会话传**：成员会话不传，于是它那边连 `subagent` 工具都不注册，
+   * **只给顶层会话传**：成员会话不传，因此它那边连 `subagent` 工具都不注册，
    * 递归派活在结构上不可能发生。
    */
   delegate?: DelegatePort
   /**
    * 装插件通道。见 `PluginPort`。
    *
-   * **只给顶层会话传**：成员会话不传，于是它那边连 `install_plugin` 都不注册。
+   * **只给顶层会话传**：成员会话不传，因此它那边连 `install_plugin` 都不注册。
    */
   plugins?: PluginPort
 }
@@ -220,9 +220,9 @@ export class Session {
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
 
-    // 派活与装插件都跟着各自的通道走：成员会话两条都拿不到，于是它那边既没有
+    // 派活与装插件都跟着各自的通道走：成员会话两条都拿不到，因此它那边既没有
     // `subagent`（子 agent 不得再派活，递归没有终止条件），也没有 `install_plugin`
-    // （子 agent 不该给整台机器装东西）。
+    // （子 agent 不该给整台机器装插件）。
     const withDelegate = {
       delegate: opts.delegate !== undefined,
       plugins: opts.plugins !== undefined,
@@ -331,7 +331,7 @@ export class Session {
 
     // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
     // **会话是权威**——config 只在会话还没有模型时兜底，否则用户在界面上切了模型，
-    // 下一轮又被配置文件里的默认值悄悄改回去。
+    // 下一轮又被配置文件里的默认值静默改回。
     const conversation = getConversation(store, conversationId)
     const model = options?.model ?? conversation?.model ?? config.active.model
     /*
@@ -350,7 +350,7 @@ export class Session {
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
     const effort = resolveModel(config, target)?.effort
 
-    // 重试不新增消息：要重现的是「当时那个上下文」。新写一条会让同一句话
+    // 重试不新增消息：要重现的是原请求那一刻的上下文。新写一条会让同一句话
     // 在历史里出现两遍，模型看到的输入和第一次就不一样了。
     const userMessageId = retryOf
       ? retryOf.userMessageId
@@ -392,13 +392,13 @@ export class Session {
      * 历史 = 消息 + **由 steps 投影出来的 assistant/tool 回合**。
      *
      * **只映射 `listMessages` 是不够的**：那张表只有 user 行（全项目唯一的
-     * `appendMessage` 就在上面几行，写的是 `role:'user'`），于是第二轮起模型拿到的
-     * 输入字面上是「用户说了三次话，我一次都没回过」，跨轮结构性失忆。
+     * `appendMessage` 就在上面几行，写的是 `role:'user'`），因此第二轮起模型拿到的
+     * 输入字面上是「用户说了三次话，助手一次都没回」，跨轮结构性失忆。
      *
      * **被接替的 run 不折**。前端对 superseded 是「打标仍渲染」给人看
      * （`connection.ts`），模型侧没有等价标记位，只有折或不折；照抄会让模型看到
      * 「失败尝试 + 重试」两遍同一件事，结论还可能互相矛盾。重试的语义本来就是
-     * 「重现当时那个上下文」，不带失败尝试。两处口径**刻意不同**，各自带测试。
+     * 「重现原请求那一刻的上下文」，不带失败尝试。两处口径**刻意不同**，各自带测试。
      */
     const history = await buildHistory(
       store,
@@ -447,9 +447,9 @@ export class Session {
       }
     }
 
-    // run.started 必须由这里发：协议早就定义了它，但一直没有发送方——
-    // 于是客户端拿不到真实 runId，中断和重试都在拿步骤 id 当 run id 用，
-    // 服务端查不到就静默什么也不做。**协议里有类型不等于有实现**。
+    // run.started 必须由这里发：没有发送方的话客户端拿不到真实 runId，中断和重试
+    // 只能拿步骤 id 当 run id 用，服务端查不到就静默什么也不做。
+    // **协议里有类型不等于有实现**。
     yield {
       type: 'run.started',
       runId: run.id,
@@ -475,7 +475,7 @@ export class Session {
     })
 
     // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
-    // 所以新装的东西默认就在，不需要给历史会话补什么。
+    // 所以新装的扩展默认就在，不需要给历史会话补什么。
     const disabled = listDisabledExtras(store, conversationId)
 
     // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
@@ -485,7 +485,7 @@ export class Session {
     }
 
     // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
-    // 而让整轮 run 因为扫目录失败而挂掉是不成比例的。
+    // 而让整轮 run 因为扫目录失败而中止是不成比例的。
     //
     // 关掉的那些**从索引里拿掉**：索引是模型判断「有没有这个技能」的唯一依据，
     // 留在索引里而调用时才拒绝，等于让它去撞一堵看不见的墙。
@@ -579,7 +579,7 @@ export class Session {
       // **step 也要落终态，不只是 run。**
       //
       // 只收 run 是不够的：`tool.started` 的 yield 处被 `.return()` 掐断时，
-      // step 已经是 running 却没人 settle——run 随即被标成终态，于是那条 step
+      // step 已经是 running 却没人 settle——run 随即被标成终态，因此那条 step
       // 永远碰不到启动时的 `recoverStaleRuns`（它只扫 running/queued 的 run）。
       //
       // 代价不是 UI 上一张转圈的卡：历史投影必须跳过含未终结调用的整个 batch，
@@ -611,7 +611,7 @@ export class Session {
     // 角色的 allowedTools 同样约束插件与 MCP 工具。
     // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
     const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
-    // 会话级开关关掉的那些**根本不进这一步**，而不是接进来再拦。
+    // 会话级开关关掉的那些**不进这一步**，而不是接进来再拦。
     // 接进来再拦的话模型仍然看得见它（工具表里、或者尾区那份清单里），
     // 会反复去调、去装一个必然失败的名字。
     const off = (spec: { name: string }) => {
@@ -665,7 +665,7 @@ export class Session {
     //
     // 判定必须**等扩展加载完**再做：插件和 MCP 工具是异步来的，
     // 在构造函数里只比内置集合的话，一个合法的 `mcp__github__x` 会被报成
-    // 「未知工具名」——让人去查一个根本不存在的问题，比不提示更糟。
+    // 「未知工具名」——让人去查一个不存在的问题，比不提示更糟。
     if (allow) {
       const unknown = [...allow].filter((n) => !this.registry.has(n))
       if (unknown.length) {
@@ -757,28 +757,24 @@ export class Session {
   /**
    * 授权裁决。**只有两种模式，不弹窗。**
    *
-   * ## `full` 也不豁免的那一条：只剩凭证剥离
-   *
-   * `scrubEnv` 两种模式一视同仁——它不是裁决，是「明文 key 不进子进程」这条
-   * 与模式无关的事实。**路径约束不在此列**：`full` 的语义是「全部权限」，
-   * 路径边界跟着一起放开（`makeToolContext` 的 `unrestrictedPaths`）。
+   * **`full` 也不豁免的那一条：只剩凭证剥离。** `scrubEnv` 两种模式一视同仁——它不是裁决，是「明文
+   * key 不进子进程」这条与模式无关的事实。**路径约束不在此列**：`full` 的语义是「全部权限」，路径
+   * 边界跟着一起放开（`makeToolContext` 的 `unrestrictedPaths`）。
    *
    * 只放开权限闸、留着路径层，得到的不是更安全，是**两套账**：同一个模式下
    * `run_command` 全放行、shell 里一个 `cd` 就出得去，而 `read_file` 还在拦
-   * ——模型于是转头用 shell 读到了同一个文件，账本里真发生过一次
+   * ——模型因此转头用 shell 读到了同一个文件，账本里有一次实证
    * （会话 `cv_0msw3jst9`）。
    *
-   * ## `auto` 下谁走哪条路
-   *
-   * 判据是**这件事是谁决定的**，不是「代码从哪来」：
+   * **`auto` 下谁走哪条路。** 判据是**这件事是谁决定的**，不是「代码从哪来」：
    *
    * - **文件与网络类**（read/write/delete/network）：路径已经被
    *   `resolveInWorkspace` 锁死、外发已经过 SSRF 闸，都是**确定性**判断，
    *   越界的根本走不到这里。所以放行，不必再花一次往返去问模型。
    * - **MCP 与插件工具**：是用户显式配置/安装的，属于知情同意，放行——
-   *   不为用户自己选的东西造第三套闸。
+   *   不为用户自己选的扩展造第三套闸。
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
-   *   （命令字符串里的路径不经过我们的参数解析）。只有它需要真正的裁决。
+   *   （命令字符串里的路径不经过参数解析）。只有它需要真正的裁决。
    */
   private async decide(
     meta: { toolName: string; args: Record<string, unknown> } | undefined,
@@ -789,7 +785,7 @@ export class Session {
 
     const command = String(meta.args.command ?? '')
     // 根目录清单必须与路径层、沙箱层是**同一份**。三处各算各的，
-    // 表现就是「配了但只有一层生效」，而三层的报错互不相干。
+    // 现象是「配了但只有一层生效」，而三层的报错互不相干。
     const d = decideCommand(command, {
       workspaceRoot: this.opts.workspaceRoot,
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
@@ -842,7 +838,7 @@ export class Session {
        * 服务端每条消息新建一个 Session（`run-control.ts`），所以进程里没有
        * 「会话级」这个生命周期可挂——真源放账本，随会话删除一起走。
        * 挂在 run 上的后果是每轮第一次改文件必然先失败一次「没读取过」，
-       * 而这条守卫要回答的是「你写的还是你读到的那份吗」，与 run 边界无关。
+       * 而这条守卫要回答的是「要写的这份，是不是读到的那份」，与 run 边界无关。
        */
       reads: {
         seen: (path) => fileReadHash(store, conversationId, path),
@@ -887,7 +883,7 @@ export class Session {
         },
         step: (id) => {
           // 摘要里的 id 是 `<runId>:<stepId>` 复合形式：单独一个 step id
-          // 跨 run 不唯一，而摘要引用的恰恰是远期记录。
+          // 跨 run 不唯一，而摘要引用的是远期记录。
           const cut = id.indexOf(':')
           if (cut <= 0) return null
           const runId = id.slice(0, cut) as RunId
@@ -975,7 +971,7 @@ export interface SummarizerOptions {
  * 发现——两条路都产出摘要，看不出口径已经不同。
  *
  * 刻意不带工具、不带冻结前缀：摘要任务只需要文本进文本出，带上工具 schema
- * 只会让这次调用也逼近容量上限，而它恰恰是在容量已经超了的时候发的。
+ * 只会让这次调用也逼近容量上限，而它是在容量已经超了的时候发的。
  *
  * 思考档位取模型声明的最低档，模型没声明档位就不发这个字段。摘要是结构化转写
  * 不是推理任务，继承主档位会让一次转写先等上分钟级的思考。
@@ -1018,7 +1014,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     // **这笔钱是完全看不见的**——压缩越频繁，账单和界面上的数字差得越多。
     let spent: { cost: number; u: ProviderUsage } | null = null
     try {
-      // 首个事件之前就要起计时：压根没回过一个字节是最典型的卡死形状。
+      // 首个事件之前就要起计时：没回过一个字节是最典型的卡死形状。
       bump()
       for await (const ev of adapter.stream({
         model: adapter.spec.id,
@@ -1031,7 +1027,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
          * 思考与正文共用这一个上限，而思考**不进投影**——压成正文预算的话，
          * 模型在思考阶段就把额度耗尽，正文没写完即被截断，整份作废
          * （实测 deepseek-v4-flash：一句话摘要花 259 个思考 token，
-         * 正文只有 10 个字）。于是摘要段恒失败，压缩退化成只有收纳段。
+         * 正文只有 10 个字）。因此摘要段恒失败，压缩退化成只有收纳段。
          *
          * 正文长度由提示词里那句字数要求约束，这里只负责让模型有地方把话说完。
          * 不思考的模型上正文就是全部输出，直申预算即可。
@@ -1105,27 +1101,21 @@ const NEWLINE = String.fromCharCode(10)
 /**
  * 把附件变成 provider 认得的内容。
  *
- * ## 图片内联，其余给路径
+ * **图片内联，其余给路径。** 图片除了内联没有别的路——模型看不到工具读不出来的内容（`read_file` 撞
+ * 上二进制直接拒）。其余附件**只把路径写进正文**，模型要看就自己 `read_file`：省掉每一轮重放时那
+ * 份 base64，也让「用户指定这个文件」表达成它本来的样子——一个位置。
  *
- * 图片除了内联没有别的路——模型看不到工具读不出来的东西（`read_file` 撞上二进制
- * 直接拒）。其余附件**只把路径写进正文**，模型要看就自己 `read_file`：省掉每一轮
- * 重放时那份 base64，也让「用户指给我看这个文件」表达成它本来的样子——一个位置。
- *
- * ## 路径不按工作区裁决
- *
- * `resolveInWorkspace` 那道边界约束的是**模型**——它挡的是模型自己构造出来的路径。
- * 附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质；
- * 判据是「字节会不会被发出去」，而按下拖放的正是决定这件事的那个人。
+ * **路径不按工作区裁决。** `resolveInWorkspace` 那道边界约束的是**模型**——它挡的是模型自己构造出
+ * 来的路径。附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质；判据
+ * 是「字节会不会被发出去」，而按下拖放的正是决定这件事的那个人。
  *
  * **前提：模型不得构造附件。** 附件只能来自客户端手势，不能由任何工具调用产出
  * （`Attachment` 现在只从 composer 来）。这条一旦破了，上面整段理由跟着失效，
  * 这里必须改回按工作区裁决。
  *
- * ## 三种读不到都留一行说明，不抛
- *
- * 文件被删了、改名了、事后长过了上限——都会发生。**跳过那一个并在正文里留一行**，
- * 而不是让整轮起不来：模型看到「这里原本有张图，现在读不到了」还能继续干活，
- * 看到一个 500 就只能重来。
+ * **三种读不到都留一行说明，不抛。** 文件被删了、改名了、事后长过了上限——都会发生。**跳过那一个并
+ * 在正文里留一行**，而不是让整轮起不来：模型看到「这里原本有张图，现在读不到了」还能继续执行，看
+ * 到一个 500 就只能重来。
  *
  * 大小上限不在这里判，在 `materialize` 那一刻判——路径型附件指向用户自己的文件，
  * 它在被引用之后还会继续长，而这里只是记下位置。

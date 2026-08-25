@@ -4,7 +4,7 @@
  * 覆盖范围：`registry.ts` 的 `READ_DELIVERY_CAP` / `RESULT_BUDGET_RATIO` /
  * `BATCH_TO_CALL_RATIO` / `deliveryBudget` / `resetBatchBudget` / `chargeBatchBudget`。
  *
- * 这一组锁的是两件用户看得见的事：**一次工具调用不许吃掉大半个窗口**，
+ * 这一组锁的是两件用户看得见的事：**一次工具调用不许占掉大半个窗口**，
  * 以及**一波并行读取加起来也有上界**——后者同时是压缩的保留预算，
  * 「刚进来的那一波必然完整保留」靠它成立。
  */
@@ -32,7 +32,7 @@ describe('投递预算', () => {
 
   /**
    * **大窗口不再按比例放大。** 承诺随产品定，跟着窗口走的话 1M 档单次就是 125K
-   * ——一次读取吃掉八分之一个上下文。
+   * ——一次读取占掉八分之一个上下文。
    */
   test('1M 档收在承诺上限，不随窗口线性放大', () => {
     expect(deliveryBudget(1_000_000).perCall).toBe(READ_DELIVERY_CAP)
@@ -50,7 +50,7 @@ describe('投递预算', () => {
     const r = chargeBatchBudget(c, 30_000)
     expect(r.ok).toBe(false)
     expect(r.perCall).toBe(25_000)
-    // 拒掉的那次不记账——否则一次失败会白白吃掉本批额度。
+    // 拒掉的那次不记账——否则一次失败会消耗本批额度。
     expect(chargeBatchBudget(c, 1000).ok).toBe(true)
   })
 

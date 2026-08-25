@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案），
- * 以及 `runCli` 交出去的两样东西——追加给它的回执约定、接着问要用的会话 id。
+ * 以及 `runCli` 交出去的两项——追加给它的回执约定、接着问要用的会话 id。
  * 后两条用 `node` 当替身跑，不需要本机装着那几家 CLI。
  *
  * 厂商表本身（调什么、参数长什么样）由真机冒烟覆盖：那是最容易过期的地方，
@@ -48,7 +48,7 @@ describe('取答案', () => {
 
   /**
    * grok 那种：整段 stdout 是**一个**缩进过的对象。
-   * 逐行解析对它一行都取不到，会整段回退成一坨 JSON 交给父会话。
+   * 逐行解析对它一行都取不到，会整段回退成一大段 JSON 交给父会话。
    */
   test('整段一个对象（grok 那种）', () => {
     const out = JSON.stringify({ text: '有三个文件', sessionId: 'gk-1' }, null, 2)
@@ -57,7 +57,7 @@ describe('取答案', () => {
     expect(extract(out, { output: 'jsonl', resultField: 'text' })).toBe(out)
   })
 
-  /** 一行都取不到时回退整段：回空串会让调用方以为「跑成了但没产出」。 */
+  /** 一行都取不到时回退整段：回空串在调用方看来是「跑成了但没产出」。 */
   test('取不到就回退整段 stdout', () => {
     expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' })).toBe(
       '横幅\n乱七八糟',

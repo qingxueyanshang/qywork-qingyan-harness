@@ -9,7 +9,7 @@
  * 1. **reasoning_content 必须原样回传**。DeepSeek 思考模式下，带 tool_calls 的 assistant
  *    消息如果不把 reasoning_content 一起送回去，下一轮直接 400。这不是可选优化。
  * 2. **缓存靠前缀自动命中，没有显式断点**。这些端点普遍没有 cache_control，命中完全
- *    依赖前缀逐字节稳定，所以工具排序和消息装配的确定性在这里比在 Anthropic 更要命。
+ *    依赖前缀逐字节稳定，所以工具排序和消息装配的确定性在这里比在 Anthropic 更关键。
  */
 
 import OpenAI from 'openai'
@@ -40,7 +40,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * GLM 这些真有思考档位的模型全都调不了，而界面上还画着一个选了没反应的控件。
    *
    * `thinking` 仍然是 false：正文里的思考内容是从流里**读**出来的
-   * （`reasoning_content`），我们从不主动声明它。
+   * （`reasoning_content`），客户端从不主动声明它。
    *
    * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
    * 不会因为这个改动开始收到它不认识的字段。
@@ -132,7 +132,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         }
       }
 
-      // 攒着没等到闭合标签的，原样当正文吐出去。放在工具调用之前：
+      // 攒着没等到闭合标签的，原样当正文输出。放在工具调用之前：
       // 它是正文的一部分，顺序不能倒。
       const tail = splitter.flush()
       if (tail) yield { type: 'text_delta', delta: tail }
@@ -141,7 +141,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       if (calls.length) {
         // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
         // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
-        // 抹掉，上层于是拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
+        // 抹掉，上层因此拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
         // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「有没有工具调用」更靠前。
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls }
@@ -154,7 +154,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 出了这个函数，`usage` 和 `done` 是无条件 yield 的，上层数事件永远数不出 0。
        *
        * 实测形状：Base URL 少了 `/v1` 时中转站对错误路径回 **200 + 一个 HTML 首页**，
-       * 解析器读不出任何 chunk 也不抛错，于是那一轮 0 token、0 步骤、`completed`
+       * 解析器读不出任何 chunk 也不抛错，因此那一轮 0 token、0 步骤、`completed`
        * ——界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
        * `normalizeBaseUrl` 已经把这个成因消掉了，但别的成因（反代吞流、
        * 网关返回空 200）还在，而**静默是比任何一个具体成因都严重的问题**。
@@ -176,14 +176,14 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 会把它记成正常完成——界面上是「思考写到一半就停、run 显示成功」，
        * 账本上那一轮是 0 token、无从对账，与 `chunks === 0` 是同一类静默。
        *
-       * 实测形状（2026-08-21，`opencode.ai/zen/go/v1`）：带 tools 的长思考请求
+       * 实测形状（2026-08-21，某中转端点）：带 tools 的长思考请求
        * 约一半的次数在 reasoning 中途直接结束响应体，既没有 `finish_reason`
        * 也没有 `[DONE]`；同样的请求另一半次数能正常收尾。
        *
-       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它计没计费——
+       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断——
        * 所以已经攒到的 usage 随错误一起带上去（见 `usage` 字段），账本行落 `uncertain`
        * 但数是实的。断在思考里的那一轮由 `loop.ts` 自动重发一次（判据是模型可见输出
-       * 为零）；正文已经吐出去的不重发，用户拿到的是一条说得出「收了多少、断在哪」
+       * 为零）；正文已经输出的不重发，用户拿到的是一条说得出「收了多少、断在哪」
        * 的错误，而不是一次假的成功。
        */
       if (!rawFinish) {
@@ -229,8 +229,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 这个字段本仓早就有（`ChatRequest.cacheKey`，会话 id），`openai-responses`
        * 一直在发——只有这条路径漏了，而 grok / deepseek / 各家中转全走这条。
        *
-       * **不要把它当成缓存不命中的解药。** 2026-08-19 在
-       * `direct.wawazz.xyz` 上做过配对交替实测（同一时间窗里逐轮交替发有键/无键，
+       * **不要把它当成缓存不命中的解药。** 2026-08-19 在某中转端点上做过配对交替
+       * 实测（同一时间窗里逐轮交替发有键/无键，
        * 各 12 轮）：无键 5/12 真命中，有键 0/12；换个时间窗再测又反过来。
        * 同一个请求形状在相邻两分钟里能给出 3008 / 192 / 字段缺失三种结果——
        * **那条路线的缓存本身不确定**，发不发这个键都盖不住。
@@ -243,11 +243,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
        *
        * **`qy probe` 不探这一项，这是有意的。** 探针只能发几次请求看命中——
        * 而上面那段实测正说明：不确定的路线上，几次请求给出的是随机结果。
-       * 探出「可用」再写回目录，等于把一次运气固化成结论（参照实现踩过这个坑：
-       * 它的快速探针两次相同小请求就判 rolling，真实会话根本不命中）。
+       * 探出「可用」再写回目录，等于把一次偶然结果固化成结论：两次相同的小请求
+       * 判出 rolling，真实会话仍然不命中。
        *
        * 未收录的模型是 `'none'`，一个字节都不多发：自建端点（ollama / vLLM）
-       * 对未知字段的容忍度没验过，而它们恰恰全都落在未收录那一档。
+       * 对未知字段的容忍度没验过，而它们全都落在未收录那一档。
        */
       ...(req.cacheKey && this.spec.cacheRouting === 'prompt_cache_key'
         ? { prompt_cache_key: req.cacheKey }
@@ -260,9 +260,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
  * 把用户填的 Base URL 归一成带 `/v1` 的 OpenAI 兼容根。
  *
  * **这不是「兼容代码」，是消灭一个静默故障。** 实测形状：用户填
- * `https://中转站/`（少了 `/v1`），SDK 于是请求 `https://中转站/chat/completions`，
+ * `https://中转站/`（少了 `/v1`），SDK 因此请求 `https://中转站/chat/completions`，
  * 而中转站对这种错误路径返回 **200 + 一个 HTML 首页**。SSE 解析器从 HTML 里
- * 解析不出任何事件、也不报错，于是那一轮 0 token、0 步骤、`completed`——
+ * 解析不出任何事件、也不报错，因此那一轮 0 token、0 步骤、`completed`——
  * 界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
  *
  * 补 `/v1` 有一个反例：中转站把 API 挂在别的路径下（`/api` 之类）。那种情况下
@@ -282,14 +282,14 @@ export function normalizeBaseUrl(raw: string | undefined): string {
  * 兼容协议下的思考控制字段。
  *
  * **「发不发」由 `effortIsTransmittable` 一处裁决**，这里只决定「用哪套字段」。
- * 两件事各判一遍的代价实测付过：`transmits` 说发得出去而这里按参数格式省掉，
- * 于是探针恒通过，把一个凭空的结论写回目录。
+ * 两件事各判一遍的实测后果：`transmits` 说发得出去而这里按参数格式省掉，
+ * 因此探针恒通过，把一个凭空的结论写回目录。
  *
  * 不认识的模型 `thinking` 是 `'none'`，被门禁挡在外面，一个字节都不会多发；
  * 自建端点和中转站不会因为这个函数收到没见过的键。
  *
  * DeepSeek 那支要**两个字段一起发**：只发 `reasoning_effort` 而不开 `thinking`，
- * 思考根本没打开，档位当然没有效果。
+ * 思考没打开，档位当然没有效果。
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
   if (!effort || !effortIsTransmittable(spec)) return {}
@@ -373,7 +373,7 @@ function nullable(node: Record<string, unknown>): Record<string, unknown> {
  *
  * **只声明本文件真的读或真的写的字段。** 兼容端点的字段集参差不齐
  * （`reasoning_content`、`prompt_cache_hit_tokens` 等都不在官方类型里），
- * 所以这几个接口就是「我们认得哪些字段名」的清单——接一家新中转站时改这里。
+ * 所以这几个接口就是「本文件认得哪些字段名」的清单——接一家新中转站时改这里。
  *
  * 放在这个文件里而不是抽一个跨协议的 wire 模块：协议这条轴已经有归属
  * （`ProviderKind` 三个值、一个适配器一个协议、模型库每条 spec 带着它）。
@@ -412,7 +412,7 @@ interface CompatChunk {
   }[]
 }
 
-/** 我们发出去的一条消息。四个分支各带一部分字段，所以除 `role` 外全可选。 */
+/** 发出去的一条消息。四个分支各带一部分字段，所以除 `role` 外全可选。 */
 interface CompatOutMessage {
   role: string
   content: string | { type: string; text?: string; image_url?: { url: string } }[] | null
@@ -431,7 +431,7 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
        * 不带图的对照组答不出来。**这一格照实测填，不照文档填。**
        *
        * 不认得多模态的端点会自己拒，那是一条带原文的 400；而压成 `[image]`
-       * 是静默丢——模型以为自己看过了，那比报错坏得多。
+       * 是静默丢弃——模型会把这次读图当成已完成，那比报错坏得多。
        */
       return {
         role: 'tool',
@@ -455,7 +455,7 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
          * 两侧的不对称有依据：那边多发的是一个**条目**，端点按 schema 直接拒
          * （`array too long. Expected an array with maximum length 0`）；这边多发的是
          * 一个**字段**，实测被忽略。改成查目录反而会制造回归：中转站把 DeepSeek 挂在
-         * 自定义模型名下时目录认不出它，于是从「零配置能用」变成确定性 400。
+         * 自定义模型名下时目录认不出它，因此从「零配置能用」变成确定性 400。
          *
          * 边界：`reasoningContent` 是**会话历史**的属性，不是端点的。中途换过接口的话，
          * 这里发出去的可能是另一个端点录下的思考内容。
@@ -466,7 +466,7 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
     /*
      * 尾区注记落成 user 轮里的 `<system-reminder>`，不按 `role: 'system'` 原样发。
      *
-     * DeepSeek 系的对话模板把消息里所有 system 段收拢到提示词最前面，注记于是从
+     * DeepSeek 系的对话模板把消息里所有 system 段收拢到提示词最前面，注记因此从
      * 「整串消息的最后一段」被搬到冻结前缀之后：注记一变，其后整段历史全部失配。
      * 实测（2026-08-21，会话 cv_0mt2wpe4o0000pfxnb6）：7 次 write_todos 之后的
      * 那 7 次请求命中数全部落到 640，正好是冻结前缀自身的长度，一次会话里
@@ -531,10 +531,10 @@ const THINKING_CLOSE = '</thinking>'
  * 而那是静默的内容丢失。
  *
  * **一个字节都不删也不丢。** 认出来的整块送思考通道；形状对不上的原样送正文；
- * 流在闭合之前就结束，攒着的连同开标签一起原样当正文吐出。
+ * 流在闭合之前就结束，攒着的连同开标签一起原样当正文输出。
  * 所以判错的最坏结果是显示在错的区，不会是内容消失。
  *
- * 代价：块内内容攒到闭合标签才吐，那一段不是逐字出现的。这种块实测是一行摘要，
+ * 代价：块内内容攒到闭合标签才输出，那一段不是逐字出现的。这种块实测是一行摘要，
  * 而流空闲看门狗的下限是 180 秒（`agent/loop.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），够不着。
  */
 export function createThinkingSplitter(): {
@@ -581,7 +581,7 @@ export function createThinkingSplitter(): {
  * **口径陷阱**：OpenAI 兼容协议的 `prompt_tokens` 是**含**缓存命中的总量
  * （DeepSeek 实测 `prompt_tokens = cache_hit + cache_miss`），而 Anthropic 的
  * `input_tokens` 是**不含**缓存的余量。两边都直接累加的话，兼容侧会把命中的
- * token 按全价再算一遍——缓存命中率越高，账单错得越离谱。
+ * token 按全价再算一遍——缓存命中率越高，账单偏差越大。
  *
  * 这里统一收敛到 Anthropic 的「排他」口径：inputTokens 只装未命中部分。
  */

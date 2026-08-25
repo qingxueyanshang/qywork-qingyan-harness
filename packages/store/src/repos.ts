@@ -132,7 +132,7 @@ export function mostRecentWorkspace(store: Store): Workspace | null {
  * 置顶 / 取消置顶。
  *
  * 幂等：已经是目标状态时返回 false，由调用方回 404 之外的处理——
- * 和 `removeWorkspace` 同一条纪律，静默当成功会让界面以为生效了，刷新又回去。
+ * 和 `removeWorkspace` 同一条纪律，静默当成功则界面显示已生效，刷新后又回到原状。
  */
 export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolean): boolean {
   const sql = pinned
@@ -193,7 +193,7 @@ export function countConversations(store: Store, id: WorkspaceId): number {
  * 从列表里消失而少一笔（理由写在 `schema.ts` 第 3 条迁移里）。
  *
  * 返回是否真的改动了一行。id 不存在、或它已经是移除状态时返回 false，
- * 由调用方回 404——静默当成功会让界面以为移除了，刷新之后它又回来。
+ * 由调用方回 404——静默当成功则界面显示已移除，刷新之后它又出现。
  */
 export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
   return (
@@ -372,7 +372,7 @@ export function deleteConversation(store: Store, id: ConversationId): boolean {
 
 /**
  * 重命名。**不动 `updated_at`**：改名不是「有了新内容」，推进它会让列表重排、
- * 侧栏那个时间开始撒谎。返回 null = 会话不存在。
+ * 侧栏那个时间与实际内容更新时间不符。返回 null = 会话不存在。
  */
 export function setConversationTitle(
   store: Store,
@@ -481,8 +481,8 @@ export function appendMessage(
 /**
  * 记下这个会话读到某个文件时的内容哈希。写前的新鲜度校验就靠它。
  *
- * 同一文件重复读只留最近那次：判据是「你手上那份还是不是磁盘上这份」，
- * 历史上的旧哈希对这个问题没有任何贡献，留着只会让表白涨。
+ * 同一文件重复读只留最近那次：判据是「手上那份还是不是磁盘上这份」，
+ * 旧哈希对这个问题没有任何贡献，留着只会让表白涨。
  */
 export function recordFileRead(
   store: Store,
@@ -731,16 +731,14 @@ export function markRunSuperseded(store: Store, id: RunId, by: RunId): boolean {
  * 别再给 `runs` 加一个 `execution_state` 之类的列——没有写入方的列拿来做判据，
  * 会让所有 run 都被判成「安全可重放」，正好是最危险的那个方向。
  *
- * ## 只回收没人在跑的那些
- *
- * **不能无差别扫全库**：账本是共享的，一台机器上同时有好几个写入者（两个工作区的
- * sidecar、开发态热重载、终端里的 `qy exec`），扫全库就是**后起的进程把别的进程
- * 正在跑的那一轮判死**。判据见 `isOrphan`，两个信号缺一不可。
+ * **只回收没人在跑的那些，不能无差别扫全库**：账本是共享的，一台机器上同时有好几个写入者（两个工作
+ * 区的 sidecar、开发态热重载、终端里的 `qy exec`），扫全库就是**后起的进程把别的进程正在跑的那一轮
+ * 判死**。判据见 `isOrphan`，两个信号缺一不可。
  */
 export function recoverStaleRuns(store: Store): {
   recovered: number
   ambiguous: number
-  /** 有归属、且那个归属还活着，本次放过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
+  /** 有归属、且那个归属仍在运行，本次跳过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
   heldByOthers: number
 } {
   // 这一趟取的是**投影**不是表行：列名改过，`ambiguous` 还是算出来的，
@@ -766,7 +764,7 @@ export function recoverStaleRuns(store: Store): {
   const heldByOthers = all.length - rows.length
 
   // **不能在这里提前返回。** 下面还有一趟「终态 run 底下的孤儿 step」要扫，
-  // 而那趟与本次有没有 stale run 无关——恰恰相反，最常见的情形就是
+  // 而那趟与本次有没有 stale run 无关——相反，最常见的情形就是
   // 「run 都是终态的、但底下留着 running step」。早退会让那趟永远不执行。
   let ambiguous = 0
   const now = Date.now()
@@ -783,7 +781,7 @@ export function recoverStaleRuns(store: Store): {
       finishStmt.run(
         // 干净那条是 `process_exit`，**不是 `user_interrupt`**——上面那段注释要求的
         // 「事后分得出崩了和用户点了停止」，写成 user_interrupt 就当场作废：
-        // 界面上只剩一句「已中断」，而用户根本没点过任何东西。
+        // 界面上只剩一句「已中断」，而用户没点过停止。
         isAmbiguous ? 'internal_guard' : 'process_exit',
         isAmbiguous ? 'internal_error' : null,
         // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
@@ -798,8 +796,8 @@ export function recoverStaleRuns(store: Store): {
     //
     // 产生路径是真实的：`tool.started` 的 yield 处被生成器 `.return()` 掐断
     // （客户端断连、用户切走），step 已经 openToolStep 成 running 但没人收尾；
-    // 随后 session 的 finally 把 run 标成 interrupted 终态。于是这条 step
-    // **永远碰不到恢复流程**，在库里挂着 running 直到天荒地老。
+    // 随后 session 的 finally 把 run 标成 interrupted 终态。因此这条 step
+    // **永远碰不到恢复流程**，在库里永久保持 running。
     //
     // 后果不是「UI 上一张转圈的卡」那么轻——历史投影必须跳过含未终结调用的整个
     // batch（provider 要求每个 tool call 有配对结果），一条孤儿会让**同一批次里
@@ -827,15 +825,15 @@ const HEARTBEAT_STALE_MS = 60_000
  * **四条判据的顺序是有意的**，每一条堵的都是前一条的漏：
  *
  * 1. **没有归属** —— 迁移之前的历史行。按老规矩回收，不能因为不认识就放过。
- * 2. **归属是我自己的 pid** —— 我刚启动，不可能拥有任何 run，所以这一定是
- *    上一个进程留下的、而 Windows 恰好把同一个号发给了我。**这条必须在心跳之前**：
- *    崩溃后立刻重启时心跳只过去两三秒，按超时判会认定它「还活着」，
- *    于是那条 run 永远没人回收，会话被永久锁死。
+ * 2. **归属是本进程的 pid** —— 本进程刚启动，不可能拥有任何 run，所以这一定是
+ *    上一个进程留下的、而 Windows 把同一个号复用给了本进程。**这条必须在心跳之前**：
+ *    崩溃后立刻重启时心跳只过去两三秒，按超时判会认定它仍在运行，
+ *    因此那条 run 永远没人回收，会话被永久锁死。
  * 3. **那个 pid 已经不在** —— 进程没了，回收。这是本函数原本的全部意义，不能弱化。
- *    `EPERM` 算活着：宁可晚一分钟由心跳兜底，也不误杀一条真在跑的。
- * 4. **pid 还在但心跳停了** —— pid 被复用，或者那个进程活着但那一轮早就废了。
+ *    `EPERM` 算存活：宁可晚一分钟由心跳兜底，也不误杀一条真在跑的。
+ * 4. **pid 还在但心跳停了** —— pid 被复用，或者那个进程仍在但那一轮已废弃。
  *
- * 只有 pid 会被复用骗过，只有心跳会被「崩溃后立刻重启」骗过。两个都要。
+ * 只有 pid 会被 pid 复用误判，只有心跳会被「崩溃后立刻重启」误判。两个都要。
  */
 function isOrphan(ownerPid: unknown, heartbeatAt: unknown): boolean {
   const pid = Number(ownerPid)
@@ -848,7 +846,7 @@ function isOrphan(ownerPid: unknown, heartbeatAt: unknown): boolean {
 
 function pidAlive(pid: number): boolean {
   try {
-    // 信号 0 不投递任何东西，只做存在性与权限检查。
+    // 信号 0 不投递信号，只做存在性与权限检查。
     process.kill(pid, 0)
     return true
   } catch (err) {
@@ -859,9 +857,7 @@ function pidAlive(pid: number): boolean {
 /**
  * 把一个 run 底下所有还挂着 running 的 step 落终态。
  *
- * ## 分两种，不能统一成一种
- *
- * 判据是 `execution_started_at`——**这是那条歧义边界的全部意义**：
+ * **分两种，不能统一成一种。** 判据是 `execution_started_at`——**这是那条歧义边界的全部意义**：
  *
  * - **非空**：已经进了执行器。工具可能已经跑完并产生了副作用，也可能刚进去就崩了，
  *   两者无法区分。所以 `executed: true`（保守假设它执行过）+ 「结果未知」。
@@ -874,13 +870,11 @@ function pidAlive(pid: number): boolean {
  * **两种必须分开 UPDATE**：用同一份 payload 一起盖掉的话，「确定没跑」会被记成
  * 「可能跑过」。
  *
- * ## 只落 outcome，不许整份换掉 payload
- *
- * 两条都走 `json_set`，动的只有 `$.kind` 和 `$.outcome`；`$.action` 与 `$.args`
- * 原封不动留着。**`action` 是前端唯一的标题来源**（落库时那句注释已经写明：
- * 它由 ToolSpec 按参数解析，前端回猜不出来），整份 payload 换成只有 outcome 的
- * 那份，这条 step 在会话流里就只剩一个红色的「失败」——没有动词、没有对象、
- * 没有目标，和旁边每一行都不一样，而用户根本看不出它是哪一步崩的。
+ * **只落 outcome，不许整份换掉 payload。** 两条都走 `json_set`，动的只有 `$.kind` 和 `$.outcome`；
+ * `$.action` 与 `$.args` 原封不动留着。**`action` 是前端唯一的标题来源**（落库时那句注释已经写明：
+ * 它由 ToolSpec 按参数解析，前端回猜不出来），整份 payload 换成只有 outcome 的那份，这条 step 在会
+ * 话流里就只剩一个红色的「失败」——没有动词、没有对象、没有目标，和旁边每一行都不一样，而用户根本
+ * 看不出它是哪一步崩的。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
   const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
@@ -920,9 +914,9 @@ export function listRuns(store: Store, conversationId: ConversationId): Run[] {
 /**
  * 记一次即将发出的模型请求。
  *
- * 在**装配完成之后、真正发出之前**调用，所以状态是 `pending`：这一刻我们已经
- * 知道要发什么（分组占用、指纹都算得出来），但还不知道 provider 会不会收。
- * 把这两件事分开记，是为了让「发出去了但没回」和「压根没发出去」在账本上
+ * 在**装配完成之后、真正发出之前**调用，所以状态是 `pending`：此刻要发什么
+ * 已经确定（分组占用、指纹都算得出来），provider 是否接收仍未知。
+ * 把这两件事分开记，是为了让「发出去了但没回」和「没发出去」在账本上
  * 可区分——它们对上下文占用的含义完全不同。
  */
 export function openProviderRequest(
@@ -1193,8 +1187,8 @@ export function settleToolStep(
  * 两者都覆盖不到这一格。
  *
  * **不删除。** 那几条 step 真实发生过、也已经逐 delta 渲染给用户看过；
- * 删掉是让用户眼看着思考凭空消失。标 `failure` 的用处在投影侧：
- * `stepsToUnits` 据它把死掉那次的思考排除在模型视图之外，
+ * 删掉会让已渲染的思考从界面上消失。标 `failure` 的用处在投影侧：
+ * `stepsToUnits` 据它把失败那次的思考排除在模型视图之外，
  * 否则它会和重发那次的思考拼成一条回传给 provider。
  */
 export function failThinkingSteps(store: Store, ids: StepId[]): void {
@@ -1226,7 +1220,7 @@ export interface ModelFinishRate {
 /**
  * 按模型统计请求收尾率。
  *
- * 用途：回答「这条端点在我这里到底稳不稳」。这个问题今天只能靠反复试来回答，
+ * 用途：回答「这条端点在本机稳不稳」。这个问题今天只能靠反复试来回答，
  * 而账本里逐行记着答案。
  *
  * **边界：样本随会话删除**（`provider_requests.run_id` 是 ON DELETE CASCADE），

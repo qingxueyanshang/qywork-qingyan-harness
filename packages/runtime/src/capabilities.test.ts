@@ -149,7 +149,7 @@ describe('exec —— 绝不透传宿主环境变量', () => {
    * 这条是整个插件隔离的成败所在。
    *
    * 宿主特意把插件进程的 env 洗干净（不给 API Key），如果插件转手能
-   * exec 出一句 echo $ANTHROPIC_API_KEY 就全白做了。
+   * exec 出一句 echo $ANTHROPIC_API_KEY 就全部落空。
    */
   test('宿主的密钥类环境变量在子进程里读不到', async () => {
     process.env.QYWORK_CAP_SECRET = 'super-secret-value'
@@ -263,7 +263,7 @@ describe('net.fetch 过 SSRF 闸', () => {
 })
 
 describe('未登记的方法', () => {
-  test('明确抛出，不返回 null —— 返回 null 插件会以为成功', async () => {
+  test('明确抛出，不返回 null —— 返回 null 在插件侧是一次成功调用', async () => {
     const { call } = await fixture()
     expect(call('fs.chmod', { path: 'a.txt' })).rejects.toThrow('尚未实现')
   })

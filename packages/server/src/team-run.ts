@@ -33,7 +33,7 @@ export function memberModel(
   if (pick?.explicit) return pick.explicit
   if (role.provider) {
     // provider 指定的是「用哪家的 key」。指了一个不存在的接口要**当场失败**——
-    // 悄悄回落到当前接口会让「用便宜模型跑审查」这类配置静默失效，而账单在另一边。
+    // 静默回落到当前接口会让「用便宜模型跑审查」这类配置失效，而账单记在另一边。
     const pinned = config.providers[role.provider]
     if (!pinned) return { error: `角色 ${role.id} 指定的接口不存在：${role.provider}` }
     return {
@@ -79,18 +79,14 @@ function modelList(config: QyConfig): string {
  * 内置后端：用本进程的 agent 跑一个编排成员。
  *
  * 在这之前它是一句「尚未接线」的显式失败——没装 codex / claude 的用户点「开始编排」
- * 什么都得不到。而 `qy` 自己就是一个完整的 agent，把它当成一个后端用不需要新东西，
+ * 什么都得不到。而 `qy` 自己就是一个完整的 agent，把它当成一个后端用不需要新增实现，
  * 只需要一个独立会话。
  *
- * ## 每个成员一个独立会话，不共用
+ * **每个成员一个独立会话，不共用。** 成员之间的上下文必须隔离：一个「审查者」角色看见「实现者」的完
+ * 整思考过程，它就不再是独立视角了，而独立视角正是多角色的全部意义。节点之间要传递的内容由编排器
+ * 显式拼进 prompt（`needs` 的产出），不靠共享上下文。
  *
- * 成员之间的上下文必须隔离：一个「审查者」角色看见「实现者」的完整思考过程，
- * 它就不再是独立视角了，而独立视角正是多角色的全部意义。节点之间要传递的东西
- * 由编排器显式拼进 prompt（`needs` 的产出），不靠共享上下文。
- *
- * ## 内层事件不往外发
- *
- * 成员会话有自己的 runId，把它的 tool.started / text.delta 广播到父会话上，
+ * **内层事件不往外发。** 成员会话有自己的 runId，把它的 tool.started / text.delta 广播到父会话上，
  * 前端会按那个陌生 runId 建出一条并不存在的 run。进度由编排器的 `team.member`
  * 事件表达，那是**为这件事设计的**通道。
  */

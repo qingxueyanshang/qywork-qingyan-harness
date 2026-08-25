@@ -5,7 +5,7 @@
 //! chokidar 在大仓库上会退化成周期性 stat 轮询，把 CPU 烧满。
 //!
 //! **必须防抖**。一次 `npm install` 或一次构建会在几秒内产生上万个事件，
-//! 逐条转发到前端等于把 WebView 打死。这里用 debouncer 聚合成批。
+//! 逐条转发到前端会让 WebView 停止响应。这里用 debouncer 聚合成批。
 
 use anyhow::Result;
 use notify::RecursiveMode;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-/// 防抖窗口。够长到能吃掉构建产生的事件风暴，又短到用户改一个文件后感觉是即时的。
+/// 防抖窗口。够长到能合并构建产生的事件风暴，又短到用户改一个文件后感觉是即时的。
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// 这些目录一律不监听：它们的写入量能达到源码的几百倍，且没人关心。

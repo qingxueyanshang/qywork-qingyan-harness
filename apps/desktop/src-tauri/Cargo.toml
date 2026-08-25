@@ -70,7 +70,7 @@ debug = false
 debug = false
 
 [profile.release]
-# 单文件体积优先：这是选 Tauri 的理由之一，不该在编译配置上白白让回去。
+# 单文件体积优先：这是选 Tauri 的理由之一，不该在编译配置上让回去。
 opt-level = "s"
 lto = true
 codegen-units = 1

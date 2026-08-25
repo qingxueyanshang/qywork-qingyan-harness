@@ -147,7 +147,7 @@ describe('删一个技能', () => {
 
   /*
    * 单独一段 `..` 到不了这里：`new URL()` 在解析阶段就把它连同上一段一起折掉
-   * （`/api/skills/..` → `/api/`），那条路由压根不匹配。编码成 `%2E%2E` 也一样，
+   * （`/api/skills/..` → `/api/`），那条路由不匹配。编码成 `%2E%2E` 也一样，
    * WHATWG 先解码再折。**留下来能到达处理器的是这几种**，所以挡的就是它们。
    */
   test('目录名里带分隔符或 .. 的删除请求被拒——那是一条任意目录删除', async () => {
@@ -160,7 +160,7 @@ describe('删一个技能', () => {
 })
 
 describe('导入一个技能目录', () => {
-  test('目录里没有 SKILL.md 就拒绝——不然导进来的东西一条都扫不到', async () => {
+  test('目录里没有 SKILL.md 就拒绝——否则导进来的技能一条都扫不到', async () => {
     const { root } = await workspace()
     const src = await mkdtemp(join(tmpdir(), 'qywork-skillsrc-'))
     dirs.push(src)

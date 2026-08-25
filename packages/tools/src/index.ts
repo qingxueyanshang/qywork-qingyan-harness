@@ -1,15 +1,9 @@
 /**
- * `@qywork/tools` 的对外面。
+ * `@qywork/tools` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
+ * 具名导出，不用 `export *`（B6）：后者会把 `buildBwrapArgv`、`parseFrontmatter`、
+ * `clampBody` 这类纯内部符号一并推出包边界。加一行之前先确认它真有包外调用点（B3）。
  *
- * **这里列的就是承诺，没列的就是内部实现。** 用具名导出，不用 `export *`：
- * 后者会把 `buildBwrapArgv`、`parseFrontmatter`、`clampBody` 这类纯内部符号一并
- * 推出包边界。后果不是「用了会坏」，是**看不出这个包对外承诺了什么**：改任何一个
- * 内部函数都得先全仓 grep 一遍才敢动。
- *
- * 包内互相引用照常走相对路径，测试也一样——它们不受这份清单约束。
- *
- * 加新的对外符号时：先确认它真的有包外调用点，再往下面加一行。
- * 「以后可能有人要用」不是理由（见 CLAUDE.md B3）。
+ * 包内互相引用与测试走相对路径，不受这份清单约束。
  */
 
 import type { ToolRegistry } from '@qywork/agent'

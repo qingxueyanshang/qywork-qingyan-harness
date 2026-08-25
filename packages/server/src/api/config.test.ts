@@ -5,9 +5,9 @@
  * `GET /api/config` 的读盘时机。
  *
  * 这两个函数是**明文 key 不出进程**这条边界的全部实现，所以这里测得比别处细。
- * 最要命的一条不是「key 泄漏了」——那种一眼能看出来；是**「打开设置页看一眼再保存」
+ * 最严重的一条不是「key 泄漏了」——那种当场就看得出来；是**「打开设置页看一眼再保存」
  * 把 key 静默清掉**：保存那一刻没有任何反馈，要到下一次调用模型才炸，
- * 那时候人已经不会把它和「我刚才改了 baseUrl」联系起来。
+ * 那时已经很难把它和刚才改过的 baseUrl 联系起来。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -142,9 +142,9 @@ describe('回填', () => {
    * `apps/web` 够不着 `@qywork/runtime`（层级不允许），所以那边手抄了一份
    * `RedactedConfig`。抄的那份现在就少一个 `sandboxNetwork`——它只在 CLI 里配。
    *
-   * 于是失败形状是：用户 `qy config` 设了 `sandboxNetwork: 'deny'`，
+   * 因此失败形状是：用户 `qy config` 设了 `sandboxNetwork: 'deny'`，
    * 然后打开设置页改个模型保存，那一项被抹掉。**保存那一刻毫无反馈**，
-   * 而它是条安全设置，等发现时早就跑了一堆没受限的命令了。
+   * 而它是条安全设置，等发现时已经跑过若干条不受限的命令。
    *
    * 现在不会抹，靠的是 `mergeConfig` 里 `{ ...current, ...incoming }` 这个展开
    * ——incoming 没有这个键就不会覆盖。但那是一行代码的副作用，没人钉住它，
@@ -161,7 +161,7 @@ describe('回填', () => {
       additionalDirectories: wire.additionalDirectories,
       envAllowList: wire.envAllowList,
     }
-    // 过一遍 JSON：真实路径上 `undefined` 的键根本不会上线，别在内存里假装它在。
+    // 过一遍 JSON：真实路径上 `undefined` 的键不会上线，别在内存里假装它在。
     const incoming = JSON.parse(JSON.stringify(asClientSeesIt)) as RedactedConfig
 
     const out = mergeConfig(current, incoming)
@@ -189,7 +189,7 @@ describe('读盘时机', () => {
    *
    * 形状是这样的：保存走「读回整份 → 改一格 → 整份写回」，所以 GET 回什么，
    * 下一次 PUT 就把什么写进文件。GET 回启动时那份的话，`qy probe` 落下的校准
-   * 结果、手编的 JSON、另一个实例写的改动，都会在用户随手改一格设置时消失。
+   * 结果、手编的 JSON、另一个实例写的改动，都会在用户改一格设置时消失。
    */
   test('每次 GET 都按文件回答，进程里那份跟着换', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))

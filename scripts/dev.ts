@@ -3,15 +3,13 @@
 /**
  * 开发编排：两端都从源码跑，两端都自动重载。
  *
- * ## 为什么要有这个脚本
- *
- * 桌面外壳跑的是**预编译的 `bin/qy`**（`externalBin`），于是改了 `packages/server`
- * 之后不重编就完全看不出来——而且症状会伪装成前端 bug。这轮真实踩到过一次：
- * 旧二进制里没有某条 POST 路由，前端抛出来的是一句
- * `Cannot read properties of undefined (reading 'id')`。
+ * **为什么要有这个脚本。** 桌面外壳跑的是**预编译的 `bin/qy`**（`externalBin`），因此改了
+ * `packages/server` 之后不重编就完全看不出来——而且症状会伪装成前端 bug。实测形状：旧二
+ * 进制里没有某条 POST 路由，前端抛出来的是一句 `Cannot read properties of undefined (reading 'id')
+ * `。
  *
  * 补一个「启动前先重编」只是把窗口缩小到一次启动之内：改一行 server 还是得重启整个应用。
- * 所以这里换掉那条路——**开发时根本不用那个二进制**：
+ * 所以这里换掉那条路——**开发时不用那个二进制**：
  *
  * - sidecar：直接跑 `packages/cli/src/index.ts`，源码变了由本脚本换进程（见下）。
  * - 前端：vite 自己的 HMR，由 `tauri dev` 的 `beforeDevCommand` 拉起。
@@ -20,15 +18,14 @@
  *
  * 两端都从同一棵源码树跑，「客户端和服务端不是同一批出的」在开发路径上不再可能。
  *
- * ## 换代码的判据是「文件变了 **且** 手上没有 run」
- *
- * **不要换回 `bun --watch`。** 它的判据只有文件 mtime，对「这个进程手上有没有活」
- * 一无所知，于是保存一次源码就把正在跑的那一轮从中间掐断——账本里三条 run 是这么
- * 没的，其中两条停在工具执行期间，结果整轮不可信（`recoverStaleRuns` 判 `internal_guard`）。
- * agent 改 qywork 自己的源码时更糟：它写完第一个文件就把自己重启了，剩下的还没写。
+ * **换代码的判据是「文件变了，且手上没有 run」。** 不要换回 `bun --watch`：它的判据只有文件 mtime，
+ * 对「这个进程手上有没有活」一无所知，因此保存一次源码就把正在跑的那一轮从中间掐断。实测形状：
+ * 账本里三条 run 因此中断，其中两条停在工具执行期间，整轮不可信（`recoverStaleRuns` 判
+ * `internal_guard`）。agent 改 qywork 自己的源码时更糟：它写完第一个文件就把自己重启了，
+ * 剩下的还没写。
  *
  * 判据换成两条之后，两个场景都对：跑着的那一轮跑完才换代码，换完下一轮就是新代码。
- * 代价是「保存到生效」多等一轮，而那正是这条规则要买的东西。
+ * 代价是「保存到生效」多等一轮，而那正是这条规则要换的结果。
  */
 
 import { Database } from 'bun:sqlite'
@@ -60,8 +57,8 @@ async function answers(port: number): Promise<boolean> {
  *
  * **判占用只能按「绑得上吗」，不能按「有没有人应答」。** 两者只在一种情况下不同，
  * 而那种情况天天发生：上一次跑留下的子进程**继承了监听句柄**——它不应答任何请求，
- * 但端口攥在它手里。按应答判会认为端口是空的，于是一路走到 `Bun.serve` 抛
- * EADDRINUSE，糊一屏栈；`netstat` 里显示的还是那个已经退出的 PID，看着像
+ * 但端口仍被它持有。按应答判会认为端口是空的，因此直接走到 `Bun.serve` 抛
+ * EADDRINUSE，打印一屏栈；`netstat` 里显示的还是那个已经退出的 PID，看着像
  * 「没人占着却起不来」。
  */
 async function bindable(port: number): Promise<boolean> {
@@ -74,11 +71,11 @@ async function bindable(port: number): Promise<boolean> {
 }
 
 /**
- * 端口被占就直接说，不偷偷换一个——换了 WebView 手里那份 base 就是错的。
+ * 端口被占就直接说，不静默换一个——换了 WebView 手里那份 base 就是错的。
  *
  * 两种占用分开说，因为下一步不一样：有 qywork 在跑 → 先停掉那一个（两个进程抢
- * 同一份 SQLite 的 WAL 锁）；绑不上又没人应答 → 是**改动之前**留下的后台进程还
- * 攥着那份监听句柄（现在的 `qy serve` 把命令挂在 runner 底下，不会再有新的），
+ * 同一份 SQLite 的 WAL 锁）；绑不上又没人应答 → 是更早留下的后台进程仍持有那份
+ * 监听句柄（`qy serve` 现在把命令挂在 runner 底下，不会再产生新的），
  * 收掉它即可。
  */
 if (!(await bindable(PORT))) {
@@ -115,11 +112,11 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       '--host',
       '127.0.0.1',
       // 这个脚本被硬关（关窗口、任务管理器）时它自己也退。少了这条，
-      // 下面那个 stopAll 根本没机会跑，sidecar 会带着一串后台进程活下来。
+      // 下面那个 stopAll 没机会跑，sidecar 会带着一串后台进程活下来。
       '--parent-pid',
       String(process.pid),
-      // **不传 --cwd**：传了就等于把这个仓库登记成项目，而开发时那正是我们不想要的
-      // 默认（用户拿到的第一个项目会是 qywork 的源码树）。不传则由服务端决定——
+      // **不传 --cwd**：传了就等于把这个仓库登记成项目，而开发态不要这个默认
+      // （用户拿到的第一个项目会是 qywork 的源码树）。不传则由服务端决定——
       // 账本里有项目就用最近打开的，一个都没有才建默认工作区。
     ],
     { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
@@ -136,7 +133,7 @@ async function waitReady(): Promise<boolean> {
   return true
 }
 
-/** 收尾中：这时候的退出是我们自己杀的，不该被当成崩溃补起来。 */
+/** 收尾中：这时候的退出由本脚本发起，不该被当成崩溃补起来。 */
 let stopping = false
 let agent!: ReturnType<typeof Bun.spawn>
 
@@ -145,7 +142,7 @@ let agent!: ReturnType<typeof Bun.spawn>
  *
  * **每起一个都要盯**：不盯的话它崩了就没人知道，界面变成一个连不上后端的空壳
  * ——前端只会数「已 N 秒没有新数据」，停止按钮点下去没有对端接，而窗口看起来
- * 一切正常，用户不知道该重启。换代码时是我们自己杀的，supervisor 认得出来
+ * 一切正常，用户不知道该重启。换代码时的退出由 supervisor 自己发起，它认得出来
  * （它正在 restart），不会重复补起。
  */
 function startAgent(): void {
@@ -171,7 +168,7 @@ process.stderr.write('[dev] sidecar 就绪，正在启动桌面外壳\n')
 /**
  * 这个 sidecar 手上还有没有没跑完的 run。
  *
- * **账本是唯一真源**，只读打开，不写任何东西——不为这件事新开一条接口或一本账。
+ * **账本是唯一真源**，只读打开，不写任何行——不为这件事新开一条接口或一本账。
  * `owner_pid` 就是 sidecar 自己的 pid（`recoverStaleRuns` 的 `isOrphan` 拿它跟
  * `process.pid` 比），所以这里问的确实是「**这个**进程手上有没有活」，
  * 而不是「机器上有没有人在跑」——那台机器上可能还有别的 qywork。
@@ -218,7 +215,7 @@ watch(join(ROOT, 'packages'), { recursive: true }, (_event, file) => {
  * **不设 `QYWORK_WORKSPACE`。**
  *
  * 它在 `resolve_workspace()`（`lib.rs`）里优先级最高，设了就等于每次启动都把
- * 这个仓库钉成当前项目——用户在应用里切走，下次又被拽回来，而且仓库自己成了
+ * 这个仓库钉成当前项目——用户在应用里切走，下次启动又被切回来，而且仓库自己成了
  * 那个默认项目。「首次运行挂哪儿」现在由服务端一处决定
  * （`server.ts` 的 `bootstrapWorkspace`）：账本里有项目就用最近打开的，
  * 一个都没有才建默认工作区。
@@ -235,9 +232,9 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
  * 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。
  *
  * **不杀更深的那一层。** sidecar 底下挂着模型用 `run_command` 起的后台进程
- * （`run.ps1 start` 那类服务），那是用户要的东西，不该因为开发环境退出而被收掉。
- * 它们也不会再把端口攥走——命令现在挂在 runner 底下，那个进程出生在绑端口之前，
- * 手里根本没有监听句柄（`tools/runner.ts`）。
+ * （`run.ps1 start` 那类服务），那是用户要的结果，不该因为开发环境退出而被收掉。
+ * 它们也不会再持有端口——命令挂在 runner 底下，那个进程出生在绑端口之前，
+ * 手里没有监听句柄（`tools/runner.ts`）。
  */
 const stopAll = () => {
   stopping = true

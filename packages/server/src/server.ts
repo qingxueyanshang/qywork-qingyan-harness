@@ -176,7 +176,7 @@ export function serve(opts: ServeOptions) {
         '\n',
     )
   }
-  // 放过的也要说。不说的话「回收了 0 个」有两种含义（没有残留 / 有但都还活着），
+  // 跳过的也要说。不说的话「回收了 0 个」有两种含义（没有残留 / 有但都还在运行），
   // 而这两种在排查「为什么那条会话还显示执行中」时是完全不同的方向。
   if (stale.heldByOthers > 0) {
     process.stderr.write(
@@ -189,8 +189,7 @@ export function serve(opts: ServeOptions) {
   /**
    * 定时任务调度器。
    *
-   * ## 触发语义（这是本功能唯一真正的设计问题，不是工作量问题）
-   *
+   * **触发语义（这是本功能唯一真正的设计问题，不是工作量问题）**：
    * - **跑在哪个会话**：每次触发**新建一个会话**，标题取任务标题。
    *   复用同一个会话的话，几十次触发之后上下文会长到每一轮都在压缩，
    *   而且任务之间会互相看见——「每天的日报」不该记得昨天那次的中间过程。
@@ -201,9 +200,7 @@ export function serve(opts: ServeOptions) {
    *   只广播事件是不够的——触发时没人开着界面，事件没有接收者。
    * - **会话忙就跳过**：上一轮还没跑完就不叠加，跳过并记一句原因。
    *
-   * ## 30 秒一跳
-   *
-   * 调度精度是分钟级（`diagnoseSchedule` 拒绝小于 1 分钟的间隔），
+   * **30 秒一跳。** 调度精度是分钟级（`diagnoseSchedule` 拒绝小于 1 分钟的间隔），
    * 30 秒的 tick 保证分钟边界不会被整体错过一格。
    * `unref()` 让它不阻止进程退出——定时任务不该成为「关不掉」的理由。
    */
@@ -283,7 +280,7 @@ export function serve(opts: ServeOptions) {
    * 局域网监听用**另一个端口**，不是主端口。
    *
    * `0.0.0.0:P` 与已绑的 `127.0.0.1:P` 在同一端口上冲突，直接报
-   * 「Failed to start server. Is port P in use?」——实测撞到过。
+   * 「Failed to start server. Is port P in use?」。
    * 所以传 port 0 让内核挑一个空闲的，二维码指向这个新端口。
    */
   const enableLan = (): { port: number } => {
@@ -304,7 +301,7 @@ export function serve(opts: ServeOptions) {
 
   // handler 抽出来给两个监听器共用。
   // 只写第一个类型参数：Bun 的签名是 serve<WebSocketData, R extends string>，
-  // 第二个是路由表的路径键，我们走 fetch 手动分派，没有路由表。
+  // 第二个是路由表的路径键，这里走 fetch 手动分派，没有路由表。
   const handlers = {
     // agent 的一轮可能跑很久，默认超时会把 WebSocket 掐掉。
     idleTimeout: 255,
@@ -330,7 +327,7 @@ export function serve(opts: ServeOptions) {
 
       // ── 跨源预检：必须答在验令牌之前 ──
       // 预检按规范不带 Authorization，用同一把尺子量它只会得到 401，
-      // 而 401 的预检意味着**真正那条请求根本不会发出**。详见 CORS_HEADERS。
+      // 而 401 的预检意味着**真正那条请求不会发出**。详见 CORS_HEADERS。
       if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
         return new Response(null, { status: 204, headers: CORS_HEADERS })
       }
@@ -464,9 +461,9 @@ export function serve(opts: ServeOptions) {
       runs.interruptAll()
       disableLan()
       server.stop(true)
-      // 插件是子进程，不显式关会留下孤儿——同一类坑已经在 sidecar 和截图脚本上踩过两次。
+      // 插件是子进程，不显式关会留下孤儿——sidecar 与截图脚本上是同一条约束。
       pluginTeardown?.()
-      // 只关自己开的：外部传进来的正文库归调用方管，替它关掉会让它下一次读直接炸。
+      // 只关自己开的：外部传进来的正文库归调用方管，替它关掉会让它下一次读抛错。
       if (ownsContent) content.close()
     },
   }

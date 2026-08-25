@@ -76,7 +76,7 @@ describe('进程生命周期', () => {
     h.stop()
   })
 
-  test('插件的 console.log 不会搞崩通道', async () => {
+  test('插件的 console.log 不会破坏通道', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         // 一句调试打印污染 stdout —— 协议必须容忍它。
@@ -131,7 +131,7 @@ describe('进程生命周期', () => {
   }, 15_000)
 })
 
-describe('隔离：插件拿不到宿主的东西', () => {
+describe('隔离：插件拿不到宿主的模块', () => {
   test('宿主环境变量不透传 —— API Key 不该白送给插件', async () => {
     process.env.QYWORK_TEST_SECRET = 'sk-绝密'
     const { dir, entry } = await pluginWith(`
@@ -177,7 +177,7 @@ describe('隔离：插件拿不到宿主的东西', () => {
    * 指定了运行时就没有强制隔离——这条**故意断言「没挡住」**。
    *
    * 子进程本身不是沙箱。别把它说成「插件拿不到 fs / net / child_process」——
-   * 那会让用户把权限清单当沙箱看，于是「它只声明了读，装了没风险」这个判断是错的。
+   * 那会让用户把权限清单当沙箱看，因此「它只声明了读，装了没风险」这个判断是错的。
    * 只有走自动解析、且机器上有 node 20+ 时才有强制隔离（见 runtime.test.ts）。
    */
   test('指定运行时时没有强制隔离：node:fs 仍然可用', async () => {
@@ -219,7 +219,7 @@ describe('权限在宿主侧强制', () => {
     })
     await h.start()
     await h.call('go')
-    // 调用到达了宿主，但被权限闸拒了 —— 插件自己根本没有 fs。
+    // 调用到达了宿主，但被权限闸拒了 —— 插件自己没有 fs。
     expect(attempted).toContain('fs.write')
     h.stop()
   })

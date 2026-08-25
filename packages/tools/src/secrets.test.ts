@@ -31,7 +31,7 @@ describe('scrubEnv 的两条判据', () => {
     expect(out.CURL_ARGS).toBeUndefined()
   })
 
-  test('名字模式兜底：抓那些我们不知道明文的凭证', () => {
+  test('名字模式兜底：抓那些明文未知的凭证', () => {
     const env = {
       GITHUB_TOKEN: 'ghp_x',
       AWS_SECRET_ACCESS_KEY: 'a',
@@ -65,7 +65,7 @@ describe('scrubEnv 的两条判据', () => {
 describe('短 secret 的下限保护', () => {
   test('长度不足的 secret 不参与按值匹配，否则整份环境会被删光', () => {
     // 配置写错、apiKey 是占位符时 values 里可能就是 "1"。按值匹配是 includes()，
-    // "1" 能命中半个环境——症状是「所有命令都莫名其妙地挂了」，最难查。
+    // "1" 能命中半个环境——症状是所有命令都失败，且报错里没有指向脱敏的线索。
     const env = { PATH: '/usr/bin', PORT: '1234', LANG: 'en_US.UTF-8', NOTE: 'v1' }
     expect(scrubEnv(env, { values: ['1'] })).toEqual(env)
   })
@@ -103,7 +103,7 @@ describe('allow 白名单的边界', () => {
   })
 
   test('放行不了「值命中」—— 值就是用户的 key 时叫什么名字都不算数', () => {
-    // 优先级搞反的后果就是白名单变成了绕过通道：用户放行 GITHUB_TOKEN，
+    // 优先级取反的后果就是白名单变成了绕过通道：用户放行 GITHUB_TOKEN，
     // 而那个变量里躺着的是 DeepSeek 的 key。
     const out = scrubEnv({ GITHUB_TOKEN: DEEPSEEK }, secretsOf(), { allow: ['GITHUB_TOKEN'] })
     expect(out.GITHUB_TOKEN).toBeUndefined()
@@ -139,7 +139,7 @@ describe('必需变量', () => {
 describe('scrubEnv 的健壮性', () => {
   test('不改入参，返回新对象', () => {
     // 调用方大概率传的是 process.env 的浅拷贝甚至 process.env 本身，
-    // 就地删除会把当前进程自己的 key 也弄没。
+    // 就地删除会把当前进程自己的 key 一起删掉。
     const env = { ANTHROPIC_API_KEY: ANTHROPIC, HOME: '/h' }
     const out = scrubEnv(env, secretsOf())
     expect(env.ANTHROPIC_API_KEY).toBe(ANTHROPIC)
@@ -186,7 +186,7 @@ describe('redactSecrets', () => {
     const weird = 'a.b*c+d$e^f(g)'
     const out = redactSecrets(`raw ${weird} and aXb*c+d$e^f(g)`, { values: [weird] })
     expect(out).toBe(`raw ${REDACTED} and aXb*c+d$e^f(g)`)
-    // 未转义的正则里 "." 会把 aXb... 也吃掉，这条断言就是用来钉死这一点的。
+    // 未转义的正则里 "." 会连 aXb... 一起匹配掉，这条断言就是用来钉死这一点的。
     expect(out).toContain('aXb*c+d$e^f(g)')
   })
 
@@ -269,7 +269,7 @@ describe('流式脱敏', () => {
     expect(stream(text, [3, 7, 11])).toBe(text)
   })
 
-  /** 忘了 flush 会静默吞掉末尾。这条钉的是「flush 确实把尾巴吐出来了」。 */
+  /** 忘了 flush 会静默丢掉末尾。这条钉的是「flush 确实把尾段交了出来」。 */
   test('flush 之后一个字节都不少', () => {
     const text = '短'
     const r = createStreamRedactor(secrets)
@@ -281,10 +281,10 @@ describe('流式脱敏', () => {
    * **没有已知 secret 也不能直通。**
    *
    * 「没有已知明文就直通」只在**只按明文匹配**时成立。有形状脱敏之后前提没了——
-   * `cat ~/.ssh/id_rsa` 的私钥、`.env` 里的 token，我们从来不知道它们的明文，
-   * 而这条链路恰恰是唯一能抓到它们的地方。直通等于把这一层关掉。
+   * `cat ~/.ssh/id_rsa` 的私钥、`.env` 里的 token，它们的明文本地从来不知道，
+   * 而这条链路是唯一能抓到它们的地方。直通等于把这一层关掉。
    *
-   * 代价是普通输出会晚一点吐出来，所以这里同时钉住「一个字节都不少」。
+   * 代价是普通输出会晚一点交出，所以这里同时钉住「一个字节都不少」。
    */
   test('没有已知 secret 也不直通，但内容一个字节不少', () => {
     const r = createStreamRedactor({ values: [] })
@@ -292,7 +292,7 @@ describe('流式脱敏', () => {
     expect(r.push(text) + r.flush()).toBe(text)
   })
 
-  test('没有已知 secret 时照样吃掉私钥', () => {
+  test('没有已知 secret 时照样剥掉私钥', () => {
     const r = createStreamRedactor({ values: [] })
     const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAABBBB\n-----END RSA PRIVATE KEY-----'
     expect(r.push(pem) + r.flush()).toBe(REDACTED)
@@ -301,7 +301,7 @@ describe('流式脱敏', () => {
   /**
    * 写完的行现在就交出去。
    *
-   * 原始失败形状：`hold` 是 256 字节，而一条命令一秒吐一行七个字节——跑完之前
+   * 原始失败形状：`hold` 是 256 字节，而一条命令一秒输出一行七个字节——跑完之前
    * 一个字都交不出去，界面上就是一张空卡片跑满全程（实测一条 12 行 87 字节的命令，
    * 全部输出攒成一条 `tool.delta` 在结束时才到）。判据是**一个 secret 不跨行**，
    * 所以最后一个换行之前的部分现在就安全。
@@ -341,16 +341,16 @@ describe('流式脱敏', () => {
 /**
  * 按形状脱敏。
  *
- * 与按明文匹配是两件互补的事：按明文只认得 `collectSecrets` 收到的东西
+ * 与按明文匹配是两件互补的事：按明文只认得 `collectSecrets` 收到的那几个值
  * （配置里的那几把 apiKey），所以 `cat ~/.ssh/id_rsa`、
- * `cat .env` 的输出一个字都不会被脱敏——我们不知道那些明文，结构上就抓不到。
+ * `cat .env` 的输出一个字都不会被脱敏——那些明文本地未知，结构上就抓不到。
  *
  * 形状不需要事先知道值，这正是它存在的理由。
  */
 describe('按形状脱敏', () => {
   const bare: SecretSet = { values: [] }
 
-  test('私钥整块吃掉，不是只打包头', () => {
+  test('私钥整块剥掉，不是只打包头', () => {
     const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF'
     const pem = `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`
     const out = redactSecrets(`前${pem}后`, bare)
@@ -397,7 +397,7 @@ describe('按形状脱敏', () => {
   })
 
   /** 私钥必然跨片，滑窗按「最长明文 -1」算兜不住它。 */
-  test('私钥跨片到达也能整块吃掉', () => {
+  test('私钥跨片到达也能整块剥掉', () => {
     const pem =
       '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAABG5vbmUAAAAE\n-----END OPENSSH PRIVATE KEY-----'
     const r = createStreamRedactor(bare)

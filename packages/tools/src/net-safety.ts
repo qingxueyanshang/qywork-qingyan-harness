@@ -1,17 +1,15 @@
 /**
  * 出网安全闸。
  *
- * ## 这不是"加固"，是 agent 出网工具的前置条件
- *
- * agent 会拿**模型生成的 URL** 去发请求。模型的 URL 可能来自它读到的网页内容、
- * 用户贴的文本、或者纯粹的臆造。不挡内网就等于把 SSRF 的能力直接递给了模型：
+ * **这不是「加固」，是 agent 出网工具的前置条件。** agent 会拿**模型生成的 URL** 去发请求。模型的 URL
+ * 可能来自它读到的网页内容、用户贴的文本、或者纯粹的臆造。不挡内网就等于把 SSRF 的能力直接递给了模
+ * 型：
  *
  * - `169.254.169.254` —— 云厂商的元数据端点。一次请求就能拿到实例凭证。
  * - `127.0.0.1` / `localhost` —— 本机上跑着的其他服务，包括 qy 自己的 API。
  * - `10.x` / `192.168.x` / `172.16-31.x` —— 内网其他机器。
  *
- * ## 三条容易漏掉的
- *
+ * **三条容易漏掉的**：
  * 1. **重定向后必须重新校验。** 只查首个 URL 挡不住 `http://evil.com` 302 到
  *    `http://169.254.169.254`。所以 fetch 必须手动跟随重定向，每一跳都过闸。
  * 2. **要按解析后的 IP 判，不能只看主机名。** `metadata.evil.com` 可以 A 记录
@@ -374,9 +372,9 @@ export async function safeFetch(
 
       // 跨源跳转必须丢掉 authorization。
       //
-      // 不丢的话，任何能让你打一个 URL 的人都能把凭证钓走：请求
+      // 不丢的话，任何能让 agent 打开一个 URL 的人都能把凭证钓走：请求
       // api.example.com（带 token）→ 对方回 302 到 evil.com → 凭证跟着过去。
-      // 浏览器早就这么做了；我们是手动跟随重定向，就得自己做。
+      // 浏览器默认就这么做；这里是手动跟随重定向，因此要自己做。
       if (originOf(next) !== origin) extraHeaders = dropAuth(extraHeaders)
 
       // 303 一律转 GET；301/302 上的非 GET 也转 GET 并丢掉请求体——
@@ -498,8 +496,8 @@ function originOf(url: string): string {
 /**
  * 有上限地读取响应体。
  *
- * 不能直接 `res.arrayBuffer()`：对方可以返回一个无限流，那会把内存吃光。
- * Content-Length 不可信（可以不发，也可以撒谎），所以按实际读取的字节数计。
+ * 不能直接 `res.arrayBuffer()`：对方可以返回一个无限流，那会耗尽内存。
+ * Content-Length 不可信（可以不发，也可以与实际不符），所以按实际读取的字节数计。
  */
 async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
   if (!res.body) return new Uint8Array(0)

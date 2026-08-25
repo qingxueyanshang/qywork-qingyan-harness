@@ -5,17 +5,17 @@
  * 模型时，`lookupModel` 回落到 `unknownModel()` 的保守默认值：不声明思考、
  * 不声明 effort、计价为 0。保守是对的——**但它是猜的**，而现在没有任何办法验证。
  *
- * 表现：接上一个其实支持思考的端点，qywork 从不开思考；接上一个不支持的，
+ * 表现：接上一个支持思考的端点，qywork 从不开思考；接上一个不支持的，
  * 又可能因为模型名恰好匹配上内置条目而每次请求都 400。两种都只能靠人试出来。
  *
  * 所以这里做的事只有一件：**发几个极小的请求，看哪些被拒**。
  *
  * - 每个探针的 `max_tokens` 压到最小，prompt 一个字。整轮探测的成本约等于一次问候。
  * - **只由用户显式触发**（`qy probe`）。自动探测意味着有人在不知情的情况下被扣钱，
- *   而且探测结果会在他没改任何配置的时候悄悄改变行为。
+ *   而且探测结果会在他没改任何配置的时候静默改变行为。
  * - 探不出来的维度**不猜**：上下文窗口、计价、视觉都没法用一个小请求问出来，
  *   思考形态（adaptive / budget_tokens）同样没有观测面——本项目从不请求它，
- *   探针发的 body 与不发时一模一样。所以这里根本不碰它们。
+ *   探针发的 body 与不发时一模一样。所以这里不碰它们。
  *   探测的价值在于它报的每一条都是实测的。
  */
 
@@ -29,18 +29,18 @@ export interface ProbeOutcome {
    *
    * 与「有没有探出能力」是两码事：一个完全可用但发不出 effort 的端点，
    * 能力一条都探不出来，但它显然是通的。把这两件事混成一个判断，
-   * 报出来的就是「端点不通」——而用户会去查一个根本没坏的东西。
+   * 报出来的就是「端点不通」——而用户会去查一处没坏的配置。
    */
   reachable: boolean
   /**
-   * 本协议下客户端根本不发送、因而**无从探测**的轴。
+   * 本协议下客户端不发送、因而**无从探测**的轴。
    *
    * 与「探了、被拒了」是两件完全不同的事，绝不能合并成一个 false——
    * 合并的结果是把「没验过」写成了结论。
    *
    * **思考模式不在这里。** 它没有观测面：本项目从不请求思考形态
    * （`ChatRequest` 里没有那个字段），探针改不了发出去的 body，
-   * 于是「端点接受了 adaptive」永远只是 `spec.thinking` 的回声。
+   * 因此「端点接受了 adaptive」永远只是 `spec.thinking` 的回声。
    * 把回声写回覆盖层会把参数格式改错，进而把 effort 判死。
    */
   untested: 'effort'[]
@@ -56,7 +56,7 @@ export interface ProbeStep {
   name: string
   ok: boolean
   detail: string
-  /** true = 这一步没有真的验证任何东西（客户端不发这个字段）。 */
+  /** true = 这一步没有真的验证任何能力（客户端不发这个字段）。 */
   skipped?: boolean
 }
 
@@ -91,7 +91,7 @@ async function attempt(
       tiny(adapter.spec.id, { ...extra, ...(signal ? { signal } : {}) }),
     )) {
       if (ev.type === 'thinking_delta') thought = true
-      // 拿到 done 就够了：再读下去只是白等，而探测要快。
+      // 拿到 done 就够了：再读下去不会有新信息，而探测要快。
       if (ev.type === 'done') break
     }
     return { step: { name, ok: true, detail: '接受' }, thought }
@@ -122,15 +122,15 @@ export async function probeModel(
   probes.push(bare.step)
   const thinksByDefault = bare.thought
 
-  // 连最朴素的请求都被拒 = 这个端点根本不通（key 错、模型名错、地址错）。
-  // 继续探下去只会得到一串同样的错误，而真正该说的是「先把连通性弄好」。
+  // 连最朴素的请求都被拒 = 这个端点不通（key 错、模型名错、地址错）。
+  // 继续探下去只会得到一串同样的错误，而真正该说的是「先解决连通性」。
   if (!bare.step.ok) {
     return { reachable: false, untested: [], effortLevels: [], thinksByDefault: false, probes }
   }
 
-  // ── 客户端到底发不发 effort ──
+  // ── 客户端发不发 effort ──
   //
-  // 不发的链路上探针**恒通过**——不是因为端点支持，而是因为请求里压根没有那个
+  // 不发的链路上探针**恒通过**——不是因为端点支持，而是因为请求里没有那个
   // 字段。把这种「通过」写进配置，会用一个凭空的结论覆盖目录里正确的保守值。
   const transmits = buildAdapter(profile).transmits
   const untested: 'effort'[] = transmits.effort ? [] : ['effort']
@@ -143,7 +143,7 @@ export async function probeModel(
    * 「端点没有 400」永远证明不了一个档存在：OpenAI 兼容端点对不认识的
    * `reasoning_effort` 一律照收后忽略，中转站更是什么都收。遍历全量词表逐档试
    * 的结果是探一次就写回五档，而 grok-4.6 官方只有 low/medium/high/xhigh——
-   * 界面照着画出一个厂商根本没有的档，选了不会有任何反应。
+   * 界面照着画出一个厂商没有的档，选了不会有任何反应。
    *
    * 所以：库声明哪几档就试哪几档，**试通一档就整份采纳库的档位**；
    * 连试两档都被拒 = 这条中转不接受这个控制面，报空数组并说清是谁拒的。
@@ -214,7 +214,7 @@ export interface ProbedCapabilities {
  * 比写一个「探针都通过了」的空结论安全得多。
  *
  * 两轴的「没探过」判据不同。`thinksByDefault` 是从**回包**里观测出来的
- * （什么都不发，看它自己吐不吐思考内容），跟我们发不发什么字段无关，
+ * （什么都不发，看它自己回不回思考内容），与客户端发什么字段无关，
  * 所以只要端点通，它永远有结论。
  *
  * **思考参数的格式（`spec.thinking`）不在写回范围内**：它决定 effort 用哪套字段发，

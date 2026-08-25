@@ -309,7 +309,7 @@ describe('「必须更小」闸', () => {
 })
 
 describe('中断即丢弃', () => {
-  test('摘要调用抛 AbortError → aborted，不落任何东西', async () => {
+  test('摘要调用抛 AbortError → aborted，不落任何行', async () => {
     const r = await compact(input(), async () => {
       throw new DOMException('已中断', 'AbortError')
     })

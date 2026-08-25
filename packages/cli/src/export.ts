@@ -1,7 +1,7 @@
 /**
  * `qy export` —— 把一个会话导出成 markdown 或 json。
  *
- *   qy export                      列出会话，让你挑一个
+ *   qy export                      列出会话供选择
  *   qy export <会话 id>            导出成 markdown 到 stdout
  *   qy export <会话 id> --json     导出成 json（完整，不裁剪）
  *   qy export <会话 id> -o out.md  写文件
@@ -28,7 +28,7 @@ export async function runExport(args: string[]): Promise<number> {
   const store = new Store({ path: dataPath() })
   try {
     if (!id) {
-      // 不猜「最近那个」。导出是要拿去存档或贴给别人的，导错一个比多问一句糟得多。
+      // 不猜「最近那个」：导出结果用于存档或转发，导错的会话不会在使用中暴露。
       const rows = listRecentConversations(store, 20)
       if (rows.length === 0) {
         process.stderr.write('还没有任何会话。\n')

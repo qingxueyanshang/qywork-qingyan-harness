@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-界面上的终端画着东西不代表会话还活着——xterm 停在最后一帧，看不出来。查真相走进程树：
+界面上有输出不代表会话还存活——xterm 停在最后一帧，看不出来。查真相走进程树：
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "ParentProcessId=<qywork.exe 的 pid>"

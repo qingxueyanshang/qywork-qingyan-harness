@@ -56,7 +56,7 @@ describe('bash 路径解析', () => {
   })
 
   test('环境变量指到不存在的位置就当没有，不回落到搜索', () => {
-    // 回落的后果是「跑起来了，但跑的不是我指的那个」——那要靠对比输出才发现。
+    // 回落的后果是「跑起来了，但跑的不是指定的那个」——那要靠对比输出才发现。
     const got = resolveBashPath({
       env: { [BASH_PATH_ENV]: 'D:/nope/bash.exe' },
       platform: 'win32',
@@ -64,7 +64,7 @@ describe('bash 路径解析', () => {
       gitBash: () => 'C:/Program Files/Git/bin/bash.exe',
     })
     expect(got.path).toBeNull()
-    // 理由要说得出是哪个变量指错了，否则用户只知道「没有 bash」而机器上明明有一个。
+    // 理由要说得出是哪个变量指错了，否则用户只知道「没有 bash」而机器上有一个。
     expect(got.reason).toContain(BASH_PATH_ENV)
     expect(got.reason).toContain('D:/nope/bash.exe')
   })
@@ -108,7 +108,7 @@ describe('bash 路径解析', () => {
  *
  * **本机只可能命中其中一档**（这台开发机装着 Git Bash，第一步就返回），
  * 所以顺序、每档的 argv 与语法提示全部靠注入来测——真机上跑不到的那两档，
- * 漏了也不会有任何东西红。
+ * 漏了也不会有任何测试红。
  */
 describe('命令 shell 三档探测', () => {
   const foundBash = (p: string) => () => ({ path: p, reason: '' })
@@ -174,7 +174,7 @@ describe('命令 shell 三档探测', () => {
     expect(resolveCommandShell({ bash: noBash, which: noWhich, exists: never, env })).toBeNull()
   })
 
-  /** 用户 profile 会改别名、函数、`$ErrorActionPreference`，而它在别人机器上长什么样我们不知道。 */
+  /** 用户 profile 会改别名、函数、`$ErrorActionPreference`，而它在别人机器上的内容无从预知。 */
   test('两档 PowerShell 的 argv 都带 -NoProfile 与 -NonInteractive', () => {
     const seven = resolveCommandShell({ bash: noBash, which: noWhich, exists: hasPwsh7, env })
     const five = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })
@@ -206,7 +206,7 @@ describe('命令 shell 三档探测', () => {
    * 不写清的表现不是「偶尔出错」，是模型按 PowerShell 7 的语法写，
    * 每条组合命令都在解析阶段整条废掉。
    */
-  test('5.1 的语法提示逐条列出 7 上有而它没有的东西', () => {
+  test('5.1 的语法提示逐条列出 7 上有而它没有的写法', () => {
     const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })?.hint
     expect(hint).toContain('5.1')
     for (const missing of ['&&', '||', '? :', '??', '?.', 'ConvertFrom-Json -AsHashtable']) {
@@ -264,7 +264,7 @@ describe('bwrap 参数生成', () => {
 
   test('额外根目录里的 .qy 也要盖成只读', () => {
     // 不盖的话，把某个目录加进 additionalDirectories 就等于在那儿开了一条
-    // 「模型可以给自己加工具」的路——而用户配这条时想的是「让它读我的笔记」。
+    // 「模型可以给自己加工具」的路——而用户配这条时要的只是让它读那个目录。
     const argv = buildBwrapArgv(
       { workspaceRoot: '/ws', writableRoots: ['/data'], readOnlySubdirs: ['.qy'] },
       inner,
@@ -276,7 +276,7 @@ describe('bwrap 参数生成', () => {
 
   test('凭证目录不存在时**不能**生成 --tmpfs', () => {
     // 实测：`--tmpfs /root/.aws` 在该目录不存在、父目录只读时会让 bwrap 直接退出
-    // （Can't mkdir …: Read-only file system）。也就是说一台没有 ~/.aws 的机器上
+    // （Can't mkdir …: Read-only file system）。一台没有 ~/.aws 的机器上
     // 盲目屏蔽它会让**每一条命令**都起不来。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws', maskPaths: ['/home/u/.aws'] }, inner, {
       exists: never,
@@ -299,14 +299,14 @@ describe('bwrap 参数生成', () => {
 
   test('不 unshare 网络', () => {
     // 刻意的：断网的 agent 装不了依赖、拉不了代码。按域名过滤要一整套代理，
-    // 记在 docs/permissions.md 的「已知边界」里，不能靠这里悄悄改。
+    // 记在 docs/permissions.md 的「已知边界」里，不能在这里静默改掉。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(argv).not.toContain('--unshare-net')
   })
 
   test('隔离 PID 命名空间并挂新的 /proc', () => {
     // 宿主的 /proc/<pid>/environ 里有别的进程的环境变量，
-    // 而我们刚在自己这边把凭证从子进程环境里剥干净——不挡这条等于白剥。
+    // 而凭证刚在本进程侧从子进程环境里剥干净——不挡这条等于白剥。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(argv).toContain('--unshare-pid')
     expect(binds(argv, '--proc').length + (argv.includes('--proc') ? 1 : 0)).toBeGreaterThan(0)
@@ -327,7 +327,7 @@ describe('平台判定', () => {
     // 一句「不支持」对用户没有任何可操作性。
     expect(s.reason.length).toBeGreaterThan(10)
     // `active` 与 `backend` 不能互相矛盾——两个字段说不同的话，
-    // 读的人会各取一个，于是同一份状态得出两种结论。
+    // 读的人会各取一个，因此同一份状态得出两种结论。
     if (s.backend === 'none') expect(s.active).toBe(false)
     if (s.active) expect(['bwrap', 'seatbelt']).toContain(s.backend)
   })
@@ -373,7 +373,7 @@ describe('默认屏蔽清单', () => {
 
   test('不屏蔽整个家目录', () => {
     // 整个盖掉的话 ~/.gitconfig、~/.npmrc、nvm/rustup 全消失，
-    // 于是 git commit 没有作者、node 可能根本找不到——那种沙箱用户开一次就关了。
+    // 因此 git commit 没有作者、node 可能根本找不到——那种沙箱用户开一次就关了。
     expect(defaultMaskPaths('/home/u')).not.toContain('/home/u')
   })
 })
@@ -384,7 +384,7 @@ describe('默认屏蔽清单', () => {
  * 这些断言全是纯函数上的——**本机不是 macOS，跑不了 `sandbox-exec`**。
  * 所以真正保证「它在 Mac 上确实生效」的不是这一组，是 `detectSandbox()` 里的
  * 自检：它在用户的机器上真的执行一次，失败就降级报 `none`。
- * 换句话说，这一组锁的是 profile 的形状，运行期那条锁的是它到底能不能用。
+ * 这一组锁的是 profile 的形状，运行期那条锁的是它在目标机器上是否可用。
  */
 describe('seatbelt profile', () => {
   const P = (p: Parameters<typeof buildSeatbeltProfile>[0]) =>
@@ -392,7 +392,7 @@ describe('seatbelt profile', () => {
 
   test('先全放行再收紧写权限', () => {
     // 反过来（deny default）要枚举出一个能跑起 node/git 的完整白名单，
-    // 而那份名单一定会漏——漏的表现是「某个工具莫名其妙起不来」。
+    // 而那份名单一定会漏——漏的表现是某个工具起不来，且报错里没有原因。
     const s = P({ workspaceRoot: '/ws' })
     expect(s.indexOf('(allow default)')).toBeLessThan(s.indexOf('(deny file-write*)'))
   })
@@ -440,8 +440,8 @@ describe('seatbelt profile', () => {
     const s = P({ workspaceRoot: '/ws/a"b' })
     expect(s).toContain('"/ws/a\\"b"')
     // 转义后整份 profile 的引号必须成对：逐字符扫，跳过被反斜杠转义的那些。
-    // （用负向后顾正则写这条踩过一次——`\\` 在不同层里被吃掉，
-    //   写出来的是一个语法都不对的正则。）
+    // 不要用负向后顾正则写这条：反斜杠在正则与字符串两层里各被消耗一次，
+    // 写出来的是一个语法不成立的正则。
     let quotes = 0
     for (let i = 0; i < s.length; i++) {
       if (s[i] === '\\') {
@@ -454,7 +454,7 @@ describe('seatbelt profile', () => {
   })
 
   test('反斜杠也要转义', () => {
-    // 反斜杠按码点构造：写成字面量的话，源码里到底有几层转义看不出来，
+    // 反斜杠按码点构造：写成字面量时，源码里有几层转义看不出来，
     // 而这条断言的全部内容就是「有几层转义」。
     const BS = String.fromCharCode(92)
     const s = P({ workspaceRoot: `/ws/a${BS}b` })
@@ -513,7 +513,7 @@ describe('两个后端承诺同一件事', () => {
 describe('出网开关', () => {
   /*
    * 只有两档，刻意不做域名白名单：中间态要在沙箱里起代理、沙箱外做转发、
-   * 还要让 TLS 认一张自签 CA，而那套东西坏起来的表现是「网络时好时坏」。
+   * 还要让 TLS 认一张自签 CA，而那套组件坏起来的表现是「网络时好时坏」。
    *
    * 下面这两组已经在 WSL2 里带对照跑过：默认 2 个网卡且网关可达，
    * denyNetwork 之后只剩 lo 且网关不可达。
@@ -539,7 +539,7 @@ describe('出网开关', () => {
   })
 
   test('断网不影响文件边界', () => {
-    // 两个维度互不相干。混在一起的话，关掉一个会顺手关掉另一个。
+    // 两个维度互不相干。混在一起的话，关掉一个会连带关掉另一个。
     const argv = buildBwrapArgv(
       { workspaceRoot: '/ws', readOnlySubdirs: ['.qy'], denyNetwork: true },
       inner,
@@ -553,10 +553,10 @@ describe('出网开关', () => {
 /**
  * 树杀。**复现的是原始失败形状，不是「新函数被调到了」。**
  *
- * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只杀我们
- * spawn 的那个 shell，真正干活的孙进程照常监听端口，而且握着 stdout ——
+ * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只杀
+ * spawn 出来的那个 shell，真正执行的孙进程照常监听端口，并持有 stdout ——
  * `shell.ts` 的 pump 永远等不到 EOF，那次 `registry.execute` 再也不返回，
- * 一路传导到会话永久回绝「已有任务在执行」。
+ * 逐层传导到会话永久回绝「已有任务在执行」。
  *
  * 所以这条测试断言两件事，缺一不可：
  *
@@ -665,11 +665,11 @@ describe('子进程输出解码', () => {
  * 命令正文必须逐字节到达 shell。
  *
  * Windows 上 argv 要经一次命令行字符串的往返，MSYS 那侧按自己的规则解回来，
- * 成对的反斜杠被折掉一半（实测发 1/2/3/4 个到达 1/1/2/2 个）。账本里真实撞到过：
+ * 成对的反斜杠被折掉一半（实测发 1/2/3/4 个到达 1/1/2/2 个）。账本里的实证：
  * 模型写的 `if ch == '\\':` 到 python 手里成了 `'\'`，一条 unterminated string
  * literal，而没有任何人知道命令在路上被改过。
  *
- * 这条测试真的起进程——纯函数测不出这个洞，它恰恰发生在进程边界上。
+ * 这条测试真的起进程——纯函数测不出这个洞，它发生在进程边界上。
  */
 describe('命令正文逐字节到达', () => {
   test('成对的反斜杠不被折半', async () => {

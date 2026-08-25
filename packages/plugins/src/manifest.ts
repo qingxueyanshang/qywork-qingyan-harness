@@ -72,7 +72,7 @@ export interface PreviewerContribution {
   extensions: string[]
   /**
    * 渲染族。选 `custom` 时插件必须导出同名渲染函数，
-   * 否则加载期直接拒绝——留一个渲染不出东西的预览器比没有更糟。
+   * 否则加载期直接拒绝——留一个渲染不出内容的预览器比没有更糟。
    */
   renders: 'text' | 'image' | 'pdf' | 'audio' | 'video' | 'tabular' | 'custom'
   /** renders='custom' 时的导出名。 */
@@ -113,7 +113,7 @@ export class ManifestError extends Error {
  * 校验清单。
  *
  * 严格拒绝而不是尽力兼容：一个字段写错的插件应该在加载期报出确切原因，
- * 而不是装载成功后在某次工具调用时以一个无法归因的形式炸掉。
+ * 而不是装载成功后在某次工具调用时以一个无法归因的形式抛错。
  */
 export function parseManifest(raw: unknown, path: string): PluginManifest {
   const fail = (msg: string): never => {
@@ -152,7 +152,7 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
   // 声明了工具却没声明相应权限，是清单写错了——放行等于把权限模型架空。
   //
   // **先校验 permissionEffect 本身。** 它是权限检查的输入，认不出来就必须拒绝而不是
-  // 跳过：`requiredPermission` 对未知值返回 null，于是把 `execute` 拼成 `exec`
+  // 跳过：`requiredPermission` 对未知值返回 null，因此把 `execute` 拼成 `exec`
   // 就能让下面这道闸整个不生效——一个拼写错误换来免检，方向反了。
   for (const t of contributes.tools ?? []) {
     if (!t.name || typeof t.name !== 'string') return fail('工具贡献缺少 name')

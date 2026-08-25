@@ -78,7 +78,7 @@ export function classifyCapacityRejection(err: unknown): CapacityRejection | nul
     providerCode:
       nativeCode ??
       // 没有原生容量码时，退一步记录泛化码。它**不作为判据**（判据是 strong message），
-      // 只是让日志能看出 provider 当时到底回了什么。
+      // 只是让日志能看出 provider 那一次回了什么。
       codes.find((c) => c === 'invalid_argument' || c === 'invalid_request_error') ??
       null,
     status,
@@ -214,7 +214,7 @@ function tokenInt(raw: string | undefined): number | null {
  * 从消息里抠出 provider 自报的「用了多少 / 上限多少」。
  *
  * 各家的措辞和**数字顺序**都不一样，所以每条 pattern 要单独标注哪个数在前。
- * `reversed` 那条是 OpenAI 系：先说上限再说请求量。搞反了会得到
+ * `reversed` 那条是 OpenAI 系：先说上限再说请求量。取反了会得到
  * 「用了 8192，上限 213000」这种荒谬的记录，比没有还糟。
  */
 function reportedCounts(text: string): {

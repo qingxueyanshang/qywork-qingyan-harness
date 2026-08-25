@@ -192,7 +192,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     /*
      * 可选模型 = **用户配置里的接口 × 它挂着的模型**，模型库不并进来。
      *
-     * 并集那版列的是「世上有哪些模型」，而用户要选的是「我配好的哪一个」——
+     * 并集那版列的是「有哪些模型」，而用户要选的是「已经配好的哪一个」——
      * 选一个没挂在任何接口下的模型，请求会按当前接口发出去，端点、key、价目表
      * 全是另一家的，且不报错。接口这一层不出现在选择器里，配了三个接口也没法切。
      */
@@ -255,7 +255,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
    * 归档一条会话：只从列表里去掉，数据一条不动。形状与字段都对齐项目级的
    * `POST /api/workspaces/:id/archive`，只是范围缩到一条。
    *
-   * **正在跑的不拦**：归档不删任何东西，那一轮照常跑完。（删除必须拦，见下。）
+   * **正在跑的不拦**：归档不删任何数据，那一轮照常跑完。（删除必须拦，见下。）
    */
   const archiveMatch = /^\/api\/conversations\/([^/]+)\/archive$/.exec(p)
   if (archiveMatch && req.method === 'POST') {
@@ -312,7 +312,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
        * 附件目录跟着会话一起走。**只删这一个目录，不按 `Attachment.path` 逐条删**
        * ——路径型附件指向的是用户自己的文件（拖进来的那张原图、项目里的那份文档），
        * 逐条删就是删用户的数据。这条目录里装的全是「除此之外没有别处存着」的字节
-       * （剪贴板位图、浏览器上传），删掉不会影响任何别的东西。
+       * （剪贴板位图、浏览器上传），删掉不会影响任何别的记录。
        *
        * 删不掉不改变接口结果：回收的是磁盘空间，不是正确性。
        */
@@ -338,7 +338,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   }
 
   // 上下文面板。**按会话现算，不靠事件残留**——事件只在 run 跑着时流，
-  // 而用户恰恰是回头看的时候才想知道上下文被谁占的。
+  // 而用户是回头看的时候才想知道上下文被谁占的。
   const ctxMatch = /^\/api\/conversations\/([^/]+)\/context$/.exec(p)
   if (ctxMatch) {
     const id = ctxMatch[1] as ConversationId
@@ -356,8 +356,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   }
 
   // 当前目标。**按会话读账本，和上下文面板同一条理由**——`goal` 事件只在变更
-  // 那一刻发一次，界面刷新、切走再切回来就什么都没有了。而目标恰恰是跨轮、
-  // 跨进程存在的东西：续起标记不落盘，重启之后账本里那个 `active` 的目标
+  // 那一刻发一次，界面刷新、切走再切回来就什么都没有了。而目标是跨轮、
+  // 跨进程存在的状态：续起标记不落盘，重启之后账本里那个 `active` 的目标
   // 静静躺着等人点继续，界面看不见它就等于那个循环凭空消失了。
   const goalMatch = /^\/api\/conversations\/([^/]+)\/goal$/.exec(p)
   if (goalMatch) {
@@ -375,7 +375,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   /*
    * 逐请求账本。
    *
-   * `usage.turns` 回答不了「这一轮到底发了几次」——它只在拿到 usage 回报时
+   * `usage.turns` 回答不了「这一轮发了几次」——它只在拿到 usage 回报时
    * 才 push 一条，连接层失败后重发的那一次在它里面不存在。而这张表是**发出之前**
    * 就落行的，重发是独立一行（`retry_index`），所以它才是请求次数的真源。
    */

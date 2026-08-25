@@ -4,12 +4,10 @@
  * 覆盖范围：`providers/anthropic.ts` 的 `buildMessages` 断点落点，
  * 以及 `WireMessage.cacheBreakpoint` 这条协议差异在兼容路径上的**惰性**。
  *
- * ## 这一组要挡的是什么
- *
- * 在此之前 qywork 只有一个断点、打在系统提示词末尾，所以缓存住的只有
+ * **这一组要挡的是什么。** 在此之前 qywork 只有一个断点、打在系统提示词末尾，所以缓存住的只有
  * 工具 schema + 系统提示词（约 1.8k）——**消息历史每一轮都在全价重付**。
  * 而这条只对 Anthropic 成立：兼容协议的前缀缓存由服务端自动做
- * （DeepSeek 的 `prompt_cache_hit_tokens` 就是它），请求体里根本没有这个位置。
+ * （DeepSeek 的 `prompt_cache_hit_tokens` 就是它），请求体里没有这个位置。
  *
  * 所以两件事都要锁住：Anthropic 上断点**真的落到线上**，
  * 兼容协议上这个字段**一个字节都不改变请求**。
@@ -142,8 +140,8 @@ describe('尾区注记按模型能力落地', () => {
   }
 
   /**
-   * **不按模型分叉。** 从前 Opus 这一档发 `role:'system'`、其余换 user 轮，
-   * 于是「尾部 system」这个没测过的形状只在一部分模型上出现——最难查的那种。
+   * **不按模型分叉。** 按模型分叉（Opus 发 `role:'system'`、其余换 user 轮）的话，
+   * 「尾部 system」这个形状只在一部分模型上出现，是最难查的那一类。
    */
   test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上一律换成 user 轮里的注记', (model) => {
     const body = bodyFor(model, [

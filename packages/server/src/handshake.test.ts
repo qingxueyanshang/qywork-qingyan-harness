@@ -1,8 +1,8 @@
 /**
- * 握手时的「我停在哪」。
+ * 握手时的「客户端停在哪一条」。
  *
  * 覆盖范围：`handshake.ts` 的补发分支与 `environment` 能力上报
- * （令牌校验由 `e2e.test.ts` 走真连接覆盖）；后者顺带覆盖 `api/host.ts` 的
+ * （令牌校验由 `e2e.test.ts` 走真连接覆盖）；后者一并覆盖 `api/host.ts` 的
  * 依赖表——那张表同时喂握手和安装路由，分开算必然漂移。
  *
  * 这份测试锁的是一条用户可见的链路：**sidecar 重启之后，重连的客户端必须被告知
@@ -113,7 +113,7 @@ describe('断线重连的位置', () => {
 
   /**
    * **原始失败形状**：重启后 `seq` 从 0 重新数，拿 `lastSeq >= seq` 判就成了
-   * 「已是最新」，于是 resync 为假、补发零条，客户端不会去重拉——那一轮的终态
+   * 「已是最新」，因此 resync 为假、补发零条，客户端不会去重拉——那一轮的终态
    * 就此永远到不了界面。
    */
   test('服务端重启过（换了流）—— 必须 resync，而不是判成已是最新', () => {
@@ -187,7 +187,7 @@ describe('能力上报', () => {
    */
   /**
    * bash 那一行的三档。**注入着测**：本机装着 Git Bash，只可能命中第一档，
-   * 而这一批要修的失败形状（没 bash、有 PowerShell）恰恰在开发机上复现不出来。
+   * 而这一批要修的失败形状（没 bash、有 PowerShell）在开发机上复现不出来。
    */
   describe('bash 那一行随机器落在哪一档', () => {
     const noBash = {
@@ -205,14 +205,14 @@ describe('能力上报', () => {
     })
 
     /**
-     * **原始失败形状**：只有 PowerShell 的机器上，模型明明有 `run_command`，
-     * 设置页却报一条必需依赖缺失——用户于是去装一个他并不需要的东西。
+     * **原始失败形状**：只有 PowerShell 的机器上，模型有 `run_command`，
+     * 设置页却报一条必需依赖缺失——用户因此去装一个他并不需要的依赖。
      */
     test('没 bash 但有 PowerShell —— 不报必需，且说清现在跑的是哪个、语法差在哪', () => {
       const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
       const row = resolveBashRow({ bash: () => noBash, shell: () => shell(ps) })
       expect(row.required).toBe(false)
-      // 用户得知道自己机器上跑的到底是什么，以及 5.1 上 && 为什么不能写。
+      // 用户得知道本机跑的是哪一档 shell，以及 5.1 上 && 为什么不能写。
       expect(row.hint).toContain(ps)
       expect(row.hint).toContain('&&')
     })

@@ -1,20 +1,16 @@
 /**
  * streamable HTTP 传输，端到端。
  *
- * ## 为什么起一个真的 HTTP server 而不是 mock fetch
- *
- * 这条传输里真正会出错的东西全在**协议表面**上：
+ * **为什么起一个真的 HTTP server 而不是 mock fetch。** 这条传输里真正会出错的点全在**协议表面**上：
  * 响应可能是 `application/json` 也可能是 `text/event-stream`，
  * 会话 id 藏在响应头里而且只出现一次，通知回 202 且没有 body，
  * 失败有五六种含义完全不同的状态码。mock 掉 fetch 等于把这些全部替换成
- * 「我以为它长这样」——而这一轮在 Responses 适配器上刚吃过一次这种亏
- * （fixture 编错了，实现和测试一起错，全绿）。
+ * 一份自拟的形状——Responses 适配器上出过同一个问题：fixture 与实际不符，
+ * 实现和测试一起错，全绿。
  *
  * 所以这里 `Bun.serve` 一个按规范应答的 server，让客户端真的发 HTTP。
  *
- * ## 它验的是客户端
- *
- * 不验任何第三方 MCP server 的实现是否合规。真实 server 的兼容性
+ * **它验的是客户端。** 不验任何第三方 MCP server 的实现是否合规。真实 server 的兼容性
  * 只能靠实际接一个来验，那件事还没做，记在 ROADMAP。
  */
 
@@ -36,7 +32,7 @@ interface ServerState {
   mode: Mode
   /** 强制下一次响应返回这个状态码。 */
   forceStatus: number | null
-  /** 收到的会话 id，按请求记下来，用于断言我们真的回传了。 */
+  /** 收到的会话 id，按请求记下来，用于断言客户端确实回传了。 */
   seenSessionIds: (string | null)[]
   seenProtocolVersions: (string | null)[]
   /** 是否收到过 DELETE。 */
@@ -135,7 +131,7 @@ const server = Bun.serve({
     // 截断的流：吐半条事件然后**正常关闭**。
     // 这比 `controller.error()` 更贴近真实——反代掐连接、server 崩掉，
     // 客户端那边看到的往往就是「流结束了」，`for await` 一个异常都不抛。
-    // 那正是「悄悄结束」与「成功结束」在传输层分不出来的那种情况。
+    // 那正是「静默结束」与「成功结束」在传输层分不出来的那种情况。
     const body = state.truncateSse
       ? new ReadableStream<Uint8Array>({
           start(controller) {
@@ -192,7 +188,7 @@ describe('两种响应形态都要收得下', () => {
 describe('会话 id', () => {
   /**
    * 会话 id 只在 initialize 的响应头里出现一次。丢了它之后每一条请求
-   * 都会被当成新会话——有的 server 直接 400，有的默默给你一个空会话，
+   * 都会被当成新会话——有的 server 直接 400，有的静默返回一个空会话，
    * 后者更糟：看起来在工作，实际每次都从头开始。
    */
   test('initialize 拿到的 session id，之后每条请求都带上', async () => {
@@ -226,7 +222,7 @@ describe('会话 id', () => {
     expect(state.seenProtocolVersions.at(-1)).toBe('2025-06-18')
   })
 
-  /** 关闭时显式结束会话，别在对面留一堆没人认领的会话。 */
+  /** 关闭时显式结束会话，别在对端留下无人认领的会话。 */
   test('stop 发 DELETE 结束会话', async () => {
     reset({ mode: 'json' })
     const c = client()
@@ -292,7 +288,7 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
   /**
    * SSE 流中途断掉，在飞的请求**必须立刻被拒**。
    * 不拒的话调用方会一直等到 60 秒超时，而用户看到的是「卡住」——
-   * 那是最难排查的一种失败，因为它看起来像还在干活。
+   * 那是最难排查的一种失败，因为它看起来像仍在执行。
    */
   test('SSE 流中途断开时立刻拒绝在飞的请求，不等超时', async () => {
     reset({ mode: 'sse', truncateSse: true })

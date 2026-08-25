@@ -43,7 +43,7 @@ export { json } from './types.ts'
  * 手输 URL 用的——界面永远显式带上，因为它同时开着好几个项目。
  *
  * 指了一个不存在的 id 返回 `null`，由派发器回 404：静默回落到别的项目，
- * 等于在用户以为是 A 的地方读写 B。
+ * 等于在用户选定 A 的位置上读写 B。
  */
 function resolveWorkspace(store: Store, url: URL): { id: string; root: string } | null {
   const id = url.searchParams.get('ws')
@@ -78,7 +78,7 @@ const HANDLERS: ApiHandler[] = [
 export async function handleApi(url: URL, req: Request, d: ApiDeps): Promise<Response | null> {
   const ws = resolveWorkspace(d.store, url)
   if (!ws) {
-    // 指名道姓要一个不存在的项目：404。静默换一个等于在用户以为是 A 的地方读写 B。
+    // 指名道姓要一个不存在的项目：404。静默换一个等于在用户选定 A 的位置上读写 B。
     if (url.searchParams.get('ws')) return json({ error: '这个项目不存在' }, 404)
     /*
      * 一个项目都还没有。**只有「列项目 / 加项目」这条路能走**——第一个项目就是

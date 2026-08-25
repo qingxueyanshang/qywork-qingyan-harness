@@ -19,7 +19,7 @@ describe('从第一句话取标题', () => {
     expect(deriveConversationTitle('修一下登录\n1. 先看接口\n2. 再看前端')).toBe('修一下登录')
   })
 
-  /* 随手敲的缩进和连续空格会在侧栏里变成一段莫名其妙的空白。 */
+  /* 输入里的缩进和连续空格会在侧栏里变成一段无意义的空白。 */
   test('连续空白压成一个空格，首尾空白去掉', () => {
     expect(deriveConversationTitle('  修   一下    登录  ')).toBe('修 一下 登录')
   })

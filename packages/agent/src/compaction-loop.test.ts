@@ -117,7 +117,7 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
   return { adapter, state }
 }
 
-/** 一路正常的 adapter。 */
+/** 全程正常返回的 adapter。 */
 function okAdapter(): LlmAdapter {
   return {
     kind: 'anthropic_messages',
@@ -236,7 +236,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * 占用没到软阈值就**一次也不压**。
    *
-   * 这是「不在根本不需要的时候损失信息」那条原则的落点：靠阈值本身足够高
+   * 这是「不在不需要的时候损失信息」那条原则的落点：靠阈值本身足够高
    * （窗口的 80%）。
    */
   test('占用远低于阈值时不压缩', async () => {
@@ -336,7 +336,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * **压缩重发是账本上的第二行，不是同一行。**
    *
-   * 这条接真 `Store`：别的用例把 `openRequest` 打桩成常量，唯一索引根本不参与，
+   * 这条接真 `Store`：别的用例把 `openRequest` 打桩成常量，唯一索引不参与，
    * 两次发送共用一组键也不会有任何反应。实测形状是撞窗那次与压完重发那次同为
    * `(run_id, 0, 0)`，第二次插入撞 `uq_provider_run_turn`，异常上抛，整轮死在
    * 一句 SQLite 约束报错上——压缩白压，模型一次都没答上话。
@@ -424,7 +424,7 @@ describe('发送前检查：唯一的压缩触发', () => {
 
   /**
    * 端口缺省时由构造函数补一个透传实现，语义与「没有压缩」逐字相同：
-   * 投影原样返回、压缩报「没什么可折」，于是容量拒绝照旧上报。
+   * 投影原样返回、压缩报「没什么可折」，因此容量拒绝照旧上报。
    */
   test('没有压缩端口时容量拒绝照样上报，不静默卡住', async () => {
     const { adapter } = rejectingAdapter(1)
@@ -434,7 +434,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * **静默截断：provider 不报错，悄悄把超出的部分丢了。**
+   * **静默截断：provider 不报错，直接丢弃超出的部分。**
    *
    * 实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
    * 窗口正好 1,000,000，全程无错误。错误分类在这种 provider 上拿不到凭证，
@@ -616,7 +616,7 @@ describe('有新可折单元才再压', () => {
     expect(events.filter((e) => e.type === 'compaction' && e.phase === 'started').length).toBe(1)
   })
 
-  test('transcript 没长东西就不重试', async () => {
+  test('transcript 没变长就不重试', async () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
@@ -650,7 +650,7 @@ describe('有新可折单元才再压', () => {
  * 缺陷 E：run 内的执行记录必须真的能被折掉。
  *
  * 改造前 `project()` 只作用于 `input.history`，transcript 在投影**之后**才拼上去，
- * 于是 run 内涨起来的那几十波工具结果压缩一条也碰不到——而涨的正是那部分。
+ * 因此 run 内涨起来的那几十波工具结果压缩一条也碰不到——而涨的正是那部分。
  */
 describe('run 内 transcript 参与投影', () => {
   test('投影丢掉带戳的消息时，请求里就真的没有它们', async () => {
@@ -770,7 +770,7 @@ describe('transcript 的可折单元', () => {
  * 触发线。
  *
  * 复现的原始失败形状是 §0.1 那条：1M 窗口的 deepseek 档，软阈值只有 366,000
- * （36.6%）——阈值把模型的输出**规格上限**整块减掉了，于是同为 1M 窗口的两个
+ * （36.6%）——阈值把模型的输出**规格上限**整块减掉了，因此同为 1M 窗口的两个
  * 模型会得到两条完全不同的线。
  */
 describe('软阈值只由窗口决定', () => {
@@ -839,7 +839,7 @@ describe('缓存断点', () => {
     }
 
     const messages = seen[0]!.messages
-    // 注记是最后一段：它之后不许再有任何东西，否则前缀里就夹着易变的一块。
+    // 注记是最后一段：它之后不许再有任何内容，否则前缀里就夹着易变的一块。
     const noteAt = messages.findIndex((m) => m.role === 'system')
     expect(noteAt).toBe(messages.length - 1)
     // 断点之二：history 末尾（跨 run 稳定点）。
@@ -933,7 +933,7 @@ describe('缓存断点', () => {
     /*
      * 比的是**上线字节**，所以内部标记要剥掉：`cacheBreakpoint` 在兼容协议上
      * 一个字节都不上线（`openai-compat.ts` 从不读它），`_group` / `_messageId` /
-     * `_step` 同理。不剥的话断言测的是内部结构而不是缓存看到的东西——
+     * `_step` 同理。不剥的话断言测的是内部结构而不是缓存看到的字节——
      * 而 history 末尾那个断点本来就该随历史增长往后走。
      */
     const wire = (req: ChatRequest) =>

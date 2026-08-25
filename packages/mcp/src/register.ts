@@ -1,12 +1,10 @@
 /**
  * 把 MCP server 的工具接进工具注册表。
  *
- * ## 权限：server 给的 hint 一律不用来放宽
- *
- * MCP 的工具定义里有 `annotations.readOnlyHint` 之类的提示，看起来正好能拿来
- * 决定要不要弹授权。**不能这么用。** 那些字段是 server 自己填的，
- * 而 server 是第三方代码——一个恶意（或只是写错了）的 server 声明
- * `readOnlyHint: true` 的工具照样可以删库。规范自己也写明客户端不得据此做安全决策。
+ * **权限：server 给的 hint 一律不用来放宽。** MCP 的工具定义里有 `annotations.readOnlyHint` 之类的
+ * 提示，看起来正好能拿来决定要不要弹授权。**不能这么用。** 那些字段是 server 自己填的，而 server
+ * 是第三方代码——一个恶意（或只是写错了）的 server 声明 `readOnlyHint: true` 的工具照样可以删库。
+ * 规范自己也写明客户端不得据此做安全决策。
  *
  * 所以这里的规则是单向的：
  *
@@ -17,9 +15,7 @@
  * allow 条目），不能来自 server 的自我声明。这条区别就是整个 MCP
  * 权限模型的全部内容。
  *
- * ## 命名
- *
- * 注册名是 `mcp__<server>__<tool>`，与插件的 `<id>__<tool>` 同一套隔离思路：
+ * **命名。** 注册名是 `mcp__<server>__<tool>`，与插件的 `<id>__<tool>` 同一套隔离思路：
  * 两个 server 各带一个 `search` 不会互相覆盖，模型也能从名字看出它在调谁。
  */
 
@@ -63,19 +59,19 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     name: toolName(server, def.name),
     description: `[MCP ${server}] ${def.description ?? def.name}`,
     // inputSchema 原样交给模型。不做「修正」——改动一个第三方 schema 的结果是
-    // 模型按我们改过的形状传参，server 按它自己的形状校验，两边对不上。
+    // 模型按改过的形状传参，server 按它自己的形状校验，两边对不上。
     parameters: normalizeSchema(def.inputSchema),
     // 同一条理由：适配器不得把它重排成 strict 形状。
     strict: false,
 
-    // 恒为 call。MCP 工具是外部 server 提供的能力，不是我们在本机执行的东西——
+    // 恒为 call。MCP 工具是外部 server 提供的能力，不是本机执行的动作——
     // 这条轴说的是「做了什么动作」，与下面的权限轴各管各的，不互相推导。
     actionKind: 'call',
     // 对象名是「MCP」这一类，不是具体哪个工具——卡片是「动词 + 对象 + 目标」三层，
     // 对象与目标填同一个串等于把目标那一层浪费掉（标题与目标一字不差）。
     objectLabel: 'MCP',
     // 一律归「外部扩展」：这一类的存在理由就是不与内置分类学混排——
-    // 第三方 server 提供什么、算哪个领域，我们并不知道，猜一个填进去更糟。
+    // 第三方 server 提供什么、算哪个领域，本地无从判断，猜一个填进去更糟。
     category: 'external',
     facet: `MCP ${server}`,
     summary: def.description?.trim() || def.name,
@@ -88,7 +84,7 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // readOnlyHint **不采纳**（那会更松）。默认 execute，交给裁决层。
     permissionEffect: destructive ? 'delete' : 'execute',
 
-    // 不并行。MCP server 是外部进程，它对并发的处理我们一无所知，
+    // 不并行。MCP server 是外部进程，它对并发的处理无从预知，
     // 而并行带来的收益远小于「两个调用互相踩」的排查成本。
     parallelSafe: false,
 
@@ -137,8 +133,8 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
 /**
  * 中断要能真的打断等待。
  *
- * `callTool` 只会等到自己的超时；用户点了停止之后还要再干等一分钟，
- * 表现就是「点了没反应」。这里让 abort 立刻把 promise 拒掉。
+ * `callTool` 只会等到自己的超时；用户点了停止之后还要再空等一分钟，
+ * 现象是点了停止之后界面无变化。这里让 abort 立刻把 promise 拒掉。
  * 注意 server 那边的调用**并没有被取消**——MCP 有 `notifications/cancelled`，
  * 但不是所有 server 都实现，所以这里只保证客户端不再等，不宣称远端停了。
  */
@@ -204,7 +200,7 @@ export function renderContent(res: McpCallResult): string {
       parts.push(`[resource_link：${String(block.uri ?? '未知')}]`)
     } else {
       // 未知块类型不能丢——将来 MCP 加了新类型，丢掉会让模型收到一份
-      // 悄悄少了一段的结果，那比看到一行占位难查得多。
+      // 静默少了一段的结果，那比看到一行占位难查得多。
       parts.push(`[${block.type}]`)
     }
   }
@@ -220,9 +216,9 @@ function sizeOf(data: unknown): string {
 /**
  * 兜底成一个合法的 JSON Schema 对象。
  *
- * 有的 server 给的 inputSchema 缺 `type` 或干脆是 null。直接交给 provider 会被
+ * 有的 server 给的 inputSchema 缺 `type`，或整个是 null。直接交给 provider 会被
  * 400 拒掉，而错误信息里只说「tools[3].parameters 无效」——查是哪个 server 的
- * 哪个工具要翻半天。
+ * 哪个工具要逐个翻。
  */
 function normalizeSchema(schema: unknown): Record<string, unknown> {
   if (typeof schema !== 'object' || schema === null) {

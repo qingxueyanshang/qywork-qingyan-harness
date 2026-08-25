@@ -92,7 +92,7 @@ export function estimateMessages(messages: readonly WireMessage[]): number {
   return total
 }
 
-/** 工具 schema。按 JSON 口径——它就是一坨稠密 JSON。 */
+/** 工具 schema。按 JSON 口径——它就是一段稠密 JSON。 */
 export function estimateSchemas(tools: readonly ToolSchema[]): number {
   return tools.length ? estimateJson(tools) : 0
 }

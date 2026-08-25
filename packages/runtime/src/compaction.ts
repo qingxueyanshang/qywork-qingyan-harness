@@ -141,7 +141,7 @@ export class RuntimeCompaction implements CompactionPort {
    * 跑一次压缩并落库。
    *
    * 顺序是固定的：选界 → 可行性 → 收纳 → 够了就落库 → 不够才调模型 → 落库前查信号。
-   * `signal` 一路带到落库点前。**可缺**：手动压缩不属于任何 run。
+   * `signal` 逐层带到落库点前。**可缺**：手动压缩不属于任何 run。
    */
   async run(input: CompactionRunInput): Promise<CompactionOutcome> {
     const { store, conversationId } = this.deps

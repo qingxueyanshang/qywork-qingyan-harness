@@ -29,8 +29,8 @@ import { Field, Row } from './Row.tsx'
  * 下拉里显示的短名。**底层值不动**——它直指端点（`/v1/chat/completions`），
  * 而官方的 `completions` 是另一个已弃用的补全接口，短名只在界面上用。
  *
- * 词表本身在 `@qywork/core`：配置、协议、界面三方都要说它，抄一份到这里
- * 就会漂（模型库那个思考下拉漂过一次，多出过一个不存在的值）。
+ * 词表本身在 `@qywork/core`：配置、协议、界面三方都要说它，抄一份到这里就会漂，
+ * 漂出来的形状是下拉里多一个端点不认的值。
  */
 const KIND_LABEL: Record<ProviderKind, string> = {
   anthropic_messages: 'anthropic_messages',
@@ -50,27 +50,19 @@ function catalogKey(model: string, kind: string): string {
 /**
  * 模型配置：**接口一层，模型一层**。
  *
- * ## 为什么是两层
- *
- * 扁平档案（一条档案一个模型）的话，同一家的三个模型要把同一把 key 和同一个
+ * **为什么是两层。** 扁平档案（一条档案一个模型）的话，同一家的三个模型要把同一把 key 和同一个
  * baseUrl 各抄三份。改一次端点得改三处，漏一处的表现是「有的模型好使有的不好使」，
  * 而界面上三条卡片长得一模一样，看不出哪条漏了。
  *
- * ## 协议只在这一页选
+ * **协议只在这一页选。** 协议（`kind`）是**接口**的属性：同一个模型经中转站以 OpenAI 协议调 Claude
+ * 是常见配置。所以模型列表里一个协议字样都不出现——摆进去就是让用户在两条「看起来一样的模型」之
+ * 间选，而他手里没有判据。
  *
- * 协议（`kind`）是**接口**的属性：同一个模型经中转站以 OpenAI 协议调 Claude 是
- * 常见配置。所以模型列表里一个协议字样都不出现——摆进去就是让用户在两条
- * 「看起来一样的模型」之间选，而他手里没有判据。
+ * **明文 key 不回传。** 服务端只回 `hasApiKey` 布尔。保存时没带 `apiKey` 的接口沿用服务端已有的那
+ * 份，所以「打开设置改个 baseUrl 再保存」不会把 key 洗掉——这类破坏在保存那一刻毫无反馈，要等下
+ * 一次调模型才失败。
  *
- * ## 明文 key 不回传
- *
- * 服务端只回 `hasApiKey` 布尔。保存时没带 `apiKey` 的接口沿用服务端已有的那份，
- * 所以「打开设置改个 baseUrl 再保存」不会把 key 洗掉——这类破坏在保存那一刻
- * 毫无反馈，要等下一次调模型才炸。
- *
- * ## 探测只认落盘配置
- *
- * 按钮打的是服务端的 `/api/probe`，它按**已保存的**接口取 key。刚敲进输入框
+ * **探测只认落盘配置。** 按钮打的是服务端的 `/api/probe`，它按**已保存的**接口取 key。刚敲进输入框
  * 还没失焦的值探不到——那是对的：让端点接收临时明文 key 等于多开一条 key 上行
  * 路径，而这一页每一格失焦即落盘，等待时间是零。
  */
@@ -132,14 +124,14 @@ export function ModelSettings() {
     setPicked(null)
     void replaceConfig((cur) => {
       const { [name]: _drop, ...rest } = cur.providers
-      // 删掉的正好是当前接口时要顺手改 active，否则保存会被服务端顶回来，
-      // 而报错说的是「active 指向不存在的接口」——用户不会把它和刚才那次删除联系起来。
+      // 删掉的正好是当前接口时要同时改 active，否则保存会被服务端顶回来，
+      // 而报错说的是「active 指向不存在的接口」，与刚才那次删除对不上号。
       const active = cur.active.provider === name ? (firstModelRef(rest) ?? cur.active) : cur.active
       return { ...cur, providers: rest, active }
     })
   }
 
-  /** 接口改名：键就是名字，所以这是「删旧建新」，顺带把指向它的 active 一起挪。 */
+  /** 接口改名：键就是名字，所以这是「删旧建新」，同时把指向它的 active 一起挪。 */
   const renameProvider = (from: string, to: string) => {
     const base = config()
     const p = base?.providers[from]
@@ -176,7 +168,7 @@ export function ModelSettings() {
           ...cur.providers,
           [provider]: { ...owner, models: { ...owner.models, [id]: {} } },
         },
-        // 这个接口本来一个模型都没有 = 它还没法用。挂上第一个就顺手切过去，
+        // 这个接口本来一个模型都没有 = 它还没法用。挂上第一个就切过去，
         // 省掉一次「加完了怎么还没生效」。
         ...(Object.keys(owner.models).length === 0 ? { active: { provider, model: id } } : {}),
       }
@@ -210,7 +202,7 @@ export function ModelSettings() {
       setProbes((prev) => ({ ...prev, [model]: r }))
       // 探到的能力**写进模型库**，走既有的整份 PUT，不新开写入路径。
       // 协议这一维从当前接口取：探的就是「这条链路」的行为。
-      // 只在真探出东西时写：空结论会盖掉目录里正确的保守值。
+      // 只在真探出结论时写：空结论会盖掉目录里正确的保守值。
       if (Object.keys(r.capabilities).length > 0) {
         void replaceConfig((cur) => {
           const owner = cur.providers[provider]
@@ -270,7 +262,7 @@ export function ModelSettings() {
                 >
                   添加接口
                 </button>
-                {/* 模型库和接口不是一类东西（一个是模型参数，一个是端点与凭证），
+                {/* 模型库和接口不是同一类（一个是模型参数，一个是端点与凭证），
                       所以隔开放在这一排的末尾，而不是混在接口中间。 */}
                 <button
                   class="tab-chip lib"
@@ -458,7 +450,7 @@ export function ModelSettings() {
   )
 }
 
-/** 接口表里第一个挂了模型的那一格。删光当前接口时用来找个落脚点。 */
+/** 接口表里第一个挂了模型的那一格。删光当前接口时用它选下一个可用接口。 */
 function firstModelRef(
   providers: Record<string, RedactedProvider>,
 ): { provider: string; model: string } | null {
@@ -473,7 +465,7 @@ function firstModelRef(
  * 一次探测的结论。
  *
  * **「没探测」和「不支持」分开显示。** 合并成一个「否」就是把没验过的事写成结论——
- * 而用户会据此去查一个根本没坏的东西。失败的那几步给出原文，结论错了要能查。
+ * 而用户会据此去查一处没坏的配置。失败的那几步给出原文，结论错了要能查。
  */
 function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
   /**

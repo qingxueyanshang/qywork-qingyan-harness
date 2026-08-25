@@ -4,10 +4,9 @@
  * 四条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试、目标续起。
  * 给任何一条单开一套装配就是四套会漂移的行为。
  *
- * ## 续起为什么判在 `startRun` 的 `finally`
- *
- * 那里已经在做 `runs.unregister` / `release` / `session.dispose()`，是「这一轮
- * 干完了」的**唯一汇合处**——正常结束、抛错、被中断三条路都要经过它。
+ * **续起为什么判在 `startRun` 的 `finally`。** 那里已经在做 `runs.unregister` / `release` /
+ * `session.dispose()`，是「这一轮干完了」的**唯一汇合处**——正常结束、抛错、被中断三条路都要经过
+ * 它。
  *
  * **不是 `recoverStaleRuns`**：那个只在 `createServer` 启动时跑一次（开服之前），
  * 把目标判定放进进程启动，正是「崩溃之后自动复活」——`GoalArm` 上那段注释
@@ -54,7 +53,7 @@ import type { GoalArm } from './runs.ts'
  * 三条硬约束：
  * - **只能重试已终结的 run**。还在跑的必须先中断，否则两个 run 同时往同一个
  *   工作区写文件，谁覆盖谁全看调度。
- * - **继承原 run 的 `messageIdUpperBound`**。重试要重现的是「当时那个上下文」，
+ * - **继承原 run 的 `messageIdUpperBound`**。重试要重现的是原请求那一刻的上下文，
  *   拿新的高水位会把重试期间用户新发的消息卷进来，那就不是重试了。
  * - **原 run 保留并标 `superseded_by`**，不删。那些步骤真实发生过，token 真的花了。
  */
@@ -134,7 +133,7 @@ export async function startRun(
    * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
    * 续起就作废——他插的这一句才是这条会话现在该干的事。
    *
-   * 放在 reserve 成功之后：被回绝的消息根本没有发生，不该动任何状态。
+   * 放在 reserve 成功之后：被回绝的消息没有发生，不该动任何状态。
    */
   if (!goalRound) deps.runs.disarm(conversationId)
 
@@ -171,10 +170,10 @@ export async function startRun(
     content: deps.content,
     workspaceRoot: ws.rootPath,
     signal: controller.signal,
-    // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，于是它那边连
+    // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，因此它那边连
     // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
     delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath, conversationId }),
-    // 装插件同样只给顶层会话：成员会话不该给整台机器装东西。
+    // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
     plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
   })
 
@@ -246,7 +245,7 @@ export async function startRun(
       const pe = err instanceof ProviderError ? err : null
       const base = pe?.message ?? (err instanceof Error ? err.message : String(err))
       // 桌面端用户手边不一定有终端，「运行 qy init」对他们只是一句空话。
-      // 把配置文件路径带上——那是他们真正能打开的东西。
+      // 把配置文件路径带上——那是他们真正能打开的位置。
       const message =
         pe?.code === 'no_api_key' || pe?.code === 'auth_failed'
           ? `${base}\n配置文件：${configPath()}`
@@ -313,7 +312,7 @@ const STOP_NOTE: Record<string, string> = {
  *   而用户只看到会话在那儿自己转；
  * - 正常收尾 → 排队起下一轮。
  *
- * 没有待续起标记就直接走人：那说明这条会话根本不在自动循环里
+ * 没有待续起标记就直接走人：那说明这条会话不在自动循环里
  * （或者进程重启过——标记不落盘，见 `GoalArm`）。
  */
 function settleGoalAfterRun(input: {
@@ -350,7 +349,7 @@ function settleGoalAfterRun(input: {
 /**
  * 把目标停在某个状态上并解除标记。
  *
- * 用**刚读到的** revision 而不是标记里那个：模型可能在这一轮里改过目标，
+ * 用**刚读到的** revision 而不是续起标记里那个：模型可能在这一轮里改过目标，
  * 那些改动是真的，不该被一次中断按旧版本覆盖回去。
  */
 function stopGoal(
@@ -538,7 +537,7 @@ function publishGoal(deps: Omit<CommandDeps, 'ws'>, goal: Goal): void {
  * 自动续起那一轮发给模型的话。
  *
  * 措辞是这个功能里最容易做坏的一处：说轻了模型草率宣布完成，一个没做完的目标
- * 被 `complete` 掉；说重了它明明卡住也不肯 `blocked`，白白转满轮数。
+ * 被 `complete` 掉；说重了它卡住也不肯 `blocked`，转满轮数。
  * 所以这段话必须做到四件事——**引用完整目标**、**报清第几轮**、
  * **点明谁才是权威**（工作区里的文件、这一轮工具跑出来的结果、落库的会话状态，
  * 而不是前几轮自己说过的话）、**要求完成前先拿证据**。

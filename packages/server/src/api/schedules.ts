@@ -72,7 +72,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
   // 立刻跑一次。
   //
   // 这是这个功能唯一能被**当场验证**的入口：定时触发要等到点，
-  // 而「配好了到底会不会跑」是用户第一个想知道的事。
+  // 而「配好了会不会跑」是用户第一个想知道的事。
   const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
   if (schedRunMatch && req.method === 'POST') {
     const all = await loadSchedules()
@@ -85,7 +85,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       title: s.title,
     })
     // 手动试跑**不推进** lastRunAt：它是调度状态，被手动触发改掉的话
-    // 「每天 9 点」会因为你下午点了一次试跑而当天不再自动触发。
+    // 「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。
     d.startRun(conv.id, s.prompt)
     return json({ ok: true, conversationId: conv.id })
   }

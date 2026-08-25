@@ -3,7 +3,7 @@
  *
  * 从 `dev.ts` 里抽出来是因为**它在脚本顶层就测不到**：防抖合并、有活时不换、
  * 换的过程中又来改动这三件事全是时序，而时序错了的表现是「偶尔打断一轮」——
- * 那种 bug 不会有人复现给你看。这里只留策略，起进程/杀进程/等就绪由调用方注入。
+ * 那种 bug 复现不出来。这里只留策略，起进程/杀进程/等就绪由调用方注入。
  *
  * 判据是两条，缺一不可：**文件变了**，**且这个 sidecar 手上没有没跑完的 run**。
  * 只看第一条就是 `bun --watch` 的行为，代价是把跑到一半的那轮从中间掐断。
@@ -27,7 +27,7 @@ export interface ReloadSupervisor {
   /** 有源码变了。反复调用只会合并成一次。 */
   onChange(): void
   /**
-   * sidecar 自己没了（崩溃、被别的东西杀掉、内部走到 `process.exit`）。
+   * sidecar 自己没了（崩溃、被别的进程杀掉、内部走到 `process.exit`）。
    *
    * **不拉起来的代价是一个连不上后端的空壳界面**：WebSocket 断了，前端只会数
    * 「已 N 秒没有新数据」，停止按钮点下去没有对端接，用户唯一的出路是重启应用
@@ -71,7 +71,7 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   }
 
   const onExit = (code: number | null): void => {
-    // 换代码时是我们自己把它杀掉的，那不是崩溃。
+    // 换代码时的退出由 supervisor 自己发起，不是崩溃。
     if (reloading) return
     crashes++
     if (crashes > MAX_CRASH_RESTARTS) {

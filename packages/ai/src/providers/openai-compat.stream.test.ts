@@ -3,12 +3,10 @@
  *
  * 覆盖 `openai-compat.ts` 的 `stream()` 收尾判定。隔壁 `openai-compat.test.ts`
  * 测的是纯函数（请求体装配、思考标签切分、工具定义），它锁不住「流没按协议收尾
- * 时这一轮算不算完成」——而那正是掉过东西的地方。
+ * 时这一轮算不算完成」——而那正是出过错的地方。
  *
- * ## 报文是抄来的，不是编的
- *
- * 下面的字节抄自 2026-08-21 对 `opencode.ai/zen/go/v1/chat/completions`
- * （模型 `ox-alpha-free`）的实测：同一个请求形状，一半的次数在 reasoning 中途
+ * **报文取自实测，不得自拟。** 下面的字节逐字取自 2026-08-21 对某中转端点
+ * （模型 `ox-alpha-free`）的一次实测：同一个请求形状，一半的次数在 reasoning 中途
  * 直接结束响应体，另一半正常收在 `finish_reason: "length"`。
  */
 
@@ -30,8 +28,8 @@ const CUT = reasoning('The user wants a 3D anime') + reasoning(' racing game') +
 /**
  * 用量那一格到了、收尾那一格没到。
  *
- * 抄自 2026-08-22 对同一端点的实测：断流样本带着 `completion_tokens`
- * （6476 / 5126 各一次），说明上游多半已经计了费。
+ * 取自 2026-08-22 对同一端点的实测：断流样本带着 `completion_tokens`
+ * （6476 / 5126 各一次），说明上游很可能已经计了费。
  */
 const CUT_WITH_USAGE =
   reasoning('The user wants a 3D anime') +
@@ -90,7 +88,7 @@ describe('流没按协议收尾', () => {
     expect(err).toBeInstanceOf(ProviderError)
     expect((err as ProviderError).code).toBe('network_error')
     expect(events.some((e) => e.type === 'done')).toBe(false)
-    // 断之前收到的思考照常吐出去：报错的是这一轮的终态，不是已经读到的字节。
+    // 断之前收到的思考照常输出：报错的是这一轮的终态，不是已经读到的字节。
     expect(events.filter((e) => e.type === 'thinking_delta')).toHaveLength(3)
   })
 

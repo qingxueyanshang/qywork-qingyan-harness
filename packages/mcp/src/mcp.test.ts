@@ -1,8 +1,8 @@
 /**
  * MCP 端到端：起一个**真的** MCP server 子进程，走完整的 JSON-RPC 握手。
  *
- * 不 mock 传输层。要验的恰恰是「帧格式对不对、握手顺序对不对、游标跟没跟完」，
- * 把传输换成内存对象就把被验的东西替换掉了。
+ * 不 mock 传输层。要验的是「帧格式对不对、握手顺序对不对、游标跟没跟完」，
+ * 把传输换成内存对象就把被验的那一层替换掉了。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -137,7 +137,7 @@ describe('握手', () => {
     c.stop()
   })
 
-  test('命令不存在时立刻失败，不干等到超时', async () => {
+  test('命令不存在时立刻失败，不阻塞到超时', async () => {
     const c = new McpClient({
       name: 'nope',
       spec: { command: 'qywork-绝对不存在的命令', args: [] },
@@ -150,7 +150,7 @@ describe('握手', () => {
     c.stop()
   }, 20_000)
 
-  test('stdout 上的 banner 不会把连接搞崩', async () => {
+  test('stdout 上的 banner 不会破坏连接', async () => {
     const { dir, entry } = await fixture({ banner: true })
     const logs: string[] = []
     const c = client(entry, dir, logs)
@@ -208,7 +208,7 @@ describe('tools/call', () => {
     c.stop()
   })
 
-  test('进程死掉时在飞的请求被逐个拒绝，不挂到超时', async () => {
+  test('进程退出时在飞的请求被逐个拒绝，不挂到超时', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -275,7 +275,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     c.stop()
   })
 
-  test('不并行 —— 外部进程的并发行为我们一无所知', async () => {
+  test('不并行 —— 外部进程的并发行为无从预知', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -351,7 +351,7 @@ describe('内容块渲染', () => {
     ).toBe('甲\n乙')
   })
 
-  test('图片只留占位 —— base64 进上下文能吃掉几万 token', () => {
+  test('图片只留占位 —— base64 进上下文能占掉几万 token', () => {
     const out = render([{ type: 'image', data: 'A'.repeat(40_000), mimeType: 'image/png' }])
     expect(out).toContain('image/png')
     expect(out.length).toBeLessThan(100)
@@ -367,7 +367,7 @@ describe('内容块渲染', () => {
 })
 
 describe('配置解析', () => {
-  test('认 servers 也认 mcpServers —— 用户多半是从别处复制过来的', () => {
+  test('认 servers 也认 mcpServers —— 用户通常是从别处复制过来的', () => {
     const a = parseMcpConfig('{"servers":{"x":{"command":"echo"}}}')
     const b = parseMcpConfig('{"mcpServers":{"x":{"command":"echo"}}}')
     expect(Object.keys(a.servers)).toEqual(['x'])
@@ -389,7 +389,7 @@ describe('配置解析', () => {
 
   /**
    * 同时配 command 与 url 是**歧义**，不是「二选一」。
-   * 静默挑一个的话，用户改了没被采用的那个字段，然后对着一个毫无变化的现象查半天。
+   * 静默挑一个的话，用户改了没被采用的那个字段，然后对着一个毫无变化的现象长时间排查。
    */
   test('command 与 url 同时给 → 报歧义，不替用户挑', () => {
     const c = parseMcpConfig('{"servers":{"r":{"command":"echo","url":"https://x/mcp"}}}')

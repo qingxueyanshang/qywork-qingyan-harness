@@ -121,7 +121,7 @@ describe('读回', () => {
     content.collectGarbage([])
 
     // 账本行还在，正文没了。必须报 null，而不是返回一个读不出来的长度——
-    // 后者会让模型拿着长度去 read_resource，然后收到空内容却以为读完了。
+    // 后者会让模型拿着长度去 read_resource，收到空内容却当成读完了。
     expect(sink.stat(resourceId)).toBeNull()
     store.close()
     content.close()

@@ -1,15 +1,9 @@
 /**
- * `@qywork/runtime` 的对外面。
+ * `@qywork/runtime` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
+ * 具名导出，不用 `export *`（B6）；加一行之前先确认它真有包外调用点（B3）。
  *
- * **这里列的就是承诺，没列的就是内部实现。** 之前九个模块走 `export *`，
- * 把六十四个符号推到包外，其中一半没有任何包外调用点——sink、prompt 的内部
- * 拼装、capabilities 的处理器都是这个包自己的事。
- *
- * 这个包是装配层：它把 agent / ai / store / tools / mcp / plugins / team 拼成
- * 一个 `Session`。**下游只该看见装配结果**，不该看见它是怎么拼的。
- *
- * 加新的对外符号时：先确认它真的有包外调用点，再往下面加一行。
- * 「以后可能有人要用」不是理由（见 CLAUDE.md B3）。
+ * 这个包是装配层：把 agent / ai / store / tools / mcp / plugins / team 拼成一个
+ * `Session`。**下游只该看见装配结果**，不该看见它是怎么拼的。
  */
 
 // 会话导出：`qy export`

@@ -55,7 +55,7 @@ export function ConversationRow(props: {
   let moreEl!: HTMLButtonElement
 
   /*
-   * 点到本行之外就收起菜单。捕获阶段监听，免得被内部的 stopPropagation 吃掉。
+   * 点到本行之外就收起菜单。捕获阶段监听，否则会被内部的 stopPropagation 拦住。
    *
    * **按本行的容器判，不用类选择器**：`closest('.conv-menu-wrap')` 对别的会话行
    * 同样成立，点另一行的 `⋯` 时这一行的菜单不关，两张卡片叠在一起。

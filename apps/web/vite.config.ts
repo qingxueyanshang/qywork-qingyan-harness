@@ -27,7 +27,7 @@ export default defineConfig({
     target: 'es2022',
     // **不要**手动把 @codemirror/@lezer 归成一个 chunk。
     // 语言包是动态 import 的，手动归组会把它们全部合并回同一个 chunk
-    // （实测 593 kB），按需加载就白做了。交给 Vite 按动态导入边界自动切分。
+    // （实测 593 kB），按需加载就失效了。交给 Vite 按动态导入边界自动切分。
     chunkSizeWarningLimit: 700,
   },
 })

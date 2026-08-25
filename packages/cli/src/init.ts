@@ -1,10 +1,10 @@
 /**
  * `qy init` —— 把「全新用户第一次运行」这条路径变成可走的。
  *
- * 之前它是这样的：装完 → `qy exec "..."` → `错误 [auth_failed] API Key 无效`。
- * 用户会去检查一个根本不存在的 key 抄错没抄错。真相是配置文件还没有。
+ * 没有这条命令时，缺配置的首次运行只会拿到 provider 返回的 `auth_failed`，
+ * 该消息不指向「配置文件尚未创建」这个真实原因。
  *
- * 这里刻意不做「自动探测环境变量里有没有 key 就悄悄用上」：配置是用户能看见、
+ * 这里刻意不做「探测到环境变量里有 key 就直接用上」：配置是用户能看见、
  * 能改、能删的一个 JSON 文件，猜出来的配置反而更难排查。init 只做一件事——
  * 把用户的回答落成那个文件，然后把路径打出来。
  */
@@ -19,7 +19,7 @@ interface Preset {
   provider: StoredProvider
   /** 预置里那一个模型。接口下可以挂很多个，init 只负责让第一个跑起来。 */
   model: string
-  /** 去哪儿领 key。写死链接比让用户自己搜要省事得多。 */
+  /** 领 key 的页面地址。写死链接省一次搜索。 */
   keyUrl: string
 }
 
@@ -113,10 +113,9 @@ export async function runInit(args: string[]): Promise<number> {
    * **不要灌一个预置值**（比如 `maxOutputTokens: 8192`）：DeepSeek 的真实上限是
    * 384000（见 `catalog.ts`），差 47 倍。
    *
-   * 它是硬上限：`factory.ts:80-84` 拿它与目录值取 min，`loop.ts:708` 每次请求
-   * 都用它。实测的失败形状：DeepSeek 开 max 思考档，一轮光思考就 8493 token，
-   * 预算在正文开始前就用完，run 以 `output_truncated` 收尾——而用户看到的是
-   * 「输出被截断，回答不完整」，完全看不出根因是 init 灌进去的一个数。
+   * 它是硬上限：装配时与目录值取 min（`loop.ts` 的输出上限计算），每次请求都用它。
+   * 实测形状：DeepSeek 开 max 思考档，一轮思考占 8493 token，预算在正文开始前耗尽，
+   * run 以 `output_truncated` 收尾。
    *
    * 目录值是本仓自己实测维护的，init 没有任何理由去覆盖它。真需要压上限的
    * 用户自己在配置里写。
@@ -129,7 +128,7 @@ export async function runInit(args: string[]): Promise<number> {
     if (url) provider.baseUrl = url
   }
 
-  // 本机服务不需要 key，别逼用户对着一个不需要填的输入框想「我是不是漏了什么」。
+  // 本机服务不需要 key，不要显示一个不需要填的输入框。
   if (preset.key !== 'local') {
     if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
     process.stderr.write('API Key（直接回车则跳过，之后可以在设置页里补）：')

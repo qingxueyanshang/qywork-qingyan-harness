@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`image.ts` 全部（`imageSizeOf` + `shrinkImage`）。
  *
- * 盯的是一个**反直觉的方向**：无脑重编码会把常见的截图搞大。所以「在上限内原样
- * 返回同一个引用」这条必须被锁住——它坏掉不报错，只是每张图悄悄大一倍。
+ * 盯的是一个**反直觉的方向**：无条件重编码会把常见的截图变大。所以「在上限内原样
+ * 返回同一个引用」这条必须被锁住——它坏掉不报错，只是每张图静默大一倍。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -32,7 +32,7 @@ describe('从文件头读宽高', () => {
     expect(imageSizeOf(b)).toEqual({ width: 1440, height: 900 })
   })
 
-  /** JPEG 要顺着 marker 走到 SOF，且**高在前宽在后**——反了会把判据整个搞错。 */
+  /** JPEG 要顺着 marker 走到 SOF，且**高在前宽在后**——反了会把判据整个取反。 */
   test('JPEG 顺着 marker 找 SOF，高在前', () => {
     const b = new Uint8Array(24)
     b.set([0xff, 0xd8], 0)

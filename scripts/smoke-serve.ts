@@ -309,7 +309,7 @@ async function main(): Promise<number> {
     //
     // 不这么做的话，一次流卡死或容量拒绝的表现是「收到 tool.started ✗」
     // 之类的一串下游失败，真正的原因埋在几十条事件里。
-    // 有了流空闲看门狗之后，卡死会变成一条 run.error 而不是干等到脚本超时——
+    // 有了流空闲看门狗之后，卡死会变成一条 run.error 而不是空等到脚本超时——
     // 这一行就是把那条错误摆到最显眼的位置。
     const errored = frames.find((f) => f.event.type === 'run.error')
     check('本轮没有 provider 错误', errored === undefined, errored?.event)
@@ -361,7 +361,7 @@ async function main(): Promise<number> {
     process.stdout.write('\n断线补发\n')
     const midSeq = seqs[Math.floor(seqs.length / 2)]!
     // 补发要带**流身份**：新总线的 seq 从 0 重新数，只比大小会把
-    // 「你落后了多少」和「你说的落后是不是我这条流上的事」混成一个判断。
+    // 「落后了多少」和「这个落后是不是本流上的」混成一个判断。
     const at = (lastSeq: number) => ({ streamId: h.bus.streamId, lastSeq })
     const watcher = { id: 'smoke', origin: 'cli' as const, conversations: null, send: () => {} }
     const replay = h.bus.replayFrom(at(midSeq), watcher)

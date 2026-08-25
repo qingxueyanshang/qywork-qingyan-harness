@@ -94,7 +94,7 @@ describe('query 投影', () => {
   })
 
   test('没命中是成功不是失败 —— 「确实不在里面」是有效结论', async () => {
-    const r = await run({ resource_id: 'rs_1', query: '不存在的东西' }, memSink(doc))
+    const r = await run({ resource_id: 'rs_1', query: '不存在的关键字' }, memSink(doc))
     expect(r.status).toBe('success')
     expect(r.data!.hits).toHaveLength(0)
     expect(r.data!.totalLines).toBe(200)
@@ -103,7 +103,7 @@ describe('query 投影', () => {
   test('多行命中全部返回', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'payload' }, memSink(doc))
     const hits = r.data!.hits as unknown[]
-    // 输出预算会截，但至少要命中一大批。
+    // 输出预算会截，但至少要命中其中绝大多数。
     expect(hits.length).toBeGreaterThan(100)
   })
 

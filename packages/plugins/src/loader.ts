@@ -43,7 +43,7 @@ export function pluginToolName(pluginId: string, tool: string): string {
  *
  * **必须走这里，不要自己拼 `${id}__`。** 注册名消毒过，一个 id 带点的插件
  * （清单推荐反向域名，`com.example` 是常态）拿原始 id 拼前缀一条都匹配不上，
- * 表现是 `qy plugins` 报「0 个工具」而工具其实全都在。
+ * 表现是 `qy plugins` 报「0 个工具」而工具全都在。
  */
 export function pluginToolPrefix(pluginId: string): string {
   return sanitizeToolName(`${pluginId}__`)
@@ -57,10 +57,10 @@ export interface PluginRegistry {
   /**
    * 插件贡献的工具规格。**这里只产出，不写进 ToolRegistry。**
    *
-   * 之前是直接往调用方给的 registry 里注册，于是「加载一次扩展」和
-   * 「拿到一份工具表」被绑死了：每建一个 Session（server 是每条消息一个）
-   * 就得重新加载一遍扩展，也就重新起一遍插件子进程——而旧的那批没人关。
-   * 产出与注册分开之后，扩展可以按工作区缓存，工具表按会话各注册各的。
+   * 直接往调用方给的 registry 里注册会把「加载一次扩展」和「拿到一份工具表」
+   * 绑死：每建一个 Session（server 是每条消息一个）就得重新加载一遍扩展，
+   * 也就重新起一遍插件子进程——而旧的那批没人关。产出与注册分开之后，
+   * 扩展可以按工作区缓存，工具表按会话各注册各的。
    */
   toolSpecs: ToolSpec[]
   /** 加载失败的插件及原因。UI 要能显示出来，不能静默跳过。 */
@@ -157,7 +157,7 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
     entry,
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
     onCapability: async (method, params) => {
-      // **权限在这里强制**，不信任插件的自我声明。
+      // **权限在这里强制**，不信任插件运行时的声明。
       const verdict = checkPermission(host, method)
       if (!verdict.ok) throw new Error(verdict.message)
       if (!options.onCapability) throw new Error(`宿主未提供能力实现：${method}`)
@@ -285,12 +285,12 @@ export function normalizeOutcome(
 
   // fail-closed 是对的，但**拒绝要说出理由**。
   //
-  // 实测踩过：插件返回了一个结构完全正常的 `{content: "..."}`，
-  // 界面上显示的就是 `✗ 失败` 两个字——插件作者无从判断是自己形状写错了，
-  // 还是插件逻辑真的失败了。这与「MCP server 未运行」不带死因是同一类问题。
+  // 实测形状：插件返回一个结构正常的 `{content: "..."}`，界面上只显示 `✗ 失败`
+  // 两个字——插件作者无从判断是形状写错了，还是插件逻辑真的失败了。
+  // 这与「MCP server 未运行」不带退出原因是同一类问题。
   //
   // 只在**插件自己没给 message** 时补这句话：它给了就用它的，
-  // 那是插件对失败原因的第一手描述，比我们的猜测有用。
+  // 那是插件对失败原因的第一手描述，比本地推断的准确。
   const explain = (): string => {
     if (status === 'success') return '完成'
     if (r.status === undefined) {

@@ -177,7 +177,7 @@ export function htmlToText(html: string): string {
  *
  * 用 DuckDuckGo 的 HTML 端点：不需要 API Key，也就不需要用户先去申请一个才能用。
  * 代价是解析的是 HTML 而不是结构化响应，站点改版会失效——所以解析失败时
- * **明确说是解析失败**，而不是返回空结果让模型以为「没搜到」。
+ * **明确说是解析失败**，而不是返回空结果——那在模型侧等同于没搜到。
  */
 export const webSearchTool: ToolSpec = {
   name: 'web_search',
@@ -207,7 +207,7 @@ export const webSearchTool: ToolSpec = {
     const query = String(args.query ?? '').trim()
     if (!query) return { status: 'failure', message: '缺少 query' }
     // 读不出整数就终止：`Math.min(20, NaN)` 是 NaN，`slice(0, NaN)` 是空数组，
-    // 那一路走完是一次「成功搜索，0 条结果」。
+    // 继续往下走就是一次「成功搜索，0 条结果」。
     const rawLimit = intArg(args.limit, 8)
     if (rawLimit === null) {
       return {

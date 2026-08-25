@@ -3,9 +3,9 @@
  *
  * 拆成一域一文件之后，「哪条路径归谁管」从一个 439 行函数里的顺序，变成了
  * 八个模块各自的 `return null`。这里锁住那条契约本身：
- * **`null` 只表示「不归我管」**，任何真实结果都必须是 `Response`。
+ * **`null` 只表示「不归本模块管」**，任何真实结果都必须是 `Response`。
  *
- * 一个域返回了 `null` 但其实已经做过副作用，是这套结构唯一会出的新错——
+ * 一个域返回了 `null` 但已经做过副作用，是这套结构唯一会出的新错——
  * 那会让请求继续往下走，被后面的域或 404 接管，而副作用已经发生了。
  *
  * 夹具用 `as unknown as ApiDeps`：这里挑的三条路由只碰 `ApiDeps` 里的几个字段，
@@ -88,7 +88,7 @@ describe('派发', () => {
   })
 
   /* 指了一个不存在的项目要 404，**不能静默回落到最近打开的那个**——
-     回落等于在用户以为是 A 的地方读写 B。 */
+     回落等于在用户选定 A 的位置上读写 B。 */
   test('?ws= 指到不存在的项目回 404', async () => {
     const res = await call('/api/workspace?ws=ws_nope')
     expect(res?.status).toBe(404)
@@ -219,7 +219,7 @@ describe('移除项目', () => {
     expect(await res?.json()).toEqual({ archived: 2 })
     expect(listConversations(d.store, oldId as never)).toHaveLength(0)
 
-    // 归档之后新建的一条照常出现——归档的是「当时那些」，不是这个项目本身
+    // 归档之后新建的一条照常出现——归档的是执行那一刻的那些，不是这个项目本身
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
   })
@@ -248,7 +248,7 @@ describe('移除项目', () => {
    *
    * **`QYWORK_HOME` 必须指到临时目录**：只给 name 那条会真的 mkdir，
    * 不改的话测试会往开发者真实的 `~/.qywork/workspaces/` 里堆文件夹——
-   * 这个仓库为「测试残留污染真实账本」已经付过一次代价。
+   * 「测试残留污染真实账本」在这个仓库里发生过。
    */
   describe('新建项目', () => {
     let home = ''
@@ -276,7 +276,7 @@ describe('移除项目', () => {
       expect((await stat(workspace.rootPath)).isDirectory()).toBe(true)
     })
 
-    test('重名不复用已有目录，加后缀 —— 那里可能是上一个同名项目的东西', async () => {
+    test('重名不复用已有目录，加后缀 —— 那里可能是上一个同名项目的内容', async () => {
       const d = deps()
       const a = (await (await post({ name: 'demo' }, d))?.json()) as {
         workspace: { rootPath: string }
@@ -293,7 +293,7 @@ describe('移除项目', () => {
       for (const name of ['../../etc', 'a/b', 'a\\b', '..', 'a:b', 'a?']) {
         expect((await post({ name }, d))?.status).toBe(422)
       }
-      // 建了一半再失败最难查，所以默认根下不该留下任何东西
+      // 建了一半再失败最难查，所以默认根下不该留下任何文件
       expect(await stat(join(home, 'workspaces')).catch(() => null)).toBe(null)
     })
 
@@ -352,7 +352,7 @@ describe('移除项目', () => {
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(onlyId)
   })
 
-  test('id 不存在回 404 —— 静默成功会让界面以为删掉了，刷新又回来', async () => {
+  test('id 不存在回 404 —— 静默成功时界面显示已删除，刷新又回来', async () => {
     const { d } = twoWorkspaces()
     const res = await call('/api/workspaces/ws_nope', { method: 'DELETE' }, d)
     expect(res?.status).toBe(404)
@@ -386,11 +386,11 @@ describe('出参形状', () => {
 /**
  * 模型目录端点（`api/conversations.ts` 的 `/api/models` 分支）。
  *
- * 它同时喂两处界面，而两处要的东西不一样：
+ * 它同时供两处界面使用，而两处要的字段不一样：
  * - 输入区的选择器要 `providers` —— **配置里真有的接口 × 模型**，第一层是接口。
  * - 设置页要 `library` —— 内置库，用来决定「加哪个模型」。
  *
- * 两者不能合成一个扁平表：合了就等于把「世上有哪些模型」当成「我能选哪些」，
+ * 两者不能合成一个扁平表：合了就等于把「有哪些模型」当成「当前能选哪些」，
  * 而选中一个没挂在任何接口下的模型，请求会按当前接口发出去。
  */
 describe('模型目录', () => {
@@ -473,7 +473,7 @@ describe('模型目录', () => {
    * **档位按这个接口的协议算。**
    *
    * 复现的是一个只在某些配置下才犯的形状：接口是「以 OpenAI 兼容协议经中转站调
-   * Claude」，目录里 claude-opus-5 的原生条目声明五档 effort，但兼容协议根本不发
+   * Claude」，目录里 claude-opus-5 的原生条目声明五档 effort，但兼容协议不发
    * Anthropic 那套思考字段。按原生条目报出去，界面就会画一个选了没反应的控件。
    */
   test('中转站以兼容协议调 Claude 时不报 Anthropic 的档位', async () => {
@@ -501,7 +501,7 @@ describe('模型目录', () => {
    * 这一侧只要键取错一维，**界面上能选哪几档就仍然按内置目录报**。
    *
    * 失败形状是「校准了但界面纹丝不动」：探测器写回的结论有生产者没消费者，
-   * 而两处口径不一致的后果是用户选不到一个其实调得动的档位。
+   * 而两处口径不一致的后果是用户选不到一个调得动的档位。
    */
   test('探测写回的档位覆盖内置目录', async () => {
     const d = deps()
@@ -658,8 +658,8 @@ describe('模型目录', () => {
   /**
    * **库里不带任何接口字段。**
    *
-   * 端点和协议是接口的属性。摆进模型库，「改一条模型参数」就会顺带改掉端点，
-   * 而那是另一件事——上一版正是这么把「加个模型」变成「别的模型突然连不上」的。
+   * 端点和协议是接口的属性。摆进模型库，「改一条模型参数」就会连带改掉端点，
+   * 而那是另一件事：加一个模型会让别的模型连不上。
    */
   test('库里没有端点、协议这类接口字段', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
@@ -746,7 +746,7 @@ describe('按 ?ws= 解析项目', () => {
       '/api/workspaces',
       {
         method: 'POST',
-        body: JSON.stringify({ path: 'C:/ws/根本没有这个目录' }),
+        body: JSON.stringify({ path: 'C:/ws/不存在的目录' }),
       },
       d,
     )
@@ -790,7 +790,7 @@ describe('按 ?ws= 解析项目', () => {
 /*
  * 工具清单下发什么。
  *
- * 锁的是「设置页拿不拿得到底层名与参数」——`ToolSpec` 上的东西被丢在服务端时，
+ * 锁的是「设置页拿不拿得到底层工具名与参数」——`ToolSpec` 上的字段被丢在服务端时，
  * 前端写了也显示不出来，而那种缺失在界面上只表现为「少了一栏」，不报任何错。
  *
  * `QYWORK_HOME` 指到临时目录：插件与 MCP 是三层作用域的，不隔离的话这条测试
@@ -856,7 +856,7 @@ describe('工具清单', () => {
     const row = (await tools()).find((t) => t.name === 'load_tool')
     expect(row?.source).toBe('builtin')
     expect(row?.params).toEqual([{ name: 'names', required: true }])
-    // 它不是常驻工具，用途里必须带上这条边界，否则这一页在说谎
+    // 它不是常驻工具，用途里必须带上这条边界，否则这一页与实际不符
     expect(row?.summary).toContain('超过阈值')
   })
 
@@ -902,7 +902,7 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(getConversation(d.store, c.id)?.title).toBe('改过的名字')
   })
 
-  /* 空名字在侧栏里会被兜底成「新对话」，用户会以为改名没生效。
+  /* 空名字在侧栏里会被兜底成「新对话」，界面上等同于改名没生效。
      所以回 422 且**不落盘**（校验先于落盘）。 */
   test('空标题回 422 且不落盘', async () => {
     const d = deps()

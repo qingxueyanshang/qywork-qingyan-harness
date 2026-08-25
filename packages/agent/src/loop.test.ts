@@ -13,7 +13,7 @@ import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase
 import { MAX_RESENDS, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
 import { ToolRegistry, type ToolSpec } from './registry.ts'
 
-/** 按脚本回放的假 adapter：每次 stream() 吐出预设的一轮。 */
+/** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0
   return {
@@ -91,10 +91,10 @@ function baseCtx(runId: string): ToolContextBase {
 
 describe('工具中途输出', () => {
   /**
-   * 回归：工具还在跑的时候，它吐的东西就要交出去。
+   * 回归：工具还在跑的时候，它的输出就要交出去。
    *
    * 这条测的是**活性**不是顺序：光断言「delta 排在 tool.finished 之前」在
-   * 攒到整波结束再排空的写法下同样成立。所以让工具吐完就卡住，
+   * 攒到整波结束再排空的写法下同样成立。所以让工具输出完就卡住，
    * 由测试看到那条 delta 之后才放行——攒批的写法在这里会直接停住，
    * 表现为超时失败。
    */
@@ -157,7 +157,7 @@ describe('工具中途输出', () => {
    * 回归：中途输出要认得出是哪张卡片的。
    *
    * 前端拿 stepId 在 transcript 里找那一条工具卡（`connection.ts` 的
-   * `find(t => t.id === ev.stepId)`），空串谁也匹配不上——整条通道于是静默丢弃，
+   * `find(t => t.id === ev.stepId)`），空串谁也匹配不上——整条通道因此静默丢弃，
    * 而事件照发、界面照旧空白，看起来像命令没有输出。
    */
   test('中途输出带的 stepId 就是这次调用那一条', async () => {
@@ -202,7 +202,7 @@ describe('工具中途输出', () => {
     expect(delta?.stepId).toBe(started!.stepId)
   })
 
-  /** 中止仍然要抛出去，且抛之前先把已经吐出来的排空——那些是真发生过的输出。 */
+  /** 中止仍然要抛出去，且抛之前先把已经产出的排空——那些是真发生过的输出。 */
   test('中止不吞掉已经产出的中途输出', async () => {
     const abort = new AbortController()
     const registry = new ToolRegistry()
@@ -255,7 +255,7 @@ describe('流式通道的顺序', () => {
    * 并成「一条思考 + 一条正文」的后果不是少两行，是 `seq` 表达不出真实顺序——
    * 实测形状：中转站分三次给推理摘要，落库出来是
    * `**Inspecting…****Running tests…**` 两段粘在一起，而它们本来分开到达。
-   * 前端据 `seq` 重放，于是刷新一次顺序就和刚才看到的不一样。
+   * 前端据 `seq` 重放，因此刷新一次顺序就和刚才看到的不一样。
    */
   test('通道来回切换就来回开新 step，正文与思考各自成段', async () => {
     const opened: string[] = []
@@ -573,7 +573,7 @@ describe('权限拒绝', () => {
  * 流空闲超时。
  *
  * `stream_idle_timeout` 必须真的有人发。没有生产者的话，provider 侧抖一下 run
- * 就那么挂着，既不出错也不结束，用户看到的是一个永远转圈的界面——实测撞到过。
+ * 就那么挂着，既不出错也不结束，界面持续转圈。
  */
 describe('流卡死要有终态，不能无限期挂着', () => {
   /** 吐第一个事件之后就沉默，直到被 abort。 */
@@ -670,9 +670,9 @@ describe('上下文分组占用', () => {
    * 回归测试：**压缩之后 breakdown 必须跟着变**。
    *
    * `breakdownOf` 算的是 `req.messages`，而那是 `compaction.project()` 的产物。
-   * 如果哪天有人图省事改成「直接读 input.history」，这条会红——
-   * 而界面上的表现是：压缩明明生效了（模型确实看不到远期历史了），
-   * 占用面板却一动不动，用户会以为压缩没起作用，然后反复点压缩。
+   * 如果哪天有人改成「直接读 input.history」，这条会红——
+   * 而界面上的表现是：压缩生效了（模型确实看不到远期历史了），
+   * 占用面板却一动不动，界面上等同于压缩没生效，用户会反复点压缩。
    */
   test('压缩投影之后，历史那一桶让位给摘要桶', async () => {
     const registry = new ToolRegistry()
@@ -870,7 +870,7 @@ describe('上下文分组占用', () => {
    *
    * 复现的形状取自实测：`write_file` 回一句「创建 src/car.js」、没有 result。
    * 信封按 `estimateJson`（2 字符/token）量而整条按 `estimateText`（4 字符/token）
-   * 量时，信封虚高一倍，差额从正文里扣到负数、被 `Math.min` 夹成零——面板于是
+   * 量时，信封虚高一倍，差额从正文里扣到负数、被 `Math.min` 夹成零——面板因此
    * 读作「这次调用没带回任何正文」。同一条会话 327 次调用里 167 条是这个形状，
    * 上面这句 summary 就是其中一种。
    *
@@ -933,7 +933,7 @@ describe('上下文分组占用', () => {
 describe('原地打转', () => {
   /**
    * 复现要挡的形状：模型用一模一样的参数反复调同一个只读工具，拿到一模一样的
-   * 结果。之前这会一路烧到 `max_steps`——几十轮 provider 往返，最后报一个
+   * 结果。不挡的话它会一直跑到 `max_steps`——几十轮 provider 往返，最后报一个
    * 「已达步数上限」，而那个原因是错的：多给一百步也一样。
    */
   test('同样的调用同样的结果三轮之后停下，stopReason=no_progress', async () => {
@@ -955,7 +955,7 @@ describe('原地打转', () => {
       },
     })
 
-    // 脚本给足十轮，如果判定没生效它会一路跑完。
+    // 脚本给足十轮，如果判定没生效它会全部跑完。
     const turns = Array.from({ length: 10 }, () => [call('stuck')])
     const loop = new AgentLoop({
       adapter: fakeAdapter(turns),
@@ -1115,7 +1115,7 @@ describe('effort 传到请求上', () => {
 /**
  * 一轮的花费带着它自己的币种。
  *
- * 币种写死美元不会让任何东西报错——`cost` 仍然是个数字、界面仍然画得出来，
+ * 币种写死美元不会触发任何报错——`cost` 仍然是个数字、界面仍然画得出来，
  * 只是 ¥ 会显示成 $，差七倍。这类错误只能靠这种测试挡。
  */
 describe('花费带币种', () => {
@@ -1301,8 +1301,8 @@ describe('上下文读数：一把尺', () => {
  *
  * 放它进去就会开出一条 tool step、发一条 `tool.started`，界面上多一张既没有动作、
  * 也什么都没做的卡片，而标题只能编（「读取<工具名>」或「未知工具」都是在给一个
- * 不存在的东西造词条）。注册表是工具的唯一权威：名字不在表里的不是工具，
- * 是 provider 违反了我们下发的工具表。
+ * 不存在的工具造词条）。注册表是工具的唯一权威：名字不在表里的不是工具，
+ * 是 provider 违反了下发的工具表。
  *
  * 但结果必须回给模型：provider 的契约是每个 tool_call 都要有一条对应 id 的
  * tool 结果，少一条下一轮直接 400。
@@ -1321,7 +1321,7 @@ describe('注册表是工具的唯一权威', () => {
     fn: async () => ({ status: 'success', message: 'ok' }),
   })
 
-  test('胡诌的工具名不产生工具卡，也不产生 step', async () => {
+  test('编造的工具名不产生工具卡，也不产生 step', async () => {
     const registry = new ToolRegistry()
     registry.register(realSpec('read_thing'))
 
@@ -1349,7 +1349,7 @@ describe('注册表是工具的唯一权威', () => {
     // 真工具那条必然有动作——挡掉之后下游不再需要任何兜底。
     expect(started[0]?.type === 'tool.started' && started[0].action.kind).toBe('read')
 
-    // 这一轮照常收尾，不因为一次胡诌就报错中断。
+    // 这一轮照常收尾，不因为一次编造的名字就报错中断。
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
@@ -1414,7 +1414,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
    * 按脚本决定每次 `stream()` 怎么收场。
    *
    * `'break'` 与 `'break-after-text'` 的区别就是重发的那条判据：前者 provider
-   * 一个事件都没回来（重发无痕），后者已经吐了字（重发会让用户看到两段不一样的话）。
+   * 一个事件都没回来（重发无痕），后者已经输出过正文（重发会让用户看到两段不一样的话）。
    */
   function scriptedAdapter(
     script: (
@@ -1437,7 +1437,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
         if (act === 'break' || act === 'break-after-text' || act === 'break-after-thinking') {
           if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
           if (act === 'break-after-thinking')
-            yield { type: 'thinking_delta', delta: '死掉那段思考' }
+            yield { type: 'thinking_delta', delta: '失败那段思考' }
           throw new ProviderError({
             code: 'network_error',
             message: '连接被断开',
@@ -1502,7 +1502,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   test('断流必须落终态：不知道 provider 收没收到就记 uncertain', async () => {
     const { rec } = await collect(scriptedAdapter(['break', 'ok']))
 
-    // 第一行是断掉那次。以前这条路径压根不 settle，账本里 9 行永久 in_flight。
+    // 第一行是断掉那次。以前这条路径不 settle，账本里 9 行永久 in_flight。
     expect(rec.settled[0]).toEqual({ status: 'uncertain', errorCode: 'network_error' })
     expect(rec.settled[1]?.status).toBe('received')
   })
@@ -1510,7 +1510,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   test('provider 明确答复过就是 rejected，不是 uncertain', async () => {
     const { rec } = await collect(scriptedAdapter(['reject']))
 
-    // 有 HTTP 状态码 = 它回绝了，我们知道请求到了。这条与「连不上」必须分开记，
+    // 有 HTTP 状态码 = 它回绝了，请求确实到达。这条与「连不上」必须分开记，
     // 两者差的是计费责任。
     expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
   })
@@ -1549,7 +1549,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   /*
    * ── 断在思考里 ──
    *
-   * 原始失败形状抄自 2026-08-22 对 `opencode.ai/zen/go/v1` 的实测：11/11 的断流
+   * 原始失败形状取自 2026-08-22 的一次实测：11/11 的断流
    * 样本正文 0 字、tool_calls 0 片段，全部断在 reasoning 中途。半截思考不进模型
    * 视图，所以这一档照样属于「模型可见输出为零」，该重发。
    */
@@ -1562,14 +1562,14 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
-  test('死掉那次的思考 step 落失败终态——不落就会被投影回传给 provider', async () => {
+  test('失败那次的思考 step 落失败终态——不落就会被投影回传给 provider', async () => {
     const { rec } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
 
     expect(rec.thinking).toHaveLength(1)
     expect(rec.failed).toEqual(rec.thinking)
   })
 
-  test('重发后新思考另开一条 step，不拼进死掉那条', async () => {
+  test('重发后新思考另开一条 step，不拼进失败那条', async () => {
     // 两次都断：第二次的思考必须落在一条新 step 上。`open` 不复位的话
     // `stepFor` 会命中旧 id，两段无关生成被 `appendText` 拼成一条。
     const { rec } = await collect(
@@ -1649,7 +1649,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   })
 })
 /**
- * 停止必须能把一轮从**卡住的工具**上拽回来。
+ * 停止必须能让一轮从**卡住的工具**上返回。
  *
  * abort 只是置一个信号，等的人不看它就等于没停。这条锁的是：即使工具永远不返回，
  * 点停止之后这一轮也在毫秒级落终态、并且落的是 `user_interrupt` 而不是红色的
@@ -1788,7 +1788,7 @@ describe('provider 说要调工具但一条都没解析出来', () => {
 describe('锚点的信封校验', () => {
   /**
    * 复现的是账本里查不出来的那种偏差：装完一个大 MCP 之后的第一次发送，
-   * 占用还按上一次真值算，于是压缩该触发而没触发。
+   * 占用还按上一次真值算，因此压缩该触发而没触发。
    *
    * 判据是**工具表变了锚点就作废**，作废的表现是读数从 `actual` 掉回 `estimated`。
    */

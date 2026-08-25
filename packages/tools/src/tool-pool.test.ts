@@ -3,7 +3,7 @@
  *
  * 覆盖范围：`tool-pool.ts` 全部。
  *
- * 锁的是**池子里的东西真的没进请求**：这一条一旦反过来，表现是账单照旧
+ * 锁的是**池子里的工具真的没进请求**：这一条一旦反过来，表现是账单照旧
  * 而不是报错——按需加载做了等于没做，谁都不会发现。
  */
 
@@ -73,7 +73,7 @@ describe('待加载池', () => {
 
     expect(out.status).toBe('success')
     expect(registry.schemas().map((s) => s.name)).toEqual(['load_tool', 'mcp__demo__a'])
-    // 装过的不再列进尾区清单——再列一遍会让模型以为还得装一次。
+    // 装过的不再列进尾区清单——再列一遍等于提示模型再装一次。
     expect(pool.index().map((t) => t.name)).toEqual(['mcp__demo__b'])
   })
 
@@ -105,7 +105,7 @@ describe('待加载池', () => {
     expect(again.message).toContain('本来就在工具表里')
   })
 
-  /** 只说「找不到」的话模型只能瞎猜；给候选它下一轮就能自己修正（同 `read_skill`）。 */
+  /** 只说「找不到」的话模型只能猜；给候选它下一轮就能自己修正（同 `read_skill`）。 */
   test('名字写错时列出可加载的名字', async () => {
     const { spec } = pooled(['mcp__demo__search'])
     const out = await spec.fn({ names: ['mcp__demo__serach'] }, ctx())

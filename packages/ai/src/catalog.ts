@@ -21,7 +21,7 @@ import type {
  *
  * **币种是这条数据的一部分。** 阿里 / 月之暗面 / 智谱三家官网就是按人民币标价的，
  * 把 ¥6 当成 $6 会让账面差七倍。所以带上 `currency`，由消费方决定怎么显示、
- * 要不要合计——而不是在这里偷偷换算成一个假的美元数字。
+ * 要不要合计——而不是在这里换算成一个没有出处的美元数字。
  */
 export interface Pricing {
   input: number
@@ -45,7 +45,7 @@ export interface ModelSpec {
    * 厂商 id（`VENDORS` 里的一条）。`null` = 未收录，来自用户自建端点。
    *
    * 显式写在每条上，不按 id 前缀推断——L 那条规矩：任何「从名字推断行为」
-   * 的便利都要先问反例是什么，而中转站的模型名可以是任何东西。
+   * 的便利都要先问反例是什么，而中转站的模型名可以是任意字符串。
    */
   vendor: string | null
   contextWindow: number
@@ -87,7 +87,7 @@ export interface ModelSpec {
    * **`qy probe` 不探这一项。** 探针只能发几次请求看命中，而不确定的路线上
    * 那是随机结果——探出「可用」再写回目录，是把一次运气固化成结论。
    *
-   * **发了不等于会命中。** 2026-08-19 在 `direct.wawazz.xyz` 上配对实测：
+   * **发了不等于会命中。** 2026-08-19 在一个中转端点上配对实测：
    * 同一时间窗逐轮交替发有键/无键各 12 轮，无键 5/12 真命中、有键 0/12，
    * 换个时间窗又反过来。缓存路线本身不确定时，这个字段盖不住——
    * 它只是协议规定的做法，不是不命中的解药。
@@ -145,10 +145,9 @@ export interface Vendor {
 /**
  * `defaultBaseUrl` **只填有实据的**。
  *
- * Anthropic 走 SDK 自带默认；DeepSeek 那条来自这台机器上跑通的配置；
- * OpenAI 那条是本仓 `openai-responses.ts` 里的常量。其余六家两个仓库里
- * 都没有落过地，所以留空——凭印象写一个域名，错了的表现是「填好了却连不上」，
- * 比空着要人自己填糟得多。
+ * Anthropic 走 SDK 自带默认；DeepSeek 那条来自本机跑通的配置；OpenAI 那条是
+ * `openai-responses.ts` 里的常量。其余六家没有实据，所以留空——凭印象写一个域名，
+ * 错了的表现是「填好了却连不上」，比空着要人自己填糟得多。
  */
 export const VENDORS: readonly Vendor[] = [
   {
@@ -202,11 +201,11 @@ export const VENDORS: readonly Vendor[] = [
  *
  * **达到阈值之后整条请求都按高档算，不是只算超出的那部分。**
  * xAI 的原话：一条 21 万 token 的请求不是「20 万按标准价 + 1 万按高价」，
- * 而是整条按高价。按超出部分算会把账记少一半，而少记的方向没有任何东西会报错。
+ * 而是整条按高价。按超出部分算会把账记少一半，而少记的方向不会有任何报错。
  *
  * **高档单价逐字抄厂商的第二行，不按倍率推算。** 各家的倍率不统一：
  * OpenAI 与 Google 的输入是 2 倍而输出只有 1.5 倍，xAI 才是整齐的 2 倍。
- * 存一个倍率就得自己算比值，算错了没有任何东西会提示。
+ * 存一个倍率就得自己算比值，算错了不会有任何提示。
  *
  * 阈值比的是**提示词**大小（未命中输入 + 命中输入），不含输出——
  * 计价发生在请求发出之后，那时输出还没产生，厂商也是按提示词分档的。
@@ -235,11 +234,9 @@ export interface LongContextTier {
  * 而错的表现只是账本上一个偏低或偏高的数字，没有任何地方会报错。
  * 所以录进来的时候就换算成 UTC，`priceAt` 只认 `getUTCHours()`。
  *
- * ## 为什么记「高峰窗口」而不是「折扣窗口」
- *
- * 照抄厂商的说法。DeepSeek 的原话是「高峰时段为北京时间 9:00-12:00、14:00-18:00
- * （其余为空闲时段）」——记高峰是逐字转录，记折扣就得自己把补集算一遍，
- * 而那一步算错了没有任何东西会提示。
+ * **记「高峰窗口」而不是「折扣窗口」。** 照抄厂商的说法。DeepSeek 的原话是「高峰时段为北京时间
+ * 9:00-12:00、14:00-18:00 （其余为空闲时段）」——记高峰是逐字转录，记折扣就得自己把补集算一遍，而
+ * 那一步算错了不会有任何提示。
  */
 export interface OffPeakDiscount {
   /** 折扣系数，乘在每一档单价上。DeepSeek 空闲时段恰好是高峰的一半，即 0.5。 */
@@ -364,7 +361,7 @@ const round = (n: number) => Math.round(n * 1e6) / 1e6
 
 /**
  * Sonnet 5 的 $2/$10 是限时引入价，2026-08-31 之后回到 $3/$15。
- * 按当前时间取值，不写死——否则账单会在九月一号那天悄悄算错。
+ * 按当前时间取值，不写死——否则账单会从九月一号起静默算错。
  */
 const SONNET_5_INTRO_ENDS = Date.UTC(2026, 7, 31, 23, 59, 59)
 
@@ -376,7 +373,7 @@ function sonnet5Pricing(now = Date.now()): Pricing {
  * Gemini 3.6 / 3.7 Flash 的促销价，2026-12-31 之后回到 $1.50 / $7.50 / $0.15。
  *
  * 与 `sonnet5Pricing` 同一个形状、同一条理由：**按当前时间取值，不写死**，
- * 否则账单会在一月一号那天悄悄算错。
+ * 否则账单会从一月一号起静默算错。
  */
 const GEMINI_FLASH_PROMO_ENDS = Date.UTC(2026, 11, 31, 23, 59, 59)
 
@@ -474,7 +471,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
  * DeepSeek。
  *
  * 口径与 Anthropic 有三处实质差异，都体现在下面的数字里：
- * - **按人民币标价**（官方价目页就是 ¥）。上一版把它记成美元，数字差着七倍。
+ * - **按人民币标价**（官方价目页就是 ¥）。记成美元的话数字差七倍。
  * - 缓存**写入不收费**（自动前缀缓存，没有 Anthropic 那样的 1.25x 写入溢价），
  *   所以 cacheWrite 两档都是 0。
  * - `input` 填的是**缓存未命中**单价；命中部分走 cacheRead。适配器已把
@@ -568,8 +565,8 @@ function deepseekCatalog(): ModelSpec[] {
   /**
    * Responses 协议下的同一批模型，**能力不同所以单独一条**。
    *
-   * 差别不是「协议名不一样」，是**我们能不能控制它思考**：
-   * - 走 chat/completions 时客户端根本不发思考相关字段，无从控制 → `thinking: 'none'`。
+   * 差别不是「协议名不一样」，是**思考能不能被控制**：
+   * - 走 chat/completions 时客户端不发思考相关字段，无从控制 → `thinking: 'none'`。
    * - 走 Responses 时 `reasoning.effort:'none'` 能真的关掉 → `thinking: 'reasoning_effort'`。
    *
    * `thinksByDefault` 两边都是 **true**：省略字段它自己就思考，`qy probe` 实测过。
@@ -591,7 +588,7 @@ function deepseekCatalog(): ModelSpec[] {
      */
     reasoningEcho: 'reasoning_text',
     thinksByDefault: true,
-    // **本仓那次实测是在这条协议下做的，不被上面那条改动覆盖。**
+    // **这一格的实测是在这条协议下做的，与上面 chat/completions 那条各自独立。**
     // Responses 只有 `reasoning.effort` 一个旋钮，没有 DeepSeek 那个 `thinking`
     // 开关可配；实测四档全部返回 200 而 reasoning_tokens 都是 899~900，
     // 一档都没被采纳。chat/completions 那边两个字段一起发是另一回事，
@@ -612,8 +609,8 @@ function deepseekCatalog(): ModelSpec[] {
 /**
  * 未知模型的保守默认值。
  *
- * BYOK 场景下用户可能填任何东西（中转站的自定义名、本地 ollama 模型、明天才发布的
- * 模型）。这里给一组不会把请求搞崩的默认值：不声明 thinking、不声明 effort、
+ * BYOK 场景下用户可能填任意模型名（中转站的自定义名、本地 ollama 模型、明天才发布的
+ * 模型）。这里给一组不会让请求失败的默认值：不声明 thinking、不声明 effort、
  * 不声明采样参数限制、计价为 0（前端显示「未知计价」而不是显示一个错的数字）。
  */
 export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
@@ -621,7 +618,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     id,
     displayName: id,
     provider,
-    // 未收录 = 没有厂商。别按 id 猜——中转站的模型名可以叫任何东西。
+    // 未收录 = 没有厂商。别按 id 猜——中转站的模型名可以是任意字符串。
     vendor: null,
     /*
      * **这一条必须被消费。** 下面那些值是「没测」，不是「不支持」——
@@ -630,10 +627,10 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 具体后果有两条，都完全静默：
      *
      * 1. `thinking: 'none'` → `buildReasoning` 整个省略 reasoning 字段，
-     *    于是**这个模型永远不会思考**。用户配了 `gpt-5.6` 期待思考，
+     *    因此**这个模型永远不会思考**。用户配了 `gpt-5.6` 期待思考，
      *    拿到的是 `reasoning_tokens: 0`，没有任何报错。
-     * 2. `pricing` 全零 → `qy usage` 报 $0。**账本在说谎**，
-     *    而账本正是用来发现「怎么突然变贵了」的那个东西。
+     * 2. `pricing` 全零 → `qy usage` 报 $0。**账本与实际不符**，
+     *    而账本正是用来发现「怎么突然变贵了」的那份记录。
      *
      * 保守默认本身是对的（乱发 reasoning 字段会让不支持的端点每次 400），
      * 错的是不说。`configNotices` 据这个字段提醒，出口是 `qy probe --save`。
@@ -679,7 +676,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * 其余七家。
  *
  * 窗口、默认最大输出、四档价、思考档位是 2026-07-30 的一份 seed，**没有在本仓
- * 逐条实测过**。改价要拿厂商当时的价目表核，别凭印象改。
+ * 逐条实测过**。改价要拿厂商现行价目表核，别凭印象改。
  *
  * `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
  * 多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
@@ -689,7 +686,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
  * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
  *
- * ## 三个不要加回来的能力位
+ * **三个不要加回来的能力位。**
  *
  * `vision` / `rejectsSamplingParams` / `maxCacheBreakpoints`：三个都会是零消费者。
  *
@@ -699,7 +696,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * 比不做门控更糟。**
  *
  * `maxCacheBreakpoints` 只有两个取值：Anthropic 恒 4、兼容协议恒 0。
- * 那是**协议常量**不是模型能力，而我们只用 2 个断点——一个逐模型不变的字段，
+ * 那是**协议常量**不是模型能力，而本仓只用 2 个断点——一个逐模型不变的字段，
  * 放在逐模型的目录里就是误导。断点数写在用它的那个适配器里。
  */
 function openAiCompatCatalog(now: number): ModelSpec[] {
@@ -813,8 +810,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
      * | gemini-3.5-flash | 1.50 | 9.00 | 0.15 | |
      *
-     * **上一版这三条价格全是错的**（3.5/3.6 Flash 记成 0.3/2.5，Pro 缺长上下文档），
-     * 而且 id 也不对：官方叫 `gemini-3.1-pro-preview`。
+     * **这三条容易记错**：Flash 不是 0.3/2.5，Pro 有长上下文档，
+     * 而且 Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
      * flash 两款厂商还给了一档 `minimal`。它不在 EffortLevel 词表里，
      * **不为它扩词表**——扩了就得让所有消费方都认一个只有一家用的档，
@@ -981,9 +978,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | glm-4.7 | 0.6 | 0.11 | 2.2 |
      *
      * **这是国际站（Z.ai）的美元价目。** 智谱国内站（open.bigmodel.cn）按人民币
-     * 另有一套，那个页面是前端渲染的，抓不到正文。上一版这里填的是一组
-     * 没有出处的人民币数字——有出处的美元价至少对一个端点是准的，
-     * 用国内站的人可以在模型库里改成自己那套。
+     * 另有一套，那个页面是前端渲染的，抓不到正文。**不要在这里填没有出处的
+     * 人民币数字**：有出处的美元价至少对一个端点是准的，用国内站的人可以在
+     * 模型库里改成自己那套。
      *
      * glm-5.3 的窗口 1M / 最大输出 128K 与三档 `reasoning_effort`（默认 max、
      * 思考关不掉）来自它的模型规格页。5.2 的档位面没有出处，原样保留。
@@ -1123,12 +1120,10 @@ export function builtinCatalog(now = Date.now()): ModelSpec[] {
 /**
  * 查目录。
  *
- * ## 为什么先按 `(id, provider)` 精确匹配
- *
- * **同一个模型在不同协议下能力不一样。** 实测（2026-08）`deepseek-v4-flash`：
- * 走 chat/completions 时我们根本不发思考相关字段，思考无从控制；
- * 走 Responses 时 `reasoning.effort:'none'` 能真的关掉它。
- * 一个条目描述不了两种协议，所以目录允许同 id 多条、按 provider 区分。
+ * **先按 `(id, provider)` 精确匹配：同一个模型在不同协议下能力不一样。** 实测（2026-08）
+ * `deepseek-v4-flash`：走 chat/completions 时客户端不发思考相关字段，思考无从控制；走 Responses
+ * 时 `reasoning.effort:'none'` 能真的关掉它。一个条目描述不了两种协议，所以目录允许同 id 多条、按
+ * provider 区分。
  *
  * 只按 id 找（`.find(m => m.id === id)`）的话，两条里永远只命中先声明的那条，
  * 而「先声明的那条」是个跟正确性毫无关系的顺序。
@@ -1154,7 +1149,7 @@ export function lookupModel(id: string, provider: ProviderKind, now = Date.now()
  *
  * 存在的理由是 `lookupModel` 的那条兜底：目录里没有「Claude + 兼容协议」的条目时，
  * 它保留 Claude 的能力约束、只改写 `provider`——而注释里已经写明**这只保留约束、
- * 不保证能力属实**。于是 `effortLevels` 还是那五档，但兼容协议根本不发 Anthropic
+ * 不保证能力属实**。因此 `effortLevels` 还是那五档，但兼容协议不发 Anthropic
  * 的 `output_config.effort`。界面照着那五档画一个 chip，选了没有任何反应。
  *
  * 判据按协议分：

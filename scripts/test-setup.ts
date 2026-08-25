@@ -9,9 +9,7 @@
  *
  * 只拦 `.tsx`：`.ts` 里没有 JSX，交给 Bun 自己的转译更快。
  *
- * ## 解析条件
- *
- * `bun test` 必须带 `--conditions browser`（`package.json` 的 `test` 脚本里写着）。
+ * **解析条件。** `bun test` 必须带 `--conditions browser`（`package.json` 的 `test` 脚本里写着）。
  * solid-js 的 `exports` 在 node 条件下指向服务端那份构建，`render()` 一调就抛
  * 「Client-only API called on the server side」。bunfig 里设不了这个，只能在命令行上给。
  *

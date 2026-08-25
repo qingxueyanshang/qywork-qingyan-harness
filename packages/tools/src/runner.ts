@@ -1,36 +1,25 @@
 /**
  * 命令跑在一个**先于监听端口出生**的子进程里。
  *
- * ## 为什么必须这样
+ * **为什么必须这样。** Windows 上句柄是继承的：`qy serve` 绑好端口之后再 spawn 出去的任何进程，都会
+ * 拿到那个监听 socket 的一份句柄。命令自己派生的后台服务（`run.ps1 start` 那种）活得比 sidecar 久，
+ * 因此 **sidecar 退出之后端口仍然被持有**——连接表里记的还是那个已经退出的 PID，看着像「没人占着
+ * 却起不来」。
  *
- * Windows 上句柄是继承的：`qy serve` 绑好端口之后再 spawn 出去的任何进程，都会
- * 拿到那个监听 socket 的一份句柄。命令自己派生的后台服务（`run.ps1 start` 那种）
- * 活得比 sidecar 久，于是 **sidecar 退出之后端口仍然被攥着**——连接表里记的还是
- * 那个已经退出的 PID，看着像「没人占着却起不来」。
+ * 实测过六种写法（detached、windowsHide、`node:child_process`、`node:http` 监听、`reusePort`），
+ * 只要监听在前、派生在后就一律被占；**先 spawn 子进程再开始监听是唯一成立的做法**
+ * （逐条见 `docs/plans/2026-08-18-命令挂在谁底下.md`）。
  *
- * 本机实测（Bun 1.3.14 / Windows 11，父进程先 `Bun.serve` 再 spawn，父退出后看端口）：
+ * 这个模块就是那一行：**在 `serve()` 之前**起一个 runner，之后所有 `run_command` 都由它来 spawn。
+ * 它出生时监听 socket 还不存在，所以它和它的子孙手里都没有那份句柄，谁活多久都不会把端口带走。
  *
- * ```
- * 直接 spawn 一个活着的子进程（powershell / node / bun）  可绑，没继承
- * 命令里再派生一层（cmd /c ping、bash -lc "… &"）        被占，继承了
- * node:child_process、detached、windowsHide              一样被占
- * Bun.serve 换成 node:http 的监听                        一样被占
- * reusePort 想抢回来                                     抢不回来
- * 先 spawn 一个子进程、再开始监听                        可绑，没继承   ← 唯一成立的做法
- * ```
- *
- * 最后一行就是这个模块：**在 `serve()` 之前**起一个 runner，之后所有 `run_command`
- * 都由它来 spawn。它出生时监听 socket 还不存在，所以它和它的子孙手里都没有那份句柄，
- * 谁活多久都不会把端口带走。
- *
- * ## 边界
- *
+ * **边界**：
  * - **没有 runner 就直接 spawn**（`qy exec` 一次性执行、测试进程都是这条）。
- *   那些进程里根本没有监听 socket，没有可继承的东西，不需要绕这一圈。
+ *   那些进程里没有监听 socket，没有可继承的句柄，不需要绕这一圈。
  * - runner 只转发字节，不解析命令、不判权限：裁决在 `policy.ts`，沙箱在
  *   `spawnGuarded`，这里只负责「谁是父进程」。
- * - 它死了就直接抛，不自动重启：重启一次意味着「哪些命令还在跑」这本账要跟着重建，
- *   而那是第二套生命周期。跑不了命令时说出来，比悄悄换一条路诚实。
+ * - 它退出就直接抛，不自动重启：重启一次意味着「哪些命令还在跑」这本账要跟着重建，
+ *   而那是第二套生命周期。跑不了命令时直接报错，不静默换一条路。
  */
 
 /** `collectProcess` / `killTree` 真正用到的那几样。Bun 的 Subprocess 天然满足。 */
@@ -147,7 +136,7 @@ export function startCommandRunner(argv: string[]): CommandRunner {
         /*
          * **退出不关流。**
          *
-         * 关掉的话读端立刻拿到 EOF，于是「进程退出了但后代仍扣着写端」这件事
+         * 关掉的话读端立刻拿到 EOF，因此「进程退出了但后代仍扣着写端」这件事
          * 在直接 spawn 那条路上看得见、在 runner 这条路上永远看不见——
          * `collectProcess` 的 `backgroundHeld` 因此恒为 false，
          * 而它是「后台还留着进程在跑」这句话唯一的来源。
@@ -196,7 +185,7 @@ export function startCommandRunner(argv: string[]): CommandRunner {
       let exitCode: number | null = null
       const pidReady = Promise.withResolvers<number>()
       const exited = Promise.withResolvers<number>()
-      // 退出码不是每个调用方都会等（起完就不管的那种）。runner 挂掉时这里会 reject，
+      // 退出码不是每个调用方都会等（起完就不管的那种）。runner 退出时这里会 reject，
       // 而没有处理器的 rejection 会把整个进程带下去，所以先挂一个空的。
       void exited.promise.catch(() => {})
       pending.set(id, {
@@ -271,7 +260,7 @@ export function runCommandRunner(): void {
 
   /*
    * 父进程没了就跟着退。**不杀已经在跑的那些命令**——它们派生的服务是用户要的
-   * 东西，而且手里没有那份监听句柄，留着不会占住任何端口。
+   * 进程，而且手里没有那份监听句柄，留着不会占住任何端口。
    *
    * 两条判据都要：IPC 通道关闭是正常退出路径；父进程被强杀时那个事件不一定到，
    * 所以再盯一遍 pid。
@@ -315,7 +304,7 @@ export function runCommandRunner(): void {
       } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>)
       /*
        * **脱开 runner 的生命周期。** 不 unref 的话 runner 退出时 Bun 会把它起的
-       * 子进程一并带走——而那些正是「命令留下的服务」，用户要它们活着。
+       * 子进程一并带走——而那些正是「命令留下的服务」，用户要它们继续运行。
        * runner 退出只该带走那份监听句柄，不该带走任何进程。
        */
       proc.unref()

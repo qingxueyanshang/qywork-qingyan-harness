@@ -5,23 +5,19 @@
  *
  *   DEEPSEEK_API_KEY=sk-... bun run scripts/smoke-responses.ts
  *
- * ## 为什么单测不够
- *
- * 单测（含 `openai-responses.stream.test.ts` 里的 fixture server）锁的是
- * **我们对报文的理解**。它锁不住「供应商实际发什么、实际要什么」——
- * 而这一版之前恰好两条都猜错了：
+ * **为什么单测不够。** 单测（含 `openai-responses.stream.test.ts` 里的 fixture server）锁的是
+ * **本仓对报文的理解**。它锁不住「供应商实际发什么、实际要什么」——
+ * 这两条都出过错：
  *
  * - 只认 `response.reasoning_summary_text.delta`，DeepSeek 发的是
  *   `response.reasoning_text.delta`。后果**静默**：思考内容全丢，不报错。
  * - 不回传 `reasoning_text`。后果是**第二轮** 400，第一轮完全正常。
  *
- * 第二条尤其说明问题：它只在「调了工具 → 把结果喂回去」时发作，
- * 也就是 agent 主循环的每一轮。**任何单轮冒烟都测不出来**，
+ * 第二条尤其说明问题：它只在「调了工具 → 把结果回传」时发作，
+ * 即 agent 主循环的每一轮。**任何单轮冒烟都测不出来**，
  * 所以下面第 2 项必须真的走完两轮，不能只发一次请求就算过。
  *
- * ## 它验的是什么、不验什么
- *
- * 验我们的客户端能不能跟一个真实的 Responses 端点对上。
+ * **它验的是什么、不验什么。** 验本仓的客户端能不能跟一个真实的 Responses 端点对上。
  * **不验** DeepSeek 的服务端行为对不对，也不代表 OpenAI 自家端点同样通过——
  * 那条路仍然没有跑过，如实记在 ROADMAP。
  */
@@ -32,10 +28,8 @@ import { buildAdapter, lookupModel } from '@qywork/ai'
 /**
  * 一个待测端点。
  *
- * ## 为什么要能配两个
- *
- * 说 Responses 协议的不止一家，而它们在推理这块**不是一套东西**（ROADMAP §22.1）：
- * OpenAI 发 `reasoning_summary_text.delta`、不要求回传；
+ * **为什么要能配两个。** 说 Responses 协议的不止一家，而它们在推理这块**行为不同**
+ * （ROADMAP §22.1）：OpenAI 发 `reasoning_summary_text.delta`、不要求回传；
  * DeepSeek 发 `reasoning_text.delta`、不回传就 400。
  *
  * 适配器为此同时认两个事件名、并用「收到过 `reasoning_text` 才补回传」的
@@ -43,7 +37,7 @@ import { buildAdapter, lookupModel } from '@qywork/ai'
  * 另一条分支永远没有被验证过，而它坏掉的表现是静默丢失全部思考内容。
  *
  * 所以同一套断言对两种实现各跑一遍。这是目前唯一能自动防住
- * 「修了一边坏了另一边」的东西。
+ * 「修了一边坏了另一边」的手段。
  */
 interface Endpoint {
   label: string
@@ -55,10 +49,10 @@ interface Endpoint {
 /*
  * 这里**没有** `dialect` 字段，是刻意的。
  *
- * 第一版写了一个 `dialect: 'reasoning_text' | 'summary'`，想用它决定
- * 反证那一项该期待 400 还是 200。但适配器把两种实现的推理增量都归一成了
- * `thinking_delta`，脚本这一侧**根本分辨不出**当前端点是哪种——
- * 那个字段只能靠手填，而手填的「预期」和实测不符时，人会去改字段而不是查代码。
+ * 不要加一个 `dialect: 'reasoning_text' | 'summary'` 去决定反证那一项该期待 400
+ * 还是 200：适配器把两种实现的推理增量都归一成 `thinking_delta`，脚本这一侧
+ * **分辨不出**当前端点是哪种，那个字段只能靠手填。手填的「预期」与实测不符时，
+ * 人会去改字段而不是查代码。
  *
  * 真正跨实现的那条断言是第 1 项的「收到思考增量」：**两个端点都必须非空**。
  * 只认一个事件名的话，另一边会静默地一个增量都没有。
@@ -118,10 +112,10 @@ interface Collected {
  * 这台开发机对 `api.deepseek.com` 的连接会间歇性失败（超时 / 连接被关 /
  * 证书校验失败），实测同一个脚本 5 次里挂 2 次。那是**环境**的问题，
  * 不是客户端的问题——但如果不管，冒烟会在第一条请求上带着堆栈崩掉，
- * 看起来像我们的 bug，而后面十几项断言一条都没跑。
+ * 看起来像客户端的 bug，而后面十几项断言一条都没跑。
  *
  * 所以只对 `network_error` 重试，**并且把重试次数打出来**：
- * 悄悄重试成功等于把「这条链路不稳」这个事实藏起来。
+ * 静默重试成功等于把「这条链路不稳」这个事实藏起来。
  */
 async function withRetry<T>(label: string, fn: () => Promise<T>, tries = 3): Promise<T> {
   for (let i = 1; ; i++) {
@@ -207,7 +201,7 @@ async function main(): Promise<number> {
     try {
       await runEndpoint()
     } catch (err) {
-      // 一个端点炸了不该让后面的端点不跑——那正好会掩盖「另一种实现坏了」。
+      // 一个端点抛错不该让后面的端点不跑——那正好会掩盖「另一种实现坏了」。
       failures++
       process.stdout.write(`  ✗ ${ep.label} 中断：${err instanceof Error ? err.message : err}\n`)
     }
@@ -224,15 +218,14 @@ async function main(): Promise<number> {
 
 async function runEndpoint(): Promise<void> {
   /*
-   * 先看这个模型在**我们这一侧**被解析成了什么。
+   * 先看这个模型在**客户端这一侧**被解析成了什么。
    *
-   * 不看的话会把「适配器压根没请求推理」误判成「适配器丢了推理增量」——
+   * 不看的话会把「适配器没请求推理」误判成「适配器丢了推理增量」——
    * 这两件事的修法完全不同，而现象一模一样（`thinking` 是空的）。
    *
-   * 第一次跑双端点就撞上了：`gpt-5.4-mini` 不在内置目录，
-   * `lookupModel` 回落到 `unknownModel()`，其 `thinking: 'none'` 让
-   * `buildReasoning` 整个省略 reasoning 字段。四条断言一起红，
-   * 而适配器**完全按它掌握的信息正确行事**。
+   * 实测形状：`gpt-5.4-mini` 不在内置目录，`lookupModel` 回落到 `unknownModel()`，
+   * 其 `thinking: 'none'` 让 `buildReasoning` 整个省略 reasoning 字段，四条断言一起
+   * 红，而适配器**完全按它掌握的信息正确行事**。
    */
   const spec = lookupModel(EP.model, 'openai_responses')
   const asksForReasoning = spec.thinking !== 'none'
@@ -262,7 +255,7 @@ async function runEndpoint(): Promise<void> {
   }
   // 兜底串写成转义 `\0` 而不是一个**裸的 NUL 字节**。
   // 真的 0x00 在源码里完全看不见，还让整个文件被 grep 当成二进制
-  // （`Binary file matches`，于是搜不到任何东西）。
+  // （`Binary file matches`，因此 grep 不出任何内容）。
   // 语义上它必须是「正常文本里不会出现的字符」——换成空格的话
   // `text.includes(' ')` 几乎恒真，这条断言就永远失败了。
   check('思考内容没混进正文', !r1.text.includes(r1.thinking.slice(0, 30) || '\0'))
@@ -270,7 +263,7 @@ async function runEndpoint(): Promise<void> {
   check('终态是 end_turn', r1.stopReason === 'end_turn', r1.stopReason)
 
   // ── 2. 工具调用**两轮**：这一条才是关键 ──
-  //    第一轮拿到调用；第二轮把 reasoningContent + 工具结果喂回去。
+  //    第一轮拿到调用；第二轮把 reasoningContent + 工具结果回传。
   //    不回传 reasoning_text 的话，第二轮直接 400。
   process.stdout.write('\n2. 工具调用来回两轮\n')
   const ask: WireMessage[] = [{ role: 'user', content: '北京现在天气怎么样？用工具查。' }]
@@ -311,9 +304,9 @@ async function runEndpoint(): Promise<void> {
     // 所以用真 id 写反证是**测不出来的**——它永远通过，然后「回传」这段代码
     // 会退化成一段没人知道还需不需要的死重量。
     //
-    // 而合成 id 恰恰是**生产里的常态**：会话存在 SQLite 里，隔天接着聊，
-    // 那时候的 call_id 对服务端来说和合成的没区别。也就是说这个 400
-    // 不会在开发时出现，只会在用户恢复旧会话时出现。
+    // 而合成 id 是**生产里的常态**：会话存在 SQLite 里，隔天接着聊，
+    // 那时候的 call_id 对服务端来说和合成的没区别。这个 400 不会在开发时出现，
+    // 只会在用户恢复旧会话时出现。
     const staleId = 'call_00_qysmokestale000000000001'
     const withoutReasoning: WireMessage[] = [
       ...ask,
@@ -333,7 +326,7 @@ async function runEndpoint(): Promise<void> {
        */
       process.stdout.write(
         '  · 陈旧 call_id 且不回传思考内容，本端点放行。三种可能：\n' +
-          '      它是 summary 形式（本就不要求回传）／本次根本没请求推理／服务端放宽了规则。\n',
+          '      它是 summary 形式（本就不要求回传）／本次未请求推理／服务端放宽了规则。\n',
       )
     } catch (err) {
       check(
@@ -365,12 +358,12 @@ async function runEndpoint(): Promise<void> {
   }
 
   // ── 3. 缓存命中口径 ──
-  //    Responses 的 input_tokens **含**缓存命中，我们统一收敛到排他口径。
+  //    Responses 的 input_tokens **含**缓存命中，本仓统一收敛到排他口径。
   //    只有连打两次同一个长前缀才看得出来减没减。
   process.stdout.write('\n3. 缓存命中口径\n')
   // 前缀要**每次跑都不一样**。用固定前缀的话，第一次就命中了上一次跑留下的缓存，
-  // 于是「第二次比第一次少」这条断言恒不成立——第一版就是这么写的，
-  // 报出来是 first=42 second=42 cached=768，看起来像口径错了，其实是测法错了。
+  // 因此「第二次比第一次少」这条断言恒不成立。实测形状：first=42 second=42
+  // cached=768——那不是口径错了，是测法错了。
   const salt = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   const longSystem = `参考资料（${salt}）：${'本项目是一个本地编程 agent。'.repeat(120)}`
   const cacheKey = `qy-smoke-${EP.model}-${salt}`
@@ -395,7 +388,7 @@ async function runEndpoint(): Promise<void> {
       { first: c1.usage?.inputTokens, second: c2.usage.inputTokens, cached: c2.usage.cachedTokens },
     )
   } else {
-    // 缓存是服务端行为，没命中不代表我们错了。说出来而不是判失败。
+    // 缓存是服务端行为，没命中不代表客户端错了。说出来而不是判失败。
     process.stdout.write(`  · 第二次没有命中缓存（cached=${c2.usage?.cachedTokens}），本项跳过\n`)
   }
 
@@ -425,8 +418,8 @@ async function runEndpoint(): Promise<void> {
   }
 }
 
-// 顶层兜底：任何漏网的异常都要变成一行「第 N 项炸了」+ 非零退出码，
-// 而不是一堆堆栈。冒烟脚本自己崩掉时最需要说清楚的是「跑到哪一步崩的」。
+// 顶层兜底：任何漏网的异常都要变成一行「第 N 项失败」+ 非零退出码，
+// 而不是整段堆栈。冒烟脚本自身崩溃时最需要说清楚的是「跑到哪一步崩的」。
 process.exit(
   await main().catch((err) => {
     process.stdout.write(`\n冒烟中断：${err instanceof Error ? err.message : String(err)}\n`)

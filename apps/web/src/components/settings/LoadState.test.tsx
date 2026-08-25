@@ -1,15 +1,12 @@
 /**
  * 覆盖 `LoadState.tsx`。
  *
- * ## DOM 在这里装，用完卸掉
+ * **DOM 在这里装，用完卸掉。** 不放进预载：happy-dom 的全局里带着它自己那份 `fetch`，而服务端那些包
+ * 的测试要的是 Bun 原生的——装成全局，一百多个测试当场变红。
  *
- * 不放进预载：happy-dom 的全局里带着它自己那份 `fetch`，而服务端那些包的测试要的是
- * Bun 原生的——装成全局，一百多个测试当场变红。
- *
- * ## 为什么要动态 import
- *
- * `LoadState.tsx` 一路 import 到 `lib/store`，那里顶层 `new QyClient(...)` 会读
- * `location` / `sessionStorage`。静态 import 在 `beforeAll` 之前就求值了，读不到。
+ * **为什么要动态 import。** `LoadState.tsx` 逐层 import 到 `lib/store`，那里顶层
+ * `new QyClient(...)` 会读 `location` / `sessionStorage`。静态 import 在 `beforeAll` 之前就求值了，
+ * 读不到。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'

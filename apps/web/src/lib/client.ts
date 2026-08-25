@@ -6,9 +6,9 @@
  * - `origin` 字段：仅用于审计和「谁批准了权限」的跨端提示，不影响能力。
  *
  * 重连是这里的主要复杂度。手机在地铁里断网是常态，所以：
- * - 指数退避 + 抖动，避免服务端刚恢复就被一堆客户端同时打爆。
+ * - 指数退避 + 抖动，避免服务端刚恢复就被全部客户端同时压垮。
  * - 重连时带 `resume`（流身份 + 位置），服务端补发缺口；补不上就置 `resync`，
- *   由调用方重新拉全量。**绝不静默丢事件**——UI 停在不完整状态却自以为正确，
+ *   由调用方重新拉全量。**绝不静默丢事件**——界面停在不完整状态且不给任何提示，
  *   比明确报错糟糕得多。
  */
 
@@ -37,8 +37,8 @@ export type ConnectionState = 'connecting' | 'ready' | 'reconnecting' | 'unautho
  * 前端已经切到 B，而这条请求还回着 A 的会话列表。
  *
  * 调用方自己写了 `ws=` 就不覆盖（目前没有这种调用，留着是因为覆盖别人显式写的
- * 参数是那种查半天才找得到的坑）。首屏还不知道自己在哪个项目时不带，
- * 服务端回落到最近打开的那个——那正是首屏要显示的东西。
+ * 参数是最难排查的一类问题）。首屏还不知道自己在哪个项目时不带，
+ * 服务端回落到最近打开的那个——那正是首屏要显示的项目。
  */
 function withWorkspace(path: string): string {
   const id = workspace()?.id
@@ -53,7 +53,7 @@ export interface ClientOptions {
    * **交出整个信封，不是拆开的 `event` + `seq`。** 归属会话在信封上
    * （`EventEnvelope.conversationId`），而消费方必须据此丢弃不属于当前会话的事件——
    * 服务端的订阅过滤挡不住 `subscribe` 指令的往返窗口，那一段是物理存在的。
-   * 拆参数的话这个字段就传不过去，接收方只能盲信「我收到的都是我订阅的」。
+   * 拆参数的话这个字段就传不过去，接收方只能假定收到的都属于已订阅的会话。
    */
   onEvent(frame: EventEnvelope<AgentEvent>): void
   onState(state: ConnectionState, detail?: string): void
@@ -66,7 +66,7 @@ export interface ClientOptions {
    */
   onBusy(conversations: ConversationId[]): void
   /**
-   * 指令被服务端拒绝。**必须实现**——不处理就等同于回到从前的静默吞掉：
+   * 指令被服务端拒绝。**必须实现**——不处理就是静默吞掉：
    * 用户点了按钮，什么都没发生，也没有任何解释。
    */
   onRejected(frame: CommandRejectedFrame): void
@@ -81,10 +81,9 @@ interface Endpoint {
 /**
  * 这个类和浏览器之间的两个接缝。
  *
- * 存在的唯一理由是**让重连语义能被测**。之前那条「握手被拒之后还要不要重连」
- * 的判断埋在消息回调里，跑起来得有真 WebSocket 和 `location` / `sessionStorage`，
- * 于是它一直没有测试——而它恰恰出过一个 bug：版本对不上时无限重连，
- * 界面显示成「N 秒后重试」。
+ * 存在的唯一理由是**让重连语义能被测**。把「握手被拒之后还要不要重连」的判断埋在
+ * 消息回调里，跑起来就得有真 WebSocket 和 `location` / `sessionStorage`，那条路没有
+ * 测试——而它出过一个 bug：版本对不上时无限重连，界面显示成「N 秒后重试」。
  *
  * 生产路径走默认实现，测试传自己的假 socket。**不是开关，是接缝**：
  * 没有第二套行为，只有第二个 socket 来源。
@@ -152,7 +151,7 @@ function isMobileViewport(): boolean {
  *
  * **`detail` 是给用户看的那一句，`message` 是给日志看的那一行。** 服务端的错误体
  * 是 `{ error, message }`，整段 JSON 贴到界面上就是「409 /api/files/create:
- * {"error":"exists","message":"notes.md 已存在"}」——用户要看的只有最后四个字。
+ * {"error":"exists","message":「notes.md 已存在」}」——用户要看的只有最后四个字。
  * 所以这里当场把 `message` 抠出来；不是 JSON 就退回原文。
  */
 export class ApiError extends Error {
@@ -204,9 +203,9 @@ export class QyClient {
   /**
    * 声明过的订阅。**`null` = 还没声明过，和「声明了空集」是两件事。**
    *
-   * 这个区分要一路传到服务端：重连时 hello 帧带着它，服务端按同一口径解释
+   * 这个区分要逐层传到服务端：重连时 hello 帧带着它，服务端按同一口径解释
    * （`Subscriber.conversations`）。写成 `[]` 起步、再用 `length` 判断要不要带上的话，
-   * 「我明确一条都不要」会被压成「我没说过」，服务端于是给全订阅——
+   * 「明确订阅空集」会被压成「未声明」，服务端因此给全订阅——
    * 切项目之后重连一次，串台就全回来了。
    */
   private subscribed: string[] | null = null
@@ -284,7 +283,7 @@ export class QyClient {
 
       if (msg.type === 'hello.ok') {
         const ok = msg as HelloOkFrame
-        // 握手成功才重置退避计数——open 事件不代表服务端接受了我们。
+        // 握手成功才重置退避计数——open 事件不代表服务端接受了这条连接。
         this.attempt = 0
         // 换了一条流（服务端重启过）与服务端放弃补发，两种情形下手里那个 seq
         // 都不再是有效位置，一律对齐到服务端当前值。
@@ -305,7 +304,7 @@ export class QyClient {
         // 服务端只会发 `bad_token`，而它重连一万次带的还是同一个令牌。
         //
         // 以后真出现「等等就好」的原因（连接数超限之类），在这里按 reason
-        // 分支。现在不预留那个分支：没有生产者的分支只会让人以为它生效过。
+        // 分支。现在不预留那个分支：没有生产者的分支会被下一个人当成生效的逻辑。
         this.closed = true
         return
       }

@@ -44,9 +44,8 @@ export interface RedactedProvider {
    * **只写。** 读接口永远不回它（回的是上面那个 `hasApiKey`），
    * 只有用户在设置里真的敲了新 key 时才带上；不带 = 沿用服务端已有的那份。
    *
-   * 之前这个键没写进类型，改 key 的地方只能 `as Partial<...>` 硬转——
-   * 转过去之后拼错键名也不会报错，而拼错的后果是保存成功、key 没变、
-   * 下一次调模型才炸。写进类型是为了让编译器接着管这一格。
+   * 写进类型是为了让编译器管住这一格：靠 `as Partial<...>` 硬转的话键名拼错
+   * 不报错，后果是保存成功、key 没变，直到下一次调模型才失败。
    */
   apiKey?: string
 }
@@ -129,7 +128,7 @@ export function explainApiError(e: unknown, fallback: string): string {
  * 422 由 `client.api` 抛成 `Error`，消息形如
  * `422 /api/config: {"error":"invalid","problems":[...]}`——直接显示给用户
  * 是一串原始 JSON。这里把 `problems` 挖出来还原成人话：保存失败必须说清
- * **哪一条**不合格，「保存失败」和一坨 JSON 是同一个层次的不可用。
+ * **哪一条**不合格，「保存失败」和一整段 JSON 是同一个层次的不可用。
  */
 export async function saveServerConfig(config: RedactedConfig): Promise<ConfigPayload> {
   try {

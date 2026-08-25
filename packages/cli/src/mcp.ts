@@ -1,5 +1,5 @@
 /**
- * `qy mcp` —— 看一眼工作区里的 MCP server 到底连没连上。
+ * `qy mcp` —— 看一眼工作区里的 MCP server 有没有连上。
  *
  * 没有这条命令的话，「配了但工具没出现」只能靠翻 `qy serve` 的日志排查，
  * 而那些日志混在启动输出里、还会被桌面外壳吞掉。MCP 的失败又特别常见：
@@ -40,17 +40,17 @@ export async function runMcp(args: string[]): Promise<number> {
     for (const s of reg.servers) {
       const tools = reg.toolSpecs.filter((t) => t.name.startsWith(toolNamePrefix(s.name)))
       // 报出传输种类：本地进程和远端 server 的排查方向完全不同，
-      // 一眼看出来是哪种，比事后猜省事。
+      // 直接看出是哪一种，比事后推断可靠。
       process.stderr.write(
         `${GREEN}✓${RESET} ${BOLD}${s.name}${RESET} ` +
           `${DIM}${s.client.transportKind} · ${s.serverInfo.name ?? '?'} ${s.serverInfo.version ?? ''} · 协议 ${s.protocolVersion || '未回报'} · ${tools.length} 个工具${RESET}\n`,
       )
       /*
-       * server 声明了、我们没接的能力**必须显示**，而且不能只在 --tools 下显示。
+       * server 声明了、本仓未接入的能力**必须显示**，而且不能只在 --tools 下显示。
        *
        * 这是「配了 MCP 但什么都没发生」这条现象的唯一线索：一个只提供
        * `prompts` 的 server 连得上、握得了手、注册 0 个工具，
-       * 如果这里不说，用户手上就没有任何可查的东西。
+       * 如果这里不说，用户手上就没有任何可查的线索。
        */
       if (s.unsupported.length > 0) {
         process.stderr.write(
@@ -62,7 +62,7 @@ export async function runMcp(args: string[]): Promise<number> {
         for (const t of s.tools) {
           process.stderr.write(`    ${t.name}${DIM} — ${t.description ?? ''}${RESET}\n`)
         }
-        // resource 工具不在 s.tools 里（它们是我们合成的，不是 server 报的），
+        // resource 工具不在 s.tools 里（它们由本仓合成，不是 server 报的），
         // 但对用户来说它们就是「这个 server 能干什么」的一部分。
         for (const t of tools.filter((x) => !s.tools.some((d) => x.name.endsWith(`__${d.name}`)))) {
           process.stderr.write(`    ${t.name}${DIM} — ${t.description}${RESET}\n`)

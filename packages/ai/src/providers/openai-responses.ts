@@ -5,7 +5,7 @@
  *
  * 1. **`input` 不是 `messages`**。它是一串条目（item），每条有自己的 `type`：
  *    `message` / `function_call` / `function_call_output`。工具调用和工具结果
- *    是**顶层条目**，不是挂在 message 上的字段——这是最容易照搬 chat 协议搬错的地方。
+ *    是**顶层条目**，不是挂在 message 上的字段——这是最容易按 chat 协议写错的地方。
  * 2. **工具定义扁平**。`{type:'function', name, description, parameters}`，
  *    没有 chat 协议那层 `function: {...}` 包装。
  * 3. **流式事件是有类型的 SSE**，不是 delta 拼接：`response.output_text.delta`、
@@ -18,9 +18,8 @@
  * 而这里要处理的字段集本来就得按 Record 断言（推理条目、各家中转站的扩展字段）。
  * 引一层类型再全部 as never，等于既付了依赖又没拿到类型收益。
  *
- * ## 推理内容：同一条协议下的两种实现（2026-08 对 DeepSeek v4 flash 实测）
- *
- * 说 Responses 协议的**不止 OpenAI**，而它们在推理这一块**不是一套东西**：
+ * **推理内容：同一条协议下的两种实现（2026-08 对 DeepSeek v4 flash 实测）。** 说 Responses 协议的**
+ * 不止 OpenAI**，而它们在推理这一块**行为不同**：
  *
  * | | OpenAI | DeepSeek |
  * |---|---|---|
@@ -37,8 +36,8 @@
  *   得到 `Invalid 'input[N].content': array too long. Expected an array with
  *   maximum length 0`；要求回传的那侧少发，得到 `The reasoning_text in the
  *   thinking mode must be passed back to the API`。
- *   两者都只在**第二轮**才发作：第一轮没有历史可回传，一路正常；模型一旦调了工具、
- *   把结果喂回去就炸。**任何单轮测试都测不出它**，而 agent 的主循环恰恰全是多轮。
+ *   两者都只在**第二轮**才发作：第一轮没有历史可回传，全程正常；模型一旦调了工具、
+ *   把结果回传就 400。**任何单轮测试都测不出它**，而 agent 的主循环全是多轮。
  *
  * 所以「要不要回传」不能从流里反推——摘要型端点同样给得出推理文本，反推必然假阳性。
  * 它是**接收端的要求**，由目录那一格 `spec.reasoningEcho` 声明，`buildInput` 只查不猜。
@@ -48,7 +47,7 @@
  *   `function_call` 和 `function_call_output` 中间会得到「找不到工具输出」。
  * - `id` 和 `summary` 可以省。
  * - **文本为空串等于没传**，照样 400。所以占位文本不能是空的。
- * - 只有**最后**一轮工具调用被检查；但我们每一轮都带上，不去赌它的实现细节。
+ * - 只有**最后**一轮工具调用被检查；但每一轮都带上，不去赌它的实现细节。
  */
 
 import type { ReasoningEcho } from '@qywork/core'
@@ -73,8 +72,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
   // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按这条模型的参数格式算**：
   // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
-  // 各写一份的代价实测付过：这里说「发得出去」而那边按参数格式省掉，
-  // 于是探针恒通过，把凭空的结论写回目录。
+  // 各写一份的实测后果：这里说「发得出去」而那边按参数格式省掉，
+  // 因此探针恒通过，把凭空的结论写回目录。
   get transmits(): { effort: boolean } {
     return { effort: effortIsTransmittable(this.spec) }
   }
@@ -113,7 +112,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     /**
      * 终态事件到过没有。**不能用 `rawFinish` 是不是空串代替**：
      * `rawStatusOf` 在 `response` 缺 `status` 字段时就回空串，
-     * 那时终态明明到了，拿空串当判据会把一次正常收尾报成截断。
+     * 那时终态到了，拿空串当判据会把一次正常收尾报成截断。
      */
     let settled = false
     /** 按 output_index 累积的工具调用。参数是分片到达的。 */
@@ -238,7 +237,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             continue
           }
           // 没见过 added 事件也要能收下这条调用——中转站漏发增量事件时，
-          // 丢掉它等于模型调了工具而我们当作没调，然后模型下一轮重复调用。
+          // 丢掉它等于模型调了工具而本地当作没调，模型下一轮会重复调用。
           // 名字没来也照样建槽：能不能执行由 `collectToolCalls` 统一裁决，
           // 在这里 `continue` 掉的话它就从账本上彻底消失了。
           partial.set(idx, {
@@ -279,8 +278,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
        * 断掉记成正常完成——界面上是「写到一半就停、run 显示成功」，
        * 用量也停在估算值上，那一轮读数无从对账。
        *
-       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，我们不知道它
-       * 计没计费，账本行因此落 `uncertain`。「收到了多少」由 `loop.ts` 的
+       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断，
+       * 账本行因此落 `uncertain`。「收到了多少」由 `loop.ts` 的
        * 现场读数补，所以这里不再分「一个事件都没有」和「断在半路」两种说法。
        */
       if (!settled) {
@@ -338,10 +337,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    * 传 `{effort:'none'}` 给一个恒开推理的模型会 400，而那种 400 的文案
    * 跟容量拒绝长得很像，之后就是一次毫无用处的压缩重发。
    *
-   * ## 「不思考」必须是 `none`，不能是 `minimal`
-   *
-   * **不能把「不思考」映射成 `{effort:'minimal'}`。** 实测
-   * （deepseek-v4-flash，`max_output_tokens=900`，各三次）：
+   * **「不思考」必须是 `none`，不能是 `minimal`。** 不能把「不思考」映射成 `{effort:'minimal'}`。**
+   * 实测（deepseek-v4-flash，`max_output_tokens=900`，各三次）：
    *
    * ```
    * effort=none      reasoning_tokens  0,   0,   0
@@ -377,7 +374,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
  *
  * **不能是空串**：DeepSeek 对空 `reasoning_text` 的处理与「没传」完全一样，
  * 照样 400。同时它必须读起来就是一句交代，不能编一段像模像样的思考——
- * 那等于往模型的历史里塞它没想过的东西。
+ * 那等于往模型的历史里塞它没生成过的内容。
  */
 const LOST_REASONING = '(上一轮的思考内容未能保留)'
 
@@ -389,7 +386,7 @@ function reasoningItem(text: string): Record<string, unknown> {
  * `input` 是条目序列，不是消息序列。
  *
  * 工具调用与工具结果是**顶层条目**（`function_call` / `function_call_output`），
- * 不是挂在 assistant message 上的字段。照搬 chat 协议的写法会得到一个
+ * 不是挂在 assistant message 上的字段。按 chat 协议的写法会得到一个
  * 结构合法但语义错误的请求：模型看不到自己调过什么。
  *
  * 带工具调用的 assistant 轮**要不要回传思考内容由 `echo` 说了算**，见文件头。
@@ -406,7 +403,7 @@ export function buildInput(
       /*
        * **工具结果里能放图。** 文档原话：`function_call_output` 的结果「可以是纯
        * 字符串或 `input_text` / `input_image` 内容块列表」，用视觉模型时按真实图片
-       * 处理、其他模型替换成占位文本——**降级由服务端做，我们无条件发**。
+       * 处理、其他模型替换成占位文本——**降级由服务端做，客户端无条件发**。
        * 2026-08 实测确认（`deepseek-v4-flash-vision-exp` 答得出图里的数字与颜色）。
        */
       items.push({
@@ -563,7 +560,7 @@ function collectToolCalls(
     .sort(([a], [b]) => a - b)
     .map(([, slot]) => {
       if (!slot.name) throw namelessToolCall('openai_responses', model)
-      // 参数解析失败**不能吞**：交一个空对象上去，模型会以为工具收到了它给的参数。
+      // 参数解析失败**不能吞**：交一个空对象上去，等于告诉模型参数已被工具收下。
       const parsed = parseArgs(slot.json)
       return {
         id: slot.id,
@@ -582,8 +579,8 @@ function parseArgs(json: string): { args: Record<string, unknown>; error: string
       ? { args: parsed, error: null }
       : { args: {}, error: json }
   } catch {
-    // 保留原文交给上层去拒绝，比静默变成 {} 强：后者会让模型
-    // 以为参数被接受了，然后对着一个完全不同的结果继续往下走。
+    // 保留原文交给上层去拒绝，比静默变成 {} 强：后者等于告诉模型参数已被接受，
+    // 模型会对着一个完全不同的结果继续往下走。
     return { args: {}, error: json }
   }
 }

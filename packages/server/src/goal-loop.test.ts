@@ -7,12 +7,10 @@
  * `run.error` 的正文写进 run 行那一手（这里有现成的真链路 + 会失败的假 provider）。
  * 目标本身的生命周期规则在 `store/goals.test.ts`，工具那一层在 `tools/goals.test.ts`。
  *
- * ## 为什么必须走真链路
- *
- * 这个功能的形状就是「一轮结束之后**自己**又起了一轮」。把 `startRun` 换成
- * 桩来测，测到的只是「我调了我自己写的那个函数」——真正会坏的是装配：
+ * **为什么必须走真链路。** 这个功能的形状就是「一轮结束之后**自己**又起了一轮」。把 `startRun` 换成
+ * 桩来测，测到的只是「桩被调用了」——真正会坏的是装配：
  * 目标事件到没到得了 run-control、finally 里读到的 stopReason 对不对、
- * 下一轮的用户消息里究竟写了什么。
+ * 下一轮的用户消息里写了什么。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -99,12 +97,12 @@ const provider = Bun.serve({
      * **脚本用完 = 401，不是再给一句无害的文本。**
      *
      * 循环没有轮数上限，而一句正常收尾的文本会让服务端接着起下一轮——脚本一空，
-     * 那条会话就在后台一路转下去，吃掉后面用例的脚本，断言全成赛跑。
+     * 那条会话就在后台持续转下去，占用后面用例的脚本，断言全成赛跑。
      * 401 判成 `auth_failed`，是个**当场终结**的答复（不在 `CONTINUABLE` 里）→
      * 目标转 blocked → 循环停下。用例要多跑几轮就多写几条脚本。
      *
      * 不要换成 5xx 或 400：那一档归 `provider_unavailable`，agent 循环会退避后
-     * 自动重发一次，于是脚本用完还会再打一次请求，`bodies` 平白多一条。
+     * 自动重发一次，因此脚本用完还会再打一次请求，`bodies` 平白多一条。
      */
     if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
@@ -200,7 +198,7 @@ async function settle(): Promise<void> {
  *
  * 用真链路跑到那一步也可以，但那样每个用例都得先演一遍立目标的两轮对话。
  * 注意循环**没有轮数上限**：用例必须自己把它收掉（模型 complete / blocked，
- * 或制造一次非正常收尾），否则脚本一用完它会一路续起下去，吃掉后面用例的脚本。
+ * 或制造一次非正常收尾），否则脚本一用完它会持续续起，占用后面用例的脚本。
  */
 function seed(cv: ConversationId) {
   const r = createGoal(store, { conversationId: cv, objective: '慢慢做这件事' })
@@ -359,16 +357,16 @@ describe('一轮接一轮', () => {
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     await settle()
 
-    // 五轮全都在目标 active 的状态下跑掉了——旧世界默认 12 轮，这里根本没有那个数。
+    // 五轮全都在目标 active 的状态下跑掉了——旧世界默认 12 轮，这里没有那个数。
     expect(seen).toEqual(Array(ROUNDS).fill('active'))
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
 })
 
-describe('四条防跑飞', () => {
+describe('四条防失控', () => {
   /**
    * 人类消息优先。原始失败形状：用户插一句话，而排着的那次自动续起照样发出去，
-   * 于是模型手上同时有两条互相打架的指令。
+   * 因此模型手上同时有两条互相打架的指令。
    */
   test('用户发消息就把待续起标记清掉', async () => {
     const cv = conversation()
@@ -491,7 +489,7 @@ describe('goal.set 指令', () => {
 
   test('指令走通到账本，第一轮当场起来', async () => {
     const cv = conversation()
-    // 第一轮就把目标收掉：留着一个 12 轮的循环在跑，会一路吃掉后面用例的脚本。
+    // 第一轮就把目标收掉：留着一个 12 轮的循环在跑，会占用后面用例的脚本。
     script = [
       () => {
         const goal = currentGoal(store, cv)
@@ -544,7 +542,7 @@ describe('goal.set 指令', () => {
  *
  * `runs.interrupt` 一直返回 `boolean`，而指令入口把它丢了。丢掉的表现是这一整类
  * 里最难查的一种：用户点了停止，按钮没反应、转圈继续转、一条日志都没有，
- * 「服务端在处理」和「这条指令根本没人接」在界面上完全一样。
+ * 「服务端在处理」和「这条指令没人接」在界面上完全一样。
  */
 describe('run.interrupt 指令', () => {
   function socket() {
@@ -605,7 +603,7 @@ describe('用户点继续', () => {
     expect(paused.ok).toBe(true)
     runs.disarm(cv)
 
-    // 这一轮里就把目标收掉：循环没有上限，不收的话它会一路吃掉后面用例的脚本。
+    // 这一轮里就把目标收掉：循环没有上限，不收的话它会持续占用后面用例的脚本。
     script = [
       () => {
         const g = currentGoal(store, cv)

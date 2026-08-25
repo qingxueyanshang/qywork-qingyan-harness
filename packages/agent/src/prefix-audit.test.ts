@@ -2,7 +2,7 @@
  * 冻结前缀审计。
  *
  * 这一组里最重要的是最后那个 describe：它拿**真实的**系统提示词去审。
- * 前面几条验的是审计器本身，最后那条验的是被审的东西——
+ * 前面几条验的是审计器本身，最后那条验的是被审的前缀——
  * 前者绿了不代表后者没问题，而后者才是会花钱的那个。
  */
 
@@ -50,7 +50,7 @@ describe('哈希', () => {
     expect(hashFrozen([block('x', true)])).not.toBe(hashFrozen([block('x ', true)]))
   })
 
-  /** 拼接歧义：["ab",""] 与 ["a","b"] 直接相连是同一串，但它们是不同的前缀。 */
+  /** 拼接歧义：`['ab','']` 与 `['a','b']` 直接相连是同一串，但它们是不同的前缀。 */
   test('分段方式不同 → 哈希不同', () => {
     const a = [block('ab'), block('', true)]
     const b = [block('a'), block('b', true)]
@@ -64,7 +64,7 @@ describe('哈希', () => {
   })
 })
 
-describe('静态审计：天生会变的东西不该进前缀', () => {
+describe('静态审计：天生会变的字段不该进前缀', () => {
   test('日期', () => {
     expect(auditFrozenText('今天是 2026-08-09').map((h) => h.kind)).toContain('date')
   })
@@ -170,7 +170,7 @@ describe('运行时审计', () => {
 })
 
 describe('审真实的系统提示词', () => {
-  test('三层冻结前缀里没有天生会变的东西', async () => {
+  test('三层冻结前缀里没有天生会变的字段', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     expect(auditFrozenText(buildSystemPrompt())).toEqual([])
   })
@@ -181,7 +181,7 @@ describe('审真实的系统提示词', () => {
   })
 
   /**
-   * 尾区注记**应该**含日期——这条反过来验：那些会变的东西确实被放在了
+   * 尾区注记**应该**含日期——这条反过来验：那些会变的字段确实被放在了
    * 断点之外。它绿了才说明分层是真的分开了，而不是两边都干净所以看着没问题。
    */
   test('尾区注记确实带着会变的内容（证明分层不是摆设）', async () => {

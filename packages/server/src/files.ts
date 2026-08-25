@@ -175,8 +175,8 @@ export function classify(path: string): { kind: PreviewKind; mime: string; langu
  * 界面文件树。**磁盘上有什么就列什么，一条都不过滤。**
  *
  * 不跳 `node_modules` / `.git` / 构建产物，也不跳点开头的条目。这棵树是用户
- * 自己的文件浏览器，回答的问题是「工作区里到底有什么」——按名字藏掉一部分，
- * 用户就以为它不存在，而 `preview` 照样读得到、模型照样改得到。
+ * 自己的文件浏览器，回答的问题是「工作区里有什么」——按名字藏掉一部分，
+ * 界面上等同于它不存在，而 `preview` 照样读得到、模型照样改得到。
  *
  * 模型侧的 `list_dir` / `glob` / `grep` **仍然**按 `IGNORED_DIRS` 跳噪音目录，
  * 那是 token 预算，不是「这个目录不存在」。两边不一致的方向只允许是这一个：
@@ -236,7 +236,7 @@ export class EntryExistsError extends Error {
  * 等于「新建」和「什么都没做」给出同一个回音。文件那一支再叠一个 `wx`，
  * 挡住判定与写入之间被人抢先建出来的那一瞬。
  *
- * 中间目录顺带建出来（`docs/a/b.md` 里的 `docs/a`）：这是用户在输入框里
+ * 中间目录一并建出来（`docs/a/b.md` 里的 `docs/a`）：这是用户在输入框里
  * 打出来的路径，缺一层就报错等于让他一层一层建。
  */
 export async function createEntry(
@@ -299,7 +299,7 @@ export async function renameEntry(
  * 删除。目录连着里面一起删。
  *
  * `force: false` 是有意的：不存在时要抛，让上面回 404。`force: true` 会把
- * 「删掉了」和「本来就没有」说成同一句话，而用户点的是删除，他需要知道到底删没删。
+ * 「删掉了」和「本来就没有」说成同一句话，而用户点的是删除，他需要知道有没有删掉。
  */
 export async function deleteEntry(workspaceRoot: string, relPath: string): Promise<void> {
   await rm(join(workspaceRoot, relPath), { recursive: true, force: false })
@@ -318,11 +318,11 @@ const FIND_MAX_ENTRIES = 20_000
  * 按名字找文件。子串匹配，大小写不敏感。
  *
  * **这里跳 `IGNORED_DIRS`，和文件树不一样**，理由是搜得到才有用：树不过滤，
- * 于是工作区第一层就有 `node_modules`；按字典序铺开的话遍历预算会在依赖树里
+ * 因此工作区第一层就有 `node_modules`；按字典序铺开的话遍历预算会在依赖树里
  * 烧光，用户搜 `launch` 一个命中都拿不到。界面必须把这条边界说出来
- * （空结果那一行），否则用户会以为文件不存在。
+ * （空结果那一行），否则空结果读起来就是文件不存在。
  *
- * 广度优先：浅的先出来。用户要找的东西通常在前两三层，而深处那些同名文件
+ * 广度优先：浅的先出来。用户要找的文件通常在前两三层，而深处那些同名文件
  * 排在前面等于把结果列表占满。
  *
  * 只 `readdir` 不 `stat`：命中列表不显示大小与时间，为两万条各取一次元数据

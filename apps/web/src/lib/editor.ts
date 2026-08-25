@@ -83,7 +83,7 @@ export async function createReadonlyEditor(
       extensions: [
         lineNumbers(),
         highlightActiveLine(),
-        // 只读预览：不给编辑能力，避免用户以为改了能存。
+        // 只读预览：不给编辑能力，避免出现一个改了存不下去的编辑器。
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         EditorView.lineWrapping,

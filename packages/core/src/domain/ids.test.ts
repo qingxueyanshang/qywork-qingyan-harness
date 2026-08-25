@@ -3,8 +3,8 @@ import { newConversationId, newMessageId, newRunId, newStepId } from './ids.ts'
 
 describe('ID 单调性', () => {
   /**
-   * 回归用例。早期实现只把毫秒时间戳编进前缀、后缀用随机字节，
-   * 于是同一毫秒内生成的 ID 字典序是随机的。
+   * 回归用例。只把毫秒时间戳编进前缀、后缀用随机字节的话，
+   * 同一毫秒内生成的 ID 字典序是随机的。
    *
    * 后果不是排序难看：`listMessages` 用 `id <= upperBound` 划定 run 的消息高水位，
    * 顺序一乱就会把同毫秒写入的前序消息判成「在水位之后」，直接从历史里丢掉。

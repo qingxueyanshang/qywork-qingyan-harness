@@ -1,27 +1,22 @@
 /**
- * `qy doctor` —— 一屏看完「我这台机器上，它现在到底处于什么状态」。
+ * `qy doctor` —— 一屏看完本机上的当前状态。
  *
- * ## 为什么需要它
- *
- * 这些事实已经全都算得出来了，但**分散在四条命令和一个日志里**：
+ * **为什么需要它。** 这些事实已经全都算得出来了，但**分散在四条命令和一个日志里**：
  * `qy config` 报配置与沙箱、`qy mcp` 报 MCP、`qy plugins` 报插件隔离、
- * `qy usage` 报花销。用户想回答「我现在安全吗 / 我的扩展都活着吗」，
+ * `qy usage` 报花销。用户想回答「当前边界是什么 / 扩展是否都在运行」，
  * 得挨个跑一遍，还得自己把结论拼起来。
  *
- * 而其中一部分事实**只有在出问题之后才有人去查**——尤其是沙箱那条。
- * 「没有内核边界」是很多机器上的默认状态，它不会主动报错，
- * 只会在某天模型删掉了工作区外的东西之后才被想起来。
+ * 其中沙箱那条**只在出问题之后才有人查**：无内核边界是多数机器的默认状态，
+ * 且不产生任何错误信号。
  *
- * ## 三条设计约束
- *
+ * **三条设计约束**：
  * 1. **不花钱、不发请求。** 一条要计费的体检命令，用户不会常跑，
  *    而不常跑的体检等于没有。所以这里只查本地事实：配置、沙箱、账本、
  *    MCP 与插件的连通性（那两个本来就要起子进程）。
  *    想实测端点能力是 `qy probe` 的事，不并进来。
  * 2. **分级而不是打分。** 输出只有三种前缀：`✗` 阻断、`⚠` 要知道、`✓` 正常。
  *    合成一个「健康度 87 分」既不可操作也不可验证。
- * 3. **退出码只由 `✗` 决定。** `⚠` 不退非零——否则 CI 里挂着一堆
- *    「没有内核沙箱」的黄灯，很快就没人看退出码了。
+ * 3. **退出码只由 `✗` 决定。** `⚠` 不退非零：否则无内核沙箱的机器上退出码恒为非零。
  */
 
 import { stat } from 'node:fs/promises'
@@ -73,9 +68,8 @@ export interface Section {
 /**
  * 跑完全部检查，返回结构化结果。
  *
- * **与渲染分开**是为了可测：把判定埋在一堆 `process.stderr.write` 中间的话，
- * 测试只能去比对带 ANSI 转义的字符串——那种断言一改文案就红，
- * 于是很快会被改成「只断言不抛异常」，等于什么都没验。
+ * **与渲染分开**是为了可测：判定埋进 `process.stderr.write` 之后，测试只能比对带
+ * ANSI 转义的字符串，而绑定文案的断言会被降级成「只断言不抛异常」。
  */
 export async function collectDoctorReport(workspaceRoot: string): Promise<Section[]> {
   return [
@@ -100,7 +94,7 @@ export async function runDoctor(args: string[]): Promise<number> {
   const warns = all.filter((l) => l.level === 'warn').length
 
   if (json) {
-    // stdout 只放 JSON，给脚本消费。人看的东西一律走 stderr。
+    // stdout 只放 JSON，给脚本消费。给人读的一律走 stderr。
     process.stdout.write(
       `${JSON.stringify({ workspaceRoot, sections, summary: { fails, warns } }, null, 2)}\n`,
     )
@@ -123,8 +117,7 @@ export async function runDoctor(args: string[]): Promise<number> {
     )
   }
 
-  // **只有阻断项才退非零。** 黄灯退非零的话，CI 里挂着一堆
-  // 「这台机器没有内核沙箱」的警告，很快就没人看退出码了。
+  // **只有阻断项才退非零。** 警告也退非零的话，无内核沙箱的机器上退出码恒为非零。
   return fails > 0 ? 1 : 0
 }
 
@@ -179,7 +172,7 @@ function checkSandbox(): Line[] {
   return [
     {
       // 没有内核边界是**警告不是失败**：绝大多数 Windows 机器都是这个状态，
-      // 判成 fail 会让 `qy doctor` 在那些机器上永远退非零，于是退出码失去意义。
+      // 判成 fail 会让 `qy doctor` 在那些机器上永远退非零，因此退出码失去意义。
       level: s.active ? 'ok' : 'warn',
       text: `${s.backend}（${where}）`,
       detail: s.reason,
@@ -196,7 +189,7 @@ const FINISH_WINDOW_DAYS = 7
 /**
  * 按模型报请求收尾率。
  *
- * 为什么在 doctor 里：这是「这条端点在我这里稳不稳」的唯一本地答案，而账本
+ * 为什么在 doctor 里：这是「这条端点在本机稳不稳」的唯一本地答案，而账本
  * 逐行记着它（`provider_requests` 的 `status` / `error_code`）。纯 SELECT，
  * 不发请求，符合本文件开头第 1 条约束。
  *
@@ -258,8 +251,7 @@ async function checkStore(): Promise<Line[]> {
     out.push({ level: 'ok', text: '正文库尚未建立', detail: content })
   }
 
-  // 目录可写是**能不能记账**的前提。不可写的话每一轮的花销都会静默丢掉，
-  // 而用户只会在月底对不上账时才发现。
+  // 目录可写是**能不能记账**的前提：不可写时每一轮的花销静默丢弃，账本不留缺口标记。
   try {
     const probe = `${configDir()}/.doctor-write-probe`
     await Bun.write(probe, 'x')
@@ -301,7 +293,7 @@ async function checkMcp(workspaceRoot: string): Promise<Line[]> {
     out.push({ level: 'fail', text: `${f.server} 未就绪`, detail: f.reason })
   }
 
-  // 起过的子进程必须收掉。体检命令留下一堆孤儿进程比不做体检糟。
+  // 起过的子进程必须收掉。体检命令留下孤儿进程比不做体检糟。
   reg.stopAll()
   return out
 }
@@ -321,7 +313,7 @@ async function checkPlugins(workspaceRoot: string): Promise<Line[]> {
       const rt = p.host?.runtime
       if (!p.host) {
         // 纯声明式插件没有进程，也就无所谓隔离。说「不适用」而不是「没有隔离」——
-        // 后者会让人以为出了问题。
+        // 后者读起来是一处故障。
         out.push({ level: 'ok', text: `${p.manifest.id} · 纯声明式，无代码进程` })
         continue
       }

@@ -3,7 +3,7 @@ import { renderMarkdown } from '../../lib/markdown.ts'
 import { configNotices, configProblems, configWriteError } from './configStore.ts'
 
 /**
- * 当前配置的三类状态。**都是「不说用户就会被骗」的那种事实**，所以摆在设置页里，
+ * 当前配置的三类状态。**都是不说出来用户就会误判的事实**，所以摆在设置页里，
  * 而不是只在终端打印——桌面端用户不会去跑 `qy config`。
  *
  * 1. `writeError`：刚才那一下写失败了。没有「保存」按钮之后**失败必须自己现身**——
@@ -14,7 +14,7 @@ import { configNotices, configProblems, configWriteError } from './configStore.t
  * 3. `notices`：`configNotices` 的提醒——不阻断运行、但每次都要说的事实
  *    （放开了工作区之外的目录、模型不在内置目录所以计价按 0、sandboxNetwork
  *    在本机没生效、权限模式是 full）。**这一条必须渲染出来**：服务端发了、store
- *    也收了，界面上没人读的话，恰恰是「配了以为生效、其实没生效」的那几件事，
+ *    也收了，界面上没人读的话，就成了「配了但没生效」的那几件事，
  *    桌面端用户一件都看不到。
  *
  * 按 markdown 渲染：这几段本来就是 markdown（`configNotices` 的注释里写明了两个

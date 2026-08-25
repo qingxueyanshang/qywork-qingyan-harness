@@ -5,21 +5,17 @@
  * 与记忆的区别：**记忆是事实，技能是流程**。「这个项目用 pnpm」是记忆，
  * 「怎么发一个版本」是技能。
  *
- * ## 按需加载，索引进尾区，正文只在被读时才进上下文
- *
- * 这是技能体系的全部价值。把所有技能正文都塞进 system prompt 的话，
- * 十个技能就能吃掉几万 token，而一次任务通常只用得上其中一个。
+ * **按需加载，索引进尾区，正文只在被读时才进上下文。** 这是技能体系的全部价值。把所有技能正文都塞进
+ * system prompt 的话，十个技能就能占掉几万 token，而一次任务通常只用得上其中一个。
  *
  * 所以：**索引**（name + description，每条一行）进尾区注记，模型看到后
  * 自己决定要不要 `read_skill` 拉全文。
  *
  * 索引同样**永不进冻结前缀**——用户装一个技能就会让整个 provider 缓存失效。
  *
- * ## 三层作用域，技能全程只读
- *
- * 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`（全局层）都扫，
- * 同名先到的赢。技能没有任何写接口——它是一个目录（`SKILL.md` + 附带脚本），
- * 在网页上编辑一个目录需要一整套文件管理界面，而那是编辑器该干的事。
+ * **三层作用域，技能全程只读。** 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`（全局层）
+ * 都扫，同名先到的赢。技能没有任何写接口——它是一个目录（`SKILL.md` + 附带脚本），在网页上编辑一
+ * 个目录需要一整套文件管理界面，而那是编辑器该干的事。
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises'
@@ -45,7 +41,7 @@ export interface SkillMeta {
   /**
    * 技能目录的**绝对路径**。
    *
-   * 不能相对工作区：全局层的技能根本不在工作区里，相对路径表达不了它，
+   * 不能相对工作区：全局层的技能不在工作区里，相对路径表达不了它，
    * 而拼出来的 `../../..` 既读不懂、回填给工具还会指向别处。
    */
   dir: string
@@ -100,8 +96,8 @@ export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<Skill
 /**
  * 每一层各自装了哪些技能，被同名盖住的也在里面。
  *
- * 设置页按层分列要的是这一份。去重之后被盖住的那个直接消失，而「我在全局装了
- * 一个同名技能，怎么用的还是项目里那个」正是靠它才答得出来。
+ * 设置页按层分列要的是这一份。去重之后被盖住的那个直接消失，而「全局装了一个
+ * 同名技能、生效的却是项目里那个」正是靠它才答得出来。
  */
 export function scanAllSkills(roots: ScopeRoots): Promise<ScopedItem<SkillMeta>[]> {
   return scanAllScopes(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
@@ -161,7 +157,7 @@ export const readSkillTool: ToolSpec = {
     const skills = await scanSkills(ctx.workspaceRoot)
     const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
-      // 列出可用的名字而不是只说「找不到」：模型多半是名字记错了一个字，
+      // 列出可用的名字而不是只说「找不到」：模型通常是名字记错了一个字，
       // 给它候选它下一轮就能自己修正。
       return {
         status: 'failure',

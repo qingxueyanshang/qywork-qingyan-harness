@@ -122,9 +122,9 @@ async function pdfText(ctx: ToolContext, abs: string, stamp: string): Promise<st
  * 二进制嗅探：NUL 字节。
  *
  * 用转义写而不是把控制字符直接嵌进正则字面量——后者在编辑器和 diff 里是不可见的，
- * 改动它的人看不出这一行到底在匹配什么。
+ * 改动它的人看不出这一行在匹配什么。
  */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: 匹配 NUL 正是本意——这是判断文件是不是二进制的标准做法
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 匹配 NUL 正是本意——判断文件是不是二进制的标准做法
 const BINARY_SNIFF = /\x00/
 
 export const readFileTool: ToolSpec = {
@@ -219,7 +219,7 @@ export const readFileTool: ToolSpec = {
          * 之后再想补是物理上做不到的。
          *
          * 附件那条**不走这里**，它仍然是路径引用（`runtime` 的 `withAttachments`）：
-         * 那是用户自己的文件，我们没有理由复制它。判据是「这是一次观察，还是一个引用」。
+         * 那是用户自己的文件，没有理由复制它。判据是「这是一次观察，还是一个引用」。
          */
         data: { images: [shrunk] },
       }
@@ -256,7 +256,7 @@ export const readFileTool: ToolSpec = {
 
     const lines = toLf(text).split('\n')
     // 读不出整数就在这里终止。`Math.max` 是下界钳位（`offset: 0` 取 1），它挡不住 NaN：
-    // `Math.max(1, NaN)` 还是 NaN，一路走下去就是一次「成功读取 0 行」。
+    // `Math.max(1, NaN)` 还是 NaN，继续往下走就是一次「成功读取 0 行」。
     const rawOffset = intArg(args.offset, 1)
     const rawLimit = intArg(args.limit, DEFAULT_READ_LINES)
     if (rawOffset === null || rawLimit === null) {
@@ -309,7 +309,7 @@ export const readFileTool: ToolSpec = {
        * 读一次就进上下文、随下一次请求发给 provider——**而那是不可撤回的**。
        *
        * 一头拦一头不拦等于没拦：模型拿不到 `cat .env` 的输出，换 `read_file`
-       * 就拿到了，而它并不是在绕过什么，只是选了个更顺手的工具。
+       * 就拿到了，而它并不是在绕过什么，只是换了个工具。
        *
        * 脱敏的是**交给模型的那一份**，磁盘上的文件一个字节没动；`edit_file`
        * 的读回校验走的是另一条路（`readHashes` 存的是原文哈希），不受影响。
@@ -448,7 +448,7 @@ export const editFileTool: ToolSpec = {
      *
      * 模型看到的正文是归一过的（`read_file` 交出去时去了 CR），它复述回来的
      * `old_string` 必然是 LF；而 CRLF 文件里那几行之间是 `\r\n`。拿原串精确匹配的话，
-     * 跨行的 old_string 在 CRLF 文件上**永远**找不到，而 agent 干活的仓库不归我们管。
+     * 跨行的 old_string 在 CRLF 文件上**永远**找不到，而目标仓库的行尾不受本仓控制。
      *
      * 只替换命中的那一段、其余字节逐字节留着：混合行尾的文件不会因为一次单行编辑
      * 被整份重写。
@@ -556,7 +556,7 @@ const MAX_EDIT = 4000
  * 注释框架行、以及旧文件里别处碰巧有同一份的任何一行都算成「没新增」，整块搬家更是
  * 直接算成 0——实测本仓 128 个文件对少报 24.7%，其中三分之二是空行、括号和注释框架。
  *
- * Myers 贪心，只求编辑距离不还原路径：D = 增 + 删，而 增 − 删 = 新行数 − 旧行数，
+ * Myers 贪心，只求编辑距离不还原路径：D = 增 + 删，而增 − 删 = 新行数 − 旧行数，
  * 两式解出两个数。**先裁公共前后缀**——真实改动裁完通常只剩几十行，这是它快的
  * 全部原因；不裁的话每次编辑都按整个文件长度算。
  */

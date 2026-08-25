@@ -3,7 +3,7 @@
  * `findByName` / `classify`。
  *
  * 锁五件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
- * 用户就以为它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
+ * 在界面上就等于它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
  * **搜索跳噪音目录**（与树口径不同，是有意的），以及分类的回落口径。
  * 预览的字节截断不在这里测。
  */
@@ -44,8 +44,8 @@ describe('文件树', () => {
    * 一条都不过滤：依赖树、构建产物、`.git`、点开头的配置全在。
    *
    * 模型侧的 `list_dir` / `glob` / `grep` 仍按 `IGNORED_DIRS` 跳噪音目录，那是
-   * token 预算；界面这棵树是用户核对「磁盘上到底有什么」的地方，藏一条他就以为
-   * 它不存在。不一致的方向只允许是界面看得多。
+   * token 预算；界面这棵树是用户核对磁盘内容的地方，藏一条在界面上就等于它
+   * 不存在。不一致的方向只允许是界面看得多。
    */
   test('磁盘上有的全进树', async () => {
     const names = (await listTree(await workspace(), '', 2)).map((n) => n.name)
@@ -77,7 +77,7 @@ describe('文件树', () => {
 })
 
 describe('新建', () => {
-  test('文件建出来是空的，中间目录顺带建', async () => {
+  test('文件建出来是空的，中间目录一并建', async () => {
     const dir = await workspace()
     const node = await createEntry(dir, 'docs/notes/a.md', 'file')
     expect(node).toMatchObject({ name: 'a.md', path: 'docs/notes/a.md', kind: 'file', size: 0 })
@@ -155,7 +155,7 @@ describe('预览分类', () => {
     expect(classify('x.png').kind).toBe('image')
     expect(classify('x.pdf').kind).toBe('pdf')
     // 回落是 text 而不是 binary：新扩展名永远追不完，把没见过的当文本读
-    // 最多是一屏乱码，当二进制则是「明明能读却不给看」。
+    // 最多是一屏乱码，当二进制则是「能读却不给看」。
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
   })
 })

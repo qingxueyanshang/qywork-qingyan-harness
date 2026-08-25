@@ -36,7 +36,7 @@ describe('同一模型在不同协议下能力不同', () => {
     expect(spec.thinking).toBe('deepseek_thinking')
   })
 
-  /** 两条协议的档位必须各记各的——合并过一次，代价是其中一边一定在说谎。 */
+  /** 两条协议的档位必须各记各的——合并之后其中一边必然与实际能力不符。 */
   test('两条协议的档位互不覆盖', () => {
     expect(lookupModel('deepseek-v4-flash', 'openai_chat_completions').effortLevels).toEqual([
       'high',
@@ -50,7 +50,7 @@ describe('同一模型在不同协议下能力不同', () => {
    *
    * 只收录 chat/completions 那一条的话，Responses 下会走到
    * `lookupModel` 的兑底分支（改写 provider 保留能力约束），
-   * 于是把 chat 那套思考字段当成 Responses 的能力拿出来用。
+   * 因此把 chat 那套思考字段当成 Responses 的能力拿出来用。
    */
   test('vision 在两条协议下各有一条', () => {
     const chat = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
@@ -99,7 +99,7 @@ describe('实测修正过的字段', () => {
     expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
   })
 
-  /** Haiku 4.5 走 budget_tokens，没有 effort 档——这条没被上面那次订正影响。 */
+  /** Haiku 4.5 走 budget_tokens，没有 effort 档。 */
   test('haiku-4-5 仍然没有 effort 档', () => {
     expect(lookupModel('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
@@ -136,7 +136,7 @@ describe('计价', () => {
     const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
     const withCache = computeCost(spec, { inputTokens: 100, outputTokens: 0, cachedTokens: 900 })
     const withoutCache = computeCost(spec, { inputTokens: 1000, outputTokens: 0, cachedTokens: 0 })
-    // 同样一千个输入 token，全靠缓存要便宜得多。等价说明缓存根本没被计入折扣。
+    // 同样一千个输入 token，全靠缓存要便宜得多。等价说明缓存没被计入折扣。
     expect(withCache).toBeLessThan(withoutCache)
   })
 })
@@ -192,7 +192,7 @@ describe('模型库覆盖', () => {
    * 未收录模型的窗口默认值。
    *
    * 锁的是**方向**不是那个具体的数：给小了每轮提前压缩，白花钱又丢上下文，
-   * 而且完全静默——没有任何东西会报「你压早了」。
+   * 而且完全静默——不会有任何一处报「压早了」。
    */
   test('未收录模型的窗口给 256K，且能被那一格改掉', () => {
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
@@ -205,8 +205,8 @@ describe('模型库覆盖', () => {
   })
 
   /**
-   * 思考三项也在库里。它们曾经只存在于接口下那一格、界面上看不见也改不动，
-   * 于是「库里显示的」和「真正发出去的」是两个值。
+   * 思考三项也在库里。只存在于接口下那一格时界面上看不见也改不动，
+   * 「库里显示的」和「真正发出去的」会是两个值。
    */
   test('思考三项覆盖 seed', () => {
     const s = applySpecOverride(lookupModel('中转站上的某个模型', 'openai_chat_completions'), {
@@ -234,7 +234,7 @@ describe('模型库覆盖', () => {
  * 空闲价恰好是高峰的一半。
  *
  * 这一组盯着两个容易错且**完全静默**的方向：按本机时区判档、以及基准价填反
- * （填空闲价时折扣没生效就少记一半钱，账本往便宜的方向说谎）。
+ * （填空闲价时折扣没生效就少记一半钱，账本向偏低的方向出错）。
  */
 describe('分时段定价', () => {
   const flash = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
@@ -277,7 +277,7 @@ describe('分时段定价', () => {
   /**
    * 星期这一维：周一至周五才有高峰，周六周日整天空闲。
    *
-   * 只按小时判的话，周末落在两段窗口里的请求会按原价记——账本往贵的方向说谎，
+   * 只按小时判的话，周末落在两段窗口里的请求会按原价记——账本向偏高的方向出错，
    * 没有任何地方会报错。四条断言把星期集合的两端都钉住。
    */
   test('高峰只在周一至周五', () => {
@@ -343,7 +343,7 @@ describe('分时段定价', () => {
  * 提示词满 20 万 token 之后**整条请求**翻倍。
  *
  * 这一组盯的是那个「整条翻倍」——按超出部分算会把账记少将近一半，
- * 而少记的方向没有任何东西会报错。
+ * 而少记的方向不会有任何报错。
  */
 describe('长上下文阶梯价', () => {
   const g46 = () => lookupModel('grok-4.6', 'openai_chat_completions')
@@ -353,7 +353,7 @@ describe('长上下文阶梯价', () => {
     expect(g46().pricing.input).toBe(2)
     expect(g46().pricing.output).toBe(6)
     expect(g46().pricing.cacheRead).toBe(0.5)
-    // 4.5 的缓存价是 $0.30，不是 $0.20——上一版这里是错的。
+    // 4.5 的缓存价是 $0.30，不是 $0.20。
     expect(g45().pricing.cacheRead).toBe(0.3)
   })
 
@@ -420,8 +420,8 @@ describe('长上下文阶梯价', () => {
 /**
  * 逐条对着官方页面核过的那些数字。
  *
- * 这一组不测机制，只钉**值**：写错一个数不会报错，只会让账本安静地说谎，
- * 而账本正是用来回答「怎么突然变贵了」的那个东西。
+ * 这一组不测机制，只钉**值**：写错一个数不会报错，只会让账本静默出错，
+ * 而账本正是用来回答「怎么突然变贵了」的那份记录。
  */
 describe('目录里的价格与档位', () => {
   const spec = (
@@ -432,7 +432,7 @@ describe('目录里的价格与档位', () => {
   test('OpenAI GPT-5.6 三档 + Cyber', () => {
     expect(spec('gpt-5.6-sol').pricing.input).toBe(5)
     expect(spec('gpt-5.6-sol').pricing.output).toBe(30)
-    // 上一版把 terra 记成 2.5/15、luna 记成 1/6，都是错的。
+    // terra 不是 2.5/15，luna 不是 1/6。
     expect(spec('gpt-5.6-terra').pricing.input).toBe(2)
     expect(spec('gpt-5.6-terra').pricing.output).toBe(12)
     expect(spec('gpt-5.6-luna').pricing.input).toBe(0.2)
@@ -443,7 +443,7 @@ describe('目录里的价格与档位', () => {
   })
 
   test('Gemini Flash 两代同价，3.5 更贵', () => {
-    // 上一版三条都记成 0.3/2.5。
+    // 三条都不是 0.3/2.5。
     expect(spec('gemini-3.7-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.6-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.5-flash').pricing.input).toBe(1.5)
@@ -473,7 +473,7 @@ describe('目录里的价格与档位', () => {
     expect(spec('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 
-  /** 智谱的官方价目是美元（Z.ai 国际站）；上一版填的是一组没有出处的人民币数字。 */
+  /** 智谱的官方价目是美元（Z.ai 国际站），不要填没有出处的人民币数字。 */
   test('GLM 三条按官方美元价，5.3 已收录', () => {
     for (const id of ['glm-5.3', 'glm-5.2']) {
       expect(spec(id).pricing.input).toBe(1.4)
