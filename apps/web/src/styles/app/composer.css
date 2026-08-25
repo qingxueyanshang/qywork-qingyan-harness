@@ -222,7 +222,9 @@
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--s-1);
+  /* 2px 而不是一格间距：这排 chip 自带 6px 内边距，真正的视觉间隔是
+     两侧内边距加这个 gap。给 4px 就是 14px 的空档，一排东西散开。 */
+  gap: 2px;
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
 
@@ -230,7 +232,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px var(--s-2);
+  padding: 3px 6px;
   border-radius: var(--r-sm);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -409,7 +411,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px var(--s-2);
+  padding: 3px 6px;
   border-radius: var(--r-sm);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
