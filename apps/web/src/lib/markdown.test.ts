@@ -5,12 +5,18 @@
  * `innerHTML`，而输入是模型输出（它可能在复述别人仓库里的 README）。
  * 一次白名单改动就能让 `<img onerror>` 活过来，而界面上看不出任何异常。
  *
- * 高亮相关的分支这里不测：`highlight.js` 是异步按需加载的，测试进程里
- * `hljsReady()` 恒为 false，走的永远是未高亮那一支。硬测会变成测桩。
+ * 高亮相关的分支这里不测：`highlight.js` 是异步按需加载的，硬测会变成测桩。
+ *
+ * **但不许假设它没加载完。** 它什么时候到取决于这个进程里别的模块加载花了多久，
+ * 断言里写死未高亮那一支的形状，加一个测试预载就会红。关心转义的那两条用
+ * `unspan()` 把高亮切出来的标记去掉再断言，两支都成立。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { createStreamRenderer, renderMarkdown } from './markdown.ts'
+
+/** 去掉高亮切出来的 `<span>`。转义测的是实体本身，不是正文被切成几段。 */
+const unspan = (html: string) => html.replace(/<\/?span[^>]*>/g, '')
 
 describe('净化', () => {
   test('script 标签不出现在结果里', () => {
@@ -64,13 +70,13 @@ describe('白名单里必须留下的东西', () => {
 
 describe('代码块正文按字面转义', () => {
   test('代码里的标签不会变成真标签', () => {
-    const html = renderMarkdown('```html\n<script>alert(1)</script>\n```')
+    const html = unspan(renderMarkdown('```html\n<script>alert(1)</script>\n```'))
     expect(html).toContain('&lt;script&gt;')
     expect(html).not.toContain('<script>')
   })
 
   test('& 先转义，不会产生二次实体', () => {
-    expect(renderMarkdown('```\na && b\n```')).toContain('a &amp;&amp; b')
+    expect(unspan(renderMarkdown('```\na && b\n```'))).toContain('a &amp;&amp; b')
   })
 })
 
