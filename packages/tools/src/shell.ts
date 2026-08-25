@@ -13,11 +13,9 @@
  * 6. **有内核沙箱的平台上再套一层**（`sandbox.ts`）：这一层不看命令长什么样，
  *    它补的正是前五条挡不住的那个缺口——「没想到的写法」。
  *
- * ## 为什么第 3 条单独算一条防线
- *
- * **绝不能是 `env: { ...process.env }`**——那等于让模型自己编的命令继承整份环境，
- * 包括 `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`。而模型的输出是不可信输入：
- * 它读到的网页、依赖的 README、`AGENTS.md` 里一句提示注入就够了。
+ * **第 3 条单独算一条防线：绝不能是 `env: { ...process.env }`**——那等于让模型自己编的命令继承整份
+ * 环境，包括 `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`。而模型的输出是不可信输入：它读到的网页、依
+ * 赖的 README、`AGENTS.md` 里一句提示注入就够了。
  *
  * 光靠 OS 级沙箱不够：沙箱**有平台就有，没有就没有**，原生 Windows 上目前一层
  * 都没有（`sandbox.ts` 会如实这么报）。剥环境变量则在每个平台上都成立，
@@ -55,7 +53,7 @@ const MAX_TIMEOUT_MS = 600_000
  *
  * 必须说出来：模型据此才知道后台留了个进程（起服务的脚本就是这个形状），
  * 以及那个进程之后的输出**不会**再进这次结果——要看只能去它自己的日志。
- * 不说的话，这件事在回话里完全不可见，而它恰恰是这类命令唯一要紧的事实。
+ * 不说的话，这件事在回话里完全不可见，而它是这类命令唯一要紧的事实。
  */
 const BACKGROUND_HELD =
   '。注意：命令已退出，但它留下的后台进程仍在运行并持有输出管道——' +
@@ -67,7 +65,7 @@ const BACKGROUND_HELD =
  * **导出是因为裁决层要用同一个数。** 超时到点是无条件树杀，而完成判据是进程退出、
  * 不是管道 EOF（见 `collectProcess`），所以「这条命令会不会一直挂着」在这个工具里
  * 有个确定答案——
- * 裁决层看不到这个数的话只能按命令字面判，于是把带 3 秒超时的
+ * 裁决层看不到这个数的话只能按命令字面判，因此把带 3 秒超时的
  * `python -m http.server` 按「不会自己退出的服务器」拒掉。
  *
  * 两处各算一遍必然漂移，而漂移的表现是**裁决时说的那个数和真正生效的不是同一个**
@@ -85,11 +83,9 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  * 参数是 shell 对象本身而不是让这里再取一次——再取一次就是两本账，
  * 而漂移的表现是「说明里写的 shell 和真正执行的不是同一个」。
  *
- * ## 为什么语法在第一句，而且 bash 也不例外
- *
- * `run_command` 这个名字不携带语法，模型的默认输出是 bash，所以语法信息只剩描述
- * 一个来源——**埋在第三句等于没说**（前两句先讲了「执行一条 shell 命令」「用于构建、
- * 测试、包管理」，读到那里语法已经在脑子里定死了）。
+ * **为什么语法在第一句，而且 bash 也不例外。** `run_command` 这个名字不携带语法，模型的默认输出是
+ * bash，所以语法信息只剩描述一个来源——**埋在第三句等于没说**（前两句先讲了「执行一条 shell 命
+ * 令」「用于构建、测试、包管理」，读到那里模型已经按默认语法生成了）。
  *
  * 不写成「非 bash 才前置」：那是一条按语法分叉的排版规则，而分叉的表现是某一档
  * 忘了前置，且只在那台机器上才看得见。一份排版，三档共用。
@@ -150,7 +146,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       /*
        * 探测地址**只准回环**，而且拿不准就当没给。
        *
-       * 这是本仓第二条能发起出站请求的路径，第一条 `web_fetch` 恰恰刻意挡掉了
+       * 这是本仓第二条能发起出站请求的路径，第一条 `web_fetch` 刻意挡掉了
        * 本机（`net-safety.ts` 开头那段：127.0.0.1 后面可能是 qy 自己的 API）。
        * 这里方向相反、边界也相反：**只有回环允许**，别的一律拒。
        * 放宽一点点，它就成了绕开那道 SSRF 闸的第二条出网通道。
@@ -172,8 +168,8 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
        *
        * 两边分别算的话，一条 `additionalDirectories` 只接了路径层的后果是：
        * 工具参数放行了、内核拒绝了，而模型收到的是一条 EACCES——
-       * 它会以为是文件权限问题，然后开始 chmod。反过来只接沙箱层，
-       * 表现是参数被我们自己拒掉，而内核那边本来是允许的。
+       * 模型会把它当成文件权限问题，然后开始 chmod。反过来只接沙箱层，
+       * 现象是参数在工具层被拒，而内核那边本来是允许的。
        * 两种都表现为「配了但不管用」，且错误信息互不相干。
        */
       const policy: SandboxPolicy = {
@@ -187,7 +183,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         command,
         cwd,
         policy,
-        // NON_INTERACTIVE_ENV 放在剥离**之后**：它是我们自己加的，
+        // NON_INTERACTIVE_ENV 放在剥离**之后**：它由本文件注入，
         // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
         env: {
           ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
@@ -290,7 +286,7 @@ function sandboxHint(active: boolean, stderr: string): string {
  *
  * 脱敏层要防的是**跨出这台机器的泄露**，按这个口径 `SSH_AUTH_SOCK` 不在其内。
  */
-const DEFAULT_ENV_ALLOW = ['SSH_AUTH_SOCK']
+export const DEFAULT_ENV_ALLOW = ['SSH_AUTH_SOCK']
 
 /** 让常见 CLI 不要输出进度条、不要开分页器、不要问问题。 */
 const NON_INTERACTIVE_ENV: Record<string, string> = {
@@ -309,7 +305,7 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
    * 一个 `✓` 就会抛 `UnicodeEncodeError` 把整条命令打挂——不是输出难看，是那一步
    * 的产出全没了。**这条只管 python 自己往 stdout 写什么，不碰 argv 语义。**
    *
-   * 不要顺手加 `LC_ALL=C.UTF-8`：那改的是 MSYS 把 argv 转给原生程序时用的字符集，
+   * 不要额外加 `LC_ALL=C.UTF-8`：那改的是 MSYS 把 argv 转给原生程序时用的字符集，
    * 设成 UTF-8 会让 `cmd /c type 中文.txt` 这类调用拿到原生程序读不懂的字节。
    */
   PYTHONIOENCODING: 'utf-8',
@@ -380,8 +376,8 @@ function deliverStreams(
  * 那一刻才定，等于没有边界。所以只认字面量：`localhost`（含子域）与回环 IP。
  *
  * IP 的判定复用 `classifyAddress`，不自己写匹配：`::ffff:127.0.0.1` 和
- * `::ffff:7f00:1` 是同一个地址，**按写法枚举永远漏一种**（那个函数的注释里
- * 就是这么写的，它已经踩过）。
+ * `::ffff:7f00:1` 是同一个地址，**按写法枚举永远漏一种**（同一条结论写在那个
+ * 函数的注释里）。
  */
 function loopbackTarget(raw: string): { ok: true; url: URL } | { ok: false; why: string } {
   let url: URL
@@ -414,12 +410,9 @@ const PROBE_INTERVAL_MS = 200
 /**
  * 轮询到服务就绪，抓一次响应，然后**无条件树杀**。
  *
- * ## 为什么这件事必须是原子的
- *
- * `run_command` 是同步的：起一个不会自己退出的服务器，就是阻塞到超时。
- * 而「起服务 → 看看页面能不能打开」是编码 agent 的日常动作，之前在本仓
- * 根本做不到——不是被权限拦的，是形状上就没有出路（实测：用户开了完全访问
- * 照样只能等到 `output_truncated`）。
+ * **为什么这件事必须是原子的。** `run_command` 是同步的：起一个不会自己退出的服务器，就是阻塞到超
+ * 时。而「起服务 → 看看页面能不能打开」是编码 agent 的日常动作，之前在本仓根本做不到——不是被权
+ * 限拦的，是形状上就没有出路（实测：用户开了完全访问照样只能等到 `output_truncated`）。
  *
  * 不做「后台跑 + 另一个工具读输出」：那需要一张跨调用存活的进程表，而 Session
  * 是**每条消息一个**（见 `server/src/run-control.ts`），进程表挂上去活不过这条
@@ -429,10 +422,8 @@ const PROBE_INTERVAL_MS = 200
  * 没有 dispose 依赖。代价是验不了「改代码→热重载→再看一眼」那种交互式调试，
  * 这条边界如实写在工具描述里。
  *
- * ## 失败也要把进程输出带回去
- *
- * 探测失败时最有用的信息通常在服务器自己的 stderr 里（端口被占、模块缺失）。
- * 调用方拿到 `ok:false` 之后仍然会把 out/err 拼进结果，所以这里只回判定。
+ * **失败也要把进程输出带回去。** 探测失败时最有用的信息通常在服务器自己的 stderr 里（端口被占、模块
+ * 缺失）。调用方拿到 `ok:false` 之后仍然会把 out/err 拼进结果，所以这里只回判定。
  */
 async function probeThenKill(
   url: URL,
@@ -452,7 +443,7 @@ async function probeThenKill(
         const body = await res.text().catch(() => '')
         return {
           // **状态码不参与成败判定**：4xx/5xx 说明服务确实起来了并且回了话，
-          // 那正是要给模型看的事实。判失败只在「压根连不上」。
+          // 那正是要给模型看的事实。判失败只在「连不上」。
           ok: true,
           message: `服务已就绪：${url.href} 回 ${res.status}（等了 ${attempts * PROBE_INTERVAL_MS}ms 左右），已抓取响应并关闭进程`,
           data: {
