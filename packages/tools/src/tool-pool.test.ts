@@ -10,6 +10,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext, ToolSpec } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
@@ -39,6 +40,7 @@ function ctx(): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -136,15 +138,17 @@ describe('按量决策', () => {
    */
   test('一个大工具就能超预算', () => {
     const fat = fakeExternal('mcp__x__fat', 'x'.repeat(EXTERNAL_SCHEMA_BUDGET_TOKENS * 2 + 100))
-    expect(externalSchemaTokens([fat])).toBeGreaterThan(EXTERNAL_SCHEMA_BUDGET_TOKENS)
+    expect(externalSchemaTokens([fat], DEFAULT_DENSITY)).toBeGreaterThan(
+      EXTERNAL_SCHEMA_BUDGET_TOKENS,
+    )
   })
 
   test('几个小工具还在预算内', () => {
     const small = ['a', 'b', 'c'].map((n) => fakeExternal(`mcp__demo__${n}`))
-    expect(externalSchemaTokens(small)).toBeLessThan(EXTERNAL_SCHEMA_BUDGET_TOKENS)
+    expect(externalSchemaTokens(small, DEFAULT_DENSITY)).toBeLessThan(EXTERNAL_SCHEMA_BUDGET_TOKENS)
   })
 
   test('空集合是 0，不是「有一点」', () => {
-    expect(externalSchemaTokens([])).toBe(0)
+    expect(externalSchemaTokens([], DEFAULT_DENSITY)).toBe(0)
   })
 })

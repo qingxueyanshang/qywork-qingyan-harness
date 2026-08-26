@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import {
   displayPath,
@@ -34,6 +35,7 @@ function ctx(root: string, approve = true): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

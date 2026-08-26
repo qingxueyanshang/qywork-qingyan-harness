@@ -8,8 +8,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
+import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
@@ -69,7 +68,7 @@ const MAX_MATCH_CHARS = 400
  * 而 grep 没有 offset，模型只能靠猜一个更窄的模式重来。
  */
 function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; trimmed: boolean } {
-  const total = estimateText(matches.join('\n'))
+  const total = deliveredTokens(matches.join('\n'), ctx.density)
   const charged = chargeBatchBudget(ctx, total)
   if (charged.ok) return { matches, trimmed: false }
 
@@ -78,7 +77,7 @@ function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; tr
   let used = 0
   for (const m of matches) {
     // +1 是行分隔符：不算它的话，条数多时累计误差正好朝着超预算的方向。
-    const n = estimateText(m) + 1
+    const n = deliveredTokens(m, ctx.density) + 1
     if (used + n > room) break
     kept.push(m)
     used += n

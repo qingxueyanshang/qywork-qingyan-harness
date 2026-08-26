@@ -66,7 +66,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
     const body = this.buildBody(req)
 
-    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, this.spec.density) }
 
     const usage: ProviderUsage = {
       inputTokens: 0,

@@ -10,7 +10,7 @@
  * 3. **重名即装配错误。** 同名注册直接抛，不静默覆盖——覆盖会无声吞掉一整个插件的工具。
  */
 
-import type { ToolSchema } from '@qywork/ai'
+import { estimateJson, type TokenDensity, type ToolSchema } from '@qywork/ai'
 import type {
   ActionDescriptor,
   ActionKind,
@@ -249,18 +249,26 @@ export interface GoalPort {
  * 一次工具调用能投递多少 token。
  *
  * **依据是工具接口的承诺，不是窗口。** `read_file` 的默认行数上限是 2000 行
- * （`tools/files.ts`），2000 行普通代码约 20~25k token。预算必须容得下这个默认
- * 读法，否则工具描述里写的「默认 2000 行」就是假的——模型照描述调用，结果被截，
- * 而它不知道为什么。承诺随产品定，**跟着窗口线性放大是错的**：1M 窗口按比例
- * 会给到 125K，等于一次读取就占掉八分之一上下文。
+ * （`tools/files.ts`），预算必须容得下这个默认读法，否则工具描述里写的
+ * 「默认 2000 行」就是假的——模型照描述调用，结果被截，而它不知道为什么。
+ * 承诺随产品定，**跟着窗口线性放大是错的**：1M 窗口按比例会给到 125K，
+ * 等于一次读取就占掉八分之一上下文。
+ *
+ * **按最费的那一档标定。** 扣账走 `deliveredTokens`（JSON 档），而各家密度不同：
+ * 2000 行普通代码（去掉中文注释、带行号前缀）在已标定的 DeepSeek 档是 23,862，
+ * 在未标定模型走的上界档是 29,828。取 30,000 才能让承诺在两档都成立——
+ * 按已标定那一档定就会让未标定的端点上 `read_file` 的默认读法被拒。
+ *
+ * 中文注释密的源码超出这条线是对的，不是标定失误：本仓 2000 行原样实测 25,514
+ * token，装进工具结果之后更多，它本来就装不下。
  */
-export const READ_DELIVERY_CAP = 25_000
+export const READ_DELIVERY_CAP = 30_000
 
 /**
  * 小窗口下单次投递不得超过的窗口份额。
  *
- * 只在 W < 200K 时生效——200K 档它与 `READ_DELIVERY_CAP` 恰好相等（25K），
- * 那正是上面那个承诺的标定点。
+ * 只在 W < 240K 时生效：240K 档它与 `READ_DELIVERY_CAP` 恰好相等（30K），
+ * 更大的窗口一律由那条承诺封顶。
  */
 export const RESULT_BUDGET_RATIO = 1 / 8
 
@@ -285,6 +293,21 @@ export const BATCH_TO_CALL_RATIO = 2
 export function deliveryBudget(contextWindow: number): { perCall: number; batchCap: number } {
   const perCall = Math.min(Math.floor(contextWindow * RESULT_BUDGET_RATIO), READ_DELIVERY_CAP)
   return { perCall, batchCap: perCall * BATCH_TO_CALL_RATIO }
+}
+
+/**
+ * 一段将要作为工具结果投递的正文有多大。**闸门与请求共用这一把尺。**
+ *
+ * 按 JSON 档量而不是散文档：它最终躺在 `{call_id, tool, status, executed,
+ * summary, result}` 里发出去，而 `estimateMessage` 对 tool 角色整条走 JSON 档
+ * （`ai/tokens.ts`）。这里换一把尺的话，扣的账和真正装进窗口的是两个数，
+ * 差约两成，而两边都不会报错。
+ *
+ * 边界：这里量的是**未转义**的正文，落进 JSON 时换行等字符会再多占一点，
+ * 量级在百分之一二。
+ */
+export function deliveredTokens(text: string, density: TokenDensity): number {
+  return estimateJson(text, density)
 }
 
 const BATCH_SPENT_KEY = 'ctx.batchSpent'
@@ -371,6 +394,14 @@ export interface ToolContext {
    * 换一次模型整段历史失配、缓存全丢，投影也不再是纯函数。
    */
   contextWindow: number
+  /**
+   * 这一轮那个模型的 token 密度。投递预算的扣账用它，与请求那侧同一把尺。
+   *
+   * 与 `contextWindow` 同因同理：上界按执行时的模型算、结果按算出来的界截好落库，
+   * 投影只读已落库的 payload。两侧尺不同的话，同一份结果在闸门这里和在请求里
+   * 是两个数，而扣账扣的是前者、装进窗口的是后者。
+   */
+  density: TokenDensity
   /** 环境注入的只读资源；插件按名取自己需要的，核心不为业务字段扩张。 */
   resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */

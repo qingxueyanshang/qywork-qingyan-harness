@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { HistoryPort, ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readHistoryTool } from './history.ts'
 
 const LONG = '甲'.repeat(60_000)
@@ -54,6 +55,7 @@ function ctx(history: HistoryPort | undefined): ToolContext {
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

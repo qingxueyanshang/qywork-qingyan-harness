@@ -210,6 +210,7 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
       runId: 'rn_1',
       model: 'deepseek-v4-flash',
       contextWindow: adapter.spec.contextWindow,
+      density: adapter.spec.density,
       resources: new Map(),
       state: new Map(),
       sink: null,

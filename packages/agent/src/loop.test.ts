@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
 import {
   classifyProviderError,
+  DEFAULT_DENSITY,
   estimateRequest,
   estimateText,
   lookupModel,
@@ -16,19 +17,20 @@ import { ToolRegistry, type ToolSpec } from './registry.ts'
 /** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0
+  const spec = lookupModel(
+    model,
+    model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
+  )
   return {
     kind: 'anthropic_messages',
     transmits: { effort: true },
-    spec: lookupModel(
-      model,
-      model === 'claude-opus-5' ? 'anthropic_messages' : 'openai_chat_completions',
-    ),
+    spec,
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
       // 三个真适配器都是 `estimateRequest(req)`，假的必须同口径：没有锚点时
       // 面板的总数就是这个值，而分组明细是同一次装配的估算，两者相等是恒等式。
       // 给一个与请求无关的常数，等于让假适配器造出真适配器造不出的状态。
-      yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
+      yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
       if (calls) {
         yield { type: 'tool_calls', calls }
       } else {
@@ -81,6 +83,7 @@ function baseCtx(runId: string): ToolContextBase {
     runId,
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -414,6 +417,7 @@ describe('ToolContext 生命周期', () => {
           runId,
           model: 'test',
           contextWindow: 200_000,
+          density: DEFAULT_DENSITY,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -476,6 +480,7 @@ describe('ToolContext 生命周期', () => {
           runId,
           model: 'test',
           contextWindow: 200_000,
+          density: DEFAULT_DENSITY,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -539,6 +544,7 @@ describe('权限拒绝', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -700,6 +706,7 @@ describe('上下文分组占用', () => {
           runId,
           model: 'test',
           contextWindow: 200_000,
+          density: DEFAULT_DENSITY,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -773,6 +780,7 @@ describe('上下文分组占用', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -837,6 +845,7 @@ describe('上下文分组占用', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -862,7 +871,7 @@ describe('上下文分组占用', () => {
     expect(ctx.source).toBe('actual')
     expect(Object.values(ctx.breakdown).reduce((n, v) => n + v, 0)).toBe(ctx.tokens)
     // 摊法是吸收不是缩放：逐字可数的固定类目保实测值，不许被差额改写。
-    expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys'))
+    expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys', DEFAULT_DENSITY))
   })
 
   /**
@@ -969,6 +978,7 @@ describe('原地打转', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1021,6 +1031,7 @@ describe('原地打转', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1081,6 +1092,7 @@ describe('effort 传到请求上', () => {
           runId,
           model: 'test',
           contextWindow: 200_000,
+          density: DEFAULT_DENSITY,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -1133,6 +1145,7 @@ describe('花费带币种', () => {
           runId,
           model,
           contextWindow: 200_000,
+          density: DEFAULT_DENSITY,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -1238,6 +1251,7 @@ describe('上下文读数：一把尺', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1275,6 +1289,7 @@ describe('上下文读数：一把尺', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1697,6 +1712,7 @@ describe('停止能拽回卡住的工具', () => {
         runId,
         model: 'test',
         contextWindow: 200_000,
+        density: DEFAULT_DENSITY,
         resources: new Map(),
         state: new Map(),
         sink: null,

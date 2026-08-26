@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { registerBuiltinTools } from './index.ts'
 
@@ -21,6 +22,7 @@ function ctx(root: string): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

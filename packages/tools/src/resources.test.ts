@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { SinkPort, ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readResourceTool } from './resources.ts'
 
 const enc = new TextEncoder()
@@ -22,6 +23,7 @@ function ctx(sink: SinkPort | null): ToolContext {
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink,

@@ -25,7 +25,7 @@
  *    加一条例外就是两条规则，而重算一次压缩的成本是零次模型调用。
  */
 
-import type { WireMessage, WireToolCall } from '@qywork/ai'
+import type { TokenDensity, WireMessage, WireToolCall } from '@qywork/ai'
 import { estimateMessages, estimateText } from '@qywork/ai'
 import type {
   ActionKind,
@@ -223,6 +223,11 @@ export interface CompactionInput {
   fold: CompactionCut
   /** 收纳段单独就把占用拉回软阈值之下：不调模型，只前移收纳线。 */
   condenseOnly: boolean
+  /**
+   * 会话主模型那把尺。**不是 summarizer 的**——这些量描述的是主模型看到的上下文，
+   * 换成摘要模型的尺就是拿另一个 tokenizer 去量别人的窗口。
+   */
+  density: TokenDensity
   /** 投影总预算（token）。事实清单先占，摘要拿剩下的。 */
   projectionBudget: number
   /** 摘要输出的常态观测（token，p95）。无观测为 null，此时预算就是 headroom。 */
@@ -296,9 +301,10 @@ export async function compact(
   const facts = fitFacts(
     extractFacts(input.messages, input.actions, previous?.facts),
     Math.floor(input.projectionBudget * FACTS_BUDGET_SHARE),
+    input.density,
   )
   // 事实清单逐字，优先占预算；摘要拿剩下的。两个量全程按 token 计，没有折算点。
-  const headroom = input.projectionBudget - estimateText(factsContent(facts))
+  const headroom = input.projectionBudget - estimateText(factsContent(facts), input.density)
   const budget =
     input.typicalSummaryTokens === null ? headroom : Math.min(headroom, input.typicalSummaryTokens)
   if (budget <= 0) return summaryFailed('no_headroom', '折叠之后仍然没有放摘要的空间')
@@ -343,8 +349,9 @@ export async function compact(
    * 它同时是事实包跨压缩累积的总闸：每折一次，模型看到的总量必须净减。
    */
   const replaced =
-    (previous ? estimateMessages(projectManifest(previous)) : 0) + input.condensedRegionTokens
-  if (estimateMessages(projectManifest(candidate)) >= replaced) {
+    (previous ? estimateMessages(projectManifest(previous), input.density) : 0) +
+    input.condensedRegionTokens
+  if (estimateMessages(projectManifest(candidate), input.density) >= replaced) {
     return summaryFailed('not_smaller', '新投影没有比被替换的内容更小')
   }
 
@@ -481,12 +488,12 @@ function dedupeKeepLatest(list: string[]): string[] {
  *
  * 顺序写成代码不写成配置：它是正确性判断，不是口味。
  */
-function fitFacts(facts: CompactionFacts, budget: number): CompactionFacts {
+function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity): CompactionFacts {
   let spent = 0
   const take = (list: readonly string[]): string[] => {
     const kept: string[] = []
     for (let i = list.length - 1; i >= 0; i--) {
-      const cost = estimateText(`- ${list[i]!}\n`)
+      const cost = estimateText(`- ${list[i]!}\n`, density)
       if (spent + cost > budget) break
       spent += cost
       kept.push(list[i]!)

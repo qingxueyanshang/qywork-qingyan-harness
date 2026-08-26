@@ -34,6 +34,7 @@ export { buildAdapter } from './factory.ts'
 export { describeProbe, type ProbeOutcome, probeModel, toCapabilities } from './probe.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上用它兜底
 export {
+  DEFAULT_DENSITY,
   estimateContent,
   estimateJson,
   estimateMessage,
@@ -42,6 +43,7 @@ export {
   estimateSchemas,
   estimateText,
   MEDIA_TOKENS,
+  type TokenDensity,
 } from './tokens.ts'
 // 协议无关的请求与事件形状
 export type {

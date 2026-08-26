@@ -20,7 +20,13 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall } from '../errors.ts'
-import { estimateMessage, estimateRequest, estimateSchemas, estimateText } from '../tokens.ts'
+import {
+  estimateMessage,
+  estimateRequest,
+  estimateSchemas,
+  estimateText,
+  type TokenDensity,
+} from '../tokens.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -77,7 +83,7 @@ export class AnthropicAdapter implements LlmAdapter {
 
     // 这个数是字符估算，不是实测：Anthropic 有 count_tokens，但热路径不调它——
     // 每轮多一次往返，而上下文读数在第一次回报之后就锚在 provider 真值上了。
-    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req) }
+    yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, this.spec.density) }
 
     const usage: ProviderUsage = {
       inputTokens: 0,
@@ -201,8 +207,10 @@ export class AnthropicAdapter implements LlmAdapter {
       // 断点的前缀长度从工具 schema + 系统提示词算起——它们排在消息之前。
       messages: buildMessages(
         req.messages,
+        this.spec.density,
         this.spec.minCacheablePrefix,
-        estimateSchemas(req.tools) + req.system.reduce((n, b) => n + estimateText(b.text), 0),
+        estimateSchemas(req.tools, this.spec.density) +
+          req.system.reduce((n, b) => n + estimateText(b.text, this.spec.density), 0),
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
@@ -386,6 +394,7 @@ export interface AnthropicOutMessage {
  */
 function buildMessages(
   messages: WireMessage[],
+  density: TokenDensity,
   minPrefix = 0,
   prefixTokens = 0,
 ): Anthropic.MessageParam[] {
@@ -395,7 +404,7 @@ function buildMessages(
   const marks: number[] = []
   let running = prefixTokens
   for (const m of messages) {
-    running += estimateMessage(m)
+    running += estimateMessage(m, density)
     if (m.role === 'tool') {
       // Anthropic 的工具结果是 user 轮里的 tool_result block。
       // 同一轮的多个结果必须合并进**一条** user 消息——拆成多条会训练模型

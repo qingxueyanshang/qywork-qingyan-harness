@@ -9,8 +9,7 @@
  *    不是同一份字节。截断丢掉的部分再也拿不回来，所以必须先落盘。
  */
 
-import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
+import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { type SafetyOptions, safeFetch } from './net-safety.ts'
@@ -101,7 +100,7 @@ export const webFetchTool: ToolSpec = {
     })
     // 摘录也记进本批预算：`deliver` 已经把它压到 8 KB 以内，
     // 但一波五次外取加起来仍然是一笔——批级上界要看得见全部来源。
-    chargeBatchBudget(ctx, estimateText(landed.text))
+    chargeBatchBudget(ctx, deliveredTokens(landed.text, ctx.density))
 
     const resources: IntermediateResourceRef[] = landed.resourceId
       ? [

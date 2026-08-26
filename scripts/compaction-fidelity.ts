@@ -191,11 +191,15 @@ async function main(): Promise<number> {
    * 摘要还剩约六成占用可用。
    */
   const occupancy = listMessages(store, conv.id, null).reduce(
-    (n, m) => n + estimateText(m.content),
+    (n, m) => n + estimateText(m.content, adapter.spec.density),
     0,
   )
   const contextWindow = Math.round(occupancy * 1.2)
-  const outcome = await compaction.run({ occupancy, contextWindow })
+  const outcome = await compaction.run({
+    occupancy,
+    contextWindow,
+    density: adapter.spec.density,
+  })
   if (outcome.status !== 'compacted') {
     process.stderr.write(`压缩未执行：${outcome.status}\n`)
     return 1
