@@ -31,6 +31,7 @@
     "smoke:serve": "bun run scripts/smoke-serve.ts",
     "smoke:responses": "bun run scripts/smoke-responses.ts",
     "smoke:compaction": "bun run scripts/compaction-fidelity.ts",
+    "smoke:context": "bun run scripts/context-scale-live.ts",
     "seed:demo": "bun run scripts/seed-demo.ts",
     "shoot": "node scripts/shoot-ui.mjs",
     "check:attachments": "node scripts/check-attachments.mjs",
