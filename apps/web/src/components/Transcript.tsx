@@ -23,13 +23,17 @@ import {
 } from '../lib/render-items.ts'
 import {
   argsRows,
+  CLI_PREFIX,
   clamp,
   collapseCarriageReturns,
   compact,
+  delegateGraph,
   diffFrom,
   displayTarget,
   fileDelta,
+  firstLine,
   firstString,
+  type GraphNode,
   hitRate,
   listOf,
   sanitizeTarget,
@@ -56,10 +60,10 @@ export function Transcript() {
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
   /**
-   * 我们自己写下去的那个 scrollTop（写完读回来的值）。`-1` = 还没写过。
+   * 本组件写下去的那个 scrollTop（写完读回来的值）。`-1` = 还没写过。
    *
    * **必须读回来**：写下去的目标会被浏览器夹到 `scrollHeight - clientHeight`，
-   * 记着没夹过的那个数，下面那句「这次滚动是我自己写的」永远判不成立。
+   * 记着没夹过的那个数，下面那句「这次滚动由本组件写入」永远判不成立。
    */
   let followTop = -1
 
@@ -71,18 +75,17 @@ export function Transcript() {
   /*
    * 跟不跟随，**只由用户的手势改，不由某一次滚动事件里的几何决定**。
    *
-   * 这是这块面板修过三次都没修掉的那个根因：判据原来只是「这次事件里离底多少」，
-   * 而滚动事件不保证在几何稳定的那一刻到达——我们补偿完写下去的那次滚动，它的事件
-   * 排在下一帧，而那一帧可能已经又落了一段内容。于是处理器读到的是
-   * 「新的 scrollHeight ＋ 旧的 scrollTop」= 离底几十像素，被判成「用户往上翻了」，
+   * 判据不能只看「这次事件里离底多少」：滚动事件不保证在几何稳定的那一刻到达——
+   * 补偿后写下去的那次滚动，其事件排在下一帧，而那一帧可能已经又落了一段内容。因此处理器读到的是
+   * 「新的 scrollHeight ＋旧的 scrollTop」= 离底几十像素，被判成「用户往上翻了」，
    * 跟随就此关掉；关掉之后离底只会越来越大，**再也不会自己回来**。
    *
    * 实测（真服务真前端，假 provider 驱动一轮四步：`.probe-ws`）：跟随在第 5 秒关掉，
    * 之后 379 个安静帧稳定停在离底 253px——新来的内容全在视口下面，读数条被顶出屏幕。
-   * 上一版拿 `position: sticky` 把读数条粘住，粘住的只是那一条：滚动位置照旧漂在
-   * 离底两百多像素，正文照旧看不见，而「跳」换成了「每次内容变矮时猛地对回来一下」。
+   * 不要用 `position: sticky` 粘住读数条：粘住的只是那一条，滚动位置仍停在离底
+   * 两百多像素，正文仍不可见，而「跳」变成「每次内容变矮时对回一次」。
    *
-   * 所以先认出自己写的那次滚动并放过它（`mine`），剩下的才是用户真的动了手。
+   * 正确做法是先认出本组件写入的那次滚动并放过它（`mine`），剩下的才是用户手势。
    * 容差 2px 只留给分数像素（scrollTop 是小数，另两个是整数）。
    */
   const onScroll = () => {
@@ -185,22 +188,16 @@ const SILENT_MS = 30_000
  * 按**流的位置**判断，而不是按快照推：从时间线快照反推会慢半拍，
  * 而这行字的全部意义就是「它现在有反应」。
  *
- * ## 为什么必须有「正在请求」这一档
+ * **为什么必须有「正在请求」这一档。** 只有三档、拿「正在回复」兜底是不成立的：刚发出消息那一刻，流
+ * 的最后一条是用户自己那句话——回车之后立刻显示「正在回复…」，紧接着出现的却是思考内容。那句话
+ * 在它为真之前就说了：请求刚发出，模型一个字都还没输出。
  *
- * 之前只有三档，「正在回复」是**兜底**。而刚发出消息那一刻，流的最后一条是用户
- * 自己那句话——于是回车之后立刻显示「正在回复…」，紧接着冒出来的却是思考内容。
- * 那句话在它为真之前就说了：请求刚发出，模型一个字都还没吐。
+ * **为什么「正在执行」要看 `status`。** 只看 `kind === 'tool'` 的话，工具跑完之后到模型回包之间这一
+ * 整段都在说「正在执行…」——而那段是最容易出事的一段（实测一次断流就断在这之后的 262 秒里）。工
+ * 具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。
  *
- * ## 为什么「正在执行」要看 `status`
- *
- * 只看 `kind === 'tool'` 的话，工具跑完之后到模型回包之间这一整段都在说「正在执行…」
- * ——而那段恰恰是最容易出事的一段（实测一次断流就断在这之后的 262 秒里）。
- * 工具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。
- *
- * ## 静默那一档为什么要绕开两种情形
- *
- * 工具还在跑时绕开（一次构建十分钟很正常，而它自己会出 stdout）——
- * 那种情况下报静默是假话。
+ * **静默那一档为什么要绕开两种情形。** 工具还在跑时绕开：一次构建十分钟很正常，而它自己
+ * 会出 stdout，那种情况下报静默是假话。
  */
 function liveStatus(now: number): string {
   const last = state.transcript[state.transcript.length - 1]
@@ -217,7 +214,7 @@ function liveStatus(now: number): string {
   if (state.connection !== 'ready') return ''
 
   /*
-   * 重发中的那一段：末条是死掉那次留下的半截思考，按流的位置判会说成「正在思考…」
+   * 重发中的那一段：末条是失败那次留下的半截思考，按流的位置判会说成「正在思考…」
    * ——而此刻模型一个字都没在写。上限的数由事件带来，不在这里写死。
    */
   const retry = state.retry
@@ -239,17 +236,12 @@ function liveStatus(now: number): string {
  * 只有「运行中且是最后一条」才按流式渲染（`createStreamRenderer`，关闭语言自动检测）；
  * 定稿后整段重渲染一次并开启检测，那一次同时纠正增量渲染的已知偏差。
  *
- * ## 这里不许再加一层限速
+ * **这里不许再加一层限速。** 正文进 store 的节奏**已经由 `stream-pace.ts` 定死**：50ms 一档，每档按
+ * 上游流速放几个字。在这之上再套一个自己的定时器，两级串起来是这样的——第一次变化排一个 60ms 的
+ * timer，期间的变化被合并，落地后 timer 清空，下一次变化再排 60ms：**稳态变成每 100ms 落地一次、
+ * 每次落两档的量**。20Hz 的匀速被压成 10Hz 的跳变，正文成批出现而不是连续流出。
  *
- * 正文进 store 的节奏**已经由 `stream-pace.ts` 定死**：50ms 一档，每档按上游流速
- * 放几个字。在这之上再套一个自己的定时器，两级串起来是这样的——第一次变化排一个
- * 60ms 的 timer，期间的变化被合并，落地后 timer 清空，下一次变化再排 60ms：
- * **稳态变成每 100ms 落地一次、每次蹦出两档的量**。20Hz 的匀速被压成 10Hz 的跳变，
- * 看起来就是字一撮一撮往外蹦，不是流出来的。
- *
- * ## DOM 只动活动区
- *
- * 已定稿的块贴进容器就不再碰，每档只删掉它们之后那几个节点再贴一次活动区。
+ * **DOM 只动活动区。** 已定稿的块贴进容器就不再碰，每档只删掉它们之后那几个节点再贴一次活动区。
  * **不要把两个区各包一个 `<div>`**：`transcript.css` 的 `.markdown > :first-child` /
  * `:last-child` / `p:last-child` 是按容器的直接子元素写的，包一层这三条全部失效
  * （首尾的外边距塌不掉，两个区之间多出一截）。
@@ -292,7 +284,7 @@ function Prose(props: { item: TranscriptItem }) {
      * `streaming()` 必须**订阅**，不能塞进下面的 `untrack`。
      *
      * 定稿那一下常常不改变文本长度——末档的字在 `run.finished` 之前就冲进 store 了，
-     * 于是闸门写回同一个值、信号不通知。只认闸门的话整段重渲染永远不会发生，
+     * 因此闸门写回同一个值、信号不通知。只认闸门的话整段重渲染永远不会发生，
      * 而语言自动检测和增量渲染的已知偏差都指着它纠正。
      * 它自己不会每档变：读的是末项的 id，往末项追加文本不动 id。
      */
@@ -335,11 +327,11 @@ function Prose(props: { item: TranscriptItem }) {
  * 折叠：思考、工具、工具组共用的**同一个**形状。
  *
  * 不要让它们长成三样（思考一个左边框、工具一张卡片、工具组另一张更大的卡片）：
- * 三种形状在同一列里交替出现，而它们在语义上是同一类东西——**这一轮里发生了
+ * 三种形状在同一列里交替出现，而它们在语义上是同一类条目——**这一轮里发生了
  * 一件可以展开看的事**。
  *
  * 用原生 `<details>` 而不是自己管 open 状态：键盘语义、`Enter`/`Space` 展开、
- * 屏幕阅读器的展开态播报全是白拿的，自写 button + signal 每一样都要补。
+ * 屏幕阅读器的展开态播报都由元素自带，自写 button + signal 每一样都要补。
  */
 function Fold(props: {
   label: string
@@ -360,11 +352,11 @@ function Fold(props: {
   /*
    * **开合只由用户点，谁都不许替他开、替他合。**
    *
-   * 原来这里有个 `autoOpen`：思考跑起来自动展开、跑完自动收起，工具组同理。它是会话流
+   * **不要加 `autoOpen`**（思考跑起来自动展开、跑完自动收起，工具组同理）：那是会话流
    * 「一直上下跳动」的根——`.fold-pre` 一次开合就是 200px，而一轮里有好几段思考、
-   * 好几组命令，于是内容高度在跑的过程中反复变矮又变高。实测一轮四步：会话流高度
+   * 好几组命令，因此内容高度在跑的过程中反复变矮又变高。实测一轮四步：会话流高度
    * 变矮 5 次，幅度 58 / 82 / 122 / 146 / 191px（`.probe-ws` 那份探针）。
-   * 贴着底看的人被这几百像素来回甩，而他一个字都没点。
+   * 贴着底看的用户因此被动经历几百像素的来回位移，而他没有做任何操作。
    *
    * 收起态并不少信息：思考那条的标签里带着**实时更新的正文摘要**，工具组的标题写着
    * 干了什么。要看全的自己点开——点开之后也不会被自动合上。
@@ -421,7 +413,7 @@ function ThinkingFold(props: { item: TranscriptItem }) {
    * 只作用在外层。用户在思考还在流的时候点开它，不跟随的话它停在第一屏——
    * 新来的字一直往下堆在看不见的地方，看起来像卡住了。
    *
-   * 只在流式期跟随：停下来之后用户往回翻，不该被拽回底部（那正是外层刻意避免的）。
+   * 只在流式期跟随：停下来之后用户往回翻，不该被强制滚回底部（那正是外层刻意避免的）。
    */
   let pre: HTMLPreElement | undefined
   createEffect(() => {
@@ -462,12 +454,10 @@ function LiveOutput(props: { item: TranscriptItem }) {
 /**
  * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
  *
- * ## 为什么收数据靠 props 而不是读 store
- *
- * 读 `state.usage` / `state.stopReason` / `state.runStartedAt` 那几个全局字段的话，
- * 整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新更是一条不剩。
- * 而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，
- * 才是它本来的形状。
+ * **为什么收数据靠 props 而不是读 store。** 读 `state.usage` / `state.stopReason` /
+ * `state.runStartedAt` 那几个全局字段的话，整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新
+ * 更是一条不剩。而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，才是它本来
+ * 的形状。
  *
  * 跑完的那一轮走 `props.run`；还在跑的那一轮没有 run 行可读，
  * 由 `<LiveRunBar />` 拿实时状态渲染同一个外壳。
@@ -503,7 +493,7 @@ function RunStatusBar(props: {
    * 地址与代理」才说得出该干什么——两句一起显示是同一件事说两遍，而这一格
    * 排在读数条末位，本来就是留给「为什么停」的。
    *
-   * 只取第一行：个别正文会带上配置文件路径那种第二行，读数条是一行的东西，
+   * 只取第一行：个别正文会带上配置文件路径那种第二行，而读数条只有一行，
    * 整段贴进来会把这一行撑开、把前面几格挤走。
    */
   const reason = () => {
@@ -561,7 +551,7 @@ function RunStatusBar(props: {
           <span class="run-live">{props.liveNote}</span>
         </Show>
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
-            于是出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
+            因此出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
         <Show when={!normal()}>
           <span class="run-reason">{reason()}</span>
         </Show>
@@ -763,32 +753,41 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
 }
 
 /**
- * 编排的图卡。
+ * 派活的图卡。**派一件与派一张图共用这一张**——一次派活就是一张只有一格的图，
+ * 两种画法并存的代价是同一件事在会话流里长两个样。
  *
- * **形状来自参数，状态来自事件或结果。** 参数（`args.nodes`）随 `tool.started` 就到，
- * 所以第一帧就能把整张图画全，等着跑的节点也在图上；状态活着的时候来自
- * `team.member` 事件（`item.nodes`），刷新之后来自这次调用落库的结果
- * （`outcome.data.nodes`）。两条路各管一段，不互相兜底——进度事件不落库。
+ * **形状来自参数，状态来自事件或结果。** 参数随 `tool.started` 就到，所以第一帧就能
+ * 把整张图画全，等着跑的格子也在图上；状态在流式期来自 `team.member` 事件
+ * （`item.nodes`），刷新之后来自落库的终态。两条路各管一段，不互相兜底——进度事件不落库。
  *
  * 按依赖分层排：同一层的并排（它们真的在并行跑），层与层之间一条竖线。
  * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
  */
-function WorkflowCard(props: { item: TranscriptItem }) {
-  const shape = (): { id: string; agent: string; needs: string[] }[] => {
-    const raw = props.item.args?.nodes
-    if (!Array.isArray(raw)) return []
-    return raw.map((n) => {
-      const o = (n ?? {}) as Record<string, unknown>
-      return {
-        id: String(o.id ?? ''),
-        agent: String(o.agent ?? ''),
-        needs: Array.isArray(o.needs) ? o.needs.map(String) : [],
-      }
-    })
-  }
+function DelegateCard(props: { item: TranscriptItem }) {
+  const graph = () => delegateGraph(props.item)
 
-  const stateOf = (id: string) => {
-    const live = props.item.nodes?.find((n) => n.nodeId === id)
+  /**
+   * 一格现在什么状态。会话端点没有状态——它是这条会话本身。
+   *
+   * **三条来源各管一段**：进度事件（流式）· 编排结果里的逐节点终态（刷新之后的一张图）·
+   * 这条 step 自己（刷新之后的一次派活——那一格就是这条 step）。
+   * 第三条与前两条不是兜底关系：派一件的结果里本来就没有逐节点终态，
+   * 那一格的成败、耗时全在 step 账上。
+   */
+  const stateOf = (n: GraphNode) => {
+    if (n.kind === 'session') return null
+    const live = props.item.nodes?.find((x) => x.nodeId === n.key)
+    if (props.item.toolName !== 'workflow') {
+      const settled =
+        props.item.status === 'success' ? 'done' : props.item.status === 'failure' ? 'failed' : null
+      return {
+        phase: live?.phase ?? settled ?? 'working',
+        label: live?.label ?? '',
+        // 耗时不在进度事件里，它随 `tool.finished` 落进这条 step。
+        durationMs: props.item.durationMs,
+        conversationId: live?.conversationId ?? flatConversationId(props.item),
+      }
+    }
     if (live) {
       return {
         phase: live.phase,
@@ -797,7 +796,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
         conversationId: live.conversationId,
       }
     }
-    // 回放这一路读的是落库的结果，**字段名与事件那一路不同**：结果里是
+    // 回放这条路读的是落库的结果，**字段名与事件那条路不同**：结果里是
     // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working）。
     // 照着事件的名字去读结果，每个节点都会退化成「等着跑」——刷新一次整张图全灰。
     const back = (
@@ -813,7 +812,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
             }[]
           }
         | undefined
-    )?.nodes?.find((n) => n.nodeId === id)
+    )?.nodes?.find((n2) => n2.nodeId === n.key)
     return back
       ? {
           phase: back.status,
@@ -822,29 +821,6 @@ function WorkflowCard(props: { item: TranscriptItem }) {
           conversationId: back.conversationId,
         }
       : null
-  }
-
-  /** 按依赖分层：一个节点落在「它所有上游的最深层 + 1」。 */
-  const layers = () => {
-    const nodes = shape()
-    const depth = new Map<string, number>()
-    const of = (id: string, seen: Set<string>): number => {
-      if (depth.has(id)) return depth.get(id)!
-      if (seen.has(id)) return 0
-      seen.add(id)
-      const n = nodes.find((x) => x.id === id)
-      const d = n?.needs.length ? Math.max(...n.needs.map((p) => of(p, seen))) + 1 : 0
-      depth.set(id, d)
-      return d
-    }
-    const out: (typeof nodes)[] = []
-    for (const n of nodes) {
-      const d = of(n.id, new Set())
-      const layer = out[d] ?? []
-      layer.push(n)
-      out[d] = layer
-    }
-    return out.filter(Boolean)
   }
 
   /**
@@ -866,15 +842,23 @@ function WorkflowCard(props: { item: TranscriptItem }) {
     // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
     const at = (v: number) => Math.round(v) + 0.5
     const out: { d: string; live: boolean }[] = []
-    for (const n of shape()) {
-      const to = refs.get(n.id)
+    const g = graph()
+    for (const n of g.nodes) {
+      const to = refs.get(n.key)
       if (!to) continue
       const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
       if (sources.length === 0) continue
       // 这一组边流不流动，看它汇进去的那个节点在不在跑。
-      const phase = stateOf(n.id)?.phase
+      const phase = stateOf(n)?.phase
       const live = phase === 'spawned' || phase === 'working'
       const t = to.getBoundingClientRect()
+      if (g.horizontal) {
+        // 三格横排时每条边只连一对格子：左格右缘中点画到右格左缘中点，一条直线。
+        const r = sources[0]!.getBoundingClientRect()
+        const y = at(t.top + t.height / 2 - b.top)
+        out.push({ d: `M${at(r.right - b.left)} ${y}H${at(t.left - b.left)}`, live })
+        continue
+      }
       const tx = at(t.left + t.width / 2 - b.left)
       const ty = at(t.top - b.top)
       const rects = sources.map((el) => el.getBoundingClientRect())
@@ -909,7 +893,7 @@ function WorkflowCard(props: { item: TranscriptItem }) {
 
   /**
    * 容器自己也要观察。**节点定宽，所以拖面板时它们的尺寸一个都不变**——只观察节点的话
-   * 观察器根本不回调，而居中的那一行整体挪了位，线停在上一次的坐标上。
+   * 观察器不回调，而居中的那一行整体挪了位，线停在上一次的坐标上。
    * 容器宽度是所有节点位置的唯一变量，观察它就补齐了这一类布局变化。
    */
   const holdBox = (el: HTMLDivElement) => {
@@ -924,47 +908,60 @@ function WorkflowCard(props: { item: TranscriptItem }) {
 
   return (
     <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
-      <div class="wf-goal truncate">{String(props.item.args?.goal ?? '')}</div>
-      <div class="wf-graph" ref={holdBox}>
+      <div class="wf-goal truncate">{cardTitle(props.item)}</div>
+      <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">
           <For each={edges()}>{(e) => <path d={e.d} classList={{ live: e.live }} />}</For>
         </svg>
-        <For each={layers()}>
+        <For each={graph().layers}>
           {(layer) => (
             <div class="wf-layer">
               <For each={layer}>
                 {(n) => {
-                  const st = () => stateOf(n.id)
+                  const st = () => stateOf(n)
                   /*
-                   * 点节点 = 翻开它。两种节点翻开的东西不同：内置子 agent 有一条
+                   * 点一格 = 翻开它。两种格子翻开的内容不同：内置子 agent 有一条
                    * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
                    * 两者都没有时（还没跑到）点不开。
                    */
-                  const cli = () => n.agent.startsWith('cli:')
+                  const cli = () => n.agent.startsWith(CLI_PREFIX)
+                  // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
+                  // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
+                  const name = () => (n.agentLabel ? n.title : st()?.label || n.title)
                   const open = () => {
                     const cid = st()?.conversationId
-                    if (cid) openConversationTab(cid, n.id)
-                    else if (cli()) openCliTab(props.item.id, n.id)
+                    if (cid) openConversationTab(cid, name())
+                    else if (cli()) openCliTab(props.item.id, n.key, name())
                   }
                   return (
-                    <button
-                      type="button"
-                      class="wf-node"
-                      classList={{ [st()?.phase ?? 'waiting']: true }}
-                      disabled={!st()?.conversationId && !(cli() && st())}
-                      onClick={open}
-                      ref={hold(n.id)}
+                    <Show
+                      when={n.kind === 'agent'}
+                      fallback={
+                        // 两端是这条会话自己：交出去、收回来。不可点——它就是用户正在看的这一页。
+                        <div class="wf-node session" ref={hold(n.key)}>
+                          <span class="wf-node-name truncate">{n.title}</span>
+                        </div>
+                      }
                     >
-                      {/* 主行是节点 id：一张图里区分得开谁是谁的就是它。
-                          执行者压一档——同一张图里常常四个节点都是同一个。 */}
-                      <span class="wf-node-name truncate">{n.id}</span>
-                      <span class="wf-node-who truncate">
-                        {st()?.label || n.agent}
-                        <Show when={st()?.durationMs}>
-                          {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
-                        </Show>
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        class="wf-node"
+                        classList={{ [st()?.phase ?? 'waiting']: true }}
+                        disabled={!st()?.conversationId && !(cli() && st())}
+                        onClick={open}
+                        ref={hold(n.key)}
+                      >
+                        {/* 主行是那一格的名字：一张图里区分得开谁是谁的就是它。
+                            执行者压一档——同一张图里常常四格都是同一个。 */}
+                        <span class="wf-node-name truncate">{name()}</span>
+                        <span class="wf-node-who truncate">
+                          <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
+                          <Show when={st()?.durationMs}>
+                            {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
+                          </Show>
+                        </span>
+                      </button>
+                    </Show>
                   )
                 }}
               </For>
@@ -972,13 +969,33 @@ function WorkflowCard(props: { item: TranscriptItem }) {
           )}
         </For>
       </div>
+      {/* 失败原因。**只印这一处**：边框已经说了「失败了」，这一行说的是为什么。 */}
+      <Show when={props.item.status === 'failure' && props.item.outcome?.message}>
+        {(msg) => <div class="wf-error">{msg()}</div>}
+      </Show>
     </div>
   )
 }
 
+/** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */
+function cardTitle(item: TranscriptItem): string {
+  const raw = item.toolName === 'workflow' ? item.args?.goal : item.args?.task
+  return firstLine(typeof raw === 'string' ? raw.trim() : '')
+}
+
+/** 派一件那张卡上的子会话 id：它不在逐节点终态里，就在结果的顶层。 */
+function flatConversationId(item: TranscriptItem): string | undefined {
+  const cid = (item.outcome?.data as { conversationId?: unknown } | undefined)?.conversationId
+  return typeof cid === 'string' && cid ? cid : undefined
+}
+
 function ToolCard(props: { item: TranscriptItem }) {
   const changes = () => fileDelta(props.item.outcome?.fileChanges)
-  if (props.item.toolName === 'workflow') return <WorkflowCard item={props.item} />
+  // 派活的那两个画成图，不套折叠：它们各自是一整条子会话的入口，
+  // 而产出正文在那条子会话（或那个 CLI 进程的输出流）里本来就有。
+  if (props.item.toolName === 'workflow' || props.item.toolName === 'subagent') {
+    return <DelegateCard item={props.item} />
+  }
   return (
     <Fold
       failed={props.item.status === 'failure'}
@@ -989,30 +1006,12 @@ function ToolCard(props: { item: TranscriptItem }) {
       {...(changes() ? { changes: changes()! } : {})}
     >
       <StepBody item={props.item} />
-      {/* 派出去那一件事的子会话。产出正文在上面已经有了，这里是「它是怎么做的」。 */}
-      <Show when={childConversation(props.item)}>
-        {(cid) => (
-          <button
-            type="button"
-            class="ghost-btn cv-open"
-            onClick={() => openConversationTab(cid(), String(props.item.args?.agent || '子 agent'))}
-          >
-            子会话
-          </button>
-        )}
-      </Show>
     </Fold>
   )
 }
 
-/** 这张卡上带着的子会话 id。只有 `subagent` 会有——图卡的 id 在每个节点上。 */
-function childConversation(item: TranscriptItem): string | null {
-  const cid = (item.outcome?.data as { conversationId?: unknown } | undefined)?.conversationId
-  return typeof cid === 'string' && cid ? cid : null
-}
-
 /**
- * 展开体。**必须给出标题行没有的东西**，而且**一种动作一种主体**，
+ * 展开体。**必须给出标题行没有的信息**，而且**一种动作一种主体**，
  * 不是把所有可能的块堆在一起。
  *
  * 只渲染 `outcome.message` 等于复述标题行：「读取 packages/server/src/git.ts」
@@ -1020,12 +1019,12 @@ function childConversation(item: TranscriptItem): string | null {
  * 知道。真正有信息的是参数——改的 diff、跑的命令、读的范围，全在 `args` 里。
  *
  * 分法：
- *   失败  错误正文 →（分隔线）→ 参数表
- *   待办  清单逐行（勾 / 转圈 / 空心点）
+ *   失败错误正文 →（分隔线）→ 参数表
+ *   待办清单逐行（勾 / 转圈 / 空心点）
  *   编辑  diff →（分隔线）→ 结果
- *   运行  命令原文 →（分隔线）→「输出」标签 + 输出
- *   创建  新内容全文 → 结果
- *   其余  参数表 →（分隔线）→ 结果
+ *   运行命令原文 →（分隔线）→「输出」标签 + 输出
+ *   创建新内容全文 → 结果
+ *   其余参数表 →（分隔线）→ 结果
  *
  * 「结果」这一格取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
  * 取不到才回落到 `message`——message 只是一句摘要，不是正文。
@@ -1056,8 +1055,8 @@ function StepBody(props: { item: TranscriptItem }) {
         {/*
          * **失败也要把输出带出来。** 只给一句 message 加一张参数表是不够的：
          * message 只是摘要，命令失败时它就是「命令退出码 1」这七个字。用户展开一张
-         * 失败的命令卡看到「跑了什么」和「失败了」，唯独没有「它到底吐了什么」，
-         * 也就无从判断是命令不对还是被测的东西不对。
+         * 失败的命令卡看到「跑了什么」和「失败了」，唯独没有它输出了什么，
+         * 也就无从判断是命令不对还是被测的代码不对。
          *
          * `noMessage` 是因为上面那行已经把 message 显示过了，回落会原样重复一遍。
          */}
@@ -1071,7 +1070,7 @@ function StepBody(props: { item: TranscriptItem }) {
       {/*
        * 待办清单。**不能落到通用参数表那一支**：整表 JSON 挤在一格里，
        * 状态埋在 `"status":"in_progress"` 的引号中间，问「哪几条做完了」
-       * 得自己数引号。这一支给的是标题行没有的东西——每条的状态。
+       * 得自己数引号。这一支给的是标题行没有的信息——每条的状态。
        *
        * `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单里那一条正带着
        * 转圈的记号，同一件事说两遍。
@@ -1130,8 +1129,8 @@ function Generic(props: { item: TranscriptItem }) {
  * 结果那一格。
  *
  * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → `data.output` → 列表型 →
- * `outcome.message`。`output` 是子 agent 交回来的正文：不取它，`subagent` 展开后
- * 只有一句「做完了」。
+ * `outcome.message`。`output` 这一键留给 MCP 与插件的工具——它们的 data 形状由第三方
+ * 决定，这是其中的常见键；内置工具里没有生产者（派活那两个画成图卡，不走这里）。
  *
  * **失败时把 `stderr` 提到最前**：报错基本只写在错误流里，而 stdout 常常另有内容
  * （测试的进度输出、服务器的启动日志），按成功时的顺序取就会拿到它、把真正的

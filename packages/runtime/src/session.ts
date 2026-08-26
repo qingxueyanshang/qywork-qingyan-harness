@@ -728,13 +728,14 @@ export class Session {
           payload: { kind: 'tool_call', args: call.arguments, action },
         }).id,
       markExecuting: (stepId) => markStepExecuting(store, stepId as never),
-      settleTool: (stepId, status, outcome, args, action) =>
-        settleToolStep(store, stepId as never, status, {
-          kind: 'tool_result',
-          args,
-          outcome,
-          action,
-        }),
+      settleTool: (stepId, status, outcome, args, action, durationMs) =>
+        settleToolStep(
+          store,
+          stepId as never,
+          status,
+          { kind: 'tool_result', args, outcome, action },
+          durationMs,
+        ),
       saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
       recordCompaction: (runId, seq, payload) => {
         appendStep(store, {

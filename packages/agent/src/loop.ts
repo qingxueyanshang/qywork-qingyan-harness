@@ -167,6 +167,11 @@ export interface LoopPersistence {
     outcome: ToolOutcomeWire,
     args: Record<string, unknown>,
     action: ActionDescriptor,
+    /**
+     * 这次调用跑了多久。**与 `tool.finished` 事件里那个数是同一个**——
+     * 一处量、两处用：事件给运行期的界面，落库给刷新之后的回放。
+     */
+    durationMs: number,
   ): void
   saveUsage(runId: RunId, usage: RunUsage): void
   /**
@@ -1434,7 +1439,14 @@ export class AgentLoop {
 
           for (const s of settled) {
             const status = s.outcome.status === 'success' ? 'success' : 'failure'
-            persist.settleTool(s.stepId, status, s.outcome, s.call.arguments, s.action)
+            persist.settleTool(
+              s.stepId,
+              status,
+              s.outcome,
+              s.call.arguments,
+              s.action,
+              s.durationMs,
+            )
 
             if (s.outcome.fileChanges?.length) {
               fileChanges.push(...s.outcome.fileChanges)

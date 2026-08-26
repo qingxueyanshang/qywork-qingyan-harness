@@ -32,11 +32,18 @@ interface Ran {
   output: string
   error?: string
   session?: string
+  conversationId?: string
 }
 
 /** 一个假的派活端口：记下派了什么，回一个预设结果。 */
 function stub(result: Ran) {
-  const calls: { target: string; task: string; resume?: string }[] = []
+  const calls: {
+    target: string
+    task: string
+    resume?: string
+    runId: string
+    stepId?: string
+  }[] = []
   return {
     calls,
     port: {
@@ -44,11 +51,19 @@ function stub(result: Ran) {
         { id: 'reviewer', kind: 'role' as const, description: '代码审查' },
         { id: 'cli:claude', kind: 'cli' as const, description: 'Anthropic · 已接入' },
       ],
-      run: async (input: { target: string; task: string; resume?: string }) => {
+      run: async (input: {
+        target: string
+        task: string
+        resume?: string
+        runId: string
+        stepId?: string
+      }) => {
         calls.push({
           target: input.target,
           task: input.task,
           ...(input.resume ? { resume: input.resume } : {}),
+          runId: input.runId,
+          ...(input.stepId ? { stepId: input.stepId } : {}),
         })
         return result
       },
@@ -58,7 +73,7 @@ function stub(result: Ran) {
 }
 
 describe('派活工具的注册条件', () => {
-  test('没有派活通道时压根不注册', () => {
+  test('没有派活通道时不注册', () => {
     const r = new ToolRegistry()
     registerBuiltinTools(r)
     expect(r.list().some((s) => s.name === 'subagent')).toBe(false)
@@ -83,19 +98,19 @@ describe('派活', () => {
     const res = await subagentTool.fn({ task: '去查一下' }, ctx(s.port))
     expect(res.status).toBe('success')
     expect(res.message).toContain('临时子 agent')
-    expect(s.calls).toEqual([{ target: '', task: '去查一下' }])
+    expect(s.calls).toEqual([{ target: '', task: '去查一下', runId: 'rn_test', stepId: 'st_test' }])
   })
 
   test('指名道姓派给不存在的目标时才拒，并提示可以临时起一个', async () => {
     const s = stub({ ok: true, output: '' })
-    const res = await subagentTool.fn({ agent: '查无此人', task: '干活' }, ctx(s.port))
+    const res = await subagentTool.fn({ agent: '查无此人', task: '执行任务' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('reviewer')
   })
 
   test('目标不存在时把能派的列出来，不是干巴巴一句没找到', async () => {
     const s = stub({ ok: true, output: '' })
-    const res = await subagentTool.fn({ agent: '不存在', task: '干活' }, ctx(s.port))
+    const res = await subagentTool.fn({ agent: '不存在', task: '执行任务' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('reviewer')
     expect(res.message).toContain('cli:claude')
@@ -113,15 +128,49 @@ describe('派活', () => {
     const res = await subagentTool.fn({ agent: 'reviewer', task: '看一眼' }, ctx(s.port))
     expect(res.status).toBe('success')
     expect((res.data as { output: string }).output).toBe('审查结论')
-    expect(s.calls).toEqual([{ target: 'reviewer', task: '看一眼' }])
+    expect(s.calls).toEqual([
+      { target: 'reviewer', task: '看一眼', runId: 'rn_test', stepId: 'st_test' },
+    ])
   })
 
   /** 失败要带着对方给的原因回来：模型据此换做法，压成一句「执行出错」就没法换。 */
   test('派失败时带回原因', async () => {
     const s = stub({ ok: false, output: '', error: '退出码 1' })
-    const res = await subagentTool.fn({ agent: 'cli:claude', task: '干活' }, ctx(s.port))
+    const res = await subagentTool.fn({ agent: 'cli:claude', task: '执行任务' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('退出码 1')
+  })
+
+  /**
+   * 进度事件要挂到这张卡上才看得见，`runId` 与 `stepId` 两个都得传下去——
+   * 前者是事件的必填字段，后者是前端认领卡片的依据。
+   */
+  test('把这一轮与这张卡的 id 一起传给端口', async () => {
+    const s = stub({ ok: true, output: '好了' })
+    await subagentTool.fn({ task: '去查一下' }, ctx(s.port))
+    expect(s.calls[0]?.runId).toBe('rn_test')
+    expect(s.calls[0]?.stepId).toBe('st_test')
+  })
+
+  /**
+   * 拿不到卡片 id 时照跑。与 `workflow` 不同：那边没有它整张图画不出状态，所以拒绝执行；
+   * 这边图的形状来自调用参数、终态来自这条 step 自己，丢的只有运行期状态。
+   */
+  test('没有卡片 id 也照样派出去', async () => {
+    const s = stub({ ok: true, output: '好了' })
+    const bare = ctx(s.port)
+    delete bare.stepId
+    const res = await subagentTool.fn({ task: '去查一下' }, bare)
+    expect(res.status).toBe('success')
+    expect(s.calls[0]?.stepId).toBeUndefined()
+  })
+
+  /** 没做成的那条子会话正是要翻开看的那一条，所以失败那次也得把它交出去。 */
+  test('失败那次也带回子会话 id', async () => {
+    const s = stub({ ok: false, output: '', error: '步数用尽', conversationId: 'cv_9' })
+    const res = await subagentTool.fn({ agent: 'reviewer', task: '看一眼' }, ctx(s.port))
+    expect(res.status).toBe('failure')
+    expect((res.data as { conversationId?: string }).conversationId).toBe('cv_9')
   })
 })
 
@@ -140,7 +189,7 @@ describe('接着问', () => {
     expect(s.calls.at(-1)?.resume).toBe('sess-9')
   })
 
-  /** 跑挂了更要接着问「卡在哪」，所以失败那次也得把会话 id 交出去。 */
+  /** 失败时更要接着问「卡在哪」，所以失败那次也得把会话 id 交出去。 */
   test('失败那次也带回会话 id', async () => {
     const s = stub({ ok: false, output: '', error: '退出码 1', session: 'sess-3' })
     const res = await subagentTool.fn({ agent: 'cli:claude', task: '改' }, ctx(s.port))

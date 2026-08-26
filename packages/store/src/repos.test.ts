@@ -144,6 +144,79 @@ describe('工具 step 原地更新', () => {
     expect(steps[0]?.payload?.kind).toBe('tool_result')
     store.close()
   })
+
+  /**
+   * 原始失败形状：跑完那一刻界面上有耗时（`tool.finished` 事件带着它），
+   * 刷新之后没了——这个数从来没落过库，只活在连接期。
+   */
+  test('耗时随终态落库，读得回来', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'r',
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: 'c1',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    // 建行的时候还没跑，这一格必须是空的。
+    expect(listSteps(store, run.id)[0]?.durationMs).toBeNull()
+
+    settleToolStep(
+      store,
+      step.id,
+      'success',
+      {
+        kind: 'tool_result',
+        args: {},
+        outcome: { status: 'success', executed: true, message: 'ok' },
+      },
+      8712,
+    )
+
+    expect(listSteps(store, run.id)[0]?.durationMs).toBe(8712)
+    store.close()
+  })
+
+  /** 不给耗时的调用方仍然合法：落 null，界面按「没有就不显示」处理。 */
+  test('没给耗时时落 null，不编一个数', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'r',
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      toolCallId: 'c1',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: {},
+      outcome: { status: 'success', executed: true, message: 'ok' },
+    })
+    expect(listSteps(store, run.id)[0]?.durationMs).toBeNull()
+    store.close()
+  })
 })
 
 describe('run 收尾', () => {

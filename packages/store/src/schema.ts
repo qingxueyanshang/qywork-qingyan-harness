@@ -935,6 +935,29 @@ SET payload = json_remove(
 WHERE json_extract(payload, '$.outcome.data.imageData') IS NOT NULL;
 `,
   },
+  {
+    id: 28,
+    name: 'step_duration',
+    /**
+     * 一次工具调用跑了多久，落库。
+     *
+     * 这个数 `loop.ts` 早就量出来了（`Date.now()` 差，随 `tool.finished` 发出去），
+     * 但只活在连接期：前端把它写进内存里那条 item，刷新就没了。表现是派活卡上
+     * 那一格的耗时刷新之后消失，而编排那张图不受影响——它的耗时是编排器另外量的，
+     * 随结果落进 `outcome.data.nodes[]`。
+     *
+     * **落在列上，不落进 payload。** 耗时是这一步的属性，不是工具结果的一部分；
+     * 塞进 `outcome.data` 的话它会跟着结果进模型上下文，而那是给模型看的载荷。
+     *
+     * 与 `execution_started_at` 分工：那个是「进执行器之前」的时间戳，为崩溃恢复
+     * 判定歧义边界而写；这个是执行完的时长。两者都在，但**不要拿它们相减**——
+     * 前者在提交事务时写，与执行器实际起跑差着一次落盘。
+     *
+     * 存量行为 NULL：那些调用真实发生过，时长没有落库。界面按「没有就不显示」
+     * 处理，不为它编一个数。
+     */
+    sql: `ALTER TABLE steps ADD COLUMN duration_ms INTEGER;`,
+  },
 ]
 
 /**
@@ -1047,6 +1070,8 @@ export interface StepRow {
   payload: string | null
   status: ToolActionStatus | 'done'
   created_at: number
+  /** 这次工具调用跑了多久。存量行与非工具行为 null。 */
+  duration_ms: number | null
 }
 
 export interface ProviderRequestRow {
@@ -1160,6 +1185,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'payload',
     'status',
     'created_at',
+    'duration_ms',
   ],
   provider_requests: [
     'id',

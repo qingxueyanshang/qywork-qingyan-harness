@@ -1,14 +1,11 @@
 /**
  * `subagent` 工具的服务端实现：把一段任务交给一个角色或本机的外部 CLI。
  *
- * ## 为什么在 server
+ * **为什么在 server。** 派一个角色出去 = 起一个成员会话，那要 `Session` 与账本；两样都在依赖图上高
+ * 于 tools。所以工具那边只声明端口（`DelegatePort`），实现落在这里——与编排（`team-run.ts`）**共
+ * 用同一条成员会话路径**，不另开一套。
  *
- * 派一个角色出去 = 起一个成员会话，那要 `Session` 与账本；两样都在依赖图上高于
- * tools。所以工具那边只声明端口（`DelegatePort`），实现落在这里——与编排
- * （`team-run.ts`）**共用同一条成员会话路径**，不另开一套。
- *
- * ## 派一件与派一张图
- *
+ * **派一件与派一张图**：
  * - `subagent`：一次一件，直接起一条成员会话。
  * - `workflow`：一整张图，交给编排器按依赖跑。
  *
@@ -16,7 +13,7 @@
  */
 
 import type { DelegatePort } from '@qywork/agent'
-import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
+import { type AgentEvent, type ConversationId, type RunId, SUBAGENT_NODE_ID } from '@qywork/core'
 import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import { CLI_PREFIX, detectClis, findCli, type Role, runCli, TeamOrchestrator } from '@qywork/team'
@@ -51,8 +48,8 @@ export function makeDelegate(ctx: {
   /**
    * 角色与团队规则**每次直接读文件**，不走 `acquireExtensions`。
    *
-   * 那份扩展是引用计数缓存的，服务全程持有一份——于是模型这一轮用 `define_subagent`
-   * 刚建好的角色，在同一轮里派活时根本看不见。实测撞到过：文件写成了、`subagent`
+   * 那份扩展是引用计数缓存的，服务全程持有一份——因此模型这一轮用 `define_subagent`
+   * 刚建好的角色，在同一轮里派活时看不见。实测形状：文件写成了、`subagent`
    * 的清单里却只有外部 CLI，模型反复重试后判定「派活引擎读的是另一份文件」。
    * 设置页那条接口（`api/team.ts`）出于同样的理由也是直接读。
    */
@@ -86,6 +83,43 @@ export function makeDelegate(ctx: {
     return pair ? { inherit: pair } : {}
   }
 
+  /**
+   * 一次派活的进度，与编排**共用 `team.member`**：派一件就是一张只有一个节点的图，
+   * 前端按同一条通道画同一种卡。
+   *
+   * **没有 `stepId` 就整条不发**：前端按它认领卡片，认不出的一律丢弃
+   * （`connection.ts` 的 `team.member`），发出去只是空转。这条降级路径是安全的——
+   * 图的形状来自调用参数，终态来自这条 step 自己。
+   *
+   * **只发 `working`，不发 `spawned`**：派一件没有排队阶段，交出去就开跑，
+   * 两条连着发的话第二条是同一时刻的同一件事。
+   */
+  const progress = (
+    at: { runId: string; stepId?: string },
+    label: string,
+    backend: 'builtin' | 'custom',
+  ) => {
+    return (
+      phase: 'working' | 'done' | 'failed',
+      extra?: { summary?: string; childConversationId?: ConversationId },
+    ) => {
+      if (!at.stepId) return
+      deps.bus.publish(
+        {
+          type: 'team.member',
+          runId: at.runId as RunId,
+          memberId: SUBAGENT_NODE_ID,
+          roleName: label,
+          backend,
+          phase,
+          stepId: at.stepId,
+          ...extra,
+        },
+        conversationId,
+      )
+    }
+  }
+
   return {
     async targets() {
       const [rs, clis] = await Promise.all([roles(), detectClis()])
@@ -110,41 +144,70 @@ export function makeDelegate(ctx: {
       task: string
       model?: string
       resume?: string
+      runId: string
+      stepId?: string
       signal: AbortSignal
     }) {
       if (input.target.startsWith(CLI_PREFIX)) {
         const id = input.target.slice(CLI_PREFIX.length)
         // 外部 CLI 用它自己的模型，接不了这个参数。当场说出来，
-        // 不是照跑一遍再让用户以为换过了。
+        // 不要照跑一遍，那在界面上等同于换过了模型。
         if (input.model) {
           return { ok: false, output: '', error: `${id} 用它自己的模型，指定不了 ${input.model}` }
         }
         const cli = await findCli(id)
         if (!cli) return { ok: false, output: '', error: `本机没有识别到 ${id}` }
-        // 接不上的那几家当场说清楚：照跑一遍会起一条全新会话，而模型以为它记得上一轮。
+        // 接不上的那几家当场说清楚：照跑一遍会起一条全新会话，而模型会按记得上一轮行事。
         if (input.resume && !cli.resumeArgs) {
           return { ok: false, output: '', error: `${id} 不支持续接会话，只能新建一次调用` }
         }
-        const r = await runCli(cli, {
-          prompt: input.task,
-          workspaceRoot,
-          signal: input.signal,
-          ...(input.resume ? { resume: input.resume } : {}),
-          // 外部 CLI 要它自己的 key 才能干活，但 qywork 配置里那几把它一把用不上。
-          secrets: collectSecrets(deps.config),
-        })
-        return {
-          ok: r.ok,
-          output: r.output,
-          ...(r.ok
-            ? {}
-            : {
-                error: r.timedOut
-                  ? '超时'
-                  : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
-              }),
-          // 会话 id 无论成败都带回去：执行失败时更需要续接会话问清楚断点。
-          ...(r.session ? { session: r.session } : {}),
+        const say = progress(input, `${cli.vendor} ${cli.id}`, 'custom')
+        say('working')
+        // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到——
+        // 内置子 agent 的过程留在它自己那条子会话里，这一种没有。
+        const stepId = input.stepId
+        const onOutput = stepId
+          ? (delta: string) =>
+              deps.bus.publish(
+                {
+                  type: 'team.output',
+                  runId: input.runId as RunId,
+                  stepId,
+                  memberId: SUBAGENT_NODE_ID,
+                  delta,
+                },
+                conversationId,
+              )
+          : null
+        try {
+          const r = await runCli(cli, {
+            prompt: input.task,
+            workspaceRoot,
+            signal: input.signal,
+            ...(input.resume ? { resume: input.resume } : {}),
+            // 外部 CLI 要它自己的 key 才能执行，但 qywork 配置里那几把它一把用不上。
+            secrets: collectSecrets(deps.config),
+            ...(onOutput ? { onChunk: onOutput } : {}),
+          })
+          say(r.ok ? 'done' : 'failed', { summary: r.output.slice(0, 200) })
+          return {
+            ok: r.ok,
+            output: r.output,
+            ...(r.ok
+              ? {}
+              : {
+                  error: r.timedOut
+                    ? '超时'
+                    : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
+                }),
+            // 会话 id 无论成败都带回去：执行失败时更需要续接会话问清楚断点。
+            ...(r.session ? { session: r.session } : {}),
+          }
+        } catch (err) {
+          // 起进程本身失败（命令在探测之后被删、权限不足）。**必须落终态**：
+          // 抛出去的话卡上那个节点停在「进行中」，而这一轮已经结束了。
+          say('failed')
+          return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) }
         }
       }
 
@@ -159,16 +222,30 @@ export function makeDelegate(ctx: {
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
       const picked = pick(input.model)
       if ('error' in picked) return { ok: false, output: '', error: picked.error }
-      const res = await runBuiltinMember(
-        { role, prompt: input.task, signal: input.signal },
-        { deps, workspaceRoot, ...picked },
-      )
-      return {
-        ok: res.ok,
-        output: res.output,
-        ...(res.error ? { error: res.error } : {}),
-        // 子会话不进会话列表，这个 id 是点开它的唯一入口。
-        ...(res.conversationId ? { conversationId: res.conversationId } : {}),
+      const say = progress(input, role.name, 'builtin')
+      say('working')
+      try {
+        const res = await runBuiltinMember(
+          { role, prompt: input.task, signal: input.signal },
+          { deps, workspaceRoot, ...picked },
+        )
+        say(res.ok ? 'done' : 'failed', {
+          summary: res.output.slice(0, 200),
+          // 子会话 id 成败都带：没做成的那条正是要翻开看的那一条。
+          ...(res.conversationId ? { childConversationId: res.conversationId } : {}),
+        })
+        return {
+          ok: res.ok,
+          output: res.output,
+          ...(res.error ? { error: res.error } : {}),
+          // 子会话不进会话列表，这个 id 是点开它的唯一入口。
+          ...(res.conversationId ? { conversationId: res.conversationId } : {}),
+        }
+      } catch (err) {
+        // 成员会话自己 try/catch 不抛（`team-run.ts`），走到这里的是装配期的意外。
+        // **必须落终态**：抛出去的话卡上那个节点停在「进行中」，而这一轮已经结束了。
+        say('failed')
+        return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) }
       }
     },
 
@@ -181,7 +258,7 @@ export function makeDelegate(ctx: {
       const clis = await detectClis()
       const orchestrator = new TeamOrchestrator(
         // 临时子 agent 排在用户的角色**后面**：同 id 时先找到的是用户那条，
-        // 他定义的东西盖过内置的默认。
+        // 用户定义的那一份盖过内置的默认。
         { name: 'workflow', roles: [...rs, AD_HOC_ROLE], rules, plan: input.nodes },
         {
           workspaceRoot,

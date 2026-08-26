@@ -544,6 +544,8 @@ interface StoredStep {
   } | null
   status: string
   createdAt: number
+  /** 这次调用跑了多久。迁移 28 之前的行没有这个数。 */
+  durationMs: number | null
 }
 
 /** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
@@ -837,6 +839,8 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
       ...(s.payload?.args ? { args: s.payload.args } : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),
+      // 存量行没有这个数，那时不显示耗时——不为它编一个。
+      ...(s.durationMs === null ? {} : { durationMs: s.durationMs }),
     })
     return out
   }

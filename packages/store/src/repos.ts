@@ -1127,6 +1127,7 @@ export function appendStep(
     callIndex: input.callIndex ?? null,
     executionWaveIndex: input.executionWaveIndex ?? null,
     executionStartedAt: null,
+    durationMs: null,
     content: input.content ?? null,
     payload: input.payload ?? null,
     status: input.status ?? 'done',
@@ -1174,10 +1175,15 @@ export function settleToolStep(
   id: StepId,
   status: ToolActionStatus,
   payload: Step['payload'],
+  /**
+   * 这次调用跑了多久。**由执行方给，不在这里算**——它量的是执行器的起止，
+   * 而这里能看到的只有落盘时刻。
+   */
+  durationMs?: number,
 ): void {
   store.db
-    .query('UPDATE steps SET status = ?, payload = ? WHERE id = ?')
-    .run(status, writeJson(payload), id)
+    .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
+    .run(status, writeJson(payload), durationMs ?? null, id)
 }
 
 /**
@@ -1357,6 +1363,7 @@ function rowToStep(r: StepRow): Step {
     callIndex: r.call_index,
     executionWaveIndex: r.execution_wave_index,
     executionStartedAt: r.execution_started_at,
+    durationMs: r.duration_ms,
     content: r.content,
     payload: readJson(r.payload, null),
     status: r.status,

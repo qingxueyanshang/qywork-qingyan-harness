@@ -610,6 +610,16 @@ export interface Step {
   payload: StepPayload | null
   status: ToolActionStatus | 'done'
   createdAt: number
+  /**
+   * 这次工具调用跑了多久（毫秒）。**只有 `tool_action` 有，且只有落过终态的才有。**
+   *
+   * 与 `executionStartedAt` 分工：那个是进执行器之前写下的时间戳（崩溃恢复的歧义
+   * 边界），这个是执行完的时长。**不要拿两者相减代替它**——前者在提交事务时写，
+   * 与执行器实际起跑差着一次落盘。
+   *
+   * 迁移 28 之前的行是 null：那些调用真实发生过，时长没有落库。
+   */
+  durationMs: number | null
 }
 
 /**
