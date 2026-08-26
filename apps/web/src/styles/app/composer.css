@@ -17,10 +17,6 @@
   max-width: 760px;
   width: 100%;
   margin: 0 auto;
-  /* 输入框上方这一竖列（读数条、跟进卡片、输入框）每一道缝都取这个值。
-     --s-2 单独看偏松，读起来像浮在半空而不是贴着框，收 3.5px 是看出来的量。
-     只有一处真源：两处各写各的话，这一列的缝会一宽一窄。 */
-  --composer-stack-gap: calc(var(--s-2) - 3.5px);
 }
 
 .live-dot {
@@ -63,10 +59,14 @@
  */
 .run-status {
   position: absolute;
-  top: 0;
+  /* `bottom: 100%` 把整条的下沿贴到 `.composer-wrap` 的上沿，间距再由
+     margin 让开。不要改回 `top: 0` + `translateY(-100% - 缝)`：那种写法里
+     `--composer-stack-gap` 一旦读不到，整条 transform 作废、chip 落回 top 0，
+     形状是它盖在跟进卡片的上半截上，而不是缝变宽变窄。 */
+  bottom: 100%;
   left: 0;
   right: 0;
-  transform: translateY(calc(-100% - var(--composer-stack-gap)));
+  margin-bottom: var(--composer-stack-gap);
   display: flex;
   justify-content: center;
   pointer-events: none;
