@@ -17,6 +17,10 @@
   max-width: 760px;
   width: 100%;
   margin: 0 auto;
+  /* 输入框上方这一竖列（读数条、跟进卡片、输入框）每一道缝都取这个值。
+     --s-2 单独看偏松，读起来像浮在半空而不是贴着框，收 3.5px 是看出来的量。
+     只有一处真源：两处各写各的话，这一列的缝会一宽一窄。 */
+  --composer-stack-gap: calc(var(--s-2) - 3.5px);
 }
 
 .live-dot {
@@ -62,9 +66,7 @@
   top: 0;
   left: 0;
   right: 0;
-  /* `+ 3.5px`：整条往下压三个半像素。它悬在输入框卡片上沿之上，间距按 --s-2
-     算出来偏松，读起来像浮在半空而不是贴着框——这是看出来的量，不是算出来的。 */
-  transform: translateY(calc(-100% - var(--s-2) + 3.5px));
+  transform: translateY(calc(-100% - var(--composer-stack-gap)));
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -185,14 +187,18 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
-  margin: 0 var(--s-4) var(--s-2);
+  /* 下边距用 `--composer-stack-gap`：它上面那条读数条悬浮时按同一个值让开
+     `.composer-wrap` 的顶沿，写成 --s-2 的话卡片下面的缝比上面宽一截。 */
+  margin: 0 var(--s-4) var(--composer-stack-gap);
 }
 .followup-card {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   height: 32px;
-  padding: 0 var(--s-3);
+  /* 右侧比左侧窄：删除按钮自带 --s-1 的内边距，两处相加会把图标推到离右沿 16px，
+     在一张 32px 高的卡里读成没贴住边。左侧是正文，仍按 --s-3。 */
+  padding: 0 var(--s-1) 0 var(--s-3);
   border-radius: var(--r-sm);
   background: var(--bg-inset);
   font-size: var(--fs-sm);
@@ -202,25 +208,29 @@
   flex: 1 1 auto;
   color: var(--text-primary);
 }
+/* 卡片底是 `--bg-inset`，档位词的底色必须显式给 `--bg-raised`：
+   透明落在它上面只剩一圈边框。悬停同理不能用半透明的 `--bg-hover`。 */
 .followup-act {
   flex: none;
   padding: 1px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-sm);
+  background: var(--bg-raised);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .followup-act:hover {
-  background: var(--bg-hover);
+  background: var(--bg-sunken);
   color: var(--text-primary);
 }
-/* 删除只留图标，边框去掉：它和档位词并排，两个都带框会读成两个同级选项。 */
+/* 删除只留图标，边框与底色都去掉：它和档位词并排，两个都带框会读成两个同级选项。 */
 .followup-act.drop {
   display: flex;
   align-items: center;
   padding: var(--s-1);
   border-color: transparent;
+  background: none;
 }
 
 .composer {
