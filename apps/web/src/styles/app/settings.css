@@ -1145,9 +1145,15 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   line-height: 1.6;
 }
-/* 「新增」贴右边沿。这一格里只有边界那句话和它，中间的空白全归 auto。 */
+/* 「新增」贴右边沿。这一格里只有边界那句话和它，中间的空白全归 auto。
+   底色必须显式给 `--bg-raised`：`.btn-ghost` 自身透明，落在这一格的浅色底上
+   只剩一圈边框。悬停同理不能用半透明的 `--bg-hover`，它会透出下面那层。 */
 .schedule-caveat .btn-ghost {
   margin-left: auto;
+  background: var(--bg-raised);
+}
+.schedule-caveat .btn-ghost:hover {
+  background: var(--bg-inset);
 }
 .schedule-card {
   display: flex;
