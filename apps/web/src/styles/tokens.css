@@ -111,6 +111,13 @@
    */
   --composer-stack-gap: calc(var(--s-2) - 3.5px);
 
+  /*
+   * 整轮状态条的高度。**定值，不由内容撑**（B9），另有一个原因：它悬浮，
+   * 会话流要按「缝 + 它 + 缝」在底部留出位置，那个 padding 需要一个能算的数。
+   * 改这里要同时看 `.changes-chip` 与 `.transcript-inner` 的下内边距。
+   */
+  --run-status-h: 28px;
+
   /* ── 字体 ──
    * 中文优先苹方/思源，英文数字走系统 UI 字体。
    * 等宽栈里 Cascadia/SF Mono 打头，它们的字重和 UI 字体更协调。 */

@@ -78,7 +78,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  padding: 4px var(--s-3);
+  /* 定高，不由内容撑：会话流底部按这个数留位置，让它上下两道缝一样宽。 */
+  height: var(--run-status-h);
+  padding: 0 var(--s-3);
   /* 与工具栏上的 chip 同阶。不做药丸形：tokens.css 的圆角阶梯写死了
      「带文字的标签一律不用 `--r-full`」。 */
   border-radius: var(--r-sm);
