@@ -199,9 +199,13 @@ export class RuntimeCompaction implements CompactionPort {
      *
      * 比值取这一份内容上两把尺的实测比，不是常数：同一份请求两个数都在手里。
      * 没有锚点时两者相等，比值为 1，算式退化成相减本身。
+     *
+     * **折算完要取整。** 这个数往下传成 `projectionBudget`，而那是给摘要器的
+     * token 预算——不取整的话小数会逐层传进提示词（真机上量到过
+     * `2702.675848654075`）。
      */
     const scale = input.estimatedOccupancy > 0 ? input.occupancy / input.estimatedOccupancy : 1
-    const afterCondense = input.occupancy - (originalNew - condensedNew) * scale
+    const afterCondense = input.occupancy - Math.round((originalNew - condensedNew) * scale)
     const condenseOnly = afterCondense <= limit
 
     // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
