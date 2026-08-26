@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { CompactionRunInput, Summarizer } from '@qywork/agent'
+import { softLimit } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateMessages } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
@@ -72,7 +73,12 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
 async function pressure(store: Store, conversationId: string): Promise<CompactionRunInput> {
   const history = await buildHistory(store, conversationId as never, null, async (c) => c)
   const total = estimateMessages(history, DEFAULT_DENSITY)
-  return { occupancy: total, contextWindow: total, density: DEFAULT_DENSITY }
+  return {
+    occupancy: total,
+    estimatedOccupancy: total,
+    contextWindow: total,
+    density: DEFAULT_DENSITY,
+  }
 }
 
 async function history(store: Store, conversationId: string): Promise<WireMessage[]> {
@@ -359,7 +365,12 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
     // 从「几乎全折」到「几乎全留」扫一遍窗口，每一档都要求配对完整。
     for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
       const p = port(store, conv.id)
-      await p.run({ occupancy: total, contextWindow: window, density: DEFAULT_DENSITY })
+      await p.run({
+        occupancy: total,
+        estimatedOccupancy: total,
+        contextWindow: window,
+        density: DEFAULT_DENSITY,
+      })
       const projected = p.project(before)
 
       const declared = new Set<string>()
@@ -628,5 +639,55 @@ describe('注入的用户消息与压缩', () => {
     // 由 `HistoryPort.message` 的复合形式解析回来。
     expect(prompt).toContain(`[message:${run.id}:${injected.id}] 用户：所有路径都用正斜杠`)
     store.close()
+  })
+})
+
+/**
+ * 占用走 provider 真值、回收量走本地估算时，两把尺不许直接相减。
+ *
+ * 复现的形状：未收录档实测高 1.47 倍，因此收纳回收量虚高同样的倍数，
+ * `condenseOnly` 判成「收纳就够了」而实际不够——摘要线不前移，此后每一轮都判
+ * `nothing_to_fold`，占用只增不减直到撞窗。修前实测压完真值 2179 而软阈值 2177。
+ *
+ * 断言写成「压完之后真值必须落到软阈值之下」，不写「摘要跑没跑」：后者是实现，
+ * 前者才是压缩这一步要交付的结果。真值按同一个倍率反推——倍率是这条会话实测出来的
+ * 常数（六次请求恒为 1.470），不是假设。
+ */
+describe('两把尺不许直接相减', () => {
+  test('回收量按实测比折算后再减，压完真值落到软阈值之下', async () => {
+    const K = 1.47
+    // 三档窗口都落在「收纳刚好不够」的那一段：修前三档全部越线，修后全部达标。
+    for (const contextWindow of [2722, 2400, 2000]) {
+      const { store, ws, conv, ids } = fresh()
+      const run = createRun(store, {
+        conversationId: conv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `req-${contextWindow}`,
+        userMessageId: ids[0]!,
+        messageIdUpperBound: ids[0]!,
+      })
+      addToolWaves(store, run.id, 20, 800)
+
+      const before = await history(store, conv.id)
+      const estimated = estimateMessages(before, DEFAULT_DENSITY)
+      const occupancy = Math.round(estimated / K)
+      const limit = softLimit({ contextWindow })
+      // 前提：真值确实越线，否则这一轮不该压，测的就不是这件事。
+      expect(occupancy).toBeGreaterThan(limit)
+
+      const p = port(store, conv.id)
+      const outcome = await p.run({
+        occupancy,
+        estimatedOccupancy: estimated,
+        contextWindow,
+        density: DEFAULT_DENSITY,
+      })
+      expect(outcome.status).toBe('compacted')
+
+      const after = estimateMessages(p.project(before), DEFAULT_DENSITY) / K
+      expect(after).toBeLessThanOrEqual(limit)
+      store.close()
+    }
   })
 })

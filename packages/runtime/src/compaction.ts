@@ -188,7 +188,20 @@ export class RuntimeCompaction implements CompactionPort {
     }
 
     const limit = softLimit({ contextWindow: input.contextWindow })
-    const afterCondense = input.occupancy - originalNew + condensedNew
+    /*
+     * 回收量先折算再减。
+     *
+     * `occupancy` 锚定之后是 provider 真值，而 `originalNew` / `condensedNew` 只能
+     * 本地估算。直接相减是拿一把尺的差额去改另一把尺的读数：未收录档实测高 1.47 倍，
+     * 因此回收量虚高同样的倍数，`condenseOnly` 判成「收纳就够了」而实际不够——
+     * 摘要线不前移，此后每一轮都判 `nothing_to_fold`，占用只增不减直到撞窗。
+     * 实测越线量上界是 0.32 × (占用 − 软阈值)。
+     *
+     * 比值取这一份内容上两把尺的实测比，不是常数：同一份请求两个数都在手里。
+     * 没有锚点时两者相等，比值为 1，算式退化成相减本身。
+     */
+    const scale = input.estimatedOccupancy > 0 ? input.occupancy / input.estimatedOccupancy : 1
+    const afterCondense = input.occupancy - (originalNew - condensedNew) * scale
     const condenseOnly = afterCondense <= limit
 
     // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
