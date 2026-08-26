@@ -987,7 +987,7 @@
   text-align: left;
   cursor: pointer;
 }
-.wf-node:not(:disabled):hover {
+.wf-node:not(.session):not(:disabled):hover {
   background: var(--bg-hover);
 }
 .wf-node:disabled {
@@ -1015,6 +1015,7 @@
 .wf-node.session {
   width: auto;
   border-style: dashed;
+  border-color: var(--border-default);
   color: var(--text-secondary);
   cursor: default;
 }
