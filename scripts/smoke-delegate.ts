@@ -15,7 +15,7 @@ import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import { getConversation, Store } from '@qywork/store'
 
-const WS_DIR = join(import.meta.dir, '..', '.smoke-ws', 'delegate')
+const WS_DIR = join(import.meta.dir, '..', '.tmp', 'smoke-ws', 'delegate')
 const DB = join(WS_DIR, 'delegate.sqlite3')
 
 /** 一父四子五条会话串下来，比单轮慢得多；短了会把 provider 的抖动记成 bug。 */

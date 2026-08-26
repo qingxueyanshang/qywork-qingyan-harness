@@ -19,8 +19,8 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const WS_DIR = join(ROOT, '.shoot-ws')
-const OUT = join(ROOT, '.shots')
+const WS_DIR = join(ROOT, '.tmp', 'shoot-ws')
+const OUT = join(ROOT, '.tmp', 'shots')
 
 const SHOTS = [
   { name: 'desktop-light', width: 1440, height: 900, scheme: 'light' },

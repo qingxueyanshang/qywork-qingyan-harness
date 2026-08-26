@@ -31,13 +31,9 @@ apps/desktop/src-tauri/bin/
 apps/web/dist/
 packages/*/dist/
 
-# 测试与截图脚本的临时工作区
-.smoke-ws/
-.shoot-ws/
-.shots/
-.probe/
+# 脚本的临时工作区与产物。全部落 `.tmp/<用途>`，根目录不再各开一个点目录；
+# 由 scripts/temp-dir.test.ts 在门禁里扫住。
 .tmp/
-.tmp-probe/
 
 # agent 运行态（.claude/memory/ 是项目记忆，要入库）
 .claude/*.lock
