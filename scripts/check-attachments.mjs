@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const WS = join(ROOT, '.attach-ws')
+const WS = join(ROOT, '.tmp', 'attach-ws')
 
 /** 1×1 的 PNG。够小又是真图——`isInlineImage` 按扩展名判，内容只要能解码就行。 */
 const PNG =

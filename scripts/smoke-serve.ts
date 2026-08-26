@@ -25,7 +25,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 
-const WS_DIR = join(import.meta.dir, '..', '.smoke-ws')
+const WS_DIR = join(import.meta.dir, '..', '.tmp', 'smoke-ws')
 const DB = join(WS_DIR, 'smoke.sqlite3')
 
 /**

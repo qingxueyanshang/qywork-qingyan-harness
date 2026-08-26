@@ -16,7 +16,7 @@ import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import { Store } from '@qywork/store'
 
-const ROOT = join(import.meta.dir, '..', '.smoke-ws')
+const ROOT = join(import.meta.dir, '..', '.tmp', 'smoke-ws')
 const WS_GIT = join(ROOT, 'cli-receipt')
 /** 不是 git 仓库的那个：派活与接着问都不该受影响。 */
 const WS_BARE = join(ROOT, 'cli-receipt-bare')
