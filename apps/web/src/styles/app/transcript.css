@@ -37,10 +37,14 @@
   margin: 0 auto;
   /* 横向边距 = 输入区的 s-5 再加 `--composer-text-inset`：对齐的是输入框里的
      文字列，不是它的边框（理由写在 tokens.css 那个变量上）。 */
-  /* 底部留白比顶部大：它同时是「最后一条离输入框多远」，也就是贴到底的时候读数条
+  /* 底部留白比顶部大：它同时是「最后一条离输入框多远」，也就是贴到底的时候正文
      和输入框之间那段距离。放在这里而不是输入区的 padding-top——理由写在
-     `.composer-wrap` 上。 */
-  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
+     `.composer-wrap` 上。
+     数值 = 缝 + 整轮状态条 + 缝。状态条悬浮在这段留白里，按它算出来，
+     贴到底时状态条上下两道缝才一样宽；写成一个固定档位的话，上面那道缝
+     等于「留白减去状态条占的位」，随字号一变就成了负数，状态条压住正文。 */
+  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset))
+    calc(var(--run-status-h) + var(--composer-stack-gap) * 2);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -667,6 +671,12 @@
   line-height: 16px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* 末尾那条不带自己的下外边距：底部留白由 `.transcript-inner` 统一给，
+   而那段留白是按「缝 + 整轮状态条 + 缝」算的。这 2px 叠上去，状态条上面
+   那道缝就比下面宽 2px。 */
+.transcript-inner > .run-strip:last-child {
+  margin-bottom: 0;
 }
 
 /*
