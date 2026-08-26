@@ -1,8 +1,7 @@
 /**
  * 把一段任务交给一个子 agent。
  *
- * ## 三类目标，一个工具
- *
+ * **三类目标，一个工具**：
  * - **临时子 agent**（不指定 `agent`）：当前模型、全套工具，任务结束即销毁。
  *   并行铺开去查、去读、去验证时用它——为了几件小事先定义几个角色，没人会这么用。
  * - **角色**：项目里配置好的那个，有自己的提示词与工具面。
@@ -11,9 +10,7 @@
  * 三者的配置面毫不相干，但对调用方是同一件事：交出去、拿回产出。拆成三个工具，
  * 模型就要先判断「这个名字属于哪一类」——而那正是这里该替它做的。
  *
- * ## 失败是返回值
- *
- * 派不出去（目标不存在、外部 CLI 没装、跑挂了）都如实回 failure 并带原因，
+ * **失败是返回值。** 派不出去（目标不存在、外部 CLI 没装、执行失败）都如实回 failure 并带原因，
  * 不抛异常：注册表会把异常压成一句「工具执行出错」，模型据此换不了做法。
  */
 
@@ -72,7 +69,7 @@ export const subagentTool: ToolSpec = {
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const delegate = ctx.delegate
     if (!delegate) {
-      // 正常不会走到：没有这条通道时这个工具压根不注册。
+      // 正常不会走到：没有这条通道时这个工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派活通道' }
     }
 
@@ -104,27 +101,36 @@ export const subagentTool: ToolSpec = {
       task,
       ...(model ? { model } : {}),
       ...(resume ? { resume } : {}),
+      // 进度挂在这次调用那张卡上。拿不到卡片 id 时照跑，只是没有运行期状态——
+      // 与 `workflow` 不同，这里的形状与终态都不依赖事件（见 `DelegatePort.run`）。
+      runId: ctx.runId,
+      ...(ctx.stepId ? { stepId: ctx.stepId } : {}),
       signal: ctx.signal,
     })
-    // 会话 id 无论成败都交出去：它是续接会话的唯一入口，而回执信息不足与
-    // 执行失败两种情形恰恰最需要追问。
-    const session = res.session ? { session: res.session } : {}
+    /*
+     * 两个 id 无论成败都交出去。
+     *
+     * `session` 是接着问外部 CLI 的唯一入口，`conversationId` 是点开那条子会话的唯一入口
+     * （进度事件不落库，刷新之后就靠它）。失败时更需要：没做成的那条会话正是要翻开看的
+     * 那一条，而回执说不清楚时追问比重派一遍便宜。
+     */
+    const ids = {
+      ...(res.session ? { session: res.session } : {}),
+      ...(res.conversationId ? { conversationId: res.conversationId } : {}),
+    }
     if (!res.ok) {
       return {
         status: 'failure' as const,
         message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
-        ...(res.output || res.session ? { data: { output: res.output, ...session } } : {}),
+        ...(res.output || res.session || res.conversationId
+          ? { data: { output: res.output, ...ids } }
+          : {}),
       }
     }
     return {
       status: 'success' as const,
       message: `${who} 做完了`,
-      // 子会话 id 随结果落库：进度事件不落库，刷新之后能点开它的只有这里。
-      data: {
-        output: res.output,
-        ...session,
-        ...(res.conversationId ? { conversationId: res.conversationId } : {}),
-      },
+      data: { output: res.output, ...ids },
     }
   },
 }

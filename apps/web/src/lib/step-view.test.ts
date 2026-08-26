@@ -13,9 +13,11 @@ import {
   clamp,
   collapseCarriageReturns,
   compact,
+  delegateGraph,
   diffFrom,
   displayTarget,
   fileDelta,
+  firstLine,
   firstString,
   hitRate,
   listOf,
@@ -318,5 +320,148 @@ describe('待办清单参数识别', () => {
         ],
       }),
     ).toBeNull()
+  })
+})
+
+/**
+ * 派活图的形状。**派一件与派一张图共用这一份**，所以这里要同时锁住两种输入
+ * 产出同一种格子数组——两侧各画各的，代价是同一件事在会话流里长两个样。
+ */
+describe('派活图', () => {
+  const keys = (g: ReturnType<typeof delegateGraph>) => g.nodes.map((n) => n.kind)
+
+  test('派一件：三格一行，两端是会话', () => {
+    const g = delegateGraph({ toolName: 'subagent', args: { task: '去查一下' } })
+    expect(g.horizontal).toBe(true)
+    expect(keys(g)).toEqual(['session', 'agent', 'session'])
+    expect(g.layers).toHaveLength(3)
+  })
+
+  /** 不指定 agent = 临时起一个。那一格的名字不能是空的。 */
+  test('派一件：没点名执行者时那一格叫「临时子 agent」', () => {
+    const g = delegateGraph({ toolName: 'subagent', args: { task: '查' } })
+    expect(g.nodes[1]?.title).toBe('临时子 agent')
+  })
+
+  /** 前缀是内部写法，不进界面。 */
+  test('派一件：外部 CLI 那一格去掉前缀', () => {
+    const g = delegateGraph({ toolName: 'subagent', args: { agent: 'cli:claude', task: '改' } })
+    expect(g.nodes[1]?.title).toBe('claude')
+    expect(g.nodes[1]?.agent).toBe('cli:claude')
+  })
+
+  /**
+   * 派一件那一格的次行不印执行者：主行已经是它了。
+   * 一张图里则相反——四格常常是同一个执行者，主行是节点 id，执行者压次行。
+   */
+  test('次行印不印执行者，两种卡不同', () => {
+    const one = delegateGraph({ toolName: 'subagent', args: { agent: 'reviewer', task: '看' } })
+    expect(one.nodes[1]?.agentLabel).toBeUndefined()
+    const many = delegateGraph({
+      toolName: 'workflow',
+      args: { goal: '做完', nodes: [{ id: 'n1', agent: 'reviewer' }] },
+    })
+    expect(many.nodes[1]?.title).toBe('n1')
+    expect(many.nodes[1]?.agentLabel).toBe('reviewer')
+  })
+
+  /**
+   * 原始失败形状：图里没点名执行者的那一格，主行印成了「临时子 agent」、次行整行消失
+   * ——判据错在拿次行有没有内容去认「这是哪种卡」，而空串正好两头都不是。
+   */
+  test('图里没点名执行者的那一格，主行仍是节点 id', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: { goal: '做完', nodes: [{ id: 'api', agent: '' }] },
+    })
+    expect(g.nodes[1]?.title).toBe('api')
+    expect(g.nodes[1]?.agentLabel).toBe('临时子 agent')
+  })
+
+  /** 只有一格的图与一次派活形状相同，本来就该长得一样。 */
+  test('一个节点的编排也横排', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: { goal: '做完', nodes: [{ id: 'n1', agent: 'dev' }] },
+    })
+    expect(g.horizontal).toBe(true)
+  })
+
+  test('多格时竖排', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'a', agent: 'dev' },
+          { id: 'b', agent: 'dev' },
+        ],
+      },
+    })
+    expect(g.horizontal).toBe(false)
+  })
+
+  /**
+   * 两端各自接住一头：没有上游的从派出端接出来，没有下游的汇进收回端。
+   * 接漏了的那一格会浮在图上，连线一条都没有。
+   */
+  test('两端接住所有没有上下游的格子', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'a', agent: 'dev' },
+          { id: 'b', agent: 'dev' },
+          { id: 'c', agent: 'dev', needs: ['a', 'b'] },
+        ],
+      },
+    })
+    const by = (k: string) => g.nodes.find((n) => n.key === k)
+    expect(by('a')?.needs).toHaveLength(1)
+    expect(by('b')?.needs).toHaveLength(1)
+    expect(by('a')?.needs).toEqual(by('b')?.needs)
+    // 汇点只接叶子：a、b 都有下游，接上去就成了两条越过 c 的边。
+    expect(g.nodes.at(-1)?.needs).toEqual(['c'])
+  })
+
+  /** 按依赖分层：并行的那两格在同一层。 */
+  test('并行的格子落在同一层', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'a', agent: 'dev' },
+          { id: 'b', agent: 'dev' },
+          { id: 'c', agent: 'dev', needs: ['a', 'b'] },
+        ],
+      },
+    })
+    expect(g.layers.map((l) => l.length)).toEqual([1, 2, 1, 1])
+  })
+
+  /** 成环由编排器拒绝，这里只保证画得出来——画不出来的话整张卡是空的。 */
+  test('图成环也画得出来', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'a', agent: 'dev', needs: ['b'] },
+          { id: 'b', agent: 'dev', needs: ['a'] },
+        ],
+      },
+    })
+    expect(g.nodes).toHaveLength(4)
+    expect(g.layers.length).toBeGreaterThan(0)
+  })
+})
+
+describe('卡顶那一行', () => {
+  test('只取第一行', () => {
+    expect(firstLine(`第一行${String.fromCharCode(10)}第二行`)).toBe('第一行')
+    expect(firstLine('只有一行')).toBe('只有一行')
+    expect(firstLine('')).toBe('')
   })
 })

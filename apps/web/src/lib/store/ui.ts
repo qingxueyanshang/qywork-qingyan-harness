@@ -2,7 +2,7 @@
  * 纯界面状态：命令面板、右侧面板、几个浮层，以及当前工作区。
  *
  * 这些和服务端无关，也不进 `state` ——它们的生命周期是「这一次打开」，
- * 混进业务 store 只会让每次事件推送都要绕过一堆与服务端无关的字段。
+ * 混进业务 store 只会让每次事件推送都要绕过大量与服务端无关的字段。
  */
 
 import { createSignal } from 'solid-js'
@@ -32,7 +32,7 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * `isDesktopShell()` 决定列不列），这里只管开了哪几页。
  *
  * `conversation` 与 `cli` 都没有看板入口：只能从图卡上点开（看哪一条由那张卡说了算），
- * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的东西不同：
+ * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的来源不同：
  * 一个是子会话（有正文、有工具卡），一个是本机另一个进程写出来的一段流。
  */
 export type PanelTabKind = 'terminal' | 'browser' | 'conversation' | 'cli'
@@ -74,7 +74,7 @@ export function activePanelTab(): string | null {
  * 关掉一页时要收的本机资源：终端的 PTY 与 xterm 实例、浏览器页记着的地址。
  *
  * **为什么不放在组件的 `onCleanup` 里**：收起面板会把整块面板卸载，而那时终端必须
- * 活着——用户收起去看会话，切回来命令还得在跑、滚动历史还得在。所以「组件卸载」和
+ * 保持存活——用户收起去看会话，切回来命令还得在跑、滚动历史还得在。所以「组件卸载」和
  * 「这一页被关掉」是两件不同的事，只有后者该收资源，而后者唯一的入口在这里。
  */
 const tabDisposers = new Map<string, () => void>()
@@ -132,10 +132,12 @@ export function tabConversationId(tabId: string): string {
  * 页 id 是「哪张卡 + 哪个节点」，与那个节点的输出缓冲同一个键——同一个节点再点一次
  * 是翻回去，不是并排开出第二页。
  */
-export function openCliTab(stepId: string, nodeId: string): void {
+export function openCliTab(stepId: string, nodeId: string, title: string): void {
   const id = `cli-${stepId}-${nodeId}`
   if (!panelTabs().some((t) => t.id === id)) {
-    setTabs((list) => [...list, { id, kind: 'cli', title: nodeId }])
+    // 标题单独给，不拿 `nodeId` 顶：派一件那张卡的节点 id 是个内部常量，
+    // 直接送上去页签就叫那个常量。
+    setTabs((list) => [...list, { id, kind: 'cli', title }])
   }
   setSidePanel({ tab: id })
 }
@@ -149,7 +151,7 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
 }
 
 /**
- * 把外壳那边还活着的终端会话补回页签。
+ * 把外壳那边仍存活的终端会话补回页签。
  *
  * `panelTabs` 是 Rust 那张会话表的镜像，而整页重载会把镜像清空——开发期改一个
  * `store/` 或 `packages/` 下的文件，vite 走的就是整页刷新。清空之后 shell 还在跑，
@@ -179,7 +181,7 @@ export function restoreTerminalTabs(ids: readonly string[]): void {
  * 关掉一页。**这是收资源的唯一入口**（见 `tabDisposers`）。
  *
  * 关掉的正是当前那一页时，落到右边那页，没有就落到左边那页，一页都不剩就回文件视图
- * ——**不顺手把面板收起来**：用户点的是这一页的 ×，不是面板的 ×。
+ * ——**不连带把面板收起来**：用户点的是这一页的 ×，不是面板的 ×。
  */
 export function closePanelTab(id: string): void {
   const list = panelTabs()
@@ -219,7 +221,7 @@ const PANEL_KEY = 'qywork.panelWidth'
 const PANEL_DEFAULT = 380
 
 /** 负数和 0 不只是难看：`minmax(0, -50px)` 会让整条 `grid-template-columns` 失效，
- *  网格退回隐式的 auto 列，那正是要防的那种崩法。 */
+ *  网格退回隐式的 auto 列，那正是要防的失效形状。 */
 function clampPanelWidth(px: number): number {
   return Math.max(PANEL_MIN, Math.round(px))
 }
@@ -238,20 +240,20 @@ function readPanelWidth(): number {
  * 右侧面板**要多宽**（像素）。由用户拖左边沿改，记在 localStorage 里。
  *
  * 真源是这个信号，不是 `tokens.css` 的 `--panel-w`：那条只是首次启动的默认值。
- * `App.tsx` 把它写成 `.app` 上的行内 `--panel-w`，于是网格那一列跟着变，
+ * `App.tsx` 把它写成 `.app` 上的行内 `--panel-w`，因此网格那一列跟着变，
  * 布局规则一行不用改。
  *
  * **它是「要多宽」，不是「实际多宽」**：窗口放不下时网格只给到上限，这个数照旧
  * 是用户拖出来的那个。窗口再变宽就还它——反过来（拖窄窗口时把它改小）等于
  * 拿一次临时的窗口尺寸抹掉用户的设置。
  *
- * 面板里现在是「内容 + 树」两块并排，所以可拖不是锦上添花：不给拖的话内容那半
- * 永远只剩一百多像素。
+ * 面板里是「内容 + 树」两块并排，所以宽度必须可拖：不给拖的话内容那半永远只剩
+ * 一百多像素。
  */
 export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
 
 /**
- * 改宽度的**唯一入口**：拖动和方向键都走它。夹住下限，并顺手记下来。
+ * 改宽度的**唯一入口**：拖动和方向键都走它。夹住下限，并同步落盘。
  *
  * 值没变就直接返回：拖到头了还在拉，每一帧都会调到这里，
  * 不拦的话就是每秒几十次无意义的 localStorage 写入。
@@ -338,24 +340,17 @@ export function toggleSidebar(): void {
 /**
  * 设置弹窗当前看的类目。`null` = 没在看设置。
  *
- * ## 为什么是一个弹窗，不是十个平行浮层
- *
- * 最早那版是六个平行浮层（定时、记忆、插件、团队、手机、设置），每个自己一套
- * 开关——「设置和配对同时开着」在类型上完全合法。类目导航就是解药：一个弹窗，
+ * **为什么是一个弹窗，不是十个平行浮层。** 最早那版是六个平行浮层（定时、记忆、插件、团队、手机、设
+ * 置），每个自己一套开关——「设置和配对同时开着」在类型上完全合法。类目导航就是解药：一个弹窗，
  * 左边一栏列类目，全部类目共用同一个状态。
  *
- * ## 为什么不是整页
+ * **不要做成整页**（左栏换类目导航、主区换设置内容）：那会把「改一格就走」变成
+ * 一次场景切换——顶栏的搜索和面板开关得跟着藏，回来还要点一次「返回」。
+ * 类目导航塞得进弹窗，整页那一层没有存在的理由。
  *
- * 中间试过整页：打开设置时左栏换成类目导航、主区换成设置内容。代价是「改一格
- * 就走」被做成了一次场景切换——顶栏的搜索和面板开关得跟着藏，回来还要点一次
- * 「返回」。类目导航塞得进弹窗，所以整页那一层没有存在的理由。
- *
- * ## 横线上下是两类东西
- *
- * 横线上面是「这个 agent 是什么、花了多少」，其中 `modules` 是说明书——只读，
- * 不配置，`usage` 是账本——只读，不配置；横线下面每一项都是一个模块的操作台，
- * 有真实的表单。**没有可配项的模块不给独立页**，它在 `modules` 里有条目就够了，
- * 开一个空页就是空壳。
+ * **横线上下是两类页。** 横线上面是「这个 agent 是什么、花了多少」，其中 `modules` 是说明书——只
+ * 读，不配置，`usage` 是账本——只读，不配置；横线下面每一项都是一个模块的操作台，有真实的表单。
+ * **没有可配项的模块不给独立页**，它在 `modules` 里有条目就够了，开一个空页就是空壳。
  */
 export type SettingsPage =
   | 'general'
@@ -392,7 +387,7 @@ export function closeSettings(): void {
 export const [openFile, setOpenFile] = createSignal<string | null>(null)
 
 /**
- * 打开一个文件。**必须走这里**：它顺手保证面板是开着的、且停在文件那一页。
+ * 打开一个文件。**必须走这里**：它同时保证面板是开着的、且停在文件那一页。
  *
  * 直接设 `openFile` 的话，从别的地方（命令面板、将来的「在文件里打开」）触发时
  * 面板可能收着或停在「变更」页，用户点一下什么都看不到。
@@ -407,7 +402,7 @@ export function openFileInPanel(path: string): void {
  * **当前项目**。
  *
  * 会话、文件树、git、扩展清单全部按它取；`client.api` 也按它给每条 REST
- * 拼 `?ws=`。它是前端这一侧「我在看哪个项目」的唯一权威——服务端那边没有
+ * 拼 `?ws=`。它是前端这一侧「当前在看哪个项目」的唯一权威——服务端那边没有
  * 对应的可变状态，只有 `workspaces` 表和每条请求自带的参数。
  */
 export interface WorkspaceInfo {

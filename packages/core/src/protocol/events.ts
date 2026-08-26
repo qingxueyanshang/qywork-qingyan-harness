@@ -31,9 +31,9 @@ export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
   /**
    * 这条事件属于哪个会话。缺省 = 工作区级事件（git 状态那类），人人可见。
    *
-   * **必须在帧上，不能只在服务端内存里。** 这个字段本来是有的——服务端一直拿着它
-   * 做订阅过滤——但它从不随帧发出，于是客户端只能盲信「我收到的都是我订阅的」。
-   * 那个前提有三处不成立（空订阅集被当成全订阅、断线补发根本不过滤、
+   * **必须在帧上，不能只在服务端内存里。** 服务端拿它做订阅过滤，但它同时必须随帧
+   * 发出：不发的话客户端只能假定收到的帧都属于已订阅的会话。
+   * 那个前提有三处不成立（空订阅集被当成全订阅、断线补发不过滤、
    * `subscribe` 指令的往返窗口），任何一处都表现为「切了会话，内容是上一条的」。
    *
    * 事件体自己带 `conversationId` 的只有两个（`conversation.updated`、`run.started`），
@@ -101,7 +101,7 @@ export interface ConversationUpdatedEvent {
  * **工作区级事件：信封上不带 `conversationId`，所有客户端都收得到。**
  * run 生命周期那三条按订阅过滤，只有开着这条会话的客户端收得到；而左栏要为
  * 列表里**每一条**画状态，取不到别人的 run 事件就只能给当前那条画，
- * 于是「哪条在跑」这个问题在界面上无解。
+ * 因此「哪条在跑」这个问题在界面上无解。
  *
  * 与 run 生命周期不是两本账：两者都出自 `RunManager` 的占位 / 登记 / 注销，
  * 那是「这条会话在不在跑」唯一的裁决点。**不要在别处补发这条事件。**
@@ -136,7 +136,7 @@ export interface RunFinishedEvent {
    *
    * **这里没有步数与耗时。** 步数在这个事件上是「循环轮次」，而 `Run.stepCount` 是
    * 「steps 表里的行数」，同名不同义；耗时客户端按自己那块表算（收到 `run.started`
-   * 到收到这条的间隔），因为用户问的是「我等了多久」。两个都没有消费者，所以删掉——
+   * 到收到这条的间隔），因为用户问的是等待时长。两个都没有消费者，所以删掉——
    * 协议里留着一个没人读、还和别处同名不同义的字段，比没有更坏。
    */
   fileChanges: FileChange[]
@@ -155,8 +155,8 @@ export interface RunErrorEvent {
  * 断流后正在原样重发。
  *
  * 只在**模型可见输出为零**时发得出来（判据在 `agent/loop.ts` 的尝试循环），
- * 所以它恒等于「刚才那次白跑了，同一份字节再发一次」。界面拿它把阶段那一格
- * 改口成「正在重连 N / M」——不这么说的话，用户看到的是死掉那次留下的半截思考
+ * 所以它恒等于「刚才那次没有产出，同一份字节再发一次」。界面拿它把阶段那一格
+ * 改口成「正在重连 N / M」——不这么说的话，界面上是失败那次留下的半截思考
  * 配一句「正在思考…」，而模型此刻一个字都没在写。
  *
  * **没有配对的「重发结束」事件。** 新那次的第一条输出就是结束信号，
@@ -198,8 +198,8 @@ export interface TextDeltaEvent {
 /**
  * 思考增量。与 `text.delta` 同构，`stepId` 指向 `steps` 里那条 `kind='thinking'` 的行。
  *
- * **这个字段不是可选的。** 没有它客户端只能自己造 id，于是实时条目的 id
- * 与刷新后按 step 重放出来的 id 永不相等，同一段思考在两种路径下是两个东西。
+ * **这个字段不是可选的。** 没有它客户端只能自己造 id，因此实时条目的 id
+ * 与刷新后按 step 重放出来的 id 永不相等，同一段思考在两条路径下成了两条记录。
  */
 export interface ThinkingDeltaEvent {
   type: 'thinking.delta'
@@ -248,7 +248,7 @@ export interface ActionDescriptor {
  *
  * `run` 与 `call` 的分界是**本机执行还是跨进程/跨网络调用**：`run_command` 直接在
  * 用户这台机器上执行，是 `run`；MCP server 与插件贡献的工具是外部进程提供的能力，
- * 一律是 `call`——它们能干什么不由我们决定，界面上也不该说成「运行」。
+ * 一律是 `call`——它们能做什么不由本机决定，界面上也不该说成「运行」。
  *
  * 这条轴**只表达「做了什么动作」，不表达「属于哪个领域」**。别把
  * `search / fetch / plan / delegate` 这类值加回来——它们全是领域不是动作
@@ -263,7 +263,7 @@ export interface ActionDescriptor {
  * **这些值会落盘**（`steps.payload.action.kind`），所以改这个联合类型不是改一个
  * 类型别名：删掉、改名，或把某一类工具改归到别的值，同一次改动里必须带一条数据迁移
  * （样例 `store/schema.ts` 的迁移 16）。不转的表现不是报错，是回放历史会话时
- * 卡片标题查不到动词——上一次就这么在界面上露出了 `undefined`。
+ * 卡片标题查不到动词，界面上直接露出 `undefined`。
  */
 export type ActionKind = 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run' | 'call'
 
@@ -307,7 +307,7 @@ export interface ContextEvent {
    * 必须显式说出来。总数只有一把尺（见 `agent/loop.ts` 的 `meter`），这个标签负责
    * 说明尺的成色。**不要退回 `max(全量估算, provider 真值)`**：两个数出自两把尺，
    * 锚点一失效显示值就从真值尺跌到估算尺——会话内容没变，数字却掉了三分之一，
-   * 而界面上没有任何东西解释这件事。
+   * 而界面上没有任何一处解释这件事。
    */
   source: 'actual' | 'estimated'
   /**
@@ -335,7 +335,7 @@ export interface TodosEvent {
  *
  * **不带 runId。** 目标是会话级的，改它的动作有一半发生在任何 run 之外
  * （续起前把轮次 +1、用户在界面上点继续），塞一个空 runId 进来只会让
- * 消费方以为它属于某一轮。归属会话由信封上的 `conversationId` 表达。
+ * 消费方会把它归到某一轮上。归属会话由信封上的 `conversationId` 表达。
  */
 export interface GoalEvent {
   type: 'goal'
@@ -387,7 +387,7 @@ export interface GitStateEvent {
   /**
    * 当前分支名。**只有这一个字段。**
    *
-   * 改动数、暂存数、领先落后曾经都在这里，一个消费者都没有——界面上唯一在问 git 的
+   * 不要再加改动数、暂存数、领先落后：它们没有消费者——界面上唯一在问 git 的
    * 是输入框上方那颗分支牌。「这条会话改了哪些文件」由 step 账本的 `fileChanges` 回答，
    * 不走这条事件。
    */
@@ -395,6 +395,16 @@ export interface GitStateEvent {
 }
 
 // ─────────────────────────────── 多智能体 ───────────────────────────────
+
+/**
+ * 单次派活那张卡上唯一那个子节点的 id。
+ *
+ * 一次 `subagent` 调用就是一张只有一个节点的图，与编排共用下面这条通道，
+ * 而通道按 `memberId` 认领节点，所以两侧要用同一个值。
+ *
+ * 它不进界面：界面上那一格显示的是执行者的名字。
+ */
+export const SUBAGENT_NODE_ID = 'child'
 
 /** Agent Team 的成员状态。父会话据此画协作视图。 */
 export interface TeamMemberEvent {
@@ -424,7 +434,7 @@ export interface TeamMemberEvent {
  * 与 `tool.delta` 分开是因为多了一维：一张图里可以有好几个 CLI 节点同时在跑，
  * 混进同一个 `stepId` 的缓冲就再也分不出哪一段是谁的。
  *
- * **不落库**，与 `team.member` 同一条口径：活着的时候看这条，刷新之后看落库的
+ * **不落库**，与 `team.member` 同一条口径：流式期间看这条，刷新之后看落库的
  * 逐节点终态（`NodeResult.output`）。
  */
 export interface TeamOutputEvent {
@@ -435,8 +445,8 @@ export interface TeamOutputEvent {
   /** 哪个节点。 */
   memberId: string
   /**
-   * 两条流合成一条。**不分 stdout / stderr**：看一个进程干活时它们本来就是交织的，
-   * 而分开要么多一份状态，要么多一个没人读的字段。跑挂了的诊断另有出口——
+   * 两条流合成一条。**不分 stdout / stderr**：观察一个进程执行时它们本来就是交织的，
+   * 而分开要么多一份状态，要么多一个没人读的字段。执行失败的诊断另有出口——
    * 节点终态里的 `error` 带着 stderr 的尾巴。
    */
   delta: string

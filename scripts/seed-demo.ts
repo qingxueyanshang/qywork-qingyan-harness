@@ -219,6 +219,133 @@ step({
   },
 })
 
+/*
+ * 派活的三种形状：派一件成了、派一件没派出去、派一张图。
+ * 三者画的是同一张卡（`DelegateCard`），截图要能一眼看出它们同形。
+ */
+step({
+  runId: run.id,
+  seq: 0,
+  kind: 'tool_action',
+  toolName: 'subagent',
+  toolCallId: 'c6',
+  status: 'success',
+  payload: {
+    kind: 'tool_result',
+    args: { task: '把夹具里遗留的空作者记录清一遍，顺带确认没有别的用例依赖它' },
+    action: { kind: 'run', objectLabel: '子 agent', target: '' },
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: '临时子 agent 做完了',
+      data: {
+        output: '夹具里三条空作者记录已清理，market 与 admin 两组用例都不依赖它们。',
+        conversationId: 'cv_demo_child',
+      },
+    },
+  },
+})
+
+step({
+  runId: run.id,
+  seq: 0,
+  kind: 'tool_action',
+  toolName: 'subagent',
+  toolCallId: 'c7',
+  status: 'failure',
+  payload: {
+    kind: 'tool_result',
+    args: { agent: 'perf', task: '跑一遍压测看归属改动有没有拖慢发布接口' },
+    action: { kind: 'run', objectLabel: '子 agent', target: 'perf' },
+    outcome: {
+      status: 'failure',
+      executed: true,
+      message: '没有 perf。现在能派的是：reviewer、cli:claude',
+      errorKind: 'not_found',
+    },
+  },
+})
+
+step({
+  runId: run.id,
+  seq: 0,
+  kind: 'tool_action',
+  toolName: 'subagent',
+  toolCallId: 'c9',
+  status: 'success',
+  payload: {
+    kind: 'tool_result',
+    args: { agent: 'cli:claude', task: '把 README 里那段安装说明按新的目录结构改一遍' },
+    action: { kind: 'run', objectLabel: '子 agent', target: 'cli:claude' },
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: 'Anthropic claude 做完了',
+      data: {
+        output:
+          '已更新 README 的安装一节。\n\n### 回执\n- 变更文件：README.md\n- 实现方式：按新的 packages/ 与 apps/ 两级结构重写路径示例，删掉了指向旧 src/ 的三处引用。\n- 未完成项：无',
+        session: 'f7bfc67d-548d-45d1-8eb5-2bb9de724d21',
+      },
+    },
+  },
+})
+
+step({
+  runId: run.id,
+  seq: 0,
+  kind: 'tool_action',
+  toolName: 'workflow',
+  toolCallId: 'c8',
+  status: 'success',
+  payload: {
+    kind: 'tool_result',
+    args: {
+      goal: '把归属改动的影响面一次过完：接口、前台、回归',
+      nodes: [
+        { id: 'api', agent: '', task: '核接口层' },
+        { id: 'web', agent: 'cli:claude', task: '核前台创作者中心' },
+        { id: 'review', agent: 'reviewer', task: '合并两份结论并复核', needs: ['api', 'web'] },
+      ],
+    },
+    action: { kind: 'run', objectLabel: '编排', target: '' },
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: '3 个节点全部做完',
+      data: {
+        nodes: [
+          {
+            nodeId: 'api',
+            agent: '',
+            label: '临时子 agent',
+            status: 'done',
+            output: '发布接口只剩一个写入点。',
+            durationMs: 8200,
+            conversationId: 'cv_demo_api',
+          },
+          {
+            nodeId: 'web',
+            agent: 'cli:claude',
+            label: 'Anthropic claude',
+            status: 'done',
+            output: '创作者中心那条路已经跟着改了。',
+            durationMs: 53000,
+          },
+          {
+            nodeId: 'review',
+            agent: 'reviewer',
+            label: '代码审查',
+            status: 'done',
+            output: '两份结论一致，回归用例补了一条。',
+            durationMs: 12400,
+            conversationId: 'cv_demo_review',
+          },
+        ],
+      },
+    },
+  },
+})
+
 const assistant = appendMessage(store, {
   conversationId: conv.id,
   role: 'assistant',
