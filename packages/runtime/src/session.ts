@@ -44,6 +44,7 @@ import type {
 import {
   deriveConversationTitle,
   EFFORT_ORDER,
+  envelopeHeadTokens,
   isInlineImage,
   mimeOf,
   toPosixPath,
@@ -453,7 +454,9 @@ export class Session {
             (anchored.providerCacheWriteTokens ?? 0) +
             (anchored.providerOutputTokens ?? 0),
           throughMessageId: anchorRun?.messageIdUpperBound ?? null,
-          // 指纹不匹配时由 loop 作废这个锚点——只有装配完才知道本轮的信封。
+          model: anchored.model,
+          headTokens: envelopeHeadTokens(anchored.sentCategories),
+          // 指纹不匹配时由 loop 换掉头部（换了模型才作废）——只有装配完才知道本轮的信封。
           envelopeFingerprint: anchored.cacheRouteFingerprint,
         }
       : null
