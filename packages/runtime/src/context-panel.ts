@@ -41,6 +41,16 @@ export interface ContextPanel {
   percent: number
   source: 'actual' | 'estimated'
   /**
+   * 最近一次已发送请求的**本地估算**占用。
+   *
+   * 与 `total` 是同一份内容的两把尺。压缩要拿它把估算尺的回收量折算到 `total`
+   * 那把尺上（`CompactionRunInput.estimatedOccupancy`）。`source` 为 `estimated`
+   * 时两者相等。
+   *
+   * **不进界面**：界面只显示 `total`，两个数一起摆出来没有人能判断该信哪个。
+   */
+  measured: number
+  /**
    * 越过它就会在下一次发送前压一次。
    *
    * **必须调 `softLimit` 而不是在这里照抄那个算式**：两处各写一遍，改了一处
@@ -124,6 +134,7 @@ export function contextPanel(
       limit,
       percent: 0,
       source: 'estimated',
+      measured: 0,
       compactAt: softLimit({ contextWindow: limit }),
       breakdown: emptyBreakdown(),
       omitted: emptyOmitted(),
@@ -150,6 +161,7 @@ export function contextPanel(
     limit,
     percent: Math.round((total / limit) * 1000) / 10,
     source,
+    measured: sent.measuredInputTokens,
     compactAt: softLimit({ contextWindow: limit }),
     breakdown: reconcileBreakdown(sent.sentCategories, total),
     omitted: sent.omittedCategories,

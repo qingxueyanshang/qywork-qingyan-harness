@@ -143,10 +143,20 @@ export interface CompactionRunInput {
   signal?: AbortSignal
   /** 当前占用读数。**必须与触发判定同一把尺**，两处各量一次就是两本账。 */
   occupancy: number
+  /**
+   * 同一份请求的**本地估算**占用。
+   *
+   * `occupancy` 锚定之后走的是 provider 真值，而收纳回收量只能本地估算——两个数
+   * 出自两把尺，直接相减就是拿一把尺的差额去改另一把尺的读数。这一项给出两把尺
+   * 在**这一份内容上**的换算比，回收量按它折算后再减。
+   *
+   * 没有锚点时它与 `occupancy` 相等，比值为 1，算式退化成相减本身。
+   */
+  estimatedOccupancy: number
   /** 模型窗口。软阈值与保留预算都从它推导，不另传现成的数字。 */
   contextWindow: number
   /**
-   * 会话主模型那把尺，与 `occupancy` 同一把。
+   * 会话主模型那把估算尺，与 `estimatedOccupancy` 同一把。
    *
    * **不是 summarizer 的**：摘要可以由另一个模型生成，但这些量描述的是主模型
    * 看到的上下文，换尺就是拿另一个 tokenizer 去量别人的窗口。
@@ -937,6 +947,7 @@ export class AgentLoop {
               this.compaction.run({
                 signal: input.signal,
                 occupancy,
+                estimatedOccupancy: estimateRequest(req, density),
                 contextWindow: adapter.spec.contextWindow,
                 density,
               }),
@@ -1236,6 +1247,8 @@ export class AgentLoop {
                 this.compaction.run({
                   signal: input.signal,
                   occupancy: cap.reportedInputTokens ?? occupancyOf(req),
+                  // `sizeBefore` 就是这一份请求的本地估算，同一次装配、同一把尺。
+                  estimatedOccupancy: sizeBefore,
                   contextWindow: adapter.spec.contextWindow,
                   density,
                 }),

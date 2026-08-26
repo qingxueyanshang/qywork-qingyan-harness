@@ -670,8 +670,11 @@ export async function compactConversation(
     // 面板与触发判定用的是同一把尺（`contextPanel` 的锚点口径），不另起一本账。
     // 窗口与密度取同一份 spec：这两个数要互相比较，出自两份 spec 就是两本账。
     const spec = buildAdapter(summaryProfile(deps, conversationId)).spec
+    const panel = contextPanel(deps.store, conversationId, spec)
     const outcome = await compaction.run({
-      occupancy: contextPanel(deps.store, conversationId, spec).total,
+      occupancy: panel.total,
+      // 同一份面板的两把尺，压缩按它们的比值折算回收量。
+      estimatedOccupancy: panel.measured,
       contextWindow: spec.contextWindow,
       density: spec.density,
     })
