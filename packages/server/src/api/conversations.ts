@@ -352,7 +352,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     )
     const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
     const spec = lookupModel(conv.model, kind ?? 'openai_chat_completions')
-    return json({ context: contextPanel(d.store, id, spec.contextWindow) })
+    return json({ context: contextPanel(d.store, id, spec) })
   }
 
   // 当前目标。**按会话读账本，和上下文面板同一条理由**——`goal` 事件只在变更

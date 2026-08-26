@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { installPluginTool } from './plugin-install.ts'
 
 type Found = Awaited<ReturnType<NonNullable<ToolContext['plugins']>['inspect']>>
@@ -42,6 +43,7 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

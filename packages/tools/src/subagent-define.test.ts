@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { defineSubagentTool } from './subagent-define.ts'
 
 function ctx(root: string): ToolContext {
@@ -18,6 +19,7 @@ function ctx(root: string): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

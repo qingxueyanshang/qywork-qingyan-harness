@@ -23,24 +23,28 @@
  */
 
 import type { ToolRegistry, ToolSpec } from '@qywork/agent'
-import { estimateSchemas } from '@qywork/ai'
+import { estimateSchemas, type TokenDensity } from '@qywork/ai'
 
 /**
  * 外部工具 schema 的常驻预算。总量不超过它就照旧全量注册，超过才转按需。
  *
- * 取 2000：按上面实测的平均 290 token/个，它约等于**七个普通工具**，
- * 也就是「一个小 server 全量常驻，两个 server 或一个大工具转按需」。
- * 低于这条线转按需省下的不足两千 token，却要多付一次往返——那是净亏。
+ * 取 1600：上面那张表是旧尺（JSON 按 2 字符/token）量的，平均 290 token/个；
+ * 按已标定模型的 JSON 档（2.5 字符/token）折算是 232 token/个，
+ * **七个普通工具**因此是 1624，取整到 1600。语义仍是
+ * 「一个小 server 全量常驻，两个 server 或一个大工具转按需」——
+ * 低于这条线转按需省下的不足两千 token，却要多付一次往返，那是净亏。
  *
- * 判据是**总量**不是个数：单个工具能占 2000（sequential-thinking 就是），
- * 按个数定档会让「一个工具的 server」被判成小配置。
+ * 判据是**总量**不是个数：单个工具能占一千多（sequential-thinking 折算后 1613），
+ * 按个数定档会让「一个工具的 server」被判成小配置。那一条与这条线只差十几个
+ * token，**改这个常数前先按新尺把那四个 server 重量一遍**，别照着旧表推。
  */
-export const EXTERNAL_SCHEMA_BUDGET_TOKENS = 2000
+export const EXTERNAL_SCHEMA_BUDGET_TOKENS = 1600
 
 /** 这批工具的 schema 发出去有多大。与请求里那份同一把尺（`estimateSchemas`）。 */
-export function externalSchemaTokens(specs: readonly ToolSpec[]): number {
+export function externalSchemaTokens(specs: readonly ToolSpec[], density: TokenDensity): number {
   return estimateSchemas(
     specs.map((s) => ({ name: s.name, description: s.description, parameters: s.parameters })),
+    density,
   )
 }
 

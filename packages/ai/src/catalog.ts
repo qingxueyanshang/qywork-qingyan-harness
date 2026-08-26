@@ -15,6 +15,7 @@ import type {
   ReasoningEcho,
   ThinkingMode,
 } from '@qywork/core'
+import { DEFAULT_DENSITY, type TokenDensity } from './tokens.ts'
 
 /**
  * 每百万 token 的单价。
@@ -49,6 +50,14 @@ export interface ModelSpec {
    */
   vendor: string | null
   contextWindow: number
+  /**
+   * 这个 tokenizer 的 token 密度。三档标定方法与边界见 `tokens.ts` 的 `TokenDensity`。
+   *
+   * **必填，不给默认值。** 加一条模型时如果没量过，显式写 `DEFAULT_DENSITY`
+   * ——那一档是上界，读数偏高但不会低估。写成可选就会有人漏掉，
+   * 而漏掉的表现是那个模型的读数换了一把尺，不报错。
+   */
+  density: TokenDensity
   /**
    * 这个模型单次最多能输出多少 token。**`null` = 没测过，不申报。**
    *
@@ -149,6 +158,28 @@ export interface Vendor {
  * `openai-responses.ts` 里的常量。其余六家没有实据，所以留空——凭印象写一个域名，
  * 错了的表现是「填好了却连不上」，比空着要人自己填糟得多。
  */
+/**
+ * DeepSeek 的 tokenizer 密度。斜率法实测（2026-08-26，`deepseek-v4-flash-vision-exp`）：
+ * 中文 0.569 token/字、真实源码 2.71–3.00 字符/token、工具结果整条 2.53 字符/token。
+ * 三档各留一点上界，在四份真实样本上落在 1.03–1.12x。
+ */
+const DEEPSEEK_DENSITY: TokenDensity = {
+  cjkTokensPerChar: 0.6,
+  textCharsPerToken: 3,
+  jsonCharsPerToken: 2.5,
+}
+
+/**
+ * Google 的 tokenizer 密度。同法实测（2026-08-26，`gemini-3.7-flash`）：
+ * 中文 0.647 token/字、真实源码 2.42 字符/token、工具结果 2.43 字符/token。
+ * 文本档比 DeepSeek 那一档更紧，因为它的代码密度实测更高。
+ */
+const GOOGLE_DENSITY: TokenDensity = {
+  cjkTokensPerChar: 0.7,
+  textCharsPerToken: 2.5,
+  jsonCharsPerToken: 2.5,
+}
+
 export const VENDORS: readonly Vendor[] = [
   {
     id: 'anthropic',
@@ -387,6 +418,13 @@ const CLAUDE_BASE = {
   provider: 'anthropic_messages' as const,
   vendor: 'anthropic',
   contextWindow: 1_000_000,
+  /*
+   * **没有直连实测过。** 斜率法只在中转站上测到中文约 1.03 token/字，同一段文本
+   * 换长度重测的斜率在 1.03 与 1.31 之间跳，不作数（评测
+   * `docs/plans/2026-08-26-上下文读数评测.md` §8）。上界档对它偏保守，
+   * 表现是读数偏高。直连量过之后在这里填自己那一档。
+   */
+  density: DEFAULT_DENSITY,
   maxOutputTokens: 128_000,
   // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
   cacheRouting: 'none' as const,
@@ -499,6 +537,7 @@ function deepseekCatalog(): ModelSpec[] {
     provider: 'openai_chat_completions' as const,
     vendor: 'deepseek',
     contextWindow: 1_000_000,
+    density: DEEPSEEK_DENSITY,
     maxOutputTokens: 384_000,
     /**
      * 只描述模型，不描述本适配器发不发思考字段——填 `'none'` 是后者，那是错的。
@@ -651,6 +690,8 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 本地 ollama 按 `num_ctx` 给，实际可用窗口小于标称是常态。
      * 知道确切窗口就在模型库那一格填 `contextWindow`。
      */
+    // 未收录 = 没标定过，走上界档。读数偏高，但不会把超限的请求判成装得下。
+    density: DEFAULT_DENSITY,
     contextWindow: 256_000,
     /*
      * **不申报输出上限。** 未收录 = 没测过，而这一格编一个数的代价是静默截断：
@@ -705,6 +746,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     minCacheablePrefix: 1024,
     cacheRouting: 'prompt_cache_key' as const,
     reasoningEcho: 'none' as const,
+    // 没标定过的一律上界档。标定过的在自己那条上覆盖。
+    density: DEFAULT_DENSITY,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
@@ -825,6 +868,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.1-pro-preview',
       displayName: 'Gemini 3.1 Pro Preview',
       vendor: 'google',
+      density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: usd(2, 12, 0.2),
@@ -836,6 +880,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.7-flash',
       displayName: 'Gemini 3.7 Flash',
       vendor: 'google',
+      density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: geminiFlashPromo(now),
@@ -846,6 +891,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.6-flash',
       displayName: 'Gemini 3.6 Flash',
       vendor: 'google',
+      density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: geminiFlashPromo(now),
@@ -856,6 +902,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.5-flash',
       displayName: 'Gemini 3.5 Flash',
       vendor: 'google',
+      density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: usd(1.5, 9, 0.15),

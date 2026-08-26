@@ -594,10 +594,12 @@ export async function compactConversation(
     })
     // 占用与窗口从会话现算：手动压缩不属于任何 run，没有活的计量。
     // 面板与触发判定用的是同一把尺（`contextPanel` 的锚点口径），不另起一本账。
-    const contextWindow = buildAdapter(summaryProfile(deps, conversationId)).spec.contextWindow
+    // 窗口与密度取同一份 spec：这两个数要互相比较，出自两份 spec 就是两本账。
+    const spec = buildAdapter(summaryProfile(deps, conversationId)).spec
     const outcome = await compaction.run({
-      occupancy: contextPanel(deps.store, conversationId, contextWindow).total,
-      contextWindow,
+      occupancy: contextPanel(deps.store, conversationId, spec).total,
+      contextWindow: spec.contextWindow,
+      density: spec.density,
     })
     if (outcome.status === 'compacted') {
       emit({

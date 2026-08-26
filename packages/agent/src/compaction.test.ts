@@ -5,6 +5,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { WireMessage } from '@qywork/ai'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
 import {
   type CompactionAction,
@@ -68,6 +69,7 @@ function input(over: Partial<CompactionInput> = {}): CompactionInput {
     previous: null,
     fold: { messageId: 'ms_004' as MessageId },
     condenseOnly: false,
+    density: DEFAULT_DENSITY,
     projectionBudget: 20_000,
     typicalSummaryTokens: null,
     condensedRegionTokens: 5_000,

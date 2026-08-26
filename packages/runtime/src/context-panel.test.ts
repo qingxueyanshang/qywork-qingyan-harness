@@ -33,6 +33,9 @@ import { contextPanel } from './context-panel.ts'
 
 const sum = (b: Record<string, number>) => Object.values(b).reduce((n, v) => n + v, 0)
 
+/** 夹具里的会话与逐请求账都记在模型 `m` 上。 */
+const M = (contextWindow: number) => ({ id: 'm', contextWindow })
+
 function fixture() {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, 'C:/ws', 'ws')
@@ -83,7 +86,7 @@ describe('逐请求账', () => {
     })
     expect(latestSentProviderRequest(store, conversationId)).toBeNull()
     // 未发送 = 没占——但窗口是模型的属性，照样报得出来，面板显示 0 / 1M。
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.total).toBe(0)
     expect(panel.percent).toBe(0)
     expect(panel.limit).toBe(1_000_000)
@@ -121,7 +124,7 @@ describe('上下文面板', () => {
       null,
     )
 
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.total).toBe(9700)
     expect(panel.source).toBe('actual')
     expect(panel.freeSpace).toBe(1_000_000 - 9700)
@@ -147,14 +150,14 @@ describe('上下文面板', () => {
       { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 12_000, cacheWriteTokens: 0 },
       null,
     )
-    const anchored = contextPanel(store, conversationId, 1_000_000)
+    const anchored = contextPanel(store, conversationId, M(1_000_000))
     expect(anchored.total).toBe(33_000)
 
     // 第二次：发出去了，但 provider 没报 usage。本地测得值远低于真值。
     const second = send(store, runId, { measured: 3200 })
     settleProviderRequest(store, second, 'received', null, null)
 
-    const after = contextPanel(store, conversationId, 1_000_000)
+    const after = contextPanel(store, conversationId, M(1_000_000))
     // 数字不许掉——上下文只多不少，而这次请求没有任何证据说明它变小了。
     expect(after.total).toBe(33_000)
     expect(after.source).toBe('actual')
@@ -190,7 +193,7 @@ describe('上下文面板', () => {
       null,
     )
 
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.total).toBe(6000)
     expect(sum(panel.breakdown)).toBe(6000)
     // 逐字可数的三桶原样不动——把最准的数摊掉才是真的不准。
@@ -210,7 +213,7 @@ describe('上下文面板', () => {
       null,
     )
 
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.breakdown.executionRecords).toBe(0)
     expect(panel.breakdown.historyMessages).toBe(700)
     expect(sum(panel.breakdown)).toBe(900)
@@ -221,7 +224,7 @@ describe('上下文面板', () => {
     const id = send(store, runId, { measured: 4242 })
     settleProviderRequest(store, id, 'rejected', null, 'context_overflow')
 
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.total).toBe(4242)
     expect(panel.source).toBe('estimated')
   })
@@ -232,7 +235,7 @@ describe('上下文面板', () => {
     const id = send(store, runId, { measured: 2139 })
     settleProviderRequest(store, id, 'received', null, null)
 
-    expect(contextPanel(store, conversationId, 1_000_000).percent).toBe(0.2)
+    expect(contextPanel(store, conversationId, M(1_000_000)).percent).toBe(0.2)
   })
 
   /**
@@ -248,7 +251,7 @@ describe('上下文面板', () => {
     })
     settleProviderRequest(store, id, 'received', null, null)
 
-    const panel = contextPanel(store, conversationId, 1_000_000)
+    const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.breakdown.systemTools).toBe(1519)
     expect(panel.breakdown.memory).toBe(823)
     // 落库走 JSON，读回来必须补齐全部十个键——缺键会让面板某一行是 undefined。
@@ -261,22 +264,94 @@ describe('上下文面板', () => {
  *
  * 面板与 loop 必须给出同一个数：面板上画一条不会触发的刻度，比不画更坏。
  */
+/**
+ * 换模型之后那条回执不再作数。
+ *
+ * 各家 tokenizer 对同一份内容算出的 token 数差到 1.8 倍（中文实测 deepseek 0.569、
+ * claude 约 1.03 token/字）。旧口径下这里不判模型，切到另一个模型之后面板因此继续
+ * 拿上一个模型的回执当锚点，还挂着「真值」的标签——**分子是 A 的尺，分母是 B 的窗口**。
+ * 手动压缩走的是同一个数（`server/run-control.ts` 拿 `contextPanel().total` 当占用），
+ * 偏低就会少压。
+ */
+describe('锚点认模型', () => {
+  test('换模型之后不拿上一个模型的回执当锚点', () => {
+    const { store, conversationId, runId } = fixture()
+    const first = send(store, runId, { measured: 3000 })
+    settleProviderRequest(
+      store,
+      first,
+      'received',
+      { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 12_000, cacheWriteTokens: 0 },
+      null,
+    )
+    // 同一个模型：照常锚定。
+    expect(contextPanel(store, conversationId, M(1_000_000)).source).toBe('actual')
+
+    // 会话切到另一个模型：那条回执描述的不是这个模型看到的上下文。
+    const other = contextPanel(store, conversationId, { id: 'other', contextWindow: 200_000 })
+    expect(other.source).toBe('estimated')
+    expect(other.total).not.toBe(33_000)
+    expect(other.limit).toBe(200_000)
+  })
+
+  /**
+   * **不往前找同模型的那一条。** 更早那条描述的是更短的上下文，它是「另一份内容的
+   * 真值」——比估算错得更隐蔽，因为标签会说它是实测的。
+   */
+  test('不回退到更早的同模型回执', () => {
+    const { store, conversationId, runId } = fixture()
+    const early = send(store, runId, { measured: 1000 })
+    settleProviderRequest(
+      store,
+      early,
+      'received',
+      { inputTokens: 5000, outputTokens: 100, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+    // 中途换到别的模型跑了一轮，也拿到了回执。
+    const row = openProviderRequest(store, {
+      runId,
+      turnIndex: 900,
+      retryIndex: 0,
+      model: 'other',
+      measuredInputTokens: 9000,
+      sentCategories: emptyBreakdown(),
+      omittedCategories: emptyOmitted(),
+      payloadHash: 'h-other',
+    })
+    markProviderRequestSent(store, row.id)
+    settleProviderRequest(
+      store,
+      row.id,
+      'received',
+      { inputTokens: 30_000, outputTokens: 500, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+
+    // 会话现在是 `m`，而最近一条回执是 `other` 的：退回估算，不去捡 5100 那条。
+    const panel = contextPanel(store, conversationId, M(1_000_000))
+    expect(panel.source).toBe('estimated')
+    expect(panel.total).not.toBe(5100)
+    expect(panel.total).not.toBe(30_500)
+  })
+})
+
 describe('压缩触发线', () => {
   test('与 loop 的软阈值同源', () => {
     const { store, conversationId, runId } = fixture()
     const id = send(store, runId, { measured: 100 })
     settleProviderRequest(store, id, 'received', null, null)
 
-    expect(contextPanel(store, conversationId, 1_000_000).compactAt).toBe(
+    expect(contextPanel(store, conversationId, M(1_000_000)).compactAt).toBe(
       softLimit({ contextWindow: 1_000_000 }),
     )
-    expect(contextPanel(store, conversationId, 200_000).compactAt).toBe(160_000)
+    expect(contextPanel(store, conversationId, M(200_000)).compactAt).toBe(160_000)
   })
 
   /** 一条请求都没发过的会话也知道线在哪——窗口是模型的属性，不是请求的属性。 */
   test('新会话也给出触发线', () => {
     const { store, conversationId } = fixture()
-    expect(contextPanel(store, conversationId, 200_000).compactAt).toBe(160_000)
+    expect(contextPanel(store, conversationId, M(200_000)).compactAt).toBe(160_000)
   })
 })
 

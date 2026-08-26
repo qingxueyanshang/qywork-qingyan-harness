@@ -12,8 +12,8 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { chargeBatchBudget, type ToolContext, type ToolSpec } from '@qywork/agent'
-import { estimateText, MEDIA_TOKENS } from '@qywork/ai'
+import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { isInlineImage, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
@@ -283,7 +283,7 @@ export const readFileTool: ToolSpec = {
      * 预算取「窗口比例」与绝对封顶的较小者（`deliveryBudget`），不是硬编码；
      * 判据与建议范围一起给回去，否则模型只知道「太大了」，只能靠二分去猜。
      */
-    const tokens = estimateText(numbered)
+    const tokens = deliveredTokens(numbered, ctx.density)
     const charged = chargeBatchBudget(ctx, tokens)
     if (!charged.ok) {
       const perLine = Math.max(1, Math.ceil(tokens / Math.max(1, slice.length)))

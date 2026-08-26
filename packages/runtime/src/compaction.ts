@@ -27,7 +27,7 @@ import {
   summaryCutOf,
   unitKey,
 } from '@qywork/agent'
-import type { WireMessage } from '@qywork/ai'
+import type { TokenDensity, WireMessage } from '@qywork/ai'
 import { estimateMessage, estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
 import type {
   ActionKind,
@@ -153,7 +153,7 @@ export class RuntimeCompaction implements CompactionPort {
 
     // 选界：从尾部逐单元累加到保留预算为止。**保留预算 = 批级投递预算**，
     // 给出的不变量是「上一次检查以来刚进来的那一波必然完整保留」。
-    const units = this.collectUnits()
+    const units = this.collectUnits(input.density)
     const foldIndex = foldIndexOf(units, deliveryBudget(input.contextWindow).batchCap)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
@@ -180,7 +180,7 @@ export class RuntimeCompaction implements CompactionPort {
       }
       actions.push(...u.actions)
 
-      const condensed = estimateMessages(u.messages.map(condenseMessage))
+      const condensed = estimateMessages(u.messages.map(condenseMessage), input.density)
       condensedRegion += condensed
       if (u.key <= condenseKey) continue
       originalNew += u.tokens
@@ -202,7 +202,7 @@ export class RuntimeCompaction implements CompactionPort {
      * 被摘要替换掉的是「收纳后的被折区」加「上一份摘要投影」，两者都腾出来；
      * 事实清单逐字优先占，摘要拿剩下的（`compact()` 里分）。全程 token 计。
      */
-    const oldProjection = summary ? estimateMessages(projectManifest(previous!)) : 0
+    const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
     const projectionBudget = limit - afterCondense + condensedRegion + oldProjection
     const workspaceId = getConversation(store, conversationId)?.workspaceId ?? ''
 
@@ -213,6 +213,7 @@ export class RuntimeCompaction implements CompactionPort {
         previous,
         fold: fold.cut,
         condenseOnly,
+        density: input.density,
         projectionBudget,
         typicalSummaryTokens: summaryOutputPercentile(store, workspaceId, SUMMARY_PERCENTILE),
         condensedRegionTokens: condensedRegion,
@@ -247,7 +248,7 @@ export class RuntimeCompaction implements CompactionPort {
    * 还在 running 的批次不收（结果未知不能当已完成，`stepsToUnits` 整批跳过）。
    * **本 run 已终结的 step 在内**——run 内涨起来的正是它们，压不到就等于压了个寂寞。
    */
-  private collectUnits(): Unit[] {
+  private collectUnits(density: TokenDensity): Unit[] {
     const { store, conversationId, messageIdUpperBound } = this.deps
     const byUser = new Map<string, ReturnType<typeof listRuns>>()
     for (const r of listRuns(store, conversationId)) {
@@ -270,7 +271,7 @@ export class RuntimeCompaction implements CompactionPort {
         key: cutKey(cut),
         cut,
         // 附件按固定值计，与装配那侧同一口径；按 base64 长度估会高出两个数量级。
-        tokens: estimateMessage(wire) + m.attachments.length * MEDIA_TOKENS,
+        tokens: estimateMessage(wire, density) + m.attachments.length * MEDIA_TOKENS,
         messages: [wire],
         row: {
           id: m.id,
@@ -286,7 +287,7 @@ export class RuntimeCompaction implements CompactionPort {
           units.push({
             key: cutKey(stepCut),
             cut: stepCut,
-            tokens: estimateMessages(u.messages),
+            tokens: estimateMessages(u.messages, density),
             messages: u.messages,
             row: null,
             actions: u.steps.map((s) => actionOf(r.id, s)),

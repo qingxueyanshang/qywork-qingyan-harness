@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   deleteMemoryTool,
   listEntries,
@@ -23,6 +24,7 @@ function ctx(root: string, approve = true): ToolContext {
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

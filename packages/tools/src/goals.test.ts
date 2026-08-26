@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { GoalPort, ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { Goal, GoalWriteResult } from '@qywork/core'
 import { readGoalTool, updateGoalTool } from './goals.ts'
 
@@ -44,6 +45,7 @@ function ctx(opts?: { goal?: Goal | null; result?: GoalWriteResult }): ToolConte
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

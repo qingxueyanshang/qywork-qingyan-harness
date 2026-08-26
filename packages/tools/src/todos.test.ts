@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { TodoItem } from '@qywork/core'
 import { writeTodosTool } from './todos.ts'
 
@@ -12,6 +13,7 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

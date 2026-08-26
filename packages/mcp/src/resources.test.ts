@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { CLIENT_PROTOCOL_VERSION, KNOWN_VERSION_LIST } from './client.ts'
 import { loadMcpServers, parseMcpConfig, unsupportedCapabilities } from './load.ts'
 
@@ -273,6 +274,7 @@ function ctx() {
     runId: 'rn',
     model: 'm',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

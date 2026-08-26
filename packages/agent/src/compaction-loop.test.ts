@@ -12,7 +12,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
-import { classifyProviderError, lookupModel } from '@qywork/ai'
+import { classifyProviderError, DEFAULT_DENSITY, lookupModel } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import {
   createConversation,
@@ -74,6 +74,7 @@ function makeCtx(): ToolContext {
     runId: 'rn' as never,
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -975,19 +976,31 @@ describe('申报按占用钳位', () => {
   /**
    * 高占用下静态申报规格上限就是 `输入 + max_tokens > 窗口`，provider 直接拒。
    * 申报回答的是「这一轮还装得下多少输出」。
+   *
+   * **还要再留一份余量。** 占用是估算出来的，估算低估多少申报就超出多少，
+   * 而那个 400 若被容量分类认成撞窗，会白花一次有损压缩去救一个申报错误。
+   * 断言写成区间而不是等式：余量比例调整时这条不该整片红，
+   * 它锁的是「申报之后仍装得下，且没把剩余空间全占满」。
    */
-  test('高占用时申报随剩余空间收缩', async () => {
+  test('高占用时申报随剩余空间收缩，并留出估算误差的余量', async () => {
     const { adapter, seen } = capturingAdapter(spec)
+    const occupancy = 950_000
     const events: AgentEvent[] = []
     for await (const ev of build(adapter).run({
       runId: 'rn_declare_high' as never,
       history: [],
-      anchor: { tokens: 950_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: { tokens: occupancy, throughMessageId: null, envelopeFingerprint: null },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
     }
-    expect(seen[0]!.maxOutputTokens).toBe(50_000)
+    const declared = seen[0]!.maxOutputTokens!
+    const room = spec.contextWindow - occupancy
+    expect(declared).toBeGreaterThan(0)
+    // 装得下：申报加上占用不越窗，且离窗口还有余量。
+    expect(occupancy + declared).toBeLessThan(spec.contextWindow)
+    // 没把剩余空间全占满——余量确实留了。
+    expect(declared).toBeLessThan(room)
   })
 })
 

@@ -27,6 +27,7 @@ import {
   ProviderError,
   type ProviderProfile,
   type ProviderUsage,
+  type TokenDensity,
   type WireToolCall,
 } from '@qywork/ai'
 import type {
@@ -481,7 +482,11 @@ export class Session {
     // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
     // 重起一遍既慢又会丢掉它们的进程内状态。会话只负责把工具规格注册进自己的表。
     if (!this.extensions) {
-      await this.loadExtensionTools(disabled, conversationId)
+      await this.loadExtensionTools(
+        buildAdapter(this.resolveProfile(target)).spec.density,
+        disabled,
+        conversationId,
+      )
     }
 
     // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
@@ -599,6 +604,7 @@ export class Session {
    * 代价完全不成比例。
    */
   private async loadExtensionTools(
+    density: TokenDensity,
     disabled: ReadonlySet<string> = new Set(),
     conversationId?: ConversationId,
   ): Promise<void> {
@@ -631,7 +637,8 @@ export class Session {
      * 一轮把角色本来就该有的工具装回来；而且下面那条未知名检查会把池子里的名字
      * 全报成「未知工具名，已忽略」——让人去查一个不存在的问题。
      */
-    const onDemand = !allow && externalSchemaTokens(eligible) > EXTERNAL_SCHEMA_BUDGET_TOKENS
+    const onDemand =
+      !allow && externalSchemaTokens(eligible, density) > EXTERNAL_SCHEMA_BUDGET_TOKENS
 
     if (onDemand) {
       const pool = new PendingToolPool({
@@ -828,6 +835,8 @@ export class Session {
       // 投递预算按窗口算，且**在执行时**应用——换模型只影响之后的读取，
       // 已落库的 step 一个字节不改（投影因此仍是纯函数）。
       contextWindow: buildAdapter(this.resolveProfile(target)).spec.contextWindow,
+      // 扣账那把尺与窗口同源，理由见 `ToolContext.density`。
+      density: buildAdapter(this.resolveProfile(target)).spec.density,
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，

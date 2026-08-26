@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { htmlToText, parseDuckDuckGo, webFetchTool } from './web.ts'
 
 function ctx(): ToolContext {
@@ -9,6 +10,7 @@ function ctx(): ToolContext {
     runId: 'rn',
     model: 'test',
     contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
     resources: new Map(),
     state: new Map(),
     sink: null,

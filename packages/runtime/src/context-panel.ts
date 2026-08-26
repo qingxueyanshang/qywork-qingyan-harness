@@ -10,8 +10,14 @@
  * 锚点一失效显示值就从真值尺跌到估算尺，会话内容没变而数字掉三分之一，
  * 界面上没有任何一处能解释它。
  *
- * 没有任何带 usage 的请求时才退回本地测得值，并把 `source` 标成 `estimated`。
+ * 没有任何**当前模型的**带 usage 请求时才退回本地测得值，并把 `source` 标成 `estimated`。
  * **标签必须跟着数走**：用户要能一眼看出这个数能不能拿来做决定。
+ *
+ * **锚点必须与会话当前的模型同一条。** 各家 tokenizer 对同一份内容算出的 token
+ * 数差到 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），换模型之后拿上一个模型的回执
+ * 当锚点，就是用 A 的尺去判 B 的窗口，而它还挂着「真值」的标签。
+ * 判据与 loop 那侧同源（`agent/loop.ts` 的 `envelopeHashOf` 含 `req.model`）——
+ * 两处口径不同的话，同一条会话跑着的时候和回头看的时候是两个数。
  */
 
 import { softLimit } from '@qywork/agent'
@@ -65,9 +71,13 @@ function anchorTokens(r: {
 export function contextPanel(
   store: Store,
   conversationId: ConversationId,
-  contextWindow: number,
+  /**
+   * 会话当前的模型。**窗口与 id 必须出自同一份 spec**——分子按 id 认锚点、
+   * 分母按窗口算百分比，两个数出自两份 spec 就是分子分母各说各话。
+   */
+  model: { id: string; contextWindow: number },
 ): ContextPanel {
-  const limit = Math.max(1, contextWindow)
+  const limit = Math.max(1, model.contextWindow)
 
   // 分组明细取最近一次**已发送**的请求：它描述的是模型当下看到的那份上下文。
   const sent = latestSentProviderRequest(store, conversationId)
@@ -91,7 +101,13 @@ export function contextPanel(
   // 锚点取最近一次**带 usage 回报**的请求，可能比上面那条更早。
   // 判据不同是刻意的：一次超时或漏 usage 的请求也是「已发送」，
   // 拿它当锚等于把锚点归零，而那正是数字莫名跳水的来源。
-  const anchored = latestAnchoredProviderRequest(store, conversationId)
+  const latest = latestAnchoredProviderRequest(store, conversationId)
+  /*
+   * 换过模型就没有锚点了，**不往前找同模型的那一条**：更早那条描述的是更短的
+   * 上下文，它是「另一份内容的真值」，比估算错得更隐蔽。退回估算尺、如实标
+   * `estimated`，下一轮回执一到即重锚。
+   */
+  const anchored = latest && latest.model === model.id ? latest : null
 
   const total = anchored ? anchorTokens(anchored) : sent.measuredInputTokens
   const source: ContextPanel['source'] = anchored ? 'actual' : 'estimated'

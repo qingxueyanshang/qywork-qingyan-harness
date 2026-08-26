@@ -15,8 +15,13 @@
  * 没有这道闸的话，模型可以把刚折掉的内容整段读回来，压缩当场失效。
  */
 
-import { chargeBatchBudget, type ToolContext, type ToolOutcome, type ToolSpec } from '@qywork/agent'
-import { estimateText } from '@qywork/ai'
+import {
+  chargeBatchBudget,
+  deliveredTokens,
+  type ToolContext,
+  type ToolOutcome,
+  type ToolSpec,
+} from '@qywork/agent'
 
 /** 一次搜索最多回多少条命中。再多模型也读不完，只会把预算烧光。 */
 const MAX_HITS = 40
@@ -34,7 +39,7 @@ function excerpt(value: string, limit: number): string {
  * 拒绝只产生一条约百字节的回执，截断产生的是满额正文而模型往往还得再读一次。
  */
 function charged(ctx: ToolContext, text: string): ToolOutcome | null {
-  const tokens = estimateText(text)
+  const tokens = deliveredTokens(text, ctx.density)
   const budget = chargeBatchBudget(ctx, tokens)
   if (budget.ok) return null
   return {

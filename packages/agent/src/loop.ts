@@ -19,11 +19,13 @@ import type {
   LlmAdapter,
   ProviderEvent,
   ProviderUsage,
+  TokenDensity,
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
 import {
   computeCost,
+  estimateJson,
   estimateMessage,
   estimateMessages,
   estimateRequest,
@@ -127,6 +129,13 @@ export interface CompactionRunInput {
   occupancy: number
   /** 模型窗口。软阈值与保留预算都从它推导，不另传现成的数字。 */
   contextWindow: number
+  /**
+   * 会话主模型那把尺，与 `occupancy` 同一把。
+   *
+   * **不是 summarizer 的**：摘要可以由另一个模型生成，但这些量描述的是主模型
+   * 看到的上下文，换尺就是拿另一个 tokenizer 去量别人的窗口。
+   */
+  density: TokenDensity
 }
 
 export interface LoopPersistence {
@@ -457,6 +466,15 @@ export function softLimit(spec: { contextWindow: number }): number {
 }
 
 /**
+ * 申报余量。**这一处必须自己留，`softLimit` 罩不到它**——软阈值不在下面那个式子里。
+ *
+ * 占用是估算出来的，估算低估多少，申报就超出窗口多少。取占用的 5%：估算器标定在
+ * 1.03–1.18 倍（`ai/tokens.ts` 的 `TokenDensity`），已标定的模型上这个余量用不到；
+ * 它挡的是未标定模型走上界档仍然偏低的那一档。
+ */
+const OUTPUT_DECLARATION_MARGIN_RATIO = 0.05
+
+/**
  * 这一轮申报多少输出上限。`null` = 不申报。
  *
  * 兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，所以申报回答的是「这一轮还装得下
@@ -467,6 +485,10 @@ export function softLimit(spec: { contextWindow: number }): number {
  * 那个数在没测过的端点上一样是编的，发出去换来的是一个 400，而不申报换来的
  * 是端点自己的默认。
  *
+ * **余量不能省。** `occupancy` 是估算值，它低估时这个式子申报的就是一个装不下的
+ * 上限，换回来一个 400；而那个 400 若被容量分类认成撞窗，还会白花一次有损压缩去
+ * 救一个申报错误。
+ *
  * `max(1, …)` 是除零保护，不是可调的余量。
  */
 function declaredMaxOutput(
@@ -474,7 +496,8 @@ function declaredMaxOutput(
   occupancy: number,
 ): number | null {
   if (spec.maxOutputTokens === null) return null
-  return Math.min(spec.maxOutputTokens, Math.max(1, spec.contextWindow - occupancy))
+  const margin = Math.ceil(occupancy * OUTPUT_DECLARATION_MARGIN_RATIO)
+  return Math.min(spec.maxOutputTokens, Math.max(1, spec.contextWindow - occupancy - margin))
 }
 
 export class AgentLoop {
@@ -567,6 +590,8 @@ export class AgentLoop {
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent, void, unknown> {
     const { adapter, registry, persist } = this.deps
+    // 这一轮那把尺。三个消费者（读数、压缩触发、申报钳位）共用它。
+    const density = adapter.spec.density
     const maxSteps = input.maxSteps ?? DEFAULT_MAX_STEPS
 
     const usage: RunUsage = {
@@ -636,6 +661,7 @@ export class AgentLoop {
                 !m._messageId ||
                 m._messageId > input.anchor.throughMessageId,
             ),
+            this.deps.adapter.spec.density,
           ),
           transcriptIndex: 0,
         }
@@ -647,7 +673,7 @@ export class AgentLoop {
             tokens:
               anchor.tokens +
               anchor.uncovered +
-              estimateMessages(transcript.slice(anchor.transcriptIndex)),
+              estimateMessages(transcript.slice(anchor.transcriptIndex), density),
             source: 'actual',
           }
         : { tokens: fallback, source: 'estimated' }
@@ -659,7 +685,7 @@ export class AgentLoop {
      * 同时成立，而这两个结论都会被写进请求。
      */
     const occupancyOf = (req: ChatRequest): number =>
-      anchor ? meter(0).tokens : estimateRequest(req)
+      anchor ? meter(0).tokens : estimateRequest(req, density)
 
     let stopReason: StopReason = 'completed'
     /**
@@ -784,6 +810,7 @@ export class AgentLoop {
                 signal: input.signal,
                 occupancy,
                 contextWindow: adapter.spec.contextWindow,
+                density,
               }),
             )
             if (outcome.status === 'aborted') {
@@ -842,7 +869,7 @@ export class AgentLoop {
           }
         }
 
-        const breakdown = breakdownOf(req)
+        const breakdown = breakdownOf(req, density)
 
         // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
         // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
@@ -899,7 +926,7 @@ export class AgentLoop {
             turnIndex: step,
             retryIndex,
             model: adapter.spec.id,
-            measuredInputTokens: estimateRequest(req),
+            measuredInputTokens: estimateRequest(req, density),
             sentCategories: breakdown,
             omittedCategories: this.lastOmitted,
             payloadHash: payloadHashOf(req),
@@ -1070,7 +1097,7 @@ export class AgentLoop {
               }
               // 压缩前后用**同一把尺**量请求本身。判据不是「压缩返回成功」——
               // 收纳段可能落了库却一个 token 没省。
-              const sizeBefore = estimateRequest(req)
+              const sizeBefore = estimateRequest(req, density)
               yield { type: 'compaction', runId: input.runId, phase: 'started' }
               const outcome = await untilAborted(
                 input.signal,
@@ -1078,6 +1105,7 @@ export class AgentLoop {
                   signal: input.signal,
                   occupancy: cap.reportedInputTokens ?? occupancyOf(req),
                   contextWindow: adapter.spec.contextWindow,
+                  density,
                 }),
               )
               if (outcome.status === 'aborted') {
@@ -1086,7 +1114,7 @@ export class AgentLoop {
               }
               if (outcome.status === 'compacted') {
                 const rebuilt = this.buildRequest(input, transcript, occupancyOf)
-                if (estimateRequest(rebuilt) < sizeBefore) {
+                if (estimateRequest(rebuilt, density) < sizeBefore) {
                   persist.recordCompaction(input.runId, nextSeq(), {
                     phase: 'done',
                     manifestRevision: outcome.manifest.revision,
@@ -1648,7 +1676,7 @@ export class AgentLoop {
       for (const m of list) {
         // 无戳的（尾区注记、投影出的摘要两条）不参与——它们不是被折的原文。
         if (!m._messageId) continue
-        const n = sign * estimateMessage(m)
+        const n = sign * estimateMessage(m, adapter.spec.density)
         if (m.role === 'tool' || m._group === 'intermediateContent')
           omitted.intermediateOriginal += n
         else omitted.historyOriginal += n
@@ -1789,18 +1817,23 @@ function payloadHashOf(req: ChatRequest): string {
 }
 
 /**
- * 请求信封的指纹：冻结前缀 + 工具表，**不含消息**。
+ * 请求信封的指纹：模型 + 冻结前缀 + 工具表，**不含消息**。
  *
  * 锚点的语义是「上一次真值描述的那个上下文」。两次请求之间用户可以装卸 MCP、
  * 装技能、`load_tool` 装工具、换模型——信封换了，那个真值描述的就不是这一次
  * 的上下文了，而它仍然是三处共用的那把尺（显示、压缩触发、`max_tokens` 钳位）。
+ *
+ * **`req.model` 必须在里面。** 系统提示词不随模型变、工具表也不随模型变，所以
+ * 只哈希这两项时换模型得到的是同一个指纹，锚点存活——而那个真值是另一个
+ * tokenizer 量出来的。中文密度各家差 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），
+ * 拿它去判新模型的窗口就是量错了尺，而且不会有任何报错。
  *
  * **不要复用 `payloadHashOf`**：它含 messages，每轮必变，当不了信封。
  * 也不要复用 `prefix-audit` 的 `hashFrozen`：它只覆盖到最后一个缓存断点，
  * 不含工具表，而工具表正是最常变的那一半。
  */
 function envelopeHashOf(req: ChatRequest): string {
-  return Bun.hash(JSON.stringify([req.system, req.tools])).toString(36)
+  return Bun.hash(JSON.stringify([req.model, req.system, req.tools])).toString(36)
 }
 
 /**
@@ -1814,18 +1847,22 @@ function envelopeHashOf(req: ChatRequest): string {
  * 量法：把同一份记录**去掉正文再量一次**，两次之差就是正文。
  * tokenization 不可加，所以不能分别量两段再相加。
  *
- * **两次必须同尺。** 整条走 `estimateText`（`estimateMessage` 对字符串正文的口径），
- * 所以信封也只能走它——用 `estimateJson` 量信封是 2 字符/token 对 4 字符/token，
- * 信封虚高一倍、差额从正文里扣。实测一条 327 次调用的会话：执行记录 15.3k 对
- * 同尺的 8.3k，其中 167 条被下面的 `Math.min` 夹成 `body = 0`，
- * 面板上读作「这次调用没带回任何正文」，而它带回了一句 summary。
+ * **两次必须同尺，而且是 `estimateMessage` 量整条时用的那一把。** tool 角色整条走
+ * JSON 档（`ai/tokens.ts` 的 `estimateMessage`），所以信封也只能走 `estimateJson`。
+ * 尺不同的代价实测过：信封虚高一倍、差额从正文里扣，一条 327 次调用的会话里
+ * 167 条被下面的 `Math.min` 夹成 `body = 0`，面板上读作「这次调用没带回任何正文」，
+ * 而它带回了一句 summary。
  */
-function splitToolResult(content: string, total: number): { envelope: number; body: number } {
+function splitToolResult(
+  content: string,
+  total: number,
+  density: TokenDensity,
+): { envelope: number; body: number } {
   try {
     const record = JSON.parse(content) as Record<string, unknown>
     if (typeof record !== 'object' || record === null) return { envelope: total, body: 0 }
     const { summary: _s, result: _r, ...envelope } = record
-    const envelopeTokens = Math.min(total, estimateText(JSON.stringify(envelope)))
+    const envelopeTokens = Math.min(total, estimateJson(JSON.stringify(envelope), density))
     return { envelope: envelopeTokens, body: total - envelopeTokens }
   } catch {
     // 不是约定的那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
@@ -1839,22 +1876,22 @@ function splitToolResult(content: string, total: number): { envelope: number; bo
  * 这里只负责量，不负责对账——各组之和与总数的恒等由 `core` 的 `reconcileBreakdown`
  * 保证（固定类目保实测值，差额归到消息类目）。不要在这个函数里追求「加起来正好」。
  */
-function breakdownOf(req: ChatRequest): ContextBreakdown {
+function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBreakdown {
   const out = emptyBreakdown()
-  out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text), 0)
+  out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text, density), 0)
 
   // 工具 schema 分两桶。判据是 `mcp__` 前缀——`mcp/register.ts` 保证 MCP 工具
   // 一律带它，插件工具走 `<插件id>__` 归内置一侧。这两类的处置完全不同：
   // MCP 涨了是用户装的服务器在涨，内置涨了是内置工具表在涨。
   const mcp = req.tools.filter((t) => t.name.startsWith('mcp__'))
   const builtin = req.tools.filter((t) => !t.name.startsWith('mcp__'))
-  if (mcp.length) out.mcpTools = estimateSchemas(mcp)
-  if (builtin.length) out.systemTools = estimateSchemas(builtin)
+  if (mcp.length) out.mcpTools = estimateSchemas(mcp, density)
+  if (builtin.length) out.systemTools = estimateSchemas(builtin, density)
 
   for (const m of req.messages) {
     // 整条量：正文 + tool call 参数 + 思考正文 + 协议开销。
     // 只量 `m.content` 会把 `write_file` 的整份文件正文漏掉——它在参数里。
-    const n = estimateMessage(m)
+    const n = estimateMessage(m, density)
     // 没有 `_group` 的一律归 historyMessages，不单开「其他」桶——
     // 一个永远对不上账的「其他」比归错桶更难解释。
     const group = m._group ?? 'historyMessages'
@@ -1866,8 +1903,8 @@ function breakdownOf(req: ChatRequest): ContextBreakdown {
         typeof m.content === 'string'
           ? m.content
           : (m.content.find((b) => b.type === 'text')?.text ?? '')
-      const media = typeof m.content === 'string' ? 0 : n - estimateText(envelopeText)
-      const { envelope, body } = splitToolResult(envelopeText, n - media)
+      const media = typeof m.content === 'string' ? 0 : n - estimateJson(envelopeText, density)
+      const { envelope, body } = splitToolResult(envelopeText, n - media, density)
       out.executionRecords += envelope
       out.intermediateContent += body + media
       continue

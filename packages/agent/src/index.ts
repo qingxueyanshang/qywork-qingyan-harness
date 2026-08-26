@@ -41,6 +41,7 @@ export { decideCommand } from './policy.ts'
 export {
   chargeBatchBudget,
   type DelegatePort,
+  deliveredTokens,
   deliveryBudget,
   type FileReadPort,
   type GoalPort,

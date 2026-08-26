@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext, ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
 import {
   createConversation,
   fileReadHash,
@@ -208,7 +209,9 @@ describe('allowedTools 与扩展工具', () => {
       signal: new AbortController().signal,
       allowedTools: ['read_file', 'mcp__demo__ping'],
     })
-    await (s as unknown as { loadExtensionTools(): Promise<void> }).loadExtensionTools()
+    await (
+      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
+    ).loadExtensionTools(DEFAULT_DENSITY)
     const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
       .schemas()
       .map((t) => t.name)
@@ -251,9 +254,9 @@ describe('外部工具按量转按需', () => {
     })
     await (
       s as unknown as {
-        loadExtensionTools(d: ReadonlySet<string>, c: string): Promise<void>
+        loadExtensionTools(n: TokenDensity, d: ReadonlySet<string>, c: string): Promise<void>
       }
-    ).loadExtensionTools(listDisabledExtras(store, conv.id), conv.id)
+    ).loadExtensionTools(DEFAULT_DENSITY, listDisabledExtras(store, conv.id), conv.id)
 
     const registry = (s as unknown as { registry: ToolRegistry }).registry
     const tail = () =>
@@ -319,9 +322,9 @@ describe('外部工具按量转按需', () => {
     })
     await (
       next as unknown as {
-        loadExtensionTools(d: ReadonlySet<string>, c: string): Promise<void>
+        loadExtensionTools(n: TokenDensity, d: ReadonlySet<string>, c: string): Promise<void>
       }
-    ).loadExtensionTools(listDisabledExtras(store, conv.id), conv.id)
+    ).loadExtensionTools(DEFAULT_DENSITY, listDisabledExtras(store, conv.id), conv.id)
 
     const names = (next as unknown as { registry: ToolRegistry }).registry
       .schemas()

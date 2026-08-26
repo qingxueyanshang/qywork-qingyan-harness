@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Summarizer } from '@qywork/agent'
+import type { CompactionRunInput, Summarizer } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
-import { estimateMessages } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateMessages } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
 import {
   appendMessage,
@@ -69,13 +69,10 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
  * 因此软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）留住尾巴——
  * 不用去猜某个模型档的具体数字，也不会因为估算系数微调就整片红。
  */
-async function pressure(
-  store: Store,
-  conversationId: string,
-): Promise<{ occupancy: number; contextWindow: number }> {
+async function pressure(store: Store, conversationId: string): Promise<CompactionRunInput> {
   const history = await buildHistory(store, conversationId as never, null, async (c) => c)
-  const total = estimateMessages(history)
-  return { occupancy: total, contextWindow: total }
+  const total = estimateMessages(history, DEFAULT_DENSITY)
+  return { occupancy: total, contextWindow: total, density: DEFAULT_DENSITY }
 }
 
 async function history(store: Store, conversationId: string): Promise<WireMessage[]> {
@@ -298,7 +295,9 @@ describe('投影三区', () => {
     expect(condensed.length).toBeGreaterThan(0)
     // 定位符必须活下来，否则 sink 里那份正文再也调不起来。
     expect(condensed.some((m) => (m.content as string).includes('rs_'))).toBe(true)
-    expect(estimateMessages(projected)).toBeLessThan(estimateMessages(before) / 2)
+    expect(estimateMessages(projected, DEFAULT_DENSITY)).toBeLessThan(
+      estimateMessages(before, DEFAULT_DENSITY) / 2,
+    )
     store.close()
   })
 })
@@ -356,11 +355,11 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
     addToolWaves(store, run.id, 20, 800)
 
     const before = await history(store, conv.id)
-    const total = estimateMessages(before)
+    const total = estimateMessages(before, DEFAULT_DENSITY)
     // 从「几乎全折」到「几乎全留」扫一遍窗口，每一档都要求配对完整。
     for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
       const p = port(store, conv.id)
-      await p.run({ occupancy: total, contextWindow: window })
+      await p.run({ occupancy: total, contextWindow: window, density: DEFAULT_DENSITY })
       const projected = p.project(before)
 
       const declared = new Set<string>()
@@ -404,7 +403,9 @@ describe('收纳段单独够用时零模型调用', () => {
     expect(r.status === 'compacted' && r.reasonCode).toBeUndefined()
     expect(calls).toBe(0)
     // 被折区的工具正文全换成信封；余下的是保留预算里那一段尾巴。
-    expect(estimateMessages(p.project(before))).toBeLessThan(estimateMessages(before) * 0.4)
+    expect(estimateMessages(p.project(before), DEFAULT_DENSITY)).toBeLessThan(
+      estimateMessages(before, DEFAULT_DENSITY) * 0.4,
+    )
     store.close()
   })
 })
