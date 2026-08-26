@@ -225,228 +225,222 @@ export function ModelSettings() {
   }
 
   return (
-    <>
-      <Show
-        when={config()}
-        fallback={<LoadState error={configError()} onRetry={() => void reloadConfig()} />}
-      >
-        {(c) => (
-          <>
-            <section class="settings-block">
-              <div class="tab-strip">
-                <For each={names()}>
-                  {(n) => (
-                    <button
-                      class="tab-chip"
-                      classList={{
-                        active: !showLibrary() && current() === n,
-                        live: c().active.provider === n,
-                      }}
-                      type="button"
-                      onClick={() => {
-                        setShowLibrary(false)
-                        setPicked(n)
-                      }}
-                    >
-                      {n}
-                    </button>
-                  )}
-                </For>
-                <button
-                  class="tab-chip add"
-                  type="button"
-                  onClick={() => {
-                    setShowLibrary(false)
-                    addProvider()
-                  }}
-                >
-                  添加接口
-                </button>
-                {/* 模型库和接口不是同一类（一个是模型参数，一个是端点与凭证），
+    <Show
+      when={config()}
+      fallback={<LoadState error={configError()} onRetry={() => void reloadConfig()} />}
+    >
+      {(c) => (
+        <>
+          <section class="settings-block">
+            <div class="tab-strip">
+              <For each={names()}>
+                {(n) => (
+                  <button
+                    class="tab-chip"
+                    classList={{
+                      active: !showLibrary() && current() === n,
+                      live: c().active.provider === n,
+                    }}
+                    type="button"
+                    onClick={() => {
+                      setShowLibrary(false)
+                      setPicked(n)
+                    }}
+                  >
+                    {n}
+                  </button>
+                )}
+              </For>
+              <button
+                class="tab-chip add"
+                type="button"
+                onClick={() => {
+                  setShowLibrary(false)
+                  addProvider()
+                }}
+              >
+                添加接口
+              </button>
+              {/* 模型库和接口不是同一类（一个是模型参数，一个是端点与凭证），
                       所以隔开放在这一排的末尾，而不是混在接口中间。 */}
-                <button
-                  class="tab-chip lib"
-                  classList={{ active: showLibrary() }}
-                  type="button"
-                  onClick={() => setShowLibrary(true)}
-                >
-                  模型库
-                </button>
-              </div>
-            </section>
+              <button
+                class="tab-chip lib"
+                classList={{ active: showLibrary() }}
+                type="button"
+                onClick={() => setShowLibrary(true)}
+              >
+                模型库
+              </button>
+            </div>
+          </section>
 
-            <Show when={!showLibrary() && current()}>
-              {(name) => {
-                const p = () => c().providers[name()]!
-                const models = () => Object.keys(p().models)
-                return (
-                  <>
-                    <section class="settings-block">
-                      <div class="settings-block-head">
-                        <h3>{name()}</h3>
-                        <button
-                          class="icon-btn"
-                          type="button"
-                          aria-label={`删除接口 ${name()}`}
-                          onClick={() => setDoomed(name())}
+          <Show when={!showLibrary() && current()}>
+            {(name) => {
+              const p = () => c().providers[name()]!
+              const models = () => Object.keys(p().models)
+              return (
+                <>
+                  <section class="settings-block">
+                    <div class="settings-block-head">
+                      <h3>{name()}</h3>
+                      <button
+                        class="icon-btn"
+                        type="button"
+                        aria-label={`删除接口 ${name()}`}
+                        onClick={() => setDoomed(name())}
+                      >
+                        <IconX size={13} />
+                      </button>
+                    </div>
+
+                    <div class="setting-rows">
+                      <Row label="名称">
+                        <input
+                          type="text"
+                          value={name()}
+                          onBlur={(e) => renameProvider(name(), e.currentTarget.value.trim())}
+                        />
+                      </Row>
+
+                      <Row label="协议">
+                        <select
+                          value={p().kind}
+                          onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
                         >
-                          <IconX size={13} />
-                        </button>
-                      </div>
+                          <For each={PROVIDER_KINDS}>
+                            {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+                          </For>
+                        </select>
+                      </Row>
 
-                      <div class="setting-rows">
-                        <Row label="名称">
-                          <input
-                            type="text"
-                            value={name()}
-                            onBlur={(e) => renameProvider(name(), e.currentTarget.value.trim())}
-                          />
-                        </Row>
+                      <Field label="Base URL">
+                        <input
+                          type="text"
+                          placeholder="留空用官方默认"
+                          value={p().baseUrl ?? ''}
+                          onBlur={(e) => patchProvider(name(), { baseUrl: e.currentTarget.value })}
+                        />
+                      </Field>
 
-                        <Row label="协议">
-                          <select
-                            value={p().kind}
-                            onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
-                          >
-                            <For each={PROVIDER_KINDS}>
-                              {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
-                            </For>
-                          </select>
-                        </Row>
-
-                        <Field label="Base URL">
-                          <input
-                            type="text"
-                            placeholder="留空用官方默认"
-                            value={p().baseUrl ?? ''}
-                            onBlur={(e) =>
-                              patchProvider(name(), { baseUrl: e.currentTarget.value })
-                            }
-                          />
-                        </Field>
-
-                        <Field label="API Key">
-                          <input
-                            type="password"
-                            placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
-                            onBlur={(e) => {
-                              // 留空 = 保持原值，所以空串不发——发了会被当成「清除 key」。
-                              if (e.currentTarget.value) {
-                                patchProvider(name(), {
-                                  apiKey: e.currentTarget.value,
-                                  hasApiKey: true,
-                                })
-                                e.currentTarget.value = ''
-                              }
-                            }}
-                          />
-                        </Field>
-                      </div>
-                    </section>
-
-                    <section class="settings-block">
-                      <div class="settings-block-head">
-                        <h3>模型</h3>
-                      </div>
-
-                      <div class="model-list">
-                        <For each={models()}>
-                          {(id) => {
-                            const isDefault = () =>
-                              c().active.provider === name() && c().active.model === id
-                            const result = () => probes()[id]
-                            return (
-                              <div class="model-row" classList={{ active: isDefault() }}>
-                                <div class="model-row-main">
-                                  {/* 「默认」= 新会话开在哪一格。已开的会话各自记着自己那一对，
-                                    改这里不会把它们挪走。 */}
-                                  <button
-                                    class="model-pick"
-                                    type="button"
-                                    disabled={isDefault()}
-                                    onClick={() =>
-                                      void replaceConfig((cur) => ({
-                                        ...cur,
-                                        active: { provider: name(), model: id },
-                                      }))
-                                    }
-                                  >
-                                    {isDefault() ? '默认' : '设为默认'}
-                                  </button>
-                                  <span class="model-id">{id}</span>
-                                  {/* 结论跟在模型 id 右边，同一行。放到行下面的话，
-                                      每探一次这一行就长高一截，下面几行整体往下跳。 */}
-                                  <Show when={result()}>
-                                    {(r) => <ProbeSummary result={r()} />}
-                                  </Show>
-                                  <button
-                                    class="btn-ghost sm"
-                                    type="button"
-                                    disabled={probing() !== null || configBusy()}
-                                    onClick={() => void runProbe(name(), id)}
-                                  >
-                                    {probing() === id ? '检测中…' : '检测'}
-                                  </button>
-                                  <button
-                                    class="icon-btn"
-                                    type="button"
-                                    aria-label={`删除模型 ${id}`}
-                                    onClick={() => removeModel(name(), id)}
-                                  >
-                                    <IconX size={12} />
-                                  </button>
-                                </div>
-                              </div>
-                            )
-                          }}
-                        </For>
-
-                        <div class="model-row add">
-                          <input
-                            type="text"
-                            placeholder="模型 ID，回车添加"
-                            onKeyDown={(e) => {
-                              if (e.key !== 'Enter') return
-                              addModel(name(), e.currentTarget.value.trim())
+                      <Field label="API Key">
+                        <input
+                          type="password"
+                          placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
+                          onBlur={(e) => {
+                            // 留空 = 保持原值，所以空串不发——发了会被当成「清除 key」。
+                            if (e.currentTarget.value) {
+                              patchProvider(name(), {
+                                apiKey: e.currentTarget.value,
+                                hasApiKey: true,
+                              })
                               e.currentTarget.value = ''
-                            }}
-                          />
-                        </div>
+                            }
+                          }}
+                        />
+                      </Field>
+                    </div>
+                  </section>
+
+                  <section class="settings-block">
+                    <div class="settings-block-head">
+                      <h3>模型</h3>
+                    </div>
+
+                    <div class="model-list">
+                      <For each={models()}>
+                        {(id) => {
+                          const isDefault = () =>
+                            c().active.provider === name() && c().active.model === id
+                          const result = () => probes()[id]
+                          return (
+                            <div class="model-row" classList={{ active: isDefault() }}>
+                              <div class="model-row-main">
+                                {/* 「默认」= 新会话开在哪一格。已开的会话各自记着自己那一对，
+                                    改这里不会把它们挪走。 */}
+                                <button
+                                  class="model-pick"
+                                  type="button"
+                                  disabled={isDefault()}
+                                  onClick={() =>
+                                    void replaceConfig((cur) => ({
+                                      ...cur,
+                                      active: { provider: name(), model: id },
+                                    }))
+                                  }
+                                >
+                                  {isDefault() ? '默认' : '设为默认'}
+                                </button>
+                                <span class="model-id">{id}</span>
+                                {/* 结论跟在模型 id 右边，同一行。放到行下面的话，
+                                      每探一次这一行就长高一截，下面几行整体往下跳。 */}
+                                <Show when={result()}>{(r) => <ProbeSummary result={r()} />}</Show>
+                                <button
+                                  class="btn-ghost sm"
+                                  type="button"
+                                  disabled={probing() !== null || configBusy()}
+                                  onClick={() => void runProbe(name(), id)}
+                                >
+                                  {probing() === id ? '检测中…' : '检测'}
+                                </button>
+                                <button
+                                  class="icon-btn"
+                                  type="button"
+                                  aria-label={`删除模型 ${id}`}
+                                  onClick={() => removeModel(name(), id)}
+                                >
+                                  <IconX size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        }}
+                      </For>
+
+                      <div class="model-row add">
+                        <input
+                          type="text"
+                          placeholder="模型 ID，回车添加"
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter') return
+                            addModel(name(), e.currentTarget.value.trim())
+                            e.currentTarget.value = ''
+                          }}
+                        />
                       </div>
-                    </section>
-                  </>
-                )
-              }}
-            </Show>
+                    </div>
+                  </section>
+                </>
+              )
+            }}
+          </Show>
 
-            {/* 上面那排 tab 已经写着「模型库」，这里不再来一个同名标题。 */}
-            <Show when={showLibrary()}>
-              <ModelLibrary
-                vendors={modelCatalog()?.library ?? []}
-                loading={modelCatalogLoading()}
-                error={modelCatalogError()}
-              />
-            </Show>
-
-            <ConfigStatus />
-
-            <ConfirmDialog
-              open={doomed() !== null}
-              title={`删除接口「${doomed()}」`}
-              message={
-                c().providers[doomed() ?? '']?.hasApiKey
-                  ? '它的 API Key 一并删除，删了拿不回来。'
-                  : '删了拿不回来。'
-              }
-              confirmLabel="删除"
-              danger
-              onConfirm={() => removeProvider(doomed()!)}
-              onCancel={() => setDoomed(null)}
+          {/* 上面那排 tab 已经写着「模型库」，这里不再来一个同名标题。 */}
+          <Show when={showLibrary()}>
+            <ModelLibrary
+              vendors={modelCatalog()?.library ?? []}
+              loading={modelCatalogLoading()}
+              error={modelCatalogError()}
             />
-          </>
-        )}
-      </Show>
-    </>
+          </Show>
+
+          <ConfigStatus />
+
+          <ConfirmDialog
+            open={doomed() !== null}
+            title={`删除接口「${doomed()}」`}
+            message={
+              c().providers[doomed() ?? '']?.hasApiKey
+                ? '它的 API Key 一并删除，删了拿不回来。'
+                : '删了拿不回来。'
+            }
+            confirmLabel="删除"
+            danger
+            onConfirm={() => removeProvider(doomed()!)}
+            onCancel={() => setDoomed(null)}
+          />
+        </>
+      )}
+    </Show>
   )
 }
 

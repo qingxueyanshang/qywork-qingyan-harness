@@ -680,54 +680,52 @@ export function TranscriptRows(props: { items: TranscriptItem[] }) {
     reconcileRenderItems(prev, buildRenderItems(props.items)),
   )
   return (
-    <>
-      <For each={items()}>
-        {(node) => (
-          <Switch>
-            <Match when={node.kind === 'user'}>
-              <div class="row user">
-                <div class="user-col">
-                  {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
-                  <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
-                    <div class="attach-row sent">
-                      <For each={(node as { item: TranscriptItem }).item.attachments}>
-                        {(a) => (
-                          <span class="attach-chip" data-tip={a.path}>
-                            <AttachmentThumb path={a.path} name={a.name} box={44} />
-                            <span class="truncate">{a.name}</span>
-                          </span>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                  <Show when={(node as { item: TranscriptItem }).item.text}>
-                    <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
-                  </Show>
-                </div>
+    <For each={items()}>
+      {(node) => (
+        <Switch>
+          <Match when={node.kind === 'user'}>
+            <div class="row user">
+              <div class="user-col">
+                {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
+                <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
+                  <div class="attach-row sent">
+                    <For each={(node as { item: TranscriptItem }).item.attachments}>
+                      {(a) => (
+                        <span class="attach-chip" data-tip={a.path}>
+                          <AttachmentThumb path={a.path} name={a.name} box={44} />
+                          <span class="truncate">{a.name}</span>
+                        </span>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+                <Show when={(node as { item: TranscriptItem }).item.text}>
+                  <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
+                </Show>
               </div>
-            </Match>
-            <Match when={node.kind === 'text'}>
-              <Prose item={(node as { item: TranscriptItem }).item} />
-            </Match>
-            <Match when={node.kind === 'thinking'}>
-              <ThinkingFold item={(node as { item: TranscriptItem }).item} />
-            </Match>
-            <Match when={node.kind === 'tool'}>
-              <ToolCard item={(node as { item: TranscriptItem }).item} />
-            </Match>
-            <Match when={node.kind === 'compaction'}>
-              <CompactionCard item={(node as { item: TranscriptItem }).item} />
-            </Match>
-            <Match when={node.kind === 'run'}>
-              <RunCard item={(node as { item: TranscriptItem }).item} />
-            </Match>
-            <Match when={node.kind === 'group'}>
-              <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
-            </Match>
-          </Switch>
-        )}
-      </For>
-    </>
+            </div>
+          </Match>
+          <Match when={node.kind === 'text'}>
+            <Prose item={(node as { item: TranscriptItem }).item} />
+          </Match>
+          <Match when={node.kind === 'thinking'}>
+            <ThinkingFold item={(node as { item: TranscriptItem }).item} />
+          </Match>
+          <Match when={node.kind === 'tool'}>
+            <ToolCard item={(node as { item: TranscriptItem }).item} />
+          </Match>
+          <Match when={node.kind === 'compaction'}>
+            <CompactionCard item={(node as { item: TranscriptItem }).item} />
+          </Match>
+          <Match when={node.kind === 'run'}>
+            <RunCard item={(node as { item: TranscriptItem }).item} />
+          </Match>
+          <Match when={node.kind === 'group'}>
+            <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
+          </Match>
+        </Switch>
+      )}
+    </For>
   )
 }
 

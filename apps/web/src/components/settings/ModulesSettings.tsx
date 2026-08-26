@@ -310,70 +310,68 @@ export function ModulesSettings() {
   }
 
   return (
-    <>
-      <Show
-        when={loaded(data)}
-        fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
-      >
-        <For each={groups()}>
-          {(g) => (
-            <section class="settings-block">
-              <div class="settings-block-head">
-                <h3>{g.mod.label}</h3>
-                <Show when={g.mod.consoles}>
-                  {(cs) => (
-                    <span class="module-consoles">
-                      <For each={cs()}>
-                        {(c) => (
-                          <button
-                            class="btn-ghost sm module-console"
-                            type="button"
-                            onClick={() => setSettingsPage(c.page)}
-                          >
-                            {c.label}
-                            <IconChevron dir="right" size={12} />
-                          </button>
-                        )}
-                      </For>
-                    </span>
-                  )}
-                </Show>
-              </div>
-              <div class="setting-rows">
-                <For each={g.rows}>
-                  {(r) => (
-                    <div class="setting-row stack">
-                      <div class="module-tool">
-                        <code class="module-name">{r.name}</code>
-                        <Show when={r.source !== 'builtin'}>
-                          <span class="module-src">{r.source}</span>
-                        </Show>
-                        <span class="module-summary">{r.summary}</span>
-                        <span class="module-perm">{permText(r.permissionEffect)}</span>
-                      </div>
-                      <Show when={r.params.length > 0}>
-                        <span class="module-params">
-                          {r.params.map((p) => (p.required ? `${p.name}*` : p.name)).join(' · ')}
-                        </span>
+    <Show
+      when={loaded(data)}
+      fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+    >
+      <For each={groups()}>
+        {(g) => (
+          <section class="settings-block">
+            <div class="settings-block-head">
+              <h3>{g.mod.label}</h3>
+              <Show when={g.mod.consoles}>
+                {(cs) => (
+                  <span class="module-consoles">
+                    <For each={cs()}>
+                      {(c) => (
+                        <button
+                          class="btn-ghost sm module-console"
+                          type="button"
+                          onClick={() => setSettingsPage(c.page)}
+                        >
+                          {c.label}
+                          <IconChevron dir="right" size={12} />
+                        </button>
+                      )}
+                    </For>
+                  </span>
+                )}
+              </Show>
+            </div>
+            <div class="setting-rows">
+              <For each={g.rows}>
+                {(r) => (
+                  <div class="setting-row stack">
+                    <div class="module-tool">
+                      <code class="module-name">{r.name}</code>
+                      <Show when={r.source !== 'builtin'}>
+                        <span class="module-src">{r.source}</span>
                       </Show>
+                      <span class="module-summary">{r.summary}</span>
+                      <span class="module-perm">{permText(r.permissionEffect)}</span>
                     </div>
-                  )}
-                </For>
-                {/* 说明行的名字取的是代码里那个标识（`mode`、`sandbox`…），
+                    <Show when={r.params.length > 0}>
+                      <span class="module-params">
+                        {r.params.map((p) => (p.required ? `${p.name}*` : p.name)).join(' · ')}
+                      </span>
+                    </Show>
+                  </div>
+                )}
+              </For>
+              {/* 说明行的名字取的是代码里那个标识（`mode`、`sandbox`…），
                   所以和工具名同一种写法——一个用等宽一个用正文，那本身就是中英混排。 */}
-                <For each={g.mod.notes}>
-                  {(n) => (
-                    <div class="setting-row stack" classList={{ warn: n.warn?.() === true }}>
-                      <code class="module-name">{n.label}</code>
-                      <span class="setting-row-hint">{n.text()}</span>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </section>
-          )}
-        </For>
-      </Show>
-    </>
+              <For each={g.mod.notes}>
+                {(n) => (
+                  <div class="setting-row stack" classList={{ warn: n.warn?.() === true }}>
+                    <code class="module-name">{n.label}</code>
+                    <span class="setting-row-hint">{n.text()}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+          </section>
+        )}
+      </For>
+    </Show>
   )
 }
