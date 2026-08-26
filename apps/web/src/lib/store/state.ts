@@ -16,6 +16,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   Conversation,
+  FollowUp,
   GitStateEvent,
   Goal,
   RunUsage,
@@ -162,6 +163,14 @@ export interface AppState {
     breakdown: ContextBreakdown
     omitted: ContextOmitted
   } | null
+  /**
+   * 当前会话排着的跟进消息。整表快照语义——`queue.changed` 每次整体替换。
+   *
+   * 真源在服务端进程内（`RunManager`），这里只是它的投影：入队时先乐观加一条
+   * （id 用 `clientRequestId`，与服务端同源），随后被快照整体覆盖。
+   * 不维护本地增量——两份增量账在「服务端按 id 去重掉一条」时必然分叉。
+   */
+  followUps: FollowUp[]
   /** 当前待办清单。整表快照语义——每次 todos 事件整体替换。 */
   todos: TodoItem[]
   /**
@@ -228,6 +237,7 @@ const initial: AppState = {
   fileChanges: [],
   git: null,
   error: null,
+  followUps: [],
   todos: [],
   goal: null,
   lastRunId: null,

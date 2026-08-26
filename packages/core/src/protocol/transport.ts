@@ -201,6 +201,8 @@ export type ClientCommand =
   | CompactCommand
   | GoalResumeCommand
   | GoalSetCommand
+  | FollowUpSteerCommand
+  | FollowUpDropCommand
 
 export interface SendMessageCommand {
   type: 'message.send'
@@ -211,6 +213,16 @@ export interface SendMessageCommand {
   attachments?: Attachment[]
   /** 不传则用会话当前模型。 */
   model?: string
+  /**
+   * 会话正忙时，这一条要不要**注入当前这一轮**（true），还是排队等这一轮跑完（false）。
+   *
+   * **意图随每条指令显式携带，服务端不存这个偏好。** 默认档是客户端的输入习惯
+   * （界面上那两个词是「加入队列」与「调整方向」），存在客户端本地；服务端存一份
+   * 就是第二本账，而且它与用户此刻按的键可能不一致。
+   *
+   * 会话空闲时这一格无意义：两种取值都是当场起一轮。
+   */
+  steer?: boolean
 }
 
 export interface InterruptRunCommand {
@@ -235,6 +247,32 @@ export interface SetModelCommand {
   /** 接口名。切模型实质是「切接口 + 切模型」，两个一起发，不许只发一半。 */
   provider: string
   model: string
+}
+
+/**
+ * 改一条排着的跟进消息的去向，或者在会话已经空闲时把它直接发出去。
+ *
+ * **一条指令，两种效果，裁决在服务端的同一个同步块里。** 拆成「翻转」与「立即发送」
+ * 两条指令的话，客户端要先判会话忙不忙才知道该发哪一条——而它判的是上一次
+ * `conversation.busy` 留下的值，用户点下去的那一刻它可能已经不成立。
+ *
+ * - 会话在跑：把这一条的 `steer` 置成给定值，仍留在队列里。
+ * - 会话空闲：队列里已经没有可注入的那一轮，因此取走这一条**当场起一轮**。
+ *   界面上那枚按钮的字也随之从档位词换成「发送」。
+ */
+export interface FollowUpSteerCommand {
+  type: 'followup.steer'
+  conversationId: ConversationId
+  /** 队列条目 id，即当初那条 `message.send` 的 `clientRequestId`。 */
+  id: string
+  steer: boolean
+}
+
+/** 删掉一条排着的跟进消息。删了就既不注入也不火发。 */
+export interface FollowUpDropCommand {
+  type: 'followup.drop'
+  conversationId: ConversationId
+  id: string
 }
 
 /** 用户显式触发上下文压缩。 */

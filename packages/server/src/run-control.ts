@@ -1,8 +1,8 @@
 /**
  * run 的起、重试、压缩，以及**目标的自动续起**。
  *
- * 四条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试、目标续起。
- * 给任何一条单开一套装配就是四套会漂移的行为。
+ * 五条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试、目标续起、
+ * 跟进消息火发。给任何一条单开一套装配就是五套会漂移的行为。
  *
  * **续起为什么判在 `startRun` 的 `finally`。** 那里已经在做 `runs.unregister` / `release` /
  * `session.dispose()`，是「这一轮干完了」的**唯一汇合处**——正常结束、抛错、被中断三条路都要经过
@@ -114,8 +114,15 @@ export async function startRun(
    */
   goalRound?: GoalArm,
 ): Promise<void> {
-  // 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
-  // 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
+  /*
+   * 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
+   * 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
+   *
+   * **走得到这条回绝的只剩两处竞态**：目标续起的 `setTimeout` 到点时会话又忙了
+   * （`fireGoalRound`），以及 `retryRun` 的忙闲检查与这里之间隔着的那几个 await。
+   * 用户发消息不再走到这里——忙时它排进队列（`commands.ts`）；定时任务也不会
+   * ——两条路径都是**新建会话**再起轮（`server.ts` 与 `api/schedules.ts`）。
+   */
   if (!deps.runs.reserve(conversationId)) {
     deps.bus.publish(
       {
@@ -175,6 +182,8 @@ export async function startRun(
     delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath, conversationId }),
     // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
     plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
+    // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
+    followUps: (id) => deps.runs.takeSteered(id),
   })
 
   /*
@@ -268,18 +277,75 @@ export async function startRun(
       // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
       session.dispose()
+      const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
+      /*
+       * 「调整方向」只对发出它的那一轮成立。这一轮收尾了，没赶上 step 边界的那些
+       * 条目再没有可注入的地方；留着标记的话下一轮开跑会把它们注入到一轮用户
+       * 没有指向过的执行里。
+       */
+      deps.runs.resetSteer(conversationId)
+      /*
+       * **跟进消息压过目标续起**：人插的那句话才是这条会话现在该干的事，
+       * 与 `startRun` 开头那条「人类消息优先」的 `disarm` 同一条学说。
+       *
+       * 但只压过续起那一支。`settleGoalAfterRun` 的 pause / blocked 两支是收尾不是
+       * 续起——跳掉它们的失败形状是：中断且队列非空时目标停不进 `paused`、
+       * 续起标记悬在表里，界面上那条目标永远显示在跑。
+       */
+      const fired =
+        !interrupted &&
+        !!stopReason &&
+        CONTINUABLE.includes(stopReason) &&
+        fireFollowUpRound(conversationId, deps)
       // 判定放在 dispose **之后**：占位放了、扩展也放了，这一轮才算真的干完，
       // 下一轮起来时不会和上一轮的子进程叠在一起。
       settleGoalAfterRun({
         conversationId,
         deps,
-        interrupted: controller.signal.aborted || stopReason === 'user_interrupt',
+        interrupted,
         stopReason,
         failure,
+        skipResume: fired,
       })
       void publishGitState(ws.rootPath, ws.id, deps.bus)
     }
   })()
+}
+
+/**
+ * run 收尾时把队首那条跟进消息发成下一轮。返回 true = 取到了、已排上。
+ *
+ * **同步取走、异步发起。** 取走与「跳不跳目标续起」是同一个决定，拆开就会出现
+ * 「续起已经被跳过，而那条消息在 setTimeout 到点之前被用户删了」——两边都没跑。
+ *
+ * 到点时会话又忙了（另一端刚发了一条），把它塞回队首，不丢。
+ * 异步发起的理由与 `queueGoalRound` 一样：不叠在这一轮的 `finally` 里。
+ */
+function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDeps, 'ws'>): boolean {
+  const item = deps.runs.takeNext(conversationId)
+  if (!item) return false
+  setTimeout(() => {
+    if (deps.runs.isBusy(conversationId)) {
+      deps.runs.enqueueFront(conversationId, item)
+      return
+    }
+    void startRun(conversationId, item.content, undefined, deps, undefined, item.attachments).catch(
+      (err) => {
+        // 塞回队首而不是吞掉：卡片重新出现，用户看得见它没发出去。
+        deps.runs.enqueueFront(conversationId, item)
+        deps.bus.publish(
+          {
+            type: 'run.error',
+            runId: '' as RunId,
+            code: 'internal_error',
+            message: err instanceof Error ? err.message : String(err),
+          },
+          conversationId,
+        )
+      },
+    )
+  }, 0)
+  return true
 }
 
 // ───────────────────────── 目标的自动续起 ─────────────────────────
@@ -321,6 +387,13 @@ function settleGoalAfterRun(input: {
   interrupted: boolean
   stopReason: StopReason | null
   failure: string | null
+  /**
+   * 队首那条跟进消息已经排上下一轮，**只跳过续起那一支**。
+   *
+   * 下面 pause / blocked 两支照走：它们是收尾不是续起，跳掉会把目标留在 active
+   * 且续起标记不解除。
+   */
+  skipResume: boolean
 }): void {
   const { conversationId, deps } = input
   const armed = deps.runs.armedOf(conversationId)
@@ -340,6 +413,7 @@ function settleGoalAfterRun(input: {
       })
       return
     }
+    if (input.skipResume) return
     queueGoalRound(conversationId, deps, armed)
   } catch (err) {
     abortGoalLoop(conversationId, deps, err)

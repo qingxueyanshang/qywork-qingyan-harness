@@ -1,5 +1,15 @@
 import { createSignal, For, Show } from 'solid-js'
-import { client, setTheme, state, type ThemePref, theme, workspace } from '../../lib/store/index.ts'
+import {
+  client,
+  type FollowUpMode,
+  followUpMode,
+  setFollowUpMode,
+  setTheme,
+  state,
+  type ThemePref,
+  theme,
+  workspace,
+} from '../../lib/store/index.ts'
 import PairPanel from '../PairPanel.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import { config, configError, configPath, ensureConfig, reloadConfig } from './configStore.ts'
@@ -10,6 +20,11 @@ const THEMES: { id: ThemePref; label: string }[] = [
   { id: 'system', label: '跟随系统' },
   { id: 'light', label: '浅色' },
   { id: 'dark', label: '深色' },
+]
+
+const FOLLOWUP_MODES: { id: FollowUpMode; label: string }[] = [
+  { id: 'queue', label: '加入队列' },
+  { id: 'steer', label: '调整方向' },
 ]
 
 /**
@@ -131,6 +146,26 @@ export function GeneralSettings() {
                     onClick={() => setTheme(t.id)}
                   >
                     {t.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Row>
+          {/* 会话在跑时发出去的消息默认走哪一档。
+              **放在设置里而不是输入框旁**：它很少改，常驻主界面的话 run 一起一停
+              就多/少一个控件，旁边那枚主按钮跟着漂。单条要走相反那档按
+              `Ctrl+Enter`，或者发出去之后在卡片上点一下档位词。 */}
+          <Row label="跟进处理方式">
+            <div class="seg">
+              <For each={FOLLOWUP_MODES}>
+                {(m) => (
+                  <button
+                    class="seg-item"
+                    classList={{ active: followUpMode() === m.id }}
+                    type="button"
+                    onClick={() => setFollowUpMode(m.id)}
+                  >
+                    {m.label}
                   </button>
                 )}
               </For>

@@ -34,11 +34,60 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       }
       return
 
-    case 'message.send':
+    case 'message.send': {
+      /*
+       * 会话在跑时**不再回绝**，这一条排进队列，去向由 `steer` 决定：
+       * 注入当前这一轮，或者等这一轮收尾后作为下一轮发起。
+       *
+       * **判忙与起轮必须在同一个同步块里**：`startRun` 的 `reserve()` 之前没有
+       * await，所以「读 `isBusy` → 调 `startRun`」整段是原子的。中间插一个 await
+       * 的话，桌面端和手机端几乎同时发的两条消息会双双读到「不忙」，
+       * 因此两个 AgentLoop 对着同一个工作区一起写文件（`runs.ts` 的 `reserve` 注释）。
+       */
+      if (deps.runs.isBusy(cmd.conversationId)) {
+        deps.runs.enqueue(cmd.conversationId, {
+          id: cmd.clientRequestId,
+          content: cmd.content,
+          ...(cmd.attachments?.length ? { attachments: cmd.attachments } : {}),
+          steer: cmd.steer === true,
+        })
+        return
+      }
       // 附件随消息一起转发。协议、存储、模型侧都支持，漏掉 `cmd.attachments`
       // 这一手的话，整条链路就是有类型没数据。
       await startRun(cmd.conversationId, cmd.content, cmd.model, deps, undefined, cmd.attachments)
       return
+    }
+
+    case 'followup.steer': {
+      /*
+       * 忙 → 改这一条的去向；闲 → 队列里已经没有可注入的那一轮，取走它当场起一轮。
+       * 两态在同一个同步块里裁决，理由同 `message.send`：客户端手里的忙闲是上一次
+       * 事件留下的值，它点下去那一刻可能已经不成立。
+       */
+      if (deps.runs.isBusy(cmd.conversationId)) {
+        if (!deps.runs.setSteer(cmd.conversationId, cmd.id, cmd.steer)) {
+          reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
+        }
+        return
+      }
+      const item = deps.runs.queueOf(cmd.conversationId).find((f) => f.id === cmd.id)
+      if (!item || !deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
+        reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
+        return
+      }
+      await startRun(cmd.conversationId, item.content, undefined, deps, undefined, item.attachments)
+      return
+    }
+
+    case 'followup.drop': {
+      // 删不掉只有一种可能：它已经被注入或火发掉了。如实回绝，不静默成功——
+      // 「点了删除、卡片还在」和「服务端没收到」在界面上无法区分。
+      if (!deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
+        reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
+      }
+      return
+    }
 
     case 'conversation.setModel': {
       // 接口必须在配置里真的存在。放行一个不存在的接口名，会话就指向了一个

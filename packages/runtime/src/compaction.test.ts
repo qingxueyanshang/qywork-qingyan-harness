@@ -586,3 +586,47 @@ describe('中断即丢弃', () => {
     store.close()
   })
 })
+
+/**
+ * run 内注入的那句用户消息，折进摘要线之后必须**留得下、取得回**。
+ *
+ * 折叠区拼摘要段时只收 `row` 与 assistant 正文，user 角色的单元消息不在其中，
+ * 而注入单元的 `actions` 是空的——不给它 `row` 的话，用户改方向的那句话
+ * 在一次压缩之后一个字都不剩，模型接着按改之前的判断跑，界面上没有任何提示。
+ */
+describe('注入的用户消息与压缩', () => {
+  test('进得了摘要段，地址是 <runId>:<stepId>', async () => {
+    const { store, conv, ids } = fresh(8)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: 'ws' as never,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: ids[0] ?? null,
+      messageIdUpperBound: ids[0] ?? null,
+    })
+    addToolWaves(store, run.id, 2, 400)
+    const injected = appendStep(store, {
+      runId: run.id,
+      seq: 9,
+      kind: 'user',
+      content: '所有路径都用正斜杠',
+      payload: { kind: 'user' },
+    })
+
+    // 摘要器收到的提示词里带着折叠区的全部段落，断言直接读它。
+    let prompt = ''
+    const spy: Summarizer = async (text) => {
+      prompt = text
+      return '模型写的摘要'
+    }
+    const result = await port(store, conv.id, spy).run(await pressure(store, conv.id))
+
+    expect(result.status).toBe('compacted')
+    expect(prompt).toContain('所有路径都用正斜杠')
+    // 印成 `[message:<runId>:<stepId>]`：它不在 messages 表里，
+    // 由 `HistoryPort.message` 的复合形式解析回来。
+    expect(prompt).toContain(`[message:${run.id}:${injected.id}] 用户：所有路径都用正斜杠`)
+    store.close()
+  })
+})

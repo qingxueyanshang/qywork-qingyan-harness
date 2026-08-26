@@ -137,6 +137,17 @@ function renderRun(run: Run & { steps: Step[] }, limit: number, thinking: boolea
       out.push(...renderTool(s, limit))
       continue
     }
+    /*
+     * run 内注入的那句用户消息。**必须在下面那个兜底之前拦下来**——
+     * 兜底把剩下的一切都当思考渲染，掉进去的结果是用户的话被标成模型的思考，
+     * 而不导出思考时它整句消失。
+     *
+     * 用二级标题打断助手那一段：它确实是对话换了个人说话。
+     */
+    if (s.kind === 'user') {
+      if (s.content?.trim()) out.push('## 用户（执行中插入）', '', s.content, '', '## 助手', '')
+      continue
+    }
     if (thinking && s.content?.trim()) {
       out.push('<details><summary>思考</summary>', '', s.content, '', '</details>', '')
     }

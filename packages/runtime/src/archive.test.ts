@@ -219,3 +219,43 @@ describe('压缩过的会话要在最上面说清楚', () => {
     store.close()
   })
 })
+
+/*
+ * run 内注入的那句用户消息。
+ *
+ * `renderRun` 末尾是一个**隐式兜底**——三个 kind 判完，剩下的一切都按思考渲染。
+ * 少了 user 那一支，导出思考时用户的话会被印成模型的思考，不导出时整句消失。
+ */
+describe('执行中插入的用户消息', () => {
+  function withInjected(): { store: Store; conversationId: ConversationId } {
+    const { store, conversationId } = fixture()
+    const run = store.db
+      .query<{ id: string }, [string]>('SELECT id FROM runs WHERE conversation_id = ?')
+      .get(conversationId) as { id: string }
+    appendStep(store, {
+      runId: run.id as never,
+      seq: 99,
+      kind: 'user',
+      content: '别动 legacy/',
+      payload: { kind: 'user' },
+    })
+    return { store, conversationId }
+  }
+
+  test('以用户身份出现一次，不管导不导出思考', () => {
+    const { store, conversationId } = withInjected()
+    const plain = exportConversation(store, conversationId, 'markdown')
+    const withThinking = exportConversation(store, conversationId, 'markdown', {
+      includeThinking: true,
+    })
+
+    for (const t of [plain, withThinking]) {
+      expect(t.split('别动 legacy/')).toHaveLength(2)
+      expect(t).toContain('## 用户（执行中插入）')
+      // 不许掉进那个兜底：它不是模型的思考。
+      const before = t.slice(0, t.indexOf('别动 legacy/'))
+      expect(before.endsWith('<details><summary>思考</summary>\n\n')).toBe(false)
+    }
+    store.close()
+  })
+})

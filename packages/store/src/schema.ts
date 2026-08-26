@@ -958,6 +958,50 @@ WHERE json_extract(payload, '$.outcome.data.imageData') IS NOT NULL;
      */
     sql: `ALTER TABLE steps ADD COLUMN duration_ms INTEGER;`,
   },
+  {
+    id: 29,
+    name: 'user_step_kind',
+    /**
+     * run 跑到一半时用户插进来的那句话，有自己的行。
+     *
+     * **它不能写进 `messages`。** 历史投影的骨架是「messages 按 id 升序，每条后面
+     * 挂 `userMessageId` 指向它的那些 run 的全部 steps」（`runtime/transcript.ts`
+     * 的 `buildHistory`），中途落进 `messages` 的行下一轮会被重排到整个 run 的全部
+     * 步骤之后：注入发生在第 K 步，回放却把它排在全部步骤之后。
+     * 落 steps 则位置由 seq 决定，活的 transcript 与回放逐条同位。
+     *
+     * **重建表而不是 ALTER**：SQLite 改不了 CHECK 约束（同迁移 3、26）。
+     * 列清单以**此刻的表**为准，不是照抄迁移 26——它之后又加过 `duration_ms`
+     * （迁移 28），照抄会把那一列搬丢。
+     */
+    sql: `
+CREATE TABLE steps_new (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('text','tool_action','compaction','thinking','user')),
+  tool_name   TEXT,
+  tool_call_id TEXT,
+  provider_batch_id TEXT,
+  call_index  INTEGER,
+  execution_wave_index INTEGER,
+  execution_started_at INTEGER,
+  content     TEXT,
+  payload     TEXT,
+  status      TEXT NOT NULL DEFAULT 'done',
+  created_at  INTEGER NOT NULL,
+  duration_ms INTEGER
+);
+INSERT INTO steps_new SELECT
+  id, run_id, seq, kind, tool_name, tool_call_id, provider_batch_id, call_index,
+  execution_wave_index, execution_started_at, content, payload, status, created_at,
+  duration_ms
+FROM steps;
+DROP TABLE steps;
+ALTER TABLE steps_new RENAME TO steps;
+CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
+`,
+  },
 ]
 
 /**
@@ -1058,7 +1102,7 @@ export interface StepRow {
   id: StepId
   run_id: RunId
   seq: number
-  /** `CHECK (kind IN ('text','tool_action','compaction','thinking'))`。 */
+  /** `CHECK (kind IN ('text','tool_action','compaction','thinking','user'))`。 */
   kind: StepKind
   tool_name: string | null
   tool_call_id: string | null

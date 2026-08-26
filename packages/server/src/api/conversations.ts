@@ -321,12 +321,15 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     }
   }
 
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs|usage)$/.exec(p)
+  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs|usage|queue)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
     if (convMatch[2] === 'messages') return json({ messages: listMessages(d.store, id) })
     if (convMatch[2] === 'runs') return json({ runs: listRuns(d.store, id) })
+    // 排着的跟进消息。刷新与重连之后卡片靠它重建；与 `queue.changed` 同源，
+    // 都读 `RunManager` 那一份，不存在快照与增量各说各话。
+    if (convMatch[2] === 'queue') return json({ queue: d.runs.queueOf(id) })
     // 这条会话的**完整**花费。真源是账本而不是 `runs` 上的 usage：压缩摘要那次调用
     // 也是这条会话引发的、也计费，但它不属于任何一轮，把 run 加起来必然少算。
     // 不设时间窗——问的是「这条会话花了多少」，它从建起来那天算。
