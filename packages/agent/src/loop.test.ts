@@ -860,7 +860,13 @@ describe('上下文分组占用', () => {
       runId: 'rn_reconcile' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
       // 真值远大于这点历史的本地估算，差额必须被摊回可变桶而不是消失。
-      anchor: { tokens: 33_000, throughMessageId: 'ms_8', envelopeFingerprint: null },
+      anchor: {
+        tokens: 33_000,
+        throughMessageId: 'ms_8',
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -1265,7 +1271,13 @@ describe('上下文读数：一把尺', () => {
     for await (const ev of loop.run({
       runId: 'rn_anchor' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
-      anchor: { tokens: 33_000, throughMessageId: 'ms_8', envelopeFingerprint: null },
+      anchor: {
+        tokens: 33_000,
+        throughMessageId: 'ms_8',
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -1804,17 +1816,19 @@ describe('provider 说要调工具但一条都没解析出来', () => {
 
 describe('锚点的信封校验', () => {
   /**
-   * 复现的是账本里查不出来的那种偏差：装完一个大 MCP 之后的第一次发送，
-   * 占用还按上一次真值算，因此压缩该触发而没触发。
+   * 复现的是用户报的那种偏差：装完一个 MCP 或升一次构建之后的第一次发送，
+   * 信封换了一份而消息侧一个字没变，读数却整条掉到估算尺上——实测一条真实
+   * 占用 54.5% 的会话读作 80.0%。
    *
-   * 判据是**工具表变了锚点就作废**，作废的表现是读数从 `actual` 掉回 `estimated`。
+   * 判据是**只换头部、不整条作废**：读数留在真值尺上，数值等于真值减旧头部
+   * 加本轮头部。换模型是另一回事，另一把尺量出来的数修正不回来。
    */
-  test('工具表变了就退回估算尺，没变则继续用真值', async () => {
-    const runOnce = async (registry: ToolRegistry, fingerprint: string | null) => {
-      const sources: string[] = []
+  test('信封变了只换头部，换模型才退回估算尺', async () => {
+    const runOnce = async (fingerprint: string | null, model: string) => {
+      const seen: { tokens: number; source: string }[] = []
       const loop = new AgentLoop({
         adapter: fakeAdapter([null]),
-        registry,
+        registry: new ToolRegistry(),
         systemPrompt: 'sys',
         tailNotes: () => [],
         persist: noopPersistence(),
@@ -1824,17 +1838,29 @@ describe('锚点的信封校验', () => {
         runId: 'rn_env' as never,
         history: [],
         signal: new AbortController().signal,
-        anchor: { tokens: 12_345, throughMessageId: null, envelopeFingerprint: fingerprint },
+        anchor: {
+          tokens: 12_345,
+          throughMessageId: null,
+          model,
+          headTokens: 5_000,
+          envelopeFingerprint: fingerprint,
+        },
       })) {
-        if (ev.type === 'context') sources.push(ev.source)
+        if (ev.type === 'context') seen.push({ tokens: ev.tokens, source: ev.source })
       }
-      return sources
+      return seen
     }
 
-    const empty = new ToolRegistry()
-    // 指纹对不上（装过工具、换过模型都是这个形状）→ 锚点作废，退回估算尺。
-    expect(await runOnce(empty, 'not-the-current-envelope')).toEqual(['estimated'])
-    // 没记过指纹的存量行不作为「变了」的证据，锚点照用。
-    expect(await runOnce(empty, null)).toEqual(['actual'])
+    // 空工具表下本轮头部只有冻结前缀那一段。
+    const head = estimateText('sys', lookupModel('claude-opus-5', 'anthropic_messages').density)
+
+    // 指纹对不上但还是同一个 tokenizer：真值仍然成立，只把头部那一段换掉。
+    expect(await runOnce('not-the-current-envelope', 'claude-opus-5')).toEqual([
+      { tokens: 12_345 - 5_000 + head, source: 'actual' },
+    ])
+    // 换了模型：退回估算尺，标签如实跟着走。
+    expect((await runOnce('not-the-current-envelope', 'other-model'))[0]?.source).toBe('estimated')
+    // 没记过指纹的存量行不作为「变了」的证据，锚点原样照用。
+    expect(await runOnce(null, 'claude-opus-5')).toEqual([{ tokens: 12_345, source: 'actual' }])
   })
 })

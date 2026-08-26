@@ -53,6 +53,7 @@ export {
   type EffortLevel,
   emptyBreakdown,
   emptyOmitted,
+  envelopeHeadTokens,
   type FileChange,
   type FollowUp,
   formatCosts,

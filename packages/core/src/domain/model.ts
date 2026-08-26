@@ -929,6 +929,23 @@ export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): 
   return out
 }
 
+/**
+ * 请求信封那部分的占用：系统提示词 + 两张工具表。
+ *
+ * 三项与 `envelopeHashOf`（`agent/loop.ts`）哈希的 `[model, system, tools]` 逐项
+ * 对应。信封换了一份时要重估的只有这三项，多算一项就把没变的内容也重估了一遍。
+ *
+ * **具名导出，两处都调它，不许各写一遍相加。** 锚点修正在 loop 与
+ * `runtime/context-panel.ts` 两处发生，两份定义一旦漂移，同一条会话在运行中和
+ * 回头看会给出两个数，而这种漂移不产生任何报错。理由同 `softLimit`。
+ *
+ * 边界：三项都是估算不是 provider 真值。拿它做加减法的一方承担的是系数误差，
+ * 不是零误差——量级见 `docs/plans/2026-08-26-上下文读数口径根治.md`。
+ */
+export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
+  return breakdown.systemPrompt + breakdown.systemTools + breakdown.mcpTools
+}
+
 // ─────────────────────────── 逐请求账 ───────────────────────────
 
 /**

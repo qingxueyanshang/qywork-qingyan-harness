@@ -55,7 +55,11 @@ let turn = 0
 function send(
   store: Store,
   runId: ReturnType<typeof createRun>['id'],
-  opts: { measured: number; categories?: Partial<ReturnType<typeof emptyBreakdown>> },
+  opts: {
+    measured: number
+    categories?: Partial<ReturnType<typeof emptyBreakdown>>
+    fingerprint?: string
+  },
 ) {
   const row = openProviderRequest(store, {
     runId,
@@ -66,6 +70,7 @@ function send(
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
     omittedCategories: emptyOmitted(),
     payloadHash: `h${turn}`,
+    ...(opts.fingerprint ? { cacheRouteFingerprint: opts.fingerprint } : {}),
   })
   markProviderRequestSent(store, row.id)
   return row.id
@@ -408,5 +413,62 @@ describe('逐请求账本读得出重发', () => {
     expect(rows[0]!.finishReason).toBe('')
     // provider 的原话进账本——没有它就分不出「说完了」和「要调工具」。
     expect(rows[1]!.finishReason).toBe('stop')
+  })
+})
+
+/**
+ * 信封换一份时只换头部。
+ *
+ * 判据与 loop 那侧同源：`agent/loop.ts` 按 `envelopeHashOf` 判、两处共用
+ * `core` 的 `envelopeHeadTokens` 量。两处不同的话同一条会话在运行中和回头看
+ * 会给出两个数——实测过 80.0% 对 54.5%，而会话内容一个字没变。
+ */
+describe('信封换一份只换头部', () => {
+  test('指纹不同时按头部差修正，指纹相同时原样', () => {
+    const { store, conversationId, runId } = fixture()
+    const anchored = send(store, runId, {
+      measured: 3000,
+      categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 0 },
+      fingerprint: 'env-a',
+    })
+    settleProviderRequest(
+      store,
+      anchored,
+      'received',
+      { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+    // 同一份信封：真值原样。
+    expect(contextPanel(store, conversationId, M(1_000_000)).total).toBe(101_000)
+
+    // 装了一个 MCP：头部从 10,000 变成 14,000，消息侧一个字没变。
+    send(store, runId, {
+      measured: 3000,
+      categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 4000 },
+      fingerprint: 'env-b',
+    })
+    const panel = contextPanel(store, conversationId, M(1_000_000))
+    expect(panel.total).toBe(101_000 - 10_000 + 14_000)
+    // 标签不变：修正的是头部那一段，不是整条退回估算。
+    expect(panel.source).toBe('actual')
+  })
+
+  test('换模型仍然整条退回估算，头部修正不参与', () => {
+    const { store, conversationId, runId } = fixture()
+    const anchored = send(store, runId, {
+      measured: 3000,
+      categories: { systemPrompt: 1000, systemTools: 9000 },
+      fingerprint: 'env-a',
+    })
+    settleProviderRequest(
+      store,
+      anchored,
+      'received',
+      { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+    const other = contextPanel(store, conversationId, { id: 'other', contextWindow: 200_000 })
+    expect(other.source).toBe('estimated')
+    expect(other.total).toBe(3000)
   })
 })

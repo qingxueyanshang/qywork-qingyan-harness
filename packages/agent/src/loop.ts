@@ -45,7 +45,13 @@ import type {
   StopReason,
   ToolOutcomeWire,
 } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted, newBatchId, reconcileBreakdown } from '@qywork/core'
+import {
+  emptyBreakdown,
+  emptyOmitted,
+  envelopeHeadTokens,
+  newBatchId,
+  reconcileBreakdown,
+} from '@qywork/core'
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import { drainUntil, EventQueue } from './event-queue.ts'
@@ -303,9 +309,24 @@ export interface RunInput {
     tokens: number
     throughMessageId: string | null
     /**
+     * 产生这个真值的那次请求用的模型。
+     *
+     * **与本轮不同就整条作废，没有修正可言**：各家 tokenizer 对同一份内容差到
+     * 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），拿 A 的真值配 B 的窗口是量错了尺。
+     */
+    model: string
+    /**
+     * 那次请求的信封占用（`core` 的 `envelopeHeadTokens`）。
+     *
+     * 信封换一份时按它换头部：`tokens − headTokens + 本轮头部`。没有它就只能
+     * 整条作废，而作废等于让裸估算尺接管显示、压缩触发、`max_tokens` 钳位三处。
+     */
+    headTokens: number
+    /**
      * 产生这个真值的那次请求的信封指纹（`envelopeHashOf`）。
      *
-     * 与本轮不一致就作废——拿旧信封的真值配新信封的上下文是两把尺。
+     * 与本轮不一致时只换头部，不作废——信封之外的内容一个字没变，那一大段真值
+     * 仍然成立。
      *
      * **`null` 不算「变了」。** 它是「这一行没记过指纹」（本次迁移之前建的），
      * 而把「不知道」当成「变了」和当成「没变」一样是编出来的确定性——
@@ -685,11 +706,17 @@ export class AgentLoop {
       tokens: number
       uncovered: number
       transcriptIndex: number
-      /** 产生这个真值的那次请求的信封指纹。信封一换它就作废。 */
+      /** 产生这个真值的那次请求用的模型。与本轮不同就整条作废。 */
+      model: string
+      /** 那次请求的信封占用。信封一换按它换头部。 */
+      headTokens: number
+      /** 产生这个真值的那次请求的信封指纹。 */
       envelope: string | null
     } | null = input.anchor
       ? {
           envelope: input.anchor.envelopeFingerprint,
+          model: input.anchor.model,
+          headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
           uncovered: estimateMessages(
             input.history.filter(
@@ -856,19 +883,43 @@ export class AgentLoop {
         // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
         let req = this.buildRequest(input, transcript, occupancyOf)
+        /*
+         * 分组明细。**在信封判定之前算**——头部修正要用本轮的头部占用，而只有
+         * 装配完才知道这一次的信封长什么样。`req` 每次重新装配都要跟着重算。
+         */
+        let breakdown = breakdownOf(req, density)
 
         /*
-         * **信封变了就不能再用旧锚点。**
+         * **信封换了一份时只换头部，不作废整条锚点。**
          *
          * 锚点是「上一次 provider 真值描述的那个上下文」。装卸一个 MCP、装个技能、
-         * `load_tool` 装一个工具、换条模型，冻结前缀或工具表就换了一份，那个真值
-         * 描述的已经不是这一次的上下文——而它是显示、压缩触发、`max_tokens` 钳位
-         * 三处共用的那把尺。作废之后退回估算尺一轮，本轮回报一到即重锚。
+         * `load_tool` 装一个工具，换掉的只有冻结前缀与工具表——消息侧一个字没变，
+         * 那一大段真值仍然成立。整条作废会让裸估算尺接管显示、压缩触发、
+         * `max_tokens` 钳位三处，而未收录模型上那把尺实测高 1.4 倍：一条真实占用
+         * 54.5% 的会话读作 80.0%，距软阈值只差 56 token。
          *
-         * 判在这里而不是取锚点的地方：只有装配完才知道这一次的信封长什么样，
-         * 两处各算一遍就是两份指纹。
+         * 换模型是另一回事，只能作废：tokenizer 不同，头部换掉也修不回来。
+         *
+         * 修正引入的是**头部这一段**的系数误差（几个百分点），而不是整份请求的
+         * （二成半）。误差界与量法见
+         * `docs/plans/2026-08-26-上下文读数口径根治.md`。
+         *
+         * 判在这里而不是取锚点的地方：两处各算一遍就是两份指纹。
          */
-        if (anchor?.envelope && anchor.envelope !== envelopeHashOf(req)) anchor = null
+        const envelope = envelopeHashOf(req)
+        if (anchor?.envelope && anchor.envelope !== envelope) {
+          if (anchor.model !== req.model) {
+            anchor = null
+          } else {
+            const head = envelopeHeadTokens(breakdown)
+            anchor = {
+              ...anchor,
+              tokens: Math.max(0, anchor.tokens - anchor.headTokens + head),
+              headTokens: head,
+              envelope,
+            }
+          }
+        }
 
         if (transcript.length > compactedAt) {
           const occupancy = occupancyOf(req)
@@ -921,10 +972,14 @@ export class AgentLoop {
                * 锚点描述的是**折叠前**那个前缀，折完还拿它算就是读数不降，
                * 下一步又越线、又压一次——压缩变成每步一次的死循环。
                * 退回估算尺一轮，下一个 provider 真值到来即重锚。
+               *
+               * 这里不套上面那条头部修正：压缩换掉的是消息侧的大头，
+               * 头部修正只覆盖信封那三项，修正完的数仍然是折叠前那个数。
                */
               anchor = null
               // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
               req = this.buildRequest(input, transcript, occupancyOf)
+              breakdown = breakdownOf(req, density)
             } else {
               // 压不动不是致命错：照常发出去，让 provider 来判。
               // **skipped 与 failed 分开报**：「没什么可压」不是失败，
@@ -945,8 +1000,6 @@ export class AgentLoop {
             }
           }
         }
-
-        const breakdown = breakdownOf(req, density)
 
         // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
         // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
@@ -1167,6 +1220,8 @@ export class AgentLoop {
                   tokens: cap.reportedInputTokens,
                   uncovered: 0,
                   transcriptIndex: transcript.length,
+                  model: req.model,
+                  headTokens: envelopeHeadTokens(breakdown),
                   envelope: envelopeHashOf(req),
                 }
               } else {
@@ -1208,6 +1263,7 @@ export class AgentLoop {
                   compactedAt = transcript.length
                   anchor = null
                   req = rebuilt
+                  breakdown = breakdownOf(req, density)
                   continue
                 }
               }
@@ -1359,6 +1415,8 @@ export class AgentLoop {
               tokens: total,
               uncovered: 0,
               transcriptIndex: transcript.length,
+              model: req.model,
+              headTokens: envelopeHeadTokens(breakdown),
               envelope: envelopeHashOf(req),
             }
           /*

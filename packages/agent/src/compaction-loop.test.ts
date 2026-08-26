@@ -272,7 +272,13 @@ describe('发送前检查：唯一的压缩触发', () => {
       history: [],
       // 锚点直接把占用顶到阈值之上——不用真造一段几十万字的历史。
       // 1M 窗口 × 0.8 → 软阈值 800,000。
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -281,6 +287,55 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
     expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
+  })
+
+  /**
+   * 信封换一份不再白压一次。
+   *
+   * 用户报过的形状：升一次构建后信封指纹必变，锚点整条作废，占用改由裸估算尺报，
+   * 而未收录档那把尺实测高 1.4 倍——真实占用远在阈值之下的会话被判成越线，
+   * 压一次、丢一段上下文，全程静默。
+   *
+   * 对照组只换模型：那一种锚点确实修正不回来，压缩照旧触发。两组用同一份历史，
+   * 因此这段历史的裸估算确实越线，不是测了个空请求。
+   */
+  test('信封变了不白压一次，换模型仍按估算尺判', async () => {
+    // 1M 窗口 × 0.8 → 软阈值 800,000。裸估算按 2.5 字符/token 计，这段正文约 96 万。
+    const bulk = 'x'.repeat(2_400_000)
+    const runOnce = async (model: string) => {
+      const comp = fakeCompaction(okOutcome)
+      const loop = new AgentLoop({
+        adapter: okAdapter(),
+        registry: new ToolRegistry(),
+        systemPrompt: 'sys',
+        tailNotes: () => [],
+        persist: noopPersistence(),
+        makeToolContext: makeCtx,
+        compaction: comp.port,
+      })
+      const events: AgentEvent[] = []
+      for await (const ev of loop.run({
+        runId: 'rn_envelope' as never,
+        history: [{ role: 'user', content: bulk, _group: 'historyMessages', _messageId: 'ms_1' }],
+        // 真值 700,000 在阈值之下；`throughMessageId` 盖住这条历史，锚点已经算过它。
+        anchor: {
+          tokens: 700_000,
+          throughMessageId: 'ms_1',
+          model,
+          headTokens: 0,
+          envelopeFingerprint: 'stale-envelope',
+        },
+        signal: new AbortController().signal,
+      })) {
+        events.push(ev)
+      }
+      return { runs: comp.state.runs, events }
+    }
+
+    const kept = await runOnce('claude-opus-5')
+    expect(kept.runs).toBe(0)
+    expect(kept.events.some((e) => e.type === 'compaction')).toBe(false)
+    expect((await runOnce('other-model')).runs).toBeGreaterThan(0)
   })
 
   /**
@@ -304,7 +359,13 @@ describe('发送前检查：唯一的压缩触发', () => {
     for await (const ev of loop.run({
       runId: 'rn_skip' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -587,7 +648,13 @@ async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
     runId: runId as never,
     history: [],
     // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接顶到线上。
-    anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+    anchor: {
+      tokens: 900_000,
+      throughMessageId: null,
+      model: 'claude-opus-5',
+      headTokens: 0,
+      envelopeFingerprint: null,
+    },
     signal: new AbortController().signal,
   })) {
     out.push(ev)
@@ -990,7 +1057,13 @@ describe('申报按占用钳位', () => {
     for await (const ev of build(adapter).run({
       runId: 'rn_declare_high' as never,
       history: [],
-      anchor: { tokens: occupancy, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: occupancy,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -1026,7 +1099,13 @@ describe('压缩被中断', () => {
     for await (const ev of loop.run({
       runId: 'rn_abort' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -1057,7 +1136,13 @@ describe('结果形态对用户可见', () => {
     for await (const ev of loop.run({
       runId: 'rn_summarized' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       events.push(ev)
@@ -1086,7 +1171,13 @@ describe('结果形态对用户可见', () => {
     for await (const _ of loop.run({
       runId: 'rn_local' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       // 只看落库结果
@@ -1109,7 +1200,13 @@ describe('结果形态对用户可见', () => {
     for await (const _ of loop.run({
       runId: 'rn_skip_step' as never,
       history: [],
-      anchor: { tokens: 900_000, throughMessageId: null, envelopeFingerprint: null },
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
       signal: new AbortController().signal,
     })) {
       // 只看落库结果

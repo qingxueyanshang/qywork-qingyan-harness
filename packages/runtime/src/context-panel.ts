@@ -16,13 +16,22 @@
  * **锚点必须与会话当前的模型同一条。** 各家 tokenizer 对同一份内容算出的 token
  * 数差到 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），换模型之后拿上一个模型的回执
  * 当锚点，就是用 A 的尺去判 B 的窗口，而它还挂着「真值」的标签。
- * 判据与 loop 那侧同源（`agent/loop.ts` 的 `envelopeHashOf` 含 `req.model`）——
- * 两处口径不同的话，同一条会话跑着的时候和回头看的时候是两个数。
+ *
+ * **信封换了一份只换头部，两侧同一组判据。** 模型相同而冻结前缀或工具表变了时，
+ * 消息侧一个字没变，锚点那一大段真值仍然成立——按 `envelopeHeadTokens` 把头部
+ * 换成最近一次已发送请求那一份即可。这与 loop 那侧逐条对应（`agent/loop.ts` 里
+ * `envelopeHashOf` 判、同一个 `envelopeHeadTokens` 量）：两处判据不同的话，
+ * 同一条会话在运行中和回头看会给出两个数。
  */
 
 import { softLimit } from '@qywork/agent'
-import type { ContextBreakdown, ContextOmitted, ConversationId } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted, reconcileBreakdown } from '@qywork/core'
+import type {
+  ContextBreakdown,
+  ContextOmitted,
+  ConversationId,
+  ProviderRequest,
+} from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, envelopeHeadTokens, reconcileBreakdown } from '@qywork/core'
 import { latestAnchoredProviderRequest, latestSentProviderRequest, type Store } from '@qywork/store'
 
 export interface ContextPanel {
@@ -68,6 +77,30 @@ function anchorTokens(r: {
   )
 }
 
+/**
+ * 锚点的真值换到**最近一次已发送请求**那份信封上。
+ *
+ * 只换头部：`真值 − 锚点头部 + 本次头部`。信封之外的内容一个字没变，那一段真值
+ * 仍然成立；整条退回估算尺的代价实测是 54.5% 读作 80.0%。
+ *
+ * 指纹相同时不动，`null`（没记过指纹的存量行）同样不动：同一份信封下两份头部
+ * 估算相等，换一遍只会把两次估算之间的口径差引进来。
+ *
+ * 边界：两份头部都是估算，所以差额带的是系数误差，不是零误差。
+ */
+function anchoredTotal(anchored: ProviderRequest, sent: ProviderRequest): number {
+  const changed =
+    anchored.cacheRouteFingerprint !== null &&
+    anchored.cacheRouteFingerprint !== sent.cacheRouteFingerprint
+  if (!changed) return anchorTokens(anchored)
+  return Math.max(
+    0,
+    anchorTokens(anchored) -
+      envelopeHeadTokens(anchored.sentCategories) +
+      envelopeHeadTokens(sent.sentCategories),
+  )
+}
+
 export function contextPanel(
   store: Store,
   conversationId: ConversationId,
@@ -109,7 +142,7 @@ export function contextPanel(
    */
   const anchored = latest && latest.model === model.id ? latest : null
 
-  const total = anchored ? anchorTokens(anchored) : sent.measuredInputTokens
+  const total = anchored ? anchoredTotal(anchored, sent) : sent.measuredInputTokens
   const source: ContextPanel['source'] = anchored ? 'actual' : 'estimated'
 
   return {
