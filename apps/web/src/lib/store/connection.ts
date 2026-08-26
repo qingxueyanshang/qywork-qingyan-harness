@@ -14,6 +14,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   EventEnvelope,
+  FollowUp,
   Goal,
   RunUsage,
   StopReason,
@@ -254,6 +255,28 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       )
       return
 
+    case 'queue.changed':
+      // 整体替换：服务端发的就是它此刻的全部，本地那几张乐观卡按同一个 id 被覆盖。
+      setState('followUps', ev.queue)
+      return
+
+    case 'message.injected':
+      setState(
+        produce((s) => {
+          // 摘掉那张卡：队列的权威仍是 `queue.changed`，这里先手一步是为了
+          // 卡片与气泡不同时出现（服务端两条事件之间隔着一次落库）。
+          s.followUps = s.followUps.filter((f) => f.id !== ev.followUpId)
+          // id 用 stepId——与刷新后 `stepToItems` 重建出来的那条同源，不会闪重。
+          s.transcript.push({
+            id: ev.stepId,
+            kind: 'user',
+            text: ev.content,
+            ...(ev.attachments?.length ? { attachments: ev.attachments } : {}),
+          })
+        }),
+      )
+      return
+
     case 'todos':
       // 整表替换而不是合并：工具那边就是整表提交的，
       // 在这里做增量合并会让两端对「待办清单是什么」产生两种理解。
@@ -280,6 +303,31 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
           s.lastRunId = ev.runId
           s.runStartedAt = Date.now()
+          /*
+           * 对齐这一轮回答的那条用户气泡。
+           *
+           * 界面上按回车那一条是客户端乐观插进去的，带的是本地 id；而目标续起、
+           * 定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条事件来。
+           * 两种情况用同一条规则收：正文对得上就把 id 换成账本里的真值，
+           * 对不上就补一条——补完之后活的这份与刷新后从账本投影出来的那份同 id。
+           */
+          if (ev.userMessage && ev.userMessageId) {
+            let last = s.transcript.length - 1
+            while (last >= 0 && s.transcript[last]!.kind !== 'user') last--
+            const hit = last >= 0 ? s.transcript[last]! : null
+            if (hit && hit.text === ev.userMessage.content) {
+              hit.id = ev.userMessageId
+            } else {
+              s.transcript.push({
+                id: ev.userMessageId,
+                kind: 'user',
+                text: ev.userMessage.content,
+                ...(ev.userMessage.attachments?.length
+                  ? { attachments: ev.userMessage.attachments }
+                  : {}),
+              })
+            }
+          }
           // 重试：把被接替那一轮的条目降透明度，而不是清空重来——
           // 清空会让用户失去「上次错在哪」的现场，那正是他点重试的原因。
           //
@@ -541,6 +589,8 @@ interface StoredStep {
     summarized?: boolean
     reasonCode?: string
     compactedMessages?: number
+    /** kind='user' 专有：注入消息带的附件，见 `StepPayload`。 */
+    attachments?: Attachment[]
   } | null
   status: string
   createdAt: number
@@ -658,7 +708,7 @@ export async function reloadActiveConversation(): Promise<void> {
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
 
-  const [folded, ctx, goal] = await Promise.all([
+  const [folded, ctx, goal, queue] = await Promise.all([
     fetchConversation(id),
     // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
     // 切一次会话面板就空了，而用户是回头看的时候才想知道被谁占的。
@@ -674,6 +724,12 @@ export async function reloadActiveConversation(): Promise<void> {
       .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
       .then((r) => r.goal)
       .catch(() => null),
+    // 排着的跟进消息。它只活在服务端进程里，刷新与重连之后卡片全靠这一拉重建；
+    // 与 `queue.changed` 同源（都读 `RunManager`），不存在快照与增量各说各话。
+    client
+      .api<{ queue: FollowUp[] }>(`/api/conversations/${id}/queue`)
+      .then((r) => r.queue)
+      .catch(() => []),
   ])
 
   const { runs, stepsByRun } = folded
@@ -706,6 +762,7 @@ export async function reloadActiveConversation(): Promise<void> {
   setState(
     produce((s) => {
       s.transcript = items
+      s.followUps = queue
       s.lastRunId = live?.id ?? null
       s.runStartedAt = live ? live.createdAt : null
       // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
@@ -798,6 +855,21 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   }
   if (s.kind === 'thinking') {
     return s.content ? [{ id: s.id, kind: 'thinking', text: s.content }] : []
+  }
+  // run 内注入的那句用户消息。刷新后要原位重建，`id` 用 stepId——
+  // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。
+  if (s.kind === 'user') {
+    const files = s.payload?.kind === 'user' ? s.payload.attachments : undefined
+    return s.content
+      ? [
+          {
+            id: s.id,
+            kind: 'user',
+            text: s.content,
+            ...(files?.length ? { attachments: files } : {}),
+          },
+        ]
+      : []
   }
   // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
   // 「这里压缩过」就没了，而它是解释「上下文为什么降了」的唯一线索。

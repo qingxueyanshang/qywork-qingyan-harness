@@ -54,6 +54,7 @@ export {
   emptyBreakdown,
   emptyOmitted,
   type FileChange,
+  type FollowUp,
   formatCosts,
   formatMoney,
   type Goal,

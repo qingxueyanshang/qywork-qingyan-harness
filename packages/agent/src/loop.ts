@@ -36,6 +36,7 @@ import {
 import type {
   ActionDescriptor,
   AgentEvent,
+  Attachment,
   ContextBreakdown,
   ContextOmitted,
   FileChange,
@@ -75,6 +76,15 @@ export interface LoopDeps {
    * 每条自带分组，**不要一律标成 `workspaceState`**：那样面板上「记忆内容」
    * 与「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
+  /**
+   * 取走此刻标了「调整方向」的跟进消息。**每个 step 边界调一次**，没有就回空数组。
+   *
+   * 端口而不是直接读队列：队列是服务端进程内的状态，loop 不认识它，
+   * 也不该认识（接口在 `agent`、实现在上层，同 `SinkPort`）。
+   *
+   * `undefined` 是合法值——成员会话与 CLI 没有这条通道，不注入。
+   */
+  followUps?: () => Promise<FollowUpInput[]>
   tailNotes: () => {
     content: string
     group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
@@ -138,8 +148,35 @@ export interface CompactionRunInput {
   density: TokenDensity
 }
 
+/**
+ * 一条要注入当前 run 的跟进消息，正文已经装配好。
+ *
+ * **附件在上游解析完再进来**：loop 不碰磁盘（同 `SinkPort` 那条边界），
+ * 把路径交给它等于让它自己去读文件。
+ */
+export interface FollowUpInput {
+  /** 队列条目 id，随 `message.injected` 回给客户端，用来摘掉那张卡。 */
+  id: string
+  /** 原文。落 step 的 `content` 列，也是事件里回传的那一份。 */
+  text: string
+  /** 装配后的正文（附件已解析成内容块），进 transcript。 */
+  content: string | ContentBlock[]
+  attachments?: Attachment[]
+}
+
 export interface LoopPersistence {
   nextSeq(runId: RunId): number
+  /**
+   * run 内注入的那句用户消息，落一条 `kind='user'` 的 step，返回 stepId。
+   *
+   * **开即终态**：它不是执行，没有中间态可等。崩溃恢复只碰 `running` 行，
+   * 因此这种行不需要、也不该有恢复分支。
+   */
+  landUserStep(
+    runId: RunId,
+    seq: number,
+    input: { text: string; attachments?: Attachment[] },
+  ): string
   openTextStep(runId: RunId, seq: number): string
   /**
    * 思考正文的行。**与文本行同构**：流到就开，逐段追加，`appendText` 共用。
@@ -722,6 +759,46 @@ export class AgentLoop {
           stopReason = 'user_interrupt'
           break
         }
+
+        /*
+         * ── 跟进消息注入 ──
+         *
+         * 位置是**装配请求之前、这一步的其余动作之前**，所以这一步发出去的请求
+         * 就带着它，模型下一次开口即已看到。
+         *
+         * 追加在 transcript 尾部（上一波工具结果之后、尾区注记之前）。请求形状
+         * 保证注记恒在最后，所以此前的 `[history][transcript…]` 逐字节不变——
+         * 本轮内不破缓存前缀。
+         *
+         * 戳要自己盖：`stampUnit` 只盖它自己那一段（起点在推 assistant 消息时才取），
+         * 波及不到这里。`_group` 用 `historyMessages` 而不是执行记录——这是用户
+         * 打的字；投影侧（`runtime/transcript.ts`）必须同值，两侧不同口径比都记错更坏。
+         */
+        if (this.deps.followUps) {
+          for (const f of await this.deps.followUps()) {
+            const seq = nextSeq()
+            const stepId = persist.landUserStep(input.runId, seq, {
+              text: f.text,
+              ...(f.attachments?.length ? { attachments: f.attachments } : {}),
+            })
+            transcript.push({
+              role: 'user',
+              content: f.content,
+              _group: 'historyMessages',
+              _step: stepStamp(input.runId, seq),
+              ...(input.userMessageId ? { _messageId: input.userMessageId } : {}),
+            })
+            yield {
+              type: 'message.injected',
+              runId: input.runId,
+              stepId: stepId as never,
+              followUpId: f.id,
+              content: f.text,
+              ...(f.attachments?.length ? { attachments: f.attachments } : {}),
+            }
+          }
+        }
+
         const batchId = newBatchId()
 
         /**

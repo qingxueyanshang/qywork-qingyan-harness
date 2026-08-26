@@ -58,6 +58,7 @@ function noopPersistence(): LoopPersistence {
     nextSeq: () => ++seq,
     openTextStep: () => `st_text_${seq}`,
     openThinkingStep: () => `st_think_${seq}`,
+    landUserStep: () => `st_user_${seq}`,
     failThinkingSteps: () => {},
     appendText: () => {},
     openToolStep: () => `st_tool_${seq}`,

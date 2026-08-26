@@ -1,14 +1,16 @@
 /**
  * Run 管理器。
  *
- * 两件事：并发控制与中断。
+ * 三件事：并发控制、中断，以及**进程内的会话意志**——待续起标记（`GoalArm`）
+ * 与跟进消息队列（`FollowUp`）。后两者共用同一条学说：它们是「接下来该干什么」
+ * 的意图，不是账本事实，因此一律不落盘，进程重启即空表。
  *
  * **这里不问用户任何事。** 工具授权由 `Session.decide()` 就地裁决（规则 + 分类器），
  * 被拒的调用以 `tool.finished{status:'failure', errorKind:'permission_denied'}` 呈现。
  * 这个产品只有 `auto` / `full` 两档，没有「逐次询问」那一档。
  */
 
-import type { ConversationId, RunId } from '@qywork/core'
+import type { ConversationId, FollowUp, RunId } from '@qywork/core'
 import type { Store } from '@qywork/store'
 import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
@@ -47,6 +49,15 @@ export class RunManager {
   private readonly reserved = new Set<string>()
   /** 每个会话最多一条待续起标记。见 `GoalArm`。 */
   private readonly armed = new Map<string, GoalArm>()
+  /**
+   * 排着的跟进消息，按会话分。**进程内，不落盘**，理由同 `GoalArm`。
+   *
+   * 代价说破：进程崩溃时排着还没跑的正文就没了，卡片随之消失。这与本仓
+   * 「输入框里没发出去的草稿刷新即丢」同级，而且丢得见得到。
+   * 换成落盘要多两条路径——删卡片变成删一行账、崩溃残留行的终态定义——
+   * 而它们服务的仍是一个进程内的意图。
+   */
+  private readonly queues = new Map<string, FollowUp[]>()
 
   constructor(
     private readonly store: Store,
@@ -137,6 +148,115 @@ export class RunManager {
 
   armedOf(conversationId: ConversationId): GoalArm | null {
     return this.armed.get(conversationId) ?? null
+  }
+
+  // ─────────────────────────── 跟进消息队列 ───────────────────────────
+
+  /**
+   * 把这条会话的队列播出去。**下面每一个改点各调一次，别处不许发这条事件。**
+   *
+   * 发的是整份快照而不是增量：客户端那边还有一份乐观加上去的本地卡，
+   * 两份增量账在「服务端按 id 去重掉一条」这种时刻必然分叉。
+   *
+   * 带 `conversationId` 发（与 `conversation.busy` 相反）：卡片只出现在打开着的
+   * 那条会话里，别的客户端收到没有用处。
+   */
+  private announceQueue(conversationId: ConversationId): void {
+    this.bus.publish({ type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) })
+  }
+
+  /** 这条会话排着的跟进消息。返回副本——调用方拿去发事件，不该能改到内部那份。 */
+  queueOf(conversationId: ConversationId): FollowUp[] {
+    return [...(this.queues.get(conversationId) ?? [])]
+  }
+
+  /**
+   * 排进一条跟进消息。**按 id 幂等**——`id` 就是指令的 `clientRequestId`，
+   * 重连补发同一条指令时不该排出两条。
+   */
+  enqueue(conversationId: ConversationId, item: FollowUp): void {
+    const list = this.queues.get(conversationId) ?? []
+    if (list.some((f) => f.id === item.id)) return
+    list.push(item)
+    this.queues.set(conversationId, list)
+    this.announceQueue(conversationId)
+  }
+
+  /**
+   * 把一条已经取走的消息塞回队首。
+   *
+   * **只给「取走之后没能发出去」用**（收尾火发到点时会话又忙了）。取走与
+   * 「跳不跳目标续起」是同一个同步决定，所以取不能延后；发不出去就得放得回来，
+   * 否则那条消息既没跑也不在队列里，卡片消失而什么都没发生。
+   */
+  enqueueFront(conversationId: ConversationId, item: FollowUp): void {
+    const list = this.queues.get(conversationId) ?? []
+    if (list.some((f) => f.id === item.id)) return
+    this.setQueue(conversationId, [item, ...list])
+  }
+
+  /** 删掉一条。返回 false = 这条不在队列里（客户端点的时候它已经被消费了）。 */
+  removeFollowUp(conversationId: ConversationId, id: string): boolean {
+    const list = this.queues.get(conversationId)
+    const next = (list ?? []).filter((f) => f.id !== id)
+    if (!list || next.length === list.length) return false
+    this.setQueue(conversationId, next)
+    return true
+  }
+
+  /** 翻转某一条的去向。返回 false = 这条不在队列里。 */
+  setSteer(conversationId: ConversationId, id: string, steer: boolean): boolean {
+    const list = this.queues.get(conversationId)
+    if (!list?.some((f) => f.id === id)) return false
+    this.setQueue(
+      conversationId,
+      list.map((f) => (f.id === id ? { ...f, steer } : f)),
+    )
+    return true
+  }
+
+  /** 取走全部标了「调整方向」的条目，按入队序。run 内的 step 边界调它。 */
+  takeSteered(conversationId: ConversationId): FollowUp[] {
+    const list = this.queues.get(conversationId) ?? []
+    const taken = list.filter((f) => f.steer)
+    if (!taken.length) return []
+    this.setQueue(
+      conversationId,
+      list.filter((f) => !f.steer),
+    )
+    return taken
+  }
+
+  /** 取走队首。run 收尾时调它，火发为下一轮。 */
+  takeNext(conversationId: ConversationId): FollowUp | null {
+    const list = this.queues.get(conversationId) ?? []
+    const head = list[0]
+    if (!head) return null
+    this.setQueue(conversationId, list.slice(1))
+    return head
+  }
+
+  /**
+   * 把余下条目的去向全部复位成「加入队列」。
+   *
+   * **「调整方向」只对发出它时的那一轮成立。** 这一轮已经收尾了，没赶上边界的
+   * 那些条目再没有可注入的地方；留着 `steer=true` 的话，下一轮一起跑就会把它们
+   * 注入到一轮用户没有指向过的执行里。
+   */
+  resetSteer(conversationId: ConversationId): void {
+    const list = this.queues.get(conversationId)
+    if (!list?.some((f) => f.steer)) return
+    this.setQueue(
+      conversationId,
+      list.map((f) => ({ ...f, steer: false })),
+    )
+  }
+
+  /** 空队列不留空数组：`queueOf` 与「有没有排着的」两处判据因此只有一种写法。 */
+  private setQueue(conversationId: ConversationId, next: FollowUp[]): void {
+    if (next.length) this.queues.set(conversationId, next)
+    else this.queues.delete(conversationId)
+    this.announceQueue(conversationId)
   }
 
   interrupt(runId: RunId): boolean {

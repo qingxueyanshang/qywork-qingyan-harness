@@ -12,6 +12,8 @@ import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
   composerSeed,
+  dropFollowUp,
+  followUpMode,
   interrupt,
   isDesktopShell,
   isRunning,
@@ -22,6 +24,7 @@ import {
   setPermissionMode,
   setState,
   state,
+  steerFollowUp,
   tauriListen,
   uploadAttachment,
   workspace,
@@ -208,11 +211,60 @@ function wireShellDrop(): void {
 }
 
 /**
+ * 排着的跟进消息，一条一张卡，在输入框上方。
+ *
+ * 卡上两个可点物，不多也不少：
+ *
+ * - **档位词** —— 会话在跑时点它翻转去向（「加入队列」↔「调整方向」），
+ *   这就是「把排着的这条现在就插进去」，而且可以反悔。会话已经空闲时队列里
+ *   没有可注入的那一轮，这枚按钮的字换成「发送」，点了当场起一轮。
+ *   两态由服务端在同一个同步块里裁决，这里只负责显示。
+ * - **删除** —— 删了就既不注入也不火发。
+ *
+ * **一行，定高（B9）**：正文长短不一，让它撑高的话删除按钮会跟着跑位。
+ * 不做悬停卡片：那张卡承载的信息这一行本来就有。
+ */
+function FollowUpCards() {
+  return (
+    <Show when={state.followUps.length > 0}>
+      <div class="followup-cards">
+        <For each={state.followUps}>
+          {(f) => (
+            <div class="followup-card">
+              <span class="followup-text truncate" data-tip={f.content}>
+                {f.content}
+              </span>
+              <button
+                class="followup-act"
+                type="button"
+                onClick={() => steerFollowUp(f.id, !f.steer)}
+              >
+                {!isRunning() ? '发送' : f.steer ? '调整方向' : '加入队列'}
+              </button>
+              <button
+                class="followup-act drop"
+                type="button"
+                aria-label="删除"
+                onClick={() => dropFollowUp(f.id)}
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
+/**
  * 输入区。
  *
- * 两条交互决定：
+ * 三条交互决定：
  * - Enter 发送、Shift+Enter 换行。中文输入法组合期间（isComposing）必须放行，
  *   否则用拼音选词时按回车会把半截拼音发出去。
+ * - 会话在跑时照样发得出去：这一条排进队列，去向由默认档决定，
+ *   `Ctrl+Enter` 对单条走相反那一档。默认档在设置页，不常驻这里。
  * - 自适应高度，封顶后转内部滚动，不把会话区挤没。
  */
 export function Composer() {
@@ -228,6 +280,8 @@ export function Composer() {
    * 「发送后 Transcript 仍要显示」冲突。
    */
   const localThumbs = new Map<string, string>()
+  /** 输入框里有没有可发的内容。主按钮的四态与 `submit()` 共用这一条判据。 */
+  const hasInput = () => text().trim().length > 0 || pending().length > 0
   /** 有本地预览就带上，没有就整个键不出现——`exactOptionalPropertyTypes` 不收 undefined。 */
   const thumbProps = (path: string): { localUrl?: string } => {
     const u = localThumbs.get(path)
@@ -361,11 +415,16 @@ export function Composer() {
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
 
-  const submit = () => {
+  /**
+   * 发出去。`flip` = 这一条走与默认档相反的那一档（`Ctrl+Enter`）。
+   *
+   * **不再因为「正在跑」早退**：跑着的时候发消息是排队，不是被拒。
+   */
+  const submit = (flip = false) => {
     const v = text().trim()
     const files = pending()
     // 只有附件没有文字也能发——「看这张图」这种意图不该逼用户再打几个字。
-    if ((!v && files.length === 0) || isRunning()) return
+    if (!v && files.length === 0) return
 
     /*
      * 带参数的斜杠命令在这里被截下来，**不发成一条消息**。
@@ -385,7 +444,8 @@ export function Composer() {
       return
     }
 
-    sendMessage(v, files.length ? files : undefined)
+    const steer = flip ? followUpMode() === 'queue' : followUpMode() === 'steer'
+    sendMessage(v, files.length ? files : undefined, steer)
     setText('')
     setPending([])
     queueMicrotask(() => {
@@ -454,6 +514,8 @@ export function Composer() {
       {/* 目标在进度条之下、输入框之上：它是常驻的（跨轮存在），所以占流，
           不像那条整轮状态条那样悬浮——悬浮层一多就会互相盖住。 */}
       <GoalChip />
+
+      <FollowUpCards />
 
       <RunStatus />
 
@@ -543,9 +605,10 @@ export function Composer() {
               }
             }
             // isComposing：中文/日文输入法组合期的回车属于选词，不能当发送。
+            // Ctrl/Cmd+Enter 走与默认档相反的那一档；会话空闲时两者等价。
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
               e.preventDefault()
-              submit()
+              submit(e.ctrlKey || e.metaKey)
             }
           }}
         />
@@ -608,18 +671,21 @@ export function Composer() {
               留在那边是因为它和「这一轮跑成什么样」在一起，
               而输入区的工具栏是给下一轮用的。 */}
 
-          {/* 发送按钮的 disabled 判据必须和 submit() 一致：只有附件没有文字也能发
-              （见 submit 里那条注释）。只看文字的话，粘一张图不打字的用户点发送
-              没反应，只有知道按 Enter 的人发得出去。 */}
+          {/* 主按钮**只有一枚**，位置与尺寸不变，只换图标与语义：
+                空闲 → 发送（没内容时 disabled）
+                运行中 + 有内容 → 发送（按档位入队或注入）
+                运行中 + 没内容 → 停止
+
+              想停止就把输入框清空。这不是代价：正在打字的人要的是发出去，
+              不是停下这一轮，两个意图不在同一时刻成立，所以不该有两枚按钮在这里
+              争同一个位置。
+
+              「有内容」的判据必须和 submit() 一致：只有附件没有文字也能发。
+              只看文字的话，粘一张图不打字的用户点发送没反应。 */}
           <Show
-            when={isRunning()}
+            when={isRunning() && !hasInput()}
             fallback={
-              <button
-                class="send-btn"
-                type="submit"
-                disabled={!text().trim() && pending().length === 0}
-                aria-label="发送"
-              >
+              <button class="send-btn" type="submit" disabled={!hasInput()} aria-label="发送">
                 <IconSend size={16} />
               </button>
             }

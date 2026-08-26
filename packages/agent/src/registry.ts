@@ -349,7 +349,13 @@ export function chargeBatchBudget(
  * 「找不到」**——后者会让模型把它当成 id 写错，然后拿几轮去猜一个取不到的 id。
  */
 export interface HistoryPort {
-  /** 按消息 id 取回原文。不存在返回 null。 */
+  /**
+   * 按消息 id 取回原文。不存在返回 null。
+   *
+   * **两种 id 都要认**：`messages` 表的行 id，以及 run 内注入的那句用户消息的
+   * `<runId>:<stepId>`——后者不在 `messages` 表里（它是一条 `kind='user'` 的 step）。
+   * 摘要里两者都印成 `[message:…]`，模型分不出也不需要分。
+   */
   message(id: string): { role: 'user' | 'assistant'; content: string } | null
   /**
    * 按执行记录 id 取回原文。

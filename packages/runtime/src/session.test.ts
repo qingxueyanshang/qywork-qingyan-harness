@@ -13,7 +13,9 @@ import { join } from 'node:path'
 import type { ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
 import {
+  appendStep,
   createConversation,
+  createRun,
   fileReadHash,
   listConversations,
   listDisabledExtras,
@@ -487,6 +489,54 @@ describe('会话标题', () => {
     setConversationTitle(store, conv?.id as never, '我自己起的名字')
     await firstEvent(s, '第二句', conv?.id)
     expect(listRecentConversations(store, 1)[0]?.title).toBe('我自己起的名字')
+    store.close()
+  })
+})
+
+/*
+ * 被折叠历史的回读。
+ *
+ * 摘要里 run 内注入的那句用户消息印的是 `[message:<runId>:<stepId>]` ——
+ * 它不在 `messages` 表里。这条通道少了那一手回落，摘要上写着地址、取回却报
+ * 「不存在」，压缩就真成了丢信息。
+ */
+describe('注入消息的回读', () => {
+  test('按 <runId>:<stepId> 取得回原文，执行记录那一侧回 null', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: null,
+      messageIdUpperBound: null,
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'user',
+      content: '改成只列文件名',
+      payload: { kind: 'user' },
+    })
+
+    const make = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
+      }
+    ).makeToolContext.bind(s)
+    const ctx = make(run.id, () => {}, 'm', conv.id)
+    const address = `${run.id}:${step.id}`
+
+    expect(ctx.history?.message(address)).toEqual({ role: 'user', content: '改成只列文件名' })
+    // 执行记录那一侧必须回 null：它的返回形状是 {tool,status,args,outcome}，
+    // 套上去只会得到一个 tool:'unknown' 加两个空 JSON——看起来被处理了。
+    expect(ctx.history?.step(address)).toBeNull()
+    // 搜索按「消息」报，因此模型拿到的标记是 [message:…]，与取回入口对得上。
+    expect(ctx.history?.search('只列文件名', 10)).toEqual([
+      { id: address, kind: 'message', line: '改成只列文件名' },
+    ])
     store.close()
   })
 })

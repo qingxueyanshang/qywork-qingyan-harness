@@ -27,13 +27,7 @@
 
 import type { TokenDensity, WireMessage, WireToolCall } from '@qywork/ai'
 import { estimateMessages, estimateText } from '@qywork/ai'
-import type {
-  ActionKind,
-  CompactionCut,
-  CompactionFacts,
-  CompactionManifest,
-  MessageId,
-} from '@qywork/core'
+import type { ActionKind, CompactionCut, CompactionFacts, CompactionManifest } from '@qywork/core'
 
 /**
  * 摘录界：一条 segment、一条事实、一个被折叠的调用参数，共用这一个长度。
@@ -210,7 +204,13 @@ export interface CompactionAction {
 export interface CompactionInput {
   /** 上一条摘要线到新折叠线之间的对话文本，按时间升序。 */
   messages: {
-    id: MessageId
+    /**
+     * 取回地址，摘要里印成 `[message:<id>]`。**两种形状**：
+     * `messages` 表的行是 `MessageId`；run 内注入的那句话是 `<runId>:<stepId>`
+     * ——它不在 `messages` 表里（见 `StepKind` 的 `'user'`）。
+     * 两种都由 `HistoryPort.message` 解析，模型侧看不出区别。
+     */
+    id: string
     role: 'user' | 'assistant'
     content: string
     hasAttachments?: boolean

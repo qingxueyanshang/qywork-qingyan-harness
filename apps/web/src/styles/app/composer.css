@@ -174,6 +174,55 @@
   color: var(--danger);
 }
 
+/* 排着的跟进消息，一条一张卡，在目标条与输入框之间。
+ *
+ * **自带一整套规则，不与 `.goal-chip` 共用选择器。** 共用的代价是删掉其中一块时
+ * 把另一块的边距、底色、圆角一起带走，而 CSS 不会为此报任何错。
+ *
+ * **每张卡高度锁死**（B9）：正文长度不定，随内容变高的话用户瞄着删除按钮按下去，
+ * 那个位置已经换成了下一张卡的档位按钮。长了就截断，title 里有全文。 */
+.followup-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin: 0 var(--s-4) var(--s-2);
+}
+.followup-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 32px;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-size: var(--fs-sm);
+}
+/* 正文占满剩余宽度并在这里截断：`min-width: 0` 由 `.truncate` 给。 */
+.followup-text {
+  flex: 1 1 auto;
+  color: var(--text-primary);
+}
+.followup-act {
+  flex: none;
+  padding: 1px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.followup-act:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 删除只留图标，边框去掉：它和档位词并排，两个都带框会读成两个同级选项。 */
+.followup-act.drop {
+  display: flex;
+  align-items: center;
+  padding: var(--s-1);
+  border-color: transparent;
+}
+
 .composer {
   border: 1px solid var(--border-default);
   border-radius: var(--r-xl);

@@ -25,11 +25,14 @@
 
 import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
 import type { ContentBlock, WireMessage, WireToolCall } from '@qywork/ai'
-import type { ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
+import type { Attachment, ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
 import { listMessages, listRuns, listSteps, type Store } from '@qywork/store'
 
 /** 投影产物统一带的分组标记。工具结果的执行记录/正文二分在计量层做，不在这里拆。 */
 const GROUP: ContextGroup = 'executionRecords'
+
+/** run 内注入的用户消息的分组。它是用户打的字，与历史消息同一本账。 */
+const USER_GROUP: ContextGroup = 'historyMessages'
 
 export interface ProjectOptions {
   /**
@@ -115,6 +118,13 @@ export interface StepUnit {
   messages: WireMessage[]
   /** 这个单元里的 tool_action step。纯文本单元为空。 */
   steps: Step[]
+  /**
+   * 这个单元是 run 内注入的用户消息时，指向那条 step。
+   *
+   * 两个消费者要它，而两处都不该靠「看消息角色猜」：`buildHistory` 拿它取附件，
+   * 压缩拿它的 id 组出取回地址（`<runId>:<stepId>`）。
+   */
+  userStep?: Step
 }
 
 /**
@@ -178,6 +188,30 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     if (step.kind === 'text') {
       pendingText += step.content ?? ''
       pendingStamp = stepStamp(step.runId, step.seq)
+      i += 1
+      continue
+    }
+    if (step.kind === 'user') {
+      /*
+       * run 内注入的那句用户消息，原位产出一条 `role:'user'`。
+       *
+       * 先 `flushText()`：它落在这条 step 之前的文本之后，顺序由 seq 定，
+       * 与活的 transcript 逐条同位。
+       *
+       * `_group` 是 `historyMessages` 而不是 `GROUP`——这是用户打的字，不是执行记录。
+       * 活侧（`agent/loop.ts` 的注入点）必须同值，两侧不同口径比都记错更坏。
+       *
+       * `pendingReasoning` 在这里必然是空的：注入发生在 step 循环顶部，
+       * 而思考与它的工具批次在同一步之内，中间夹不进别的 step。
+       */
+      flushText()
+      const stamp = stepStamp(step.runId, step.seq)
+      units.push({
+        stamp,
+        messages: [mark({ role: 'user', content: step.content ?? '', _group: USER_GROUP }, stamp)],
+        steps: [],
+        userStep: step,
+      })
       i += 1
       continue
     }
@@ -262,6 +296,12 @@ export function stepsToWireMessages(steps: Step[], opts: ProjectOptions = {}): W
   return stepsToUnits(steps, opts).flatMap((u) => u.messages)
 }
 
+/** 注入消息带的附件。不是注入单元、或者没带附件时是空数组。 */
+export function attachmentsOf(step: Step | undefined): Attachment[] {
+  if (step?.kind !== 'user') return []
+  return (step.payload as { attachments?: Attachment[] } | null)?.attachments ?? []
+}
+
 /**
  * 装配一次请求的完整历史：消息 + 由 steps 投影出的执行回合。
  *
@@ -295,7 +335,26 @@ export async function buildHistory(
       _messageId: m.id,
     })
     for (const r of byUser.get(m.id) ?? []) {
-      out.push(...stepsToWireMessages(listSteps(store, r.id), { messageId: m.id }))
+      /*
+       * 逐单元走而不是直接摊平：注入消息的附件要在这里解析（读磁盘），
+       * 而 `stepsToUnits` 是同步的——压缩那侧共用它。
+       */
+      for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id })) {
+        const files = attachmentsOf(u.userStep)
+        for (const msg of u.messages) {
+          out.push(
+            files.length
+              ? {
+                  ...msg,
+                  content: await attachments(
+                    typeof msg.content === 'string' ? msg.content : '',
+                    files,
+                  ),
+                }
+              : msg,
+          )
+        }
+      }
     }
   }
   return out

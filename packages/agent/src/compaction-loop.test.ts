@@ -52,6 +52,7 @@ function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
     nextSeq: () => ++seq,
     openTextStep: () => `st_${seq}`,
     openThinkingStep: () => `st_think_${seq}`,
+    landUserStep: () => `st_user_${seq}`,
     failThinkingSteps: () => {},
     appendText: () => {},
     openToolStep: () => `st_${seq}`,

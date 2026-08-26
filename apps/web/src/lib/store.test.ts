@@ -427,6 +427,50 @@ describe('事件按会话归属过滤', () => {
     expect(state.runStartedAt).toBe(null)
   })
 
+  /*
+   * 服务端自己发起的那几轮（目标续起、定时触发、跟进消息火发）没有客户端的
+   * 乐观插入，用户那句话只能从 `run.started` 带的正文来。
+   *
+   * 真机上先漏了这一手：排队的消息跑完自动起了下一轮，账本里那条消息在、
+   * 模型的回答也在，唯独用户自己那句话在界面上不存在，要刷新一次才出现。
+   */
+  const runStarted = (
+    conversationId: string,
+    userMessageId: string | null,
+    userMessage: { content: string } | null,
+  ) =>
+    ({
+      seq: 9,
+      at: 0,
+      conversationId,
+      event: {
+        type: 'run.started',
+        runId: 'run_f',
+        conversationId,
+        model: 'm',
+        userMessageId,
+        userMessage,
+        retryOfRunId: null,
+      },
+    }) as never
+
+  test('服务端自己发起的那一轮，用户消息由 run.started 补出来', () => {
+    reset('cv_now')
+    applyEvent(runStarted('cv_now', 'ms_1', { content: '排着的那一句' }))
+    expect(state.transcript.map((i) => [i.kind, i.text, i.id])).toEqual([
+      ['user', '排着的那一句', 'ms_1'],
+    ])
+  })
+
+  test('界面上按回车那条不会因此变成两条，且 id 换成账本里的真值', () => {
+    reset('cv_now')
+    setState('transcript', [{ id: 'local_1', kind: 'user', text: '我打的那句' }])
+    applyEvent(runStarted('cv_now', 'ms_2', { content: '我打的那句' }))
+    expect(state.transcript).toHaveLength(1)
+    // id 对齐之后，活的这一份与刷新后从账本投影出来的那一份是同一个键。
+    expect(state.transcript[0]?.id).toBe('ms_2')
+  })
+
   /**
    * 忙闲反过来：它是**工作区级事件**，别的会话那条必须收下——左栏要为列表里
    * 每一条画状态。原始失败形状是「只有点开的那条会话才转圈，别的在跑也看不出来」。

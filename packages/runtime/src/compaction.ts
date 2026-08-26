@@ -46,7 +46,7 @@ import {
   setCompactionManifest,
   summaryOutputPercentile,
 } from '@qywork/store'
-import { stepsToUnits } from './transcript.ts'
+import { attachmentsOf, stepsToUnits } from './transcript.ts'
 
 /**
  * 摘要输出的观测分位。
@@ -284,12 +284,29 @@ export class RuntimeCompaction implements CompactionPort {
       for (const r of byUser.get(m.id) ?? []) {
         for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id })) {
           const stepCut: CompactionCut = { messageId: m.id, step: u.stamp }
+          const files = attachmentsOf(u.userStep)
           units.push({
             key: cutKey(stepCut),
             cut: stepCut,
-            tokens: estimateMessages(u.messages, density),
+            tokens: estimateMessages(u.messages, density) + files.length * MEDIA_TOKENS,
             messages: u.messages,
-            row: null,
+            /*
+             * run 内注入的那句用户消息也要有 `row`，否则它折进摘要线之后
+             * **一个字都不会进摘要**：下面拼摘要段时只收 `row` 与 assistant 正文，
+             * user 角色的单元消息不在其中，而它的 `actions` 是空的。
+             * 表现是用户改方向的那句话在一次压缩后彻底消失，模型接着按改之前的判断跑。
+             *
+             * id 用 `<runId>:<stepId>`——它不在 `messages` 表里，
+             * 由 `HistoryPort.message` 的复合形式解析回来。
+             */
+            row: u.userStep
+              ? {
+                  id: `${r.id}:${u.userStep.id}`,
+                  role: 'user' as const,
+                  content: u.userStep.content ?? '',
+                  ...(files.length ? { hasAttachments: true } : {}),
+                }
+              : null,
             actions: u.steps.map((s) => actionOf(r.id, s)),
           })
         }

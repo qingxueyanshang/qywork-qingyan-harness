@@ -11,10 +11,12 @@
 
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
+  Attachment,
   CompactionManifest,
   ContextBreakdown,
   ContextOmitted,
   FileChange,
+  FollowUp,
   Goal,
   RunUsage,
   StopReason,
@@ -72,6 +74,9 @@ export type AgentEvent =
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
+  // ── 跟进消息 ──
+  | QueueChangedEvent
+  | MessageInjectedEvent
 
 // ─────────────────────────────── 会话 ───────────────────────────────
 
@@ -112,6 +117,43 @@ export interface ConversationBusyEvent {
   busy: boolean
 }
 
+// ─────────────────────────────── 跟进消息 ───────────────────────────────
+
+/**
+ * 这条会话排着哪些跟进消息。**整份快照，不是增量。**
+ *
+ * 增量（进一条 / 出一条 / 翻一次档）要客户端自己维护一份能对得上的队列，
+ * 而它同时还有乐观加的本地卡——两份账在「服务端去重掉一条重复的 clientRequestId」
+ * 这种时刻必然分叉。快照整体替换没有这个问题，队列长度也不值得省这点字节。
+ *
+ * 按会话过滤下发（与 `conversation.busy` 不同）：卡片只出现在打开着的那条会话里。
+ */
+export interface QueueChangedEvent {
+  type: 'queue.changed'
+  conversationId: ConversationId
+  queue: FollowUp[]
+}
+
+/**
+ * 一条跟进消息刚被注入当前这一轮。
+ *
+ * `stepId` 指向 `steps` 里那条 `kind='user'` 的行——**必须带**，理由与
+ * `ThinkingDeltaEvent.stepId` 相同：客户端自己造 id 的话，实时插进去的那条气泡
+ * 与刷新后按 step 重建出来的是两条。
+ *
+ * 收到它的客户端同时要把队列里那张卡摘掉；队列的权威仍是 `queue.changed`，
+ * 这条只负责会话流里那一格。
+ */
+export interface MessageInjectedEvent {
+  type: 'message.injected'
+  runId: RunId
+  stepId: StepId
+  /** 队列条目的 id，客户端据此摘掉对应的卡。 */
+  followUpId: string
+  content: string
+  attachments?: Attachment[]
+}
+
 // ─────────────────────────────── run 生命周期 ───────────────────────────────
 
 export interface RunStartedEvent {
@@ -120,6 +162,18 @@ export interface RunStartedEvent {
   conversationId: ConversationId
   model: string
   userMessageId: MessageId | null
+  /**
+   * 这一轮回答的那条用户消息正文。**服务端自己发起的轮次靠它才画得出气泡。**
+   *
+   * 用户在界面上按回车时，那条气泡是客户端乐观插进去的；而目标续起、定时触发、
+   * 跟进消息火发这三条路没有客户端动作，正文只存在于服务端刚写进 `messages`
+   * 表的那一行。少了它，那几轮在界面上是「模型自己开口说了一段」，
+   * 用户要刷新一次页面才看得到自己那句话——而账本里它一直在。
+   *
+   * 客户端按正文与最后一条用户气泡比对：对得上就把 id 换成这里的真值
+   * （乐观插入用的是本地 id），对不上就补一条。
+   */
+  userMessage: { content: string; attachments?: Attachment[] } | null
   /** 显式重试时指向被重试的 run。 */
   retryOfRunId: RunId | null
 }

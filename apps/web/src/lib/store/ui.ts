@@ -459,3 +459,41 @@ if (isDesktopShell()) {
     .then(restoreTerminalTabs)
     .catch(() => {})
 }
+
+const FOLLOWUP_KEY = 'qywork.followUpMode'
+
+/**
+ * 会话在跑时发出去的消息，默认走哪一档。
+ *
+ * `queue` = 等这一轮跑完再作为下一轮发起；`steer` = 注入当前这一轮，
+ * 模型下一次请求就看到。界面上这两个词是「加入队列」与「调整方向」。
+ *
+ * **真源在客户端，服务端不存也不读。** 它是输入习惯，与主题、面板宽度同层；
+ * 服务端存一份就是第二本账，而且和用户此刻按的键可能不一致——意图随每条
+ * `message.send` 的 `steer` 字段显式携带。
+ *
+ * 按设备记：手机上没有 `Ctrl+Enter`，两端的习惯本来就不必相同。
+ */
+export type FollowUpMode = 'queue' | 'steer'
+
+function readFollowUpMode(): FollowUpMode {
+  try {
+    return localStorage.getItem(FOLLOWUP_KEY) === 'steer' ? 'steer' : 'queue'
+  } catch {
+    // 隐私模式下 localStorage 直接抛。记不住默认档不该让应用起不来。
+    return 'queue'
+  }
+}
+
+export const [followUpMode, setFollowUpModeSignal] = createSignal<FollowUpMode>(readFollowUpMode())
+
+/** 改默认档的唯一入口，同步落盘。 */
+export function setFollowUpMode(next: FollowUpMode): void {
+  if (next === followUpMode()) return
+  setFollowUpModeSignal(next)
+  try {
+    localStorage.setItem(FOLLOWUP_KEY, next)
+  } catch {
+    // 同上：这一次的选择已经生效，存不下只影响下次启动。
+  }
+}

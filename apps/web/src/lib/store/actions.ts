@@ -317,20 +317,44 @@ export async function newConversation(): Promise<void> {
   await selectConversation(conversation.id)
 }
 
-export function sendMessage(content: string, attachments?: Attachment[]): void {
+/**
+ * 发一条消息。会话在跑时它不再被回绝，而是**排进队列**——去向由 `steer` 决定。
+ *
+ * `steer` 由调用方给：Enter 走默认档，Ctrl+Enter 走相反档（`Composer.tsx`）。
+ * 会话空闲时这一格无意义，两种取值都是当场起一轮。
+ */
+export function sendMessage(content: string, attachments?: Attachment[], steer = false): void {
   const id = state.activeConversation
   // 只带附件不带文字也算一条有效消息——「看这张图」这种意图，
   // 逼用户再打几个字没有道理。
   if (!id || (!content.trim() && !attachments?.length)) return
+  const requestId = crypto.randomUUID()
+  const queued = state.busyConversations.includes(id)
   setState(
     produce((s) => {
-      // 乐观插入：用户按下回车立刻看到自己的消息，不等服务端回执。
-      s.transcript.push({
-        id: `local_${Date.now()}`,
-        kind: 'user',
-        text: content,
-        ...(attachments?.length ? { attachments } : {}),
-      })
+      /*
+       * 乐观呈现，不等服务端回执。**忙与闲落在两个地方**：
+       * 闲时这条消息就是下一轮的开头，进会话流；忙时它排着队，进卡片区。
+       * 都插进会话流的话，用户会看到一条还没发生的对话。
+       *
+       * 卡片的 id 用 `clientRequestId`——与服务端队列条目同源，
+       * 随后那份快照整体覆盖时同一条不会闪重。
+       */
+      if (queued) {
+        s.followUps.push({
+          id: requestId,
+          content,
+          ...(attachments?.length ? { attachments } : {}),
+          steer,
+        })
+      } else {
+        s.transcript.push({
+          id: `local_${Date.now()}`,
+          kind: 'user',
+          text: content,
+          ...(attachments?.length ? { attachments } : {}),
+        })
+      }
       s.error = null
     }),
   )
@@ -343,9 +367,29 @@ export function sendMessage(content: string, attachments?: Attachment[]): void {
   markBusy(id, true)
   client.send({
     type: 'message.send',
-    clientRequestId: crypto.randomUUID(),
+    clientRequestId: requestId,
     conversationId: id as never,
     content,
     ...(attachments?.length ? { attachments } : {}),
+    ...(steer ? { steer: true } : {}),
   })
+}
+
+/**
+ * 改一条排着的跟进消息的去向；会话已经空闲时，服务端把它当「现在就发」处理。
+ *
+ * **两态由服务端在同一个同步块里裁决**，客户端不预判：它手里的忙闲是上一次
+ * 事件留下的值，用户点下去那一刻可能已经不成立。
+ */
+export function steerFollowUp(id: string, steer: boolean): void {
+  const conversationId = state.activeConversation
+  if (!conversationId) return
+  client.send({ type: 'followup.steer', conversationId: conversationId as never, id, steer })
+}
+
+/** 删掉一条排着的跟进消息。删了就既不注入也不火发。 */
+export function dropFollowUp(id: string): void {
+  const conversationId = state.activeConversation
+  if (!conversationId) return
+  client.send({ type: 'followup.drop', conversationId: conversationId as never, id })
 }

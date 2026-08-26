@@ -580,7 +580,17 @@ export type GoalWriteResult =
 
 // ─────────────────────────────── Step ───────────────────────────────
 
-export type StepKind = 'text' | 'tool_action' | 'compaction' | 'thinking'
+/**
+ * step 的种类。
+ *
+ * `user` 是唯一不由模型产生的一种：run 跑到一半时用户插进来的那句话
+ * （「调整方向」）。**它必须落在 steps 而不是 `messages`**——历史投影的骨架是
+ * 「messages 按 id 升序，每条后面挂 `userMessageId` 指向它的那些 run 的全部 steps」
+ * （`runtime/transcript.ts` 的 `buildHistory`），写进 `messages` 的行下一轮会被重排到
+ * 整个 run 的全部步骤之后，注入点在回放里的时序因此与活的 transcript 不一致。
+ * 落 steps 则位置由 seq 决定，两侧逐条同位。
+ */
+export type StepKind = 'text' | 'tool_action' | 'compaction' | 'thinking' | 'user'
 
 export type ToolActionStatus = 'running' | 'success' | 'failure'
 
@@ -662,6 +672,14 @@ export type StepPayload =
       summarized?: boolean
       reasonCode?: string
     }
+  | {
+      /**
+       * run 内注入的那句用户消息。正文在 `content` 列，与 `text` / `thinking` 同法；
+       * 这里只装附件引用。
+       */
+      kind: 'user'
+      attachments?: Attachment[]
+    }
 
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
 export interface ToolOutcomeWire {
@@ -675,6 +693,27 @@ export interface ToolOutcomeWire {
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
+}
+
+/**
+ * 一条排着的跟进消息。
+ *
+ * 会话正忙时用户发的消息进这份队列，去向由 `steer` 决定：注入当前这一轮，
+ * 或者等这一轮跑完再作为下一轮发起。**进 run 之前它不落任何表**——
+ * 队列是进程内的意志，不是账本事实，落盘的队列会在崩溃重启后自己跑起来。
+ */
+export interface FollowUp {
+  /**
+   * 幂等键，直接用 `message.send` 的 `clientRequestId`。
+   *
+   * 一个键三用：服务端按它去重、客户端的乐观卡按它与服务端快照对账、
+   * 卡片上的翻转与删除按它寻址。
+   */
+  id: string
+  content: string
+  attachments?: Attachment[]
+  /** true = 在当前 run 的下一个 step 边界注入；false = 等这一轮收尾后发起下一轮。 */
+  steer: boolean
 }
 
 // ─────────────────────────── 中间资源 ───────────────────────────
