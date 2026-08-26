@@ -324,7 +324,7 @@ export interface DelegateGraph {
  * 所以第一帧就能把整张图画全，等着跑的格子也在图上。状态是另一条路（见 `WorkflowCard`）。
  *
  * 两端那两格是**同一条会话的两个时刻**：交出去、收回来。画成两格而不是一格加一条
- * 返回边，是因为返回边要绕回起点，绕出来的线怎么画都难看。
+ * 返回边，是因为返回边要绕回起点，那条线必然横穿已经分好的层。
  */
 export function delegateGraph(item: {
   toolName?: string
