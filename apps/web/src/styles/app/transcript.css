@@ -186,9 +186,13 @@
 .code-block {
   position: relative;
   margin: 0 0 var(--s-3);
-  padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--bg-inset);
+}
+/* 横向滚动在这一层，右上角那排工具在它外面，滚代码时不跟着走。 */
+.code-body {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
   overflow-x: auto;
   font-size: var(--fs-sm);
   line-height: 1.6;
@@ -270,15 +274,53 @@
   font-style: italic;
 }
 
-.code-lang {
+/*
+ * 语言角标与复制按钮：同一条水平线，右对齐贴住块的右上角。
+ * 整排压在首行代码上方，所以容器不收指针事件，只有按钮收——否则挡住横向滚动。
+ */
+.code-tools {
   position: absolute;
-  top: 6px;
-  right: var(--s-3);
+  top: 5px;
+  right: var(--s-1);
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  pointer-events: none;
+}
+.code-lang {
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-family: var(--font-ui);
-  /* 不挡住代码的横向滚动 */
-  pointer-events: none;
+  line-height: 18px;
+}
+/* 按钮与角标同高：高过角标一圈就成了压在代码上的第二层，不再是同一行。 */
+.code-copy {
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-xs);
+  color: var(--text-tertiary);
+}
+.code-copy::before {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: currentcolor;
+  mask:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 3.4H4.9a1.5 1.5 0 0 0-1.5 1.5v5.7'/%3E%3Crect x='6.4' y='6.4' width='6.2' height='6.2' rx='1.5'/%3E%3C/g%3E%3C/svg%3E")
+    center / 13px no-repeat;
+}
+.code-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+/* 复制成功 1.2 秒的回执，由 App.tsx 的根委托加这个类。 */
+.code-copy.done {
+  color: var(--success);
+}
+.code-copy.done::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.4 8.6l3.1 3.1 6.1-6.6' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 /* 宽表格必须能独立横向滚动，否则会把整页撑出横向滚动条。 */

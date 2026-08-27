@@ -70,6 +70,8 @@ const WHITELIST = {
   code: ['class'],
   pre: ['class'],
   div: ['class'],
+  // 代码块右上角的复制按钮。不放行 button 就只剩一个空壳。
+  button: ['class', 'type', 'aria-label', 'data-tip'],
   table: ['class'],
   a: ['href', 'title', 'target', 'rel'],
   // 中间隔了别的块的续号列表，marked 会给出 `<ol start="2">`；剥掉这个属性，
@@ -142,7 +144,15 @@ function makeRenderer(opts: RenderOptions, ready: boolean): Renderer {
       shownLang && !PLAIN_LANGS.has(shownLang)
         ? `<span class="code-lang">${escapeHtml(shownLang)}</span>`
         : ''
-    return `<pre class="code-block"><code class="hljs">${highlighted}</code>${badge}</pre>`
+    // 横向滚动归 pre，角标与复制按钮归外层 div。
+    // 不要把它们放回 pre 里：那是滚动容器，绝对定位的子元素跟着代码一起滚出视野，
+    // 按钮会滑到点不到的地方。
+    return (
+      `<div class="code-block"><pre class="code-body"><code class="hljs">${highlighted}</code></pre>` +
+      `<div class="code-tools">${badge}` +
+      `<button class="code-copy" type="button" data-tip="复制" aria-label="复制代码"></button>` +
+      `</div></div>`
+    )
   }
 
   // 外链一律新窗口打开并断开 opener——模型给的链接不可信。

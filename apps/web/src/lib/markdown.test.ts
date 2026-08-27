@@ -66,6 +66,23 @@ describe('白名单里必须留下的标签', () => {
       expect(renderMarkdown(fence(lang))).not.toContain('code-lang')
     }
   })
+  test('复制按钮不被净化剥掉 —— 白名单不放行 button 就只剩空壳', () => {
+    const html = renderMarkdown('```js\nconst a = 1\n```')
+    expect(html).toContain('<button class="code-copy" type="button"')
+    expect(html).toContain('aria-label="复制代码"')
+  })
+
+  test('没有语言角标的块同样有复制按钮', () => {
+    const html = renderMarkdown('```\nhello\n```')
+    expect(html).not.toContain('code-lang')
+    expect(html).toContain('code-copy')
+  })
+
+  test('横向滚动归 pre，那一排工具排在它外面 —— 在里面会跟着代码滚走', () => {
+    const html = renderMarkdown('```js\nconst a = 1\n```')
+    expect(html).toContain('<pre class="code-body">')
+    expect(html.indexOf('code-tools')).toBeGreaterThan(html.indexOf('</pre>'))
+  })
 })
 
 describe('代码块正文按字面转义', () => {

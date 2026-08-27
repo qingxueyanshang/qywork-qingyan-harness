@@ -56,6 +56,27 @@ export function openLink(e: MouseEvent): void {
   openBrowserTab(href)
 }
 
+/** 复制回执停留的时长。短于这个数看不清图标换过，长了会跨到下一次点击。 */
+const COPY_DONE_MS = 1200
+
+/**
+ * 代码块右上角的复制按钮。
+ *
+ * 挂在根上，理由同 openLink：按钮由 markdown 渲染产出，正文与配置提醒两处的 HTML
+ * 都是整段替换的，逐处接等于每次重渲染后再接一遍。
+ *
+ * 取 textContent 不取 innerHTML——高亮把代码切成了一串 span。
+ */
+export function copyCode(e: MouseEvent): void {
+  const btn = (e.target as Element).closest('.code-copy')
+  const code = btn?.closest('.code-block')?.querySelector('code')
+  if (!btn || !code) return
+  void navigator.clipboard?.writeText(code.textContent ?? '').then(() => {
+    btn.classList.add('done')
+    setTimeout(() => btn.classList.remove('done'), COPY_DONE_MS)
+  })
+}
+
 export function App() {
   // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
@@ -111,7 +132,10 @@ export function App() {
       // 这里**不夹**：窗口放不下由网格自己收（`.app.with-panel` 的 minmax），
       // 在这儿再夹一次就是把布局知识抄进 JS，而它只在写的那一刻是对的。
       style={{ '--panel-w': `${panelWidth()}px`, '--panel-min-w': `${PANEL_MIN}px` }}
-      on:click={openLink}
+      on:click={(e) => {
+        openLink(e)
+        copyCode(e)
+      }}
     >
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>
