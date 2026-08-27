@@ -38,8 +38,10 @@
       "minimumSystemVersion": "11.0"
     },
     "windows": {
+      "minimumWebview2Version": "110.0.1587.0",
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "perMachine",
+        "languages": ["SimpChinese", "English"]
       }
     }
   },
