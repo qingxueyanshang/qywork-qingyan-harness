@@ -243,7 +243,7 @@ OpenAI Responses 三套协议。
 **联网**过 SSRF 闸：每一跳重定向都重新校验，按解析后的 IP 分类，展开
 IPv4-mapped IPv6，跨源跳转丢弃 `authorization`。
 
-细节和取舍见 [`ARCHITECTURE.md`](ARCHITECTURE.md)，未落地项见 [`ROADMAP.md`](ROADMAP.md)。
+细节和取舍见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---
 
@@ -294,8 +294,7 @@ bun run scripts/compaction-fidelity.ts    # 压缩保真度：压完之后模型
 
 2026-08 修掉了一个可能相关的原因（Bun 的传输层错误此前全部被判成不可重试，
 一次网络抖动就终结整轮 run），之后连跑三次全绿。但**三次不构成证据**——
-按旧频率，连中三绿本来就有约 22% 的概率。详见 ROADMAP §18.1 与 §21-3，
-没查清的事不写成结论。
+按旧频率，连中三绿本来就有约 22% 的概率。没查清的事不写成结论。
 
 `compaction-fidelity.ts` 值得单独说：它在一段 40 轮对话里埋 5 条可验证的事实，压缩后
 再问模型，看它还答不答得上来。压缩实现出错时可以在单测全绿的情况下把上下文压到

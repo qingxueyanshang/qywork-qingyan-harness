@@ -91,11 +91,6 @@ function probeNode(): { path: string; major: number; minor: number } | null {
   return nodeProbe
 }
 
-/** 仅供测试重置探测缓存。 */
-export function resetRuntimeProbe(): void {
-  nodeProbe = undefined
-}
-
 /** 权限标志的旗名在 Node 23 改过。给错版本的旗子会让进程直接起不来。 */
 function permissionFlag(major: number): string | null {
   if (major >= 23) return '--permission'

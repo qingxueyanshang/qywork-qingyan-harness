@@ -7,8 +7,7 @@
  * 却起不来」。
  *
  * 实测过六种写法（detached、windowsHide、`node:child_process`、`node:http` 监听、`reusePort`），
- * 只要监听在前、派生在后就一律被占；**先 spawn 子进程再开始监听是唯一成立的做法**
- * （逐条见 `docs/plans/2026-08-18-命令挂在谁底下.md`）。
+ * 只要监听在前、派生在后就一律被占；**先 spawn 子进程再开始监听是唯一成立的做法**。
  *
  * 这个模块就是那一行：**在 `serve()` 之前**起一个 runner，之后所有 `run_command` 都由它来 spawn。
  * 它出生时监听 socket 还不存在，所以它和它的子孙手里都没有那份句柄，谁活多久都不会把端口带走。

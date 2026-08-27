@@ -1002,6 +1002,25 @@ ALTER TABLE steps_new RENAME TO steps;
 CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
 `,
   },
+  {
+    id: 30,
+    name: 'drop_manual_retry',
+    /**
+     * 手动重试整条移除，这两列随之失去生产者与消费者。
+     *
+     * 产品上只保留两种重试：`AgentLoop` 轮内的原样重发（`run.retrying`，不落库），
+     * 以及用户自己再发一次消息（那是一条普通的新 run）。「拿同一条消息重开一个 run
+     * 并把旧 run 标为被接替」这个语义不再存在。
+     *
+     * **索引必须先删**：SQLite 拒绝 DROP 一个仍被索引引用的列，
+     * 顺序反了整条迁移失败，库停在 29。
+     */
+    sql: `
+DROP INDEX IF EXISTS idx_run_retry_of;
+ALTER TABLE runs DROP COLUMN retry_of_run_id;
+ALTER TABLE runs DROP COLUMN superseded_by;
+`,
+  },
 ]
 
 /**
@@ -1090,8 +1109,6 @@ export interface RunRow {
   step_count: number
   error_message: string | null
   error_code: string | null
-  retry_of_run_id: RunId | null
-  superseded_by: RunId | null
   owner_pid: number | null
   heartbeat_at: number | null
   created_at: number
@@ -1207,8 +1224,6 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'step_count',
     'error_message',
     'error_code',
-    'retry_of_run_id',
-    'superseded_by',
     'owner_pid',
     'heartbeat_at',
     'created_at',

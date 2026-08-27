@@ -348,7 +348,7 @@ describe('收尾之后的火发', () => {
     const held = gate(textTurn('这一轮完了。'))
     script = [held.turn, ok(textTurn('跟进那一轮也完了。'))]
     const sock = socket()
-    void startRun(cv, '第一句', undefined, deps(), undefined, undefined, {
+    void startRun(cv, '第一句', undefined, deps(), undefined, {
       goalId: live.id,
       revision: live.revision,
     })

@@ -43,7 +43,6 @@ export {
   type ModelFinishRate,
   markProviderRequestSent,
   markRunRunning,
-  markRunSuperseded,
   markStepExecuting,
   mostRecentWorkspace,
   openProviderRequest,

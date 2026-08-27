@@ -328,19 +328,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
               })
             }
           }
-          // 重试：把被接替那一轮的条目降透明度，而不是清空重来——
-          // 清空会让用户失去「上次错在哪」的现场，那正是他点重试的原因。
-          //
-          // 范围只到**最后一条用户消息之后**：重试复用同一条用户消息，
-          // 所以它之后的全部就是被接替的那轮。更早的轮次没有被接替，不能一起变灰；
-          // 用户消息本身更不能——它没有被替代，只是被重新回答了一次。
-          if (ev.retryOfRunId) {
-            let start = s.transcript.length
-            while (start > 0 && s.transcript[start - 1]!.kind !== 'user') start--
-            for (let i = start; i < s.transcript.length; i++) {
-              s.transcript[i]!.superseded = true
-            }
-          }
         }),
       )
       return
@@ -570,7 +557,6 @@ interface StoredRun {
   stopReason: StopReason | null
   status: string
   usage: RunUsage | null
-  supersededBy: string | null
   errorMessage: string | null
 }
 interface StoredStep {
@@ -647,7 +633,7 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
       for (const r of runsByUserMessage.get(m.id) ?? []) {
         for (const s of stepsByRun.get(r.id) ?? []) {
           for (const item of stepToItems(s)) {
-            items.push(r.supersededBy ? { ...item, superseded: true } : item)
+            items.push(item)
           }
         }
         // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类条目：
@@ -661,7 +647,6 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
             id: `run_${r.id}`,
             kind: 'run',
             text: '',
-            ...(r.supersededBy ? { superseded: true } : {}),
             run: {
               runId: r.id,
               stopReason: r.stopReason,
@@ -774,8 +759,7 @@ export async function reloadActiveConversation(): Promise<void> {
        *
        * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
        * 出来的。重投之后仍在运行的那几个节点回落到 outcome 里的终态（跑完的那些），
-       * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说，见
-       * `docs/plans/2026-08-23-workflow-图化编排.md` §3.2。
+       * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说。
        */
       s.retry = null
       /*

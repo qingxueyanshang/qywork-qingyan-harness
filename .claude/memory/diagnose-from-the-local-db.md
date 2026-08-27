@@ -7,7 +7,7 @@ metadata:
 ---
 
 用户报「模型行为不对」时，**本地数据库能把那一轮完整重放出来**，不必靠截图推断。
-只读打开 `<home>/.qywork/qywork.sqlite3`（bun:sqlite，
+只读打开 `~/.qywork/qywork.sqlite3`（bun:sqlite，
 `{ readonly: true }`；跑着的服务是 WAL 模式，读不影响它）。
 
 哪张表回答哪个问题：

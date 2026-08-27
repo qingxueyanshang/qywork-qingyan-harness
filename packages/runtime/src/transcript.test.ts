@@ -26,7 +26,6 @@ import {
   createRun,
   finishRun,
   listSteps,
-  markRunSuperseded,
   markStepExecuting,
   Store,
   settleRunningSteps,
@@ -257,28 +256,6 @@ describe('历史装配', () => {
     // 两条 user + 一条 assistant(text 与 toolCalls 合流) + 一条 tool。
     expect(history.filter((m) => m.role === 'user')).toHaveLength(2)
     expect(history).toHaveLength(4)
-  })
-
-  /**
-   * 前端对 superseded 是「打标仍渲染」给人看；模型侧只有折或不折。
-   * 照抄前端会让模型看到「失败尝试 + 重试」两遍同一件事。
-   */
-  test('被接替的 run 不折进历史', async () => {
-    const { store, conv, ask, run } = fixture()
-    const m1 = ask('跑一下')
-    const failed = run(m1)
-    appendStep(store, { runId: failed.id, seq: 1, kind: 'text', content: '第一次尝试的结论' })
-    // `markRunSuperseded` 只对已终结的 run 生效（还在跑的应当先中断再重试，
-    // 否则两个 run 会同时往同一个工作区写文件）。生产路径也是这个顺序。
-    finishRun(store, failed.id, { status: 'failed', stopReason: 'provider_error' })
-    const retry = run(m1)
-    expect(markRunSuperseded(store, failed.id, retry.id)).toBe(true)
-    appendStep(store, { runId: retry.id, seq: 1, kind: 'text', content: '重试之后的结论' })
-
-    const history = await buildHistory(store, conv.id, m1, noAttachments)
-    const text = JSON.stringify(history)
-    expect(text).toContain('重试之后的结论')
-    expect(text).not.toContain('第一次尝试的结论')
   })
 
   /**

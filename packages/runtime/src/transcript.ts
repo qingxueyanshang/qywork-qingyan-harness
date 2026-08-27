@@ -16,11 +16,6 @@
  * 前端早就是这么干的（`connection.ts` 的 `reloadActiveConversation` 折 steps），
  * 注释原话：「工具调用只存在于 steps 里，单拉 messages 意味着刷新一次页面
  * 就丢掉全部工具卡」。同一句话对模型侧一字不差地成立。
- *
- * **与前端那份**刻意不同口径**。** 前端对被接替（superseded）的 run 照样渲染、只打个标记给人看。模
- * 型侧没有「打标仍渲染」这个选项——`WireMessage` 没有等价标记位，只有折或不折。照抄前端会让模型
- * 看到「失败尝试的全部步骤 + 重试的全部步骤」连排且无标记，同一件事做了两遍、结论可能互相矛盾。**
- * 筛掉 superseded 是调用方的事** （见 `session.ts`），本文件只管把给定的 steps 折平。
  */
 
 import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
@@ -318,9 +313,7 @@ export async function buildHistory(
 ): Promise<WireMessage[]> {
   const byUser = new Map<string, ReturnType<typeof listRuns>>()
   for (const r of listRuns(store, conversationId)) {
-    // 被接替的 run 不折。模型侧没有「打标仍渲染」这个选项，照抄前端会让它
-    // 看到同一件事做了两遍、结论还可能互相矛盾。
-    if (!r.userMessageId || r.supersededBy) continue
+    if (!r.userMessageId) continue
     const list = byUser.get(r.userMessageId) ?? []
     list.push(r)
     byUser.set(r.userMessageId, list)

@@ -269,7 +269,7 @@ export class RuntimeCompaction implements CompactionPort {
     const { store, conversationId, messageIdUpperBound } = this.deps
     const byUser = new Map<string, ReturnType<typeof listRuns>>()
     for (const r of listRuns(store, conversationId)) {
-      if (!r.userMessageId || r.supersededBy) continue
+      if (!r.userMessageId) continue
       const list = byUser.get(r.userMessageId) ?? []
       list.push(r)
       byUser.set(r.userMessageId, list)

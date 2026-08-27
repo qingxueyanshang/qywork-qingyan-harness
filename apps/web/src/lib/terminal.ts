@@ -50,11 +50,6 @@ export async function openTerminal(
   return await tauriInvoke<string>('terminal_open', { id, cwd, cols, rows })
 }
 
-/** 外壳那边还开着哪几条会话。页签据此恢复，见 store 的 `restoreTerminalTabs`。 */
-export function listTerminals(): Promise<string[]> {
-  return tauriInvoke<string[]>('terminal_list')
-}
-
 export function writeTerminal(id: string, data: string): Promise<void> {
   return tauriInvoke<void>('terminal_write', { id, data })
 }

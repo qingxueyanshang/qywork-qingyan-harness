@@ -11,7 +11,7 @@
  * 所以这里 `Bun.serve` 一个按规范应答的 server，让客户端真的发 HTTP。
  *
  * **它验的是客户端。** 不验任何第三方 MCP server 的实现是否合规。真实 server 的兼容性
- * 只能靠实际接一个来验，那件事还没做，记在 ROADMAP。
+ * 只能靠实际接一个来验，那件事还没做。
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'

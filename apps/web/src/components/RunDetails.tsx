@@ -26,7 +26,19 @@ import { LoadState } from './settings/LoadState.tsx'
  * 账。清单里同样把非轮次的那几笔列出来，所以合计与清单对得上，不需要任何一句解释差额的话。
  */
 export default function RunDetails() {
-  const key = () => ({ id: state.activeConversation, rev: ledgerRevision() })
+  /*
+   * 判据按值去重，不能是每次都新建的那个对象字面量。
+   *
+   * `createResource` 把 source 包进 memo 按 `===` 比，对象字面量每次都不相等——
+   * `ledgerRevision()` 那份「没变就别重取」因此白写：别的会话开跑一次、某一轮的
+   * 金额原地改一次（分量都没动），这两张表就各重取一遍。同文件另外两处的判据是串，
+   * 天生按值比。
+   */
+  const key = createMemo(
+    () => ({ id: state.activeConversation, rev: ledgerRevision() }),
+    undefined,
+    { equals: (a, b) => a.id === b.id && a.rev === b.rev },
+  )
 
   const [runData, { refetch: refetchRuns }] = createResource(key, async (k) =>
     k.id === null
@@ -192,7 +204,7 @@ function RunRow(props: { run: Run; open: boolean; onPick: () => void }) {
   }
 
   return (
-    <li classList={{ superseded: !!r().supersededBy }}>
+    <li>
       <button class="run-row" type="button" aria-expanded={props.open} onClick={props.onPick}>
         <IconChevron size={10} dir={props.open ? 'down' : 'right'} />
         <span class="run-when">{clockOf(r().createdAt)}</span>
@@ -362,8 +374,7 @@ function runMark(r: Run): { text: string; bad?: boolean } | null {
     return { text: stopReasonLabel(r.stopReason), bad: true }
   }
   if (r.finishedAt === null) return { text: '进行中' }
-  // 被接替的产出不算数，但钱算数，所以照常列出，只标出来并整行压暗。
-  return r.supersededBy ? { text: '已被接替' } : null
+  return null
 }
 
 /** 行首的时间。当天只给时分，跨天补日期——不另做日期分隔行，那会把清单切成几段。 */

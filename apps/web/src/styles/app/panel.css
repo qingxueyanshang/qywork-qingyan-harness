@@ -1019,10 +1019,6 @@
     scrollbar-color: transparent transparent;
   }
 }
-/* 被接替的那一轮压暗：产出不算数，但钱算数，所以照常列出来。 */
-.run-list > li.superseded {
-  opacity: 0.55;
-}
 /* 收起的行只有三格：什么时候、出没出事、贵不贵。模型名、步数、耗时、token
    都在展开区——它们是选中之后才要的，印在这里就是把档案摊在目录页上。 */
 .run-row {

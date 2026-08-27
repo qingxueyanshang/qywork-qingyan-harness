@@ -37,7 +37,6 @@ import type {
   ConversationId,
   FollowUp,
   GoalWriteResult,
-  MessageId,
   RunId,
   Step,
 } from '@qywork/core'
@@ -71,7 +70,6 @@ import {
   listSteps,
   markProviderRequestSent,
   markRunRunning,
-  markRunSuperseded,
   markStepExecuting,
   openProviderRequest,
   recordFileRead,
@@ -158,17 +156,9 @@ export interface SessionOptions {
   followUps?: (conversationId: ConversationId) => FollowUp[]
 }
 
-/** 重试：复用原 run 的用户消息与高水位，不新增消息。 */
-export interface RetrySource {
-  runId: RunId
-  userMessageId: MessageId | null
-  messageIdUpperBound: MessageId | null
-}
-
 export interface AskOptions {
   /** 本轮强制用这个模型；不传则用会话当前模型。 */
   model?: string
-  retryOf?: RetrySource
   /** 幂等键。同一 (conversationId, clientRequestId) 不会起两个 run。 */
   clientRequestId?: string
   /**
@@ -347,7 +337,6 @@ export class Session {
     options?: AskOptions,
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const { store, config } = this.opts
-    const retryOf = options?.retryOf
 
     const conversationId =
       existing ??
@@ -381,24 +370,20 @@ export class Session {
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
     const effort = resolveModel(config, target)?.effort
 
-    // 重试不新增消息：要重现的是原请求那一刻的上下文。新写一条会让同一句话
-    // 在历史里出现两遍，模型看到的输入和第一次就不一样了。
-    const userMessageId = retryOf
-      ? retryOf.userMessageId
-      : appendMessage(store, {
-          conversationId,
-          role: 'user',
-          content: prompt,
-          ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
-        }).id
+    const userMessageId = appendMessage(store, {
+      conversationId,
+      role: 'user',
+      content: prompt,
+      ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+    }).id
 
     /*
      * 标题在第一条用户消息落库之后产生，**全项目只有这一处产生点**。
      * 建会话时不取：界面端先建会话、后发第一句话，那时正文还不存在。
      *
-     * 只在标题空着时写——用户改过的名字不许被下一句话盖掉；重试不参与。
+     * 只在标题空着时写——用户改过的名字不许被下一句话盖掉。
      */
-    if (!retryOf && !conversation?.title) {
+    if (!conversation?.title) {
       const derived = deriveConversationTitle(prompt)
       if (derived) setConversationTitle(store, conversationId, derived)
     }
@@ -409,15 +394,10 @@ export class Session {
       model,
       clientRequestId: options?.clientRequestId ?? crypto.randomUUID(),
       userMessageId,
-      // 高水位：新轮定格在刚写入的消息；重试继承原 run 的，
-      // 否则重试期间用户新发的消息会被卷进来——那就不是重试了。
-      messageIdUpperBound: retryOf ? retryOf.messageIdUpperBound : userMessageId,
-      ...(retryOf ? { retryOfRunId: retryOf.runId } : {}),
+      // 高水位：本轮定格在刚写入的消息。排队期间新到的消息不进本轮视野。
+      messageIdUpperBound: userMessageId,
     })
     markRunRunning(store, run.id)
-    // 接替关系在新 run 落库之后才写：先写会短暂存在「指向一个还不存在的 run」的状态，
-    // 那个瞬间崩溃就留下一条悬空引用。
-    if (retryOf) markRunSuperseded(store, retryOf.runId, run.id)
 
     /*
      * 历史 = 消息 + **由 steps 投影出来的 assistant/tool 回合**。
@@ -425,11 +405,6 @@ export class Session {
      * **只映射 `listMessages` 是不够的**：那张表只有 user 行（全项目唯一的
      * `appendMessage` 就在上面几行，写的是 `role:'user'`），因此第二轮起模型拿到的
      * 输入字面上是「用户说了三次话，助手一次都没回」，跨轮结构性失忆。
-     *
-     * **被接替的 run 不折**。前端对 superseded 是「打标仍渲染」给人看
-     * （`connection.ts`），模型侧没有等价标记位，只有折或不折；照抄会让模型看到
-     * 「失败尝试 + 重试」两遍同一件事，结论还可能互相矛盾。重试的语义本来就是
-     * 「重现原请求那一刻的上下文」，不带失败尝试。两处口径**刻意不同**，各自带测试。
      */
     const history = await buildHistory(
       store,
@@ -495,7 +470,6 @@ export class Session {
         content: prompt,
         ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
       },
-      retryOfRunId: retryOf?.runId ?? null,
     }
 
     // 压缩端口绑定到本会话与本 run 的高水位：压缩范围不得越过 run 创建时定格的水位，

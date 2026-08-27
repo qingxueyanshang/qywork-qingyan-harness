@@ -67,8 +67,10 @@ const {
   panelTabs,
   panelWidth,
   reloadActiveConversation,
+  runClosed,
   resizePanel,
   saveServerConfig,
+  sendMessage,
   setPanelTabUrl,
   setSidePanel,
   setState,
@@ -159,7 +161,7 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
  * 那是网格的事，这里没有 DOM 也没有窗口，量不到——所以下面不会出现任何一条
  * 「窗口 1280、存了 1632，因此应该是 800」的断言。**那条断言写在这里就是假的**：
  * 它只能证明这个文件里又抄了一遍 CSS 的算法。原始失败形状（存 1632、窗口 1280）
- * 由浏览器里跑的那次实测覆盖，见 docs/plans。
+ * 由浏览器里跑的那次实测覆盖。
  */
 describe('面板宽度：拖出来的数照原样记住', () => {
   test('拖不足夹在下限——再窄这块面板就没法看了', () => {
@@ -439,7 +441,6 @@ describe('事件按会话归属过滤', () => {
         conversationId: 'cv_other',
         model: 'm',
         userMessageId: null,
-        retryOfRunId: null,
       },
     } as never)
     expect(state.lastRunId).toBe(null)
@@ -470,7 +471,6 @@ describe('事件按会话归属过滤', () => {
         model: 'm',
         userMessageId,
         userMessage,
-        retryOfRunId: null,
       },
     }) as never
 
@@ -638,7 +638,6 @@ describe('账本修订号跟着落库走', () => {
         conversationId: 'cv_1',
         model: 'm',
         userMessageId: null,
-        retryOfRunId: null,
       },
     } as never)
   }
@@ -786,7 +785,6 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     stopReason: 'user_interrupt',
     status: 'interrupted',
     usage: null,
-    supersededBy: null,
   }
 
   /**
@@ -1198,5 +1196,100 @@ describe('工具卡按 stepId 认领实时输出', () => {
     applyEvent(delta('', '认不出归属的一行\n'))
     applyEvent(finished('st_tool_1'))
     expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBeUndefined()
+  })
+})
+
+/**
+ * 收尾走两帧：`run.finished` 落下收尾条并交接读数，`conversation.busy` 随后才放闲。
+ * 中间那一帧按忙闲判的话，流尾同一个位置上下画着两条读数条。
+ */
+describe('收尾条落下就算这一轮完了，不等忙闲', () => {
+  const started = (runId: string) =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_tail',
+      event: {
+        type: 'run.started',
+        runId,
+        conversationId: 'cv_tail',
+        model: 'm',
+        userMessageId: null,
+      },
+    }) as never
+
+  const finished = (runId: string) =>
+    ({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_tail',
+      event: {
+        type: 'run.finished',
+        runId,
+        status: 'done',
+        stopReason: 'completed',
+        usage: null,
+        stepCount: 1,
+        durationMs: 5,
+        fileChanges: [],
+      },
+    }) as never
+
+  const fresh = () =>
+    setState({
+      activeConversation: 'cv_tail',
+      transcript: [],
+      busyConversations: ['cv_tail'],
+      lastRunId: null,
+      runStartedAt: null,
+    })
+
+  test('跑着的时候不算完', () => {
+    fresh()
+    applyEvent(started('run_a'))
+    expect(runClosed()).toBe(false)
+  })
+
+  test('收尾条一落下就算完，此时忙闲还挂着', () => {
+    fresh()
+    applyEvent(started('run_a'))
+    applyEvent(finished('run_a'))
+    expect(isRunning()).toBe(true)
+    expect(runClosed()).toBe(true)
+  })
+
+  test('下一轮起来就不算完了', () => {
+    fresh()
+    applyEvent(started('run_a'))
+    applyEvent(finished('run_a'))
+    applyEvent(started('run_b'))
+    expect(runClosed()).toBe(false)
+  })
+
+  /**
+   * 另一头不能一起收掉：按下回车到 `run.started` 之间那段，读数条要在
+   * （它那一格说的是「正在请求…」，而那正是用户唯一的反馈）。
+   */
+  test('按下回车之后、run.started 之前，活的那条读数条照挂', () => {
+    fresh()
+    applyEvent(started('run_a'))
+    applyEvent(finished('run_a'))
+    setState('busyConversations', [])
+    sendMessage('接着干')
+    expect(isRunning()).toBe(true)
+    expect(runClosed()).toBe(false)
+  })
+
+  /**
+   * 服务端自发起的轮次（目标续起、定时触发、跟进火发）没有客户端乐观插入，
+   * 流尾仍是上一轮的收尾条，而新那一轮真的在跑。按末条的 kind 判会漏掉它。
+   */
+  test('流尾是上一轮的收尾条时，新那一轮照样算在跑', () => {
+    fresh()
+    applyEvent(started('run_a'))
+    applyEvent(finished('run_a'))
+    applyEvent(started('run_b'))
+    expect(state.transcript[state.transcript.length - 1]?.kind).toBe('run')
+    expect(runClosed()).toBe(false)
   })
 })

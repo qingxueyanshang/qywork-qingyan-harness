@@ -14,15 +14,7 @@
  */
 
 import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
-import type {
-  AgentEvent,
-  Attachment,
-  ConversationId,
-  Goal,
-  Run,
-  RunId,
-  StopReason,
-} from '@qywork/core'
+import type { AgentEvent, Attachment, ConversationId, Goal, RunId, StopReason } from '@qywork/core'
 import {
   configPath,
   contextPanel,
@@ -31,65 +23,12 @@ import {
   resolveModel,
   Session,
 } from '@qywork/runtime'
-import {
-  createGoal,
-  currentGoal,
-  getConversation,
-  getRun,
-  listMessages,
-  updateGoal,
-  workspaceOf,
-} from '@qywork/store'
-import { reject } from './commands.ts'
+import { createGoal, currentGoal, getConversation, updateGoal, workspaceOf } from '@qywork/store'
 import { makeDelegate } from './delegate.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
 import { makePluginPort } from './plugin-port.ts'
 import type { GoalArm } from './runs.ts'
-
-/**
- * 重试一个已结束的 run。
- *
- * 三条硬约束：
- * - **只能重试已终结的 run**。还在跑的必须先中断，否则两个 run 同时往同一个
- *   工作区写文件，谁覆盖谁全看调度。
- * - **继承原 run 的 `messageIdUpperBound`**。重试要重现的是原请求那一刻的上下文，
- *   拿新的高水位会把重试期间用户新发的消息卷进来，那就不是重试了。
- * - **原 run 保留并标 `superseded_by`**，不删。那些步骤真实发生过，token 真的花了。
- */
-export async function retryRun(
-  runId: RunId,
-  clientRequestId: string,
-  deps: CommandDeps,
-): Promise<void> {
-  const original = getRun(deps.store, runId)
-  if (!original) {
-    reject(deps.ws, 'run.retry', 'invalid_payload', 'run 不存在', clientRequestId)
-    return
-  }
-  if (original.status === 'running' || original.status === 'queued') {
-    reject(deps.ws, 'run.retry', 'conflict', '该 run 仍在执行，请先中断', clientRequestId)
-    return
-  }
-  if (deps.runs.isBusy(original.conversationId)) {
-    reject(deps.ws, 'run.retry', 'conflict', '该会话已有任务在执行', clientRequestId)
-    return
-  }
-
-  // 原 run 的用户消息就是要重试的那句话。没有它（例如被清理过）无从重放。
-  const userMessage = original.userMessageId
-    ? listMessages(deps.store, original.conversationId, original.userMessageId).at(-1)
-    : null
-  if (!userMessage || userMessage.id !== original.userMessageId) {
-    reject(deps.ws, 'run.retry', 'invalid_payload', '原始消息已不存在，无法重试', clientRequestId)
-    return
-  }
-
-  await startRun(original.conversationId, userMessage.content, undefined, deps, {
-    retryOf: original,
-    clientRequestId,
-  })
-}
 
 /**
  * 发起一轮。
@@ -103,7 +42,6 @@ export async function startRun(
   content: string,
   model: string | undefined,
   deps: Omit<CommandDeps, 'ws'>,
-  retry?: { retryOf: Run; clientRequestId: string },
   attachments?: Attachment[],
   /**
    * 这一轮是**目标自动续起**的那一轮，带着发起时的预留。
@@ -118,8 +56,8 @@ export async function startRun(
    * 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
    * 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
    *
-   * **走得到这条回绝的只剩两处竞态**：目标续起的 `setTimeout` 到点时会话又忙了
-   * （`fireGoalRound`），以及 `retryRun` 的忙闲检查与这里之间隔着的那几个 await。
+   * **走得到这条回绝的只剩一处竞态**：目标续起的 `setTimeout` 到点时会话又忙了
+   * （`fireGoalRound`）。
    * 用户发消息不再走到这里——忙时它排进队列（`commands.ts`）；定时任务也不会
    * ——两条路径都是**新建会话**再起轮（`server.ts` 与 `api/schedules.ts`）。
    */
@@ -205,16 +143,6 @@ export async function startRun(
       for await (const ev of session.ask(content, conversationId, {
         ...(model ? { model } : {}),
         ...(attachments?.length ? { attachments } : {}),
-        ...(retry
-          ? {
-              clientRequestId: retry.clientRequestId,
-              retryOf: {
-                runId: retry.retryOf.id,
-                userMessageId: retry.retryOf.userMessageId,
-                messageIdUpperBound: retry.retryOf.messageIdUpperBound,
-              },
-            }
-          : {}),
       })) {
         // 并非所有事件都带 runId（git.state / file.changed 是工作区级的），
         // 取之前先窄化，不能假设字段存在。
@@ -329,21 +257,19 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
       deps.runs.enqueueFront(conversationId, item)
       return
     }
-    void startRun(conversationId, item.content, undefined, deps, undefined, item.attachments).catch(
-      (err) => {
-        // 塞回队首而不是吞掉：卡片重新出现，用户看得见它没发出去。
-        deps.runs.enqueueFront(conversationId, item)
-        deps.bus.publish(
-          {
-            type: 'run.error',
-            runId: '' as RunId,
-            code: 'internal_error',
-            message: err instanceof Error ? err.message : String(err),
-          },
-          conversationId,
-        )
-      },
-    )
+    void startRun(conversationId, item.content, undefined, deps, item.attachments).catch((err) => {
+      // 塞回队首而不是吞掉：卡片重新出现，用户看得见它没发出去。
+      deps.runs.enqueueFront(conversationId, item)
+      deps.bus.publish(
+        {
+          type: 'run.error',
+          runId: '' as RunId,
+          code: 'internal_error',
+          message: err instanceof Error ? err.message : String(err),
+        },
+        conversationId,
+      )
+    })
   }, 0)
   return true
 }
@@ -501,7 +427,7 @@ async function fireGoalRound(
    * 预留（goalId + revision）因此天然还对得上——模型一旦 complete / blocked，
    * revision 就变了，下一次排队自己判成陈旧退出。
    */
-  await startRun(conversationId, goalRoundPrompt(goal), undefined, deps, undefined, undefined, {
+  await startRun(conversationId, goalRoundPrompt(goal), undefined, deps, undefined, {
     goalId: goal.id,
     revision: goal.revision,
   })

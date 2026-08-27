@@ -19,7 +19,7 @@
  *
  * **它验的是什么、不验什么。** 验本仓的客户端能不能跟一个真实的 Responses 端点对上。
  * **不验** DeepSeek 的服务端行为对不对，也不代表 OpenAI 自家端点同样通过——
- * 那条路仍然没有跑过，如实记在 ROADMAP。
+ * 那条路仍然没有跑过。
  */
 
 import type { ProviderEvent, ProviderUsage, WireMessage, WireToolCall } from '@qywork/ai'
@@ -28,8 +28,8 @@ import { buildAdapter, lookupModel } from '@qywork/ai'
 /**
  * 一个待测端点。
  *
- * **为什么要能配两个。** 说 Responses 协议的不止一家，而它们在推理这块**行为不同**
- * （ROADMAP §22.1）：OpenAI 发 `reasoning_summary_text.delta`、不要求回传；
+ * **为什么要能配两个。** 说 Responses 协议的不止一家，而它们在推理这块**行为不同**：
+ * OpenAI 发 `reasoning_summary_text.delta`、不要求回传；
  * DeepSeek 发 `reasoning_text.delta`、不回传就 400。
  *
  * 适配器为此同时认两个事件名、并用「收到过 `reasoning_text` 才补回传」的

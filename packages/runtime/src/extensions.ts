@@ -162,15 +162,6 @@ export function releaseExtensions(workspaceRoot: string): void {
   void entry.promise.then((ext) => ext.stop()).catch(() => {})
 }
 
-/** 进程退出前收掉所有扩展。只给 CLI / 测试用。 */
-export function releaseAllExtensions(): void {
-  for (const root of [...shared.keys()]) {
-    const entry = shared.get(root)
-    shared.delete(root)
-    void entry?.promise.then((ext) => ext.stop()).catch(() => {})
-  }
-}
-
 /**
  * 装在 `~/.qywork/plugins/` 里的插件。
  *

@@ -680,53 +680,6 @@ describe('图片附件', () => {
     expect(body.length).toBeGreaterThan(0)
     // 图片以 base64 进 image 块——原始字节的前缀应当出现在请求体里。
     expect(body).toContain(png.toString('base64').slice(0, 40))
-
-    /*
-     * 重试必须**照样带着那张图**。
-     *
-     * 重试复用同一条用户消息（不新建），所以附件只能从库里来。
-     * 如果哪天有人「优化」成只从指令里取 attachments，这条会红——
-     * 而在界面上它的表现是「重试之后模型突然看不见图了」，
-     * 几乎不可能被联想到是重试路径的问题。
-     */
-    const runs = (await (
-      await fetch(`${base()}/api/conversations/${conversationId}/runs`, { headers: auth() })
-    ).json()) as { runs: { id: string }[] }
-    const lastRun = runs.runs.at(-1)
-    expect(lastRun).toBeTruthy()
-
-    const beforeRetry = seenBodies.length
-    const retried = Promise.withResolvers<void>()
-    const ws2 = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
-    ws2.addEventListener('message', (e) => {
-      const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
-      if (msg.type === 'hello.ok') {
-        ws2.send(
-          JSON.stringify({
-            type: 'run.retry',
-            clientRequestId: crypto.randomUUID(),
-            runId: lastRun!.id,
-          }),
-        )
-      }
-      if (msg.event?.type === 'run.finished') retried.resolve()
-    })
-    ws2.addEventListener('open', () => {
-      ws2.send(
-        JSON.stringify({
-          type: 'hello',
-          token: handle.token,
-          origin: 'desktop',
-          subscribe: [conversationId],
-        }),
-      )
-    })
-    const t2 = setTimeout(() => retried.reject(new Error('retry 超时')), 20_000)
-    await retried.promise
-    clearTimeout(t2)
-    ws2.close()
-
-    expect(seenBodies.slice(beforeRetry).join('')).toContain(png.toString('base64').slice(0, 40))
   })
 
   /**

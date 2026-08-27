@@ -230,13 +230,6 @@ export const IconSearch = (p: IconProps) => (
   </Svg>
 )
 
-export const IconBell = (p: IconProps) => (
-  <Svg {...p}>
-    <path d="M6.4 10.4a5.6 5.6 0 0 1 11.2 0c0 4 1.4 5.4 1.4 5.4H5s1.4-1.4 1.4-5.4z" />
-    <path d="M10.4 19a1.9 1.9 0 0 0 3.2 0" />
-  </Svg>
-)
-
 const CHEVRON: Record<'down' | 'up' | 'right' | 'left', string> = {
   down: 'M5.6 9.5 12 16l6.4-6.5',
   up: 'M5.6 14.5 12 8l6.4 6.5',
@@ -336,13 +329,6 @@ export const IconEye = (p: IconProps) => (
   </Svg>
 )
 
-export const IconPhone = (p: IconProps) => (
-  <Svg {...p}>
-    <rect x="7" y="2.8" width="10" height="18.4" rx="2.8" />
-    <path d="M10.8 18.2h2.4" />
-  </Svg>
-)
-
 export const IconPanel = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3" y="4.4" width="18" height="15.2" rx="2.4" />
@@ -400,13 +386,3 @@ export const IconSpinner = (p: IconProps) => (
     <path d="m8.8 15.2-2.3 2.3" opacity="0.3" />
   </Svg>
 )
-
-/** 工具名 → 图标。找不到时回落到文件图标，不显示空白。 */
-export function toolIcon(name: string): (p: IconProps) => JSX.Element {
-  if (name === 'run_command') return IconTerminal
-  if (name === 'grep' || name === 'glob') return IconSearch
-  if (name === 'list_dir') return IconFolder
-  if (name.startsWith('git')) return IconBranch
-  if (name === 'web_fetch' || name === 'web_search') return IconGlobe
-  return IconFile
-}
