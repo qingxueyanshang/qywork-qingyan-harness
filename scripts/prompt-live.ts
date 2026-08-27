@@ -6,8 +6,8 @@
  * 这里验的是行为：告诉它权限模式之后它还撞不撞、能力段列了子 agent 之后它派不派、
  * 待办那两句禁止复述之后它还写不写「继续执行第 N 项」。
  *
- * 会话落在**主库**，跑完能在面板里逐条翻开看。工作区是 `.tmp/prompt-live`，
- * 面板上会多出一个同名 work。
+ * 会话落在**主库**，跑完能在面板里逐条翻开看。工作区在 `.tmp/prompt-live/<接口>-<模型>`，一个模型一个，
+ * 面板上会按模型多出几个 work。
  *
  *   bun run scripts/prompt-live.ts                       # 配置里全部模型
  *   bun run scripts/prompt-live.ts deepseek/deepseek-v4-pro   # 指定几个
@@ -20,7 +20,21 @@ import { dataPath, loadConfig, type ModelRef, type QyConfig } from '@qywork/runt
 import { serve } from '@qywork/server'
 import { listProviderRequests, listRuns, listSteps, Store } from '@qywork/store'
 
-const WS_DIR = join(import.meta.dir, '..', '.tmp', 'prompt-live')
+const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
+
+/**
+ * 每个模型一个工作区。
+ *
+ * 记忆落在工作区的 `.agents/memory/`，共用一个目录的话第一个模型写进去的那条
+ * 会留给后面所有模型：它们在尾区看到这条记忆已存在，用 read_memory 确认一下
+ * 就回「无需重复写入」——那是正确行为，却被断言按「没写进记忆」计失败，
+ * 表现是通过率跟着执行顺序递减，看起来像模型能力差异。
+ *
+ * 用独立目录而不是每轮删：Windows 上前一个 serve 还持着目录，删会 EBUSY。
+ */
+function wsFor(ref: ModelRef): string {
+  return join(WS_ROOT, `${ref.provider}-${ref.model}`.replace(/[^w.-]/g, '_'))
+}
 /** 换行。写进模板串里，避免转义在工具链上被折半。 */
 const NL = String.fromCharCode(10)
 const RUN_TIMEOUT_MS = 300_000
@@ -98,8 +112,8 @@ interface Live {
   close: () => void
 }
 
-function start(store: Store, config: QyConfig): Live {
-  const h = serve({ store, config, workspaceRoot: WS_DIR, port: 0, host: '127.0.0.1' })
+function start(store: Store, config: QyConfig, workspaceRoot: string): Live {
+  const h = serve({ store, config, workspaceRoot, port: 0, host: '127.0.0.1' })
   return { base: `http://127.0.0.1:${h.port}`, token: h.token, close: () => h.stop() }
 }
 
@@ -279,7 +293,10 @@ const TASKS = {
 async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
   const name = `${ref.provider}/${ref.model}`
   const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
-  const live = start(store, config)
+  const ws = wsFor(ref)
+  await mkdir(ws, { recursive: true })
+  await writeFile(join(ws, 'README.txt'), `提示词真机验证的工作区。${NL}`, 'utf8')
+  const live = start(store, config, ws)
   try {
     const conv = await newConversation(live, `提示词真机 · ${name}`)
     if (!conv) throw new Error('建会话失败')
@@ -366,10 +383,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
 }
 
 async function main(): Promise<number> {
-  await rm(WS_DIR, { recursive: true, force: true })
-  await mkdir(WS_DIR, { recursive: true })
-  await writeFile(join(WS_DIR, 'README.txt'), `提示词真机验证的工作区。${NL}`, 'utf8')
-
+  await rm(WS_ROOT, { recursive: true, force: true })
   const config = await loadConfig()
   // 落主库，跑完能在面板里翻开看每一轮。
   const store = new Store({ path: dataPath() })
