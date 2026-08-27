@@ -112,19 +112,28 @@ export function Transcript() {
    *
    * **两个盒子都要盯。** 内容长高是一件事，而滚动区自己变矮（窗口缩了、输入框长高）
    * 同样把末尾内容推到视口下面，那时 `inner` 的高度一个像素都没动，只盯它就漏了。
+   *
+   * **必须按 border box 盯 `inner`。** 默认的 content box 不含内边距，而它的
+   * 下内边距会随整轮状态条挂不挂而变（`transcript.css` 的三档留白）：状态条一挂上，
+   * 留白多出它那一截，content box 一个像素没动，回调不触发，滚动位置停在原处
+   * ——状态条压住读数条，手动滚一下才对回来。
    */
   onMount(() => {
     const ro = new ResizeObserver(() => {
       if (pinned()) stickToBottom()
     })
-    ro.observe(inner)
+    ro.observe(inner, { box: 'border-box' })
     ro.observe(scroller)
     onCleanup(() => ro.disconnect())
   })
 
   return (
     <div class="transcript" ref={scroller} onScroll={onScroll}>
-      <div class="transcript-inner" classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }} ref={inner}>
+      <div
+        class="transcript-inner"
+        classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }}
+        ref={inner}
+      >
         <TranscriptRows items={state.transcript} />
 
         {/*
