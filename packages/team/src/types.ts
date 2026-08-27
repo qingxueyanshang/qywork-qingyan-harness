@@ -145,7 +145,7 @@ export interface NodeResult {
   /**
    * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
    * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，
-   * 而进度事件不落库（见 `docs/plans/2026-08-23-workflow-图化编排.md` 取证 11）。
+   * 而进度事件不落库。
    * 外部 CLI 没有子会话，那边这个字段自然缺席。
    */
   conversationId?: string

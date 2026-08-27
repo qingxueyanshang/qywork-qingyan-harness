@@ -15,7 +15,7 @@ metadata:
 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`，外部设的 `--remote-debugging-port`
 不会生效。
 
-直接后果，已经记在 `ROADMAP.md` §37.4 / §38.6：`switch_workspace` 这个 Tauri
+直接后果：`switch_workspace` 这个 Tauri
 命令的两端都验过（Rust 编译通过 + 写入的文件确实被下次启动读到），
 但**中间那一次点击没验**，明确记为「不算作已验证」。
 

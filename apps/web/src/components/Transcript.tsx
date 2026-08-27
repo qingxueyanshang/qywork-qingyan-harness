@@ -348,7 +348,7 @@ function Prose(props: { item: TranscriptItem }) {
   })
 
   return (
-    <div class="row assistant" classList={{ superseded: props.item.superseded }}>
+    <div class="row assistant">
       <div class="prose markdown" ref={host} />
     </div>
   )
@@ -377,7 +377,6 @@ function Fold(props: {
   /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
-  superseded?: boolean
   children: JSX.Element
 }) {
   /*
@@ -395,10 +394,7 @@ function Fold(props: {
    * 开合完全归 `<details>` 自己管：这里不留 open 信号，也就没有第二本账。
    */
   return (
-    <details
-      class="fold"
-      classList={{ 'fold-dim': props.dim, failed: props.failed, superseded: props.superseded }}
-    >
+    <details class="fold" classList={{ 'fold-dim': props.dim, failed: props.failed }}>
       {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
       <summary class="fold-head">
         <span class="fold-summary">
@@ -1030,7 +1026,6 @@ function ToolCard(props: { item: TranscriptItem }) {
   return (
     <Fold
       failed={props.item.status === 'failure'}
-      superseded={props.item.superseded === true}
       label={actionLabel(props.item)}
       statusWord={statusWord(props.item.status)}
       {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}

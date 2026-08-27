@@ -30,6 +30,8 @@ Thumbs.db
 apps/desktop/src-tauri/bin/
 apps/web/dist/
 packages/*/dist/
+# tauri-build 每次构建重生成；`capabilities/default.json` 只把它当 IDE 的 $schema 指针用。
+apps/desktop/src-tauri/gen/
 
 # 脚本的临时工作区与产物。全部落 `.tmp/<用途>`，根目录不再各开一个点目录；
 # 由 scripts/temp-dir.test.ts 在门禁里扫住。
@@ -38,3 +40,11 @@ packages/*/dist/
 # agent 运行态（.claude/memory/ 是项目记忆，要入库）
 .claude/*.lock
 scripts/dist/
+
+# 方案、复审、执行记录（CLAUDE.md A3/A4）。
+#
+# 留在本地，不入库：它们逐条引用外部参照实现的 `文件:行号` 与本机绝对路径，
+# 那是取证过程，不是这个仓库对外承诺的东西。公开的是结论——落在
+# `ARCHITECTURE.md`（为什么这么做）与代码注释（用途与坑）里。
+ROADMAP.md
+docs/plans/

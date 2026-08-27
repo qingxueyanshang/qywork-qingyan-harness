@@ -195,7 +195,6 @@ export interface HelloErrFrame {
 export type ClientCommand =
   | SendMessageCommand
   | InterruptRunCommand
-  | RetryRunCommand
   | SubscribeCommand
   | SetModelCommand
   | CompactCommand
@@ -228,12 +227,6 @@ export interface SendMessageCommand {
 export interface InterruptRunCommand {
   type: 'run.interrupt'
   runId: RunId
-}
-
-export interface RetryRunCommand {
-  type: 'run.retry'
-  runId: RunId
-  clientRequestId: string
 }
 
 export interface SubscribeCommand {

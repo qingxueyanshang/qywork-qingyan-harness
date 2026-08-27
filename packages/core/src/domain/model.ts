@@ -329,10 +329,6 @@ export interface Run {
   // 上下文读数不在这里。真源是 `ProviderRequest`——一个 run 有 N 次请求，
   // 账就该有 N 行；挂在 run 上的标量每 step 覆盖一次，只剩最后一次的读数。
 
-  /** 重试链：本 run 是哪个失败 run 的重试；本 run 被哪个新 run 接替。 */
-  retryOfRunId: RunId | null
-  supersededBy: RunId | null
-
   createdAt: number
   finishedAt: number | null
 }
@@ -940,7 +936,7 @@ export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): 
  * 回头看会给出两个数，而这种漂移不产生任何报错。理由同 `softLimit`。
  *
  * 边界：三项都是估算不是 provider 真值。拿它做加减法的一方承担的是系数误差，
- * 不是零误差——量级见 `docs/plans/2026-08-26-上下文读数口径根治.md`。
+ * 不是零误差。
  */
 export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
   return breakdown.systemPrompt + breakdown.systemTools + breakdown.mcpTools

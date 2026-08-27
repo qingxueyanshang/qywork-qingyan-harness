@@ -528,8 +528,6 @@ export interface ToolContext {
    *    只接一层的表现都是「配了但不管用」，而三层各自的错误信息完全不同。
    * 2. **只接受绝对路径**，且已经过 `normalizeAdditionalDirectories` 校验。
    * 3. **`full` 模式不豁免它**——它是路径边界不是裁决，与凭证剥离同级。
-   *
-   * 见 ROADMAP §31。
    */
   additionalDirectories?: string[]
   /**

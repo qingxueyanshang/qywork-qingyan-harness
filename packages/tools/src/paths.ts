@@ -78,7 +78,7 @@ export class PathEscapeError extends Error {
  *
  * **这份清单必须同时传给三层**（路径解析、`policy.ts` 的静态规则、沙箱 bind 列表）。
  * 只接一层的症状都是「配了但不管用」，而三层各自的错误信息完全不同——
- * 三个错误信息看起来是三个 bug。见 ROADMAP §31。
+ * 三个错误信息看起来是三个 bug。
  */
 export interface WorkspaceRoots {
   workspaceRoot: string
@@ -337,7 +337,7 @@ function decodeSafely(input: string): string {
  * 「文件工具拦、shell 不拦」的两套账。
  *
  * **它挡不住什么。** `run_command` 里的路径不经过这里（`rm .qy/mcp.json` 照样能跑）。
- * 那条路只能靠 OS 沙箱，Windows 上暂时没有。如实记在 ROADMAP §26.6。
+ * 那条路只能靠 OS 沙箱，Windows 上暂时没有。
  *
  * **为什么 `.agents/` 也在里面。** 项目层的 MCP 配置搬到了 `.agents/`（跨客户端约定的那条路径）。
  * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。

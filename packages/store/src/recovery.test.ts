@@ -11,7 +11,6 @@ import {
   getRun,
   listSteps,
   markRunRunning,
-  markRunSuperseded,
   markStepExecuting,
   recordFileRead,
   recoverStaleRuns,
@@ -64,43 +63,6 @@ describe('会话级模型切换', () => {
     expect(
       setConversationModel(store, 'conv_nope' as never, { provider: 'p', model: 'm' }),
     ).toBeNull()
-    store.close()
-  })
-})
-
-describe('retry / supersede', () => {
-  test('已终结的 run 可以被标记接替', () => {
-    const { store, ws, conv } = fresh()
-    const first = newRun(store, ws, conv)
-    finishRun(store, first.id, { status: 'failed', stopReason: 'provider_error' })
-    const second = newRun(store, ws, conv)
-
-    expect(markRunSuperseded(store, first.id, second.id)).toBe(true)
-    expect(getRun(store, first.id)?.supersededBy).toBe(second.id)
-    store.close()
-  })
-
-  test('仍在跑的 run 不能被接替 —— 否则两个 run 同时写同一个工作区', () => {
-    const { store, ws, conv } = fresh()
-    const first = newRun(store, ws, conv)
-    markRunRunning(store, first.id)
-    const second = newRun(store, ws, conv)
-
-    expect(markRunSuperseded(store, first.id, second.id)).toBe(false)
-    expect(getRun(store, first.id)?.supersededBy).toBeNull()
-    store.close()
-  })
-
-  test('被接替的 run 保留，不删除 —— 那些步骤真实发生过', () => {
-    const { store, ws, conv } = fresh()
-    const first = newRun(store, ws, conv)
-    appendStep(store, { runId: first.id, seq: 1, kind: 'text', content: '写过的字' })
-    finishRun(store, first.id, { status: 'failed', stopReason: 'provider_error' })
-    const second = newRun(store, ws, conv)
-    markRunSuperseded(store, first.id, second.id)
-
-    expect(getRun(store, first.id)).not.toBeNull()
-    expect(listSteps(store, first.id)).toHaveLength(1)
     store.close()
   })
 })

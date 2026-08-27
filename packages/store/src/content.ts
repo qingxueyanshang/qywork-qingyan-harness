@@ -52,12 +52,6 @@ export function contentPathFor(agentDbPath: string): string {
   return agentDbPath.replace(/(\.sqlite3?|\.db)?$/i, '_content$1')
 }
 
-export function canonicalSha256(raw: Uint8Array): string {
-  const h = new Bun.CryptoHasher('sha256')
-  h.update(raw)
-  return `sha256:${h.digest('hex')}`
-}
-
 export class ContentStore {
   readonly db: Database
   /** 进行中的写入：write_id → 滚动哈希器。哈希器不能存 SQLite，只能在内存里滚。 */

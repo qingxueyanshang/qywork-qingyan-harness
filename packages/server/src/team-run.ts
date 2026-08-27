@@ -5,8 +5,7 @@
  * 陌生 runId 建出一条并不存在的 run。进度只由 `team.member` 事件表达。
  *
  * 调用方是派活端口（`delegate.ts`）：`subagent` 派一件、`workflow` 派一张图，
- * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了，
- * 理由见 `docs/plans/2026-08-23-workflow-图化编排.md`。
+ * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了。
  */
 
 import type { ConversationId, StopReason } from '@qywork/core'

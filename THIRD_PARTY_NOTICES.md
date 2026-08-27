@@ -1,6 +1,6 @@
 # 第三方依赖许可证清单
 
-本文件记录 qywork 直接声明的第三方依赖及其许可证。它不涉及 qywork 自有代码、青研魔盒自有代码，或开发过程中的功能/界面参考。
+本文件记录 qywork 直接声明的第三方依赖及其许可证，不涉及 qywork 自有代码。
 
 版本以本仓库的 `bun.lock` 与 `apps/desktop/src-tauri/Cargo.lock` 为准；两份锁文件同时固定了下列依赖的传递依赖。发布桌面安装包时，应将本文件随安装包一同提供，并在升级依赖后重新核对。
 
@@ -16,7 +16,6 @@
 | `@codemirror/lang-markdown` | 6.5.2 | MIT |
 | `@codemirror/lang-python` | 6.2.1 | MIT |
 | `@codemirror/lang-rust` | 6.0.2 | MIT |
-| `@codemirror/merge` | 6.12.2 | MIT |
 | `@codemirror/state` | 6.7.1 | MIT |
 | `@codemirror/view` | 6.43.8 | MIT |
 | `@silvia-odwyer/photon-node` | 0.3.4 | Apache-2.0 |
@@ -30,7 +29,6 @@
 | `solid-js` | 1.9.14 | MIT |
 | `unpdf` | 1.8.1 | MIT |
 | `xss` | 1.0.15 | MIT |
-| `zod` | 4.3.6 | MIT |
 
 ## Rust / Cargo 桌面运行时依赖
 
@@ -70,4 +68,3 @@
 
 - qywork 自身以 [Apache-2.0](LICENSE) 发布；本清单不会改变 qywork 的许可证。
 - 每项组件仍按其上游许可证授权；完整依赖图与精确版本见 `bun.lock` 和 `apps/desktop/src-tauri/Cargo.lock`。
-- 本清单是依赖透明度记录，不是对任何外部项目源码的“移植”或“基于其开发”的声明。

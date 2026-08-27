@@ -146,23 +146,6 @@ export function resumeGoal(): void {
 }
 
 /**
- * 重试最后一轮。
- *
- * 只在 run 已结束时可用——还在跑的必须先中断，否则两个 run 会同时改同一个工作区。
- * 这个判断服务端也会做一遍（并回 `conflict`），前端这层只是不让按钮白点。
- */
-export function retryLastRun(): void {
-  const runId = state.lastRunId
-  if (!runId || isRunning()) return
-  setState('error', null)
-  client.send({
-    type: 'run.retry',
-    runId: runId as never,
-    clientRequestId: crypto.randomUUID(),
-  })
-}
-
-/**
  * 切换当前会话的模型。
  *
  * 只发指令、不改本地状态：等服务端的 `conversation.updated` 广播回来再更新。

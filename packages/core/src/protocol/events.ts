@@ -174,8 +174,6 @@ export interface RunStartedEvent {
    * （乐观插入用的是本地 id），对不上就补一条。
    */
   userMessage: { content: string; attachments?: Attachment[] } | null
-  /** 显式重试时指向被重试的 run。 */
-  retryOfRunId: RunId | null
 }
 
 export interface RunFinishedEvent {

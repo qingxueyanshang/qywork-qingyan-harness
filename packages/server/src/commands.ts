@@ -9,7 +9,7 @@ import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@
 import { getConversation, setConversationModel } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
-import { compactConversation, resumeGoal, retryRun, setGoal, startRun } from './run-control.ts'
+import { compactConversation, resumeGoal, setGoal, startRun } from './run-control.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
@@ -55,7 +55,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       }
       // 附件随消息一起转发。协议、存储、模型侧都支持，漏掉 `cmd.attachments`
       // 这一手的话，整条链路就是有类型没数据。
-      await startRun(cmd.conversationId, cmd.content, cmd.model, deps, undefined, cmd.attachments)
+      await startRun(cmd.conversationId, cmd.content, cmd.model, deps, cmd.attachments)
       return
     }
 
@@ -76,7 +76,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
         return
       }
-      await startRun(cmd.conversationId, item.content, undefined, deps, undefined, item.attachments)
+      await startRun(cmd.conversationId, item.content, undefined, deps, item.attachments)
       return
     }
 
@@ -133,11 +133,6 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       // run 收尾时会把目标置回 paused。
       const result = resumeGoal(cmd.conversationId, deps)
       if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
-      return
-    }
-
-    case 'run.retry': {
-      await retryRun(cmd.runId, cmd.clientRequestId, deps)
       return
     }
 

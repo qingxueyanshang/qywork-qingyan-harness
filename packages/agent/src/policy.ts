@@ -59,8 +59,6 @@ export interface PolicyContext {
    * **这一层必须知道它，否则三层会打架。** 路径层放行了、内核沙箱 bind 了，
    * 而静态规则这里仍然按「家目录 = 越界」把命令硬拒——用户配了额外目录，
    * 得到的是一条说「越界一律拒绝」的错误，而那句话此刻已经不成立。
-   *
-   * 见 ROADMAP §31 的三层表。
    */
   additionalDirectories?: readonly string[]
 }
@@ -358,11 +356,11 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
  * 家目录的**字面写法**。命中返回拒绝理由，否则 `null`。
  *
  * **这是上面那条硬拒绝漏掉的另一半。** `OUTSIDE_LOCATION_RULE` 那条正则只认**符号写法**——`~/`、
- * `$HOME`、`%USERPROFILE%`。实测（Windows，工作区 `<home>\Desktop\qywork`）：
+ * `$HOME`、`%USERPROFILE%`。实测（Windows，工作区在 `<home>\Desktop\qywork`）：
  *
  * ```
  * deny      | Get-Content $env:USERPROFILE\.qywork\config.json
- * undecided | type <home>\.qywork\config.json
+ * undecided | type C:\Users\<user>\.qywork\config.json
  * ```
  *
  * **同一个文件，两种拼法，两种结论。** 后者掉到分类器，而分类器是概率判断。
@@ -371,7 +369,7 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
  *
  * **为什么不是把正则改宽一点。** 因为要判的不是「长得像不像家目录」，是「**这个路径在不在允许的范围
  * 里**」，而那必须拿真实的 homedir 和工作区去比。Windows 上工作区几乎总是在家目录**里面**
- * （`C:\Users\x\Desktop\proj`），所以一条「家目录一律拒」的正则会把工作区自己拒掉。这个判断做不成
+ * （`C:\Users\<user>\Desktop\proj`），所以一条「家目录一律拒」的正则会把工作区自己拒掉。这个判断做不成
  * 纯文本匹配。
  *
  * **判据。** 命令里的绝对路径，落在家目录或系统目录内、**且**不在工作区、

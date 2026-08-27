@@ -26,8 +26,7 @@
  * 3. **起一个可见的终端窗口，不后台静默。** UAC 抬权、下载进度、失败原因都得让
  *    用户自己看见；本项目没有 PTY，闷在管道里的安装过程就是一个转不完的圈。
  *
- * 「应用内装依赖」本身是一条额外的执行入口，由用户明确要求才有
- * （`docs/plans/2026-08-14-bash-能力检测与安装引导.md`）——不要往这里追加别的软件。
+ * 「应用内装依赖」本身是一条额外的执行入口，由用户明确要求才有——不要往这里追加别的软件。
  */
 
 import type { EnvDependency } from '@qywork/core'
@@ -86,8 +85,7 @@ function onPath(cmd: string): string | null {
  * 真文件：`stat` 认不出这个标签，因此所有基于 `existsSync` 的查找一律说没有
  * （`Bun.which` 返回 null、`Bun.spawnSync` 直接抛），而 `CreateProcess` 解析得了它，
  * `cmd /c winget --version` 是 exit 0。**Win10/11 上 winget 一律是这个形状**——照
- * `Bun.which` 判的话一键装按钮在任何机器上都不出现，而这个缺陷只有真起一次服务才撞
- * 得到（实测记录见 `docs/plans/2026-08-14-bash-能力检测与安装引导.md` 批 5）。
+ * `Bun.which` 判的话一键装按钮在任何机器上都不出现，而这个缺陷只有真起一次服务才撞得到。
  *
  * 判据仍然是本仓一贯的那条（`sandbox.ts` 的 `detectSandbox`）：
  * **「装了」不等于「能用」，所以真跑一次**。而且跑的是**和安装时同一条路**——

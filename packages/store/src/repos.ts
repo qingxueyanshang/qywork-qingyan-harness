@@ -384,16 +384,6 @@ export function setConversationTitle(
   return getConversation(store, id)
 }
 
-export function touchConversation(store: Store, id: ConversationId, title?: string): void {
-  if (title === undefined) {
-    store.db.query('UPDATE conversations SET updated_at = ? WHERE id = ?').run(Date.now(), id)
-  } else {
-    store.db
-      .query('UPDATE conversations SET updated_at = ?, title = ? WHERE id = ?')
-      .run(Date.now(), title, id)
-  }
-}
-
 /**
  * 切换会话的「接口 × 模型」。
  *
@@ -549,7 +539,6 @@ export function createRun(
     clientRequestId: string
     userMessageId: MessageId | null
     messageIdUpperBound: MessageId | null
-    retryOfRunId?: RunId | null
   },
 ): Run {
   const now = Date.now()
@@ -568,8 +557,6 @@ export function createRun(
     stepCount: 0,
     errorMessage: null,
     errorCode: null,
-    retryOfRunId: input.retryOfRunId ?? null,
-    supersededBy: null,
     createdAt: now,
     finishedAt: null,
   }
@@ -579,9 +566,8 @@ export function createRun(
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
         cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
-        retry_of_run_id, superseded_by,
         created_at, finished_at, owner_pid, heartbeat_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,NULL,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,?)`,
     )
     .run(
       run.id,
@@ -594,7 +580,6 @@ export function createRun(
       run.clientRequestId,
       run.status,
       null,
-      run.retryOfRunId,
       now,
       // 归属从建行那一刻就写上。晚一步写的话，「刚 createRun 就崩」留下的那条
       // 无归属行会被下一个进程按老规矩回收——那正是本来就该发生的事，
@@ -688,25 +673,6 @@ export function finishRun(
       Date.now(),
       id,
     )
-}
-
-/**
- * 标记某个 run 已被重试接替。
- *
- * 被接替的 run **不删除、不隐藏**：那些步骤是真实发生过的，工具真的跑过、
- * 文件真的改过、token 真的花了。UI 把它降透明度保留，用户能回看「上一次是怎么错的」。
- * 删掉它等于让账本对不上——费用统计里那笔钱找不到对应的执行记录。
- *
- * 只对已终结的 run 生效：还在跑的 run 应当先中断再重试，否则会出现两个 run
- * 同时往同一个工作区写文件。
- */
-export function markRunSuperseded(store: Store, id: RunId, by: RunId): boolean {
-  const changed = store.db
-    .query(
-      "UPDATE runs SET superseded_by = ? WHERE id = ? AND status IN ('done','failed','interrupted')",
-    )
-    .run(by, id)
-  return changed.changes > 0
 }
 
 /**
@@ -1344,8 +1310,6 @@ function rowToRun(r: RunRow): Run {
     stepCount: r.step_count,
     errorMessage: r.error_message,
     errorCode: r.error_code,
-    retryOfRunId: r.retry_of_run_id,
-    supersededBy: r.superseded_by,
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   }
