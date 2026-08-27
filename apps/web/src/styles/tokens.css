@@ -115,9 +115,9 @@
   --composer-stack-gap: var(--s-1);
 
   /*
-   * 整轮状态条的高度。**定值，不由内容撑**（B9），另有一个原因：它悬浮，
-   * 会话流要按「缝 + 它 + 缝」在底部留出位置，那个 padding 需要一个能算的数。
-   * 改这里要同时看 `.changes-chip` 与 `.transcript-inner` 的下内边距。
+   * 整轮状态条的高度。**定值，不由内容撑**：它悬浮，会话流要按
+   * 「缝 + 它 + 缝」在底部留出位置，那段留白需要一个能算的数。
+   * 改这里要同时看 `.changes-chip` 与 `.transcript-inner.with-run-status`。
    */
   --run-status-h: 28px;
 

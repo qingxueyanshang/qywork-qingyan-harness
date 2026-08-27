@@ -41,12 +41,19 @@ import {
   stopReasonLabel,
   todosOf,
 } from '../lib/step-view.ts'
-import { isRunning, runClosed, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import {
+  composerStackAbove,
+  hasRunStatus,
+  isRunning,
+  runClosed,
+  setState,
+  state,
+  type TranscriptItem,
+} from '../lib/store/index.ts'
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
-import { hasRunStatus } from './RunStatus.tsx'
 import { TodoList } from './TodoList.tsx'
 
 /**
@@ -117,7 +124,7 @@ export function Transcript() {
 
   return (
     <div class="transcript" ref={scroller} onScroll={onScroll}>
-      <div class="transcript-inner" classList={{ 'with-run-status': hasRunStatus() }} ref={inner}>
+      <div class="transcript-inner" classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }} ref={inner}>
         <TranscriptRows items={state.transcript} />
 
         {/*
@@ -253,8 +260,20 @@ function liveStatus(now: number): string {
  * （2026-08-20，真实 Chromium），且流式期用户选中的文字每档被销毁一次，复制不了。
  */
 function Prose(props: { item: TranscriptItem }) {
-  const streaming = () =>
-    isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id
+  /*
+   * **必须是 memo，不能是普通取值函数。**
+   *
+   * 它读的两样都是全局量：`isRunning()` 与 transcript 的末项 id。每 push 一条
+   * （每个工具启动、每条用户消息、每条收尾读数）这两样就变一次，而 effect 只按
+   * 依赖是否通知重跑，不按取值是否变化——普通取值函数下，会话里**每一段已经定稿的
+   * 正文**都会在每次 push 时重跑一遍 `renderMarkdown` 并整段替换 innerHTML。
+   * 逐帧实测（真服务真前端，两轮四步）：一段 80 个节点的正文在定稿之后又被整段
+   * 重建 9 次，其中 5 次挤在收尾那一毫秒里。memo 按值去重，只在真的从流式转定稿
+   * 那一下通知。
+   */
+  const streaming = createMemo(
+    () => isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id,
+  )
 
   // 解析闸门：`reparseSkip` 说了算，判据与理由都在它那里。
   const [gate, setGate] = createSignal(0)
@@ -402,8 +421,10 @@ function Fold(props: {
 }
 
 function ThinkingFold(props: { item: TranscriptItem }) {
-  const streaming = () =>
-    isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id
+  // memo 而不是取值函数，理由同 `Prose`：读的是全局量，每 push 一条就通知一次。
+  const streaming = createMemo(
+    () => isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id,
+  )
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
   // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
   const verb = () => (streaming() ? '思考中' : '已思考')

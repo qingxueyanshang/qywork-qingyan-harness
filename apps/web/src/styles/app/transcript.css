@@ -37,18 +37,22 @@
   margin: 0 auto;
   /* 横向边距 = 输入区的 s-5 再加 `--composer-text-inset`：对齐的是输入框里的
      文字列，不是它的边框（理由写在 tokens.css 那个变量上）。 */
-  /* 底部留白 = 滚到末尾时正文与它下面那一块之间的距离。放在这里而不是输入区的
+  /* 底部留白 = 滚到末尾时正文与输入框之间的距离。放在这里而不是输入区的
      padding-top——理由写在 `.composer-wrap` 上。 */
-  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-2);
+  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-/* 整轮状态条挂着的那些轮次，留白换成「缝 + 它 + 缝」：它悬浮在这段留白里，
-   上下两道缝因此一样宽。**必须跟着它挂不挂来给**——常留这一截的话，它不挂的
-   那些轮次输入框上方空着一块没有内容的白。判据在 `RunStatus.tsx` 的
-   `hasRunStatus()`，两处共用一个。 */
+/* 输入框上方挂着占流的块（目标条 / 跟进卡片）时，正文贴住它：留白换成这一列
+   的缝，与块之间那几道同宽。判据在 store 的 `composerStackAbove()`。 */
+.transcript-inner.with-stack {
+  padding-bottom: var(--composer-stack-gap);
+}
+/* 整轮状态条不占流，它**悬浮在这段留白里**，所以留白要按「缝 + 它 + 缝」给，
+   上下两道缝才一样宽。给成上面那一档的话它压在正文上（实测 -27px）。
+   这条排在 .with-stack 之后：两个类同时挂着时以这一档为准。 */
 .transcript-inner.with-run-status {
   padding-bottom: calc(var(--run-status-h) + var(--composer-stack-gap) * 2);
 }
