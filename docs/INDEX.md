@@ -16,6 +16,7 @@
 | [`plugins.md`](plugins.md) | 写一个插件：清单、RPC 协议、宿主能力与权限边界 |
 | [`mcp.md`](mcp.md) | 接外部 MCP server：配置、权限、限制 |
 | [`team.md`](team.md) | 多角色编排：后端、角色、计划、规则 |
+| [`releasing.md`](releasing.md) | Windows 安装包构建、草稿 Release 与公开发布流程 |
 
 ## 计划文档
 
