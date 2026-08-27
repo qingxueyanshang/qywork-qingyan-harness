@@ -41,11 +41,12 @@ import {
   stopReasonLabel,
   todosOf,
 } from '../lib/step-view.ts'
-import { isRunning, setState, state, type TranscriptItem } from '../lib/store/index.ts'
+import { isRunning, runClosed, setState, state, type TranscriptItem } from '../lib/store/index.ts'
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconSpinner } from './Icons.tsx'
+import { hasRunStatus } from './RunStatus.tsx'
 import { TodoList } from './TodoList.tsx'
 
 /**
@@ -116,7 +117,7 @@ export function Transcript() {
 
   return (
     <div class="transcript" ref={scroller} onScroll={onScroll}>
-      <div class="transcript-inner" ref={inner}>
+      <div class="transcript-inner" classList={{ 'with-run-status': hasRunStatus() }} ref={inner}>
         <TranscriptRows items={state.transcript} />
 
         {/*
@@ -153,8 +154,10 @@ export function Transcript() {
         </Show>
 
         {/* 还在跑的那一轮没有 run 行可读，挂在流尾；跑完由 `run.finished`
-            落成条目，位置就在它那一轮的最后一步之后。 */}
-        <Show when={isRunning()}>
+            落成条目，位置就在它那一轮的最后一步之后。
+            收尾条一落下就撤（`runClosed`），不等 `conversation.busy` 那一帧——
+            两帧之间画出来的是同一个位置上下两条读数条。 */}
+        <Show when={isRunning() && !runClosed()}>
           <LiveRunBar />
         </Show>
       </div>
