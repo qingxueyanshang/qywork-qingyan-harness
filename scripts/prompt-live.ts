@@ -32,8 +32,8 @@ const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
  *
  * 用独立目录而不是每轮删：Windows 上前一个 serve 还持着目录，删会 EBUSY。
  */
-function wsFor(ref: ModelRef): string {
-  return join(WS_ROOT, `${ref.provider}-${ref.model}`.replace(/[^w.-]/g, '_'))
+export function wsFor(ref: ModelRef): string {
+  return join(WS_ROOT, `${ref.provider}-${ref.model}`.replace(/[^\w.-]/g, '_'))
 }
 /** 换行。写进模板串里，避免转义在工具链上被折半。 */
 const NL = String.fromCharCode(10)
@@ -451,4 +451,4 @@ async function main(): Promise<number> {
   return alive.length > 0 && failed === 0 ? 0 : 1
 }
 
-process.exit(await main())
+if (import.meta.main) process.exit(await main())
