@@ -13,3 +13,4 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 - [改 terminal.rs 前先读这四条](pty-lessons-before-removal.md) — PTY 必须在 Rust 侧、slave 立刻丢、字节流按累积缓冲 lossy 解码、默认 shell 写死 powershell 不读 COMSPEC
 - [dev 状态下改源码会打到用户正在用的窗口](dev-edits-hit-the-running-app.md) — 改前端热更、改 core 整页刷新、改 Rust 重启整个应用；取证要另起隔离实例
 - [PTY 还在不在看进程树](pty-alive-check-by-process-tree.md) — `qywork.exe` 下有 `conhost.exe --headless` + shell 才算活着；只剩 webview 就是界面在骗人
+- [本地打包产物收进 .tmp/installer/](local-installer-lands-in-tmp.md) — `tauri:build` 末尾自动收；正式发布走 GitHub Actions 草稿 Release，别拿本地 exe 当发布产物
