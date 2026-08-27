@@ -232,11 +232,46 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   // 这一次请求问的是哪个项目（`?ws=` 解析的结果，见 api/index.ts）。
   // 名字取目录名；取不出来（根目录）时回落到整条路径，不回空串。
   if (p === '/api/workspace') {
+    const { isWorkspaceTrusted, loadConfig, loadScopedMcpConfig } = await import('@qywork/runtime')
+    /*
+     * `pendingTrust` 列的是**这个项目里要先点头才会执行的配置项**，不是「有没有配 MCP」。
+     * 空数组有两种成因（没有项目层配置 / 已经信任过），调用方不需要区分：
+     * 两种都表示这里没有待决定的事。
+     *
+     * 只读文件，不起进程——它挂在每次切项目都会走的这条路上。
+     */
+    const scoped = await loadScopedMcpConfig(d.workspaceRoot)
+    const project = Object.keys(scoped.servers).filter((n) => scoped.scopeOf[n] === 'project')
+    const pendingTrust =
+      project.length > 0 && !isWorkspaceTrusted(await loadConfig(), d.workspaceRoot) ? project : []
     return json({
       id: d.workspaceId,
       root: d.workspaceRoot,
       name: basename(d.workspaceRoot) || d.workspaceRoot,
+      pendingTrust,
     })
+  }
+
+  /**
+   * 信任这个项目。
+   *
+   * **信任的对象是项目，不是 MCP。** 今天只有项目层 `.agents/mcp.json` 会被执行，
+   * 所以闸只落在那里；`.agents/skills`、`.agents/memory` 注入的是提示词不是命令，
+   * 插件只从 `~/.qywork/plugins/` 装。以后再有工作区来源的执行面，复用这一份信任，
+   * 不再各加一道闸。
+   *
+   * 粒度是整个项目：单条 server 的命令行安不安全，用户在界面上判断不了。
+   * 也不记配置的内容指纹——记了就是每次 `git pull` 重问一次。
+   */
+  if (p === '/api/workspace/trust' && req.method === 'POST') {
+    const { loadConfig, saveConfig, setWorkspaceTrust } = await import('@qywork/runtime')
+    const body = (await req.json().catch(() => null)) as { trusted?: unknown } | null
+    if (typeof body?.trusted !== 'boolean') {
+      return json({ error: 'bad request', message: '缺少 trusted' }, 400)
+    }
+    await saveConfig(setWorkspaceTrust(await loadConfig(), d.workspaceRoot, body.trusted))
+    // 改的是下一次加载扩展时的输入。已经持有的那一份不重载，与 `/api/mcp/import` 同理。
+    return json({ trusted: body.trusted })
   }
 
   /*
