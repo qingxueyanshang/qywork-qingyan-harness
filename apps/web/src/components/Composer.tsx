@@ -11,6 +11,7 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { slashCall } from '../lib/slash.ts'
 import {
+  activeModelRow,
   composerSeed,
   dropFollowUp,
   followUpMode,
@@ -40,7 +41,7 @@ import { VoiceButton } from './VoiceButton.tsx'
 /**
  * 权限模式。
  *
- * 位置在输入区而不是设置里：它决定的是**下一轮**能不能不问就动手，
+ * 位置在输入区而不是设置里：它决定的是**下一轮**放行到哪一档，
  * 和「用哪个模型」是同一层的决定，随时要改。塞进设置意味着改一次要点四下，
  * 而且和模型选择器分处两地——同一个决定被拆成两个地方做。
  *
@@ -78,7 +79,7 @@ function ModeChip() {
       disabled={busy()}
       aria-pressed={full()}
       data-tip={
-        full() ? '完全访问：不再逐条询问；凭证与 .qy/ 的硬边界仍然生效' : '自动审批：拿不准的会问你'
+        full() ? '不裁决，路径边界一并放开；凭证剥离仍在' : '只放行确定安全的命令，其余直接拒绝'
       }
       onClick={() => void toggle()}
     >
@@ -443,6 +444,23 @@ export function Composer() {
       queueMicrotask(() => {
         ta.style.height = 'auto'
         cmd.run(call.arg)
+      })
+      return
+    }
+
+    /*
+     * 当前模型不收图片：**停在这里，不替用户摘图**。
+     *
+     * 判据只认 `false`（约定见服务端的 `ModelSpec.vision`），`null` 是
+     * 「厂商规格页没写」，照常发。
+     *
+     * 摘掉的话待发行上那几张图会无声消失；停住则正文、其余附件、图片都还在，
+     * 用户自己删图或换个模型。**只拦图片**：纯文本模型照样读得了 PDF 与文本附件。
+     */
+    if (activeModelRow()?.vision === false && files.some((f) => f.type === 'image')) {
+      setState('notice', {
+        message: '当前模型不属于多模态，请取消图片发送',
+        reason: 'model_without_vision',
       })
       return
     }
