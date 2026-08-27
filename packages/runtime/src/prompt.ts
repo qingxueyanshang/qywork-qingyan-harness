@@ -62,7 +62,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     tool: 'subagent',
     line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。',
   },
-  { tool: 'workflow', line: '- 编排：同一套处理要对一批对象重复执行时用 workflow。' },
+  {
+    tool: 'workflow',
+    line: '- 编排：几件事之间有先后依赖、要把上一步的产出传给下一步时用 workflow，一次交一整张图。',
+  },
   { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
   { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },
   {

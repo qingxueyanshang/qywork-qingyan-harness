@@ -82,7 +82,7 @@ export interface CliAgent {
 export interface TeamRules {
   /** 追加到**所有**角色系统提示词的公共约束。 */
   shared?: string
-  /** 同时最多几个角色在跑。默认 3——再多，用户就看不过来了。 */
+  /** 一张图里同时最多几个节点在跑。默认 3——再多，用户就看不过来了。同一轮里 `subagent` 派出去的那几件不受它约束。 */
   maxConcurrent?: number
 }
 
