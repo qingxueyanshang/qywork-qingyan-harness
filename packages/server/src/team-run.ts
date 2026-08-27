@@ -1,14 +1,15 @@
 /**
  * 编排里的一个成员怎么跑：起一条独立子会话，跑完把最终文本交回去。
  *
- * 成员会话的事件**不往父会话广播**——那些 runId 在父会话里不存在，前端会按
- * 陌生 runId 建出一条并不存在的 run。进度只由 `team.member` 事件表达。
+ * 成员会话的事件**按它自己的会话 id 广播**，不挂在父会话的归属上——那些 runId
+ * 在父会话里不存在，挂过去前端会按陌生 runId 建出一条并不存在的 run。
+ * 父会话那张图卡上的进度只由 `team.member` 事件表达。
  *
  * 调用方是派活端口（`delegate.ts`）：`subagent` 派一件、`workflow` 派一张图，
  * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了。
  */
 
-import type { ConversationId, StopReason } from '@qywork/core'
+import type { AgentEvent, ConversationId, StopReason } from '@qywork/core'
 import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
@@ -85,9 +86,11 @@ function modelList(config: QyConfig): string {
  * 整思考过程，它就不再是独立视角了，而独立视角正是多角色的全部意义。节点之间要传递的内容由编排器
  * 显式拼进 prompt（`needs` 的产出），不靠共享上下文。
  *
- * **内层事件不往外发。** 成员会话有自己的 runId，把它的 tool.started / text.delta 广播到父会话上，
- * 前端会按那个陌生 runId 建出一条并不存在的 run。进度由编排器的 `team.member`
- * 事件表达，那是**为这件事设计的**通道。
+ * **内层事件按子会话自己的 id 发，不挂在父会话的归属上。** 成员会话有自己的 runId，
+ * 挂着父会话的 id 广播出去的话，前端会按那个陌生 runId 建出一条并不存在的 run。
+ * 归属写在帧上之后两件事各自成立：右侧那一页订阅子会话 id 就能实时看它在做什么，
+ * 而父会话的订阅者按会话隔离收不到（`bus.ts` 的 `visibleTo`）。
+ * 父会话那张图卡上的进度仍由 `team.member` 表达，那是为这件事设计的通道。
  */
 /**
  * 子 agent 没跑到自然结束时的原因，原样交回父会话——它据此决定是换做法还是拆小再派。
@@ -114,6 +117,15 @@ export async function runBuiltinMember(
     inherit?: ModelRef
     /** 用户这一次点名的那一对，盖过角色与父会话。 */
     explicit?: ModelRef
+    /**
+     * 子会话 id 一拿到就交出去，不等这一趟跑完。
+     *
+     * 图卡上那一格靠它才点得开（`team.member` 的 `childConversationId`）。
+     * 拖到返回值里交的话，「跑着的时候点开看它在做什么」这件事在语义上就不成立了。
+     */
+    onConversation?: (conversationId: ConversationId) => void
+    /** 子会话的每一条事件，带着它自己的会话 id。见本文件头那段。 */
+    onEvent?: (event: AgentEvent, conversationId: ConversationId) => void
   },
 ): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
   const { role } = input
@@ -152,10 +164,15 @@ export async function runBuiltinMember(
       source: 'workflow',
       sourceRef: role.id,
     })) {
-      if (ev.type === 'run.started') conversationId = ev.conversationId
-      else if (ev.type === 'text.delta') text += ev.delta
+      if (ev.type === 'run.started') {
+        conversationId = ev.conversationId
+        ctx.onConversation?.(conversationId)
+      } else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
       else if (ev.type === 'run.finished') stop = ev.stopReason
+      // `run.started` 之前没有会话 id，那几条无处归属，只能丢。
+      // 实际只有装配期的意外事件落在那一段，正常路径第一条就是 `run.started`。
+      if (conversationId) ctx.onEvent?.(ev, conversationId)
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)

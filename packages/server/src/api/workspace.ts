@@ -106,7 +106,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      *
      * **同一条路既是「新增」也是「切过去」**：`upsertWorkspace` 已有就更新
      * `last_opened_at`，没有就插一行。给「切换」单开一个端点等于两条路写同一个
-     * 字段，而那个字段正是 git 轮询与缺省 `?ws=` 的判据。
+     * 字段，而那个字段正是分支监听与缺省 `?ws=` 的判据。
      *
      * 两种入参：
      *
@@ -137,7 +137,10 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
          */
         const known = getWorkspaceByPath(d.store, path)
         const name = rawName || known?.name || basename(path) || path
-        return json({ workspace: upsertWorkspace(d.store, path, name) })
+        const ws = upsertWorkspace(d.store, path, name)
+        // 「最近打开」刚被顶成这一条，分支监听跟着指过来。
+        d.watchGit()
+        return json({ workspace: ws })
       }
 
       if (!rawName) return json({ error: '要么给 path，要么给 name' }, 422)
@@ -149,7 +152,9 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       const path = await freshDir(root, folder)
       // 先建目录再写账本：反过来的话建失败就留下一条指向不存在目录的记录。
       await mkdir(path, { recursive: true })
-      return json({ workspace: upsertWorkspace(d.store, path, rawName) })
+      const ws = upsertWorkspace(d.store, path, rawName)
+      d.watchGit()
+      return json({ workspace: ws })
     }
     /*
      * 每条带上会话数：项目卡片上要显示它。

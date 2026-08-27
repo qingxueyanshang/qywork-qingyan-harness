@@ -2,6 +2,7 @@ import type { RunUsage, StopReason } from '@qywork/core'
 import { formatMoney } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import {
+  createContext,
   createEffect,
   createMemo,
   createSignal,
@@ -12,6 +13,7 @@ import {
   Show,
   Switch,
   untrack,
+  useContext,
 } from 'solid-js'
 import { createStreamRenderer, renderMarkdown } from '../lib/markdown.ts'
 import {
@@ -49,6 +51,8 @@ import {
   setState,
   state,
   type TranscriptItem,
+  transcript,
+  view,
 } from '../lib/store/index.ts'
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
@@ -134,7 +138,7 @@ export function Transcript() {
         classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }}
         ref={inner}
       >
-        <TranscriptRows items={state.transcript} />
+        <TranscriptRows items={transcript()} />
 
         {/*
          * 没有 run 收尾条可挂的那些错误。
@@ -148,7 +152,7 @@ export function Transcript() {
          * （`ai/src/errors.ts` 的分类文案就是按「用户的下一步动作」写的），
          * 再挂一句是同一件事说两遍；要重发，输入框一直在。
          */}
-        <Show when={state.error}>
+        <Show when={view().error}>
           {(e) => (
             <div class="error-card" role="alert">
               {e().message}
@@ -219,7 +223,8 @@ const SILENT_MS = 30_000
  * 会出 stdout，那种情况下报静默是假话。
  */
 function liveStatus(now: number): string {
-  const last = state.transcript[state.transcript.length - 1]
+  const items = transcript()
+  const last = items[items.length - 1]
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
   /*
@@ -239,7 +244,7 @@ function liveStatus(now: number): string {
   const retry = state.retry
   if (retry) return `正在重连 ${retry.attempt} / ${retry.max}…`
 
-  const since = state.lastEventAt ?? state.runStartedAt
+  const since = state.lastEventAt ?? view().runStartedAt
   if (since !== null && now - since >= SILENT_MS) {
     return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
   }
@@ -269,10 +274,11 @@ function liveStatus(now: number): string {
  * （2026-08-20，真实 Chromium），且流式期用户选中的文字每档被销毁一次，复制不了。
  */
 function Prose(props: { item: TranscriptItem }) {
+  const row = useContext(RowStream)
   /*
    * **必须是 memo，不能是普通取值函数。**
    *
-   * 它读的两样都是全局量：`isRunning()` 与 transcript 的末项 id。每 push 一条
+   * 它读的两样都随本列增长：这条流在不在跑，与它的末项 id。每 push 一条
    * （每个工具启动、每条用户消息、每条收尾读数）这两样就变一次，而 effect 只按
    * 依赖是否通知重跑，不按取值是否变化——普通取值函数下，会话里**每一段已经定稿的
    * 正文**都会在每次 push 时重跑一遍 `renderMarkdown` 并整段替换 innerHTML。
@@ -280,9 +286,7 @@ function Prose(props: { item: TranscriptItem }) {
    * 重建 9 次，其中 5 次挤在收尾那一毫秒里。memo 按值去重，只在真的从流式转定稿
    * 那一下通知。
    */
-  const streaming = createMemo(
-    () => isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id,
-  )
+  const streaming = createMemo(() => row.live() && row.items().at(-1)?.id === props.item.id)
 
   // 解析闸门：`reparseSkip` 说了算，判据与理由都在它那里。
   const [gate, setGate] = createSignal(0)
@@ -426,10 +430,9 @@ function Fold(props: {
 }
 
 function ThinkingFold(props: { item: TranscriptItem }) {
-  // memo 而不是取值函数，理由同 `Prose`：读的是全局量，每 push 一条就通知一次。
-  const streaming = createMemo(
-    () => isRunning() && state.transcript[state.transcript.length - 1]?.id === props.item.id,
-  )
+  const row = useContext(RowStream)
+  // memo 而不是取值函数，理由同 `Prose`：读的两样每 push 一条就通知一次。
+  const streaming = createMemo(() => row.live() && row.items().at(-1)?.id === props.item.id)
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
   // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
   const verb = () => (streaming() ? '思考中' : '已思考')
@@ -484,7 +487,7 @@ function LiveOutput(props: { item: TranscriptItem }) {
  * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
  *
  * **为什么收数据靠 props 而不是读 store。** 读 `state.usage` / `state.stopReason` /
- * `state.runStartedAt` 那几个全局字段的话，整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新
+ * `runStartedAt` 那几个会话级字段的话，整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新
  * 更是一条不剩。而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，才是它本来
  * 的形状。
  *
@@ -607,7 +610,7 @@ function LiveRunBar() {
   })
 
   const elapsed = () => {
-    const from = state.runStartedAt
+    const from = view().runStartedAt
     return from === null ? null : (now() - from) / 1000
   }
 
@@ -702,59 +705,73 @@ function compactionFailureLabel(code: string | undefined): string {
  *
  * 滚动跟随不在这里：那件事只有父会话要，它在 `Transcript` 里。
  */
-export function TranscriptRows(props: { items: TranscriptItem[] }) {
+/**
+ * 这一列正文属于哪条流，以及那条流还在不在长。
+ *
+ * `Prose` 与 `ThinkingFold` 判「这一条还在流」要拿**本列**的末项比。默认是当前会话
+ * 那一列；右侧的子会话页给它自己那条——拿当前会话的末项去比的话，子会话的每一段
+ * 正文都会被判成已定稿，每来一批字就整段重排一次。
+ */
+const RowStream = createContext<{ items: () => TranscriptItem[]; live: () => boolean }>({
+  items: transcript,
+  live: isRunning,
+})
+
+export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => boolean }) {
   // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
   // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
   const items = createMemo<RenderItem[]>((prev = []) =>
     reconcileRenderItems(prev, buildRenderItems(props.items)),
   )
   return (
-    <For each={items()}>
-      {(node) => (
-        <Switch>
-          <Match when={node.kind === 'user'}>
-            <div class="row user">
-              <div class="user-col">
-                {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
-                <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
-                  <div class="attach-row sent">
-                    <For each={(node as { item: TranscriptItem }).item.attachments}>
-                      {(a) => (
-                        <span class="attach-chip" data-tip={a.path}>
-                          <AttachmentThumb path={a.path} name={a.name} box={44} />
-                          <span class="truncate">{a.name}</span>
-                        </span>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-                <Show when={(node as { item: TranscriptItem }).item.text}>
-                  <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
-                </Show>
+    <RowStream.Provider value={{ items: () => props.items, live: props.live ?? isRunning }}>
+      <For each={items()}>
+        {(node) => (
+          <Switch>
+            <Match when={node.kind === 'user'}>
+              <div class="row user">
+                <div class="user-col">
+                  {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
+                  <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
+                    <div class="attach-row sent">
+                      <For each={(node as { item: TranscriptItem }).item.attachments}>
+                        {(a) => (
+                          <span class="attach-chip" data-tip={a.path}>
+                            <AttachmentThumb path={a.path} name={a.name} box={44} />
+                            <span class="truncate">{a.name}</span>
+                          </span>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                  <Show when={(node as { item: TranscriptItem }).item.text}>
+                    <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
+                  </Show>
+                </div>
               </div>
-            </div>
-          </Match>
-          <Match when={node.kind === 'text'}>
-            <Prose item={(node as { item: TranscriptItem }).item} />
-          </Match>
-          <Match when={node.kind === 'thinking'}>
-            <ThinkingFold item={(node as { item: TranscriptItem }).item} />
-          </Match>
-          <Match when={node.kind === 'tool'}>
-            <ToolCard item={(node as { item: TranscriptItem }).item} />
-          </Match>
-          <Match when={node.kind === 'compaction'}>
-            <CompactionCard item={(node as { item: TranscriptItem }).item} />
-          </Match>
-          <Match when={node.kind === 'run'}>
-            <RunCard item={(node as { item: TranscriptItem }).item} />
-          </Match>
-          <Match when={node.kind === 'group'}>
-            <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
-          </Match>
-        </Switch>
-      )}
-    </For>
+            </Match>
+            <Match when={node.kind === 'text'}>
+              <Prose item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'thinking'}>
+              <ThinkingFold item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'tool'}>
+              <ToolCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'compaction'}>
+              <CompactionCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'run'}>
+              <RunCard item={(node as { item: TranscriptItem }).item} />
+            </Match>
+            <Match when={node.kind === 'group'}>
+              <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
+            </Match>
+          </Switch>
+        )}
+      </For>
+    </RowStream.Provider>
   )
 }
 

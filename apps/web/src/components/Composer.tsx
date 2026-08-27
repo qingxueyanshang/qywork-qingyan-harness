@@ -26,6 +26,7 @@ import {
   state,
   steerFollowUp,
   tauriListen,
+  transcript,
   uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
@@ -465,7 +466,7 @@ export function Composer() {
           **审批模式不在这里。** 它就在下面那条工具栏上常驻，而且是同一个
           `<ModeChip>`——同一个开关在同一屏出现两次，用户得先判断这两个是不是
           一回事。工作区和分支不同：工具栏上没有它们。 */}
-      <Show when={state.transcript.length === 0}>
+      <Show when={transcript().length === 0}>
         <div class="run-context">
           <span class="run-context-label">运行于</span>
           {/* 只显示，不可点：换项目在左栏点一下就是了，这里再放一个入口

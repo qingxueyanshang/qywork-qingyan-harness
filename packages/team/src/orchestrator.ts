@@ -36,6 +36,13 @@ export interface OrchestratorDeps {
     signal: AbortSignal
     /** 节点点名的模型，实现方负责解析成一对「接口 × 模型」。 */
     model?: string
+    /**
+     * 子会话 id 一拿到就回调，不等这一趟跑完。
+     *
+     * 这一格靠它才点得开。等返回值的话，这张图上正在跑的那几格全程点不开，
+     * 而正在跑的那几格正是用户要翻开的。
+     */
+    onConversation?: (conversationId: ConversationId) => void
   }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }>
   emit(event: AgentEvent): void
   runId: RunId
@@ -225,6 +232,18 @@ export class TeamOrchestrator {
             prompt,
             signal: this.deps.signal,
             ...(node.model ? { model: node.model } : {}),
+            // 子会话起来了，把「点开哪一条」补给这一格。仍是 `working`——
+            // 阶段没变，变的是这一格多了一个可以翻开的去处。
+            onConversation: (cid) =>
+              this.deps.emit({
+                type: 'team.member',
+                runId: this.deps.runId,
+                memberId: node.id,
+                roleName: label,
+                backend: kind,
+                phase: 'working',
+                childConversationId: cid,
+              }),
           })
 
       this.deps.emit({

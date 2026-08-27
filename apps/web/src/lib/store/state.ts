@@ -25,7 +25,7 @@ import type {
   TodoItem,
   ToolOutcomeWire,
 } from '@qywork/core'
-import { createStore } from 'solid-js/store'
+import { createStore, produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
 
 export interface TranscriptItem {
@@ -114,6 +114,43 @@ export interface WorkflowNodeState {
   durationMs?: number
 }
 
+/**
+ * 一条会话此刻的样子。
+ *
+ * **按会话 id 存一张表（`views`），当前会话只是其中一个键。** 右侧面板那一页看的是
+ * 另一条会话——派活起的子会话，它和当前会话同时在收事件。单例的时候两条会话的正文
+ * 会写进同一个数组，而界面上没有任何地方说得出哪一段是谁的。
+ *
+ * 表里只放**这条会话是什么**，不放读数：用量、上下文、待办、目标、跟进队列都是
+ * 当前会话那一份账，子会话那一页只画内容（`ConversationPanel` 就是一列 transcript），
+ * 没有读数条也没有输入框，跟着一起按 id 存就是为一个不存在的消费者建表。
+ */
+export interface ConversationView {
+  transcript: TranscriptItem[]
+  /**
+   * 这一轮什么时候开始的（本地时钟，毫秒）。`null` = 没在跑。
+   *
+   * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是用户等待时长，
+   * 而不是服务端计算时长，两者在手机走蜂窝网时能差出好几百毫秒，
+   * 而用户看的是本机时钟。跑完之后耗时归条目管，这里清空。
+   */
+  runStartedAt: number | null
+  /**
+   * 这条会话最后一次报错。
+   *
+   * 收尾条的报错正文从这里取，所以它必须跟着会话走：单例的话，子会话报的错
+   * 会写进当前会话的收尾条。
+   */
+  error: { code: string; message: string } | null
+}
+
+/** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
+const EMPTY_VIEW: ConversationView = Object.freeze({
+  transcript: Object.freeze([]) as unknown as TranscriptItem[],
+  runStartedAt: null,
+  error: null,
+})
+
 export interface AppState {
   connection: ConnectionState
   connectionDetail: string
@@ -122,7 +159,11 @@ export interface AppState {
   conversations: Conversation[]
   activeConversation: string | null
 
-  transcript: TranscriptItem[]
+  /**
+   * 收着事件的那几条会话，按 id。键 = 当前会话 + 右侧开着的那几页子会话，
+   * 与 `client.subscribe` 报上去的那一组同源（见 `connection.ts` 的订阅集）。
+   */
+  views: Record<string, ConversationView>
   /**
    * 正在跑的会话 id。**「谁在跑」全仓只有这一份账**，当前那条在不在跑由
    * `isRunning()` 从这里派生，不另记一个布尔。
@@ -175,17 +216,9 @@ export interface AppState {
   /** 当前会话最后一个 run，重试的目标。 */
   lastRunId: string | null
   /**
-   * 运行中那一轮的开始时刻（本地时钟，毫秒）。
-   *
-   * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是用户等待时长，
-   * 而不是服务端计算时长，两者在手机走蜂窝网时能差出好几百毫秒，
-   * 而用户看的是本机时钟。跑完之后耗时归条目管，这里清空。
-   */
-  runStartedAt: number | null
-  /**
    * 这一轮最后一次收到事件的时刻（本地时钟，毫秒）。
    *
-   * 它与 `runStartedAt` 回答的是两件事：那个说「这轮跑了多久」，这个说
+   * 它与 `ConversationView.runStartedAt` 回答的是两件事：那个说「这轮跑了多久」，这个说
    * 「多久没动静了」。**只有后者能区分「还在想」和「链路断了」**——实测一次断流里
    * 服务端 262 秒一个字节都没收到，而界面靠总耗时只能显示一个越走越大的数字，
    * 配着一句「正在思考…」，两者都没说出真相。
@@ -211,8 +244,6 @@ export interface AppState {
 
   fileChanges: { path: string; additions: number; deletions: number; changeType: string }[]
   git: Omit<GitStateEvent, 'type'> | null
-
-  error: { code: string; message: string } | null
 }
 
 const initial: AppState = {
@@ -221,24 +252,67 @@ const initial: AppState = {
   capabilities: null,
   conversations: [],
   activeConversation: null,
-  transcript: [],
+  views: {},
   busyConversations: [],
   usage: null,
   context: null,
   fileChanges: [],
   git: null,
-  error: null,
   followUps: [],
   todos: [],
   goal: null,
   lastRunId: null,
-  runStartedAt: null,
   lastEventAt: null,
   retry: null,
   notice: null,
 }
 
 export const [state, setState] = createStore<AppState>(initial)
+
+/**
+ * 某条会话此刻的样子。没建过表的回那份冻结的空视图——调用点因此不必各写一遍
+ * `?? []`，而漏写一次的表现是整个界面白屏。
+ */
+export function viewOf(id: string | null): ConversationView {
+  return (id && state.views[id]) || EMPTY_VIEW
+}
+
+/** 当前会话那一份。界面上绝大多数地方要的是这个。 */
+export function view(): ConversationView {
+  return viewOf(state.activeConversation)
+}
+
+/** 当前会话的正文流。 */
+export function transcript(): TranscriptItem[] {
+  return view().transcript
+}
+
+/**
+ * 建一条会话的表（幂等）。**开始收它的事件之前必须先建**：
+ * 表里没有这一条时事件整帧丢弃（见 `connection.ts` 的归属判定）。
+ */
+export function openView(id: string): void {
+  if (state.views[id]) return
+  setState('views', id, { transcript: [], runStartedAt: null, error: null })
+}
+
+/**
+ * 撤掉一条会话的表：切走的那条、关掉的那一页子会话。
+ *
+ * **不留着**：一条跑过几百步的会话在表里就是几百个条目，留着等于每开一次子会话页
+ * 就多占一份，而再打开时本来就要按 id 重拉一次。
+ */
+export function dropView(id: string): void {
+  if (!state.views[id]) return
+  // 必须 `produce` + `delete`：store 的对象写点是**合并**语义，
+  // 交回一个少了这个键的新对象不会把它删掉，那一份正文会原地留着。
+  setState(
+    'views',
+    produce((all) => {
+      delete all[id]
+    }),
+  )
+}
 
 /**
  * 当前会话在不在跑。**派生量**——真源是 `busyConversations`。
@@ -260,7 +334,7 @@ export function isRunning(): boolean {
 export function hasRunStatus(): boolean {
   return (
     isRunning() &&
-    state.runStartedAt !== null &&
+    view().runStartedAt !== null &&
     (state.todos.some((t) => t.status !== 'completed') || state.fileChanges.length > 0)
   )
 }
@@ -293,7 +367,8 @@ export function composerStackAbove(): boolean {
  * 而新那一轮真的在跑。
  */
 export function runClosed(): boolean {
-  const last = state.transcript[state.transcript.length - 1]
+  const t = transcript()
+  const last = t[t.length - 1]
   return last?.kind === 'run' && last.run?.runId === state.lastRunId
 }
 
@@ -313,7 +388,7 @@ export function ledgerRevision(): string {
   const marks = [
     state.lastRunId ?? '',
     isRunning() ? '1' : '0',
-    state.transcript.length,
+    transcript().length,
     state.usage?.turns.length ?? 0,
   ]
   return marks.join(':')

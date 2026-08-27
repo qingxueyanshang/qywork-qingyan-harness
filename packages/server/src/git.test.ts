@@ -51,12 +51,12 @@ describe('这台机器上没装 git', () => {
    * **不能抛，只能报「不是仓库」。**
    *
    * 原始失败形状是实测撞出来的：把 PATH 剥到只剩 System32 起一次服务，
-   * `Bun.spawn(['git', …])` 同步抛 ENOENT，而 `server.ts` 的 `pollGit` 是
-   * `void publishGitState(...)`——浮动 promise 没人接，因此启动时糊一屏栈、
-   * 之后每 4 秒再来一次。
+   * `Bun.spawn(['git', …])` 同步抛 ENOENT，而广播那一处是
+   * `void publishGitState(...)`——浮动 promise 没人接，因此启动时糊一屏栈，
+   * 此后每次广播再来一次。
    *
    * 判据是「git 跑不跑得起来」本来就属于 `git()` 的返回类型（它有 `ok: false` 这一档），
-   * 所以接在那里而不是给 `pollGit` 加 `.catch`——后者是在下游堵症状。
+   * 所以接在那里而不是给广播那一处加 `.catch`——后者是在下游堵症状。
    *
    * 用清空 PATH 制造这个状态：Bun 按 PATH 解析可执行文件，空 PATH 就是「没装」。
    */

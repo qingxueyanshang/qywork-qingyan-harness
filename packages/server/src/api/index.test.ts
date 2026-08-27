@@ -54,6 +54,9 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
     },
     lanEnabled: () => lan,
     lanPort: () => 7788,
+    // upsert 项目那条路会调它把分支监听指过去。真的监听在 `server.ts` 装配，
+    // 这里只要不是 undefined。
+    watchGit: () => {},
   } as unknown as ApiDeps & { wsId: string }
 }
 
@@ -760,7 +763,7 @@ describe('按 ?ws= 解析项目', () => {
   test('加项目：已经有了就只更新「最近打开」，不插第二行', async () => {
     const store = new Store({ path: ':memory:' })
     const here = process.cwd()
-    const d = { store } as unknown as ApiDeps
+    const d = { store, watchGit: () => {} } as unknown as ApiDeps
     const first = await call(
       '/api/workspaces',
       {

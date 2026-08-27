@@ -33,6 +33,7 @@ import {
   state,
   togglePanel,
   toggleSidebar,
+  transcript,
 } from './lib/store/index.ts'
 
 /**
@@ -189,7 +190,7 @@ export function App() {
       </header>
 
       {/* 空会话时把输入区居中：只在底部钉一个输入框看起来像没加载完 */}
-      <main class="main" classList={{ empty: state.transcript.length === 0 }}>
+      <main class="main" classList={{ empty: transcript().length === 0 }}>
         {/* 面板放大时正文整块卸载，不是用 CSS 藏起来：`display: none` 会把
             滚动容器的 scrollTop 清成 0，还原时用户落在几百条之前的开头，而
             重新挂载会走一遍「贴底」的初始态，还原就停在最新那条上。 */}

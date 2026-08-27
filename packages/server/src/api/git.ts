@@ -32,7 +32,7 @@ export const handleGitApi: ApiHandler = async (url, req, d) => {
      */
     const r = await git.switchTo(d.workspaceRoot, name)
     if (!r.ok) return json({ error: r.message }, 409)
-    // 立刻广播新分支。等 4 秒那次轮询的话，chip 会在切完之后还挂着旧名字。
+    // 立刻广播新分支。等 `.git/HEAD` 那条监听的话，chip 会多挂着旧名字一小会儿。
     await publishGitState(d.workspaceRoot, d.workspaceId, d.bus)
     return json({ branch: name })
   }

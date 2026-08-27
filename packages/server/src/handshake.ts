@@ -36,6 +36,13 @@ export function handleHello(
     config: QyConfig
     /** 报「此刻哪几条会话在跑」的那份权威，见 `busyConversations`。 */
     runs: RunManager
+    /**
+     * 当前分支名广播一份。
+     *
+     * **新连上的客户端只能从这条广播拿到分支名**，没有别的取法；而 `.git/HEAD`
+     * 那条监听只在它变了的时候报，一个刚连上的客户端等不到。
+     */
+    announceGit(): void
   },
 ) {
   if (frame.token !== deps.token) {
@@ -101,6 +108,7 @@ export function handleHello(
     },
   }
   ws.send(JSON.stringify(ok))
+  deps.announceGit()
 
   for (const f of backlog) ws.send(JSON.stringify(f))
 }

@@ -65,7 +65,18 @@ export const subagentTool: ToolSpec = {
   // 子 agent 用它自己那套工具，权限在那一侧按它的会话逐次裁决；
   // 外部 CLI 是本机上的另一个进程。两者都算「起一件会动这台机器的事」。
   permissionEffect: 'execute',
-  parallelSafe: false,
+  /*
+   * **派几件就是几件一起跑。**
+   *
+   * 不开的话同一批调用被 `planWaves` 拆成一波一件串着跑，而工具描述与提示词
+   * （`prompt.ts`）承诺的都是「互不依赖的可以一次派几个」——承诺了并行却串行执行，
+   * 用户看到的是第一格跑完第二格才开始。
+   *
+   * 边界：并发的子 agent 各自会动这个工作区的文件，这里不做冲突检测。
+   * 一张图里的节点本来就是这么跑的（编排器按 `maxConcurrent` 并发），
+   * 派一件与派一张图必须是同一种行为，否则同一件事换个工具名就换一种语义。
+   */
+  parallelSafe: true,
 
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const delegate = ctx.delegate
