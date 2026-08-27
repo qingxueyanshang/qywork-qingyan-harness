@@ -60,6 +60,7 @@ export function ModelLibrary(props: {
                       <th class="vendor">{v.displayName}</th>
                       <th class="num">上下文窗口</th>
                       <th class="num">最大输出</th>
+                      <th>图片输入</th>
                       <th class="num">输入</th>
                       <th class="num">输出</th>
                       <th class="num">缓存读取</th>
@@ -82,6 +83,11 @@ export function ModelLibrary(props: {
                             <td class="num">
                               {m.maxOutputTokens === null ? '—' : compact(m.maxOutputTokens)}
                             </td>
+                            {/* 三态照实显示。`null` 是「厂商没写」，写成「不支持」就是
+                                替厂商作保，而界面上分不出这两者的用户会照它做决定。 */}
+                            <td class="lv">
+                              {m.vision === null ? '—' : m.vision ? '支持' : '不支持'}
+                            </td>
                             <td class="num">{price(m.input, m.currency)}</td>
                             <td class="num">{price(m.output, m.currency)}</td>
                             <td class="num">{price(m.cacheRead, m.currency)}</td>
@@ -101,7 +107,7 @@ export function ModelLibrary(props: {
                               只画一个数字的话，用户对着账单会发现对不上，而差价是两倍。 */}
                           <Show when={m.priceNotes?.length}>
                             <tr class="lib-note">
-                              <td colSpan={8}>{m.priceNotes?.join('；')}</td>
+                              <td colSpan={9}>{m.priceNotes?.join('；')}</td>
                             </tr>
                           </Show>
                         </>

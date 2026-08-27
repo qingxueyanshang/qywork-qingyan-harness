@@ -230,6 +230,13 @@ export type ErrorCode =
   | 'insufficient_quota'
   | 'context_overflow'
   | 'model_not_found'
+  /**
+   * 上游明确拒绝了这一份请求（4xx 参数错误、网关按字节数拒收）。
+   *
+   * 与 `provider_unavailable` 的区别是**同一份字节再发一次会不会有别的结果**：
+   * 这个码恒定不会，所以它不在 `agent` 的重发表里。
+   */
+  | 'invalid_request'
   | 'provider_unavailable'
   | 'network_error'
   | 'stream_idle_timeout'

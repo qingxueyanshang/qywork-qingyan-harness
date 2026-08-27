@@ -10,7 +10,7 @@
  *    猜错的那次会静默改错地方。
  */
 
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
@@ -127,6 +127,39 @@ async function pdfText(ctx: ToolContext, abs: string, stamp: string): Promise<st
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 匹配 NUL 正是本意——判断文件是不是二进制的标准做法
 const BINARY_SNIFF = /\x00/
 
+/**
+ * 只读头部若干字节做嗅探，**不整个读进来**——走到这里的文件已经超了
+ * `MAX_READ_BYTES`，整读一次就是把它装进内存再丢掉。
+ */
+async function looksBinary(abs: string): Promise<boolean> {
+  const fh = await open(abs, 'r').catch(() => null)
+  if (!fh) return false
+  try {
+    const buf = Buffer.alloc(4096)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    return BINARY_SNIFF.test(buf.subarray(0, bytesRead).toString('utf8'))
+  } finally {
+    await fh.close()
+  }
+}
+
+/**
+ * 读不成文本的那一类的回执。
+ *
+ * **必须带下一步，且明说不要再读。** 只回「无法作为文本读取」的话，模型除了换个
+ * 参数再读一遍没有别的选择，而每一遍都会失败。视频与音频还多一条：本仓的请求体里
+ * 只有文本和图像两种内容块，任何模型都收不到它们，换模型也没用。
+ */
+function notText(path: string): { status: 'failure'; message: string } {
+  return {
+    status: 'failure',
+    message:
+      `${path} 不是文本文件，读不出内容。不要再读它——` +
+      `音视频与压缩包无法作为文本读取，也不能作为内容发给模型；` +
+      `需要里面的信息就用 run_command 调外部工具处理，或请用户描述。`,
+  }
+}
+
 export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
@@ -172,6 +205,21 @@ export const readFileTool: ToolSpec = {
     // PDF 抽取缓存的键：文件改了就是另一份内容，缓存自然不命中。
     const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
     if (isInlineImage(abs)) {
+      /*
+       * 当前模型不收图片：**在读字节之前就回绝**，并把原因说全。
+       *
+       * 判据只认 `false`（约定见 `ai` 的 `ModelSpec.vision`）。这里回绝的是
+       * 一件重试永远不会成功的事，所以话里要带**下一步该干什么**——只说
+       * 「读取失败」的话，模型除了原样再读一遍没有别的选择，而每一遍都会失败。
+       */
+      if (ctx.vision === false) {
+        return {
+          status: 'failure',
+          message:
+            `当前模型不接受图片输入，${displayPath(ctx.workspaceRoot, abs)} 读不出内容。` +
+            `不要再读这个文件——换一个支持图片的模型，或请用户描述图里的内容。`,
+        }
+      }
       if (info.size > MAX_IMAGE_BYTES) {
         return {
           status: 'failure',
@@ -240,15 +288,20 @@ export const readFileTool: ToolSpec = {
     }
 
     if (pdf === null && info.size > MAX_READ_BYTES) {
+      /*
+       * **先嗅探再报「过大」。** 视频、音频、压缩包多数都超过 1 MB，落到「请用
+       * offset/limit 分段读取」这句话上的话，模型会照着分段读一遍——那条路对二进制
+       * 走不通，它只能反复试。判据取内容不取扩展名：一张扩展名写错的文件同样成立，
+       * 而按扩展名判就得在这里再养一份音视频清单。
+       */
+      if (await looksBinary(abs)) return notText(String(args.path))
       return {
         status: 'failure',
         message: `文件过大（${info.size} 字节），请用 offset/limit 分段读取`,
       }
     }
     const text = pdf ?? (await readFile(abs, 'utf8'))
-    if (BINARY_SNIFF.test(text.slice(0, 4096))) {
-      return { status: 'failure', message: '二进制文件，无法作为文本读取' }
-    }
+    if (BINARY_SNIFF.test(text.slice(0, 4096))) return notText(String(args.path))
 
     // 哈希按**磁盘原文**算：它回答的是「磁盘现在是什么」，换成归一后的那份，
     // 文件行尾被别人改过就查不出来了。交给模型的正文才归一。

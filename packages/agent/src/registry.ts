@@ -408,6 +408,15 @@ export interface ToolContext {
    * 是两个数，而扣账扣的是前者、装进窗口的是后者。
    */
   density: TokenDensity
+  /**
+   * 这一轮那个模型收不收图片。三态，约定见 `ai` 的 `ModelSpec.vision`：
+   * `null` = 没有出处，按放行算；只有 `false` 才拦。
+   *
+   * 与 `contextWindow` / `density` 同因同理：在**执行时**按当前模型判。
+   * 工具据它决定要不要把图片字节读出来——不判的话，一张图会走完缩放、
+   * 扣完投递预算，再在装配请求那一步被换成一句话，白跑一趟。
+   */
+  vision: boolean | null
   /** 环境注入的只读资源；插件按名取自己需要的，核心不为业务字段扩张。 */
   resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */

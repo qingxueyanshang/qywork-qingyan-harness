@@ -44,6 +44,7 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
     model: 'test',
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
+    vision: null,
     resources: new Map(),
     state: new Map(),
     sink: null,

@@ -426,10 +426,10 @@ export const MAX_RESENDS = 5
  *
  * `rate_limited` 不在表里：429 该按 provider 给的 `Retry-After` 等，不是固定值。
  *
- * 已知代价：`provider_unavailable` 同时装着 4xx 参数错误（`errors.ts` 的 400/422 一支），
- * 那类重发必然拿回同一个拒绝——按 `MAX_RESENDS` 就是空等 5 轮退避（15 秒）、
- * 白付 5 次长 prompt。接受它是因为参数错误由配置决定，改一次就不再出现；
- * 而临时不可用是随机的，不救就是丢掉整轮已完成的工作。
+ * **`invalid_request` 不在表里，别加进来。** 那个码的定义就是「同一份字节再发一次
+ * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支）。加进来的代价实测付过：
+ * 给不接受图片的模型发一张图，用户看到的是「正在重连 1 / 5」一直数到 5，
+ * 而真正的原因——这个模型不接受图片——一个字都没出现。
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['network_error', 0],
@@ -614,7 +614,7 @@ export class AgentLoop {
   ): Promise<AsyncIterable<ProviderEvent>> {
     const provider = adapter.spec.provider
     const idleMs = this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(req.effort)
-    const it = adapter.stream(await materialize(req))[Symbol.asyncIterator]()
+    const it = adapter.stream(await materialize(req, adapter.spec.vision))[Symbol.asyncIterator]()
 
     /** 等一个事件，超时就判流卡死并中止本次请求。 */
     const step = async (): Promise<IteratorResult<ProviderEvent>> => {
@@ -1357,16 +1357,15 @@ export class AgentLoop {
             /*
              * 分类短语 + 现场读数 + 是否自动重发过，一行说完。
              *
-             * 现场读数只给传输层。`provider_unavailable` 是上游明确答复的，
-             * 给它拼「N 秒未收到响应」等于告诉用户请求没落地。
+             * 现场读数只给传输层，判据是**上游答复过没有**（同 `settleRequest`
+             * 那一处），不逐个码列举：有状态码就是它明确回绝了，
+             * 给这一类拼「N 秒未收到响应」等于告诉用户请求没落地。
              */
             throw new ProviderError({
               code: pe.code,
               message: [
                 pe.message,
-                ...(code === 'provider_unavailable'
-                  ? []
-                  : [transportReading(providerEvents, silentMs)]),
+                ...(pe.status !== undefined ? [] : [transportReading(providerEvents, silentMs)]),
                 ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
               ].join('，'),
               provider: pe.provider,
@@ -2141,30 +2140,45 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
  *   内存里常驻整个 run。
  *
- * **只处理附件那一种。** 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻就已
- * 经是字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，那是他自己的文
- * 件，这个语义是对的。
+ * **读盘只处理附件那一种。** 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻
+ * 就已经是字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，那是他自己的
+ * 文件，这个语义是对的。
  *
- * **读不到不是致命错。** 文件没了、超了上限、指纹对不上——三种都换成一个文本块，
+ * **图片发不发得出去也在这里裁决**，判据是 `spec.vision`。这一处覆盖全部来源——
+ * 用户附件、工具返回的图、MCP 返回的图、换模型之前留在历史里的旧图。
+ *
+ * **读不到不是致命错。** 文件没了、超了上限、模型不收图片——都换成一个文本块，
  * 不抛。一张图发不出去不该让整轮起不来，而**必须让模型看见这句话**：静默丢掉时
  * 模型会把这次读取当成已完成。
  */
-export async function materialize(req: ChatRequest): Promise<ChatRequest> {
+export async function materialize(req: ChatRequest, vision: boolean | null): Promise<ChatRequest> {
   if (!req.messages.some((m) => typeof m.content !== 'string')) return req
   const messages = await Promise.all(
     req.messages.map(async (m) => {
       if (typeof m.content === 'string') return m
-      const blocks = await Promise.all(m.content.map(loadBlock))
+      const blocks = await Promise.all(m.content.map((b) => loadBlock(b, vision)))
       return { ...m, content: blocks }
     }),
   )
   return { ...req, messages }
 }
 
-async function loadBlock(b: ContentBlock): Promise<ContentBlock> {
-  if (b.type !== 'image' || b.source.kind !== 'path') return b
+async function loadBlock(b: ContentBlock, vision: boolean | null): Promise<ContentBlock> {
+  if (b.type !== 'image') return b
+  const where = b.source.kind === 'path' ? `图片 ${b.source.path}` : '图片'
+  const note = (why: string): ContentBlock => ({ type: 'text', text: `［${where}：${why}］` })
+
+  /*
+   * 模型不收图片：换成文本注记，不发图像块。
+   *
+   * 判据只认 `false`——`null` 是「厂商规格页没写」，照常发（约定写在
+   * `ModelSpec.vision` 上）。少了这一支，带图的会话切到纯文本模型之后每一轮都被
+   * 端点以 400 拒绝，而手动删图救不回历史里已有的那些。
+   */
+  if (vision === false) return note('当前模型不接受图片输入，这一张没有发出去')
+
+  if (b.source.kind !== 'path') return b
   const { path } = b.source
-  const note = (why: string): ContentBlock => ({ type: 'text', text: `［图片 ${path}：${why}］` })
 
   const info = await stat(path).catch(() => null)
   if (!info?.isFile()) return note('已不存在')
