@@ -1,0 +1,89 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CI: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check version manifests
+        run: bun run scripts/sync-version.ts --check
+
+      - name: Run release gate
+        run: bun run gate
+
+      - name: Build sidecar
+        run: bun run build:agent
+
+      - name: Build installer and create draft release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: bun run tauri
+          args: --target x86_64-pc-windows-msvc --bundles nsis
+          tagName: v__VERSION__
+          releaseName: qywork v__VERSION__
+          releaseCommitish: ${{ github.sha }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: false
+          generateReleaseNotes: true
+          releaseBody: |
+            qywork Windows x64 安装包。
+
+            下载 `.exe` 文件即可安装。`SHA256SUMS.txt` 用于校验安装包完整性。
+
+            当前安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示。
+
+      - name: Create checksum
+        shell: pwsh
+        run: |
+          $bundlePath = "apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installers = @(Get-ChildItem -LiteralPath $bundlePath -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer in $bundlePath, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload checksum to draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          gh release upload "v$version" SHA256SUMS.txt --clobber
