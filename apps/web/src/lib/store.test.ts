@@ -59,6 +59,7 @@ const {
   fileRevision,
   isRunning,
   ledgerRevision,
+  openBrowserTab,
   openPanel,
   openPanelTab,
   PANEL_MIN,
@@ -68,6 +69,7 @@ const {
   reloadActiveConversation,
   resizePanel,
   saveServerConfig,
+  setPanelTabUrl,
   setSidePanel,
   setState,
   sidePanel,
@@ -189,6 +191,24 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     openPanelTab('terminal')
     expect(panelTabs().length).toBe(1)
     expect(activePanelTab()).toBe(panelTabs()[0]!.id)
+  })
+
+  test('正文里的链接开出浏览器页，同一个地址再点是翻回去', () => {
+    reset()
+    openBrowserTab('http://localhost:8000')
+    const [tab] = panelTabs()
+    expect(tab!.kind).toBe('browser')
+    expect(tab!.url).toBe('http://localhost:8000')
+
+    setSidePanel('files')
+    openBrowserTab('http://localhost:8000')
+    expect(panelTabs().length).toBe(1)
+    expect(activePanelTab()).toBe(tab!.id)
+
+    // 地址栏跳走之后记的是新地址，翻回去认的也是它。
+    setPanelTabUrl(tab!.id, 'http://localhost:8000/about')
+    openBrowserTab('http://localhost:8000')
+    expect(panelTabs().length).toBe(2)
   })
 
   test('关掉当前那一页 —— 落到右边那页，不收起面板', () => {

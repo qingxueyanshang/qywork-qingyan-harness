@@ -1,5 +1,5 @@
 import { createSignal, onMount, Show } from 'solid-js'
-import { holdPanelTab } from '../lib/store/index.ts'
+import { panelTabUrl, setPanelTabUrl } from '../lib/store/index.ts'
 import { IconRefresh } from './Icons.tsx'
 
 /**
@@ -26,15 +26,6 @@ import { IconRefresh } from './Icons.tsx'
  * local resource`），CSP 放行也没用；本地 html 只能起个静态服务器再填它的地址。
  */
 
-/**
- * 每一页记着的地址。**存在模块上而不是组件里**：收起面板会把组件卸载，地址跟着没了，
- * 再展开是一个空地址栏。这一页被关掉时才删（`holdPanelTab`）。
- *
- * 只记地址，不保页面状态：iframe 一旦从 DOM 里摘下来，再插回去就是重新加载，
- * 这是浏览器的行为，前端这一侧没有第二条路。
- */
-const urls = new Map<string, string>()
-
 /** 补协议：用户习惯只打 `localhost:3000`。预览的是本机服务，所以补 `http://`。 */
 function normalize(raw: string): string {
   const s = raw.trim()
@@ -43,7 +34,8 @@ function normalize(raw: string): string {
 }
 
 export default function BrowserPanel(props: { id: string }) {
-  const [url, setUrl] = createSignal(urls.get(props.id) ?? '')
+  // 地址记在页签记录上，不记在组件里：收起面板这个组件就没了（见 `PanelTab.url`）。
+  const url = () => panelTabUrl(props.id)
   const [draft, setDraft] = createSignal(url())
   /**
    * 按过几次刷新。**同一个地址要重新加载只能把 iframe 整个换掉**：跨源的 iframe
@@ -76,14 +68,12 @@ export default function BrowserPanel(props: { id: string }) {
       setReloads((n) => n + 1)
       return
     }
-    setUrl(next)
-    urls.set(props.id, next)
+    setPanelTabUrl(props.id, next)
   }
 
   let input!: HTMLInputElement
   onMount(() => {
-    holdPanelTab(props.id, () => urls.delete(props.id))
-    // 新开一页就是要打地址，焦点直接给它。已经有地址的（收起再展开）不抢焦点。
+    // 新开一页就是要打地址，焦点直接给它。已经有地址的（收起再展开、正文里点开的）不抢焦点。
     if (!url()) input.focus()
   })
 

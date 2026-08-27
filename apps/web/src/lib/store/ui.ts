@@ -47,6 +47,14 @@ export interface PanelTab {
    * 用户正瞄着的那颗 × 会跑到别的地方去。
    */
   title: string
+  /**
+   * 浏览器页现在指着的地址。**这一页的地址只有这一份**：收起面板会把 `BrowserPanel`
+   * 卸载，地址记在组件里的话再展开就是一个空地址栏。其余几种页没有这个字段。
+   *
+   * 只记地址，不保页面状态：iframe 从 DOM 上摘下来再插回去就是重新加载，
+   * 这是浏览器的行为，前端这一侧没有第二条路。
+   */
+  url?: string
 }
 
 /**
@@ -98,13 +106,41 @@ const TAB_LABEL = { terminal: '终端', browser: '浏览器' } as const
 type NumberedKind = keyof typeof TAB_LABEL
 const tabSeq: Record<NumberedKind, number> = { terminal: 0, browser: 0 }
 
-/** 新开一页并翻到它。 */
-export function openPanelTab(kind: NumberedKind): void {
+/** 新开一页并翻到它。`url` 只有浏览器页用得上：新开出来就指着它。 */
+export function openPanelTab(kind: NumberedKind, url?: string): void {
   tabSeq[kind] += 1
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
-  setTabs((list) => [...list, { id, kind, title: `${TAB_LABEL[kind]} ${n}` }])
+  const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}` }
+  // `exactOptionalPropertyTypes` 开着：没有地址时这个键必须不存在，不能写 undefined。
+  if (url) tab.url = url
+  setTabs((list) => [...list, tab])
   setSidePanel({ tab: id })
+}
+
+/**
+ * 在浏览器页里打开一个地址：正文里的链接点下去落在这里。
+ *
+ * **已经有一页指着这个地址就翻回去**，不并排开出第二页——两页看同一个地址，
+ * 内容逐字相同（同 `openConversationTab`）。
+ */
+export function openBrowserTab(url: string): void {
+  const open = panelTabs().find((t) => t.kind === 'browser' && t.url === url)
+  if (open) {
+    setSidePanel({ tab: open.id })
+    return
+  }
+  openPanelTab('browser', url)
+}
+
+/** 某一页现在指着的地址。没有地址（或不是浏览器页）时是空串。 */
+export function panelTabUrl(id: string): string {
+  return panelTabs().find((t) => t.id === id)?.url ?? ''
+}
+
+/** 浏览器页跳到另一个地址。 */
+export function setPanelTabUrl(id: string, url: string): void {
+  setTabs((list) => list.map((t) => (t.id === id ? { ...t, url } : t)))
 }
 
 /**
