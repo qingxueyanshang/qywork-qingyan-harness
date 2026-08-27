@@ -15,6 +15,7 @@ import { join } from 'node:path'
 const ROOT = join(import.meta.dir, '..')
 const OUT_DIR = join(ROOT, 'apps/desktop/src-tauri/bin')
 const ENTRY = join(ROOT, 'packages/cli/src/index.ts')
+const ICON = join(ROOT, 'apps/desktop/src-tauri/icons/icon.ico')
 
 async function hostTriple(): Promise<string> {
   const proc = Bun.spawn(['rustc', '-vV'], { stdout: 'pipe', stderr: 'pipe' })
@@ -26,6 +27,33 @@ async function hostTriple(): Promise<string> {
   const m = /^host:\s*(\S+)$/m.exec(out)
   if (!m) throw new Error('无法从 rustc -vV 解析目标三元组')
   return m[1]!
+}
+
+/**
+ * Windows PE 版本信息。仅在编译目标为 Windows 时传。
+ *
+ * 一个字段都不传的产物会原样带着 Bun 运行时自己的资源段：ProductName=Bun、
+ * CompanyName=Oven、OriginalFilename=bun.exe。文件属性、任务管理器和杀毒软件
+ * 因此把 sidecar 标成 Bun。补齐这些字段只修正文件归属，它不是代码签名，
+ * 不建立任何系统信任。
+ *
+ * 六个字段必须一起给：bun build 只覆盖显式传入的字段，漏掉的保留 Bun 的值。
+ * 实测只传 `--windows-title` 时，CompanyName 仍是 Oven、LegalCopyright 仍指向 bun.com。
+ *
+ * `--windows-version` 只收四段数字，而 VERSION 是 semver 且允许预发布后缀
+ * （`scripts/sync-version.ts` 的 SEMVER）。必须先截掉后缀再补第四段，
+ * 否则 bun build 直接拒绝该参数。
+ */
+function windowsMetadata(version: string): string[] {
+  if (process.platform !== 'win32') return []
+  return [
+    '--windows-title=qywork',
+    '--windows-publisher=qywork',
+    '--windows-description=qywork agent',
+    `--windows-version=${version.split('-')[0]}.0`,
+    '--windows-copyright=Apache-2.0',
+    `--windows-icon=${ICON}`,
+  ]
 }
 
 async function main(): Promise<number> {
@@ -54,6 +82,7 @@ async function main(): Promise<number> {
       '--sourcemap',
       '--define',
       `QYWORK_VERSION="${version}"`,
+      ...windowsMetadata(version),
       '--outfile',
       outfile,
     ],
