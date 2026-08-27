@@ -103,8 +103,8 @@ const MODULES: Module[] = [
         label: 'mode',
         text: () =>
           state.capabilities?.mode === 'full'
-            ? '完全访问：不逐条裁决，路径边界一并放开。凭证剥离与沙箱不受影响。'
-            : '自动审批：逐条裁决 run_command。MCP 与插件的工具不过这道闸。',
+            ? '完全访问 · 沙箱与凭证剥离不受影响'
+            : '自动审批 · MCP 与插件的工具不过这道闸',
       },
       {
         label: 'additionalDirectories',
