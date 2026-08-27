@@ -6,7 +6,7 @@
  * 一个「只读」角色如果 allowedTools 没生效，它照样能改文件，而配置看着是对的。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,7 +26,7 @@ import {
   setExtraEnabled,
   upsertWorkspace,
 } from '@qywork/store'
-import type { QyConfig } from './config.ts'
+import { configPath, type QyConfig } from './config.ts'
 import { Session } from './session.ts'
 
 const config: QyConfig = {
@@ -160,6 +160,13 @@ async function workspaceWithMcp(
 ): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
   await mkdir(join(root, '.agents'), { recursive: true })
+  /*
+   * 项目层的 MCP 要先授权才加载，而授权落在 `config.json` 里。这一份必须写进临时
+   * 的 `QYWORK_HOME`，写本机真配置会给用户加上一条指向临时目录的授权。
+   * 还原由文件末尾的 `afterEach` 负责。
+   */
+  process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-sess-home-'))
+  await writeFile(configPath(), JSON.stringify({ trustedWorkspaces: [root] }), 'utf8')
   const NL = String.fromCharCode(10)
   const defs = JSON.stringify(
     tools.map((t) => ({ ...t, inputSchema: { type: 'object' } })),
@@ -539,4 +546,11 @@ describe('注入消息的回读', () => {
     ])
     store.close()
   })
+})
+
+/** `workspaceWithMcp` 会改 `QYWORK_HOME`，每条用例跑完还回去。 */
+const HOME_BEFORE = process.env.QYWORK_HOME
+afterEach(() => {
+  if (HOME_BEFORE === undefined) delete process.env.QYWORK_HOME
+  else process.env.QYWORK_HOME = HOME_BEFORE
 })

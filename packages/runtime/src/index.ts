@@ -19,6 +19,7 @@ export {
   configPath,
   dataPath,
   diagnoseConfig,
+  isWorkspaceTrusted,
   loadConfig,
   type ModelRef,
   type QyConfig,
@@ -27,6 +28,7 @@ export {
   type StoredModel,
   type StoredProvider,
   saveConfig,
+  setWorkspaceTrust,
 } from './config.ts'
 // 上下文面板：按会话现算，切会话/刷新后仍可查
 export { type ContextPanel, contextPanel } from './context-panel.ts'
