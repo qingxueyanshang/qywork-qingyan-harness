@@ -1,8 +1,8 @@
 /**
  * 导入一份现成的 MCP 配置。
  *
- * 覆盖范围：`api/mcp.ts` 的 `/api/mcp/import`。`/api/mcp` GET 要真的连一批 server，
- * 不在这里测。
+ * 覆盖范围：`api/mcp.ts` 的 `/api/mcp/import` 与 `/api/mcp/trust`。`/api/mcp` GET 要
+ * 真的连一批 server，不在这里测。
  *
  * 钉的是三条**静默失败**——它们都不会报错，只会让用户对着一个没有任何变化的界面长时间排查：
  *
@@ -12,10 +12,11 @@
  *   但只取一份且 `servers` 优先，写错键的话并进来的这几条会被整份忽略。
  */
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { configPath, isWorkspaceTrusted, loadConfig } from '@qywork/runtime'
 import { handleMcpApi } from './mcp.ts'
 import type { ApiRequestDeps } from './types.ts'
 
@@ -147,5 +148,49 @@ describe('导入一份现成的 MCP 配置', () => {
     })
     expect(res!.status).toBe(422)
     expect(await readFile(file, 'utf8')).toBe('{ 这不是 JSON')
+  })
+})
+
+/**
+ * 工作区授权。
+ *
+ * 钉的是这条闸的两个方向都通：授权落进 `config.json`，撤销把它去掉。
+ * 未授权时项目层不加载那一半在 `runtime/extensions.test.ts` 里验。
+ */
+describe('工作区授权', () => {
+  const prevHome = process.env.QYWORK_HOME
+  beforeEach(async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qywork-trusthome-'))
+    dirs.push(home)
+    process.env.QYWORK_HOME = home
+  })
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = prevHome
+  })
+
+  test('不带 trusted 回 400，且不落盘', async () => {
+    const { root } = await workspace()
+    const res = await call(root, '/api/mcp/trust', { method: 'POST', body: '{}' })
+    expect(res?.status).toBe(400)
+    expect(await readFile(configPath(), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('授权与撤销都落进 config.json', async () => {
+    const { root } = await workspace()
+
+    const on = await call(root, '/api/mcp/trust', {
+      method: 'POST',
+      body: JSON.stringify({ trusted: true }),
+    })
+    expect(on?.status).toBe(200)
+    expect(isWorkspaceTrusted(await loadConfig(), root)).toBe(true)
+
+    const off = await call(root, '/api/mcp/trust', {
+      method: 'POST',
+      body: JSON.stringify({ trusted: false }),
+    })
+    expect(off?.status).toBe(200)
+    expect(isWorkspaceTrusted(await loadConfig(), root)).toBe(false)
   })
 })

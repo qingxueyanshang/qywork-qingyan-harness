@@ -663,9 +663,24 @@ export interface McpPayload {
   /** 配置里有、但这一轮没连上的。不列的话它们凭空消失。 */
   configured: { name: string; scope: Scope }[]
   error: string | null
+  /** 这个工作区的项目层扩展是否已授权。未授权时项目层的 server 一条都不启动。 */
+  trusted: boolean
 }
 export function loadMcp(): Promise<McpPayload> {
   return client.api<McpPayload>('/api/mcp')
+}
+/**
+ * 授权 / 撤销这个工作区的项目层扩展。
+ *
+ * 授权的是整个工作区，不是单个 server：一条 server 的命令行安不安全，用户在界面上
+ * 判断不了。改的是**下一次加载扩展时的输入**：服务已经持有的那一份不会重载，
+ * 与 `importMcp` 同理。
+ */
+export function trustWorkspaceExtensions(trusted: boolean): Promise<{ trusted: boolean }> {
+  return scheduleWrite('/api/mcp/trust', {
+    method: 'POST',
+    body: JSON.stringify({ trusted }),
+  })
 }
 /** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
 export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; names: string[] }> {

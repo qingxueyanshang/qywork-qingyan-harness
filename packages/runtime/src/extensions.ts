@@ -27,6 +27,7 @@ import {
   scopeRoots,
 } from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
+import { isWorkspaceTrusted, loadConfig } from './config.ts'
 
 /** 全局根下装插件的子目录名。 */
 export const PLUGINS_SUBDIR = 'plugins'
@@ -226,8 +227,21 @@ export async function loadWorkspaceMcp(
     stopAll: () => {},
   }
 
-  const config = await loadScopedMcpConfig(workspaceRoot)
-  if (config.error) onLog?.(`[qy] ${MCP_FILE}：${config.error}`)
+  const all = await loadScopedMcpConfig(workspaceRoot)
+  if (all.error) onLog?.(`[qy] ${MCP_FILE}：${all.error}`)
+
+  /*
+   * 项目层要先授权。这里必须**重新合成**而不是把项目层那几个名字过滤掉：
+   * `loadScopedMcpConfig` 里先认领的赢，项目层已经把同名的全局 server 丢掉了，
+   * 事后过滤的结果是这个名字一个都不剩。
+   */
+  const pending = Object.keys(all.servers).filter((n) => all.scopeOf[n] === 'project')
+  const trusted = pending.length === 0 || isWorkspaceTrusted(await loadConfig(), workspaceRoot)
+  const config = trusted
+    ? all
+    : await loadScopedMcpConfig(workspaceRoot, { scopes: ['builtin', 'global'] })
+  if (!trusted) onLog?.(`[qy] 项目层 MCP 未授权，本轮不启动：${pending.join('、')}`)
+
   if (Object.keys(config.servers).length === 0) return empty
 
   return loadMcpServers(config, workspaceRoot, {
@@ -255,13 +269,17 @@ export interface ScopedMcpConfig extends McpConfig {
  *
  * **加载器和设置页共用它**：页面上列出来的 server，必须就是模型真的连上的那批。
  */
-export async function loadScopedMcpConfig(workspaceRoot: string): Promise<ScopedMcpConfig> {
+export async function loadScopedMcpConfig(
+  workspaceRoot: string,
+  opts: { scopes?: readonly Scope[] } = {},
+): Promise<ScopedMcpConfig> {
   const servers: ScopedMcpConfig['servers'] = {}
   const scopeOf: Record<string, Scope> = {}
   const files: { scope: Scope; path: string }[] = []
   const errors: string[] = []
 
   for (const { scope, dir } of scopePaths(scopeRoots(workspaceRoot), '')) {
+    if (opts.scopes && !opts.scopes.includes(scope)) continue
     const path = join(dir, MCP_FILE)
     files.push({ scope, path })
     const raw = await readFile(path, 'utf8').catch(() => null)

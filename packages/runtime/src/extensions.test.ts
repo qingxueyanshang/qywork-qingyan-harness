@@ -5,15 +5,18 @@
  * 而 mock 掉进程就把被验的那一层替换掉了。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolRegistry } from '@qywork/agent'
+import { configPath, isWorkspaceTrusted, type QyConfig, setWorkspaceTrust } from './config.ts'
 import {
   acquireExtensions,
   globalPluginsDir,
   loadExtensions,
+  loadScopedMcpConfig,
+  loadWorkspaceMcp,
   MCP_CONFIG,
   releaseExtensions,
 } from './extensions.ts'
@@ -320,9 +323,24 @@ describe('MCP 接线', () => {
     '})',
   ].join('\n')
 
+  /*
+   * 这一组要写 `config.json` 授权工作区，所以整组都在临时 `QYWORK_HOME` 下跑。
+   * 不隔离的话写的是本机真配置。
+   */
+  const prevHome = process.env.QYWORK_HOME
+  beforeEach(async () => {
+    process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-mcphome-'))
+  })
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = prevHome
+  })
+
   async function withMcp(extra: Record<string, unknown> = {}) {
     const root = await mkdtemp(join(tmpdir(), 'qywork-mcpext-'))
     await mkdir(join(root, '.agents'), { recursive: true })
+    // 项目层的 server 要先授权才加载，这一组验的是加载之后的事。
+    await writeFile(configPath(), JSON.stringify({ trustedWorkspaces: [root] }), 'utf8')
     await writeFile(join(root, '.agents', 'server.mjs'), SERVER, 'utf8')
     await writeFile(
       join(root, MCP_CONFIG),
@@ -390,5 +408,81 @@ describe('扩展按工作区共享', () => {
     const d = await acquireExtensions(root)
     expect(d).not.toBe(a)
     releaseExtensions(root)
+  })
+})
+
+/**
+ * 项目层 MCP 的授权闸。
+ *
+ * 覆盖范围：`extensions.ts` 的 `loadWorkspaceMcp` / `loadScopedMcpConfig`，
+ * 以及 `config.ts` 的 `isWorkspaceTrusted` / `setWorkspaceTrust`。
+ *
+ * 钉的是原始失败形状：**把别人的仓库设成工作区，服务一启动就执行它
+ * `.agents/mcp.json` 里声明的命令**，用户全程没有表态的机会。
+ *
+ * 判据是「试没试过」，不是「连没连上」：未授权时 `failures` 也必须是空的
+ * ——记一条失败意味着已经把命令跑起来过了。
+ */
+describe('项目层 MCP 要先授权', () => {
+  const PROJECT_ONLY = {
+    mcpServers: { repo: { command: 'node', args: ['-e', 'process.exit(0)'] } },
+  }
+
+  async function workspaceWith(config: unknown): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-trust-'))
+    await mkdir(join(root, '.agents'), { recursive: true })
+    await writeFile(join(root, '.agents', 'mcp.json'), JSON.stringify(config), 'utf8')
+    return root
+  }
+
+  async function trust(root: string): Promise<void> {
+    await writeFile(configPath(), JSON.stringify({ trustedWorkspaces: [root] }), 'utf8')
+  }
+
+  test('未授权：项目层的 server 一条都不启动，也不记失败', async () => {
+    await withTempHome(async () => {
+      const root = await workspaceWith(PROJECT_ONLY)
+      const reg = await loadWorkspaceMcp(root)
+      expect(reg.servers).toEqual([])
+      expect(reg.failures).toEqual([])
+    })
+  })
+
+  test('授权后才去连它', async () => {
+    await withTempHome(async () => {
+      const root = await workspaceWith(PROJECT_ONLY)
+      await trust(root)
+      const reg = await loadWorkspaceMcp(root)
+      // 这个命令立刻退出，连不上。**有失败记录就说明真的试过了**，
+      // 而「试过」正是未授权时不该发生的那件事。
+      expect(reg.failures.map((f) => f.server)).toEqual(['repo'])
+    })
+  })
+
+  test('未授权时同名的 server 归全局那份，不被仓库里的遮蔽', async () => {
+    await withTempHome(async (home) => {
+      const root = await workspaceWith({ mcpServers: { same: { command: 'from-repo' } } })
+      await writeFile(
+        join(home, 'mcp.json'),
+        JSON.stringify({ mcpServers: { same: { command: 'from-global' } } }),
+        'utf8',
+      )
+
+      const all = await loadScopedMcpConfig(root)
+      expect(all.scopeOf.same).toBe('project')
+
+      const gated = await loadScopedMcpConfig(root, { scopes: ['builtin', 'global'] })
+      expect(gated.scopeOf.same).toBe('global')
+      expect((gated.servers.same as { command?: string }).command).toBe('from-global')
+    })
+  })
+
+  test('授权可以撤销，撤到空时键整个删掉', () => {
+    const base = { active: { provider: 'x', model: 'y' }, providers: {} } as QyConfig
+    const on = setWorkspaceTrust(base, '/tmp/ws', true)
+    expect(isWorkspaceTrusted(on, '/tmp/ws')).toBe(true)
+    const off = setWorkspaceTrust(on, '/tmp/ws', false)
+    expect(isWorkspaceTrusted(off, '/tmp/ws')).toBe(false)
+    expect('trustedWorkspaces' in off).toBe(false)
   })
 })

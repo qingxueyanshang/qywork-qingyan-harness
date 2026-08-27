@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Show } from 'solid-js'
+import { createResource, createSignal, For, Match, Show, Switch } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import {
   askInChat,
@@ -7,6 +7,7 @@ import {
   loadMcp,
   pickFiles,
   type Scope,
+  trustWorkspaceExtensions,
 } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
@@ -80,11 +81,49 @@ export default function McpSettings() {
   )
 
   const servers = () => (loaded(data)?.servers ?? []).filter((s) => s.scope === scope())
-  /** 这一轮配了但没连上的：配置里有、servers 里没有。它们不能凭空消失。 */
+
+  /** 项目层配了几条。授权按钮只在这一层、且这一层真有 server 时才出现。 */
+  const projectConfigured = () =>
+    (loaded(data)?.configured ?? []).filter((c) => c.scope === 'project')
+
+  /**
+   * 未授权而没启动的那些。**它们不能混进「没连上」**：那一栏的含义是「试过、失败了」，
+   * 而这些一次都没试过，两者的出路完全不同。
+   */
+  const pending = () =>
+    scope() === 'project' && loaded(data)?.trusted === false ? projectConfigured() : []
+
+  /** 这一轮配了但没连上的：配置里有、servers 里没有、也不是在等授权的那些。 */
   const missing = () =>
     (loaded(data)?.configured ?? []).filter(
-      (c) => c.scope === scope() && !loaded(data)?.servers.some((s) => s.name === c.name),
+      (c) =>
+        c.scope === scope() &&
+        !loaded(data)?.servers.some((s) => s.name === c.name) &&
+        !pending().some((x) => x.name === c.name),
     )
+
+  const setTrust = async (next: boolean) => {
+    setError(null)
+    try {
+      await trustWorkspaceExtensions(next)
+      await refetch()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** 按钮写它会做什么，不写当前状态——当前状态由下面那一栏在不在说。 */
+  const TrustButton = () => (
+    <Show when={scope() === 'project' && projectConfigured().length > 0}>
+      <button
+        class="btn-ghost sm"
+        type="button"
+        onClick={() => void setTrust(loaded(data)?.trusted !== true)}
+      >
+        {loaded(data)?.trusted ? '撤销授权' : '授权'}
+      </button>
+    </Show>
+  )
   const failures = () =>
     (loaded(data)?.failures ?? []).filter((f) => {
       const owner = loaded(data)?.configured.find((c) => c.name === f.server)
@@ -107,41 +146,52 @@ export default function McpSettings() {
                 setError(null)
               }}
               dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
-              actions={<AddButton />}
+              actions={
+                <>
+                  <TrustButton />
+                  <AddButton />
+                </>
+              }
             />
 
             <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
             <Section>
-              <Show
-                when={servers().length > 0}
-                fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}
-              >
-                <div class="entry-list">
-                  <For each={servers()}>
-                    {(s) => (
-                      <EntryCard
-                        name={s.name}
-                        desc={`${s.tools.length} 个工具 · MCP ${s.protocolVersion}`}
-                      >
-                        <Show when={s.tools.length > 0}>
-                          <div class="entry-extra">
-                            <For each={s.tools}>{(t) => <code>{t.name}</code>}</For>
-                          </div>
-                        </Show>
-                        {/* 声明了、本仓未实现的能力。不写的话「连上了却没有工具」
+              <Switch fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}>
+                <Match when={pending().length > 0}>
+                  {/* 边界，不是解释：界面上没有第二处说得出「未授权就不启动」。 */}
+                  <p class="settings-notices">项目层的 mcp.json 跟着仓库走，授权后这一层才启动</p>
+                  <div class="entry-list">
+                    <For each={pending()}>{(c) => <EntryCard name={c.name} />}</For>
+                  </div>
+                </Match>
+                <Match when={servers().length > 0}>
+                  <div class="entry-list">
+                    <For each={servers()}>
+                      {(s) => (
+                        <EntryCard
+                          name={s.name}
+                          desc={`${s.tools.length} 个工具 · MCP ${s.protocolVersion}`}
+                        >
+                          <Show when={s.tools.length > 0}>
+                            <div class="entry-extra">
+                              <For each={s.tools}>{(t) => <code>{t.name}</code>}</For>
+                            </div>
+                          </Show>
+                          {/* 声明了、本仓未实现的能力。不写的话「连上了却没有工具」
                           就是一个查不出原因的现象。 */}
-                        <Show when={s.unsupported.length > 0}>
-                          <div class="entry-extra bad">
-                            这个 server 还声明了 {s.unsupported.join(' / ')}，qywork 没有实现，
-                            它们不会生效
-                          </div>
-                        </Show>
-                      </EntryCard>
-                    )}
-                  </For>
-                </div>
-              </Show>
+                          <Show when={s.unsupported.length > 0}>
+                            <div class="entry-extra bad">
+                              这个 server 还声明了 {s.unsupported.join(' / ')}，qywork 没有实现，
+                              它们不会生效
+                            </div>
+                          </Show>
+                        </EntryCard>
+                      )}
+                    </For>
+                  </div>
+                </Match>
+              </Switch>
               {/* 导入失败挂在带「导入」按钮的这一段上。 */}
               <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
             </Section>

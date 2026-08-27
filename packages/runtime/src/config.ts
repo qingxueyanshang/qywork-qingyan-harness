@@ -6,7 +6,7 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { lookupModel } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
@@ -99,6 +99,57 @@ export interface QyConfig {
    * 已配置的 API Key，不管它叫什么都必须剥。
    */
   envAllowList?: string[]
+  /**
+   * 已授权加载项目层扩展的工作区绝对路径。
+   *
+   * 工作区里的 `.agents/mcp.json` 跟着仓库走，克隆下来就带着。没有这一层，把别人的
+   * 仓库设成工作区就等于同意执行它声明的命令——服务一启动就 spawn，用户没有任何
+   * 表态的机会。未列入时项目层整层不参与合成，全局层照常。
+   *
+   * **同名遮蔽一并修掉**：`SCOPE_ORDER` 里 project 高于 global，仓库声明一个与全局
+   * 同名的 server 会把用户自己那份挤掉，而设置页显示的名字不变。项目层不参与时，
+   * 这个名字归全局那份。
+   *
+   * **只管执行类的项目层配置。** `.agents/skills`、`.agents/memory` 注入的是提示词
+   * 不是命令，不走这一层。
+   */
+  trustedWorkspaces?: string[]
+}
+
+/**
+ * 路径比较键。Windows 上路径大小写不敏感，同一个目录会以两种写法进来，
+ * 按原串比会出现「授权过但仍然拦」。
+ */
+function trustKey(path: string): string {
+  const abs = resolve(path)
+  return process.platform === 'win32' ? abs.toLowerCase() : abs
+}
+
+/** 这个工作区的项目层扩展是否已被授权。 */
+export function isWorkspaceTrusted(cfg: QyConfig, workspaceRoot: string): boolean {
+  const key = trustKey(workspaceRoot)
+  return (cfg.trustedWorkspaces ?? []).some((p) => trustKey(p) === key)
+}
+
+/**
+ * 授权或撤销一个工作区。
+ *
+ * 一个函数管两个方向，不拆成 trust / untrust 一对：撤销是这条边界的必需品，
+ * 拆开写会出现只接了授权那一半的界面，而用户没有出路。
+ */
+export function setWorkspaceTrust(
+  cfg: QyConfig,
+  workspaceRoot: string,
+  trusted: boolean,
+): QyConfig {
+  const key = trustKey(workspaceRoot)
+  const rest = (cfg.trustedWorkspaces ?? []).filter((p) => trustKey(p) !== key)
+  const next = trusted ? [...rest, resolve(workspaceRoot)] : rest
+  if (next.length === 0) {
+    const { trustedWorkspaces: _drop, ...without } = cfg
+    return without
+  }
+  return { ...cfg, trustedWorkspaces: next }
 }
 
 /**
