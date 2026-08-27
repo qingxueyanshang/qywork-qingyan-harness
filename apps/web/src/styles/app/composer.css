@@ -17,6 +17,9 @@
   max-width: 760px;
   width: 100%;
   margin: 0 auto;
+  /* 底色不能省：这一块里的整轮状态条、目标条、跟进卡片都占流，会话流的裁切边
+     落在它们的上沿。透明的话正文会从 chip 两侧的空白里透出来再被切断。 */
+  background: var(--bg-app);
 }
 
 .live-dot {
@@ -43,44 +46,26 @@
   }
 }
 
-/* 整轮状态条：居中，且**悬浮在输入框上沿之上，不占流**。
+/* 整轮状态条：居中，占流。
  *
  * 居中是因为它不属于左右任何一侧的控件，是这一轮的状态——左对齐时看起来像
  * 输入框长出来的一个附件。居中交给外层，chip 自己仍然按内容宽度收缩。
  *
- * 不占流是实测逼出来的：占流时 `.composer-wrap` 在输入框上方多出一条 35px 的
- * **整宽**带子（27 的行 + 8 的间距），而会话流的裁切边就落在那条带子的顶上
- * ——量出来 `.transcript` 底边 744、输入框卡片上沿 779。因此正文在离框 35px 的
- * 半空中被齐刷刷切断。这与本文件开头 `.composer-wrap` 那条「padding-top 必须是 0」
- * 拦的是同一个坑。
- *
- * 悬浮之后裁切边回到卡片上沿（实测 clipGap 0），chip 挡住的只剩正文最底下那一小截。
- * **整条不吃指针**，否则输入框上方那 35px 会挡住正文的选中和点击。
+ * **占流，不要改回绝对定位。** 悬浮时它的高度不在流里，上面那道缝只能由
+ * 会话流的下内边距减去「它的高 + 下缝」得出，于是缝的宽窄取决于一个写死的高度
+ * 与它的实际高度差多少——字号、内容换行、样式没全量加载都会让这道缝变宽变窄，
+ * 而下面那道缝是 margin 直接给的，两边永远对不齐。占流之后上下都是直接给的值。
  */
 .run-status {
-  position: absolute;
-  /* `bottom: 100%` 把整条的下沿贴到 `.composer-wrap` 的上沿，间距再由
-     margin 让开。不要改回 `top: 0` + `translateY(-100% - 缝)`：那种写法里
-     `--composer-stack-gap` 一旦读不到，整条 transform 作废、chip 落回 top 0，
-     形状是它盖在跟进卡片的上半截上，而不是缝变宽变窄。 */
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  margin-bottom: var(--composer-stack-gap);
   display: flex;
   justify-content: center;
-  pointer-events: none;
+  margin-bottom: var(--composer-stack-gap);
 }
 .changes-chip {
-  /* 指针在 `.run-status` 那一层被关掉了，这里单独开回来：关掉的是整宽那条带子
-     （它悬在正文上面），开回来的是 chip 自己——里面两段读数都是按钮。 */
-  pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  /* 定高，不由内容撑：会话流底部按这个数留位置，让它上下两道缝一样宽。 */
-  height: var(--run-status-h);
-  padding: 0 var(--s-3);
+  padding: 4px var(--s-3);
   /* 与工具栏上的 chip 同阶。不做药丸形：tokens.css 的圆角阶梯写死了
      「带文字的标签一律不用 `--r-full`」。 */
   border-radius: var(--r-sm);
@@ -131,7 +116,7 @@
  * **高度锁死**（B9）：目标正文长度不定、状态文字长度不定，随内容变高的话
  * 用户瞄着「停止」按下去，那个位置已经换成了别的按钮。长了就截断，title 里有全文。 */
 .goal-chip {
-  margin: 0 var(--s-4) var(--s-2);
+  margin: 0 var(--s-4) var(--composer-stack-gap);
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
   background: var(--bg-inset);
@@ -189,8 +174,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
-  /* 下边距用 `--composer-stack-gap`：它上面那条读数条悬浮时按同一个值让开
-     `.composer-wrap` 的顶沿，写成 --s-2 的话卡片下面的缝比上面宽一截。 */
   margin: 0 var(--s-4) var(--composer-stack-gap);
 }
 .followup-card {
