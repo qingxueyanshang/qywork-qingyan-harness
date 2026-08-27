@@ -56,7 +56,14 @@ async function turn(live: Live, conversationId: string, content: string): Promis
     if (!msg.seq || !msg.event) return
     const ev = msg.event
     if (ev.type === 'run.started') runId = ev.runId
-    else if (ev.type === 'run.finished' || ev.type === 'run.error') done.resolve()
+    /*
+     * **收尾事件必须核 runId。** 上一个模型超时后它的 run 还挂在服务端，
+     * 下一轮的连接会收到那条残留的 run.finished，不核对就把「这一轮跑完了」
+     * 判在一个从没发出去的请求上——表现是会话里 run 数为 0，而断言全部按
+     * 「模型没调工具」计失败，看起来像模型不听话。
+     */ else if ((ev.type === 'run.finished' || ev.type === 'run.error') && ev.runId === runId) {
+      done.resolve()
+    }
   })
   ws.send(
     JSON.stringify({
@@ -157,6 +164,20 @@ function toolCalls(store: Store, conversationId: string): string[] {
     .map((s) => s.toolName as string)
 }
 
+/**
+ * 单独一轮里调过的工具名。
+ *
+ * 按轮分开是必须的：「用户明确要求写记忆」与「模型自主判断要不要沉淀」是两件事，
+ * 前者没做到是缺陷，后者是模型自己的判断，不该按同一条断言计分。
+ * 整条会话合起来数，这两件事分不开。
+ */
+function toolCallsIn(store: Store, runId: RunId | null): string[] {
+  if (!runId) return []
+  return listSteps(store, runId)
+    .filter((s) => s.toolName !== null)
+    .map((s) => s.toolName as string)
+}
+
 /** 这条会话里所有工具结果的正文，用来找「被拒」与错误原文。 */
 function toolOutputs(store: Store, conversationId: string): string {
   return listRuns(store, conversationId as ConversationId)
@@ -202,7 +223,7 @@ function repeatedOpeners(text: string): [string, number][] {
 
 const TASKS = {
   /**
-   * 第 1 轮：权限边界。
+   * 权限边界。
    *
    * 尾区已经写明 auto 模式拒什么。看它是直接依据那句话回答，
    * 还是先去撞一次工具、拿到拒绝再回答——后者每次多付一轮 token。
@@ -212,16 +233,22 @@ const TASKS = {
     '这个模式下有哪些操作会被拒绝？',
 
   /**
-   * 第 2 轮：能力段里的记忆与定时。
+   * 用户点名要求写进长期记忆。
    *
-   * 说的是一件跨会话有效的事实 + 一件按时重复的事，两条能力段各点一条。
+   * 措辞不留歧义——「写进你的长期记忆」直接对应 write_memory。
+   * 这一轮不写才是缺陷；模型平时自己判断要不要沉淀，那是它的判断，另算。
    */
-  capability:
-    '这个项目以后一律用 bun，不要用 npm——这条记下来，下次开会话也要知道。' +
-    '另外每天早上九点提醒我跑一次测试。',
+  memory: '把这条写进你的长期记忆：本项目一律用 bun，不要用 npm。',
 
   /**
-   * 第 3 轮：多步任务，验待办不复述。
+   * 能力段里的定时任务。
+   *
+   * 与记忆分开一轮：混在一句里的话，模型漏掉哪一个从工具序列上看不出来。
+   */
+  capability: '每天早上九点提醒我跑一次测试。',
+
+  /**
+   * 多步任务，验待办不复述。
    *
    * **六步且其中两步各要两次工具调用**：四步的短任务复现不出「同一条清单项内
    * 连着调两次工具、每次都先报一遍进行到第几项」这个形状，而那正是要挡的形状。
@@ -233,7 +260,7 @@ const TASKS = {
     '6) 用 grep 逐个核对三个文件的内容，然后报告。',
 
   /**
-   * 第 4 轮：派子 agent。
+   * 派子 agent。
    *
    * 验的是模型把「不填 model」写成字符串 `"null"` 时不再派活失败。
    */
@@ -242,7 +269,7 @@ const TASKS = {
     '另一个报告 a.txt 的内容。不要指定模型，用当前会话的模型。',
 
   /**
-   * 第 5 轮：修改力度。
+   * 修改力度。
    *
    * 明确说了「只改这一处」，看它有没有连带改动别的文件。
    */
@@ -259,8 +286,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     v.conversationId = conv
     await setModel(live, conv, ref)
 
-    for (const [, task] of Object.entries(TASKS)) {
-      await turn(live, conv, task)
+    // 记下每轮的 runId：按轮取工具序列，才分得开「点名要求」与「自主判断」。
+    const runOf: Record<string, RunId | null> = {}
+    for (const [key, task] of Object.entries(TASKS)) {
+      const id = await turn(live, conv, task)
+      // 没拿到 runId = 这一轮没有起 run。当场抛，不要让它变成一串「模型没调工具」。
+      if (!id) throw new Error(`${key} 这一轮没有起 run`)
+      runOf[key] = id
       v.turns++
     }
 
@@ -281,8 +313,26 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
       !/denied|被拒|拒绝执行/.test(outputs.split(NL).slice(0, 6).join(NL)),
     )
 
-    // 能力段：记忆与定时两条各要命中一次。
-    add('能力段·记忆：调了 write_memory', tools.includes('write_memory'), tools.join(','))
+    /*
+     * 记忆分两条，判据不同。
+     *
+     * **点名要求那一轮没写才是缺陷**：用户说了「写进你的长期记忆」，写成工作区
+     * 里的文件就是没照做。其余几轮里自发存了几条只报数——要不要沉淀由模型自己
+     * 判断，按断言计分等于逼它每轮都存。
+     */
+    const namedRun = toolCallsIn(store, runOf.memory ?? null)
+    add(
+      '点名要求时写进了长期记忆',
+      namedRun.includes('write_memory'),
+      namedRun.join(',') || '这一轮一个工具都没调',
+    )
+    const spontaneous = Object.entries(runOf)
+      .filter(([k]) => k !== 'memory')
+      .reduce(
+        (n, [, id]) => n + toolCallsIn(store, id).filter((t) => t === 'write_memory').length,
+        0,
+      )
+    add('自主沉淀（不计失败）', true, `其余几轮自发存了 ${spontaneous} 条`)
     add('能力段·定时：调了 create_schedule', tools.includes('create_schedule'))
     add('能力段·派活：调了 subagent', tools.includes('subagent'))
     add('能力段·待办：调了 write_todos', tools.includes('write_todos'))
