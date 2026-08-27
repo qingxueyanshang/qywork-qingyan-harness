@@ -14,6 +14,7 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
     model: 'test',
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
+    vision: null,
     resources: new Map(),
     state: new Map(),
     sink: null,

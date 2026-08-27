@@ -851,6 +851,9 @@ export class Session {
     const model = typeof target === 'string' ? target : target.model
     const secrets = collectSecrets(this.opts.config)
     const store = this.opts.store
+    // 三项逐模型的能力取自同一份 spec：分开各取一次的话，换模型时它们会来自
+    // 两次不同的解析结果。
+    const spec = buildAdapter(this.resolveProfile(target)).spec
     return {
       workspaceRoot: this.opts.workspaceRoot,
       conversationId,
@@ -858,9 +861,10 @@ export class Session {
       model,
       // 投递预算按窗口算，且**在执行时**应用——换模型只影响之后的读取，
       // 已落库的 step 一个字节不改（投影因此仍是纯函数）。
-      contextWindow: buildAdapter(this.resolveProfile(target)).spec.contextWindow,
+      contextWindow: spec.contextWindow,
       // 扣账那把尺与窗口同源，理由见 `ToolContext.density`。
-      density: buildAdapter(this.resolveProfile(target)).spec.density,
+      density: spec.density,
+      vision: spec.vision,
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，

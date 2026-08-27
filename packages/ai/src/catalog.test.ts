@@ -224,6 +224,48 @@ describe('模型库覆盖', () => {
     expect(applySpecOverride(opus(), { thinksByDefault: false }).thinksByDefault).toBe(false)
     expect(applySpecOverride(opus(), {}).thinksByDefault).toBe(opus().thinksByDefault)
   })
+
+  /**
+   * 中转站把一个收图片的模型挂在自定义名下时，这一格是唯一出口——
+   * 目录认不出那个名字，落在 `null`（不裁决）。反过来也一样：
+   * 中转站的某条链路不收图片时填 `false` 就挡住了。
+   */
+  test('vision 三态都能覆盖，false 不被当成缺省', () => {
+    const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
+    expect(unknown.vision).toBeNull()
+    expect(applySpecOverride(unknown, { vision: true }).vision).toBe(true)
+    expect(applySpecOverride(opus(), { vision: false }).vision).toBe(false)
+    expect(applySpecOverride(opus(), {}).vision).toBe(opus().vision)
+  })
+})
+
+/**
+ * 图片输入这一轴。
+ *
+ * 三态的意义全在这里：`null` 是「厂商规格页没写」，被门控当成放行；
+ * 只有 `false` 会让 `agent` 把图像块换成文本注记、让界面收起图片入口。
+ * 把 `null` 折成 `false` 的话，一批实际收图片的中转站模型会被挡掉。
+ */
+describe('图片输入', () => {
+  test('未收录模型不裁决', () => {
+    expect(lookupModel('中转站上的某个模型', 'openai_chat_completions').vision).toBeNull()
+  })
+
+  /** 照厂商规格页逐条填，不按 id 前缀推断：同一家的两条能一真一假。 */
+  test('照规格页填：同一家里两条取值相反', () => {
+    expect(lookupModel('glm-5.3', 'openai_chat_completions').vision).toBe(false)
+    expect(lookupModel('glm-5.3-flash', 'openai_chat_completions').vision).toBe(true)
+    expect(lookupModel('qwen3.7-max', 'openai_chat_completions').vision).toBe(false)
+    expect(lookupModel('qwen3.7-plus', 'openai_chat_completions').vision).toBe(true)
+  })
+
+  /** DeepSeek 那两条的唯一差别就是这一项，两条协议下都成立。 */
+  test('DeepSeek 视觉条目与普通条目分得开', () => {
+    for (const kind of ['openai_chat_completions', 'openai_responses'] as const) {
+      expect(lookupModel('deepseek-v4-flash', kind).vision).toBe(false)
+      expect(lookupModel('deepseek-v4-flash-vision-exp', kind).vision).toBe(true)
+    }
+  })
 })
 
 /**
@@ -414,6 +456,20 @@ describe('长上下文阶梯价', () => {
     expect(priceAt(pro, { promptTokens: 200_000 }).output).toBe(12)
     expect(priceAt(pro, { promptTokens: 200_001 }).output).toBe(18)
     expect(priceAt(g46(), { promptTokens: 200_000 }).output).toBe(12)
+  })
+
+  /**
+   * 三档的那几条：取**达到的最高一档**，不是第一条命中的。
+   *
+   * 只留一档的话，中间那段与最长那段必有一段记错价，而两个方向都是静默的。
+   */
+  test('三档阶梯逐档进档', () => {
+    const flash = lookupModel('qwen3.7-flash', 'openai_chat_completions')
+    expect(priceAt(flash, { promptTokens: 32_768 }).input).toBe(0.2)
+    expect(priceAt(flash, { promptTokens: 32_769 }).input).toBe(0.6)
+    expect(priceAt(flash, { promptTokens: 262_144 }).input).toBe(0.6)
+    expect(priceAt(flash, { promptTokens: 262_145 }).input).toBe(1.2)
+    expect(priceAt(flash, { promptTokens: 900_000 }).output).toBe(4.8)
   })
 })
 

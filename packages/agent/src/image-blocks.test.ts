@@ -121,7 +121,7 @@ describe('materialize', () => {
         ],
       },
     ]
-    const out = await materialize(req(original))
+    const out = await materialize(req(original), true)
     const before = original[0]!.content as ContentBlock[]
     expect(before[1]).toMatchObject({ source: { kind: 'path' } })
     const after = out.messages[0]!.content as ContentBlock[]
@@ -131,7 +131,7 @@ describe('materialize', () => {
   /** 全是字符串时原样返回，不白拷一遍。 */
   test('没有内容块时原对象直接返回', async () => {
     const r = req([{ role: 'user', content: '你好' }])
-    expect(await materialize(r)).toBe(r)
+    expect(await materialize(r, true)).toBe(r)
   })
 
   /** 文件没了同样是终态，不抛——一张图发不出去不该让整轮起不来。 */
@@ -146,9 +146,65 @@ describe('materialize', () => {
           ],
         },
       ]),
+      true,
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect((blocks[0] as { text: string }).text).toContain('已不存在')
+  })
+
+  /**
+   * 原始失败形状：模型不收图片，请求体里却带着图像块，端点回 400。
+   *
+   * 三种来源在同一处收口——用户附件（path 形态）、工具与 MCP 返回的图（base64
+   * 形态）、以及换模型之前留在历史里的旧图。锁的是**请求体里一个图像块都没有**，
+   * 且换上的那句话模型看得见。
+   */
+  test('模型不收图片：图像块换成文本注记，两种来源都覆盖', async () => {
+    const { path } = await fixture()
+    const out = await materialize(
+      req([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '看这张' },
+            { type: 'image', mimeType: 'image/png', source: { kind: 'path', path } },
+          ],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'c1',
+          content: [
+            { type: 'text', text: envelope },
+            {
+              type: 'image',
+              mimeType: 'image/png',
+              source: { kind: 'base64', data: PNG.toString('base64') },
+            },
+          ],
+        },
+      ]),
+      false,
+    )
+    const all = out.messages.flatMap((m) => m.content as ContentBlock[])
+    expect(all.some((b) => b.type === 'image')).toBe(false)
+    const texts = all.filter((b) => b.type === 'text').map((b) => b.text)
+    expect(texts.some((t) => t.includes('当前模型不接受图片输入'))).toBe(true)
+  })
+
+  /** `null` 是「厂商规格页没写」，不是「不支持」——照常发。 */
+  test('没有出处时照常发图片', async () => {
+    const { path } = await fixture()
+    const out = await materialize(
+      req([
+        {
+          role: 'user',
+          content: [{ type: 'image', mimeType: 'image/png', source: { kind: 'path', path } }],
+        },
+      ]),
+      null,
+    )
+    const blocks = out.messages[0]!.content as ContentBlock[]
+    expect(blocks[0]).toMatchObject({ source: { kind: 'base64' } })
   })
 })
 

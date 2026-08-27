@@ -85,6 +85,7 @@ function baseCtx(runId: string): ToolContextBase {
     model: 'test',
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
+    vision: null,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -419,6 +420,7 @@ describe('ToolContext 生命周期', () => {
           model: 'test',
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
+          vision: null,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -482,6 +484,7 @@ describe('ToolContext 生命周期', () => {
           model: 'test',
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
+          vision: null,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -546,6 +549,7 @@ describe('权限拒绝', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -708,6 +712,7 @@ describe('上下文分组占用', () => {
           model: 'test',
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
+          vision: null,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -782,6 +787,7 @@ describe('上下文分组占用', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -847,6 +853,7 @@ describe('上下文分组占用', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -986,6 +993,7 @@ describe('原地打转', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1039,6 +1047,7 @@ describe('原地打转', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1100,6 +1109,7 @@ describe('effort 传到请求上', () => {
           model: 'test',
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
+          vision: null,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -1153,6 +1163,7 @@ describe('花费带币种', () => {
           model,
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
+          vision: null,
           resources: new Map(),
           state: new Map(),
           sink: null,
@@ -1259,6 +1270,7 @@ describe('上下文读数：一把尺', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1303,6 +1315,7 @@ describe('上下文读数：一把尺', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,
@@ -1451,6 +1464,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       | 'break-after-thinking'
       | 'reject'
       | 'reject-relay'
+      | 'reject-image'
       | 'ok'
     )[],
   ): LlmAdapter {
@@ -1491,6 +1505,19 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
             Object.assign(new Error('{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'), {
               status: 400,
             }),
+          )
+        }
+        if (act === 'reject-image') {
+          // 不接受图片的模型收到图像块。同样走真的分类器：手写 ProviderError
+          // 会绕开「400 归哪个码」，而那正是这条要锁的一环。
+          throw classifyProviderError(
+            'anthropic_messages',
+            Object.assign(
+              new Error(
+                '{"error":{"message":"Invalid content type: image_url is not supported by this model"}}',
+              ),
+              { status: 400 },
+            ),
           )
         }
         yield { type: 'text_delta', delta: '完成' }
@@ -1561,6 +1588,24 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  /**
+   * 原始失败形状：不接受图片的模型收到图像块，界面从「正在重连 1 / 5」数到 5，
+   * 而模型不接受图片这件事一个字都没出现。
+   *
+   * 锁的是**一次都不重发**：只开一行账、没有 `run.retrying`、错误码是
+   * `invalid_request`、provider 原话原样带到界面。
+   */
+  test('请求被明确拒绝：一次都不重发，界面不报「正在重连」', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['reject-image', 'ok']))
+
+    expect(rec.opened).toEqual([0])
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('invalid_request')
+    expect(err?.type === 'run.error' && err.message).toContain('image_url is not supported')
+    expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'invalid_request' })
   })
 
   test('重发后还是不可用：正文不许带传输读数——上游明确答复过，请求落地了', async () => {
@@ -1726,6 +1771,7 @@ describe('停止能拽回卡住的工具', () => {
         model: 'test',
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
+        vision: null,
         resources: new Map(),
         state: new Map(),
         sink: null,

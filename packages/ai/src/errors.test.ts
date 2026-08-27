@@ -184,7 +184,24 @@ describe('按用户的下一步动作分类', () => {
   test('400 的参数错误不带 capacity，压缩不会被触发', () => {
     const e = classifyProviderError(P, http(400, 'max_tokens must be less than or equal to 8192'))
     expect(e.capacity).toBeUndefined()
-    expect(e.code).toBe('provider_unavailable')
+    expect(e.code).toBe('invalid_request')
+  })
+
+  /**
+   * 原始失败形状：给不接受图片的模型发图像块。这个码**不在** `loop.ts` 的重发表里，
+   * 所以界面不会报「正在重连 N / M」。
+   */
+  test('模型不接受图片的 400 归 invalid_request', () => {
+    for (const m of [
+      '{"error":{"message":"Invalid content type: image_url is not supported by this model","type":"invalid_request_error"}}',
+      '该模型不支持图片输入',
+    ]) {
+      const e = classifyProviderError(P, http(400, m))
+      expect(e.code).toBe('invalid_request')
+      expect(e.capacity).toBeUndefined()
+      // provider 原话原样带出去：分类短语说得出「哪一类」，说不出「哪一格参数」。
+      expect(e.message).toBe(m)
+    }
   })
 
   /**
@@ -201,10 +218,13 @@ describe('按用户的下一步动作分类', () => {
     expect(e.capacity).toBeUndefined()
   })
 
-  /** 413 走到这里说明容量分类器已经否掉它了 —— 那是网关体积限制，不是上下文超限。 */
+  /**
+   * 413 走到这里说明容量分类器已经否掉它了 —— 那是网关体积限制，不是上下文超限。
+   * 同一份字节重发必然同样被拒，所以归不可重发的那一档。
+   */
   test('413 指向附件大小与反代配置', () => {
     const e = classifyProviderError(P, http(413))
-    expect(e.code).toBe('provider_unavailable')
+    expect(e.code).toBe('invalid_request')
     expect(e.message).toMatch(/附件|反代|网关/)
   })
 })

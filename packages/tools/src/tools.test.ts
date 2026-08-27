@@ -36,6 +36,7 @@ function ctx(root: string, approve = true): ToolContext {
     model: 'test',
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
+    vision: null,
     resources: new Map(),
     state: new Map(),
     sink: null,
@@ -1298,6 +1299,58 @@ describe('read_file 认图片', () => {
     // 覆盖同名文件之后，刚才那一份仍然完好——这就是不给路径的全部意义。
     await writeFile(join(root, 'a.png'), Buffer.concat([PNG, Buffer.from('x')]))
     expect(data.images?.[0]?.data).toBe(PNG.toString('base64'))
+  })
+
+  /**
+   * 当前模型不收图片：**在读字节之前就回绝**，而且话里要带下一步。
+   *
+   * 只说「读取失败」的话，模型除了原样再读一遍没有别的选择，而每一遍都会失败——
+   * 那正是「陷进死循环」的形状。所以断言的不只是 `failure`，还有那句「不要再读」。
+   *
+   * `null` 是「厂商规格页没写」，照常读（判据只认 `false`）。
+   */
+  test('模型不收图片：不读字节，失败信息带下一步', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img3-'))
+    await writeFile(join(root, 'a.png'), PNG)
+
+    const out = await registry().execute(
+      'read_file',
+      { path: 'a.png' },
+      { ...ctx(root), vision: false },
+    )
+    expect(out.status).toBe('failure')
+    expect(out.message).toContain('当前模型不接受图片输入')
+    expect(out.message).toContain('不要再读')
+    // 一个字节都没读出来：读了再丢等于白跑一次缩放、白扣一次投递预算。
+    expect(out.data).toBeUndefined()
+
+    const ok = await registry().execute(
+      'read_file',
+      { path: 'a.png' },
+      { ...ctx(root), vision: null },
+    )
+    expect(ok.status).toBe('success')
+  })
+
+  /**
+   * 视频这条：**模型收不到视频**——请求体里只有文本和图像两种内容块，
+   * 三个适配器都没有视频的编码器，任何模型都一样。所以这里回的不是
+   * 「换个模型」，是「不要再读它」。
+   *
+   * 盯的是那句话不能落到「请用 offset/limit 分段读取」上：多数视频都超过 1 MB，
+   * 而分段读一个二进制文件走不通，模型只能反复试。判据取内容不取扩展名。
+   */
+  test('读视频：报「不是文本」而不是「分段读取」', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-mp4-'))
+    // 前 4 KB 里有 NUL 就够判：真 mp4 的头部一定有。
+    const head = Buffer.concat([Buffer.from('    ftypisom'), Buffer.alloc(4096)])
+    await writeFile(join(root, 'clip.mp4'), Buffer.concat([head, Buffer.alloc(2 * 1024 * 1024)]))
+
+    const out = await registry().execute('read_file', { path: 'clip.mp4' }, ctx(root))
+    expect(out.status).toBe('failure')
+    expect(out.message).toContain('不是文本文件')
+    expect(out.message).toContain('不要再读')
+    expect(out.message).not.toContain('分段读取')
   })
 
   /**

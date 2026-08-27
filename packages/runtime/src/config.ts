@@ -167,6 +167,11 @@ export interface StoredCatalogEntry {
   vendor?: string
   contextWindow?: number
   maxOutputTokens?: number
+  /**
+   * 接不接受图片输入。缺省 = 按目录里那条走（未收录的落在「不裁决」那一档）。
+   * 只有填 `false` 才会挡住图片——中转站的自定义模型名靠这一格纠正。
+   */
+  vision?: boolean
   /** 每百万 token 的输入 / 输出单价。 */
   input?: number
   output?: number

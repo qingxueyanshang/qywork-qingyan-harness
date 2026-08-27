@@ -67,6 +67,21 @@ export interface ModelSpec {
    * 由端点用自己的默认；Anthropic 协议要求这个字段，见 `anthropic.ts` 的兜底。
    */
   maxOutputTokens: number | null
+  /**
+   * 接不接受图片输入。**三态**，与 `maxOutputTokens` 同一个惯例：
+   * `null` = 厂商规格页没写、也没实测过，**不是「不支持」**。
+   *
+   * **门控只认 `false`。** `null` 一律放行——中转站的模型名是任意字符串，
+   * 目录认不出它们，按不确定的数据挡请求比不挡更糟：那种失败看起来像
+   * 「图片发不出去」，查不到这里。判错了在模型库那一格覆盖（`SpecOverride`）。
+   *
+   * 逐条照厂商规格页填，**不按 id 前缀推断**（同 `vendor` 那条）：
+   * `qwen3.7-max` 基础版只收文本而它的快照版收图片，名字上分不出来。
+   *
+   * 消费者三处：模型库那一列、组合器的图片附件入口、`agent` 装配请求时的兜底
+   * （`false` 时图像块换成文本注记，历史里的旧图与工具返回的图一并覆盖）。
+   */
+  vision: boolean | null
   pricing: Pricing
   thinking: ThinkingMode
   /**
@@ -115,10 +130,14 @@ export interface ModelSpec {
    */
   offPeak?: OffPeakDiscount
   /**
-   * 长上下文阶梯价。没有就是「多大的请求都一个价」。
+   * 长上下文阶梯价，**按 `thresholdTokens` 升序排**。没有就是「多大的请求都一个价」。
    * 与 `offPeak` 一样，`pricing` 是标准价，这一条只描述什么时候换档。
+   *
+   * 是数组而不是单档：阿里的 flash 两款是三档（≤32K / 32K–256K / 256K–1M），
+   * 只留一档就得在「中间那段记高」和「最长那段记低」之间挑一个，
+   * 而两个方向都是静默记错钱。
    */
-  longContext?: LongContextTier
+  longContext?: readonly LongContextTier[]
   /**
    * 这条 spec 是不是来自内置目录。
    *
@@ -335,6 +354,61 @@ const GROK_45_LONG: LongContextTier = {
   note: '提示词满 20 万 token 后整条请求按 $4 / $12（缓存 $0.6）计价',
 }
 
+/*
+ * 阿里的阶梯按输入长度分档，档位边界写作 32K / 128K / 256K，**K = 1024**。
+ * 区间是左开右闭（「32K-256K」不含 32,768），所以第一个进高档的数是边界 + 1。
+ */
+
+/** qwen3.7-plus：256K 以上整条按 ¥6 / ¥24 / 命中 ¥1.2。 */
+const QWEN_37_PLUS_LONG: LongContextTier = {
+  thresholdTokens: 262_145,
+  input: 6,
+  output: 24,
+  cacheRead: 1.2,
+  note: '输入超过 256K token 后整条请求按 ¥6 / ¥24（缓存 ¥1.2）计价',
+}
+
+/** qwen3.7-flash：三档，官方页面把命中价也逐档给了。 */
+const QWEN_37_FLASH_LONG: readonly LongContextTier[] = [
+  {
+    thresholdTokens: 32_769,
+    input: 0.6,
+    output: 2.4,
+    cacheRead: 0.12,
+    note: '输入超过 32K token 后整条请求按 ¥0.6 / ¥2.4（缓存 ¥0.12）计价',
+  },
+  {
+    thresholdTokens: 262_145,
+    input: 1.2,
+    output: 4.8,
+    cacheRead: 0.24,
+    note: '输入超过 256K token 后整条请求按 ¥1.2 / ¥4.8（缓存 ¥0.24）计价',
+  },
+]
+
+/**
+ * qwen3-vl-flash：三档。
+ *
+ * **命中价只有第一档是官方给的**（¥0.03，即输入价的 20%），后两档按同一个比例推。
+ * 不推的话这两档只能留成第一档的 ¥0.03，那是把长请求按最短那一档记账。
+ */
+const QWEN_VL_FLASH_LONG: readonly LongContextTier[] = [
+  {
+    thresholdTokens: 32_769,
+    input: 0.3,
+    output: 3,
+    cacheRead: 0.06,
+    note: '输入超过 32K token 后整条请求按 ¥0.3 / ¥3 计价',
+  },
+  {
+    thresholdTokens: 131_073,
+    input: 0.6,
+    output: 6,
+    cacheRead: 0.12,
+    note: '输入超过 128K token 后整条请求按 ¥0.6 / ¥6 计价',
+  },
+]
+
 /**
  * 这一刻、这么大的一条请求，实际单价是多少。
  *
@@ -358,10 +432,11 @@ export function priceAt(
       spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
     if (!peak) rate *= spec.offPeak.rate
   }
-  const long =
-    spec.longContext && (ctx.promptTokens ?? 0) >= spec.longContext.thresholdTokens
-      ? spec.longContext
-      : undefined
+  // 取提示词达到的**最高**一档。依赖 `longContext` 是升序的，约定写在字段上。
+  let long: LongContextTier | undefined
+  for (const tier of spec.longContext ?? []) {
+    if ((ctx.promptTokens ?? 0) >= tier.thresholdTokens) long = tier
+  }
   if (rate === 1 && !long) return spec.pricing
   const p = spec.pricing
   const base = long
@@ -414,6 +489,20 @@ function geminiFlashPromo(now: number): Pricing {
     : { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite5m: 0, cacheWrite1h: 0 }
 }
 
+/**
+ * GLM-5.3-Flash 的限时半价，2026-09-09 24:00（UTC+8）之后回到 $0.15 / $0.50 / $0.03。
+ *
+ * 与 `sonnet5Pricing`、`geminiFlashPromo` 同一个形状、同一条理由：**按当前时间取值，
+ * 不写死**，否则账单会从九月十号起静默算错。
+ */
+const GLM_53_FLASH_PROMO_ENDS = Date.UTC(2026, 8, 9, 16, 0, 0)
+
+function glm53FlashPromo(now: number): Pricing {
+  return now <= GLM_53_FLASH_PROMO_ENDS
+    ? { input: 0.075, output: 0.25, cacheRead: 0.015, cacheWrite5m: 0, cacheWrite1h: 0 }
+    : { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite5m: 0, cacheWrite1h: 0 }
+}
+
 const CLAUDE_BASE = {
   provider: 'anthropic_messages' as const,
   vendor: 'anthropic',
@@ -425,6 +514,8 @@ const CLAUDE_BASE = {
    */
   density: DEFAULT_DENSITY,
   maxOutputTokens: 128_000,
+  // Claude 5 与 4 系全部收图片（官方模型页的输入模态一栏）。
+  vision: true,
   // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
   cacheRouting: 'none' as const,
   thinking: 'adaptive_only' as const,
@@ -548,6 +639,8 @@ function deepseekCatalog(): ModelSpec[] {
      * 写回档案覆盖这里。
      */
     thinking: 'deepseek_thinking' as const,
+    // 只有下面那条视觉实验模型收图片，flash 与 pro 都不收。
+    vision: false,
     // chat/completions 那支的回传由 `openai-compat` 无条件发 `reasoning_content`，
     // 不读这一格。要回传的是下面 Responses 那支。
     reasoningEcho: 'none' as const,
@@ -597,6 +690,7 @@ function deepseekCatalog(): ModelSpec[] {
     ...base,
     id: 'deepseek-v4-flash-vision-exp',
     displayName: 'DeepSeek V4 Flash Vision',
+    vision: true,
     pricing: { ...flash.pricing },
   }
 
@@ -698,6 +792,8 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 想钉死就在模型库那一格填 `maxOutputTokens`。
      */
     maxOutputTokens: null,
+    // 没有出处就不裁决：挡住一个实际收图片的中转站模型，比不挡更糟。
+    vision: null,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
     thinking: 'none',
     /*
@@ -726,18 +822,16 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
  * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
  *
- * **三个不要加回来的能力位。**
+ * **两个不要加回来的能力位。**
  *
- * `vision` / `rejectsSamplingParams` / `maxCacheBreakpoints`：三个都会是零消费者。
- *
- * `vision` 值得单说：它对绝大多数条目只能填 `false`，而语义是**未确认**不是
- * 「确认不支持」。拿它当门控会把一批实际支持视觉的中转站模型挡掉，
- * 而那种失败看起来像「图片发不出去」，查不到这里。**按不确定的数据做门控，
- * 比不做门控更糟。**
+ * `rejectsSamplingParams` / `maxCacheBreakpoints`：两个都会是零消费者。
  *
  * `maxCacheBreakpoints` 只有两个取值：Anthropic 恒 4、兼容协议恒 0。
  * 那是**协议常量**不是模型能力，而本仓只用 2 个断点——一个逐模型不变的字段，
  * 放在逐模型的目录里就是误导。断点数写在用它的那个适配器里。
+ *
+ * `vision` 不在这份名单里：它有三个消费者，取值是三态而不是布尔，
+ * 约定写在 `ModelSpec.vision` 上。
  */
 function openAiCompatCatalog(now: number): ModelSpec[] {
   const base = {
@@ -747,6 +841,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     reasoningEcho: 'none' as const,
     // 没标定过的一律上界档。标定过的在自己那条上覆盖。
     density: DEFAULT_DENSITY,
+    // 逐条按厂商规格页覆盖。这一档是「没有出处」，不裁决。
+    vision: null as boolean | null,
   }
   /** OpenAI 那套五档，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
@@ -758,6 +854,16 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     thinking: 'none' as const,
     effortLevels: [] as EffortLevel[],
     thinksByDefault: false,
+  }
+  /**
+   * 会思考，但用哪个字段控制、有哪几档没有出处。档位照保守留空——多声明一档的
+   * 代价是一个选了没反应的控件；默认思考照保守填 `true`——思考与正文共用输出上限，
+   * 少留会把回答从中间截断。
+   */
+  const thinksNoDial = {
+    thinking: 'none' as const,
+    effortLevels: [] as EffortLevel[],
+    thinksByDefault: true,
   }
   const usd = (input: number, output: number, cacheRead: number, write = 0): Pricing => ({
     input,
@@ -805,6 +911,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gpt-5.6-sol',
       displayName: 'GPT-5.6 Sol',
       vendor: 'openai',
+      vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(5, 30, 0.5, 6.25),
@@ -815,6 +922,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gpt-5.6-terra',
       displayName: 'GPT-5.6 Terra',
       vendor: 'openai',
+      vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(2, 12, 0.2, 2.5),
@@ -825,6 +933,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gpt-5.6-luna',
       displayName: 'GPT-5.6 Luna',
       vendor: 'openai',
+      vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(0.2, 1.2, 0.02, 0.25),
@@ -835,6 +944,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gpt-5.6-cyber',
       displayName: 'GPT-5.6 Cyber',
       vendor: 'openai',
+      vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(12.5, 75, 1.25, 15.625),
@@ -867,11 +977,12 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.1-pro-preview',
       displayName: 'Gemini 3.1 Pro Preview',
       vendor: 'google',
+      vision: true,
       density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
       pricing: usd(2, 12, 0.2),
-      longContext: GEMINI_31_PRO_LONG,
+      longContext: [GEMINI_31_PRO_LONG],
     },
     {
       ...base,
@@ -879,6 +990,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.7-flash',
       displayName: 'Gemini 3.7 Flash',
       vendor: 'google',
+      vision: true,
       density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
@@ -890,6 +1002,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.6-flash',
       displayName: 'Gemini 3.6 Flash',
       vendor: 'google',
+      vision: true,
       density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
@@ -901,6 +1014,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gemini-3.5-flash',
       displayName: 'Gemini 3.5 Flash',
       vendor: 'google',
+      vision: true,
       density: GOOGLE_DENSITY,
       contextWindow: 1_000_000,
       maxOutputTokens: 64_000,
@@ -927,10 +1041,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'grok-4.6',
       displayName: 'Grok 4.6',
       vendor: 'xai',
+      vision: true,
       contextWindow: 500_000,
       maxOutputTokens: 64_000,
       pricing: usd(2, 6, 0.5),
-      longContext: GROK_46_LONG,
+      longContext: [GROK_46_LONG],
     },
     {
       ...base,
@@ -938,36 +1053,68 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'grok-4.5',
       displayName: 'Grok 4.5',
       vendor: 'xai',
+      vision: true,
       contextWindow: 500_000,
       maxOutputTokens: 64_000,
       pricing: usd(2, 6, 0.3),
-      longContext: GROK_45_LONG,
+      longContext: [GROK_45_LONG],
     },
 
     // ── 阿里云百炼 Qwen（人民币标价）──
-    /**
-     * 官方规格页（2026-08）：窗口 1000000、最大输出 131072、
-     * ¥12 输入 / ¥36 输出 / ¥1.5 命中。
+    /*
+     * 官方模型页（2026-08）逐字，华北 2（北京），单位 ¥/百万：
      *
-     * **思考控制面没测**：规格页写着「最大输出长度（思考模式下）131072」与
-     * 「最大思维链长度 262144」，所以它会思考，但用哪个字段控制、有哪几档，
-     * 官方页面没说。照保守填 `effortLevels: []`——多声明一个档位的代价是
-     * 一个选了没反应的控件。要坐实跑 `qy probe --save`。
+     * | 模型 | 窗口 | 最大输出 | 输入 | 输出 | 命中 | 输入模态 |
+     * |---|---|---|---|---|---|---|
+     * | qwen3.8-max | 1,000,000 | 131,072 | 12 | 36 | 1.5 | Image、Text、Video |
+     * | qwen3.8-flash | 1,000,000 | 131,072 | 0.8 | 2.7 | 0.1 | Image、Text、Video |
+     * | qwen3.7-max | 1,000,000 | 131,072 | 12 | 36 | 2.4 | Text |
+     * | qwen3.7-plus | 1,000,000 | 131,072 | 2 | 8 | 0.4 | Image、Text、Video |
+     * | qwen3.7-flash | 1,000,000 | 131,072 | 0.2 | 0.8 | 0.04 | Image、Text、Video |
+     * | qwen3-vl-plus | 262,144 | 32,768 | 1 | 10 | 0.2 | Image、Text、Video |
+     * | qwen3-vl-flash | 262,144 | 32,768 | 0.15 | 1.5 | 0.03 | Image、Text、Video |
+     *
+     * **最大输出那一列容易记错**：plus 与 flash 都是 131,072。
+     *
+     * `qwen3.7-max` 是这一批里唯一只收文本的：它的日期快照版收图片，基础版不收，
+     * 名字上分不出来——逐条按规格页填，不按 id 前缀推断。
+     *
+     * **思考控制面没测**：规格页写着思考模式下的最大输出与最大思维链长度，
+     * 所以它会思考，但用哪个字段控制、有哪几档，官方页面没说。照保守填
+     * `effortLevels: []`——多声明一个档位的代价是一个选了没反应的控件。
+     * 要坐实跑 `qy probe --save`。
      *
      * `thinksByDefault` 填 `true`：思考和正文共用输出上限，多留是保守，
      * 少留会把回答从中间截断，两个方向的代价不对等。
+     *
+     * `qwen3.8-max-prime` 不进目录：价目页上有它（¥24 / ¥72），模型页取不到，
+     * 窗口与最大输出没有出处，而这两项没法留空。
+     *
+     * **`Qwen3.8-Flash-Next` 不是这里的 `qwen3.8-flash`，别填错。** 前者是开放权重
+     * 版本（自部署，原生 256K，没有官方 API 定价），后者是托管服务的模型 id，
+     * 1M 窗口与上面那一行价目都出自它的模型页。目录收的是 API 上调得到的那个 id。
      */
     {
       ...base,
-      thinking: 'none',
-      effortLevels: [],
-      thinksByDefault: true,
+      ...thinksNoDial,
       id: 'qwen3.8-max',
       displayName: 'Qwen3.8 Max',
       vendor: 'alibaba',
+      vision: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(12, 36, 1.5),
+    },
+    {
+      ...base,
+      ...thinksNoDial,
+      id: 'qwen3.8-flash',
+      displayName: 'Qwen3.8 Flash',
+      vendor: 'alibaba',
+      vision: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      pricing: cny(0.8, 2.7, 0.1),
     },
     {
       ...base,
@@ -975,9 +1122,10 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'qwen3.7-max',
       displayName: 'Qwen3.7 Max',
       vendor: 'alibaba',
+      vision: false,
       contextWindow: 1_000_000,
-      maxOutputTokens: 32_000,
-      pricing: cny(6, 24, 1.5),
+      maxOutputTokens: 131_072,
+      pricing: cny(12, 36, 2.4),
     },
     {
       ...base,
@@ -985,9 +1133,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'qwen3.7-plus',
       displayName: 'Qwen3.7 Plus',
       vendor: 'alibaba',
+      vision: true,
       contextWindow: 1_000_000,
-      maxOutputTokens: 32_000,
-      pricing: cny(2, 8, 0.5),
+      maxOutputTokens: 131_072,
+      pricing: cny(2, 8, 0.4),
+      longContext: [QWEN_37_PLUS_LONG],
     },
     {
       ...base,
@@ -995,9 +1145,34 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'qwen3.7-flash',
       displayName: 'Qwen3.7 Flash',
       vendor: 'alibaba',
+      vision: true,
       contextWindow: 1_000_000,
-      maxOutputTokens: 16_000,
-      pricing: cny(0.3, 1.2, 0.08),
+      maxOutputTokens: 131_072,
+      pricing: cny(0.2, 0.8, 0.04),
+      longContext: QWEN_37_FLASH_LONG,
+    },
+    {
+      ...base,
+      ...thinksNoDial,
+      id: 'qwen3-vl-plus',
+      displayName: 'Qwen3-VL Plus',
+      vendor: 'alibaba',
+      vision: true,
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+      pricing: cny(1, 10, 0.2),
+    },
+    {
+      ...base,
+      ...thinksNoDial,
+      id: 'qwen3-vl-flash',
+      displayName: 'Qwen3-VL Flash',
+      vendor: 'alibaba',
+      vision: true,
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+      pricing: cny(0.15, 1.5, 0.03),
+      longContext: QWEN_VL_FLASH_LONG,
     },
 
     // ── 月之暗面（人民币标价）──
@@ -1007,6 +1182,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'kimi-k3',
       displayName: 'Kimi K3',
       vendor: 'moonshot',
+      vision: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 32_000,
       pricing: cny(21, 105, 2.1),
@@ -1020,16 +1196,30 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | 模型 | 输入 | 缓存命中 | 输出 |
      * |---|---|---|---|
      * | glm-5.3 | 1.4 | 0.26 | 4.4 |
+     * | glm-5.3-flash | 0.15 | 0.03 | 0.50 |
      * | glm-5.2 | 1.4 | 0.26 | 4.4 |
      * | glm-4.7 | 0.6 | 0.11 | 2.2 |
+     * | glm-5v-turbo | 1.2 | 0.24 | 4 |
+     * | glm-4.6v | 0.3 | 0.05 | 0.9 |
      *
      * **这是国际站（Z.ai）的美元价目。** 智谱国内站（open.bigmodel.cn）按人民币
      * 另有一套，那个页面是前端渲染的，抓不到正文。**不要在这里填没有出处的
      * 人民币数字**：有出处的美元价至少对一个端点是准的，用国内站的人可以在
      * 模型库里改成自己那套。
      *
+     * **图片输入按价目页的分节填**：文本模型一节里的三条（5.3 / 5.2 / 4.7）
+     * 只收文本，视觉模型一节里的（5v-turbo / 4.6v）收图片。glm-5.3 的模型页
+     * 另有一句明写「当前不支持图片输入」。
+     *
      * glm-5.3 的窗口 1M / 最大输出 128K 与三档 `reasoning_effort`（默认 max、
      * 思考关不掉）来自它的模型规格页。5.2 的档位面没有出处，原样保留。
+     *
+     * glm-5.3-flash 的模型页：1M 窗口、128K 最大输出、原生多模态，
+     * `thinking.type` 只接受 `enabled`，且不吃 `reasoning_effort` 的多档位——
+     * 所以档位留空，思考按 `always_on` 记。
+     *
+     * glm-5v-turbo 的模型页：200K 窗口、128K 最大输出、收图片视频文本文件，
+     * 思考是一个开关而不是档位。glm-4.6v：128K 窗口，最大输出页面没写。
      */
     {
       ...base,
@@ -1037,9 +1227,24 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'glm-5.3',
       displayName: 'GLM-5.3',
       vendor: 'zhipu',
+      vision: false,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       pricing: usd(1.4, 4.4, 0.26),
+    },
+    {
+      ...base,
+      // 思考恒开、关不掉，也不吃档位：一个字段都不发，模型自己思考。
+      thinking: 'always_on',
+      effortLevels: [],
+      thinksByDefault: true,
+      id: 'glm-5.3-flash',
+      displayName: 'GLM-5.3 Flash',
+      vendor: 'zhipu',
+      vision: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      pricing: glm53FlashPromo(now),
     },
     {
       ...base,
@@ -1047,6 +1252,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'glm-5.2',
       displayName: 'GLM-5.2',
       vendor: 'zhipu',
+      vision: false,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       pricing: usd(1.4, 4.4, 0.26),
@@ -1057,9 +1263,33 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'glm-4.7',
       displayName: 'GLM-4.7',
       vendor: 'zhipu',
+      vision: false,
       contextWindow: 200_000,
       maxOutputTokens: 128_000,
       pricing: usd(0.6, 2.2, 0.11),
+    },
+    {
+      ...base,
+      ...thinksNoDial,
+      id: 'glm-5v-turbo',
+      displayName: 'GLM-5V Turbo',
+      vendor: 'zhipu',
+      vision: true,
+      contextWindow: 200_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(1.2, 4, 0.24),
+    },
+    {
+      ...base,
+      ...thinksNoDial,
+      id: 'glm-4.6v',
+      displayName: 'GLM-4.6V',
+      vendor: 'zhipu',
+      vision: true,
+      contextWindow: 128_000,
+      // 模型页没写最大输出。编一个数会把长回答静默截在那个数上。
+      maxOutputTokens: null,
+      pricing: usd(0.3, 0.9, 0.05),
     },
 
     // ── MiniMax ──
@@ -1069,6 +1299,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'MiniMax-M3',
       displayName: 'MiniMax M3',
       vendor: 'minimax',
+      vision: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       pricing: usd(0.6, 2.4, 0.12),
@@ -1088,6 +1319,14 @@ export interface SpecOverride {
   vendor?: string
   contextWindow?: number
   maxOutputTokens?: number
+  /**
+   * 接不接受图片输入。**只能手填**——探针不探这一轴：探出「这次发过去没报错」
+   * 不等于这条链路稳定收图片，而探出报错也分不清是模型不收还是这一次参数写错了。
+   *
+   * 这一格是中转站模型的唯一出口：内置目录认不出它们的自定义名，
+   * 目录里落在 `null`（不裁决）。填了 `false` 才会挡图片。
+   */
+  vision?: boolean
   input?: number
   output?: number
   /** 缓存命中价。 */
@@ -1140,6 +1379,8 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
     ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
+    // 布尔，`false` 是有效覆盖（正是「挡住图片」那一档），只能按 `undefined` 判缺省。
+    ...(o.vision !== undefined ? { vision: o.vision } : {}),
     ...(o.thinking ? { thinking: o.thinking } : {}),
     ...(o.reasoningEcho ? { reasoningEcho: o.reasoningEcho } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),

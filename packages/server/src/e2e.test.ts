@@ -110,7 +110,7 @@ beforeAll(async () => {
         kind: 'openai_responses',
         apiKey: 'sk-fake',
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
-        models: { 'deepseek-v4-flash': {} },
+        models: { 'deepseek-v4-flash': {}, 'deepseek-v4-flash-vision-exp': {} },
       },
     },
     mode: 'auto',
@@ -640,6 +640,16 @@ describe('图片附件', () => {
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
       if (msg.type === 'hello.ok') {
+        // 默认那条模型不收图片（目录里 `vision: false`），图像块会被换成一句话。
+        // 先切到收图片的那条——「要发图片就得挑一个收图片的模型」正是这条链路的前提。
+        ws.send(
+          JSON.stringify({
+            type: 'conversation.setModel',
+            conversationId,
+            provider: 'fake',
+            model: 'deepseek-v4-flash-vision-exp',
+          }),
+        )
         ws.send(
           JSON.stringify({
             type: 'message.send',

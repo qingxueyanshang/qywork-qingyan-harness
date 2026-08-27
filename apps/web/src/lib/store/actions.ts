@@ -8,7 +8,14 @@
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { client, discardPace, reloadActiveConversation, syncViews } from './connection.ts'
-import { addWorkspace, loadServerConfig, saveServerConfig, watchWorkspace } from './settings.ts'
+import {
+  addWorkspace,
+  loadServerConfig,
+  type ModelOption,
+  modelCatalog,
+  saveServerConfig,
+  watchWorkspace,
+} from './settings.ts'
 import { isDesktopShell } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
@@ -249,6 +256,27 @@ export function activeModel(): { provider: string; model: string } | null {
   if (!id) return null
   const conv = state.conversations.find((c) => c.id === id)
   return conv ? { provider: conv.provider, model: conv.model } : null
+}
+
+/**
+ * 当前这一对在目录里对应哪一行。
+ *
+ * 会话的 `provider` 是空串时（迁移 24 之前建的会话）按模型 id 找：先当前默认接口，
+ * 再第一个声明了它的接口——**与服务端 `resolveModel` 的裸串入口同一条规则**。
+ * 两处答案不一致的话，界面上的档位面属于 A 接口，而请求发给了 B。
+ *
+ * **逐模型不同的能力（思考档位、收不收图片）一律从这一行取。** 分两处各自解析
+ * 必然出现「档位面是 A 模型的、图片入口按 B 模型算」，而用户随时会切模型。
+ */
+export function activeModelRow(): ModelOption | null {
+  const c = modelCatalog()
+  const ref = activeModel()
+  if (!c || !ref) return null
+  const owners = c.providers.filter((p) => p.models.some((m) => m.id === ref.model))
+  const owner = ref.provider
+    ? c.providers.find((p) => p.name === ref.provider)
+    : (owners.find((p) => p.name === c.active.provider) ?? owners[0])
+  return owner?.models.find((m) => m.id === ref.model) ?? null
 }
 
 /** 重命名。空标题的校验只在服务端（422 且不落盘），两边各写一份必然漂移。 */

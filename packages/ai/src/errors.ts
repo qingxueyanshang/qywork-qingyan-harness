@@ -134,7 +134,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
       // 走到这里说明容量分类器已经否掉了它 —— 那就不是上下文超限，
       // 而是网关的请求体大小限制（nginx client_max_body_size 之类）。
       // 报成上下文超限会把用户引向「精简对话」，而真正该做的是缩小附件。
-      return build('provider_unavailable', '请求体超出网关限制：检查附件大小或反代配置')
+      return build('invalid_request', '请求体超出网关限制：检查附件大小或反代配置')
     case 429: {
       // 429 有两种：限速（等一下能好）和额度耗尽（等多久都不会好）。
       // 混为一谈会让用户对着一个永远不会成功的错误反复重发。
@@ -150,11 +150,21 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
     }
     case 400:
     case 422:
-      // 不要按「消息里含 context / too long / max_tokens」判上下文超限：
-      // `max_tokens must be ≤ 8192` 是**输出**参数校验，判成上下文超限等于把一个
-      // 参数错误报成「上下文满了」，用户照着这条查不下去。
-      // 容量判定全部交给上面的分类器，这里只剩「确实是参数错了」。
-      return build('provider_unavailable', message)
+      /*
+       * 不要按「消息里含 context / too long / max_tokens」判上下文超限：
+       * `max_tokens must be ≤ 8192` 是**输出**参数校验，判成上下文超限等于把一个
+       * 参数错误报成「上下文满了」，用户照着这条查不下去。
+       * 容量判定全部交给上面的分类器，这里只剩「确实是参数错了」。
+       *
+       * **默认归不可重发的那一档。** 4xx 说的是这一份请求被拒了，同一份字节再发
+       * 一次拿回同一个拒绝——不接受图片的模型收到图像块、`max_tokens` 越界，
+       * 每一次都命中。归成可重发的码时界面报的是「正在重连 N / M」，
+       * 那句话指不到真正的原因。
+       */
+      return build(
+        looksTemporarilyUnavailable(message) ? 'provider_unavailable' : 'invalid_request',
+        message,
+      )
     case 500:
     case 502:
     case 503:
@@ -168,6 +178,21 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
   if (transport) return build('network_error', transport)
 
   return build('internal_error')
+}
+
+/**
+ * 400 里那一小撮「上游暂时不可用」。
+ *
+ * 中转站把后端的 5xx 转述成 400 是常见做法，状态码这一层分不出来，文案是唯一线索
+ * （判据优先级见文件头第 3 档）。命中的归可重发的码，其余按 4xx 的本义处理。
+ *
+ * 词表照实际见过的措辞收，**宁可漏判**：漏判的代价是一次上游抖动要用户手动重发，
+ * 误判的代价是对着一个永远不会成功的请求空等五轮退避、并付五次长 prompt 的钱。
+ */
+function looksTemporarilyUnavailable(message: string): boolean {
+  return /暂不可用|暂时不可用|稍后(?:再试|重试)|服务(?:繁忙|不可用)|系统繁忙|上游(?:负载|不可用)|无可用渠道|temporarily unavailable|service unavailable|try again later|overloaded|server is busy|no available channel/i.test(
+    message,
+  )
 }
 
 /**

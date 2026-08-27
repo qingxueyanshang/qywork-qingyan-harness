@@ -173,6 +173,11 @@ export interface ModelOption {
   effort: EffortLevel | null
   /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
   currency: 'USD' | 'CNY'
+  /**
+   * 接不接受图片输入。`null` = 没有出处，照常放行；只有 `false` 才收起
+   * 图片附件入口。与上面几行同源，逐模型不同，所以不走握手。
+   */
+  vision: boolean | null
   /** false = 内置目录里没有，来自用户自己配的模型 id（自建端点 / 中转）。 */
   known: boolean
 }
@@ -196,6 +201,8 @@ export interface LibraryModel {
   contextWindow: number
   /** `null` = 这个模型没测过输出上限，请求里整个不发这一项。 */
   maxOutputTokens: number | null
+  /** 接不接受图片输入。`null` = 厂商规格页没写，**不是「不支持」**。 */
+  vision: boolean | null
   input: number
   output: number
   /** 缓存命中价。 */

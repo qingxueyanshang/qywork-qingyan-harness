@@ -54,6 +54,13 @@ export interface ModelRow {
   effort: EffortLevel | null
   /** 计价币种。缺省是 USD，阿里 / 月之暗面 / 智谱三家官网按人民币标价。 */
   currency: 'USD' | 'CNY'
+  /**
+   * 接不接受图片输入。**逐模型不同，所以和 `effortLevels` 一起从这里下发、
+   * 不走握手**——握手是连接级、只报一次，用户切一次模型那个值就不再成立。
+   *
+   * 界面只在 `false` 时收起图片附件入口。`null` = 没有出处，照常放行。
+   */
+  vision: boolean | null
   /** false = 内置目录里没有，计价与能力都只能按保守值算。 */
   known: boolean
 }
@@ -91,6 +98,11 @@ export interface LibraryModel {
   contextWindow: number
   /** `null` = 这个模型没测过输出上限，请求里整个不发这一项。 */
   maxOutputTokens: number | null
+  /**
+   * 接不接受图片输入。`null` = 厂商规格页没写，**不是「不支持」**——
+   * 界面按三态显示，不要把它折成布尔。
+   */
+  vision: boolean | null
   input: number
   output: number
   /** 缓存命中价。 */
@@ -163,12 +175,15 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   const custom: LibraryVendor = { id: '', displayName: '自定义', models: [] }
 
   for (const spec of rows.values()) {
-    const notes = [spec.offPeak?.note, spec.longContext?.note].filter((n) => n !== undefined)
+    const notes = [spec.offPeak?.note, ...(spec.longContext ?? []).map((t) => t.note)].filter(
+      (n) => n !== undefined,
+    )
     const row: LibraryModel = {
       id: spec.id,
       label: spec.displayName,
       contextWindow: spec.contextWindow,
       maxOutputTokens: spec.maxOutputTokens,
+      vision: spec.vision,
       input: spec.pricing.input,
       output: spec.pricing.output,
       cacheRead: spec.pricing.cacheRead,
@@ -215,6 +230,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
           effort: declared?.effort ?? null,
           currency: spec.pricing.currency ?? 'USD',
+          vision: spec.vision,
           known: spec.catalogued !== false,
         }
       }),
