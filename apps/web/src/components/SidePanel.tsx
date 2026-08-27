@@ -39,6 +39,7 @@ import {
   sidePanel,
   state,
   togglePanelMax,
+  transcript,
   workspace,
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -1148,7 +1149,7 @@ interface ChangedFile {
 function ChangeRecord() {
   const rows = createMemo(() => {
     const byPath = new Map<string, ChangedFile>()
-    for (const item of state.transcript) {
+    for (const item of transcript()) {
       for (const c of item.outcome?.fileChanges ?? []) {
         // 这一步的入参就在账本里，正文从它来——不另存一份。
         const edit: ChangeEdit = {

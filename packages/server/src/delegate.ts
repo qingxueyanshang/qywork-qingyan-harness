@@ -93,6 +93,9 @@ export function makeDelegate(ctx: {
    *
    * **只发 `working`，不发 `spawned`**：派一件没有排队阶段，交出去就开跑，
    * 两条连着发的话第二条是同一时刻的同一件事。
+   *
+   * `working` 会发第二次，带上子会话 id：那个 id 要等子会话起来才有，
+   * 而前端按 `memberId` 原地更新，第二条只是给同一格补上「点开哪一条」。
    */
   const progress = (
     at: { runId: string; stepId?: string },
@@ -227,7 +230,13 @@ export function makeDelegate(ctx: {
       try {
         const res = await runBuiltinMember(
           { role, prompt: input.task, signal: input.signal },
-          { deps, workspaceRoot, ...picked },
+          {
+            deps,
+            workspaceRoot,
+            ...picked,
+            onConversation: (cid) => say('working', { childConversationId: cid }),
+            onEvent: (ev, cid) => deps.bus.publish(ev, cid),
+          },
         )
         say(res.ok ? 'done' : 'failed', {
           summary: res.output.slice(0, 200),
@@ -277,7 +286,15 @@ export function makeDelegate(ctx: {
           runBuiltin: async (member) => {
             const picked = pick(member.model)
             if ('error' in picked) return { ok: false, output: '', error: picked.error }
-            return runBuiltinMember(member, { deps, workspaceRoot, ...picked })
+            return runBuiltinMember(member, {
+              deps,
+              workspaceRoot,
+              ...picked,
+              ...(member.onConversation ? { onConversation: member.onConversation } : {}),
+              // 子会话的事件按**它自己的会话 id** 发。这条与上面那个 `emit` 不是一回事：
+              // 那个发的是图卡进度，归属是父会话。
+              onEvent: (ev, cid) => deps.bus.publish(ev, cid),
+            })
           },
         },
       )

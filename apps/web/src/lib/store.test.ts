@@ -50,6 +50,7 @@ const {
   activePanelTab,
   applyEvent,
   client,
+  dropView,
   modelCatalog,
   closeAllPanelTabs,
   closePanel,
@@ -60,6 +61,8 @@ const {
   isRunning,
   ledgerRevision,
   openBrowserTab,
+  openConversationTab,
+  openView,
   openPanel,
   openPanelTab,
   PANEL_MIN,
@@ -76,9 +79,19 @@ const {
   setState,
   sidePanel,
   state,
+  syncViews,
   togglePanel,
   togglePanelMax,
+  transcript,
+  view,
+  viewOf,
 } = await import('./store/index.ts')
+
+/** 这条会话现开一份空表：上一条用例往里写过条目，下一条要从空的开始。 */
+const freshView = (id: string) => {
+  dropView(id)
+  openView(id)
+}
 
 describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {
   test('收起状态下点开，回到默认的文件视图', () => {
@@ -359,7 +372,8 @@ describe('接口错误还原成人话', () => {
  */
 describe('事件按会话归属过滤', () => {
   const reset = (activeConversation: string | null) => {
-    setState({ activeConversation, transcript: [], conversations: [], busyConversations: [] })
+    setState({ activeConversation, conversations: [], busyConversations: [] })
+    if (activeConversation) freshView(activeConversation)
   }
 
   const deltaFrame = (conversationId: string | undefined, delta: string) =>
@@ -373,7 +387,57 @@ describe('事件按会话归属过滤', () => {
   test('别的会话的正文不写进当前 transcript —— 这就是「切了还是上一条」', () => {
     reset('cv_now')
     applyEvent(deltaFrame('cv_other', '别人的话'))
-    expect(state.transcript).toHaveLength(0)
+    expect(transcript()).toHaveLength(0)
+  })
+
+  /**
+   * 右侧开着的那一页子会话同时在收事件。
+   *
+   * **原始失败形状**：子 agent 跑着的时候那一页一个字都没有——它的帧因为「不是当前
+   * 会话」被整帧丢掉。开着那一页时必须落进它自己那一份，且不许溢到当前会话这一份上。
+   *
+   * 走的是真路径：开页 → `syncViews` 建表并报订阅。直接 `openView` 建的表会被
+   * 下一次 `syncViews` 撤掉——没有哪一页开着它。
+   */
+  test('开着那一页的子会话，帧落进它自己那一份', () => {
+    reset('cv_now')
+    openConversationTab('cv_child', '子 agent')
+    syncViews()
+    applyEvent(deltaFrame('cv_child', '子 agent 在写的话'))
+    applyEvent({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_child',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+
+    expect(
+      viewOf('cv_child')
+        .transcript.map((t) => t.text)
+        .join(''),
+    ).toContain('子 agent 在写的话')
+    // 当前会话这一份一个字都不该多。
+    expect(transcript()).toHaveLength(0)
+    closePanelTab('conversation-cv_child')
+    syncViews()
+  })
+
+  /** 关掉那一页之后再到达的帧没有落点，整帧丢弃——不能落回当前会话。 */
+  test('关掉那一页之后，它的帧不再有落点', () => {
+    reset('cv_now')
+    openConversationTab('cv_child', '子 agent')
+    syncViews()
+    closePanelTab('conversation-cv_child')
+    syncViews()
+    applyEvent(deltaFrame('cv_child', '关掉之后又来的话'))
+    applyEvent({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_child',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+    expect(transcript()).toHaveLength(0)
+    expect(viewOf('cv_child').transcript).toHaveLength(0)
   })
 
   test('自己会话的正文照常写入', () => {
@@ -386,12 +450,17 @@ describe('事件按会话归属过滤', () => {
       conversationId: 'cv_now',
       event: { type: 'todos', runId: 'run_1', todos: [] },
     } as never)
-    expect(state.transcript.map((t) => t.text).join('')).toContain('我的话')
+    expect(
+      transcript()
+        .map((t) => t.text)
+        .join(''),
+    ).toContain('我的话')
   })
 
   /**
-   * `git.state` 由服务端每 4 秒无条件广播一次。它不进 transcript，冲缓冲毫无必要，
-   * 而冲了的现象是：正文匀速输出一阵、每 4 秒把攒着的几十个字一次性排空。
+   * `git.state` 由服务端在握手、切项目、`.git/HEAD` 变了时广播。它不进 transcript，
+   * 冲缓冲毫无必要，而冲了的现象是：正文匀速输出一阵、到这一条时把攒着的几十个字
+   * 一次性排空。
    */
   test('git 轮询不冲正文缓冲', () => {
     reset('cv_now')
@@ -401,7 +470,7 @@ describe('事件按会话归属过滤', () => {
       at: 0,
       event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
     } as never)
-    expect(state.transcript).toHaveLength(0)
+    expect(transcript()).toHaveLength(0)
 
     // 真要落 transcript 的事件照旧冲——否则读数条会排在半段正文后面。
     applyEvent({
@@ -410,7 +479,11 @@ describe('事件按会话归属过滤', () => {
       conversationId: 'cv_now',
       event: { type: 'todos', runId: 'run_1', todos: [] },
     } as never)
-    expect(state.transcript.map((t) => t.text).join('')).toContain('正在写的一段话')
+    expect(
+      transcript()
+        .map((t) => t.text)
+        .join(''),
+    ).toContain('正在写的一段话')
   })
 
   test('没有归属的是工作区级事件，照样放行', () => {
@@ -425,7 +498,7 @@ describe('事件按会话归属过滤', () => {
         message: '工作区级错误',
       },
     } as never)
-    expect(state.error?.message).toBe('工作区级错误')
+    expect(view().error?.message).toBe('工作区级错误')
   })
 
   test('别的会话的 run.started 不会写进当前会话的 run 投影', () => {
@@ -445,7 +518,7 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(state.lastRunId).toBe(null)
     // 中断按钮发的是 lastRunId，串台的表现是「点停止停掉了别人那一轮」。
-    expect(state.runStartedAt).toBe(null)
+    expect(view().runStartedAt).toBe(null)
   })
 
   /*
@@ -477,18 +550,18 @@ describe('事件按会话归属过滤', () => {
   test('服务端自己发起的那一轮，用户消息由 run.started 补出来', () => {
     reset('cv_now')
     applyEvent(runStarted('cv_now', 'ms_1', { content: '排着的那一句' }))
-    expect(state.transcript.map((i) => [i.kind, i.text, i.id])).toEqual([
+    expect(transcript().map((i) => [i.kind, i.text, i.id])).toEqual([
       ['user', '排着的那一句', 'ms_1'],
     ])
   })
 
   test('界面上按回车那条不会因此变成两条，且 id 换成账本里的真值', () => {
     reset('cv_now')
-    setState('transcript', [{ id: 'local_1', kind: 'user', text: '我打的那句' }])
+    setState('views', 'cv_now', 'transcript', [{ id: 'local_1', kind: 'user', text: '我打的那句' }])
     applyEvent(runStarted('cv_now', 'ms_2', { content: '我打的那句' }))
-    expect(state.transcript).toHaveLength(1)
+    expect(transcript()).toHaveLength(1)
     // id 对齐之后，活的这一份与刷新后从账本投影出来的那一份是同一个键。
-    expect(state.transcript[0]?.id).toBe('ms_2')
+    expect(transcript()[0]?.id).toBe('ms_2')
   })
 
   /**
@@ -627,7 +700,8 @@ describe('事件按会话归属过滤', () => {
  */
 describe('账本修订号跟着落库走', () => {
   const startRun = () => {
-    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [], usage: null })
+    setState({ activeConversation: 'cv_1', busyConversations: [], usage: null })
+    freshView('cv_1')
     applyEvent({
       seq: 1,
       at: 0,
@@ -793,20 +867,22 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
    * `session.ts` 的 `openToolStep`），只读 `payload` 的话就会漏掉。
    */
   test('思考正文跟着工具 step 折回来，位置在工具卡之前', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: ['cv_1'] })
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
     stub([toolStep('先看看这台机器的显卡')], [interruptedRun])
     await reloadActiveConversation()
 
-    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'thinking', 'tool', 'run'])
-    expect(state.transcript[1]?.text).toBe('先看看这台机器的显卡')
+    expect(transcript().map((t) => t.kind)).toEqual(['user', 'thinking', 'tool', 'run'])
+    expect(transcript()[1]?.text).toBe('先看看这台机器的显卡')
   })
 
   test('没有思考的工具 step 不平白多出一条空折叠', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: ['cv_1'] })
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
     stub([toolStep('')], [interruptedRun])
     await reloadActiveConversation()
 
-    expect(state.transcript.map((t) => t.kind)).toEqual(['user', 'tool', 'run'])
+    expect(transcript().map((t) => t.kind)).toEqual(['user', 'tool', 'run'])
   })
 
   /**
@@ -816,17 +892,19 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
    * 没有这条 run。放下它的是握手报的那份忙闲快照。
    */
   test('账本里那一轮是中断态，重拉之后收尾条目在，执行中不再由账本决定', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [] })
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
     stub([toolStep('思考')], [interruptedRun])
     await reloadActiveConversation()
 
     expect(isRunning()).toBe(false)
-    expect(state.transcript.at(-1)?.run?.stopReason).toBe('user_interrupt')
+    expect(transcript().at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
 
   /** 反过来的那一半：账本那行还挂着 `running`，重拉也不许把界面点回执行中。 */
   test('账本里还挂着在跑，忙闲快照说没跑 —— 以快照为准', async () => {
-    setState({ activeConversation: 'cv_1', transcript: [], busyConversations: [] })
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
     stub(
       [toolStep('思考')],
       [{ ...interruptedRun, finishedAt: null, stopReason: null, status: 'running' }],
@@ -860,10 +938,10 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     }
     setState({
       activeConversation: 'cv_1',
-      transcript: [],
       busyConversations: ['cv_1'],
       usage: null,
     })
+    freshView('cv_1')
     stub([toolStep('思考')], [liveRun])
     await reloadActiveConversation()
 
@@ -917,7 +995,8 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
    * 界面上一样都没有，只剩一条看起来正常结束的会话。
    */
   test('重拉会话时从账本读回来，理由跟着一起回来', async () => {
-    setState({ activeConversation: 'cv_1', goal: null, transcript: [] })
+    setState({ activeConversation: 'cv_1', goal: null })
+    freshView('cv_1')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/messages')) return { messages: [] }
       if (p.includes('/goal')) {
@@ -977,28 +1056,26 @@ describe('报错正文并进这一轮的读数条', () => {
   test('收尾时正文进条目，全局那份放下——不能两处都说', () => {
     setState({
       activeConversation: 'cv_now',
-      transcript: [],
-      error: null,
       busyConversations: ['cv_now'],
     })
+    freshView('cv_now')
     applyEvent(errorFrame('网络不可达：检查接口地址与代理'))
     applyEvent(finishedFrame())
 
-    const item = state.transcript.find((t) => t.kind === 'run')
+    const item = transcript().find((t) => t.kind === 'run')
     expect(item?.run?.errorMessage).toBe('网络不可达：检查接口地址与代理')
-    expect(state.error).toBe(null)
+    expect(view().error).toBe(null)
   })
 
   /** 正常收尾没有正文，读数条回落到停止原因的通用说法。 */
   test('没出错的那一轮 errorMessage 是 null', () => {
     setState({
       activeConversation: 'cv_now',
-      transcript: [],
-      error: null,
       busyConversations: ['cv_now'],
     })
+    freshView('cv_now')
     applyEvent(finishedFrame())
-    expect(state.transcript.find((t) => t.kind === 'run')?.run?.errorMessage).toBe(null)
+    expect(transcript().find((t) => t.kind === 'run')?.run?.errorMessage).toBe(null)
   })
 
   /**
@@ -1008,13 +1085,12 @@ describe('报错正文并进这一轮的读数条', () => {
   test('没有收尾事件时全局那份留着', () => {
     setState({
       activeConversation: 'cv_now',
-      transcript: [],
-      error: null,
       busyConversations: ['cv_now'],
     })
+    freshView('cv_now')
     applyEvent(errorFrame('未配置 API Key'))
-    expect(state.error?.message).toBe('未配置 API Key')
-    expect(state.transcript.some((t) => t.kind === 'run')).toBe(false)
+    expect(view().error?.message).toBe('未配置 API Key')
+    expect(transcript().some((t) => t.kind === 'run')).toBe(false)
   })
 })
 
@@ -1037,7 +1113,8 @@ describe('事件到达时刻按帧记下来', () => {
     }) as never
 
   test('任何一帧到达都刷新「上一次有动静」', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], lastEventAt: null })
+    setState({ activeConversation: 'cv_now', lastEventAt: null })
+    freshView('cv_now')
     applyEvent(frame('todos', { todos: [] }))
     const first = state.lastEventAt
     expect(first).not.toBe(null)
@@ -1048,7 +1125,8 @@ describe('事件到达时刻按帧记下来', () => {
    * 前台这条就被判成「刚有动静」，静默永远不会显示出来。
    */
   test('别的会话的帧不刷新它', () => {
-    setState({ activeConversation: 'cv_now', transcript: [], lastEventAt: 1 })
+    setState({ activeConversation: 'cv_now', lastEventAt: 1 })
+    freshView('cv_now')
     applyEvent({
       seq: 10,
       at: 0,
@@ -1062,10 +1140,10 @@ describe('事件到达时刻按帧记下来', () => {
   test('run 收尾后清空', () => {
     setState({
       activeConversation: 'cv_now',
-      transcript: [],
       busyConversations: ['cv_now'],
       lastEventAt: 1,
     })
+    freshView('cv_now')
     applyEvent(
       frame('run.finished', {
         status: 'done',
@@ -1178,12 +1256,13 @@ describe('工具卡按 stepId 认领实时输出', () => {
    * 事件来断言，而不是靠等定时器——**任何要读 transcript 的事件之前一定先落地**。
    */
   test('落到 tool.started 开出来的那张卡上', () => {
-    setState({ activeConversation: 'cv_now', transcript: [] })
+    setState({ activeConversation: 'cv_now' })
+    freshView('cv_now')
     applyEvent(started('st_tool_1'))
     applyEvent(delta('st_tool_1', '第一行\n'))
     applyEvent(delta('st_tool_1', '第二行\n'))
     applyEvent(finished('st_tool_1'))
-    expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
+    expect(transcript().find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
   })
 
   /**
@@ -1191,11 +1270,12 @@ describe('工具卡按 stepId 认领实时输出', () => {
    * 一波里可以有多个工具同时在跑，贴错的输出比没有输出更难查。
    */
   test('认不出 stepId 的一律不落卡', () => {
-    setState({ activeConversation: 'cv_now', transcript: [] })
+    setState({ activeConversation: 'cv_now' })
+    freshView('cv_now')
     applyEvent(started('st_tool_1'))
     applyEvent(delta('', '认不出归属的一行\n'))
     applyEvent(finished('st_tool_1'))
-    expect(state.transcript.find((t) => t.id === 'st_tool_1')?.stdout).toBeUndefined()
+    expect(transcript().find((t) => t.id === 'st_tool_1')?.stdout).toBeUndefined()
   })
 })
 
@@ -1235,14 +1315,14 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
       },
     }) as never
 
-  const fresh = () =>
+  const fresh = () => {
     setState({
       activeConversation: 'cv_tail',
-      transcript: [],
       busyConversations: ['cv_tail'],
       lastRunId: null,
-      runStartedAt: null,
     })
+    freshView('cv_tail')
+  }
 
   test('跑着的时候不算完', () => {
     fresh()
@@ -1289,7 +1369,7 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
     applyEvent(started('run_b'))
-    expect(state.transcript[state.transcript.length - 1]?.kind).toBe('run')
+    expect(transcript()[transcript().length - 1]?.kind).toBe('run')
     expect(runClosed()).toBe(false)
   })
 })

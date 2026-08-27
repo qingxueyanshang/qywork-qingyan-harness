@@ -74,6 +74,7 @@ function shake(
       unsubscribers: new Map(),
       config: { active: { provider: 'p', model: 'm' }, providers: {} },
       runs,
+      announceGit: () => {},
     },
   )
   return sock

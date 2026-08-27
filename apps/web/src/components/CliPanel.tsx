@@ -10,12 +10,12 @@
  */
 
 import { Show } from 'solid-js'
-import { state } from '../lib/store/index.ts'
+import { transcript } from '../lib/store/index.ts'
 import { tabCliNode } from '../lib/store/ui.ts'
 
 export default function CliPanel(props: { id: string }) {
   const where = () => tabCliNode(props.id)
-  const card = () => state.transcript.find((t) => t.id === where().stepId)
+  const card = () => transcript().find((t) => t.id === where().stepId)
 
   /**
    * 运行期间是攒起来的中途输出，跑完 / 刷新之后是落库的那段产出。

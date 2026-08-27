@@ -21,11 +21,20 @@ import type {
   TodoItem,
   ToolOutcomeWire,
 } from '@qywork/core'
+import { createEffect, createRoot } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
-import { markBusy, setState, state, type TranscriptItem, type WorkflowNodeState } from './state.ts'
-import { workspace } from './ui.ts'
+import {
+  dropView,
+  markBusy,
+  openView,
+  setState,
+  state,
+  type TranscriptItem,
+  type WorkflowNodeState,
+} from './state.ts'
+import { panelTabs, tabConversationId, workspace } from './ui.ts'
 
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
@@ -59,17 +68,29 @@ if (import.meta.hot) import.meta.hot.dispose(() => client.close())
  * **除 `text.delta` 外的任何事件都先冲一次**，所以不需要按 step 记账。
  * 编排逻辑在 `stream-pace.ts` 里（那边能测），这里只做接线。
  */
-function writeTail(stepId: string, chunk: string): void {
+function writeTail(key: string, chunk: string): void {
   if (!chunk) return
+  const [cid, stepId] = key.split(SEP) as [string, string]
   setState(
     produce((s) => {
-      const last = s.transcript[s.transcript.length - 1]
+      const items = s.views[cid]?.transcript
+      if (!items) return
+      const last = items[items.length - 1]
       // 同一条 text step 持续追加：只改这一个字段，只更新一个文本节点。
       if (last?.kind === 'text' && last.id === stepId) last.text += chunk
-      else s.transcript.push({ id: stepId, kind: 'text', text: chunk })
+      else items.push({ id: stepId, kind: 'text', text: chunk })
     }),
   )
 }
+
+/**
+ * 节拍器与合帧器的缓冲键：**会话 id 打头**。
+ *
+ * 当前会话和右侧那一页子会话同时在收增量，只按 stepId 记账的话两条会话的
+ * step id 撞上就会把字写进另一条会话的正文里。
+ */
+const SEP = String.fromCharCode(0)
+const bufKey = (cid: string, ...rest: string[]): string => [cid, ...rest].join(SEP)
 
 const schedule = (fn: () => void, ms: number) => {
   const t = setInterval(fn, ms)
@@ -84,10 +105,11 @@ const pacer = createPacer({ write: writeTail, schedule, now: () => Date.now() })
  * **只留尾部**：一次构建可能输出几万行，全存会让内存占用与渲染开销都不可接受。
  * 截断发生在合帧之后——按到达逐段截等于把同一份文本反复重排一遍。
  */
-function appendStdout(stepId: string, chunk: string): void {
+function appendStdout(key: string, chunk: string): void {
+  const [cid, stepId] = key.split(SEP) as [string, string]
   setState(
     produce((s) => {
-      const item = s.transcript.find((t) => t.id === stepId)
+      const item = s.views[cid]?.transcript.find((t) => t.id === stepId)
       if (!item) return
       const next = (item.stdout ?? '') + chunk
       item.stdout = next.length > 8000 ? next.slice(-8000) : next
@@ -100,15 +122,14 @@ const toolFrames = createFramer({ write: appendStdout, schedule })
 /**
  * 外部 CLI 节点的中途输出，攒在它自己那个节点上。
  *
- * 键是「哪张卡 + 哪个节点」两段：一张图里可以有好几个 CLI 节点同时在跑，
+ * 键是「哪条会话 + 哪张卡 + 哪个节点」三段：一张图里可以有好几个 CLI 节点同时在跑，
  * 只按卡认的话它们的输出会混成一段，再也分不出谁是谁。
  */
-const NODE_KEY = String.fromCharCode(0)
 function appendNodeOutput(key: string, chunk: string): void {
-  const [stepId, memberId] = key.split(NODE_KEY)
+  const [cid, stepId, memberId] = key.split(SEP)
   setState(
     produce((s) => {
-      const card = s.transcript.find((t) => t.id === stepId)
+      const card = s.views[cid ?? '']?.transcript.find((t) => t.id === stepId)
       const node = card?.nodes?.find((n) => n.nodeId === memberId)
       if (!node) return
       const next = (node.output ?? '') + chunk
@@ -122,9 +143,9 @@ const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
 /**
  * 不落 transcript 的事件——它们不该冲正文缓冲。
  *
- * `git.state` 由服务端每 4 秒轮询广播一次，且**无条件发**：新连上的客户端只能从
- * 这条广播拿到分支名，没有别的取法，所以那边不能改成「变了才发」。让它冲缓冲的话，
- * 正文攒着的几十个字每 4 秒一次性排空，界面上是匀速输出一阵、再突进一次。
+ * `git.state` 由服务端在握手时、切项目时、以及 `.git/HEAD` 变了的时候广播——
+ * 新连上的客户端只能从这条广播拿到分支名，没有别的取法。让它冲缓冲的话，
+ * 正文攒着的几十个字会在切分支那一下一次性排空，界面上是匀速输出一阵、再突进一次。
  *
  * **这份名单宁可短。** 漏一条只是多冲一次（顿一下）；多写一条会让真正要落
  * transcript 的事件看到一段放了一半的正文，那是顺序错乱，比顿挫严重得多。
@@ -157,16 +178,27 @@ export function discardPace(): void {
 /**
  * 把一帧折进 `state`。
  *
- * **归属校验只判一次，就在这里。** 下面三十个 case 里的绝大多数（`text.delta` / `tool.*` / `usage`
- * / `run.*`）写的都是 **当前会话**那一份 transcript 和 run 状态，而事件体自己不带 `conversationId`
- * ——归属在信封上。不能假定「服务端只推已订阅的会话」：那个前提有一段消不掉的窗口——`subscribe`
- * 指令发出到服务端处理之间，旧会话还在推。现象是切了会话、正文却是上一条的。
+ * **归属只判一次，就在这里。** 事件体自己不带 `conversationId`——归属在信封上。
+ * 它决定这一帧折进哪一条会话那一份（`state.views` 的一个键）；表里没有这一条的
+ * （既不是当前会话，也不是右侧开着的子会话页）**整帧丢弃**。不能假定「服务端只推
+ * 已订阅的会话」：`subscribe` 指令发出到服务端处理之间有一段消不掉的窗口，
+ * 那一段里旧会话还在推。
  *
- * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。入口判一次。
+ * **两条折法，按会话分工：**
  *
- * **`conversation.updated` 在校验之前处理。** 它改的是左栏那份**列表**，不是 transcript，对后台会话
- * 同样有意义（标题、模型）。一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。它自己带着
- * `conversationId`，本来就该按 id 精确路由。
+ * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、收尾条。
+ *   每条收着事件的会话各折各的，当前会话和它派出去的子会话同时在跑是常态。
+ * - `foldRunState`——**这一轮跑得怎么样**：用量、上下文、待办、目标、跟进队列、重发、
+ *   这一轮改了哪些文件。只折当前会话那一条：子会话那一页只画内容
+ *   （`ConversationPanel` 就是一列 transcript），没有读数条也没有输入框，
+ *   折过去等于让另一条会话的数字改写用户正看着的这一份，而界面上没有一处说得出这是谁的。
+ *
+ * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。分工只在这里判。
+ *
+ * **`conversation.updated` 与 `conversation.busy` 在归属之前处理。** 它们改的是左栏那份
+ * **列表**，不是某一条会话的内容，对后台会话同样有意义（标题、模型、忙闲）。一刀切按
+ * 当前会话丢，会让后台会话的标题永远停在「新对话」。它们自己带着 `conversationId`，
+ * 本来就该按 id 精确路由。
  */
 export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   const ev = frame.event
@@ -189,7 +221,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   /*
-   * 忙闲同样在归属校验之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
+   * 忙闲同样在归属之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
    *
    * **也在 `lastEventAt` 之前**：别的会话开跑不是这条会话「有动静」，
    * 算进去的话，静默检测会被后台会话持续刷新，「链路断了」永远报不出来。
@@ -199,19 +231,24 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
-  // 归属不是当前会话的一律丢弃。没有归属的是工作区级事件（git 状态那类），放行。
-  if (frame.conversationId && frame.conversationId !== state.activeConversation) return
+  const from = frame.conversationId
+  // 没有归属的是工作区级事件（git 状态那类），按当前会话算。
+  const mine = !from || from === state.activeConversation
+  if (from && !state.views[from]) return
 
   /*
    * **「有动静」的唯一落点，就是这里。**
    *
-   * 判在入口而不是给三十个 case 各补一句：那是三十次忘记的机会（同下面归属校验
-   * 那条理由）。语义也正好——一帧到了就是有动静，与它是哪种事件无关。
+   * 判在入口而不是给三十个 case 各补一句：那是三十次忘记的机会（同上面归属那条理由）。
+   * 语义也正好——一帧到了就是有动静，与它是哪种事件无关。
+   *
+   * **只认当前会话那条**：子会话在后台收着事件，不说明用户正看着的这一轮还在出数据。
    */
-  setState('lastEventAt', Date.now())
-
-  // 收场判据的唯一落点，理由见 `RESUMED`。
-  if (state.retry && RESUMED.has(ev.type)) setState('retry', null)
+  if (mine) {
+    setState('lastEventAt', Date.now())
+    // 收场判据的唯一落点，理由见 `RESUMED`。
+    if (state.retry && RESUMED.has(ev.type)) setState('retry', null)
+  }
 
   /*
    * 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
@@ -227,6 +264,19 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     nodeFrames.flush()
   }
 
+  const cid = from ?? state.activeConversation
+  if (cid) foldContent(cid, ev)
+  if (mine) foldRunState(ev)
+}
+
+/**
+ * 这条会话**是什么**。见 `applyEvent` 里那段分工。
+ *
+ * 每个写点都先取 `s.views[cid]`，取不到就整条不落：表在 `openView` 建，
+ * 而切走一条会话、关掉一页子会话都会当场撤表（`dropView`），撤表之后到达的那几帧
+ * 已经没有归属可言。
+ */
+function foldContent(cid: string, ev: AgentEvent): void {
   switch (ev.type) {
     case 'team.member':
       // 进度落到那张图卡上。**没带 stepId 就整条丢弃**：一条会话里可能有好几张图卡，
@@ -234,19 +284,22 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       if (!ev.stepId) return
       setState(
         produce((s) => {
-          const card = s.transcript.find((t) => t.id === ev.stepId)
+          const card = s.views[cid]?.transcript.find((t) => t.id === ev.stepId)
           if (!card) return
           const nodes = card.nodes ?? []
           // 原地更新而不是追加：同一个节点会连发 spawned → working → done，
           // 追加的话图上会出现同一个节点的三份。
           const i = nodes.findIndex((n) => n.nodeId === ev.memberId)
+          // 子会话 id 要逐条保留。它在 `working` 那条补上来，后面每条都得带着——
+          // 不带的话 `done` 到达时这一格重新变回点不开的。外部 CLI 那几格没有这个字段。
+          const child = ev.childConversationId ?? nodes[i]?.conversationId
           const next: WorkflowNodeState = {
             nodeId: ev.memberId,
             agent: nodes[i]?.agent ?? ev.roleName,
             label: ev.roleName,
             phase: ev.phase,
             ...(ev.summary ? { summary: ev.summary } : {}),
-            ...(ev.childConversationId ? { conversationId: ev.childConversationId } : {}),
+            ...(child ? { conversationId: child } : {}),
           }
           if (i >= 0) nodes[i] = next
           else nodes.push(next)
@@ -255,19 +308,11 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       )
       return
 
-    case 'queue.changed':
-      // 整体替换：服务端发的就是它此刻的全部，本地那几张乐观卡按同一个 id 被覆盖。
-      setState('followUps', ev.queue)
-      return
-
     case 'message.injected':
       setState(
         produce((s) => {
-          // 摘掉那张卡：队列的权威仍是 `queue.changed`，这里先手一步是为了
-          // 卡片与气泡不同时出现（服务端两条事件之间隔着一次落库）。
-          s.followUps = s.followUps.filter((f) => f.id !== ev.followUpId)
           // id 用 stepId——与刷新后 `stepToItems` 重建出来的那条同源，不会闪重。
-          s.transcript.push({
+          s.views[cid]?.transcript.push({
             id: ev.stepId,
             kind: 'user',
             text: ev.content,
@@ -275,6 +320,212 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           })
         }),
       )
+      return
+
+    case 'run.started':
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          v.error = null
+          v.runStartedAt = Date.now()
+          /*
+           * 对齐这一轮回答的那条用户气泡。
+           *
+           * 界面上按回车那一条是客户端乐观插进去的，带的是本地 id；而目标续起、
+           * 定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条事件来。
+           * 两种情况用同一条规则收：正文对得上就把 id 换成账本里的真值，
+           * 对不上就补一条——补完之后活的这份与刷新后从账本投影出来的那份同 id。
+           */
+          if (ev.userMessage && ev.userMessageId) {
+            let last = v.transcript.length - 1
+            while (last >= 0 && v.transcript[last]!.kind !== 'user') last--
+            const hit = last >= 0 ? v.transcript[last]! : null
+            if (hit && hit.text === ev.userMessage.content) {
+              hit.id = ev.userMessageId
+            } else {
+              v.transcript.push({
+                id: ev.userMessageId,
+                kind: 'user',
+                text: ev.userMessage.content,
+                ...(ev.userMessage.attachments?.length
+                  ? { attachments: ev.userMessage.attachments }
+                  : {}),
+              })
+            }
+          }
+        }),
+      )
+      return
+
+    case 'text.delta':
+      pacer.push(bufKey(cid, ev.stepId), ev.delta)
+      return
+
+    // 与 `text.delta` 同构：按 stepId 认自己那一条，不按「末条是不是思考」认。
+    // 后者在同一次调用里出现第二段思考时会把它并进第一段，而那两段是分开到达的。
+    case 'thinking.delta':
+      setState(
+        produce((s) => {
+          const items = s.views[cid]?.transcript
+          if (!items) return
+          const last = items[items.length - 1]
+          if (last?.kind === 'thinking' && last.id === ev.stepId) last.text += ev.delta
+          else items.push({ id: ev.stepId, kind: 'thinking', text: ev.delta })
+        }),
+      )
+      return
+
+    case 'tool.started':
+      setState(
+        produce((s) => {
+          s.views[cid]?.transcript.push({
+            id: ev.stepId,
+            kind: 'tool',
+            text: '',
+            toolName: ev.toolName,
+            action: ev.action,
+            args: ev.args,
+            status: 'running',
+            batchId: ev.batchId,
+            waveIndex: ev.waveIndex,
+          })
+        }),
+      )
+      return
+
+    case 'tool.delta':
+      toolFrames.push(bufKey(cid, ev.stepId), ev.delta)
+      return
+
+    case 'team.output':
+      // 认不出是哪张卡就整条丢弃，与 `team.member` 同一条理由。
+      if (!ev.stepId) return
+      nodeFrames.push(bufKey(cid, ev.stepId, ev.memberId), ev.delta)
+      return
+
+    case 'tool.finished':
+      setState(
+        produce((s) => {
+          const item = s.views[cid]?.transcript.find((t) => t.id === ev.stepId)
+          if (!item) return
+          item.status = ev.status === 'success' ? 'success' : 'failure'
+          item.outcome = ev.outcome
+          item.durationMs = ev.durationMs
+        }),
+      )
+      return
+
+    case 'compaction':
+      setState(
+        produce((s) => {
+          const items = s.views[cid]?.transcript
+          if (!items) return
+          // 压缩是会话管理的可见事件，不能静默发生——用户需要知道
+          // 「为什么模型突然不记得前面说过的话了」。
+          const existing = items.find(
+            (t) => t.kind === 'compaction' && t.compaction?.phase === 'started',
+          )
+          if (existing && ev.phase !== 'started') {
+            existing.compaction = {
+              phase: ev.phase,
+              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
+              ...(ev.summarized === undefined ? {} : { summarized: ev.summarized }),
+              ...(ev.manifest
+                ? {
+                    revision: ev.manifest.revision,
+                    compactedMessages: ev.manifest.compactedMessageCount,
+                  }
+                : {}),
+            }
+            return
+          }
+          items.push({
+            id: `cmp_${Date.now()}`,
+            kind: 'compaction',
+            text: '',
+            compaction: {
+              phase: ev.phase,
+              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
+            },
+          })
+        }),
+      )
+      return
+
+    case 'run.error':
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          v.error = { code: ev.code, message: ev.message }
+          /*
+           * **不要在这里把「在跑」放下来。** 终态由服务端的 `conversation.busy`
+           * 给：loop 之外抛出的错误（没配 API key、档案解析失败）没有
+           * `run.finished`，但 `run-control.ts` 的 finally 一定会走 unregister /
+           * release，那两处就是忙闲的唯一裁决点。在这里补一个客户端判断，
+           * 「谁在跑」就有了第二本账。
+           */
+        }),
+      )
+      return
+
+    case 'run.finished':
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
+          // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
+          v.transcript.push({
+            id: `run_${ev.runId}`,
+            kind: 'run',
+            text: '',
+            run: {
+              runId: ev.runId,
+              stopReason: ev.stopReason,
+              usage: ev.usage,
+              startedAt: v.runStartedAt ?? Date.now(),
+              endedAt: Date.now(),
+              // 刚刚那条 `run.error` 的正文（恒在 finished 之前到）。服务端同时
+              // 把它写进了 `runs.error_message`，刷新后由投影层原样折回来。
+              errorMessage: v.error?.message ?? null,
+            },
+          })
+          /*
+           * **正文交接给了这一轮的条目，会话上那份就得放下。**
+           *
+           * 不放的话同一句话同时挂在读数条和错误卡上——用户看到的是两遍。
+           * 剩下的错误卡只服务「没有 run 收尾条可挂」的那一半（没配 key、
+           * 档案解析失败），那些不会走到这里。
+           */
+          v.error = null
+          v.runStartedAt = null
+        }),
+      )
+      return
+
+    default:
+      return
+  }
+}
+
+/**
+ * **这一轮跑得怎么样**：读数、待办、目标、跟进队列、重发、这一轮改了哪些文件。
+ *
+ * 只有当前会话那一条走到这里，理由见 `applyEvent`。
+ */
+function foldRunState(ev: AgentEvent): void {
+  switch (ev.type) {
+    case 'queue.changed':
+      // 整体替换：服务端发的就是它此刻的全部，本地那几张乐观卡按同一个 id 被覆盖。
+      setState('followUps', ev.queue)
+      return
+
+    case 'message.injected':
+      // 摘掉那张卡：队列的权威仍是 `queue.changed`，这里先手一步是为了
+      // 卡片与气泡不同时出现（服务端两条事件之间隔着一次落库）。
+      setState('followUps', (list) => list.filter((f) => f.id !== ev.followUpId))
       return
 
     case 'todos':
@@ -293,7 +544,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       setState(
         produce((s) => {
           s.usage = null
-          s.error = null
           s.notice = null
           s.fileChanges = []
           // **待办不清。** 它是这条会话的进度，不是这一轮的临时读数——
@@ -302,32 +552,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的读数
           // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
           s.lastRunId = ev.runId
-          s.runStartedAt = Date.now()
-          /*
-           * 对齐这一轮回答的那条用户气泡。
-           *
-           * 界面上按回车那一条是客户端乐观插进去的，带的是本地 id；而目标续起、
-           * 定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条事件来。
-           * 两种情况用同一条规则收：正文对得上就把 id 换成账本里的真值，
-           * 对不上就补一条——补完之后活的这份与刷新后从账本投影出来的那份同 id。
-           */
-          if (ev.userMessage && ev.userMessageId) {
-            let last = s.transcript.length - 1
-            while (last >= 0 && s.transcript[last]!.kind !== 'user') last--
-            const hit = last >= 0 ? s.transcript[last]! : null
-            if (hit && hit.text === ev.userMessage.content) {
-              hit.id = ev.userMessageId
-            } else {
-              s.transcript.push({
-                id: ev.userMessageId,
-                kind: 'user',
-                text: ev.userMessage.content,
-                ...(ev.userMessage.attachments?.length
-                  ? { attachments: ev.userMessage.attachments }
-                  : {}),
-              })
-            }
-          }
         }),
       )
       return
@@ -338,62 +562,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
      */
     case 'run.retrying':
       setState('retry', { attempt: ev.attempt, max: ev.max })
-      return
-
-    case 'text.delta':
-      pacer.push(ev.stepId, ev.delta)
-      return
-
-    // 与 `text.delta` 同构：按 stepId 认自己那一条，不按「末条是不是思考」认。
-    // 后者在同一次调用里出现第二段思考时会把它并进第一段，而那两段是分开到达的。
-    case 'thinking.delta':
-      setState(
-        produce((s) => {
-          const last = s.transcript[s.transcript.length - 1]
-          if (last?.kind === 'thinking' && last.id === ev.stepId) last.text += ev.delta
-          else s.transcript.push({ id: ev.stepId, kind: 'thinking', text: ev.delta })
-        }),
-      )
-      return
-
-    case 'tool.started':
-      setState(
-        produce((s) => {
-          s.transcript.push({
-            id: ev.stepId,
-            kind: 'tool',
-            text: '',
-            toolName: ev.toolName,
-            action: ev.action,
-            args: ev.args,
-            status: 'running',
-            batchId: ev.batchId,
-            waveIndex: ev.waveIndex,
-          })
-        }),
-      )
-      return
-
-    case 'tool.delta':
-      toolFrames.push(ev.stepId, ev.delta)
-      return
-
-    case 'team.output':
-      // 认不出是哪张卡就整条丢弃，与 `team.member` 同一条理由。
-      if (!ev.stepId) return
-      nodeFrames.push(`${ev.stepId}${NODE_KEY}${ev.memberId}`, ev.delta)
-      return
-
-    case 'tool.finished':
-      setState(
-        produce((s) => {
-          const item = s.transcript.find((t) => t.id === ev.stepId)
-          if (!item) return
-          item.status = ev.status === 'success' ? 'success' : 'failure'
-          item.outcome = ev.outcome
-          item.durationMs = ev.durationMs
-        }),
-      )
       return
 
     case 'file.changed':
@@ -413,41 +581,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
               })
             }
           }
-        }),
-      )
-      return
-
-    case 'compaction':
-      setState(
-        produce((s) => {
-          // 压缩是会话管理的可见事件，不能静默发生——用户需要知道
-          // 「为什么模型突然不记得前面说过的话了」。
-          const existing = s.transcript.find(
-            (t) => t.kind === 'compaction' && t.compaction?.phase === 'started',
-          )
-          if (existing && ev.phase !== 'started') {
-            existing.compaction = {
-              phase: ev.phase,
-              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
-              ...(ev.summarized === undefined ? {} : { summarized: ev.summarized }),
-              ...(ev.manifest
-                ? {
-                    revision: ev.manifest.revision,
-                    compactedMessages: ev.manifest.compactedMessageCount,
-                  }
-                : {}),
-            }
-            return
-          }
-          s.transcript.push({
-            id: `cmp_${Date.now()}`,
-            kind: 'compaction',
-            text: '',
-            compaction: {
-              phase: ev.phase,
-              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
-            },
-          })
         }),
       )
       return
@@ -476,51 +609,10 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
       setState('git', { workspaceId: ev.workspaceId, branch: ev.branch })
       return
 
-    case 'run.error':
-      setState(
-        produce((s) => {
-          s.error = { code: ev.code, message: ev.message }
-          /*
-           * **不要在这里把「在跑」放下来。** 终态由服务端的 `conversation.busy`
-           * 给：loop 之外抛出的错误（没配 API key、档案解析失败）没有
-           * `run.finished`，但 `run-control.ts` 的 finally 一定会走 unregister /
-           * release，那两处就是忙闲的唯一裁决点。在这里补一个客户端判断，
-           * 「谁在跑」就有了第二本账。
-           */
-        }),
-      )
-      return
-
     case 'run.finished':
       setState(
         produce((s) => {
-          // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
-          // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
-          s.transcript.push({
-            id: `run_${ev.runId}`,
-            kind: 'run',
-            text: '',
-            run: {
-              runId: ev.runId,
-              stopReason: ev.stopReason,
-              usage: ev.usage,
-              startedAt: s.runStartedAt ?? Date.now(),
-              endedAt: Date.now(),
-              // 刚刚那条 `run.error` 的正文（恒在 finished 之前到）。服务端同时
-              // 把它写进了 `runs.error_message`，刷新后由投影层原样折回来。
-              errorMessage: s.error?.message ?? null,
-            },
-          })
-          /*
-           * **正文交接给了这一轮的条目，全局那份就得放下。**
-           *
-           * 不放的话同一句话同时挂在读数条和错误卡上——用户看到的是两遍。
-           * 剩下的错误卡只服务「没有 run 收尾条可挂」的那一半（没配 key、
-           * 档案解析失败），那些不会走到这里。
-           */
-          s.error = null
           s.usage = null
-          s.runStartedAt = null
           s.lastEventAt = null
         }),
       )
@@ -674,9 +766,55 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
  * 子 agent 的会话不在会话列表里（`source='workflow'`），点开它的入口只有工具卡上
  * 带回来的那个 id；而它一旦跑完就不再有事件，投影一次即可，不需要订阅。
  */
-export async function projectConversation(id: string): Promise<TranscriptItem[]> {
-  return foldTranscript(await fetchConversation(id))
+export async function loadConversationView(id: string): Promise<void> {
+  openView(id)
+  const items = foldTranscript(await fetchConversation(id))
+  setState(
+    produce((s) => {
+      const v = s.views[id]
+      if (!v) return
+      // 建表到这一拉返回之间到达的那几条接在后面，按 id 去重。同一条 step
+      // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
+      const known = new Set(items.map((i) => i.id))
+      v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
+    }),
+  )
 }
+
+/**
+ * 哪几条会话正在收事件：当前会话，加上右侧开着的那几页子会话。
+ *
+ * **表的键与报给服务端的订阅集是同一份派生量**，不是两处各记一遍：报了却没建表的
+ * 那条，事件到了会被整帧丢弃（`applyEvent` 的归属判定）；建了表却没报的那条，
+ * 一个字都收不到。两边都从这里出。
+ *
+ * 建表在撤表之前：中间那一步里两条都在表上，比先撤后建那一瞬间一条都不在要好——
+ * 后者那一瞬间到达的帧会被丢掉。
+ */
+let reported = ''
+
+export function syncViews(): void {
+  const want = new Set<string>()
+  if (state.activeConversation) want.add(state.activeConversation)
+  for (const t of panelTabs()) {
+    if (t.kind === 'conversation') want.add(tabConversationId(t.id))
+  }
+  for (const id of want) openView(id)
+  for (const id of Object.keys(state.views)) if (!want.has(id)) dropView(id)
+  // 没变就不报：这个函数既由下面那个 effect 触发，也在切会话那条路上被显式调一次，
+  // 同一组会话报两遍只是两条白发的指令。
+  const line = [...want].sort().join(',')
+  if (line === reported) return
+  reported = line
+  client.subscribe([...want])
+}
+
+/*
+ * 开着哪几页是 `ui.ts` 那边的信号，所以订阅集跟着它自己走一遍——
+ * 不能反过来让 `ui.ts` 调这里：连接层已经引了它（`workspace`），两个模块互相 import
+ * 是一定要避免的。切会话那条路另有一次显式调用，理由见 `selectConversation`。
+ */
+createRoot(() => createEffect(syncViews))
 
 /**
  * 重建完整会话投影。
@@ -728,11 +866,11 @@ export async function reloadActiveConversation(): Promise<void> {
   /*
    * **run 作用域的状态一律从这里派生，不靠事件残留。**
    *
-   * 这些字段（lastRunId / runStartedAt / todos / usage / context）
-   * 是扁平的全局量，没有「属于哪条会话」这一维。切会话时若只重置
-   * transcript，它们会连同上一条会话的 run 一起留在界面上；而 `applyEvent`
-   * 按 conversationId 丢弃非当前会话的事件，那条 run 的 `run.finished`
-   * **结构性地永远到不了**，因此它们再也不会被放下来。
+   * 这些字段（lastRunId / todos / usage / context）只有当前会话那一份，
+   * 没有「属于哪条会话」这一维。切会话时若只重置正文流，它们会连同上一条会话的
+   * run 一起留在界面上；而上一条会话的表在切走那一刻就撤了（`dropView`），
+   * 它那条 run 的 `run.finished` **结构性地永远到不了**，
+   * 因此它们再也不会被放下来。
    *
    * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
    * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
@@ -746,10 +884,15 @@ export async function reloadActiveConversation(): Promise<void> {
 
   setState(
     produce((s) => {
-      s.transcript = items
+      const v = s.views[id]
+      if (v) {
+        v.transcript = items
+        v.runStartedAt = live ? live.createdAt : null
+        // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
+        v.error = null
+      }
       s.followUps = queue
       s.lastRunId = live?.id ?? null
-      s.runStartedAt = live ? live.createdAt : null
       // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
       // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
       s.lastEventAt = live ? Date.now() : null

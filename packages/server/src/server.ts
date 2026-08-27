@@ -31,8 +31,9 @@ import { handleApi, json } from './api/index.ts'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import type { SocketData } from './deps.ts'
+import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
-import { CORS_HEADERS, hostLabel, publishGitState, serveStatic, withCors } from './http-util.ts'
+import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
@@ -108,6 +109,7 @@ function bootstrapWorkspace(
 export function serve(opts: ServeOptions) {
   const bus = new EventBus()
   const runs = new RunManager(opts.store, bus)
+  const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
   const pairing = new Pairing({
     deviceName: hostLabel(),
@@ -365,6 +367,7 @@ export function serve(opts: ServeOptions) {
                 runs,
               })
             },
+            watchGit: () => gitWatch.retarget(),
           })
           if (res) return withCors(res)
         } catch (err) {
@@ -398,6 +401,7 @@ export function serve(opts: ServeOptions) {
             unsubscribers,
             config: opts.config,
             runs,
+            announceGit: () => gitWatch.announce(),
           })
           return
         }
@@ -425,21 +429,8 @@ export function serve(opts: ServeOptions) {
   })
   boundPort = server.port ?? opts.port
 
-  /*
-   * git 状态轮询：文件监听在 Tauri 侧（notify），但 git 的 index/HEAD 变化
-   * 也可能来自用户在终端里的操作，所以这里独立轮询一份。
-   *
-   * **只轮询最近打开的那个项目**，不是每个项目各轮一份：N 个项目就是每 4 秒
-   * N 个 git 子进程，而用户同一时刻只看得见一个。「最近打开」由 `last_opened_at`
-   * 定义，切项目时前端会 upsert 一次把它顶上来——所以这条轮询天然跟着当前项目走，
-   * 不需要再记一个「当前是谁」的状态。
-   */
-  const pollGit = () => {
-    const recent = mostRecentWorkspace(opts.store)
-    if (recent) void publishGitState(recent.rootPath, recent.id, bus)
-  }
-  const gitTimer = setInterval(pollGit, 4000)
-  pollGit()
+  // 分支名跟着 `.git/HEAD` 走，理由与边界都在 `git-watch.ts`。
+  gitWatch.retarget()
 
   return {
     server,
@@ -457,7 +448,7 @@ export function serve(opts: ServeOptions) {
     pairingUrl: () => pairing.qrUrl(boundPort),
     lanUrl: () => `http://${preferredLanAddress()}:${boundPort}`,
     stop() {
-      clearInterval(gitTimer)
+      gitWatch.stop()
       runs.interruptAll()
       disableLan()
       server.stop(true)

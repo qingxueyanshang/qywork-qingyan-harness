@@ -31,6 +31,14 @@ export interface ApiDeps {
   lanPort(): number
   /** 起一轮。由 `server.ts` 注入，见本文件头注释。 */
   startRun(conversationId: ConversationId, prompt: string): void
+  /**
+   * 「当前项目换了」——把分支监听重新指过去并报一份新的。
+   *
+   * 与 `startRun` 同一个理由注入：监听住在 `server.ts`，反向 import 会成环。
+   * 只有 upsert 项目那条路该调它：那个动作改的正是 `last_opened_at`，
+   * 而监听盯的就是「最近打开的那个」。
+   */
+  watchGit(): void
 }
 
 /**

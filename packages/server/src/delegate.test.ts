@@ -145,7 +145,7 @@ function members(): MemberEvent[] {
 const at = { runId: 'rn_1' as RunId, stepId: 'st_1' }
 
 describe('派一件的进度', () => {
-  test('跑成时按 working → done 走，两条都挂在这张卡上', async () => {
+  test('跑成时按 working → done 走，都挂在这张卡上', async () => {
     const cid = conversation()
     script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]
     const res = await delegate(cid).run({
@@ -157,14 +157,21 @@ describe('派一件的进度', () => {
 
     expect(res.ok).toBe(true)
     expect(res.output).toBe('查完了')
-    expect(members().map((m) => m.phase)).toEqual(['working', 'done'])
+    // 两条 `working`：交出去一条，子会话起来之后一条（那条带着它的 id）。
+    // 前端按 memberId 原地更新，图上仍是一格。
+    expect(members().map((m) => m.phase)).toEqual(['working', 'working', 'done'])
     // 不带 stepId 的事件前端认不出是哪张卡，整条丢弃。
     expect(members().every((m) => m.stepId === 'st_1')).toBe(true)
     expect(members().every((m) => m.runId === 'rn_1')).toBe(true)
   })
 
-  /** 子会话不进会话列表，终态里这个 id 是点开它的唯一入口。 */
-  test('终态带着子会话 id', async () => {
+  /**
+   * 子会话不进会话列表，这个 id 是点开它的唯一入口。
+   *
+   * **跑着的时候就得带上**，不能只在终态带：这是原始失败形状——只有终态带的话，
+   * 子 agent 跑完之前那一格是灰的，而正在跑的那一格恰好是用户要翻开的。
+   */
+  test('跑着的时候那一格就带上子会话 id，终态照旧带着', async () => {
     const cid = conversation()
     script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
     const res = await delegate(cid).run({
@@ -174,10 +181,44 @@ describe('派一件的进度', () => {
       signal: new AbortController().signal,
     })
 
+    const live = members()
+      .filter((m) => m.phase === 'working')
+      .at(-1)
+    expect(live?.childConversationId).toBe(res.conversationId as ConversationId)
+    expect(live?.childConversationId).toBeTruthy()
+
     const done = members().at(-1)
     expect(done?.phase).toBe('done')
     expect(done?.childConversationId).toBe(res.conversationId as ConversationId)
-    expect(done?.childConversationId).toBeTruthy()
+  })
+
+  /**
+   * 子会话的事件按**它自己的会话 id** 广播。右侧那一页订阅的就是这个 id——
+   * 不发的话它在子 agent 跑完之前一个字都画不出来。
+   *
+   * 归属必须是子会话，不能是父会话：那些 runId 在父会话里不存在，
+   * 挂过去前端会按陌生 runId 建出一条并不存在的 run。
+   */
+  test('子会话的事件按它自己的 id 发出去，不挂在父会话上', async () => {
+    const cid = conversation()
+    script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
+    const res = await delegate(cid).run({
+      target: '',
+      task: '看一眼',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    const child = res.conversationId as ConversationId
+    const inner = events.filter((f) => f.conversationId === child)
+    expect(inner.map((f) => f.event.type)).toContain('run.started')
+    expect(inner.map((f) => f.event.type)).toContain('run.finished')
+    // 父会话那条上只有图卡进度，没有子会话的内层事件。
+    expect(
+      events
+        .filter((f) => f.conversationId === cid)
+        .every((f) => f.event.type === 'team.member' || f.event.type === 'team.output'),
+    ).toBe(true)
   })
 
   /**
@@ -195,7 +236,7 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members().map((m) => m.phase)).toEqual(['working', 'failed'])
+    expect(members().map((m) => m.phase)).toEqual(['working', 'working', 'failed'])
   })
 
   /** 中断走的也是终态那条路：用户点停止之后，那一格不能还转着。 */
@@ -211,7 +252,7 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members().map((m) => m.phase)).toEqual(['working', 'failed'])
+    expect(members().map((m) => m.phase)).toEqual(['working', 'working', 'failed'])
   })
 
   /**

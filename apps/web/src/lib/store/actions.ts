@@ -7,7 +7,7 @@
 
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
-import { client, discardPace, reloadActiveConversation } from './connection.ts'
+import { client, discardPace, reloadActiveConversation, syncViews } from './connection.ts'
 import { addWorkspace, loadServerConfig, saveServerConfig, watchWorkspace } from './settings.ts'
 import { isDesktopShell } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
@@ -62,8 +62,8 @@ export async function activateWorkspace(path: string): Promise<void> {
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setOpenFile(null)
   closeAllPanelTabs()
-  setState({ activeConversation: null, transcript: [], fileChanges: [], error: null, git: null })
-  client.subscribe([])
+  setState({ activeConversation: null, fileChanges: [], git: null })
+  syncViews()
   await loadConversations()
   // 文件监听的句柄在 Rust 侧，只有桌面端有。失败不阻断切换：
   // 没有监听只是外部编辑器的改动不会实时推，会话本身照常。
@@ -75,22 +75,24 @@ export async function activateWorkspace(path: string): Promise<void> {
  *
  * **两处必须有终态，否则都是静默失败：**
  *
- * 1. `discardPace()` 和清空 transcript 必须在同一处。只在 `reloadActiveConversation`
+ * 1. `discardPace()` 和换表必须在同一处。只在 `reloadActiveConversation`
  *    里丢积压的话，那是 await 之后的事——这中间到达的 delta 会落在新会话的正文
  *    末尾，表现成「切过去，开头多了半句上一条会话的话」。
- * 2. 拉取失败落 `state.error`。调用点写的是 `void selectConversation(id)`，
- *    里面任何一条 `client.api` 抛错都会变成 unhandled rejection：transcript 已经
- *    清空、新的没加载上，界面停在一个空会话上，一个字的解释都没有。
+ * 2. 拉取失败落这条会话的 `error`。调用点写的是 `void selectConversation(id)`，
+ *    里面任何一条 `client.api` 抛错都会变成 unhandled rejection：表刚建出来是空的、
+ *    正文没加载上，界面停在一个空会话上，一个字的解释都没有。
  *    **这就是「点了会话没反应」**。
  */
 export async function selectConversation(id: string): Promise<void> {
-  setState({ activeConversation: id, transcript: [], fileChanges: [], error: null })
+  setState({ activeConversation: id, fileChanges: [] })
   discardPace()
-  client.subscribe([id])
+  // 建表与订阅在这里显式走一次，不等那个 effect：下面紧接着就 await，
+  // 而重拉回来要写的正是这条会话的表，表还没建的话那一份正文无处可落。
+  syncViews()
   try {
     await reloadActiveConversation()
   } catch (e) {
-    setState('error', {
+    setState('views', id, 'error', {
       code: 'internal_error',
       message: `打不开这条会话：${e instanceof Error ? e.message : String(e)}`,
     })
@@ -286,8 +288,8 @@ async function dropConversation(id: string): Promise<void> {
   const wasActive = state.activeConversation === id
   setState('conversations', (list) => list.filter((c) => c.id !== id))
   if (!wasActive) return
-  setState({ activeConversation: null, transcript: [], fileChanges: [], error: null })
-  client.subscribe([])
+  setState({ activeConversation: null, fileChanges: [] })
+  syncViews()
   await loadConversations()
 }
 
@@ -331,14 +333,15 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
           steer,
         })
       } else {
-        s.transcript.push({
+        s.views[id]?.transcript.push({
           id: `local_${Date.now()}`,
           kind: 'user',
           text: content,
           ...(attachments?.length ? { attachments } : {}),
         })
       }
-      s.error = null
+      const v = s.views[id]
+      if (v) v.error = null
     }),
   )
   /*

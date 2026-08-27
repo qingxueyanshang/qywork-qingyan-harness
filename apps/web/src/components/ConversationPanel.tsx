@@ -1,28 +1,35 @@
 /**
- * 右侧面板里的子会话页：一条子 agent 会话的只读回放。
+ * 右侧面板里的子会话页：一条子 agent 会话在做什么。
  *
- * 子会话跑完就不再有事件，也不在会话列表里——所以这里投影一次即可，不订阅、
- * 不接事件、不给输入框。**它是回放，不是第二个可以说话的地方。**
+ * **跑着的时候也看得到**：这一页订阅的是那条子会话自己的事件流
+ * （订阅集见 `connection.ts` 的 `syncViews`），正文与工具卡跟着长，
+ * 不是等它跑完再一次性显示。
+ *
+ * **只读**：没有输入框，也没有读数条、待办、目标那几样——那些是当前会话那一份账
+ * （`applyEvent` 里的分工）。要接着问，回到会话流里再派一次。
  */
 
 import { createResource, Show } from 'solid-js'
-import { projectConversation } from '../lib/store/connection.ts'
-import { tabConversationId } from '../lib/store/ui.ts'
+import { loadConversationView } from '../lib/store/connection.ts'
+import { tabConversationId, viewOf } from '../lib/store/index.ts'
 import { TranscriptRows } from './Transcript.tsx'
 
 export default function ConversationPanel(props: { id: string }) {
-  const [items] = createResource(
-    () => tabConversationId(props.id),
-    (cid) => projectConversation(cid),
-  )
+  const cid = () => tabConversationId(props.id)
+  // 只用来接住这一拉的失败：正文本身读的是那条会话的表，由事件实时更新。
+  const [loaded] = createResource(cid, (id) => loadConversationView(id))
   return (
     <div class="child-cv">
-      <Show when={items.error}>
+      <Show when={loaded.error}>
         <div class="error-card" role="alert">
-          {String(items.error)}
+          {String(loaded.error)}
         </div>
       </Show>
-      <TranscriptRows items={items() ?? []} />
+      {/* 这一列还在不在长，看这条子会话自己那一轮起没起——不是看当前会话在不在跑。 */}
+      <TranscriptRows
+        items={viewOf(cid()).transcript}
+        live={() => viewOf(cid()).runStartedAt !== null}
+      />
     </div>
   )
 }
