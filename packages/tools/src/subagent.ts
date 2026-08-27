@@ -15,6 +15,7 @@
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { idArg } from './args.ts'
 
 export const subagentTool: ToolSpec = {
   name: 'subagent',
@@ -73,10 +74,10 @@ export const subagentTool: ToolSpec = {
       return { status: 'failure' as const, message: '本次执行没有派活通道' }
     }
 
-    const target = typeof args.agent === 'string' ? args.agent.trim() : ''
+    const target = idArg(args.agent)
     const task = typeof args.task === 'string' ? args.task.trim() : ''
-    const model = typeof args.model === 'string' ? args.model.trim() : ''
-    const resume = typeof args.resume === 'string' ? args.resume.trim() : ''
+    const model = idArg(args.model)
+    const resume = idArg(args.resume)
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
 
     // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，

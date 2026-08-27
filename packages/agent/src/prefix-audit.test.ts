@@ -170,14 +170,53 @@ describe('运行时审计', () => {
 })
 
 describe('审真实的系统提示词', () => {
+  /** 门槛工具全在，能力段全部发出——审的是最长的那份前缀。 */
+  const GATES = [
+    'run_command',
+    'write_memory',
+    'read_skill',
+    'load_tool',
+    'subagent',
+    'workflow',
+    'create_schedule',
+    'read_goal',
+    'read_history',
+    'web_search',
+  ]
+  const ALL = new Set(GATES)
+
   test('三层冻结前缀里没有天生会变的字段', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
-    expect(auditFrozenText(buildSystemPrompt())).toEqual([])
+    expect(auditFrozenText(buildSystemPrompt(ALL))).toEqual([])
   })
 
   test('两次构造逐字节相同', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
-    expect(buildSystemPrompt()).toBe(buildSystemPrompt())
+    expect(buildSystemPrompt(ALL)).toBe(buildSystemPrompt(ALL))
+  })
+
+  /** 缺一条模型就想不起来自己能做这件事，所以每个类目都要发到。 */
+  test('能力段把每个类目都告诉模型', async () => {
+    const { buildSystemPrompt } = await import('@qywork/runtime')
+    const p = buildSystemPrompt(ALL)
+    for (const tool of GATES) expect(p).toContain(tool)
+  })
+
+  /**
+   * 复现的是原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
+   * 按通道注册，写死会让没有对应通道的会话读到一个不存在的工具。
+   */
+  test('缺通道时那一行不发，其余照常', async () => {
+    const { buildSystemPrompt } = await import('@qywork/runtime')
+    const p = buildSystemPrompt(new Set(['write_memory', 'read_skill']))
+    expect(p).not.toContain('run_command')
+    expect(p).not.toContain('subagent')
+    expect(p).not.toContain('load_tool')
+    expect(p).toContain('write_memory')
+    expect(p).toContain('read_skill')
+
+    // 一个门槛工具都没有时整段不出现，而不是留一个空标题。
+    expect(buildSystemPrompt(new Set())).not.toContain('## 能力')
   })
 
   /**
@@ -186,7 +225,7 @@ describe('审真实的系统提示词', () => {
    */
   test('尾区注记确实带着会变的内容（证明分层不是摆设）', async () => {
     const { buildTailNotes } = await import('@qywork/runtime')
-    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux' })
+    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' })
       .map((n) => n.content)
       .join('\n')
     const kinds = auditFrozenText(notes).map((h) => h.kind)
