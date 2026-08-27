@@ -1,6 +1,7 @@
 /**
- * 覆盖 `App.tsx` 的 `openLink`：正文里的链接点下去落在右侧面板的浏览器页。
- * 应用里的 `<a>` 全部由 markdown 渲染产出，这一条是它们唯一的落点。
+ * 覆盖 `App.tsx` 挂在根上的两个委托：`openLink`（正文里的链接落到右侧面板的浏览器页）
+ * 与 `copyCode`（代码块右上角的复制按钮）。两者的触发元素全部由 markdown 渲染产出，
+ * 根上这一处是它们唯一的落点。
  *
  * DOM 在这里装、用完卸掉，理由同 `components/RunStatus.test.tsx`。
  */
@@ -43,5 +44,61 @@ describe('正文里的链接', () => {
     const event = await clickLink('<a href="mailto:a@b.com">a@b.com</a>')
     expect(event.defaultPrevented).toBe(false)
     expect(store.panelTabs().length).toBe(0)
+  })
+})
+
+describe('代码块的复制按钮', () => {
+  /** 拿一份真的渲染结果，点它右上角的按钮。 */
+  async function clickCopy(md: string) {
+    const { copyCode } = await import('./App.tsx')
+    const { renderMarkdown } = await import('./lib/markdown.ts')
+    let written: string | null = null
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: (t: string) => {
+          written = t
+          return Promise.resolve()
+        },
+      },
+    })
+    const root = document.createElement('div')
+    root.innerHTML = renderMarkdown(md)
+    root.addEventListener('click', copyCode as (e: Event) => void)
+    const btn = root.querySelector('.code-copy')
+    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+    return { written: written as string | null, btn }
+  }
+
+  test('复制的是代码正文 —— 高亮把它切成了一串 span', async () => {
+    const { written } = await clickCopy('```js\nconst a = 1\n```')
+    expect(written).toBe('const a = 1')
+  })
+
+  test('复制成功后按钮进回执态', async () => {
+    const { btn } = await clickCopy('```js\nconst a = 1\n```')
+    expect(btn?.classList.contains('done')).toBe(true)
+  })
+
+  test('点代码正文不会触发复制', async () => {
+    const { copyCode } = await import('./App.tsx')
+    const { renderMarkdown } = await import('./lib/markdown.ts')
+    let called = false
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: () => {
+          called = true
+          return Promise.resolve()
+        },
+      },
+    })
+    const root = document.createElement('div')
+    root.innerHTML = renderMarkdown('```js\nconst a = 1\n```')
+    root.addEventListener('click', copyCode as (e: Event) => void)
+    root.querySelector('code')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+    expect(called).toBe(false)
   })
 })
