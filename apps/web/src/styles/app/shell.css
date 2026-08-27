@@ -545,6 +545,15 @@
   /* 当前项目那一行点了也不换，但它仍要能 hover 出卡片，所以不降透明度。 */
   cursor: default;
 }
+/* flex 子项默认 `flex-shrink: 1`，收缩量按 flex-basis 成比例分摊到每个孩子。
+   不写这条的话，名字长到撑满的行会把图标一起压窄。实测（真实界面、真账本、
+   只切这一条）：`deepseek-deepseek-v4-flash-vision-exp` 那行的图标从 15px
+   被压到 9.78px，另外两行压到 13.27 / 13.81——三行各压成不同大小，
+   同一列里图标忽大忽小。
+   与 `.tree-item svg` / `.run-row > svg` / `.change-row svg` 同一条规则。 */
+.project-open > svg {
+  flex: none;
+}
 .pinned-mark {
   color: var(--accent);
 }
