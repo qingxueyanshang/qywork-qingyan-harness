@@ -21,6 +21,7 @@ import {
   client,
   loadConversations,
   loadWorkspace,
+  openBrowserTab,
   PANEL_MIN,
   panelMaximized,
   panelWidth,
@@ -33,6 +34,26 @@ import {
   togglePanel,
   toggleSidebar,
 } from './lib/store/index.ts'
+
+/**
+ * 正文里的链接落到右侧面板的浏览器页。
+ *
+ * **挂在根上，不在每个渲染点各接一次**：应用里的 `<a>` 全部由 markdown 渲染产出
+ * （模型正文、配置提醒），没有手写的锚点。
+ *
+ * 桌面外壳里 `target="_blank"` 什么也不会发生——WebView 没有开新窗口这回事，
+ * 点了没反应。http(s) 之外的 scheme 不接管：浏览器页只加载得了 http(s)。
+ *
+ * **外站不一定框得进来**：`X-Frame-Options` / `frame-ancestors` 拒绝时那一页是空白，
+ * 而跨源 iframe 的加载结果读不到，这一侧看不出被拒。
+ */
+export function openLink(e: MouseEvent): void {
+  const link = (e.target as Element).closest('a')
+  const href = link?.getAttribute('href') ?? ''
+  if (!/^https?:\/\//i.test(href)) return
+  e.preventDefault()
+  openBrowserTab(href)
+}
 
 export function App() {
   // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
@@ -89,6 +110,7 @@ export function App() {
       // 这里**不夹**：窗口放不下由网格自己收（`.app.with-panel` 的 minmax），
       // 在这儿再夹一次就是把布局知识抄进 JS，而它只在写的那一刻是对的。
       style={{ '--panel-w': `${panelWidth()}px`, '--panel-min-w': `${PANEL_MIN}px` }}
+      on:click={openLink}
     >
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>

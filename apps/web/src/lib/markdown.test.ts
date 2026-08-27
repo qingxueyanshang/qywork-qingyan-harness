@@ -86,6 +86,25 @@ describe('外链', () => {
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noreferrer noopener"')
   })
+
+  test('裸地址在全角标点处断开，后面的正文不进 href', () => {
+    const html = renderMarkdown('刷新 http://localhost:8000，选「循环」开一局。')
+    expect(html).toContain('href="http://localhost:8000"')
+    expect(html).toContain('</a>，选「循环」开一局。</p>')
+  })
+
+  test('路径里的汉字仍属于地址', () => {
+    const html = renderMarkdown('见 https://zh.wikipedia.org/wiki/中文，然后回来')
+    expect(html).toContain('href="https://zh.wikipedia.org/wiki/中文"')
+    expect(html).toContain('</a>，然后回来</p>')
+  })
+
+  test('流式期的增量渲染走同一条边界', () => {
+    const stream = createStreamRenderer()
+    const blocks = ['刷新 http://localhost:8000，选「循环」。', '第二段', '第三段', '第四段']
+    const { settled, live } = stream.push(blocks.join('\n\n'))
+    expect(settled + live).toContain('href="http://localhost:8000"')
+  })
 })
 
 describe('表格', () => {

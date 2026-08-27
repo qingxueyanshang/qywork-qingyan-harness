@@ -26,7 +26,7 @@
  * 这个模块只在浏览器里跑，判据以浏览器为准。
  */
 
-import { Lexer, marked, Parser, Renderer, type Tokens } from 'marked'
+import { Lexer, marked, Parser, Renderer, Tokenizer, type Tokens } from 'marked'
 import { createSignal } from 'solid-js'
 import { filterXSS, getDefaultWhiteList } from 'xss'
 
@@ -78,6 +78,32 @@ const WHITELIST = {
 }
 
 marked.setOptions({ gfm: true, breaks: false })
+
+/**
+ * 自动链接的右边界。GFM 的自动链接匹配到空白或 `<` 为止，尾部回退只剥 ASCII 标点；
+ * 中文正文里 URL 后面接的是全角标点而不是空格，`http://localhost:8000，选…`
+ * 因此连同后面整句一起进了 href。
+ *
+ * **只在非 ASCII 的标点 / 符号 / 空白处断，不在非 ASCII 字母处断**：
+ * 路径里带汉字的地址是合法地址，按字母断会把它截短成打不开的前缀。
+ */
+const URL_END = /(?!\p{ASCII})[\p{P}\p{S}\p{Z}]/u
+
+marked.use({
+  tokenizer: {
+    /**
+     * **先让 marked 认，再切**，不要先切再认：切需要扫一遍剩余正文，而这个方法在
+     * 每个行内 token 上都被调用一次，先扫是每段正文平方级的开销。
+     * 切完重认一次，为的是拿回 marked 自己的尾部标点回退。
+     */
+    url(src) {
+      const token = Tokenizer.prototype.url.call(this, src)
+      if (!token) return token
+      const cut = token.raw.search(URL_END)
+      return cut < 0 ? token : Tokenizer.prototype.url.call(this, src.slice(0, cut))
+    },
+  },
+})
 
 export interface RenderOptions {
   /** true = 内容仍在增长：跳过语言自动检测（见文件头第 1 条）。 */
