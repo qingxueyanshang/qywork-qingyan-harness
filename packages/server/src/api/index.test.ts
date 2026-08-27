@@ -82,6 +82,8 @@ describe('派发', () => {
       id: (d as unknown as { wsId: string }).wsId,
       root: 'C:/ws/demo',
       name: 'demo',
+      // 这个目录不存在，读不到项目层配置，所以没有待决定的信任。
+      pendingTrust: [],
     })
   })
 
@@ -738,7 +740,7 @@ describe('按 ?ws= 解析项目', () => {
     const { d, a, b } = twoProjects()
     // b 是后 upsert 的，缺省会落到它身上——所以这条能证明参数真的起作用。
     const res = await call(`/api/workspace?ws=${a.id}`, undefined, d)
-    expect(await res?.json()).toEqual({ id: a.id, root: 'C:/ws/a', name: 'a' })
+    expect(await res?.json()).toEqual({ id: a.id, root: 'C:/ws/a', name: 'a', pendingTrust: [] })
     const fallback = await call('/api/workspace', undefined, d)
     expect(((await fallback?.json()) as { id: string }).id).toBe(b.id)
   })

@@ -23,8 +23,6 @@ import {
   loadScopedMcpConfig,
   MCP_CONFIG,
   MCP_FILE,
-  saveConfig,
-  setWorkspaceTrust,
 } from '@qywork/runtime'
 import { type Scope, scopeDir, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
@@ -47,56 +45,46 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
    * 这种静默失败。
    */
   if (p === '/api/mcp' && req.method === 'GET') {
-    const { loadExtensions } = await import('@qywork/runtime')
-    const ext = await loadExtensions(d.workspaceRoot)
-    const config = await loadScopedMcpConfig(d.workspaceRoot)
-    return json({
-      configPath: MCP_CONFIG,
-      files: config.files,
-      servers: ext.mcp.servers.map((s) => ({
-        name: s.name,
-        scope: config.scopeOf[s.name] ?? 'project',
-        serverInfo: s.serverInfo,
-        protocolVersion: s.protocolVersion,
-        unsupported: s.unsupported,
-        tools: s.tools.map((t) => ({ name: t.name, description: t.description ?? '' })),
-      })),
-      failures: ext.mcp.failures,
-      /** 配好了但这一轮没连上的那些，也要列出来——否则它们凭空消失。 */
-      configured: Object.keys(config.servers).map((name) => ({
-        name,
-        scope: config.scopeOf[name] ?? 'project',
-      })),
-      error: config.error,
-      /**
-       * 项目层要先授权才加载。未授权时项目层的 server 只出现在 `configured` 里，
-       * `servers` 一条都没有——界面必须能说出这是为什么，否则用户看到的是
-       * 「配了但什么都没发生」。
-       */
-      trusted: isWorkspaceTrusted(await loadConfig(), d.workspaceRoot),
-    })
-  }
-
-  /**
-   * 授权 / 撤销这个工作区的项目层扩展。
-   *
-   * 授权对象是**工作区**不是单个 server：某一条 server 的命令行安不安全，用户在
-   * 界面上判断不了（判据同 B7），把一个「这个仓库可信吗」的问题拆成 N 个答不了的
-   * 小问题只会让人闭眼点过去。
-   *
-   * **不记 `mcp.json` 的内容指纹。** 记了就是每次 `git pull` 都要重新授权一次，
-   * 而重复的确认框会训练用户不看内容直接点。信任的对象是这个仓库。
-   */
-  if (p === '/api/mcp/trust' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as { trusted?: unknown } | null
-    if (typeof body?.trusted !== 'boolean') {
-      return json({ error: 'bad request', message: '缺少 trusted' }, 400)
+    /*
+     * **走引用计数，配对 release。** 直接 `loadExtensions` 会给每一次请求新起一批
+     * 插件与 MCP 子进程，而且没有人关——开一次这一页就漏一套。异常路径也要 release，
+     * 所以是 try/finally。同 `/api/tools`。
+     *
+     * 另一层作用：这里回的必须就是**模型手里那一份**。现起一份的话，信任刚打开时
+     * 这一页会显示「已连上」，而模型持有的仍是加载时那份，两个界面互相打脸。
+     */
+    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const ext = await acquireExtensions(d.workspaceRoot)
+    try {
+      const config = await loadScopedMcpConfig(d.workspaceRoot)
+      return json({
+        configPath: MCP_CONFIG,
+        files: config.files,
+        servers: ext.mcp.servers.map((s) => ({
+          name: s.name,
+          scope: config.scopeOf[s.name] ?? 'project',
+          serverInfo: s.serverInfo,
+          protocolVersion: s.protocolVersion,
+          unsupported: s.unsupported,
+          tools: s.tools.map((t) => ({ name: t.name, description: t.description ?? '' })),
+        })),
+        failures: ext.mcp.failures,
+        /** 配好了但这一轮没连上的那些，也要列出来——否则它们凭空消失。 */
+        configured: Object.keys(config.servers).map((name) => ({
+          name,
+          scope: config.scopeOf[name] ?? 'project',
+        })),
+        error: config.error,
+        /**
+         * 项目层要先授权才加载。未授权时项目层的 server 只出现在 `configured` 里，
+         * `servers` 一条都没有——界面必须能说出这是为什么，否则用户看到的是
+         * 「配了但什么都没发生」。
+         */
+        trusted: isWorkspaceTrusted(await loadConfig(), d.workspaceRoot),
+      })
+    } finally {
+      releaseExtensions(d.workspaceRoot)
     }
-    const cfg = await loadConfig()
-    await saveConfig(setWorkspaceTrust(cfg, d.workspaceRoot, body.trusted))
-    // 改的是下一次加载扩展时的输入。`acquireExtensions` 已经持有的那一份不重载，
-    // 与 `/api/mcp/import` 同理。
-    return json({ trusted: body.trusted })
   }
 
   /**
