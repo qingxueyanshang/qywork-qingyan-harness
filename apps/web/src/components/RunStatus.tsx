@@ -14,15 +14,40 @@ import { IconSpinner } from './Icons.tsx'
  * 示成了进度；「第 3 / 4 步」不带条目名又会被读成「4 步做完了 3 步」。带条目名的说法留在
  * `write_todos` 的回执里。口径只有 `todoProgress` 一个（core），别在这里重算。
  *
- * **只在跑着时挂。** 判据是 `isRunning()`，跑完整条就撤掉——停着的时候它是一枚常驻的浮层，
+ * **只在跑着时挂。** 跑完整条就撤掉——停着的时候它是一枚常驻的浮层，
  * 而它说的两件事都另有去处：清单在右侧「待办」页，变更在「变更」页。
  * 每轮开始时按当下状态重新决定挂不挂，所以「上一轮没做完的待办」下一轮照样显示。
+ *
+ * **判据是「有一轮在跑」，不是「这条会话忙」。** 忙闲由 `sendMessage` 在按下回车那一刻
+ * 乐观置上，而这一轮的文件读数要等服务端的 `run.started` 才清空——中间隔着一次往返
+ * 加一次历史装配（`session.ts` 的 `buildHistory` 要读全部 steps 与附件），实测最小
+ * 1.6ms，带附件的长会话远不止。只按忙闲挂的话，这一枚 chip 会带着**上一轮**的文件
+ * 读数出现，过几帧再自己缩掉那一段。`runStartedAt` 由 `run.started` 立、`run.finished`
+ * 清，两处都与读数的清空写在同一个 handler 里，按它挂两端都没有这个窗口。
+ *
+ * 忙闲那一半仍要判：重拉会话时 `runStartedAt` 取自账本里 `status='running'` 的那一行，
+ * 服务进程崩过之后那一行不再成立（同 `reloadActiveConversation` 的说明）。
  *
  * 两段各自的条件：
  *
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
  * - **文件**：这一轮的读数，`run.started` 时清空。
  */
+/**
+ * 状态条这一轮挂不挂。
+ *
+ * 它悬浮，高度不在流里，会话流要按「缝 + 它 + 缝」在底部留出位置——那段留白
+ * 因此也跟着它挂不挂来给，否则不挂的那些轮次输入框上方空着一块没有内容的白。
+ * 判据只有这一处，`Transcript` 与本组件共用。
+ */
+export function hasRunStatus(): boolean {
+  return (
+    isRunning() &&
+    state.runStartedAt !== null &&
+    (state.todos.some((t) => t.status !== 'completed') || state.fileChanges.length > 0)
+  )
+}
+
 export function RunStatus() {
   const todos = () => state.todos
   const progress = () => todoProgress(todos())
@@ -32,7 +57,7 @@ export function RunStatus() {
   const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
 
   return (
-    <Show when={isRunning() && (inProgress() || files().length > 0)}>
+    <Show when={hasRunStatus()}>
       <div class="run-status">
         <div class="changes-chip">
           <Show when={inProgress()}>
