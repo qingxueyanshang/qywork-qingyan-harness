@@ -12,7 +12,7 @@
 import { describe, expect, test } from 'bun:test'
 import { buildTailNotes } from './prompt.ts'
 
-const base = { workspaceRoot: '/tmp/ws', platform: 'linux' }
+const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
 const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
   notes.find((n) => n.group === group)
 
@@ -74,6 +74,22 @@ describe('尾区注记', () => {
   })
 
   /**
+   * 复现的是原始失败形状：第三方 description 以空行或 `## Overview` 开头时，
+   * 清单里那一行只剩工具名，模型据此判断不出该不该 `load_tool`。
+   */
+  test('摘要跳过空行与标题行，取第一句有内容的话', () => {
+    const line = (summary: string) => {
+      const notes = buildTailNotes({ ...base, externalTools: [{ name: 'mcp__x__t', summary }] })
+      return note(notes, 'mcpTools')?.content ?? ''
+    }
+    expect(line('\n\nSearch repositories.')).toContain('- mcp__x__t：Search repositories.')
+    expect(line('## Overview\n\nSearch repositories.')).toContain(
+      '- mcp__x__t：Search repositories.',
+    )
+    expect(line('## Overview\n\nSearch repositories.')).not.toContain('## Overview')
+  })
+
+  /**
    * 分组必须带出来。一律标 `workspaceState` 的话，面板上「记忆内容」与
    * 「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */
@@ -107,6 +123,21 @@ describe('尾区注记', () => {
 
     // 没收录的取值原样带过去：编一个名字比给出原值更糟。
     expect(state('freebsd')).toContain('平台：freebsd')
+  })
+
+  /**
+   * 权限模式必须在尾区。不说的话模型只能靠撞：每撞一次多付一轮
+   * 「被拒 → 改写 → 重发」，而被拒的那次调用本身已经计过费。
+   */
+  test('权限模式两种都写清边界，auto 说明拒什么', () => {
+    const state = (mode: 'auto' | 'full') =>
+      note(buildTailNotes({ ...base, mode }), 'workspaceState')?.content ?? ''
+
+    expect(state('auto')).toContain('权限模式：auto')
+    expect(state('auto')).toContain('凭证')
+    expect(state('full')).toContain('完全访问')
+    // full 下不设裁决，别把 auto 那句边界一起发出去。
+    expect(state('full')).not.toContain('会被拒绝')
   })
 
   /**

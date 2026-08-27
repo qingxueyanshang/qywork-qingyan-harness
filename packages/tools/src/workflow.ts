@@ -17,6 +17,7 @@
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { idArg } from './args.ts'
 
 interface NodeArg {
   id: string
@@ -123,7 +124,7 @@ export const workflowTool: ToolSpec = {
       }
       // 没写派给谁 = 临时子 agent。这个 id 在执行侧兜底成一条内置角色，
       // 用户自己定义了同 id 的角色时以他那条为准。
-      const agent = typeof n.agent === 'string' && n.agent.trim() ? n.agent.trim() : 'ad-hoc'
+      const agent = idArg(n.agent) || 'ad-hoc'
       if (nodes.some((x) => x.id === id)) {
         return { status: 'failure' as const, message: `节点 id 重复：${id}` }
       }
@@ -133,7 +134,7 @@ export const workflowTool: ToolSpec = {
         task,
         ...(Array.isArray(n.needs) ? { needs: n.needs.map(String) } : {}),
         ...(n.passInput === false ? { passInput: false } : {}),
-        ...(typeof n.model === 'string' && n.model.trim() ? { model: n.model.trim() } : {}),
+        ...(idArg(n.model) ? { model: idArg(n.model) } : {}),
       })
     }
 

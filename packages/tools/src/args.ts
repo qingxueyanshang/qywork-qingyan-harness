@@ -22,6 +22,21 @@ export function intArg(raw: unknown, fallback: number): number | null {
   return Number.isInteger(n) ? n : null
 }
 
+/**
+ * 取一个可选的标识符参数（模型名、角色 id、会话 id 这类），空值一律归成 `''`。
+ *
+ * 模型表达「不填这个可选参数」有三种写法：省略键、JSON `null`、以及**字符串
+ * `"null"` / `"undefined"`**。前两种 `typeof` 就挡住了，第三种挡不住，会被当成
+ * 一个真实取值往下传——实测子 agent 因此收到模型名 `null`，派活当场失败。
+ *
+ * **不要用在自由文本参数上**（task、goal、content）：那里的 `null` 是合法内容。
+ */
+export function idArg(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const s = raw.trim()
+  return s === 'null' || s === 'undefined' ? '' : s
+}
+
 /** 读不出整数时给模型的那句话。带上原值——不说收到了什么，模型只能靠猜去改。 */
 export function badIntMessage(name: string, raw: unknown): string {
   return `${name} 必须是整数，收到 ${JSON.stringify(raw)}`

@@ -42,6 +42,7 @@ function stub(result: Ran) {
   const calls: {
     target: string
     task: string
+    model?: string
     resume?: string
     runId: string
     stepId?: string
@@ -56,6 +57,7 @@ function stub(result: Ran) {
       run: async (input: {
         target: string
         task: string
+        model?: string
         resume?: string
         runId: string
         stepId?: string
@@ -63,6 +65,7 @@ function stub(result: Ran) {
         calls.push({
           target: input.target,
           task: input.task,
+          ...(input.model ? { model: input.model } : {}),
           ...(input.resume ? { resume: input.resume } : {}),
           runId: input.runId,
           ...(input.stepId ? { stepId: input.stepId } : {}),
@@ -101,6 +104,27 @@ describe('派活', () => {
     expect(res.status).toBe('success')
     expect(res.message).toContain('临时子 agent')
     expect(s.calls).toEqual([{ target: '', task: '去查一下', runId: 'rn_test', stepId: 'st_test' }])
+  })
+
+  /**
+   * 复现的是原始失败形状：模型把「不填这个可选参数」写成字符串 `"null"`，
+   * 它穿过 `typeof` 守卫被当成模型名派下去，派活以「配置里没有模型 null」失败。
+   * 设计是没点名就跟当前会话同一个模型，所以这里必须一个 model 都不带出去。
+   */
+  test('model 传字符串 null 视为没点名，跟当前会话的模型走', async () => {
+    const s = stub({ ok: true, output: '查完了' })
+    const res = await subagentTool.fn({ task: '去查一下', model: 'null' }, ctx(s.port))
+    expect(res.status).toBe('success')
+    expect(s.calls[0]).not.toHaveProperty('model')
+
+    const s2 = stub({ ok: true, output: '查完了' })
+    await subagentTool.fn({ task: '去查一下', model: 'undefined' }, ctx(s2.port))
+    expect(s2.calls[0]).not.toHaveProperty('model')
+
+    // 真的点名了照常带出去，别把这条修成「所有 model 都吞掉」。
+    const s3 = stub({ ok: true, output: '查完了' })
+    await subagentTool.fn({ task: '去查一下', model: 'anthropic/claude-opus-5' }, ctx(s3.port))
+    expect(s3.calls[0]).toHaveProperty('model', 'anthropic/claude-opus-5')
   })
 
   test('指名道姓派给不存在的目标时才拒，并提示可以临时起一个', async () => {

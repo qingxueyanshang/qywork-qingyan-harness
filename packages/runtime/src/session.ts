@@ -295,12 +295,12 @@ export class Session {
     conversationId: ConversationId,
     compaction?: CompactionPort,
   ): AgentLoop {
+    // 能力段按已注册的工具名过滤：shell、派活、编排、外部工具都按通道注册。
+    const base = buildSystemPrompt(new Set(this.registry.list().map((s) => s.name)))
     return new AgentLoop({
       adapter: buildAdapter(this.resolveProfile(target)),
       registry: this.registry,
-      systemPrompt: this.opts.extraSystem
-        ? `${buildSystemPrompt()}\n\n## 角色\n\n${this.opts.extraSystem}`
-        : buildSystemPrompt(),
+      systemPrompt: this.opts.extraSystem ? `${base}\n\n## 角色\n\n${this.opts.extraSystem}` : base,
       ...(this.opts.followUps
         ? {
             followUps: async () => {
@@ -324,6 +324,7 @@ export class Session {
         buildTailNotes({
           workspaceRoot: this.opts.workspaceRoot,
           platform: process.platform,
+          mode: this.opts.config.mode ?? 'auto',
           skills: this.skillIndex,
           memories: this.memoryIndex,
           // 每次现取而不是缓存：`load_tool` 装走一个，清单就少一条，
