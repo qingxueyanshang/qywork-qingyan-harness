@@ -1,6 +1,6 @@
 import { todoProgress } from '@qywork/core'
 import { Show } from 'solid-js'
-import { isRunning, openPanel, state } from '../lib/store/index.ts'
+import { hasRunStatus, openPanel, state } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
 
 /**
@@ -33,21 +33,6 @@ import { IconSpinner } from './Icons.tsx'
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
  * - **文件**：这一轮的读数，`run.started` 时清空。
  */
-/**
- * 状态条这一轮挂不挂。
- *
- * 它悬浮，高度不在流里，会话流要按「缝 + 它 + 缝」在底部留出位置——那段留白
- * 因此也跟着它挂不挂来给，否则不挂的那些轮次输入框上方空着一块没有内容的白。
- * 判据只有这一处，`Transcript` 与本组件共用。
- */
-export function hasRunStatus(): boolean {
-  return (
-    isRunning() &&
-    state.runStartedAt !== null &&
-    (state.todos.some((t) => t.status !== 'completed') || state.fileChanges.length > 0)
-  )
-}
-
 export function RunStatus() {
   const todos = () => state.todos
   const progress = () => todoProgress(todos())

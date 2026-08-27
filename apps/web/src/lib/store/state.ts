@@ -261,6 +261,52 @@ export function isRunning(): boolean {
 }
 
 /**
+ * 整轮状态条这一轮挂不挂：有没做完的待办，或这一轮改过文件。
+ *
+ * 判据放在这里而不是组件里：`RunStatus` 按它决定挂不挂，`Transcript` 按它决定
+ * 底部留多少白，两处是同一个判据。
+ */
+export function hasRunStatus(): boolean {
+  return (
+    isRunning() &&
+    state.runStartedAt !== null &&
+    (state.todos.some((t) => t.status !== 'completed') || state.fileChanges.length > 0)
+  )
+}
+
+/**
+ * 输入框上方除了输入框自己还挂着块：整轮状态条 / 目标条 / 排着的跟进消息。
+ *
+ * 会话流底部那段留白按它给。下面紧挨着一个块时贴住它——那一段是输入框上方
+ * 这一列的缝，与块之间的缝同宽；下面直接是输入框时要留出正文的呼吸，
+ * 两者差着一个量级，用同一个数会一头挤一头空。
+ */
+export function composerStackAbove(): boolean {
+  return (
+    hasRunStatus() ||
+    state.followUps.length > 0 ||
+    (state.goal !== null && state.goal.status !== 'completed')
+  )
+}
+
+/**
+ * 这一轮的收尾条已经落到流尾了。
+ *
+ * 收尾走两帧：`run.finished` 落下收尾条并把实时读数交接给它，随后
+ * `conversation.busy` 才把这条会话放闲。只按 `isRunning()` 判活的那条读数条，
+ * 中间那一帧里流尾同时挂着刚落下的收尾条和一条读数已经交接完的空壳。
+ * 那一帧会被画出来：`run.finished` 这个任务里连带跑了正文的定稿重渲染
+ * （33KB 实测 7.8ms），帧边界大概率就落在它之后。
+ *
+ * 按 runId 认，不按「末条是不是 run」认：重试时被接替那一轮的收尾条就在流尾，
+ * 而新那一轮真的在跑。
+ */
+export function runClosed(): boolean {
+  const last = state.transcript[state.transcript.length - 1]
+  return last?.kind === 'run' && last.run?.runId === state.lastRunId
+}
+
+/**
  * 这条会话的账本走到哪儿了。**只当「该重取了」的信号用，不是要显示的数。**
  *
  * 运行面板画的是账本此刻的样子，而账本在一轮之内一直在变：每落一步
