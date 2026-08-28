@@ -228,9 +228,13 @@ describe('Base URL 归一', () => {
     expect(normalizeBaseUrl('https://direct.example.xyz')).toBe('https://direct.example.xyz/v1')
   })
 
-  test('已经带了就原样，不会补成 /v1/v1', () => {
+  test('已经带了版本段就原样，不重复追加 /v1', () => {
     expect(normalizeBaseUrl('https://api.deepseek.com/v1')).toBe('https://api.deepseek.com/v1')
     expect(normalizeBaseUrl('https://api.deepseek.com/v1/')).toBe('https://api.deepseek.com/v1')
+    expect(normalizeBaseUrl('https://open.bigmodel.cn/api/paas/v4')).toBe(
+      'https://open.bigmodel.cn/api/paas/v4',
+    )
+    expect(normalizeBaseUrl('https://relay.example/v27/')).toBe('https://relay.example/v27')
   })
 
   test('空值走官方根', () => {
