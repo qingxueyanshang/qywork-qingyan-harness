@@ -50,7 +50,7 @@ windows = { version = "0.61", features = [
 # 由 tauri-build 生成的自定义协议开关，勿手改。
 custom-protocol = ["tauri/custom-protocol"]
 
-# target/debug 曾长到 12 GB。实测构成：incremental 4.7 G · deps 4.6 G · build 1.3 G，
+# `.tmp/cargo-target/debug` 曾长到 12 GB。实测构成：incremental 4.7 G · deps 4.6 G · build 1.3 G，
 # 其中 .pdb 1.48 G、.o 4.2 G——大头是调试信息。cargo 不回收旧产物，dev 每跑一次就往上堆，
 # 所以在生成端掐掉，而不是定期 clean。
 [profile.dev]
@@ -76,4 +76,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-

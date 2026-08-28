@@ -81,7 +81,7 @@ jobs:
       - name: Create checksum
         shell: pwsh
         run: |
-          $bundlePath = "apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $bundlePath = ".tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis"
           $installers = @(Get-ChildItem -LiteralPath $bundlePath -Filter "*.exe" -File)
           if ($installers.Count -ne 1) {
             throw "Expected one NSIS installer in $bundlePath, found $($installers.Count)."

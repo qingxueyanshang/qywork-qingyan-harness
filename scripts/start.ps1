@@ -55,7 +55,7 @@ function Clear-DevPort([int]$Port) {
 # 上一次没退干净的桌面壳。
 #
 # 它不占 5180，也不占固定端口（sidecar 走 --port 0），所以端口清场抓不到它。
-# 但它**占着 `target\debug\qy.exe` 的文件句柄**——tauri-build 要把新的 sidecar
+# 但它**占着 `.tmp\cargo-target\debug\qy.exe` 的文件句柄**——tauri-build 要把新的 sidecar
 # 复制过去，复制失败后整个 dev 构建以 exit 101 退出，报出来的只有一句
 # 「拒绝访问」，完全看不出和上一个还在跑的窗口有关。实测踩到过。
 #
@@ -66,7 +66,7 @@ function Clear-StaleShell {
   foreach ($p in @(Get-Process qywork, qy -ErrorAction SilentlyContinue)) {
     $path = try { $p.Path } catch { $null }
     if ($path -and $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
-      Warn "上一次的 $($p.ProcessName) (pid $($p.Id)) 还在跑，占着 target\debug 里的文件，清掉"
+      Warn "上一次的 $($p.ProcessName) (pid $($p.Id)) 还在跑，占着 .tmp\cargo-target\debug 里的文件，清掉"
       try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
     }
   }
