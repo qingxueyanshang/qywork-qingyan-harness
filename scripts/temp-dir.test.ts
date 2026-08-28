@@ -48,6 +48,11 @@ describe('脚本产物落点', () => {
     expect(process.env.GIT_CEILING_DIRECTORIES).toBe(tmpdir())
   })
 
+  test('Cargo 与 Tauri 的构建目录固定在 .tmp', () => {
+    const config = readFileSync(join(ROOT, '.cargo', 'config.toml'), 'utf8')
+    expect(config).toContain('target-dir = ".tmp/cargo-target"')
+  })
+
   test('根目录下的点目录判定：只放行 .tmp，工作区内的点目录不管', () => {
     const src = [
       `const a = join(ROOT, '.shoot-ws')`,
