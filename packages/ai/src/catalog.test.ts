@@ -623,13 +623,15 @@ describe('目录里的价格与档位', () => {
     expect(spec('qwen3.8-max').maxOutputTokens).toBe(131_072)
     expect(spec('qwen3.8-max').effortLevels).toEqual(['none', 'low', 'medium', 'xhigh'])
     expect(spec('qwen3.8-max').chatReasoningProtocol).toBe('qwen_preserved')
+    expect(spec('qwen3.8-max').chatToolSchema).toBe('openai_strict')
   })
 
-  test('GLM-5.3 两款各走自己的保留思考协议', () => {
+  test('GLM-5.3 两款走保留思考协议，并保留厂商原生工具 schema', () => {
     for (const id of ['glm-5.3', 'glm-5.3-flash']) {
       expect(spec(id).effortLevels).toEqual(['low', 'high', 'max'])
       expect(spec(id).maxOutputTokens).toBe(131_072)
       expect(spec(id).chatReasoningProtocol).toBe('glm_preserved')
+      expect(spec(id).chatToolSchema).toBe('native')
     }
   })
 

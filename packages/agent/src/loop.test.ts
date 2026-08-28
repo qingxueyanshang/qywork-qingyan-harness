@@ -1022,6 +1022,66 @@ describe('原地打转', () => {
     expect(executed).toBe(3)
   })
 
+  test('失败正文逐字进入下一轮请求，第三次相同失败后才暂停', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'bad_args',
+      description: '固定返回参数错误。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => ({
+        status: 'failure' as const,
+        executed: false,
+        message: 'probe_url 不是合法 URL：null',
+        errorKind: 'bad_request',
+      }),
+    })
+
+    const inner = fakeAdapter(Array.from({ length: 10 }, () => [call('bad_args')]))
+    const requests: ChatRequest[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests.push(req)
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    for await (const _ of loop.run({
+      runId: 'rn_bad_args' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 只检查模型收到的请求。
+    }
+
+    expect(requests).toHaveLength(3)
+    for (const req of requests.slice(1)) {
+      const result = req.messages.findLast((m) => m.role === 'tool')
+      expect(result).toBeDefined()
+      const body = JSON.parse(String(result!.content))
+      expect(body).toMatchObject({
+        tool: 'bad_args',
+        status: 'failure',
+        executed: false,
+        summary: 'probe_url 不是合法 URL：null',
+      })
+    }
+  })
+
   /** 结果每轮都在变（轮询等待）就不该被判成打转，得让它跑完。 */
   test('结果在变的不判，跑满脚本', async () => {
     const registry = new ToolRegistry()

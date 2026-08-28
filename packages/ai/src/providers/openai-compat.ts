@@ -221,7 +221,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       messages,
       // 未收录的模型不申报上限，让端点用自己的默认——编一个数出去的代价是静默截断。
       ...(cap === null ? {} : { max_tokens: cap }),
-      ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
+      ...(req.tools.length ? { tools: buildTools(req.tools, this.spec) } : {}),
       ...buildReasoning(this.spec, req.effort),
       /*
        * 缓存路由亲和键：OpenAI 协议里让「同一条会话钉到同一个缓存分片」的标准字段。
@@ -320,19 +320,22 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
     : { ...protocol, reasoning_effort: effort }
 }
 
-function buildTools(tools: ToolSchema[]) {
+function buildTools(tools: ToolSchema[], spec: ModelSpec) {
   // 与 Anthropic 路径同样按名排序：兼容端点的隐式前缀缓存同样怕顺序抖动。
   return [...tools]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    .map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.strict ? strictify(t.parameters) : t.parameters,
-        ...(t.strict ? { strict: true } : {}),
-      },
-    }))
+    .map((t) => {
+      const strict = t.strict && spec.chatToolSchema === 'openai_strict'
+      return {
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: strict ? strictify(t.parameters) : t.parameters,
+          ...(strict ? { strict: true } : {}),
+        },
+      }
+    })
 }
 
 /**

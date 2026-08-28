@@ -23,9 +23,14 @@ import {
   listOf,
   sanitizeTarget,
   statusWord,
+  stopReasonLabel,
   TARGET_MAX,
   todosOf,
 } from './step-view.ts'
+
+test('重复失败的停止原因使用标准短句', () => {
+  expect(stopReasonLabel('no_progress')).toBe('模型执行出错，多次重复，已暂停')
+})
 
 /** 命中率的入参只用到这几格，其余字段测里一律不造。 */
 function usage(over: {
