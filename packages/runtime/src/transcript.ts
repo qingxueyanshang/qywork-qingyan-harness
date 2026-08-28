@@ -21,7 +21,13 @@
 import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
 import type { ContentBlock, WireMessage, WireToolCall } from '@qywork/ai'
 import type { Attachment, ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
-import { listMessages, listRuns, listSteps, type Store } from '@qywork/store'
+import {
+  listMessages,
+  listRunContextSnapshots,
+  listRuns,
+  listSteps,
+  type Store,
+} from '@qywork/store'
 
 /** 投影产物统一带的分组标记。工具结果的执行记录/正文二分在计量层做，不在这里拆。 */
 const GROUP: ContextGroup = 'executionRecords'
@@ -331,8 +337,27 @@ export async function buildHistory(
     byUser.set(r.userMessageId, list)
   }
 
+  const contextByUser = new Map<
+    string,
+    ReturnType<typeof listRunContextSnapshots>[number]['segments']
+  >()
+  for (const snapshot of listRunContextSnapshots(store, conversationId)) {
+    if (!snapshot.userMessageId) continue
+    contextByUser.set(snapshot.userMessageId, snapshot.segments)
+  }
+
   const out: WireMessage[] = []
   for (const m of listMessages(store, conversationId, upperBound)) {
+    if (m.role === 'user') {
+      for (const segment of contextByUser.get(m.id) ?? []) {
+        out.push({
+          role: 'context',
+          content: segment.content,
+          _group: segment.group,
+          _messageId: m.id,
+        })
+      }
+    }
     out.push({
       role: m.role,
       content: m.attachments.length ? await attachments(m.content, m.attachments) : m.content,

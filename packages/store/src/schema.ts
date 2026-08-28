@@ -1036,6 +1036,17 @@ ALTER TABLE runs DROP COLUMN superseded_by;
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN error_message TEXT;`,
   },
+  {
+    id: 32,
+    name: 'run_context_snapshot',
+    /**
+     * 一次 run 开始时看到的非对话上下文快照。它跟 run 同行原子落库，重启、压缩
+     * 与重放都从这里读，不再靠每次 provider 请求临时重算。
+     *
+     * NULL 只代表迁移前的历史 run；新 run 必须写 JSON 数组（空数组也写 `[]`）。
+     */
+    sql: `ALTER TABLE runs ADD COLUMN context_snapshot TEXT;`,
+  },
 ]
 
 /**
@@ -1124,6 +1135,8 @@ export interface RunRow {
   step_count: number
   error_message: string | null
   error_code: string | null
+  /** NULL = 迁移前存量；新 run 写入 `RunContextSegment[]` JSON。 */
+  context_snapshot: string | null
   owner_pid: number | null
   heartbeat_at: number | null
   created_at: number
@@ -1240,6 +1253,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'step_count',
     'error_message',
     'error_code',
+    'context_snapshot',
     'owner_pid',
     'heartbeat_at',
     'created_at',

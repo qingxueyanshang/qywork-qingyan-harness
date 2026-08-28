@@ -184,16 +184,100 @@ describe('投影三区', () => {
     store.close()
   })
 
-  test('没有 _messageId 的消息（尾区注记）一律保留', async () => {
+  test('最新运行上下文跨过摘要线时只保留一份，并贴着摘要用户消息', async () => {
+    const { store, ws, conv, ids } = fresh(8)
+    createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'context-pin',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [
+        { content: '工作区：C:/ws', group: 'workspaceState' },
+        { content: '## 记忆索引\n- no-repeat', group: 'memory' },
+      ],
+    })
+    const p = port(store, conv.id)
+    expect((await p.run(await pressure(store, conv.id))).status).toBe('compacted')
+
+    const projected = p.project(await history(store, conv.id))
+    expect(projected.slice(0, 3).map((message) => message.role)).toEqual([
+      'context',
+      'context',
+      'user',
+    ])
+    expect(projected.filter((message) => message.role === 'context')).toHaveLength(2)
+    expect(projected[0]!.content).toBe('工作区：C:/ws')
+    expect(projected[2]!.content).toContain('被压缩的早期对话摘要')
+    store.close()
+  })
+
+  test('最后一次成功 write_todos 跨摘要与收纳仍保留完整调用和结果', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'todo-pin',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const todo = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      toolCallId: 'todo_1',
+      providerBatchId: 'todo_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, todo.id, 'success', {
+      kind: 'tool_result',
+      args: {
+        todos: [
+          { content: '检查缓存', status: 'completed' },
+          { content: '验证重启', status: 'in_progress' },
+        ],
+      },
+      outcome: { status: 'success', executed: true, message: '待办已更新' },
+    })
+    addToolWaves(store, run.id, 24, 3000, 2)
+    const p = port(store, conv.id)
+    expect((await p.run(await pressure(store, conv.id))).status).toBe('compacted')
+
+    const projected = p.project(await history(store, conv.id))
+    const assistant = projected.find((message) =>
+      message.toolCalls?.some((call) => call.name === 'write_todos'),
+    )
+    expect(assistant).toBeDefined()
+    const call = assistant!.toolCalls!.find((item) => item.name === 'write_todos')!
+    expect(call.arguments).toEqual({
+      todos: [
+        { content: '检查缓存', status: 'completed' },
+        { content: '验证重启', status: 'in_progress' },
+      ],
+    })
+    const result = projected.find(
+      (message) => message.role === 'tool' && message.toolCallId === call.id,
+    )
+    expect(JSON.parse(String(result?.content)).status).toBe('success')
+    expect(projected.filter((message) => message.toolCallId === call.id)).toHaveLength(1)
+    store.close()
+  })
+
+  test('没有 _messageId 的投影消息一律保留', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)
     await p.run(await pressure(store, conv.id))
 
     const h = [
       ...(await history(store, conv.id)),
-      { role: 'system' as const, content: '尾区注记：当前分支 main' },
+      { role: 'assistant' as const, content: '投影摘要' },
     ]
-    expect(p.project(h).some((m) => String(m.content).includes('尾区注记'))).toBe(true)
+    expect(p.project(h).some((m) => String(m.content).includes('投影摘要'))).toBe(true)
     store.close()
   })
 
@@ -226,6 +310,7 @@ describe('投影三区', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     // 每一波带一张「图」：内容不重要，体积重要——要撑得起选界。
     for (let w = 0; w < 12; w++) {
@@ -287,6 +372,7 @@ describe('投影三区', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     addToolWaves(store, run.id, 12, 4000)
 
@@ -337,6 +423,7 @@ describe('长 run 少消息的会话必须压得动', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: m1,
       messageIdUpperBound: m1,
+      contextSnapshot: [],
     })
     addToolWaves(store, run.id, 60, 2000)
     appendMessage(store, { conversationId: conv.id, role: 'user', content: '继续' })
@@ -357,6 +444,7 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     addToolWaves(store, run.id, 20, 800)
 
@@ -397,6 +485,7 @@ describe('收纳段单独够用时零模型调用', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     addToolWaves(store, run.id, 30, 6000)
 
@@ -431,6 +520,7 @@ describe('事实提取', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     const edit = appendStep(store, {
       runId: run.id,
@@ -467,6 +557,7 @@ describe('事实提取', () => {
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
       messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
     })
     appendStep(store, {
       runId: run.id,
@@ -615,6 +706,7 @@ describe('注入的用户消息与压缩', () => {
       clientRequestId: 'c1',
       userMessageId: ids[0] ?? null,
       messageIdUpperBound: ids[0] ?? null,
+      contextSnapshot: [],
     })
     addToolWaves(store, run.id, 2, 400)
     const injected = appendStep(store, {
@@ -666,6 +758,7 @@ describe('两把尺不许直接相减', () => {
         clientRequestId: `req-${contextWindow}`,
         userMessageId: ids[0]!,
         messageIdUpperBound: ids[0]!,
+        contextSnapshot: [],
       })
       addToolWaves(store, run.id, 20, 800)
 

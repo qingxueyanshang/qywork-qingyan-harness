@@ -7,8 +7,7 @@
  *
  * 上下文装配的硬约束（靠代码保证，不靠提示词）：
  * - 冻结前缀 = system.md + environment.md + rules.md，跨 run 逐字节稳定。
- * - 日期、技能清单、记忆**永不进冻结前缀**——它们随时间/用户增删而变，
- *   放进前缀等于每次都破缓存。一律压到 transcript 之后的尾区。
+ * - 日期、技能清单、记忆**永不进冻结前缀**；runtime 按 run 冻结并跟用户消息绑定。
  * - 工具 schema 按名排序（registry 保证），排在最前，顺序抖动即全量失效。
  */
 
@@ -77,12 +76,6 @@ export interface LoopDeps {
   /** 三层冻结前缀，已拼好。 */
   systemPrompt: string
   /**
-   * 尾区注记：日期、工作区状态、技能索引、记忆索引、待加载的外部工具清单。
-   *
-   * 每条自带分组，**不要一律标成 `workspaceState`**：那样面板上「记忆内容」
-   * 与「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
-   */
-  /**
    * 取走此刻标了「调整方向」的跟进消息。**每个 step 边界调一次**，没有就回空数组。
    *
    * 端口而不是直接读队列：队列是服务端进程内的状态，loop 不认识它，
@@ -91,10 +84,6 @@ export interface LoopDeps {
    * `undefined` 是合法值——成员会话与 CLI 没有这条通道，不注入。
    */
   followUps?: () => Promise<FollowUpInput[]>
-  tailNotes: () => {
-    content: string
-    group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
-  }[]
   /**
    * 除 `emit` 外的执行上下文。**`emit` 不在这里**——它要带的 stepId 只有 loop 有，
    * 理由写在 `ToolContext.emit` 上方。
@@ -817,9 +806,8 @@ export class AgentLoop {
          * 位置是**装配请求之前、这一步的其余动作之前**，所以这一步发出去的请求
          * 就带着它，模型下一次开口即已看到。
          *
-         * 追加在 transcript 尾部（上一波工具结果之后、尾区注记之前）。请求形状
-         * 保证注记恒在最后，所以此前的 `[history][transcript…]` 逐字节不变——
-         * 本轮内不破缓存前缀。
+         * 追加在 transcript 尾部（上一波工具结果之后）。运行上下文已经固定在 history
+         * 的所属用户消息上，所以此前的 `[history][transcript…]` 逐字节不变。
          *
          * 戳要自己盖：`stampUnit` 只盖它自己那一段（起点在推 assistant 消息时才取），
          * 波及不到这里。`_group` 用 `historyMessages` 而不是执行记录——这是用户
@@ -1530,8 +1518,8 @@ export class AgentLoop {
 
           /*
            * `end_turn` 只证明**这一条响应**结束，不证明整个任务完成。
-           * `write_todos` 已经是任务清单的唯一账本，尾区注记与工具也都读 `ctx.todos`；
-           * 这里读同一份只读端口，不另造完成状态。清单没有未完成项时保留原语义。
+           * `write_todos` 已经是任务清单的唯一账本；这里读同一份只读端口，
+           * 不另造完成状态。清单没有未完成项时保留原语义。
            *
            * 本轮正文已在上面进 transcript，直接继续会让模型下一次看到自己刚说过的话。
            * 同一份未完成清单下连续三次只说不做，则复用已有的无进展监督器停下来，
@@ -1811,37 +1799,8 @@ export class AgentLoop {
     // 冻结前缀。缓存断点打在这里的末尾——它之后的所有内容都是易变的。
     const system: ChatRequest['system'] = [{ text: systemPrompt, cacheBreakpoint: true }]
 
-    /*
-     * 请求的形状是 `[tools][system] [history] [transcript] [tailNotes]`。
-     *
-     * **注记必须排在最后一段，这是约束不是偏好。** 缓存是前缀匹配的，而
-     * 兼容协议没有显式断点（`openai-compat.ts` 文件头第 2 条），命中完全靠
-     * 前缀逐字节相同。注记夹在 history 与 transcript 之间的话，跨 run 时
-     * 上一轮的 transcript 折进 history，位置从「注记之后」挪到「注记之前」：
-     *
-     *   上一轮：S + H + Notes + T
-     *   这一轮：S + H + T'    + Notes + …     ← 在 |S+H| 处分叉
-     *
-     * 因此**每开一个新 run，上一轮跑出来的全部工具结果必然全价重付**
-     * （实测一次 grep 产出约 1.4 万 token，下一轮可命中上限因此从约 2.6 万
-     * 掉到约 1.2 万）。排在最后之后，`history + transcript` 是一条跨 run
-     * 只追加的稳定前缀，注记是唯一的易变尾巴。
-     *
-     * 代价是注记从「每 run 付一次」变成「每轮付一次」：本机实测注记 40 token
-     * （技能/记忆/外部工具全空），装满 MCP 的极端约 1200–1500。两笔账相比，
-     * 净值仍然强正向；而且 `load_tool` 装走一个工具、清单少一条时，
-     * 旧布局下它一变整段 transcript 缓存全废，新布局下只废注记自己。
-     *
-     * 三段先拼完整，**再整串过一次压缩投影**。不要只投影 history：run 内涨起来的
-     * 全是 transcript 里的工具结果，把它留在投影之外就等于压缩碰不到大头。
-     * 尾区注记没有单元戳，投影按「无戳恒保留」原样让它过，位置无关。
-     */
-    const notes: WireMessage[] = []
-    for (const note of this.deps.tailNotes()) {
-      if (note.content.trim()) {
-        notes.push({ role: 'system', content: note.content, _group: note.group })
-      }
-    }
+    // 历史已经带着每个 run 的不可变上下文快照；run 内 transcript 只追加。
+    // 整串一起走压缩投影，工具结果才不会留在投影之外。
     /*
      * 缓存断点之二：**history 的最后一条**（跨 run 稳定点）。
      *
@@ -1855,7 +1814,7 @@ export class AgentLoop {
           { ...input.history[input.history.length - 1]!, cacheBreakpoint: true },
         ]
       : input.history
-    const assembledRaw: WireMessage[] = [...history, ...transcript, ...notes]
+    const assembledRaw: WireMessage[] = [...history, ...transcript]
     const projected = this.compaction.project(assembledRaw)
     const messages: WireMessage[] = [...projected]
 
@@ -1870,7 +1829,7 @@ export class AgentLoop {
     const omitted = emptyOmitted()
     const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
       for (const m of list) {
-        // 无戳的（尾区注记、投影出的摘要两条）不参与——它们不是被折的原文。
+        // 无戳的投影摘要不参与——它不是被折的原文。
         if (!m._messageId) continue
         const n = sign * estimateMessage(m, adapter.spec.density)
         if (m.role === 'tool' || m._group === 'intermediateContent')
@@ -1885,24 +1844,12 @@ export class AgentLoop {
     this.lastOmitted = omitted
 
     /*
-     * 缓存断点之三：**尾区注记之前的那条消息**（run 内稳定点）。
-     *
-     * run 内 `transcript` 只追加，所以「历史 + 已产生的 transcript」是一个不断
-     * 变长的稳定前缀：每一步读上一步缓存的那段（0.1×）、只写新增的那点（1.25×），
-     * 而不是每一步把整串 transcript 全价重付一遍。
-     *
-     * 找位置认 `role === 'system'`：整串消息里只有尾区注记是这个角色
-     * （压缩投影出的摘要两条是 user/assistant，见 `compaction.ts` 的
-     * `projectManifest`）。注记为空时它落在最后一条上，与断点之二可能重合，
-     * 下面的 `>` 挡住重复标记。
-     *
-     * 这条只对 Anthropic 有效；兼容协议的前缀缓存由服务端自动做，不需要标记
-     * （`openai-compat.ts` 从不读这个字段，上线字节一个不变）。
+     * 缓存断点之三：本次已接受消息的末尾。run 内只追加，所以下一步能复用此前
+     * 全部历史与执行记录；兼容协议忽略此标记，Anthropic 把它落成显式断点。
      */
-    const noteStart = messages.findIndex((m) => m.role === 'system')
-    const beforeNotes = (noteStart < 0 ? messages.length : noteStart) - 1
-    if (beforeNotes >= 0 && !messages[beforeNotes]!.cacheBreakpoint) {
-      messages[beforeNotes] = { ...messages[beforeNotes]!, cacheBreakpoint: true }
+    const latest = messages.length - 1
+    if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
+      messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
     }
 
     const assembled: ChatRequest = {

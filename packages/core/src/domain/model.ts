@@ -266,6 +266,17 @@ export function toPosixPath(filePath: string): string {
 export type RunStatus = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 
 /**
+ * 一次 run 开始时冻结的非对话上下文。
+ *
+ * 它属于运行输入，不属于用户消息，也不进入公开 `Run`：store 负责持久化，runtime
+ * 负责在对应的真实用户消息前重建，provider 适配器再把它并入那条用户消息。
+ */
+export interface RunContextSegment {
+  content: string
+  group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
+}
+
+/**
  * 为什么停。废除「静默 done」——前端据此展示停止原因，用户不必追问「怎么暂停了」。
  */
 export type StopReason =

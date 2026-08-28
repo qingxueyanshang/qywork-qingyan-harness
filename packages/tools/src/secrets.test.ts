@@ -233,7 +233,7 @@ describe('redactSecrets', () => {
  * 本地几乎复现不出来，所以只能靠断言钉死。
  */
 describe('流式脱敏', () => {
-  const KEY = 'sk-f16382f2a0194dfc93d55e10ff3d61a7'
+  const KEY = 'sk-test-stream-redaction-fixture-0123456789'
   const secrets = { values: [KEY] }
 
   /** 把一段文本按给定切点切开喂进去，返回拼接后的结果。 */

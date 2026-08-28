@@ -20,6 +20,7 @@ import {
   listConversations,
   listDisabledExtras,
   listRecentConversations,
+  listRunContextSnapshots,
   listWorkspaces,
   Store,
   setConversationTitle,
@@ -27,6 +28,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { configPath, type QyConfig } from './config.ts'
+import { buildTailNotes } from './prompt.ts'
 import { Session } from './session.ts'
 
 const config: QyConfig = {
@@ -268,31 +270,39 @@ describe('外部工具按量转按需', () => {
     ).loadExtensionTools(DEFAULT_DENSITY, listDisabledExtras(store, conv.id), conv.id)
 
     const registry = (s as unknown as { registry: ToolRegistry }).registry
-    const tail = () =>
-      (
-        (s as unknown as { makeLoop(m: string, c: string): unknown }).makeLoop('m', conv.id) as {
-          deps: { tailNotes(): { content: string; group: string }[] }
+    const nextSnapshot = () => {
+      const pending = (
+        s as unknown as {
+          pendingTools: { index(): { name: string; summary: string }[] } | null
+          opts: { workspaceRoot: string }
         }
-      ).deps
-        .tailNotes()
-        .find((n) => n.group === 'mcpTools')?.content ?? ''
-    return { store, s, conv, registry, tail }
+      ).pendingTools
+      return (
+        buildTailNotes({
+          workspaceRoot: root,
+          platform: process.platform,
+          mode: 'auto',
+          externalTools: pending?.index() ?? [],
+        }).find((note) => note.group === 'mcpTools')?.content ?? ''
+      )
+    }
+    return { store, s, conv, registry, nextSnapshot }
   }
 
   test('超预算时那批工具不进 schemas，只出现一个 load_tool', async () => {
-    const { store, s, registry, tail } = await assemble()
+    const { store, s, registry, nextSnapshot } = await assemble()
     const names = registry.schemas().map((t) => t.name)
 
     expect(names).toContain('load_tool')
     expect(names.filter((n) => n.startsWith('mcp__fat__'))).toEqual([])
-    // 但模型得知道它们存在——清单在尾区，不在冻结前缀里。
-    expect(tail()).toContain('mcp__fat__t0')
+    // 但下一次 run 冻结快照时仍能看到待加载清单。
+    expect(nextSnapshot()).toContain('mcp__fat__t0')
     s.dispose()
     store.close()
   }, 20_000)
 
-  test('load_tool 装完就进 schemas，同时从清单里消失', async () => {
-    const { store, s, registry, tail } = await assemble()
+  test('load_tool 装完就进 schemas，下一次 run 的快照不再列它', async () => {
+    const { store, s, registry, nextSnapshot } = await assemble()
     const out = await registry.execute(
       'load_tool',
       { names: ['mcp__fat__t0'] },
@@ -303,7 +313,7 @@ describe('外部工具按量转按需', () => {
 
     expect(out.status).toBe('success')
     expect(registry.schemas().map((t) => t.name)).toContain('mcp__fat__t0')
-    expect(tail()).not.toContain('mcp__fat__t0：')
+    expect(nextSnapshot()).not.toContain('mcp__fat__t0：')
     s.dispose()
     store.close()
   }, 20_000)
@@ -351,8 +361,8 @@ describe('外部工具按量转按需', () => {
    * 否则模型会去 load_tool 一个必然失败的名字。
    */
   test('会话级关掉的 server 连清单都不进', async () => {
-    const { store, s, registry, tail } = await assemble({ disabled: ['mcp:fat'] })
-    expect(tail()).toBe('')
+    const { store, s, registry, nextSnapshot } = await assemble({ disabled: ['mcp:fat'] })
+    expect(nextSnapshot()).toBe('')
     expect(registry.schemas().map((t) => t.name)).not.toContain('load_tool')
     s.dispose()
     store.close()
@@ -475,6 +485,9 @@ describe('会话标题', () => {
     const conv = listRecentConversations(store, 1)[0]
     expect(conv?.title).toBe('帮我把侧栏的时间显示出来')
     expect((ev as { title: string }).title).toBe('帮我把侧栏的时间显示出来')
+    const snapshots = listRunContextSnapshots(store, conv!.id)
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]!.segments.some((segment) => segment.group === 'workspaceState')).toBe(true)
     store.close()
   })
 
@@ -519,6 +532,7 @@ describe('注入消息的回读', () => {
       clientRequestId: 'c1',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const step = appendStep(store, {
       runId: run.id,

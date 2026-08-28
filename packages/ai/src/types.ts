@@ -89,7 +89,8 @@ export interface SystemBlock {
 }
 
 export interface WireMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool'
+  /** `context` 是内部装配角色，provider 适配器必须把它并入后续真实 user 后再上线。 */
+  role: 'user' | 'assistant' | 'tool' | 'context'
   content: string | ContentBlock[]
   /** assistant 轮携带的工具调用。 */
   toolCalls?: WireToolCall[]

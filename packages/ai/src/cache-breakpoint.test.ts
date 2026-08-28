@@ -119,15 +119,7 @@ describe('Anthropic 缓存断点', () => {
   })
 })
 
-/**
- * 尾区注记是**故意**排在整串消息末尾的 `role:'system'`——挪进顶层 `system`
- * 等于挪进冻结前缀，改一条记忆就把整段缓存打掉。
- *
- * 这条协议上它**一律**落成 user 轮里的 `<system-reminder>`，不按模型分叉：
- * 注记在末尾，而「尾部 system 且其后无内容」这个形状一档都没有实测过，
- * 赌错的代价是那些模型上每一条请求都发不出去。
- */
-describe('尾区注记按模型能力落地', () => {
+describe('运行上下文并入真实用户消息', () => {
   const bodyFor = (model: string, messages: WireMessage[]) => {
     const adapter = buildAdapter({
       kind: 'anthropic_messages',
@@ -139,46 +131,29 @@ describe('尾区注记按模型能力落地', () => {
     return adapter.buildBody({ ...req(messages), model })
   }
 
-  /**
-   * **不按模型分叉。** 按模型分叉（Opus 发 `role:'system'`、其余换 user 轮）的话，
-   * 「尾部 system」这个形状只在一部分模型上出现，是最难查的那一类。
-   */
-  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上一律换成 user 轮里的注记', (model) => {
+  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上不新增消息轮次', (model) => {
     const body = bodyFor(model, [
+      { role: 'context', content: '当前日期：2026-08-16' },
       { role: 'user', content: '帮我改一下' },
-      { role: 'system', content: '当前日期：2026-08-16' },
     ])
-    expect(body.messages.map((m) => m.role)).toEqual(['user', 'user'])
-    // 注记那条自成一条消息，正文摊成块——两层下标各自可能没有，取不到时断言拿到
-    // undefined 干净地红，比读 undefined 的属性当场抛更像测试。
-    const note = body.messages[1]?.content
-    expect(Array.isArray(note) ? note[0]?.text : undefined).toBe(
-      '<system-reminder>\n当前日期：2026-08-16\n</system-reminder>',
-    )
+    expect(body.messages.map((m) => m.role)).toEqual(['user'])
+    expect(body.messages[0]?.content).toBe('当前日期：2026-08-16\n\n帮我改一下')
   })
 
-  /**
-   * **绝不并进前一条。** 前一条通常是历史的末尾，缓存断点之二正落在那儿——
-   * 并进去的话 `cache_control` 会挂到跨轮必变的注记上，那个断点每轮失配。
-   */
-  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上注记自成一条，不并进历史末尾', (model) => {
+  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上断点随所属用户消息落地', (model) => {
     const body = bodyFor(model, [
+      { role: 'context', content: '工作区：/tmp/ws' },
       { role: 'user', content: long(8000), cacheBreakpoint: true },
-      { role: 'system', content: '工作区：/tmp/ws' },
     ])
-    expect(body.messages).toHaveLength(2)
-    // 断点仍然落在历史那一条上，不是注记那一条。
+    expect(body.messages).toHaveLength(1)
     expect(cacheMarks(body)).toEqual([0])
     expect(JSON.stringify(body.messages)).toContain('工作区：/tmp/ws')
   })
 
-  /** 空注记不该在历史里留一条空消息，两条路都是。 */
-  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上空注记整条丢掉', (model) => {
-    const body = bodyFor(model, [
-      { role: 'assistant', content: '好的' },
-      { role: 'system', content: '   ' },
-    ])
-    expect(body.messages).toHaveLength(1)
+  test.each(['claude-opus-5', 'claude-sonnet-5'])('%s 上孤立上下文直接拒绝', (model) => {
+    expect(() => bodyFor(model, [{ role: 'context', content: '孤立' }])).toThrow(
+      '内部上下文缺少所属的用户消息',
+    )
   })
 })
 

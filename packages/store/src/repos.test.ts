@@ -14,6 +14,7 @@ import {
   getRun,
   listConversations,
   listMessages,
+  listRunContextSnapshots,
   listSteps,
   openProviderRequest,
   providerFinishRates,
@@ -74,6 +75,7 @@ describe('run 幂等', () => {
       clientRequestId: key,
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     expect(findRunByClientRequest(store, conv.id, key)?.id).toBe(run.id)
     // 重复创建必须被唯一索引挡下，而不是静默起第二个 run。
@@ -85,8 +87,36 @@ describe('run 幂等', () => {
         clientRequestId: key,
         userMessageId: null,
         messageIdUpperBound: null,
+        contextSnapshot: [],
       }),
     ).toThrow()
+    store.close()
+  })
+})
+
+describe('run 上下文快照', () => {
+  test('内部快照原样落库，公开 Run 不长出第二份可编辑状态', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const user = appendMessage(store, { conversationId: conv.id, role: 'user', content: '继续' })
+    const segments = [
+      { content: '工作区：C:/ws', group: 'workspaceState' as const },
+      { content: '## 记忆索引\n- cache-rule', group: 'memory' as const },
+    ]
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'snapshot',
+      userMessageId: user.id,
+      messageIdUpperBound: user.id,
+      contextSnapshot: segments,
+    })
+
+    expect(listRunContextSnapshots(store, conv.id)).toEqual([
+      { runId: run.id, userMessageId: user.id, segments },
+    ])
+    expect(Object.hasOwn(getRun(store, run.id) as object, 'contextSnapshot')).toBe(false)
     store.close()
   })
 })
@@ -121,6 +151,7 @@ describe('工具 step 原地更新', () => {
       clientRequestId: 'r',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const step = appendStep(store, {
       runId: run.id,
@@ -159,6 +190,7 @@ describe('工具 step 原地更新', () => {
       clientRequestId: 'r',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const step = appendStep(store, {
       runId: run.id,
@@ -199,6 +231,7 @@ describe('工具 step 原地更新', () => {
       clientRequestId: 'r',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const step = appendStep(store, {
       runId: run.id,
@@ -230,6 +263,7 @@ describe('run 收尾', () => {
       clientRequestId: 'r',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
     const found = findRunByClientRequest(store, conv.id, 'r')
@@ -249,6 +283,7 @@ describe('run 收尾', () => {
       clientRequestId: 'r',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const found = findRunByClientRequest(store, conv.id, 'r')
     expect(found?.usage.cachedTokens).toBeNull()
@@ -357,6 +392,7 @@ describe('归档与硬删', () => {
       clientRequestId: 'req-del',
       userMessageId: msg.id,
       messageIdUpperBound: msg.id,
+      contextSnapshot: [],
     })
 
     expect(deleteConversation(store, conv.id)).toBe(true)
@@ -388,6 +424,7 @@ describe('思考 step 落失败终态', () => {
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const think = appendStep(store, { runId: run.id, seq: 1, kind: 'thinking', content: '半截' })
     const tool = appendStep(store, { runId: run.id, seq: 2, kind: 'tool_action' })
@@ -424,6 +461,7 @@ describe('按模型的请求收尾率', () => {
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const open = (turnIndex: number, model: string) =>
       openProviderRequest(store, {
@@ -462,6 +500,7 @@ describe('按模型的请求收尾率', () => {
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     openProviderRequest(store, {
       runId: run.id,

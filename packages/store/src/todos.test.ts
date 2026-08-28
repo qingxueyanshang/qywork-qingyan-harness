@@ -31,6 +31,7 @@ function newRun(store: Store, conversationId: ConversationId, workspaceId: strin
     clientRequestId: key,
     userMessageId: null,
     messageIdUpperBound: null,
+    contextSnapshot: [],
   })
 }
 

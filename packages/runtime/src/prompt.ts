@@ -1,11 +1,11 @@
-import type { TodoItem } from '@qywork/core'
+import type { RunContextSegment, TodoItem } from '@qywork/core'
 
 /**
  * 三层冻结前缀：system → environment → rules。
  *
  * 这三段跨 run 逐字节稳定，是提示缓存能命中的前提。**日期、技能清单、记忆、
- * 工作区文件列表一律不进这里**——它们随时间和用户操作而变，放进来等于每次请求
- * 都把整个缓存前缀作废。那些内容由 loop 的 tailNotes 排在整串消息的最后一段。
+ * 工作区文件列表一律不进这里**——它们随时间和用户操作而变。Session 在 run 开始时
+ * 冻结一份快照，runtime 把它放在所属真实用户消息前，协议层再并进同一条 user。
  *
  * 措辞刻意克制：当前模型对系统提示的服从度很高，为老模型写的
  * 「CRITICAL / YOU MUST / 如有疑问就用 X」会造成过度触发。说清楚该做什么就够了。
@@ -127,15 +127,12 @@ export function buildSystemPrompt(toolNames: ReadonlySet<string>): string {
 }
 
 /**
- * 一条尾区注记及它归哪个桶。
+ * 一条运行上下文及它归哪个桶。
  *
  * 分组必须带出来，**不能一律标成 `workspaceState`**：那样面板上「记忆内容」
  * 与「技能清单」两行**永远是 0**——数据一直在发，只是没人按组去量。
  */
-export interface TailNote {
-  content: string
-  group: 'workspaceState' | 'skills' | 'memory' | 'mcpTools'
-}
+export type TailNote = RunContextSegment
 
 /**
  * 外部工具那一行摘要截多长。
@@ -185,17 +182,8 @@ const TODO_LABEL: Record<TodoItem['status'], string> = {
 }
 
 /**
- * 尾区注记。每次请求重算，排在**整串消息的最后一段**（装配见 `agent/loop.ts`）。
- *
- * **位置不能动，这是约束不是偏好。** 缓存是前缀匹配的，而兼容协议没有显式断点，
- * 命中完全靠前缀逐字节相同：
- *
- * - 放在历史**之前**：用户改一条记忆、装一个技能，其后整段历史全部失配。
- * - 夹在历史与 transcript **之间**：跨 run 时上一轮的 transcript 折进历史，
- *   位置从注记之后挪到注记之前，公共前缀在上一轮历史末尾就断——
- *   上一轮跑出来的全部工具结果每开一个新 run 都要全价重付一遍。
- * - 排在**最后**：`历史 + transcript` 成为一条跨 run 只追加的稳定前缀，
- *   注记是唯一的易变尾巴。
+ * 生成一次 run 的非对话上下文快照。调用方只在 run 建立前调用一次并原子落库；
+ * 不得在每个 provider 请求前重算，否则同一 run 的线上字节会漂移，重试与缓存都失真。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string
@@ -214,16 +202,12 @@ export function buildTailNotes(input: {
   /**
    * 待加载的外部工具：只有工具名 + 一句话，完整参数说明由模型按需 load_tool 拉。
    *
-   * **这份清单必须在尾区，不能进冻结前缀**——它随用户装卸 MCP / 插件而变，
-   * 进前缀等于装一个插件就把整段缓存打掉，而那正是按需加载要治的病。
+   * 这份清单属于 run 快照，不能进冻结 system 前缀——它随用户装卸 MCP / 插件而变。
    */
   externalTools?: { name: string; summary: string }[]
   /**
-   * 会话账本里最后一份待办清单。**这里是模型侧唯一能看到它的地方。**
-   *
-   * `write_todos` 那次调用本身会随步数沉进 transcript，而它的
-   * `targetExtractor` 返回 `null`，压缩后不进事实清单——不重发的话清单先被
-   * 后面的工具结果埋掉、再被压缩拿掉，表现是模型做着做着就不认领下一条了。
+   * run 开始时会话账本里的最后一份待办清单。run 内更新仍以真实 `write_todos`
+   * 调用与回执为准；压缩层负责保留最后一次成功单元，不另造 Todo 状态。
    */
   todos?: TodoItem[] | null
 }): TailNote[] {
@@ -271,9 +255,8 @@ export function buildTailNotes(input: {
     })
   }
   /*
-   * 待办排在**所有注记的最后**：它是尾区里最易变的一条，模型每提交一次
-   * `write_todos` 它就变。排在前面会把技能、记忆、外部工具三条一并挤出缓存
-   * （装满 MCP 时那三条约 1200–1500 token）。
+   * 待办排在快照最后，便于审计同一 run 的输入顺序；这只是段内顺序，
+   * 不产生第二份可写状态。
    */
   if (input.todos?.length) {
     const list = input.todos

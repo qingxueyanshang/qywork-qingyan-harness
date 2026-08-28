@@ -67,6 +67,7 @@ const run = createRun(store, {
   clientRequestId: crypto.randomUUID(),
   userMessageId: user.id,
   messageIdUpperBound: user.id,
+  contextSnapshot: [],
 })
 markRunRunning(store, run.id)
 

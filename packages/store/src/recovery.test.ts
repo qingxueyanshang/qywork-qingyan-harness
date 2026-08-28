@@ -9,9 +9,12 @@ import {
   finishRun,
   getConversation,
   getRun,
+  listProviderRequests,
   listSteps,
+  markProviderRequestSent,
   markRunRunning,
   markStepExecuting,
+  openProviderRequest,
   recordFileRead,
   recoverStaleRuns,
   setConversationModel,
@@ -39,6 +42,7 @@ function newRun(store: Store, ws: { id: string }, conv: { id: string }) {
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,
     messageIdUpperBound: null,
+    contextSnapshot: [],
   })
 }
 
@@ -93,6 +97,32 @@ describe('崩溃恢复', () => {
      * 用户看到的是一个自己没做过的动作。判据写在 `recoverStaleRuns` 顶上。
      */
     expect(after.stopReason).toBe('process_exit')
+    store.close()
+  })
+
+  test('已发出但未收尾的 provider 请求随孤儿 run 落成 uncertain', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    markRunRunning(store, run.id)
+    const request = openProviderRequest(store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'claude-opus-5',
+      measuredInputTokens: 123,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'payload',
+    })
+    markProviderRequestSent(store, request.id)
+
+    expect(recoverStaleRuns(store).recovered).toBe(1)
+    const [after] = listProviderRequests(store, run.id)
+    expect(after?.status).toBe('uncertain')
+    expect(after?.providerInputTokens).toBeNull()
+    expect(after?.providerOutputTokens).toBeNull()
+    expect(after?.providerCachedTokens).toBeNull()
+    expect(after?.providerCacheWriteTokens).toBeNull()
     store.close()
   })
 
@@ -209,6 +239,27 @@ describe('崩溃恢复', () => {
 
     expect(recoverStaleRuns(store).recovered).toBe(0)
     expect(getRun(store, done.id)?.stopReason).toBe('completed')
+    store.close()
+  })
+
+  test('终态 run 下遗留的 in_flight 请求也收敛为 uncertain', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    const request = openProviderRequest(store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'claude-opus-5',
+      measuredInputTokens: 123,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'payload',
+    })
+    markProviderRequestSent(store, request.id)
+    finishRun(store, run.id, { status: 'interrupted', stopReason: 'process_exit' })
+
+    expect(recoverStaleRuns(store).recovered).toBe(0)
+    expect(listProviderRequests(store, run.id)[0]?.status).toBe('uncertain')
     store.close()
   })
 
@@ -352,6 +403,7 @@ describe('终态 run 底下的孤儿 step', () => {
       clientRequestId: 'c1',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     const orphan = appendStep(store, {
       runId: run.id,

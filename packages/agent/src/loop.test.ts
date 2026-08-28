@@ -136,7 +136,6 @@ describe('工具中途输出', () => {
       adapter: fakeAdapter([[call('noisy')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -192,7 +191,6 @@ describe('工具中途输出', () => {
       adapter: fakeAdapter([[call('noisy')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -237,7 +235,6 @@ describe('工具中途输出', () => {
       adapter: fakeAdapter([[call('noisy')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -305,7 +302,6 @@ describe('流式通道的顺序', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist,
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -365,7 +361,6 @@ describe('流式通道的顺序', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist,
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -415,7 +410,6 @@ describe('ToolContext 生命周期', () => {
       adapter: fakeAdapter([[call('remember'), call('remember')], [call('remember')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => {
         const ctx: ToolContextBase = {
@@ -478,7 +472,6 @@ describe('ToolContext 生命周期', () => {
       adapter: fakeAdapter([[call('noop')], [call('noop')], [call('noop')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => {
         created++
@@ -545,7 +538,6 @@ describe('权限拒绝', () => {
       adapter,
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -620,7 +612,6 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       adapter,
       registry,
       systemPrompt: 's',
-      tailNotes: () => [],
       makeToolContext: () => ({}) as ToolContext,
       persist: noopPersistence(),
       streamIdleTimeoutMs: 150,
@@ -700,7 +691,6 @@ describe('上下文分组占用', () => {
         adapter: fakeAdapter([null]),
         registry,
         systemPrompt: 'sys',
-        tailNotes: () => [],
         persist: noopPersistence(),
         // project() 模拟压缩：把历史换成一条 summary。这正是 RuntimeCompaction 的形状。
         compaction: {
@@ -780,10 +770,6 @@ describe('上下文分组占用', () => {
       adapter: fakeAdapter([null]),
       registry,
       systemPrompt: '这是一段足够长的系统提示词，用来让 systemPrompt 那一桶明确非零。',
-      // 尾区注记 → workspaceState 桶。
-      tailNotes: () => [
-        { content: '当前工作区状态：分支 main，无未提交改动。', group: 'workspaceState' as const },
-      ],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -805,6 +791,11 @@ describe('上下文分组占用', () => {
     for await (const ev of loop.run({
       runId: 'rn_breakdown' as never,
       history: [
+        {
+          role: 'context',
+          content: '当前工作区状态：分支 main，无未提交改动。',
+          _group: 'workspaceState',
+        },
         { role: 'user', content: '历史消息一', _group: 'historyMessages' },
         { role: 'assistant', content: '这是上一轮的摘要', _group: 'summary' },
         // 不带 _group：按口径落进 historyMessages，不单开「其他」桶。
@@ -849,7 +840,6 @@ describe('上下文分组占用', () => {
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -929,7 +919,6 @@ describe('上下文分组占用', () => {
       adapter: fakeAdapter([[{ id: 'call_0mt3zi7wa01', name: 'write_file', arguments: {} }], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: {
         ...persist,
         openRequest: (r) => {
@@ -989,7 +978,6 @@ describe('原地打转', () => {
       adapter: fakeAdapter(turns),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -1055,7 +1043,6 @@ describe('原地打转', () => {
       adapter,
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -1103,7 +1090,6 @@ describe('原地打转', () => {
       adapter: fakeAdapter([[call('poll')], [call('poll')], [call('poll')], [call('poll')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -1195,7 +1181,6 @@ describe('正常响应结束不冒充任务完成', () => {
       adapter,
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
@@ -1230,7 +1215,6 @@ describe('正常响应结束不冒充任务完成', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
@@ -1267,7 +1251,6 @@ describe('正常响应结束不冒充任务完成', () => {
         adapter,
         registry: new ToolRegistry(),
         systemPrompt: 'sys',
-        tailNotes: () => [],
         persist: noopPersistence(),
         makeToolContext: (runId) => ({
           ...baseCtx(runId),
@@ -1286,7 +1269,6 @@ describe('正常响应结束不冒充任务完成', () => {
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
@@ -1327,7 +1309,6 @@ describe('effort 传到请求上', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 's',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) =>
         ({
@@ -1381,7 +1362,6 @@ describe('花费带币种', () => {
       adapter: fakeAdapter([null], model),
       registry: new ToolRegistry(),
       systemPrompt: 's',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) =>
         ({
@@ -1453,7 +1433,6 @@ describe('用户中断不是错误', () => {
       adapter: abortingAdapter(controller),
       registry: new ToolRegistry(),
       systemPrompt: 's',
-      tailNotes: () => [],
       makeToolContext: () => ({}) as never,
       persist: noopPersistence(),
     })
@@ -1489,7 +1468,6 @@ describe('上下文读数：一把尺', () => {
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -1534,7 +1512,6 @@ describe('上下文读数：一把尺', () => {
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -1598,7 +1575,6 @@ describe('注册表是工具的唯一权威', () => {
       adapter: fakeAdapter([[call('read_thing'), call('no_such_tool')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -1804,7 +1780,6 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 's',
-      tailNotes: () => [],
       persist: recordingPersistence(rec),
       makeToolContext: (runId) => baseCtx(runId),
     }).run({ runId: 'rn_net' as never, history: [], signal })
@@ -2103,7 +2078,6 @@ describe('停止能拽回卡住的工具', () => {
       adapter: fakeAdapter([[call('hang')], null]),
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -2176,7 +2150,6 @@ describe('provider 说要调工具但一条都没解析出来', () => {
       },
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist,
       makeToolContext: (runId) => baseCtx(runId),
     })
@@ -2217,7 +2190,6 @@ describe('锚点的信封校验', () => {
         adapter: fakeAdapter([null]),
         registry: new ToolRegistry(),
         systemPrompt: 'sys',
-        tailNotes: () => [],
         persist: noopPersistence(),
         makeToolContext: (runId) => baseCtx(runId),
       })

@@ -406,6 +406,7 @@ async function main(): Promise<number> {
       clientRequestId: crypto.randomUUID(),
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
     markRunRunning(store2, stale.id)
     const step = appendStep(store2, {

@@ -118,7 +118,7 @@ export interface SessionOptions {
   /**
    * 追加到冻结前缀末尾的角色约束。Agent Team 的成员会话用它承载角色提示词。
    *
-   * 放在前缀里而不是尾区：角色约束在整个子会话里逐字不变，进前缀能吃到缓存；
+   * 放在冻结前缀而不是运行上下文：角色约束在整个子会话里逐字不变，进前缀能吃到缓存；
    * 而它每个角色一份、角色各自独立会话，不存在互相冲缓存的问题。
    */
   extraSystem?: string
@@ -187,21 +187,6 @@ export class Session {
   private readonly registry = new ToolRegistry()
   private readonly workspaceId: string
   private seqCounter = new Map<string, number>()
-
-  /**
-   * 技能与记忆索引的缓存。
-   *
-   * tailNotes 是**同步**回调（loop 每次构造请求都调），而扫描是异步的，
-   * 所以在这里缓存，由 ask() 在每轮开始前刷新。
-   */
-  private skillIndex: { name: string; description: string }[] = []
-  /**
-   * 记忆索引：`key` + 首行摘要，正文由模型按需 `read_memory` 拉。
-   *
-   * 每 run 扫一次，run 内多次模型调用共用同一份——否则尾区字节每次请求都可能变，
-   * 缓存白丢。
-   */
-  private memoryIndex: { key: string; preview: string }[] = []
 
   /** 已加载的扩展。null = 还没加载过（首次 ask 时加载）。 */
   private extensions: Extensions | null = null
@@ -312,21 +297,6 @@ export class Session {
             },
           }
         : {}),
-      // 索引每轮重扫：用户可能在会话进行中装了技能或改了记忆。
-      // 扫的是目录项不是文件内容，代价可忽略。
-      tailNotes: () =>
-        buildTailNotes({
-          workspaceRoot: this.opts.workspaceRoot,
-          platform: process.platform,
-          mode: this.opts.config.mode ?? 'auto',
-          skills: this.skillIndex,
-          memories: this.memoryIndex,
-          // 每次现取而不是缓存：`load_tool` 装走一个，清单就少一条，
-          // 而缓存下来的那份会一直劝模型再装一遍已经装好的工具。
-          externalTools: this.pendingTools?.index() ?? [],
-          // 待办每次现取：模型在 run 内提交一次，下一次请求就该看到新的那份。
-          todos: latestTodos(this.opts.store, conversationId),
-        }),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, target, conversationId as ConversationId),
       persist: this.makePersistence(),
@@ -374,6 +344,35 @@ export class Session {
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
     const effort = resolveModel(config, target)?.effort
 
+    /*
+     * 冻结本 run 的非对话上下文。
+     *
+     * 这一步必须在写 run 之前完成：扩展工具、技能、记忆与待办只读一次，随后跟 run
+     * 同行落库。loop 内任何一次 provider 请求都不再临时重算，重启也从同一份快照
+     * 重建，因此上下文字节不会随执行波次漂移。
+     */
+    const adapter = buildAdapter(this.resolveProfile(target))
+    const disabled = listDisabledExtras(store, conversationId)
+    if (!this.extensions) {
+      await this.loadExtensionTools(adapter.spec.density, disabled, conversationId)
+    }
+    const roots = scopeRoots(this.opts.workspaceRoot)
+    const skills = (await scanSkills(roots).catch(() => [])).filter(
+      (skill) => !disabled.has(`skill:${skill.name}`),
+    )
+    const memories = (await listScopedEntries(roots).catch(() => [])).filter(
+      (memory) => !disabled.has(`memory:${memory.key}`),
+    )
+    const contextSnapshot = buildTailNotes({
+      workspaceRoot: this.opts.workspaceRoot,
+      platform: process.platform,
+      mode: this.opts.config.mode ?? 'auto',
+      skills,
+      memories,
+      externalTools: this.pendingTools?.index() ?? [],
+      todos: latestTodos(store, conversationId),
+    })
+
     const userMessageId = appendMessage(store, {
       conversationId,
       role: 'user',
@@ -400,6 +399,7 @@ export class Session {
       userMessageId,
       // 高水位：本轮定格在刚写入的消息。排队期间新到的消息不进本轮视野。
       messageIdUpperBound: userMessageId,
+      contextSnapshot,
     })
     markRunRunning(store, run.id)
 
@@ -410,7 +410,6 @@ export class Session {
      * `appendMessage` 就在上面几行，写的是 `role:'user'`），因此第二轮起模型拿到的
      * 输入字面上是「用户说了三次话，助手一次都没回」，跨轮结构性失忆。
      */
-    const adapter = buildAdapter(this.resolveProfile(target))
     const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
     const history = await buildHistory(
       store,
@@ -494,31 +493,6 @@ export class Session {
       }),
       preserveAssistantReasoning,
     })
-
-    // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
-    // 所以新装的扩展默认就在，不需要给历史会话补什么。
-    const disabled = listDisabledExtras(store, conversationId)
-
-    // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
-    // 重起一遍既慢又会丢掉它们的进程内状态。会话只负责把工具规格注册进自己的表。
-    if (!this.extensions) {
-      await this.loadExtensionTools(adapter.spec.density, disabled, conversationId)
-    }
-
-    // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
-    // 而让整轮 run 因为扫目录失败而中止是不成比例的。
-    //
-    // 关掉的那些**从索引里拿掉**：索引是模型判断「有没有这个技能」的唯一依据，
-    // 留在索引里而调用时才拒绝，等于让它去撞一堵看不见的墙。
-    const roots = scopeRoots(this.opts.workspaceRoot)
-    this.skillIndex = (await scanSkills(roots).catch(() => [])).filter(
-      (s) => !disabled.has(`skill:${s.name}`),
-    )
-    // 记忆同技能：只扫索引不读正文，哪条要展开由模型看着首行摘要自己判断
-    // （见 `tools/memory.ts` 的模块注释）。关掉的那些同样从索引里拿掉。
-    this.memoryIndex = (await listScopedEntries(roots).catch(() => [])).filter(
-      (m) => !disabled.has(`memory:${m.key}`),
-    )
 
     /*
      * 心跳：**告诉别的进程「这一轮还有人在跑」。**
@@ -613,7 +587,7 @@ export class Session {
    * 取扩展并把它们贡献的工具接进本会话的表。
    *
    * **按量分两档**：外置 schema 总量在预算内就全部注册（省掉一次往返），
-   * 超了就全部进待加载池、只注册一个 `load_tool`，清单进尾区。
+   * 超了就全部进待加载池、只注册一个 `load_tool`，清单进入下一份 run 快照。
    * 阈值与实测的量见 `tools/tool-pool.ts`。
    *
    * 注册失败（重名）只跳过那一个工具：让整个会话因为一个撞名的插件工具起不来，
@@ -634,7 +608,7 @@ export class Session {
     // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
     const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
     // 会话级开关关掉的那些**不进这一步**，而不是接进来再拦。
-    // 接进来再拦的话模型仍然看得见它（工具表里、或者尾区那份清单里），
+    // 接进来再拦的话模型仍然看得见它（工具表里、或者运行上下文清单里），
     // 会反复去调、去装一个必然失败的名字。
     const off = (spec: { name: string }) => {
       const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(spec.name)

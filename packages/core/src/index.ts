@@ -76,6 +76,7 @@ export {
   type ResourceCoverage,
   type ResourceStatus,
   type Run,
+  type RunContextSegment,
   type RunStatus,
   type RunUsage,
   reconcileBreakdown,

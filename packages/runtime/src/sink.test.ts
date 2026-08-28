@@ -30,6 +30,7 @@ function fresh() {
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,
     messageIdUpperBound: null,
+    contextSnapshot: [],
   })
   return { store, content, run, sink: new RuntimeSink(store, content, run.id) }
 }

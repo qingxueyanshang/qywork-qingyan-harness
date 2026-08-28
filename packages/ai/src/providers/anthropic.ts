@@ -39,6 +39,7 @@ import type {
   WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { mergeContextIntoUsers } from './context.ts'
 
 /**
  * 思考开启时给输出留的最小预算。低于这个数，思考稍微长一点正文就没地方写了，
@@ -403,7 +404,7 @@ function buildMessages(
   // 所以输入下标和输出下标不是一一对应的——只能边走边记。
   const marks: number[] = []
   let running = prefixTokens
-  for (const m of messages) {
+  for (const m of mergeContextIntoUsers(messages)) {
     running += estimateMessage(m, density)
     if (m.role === 'tool') {
       // Anthropic 的工具结果是 user 轮里的 tool_result block。
@@ -433,30 +434,6 @@ function buildMessages(
         content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments })
       }
       out.push({ role: 'assistant', content })
-      if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
-      continue
-    }
-
-    /*
-     * 尾区注记（日期、工作区、技能与记忆索引、待加载的外部工具）在这条协议上
-     * **一律落成 user 轮里的 `<system-reminder>`**。
-     *
-     * 不要按模型分叉去发 `role:'system'` 消息。理由不只是「有的模型不收」——
-     * 注记排在整串消息的**末尾**（见 `agent/loop.ts` 的装配顺序），而「尾部
-     * system 且其后无内容」这个形状一档都没有实测过，赌错的代价是那些模型上
-     * 每一条请求都发不出去。user 轮这条路三档共用、一直在跑，没有要赌的部分。
-     *
-     * **自成一条消息，绝不并进前一条。** 前一条通常是 transcript 的末尾，
-     * 而缓存断点正落在那儿——并进去的话 `cache_control` 会挂到追加的注记上，
-     * 而注记跨轮必变，因此那个断点每轮失配，等于没打。
-     */
-    if (m.role === 'system') {
-      const text = typeof m.content === 'string' ? m.content : ''
-      if (!text.trim()) continue
-      out.push({
-        role: 'user',
-        content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }],
-      })
       if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }
