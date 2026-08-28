@@ -49,6 +49,8 @@ export {
   releaseExtensions,
   toolNamePrefix,
 } from './extensions.ts'
+// MCP 配置：server 的导入接口与会话里的模型工具共用同一份写入实现
+export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。

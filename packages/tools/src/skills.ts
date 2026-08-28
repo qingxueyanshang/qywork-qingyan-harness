@@ -13,20 +13,22 @@
  *
  * 索引同样**永不进冻结前缀**——用户装一个技能就会让整个 provider 缓存失效。
  *
- * **三层作用域，技能全程只读。** 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`（全局层）
- * 都扫，同名先到的赢。技能没有任何写接口——它是一个目录（`SKILL.md` + 附带脚本），在网页上编辑一
- * 个目录需要一整套文件管理界面，而那是编辑器该干的事。
+ * **三层作用域，读跨层，写默认项目层。** 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`
+ * （全局层）都扫，同名先到的赢。用户明确指定全局时写入全局；迁移由单个工具完成，目标冲突时不改来源，
+ * 成功后不保留双份。
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { resolveInWorkspace } from './paths.ts'
 import {
   type Scope,
   type ScopedItem,
   type ScopeRoots,
   scanAllScopes,
   scanScoped,
+  scopeDir,
   scopeRoots,
 } from './scopes.ts'
 
@@ -131,6 +133,73 @@ export function parseFrontmatter(text: string): { name: string; description: str
   return out
 }
 
+type WritableScope = Exclude<Scope, 'builtin'>
+
+function writableScope(raw: unknown): WritableScope | null {
+  if (raw === undefined || raw === null || raw === 'project') return 'project'
+  if (raw === 'global') return 'global'
+  return null
+}
+
+function safeDirName(raw: string): string | null {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+  return cleaned || null
+}
+
+function scopeProperty(): Record<string, unknown> {
+  return {
+    type: 'string',
+    enum: ['project', 'global'],
+    description: '写入层；不传默认 project，用户明确要求全局时必须传 global',
+  }
+}
+
+function skillRoot(workspaceRoot: string, scope: WritableScope): string {
+  const root = scopeDir(scopeRoots(workspaceRoot), scope, SKILLS_SUBDIR)
+  if (root === null) throw new Error('这一层不可写')
+  return root
+}
+
+/** 先在同层临时目录组好完整技能，再用目录改名提交，避免写到一半留下残缺技能。 */
+async function commitSkill(
+  target: string,
+  markdown: string,
+  files: { path: string; content: string }[],
+): Promise<boolean> {
+  const existed = (await stat(target).catch(() => null)) !== null
+  const parent = join(target, '..')
+  await mkdir(parent, { recursive: true })
+  const temp = `${target}.qywork-writing-${crypto.randomUUID()}`
+  const backup = `${target}.qywork-backup-${crypto.randomUUID()}`
+  try {
+    if (existed) await cp(target, temp, { recursive: true, errorOnExist: true, force: false })
+    else await mkdir(temp, { recursive: false })
+    await writeFile(join(temp, 'SKILL.md'), markdown, 'utf8')
+    for (const file of files) {
+      const dest = await resolveInWorkspace(temp, file.path, { mustExist: false })
+      await mkdir(join(dest, '..'), { recursive: true })
+      await writeFile(dest, file.content, 'utf8')
+    }
+    if (existed) await rename(target, backup)
+    try {
+      await rename(temp, target)
+    } catch (err) {
+      if (existed) await rename(backup, target).catch(() => undefined)
+      throw err
+    }
+    if (existed) await rm(backup, { recursive: true, force: true })
+    return existed
+  } catch (err) {
+    await rm(temp, { recursive: true, force: true }).catch(() => undefined)
+    throw err
+  }
+}
+
 export const readSkillTool: ToolSpec = {
   name: 'read_skill',
   description: '读取一个技能的完整内容（操作步骤）。名称从尾区的技能索引里取。',
@@ -170,6 +239,174 @@ export const readSkillTool: ToolSpec = {
     if (text === null) {
       return { status: 'failure', message: `技能 ${wanted} 的 SKILL.md 读取失败` }
     }
-    return { status: 'success', message: text, data: { name: hit.name, dir: hit.dir } }
+    return {
+      status: 'success',
+      message: text,
+      data: { name: hit.name, dir: hit.dir, scope: hit.scope },
+    }
+  },
+}
+
+export const writeSkillTool: ToolSpec = {
+  name: 'write_skill',
+  description:
+    '创建或更新一个 qywork 技能。默认写项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '技能名称' },
+      description: { type: 'string', description: '一句话说明何时使用这个技能' },
+      content: { type: 'string', description: '操作指南正文，不含 YAML 前置元信息' },
+      scope: scopeProperty(),
+      files: {
+        type: 'array',
+        description: '可选的附带文本文件，路径相对技能目录',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '相对技能目录的文件路径' },
+            content: { type: 'string', description: '文件正文' },
+          },
+          required: ['path', 'content'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['name', 'description', 'content'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '技能',
+  category: 'skills',
+  facet: '技能',
+  summary: '创建或更新一个技能',
+  targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
+  permissionEffect: 'write',
+  parallelSafe: false,
+  resourceKeys: (a) => [`skill:${String(a.scope ?? 'project')}:${String(a.name ?? '*')}`],
+
+  async fn(args, ctx) {
+    const name = String(args.name ?? '').trim()
+    const description = String(args.description ?? '').trim()
+    const content = String(args.content ?? '').trim()
+    const dirName = safeDirName(name)
+    const scope = writableScope(args.scope)
+    if (!dirName) return { status: 'failure', message: 'name 为空或全是非法字符' }
+    if (!description) return { status: 'failure', message: 'description 为空' }
+    if (!content) return { status: 'failure', message: 'content 为空' }
+    if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
+
+    const rawFiles = Array.isArray(args.files) ? args.files : []
+    const files: { path: string; content: string }[] = []
+    for (const raw of rawFiles) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        return { status: 'failure', message: 'files 的每一项都必须包含 path 和 content' }
+      }
+      const item = raw as Record<string, unknown>
+      const path = String(item.path ?? '').trim()
+      if (!path || path === 'SKILL.md') {
+        return { status: 'failure', message: '附带文件路径不能为空，也不能覆盖 SKILL.md' }
+      }
+      files.push({ path, content: String(item.content ?? '') })
+    }
+
+    const root = skillRoot(ctx.workspaceRoot, scope)
+    const target = join(root, dirName)
+    const markdown = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${content}\n`
+    try {
+      const replaced = await commitSkill(target, markdown, files)
+      return {
+        status: 'success',
+        message: `已${replaced ? '更新' : '创建'}${scope === 'global' ? '全局' : '项目'}技能 ${name}`,
+        data: {
+          name,
+          scope,
+          dir: target,
+          replaced,
+          files: ['SKILL.md', ...files.map((f) => f.path)],
+        },
+      }
+    } catch (err) {
+      return { status: 'failure', message: `写入技能失败：${String(err)}` }
+    }
+  },
+}
+
+export const moveSkillTool: ToolSpec = {
+  name: 'move_skill',
+  description:
+    '把一个技能目录从项目层迁移到全局层，或从全局层迁回项目层。成功后只保留目标副本；目标层已有同目录时拒绝且保留原件。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '技能名称或技能目录名' },
+      from_scope: scopeProperty(),
+      to_scope: scopeProperty(),
+    },
+    required: ['name', 'from_scope', 'to_scope'],
+    additionalProperties: false,
+  },
+  actionKind: 'edit',
+  objectLabel: '技能',
+  category: 'skills',
+  facet: '技能',
+  summary: '在项目层与全局层之间迁移技能',
+  targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
+  permissionEffect: 'delete',
+  parallelSafe: false,
+  resourceKeys: (a) => [
+    `skill:${String(a.from_scope ?? '*')}:${String(a.name ?? '*')}`,
+    `skill:${String(a.to_scope ?? '*')}:${String(a.name ?? '*')}`,
+  ],
+
+  async fn(args, ctx) {
+    const wanted = String(args.name ?? '').trim()
+    const from = writableScope(args.from_scope)
+    const to = writableScope(args.to_scope)
+    if (!wanted) return { status: 'failure', message: '缺少 name' }
+    if (!from || !to) return { status: 'failure', message: '作用域只能是 project 或 global' }
+    if (from === to) return { status: 'failure', message: '迁移的来源层和目标层不能相同' }
+
+    const fromRoot = skillRoot(ctx.workspaceRoot, from)
+    const sourceSkills = await scanSkillDir(fromRoot, from)
+    const hit = sourceSkills.find((s) => s.name === wanted || basename(s.dir) === wanted)
+    if (!hit) {
+      return { status: 'failure', message: `${from} 层没有技能 ${wanted}`, errorKind: 'not_found' }
+    }
+    const target = join(skillRoot(ctx.workspaceRoot, to), basename(hit.dir))
+    if (await stat(target).catch(() => null)) {
+      return {
+        status: 'failure',
+        message: `${to} 层已有同目录技能 ${basename(hit.dir)}，未迁移任何文件`,
+      }
+    }
+
+    await mkdir(join(target, '..'), { recursive: true })
+    const temp = `${target}.qywork-moving-${crypto.randomUUID()}`
+    try {
+      await cp(hit.dir, temp, { recursive: true, errorOnExist: true, force: false })
+      await rename(temp, target)
+      try {
+        await rm(hit.dir, { recursive: true, force: false })
+      } catch (err) {
+        await rm(target, { recursive: true, force: true }).catch(() => undefined)
+        throw err
+      }
+    } catch (err) {
+      await rm(temp, { recursive: true, force: true }).catch(() => undefined)
+      return { status: 'failure', message: `迁移技能失败，原件仍在 ${from} 层：${String(err)}` }
+    }
+
+    return {
+      status: 'success',
+      message: `已把技能 ${hit.name} 从 ${from} 层迁移到 ${to} 层，只保留目标副本`,
+      data: {
+        name: hit.name,
+        from_scope: from,
+        to_scope: to,
+        from_dir: hit.dir,
+        to_dir: target,
+      },
+    }
   },
 }

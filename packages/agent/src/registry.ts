@@ -171,6 +171,33 @@ export interface PluginPort {
 }
 
 /**
+ * MCP 配置写入端口。
+ *
+ * 配置解析器在 mcp 包，作用域路径在 tools 包，两者同层不能互相依赖。工具只声明动作，runtime 同时拿到
+ * 两边后实现这个端口。没有端口时不注册对应工具，避免出现一个必然失败的入口。
+ */
+export interface McpConfigPort {
+  writeServer(input: { name: string; configJson: string; scope: 'project' | 'global' }): Promise<{
+    ok: boolean
+    error?: string
+    path?: string
+    replaced?: boolean
+    restartRequired?: boolean
+  }>
+  moveServer(input: {
+    name: string
+    fromScope: 'project' | 'global'
+    toScope: 'project' | 'global'
+  }): Promise<{
+    ok: boolean
+    error?: string
+    fromPath?: string
+    toPath?: string
+    restartRequired?: boolean
+  }>
+}
+
+/**
  * 「这个会话读到那个文件时，它长什么样」。写前的新鲜度校验就靠它。
  *
  * **为什么必须是个 port，不能塞进 `state`。** `state` 是 **run 内的便签**（批级预算、计划快照都在里
@@ -464,6 +491,8 @@ export interface ToolContext {
    * 装不了插件的装插件工具没有任何降级形态。
    */
   plugins?: PluginPort
+  /** MCP 配置通道；没接时 `write_mcp_server` / `move_mcp_server` 不注册。 */
+  mcpConfig?: McpConfigPort
   /**
    * 长工具的中途输出回传通道（shell stdout、下载进度）。
    *

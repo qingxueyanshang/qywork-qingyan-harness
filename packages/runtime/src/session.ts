@@ -99,6 +99,7 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import { collectSecrets, type ModelRef, type QyConfig, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
+import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
 import { buildHistory } from './transcript.ts'
@@ -229,6 +230,7 @@ export class Session {
     const withDelegate = {
       delegate: opts.delegate !== undefined,
       plugins: opts.plugins !== undefined,
+      mcpConfig: true,
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)
@@ -922,6 +924,7 @@ export class Session {
       // 这里不做「没有就造一个空的」——那会让 `subagent` 注册进来却派不出去。
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
+      mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       history: (() => {
         /**
          * 摘要里的 `<runId>:<stepId>` 解析成那条 step。

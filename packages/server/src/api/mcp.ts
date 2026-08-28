@@ -6,29 +6,26 @@
  * 失败**的一块——一个只提供 `prompts` 的 server 会连上、握手成功、注册 0 个工具、
  * 不报任何错，用户看到的是「配了但什么都没发生」。
  *
- * **这里是写 `mcp.json` 的唯一接口。** `mcp.json` 决定模型拿到哪些工具，所以它在 `auto` 下是受保护
- * 路径，`write_file` / `edit_file` 拒写（`tools/src/paths.ts` 的 `PROTECTED_DIRS`）。界面上没有原
- * 文编辑框：那几格填什么要读 server 自己的文档才知道。
+ * `mcp.json` 决定模型拿到哪些工具，所以它在 `auto` 下是受保护路径，`write_file` / `edit_file` 拒写。
+ * 导入接口与模型专用工具共用 runtime 的配置写入实现，不能各自解析和合并一遍。
  *
  * **导入一份现成的配置。** `/api/mcp/import` 读本机上一个文件，把里面的 server 并进本层。用户通常是
  * 从别的 MCP 客户端整段拷过来的，让他先另存成文件再指过来：同名冲突这里能报出来。
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { parseMcpConfig } from '@qywork/mcp'
 import {
   isWorkspaceTrusted,
   loadConfig,
   loadScopedMcpConfig,
   MCP_CONFIG,
-  MCP_FILE,
+  mergeMcpServers,
 } from '@qywork/runtime'
-import { type Scope, scopeDir, scopeRoots } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /** 只有项目层和全局层可写。内置随程序发布，写进去下次升级就没了。 */
-function writableScope(raw: string | null): Scope | null {
+function writableScope(raw: string | null): 'project' | 'global' | null {
   if (raw === null || raw === 'project') return 'project'
   if (raw === 'global') return 'global'
   return null
@@ -104,9 +101,6 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/mcp/import' && req.method === 'POST') {
     const scope = writableScope(url.searchParams.get('scope'))
     if (!scope) return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
-    const dir = scopeDir(scopeRoots(d.workspaceRoot), scope, '')
-    if (dir === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-
     const body = (await req.json().catch(() => null)) as { path?: string } | null
     const src = body?.path?.trim()
     if (!src) return json({ error: 'bad request', message: '缺少文件路径' }, 400)
@@ -124,42 +118,19 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
       )
     }
 
-    const file = join(dir, MCP_FILE)
-    const current = await readFile(file, 'utf8').catch(() => null)
-    let root: Record<string, unknown> = {}
-    if (current?.trim()) {
-      try {
-        const parsed: unknown = JSON.parse(current)
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          return json({ error: 'invalid', message: '本层的配置最外层不是一个对象' }, 422)
-        }
-        root = parsed as Record<string, unknown>
-      } catch (err) {
-        return json(
-          { error: 'invalid', message: `本层的配置解析不了，先修好它：${String(err)}` },
-          422,
-        )
-      }
-    }
-    const key = 'servers' in root ? 'servers' : 'mcpServers'
-    const servers = (root[key] ?? {}) as Record<string, unknown>
-    const clash = names.filter((n) => n in servers)
-    if (clash.length) {
+    const merged = await mergeMcpServers(d.workspaceRoot, scope, incoming.servers)
+    if (!merged.ok) {
       return json(
         {
-          error: 'conflict',
-          message: `这一层已经有同名 server：${clash.join('、')}`,
-          names: clash,
+          error: merged.kind,
+          message: merged.error,
+          ...(merged.names ? { names: merged.names } : {}),
         },
-        409,
+        merged.kind === 'conflict' ? 409 : 422,
       )
     }
-    for (const n of names) servers[n] = incoming.servers[n]
-    root[key] = servers
-    await mkdir(dirname(file), { recursive: true })
-    await writeFile(file, `${JSON.stringify(root, null, 2)}\n`, 'utf8')
     // 同 PUT：改完要重连才生效，说出来。
-    return json({ ok: true, path: file, names, restartRequired: true })
+    return json(merged)
   }
 
   return null

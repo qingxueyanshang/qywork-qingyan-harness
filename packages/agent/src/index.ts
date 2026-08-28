@@ -46,6 +46,7 @@ export {
   type FileReadPort,
   type GoalPort,
   type HistoryPort,
+  type McpConfigPort,
   type PermissionVerdict,
   type PluginPort,
   RESULT_BUDGET_RATIO,

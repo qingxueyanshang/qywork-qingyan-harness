@@ -48,11 +48,31 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   { tool: 'run_command', line: '- 命令：用 run_command 执行 shell 命令。' },
   {
     tool: 'write_memory',
-    line: '- 记忆：用户说明的偏好、项目约定、下次还用得上的结论，用 write_memory 存，read_memory 读正文。',
+    line: '- 记忆写入：用户说明的偏好、项目约定、下次还用得上的结论用 write_memory 存。默认 scope=project；用户明确指定全局时必须传 scope=global。',
+  },
+  {
+    tool: 'move_memory',
+    line: '- 记忆迁移：项目层与全局层之间迁移用 move_memory，不得用复制留下双份。',
   },
   {
     tool: 'read_skill',
-    line: '- 技能：有既定步骤的任务，先看末尾清单里有没有对应技能，用 read_skill 读正文。',
+    line: '- 技能读取：有既定步骤的任务，先看末尾清单并用 read_skill 读正文。',
+  },
+  {
+    tool: 'write_skill',
+    line: '- 技能写入：新建或更新用 write_skill；默认 scope=project，用户明确指定全局时必须传 scope=global。',
+  },
+  {
+    tool: 'move_skill',
+    line: '- 技能迁移：项目层与全局层之间迁移用 move_skill，成功后只保留目标目录。',
+  },
+  {
+    tool: 'write_mcp_server',
+    line: '- MCP 配置：新增或更新服务用 write_mcp_server；默认 scope=project，用户明确指定全局时必须传 scope=global。',
+  },
+  {
+    tool: 'move_mcp_server',
+    line: '- MCP 迁移：项目层与全局层之间迁移用 move_mcp_server，成功后只保留目标配置。',
   },
   {
     tool: 'load_tool',
