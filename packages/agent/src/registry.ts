@@ -468,8 +468,9 @@ export interface ToolContext {
   /**
    * 会话级的「上一份待办清单」。见 `TodoPort`。
    *
-   * 只读，且只用于判动作词。没接上时 `write_todos` 一律报「创建」——
-   * 那是更保守的一侧，不会声称改过一份不存在的清单。
+   * 只读：`write_todos` 用它判动作词，Agent Loop 用它判断一次正常 end_turn 后
+   * 是否仍有未完成项。没接上时工具一律报「创建」，循环沿用普通问答的结束语义；
+   * 两边都不会凭空编一份清单。
    */
   todos?: TodoPort
   /**

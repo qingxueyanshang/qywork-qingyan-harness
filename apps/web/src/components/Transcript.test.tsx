@@ -142,4 +142,44 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
 
     dispose()
   })
+
+  test('正常完成也显示停止原因', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      lastRunId: 'run_done',
+      views: {
+        [CV]: {
+          runStartedAt: null,
+          error: null,
+          transcript: [
+            { id: 'u-done', kind: 'user', text: '开始' },
+            {
+              id: 'run-run_done',
+              kind: 'run',
+              text: '',
+              run: {
+                runId: 'run_done',
+                stopReason: 'completed',
+                usage: null,
+                startedAt: 1_000,
+                endedAt: 1_500,
+                errorMessage: null,
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    expect(host.querySelector('.run-reason')?.textContent).toBe('已完成')
+
+    dispose()
+  })
 })

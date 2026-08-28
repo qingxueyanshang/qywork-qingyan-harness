@@ -584,7 +584,7 @@ function RunStatusBar(props: {
         </Show>
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
             因此出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
-        <Show when={!normal()}>
+        <Show when={!props.running && props.stopReason}>
           <span class="run-reason">{reason()}</span>
         </Show>
       </span>
