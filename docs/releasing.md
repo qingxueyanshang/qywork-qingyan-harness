@@ -19,7 +19,7 @@ git diff --check
 
 1. 打开仓库的 **Actions** 页面。
 2. 选择 **Windows Release**。
-3. 点击 **Run workflow**，选择要发布的分支并运行。
+3. 点击 **Run workflow**，确认分支为 `master` 后运行。工作流会拒绝其它分支。
 4. 等待版本检查、全量门禁、Sidecar 构建和 NSIS 打包完成。
 
 工作流会按 `VERSION` 创建 `v<version>` 标签对应的草稿 Release，并上传：
