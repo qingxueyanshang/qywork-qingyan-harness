@@ -63,6 +63,8 @@ export interface CompactionDeps {
   messageIdUpperBound: MessageId | null
   /** 摘要生成器。 */
   summarize: Summarizer
+  /** 与当前主模型的历史投影同源；压缩不能换一套 wire 形状。 */
+  preserveAssistantReasoning?: boolean
 }
 
 /** 一个可折单元在账本侧的形态。切界只落在单元之间。 */
@@ -299,7 +301,12 @@ export class RuntimeCompaction implements CompactionPort {
         actions: [],
       })
       for (const r of byUser.get(m.id) ?? []) {
-        for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id })) {
+        for (const u of stepsToUnits(listSteps(store, r.id), {
+          messageId: m.id,
+          ...(this.deps.preserveAssistantReasoning !== undefined
+            ? { preserveAssistantReasoning: this.deps.preserveAssistantReasoning }
+            : {}),
+        })) {
           const stepCut: CompactionCut = { messageId: m.id, step: u.stamp }
           const files = attachmentsOf(u.userStep)
           units.push({
