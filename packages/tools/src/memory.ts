@@ -19,15 +19,13 @@
  *
  * 成立的前提是**第一行就是摘要**，所以 `write_memory` 的描述里这么要求。
  *
- * **三层作用域：列表和读跨层，写和删只在项目层。** 索引与 `read_memory` 看得到全局层的记忆（跨工作
- * 区那几条常用事实），但 `write_memory` / `delete_memory` **只动工作区 `.agents/memory/`**。
- *
- * 不对称是刻意的：让模型在一次任务里改掉一条「所有项目都生效」的记忆，
- * 影响范围远远超出它这一轮看到的上下文。全局那几条由人在设置页管。
+ * **三层作用域：列表和读跨层，写默认项目层。** 用户明确指定 `global` 时，写、删和迁移都必须落到
+ * 全局层；没有指定才用项目层。迁移是一个工具动作，目标写成后才删来源，失败时回滚目标，不能靠模型
+ * 先写再删拼出一个会留下双份的流程。
  */
 
-import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { resolveInWorkspace } from './paths.ts'
 import {
@@ -36,6 +34,7 @@ import {
   type ScopeRoots,
   scanAllScopes,
   scanScoped,
+  scopeDir,
   scopePaths,
   scopeRoots,
 } from './scopes.ts'
@@ -82,12 +81,47 @@ function requireKey(args: Record<string, unknown>): string | null {
   return safeName(String(args.key ?? ''))
 }
 
+type WritableScope = Exclude<Scope, 'builtin'>
+
+/** 不传就是项目层；只有显式的 global 才扩大到所有工作区。 */
+function writableScope(raw: unknown): WritableScope | null {
+  if (raw === undefined || raw === null || raw === 'project') return 'project'
+  if (raw === 'global') return 'global'
+  return null
+}
+
+/** 项目层继续走工作区边界；全局层靠安全化后的单段 key 定位。 */
+async function memoryFile(
+  workspaceRoot: string,
+  scope: WritableScope,
+  key: string,
+): Promise<string> {
+  if (scope === 'project') {
+    return resolveInWorkspace(workspaceRoot, join(MEMORY_DIR, `${key}.md`), { mustExist: false })
+  }
+  const dir = scopeDir(scopeRoots(workspaceRoot), scope, MEMORY_SUBDIR)
+  if (dir === null) throw new Error('这一层不可写')
+  return join(dir, `${key}.md`)
+}
+
+function scopeProperty(): Record<string, unknown> {
+  return {
+    type: 'string',
+    enum: ['project', 'global'],
+    description: '写入层；不传默认 project，用户明确要求全局时必须传 global',
+  }
+}
+
 export const readMemoryTool: ToolSpec = {
   name: 'read_memory',
-  description: '读一条长期记忆的全文。尾区只列出 key 与首行摘要，正文只有这里拿得到。',
+  description:
+    '读一条长期记忆的全文。默认按项目层优先、再全局层查找；要读取被同名项目记忆盖住的全局记忆时显式传 scope=global。',
   parameters: {
     type: 'object',
-    properties: { key: { type: 'string', description: '记忆标识' } },
+    properties: {
+      key: { type: 'string', description: '记忆标识' },
+      scope: scopeProperty(),
+    },
     required: ['key'],
     additionalProperties: false,
   },
@@ -105,11 +139,20 @@ export const readMemoryTool: ToolSpec = {
   async fn(args, ctx) {
     const key = requireKey(args)
     if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
-    // 读跨层：项目层没有就往全局找。找不到才算 not_found。
-    const found = await readScoped(scopeRoots(ctx.workspaceRoot), key)
+    const requested = args.scope === undefined ? null : writableScope(args.scope)
+    if (args.scope !== undefined && !requested) {
+      return { status: 'failure', message: 'scope 只能是 project 或 global' }
+    }
+    const found = requested
+      ? await readFromScope(scopeRoots(ctx.workspaceRoot), requested, key)
+      : await readScoped(scopeRoots(ctx.workspaceRoot), key)
     return found === null
       ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
-      : { status: 'success', message: found.content, data: { key, content: found.content } }
+      : {
+          status: 'success',
+          message: found.content,
+          data: { key, content: found.content, scope: found.scope },
+        }
   },
 }
 
@@ -117,7 +160,7 @@ export const writeMemoryTool: ToolSpec = {
   name: 'write_memory',
   description:
     '写入或覆盖一条长期记忆。用于记录跨会话有效的事实：项目约定、用户偏好、已知问题。' +
-    '只记录后续仍然适用的内容，一次性上下文不记。',
+    '只记录后续仍然适用的内容，一次性上下文不记。默认写项目层；用户明确要求全局时 scope 必须传 global。',
   parameters: {
     type: 'object',
     properties: {
@@ -126,6 +169,7 @@ export const writeMemoryTool: ToolSpec = {
         type: 'string',
         description: '正文，整条覆盖。第一行写一句话摘要——尾区只列这一行，它决定是否需要读取全文。',
       },
+      scope: scopeProperty(),
     },
     required: ['key', 'content'],
     additionalProperties: false,
@@ -152,24 +196,27 @@ export const writeMemoryTool: ToolSpec = {
       }
     }
 
-    const dir = join(ctx.workspaceRoot, MEMORY_DIR)
-    const existing = await listEntries(dir)
+    const scope = writableScope(args.scope)
+    if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
+
+    const dir = scopeDir(scopeRoots(ctx.workspaceRoot), scope, MEMORY_SUBDIR)
+    if (dir === null) return { status: 'failure', message: '这一层不可写' }
+    const existing = await listEntries(dir, scope)
     if (existing.length >= MAX_ENTRIES && !existing.some((e) => e.key === key)) {
       return { status: 'failure', message: `记忆已达 ${MAX_ENTRIES} 条上限，先删掉不再需要的` }
     }
-    // 即使已经安全化过也再走一遍工作区边界：安全化的规则将来可能被改宽。
-    const file = await resolveInWorkspace(ctx.workspaceRoot, join(MEMORY_DIR, `${key}.md`), {
-      mustExist: false,
-    })
+    const file = await memoryFile(ctx.workspaceRoot, scope, key)
     await mkdir(dir, { recursive: true })
     await writeFile(file, `${content}\n`, 'utf8')
+    const replaced = existing.some((e) => e.key === key)
     return {
       status: 'success',
-      message: `已记住 ${key}`,
+      message: `已写入${scope === 'global' ? '全局' : '项目'}记忆 ${key}`,
+      data: { key, scope, path: file, replaced },
       fileChanges: [
         {
-          path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
-          changeType: existing.some((e) => e.key === key) ? 'modified' : 'created',
+          path: scope === 'project' ? join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/') : file,
+          changeType: replaced ? 'modified' : 'created',
           additions: content.split('\n').length,
           deletions: 0,
         },
@@ -180,10 +227,13 @@ export const writeMemoryTool: ToolSpec = {
 
 export const deleteMemoryTool: ToolSpec = {
   name: 'delete_memory',
-  description: '删除一条长期记忆。只能删除当前工作区的记忆；全局记忆由用户在设置页管理。',
+  description: '删除一条长期记忆。默认删除项目层；用户明确要求删除全局记忆时 scope 必须传 global。',
   parameters: {
     type: 'object',
-    properties: { key: { type: 'string', description: '记忆标识' } },
+    properties: {
+      key: { type: 'string', description: '记忆标识' },
+      scope: scopeProperty(),
+    },
     required: ['key'],
     additionalProperties: false,
   },
@@ -200,9 +250,9 @@ export const deleteMemoryTool: ToolSpec = {
   async fn(args, ctx) {
     const key = requireKey(args)
     if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
-    const file = await resolveInWorkspace(ctx.workspaceRoot, join(MEMORY_DIR, `${key}.md`), {
-      mustExist: false,
-    })
+    const scope = writableScope(args.scope)
+    if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
+    const file = await memoryFile(ctx.workspaceRoot, scope, key)
     const ok = await unlink(file).then(
       () => true,
       () => false,
@@ -210,10 +260,12 @@ export const deleteMemoryTool: ToolSpec = {
     return ok
       ? {
           status: 'success',
-          message: `已删除记忆 ${key}`,
+          message: `已删除${scope === 'global' ? '全局' : '项目'}记忆 ${key}`,
+          data: { key, scope, path: file },
           fileChanges: [
             {
-              path: join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/'),
+              path:
+                scope === 'project' ? join(MEMORY_DIR, `${key}.md`).replaceAll('\\', '/') : file,
               changeType: 'deleted',
               additions: 0,
               deletions: 0,
@@ -221,6 +273,79 @@ export const deleteMemoryTool: ToolSpec = {
           ],
         }
       : { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
+  },
+}
+
+export const moveMemoryTool: ToolSpec = {
+  name: 'move_memory',
+  description:
+    '把一条记忆从项目层迁移到全局层，或从全局层迁回项目层。迁移成功后只保留目标副本；目标已有同名记忆时拒绝且不改任何一份。',
+  parameters: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: '记忆标识' },
+      from_scope: scopeProperty(),
+      to_scope: scopeProperty(),
+    },
+    required: ['key', 'from_scope', 'to_scope'],
+    additionalProperties: false,
+  },
+  actionKind: 'edit',
+  objectLabel: '记忆',
+  category: 'memory',
+  facet: '记忆',
+  summary: '在项目层与全局层之间迁移记忆',
+  targetExtractor: (a) => (typeof a.key === 'string' ? a.key : null),
+  permissionEffect: 'delete',
+  parallelSafe: false,
+  resourceKeys: (a) => [
+    `memory:${String(a.from_scope ?? '*')}:${String(a.key ?? '*')}`,
+    `memory:${String(a.to_scope ?? '*')}:${String(a.key ?? '*')}`,
+  ],
+
+  async fn(args, ctx) {
+    const key = requireKey(args)
+    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    const from = writableScope(args.from_scope)
+    const to = writableScope(args.to_scope)
+    if (!from || !to) return { status: 'failure', message: '作用域只能是 project 或 global' }
+    if (from === to) return { status: 'failure', message: '迁移的来源层和目标层不能相同' }
+
+    const source = await memoryFile(ctx.workspaceRoot, from, key)
+    const target = await memoryFile(ctx.workspaceRoot, to, key)
+    const content = await readFile(source, 'utf8').catch(() => null)
+    if (content === null) {
+      return {
+        status: 'failure',
+        message: `${from} 层没有名为 ${key} 的记忆`,
+        errorKind: 'not_found',
+      }
+    }
+    if (await stat(target).catch(() => null)) {
+      return { status: 'failure', message: `${to} 层已有同名记忆 ${key}，未迁移任何文件` }
+    }
+
+    await mkdir(dirname(target), { recursive: true })
+    const temp = `${target}.qywork-moving-${crypto.randomUUID()}`
+    try {
+      await writeFile(temp, content, { encoding: 'utf8', flag: 'wx' })
+      await rename(temp, target)
+      try {
+        await unlink(source)
+      } catch (err) {
+        await unlink(target).catch(() => undefined)
+        throw err
+      }
+    } catch (err) {
+      await unlink(temp).catch(() => undefined)
+      return { status: 'failure', message: `迁移记忆失败，原件仍在 ${from} 层：${String(err)}` }
+    }
+
+    return {
+      status: 'success',
+      message: `已把记忆 ${key} 从 ${from} 层迁移到 ${to} 层，只保留目标副本`,
+      data: { key, from_scope: from, to_scope: to, from_path: source, to_path: target },
+    }
   },
 }
 
@@ -287,4 +412,16 @@ export async function readScoped(
     if (text !== null) return { content: text, scope }
   }
   return null
+}
+
+/** 从指定层读，不走优先级。用于读取被同名项目条目盖住的全局记忆。 */
+export async function readFromScope(
+  roots: ScopeRoots,
+  scope: WritableScope,
+  key: string,
+): Promise<{ content: string; scope: Scope } | null> {
+  const dir = scopeDir(roots, scope, MEMORY_SUBDIR)
+  if (dir === null) return null
+  const content = await readFile(join(dir, `${key}.md`), 'utf8').catch(() => null)
+  return content === null ? null : { content, scope }
 }

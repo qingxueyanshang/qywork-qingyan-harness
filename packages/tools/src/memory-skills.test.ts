@@ -8,10 +8,18 @@ import {
   deleteMemoryTool,
   listEntries,
   MEMORY_DIR,
+  moveMemoryTool,
   readMemoryTool,
   writeMemoryTool,
 } from './memory.ts'
-import { parseFrontmatter, readSkillTool, SKILLS_DIR, scanSkills } from './skills.ts'
+import {
+  moveSkillTool,
+  parseFrontmatter,
+  readSkillTool,
+  SKILLS_DIR,
+  scanSkills,
+  writeSkillTool,
+} from './skills.ts'
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'qywork-ms-'))
@@ -35,6 +43,18 @@ function ctx(root: string, approve = true): ToolContext {
   }
 }
 
+async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const before = process.env.QYWORK_HOME
+  const home = await workspace()
+  process.env.QYWORK_HOME = home
+  try {
+    return await fn(home)
+  } finally {
+    if (before === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = before
+  }
+}
+
 describe('记忆', () => {
   test('写入后能读回，并落成工作区里的普通文件', async () => {
     const root = await workspace()
@@ -48,6 +68,38 @@ describe('记忆', () => {
     // 用户能直接看、直接改、直接删——这是不放 SQLite 的全部理由。
     const raw = await Bun.file(join(root, MEMORY_DIR, '包管理器.md')).text()
     expect(raw).toContain('本项目用 pnpm')
+  })
+
+  test('明确指定 global 时只写全局目录，并能按层读回', async () => {
+    await withTempHome(async (home) => {
+      const root = await workspace()
+      const c = ctx(root)
+      const w = await writeMemoryTool.fn(
+        { key: '全局偏好', content: '所有项目都使用这条', scope: 'global' },
+        c,
+      )
+      expect(w.status).toBe('success')
+      expect(await Bun.file(join(home, 'memory', '全局偏好.md')).exists()).toBe(true)
+      expect(await Bun.file(join(root, MEMORY_DIR, '全局偏好.md')).exists()).toBe(false)
+
+      const r = await readMemoryTool.fn({ key: '全局偏好', scope: 'global' }, c)
+      expect(r.data).toMatchObject({ key: '全局偏好', scope: 'global' })
+    })
+  })
+
+  test('迁移记忆成功后只剩目标副本', async () => {
+    await withTempHome(async (home) => {
+      const root = await workspace()
+      const c = ctx(root)
+      await writeMemoryTool.fn({ key: 'style', content: '不要 emoji' }, c)
+      const moved = await moveMemoryTool.fn(
+        { key: 'style', from_scope: 'project', to_scope: 'global' },
+        c,
+      )
+      expect(moved.status).toBe('success')
+      expect(await Bun.file(join(root, MEMORY_DIR, 'style.md')).exists()).toBe(false)
+      expect(await Bun.file(join(home, 'memory', 'style.md')).exists()).toBe(true)
+    })
   })
 
   test('索引只给首行摘要，不给全文', async () => {
@@ -99,18 +151,21 @@ describe('记忆', () => {
     expect(required(readMemoryTool)).toEqual(['key'])
     expect(required(writeMemoryTool)).toEqual(['key', 'content'])
     expect(required(deleteMemoryTool)).toEqual(['key'])
+    expect(required(moveMemoryTool)).toEqual(['key', 'from_scope', 'to_scope'])
   })
 
   test('读记忆不走权限闸，写和删各走各的闸', () => {
     expect(readMemoryTool.permissionEffect).toBe('internal_control')
     expect(writeMemoryTool.permissionEffect).toBe('write')
     expect(deleteMemoryTool.permissionEffect).toBe('delete')
+    expect(moveMemoryTool.permissionEffect).toBe('delete')
   })
 
   test('动作是常量 —— 一个名字一个动作，不用从参数里现算', () => {
     expect(readMemoryTool.actionKind).toBe('read')
     expect(writeMemoryTool.actionKind).toBe('write')
     expect(deleteMemoryTool.actionKind).toBe('delete')
+    expect(moveMemoryTool.actionKind).toBe('edit')
   })
 
   test('空目录返回空列表而不是抛', async () => {
@@ -171,6 +226,45 @@ describe('技能扫描', () => {
     const r = await readSkillTool.fn({ name: '发版' }, ctx(await withSkills()))
     expect(r.status).toBe('success')
     expect(r.message).toContain('打 tag')
+  })
+
+  test('模型能明确写全局技能，附带文件与 SKILL.md 落在同一目录', async () => {
+    await withTempHome(async (home) => {
+      const root = await workspace()
+      const written = await writeSkillTool.fn(
+        {
+          name: '发版',
+          description: '发布版本时使用',
+          content: '1. 跑测试\n2. 打标签',
+          scope: 'global',
+          files: [{ path: 'scripts/check.ts', content: 'export {}\n' }],
+        },
+        ctx(root),
+      )
+      expect(written.status).toBe('success')
+      expect(await Bun.file(join(home, 'skills', '发版', 'SKILL.md')).text()).toContain('打标签')
+      expect(await Bun.file(join(home, 'skills', '发版', 'scripts', 'check.ts')).exists()).toBe(
+        true,
+      )
+      expect(await Bun.file(join(root, SKILLS_DIR, '发版', 'SKILL.md')).exists()).toBe(false)
+    })
+  })
+
+  test('迁移技能成功后整个目录只在目标层', async () => {
+    await withTempHome(async (home) => {
+      const root = await workspace()
+      await writeSkillTool.fn(
+        { name: 'review', description: '审查时使用', content: '读取差异' },
+        ctx(root),
+      )
+      const moved = await moveSkillTool.fn(
+        { name: 'review', from_scope: 'project', to_scope: 'global' },
+        ctx(root),
+      )
+      expect(moved.status).toBe('success')
+      expect(await Bun.file(join(root, SKILLS_DIR, 'review', 'SKILL.md')).exists()).toBe(false)
+      expect(await Bun.file(join(home, 'skills', 'review', 'SKILL.md')).exists()).toBe(true)
+    })
   })
 
   test('名字记错时列出候选，而不是只说找不到', async () => {

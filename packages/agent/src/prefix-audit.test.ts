@@ -174,7 +174,12 @@ describe('审真实的系统提示词', () => {
   const GATES = [
     'run_command',
     'write_memory',
+    'move_memory',
     'read_skill',
+    'write_skill',
+    'move_skill',
+    'write_mcp_server',
+    'move_mcp_server',
     'load_tool',
     'subagent',
     'workflow',

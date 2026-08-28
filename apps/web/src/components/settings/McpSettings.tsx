@@ -11,6 +11,7 @@ import {
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs } from './Scope.tsx'
+import { newMcpPrompt } from './ScopePrompts.ts'
 
 /**
  * MCP。
@@ -28,13 +29,9 @@ import { ScopeTabs } from './Scope.tsx'
  * **这一页只报结果，不编辑配置。** server 的形状按 transport 分两种（stdio 要
  * command/args/env/cwd，http 要 url 和 headers），还要知道那个包的命令行怎么写——
  * 这几格填什么，用户在界面上判断不了。
- * 所以「新增」把话头递给模型（`askInChat`）由它写 `.agents/mcp.json`，「导入」并一份现成的进来；这
- * 一页只回答：连上了哪些、没连上哪些。
+ * 所以「新增」把当前标签页的作用域一并递给模型（`askInChat`），由专用工具写对应层的 `mcp.json`；
+ * 「导入」并一份现成的进来。这一页只回答：连上了哪些、没连上哪些。
  */
-
-/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
-const NEW_SERVER =
-  '我们一起来接一个 MCP 服务吧。先说明 MCP 服务在 qywork 里怎么配置、连接，配置写在哪个文件；然后问我要接哪一个、走本机命令还是 HTTP。'
 
 export default function McpSettings() {
   const [data, { refetch }] = createResource(loadMcp)
@@ -73,7 +70,7 @@ export default function McpSettings() {
           导入
         </button>
       </Show>
-      <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SERVER)}>
+      <button class="btn-ghost sm" type="button" onClick={() => askInChat(newMcpPrompt(scope()))}>
         新增
       </button>
     </>

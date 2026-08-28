@@ -9,13 +9,14 @@
 import type { ToolRegistry } from '@qywork/agent'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
-import { deleteMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
+import { moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
+import { deleteMemoryTool, moveMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
 import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
 import { makeShellTool } from './shell.ts'
-import { readSkillTool } from './skills.ts'
+import { moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
@@ -121,7 +122,7 @@ import { workflowTool } from './workflow.ts'
  */
 export function registerBuiltinTools(
   registry: ToolRegistry,
-  opts: { delegate?: boolean; plugins?: boolean } = {},
+  opts: { delegate?: boolean; plugins?: boolean; mcpConfig?: boolean } = {},
 ): void {
   const shell = commandShell()
   for (const spec of [
@@ -142,7 +143,11 @@ export function registerBuiltinTools(
     readMemoryTool,
     writeMemoryTool,
     deleteMemoryTool,
+    moveMemoryTool,
     readSkillTool,
+    writeSkillTool,
+    moveSkillTool,
+    ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

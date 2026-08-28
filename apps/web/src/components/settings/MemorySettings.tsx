@@ -12,6 +12,7 @@ import { IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
+import { newMemoryPrompt } from './ScopePrompts.ts'
 
 /**
  * 记忆。
@@ -31,10 +32,6 @@ import { ScopeTabs, ShadowTag } from './Scope.tsx'
  * 形状，没有理由两样。新建不同：它建的是一个还不存在的条目，标识敲到一半就落盘会在库里留下一串半
  * 截的键，所以那一次保留一颗「创建」。
  */
-/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
-const NEW_MEMORY =
-  '我们一起来加一条记忆吧。先说明记忆在 qywork 里怎么工作、分哪几层、写在哪个目录；然后问我要记什么。'
-
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
   /** 正在编辑哪一条记忆的标识。`null` = 没在编辑。 */
@@ -85,7 +82,7 @@ export default function MemorySettings() {
    * 一处，而空的时候用户看到的是空态框里那一份。
    */
   const Actions = () => (
-    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_MEMORY)}>
+    <button class="btn-ghost sm" type="button" onClick={() => askInChat(newMemoryPrompt(scope()))}>
       新增
     </button>
   )

@@ -13,6 +13,7 @@ import { IconX } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
+import { newSkillPrompt } from './ScopePrompts.ts'
 
 /**
  * 技能。
@@ -32,10 +33,6 @@ import { ScopeTabs, ShadowTag } from './Scope.tsx'
 function dirName(dir: string): string {
   return dir.split(/[\\/]/).pop() ?? dir
 }
-
-/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
-const NEW_SKILL =
-  '我们一起来做一个技能吧。先说明技能在 qywork 里怎么被索引、什么时候会被加载，目录和 SKILL.md 长什么样；然后问我这个技能要干什么、分几步。'
 
 export default function SkillsSettings() {
   const [data, { refetch }] = createResource(loadSkills)
@@ -81,7 +78,7 @@ export default function SkillsSettings() {
           导入
         </button>
       </Show>
-      <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SKILL)}>
+      <button class="btn-ghost sm" type="button" onClick={() => askInChat(newSkillPrompt(scope()))}>
         新增
       </button>
     </>
