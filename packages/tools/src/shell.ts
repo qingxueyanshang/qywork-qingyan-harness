@@ -135,7 +135,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
     parallelSafe: false,
     async fn(args, ctx) {
       const command = String(args.command ?? '').trim()
-      if (!command) return { status: 'failure', message: '命令为空' }
+      if (!command) return { status: 'failure', executed: false, message: '命令为空' }
 
       const cwd = await resolveInWorkspace(rootsOf(ctx), String(args.cwd ?? '.'), {
         mustExist: true,
@@ -155,7 +155,12 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeRaw) {
         const checked = loopbackTarget(probeRaw)
         if (!checked.ok)
-          return { status: 'failure', message: checked.why, errorKind: 'bad_request' }
+          return {
+            status: 'failure',
+            executed: false,
+            message: checked.why,
+            errorKind: 'bad_request',
+          }
         probeUrl = checked.url
       }
 

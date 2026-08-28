@@ -623,6 +623,24 @@ describe('strict 工具定义', () => {
   })
 
   /**
+   * GLM-5.3 Flash 的真实失败形状：适配器把可选 `probe_url` 改成 required + nullable，
+   * 模型随后连续把 JSON null 采样成字符串 `"null"`。智谱公开的是标准 JSON Schema
+   * required/optional 形状，所以只给这两条模型保留注册表原样；别的模型仍走上面的 strict。
+   */
+  test('GLM-5.3 两款不套 OpenAI strict，可选属性仍可省略', async () => {
+    for (const model of ['glm-5.3', 'glm-5.3-flash']) {
+      const body = await send(model, undefined, [readFile])
+      const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
+      expect(tool.strict).toBeUndefined()
+      expect((tool.parameters as Record<string, unknown>).required).toEqual(['path'])
+      const props = (tool.parameters as { properties: Record<string, Record<string, unknown>> })
+        .properties
+      expect(props.offset?.type).toBe('integer')
+      expect(props.limit?.type).toBe('integer')
+    }
+  })
+
+  /**
    * 第三方 schema 原样发，一个字节都不改。
    *
    * 改动一个第三方 schema，模型按改过的形状传参、server 按原形状校验，

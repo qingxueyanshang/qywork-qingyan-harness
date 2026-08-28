@@ -98,6 +98,14 @@ export interface ModelSpec {
    */
   chatReasoningProtocol: 'standard' | 'qwen_preserved' | 'glm_preserved'
   /**
+   * Chat Completions 的工具参数 schema 协议。
+   *
+   * `openai_strict` 会把可选属性改成「必填但可为 null」并发送 `strict:true`；
+   * `native` 保留模型库注册时的原生 required/optional 形状。两者不能按
+   * OpenAI-compatible 这个接口名一刀切：兼容基础字段不等于兼容 strict 采样规则。
+   */
+  chatToolSchema: 'openai_strict' | 'native'
+  /**
    * 支持的 effort 档位。空数组=不支持 effort 参数。
    */
   effortLevels: EffortLevel[]
@@ -651,6 +659,7 @@ const CLAUDE_BASE = {
   thinking: 'adaptive_only' as const,
   reasoningEcho: 'none' as const,
   chatReasoningProtocol: 'standard' as const,
+  chatToolSchema: 'native' as const,
   // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
 }
@@ -776,6 +785,7 @@ function deepseekCatalog(): ModelSpec[] {
     // 不读这一格。要回传的是下面 Responses 那支。
     reasoningEcho: 'none' as const,
     chatReasoningProtocol: 'standard' as const,
+    chatToolSchema: 'openai_strict' as const,
     effortLevels: ['high', 'max'] as EffortLevel[],
     thinksByDefault: false,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
@@ -935,6 +945,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      */
     reasoningEcho: 'none',
     chatReasoningProtocol: 'standard',
+    chatToolSchema: 'openai_strict',
     effortLevels: [],
     thinksByDefault: false,
     minCacheablePrefix: 1024,
@@ -973,6 +984,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     cacheRouting: 'prompt_cache_key' as const,
     reasoningEcho: 'none' as const,
     chatReasoningProtocol: 'standard' as const,
+    chatToolSchema: 'openai_strict' as const,
     // 没标定过的一律上界档。标定过的在自己那条上覆盖。
     density: DEFAULT_DENSITY,
     // 逐条按厂商规格页覆盖。这一档是「没有出处」，不裁决。
@@ -1360,6 +1372,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       maxOutputTokens: 131_072,
       pricing: cny(8, 28, 2),
       chatReasoningProtocol: 'glm_preserved',
+      // 智谱只公开标准 required/optional Function Call 形状；不要套 OpenAI strict 的
+      // 「全部 required + nullable」。Flash 实测会把 JSON null 采样成字符串 "null"。
+      chatToolSchema: 'native',
       // 国内站缓存自动识别公共前缀、无需手动参数，不发送未声明的 prompt_cache_key。
       cacheRouting: 'none',
     },
@@ -1374,6 +1389,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       maxOutputTokens: 131_072,
       pricing: glm53FlashPromo(now),
       chatReasoningProtocol: 'glm_preserved',
+      chatToolSchema: 'native',
       cacheRouting: 'none',
     },
     {

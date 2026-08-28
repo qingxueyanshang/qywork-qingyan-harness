@@ -288,6 +288,46 @@ describe('历史装配', () => {
     expect(history).toHaveLength(4)
   })
 
+  test('刷新恢复后，失败工具的原始正文和未执行标记仍进入模型历史', async () => {
+    const { store, conv, ask, run } = fixture()
+    const m1 = ask('下载依赖')
+    const r1 = run(m1)
+    const tool = appendStep(store, {
+      runId: r1.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'run_command',
+      toolCallId: 'A',
+      providerBatchId: 'b1',
+      callIndex: 0,
+      status: 'running',
+      payload: { kind: 'tool_call', args: { command: 'curl example', probe_url: 'null' } },
+    })
+    settleToolStep(store, tool.id, 'failure', {
+      kind: 'tool_result',
+      args: { command: 'curl example', probe_url: 'null' },
+      outcome: {
+        status: 'failure',
+        executed: false,
+        message: 'probe_url 不是合法 URL：null',
+        errorKind: 'bad_request',
+      },
+    })
+    finishRun(store, r1.id, { status: 'failed', stopReason: 'no_progress' })
+
+    const m2 = ask('继续')
+    const history = await buildHistory(store, conv.id, m2, noAttachments)
+    const result = history.find((m) => m.role === 'tool')
+    expect(result).toBeDefined()
+    expect(JSON.parse(String(result!.content))).toMatchObject({
+      tool: 'run_command',
+      status: 'failure',
+      executed: false,
+      summary: 'probe_url 不是合法 URL：null',
+    })
+    assertPairs(history)
+  })
+
   /**
    * **中断残留。** 波次 1 已成功、波次 2 被掐断留下 running 行。
    *
