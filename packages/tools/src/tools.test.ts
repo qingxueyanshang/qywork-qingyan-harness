@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'no
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { ToolRegistry } from '@qywork/agent'
+import { sanitizeToolName, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import {
@@ -51,6 +51,11 @@ function registry(): ToolRegistry {
   registerBuiltinTools(r)
   return r
 }
+
+test('内置工具名全部符合 provider 约束', () => {
+  const r = registry()
+  for (const tool of r.list()) expect(sanitizeToolName(tool.name)).toBe(tool.name)
+})
 
 /**
  * 在「这台机器没有 bash」的状态里跑一段。

@@ -53,13 +53,6 @@ describe('注册期就挡住 provider 不收的名字', () => {
     r.register(spec('mcp__github__create-issue'))
     expect(r.list()).toHaveLength(2)
   })
-
-  test('内置工具名全部合法 —— 这条防的是将来手滑加一个带点的', async () => {
-    const { registerBuiltinTools } = await import('@qywork/tools')
-    const r = new ToolRegistry()
-    registerBuiltinTools(r)
-    for (const t of r.list()) expect(TOOL_NAME_PATTERN.test(t.name)).toBe(true)
-  })
 })
 
 describe('消毒', () => {
