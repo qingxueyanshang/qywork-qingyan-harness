@@ -497,8 +497,8 @@ function LiveOutput(props: { item: TranscriptItem }) {
  * 三条口径必须守住：
  * - **停止原因永远显示**，正常完成也显示（只是低调）。废除「静默 done」的意义
  *   就在于用户不用追问「它怎么停了」。
- * - **缓存命中显示「未回报」的门槛只有一条**：那一次连 usage 都没回来。
- *   回了 usage 但没有缓存字段的算 0——那一次的钱就是按零命中付的。
+ * - **缓存命中未知或未回报都显示 `N/A`**；provider 明确回报 0 才显示 0。
+ *   只看最后一次调用，不拿上一轮的数填当前空缺。
  * - 计价为 0 时不显示金额，而不是显示 $0.0000——未知计价冒充免费更误导。
  */
 function RunStatusBar(props: {
@@ -558,11 +558,6 @@ function RunStatusBar(props: {
               <span class="run-metric" data-tip="输入 / 输出 token">
                 ↓{compact(usage().inputTokens)} ↑{compact(usage().outputTokens)}
               </span>
-              {/* 口径（分母是输入总量、取最后一次调用、什么时候算 0）全在 `hitRate` 上，
-                  这里不复述——两处各写一遍必然漂移。 */}
-              <span class="run-metric" data-tip="最后一次模型调用的缓存命中占输入总量的比例">
-                命中 {hitRate(usage())}
-              </span>
               {/* 计价为 0 时不显示金额：未知计价冒充免费更误导。 */}
               <Show when={usage().cost > 0}>
                 <span class="run-metric run-cost">
@@ -572,6 +567,11 @@ function RunStatusBar(props: {
             </>
           )}
         </Show>
+        {/* 即使模型在 usage 生成前报错，也必须把未知明确显示出来。
+            口径（最后一次调用、null 与 0 的区别）只由 `hitRate` 维护。 */}
+        <span class="run-metric" data-tip="最后一次模型调用的缓存命中占输入总量的比例">
+          命中 {props.usage ? hitRate(props.usage) : 'N/A'}
+        </span>
         {/*
          * 「正在思考…」跟在钱后面，和停止原因同一格。
          *
