@@ -992,6 +992,8 @@ export interface ProviderRequest {
   /** 本次请求**没有**发出去的那部分原文。 */
   omittedCategories: ContextOmitted
   errorCode: string | null
+  /** provider 返回的错误正文。NULL = 没给、连接层失败，或存量请求。 */
+  errorMessage: string | null
   /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
   payloadHash: string
   cacheRouteFingerprint: string | null

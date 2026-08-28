@@ -356,11 +356,11 @@ function LedgerLink() {
   )
 }
 
-/** 一次请求的结局。`finishReason` 是 provider 的原话，能给就给原话。 */
+/** 一次请求的结局。成功和明确拒绝都优先给 provider 原话，能给就给原话。 */
 function requestOutcome(q: ProviderRequest): string {
   if (q.status === 'received') return q.finishReason || '已回报'
   if (q.status === 'uncertain') return '结果不明'
-  if (q.status === 'rejected') return q.errorCode || '被拒绝'
+  if (q.status === 'rejected') return q.errorMessage || q.errorCode || '被拒绝'
   return q.status === 'in_flight' ? '进行中' : '未发出'
 }
 

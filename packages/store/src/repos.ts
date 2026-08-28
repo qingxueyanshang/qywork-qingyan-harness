@@ -915,6 +915,7 @@ export function openProviderRequest(
     sentCategories: input.sentCategories,
     omittedCategories: input.omittedCategories,
     errorCode: null,
+    errorMessage: null,
     payloadHash: input.payloadHash,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
     sentAt: null,
@@ -971,13 +972,14 @@ export function settleProviderRequest(
   } | null,
   errorCode: string | null = null,
   finishReason = '',
+  errorMessage: string | null = null,
 ): void {
   store.db
     .query(
       `UPDATE provider_requests
        SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
            provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?,
-           finish_reason = ?
+           finish_reason = ?, error_message = ?
        WHERE id = ?`,
     )
     .run(
@@ -988,6 +990,7 @@ export function settleProviderRequest(
       usage?.cacheWriteTokens ?? null,
       errorCode,
       finishReason,
+      errorMessage,
       id,
     )
 }
@@ -1056,6 +1059,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     sentCategories: { ...emptyBreakdown(), ...readJson(r.sent_categories, {}) },
     omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
     errorCode: r.error_code,
+    errorMessage: r.error_message,
     payloadHash: r.payload_hash,
     finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,

@@ -411,8 +411,17 @@ describe('逐请求账本读得出重发', () => {
     // 结果不明的那次不许被填成 0：收没收到、计没计费都不知道。
     expect(rows[0]!.providerInputTokens).toBeNull()
     expect(rows[0]!.finishReason).toBe('')
+    expect(rows[0]!.errorMessage).toBeNull()
     // provider 的原话进账本——没有它就分不出「说完了」和「要调工具」。
     expect(rows[1]!.finishReason).toBe('stop')
+  })
+
+  test('明确拒绝的原始正文随请求落盘', () => {
+    const { store, runId } = fixture()
+    const id = send(store, runId, { measured: 100 })
+    settleProviderRequest(store, id, 'rejected', null, 'rate_limited', '', 'Rate limit reached')
+
+    expect(listProviderRequests(store, runId)[0]?.errorMessage).toBe('Rate limit reached')
   })
 })
 

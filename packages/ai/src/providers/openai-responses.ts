@@ -157,7 +157,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       // 错误体要读出来再分类：容量拒绝的判据全在响应正文里，
       // 只拿状态码分类会把「上下文超了」和「参数写错了」混成同一个 400。
       const text = await res.text().catch(() => '')
-      throw classifyProviderError('openai_responses', asError(res.status, text))
+      throw classifyProviderError('openai_responses', asError(res.status, text, res.headers))
     }
     if (!res.body) {
       throw new ProviderError({
@@ -585,13 +585,25 @@ function parseArgs(json: string): { args: Record<string, unknown>; error: string
   }
 }
 
-function asError(status: number, body: string): Error & { status: number } {
+function asError(
+  status: number,
+  body: string,
+  headers?: Headers,
+): Error & { status: number; headers?: Headers; error?: Record<string, unknown> } {
   let message = body
+  let detail: Record<string, unknown> | undefined
   try {
-    const parsed = JSON.parse(body)
-    message = parsed?.error?.message ?? parsed?.message ?? body
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const nested = parsed.error
+    detail =
+      typeof nested === 'object' && nested !== null ? (nested as Record<string, unknown>) : parsed
+    message = String(detail.message ?? body)
   } catch {
     // 非 JSON 错误体（网关的 HTML 页面之类）原样带上。
   }
-  return Object.assign(new Error(message || `HTTP ${status}`), { status })
+  return Object.assign(new Error(message || `HTTP ${status}`), {
+    status,
+    ...(headers ? { headers } : {}),
+    ...(detail ? { error: detail } : {}),
+  })
 }

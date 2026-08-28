@@ -781,8 +781,16 @@ export class Session {
       },
       openRequest: (input) => openProviderRequest(store, input).id,
       markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
-      settleRequest: (requestId, status, usage, errorCode, finishReason) =>
-        settleProviderRequest(store, requestId as never, status, usage, errorCode, finishReason),
+      settleRequest: (requestId, status, usage, errorCode, finishReason, errorMessage) =>
+        settleProviderRequest(
+          store,
+          requestId as never,
+          status,
+          usage,
+          errorCode,
+          finishReason,
+          errorMessage,
+        ),
     }
   }
 
