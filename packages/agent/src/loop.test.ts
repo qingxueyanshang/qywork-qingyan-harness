@@ -11,7 +11,12 @@ import {
 import type { AgentEvent, ContextBreakdown } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
-import { MAX_RESENDS, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
+import {
+  MAX_RESENDS,
+  RATE_LIMIT_BACKOFF_BASE_MS,
+  RATE_LIMIT_BACKOFF_MAX_MS,
+  UNAVAILABLE_BACKOFF_MS,
+} from './loop.ts'
 import { ToolRegistry, type ToolSpec } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
@@ -1413,9 +1418,19 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
    * （`STREAM_IDLE_TIMEOUT_MS`）立刻开火，成功用例会被判成断流。
    */
   const realSetTimeout = globalThis.setTimeout
+  const rateLimitBackoffs = new Set(
+    Array.from({ length: MAX_RESENDS }, (_, i) =>
+      Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** i, RATE_LIMIT_BACKOFF_MAX_MS),
+    ),
+  )
+  const observedBackoffs: number[] = []
   beforeAll(() => {
-    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
-      realSetTimeout(fn, ms === UNAVAILABLE_BACKOFF_MS ? 0 : ms, ...rest)) as typeof setTimeout
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (ms !== undefined && rateLimitBackoffs.has(ms)) observedBackoffs.push(ms)
+      const delay =
+        ms === UNAVAILABLE_BACKOFF_MS || (ms !== undefined && rateLimitBackoffs.has(ms)) ? 0 : ms
+      return realSetTimeout(fn, delay, ...rest)
+    }) as typeof setTimeout
   })
   afterAll(() => {
     globalThis.setTimeout = realSetTimeout
@@ -1423,7 +1438,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
 
   interface Recorded {
     opened: number[]
-    settled: { status: string; errorCode: string | null }[]
+    settled: { status: string; errorCode: string | null; errorMessage?: string }[]
     /** 开过的思考 step，按顺序。 */
     thinking: string[]
     /** 被落成失败终态的那几条。 */
@@ -1445,8 +1460,12 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
         rec.opened.push(input.retryIndex)
         return `pr_${input.retryIndex}`
       },
-      settleRequest: (_id, status, _usage, errorCode) => {
-        rec.settled.push({ status, errorCode })
+      settleRequest: (_id, status, _usage, errorCode, _finishReason, errorMessage) => {
+        rec.settled.push({
+          status,
+          errorCode,
+          ...(errorMessage === null || errorMessage === undefined ? {} : { errorMessage }),
+        })
       },
     }
   }
@@ -1465,6 +1484,10 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       | 'reject'
       | 'reject-relay'
       | 'reject-image'
+      | 'rate-limit'
+      | 'rate-limit-no-header'
+      | 'rate-limit-after-text'
+      | 'quota'
       | 'ok'
     )[],
   ): LlmAdapter {
@@ -1520,13 +1543,40 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
             ),
           )
         }
+        if (
+          act === 'rate-limit' ||
+          act === 'rate-limit-no-header' ||
+          act === 'rate-limit-after-text'
+        ) {
+          if (act === 'rate-limit-after-text') yield { type: 'text_delta', delta: '已输出' }
+          throw new ProviderError({
+            code: 'rate_limited',
+            message: '触发限速',
+            provider: 'anthropic_messages',
+            status: 429,
+            detail: { providerMessage: 'Rate limit reached' },
+            ...(act === 'rate-limit-no-header' ? {} : { retryAfterMs: 5 }),
+          })
+        }
+        if (act === 'quota') {
+          throw new ProviderError({
+            code: 'insufficient_quota',
+            message: '账户额度不足',
+            provider: 'anthropic_messages',
+            status: 429,
+          })
+        }
         yield { type: 'text_delta', delta: '完成' }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
   }
 
-  function run(adapter: LlmAdapter, rec: Recorded) {
+  function run(
+    adapter: LlmAdapter,
+    rec: Recorded,
+    signal: AbortSignal = new AbortController().signal,
+  ) {
     return new AgentLoop({
       adapter,
       registry: new ToolRegistry(),
@@ -1534,7 +1584,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       tailNotes: () => [],
       persist: recordingPersistence(rec),
       makeToolContext: (runId) => baseCtx(runId),
-    }).run({ runId: 'rn_net' as never, history: [], signal: new AbortController().signal })
+    }).run({ runId: 'rn_net' as never, history: [], signal })
   }
 
   async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
@@ -1590,6 +1640,69 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
+  test('429 按 Retry-After 等待后原样重发', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['rate-limit', 'ok']))
+
+    expect(rec.opened).toEqual([0, 1])
+    expect(rec.settled[0]).toEqual({
+      status: 'rejected',
+      errorCode: 'rate_limited',
+      errorMessage: 'Rate limit reached',
+    })
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+  })
+
+  test('429 没有 Retry-After 时按指数退避', async () => {
+    observedBackoffs.length = 0
+    const { rec } = await collect(
+      scriptedAdapter(['rate-limit-no-header', 'rate-limit-no-header', 'ok']),
+    )
+
+    expect(rec.opened).toEqual([0, 1, 2])
+    expect(observedBackoffs).toEqual([RATE_LIMIT_BACKOFF_BASE_MS, RATE_LIMIT_BACKOFF_BASE_MS * 2])
+  })
+
+  test('额度不足不重发', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['quota', 'ok']))
+
+    expect(rec.opened).toEqual([0])
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('insufficient_quota')
+  })
+
+  test('429 前已有正文时不重发', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['rate-limit-after-text', 'ok']))
+
+    expect(rec.opened).toEqual([0])
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+  })
+
+  test('等待限速退避时可以停止', async () => {
+    const controller = new AbortController()
+    const rec: Recorded = { opened: [], settled: [], thinking: [], failed: [] }
+    const events: AgentEvent[] = []
+    for await (const ev of run(scriptedAdapter(['rate-limit', 'ok']), rec, controller.signal)) {
+      events.push(ev)
+      if (ev.type === 'run.retrying') controller.abort()
+    }
+
+    expect(rec.opened).toEqual([0])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('user_interrupt')
+  })
+
+  test('429 重发耗尽后保留上游原话', async () => {
+    const { rec, events } = await collect(
+      scriptedAdapter(Array(MAX_RESENDS + 1).fill('rate-limit')),
+    )
+
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.message).toBe(`触发限速，已重发 ${MAX_RESENDS} 次`)
+    expect(rec.settled.at(-1)?.errorMessage).toBe('Rate limit reached')
+  })
+
   /**
    * 原始失败形状：不接受图片的模型收到图像块，界面从「正在重连 1 / 5」数到 5，
    * 而模型不接受图片这件事一个字都没出现。
@@ -1605,7 +1718,12 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('invalid_request')
     expect(err?.type === 'run.error' && err.message).toContain('image_url is not supported')
-    expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'invalid_request' })
+    expect(rec.settled[0]).toEqual({
+      status: 'rejected',
+      errorCode: 'invalid_request',
+      errorMessage:
+        '{"error":{"message":"Invalid content type: image_url is not supported by this model"}}',
+    })
   })
 
   test('重发后还是不可用：正文不许带传输读数——上游明确答复过，请求落地了', async () => {

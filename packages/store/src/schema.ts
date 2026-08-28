@@ -1021,6 +1021,21 @@ ALTER TABLE runs DROP COLUMN retry_of_run_id;
 ALTER TABLE runs DROP COLUMN superseded_by;
 `,
   },
+  {
+    id: 31,
+    name: 'provider_error_message',
+    /**
+     * 被 provider 拒绝时把它的原话留在逐请求账本。
+     *
+     * `error_code` 是本仓归一化后的分类，只能回答「哪一类错」；限速响应里真正能
+     * 定位账号、端点或上游策略的正文此前只活在异常对象里，进程一过就丢。它也
+     * 不能挂到 `runs.error_message` 代替这里：一个 run 可以重发多次，每次请求各有
+     * 自己的回执，真源必须仍是一请求一行。
+     *
+     * NULL = provider 没给正文、请求在连接层失败，或本次迁移之前的存量行。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN error_message TEXT;`,
+  },
 ]
 
 /**
@@ -1152,6 +1167,7 @@ export interface ProviderRequestRow {
   omitted_categories: string
   finish_reason: string
   error_code: string | null
+  error_message: string | null
   payload_hash: string
   cache_route_fingerprint: string | null
   sent_at: number | null
@@ -1262,6 +1278,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'omitted_categories',
     'finish_reason',
     'error_code',
+    'error_message',
     'payload_hash',
     'cache_route_fingerprint',
     'sent_at',

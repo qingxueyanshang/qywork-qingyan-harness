@@ -20,6 +20,7 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
+import { ProviderError } from '../errors.ts'
 import type { ProviderEvent, ProviderUsage } from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
@@ -202,11 +203,13 @@ const TRUNCATED = sse([
 
 // ───────────────────────── fixture server ─────────────────────────
 
-let script: { status: number; body: string; contentType: string } = {
-  status: 200,
-  body: TEXT_RUN,
-  contentType: 'text/event-stream',
-}
+let script: { status: number; body: string; contentType: string; headers: Record<string, string> } =
+  {
+    status: 200,
+    body: TEXT_RUN,
+    contentType: 'text/event-stream',
+    headers: {},
+  }
 /** 上一次发出去的请求体。用来断言**发出去**的内容，不只是收回来的；只声明这份测试真的读的那几格。 */
 interface SentBody {
   input?: { type: string }[]
@@ -223,7 +226,7 @@ const server = Bun.serve({
     lastBody = ((await req.json().catch(() => ({}))) ?? {}) as SentBody
     return new Response(script.body, {
       status: script.status,
-      headers: { 'content-type': script.contentType },
+      headers: { 'content-type': script.contentType, ...script.headers },
     })
   },
 })
@@ -242,8 +245,14 @@ async function run(
   body: string,
   over: Partial<Parameters<OpenAIResponsesAdapter['stream']>[0]> = {},
   status = 200,
+  headers: Record<string, string> = {},
 ): Promise<ProviderEvent[]> {
-  script = { status, body, contentType: status === 200 ? 'text/event-stream' : 'application/json' }
+  script = {
+    status,
+    body,
+    contentType: status === 200 ? 'text/event-stream' : 'application/json',
+    headers,
+  }
   const events: ProviderEvent[] = []
   for await (const ev of adapter().stream({
     model: 'deepseek-v4-flash',
@@ -370,6 +379,24 @@ describe('错误路径', () => {
       },
     })
     await expect(run(body, {}, 400)).rejects.toThrow(/reasoning_text/)
+  })
+
+  test('429 的错误码、正文与 Retry-After 一起进入分类结果', async () => {
+    const body = JSON.stringify({
+      error: { code: 'rate_limit_exceeded', message: 'Too many requests' },
+    })
+    let caught: unknown
+    try {
+      await run(body, {}, 429, { 'retry-after': '3' })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(ProviderError)
+    expect(caught).toMatchObject({
+      code: 'rate_limited',
+      retryAfterMs: 3_000,
+      detail: { providerMessage: 'Too many requests', providerCode: 'rate_limit_exceeded' },
+    })
   })
 
   /** SSE 已经 200 了，流内错误只能从事件里出。不认它的表现是「流正常结束但什么都没有」。 */

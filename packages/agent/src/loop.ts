@@ -296,6 +296,8 @@ export interface LoopPersistence {
     errorCode: string | null,
     /** provider 的原话。拿不到就空串——编一个是给账本注水。 */
     finishReason?: string,
+    /** provider 返回的错误正文。连接层失败或没有正文时为 null。 */
+    errorMessage?: string | null,
   ): void
 }
 
@@ -394,6 +396,10 @@ function idleTimeoutFor(effort: ChatRequest['effort']): number {
  */
 export const UNAVAILABLE_BACKOFF_MS = 3_000
 
+/** 429 未给等待时间时，从 1 秒开始指数退避，单次最多等待 30 秒。 */
+export const RATE_LIMIT_BACKOFF_BASE_MS = 1_000
+export const RATE_LIMIT_BACKOFF_MAX_MS = 30_000
+
 /**
  * 一轮之内最多原样重发几次。**对表里每个码一视同仁。**
  *
@@ -424,8 +430,6 @@ export const MAX_RESENDS = 5
  * 不重发时用户要手动继续，那一次付的是同一笔钱，而且 run 已经落成 failed，
  * 新消息还得让模型重新理解上一轮做到哪。
  *
- * `rate_limited` 不在表里：429 该按 provider 给的 `Retry-After` 等，不是固定值。
- *
  * **`invalid_request` 不在表里，别加进来。** 那个码的定义就是「同一份字节再发一次
  * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支）。加进来的代价实测付过：
  * 给不接受图片的模型发一张图，用户看到的是「正在重连 1 / 5」一直数到 5，
@@ -436,6 +440,14 @@ const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['stream_idle_timeout', 0],
   ['provider_unavailable', UNAVAILABLE_BACKOFF_MS],
 ])
+
+function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
+  if (error.code === 'rate_limited') {
+    if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
+    return Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** resends, RATE_LIMIT_BACKOFF_MAX_MS)
+  }
+  return RESENDABLE.get(error.code)
+}
 
 /**
  * 传输失败的现场读数。
@@ -1195,6 +1207,9 @@ export class AgentLoop {
               pe?.usage ?? null,
               code,
               rawStop,
+              pe?.status !== undefined && typeof pe.detail?.providerMessage === 'string'
+                ? pe.detail.providerMessage
+                : null,
             )
 
             // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
@@ -1299,7 +1314,7 @@ export class AgentLoop {
             // 不在重发表里的原样上抛：provider 已经说清是什么了（参数错、没权限、
             // 模型不存在），重发拿回来的是同一个拒绝。
             if (!pe) throw err
-            const backoffMs = RESENDABLE.get(code)
+            const backoffMs = resendBackoffMs(pe, resends)
             if (backoffMs === undefined) throw err
 
             const silentMs = Date.now() - lastEventAt
@@ -1369,6 +1384,9 @@ export class AgentLoop {
                 ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
               ].join('，'),
               provider: pe.provider,
+              ...(pe.status !== undefined ? { status: pe.status } : {}),
+              ...(pe.detail !== undefined ? { detail: pe.detail } : {}),
+              ...(pe.retryAfterMs !== null ? { retryAfterMs: pe.retryAfterMs } : {}),
               cause: err,
             })
           }

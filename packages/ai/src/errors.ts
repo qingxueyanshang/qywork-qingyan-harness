@@ -10,8 +10,8 @@
  *    ——次稳，跨版本基本不动。
  * 3. **文案匹配**——最后兜底，且**只在文案是唯一线索时**用。
  *
- * **文案匹配是刻意的兜底，不是 bug，别删。** 429 分限速与欠费全靠文案，
- * 传输层错误也是——这里没有别的线索可用。规矩写在上面那三档优先级里。
+ * **文案匹配是刻意的兜底，不是 bug，别删。** 429 优先读结构化错误码，
+ * 没有错误码时仍要靠文案区分限速与欠费；传输层错误同样需要文案兜底。
  */
 
 import type { ErrorCode, ProviderKind } from '@qywork/core'
@@ -39,6 +39,8 @@ export class ProviderError extends Error {
    * 不要把 `undefined` 当成 0。
    */
   readonly usage: ProviderUsage | undefined
+  /** Provider 要求的重试等待时间。null 表示响应没有给出有效等待值。 */
+  readonly retryAfterMs: number | null
 
   constructor(opts: {
     code: ErrorCode
@@ -48,6 +50,7 @@ export class ProviderError extends Error {
     detail?: Record<string, unknown>
     capacity?: CapacityRejection
     usage?: ProviderUsage
+    retryAfterMs?: number
     cause?: unknown
   }) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined)
@@ -58,6 +61,7 @@ export class ProviderError extends Error {
     this.detail = opts.detail
     this.capacity = opts.capacity
     this.usage = opts.usage
+    this.retryAfterMs = opts.retryAfterMs ?? null
   }
 }
 
@@ -79,6 +83,70 @@ function messageOf(err: unknown): string {
   return String(err)
 }
 
+function stringField(value: unknown, key: string): string | null {
+  if (typeof value !== 'object' || value === null) return null
+  const field = (value as Record<string, unknown>)[key]
+  return typeof field === 'string' ? field : null
+}
+
+/** SDK 与直连适配器都把响应头放在错误对象的 headers 字段。 */
+function headerOf(err: unknown, name: string): string | null {
+  if (typeof err !== 'object' || err === null) return null
+  const headers = (err as Record<string, unknown>).headers
+  if (typeof headers !== 'object' || headers === null) return null
+
+  const get = (headers as { get?: unknown }).get
+  if (typeof get === 'function') {
+    const value = get.call(headers, name)
+    return typeof value === 'string' ? value : null
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && typeof value === 'string') return value
+  }
+  return null
+}
+
+function retryAfterOf(err: unknown, now = Date.now()): number | null {
+  const milliseconds = headerOf(err, 'retry-after-ms')
+  if (milliseconds !== null) {
+    const parsed = Number(milliseconds)
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed
+  }
+
+  const value = headerOf(err, 'retry-after')
+  if (value === null) return null
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
+
+  const at = Date.parse(value)
+  return Number.isFinite(at) ? Math.max(0, at - now) : null
+}
+
+function providerErrorField(err: unknown, key: string): string | null {
+  const direct = stringField(err, key)
+  if (direct) return direct
+  if (typeof err !== 'object' || err === null) return null
+  return stringField((err as Record<string, unknown>).error, key)
+}
+
+function quotaExhausted(err: unknown, message: string): boolean {
+  const code = providerErrorField(err, 'code')?.toLowerCase() ?? ''
+  const type = providerErrorField(err, 'type')?.toLowerCase() ?? ''
+  if (
+    /^(insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached|quota_exceeded|insufficient_balance)$/.test(
+      code,
+    ) ||
+    /^(insufficient_quota|billing_error)$/.test(type)
+  ) {
+    return true
+  }
+
+  return /exceeded your current quota|insufficient (?:quota|credit|balance)|credit balance|billing hard limit|not enough credits|额度不足|余额不足|余额耗尽|余额已用完|欠费|需要充值/i.test(
+    message,
+  )
+}
+
 /** 判断是不是「没配 key」而不是「key 不对」——两者的引导文案完全不同。 */
 function looksUnconfigured(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
@@ -90,6 +158,15 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
 
   const status = statusOf(err)
   const message = messageOf(err)
+  const retryAfterMs = retryAfterOf(err)
+  const providerCode = providerErrorField(err, 'code')
+  const providerType = providerErrorField(err, 'type')
+  const detail = {
+    providerMessage: message,
+    ...(providerCode ? { providerCode } : {}),
+    ...(providerType ? { providerType } : {}),
+    ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+  }
 
   const build = (code: ErrorCode, msg?: string) =>
     new ProviderError({
@@ -97,6 +174,8 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
       message: msg ?? message,
       provider,
       ...(status !== undefined ? { status } : {}),
+      detail,
+      ...(retryAfterMs !== null ? { retryAfterMs } : {}),
       cause: err,
     })
 
@@ -138,15 +217,9 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
     case 429: {
       // 429 有两种：限速（等一下能好）和额度耗尽（等多久都不会好）。
       // 混为一谈会让用户对着一个永远不会成功的错误反复重发。
-      const m = message.toLowerCase()
-      const exhausted =
-        m.includes('quota') ||
-        m.includes('credit') ||
-        m.includes('balance') ||
-        m.includes('insufficient')
-      return exhausted
+      return quotaExhausted(err, message)
         ? build('insufficient_quota', '账户额度不足')
-        : build('rate_limited', '触发限速，稍后重试')
+        : build('rate_limited', '触发限速')
     }
     case 400:
     case 422:

@@ -160,11 +160,42 @@ describe('按用户的下一步动作分类', () => {
 
   /** 限速等一下能好，欠费等多久都不会好。混一起会让用户对着永不成功的重试狂点。 */
   test('429 分限速与额度耗尽', () => {
-    const limited = classifyProviderError(P, http(429, 'Rate limit reached'))
+    const raw = Object.assign(new Error('Rate limit reached'), {
+      status: 429,
+      code: 'rate_limit_exceeded',
+      headers: new Headers({ 'retry-after': '2.5' }),
+    })
+    const limited = classifyProviderError(P, raw)
     expect(limited.code).toBe('rate_limited')
+    expect(limited.message).toBe('触发限速')
+    expect(limited.retryAfterMs).toBe(2_500)
+    expect(limited.detail).toMatchObject({
+      providerMessage: 'Rate limit reached',
+      providerCode: 'rate_limit_exceeded',
+      retryAfterMs: 2_500,
+    })
 
     const broke = classifyProviderError(P, http(429, 'You exceeded your current quota'))
     expect(broke.code).toBe('insufficient_quota')
+  })
+
+  test('429 优先读结构化额度码，也识别中文额度正文', () => {
+    const structured = Object.assign(new Error('request rejected'), {
+      status: 429,
+      error: { code: 'insufficient_quota', message: 'request rejected' },
+    })
+    expect(classifyProviderError(P, structured).code).toBe('insufficient_quota')
+    expect(classifyProviderError(P, http(429, '账户余额不足，请充值')).code).toBe(
+      'insufficient_quota',
+    )
+  })
+
+  test('retry-after-ms 优先于 retry-after', () => {
+    const err = Object.assign(new Error('busy'), {
+      status: 429,
+      headers: new Headers({ 'retry-after-ms': '125', 'retry-after': '9' }),
+    })
+    expect(classifyProviderError(P, err).retryAfterMs).toBe(125)
   })
 
   test('404 指向模型名或接口地址，而不是「服务不可用」', () => {
