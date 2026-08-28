@@ -145,7 +145,7 @@ if ($Mode -eq 'desktop') {
 Clear-DevPort 7717
 Clear-DevPort 5180
 
-$logDir = Join-Path $env:TEMP 'qywork-start'
+$logDir = Join-Path $root '.tmp\start'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $serveLog = Join-Path $logDir "serve-$PID.log"
 if (Test-Path $serveLog) { Remove-Item $serveLog -Force }
@@ -209,4 +209,5 @@ try {
   # vite 是 bun 起的 node 子进程，父进程被杀不一定带走它，补一刀。
   Clear-DevPort 5180
   Clear-DevPort 7717
+  if (Test-Path $serveLog) { Remove-Item -LiteralPath $serveLog -Force }
 }

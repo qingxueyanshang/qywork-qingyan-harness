@@ -210,8 +210,9 @@ F 是明确不采纳的，写出来是为了不被重新抄进来。
   这份仓库的结构审查里，「这个文件没有测试」的判断就被这种隐式对应关系骗过一次。
 - **导出用具名，不用 `export *`**。后者会把内部符号一并泄漏出包边界，
   而且看不出这个包到底对外承诺了什么。
-- **脚本跑出来的临时工作区与产物一律落 `.tmp/<用途>`**，不在仓库根另开点目录。
-  由 `scripts/temp-dir.test.ts` 在门禁里扫住——根级点目录不入 git 状态
+- **开发脚本与测试跑出来的临时工作区和产物一律落 `.tmp/<用途>`**，不写系统临时目录，
+  也不在仓库根另开点目录。由测试预载统一设置 `TEMP` / `TMP` / `TMPDIR`，并由
+  `scripts/temp-dir.test.ts` 在门禁里扫住——根级点目录不入 git 状态
   （目录本身与 `*.sqlite3` 都被忽略），没有守卫就只在文件管理器里堆着，
   且每加一个都要往 `.gitignore` 与 `biome.json` 各补一行。
 
@@ -342,7 +343,7 @@ F 是明确不采纳的，写出来是为了不被重新抄进来。
 ### 词表由门禁执行，不靠评审
 
 上面「不写的具体形状」里能按词判定的那几类，落成了 `scripts/comment-style.ts` 的词表，
-由 `scripts/comment-style.test.ts` 在 `bun test` 里全量扫描注释，**命中即失败**，
+由 `scripts/comment-style.test.ts` 在 `bun run test` 里全量扫描注释，**命中即失败**，
 失败信息给「文件:行 + 命中词 + 改写方向」。
 
 覆盖六类：口语与语气词（`其实` `到底` `于是` `顺手` `莫名其妙` …）· 泛指名词
@@ -387,9 +388,9 @@ bun run gate
 ```
 
 它按顺序跑：`typecheck`（`packages/*` 的 solution build **加** `apps/web`）→
-`biome check` → `bun test` → `cargo check`（桌面端 Rust）。
+`biome check` → `bun run test` → `cargo check`（桌面端 Rust）。
 
-`bun test` 这一闸里有两道结构守卫，红了不是「测试挂了」而是「规则被破了」：
+`bun run test` 这一闸里有两道结构守卫，红了不是「测试挂了」而是「规则被破了」：
 `scripts/dependency-graph.test.ts`（B6 的包依赖方向）与
 `scripts/comment-style.test.ts`（B10 的注释文体词表）。
 
@@ -418,7 +419,7 @@ bun run gate
 - **没有依据的偏好不写。** 结论被实测推翻时当场改写，不要留旧结论加一句「但是」
   （`ARCHITECTURE.md` 第 2 节把「Tauri 内存减半」整段划掉重写，是这条的样例）。
 - **不写会过期的数字。** 「N 个测试」「M 个文件」写进文档的第二天就是错的
-  ——要么不写，要么写「跑 `bun test` 看」。带日期的实测数据是证据，不受此限。
+  ——要么不写，要么写「跑 `bun run test` 看」。带日期的实测数据是证据，不受此限。
 
 ## D2　版本号只准出现在有真源的地方
 
