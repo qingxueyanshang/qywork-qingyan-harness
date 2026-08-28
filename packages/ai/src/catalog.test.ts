@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { applySpecOverride, computeCost, lookupModel, priceAt } from './catalog.ts'
+import { applySpecOverride, builtinCatalog, computeCost, lookupModel, priceAt } from './catalog.ts'
 
 describe('同一模型在不同协议下能力不同', () => {
   /**
@@ -450,6 +450,42 @@ describe('长上下文阶梯价', () => {
     expect(long.cacheRead).toBe(0.4)
   })
 
+  test('GPT-5.6 长上下文连缓存写入价一起换档', () => {
+    const sol = lookupModel('gpt-5.6-sol', 'openai_chat_completions')
+    expect(priceAt(sol, { promptTokens: 272_000 }).cacheWrite5m).toBe(5)
+    const long = priceAt(sol, { promptTokens: 272_001 })
+    expect(long.input).toBe(8)
+    expect(long.output).toBe(30)
+    expect(long.cacheRead).toBe(0.8)
+    expect(long.cacheWrite5m).toBe(10)
+  })
+
+  test('MiniMax M3 以 512K 为价格分界', () => {
+    const m3 = lookupModel('MiniMax-M3', 'openai_chat_completions')
+    expect(priceAt(m3, { promptTokens: 524_288 }).input).toBe(0.3)
+    expect(priceAt(m3, { promptTokens: 524_289 }).input).toBe(0.6)
+  })
+
+  test('GLM-4.7 国内站按输入与输出双轴换档', () => {
+    const glm = lookupModel('glm-4.7', 'openai_chat_completions')
+    expect(priceAt(glm, { promptTokens: 31_999, outputTokens: 199 }).output).toBe(8)
+    expect(priceAt(glm, { promptTokens: 31_999, outputTokens: 200 }).output).toBe(14)
+    // 输入满 32K 后第三档优先，不再取「短输入、长输出」的第二档。
+    const long = priceAt(glm, { promptTokens: 32_000, outputTokens: 200 })
+    expect(long.input).toBe(4)
+    expect(long.output).toBe(16)
+    expect(long.cacheRead).toBe(0.8)
+  })
+
+  test('GLM 视觉模型的国内站 32K 档进入真实计费', () => {
+    const turbo = lookupModel('glm-5v-turbo', 'openai_chat_completions')
+    expect(priceAt(turbo, { promptTokens: 31_999 }).output).toBe(22)
+    expect(priceAt(turbo, { promptTokens: 32_000 }).output).toBe(26)
+    const v46 = lookupModel('glm-4.6v', 'openai_chat_completions')
+    expect(priceAt(v46, { promptTokens: 32_000 }).cacheRead).toBe(0.4)
+    expect(computeCost(v46, { inputTokens: 32_000, outputTokens: 1_000 })).toBe(0.07)
+  })
+
   /** Google 写的是「>200k」，xAI 写的是「≥200k」，边界差一个 token。 */
   test('两家的阈值边界各按各的', () => {
     const pro = lookupModel('gemini-3.1-pro-preview', 'openai_chat_completions')
@@ -465,11 +501,22 @@ describe('长上下文阶梯价', () => {
    */
   test('三档阶梯逐档进档', () => {
     const flash = lookupModel('qwen3.7-flash', 'openai_chat_completions')
-    expect(priceAt(flash, { promptTokens: 32_768 }).input).toBe(0.2)
-    expect(priceAt(flash, { promptTokens: 32_769 }).input).toBe(0.6)
-    expect(priceAt(flash, { promptTokens: 262_144 }).input).toBe(0.6)
-    expect(priceAt(flash, { promptTokens: 262_145 }).input).toBe(1.2)
+    expect(priceAt(flash, { promptTokens: 32_000 }).input).toBe(0.2)
+    expect(priceAt(flash, { promptTokens: 32_001 }).input).toBe(0.6)
+    expect(priceAt(flash, { promptTokens: 256_000 }).input).toBe(0.6)
+    expect(priceAt(flash, { promptTokens: 256_001 }).input).toBe(1.2)
     expect(priceAt(flash, { promptTokens: 900_000 }).output).toBe(4.8)
+  })
+
+  test('Qwen3-VL 两款都按官方 32K / 128K 三档计价', () => {
+    const plus = lookupModel('qwen3-vl-plus', 'openai_chat_completions')
+    expect(priceAt(plus, { promptTokens: 32_000 }).output).toBe(10)
+    expect(priceAt(plus, { promptTokens: 32_001 }).output).toBe(15)
+    expect(priceAt(plus, { promptTokens: 128_001 }).output).toBe(30)
+
+    const flash = lookupModel('qwen3-vl-flash', 'openai_chat_completions')
+    expect(priceAt(flash, { promptTokens: 32_001 }).input).toBe(0.3)
+    expect(priceAt(flash, { promptTokens: 128_001 }).input).toBe(0.6)
   })
 })
 
@@ -486,8 +533,8 @@ describe('目录里的价格与档位', () => {
   ) => lookupModel(id, kind)
 
   test('OpenAI GPT-5.6 三档 + Cyber', () => {
-    expect(spec('gpt-5.6-sol').pricing.input).toBe(5)
-    expect(spec('gpt-5.6-sol').pricing.output).toBe(30)
+    expect(spec('gpt-5.6-sol').pricing.input).toBe(4)
+    expect(spec('gpt-5.6-sol').pricing.output).toBe(20)
     // terra 不是 2.5/15，luna 不是 1/6。
     expect(spec('gpt-5.6-terra').pricing.input).toBe(2)
     expect(spec('gpt-5.6-terra').pricing.output).toBe(12)
@@ -496,6 +543,7 @@ describe('目录里的价格与档位', () => {
     expect(spec('gpt-5.6-cyber').pricing.output).toBe(75)
     // 官方模型页写的是 1.05M，不是 1M。
     expect(spec('gpt-5.6-sol').contextWindow).toBe(1_050_000)
+    expect(spec('gpt-5.6-cyber').contextWindow).toBe(400_000)
   })
 
   test('Gemini Flash 两代同价，3.5 更贵', () => {
@@ -504,6 +552,9 @@ describe('目录里的价格与档位', () => {
     expect(spec('gemini-3.6-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.5-flash').pricing.input).toBe(1.5)
     expect(spec('gemini-3.5-flash').pricing.output).toBe(9)
+    expect(spec('gemini-3.6-flash').effortLevels).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(spec('gemini-3.7-flash').contextWindow).toBe(1_048_576)
+    expect(spec('gemini-3.7-flash').maxOutputTokens).toBe(65_536)
   })
 
   test('Grok 的档位面：4.6 有 xhigh，4.5 没有，都没有 max', () => {
@@ -529,22 +580,67 @@ describe('目录里的价格与档位', () => {
     expect(spec('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 
-  /** 智谱的官方价目是美元（Z.ai 国际站），不要填没有出处的人民币数字。 */
-  test('GLM 三条按官方美元价，5.3 已收录', () => {
+  /** 国内端点按 BigModel 国内站价目记人民币。 */
+  test('GLM 国内站基础价与币种', () => {
     for (const id of ['glm-5.3', 'glm-5.2']) {
-      expect(spec(id).pricing.input).toBe(1.4)
-      expect(spec(id).pricing.output).toBe(4.4)
-      expect(spec(id).pricing.cacheRead).toBe(0.26)
-      expect(spec(id).pricing.currency).toBeUndefined()
+      expect(spec(id).pricing.input).toBe(8)
+      expect(spec(id).pricing.output).toBe(28)
+      expect(spec(id).pricing.cacheRead).toBe(2)
+      expect(spec(id).pricing.currency).toBe('CNY')
     }
-    expect(spec('glm-4.7').pricing.input).toBe(0.6)
+    expect(spec('glm-4.7').pricing.input).toBe(2)
+    expect(spec('glm-5v-turbo').pricing.input).toBe(5)
+    expect(spec('glm-4.6v').pricing.input).toBe(1)
     expect(spec('glm-5.3').effortLevels).toEqual(['low', 'high', 'max'])
+  })
+
+  test('GLM-5.3 Flash 国内站限时价在北京时间九月一日自动恢复', () => {
+    const before = lookupModel(
+      'glm-5.3-flash',
+      'openai_chat_completions',
+      Date.UTC(2026, 7, 31, 15, 59, 59),
+    ).pricing
+    expect(before).toMatchObject({ input: 0.4, output: 1.4, cacheRead: 0.115, currency: 'CNY' })
+    const after = lookupModel(
+      'glm-5.3-flash',
+      'openai_chat_completions',
+      Date.UTC(2026, 7, 31, 16),
+    ).pricing
+    expect(after).toMatchObject({ input: 0.8, output: 2.8, cacheRead: 0.23, currency: 'CNY' })
   })
 
   test('Kimi K3 三档，Qwen3.8 Max 已收录', () => {
     expect(spec('kimi-k3').effortLevels).toEqual(['low', 'high', 'max'])
+    expect(spec('kimi-k3').pricing).toMatchObject({
+      input: 20,
+      output: 100,
+      cacheRead: 2,
+      currency: 'CNY',
+    })
+    expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)
     expect(spec('qwen3.8-max').pricing.input).toBe(12)
     expect(spec('qwen3.8-max').pricing.currency).toBe('CNY')
     expect(spec('qwen3.8-max').maxOutputTokens).toBe(131_072)
+    expect(spec('qwen3.8-max').effortLevels).toEqual(['none', 'low', 'medium', 'xhigh'])
+    expect(spec('qwen3.8-max').chatReasoningProtocol).toBe('qwen_preserved')
+  })
+
+  test('GLM-5.3 两款各走自己的保留思考协议', () => {
+    for (const id of ['glm-5.3', 'glm-5.3-flash']) {
+      expect(spec(id).effortLevels).toEqual(['low', 'high', 'max'])
+      expect(spec(id).maxOutputTokens).toBe(131_072)
+      expect(spec(id).chatReasoningProtocol).toBe('glm_preserved')
+    }
+  })
+
+  test('官方可确认的输出上限已收录；只有 Grok 两条保留 null', () => {
+    expect(spec('MiniMax-M3').maxOutputTokens).toBe(524_288)
+    expect(spec('glm-4.6v').maxOutputTokens).toBe(32_768)
+    expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)
+    expect(
+      builtinCatalog()
+        .filter((m) => m.maxOutputTokens === null)
+        .map((m) => m.id),
+    ).toEqual(['grok-4.6', 'grok-4.5'])
   })
 })

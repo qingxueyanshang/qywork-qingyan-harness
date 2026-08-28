@@ -24,6 +24,7 @@ import {
   buildAdapter,
   type ContentBlock,
   computeCost,
+  type LlmAdapter,
   ProviderError,
   type ProviderProfile,
   type ProviderUsage,
@@ -284,13 +285,14 @@ export class Session {
    */
   private makeLoop(
     target: string | ModelRef,
+    adapter: LlmAdapter,
     conversationId: ConversationId,
     compaction?: CompactionPort,
   ): AgentLoop {
     // 能力段按已注册的工具名过滤：shell、派活、编排、外部工具都按通道注册。
     const base = buildSystemPrompt(new Set(this.registry.list().map((s) => s.name)))
     return new AgentLoop({
-      adapter: buildAdapter(this.resolveProfile(target)),
+      adapter,
       registry: this.registry,
       systemPrompt: this.opts.extraSystem ? `${base}\n\n## 角色\n\n${this.opts.extraSystem}` : base,
       ...(this.opts.followUps
@@ -408,11 +410,14 @@ export class Session {
      * `appendMessage` 就在上面几行，写的是 `role:'user'`），因此第二轮起模型拿到的
      * 输入字面上是「用户说了三次话，助手一次都没回」，跨轮结构性失忆。
      */
+    const adapter = buildAdapter(this.resolveProfile(target))
+    const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
     const history = await buildHistory(
       store,
       conversationId,
       run.messageIdUpperBound,
       (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
+      { preserveAssistantReasoning },
     )
 
     /*
@@ -487,6 +492,7 @@ export class Session {
         profile: () => this.resolveProfile(target),
         signal: this.opts.signal,
       }),
+      preserveAssistantReasoning,
     })
 
     // 这条会话关掉了哪些技能 / MCP / 插件 / 记忆。**没有行 = 全开**，
@@ -496,11 +502,7 @@ export class Session {
     // 扩展按工作区共享、引用计数持有：插件与 MCP 都是子进程，每条消息
     // 重起一遍既慢又会丢掉它们的进程内状态。会话只负责把工具规格注册进自己的表。
     if (!this.extensions) {
-      await this.loadExtensionTools(
-        buildAdapter(this.resolveProfile(target)).spec.density,
-        disabled,
-        conversationId,
-      )
+      await this.loadExtensionTools(adapter.spec.density, disabled, conversationId)
     }
 
     // 刷新索引。失败不影响主流程——没有技能索引只是模型少一条线索，
@@ -543,7 +545,7 @@ export class Session {
      */
     let failure: { message: string; code: string } | null = null
     try {
-      for await (const ev of this.makeLoop(target, conversationId, compaction).run({
+      for await (const ev of this.makeLoop(target, adapter, conversationId, compaction).run({
         runId: run.id,
         history,
         ...(effort ? { effort } : {}),
@@ -1071,9 +1073,9 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     const profile = opts.profile()
     const adapter = buildAdapter(profile)
     const effort = EFFORT_ORDER.find((level) => adapter.spec.effortLevels.includes(level))
-    // 档位里没有低档的模型（deepseek 只有 high/max）关不掉思考，`thinksByDefault`
-    // 为真时更是一开口就思考。两者任一成立就得给思考留出输出空间。
-    const willThink = effort !== undefined || adapter.spec.thinksByDefault
+    // 显式 `none` 就是不思考；没选档时才看模型默认。否则把 `none` 当成会思考，
+    // 会给摘要误申报整份模型输出上限，而不是调用方给的摘要预算。
+    const willThink = effort === undefined ? adapter.spec.thinksByDefault : effort !== 'none'
 
     // 空闲判定要能中止底层请求，所以走自己的控制器，外部信号挂在它上面。
     const ac = new AbortController()

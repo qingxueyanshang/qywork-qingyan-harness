@@ -1413,13 +1413,16 @@ export class AgentLoop {
         // 调了哪些工具，否则会重复调用。
         /** 本轮这个可折单元在 transcript 里的起点。工具结果随后追加到它后面。 */
         const unitStart = transcript.length
-        if (assistantText || calls.length) {
+        const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
+        if (assistantText || calls.length || (thinkingText && preserveAssistantReasoning)) {
           transcript.push({
             role: 'assistant',
             content: assistantText,
             ...(calls.length ? { toolCalls: calls } : {}),
-            // DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传思考内容。
-            ...(thinkingText && calls.length ? { reasoningContent: thinkingText } : {}),
+            // 标准路径只回放工具轮；Qwen3.8 / GLM-5.3 的官方协议要求所有轮次完整回放。
+            ...(thinkingText && (calls.length || preserveAssistantReasoning)
+              ? { reasoningContent: thinkingText }
+              : {}),
             _group: 'executionRecords',
           })
           stampUnit(unitStart)

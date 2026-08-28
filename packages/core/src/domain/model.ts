@@ -40,7 +40,7 @@ import type {
  * `catalog.ts` 里各家 spec 的 `effortLevels` 是照实测填的事实声明，
  * 不能改成引用这个数组——那等于替新加的档位替所有厂商作保。
  */
-export const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_ORDER)[number]
 
 /**

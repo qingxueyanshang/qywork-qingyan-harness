@@ -133,6 +133,36 @@ describe('可折单元的戳', () => {
 })
 
 describe('steps 投影', () => {
+  test('纯文本思考只对明确要求完整回放的模型进入历史', () => {
+    const steps = [
+      step({ seq: 1, kind: 'thinking', content: '先分析', toolName: null, toolCallId: null }),
+      step({ seq: 2, kind: 'text', content: '结论', toolName: null, toolCallId: null }),
+    ]
+
+    expect(stepsToWireMessages(steps)[0]?.reasoningContent).toBeUndefined()
+    expect(
+      stepsToWireMessages(steps, { preserveAssistantReasoning: true })[0]?.reasoningContent,
+    ).toBe('先分析')
+  })
+
+  test('完整回放模式不丢只有思考、没有正文的终止轮', () => {
+    const out = stepsToWireMessages(
+      [
+        step({
+          seq: 1,
+          kind: 'thinking',
+          content: '达到输出上限',
+          toolName: null,
+          toolCallId: null,
+        }),
+      ],
+      { preserveAssistantReasoning: true },
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0]?.content).toBe('')
+    expect(out[0]?.reasoningContent).toBe('达到输出上限')
+  })
+
   test('结构与精确条数：user 之后是 assistant(toolCalls) + 每个调用一条 tool', () => {
     const out = stepsToWireMessages([
       step({ seq: 1, kind: 'text', content: '我先读两个文件。', toolName: null, toolCallId: null }),

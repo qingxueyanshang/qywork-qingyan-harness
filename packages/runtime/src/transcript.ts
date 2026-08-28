@@ -38,6 +38,8 @@ export interface ProjectOptions {
    * 那部分却一条没少。
    */
   messageId?: MessageId | null
+  /** 厂商要求纯文本 assistant 轮也完整回放思考时开启；默认保持原有投影。 */
+  preserveAssistantReasoning?: boolean
 }
 
 /**
@@ -143,22 +145,30 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
   /**
    * 本轮的思考正文，等这一轮的工具批次来取。
    *
-   * **纯文本轮不带它。** 活的 transcript 只在 `calls.length` 时才挂
-   * `reasoningContent`（`agent/loop.ts`），投影多带一份就与活的不同形，
-   * 同一次调用在本轮和下一轮长得不一样，缓存前缀从那里断掉。
-   * 界面那侧另有投影，思考照常显示，两者是不同的消费者。
+   * 默认纯文本轮不带它；只有模型 spec 明确要求完整历史时，活 transcript 与投影
+   * 同时开启 `preserveAssistantReasoning`。两边必须同形，否则下一轮缓存前缀会断。
    */
   let pendingReasoning = ''
   const flushText = () => {
-    // 见 `pendingReasoning` 的注释：纯文本轮的思考不进模型视图。
+    const reasoning = opts.preserveAssistantReasoning ? pendingReasoning : ''
     pendingReasoning = ''
-    if (!pendingText.trim()) {
+    if (!pendingText.trim() && !reasoning) {
       pendingText = ''
       return
     }
     units.push({
       stamp: pendingStamp,
-      messages: [mark({ role: 'assistant', content: pendingText, _group: GROUP }, pendingStamp)],
+      messages: [
+        mark(
+          {
+            role: 'assistant',
+            content: pendingText,
+            ...(reasoning ? { reasoningContent: reasoning } : {}),
+            _group: GROUP,
+          },
+          pendingStamp,
+        ),
+      ],
       steps: [],
     })
     pendingText = ''
@@ -177,6 +187,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
        * 那条「必须与活的逐字同形」，缓存前缀也从那里断。
        */
       if (step.status !== 'failure') pendingReasoning += step.content ?? ''
+      pendingStamp = stepStamp(step.runId, step.seq)
       i += 1
       continue
     }
@@ -310,6 +321,7 @@ export async function buildHistory(
   conversationId: ConversationId,
   upperBound: MessageId | null,
   attachments: (content: string, list: unknown[]) => Promise<string | ContentBlock[]>,
+  opts: Pick<ProjectOptions, 'preserveAssistantReasoning'> = {},
 ): Promise<WireMessage[]> {
   const byUser = new Map<string, ReturnType<typeof listRuns>>()
   for (const r of listRuns(store, conversationId)) {
@@ -332,7 +344,7 @@ export async function buildHistory(
        * 逐单元走而不是直接摊平：注入消息的附件要在这里解析（读磁盘），
        * 而 `stepsToUnits` 是同步的——压缩那侧共用它。
        */
-      for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id })) {
+      for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id, ...opts })) {
         const files = attachmentsOf(u.userStep)
         for (const msg of u.messages) {
           out.push(

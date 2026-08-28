@@ -613,10 +613,11 @@ describe('模型目录', () => {
     )
     expect(all.find((m) => m.id === 'qwen3.7-max')?.currency).toBe('CNY')
     expect(all.find((m) => m.id === 'kimi-k3')?.currency).toBe('CNY')
+    expect(all.find((m) => m.id === 'glm-5.2')?.currency).toBe('CNY')
     const sol = all.find((m) => m.id === 'gpt-5.6-sol')!
     expect(sol.currency).toBe('USD')
-    expect(sol.input).toBe(5)
-    expect(sol.output).toBe(30)
+    expect(sol.input).toBe(4)
+    expect(sol.output).toBe(20)
   })
 
   /**

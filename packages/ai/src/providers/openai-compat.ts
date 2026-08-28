@@ -213,7 +213,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
     const messages: CompatOutMessage[] = []
     if (systemText) messages.push({ role: 'system', content: systemText })
-    messages.push(...buildMessages(req.messages))
+    messages.push(...buildMessages(req.messages, this.spec))
 
     const cap = outputCap(req.maxOutputTokens, this.spec.maxOutputTokens)
     return {
@@ -292,7 +292,13 @@ export function normalizeBaseUrl(raw: string | undefined): string {
  * 思考没打开，档位当然没有效果。
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
-  if (!effort || !effortIsTransmittable(spec)) return {}
+  const protocol =
+    spec.chatReasoningProtocol === 'qwen_preserved'
+      ? { preserve_thinking: true }
+      : spec.chatReasoningProtocol === 'glm_preserved'
+        ? { thinking: { type: 'enabled', clear_thinking: false } }
+        : {}
+  if (!effort || !effortIsTransmittable(spec)) return protocol
   /*
    * **不在这个模型档位面里的档，一个字节都不发。**
    *
@@ -308,10 +314,10 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
    * 拦下而不是降档：本仓的目录没有「默认档」这个概念，替它挑一档是猜。
    * 不发 = 模型走自己的默认，这与「没选过」是同一个行为，可预期。
    */
-  if (!spec.effortLevels.includes(effort as never)) return {}
+  if (!spec.effortLevels.includes(effort as never)) return protocol
   return spec.thinking === 'deepseek_thinking'
     ? { thinking: { type: 'enabled' }, reasoning_effort: effort }
-    : { reasoning_effort: effort }
+    : { ...protocol, reasoning_effort: effort }
 }
 
 function buildTools(tools: ToolSchema[]) {
@@ -421,7 +427,7 @@ interface CompatOutMessage {
   reasoning_content?: string
 }
 
-function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
+function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessage[] {
   return messages.map((m) => {
     if (m.role === 'tool') {
       /*
@@ -477,9 +483,23 @@ function buildMessages(messages: WireMessage[]): CompatOutMessage[] {
       return { role: 'user', content: `<system-reminder>\n${text}\n</system-reminder>` }
     }
     if (typeof m.content !== 'string') {
-      return { role: m.role, content: toMultimodal(m.content) }
+      return {
+        role: m.role,
+        content: toMultimodal(m.content),
+        ...(m.role === 'assistant' &&
+        m.reasoningContent &&
+        spec.chatReasoningProtocol !== 'standard'
+          ? { reasoning_content: m.reasoningContent }
+          : {}),
+      }
     }
-    return { role: m.role, content: m.content }
+    return {
+      role: m.role,
+      content: m.content,
+      ...(m.role === 'assistant' && m.reasoningContent && spec.chatReasoningProtocol !== 'standard'
+        ? { reasoning_content: m.reasoningContent }
+        : {}),
+    }
   })
 }
 

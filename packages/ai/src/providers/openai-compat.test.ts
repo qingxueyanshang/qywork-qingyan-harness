@@ -11,7 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { lookupModel, unknownModel } from '../catalog.ts'
-import type { ProviderProfile, ToolSchema } from '../types.ts'
+import type { ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
 import {
   createThinkingSplitter,
   normalizeBaseUrl,
@@ -45,6 +45,7 @@ async function send(
   model: string,
   effort?: string,
   tools: ToolSchema[] = [],
+  messages: WireMessage[] = [{ role: 'user', content: '嗨' }],
 ): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
@@ -57,7 +58,7 @@ async function send(
   for await (const _ of adapter.stream({
     model,
     system: [],
-    messages: [{ role: 'user', content: '嗨' }],
+    messages,
     tools,
     maxOutputTokens: 64,
     ...(effort ? { effort: effort as never } : {}),
@@ -151,6 +152,47 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
   })
 })
 
+describe('逐模型的历史思考协议', () => {
+  const history: WireMessage[] = [
+    { role: 'user', content: '第一问' },
+    { role: 'assistant', content: '第一答', reasoningContent: '完整思考' },
+    { role: 'user', content: '继续' },
+  ]
+
+  test('Qwen3.8 始终声明保留思考，并发官方档位', async () => {
+    const bare = await send('qwen3.8-flash')
+    expect(bare.preserve_thinking).toBe(true)
+    expect('reasoning_effort' in bare).toBe(false)
+
+    const xhigh = await send('qwen3.8-flash', 'xhigh')
+    expect(xhigh.preserve_thinking).toBe(true)
+    expect(xhigh.reasoning_effort).toBe('xhigh')
+  })
+
+  test('Qwen3.8 的纯文本历史原样回放 reasoning_content', async () => {
+    const body = await send('qwen3.8-flash', 'low', [], history)
+    expect((body.messages as Record<string, unknown>[])[1]?.reasoning_content).toBe('完整思考')
+  })
+
+  test('GLM-5.3 Flash 始终保留思考，并可单独选档', async () => {
+    const bare = await send('glm-5.3-flash')
+    expect(bare.thinking).toEqual({ type: 'enabled', clear_thinking: false })
+    expect('reasoning_effort' in bare).toBe(false)
+
+    const low = await send('glm-5.3-flash', 'low', [], history)
+    expect(low.thinking).toEqual({ type: 'enabled', clear_thinking: false })
+    expect(low.reasoning_effort).toBe('low')
+    expect((low.messages as Record<string, unknown>[])[1]?.reasoning_content).toBe('完整思考')
+  })
+
+  test('未特调模型的请求形状不变', async () => {
+    const body = await send('gpt-5.6-sol', 'high', [], history)
+    expect('preserve_thinking' in body).toBe(false)
+    expect(body.thinking).toBeUndefined()
+    expect((body.messages as Record<string, unknown>[])[1]?.reasoning_content).toBeUndefined()
+  })
+})
+
 /**
  * 档位不在这个模型的档位面里，一个字节都不发。
  *
@@ -195,8 +237,8 @@ describe('不该发的时候一个字节都不多发', () => {
     expect('thinking' in body).toBe(false)
   })
 
-  /** 目录里明确没有思考能力的（Qwen 三款）同样不发。 */
-  test('声明无思考能力的模型不发', async () => {
+  /** 有默认思考但没有命名 effort 档的模型，不可把别家的档位原样发过去。 */
+  test('没有命名档位的模型不发 reasoning_effort', async () => {
     const body = await send('qwen3.7-max', 'high')
     expect('reasoning_effort' in body).toBe(false)
   })
@@ -364,6 +406,30 @@ describe('缓存路由亲和键', () => {
       // 只看请求体
     }
     expect('prompt_cache_key' in bodies[0]!).toBe(false)
+  })
+
+  test('Qwen3.8 与 GLM-5.3 走各自的隐式缓存协议，不混入 OpenAI 路由键', async () => {
+    for (const model of ['qwen3.8-flash', 'glm-5.3-flash']) {
+      bodies.length = 0
+      const spec = lookupModel(model, 'openai_chat_completions')
+      expect(spec.cacheRouting).toBe('none')
+      const adapter = new OpenAICompatAdapter(
+        { kind: 'openai_chat_completions', apiKey: 'sk-x', model, baseUrl: base },
+        spec,
+      )
+      for await (const _ of adapter.stream({
+        model,
+        system: [],
+        messages: [{ role: 'user', content: '嗨' }],
+        tools: [],
+        maxOutputTokens: 64,
+        cacheKey: 'cv_should_not_cross_protocols',
+        signal: new AbortController().signal,
+      })) {
+        // 只看请求体。
+      }
+      expect('prompt_cache_key' in bodies[0]!).toBe(false)
+    }
   })
 })
 
