@@ -49,11 +49,11 @@ jobs:
       - name: Check version manifests
         run: bun run scripts/sync-version.ts --check
 
-      - name: Run release gate
-        run: bun run gate
-
       - name: Build sidecar
         run: bun run build:agent
+
+      - name: Run release gate
+        run: bun run gate
 
       - name: Build installer and create draft release
         id: tauri

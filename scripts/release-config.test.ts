@@ -24,4 +24,16 @@ describe('桌面发布清单', () => {
       '../../../THIRD_PARTY_NOTICES.md': 'licenses/THIRD_PARTY_NOTICES.md',
     })
   })
+
+  test('Windows 发布在 Rust 门禁前准备 sidecar', () => {
+    const workflow = readFileSync(
+      new URL('../.github/workflows/release-windows.yml', import.meta.url),
+      'utf8',
+    )
+    const sidecar = workflow.indexOf('- name: Build sidecar')
+    const gate = workflow.indexOf('- name: Run release gate')
+
+    expect(sidecar).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(sidecar)
+  })
 })
