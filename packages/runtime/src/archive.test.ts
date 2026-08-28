@@ -34,6 +34,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     clientRequestId: crypto.randomUUID(),
     userMessageId: msg.id,
     messageIdUpperBound: msg.id,
+    contextSnapshot: [],
   })
 
   const ok = appendStep(store, {

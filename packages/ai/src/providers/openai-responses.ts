@@ -66,6 +66,7 @@ import type {
   WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { mergeContextIntoUsers } from './context.ts'
 import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
@@ -398,7 +399,7 @@ export function buildInput(
   const items: Record<string, unknown>[] = []
   const echoesReasoning = echo === 'reasoning_text'
 
-  for (const m of messages) {
+  for (const m of mergeContextIntoUsers(messages)) {
     if (m.role === 'tool') {
       /*
        * **工具结果里能放图。** 文档原话：`function_call_output` 的结果「可以是纯
@@ -440,7 +441,7 @@ export function buildInput(
 
     // 输入侧文本用 input_text，输出侧用 output_text。写反了会被拒，
     // 而错误信息只说「content 无效」，不说是哪一条。
-    const role = m.role === 'system' ? 'system' : m.role
+    const role = m.role
     const isAssistant = role === 'assistant'
     if (typeof m.content === 'string') {
       items.push({

@@ -108,7 +108,7 @@ describe('单元键与边界', () => {
   })
 
   test('无 _messageId 的消息不参与折叠', () => {
-    expect(unitKey({ role: 'system', content: '尾区注记' })).toBeNull()
+    expect(unitKey({ role: 'assistant', content: '投影摘要' })).toBeNull()
   })
 
   test('缺 condensedThrough 的 manifest：收纳线与摘要线重合', () => {

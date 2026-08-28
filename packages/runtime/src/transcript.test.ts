@@ -18,7 +18,7 @@
 import { describe, expect, test } from 'bun:test'
 import { stepStamp } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
-import type { MessageId, Step } from '@qywork/core'
+import type { MessageId, RunContextSegment, Step } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -235,7 +235,7 @@ describe('历史装配', () => {
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const ask = (text: string) =>
       appendMessage(store, { conversationId: conv.id, role: 'user', content: text }).id
-    const run = (userMessageId: MessageId) =>
+    const run = (userMessageId: MessageId, contextSnapshot: RunContextSegment[] = []) =>
       createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
@@ -243,6 +243,7 @@ describe('历史装配', () => {
         clientRequestId: `c${Math.random()}`,
         userMessageId,
         messageIdUpperBound: userMessageId,
+        contextSnapshot,
       })
     return { store, conv, ws, ask, run }
   }
@@ -286,6 +287,32 @@ describe('历史装配', () => {
     // 两条 user + 一条 assistant(text 与 toolCalls 合流) + 一条 tool。
     expect(history.filter((m) => m.role === 'user')).toHaveLength(2)
     expect(history).toHaveLength(4)
+  })
+
+  test('每个 run 的上下文只出现在所属真实用户消息之前，重复重建不漂移', async () => {
+    const { store, conv, ask, run } = fixture()
+    const m1 = ask('第一轮')
+    run(m1, [
+      { content: '工作区：C:/ws', group: 'workspaceState' },
+      { content: '## 记忆索引\n- no-repeat', group: 'memory' },
+    ])
+    const m2 = ask('第二轮')
+    run(m2, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
+
+    const first = await buildHistory(store, conv.id, m2, noAttachments)
+    const second = await buildHistory(store, conv.id, m2, noAttachments)
+    expect(second).toEqual(first)
+    expect(first.map((message) => message.role)).toEqual([
+      'context',
+      'context',
+      'user',
+      'context',
+      'user',
+    ])
+    expect(first.filter((message) => message.role === 'context')).toHaveLength(3)
+    expect(first[2]!.content).toBe('第一轮')
+    expect(first[4]!.content).toBe('第二轮')
+    store.close()
   })
 
   test('刷新恢复后，失败工具的原始正文和未执行标记仍进入模型历史', async () => {

@@ -75,7 +75,9 @@ async function turn(live: Live, conversationId: string, content: string): Promis
      * 下一轮的连接会收到那条残留的 run.finished，不核对就把「这一轮跑完了」
      * 判在一个从没发出去的请求上——表现是会话里 run 数为 0，而断言全部按
      * 「模型没调工具」计失败，看起来像模型不听话。
-     */ else if ((ev.type === 'run.finished' || ev.type === 'run.error') && ev.runId === runId) {
+     */ else if (ev.type === 'run.error' && ev.runId === runId) {
+      done.reject(new Error(`${ev.code}: ${ev.message}`))
+    } else if (ev.type === 'run.finished' && ev.runId === runId) {
       done.resolve()
     }
   })
@@ -96,11 +98,20 @@ async function turn(live: Live, conversationId: string, content: string): Promis
       content,
     }),
   )
-  const timer = setTimeout(() => done.reject(new Error('这一轮超时')), RUN_TIMEOUT_MS)
+  let timedOut = false
+  let interruptTimer: ReturnType<typeof setTimeout> | null = null
+  const timer = setTimeout(() => {
+    timedOut = true
+    if (!runId) return done.reject(new Error('这一轮超时'))
+    ws.send(JSON.stringify({ type: 'run.interrupt', runId }))
+    interruptTimer = setTimeout(() => done.reject(new Error('这一轮超时，中断后仍未收尾')), 10_000)
+  }, RUN_TIMEOUT_MS)
   try {
     await done.promise
+    if (timedOut) throw new Error('这一轮超时，已中断')
   } finally {
     clearTimeout(timer)
+    if (interruptTimer) clearTimeout(interruptTimer)
     ws.close()
   }
   return runId
@@ -294,6 +305,8 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
   const name = `${ref.provider}/${ref.model}`
   const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
   const ws = wsFor(ref)
+  // 只清当前模型的 fixture：分批跑模型时，先前已完成的真实验收工作区必须保留。
+  await rm(ws, { recursive: true, force: true })
   await mkdir(ws, { recursive: true })
   await writeFile(join(ws, 'README.txt'), `提示词真机验证的工作区。${NL}`, 'utf8')
   const live = start(store, config, ws)
@@ -383,7 +396,6 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
 }
 
 async function main(): Promise<number> {
-  await rm(WS_ROOT, { recursive: true, force: true })
   const config = await loadConfig()
   // 落主库，跑完能在面板里翻开看每一轮。
   const store = new Store({ path: dataPath() })

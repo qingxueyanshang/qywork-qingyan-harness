@@ -28,7 +28,7 @@ import {
   unitKey,
 } from '@qywork/agent'
 import type { TokenDensity, WireMessage } from '@qywork/ai'
-import { estimateMessage, estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
+import { estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
 import type {
   ActionKind,
   CompactionCut,
@@ -40,6 +40,7 @@ import type {
 import {
   getConversation,
   listMessages,
+  listRunContextSnapshots,
   listRuns,
   listSteps,
   type Store,
@@ -86,9 +87,15 @@ export class RuntimeCompaction implements CompactionPort {
    * 一轮几十次，每次一个 SQL 查询纯属浪费。压缩由本对象自己执行，所以它总是知道最新值。
    */
   private manifest: CompactionManifest | null
+  /** 最新 run 的上下文归属；空快照也要覆盖旧 run，不能误把旧上下文钉回来。 */
+  private latestContextUserMessageId: MessageId | null
 
   constructor(private readonly deps: CompactionDeps) {
     this.manifest = getConversation(deps.store, deps.conversationId)?.compactionManifest ?? null
+    this.latestContextUserMessageId =
+      [...listRunContextSnapshots(deps.store, deps.conversationId)]
+        .reverse()
+        .find((snapshot) => snapshot.userMessageId !== null)?.userMessageId ?? null
   }
 
   /**
@@ -97,9 +104,8 @@ export class RuntimeCompaction implements CompactionPort {
    * 摘要线以内 → 换成「摘要 + 事实清单」两条；摘要线到收纳线之间 → 消息原样、
    * 工具正文换信封；收纳线之后 → 逐字原样。模型因此看到一个保真度梯度。
    *
-   * 判断边界用单元键而不是数组下标：history 里除了会话消息还夹着尾区注记与
-   * 本 run 的 transcript，按下标切会把它们一起切掉。无键的消息（尾区注记）
-   * 一律保留——它们不属于会话历史。
+   * 判断边界用单元键而不是数组下标：一条用户消息前还有它所属的运行上下文，
+   * assistant/tool 也按执行波次成组。按下标切会拆坏这些结构。
    */
   project(history: WireMessage[]): WireMessage[] {
     const m = this.manifest
@@ -109,6 +115,16 @@ export class RuntimeCompaction implements CompactionPort {
     const condense = condenseCutOf(m)
     const summaryKey = summary ? cutKey(summary) : null
     const condenseKey = condense ? cutKey(condense) : null
+    const todo = latestSuccessfulTodo(history)
+    const latestContext = this.latestContextUserMessageId
+      ? history.filter(
+          (message) =>
+            message.role === 'context' && message._messageId === this.latestContextUserMessageId,
+        )
+      : []
+    const latestContextKey = latestContext[0] ? unitKey(latestContext[0]) : null
+    const pinContext =
+      summaryKey !== null && latestContextKey !== null && latestContextKey <= summaryKey
 
     let folded = 0
     const out: WireMessage[] = []
@@ -122,19 +138,32 @@ export class RuntimeCompaction implements CompactionPort {
         folded++
         continue
       }
-      out.push(condenseKey !== null && key <= condenseKey ? condenseMessage(msg) : msg)
+      out.push(
+        condenseKey !== null &&
+          key <= condenseKey &&
+          // 最新成功的 Todo 工具单元保留真实参数与结果；折参数会让循环失去清单。
+          key !== todo?.key
+          ? condenseMessage(msg)
+          : msg,
+      )
     }
 
     // 一条都没折掉说明摘要线与当前历史对不上（换了会话、消息被删）。
     // 这时插两条摘要只会平白多两条消息。
     if (folded === 0) return out
 
+    const manifest = projectManifest(m).map((p) => ({
+      role: p.role,
+      content: p.content,
+      _group: 'summary' as const,
+    }))
+    const pinnedTodo = todo && summaryKey !== null && todo.key <= summaryKey ? todo.messages : []
+
     return [
-      ...projectManifest(m).map((p) => ({
-        role: p.role,
-        content: p.content,
-        _group: 'summary' as const,
-      })),
+      ...(pinContext ? latestContext : []),
+      ...(manifest[0] ? [manifest[0]] : []),
+      ...pinnedTodo,
+      ...manifest.slice(1),
       ...out,
     ]
   }
@@ -159,6 +188,11 @@ export class RuntimeCompaction implements CompactionPort {
     const foldIndex = foldIndexOf(units, deliveryBudget(input.contextWindow).batchCap)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
+    const latestTodo = [...units]
+      .reverse()
+      .find((unit) =>
+        unit.actions.some((action) => action.tool === 'write_todos' && action.status === 'success'),
+      )
 
     // 收纳段：折叠线以内的工具正文换信封。**零模型调用**，回收量当场估得出。
     const messages: CompactionInput['messages'] = []
@@ -182,7 +216,10 @@ export class RuntimeCompaction implements CompactionPort {
       }
       actions.push(...u.actions)
 
-      const condensed = estimateMessages(u.messages.map(condenseMessage), input.density)
+      const condensed = estimateMessages(
+        u === latestTodo ? u.messages : u.messages.map(condenseMessage),
+        input.density,
+      )
       condensedRegion += condensed
       if (u.key <= condenseKey) continue
       originalNew += u.tokens
@@ -222,7 +259,27 @@ export class RuntimeCompaction implements CompactionPort {
      * 事实清单逐字优先占，摘要拿剩下的（`compact()` 里分）。全程 token 计。
      */
     const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
-    const projectionBudget = limit - afterCondense + condensedRegion + oldProjection
+    const latestContextUnit = [...units]
+      .reverse()
+      .find((unit) => unit.messages.some((message) => message.role === 'context'))
+    const pinnedContextTokens =
+      latestContextUnit && latestContextUnit.key > summaryKey && latestContextUnit.key <= fold.key
+        ? estimateMessages(
+            latestContextUnit.messages.filter((message) => message.role === 'context'),
+            input.density,
+          )
+        : 0
+    const pinnedTodoTokens =
+      latestTodo && latestTodo.key > summaryKey && latestTodo.key <= fold.key
+        ? estimateMessages(latestTodo.messages, input.density)
+        : 0
+    const projectionBudget =
+      limit -
+      afterCondense +
+      condensedRegion +
+      oldProjection -
+      pinnedContextTokens -
+      pinnedTodoTokens
     const workspaceId = getConversation(store, conversationId)?.workspaceId ?? ''
 
     const outcome = await compact(
@@ -276,6 +333,14 @@ export class RuntimeCompaction implements CompactionPort {
       list.push(r)
       byUser.set(r.userMessageId, list)
     }
+    const contextByUser = new Map<
+      string,
+      ReturnType<typeof listRunContextSnapshots>[number]['segments']
+    >()
+    for (const snapshot of listRunContextSnapshots(store, conversationId)) {
+      if (!snapshot.userMessageId) continue
+      contextByUser.set(snapshot.userMessageId, snapshot.segments)
+    }
 
     const units: Unit[] = []
     for (const m of listMessages(store, conversationId, messageIdUpperBound)) {
@@ -286,12 +351,21 @@ export class RuntimeCompaction implements CompactionPort {
         _group: 'historyMessages',
         _messageId: m.id,
       }
+      const context: WireMessage[] =
+        m.role === 'user'
+          ? (contextByUser.get(m.id) ?? []).map((segment) => ({
+              role: 'context' as const,
+              content: segment.content,
+              _group: segment.group,
+              _messageId: m.id,
+            }))
+          : []
       units.push({
         key: cutKey(cut),
         cut,
         // 附件按固定值计，与装配那侧同一口径；按 base64 长度估会高出两个数量级。
-        tokens: estimateMessage(wire, density) + m.attachments.length * MEDIA_TOKENS,
-        messages: [wire],
+        tokens: estimateMessages([...context, wire], density) + m.attachments.length * MEDIA_TOKENS,
+        messages: [...context, wire],
         row: {
           id: m.id,
           role: m.role,
@@ -337,6 +411,52 @@ export class RuntimeCompaction implements CompactionPort {
       }
     }
     return units
+  }
+}
+
+/** 最后一次成功的真实 `write_todos` 工具单元；assistant 调用与结果必须同进同出。 */
+function latestSuccessfulTodo(
+  history: readonly WireMessage[],
+): { key: string; messages: WireMessage[] } | null {
+  const units = new Map<string, WireMessage[]>()
+  for (const message of history) {
+    if (!message._step) continue
+    const key = unitKey(message)
+    if (!key) continue
+    const messages = units.get(key) ?? []
+    messages.push(message)
+    units.set(key, messages)
+  }
+
+  let latest: { key: string; messages: WireMessage[] } | null = null
+  for (const [key, messages] of units) {
+    const calls = messages
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.toolCalls ?? [])
+      .filter((call) => call.name === 'write_todos')
+    if (!calls.length) continue
+    const succeeded = calls.some((call) =>
+      messages.some(
+        (message) =>
+          message.role === 'tool' &&
+          message.toolCallId === call.id &&
+          toolEnvelopeStatus(message.content) === 'success',
+      ),
+    )
+    if (succeeded) latest = { key, messages }
+  }
+  return latest
+}
+
+function toolEnvelopeStatus(content: WireMessage['content']): string | null {
+  const text =
+    typeof content === 'string' ? content : content.find((block) => block.type === 'text')?.text
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text) as { status?: unknown }
+    return typeof parsed.status === 'string' ? parsed.status : null
+  } catch {
+    return null
   }
 }
 

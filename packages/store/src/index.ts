@@ -37,6 +37,7 @@ export {
   listMessages,
   listProviderRequests,
   listRecentConversations,
+  listRunContextSnapshots,
   listRuns,
   listSteps,
   listWorkspaces,

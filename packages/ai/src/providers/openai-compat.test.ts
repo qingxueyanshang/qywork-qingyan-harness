@@ -660,18 +660,8 @@ describe('strict 工具定义', () => {
   })
 })
 
-describe('尾区注记的上线形状', () => {
-  /**
-   * 复现原始失败形状：待办进尾区注记之后，DeepSeek 上每次 `write_todos` 之后的
-   * 那一次请求命中数都掉到 640——冻结前缀自身的长度（2026-08-21，会话
-   * `cv_0mt2wpe4o0000pfxnb6`，7 次提交对应 7 次全价重付）。成因是注记按
-   * `role: 'system'` 上线，而对话模板把消息里的 system 段全部收拢到提示词最前面，
-   * 因此 `agent/loop.ts` 那条「注记排在最后一段」的装配约定在这条协议上不成立。
-   *
-   * 断言的是上线字节：注记要落在**最后一条 user 消息**里，且整个请求体里
-   * 除冻结前缀之外没有第二条 system 消息。
-   */
-  test('注记落成末尾的 user 轮，不留第二条 system 消息', async () => {
+describe('运行上下文的上线形状', () => {
+  test('上下文并入所属真实用户，不增加 system 或 user 轮次', async () => {
     bodies.length = 0
     const model = 'deepseek-v4-flash'
     const adapter = new OpenAICompatAdapter(
@@ -682,8 +672,8 @@ describe('尾区注记的上线形状', () => {
       model,
       system: [{ text: '冻结前缀', cacheBreakpoint: true }],
       messages: [
+        { role: 'context', content: '## 当前待办清单\n1. [进行中] 建模' },
         { role: 'user', content: '嗨' },
-        { role: 'system', content: '## 当前待办清单\n1. [进行中] 建模' },
       ],
       tools: [],
       maxOutputTokens: 64,
@@ -696,7 +686,8 @@ describe('尾区注记的上线形状', () => {
     expect(messages[0]).toEqual({ role: 'system', content: '冻结前缀' })
     expect(messages.at(-1)).toEqual({
       role: 'user',
-      content: '<system-reminder>\n## 当前待办清单\n1. [进行中] 建模\n</system-reminder>',
+      content: '## 当前待办清单\n1. [进行中] 建模\n\n嗨',
     })
+    expect(messages).toHaveLength(2)
   })
 })

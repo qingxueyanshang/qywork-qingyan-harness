@@ -17,6 +17,7 @@ import type {
   ProviderRequestId,
   ProviderRequestStatus,
   Run,
+  RunContextSegment,
   RunId,
   RunUsage,
   Step,
@@ -539,6 +540,7 @@ export function createRun(
     clientRequestId: string
     userMessageId: MessageId | null
     messageIdUpperBound: MessageId | null
+    contextSnapshot: RunContextSegment[]
   },
 ): Run {
   const now = Date.now()
@@ -565,9 +567,9 @@ export function createRun(
       `INSERT INTO runs
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
-        cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
-        created_at, finished_at, owner_pid, heartbeat_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,NULL,?,?)`,
+         cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
+         context_snapshot, created_at, finished_at, owner_pid, heartbeat_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?)`,
     )
     .run(
       run.id,
@@ -580,6 +582,7 @@ export function createRun(
       run.clientRequestId,
       run.status,
       null,
+      writeJson(input.contextSnapshot),
       now,
       // 归属从建行那一刻就写上。晚一步写的话，「刚 createRun 就崩」留下的那条
       // 无归属行会被下一个进程按老规矩回收——那正是本来就该发生的事，
@@ -744,6 +747,16 @@ export function recoverStaleRuns(store: Store): {
       const isAmbiguous = Number(r.ambiguous) === 1
       if (isAmbiguous) ambiguous++
       settleRunningSteps(store, r.id)
+      /*
+       * 已发出但进程退出的 provider 请求，送达与计费都无法确认。run 收尾时必须
+       * 同步落成 uncertain；继续挂在 in_flight 会让账本永远声称后台仍在执行。
+       * usage 保持原样（通常为 NULL），绝不能补 0 或借上一条回报填充。
+       */
+      store.db
+        .query(
+          "UPDATE provider_requests SET status = 'uncertain' WHERE run_id = ? AND status = 'in_flight'",
+        )
+        .run(r.id)
       finishStmt.run(
         // 干净那条是 `process_exit`，**不是 `user_interrupt`**——上面那段注释要求的
         // 「事后分得出崩了和用户点了停止」，写成 user_interrupt 就当场作废：
@@ -777,6 +790,16 @@ export function recoverStaleRuns(store: Store): {
       )
       .all()
     for (const o of orphanRuns) settleRunningSteps(store, o.run_id as RunId)
+
+    // 与上面的孤儿 step 同理：旧版本可能先把 run 收尾，却漏掉已发送请求的终态。
+    // 终态 run 不可能仍合法持有 in_flight；只能按“是否送达未知”收敛为 uncertain。
+    store.db
+      .query(
+        `UPDATE provider_requests SET status = 'uncertain'
+         WHERE status = 'in_flight'
+           AND run_id IN (SELECT id FROM runs WHERE status NOT IN ('running','queued'))`,
+      )
+      .run()
   })()
 
   return { recovered: rows.length, ambiguous, heldByOthers }
@@ -873,6 +896,29 @@ export function listRuns(store: Store, conversationId: ConversationId): Run[] {
     )
     .all(conversationId)
     .map(rowToRun)
+}
+
+/**
+ * runtime 重建模型历史所需的内部快照。公开 `Run` 故意不带这份输入，避免 UI/API
+ * 把内部上下文误当成可编辑的 run 属性。
+ */
+export function listRunContextSnapshots(
+  store: Store,
+  conversationId: ConversationId,
+): { runId: RunId; userMessageId: MessageId | null; segments: RunContextSegment[] }[] {
+  return store.db
+    .query<Pick<RunRow, 'id' | 'user_message_id' | 'context_snapshot'>, [string]>(
+      `SELECT id, user_message_id, context_snapshot
+       FROM runs
+       WHERE conversation_id = ?
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(conversationId)
+    .map((row) => ({
+      runId: row.id,
+      userMessageId: row.user_message_id,
+      segments: readJson(row.context_snapshot, []),
+    }))
 }
 
 // ─────────────────────────── 逐请求账 ───────────────────────────

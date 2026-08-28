@@ -228,7 +228,6 @@ function build(
     adapter,
     registry,
     systemPrompt: 'sys',
-    tailNotes: () => [],
     persist: noopPersistence(),
     makeToolContext: makeCtx,
     ...(compaction ? { compaction } : {}),
@@ -262,7 +261,6 @@ describe('发送前检查：唯一的压缩触发', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: makeCtx,
       compaction: comp.port,
@@ -309,7 +307,6 @@ describe('发送前检查：唯一的压缩触发', () => {
         adapter: okAdapter(),
         registry: new ToolRegistry(),
         systemPrompt: 'sys',
-        tailNotes: () => [],
         persist: noopPersistence(),
         makeToolContext: makeCtx,
         compaction: comp.port,
@@ -351,7 +348,6 @@ describe('发送前检查：唯一的压缩触发', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: makeCtx,
       compaction: comp.port,
@@ -416,6 +412,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       clientRequestId: 'req-overflow',
       userMessageId: null,
       messageIdUpperBound: null,
+      contextSnapshot: [],
     })
 
     const comp = shrinkingCompaction()
@@ -424,7 +421,6 @@ describe('发送前检查：唯一的压缩触发', () => {
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: {
         ...noopPersistence(),
         openRequest: (input) => openProviderRequest(store, input).id,
@@ -751,7 +747,6 @@ describe('run 内 transcript 参与投影', () => {
       adapter: twoTurn,
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: makeCtx,
       compaction: port,
@@ -810,7 +805,6 @@ describe('transcript 的可折单元', () => {
       adapter,
       registry,
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(),
       makeToolContext: makeCtx,
       compaction: port,
@@ -881,25 +875,25 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
   return { adapter, seen }
 }
 
-/**
- * 缓存断点的位置随「整串一次投影」一起变了：断点二不再是「history 数组的末尾」，
- * 而是**尾区注记之前那条**——整串消息里只有尾区注记是 system 角色。
- * 位置错了不会有任何报错，只会每一轮全价重付。
- */
 describe('缓存断点', () => {
-  test('注记排在末尾；断点落在 history 末尾与注记之前', async () => {
+  test('上下文跟随所属用户；断点落在当前已接受消息末尾', async () => {
     const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
     const loop = new AgentLoop({
       adapter,
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [{ content: '今天是周三', group: 'workspaceState' }],
       persist: noopPersistence(),
       makeToolContext: makeCtx,
     })
     for await (const _ of loop.run({
       runId: 'rn_brk' as never,
       history: [
+        {
+          role: 'context',
+          content: '今天是周三',
+          _group: 'workspaceState',
+          _messageId: 'ms_001',
+        },
         { role: 'user', content: '第一句', _messageId: 'ms_001' },
         { role: 'assistant', content: '好的', _messageId: 'ms_001' },
       ],
@@ -909,13 +903,8 @@ describe('缓存断点', () => {
     }
 
     const messages = seen[0]!.messages
-    // 注记是最后一段：它之后不许再有任何内容，否则前缀里就夹着易变的一块。
-    const noteAt = messages.findIndex((m) => m.role === 'system')
-    expect(noteAt).toBe(messages.length - 1)
-    // 断点之二：history 末尾（跨 run 稳定点）。
-    expect(messages[1]!.cacheBreakpoint).toBe(true)
-    // 断点之三：注记之前（run 内稳定点）。首轮 transcript 为空，两者重合。
-    expect(messages[noteAt - 1]!.cacheBreakpoint).toBe(true)
+    expect(messages.map((message) => message.role)).toEqual(['context', 'user', 'assistant'])
+    expect(messages[2]!.cacheBreakpoint).toBe(true)
   })
 
   /**
@@ -971,12 +960,19 @@ describe('缓存断点', () => {
         adapter,
         registry,
         systemPrompt: 'sys',
-        tailNotes: () => [{ content: '工作区：/tmp/ws', group: 'workspaceState' }],
         persist: noopPersistence(),
         makeToolContext: makeCtx,
       })
 
-    const history: WireMessage[] = [{ role: 'user', content: '找 bug', _messageId: 'ms_001' }]
+    const history: WireMessage[] = [
+      {
+        role: 'context',
+        content: '工作区：/tmp/ws',
+        _group: 'workspaceState',
+        _messageId: 'ms_001',
+      },
+      { role: 'user', content: '找 bug', _messageId: 'ms_001' },
+    ]
     for await (const _ of build().run({
       runId: 'rn_a' as never,
       history,
@@ -989,6 +985,12 @@ describe('缓存断点', () => {
     const carried: WireMessage[] = [
       ...history,
       ...seen[seen.length - 1]!.messages.filter((m) => m._group === 'executionRecords'),
+      {
+        role: 'context',
+        content: '工作区：/tmp/ws',
+        _group: 'workspaceState',
+        _messageId: 'ms_002',
+      },
       { role: 'user', content: '全部都做一下', _messageId: 'ms_002' },
     ]
     const before = seen.length
@@ -1091,7 +1093,6 @@ describe('压缩被中断', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(recorded),
       makeToolContext: makeCtx,
       compaction: comp.port,
@@ -1128,7 +1129,6 @@ describe('结果形态对用户可见', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(recorded),
       makeToolContext: makeCtx,
       compaction: comp.port,
@@ -1164,7 +1164,6 @@ describe('结果形态对用户可见', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(recorded),
       makeToolContext: makeCtx,
       compaction: comp.port,
@@ -1193,7 +1192,6 @@ describe('结果形态对用户可见', () => {
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
-      tailNotes: () => [],
       persist: noopPersistence(recorded),
       makeToolContext: makeCtx,
       compaction: comp.port,

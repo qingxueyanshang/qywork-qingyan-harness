@@ -56,7 +56,7 @@ export function stepStamp(runId: string, seq: number): string {
 }
 
 /**
- * 一条消息在折叠序上的位置。`null` = 不参与折叠（尾区注记等无戳消息）。
+ * 一条消息在折叠序上的位置。`null` = 不参与折叠（摘要投影等无戳消息）。
  *
  * 先比消息 id、同一条消息内再比 step 戳：消息本体的戳为空串，排在它的执行记录之前。
  */

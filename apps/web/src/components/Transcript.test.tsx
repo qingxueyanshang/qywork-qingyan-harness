@@ -143,7 +143,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     dispose()
   })
 
-  test('正常完成也显示停止原因', async () => {
+  test('正常完成不重复显示已完成', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: CV,
@@ -178,7 +178,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     const host = document.createElement('div')
     const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
 
-    expect(host.querySelector('.run-reason')?.textContent).toBe('已完成')
+    expect(host.querySelector('.run-reason')).toBeNull()
 
     dispose()
   })

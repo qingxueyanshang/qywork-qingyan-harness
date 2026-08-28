@@ -47,6 +47,7 @@ function fixture() {
     clientRequestId: 'req-1',
     userMessageId: null,
     messageIdUpperBound: null,
+    contextSnapshot: [],
   })
   return { store, conversationId: conv.id, runId: run.id }
 }

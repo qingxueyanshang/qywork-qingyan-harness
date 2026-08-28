@@ -28,6 +28,7 @@ import type {
   WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { mergeContextIntoUsers } from './context.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
@@ -431,7 +432,7 @@ interface CompatOutMessage {
 }
 
 function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessage[] {
-  return messages.map((m) => {
+  return mergeContextIntoUsers(messages).map((m) => {
     if (m.role === 'tool') {
       /*
        * **工具结果里能放图。** 官方文档把 tool 消息的 content 写成
@@ -472,19 +473,6 @@ function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessa
         ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
       }
     }
-    /*
-     * 尾区注记落成 user 轮里的 `<system-reminder>`，不按 `role: 'system'` 原样发。
-     *
-     * DeepSeek 系的对话模板把消息里所有 system 段收拢到提示词最前面，注记因此从
-     * 「整串消息的最后一段」被搬到冻结前缀之后：注记一变，其后整段历史全部失配。
-     * 实测（2026-08-21，会话 cv_0mt2wpe4o0000pfxnb6）：7 次 write_todos 之后的
-     * 那 7 次请求命中数全部落到 640，正好是冻结前缀自身的长度，一次会话里
-     * 23 万 token 全价重付。user 轮不会被模板搬位置。
-     */
-    if (m.role === 'system') {
-      const text = typeof m.content === 'string' ? m.content : flatten(m.content)
-      return { role: 'user', content: `<system-reminder>\n${text}\n</system-reminder>` }
-    }
     if (typeof m.content !== 'string') {
       return {
         role: m.role,
@@ -514,10 +502,6 @@ function toMultimodal(content: Exclude<WireMessage['content'], string>) {
       image_url: { url: `data:${b.mimeType};base64,${imageData(b.source)}` },
     }
   })
-}
-
-function flatten(content: Exclude<WireMessage['content'], string>): string {
-  return content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('\n')
 }
 
 function normalizeFinishReason(raw: string): ProviderStopReason {

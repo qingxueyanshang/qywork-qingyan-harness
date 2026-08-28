@@ -20,6 +20,23 @@ describe('input 是条目序列，不是消息序列', () => {
     ])
   })
 
+  test('运行上下文并入所属用户，协议里没有额外角色或条目', () => {
+    const items = buildInput(
+      [
+        { role: 'context', content: '工作区：C:/ws' },
+        { role: 'user', content: '继续' },
+      ],
+      'none',
+    )
+    expect(items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '工作区：C:/ws\n\n继续' }],
+      },
+    ])
+  })
+
   /** 输入侧与输出侧的文本块类型不同。写反了被拒，而错误只说「content 无效」。 */
   test('assistant 正文用 output_text', () => {
     const items = buildInput([{ role: 'assistant', content: '好的' }], 'none')

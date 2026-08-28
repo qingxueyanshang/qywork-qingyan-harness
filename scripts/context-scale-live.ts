@@ -14,7 +14,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { buildAdapter, estimateMessages } from '@qywork/ai'
-import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
+import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
 import { envelopeHeadTokens } from '@qywork/core'
 import type { ModelRef, QyConfig } from '@qywork/runtime'
 import {
@@ -26,7 +26,14 @@ import {
   resolveModel,
 } from '@qywork/runtime'
 import { serve } from '@qywork/server'
-import { getConversation, listProviderRequests, listRuns, listSteps, Store } from '@qywork/store'
+import {
+  getConversation,
+  latestTodos,
+  listProviderRequests,
+  listRuns,
+  listSteps,
+  Store,
+} from '@qywork/store'
 
 const WS_DIR = join(import.meta.dir, '..', '.tmp', 'smoke-ws', 'context-scale')
 const DB = join(WS_DIR, 'context-scale.sqlite3')
@@ -35,6 +42,8 @@ const NL = String.fromCharCode(10)
 const RUN_TIMEOUT_MS = 240_000
 /** 第四段要模型逐个读的文件数。多几个才凑得出可折单元。 */
 const NOTES = 8
+/** 只写在第一份被折叠的工具结果里，重启后不能从召回问题本身抄答案。 */
+const RECALL_MARKER = 'QYWORK-RESTART-7429'
 
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown): void {
@@ -124,12 +133,13 @@ function trueTokens(r: {
   )
 }
 
+interface TurnResult {
+  contexts: Extract<AgentEvent, { type: 'context' }>[]
+  runId: RunId
+}
+
 /** 起一轮对话并等它跑完，一并把这一轮的 `context` 事件按到达顺序收下来。 */
-async function turn(
-  live: Live,
-  conversationId: string,
-  content: string,
-): Promise<Extract<AgentEvent, { type: 'context' }>[]> {
+async function turn(live: Live, conversationId: string, content: string): Promise<TurnResult> {
   const ws = new WebSocket(
     `ws://127.0.0.1:${new URL(live.base).port}/stream?token=${live.token}&origin=desktop`,
   )
@@ -138,6 +148,7 @@ async function turn(
     ws.addEventListener('error', () => rej(new Error('ws 连接失败')), { once: true })
   })
   const seen: Extract<AgentEvent, { type: 'context' }>[] = []
+  let runId: RunId | null = null
   const done = Promise.withResolvers<void>()
   ws.addEventListener('message', (e) => {
     const msg = JSON.parse(String(e.data)) as EventEnvelope<AgentEvent> & { type?: string }
@@ -145,7 +156,12 @@ async function turn(
     if (!msg.seq || !msg.event) return
     const ev = msg.event
     if (ev.type === 'context') seen.push(ev)
-    else if (ev.type === 'run.finished' || ev.type === 'run.error') done.resolve()
+    else if (ev.type === 'run.started') runId = ev.runId
+    else if (ev.type === 'run.error' && ev.runId === runId) {
+      done.reject(new Error(`${ev.code}: ${ev.message}`))
+    } else if (ev.type === 'run.finished' && ev.runId === runId) {
+      done.resolve()
+    }
   })
   ws.send(
     JSON.stringify({
@@ -164,14 +180,24 @@ async function turn(
       content,
     }),
   )
-  const timer = setTimeout(() => done.reject(new Error('这一轮超时')), RUN_TIMEOUT_MS)
+  let timedOut = false
+  let interruptTimer: ReturnType<typeof setTimeout> | null = null
+  const timer = setTimeout(() => {
+    timedOut = true
+    if (!runId) return done.reject(new Error('这一轮超时'))
+    ws.send(JSON.stringify({ type: 'run.interrupt', runId }))
+    interruptTimer = setTimeout(() => done.reject(new Error('这一轮超时，中断后仍未收尾')), 10_000)
+  }, RUN_TIMEOUT_MS)
   try {
     await done.promise
+    if (timedOut) throw new Error('这一轮超时，已中断')
   } finally {
     clearTimeout(timer)
+    if (interruptTimer) clearTimeout(interruptTimer)
     ws.close()
   }
-  return seen
+  if (!runId) throw new Error('这一轮没有起 run')
+  return { contexts: seen, runId }
 }
 
 function start(store: Store, config: Awaited<ReturnType<typeof loadConfig>>): Live {
@@ -226,6 +252,26 @@ function settled(store: Store, conversationId: string) {
     .sort((a, b) => (a.sentAt ?? 0) - (b.sentAt ?? 0))
 }
 
+/** 指定一轮的助手正文。召回断言只看重启后的那一轮，不从旧正文误命中。 */
+function runText(store: Store, runId: RunId): string {
+  return listSteps(store, runId)
+    .filter((step) => step.kind === 'text')
+    .map((step) => step.content ?? '')
+    .join(NL)
+}
+
+/** 被重复拿来当开头的编号；正文允许汇报进度，但同一个编号不该反复复述。 */
+function repeatedOpeners(text: string): [string, number][] {
+  const count = new Map<string, number>()
+  for (const match of text.matchAll(
+    /继续(?:执行)?第\s*([0-9一二三四五六七八九十]+)\s*(?:项|条|步)/g,
+  )) {
+    const number = match[1] as string
+    count.set(number, (count.get(number) ?? 0) + 1)
+  }
+  return [...count].filter(([, times]) => times > 1)
+}
+
 async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<void> {
   // 每个模型都从「没装 MCP」起步，否则第二个模型的第一阶段就已经带着它了。
   await rm(join(WS_DIR, '.agents', 'mcp.json'), { force: true })
@@ -233,7 +279,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   for (let i = 1; i <= NOTES; i++) {
     await writeFile(
       join(WS_DIR, `note-${i}.txt`),
-      `第 ${i} 号记录${NL}${BULK.slice(0, 1200)}${NL}`,
+      `第 ${i} 号记录${NL}${i === 1 ? `召回口令：${RECALL_MARKER}${NL}` : ''}${BULK.slice(0, 1200)}${NL}`,
       'utf8',
     )
   }
@@ -306,7 +352,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   )
   live = start(store, config)
   await Bun.sleep(1500)
-  const events = await turn(live, conv, '只回两个字：好的。不要调用任何工具。')
+  const events = (await turn(live, conv, '只回两个字：好的。不要调用任何工具。')).contexts
 
   const after = settled(store, conv)
   const fresh = after.filter((r) => !rows.some((o) => o.id === r.id))
@@ -375,12 +421,24 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
    * 压缩的可折单元就是执行记录，纯对话选不出单元、`run` 直接回 `nothing_to_fold`，
    * `projectionBudget` 那一段一行都走不到。
    */
+  // 一轮里连调八次工具仍然只有一个可折单元；必须拆成真实的独立 run，才能验证
+  // 「保留最近批次、折叠更早批次」的产品语义，而不是在测试里伪造 step。
   await turn(
     live,
     conv,
-    `这个目录下有 note-1.txt 到 note-${NOTES}.txt。` +
-      '请逐个用 read_file 读一遍，每读一个就把它的第一行原样报给我。不要一次读多个。',
+    '调用一次 write_todos，写入三项且状态全部为 completed：' +
+      '“已确认会话可写”、“已确认工具可用”、“已准备重启验收”。不要做别的事。',
   )
+  for (let i = 1; i <= NOTES; i++) {
+    const filler = `${BULK.slice(0, 2400)}${NL}${NL}上面的材料只用于形成可折叠的长会话，不需要复述。${NL}`
+    await turn(
+      live,
+      conv,
+      i === 1
+        ? `${filler}只用 read_file 读取 note-1.txt，按原样报告前两行并记住第二行的召回口令。不要读取其他文件。`
+        : `${filler}只用 read_file 读取 note-${i}.txt，然后只报告第一行。不要读取其他文件。`,
+    )
+  }
   const foldable = listRuns(store, conv as ConversationId)
     .flatMap((r) => listSteps(store, r.id))
     .filter((s) => s.kind === 'tool_action').length
@@ -424,8 +482,14 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   }
   const estBefore = lastRow.measuredInputTokens
   const trueBefore = trueTokens(lastRow)
-  // 造一个刚好越线、但摘要仍放得下的窗口（同 compaction-fidelity 的 1.2 倍口径）。
-  const window = Math.round(trueBefore * 1.2)
+  /*
+   * 造一个必须走摘要、但摘要仍放得下的窗口。
+   *
+   * 1.2 倍窗口只会触发工具正文收纳，模型摘要不会运行；0.8 倍让收纳后的占用仍高于
+   * 软阈值，同时保留足够投影预算，因此这次验收会真实调用当前模型生成摘要。它是人工缩窗触发，不冒充模型
+   * 原生 1M 窗口已经自然填满。
+   */
+  const window = Math.max(4096, Math.round(trueBefore * 0.8))
   const softAt = Math.floor(window * 0.8)
   const outcome = await compaction.run({
     occupancy: trueBefore,
@@ -448,7 +512,64 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       压完真值: trueAfter,
       软阈值: softAt,
     })
-    check('摘要预算是正数（不是被算成负的）', budgetSeen >= 0, { 预算: budgetSeen })
+    check('这次压缩真实调用了模型生成摘要', outcome.summarized, outcome)
+    check('摘要预算是正数（不是被算成负的）', budgetSeen > 0, { 预算: budgetSeen })
+
+    // ── 五、停掉并重启服务：压缩投影、Todo 与缓存都必须能继续 ──────────
+    process.stdout.write(`${NL}【五】压缩后重启并再次召回${NL}`)
+    const beforeRestartTodos = latestTodos(store, conv as ConversationId)
+    check(
+      '重启前最后一份 Todo 是三项且全部完成',
+      beforeRestartTodos?.length === 3 &&
+        beforeRestartTodos.every((todo) => todo.status === 'completed'),
+      beforeRestartTodos,
+    )
+    check(
+      '压缩 manifest 已持久化',
+      getConversation(store, conv as ConversationId)?.compactionManifest !== null,
+    )
+
+    live.close()
+    await Bun.sleep(500)
+    live = start(store, config)
+    await Bun.sleep(1000)
+
+    const recalled = await turn(
+      live,
+      conv,
+      '不要读取文件，也不要调用工具。只根据重启前的会话回答：' +
+        '第 1 号记录中的召回口令是什么？当前三项待办分别是什么状态？',
+    )
+    const answer = runText(store, recalled.runId)
+    const recallRequests = listProviderRequests(store, recalled.runId)
+    const recallCached = recallRequests
+      .filter((request) => request.providerCachedTokens !== null)
+      .reduce((sum, request) => sum + (request.providerCachedTokens ?? 0), 0)
+    const afterRestartTodos = latestTodos(store, conv as ConversationId)
+    const allText = listRuns(store, conv as ConversationId)
+      .flatMap((run) => listSteps(store, run.id))
+      .filter((step) => step.kind === 'text')
+      .map((step) => step.content ?? '')
+      .join(NL)
+
+    check('重启后模型准确召回被压缩工具结果里的口令', answer.includes(RECALL_MARKER), answer)
+    check(
+      '重启后模型准确回答 Todo 全部完成',
+      /(?:三项|3\s*项|全部).{0,30}(?:completed|已完成|完成)/is.test(answer),
+      answer,
+    )
+    check(
+      '重启后 Todo 真源没有丢失或被改写',
+      JSON.stringify(afterRestartTodos) === JSON.stringify(beforeRestartTodos),
+      { 重启前: beforeRestartTodos, 重启后: afterRestartTodos },
+    )
+    check('重启后的请求仍有真实缓存命中', recallCached > 0, {
+      缓存token: recallCached,
+      请求数: recallRequests.length,
+    })
+    check('整条会话正文没有重复编号开头', repeatedOpeners(allText).length === 0, {
+      重复项: repeatedOpeners(allText),
+    })
   } else {
     note('这条会话太短，选不出可折单元——`projectionBudget` 这一项本轮没验到。')
   }

@@ -409,12 +409,8 @@ describe('注入当前这一轮', () => {
     expect(JSON.stringify(second)).toContain('改主意了，只列文件名')
     expect(JSON.stringify(first)).not.toContain('改主意了')
 
-    /*
-     * 逐条前缀。**尾区注记那一条要去掉再比**：它恒在最后一条，每轮都变，
-     * 本来就不是前缀的一部分（`agent/loop.ts` 的装配顺序注释）。
-     */
-    const firstBody = first.slice(0, -1)
-    expect(second.slice(0, firstBody.length)).toEqual(firstBody)
+    // run 上下文已经跟真实用户消息绑定；跟进只向 transcript 追加，已有线上消息不动。
+    expect(second.slice(0, first.length)).toEqual(first)
 
     // 注入消息落成一条 kind='user' 的 step，开即终态。
     const run = listRuns(store, cv)[0]

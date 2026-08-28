@@ -495,8 +495,7 @@ function LiveOutput(props: { item: TranscriptItem }) {
  * 由 `<LiveRunBar />` 拿实时状态渲染同一个外壳。
  *
  * 三条口径必须守住：
- * - **停止原因永远显示**，正常完成也显示（只是低调）。废除「静默 done」的意义
- *   就在于用户不用追问「它怎么停了」。
+ * - 正常完成不另报「已完成」；异常停止与错误正文才占用这一格。
  * - **缓存命中未知或未回报都显示 `N/A`**；provider 明确回报 0 才显示 0。
  *   只看最后一次调用，不拿上一轮的数填当前空缺。
  * - 计价为 0 时不显示金额，而不是显示 $0.0000——未知计价冒充免费更误导。
@@ -532,6 +531,10 @@ function RunStatusBar(props: {
     const detail = props.errorMessage?.split(NEWLINE)[0]?.trim()
     return detail || stopReasonLabel(props.stopReason!)
   }
+  const showReason = () =>
+    !props.running &&
+    Boolean(props.stopReason) &&
+    (props.stopReason !== 'completed' || Boolean(props.errorMessage?.trim()))
 
   return (
     <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>
@@ -584,7 +587,7 @@ function RunStatusBar(props: {
         </Show>
         {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
             因此出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
-        <Show when={!props.running && props.stopReason}>
+        <Show when={showReason()}>
           <span class="run-reason">{reason()}</span>
         </Show>
       </span>
