@@ -773,7 +773,9 @@ export class AgentLoop {
     const occupancyOf = (req: ChatRequest): number =>
       anchor ? meter(0).tokens : estimateRequest(req, density)
 
-    let stopReason: StopReason = 'completed'
+    // 只有自然耗尽 for-loop 才保留这个值；所有提前终止都在现场覆盖。
+    // 默认成 completed 会让最后一步的 `continue`（例如 pause_turn）假报完成。
+    let stopReason: StopReason = 'max_steps'
     /**
      * 溢出恢复用过没有。**状态机，不是重试计数。**
      *
@@ -1519,11 +1521,40 @@ export class AgentLoop {
             break
           }
 
-          // 没有工具调用 = 模型认为任务结束。
-          // 唯一例外是 provider 报 max_tokens：那是**输出**被截断，模型话没说完，
-          // 不是它认为结束了。判成输入超限会把用户引向「精简上下文」，
-          // 而那条路解决不了输出截断。
-          stopReason = providerStop === 'max_tokens' ? 'output_truncated' : 'completed'
+          // provider 报 max_tokens 是**输出**被截断，模型话没说完。它优先于待办判据：
+          // 继续同一任务也接不回被截断的半句话，必须先把真实终态交给用户。
+          if (providerStop === 'max_tokens') {
+            stopReason = 'output_truncated'
+            break
+          }
+
+          /*
+           * `end_turn` 只证明**这一条响应**结束，不证明整个任务完成。
+           * `write_todos` 已经是任务清单的唯一账本，尾区注记与工具也都读 `ctx.todos`；
+           * 这里读同一份只读端口，不另造完成状态。清单没有未完成项时保留原语义。
+           *
+           * 本轮正文已在上面进 transcript，直接继续会让模型下一次看到自己刚说过的话。
+           * 同一份未完成清单下连续三次只说不做，则复用已有的无进展监督器停下来，
+           * 免得把一次误完成改成 120 次空转。
+           */
+          const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
+          if (unfinished.length) {
+            const snapshot = JSON.stringify(
+              unfinished.map((todo) => [todo.id, todo.content, todo.status]),
+            )
+            progress.push({
+              action: 'assistant_end_turn',
+              cycle: `assistant_end_turn|${snapshot}`,
+              noProgress: true,
+            })
+            if (repeatsNoProgress(progress)) {
+              stopReason = 'no_progress'
+              break
+            }
+            continue
+          }
+
+          stopReason = 'completed'
           break
         }
 
@@ -1707,8 +1738,6 @@ export class AgentLoop {
           stopReason = 'no_progress'
           break
         }
-
-        if (step === maxSteps - 1) stopReason = 'max_steps'
       }
     } catch (err) {
       // **先看是不是用户按了停止。**

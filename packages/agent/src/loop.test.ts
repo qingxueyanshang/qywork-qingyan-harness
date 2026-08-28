@@ -8,7 +8,7 @@ import {
   lookupModel,
   ProviderError,
 } from '@qywork/ai'
-import type { AgentEvent, ContextBreakdown } from '@qywork/core'
+import type { AgentEvent, ContextBreakdown, TodoItem } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
 import {
@@ -1133,6 +1133,169 @@ describe('原地打转', () => {
 
     expect(stopReason).toBe('completed')
     expect(n).toBe(4)
+  })
+})
+
+describe('正常响应结束不冒充任务完成', () => {
+  const unfinished: TodoItem[] = [
+    { id: 'todo_1', content: '完成第 7 步', status: 'in_progress' },
+    { id: 'todo_2', content: '完成第 8 步', status: 'pending' },
+  ]
+
+  async function runToEnd(
+    loop: AgentLoop,
+    input: { runId: string; maxSteps?: number } = { runId: 'rn_todos' },
+  ): Promise<AgentEvent> {
+    let finished: AgentEvent | null = null
+    for await (const ev of loop.run({
+      runId: input.runId as never,
+      history: [],
+      signal: new AbortController().signal,
+      ...(input.maxSteps === undefined ? {} : { maxSteps: input.maxSteps }),
+    })) {
+      if (ev.type === 'run.finished') finished = ev
+    }
+    expect(finished).toBeDefined()
+    return finished!
+  }
+
+  /**
+   * 原始失败的正向回归：第一轮正文说完但清单仍未完成，不得落 completed。
+   * 第二轮通过工具把同一账本改完，第三轮正常 end_turn 才能结束。
+   */
+  test('未完成待办让同一循环续跑，清单完成后才结束', async () => {
+    let todos = structuredClone(unfinished)
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'finish_todos',
+      description: '把测试清单标成完成。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '待办',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        todos = todos.map((todo) => ({ ...todo, status: 'completed' }))
+        return { status: 'success', message: '清单已完成' }
+      },
+    })
+
+    const inner = fakeAdapter([null, [call('finish_todos')], null])
+    const requests: ChatRequest[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests.push(req)
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(todos) },
+      }),
+    })
+
+    const finished = await runToEnd(loop)
+
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+    expect(requests).toHaveLength(3)
+    // 第一轮正文已经进同一份 transcript，续跑不是另起一条隐藏路径。
+    expect(
+      requests[1]!.messages.some(
+        (message) => message.role === 'assistant' && message.content === '完成',
+      ),
+    ).toBe(true)
+    expect(todos.every((todo) => todo.status === 'completed')).toBe(true)
+  })
+
+  test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {
+    const inner = fakeAdapter(Array.from({ length: 10 }, () => null))
+    let requests = 0
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests++
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(unfinished) },
+      }),
+    })
+
+    const finished = await runToEnd(loop, { runId: 'rn_todos_stuck' })
+
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
+    expect(requests).toBe(3)
+  })
+
+  test('没有清单或清单全部完成，保留一次正常 completed', async () => {
+    const cases: Array<{ runId: string; todos?: TodoItem[] }> = [
+      { runId: 'rn_no_todos' },
+      {
+        runId: 'rn_done_todos',
+        todos: [{ id: 'todo_done', content: '已经完成', status: 'completed' }],
+      },
+    ]
+
+    for (const item of cases) {
+      let requests = 0
+      const inner = fakeAdapter([null])
+      const adapter: LlmAdapter = {
+        ...inner,
+        async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+          requests++
+          yield* inner.stream(req)
+        },
+      }
+      const loop = new AgentLoop({
+        adapter,
+        registry: new ToolRegistry(),
+        systemPrompt: 'sys',
+        tailNotes: () => [],
+        persist: noopPersistence(),
+        makeToolContext: (runId) => ({
+          ...baseCtx(runId),
+          ...(item.todos ? { todos: { read: () => structuredClone(item.todos!) } } : {}),
+        }),
+      })
+
+      const finished = await runToEnd(loop, { runId: item.runId })
+      expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+      expect(requests).toBe(1)
+    }
+  })
+
+  test('最后一步仍有未完成待办时，如实落 max_steps', async () => {
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      tailNotes: () => [],
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(unfinished) },
+      }),
+    })
+
+    const finished = await runToEnd(loop, { runId: 'rn_todos_limit', maxSteps: 1 })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('max_steps')
   })
 })
 

@@ -272,7 +272,7 @@ export type StopReason =
   | 'completed'
   | 'max_steps'
   /**
-   * 原地打转：同样的调用、同样的结果、没有任何副作用，连着两个周期。
+   * 原地打转：同样的执行周期、同样的结果或待办快照、没有任何副作用，连续三次。
    *
    * 与 `max_steps` 严格区分——那是「步数不够」，这是「多给一百步也一样」。
    * 判据见 `@qywork/agent` 的 `repeatsNoProgress`。
