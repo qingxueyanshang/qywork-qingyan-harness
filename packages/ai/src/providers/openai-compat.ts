@@ -257,7 +257,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 }
 
 /**
- * 把用户填的 Base URL 归一成带 `/v1` 的 OpenAI 兼容根。
+ * 把用户填的 Base URL 归一成带版本段的 OpenAI 兼容根。
  *
  * **这不是「兼容代码」，是消灭一个静默故障。** 实测形状：用户填
  * `https://中转站/`（少了 `/v1`），SDK 因此请求 `https://中转站/chat/completions`，
@@ -265,9 +265,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
  * 解析不出任何事件、也不报错，因此那一轮 0 token、0 步骤、`completed`——
  * 界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
  *
- * 补 `/v1` 有一个反例：中转站把 API 挂在别的路径下（`/api` 之类）。那种情况下
- * 用户填的就已经是完整根，而完整根**几乎总是以 `/v1` 结尾**（OpenAI 协议本身的
- * 版本段），所以判据取「结尾是不是 `/v1`」而不是「有没有路径」。落到反例上时
+ * 补 `/v1` 有一个反例：有些兼容端点用的是 `/v4` 等别的版本。版本段是用户明确
+ * 提供的路由信息，不能覆盖，也不能再拼成 `/v4/v1`；只有路径末尾没有 `/v数字`
+ * 时才补默认 `/v1`。中转站把 API 挂在无版本路径（`/api` 之类）时仍会补默认版本，
  * 失败是响亮的（404 / 401），不是这次这种静默——两种错的代价不对等。
  *
  * 空值走官方根：`openai_responses` 那侧也是同一个常量。
@@ -275,7 +275,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 export function normalizeBaseUrl(raw: string | undefined): string {
   const url = (raw ?? '').trim().replace(/\/+$/, '')
   if (!url) return 'https://api.openai.com/v1'
-  return url.endsWith('/v1') ? url : `${url}/v1`
+  return /\/v\d+$/i.test(url) ? url : `${url}/v1`
 }
 
 /**
