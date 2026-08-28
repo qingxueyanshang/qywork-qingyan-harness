@@ -430,19 +430,19 @@ describe('WebSocket 协议与一轮完整 run', () => {
     )
     const frames: EventEnvelope<AgentEvent>[] = []
     const rejections: { command?: string; reason?: string }[] = []
-    let helloOk: {
+    const helloReady = Promise.withResolvers<{
       type?: string
       capabilities?: {
         pty?: boolean
         sandbox?: { backend?: string; active?: boolean; reason?: string }
       }
-    } | null = null
+    }>()
     const done = Promise.withResolvers<void>()
 
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data))
       if (msg.type === 'hello.ok') {
-        helloOk = msg
+        helloReady.resolve(msg)
         return
       }
       if (msg.type === 'command.rejected') {
@@ -468,15 +468,14 @@ describe('WebSocket 协议与一轮完整 run', () => {
         subscribe: [conversationId],
       }),
     )
-    await Bun.sleep(200)
-    const hello = helloOk as {
+    const hello = (await helloReady.promise) as {
       type?: string
       capabilities?: {
         pty?: boolean
         mode?: string
         sandbox?: { backend?: string; active?: boolean; reason?: string }
       }
-    } | null
+    }
     expect(hello?.type).toBe('hello.ok')
 
     /*
@@ -522,11 +521,11 @@ describe('WebSocket 协议与一轮完整 run', () => {
       `ws://127.0.0.1:${handle.port}/stream?token=${handle.token}&origin=mobile`,
     )
     const peerFrames: EventEnvelope<AgentEvent>[] = []
-    let peerHello: { busyConversations?: string[] } | null = null
+    const peerReady = Promise.withResolvers<{ busyConversations?: string[] }>()
     peer.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data))
       if (msg.type === 'hello.ok') {
-        peerHello = msg
+        peerReady.resolve(msg)
         return
       }
       if (msg.seq && msg.event) peerFrames.push(msg)
@@ -538,8 +537,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     peer.send(
       JSON.stringify({ type: 'hello', token: handle.token, origin: 'mobile', subscribe: [] }),
     )
-    await Bun.sleep(200)
-    expect((peerHello as { busyConversations?: string[] } | null)?.busyConversations).toEqual([])
+    expect((await peerReady.promise).busyConversations).toEqual([])
 
     ws.send(
       JSON.stringify({
