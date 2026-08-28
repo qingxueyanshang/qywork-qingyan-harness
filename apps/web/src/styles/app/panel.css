@@ -22,26 +22,36 @@
 }
 
 /*
- * 拖宽用的把手：压在左边框上，**只有 6px 宽**。
+ * 拖宽用的把手：压在左边框上，12px 的命中区覆盖边线两侧。
  *
- * 常态不画（hover 才给一条淡色）：这条边上已经有面板的分隔线，再画一条
- * 就是两道。指针形状本身就是可拖的信号。
- * 往左伸出 3px 是为了好瞄——鼠标停在分隔线上就能拖，不用对准面板内侧。
+ * 分隔线由面板边框绘制，把手只在 hover、键盘焦点和拖动时加深。
  */
 .panel-grip {
   position: absolute;
-  left: -3px;
+  left: -6px;
   top: 0;
   bottom: 0;
   z-index: 20;
-  width: 6px;
+  width: 12px;
   padding: 0;
   border: none;
   background: none;
   cursor: col-resize;
+  touch-action: none;
 }
-.panel-grip:hover {
-  background: var(--accent-soft);
+.panel-grip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: transparent;
+}
+.panel-grip:hover::after,
+.panel-grip:focus-visible::after,
+.panel-grip:active::after {
+  background: var(--accent);
 }
 
 /* 标签行不再顶到窗口上沿，安全区由顶栏那一行占掉了，这里不用再让。

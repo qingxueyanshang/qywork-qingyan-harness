@@ -13,6 +13,13 @@ import {
 } from 'solid-js'
 import { activePanelTab, holdPanelTab, theme, workspace } from '../lib/store/index.ts'
 import { closeTerminal, openTerminal, resizeTerminal, writeTerminal } from '../lib/terminal.ts'
+import {
+  disconnectedTerminal,
+  type TerminalEnd,
+  type TerminalOperation,
+  terminalEndLabel,
+  terminalWheelAction,
+} from '../lib/terminal-behavior.ts'
 
 /**
  * 终端页。渲染在 xterm.js 里，进程在 Rust 侧的 PTY 里（见 `src-tauri/src/terminal.rs`）。
@@ -26,7 +33,7 @@ import { closeTerminal, openTerminal, resizeTerminal, writeTerminal } from '../l
  * `holdPanelTab`（页签上的 × 和换项目都走它），见 `disposePane`。
  */
 
-/** 滚轮一格翻几行。三行是各家终端的通行值，再多会在窄面板里一下子翻过头。 */
+/** Shift + 滚轮查看历史时一格翻三行。 */
 const WHEEL_LINES = 3
 
 interface Pane {
@@ -34,11 +41,11 @@ interface Pane {
   fit: FitAddon
   /** 常驻宿主。组件卸载只是把它摘下来，xterm 的 DOM 与滚动历史都留在上面。 */
   host: HTMLDivElement
-  /** PTY 那条会话开着没有。子进程退出后回 `false`，「重开」据此再开一条。 */
+  /** PTY 会话可用时为 `true`；退出或连接断开后回 `false`。 */
   started: boolean
-  /** 子进程的终态。`null` = 仍在运行。`code` 为 null 表示拿不到退出码。 */
-  exit: Accessor<{ code: number | null } | null>
-  setExit: Setter<{ code: number | null } | null>
+  /** `null` 表示仍在运行；非空值区分进程退出与 PTY 连接断开。 */
+  end: Accessor<TerminalEnd | null>
+  setEnd: Setter<TerminalEnd | null>
 }
 
 /** 开着的终端，按页签 id 存。id 就是传给 Rust 的会话 id。 */
@@ -181,8 +188,8 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   term.loadAddon(fit)
   term.open(host)
 
-  const [exit, setExit] = createSignal<{ code: number | null } | null>(null)
-  const pane: Pane = { term, fit, host, started: false, exit, setExit }
+  const [end, setEnd] = createSignal<TerminalEnd | null>(null)
+  const pane: Pane = { term, fit, host, started: false, end, setEnd }
   panes.set(id, pane)
   applyTheme(pane)
   watchTheme()
@@ -190,28 +197,16 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   // 键盘输入原样送进 PTY。**不在这里解释按键**——回车、Ctrl-C、方向键都是字节，
   // 由 shell 自己认；前端插一层翻译就会和真终端的行为对不上。
   // 鼠标报文走的也是这一条（开了鼠标追踪的 TUI），所以写失败等于点击也失败。
-  term.onData((d) => void writeTerminal(id, d).catch(() => markGone(pane)))
+  term.onData((d) => void writeTerminal(id, d).catch((error) => markGone(id, pane, 'write', error)))
 
   /*
-   * 滚轮由本组件接管，不交给程序。
-   *
-   * 程序一开鼠标追踪（`CSI ?1002h`，全屏 TUI 的常规做法），xterm 就把滚轮当成
-   * 鼠标事件转发过去，终端自己**一行都滚不动**——而且既然从不滚动，那条
-   * 「滚动时淡入」的滚动条也永远不出现。实测：普通态 viewportY 277→273，
-   * 开了追踪之后纹丝不动，**按住 Shift 也没用**（xterm 6 没留这个逃生口）。
-   *
-   * **在宿主上用捕获阶段接，不用 `attachCustomWheelEventHandler`。** 后者要等
-   * 事件走到 xterm 自己那个监听器才轮得到；捕获阶段挂在最外层，先到先得，
-   * 再 `stopPropagation` 掐死后续转发。
-   *
-   * 代价说清楚：正常缓冲区里的程序从此收不到滚轮事件。这是有意的取舍——
-   * 这块面板是用来回看输出的，翻历史比让 TUI 收到滚轮更要紧。
-   * 备用缓冲区例外：那里没有回滚可翻，滚轮本来就该归程序（`less` / `vim` 自己处理）。
+   * 普通滚轮交给 xterm 与终端程序，保留 TUI 的鼠标和固定底栏行为。
+   * Shift + 滚轮在普通缓冲区查看历史；备用缓冲区没有可查看的历史。
    */
   host.addEventListener(
     'wheel',
     (ev) => {
-      if (term.buffer.active.type === 'alternate') return
+      if (terminalWheelAction(term.buffer.active.type, ev.shiftKey) !== 'history') return
       ev.preventDefault()
       ev.stopPropagation()
       term.scrollLines(Math.sign(ev.deltaY) * WHEEL_LINES)
@@ -233,12 +228,14 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
  * 不存在的会话——用户面前是一块画着上一帧、点了没反应的终端。命令被拒是权威
  * 本身的答复，**要就地消费掉，不能吞**。
  *
- * 退出码给 `null`：这条路上读不到子进程的终态，只知道会话不能用了。
+ * 断连状态保留失败操作与错误原文，界面只显示简短状态。
  */
-function markGone(pane: Pane): void {
-  if (pane.exit()) return
+function markGone(id: string, pane: Pane, operation: TerminalOperation, error: unknown): void {
+  if (pane.end()) return
+  const end = disconnectedTerminal(operation, error)
+  console.error(`[terminal:${id}] ${operation}: ${end.reason}`)
   pane.started = false
-  pane.setExit({ code: null })
+  pane.setEnd(end)
 }
 
 /** 收掉一条终端：杀进程、销毁实例、摘掉 DOM。只由 `holdPanelTab` 那条路调。 */
@@ -270,13 +267,15 @@ function syncSize(id: string, pane: Pane): void {
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) return
   if (cols !== pane.term.cols || rows !== pane.term.rows) pane.term.resize(cols, rows)
   if (!pane.started) return
-  void resizeTerminal(id, pane.term.cols, pane.term.rows).catch(() => markGone(pane))
+  void resizeTerminal(id, pane.term.cols, pane.term.rows).catch((error) =>
+    markGone(id, pane, 'resize', error),
+  )
 }
 
 async function ensureStarted(id: string, pane: Pane): Promise<void> {
   if (pane.started) return
   pane.started = true
-  pane.setExit(null)
+  pane.setEnd(null)
   try {
     const backlog = await openTerminal(
       id,
@@ -287,7 +286,7 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
         output: (d) => pane.term.write(d),
         exit: (code) => {
           pane.started = false
-          pane.setExit({ code })
+          pane.setEnd({ kind: 'exited', code })
         },
       },
     )
@@ -297,9 +296,9 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
     // 开完再对一次：从调用到会话建好这段时间里，面板可能已经被拖宽或放大了。
     syncSize(id, pane)
   } catch (e) {
-    pane.started = false
     // 起不来要说在终端里，不是静默留一块黑：用户盯着的就是这块地方。
     pane.term.write(`\r\n\x1b[31m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`)
+    markGone(id, pane, 'open', e)
   }
 }
 
@@ -366,12 +365,11 @@ export default function TerminalPanel(props: { id: string }) {
   return (
     <div class="terminal-panel">
       <div class="term-slot" ref={setSlot} />
-      {/* 进程退出要有终态，还要给得出下一步。只显示「已退出」而不给重开，
-          用户唯一的出路是切走再切回来——那是让人自己去猜的交互。 */}
-      <Show when={pane()?.exit()}>
+      {/* 进程退出或连接断开后提供同一个恢复入口。 */}
+      <Show when={pane()?.end()}>
         {(e) => (
           <footer class="term-foot">
-            <span>{e().code === null ? '进程已结束' : `进程已退出（${e().code}）`}</span>
+            <span>{terminalEndLabel(e())}</span>
             <button
               class="btn-ghost"
               type="button"
