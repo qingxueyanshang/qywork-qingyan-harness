@@ -25,7 +25,7 @@
     "gate": "bun run typecheck && biome check . && bun run test && bun run typecheck:rust",
     "typecheck": "tsc --build --force && bun run --cwd apps/web typecheck",
     "typecheck:rust": "cargo check --quiet --manifest-path apps/desktop/src-tauri/Cargo.toml",
-    "test": "bun test --conditions browser",
+    "test": "bun run scripts/run-tests.ts",
     "check": "biome check --write .",
     "version:sync": "bun run scripts/sync-version.ts",
     "smoke:serve": "bun run scripts/smoke-serve.ts",

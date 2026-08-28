@@ -1,7 +1,8 @@
 /**
  * 脚本产物落点的结构守卫。
  *
- * 覆盖范围：`scripts/` 下所有 `.ts` 与 `.mjs` 里以仓库根为基准拼出的路径字面量。
+ * 覆盖范围：测试进程的系统临时目录，以及 `scripts/` 下所有 `.ts` 与 `.mjs` 里
+ * 以仓库根为基准拼出的路径字面量。
  *
  * 临时工作区与截图产物一律落 `.tmp/<用途>`。在仓库根另开点目录不会有任何报错，
  * 也不进 git 状态（`*.sqlite3` 与目录本身不入库），只在文件管理器里堆着，
@@ -10,7 +11,8 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
 const SELF = 'temp-dir.test.ts'
@@ -40,6 +42,12 @@ export function detect(file: string, src: string): string[] {
 }
 
 describe('脚本产物落点', () => {
+  test('测试进程的临时目录落在 .tmp/tests 本次运行目录', () => {
+    const path = relative(ROOT, tmpdir()).replaceAll('\\', '/')
+    expect(path).toMatch(/^\.tmp\/tests\/run-[^/]+$/)
+    expect(process.env.GIT_CEILING_DIRECTORIES).toBe(tmpdir())
+  })
+
   test('根目录下的点目录判定：只放行 .tmp，工作区内的点目录不管', () => {
     const src = [
       `const a = join(ROOT, '.shoot-ws')`,
