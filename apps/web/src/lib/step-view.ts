@@ -56,25 +56,24 @@ interface UsageLike {
  * 格的语义就是最新那一次，同一行上其余几格是累计不构成改它的理由。没有逐轮记录（老数据、断流）才回
  * 落到整轮累计，**回落不能显示 `—`**：「有缓存但没逐轮记录」和「没有缓存」是两回事。
  *
- * **最后一次没回报缓存字段就是 0，不是跳过。** 跳过它去找更早那条报过的，屏幕上就会挂着一个几轮之前
- * 的数——最新这次全价重付了，读数却还写着 93%。计费那侧早就把「没回报」按 0 命中算
- * （`ai/catalog.ts` 的 `computeCost`：`cachedTokens ?? 0` 走全价输入），读数跟着同一个口径才只有一
- * 本账。
+ * **最后一次没回报缓存字段就是 `N/A`，而不是 0，更不能往前找。** `null` 表示 provider
+ * 没给这个数；把它强转成 0 是编数据，往前找则会把旧命中率冒充成当前命中率。只有 provider
+ * 明确回报的 0 才显示 0。
  *
- * 「未回报」只留给**这一次连 usage 都没到**的情形（`source === 'estimated'`）：
- * 那时命中多少、输入多少都未知，写 0 是编数据。
+ * 本地估算兜底同样显示 `N/A`：那时命中多少、输入多少都未知。
  */
 export function hitRate(usage: UsageLike): string {
   const last = usage.turns[usage.turns.length - 1]
   // 这一次连 usage 都没回来：命中多少、输入多少都不知道，写 0 是编造数据。
-  if (last && last.source !== 'provider') return '未回报'
-  const cached = last ? (last.cached ?? 0) : usage.cachedTokens
-  if (cached === null) return '未回报'
+  if (last && last.source !== 'provider') return 'N/A'
+  const cached = last ? last.cached : usage.cachedTokens
+  if (cached === null) return 'N/A'
 
   const denom = last
     ? last.input + cached + (last.cacheWrite ?? 0)
     : usage.inputTokens + cached + (usage.cacheWriteTokens ?? 0)
-  if (denom <= 0) return '—'
+  // provider 明确回报 0 就是 0；不能因为这一调用没有 token 又把它改写成未知。
+  if (denom <= 0) return cached === 0 ? '0.00%' : 'N/A'
   return `${((cached / denom) * 100).toFixed(2)}%`
 }
 

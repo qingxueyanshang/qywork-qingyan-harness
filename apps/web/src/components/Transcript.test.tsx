@@ -101,4 +101,45 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
 
     dispose()
   })
+
+  test('模型在 usage 前报错，收尾条仍显示命中 N/A', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      lastRunId: 'run_failed',
+      views: {
+        [CV]: {
+          runStartedAt: null,
+          error: null,
+          transcript: [
+            { id: 'u-failed', kind: 'user', text: '开始' },
+            {
+              id: 'run-run_failed',
+              kind: 'run',
+              text: '',
+              run: {
+                runId: 'run_failed',
+                stopReason: 'provider_error',
+                usage: null,
+                startedAt: 1_000,
+                endedAt: 1_500,
+                errorMessage: '模型连接失败',
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    expect(host.textContent).toContain('命中 N/A')
+    expect(host.textContent).toContain('模型连接失败')
+
+    dispose()
+  })
 })
