@@ -99,24 +99,23 @@
 .bubble.collapsible .user-bubble-copy {
   max-height: var(--user-message-preview-height);
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 0%, #000 72%, transparent 100%);
 }
 .bubble.collapsible.expanded .user-bubble-copy {
   max-height: none;
-  mask-image: none;
 }
 .user-bubble-toggle {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   width: max-content;
-  height: 24px;
-  margin: 2px 0 0 auto;
+  height: 18px;
+  margin: 0 0 0 auto;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
+  font-size: 11px;
   line-height: 1;
 }
 .user-bubble-toggle:hover {
@@ -127,6 +126,7 @@
 }
 .user-bubble-size {
   color: var(--text-tertiary);
+  font-size: 11px;
 }
 
 /*

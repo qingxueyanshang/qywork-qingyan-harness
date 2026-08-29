@@ -778,7 +778,7 @@ function UserBubble(props: { text: string }) {
         >
           <span>{expanded() ? '收起' : '展开全部'}</span>
           <span class="user-bubble-size">· {size()} 字</span>
-          <IconChevron size={14} dir={expanded() ? 'up' : 'down'} />
+          <IconChevron size={12} dir={expanded() ? 'up' : 'down'} />
         </button>
       </Show>
     </div>
