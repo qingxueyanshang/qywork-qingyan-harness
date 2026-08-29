@@ -395,10 +395,18 @@ function Fold(props: {
    * 收起态并不少信息：思考那条的标签里带着**实时更新的正文摘要**，工具组的标题写着
    * 干了什么。要看全的自己点开——点开之后也不会被自动合上。
    *
-   * 开合完全归 `<details>` 自己管：这里不留 open 信号，也就没有第二本账。
+   * 开合完全归 `<details>` 自己管，不绑定 `open` 属性。`mounted` 只记录正文是否被
+   * 展开请求过，首次展开后保持为 true；它不裁决开合，也不复制原生状态。
    */
+  const [mounted, setMounted] = createSignal(false)
   return (
-    <details class="fold" classList={{ 'fold-dim': props.dim, failed: props.failed }}>
+    <details
+      class="fold"
+      classList={{ 'fold-dim': props.dim, failed: props.failed }}
+      onToggle={(e) => {
+        if (e.currentTarget.open) setMounted(true)
+      }}
+    >
       {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
       <summary class="fold-head">
         <span class="fold-summary">
@@ -424,7 +432,9 @@ function Fold(props: {
           </Show>
         </span>
       </summary>
-      <div class="fold-body">{props.children}</div>
+      <Show when={mounted()}>
+        <div class="fold-body">{props.children}</div>
+      </Show>
     </details>
   )
 }

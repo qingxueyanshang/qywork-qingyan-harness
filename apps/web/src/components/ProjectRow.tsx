@@ -103,7 +103,7 @@ export function ProjectRow(props: {
   const confirmed = async () => {
     if (armed() === 'archive') return archiveWorkspaceChats(props.workspace.id)
     const res = await removeKnownWorkspace(props.workspace.id)
-    if (props.current && res.next) await activateWorkspace(res.next.rootPath)
+    if (props.current && res.next) await activateWorkspace({ path: res.next.rootPath })
     return res
   }
 

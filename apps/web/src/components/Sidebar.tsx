@@ -91,7 +91,7 @@ export function Sidebar(props: { onClose?: () => void }) {
     if (path === workspace()?.root) return
     setError(null)
     try {
-      await activateWorkspace(path)
+      await activateWorkspace({ path })
       // 列表按「最近打开」排序，切过之后顺序变了，重拉一次。
       void refetchWorkspaces()
     } catch (e) {
@@ -225,8 +225,9 @@ export function Sidebar(props: { onClose?: () => void }) {
       <NewProjectDialog
         open={creating()}
         canPickFolder={desktop}
-        onCreated={(rootPath) => {
-          void go(rootPath)
+        onCreate={async (input) => {
+          await activateWorkspace(input)
+          void refetchWorkspaces()
         }}
         onClose={() => setCreating(false)}
       />

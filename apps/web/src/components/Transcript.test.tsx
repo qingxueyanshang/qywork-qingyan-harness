@@ -46,6 +46,55 @@ async function resetStore() {
 const CV = 'cv_prose'
 
 describe('定稿的正文不跟着会话流的增长重建', () => {
+  test('折叠正文首次展开时才挂载', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          runStartedAt: null,
+          error: null,
+          transcript: [
+            {
+              id: 'tool-lazy',
+              kind: 'tool',
+              text: '',
+              toolName: 'run_command',
+              action: { kind: 'run', objectLabel: '命令', target: 'echo ok' },
+              args: { command: 'echo ok' },
+              status: 'success',
+              outcome: {
+                status: 'success',
+                executed: true,
+                message: '命令执行完成',
+                data: { stdout: '首次展开后才能看见的输出' },
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    const details = host.querySelector('details') as HTMLDetailsElement
+    expect(details).toBeTruthy()
+    expect(host.querySelector('.fold-body')).toBeNull()
+    expect(host.textContent).not.toContain('首次展开后才能看见的输出')
+
+    details.open = true
+    details.dispatchEvent(new Event('toggle'))
+
+    expect(host.querySelector('.fold-body')).toBeTruthy()
+    expect(host.textContent).toContain('首次展开后才能看见的输出')
+
+    dispose()
+  })
+
   test('下一批工具一条条起来，那段正文的节点还是原来那个', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({

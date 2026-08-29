@@ -21,7 +21,6 @@
   font: inherit;
   cursor: default;
   background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(3px);
 }
 
 /* 遮罩层只负责居中，点击穿透到底下的关闭按钮；对话框自己重新接住点击。 */
