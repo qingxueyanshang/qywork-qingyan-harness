@@ -1,4 +1,4 @@
-import type { Attachment, ContextGroup, Goal } from '@qywork/core'
+import type { Attachment, ContextGroup, FollowUp, Goal } from '@qywork/core'
 import {
   attachmentTypeOf,
   baseNameOf,
@@ -33,7 +33,16 @@ import {
 } from '../lib/store/index.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { BranchPicker } from './BranchPicker.tsx'
-import { IconFolder, IconPlus, IconSend, IconShield, IconStop, IconX } from './Icons.tsx'
+import {
+  IconFolder,
+  IconPencil,
+  IconPlus,
+  IconSend,
+  IconShield,
+  IconStop,
+  IconTrash,
+  IconX,
+} from './Icons.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
 import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
@@ -110,7 +119,7 @@ function goalNote(goal: Goal, running: boolean): string {
  * 当前目标：做的是什么、在不在跑、能不能停。
  *
  * **自动循环必须可见**：它一轮接一轮自己跑下去，而界面上只有正文在长。
- * 所以它常驻在输入框正上方，和这一轮的待办进度同一片区域：目标回答「一轮接一轮
+ * 所以它常驻在输入框顶部，和等待队列共用同一组状态栏：目标回答「一轮接一轮
  * 要做到什么」，待办回答「这一轮进行到哪了」，用户抬眼就该同时看到这两句。
  *
  * **两个按钮各走哪条路**：
@@ -213,9 +222,9 @@ function wireShellDrop(): void {
 }
 
 /**
- * 排着的跟进消息，一条一张卡，在输入框上方。
+ * 排着的跟进消息，作为输入框顶部的队列栏；它和正文、附件共用同一个输入框外壳。
  *
- * 卡上两个可点物，不多也不少：
+ * 卡上三个可点物：
  *
  * - **档位词** —— 按钮上写的是**点它会做什么**，不是这一条此刻的档位。
  *   排着队的显示「调整方向」，点了就注入当前这一轮，字随之换成「加入队列」，
@@ -223,36 +232,80 @@ function wireShellDrop(): void {
  *   起一轮——三态同一种读法。不要改成显示当前档位：那样这一枚按钮上「发送」是
  *   动作、另两个词是状态，同一个位置两种读法。
  *   档位由服务端在同一个同步块里裁决，这里只负责显示。
+ * - **修改** —— 从队列删除原条目，把正文和附件交回输入框；修改后走原发送入口。
  * - **删除** —— 删了就既不注入也不火发。
  *
  * **一行，定高（B9）**：正文长短不一，让它撑高的话删除按钮会跟着跑位。
  * 不做悬停卡片：那张卡承载的信息这一行本来就有。
  */
-function FollowUpCards() {
+function FollowUpCards(props: {
+  onEdit: (followUp: FollowUp) => void
+  thumbProps: (path: string) => { localUrl?: string }
+}) {
   return (
     <Show when={state.followUps.length > 0}>
       <div class="followup-cards">
         <For each={state.followUps}>
           {(f) => (
             <div class="followup-card">
-              <span class="followup-text truncate" data-tip={f.content}>
-                {f.content}
+              <span class="followup-label">{f.steer ? '调整' : '队列'}</span>
+              <Show when={(f.attachments?.length ?? 0) > 0}>
+                <span class="followup-attachment-strip">
+                  <For each={(f.attachments ?? []).slice(0, 3)}>
+                    {(a) => (
+                      <span class="followup-mini-attachment" data-tip={a.name}>
+                        <AttachmentThumb
+                          path={a.path}
+                          name={a.name}
+                          box={24}
+                          {...props.thumbProps(a.path)}
+                        />
+                      </span>
+                    )}
+                  </For>
+                  <Show when={(f.attachments?.length ?? 0) > 3}>
+                    <span class="followup-attachment-more">
+                      +{(f.attachments?.length ?? 0) - 3}
+                    </span>
+                  </Show>
+                </span>
+              </Show>
+              <span
+                class="followup-text truncate"
+                data-tip={f.content || f.attachments?.map((a) => a.name).join('、')}
+              >
+                {f.content ||
+                  (f.attachments?.length === 1
+                    ? f.attachments[0]?.name
+                    : `${f.attachments?.length ?? 0} 个附件`)}
               </span>
-              <button
-                class="followup-act"
-                type="button"
-                onClick={() => steerFollowUp(f.id, !f.steer)}
-              >
-                {!isRunning() ? '发送' : f.steer ? '加入队列' : '调整方向'}
-              </button>
-              <button
-                class="followup-act drop"
-                type="button"
-                aria-label="删除"
-                onClick={() => dropFollowUp(f.id)}
-              >
-                <IconX size={12} />
-              </button>
+              <div class="followup-actions">
+                <button
+                  class="followup-act"
+                  type="button"
+                  onClick={() => steerFollowUp(f.id, !f.steer)}
+                >
+                  {!isRunning() ? '发送' : f.steer ? '加入队列' : '调整方向'}
+                </button>
+                <button
+                  class="followup-act icon"
+                  type="button"
+                  aria-label="修改"
+                  data-tip="修改"
+                  onClick={() => props.onEdit(f)}
+                >
+                  <IconPencil size={16} />
+                </button>
+                <button
+                  class="followup-act icon danger"
+                  type="button"
+                  aria-label="删除"
+                  data-tip="删除"
+                  onClick={() => dropFollowUp(f.id)}
+                >
+                  <IconTrash size={16} />
+                </button>
+              </div>
             </div>
           )}
         </For>
@@ -420,6 +473,24 @@ export function Composer() {
   }
 
   /**
+   * 把一条等待消息取回输入框。队列仍通过服务端原有的删除指令收敛，输入正文与附件
+   * 直接回到本组件的草稿；已有草稿不覆盖，待编辑内容追加在末尾。
+   */
+  const editFollowUp = (followUp: FollowUp) => {
+    dropFollowUp(followUp.id)
+    if (followUp.content) {
+      setText((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${followUp.content}` : followUp.content))
+    }
+    const attachments = followUp.attachments ?? []
+    if (attachments.length) setPending((prev) => [...prev, ...attachments])
+    queueMicrotask(() => {
+      autosize()
+      ta.focus()
+      ta.setSelectionRange(ta.value.length, ta.value.length)
+    })
+  }
+
+  /**
    * 发出去。`flip` = 这一条走与默认档相反的那一档（`Ctrl+Enter`）。
    *
    * **不再因为「正在跑」早退**：跑着的时候发消息是排队，不是被拒。
@@ -506,38 +577,6 @@ export function Composer() {
         </div>
       </Show>
 
-      {/* 待发附件。一行一个看得清、删得掉，**不做缩略图墙**——那会把输入区顶掉半屏。
-          左边那格是定尺的（20px），图片放缩略图、文件放通用图标，行高不随内容变。 */}
-      <Show when={pending().length > 0 || uploading() > 0}>
-        <div class="attach-row">
-          <For each={pending()}>
-            {(a, i) => (
-              <span class="attach-chip" data-tip={a.path}>
-                <AttachmentThumb path={a.path} name={a.name} box={20} {...thumbProps(a.path)} />
-                <span class="truncate">{a.name}</span>
-                <button
-                  class="attach-x"
-                  type="button"
-                  aria-label={`移除 ${a.name}`}
-                  onClick={() => setPending((prev) => prev.filter((_, j) => j !== i()))}
-                >
-                  <IconX size={11} />
-                </button>
-              </span>
-            )}
-          </For>
-          <Show when={uploading() > 0}>
-            <span class="attach-chip busy">上传中 {uploading()}</span>
-          </Show>
-        </div>
-      </Show>
-
-      {/* 目标在进度条之下、输入框之上：它是常驻的（跨轮存在），所以占流，
-          不像那条整轮状态条那样悬浮——悬浮层一多就会互相盖住。 */}
-      <GoalChip />
-
-      <FollowUpCards />
-
       <RunStatus />
 
       {/* 斜杠弹层向上开：输入区贴着窗口底部。 */}
@@ -573,126 +612,187 @@ export function Composer() {
           submit()
         }}
       >
-        <textarea
-          ref={ta}
-          class="composer-input"
-          rows={1}
-          placeholder="随心输入，可粘贴图片"
-          onPaste={(e) => {
-            const files = Array.from(e.clipboardData?.files ?? [])
-            if (files.length) {
-              // 有文件才拦：拦掉纯文本粘贴会让人没法正常贴代码。
-              e.preventDefault()
-              void takeFiles(files)
-            }
-          }}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            const files = Array.from(e.dataTransfer?.files ?? [])
-            if (files.length) {
-              e.preventDefault()
-              void takeFiles(files)
-            }
-          }}
-          value={text()}
-          onInput={(e) => {
-            setText(e.currentTarget.value)
-            setSlashCursor(0)
-            autosize()
-          }}
-          onKeyDown={(e) => {
-            const hits = slashHits()
-            if (hits.length > 0 && !e.isComposing) {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                setSlashCursor((c) => Math.min(c + 1, hits.length - 1))
-                return
-              }
-              if (e.key === 'ArrowUp') {
-                e.preventDefault()
-                setSlashCursor((c) => Math.max(c - 1, 0))
-                return
-              }
-              if (e.key === 'Escape') {
-                e.preventDefault()
-                setText('')
-                return
-              }
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                const cmd = hits[slashCursor()]
-                if (cmd) runSlash(cmd)
-                return
-              }
-            }
-            // isComposing：中文/日文输入法组合期的回车属于选词，不能当发送。
-            // Ctrl/Cmd+Enter 走与默认档相反的那一档；会话空闲时两者等价。
-            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-              e.preventDefault()
-              submit(e.ctrlKey || e.metaKey)
-            }
-          }}
-        />
+        {/* Goal 与等待队列共用输入框顶部的状态栏栈：目标固定在上，队列按顺序在下。
+            两者同时出现也只有一个外框、一套纵向次序，不互相覆盖。 */}
+        <div class="composer-rails">
+          <GoalChip />
+          <FollowUpCards onEdit={editFollowUp} thumbProps={thumbProps} />
+        </div>
 
-        <div class="composer-bar">
-          {/* 一个 `+` 收所有附件，不做图片/文件两个入口——对用户来说
+        <div class="composer-body">
+          {/* 待发附件属于这次输入，挂在输入框内部而不是另起一张外部卡片。
+            图片显示可辨认的缩略图；普通文件保留文件名卡。区域最多两行，超出后内部滚动。 */}
+          <Show when={pending().length > 0 || uploading() > 0}>
+            <div class="attach-row pending">
+              <For each={pending()}>
+                {(a, i) => (
+                  <Show
+                    when={isInlineImage(a.path)}
+                    fallback={
+                      <span class="attach-chip file" data-tip={a.path}>
+                        <AttachmentThumb
+                          path={a.path}
+                          name={a.name}
+                          box={20}
+                          {...thumbProps(a.path)}
+                        />
+                        <span class="truncate">{a.name}</span>
+                        <button
+                          class="attach-x"
+                          type="button"
+                          aria-label={`移除 ${a.name}`}
+                          onClick={() => setPending((prev) => prev.filter((_, j) => j !== i()))}
+                        >
+                          <IconX size={11} />
+                        </button>
+                      </span>
+                    }
+                  >
+                    <span class="attach-image" data-tip={a.path}>
+                      <AttachmentThumb
+                        path={a.path}
+                        name={a.name}
+                        box={72}
+                        {...thumbProps(a.path)}
+                      />
+                      <button
+                        class="attach-image-x"
+                        type="button"
+                        aria-label={`移除 ${a.name}`}
+                        onClick={() => setPending((prev) => prev.filter((_, j) => j !== i()))}
+                      >
+                        <IconX size={10} />
+                      </button>
+                    </span>
+                  </Show>
+                )}
+              </For>
+              <Show when={uploading() > 0}>
+                <span class="attach-chip busy">上传中 {uploading()}</span>
+              </Show>
+            </div>
+          </Show>
+
+          <textarea
+            ref={ta}
+            class="composer-input"
+            rows={1}
+            placeholder="随心输入，可粘贴图片"
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData?.files ?? [])
+              if (files.length) {
+                // 有文件才拦：拦掉纯文本粘贴会让人没法正常贴代码。
+                e.preventDefault()
+                void takeFiles(files)
+              }
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              const files = Array.from(e.dataTransfer?.files ?? [])
+              if (files.length) {
+                e.preventDefault()
+                void takeFiles(files)
+              }
+            }}
+            value={text()}
+            onInput={(e) => {
+              setText(e.currentTarget.value)
+              setSlashCursor(0)
+              autosize()
+            }}
+            onKeyDown={(e) => {
+              const hits = slashHits()
+              if (hits.length > 0 && !e.isComposing) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  setSlashCursor((c) => Math.min(c + 1, hits.length - 1))
+                  return
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setSlashCursor((c) => Math.max(c - 1, 0))
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setText('')
+                  return
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  const cmd = hits[slashCursor()]
+                  if (cmd) runSlash(cmd)
+                  return
+                }
+              }
+              // isComposing：中文/日文输入法组合期的回车属于选词，不能当发送。
+              // Ctrl/Cmd+Enter 走与默认档相反的那一档；会话空闲时两者等价。
+              if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                e.preventDefault()
+                submit(e.ctrlKey || e.metaKey)
+              }
+            }}
+          />
+
+          <div class="composer-bar">
+            {/* 一个 `+` 收所有附件，不做图片/文件两个入口——对用户来说
               「把这个文件给它看」是同一件事。
 
               桌面端走系统对话框：它给的是**绝对路径**，因此这条入口和拖入一样
               不搬字节。`<input type="file">` 拿不到路径，那是浏览器端唯一的路。 */}
-          <input
-            ref={filePicker}
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const fs = e.currentTarget.files
-              if (fs) void takeFiles(fs)
-              // 清空 value：同一个文件连选两次也要能触发 change。
-              e.currentTarget.value = ''
-            }}
-          />
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="添加附件"
-            data-tip="添加附件（也可直接粘贴或拖入）"
-            onClick={() => {
-              if (isDesktopShell()) {
-                void pickFiles().then(takePaths)
-                return
-              }
-              filePicker.click()
-            }}
-          >
-            <IconPlus size={16} />
-          </button>
+            <input
+              ref={filePicker}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const fs = e.currentTarget.files
+                if (fs) void takeFiles(fs)
+                // 清空 value：同一个文件连选两次也要能触发 change。
+                e.currentTarget.value = ''
+              }}
+            />
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label="添加附件"
+              data-tip="添加附件（也可直接粘贴或拖入）"
+              onClick={() => {
+                if (isDesktopShell()) {
+                  void pickFiles().then(takePaths)
+                  return
+                }
+                filePicker.click()
+              }}
+            >
+              <IconPlus size={16} />
+            </button>
 
-          <ModeChip />
+            <ModeChip />
 
-          {/* 上下文占用排在模型前面：它是「这一轮还装得下多少」，
+            {/* 上下文占用排在模型前面：它是「这一轮还装得下多少」，
               而模型是「拿什么去装」——先看容量再挑模型。 */}
-          <ContextMeter />
+            <ContextMeter />
 
-          <ModelPicker />
+            <ModelPicker />
 
-          <span class="spacer" />
+            <span class="spacer" />
 
-          {/* 语音输入。特性检测不通过时它自己不渲染，见 VoiceButton。 */}
-          <VoiceButton
-            draft={text()}
-            onText={(next) => {
-              setText(next)
-              autosize()
-            }}
-          />
+            {/* 语音输入。特性检测不通过时它自己不渲染，见 VoiceButton。 */}
+            <VoiceButton
+              draft={text()}
+              onText={(next) => {
+                setText(next)
+                autosize()
+              }}
+            />
 
-          {/* 这里不放金额：会话流末尾那条运行读数（Transcript 的 `.run-strip`）
+            {/* 这里不放金额：会话流末尾那条运行读数（Transcript 的 `.run-strip`）
               已经在显示同一笔钱。同源同值显示两遍，读起来是两笔账。
               留在那边是因为它和「这一轮跑成什么样」在一起，
               而输入区的工具栏是给下一轮用的。 */}
 
-          {/* 主按钮**只有一枚**，位置与尺寸不变，只换图标与语义：
+            {/* 主按钮**只有一枚**，位置与尺寸不变，只换图标与语义：
                 空闲 → 发送（没内容时 disabled）
                 运行中 + 有内容 → 发送（按档位入队或注入）
                 运行中 + 没内容 → 停止
@@ -703,18 +803,19 @@ export function Composer() {
 
               「有内容」的判据必须和 submit() 一致：只有附件没有文字也能发。
               只看文字的话，粘一张图不打字的用户点发送没反应。 */}
-          <Show
-            when={isRunning() && !hasInput()}
-            fallback={
-              <button class="send-btn" type="submit" disabled={!hasInput()} aria-label="发送">
-                <IconSend size={16} />
+            <Show
+              when={isRunning() && !hasInput()}
+              fallback={
+                <button class="send-btn" type="submit" disabled={!hasInput()} aria-label="发送">
+                  <IconSend size={16} />
+                </button>
+              }
+            >
+              <button class="send-btn" type="button" onClick={interrupt} aria-label="停止">
+                <IconStop size={16} />
               </button>
-            }
-          >
-            <button class="send-btn" type="button" onClick={interrupt} aria-label="停止">
-              <IconStop size={16} />
-            </button>
-          </Show>
+            </Show>
+          </div>
         </div>
       </form>
     </div>

@@ -294,6 +294,16 @@ export const IconArchive = (p: IconProps) => (
   </Svg>
 )
 
+/** 删除：垃圾桶。与关闭用的 `IconX` 分开，避免把移除数据读成关闭浮层。 */
+export const IconTrash = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 6h16" />
+    <path d="M9 6V4h6v2" />
+    <path d="m18 6-1 14H7L6 6" />
+    <path d="M10 10v6M14 10v6" />
+  </Svg>
+)
+
 /** 在文件管理器里打开：文件夹 + 一支斜向外的箭头。 */
 export const IconFolderOpen = (p: IconProps) => (
   <Svg {...p}>
