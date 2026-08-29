@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
-import { addWorkspace, pickWorkspace } from '../lib/store/index.ts'
+import { pickWorkspace, type WorkspaceInput } from '../lib/store/index.ts'
 import { IconFolder, IconPlus } from './Icons.tsx'
 
 /**
@@ -19,7 +19,7 @@ export function NewProjectDialog(props: {
   open: boolean
   /** 桌面外壳才有系统目录选择器。 */
   canPickFolder: boolean
-  onCreated: (rootPath: string) => void
+  onCreate: (input: WorkspaceInput) => Promise<void>
   onClose: () => void
 }) {
   const [name, setName] = createSignal('')
@@ -68,11 +68,10 @@ export function NewProjectDialog(props: {
     setError(null)
     setBusy(true)
     try {
-      const res = await addWorkspace({
+      await props.onCreate({
         ...(folder() ? { path: folder() as string } : {}),
         ...(name().trim() ? { name: name().trim() } : {}),
       })
-      props.onCreated(res.workspace.rootPath)
       props.onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

@@ -14,6 +14,7 @@ import {
   type ModelOption,
   modelCatalog,
   saveServerConfig,
+  type WorkspaceInput,
   watchWorkspace,
 } from './settings.ts'
 import { isDesktopShell } from './shell.ts'
@@ -63,9 +64,9 @@ export async function loadConversations(): Promise<void> {
  * **终端页和浏览器页要连着里面的进程一起关掉**：那个 shell 跑在上一个项目的目录里，
  * 靠重挂是收不掉的（PTY 在 Rust 侧，只认显式关闭）。
  */
-export async function activateWorkspace(path: string): Promise<void> {
-  // 切过去用的是同一条 upsert：只给路径，名字由服务端沿用账本里那一行的。
-  const { workspace: ws } = await addWorkspace({ path })
+export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
+  // 新建与切换共用这一次 upsert；切换只给路径，名字由服务端沿用账本里那一行的。
+  const { workspace: ws } = await addWorkspace(input)
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setOpenFile(null)
   closeAllPanelTabs()
