@@ -26,6 +26,7 @@ import {
   markProviderRequestSent,
   openProviderRequest,
   Store,
+  setCompactionManifest,
   settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
@@ -112,6 +113,55 @@ describe('逐请求账', () => {
 })
 
 describe('上下文面板', () => {
+  test('手动压缩后采用 manifest 的派生读数，新请求一到立即回归逐请求账', () => {
+    const { store, conversationId, runId } = fixture()
+    const first = send(store, runId, {
+      measured: 100_000,
+      categories: { historyMessages: 80_000, systemPrompt: 20_000 },
+    })
+    settleProviderRequest(
+      store,
+      first,
+      'received',
+      { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+    setCompactionManifest(store, conversationId, {
+      revision: 1,
+      compactedThroughMessageId: null,
+      compactedMessageCount: 0,
+      summary: '',
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      contextAfter: {
+        basedOnProviderRequestId: first,
+        model: 'm',
+        total: 40_000,
+        measured: 39_000,
+      },
+      createdAt: Date.now(),
+    })
+
+    const compacted = contextPanel(store, conversationId, M(1_000_000))
+    expect(compacted.total).toBe(40_000)
+    expect(compacted.measured).toBe(39_000)
+    expect(compacted.percent).toBe(4)
+    expect(compacted.source).toBe('estimated')
+    expect(sum(compacted.breakdown)).toBe(40_000)
+
+    const second = send(store, runId, { measured: 45_000 })
+    settleProviderRequest(
+      store,
+      second,
+      'received',
+      { inputTokens: 45_000, outputTokens: 500, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+    const refreshed = contextPanel(store, conversationId, M(1_000_000))
+    expect(refreshed.total).toBe(45_500)
+    expect(refreshed.source).toBe('actual')
+    store.close()
+  })
+
   /**
    * 真值口径：input + cached + cacheWrite + output。
    *

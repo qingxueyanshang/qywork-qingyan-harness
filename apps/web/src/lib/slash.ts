@@ -37,3 +37,27 @@ export function slashCall(draft: string): { name: string; arg: string } | null {
   if (!m) return null
   return { name: m[1]!, arg: (m[2] ?? '').trim() }
 }
+
+export type SlashDispatch<T> =
+  | { kind: 'run'; command: T; arg?: string }
+  | { kind: 'await_argument'; command: T }
+  | { kind: 'message' }
+
+/**
+ * 把发送按钮、移动端提交和键盘回车统一成同一种命令语义。
+ *
+ * 已知的无参命令直接执行；已知的带参命令缺参数时留在草稿里等用户补；未知命令
+ * 或给无参命令硬塞参数时仍按正文发送，不能静默吞掉用户输入。
+ */
+export function slashDispatch<T extends { slash?: string; arg?: unknown }>(
+  draft: string,
+  commands: readonly T[],
+): SlashDispatch<T> {
+  const call = slashCall(draft)
+  if (!call) return { kind: 'message' }
+  const command = commands.find((item) => item.slash === call.name)
+  if (!command) return { kind: 'message' }
+  if (command.arg && !call.arg) return { kind: 'await_argument', command }
+  if (!command.arg && call.arg) return { kind: 'message' }
+  return { kind: 'run', command, ...(call.arg ? { arg: call.arg } : {}) }
+}

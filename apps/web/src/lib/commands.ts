@@ -9,7 +9,7 @@
  * 没发生，且没有任何反馈。加新条目前先确认那个动作真的存在，别留空函数。
  *
  * **斜杠名只给「在打字途中会想用」的那几条。** 不是每条命令都配 `slash`。设置、插件这类是导航，用
- * Ctrl-K 更合适；斜杠是**手已经在输入框里**时的快捷方式，只有压缩、清空这种和当前这轮直接相关的才
+ * Ctrl-K 更合适；斜杠是**手已经在输入框里**时的快捷方式，只有压缩、新对话这种和当前这轮直接相关的才
  * 值得占一个斜杠名。
  */
 
@@ -57,7 +57,7 @@ export function buildCommands(): Command[] {
     {
       id: 'new',
       label: '新对话',
-      slash: 'clear',
+      slash: 'new',
       hint: '当前对话留在列表里',
       icon: IconNewChat,
       run: () => void newConversation(),
