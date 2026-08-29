@@ -73,7 +73,10 @@ function stub(result: Ran) {
         })
         return result
       },
-      runGraph: async () => ({ ok: true, nodes: [] }),
+      runGraph: async () => ({
+        ok: true,
+        transition: { workflowId: 'unused', phase: 'completed' as const, receipts: [] },
+      }),
     },
   }
 }
@@ -91,6 +94,26 @@ describe('派活工具的注册条件', () => {
     const names = r.list().map((s) => s.name)
     expect(names).toContain('subagent')
     expect(names).toContain('workflow')
+  })
+
+  test('workflow schema 用扁平可空判别，不依赖 oneOf/anyOf', () => {
+    const r = new ToolRegistry()
+    registerBuiltinTools(r, { delegate: true })
+    const schema = r.schemas().find((entry) => entry.name === 'workflow')
+    expect(schema?.strict).toBe(true)
+    const encoded = JSON.stringify(schema?.parameters)
+    expect(encoded).not.toContain('oneOf')
+    expect(encoded).not.toContain('anyOf')
+    const properties = schema?.parameters.properties as Record<string, Record<string, unknown>>
+    expect(properties.kind).toBeUndefined()
+    expect(properties.decision?.type).toEqual(['string', 'null'])
+    expect(properties.decision?.enum).toEqual(['approve', 'revise', null])
+    const node = (properties.nodes?.items as Record<string, unknown>).properties as Record<
+      string,
+      Record<string, unknown>
+    >
+    expect(node.kind?.type).toEqual(['string', 'null'])
+    expect(node.kind?.enum).toEqual(['agent', 'checkpoint', null])
   })
 })
 
@@ -239,15 +262,21 @@ describe('编排', () => {
   const graphPort = (result: {
     ok: boolean
     error?: string
-    nodes: {
-      nodeId: string
-      agent: string
-      status: 'done' | 'failed' | 'skipped'
-      output: string
-      durationMs: number
-      conversationId?: string
-      session?: string
-    }[]
+    transition?: {
+      workflowId: string
+      phase: 'waiting_review' | 'completed' | 'failed'
+      checkpointId?: string
+      receipts: Array<{
+        nodeId: string
+        agent: string
+        label: string
+        status: 'done' | 'failed' | 'skipped'
+        output: string
+        durationMs: number
+        conversationId?: string
+        session?: string
+      }>
+    }
   }) => {
     const seen: { goal: string; count: number; stepId: string }[] = []
     return {
@@ -255,8 +284,16 @@ describe('编排', () => {
       port: {
         targets: async () => [],
         run: async () => ({ ok: true, output: '' }),
-        runGraph: async (input: { goal: string; nodes: unknown[]; stepId: string }) => {
-          seen.push({ goal: input.goal, count: input.nodes.length, stepId: input.stepId })
+        runGraph: async (
+          input: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0],
+        ) => {
+          if (input.call.kind === 'start') {
+            seen.push({
+              goal: input.call.goal,
+              count: input.call.nodes.length,
+              stepId: input.stepId,
+            })
+          }
           return result
         },
       },
@@ -267,27 +304,35 @@ describe('编排', () => {
   test('图节点的会话 id 随结果回来', async () => {
     const g = graphPort({
       ok: true,
-      nodes: [
-        {
-          nodeId: 'a',
-          agent: 'cli:codex',
-          status: 'done',
-          output: '改完了',
-          durationMs: 1,
-          session: 'thread-5',
-        },
-      ],
+      transition: {
+        workflowId: 'st_test',
+        phase: 'completed',
+        receipts: [
+          {
+            nodeId: 'a',
+            agent: 'cli:codex',
+            label: 'Codex',
+            status: 'done',
+            output: '改完了',
+            durationMs: 1,
+            session: 'thread-5',
+          },
+        ],
+      },
     })
     const res = await workflowTool.fn(
       { goal: '改一下', nodes: [{ id: 'a', agent: 'cli:codex', task: '改' }] },
       ctx(g.port),
     )
-    const nodes = (res.data as { nodes: { session?: string }[] }).nodes
-    expect(nodes[0]?.session).toBe('thread-5')
+    const receipts = (res.data as { receipts: { session?: string }[] }).receipts
+    expect(receipts[0]?.session).toBe('thread-5')
   })
 
   test('图交出去时带上这次调用的 stepId', async () => {
-    const g = graphPort({ ok: true, nodes: [] })
+    const g = graphPort({
+      ok: true,
+      transition: { workflowId: 'st_test', phase: 'completed', receipts: [] },
+    })
     await workflowTool.fn(
       { goal: '做完这件事', nodes: [{ id: 'a', agent: 'dev', task: '写' }] },
       ctx(g.port),
@@ -296,7 +341,10 @@ describe('编排', () => {
   })
 
   test('节点 id 重复当场拒绝，不派出去', async () => {
-    const g = graphPort({ ok: true, nodes: [] })
+    const g = graphPort({
+      ok: true,
+      transition: { workflowId: 'st_test', phase: 'completed', receipts: [] },
+    })
     const res = await workflowTool.fn(
       {
         goal: '目标',
@@ -318,42 +366,60 @@ describe('编排', () => {
   test('逐节点终态与子会话 id 原样回在 data 里', async () => {
     const g = graphPort({
       ok: true,
-      nodes: [
-        {
-          nodeId: 'a',
-          agent: 'dev',
-          status: 'done',
-          output: '写完了',
-          durationMs: 12,
-          conversationId: 'cv_child',
-        },
-      ],
+      transition: {
+        workflowId: 'st_test',
+        phase: 'completed',
+        receipts: [
+          {
+            nodeId: 'a',
+            agent: 'dev',
+            label: '开发',
+            status: 'done',
+            output: '写完了',
+            durationMs: 12,
+            conversationId: 'cv_child',
+          },
+        ],
+      },
     })
     const res = await workflowTool.fn(
       { goal: '目标', nodes: [{ id: 'a', agent: 'dev', task: '写' }] },
       ctx(g.port),
     )
     expect(res.status).toBe('success')
-    expect((res.data as { nodes: { conversationId?: string }[] }).nodes[0]?.conversationId).toBe(
-      'cv_child',
-    )
+    expect(
+      (res.data as { receipts: { conversationId?: string }[] }).receipts[0]?.conversationId,
+    ).toBe('cv_child')
   })
 
   test('有节点没做成时整次调用算失败', async () => {
     const g = graphPort({
       ok: false,
-      nodes: [{ nodeId: 'a', agent: 'dev', status: 'failed', output: '', durationMs: 3 }],
+      transition: {
+        workflowId: 'st_test',
+        phase: 'failed',
+        receipts: [
+          {
+            nodeId: 'a',
+            agent: 'dev',
+            label: '开发',
+            status: 'failed',
+            output: '',
+            durationMs: 3,
+          },
+        ],
+      },
     })
     const res = await workflowTool.fn(
       { goal: '目标', nodes: [{ id: 'a', agent: 'dev', task: '写' }] },
       ctx(g.port),
     )
     expect(res.status).toBe('failure')
-    expect(res.message).toContain('1 个失败')
+    expect(res.message).toContain('执行失败')
   })
 
   test('图不合法时把编排器的原话带回来', async () => {
-    const g = graphPort({ ok: false, error: '节点 b 依赖不存在的节点 x', nodes: [] })
+    const g = graphPort({ ok: false, error: '节点 b 依赖不存在的节点 x' })
     const res = await workflowTool.fn(
       { goal: '目标', nodes: [{ id: 'b', agent: 'dev', task: '写' }] },
       ctx(g.port),
@@ -370,9 +436,18 @@ describe('临时子 agent 在图里', () => {
     const port = {
       targets: async () => [],
       run: async () => ({ ok: true, output: '' }),
-      runGraph: async (input: { nodes: { agent: string }[] }) => {
-        seen.push(...input.nodes.map((n) => ({ agent: n.agent })))
-        return { ok: true, nodes: [] }
+      runGraph: async (input: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]) => {
+        if (input.call.kind === 'start') {
+          seen.push(
+            ...input.call.nodes
+              .filter((node) => node.kind !== 'checkpoint')
+              .map((node) => ({ agent: node.agent })),
+          )
+        }
+        return {
+          ok: true,
+          transition: { workflowId: 'st_test', phase: 'completed' as const, receipts: [] },
+        }
       },
     }
     const res = await workflowTool.fn(

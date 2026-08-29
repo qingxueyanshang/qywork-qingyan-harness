@@ -22,6 +22,8 @@ import type {
   ResourceCoverage,
   TodoItem,
   ToolOutcomeWire,
+  WorkflowCall,
+  WorkflowTransition,
 } from '@qywork/core'
 
 // ─────────────────────────────── 执行上下文 ───────────────────────────────
@@ -113,30 +115,14 @@ export interface DelegatePort {
    * 只有这次调用的返回值。
    */
   runGraph(input: {
-    goal: string
-    nodes: {
-      id: string
-      agent: string
-      task: string
-      needs?: string[]
-      passInput?: boolean
-      model?: string
-    }[]
+    call: WorkflowCall
     runId: string
     stepId: string
     signal: AbortSignal
   }): Promise<{
     ok: boolean
     error?: string
-    nodes: {
-      nodeId: string
-      agent: string
-      status: 'done' | 'failed' | 'skipped'
-      output: string
-      error?: string
-      durationMs: number
-      conversationId?: string
-    }[]
+    transition?: WorkflowTransition
   }>
 }
 

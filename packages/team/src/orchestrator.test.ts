@@ -75,6 +75,19 @@ describe('计划校验', () => {
       ),
     ).toThrow(/重复/)
   })
+
+  test('不允许有分支绕过主会话检查点', () => {
+    expect(() =>
+      validatePlan(
+        [
+          { id: 'a', agent: 'dev', task: '第一批' },
+          { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+          { id: 'b', agent: 'dev', task: '没有经过检查点' },
+        ],
+        [role('dev')],
+      ),
+    ).toThrow(/绕过检查点/)
+  })
 })
 
 describe('编排执行', () => {
@@ -88,7 +101,9 @@ describe('编排执行', () => {
       ],
     }
     const d = deps(ok)
-    const results = await new TeamOrchestrator(config, d.deps as never).run('做个登录页')
+    const { receipts: results } = await new TeamOrchestrator(config, d.deps as never).run(
+      '做个登录页',
+    )
 
     expect(d.order).toEqual(['设计', '实现'])
     expect(results.every((r) => r.status === 'done')).toBe(true)
@@ -148,7 +163,7 @@ describe('编排执行', () => {
       ],
     }
     const d = deps(ok)
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
+    const { receipts: results } = await new TeamOrchestrator(config, d.deps as never).run('目标')
     expect(results.find((r) => r.nodeId === 'a')?.status).toBe('done')
     const failed = results.find((r) => r.nodeId === 'b')!
     expect(failed.status).toBe('failed')
@@ -196,7 +211,7 @@ describe('编排执行', () => {
     const d = deps(async (id) =>
       id === 'a' ? { ok: false, output: '' } : { ok: true, output: 'ok' },
     )
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
+    const { receipts: results } = await new TeamOrchestrator(config, d.deps as never).run('目标')
 
     expect(byId(results, 'n1').status).toBe('failed')
     expect(byId(results, 'n2').status).toBe('skipped')
@@ -225,10 +240,218 @@ describe('编排执行', () => {
       inFlight--
       return { ok: true, output: 'x' }
     })
-    const results = await new TeamOrchestrator(config, d.deps as never).run('目标')
+    const { receipts: results } = await new TeamOrchestrator(config, d.deps as never).run('目标')
 
     expect(results.filter((r) => r.status === 'done')).toHaveLength(4)
     expect(peak).toBeLessThanOrEqual(2)
+  })
+})
+
+describe('主会话检查点', () => {
+  const plan: TeamConfig = {
+    name: 'checkpoint',
+    roles: [role('r')],
+    plan: [
+      { id: 'a', agent: 'r', task: '查 A' },
+      { id: 'b', agent: 'r', task: '查 B' },
+      { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a', 'b'] },
+      { id: 'c', agent: 'r', task: '汇总 {input}', needs: ['review'] },
+    ],
+  }
+
+  test('首批并行回执齐后暂停，approve 才启动下一批', async () => {
+    const calls: string[] = []
+    const deps = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_checkpoint' as never,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async ({ prompt }: { prompt: string }) => {
+        calls.push(prompt)
+        return { ok: true, output: `结果 ${calls.length}`, conversationId: `cv_${calls.length}` }
+      },
+    }
+    const first = await new TeamOrchestrator(plan, deps as never).run('完成目标')
+    expect(first.phase).toBe('waiting_review')
+    expect(first.checkpointId).toBe('review')
+    expect(first.receipts.map((receipt) => receipt.nodeId).sort()).toEqual(['a', 'b'])
+    expect(calls).toHaveLength(2)
+
+    const results = Object.fromEntries(first.receipts.map((receipt) => [receipt.nodeId, receipt]))
+    const second = await new TeamOrchestrator(plan, deps as never).run('完成目标', {
+      results,
+      approvals: {},
+      checkpointId: 'review',
+      review: {
+        checkpointId: 'review',
+        decision: 'approve',
+        note: '回执合格',
+        revisions: [],
+      },
+    })
+    expect(second.phase).toBe('completed')
+    expect(second.review?.decision).toBe('approve')
+    expect(second.receipts.map((receipt) => receipt.nodeId)).toEqual(['c'])
+    expect(calls[2]).toContain('回执合格')
+    expect(calls[2]).toContain('结果 1')
+    expect(calls[2]).toContain('结果 2')
+  })
+
+  test('revise 向原子会话续发，并让本批下游在原会话重跑', async () => {
+    const chain: TeamConfig = {
+      name: 'revise',
+      roles: [role('r')],
+      plan: [
+        { id: 'a', agent: 'r', task: '先研究' },
+        { id: 'b', agent: 'r', task: '再复核 {input}', needs: ['a'] },
+        { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['b'] },
+      ],
+    }
+    const resumed: Array<{ prompt: string; existing?: string }> = []
+    let fresh = 0
+    const deps = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_revise' as never,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async (input: { prompt: string; existingConversationId?: string }) => {
+        resumed.push({
+          prompt: input.prompt,
+          ...(input.existingConversationId ? { existing: input.existingConversationId } : {}),
+        })
+        if (!input.existingConversationId) {
+          fresh += 1
+          return { ok: true, output: `初稿 ${fresh}`, conversationId: `cv_${fresh}` }
+        }
+        return {
+          ok: true,
+          output: input.existingConversationId === 'cv_1' ? '修订稿' : '复核新版',
+          conversationId: input.existingConversationId,
+        }
+      },
+    }
+    const first = await new TeamOrchestrator(chain, deps as never).run('目标')
+    const results = Object.fromEntries(first.receipts.map((receipt) => [receipt.nodeId, receipt]))
+    const second = await new TeamOrchestrator(chain, deps as never).run('目标', {
+      results,
+      approvals: {},
+      checkpointId: 'review',
+      review: {
+        checkpointId: 'review',
+        decision: 'revise',
+        note: 'A 缺少证据',
+        revisions: [{ nodeId: 'a', instruction: '补充两条可核验证据' }],
+      },
+    })
+
+    expect(second.phase).toBe('waiting_review')
+    expect(second.review?.decision).toBe('revise')
+    expect(second.receipts.map((receipt) => receipt.nodeId)).toEqual(['a', 'b'])
+    expect(resumed.slice(-2).map((call) => call.existing)).toEqual(['cv_1', 'cv_2'])
+    expect(resumed.at(-2)?.prompt).toContain('补充两条可核验证据')
+    expect(resumed.at(-1)?.prompt).toContain('修订稿')
+    expect(second.receipts.map((receipt) => receipt.conversationId)).toEqual(['cv_1', 'cv_2'])
+  })
+
+  test('上一轮缺少 conversationId 时明确失败，不偷偷新建会话', async () => {
+    let calls = 0
+    const deps = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_missing_handle' as never,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async () => {
+        calls += 1
+        return { ok: true, output: '不该执行' }
+      },
+    }
+    const result = await new TeamOrchestrator(
+      {
+        name: 'missing',
+        roles: [role('r')],
+        plan: [
+          { id: 'a', agent: 'r', task: '研究' },
+          { id: 'review', kind: 'checkpoint', label: '审查', needs: ['a'] },
+        ],
+      },
+      deps as never,
+    ).run('目标', {
+      results: {
+        a: {
+          nodeId: 'a',
+          agent: 'r',
+          label: 'r',
+          status: 'done',
+          output: '旧稿',
+          durationMs: 1,
+        },
+      },
+      approvals: {},
+      checkpointId: 'review',
+      review: {
+        checkpointId: 'review',
+        decision: 'revise',
+        note: '',
+        revisions: [{ nodeId: 'a', instruction: '重做' }],
+      },
+    })
+    expect(result.receipts[0]?.status).toBe('failed')
+    expect(result.receipts[0]?.error).toContain('没有可续接子会话')
+    expect(calls).toBe(0)
+  })
+
+  test('外部 CLI 没有 resumeArgs 时明确失败，不另起新进程', async () => {
+    const deps = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_cli_no_resume' as never,
+      emit: () => {},
+      resolveCli: () => ({
+        id: 'plain',
+        vendor: 'Plain',
+        command: 'plain',
+        args: ['{prompt}'],
+        output: 'text' as const,
+      }),
+      runBuiltin: async () => ({ ok: true, output: '不该执行' }),
+    }
+    const result = await new TeamOrchestrator(
+      {
+        name: 'cli-no-resume',
+        roles: [],
+        plan: [
+          { id: 'a', agent: 'cli:plain', task: '研究' },
+          { id: 'review', kind: 'checkpoint', label: '审查', needs: ['a'] },
+        ],
+      },
+      deps,
+    ).run('目标', {
+      results: {
+        a: {
+          nodeId: 'a',
+          agent: 'cli:plain',
+          label: 'Plain plain',
+          status: 'done',
+          output: '旧稿',
+          durationMs: 1,
+          session: 'sess_old',
+        },
+      },
+      approvals: {},
+      checkpointId: 'review',
+      review: {
+        checkpointId: 'review',
+        decision: 'revise',
+        note: '',
+        revisions: [{ nodeId: 'a', instruction: '重做' }],
+      },
+    })
+    expect(result.receipts[0]?.status).toBe('failed')
+    expect(result.receipts[0]?.error).toContain('没有可续接会话')
+    expect(result.receipts[0]?.session).toBe('sess_old')
   })
 })
 

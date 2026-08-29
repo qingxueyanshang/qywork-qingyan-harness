@@ -129,12 +129,16 @@ stdin 是关的，没有人能应答。不这样的代价实测付过（2026-08-
 workflow(goal: "…", nodes: [
   { id: "diag", task: "定位问题：{goal}" },
   { id: "fix", agent: "implementer", task: "按下面的分析改", needs: ["diag"] },
-  { id: "check", agent: "cli:claude", task: "复核", needs: ["fix"] }
+  { id: "review", kind: "checkpoint", label: "主会话审查", needs: ["fix"] },
+  { id: "check", agent: "cli:claude", task: "复核", needs: ["review"] }
 ])
 ```
 
 图**由模型一次性画出来**，不预先写在 `team.json` 里：编排图是这一次任务的，不是项目配置。
-执行仍然是确定性的代码——依赖顺序、并发闸都由编排器按图跑，模型不参与「下一步派谁」。
+执行仍然是确定性的代码——依赖顺序、并发闸都由编排器按图跑。到 `checkpoint` 后，本次
+调度先把回执返回主会话；主会话核验后，用返回的 `workflowId` 和 `checkpointId` 再次调用
+同一个 `workflow`，选择 `approve` 进入下一批，或用 `revise + revisions` 向指定节点的原
+conversation/session 续发。图仍是 DAG，返工不会加依赖环。
 
 - 节点不写 `agent` = 临时子 agent；写角色 id = 那个角色；写 `cli:<id>` = 外部 CLI。三种可以混。
 - `{goal}` 替换成用户的原始诉求。
@@ -142,11 +146,13 @@ workflow(goal: "…", nodes: [
   「## 上游产出」小节下——声明了 `needs` 却拿不到产出，表现是下游回「没有上一步的上下文，
   无法复核」，而配置看起来完全正确。真的只想要执行顺序，写 `passInput: false`。
 - 不写依赖的节点**并行**跑，受 `rules.maxConcurrent`（默认 3）限制。
+- `checkpoint` 是当前主会话的审查屏障，不执行子 agent；下一批必须依赖它。
 - 上游失败时下游**跳过**，不拿着坏输入继续。
 - 成环、悬空依赖、引用不存在的角色在加载期就拒绝，不留到运行时变成「一直没有可启动节点」。
 
-图在会话里画成一张卡：节点按依赖分层，同层并排，层间连线指向下游；走向一个正在跑的
-节点的那几段线在流动。点节点——子 agent 打开它那条子会话，外部 CLI 打开它写出来的那段流。
+同一个 workflow 的首次派发、返工和批准在会话里始终投影成一张卡：节点按依赖分层，同层
+并排，层间连线指向下游；`checkpoint` 显示为当前会话节点。点 agent 节点——子 agent 打开
+它那条子会话，外部 CLI 打开它写出来的那段流；多次返工仍是同一个入口。
 
 ---
 

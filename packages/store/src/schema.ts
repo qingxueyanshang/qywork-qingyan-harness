@@ -944,7 +944,7 @@ WHERE json_extract(payload, '$.outcome.data.imageData') IS NOT NULL;
      * 这个数 `loop.ts` 早就量出来了（`Date.now()` 差，随 `tool.finished` 发出去），
      * 但只活在连接期：前端把它写进内存里那条 item，刷新就没了。表现是派活卡上
      * 那一格的耗时刷新之后消失，而编排那张图不受影响——它的耗时是编排器另外量的，
-     * 随结果落进 `outcome.data.nodes[]`。
+     * 旧记录落在 `outcome.data.nodes[]`，新 workflow 转移落在 `outcome.data.receipts[]`。
      *
      * **落在列上，不落进 payload。** 耗时是这一步的属性，不是工具结果的一部分；
      * 塞进 `outcome.data` 的话它会跟着结果进模型上下文，而那是给模型看的载荷。

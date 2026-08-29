@@ -13,7 +13,7 @@
  * - **派活的那两个不进组**（见 `STANDALONE`）。
  */
 
-import type { ActionKind } from '@qywork/core'
+import { type ActionKind, foldWorkflow, workflowGroupId, workflowTransitionOf } from '@qywork/core'
 import type { TranscriptItem } from './store/index.ts'
 
 export type RenderItem =
@@ -35,6 +35,7 @@ export type RenderItem =
 const STANDALONE = new Set(['subagent', 'workflow'])
 
 export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
+  transcript = collapseWorkflowItems(transcript)
   const out: RenderItem[] = []
   let segment: TranscriptItem[] = []
 
@@ -106,6 +107,57 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
   }
   flush()
   return out
+}
+
+/**
+ * 一个 workflow 可以在 transcript 里有多次工具调用，但界面语义始终是一张卡。
+ * 这里只折叠已落在现有 tool step 里的事实，不保存 UI 专用状态。
+ */
+export function collapseWorkflowItems(transcript: TranscriptItem[]): TranscriptItem[] {
+  const groups = new Map<string, Array<{ item: TranscriptItem; index: number }>>()
+  transcript.forEach((item, index) => {
+    if (item.kind !== 'tool' || item.toolName !== 'workflow') return
+    const id = workflowGroupId({
+      stepId: item.id,
+      ...(item.args ? { args: item.args } : {}),
+      ...(item.outcome ? { outcome: item.outcome } : {}),
+    })
+    const rows = groups.get(id)
+    if (rows) rows.push({ item, index })
+    else groups.set(id, [{ item, index }])
+  })
+
+  const hidden = new Set<number>()
+  const replacements = new Map<number, TranscriptItem>()
+  for (const [workflowId, rows] of groups) {
+    const records = rows.map(({ item }) => ({
+      stepId: item.id,
+      ...(item.args ? { args: item.args } : {}),
+      ...(item.outcome ? { outcome: item.outcome } : {}),
+      ...(item.status ? { status: item.status } : {}),
+    }))
+    const folded = foldWorkflow(records, workflowId)
+    if (!folded.ok) continue
+    const isCheckpointWorkflow = folded.projection.nodes.some((node) => node.kind === 'checkpoint')
+    const hasTransition = rows.some(({ item }) => workflowTransitionOf(item.outcome))
+    // 迁移前的一次性 workflow 没有 transition，保持原卡原样，不能伪装成运行中。
+    if (!isCheckpointWorkflow && !hasTransition && rows.length === 1) continue
+
+    const first = rows[0]!.item
+    const last = rows.at(-1)!
+    for (const row of rows.slice(0, -1)) hidden.add(row.index)
+    replacements.set(last.index, {
+      ...last.item,
+      id: workflowId,
+      ...(first.args ? { args: first.args } : {}),
+      workflow: folded.projection,
+    })
+  }
+
+  return transcript.flatMap((item, index) => {
+    if (hidden.has(index)) return []
+    return [replacements.get(index) ?? item]
+  })
 }
 
 /**

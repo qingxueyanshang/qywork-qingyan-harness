@@ -107,7 +107,13 @@ const CUT_SHORT: Partial<Record<StopReason, string>> = {
 }
 
 export async function runBuiltinMember(
-  input: { role: Role; prompt: string; signal: AbortSignal },
+  input: {
+    role: Role
+    prompt: string
+    signal: AbortSignal
+    /** workflow revise 时续用上一轮子会话；不提供才新建。 */
+    existingConversationId?: ConversationId
+  },
   ctx: {
     // 只要装配三件套：派活端口（`delegate.ts`）在没有 WebSocket 的地方也要调它。
     deps: Omit<CommandDeps, 'ws'>
@@ -155,9 +161,11 @@ export async function runBuiltinMember(
   let stop: StopReason | null = null
 
   try {
-    for await (const ev of session.ask(input.prompt, undefined, {
+    for await (const ev of session.ask(input.prompt, input.existingConversationId, {
       // 点名过模型时不再带角色那一个：裸模型名会盖过上面刚定下的那一对。
-      ...(role.model && !ctx.explicit ? { model: role.model } : {}),
+      ...(role.model && !ctx.explicit && !input.existingConversationId
+        ? { model: role.model }
+        : {}),
       // 成员子会话不进会话列表——`listConversations` 的判据是 `source IS NULL`。
       // 不打这个标记的话，每跑一次 team，用户列表里就多出 N 条以成员 prompt
       // 开头的条目，而点进去只有半截独白。

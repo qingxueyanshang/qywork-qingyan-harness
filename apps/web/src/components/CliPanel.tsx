@@ -10,12 +10,18 @@
  */
 
 import { Show } from 'solid-js'
+import { collapseWorkflowItems } from '../lib/render-items.ts'
 import { transcript } from '../lib/store/index.ts'
 import { tabCliNode } from '../lib/store/ui.ts'
 
 export default function CliPanel(props: { id: string }) {
   const where = () => tabCliNode(props.id)
-  const card = () => transcript().find((t) => t.id === where().stepId)
+  const card = () => {
+    const items = transcript()
+    // workflow 的面板 stepId 是稳定 workflowId，而实时输出落在最近一轮真实 step。
+    // 与主列表走同一折叠，才能同时拿到最近 live 节点和累计回执。
+    return collapseWorkflowItems(items).find((item) => item.id === where().stepId)
+  }
 
   /**
    * 运行期间是攒起来的中途输出，跑完 / 刷新之后是落库的那段产出。
@@ -31,7 +37,11 @@ export default function CliPanel(props: { id: string }) {
       | undefined
     // 一张图的产出按节点分开落；派一件只有一格，产出就在结果顶层。
     if (card()?.toolName === 'workflow') {
-      return data?.nodes?.find((n) => n.nodeId === where().nodeId)?.output ?? ''
+      return (
+        card()?.workflow?.results[where().nodeId]?.output ??
+        data?.nodes?.find((n) => n.nodeId === where().nodeId)?.output ??
+        ''
+      )
     }
     return typeof data?.output === 'string' ? data.output : ''
   }

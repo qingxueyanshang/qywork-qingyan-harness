@@ -1076,6 +1076,10 @@
 .wf-node.spawned {
   border-color: var(--accent);
 }
+.wf-node.session.waiting_review {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .wf-node.done {
   background: var(--bg-inset);
 }

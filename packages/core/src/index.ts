@@ -98,6 +98,30 @@ export {
   type Workspace,
 } from './domain/model.ts'
 
+// workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各算一份。
+export {
+  checkpointOutput,
+  foldWorkflow,
+  parseWorkflowCall,
+  type RevisionClosureResult,
+  revisionClosure,
+  type WorkflowAgentNode,
+  type WorkflowAppliedReview,
+  type WorkflowCall,
+  type WorkflowCallRecord,
+  type WorkflowCheckpointNode,
+  type WorkflowFoldResult,
+  type WorkflowNode,
+  type WorkflowParseResult,
+  type WorkflowPhase,
+  type WorkflowProjection,
+  type WorkflowReceipt,
+  type WorkflowRevision,
+  type WorkflowTransition,
+  workflowGroupId,
+  workflowTransitionOf,
+} from './domain/workflow.ts'
+
 // 服务端 → 客户端的事件
 export type {
   ActionDescriptor,
