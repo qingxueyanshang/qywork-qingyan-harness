@@ -118,30 +118,29 @@
   color: var(--danger);
 }
 
-/* 当前目标。**占流，不悬浮**——它跨轮存在（一轮接一轮自己跑下去的那条目标），
- * 而上面那条整轮状态条是这一轮的临时读数。两块都悬浮的话它们会互相盖住，
- * 而且常驻的一块悬在正文上等于永久糊掉最底下那一行。
- *
- * 占流的代价是会话流少一截高度，但**输入框不会被往下挤**：`.composer-wrap`
- * 贴着底边，长高只往上长。
- *
- * **一行，且两侧比输入框各缩一格**：它是输入框的附属说明，不是并列的另一块，
- * 等宽会读成上下两个控件。
- *
- * **高度锁死**（B9）：目标正文长度不定、状态文字长度不定，随内容变高的话
- * 用户瞄着「停止」按下去，那个位置已经换成了别的按钮。长了就截断，title 里有全文。 */
+/* Goal 与等待队列是输入框后方的内缩扩展层；正文壳在前景盖住它的底边。
+ * 目标永远在第一行，队列依次排在下面。空栈不占高度。 */
+.composer-rails {
+  position: relative;
+  z-index: 0;
+  margin: 0 var(--s-3) -1px;
+  border: 1px solid var(--border-default);
+  border-bottom: 0;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  background: var(--bg-raised);
+}
+.composer-rails:empty {
+  display: none;
+}
 .goal-chip {
-  margin: 0 var(--s-4) var(--s-2);
-  padding: var(--s-2) var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  padding: 0 var(--s-3);
   font-size: var(--fs-sm);
 }
 .goal-line {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  height: 20px;
+  height: 36px;
 }
 .goal-label {
   flex: none;
@@ -154,11 +153,16 @@
 }
 .goal-act {
   flex: none;
-  padding: 1px var(--s-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--s-1);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
+  line-height: 1;
   white-space: nowrap;
 }
 .goal-act:hover {
@@ -178,64 +182,100 @@
   color: var(--danger);
 }
 
-/* 排着的跟进消息，一条一张卡，在目标条与输入框之间。
- *
- * **自带一整套规则，不与 `.goal-chip` 共用选择器。** 共用的代价是删掉其中一块时
- * 把另一块的边距、底色、圆角一起带走，而 CSS 不会为此报任何错。
- *
- * **每张卡高度锁死**（B9）：正文长度不定，随内容变高的话用户瞄着删除按钮按下去，
- * 那个位置已经换成了下一张卡的档位按钮。长了就截断，title 里有全文。 */
+/* 等待队列是 `.composer` 的顶部扩展栏，不在输入框外另起悬浮卡。
+ * 每行定高，正文过长就在本行截断；多条队列之间只用一条分隔线。 */
 .followup-cards {
   display: flex;
   flex-direction: column;
-  gap: var(--s-1);
-  /* 下边距用 `--composer-stack-gap`：它上面那条读数条悬浮时按同一个值让开
-     `.composer-wrap` 的顶沿，写成 --s-2 的话卡片下面的缝比上面宽一截。 */
-  margin: 0 var(--s-4) var(--composer-stack-gap);
+  gap: 0;
+  background: transparent;
+}
+.goal-chip + .followup-cards {
+  border-top: 1px solid var(--border-subtle);
 }
 .followup-card {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  height: 32px;
-  /* 右侧比左侧窄：删除按钮自带 --s-1 的内边距，两处相加会把图标推到离右沿 16px，
-     在一张 32px 高的卡里读成没贴住边。左侧是正文，仍按 --s-3。 */
-  padding: 0 var(--s-1) 0 var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  height: 36px;
+  padding: 0 var(--s-3);
   font-size: var(--fs-sm);
+}
+.followup-card + .followup-card {
+  border-top: 1px solid var(--border-subtle);
+}
+.followup-label {
+  flex: none;
+  color: var(--text-tertiary);
 }
 /* 正文占满剩余宽度并在这里截断：`min-width: 0` 由 `.truncate` 给。 */
 .followup-text {
   flex: 1 1 auto;
   color: var(--text-primary);
 }
-/* 卡片底是 `--bg-inset`，档位词的底色必须显式给 `--bg-raised`：
-   透明落在它上面只剩一圈边框。悬停同理不能用半透明的 `--bg-hover`。 */
-.followup-act {
+.followup-attachment-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   flex: none;
-  padding: 1px var(--s-2);
+}
+.followup-mini-attachment {
+  display: block;
+  width: 24px;
+  height: 24px;
   border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
+  border-radius: var(--r-xs);
+  overflow: hidden;
+}
+.followup-attachment-more {
+  margin-left: 2px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 右侧操作严格共用 24px 高度与同一条中心线，默认不画按钮盒。 */
+.followup-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  height: 24px;
+}
+.followup-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 var(--s-1);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
+  line-height: 1;
   white-space: nowrap;
 }
 .followup-act:hover {
-  background: var(--bg-sunken);
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
-/* 删除只留图标，边框与底色都去掉：它和档位词并排，两个都带框会读成两个同级选项。 */
-.followup-act.drop {
-  display: flex;
-  align-items: center;
-  padding: var(--s-1);
-  border-color: transparent;
-  background: none;
+.followup-act.icon {
+  width: 24px;
+  padding: 0;
+}
+
+.followup-act.icon svg {
+  display: block;
+}
+.followup-act.danger:hover {
+  color: var(--danger);
 }
 
 .composer {
+  background: transparent;
+}
+.composer-body {
+  position: relative;
+  z-index: 1;
   border: 1px solid var(--border-default);
   border-radius: var(--r-xl);
   background: var(--bg-raised);
@@ -244,7 +284,7 @@
     border-color var(--t-base) var(--ease),
     box-shadow var(--t-base) var(--ease);
 }
-.composer:focus-within {
+.composer:focus-within .composer-body {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
 }
@@ -690,9 +730,7 @@
 }
 
 /* ── 附件 ──
-   一行一个看得清、删得掉，**不做缩略图墙**——那会把输入区顶掉半屏。
-   左边那格是定尺的，图片放缩略图、文件放通用图标；只给图片留格子的话，
-   两种 chip 高度不同，混排就是锯齿而且行高跟着内容跳。 */
+   已发送附件继续使用紧凑 chip；待发附件使用 `.pending` 修饰，挂在输入框内部。 */
 .attach-row {
   display: flex;
   flex-wrap: wrap;
@@ -703,6 +741,14 @@
 .attach-row.sent {
   justify-content: flex-end;
   margin-bottom: 4px;
+}
+.attach-row.pending {
+  align-items: flex-start;
+  gap: var(--s-3);
+  max-height: 176px;
+  margin: 0;
+  padding: var(--s-4) var(--s-4) 0;
+  overflow-y: auto;
 }
 .attach-chip {
   display: inline-flex;
@@ -721,6 +767,9 @@
   color: var(--text-tertiary);
   border-style: dashed;
 }
+.attach-row.pending .attach-chip.file {
+  height: 32px;
+}
 /* 定尺格子。宽高由行内样式给（两处用不同边长），这里只管它不许被内容改形状。 */
 .attach-thumb {
   display: grid;
@@ -736,6 +785,34 @@
   height: 100%;
   /* cover 而不是 contain：格子是定尺的，contain 会在长图两侧留出空条。 */
   object-fit: cover;
+}
+.attach-image {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 72px;
+  height: 72px;
+}
+.attach-image .attach-thumb {
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+}
+.attach-image-x {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--bg-raised);
+  border-radius: var(--r-full);
+  background: var(--text-primary);
+  color: var(--bg-raised);
+}
+.attach-image-x:hover {
+  background: var(--danger);
 }
 /* 已发送的那一列 chip 竖着排：缩略图大一圈，横着排一行放不下两张。 */
 .attach-row.sent .attach-chip {
@@ -891,6 +968,6 @@
 
 /* 拖着文件悬在输入区上。**只给边框，不加文案**——「拖到这里」是解释性文本，
    边框已经说完了。 */
-.composer-wrap.drag-over .composer {
+.composer-wrap.drag-over .composer-body {
   border-color: var(--accent);
 }
