@@ -9,7 +9,7 @@ import {
 } from '@qywork/core'
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
-import { slashCall } from '../lib/slash.ts'
+import { slashDispatch } from '../lib/slash.ts'
 import {
   activeModelRow,
   composerSeed,
@@ -448,6 +448,14 @@ export function Composer() {
    * 必然漂移成「Ctrl-K 搜得到、打 / 搜不到」，而那种不一致没人会当成 bug。
    */
   const slashHits = () => matchSlash(text())
+  const executeSlash = (cmd: Command, arg?: string) => {
+    // 先清草稿再执行：命令可能会开浮层或换会话，那之后 setText 未必还落在这个组件上。
+    setText('')
+    queueMicrotask(() => {
+      ta.style.height = 'auto'
+      cmd.run(arg)
+    })
+  }
   const runSlash = (cmd: Command) => {
     // 要跟一段话的命令（`/goal`）在面板里选中**不执行**，只把命令名填进草稿——
     // 这时候用户还没说要做什么，跑起来只能跑一个空目标。
@@ -459,12 +467,7 @@ export function Composer() {
       })
       return
     }
-    // 先清草稿再执行：命令可能会开浮层或换会话，那之后 setText 未必还落在这个组件上。
-    setText('')
-    queueMicrotask(() => {
-      ta.style.height = 'auto'
-      cmd.run()
-    })
+    executeSlash(cmd)
   }
 
   const autosize = () => {
@@ -502,20 +505,16 @@ export function Composer() {
     if (!v && files.length === 0) return
 
     /*
-     * 带参数的斜杠命令在这里被截下来，**不发成一条消息**。
-     *
-     * 只截「确实是命令名 + 确实带了参数」这一种：`/goal` 光杆走的是补全面板
-     * （`runSlash` 把它填回草稿），认不出的 `/xxx` 原样当正文发出去——
-     * 静默丢掉一句用户打的话，比把它当消息发出去坏得多。
+     * 所有提交方式都在这里认命令。此前只截带参数的 `/goal`，因此点击发送按钮提交
+     * `/compact`、`/new` 会被当成普通消息；键盘补全面板却能执行，因此同一行字有两种语义。
      */
-    const call = slashCall(v)
-    const cmd = call ? buildCommands().find((c) => c.slash === call.name && c.arg) : null
-    if (cmd && call?.arg) {
-      setText('')
-      queueMicrotask(() => {
-        ta.style.height = 'auto'
-        cmd.run(call.arg)
-      })
+    const dispatch = slashDispatch(v, buildCommands())
+    if (dispatch.kind === 'run') {
+      executeSlash(dispatch.command, dispatch.arg)
+      return
+    }
+    if (dispatch.kind === 'await_argument') {
+      runSlash(dispatch.command)
       return
     }
 

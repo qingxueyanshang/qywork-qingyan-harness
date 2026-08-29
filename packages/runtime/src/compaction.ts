@@ -39,6 +39,7 @@ import type {
 } from '@qywork/core'
 import {
   getConversation,
+  latestSentProviderRequest,
   listMessages,
   listRunContextSnapshots,
   listRuns,
@@ -185,7 +186,21 @@ export class RuntimeCompaction implements CompactionPort {
     // 选界：从尾部逐单元累加到保留预算为止。**保留预算 = 批级投递预算**，
     // 给出的不变量是「上一次检查以来刚进来的那一波必然完整保留」。
     const units = this.collectUnits(input.density)
-    const foldIndex = foldIndexOf(units, deliveryBudget(input.contextWindow).batchCap)
+    const automaticRetain = deliveryBudget(input.contextWindow).batchCap
+    /*
+     * 自动压缩必须完整保留一个批级窗口；手动压缩发生在用户明确要求收纳时，
+     * 若仍拿模型总窗口的 1/4 当尾部预算，低占用会话的整段历史可能还不够这个数，
+     * `/compact` 就只能回 `nothing_to_fold`。手动入口仍用同一个选界函数，只把
+     * 保留量收敛到当前可折历史的 1/4，至少保留最后一个完整单元。
+     */
+    const retain =
+      input.trigger === 'manual'
+        ? Math.min(
+            automaticRetain,
+            Math.max(1, Math.floor(units.reduce((total, unit) => total + unit.tokens, 0) / 4)),
+          )
+        : automaticRetain
+    const foldIndex = foldIndexOf(units, retain)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
     const latestTodo = [...units]
@@ -245,7 +260,8 @@ export class RuntimeCompaction implements CompactionPort {
      */
     const scale = input.estimatedOccupancy > 0 ? input.occupancy / input.estimatedOccupancy : 1
     const afterCondense = input.occupancy - Math.round((originalNew - condensedNew) * scale)
-    const condenseOnly = afterCondense <= limit
+    // 手动触发是明确的摘要请求；即使收纳已经够用，也必须继续尝试摘要段。
+    const condenseOnly = input.trigger === 'automatic' && afterCondense <= limit
 
     // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
     if (fold.key <= summaryKey || (condenseOnly && fold.key <= condenseKey)) {
@@ -311,10 +327,87 @@ export class RuntimeCompaction implements CompactionPort {
        * 下次启动投影就丢了，而模型会突然又看到全部历史。
        */
       if (input.signal?.aborted) return { status: 'aborted' }
-      setCompactionManifest(store, conversationId, outcome.manifest)
-      this.manifest = outcome.manifest
+      const before = this.estimateProjection(units, previous, input.density)
+      const after = this.estimateProjection(units, outcome.manifest, input.density)
+      const recovered = before - after
+      const latestSent = latestSentProviderRequest(store, conversationId)
+      const manifest: CompactionManifest = {
+        ...outcome.manifest,
+        contextAfter: {
+          basedOnProviderRequestId: latestSent?.id ?? null,
+          model: input.model,
+          total: Math.max(0, input.occupancy - Math.round(recovered * scale)),
+          measured: Math.max(0, input.estimatedOccupancy - recovered),
+        },
+      }
+      setCompactionManifest(store, conversationId, manifest)
+      this.manifest = manifest
+      return { ...outcome, manifest }
     }
     return outcome
+  }
+
+  /**
+   * 用主模型的同一把尺量 manifest 前后的历史投影。
+   *
+   * 面板只拿两者差额去修正完整请求，因此系统提示词、工具表等头部不在这里重复
+   * 造账。附件在 `collectUnits` 里按 `MEDIA_TOKENS` 计入 `unit.tokens`；收纳工具
+   * 正文时仍把附件差额补回，口径与活请求一致。
+   */
+  private estimateProjection(
+    units: readonly Unit[],
+    manifest: CompactionManifest | null,
+    density: TokenDensity,
+  ): number {
+    if (!manifest) return units.reduce((total, unit) => total + unit.tokens, 0)
+
+    const summary = summaryCutOf(manifest)
+    const condense = condenseCutOf(manifest)
+    const summaryKey = summary ? cutKey(summary) : null
+    const condenseKey = condense ? cutKey(condense) : null
+    const latestTodo = [...units]
+      .reverse()
+      .find((unit) =>
+        unit.actions.some((action) => action.tool === 'write_todos' && action.status === 'success'),
+      )
+    const latestContext = this.latestContextUserMessageId
+      ? units.find(
+          (unit) =>
+            unit.cut.messageId === this.latestContextUserMessageId &&
+            unit.messages.some((message) => message.role === 'context'),
+        )
+      : undefined
+    const pinContext =
+      summaryKey !== null && latestContext !== undefined && latestContext.key <= summaryKey
+
+    let folded = 0
+    let total = 0
+    for (const unit of units) {
+      if (summaryKey !== null && unit.key <= summaryKey) {
+        folded++
+        continue
+      }
+      if (condenseKey !== null && unit.key <= condenseKey && unit !== latestTodo) {
+        const messageTokens = estimateMessages(unit.messages, density)
+        const attachmentTokens = Math.max(0, unit.tokens - messageTokens)
+        total += estimateMessages(unit.messages.map(condenseMessage), density) + attachmentTokens
+      } else {
+        total += unit.tokens
+      }
+    }
+
+    // manifest 的切线与当前历史不相交时，投影函数也不会平白插入摘要。
+    if (folded === 0) return total
+    if (pinContext && latestContext) {
+      total += estimateMessages(
+        latestContext.messages.filter((message) => message.role === 'context'),
+        density,
+      )
+    }
+    if (latestTodo && summaryKey !== null && latestTodo.key <= summaryKey) {
+      total += latestTodo.tokens
+    }
+    return total + estimateMessages(projectManifest(manifest), density)
   }
 
   /**

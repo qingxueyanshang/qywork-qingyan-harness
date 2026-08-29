@@ -74,6 +74,8 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
   const history = await buildHistory(store, conversationId as never, null, async (c) => c)
   const total = estimateMessages(history, DEFAULT_DENSITY)
   return {
+    trigger: 'automatic',
+    model: 'm',
     occupancy: total,
     estimatedOccupancy: total,
     contextWindow: total,
@@ -157,6 +159,10 @@ describe('压缩是投影，不销毁数据', () => {
     expect(reloaded).not.toBeNull()
     expect(reloaded!.revision).toBe(1)
     expect(reloaded!.condensedThrough).toBeDefined()
+    expect(reloaded!.contextAfter?.model).toBe('m')
+    expect(reloaded!.contextAfter?.measured).toBeLessThan(
+      (await pressure(store, conv.id)).estimatedOccupancy,
+    )
     store.close()
   })
 })
@@ -454,6 +460,8 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
     for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
       const p = port(store, conv.id)
       await p.run({
+        trigger: 'automatic',
+        model: 'm',
         occupancy: total,
         estimatedOccupancy: total,
         contextWindow: window,
@@ -506,6 +514,28 @@ describe('收纳段单独够用时零模型调用', () => {
     expect(estimateMessages(p.project(before), DEFAULT_DENSITY)).toBeLessThan(
       estimateMessages(before, DEFAULT_DENSITY) * 0.4,
     )
+    store.close()
+  })
+
+  test('手动触发在低占用时仍选出旧段并尝试摘要', async () => {
+    const { store, conv } = fresh()
+    let calls = 0
+    const p = port(store, conv.id, async () => {
+      calls++
+      return '用户手动触发的摘要'
+    })
+    const input = await pressure(store, conv.id)
+    const r = await p.run({
+      ...input,
+      trigger: 'manual',
+      // 只有模型窗口 10% 的低占用：旧逻辑拿窗口 1/4 保留尾部，整段都无可折。
+      contextWindow: input.contextWindow * 10,
+    })
+
+    expect(r.status).toBe('compacted')
+    expect(r.status === 'compacted' && r.summarized).toBe(true)
+    expect(calls).toBe(1)
+    expect(r.status === 'compacted' && r.manifest.summary).toBe('用户手动触发的摘要')
     store.close()
   })
 })
@@ -771,6 +801,8 @@ describe('两把尺不许直接相减', () => {
 
       const p = port(store, conv.id)
       const outcome = await p.run({
+        trigger: 'automatic',
+        model: 'm',
         occupancy,
         estimatedOccupancy: estimated,
         contextWindow,

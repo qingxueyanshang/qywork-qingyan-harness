@@ -598,6 +598,8 @@ export async function compactConversation(
     const spec = buildAdapter(summaryProfile(deps, conversationId)).spec
     const panel = contextPanel(deps.store, conversationId, spec)
     const outcome = await compaction.run({
+      trigger: 'manual',
+      model: spec.id,
       occupancy: panel.total,
       // 同一份面板的两把尺，压缩按它们的比值折算回收量。
       estimatedOccupancy: panel.measured,
@@ -611,6 +613,20 @@ export async function compactConversation(
         phase: 'done',
         manifest: outcome.manifest,
         summarized: outcome.summarized,
+      })
+      // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
+      // 重算并广播；否则模型下一轮已看到压缩投影，面板却一直停在压缩前。
+      const updated = contextPanel(deps.store, conversationId, spec)
+      emit({
+        type: 'context',
+        runId,
+        tokens: updated.total,
+        limit: updated.limit,
+        percent: updated.percent,
+        source: updated.source,
+        compactAt: updated.compactAt,
+        breakdown: updated.breakdown,
+        omitted: updated.omitted,
       })
     } else if (outcome.status === 'aborted') {
       // 手动压缩不往 `run()` 传信号，这条终态走不到。留着是因为静默吞掉一个终态

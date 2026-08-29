@@ -1051,6 +1051,21 @@ export interface CompactionManifest {
   summary: string
   /** 摘要保留的精确事实包（文件路径、决定、未完成项），不是自由文本。 */
   facts: CompactionFacts
+  /**
+   * 这份投影落库后，下一次请求预计会占多少上下文。
+   *
+   * 它是 manifest 的派生快照，不是第二本上下文账：`basedOnProviderRequestId`
+   * 指明它从哪一条已发送请求扣除了本次投影回收量；一旦又发出新请求，面板立即
+   * 回到逐请求账。没有 provider 真值验证过压缩后的请求，所以界面必须标成估算。
+   *
+   * 可缺是为了读取升级前已经落库的 manifest；新写入一律带上。
+   */
+  contextAfter?: {
+    basedOnProviderRequestId: ProviderRequestId | null
+    model: string
+    total: number
+    measured: number
+  }
   createdAt: number
 }
 

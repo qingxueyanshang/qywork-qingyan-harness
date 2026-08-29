@@ -5,7 +5,7 @@
  * JSX runtime 并失败。判定逻辑不该拖着整批 SVG 才能被验证，所以拆了出来。
  */
 import { describe, expect, test } from 'bun:test'
-import { slashCall, slashQuery } from './slash.ts'
+import { slashCall, slashDispatch, slashQuery } from './slash.ts'
 
 describe('斜杠查询', () => {
   test('整段就是一个 /xxx 才算命令', () => {
@@ -20,7 +20,7 @@ describe('斜杠查询', () => {
     expect(slashQuery('看下 src/lib')).toBeNull()
     expect(slashQuery('')).toBeNull()
     // 换行也算空白：多行草稿里第一行像命令也不该弹。
-    expect(slashQuery('/clear\n第二行')).toBeNull()
+    expect(slashQuery('/new\n第二行')).toBeNull()
   })
 })
 
@@ -56,5 +56,30 @@ describe('带参数的命令', () => {
     expect(slashCall('看下 src/lib')).toBeNull()
     expect(slashCall('')).toBeNull()
     expect(slashCall('/')).toBeNull()
+  })
+})
+
+describe('提交分派', () => {
+  const commands = [
+    { slash: 'compact' },
+    { slash: 'new' },
+    { slash: 'goal', arg: { placeholder: '目标' } },
+  ]
+
+  test('无参命令通过发送按钮提交时也直接执行', () => {
+    expect(slashDispatch('/compact', commands).kind).toBe('run')
+    expect(slashDispatch('/new   ', commands).kind).toBe('run')
+  })
+
+  test('带参命令缺参数时等待输入，参数完整时执行', () => {
+    expect(slashDispatch('/goal', commands).kind).toBe('await_argument')
+    const dispatch = slashDispatch('/goal 把测试跑绿', commands)
+    expect(dispatch.kind).toBe('run')
+    expect(dispatch.kind === 'run' && dispatch.arg).toBe('把测试跑绿')
+  })
+
+  test('未知命令和无参命令后的额外正文仍作为消息', () => {
+    expect(slashDispatch('/unknown', commands).kind).toBe('message')
+    expect(slashDispatch('/compact 然后呢', commands).kind).toBe('message')
   })
 })

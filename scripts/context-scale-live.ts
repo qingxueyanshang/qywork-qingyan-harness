@@ -492,6 +492,8 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const window = Math.max(4096, Math.round(trueBefore * 0.8))
   const softAt = Math.floor(window * 0.8)
   const outcome = await compaction.run({
+    trigger: 'automatic',
+    model: spec.id,
     occupancy: trueBefore,
     estimatedOccupancy: estBefore,
     contextWindow: window,

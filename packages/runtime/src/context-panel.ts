@@ -32,7 +32,12 @@ import type {
   ProviderRequest,
 } from '@qywork/core'
 import { emptyBreakdown, emptyOmitted, envelopeHeadTokens, reconcileBreakdown } from '@qywork/core'
-import { latestAnchoredProviderRequest, latestSentProviderRequest, type Store } from '@qywork/store'
+import {
+  getConversation,
+  latestAnchoredProviderRequest,
+  latestSentProviderRequest,
+  type Store,
+} from '@qywork/store'
 
 export interface ContextPanel {
   total: number
@@ -124,21 +129,50 @@ export function contextPanel(
 
   // 分组明细取最近一次**已发送**的请求：它描述的是模型当下看到的那份上下文。
   const sent = latestSentProviderRequest(store, conversationId)
+  const compacted = getConversation(store, conversationId)?.compactionManifest?.contextAfter
+  /*
+   * 手动压缩后没有紧随其后的 provider 请求，逐请求账自然还是压缩前的数字。
+   * manifest 上的派生快照只在它仍基于「当前最后一次请求」且模型没换时生效；
+   * 一旦发出新请求，request id 改变，下面自动回到逐请求账，不需要客户端另存状态。
+   */
+  const currentCompaction =
+    compacted &&
+    compacted.model === model.id &&
+    compacted.basedOnProviderRequestId === (sent?.id ?? null)
+      ? compacted
+      : null
   // 还没发过请求的会话是 **0 / 窗口**，不是「没有面板」。
   // 别回 `available: false`：前端据此整个不渲染，因此新开一条会话上下文那一格
   // 是空的，用户看到的是「这个功能没了」而不是「还没占」。
   // 窗口是模型的属性，不是请求的属性：一条请求都没发也知道它有多大。
   if (!sent) {
+    const total = currentCompaction?.total ?? 0
     return {
-      total: 0,
+      total,
       limit,
-      percent: 0,
+      percent: Math.round((total / limit) * 1000) / 10,
       source: 'estimated',
-      measured: 0,
+      measured: currentCompaction?.measured ?? 0,
       compactAt: softLimit({ contextWindow: limit }),
-      breakdown: emptyBreakdown(),
+      breakdown: reconcileBreakdown(emptyBreakdown(), total),
       omitted: emptyOmitted(),
-      freeSpace: limit,
+      freeSpace: Math.max(0, limit - total),
+    }
+  }
+
+  if (currentCompaction) {
+    const total = currentCompaction.total
+    return {
+      total,
+      limit,
+      percent: Math.round((total / limit) * 1000) / 10,
+      // 压缩后的请求还没发给 provider 验尺，这个数只能诚实标成估算。
+      source: 'estimated',
+      measured: currentCompaction.measured,
+      compactAt: softLimit({ contextWindow: limit }),
+      breakdown: reconcileBreakdown(sent.sentCategories, total),
+      omitted: sent.omittedCategories,
+      freeSpace: Math.max(0, limit - total),
     }
   }
 

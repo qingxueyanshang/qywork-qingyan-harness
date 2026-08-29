@@ -130,6 +130,13 @@ export interface CompactionPort {
 export interface CompactionRunInput {
   /** 中断信号。**可缺**：手动压缩不属于任何 run，没有 run 信号。 */
   signal?: AbortSignal
+  /**
+   * 自动触发允许「只收纳、不摘要」；手动触发代表用户明确要求生成压缩投影。
+   * 两者仍走同一个端口、同一份 manifest，只在选界和是否必须尝试摘要上有差别。
+   */
+  trigger: 'automatic' | 'manual'
+  /** 当前主模型 id；与压缩后的面板快照绑定，换模型后不得继续沿用。 */
+  model: string
   /** 当前占用读数。**必须与触发判定同一把尺**，两处各量一次就是两本账。 */
   occupancy: number
   /**
@@ -947,6 +954,8 @@ export class AgentLoop {
               input.signal,
               this.compaction.run({
                 signal: input.signal,
+                trigger: 'automatic',
+                model: adapter.spec.id,
                 occupancy,
                 estimatedOccupancy: estimateRequest(req, density),
                 contextWindow: adapter.spec.contextWindow,
@@ -1250,6 +1259,8 @@ export class AgentLoop {
                 input.signal,
                 this.compaction.run({
                   signal: input.signal,
+                  trigger: 'automatic',
+                  model: adapter.spec.id,
                   occupancy: cap.reportedInputTokens ?? occupancyOf(req),
                   // `sizeBefore` 就是这一份请求的本地估算，同一次装配、同一把尺。
                   estimatedOccupancy: sizeBefore,
