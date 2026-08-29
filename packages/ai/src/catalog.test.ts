@@ -562,6 +562,13 @@ describe('目录里的价格与档位', () => {
     expect(spec('grok-4.5').effortLevels).toEqual(['low', 'medium', 'high'])
   })
 
+  test('Grok 使用 xAI 原生工具 schema 与 Chat Completions 缓存请求头', () => {
+    for (const model of ['grok-4.6', 'grok-4.5']) {
+      expect(spec(model).chatToolSchema).toBe('native')
+      expect(spec(model).cacheRouting).toBe('x_grok_conv_id')
+    }
+  })
+
   /** effort 支持名单里没有 Haiku 4.5；Sonnet 4.6 有 max 但没有 xhigh。 */
   test('Claude 的档位面逐条对官方名单', () => {
     expect(spec('claude-opus-5', 'anthropic_messages').effortLevels).toEqual([
