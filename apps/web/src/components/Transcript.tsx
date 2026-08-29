@@ -6,6 +6,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  createUniqueId,
   For,
   Match,
   onCleanup,
@@ -57,7 +58,7 @@ import {
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
-import { IconSpinner } from './Icons.tsx'
+import { IconChevron, IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
 /**
@@ -730,6 +731,60 @@ const RowStream = createContext<{ items: () => TranscriptItem[]; live: () => boo
   live: isRunning,
 })
 
+/** 六行用户正文的实际高度：13px 基准字号 × 1.55 行高 × 6，取整为 121px。 */
+const USER_MESSAGE_PREVIEW_HEIGHT = 121
+
+/**
+ * 用户消息只在真实渲染高度超过六行时收敛。正文仍是 transcript 的原投影；这里的
+ * `expanded` 只决定这一只气泡画多高，不改消息、不截字，也不参与同步或持久化。
+ */
+function UserBubble(props: { text: string }) {
+  let copy!: HTMLDivElement
+  const copyId = `user-message-${createUniqueId()}`
+  const [collapsible, setCollapsible] = createSignal(false)
+  const [expanded, setExpanded] = createSignal(false)
+
+  const measure = () => {
+    const next = copy.scrollHeight > USER_MESSAGE_PREVIEW_HEIGHT + 1
+    setCollapsible(next)
+    if (!next) setExpanded(false)
+  }
+
+  onMount(() => {
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(copy)
+    onCleanup(() => observer.disconnect())
+  })
+
+  const size = () => Array.from(props.text).length
+
+  return (
+    <div
+      class="bubble"
+      classList={{ collapsible: collapsible(), expanded: expanded() }}
+      style={{ '--user-message-preview-height': `${USER_MESSAGE_PREVIEW_HEIGHT}px` }}
+    >
+      <div id={copyId} class="user-bubble-copy" ref={copy}>
+        {props.text}
+      </div>
+      <Show when={collapsible()}>
+        <button
+          class="user-bubble-toggle"
+          type="button"
+          aria-expanded={expanded()}
+          aria-controls={copyId}
+          on:click={() => setExpanded((value) => !value)}
+        >
+          <span>{expanded() ? '收起' : '展开全部'}</span>
+          <span class="user-bubble-size">· {size()} 字</span>
+          <IconChevron size={14} dir={expanded() ? 'up' : 'down'} />
+        </button>
+      </Show>
+    </div>
+  )
+}
+
 export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => boolean }) {
   // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
   // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
@@ -758,7 +813,7 @@ export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => bo
                     </div>
                   </Show>
                   <Show when={(node as { item: TranscriptItem }).item.text}>
-                    <div class="bubble">{(node as { item: TranscriptItem }).item.text}</div>
+                    <UserBubble text={(node as { item: TranscriptItem }).item.text} />
                   </Show>
                 </div>
               </div>

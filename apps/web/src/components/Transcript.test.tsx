@@ -46,6 +46,66 @@ async function resetStore() {
 const CV = 'cv_prose'
 
 describe('定稿的正文不跟着会话流的增长重建', () => {
+  test('用户长消息按真实高度收敛，并可在右下角展开和收起', async () => {
+    const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.textContent && this.textContent.length > 100 ? 240 : 20
+      },
+    })
+
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          runStartedAt: null,
+          error: null,
+          transcript: [
+            { id: 'u-short', kind: 'user', text: '短消息' },
+            { id: 'u-long', kind: 'user', text: '这是一条需要收敛的长消息。'.repeat(12) },
+          ],
+        },
+      },
+    })
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    try {
+      const bubbles = host.querySelectorAll('.bubble')
+      expect(bubbles).toHaveLength(2)
+      expect(bubbles[0]?.classList.contains('collapsible')).toBe(false)
+
+      const longBubble = bubbles[1] as HTMLElement
+      const toggle = longBubble.querySelector('.user-bubble-toggle') as HTMLButtonElement
+      expect(longBubble.classList.contains('collapsible')).toBe(true)
+      expect(toggle.textContent).toContain('展开全部')
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+      toggle.click()
+      await Promise.resolve()
+      expect(longBubble.classList.contains('expanded')).toBe(true)
+      expect(toggle.textContent).toContain('收起')
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+      toggle.click()
+      await Promise.resolve()
+      expect(longBubble.classList.contains('expanded')).toBe(false)
+      expect(toggle.textContent).toContain('展开全部')
+    } finally {
+      dispose()
+      host.remove()
+      if (height) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', height)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight')
+    }
+  })
+
   test('折叠正文首次展开时才挂载', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({

@@ -96,6 +96,38 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.bubble.collapsible .user-bubble-copy {
+  max-height: var(--user-message-preview-height);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 0%, #000 72%, transparent 100%);
+}
+.bubble.collapsible.expanded .user-bubble-copy {
+  max-height: none;
+  mask-image: none;
+}
+.user-bubble-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: max-content;
+  height: 24px;
+  margin: 2px 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  line-height: 1;
+}
+.user-bubble-toggle:hover {
+  color: var(--text-primary);
+}
+.user-bubble-toggle svg {
+  display: block;
+}
+.user-bubble-size {
+  color: var(--text-tertiary);
+}
 
 /*
  * 助手正文。
