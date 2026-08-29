@@ -24,6 +24,7 @@ import type {
   StopReason,
   TodoItem,
   ToolOutcomeWire,
+  WorkflowProjection,
 } from '@qywork/core'
 import { createStore, produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
@@ -84,10 +85,12 @@ export interface TranscriptItem {
    * 派活那两个工具专有：这张图现在跑到哪了。派一件时只有一格。
    *
    * **流式期间来自事件，回放时另有来源。** 进度事件不落库，所以刷新之后
-   * 这个字段是空的：一张图由 `outcome.data.nodes` 重画，一次派活由那条 step
-   * 自己的状态与耗时重画——各管一段，不互相兜底。
+   * 这个字段是空的：一张图由 workflow transition 纯折叠重画，一次派活由那条
+   * step 自己的状态与耗时重画——各管一段，不互相兜底。
    */
   nodes?: WorkflowNodeState[]
+  /** 同一 workflow 的多次 tool step 由 transcript 纯折叠得到的累计视图。 */
+  workflow?: WorkflowProjection
   batchId?: string
   waveIndex?: number
 }

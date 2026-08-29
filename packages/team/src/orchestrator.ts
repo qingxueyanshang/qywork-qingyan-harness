@@ -1,14 +1,17 @@
 /**
- * 编排器。
- *
- * 按依赖图跑角色，尊重并发上限。
- *
- * 一条刻意的设计取舍：**编排是确定性的代码，不是让某个模型自由发挥。**
- * 依赖顺序、并发数、门禁位置都由配置固定。模型只负责节点内的工作，
- * 不负责决定「下一步该谁上」——把调度也交给模型，出问题时无法复现也无法归因。
+ * 确定性的 workflow 调度器：并行只发生在同一批就绪 agent 之间；checkpoint
+ * 一旦就绪就把回执交回父会话，不在后台替父会话作审批决定。
  */
-
-import type { AgentEvent, ConversationId, RunId } from '@qywork/core'
+import {
+  type AgentEvent,
+  type ConversationId,
+  checkpointOutput,
+  type RunId,
+  revisionClosure,
+  type WorkflowAgentNode,
+  type WorkflowAppliedReview,
+  type WorkflowCheckpointNode,
+} from '@qywork/core'
 import { runCli } from './cli-backend.ts'
 import type { CliAgent, NodeResult, PlanNode, Role, TeamConfig } from './types.ts'
 import { CLI_PREFIX } from './types.ts'
@@ -16,37 +19,44 @@ import { CLI_PREFIX } from './types.ts'
 export interface OrchestratorDeps {
   workspaceRoot: string
   signal: AbortSignal
-  /**
-   * qywork 自己的凭证，交给外部 CLI 后端之前按值剥掉。
-   *
-   * 后端需要**它自己**的 key（codex 要 OPENAI_API_KEY），所以不能按名字剥；
-   * 但用户配在 qywork 里的那几把它一把都用不上，没有理由拿到。
-   * 不传等于「没有已知凭证」，不等于「不用剥」——装配方应当始终提供。
-   */
   secrets?: { values: string[] }
-  /**
-   * 派给外部 CLI 时，按 id 取那一条识别结果。识别不到返回 undefined——
-   * 节点当场失败，不退回内置跑：那会拿一个模型冒充另一个模型的产出。
-   */
   resolveCli(id: string): CliAgent | undefined
-  /** 角色的执行入口：跑一个子会话并返回最终文本。 */
   runBuiltin(input: {
     role: Role
     prompt: string
     signal: AbortSignal
-    /** 节点点名的模型，实现方负责解析成一对「接口 × 模型」。 */
     model?: string
-    /**
-     * 子会话 id 一拿到就回调，不等这一趟跑完。
-     *
-     * 这一格靠它才点得开。等返回值的话，这张图上正在跑的那几格全程点不开，
-     * 而正在跑的那几格正是用户要翻开的。
-     */
+    existingConversationId?: ConversationId
     onConversation?: (conversationId: ConversationId) => void
   }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }>
   emit(event: AgentEvent): void
   runId: RunId
 }
+
+export interface OrchestratorReview {
+  checkpointId: string
+  decision: 'approve' | 'revise'
+  note: string
+  revisions: Array<{ nodeId: string; instruction: string }>
+}
+
+export interface OrchestratorState {
+  results?: Record<string, NodeResult>
+  approvals?: Record<string, string>
+  checkpointId?: string
+  review?: OrchestratorReview
+}
+
+export interface OrchestratorRunResult {
+  /** 只含本次工具调用实际产生的增量；累计状态由父会话 transcript 折叠。 */
+  receipts: NodeResult[]
+  phase: 'waiting_review' | 'completed' | 'failed'
+  checkpointId?: string
+  review?: WorkflowAppliedReview
+}
+
+const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
+const isAgent = (node: PlanNode): node is WorkflowAgentNode => node.kind !== 'checkpoint'
 
 export class TeamOrchestrator {
   constructor(
@@ -54,151 +64,259 @@ export class TeamOrchestrator {
     private readonly deps: OrchestratorDeps,
   ) {}
 
-  async run(goal: string): Promise<NodeResult[]> {
+  async run(goal: string, state: OrchestratorState = {}): Promise<OrchestratorRunResult> {
     const plan = this.config.plan
     validatePlan(plan, this.config.roles)
 
-    const results = new Map<string, NodeResult>()
-    const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
+    const results = new Map<string, NodeResult>(Object.entries(state.results ?? {}))
+    const approvals = new Map<string, string>(Object.entries(state.approvals ?? {}))
+    const receipts: NodeResult[] = []
+    const priorForResume = new Map<string, NodeResult>()
+    const correction = new Map<string, string>()
+    let appliedReview: WorkflowAppliedReview | undefined
 
-    const pending = new Set(plan.map((n) => n.id))
+    if (state.review) {
+      const review = state.review
+      if (state.checkpointId !== review.checkpointId) {
+        throw new Error(
+          `当前待审查检查点是 ${state.checkpointId ?? '无'}，不是 ${review.checkpointId}`,
+        )
+      }
+      const checkpoint = plan.find(
+        (node): node is WorkflowCheckpointNode =>
+          isCheckpoint(node) && node.id === review.checkpointId,
+      )
+      if (!checkpoint) throw new Error(`找不到检查点 ${review.checkpointId}`)
+      if (approvals.has(checkpoint.id))
+        throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
+      if (!checkpoint.needs.every((id) => this.dependencyResolved(id, results, approvals))) {
+        throw new Error(`检查点 ${checkpoint.id} 的上游回执尚未齐全`)
+      }
+
+      appliedReview = {
+        checkpointId: checkpoint.id,
+        decision: review.decision,
+        note: review.note,
+      }
+      if (review.decision === 'approve') {
+        approvals.set(
+          checkpoint.id,
+          checkpointOutput(checkpoint, Object.fromEntries(results), review.note),
+        )
+      } else {
+        const closure = revisionClosure(
+          plan,
+          checkpoint.id,
+          [...approvals.keys()],
+          review.revisions.map((revision) => revision.nodeId),
+        )
+        if (!closure.ok) throw new Error(closure.error)
+        for (const revision of review.revisions) {
+          const prior = results.get(revision.nodeId)
+          if (!prior) throw new Error(`节点 ${revision.nodeId} 没有可续接的上一轮回执`)
+          correction.set(revision.nodeId, revision.instruction)
+        }
+
+        // 被修订节点和它在本批次内的下游都失效。先保留会话句柄，再删投影结果；
+        // 这样是向原会话续发，不是另起一条看似相同的新任务。
+        for (const id of closure.nodeIds) {
+          const prior = results.get(id)
+          if (prior) priorForResume.set(id, prior)
+          results.delete(id)
+          if (!correction.has(id)) {
+            correction.set(
+              id,
+              '上游结果已被主会话要求修订。请重新核验原任务，并基于更新后的上游产出给出新版结果。',
+            )
+          }
+        }
+      }
+    }
+
+    const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
     const running = new Map<string, Promise<void>>()
 
-    while (pending.size > 0 || running.size > 0) {
-      if (this.deps.signal.aborted) break
+    while (true) {
+      if (this.deps.signal.aborted && running.size === 0) {
+        return this.finish('failed', receipts, appliedReview)
+      }
 
-      // 依赖全部完成的节点才可以启动。上游失败则本节点跳过——
-      // 拿着失败的上游输出继续跑，产出的是看起来合理实则无根的结果。
-      const ready = [...pending].filter((id) => {
-        const node = plan.find((n) => n.id === id)!
-        return (node.needs ?? []).every((dep) => results.has(dep))
-      })
+      const readyCheckpoints = plan.filter(
+        (node): node is WorkflowCheckpointNode =>
+          isCheckpoint(node) &&
+          !approvals.has(node.id) &&
+          node.needs.every((id) => this.dependencyResolved(id, results, approvals)),
+      )
+      if (readyCheckpoints.length > 1) {
+        throw new Error(
+          `同时有多个检查点就绪：${readyCheckpoints.map((node) => node.id).join('、')}`,
+        )
+      }
+      if (readyCheckpoints.length === 1 && running.size === 0) {
+        return this.finish('waiting_review', receipts, appliedReview, readyCheckpoints[0]!.id)
+      }
 
-      for (const id of ready) {
+      const ready = plan.filter(
+        (node): node is WorkflowAgentNode =>
+          isAgent(node) &&
+          !results.has(node.id) &&
+          !running.has(node.id) &&
+          (node.needs ?? []).every((id) => this.dependencyResolved(id, results, approvals)),
+      )
+
+      for (const node of ready) {
         if (running.size >= maxConcurrent) break
-        pending.delete(id)
-        const node = plan.find((n) => n.id === id)!
-
-        const upstreamFailed = (node.needs ?? []).some((dep) => results.get(dep)?.status !== 'done')
+        const upstreamFailed = (node.needs ?? []).some((id) => {
+          const result = results.get(id)
+          return result ? result.status !== 'done' : false
+        })
         if (upstreamFailed) {
-          results.set(id, {
-            nodeId: id,
+          const skipped: NodeResult = {
+            nodeId: node.id,
             agent: node.agent,
             label: this.labelOf(node.agent),
             status: 'skipped',
             output: '',
             error: '上游节点未成功',
             durationMs: 0,
-          })
+          }
+          results.set(node.id, skipped)
+          receipts.push(skipped)
           continue
         }
 
         running.set(
-          id,
-          this.execute(node, goal, results).then((r) => {
-            results.set(id, r)
-            running.delete(id)
+          node.id,
+          this.execute(
+            node,
+            goal,
+            results,
+            approvals,
+            priorForResume.get(node.id),
+            correction.get(node.id),
+          ).then((result) => {
+            results.set(node.id, result)
+            receipts.push(result)
+            running.delete(node.id)
           }),
         )
       }
 
-      if (running.size === 0 && pending.size > 0) {
-        // 没有可启动的节点又还有待办 = 依赖成环或指向不存在的节点。
-        // validatePlan 应该已经拦住，走到这里说明有漏网的，明确失败而不是死循环。
-        for (const id of pending) {
-          const node = plan.find((n) => n.id === id)!
-          results.set(id, {
-            nodeId: id,
-            agent: node.agent,
-            label: this.labelOf(node.agent),
-            status: 'failed',
-            output: '',
-            error: '依赖无法满足（可能成环）',
-            durationMs: 0,
-          })
-        }
-        break
+      if (running.size > 0) {
+        await Promise.race(running.values())
+        continue
       }
 
-      if (running.size > 0) await Promise.race(running.values())
+      const unresolvedAgents = plan.filter(
+        (node): node is WorkflowAgentNode => isAgent(node) && !results.has(node.id),
+      )
+      const unresolvedCheckpoints = plan.filter(
+        (node) => isCheckpoint(node) && !approvals.has(node.id),
+      )
+      if (unresolvedAgents.length === 0 && unresolvedCheckpoints.length === 0) {
+        const phase = [...results.values()].some((result) => result.status !== 'done')
+          ? 'failed'
+          : 'completed'
+        return this.finish(phase, receipts, appliedReview)
+      }
+      throw new Error(
+        `依赖无法继续：${[...unresolvedAgents, ...unresolvedCheckpoints].map((node) => node.id).join('、')}`,
+      )
     }
+  }
 
-    return plan.map(
-      (n) =>
-        results.get(n.id) ?? {
-          nodeId: n.id,
-          agent: n.agent,
-          label: this.labelOf(n.agent),
-          status: 'skipped' as const,
-          output: '',
-          durationMs: 0,
-        },
-    )
+  private finish(
+    phase: OrchestratorRunResult['phase'],
+    receipts: NodeResult[],
+    review?: WorkflowAppliedReview,
+    checkpointId?: string,
+  ): OrchestratorRunResult {
+    return {
+      receipts,
+      phase,
+      ...(checkpointId ? { checkpointId } : {}),
+      ...(review ? { review } : {}),
+    }
+  }
+
+  private dependencyResolved(
+    id: string,
+    results: Map<string, NodeResult>,
+    approvals: Map<string, string>,
+  ): boolean {
+    return results.has(id) || approvals.has(id)
   }
 
   private async execute(
-    node: PlanNode,
+    node: Exclude<PlanNode, WorkflowCheckpointNode>,
     goal: string,
     results: Map<string, NodeResult>,
+    approvals: Map<string, string>,
+    prior?: NodeResult,
+    correction?: string,
   ): Promise<NodeResult> {
-    // 目标要么是角色，要么是 `cli:<id>` 的外部 CLI。两者的配置面不相干，
-    // 所以这里各解析各的，不做「找不到角色就当 CLI」那种回退。
     const isCli = node.agent.startsWith(CLI_PREFIX)
     const cli = isCli ? this.deps.resolveCli(node.agent.slice(CLI_PREFIX.length)) : undefined
-    const role = isCli ? undefined : this.config.roles.find((r) => r.id === node.agent)
+    const role = isCli
+      ? undefined
+      : this.config.roles.find((candidate) => candidate.id === node.agent)
     const label = this.labelOf(node.agent)
     const started = Date.now()
 
-    if (!role && !cli) {
-      return {
-        nodeId: node.id,
-        agent: node.agent,
+    if (!role && !cli)
+      return this.failed(
+        node,
         label,
-        status: 'failed',
-        output: '',
-        error: isCli ? `本机没有识别到 ${node.agent.slice(CLI_PREFIX.length)}` : '找不到这个角色',
-        durationMs: Date.now() - started,
+        started,
+        isCli ? `本机没有识别到 ${node.agent.slice(CLI_PREFIX.length)}` : '找不到这个角色',
+      )
+    if (prior && prior.status !== 'skipped') {
+      if (cli && (!prior.session || !cli.resumeArgs)) {
+        return {
+          ...this.failed(node, label, started, `${node.agent} 的上一轮回执没有可续接会话`),
+          ...(prior.session ? { session: prior.session } : {}),
+        }
+      }
+      if (role && !prior.conversationId) {
+        return this.failed(node, label, started, `${node.agent} 的上一轮回执没有可续接子会话`)
       }
     }
 
     const upstream = (node.needs ?? [])
-      .map((dep) => results.get(dep)?.output ?? '')
+      .map((id) => results.get(id)?.output ?? approvals.get(id) ?? '')
       .filter(Boolean)
       .join('\n\n---\n\n')
-
-    // `{input}` 决定上游产出**放在哪儿**，不决定要不要放。
-    //
-    // 不写 `{input}` 就会把上游产出直接丢掉——`needs: ["n1"]` 只影响顺序、不影响内容，
-    // 实测的表现是下游角色回「没有上一步的上下文，无法复核」。
-    // 声明了依赖却拿不到依赖的产出，是最难查的一类配置陷阱：它不报错，
-    // 只是让下游角色拿不到上游产出。真的只想要顺序，写 `passInput: false`。
     const withGoal = node.task.replaceAll('{goal}', goal)
     const wantsInput = node.passInput !== false && upstream !== ''
-    const task = withGoal.includes('{input}')
+    const originalTask = withGoal.includes('{input}')
       ? withGoal.replaceAll('{input}', wantsInput ? upstream : '')
       : wantsInput
         ? `${withGoal}\n\n## 上游产出\n\n${upstream}`
         : withGoal
-    // 外部 CLI 拿不到角色的系统提示词——它有自己的一套，也没有地方接收。
+    const task = correction
+      ? `## 主会话续发指令\n\n${correction}\n\n## 原任务与最新输入\n\n${originalTask}`
+      : originalTask
     const prompt = role ? this.composePrompt(role, task) : task
-    const kind = cli ? ('custom' as const) : ('builtin' as const)
+    const backend = cli ? ('custom' as const) : ('builtin' as const)
 
     this.deps.emit({
       type: 'team.member',
       runId: this.deps.runId,
       memberId: node.id,
       roleName: label,
-      backend: kind,
+      backend,
       phase: 'spawned',
     })
-
     this.deps.emit({
       type: 'team.member',
       runId: this.deps.runId,
       memberId: node.id,
       roleName: label,
-      backend: kind,
+      backend,
       phase: 'working',
+      ...(prior?.conversationId
+        ? { childConversationId: prior.conversationId as ConversationId }
+        : {}),
     })
 
     try {
@@ -207,9 +325,8 @@ export class TeamOrchestrator {
             prompt,
             workspaceRoot: this.deps.workspaceRoot,
             signal: this.deps.signal,
+            ...(prior?.session ? { resume: prior.session } : {}),
             ...(this.deps.secrets ? { secrets: this.deps.secrets } : {}),
-            // 外部 CLI 的过程只能靠这条看得见：它是本机另一个进程，
-            // 不像内置子 agent 那样有一条点得开的子会话。
             onChunk: (delta) =>
               this.deps.emit({
                 type: 'team.output',
@@ -217,32 +334,33 @@ export class TeamOrchestrator {
                 memberId: node.id,
                 delta,
               }),
-          }).then((r) => ({
-            ok: r.ok,
-            output: r.output,
-            error: r.ok
+          }).then((result) => ({
+            ok: result.ok,
+            output: result.output,
+            error: result.ok
               ? undefined
-              : r.timedOut
+              : result.timedOut
                 ? '超时'
-                : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`,
-            ...(r.session ? { session: r.session } : {}),
+                : `退出码 ${result.exitCode}${result.stderr ? `：${result.stderr.slice(-500)}` : ''}`,
+            ...(result.session ? { session: result.session } : {}),
           }))
         : await this.deps.runBuiltin({
             role: role!,
             prompt,
             signal: this.deps.signal,
             ...(node.model ? { model: node.model } : {}),
-            // 子会话起来了，把「点开哪一条」补给这一格。仍是 `working`——
-            // 阶段没变，变的是这一格多了一个可以翻开的去处。
-            onConversation: (cid) =>
+            ...(prior?.conversationId
+              ? { existingConversationId: prior.conversationId as ConversationId }
+              : {}),
+            onConversation: (conversationId) =>
               this.deps.emit({
                 type: 'team.member',
                 runId: this.deps.runId,
                 memberId: node.id,
                 roleName: label,
-                backend: kind,
+                backend,
                 phase: 'working',
-                childConversationId: cid,
+                childConversationId: conversationId,
               }),
           })
 
@@ -251,15 +369,14 @@ export class TeamOrchestrator {
         runId: this.deps.runId,
         memberId: node.id,
         roleName: label,
-        backend: kind,
+        backend,
         phase: res.ok ? 'done' : 'failed',
         summary: res.output.slice(0, 200),
-        // 子会话不进会话列表（`source='workflow'`），**这个 id 是它唯一的入口**。
-        // 不带出去的话，成员读了什么、跑了哪些命令就永远看不到了。
-        // 外部 CLI 没有子会话，那边这个字段自然缺席。
         ...('conversationId' in res && res.conversationId
           ? { childConversationId: res.conversationId }
-          : {}),
+          : prior?.conversationId
+            ? { childConversationId: prior.conversationId as ConversationId }
+            : {}),
       })
 
       return {
@@ -270,39 +387,56 @@ export class TeamOrchestrator {
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
         durationMs: Date.now() - started,
-        // 图跑完之后常常还要追一句「你刚才那步具体改了什么」——不带出去就只能重派。
-        ...('session' in res && res.session ? { session: res.session } : {}),
+        ...('session' in res && res.session
+          ? { session: res.session }
+          : prior?.session
+            ? { session: prior.session }
+            : {}),
         ...('conversationId' in res && res.conversationId
           ? { conversationId: res.conversationId }
-          : {}),
+          : prior?.conversationId
+            ? { conversationId: prior.conversationId }
+            : {}),
       }
-    } catch (err) {
+    } catch (error) {
       return {
-        nodeId: node.id,
-        agent: node.agent,
-        label,
-        status: 'failed',
-        output: '',
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - started,
+        ...this.failed(
+          node,
+          label,
+          started,
+          error instanceof Error ? error.message : String(error),
+        ),
+        ...(prior?.session ? { session: prior.session } : {}),
+        ...(prior?.conversationId ? { conversationId: prior.conversationId } : {}),
       }
     }
   }
 
-  /**
-   * 节点上显示的名字：角色名，或「厂商 + CLI 名」，两样都认不出就退回 agent 那个 id。
-   *
-   * 事件与结果**共用这一份**：两处各写一遍的话，刷新前后同一个节点会显示两个名字。
-   */
+  private failed(
+    node: Exclude<PlanNode, WorkflowCheckpointNode>,
+    label: string,
+    started: number,
+    error: string,
+  ): NodeResult {
+    return {
+      nodeId: node.id,
+      agent: node.agent,
+      label,
+      status: 'failed',
+      output: '',
+      error,
+      durationMs: Date.now() - started,
+    }
+  }
+
   private labelOf(agent: string): string {
     if (agent.startsWith(CLI_PREFIX)) {
       const cli = this.deps.resolveCli(agent.slice(CLI_PREFIX.length))
       return cli ? `${cli.vendor} ${cli.id}` : agent
     }
-    return this.config.roles.find((r) => r.id === agent)?.name ?? agent
+    return this.config.roles.find((role) => role.id === agent)?.name ?? agent
   }
 
-  /** 角色约束 + 团队公共约束 + 任务。公共规则放最后，压过角色自己的设定。 */
   private composePrompt(role: Role, task: string): string {
     const parts = [role.systemPrompt]
     if (this.config.rules?.shared) parts.push(this.config.rules.shared)
@@ -311,39 +445,66 @@ export class TeamOrchestrator {
   }
 }
 
-/** 加载期就把成环和悬空引用挡掉，不留到运行时变成死循环。 */
-export function validatePlan(plan: PlanNode[], roles: Role[]): void {
-  const roleIds = new Set(roles.map((r) => r.id))
-  const nodeIds = new Set(plan.map((n) => n.id))
+function ancestorOf(plan: PlanNode[], ancestor: string, nodeId: string): boolean {
+  const seen = new Set<string>()
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return false
+    seen.add(id)
+    const node = plan.find((candidate) => candidate.id === id)
+    return (node?.needs ?? []).some((dependency) => dependency === ancestor || visit(dependency))
+  }
+  return visit(nodeId)
+}
 
+/** 加载期挡住成环、悬空引用，以及会绕过主会话检查点的分支。 */
+export function validatePlan(plan: PlanNode[], roles: Role[]): void {
+  const roleIds = new Set(roles.map((role) => role.id))
+  const nodeIds = new Set(plan.map((node) => node.id))
   if (nodeIds.size !== plan.length) throw new Error('plan 节点 id 重复')
 
   for (const node of plan) {
-    // 指向外部 CLI 的节点这里不校验：装没装是本机的事实，随时会变，
-    // 校验点在执行时（识别不到就那一个节点失败），不该让整张图起不来。
-    if (!node.agent.startsWith(CLI_PREFIX) && !roleIds.has(node.agent)) {
+    if (isCheckpoint(node)) {
+      if (!node.label.trim()) throw new Error(`检查点 ${node.id} 没有 label`)
+      if (node.needs.length === 0) throw new Error(`检查点 ${node.id} 必须依赖上一批节点`)
+    } else if (!node.agent.startsWith(CLI_PREFIX) && !roleIds.has(node.agent)) {
       throw new Error(`节点 ${node.id} 引用了不存在的角色 ${node.agent}`)
     }
-    for (const dep of node.needs ?? []) {
-      if (!nodeIds.has(dep)) throw new Error(`节点 ${node.id} 依赖不存在的节点 ${dep}`)
-      if (dep === node.id) throw new Error(`节点 ${node.id} 依赖自己`)
+    for (const dependency of node.needs ?? []) {
+      if (!nodeIds.has(dependency))
+        throw new Error(`节点 ${node.id} 依赖不存在的节点 ${dependency}`)
+      if (dependency === node.id) throw new Error(`节点 ${node.id} 依赖自己`)
     }
   }
 
-  // 深度优先找环。成环在运行时的表现是「一直没有可启动节点」，
-  // 从现象倒推原因很费劲，所以必须在这里报出确切的环。
   const state = new Map<string, 'visiting' | 'done'>()
   const walk = (id: string, trail: string[]): void => {
-    const s = state.get(id)
-    if (s === 'done') return
-    if (s === 'visiting') {
-      throw new Error(`plan 存在循环依赖：${[...trail, id].join(' → ')}`)
-    }
+    const current = state.get(id)
+    if (current === 'done') return
+    if (current === 'visiting') throw new Error(`plan 存在循环依赖：${[...trail, id].join(' → ')}`)
     state.set(id, 'visiting')
-    for (const dep of plan.find((n) => n.id === id)?.needs ?? []) {
-      walk(dep, [...trail, id])
+    for (const dependency of plan.find((node) => node.id === id)?.needs ?? []) {
+      walk(dependency, [...trail, id])
     }
     state.set(id, 'done')
   }
   for (const node of plan) walk(node.id, [])
+
+  const checkpoints = plan.filter(isCheckpoint)
+  for (let i = 0; i < checkpoints.length; i += 1) {
+    for (let j = i + 1; j < checkpoints.length; j += 1) {
+      const left = checkpoints[i]!
+      const right = checkpoints[j]!
+      if (!ancestorOf(plan, left.id, right.id) && !ancestorOf(plan, right.id, left.id)) {
+        throw new Error(`检查点必须形成单链：${left.id} 与 ${right.id} 不能并行`)
+      }
+    }
+  }
+  for (const checkpoint of checkpoints) {
+    for (const node of plan) {
+      if (isCheckpoint(node)) continue
+      if (!ancestorOf(plan, node.id, checkpoint.id) && !ancestorOf(plan, checkpoint.id, node.id)) {
+        throw new Error(`节点 ${node.id} 会绕过检查点 ${checkpoint.id}`)
+      }
+    }
+  }
 }

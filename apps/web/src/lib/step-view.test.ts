@@ -446,6 +446,22 @@ describe('派活图', () => {
     expect(g.layers.map((l) => l.length)).toEqual([1, 2, 1, 1])
   })
 
+  test('checkpoint 就是当前会话审查节点，末尾不再复制一个返回端', () => {
+    const g = delegateGraph({
+      toolName: 'workflow',
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'a', agent: 'dev' },
+          { id: 'b', agent: 'dev' },
+          { id: 'review', kind: 'checkpoint', label: '主会话审批', needs: ['a', 'b'] },
+        ],
+      },
+    })
+    expect(g.nodes.map((node) => node.kind)).toEqual(['session', 'agent', 'agent', 'session'])
+    expect(g.nodes.at(-1)).toMatchObject({ key: 'review', title: '主会话审批', needs: ['a', 'b'] })
+  })
+
   /** 成环由编排器拒绝，这里只保证画得出来——画不出来的话整张卡是空的。 */
   test('图成环也画得出来', () => {
     const g = delegateGraph({

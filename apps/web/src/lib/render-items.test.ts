@@ -153,6 +153,146 @@ describe('分组规则', () => {
   })
 })
 
+describe('workflow 始终是一张卡', () => {
+  const nodes = [
+    { id: 'a', kind: 'agent', agent: 'dev', task: '查' },
+    { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+  ]
+  const receipt = (output: string) => ({
+    nodeId: 'a',
+    agent: 'dev',
+    label: '开发',
+    status: 'done' as const,
+    output,
+    durationMs: 10,
+    conversationId: 'cv_a',
+  })
+  const workflow = (
+    id: string,
+    args: Record<string, unknown>,
+    data?: Record<string, unknown>,
+    status: TranscriptItem['status'] = 'success',
+  ): TranscriptItem => ({
+    id,
+    kind: 'tool',
+    text: '',
+    toolName: 'workflow',
+    args,
+    status,
+    ...(data ? { outcome: { status: 'success', executed: true, message: 'ok', data } } : {}),
+  })
+
+  test('首轮与 revise 只保留同一张卡，并累计次数与原 conversationId', () => {
+    const out = buildRenderItems([
+      workflow(
+        'st_root',
+        { goal: '目标', nodes },
+        {
+          workflowId: 'st_root',
+          phase: 'waiting_review',
+          checkpointId: 'cp',
+          receipts: [receipt('初稿')],
+        },
+      ),
+      item('text', { text: '主会话发现证据不足' }),
+      workflow(
+        'st_review',
+        {
+          workflowId: 'st_root',
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '补证据',
+          revisions: [{ nodeId: 'a', instruction: '补证据' }],
+        },
+        {
+          workflowId: 'st_root',
+          phase: 'waiting_review',
+          checkpointId: 'cp',
+          receipts: [receipt('修订稿')],
+          review: { checkpointId: 'cp', decision: 'revise', note: '补证据' },
+        },
+      ),
+    ])
+    expect(out.map((row) => row.kind)).toEqual(['text', 'tool'])
+    const card = out[1]
+    expect(card?.id).toBe('st_root')
+    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    expect(card.item.workflow?.attempts.a).toBe(2)
+    expect(card.item.workflow?.results.a?.output).toBe('修订稿')
+    expect(card.item.workflow?.results.a?.conversationId).toBe('cv_a')
+  })
+
+  test('下一次 review 刚 started 时也立刻归入原卡，不闪出第二张', () => {
+    const out = buildRenderItems([
+      workflow(
+        'st_root',
+        { goal: '目标', nodes },
+        {
+          workflowId: 'st_root',
+          phase: 'waiting_review',
+          checkpointId: 'cp',
+          receipts: [receipt('初稿')],
+        },
+      ),
+      workflow(
+        'st_live',
+        {
+          workflowId: 'st_root',
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '补证据',
+          revisions: [{ nodeId: 'a', instruction: '补证据' }],
+        },
+        undefined,
+        'running',
+      ),
+    ])
+    expect(out).toHaveLength(1)
+    const card = out[0]
+    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    expect(card.id).toBe('st_root')
+    expect(card.item.workflow?.phase).toBe('running')
+    expect(card.item.workflow?.results.a).toBeUndefined()
+  })
+
+  test('两张独立 workflow 不会互相吞并', () => {
+    const one = workflow(
+      'st_one',
+      { goal: '一', nodes },
+      {
+        workflowId: 'st_one',
+        phase: 'waiting_review',
+        checkpointId: 'cp',
+        receipts: [receipt('一')],
+      },
+    )
+    const two = workflow(
+      'st_two',
+      { goal: '二', nodes },
+      {
+        workflowId: 'st_two',
+        phase: 'waiting_review',
+        checkpointId: 'cp',
+        receipts: [receipt('二')],
+      },
+    )
+    expect(buildRenderItems([one, two]).map((row) => row.id)).toEqual(['st_one', 'st_two'])
+  })
+
+  test('旧版一次性 workflow 没有 transition 时保持原样', () => {
+    const old = workflow(
+      'st_old',
+      { goal: '旧图', nodes: [{ id: 'a', agent: 'dev', task: '查' }] },
+      { nodes: [receipt('旧结果')] },
+    )
+    const out = buildRenderItems([old])
+    expect(out).toHaveLength(1)
+    if (out[0]?.kind !== 'tool') throw new Error('没有旧卡')
+    expect(out[0].item).toBe(old)
+    expect(out[0].item.workflow).toBeUndefined()
+  })
+})
+
 describe('组头文案', () => {
   /**
    * **跑着也是摘要**，不换成「正在<某一个的动词>…」。

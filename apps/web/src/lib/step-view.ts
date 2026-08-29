@@ -332,10 +332,15 @@ export function delegateGraph(item: {
   const kids = childNodes(item)
   // 没有下游的那几格汇进收回端；没有上游的那几格从派出端接出来。
   const leaves = kids.filter((n) => !kids.some((m) => m.needs.includes(n.key))).map((n) => n.key)
+  const leafNodes = kids.filter((node) => leaves.includes(node.key))
+  const needsExit =
+    leafNodes.some((node) => node.kind === 'agent') || (leaves.length === 0 && kids.length > 0)
   const nodes: GraphNode[] = [
     { key: ENTRY, title: '当前会话', kind: 'session', agent: '', needs: [] },
     ...kids.map((n) => (n.needs.length ? n : { ...n, needs: [ENTRY] })),
-    { key: EXIT, title: '当前会话', kind: 'session', agent: '', needs: leaves },
+    ...(needsExit
+      ? [{ key: EXIT, title: '当前会话', kind: 'session' as const, agent: '', needs: leaves }]
+      : []),
   ]
   return { nodes, layers: layered(nodes), horizontal: kids.length === 1 }
 }
@@ -347,6 +352,16 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
     return raw.map((n) => {
       const o = (n ?? {}) as Record<string, unknown>
       const id = String(o.id ?? '')
+      const needs = Array.isArray(o.needs) ? o.needs.map(String) : []
+      if (o.kind === 'checkpoint') {
+        return {
+          key: id,
+          title: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : '当前会话审查',
+          kind: 'session' as const,
+          agent: '',
+          needs,
+        }
+      }
       const agent = String(o.agent ?? '')
       // 主行是节点 id：一张图里常常四格都是同一个执行者，区分得开的就是它。
       // 次行的执行者**一定要有个字**——节点没点名执行者时它是临时子 agent，
@@ -357,7 +372,7 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
         kind: 'agent' as const,
         agent,
         agentLabel: agentTitle(agent),
-        needs: Array.isArray(o.needs) ? o.needs.map(String) : [],
+        needs,
       }
     })
   }

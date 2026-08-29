@@ -13,10 +13,27 @@
  */
 
 import type { DelegatePort } from '@qywork/agent'
-import { type AgentEvent, type ConversationId, type RunId, SUBAGENT_NODE_ID } from '@qywork/core'
+import {
+  type AgentEvent,
+  type ConversationId,
+  foldWorkflow,
+  type RunId,
+  SUBAGENT_NODE_ID,
+  type WorkflowCallRecord,
+  type WorkflowNode,
+  type WorkflowTransition,
+} from '@qywork/core'
 import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
-import { getConversation } from '@qywork/store'
-import { CLI_PREFIX, detectClis, findCli, type Role, runCli, TeamOrchestrator } from '@qywork/team'
+import { getConversation, listRuns, listSteps } from '@qywork/store'
+import {
+  CLI_PREFIX,
+  detectClis,
+  findCli,
+  type OrchestratorState,
+  type Role,
+  runCli,
+  TeamOrchestrator,
+} from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 import { resolveModel, runBuiltinMember } from './team-run.ts'
 
@@ -69,6 +86,39 @@ export function makeDelegate(ctx: {
   const inherited = () => {
     const c = getConversation(deps.store, conversationId)
     return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
+  }
+
+  /**
+   * workflow 没有第二份运行表：同一父会话里已经落库的 workflow tool step
+   * 就是恢复权威。当前正在执行的 step 尚无结果，必须排除，避免把请求当成事实。
+   */
+  const workflowRecords = (currentStepId: string): WorkflowCallRecord[] => {
+    const records: WorkflowCallRecord[] = []
+    for (const run of listRuns(deps.store, conversationId)) {
+      for (const step of listSteps(deps.store, run.id)) {
+        if (
+          step.id === currentStepId ||
+          step.kind !== 'tool_action' ||
+          step.toolName !== 'workflow'
+        ) {
+          continue
+        }
+        const payload = step.payload
+        if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') continue
+        records.push({
+          stepId: step.id,
+          ...(payload.args ? { args: payload.args } : {}),
+          ...(payload.kind === 'tool_result' ? { outcome: payload.outcome } : {}),
+          status:
+            step.status === 'running'
+              ? 'running'
+              : step.status === 'success'
+                ? 'success'
+                : 'failure',
+        })
+      }
+    }
+    return records
   }
 
   /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */
@@ -265,10 +315,48 @@ export function makeDelegate(ctx: {
     async runGraph(input) {
       const { roles: rs, rules } = await team()
       const clis = await detectClis()
+      const workflowId = input.call.kind === 'start' ? input.stepId : input.call.workflowId
+      let goal: string
+      let nodes: WorkflowNode[]
+      let state: OrchestratorState
+      if (input.call.kind === 'start') {
+        goal = input.call.goal
+        nodes = input.call.nodes
+        state = {}
+      } else {
+        const folded = foldWorkflow(workflowRecords(input.stepId), workflowId)
+        if (!folded.ok) return { ok: false, error: folded.error }
+        const projection = folded.projection
+        if (projection.phase !== 'waiting_review') {
+          return {
+            ok: false,
+            error: `工作流 ${workflowId} 当前不是待审查状态（${projection.phase}）`,
+          }
+        }
+        if (projection.checkpointId !== input.call.checkpointId) {
+          return {
+            ok: false,
+            error: `工作流 ${workflowId} 当前待审查的是 ${projection.checkpointId ?? '无'}，不是 ${input.call.checkpointId}`,
+          }
+        }
+        goal = projection.goal
+        nodes = projection.nodes
+        state = {
+          results: projection.results,
+          approvals: projection.approvals,
+          checkpointId: projection.checkpointId,
+          review: {
+            checkpointId: input.call.checkpointId,
+            decision: input.call.decision,
+            note: input.call.note,
+            revisions: input.call.revisions,
+          },
+        }
+      }
       const orchestrator = new TeamOrchestrator(
         // 临时子 agent 排在用户的角色**后面**：同 id 时先找到的是用户那条，
         // 用户定义的那一份盖过内置的默认。
-        { name: 'workflow', roles: [...rs, AD_HOC_ROLE], rules, plan: input.nodes },
+        { name: 'workflow', roles: [...rs, AD_HOC_ROLE], rules, plan: nodes },
         {
           workspaceRoot,
           signal: input.signal,
@@ -286,6 +374,23 @@ export function makeDelegate(ctx: {
           runBuiltin: async (member) => {
             const picked = pick(member.model)
             if ('error' in picked) return { ok: false, output: '', error: picked.error }
+            if (member.existingConversationId) {
+              const parent = getConversation(deps.store, conversationId)
+              const child = getConversation(deps.store, member.existingConversationId)
+              if (
+                !parent ||
+                !child ||
+                child.workspaceId !== parent.workspaceId ||
+                child.source !== 'workflow' ||
+                child.sourceRef !== member.role.id
+              ) {
+                return {
+                  ok: false,
+                  output: '',
+                  error: `子会话 ${member.existingConversationId} 不属于当前工作流节点 ${member.role.id}`,
+                }
+              }
+            }
             return runBuiltinMember(member, {
               deps,
               workspaceRoot,
@@ -299,15 +404,24 @@ export function makeDelegate(ctx: {
         },
       )
       try {
-        const results = await orchestrator.run(input.goal)
+        const result = await orchestrator.run(goal, state)
+        const transition: WorkflowTransition = {
+          workflowId,
+          phase: result.phase,
+          receipts: result.receipts,
+          ...(result.checkpointId ? { checkpointId: result.checkpointId } : {}),
+          ...(result.review ? { review: result.review } : {}),
+        }
         return {
-          ok: results.every((r) => r.status === 'done'),
-          nodes: results,
+          ok:
+            result.receipts.every((receipt) => receipt.status === 'done') &&
+            result.phase !== 'failed',
+          transition,
         }
       } catch (err) {
         // 图本身不合法（成环、悬空依赖、门禁引用不到角色）在这里落地：
         // 它是模型写错了参数，要原样告诉它，不能压成一句「工具执行出错」。
-        return { ok: false, error: err instanceof Error ? err.message : String(err), nodes: [] }
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   }

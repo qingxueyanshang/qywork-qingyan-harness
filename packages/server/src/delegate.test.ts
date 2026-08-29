@@ -18,13 +18,21 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { ToolContext } from '@qywork/agent'
 import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
+  appendMessage,
+  appendStep,
   ContentStore,
   contentPathFor,
   createConversation,
+  createRun,
+  listMessages,
+  listRuns,
+  listSteps,
   Store,
+  settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
 import { EventBus } from './bus.ts'
@@ -128,6 +136,60 @@ function delegate(conversationId: ConversationId) {
     workspaceRoot: dir,
     conversationId,
   })
+}
+
+function seedWaitingWorkflow(parent: ConversationId, child: ConversationId, key: string) {
+  const run = createRun(store, {
+    conversationId: parent,
+    workspaceId: workspaceId as never,
+    model: 'deepseek-v4-flash',
+    clientRequestId: `workflow-${key}`,
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  const args = {
+    goal: '形成可靠结论',
+    nodes: [
+      { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '研究并给出证据' },
+      { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+    ],
+  }
+  const step = appendStep(store, {
+    runId: run.id,
+    seq: 1,
+    kind: 'tool_action',
+    toolName: 'workflow',
+    toolCallId: `call_${key}`,
+    status: 'running',
+    payload: { kind: 'tool_call', args },
+  })
+  settleToolStep(store, step.id, 'success', {
+    kind: 'tool_result',
+    args,
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: '等待审查',
+      data: {
+        workflowId: step.id,
+        phase: 'waiting_review',
+        checkpointId: 'review',
+        receipts: [
+          {
+            nodeId: 'a',
+            agent: 'ad-hoc',
+            label: '临时子 agent',
+            status: 'done',
+            output: '初稿',
+            durationMs: 5,
+            conversationId: child,
+          },
+        ],
+      },
+    },
+  })
+  return step
 }
 
 /**
@@ -285,5 +347,283 @@ describe('派一件的进度', () => {
 
     expect(res.ok).toBe(false)
     expect(members()).toHaveLength(0)
+  })
+})
+
+describe('workflow 从父会话账本续接', () => {
+  test('revise 读回首轮回执，并把二次指令发进同一个子会话', async () => {
+    const parent = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      title: '节点 a',
+      source: 'workflow',
+      sourceRef: 'ad-hoc',
+    })
+    appendMessage(store, { conversationId: child.id, role: 'user', content: '先给一个初稿' })
+    appendMessage(store, {
+      conversationId: child.id,
+      role: 'assistant',
+      content: '初稿：只有一个来源',
+    })
+    const hiddenBefore = store.db
+      .query<{ count: number }, []>(
+        "SELECT count(*) AS count FROM conversations WHERE source = 'workflow'",
+      )
+      .get()?.count
+
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-seed',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const first = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_workflow_seed',
+      status: 'running',
+      payload: {
+        kind: 'tool_call',
+        args: {
+          goal: '形成可靠结论',
+          nodes: [
+            { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '研究并给出证据' },
+            { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+          ],
+        },
+      },
+    })
+    settleToolStep(store, first.id, 'success', {
+      kind: 'tool_result',
+      args: {
+        goal: '形成可靠结论',
+        nodes: [
+          { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '研究并给出证据' },
+          { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+        ],
+      },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '等待审查',
+        data: {
+          workflowId: first.id,
+          phase: 'waiting_review',
+          checkpointId: 'review',
+          receipts: [
+            {
+              nodeId: 'a',
+              agent: 'ad-hoc',
+              label: '临时子 agent',
+              status: 'done',
+              output: '初稿：只有一个来源',
+              durationMs: 5,
+              conversationId: child.id,
+            },
+          ],
+        },
+      },
+    })
+
+    script = [() => new Response(textTurn('修订稿：已经补充两条证据'), { headers: SSE_HEADERS })]
+    const result = await delegate(parent).runGraph({
+      call: {
+        kind: 'review',
+        workflowId: first.id,
+        checkpointId: 'review',
+        decision: 'revise',
+        note: '证据不足',
+        revisions: [{ nodeId: 'a', instruction: '补充两条可核验证据' }],
+      },
+      runId: 'rn_review',
+      stepId: 'st_review',
+      signal: new AbortController().signal,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.transition?.phase).toBe('waiting_review')
+    expect(result.transition?.review?.decision).toBe('revise')
+    expect(result.transition?.receipts[0]?.conversationId).toBe(child.id)
+    expect(result.transition?.receipts[0]?.output).toBe('修订稿：已经补充两条证据')
+    const messages = listMessages(store, child.id)
+    expect(messages.filter((message) => message.role === 'user').at(-1)?.content).toContain(
+      '补充两条可核验证据',
+    )
+    const resumedRun = listRuns(store, child.id).at(-1)
+    expect(
+      resumedRun
+        ? listSteps(store, resumedRun.id)
+            .filter((step) => step.kind === 'text')
+            .map((step) => step.content)
+            .join('')
+        : '',
+    ).toBe('修订稿：已经补充两条证据')
+    const hidden = store.db
+      .query<{ count: number }, []>(
+        "SELECT count(*) AS count FROM conversations WHERE source = 'workflow'",
+      )
+      .get()
+    expect(hidden?.count).toBe(hiddenBefore)
+  })
+
+  test('普通会话不能被伪装成 workflow 子节点续接', async () => {
+    const parent = conversation()
+    const ordinary = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      title: '普通会话',
+    })
+    const first = seedWaitingWorkflow(parent, ordinary.id, 'ordinary-child')
+    const result = await delegate(parent).runGraph({
+      call: {
+        kind: 'review',
+        workflowId: first.id,
+        checkpointId: 'review',
+        decision: 'revise',
+        note: '返工',
+        revisions: [{ nodeId: 'a', instruction: '继续' }],
+      },
+      runId: 'rn_bad_child',
+      stepId: 'st_bad_child',
+      signal: new AbortController().signal,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.transition?.receipts[0]?.status).toBe('failed')
+    expect(result.transition?.receipts[0]?.error).toContain('不属于当前工作流节点')
+    expect(result.transition?.receipts[0]?.conversationId).toBe(ordinary.id)
+    expect(listRuns(store, ordinary.id)).toHaveLength(0)
+  })
+
+  test('start → revise → approve 下一批 → approve 完成全程从同一父账本推进', async () => {
+    const parent = conversation()
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-full-loop',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const nodes = [
+      { id: 'a', kind: 'agent' as const, agent: 'ad-hoc', task: '第一批 A' },
+      { id: 'b', kind: 'agent' as const, agent: 'ad-hoc', task: '第一批 B' },
+      { id: 'cp1', kind: 'checkpoint' as const, label: '审查第一批', needs: ['a', 'b'] },
+      { id: 'c', kind: 'agent' as const, agent: 'ad-hoc', task: '第二批 C', needs: ['cp1'] },
+      { id: 'd', kind: 'agent' as const, agent: 'ad-hoc', task: '第二批 D', needs: ['cp1'] },
+      { id: 'cp2', kind: 'checkpoint' as const, label: '最终审查', needs: ['c', 'd'] },
+    ]
+    const invoke = async (
+      seq: number,
+      args: Record<string, unknown>,
+      call: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]['call'],
+    ) => {
+      const step = appendStep(store, {
+        runId: run.id,
+        seq,
+        kind: 'tool_action',
+        toolName: 'workflow',
+        toolCallId: `call_full_${seq}`,
+        status: 'running',
+        payload: { kind: 'tool_call', args },
+      })
+      const result = await delegate(parent).runGraph({
+        call,
+        runId: run.id,
+        stepId: step.id,
+        signal: new AbortController().signal,
+      })
+      if (!result.transition) throw new Error(result.error ?? '没有 transition')
+      settleToolStep(store, step.id, result.ok ? 'success' : 'failure', {
+        kind: 'tool_result',
+        args,
+        outcome: {
+          status: result.ok ? 'success' : 'failure',
+          executed: true,
+          message: result.transition.phase,
+          data: result.transition as unknown as Record<string, unknown>,
+        },
+      })
+      return { step, result }
+    }
+
+    script = [
+      () => new Response(textTurn('第一批结果 1'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('第一批结果 2'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('A 的修订结果'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('第二批结果 1'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('第二批结果 2'), { headers: SSE_HEADERS }),
+    ]
+    const first = await invoke(
+      1,
+      { goal: '两批完成', nodes },
+      { kind: 'start', goal: '两批完成', nodes },
+    )
+    expect(first.result.transition?.phase).toBe('waiting_review')
+    expect(first.result.transition?.checkpointId).toBe('cp1')
+    expect(first.result.transition?.receipts.map((receipt) => receipt.nodeId).sort()).toEqual([
+      'a',
+      'b',
+    ])
+    const firstA = first.result.transition?.receipts.find((receipt) => receipt.nodeId === 'a')
+
+    const reviseArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp1',
+      decision: 'revise' as const,
+      note: 'A 需要修订',
+      revisions: [{ nodeId: 'a', instruction: '纠正 A' }],
+    }
+    const revised = await invoke(2, reviseArgs, { kind: 'review', ...reviseArgs })
+    expect(revised.result.transition?.phase).toBe('waiting_review')
+    expect(revised.result.transition?.receipts.map((receipt) => receipt.nodeId)).toEqual(['a'])
+    expect(revised.result.transition?.receipts[0]?.conversationId).toBe(firstA?.conversationId)
+
+    const approveFirstArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp1',
+      decision: 'approve' as const,
+      note: '第一批通过',
+    }
+    const secondBatch = await invoke(3, approveFirstArgs, {
+      kind: 'review',
+      ...approveFirstArgs,
+      revisions: [],
+    })
+    expect(secondBatch.result.transition?.phase).toBe('waiting_review')
+    expect(secondBatch.result.transition?.checkpointId).toBe('cp2')
+    expect(secondBatch.result.transition?.receipts.map((receipt) => receipt.nodeId).sort()).toEqual(
+      ['c', 'd'],
+    )
+
+    const approveFinalArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp2',
+      decision: 'approve' as const,
+      note: '最终通过',
+    }
+    const completed = await invoke(4, approveFinalArgs, {
+      kind: 'review',
+      ...approveFinalArgs,
+      revisions: [],
+    })
+    expect(completed.result.transition?.phase).toBe('completed')
+    expect(completed.result.transition?.receipts).toEqual([])
+    expect(script).toHaveLength(0)
+    const memberEvents = members()
+    expect(
+      memberEvents
+        .filter((event) => event.memberId === 'c' || event.memberId === 'd')
+        .every((event) => event.stepId === secondBatch.step.id),
+    ).toBe(true)
+    expect(listSteps(store, run.id).filter((step) => step.toolName === 'workflow')).toHaveLength(4)
   })
 })

@@ -887,7 +887,24 @@ function DelegateCard(props: { item: TranscriptItem }) {
    * 那一格的成败、耗时全在 step 账上。
    */
   const stateOf = (n: GraphNode) => {
-    if (n.kind === 'session') return null
+    if (n.kind === 'session') {
+      const checkpoint = props.item.workflow?.nodes.find(
+        (node) => node.kind === 'checkpoint' && node.id === n.key,
+      )
+      if (!checkpoint || checkpoint.kind !== 'checkpoint') return null
+      const approved = props.item.workflow?.approvals[n.key]
+      const current = props.item.workflow?.checkpointId === n.key
+      return {
+        phase: approved
+          ? 'done'
+          : current && props.item.workflow?.phase === 'waiting_review'
+            ? 'waiting_review'
+            : current && props.item.workflow?.phase === 'running'
+              ? 'working'
+              : 'waiting',
+        label: checkpoint.label,
+      }
+    }
     const live = props.item.nodes?.find((x) => x.nodeId === n.key)
     if (props.item.toolName !== 'workflow') {
       const settled =
@@ -906,6 +923,17 @@ function DelegateCard(props: { item: TranscriptItem }) {
         label: live.label,
         durationMs: live.durationMs,
         conversationId: live.conversationId,
+        attempts: props.item.workflow?.attempts[n.key],
+      }
+    }
+    const projected = props.item.workflow?.results[n.key]
+    if (projected) {
+      return {
+        phase: projected.status,
+        label: projected.label || projected.agent,
+        durationMs: projected.durationMs,
+        conversationId: projected.conversationId,
+        attempts: props.item.workflow?.attempts[n.key],
       }
     }
     // 回放这条路读的是落库的结果，**字段名与事件那条路不同**：结果里是
@@ -931,6 +959,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
           label: back.label || back.agent,
           durationMs: back.durationMs,
           conversationId: back.conversationId,
+          attempts: undefined,
         }
       : null
   }
@@ -1000,6 +1029,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
   createEffect(() => {
     props.item.nodes
     props.item.outcome
+    props.item.workflow
     queueMicrotask(measure)
   })
 
@@ -1019,7 +1049,14 @@ function DelegateCard(props: { item: TranscriptItem }) {
   }
 
   return (
-    <div class="wf-card" classList={{ failed: props.item.status === 'failure' }}>
+    <div
+      class="wf-card"
+      classList={{
+        failed: props.item.workflow
+          ? props.item.workflow.phase === 'failed'
+          : props.item.status === 'failure',
+      }}
+    >
       <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">
@@ -1050,7 +1087,11 @@ function DelegateCard(props: { item: TranscriptItem }) {
                       when={n.kind === 'agent'}
                       fallback={
                         // 两端是这条会话自己：交出去、收回来。不可点——它就是用户正在看的这一页。
-                        <div class="wf-node session" ref={hold(n.key)}>
+                        <div
+                          class="wf-node session"
+                          classList={{ [st()?.phase ?? 'waiting']: true }}
+                          ref={hold(n.key)}
+                        >
                           <span class="wf-node-name truncate">{n.title}</span>
                         </div>
                       }
@@ -1071,6 +1112,9 @@ function DelegateCard(props: { item: TranscriptItem }) {
                           <Show when={st()?.durationMs}>
                             {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
                           </Show>
+                          <Show when={(st()?.attempts ?? 0) > 1}>
+                            <span class="wf-node-time">×{st()?.attempts}</span>
+                          </Show>
                         </span>
                       </button>
                     </Show>
@@ -1082,7 +1126,13 @@ function DelegateCard(props: { item: TranscriptItem }) {
         </For>
       </div>
       {/* 失败原因。**只印这一处**：边框已经说了「失败了」，这一行说的是为什么。 */}
-      <Show when={props.item.status === 'failure' && props.item.outcome?.message}>
+      <Show
+        when={
+          (props.item.workflow
+            ? props.item.workflow.phase === 'failed'
+            : props.item.status === 'failure') && props.item.outcome?.message
+        }
+      >
         {(msg) => <div class="wf-error">{msg()}</div>}
       </Show>
     </div>

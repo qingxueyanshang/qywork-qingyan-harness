@@ -13,7 +13,7 @@
  * 后端这个概念，而且删掉一个 CLI 会让引用它的角色整条消失。
  */
 
-import type { EffortLevel } from '@qywork/core'
+import type { EffortLevel, WorkflowNode, WorkflowReceipt } from '@qywork/core'
 
 /** 目标是外部 CLI 时，`PlanNode.agent` 用这个前缀。角色 id 不带前缀。 */
 export const CLI_PREFIX = 'cli:'
@@ -97,56 +97,6 @@ export interface TeamConfig {
   plan: PlanNode[]
 }
 
-export interface PlanNode {
-  id: string
-  /** 派给谁：角色 id，或 `cli:<id>` 指一个识别到的外部 CLI。 */
-  agent: string
-  /**
-   * 任务描述。`{goal}` 替换成用户原始诉求；`{input}` 决定上游产出**插在哪里**。
-   * 不写 `{input}` 时上游产出会追加在末尾——声明了 needs 却拿不到产出，
-   * 表现是下游角色说「没有上下文」，而配置看起来完全正确。
-   */
-  task: string
-  /** 依赖的节点 id。全部完成后本节点才开始。 */
-  needs?: string[]
-  /** 设为 false 则依赖只影响顺序，不传递产出。默认传递。 */
-  passInput?: boolean
-  /**
-   * 这个节点点名用哪个模型。不写 = 跟父会话同一个。
-   *
-   * 外部 CLI 节点上不成立：那边用它自己的模型，写了也没地方接。
-   */
-  model?: string
-}
-
-export interface NodeResult {
-  nodeId: string
-  /** 同 `PlanNode.agent`：角色 id 或 `cli:<id>`。 */
-  agent: string
-  /**
-   * 显示用的名字：角色名，或「厂商 + CLI 名」。
-   *
-   * **必须随结果带出来**：刷新之后图卡只能照落库结果重画，那时事件里的名字早没了，
-   * 剩下的只有 `agent` 那个 id——图上每个节点会退化成 `ad-hoc` 这样的内部 id。
-   */
-  label: string
-  status: 'done' | 'failed' | 'skipped'
-  output: string
-  error?: string
-  durationMs: number
-  /**
-   * 外部 CLI 节点那条会话的 id，**接着问它就靠这个**。
-   *
-   * 图跑完之后模型常常还要追一句「你刚才那步具体改了什么」——不带出来的话
-   * 只能重新派一遍，而重派会让它把活再做一次。内置角色没有这一项（那边看
-   * `conversationId`），认不出 id 的那几家 CLI 也没有。
-   */
-  session?: string
-  /**
-   * 这个节点跑出来的子会话。**必须带出来**：图卡刷新之后重画时，
-   * 「点开看它读了什么、跑了哪些命令」的入口只有这一个 id，
-   * 而进度事件不落库。
-   * 外部 CLI 没有子会话，那边这个字段自然缺席。
-   */
-  conversationId?: string
-}
+/** 编排图与持久化回执共用 core 的 wire 契约，避免工具、服务端、UI 各维护一份。 */
+export type PlanNode = WorkflowNode
+export type NodeResult = WorkflowReceipt

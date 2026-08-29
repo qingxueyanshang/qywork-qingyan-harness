@@ -1,170 +1,117 @@
 /**
- * 一次交一整张图：拆成哪几件事、每件派给谁、哪些并行、哪些等上一步。
+ * 一张可暂停、可审查、可续发的 DAG。
  *
- * **与 `subagent` 的分工。** 派一件事用 `subagent`；**几件事之间有先后依赖**才用这个。判据是「要不
- * 要把上一步的产出传给下一步」——要，就是一张图。
- *
- * 节点的目标与 `subagent` 同一套取值：不写 = 临时子 agent，写角色 id = 配置好的角色，
- * 写 `cli:<id>` = 本机的外部 CLI。一张图里三种可以混。
- *
- * **调度不在这里。** 图交出去之后由服务端的编排器按图跑：依赖就绪才启动、并发上限都在那边。
- * **模型不参与调度**——每完成一步再回来问「下一步派谁」的话，每次跑出来的形状都不同，
- * 出问题既不能复现也不能归因，界面上也画不出一张固定的图。
- *
- * **图卡靠 stepId 认领。** 进度事件带的是这次调用的 step id（`ctx.stepId`），前端据此把节点状态落到
- * 这张卡上。但**进度事件不落库**：刷新之后能重画这张图的只有这次调用的返回值，所以逐节点的终态
- * （含子会话 id）必须原样回在 `data.nodes` 里。
+ * workflow 每次调用只推进到下一个 checkpoint 或结束。检查点回执回到当前
+ * 会话后，由当前会话决定 approve 或 revise；续发仍使用同一个 workflowId。
  */
-
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { idArg } from './args.ts'
-
-interface NodeArg {
-  id: string
-  agent: string
-  task: string
-  needs?: string[]
-  passInput?: boolean
-  model?: string
-}
+import { parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
   description:
-    '把一件复杂的事拆成一张图交出去执行：节点之间用 needs 表达先后——' +
-    '不写依赖的并行跑，写了的等上游做完并拿到它的产出。整张图跑完一次性回来，' +
-    '逐节点带状态与产出。' +
+    '把复杂任务按 DAG 分批交给子 agent。agent 节点按 needs 并行或串行执行；checkpoint 节点' +
+    '把上一批回执交回当前会话审查。到 checkpoint 只代表本次调度返回，不代表整个 workflow 完成：' +
+    '核验后必须再次调用本工具，用同一 workflowId 对该 checkpoint approve 或 revise。' +
+    'revise 会向原子会话续发，approve 才启动下一批。' +
     '节点不指定 agent 就临时起一个子 agent（当前模型、全套工具），' +
     '指定则派给配置好的角色或 cli:<id> 的外部 CLI。' +
-    '只派一件事用 subagent。',
+    '只派一件事用 subagent。用户明确要求先设计流程时，先用普通回复展示完整图并等待确认，' +
+    '确认前不要调用本工具。',
   parameters: {
     type: 'object',
     properties: {
-      goal: {
-        type: 'string',
-        description: '这张图整体要达成什么。节点任务里写 {goal} 会被替换成它。',
-      },
+      goal: { type: 'string', description: '整个 workflow 的目标（首次调用）' },
       nodes: {
         type: 'array',
-        description: '图的全部节点。至少一个。',
+        description: '首次调用的 DAG 节点；agent 执行任务，checkpoint 将回执交回当前会话审查',
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: '节点 id，图内唯一，被 needs 引用' },
-            agent: {
-              type: 'string',
-              description:
-                '派给谁。留空 = 临时起一个子 agent；角色 id = 配置好的角色；' +
-                'cli:<id> = 本机的外部 CLI。',
+            id: { type: 'string', description: '节点唯一 ID' },
+            kind: {
+              type: ['string', 'null'],
+              enum: ['agent', 'checkpoint', null],
+              description: '默认 agent；checkpoint 是主会话审查关口',
             },
-            task: {
-              type: 'string',
-              description:
-                '要它做什么。子 agent 看不到这条会话，背景要写全。' +
-                '写 {input} 决定上游产出插在哪里，不写则追加在末尾。',
-            },
-            needs: {
-              type: 'array',
-              items: { type: 'string' },
-              description: '依赖的节点 id，全部做完本节点才开始',
-            },
-            passInput: {
-              type: 'boolean',
-              description: 'false = 依赖只管顺序，不把上游产出带给它。默认带。',
-            },
-            model: {
-              type: 'string',
-              description:
-                '**只在用户点名了模型时才填**：写模型 id，同一个 id 挂在多个接口下时写 接口/模型。' +
-                '不填 = 跟当前会话同一个模型。外部 CLI 节点填了会被拒。',
-            },
+            agent: { type: 'string', description: '角色名或 cli:<id>；agent 节点可省略' },
+            task: { type: 'string', description: 'agent 节点任务' },
+            label: { type: 'string', description: 'checkpoint 显示名称' },
+            needs: { type: 'array', items: { type: 'string' }, description: '依赖节点 ID' },
+            passInput: { type: 'boolean', description: '是否把上游输出传入任务，默认 true' },
+            model: { type: 'string', description: '该 agent 节点的模型覆盖' },
           },
-          required: ['id', 'task'],
-          additionalProperties: false,
+          required: ['id'],
+        },
+      },
+      workflowId: { type: 'string', description: '续接既有 workflow 时使用首次返回的 ID' },
+      checkpointId: { type: 'string', description: '当前待审查 checkpoint ID' },
+      decision: {
+        type: ['string', 'null'],
+        enum: ['approve', 'revise', null],
+        description: 'approve 进入下一批；revise 向指定原子会话续发',
+      },
+      note: { type: 'string', description: '本次审批或修订说明' },
+      revisions: {
+        type: 'array',
+        description: 'revise 时要向原节点续发的指令',
+        items: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            instruction: { type: 'string' },
+          },
+          required: ['nodeId', 'instruction'],
         },
       },
     },
-    required: ['goal', 'nodes'],
-    additionalProperties: false,
+    required: [],
   },
   actionKind: 'run',
   objectLabel: '编排',
   category: 'session',
   facet: '协作',
-  summary: '把一张图交出去跑',
-  targetExtractor: (a) => (typeof a.goal === 'string' ? a.goal : null),
-  // 图里的每个节点最终都是一个子会话或一个本机进程，与 `subagent` 同一档。
+  summary: '分批执行并由当前会话审查一张图',
   permissionEffect: 'execute',
   parallelSafe: false,
+  targetExtractor: (args) => {
+    const goal = typeof args.goal === 'string' ? args.goal : ''
+    const workflowId = typeof args.workflowId === 'string' ? args.workflowId : ''
+    return (goal || workflowId).slice(0, 200)
+  },
+  fn: async (args: Record<string, unknown>, ctx?: ToolContext) => {
+    if (!ctx?.delegate) return { status: 'failure', message: '本次执行没有派活通道' }
+    if (!ctx.stepId) return { status: 'failure', message: '这次调用拿不到卡片 id，图没法画' }
+    const parsed = parseWorkflowCall(args)
+    if (!parsed.ok) return { status: 'failure', message: parsed.error }
 
-  async fn(args: Record<string, unknown>, ctx: ToolContext) {
-    const delegate = ctx.delegate
-    if (!delegate) {
-      // 正常不会走到：没有这条通道时这个工具不注册。
-      return { status: 'failure' as const, message: '本次执行没有派活通道' }
-    }
-
-    if (!ctx.stepId) {
-      // 挂不上卡的进度事件到了前端是静默丢弃，那样图会一直停在「等着跑」。
-      return { status: 'failure' as const, message: '这次调用拿不到卡片 id，图没法画' }
-    }
-
-    const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
-    if (!goal) return { status: 'failure' as const, message: '这张图整体要达成什么，得写清楚' }
-
-    const raw = Array.isArray(args.nodes) ? (args.nodes as Record<string, unknown>[]) : []
-    if (raw.length === 0) return { status: 'failure' as const, message: '图里一个节点都没有' }
-
-    const nodes: NodeArg[] = []
-    for (const n of raw) {
-      const id = typeof n.id === 'string' ? n.id.trim() : ''
-      const task = typeof n.task === 'string' ? n.task.trim() : ''
-      if (!id || !task) {
-        return { status: 'failure' as const, message: '每个节点都要有 id 和 task' }
-      }
-      // 没写派给谁 = 临时子 agent。这个 id 在执行侧兜底成一条内置角色，
-      // 用户自己定义了同 id 的角色时以他那条为准。
-      const agent = idArg(n.agent) || 'ad-hoc'
-      if (nodes.some((x) => x.id === id)) {
-        return { status: 'failure' as const, message: `节点 id 重复：${id}` }
-      }
-      nodes.push({
-        id,
-        agent,
-        task,
-        ...(Array.isArray(n.needs) ? { needs: n.needs.map(String) } : {}),
-        ...(n.passInput === false ? { passInput: false } : {}),
-        ...(idArg(n.model) ? { model: idArg(n.model) } : {}),
-      })
-    }
-
-    // 成环、悬空依赖、门禁引用不到角色由编排器那边校验：那三件事要拿到角色表才判得了，
-    // 而角色表在服务端。这里只挡「一眼就知道写错了」的那几种。
-    const res = await delegate.runGraph({
-      goal,
-      nodes,
+    const res = await ctx.delegate.runGraph({
+      call: parsed.call,
       runId: ctx.runId,
       stepId: ctx.stepId,
       signal: ctx.signal,
     })
+    if (res.error) return { status: 'failure', message: `这张图跑不起来：${res.error}` }
+    if (!res.transition) return { status: 'failure', message: 'Workflow 没有返回状态转移' }
 
-    if (res.error) {
-      return { status: 'failure' as const, message: `这张图跑不起来：${res.error}` }
-    }
-
-    const done = res.nodes.filter((n) => n.status === 'done').length
-    const failed = res.nodes.filter((n) => n.status === 'failed')
-    const skipped = res.nodes.filter((n) => n.status === 'skipped').length
-    const parts = [`${done} 个完成`]
-    if (failed.length) parts.push(`${failed.length} 个失败`)
-    if (skipped) parts.push(`${skipped} 个跳过`)
-
+    const transition = res.transition
     return {
-      // 有一个没做成就算这次工具调用失败：回 success 等于告诉模型整张图都跑通了，
-      // 而它下一步很可能就建立在那个没做成的节点的产出上。
-      status: res.ok ? ('success' as const) : ('failure' as const),
-      message: `${res.nodes.length} 个节点：${parts.join(' · ')}`,
-      data: { nodes: res.nodes },
+      status: res.ok ? 'success' : 'failure',
+      message: transitionMessage(transition),
+      data: transition as unknown as Record<string, unknown>,
     }
   },
+}
+
+function transitionMessage(transition: WorkflowTransition): string {
+  const count = transition.receipts.length
+  if (transition.phase === 'waiting_review') {
+    return (
+      `本次调度已返回 ${count} 个回执；整个 workflow 尚未完成。` +
+      ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +
+      '请核验回执后，再以 approve 或 revise 续接。'
+    )
+  }
+  if (transition.phase === 'completed') return `Workflow 已完成，本次返回 ${count} 个回执`
+  return `Workflow 执行失败，本次返回 ${count} 个回执`
 }
