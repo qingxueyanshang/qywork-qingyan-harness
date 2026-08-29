@@ -208,6 +208,7 @@ export function buildTailNotes(input: {
   /**
    * run 开始时会话账本里的最后一份待办清单。run 内更新仍以真实 `write_todos`
    * 调用与回执为准；压缩层负责保留最后一次成功单元，不另造 Todo 状态。
+   * 全部完成的清单属于上一件事，只留在历史里，不再冒充下一条指令的“当前待办”。
    */
   todos?: TodoItem[] | null
 }): TailNote[] {
@@ -258,7 +259,7 @@ export function buildTailNotes(input: {
    * 待办排在快照最后，便于审计同一 run 的输入顺序；这只是段内顺序，
    * 不产生第二份可写状态。
    */
-  if (input.todos?.length) {
+  if (input.todos?.some((t) => t.status !== 'completed')) {
     const list = input.todos
       .map((t, i) => `${i + 1}. [${TODO_LABEL[t.status]}] ${t.content}`)
       .join('\n')
@@ -268,12 +269,8 @@ export function buildTailNotes(input: {
     // 在回复开头复述一遍进度。按措辞禁是打地鼠：冻结前缀里禁的是「继续执行第 N 项」，
     // 模型写的是「继续第 2 项」，少一个词就绕过去了。所以这里禁的是「重复播报进度」
     // 这个动作，判据交给模型自己比对上一轮说过什么。
-    const unfinished = input.todos.some((t) => t.status !== 'completed')
-    const tail = unfinished
-      ? '\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮，完成后调用 write_todos 更新状态。禁止重复回复用户当前进度，仅在进度更新时告知。'
-      : ''
     notes.push({
-      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}${tail}`,
+      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮，完成后调用 write_todos 更新状态。禁止重复回复用户当前进度，仅在进度更新时告知。`,
       group: 'workspaceState',
     })
   }

@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { basename } from 'node:path'
-import { wsFor } from './prompt-live.ts'
+import { repeatedOpenersInRuns, wsFor } from './prompt-live.ts'
 
 const nameOf = (provider: string, model: string) => basename(wsFor({ provider, model } as never))
 
@@ -35,5 +35,17 @@ describe('工作区目录名', () => {
    */
   test('斜杠换成下划线，不多出一层目录', () => {
     expect(nameOf('openrouter', 'meta/llama-3')).toBe('openrouter-meta_llama-3')
+  })
+})
+
+describe('重复开头按 run 隔离', () => {
+  test('两个任务各说一次相同编号不算重复', () => {
+    expect(repeatedOpenersInRuns(['继续第 5 项。', '继续第 5 项。'])).toEqual([])
+  })
+
+  test('同一任务里重复相同编号才报告', () => {
+    expect(repeatedOpenersInRuns(['继续第 5 项。\n继续执行第 5 项。', '继续第 5 项。'])).toEqual([
+      [1, '5', 2],
+    ])
   })
 })

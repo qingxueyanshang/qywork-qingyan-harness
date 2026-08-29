@@ -18,7 +18,14 @@ import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
 import { dataPath, loadConfig, type ModelRef, type QyConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
-import { listProviderRequests, listRuns, listSteps, Store } from '@qywork/store'
+import {
+  latestTodos,
+  listProviderRequests,
+  listRunContextSnapshots,
+  listRuns,
+  listSteps,
+  Store,
+} from '@qywork/store'
 
 const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
 
@@ -37,7 +44,7 @@ export function wsFor(ref: ModelRef): string {
 }
 /** 换行。写进模板串里，避免转义在工具链上被折半。 */
 const NL = String.fromCharCode(10)
-const RUN_TIMEOUT_MS = 300_000
+const RUN_TIMEOUT_MS = Number(process.env.QYWORK_PROMPT_LIVE_TIMEOUT_MS ?? 300_000)
 
 interface Verdict {
   ref: string
@@ -181,6 +188,15 @@ function saidBy(store: Store, conversationId: string, kind: 'text' | 'thinking')
     .join(NL)
 }
 
+/** 指定一轮里模型说过的话。 */
+function saidIn(store: Store, runId: RunId | null, kind: 'text' | 'thinking'): string {
+  if (!runId) return ''
+  return listSteps(store, runId)
+    .filter((step) => step.kind === kind)
+    .map((step) => step.content ?? '')
+    .join(NL)
+}
+
 /** 这条会话里调过的所有工具名，按顺序。 */
 function toolCalls(store: Store, conversationId: string): string[] {
   return listRuns(store, conversationId as ConversationId)
@@ -246,6 +262,19 @@ function repeatedOpeners(text: string): [string, number][] {
   return [...count].filter(([, c]) => c > 1)
 }
 
+/**
+ * 每个 run 独立检查重复开头。两个不同任务都有“第 5 条”不算重复。
+ */
+export function repeatedOpenersInRuns(texts: string[]): [number, string, number][] {
+  return texts.flatMap((text, index) =>
+    repeatedOpeners(text).map(([item, count]): [number, string, number] => [
+      index + 1,
+      item,
+      count,
+    ]),
+  )
+}
+
 const TASKS = {
   /**
    * 权限边界。
@@ -284,6 +313,13 @@ const TASKS = {
     '4) 把 a.txt 改成 ALPHA，改完读回来确认；5) 把 b.txt 改成 BETA，改完读回来确认；' +
     '6) 用 grep 逐个核对三个文件的内容，然后报告。',
 
+  /** 第一份清单完成后的第二个长任务，复现“二次指令不新建 Todo”。 */
+  todosFollowup:
+    '上一项工作已经结束。现在开始一项新的六步任务，每做完一件就更新一次待办清单：' +
+    '1) 新建 d.txt 写入 delta；2) 新建 e.txt 写入 epsilon；3) 新建 f.txt 写入 zeta；' +
+    '4) 把 d.txt 改成 DELTA，改完读回来确认；5) 把 e.txt 改成 EPSILON，改完读回来确认；' +
+    '6) 用 grep 逐个核对 d.txt、e.txt、f.txt 的内容，然后报告。',
+
   /**
    * 派子 agent。
    *
@@ -318,16 +354,22 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
 
     // 记下每轮的 runId：按轮取工具序列，才分得开「点名要求」与「自主判断」。
     const runOf: Record<string, RunId | null> = {}
+    let firstTodosComplete = false
     for (const [key, task] of Object.entries(TASKS)) {
       const id = await turn(live, conv, task)
       // 没拿到 runId = 这一轮没有起 run。当场抛，不要让它变成一串「模型没调工具」。
       if (!id) throw new Error(`${key} 这一轮没有起 run`)
       runOf[key] = id
       v.turns++
+      if (key === 'todos') {
+        const current = latestTodos(store, conv as ConversationId)
+        firstTodosComplete = Boolean(
+          current?.length && current.every((todo) => todo.status === 'completed'),
+        )
+      }
     }
 
     const text = saidBy(store, conv, 'text')
-    const thinking = saidBy(store, conv, 'thinking')
     const tools = toolCalls(store, conv)
     const outputs = toolOutputs(store, conv)
     const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
@@ -365,16 +407,37 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     add('自主沉淀（不计失败）', true, `其余几轮自发存了 ${spontaneous} 条`)
     add('能力段·定时：调了 create_schedule', tools.includes('create_schedule'))
     add('能力段·派活：调了 subagent', tools.includes('subagent'))
-    add('能力段·待办：调了 write_todos', tools.includes('write_todos'))
+    const firstTodoTools = toolCallsIn(store, runOf.todos ?? null)
+    const followupTodoTools = toolCallsIn(store, runOf.todosFollowup ?? null)
+    const followupContext = listRunContextSnapshots(store, conv as ConversationId).find(
+      (snapshot) => snapshot.runId === runOf.todosFollowup,
+    )
+    const oldTodoProjected = followupContext?.segments.some(
+      (segment) =>
+        segment.content.includes('## 当前待办清单') ||
+        segment.content.includes('新建 a.txt 写入 alpha'),
+    )
+    const finalTodos = latestTodos(store, conv as ConversationId)
+    add('首个长任务建立了 Todo', firstTodoTools.includes('write_todos'))
+    add('首个长任务的 Todo 正常收尾', firstTodosComplete)
+    add('二次指令的 run 快照没有继承已完成旧清单', oldTodoProjected === false)
+    add('二次长任务重新建立了 Todo', followupTodoTools.includes('write_todos'))
+    add(
+      '二次长任务的 Todo 正常收尾',
+      Boolean(finalTodos?.length && finalTodos.every((todo) => todo.status === 'completed')),
+    )
 
     // 只卡正文里同一条被反复开场；思考里的次数一并报出来，但不判失败。
-    const repeated = repeatedOpeners(text)
-    const inThinking = repeatedOpeners(thinking).length
+    const runIds = Object.values(runOf)
+    const repeated = repeatedOpenersInRuns(runIds.map((id) => saidIn(store, id, 'text')))
+    const inThinking = repeatedOpenersInRuns(
+      runIds.map((id) => saidIn(store, id, 'thinking')),
+    ).length
     add(
       '正文没有把同一条反复拿来开场',
       repeated.length === 0,
       repeated.length
-        ? repeated.map(([n, c]) => `第 ${n} 条 ×${c}`).join('、')
+        ? repeated.map(([run, item, count]) => `第 ${run} 轮·第 ${item} 条 ×${count}`).join('、')
         : `思考里 ${inThinking} 条重复（不计失败）`,
     )
 

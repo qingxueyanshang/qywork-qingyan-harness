@@ -545,6 +545,15 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     const recallCached = recallRequests
       .filter((request) => request.providerCachedTokens !== null)
       .reduce((sum, request) => sum + (request.providerCachedTokens ?? 0), 0)
+    const warmed = await turn(
+      live,
+      conv,
+      '仍然不要读取文件或调用工具。只回答：刚才召回的口令是否仍是 QYWORK-RESTART-7429？',
+    )
+    const warmRequests = listProviderRequests(store, warmed.runId)
+    const warmCached = warmRequests
+      .filter((request) => request.providerCachedTokens !== null)
+      .reduce((sum, request) => sum + (request.providerCachedTokens ?? 0), 0)
     const afterRestartTodos = latestTodos(store, conv as ConversationId)
     const allText = listRuns(store, conv as ConversationId)
       .flatMap((run) => listSteps(store, run.id))
@@ -566,6 +575,10 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     check('重启后的请求仍有真实缓存命中', recallCached > 0, {
       缓存token: recallCached,
       请求数: recallRequests.length,
+    })
+    check('重启后追加一轮会恢复缓存命中', warmCached > 0, {
+      缓存token: warmCached,
+      请求数: warmRequests.length,
     })
     check('整条会话正文没有重复编号开头', repeatedOpeners(allText).length === 0, {
       重复项: repeatedOpeners(allText),
