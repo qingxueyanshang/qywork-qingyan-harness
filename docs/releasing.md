@@ -1,7 +1,10 @@
-# 发布 Windows 安装包
+# 发布桌面安装包
 
-Windows 安装包通过 `.github/workflows/release-windows.yml` 构建。工作流只能手动触发，
-构建完成后先创建 GitHub 草稿 Release，不会自动公开。
+Windows 安装包通过 `.github/workflows/release-windows.yml` 构建；macOS 和 Linux 安装包通过
+`.github/workflows/release-macos-linux.yml` 构建。两个工作流都只能手动触发。
+
+Windows 工作流会创建 GitHub 草稿 Release。macOS/Linux 工作流会在 Actions 运行中上传构建产物，
+需要发布到同一个 Release 时，将下载的产物和各自的 `SHA256SUMS.txt` 一并上传。
 
 ## 发布前
 
@@ -44,3 +47,14 @@ git diff --check
 
 当前安装包没有 Authenticode 签名，Windows 可能显示 SmartScreen 提示；这不阻塞草稿构建和
 GitHub Release 上传。
+
+## macOS 与 Linux
+
+1. 打开仓库的 **Actions** 页面。
+2. 选择 **macOS and Linux Build**。
+3. 点击 **Run workflow**，选择要构建的分支后运行。
+4. 等待 `macOS arm64`、`macOS x64` 和 `Linux x64` 三个矩阵任务完成。
+5. 在工作流的 **Artifacts** 区域下载对应平台的压缩包；每个产物都带有 `SHA256SUMS.txt`。
+
+macOS 产物包含 `.dmg` 和 `.app.zip`；Linux 产物包含 `.deb` 和 `.AppImage`。
+macOS 构建不依赖 Finder AppleScript，适合 GitHub Actions 的非交互环境。

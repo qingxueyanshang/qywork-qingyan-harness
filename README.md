@@ -15,8 +15,9 @@ qywork 是一个面向真实软件工程任务的开源 Agent Harness（执行�
 
 ## 下载
 
-Windows x64 安装包通过 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases)
-提供。每个版本公开后，发布页会同时提供版本说明和 SHA-256 校验文件。
+Windows、macOS 和 Linux 安装包通过 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases)
+提供。Windows 发布由 `Windows Release` 工作流构建；macOS 和 Linux 发布由
+`macOS and Linux Build` 工作流构建。每个版本公开后，发布页会同时提供版本说明和 SHA-256 校验文件。
 
 ## 核心亮点
 
