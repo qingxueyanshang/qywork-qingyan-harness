@@ -491,6 +491,43 @@ describe('会话标题', () => {
     store.close()
   })
 
+  test('上一份待办全部完成后，第二条指令的 run 快照不再带旧清单', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'deepseek-v4-flash',
+    })
+    const old = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'old-completed-todos',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    appendStep(store, {
+      runId: old.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { todos: [{ content: '旧任务', status: 'completed' }] },
+      } as never,
+    })
+
+    await firstEvent(s, '检查三个新问题并逐项修复', conv.id)
+
+    const snapshot = listRunContextSnapshots(store, conv.id).at(-1)?.segments ?? []
+    expect(snapshot.some((segment) => segment.content.includes('## 当前待办清单'))).toBe(false)
+    expect(snapshot.map((segment) => segment.content).join('\n')).not.toContain('旧任务')
+    store.close()
+  })
+
   /* 第二句话不许盖掉第一句定下的名字——列表里那一行会随每次发言变来变去。 */
   test('第二句话不覆盖已有标题', async () => {
     const { s, store } = await session()

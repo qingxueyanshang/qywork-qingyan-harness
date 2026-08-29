@@ -163,13 +163,14 @@ describe('尾区注记', () => {
     expect(todo).toContain('不要结束本轮')
   })
 
-  test('全部完成时不附继续执行的指令', () => {
+  test('旧清单全部完成后不再冒充下一轮当前待办', () => {
     const notes = buildTailNotes({
       ...base,
       todos: [{ id: 'todo_1', content: '做一件事', status: 'completed' }],
     })
-    expect(notes.at(-1)?.content ?? '').toContain('1. [已完成] 做一件事')
-    expect(notes.at(-1)?.content ?? '').not.toContain('不要结束本轮')
+    const current = notes.filter((item) => item.content.includes('## 当前待办清单'))
+    expect(current).toEqual([])
+    expect(notes.map((item) => item.content).join('\n')).not.toContain('做一件事')
   })
 
   test('待办排在最后：它最易变，排前面会把技能与记忆一起挤出缓存', () => {
