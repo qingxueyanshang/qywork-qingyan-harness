@@ -456,6 +456,7 @@ describe('模型库枚举校验', () => {
         }),
       ),
     ).toEqual([])
+    expect(diagnoseConfig(withEntry({ cacheRouting: 'x_grok_conv_id' }))).toEqual([])
   })
 
   /** 没填 = 照内置值，不是问题。 */

@@ -105,10 +105,11 @@ export type ThinkingMode = (typeof THINKING_MODES)[number]
 /**
  * 缓存路由亲和键的发法。
  *
- * `prompt_cache_key` 是 OpenAI 协议的标准字段。中转站普遍在多个上游 key /
- * 节点之间轮询，而隐式前缀缓存按分片存——不带键就是每次随机落一个分片。
+ * `prompt_cache_key` 是 OpenAI Responses / 部分兼容端点的请求体字段；
+ * `x_grok_conv_id` 是 xAI Chat Completions 的同义请求头。两者都用于把同一会话
+ * 路由到同一缓存分片，但上线位置不同，不能因为都叫“亲和键”就混发。
  */
-export const CACHE_ROUTINGS = ['prompt_cache_key', 'none'] as const
+export const CACHE_ROUTINGS = ['prompt_cache_key', 'x_grok_conv_id', 'none'] as const
 export type CacheRouting = (typeof CACHE_ROUTINGS)[number]
 
 /**

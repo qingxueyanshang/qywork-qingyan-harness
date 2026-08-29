@@ -20,6 +20,7 @@ import {
 } from './openai-compat.ts'
 
 const bodies: Record<string, unknown>[] = []
+const requestHeaders: Headers[] = []
 let server: ReturnType<typeof Bun.serve>
 let base = ''
 
@@ -27,6 +28,7 @@ beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
+      requestHeaders.push(new Headers(req.headers))
       bodies.push((await req.json()) as Record<string, unknown>)
       // 最小可解析的 SSE：一个 delta + 一个终止。适配器只要能读完就行。
       const body =
@@ -48,6 +50,7 @@ async function send(
   messages: WireMessage[] = [{ role: 'user', content: '嗨' }],
 ): Promise<Record<string, unknown>> {
   bodies.length = 0
+  requestHeaders.length = 0
   const profile: ProviderProfile = {
     kind: 'openai_chat_completions',
     apiKey: 'sk-x',
@@ -349,6 +352,7 @@ describe('缓存路由亲和键', () => {
    */
   test('cacheKey 落成请求体里的 prompt_cache_key', async () => {
     bodies.length = 0
+    requestHeaders.length = 0
     const adapter = new OpenAICompatAdapter(
       {
         kind: 'openai_chat_completions',
@@ -370,12 +374,47 @@ describe('缓存路由亲和键', () => {
       // 只看请求体
     }
     expect(bodies[0]!.prompt_cache_key).toBe('cv_0mt0x92q10000mx0dff')
+    expect(requestHeaders[0]?.get('x-grok-conv-id')).toBeNull()
+  })
+
+  /** xAI 把同一个亲和键放在 Chat Completions 请求头；body 字段只属于 Responses。 */
+  test('Grok cacheKey 只落成 x-grok-conv-id 请求头', async () => {
+    bodies.length = 0
+    requestHeaders.length = 0
+    const adapter = new OpenAICompatAdapter(
+      {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-x',
+        model: 'grok-4.6',
+        baseUrl: base,
+      },
+      lookupModel('grok-4.6', 'openai_chat_completions'),
+    )
+    for await (const _ of adapter.stream({
+      model: 'grok-4.6',
+      system: [],
+      messages: [{ role: 'user', content: '嗨' }],
+      tools: [],
+      maxOutputTokens: 64,
+      cacheKey: 'cv_grok_1',
+      signal: new AbortController().signal,
+    })) {
+      // 只看真实 HTTP 请求
+    }
+    expect(requestHeaders[0]?.get('x-grok-conv-id')).toBe('cv_grok_1')
+    expect('prompt_cache_key' in bodies[0]!).toBe(false)
   })
 
   /** 没有键就一个字节都不发——自建端点不该因为这个开始收到它不认识的字段。 */
   test('没有 cacheKey 时不出现这个字段', async () => {
     const body = await send('deepseek-v4-flash')
     expect('prompt_cache_key' in body).toBe(false)
+  })
+
+  test('Grok 没有 cacheKey 时也不编请求头', async () => {
+    const body = await send('grok-4.6')
+    expect('prompt_cache_key' in body).toBe(false)
+    expect(requestHeaders[0]?.get('x-grok-conv-id')).toBeNull()
   })
 
   /**
@@ -612,7 +651,7 @@ describe('strict 工具定义', () => {
   })
 
   test('请求体里带 strict，且发的是重排后的 schema', async () => {
-    const body = await send('grok-4.6', undefined, [readFile])
+    const body = await send('deepseek-v4-flash', undefined, [readFile])
     const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
     expect(tool.strict).toBe(true)
     expect((tool.parameters as Record<string, unknown>).required).toEqual([
@@ -623,12 +662,12 @@ describe('strict 工具定义', () => {
   })
 
   /**
-   * GLM-5.3 Flash 的真实失败形状：适配器把可选 `probe_url` 改成 required + nullable，
-   * 模型随后连续把 JSON null 采样成字符串 `"null"`。智谱公开的是标准 JSON Schema
-   * required/optional 形状，所以只给这两条模型保留注册表原样；别的模型仍走上面的 strict。
+   * GLM-5.3 Flash 与 Grok 4.6 的真实失败形状相同：适配器把可选 `probe_url` 改成
+   * required + nullable 后，模型被迫给它编值。两家官方都公开标准 JSON Schema 的
+   * required/optional 形状，所以只给映射声明 native 的模型保留注册表原样。
    */
-  test('GLM-5.3 两款不套 OpenAI strict，可选属性仍可省略', async () => {
-    for (const model of ['glm-5.3', 'glm-5.3-flash']) {
+  test('GLM 与 Grok 不套 OpenAI strict，可选属性仍可省略', async () => {
+    for (const model of ['glm-5.3', 'glm-5.3-flash', 'grok-4.5', 'grok-4.6']) {
       const body = await send(model, undefined, [readFile])
       const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
       expect(tool.strict).toBeUndefined()

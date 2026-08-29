@@ -1180,6 +1180,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'grok-4.6',
       displayName: 'Grok 4.6',
       vendor: 'xai',
+      // xAI 的工具 schema 天然按 required/optional 严格采样；不要套 OpenAI 的
+      // “全部 required + nullable”，否则模型会被迫给 probe_url 等可选项编值。
+      chatToolSchema: 'native',
+      // xAI Chat Completions 的缓存亲和键是请求头，不是请求体 prompt_cache_key。
+      cacheRouting: 'x_grok_conv_id',
       vision: true,
       contextWindow: 500_000,
       maxOutputTokens: null,
@@ -1192,6 +1197,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'grok-4.5',
       displayName: 'Grok 4.5',
       vendor: 'xai',
+      chatToolSchema: 'native',
+      cacheRouting: 'x_grok_conv_id',
       vision: true,
       contextWindow: 500_000,
       maxOutputTokens: null,

@@ -88,7 +88,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
       // 都不在官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
       const stream = (await this.client.chat.completions.create(
         { ...body, stream: true, stream_options: { include_usage: true } } as never,
-        req.signal ? { signal: req.signal } : {},
+        {
+          ...(req.signal ? { signal: req.signal } : {}),
+          ...(req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id'
+            ? { headers: { 'x-grok-conv-id': req.cacheKey } }
+            : {}),
+        },
       )) as unknown as AsyncIterable<CompatChunk>
 
       let chunks = 0
@@ -225,10 +230,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
       ...(req.tools.length ? { tools: buildTools(req.tools, this.spec) } : {}),
       ...buildReasoning(this.spec, req.effort),
       /*
-       * 缓存路由亲和键：OpenAI 协议里让「同一条会话钉到同一个缓存分片」的标准字段。
+       * 缓存路由亲和键：这一格只负责请求体 `prompt_cache_key`。
        *
        * 这个字段本仓早就有（`ChatRequest.cacheKey`，会话 id），`openai-responses`
-       * 一直在发——只有这条路径漏了，而 grok / deepseek / 各家中转全走这条。
+       * 一直在发——只有这条路径漏了，而 deepseek / 各家中转全走这条。
        *
        * **不要把它当成缓存不命中的解药。** 2026-08-19 在某中转端点上做过配对交替
        * 实测（同一时间窗里逐轮交替发有键/无键，
@@ -239,8 +244,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 不是「发了就命中」。
        *
        * **发不发由目录里那条模型说了算**（`spec.cacheRouting`），不是协议说了算，
-       * 也不是这里写死。缓存能力是「端点 × 模型」那一格的属性：同一个 grok
-       * 换个中转站就是另一条结论，所以内置值只是 seed，端点侧在模型库那一格手填。
+       * 也不是这里写死。xAI 的 Chat Completions 明确使用 `x-grok-conv-id` 请求头，
+       * 已在上面的请求选项分支发送；不能同时再塞一份 Responses 才用的 body 字段。
        *
        * **`qy probe` 不探这一项，这是有意的。** 探针只能发几次请求看命中——
        * 而上面那段实测正说明：不确定的路线上，几次请求给出的是随机结果。
