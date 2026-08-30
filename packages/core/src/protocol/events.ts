@@ -424,7 +424,7 @@ export interface CompactionEvent {
 
 /**
  * 文件变更广播。实时预览的核心：agent 一改文件，桌面和手机同时看到。
- * 由文件监听（Tauri notify）与工具产出两路汇入，按路径去重。
+ * 由工具的文件变更结果产出，按路径去重。
  */
 export interface FileChangedEvent {
   type: 'file.changed'

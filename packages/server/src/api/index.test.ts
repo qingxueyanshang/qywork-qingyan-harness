@@ -24,6 +24,7 @@ import {
   createConversation,
   getConversation,
   getWorkspace,
+  getWorkspaceByPath,
   listConversations,
   listWorkspaces,
   Store,
@@ -40,6 +41,13 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
   return {
     store,
     wsId: ws.id,
+    config: {
+      active: { provider: 'p', model: 'm' },
+      providers: {
+        p: { kind: 'openai_chat_completions', models: { m: {} } },
+      },
+      mode: 'auto',
+    },
     // 会话那几条动作要用到这两个：删除前问一句「在跑吗」，重命名后广播一条。
     // 只给这两个方法，不造一个真的 RunManager / EventBus——那会把这里变成集成测试，
     // 而集成部分 `e2e.test.ts` 已经覆盖了。
@@ -275,10 +283,31 @@ describe('移除项目', () => {
       const d = deps()
       const res = await post({ name: '青学研上' }, d)
       expect(res?.status).toBe(200)
-      const { workspace } = (await res?.json()) as { workspace: { name: string; rootPath: string } }
+      const { workspace, conversations } = (await res?.json()) as {
+        workspace: { id: string; name: string; rootPath: string }
+        conversations: { workspaceId: string; provider: string; model: string }[]
+      }
       expect(workspace.name).toBe('青学研上')
       expect(workspace.rootPath).toBe(join(home, 'workspaces', '青学研上'))
       expect((await stat(workspace.rootPath)).isDirectory()).toBe(true)
+      expect(conversations).toEqual([
+        expect.objectContaining({ workspaceId: workspace.id, provider: 'p', model: 'm' }),
+      ])
+      expect(listConversations(d.store, workspace.id as never)).toHaveLength(1)
+    })
+
+    test('首会话写入失败时项目账本也回滚 —— 两次写入必须是同一个事务', async () => {
+      const d = deps()
+      d.store.db.exec(/* sql */ `
+        CREATE TRIGGER reject_first_conversation
+        BEFORE INSERT ON conversations
+        BEGIN
+          SELECT RAISE(ABORT, 'reject first conversation');
+        END;
+      `)
+
+      await expect(post({ name: 'rollback' }, d)).rejects.toThrow('reject first conversation')
+      expect(getWorkspaceByPath(d.store, join(home, 'workspaces', 'rollback'))).toBeNull()
     })
 
     test('重名不复用已有目录，加后缀 —— 那里可能是上一个同名项目的内容', async () => {
@@ -766,7 +795,15 @@ describe('按 ?ws= 解析项目', () => {
   test('加项目：已经有了就只更新「最近打开」，不插第二行', async () => {
     const store = new Store({ path: ':memory:' })
     const here = process.cwd()
-    const d = { store, watchGit: () => {} } as unknown as ApiDeps
+    const d = {
+      store,
+      config: {
+        active: { provider: 'p', model: 'm' },
+        providers: { p: { kind: 'openai_chat_completions', models: { m: {} } } },
+        mode: 'auto',
+      },
+      watchGit: () => {},
+    } as unknown as ApiDeps
     const first = await call(
       '/api/workspaces',
       {
@@ -790,6 +827,7 @@ describe('按 ?ws= 解析项目', () => {
       workspaces: unknown[]
     }
     expect(list.workspaces.length).toBe(1)
+    expect(listConversations(store, id1 as never)).toHaveLength(1)
   })
 })
 

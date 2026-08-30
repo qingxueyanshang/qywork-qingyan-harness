@@ -1,7 +1,7 @@
 //! qywork 桌面外壳。
 //!
 //! **这一层不持有任何业务状态。** 会话、账本、权限、缓存全在 `qy serve` 里；
-//! Tauri 只负责原生窗口、文件监听，以及 sidecar 的生死。
+//! Tauri 只负责原生窗口以及 sidecar 的生死。
 //!
 //! 坑：不要为了省一次 localhost 往返在这一层放数据库或缓存。外壳一存状态就是
 //! 第二本账，两本账迟早漂移，而且漂移了很难发现。
@@ -16,7 +16,6 @@
 
 mod sidecar;
 mod terminal;
-mod watcher;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -213,23 +212,16 @@ fn reveal_workspace(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// 把文件监听改到另一个项目的目录上。
+/// 记住最后打开的项目。
 ///
-/// 换项目**不再重启 sidecar**（服务端一次服务多个项目），所以这里只剩
-/// 「监听哪一个目录」这一件事需要外壳出手：notify 的句柄在 Rust 侧，Web 端够不着。
-///
-/// 一次只监听一个目录，不是每个项目各挂一个：用户同一时刻只看得见一个项目，
-/// 而每个监听器都是一组真实的 OS 句柄。切过去先停再起，顺序不能反——
-/// 反过来会有一小段时间两个监听器同时往同一条 bus 上推。
+/// 这条 IPC 只做路径校验与落盘。递归文件监听不能混进来：Web 端没有
+/// 对应事件的消费端，启动监听只会在大目录上递归扫描全部文件。
 #[tauri::command]
-fn watch_workspace(app: AppHandle, path: String) -> Result<(), String> {
+fn remember_workspace(path: String) -> Result<(), String> {
     let dir = PathBuf::from(&path);
     if !dir.is_dir() {
         return Err(format!("不是一个目录：{path}"));
     }
-    let handle = app.state::<watcher::WatcherHandle>();
-    watcher::stop(&handle);
-    watcher::start(&app, &dir, &handle).map_err(|e| e.to_string())?;
     sidecar::write_last_workspace(&path);
     Ok(())
 }
@@ -255,13 +247,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(sidecar::SidecarHandle::default())
-        .manage(watcher::WatcherHandle::default())
         .manage(terminal::TerminalHandle::default())
         .invoke_handler(tauri::generate_handler![
             pick_workspace,
             pick_files,
             reveal_workspace,
-            watch_workspace,
+            remember_workspace,
             window_minimize,
             window_toggle_maximize,
             window_close,
@@ -292,17 +283,6 @@ pub fn run() {
                         sidecar::spawn(&handle, &arg).await?
                     }
                 };
-
-                // 没有显式工作区时不起监听：起了也不知道该盯哪个目录。
-                // 前端拿到服务端解析出的那个项目之后会调 `watch_workspace` 补上。
-                if let Some(dir) = workspace.as_ref() {
-                    if let Err(e) =
-                        watcher::start(&handle, dir, &handle.state::<watcher::WatcherHandle>())
-                    {
-                        // 监听起不来只影响实时刷新，不该阻断启动。
-                        eprintln!("[qywork] 文件监听未启用：{e}");
-                    }
-                }
 
                 // 令牌走初始化脚本注入，而不是等前端来调命令：
                 // 连接层在首帧就要用它，晚一拍就会先渲染出「未配对」。
@@ -346,7 +326,6 @@ pub fn run() {
             // Windows 上父进程退出不会带走子进程：残留的 qy serve 会占着端口和
             // SQLite 的 WAL 锁，下次启动直接起不来。所以退出路径必须显式收干净。
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-                watcher::stop(&app.state::<watcher::WatcherHandle>());
                 // 终端里的 shell 也是子进程，同一条理由要显式杀掉：留下来会持有
                 // 工作区里的文件句柄，用户下一次删目录会被拒。
                 terminal::shutdown(&app.state::<terminal::TerminalHandle>());
@@ -387,4 +366,3 @@ fn resolve_workspace() -> Option<PathBuf> {
     // 上次在应用里选的那个。排在环境变量之后：环境变量是显式指定，优先级更高。
     sidecar::read_last_workspace()
 }
-

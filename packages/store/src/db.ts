@@ -56,9 +56,15 @@ export class Store {
     }
   }
 
-  /** 事务包装。回调抛异常即整体回滚。 */
+  /**
+   * 写事务包装。回调抛异常即整体回滚。
+   *
+   * 用 IMMEDIATE 在进回调前取得写权：默认 DEFERRED 若先 SELECT 再写，
+   * 遇到其他写者时是从读事务升级，SQLite 会直接回 SQLITE_BUSY，
+   * 不会走 busy_timeout。写权在事务起点等待，才能既保持原子性又遵守等待上限。
+   */
   tx<T>(fn: () => T): T {
-    return this.db.transaction(fn)()
+    return this.db.transaction(fn).immediate()
   }
 
   close(): void {

@@ -13,9 +13,9 @@ import {
   loadServerConfig,
   type ModelOption,
   modelCatalog,
+  rememberWorkspace,
   saveServerConfig,
   type WorkspaceInput,
-  watchWorkspace,
 } from './settings.ts'
 import { isDesktopShell } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
@@ -65,17 +65,19 @@ export async function loadConversations(): Promise<void> {
  * 靠重挂是收不掉的（PTY 在 Rust 侧，只认显式关闭）。
  */
 export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
-  // 新建与切换共用这一次 upsert；切换只给路径，名字由服务端沿用账本里那一行的。
-  const { workspace: ws } = await addWorkspace(input)
+  // 新建与切换共用这一次 upsert；服务端同时保证至少有一条用户会话并返回完整列表。
+  const { workspace: ws, conversations } = await addWorkspace(input)
+  const first = conversations[0]
+  if (!first) throw new Error('项目没有可用会话')
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setOpenFile(null)
   closeAllPanelTabs()
-  setState({ activeConversation: null, fileChanges: [], git: null })
+  setState({ conversations, activeConversation: null, fileChanges: [], git: null })
   syncViews()
-  await loadConversations()
-  // 文件监听的句柄在 Rust 侧，只有桌面端有。失败不阻断切换：
-  // 没有监听只是外部编辑器的改动不会实时推，会话本身照常。
-  if (isDesktopShell()) await watchWorkspace(ws.rootPath).catch(() => {})
+  await selectConversation(first.id)
+  // 桌面端记住最后打开的目录，下次启动才能回到这个项目。
+  // 落盘失败不阻断切换：影响的只是下次启动的默认项目。
+  if (isDesktopShell()) await rememberWorkspace(ws.rootPath).catch(() => {})
 }
 
 /**

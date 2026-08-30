@@ -48,6 +48,7 @@ g.localStorage = {
 
 const {
   activePanelTab,
+  activateWorkspace,
   applyEvent,
   client,
   dropView,
@@ -86,6 +87,69 @@ const {
   view,
   viewOf,
 } = await import('./store/index.ts')
+
+describe('激活项目复用服务端返回的会话列表', () => {
+  test('新项目不再追加会话列表请求与第二次创建请求', async () => {
+    const calls: string[] = []
+    const invokes: string[] = []
+    const apiBefore = client.api
+    ;(
+      client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === '/api/workspaces') {
+        return {
+          workspace: {
+            id: 'ws_created',
+            name: '空项目',
+            rootPath: 'C:/ws/empty',
+            lastOpenedAt: 1,
+            conversations: 1,
+          },
+          conversations: [
+            {
+              id: 'cv_created',
+              workspaceId: 'ws_created',
+              title: '',
+              provider: 'p',
+              model: 'm',
+              compactionManifest: null,
+              cacheGeneration: 0,
+              source: null,
+              sourceRef: null,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        }
+      }
+      if (path.endsWith('/messages')) return { messages: [] }
+      if (path.endsWith('/runs')) return { runs: [] }
+      throw new Error(`投影不可用：${path}`)
+    }
+
+    g.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string) => {
+        invokes.push(cmd)
+      },
+      transformCallback: () => 0,
+    }
+    try {
+      await activateWorkspace({ name: '空项目' })
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+      delete g.__TAURI_INTERNALS__
+    }
+
+    expect(state.activeConversation).toBe('cv_created')
+    expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_created'])
+    expect(calls).not.toContain('GET /api/conversations')
+    expect(calls).not.toContain('POST /api/conversations')
+    expect(invokes).toEqual(['remember_workspace'])
+  })
+})
 
 /** 这条会话现开一份空表：上一条用例往里写过条目，下一条要从空的开始。 */
 const freshView = (id: string) => {
