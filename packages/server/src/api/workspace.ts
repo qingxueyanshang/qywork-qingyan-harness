@@ -7,7 +7,9 @@ import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
   countConversations,
+  createConversation,
   getWorkspaceByPath,
+  listConversations,
   listWorkspaces,
   removeWorkspace,
   setWorkspacePinned,
@@ -119,11 +121,31 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      * **路径已经在账本里时复用那一行**（`root_path` 是 UNIQUE），
      * `upsertWorkspace` 一并清掉 `removed_at`——移除过的项目重新添加，
      * 它的会话跟着回来。会话挂的是 id，不是路径。
+     *
+     * 项目与首会话在一个事务里写入。响应同时返回当前会话列表，调用方不需要在
+     * upsert 之后再发一次列表请求，并为新项目另开一次写事务。
      */
     if (req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as { path?: string; name?: string }
       const rawPath = body.path?.trim()
       const rawName = body.name?.trim()
+
+      const activate = (path: string, name: string) =>
+        d.store.tx(() => {
+          const workspace = upsertWorkspace(d.store, path, name)
+          const existing = listConversations(d.store, workspace.id)
+          const conversations =
+            existing.length > 0
+              ? existing
+              : [
+                  createConversation(d.store, {
+                    workspaceId: workspace.id,
+                    provider: d.config.active.provider,
+                    model: d.config.active.model,
+                  }),
+                ]
+          return { workspace, conversations }
+        })
 
       if (rawPath) {
         const path = resolve(rawPath)
@@ -137,10 +159,10 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
          */
         const known = getWorkspaceByPath(d.store, path)
         const name = rawName || known?.name || basename(path) || path
-        const ws = upsertWorkspace(d.store, path, name)
+        const result = activate(path, name)
         // 「最近打开」刚被顶成这一条，分支监听跟着指过来。
         d.watchGit()
-        return json({ workspace: ws })
+        return json(result)
       }
 
       if (!rawName) return json({ error: '要么给 path，要么给 name' }, 422)
@@ -152,9 +174,9 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       const path = await freshDir(root, folder)
       // 先建目录再写账本：反过来的话建失败就留下一条指向不存在目录的记录。
       await mkdir(path, { recursive: true })
-      const ws = upsertWorkspace(d.store, path, rawName)
+      const result = activate(path, rawName)
       d.watchGit()
-      return json({ workspace: ws })
+      return json(result)
     }
     /*
      * 每条带上会话数：项目卡片上要显示它。

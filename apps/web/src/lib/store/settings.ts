@@ -5,7 +5,7 @@
  * 它们加起来比会话链路还长，混在一起会让读 store 的人把这些当成热路径。
  */
 
-import type { Attachment, EffortLevel, PermissionMode } from '@qywork/core'
+import type { Attachment, Conversation, EffortLevel, PermissionMode } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
 import { tauriInvoke } from './shell.ts'
@@ -442,11 +442,16 @@ export interface WorkspaceInput {
   name?: string
 }
 
-export function addWorkspace(input: WorkspaceInput): Promise<{ workspace: KnownWorkspace }> {
-  return client.api<{ workspace: KnownWorkspace }>('/api/workspaces', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  })
+export function addWorkspace(
+  input: WorkspaceInput,
+): Promise<{ workspace: KnownWorkspace; conversations: Conversation[] }> {
+  return client.api<{ workspace: KnownWorkspace; conversations: Conversation[] }>(
+    '/api/workspaces',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  )
 }
 
 // ───────────────────────── 插件安装 ─────────────────────────
@@ -479,15 +484,9 @@ export function pickFiles(): Promise<string[]> {
   return tauriInvoke<string[]>('pick_files')
 }
 
-/**
- * 把文件监听改到这个项目的目录上。
- *
- * 换项目本身不需要外壳，但**文件监听需要**：notify 的句柄在 Rust 侧。
- * 不改的话，切到 B 之后外部编辑器改 B 的文件不会推事件——而界面看起来一切正常，
- * 只是永远不刷新，这种「安静的不工作」最难被发现。
- */
-export function watchWorkspace(path: string): Promise<void> {
-  return tauriInvoke<void>('watch_workspace', { path })
+/** 记住桌面端最后打开的项目，供下次启动选根目录。 */
+export function rememberWorkspace(path: string): Promise<void> {
+  return tauriInvoke<void>('remember_workspace', { path })
 }
 
 // ───────────────────────── 定时任务 ─────────────────────────
