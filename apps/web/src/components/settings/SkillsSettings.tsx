@@ -9,7 +9,7 @@ import {
   pickWorkspace,
   type Scope,
 } from '../../lib/store/index.ts'
-import { IconX } from '../Icons.tsx'
+import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
@@ -144,7 +144,7 @@ export default function SkillsSettings() {
                               })
                             }
                           >
-                            <IconX size={13} />
+                            <IconTrash size={13} />
                           </button>
                         }
                       >

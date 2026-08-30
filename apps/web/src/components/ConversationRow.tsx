@@ -3,7 +3,7 @@ import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { archiveConversation, deleteConversation, renameConversation } from '../lib/store/index.ts'
 import { AnchoredMenu } from './AnchoredMenu.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
-import { IconArchive, IconMore, IconPencil, IconX } from './Icons.tsx'
+import { IconArchive, IconMore, IconPencil, IconTrash } from './Icons.tsx'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -173,7 +173,7 @@ export function ConversationRow(props: {
                     role="menuitem"
                     onClick={() => setArmed('delete')}
                   >
-                    <IconX size={14} />
+                    <IconTrash size={14} />
                     删除
                   </button>
                 </AnchoredMenu>

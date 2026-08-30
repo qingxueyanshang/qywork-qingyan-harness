@@ -8,7 +8,7 @@ import {
   type ScheduleItem,
   updateSchedule,
 } from '../lib/store/index.ts'
-import { IconX } from './Icons.tsx'
+import { IconTrash } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 
 /**
@@ -80,7 +80,7 @@ export function SchedulesPanel() {
                       disabled={busy() === s.id}
                       onClick={() => void act(s.id, () => deleteSchedule(s.id))}
                     >
-                      <IconX size={13} />
+                      <IconTrash size={13} />
                     </button>
                   </div>
 
