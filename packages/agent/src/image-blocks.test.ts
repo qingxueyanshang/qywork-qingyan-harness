@@ -231,5 +231,24 @@ describe('收纳', () => {
     // 正文被换成标记，模型仍能靠信封里的定位符重新取。
     expect(env.result_omitted).toBe(true)
     expect(env.result).toBeUndefined()
+    // 图像被丢必须留痕：收纳后的信封与新鲜成功信封同形，缺这一位模型会把图当成仍然可见。
+    expect(env.images_omitted).toBe(true)
+  })
+
+  test('图像省略标记在再收纳时逐字保留', () => {
+    const m: WireMessage = {
+      role: 'tool',
+      toolCallId: 'c1',
+      content: [
+        { type: 'text', text: envelope },
+        { type: 'image', mimeType: 'image/png', source: { kind: 'path', path: '/tmp/a.png' } },
+      ],
+    }
+    const once = condenseMessage(m)
+    const twice = condenseMessage(once)
+    expect(twice.content).toBe(once.content)
+    expect((JSON.parse(twice.content as string) as Record<string, unknown>).images_omitted).toBe(
+      true,
+    )
   })
 })

@@ -144,6 +144,8 @@ describe('收纳段：换信封，不改字节', () => {
     const env = JSON.parse(out.content as string)
     expect(env.result).toBeUndefined()
     expect(env.result_omitted).toBe(true)
+    // 图像省略标记只属于真丢过图像块的收纳，纯文本收纳不得带。
+    expect(env.images_omitted).toBeUndefined()
     expect(env.summary).toBe('跑完了')
     expect(env.resources).toEqual(['rs_abc'])
     expect((out.content as string).length).toBeLessThan((toolMsg.content as string).length / 10)
