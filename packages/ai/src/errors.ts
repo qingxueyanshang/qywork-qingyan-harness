@@ -302,7 +302,7 @@ const TRANSPORT_SHAPES: { code: RegExp; message: RegExp; text: string }[] = [
   {
     code: /^(ECONNRESET|ECONNABORTED|EPIPE|ERR_SOCKET_CLOSED|UND_ERR_SOCKET|CONNECTION(CLOSED|RESET|ABORTED))/,
     message:
-      /socket connection was closed|socket hang up|premature close|connection (closed|reset|aborted)|\b(ECONNRESET|ECONNABORTED|EPIPE)\b/i,
+      /socket connection was closed|socket hang up|premature close|http\/2 stream failed|connection (closed|reset|aborted)|\b(ECONNRESET|ECONNABORTED|EPIPE)\b/i,
     text: '连接被断开',
   },
   {
