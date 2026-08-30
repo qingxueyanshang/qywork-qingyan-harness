@@ -124,6 +124,62 @@ describe('输出上限：没测过就整个字段不发', () => {
   })
 })
 
+/*
+ * ── 工具结果图片的 wire 形状 ──
+ *
+ * 官方文档把 tool 消息的 content 写成字符串；带图数组是实测立住的形状
+ * （依据见 `openai-compat.ts` 的 `buildMessages` 注释）。这里锁请求体：
+ * 图片块必须原样落进 tool 消息，不得被压成字符串或静默丢弃。
+ */
+describe('工具结果带图片', () => {
+  test('tool 消息发成 text + image_url 数组，call id 与块顺序保留', async () => {
+    const body = await send(
+      'deepseek-v4-flash',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看图' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c_img', name: 'read_file', arguments: { path: 'a.png' } }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'c_img',
+          content: [
+            { type: 'text', text: '{"call_id":"c_img","status":"success"}' },
+            { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'QUJD' } },
+          ],
+        },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    const tool = messages.find((m) => m.role === 'tool')
+    expect(tool).toBeDefined()
+    expect(tool!.tool_call_id).toBe('c_img')
+    expect(tool!.content).toEqual([
+      { type: 'text', text: '{"call_id":"c_img","status":"success"}' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+    ])
+  })
+
+  test('纯文本工具结果仍是字符串，不改发数组', async () => {
+    const body = await send(
+      'deepseek-v4-flash',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c_t', name: 'x', arguments: {} }] },
+        { role: 'tool', toolCallId: 'c_t', content: '读到了' },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages.find((m) => m.role === 'tool')!.content).toBe('读到了')
+  })
+})
+
 describe('DeepSeek 要两个字段一起发', () => {
   /**
    * 复现原始失败形状：只发 `reasoning_effort` 时实测「每一档 reasoning_tokens

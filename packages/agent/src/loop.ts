@@ -63,10 +63,13 @@ import {
 } from './progress.ts'
 import {
   isParallelSafe,
+  type PermissionEffect,
   resetBatchBudget,
   resolveAction,
+  resolvePermissionEffect,
   type ToolContext,
   type ToolContextBase,
+  type ToolOutcome,
   type ToolRegistry,
 } from './registry.ts'
 
@@ -1594,6 +1597,14 @@ export class AgentLoop {
           this.deps.registry,
         )
 
+        // 本批（一次 provider 决策）的逐调用证据，波次全部结束后聚合成一条。
+        const batchEvidence: {
+          callIndex: number
+          action: string
+          cycle: string
+          noProgress: boolean
+        }[] = []
+
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
           const wave = waves[waveIndex]!
           // 批级投递预算按波次清零。限单次没有上界——一波五个 read_file
@@ -1715,14 +1726,31 @@ export class AgentLoop {
               _group: 'executionRecords',
             })
 
-            // 进展证据：**`noProgress` 取执行器给出的事实，不猜**。
-            // 报错不算证据——写了一半再抛也是错，那时副作用已经发生了。
-            progress.push({
+            batchEvidence.push({
+              callIndex: s.callIndex,
               action: actionFingerprint(s.call.name, s.call.arguments),
               cycle: cycleFingerprint(s.call.name, s.call.arguments, s.outcome),
-              noProgress: !s.outcome.fileChanges?.length,
+              noProgress: provablyNoEffect(
+                resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments),
+                s.outcome,
+              ),
             })
           }
+        }
+
+        /*
+         * 一次 provider 决策只记**一条**进展证据：监督器数的是「看过结果仍作
+         * 相同决策」的周期数，不是工具调用数。逐调用记账时，单次响应内的重复
+         * 调用会在模型看到任何结果之前满足三次阈值并误停。
+         * 按 callIndex 排序，保证聚合顺序与 provider 原调用顺序一致。
+         */
+        if (batchEvidence.length) {
+          const ordered = [...batchEvidence].sort((a, b) => a.callIndex - b.callIndex)
+          progress.push({
+            action: ordered.map((e) => e.action).join('+'),
+            cycle: ordered.map((e) => e.cycle).join('+'),
+            noProgress: ordered.every((e) => e.noProgress),
+          })
         }
 
         // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
@@ -1921,6 +1949,21 @@ function planWaves(
   flush()
 
   return waves
+}
+
+/**
+ * 这次调用是否确凿没有产生副作用。契约见 `ProgressEvidence.noProgress`：
+ * 只有明确事实参与空转判定，含糊一律视为可能有副作用。
+ *
+ * `fileChanges` 非空直接判为有副作用；`executed: false` 表示没有进入执行器；
+ * 其余只认注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
+ * `internal_control`：它们即使返回失败也可能已修改外部状态（写到一半再抛也是错），
+ * 字段缺席不能当成「明确没有变更」。
+ */
+function provablyNoEffect(effect: PermissionEffect, outcome: ToolOutcome): boolean {
+  if (outcome.fileChanges?.length) return false
+  if (outcome.executed === false) return true
+  return effect === 'read'
 }
 
 function mergeUsage(
