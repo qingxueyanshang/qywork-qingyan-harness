@@ -7,38 +7,51 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  actionFingerprint,
-  cycleFingerprint,
-  type ProgressEvidence,
-  repeatsNoProgress,
-} from './progress.ts'
+import { cycleFingerprint, type ProgressEvidence, repeatsNoProgress } from './progress.ts'
 
 function ev(action: string, result: string, noProgress = true): ProgressEvidence {
-  return { action, cycle: `${action}|${result}`, noProgress }
+  return { cycle: `${action}|${result}`, noProgress }
 }
 
 describe('指纹', () => {
   /** 参数键顺序不该改变指纹——同一次调用，JSON 序列化顺序可能不同。 */
-  test('参数键顺序不影响动作指纹', () => {
-    expect(actionFingerprint('read_file', { path: 'a.ts', limit: 5 })).toBe(
-      actionFingerprint('read_file', { limit: 5, path: 'a.ts' }),
+  test('参数键顺序不影响周期指纹', () => {
+    expect(cycleFingerprint('read_file', { path: 'a.ts', limit: 5 }, { status: 'success' })).toBe(
+      cycleFingerprint('read_file', { limit: 5, path: 'a.ts' }, { status: 'success' }),
     )
   })
 
   test('参数值不同则指纹不同', () => {
-    expect(actionFingerprint('read_file', { path: 'a.ts' })).not.toBe(
-      actionFingerprint('read_file', { path: 'b.ts' }),
+    expect(cycleFingerprint('read_file', { path: 'a.ts' }, { status: 'success' })).not.toBe(
+      cycleFingerprint('read_file', { path: 'b.ts' }, { status: 'success' }),
     )
   })
 
   /** 同样的动作、不同的结果 = 不同的周期。轮询类调用靠这条不被误判。 */
-  test('结果不同则周期指纹不同，动作指纹相同', () => {
+  test('结果不同则周期指纹不同', () => {
     const args = { command: 'ls' }
     const a = cycleFingerprint('run_command', args, { status: 'success', message: '2 项' })
     const b = cycleFingerprint('run_command', args, { status: 'success', message: '3 项' })
     expect(a).not.toBe(b)
-    expect(actionFingerprint('run_command', args)).toBe(actionFingerprint('run_command', args))
+  })
+
+  test('模型可见的执行事实或资源变化会改变周期', () => {
+    const args = { path: 'a.txt' }
+    const base = { status: 'success', message: '读取完成' }
+    expect(cycleFingerprint('read_file', args, { ...base, executed: false })).not.toBe(
+      cycleFingerprint('read_file', args, { ...base, executed: true }),
+    )
+    expect(
+      cycleFingerprint('read_file', args, {
+        ...base,
+        resources: [{ resourceId: 'rs_a' }],
+      }),
+    ).not.toBe(
+      cycleFingerprint('read_file', args, {
+        ...base,
+        resources: [{ resourceId: 'rs_b' }],
+      }),
+    )
   })
 
   test('嵌套对象也按键排序，不因序列化顺序抖动', () => {

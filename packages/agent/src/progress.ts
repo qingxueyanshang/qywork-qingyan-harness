@@ -7,10 +7,8 @@
  * 「已达步数上限」。那个终止原因是错的：它不是步数不够，是它在原地打转，
  * 多给一百步也一样。
  *
- * **判据：动作、结果或状态快照、副作用三样都没变。** 一次周期留下两个指纹：
- *
- * - **动作指纹** = 工具名 + 参数，或响应结束动作。同样的动作。
- * - **周期指纹** = 工具动作 + 状态 + 结果正文，或响应结束动作 + 未完成待办快照。
+ * **判据：动作、模型可见结果或状态快照、副作用三样都没变。** 一次 provider 决策只留一个
+ * 周期指纹；工具名、参数与结果共同进入该指纹，响应结束动作则与未完成待办快照共同进入。
  *
  * 只有周期指纹逐项相同、而且这些周期**都确凿没有产生副作用**
  * 时才算一个空转周期。这三条缺一不可：
@@ -38,8 +36,6 @@
 
 /** 一次执行动作或响应结束留下的进展证据。 */
 export interface ProgressEvidence {
-  /** 动作名 + 参数或待办快照。 */
-  action: string
   /** 足以判断这个周期是否变化的指纹（定长摘要）。 */
   cycle: string
   /**
@@ -71,23 +67,27 @@ function digest(payload: string): string {
   return Bun.hash(payload).toString(36)
 }
 
-export function actionFingerprint(toolName: string, args: Record<string, unknown>): string {
-  return digest(`${toolName}|${stable(args)}`)
-}
-
 export function cycleFingerprint(
   toolName: string,
   args: Record<string, unknown>,
-  outcome: { status: string; message?: string; data?: unknown; errorKind?: string },
+  outcome: {
+    status: string
+    executed?: boolean
+    message?: string
+    data?: unknown
+    resources?: readonly { resourceId: string }[]
+  },
 ): string {
   return digest(
-    [
-      `${toolName}|${stable(args)}`,
-      outcome.status,
-      outcome.errorKind ?? '',
-      outcome.message ?? '',
-      stable(outcome.data ?? null),
-    ].join('|'),
+    stable({
+      tool: toolName,
+      arguments: args,
+      status: outcome.status,
+      executed: outcome.executed ?? null,
+      summary: outcome.message ?? '',
+      resources: outcome.resources?.map((r) => r.resourceId) ?? [],
+      result: outcome.data ?? null,
+    }),
   )
 }
 

@@ -165,6 +165,7 @@ describe('工具结果带图片', () => {
   })
 
   test('纯文本工具结果仍是字符串，不改发数组', async () => {
+    const omitted = '{"call_id":"c_t","status":"success","images_omitted":true}'
     const body = await send(
       'deepseek-v4-flash',
       undefined,
@@ -172,11 +173,11 @@ describe('工具结果带图片', () => {
       [
         { role: 'user', content: '看' },
         { role: 'assistant', content: '', toolCalls: [{ id: 'c_t', name: 'x', arguments: {} }] },
-        { role: 'tool', toolCallId: 'c_t', content: '读到了' },
+        { role: 'tool', toolCallId: 'c_t', content: omitted },
       ],
     )
     const messages = body.messages as Record<string, unknown>[]
-    expect(messages.find((m) => m.role === 'tool')!.content).toBe('读到了')
+    expect(messages.find((m) => m.role === 'tool')!.content).toBe(omitted)
   })
 })
 
