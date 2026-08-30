@@ -18,13 +18,14 @@ import {
   type ConversationId,
   foldWorkflow,
   type RunId,
+  type StepId,
   SUBAGENT_NODE_ID,
   type WorkflowCallRecord,
   type WorkflowNode,
   type WorkflowTransition,
 } from '@qywork/core'
 import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
-import { getConversation, listRuns, listSteps } from '@qywork/store'
+import { getConversation, listRuns, listSteps, setStepChildConversation } from '@qywork/store'
 import {
   CLI_PREFIX,
   detectClis,
@@ -284,7 +285,14 @@ export function makeDelegate(ctx: {
             deps,
             workspaceRoot,
             ...picked,
-            onConversation: (cid) => say('working', { childConversationId: cid }),
+            onConversation: (cid) => {
+              // 先落账再广播。用户此刻切走父会话会错过广播，但切回来从同一条 step
+              // 回放时仍拿得到入口，不会把运行中的节点画成不可点击。
+              if (input.stepId) {
+                setStepChildConversation(deps.store, input.stepId as StepId, cid)
+              }
+              say('working', { childConversationId: cid })
+            },
             onEvent: (ev, cid) => deps.bus.publish(ev, cid),
           },
         )

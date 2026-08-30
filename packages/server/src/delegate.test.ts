@@ -255,6 +255,50 @@ describe('派一件的进度', () => {
   })
 
   /**
+   * 原始失败形状：子 agent 跑着时切到另一条会话，再切回来会从正在执行的 step 回放。
+   * `team.member` 只活在订阅期，入口若等工具终态才落库，这张回放卡没有 id、节点被禁用。
+   */
+  test('父会话切走前，运行中的 step 已经落下子会话入口', async () => {
+    const cid = conversation()
+    const run = createRun(store, {
+      conversationId: cid,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: `early-child-${cid}`,
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: `call_${cid}`,
+      status: 'running',
+      payload: { kind: 'tool_call', args: { task: '看一眼' } },
+    })
+    script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
+
+    const res = await delegate(cid).run({
+      target: '',
+      task: '看一眼',
+      runId: run.id,
+      stepId: step.id,
+      signal: new AbortController().signal,
+    })
+
+    // 外层工具循环尚未 settle：这里就是切换父会话时会读到的形状。
+    const replay = listSteps(store, run.id).find((s) => s.id === step.id)
+    expect(replay?.status).toBe('running')
+    const payload = replay?.payload
+    expect(payload?.kind).toBe('tool_call')
+    expect(payload?.kind === 'tool_call' ? payload.childConversationId : undefined).toBe(
+      res.conversationId as ConversationId | undefined,
+    )
+  })
+
+  /**
    * 子会话的事件按**它自己的会话 id** 广播。右侧那一页订阅的就是这个 id——
    * 不发的话它在子 agent 跑完之前一个字都画不出来。
    *

@@ -26,6 +26,16 @@ export function compact(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
+/** 派活卡上的子会话入口：运行中读 step 快照，结束后兼容历史 outcome。 */
+export function delegateConversationId(item: {
+  childConversationId?: string
+  outcome?: { data?: unknown }
+}): string | undefined {
+  if (item.childConversationId) return item.childConversationId
+  const cid = (item.outcome?.data as { conversationId?: unknown } | undefined)?.conversationId
+  return typeof cid === 'string' && cid ? cid : undefined
+}
+
 /** 命中率要用到的那几格。写成结构类型而不是 import `RunUsage`：这个文件要能被单测直接喂数据。 */
 interface UsageLike {
   inputTokens: number
