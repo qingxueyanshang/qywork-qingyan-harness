@@ -41,6 +41,12 @@ describe('传输层失败必须可重试', () => {
     expect(e.code).toBe('network_error')
   })
 
+  test('中转站实测：Upstream HTTP/2 stream failed', () => {
+    const e = classifyProviderError(P, new Error('Upstream HTTP/2 stream failed'))
+    expect(e.code).toBe('network_error')
+    expect(e.message).toBe('连接被断开')
+  })
+
   /**
    * 证书错误判成可重试是**权衡后的选择**：它既可能是握手撞上抖动（重试就好），
    * 也可能是代理或自签名证书没被信任（重试没用）。判错成不可重试的代价更大，
