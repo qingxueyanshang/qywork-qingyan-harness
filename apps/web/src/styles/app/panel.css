@@ -509,6 +509,17 @@
   line-height: 1.5;
   text-align: left;
 }
+/*
+ * 文件 / 目录行的命中区和选中底色收在内容宽度内。
+ *
+ * 通用 `.tree-item` 原先写死 `width: 100%`，一条短文件名也会画出贯穿整列的灰框；
+ * 根目录名仍要占掉操作按钮左边的剩余空间，所以只排除 `.tree-root-name`。长名字由
+ * `max-width` 卡在树宽内，里面的 `.truncate` 继续负责省略。
+ */
+.file-tree-col .tree-item:not(.tree-root-name) {
+  width: fit-content;
+  max-width: 100%;
+}
 .tree-item svg {
   flex: none;
 }
@@ -565,6 +576,11 @@
   display: flex;
   align-items: center;
   gap: 0;
+}
+/* 四颗树操作与 20px 的文件行同高；全局 28px 命中盒放在这里会把图标组撑散。 */
+.tree-root-acts .icon-btn {
+  width: 20px;
+  height: 20px;
 }
 
 .tree-search {

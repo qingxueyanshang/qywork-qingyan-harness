@@ -29,11 +29,11 @@ interface PreviewResult {
  * 默认导出给 `lazy()` 用：`CodeView` 拖着 CodeMirror 核心约 300 kB，
  * 只想聊天的用户不该为它付首屏成本。
  */
-export default function FileView(props: { path: string }) {
-  // 判据带上改动累计：只报路径的话，agent 改了正开着的文件，旁边的树刷新了
-  // （`SidePanel` 依赖 `fileChanges.length`）而这块内容还是旧的。
+export default function FileView(props: { path: string; refresh?: number }) {
+  // 判据带上改动累计与手动刷新次数：只报路径的话，agent 改了正开着的文件，旁边的树
+  // 刷新了而这块内容还是旧的；只报改动累计的话，用户点文件页刷新也重取不了正文。
   const [result] = createResource(
-    () => `${props.path}:${fileRevision(props.path)}`,
+    () => `${props.path}:${fileRevision(props.path)}:${props.refresh ?? 0}`,
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
 

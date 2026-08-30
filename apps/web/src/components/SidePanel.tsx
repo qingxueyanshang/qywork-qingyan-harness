@@ -484,6 +484,13 @@ function FileBrowser() {
   const [doomed, setDoomed] = createSignal<FileNode | null>(null)
   const [query, setQuery] = createSignal('')
   const [rootOpen, setRootOpen] = createSignal(true)
+  /**
+   * 手动刷新的是整个文件页，不只是左边那棵树。
+   *
+   * 当前文件预览有自己的 resource；只调树的 `refetch()`，右边正文会继续停在旧内容上，
+   * 用户看到的就是「刷新点不动」。这个递增值只表达一次命令，不另存任何文件状态。
+   */
+  const [manualRefresh, setManualRefresh] = createSignal(0)
 
   // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
   // 也在里面），而用户通常只展开一两层。
@@ -665,13 +672,26 @@ function FileBrowser() {
               type="button"
               aria-label="刷新"
               data-tip="刷新"
+              aria-busy={tree.loading}
               onClick={() => {
                 // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
                 setKids(new Map())
+                setManualRefresh((n) => n + 1)
                 void refetch()
               }}
             >
-              <IconRefresh size={14} />
+              {/*
+               * 每次点击固定转一圈，不跟 `tree.loading` 的时长绑在一起：本机请求经常在
+               * 浏览器第一次绘制前就结束，只按 loading 加动画等于用户一帧都看不到。
+               * transform 的终点持续递增，连续点击也会从上一圈接着转，不需要计时器。
+               */}
+              <IconRefresh
+                size={14}
+                style={{
+                  transform: `rotate(${manualRefresh() * 360}deg)`,
+                  transition: 'transform 360ms ease-out',
+                }}
+              />
             </button>
             <button
               class="icon-btn"
@@ -713,7 +733,7 @@ function FileBrowser() {
       <Show when={openFile()}>
         {(path) => (
           <Suspense fallback={<div class="preview" />}>
-            <FileView path={path()} />
+            <FileView path={path()} refresh={manualRefresh()} />
           </Suspense>
         )}
       </Show>
