@@ -20,8 +20,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { ConversationHistoryPageResponse, MessageId } from '@qywork/core'
 import {
+  appendMessage,
+  appendStep,
   createConversation,
+  createRun,
+  finishRun,
   getConversation,
   getWorkspace,
   getWorkspaceByPath,
@@ -930,6 +935,58 @@ describe('工具清单', () => {
  * 三条都会改账本，所以每一条的**拒绝路径**也要锁住——静默成功的写接口，
  * 在界面上和「成功了但什么都没变」完全一样。
  */
+describe('会话历史分页接口', () => {
+  test('一条请求返回完整轮次并给出下一页游标', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const ids: MessageId[] = []
+    for (let i = 1; i <= 2; i++) {
+      const msg = appendMessage(d.store, {
+        conversationId: conv.id,
+        role: 'user',
+        content: `问题 ${i}`,
+      })
+      ids.push(msg.id)
+      const run = createRun(d.store, {
+        conversationId: conv.id,
+        workspaceId: workspaceId as never,
+        model: 'm',
+        clientRequestId: `history-${i}`,
+        userMessageId: msg.id,
+        messageIdUpperBound: msg.id,
+        contextSnapshot: [],
+      })
+      appendStep(d.store, { runId: run.id, seq: 1, kind: 'text', content: `答案 ${i}` })
+      finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+    }
+
+    const res = await call(`/api/conversations/${conv.id}/history?limit=1`, undefined, d)
+    expect(res?.status).toBe(200)
+    const page = (await res?.json()) as ConversationHistoryPageResponse
+    expect(page.messages.map((m) => m.content)).toEqual(['问题 2'])
+    expect(page.runs).toHaveLength(1)
+    expect(page.steps.map((s) => s.content)).toEqual(['答案 2'])
+    expect(page.nextCursor).toBe(ids[1]!)
+  })
+
+  test('非法页大小回 422，不静默改成别的数', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const res = await call(`/api/conversations/${conv.id}/history?limit=0`, undefined, d)
+    expect(res?.status).toBe(422)
+  })
+})
+
 describe('会话的重命名 / 归档 / 删除', () => {
   const conv = (d: ApiDeps & { wsId: string }) =>
     createConversation(d.store, { workspaceId: d.wsId as never, provider: 'p', model: 'm' })

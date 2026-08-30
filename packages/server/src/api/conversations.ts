@@ -10,7 +10,14 @@ import {
   unknownModel,
   VENDORS,
 } from '@qywork/ai'
-import type { ConversationId, ConversationUsageResponse, EffortLevel, RunId } from '@qywork/core'
+import type {
+  ConversationHistoryPageResponse,
+  ConversationId,
+  ConversationUsageResponse,
+  EffortLevel,
+  MessageId,
+  RunId,
+} from '@qywork/core'
 import {
   catalogKey,
   contextPanel,
@@ -24,6 +31,7 @@ import {
   currentGoal,
   deleteConversation,
   getConversation,
+  listConversationHistoryPage,
   listConversations,
   listMessages,
   listProviderRequests,
@@ -337,10 +345,23 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     }
   }
 
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(messages|runs|usage|queue)$/.exec(p)
+  const convMatch = /^\/api\/conversations\/([^/]+)\/(history|messages|runs|usage|queue)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    if (convMatch[2] === 'history') {
+      const rawLimit = url.searchParams.get('limit')
+      const limit = rawLimit === null ? 30 : Number(rawLimit)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return json({ error: 'limit 必须是 1 到 100 的整数' }, 422)
+      }
+      const before = url.searchParams.get('before')?.trim() || null
+      const page: ConversationHistoryPageResponse = listConversationHistoryPage(d.store, id, {
+        limit,
+        before: before as MessageId | null,
+      })
+      return json(page)
+    }
     if (convMatch[2] === 'messages') return json({ messages: listMessages(d.store, id) })
     if (convMatch[2] === 'runs') return json({ runs: listRuns(d.store, id) })
     // 排着的跟进消息。刷新与重连之后卡片靠它重建；与 `queue.changed` 同源，

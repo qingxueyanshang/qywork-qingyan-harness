@@ -133,7 +133,11 @@ export type {
 } from './protocol/events.ts'
 // 单次派活那张卡上那个子节点的 id：服务端发事件、前端画节点，两侧要用同一个值
 export { SUBAGENT_NODE_ID } from './protocol/events.ts'
-export type { ConversationUsageResponse, UsageResponse } from './protocol/http.ts'
+export type {
+  ConversationHistoryPageResponse,
+  ConversationUsageResponse,
+  UsageResponse,
+} from './protocol/http.ts'
 
 // 客户端 → 服务端的指令、握手与配对
 export {

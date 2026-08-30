@@ -11,7 +11,35 @@
  * 同一份。
  */
 
-import type { UsageBucket, UsageLedgerRow, UsageTotals } from '../domain/model.ts'
+import type { MessageId } from '../domain/ids.ts'
+import type {
+  Message,
+  Run,
+  Step,
+  TodoItem,
+  UsageBucket,
+  UsageLedgerRow,
+  UsageTotals,
+} from '../domain/model.ts'
+
+/**
+ * `GET /api/conversations/:id/history` —— 会话流的一页完整轮次。
+ *
+ * 一页以 user message 为边界：`messages` 会包含所选用户消息之间的 assistant
+ * 兜底消息，`runs` 与 `steps` 则是这些用户消息名下的完整事实。这样翻页不会把
+ * 一轮工具调用从中间劈开。`nextCursor` 是下一页的排他上界；null = 已到最早。
+ *
+ * `todos` 不是第二本账，只是服务端从同一批 steps 账本里投影出的当前快照。
+ * 它必须随首屏一起回：最新一次 `write_todos` 可能早于当前页，前端不能为了找它
+ * 又把全部历史拉一遍。
+ */
+export interface ConversationHistoryPageResponse {
+  messages: Message[]
+  runs: Run[]
+  steps: Step[]
+  todos: TodoItem[]
+  nextCursor: MessageId | null
+}
 
 /**
  * `GET /api/usage` —— 这台机器最近这些天的账。

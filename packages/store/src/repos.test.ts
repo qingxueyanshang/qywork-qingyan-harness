@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { MessageId } from '@qywork/core'
 import { Store } from './db.ts'
 import {
   appendMessage,
@@ -12,6 +13,7 @@ import {
   finishRun,
   getConversation,
   getRun,
+  listConversationHistoryPage,
   listConversations,
   listMessages,
   listRunContextSnapshots,
@@ -136,6 +138,76 @@ describe('消息高水位', () => {
     const scoped = listMessages(store, conv.id, m2.id).map((m) => m.content)
     expect(scoped).toEqual(['第一条', '第二条'])
     expect(listMessages(store, conv.id, m1.id).map((m) => m.content)).toEqual(['第一条'])
+    store.close()
+  })
+})
+
+describe('会话历史分页', () => {
+  test('按完整用户轮次分页并批量带回 run/step，页间不重不漏', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const users: MessageId[] = []
+    for (let i = 1; i <= 5; i++) {
+      const user = appendMessage(store, {
+        conversationId: conv.id,
+        role: 'user',
+        content: `用户 ${i}`,
+      })
+      users.push(user.id)
+      const run = createRun(store, {
+        conversationId: conv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `page-${i}`,
+        userMessageId: user.id,
+        messageIdUpperBound: user.id,
+        contextSnapshot: [],
+      })
+      appendStep(store, { runId: run.id, seq: 1, kind: 'text', content: `回答 ${i}` })
+      if (i === 1) {
+        appendStep(store, {
+          runId: run.id,
+          seq: 2,
+          kind: 'tool_action',
+          toolName: 'write_todos',
+          status: 'success',
+          payload: {
+            kind: 'tool_result',
+            args: { todos: [{ content: '跨页待办', status: 'pending' }] },
+          } as never,
+        })
+      }
+      finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+      appendMessage(store, {
+        conversationId: conv.id,
+        role: 'assistant',
+        content: `兜底 ${i}`,
+      })
+    }
+
+    const newest = listConversationHistoryPage(store, conv.id, { limit: 2 })
+    expect(newest.messages.map((m) => m.content)).toEqual(['用户 4', '兜底 4', '用户 5', '兜底 5'])
+    expect(newest.runs).toHaveLength(2)
+    expect(newest.steps.map((s) => s.content)).toEqual(['回答 4', '回答 5'])
+    expect(newest.todos.map((t) => t.content)).toEqual(['跨页待办'])
+    expect(newest.nextCursor).toBe(users[3]!)
+
+    const older = listConversationHistoryPage(store, conv.id, {
+      limit: 2,
+      before: newest.nextCursor,
+    })
+    expect(older.messages.map((m) => m.content)).toEqual(['用户 2', '兜底 2', '用户 3', '兜底 3'])
+    expect(older.runs).toHaveLength(2)
+    expect(older.steps.map((s) => s.content)).toEqual(['回答 2', '回答 3'])
+    expect(older.nextCursor).toBe(users[1]!)
+
+    const oldest = listConversationHistoryPage(store, conv.id, {
+      limit: 2,
+      before: older.nextCursor,
+    })
+    expect(oldest.messages.map((m) => m.content)).toEqual(['用户 1', '兜底 1'])
+    expect(oldest.steps.map((s) => s.content)).toEqual(['回答 1', null])
+    expect(oldest.nextCursor).toBeNull()
     store.close()
   })
 })

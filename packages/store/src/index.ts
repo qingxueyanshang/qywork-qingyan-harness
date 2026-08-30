@@ -33,6 +33,7 @@ export {
   getWorkspaceByPath,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
+  listConversationHistoryPage,
   listConversations,
   listMessages,
   listProviderRequests,

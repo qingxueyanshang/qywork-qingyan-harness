@@ -13,12 +13,12 @@ import type {
   Attachment,
   ContextBreakdown,
   ContextOmitted,
+  ConversationHistoryPageResponse,
   EventEnvelope,
   FollowUp,
   Goal,
   RunUsage,
   StopReason,
-  TodoItem,
   ToolOutcomeWire,
 } from '@qywork/core'
 import { createEffect, createRoot } from 'solid-js'
@@ -653,6 +653,7 @@ interface StoredRun {
 }
 interface StoredStep {
   id: string
+  runId: string
   seq: number
   kind: string
   toolName: string | null
@@ -684,21 +685,85 @@ interface Folded {
   stepsByRun: Map<string, StoredStep[]>
 }
 
-/** 按会话 id 把那三样拉回来。子会话与当前会话走同一条路——读接口不按 source 过滤。 */
-async function fetchConversation(id: string): Promise<Folded> {
-  const [{ messages }, { runs }] = await Promise.all([
-    client.api<{ messages: StoredMessage[] }>(`/api/conversations/${id}/messages`),
-    client.api<{ runs: StoredRun[] }>(`/api/conversations/${id}/runs`),
-  ])
-  // 并行取每个 run 的 steps：串行拉在有几十轮的会话上会明显卡顿。
-  const stepsByRun = new Map<string, StoredStep[]>()
-  await Promise.all(
-    runs.map(async (r) => {
-      const { steps } = await client.api<{ steps: StoredStep[] }>(`/api/runs/${r.id}/steps`)
-      stepsByRun.set(r.id, steps)
-    }),
+interface HistoryPage extends Folded {
+  todos: ConversationHistoryPageResponse['todos']
+  nextCursor: string | null
+}
+
+// 600 轮 / 16.9 MiB 级会话实测：30 轮首屏虽能在 400ms 内出现第一行，
+// 但后续 Markdown 挂载仍会占主线程约 2.8s，快速点下一条会话要等。10 轮把单页
+// 控制在约 300 KiB；历史一字不少，只把“继续往前读”的粒度收细。
+const HISTORY_PAGE_SIZE = 10
+const HISTORY_TIMEOUT_MS = 15_000
+
+interface HistoryLease {
+  controller: AbortController
+  timer: ReturnType<typeof setTimeout> | null
+  timedOut: boolean
+}
+
+/** 同一会话同一时刻只允许一页在飞；新请求会撤掉旧请求。 */
+const historyLoads = new Map<string, HistoryLease>()
+let activeHistoryLease: HistoryLease | null = null
+
+function beginHistoryLoad(id: string): HistoryLease {
+  historyLoads.get(id)?.controller.abort()
+  const lease: HistoryLease = {
+    controller: new AbortController(),
+    timer: null,
+    timedOut: false,
+  }
+  lease.timer = setTimeout(() => {
+    lease.timedOut = true
+    lease.controller.abort()
+  }, HISTORY_TIMEOUT_MS)
+  historyLoads.set(id, lease)
+  return lease
+}
+
+function finishHistoryLoad(id: string, lease: HistoryLease): void {
+  if (lease.timer) clearTimeout(lease.timer)
+  if (historyLoads.get(id) === lease) historyLoads.delete(id)
+}
+
+function canceledByNewerRequest(lease: HistoryLease): boolean {
+  return lease.controller.signal.aborted && !lease.timedOut
+}
+
+function historyErrorMessage(error: unknown, lease: HistoryLease): string {
+  if (lease.timedOut) return '加载历史记录超时，请重试'
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 一页只走一个接口：服务端按完整 user turn 一次带回 messages/runs/steps。
+ * 这条替掉旧的 `2 + runs.length` 个请求，页面大小不再决定请求个数。
+ */
+async function fetchConversationPage(
+  id: string,
+  before: string | null,
+  signal: AbortSignal,
+): Promise<HistoryPage> {
+  const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) })
+  if (before) query.set('before', before)
+  const page = await client.api<ConversationHistoryPageResponse>(
+    `/api/conversations/${id}/history?${query}`,
+    { signal },
   )
-  return { messages, runs, stepsByRun }
+  const stepsByRun = new Map<string, StoredStep[]>()
+  for (const raw of page.steps) {
+    const step = raw as unknown as StoredStep
+    const list = stepsByRun.get(step.runId) ?? []
+    list.push(step)
+    stepsByRun.set(step.runId, list)
+  }
+  return {
+    messages: page.messages,
+    runs: page.runs,
+    stepsByRun,
+    todos: page.todos,
+    nextCursor: page.nextCursor,
+  }
 }
 
 /**
@@ -769,17 +834,93 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
  */
 export async function loadConversationView(id: string): Promise<void> {
   openView(id)
-  const items = foldTranscript(await fetchConversation(id))
-  setState(
-    produce((s) => {
-      const v = s.views[id]
-      if (!v) return
-      // 建表到这一拉返回之间到达的那几条接在后面，按 id 去重。同一条 step
-      // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
-      const known = new Set(items.map((i) => i.id))
-      v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
-    }),
-  )
+  setState('views', id, 'history', {
+    loading: 'initial',
+    nextCursor: null,
+    error: null,
+  })
+  const lease = beginHistoryLoad(id)
+  try {
+    const page = await fetchConversationPage(id, null, lease.controller.signal)
+    if (canceledByNewerRequest(lease)) return
+    const items = foldTranscript(page)
+    setState(
+      produce((s) => {
+        const v = s.views[id]
+        if (!v) return
+        // 建表到这一拉返回之间到达的那几条接在后面，按 id 去重。同一条 step
+        // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
+        const known = new Set(items.map((i) => i.id))
+        v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
+        v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+      }),
+    )
+  } catch (error) {
+    if (canceledByNewerRequest(lease)) return
+    setState(
+      produce((s) => {
+        const v = s.views[id]
+        if (!v) return
+        v.history.loading = null
+        v.history.error = { phase: 'initial', message: historyErrorMessage(error, lease) }
+      }),
+    )
+  } finally {
+    finishHistoryLoad(id, lease)
+  }
+}
+
+/**
+ * 在流顶端补一页更早记录。只做前插且按 id 去重，加载期间到达的实时事件仍留在尾部。
+ * 滚动锚点由拥有滚动容器的组件补偿，这里只负责账本投影。
+ */
+export async function loadOlderConversation(id: string): Promise<boolean> {
+  const current = state.views[id]
+  const before = current?.history.nextCursor ?? null
+  if (!current || !before || current.history.loading) return false
+
+  setState('views', id, 'history', 'loading', 'older')
+  setState('views', id, 'history', 'error', null)
+  const lease = beginHistoryLoad(id)
+  try {
+    const page = await fetchConversationPage(id, before, lease.controller.signal)
+    if (canceledByNewerRequest(lease)) return false
+    const items = foldTranscript(page)
+    setState(
+      produce((s) => {
+        const v = s.views[id]
+        if (!v) return
+        const olderIds = new Set(items.map((item) => item.id))
+        v.transcript = [...items, ...v.transcript.filter((item) => !olderIds.has(item.id))]
+        v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+      }),
+    )
+    return true
+  } catch (error) {
+    if (canceledByNewerRequest(lease)) return false
+    setState(
+      produce((s) => {
+        const v = s.views[id]
+        if (!v) return
+        v.history.loading = null
+        v.history.error = { phase: 'older', message: historyErrorMessage(error, lease) }
+      }),
+    )
+    return false
+  } finally {
+    finishHistoryLoad(id, lease)
+  }
+}
+
+/** 初次加载失败与“更早记录”失败共用一个重试入口。 */
+export async function retryConversationHistory(id: string): Promise<void> {
+  const error = state.views[id]?.history.error
+  if (error?.phase === 'older') {
+    await loadOlderConversation(id)
+    return
+  }
+  if (state.activeConversation === id) await reloadActiveConversation()
+  else await loadConversationView(id)
 }
 
 /**
@@ -801,7 +942,11 @@ export function syncViews(): void {
     if (t.kind === 'conversation') want.add(tabConversationId(t.id))
   }
   for (const id of want) openView(id)
-  for (const id of Object.keys(state.views)) if (!want.has(id)) dropView(id)
+  for (const id of Object.keys(state.views)) {
+    if (want.has(id)) continue
+    historyLoads.get(id)?.controller.abort()
+    dropView(id)
+  }
   // 没变就不报：这个函数既由下面那个 effect 触发，也在切会话那条路上被显式调一次，
   // 同一组会话报两遍只是两条白发的指令。
   const line = [...want].sort().join(',')
@@ -818,7 +963,7 @@ export function syncViews(): void {
 createRoot(() => createEffect(syncViews))
 
 /**
- * 重建完整会话投影。
+ * 重建会话的最新一页投影。
  *
  * 必须把 **run 的 steps 也折回来**，而不是只拉 messages——工具调用只存在于 steps 里，
  * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，界面上等于 agent 什么都没做。
@@ -831,142 +976,152 @@ export async function reloadActiveConversation(): Promise<void> {
   // 整段重拉之前把积压**丢掉而不是冲出去**：那段字属于重拉之前的那份
   // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
   discardPace()
+  activeHistoryLease?.controller.abort()
+  const lease = beginHistoryLoad(id)
+  activeHistoryLease = lease
+  setState('views', id, 'history', {
+    loading: 'initial',
+    nextCursor: null,
+    error: null,
+  })
 
-  const [folded, ctx, goal, queue] = await Promise.all([
-    fetchConversation(id),
-    // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
-    // 切一次会话面板就空了，而用户是回头看的时候才想知道被谁占的。
-    // 拉失败不影响会话本身能不能打开，退化成没有面板。
-    client
-      .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`)
-      .then((r) => r.context)
-      .catch(() => null),
-    // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
-    // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
-    // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
-    client
-      .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`)
-      .then((r) => r.goal)
-      .catch(() => null),
-    // 排着的跟进消息。它只活在服务端进程里，刷新与重连之后卡片全靠这一拉重建；
-    // 与 `queue.changed` 同源（都读 `RunManager`），不存在快照与增量各说各话。
-    client
-      .api<{ queue: FollowUp[] }>(`/api/conversations/${id}/queue`)
-      .then((r) => r.queue)
-      .catch(() => []),
-  ])
+  try {
+    const [folded, ctx, goal, queue] = await Promise.all([
+      fetchConversationPage(id, null, lease.controller.signal),
+      // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
+      // 切一次会话面板就空了，而用户是回头看的时候才想知道被谁占的。
+      // 拉失败不影响会话本身能不能打开，退化成没有面板。
+      client
+        .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`, {
+          signal: lease.controller.signal,
+        })
+        .then((r) => r.context)
+        .catch(() => null),
+      // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
+      // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
+      // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
+      client
+        .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`, {
+          signal: lease.controller.signal,
+        })
+        .then((r) => r.goal)
+        .catch(() => null),
+      // 排着的跟进消息。它只活在服务端进程里，刷新与重连之后卡片全靠这一拉重建；
+      // 与 `queue.changed` 同源（都读 `RunManager`），不存在快照与增量各说各话。
+      client
+        .api<{ queue: FollowUp[] }>(`/api/conversations/${id}/queue`, {
+          signal: lease.controller.signal,
+        })
+        .then((r) => r.queue)
+        .catch(() => []),
+    ])
 
-  const { runs, stepsByRun } = folded
-  const items = foldTranscript(folded)
+    const { runs } = folded
+    const items = foldTranscript(folded)
 
-  // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
-  // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
-  // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
-  if (state.activeConversation !== id) return
+    // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
+    // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
+    // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
+    if (state.activeConversation !== id || canceledByNewerRequest(lease)) return
 
-  /*
-   * **run 作用域的状态一律从这里派生，不靠事件残留。**
-   *
-   * 这些字段（lastRunId / todos / usage / context）只有当前会话那一份，
-   * 没有「属于哪条会话」这一维。切会话时若只重置正文流，它们会连同上一条会话的
-   * run 一起留在界面上；而上一条会话的表在切走那一刻就撤了（`dropView`），
-   * 它那条 run 的 `run.finished` **结构性地永远到不了**，
-   * 因此它们再也不会被放下来。
-   *
-   * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
-   * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
-   *
-   * **「在不在跑」不在这张单子上**：`busyConversations` 本来就带着会话这一维，
-   * 换一条会话读的就是另一格，没有什么需要重置。这里也不许照 runs 表补写一份
-   * ——账本那行在服务进程崩过之后可能还挂着 `running`，照它写就会把界面永久
-   * 钉在执行中，而 `RunManager` 早就没有这条 run 了。
-   */
-  const live = runs.find((r) => r.status === 'running') ?? null
+    /*
+     * **run 作用域的状态一律从这里派生，不靠事件残留。**
+     *
+     * 这些字段（lastRunId / todos / usage / context）只有当前会话那一份，
+     * 没有「属于哪条会话」这一维。切会话时若只重置正文流，它们会连同上一条会话的
+     * run 一起留在界面上；而上一条会话的表在切走那一刻就撤了（`dropView`），
+     * 它那条 run 的 `run.finished` **结构性地永远到不了**，
+     * 因此它们再也不会被放下来。
+     *
+     * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
+     * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
+     *
+     * **「在不在跑」不在这张单子上**：`busyConversations` 本来就带着会话这一维，
+     * 换一条会话读的就是另一格，没有什么需要重置。这里也不许照 runs 表补写一份
+     * ——账本那行在服务进程崩过之后可能还挂着 `running`，照它写就会把界面永久
+     * 钉在执行中，而 `RunManager` 早就没有这条 run 了。
+     */
+    const live = runs.find((r) => r.status === 'running') ?? null
 
-  setState(
-    produce((s) => {
-      const v = s.views[id]
-      if (v) {
-        v.transcript = items
-        v.runStartedAt = live ? live.createdAt : null
-        // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
-        v.error = null
-      }
-      s.followUps = queue
-      s.lastRunId = live?.id ?? null
-      // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
-      // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
-      s.lastEventAt = live ? Date.now() : null
-      /*
-       * 重连计数是这里仅有的一处清空，因为它确实无处可读——它活在 `AgentLoop`
-       * 的调用栈上，账本里没有表也没有列。
-       *
-       * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
-       * 出来的。重投之后仍在运行的那几个节点回落到 outcome 里的终态（跑完的那些），
-       * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说。
-       */
-      s.retry = null
-      /*
-       * **用量跟着那一轮走，不清空。**
-       *
-       * 它不属于上面那几项：`runs` 行有这一列，而且是每收到一次 provider 的
-       * usage 就写一次（`agent/loop.ts` 的 `saveUsage`），所以正在跑的那一轮
-       * 此刻累计了多少，这里读得到。
-       *
-       * 清成 null 的表现是：跑了一半重连或切回来，读数条上的 `↓入 ↑出 / 命中 /
-       * 金额` 整组消失，要等下一次模型调用回报 usage 才凭空长回来——一轮里
-       * 这一等可能是几分钟，用户看到的是「数字自己丢了又自己回来」。
-       */
-      s.usage = live?.usage ?? null
-      // **待办从账本投影回来，不新增持久化路径。**
-      // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。真源现成的：
-      // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
-      // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
-      s.todos = todosFromSteps(runs, stepsByRun)
-      // 目标有自己的账本（`goal_events`），所以是读回来的，不像待办那样从
-      // steps 里反推——反推等于给「目标现在是什么」造第二个真源。
-      s.goal = goal
-      // 上下文不在这一批里——它有账本可依（`provider_requests`），
-      // 不是「run 内的易失投影」。
-      // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。
-      // 只有这次拉取失败（上面 catch 成 null）才降级成不显示。
-      s.context = ctx
-        ? {
-            tokens: ctx.total,
-            limit: ctx.limit,
-            percent: ctx.percent,
-            source: ctx.source,
-            compactAt: ctx.compactAt,
-            breakdown: ctx.breakdown,
-            omitted: ctx.omitted,
-          }
-        : null
-    }),
-  )
-}
-
-/**
- * 从落库的 steps 里投影出当前待办清单。
- *
- * **不新增持久化路径**（A2 第 5 问答「否」）。只活在 WS 事件里的话刷新即丢，
- * 而真源现成的：`write_todos` 每次调用本身就是一条 tool step，整表 todos
- * 就躺在它的 `args` 里。整表语义下**最后一次成功提交就是全部事实**，
- * 所以从后往前找第一条成功的即可，不需要合并、也不需要另建一张表。
- *
- * 按 run 顺序倒着扫：跨 run 的进度要延续——一轮做三条、下一轮接着做第四条是常态。
- */
-function todosFromSteps(runs: StoredRun[], stepsByRun: Map<string, StoredStep[]>): TodoItem[] {
-  for (let i = runs.length - 1; i >= 0; i--) {
-    const steps = stepsByRun.get(runs[i]!.id) ?? []
-    for (let j = steps.length - 1; j >= 0; j--) {
-      const st = steps[j]!
-      if (st.kind !== 'tool_action' || st.toolName !== 'write_todos') continue
-      if (st.status !== 'success') continue
-      const todos = st.payload?.args?.todos
-      if (Array.isArray(todos)) return todos as TodoItem[]
+    setState(
+      produce((s) => {
+        const v = s.views[id]
+        if (v) {
+          // 请求期间到达的实时事件接在账本页后面；同 id 以账本为准。
+          const known = new Set(items.map((item) => item.id))
+          v.transcript = [...items, ...v.transcript.filter((item) => !known.has(item.id))]
+          v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
+          v.runStartedAt = live ? live.createdAt : null
+          // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
+          v.error = null
+        }
+        s.followUps = queue
+        s.lastRunId = live?.id ?? null
+        // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
+        // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
+        s.lastEventAt = live ? Date.now() : null
+        /*
+         * 重连计数是这里仅有的一处清空，因为它确实无处可读——它活在 `AgentLoop`
+         * 的调用栈上，账本里没有表也没有列。
+         *
+         * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
+         * 出来的。重投之后仍在运行的那几个节点回落到 outcome 里的终态（跑完的那些），
+         * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说。
+         */
+        s.retry = null
+        /*
+         * **用量跟着那一轮走，不清空。**
+         *
+         * 它不属于上面那几项：`runs` 行有这一列，而且是每收到一次 provider 的
+         * usage 就写一次（`agent/loop.ts` 的 `saveUsage`），所以正在跑的那一轮
+         * 此刻累计了多少，这里读得到。
+         *
+         * 清成 null 的表现是：跑了一半重连或切回来，读数条上的 `↓入 ↑出 / 命中 /
+         * 金额` 整组消失，要等下一次模型调用回报 usage 才凭空长回来——一轮里
+         * 这一等可能是几分钟，用户看到的是「数字自己丢了又自己回来」。
+         */
+        s.usage = live?.usage ?? null
+        // **待办从账本投影回来，不新增持久化路径。**
+        // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。真源现成的：
+        // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
+        // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
+        s.todos = folded.todos
+        // 目标有自己的账本（`goal_events`），所以是读回来的，不像待办那样从
+        // steps 里反推——反推等于给「目标现在是什么」造第二个真源。
+        s.goal = goal
+        // 上下文不在这一批里——它有账本可依（`provider_requests`），
+        // 不是「run 内的易失投影」。
+        // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。
+        // 只有这次拉取失败（上面 catch 成 null）才降级成不显示。
+        s.context = ctx
+          ? {
+              tokens: ctx.total,
+              limit: ctx.limit,
+              percent: ctx.percent,
+              source: ctx.source,
+              compactAt: ctx.compactAt,
+              breakdown: ctx.breakdown,
+              omitted: ctx.omitted,
+            }
+          : null
+      }),
+    )
+  } catch (error) {
+    if (canceledByNewerRequest(lease)) return
+    if (state.activeConversation === id) {
+      setState(
+        produce((s) => {
+          const v = s.views[id]
+          if (!v) return
+          v.history.loading = null
+          v.history.error = { phase: 'initial', message: historyErrorMessage(error, lease) }
+        }),
+      )
     }
+  } finally {
+    finishHistoryLoad(id, lease)
+    if (activeHistoryLease === lease) activeHistoryLease = null
   }
-  return []
 }
 
 /**

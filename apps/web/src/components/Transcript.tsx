@@ -49,18 +49,75 @@ import {
   composerStackAbove,
   hasRunStatus,
   isRunning,
+  loadOlderConversation,
+  retryConversationHistory,
   runClosed,
   setState,
   state,
   type TranscriptItem,
   transcript,
   view,
+  viewOf,
 } from '../lib/store/index.ts'
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconChevron, IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
+
+/** 历史请求的可见落点：首屏反馈、失败重试，以及按需加载更早轮次。 */
+export function ConversationHistoryBoundary(props: {
+  conversationId: string
+  onLoadOlder?: () => void | Promise<void>
+}) {
+  const history = () => viewOf(props.conversationId).history
+  const loadOlder = () =>
+    props.onLoadOlder ? props.onLoadOlder() : loadOlderConversation(props.conversationId)
+
+  return (
+    <Show
+      when={history().loading !== null || history().error !== null || history().nextCursor !== null}
+    >
+      <div class="history-boundary" aria-live="polite">
+        <Show when={history().loading === 'initial'}>
+          <span class="history-note">
+            <IconSpinner size={13} />
+            正在加载会话…
+          </span>
+        </Show>
+        <Show when={history().loading === 'older'}>
+          <button class="history-button" type="button" disabled>
+            <IconSpinner size={13} />
+            正在加载更早记录…
+          </button>
+        </Show>
+        <Show when={history().error}>
+          {(error) => (
+            <div class="history-error" role="alert">
+              <span>历史记录加载失败：{error().message}</span>
+              <button
+                class="ghost-btn"
+                type="button"
+                onClick={() => void retryConversationHistory(props.conversationId)}
+              >
+                重试
+              </button>
+            </div>
+          )}
+        </Show>
+        <Show
+          when={
+            history().loading === null && history().error === null && history().nextCursor !== null
+          }
+        >
+          <button class="history-button" type="button" onClick={() => void loadOlder()}>
+            加载更早记录
+          </button>
+        </Show>
+      </div>
+    </Show>
+  )
+}
 
 /**
  * 会话流。
@@ -83,6 +140,20 @@ export function Transcript() {
 
   const stickToBottom = () => {
     scroller.scrollTop = scroller.scrollHeight
+    followTop = scroller.scrollTop
+  }
+
+  /** 前插一页后补偿新增高度，让点击前视口里的第一行仍停在原处。 */
+  const loadOlderAnchored = async (id: string) => {
+    const beforeHeight = scroller.scrollHeight
+    const beforeTop = scroller.scrollTop
+    setPinned(false)
+    const loaded = await loadOlderConversation(id)
+    if (!loaded || state.activeConversation !== id) return
+    // Markdown 的 effect 与布局要到下一帧才全部落定。只等一个 microtask 时，
+    // ResizeObserver 可能在补偿之后又收到后续高度变化，把视口带走。
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    scroller.scrollTop = beforeTop + (scroller.scrollHeight - beforeHeight)
     followTop = scroller.scrollTop
   }
 
@@ -140,6 +211,14 @@ export function Transcript() {
         classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }}
         ref={inner}
       >
+        <Show when={state.activeConversation}>
+          {(id) => (
+            <ConversationHistoryBoundary
+              conversationId={id()}
+              onLoadOlder={() => loadOlderAnchored(id())}
+            />
+          )}
+        </Show>
         <TranscriptRows items={transcript()} />
 
         {/*

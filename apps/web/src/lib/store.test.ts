@@ -61,6 +61,7 @@ const {
   fileRevision,
   isRunning,
   ledgerRevision,
+  loadOlderConversation,
   openBrowserTab,
   openConversationTab,
   openView,
@@ -74,6 +75,7 @@ const {
   runClosed,
   resizePanel,
   saveServerConfig,
+  selectConversation,
   sendMessage,
   setPanelTabUrl,
   setSidePanel,
@@ -125,8 +127,9 @@ describe('激活项目复用服务端返回的会话列表', () => {
           ],
         }
       }
-      if (path.endsWith('/messages')) return { messages: [] }
-      if (path.endsWith('/runs')) return { runs: [] }
+      if (path.includes('/history')) {
+        return { messages: [], runs: [], steps: [], todos: [], nextCursor: null }
+      }
       throw new Error(`投影不可用：${path}`)
     }
 
@@ -890,12 +893,27 @@ describe('打开的文件跟着改动重取', () => {
 describe('重拉会话：账本里有的，界面上就得有', () => {
   const stub = (steps: unknown[], runs: unknown[]) => {
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
-      if (p.includes('/messages')) {
-        return { messages: [{ id: 'ms_1', role: 'user', content: '为什么动不了', createdAt: 1 }] }
+      if (p.includes('/history')) {
+        return {
+          messages: [
+            {
+              id: 'ms_1',
+              conversationId: 'cv_1',
+              role: 'user',
+              content: '为什么动不了',
+              attachments: [],
+              createdAt: 1,
+            },
+          ],
+          runs,
+          steps: steps.map((step) => ({
+            ...(step as Record<string, unknown>),
+            runId: (runs[0] as { id?: string } | undefined)?.id ?? 'rn_1',
+          })),
+          todos: [],
+          nextCursor: null,
+        }
       }
-      // 先判 `/steps`：run 的 steps 路径是 `/api/runs/<id>/steps`，两条都含 `/runs`。
-      if (p.includes('/steps')) return { steps }
-      if (p.includes('/runs')) return { runs }
       throw new Error('没有上下文面板')
     }
   }
@@ -1039,6 +1057,147 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(state.usage?.inputTokens).toBe(30_000)
     expect(state.usage?.cost).toBe(0.02)
   })
+
+  test('首屏和更早页各只发一个历史请求，前插后顺序不乱', async () => {
+    const id = 'cv_paged'
+    setState({ activeConversation: id, todos: [] })
+    freshView(id)
+    const calls: string[] = []
+    const apiBefore = client.api
+    ;(
+      client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string) => {
+      calls.push(path)
+      if (path.includes('/history')) {
+        const older = path.includes('before=ms_3')
+        const suffix = older ? '1' : '3'
+        return {
+          messages: [
+            {
+              id: `ms_${suffix}`,
+              conversationId: id,
+              role: 'user',
+              content: older ? '更早的问题' : '最新的问题',
+              attachments: [],
+              createdAt: Number(suffix),
+            },
+          ],
+          runs: [
+            {
+              id: `rn_${suffix}`,
+              userMessageId: `ms_${suffix}`,
+              createdAt: Number(suffix),
+              finishedAt: Number(suffix) + 1,
+              stopReason: 'completed',
+              status: 'done',
+              usage: null,
+              errorMessage: null,
+            },
+          ],
+          steps: [
+            {
+              id: `st_${suffix}`,
+              runId: `rn_${suffix}`,
+              seq: 1,
+              kind: 'text',
+              toolName: null,
+              content: older ? '更早的回答' : '最新的回答',
+              payload: null,
+              status: 'done',
+              createdAt: Number(suffix),
+              durationMs: null,
+            },
+          ],
+          todos: [{ id: 'todo-old', content: '跨页待办', status: 'pending' }],
+          nextCursor: older ? null : 'ms_3',
+        }
+      }
+      if (path.includes('/context')) return { context: null }
+      if (path.includes('/goal')) return { goal: null }
+      if (path.includes('/queue')) return { queue: [] }
+      throw new Error(`未预期请求：${path}`)
+    }
+
+    try {
+      await reloadActiveConversation()
+      expect(viewOf(id).history.nextCursor).toBe('ms_3')
+      expect(state.todos.map((todo) => todo.content)).toEqual(['跨页待办'])
+      expect(await loadOlderConversation(id)).toBe(true)
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+    }
+
+    expect(calls.filter((path) => path.includes('/history'))).toHaveLength(2)
+    expect(calls.some((path) => path.includes('/api/runs/'))).toBe(false)
+    expect(
+      transcript()
+        .filter((item) => item.kind === 'user')
+        .map((item) => item.text),
+    ).toEqual(['更早的问题', '最新的问题'])
+    expect(viewOf(id).history.nextCursor).toBeNull()
+  })
+
+  test('快速从 A 点到 B 会撤销 A，A 的迟到结果不能覆盖 B', async () => {
+    const apiBefore = client.api
+    let releaseStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      releaseStarted = resolve
+    })
+    let aAborted = false
+    ;(
+      client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string, init?: RequestInit) => {
+      if (path.includes('/cv_a/history')) {
+        releaseStarted()
+        return await new Promise((_, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            aAborted = true
+            reject(new DOMException('aborted', 'AbortError'))
+          })
+        })
+      }
+      if (path.includes('/cv_b/history')) {
+        return {
+          messages: [
+            {
+              id: 'ms_b',
+              conversationId: 'cv_b',
+              role: 'user',
+              content: '这是 B',
+              attachments: [],
+              createdAt: 2,
+            },
+          ],
+          runs: [],
+          steps: [],
+          todos: [],
+          nextCursor: null,
+        }
+      }
+      if (path.includes('/context')) return { context: null }
+      if (path.includes('/goal')) return { goal: null }
+      if (path.includes('/queue')) return { queue: [] }
+      throw new Error(`未预期请求：${path}`)
+    }
+
+    try {
+      const loadingA = selectConversation('cv_a')
+      await started
+      const loadingB = selectConversation('cv_b')
+      await Promise.all([loadingA, loadingB])
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+    }
+
+    expect(aAborted).toBe(true)
+    expect(state.activeConversation).toBe('cv_b')
+    expect(transcript().map((item) => item.text)).toEqual(['这是 B'])
+    expect(viewOf('cv_b').history.error).toBeNull()
+  })
 })
 
 /**
@@ -1087,7 +1246,9 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     setState({ activeConversation: 'cv_1', goal: null })
     freshView('cv_1')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
-      if (p.includes('/messages')) return { messages: [] }
+      if (p.includes('/history')) {
+        return { messages: [], runs: [], steps: [], todos: [], nextCursor: null }
+      }
       if (p.includes('/goal')) {
         return {
           goal: {
@@ -1098,8 +1259,6 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
           },
         }
       }
-      if (p.includes('/steps')) return { steps: [] }
-      if (p.includes('/runs')) return { runs: [] }
       throw new Error('没有上下文面板')
     }
     await reloadActiveConversation()
