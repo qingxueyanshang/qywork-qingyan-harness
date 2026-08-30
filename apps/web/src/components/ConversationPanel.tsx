@@ -10,21 +10,38 @@
  */
 
 import { createResource, Show } from 'solid-js'
-import { loadConversationView } from '../lib/store/connection.ts'
-import { tabConversationId, viewOf } from '../lib/store/index.ts'
-import { TranscriptRows } from './Transcript.tsx'
+import {
+  loadConversationView,
+  loadOlderConversation,
+  tabConversationId,
+  viewOf,
+} from '../lib/store/index.ts'
+import { ConversationHistoryBoundary, TranscriptRows } from './Transcript.tsx'
 
 export default function ConversationPanel(props: { id: string }) {
+  let scroller!: HTMLDivElement
   const cid = () => tabConversationId(props.id)
   // 只用来接住这一拉的失败：正文本身读的是那条会话的表，由事件实时更新。
   const [loaded] = createResource(cid, (id) => loadConversationView(id))
+
+  const loadOlderAnchored = async () => {
+    const id = cid()
+    const beforeHeight = scroller.scrollHeight
+    const beforeTop = scroller.scrollTop
+    const added = await loadOlderConversation(id)
+    if (!added || cid() !== id) return
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    scroller.scrollTop = beforeTop + (scroller.scrollHeight - beforeHeight)
+  }
+
   return (
-    <div class="child-cv">
+    <div class="child-cv" ref={scroller}>
       <Show when={loaded.error}>
         <div class="error-card" role="alert">
           {String(loaded.error)}
         </div>
       </Show>
+      <ConversationHistoryBoundary conversationId={cid()} onLoadOlder={loadOlderAnchored} />
       {/* 这一列还在不在长，看这条子会话自己那一轮起没起——不是看当前会话在不在跑。 */}
       <TranscriptRows
         items={viewOf(cid()).transcript}

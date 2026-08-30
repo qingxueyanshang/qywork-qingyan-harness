@@ -48,7 +48,14 @@ async function afterPreviousRun() {
   const store = await import('../lib/store/index.ts')
   store.setState({
     activeConversation: CV,
-    views: { [CV]: { transcript: [], runStartedAt: null, error: null } },
+    views: {
+      [CV]: {
+        transcript: [],
+        history: { loading: null, nextCursor: null, error: null },
+        runStartedAt: null,
+        error: null,
+      },
+    },
     busyConversations: [],
     lastRunId: 'run_prev',
     todos: [

@@ -57,6 +57,51 @@
   padding-bottom: calc(var(--run-status-h) + var(--composer-stack-gap) * 2);
 }
 
+/* 历史分页的唯一入口。放在流顶端，补页后仍留在最上面；不悬浮、不遮正文。 */
+.history-boundary {
+  display: flex;
+  justify-content: center;
+  min-height: 24px;
+  margin-bottom: 2px;
+}
+.history-note,
+.history-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.history-button {
+  padding: 3px var(--s-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.history-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.history-button:disabled {
+  cursor: default;
+}
+.history-error {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  max-width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+.history-error > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .row {
   display: flex;
 }

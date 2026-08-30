@@ -61,6 +61,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       busyConversations: [],
       views: {
         [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
           transcript: [
@@ -113,6 +114,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       busyConversations: [],
       views: {
         [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
           transcript: [
@@ -163,6 +165,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       lastRunId: 'run_now',
       views: {
         [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
           runStartedAt: Date.now(),
           error: null,
           transcript: [
@@ -219,6 +222,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       lastRunId: 'run_failed',
       views: {
         [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
           transcript: [
@@ -260,6 +264,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       lastRunId: 'run_done',
       views: {
         [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
           transcript: [
@@ -288,6 +293,45 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
 
     expect(host.querySelector('.run-reason')).toBeNull()
+
+    dispose()
+  })
+
+  test('历史加载、失败重试和更早页入口都有可见反馈', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: 'initial', nextCursor: null, error: null },
+          runStartedAt: null,
+          error: null,
+          transcript: [],
+        },
+      },
+    })
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    expect(host.textContent).toContain('正在加载会话')
+    store.setState('views', CV, 'history', {
+      loading: null,
+      nextCursor: null,
+      error: { phase: 'initial', message: '网络断开' },
+    })
+    expect(host.textContent).toContain('历史记录加载失败：网络断开')
+    expect(host.querySelector('.history-error button')?.textContent).toContain('重试')
+
+    store.setState('views', CV, 'history', {
+      loading: null,
+      nextCursor: 'ms_old',
+      error: null,
+    })
+    expect(host.querySelector('.history-button')?.textContent).toContain('加载更早记录')
 
     dispose()
   })

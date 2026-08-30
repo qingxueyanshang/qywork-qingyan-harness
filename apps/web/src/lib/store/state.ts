@@ -136,6 +136,15 @@ export interface WorkflowNodeState {
 export interface ConversationView {
   transcript: TranscriptItem[]
   /**
+   * 历史 REST 的纯界面态。正文真源仍是 messages/runs/steps，这里只回答：
+   * 请求在不在飞、还能不能往前翻、失败后该重试哪一页。
+   */
+  history: {
+    loading: 'initial' | 'older' | null
+    nextCursor: string | null
+    error: { phase: 'initial' | 'older'; message: string } | null
+  }
+  /**
    * 这一轮什么时候开始的（本地时钟，毫秒）。`null` = 没在跑。
    *
    * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是用户等待时长，
@@ -155,6 +164,7 @@ export interface ConversationView {
 /** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
+  history: Object.freeze({ loading: null, nextCursor: null, error: null }),
   runStartedAt: null,
   error: null,
 })
@@ -301,7 +311,12 @@ export function transcript(): TranscriptItem[] {
  */
 export function openView(id: string): void {
   if (state.views[id]) return
-  setState('views', id, { transcript: [], runStartedAt: null, error: null })
+  setState('views', id, {
+    transcript: [],
+    history: { loading: null, nextCursor: null, error: null },
+    runStartedAt: null,
+    error: null,
+  })
 }
 
 /**

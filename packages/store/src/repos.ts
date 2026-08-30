@@ -10,6 +10,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   Conversation,
+  ConversationHistoryPageResponse,
   ConversationId,
   Message,
   MessageId,
@@ -47,6 +48,7 @@ import type {
   StepRow,
   WorkspaceRow,
 } from './schema.ts'
+import { latestTodos } from './todos.ts'
 
 const EMPTY_USAGE: RunUsage = {
   inputTokens: 0,
@@ -527,6 +529,103 @@ export function listMessages(
         )
         .all(conversationId)
   return rows.map(rowToMessage)
+}
+
+/**
+ * 给界面读一页**完整用户轮次**。
+ *
+ * 旧读法是 messages + runs + 每个 run 一次 steps：轮数越多，请求数线性增长，
+ * 浏览器还要等所有请求、解析所有 JSON、一次挂完整棵 DOM。这里把边界与批量读取
+ * 收回账本层：一页只选 `limit` 条 user message，再一次取齐它们之间的消息、run
+ * 与 steps。模型重建历史仍走无分页的 `listMessages` / `buildHistory`，不受影响。
+ */
+export function listConversationHistoryPage(
+  store: Store,
+  conversationId: ConversationId,
+  input: { before?: MessageId | null; limit: number },
+): ConversationHistoryPageResponse {
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)))
+  const before = input.before ?? null
+  const userRows = before
+    ? store.db
+        .query<Pick<MessageRow, 'id'>, [string, string, number]>(
+          `SELECT id FROM messages
+           WHERE conversation_id = ? AND role = 'user' AND id < ?
+           ORDER BY id DESC LIMIT ?`,
+        )
+        .all(conversationId, before, limit + 1)
+    : store.db
+        .query<Pick<MessageRow, 'id'>, [string, number]>(
+          `SELECT id FROM messages
+           WHERE conversation_id = ? AND role = 'user'
+           ORDER BY id DESC LIMIT ?`,
+        )
+        .all(conversationId, limit + 1)
+
+  const hasMore = userRows.length > limit
+  const selected = userRows.slice(0, limit)
+  const oldest = selected.at(-1)?.id ?? null
+  if (!oldest) {
+    return {
+      messages: [],
+      runs: [],
+      steps: [],
+      todos: latestTodos(store, conversationId) ?? [],
+      nextCursor: null,
+    }
+  }
+
+  // 取所选用户轮次之间的整段消息；排他上界保证相邻页不重叠。
+  const messages = (
+    before
+      ? store.db
+          .query<MessageRow, [string, string, string]>(
+            `SELECT * FROM messages
+           WHERE conversation_id = ? AND id >= ? AND id < ?
+           ORDER BY id ASC`,
+          )
+          .all(conversationId, oldest, before)
+      : store.db
+          .query<MessageRow, [string, string]>(
+            `SELECT * FROM messages
+           WHERE conversation_id = ? AND id >= ?
+           ORDER BY id ASC`,
+          )
+          .all(conversationId, oldest)
+  ).map(rowToMessage)
+
+  const userIds = selected.map((row) => row.id)
+  const marks = userIds.map(() => '?').join(',')
+  const runs = store.db
+    .query<RunRow, string[]>(
+      `SELECT * FROM runs
+       WHERE conversation_id = ? AND user_message_id IN (${marks})
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(conversationId, ...userIds)
+    .map(rowToRun)
+
+  const runIds = runs.map((run) => run.id)
+  const steps = runIds.length
+    ? store.db
+        .query<StepRow, string[]>(
+          `SELECT s.* FROM steps s
+           JOIN runs r ON r.id = s.run_id
+           WHERE s.run_id IN (${runIds.map(() => '?').join(',')})
+           ORDER BY r.created_at ASC, r.id ASC, s.seq ASC`,
+        )
+        .all(...runIds)
+        .map(rowToStep)
+    : []
+
+  return {
+    messages,
+    runs,
+    steps,
+    // 与 tools/runtime 读待办复用同一条账本投影；不是分页结果的一部分。
+    todos: latestTodos(store, conversationId) ?? [],
+    nextCursor: hasMore ? (oldest as MessageId) : null,
+  }
 }
 
 // ─────────────────────────────── Run ───────────────────────────────
