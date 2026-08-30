@@ -8,7 +8,7 @@ import {
   pickWorkspace,
   uninstallPlugin,
 } from '../lib/store/index.ts'
-import { IconX } from './Icons.tsx'
+import { IconTrash } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './settings/Page.tsx'
 
@@ -172,7 +172,7 @@ export function PluginsPanel() {
                               )
                             }
                           >
-                            <IconX size={13} />
+                            <IconTrash size={13} />
                           </button>
                         }
                       >

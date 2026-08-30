@@ -11,7 +11,7 @@ import {
   type RedactedProvider,
 } from '../../lib/store/index.ts'
 import { ConfirmDialog } from '../ConfirmDialog.tsx'
-import { IconX } from '../Icons.tsx'
+import { IconTrash } from '../Icons.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -289,7 +289,7 @@ export function ModelSettings() {
                         aria-label={`删除接口 ${name()}`}
                         onClick={() => setDoomed(name())}
                       >
-                        <IconX size={13} />
+                        <IconTrash size={13} />
                       </button>
                     </div>
 
@@ -388,7 +388,7 @@ export function ModelSettings() {
                                   aria-label={`删除模型 ${id}`}
                                   onClick={() => removeModel(name(), id)}
                                 >
-                                  <IconX size={12} />
+                                  <IconTrash size={12} />
                                 </button>
                               </div>
                             </div>

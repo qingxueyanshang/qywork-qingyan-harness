@@ -7,7 +7,7 @@ import {
   loadTeamRaw,
   saveTeamRaw,
 } from '../../lib/store/index.ts'
-import { IconPencil, IconX } from '../Icons.tsx'
+import { IconPencil, IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 
@@ -223,7 +223,7 @@ export default function AgentsSettings() {
                                 })
                               }
                             >
-                              <IconX size={13} />
+                              <IconTrash size={13} />
                             </button>
                           </>
                         }
