@@ -55,12 +55,7 @@ import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import { drainUntil, EventQueue } from './event-queue.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
-import {
-  actionFingerprint,
-  cycleFingerprint,
-  type ProgressEvidence,
-  repeatsNoProgress,
-} from './progress.ts'
+import { cycleFingerprint, type ProgressEvidence, repeatsNoProgress } from './progress.ts'
 import {
   isParallelSafe,
   type PermissionEffect,
@@ -1541,12 +1536,13 @@ export class AgentLoop {
            */
           const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
           if (unfinished.length) {
-            const snapshot = JSON.stringify(
-              unfinished.map((todo) => [todo.id, todo.content, todo.status]),
-            )
+            const snapshot = unfinished.map((todo) => [todo.id, todo.content, todo.status])
             progress.push({
-              action: 'assistant_end_turn',
-              cycle: `assistant_end_turn|${snapshot}`,
+              cycle: cycleFingerprint(
+                'assistant_end_turn',
+                {},
+                { status: 'unfinished', data: snapshot },
+              ),
               noProgress: true,
             })
             if (repeatsNoProgress(progress)) {
@@ -1576,19 +1572,30 @@ export class AgentLoop {
          * 对应 id 的 tool 结果，少一条下一轮直接 400。所以照常推一条失败结果，
          * 它自己会改用真实存在的工具。
          */
-        const bogus = calls.filter((c) => !registry.has(c.name))
-        for (const c of bogus) {
+        // 本批（一次 provider 决策）的逐调用证据，波次全部结束后聚合成一条。
+        const batchEvidence: {
+          callIndex: number
+          cycle: string
+          noProgress: boolean
+        }[] = []
+
+        for (const [callIndex, c] of calls.entries()) {
+          if (registry.has(c.name)) continue
+          const outcome: ToolOutcome = {
+            status: 'failure',
+            executed: false,
+            message: `没有这个工具：${c.name}。只能调用工具表里列出的那些。`,
+          }
           transcript.push({
             role: 'tool',
             toolCallId: c.id,
-            content: JSON.stringify({
-              call_id: c.id,
-              tool: c.name,
-              status: 'failure',
-              executed: false,
-              summary: `没有这个工具：${c.name}。只能调用工具表里列出的那些。`,
-            }),
+            content: toolOutcomeContent(c, outcome),
             _group: 'executionRecords',
+          })
+          batchEvidence.push({
+            callIndex,
+            cycle: cycleFingerprint(c.name, c.arguments, outcome),
+            noProgress: true,
           })
         }
 
@@ -1596,14 +1603,6 @@ export class AgentLoop {
           calls.filter((c) => registry.has(c.name)),
           this.deps.registry,
         )
-
-        // 本批（一次 provider 决策）的逐调用证据，波次全部结束后聚合成一条。
-        const batchEvidence: {
-          callIndex: number
-          action: string
-          cycle: string
-          noProgress: boolean
-        }[] = []
 
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
           const wave = waves[waveIndex]!
@@ -1701,34 +1700,15 @@ export class AgentLoop {
 
             // 工具结果必须原样回传给模型——这是不可改写的事实，
             // 装配层不得摘要、截断或改写措辞。
-            const landed = (s.outcome.resources ?? []).map((r) => r.resourceId)
             transcript.push({
               role: 'tool',
               toolCallId: s.call.id,
-              content: toolResultContent(
-                JSON.stringify({
-                  call_id: s.call.id,
-                  tool: s.call.name,
-                  status: s.outcome.status,
-                  executed: s.outcome.executed,
-                  summary: s.outcome.message,
-                  // 落盘定位符**要单独成键**，不能只留在正文里：收纳把正文换成信封时
-                  // 正文里那行 `[完整输出已保存：rs_xxx]` 一起没了，`read_resource`
-                  // 就再也无从调起。
-                  ...(landed.length ? { resources: landed } : {}),
-                  // 图像字节不进信封，只进图像块——见 `envelopeResult`。
-                  ...(envelopeResult(s.outcome.data)
-                    ? { result: envelopeResult(s.outcome.data) }
-                    : {}),
-                }),
-                s.outcome.data,
-              ),
+              content: toolOutcomeContent(s.call, s.outcome),
               _group: 'executionRecords',
             })
 
             batchEvidence.push({
               callIndex: s.callIndex,
-              action: actionFingerprint(s.call.name, s.call.arguments),
               cycle: cycleFingerprint(s.call.name, s.call.arguments, s.outcome),
               noProgress: provablyNoEffect(
                 resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments),
@@ -1747,8 +1727,14 @@ export class AgentLoop {
         if (batchEvidence.length) {
           const ordered = [...batchEvidence].sort((a, b) => a.callIndex - b.callIndex)
           progress.push({
-            action: ordered.map((e) => e.action).join('+'),
-            cycle: ordered.map((e) => e.cycle).join('+'),
+            cycle: cycleFingerprint(
+              'provider_batch',
+              {},
+              {
+                status: 'results',
+                data: ordered.map((e) => e.cycle),
+              },
+            ),
             noProgress: ordered.every((e) => e.noProgress),
           })
         }
@@ -1756,7 +1742,7 @@ export class AgentLoop {
         // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
         stampUnit(unitStart)
 
-        // 原地打转：同样的调用、同样的结果、没有副作用，连着两个周期。
+        // 原地打转：同样的调用、同样的结果、没有副作用，连着三个周期。
         // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
         // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
         // provider 直接 400。代价是晚一轮才停，仍然远好过烧满 maxSteps。
@@ -2109,6 +2095,26 @@ function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBreakdown 
     out[group] += n
   }
   return out
+}
+
+/** 活跃 run 中工具执行结果到模型可见信封的构造点。 */
+function toolOutcomeContent(call: WireToolCall, outcome: ToolOutcome): string | ContentBlock[] {
+  const resources = (outcome.resources ?? []).map((r) => r.resourceId)
+  const result = envelopeResult(outcome.data)
+  return toolResultContent(
+    JSON.stringify({
+      call_id: call.id,
+      tool: call.name,
+      status: outcome.status,
+      executed: outcome.executed,
+      summary: outcome.message,
+      // 定位符单独成键，收纳正文后仍能调用 `read_resource`。
+      ...(resources.length ? { resources } : {}),
+      // 图像字节只进图像块，其他结果留在信封。
+      ...(result ? { result } : {}),
+    }),
+    outcome.data,
+  )
 }
 
 /**

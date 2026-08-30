@@ -121,6 +121,28 @@ describe('工具结果带图片', () => {
     ])
   })
 
+  test('收纳后的图片省略标记逐字进入 tool_result', async () => {
+    const omitted = '{"call_id":"c_img","status":"success","images_omitted":true}'
+    const body = await send([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c_img', name: 'read_file', arguments: { path: 'a.png' } }],
+      },
+      { role: 'tool', toolCallId: 'c_img', content: omitted },
+    ])
+    const messages = body.messages as { role: string; content: unknown }[]
+    const toolTurn = messages.find(
+      (m) =>
+        Array.isArray(m.content) &&
+        (m.content as { type?: string }[]).some((block) => block.type === 'tool_result'),
+    )
+    const result = (toolTurn!.content as Record<string, unknown>[]).find(
+      (block) => block.type === 'tool_result',
+    )
+    expect(result?.content).toBe(omitted)
+  })
+
   test('同一轮的多个工具结果合并进一条 user 消息', async () => {
     const body = await send([
       { role: 'user', content: '看' },

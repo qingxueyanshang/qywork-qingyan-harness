@@ -86,6 +86,16 @@ describe('input 是条目序列，不是消息序列', () => {
     })
   })
 
+  test('收纳后的图片省略标记逐字进入 function_call_output', () => {
+    const omitted = '{"call_id":"call_1","status":"success","images_omitted":true}'
+    const items = buildInput([{ role: 'tool', toolCallId: 'call_1', content: omitted }], 'none')
+    expect(items[0]).toEqual({
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: omitted,
+    })
+  })
+
   test('工具结果里的图片走 function_call_output 的内容块，call_id 保留', () => {
     const items = buildInput(
       [

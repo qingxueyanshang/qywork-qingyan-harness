@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
 import {
+  buildAdapter,
   classifyProviderError,
   DEFAULT_DENSITY,
   estimateRequest,
@@ -1274,6 +1275,51 @@ describe('原地打转', () => {
     expect(stopReason).toBe('completed')
     expect(n).toBe(4)
   })
+
+  test('模型可见的 executed 变化会打断周期', async () => {
+    const registry = new ToolRegistry()
+    const states = [false, false, true]
+    let n = 0
+    registry.register({
+      name: 'read_state',
+      description: '返回执行状态。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '状态',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      fn: async () => ({
+        status: 'failure',
+        executed: states[n++]!,
+        message: '读取失败',
+      }),
+    })
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('read_state')],
+        [call('read_state')],
+        [call('read_state')],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_executed_changes' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+  })
 })
 
 describe('正常响应结束不冒充任务完成', () => {
@@ -1751,6 +1797,218 @@ describe('注册表是工具的唯一权威', () => {
     // 这一轮照常收尾，不因为一次编造的名字就报错中断。
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('连续三轮相同的编造工具会进入无进展终态', async () => {
+    const registry = new ToolRegistry()
+    registry.register(realSpec('read_thing'))
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('no_such_tool', { path: 'a' })],
+        [call('no_such_tool', { path: 'a' })],
+        [call('no_such_tool', { path: 'a' })],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    const started: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_bogus_repeat' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'tool.started') started.push(ev)
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('no_progress')
+    expect(started).toHaveLength(0)
+  })
+
+  test('编造工具的参数变化会打断周期', async () => {
+    const registry = new ToolRegistry()
+    registry.register(realSpec('read_thing'))
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('no_such_tool', { path: 'a' })],
+        [call('no_such_tool', { path: 'a' })],
+        [call('no_such_tool', { path: 'b' })],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_bogus_changes' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+  })
+
+  test('真实读取与编造工具混合时按完整结果判断周期', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      ...realSpec('read_thing'),
+      permissionEffect: 'read',
+    })
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('read_thing'), call('no_such_tool', { path: 'a' })],
+        [call('read_thing'), call('no_such_tool', { path: 'a' })],
+        [call('read_thing'), call('no_such_tool', { path: 'b' })],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_mixed_bogus_changes' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+  })
+})
+
+describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
+  test('工具结果的信封、图片字节、MIME 与 call id 进入下一次请求体', async () => {
+    const bodies: Record<string, unknown>[] = []
+    let requestIndex = 0
+    const endpoint = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        bodies.push((await req.json()) as Record<string, unknown>)
+        requestIndex++
+        const events =
+          requestIndex === 1
+            ? [
+                {
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: 'call_image',
+                            function: {
+                              name: 'read_image',
+                              arguments: JSON.stringify({ path: 'probe.png' }),
+                            },
+                          },
+                        ],
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                },
+                { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+              ]
+            : [
+                { choices: [{ delta: { content: '完成' }, finish_reason: null }] },
+                { choices: [{ delta: {}, finish_reason: 'stop' }] },
+              ]
+        const stream = [
+          ...events.map((event) => `data: ${JSON.stringify(event)}`),
+          'data: [DONE]',
+          '',
+        ].join('\n\n')
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+      },
+    })
+
+    try {
+      const adapter = buildAdapter({
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-test',
+        model: 'deepseek-v4-flash-vision-exp',
+        baseUrl: `http://127.0.0.1:${endpoint.port}/v1`,
+      })
+      const registry = new ToolRegistry()
+      registry.register({
+        name: 'read_image',
+        description: '读取图片。',
+        parameters: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
+        actionKind: 'read',
+        objectLabel: '图片',
+        category: 'files',
+        facet: '测试',
+        summary: '测试夹具',
+        permissionEffect: 'read',
+        fn: async () => ({
+          status: 'success',
+          executed: true,
+          message: '读取 probe.png（图片）',
+          data: { images: [{ data: 'QUJD', mime: 'image/png' }] },
+        }),
+      })
+      const loop = new AgentLoop({
+        adapter,
+        registry,
+        systemPrompt: 'sys',
+        persist: noopPersistence(),
+        makeToolContext: (runId) => baseCtx(runId),
+      })
+
+      for await (const _ of loop.run({
+        runId: 'rn_image_to_wire' as never,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        // 读完整轮即可，请求体由本机端点记录。
+      }
+
+      expect(bodies).toHaveLength(2)
+      const messages = bodies[1]!.messages as {
+        role?: string
+        tool_call_id?: string
+        content?: unknown
+      }[]
+      const tool = messages.find((message) => message.role === 'tool')
+      expect(tool?.tool_call_id).toBe('call_image')
+      const content = tool?.content as {
+        type?: string
+        text?: string
+        image_url?: { url?: string }
+      }[]
+      expect(content[1]).toEqual({
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,QUJD' },
+      })
+      expect(JSON.parse(content[0]!.text ?? '')).toMatchObject({
+        call_id: 'call_image',
+        tool: 'read_image',
+        status: 'success',
+        executed: true,
+        summary: '读取 probe.png（图片）',
+      })
+    } finally {
+      endpoint.stop(true)
+    }
   })
 })
 
