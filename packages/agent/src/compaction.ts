@@ -107,17 +107,23 @@ export function condenseMessage(m: WireMessage): WireMessage {
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
-   * 块数组：**丢掉图像块，只把文本信封收起来**。
+   * 块数组：**丢掉图像块，只把文本信封收起来，并在信封里标 `images_omitted`**。
    *
    * 图片正是最该被收掉的那一类——一张几 MB 的截图跨轮重放一次就是一次满额，
-   * 而收纳的整个用途就是把大段正文换成一句话。丢掉之后模型仍拿得到路径
-   * （信封里的 `result.imagePath`），要看重新 `read_file` 一次即可。
+   * 而收纳的整个用途就是把大段正文换成一句话。标记不可省：收纳后的信封与
+   * 新鲜的成功信封同形，缺这一位模型会把图当成仍然可见（`materialize` 的约定
+   * 同理：图不在场必须让模型看得见这件事）。要再看按原路径重新 `read_file`
+   * ——路径在模型自己的调用参数与 `summary` 里。
    *
    * 写成 `return content` 原样放行的话，带图的工具结果**永远收不掉**。
    */
   if (Array.isArray(content)) {
     const text = content.find((b) => b.type === 'text')
-    return text ? condenseToolResult(text.text) : content
+    if (!text) return content
+    const env = parseEnvelope(text.text)
+    if (!env) return text.text
+    const dropped = content.some((b) => b.type === 'image')
+    return condenseToolResult(JSON.stringify(dropped ? { ...env, images_omitted: true } : env))
   }
   const env = parseEnvelope(content)
   if (!env) return content
@@ -128,6 +134,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     executed: env.executed,
     summary: env.summary,
     ...(env.resources ? { resources: env.resources } : {}),
+    ...(env.images_omitted ? { images_omitted: true } : {}),
     // 收纳过的再收纳一次必须逐字相同：投影每次构造请求都跑，产物一抖动缓存就全失配。
     ...(env.result !== undefined || env.result_omitted ? { result_omitted: true } : {}),
   })
