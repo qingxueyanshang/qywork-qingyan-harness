@@ -86,6 +86,29 @@ describe('input 是条目序列，不是消息序列', () => {
     })
   })
 
+  test('工具结果里的图片走 function_call_output 的内容块，call_id 保留', () => {
+    const items = buildInput(
+      [
+        {
+          role: 'tool',
+          toolCallId: 'call_img',
+          content: [
+            { type: 'text', text: '{"status":"success"}' },
+            { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'QUJD' } },
+          ],
+        },
+      ],
+      'none',
+    )
+    expect(items).toHaveLength(1)
+    expect(items[0]!.type).toBe('function_call_output')
+    expect(items[0]!.call_id).toBe('call_img')
+    expect(items[0]!.output).toEqual([
+      { type: 'input_text', text: '{"status":"success"}' },
+      { type: 'input_image', image_url: 'data:image/png;base64,QUJD' },
+    ])
+  })
+
   test('多模态：图片走 input_image 的 data URL', () => {
     const msg: WireMessage = {
       role: 'user',

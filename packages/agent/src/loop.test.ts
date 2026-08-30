@@ -965,7 +965,8 @@ describe('原地打转', () => {
       category: 'session',
       facet: '测试',
       summary: '测试夹具',
-      permissionEffect: 'internal_control',
+      // 必须声明为纯 read：副作用未知的调用不参与空转判定。
+      permissionEffect: 'read',
       fn: async () => {
         executed++
         return { status: 'success' as const, message: '还是这些' }
@@ -1008,6 +1009,159 @@ describe('原地打转', () => {
     expect(stopReason).toBe('no_progress')
     // 停在第三轮，不是第十轮——这条数字就是这个改动的全部价值。
     expect(executed).toBe(3)
+  })
+
+  /**
+   * 一次响应内的三次相同调用只算一次决策周期：模型尚未看到任何结果，
+   * 不构成「看过结果仍重复」。证据按 provider 决策计数，不按工具调用计数，
+   * 否则单次响应即可满足三次阈值并提前暂停。
+   */
+  test('同一响应内三次相同调用不判打转，下一次请求照发', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'stuck',
+      description: '永远返回同一个结果，用于验证空转判定。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      fn: async () => {
+        executed++
+        return { status: 'success' as const, message: '还是这些' }
+      },
+    })
+
+    const inner = fakeAdapter([[call('stuck'), call('stuck'), call('stuck')], null])
+    const requests: ChatRequest[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests.push(req)
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_same_batch' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(executed).toBe(3)
+    expect(requests).toHaveLength(2)
+    expect(stopReason).toBe('completed')
+  })
+
+  /**
+   * 已执行命令的失败不能证明无副作用——外部状态可能已被修改。
+   * 判定只取确凿事实：非 read 声明且 executed:true 的调用视为副作用未知，
+   * 不参与空转计数。
+   */
+  test('已执行命令的相同失败不判打转，跑满脚本', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'ran_cmd',
+      description: '固定返回非零退出码，模拟已执行命令。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'code',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'execute',
+      fn: async () => {
+        executed++
+        return { status: 'failure' as const, message: '命令退出码 1', data: { exitCode: 1 } }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('ran_cmd')],
+        [call('ran_cmd')],
+        [call('ran_cmd')],
+        [call('ran_cmd')],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_ran_cmd' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+    expect(executed).toBe(4)
+  })
+
+  /** 内部控制工具执行后状态可能已变（如待办账本），字段缺席不算确凿无副作用。 */
+  test('内部控制工具的相同结果不判打转', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'note_state',
+      description: '固定返回同一确认文本，模拟内部记账。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '状态',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => {
+        executed++
+        return { status: 'success' as const, message: '已记录' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('note_state')],
+        [call('note_state')],
+        [call('note_state')],
+        [call('note_state')],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_note_state' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+    expect(executed).toBe(4)
   })
 
   test('失败正文逐字进入下一轮请求，第三次相同失败后才暂停', async () => {

@@ -12,7 +12,7 @@
  * - **动作指纹** = 工具名 + 参数，或响应结束动作。同样的动作。
  * - **周期指纹** = 工具动作 + 状态 + 结果正文，或响应结束动作 + 未完成待办快照。
  *
- * 只有周期指纹逐项相同、而且这些周期**都没有产生任何副作用**（没有文件变更）
+ * 只有周期指纹逐项相同、而且这些周期**都确凿没有产生副作用**
  * 时才算一个空转周期。这三条缺一不可：
  *
  * - 只看动作不看结果：轮询类调用（等构建、等文件出现）会被误判——
@@ -40,14 +40,15 @@
 export interface ProgressEvidence {
   /** 动作名 + 参数或待办快照。 */
   action: string
-  /** 足以判断这个周期是否变化的完整指纹。 */
+  /** 足以判断这个周期是否变化的指纹（定长摘要）。 */
   cycle: string
   /**
    * 这次调用是否**确凿地**没有产生副作用。
    *
-   * 工具调用只有执行器明说「没有文件变更」才是 true；正常 end_turn 本身没有副作用，
-   * 由调用方把未完成待办快照写进 `cycle`。含糊的失败留 false，让它继续可重试，
-   * 而不是被算进空转。
+   * 工具证据只有明确事实才置 true：调用没有进入执行器（`executed: false`），
+   * 或工具在注册期声明为纯 `read` 且没有报告文件变更。正常 end_turn 本身没有
+   * 副作用，由调用方把未完成待办快照写进 `cycle`。含糊的一律留 false，
+   * 让它继续可重试，而不是被算进空转。
    */
   noProgress: boolean
 }
@@ -61,8 +62,17 @@ function stable(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stable(rec[k])}`).join(',')}}`
 }
 
+/**
+ * 指纹一律是定长摘要，不保留原串：参数可能含整份文件内容，结果可能含图片
+ * base64，原串会在证据数组里常驻整个 run。判等语义与稳定序列化一致；
+ * 非加密哈希，不承担安全语义。
+ */
+function digest(payload: string): string {
+  return Bun.hash(payload).toString(36)
+}
+
 export function actionFingerprint(toolName: string, args: Record<string, unknown>): string {
-  return `${toolName}|${stable(args)}`
+  return digest(`${toolName}|${stable(args)}`)
 }
 
 export function cycleFingerprint(
@@ -70,13 +80,15 @@ export function cycleFingerprint(
   args: Record<string, unknown>,
   outcome: { status: string; message?: string; data?: unknown; errorKind?: string },
 ): string {
-  return [
-    actionFingerprint(toolName, args),
-    outcome.status,
-    outcome.errorKind ?? '',
-    outcome.message ?? '',
-    stable(outcome.data ?? null),
-  ].join('|')
+  return digest(
+    [
+      `${toolName}|${stable(args)}`,
+      outcome.status,
+      outcome.errorKind ?? '',
+      outcome.message ?? '',
+      stable(outcome.data ?? null),
+    ].join('|'),
+  )
 }
 
 /** 宽度上限。见文件头：再宽的重复不像循环，误判代价更大。 */

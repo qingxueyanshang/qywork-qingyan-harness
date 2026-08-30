@@ -46,6 +46,20 @@ describe('指纹', () => {
     const y = cycleFingerprint('t', { o: { a: 2, b: 1 } }, { status: 'success' })
     expect(x).toBe(y)
   })
+
+  /** 指纹是定长摘要：图片结果的 base64 不得原样进入证据数组。 */
+  test('大结果不进指纹原文，相同图片相等、不同图片不等', () => {
+    const big = 'A'.repeat(100_000)
+    const of = (bytes: string) =>
+      cycleFingerprint(
+        'read_file',
+        { path: 'a.png' },
+        { status: 'success', data: { images: [{ data: bytes, mime: 'image/png' }] } },
+      )
+    expect(of(big).length).toBeLessThan(64)
+    expect(of(big)).toBe(of(big))
+    expect(of(big)).not.toBe(of(`${big}B`))
+  })
 })
 
 describe('该判成打转的', () => {
