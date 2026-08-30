@@ -1185,6 +1185,28 @@ export function markStepExecuting(store: Store, id: StepId): void {
   store.db.query('UPDATE steps SET execution_started_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
+/**
+ * 子会话一创建就把入口写回正在执行的工具 step。
+ *
+ * 不能等 `settleToolStep`：用户可能在子 agent 运行期间切走父会话，切回来会从账本
+ * 重建卡片；那时工具尚无 outcome，而运行期的 `team.member` 事件已经错过，节点会永久
+ * 变成不可点击。这里只补一个 JSON 字段，保留原有 args / action；正常终态随后仍由
+ * `settleToolStep` 整体写入，进程中断则由 `settleRunningSteps` 原地补 outcome。
+ */
+export function setStepChildConversation(
+  store: Store,
+  id: StepId,
+  conversationId: ConversationId,
+): void {
+  store.db
+    .query(
+      `UPDATE steps
+       SET payload = json_set(coalesce(payload, '{}'), '$.childConversationId', ?)
+       WHERE id = ? AND kind = 'tool_action' AND status = 'running'`,
+    )
+    .run(conversationId, id)
+}
+
 /** 一次调用一行，原地从 running 更新到终态；不产生第二行。 */
 export function settleToolStep(
   store: Store,

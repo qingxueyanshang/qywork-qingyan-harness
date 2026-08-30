@@ -647,7 +647,16 @@ export interface Step {
  * 早期版本没存，刷新后所有历史工具卡都显示成「读取」，包括写入和执行命令。
  */
 export type StepPayload =
-  | { kind: 'tool_call'; args: Record<string, unknown>; action?: ActionDescriptor }
+  | {
+      kind: 'tool_call'
+      args: Record<string, unknown>
+      action?: ActionDescriptor
+      /**
+       * 内置子 agent 的会话入口。子会话一创建就写入，不等工具跑完：用户切走父会话
+       * 再切回来时，运行中的 step 还没有 outcome，回放仍要能点开那条子会话。
+       */
+      childConversationId?: ConversationId
+    }
   | {
       kind: 'tool_result'
       /**
@@ -664,6 +673,11 @@ export type StepPayload =
       args?: Record<string, unknown>
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
+      /**
+       * 崩溃恢复会在原 payload 上把 tool_call 改成 tool_result，因此早先写入的入口
+       * 仍可能留在这里。正常终态同时会在 outcome.data.conversationId 里带一份。
+       */
+      childConversationId?: ConversationId
     }
   | {
       kind: 'compaction'

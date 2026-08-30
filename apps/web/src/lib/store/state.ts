@@ -91,6 +91,11 @@ export interface TranscriptItem {
   nodes?: WorkflowNodeState[]
   /** 同一 workflow 的多次 tool step 由 transcript 纯折叠得到的累计视图。 */
   workflow?: WorkflowProjection
+  /**
+   * 运行中的内置子 agent 会话入口。切换会话后的回放从 step payload 恢复；工具收尾后
+   * 同一个值在 outcome.data.conversationId，两个阶段只会有一个入口。
+   */
+  childConversationId?: string
   batchId?: string
   waveIndex?: number
 }

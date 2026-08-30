@@ -54,6 +54,7 @@ export {
   setCompactionManifest,
   setConversationModel,
   setConversationTitle,
+  setStepChildConversation,
   settleProviderRequest,
   settleRunningSteps,
   settleToolStep,

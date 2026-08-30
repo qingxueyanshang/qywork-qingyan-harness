@@ -13,6 +13,7 @@ import {
   clamp,
   collapseCarriageReturns,
   compact,
+  delegateConversationId,
   delegateGraph,
   diffFrom,
   displayTarget,
@@ -30,6 +31,23 @@ import {
 
 test('重复失败的停止原因使用标准短句', () => {
   expect(stopReasonLabel('no_progress')).toBe('模型执行出错，多次重复，已暂停')
+})
+
+describe('派活子会话入口', () => {
+  test('运行中优先从持久化 step 恢复入口', () => {
+    expect(
+      delegateConversationId({
+        childConversationId: 'cv_running_child',
+        outcome: { data: { conversationId: 'cv_finished_child' } },
+      }),
+    ).toBe('cv_running_child')
+  })
+
+  test('已结束的历史步骤继续读取 outcome', () => {
+    expect(
+      delegateConversationId({ outcome: { data: { conversationId: 'cv_finished_child' } } }),
+    ).toBe('cv_finished_child')
+  })
 })
 
 /** 命中率的入参只用到这几格，其余字段测里一律不造。 */

@@ -30,6 +30,7 @@ import {
   clamp,
   collapseCarriageReturns,
   compact,
+  delegateConversationId,
   delegateGraph,
   diffFrom,
   displayTarget,
@@ -914,7 +915,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
         label: live?.label ?? '',
         // 耗时不在进度事件里，它随 `tool.finished` 落进这条 step。
         durationMs: props.item.durationMs,
-        conversationId: live?.conversationId ?? flatConversationId(props.item),
+        conversationId: live?.conversationId ?? delegateConversationId(props.item),
       }
     }
     if (live) {
@@ -1143,12 +1144,6 @@ function DelegateCard(props: { item: TranscriptItem }) {
 function cardTitle(item: TranscriptItem): string {
   const raw = item.toolName === 'workflow' ? item.args?.goal : item.args?.task
   return firstLine(typeof raw === 'string' ? raw.trim() : '')
-}
-
-/** 派一件那张卡上的子会话 id：它不在逐节点终态里，就在结果的顶层。 */
-function flatConversationId(item: TranscriptItem): string | undefined {
-  const cid = (item.outcome?.data as { conversationId?: unknown } | undefined)?.conversationId
-  return typeof cid === 'string' && cid ? cid : undefined
 }
 
 function ToolCard(props: { item: TranscriptItem }) {

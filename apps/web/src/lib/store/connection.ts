@@ -662,6 +662,7 @@ interface StoredStep {
     args?: Record<string, unknown>
     outcome?: ToolOutcomeWire
     action?: ActionDescriptor
+    childConversationId?: string
     /** kind='compaction' 专有，见 `StepPayload`。 */
     phase?: 'done' | 'skipped' | 'failed'
     summarized?: boolean
@@ -1036,6 +1037,9 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
       toolName: s.toolName ?? '',
       ...(s.payload?.action ? { action: s.payload.action } : {}),
       ...(s.payload?.args ? { args: s.payload.args } : {}),
+      ...(s.payload?.childConversationId
+        ? { childConversationId: s.payload.childConversationId }
+        : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),
       // 存量行没有这个数，那时不显示耗时——不为它编一个。

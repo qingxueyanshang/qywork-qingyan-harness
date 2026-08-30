@@ -885,6 +885,31 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(transcript().map((t) => t.kind)).toEqual(['user', 'tool', 'run'])
   })
 
+  test('运行中的子 agent 入口随 step 回放，不依赖已经错过的进度事件', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    stub(
+      [
+        {
+          ...toolStep(''),
+          toolName: 'subagent',
+          payload: {
+            kind: 'tool_call',
+            args: { task: '并行排查' },
+            action: { kind: 'run', objectLabel: '子 agent' },
+            childConversationId: 'cv_child_replayed',
+          },
+          status: 'running',
+        },
+      ],
+      [{ ...interruptedRun, finishedAt: null, stopReason: null, status: 'running' }],
+    )
+    await reloadActiveConversation()
+
+    const card = transcript().find((item) => item.id === 'st_1')
+    expect(card?.childConversationId).toBe('cv_child_replayed')
+  })
+
   /**
    * 后台进程被杀之后，账本里那一轮已经是 `interrupted`，界面要据此把那一轮的收尾
    * 画出来。**「在不在跑」不从这里读**：账本那行在进程崩过之后可能还挂着
