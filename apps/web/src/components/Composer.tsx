@@ -419,6 +419,7 @@ export function Composer() {
   let ta!: HTMLTextAreaElement
   let filePicker!: HTMLInputElement
   let wrap: HTMLDivElement | undefined
+  let stopVoiceForSubmit = () => {}
 
   /*
    * 候选按项目失效。Composer 本身切项目时不会重挂，如果把第一次加载的结果一直
@@ -715,6 +716,7 @@ export function Composer() {
      */
     const dispatch = slashDispatch(v, buildCommands())
     if (dispatch.kind === 'run') {
+      stopVoiceForSubmit()
       executeSlash(dispatch.command, dispatch.arg)
       return
     }
@@ -743,6 +745,7 @@ export function Composer() {
     }
 
     const steer = flip ? followUpMode() === 'queue' : followUpMode() === 'steer'
+    stopVoiceForSubmit()
     sendMessage(v, files.length ? files : undefined, steer)
     setText('')
     setPending([])
@@ -1008,6 +1011,9 @@ export function Composer() {
             {/* 语音输入。特性检测不通过时它自己不渲染，见 VoiceButton。 */}
             <VoiceButton
               draft={text()}
+              bindSubmitStop={(stop) => {
+                stopVoiceForSubmit = stop
+              }}
               onText={(next) => {
                 setText(next)
                 autosize()
