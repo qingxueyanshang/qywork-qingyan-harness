@@ -9,23 +9,32 @@ import {
 } from '@qywork/core'
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
+import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
   activeModelRow,
+  type CliAgentRow,
   composerSeed,
   dropFollowUp,
   followUpMode,
   interrupt,
   isDesktopShell,
   isRunning,
+  loadSkills,
+  loadTeam,
+  loadTeamClis,
+  loadTools,
   pickFiles,
   resumeGoal,
+  type SkillMeta,
   sendMessage,
   setComposerSeed,
   setPermissionMode,
   setState,
   state,
   steerFollowUp,
+  type TeamRoleRow,
+  type ToolMeta,
   tauriListen,
   transcript,
   uploadAttachment,
@@ -35,12 +44,16 @@ import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { BranchPicker } from './BranchPicker.tsx'
 import {
   IconFolder,
+  IconMcpSolid,
   IconPencil,
+  IconPluginSolid,
   IconPlus,
   IconSend,
   IconShield,
+  IconSkillSolid,
   IconStop,
   IconTrash,
+  IconUsers,
   IconX,
 } from './Icons.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
@@ -314,6 +327,59 @@ function FollowUpCards(props: {
   )
 }
 
+type MentionOption = {
+  id: string
+  name: string
+  label: string
+  hint: string
+  icon: Command['icon']
+}
+
+type PickerOption = { kind: 'command'; command: Command } | { kind: 'mention'; item: MentionOption }
+
+function scopeLabel(skill: SkillMeta): string {
+  if (skill.scope === 'project') return '项目技能'
+  if (skill.scope === 'global') return '全局技能'
+  return '内置技能'
+}
+
+function toolSource(tool: ToolMeta): string {
+  if (tool.source.startsWith('mcp:')) return `MCP · ${tool.source.slice(4)}`
+  if (tool.source.startsWith('plugin:')) return `插件 · ${tool.source.slice(7)}`
+  return tool.source
+}
+
+function roleOption(role: TeamRoleRow): MentionOption {
+  return {
+    id: `agent:role:${role.id}`,
+    name: role.id,
+    label: `子 Agent · ${role.name}`,
+    hint: role.description || '项目角色',
+    icon: IconUsers,
+  }
+}
+
+function cliOption(agent: CliAgentRow): MentionOption {
+  return {
+    id: `agent:cli:${agent.id}`,
+    name: `cli:${agent.id}`,
+    label: `外部 Agent · ${agent.vendor}`,
+    hint: '已连接',
+    icon: IconUsers,
+  }
+}
+
+function toolOption(tool: ToolMeta): MentionOption {
+  const source = toolSource(tool)
+  return {
+    id: `tool:${tool.name}`,
+    name: tool.name,
+    label: source,
+    hint: tool.summary,
+    icon: tool.source.startsWith('mcp:') ? IconMcpSolid : IconPluginSolid,
+  }
+}
+
 /**
  * 输入区。
  *
@@ -326,10 +392,16 @@ function FollowUpCards(props: {
  */
 export function Composer() {
   const [text, setText] = createSignal('')
-  const [slashCursor, setSlashCursor] = createSignal(0)
+  const [menuCursor, setMenuCursor] = createSignal(0)
   const [pending, setPending] = createSignal<Attachment[]>([])
   const [uploading, setUploading] = createSignal(0)
   const [dragOver, setDragOver] = createSignal(false)
+  const [skillOptions, setSkillOptions] = createSignal<MentionOption[]>([])
+  const [targetOptions, setTargetOptions] = createSignal<MentionOption[]>([])
+  const [skillLoad, setSkillLoad] = createSignal<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [targetLoad, setTargetLoad] = createSignal<'idle' | 'loading' | 'ready'>('idle')
+  const [skillLoadNote, setSkillLoadNote] = createSignal<string | null>(null)
+  const [targetLoadNote, setTargetLoadNote] = createSignal<string | null>(null)
   /**
    * 粘贴进来的那一份的本地预览地址，按落盘路径存。
    *
@@ -347,6 +419,97 @@ export function Composer() {
   let ta!: HTMLTextAreaElement
   let filePicker!: HTMLInputElement
   let wrap: HTMLDivElement | undefined
+
+  /*
+   * 候选按项目失效。Composer 本身切项目时不会重挂，如果把第一次加载的结果一直
+   * 留着，`#` / `@` 会显示上一个项目的技能、角色与 MCP。异步请求也绑定发起时的
+   * workspace id；切换途中回来的旧结果直接丢弃。
+   */
+  let suggestionWorkspace: string | null | undefined
+  createEffect(() => {
+    const next = workspace()?.id ?? null
+    if (next === suggestionWorkspace) return
+    suggestionWorkspace = next
+    setSkillOptions([])
+    setTargetOptions([])
+    setSkillLoad('idle')
+    setTargetLoad('idle')
+    setSkillLoadNote(null)
+    setTargetLoadNote(null)
+  })
+
+  const ensureSkills = async () => {
+    if (skillLoad() !== 'idle') return
+    const owner = workspace()?.id ?? null
+    setSkillLoad('loading')
+    setSkillLoadNote(null)
+    try {
+      const loaded = await loadSkills()
+      if ((workspace()?.id ?? null) !== owner) return
+      setSkillOptions(
+        loaded.skills
+          // 与运行时 `scanSkills` 的生效集合一致；被高优先级同名技能盖住的不冒充可选。
+          .filter((skill) => skill.shadowedBy === null)
+          .map((skill) => ({
+            id: `skill:${skill.scope}:${skill.name}`,
+            name: skill.name,
+            label: scopeLabel(skill),
+            hint: skill.description,
+            icon: IconSkillSolid,
+          })),
+      )
+      setSkillLoad('ready')
+    } catch (error) {
+      if ((workspace()?.id ?? null) !== owner) return
+      setSkillLoad('error')
+      setSkillLoadNote(`技能读取失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const ensureTargets = async () => {
+    if (targetLoad() !== 'idle') return
+    const owner = workspace()?.id ?? null
+    setTargetLoad('loading')
+    setTargetLoadNote(null)
+
+    /*
+     * 三个来源互不拖累：本机外部 CLI 探测失败，不应让已经连好的 MCP 与项目角色
+     * 一起消失。失败项就近报在面板末尾，成功项仍可选。
+     */
+    const [toolsResult, teamResult, cliResult] = await Promise.allSettled([
+      loadTools(),
+      loadTeam(),
+      loadTeamClis(),
+    ])
+    if ((workspace()?.id ?? null) !== owner) return
+
+    const failed: string[] = []
+    const roles = teamResult.status === 'fulfilled' ? teamResult.value.roles : []
+    if (teamResult.status === 'rejected') failed.push('项目角色')
+    const agents = cliResult.status === 'fulfilled' ? cliResult.value.agents : []
+    if (cliResult.status === 'rejected') failed.push('外部 Agent')
+    const tools =
+      toolsResult.status === 'fulfilled'
+        ? toolsResult.value.tools.filter(
+            (tool) => tool.source.startsWith('mcp:') || tool.source.startsWith('plugin:'),
+          )
+        : []
+    if (toolsResult.status === 'rejected') failed.push('MCP / 插件')
+
+    setTargetOptions([
+      ...roles.map(roleOption),
+      ...agents.filter((agent) => agent.connected).map(cliOption),
+      ...tools.map(toolOption),
+    ])
+    setTargetLoad('ready')
+    setTargetLoadNote(failed.length ? `部分来源读取失败：${failed.join('、')}` : null)
+  }
+
+  createEffect(() => {
+    const query = mentionQuery(text())
+    if (query?.kind === 'skill') void ensureSkills()
+    if (query?.kind === 'target') void ensureTargets()
+  })
 
   /*
    * 收下设置页递过来的起手指令。
@@ -472,6 +635,51 @@ export function Composer() {
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
 
+  /** `/`、`#`、`@` 共用一张弹层与一套键盘游标，任何时刻只有当前词对应的一类。 */
+  const pickerOptions = (): PickerOption[] => {
+    const commands = slashHits()
+    if (commands.length) return commands.map((command) => ({ kind: 'command', command }))
+
+    const query = mentionQuery(text())
+    if (!query) return []
+    const source = query.kind === 'skill' ? skillOptions() : targetOptions()
+    return source
+      .filter((item) => matchesMention(query.query, item.name, item.label, item.hint))
+      .map((item) => ({ kind: 'mention', item }))
+  }
+
+  const pickerOpen = () => slashHits().length > 0 || mentionQuery(text()) !== null
+
+  const pickerNote = (): string | null => {
+    const query = mentionQuery(text())
+    if (!query) return null
+    const hits = pickerOptions()
+    if (query.kind === 'skill') {
+      if (skillLoad() === 'loading' || skillLoad() === 'idle') return '正在读取技能…'
+      if (skillLoad() === 'error') return skillLoadNote()
+      return hits.length ? null : '没有匹配的技能'
+    }
+    if (targetLoad() === 'loading' || targetLoad() === 'idle')
+      return '正在读取 MCP、插件与子 Agent…'
+    return targetLoadNote() ?? (hits.length ? null : '没有匹配的调用目标')
+  }
+
+  const pickOption = (option: PickerOption) => {
+    if (option.kind === 'command') {
+      runSlash(option.command)
+      return
+    }
+    const query = mentionQuery(text())
+    if (!query) return
+    setText(replaceMention(text(), query, option.item.name))
+    setMenuCursor(0)
+    queueMicrotask(() => {
+      autosize()
+      ta.focus()
+      ta.setSelectionRange(ta.value.length, ta.value.length)
+    })
+  }
+
   /**
    * 把一条等待消息取回输入框。队列仍通过服务端原有的删除指令收敛，输入正文与附件
    * 直接回到本组件的草稿；已有草稿不覆盖，待编辑内容追加在末尾。
@@ -575,29 +783,46 @@ export function Composer() {
 
       <RunStatus />
 
-      {/* 斜杠弹层向上开：输入区贴着窗口底部。 */}
-      <Show when={slashHits().length > 0}>
-        <div class="slash-pop" role="listbox" aria-label="命令">
-          <For each={slashHits()}>
-            {(cmd, i) => (
-              <button
-                class="slash-item"
-                classList={{ active: i() === slashCursor() }}
-                type="button"
-                role="option"
-                aria-selected={i() === slashCursor()}
-                onMouseEnter={() => setSlashCursor(i())}
-                onClick={() => runSlash(cmd)}
-              >
-                <span class="slash-icon">{cmd.icon({ size: 14 }) as never}</span>
-                <code class="slash-name">/{cmd.slash}</code>
-                <span class="slash-label truncate">{cmd.label}</span>
-                <Show when={cmd.hint}>
-                  <span class="slash-hint truncate">{cmd.hint}</span>
-                </Show>
-              </button>
-            )}
+      {/* 输入补全向上开：输入区贴着窗口底部。命令、技能与调用目标共用一套尺寸和键盘行为。 */}
+      <Show when={pickerOpen()}>
+        <div class="composer-pop" role="listbox" aria-label="命令与引用">
+          <For each={pickerOptions()}>
+            {(option, i) => {
+              const icon = () =>
+                option.kind === 'command' ? option.command.icon : option.item.icon
+              const name = () =>
+                option.kind === 'command' ? `/${option.command.slash}` : `@${option.item.name}`
+              const displayName = () => {
+                if (option.kind === 'command') return name()
+                return `${mentionQuery(text())?.sigil ?? '@'}${option.item.name}`
+              }
+              const label = () =>
+                option.kind === 'command' ? option.command.label : option.item.label
+              const hint = () =>
+                option.kind === 'command' ? (option.command.hint ?? '') : option.item.hint
+              return (
+                <button
+                  class="composer-option"
+                  classList={{ active: i() === menuCursor() }}
+                  type="button"
+                  role="option"
+                  aria-selected={i() === menuCursor()}
+                  onMouseEnter={() => setMenuCursor(i())}
+                  onClick={() => pickOption(option)}
+                >
+                  <span class="composer-option-icon">{icon()({ size: 14 }) as never}</span>
+                  <code class="composer-option-name">{displayName()}</code>
+                  <span class="composer-option-label truncate">{label()}</span>
+                  <Show when={hint()}>
+                    <span class="composer-option-hint truncate">{hint()}</span>
+                  </Show>
+                </button>
+              )
+            }}
           </For>
+          <Show when={pickerNote()}>
+            {(note) => <div class="composer-pop-state">{note()}</div>}
+          </Show>
         </div>
       </Show>
 
@@ -693,31 +918,35 @@ export function Composer() {
             value={text()}
             onInput={(e) => {
               setText(e.currentTarget.value)
-              setSlashCursor(0)
+              setMenuCursor(0)
               autosize()
             }}
             onKeyDown={(e) => {
-              const hits = slashHits()
-              if (hits.length > 0 && !e.isComposing) {
+              const hits = pickerOptions()
+              const open = pickerOpen()
+              if (open && !e.isComposing) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault()
-                  setSlashCursor((c) => Math.min(c + 1, hits.length - 1))
+                  if (hits.length) setMenuCursor((c) => Math.min(c + 1, hits.length - 1))
                   return
                 }
                 if (e.key === 'ArrowUp') {
                   e.preventDefault()
-                  setSlashCursor((c) => Math.max(c - 1, 0))
+                  if (hits.length) setMenuCursor((c) => Math.max(c - 1, 0))
                   return
                 }
                 if (e.key === 'Escape') {
                   e.preventDefault()
-                  setText('')
+                  const mention = mentionQuery(text())
+                  setText(mention ? text().slice(0, mention.start) : '')
+                  setMenuCursor(0)
+                  queueMicrotask(autosize)
                   return
                 }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
-                  const cmd = hits[slashCursor()]
-                  if (cmd) runSlash(cmd)
+                  const option = hits[menuCursor()]
+                  if (option) pickOption(option)
                   return
                 }
               }

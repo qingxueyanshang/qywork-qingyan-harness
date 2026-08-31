@@ -663,14 +663,16 @@
   font-size: var(--fs-xs);
 }
 
-/* ── 斜杠命令弹层 ──
-   贴在输入框上沿，向上开。行内是「/名字 + 标签 + 一句代价说明」——
-   代价说明必须在这里，用户按回车前唯一能看到它的地方就是这一行。 */
-.slash-pop {
+/* ── 输入补全弹层 ──
+   贴在输入框上沿，向上开。`/` 命令、`#` 技能与 `@` 调用目标共用这一个面板。
+
+   桌面宽度封在 560px：候选每行只有名字、来源与一句说明，拉到输入框全宽会把
+   三者拆成相距很远的三座孤岛。窄屏则退回两侧各留一格，不产生横向滚动。 */
+.composer-pop {
   position: absolute;
   bottom: 100%;
   left: var(--s-5);
-  right: var(--s-5);
+  width: min(560px, calc(100% - var(--s-5) - var(--s-5)));
   z-index: 25;
   margin-bottom: 6px;
   padding: var(--s-1);
@@ -684,7 +686,7 @@
   background: var(--bg-raised);
   box-shadow: var(--shadow-lg);
 }
-.slash-item {
+.composer-option {
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -696,26 +698,31 @@
   font-size: var(--fs-sm);
   color: var(--text-primary);
 }
-.slash-item.active {
+.composer-option.active {
   background: var(--bg-active);
 }
-.slash-icon {
+.composer-option-icon {
   display: grid;
   place-items: center;
   flex: none;
   color: var(--text-tertiary);
 }
-.slash-name {
+.composer-option-name {
   flex: none;
   color: var(--accent);
 }
-.slash-label {
+.composer-option-label {
   flex: none;
 }
-.slash-hint {
+.composer-option-hint {
   min-width: 0;
   margin-left: auto;
   padding-left: var(--s-3);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.composer-pop-state {
+  padding: 6px var(--s-2);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }

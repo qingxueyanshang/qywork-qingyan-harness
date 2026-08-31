@@ -6,9 +6,9 @@
  */
 
 import type { JSX } from 'solid-js'
-import { IconNewChat, IconSpinner, IconTarget } from '../components/Icons.tsx'
+import { IconNewChat, IconSpinner, IconTarget, IconUsers } from '../components/Icons.tsx'
 import { slashQuery } from './slash.ts'
-import { compactContext, newConversation, setGoal, state } from './store/index.ts'
+import { compactContext, newConversation, sendMessage, setGoal, state } from './store/index.ts'
 
 export interface Command {
   id: string
@@ -53,6 +53,17 @@ export function buildCommands(): Command[] {
       arg: { placeholder: '要做到什么' },
       icon: IconTarget,
       run: (objective) => setGoal(objective ?? ''),
+    },
+    {
+      id: 'subagent',
+      label: '创建 Agent 角色',
+      slash: 'subagent',
+      hint: '写入当前项目 Agent Team，之后可用 @ 点名',
+      arg: { placeholder: '描述角色的职责与工作方式' },
+      icon: IconUsers,
+      // 原文作为用户消息进入同一条会话；运行时能力约定把这个前缀绑定到
+      // `define_subagent`，创建的是持久角色，不是一次性的临时派活。
+      run: (description) => sendMessage(`/subagent ${description ?? ''}`.trimEnd()),
     },
   ]
 }

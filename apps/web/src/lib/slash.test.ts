@@ -64,6 +64,7 @@ describe('提交分派', () => {
     { slash: 'compact' },
     { slash: 'new' },
     { slash: 'goal', arg: { placeholder: '目标' } },
+    { slash: 'subagent', arg: { placeholder: '任务' } },
   ]
 
   test('无参命令通过发送按钮提交时也直接执行', () => {
@@ -76,6 +77,10 @@ describe('提交分派', () => {
     const dispatch = slashDispatch('/goal 把测试跑绿', commands)
     expect(dispatch.kind).toBe('run')
     expect(dispatch.kind === 'run' && dispatch.arg).toBe('把测试跑绿')
+    expect(slashDispatch('/subagent 检查这次改动', commands)).toMatchObject({
+      kind: 'run',
+      arg: '检查这次改动',
+    })
   })
 
   test('未知命令和无参命令后的额外正文仍作为消息', () => {

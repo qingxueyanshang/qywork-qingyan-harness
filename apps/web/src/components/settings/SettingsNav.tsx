@@ -5,11 +5,11 @@ import {
   IconBrain,
   IconCanvas,
   IconClock,
-  IconFile,
   IconPackage,
   IconPlug,
   IconSettings,
   IconShield,
+  IconSkillSolid,
   IconTerminal,
   IconUsers,
 } from '../Icons.tsx'
@@ -30,7 +30,9 @@ import {
 interface Item {
   id: SettingsPage
   label: string
-  icon: (p: { size?: number }) => JSX.Element
+  icon: (p: { size?: number; class?: string }) => JSX.Element
+  /** 只有同一语义跨界面复用、且必须锁定同一明度时才填。 */
+  iconClass?: string
   /** 页头那句边界（B7：只写别处看不到的事）。没有就不写。 */
   desc?: string
 }
@@ -55,7 +57,8 @@ const GROUPS: Item[][] = [
     {
       id: 'skills',
       label: '技能',
-      icon: IconFile,
+      icon: IconSkillSolid,
+      iconClass: 'settings-nav-skill-icon',
       desc: '按需加载的操作步骤：索引随每轮请求发送，正文按需读取',
     },
     {
@@ -99,7 +102,7 @@ export function SettingsNav() {
                     type="button"
                     onClick={() => setSettingsPage(item.id)}
                   >
-                    <item.icon size={15} />
+                    <item.icon size={15} {...(item.iconClass ? { class: item.iconClass } : {})} />
                     {item.label}
                   </button>
                 </li>

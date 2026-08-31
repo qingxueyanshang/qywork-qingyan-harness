@@ -44,6 +44,56 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
 }
 
 /**
+ * 补全菜单的分类标记。
+ *
+ * 这组故意不用上面的细线语言：它们不是普通操作按钮，而是在一列相似结果里帮助
+ * 用户一眼分出技能、MCP 与插件的路标。小尺寸下用实心轮廓比脑形、插头等
+ * 细节繁多的线稿更稳，也不会把「技能」误读成「记忆」。
+ */
+function SolidSvg(props: IconProps & { children: JSX.Element; label?: string }) {
+  return (
+    <svg
+      width={props.size ?? 16}
+      height={props.size ?? 16}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      class={props.class}
+      style={props.style}
+      aria-hidden={props.label ? undefined : true}
+      aria-label={props.label}
+      role={props.label ? 'img' : undefined}
+    >
+      {props.children}
+    </svg>
+  )
+}
+
+/** 技能：能力闪光，不再复用脑形记忆图标。 */
+export const IconSkillSolid = (p: IconProps) => (
+  <SolidSvg {...p}>
+    <path d="M11.9 2.4c.8 4.8 2.8 6.9 7.7 7.7-4.9.8-6.9 3-7.7 8-.8-5-2.8-7.2-7.7-8 4.9-.8 6.9-2.9 7.7-7.7Z" />
+    <path d="M19.1 15.2c.3 2 1.2 2.9 3.1 3.2-1.9.3-2.8 1.2-3.1 3.2-.3-2-1.1-2.9-3.1-3.2 2-.3 2.8-1.2 3.1-3.2Z" />
+  </SolidSvg>
+)
+
+/** MCP：三个已连接的能力节点。 */
+export const IconMcpSolid = (p: IconProps) => (
+  <SolidSvg {...p}>
+    <path d="M10.5 6.3h3v8h-3zM6.8 9.4h10.4v3H6.8z" />
+    <circle cx="12" cy="5" r="3" />
+    <circle cx="5.5" cy="13.5" r="3" />
+    <circle cx="18.5" cy="13.5" r="3" />
+  </SolidSvg>
+)
+
+/** 插件：实心拼图片。 */
+export const IconPluginSolid = (p: IconProps) => (
+  <SolidSvg {...p}>
+    <path d="M4 4h6.1a2.4 2.4 0 1 0 3.8 0H20v6.1a2.4 2.4 0 1 1 0 3.8V20h-6.1a2.4 2.4 0 1 1-3.8 0H4v-6.1a2.4 2.4 0 1 0 0-3.8V4Z" />
+  </SolidSvg>
+)
+
+/**
  * 新建会话。
  *
  * 「方框缺一角 + 一支笔」，不是「对话气泡加一个加号」。改掉的理由：

@@ -695,6 +695,21 @@ export interface McpPayload {
 export function loadMcp(): Promise<McpPayload> {
   return client.api<McpPayload>('/api/mcp')
 }
+
+/**
+ * 当前真正能调用的工具清单。输入区 `@` 与设置页都应以 `/api/tools` 为真源：
+ * 它只列注册成功的 MCP / 插件工具，不把「清单里声明了但进程没起来」冒充成可调用。
+ */
+export interface ToolMeta {
+  name: string
+  category: string
+  summary: string
+  source: string
+}
+export function loadTools(): Promise<{ tools: ToolMeta[] }> {
+  return client.api<{ tools: ToolMeta[] }>('/api/tools')
+}
+
 /** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
 export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; names: string[] }> {
   return scheduleWrite(`/api/mcp/import?scope=${scope}`, {

@@ -58,7 +58,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'read_skill',
-    line: '- 技能读取：有既定步骤的任务，先看末尾清单并用 read_skill 读正文。',
+    line: '- 技能读取：有既定步骤的任务，先看末尾清单并用 read_skill 读正文。用户用 `#技能名` 明确选中时，先读取该技能再执行。',
   },
   {
     tool: 'write_skill',
@@ -78,11 +78,15 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'load_tool',
-    line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单只列名字，用 load_tool 加载后才能调用。',
+    line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单只列名字，用 load_tool 加载后才能调用。用户用 `@工具注册名` 明确点名时，加载并调用该工具。',
+  },
+  {
+    tool: 'define_subagent',
+    line: '- 角色定义：用 define_subagent 新建或修改当前项目 Agent Team 里的真实角色。用户消息以 `/subagent 角色描述` 开头时，按描述创建一个可长期复用、之后能被 `@角色id` 点名的角色；不要把它当成一次临时派活。',
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。',
+    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
   },
   {
     tool: 'workflow',
@@ -122,6 +126,15 @@ export const RULES_LAYER = `## 边界
 /** `toolNames` 是当前注册表里的工具名，决定能力段发哪几行。 */
 export function buildSystemPrompt(toolNames: ReadonlySet<string>): string {
   const caps = CAPABILITY_LINES.filter((c) => toolNames.has(c.tool)).map((c) => c.line)
+  /*
+   * 外部 schema 小于预算时直接注册，不会有 `load_tool`。这时同样要解释输入区的
+   * `@注册名`，门槛就是注册表里真的出现了扩展命名的工具，不能只绑 load_tool。
+   */
+  if ([...toolNames].some((name) => name.startsWith('mcp__') || name.includes('__'))) {
+    caps.push(
+      '- 点名调用：用户用 `@工具注册名` 明确选择已在工具表中的 MCP 或插件工具时，直接调用该工具。',
+    )
+  }
   const environment = caps.length
     ? `${ENVIRONMENT_LAYER}\n\n## 能力\n\n${caps.join('\n')}`
     : ENVIRONMENT_LAYER
