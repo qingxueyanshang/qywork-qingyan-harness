@@ -1800,10 +1800,9 @@ describe('上下文读数：一把尺', () => {
 /**
  * 名字不在注册表里的调用**不进执行链**。
  *
- * 放它进去就会开出一条 tool step、发一条 `tool.started`，界面上多一张既没有动作、
- * 也什么都没做的卡片，而标题只能编（「读取<工具名>」或「未知工具」都是在给一个
- * 不存在的工具造词条）。注册表是工具的唯一权威：名字不在表里的不是工具，
- * 是 provider 违反了下发的工具表。
+ * 放它进去就会开出一条 tool step、发一条 `tool.started`，界面上多出一条没有动作、
+ * 也没有执行事实的记录。注册表是工具的唯一权威：名字不在表里就是未注册调用，
+ * 不是一种工具。
  *
  * 但结果必须回给模型：provider 的契约是每个 tool_call 都要有一条对应 id 的
  * tool 结果，少一条下一轮直接 400。
@@ -1822,7 +1821,7 @@ describe('注册表是工具的唯一权威', () => {
     fn: async () => ({ status: 'success', message: 'ok' }),
   })
 
-  test('编造的工具名不产生工具卡，也不产生 step', async () => {
+  test('未注册调用不产生工具卡，也不产生 step', async () => {
     const registry = new ToolRegistry()
     registry.register(realSpec('read_thing'))
 
@@ -1854,7 +1853,7 @@ describe('注册表是工具的唯一权威', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
-  test('连续三轮相同的编造工具会进入无进展终态', async () => {
+  test('连续三轮相同的未注册调用会进入无进展终态', async () => {
     const registry = new ToolRegistry()
     registry.register(realSpec('read_thing'))
     const loop = new AgentLoop({
@@ -1885,7 +1884,7 @@ describe('注册表是工具的唯一权威', () => {
     expect(started).toHaveLength(0)
   })
 
-  test('编造工具的参数变化会打断周期', async () => {
+  test('未注册调用的参数变化会打断周期', async () => {
     const registry = new ToolRegistry()
     registry.register(realSpec('read_thing'))
     const loop = new AgentLoop({
@@ -1913,7 +1912,7 @@ describe('注册表是工具的唯一权威', () => {
     expect(stopReason).toBe('completed')
   })
 
-  test('真实读取与编造工具混合时按完整结果判断周期', async () => {
+  test('真实读取与未注册调用混合时按完整结果判断周期', async () => {
     const registry = new ToolRegistry()
     registry.register({
       ...realSpec('read_thing'),

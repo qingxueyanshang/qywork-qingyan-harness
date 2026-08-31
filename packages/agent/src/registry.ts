@@ -613,7 +613,7 @@ export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promis
 /** 工具执行结果。这是规范事实，必须原样抵达账本、事件流和 provider transcript。 */
 export interface ToolOutcome {
   status: 'success' | 'failure'
-  /** 是否真的执行了。权限拒绝 / 未知工具 = false。 */
+  /** 是否真的执行了。权限拒绝 / 注册表未命中 = false。 */
   executed?: boolean
   message: string
   data?: Record<string, unknown>
@@ -822,8 +822,8 @@ export class ToolRegistry {
       return {
         status: 'failure',
         executed: false,
-        message: `未知工具: ${name}`,
-        errorKind: 'unknown_tool',
+        message: `未注册调用：${name}`,
+        errorKind: 'unregistered_tool_call',
       }
     }
 
