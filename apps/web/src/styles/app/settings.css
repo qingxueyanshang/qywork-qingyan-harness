@@ -276,26 +276,16 @@
   background: var(--bg-sunken);
   border-right: 1px solid var(--border-subtle);
 }
-.settings-nav .nav-item {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  column-gap: var(--s-2);
-  align-items: center;
-}
-.settings-nav-icon {
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  line-height: 0;
-}
-.settings-nav-icon > svg {
+.settings-nav .settings-nav-icon {
+  flex: none;
   display: block;
+  transform: translateY(-0.5px);
+  transform-origin: center;
 }
-.settings-nav-label {
-  min-width: 0;
-  line-height: 20px;
-  text-align: left;
+/* 齿轮的路径几乎占满整个 24px 画布，比其余图标的标准 keyline 大一圈；
+   导航里单独收小，避免首项在同一图标槽内显得向两侧凸出。 */
+.settings-nav .settings-nav-icon-general {
+  transform: translateY(-0.5px) scale(0.9);
 }
 /* 与输入补全面板里的 `#技能` 使用同一枚图形，也固定在同一明度；导航项是否选中
    只改变文字和底色，不再把这枚实心闪光额外压深。 */

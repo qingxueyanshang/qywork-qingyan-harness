@@ -102,13 +102,11 @@ export function SettingsNav() {
                     type="button"
                     onClick={() => setSettingsPage(item.id)}
                   >
-                    <span
-                      class="settings-nav-icon"
-                      classList={{ [item.iconClass ?? '']: Boolean(item.iconClass) }}
-                    >
-                      <item.icon size={16} />
-                    </span>
-                    <span class="settings-nav-label">{item.label}</span>
+                    <item.icon
+                      size={15}
+                      class={`settings-nav-icon settings-nav-icon-${item.id}${item.iconClass ? ` ${item.iconClass}` : ''}`}
+                    />
+                    {item.label}
                   </button>
                 </li>
               )}
