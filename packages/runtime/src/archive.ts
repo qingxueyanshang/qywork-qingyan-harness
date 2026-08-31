@@ -72,6 +72,27 @@ export interface ArchiveBundle {
   exportedAt: number
 }
 
+export interface ChildConversationLink {
+  parentConversationId: ConversationId
+  parentRunId: Run['id']
+  parentStepId: Step['id']
+  childConversationId: ConversationId
+  /** 新账本直接记在 step 上；旧账本从最终工具回执里回退读取。 */
+  source: 'step_payload' | 'outcome_fallback'
+}
+
+export interface ConversationTree {
+  rootConversationId: ConversationId
+  /** 根会话仍在诊断包顶层；这里仅放全部后代，按首次出现顺序排列。 */
+  childConversations: ArchiveBundle[]
+  /** 扁平边表可还原父子层级，同一子会话被多处引用时正文只导出一份。 */
+  links: ChildConversationLink[]
+  unresolvedChildren: {
+    link: ChildConversationLink
+    error: string
+  }[]
+}
+
 /** 把一个会话的全部账本读出来。两种格式共用这一份采集。 */
 export function collect(store: Store, conversationId: ConversationId): ArchiveBundle {
   const conversation = getConversation(store, conversationId)
@@ -121,6 +142,73 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
 }
 
 /**
+ * 沿父工具 step 递归收集子 Agent 会话。
+ *
+ * 会话 id 是去重键，也同时是循环保护：损坏账本即使出现 A → B → A，也只采集两份正文，
+ * 但三条关联事实仍会留在 `links` 里供排查。
+ */
+function collectConversationTree(
+  store: Store,
+  rootConversationId: ConversationId,
+  root: ArchiveBundle,
+): ConversationTree {
+  const childConversations: ArchiveBundle[] = []
+  const links: ChildConversationLink[] = []
+  const unresolvedChildren: ConversationTree['unresolvedChildren'] = []
+  const visited = new Set<ConversationId>([rootConversationId])
+  const pending: ArchiveBundle[] = [root]
+
+  for (let cursor = 0; cursor < pending.length; cursor++) {
+    const parent = pending[cursor]!
+    const parentConversationId = parent.conversation!.id
+    for (const run of parent.runs) {
+      for (const step of run.steps) {
+        const child = childConversationFrom(step)
+        if (!child) continue
+        const link: ChildConversationLink = {
+          parentConversationId,
+          parentRunId: run.id,
+          parentStepId: step.id,
+          childConversationId: child.id,
+          source: child.source,
+        }
+        links.push(link)
+        if (visited.has(child.id)) continue
+        visited.add(child.id)
+
+        try {
+          const bundle = collect(store, child.id)
+          childConversations.push(bundle)
+          pending.push(bundle)
+        } catch (error) {
+          unresolvedChildren.push({
+            link,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+    }
+  }
+
+  return { rootConversationId, childConversations, links, unresolvedChildren }
+}
+
+function childConversationFrom(
+  step: Step,
+): { id: ConversationId; source: ChildConversationLink['source'] } | null {
+  const payload = step.payload
+  if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') return null
+  if (payload.childConversationId) {
+    return { id: payload.childConversationId, source: 'step_payload' }
+  }
+  if (payload.kind !== 'tool_result') return null
+  const historical = payload.outcome.data?.conversationId
+  return typeof historical === 'string' && historical.length > 0
+    ? { id: historical as ConversationId, source: 'outcome_fallback' }
+    : null
+}
+
+/**
  * 给排障人员的当前会话快照。
  *
  * 会话正文、思考、工具与逐请求账本全部来自 `collect`，没有一份前端临时投影。
@@ -133,19 +221,17 @@ export function exportConversationDiagnostics(
   config: QyConfig,
 ): string {
   const bundle = collect(store, conversationId)
-  const conversation = bundle.conversation!
-  const resolved = resolveModel(config, {
-    provider: conversation.provider,
-    model: conversation.model,
-  })
-  const effectiveModel = resolved
-    ? applySpecOverride(lookupModel(resolved.model, resolved.kind), resolved.spec)
-    : null
+  const conversationTree = collectConversationTree(store, conversationId, bundle)
+  const allConversations = [bundle, ...conversationTree.childConversations]
+  const conversationProfiles = allConversations.map((item) => ({
+    conversationId: item.conversation!.id,
+    provider: diagnosticProvider(config, item.conversation!),
+  }))
 
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,
@@ -157,6 +243,7 @@ export function exportConversationDiagnostics(
       coverage: {
         messages: 'full',
         steps: 'full',
+        childConversations: 'recursive_full',
         runContextSnapshots: 'full',
         providerRequestLedger: 'full',
         intermediateResources: 'metadata_and_references',
@@ -164,40 +251,33 @@ export function exportConversationDiagnostics(
         rawProviderBodies: 'not_persisted',
         configuredCredentials: 'redacted',
       },
-      runSignals: bundle.runs.map((run) => {
-        const textSteps = run.steps.filter(
-          (step) => step.kind === 'text' && Boolean(step.content?.trim()),
-        ).length
-        const thinkingSteps = run.steps.filter(
-          (step) => step.kind === 'thinking' && Boolean(step.content?.trim()),
-        ).length
-        const toolSteps = run.steps.filter((step) => step.kind === 'tool_action')
-        return {
-          runId: run.id,
-          textSteps,
-          thinkingSteps,
-          toolSteps: toolSteps.length,
-          failedToolSteps: toolSteps.filter((step) => step.status === 'failure').length,
-          providerRequests: run.providerRequests.length,
-          finishReasons: run.providerRequests.map((request) => request.finishReason),
-          hasUnsettledProviderRequest: run.providerRequests.some(
-            (request) => request.status === 'pending' || request.status === 'in_flight',
-          ),
-          toolOnly: toolSteps.length > 0 && textSteps === 0 && thinkingSteps === 0,
-        }
-      }),
-      provider: resolved
-        ? {
-            name: resolved.provider,
-            kind: resolved.kind,
-            model: resolved.model,
-            baseUrl: safeBaseUrl(resolved.baseUrl),
-            headerNames: Object.keys(resolved.headers ?? {}).sort(),
-            effort: resolved.effort ?? null,
-            catalogOverride: resolved.spec ?? null,
-            effectiveModel,
+      runSignals: allConversations.flatMap((item) =>
+        item.runs.map((run) => {
+          const textSteps = run.steps.filter(
+            (step) => step.kind === 'text' && Boolean(step.content?.trim()),
+          ).length
+          const thinkingSteps = run.steps.filter(
+            (step) => step.kind === 'thinking' && Boolean(step.content?.trim()),
+          ).length
+          const toolSteps = run.steps.filter((step) => step.kind === 'tool_action')
+          return {
+            conversationId: item.conversation!.id,
+            runId: run.id,
+            textSteps,
+            thinkingSteps,
+            toolSteps: toolSteps.length,
+            failedToolSteps: toolSteps.filter((step) => step.status === 'failure').length,
+            providerRequests: run.providerRequests.length,
+            finishReasons: run.providerRequests.map((request) => request.finishReason),
+            hasUnsettledProviderRequest: run.providerRequests.some(
+              (request) => request.status === 'pending' || request.status === 'in_flight',
+            ),
+            toolOnly: toolSteps.length > 0 && textSteps === 0 && thinkingSteps === 0,
           }
-        : null,
+        }),
+      ),
+      provider: conversationProfiles[0]?.provider ?? null,
+      conversationProfiles,
       runtimeConfig: {
         permissionMode: config.mode ?? 'auto',
         sandboxNetwork: config.sandboxNetwork ?? 'allow',
@@ -207,11 +287,33 @@ export function exportConversationDiagnostics(
           ? isWorkspaceTrusted(config, bundle.workspace.rootPath)
           : null,
       },
+      conversationTree,
       ...bundle,
     },
     null,
     2,
   )}\n`
+}
+
+function diagnosticProvider(
+  config: QyConfig,
+  conversation: NonNullable<ArchiveBundle['conversation']>,
+) {
+  const resolved = resolveModel(config, {
+    provider: conversation.provider,
+    model: conversation.model,
+  })
+  if (!resolved) return null
+  return {
+    name: resolved.provider,
+    kind: resolved.kind,
+    model: resolved.model,
+    baseUrl: safeBaseUrl(resolved.baseUrl),
+    headerNames: Object.keys(resolved.headers ?? {}).sort(),
+    effort: resolved.effort ?? null,
+    catalogOverride: resolved.spec ?? null,
+    effectiveModel: applySpecOverride(lookupModel(resolved.model, resolved.kind), resolved.spec),
+  }
 }
 
 /**
