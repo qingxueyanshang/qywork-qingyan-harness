@@ -278,7 +278,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(2)
+    expect(parsed.schemaVersion).toBe(3)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
@@ -348,6 +348,258 @@ describe('诊断导出', () => {
       rawProviderBodies: 'not_persisted',
       configuredCredentials: 'redacted',
     })
+    store.close()
+  })
+
+  test('父会话递归带出子 Agent 与孙会话，历史回退可用且循环引用不重复正文', () => {
+    const { store, conversationId } = fixture()
+    const parent = collect(store, conversationId)
+    const parentRun = parent.runs[0]!
+    const workspaceId = parent.workspace!.id
+
+    const child = createConversation(store, {
+      workspaceId,
+      provider: 'child-provider',
+      model: 'child-model',
+      title: '研究员子会话',
+      source: 'workflow',
+      sourceRef: 'researcher',
+    })
+    const childMessage = appendMessage(store, {
+      conversationId: child.id,
+      role: 'user',
+      content: '调查工具为什么循环',
+    })
+    const childRun = createRun(store, {
+      conversationId: child.id,
+      workspaceId,
+      model: 'child-model',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: childMessage.id,
+      messageIdUpperBound: childMessage.id,
+      contextSnapshot: [{ group: 'skills', content: '先检查请求账本' }],
+    })
+    appendStep(store, {
+      runId: childRun.id,
+      seq: 1,
+      kind: 'thinking',
+      status: 'done',
+      content: '先比较 finish reason。',
+    })
+    const childRequest = openProviderRequest(store, {
+      runId: childRun.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'child-model',
+      measuredInputTokens: 50,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'child-payload',
+    })
+    settleProviderRequest(store, childRequest.id, 'received', null, null, 'tool_calls')
+    finishRun(store, childRun.id, { status: 'done', stopReason: 'completed' })
+
+    const grandchild = createConversation(store, {
+      workspaceId,
+      provider: 'child-provider',
+      model: 'child-model',
+      title: '孙会话',
+      source: 'workflow',
+      sourceRef: 'reviewer',
+    })
+    const grandchildMessage = appendMessage(store, {
+      conversationId: grandchild.id,
+      role: 'user',
+      content: '复核研究员结论',
+    })
+    const grandchildRun = createRun(store, {
+      conversationId: grandchild.id,
+      workspaceId,
+      model: 'child-model',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: grandchildMessage.id,
+      messageIdUpperBound: grandchildMessage.id,
+      contextSnapshot: [{ group: 'memory', content: '保留原始证据' }],
+    })
+    appendStep(store, {
+      runId: grandchildRun.id,
+      seq: 1,
+      kind: 'text',
+      status: 'done',
+      content: '确认是工具专用响应。',
+    })
+    finishRun(store, grandchildRun.id, { status: 'done', stopReason: 'completed' })
+
+    // 新账本：父 step 上直接有 childConversationId。
+    appendStep(store, {
+      runId: parentRun.id,
+      seq: 10,
+      kind: 'tool_action',
+      toolName: 'delegate',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { task: '调查循环' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '研究完成',
+          data: { conversationId: child.id },
+        },
+        childConversationId: child.id,
+      },
+    })
+    // 旧账本：没有直接字段，只能从最终 outcome.data 回退。
+    appendStep(store, {
+      runId: childRun.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'delegate',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { task: '复核' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '复核完成',
+          data: { conversationId: grandchild.id },
+        },
+      },
+    })
+    // 损坏账本可能形成环；应保留这条关系，但不能再次导出根正文或无限递归。
+    appendStep(store, {
+      runId: grandchildRun.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'delegate',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { task: '错误回指' },
+        outcome: { status: 'success', executed: true, message: '回指父会话' },
+        childConversationId: conversationId,
+      },
+    })
+
+    const text = exportConversationDiagnostics(store, conversationId, {
+      active: { provider: 'p', model: 'deepseek-v4-flash' },
+      providers: {
+        p: {
+          kind: 'openai_chat_completions',
+          apiKey: 'root-secret',
+          models: { 'deepseek-v4-flash': {} },
+        },
+        'child-provider': {
+          kind: 'openai_responses',
+          apiKey: 'child-secret',
+          models: { 'child-model': { effort: 'high' } },
+        },
+      },
+    })
+    const parsed = JSON.parse(text)
+    expect(parsed.conversationTree.rootConversationId).toBe(conversationId)
+    expect(
+      parsed.conversationTree.childConversations.map(
+        (item: { conversation: { id: string } }) => item.conversation.id,
+      ),
+    ).toEqual([child.id, grandchild.id])
+    expect(parsed.conversationTree.childConversations[0]).toMatchObject({
+      conversation: { id: child.id, source: 'workflow', sourceRef: 'researcher' },
+      messages: [{ content: '调查工具为什么循环' }],
+      runs: [
+        {
+          contextSnapshot: [{ group: 'skills', content: '先检查请求账本' }],
+          providerRequests: [{ finishReason: 'tool_calls' }],
+        },
+      ],
+    })
+    const exportedGrandchild = parsed.conversationTree.childConversations[1]
+    expect(exportedGrandchild).toMatchObject({
+      conversation: { id: grandchild.id, sourceRef: 'reviewer' },
+      messages: [{ content: '复核研究员结论' }],
+    })
+    expect(exportedGrandchild.runs[0].steps[0]).toMatchObject({
+      kind: 'text',
+      content: '确认是工具专用响应。',
+    })
+    expect(parsed.conversationTree.links).toEqual([
+      expect.objectContaining({
+        parentConversationId: conversationId,
+        childConversationId: child.id,
+        source: 'step_payload',
+      }),
+      expect.objectContaining({
+        parentConversationId: child.id,
+        childConversationId: grandchild.id,
+        source: 'outcome_fallback',
+      }),
+      expect.objectContaining({
+        parentConversationId: grandchild.id,
+        childConversationId: conversationId,
+        source: 'step_payload',
+      }),
+    ])
+    expect(parsed.conversationTree.unresolvedChildren).toEqual([])
+    expect(parsed.conversationProfiles).toContainEqual(
+      expect.objectContaining({
+        conversationId: child.id,
+        provider: expect.objectContaining({
+          name: 'child-provider',
+          kind: 'openai_responses',
+          model: 'child-model',
+          effort: 'high',
+        }),
+      }),
+    )
+    expect(
+      parsed.runSignals.some(
+        (signal: { conversationId: string }) => signal.conversationId === grandchild.id,
+      ),
+    ).toBe(true)
+    expect(parsed.coverage.childConversations).toBe('recursive_full')
+    expect(text).not.toContain('root-secret')
+    expect(text).not.toContain('child-secret')
+    store.close()
+  })
+
+  test('子会话引用损坏时仍导出父会话，并把缺失项明确列出', () => {
+    const { store, conversationId } = fixture()
+    const run = collect(store, conversationId).runs[0]!
+    appendStep(store, {
+      runId: run.id,
+      seq: 10,
+      kind: 'tool_action',
+      toolName: 'delegate',
+      status: 'failure',
+      payload: {
+        kind: 'tool_result',
+        args: { task: '丢失的子会话' },
+        outcome: { status: 'failure', executed: true, message: '子会话记录丢失' },
+        childConversationId: 'cv_missing_child' as never,
+      },
+    })
+
+    const parsed = JSON.parse(
+      exportConversationDiagnostics(store, conversationId, {
+        active: { provider: 'p', model: 'deepseek-v4-flash' },
+        providers: {
+          p: {
+            kind: 'openai_chat_completions',
+            apiKey: 'secret-api-key',
+            models: { 'deepseek-v4-flash': {} },
+          },
+        },
+      }),
+    )
+    expect(parsed.conversation.id).toBe(conversationId)
+    expect(parsed.conversationTree.childConversations).toEqual([])
+    expect(parsed.conversationTree.unresolvedChildren).toMatchObject([
+      {
+        link: { childConversationId: 'cv_missing_child' },
+        error: '会话不存在：cv_missing_child',
+      },
+    ])
     store.close()
   })
 })

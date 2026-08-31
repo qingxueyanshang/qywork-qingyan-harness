@@ -1025,6 +1025,32 @@ describe('会话诊断导出接口', () => {
         outcome: { status: 'success', executed: true, message: '读取完成' },
       },
     })
+    const child = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+      title: '子 Agent',
+      source: 'workflow',
+      sourceRef: 'researcher',
+    })
+    appendMessage(d.store, {
+      conversationId: child.id,
+      role: 'user',
+      content: '子 Agent 的完整内容',
+    })
+    appendStep(d.store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'delegate',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { task: '调查' },
+        outcome: { status: 'success', executed: true, message: '调查完成' },
+        childConversationId: child.id,
+      },
+    })
     const request = openProviderRequest(d.store, {
       runId: run.id,
       turnIndex: 0,
@@ -1052,9 +1078,13 @@ describe('会话诊断导出接口', () => {
         steps: { toolName: string }[]
         providerRequests: { finishReason: string }[]
       }[]
+      conversationTree: {
+        childConversations: { conversation: { id: string }; messages: { content: string }[] }[]
+        links: { parentConversationId: string; childConversationId: string }[]
+      }
     }
     expect(payload.kind).toBe('qywork.session-diagnostic')
-    expect(payload.schemaVersion).toBe(2)
+    expect(payload.schemaVersion).toBe(3)
     expect(payload.conversation.id).toBe(conv.id)
     expect(payload.messages.map((m) => m.content)).toEqual(['为什么只调用工具'])
     expect(payload.runs[0]?.contextSnapshot).toEqual([
@@ -1062,6 +1092,15 @@ describe('会话诊断导出接口', () => {
     ])
     expect(payload.runs[0]?.steps[0]?.toolName).toBe('read_file')
     expect(payload.runs[0]?.providerRequests[0]?.finishReason).toBe('tool_calls')
+    expect(payload.conversationTree.childConversations).toMatchObject([
+      {
+        conversation: { id: child.id },
+        messages: [{ content: '子 Agent 的完整内容' }],
+      },
+    ])
+    expect(payload.conversationTree.links).toMatchObject([
+      { parentConversationId: conv.id, childConversationId: child.id },
+    ])
   })
 
   test('不存在的会话回 404，不生成空诊断包', async () => {
