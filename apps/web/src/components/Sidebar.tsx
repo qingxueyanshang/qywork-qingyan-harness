@@ -48,7 +48,6 @@ import { ProjectRow } from './ProjectRow.tsx'
  *
  * 「分支 / 站点 / 已安装 / 通知」四个按这条删过：分支归右侧面板的变更视图（它的语境是
  * 「这次改了什么」，不是「要去哪个页面」）、已安装并进插件页，站点与通知没有数据源。
- * 「搜索」留着，因为它有真实去处：命令面板（Cmd/Ctrl-K）。
  */
 export function Sidebar(props: { onClose?: () => void }) {
   /**
@@ -114,9 +113,7 @@ export function Sidebar(props: { onClose?: () => void }) {
             而承诺一个不存在的交互比没有交互更坏。 */}
         <span class="brand">QyWork</span>
         <div class="head-actions">
-          {/* 这一格不放第二个搜索入口：顶栏上就有一个，命令面板还有 Ctrl/Cmd-K，
-              同一个动作在同一屏出现两次，用户得先判断这两个是不是一回事。
-              放收起左栏——这个动作只有左栏自己这个位置放得下。 */}
+          {/* 放收起左栏——这个动作只有左栏自己这个位置放得下。 */}
           <button
             class="icon-btn"
             type="button"

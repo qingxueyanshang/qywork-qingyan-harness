@@ -12,8 +12,34 @@
  *   两种格式的取舍相反，混成一种就两边都不好用。
  */
 
-import type { ConversationId, Message, Run, Step } from '@qywork/core'
-import { getConversation, listMessages, listRuns, listSteps, type Store } from '@qywork/store'
+import { applySpecOverride, lookupModel } from '@qywork/ai'
+import type {
+  ConversationId,
+  Message,
+  ProviderRequest,
+  Run,
+  RunContextSegment,
+  Step,
+} from '@qywork/core'
+import {
+  currentGoal,
+  getConversation,
+  getWorkspace,
+  latestTodos,
+  listDisabledExtras,
+  listLoadedTools,
+  listMessages,
+  listProviderRequests,
+  listResourcesForRun,
+  listRunContextSnapshots,
+  listRuns,
+  listSteps,
+  SCHEMA_VERSION,
+  type Store,
+} from '@qywork/store'
+import pkg from '../package.json' with { type: 'json' }
+import type { QyConfig } from './config.ts'
+import { isWorkspaceTrusted, resolveModel } from './config.ts'
 
 export type ArchiveFormat = 'markdown' | 'json'
 
@@ -27,9 +53,22 @@ export interface ArchiveOptions {
 const DEFAULT_TOOL_CHARS = 600
 
 export interface ArchiveBundle {
+  workspace: ReturnType<typeof getWorkspace>
   conversation: ReturnType<typeof getConversation>
   messages: Message[]
-  runs: (Run & { steps: Step[] })[]
+  sessionState: {
+    goal: ReturnType<typeof currentGoal>
+    todos: NonNullable<ReturnType<typeof latestTodos>>
+    loadedTools: string[]
+    disabledExtras: string[]
+  }
+  runs: (Run & {
+    contextSnapshot: RunContextSegment[]
+    steps: Step[]
+    providerRequests: ProviderRequest[]
+    resources: ReturnType<typeof listResourcesForRun>
+  })[]
+  collectionErrors: { section: string; message: string }[]
   exportedAt: number
 }
 
@@ -37,11 +76,159 @@ export interface ArchiveBundle {
 export function collect(store: Store, conversationId: ConversationId): ArchiveBundle {
   const conversation = getConversation(store, conversationId)
   if (!conversation) throw new Error(`会话不存在：${conversationId}`)
+  const collectionErrors: ArchiveBundle['collectionErrors'] = []
+  const bestEffort = <T>(section: string, fallback: T, read: () => T): T => {
+    try {
+      return read()
+    } catch (error) {
+      collectionErrors.push({
+        section,
+        message: error instanceof Error ? error.message : String(error),
+      })
+      return fallback
+    }
+  }
+  const contextByRun = new Map(
+    listRunContextSnapshots(store, conversationId).map((snapshot) => [
+      snapshot.runId,
+      snapshot.segments,
+    ]),
+  )
   return {
+    workspace: getWorkspace(store, conversation.workspaceId),
     conversation,
     messages: listMessages(store, conversationId),
-    runs: listRuns(store, conversationId).map((r) => ({ ...r, steps: listSteps(store, r.id) })),
+    sessionState: {
+      goal: bestEffort('sessionState.goal', null, () => currentGoal(store, conversationId)),
+      todos: bestEffort('sessionState.todos', [], () => latestTodos(store, conversationId) ?? []),
+      loadedTools: bestEffort('sessionState.loadedTools', [], () =>
+        [...listLoadedTools(store, conversationId)].sort(),
+      ),
+      disabledExtras: bestEffort('sessionState.disabledExtras', [], () =>
+        [...listDisabledExtras(store, conversationId)].sort(),
+      ),
+    },
+    runs: listRuns(store, conversationId).map((r) => ({
+      ...r,
+      contextSnapshot: contextByRun.get(r.id) ?? [],
+      steps: listSteps(store, r.id),
+      providerRequests: listProviderRequests(store, r.id),
+      resources: listResourcesForRun(store, r.id),
+    })),
+    collectionErrors,
     exportedAt: Date.now(),
+  }
+}
+
+/**
+ * 给排障人员的当前会话快照。
+ *
+ * 会话正文、思考、工具与逐请求账本全部来自 `collect`，没有一份前端临时投影。
+ * 接口配置只带判断请求形状所需的字段：协议、地址、思考档位、请求头名字与模型库覆盖。
+ * API key 和请求头值绝不进入导出物。
+ */
+export function exportConversationDiagnostics(
+  store: Store,
+  conversationId: ConversationId,
+  config: QyConfig,
+): string {
+  const bundle = collect(store, conversationId)
+  const conversation = bundle.conversation!
+  const resolved = resolveModel(config, {
+    provider: conversation.provider,
+    model: conversation.model,
+  })
+  const effectiveModel = resolved
+    ? applySpecOverride(lookupModel(resolved.model, resolved.kind), resolved.spec)
+    : null
+
+  return `${JSON.stringify(
+    {
+      kind: 'qywork.session-diagnostic',
+      schemaVersion: 2,
+      exportedBy: {
+        name: 'qywork',
+        version: pkg.version,
+        runtime: `Bun ${Bun.version}`,
+        platform: process.platform,
+        arch: process.arch,
+        storeSchemaVersion: SCHEMA_VERSION,
+      },
+      coverage: {
+        messages: 'full',
+        steps: 'full',
+        runContextSnapshots: 'full',
+        providerRequestLedger: 'full',
+        intermediateResources: 'metadata_and_references',
+        attachmentBytes: 'references_only',
+        rawProviderBodies: 'not_persisted',
+        configuredCredentials: 'redacted',
+      },
+      runSignals: bundle.runs.map((run) => {
+        const textSteps = run.steps.filter(
+          (step) => step.kind === 'text' && Boolean(step.content?.trim()),
+        ).length
+        const thinkingSteps = run.steps.filter(
+          (step) => step.kind === 'thinking' && Boolean(step.content?.trim()),
+        ).length
+        const toolSteps = run.steps.filter((step) => step.kind === 'tool_action')
+        return {
+          runId: run.id,
+          textSteps,
+          thinkingSteps,
+          toolSteps: toolSteps.length,
+          failedToolSteps: toolSteps.filter((step) => step.status === 'failure').length,
+          providerRequests: run.providerRequests.length,
+          finishReasons: run.providerRequests.map((request) => request.finishReason),
+          hasUnsettledProviderRequest: run.providerRequests.some(
+            (request) => request.status === 'pending' || request.status === 'in_flight',
+          ),
+          toolOnly: toolSteps.length > 0 && textSteps === 0 && thinkingSteps === 0,
+        }
+      }),
+      provider: resolved
+        ? {
+            name: resolved.provider,
+            kind: resolved.kind,
+            model: resolved.model,
+            baseUrl: safeBaseUrl(resolved.baseUrl),
+            headerNames: Object.keys(resolved.headers ?? {}).sort(),
+            effort: resolved.effort ?? null,
+            catalogOverride: resolved.spec ?? null,
+            effectiveModel,
+          }
+        : null,
+      runtimeConfig: {
+        permissionMode: config.mode ?? 'auto',
+        sandboxNetwork: config.sandboxNetwork ?? 'allow',
+        additionalDirectories: config.additionalDirectories ?? [],
+        envAllowList: config.envAllowList ?? [],
+        workspaceTrusted: bundle.workspace
+          ? isWorkspaceTrusted(config, bundle.workspace.rootPath)
+          : null,
+      },
+      ...bundle,
+    },
+    null,
+    2,
+  )}\n`
+}
+
+/**
+ * 端点的主机与路径影响协议排查，但 URL 也能夹带 Basic Auth 或 `?key=`。
+ * 这些值与 API key / header value 同属凭证，诊断包一律不带。
+ */
+function safeBaseUrl(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return '[invalid URL omitted]'
   }
 }
 
@@ -121,7 +308,7 @@ function hasRunFor(bundle: ArchiveBundle, m: Message): boolean {
   return bundle.runs.some((r) => r.assistantMessageId === m.id)
 }
 
-function renderRun(run: Run & { steps: Step[] }, limit: number, thinking: boolean): string[] {
+function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: boolean): string[] {
   const out: string[] = ['## 助手', '']
 
   for (const s of run.steps) {

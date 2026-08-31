@@ -32,8 +32,10 @@ import {
   getWorkspaceByPath,
   listConversations,
   listWorkspaces,
+  openProviderRequest,
   Store,
   setConversationTitle,
+  settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
 import type { ModelsResponse } from './conversations.ts'
@@ -984,6 +986,87 @@ describe('会话历史分页接口', () => {
     })
     const res = await call(`/api/conversations/${conv.id}/history?limit=0`, undefined, d)
     expect(res?.status).toBe(422)
+  })
+})
+
+describe('会话诊断导出接口', () => {
+  test('只导出路径里的那条会话，并以附件 JSON 返回', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+      title: '要排查的会话',
+    })
+    const message = appendMessage(d.store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '为什么只调用工具',
+    })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: workspaceId as never,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: message.id,
+      messageIdUpperBound: message.id,
+      contextSnapshot: [{ group: 'workspaceState', content: '分支 main' }],
+    })
+    appendStep(d.store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { path: 'calc.js' },
+        outcome: { status: 'success', executed: true, message: '读取完成' },
+      },
+    })
+    const request = openProviderRequest(d.store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      model: 'm',
+      measuredInputTokens: 80,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'payload-hash',
+    })
+    settleProviderRequest(d.store, request.id, 'received', null, null, 'tool_calls')
+    finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+
+    const res = await call(`/api/conversations/${conv.id}/export`, undefined, d)
+    expect(res?.status).toBe(200)
+    expect(res?.headers.get('content-type')).toContain('application/json')
+    expect(res?.headers.get('content-disposition')).toContain(`qywork-session-${conv.id}.json`)
+    const payload = (await res?.json()) as {
+      kind: string
+      schemaVersion: number
+      conversation: { id: string }
+      messages: { content: string }[]
+      runs: {
+        contextSnapshot: { group: string; content: string }[]
+        steps: { toolName: string }[]
+        providerRequests: { finishReason: string }[]
+      }[]
+    }
+    expect(payload.kind).toBe('qywork.session-diagnostic')
+    expect(payload.schemaVersion).toBe(2)
+    expect(payload.conversation.id).toBe(conv.id)
+    expect(payload.messages.map((m) => m.content)).toEqual(['为什么只调用工具'])
+    expect(payload.runs[0]?.contextSnapshot).toEqual([
+      { group: 'workspaceState', content: '分支 main' },
+    ])
+    expect(payload.runs[0]?.steps[0]?.toolName).toBe('read_file')
+    expect(payload.runs[0]?.providerRequests[0]?.finishReason).toBe('tool_calls')
+  })
+
+  test('不存在的会话回 404，不生成空诊断包', async () => {
+    const res = await call('/api/conversations/cv_nope/export')
+    expect(res?.status).toBe(404)
   })
 })
 

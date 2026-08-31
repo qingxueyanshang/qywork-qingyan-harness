@@ -55,6 +55,46 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(picked.into_iter().map(|p| p.to_string()).collect())
 }
 
+/// 用系统保存对话框写出一份会话诊断文件。
+///
+/// 会话内容仍由 sidecar 的 HTTP 接口产生；外壳只接收已经生成好的字节并让用户决定
+/// 落在哪里，不读取数据库，也不持有第二份会话状态。取消不是错误，返回 `None`。
+#[cfg(desktop)]
+#[tauri::command]
+async fn save_session_export(
+    app: AppHandle,
+    file_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tauri::async_runtime::channel(1);
+    app.dialog()
+        .file()
+        .add_filter("QyWork 会话诊断", &["json"])
+        .set_file_name(file_name)
+        .save_file(move |file| {
+            let _ = tx.blocking_send(file);
+        });
+    let mut rx = rx;
+    let Some(file) = rx.recv().await.flatten() else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, contents).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// 手机端不经 Tauri 外壳保存，前端会走浏览器下载；保留同名命令只是让移动构建完整。
+#[cfg(mobile)]
+#[tauri::command]
+async fn save_session_export(
+    _app: AppHandle,
+    _file_name: String,
+    _contents: String,
+) -> Result<Option<String>, String> {
+    Err("移动端请使用浏览器下载".into())
+}
+
 /// 窗口控制。
 ///
 /// 关掉系统装饰之后，最小化 / 最大化 / 关闭三个动作没有别的入口了，
@@ -251,6 +291,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pick_workspace,
             pick_files,
+            save_session_export,
             reveal_workspace,
             remember_workspace,
             window_minimize,

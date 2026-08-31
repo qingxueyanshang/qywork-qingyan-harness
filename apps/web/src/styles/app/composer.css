@@ -720,15 +720,6 @@
   font-size: var(--fs-xs);
 }
 
-/* 命令面板里的同一条说明。它不是快捷键，所以不用 kbd 的键帽样式。 */
-.palette-hint {
-  min-width: 0;
-  margin-left: auto;
-  padding-left: var(--s-3);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-}
-
 /* ── 附件 ──
    已发送附件继续使用紧凑 chip；待发附件使用 `.pending` 修饰，挂在输入框内部。 */
 .attach-row {

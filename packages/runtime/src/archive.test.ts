@@ -4,14 +4,20 @@ import {
   appendMessage,
   appendStep,
   createConversation,
+  createGoal,
   createRun,
   finishRun,
+  openProviderRequest,
+  recordLoadedTools,
+  registerResource,
   Store,
+  setExtraEnabled,
+  settleProviderRequest,
   settleToolStep,
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
-import { collect, exportConversation } from './archive.ts'
+import { collect, exportConversation, exportConversationDiagnostics } from './archive.ts'
 
 function fixture(): { store: Store; conversationId: ConversationId } {
   const store = new Store({ path: ':memory:' })
@@ -34,8 +40,16 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     clientRequestId: crypto.randomUUID(),
     userMessageId: msg.id,
     messageIdUpperBound: msg.id,
-    contextSnapshot: [],
+    contextSnapshot: [
+      { group: 'workspaceState', content: '分支 main，工作区有未提交修改' },
+      { group: 'skills', content: '技能：先验证再修改' },
+      { group: 'memory', content: '记忆：保留用户改动' },
+      { group: 'mcpTools', content: '按需工具：mcp__docs__search' },
+    ],
   })
+  createGoal(store, { conversationId: conv.id, objective: '修好 calc.js' })
+  recordLoadedTools(store, conv.id, ['mcp__docs__search'])
+  setExtraEnabled(store, conv.id, 'skill:legacy', false)
 
   const ok = appendStep(store, {
     runId: run.id,
@@ -49,6 +63,17 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     args: { path: 'calc.js' },
     outcome: { status: 'success', executed: true, message: '读取 calc.js（4 行）' },
     action: { kind: 'read', objectLabel: '文件', target: 'calc.js' },
+  })
+  registerResource(store, {
+    runId: run.id,
+    stepId: ok.id,
+    toolName: 'read_file',
+    sourceType: 'file',
+    status: 'complete',
+    contentHash: 'sha256:calc',
+    sizeBytes: 128,
+    mimeType: 'text/javascript',
+    coverage: { deliveredBytes: 128, totalBytes: 128, truncated: false },
   })
 
   const bad = appendStep(store, {
@@ -87,19 +112,54 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     currency: 'USD',
     turns: [],
   })
+  const request = openProviderRequest(store, {
+    runId: run.id,
+    turnIndex: 0,
+    retryIndex: 0,
+    model: 'deepseek-v4-flash',
+    measuredInputTokens: 98,
+    sentCategories: {} as never,
+    omittedCategories: {} as never,
+    payloadHash: 'payload-hash',
+  })
+  settleProviderRequest(
+    store,
+    request.id,
+    'received',
+    { inputTokens: 100, outputTokens: 20, cachedTokens: null, cacheWriteTokens: null },
+    null,
+    'tool_calls',
+  )
   finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
 
   return { store, conversationId: conv.id }
 }
 
 describe('采集', () => {
-  test('会话、消息、run、step 都取到了', () => {
+  test('工作区、会话状态、运行上下文、消息、step、资源与逐请求账本都取到了', () => {
     const { store, conversationId } = fixture()
     const b = collect(store, conversationId)
+    expect(b.workspace?.rootPath).toBe('/tmp/ws')
     expect(b.conversation?.id).toBe(conversationId)
     expect(b.messages).toHaveLength(1)
+    expect(b.sessionState.goal?.objective).toBe('修好 calc.js')
+    expect(b.sessionState.loadedTools).toEqual(['mcp__docs__search'])
+    expect(b.sessionState.disabledExtras).toEqual(['skill:legacy'])
     expect(b.runs).toHaveLength(1)
+    expect(b.runs[0]!.contextSnapshot.map((s) => s.group)).toEqual([
+      'workspaceState',
+      'skills',
+      'memory',
+      'mcpTools',
+    ])
     expect(b.runs[0]!.steps).toHaveLength(3)
+    expect(b.runs[0]!.resources[0]).toMatchObject({
+      toolName: 'read_file',
+      contentHash: 'sha256:calc',
+      sizeBytes: 128,
+    })
+    expect(b.runs[0]!.providerRequests[0]?.finishReason).toBe('tool_calls')
+    expect(b.collectionErrors).toEqual([])
     store.close()
   })
 
@@ -196,6 +256,97 @@ describe('json：给脚本读', () => {
     const { store, conversationId } = fixture()
     const parsed = JSON.parse(exportConversation(store, conversationId, 'json'))
     expect(typeof parsed.exportedAt).toBe('number')
+    store.close()
+  })
+})
+
+describe('诊断导出', () => {
+  test('带请求形状所需的接口信息，但不泄露凭证值', () => {
+    const { store, conversationId } = fixture()
+    const text = exportConversationDiagnostics(store, conversationId, {
+      active: { provider: 'p', model: 'deepseek-v4-flash' },
+      providers: {
+        p: {
+          kind: 'openai_chat_completions',
+          apiKey: 'secret-api-key',
+          baseUrl: 'https://user:url-password@relay.example/v1?key=url-secret#fragment',
+          headers: { Authorization: 'secret-header', 'X-Route': 'route-a' },
+          models: { 'deepseek-v4-flash': { effort: 'high' } },
+        },
+      },
+    })
+    const parsed = JSON.parse(text)
+    expect(parsed.kind).toBe('qywork.session-diagnostic')
+    expect(parsed.schemaVersion).toBe(2)
+    expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: '0.1.5' })
+    expect(parsed.provider).toMatchObject({
+      name: 'p',
+      kind: 'openai_chat_completions',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://relay.example/v1',
+      effort: 'high',
+      headerNames: ['Authorization', 'X-Route'],
+    })
+    expect(parsed.provider.effectiveModel).toMatchObject({
+      id: 'deepseek-v4-flash',
+      provider: 'openai_chat_completions',
+    })
+    expect(parsed.runtimeConfig).toMatchObject({
+      permissionMode: 'auto',
+      sandboxNetwork: 'allow',
+      workspaceTrusted: false,
+    })
+    expect(parsed.runs[0].contextSnapshot).toHaveLength(4)
+    expect(parsed.runs[0].resources[0].contentHash).toBe('sha256:calc')
+    expect(parsed.runs[0].providerRequests[0].finishReason).toBe('tool_calls')
+    expect(text).not.toContain('secret-api-key')
+    expect(text).not.toContain('secret-header')
+    expect(text).not.toContain('route-a')
+    expect(text).not.toContain('url-password')
+    expect(text).not.toContain('url-secret')
+    store.close()
+  })
+
+  test('工具专用且无正文/思考的异常形状能被原样识别', () => {
+    const { store, conversationId } = fixture()
+    store.db.query("DELETE FROM steps WHERE kind = 'text'").run()
+
+    const parsed = JSON.parse(
+      exportConversationDiagnostics(store, conversationId, {
+        active: { provider: 'p', model: 'deepseek-v4-flash' },
+        providers: {
+          p: {
+            kind: 'openai_chat_completions',
+            apiKey: 'secret-api-key',
+            models: { 'deepseek-v4-flash': {} },
+          },
+        },
+      }),
+    )
+    const run = parsed.runs[0]
+    expect(run.steps.every((step: { kind: string }) => step.kind === 'tool_action')).toBe(true)
+    expect(run.steps.map((step: { toolName: string }) => step.toolName)).toEqual([
+      'read_file',
+      'run_command',
+    ])
+    expect(run.providerRequests[0].finishReason).toBe('tool_calls')
+    expect(run.stopReason).toBe('completed')
+    expect(parsed.runSignals[0]).toMatchObject({
+      runId: run.id,
+      textSteps: 0,
+      thinkingSteps: 0,
+      toolSteps: 2,
+      failedToolSteps: 1,
+      finishReasons: ['tool_calls'],
+      hasUnsettledProviderRequest: false,
+      toolOnly: true,
+    })
+    expect(parsed.coverage).toMatchObject({
+      messages: 'full',
+      steps: 'full',
+      rawProviderBodies: 'not_persisted',
+      configuredCredentials: 'redacted',
+    })
     store.close()
   })
 })

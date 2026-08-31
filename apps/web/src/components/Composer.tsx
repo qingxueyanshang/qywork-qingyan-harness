@@ -443,9 +443,6 @@ export function Composer() {
    *
    * 只在**整段草稿就是一个 `/xxx`** 时才弹（见 `matchSlash`）——正文里的路径
    * `src/lib` 或代码里的除号不该把面板弹出来。
-   *
-   * 命令表和 Ctrl-K 那个面板**是同一份**（`lib/commands.ts`）。两份清单
-   * 必然漂移成「Ctrl-K 搜得到、打 / 搜不到」，而那种不一致没人会当成 bug。
    */
   const slashHits = () => matchSlash(text())
   const executeSlash = (cmd: Command, arg?: string) => {
