@@ -27,7 +27,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HTTP, videoData } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
@@ -46,10 +46,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
    * 不会因为这个改动开始收到它不认识的字段。
    */
-  get transmits(): { effort: boolean } {
+  get transmits(): { effort: boolean; video: boolean } {
     // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
     // 恒 true 会让 `qy probe` 的 effort 探针在发不出该字段的模型上全部假通过。
-    return { effort: effortIsTransmittable(this.spec) }
+    return { effort: effortIsTransmittable(this.spec), video: true }
   }
   readonly spec: ModelSpec
   private readonly client: OpenAI
@@ -430,7 +430,15 @@ interface CompatChunk {
 /** 发出去的一条消息。四个分支各带一部分字段，所以除 `role` 外全可选。 */
 interface CompatOutMessage {
   role: string
-  content: string | { type: string; text?: string; image_url?: { url: string } }[] | null
+  content:
+    | string
+    | {
+        type: string
+        text?: string
+        image_url?: { url: string }
+        video_url?: { url: string }
+      }[]
+    | null
   tool_call_id?: string | undefined
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
   reasoning_content?: string
@@ -502,9 +510,15 @@ function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessa
 function toMultimodal(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'text', text: b.text }
+    if (b.type === 'image') {
+      return {
+        type: 'image_url',
+        image_url: { url: `data:${b.mimeType};base64,${imageData(b.source)}` },
+      }
+    }
     return {
-      type: 'image_url',
-      image_url: { url: `data:${b.mimeType};base64,${imageData(b.source)}` },
+      type: 'video_url',
+      video_url: { url: `data:${b.mimeType};base64,${videoData(b.source)}` },
     }
   })
 }

@@ -181,6 +181,30 @@ describe('工具结果带图片', () => {
   })
 })
 
+describe('用户消息带视频', () => {
+  test('视频块按原生 video_url Data URL 发送', async () => {
+    const body = await send(
+      'qwen3.7-plus',
+      undefined,
+      [],
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'video', mimeType: 'video/mp4', source: { kind: 'base64', data: 'QUJD' } },
+            { type: 'text', text: '描述视频内容' },
+          ],
+        },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages[0]?.content).toEqual([
+      { type: 'video_url', video_url: { url: 'data:video/mp4;base64,QUJD' } },
+      { type: 'text', text: '描述视频内容' },
+    ])
+  })
+})
+
 describe('DeepSeek 要两个字段一起发', () => {
   /**
    * 复现原始失败形状：只发 `reasoning_effort` 时实测「每一档 reasoning_tokens

@@ -64,6 +64,7 @@ export {
   type GoalWriteResult,
   type IntermediateResourceRef,
   isInlineImage,
+  isInlineVideo,
   type Message,
   mimeOf,
   type PermissionMode,

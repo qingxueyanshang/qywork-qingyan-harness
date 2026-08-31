@@ -620,7 +620,14 @@ export class AgentLoop {
   ): Promise<AsyncIterable<ProviderEvent>> {
     const provider = adapter.spec.provider
     const idleMs = this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(req.effort)
-    const it = adapter.stream(await materialize(req, adapter.spec.vision))[Symbol.asyncIterator]()
+    const it = adapter
+      .stream(
+        await materialize(req, {
+          image: adapter.spec.vision,
+          video: adapter.spec.video && adapter.transmits.video === true,
+        }),
+      )
+      [Symbol.asyncIterator]()
 
     /** 等一个事件，超时就判流卡死并中止本次请求。 */
     const step = async (): Promise<IteratorResult<ProviderEvent>> => {
@@ -2194,9 +2201,16 @@ export function envelopeResult(
 
 /** 图像块进请求体的上限。10 MB 的 base64 约 13 MB，已经贴着多数 provider 的单请求上限。 */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+/** 本地视频当前走 Data URL，与浏览器附件入口保持同一个请求体上限。 */
+const MAX_VIDEO_BYTES = 10 * 1024 * 1024
+
+export interface InputMediaCapabilities {
+  image: boolean | null
+  video: boolean
+}
 
 /**
- * 把 path 形态的图像块换成 base64，交给适配器。
+ * 把 path 形态的图片和视频块换成临时 base64，交给适配器。
  *
  * **产副本，绝不回写。** 原地改会同时坏两件事：
  *
@@ -2206,32 +2220,34 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
  *   内存里常驻整个 run。
  *
- * **读盘只处理附件那一种。** 走到这里的 path 形态**只可能来自用户附件**——工具读到的图在观察那一刻
- * 就已经是字节了（见 `ImageSource`）。附件是活引用：用户改了自己的文件，历史跟着变，那是他自己的
- * 文件，这个语义是对的。
+ * path 形态只来自当前轮用户附件。工具读到的图在观察时已经是字节，历史附件只保留引用说明。
  *
- * **图片发不发得出去也在这里裁决**，判据是 `spec.vision`。这一处覆盖全部来源——
- * 用户附件、工具返回的图、MCP 返回的图、换模型之前留在历史里的旧图。
+ * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输。
  *
- * **读不到不是致命错。** 文件没了、超了上限、模型不收图片——都换成一个文本块，
- * 不抛。一张图发不出去不该让整轮起不来，而**必须让模型看见这句话**：静默丢掉时
- * 模型会把这次读取当成已完成。
+ * 文件不存在、超过上限或能力不支持时换成文本说明，不让整轮静默丢失媒体。
  */
-export async function materialize(req: ChatRequest, vision: boolean | null): Promise<ChatRequest> {
+export async function materialize(
+  req: ChatRequest,
+  capabilities: InputMediaCapabilities,
+): Promise<ChatRequest> {
   if (!req.messages.some((m) => typeof m.content !== 'string')) return req
   const messages = await Promise.all(
     req.messages.map(async (m) => {
       if (typeof m.content === 'string') return m
-      const blocks = await Promise.all(m.content.map((b) => loadBlock(b, vision)))
+      const blocks = await Promise.all(m.content.map((b) => loadBlock(b, capabilities)))
       return { ...m, content: blocks }
     }),
   )
   return { ...req, messages }
 }
 
-async function loadBlock(b: ContentBlock, vision: boolean | null): Promise<ContentBlock> {
-  if (b.type !== 'image') return b
-  const where = b.source.kind === 'path' ? `图片 ${b.source.path}` : '图片'
+async function loadBlock(
+  b: ContentBlock,
+  capabilities: InputMediaCapabilities,
+): Promise<ContentBlock> {
+  if (b.type === 'text') return b
+  const label = b.type === 'image' ? '图片' : '视频'
+  const where = b.source.kind === 'path' ? `${label} ${b.source.path}` : label
   const note = (why: string): ContentBlock => ({ type: 'text', text: `［${where}：${why}］` })
 
   /*
@@ -2241,19 +2257,24 @@ async function loadBlock(b: ContentBlock, vision: boolean | null): Promise<Conte
    * `ModelSpec.vision` 上）。少了这一支，带图的会话切到纯文本模型之后每一轮都被
    * 端点以 400 拒绝，而手动删图救不回历史里已有的那些。
    */
-  if (vision === false) return note('当前模型不接受图片输入，这一张没有发出去')
+  if (b.type === 'image' && capabilities.image === false) {
+    return note('当前模型不接受图片输入，这一张没有发出去')
+  }
+  if (b.type === 'video' && !capabilities.video) {
+    return note('当前模型或接口不接受原生视频输入，这一段没有发出去')
+  }
 
   if (b.source.kind !== 'path') return b
   const { path } = b.source
 
   const info = await stat(path).catch(() => null)
   if (!info?.isFile()) return note('已不存在')
-  if (info.size > MAX_IMAGE_BYTES) return note('超过 10 MB，未发送')
+  const limit = b.type === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
+  if (info.size > limit) return note('超过当前 10 MB 传输上限，未发送')
   const bytes = await readFile(path).catch(() => null)
   if (!bytes) return note('读取失败')
   return {
-    type: 'image',
-    mimeType: b.mimeType,
+    ...b,
     source: { kind: 'base64', data: bytes.toString('base64') },
   }
 }

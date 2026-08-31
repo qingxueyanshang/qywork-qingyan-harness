@@ -289,6 +289,33 @@ describe('历史装配', () => {
     expect(history).toHaveLength(4)
   })
 
+  test('只让当前用户消息发送媒体，历史附件保留引用', async () => {
+    const { store, conv } = fixture()
+    appendMessage(store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '第一轮',
+      attachments: [
+        { type: 'image', name: 'old.png', mime: 'image/png', size: 1, path: 'old.png' },
+      ],
+    })
+    const current = appendMessage(store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '第二轮',
+      attachments: [
+        { type: 'video', name: 'now.mp4', mime: 'video/mp4', size: 1, path: 'now.mp4' },
+      ],
+    }).id
+    const mediaFlags: boolean[] = []
+    await buildHistory(store, conv.id, current, async (content, _files, includeMedia) => {
+      mediaFlags.push(includeMedia)
+      return content
+    })
+
+    expect(mediaFlags).toEqual([false, true])
+  })
+
   test('每个 run 的上下文只出现在所属真实用户消息之前，重复重建不漂移', async () => {
     const { store, conv, ask, run } = fixture()
     const m1 = ask('第一轮')

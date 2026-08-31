@@ -140,7 +140,7 @@ describe('适配器如实声明自己发不发 effort', () => {
       { kind: 'openai_chat_completions', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
       lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
     )
-    expect(a.transmits).toEqual({ effort: true })
+    expect(a.transmits).toEqual({ effort: true, video: true })
   })
 })
 

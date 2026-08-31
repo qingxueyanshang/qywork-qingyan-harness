@@ -196,7 +196,7 @@ export interface Message {
 }
 
 export interface Attachment {
-  type: 'image' | 'file'
+  type: 'image' | 'video' | 'file'
   name: string
   mime: string
   /**
@@ -230,10 +230,16 @@ export interface Attachment {
  * 按扩展名而不是 mime：路径型附件没有 mime，它只有一个路径。
  */
 const INLINE_IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i
+const INLINE_VIDEO_RE = /\.(mp4|mov|webm|mkv)$/i
 
 /** 这个路径或文件名算不算可内联的图片。 */
 export function isInlineImage(pathOrName: string): boolean {
   return INLINE_IMAGE_RE.test(pathOrName)
+}
+
+/** 这个路径或文件名算不算可直接提交给视频模型的视频。 */
+export function isInlineVideo(pathOrName: string): boolean {
+  return INLINE_VIDEO_RE.test(pathOrName)
 }
 
 /** 扩展名 → mime。只覆盖可内联的那几种，其余交给通用二进制类型。 */
@@ -243,12 +249,18 @@ export function mimeOf(pathOrName: string): string {
   if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
   if (ext === 'gif') return 'image/gif'
   if (ext === 'webp') return 'image/webp'
+  if (ext === 'mp4') return 'video/mp4'
+  if (ext === 'mov') return 'video/quicktime'
+  if (ext === 'webm') return 'video/webm'
+  if (ext === 'mkv') return 'video/x-matroska'
   return 'application/octet-stream'
 }
 
 /** 附件分类。判据与 `isInlineImage` 同一处，不要在别处再判一次。 */
 export function attachmentTypeOf(pathOrName: string): Attachment['type'] {
-  return isInlineImage(pathOrName) ? 'image' : 'file'
+  if (isInlineImage(pathOrName)) return 'image'
+  if (isInlineVideo(pathOrName)) return 'video'
+  return 'file'
 }
 
 /** 路径里的文件名。两种分隔符都要吃——拖放给的是平台原生分隔符。 */
