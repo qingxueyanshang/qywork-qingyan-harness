@@ -17,6 +17,7 @@ import {
   updateRunUsage,
   upsertWorkspace,
 } from '@qywork/store'
+import pkg from '../package.json' with { type: 'json' }
 import { collect, exportConversation, exportConversationDiagnostics } from './archive.ts'
 
 function fixture(): { store: Store; conversationId: ConversationId } {
@@ -278,7 +279,7 @@ describe('诊断导出', () => {
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
     expect(parsed.schemaVersion).toBe(2)
-    expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: '0.1.5' })
+    expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
       kind: 'openai_chat_completions',

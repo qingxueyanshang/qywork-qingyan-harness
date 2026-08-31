@@ -36,4 +36,20 @@ describe('桌面发布清单', () => {
     expect(sidecar).toBeGreaterThan(-1)
     expect(gate).toBeGreaterThan(sidecar)
   })
+
+  test('Windows 发布必须携带当前版本的更新说明', () => {
+    const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim()
+    const notes = readFileSync(
+      new URL(`../.github/release-notes/v${version}.md`, import.meta.url),
+      'utf8',
+    )
+    const workflow = readFileSync(
+      new URL('../.github/workflows/release-windows.yml', import.meta.url),
+      'utf8',
+    )
+
+    expect(notes).toContain('## 本次更新')
+    expect(workflow).toContain('.github/release-notes/v$version.md')
+    expect(workflow).toContain('releaseBody: $' + '{{ steps.release_notes.outputs.body }}')
+  })
 })
