@@ -53,8 +53,8 @@ export interface LoadResult {
   loaded: string[]
   /** 本来就在表里的。不是错误——重复注册会抛，那是装配错误的信号，不该由模型触发。 */
   already: string[]
-  /** 池子里没有这个名字。 */
-  unknown: string[]
+  /** 加载目标没有命中待加载池。 */
+  notFound: string[]
 }
 
 /**
@@ -96,7 +96,7 @@ export class PendingToolPool {
   }
 
   load(names: readonly string[]): LoadResult {
-    const out: LoadResult = { loaded: [], already: [], unknown: [] }
+    const out: LoadResult = { loaded: [], already: [], notFound: [] }
     for (const name of names) {
       if (this.deps.registry.has(name)) {
         out.already.push(name)
@@ -104,7 +104,7 @@ export class PendingToolPool {
       }
       const spec = this.pending.get(name)
       if (!spec) {
-        out.unknown.push(name)
+        out.notFound.push(name)
         continue
       }
       this.deps.registry.register(spec)
@@ -173,12 +173,12 @@ export function makeLoadToolTool(pool: PendingToolPool): ToolSpec {
         parts.push(`已装入 ${r.loaded.length} 个工具：${r.loaded.join('、')}，现在可以直接调用。`)
       }
       if (r.already.length) parts.push(`本来就在工具表里：${r.already.join('、')}。`)
-      if (r.unknown.length) {
+      if (r.notFound.length) {
         // 列出可加载的名字而不是只说「找不到」：模型通常是名字记错了一个字，
         // 给它候选它下一轮就能自己修正（同 `read_skill` 的做法）。
         const available = pool.index().map((t) => t.name)
         parts.push(
-          `没有这些工具：${r.unknown.join('、')}。` +
+          `加载目标未命中：${r.notFound.join('、')}。` +
             (available.length ? `可加载的是：${available.join('、')}。` : '当前没有待加载的工具。'),
         )
       }

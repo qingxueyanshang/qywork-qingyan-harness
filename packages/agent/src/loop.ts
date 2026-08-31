@@ -1560,10 +1560,9 @@ export class AgentLoop {
         /*
          * **名字不在注册表里的，一律不进执行链。**
          *
-         * 注册表是工具的唯一权威——名字不在表里的调用不是工具，它是 provider
-         * 违反了下发的工具表（模型编造了一个名字）。放它进去就会开出一条
-         * tool step、发一条 `tool.started`，界面上多一张既没有动作、也什么都没做的
-         * 卡片，而标题只能编（「读取 xxx」或「未知工具」都是在给不存在的工具造词条）。
+         * 注册表是工具的唯一权威——名字不在表里就是未注册调用，不是一种工具。
+         * 放它进去会开出一条没有动作、也没有执行事实的 tool step，迫使界面替它
+         * 编造标题。
          *
          * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
          * 渲染那侧不再需要任何兜底分支。
@@ -1584,7 +1583,7 @@ export class AgentLoop {
           const outcome: ToolOutcome = {
             status: 'failure',
             executed: false,
-            message: `没有这个工具：${c.name}。只能调用工具表里列出的那些。`,
+            message: `未注册调用：${c.name}。只能调用工具表中已注册的工具。`,
           }
           transcript.push({
             role: 'tool',

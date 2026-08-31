@@ -706,7 +706,7 @@ export type StepPayload =
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
 export interface ToolOutcomeWire {
   status: 'success' | 'failure'
-  /** 是否真的执行了。权限拒绝 / 未知工具 = false，绝不伪装成功。 */
+  /** 是否真的执行了。权限拒绝 / 注册表未命中 = false，绝不伪装成功。 */
   executed: boolean
   message: string
   data?: Record<string, unknown>

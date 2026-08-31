@@ -80,7 +80,7 @@ describe('工具集', () => {
     store.close()
   })
 
-  test('未知工具名被忽略，其余照常注册', async () => {
+  test('无效工具引用被忽略，其余照常注册', async () => {
     const { names, store } = await session({ allowedTools: ['read_file', 'read_files'] })
     expect(names()).toEqual(['read_file'])
     store.close()

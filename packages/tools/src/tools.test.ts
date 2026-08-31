@@ -567,12 +567,12 @@ describe('权限闸', () => {
 })
 
 describe('注册表', () => {
-  test('未知工具 fail-closed，不伪装成功', async () => {
+  test('注册表未命中 fail-closed，不伪装成功', async () => {
     const root = await workspace()
     const out = await registry().execute('no_such_tool', {}, ctx(root))
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(false)
-    expect(out.errorKind).toBe('unknown_tool')
+    expect(out.errorKind).toBe('unregistered_tool_call')
   })
 
   test('重名注册直接抛，不静默覆盖', () => {

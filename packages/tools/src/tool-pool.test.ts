@@ -113,7 +113,9 @@ describe('待加载池', () => {
     const { spec } = pooled(['mcp__demo__search'])
     const out = await spec.fn({ names: ['mcp__demo__serach'] }, ctx())
     expect(out.status).toBe('failure')
+    expect(out.message).toContain('加载目标未命中：mcp__demo__serach')
     expect(out.message).toContain('mcp__demo__search')
+    expect(out.data?.notFound).toEqual(['mcp__demo__serach'])
   })
 
   test('一半对一半错时装对的那些，并把错的说出来', async () => {

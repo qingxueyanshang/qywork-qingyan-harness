@@ -55,6 +55,18 @@ describe('注册期就挡住 provider 不收的名字', () => {
   })
 })
 
+describe('执行入口 fail-closed', () => {
+  test('注册表未命中返回未执行的结构化失败', async () => {
+    const out = await new ToolRegistry().execute('missing_tool', {}, {} as unknown as ToolContext)
+    expect(out).toEqual({
+      status: 'failure',
+      executed: false,
+      message: '未注册调用：missing_tool',
+      errorKind: 'unregistered_tool_call',
+    })
+  })
+})
+
 describe('消毒', () => {
   test('非法字符统一换成下划线', () => {
     expect(sanitizeToolName('demo.lines__count')).toBe('demo_lines__count')

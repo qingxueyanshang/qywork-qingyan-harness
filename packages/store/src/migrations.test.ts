@@ -120,7 +120,7 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     const db = dbBefore(16)
     insertStep(db, 's_none', 'weird', {
       kind: 'tool_result',
-      outcome: { message: '未知工具: weird' },
+      outcome: { message: '未注册调用：weird' },
     })
     applyOne(db, 16)
     const row = db

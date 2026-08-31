@@ -624,8 +624,8 @@ export class Session {
      * **角色点名的那一套不进池子。**
      *
      * `allowedTools` 是人挑过的一小把工具，把它们塞进池子有两个后果：模型要多花
-     * 一轮把角色本来就该有的工具装回来；而且下面那条未知名检查会把池子里的名字
-     * 全报成「未知工具名，已忽略」——让人去查一个不存在的问题。
+     * 一轮把角色本来就该有的工具装回来；而且下面的引用校验会把池子里的名字
+     * 全报成无效引用。
      */
     const onDemand =
       !allow && externalSchemaTokens(eligible, density) > EXTERNAL_SCHEMA_BUDGET_TOKENS
@@ -661,13 +661,13 @@ export class Session {
     // 的角色会安安静静地一个工具都没有，表现为「它什么也不干」。
     //
     // 判定必须**等扩展加载完**再做：插件和 MCP 工具是异步来的，
-    // 在构造函数里只比内置集合的话，一个合法的 `mcp__github__x` 会被报成
-    // 「未知工具名」——让人去查一个不存在的问题，比不提示更糟。
+    // 在构造函数里只比内置集合的话，一个合法的 `mcp__github__x` 会被误报成
+    // 无效工具引用，比不提示更糟。
     if (allow) {
-      const unknown = [...allow].filter((n) => !this.registry.has(n))
-      if (unknown.length) {
+      const invalid = [...allow].filter((n) => !this.registry.has(n))
+      if (invalid.length) {
         process.stderr.write(
-          `[qy] 角色 allowedTools 里有未知工具名，已忽略：${unknown.join('、')}\n`,
+          `[qy] 角色 allowedTools 含无效工具引用，已忽略：${invalid.join('、')}\n`,
         )
       }
     }
