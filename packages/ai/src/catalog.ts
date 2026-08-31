@@ -82,6 +82,8 @@ export interface ModelSpec {
    * （`false` 时图像块换成文本注记，历史里的旧图与工具返回的图一并覆盖）。
    */
   vision: boolean | null
+  /** 只有官方协议与当前适配器都核实支持时才为 true。未知模型按 false 处理。 */
+  video: boolean
   pricing: Pricing
   thinking: ThinkingMode
   /**
@@ -654,6 +656,7 @@ const CLAUDE_BASE = {
   maxOutputTokens: 128_000,
   // Claude 5 与 4 系全部收图片（官方模型页的输入模态一栏）。
   vision: true,
+  video: false,
   // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
   cacheRouting: 'none' as const,
   thinking: 'adaptive_only' as const,
@@ -781,6 +784,7 @@ function deepseekCatalog(): ModelSpec[] {
     thinking: 'deepseek_thinking' as const,
     // 只有下面那条视觉实验模型收图片，flash 与 pro 都不收。
     vision: false,
+    video: false,
     // chat/completions 那支的回传由 `openai-compat` 无条件发 `reasoning_content`，
     // 不读这一格。要回传的是下面 Responses 那支。
     reasoningEcho: 'none' as const,
@@ -936,6 +940,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     maxOutputTokens: null,
     // 没有出处就不裁决：挡住一个实际收图片的中转站模型，比不挡更糟。
     vision: null,
+    video: false,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
     thinking: 'none',
     /*
@@ -989,6 +994,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     density: DEFAULT_DENSITY,
     // 逐条按厂商规格页覆盖。这一档是「没有出处」，不裁决。
     vision: null as boolean | null,
+    video: false,
   }
   /** OpenAI 兼容的命名档位，走 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
@@ -1243,6 +1249,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.8 Max',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(12, 36, 1.5),
@@ -1257,6 +1264,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.8 Flash',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.8, 2.7, 0.1),
@@ -1270,6 +1278,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.7 Max',
       vendor: 'alibaba',
       vision: false,
+      video: false,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(12, 36, 2.4),
@@ -1281,6 +1290,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.7 Plus',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(2, 8, 0.4),
@@ -1293,6 +1303,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.7 Flash',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.2, 0.8, 0.04),
@@ -1305,6 +1316,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Plus',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
       pricing: cny(1, 10, 0.2),
@@ -1317,6 +1329,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Flash',
       vendor: 'alibaba',
       vision: true,
+      video: true,
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
       pricing: cny(0.15, 1.5, 0.03),
@@ -1331,6 +1344,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Kimi K3',
       vendor: 'moonshot',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       // OpenAPI：默认 131,072，参数最大可设 1,048,576；运行时仍会按剩余上下文收紧。
       maxOutputTokens: 1_048_576,
@@ -1392,6 +1406,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'GLM-5.3 Flash',
       vendor: 'zhipu',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: glm53FlashPromo(now),
@@ -1429,6 +1444,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'GLM-5V Turbo',
       vendor: 'zhipu',
       vision: true,
+      video: true,
       contextWindow: 200_000,
       maxOutputTokens: 128_000,
       pricing: cny(5, 22, 1.2),
@@ -1441,6 +1457,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'GLM-4.6V',
       vendor: 'zhipu',
       vision: true,
+      video: true,
       contextWindow: 128_000,
       maxOutputTokens: 32_768,
       pricing: cny(1, 3, 0.2),
@@ -1455,6 +1472,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'MiniMax M3',
       vendor: 'minimax',
       vision: true,
+      video: true,
       contextWindow: 1_000_000,
       // OpenAI 兼容接口：推荐 131,072，参数最大可设 524,288。
       maxOutputTokens: 524_288,

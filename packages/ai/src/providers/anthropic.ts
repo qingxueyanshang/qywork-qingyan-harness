@@ -462,10 +462,13 @@ function buildMessages(
 function toBlocks(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'text', text: b.text }
-    return {
-      type: 'image',
-      source: { type: 'base64', media_type: b.mimeType, data: imageData(b.source) },
+    if (b.type === 'image') {
+      return {
+        type: 'image',
+        source: { type: 'base64', media_type: b.mimeType, data: imageData(b.source) },
+      }
     }
+    throw new Error('Anthropic 适配器不支持视频内容块')
   })
 }
 

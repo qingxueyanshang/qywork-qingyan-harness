@@ -257,6 +257,9 @@ describe('图片输入', () => {
     expect(lookupModel('glm-5.3-flash', 'openai_chat_completions').vision).toBe(true)
     expect(lookupModel('qwen3.7-max', 'openai_chat_completions').vision).toBe(false)
     expect(lookupModel('qwen3.7-plus', 'openai_chat_completions').vision).toBe(true)
+    expect(lookupModel('qwen3.7-max', 'openai_chat_completions').video).toBe(false)
+    expect(lookupModel('qwen3.7-plus', 'openai_chat_completions').video).toBe(true)
+    expect(lookupModel('中转站上的某个模型', 'openai_chat_completions').video).toBe(false)
   })
 
   /** DeepSeek 那两条的唯一差别就是这一项，两条协议下都成立。 */
@@ -265,6 +268,39 @@ describe('图片输入', () => {
       expect(lookupModel('deepseek-v4-flash', kind).vision).toBe(false)
       expect(lookupModel('deepseek-v4-flash-vision-exp', kind).vision).toBe(true)
     }
+  })
+})
+
+describe('视频输入', () => {
+  test('完整内置目录只放行官方协议与当前适配器都支持的模型', () => {
+    const supported = builtinCatalog()
+      .filter((spec) => spec.video)
+      .map((spec) => `${spec.provider}:${spec.id}`)
+      .sort()
+
+    expect(supported).toEqual(
+      [
+        'openai_chat_completions:MiniMax-M3',
+        'openai_chat_completions:glm-4.6v',
+        'openai_chat_completions:glm-5.3-flash',
+        'openai_chat_completions:glm-5v-turbo',
+        'openai_chat_completions:kimi-k3',
+        'openai_chat_completions:qwen3-vl-flash',
+        'openai_chat_completions:qwen3-vl-plus',
+        'openai_chat_completions:qwen3.7-flash',
+        'openai_chat_completions:qwen3.7-plus',
+        'openai_chat_completions:qwen3.8-flash',
+        'openai_chat_completions:qwen3.8-max',
+      ].sort(),
+    )
+  })
+
+  test('原生模型支持但当前协议未接通时仍不放行', () => {
+    expect(lookupModel('gemini-3.7-flash', 'openai_chat_completions').video).toBe(false)
+    expect(lookupModel('gpt-5.6-sol', 'openai_chat_completions').video).toBe(false)
+    expect(lookupModel('claude-opus-5', 'anthropic_messages').video).toBe(false)
+    expect(lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions').video).toBe(false)
+    expect(lookupModel('中转站上的某个模型', 'openai_chat_completions').video).toBe(false)
   })
 })
 

@@ -724,18 +724,20 @@ export function Composer() {
     }
 
     /*
-     * 当前模型不收图片：**停在这里，不替用户摘图**。
-     *
-     * 判据只认 `false`（约定见服务端的 `ModelSpec.vision`），`null` 是
-     * 「厂商规格页没写」，照常发。
-     *
-     * 摘掉的话待发行上那几张图会无声消失；停住则正文、其余附件、图片都还在，
-     * 用户自己删图或换个模型。**只拦图片**：纯文本模型照样读得了 PDF 与文本附件。
+     * 图片能力未知时沿用现有试发语义；视频只有模型与协议均明确支持时才允许发送。
+     * 能力不符时保留草稿与附件，由用户换模型或移除媒体。
      */
     if (activeModelRow()?.vision === false && files.some((f) => f.type === 'image')) {
       setState('notice', {
         message: '当前模型不属于多模态，请取消图片发送',
         reason: 'model_without_vision',
+      })
+      return
+    }
+    if (activeModelRow()?.video !== true && files.some((f) => f.type === 'video')) {
+      setState('notice', {
+        message: '当前模型不支持视频输入',
+        reason: 'model_without_video',
       })
       return
     }

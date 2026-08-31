@@ -131,7 +131,7 @@ export interface WireMessage {
  * 两档不是同一件事的两个阶段，是**两种来源**，会同时出现在一次请求里。
  * `materialize`（`agent/loop.ts`）只把 path 那档换成字节，base64 那档原样通过。
  */
-export type ImageSource =
+export type MediaSource =
   /**
    * 用户拖 / 粘 / 选进来的附件。**引用他自己的文件，不复制**——那份文件归他所有，
    * 没有理由在别处再存一份。语义上是**活引用**：他改了那个文件，历史跟着变。
@@ -147,17 +147,19 @@ export type ImageSource =
    */
   | { kind: 'base64'; data: string }
 
+export type ImageSource = MediaSource
+export type VideoSource = MediaSource
+
 /**
  * 消息正文里的一块。
  *
- * **只有文本和图片两种。** 非图片附件不进内容块——装配层只把它的路径写进正文，
- * 由模型自己 `read_file`（`runtime` 的 `withAttachments`）。加回一个文档块会让
- * 三条协议各自需要一种降级写法，而其中至少一条（chat/completions）没有对应
- * 的块类型，只能退化成一行占位符——那是内容被静默丢掉。
+ * 普通文件不进内容块，装配层只把路径写进正文，由模型按需 `read_file`。
+ * 图片和视频保留路径引用，请求发出前才读取字节。
  */
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; mimeType: string; source: ImageSource }
+  | { type: 'video'; mimeType: string; source: VideoSource }
 
 /**
  * 取图像块的 base64。
@@ -169,6 +171,11 @@ export type ContentBlock =
 export function imageData(source: ImageSource): string {
   if (source.kind === 'base64') return source.data
   throw new Error(`图像块还是路径形态（${source.path}），materialize 没跑到`)
+}
+
+export function videoData(source: VideoSource): string {
+  if (source.kind === 'base64') return source.data
+  throw new Error(`视频块还是路径形态（${source.path}），materialize 没跑到`)
 }
 
 export interface WireToolCall {
@@ -264,6 +271,6 @@ export interface LlmAdapter {
    * **必须按 `spec` 算，不能是类级常量**，且判据只有 `effortIsTransmittable`
    * 一份——协议支持不等于这条模型的参数格式发得出去。
    */
-  readonly transmits: { effort: boolean }
+  readonly transmits: { effort: boolean; video?: boolean }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
 }

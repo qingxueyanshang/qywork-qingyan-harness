@@ -460,7 +460,10 @@ export function buildInput(
 function toResponsesContent(content: Exclude<WireMessage['content'], string>) {
   return content.map((b) => {
     if (b.type === 'text') return { type: 'input_text', text: b.text }
-    return { type: 'input_image', image_url: `data:${b.mimeType};base64,${imageData(b.source)}` }
+    if (b.type === 'image') {
+      return { type: 'input_image', image_url: `data:${b.mimeType};base64,${imageData(b.source)}` }
+    }
+    throw new Error('Responses 适配器不支持视频内容块')
   })
 }
 

@@ -178,6 +178,8 @@ export interface ModelOption {
    * 图片附件入口。与上面几行同源，逐模型不同，所以不走握手。
    */
   vision: boolean | null
+  /** 是否支持通过当前协议直接输入视频。 */
+  video: boolean
   /** false = 内置目录里没有，来自用户自己配的模型 id（自建端点 / 中转）。 */
   known: boolean
 }

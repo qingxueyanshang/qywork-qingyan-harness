@@ -46,6 +46,7 @@ import {
   EFFORT_ORDER,
   envelopeHeadTokens,
   isInlineImage,
+  isInlineVideo,
   mimeOf,
   toPosixPath,
 } from '@qywork/core'
@@ -415,7 +416,8 @@ export class Session {
       store,
       conversationId,
       run.messageIdUpperBound,
-      (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
+      (content, list, includeMedia) =>
+        withAttachments(this.opts.workspaceRoot, content, list as Attachment[], includeMedia),
       { preserveAssistantReasoning },
     )
 
@@ -1160,9 +1162,8 @@ const NEWLINE = String.fromCharCode(10)
 /**
  * 把附件变成 provider 认得的内容。
  *
- * **图片内联，其余给路径。** 图片除了内联没有别的路——模型看不到工具读不出来的内容（`read_file` 撞
- * 上二进制直接拒）。其余附件**只把路径写进正文**，模型要看就自己 `read_file`：省掉每一轮重放时那
- * 份 base64，也让「用户指定这个文件」表达成它本来的样子——一个位置。
+ * 当前轮的图片和视频进入内容块，其余附件只把路径写进正文。历史媒体只保留路径说明，
+ * 不在每一轮重复读取和传输。
  *
  * **路径不按工作区裁决。** `resolveInWorkspace` 那道边界约束的是**模型**——它挡的是模型自己构造出
  * 来的路径。附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质；判据
@@ -1183,6 +1184,7 @@ async function withAttachments(
   workspaceRoot: string,
   text: string,
   attachments: Attachment[],
+  includeMedia = true,
 ): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = []
   const notes: string[] = []
@@ -1194,20 +1196,34 @@ async function withAttachments(
       notes.push(`（附件 ${a.name} 已不存在，跳过）`)
       continue
     }
-    // 分类按扩展名，与界面显示缩略图用的是同一份判据（`core` 的 `isInlineImage`）。
+    const image = isInlineImage(a.path)
+    const video = isInlineVideo(a.path)
+    if (!includeMedia && (image || video)) {
+      notes.push(`（历史附件 ${a.name}：${toPosixPath(abs)}）`)
+      continue
+    }
+    // 分类按扩展名，与界面附件入口使用同一份判据。
     // 按 `a.type` 判会读到历史行里那个按 mime 算出来的旧值，两处给出不同答案。
-    if (!isInlineImage(a.path)) {
+    if (!image && !video) {
       // 给位置不给字节。模型读不到时 `read_file` 会明确报越界或不存在，不是静默失败。
       notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
       continue
     }
     // 只给位置，不读字节。读盘由 `agent/loop.ts` 的 `materialize` 在发出前做一次——
     // 被压缩折掉的那些轮次因此完全不必读盘，而这里读的话它们每一轮都白读一遍。
-    blocks.push({
-      type: 'image',
-      mimeType: mimeOf(a.path),
-      source: { kind: 'path', path: toPosixPath(abs) },
-    })
+    blocks.push(
+      image
+        ? {
+            type: 'image',
+            mimeType: mimeOf(a.path),
+            source: { kind: 'path', path: toPosixPath(abs) },
+          }
+        : {
+            type: 'video',
+            mimeType: mimeOf(a.path),
+            source: { kind: 'path', path: toPosixPath(abs) },
+          },
+    )
   }
 
   // 文本块放最后：附件是这句话的**语境**，先看图再读要求更符合阅读顺序。

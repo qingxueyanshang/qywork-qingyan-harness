@@ -1,5 +1,5 @@
 /**
- * 会话标题的派生口径。覆盖 `domain/model.ts` 里的 `deriveConversationTitle`。
+ * 会话标题与附件分类口径。覆盖 `domain/model.ts` 的对应纯函数。
  *
  * 它是全项目**唯一**一处产生会话标题的地方（`runtime/session.ts` 在第一条用户消息
  * 落库之后调它）。锁在这里而不是在 session 上，是因为那条路要真跑一轮才走得到，
@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { deriveConversationTitle } from './model.ts'
+import { attachmentTypeOf, deriveConversationTitle, mimeOf } from './model.ts'
 
 describe('从第一句话取标题', () => {
   test('短句原样留下', () => {
@@ -44,5 +44,14 @@ describe('从第一句话取标题', () => {
   test('空正文回空串', () => {
     expect(deriveConversationTitle('')).toBe('')
     expect(deriveConversationTitle('   \n  ')).toBe('')
+  })
+})
+
+describe('附件分类', () => {
+  test('视频按扩展名进入视频附件并得到正确 MIME', () => {
+    expect(attachmentTypeOf('clip.mp4')).toBe('video')
+    expect(attachmentTypeOf('clip.webm')).toBe('video')
+    expect(attachmentTypeOf('clip.txt')).toBe('file')
+    expect(mimeOf('clip.mp4')).toBe('video/mp4')
   })
 })

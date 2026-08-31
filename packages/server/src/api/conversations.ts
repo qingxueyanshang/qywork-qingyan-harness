@@ -70,6 +70,8 @@ export interface ModelRow {
    * 界面只在 `false` 时收起图片附件入口。`null` = 没有出处，照常放行。
    */
   vision: boolean | null
+  /** 是否支持通过当前协议直接输入视频。 */
+  video: boolean
   /** false = 内置目录里没有，计价与能力都只能按保守值算。 */
   known: boolean
 }
@@ -240,6 +242,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           effort: declared?.effort ?? null,
           currency: spec.pricing.currency ?? 'USD',
           vision: spec.vision,
+          video: spec.video,
           known: spec.catalogued !== false,
         }
       }),

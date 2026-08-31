@@ -75,6 +75,14 @@ function textTurn(text: string): string {
   ])
 }
 
+function chatTextTurn(text: string): string {
+  return (
+    `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n` +
+    'data: [DONE]\n\n'
+  )
+}
+
 let calls = 0
 /** 假 provider 收到的请求体。附件链路的断言要看模型**实际收到了什么**。 */
 const seenBodies: string[] = []
@@ -82,6 +90,11 @@ const provider = Bun.serve({
   port: 0,
   async fetch(req) {
     seenBodies.push(await req.text())
+    if (new URL(req.url).pathname.endsWith('/chat/completions')) {
+      return new Response(chatTextTurn('已经看完。'), {
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }
     calls++
     const body = calls === 1 ? toolTurn('out.txt', 'written by fake\n') : textTurn('已经写好了。')
     return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
@@ -111,6 +124,12 @@ beforeAll(async () => {
         apiKey: 'sk-fake',
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
         models: { 'deepseek-v4-flash': {}, 'deepseek-v4-flash-vision-exp': {} },
+      },
+      'fake-video': {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-fake',
+        baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+        models: { 'qwen3.7-plus': {} },
       },
     },
     mode: 'auto',
@@ -688,6 +707,84 @@ describe('图片附件', () => {
     expect(body.length).toBeGreaterThan(0)
     // 图片以 base64 进 image 块——原始字节的前缀应当出现在请求体里。
     expect(body).toContain(png.toString('base64').slice(0, 40))
+  })
+
+  test('当前轮视频进入 video_url，下一轮历史不重复传字节', async () => {
+    const video = Buffer.from('native-video-e2e')
+    await writeFile(join(ws_dir, 'clip.mp4'), video)
+    const conv = (await (
+      await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    ).json()) as { conversation?: { id?: string } }
+    const conversationId = conv.conversation?.id
+    expect(conversationId).toBeTruthy()
+
+    const before = seenBodies.length
+    const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    const settled = Promise.withResolvers<void>()
+    let finished = 0
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
+      if (msg.type === 'hello.ok') {
+        ws.send(
+          JSON.stringify({
+            type: 'conversation.setModel',
+            conversationId,
+            provider: 'fake-video',
+            model: 'qwen3.7-plus',
+          }),
+        )
+        ws.send(
+          JSON.stringify({
+            type: 'message.send',
+            clientRequestId: crypto.randomUUID(),
+            conversationId,
+            content: '描述视频内容',
+            attachments: [
+              {
+                type: 'video',
+                name: 'clip.mp4',
+                mime: 'video/mp4',
+                size: video.length,
+                path: 'clip.mp4',
+              },
+            ],
+          }),
+        )
+      }
+      if (msg.event?.type !== 'run.finished') return
+      finished++
+      if (finished === 1) {
+        ws.send(
+          JSON.stringify({
+            type: 'message.send',
+            clientRequestId: crypto.randomUUID(),
+            conversationId,
+            content: '继续',
+          }),
+        )
+      } else settled.resolve()
+    })
+    ws.addEventListener('open', () => {
+      ws.send(
+        JSON.stringify({
+          type: 'hello',
+          token: handle.token,
+          origin: 'desktop',
+          subscribe: [conversationId],
+        }),
+      )
+    })
+
+    const timer = setTimeout(() => settled.reject(new Error('run 超时')), 20_000)
+    await settled.promise
+    clearTimeout(timer)
+    ws.close()
+
+    const bodies = seenBodies.slice(before)
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0]).toContain(`data:video/mp4;base64,${video.toString('base64')}`)
+    expect(bodies[1]).toContain('历史附件 clip.mp4')
+    expect(bodies[1]).not.toContain(video.toString('base64'))
   })
 
   /**

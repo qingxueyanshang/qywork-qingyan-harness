@@ -38,6 +38,7 @@ const envelope = JSON.stringify({
 })
 
 const req = (messages: WireMessage[]) => ({ model: 'm', system: [], messages, tools: [] }) as never
+const media = (image: boolean | null, video = false) => ({ image, video })
 
 describe('工具结果里的图像块', () => {
   test('没有 images 时仍然是纯字符串', () => {
@@ -121,7 +122,7 @@ describe('materialize', () => {
         ],
       },
     ]
-    const out = await materialize(req(original), true)
+    const out = await materialize(req(original), media(true))
     const before = original[0]!.content as ContentBlock[]
     expect(before[1]).toMatchObject({ source: { kind: 'path' } })
     const after = out.messages[0]!.content as ContentBlock[]
@@ -131,7 +132,7 @@ describe('materialize', () => {
   /** 全是字符串时原样返回，不白拷一遍。 */
   test('没有内容块时原对象直接返回', async () => {
     const r = req([{ role: 'user', content: '你好' }])
-    expect(await materialize(r, true)).toBe(r)
+    expect(await materialize(r, media(true))).toBe(r)
   })
 
   /** 文件没了同样是终态，不抛——一张图发不出去不该让整轮起不来。 */
@@ -146,7 +147,7 @@ describe('materialize', () => {
           ],
         },
       ]),
-      true,
+      media(true),
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect((blocks[0] as { text: string }).text).toContain('已不存在')
@@ -183,7 +184,7 @@ describe('materialize', () => {
           ],
         },
       ]),
-      false,
+      media(false),
     )
     const all = out.messages.flatMap((m) => m.content as ContentBlock[])
     expect(all.some((b) => b.type === 'image')).toBe(false)
@@ -201,10 +202,53 @@ describe('materialize', () => {
           content: [{ type: 'image', mimeType: 'image/png', source: { kind: 'path', path } }],
         },
       ]),
-      null,
+      media(null),
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect(blocks[0]).toMatchObject({ source: { kind: 'base64' } })
+  })
+
+  test('支持视频时只在请求副本中读取路径', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-video-'))
+    const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
+    const bytes = Buffer.from('native-video')
+    await writeFile(path, bytes)
+    const original: WireMessage[] = [
+      {
+        role: 'user',
+        content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+      },
+    ]
+
+    const out = await materialize(req(original), media(true, true))
+    expect((original[0]!.content as ContentBlock[])[0]).toMatchObject({
+      source: { kind: 'path', path },
+    })
+    expect((out.messages[0]!.content as ContentBlock[])[0]).toMatchObject({
+      type: 'video',
+      source: { kind: 'base64', data: bytes.toString('base64') },
+    })
+  })
+
+  test('模型或适配器不支持视频时不发送视频块', async () => {
+    const out = await materialize(
+      req([
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'video',
+              mimeType: 'video/mp4',
+              source: { kind: 'base64', data: 'QUJD' },
+            },
+          ],
+        },
+      ]),
+      media(true, false),
+    )
+    const blocks = out.messages[0]!.content as ContentBlock[]
+    expect(blocks.some((b) => b.type === 'video')).toBe(false)
+    expect(blocks[0]).toMatchObject({ type: 'text' })
   })
 })
 
