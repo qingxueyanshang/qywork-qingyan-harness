@@ -1118,6 +1118,61 @@ describe('原地打转', () => {
     expect(executed).toBe(4)
   })
 
+  /**
+   * 混合批的证据必须按 provider 原调用顺序聚合：未知调用记原始下标、
+   * 注册调用记过滤后下标的话，两个只是换了顺序的决策会得到同一个批指纹，
+   * 被并成同一周期。
+   */
+  test('混合批换序算不同决策，逐字重复仍判打转', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'peek',
+      description: '永远返回同一个结果，用于验证空转判定。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      fn: async () => {
+        executed++
+        return { status: 'success' as const, message: '还是这些' }
+      },
+    })
+    const run = async (turns: (WireToolCall[] | null)[]) => {
+      const loop = new AgentLoop({
+        adapter: fakeAdapter(turns),
+        registry,
+        systemPrompt: 'sys',
+        persist: noopPersistence(),
+        makeToolContext: (runId) => baseCtx(runId),
+      })
+      let stopReason: string | null = null
+      for await (const ev of loop.run({
+        runId: 'rn_mixed_order' as never,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        if (ev.type === 'run.finished') stopReason = ev.stopReason
+      }
+      return stopReason
+    }
+
+    const d1 = () => [call('ghost_a'), call('ghost_b'), call('peek')]
+    const d2 = () => [call('ghost_a'), call('peek'), call('ghost_b')]
+
+    // 换序：三轮里第二轮顺序不同，不构成重复，跑满脚本。
+    expect(await run([d1(), d2(), d1(), null])).toBe('completed')
+    expect(executed).toBe(3)
+
+    // 逐字重复的混合批仍在第三轮停下。
+    executed = 0
+    expect(await run([d1(), d1(), d1(), null])).toBe('no_progress')
+    expect(executed).toBe(3)
+  })
+
   /** 内部控制工具执行后状态可能已变（如待办账本），字段缺席不算确凿无副作用。 */
   test('内部控制工具的相同结果不判打转', async () => {
     const registry = new ToolRegistry()

@@ -1599,10 +1599,20 @@ export class AgentLoop {
           })
         }
 
-        const waves = planWaves(
-          calls.filter((c) => registry.has(c.name)),
-          this.deps.registry,
-        )
+        /*
+         * 两套下标不可混用：`planWaves` 的 callIndex 是过滤后下标，进账本与
+         * 事件，语义保持不变；批证据要按 provider 原调用顺序聚合，用原始下标
+         * ——未知调用的证据（上面）就是按原始下标记的，混用会让含未知调用的
+         * 批次聚合顺序偏离原顺序。
+         */
+        const known: WireToolCall[] = []
+        const originalIndexes: number[] = []
+        calls.forEach((c, i) => {
+          if (!registry.has(c.name)) return
+          known.push(c)
+          originalIndexes.push(i)
+        })
+        const waves = planWaves(known, this.deps.registry)
 
         for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
           const wave = waves[waveIndex]!
@@ -1708,7 +1718,7 @@ export class AgentLoop {
             })
 
             batchEvidence.push({
-              callIndex: s.callIndex,
+              callIndex: originalIndexes[s.callIndex]!,
               cycle: cycleFingerprint(s.call.name, s.call.arguments, s.outcome),
               noProgress: provablyNoEffect(
                 resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments),
