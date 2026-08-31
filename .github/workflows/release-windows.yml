@@ -49,6 +49,26 @@ jobs:
       - name: Check version manifests
         run: bun run scripts/sync-version.ts --check
 
+      - name: Load release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $notesPath = ".github/release-notes/v$version.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Missing release notes: $notesPath"
+          }
+
+          $notes = (Get-Content -LiteralPath $notesPath -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            throw "Release notes are empty: $notesPath"
+          }
+
+          $delimiter = "RELEASE_NOTES_$([guid]::NewGuid().ToString('N'))"
+          "body<<$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $notes | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $delimiter | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Build sidecar
         run: bun run build:agent
 
@@ -71,12 +91,7 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           generateReleaseNotes: true
-          releaseBody: |
-            qywork Windows x64 安装包。
-
-            下载 `.exe` 文件即可安装。`SHA256SUMS.txt` 用于校验安装包完整性。
-
-            当前安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示。
+          releaseBody: ${{ steps.release_notes.outputs.body }}
 
       - name: Create checksum
         shell: pwsh
