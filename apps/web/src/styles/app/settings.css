@@ -276,6 +276,11 @@
   background: var(--bg-sunken);
   border-right: 1px solid var(--border-subtle);
 }
+/* 与输入补全面板里的 `#技能` 使用同一枚图形，也固定在同一明度；导航项是否选中
+   只改变文字和底色，不再把这枚实心闪光额外压深。 */
+.settings-nav-skill-icon {
+  color: var(--text-tertiary);
+}
 .nav-group-split {
   margin-top: var(--s-3);
   padding-top: var(--s-3);

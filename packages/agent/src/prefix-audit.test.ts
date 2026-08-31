@@ -224,6 +224,20 @@ describe('审真实的系统提示词', () => {
     expect(buildSystemPrompt(new Set())).not.toContain('## 能力')
   })
 
+  test('输入区显式引用绑定技能、外部工具与子 agent', async () => {
+    const { buildSystemPrompt } = await import('@qywork/runtime')
+    const p = buildSystemPrompt(
+      new Set(['read_skill', 'load_tool', 'define_subagent', 'subagent', 'mcp__github__search']),
+    )
+    expect(p).toContain('#技能名')
+    expect(p).toContain('@工具注册名')
+    expect(p).toContain('@角色id')
+    expect(p).toContain('/subagent 角色描述')
+    expect(p).toContain('可长期复用')
+    expect(p).not.toContain('`@subagent`')
+    expect(p).toContain('直接调用该工具')
+  })
+
   /**
    * 尾区注记**应该**含日期——这条反过来验：那些会变的字段确实被放在了
    * 断点之外。它绿了才说明分层是真的分开了，而不是两边都干净所以看着没问题。
