@@ -1,6 +1,5 @@
 import { createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { Composer } from './components/Composer.tsx'
-import { Palette } from './components/Palette.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
@@ -16,17 +15,18 @@ const SettingsDialog = lazy(() =>
   import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
 
-import { IconChevron, IconPanel, IconSearch } from './components/Icons.tsx'
+import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
 import {
   client,
+  exportActiveConversation,
   loadConversations,
   loadWorkspace,
   openBrowserTab,
   PANEL_MIN,
   panelMaximized,
   panelWidth,
-  setPaletteOpen,
+  setState,
   settingsPage,
   setWorkspace,
   sidebarCollapsed,
@@ -82,6 +82,32 @@ export function copyCode(e: MouseEvent): void {
 export function App() {
   // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
+  const [exportState, setExportState] = createSignal<'idle' | 'working' | 'done'>('idle')
+  let exportReceipt: ReturnType<typeof setTimeout> | undefined
+
+  const exportConversation = async () => {
+    if (exportState() === 'working') return
+    setExportState('working')
+    try {
+      const result = await exportActiveConversation()
+      if (result === 'cancelled') {
+        setExportState('idle')
+        return
+      }
+      setExportState('done')
+      exportReceipt = setTimeout(() => setExportState('idle'), COPY_DONE_MS)
+    } catch (error) {
+      setExportState('idle')
+      setState('notice', {
+        reason: 'export_failed',
+        message: `导出失败：${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+  }
+
+  onCleanup(() => {
+    if (exportReceipt) clearTimeout(exportReceipt)
+  })
 
   onMount(() => {
     client.connect()
@@ -93,16 +119,6 @@ export function App() {
     void loadWorkspace()
       .then(setWorkspace)
       .catch(() => {})
-
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey
-      if (mod && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        setPaletteOpen((v) => !v)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    onCleanup(() => window.removeEventListener('keydown', onKey))
 
     /*
      * 空闲时先把面板那块代码取回来。
@@ -190,28 +206,34 @@ export function App() {
         </Show>
         <h1 class="title truncate">{activeTitle()}</h1>
         <span class="spacer" />
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="命令面板"
-          onClick={() => setPaletteOpen(true)}
-        >
-          <IconSearch size={15} />
-        </button>
-        {/* 右侧面板只留**一个**开关。
-            两个按钮各 toggle 一个视图、面板内部再放三个 tab，是两套并列且不等价的
-            机制：顶栏点不出「协作」，tab 点不掉面板。
-            职责分开：顶栏管开关，tab 管看哪个视图。 */}
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label={sidePanel() ? '收起侧面板' : '展开侧面板'}
-          aria-expanded={sidePanel() !== null}
-          data-tip={sidePanel() ? '收起侧面板' : '展开侧面板'}
-          onClick={togglePanel}
-        >
-          <IconPanel size={15} />
-        </button>
+        <div class="topbar-tools">
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label={exportState() === 'working' ? '正在导出当前会话' : '导出当前会话'}
+            data-tip={exportState() === 'done' ? '已导出' : '导出当前会话'}
+            disabled={!state.activeConversation || exportState() === 'working'}
+            onClick={() => void exportConversation()}
+          >
+            <Show when={exportState() === 'done'} fallback={<IconDownload size={16} />}>
+              <IconCheck size={16} />
+            </Show>
+          </button>
+          {/* 右侧面板只留**一个**开关。
+              两个按钮各 toggle 一个视图、面板内部再放三个 tab，是两套并列且不等价的
+              机制：顶栏点不出「协作」，tab 点不掉面板。
+              职责分开：顶栏管开关，tab 管看哪个视图。 */}
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label={sidePanel() ? '收起侧面板' : '展开侧面板'}
+            aria-expanded={sidePanel() !== null}
+            data-tip={sidePanel() ? '收起侧面板' : '展开侧面板'}
+            onClick={togglePanel}
+          >
+            <IconPanel size={15} />
+          </button>
+        </div>
         <WindowControls />
       </header>
 
@@ -250,7 +272,6 @@ export function App() {
           <SidePanel />
         </Suspense>
       </Show>
-      <Palette />
       <Tooltip />
       {/* 项目里带着会被执行的配置时才出现，绝大多数项目从不画它。 */}
       <TrustDialog />

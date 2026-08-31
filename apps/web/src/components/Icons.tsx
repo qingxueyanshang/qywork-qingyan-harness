@@ -223,10 +223,11 @@ export const IconCanvas = (p: IconProps) => (
   </Svg>
 )
 
-export const IconSearch = (p: IconProps) => (
+/** 下载：对称的向下箭头落到横线，避免 U 形托盘造成视觉重心偏低。 */
+export const IconDownload = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="10.8" cy="10.8" r="6.4" />
-    <path d="M15.6 15.6 20 20" />
+    <path d="M12 4.5v10M8.2 10.8 12 14.6l3.8-3.8" />
+    <path d="M5 19.5h14" />
   </Svg>
 )
 

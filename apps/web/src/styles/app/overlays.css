@@ -1,8 +1,7 @@
-/* 命令面板、授权、手机接入。
+/* 授权、手机接入。
  *
  * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
 
-/* ── 命令面板 ── */
 /*
  * 点空白关闭用的遮罩。
  *
@@ -24,78 +23,13 @@
 }
 
 /* 遮罩层只负责居中，点击穿透到底下的关闭按钮；对话框自己重新接住点击。 */
-.sheet-backdrop.pass-through,
-.palette-backdrop.pass-through {
+.sheet-backdrop.pass-through {
   background: transparent;
   backdrop-filter: none;
   pointer-events: none;
 }
-.sheet-backdrop.pass-through > *,
-.palette-backdrop.pass-through > * {
+.sheet-backdrop.pass-through > * {
   pointer-events: auto;
-}
-
-.palette-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(3px);
-  display: grid;
-  place-items: start center;
-  padding-top: 14vh;
-}
-
-.palette {
-  width: min(560px, calc(100vw - var(--s-8)));
-  border-radius: var(--r-lg);
-  background: var(--bg-raised);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
-}
-
-.palette-input {
-  width: 100%;
-  padding: var(--s-4);
-  border: none;
-  border-bottom: 1px solid var(--border-subtle);
-  background: none;
-  outline: none;
-  font-size: var(--fs-lg);
-}
-
-.palette-list {
-  list-style: none;
-  margin: 0;
-  padding: var(--s-1);
-  max-height: 50vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.palette-item {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  width: 100%;
-  padding: var(--s-2) var(--s-3);
-  border-radius: var(--r-sm);
-  text-align: left;
-  color: var(--text-primary);
-}
-.palette-item.active {
-  background: var(--bg-active);
-}
-.palette-item kbd {
-  margin-left: auto;
-}
-.palette-icon {
-  display: grid;
-  place-items: center;
-  color: var(--text-secondary);
 }
 
 /* ── 授权 ── */

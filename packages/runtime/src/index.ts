@@ -7,7 +7,7 @@
  */
 
 // 会话导出：`qy export`
-export { exportConversation } from './archive.ts'
+export { exportConversation, exportConversationDiagnostics } from './archive.ts'
 // 压缩端口：server 的手动压缩与 loop 的自动压缩共用
 export { RuntimeCompaction } from './compaction.ts'
 // 配置：CLI 与 server 的配置读写、诊断、脱敏

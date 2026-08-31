@@ -7,6 +7,7 @@
 
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
+import { ApiError } from '../client.ts'
 import { client, discardPace, reloadActiveConversation, syncViews } from './connection.ts'
 import {
   addWorkspace,
@@ -17,7 +18,7 @@ import {
   saveServerConfig,
   type WorkspaceInput,
 } from './settings.ts'
-import { isDesktopShell } from './shell.ts'
+import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
 
@@ -300,6 +301,46 @@ export async function renameConversation(id: string, title: string): Promise<voi
 export async function archiveConversation(id: string): Promise<void> {
   await client.api(`/api/conversations/${encodeURIComponent(id)}/archive`, { method: 'POST' })
   await dropConversation(id)
+}
+
+/**
+ * 把当前会话导出为排障 JSON。
+ *
+ * 内容由服务端从消息、run、step 与逐请求账本现取；这里不读 `transcript()` 再拼一份
+ * 已分页、已折叠的界面副本。桌面端交给系统保存对话框，浏览器与手机走原生下载。
+ */
+export async function exportActiveConversation(): Promise<'saved' | 'cancelled'> {
+  const id = state.activeConversation
+  if (!id) return 'cancelled'
+
+  const path = `/api/conversations/${encodeURIComponent(id)}/export`
+  const response = await client.raw(path)
+  if (!response.ok) {
+    const error = new ApiError(response.status, path, await response.text().catch(() => ''))
+    throw new Error(error.detail)
+  }
+
+  const contents = await response.text()
+  const fileName = `qywork-session-${id}.json`
+  if (isDesktopShell()) {
+    try {
+      const saved = await tauriInvoke<string | null>('save_session_export', { fileName, contents })
+      return saved ? 'saved' : 'cancelled'
+    } catch (error) {
+      // Tauri 移动壳没有可写的普通文件路径，退回同一份 Web 下载；桌面写入失败照实抛。
+      if (!String(error).includes('移动端请使用浏览器下载')) throw error
+    }
+  }
+
+  const url = URL.createObjectURL(new Blob([contents], { type: 'application/json;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+  return 'saved'
 }
 
 /** 删除：服务端是硬删，消息、run、步骤一并没了。 */

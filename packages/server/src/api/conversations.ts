@@ -21,6 +21,7 @@ import type {
 import {
   catalogKey,
   contextPanel,
+  exportConversationDiagnostics,
   type QyConfig,
   resolveModel,
   type StoredCatalogEntry,
@@ -343,6 +344,23 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       await rm(attachmentsDirOf(id), { recursive: true, force: true }).catch(() => {})
       return json({ ok: true })
     }
+  }
+
+  /*
+   * 当前会话的诊断快照。它必须在服务端从持久化账本现取，不能把前端屏幕上已经
+   * 折叠、分页过的投影再拼一遍——「只调用工具、不说话」正需要靠完整 step 与
+   * provider request 判断内容在哪一层消失。
+   */
+  const exportMatch = /^\/api\/conversations\/([^/]+)\/export$/.exec(p)
+  if (exportMatch && req.method === 'GET') {
+    const id = exportMatch[1] as ConversationId
+    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    return new Response(exportConversationDiagnostics(d.store, id, d.config), {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'content-disposition': `attachment; filename="qywork-session-${id}.json"`,
+      },
+    })
   }
 
   const convMatch = /^\/api\/conversations\/([^/]+)\/(history|messages|runs|usage|queue)$/.exec(p)

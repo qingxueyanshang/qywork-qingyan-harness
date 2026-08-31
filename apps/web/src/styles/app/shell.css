@@ -169,6 +169,14 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+.icon-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
 
 /* 头部与滚动区之间的固定块：「新建 work」和它的错误提示。
    放进滚动区的代价是会话一多就被滚走，而它是这一栏唯一的「开新项目」入口。 */
@@ -696,6 +704,14 @@
 
 .spacer {
   flex: 1;
+}
+
+/* 会话导出和侧面板都是当前会话的顶栏工具，作为一组排布。
+   顶栏自身的 8px gap 用来分隔不同区域，直接套在两颗按钮之间会显得散。 */
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .drawer-toggle {
