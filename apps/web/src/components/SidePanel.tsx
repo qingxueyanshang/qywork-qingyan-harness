@@ -165,6 +165,94 @@ export default function SidePanel() {
    */
   const [board, setBoard] = createSignal(false)
 
+  /*
+   * 普通鼠标一格滚轮在 Windows 上通常只来一个较大的离散 delta。直接写 `scrollLeft`
+   * 会整段跳过去；这里让一个 rAF 循环追同一个目标，连续滚轮只累加目标，不排队创建
+   * 多段 smooth 动画。40ms 是追赶的时间常数，约 120ms 已走完 95%，既看得到过渡，
+   * 又不在手停之后拖很久。
+   */
+  const wheelSmoothingMs = 40
+  let wheelTarget: number | null = null
+  let wheelDirection = 0
+  let wheelFrame: number | null = null
+  let wheelFrameAt = 0
+  let wheelTabs: HTMLDivElement | null = null
+
+  const stopWheelScroll = () => {
+    if (wheelFrame !== null) cancelAnimationFrame(wheelFrame)
+    wheelTarget = null
+    wheelDirection = 0
+    wheelFrame = null
+    wheelTabs = null
+  }
+
+  const animateWheelScroll = (at: number) => {
+    const tabs = wheelTabs
+    if (!tabs || wheelTarget === null) {
+      stopWheelScroll()
+      return
+    }
+
+    const max = Math.max(0, tabs.scrollWidth - tabs.clientWidth)
+    const target = Math.min(max, Math.max(0, wheelTarget))
+    wheelTarget = target
+    const distance = target - tabs.scrollLeft
+    if (Math.abs(distance) <= 0.5) {
+      tabs.scrollLeft = target
+      stopWheelScroll()
+      return
+    }
+
+    const elapsed = Math.max(0, at - wheelFrameAt)
+    wheelFrameAt = at
+    const blend = 1 - Math.exp(-elapsed / wheelSmoothingMs)
+    tabs.scrollLeft += distance * blend
+    wheelFrame = requestAnimationFrame(animateWheelScroll)
+  }
+
+  /**
+   * 窄面板里的页签仍是一条横带：普通鼠标只有纵向滚轮，这里把它换成横向位移。
+   * 触控板已经会发 `deltaX`，交给浏览器原生滚动；边界与无溢出时也不拦截。滚动只
+   * 响应用户输入，选中页签不自动改位置。
+   */
+  const scrollTabsWithWheel = (e: WheelEvent & { currentTarget: HTMLDivElement }) => {
+    if (Math.abs(e.deltaX) >= Math.abs(e.deltaY) || e.deltaY === 0) {
+      // 一旦触控板开始原生横向滚，上一段鼠标滚轮动画必须让路，不能争写 scrollLeft。
+      stopWheelScroll()
+      return
+    }
+
+    const tabs = e.currentTarget
+    const max = Math.max(0, tabs.scrollWidth - tabs.clientWidth)
+    if (max === 0) return
+
+    const scale =
+      e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? tabs.clientWidth
+          : 1
+    const delta = e.deltaY * scale
+    const direction = Math.sign(delta)
+    // 反向滚动要从眼前的位置起算；继续同向才累加尚未走完的目标。
+    const base =
+      wheelTarget !== null && direction === wheelDirection ? wheelTarget : tabs.scrollLeft
+    const target = Math.min(max, Math.max(0, base + delta))
+    const pendingDistance = (wheelTarget ?? tabs.scrollLeft) - tabs.scrollLeft
+    if (target === base && Math.abs(pendingDistance) <= 0.5) return
+
+    e.preventDefault()
+    wheelTabs = tabs
+    wheelTarget = target
+    wheelDirection = direction
+    if (wheelFrame === null) {
+      wheelFrameAt = performance.now()
+      wheelFrame = requestAnimationFrame(animateWheelScroll)
+    }
+  }
+
+  onCleanup(stopWheelScroll)
+
   /** 页签亮不亮。看板盖着时哪一格都不亮——那时正文不是它们任何一个。 */
   const onView = (view: PanelView) => sidePanel() === view && !board()
   const onTab = (id: string) => activePanelTab() === id && !board()
@@ -205,7 +293,7 @@ export default function SidePanel() {
           }}
         />
         <header class="side-head">
-          <div class="side-tabs" role="tablist">
+          <div class="side-tabs" role="tablist" onWheel={scrollTabsWithWheel}>
             <For each={VIEWS}>
               {(t) => (
                 <button

@@ -103,3 +103,112 @@ describe('文件页刷新', () => {
     )
   })
 })
+
+describe('页签栏横向滚轮', () => {
+  async function renderTabs() {
+    const store = await import('../lib/store/index.ts')
+    store.setSidePanel('todos')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    const tabs = host.querySelector<HTMLDivElement>('.side-tabs')
+    if (!tabs) throw new Error('没有渲染页签栏')
+    return tabs
+  }
+
+  function setScrollBox(
+    tabs: HTMLDivElement,
+    opts: { width: number; content: number; left: number },
+  ) {
+    Object.defineProperties(tabs, {
+      clientWidth: { configurable: true, value: opts.width },
+      scrollWidth: { configurable: true, value: opts.content },
+      scrollLeft: { configurable: true, value: opts.left, writable: true },
+    })
+  }
+
+  test('宽度不足时，普通鼠标的纵向滚轮平滑移动到横向目标', async () => {
+    const tabs = await renderTabs()
+    setScrollBox(tabs, { width: 200, content: 500, left: 40 })
+
+    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 })
+    tabs.dispatchEvent(wheel)
+
+    // 滚轮事件本身不再让标签瞬移；唯一的 rAF 循环随后追到目标。
+    expect(tabs.scrollLeft).toBe(40)
+    expect(wheel.defaultPrevented).toBe(true)
+    await waitFor(
+      () => tabs.scrollLeft === 100,
+      () => `scrollLeft=${tabs.scrollLeft}`,
+    )
+  })
+
+  test('连续同向滚轮累加到同一个目标，不排成多段动画', async () => {
+    const tabs = await renderTabs()
+    setScrollBox(tabs, { width: 200, content: 500, left: 40 })
+
+    tabs.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 30 }))
+    tabs.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 30 }))
+
+    expect(tabs.scrollLeft).toBe(40)
+    await waitFor(
+      () => tabs.scrollLeft === 100,
+      () => `scrollLeft=${tabs.scrollLeft}`,
+    )
+  })
+
+  test('没有溢出或已经抵达边界时，不吞掉页面滚轮', async () => {
+    const tabs = await renderTabs()
+    setScrollBox(tabs, { width: 200, content: 200, left: 0 })
+
+    const noOverflow = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 60,
+    })
+    tabs.dispatchEvent(noOverflow)
+    expect(tabs.scrollLeft).toBe(0)
+    expect(noOverflow.defaultPrevented).toBe(false)
+
+    setScrollBox(tabs, { width: 200, content: 500, left: 300 })
+    const atEnd = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 })
+    tabs.dispatchEvent(atEnd)
+    expect(tabs.scrollLeft).toBe(300)
+    expect(atEnd.defaultPrevented).toBe(false)
+  })
+
+  test('触控板原生横向手势不再手动叠加一次', async () => {
+    const tabs = await renderTabs()
+    setScrollBox(tabs, { width: 200, content: 500, left: 40 })
+
+    const wheel = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaX: 60,
+      deltaY: 5,
+    })
+    tabs.dispatchEvent(wheel)
+
+    // happy-dom 不执行浏览器的原生滚动；这里锁的是处理器没有再加一遍。
+    expect(tabs.scrollLeft).toBe(40)
+    expect(wheel.defaultPrevented).toBe(false)
+  })
+
+  test('触控板接管时停止尚未走完的鼠标滚轮动画', async () => {
+    const tabs = await renderTabs()
+    setScrollBox(tabs, { width: 200, content: 500, left: 40 })
+
+    tabs.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 }))
+    tabs.dispatchEvent(
+      new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 20, deltaY: 5 }),
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // happy-dom 不执行原生横向滚动；旧动画若没被取消，这里已经向 100 移动了。
+    expect(tabs.scrollLeft).toBe(40)
+  })
+})
