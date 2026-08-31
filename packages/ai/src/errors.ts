@@ -235,7 +235,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
        * 那句话指不到真正的原因。
        */
       return build(
-        looksTemporarilyUnavailable(message) ? 'provider_unavailable' : 'invalid_request',
+        looksRetryableRejection(status, message) ? 'provider_unavailable' : 'invalid_request',
         message,
       )
     case 500:
@@ -254,17 +254,24 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
 }
 
 /**
- * 400 里那一小撮「上游暂时不可用」。
+ * 400 / 422 里那一小撮「原样重发可能恢复」的拒绝。
  *
  * 中转站把后端的 5xx 转述成 400 是常见做法，状态码这一层分不出来，文案是唯一线索
  * （判据优先级见文件头第 3 档）。命中的归可重发的码，其余按 4xx 的本义处理。
  *
+ * `Request contains an invalid argument.` 是另一种中转站通用拒绝：没有参数名、字段位置
+ * 或任何可供用户修正的细节。现场两段失败历史按完全相同的装配结果重放都被同一中转站
+ * 接受，证明这句在这里不稳定地代表真正的参数错误。只精确匹配 400 的整句话，不把任何
+ * 带具体参数信息的 4xx 放进重发表。
+ *
  * 词表照实际见过的措辞收，**宁可漏判**：漏判的代价是一次上游抖动要用户手动重发，
  * 误判的代价是对着一个永远不会成功的请求空等五轮退避、并付五次长 prompt 的钱。
  */
-function looksTemporarilyUnavailable(message: string): boolean {
+function looksRetryableRejection(status: number, message: string): boolean {
+  const normalized = message.trim()
+  if (status === 400 && /^request contains an invalid argument\.?$/i.test(normalized)) return true
   return /暂不可用|暂时不可用|稍后(?:再试|重试)|服务(?:繁忙|不可用)|系统繁忙|上游(?:负载|不可用)|无可用渠道|temporarily unavailable|service unavailable|try again later|overloaded|server is busy|no available channel/i.test(
-    message,
+    normalized,
   )
 }
 

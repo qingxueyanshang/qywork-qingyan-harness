@@ -15,15 +15,44 @@ import { IconMic } from './Icons.tsx'
  * **中途结果也写进草稿。** `interimResults` 开着，说到一半就能看到字。**基线是开始录音那一刻的草稿
  * **，已定稿的部分累加在它后面——不这么记的话，每来一段中途结果都会把用户已经打好的字覆盖掉。
  */
-export function VoiceButton(props: { draft: string; onText: (next: string) => void }) {
+export function VoiceButton(props: {
+  draft: string
+  onText: (next: string) => void
+  /** 提交方拿到这一个停止入口：发送时冻结当前草稿，不再接收随后到达的识别结果。 */
+  bindSubmitStop?: (stop: () => void) => void
+}) {
   const Ctor = speechRecognitionCtor()
   const [recording, setRecording] = createSignal(false)
   const [failure, setFailure] = createSignal('')
   let rec: SpeechRecognitionLike | null = null
   let base = ''
   let settled = ''
+  let acceptsResults = false
 
-  onCleanup(() => rec?.abort())
+  onCleanup(() => {
+    acceptsResults = false
+    rec?.abort()
+    rec = null
+  })
+
+  /*
+   * 提交与按钮停止不是同一种语义：按钮停止要收下最后一段定稿；提交已经按此刻草稿
+   * 发出，之后到达的 onresult 不能再把已清空的输入框填回来。`abort()` 同时立即释放
+   * 麦克风，避免 continuous 模式继续占用设备。
+   */
+  const stopForSubmit = () => {
+    const active = rec
+    if (!active) return
+    acceptsResults = false
+    rec = null
+    setRecording(false)
+    try {
+      active.abort()
+    } catch {
+      // 识别实例已经自行结束时 abort 可能抛；不能因此挡住发送。
+    }
+  }
+  props.bindSubmitStop?.(stopForSubmit)
 
   const start = () => {
     if (!Ctor) return
@@ -34,7 +63,9 @@ export function VoiceButton(props: { draft: string; onText: (next: string) => vo
     r.continuous = true
     base = props.draft
     settled = ''
+    acceptsResults = true
     r.onresult = (e) => {
+      if (!acceptsResults || rec !== r) return
       let interim = ''
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i]
@@ -46,6 +77,7 @@ export function VoiceButton(props: { draft: string; onText: (next: string) => vo
       props.onText(base + settled + interim)
     }
     r.onerror = (e) => {
+      if (rec !== r) return
       // **每一种失败都要说出来。**
       //
       // 这里最危险的不是权限被拒，而是「API 在、但识别服务不可用」：
@@ -54,9 +86,13 @@ export function VoiceButton(props: { draft: string; onText: (next: string) => vo
       // 只是稍后回一个 `network` / `service-not-allowed` 错误然后 onend——
       // 用户看到的就是「点了、亮了一下、什么都没有」。
       setFailure(errorLabel(e.error))
+      acceptsResults = false
       setRecording(false)
     }
     r.onend = () => {
+      // 旧实例在提交后才送达 onend 时，不能把随后新开的实例一并清掉。
+      if (rec !== r) return
+      acceptsResults = false
       setRecording(false)
       rec = null
     }

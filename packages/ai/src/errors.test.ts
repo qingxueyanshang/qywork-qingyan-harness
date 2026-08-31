@@ -255,6 +255,13 @@ describe('按用户的下一步动作分类', () => {
     expect(e.capacity).toBeUndefined()
   })
 
+  test('中转站无参数细节的通用 400 归 provider_unavailable', () => {
+    const e = classifyProviderError(P, http(400, 'Request contains an invalid argument.'))
+    expect(e.code).toBe('provider_unavailable')
+    expect(e.capacity).toBeUndefined()
+    expect(e.message).toBe('Request contains an invalid argument.')
+  })
+
   /**
    * 413 走到这里说明容量分类器已经否掉它了 —— 那是网关体积限制，不是上下文超限。
    * 同一份字节重发必然同样被拒，所以归不可重发的那一档。

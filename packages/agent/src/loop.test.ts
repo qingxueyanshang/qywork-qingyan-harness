@@ -2148,6 +2148,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       | 'break-after-thinking'
       | 'reject'
       | 'reject-relay'
+      | 'reject-opaque-invalid'
       | 'reject-image'
       | 'rate-limit'
       | 'rate-limit-no-header'
@@ -2192,6 +2193,18 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
             'anthropic_messages',
             Object.assign(new Error('{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'), {
               status: 400,
+            }),
+          )
+        }
+        if (act === 'reject-opaque-invalid') {
+          throw classifyProviderError(
+            'openai_responses',
+            Object.assign(new Error('Request contains an invalid argument.'), {
+              status: 400,
+              error: {
+                message: 'Request contains an invalid argument.',
+                type: 'invalid_request_error',
+              },
             }),
           )
         }
@@ -2302,6 +2315,29 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+
+  test('中转站用无参数细节的 400 拒绝：零输出时走统一五次重发路径', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['reject-opaque-invalid', 'ok']))
+
+    expect(rec.opened).toEqual([0, 1])
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([
+      expect.objectContaining({ attempt: 1, max: MAX_RESENDS }),
+    ])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+  })
+
+  test('无参数细节的 400 连续失败：五次额度耗尽后保留原话', async () => {
+    const { rec, events } = await collect(
+      scriptedAdapter(Array(MAX_RESENDS + 1).fill('reject-opaque-invalid')),
+    )
+
+    expect(rec.opened).toEqual([0, 1, 2, 3, 4, 5])
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('provider_unavailable')
+    expect(err?.type === 'run.error' && err.message).toBe(
+      'Request contains an invalid argument.，已重发 5 次',
+    )
   })
 
   test('429 按 Retry-After 等待后原样重发', async () => {

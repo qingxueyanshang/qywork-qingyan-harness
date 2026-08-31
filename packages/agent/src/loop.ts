@@ -425,9 +425,10 @@ export const MAX_RESENDS = 5
  * 新消息还得让模型重新理解上一轮做到哪。
  *
  * **`invalid_request` 不在表里，别加进来。** 那个码的定义就是「同一份字节再发一次
- * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支）。加进来的代价实测付过：
+ * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支）。整类加进来的代价实测付过：
  * 给不接受图片的模型发一张图，用户看到的是「正在重连 1 / 5」一直数到 5，
- * 而真正的原因——这个模型不接受图片——一个字都没出现。
+ * 而真正的原因——这个模型不接受图片——一个字都没出现。中转站已证实可恢复的模糊
+ * 拒绝由 `ai/errors.ts` 精确归成 `provider_unavailable`，不要在这里再按文案分叉。
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['network_error', 0],
