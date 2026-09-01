@@ -43,6 +43,7 @@ import {
   workspace,
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
+import FileTypeIcon from './FileTypeIcon.tsx'
 import {
   IconCanvas,
   IconChevron,
@@ -536,15 +537,6 @@ interface TreeCtx {
 
 const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
 
-/**
- * 工作区根**也是一个可选中的节点**，路径是空串。
- *
- * 不给它一个节点的话，「选中根、然后新建」就得靠「什么都没选」来表达，而那和
- * 「刚打开面板、还没点过任何一行」是同一个状态——用户点了一下根，界面上什么都
- * 不该发生就说不通了。名字由 `workspace()` 给，这里只当占位。
- */
-const ROOT_NODE: FileNode = { name: '', path: '', kind: 'dir', size: 0, mtime: 0 }
-
 function FileBrowser() {
   const [tree, { refetch }] = createResource(
     // 依赖 fileChanges 长度：agent 改了文件后自动刷新树，
@@ -721,19 +713,21 @@ function FileBrowser() {
           onInput={(e) => setQuery(e.currentTarget.value)}
         />
 
-        {/* 根目录行：四颗按钮长在这一行上，选中态与 hover 画在整行上。
-            两条的理由都在 `panel.css` 的 `.tree-root` 上。 */}
-        <div class="tree-root" classList={{ selected: ctx.selected() === '' }}>
+        {/* 根目录行：只负责展开与四颗操作，不参与文件选中；hover 由整行承接，
+            标题按钮自身不再叠一层灰底。理由在 `panel.css` 的 `.tree-root` 上。 */}
+        <div class="tree-root">
           <button
             class="tree-item tree-root-name"
             type="button"
             onClick={() => {
-              setSelected(ROOT_NODE)
+              // 根是结构标题，不是第二个可选节点。清空选择仍让后续新建落在根目录。
+              setSelected(null)
               setRootOpen((v) => !v)
             }}
           >
-            <IconChevron size={11} dir={rootOpen() ? 'down' : 'right'} />
-            <IconFolder size={13} />
+            <span class="tree-chevron-slot" aria-hidden="true">
+              <IconChevron size={11} dir={rootOpen() ? 'down' : 'right'} />
+            </span>
             <span class="truncate">{workspace()?.name ?? '工作区'}</span>
           </button>
           <div class="tree-root-acts">
@@ -1026,8 +1020,10 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
               props.ctx.menu(hit, e.clientX, e.clientY)
             }}
           >
-            <Show when={hit.kind === 'dir'} fallback={<IconFile size={13} />}>
-              <IconFolder size={13} />
+            <Show when={hit.kind === 'dir'} fallback={<FileTypeIcon name={hit.name} />}>
+              <span class="tree-node-icon" aria-hidden="true">
+                <IconFolder size={13} />
+              </span>
             </Show>
             <span class="truncate">{hit.path}</span>
           </button>
@@ -1050,7 +1046,14 @@ function Tree(props: { ctx: TreeCtx; dir: string; nodes: FileNode[]; depth: numb
   }
 
   return (
-    <ul class="tree" classList={{ 'tree-top': props.depth === 1 }}>
+    <ul
+      class="tree"
+      classList={{
+        'tree-top': props.depth === 1,
+        'tree-terminal': props.nodes.every((node) => node.kind !== 'dir'),
+      }}
+      style={{ '--tree-guide-left': `${props.depth * 6 + 2}px` } as JSX.CSSProperties}
+    >
       {/* 新建那一行**就在这个目录的第一个孩子的位置**，和 Qoder 一样：
           它建在哪里，输入框就出现在哪里。 */}
       <Show when={making()}>
@@ -1083,6 +1086,7 @@ function NameRow(props: {
   depth: number
   value: string
   placeholder?: string
+  chevronDir?: 'right' | 'down' | undefined
 }) {
   const [name, setName] = createSignal(props.value)
 
@@ -1102,9 +1106,21 @@ function NameRow(props: {
   })
 
   return (
-    <div class="tree-edit" style={{ 'padding-left': `${props.depth * 12 + 8}px` }}>
-      <Show when={props.kind === 'dir'} fallback={<IconFile size={13} />}>
-        <IconFolder size={13} />
+    <div class="tree-edit" style={{ 'padding-left': `${props.depth * 6 + 2}px` }}>
+      <Show when={props.chevronDir}>
+        {(dir) => (
+          <span class="tree-chevron-slot" aria-hidden="true">
+            <IconChevron size={11} dir={dir()} />
+          </span>
+        )}
+      </Show>
+      <Show when={props.kind === 'file'}>
+        <FileTypeIcon name={name()} />
+      </Show>
+      <Show when={props.kind === 'dir' && !props.chevronDir}>
+        <span class="tree-node-icon" aria-hidden="true">
+          <IconFolder size={13} />
+        </span>
       </Show>
       <input
         class="tree-edit-input"
@@ -1139,23 +1155,22 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
     if (open() && children() === null) props.ctx.load(props.node.path)
   })
 
-  const row = (onClick: () => void, chevron: boolean) => (
+  const row = (onClick: () => void) => (
     <button
       class="tree-item"
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
-      style={{ 'padding-left': `${props.depth * 12 + 8}px` }}
+      style={{ 'padding-left': `${props.depth * 6 + 2}px` }}
       onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault()
         props.ctx.menu(props.node, e.clientX, e.clientY)
       }}
     >
-      <Show when={chevron}>
-        <IconChevron size={11} dir={open() ? 'down' : 'right'} />
-      </Show>
-      <Show when={props.node.kind === 'dir'} fallback={<IconFile size={13} />}>
-        <IconFolder size={13} />
+      <Show when={props.node.kind === 'dir'} fallback={<FileTypeIcon name={props.node.name} />}>
+        <span class="tree-chevron-slot" aria-hidden="true">
+          <IconChevron size={11} dir={open() ? 'down' : 'right'} />
+        </span>
       </Show>
       <span class="truncate">{props.node.name}</span>
     </button>
@@ -1166,11 +1181,8 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
       <Show
         when={editing()}
         fallback={
-          <Show
-            when={props.node.kind === 'dir'}
-            fallback={row(() => props.ctx.pick(props.node), false)}
-          >
-            {row(() => props.ctx.toggle(props.node), true)}
+          <Show when={props.node.kind === 'dir'} fallback={row(() => props.ctx.pick(props.node))}>
+            {row(() => props.ctx.toggle(props.node))}
           </Show>
         }
       >
@@ -1179,6 +1191,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
           kind={props.node.kind}
           depth={props.depth}
           value={props.node.name}
+          chevronDir={props.node.kind === 'dir' ? (open() ? 'down' : 'right') : undefined}
         />
       </Show>
       <Show when={props.node.kind === 'dir' && open()}>
@@ -1324,7 +1337,7 @@ function ChangeRecord() {
                   onClick={() => toggle(r.path)}
                 >
                   <IconChevron size={11} dir={open().has(r.path) ? 'down' : 'right'} />
-                  <IconFile size={13} />
+                  <FileTypeIcon name={r.path} />
                   <span class="change-path truncate-left">
                     <span dir="ltr">{nativePath(r.path)}</span>
                   </span>

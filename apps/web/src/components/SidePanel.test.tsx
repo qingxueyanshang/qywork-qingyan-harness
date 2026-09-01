@@ -104,6 +104,114 @@ describe('文件页刷新', () => {
   })
 })
 
+describe('文件树层级', () => {
+  test('目录与文件共用单主图标位，每层只递进 6px', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(
+      store.client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string) => {
+      if (path.startsWith('/api/files/tree')) {
+        return {
+          nodes: [
+            {
+              name: '目录',
+              path: '目录',
+              kind: 'dir',
+              size: 0,
+              mtime: 1,
+              children: [
+                {
+                  name: '子文件.md',
+                  path: '目录/子文件.md',
+                  kind: 'file',
+                  size: 1,
+                  mtime: 1,
+                },
+                {
+                  name: '子目录',
+                  path: '目录/子目录',
+                  kind: 'dir',
+                  size: 0,
+                  mtime: 1,
+                  children: [],
+                },
+              ],
+            },
+            { name: '同层文件.md', path: '同层文件.md', kind: 'file', size: 1, mtime: 1 },
+          ],
+        }
+      }
+      throw new Error(`没有桩这条：${path}`)
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+
+    store.setWorkspace({ id: 'ws_tree_indent', root: 'C:\\work', name: 'work' })
+    store.setSidePanel('files')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.tree-top > li > .tree-item').length === 2,
+      () => `rows=${host.querySelectorAll('.tree-top > li > .tree-item').length}`,
+    )
+    const rows = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-top > li > .tree-item'))
+    const root = host.querySelector<HTMLElement>('.tree-root')
+    const dir = rows.find((row) => row.textContent?.includes('目录'))
+    const file = rows.find((row) => row.textContent?.includes('同层文件.md'))
+    expect(dir?.style.paddingLeft).toBe('8px')
+    expect(file?.style.paddingLeft).toBe('8px')
+    expect(dir?.querySelector('.tree-chevron-slot')).not.toBeNull()
+    expect(file?.querySelector('.tree-chevron-slot')).toBeNull()
+    expect(dir?.children.length).toBe(2)
+    expect(file?.children.length).toBe(2)
+    expect(file?.querySelector('.file-type-icon')?.getAttribute('data-file-kind')).toBe('markdown')
+    expect(root?.classList.contains('selected')).toBe(false)
+
+    dir?.click()
+    await waitFor(
+      () => host.textContent?.includes('子文件.md') ?? false,
+      () => host.textContent ?? '',
+    )
+    const childFile = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-item')).find(
+      (row) => row.textContent?.includes('子文件.md'),
+    )
+    const childDir = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-item')).find(
+      (row) => row.textContent?.includes('子目录'),
+    )
+    expect(childFile?.style.paddingLeft).toBe('14px')
+    expect(childFile?.querySelector('.tree-chevron-slot')).toBeNull()
+    expect(childFile?.querySelector('.file-type-icon')?.getAttribute('data-file-kind')).toBe(
+      'markdown',
+    )
+    expect(childDir?.style.paddingLeft).toBe('14px')
+    expect(childDir?.querySelector('.tree-chevron-slot')).not.toBeNull()
+    expect(childDir?.children.length).toBe(2)
+    const childTree = host.querySelector<HTMLElement>('.tree:not(.tree-top)')
+    expect(childTree?.style.getPropertyValue('--tree-guide-left')).toBe('14px')
+    expect(childTree?.classList.contains('tree-terminal')).toBe(false)
+
+    childDir?.click()
+    await waitFor(
+      () => host.querySelectorAll('.tree:not(.tree-top)').length === 2,
+      () => `trees=${host.querySelectorAll('.tree:not(.tree-top)').length}`,
+    )
+    const grandchildTree = host.querySelectorAll<HTMLElement>('.tree:not(.tree-top)')[1]
+    expect(grandchildTree?.style.getPropertyValue('--tree-guide-left')).toBe('20px')
+    expect(grandchildTree?.classList.contains('tree-terminal')).toBe(true)
+    expect(childDir?.classList.contains('selected')).toBe(true)
+    expect(root?.classList.contains('selected')).toBe(false)
+  })
+})
+
 describe('页签栏横向滚轮', () => {
   async function renderTabs() {
     const store = await import('../lib/store/index.ts')
