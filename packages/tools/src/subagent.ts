@@ -26,7 +26,8 @@ export const subagentTool: ToolSpec = {
     '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
     '或 cli:<id> 派给本机安装的外部 agent CLI。' +
     '适合可以独立完成、产出是一段文字的整块工作；当前有未完成待办时，' +
-    '必须用 parentTodo 精确绑定成功即可完成的那一条，成功后父清单自动推进；' +
+    '必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
+    '父待办仍需当前会话验收并用 write_todos 完成。可能需要原子会话返工时改用带 checkpoint 的 workflow；' +
     '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
   parameters: {
     type: 'object',
@@ -44,8 +45,8 @@ export const subagentTool: ToolSpec = {
       parentTodo: {
         type: 'string',
         description:
-          '这次子任务成功即可完成的父待办，逐字复制当前清单里的 content。' +
-          '当前有未完成待办时必填；只做其中一部分时应先把父清单拆到可独立完成的粒度。',
+          '这次子任务产出归属的父待办，逐字复制当前清单里的 content。' +
+          '当前有未完成待办时必填；返回后该条仍保持未完成，等待当前会话验收。',
       },
       model: {
         type: 'string',
@@ -100,8 +101,8 @@ export const subagentTool: ToolSpec = {
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
 
     /*
-     * 子任务与父清单的归属在派出之前钉死。回来之后靠自然语言猜「它大概完成了哪条」
-     * 会把错误条目打勾；完全不绑定又回到原始故障——子 agent 已成功，父清单仍停着。
+     * 子任务与父清单的归属在派出之前钉死。回来之后靠自然语言猜「它属于哪条」
+     * 会让验收对象漂移；但归属不是验收，子 agent 返回 success 不能替父会话打勾。
      *
      * 只要求未完成清单：没有清单的短任务照常可以派。内容必须唯一且逐字匹配，
      * 不接受模糊命中，也不静默替模型挑一条。
@@ -178,7 +179,9 @@ export const subagentTool: ToolSpec = {
     }
     return {
       status: 'success' as const,
-      message: parentTodo ? `${who} 做完了；父待办已推进：${parentTodo}` : `${who} 做完了`,
+      message: parentTodo
+        ? `${who} 已返回；父待办仍待验收：${parentTodo}。满意后用 write_todos 完成，不满意则继续处理或返工。`
+        : `${who} 已返回`,
       data: { output: res.output, ...ids },
     }
   },

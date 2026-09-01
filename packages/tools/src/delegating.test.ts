@@ -216,7 +216,8 @@ describe('派活', () => {
       withTodos(ctx(exact.port), todos),
     )
     expect(exactResult.status).toBe('success')
-    expect(exactResult.message).toContain('父待办已推进：服务端审计')
+    expect(exactResult.message).toContain('父待办仍待验收：服务端审计')
+    expect(exactResult.message).toContain('write_todos')
     expect(exact.calls).toHaveLength(1)
   })
 

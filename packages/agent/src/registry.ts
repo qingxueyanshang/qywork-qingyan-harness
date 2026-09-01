@@ -224,9 +224,9 @@ export interface FileReadPort {
 /**
  * 待办端口 —— **只读**，因为待办没有第二本账。
  *
- * 事实都在 tool steps：`write_todos` 落整表，明确绑定父待办的成功 `subagent`
- * step 落单条完成事实。`read()` 从同一账本折叠；再开一个 `write()` 才会变成
- * 同一份清单两处存，两本账迟早对不上。
+ * 事实都在 tool steps：`write_todos` 落整表，`subagent` 在自己的 step 上留下
+ * 待验收回执；只有前者改变清单状态。`read()` 从同一账本读取；再开一个
+ * `write()` 才会变成同一份清单两处存，两本账迟早对不上。
  *
  * 存在的理由只有一个：**「这是第一份清单，还是在改已有的」是会话级事实**，
  * 而 `ctx.state` 是 run 级的（一条消息一个 run，Map 新建），在里面永远查不到

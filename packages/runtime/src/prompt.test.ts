@@ -162,7 +162,8 @@ describe('尾区注记', () => {
     expect(todo).not.toContain('in_progress')
     expect(todo).toContain('不要结束本轮')
     expect(todo).toContain('parentTodo')
-    expect(todo).toContain('自动推进')
+    expect(todo).toContain('先验收')
+    expect(todo).toContain('不满意保持未完成')
   })
 
   test('旧清单全部完成后不再冒充下一轮当前待办', () => {

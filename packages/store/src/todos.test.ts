@@ -1,8 +1,8 @@
 /**
  * 待办读回的行为回归。**覆盖范围**：`todos.ts`。
  *
- * 锁的是「整表提交 + 明确绑定的子任务完成」这一个账本投影——它是工具、提示词、
- * 历史接口与实时事件共同使用的判据，不能各自猜一次。
+ * 锁的是「父会话整表提交是唯一完成权威」这一个账本投影——子任务回执可供验收，
+ * 但不能替父会话打勾。工具、提示词与历史接口不能各自猜一次。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -43,6 +43,22 @@ function submit(
   contents: string[],
   status: 'success' | 'failure' = 'success',
 ) {
+  submitItems(
+    store,
+    runId,
+    seq,
+    contents.map((content) => ({ content, status: 'pending' as const })),
+    status,
+  )
+}
+
+function submitItems(
+  store: Store,
+  runId: string,
+  seq: number,
+  todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>,
+  status: 'success' | 'failure' = 'success',
+) {
   appendStep(store, {
     runId: runId as never,
     seq,
@@ -51,7 +67,7 @@ function submit(
     status,
     payload: {
       kind: 'tool_result',
-      args: { todos: contents.map((content) => ({ content, status: 'pending' })) },
+      args: { todos },
     } as never,
   })
 }
@@ -112,31 +128,35 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('成功子任务完成明确绑定的父待办，并在没有进行项时认领下一条', () => {
+  test('成功子任务只交回待验收回执，不替父会话完成待办', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
-    submit(store, run.id, 1, ['第一批', '第二批', '收尾'])
+    submitItems(store, run.id, 1, [
+      { content: '第一批', status: 'in_progress' },
+      { content: '第二批', status: 'pending' },
+      { content: '收尾', status: 'pending' },
+    ])
     delegate(store, run.id, 2, '第一批')
 
     expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
-      ['第一批', 'completed'],
-      ['第二批', 'in_progress'],
+      ['第一批', 'in_progress'],
+      ['第二批', 'pending'],
       ['收尾', 'pending'],
     ])
     store.close()
   })
 
-  test('并行子任务逐条折叠，不用整表回写覆盖彼此', () => {
+  test('并行部分成功与失败都不抢父会话的验收权', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submit(store, run.id, 1, ['第一批', '第二批', '收尾'])
     delegate(store, run.id, 2, '第一批')
-    delegate(store, run.id, 3, '第二批')
+    delegate(store, run.id, 3, '第二批', 'failure')
 
     expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
-      ['第一批', 'completed'],
-      ['第二批', 'completed'],
-      ['收尾', 'in_progress'],
+      ['第一批', 'pending'],
+      ['第二批', 'pending'],
+      ['收尾', 'pending'],
     ])
     store.close()
   })
@@ -155,16 +175,20 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('子任务完成之后较新的整表提交仍是最新事实', () => {
+  test('子任务返回之后只有父会话的新整表能完成或重开条目', () => {
     const { store, ws, conversationId } = fresh()
     const first = newRun(store, conversationId, ws.id, 'r1')
     submit(store, first.id, 1, ['旧任务'])
     delegate(store, first.id, 2, '旧任务')
     const second = newRun(store, conversationId, ws.id, 'r2')
-    submit(store, second.id, 1, ['重新拆分'])
+    submitItems(store, second.id, 1, [
+      { content: '旧任务', status: 'in_progress' },
+      { content: '按验收意见返工', status: 'pending' },
+    ])
 
     expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
-      ['重新拆分', 'pending'],
+      ['旧任务', 'in_progress'],
+      ['按验收意见返工', 'pending'],
     ])
     store.close()
   })

@@ -1456,7 +1456,7 @@ describe('正常响应结束不冒充任务完成', () => {
     expect(todos.every((todo) => todo.status === 'completed')).toBe(true)
   })
 
-  test('成功子任务落账后，从同一投影发父待办快照', async () => {
+  test('子任务成功只代表返回，父验收前不推进待办', async () => {
     let todos: TodoItem[] = [
       { id: 'todo_1', content: '交给子 agent', status: 'in_progress' },
       { id: 'todo_2', content: '主会话收尾', status: 'pending' },
@@ -1477,13 +1477,7 @@ describe('正常响应结束不冒充任务完成', () => {
       },
     })
     const persist = noopPersistence()
-    persist.settleTool = (_stepId, status, _outcome, args) => {
-      if (status !== 'success' || args.parentTodo !== '交给子 agent') return
-      todos = [
-        { ...todos[0]!, status: 'completed' },
-        { ...todos[1]!, status: 'in_progress' },
-      ]
-    }
+    let beforeAcceptance: TodoItem[] = []
     const loop = new AgentLoop({
       adapter: fakeAdapter([
         [call('subagent', { task: '执行', parentTodo: '交给子 agent' })],
@@ -1509,6 +1503,7 @@ describe('正常响应结束不冒充任务完成', () => {
       summary: '测试夹具',
       permissionEffect: 'internal_control',
       async fn() {
+        beforeAcceptance = structuredClone(todos)
         todos = todos.map((todo) => ({ ...todo, status: 'completed' }))
         return { status: 'success', message: '收尾完成' }
       },
@@ -1523,11 +1518,8 @@ describe('正常响应结束不冒充任务完成', () => {
       events.push(event)
     }
 
-    const projected = events.find((event) => event.type === 'todos')
-    expect(projected?.type === 'todos' && projected.todos.map((todo) => todo.status)).toEqual([
-      'completed',
-      'in_progress',
-    ])
+    expect(beforeAcceptance.map((todo) => todo.status)).toEqual(['in_progress', 'pending'])
+    expect(events.some((event) => event.type === 'todos')).toBe(false)
   })
 
   test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {

@@ -274,7 +274,7 @@ describe('投影三区', () => {
     store.close()
   })
 
-  test('整表之后的父待办完成事实跨摘要仍保留，但子任务大输出照常收纳', async () => {
+  test('整表之后的待验收子任务回执跨摘要仍保留，但大输出照常收纳', async () => {
     const { store, ws, conv, ids } = fresh(2)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -321,7 +321,7 @@ describe('投影三区', () => {
       outcome: {
         status: 'success',
         executed: true,
-        message: '临时子 agent 做完了；父待办已推进：子任务审计',
+        message: '临时子 agent 已返回；父待办仍待验收：子任务审计',
         data: { output: 'z'.repeat(12_000), conversationId: 'cv_child' },
       },
     })
@@ -344,7 +344,7 @@ describe('投影三区', () => {
       result_omitted?: boolean
     }
     expect(envelope.status).toBe('success')
-    expect(envelope.summary).toContain('父待办已推进：子任务审计')
+    expect(envelope.summary).toContain('父待办仍待验收：子任务审计')
     expect(envelope.result_omitted).toBe(true)
     expect(String(result?.content)).not.toContain('z'.repeat(100))
     store.close()
