@@ -74,7 +74,7 @@ export {
 } from './resources.ts'
 // 落盘 schema 版本。**真源就在 schema.ts，不设中心登记表**（CLAUDE.md D2）
 export { SCHEMA_VERSION } from './schema.ts'
-// 待办：只读回，不写入——真源是 `write_todos` 那条 step 的 args
+// 待办：只读回，不另写——真源是整表与绑定子任务原本就落下的 tool steps
 export { latestTodos } from './todos.ts'
 // 花费账本
 export {

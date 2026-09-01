@@ -51,6 +51,7 @@ async function afterPreviousRun() {
     views: {
       [CV]: {
         transcript: [],
+        todos: [],
         history: { loading: null, nextCursor: null, error: null },
         runStartedAt: null,
         error: null,

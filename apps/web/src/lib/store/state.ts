@@ -129,12 +129,14 @@ export interface WorkflowNodeState {
  * 另一条会话——派活起的子会话，它和当前会话同时在收事件。单例的时候两条会话的正文
  * 会写进同一个数组，而界面上没有任何地方说得出哪一段是谁的。
  *
- * 表里只放**这条会话是什么**，不放读数：用量、上下文、待办、目标、跟进队列都是
- * 当前会话那一份账，子会话那一页只画内容（`ConversationPanel` 就是一列 transcript），
- * 没有读数条也没有输入框，跟着一起按 id 存就是为一个不存在的消费者建表。
+ * 表里只放**这条会话是什么**，不放运行读数。子会话页除了 transcript 也显示它自己的
+ * 待办，所以清单跟会话 id 存；用量、上下文、目标、跟进队列仍只有当前会话消费者，
+ * 不在这里复制。
  */
 export interface ConversationView {
   transcript: TranscriptItem[]
+  /** 这条会话自己的待办投影；子会话页只读展示，绝不混进父会话的全局面板。 */
+  todos: TodoItem[]
   /**
    * 历史 REST 的纯界面态。正文真源仍是 messages/runs/steps，这里只回答：
    * 请求在不在飞、还能不能往前翻、失败后该重试哪一页。
@@ -164,6 +166,7 @@ export interface ConversationView {
 /** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
+  todos: Object.freeze([]) as unknown as TodoItem[],
   history: Object.freeze({ loading: null, nextCursor: null, error: null }),
   runStartedAt: null,
   error: null,
@@ -313,6 +316,7 @@ export function openView(id: string): void {
   if (state.views[id]) return
   setState('views', id, {
     transcript: [],
+    todos: [],
     history: { loading: null, nextCursor: null, error: null },
     runStartedAt: null,
     error: null,

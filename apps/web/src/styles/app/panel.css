@@ -255,6 +255,15 @@
   padding: var(--s-3) var(--s-4) var(--s-6);
   overflow-y: auto;
 }
+.child-cv-todos {
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.child-cv-section-title {
+  margin-bottom: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 
 /* 外部 CLI 页：一段只读的流。等宽字，长行照样折——面板本来就窄，
    不折的话跑完之后显示的那段终态产出（一整段话）会齐刷刷跑出右边界，

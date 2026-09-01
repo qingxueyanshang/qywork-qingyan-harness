@@ -30,6 +30,10 @@ function ctx(delegate?: ToolContext['delegate']): ToolContext {
   }
 }
 
+function withTodos(c: ToolContext, todos: NonNullable<ToolContext['todos']>): ToolContext {
+  return { ...c, todos }
+}
+
 interface Ran {
   ok: boolean
   output: string
@@ -180,6 +184,55 @@ describe('派活', () => {
     const s = stub({ ok: true, output: '产出' })
     const res = await subagentTool.fn({ agent: 'reviewer', task: '  ' }, ctx(s.port))
     expect(res.status).toBe('failure')
+    expect(s.calls).toHaveLength(0)
+  })
+
+  test('有未完成清单时必须逐字绑定唯一父待办', async () => {
+    const todos = {
+      read: () => [
+        { id: 'todo_1', content: '服务端审计', status: 'in_progress' as const },
+        { id: 'todo_2', content: '网页端审计', status: 'pending' as const },
+      ],
+    }
+    const missing = stub({ ok: true, output: '产出' })
+    const missingResult = await subagentTool.fn(
+      { task: '审计服务端' },
+      withTodos(ctx(missing.port), todos),
+    )
+    expect(missingResult.status).toBe('failure')
+    expect(missing.calls).toHaveLength(0)
+
+    const wrong = stub({ ok: true, output: '产出' })
+    const wrongResult = await subagentTool.fn(
+      { task: '审计服务端', parentTodo: '服务端' },
+      withTodos(ctx(wrong.port), todos),
+    )
+    expect(wrongResult.status).toBe('failure')
+    expect(wrong.calls).toHaveLength(0)
+
+    const exact = stub({ ok: true, output: '产出' })
+    const exactResult = await subagentTool.fn(
+      { task: '审计服务端', parentTodo: '服务端审计' },
+      withTodos(ctx(exact.port), todos),
+    )
+    expect(exactResult.status).toBe('success')
+    expect(exactResult.message).toContain('父待办已推进：服务端审计')
+    expect(exact.calls).toHaveLength(1)
+  })
+
+  test('同名未完成条目拒绝绑定，不猜完成哪一条', async () => {
+    const s = stub({ ok: true, output: '产出' })
+    const result = await subagentTool.fn(
+      { task: '执行', parentTodo: '重复项' },
+      withTodos(ctx(s.port), {
+        read: () => [
+          { id: 'todo_1', content: '重复项', status: 'in_progress' },
+          { id: 'todo_2', content: '重复项', status: 'pending' },
+        ],
+      }),
+    )
+    expect(result.status).toBe('failure')
+    expect(result.message).toContain('多条同名待办')
     expect(s.calls).toHaveLength(0)
   })
 

@@ -64,6 +64,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
+          todos: [],
           transcript: [
             { id: 'u-short', kind: 'user', text: '短消息' },
             { id: 'u-long', kind: 'user', text: '这是一条需要收敛的长消息。'.repeat(12) },
@@ -168,6 +169,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: Date.now(),
           error: null,
+          todos: [],
           transcript: [
             { id: 'u1', kind: 'user', text: '问一句' },
             { id: 't1', kind: 'text', text: '# 标题\n\n一段正文。\n\n另一段正文。' },
@@ -307,6 +309,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           history: { loading: 'initial', nextCursor: null, error: null },
           runStartedAt: null,
           error: null,
+          todos: [],
           transcript: [],
         },
       },

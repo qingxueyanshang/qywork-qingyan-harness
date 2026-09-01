@@ -871,10 +871,10 @@ export class Session {
         mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
       },
       /*
-       * 待办同样绑到**会话**，而且**只读**：写入就是 `write_todos` 那次调用本身，
-       * 它的 args 随 step 落进账本，整表语义下最后一次成功提交即全部事实。
-       * 这里读回来只为回答「这是第一份清单还是在改已有的」——那是会话级事实，
-       * run 级的 `ctx.state` 里永远查不到。
+       * 待办同样绑到**会话**，而且**只读**：整表提交与绑定父待办的子任务完成
+       * 都是原本就要落的 tool step，`latestTodos` 从这一本账折叠当前快照。
+       * 这里读回来给动作词、委派归属与 loop 收尾共用；run 级的 `ctx.state`
+       * 跨轮查不到这些会话事实。
        */
       todos: { read: () => latestTodos(store, conversationId) },
       /*

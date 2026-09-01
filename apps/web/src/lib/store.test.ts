@@ -62,6 +62,7 @@ const {
   isRunning,
   ledgerRevision,
   loadOlderConversation,
+  loadConversationView,
   openBrowserTab,
   openConversationTab,
   openView,
@@ -439,7 +440,7 @@ describe('接口错误还原成人话', () => {
  */
 describe('事件按会话归属过滤', () => {
   const reset = (activeConversation: string | null) => {
-    setState({ activeConversation, conversations: [], busyConversations: [] })
+    setState({ activeConversation, conversations: [], busyConversations: [], todos: [] })
     if (activeConversation) freshView(activeConversation)
   }
 
@@ -475,7 +476,11 @@ describe('事件按会话归属过滤', () => {
       seq: 3,
       at: 0,
       conversationId: 'cv_child',
-      event: { type: 'todos', runId: 'run_1', todos: [] },
+      event: {
+        type: 'todos',
+        runId: 'run_1',
+        todos: [{ id: 'todo_1', content: '子任务自己的清单', status: 'in_progress' }],
+      },
     } as never)
 
     expect(
@@ -483,9 +488,41 @@ describe('事件按会话归属过滤', () => {
         .transcript.map((t) => t.text)
         .join(''),
     ).toContain('子 agent 在写的话')
+    expect(viewOf('cv_child').todos.map((todo) => todo.content)).toEqual(['子任务自己的清单'])
     // 当前会话这一份一个字都不该多。
     expect(transcript()).toHaveLength(0)
+    expect(state.todos).toHaveLength(0)
     closePanelTab('conversation-cv_child')
+    syncViews()
+  })
+
+  test('已完成的子会话从历史接口读回自己的待办', async () => {
+    reset('cv_now')
+    openConversationTab('cv_child_done', '已完成的子 agent')
+    syncViews()
+    const apiBefore = client.api
+    ;(client as unknown as { api: (path: string) => Promise<unknown> }).api = async (path) => {
+      if (!path.includes('/cv_child_done/history')) throw new Error(`未预期请求：${path}`)
+      return {
+        messages: [],
+        runs: [],
+        steps: [],
+        todos: [{ id: 'todo_1', content: '已经做完', status: 'completed' }],
+        nextCursor: null,
+      }
+    }
+
+    try {
+      await loadConversationView('cv_child_done')
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+    }
+
+    expect(viewOf('cv_child_done').todos.map((todo) => [todo.content, todo.status])).toEqual([
+      ['已经做完', 'completed'],
+    ])
+    expect(state.todos).toHaveLength(0)
+    closePanelTab('conversation-cv_child_done')
     syncViews()
   })
 

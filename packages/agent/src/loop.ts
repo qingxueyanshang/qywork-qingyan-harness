@@ -1692,6 +1692,7 @@ export class AgentLoop {
             ),
           )
 
+          let linkedTodoCompleted = false
           for (const s of settled) {
             const status = s.outcome.status === 'success' ? 'success' : 'failure'
             persist.settleTool(
@@ -1702,6 +1703,15 @@ export class AgentLoop {
               s.action,
               s.durationMs,
             )
+
+            if (
+              status === 'success' &&
+              s.call.name === 'subagent' &&
+              typeof s.call.arguments.parentTodo === 'string' &&
+              s.call.arguments.parentTodo.trim()
+            ) {
+              linkedTodoCompleted = true
+            }
 
             if (s.outcome.fileChanges?.length) {
               fileChanges.push(...s.outcome.fileChanges)
@@ -1735,6 +1745,17 @@ export class AgentLoop {
                 s.outcome,
               ),
             })
+          }
+
+          /*
+           * 子任务完成父待办的事实已经随上面的 subagent step 落盘；现在从同一个
+           * TodoPort 读回整表并发快照。不能让工具在自己结束时发：同一波并行子任务
+           * 都会从旧表各算一份，后到的整表事件会覆盖先完成的那一条。
+           * 一波全部落账后只读一次，既没有第二个写入方，也没有丢更新窗口。
+           */
+          if (linkedTodoCompleted) {
+            const todos = ctx.todos?.read()
+            if (todos) yield { type: 'todos', runId: input.runId, todos }
           }
         }
 

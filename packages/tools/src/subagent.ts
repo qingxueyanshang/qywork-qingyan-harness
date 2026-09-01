@@ -25,7 +25,8 @@ export const subagentTool: ToolSpec = {
     '要并行铺开去查、去读、去验证时用这一种，不必先定义角色。' +
     '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
     '或 cli:<id> 派给本机安装的外部 agent CLI。' +
-    '适合可以独立完成、产出是一段文字的整块工作；' +
+    '适合可以独立完成、产出是一段文字的整块工作；当前有未完成待办时，' +
+    '必须用 parentTodo 精确绑定成功即可完成的那一条，成功后父清单自动推进；' +
     '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
   parameters: {
     type: 'object',
@@ -39,6 +40,12 @@ export const subagentTool: ToolSpec = {
       task: {
         type: 'string',
         description: '要它做什么。子 agent 看不到这条会话，所以背景要在这里写全。',
+      },
+      parentTodo: {
+        type: 'string',
+        description:
+          '这次子任务成功即可完成的父待办，逐字复制当前清单里的 content。' +
+          '当前有未完成待办时必填；只做其中一部分时应先把父清单拆到可独立完成的粒度。',
       },
       model: {
         type: 'string',
@@ -87,9 +94,39 @@ export const subagentTool: ToolSpec = {
 
     const target = idArg(args.agent)
     const task = typeof args.task === 'string' ? args.task.trim() : ''
+    const parentTodo = typeof args.parentTodo === 'string' ? args.parentTodo.trim() : ''
     const model = idArg(args.model)
     const resume = idArg(args.resume)
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
+
+    /*
+     * 子任务与父清单的归属在派出之前钉死。回来之后靠自然语言猜「它大概完成了哪条」
+     * 会把错误条目打勾；完全不绑定又回到原始故障——子 agent 已成功，父清单仍停着。
+     *
+     * 只要求未完成清单：没有清单的短任务照常可以派。内容必须唯一且逐字匹配，
+     * 不接受模糊命中，也不静默替模型挑一条。
+     */
+    const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
+    if (unfinished.length > 0 && !parentTodo) {
+      return {
+        status: 'failure' as const,
+        message: '当前有未完成待办；请用 parentTodo 逐字绑定这次子任务成功即可完成的那一条',
+        errorKind: 'invalid_plan',
+      }
+    }
+    if (parentTodo) {
+      const matches = unfinished.filter((todo) => todo.content === parentTodo)
+      if (matches.length !== 1) {
+        return {
+          status: 'failure' as const,
+          message:
+            matches.length === 0
+              ? `parentTodo 不在当前未完成清单中：${parentTodo}`
+              : `当前清单里有多条同名待办，无法确定归属：${parentTodo}`,
+          errorKind: 'invalid_plan',
+        }
+      }
+    }
 
     // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，
     // 那正是它存在的理由：为了铺开去做几件小事而先建几个角色，没人会这么用。
@@ -141,7 +178,7 @@ export const subagentTool: ToolSpec = {
     }
     return {
       status: 'success' as const,
-      message: `${who} 做完了`,
+      message: parentTodo ? `${who} 做完了；父待办已推进：${parentTodo}` : `${who} 做完了`,
       data: { output: res.output, ...ids },
     }
   },
