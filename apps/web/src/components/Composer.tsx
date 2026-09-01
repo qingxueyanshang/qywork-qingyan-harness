@@ -1328,8 +1328,8 @@ function ContextMeter() {
                   <span class="ctx-source">
                     {c().source === 'actual'
                       ? '实际统计'
-                      : c().source === 'calibrated'
-                        ? '真值校准'
+                      : c().source === 'projected'
+                        ? '真值投影'
                         : '估算统计'}
                   </span>
                 </span>

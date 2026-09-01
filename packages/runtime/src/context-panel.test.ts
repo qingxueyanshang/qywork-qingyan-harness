@@ -218,13 +218,13 @@ describe('上下文面板', () => {
     settleProviderRequest(store, second, 'received', null, null)
 
     const after = contextPanel(store, conversationId, M(1_000_000))
-    // 锚点输入真值 32,000 / 本地 3,000：新增的本地 200 按同一比值折成 2,133。
-    // 不冻结在 33,000，也不跌回裸估算 3,200。
-    expect(after.total).toBe(34_133)
-    expect(after.source).toBe('calibrated')
+    // 锚点输入真值 32,000；锚点后的模型可见增量按当前结构估算为 200。
+    // 不冻结在 32,000，也不跌回裸估算 3,200。
+    expect(after.total).toBe(32_200)
+    expect(after.source).toBe('projected')
     // 分组明细跟着最近一次已发送的请求走，与锚点是两条判据；
     // 但会按对账把差额摊进可变桶，所以和恒等于总数。
-    expect(sum(after.breakdown)).toBe(34_133)
+    expect(sum(after.breakdown)).toBe(32_200)
   })
 
   /**
@@ -397,8 +397,8 @@ describe('锚点认模型', () => {
   })
 })
 
-describe('校准认接口路线', () => {
-  test('同名模型换接口后不复用上一条路线的 usage 比值', () => {
+describe('真值锚点认接口路线', () => {
+  test('同名模型换接口后不复用上一条路线的 usage 真值', () => {
     const { store, conversationId, runId } = fixture()
     const id = send(store, runId, {
       measured: 3000,
@@ -540,9 +540,9 @@ describe('信封换一份只换头部', () => {
       fingerprint: 'env-b',
     })
     const panel = contextPanel(store, conversationId, M(1_000_000))
-    expect(panel.total).toBe(101_000 - 10_000 + 14_000)
-    // 头部差逐字加，消息侧的 300 按真值比折成 1,000。
-    expect(panel.source).toBe('calibrated')
+    expect(panel.total).toBe(100_000 + 4000 + 300)
+    // 头部与消息侧增量都按当前请求结构估算，不外推旧请求的整体误差倍率。
+    expect(panel.source).toBe('projected')
   })
 
   test('换模型仍然整条退回估算，头部修正不参与', () => {

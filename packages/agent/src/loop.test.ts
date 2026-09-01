@@ -866,7 +866,6 @@ describe('上下文分组占用', () => {
       // 真值远大于这点历史的本地估算，差额必须被摊回可变桶而不是消失。
       anchor: {
         tokens: 33_000,
-        scale: 0.5,
         throughMessageId: 'ms_8',
         model: 'claude-opus-5',
         headTokens: 0,
@@ -880,7 +879,7 @@ describe('上下文分组占用', () => {
     const ctx = events.find((e) => e.type === 'context')
     expect(ctx?.type).toBe('context')
     if (ctx?.type !== 'context') return
-    expect(ctx.source).toBe('calibrated')
+    expect(ctx.source).toBe('projected')
     expect(Object.values(ctx.breakdown).reduce((n, v) => n + v, 0)).toBe(ctx.tokens)
     // 摊法是吸收不是缩放：逐字可数的固定类目保实测值，不许被差额改写。
     expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys', DEFAULT_DENSITY))
@@ -1845,7 +1844,7 @@ describe('上下文读数：一把尺', () => {
    * 第二次起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
    * 用户实测报的「一个轮会话里上下文跳了好几次」，跨轮的那一半就是它。
    */
-  test('带着上一轮真值开跑，首个读数按真值比校准新增内容', async () => {
+  test('带着上一轮真值开跑，首个读数只投影新增内容', async () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
@@ -1873,8 +1872,6 @@ describe('上下文读数：一把尺', () => {
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
       anchor: {
         tokens: 33_000,
-        // 上一份请求本地估算是真值的两倍；新增历史必须换回真值尺再相加。
-        scale: 0.5,
         throughMessageId: 'ms_8',
         model: 'claude-opus-5',
         headTokens: 0,
@@ -1886,9 +1883,9 @@ describe('上下文读数：一把尺', () => {
     }
 
     const ctx = events.find((e) => e.type === 'context')
-    expect(ctx?.type === 'context' && ctx.source).toBe('calibrated')
-    // “继续”本地估 7 token，按 0.5 折为 4；不能原样把两把尺加成 33,007。
-    expect(ctx?.type === 'context' && ctx.tokens).toBe(33_004)
+    expect(ctx?.type === 'context' && ctx.source).toBe('projected')
+    // “继续”按当前模型的本地结构估算为 7 token；旧请求的整体误差不能外推到新消息。
+    expect(ctx?.type === 'context' && ctx.tokens).toBe(33_007)
   })
 
   test('没有锚点时如实标 estimated，不假装是实测', async () => {

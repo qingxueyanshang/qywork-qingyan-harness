@@ -322,13 +322,6 @@ export interface RunInput {
    */
   anchor?: {
     tokens: number
-    /**
-     * 同一份输入上 `provider 真值 / 本地估算` 的换算比。
-     *
-     * 锚点之后新增的用户消息与工具结果仍只能本地估算；把它们原样加到真值上，
-     * 就是在同一个总数里混两把尺。可选只为兼容旧测试夹具，生产入口始终提供。
-     */
-    scale?: number
     throughMessageId: string | null
     /**
      * 产生这个真值的那次请求用的模型。
@@ -734,7 +727,7 @@ export class AgentLoop {
     }
 
     /*
-     * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 按同请求真值比校准的增量。
+     * 上下文读数的**唯一锚点**：最后一次 provider 真值 + 锚点后的本地结构增量。
      *
      * 坑：不要写成 `max(全量估算, 真值)`。两个数出自两把尺，锚点一失效显示值就从
      * 真值尺跌到系统性偏低的估算尺，会话内容一个字没变而数字掉三成（实测 33%→20%）。
@@ -744,7 +737,6 @@ export class AgentLoop {
      */
     let anchor: {
       tokens: number
-      scale: number
       uncovered: number
       transcriptIndex: number
       /** 产生这个真值的那次请求用的模型。与本轮不同就整条作废。 */
@@ -759,7 +751,6 @@ export class AgentLoop {
           model: input.anchor.model,
           headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
-          scale: input.anchor.scale ?? 1,
           uncovered: estimateMessages(
             input.history.filter(
               (m) =>
@@ -775,19 +766,16 @@ export class AgentLoop {
 
     const meter = (
       fallback: number,
-    ): { tokens: number; source: 'actual' | 'calibrated' | 'estimated' } =>
+    ): { tokens: number; source: 'actual' | 'projected' | 'estimated' } =>
       anchor
         ? {
             tokens:
               anchor.tokens +
-              Math.round(
-                (anchor.uncovered +
-                  estimateMessages(transcript.slice(anchor.transcriptIndex), density)) *
-                  anchor.scale,
-              ),
+              anchor.uncovered +
+              estimateMessages(transcript.slice(anchor.transcriptIndex), density),
             source:
               anchor.uncovered > 0 || transcript.length > anchor.transcriptIndex
-                ? 'calibrated'
+                ? 'projected'
                 : 'actual',
           }
         : { tokens: fallback, source: 'estimated' }
@@ -925,7 +913,7 @@ export class AgentLoop {
          *
          * 主路径不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要
          * 先烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
-         * 锚定尺（provider 真值 + 按同请求真值比校准的一轮尾巴），误差被限制在单轮增量内，
+         * 锚定尺（provider 真值 + 锚点后的一轮本地增量），误差被限制在单轮增量内，
          * 够做发送前判断。
          *
          * 估算失误时这里放行，由容量拒绝那条窄路兜底——凭证收得很窄，
@@ -1172,7 +1160,7 @@ export class AgentLoop {
                     source: m.source,
                     compactAt: softLimit(adapter.spec),
                     /*
-                     * **必须对账**：`tokens` 走锚定尺（provider 真值 + 校准后的一轮尾巴），
+                     * **必须对账**：`tokens` 走锚定尺（provider 真值 + 锚点后的一轮尾巴），
                      * `breakdown` 是本地估算，两者天然不等。不对账的话面板上各行
                      * 加起来对不上标题，而差额无声地落进「剩余空间」那一行。
                      *
@@ -1299,10 +1287,8 @@ export class AgentLoop {
                * 去填这个位置**：那正是撞窗的原因，填进去等于确认一遍错误。
                */
               if (cap.reportedInputTokens !== null) {
-                const measured = estimateRequest(req, density)
                 anchor = {
                   tokens: cap.reportedInputTokens,
-                  scale: measured > 0 ? cap.reportedInputTokens / measured : 1,
                   uncovered: 0,
                   transcriptIndex: transcript.length,
                   model: req.model,
@@ -1504,15 +1490,9 @@ export class AgentLoop {
             (turnUsage.cachedTokens ?? 0) +
             (turnUsage.cacheWriteTokens ?? 0) +
             turnUsage.outputTokens
-          const inputTotal =
-            turnUsage.inputTokens +
-            (turnUsage.cachedTokens ?? 0) +
-            (turnUsage.cacheWriteTokens ?? 0)
-          const measuredInput = estimateRequest(req, density)
           if (total > 0)
             anchor = {
               tokens: total,
-              scale: measuredInput > 0 && inputTotal > 0 ? inputTotal / measuredInput : 1,
               uncovered: 0,
               transcriptIndex: transcript.length,
               model: req.model,

@@ -333,7 +333,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     note(
       `斜率法（首尾相减）：Δ估算 ${dm} / Δ真值 ${dt} = ${dt !== 0 ? (dm / dt).toFixed(3) : '真值没变，量不出'}`,
     )
-    note('这一行就是批 5 的 `scale` 在真机上的取值来源——它按请求现算，不是脚本里那个 1.47。')
+    note('斜率只作诊断证据，不写入模型库，也不作为后续消息的持久化倍率。')
   }
 
   // ── 二、装一个 MCP：信封变了，读数不许跳 ────────────────────────────
@@ -372,7 +372,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 锚点: anchorRow?.sentCategories.mcpTools, 本轮: firstNew?.sentCategories.mcpTools },
   )
 
-  check('首个读数由上一份真值校准（修前这里是 estimated）', first?.source === 'calibrated', {
+  check('首个读数由上一份真值投影（修前这里是 estimated）', first?.source === 'projected', {
     source: first?.source,
   })
   if (first && firstNew && anchorRow) {
