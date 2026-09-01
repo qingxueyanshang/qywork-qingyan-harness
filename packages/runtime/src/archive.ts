@@ -209,9 +209,44 @@ function childConversationFrom(
 }
 
 /**
+ * 诊断包是给人转发的，工具图片的原始字节不属于排障事实。
+ * 运行账本和普通 JSON 存档保持完整；只在这个分享边界把字节换成明确的长度元数据。
+ */
+function diagnosticBundle(bundle: ArchiveBundle): ArchiveBundle {
+  return {
+    ...bundle,
+    runs: bundle.runs.map((run) => ({
+      ...run,
+      steps: run.steps.map((step) => {
+        const payload = step.payload
+        if (payload?.kind !== 'tool_result') return step
+        const data = payload.outcome.data
+        if (!Array.isArray(data?.images)) return step
+
+        const images = data.images.map((image) => {
+          if (typeof image !== 'object' || image === null) return image
+          const record = image as Record<string, unknown>
+          if (typeof record.data !== 'string') return image
+          const { data: base64, ...metadata } = record
+          return { ...metadata, base64Chars: base64.length, bytesOmitted: true }
+        })
+        return {
+          ...step,
+          payload: {
+            ...payload,
+            outcome: { ...payload.outcome, data: { ...data, images } },
+          },
+        }
+      }),
+    })),
+  }
+}
+
+/**
  * 给排障人员的当前会话快照。
  *
- * 会话正文、思考、工具与逐请求账本全部来自 `collect`，没有一份前端临时投影。
+ * 会话正文、思考、工具与逐请求账本全部来自 `collect`，没有一份前端临时投影；
+ * 工具结果里的媒体字节只在导出边界替换为长度元数据。
  * 接口配置只带判断请求形状所需的字段：协议、地址、思考档位、请求头名字与模型库覆盖。
  * API key 和请求头值绝不进入导出物。
  */
@@ -223,6 +258,11 @@ export function exportConversationDiagnostics(
   const bundle = collect(store, conversationId)
   const conversationTree = collectConversationTree(store, conversationId, bundle)
   const allConversations = [bundle, ...conversationTree.childConversations]
+  const exportedBundle = diagnosticBundle(bundle)
+  const exportedTree = {
+    ...conversationTree,
+    childConversations: conversationTree.childConversations.map(diagnosticBundle),
+  }
   const conversationProfiles = allConversations.map((item) => ({
     conversationId: item.conversation!.id,
     provider: diagnosticProvider(config, item.conversation!),
@@ -231,7 +271,7 @@ export function exportConversationDiagnostics(
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 3,
+      schemaVersion: 4,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,
@@ -242,12 +282,13 @@ export function exportConversationDiagnostics(
       },
       coverage: {
         messages: 'full',
-        steps: 'full',
-        childConversations: 'recursive_full',
+        steps: 'full_except_tool_result_media',
+        childConversations: 'recursive_full_except_tool_result_media',
         runContextSnapshots: 'full',
         providerRequestLedger: 'full',
         intermediateResources: 'metadata_and_references',
         attachmentBytes: 'references_only',
+        toolResultMedia: 'metadata_only',
         rawProviderBodies: 'not_persisted',
         configuredCredentials: 'redacted',
       },
@@ -287,8 +328,8 @@ export function exportConversationDiagnostics(
           ? isWorkspaceTrusted(config, bundle.workspace.rootPath)
           : null,
       },
-      conversationTree,
-      ...bundle,
+      conversationTree: exportedTree,
+      ...exportedBundle,
     },
     null,
     2,

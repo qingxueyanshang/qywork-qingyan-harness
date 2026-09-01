@@ -1684,12 +1684,20 @@ describe('用户中断不是错误', () => {
 
   test('流式等待中被中断 —— 终态是 interrupted，且不发 run.error', async () => {
     const controller = new AbortController()
+    let settlement:
+      | { status: string; errorCode: string | null; errorMessage: string | null }
+      | undefined
     const loop = new AgentLoop({
       adapter: abortingAdapter(controller),
       registry: new ToolRegistry(),
       systemPrompt: 's',
       makeToolContext: () => ({}) as never,
-      persist: noopPersistence(),
+      persist: {
+        ...noopPersistence(),
+        settleRequest: (_id, status, _usage, errorCode, _finishReason, errorMessage) => {
+          settlement = { status, errorCode, errorMessage: errorMessage ?? null }
+        },
+      },
     })
 
     const types: string[] = []
@@ -1707,6 +1715,8 @@ describe('用户中断不是错误', () => {
     expect(finished?.stopReason).toBe('user_interrupt')
     // 报红的那条不能出现——中断不该走错误通道。
     expect(types).not.toContain('run.error')
+    // provider 没有返回错误；账本不能把 SDK 的取消异常伪装成上游 internal_error。
+    expect(settlement).toEqual({ status: 'uncertain', errorCode: null, errorMessage: null })
   })
 })
 

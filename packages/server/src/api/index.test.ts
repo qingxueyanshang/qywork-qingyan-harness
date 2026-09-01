@@ -1084,7 +1084,7 @@ describe('会话诊断导出接口', () => {
       }
     }
     expect(payload.kind).toBe('qywork.session-diagnostic')
-    expect(payload.schemaVersion).toBe(3)
+    expect(payload.schemaVersion).toBe(4)
     expect(payload.conversation.id).toBe(conv.id)
     expect(payload.messages.map((m) => m.content)).toEqual(['为什么只调用工具'])
     expect(payload.runs[0]?.contextSnapshot).toEqual([
