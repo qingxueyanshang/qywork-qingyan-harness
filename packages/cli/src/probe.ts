@@ -12,8 +12,8 @@
  * 探测会**真的发几个请求**（每个一个字、最多 16 token），所以它只由用户显式触发。
  */
 
-import { describeProbe, probeModel, toCapabilities } from '@qywork/ai'
-import { catalogKey, loadConfig, resolveModel, saveConfig } from '@qywork/runtime'
+import { describeProbe, probeModel, toTransportCapabilities } from '@qywork/ai'
+import { loadConfig, resolveModel, saveConfig } from '@qywork/runtime'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -43,8 +43,8 @@ export async function runProbe(args: string[]): Promise<number> {
     model: stored.model,
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),
-    // **不带模型库里那条覆盖**：带上等于让上一次的探测结果影响这一次，
-    // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
+    // 不带上次的 transport 结论：否则被判定为不透传后，下一次探测自己也不再发
+    // effort，探出来的只会是「上次那个结论有没有自洽」。
   })
 
   if (json) {
@@ -58,7 +58,7 @@ export async function runProbe(args: string[]): Promise<number> {
     return 1
   }
 
-  const caps = toCapabilities(outcome)
+  const transport = toTransportCapabilities(outcome)
 
   // 探不出来的轴要**点名**说，不能笼统一句「没结论」。
   // 模型的思考参数格式发不出 effort 时那一轴无从探测；但「什么都不发时它自己思不思考」
@@ -69,6 +69,12 @@ export async function runProbe(args: string[]): Promise<number> {
         `目录里的保守默认值保持不变。${RESET}\n`,
     )
   }
+  if (outcome.inconclusive.length) {
+    process.stderr.write(
+      `\n${DIM}未得出结论的轴：${outcome.inconclusive.join(' / ')}（请求超时、限速或上游暂不可用），` +
+        `配置保持不变。${RESET}\n`,
+    )
+  }
 
   if (!save) {
     // 默认不改配置。探测会改变后续每一次请求的形状，那种事不该在用户只想
@@ -77,11 +83,24 @@ export async function runProbe(args: string[]): Promise<number> {
     return 0
   }
 
-  // 落进模型库那一格：探的是「这条模型在这条协议上」的行为，键的两维正好是它。
-  // 协议从当前接口取，不从模型名猜。
-  const key = catalogKey(stored.model, stored.kind)
-  config.catalog = { ...config.catalog, [key]: { ...config.catalog?.[key], ...caps } }
+  // 只写当前接口下的模型格子。模型档位来自官方目录；探测回答的是这个具体端点
+  // 是否透传控制面，不能写进 model + protocol 的全局目录污染其他中转。
+  const owner = config.providers[stored.provider]
+  const model = owner?.models[stored.model]
+  if (!owner || !model) return 2
+  if (Object.keys(transport).length === 0) {
+    process.stderr.write(`\n没有可写的传输结论，配置保持不变。\n`)
+    return 0
+  }
+
+  owner.models[stored.model] = {
+    ...model,
+    transport: { ...model.transport, ...transport },
+  }
   await saveConfig(config)
-  process.stderr.write(`\n已写回模型库 ${key} 的能力：${Object.keys(caps).join('、')}\n`)
+  process.stderr.write(
+    `\n已写回接口 ${stored.provider} / ${stored.model} 的传输校准：` +
+      `${Object.keys(transport).join('、')}\n`,
+  )
   return 0
 }

@@ -641,7 +641,7 @@ interface StoredContextPanel {
   total: number
   limit: number
   percent: number
-  source: 'actual' | 'estimated'
+  source: 'actual' | 'calibrated' | 'estimated'
   compactAt: number
   breakdown: ContextBreakdown
   omitted: ContextOmitted

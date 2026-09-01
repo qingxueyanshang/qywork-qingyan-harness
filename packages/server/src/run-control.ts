@@ -595,8 +595,14 @@ export async function compactConversation(
     // 占用与窗口从会话现算：手动压缩不属于任何 run，没有活的计量。
     // 面板与触发判定用的是同一把尺（`contextPanel` 的锚点口径），不另起一本账。
     // 窗口与密度取同一份 spec：这两个数要互相比较，出自两份 spec 就是两本账。
-    const spec = buildAdapter(summaryProfile(deps, conversationId)).spec
-    const panel = contextPanel(deps.store, conversationId, spec)
+    const adapter = buildAdapter(summaryProfile(deps, conversationId))
+    const spec = adapter.spec
+    const providerName = getConversation(deps.store, conversationId)?.provider
+    const panel = contextPanel(deps.store, conversationId, {
+      ...spec,
+      ...(providerName ? { providerName } : {}),
+      providerKind: adapter.kind,
+    })
     const outcome = await compaction.run({
       trigger: 'manual',
       model: spec.id,
@@ -616,7 +622,11 @@ export async function compactConversation(
       })
       // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
       // 重算并广播；否则模型下一轮已看到压缩投影，面板却一直停在压缩前。
-      const updated = contextPanel(deps.store, conversationId, spec)
+      const updated = contextPanel(deps.store, conversationId, {
+        ...spec,
+        ...(providerName ? { providerName } : {}),
+        providerKind: adapter.kind,
+      })
       emit({
         type: 'context',
         runId,

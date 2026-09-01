@@ -269,6 +269,14 @@ async function run(
 
 // ───────────────────────── 断言 ─────────────────────────
 
+test('响应建立事件早于模型内容', async () => {
+  const events = await run(TEXT_RUN)
+  const started = events.findIndex((e) => e.type === 'response_started')
+  const content = events.findIndex((e) => e.type === 'thinking_delta' || e.type === 'text_delta')
+  expect(started).toBeGreaterThan(0)
+  expect(content).toBeGreaterThan(started)
+})
+
 describe('推理增量：两种事件名都要认', () => {
   /**
    * 这条是这个文件存在的理由。DeepSeek 发 `response.reasoning_text.delta`，

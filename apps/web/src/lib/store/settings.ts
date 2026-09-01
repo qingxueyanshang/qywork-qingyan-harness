@@ -31,6 +31,8 @@ export interface RedactedModel {
    * Claude 上选的 `xhigh` 换到 DeepSeek 就是个它没有的档。
    */
   effort?: EffortLevel
+  /** 当前接口路线的控制面透传结论；不写入全局模型目录。 */
+  transport?: { effort?: boolean }
 }
 
 /** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
@@ -67,9 +69,9 @@ export interface RedactedConfig {
   /**
    * 模型参数的覆盖，键是「模型 id | 协议」。
    *
-   * **模型库那张表只读**，界面唯一往这里写的是「校准」——它把探测到的能力
-   * 原样合进对应那一格。字段形状的真源在服务端（`StoredCatalogEntry`），
-   * 这里不复述，只保证整份 PUT 时原样带回去，否则会被抹掉。
+   * **模型库那张表只读**。字段形状的真源在服务端（`StoredCatalogEntry`），
+   * 这里不复述，只保证整份 PUT 时原样带回去，否则会被抹掉。端点校准写在
+   * `providers[].models[].transport`，不会污染这份全局规格。
    */
   catalog?: Record<string, Record<string, unknown>>
   // 思考档位**不在顶层**：它是「接口 × 模型」那一格的属性，见 `RedactedModel.effort`。
@@ -302,19 +304,23 @@ export interface ProbeStep {
   detail: string
   /** true = 这一步没有真的验证任何能力（本协议下客户端不发这个字段）。 */
   skipped?: boolean
+  /** 已发请求，但只得到超时、限速或上游暂不可用。 */
+  inconclusive?: boolean
 }
 export interface ProbeOutcome {
   reachable: boolean
   /** 这条链路上无从探测的轴。**与「探了、被拒了」不是一回事**，不能合并显示。 */
   untested: 'effort'[]
+  /** 已尝试但没有形成能力结论；不得写成“不支持”。 */
+  inconclusive: 'effort'[]
   effortLevels: EffortLevel[]
   thinksByDefault: boolean
   probes: ProbeStep[]
 }
 export interface ProbeResult {
   outcome: ProbeOutcome
-  /** 可以安全写回配置的那一部分，没探过的轴一条都不含。 */
-  capabilities: Record<string, unknown>
+  /** 当前接口路线的传输校准；没探过的轴一条都不含。 */
+  transport: { effort?: boolean }
 }
 
 /**

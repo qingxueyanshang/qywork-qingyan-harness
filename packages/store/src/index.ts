@@ -43,6 +43,8 @@ export {
   listSteps,
   listWorkspaces,
   type ModelFinishRate,
+  markProviderRequestFirstContent,
+  markProviderRequestFirstEvent,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,

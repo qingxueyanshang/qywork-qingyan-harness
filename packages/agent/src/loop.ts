@@ -39,6 +39,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   FileChange,
+  ProviderKind,
   RunId,
   RunUsage,
   StopReason,
@@ -70,6 +71,8 @@ import {
 
 export interface LoopDeps {
   adapter: LlmAdapter
+  /** 配置里的接口名；用于逐请求路线证据，不参与请求组装。 */
+  providerName?: string
   registry: ToolRegistry
   /** 三层冻结前缀，已拼好。 */
   systemPrompt: string
@@ -264,16 +267,22 @@ export interface LoopPersistence {
     runId: RunId
     turnIndex: number
     retryIndex: number
+    providerName?: string
+    providerKind: ProviderKind
     model: string
     measuredInputTokens: number
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
+    requestBytes: number
     /** 本次请求的信封指纹。跨 run 复用锚点时靠它判「还是同一份上下文吗」。 */
     cacheRouteFingerprint: string
   }): string
   /** 请求真的发出去了。sent_at 只在这里置。 */
   markRequestSent(requestId: string): void
+  /** 可选是为了旧测试夹具；生产装配必须提供。 */
+  markRequestFirstEvent?(requestId: string): void
+  markRequestFirstContent?(requestId: string): void
   /**
    * 请求终态。`usage` 为 null = provider 没回报，**四个字段落 null 不落 0**——
    * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次什么都没占」。
@@ -313,6 +322,13 @@ export interface RunInput {
    */
   anchor?: {
     tokens: number
+    /**
+     * 同一份输入上 `provider 真值 / 本地估算` 的换算比。
+     *
+     * 锚点之后新增的用户消息与工具结果仍只能本地估算；把它们原样加到真值上，
+     * 就是在同一个总数里混两把尺。可选只为兼容旧测试夹具，生产入口始终提供。
+     */
+    scale?: number
     throughMessageId: string | null
     /**
      * 产生这个真值的那次请求用的模型。
@@ -718,7 +734,7 @@ export class AgentLoop {
     }
 
     /*
-     * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 仅对其后新增内容的估算。
+     * 上下文读数的**唯一一把尺**：最后一次 provider 真值 + 按同请求真值比校准的增量。
      *
      * 坑：不要写成 `max(全量估算, 真值)`。两个数出自两把尺，锚点一失效显示值就从
      * 真值尺跌到系统性偏低的估算尺，会话内容一个字没变而数字掉三成（实测 33%→20%）。
@@ -728,6 +744,7 @@ export class AgentLoop {
      */
     let anchor: {
       tokens: number
+      scale: number
       uncovered: number
       transcriptIndex: number
       /** 产生这个真值的那次请求用的模型。与本轮不同就整条作废。 */
@@ -742,6 +759,7 @@ export class AgentLoop {
           model: input.anchor.model,
           headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
+          scale: input.anchor.scale ?? 1,
           uncovered: estimateMessages(
             input.history.filter(
               (m) =>
@@ -755,14 +773,22 @@ export class AgentLoop {
         }
       : null
 
-    const meter = (fallback: number): { tokens: number; source: 'actual' | 'estimated' } =>
+    const meter = (
+      fallback: number,
+    ): { tokens: number; source: 'actual' | 'calibrated' | 'estimated' } =>
       anchor
         ? {
             tokens:
               anchor.tokens +
-              anchor.uncovered +
-              estimateMessages(transcript.slice(anchor.transcriptIndex), density),
-            source: 'actual',
+              Math.round(
+                (anchor.uncovered +
+                  estimateMessages(transcript.slice(anchor.transcriptIndex), density)) *
+                  anchor.scale,
+              ),
+            source:
+              anchor.uncovered > 0 || transcript.length > anchor.transcriptIndex
+                ? 'calibrated'
+                : 'actual',
           }
         : { tokens: fallback, source: 'estimated' }
 
@@ -899,7 +925,7 @@ export class AgentLoop {
          *
          * 主路径不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要
          * 先烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
-         * 锚定尺（provider 真值 + 仅一轮尾巴的估算），误差被限制在单轮增量内，
+         * 锚定尺（provider 真值 + 按同请求真值比校准的一轮尾巴），误差被限制在单轮增量内，
          * 够做发送前判断。
          *
          * 估算失误时这里放行，由容量拒绝那条窄路兜底——凭证收得很窄，
@@ -1078,15 +1104,19 @@ export class AgentLoop {
           // 账本行在**发出之前**落。此刻要发什么已经确定（分组、指纹都算得出），
           // provider 是否接收仍未知——两件事分开记，「发出去了没回」
           // 和「没发出去」在账本上才可区分。
+          const payload = payloadSnapshotOf(req)
           requestId = persist.openRequest({
             runId: input.runId,
             turnIndex: step,
             retryIndex,
+            ...(this.deps.providerName ? { providerName: this.deps.providerName } : {}),
+            providerKind: adapter.kind,
             model: adapter.spec.id,
             measuredInputTokens: estimateRequest(req, density),
             sentCategories: breakdown,
             omittedCategories: this.lastOmitted,
-            payloadHash: payloadHashOf(req),
+            payloadHash: payload.hash,
+            requestBytes: payload.bytes,
             cacheRouteFingerprint: envelopeHashOf(req),
           })
 
@@ -1097,6 +1127,8 @@ export class AgentLoop {
           let lastEventAt = Date.now()
           /** provider 真的回过来的事件数（不含 `request_prepared`）。 */
           let providerEvents = 0
+          let recordedFirstEvent = false
+          let recordedFirstContent = false
 
           try {
             const stream = await this.openStream(adapter, req, () => attemptAbort.abort())
@@ -1104,10 +1136,28 @@ export class AgentLoop {
 
             for await (const ev of stream) {
               lastEventAt = Date.now()
-              if (ev.type !== 'request_prepared') providerEvents++
+              if (ev.type !== 'request_prepared') {
+                providerEvents++
+                if (!recordedFirstEvent) {
+                  recordedFirstEvent = true
+                  persist.markRequestFirstEvent?.(requestId)
+                }
+                if (
+                  !recordedFirstContent &&
+                  (ev.type === 'thinking_delta' ||
+                    ev.type === 'text_delta' ||
+                    ev.type === 'tool_calls')
+                ) {
+                  recordedFirstContent = true
+                  persist.markRequestFirstContent?.(requestId)
+                }
+              }
               if (input.signal.aborted) break
 
               switch (ev.type) {
+                case 'response_started':
+                  // 只作为传输遥测边界；不产生模型可见内容或 UI step。
+                  break
                 case 'request_prepared': {
                   const limit = adapter.spec.contextWindow
                   const m = meter(ev.measuredInputTokens)
@@ -1122,7 +1172,7 @@ export class AgentLoop {
                     source: m.source,
                     compactAt: softLimit(adapter.spec),
                     /*
-                     * **必须对账**：`tokens` 走锚定尺（provider 真值 + 一轮尾巴），
+                     * **必须对账**：`tokens` 走锚定尺（provider 真值 + 校准后的一轮尾巴），
                      * `breakdown` 是本地估算，两者天然不等。不对账的话面板上各行
                      * 加起来对不上标题，而差额无声地落进「剩余空间」那一行。
                      *
@@ -1249,8 +1299,10 @@ export class AgentLoop {
                * 去填这个位置**：那正是撞窗的原因，填进去等于确认一遍错误。
                */
               if (cap.reportedInputTokens !== null) {
+                const measured = estimateRequest(req, density)
                 anchor = {
                   tokens: cap.reportedInputTokens,
+                  scale: measured > 0 ? cap.reportedInputTokens / measured : 1,
                   uncovered: 0,
                   transcriptIndex: transcript.length,
                   model: req.model,
@@ -1452,9 +1504,15 @@ export class AgentLoop {
             (turnUsage.cachedTokens ?? 0) +
             (turnUsage.cacheWriteTokens ?? 0) +
             turnUsage.outputTokens
+          const inputTotal =
+            turnUsage.inputTokens +
+            (turnUsage.cachedTokens ?? 0) +
+            (turnUsage.cacheWriteTokens ?? 0)
+          const measuredInput = estimateRequest(req, density)
           if (total > 0)
             anchor = {
               tokens: total,
+              scale: measuredInput > 0 && inputTotal > 0 ? inputTotal / measuredInput : 1,
               uncovered: 0,
               transcriptIndex: transcript.length,
               model: req.model,
@@ -2015,8 +2073,10 @@ function mergeUsage(
  * 非加密哈希是够的：它回答的是「这两行是不是同一次请求的重复」，
  * 不承担任何安全语义。用加密哈希只会让每次装配多花几毫秒。
  */
-function payloadHashOf(req: ChatRequest): string {
-  return Bun.hash(JSON.stringify([req.system, req.messages, req.tools])).toString(36)
+function payloadSnapshotOf(req: ChatRequest): { hash: string; bytes: number } {
+  // 这次序列化原本就用于指纹；在同一份字符串上读字节数，避免为测量再遍历一遍长历史。
+  const serialized = JSON.stringify([req.system, req.messages, req.tools])
+  return { hash: Bun.hash(serialized).toString(36), bytes: Buffer.byteLength(serialized) }
 }
 
 /**
@@ -2031,7 +2091,7 @@ function payloadHashOf(req: ChatRequest): string {
  * tokenizer 量出来的。中文密度各家差 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），
  * 拿它去判新模型的窗口就是量错了尺，而且不会有任何报错。
  *
- * **不要复用 `payloadHashOf`**：它含 messages，每轮必变，当不了信封。
+ * **不要复用 `payloadSnapshotOf`**：它含 messages，每轮必变，当不了信封。
  * 也不要复用 `prefix-audit` 的 `hashFrozen`：它只覆盖到最后一个缓存断点，
  * 不含工具表，而工具表正是最常变的那一半。
  */

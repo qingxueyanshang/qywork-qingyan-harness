@@ -210,7 +210,7 @@ export interface AppState {
     tokens: number
     limit: number
     percent: number
-    source: 'actual' | 'estimated'
+    source: 'actual' | 'calibrated' | 'estimated'
     /** 越过它就会在下一次发送前压一次。读数条上那道刻度。 */
     compactAt: number
     breakdown: ContextBreakdown

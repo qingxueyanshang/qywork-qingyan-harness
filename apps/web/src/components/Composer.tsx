@@ -1326,7 +1326,11 @@ function ContextMeter() {
                   {/* 成色紧跟标题，不另起一行：它是「上下文」这个数的定语，
                       不是一条独立信息。百分比不重复——弹层正下方那个按钮就是它。 */}
                   <span class="ctx-source">
-                    {c().source === 'actual' ? '实际统计' : '估算统计'}
+                    {c().source === 'actual'
+                      ? '实际统计'
+                      : c().source === 'calibrated'
+                        ? '真值校准'
+                        : '估算统计'}
                   </span>
                 </span>
                 <span class="ctx-head-nums">

@@ -372,7 +372,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 锚点: anchorRow?.sentCategories.mcpTools, 本轮: firstNew?.sentCategories.mcpTools },
   )
 
-  check('首个读数留在真值尺上（修前这里是 estimated）', first?.source === 'actual', {
+  check('首个读数由上一份真值校准（修前这里是 estimated）', first?.source === 'calibrated', {
     source: first?.source,
   })
   if (first && firstNew && anchorRow) {
@@ -402,7 +402,11 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
 
   // ── 三、跑着的时候与回头看是同一个数 ────────────────────────────────
   process.stdout.write('\n【三】运行中与回头看\n')
-  const panel = contextPanel(store, conv as ConversationId, spec)
+  const panel = contextPanel(store, conv as ConversationId, {
+    ...spec,
+    providerName: ref.provider,
+    providerKind: profile.kind,
+  })
   note(
     `面板 ${panel.total}（${panel.percent}%，${panel.source}）　运行中末次事件 ${events[events.length - 1]?.tokens}`,
   )

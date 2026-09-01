@@ -169,6 +169,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       })
     }
 
+    // fetch 在响应头到达时 resolve；正文 SSE 尚未开始。把这条边界交给账本，
+    // 才能区分「请求上传/中转排队」和「provider 已接单后的预填充/思考」。
+    yield { type: 'response_started' }
+
     try {
       for await (const event of readSse(res.body)) {
         const type = String(event.type ?? '')
@@ -338,7 +342,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    * 传 `{effort:'none'}` 给一个恒开推理的模型会 400，而那种 400 的文案
    * 跟容量拒绝长得很像，之后就是一次毫无用处的压缩重发。
    *
-   * **「不思考」必须是 `none`，不能是 `minimal`。** 不能把「不思考」映射成 `{effort:'minimal'}`。**
+   * **协议层的 `none` 与 `minimal` 不是一回事。** 本产品不提供“关闭思考”档：
+   * 用户未选择时省略整个 `effort`，由模型使用默认值；绝不能为了提速在后台发送
+   * `none`，也不能把关闭意图伪装成 `minimal`。
    * 实测（deepseek-v4-flash，`max_output_tokens=900`，各三次）：
    *
    * ```

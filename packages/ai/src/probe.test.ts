@@ -8,13 +8,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { applySpecOverride, effortIsTransmittable, lookupModel } from './catalog.ts'
-import { describeProbe, type ProbeOutcome, toCapabilities } from './probe.ts'
+import { lookupModel } from './catalog.ts'
+import { describeProbe, type ProbeOutcome, toTransportCapabilities } from './probe.ts'
 
 function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
   return {
     reachable: true,
     untested: [],
+    inconclusive: [],
     effortLevels: ['low', 'high'],
     thinksByDefault: true,
     probes: [],
@@ -23,33 +24,22 @@ function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
 }
 
 describe('只写回真的探过的轴', () => {
-  test('全探过就全写', () => {
-    expect(toCapabilities(outcome())).toEqual({
-      effortLevels: ['low', 'high'],
-      thinksByDefault: true,
-    })
+  test('官方档位在当前端点通过时只写透传结论', () => {
+    expect(toTransportCapabilities(outcome())).toEqual({ effort: true })
   })
 
   /**
    * 没探过就不写。留空让目录里的保守默认值继续生效——
    * 写一个「探针都通过了」的空结论，会用凭空的值覆盖正确的值。
    */
-  test('effort 没探过时不写 effortLevels', () => {
-    expect(toCapabilities(outcome({ untested: ['effort'] })).effortLevels).toBeUndefined()
+  test('effort 没探过时不写结论', () => {
+    expect(toTransportCapabilities(outcome({ untested: ['effort'] }))).toEqual({})
   })
 
-  /**
-   * `thinksByDefault` 不跟着 effort 轴一起丢。
-   *
-   * 它测的是**回包**——什么都不发，看端点自己吐不吐思考内容。这跟客户端
-   * 在这条链路上发不发 effort 字段是两回事。绑在一起的后果在 DeepSeek 上
-   * 就能看见：探针报了「省略字段时自己思考：是」，`--save` 却什么都不写，
-   * 目录里那条错的 `thinksByDefault: false` 原样留着。
-   */
-  test('effort 轴没探过，thinksByDefault 照写 —— 它是从回包观测的', () => {
-    const c = toCapabilities(outcome({ untested: ['effort'] }))
-    expect(c.thinksByDefault).toBe(true)
-    expect(c.effortLevels).toBeUndefined()
+  test('effort 探测遇到暂时失败时不写 false', () => {
+    expect(
+      toTransportCapabilities(outcome({ effortLevels: [], inconclusive: ['effort'] })),
+    ).toEqual({})
   })
 
   /**
@@ -60,13 +50,8 @@ describe('只写回真的探过的轴', () => {
    * 把格式从 `reasoning_effort` 改成 `adaptive_only`，因此 effort 整片消失——
    * 校准一次思考，反而再也选不出档位。
    */
-  test('写回里没有思考参数格式这一项', () => {
-    const spec = lookupModel('gemini-3.7-flash', 'openai_responses')
-    expect(effortIsTransmittable(spec)).toBe(true)
-
-    const after = applySpecOverride(spec, toCapabilities(outcome()))
-    expect(after.thinking).toBe(spec.thinking)
-    expect(effortIsTransmittable(after)).toBe(true)
+  test('写回里没有档位、默认行为或思考参数格式', () => {
+    expect(toTransportCapabilities(outcome())).toEqual({ effort: true })
   })
 
   /**
@@ -74,12 +59,13 @@ describe('只写回真的探过的轴', () => {
    * 写回去会把「没测成」变成「测出来它不思考」。
    */
   test('端点不通时什么都不写 —— 那个 false 是占位不是结论', () => {
-    expect(toCapabilities(outcome({ reachable: false, thinksByDefault: false }))).toEqual({})
+    expect(toTransportCapabilities(outcome({ reachable: false, thinksByDefault: false }))).toEqual(
+      {},
+    )
   })
 
-  test('探出「不支持 effort」时写空数组，不是不写', () => {
-    // 空数组是一条结论（实测每档都被拒），不写是「没测」。两者必须能区分。
-    expect(toCapabilities(outcome({ effortLevels: [] })).effortLevels).toEqual([])
+  test('探出当前端点拒绝 effort 时写 false，不改官方档位', () => {
+    expect(toTransportCapabilities(outcome({ effortLevels: [] }))).toEqual({ effort: false })
   })
 })
 
@@ -101,6 +87,21 @@ describe('报告要能区分三种状态', () => {
   test('实测不支持时说「不支持」，不说「未探测」', () => {
     const t = describeProbe(outcome({ effortLevels: [] }), 'anthropic_messages', 'x')
     expect(t).toContain('（不支持）')
+  })
+
+  test('暂时失败显示未得出结论，不冒充不支持', () => {
+    const t = describeProbe(
+      outcome({
+        effortLevels: [],
+        inconclusive: ['effort'],
+        probes: [{ name: 'effort=low', ok: false, inconclusive: true, detail: '连接超时' }],
+      }),
+      'openai_chat_completions',
+      'x',
+    )
+    expect(t).toContain('? effort=low')
+    expect(t).toContain('未得出结论')
+    expect(t).not.toContain('（不支持）')
   })
 
   test('原始探针逐条列出 —— 结论错了要能查', () => {
@@ -145,27 +146,34 @@ describe('适配器如实声明自己发不发 effort', () => {
 })
 
 /**
- * `toCapabilities` 的输出就是模型库那一条覆盖，中间不再有第二种形状。
- * 这一条断的是整链：探测结论 → 模型库 → adapter 手里的 spec。
+ * 这一条断的是整链：当前接口的探测结论 → 传输否决闸 → adapter。
  */
 describe('探测结果真的会影响请求装配', () => {
-  test('探测结论作为模型库那一条，覆盖目录里的猜测', async () => {
+  test('当前端点拒绝时收起控制面，但不改官方模型档位', async () => {
     const { buildAdapter } = await import('./factory.ts')
     const base = {
       kind: 'openai_chat_completions' as const,
       apiKey: 'sk-x',
-      model: '某个中转站的模型',
+      model: 'deepseek-v4-flash',
     }
-    expect(buildAdapter(base).spec.thinking).toBe('none')
+    expect(buildAdapter(base).spec.effortLevels).toEqual(['low', 'high', 'max'])
 
-    // 没有这一步，`qy probe --save` 就只是打印一份报告——探得再准也不影响任何请求。
     const probed = buildAdapter({
       ...base,
-      spec: toCapabilities(outcome({ effortLevels: ['high'], thinksByDefault: true })),
+      transport: toTransportCapabilities(outcome({ effortLevels: [] })),
     })
-    expect(probed.spec.effortLevels).toEqual(['high'])
-    expect(probed.spec.thinksByDefault).toBe(true)
-    // 参数格式不在写回范围内：探测改不了「用哪套字段发」。
-    expect(probed.spec.thinking).toBe('none')
+    expect(probed.spec.effortLevels).toEqual([])
+    expect(lookupModel(base.model, base.kind).effortLevels).toEqual(['low', 'high', 'max'])
+  })
+
+  test('端点通过不能给未收录模型凭空增加档位', async () => {
+    const { buildAdapter } = await import('./factory.ts')
+    const adapter = buildAdapter({
+      kind: 'openai_chat_completions',
+      apiKey: 'sk-x',
+      model: '某个中转站的模型',
+      transport: { effort: true },
+    })
+    expect(adapter.spec.effortLevels).toEqual([])
   })
 })

@@ -528,23 +528,18 @@ describe('模型目录', () => {
   /** DeepSeek 两条协议的档位不一样，报的必须是接口实际用的那条。 */
   test('DeepSeek 按接口协议报档位', async () => {
     const compat = await models(withConfig('openai_chat_completions', 'deepseek-v4-flash'))
-    expect(compat.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual(['high', 'max'])
+    expect(compat.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual([
+      'low',
+      'high',
+      'max',
+    ])
 
     const responses = await models(withConfig('openai_responses', 'deepseek-v4-flash'))
     expect(responses.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual([])
   })
 
-  /**
-   * **`qy probe --save` 实测出来的档位要覆盖内置目录。**
-   *
-   * 这条锁的是一条容易断的链：`buildAdapter`（`ai/src/factory.ts`）按
-   * 「模型 + 协议」取模型库覆盖，所以**真正发出去的请求**用的是校准值；
-   * 这一侧只要键取错一维，**界面上能选哪几档就仍然按内置目录报**。
-   *
-   * 失败形状是「校准了但界面纹丝不动」：探测器写回的结论有生产者没消费者，
-   * 而两处口径不一致的后果是用户选不到一个调得动的档位。
-   */
-  test('探测写回的档位覆盖内置目录', async () => {
+  /** 人工维护的模型规格覆盖内置 seed；它不是某个中转站的探测结果。 */
+  test('模型库里人工维护的档位覆盖内置目录', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: 'deepseek-v4-flash' },
@@ -559,25 +554,21 @@ describe('模型目录', () => {
       },
     }
     const row = (await models(d)).find((m) => m.id === 'deepseek-v4-flash')!
-    // 内置目录写的是 high/max，实测覆盖成 low/medium。
+    // 内置目录写的是 high/max，人工规格覆盖成 low/medium。
     expect(row.effortLevels).toEqual(['low', 'medium'])
   })
 
   /**
-   * 未收录的模型**探过就算数**。
-   *
-   * 别在这一支写死 `effortLevels: []`。「未收录 = 没测过它吃不吃 effort」只在探测
-   * 之前成立——自建端点和中转站正是最需要探的地方，探完界面照样不给选的话，
-   * `qy probe --save` 对它们完全无效。
+   * 未收录模型可以由用户在模型库明确补录能力；端点探测本身不能发明官方档位。
    */
-  test('未收录的模型探过之后也报档位', async () => {
+  test('未收录的模型人工补录后也报档位', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: '中转站上的某个模型' },
       providers: {
         p: {
           kind: 'openai_chat_completions',
-          models: { 中转站上的某个模型: {}, 没探过的: {} },
+          models: { 中转站上的某个模型: {}, 没补录的: {} },
         },
       },
       catalog: {
@@ -589,8 +580,38 @@ describe('模型目录', () => {
     }
     const list = await models(d)
     expect(list.find((m) => m.id === '中转站上的某个模型')?.effortLevels).toEqual(['high'])
-    // 没探过的仍然是空：不能把「没测」说成「不支持」，也不能反过来。
-    expect(list.find((m) => m.id === '没探过的')?.effortLevels).toEqual([])
+    expect(list.find((m) => m.id === '没补录的')?.effortLevels).toEqual([])
+  })
+
+  /**
+   * 端点校准必须按接口隔离。同一个官方模型挂在两个中转站上，其中一个拒绝
+   * effort 不能把另一个也判死；反过来，某个端点接受字段也不能凭空增加官方档位。
+   */
+  test('同模型的端点传输校准互不污染', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'blocked', model: 'deepseek-v4-flash' },
+      providers: {
+        blocked: {
+          kind: 'openai_chat_completions',
+          models: {
+            'deepseek-v4-flash': { effort: 'high', transport: { effort: false } },
+          },
+        },
+        untouched: {
+          kind: 'openai_chat_completions',
+          models: { 'deepseek-v4-flash': { effort: 'high' } },
+        },
+      },
+    }
+    const response = await body(d)
+    const blocked = response.providers.find((p) => p.name === 'blocked')!.models[0]!
+    const untouched = response.providers.find((p) => p.name === 'untouched')!.models[0]!
+
+    expect(blocked.effortLevels).toEqual([])
+    expect(blocked.effort).toBeNull()
+    expect(untouched.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(untouched.effort).toBe('high')
   })
 
   /**
@@ -614,7 +635,7 @@ describe('模型目录', () => {
     const list = await models(d)
     const flash = list.find((m) => m.id === 'deepseek-v4-flash')!
     expect(flash.effort).toBe('max')
-    expect(flash.effortLevels).toEqual(['high', 'max'])
+    expect(flash.effortLevels).toEqual(['low', 'high', 'max'])
     // 同接口的另一个模型没选过就是 null，不跟着变。
     expect(list.find((m) => m.id === 'deepseek-v4-pro')?.effort).toBeNull()
   })
@@ -711,10 +732,7 @@ describe('模型目录', () => {
     expect(Object.keys(ds).sort()).toEqual(['displayName', 'id', 'models'])
   })
 
-  /**
-   * 覆盖要生效。界面只读，覆盖来自 `qy probe --save` 或手改 config.json——
-   * 不生效的话那两条路等于没有出口。
-   */
+  /** 模型库人工覆盖要生效；端点探测单独落在 provider.models[].transport。 */
   test('config.catalog 里的覆盖盖在内置值上', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = {

@@ -5,17 +5,18 @@
  * 面，面板就空了——而用户是在**回头看**的时候才想知道「上下文被谁占的」。所以真源是账本，面板是
  * 它的投影，任何时刻可查。
  *
- * **总数只有一把尺。** `total` 取**最近一次带 usage 回报的请求**的 provider 真值。
- * 这里刻意不做 `max(全量估算, provider真值)`——那两个数出自两把尺，
- * 锚点一失效显示值就从真值尺跌到估算尺，会话内容没变而数字掉三分之一，
- * 界面上没有任何一处能解释它。
+ * **总数只有一把尺。** 最近一次已发送请求带 usage 时，`total` 就是 provider 真值；
+ * 更新的请求尚未拿到 usage 时，从上一个真值输入起算，固定头部按逐字估算差替换，
+ * 新增消息按同一份锚点的 `provider 输入 / 本地估算` 比值校准。
+ * 这里刻意不做 `max(全量估算, provider真值)`——那两个数出自两把尺，锚点一失效
+ * 显示值就会无理由跳回字符上界。
  *
- * 没有任何**当前模型的**带 usage 请求时才退回本地测得值，并把 `source` 标成 `estimated`。
+ * 没有任何**当前路线与模型的**带 usage 请求时才退回本地测得值，并把 `source` 标成
+ * `estimated`。锚点后还有增量时标 `calibrated`，只有最近请求本身有回执才标 `actual`。
  * **标签必须跟着数走**：用户要能一眼看出这个数能不能拿来做决定。
  *
- * **锚点必须与会话当前的模型同一条。** 各家 tokenizer 对同一份内容算出的 token
- * 数差到 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），换模型之后拿上一个模型的回执
- * 当锚点，就是用 A 的尺去判 B 的窗口，而它还挂着「真值」的标签。
+ * **锚点必须与会话当前的接口、协议、模型同一条。** 各家 tokenizer 与中转 usage
+ * 口径都可能不同，跨路线复用就是拿 A 的尺去判 B 的窗口，而它还挂着真值标签。
  *
  * **信封换了一份只换头部，两侧同一组判据。** 模型相同而冻结前缀或工具表变了时，
  * 消息侧一个字没变，锚点那一大段真值仍然成立——按 `envelopeHeadTokens` 把头部
@@ -44,13 +45,13 @@ export interface ContextPanel {
   limit: number
   /** 一位小数。1M 窗口下取整会把 2139 显示成 0%。 */
   percent: number
-  source: 'actual' | 'estimated'
+  source: 'actual' | 'calibrated' | 'estimated'
   /**
    * 最近一次已发送请求的**本地估算**占用。
    *
    * 与 `total` 是同一份内容的两把尺。压缩要拿它把估算尺的回收量折算到 `total`
    * 那把尺上（`CompactionRunInput.estimatedOccupancy`）。`source` 为 `estimated`
-   * 时两者相等。
+   * 时两者相等；`calibrated` 时则是最近真值加上已换尺的增量。
    *
    * **不进界面**：界面只显示 `total`，两个数一起摆出来没有人能判断该信哪个。
    */
@@ -92,27 +93,53 @@ function anchorTokens(r: {
   )
 }
 
+/** provider 对这一次请求实际计入窗口的输入，不含本轮输出。 */
+function anchorInputTokens(r: {
+  providerInputTokens: number | null
+  providerCachedTokens: number | null
+  providerCacheWriteTokens: number | null
+}): number {
+  return (
+    (r.providerInputTokens ?? 0) + (r.providerCachedTokens ?? 0) + (r.providerCacheWriteTokens ?? 0)
+  )
+}
+
+/** 同一份输入上的真值 / 本地估算；没有可用分母时不编系数。 */
+function anchorScale(r: ProviderRequest): number {
+  const actual = anchorInputTokens(r)
+  return r.measuredInputTokens > 0 && actual > 0 ? actual / r.measuredInputTokens : 1
+}
+
 /**
- * 锚点的真值换到**最近一次已发送请求**那份信封上。
+ * 锚点的真值推进到**最近一次已发送请求**。
  *
- * 只换头部：`真值 − 锚点头部 + 本次头部`。信封之外的内容一个字没变，那一段真值
- * 仍然成立；整条退回估算尺的代价实测是 54.5% 读作 80.0%。
+ * 当前请求就是锚点时直接返回完整回执。更新的请求尚未回 usage 时分两段推进：
+ * 信封头部逐字可数，按两次估算的差值换；消息侧按锚点请求的真值比校准后再加。
+ * 整条退回裸估算尺的代价实测是 54.5% 读作 80.0%。
  *
- * 指纹相同时不动，`null`（没记过指纹的存量行）同样不动：同一份信封下两份头部
- * 估算相等，换一遍只会把两次估算之间的口径差引进来。
+ * 指纹相同时不换头部，`null`（没记过指纹的存量行）同样不换：同一份信封下两份
+ * 头部估算相等，换一遍只会把两次估算之间的口径差引进来。
  *
  * 边界：两份头部都是估算，所以差额带的是系数误差，不是零误差。
  */
 function anchoredTotal(anchored: ProviderRequest, sent: ProviderRequest): number {
+  if (anchored.id === sent.id) return anchorTokens(anchored)
+
   const changed =
     anchored.cacheRouteFingerprint !== null &&
     anchored.cacheRouteFingerprint !== sent.cacheRouteFingerprint
-  if (!changed) return anchorTokens(anchored)
+  const headDelta = changed
+    ? envelopeHeadTokens(sent.sentCategories) - envelopeHeadTokens(anchored.sentCategories)
+    : 0
+  /*
+   * 头部逐字可数，仍按原估算差换；其余增量才按同一请求的真值比校准。
+   * `sent - anchored - headDelta` 包含锚点回复进入下一轮后的模型可见部分，
+   * 所以基底必须是不含锚点输出的 provider 输入，不能从 `anchorTokens` 起算后再重复加。
+   */
+  const variableDelta = sent.measuredInputTokens - anchored.measuredInputTokens - headDelta
   return Math.max(
     0,
-    anchorTokens(anchored) -
-      envelopeHeadTokens(anchored.sentCategories) +
-      envelopeHeadTokens(sent.sentCategories),
+    anchorInputTokens(anchored) + headDelta + Math.round(variableDelta * anchorScale(anchored)),
   )
 }
 
@@ -123,7 +150,13 @@ export function contextPanel(
    * 会话当前的模型。**窗口与 id 必须出自同一份 spec**——分子按 id 认锚点、
    * 分母按窗口算百分比，两个数出自两份 spec 就是分子分母各说各话。
    */
-  model: { id: string; contextWindow: number },
+  model: {
+    id: string
+    contextWindow: number
+    /** 有值时把真值校准限制在同一条接口路线上；旧行没有路线证据时仍可作锚。 */
+    providerName?: string
+    providerKind?: ProviderRequest['providerKind']
+  },
 ): ContextPanel {
   const limit = Math.max(1, model.contextWindow)
 
@@ -185,10 +218,24 @@ export function contextPanel(
    * 上下文，它是「另一份内容的真值」，比估算错得更隐蔽。退回估算尺、如实标
    * `estimated`，下一轮回执一到即重锚。
    */
-  const anchored = latest && latest.model === model.id ? latest : null
+  const anchored =
+    latest &&
+    latest.model === model.id &&
+    (latest.providerName === null ||
+      model.providerName === undefined ||
+      latest.providerName === model.providerName) &&
+    (latest.providerKind === null ||
+      model.providerKind === undefined ||
+      latest.providerKind === model.providerKind)
+      ? latest
+      : null
 
   const total = anchored ? anchoredTotal(anchored, sent) : sent.measuredInputTokens
-  const source: ContextPanel['source'] = anchored ? 'actual' : 'estimated'
+  const source: ContextPanel['source'] = anchored
+    ? anchored.id === sent.id
+      ? 'actual'
+      : 'calibrated'
+    : 'estimated'
 
   return {
     total,

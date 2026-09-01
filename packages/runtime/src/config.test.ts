@@ -263,7 +263,8 @@ describe('配置提醒', () => {
     expect(n).toContain('不在内置目录')
     expect(n).toContain('思考')
     expect(n).toContain('计价')
-    expect(n).toContain('qy probe')
+    expect(n).toContain('端点探测')
+    expect(n).toContain('不能补出')
   })
 
   test('内置目录里的模型不提醒', () => {
@@ -278,7 +279,7 @@ describe('配置提醒', () => {
     expect(n).not.toContain('不在内置目录')
   })
 
-  test('模型库里已经有这一条时不提醒——那说明用户跑过 qy probe --save 了', () => {
+  test('模型库里已经明确补录这一条时不提醒', () => {
     const n = configNotices(
       cfg({
         active: { provider: 'x', model: '某个没收录的模型' },
@@ -296,7 +297,7 @@ describe('配置提醒', () => {
     expect(n).not.toContain('不在内置目录')
   })
 
-  /** 键的第二维是协议：探过 responses 那条链路，不等于兼容协议那条也探过。 */
+  /** 键的第二维是协议：补录 responses 的规格，不等于补录兼容协议的规格。 */
   test('另一条协议下的那一条不算数', () => {
     const n = configNotices(
       cfg({
@@ -336,7 +337,7 @@ describe('配置提醒', () => {
  * 档位挂在「接口 × 模型」那一格。
  *
  * **不能用一个全局值**：只调一家模型时档位面一致，一个全局字段够用；这里同时
- * 接多家（Claude 五档、DeepSeek 两档、Qwen 一档没有，同一个模型换条协议档位面
+ * 接多家（Claude 五档、DeepSeek 三档、也有模型一档没有，同一个模型换条协议档位面
  * 还会变），而且 Agent Team 的每个角色各带一个模型（`team-run.ts` 的
  * `backend.model`）——一个全局值套上去必然错配。
  */
@@ -406,6 +407,10 @@ describe('思考档位校验', () => {
 
   test('词表里的值放行', () => {
     expect(effortProblems(withEffort('max'))).toEqual([])
+  })
+
+  test('旧的关闭命令 none 不再是可选档位', () => {
+    expect(effortProblems(withEffort('none'))).toHaveLength(1)
   })
 
   /** 没选过 = 不发思考字段，让模型走自己的默认，不是问题。 */
@@ -641,6 +646,22 @@ describe('模型库一次性迁移', () => {
     expect(currentSpec(migrated, 'ds', 'deepseek-v4-flash')).toEqual(
       legacySpec(raw, 'ds', 'deepseek-v4-flash'),
     )
+  })
+
+  test('旧配置里的 none 迁成未选择，不再向 provider 发送关闭命令', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: {
+        ds: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-ds',
+          models: { 'deepseek-v4-flash': { effort: 'none' } },
+        },
+      },
+    }
+    const migrated = await load(raw)
+    expect(migrated.providers.ds?.models['deepseek-v4-flash']?.effort).toBeUndefined()
+    expect(resolveModel(migrated, 'deepseek-v4-flash')?.effort).toBeUndefined()
   })
 
   test('一维键 + 单 kind：改写成两维键，解析结果逐字段不变', async () => {

@@ -36,6 +36,7 @@ import type {
   Attachment,
   Conversation,
   ConversationId,
+  EffortLevel,
   FollowUp,
   GoalWriteResult,
   RunId,
@@ -43,7 +44,6 @@ import type {
 } from '@qywork/core'
 import {
   deriveConversationTitle,
-  EFFORT_ORDER,
   envelopeHeadTokens,
   isInlineImage,
   isInlineVideo,
@@ -70,6 +70,8 @@ import {
   listMessages,
   listRuns,
   listSteps,
+  markProviderRequestFirstContent,
+  markProviderRequestFirstEvent,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,
@@ -260,6 +262,7 @@ export class Session {
       ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
       ...(stored.headers ? { headers: stored.headers } : {}),
       ...(stored.spec ? { spec: stored.spec } : {}),
+      ...(stored.transport ? { transport: stored.transport } : {}),
     }
   }
 
@@ -277,8 +280,10 @@ export class Session {
   ): AgentLoop {
     // 能力段按已注册的工具名过滤：shell、派活、编排、外部工具都按通道注册。
     const base = buildSystemPrompt(new Set(this.registry.list().map((s) => s.name)))
+    const providerName = resolveModel(this.opts.config, target)?.provider
     return new AgentLoop({
       adapter,
+      ...(providerName ? { providerName } : {}),
       registry: this.registry,
       systemPrompt: this.opts.extraSystem ? `${base}\n\n## 角色\n\n${this.opts.extraSystem}` : base,
       ...(this.opts.followUps
@@ -343,7 +348,8 @@ export class Session {
     // 思考强度**按这一轮真正要用的那个模型解析**，真源是配置里
     // 「接口 × 模型」那一格。不存会话级的第二份，也不共用一个全局值——
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
-    const effort = resolveModel(config, target)?.effort
+    const resolvedTarget = resolveModel(config, target)
+    const effort = resolvedTarget?.effort
 
     /*
      * 冻结本 run 的非对话上下文。
@@ -428,7 +434,20 @@ export class Session {
      * 没有回执（新会话、或一直没拿到 usage）就不传，loop 退回本地估算并如实
      * 标 `estimated`。
      */
-    const anchored = latestAnchoredProviderRequest(store, conversationId)
+    const latestAnchor = latestAnchoredProviderRequest(store, conversationId)
+    /*
+     * 校准属于「接口 × 协议 × 模型」这条路线，不只属于模型名。
+     * 同一个 model id 挂在两个中转站上时，usage 口径与实际 tokenizer 都可能不同；
+     * 新账本行带路线证据后必须严格匹配。null 只放行迁移前没有记录过路线的旧行。
+     */
+    const anchored =
+      latestAnchor &&
+      latestAnchor.model === adapter.spec.id &&
+      (latestAnchor.providerName === null ||
+        latestAnchor.providerName === resolvedTarget?.provider) &&
+      (latestAnchor.providerKind === null || latestAnchor.providerKind === adapter.kind)
+        ? latestAnchor
+        : null
     const anchorRun = anchored ? getRun(store, anchored.runId) : null
     const anchor = anchored
       ? {
@@ -437,6 +456,17 @@ export class Session {
             (anchored.providerCachedTokens ?? 0) +
             (anchored.providerCacheWriteTokens ?? 0) +
             (anchored.providerOutputTokens ?? 0),
+          scale:
+            anchored.measuredInputTokens > 0 &&
+            (anchored.providerInputTokens ?? 0) +
+              (anchored.providerCachedTokens ?? 0) +
+              (anchored.providerCacheWriteTokens ?? 0) >
+              0
+              ? ((anchored.providerInputTokens ?? 0) +
+                  (anchored.providerCachedTokens ?? 0) +
+                  (anchored.providerCacheWriteTokens ?? 0)) /
+                anchored.measuredInputTokens
+              : 1,
           throughMessageId: anchorRun?.messageIdUpperBound ?? null,
           model: anchored.model,
           headTokens: envelopeHeadTokens(anchored.sentCategories),
@@ -491,6 +521,7 @@ export class Session {
         conversationId,
         workspaceId: this.workspaceId,
         profile: () => this.resolveProfile(target),
+        effort: () => resolveModel(this.opts.config, target)?.effort,
         signal: this.opts.signal,
       }),
       preserveAssistantReasoning,
@@ -761,6 +792,10 @@ export class Session {
       },
       openRequest: (input) => openProviderRequest(store, input).id,
       markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
+      markRequestFirstEvent: (requestId) =>
+        markProviderRequestFirstEvent(store, requestId as never),
+      markRequestFirstContent: (requestId) =>
+        markProviderRequestFirstContent(store, requestId as never),
       settleRequest: (requestId, status, usage, errorCode, finishReason, errorMessage) =>
         settleProviderRequest(
           store,
@@ -1021,6 +1056,8 @@ export interface SummarizerOptions {
   conversationId: ConversationId
   /** 每次调用现解析：摘要发起时会话模型可能已经被切过。 */
   profile: () => ProviderProfile
+  /** 用户为当前「接口 × 模型」选的档；undefined = 省略字段，沿用模型默认。 */
+  effort?: () => EffortLevel | undefined
   /** 调用方的中断信号。不传 = 只受流空闲判定约束。 */
   signal?: AbortSignal
 }
@@ -1034,8 +1071,8 @@ export interface SummarizerOptions {
  * 刻意不带工具、不带冻结前缀：摘要任务只需要文本进文本出，带上工具 schema
  * 只会让这次调用也逼近容量上限，而它是在容量已经超了的时候发的。
  *
- * 思考档位取模型声明的最低档，模型没声明档位就不发这个字段。摘要是结构化转写
- * 不是推理任务，继承主档位会让一次转写先等上分钟级的思考。
+ * 思考档位遵守用户选择：选了就原样继承，没选就省略字段、沿用模型默认。
+ * 摘要任务不能为了提速在后台替用户降档，更不能发送关闭思考的命令。
  *
  * 超时判的是**流停了多久**（与主请求同一个 `STREAM_IDLE_TIMEOUT_MS`），不是总共
  * 跑了多久。不要换成总时长上限：正在逐字产出的慢摘要不是卡死，掐掉它等于把
@@ -1048,10 +1085,12 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
   return async (prompt, budgetTokens) => {
     const profile = opts.profile()
     const adapter = buildAdapter(profile)
-    const effort = EFFORT_ORDER.find((level) => adapter.spec.effortLevels.includes(level))
-    // 显式 `none` 就是不思考；没选档时才看模型默认。否则把 `none` 当成会思考，
-    // 会给摘要误申报整份模型输出上限，而不是调用方给的摘要预算。
-    const willThink = effort === undefined ? adapter.spec.thinksByDefault : effort !== 'none'
+    const selectedEffort = opts.effort?.()
+    const effort =
+      selectedEffort && adapter.spec.effortLevels.includes(selectedEffort)
+        ? selectedEffort
+        : undefined
+    const willThink = effort !== undefined || adapter.spec.thinksByDefault
 
     // 空闲判定要能中止底层请求，所以走自己的控制器，外部信号挂在它上面。
     const ac = new AbortController()

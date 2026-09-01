@@ -7,7 +7,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { lookupModel } from '@qywork/ai'
+import { lookupModel, type TransportCapabilities } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
@@ -195,8 +195,8 @@ export function catalogKey(model: string, kind: ProviderKind): string {
  * 用户改过的**模型参数**，也是内置目录之上**唯一的覆盖层**。
  *
  * 窗口、上限、单价是模型本身的属性；思考三项（`thinking` / `effortLevels` /
- * `thinksByDefault`）是这个模型在这条协议上的能力，`qy probe --save` 落的就是
- * 这里。两类都由键的第二维（协议）区分开，不再各存一处。
+ * `thinksByDefault`）是这个模型在这条协议上的能力。两类都由键的第二维
+ * （协议）区分开，不再各存一处。探测不能发明这些官方模型事实。
  *
  * **它和接口无关。** 库回答的是「这个模型在这条协议上是什么样」，接口回答的是「用谁的端点和
  * 哪把 key」。两者唯一的接点是接口下那一行模型 id ——参数照着
@@ -242,7 +242,7 @@ export interface StoredCatalogEntry {
   reasoningEcho?: ReasoningEcho
   /**
    * 缓存路由亲和键发不发。与思考三项同属「这条模型在这条协议上的能力」，
-   * 落点也是同一处（手填或 `qy probe --save` 写回）。
+   * 落点也是同一处（手填或目录 seed；当前探针不探缓存命中）。
    *
    * 它比思考更需要按端点填：缓存是「端点 × 模型」那一格的属性，
    * 同一个模型换个中转站就是另一条结论。
@@ -253,9 +253,8 @@ export interface StoredCatalogEntry {
 /**
  * 一个模型挂在**这个接口下**的那一格。
  *
- * 只放**偏好**（要用哪一档），不放**能力**（这个模型能发哪几档）——
- * 能力全在模型库里，按「模型 × 协议」索引。往这里再加一个能力字段就是第二本账：
- * 界面显示的是库里那份，发出去的是这里这份。
+ * 模型能力全在模型库里，按「模型 × 协议」索引；这里存用户偏好，以及当前接口
+ * 是否透传某个控制面的实测结论。后者只能收窄这条路线，不能增加官方档位。
  */
 export interface StoredModel {
   /**
@@ -281,6 +280,8 @@ export interface StoredModel {
    * 变成了「接口 × 模型」。真正的第二条线是会话表上那一列，已经删掉。
    */
   effort?: EffortLevel
+  /** 这个具体接口是否透传控制面；不属于全局模型能力。 */
+  transport?: TransportCapabilities
 }
 
 /**
@@ -301,6 +302,7 @@ export interface ResolvedModel {
   spec?: StoredCatalogEntry
   /** 用户为这个模型选定的思考档。undefined = 没选过，不发思考字段。 */
   effort?: EffortLevel
+  transport?: TransportCapabilities
 }
 
 /**
@@ -449,6 +451,27 @@ function migrateModelLibrary(cfg: QyConfig): string[] {
   return notices
 }
 
+/**
+ * 配置里读到曾作为思考强度保存的 `none` 时迁成“未选择”：它不再是用户档位，
+ * provider 字段随之省略并沿用模型默认。
+ *
+ * 只改内存，与模型库迁移相同；用户下一次保存配置时旧值自然消失。
+ */
+function migrateDisabledEffort(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [providerName, provider] of Object.entries(cfg.providers ?? {})) {
+    for (const [modelId, model] of Object.entries(provider.models ?? {})) {
+      const legacy = model as { effort?: string }
+      if (legacy.effort !== 'none') continue
+      delete legacy.effort
+      notices.push(
+        `接口 ${providerName} / ${modelId} 的旧思考值 none 已迁为未选择，将沿用模型默认。`,
+      )
+    }
+  }
+  return notices
+}
+
 export async function loadConfig(): Promise<QyConfig> {
   const raw = await readFile(configPath(), 'utf8').catch(() => null)
   if (raw === null) return structuredClone(DEFAULT_CONFIG)
@@ -467,6 +490,7 @@ export async function loadConfig(): Promise<QyConfig> {
   // 模型库的旧形状就地迁成两维键。冲突点名走 stderr：这一步在解析阶段，
   // 而 `configNotices` 拿到的已经是迁完的配置，看不见旧键了。
   for (const n of migrateModelLibrary(cfg)) process.stderr.write(`[qy] ${n}\n`)
+  for (const n of migrateDisabledEffort(cfg)) process.stderr.write(`[qy] ${n}\n`)
 
   /*
    * 接口表**不与默认值合并**。
@@ -545,6 +569,7 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
     ...(declared?.effort ? { effort: declared.effort } : {}),
+    ...(declared?.transport ? { transport: declared.transport } : {}),
     ...(spec ? { spec } : {}),
   }
 }
@@ -593,7 +618,13 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         problems.push(
           `${name} / ${id} 的思考强度 "${m.effort}" 不是有效值。\n` +
             `  可选：${EFFORT_ORDER.join('、')}\n` +
-            `  这是**档位全集**；该模型实际支持的档位以 qy probe 或界面选项为准。`,
+            `  这是**档位全集**；该模型实际支持的档位以官方目录和界面选项为准。`,
+        )
+      }
+      if (m.transport?.effort !== undefined && typeof m.transport.effort !== 'boolean') {
+        problems.push(
+          `${name} / ${id} 的 transport.effort 必须是 true 或 false。\n` +
+            `  它只表示当前接口是否透传 effort，不定义模型有哪些档位。`,
         )
       }
     }
@@ -735,7 +766,7 @@ export function configNotices(cfg: QyConfig): string[] {
   }
 
   const active = resolveModel(cfg)
-  // 模型库里已经有这一条就不提醒：那说明用户跑过 `qy probe --save` 或自己补过参数。
+  // 模型库里已经有这一条就不提醒：用户已经明确补过模型规格。
   if (active && !active.spec) {
     const spec = lookupModel(active.model, active.kind)
     if (spec.catalogued === false) {
@@ -744,7 +775,7 @@ export function configNotices(cfg: QyConfig): string[] {
           `- 不请求思考（reasoning_tokens 恒为 0），即使该模型支持\n` +
           `- 计价按 0 计算，用量显示为 $0\n` +
           `- 上下文按 ${Math.round(spec.contextWindow / 1000)}K 假设，真实窗口更大时压缩会提前触发\n` +
-          `\n运行 qy probe --save 实测一次并写回配置即可消除本提示；窗口一项它探不出来，要准就在模型库那一格填。`,
+          `\n端点探测只能校验接口是否透传控制字段，不能补出官方档位、窗口和价格；要准确请在模型库对应条目中明确填写。`,
       )
     }
   }

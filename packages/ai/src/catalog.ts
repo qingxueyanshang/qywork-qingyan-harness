@@ -776,7 +776,7 @@ function deepseekCatalog(): ModelSpec[] {
      * 只描述模型，不描述本适配器发不发思考字段——填 `'none'` 是后者，那是错的。
      *
      * 这一支是 chat/completions（Responses 那支见下面）：`thinking:{type:'enabled'}`
-     * 和 `reasoning_effort` 必须**一起发**，两档 high / max。
+     * 和 `reasoning_effort` 必须**一起发**，三档 low / high / max。
      *
      * **这两档没有在本仓实测过。** 要坐实就跑 `qy probe`——它会把实际接受的档位
      * 写回档案覆盖这里。
@@ -790,7 +790,7 @@ function deepseekCatalog(): ModelSpec[] {
     reasoningEcho: 'none' as const,
     chatReasoningProtocol: 'standard' as const,
     chatToolSchema: 'openai_strict' as const,
-    effortLevels: ['high', 'max'] as EffortLevel[],
+    effortLevels: ['low', 'high', 'max'] as EffortLevel[],
     thinksByDefault: false,
     // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
     minCacheablePrefix: 0,
@@ -911,13 +911,14 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      *    而账本正是用来发现「怎么突然变贵了」的那份记录。
      *
      * 保守默认本身是对的（乱发 reasoning 字段会让不支持的端点每次 400），
-     * 错的是不说。`configNotices` 据这个字段提醒，出口是 `qy probe --save`。
+     * 错的是不说。`configNotices` 据这个字段提醒，出口是明确补录模型规格；
+     * 端点探测只能校验传输，不能发明官方能力。
      */
     catalogued: false,
     /*
      * 未收录 = **没测过**，不是不支持。所以不发亲和键：自建端点（ollama / vLLM）
      * 对未知字段的容忍度没验过，而它们全都落在这一档。
-     * 想开就在配置里那一格填 `cacheRouting`，或者跑 `qy probe --save`。
+     * 想开就在配置里那一格明确填 `cacheRouting`；当前探针不推断缓存能力。
      */
     cacheRouting: 'none',
     /*
@@ -1032,7 +1033,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     cacheWrite1h: 0,
     currency: 'CNY',
   })
-  const GPT_56_EFFORTS: EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+  const GPT_56_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
   return [
     /*
@@ -1231,7 +1232,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * `qwen3.7-max` 是这一批里唯一只收文本的：它的日期快照版收图片，基础版不收，
      * 名字上分不出来——逐条按规格页填，不按 id 前缀推断。
      *
-     * Qwen3.8 的 Chat API 明确支持 `none / low / medium / xhigh`，默认 xhigh；
+     * Qwen3.8 的 Chat API 正向强度是 `low / medium / xhigh`，默认 xhigh；
+     * 协议另有 `none` 关闭命令，但产品不把关闭命令当成强度档位。
      * 同时默认保留思考并要求历史 `reasoning_content` 完整、原序回放。
      * 3.7 系是混合思考且默认开启，但没有同一组命名 effort 档；VL 两款默认关闭。
      *
@@ -1244,7 +1246,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      */
     {
       ...base,
-      ...effort(['none', 'low', 'medium', 'xhigh']),
+      ...effort(['low', 'medium', 'xhigh']),
       id: 'qwen3.8-max',
       displayName: 'Qwen3.8 Max',
       vendor: 'alibaba',
@@ -1259,7 +1261,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     },
     {
       ...base,
-      ...effort(['none', 'low', 'medium', 'xhigh']),
+      ...effort(['low', 'medium', 'xhigh']),
       id: 'qwen3.8-flash',
       displayName: 'Qwen3.8 Flash',
       vendor: 'alibaba',
@@ -1514,8 +1516,8 @@ export interface SpecOverride {
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
   /**
-   * 思考三项。它们既是用户手填的参数，也是 `qy probe --save` 的落点——
-   * 探测得到的就是「这条模型在这条协议上的思考能力」，与窗口、价格同属模型库。
+   * 思考三项是用户明确维护的模型规格。端点探测只回答某条路线是否透传控制面，
+   * 不会覆盖官方档位或默认思考行为。
    */
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
@@ -1526,7 +1528,7 @@ export interface SpecOverride {
    */
   reasoningEcho?: ReasoningEcho
   /**
-   * 缓存路由。与思考三项同属「探测得到、也可手填」的那一类，落点也是同一处。
+   * 缓存路由。当前探针不探这一项，只能由目录 seed 或用户明确填写。
    *
    * 它比思考更需要按端点覆盖：缓存能力是「端点 × 模型」那一格的属性，
    * 换个中转站同一个模型就是另一条结论，内置表只能给 seed。

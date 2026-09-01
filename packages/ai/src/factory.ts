@@ -55,10 +55,10 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
     })
   }
 
-  // 两层，一个真源：目录 seed → 模型库这一条覆盖。**不要再叠第三层**——
-  // 并列的覆盖通道会让模型库界面上显示的值不是真正发出去的值。
-  // 探测结论也落在模型库里（`qy probe --save`），走的就是这一层。
-  const spec = applySpecOverride(lookupModel(profile.model, profile.kind, now), profile.spec)
+  // 模型事实仍只有两层：官方目录 seed → 用户模型库覆盖。端点传输校准只做否决闸，
+  // 不新增档位、不改厂商默认，避免一个中转的探测结果污染同模型的其他接口。
+  const declared = applySpecOverride(lookupModel(profile.model, profile.kind, now), profile.spec)
+  const spec = profile.transport?.effort === false ? { ...declared, effortLevels: [] } : declared
 
   switch (profile.kind) {
     case 'anthropic_messages':

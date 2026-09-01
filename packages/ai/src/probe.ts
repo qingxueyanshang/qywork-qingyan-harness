@@ -20,6 +20,7 @@
  */
 
 import type { EffortLevel, ProviderKind } from '@qywork/core'
+import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
 import type { ChatRequest, ProviderProfile } from './types.ts'
 
@@ -44,6 +45,8 @@ export interface ProbeOutcome {
    * 把回声写回覆盖层会把参数格式改错，进而把 effort 判死。
    */
   untested: 'effort'[]
+  /** 已经尝试，但只得到超时、限速或上游暂不可用，不能据此判成“不支持”。 */
+  inconclusive: 'effort'[]
   /** 实测被接受的 effort 档。 */
   effortLevels: EffortLevel[]
   /** 实测什么控制字段都不发时，它是否仍然返回了思考内容。 */
@@ -58,6 +61,8 @@ export interface ProbeStep {
   detail: string
   /** true = 这一步没有真的验证任何能力（客户端不发这个字段）。 */
   skipped?: boolean
+  /** 请求失败但不是字段级 4xx；这一条不能形成能力结论。 */
+  inconclusive?: boolean
 }
 
 /** 一次探针请求：一个字的输入、最小的输出。 */
@@ -83,7 +88,11 @@ async function attempt(
   name: string,
   extra: Partial<ChatRequest>,
   signal?: AbortSignal,
-): Promise<{ step: ProbeStep; thought: boolean }> {
+): Promise<{
+  step: ProbeStep
+  thought: boolean
+  verdict: 'accepted' | 'rejected' | 'inconclusive'
+}> {
   const adapter = buildAdapter(profile)
   let thought = false
   try {
@@ -94,11 +103,20 @@ async function attempt(
       // 拿到 done 就够了：再读下去不会有新信息，而探测要快。
       if (ev.type === 'done') break
     }
-    return { step: { name, ok: true, detail: '接受' }, thought }
+    return { step: { name, ok: true, detail: '接受' }, thought, verdict: 'accepted' }
   } catch (err) {
+    // 只有明确的参数 4xx 才能证明控制面被拒。超时、限速、5xx 与中转暂不可用
+    // 都是链路状态；把它们写成 effort=false 会让一次抖动永久收起用户控件。
+    const rejected = err instanceof ProviderError && err.code === 'invalid_request'
     return {
-      step: { name, ok: false, detail: err instanceof Error ? err.message : String(err) },
+      step: {
+        name,
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+        ...(rejected ? {} : { inconclusive: true }),
+      },
       thought: false,
+      verdict: rejected ? 'rejected' : 'inconclusive',
     }
   }
 }
@@ -125,7 +143,14 @@ export async function probeModel(
   // 连最朴素的请求都被拒 = 这个端点不通（key 错、模型名错、地址错）。
   // 继续探下去只会得到一串同样的错误，而真正该说的是「先解决连通性」。
   if (!bare.step.ok) {
-    return { reachable: false, untested: [], effortLevels: [], thinksByDefault: false, probes }
+    return {
+      reachable: false,
+      untested: [],
+      inconclusive: [],
+      effortLevels: [],
+      thinksByDefault: false,
+      probes,
+    }
   }
 
   // ── 客户端发不发 effort ──
@@ -134,6 +159,7 @@ export async function probeModel(
   // 字段。把这种「通过」写进配置，会用一个凭空的结论覆盖目录里正确的保守值。
   const transmits = buildAdapter(profile).transmits
   const untested: 'effort'[] = transmits.effort ? [] : ['effort']
+  const inconclusive: 'effort'[] = []
 
   /*
    * ── 2. effort 档位 ──
@@ -172,28 +198,40 @@ export async function probeModel(
     })
   } else {
     let accepted = false
+    let rejected = 0
+    let attempted = 0
     // 只试前两档：一档通了就够（控制面成立），两档都被拒就是真不接受。
     for (const level of declared.slice(0, 2)) {
       await pause()
       const r = await attempt(profile, `effort=${level}`, { effort: level }, opts.signal)
+      attempted++
       probes.push(r.step)
       if (r.step.ok) {
         accepted = true
         break
       }
+      if (r.verdict === 'rejected') rejected++
     }
     if (accepted) {
       effortLevels = [...declared]
-    } else {
+    } else if (rejected === attempted) {
       probes.push({
         name: 'effort 控制面',
         ok: false,
         detail: `内置库声明该模型有 ${declared.join(' / ')}，本链路拒绝该字段`,
       })
+    } else {
+      inconclusive.push('effort')
+      probes.push({
+        name: 'effort 控制面',
+        ok: false,
+        inconclusive: true,
+        detail: '探测遇到超时、限速或上游暂不可用，未形成能力结论',
+      })
     }
   }
 
-  return { reachable: true, untested, effortLevels, thinksByDefault, probes }
+  return { reachable: true, untested, inconclusive, effortLevels, thinksByDefault, probes }
 }
 
 /**
@@ -202,9 +240,9 @@ export async function probeModel(
  * 刻意**不含**上下文窗口与计价：那两样探不出来，写一个猜的值进配置比不写更糟——
  * 它会让「未知计价」变成一个看起来确定的错数字。
  */
-export interface ProbedCapabilities {
-  effortLevels?: EffortLevel[]
-  thinksByDefault?: boolean
+export interface ProbedTransportCapabilities {
+  /** 当前端点是否接受官方目录声明的 effort 控制面。 */
+  effort?: boolean
 }
 
 /**
@@ -213,30 +251,25 @@ export interface ProbedCapabilities {
  * 没探过的一律不写——留空让目录里的保守默认值继续生效，
  * 比写一个「探针都通过了」的空结论安全得多。
  *
- * 两轴的「没探过」判据不同。`thinksByDefault` 是从**回包**里观测出来的
- * （什么都不发，看它自己回不回思考内容），与客户端发什么字段无关，
- * 所以只要端点通，它永远有结论。
- *
  * **思考参数的格式（`spec.thinking`）不在写回范围内**：它决定 effort 用哪套字段发，
  * 而探测没有观测它的手段。写一个猜的格式回去会把 effort 判死。
  */
-export function toCapabilities(o: ProbeOutcome): ProbedCapabilities {
+export function toTransportCapabilities(o: ProbeOutcome): ProbedTransportCapabilities {
   // 端点不通时这份结果里**没有一项是观测**：`effortLevels: []` 不是
   // 「逐档试过都被拒」，`thinksByDefault: false` 不是「它不思考」，
   // 全是连不上时的占位。整个丢掉，一项都不写。
   if (!o.reachable) return {}
 
-  return {
-    ...(o.untested.includes('effort') ? {} : { effortLevels: o.effortLevels }),
-    thinksByDefault: o.thinksByDefault,
-  }
+  return o.untested.includes('effort') || o.inconclusive.includes('effort')
+    ? {}
+    : { effort: o.effortLevels.length > 0 }
 }
 
 /** 人读的探测报告。 */
 export function describeProbe(o: ProbeOutcome, provider: ProviderKind, model: string): string {
   const lines = [`${provider} / ${model}`, '']
   for (const p of o.probes) {
-    const mark = p.skipped ? '–' : p.ok ? '✓' : '✗'
+    const mark = p.skipped ? '–' : p.inconclusive ? '?' : p.ok ? '✓' : '✗'
     lines.push(`  ${mark} ${p.name}${p.ok && !p.skipped ? '' : `  ${p.detail}`}`)
   }
   lines.push(
@@ -245,9 +278,11 @@ export function describeProbe(o: ProbeOutcome, provider: ProviderKind, model: st
     `  可用 effort：${
       o.untested.includes('effort')
         ? '未探测（这条链路不发该字段）'
-        : o.effortLevels.length
-          ? o.effortLevels.join(' / ')
-          : '（不支持）'
+        : o.inconclusive.includes('effort')
+          ? '未得出结论（请求失败）'
+          : o.effortLevels.length
+            ? o.effortLevels.join(' / ')
+            : '（不支持）'
     }`,
   )
   return lines.join('\n')

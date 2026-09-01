@@ -11,13 +11,15 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { probeModel } from './probe.ts'
+import { probeModel, toTransportCapabilities } from './probe.ts'
 import type { ProviderProfile } from './types.ts'
 
 /** 端点拒不拒这个 effort 值。默认全收——这正是要复现的行为。 */
 let rejects: (effort: string | undefined) => boolean = () => false
 /** true = 回一个 200 的网页，复现「Base URL 少了 /v1」那个形状。 */
 let htmlInstead = false
+/** effort 请求临时返回 503；最小请求仍成功。 */
+let transientEffort = false
 /** 收到过的 effort 值，按顺序。用来验「试了几档」。 */
 let seen: (string | undefined)[] = []
 
@@ -35,6 +37,15 @@ beforeAll(() => {
       }
       const body = (await req.json()) as { reasoning_effort?: string }
       seen.push(body.reasoning_effort)
+      if (transientEffort && body.reasoning_effort) {
+        return new Response(
+          JSON.stringify({ error: { message: 'upstream temporarily unavailable' } }),
+          {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          },
+        )
+      }
       if (rejects(body.reasoning_effort)) {
         return new Response(JSON.stringify({ error: { message: 'unsupported effort' } }), {
           status: 400,
@@ -93,6 +104,17 @@ describe('effort 校准', () => {
     expect(r.probes.find((p) => p.name === 'effort 控制面')?.detail).toContain('本链路拒绝')
     // 只试前两档，不把库里的档全打一遍。
     expect(seen.filter((e) => e !== undefined)).toEqual(['low', 'medium'])
+  })
+
+  test('effort 请求只遇到暂时失败时不写成不支持', async () => {
+    seen = []
+    rejects = () => false
+    transientEffort = true
+    const r = await probeModel(profile(), { gapMs: 0 })
+    transientEffort = false
+    expect(r.effortLevels).toEqual([])
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(toTransportCapabilities(r)).toEqual({})
   })
 
   /** 库里没有 effort 的模型一个请求都不该发。 */

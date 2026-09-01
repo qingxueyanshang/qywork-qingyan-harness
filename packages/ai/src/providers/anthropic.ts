@@ -111,6 +111,8 @@ export class AnthropicAdapter implements LlmAdapter {
       for await (const ev of stream as AsyncIterable<AnthropicStreamEvent>) {
         switch (ev.type) {
           case 'message_start': {
+            // Anthropic 的 message_start 是协议级流起点，早于首个内容块。
+            yield { type: 'response_started' }
             const u = ev.message?.usage
             if (u) applyUsage(usage, u)
             break
@@ -237,15 +239,15 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 
   /**
-   * effort 档位。越界值降到这个模型的最高可用档而不是报错——各家档位面不同
-   * （Sonnet 4.6 没有 xhigh），为一个能降的值拒绝整个请求没有意义。
+   * effort 档位只接受这条模型明确支持的值。越界时省略字段、交给模型默认，
+   * 不能为了让请求通过而静默替用户换成另一档。
    */
   private resolveEffort(req: ChatRequest): EffortLevel | undefined {
     if (!this.spec.effortLevels.length) return undefined
     const effort = req.effort
     if (!effort) return undefined
     if (this.spec.effortLevels.includes(effort)) return effort
-    return this.spec.effortLevels[this.spec.effortLevels.length - 1]!
+    return undefined
   }
 
   /**

@@ -264,7 +264,8 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
  * 者按 `turnIndex` 对齐：成功那次对得上，重发失败那次对不上——而对不上正是实话，那一次收没收费不知
  * 道。
  *
- * **列序对齐中转站后台。** 输入 → 输出 → 命中 → 写入 → 金额 → 结果，与账单同序，两边能逐行扫下来。
+ * **列序对齐中转站后台。** 传输证据放在请求编号之后，账单字段仍保持
+ * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，同序逐行扫下来。
  */
 function RequestLedger(props: { run: Run }) {
   // 跑完的那一轮不会再多请求，判据里就不放账本修订号——否则每落一步都要为一张
@@ -287,6 +288,7 @@ function RequestLedger(props: { run: Run }) {
                   （每段思考、每段正文、每次工具调用各一条），这里数的是模型往返次数，
                   两个数不该、也不会相等。列名把单位说出来，省掉一次「为什么对不上」。 */}
               <th>请求</th>
+              <th title="模型可见请求体 / 发出到首段内容">传输</th>
               <th>输入</th>
               <th>输出</th>
               <th>命中</th>
@@ -305,6 +307,7 @@ function RequestLedger(props: { run: Run }) {
                     : q.providerInputTokens + (q.providerCachedTokens ?? 0)
                 const cost = costOf(q.turnIndex)
                 const outcome = requestOutcome(q)
+                const transport = requestTransport(q)
                 return (
                   <tr>
                     {/* 重发是同一轮的第 N 次，编号要看得出来，否则两行长得一样。 */}
@@ -312,6 +315,7 @@ function RequestLedger(props: { run: Run }) {
                       {q.turnIndex + 1}
                       {q.retryIndex > 0 ? `.${q.retryIndex + 1}` : ''}
                     </td>
+                    <td title={transport.title}>{transport.text}</td>
                     <td>{num(input)}</td>
                     <td>{num(q.providerOutputTokens)}</td>
                     <td>{num(q.providerCachedTokens)}</td>
@@ -362,6 +366,35 @@ function requestOutcome(q: ProviderRequest): string {
   if (q.status === 'uncertain') return '结果不明'
   if (q.status === 'rejected') return q.errorMessage || q.errorCode || '被拒绝'
   return q.status === 'in_flight' ? '进行中' : '未发出'
+}
+
+/**
+ * 不把“请求很大”和“上游首内容慢”揉成一个结论：单元格给紧凑读数，title 保留
+ * 路线、首事件和总耗时。旧账本没有这些字段时显示 N/A，不伪造成 0ms / 0B。
+ */
+function requestTransport(q: ProviderRequest): { text: string; title: string } {
+  const size = byteSize(q.requestBytes)
+  const firstContent = elapsed(q.sentAt, q.firstContentAt)
+  const firstEvent = elapsed(q.sentAt, q.firstEventAt)
+  const total = elapsed(q.sentAt, q.completedAt)
+  const route = [q.providerName, q.providerKind].filter(Boolean).join(' / ') || '旧账本未记录路线'
+  return {
+    text: `${size} / ${firstContent}`,
+    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}`,
+  }
+}
+
+function byteSize(n: number | null): string {
+  if (n === null) return NA
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function elapsed(start: number | null, end: number | null): string {
+  if (start === null || end === null) return NA
+  const ms = Math.max(0, end - start)
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
 }
 
 /**

@@ -227,19 +227,25 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       name,
       models: Object.keys(provider.models).map((id) => {
         const declared = provider.models[id]
-        // 能力（思考三项）与参数（窗口、上限、单价）同在模型库这一个覆盖层里，
-        // 按「模型 + 协议」取——`qy probe --save` 落的就是这个键。
+        // 模型能力与参数按「模型 + 协议」从官方目录/模型库取；当前中转是否透传
+        // 控制面则只看接口下这一格的 transport，不能写回全局目录。
         const spec = applySpecOverride(
           lookupModel(id, provider.kind),
           overrides[catalogKey(id, provider.kind)],
         )
+        const effortLevels =
+          declared?.transport?.effort === false || !effortIsTransmittable(spec)
+            ? []
+            : spec.effortLevels
         return {
           id,
           label: spec.catalogued === false ? id : spec.displayName,
           // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上
           // 调不了思考，显示出来就是一个选了没反应的控件。
-          effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
-          effort: declared?.effort ?? null,
+          effortLevels,
+          // 目录或端点校准变化后，旧选择不在可用档位里就视为未选择，不显示假状态。
+          effort:
+            declared?.effort && effortLevels.includes(declared.effort) ? declared.effort : null,
           currency: spec.pricing.currency ?? 'USD',
           vision: spec.vision,
           video: spec.video,
@@ -413,7 +419,13 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     )
     const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
     const spec = lookupModel(conv.model, kind ?? 'openai_chat_completions')
-    return json({ context: contextPanel(d.store, id, spec) })
+    return json({
+      context: contextPanel(d.store, id, {
+        ...spec,
+        ...(conv.provider ? { providerName: conv.provider } : {}),
+        ...(kind ? { providerKind: kind } : {}),
+      }),
+    })
   }
 
   // 当前目标。**按会话读账本，和上下文面板同一条理由**——`goal` 事件只在变更

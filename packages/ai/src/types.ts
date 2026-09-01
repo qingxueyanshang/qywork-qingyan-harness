@@ -26,6 +26,14 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  */
 export const PROVIDER_HTTP = { timeout: 60_000, maxRetries: 0 } as const
 
+/**
+ * 具体接口路线的传输能力。模型有哪些档位由官方目录回答；这里仅回答当前端点
+ * 是否透传相应控制面。undefined = 未校准，沿用协议/目录结论。
+ */
+export interface TransportCapabilities {
+  effort?: boolean
+}
+
 export interface ProviderProfile {
   kind: ProviderKind
   /**
@@ -46,6 +54,8 @@ export interface ProviderProfile {
    * 因为同一个模型换条协议能力就不同；这里拿到的已经是选中的那一条。
    */
   spec?: SpecOverride
+  /** 当前「接口 × 模型」的传输校准，不写进全局模型目录。 */
+  transport?: TransportCapabilities
 }
 
 // ─────────────────────────────── 请求 ───────────────────────────────
@@ -213,6 +223,13 @@ export interface ToolSchema {
 
 export type ProviderEvent =
   | { type: 'request_prepared'; measuredInputTokens: number }
+  /**
+   * 远端响应已经建立，但还没有模型内容。
+   *
+   * 它把「上传/排队到响应头」与「响应建立后到首段思考或正文」分开；不携带正文，
+   * 也不进入模型历史。各适配器必须在自己的协议边界上发一次。
+   */
+  | { type: 'response_started' }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_calls'; calls: WireToolCall[] }

@@ -176,7 +176,7 @@ export function setModel(provider: string, model: string): void {
  *
  * **写「接口 × 模型」那一格**，走 `/api/config` 这条已有的写入路径——配置的
  * 真源就是那一个 config.json，不新开接口。档位不是全局一个值：本仓同时接多家
- * 模型，档位面从 0 档到 5 档都有（Claude 五档、DeepSeek 两档、Qwen 一档没有），
+ * 模型，档位面从 0 档到 5 档都有（Claude 五档、DeepSeek 三档，也有模型一档没有），
  * 而且 Agent Team 的每个角色各带一个模型——一个全局值套上去必然错配。
  *
  * 只负责落盘。界面那一行由调用方就地更新——模型目录的 signal 住在选择器组件里，
