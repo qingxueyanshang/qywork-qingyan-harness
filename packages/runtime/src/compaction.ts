@@ -116,7 +116,8 @@ export class RuntimeCompaction implements CompactionPort {
     const condense = condenseCutOf(m)
     const summaryKey = summary ? cutKey(summary) : null
     const condenseKey = condense ? cutKey(condense) : null
-    const todo = latestSuccessfulTodo(history)
+    const todoFacts = currentTodoFacts(messageUnits(history))
+    const todoTable = todoFacts[0]
     const latestContext = this.latestContextUserMessageId
       ? history.filter(
           (message) =>
@@ -142,8 +143,8 @@ export class RuntimeCompaction implements CompactionPort {
       out.push(
         condenseKey !== null &&
           key <= condenseKey &&
-          // 最新成功的 Todo 工具单元保留真实参数与结果；折参数会让循环失去清单。
-          key !== todo?.key
+          // 最近整表保留真实参数；其后的子任务完成事实照常收纳成小信封。
+          key !== todoTable?.key
           ? condenseMessage(msg)
           : msg,
       )
@@ -158,12 +159,17 @@ export class RuntimeCompaction implements CompactionPort {
       content: p.content,
       _group: 'summary' as const,
     }))
-    const pinnedTodo = todo && summaryKey !== null && todo.key <= summaryKey ? todo.messages : []
+    const pinnedTodos =
+      summaryKey === null
+        ? []
+        : todoFacts
+            .filter((fact) => fact.key <= summaryKey)
+            .flatMap((fact) => todoFactMessages(fact))
 
     return [
       ...(pinContext ? latestContext : []),
       ...(manifest[0] ? [manifest[0]] : []),
-      ...pinnedTodo,
+      ...pinnedTodos,
       ...manifest.slice(1),
       ...out,
     ]
@@ -203,11 +209,8 @@ export class RuntimeCompaction implements CompactionPort {
     const foldIndex = foldIndexOf(units, retain)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
-    const latestTodo = [...units]
-      .reverse()
-      .find((unit) =>
-        unit.actions.some((action) => action.tool === 'write_todos' && action.status === 'success'),
-      )
+    const todoFacts = currentTodoFacts(units)
+    const latestTodo = todoFacts[0]?.source
 
     // 收纳段：折叠线以内的工具正文换信封。**零模型调用**，回收量当场估得出。
     const messages: CompactionInput['messages'] = []
@@ -285,10 +288,9 @@ export class RuntimeCompaction implements CompactionPort {
             input.density,
           )
         : 0
-    const pinnedTodoTokens =
-      latestTodo && latestTodo.key > summaryKey && latestTodo.key <= fold.key
-        ? estimateMessages(latestTodo.messages, input.density)
-        : 0
+    const pinnedTodoTokens = todoFacts
+      .filter((fact) => fact.key > summaryKey && fact.key <= fold.key)
+      .reduce((tokens, fact) => tokens + estimateMessages(todoFactMessages(fact), input.density), 0)
     const projectionBudget =
       limit -
       afterCondense +
@@ -365,11 +367,8 @@ export class RuntimeCompaction implements CompactionPort {
     const condense = condenseCutOf(manifest)
     const summaryKey = summary ? cutKey(summary) : null
     const condenseKey = condense ? cutKey(condense) : null
-    const latestTodo = [...units]
-      .reverse()
-      .find((unit) =>
-        unit.actions.some((action) => action.tool === 'write_todos' && action.status === 'success'),
-      )
+    const todoFacts = currentTodoFacts(units)
+    const latestTodo = todoFacts[0]?.source
     const latestContext = this.latestContextUserMessageId
       ? units.find(
           (unit) =>
@@ -404,8 +403,10 @@ export class RuntimeCompaction implements CompactionPort {
         density,
       )
     }
-    if (latestTodo && summaryKey !== null && latestTodo.key <= summaryKey) {
-      total += latestTodo.tokens
+    if (summaryKey !== null) {
+      total += todoFacts
+        .filter((fact) => fact.key <= summaryKey)
+        .reduce((tokens, fact) => tokens + estimateMessages(todoFactMessages(fact), density), 0)
     }
     return total + estimateMessages(projectManifest(manifest), density)
   }
@@ -507,10 +508,15 @@ export class RuntimeCompaction implements CompactionPort {
   }
 }
 
-/** 最后一次成功的真实 `write_todos` 工具单元；assistant 调用与结果必须同进同出。 */
-function latestSuccessfulTodo(
-  history: readonly WireMessage[],
-): { key: string; messages: WireMessage[] } | null {
+interface TodoFact<T extends { key: string; messages: WireMessage[] }> {
+  key: string
+  messages: WireMessage[]
+  kind: 'table' | 'completion'
+  source: T
+}
+
+/** 把 wire history 按执行单元分组；同一波 assistant 调用与所有结果必须同进同出。 */
+function messageUnits(history: readonly WireMessage[]): { key: string; messages: WireMessage[] }[] {
   const units = new Map<string, WireMessage[]>()
   for (const message of history) {
     if (!message._step) continue
@@ -521,24 +527,63 @@ function latestSuccessfulTodo(
     units.set(key, messages)
   }
 
-  let latest: { key: string; messages: WireMessage[] } | null = null
-  for (const [key, messages] of units) {
-    const calls = messages
-      .filter((message) => message.role === 'assistant')
-      .flatMap((message) => message.toolCalls ?? [])
-      .filter((call) => call.name === 'write_todos')
-    if (!calls.length) continue
-    const succeeded = calls.some((call) =>
-      messages.some(
-        (message) =>
-          message.role === 'tool' &&
-          message.toolCallId === call.id &&
-          toolEnvelopeStatus(message.content) === 'success',
-      ),
-    )
-    if (succeeded) latest = { key, messages }
+  return [...units].map(([key, messages]) => ({ key, messages }))
+}
+
+/**
+ * 当前待办的最小事实链：最近成功整表，以及它之后明确绑定父待办的成功子任务。
+ * 新整表出现就整组替换；失败或未绑定的子任务不是待办事实。
+ */
+function currentTodoFacts<T extends { key: string; messages: WireMessage[] }>(
+  units: readonly T[],
+): TodoFact<T>[] {
+  let facts: TodoFact<T>[] = []
+  for (const unit of units) {
+    if (hasSuccessfulCall(unit.messages, 'write_todos')) {
+      facts = [{ key: unit.key, messages: unit.messages, kind: 'table', source: unit }]
+      continue
+    }
+    if (
+      facts.length > 0 &&
+      hasSuccessfulCall(
+        unit.messages,
+        'subagent',
+        (args) => typeof args.parentTodo === 'string' && args.parentTodo.trim().length > 0,
+      )
+    ) {
+      facts.push({
+        key: unit.key,
+        messages: unit.messages,
+        kind: 'completion',
+        source: unit,
+      })
+    }
   }
-  return latest
+  return facts
+}
+
+/** 整表逐字保留；子任务只留调用摘录与成功摘要，不能把大段产出钉在窗口里。 */
+function todoFactMessages(fact: TodoFact<{ key: string; messages: WireMessage[] }>): WireMessage[] {
+  return fact.kind === 'table' ? fact.messages : fact.messages.map(condenseMessage)
+}
+
+function hasSuccessfulCall(
+  messages: readonly WireMessage[],
+  name: string,
+  accepts: (args: Record<string, unknown>) => boolean = () => true,
+): boolean {
+  const calls = messages
+    .filter((message) => message.role === 'assistant')
+    .flatMap((message) => message.toolCalls ?? [])
+    .filter((call) => call.name === name && accepts(call.arguments))
+  return calls.some((call) =>
+    messages.some(
+      (message) =>
+        message.role === 'tool' &&
+        message.toolCallId === call.id &&
+        toolEnvelopeStatus(message.content) === 'success',
+    ),
+  )
 }
 
 function toolEnvelopeStatus(content: WireMessage['content']): string | null {

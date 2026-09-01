@@ -186,11 +186,11 @@ export function discardPace(): void {
  *
  * **两条折法，按会话分工：**
  *
- * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、收尾条。
+ * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、待办、收尾条。
  *   每条收着事件的会话各折各的，当前会话和它派出去的子会话同时在跑是常态。
- * - `foldRunState`——**这一轮跑得怎么样**：用量、上下文、待办、目标、跟进队列、重发、
- *   这一轮改了哪些文件。只折当前会话那一条：子会话那一页只画内容
- *   （`ConversationPanel` 就是一列 transcript），没有读数条也没有输入框，
+ * - `foldRunState`——**这一轮跑得怎么样**：用量、上下文、当前会话待办面板、目标、
+ *   跟进队列、重发、这一轮改了哪些文件。只折当前会话那一条：子会话页没有运行读数
+ *   与输入框，
  *   折过去等于让另一条会话的数字改写用户正看着的这一份，而界面上没有一处说得出这是谁的。
  *
  * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。分工只在这里判。
@@ -278,6 +278,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
  */
 function foldContent(cid: string, ev: AgentEvent): void {
   switch (ev.type) {
+    case 'todos':
+      // 每条会话各收自己的整表。父会话另投影到 `state.todos` 给全局面板消费；
+      // 子会话只读这里这一份，不能把它的事件写进父面板。
+      setState('views', cid, 'todos', ev.todos)
+      return
+
     case 'team.member':
       // 进度落到那张图卡上。**没带 stepId 就整条丢弃**：一条会话里可能有好几张图卡，
       // 认不出是哪一张时挂在任意一张上，用户看到的是另一件事的进度。
@@ -852,6 +858,7 @@ export async function loadConversationView(id: string): Promise<void> {
         // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
         const known = new Set(items.map((i) => i.id))
         v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
+        v.todos = page.todos
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
       }),
     )
@@ -1081,10 +1088,10 @@ export async function reloadActiveConversation(): Promise<void> {
          * 这一等可能是几分钟，用户看到的是「数字自己丢了又自己回来」。
          */
         s.usage = live?.usage ?? null
-        // **待办从账本投影回来，不新增持久化路径。**
-        // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。真源现成的：
-        // `write_todos` 的每次调用本身就是一条 tool step，整表 todos 就在它的 args 里。
-        // 取最后一条成功的那条即是当前清单——整表语义下，最后一次提交就是全部事实。
+        // **待办从同一份 steps 账本投影回来，不新增持久化路径。**
+        // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。`write_todos` step
+        // 提交整表，之后明确绑定的成功 `subagent` step 推进单条；历史接口已按这个
+        // 顺序折成当前快照，这里只接住，不在前端再猜一遍。
         s.todos = folded.todos
         // 目标有自己的账本（`goal_events`），所以是读回来的，不像待办那样从
         // steps 里反推——反推等于给「目标现在是什么」造第二个真源。

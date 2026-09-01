@@ -222,11 +222,11 @@ export interface FileReadPort {
  * 工具必须能降级——明确报「这里没有目标账本」，不能假装记下了。
  */
 /**
- * 待办端口 —— **只读**，因为待办没有第二个写入方。
+ * 待办端口 —— **只读**，因为待办没有第二本账。
  *
- * 写入就是 `write_todos` 那次调用本身：loop 把它的 `args` 连同 step 落进账本，
- * 整表语义下最后一次成功提交即全部事实。再开一个 `write()` 就是同一份清单
- * 两处存，两本账迟早对不上。
+ * 事实都在 tool steps：`write_todos` 落整表，明确绑定父待办的成功 `subagent`
+ * step 落单条完成事实。`read()` 从同一账本折叠；再开一个 `write()` 才会变成
+ * 同一份清单两处存，两本账迟早对不上。
  *
  * 存在的理由只有一个：**「这是第一份清单，还是在改已有的」是会话级事实**，
  * 而 `ctx.state` 是 run 级的（一条消息一个 run，Map 新建），在里面永远查不到
@@ -237,7 +237,7 @@ export interface FileReadPort {
  * 反过来说「修改」会在没有清单时声称改过一份不存在的清单。
  */
 export interface TodoPort {
-  /** 这条会话最近一次成功提交的清单；没提交过就是 null。 */
+  /** 这条会话从 tool steps 折叠出的当前清单；没提交过就是 null。 */
   read(): TodoItem[] | null
 }
 
@@ -452,7 +452,7 @@ export interface ToolContext {
    */
   goals?: GoalPort
   /**
-   * 会话级的「上一份待办清单」。见 `TodoPort`。
+   * 会话级的当前待办投影。见 `TodoPort`。
    *
    * 只读：`write_todos` 用它判动作词，Agent Loop 用它判断一次正常 end_turn 后
    * 是否仍有未完成项。没接上时工具一律报「创建」，循环沿用普通问答的结束语义；

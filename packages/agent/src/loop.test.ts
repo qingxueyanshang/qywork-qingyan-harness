@@ -1456,6 +1456,80 @@ describe('正常响应结束不冒充任务完成', () => {
     expect(todos.every((todo) => todo.status === 'completed')).toBe(true)
   })
 
+  test('成功子任务落账后，从同一投影发父待办快照', async () => {
+    let todos: TodoItem[] = [
+      { id: 'todo_1', content: '交给子 agent', status: 'in_progress' },
+      { id: 'todo_2', content: '主会话收尾', status: 'pending' },
+    ]
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'subagent',
+      description: '测试子任务。',
+      parameters: { type: 'object', properties: {}, additionalProperties: true },
+      actionKind: 'run',
+      objectLabel: '子 agent',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        return { status: 'success', message: '做完了' }
+      },
+    })
+    const persist = noopPersistence()
+    persist.settleTool = (_stepId, status, _outcome, args) => {
+      if (status !== 'success' || args.parentTodo !== '交给子 agent') return
+      todos = [
+        { ...todos[0]!, status: 'completed' },
+        { ...todos[1]!, status: 'in_progress' },
+      ]
+    }
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([
+        [call('subagent', { task: '执行', parentTodo: '交给子 agent' })],
+        [call('finish_todos')],
+        null,
+      ]),
+      registry,
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(todos) },
+      }),
+    })
+    registry.register({
+      name: 'finish_todos',
+      description: '完成收尾。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '待办',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        todos = todos.map((todo) => ({ ...todo, status: 'completed' }))
+        return { status: 'success', message: '收尾完成' }
+      },
+    })
+
+    const events: AgentEvent[] = []
+    for await (const event of loop.run({
+      runId: 'rn_subagent_todo' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    const projected = events.find((event) => event.type === 'todos')
+    expect(projected?.type === 'todos' && projected.todos.map((todo) => todo.status)).toEqual([
+      'completed',
+      'in_progress',
+    ])
+  })
+
   test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {
     const inner = fakeAdapter(Array.from({ length: 10 }, () => null))
     let requests = 0

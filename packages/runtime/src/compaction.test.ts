@@ -274,6 +274,82 @@ describe('投影三区', () => {
     store.close()
   })
 
+  test('整表之后的父待办完成事实跨摘要仍保留，但子任务大输出照常收纳', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'todo-subagent-pin',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const todo = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      toolCallId: 'todo_parent',
+      providerBatchId: 'todo_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, todo.id, 'success', {
+      kind: 'tool_result',
+      args: {
+        todos: [
+          { content: '子任务审计', status: 'in_progress' },
+          { content: '主会话收尾', status: 'pending' },
+        ],
+      },
+      outcome: { status: 'success', executed: true, message: '第 1/2 步' },
+    })
+    const child = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: 'child_1',
+      providerBatchId: 'child_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, child.id, 'success', {
+      kind: 'tool_result',
+      args: { task: '完成独立审计', parentTodo: '子任务审计' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '临时子 agent 做完了；父待办已推进：子任务审计',
+        data: { output: 'z'.repeat(12_000), conversationId: 'cv_child' },
+      },
+    })
+    addToolWaves(store, run.id, 24, 3000, 3)
+    const p = port(store, conv.id)
+    expect((await p.run(await pressure(store, conv.id))).status).toBe('compacted')
+
+    const projected = p.project(await history(store, conv.id))
+    const assistant = projected.find((message) =>
+      message.toolCalls?.some((call) => call.id === 'child_1'),
+    )
+    const call = assistant?.toolCalls?.find((item) => item.id === 'child_1')
+    expect(call?.arguments.parentTodo).toBe('子任务审计')
+    const result = projected.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'child_1',
+    )
+    const envelope = JSON.parse(String(result?.content)) as {
+      status: string
+      summary: string
+      result_omitted?: boolean
+    }
+    expect(envelope.status).toBe('success')
+    expect(envelope.summary).toContain('父待办已推进：子任务审计')
+    expect(envelope.result_omitted).toBe(true)
+    expect(String(result?.content)).not.toContain('z'.repeat(100))
+    store.close()
+  })
+
   test('没有 _messageId 的投影消息一律保留', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)

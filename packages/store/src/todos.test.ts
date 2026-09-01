@@ -1,8 +1,8 @@
 /**
  * 待办读回的行为回归。**覆盖范围**：`todos.ts`。
  *
- * 锁的是「跨 run 取到最后一次成功提交」这件事——它是动作词（创建 / 修改）
- * 唯一的判据，判错的表现是同一张卡片上动词和进度互相打架。
+ * 锁的是「整表提交 + 明确绑定的子任务完成」这一个账本投影——它是工具、提示词、
+ * 历史接口与实时事件共同使用的判据，不能各自猜一次。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -56,6 +56,26 @@ function submit(
   })
 }
 
+function delegate(
+  store: Store,
+  runId: string,
+  seq: number,
+  parentTodo: string | null,
+  status: 'success' | 'failure' = 'success',
+) {
+  appendStep(store, {
+    runId: runId as never,
+    seq,
+    kind: 'tool_action',
+    toolName: 'subagent',
+    status,
+    payload: {
+      kind: 'tool_result',
+      args: { task: '交给子 agent', ...(parentTodo ? { parentTodo } : {}) },
+    } as never,
+  })
+}
+
 describe('待办读回', () => {
   test('没提交过就是 null', () => {
     const { store, conversationId } = fresh()
@@ -89,6 +109,63 @@ describe('待办读回', () => {
     submit(store, run.id, 1, ['好清单'])
     submit(store, run.id, 2, ['两条 in_progress 被拒的'], 'failure')
     expect(latestTodos(store, conversationId)?.[0]?.content).toBe('好清单')
+    store.close()
+  })
+
+  test('成功子任务完成明确绑定的父待办，并在没有进行项时认领下一条', () => {
+    const { store, ws, conversationId } = fresh()
+    const run = newRun(store, conversationId, ws.id, 'r1')
+    submit(store, run.id, 1, ['第一批', '第二批', '收尾'])
+    delegate(store, run.id, 2, '第一批')
+
+    expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
+      ['第一批', 'completed'],
+      ['第二批', 'in_progress'],
+      ['收尾', 'pending'],
+    ])
+    store.close()
+  })
+
+  test('并行子任务逐条折叠，不用整表回写覆盖彼此', () => {
+    const { store, ws, conversationId } = fresh()
+    const run = newRun(store, conversationId, ws.id, 'r1')
+    submit(store, run.id, 1, ['第一批', '第二批', '收尾'])
+    delegate(store, run.id, 2, '第一批')
+    delegate(store, run.id, 3, '第二批')
+
+    expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
+      ['第一批', 'completed'],
+      ['第二批', 'completed'],
+      ['收尾', 'in_progress'],
+    ])
+    store.close()
+  })
+
+  test('失败、未绑定和匹配不到的子任务都不改父清单', () => {
+    const { store, ws, conversationId } = fresh()
+    const run = newRun(store, conversationId, ws.id, 'r1')
+    submit(store, run.id, 1, ['保留进行中'])
+    delegate(store, run.id, 2, '保留进行中', 'failure')
+    delegate(store, run.id, 3, null)
+    delegate(store, run.id, 4, '别的条目')
+
+    expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
+      ['保留进行中', 'pending'],
+    ])
+    store.close()
+  })
+
+  test('子任务完成之后较新的整表提交仍是最新事实', () => {
+    const { store, ws, conversationId } = fresh()
+    const first = newRun(store, conversationId, ws.id, 'r1')
+    submit(store, first.id, 1, ['旧任务'])
+    delegate(store, first.id, 2, '旧任务')
+    const second = newRun(store, conversationId, ws.id, 'r2')
+    submit(store, second.id, 1, ['重新拆分'])
+
+    expect(latestTodos(store, conversationId)?.map((t) => [t.content, t.status])).toEqual([
+      ['重新拆分', 'pending'],
+    ])
     store.close()
   })
 

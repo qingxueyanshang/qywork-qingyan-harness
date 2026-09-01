@@ -29,7 +29,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 改动代码时匹配周围代码的风格：命名、注释密度、惯用法。
 
-多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况，每做完一条立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress。不要在结束时一次性把全部条目标成 completed。单步任务不列清单。
+多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。自己做完一条时立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress；把整条待办交给子 agent 时按对应能力说明绑定，成功后清单自动推进，不要重复整表回写。不要在结束时一次性把全部条目标成 completed。单步任务不列清单。
 
 注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，那属于提交记录。
 
@@ -86,7 +86,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
+    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定成功即可完成的那一条；只做条目的一部分就先把清单拆细。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
   },
   {
     tool: 'workflow',
@@ -221,8 +221,8 @@ export function buildTailNotes(input: {
    */
   externalTools?: { name: string; summary: string }[]
   /**
-   * run 开始时会话账本里的最后一份待办清单。run 内更新仍以真实 `write_todos`
-   * 调用与回执为准；压缩层负责保留最后一次成功单元，不另造 Todo 状态。
+   * run 开始时会话账本里的待办快照。run 内更新仍以真实 `write_todos` 与绑定父待办的
+   * `subagent` 调用/回执为准；压缩层保留这组最小事实链，不另造 Todo 状态。
    * 全部完成的清单属于上一件事，只留在历史里，不再冒充下一条指令的“当前待办”。
    */
   todos?: TodoItem[] | null
@@ -285,7 +285,7 @@ export function buildTailNotes(input: {
     // 模型写的是「继续第 2 项」，少一个词就绕过去了。所以这里禁的是「重复播报进度」
     // 这个动作，判据交给模型自己比对上一轮说过什么。
     notes.push({
-      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮，完成后调用 write_todos 更新状态。禁止重复回复用户当前进度，仅在进度更新时告知。`,
+      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮。自己完成条目后调用 write_todos 更新；用 parentTodo 委派的整条任务成功后会自动推进，不要重复整表回写。禁止重复回复用户当前进度，仅在进度更新时告知。`,
       group: 'workspaceState',
     })
   }

@@ -5,8 +5,8 @@
  * （订阅集见 `connection.ts` 的 `syncViews`），正文与工具卡跟着长，
  * 不是等它跑完再一次性显示。
  *
- * **只读**：没有输入框，也没有读数条、待办、目标那几样——那些是当前会话那一份账
- * （`applyEvent` 里的分工）。要接着问，回到会话流里再派一次。
+ * **只读**：没有输入框与运行读数；顶部清单是这条子会话自己的待办投影，
+ * 不读取父会话的全局待办。要接着问，回到会话流里再派一次。
  */
 
 import { createResource, Show } from 'solid-js'
@@ -16,6 +16,7 @@ import {
   tabConversationId,
   viewOf,
 } from '../lib/store/index.ts'
+import { TodoList } from './TodoList.tsx'
 import { ConversationHistoryBoundary, TranscriptRows } from './Transcript.tsx'
 
 export default function ConversationPanel(props: { id: string }) {
@@ -40,6 +41,12 @@ export default function ConversationPanel(props: { id: string }) {
         <div class="error-card" role="alert">
           {String(loaded.error)}
         </div>
+      </Show>
+      <Show when={viewOf(cid()).todos.length > 0}>
+        <section class="child-cv-todos" aria-label="子任务待办">
+          <div class="child-cv-section-title">待办</div>
+          <TodoList todos={viewOf(cid()).todos} />
+        </section>
       </Show>
       <ConversationHistoryBoundary conversationId={cid()} onLoadOlder={loadOlderAnchored} />
       {/* 这一列还在不在长，看这条子会话自己那一轮起没起——不是看当前会话在不在跑。 */}
