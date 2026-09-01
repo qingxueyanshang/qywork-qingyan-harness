@@ -40,7 +40,7 @@ import type {
  * `catalog.ts` 里各家 spec 的 `effortLevels` 是照实测填的事实声明，
  * 不能改成引用这个数组——那等于替新加的档位替所有厂商作保。
  */
-export const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_ORDER)[number]
 
 /**
@@ -79,16 +79,10 @@ export const THINKING_MODES = [
   'budget_tokens',
   /**
    * OpenAI Responses 形态：思考默认开着，靠 `reasoning.effort` 控制，
-   * **`'none'` 是唯一能真的关掉它的值**。
+   * 产品只发送正向强度，用户不选择时省略整个字段、交给模型默认值。
    *
-   * 与 `always_on` 的区别是「关得掉」，与 `none` 的区别是「本来就在思考」。
-   * 这两条差别都要钱：当成 `always_on` 会让「不思考」这个选项静默失效，
-   * 当成 `none` 会让适配器一个 reasoning 字段都不发、因此同样关不掉。
-   *
-   * 实测（2026-08，deepseek-v4-flash / max_output_tokens=900，各三次）：
-   * `effort:'none'` → reasoning_tokens 0/0/0；其余每一档都是 899~900。
-   * 即除 `none` 外，**effort 被接受但不被采纳**——
-   * 这类模型的 `effortLevels` 应当照实填 `[]`。
+   * 厂商协议可能另外接受 `none` 作为“关闭思考”命令，但它不是强度档位，
+   * 不进入 `EffortLevel`、模型选择器或后台摘要请求。
    */
   'reasoning_effort',
   /**
@@ -1005,12 +999,17 @@ export interface ProviderRequest {
   turnIndex: number
   /** 同一 turn 的第几次重试，从 0 起。与 turnIndex 一起构成唯一键。 */
   retryIndex: number
+  /** 请求发出时绑定的接口名。null = 迁移前旧行或测试夹具未提供。 */
+  providerName: string | null
+  /** 请求实际走的协议。与接口名一起区分同模型的不同路线。 */
+  providerKind: ProviderKind | null
   model: string
   status: ProviderRequestStatus
   /**
    * 发送前本地测得的输入量。**一律是字符估算**——三条协议都没有在热路径上
    * 实测 token 的通道。真值由 `providerInputTokens` 那几列给，读数以它们为准，
-   * 这一列只在一条回报都还没有时兜底（`context-panel.ts`）。
+   * 这一列在一条回报都还没有时兜底；拿到 usage 后还会与真值成对，校准锚点之后
+   * 的增量，并给压缩回收量做两把尺的折算（`context-panel.ts` / `compaction.ts`）。
    */
   measuredInputTokens: number
   providerInputTokens: number | null
@@ -1034,8 +1033,16 @@ export interface ProviderRequest {
   errorMessage: string | null
   /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
   payloadHash: string
+  /** 模型可见请求主体的 UTF-8 字节数；不含凭证和传输头。 */
+  requestBytes: number | null
   cacheRouteFingerprint: string | null
   sentAt: number | null
+  /** provider 返回的第一个流事件；不含本地 request_prepared。 */
+  firstEventAt: number | null
+  /** 第一段思考、正文或工具调用到达的时刻。 */
+  firstContentAt: number | null
+  /** 请求进入 received / uncertain / rejected 终态的时刻。 */
+  completedAt: number | null
   createdAt: number
 }
 

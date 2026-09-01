@@ -31,7 +31,12 @@ export { classifyProviderError, ProviderError } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
 // 能力探测：cli 的 probe 子命令与设置页的「探测」按钮
-export { describeProbe, type ProbeOutcome, probeModel, toCapabilities } from './probe.ts'
+export {
+  describeProbe,
+  type ProbeOutcome,
+  probeModel,
+  toTransportCapabilities,
+} from './probe.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上用它兜底
 export {
   DEFAULT_DENSITY,
@@ -55,6 +60,7 @@ export type {
   ProviderUsage,
   SystemBlock,
   ToolSchema,
+  TransportCapabilities,
   WireMessage,
   WireToolCall,
 } from './types.ts'

@@ -39,15 +39,6 @@ const KIND_LABEL: Record<ProviderKind, string> = {
 }
 
 /**
- * 模型库的键：模型 id + 协议。服务端 `runtime/config.ts` 的 `catalogKey` 是真源，
- * 这里抄一份是因为界面只依赖 `@qywork/core`，够不着 runtime。**两处必须一致。**
- * 分隔符是 `|`：模型 id 含斜杠但不含它。
- */
-function catalogKey(model: string, kind: string): string {
-  return `${model}|${kind}`
-}
-
-/**
  * 模型配置：**接口一层，模型一层**。
  *
  * **为什么是两层。** 扁平档案（一条档案一个模型）的话，同一家的三个模型要把同一把 key 和同一个
@@ -200,17 +191,25 @@ export function ModelSettings() {
     try {
       const r = await probeModel(provider, model)
       setProbes((prev) => ({ ...prev, [model]: r }))
-      // 探到的能力**写进模型库**，走既有的整份 PUT，不新开写入路径。
-      // 协议这一维从当前接口取：探的就是「这条链路」的行为。
-      // 只在真探出结论时写：空结论会盖掉目录里正确的保守值。
-      if (Object.keys(r.capabilities).length > 0) {
+      // 探测只校准当前接口是否透传控制面，不改写全局模型能力。
+      if (Object.keys(r.transport).length > 0) {
         void replaceConfig((cur) => {
           const owner = cur.providers[provider]
           if (!owner) return null
-          const key = catalogKey(model, owner.kind)
+          const entry = owner.models[model]
+          if (!entry) return null
           return {
             ...cur,
-            catalog: { ...cur.catalog, [key]: { ...cur.catalog?.[key], ...r.capabilities } },
+            providers: {
+              ...cur.providers,
+              [provider]: {
+                ...owner,
+                models: {
+                  ...owner.models,
+                  [model]: { ...entry, transport: { ...entry.transport, ...r.transport } },
+                },
+              },
+            },
           }
         })
       }
@@ -483,7 +482,9 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
         ? levels.join(' / ')
         : o.untested.includes('effort')
           ? '发不出思考档位'
-          : '无思考档位'
+          : o.inconclusive.includes('effort')
+            ? '思考档位未确认'
+            : '无思考档位'
     return { text: `连接正常　${effort}`, bad: false }
   }
   return (

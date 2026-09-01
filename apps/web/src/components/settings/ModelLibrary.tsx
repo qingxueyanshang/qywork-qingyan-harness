@@ -25,7 +25,8 @@ import { explainApiError, type LibraryVendor } from '../../lib/store/index.ts'
  * 价格要对当期价目表。目录里没有的模型同样不在这里加：加一条只影响它自己的
  * 计价显示，真正决定能不能用的是接口下挂的那个 id。
  *
- * 需要临时纠正某一条时，改 `config.json` 的 `catalog`，或跑 `qy probe --save`。
+ * 需要临时纠正某一条时，改 `config.json` 的 `catalog`；端点探测只校验当前接口
+ * 是否透传控制字段，不会改这张官方规格表。
  */
 export function ModelLibrary(props: {
   vendors: LibraryVendor[]

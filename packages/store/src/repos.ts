@@ -14,6 +14,7 @@ import type {
   ConversationId,
   Message,
   MessageId,
+  ProviderKind,
   ProviderRequest,
   ProviderRequestId,
   ProviderRequestStatus,
@@ -1036,11 +1037,14 @@ export function openProviderRequest(
     runId: RunId
     turnIndex: number
     retryIndex: number
+    providerName?: string
+    providerKind?: ProviderKind
     model: string
     measuredInputTokens: number
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
+    requestBytes?: number
     cacheRouteFingerprint?: string | null
   },
 ): ProviderRequest {
@@ -1049,6 +1053,8 @@ export function openProviderRequest(
     runId: input.runId,
     turnIndex: input.turnIndex,
     retryIndex: input.retryIndex,
+    providerName: input.providerName ?? null,
+    providerKind: input.providerKind ?? null,
     model: input.model,
     status: 'pending',
     measuredInputTokens: input.measuredInputTokens,
@@ -1062,30 +1068,37 @@ export function openProviderRequest(
     errorCode: null,
     errorMessage: null,
     payloadHash: input.payloadHash,
+    requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
     sentAt: null,
+    firstEventAt: null,
+    firstContentAt: null,
+    completedAt: null,
     createdAt: Date.now(),
   }
   store.db
     .query(
       `INSERT INTO provider_requests
-       (id, run_id, turn_index, retry_index, model, status, measured_input_tokens,
+       (id, run_id, turn_index, retry_index, provider_name, provider_kind, model, status, measured_input_tokens,
         provider_input_tokens, provider_output_tokens, provider_cached_tokens, provider_cache_write_tokens,
-        sent_categories, omitted_categories, error_code, payload_hash, cache_route_fingerprint,
-        sent_at, created_at)
-       VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,NULL,?)`,
+        sent_categories, omitted_categories, error_code, payload_hash, request_bytes, cache_route_fingerprint,
+        sent_at, first_event_at, first_content_at, completed_at, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,?)`,
     )
     .run(
       row.id,
       row.runId,
       row.turnIndex,
       row.retryIndex,
+      row.providerName,
+      row.providerKind,
       row.model,
       row.status,
       row.measuredInputTokens,
       writeJson(row.sentCategories),
       writeJson(row.omittedCategories),
       row.payloadHash,
+      row.requestBytes,
       row.cacheRouteFingerprint,
       row.createdAt,
     )
@@ -1096,6 +1109,22 @@ export function openProviderRequest(
 export function markProviderRequestSent(store: Store, id: ProviderRequestId): void {
   store.db
     .query("UPDATE provider_requests SET status = 'in_flight', sent_at = ? WHERE id = ?")
+    .run(Date.now(), id)
+}
+
+/** provider 的第一个真实流事件。重复调用保持第一次，不让后续事件覆盖。 */
+export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestId): void {
+  store.db
+    .query('UPDATE provider_requests SET first_event_at = COALESCE(first_event_at, ?) WHERE id = ?')
+    .run(Date.now(), id)
+}
+
+/** 第一段思考、正文或工具调用。重复调用保持第一次。 */
+export function markProviderRequestFirstContent(store: Store, id: ProviderRequestId): void {
+  store.db
+    .query(
+      'UPDATE provider_requests SET first_content_at = COALESCE(first_content_at, ?) WHERE id = ?',
+    )
     .run(Date.now(), id)
 }
 
@@ -1124,7 +1153,7 @@ export function settleProviderRequest(
       `UPDATE provider_requests
        SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
            provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?,
-           finish_reason = ?, error_message = ?
+           finish_reason = ?, error_message = ?, completed_at = ?
        WHERE id = ?`,
     )
     .run(
@@ -1136,6 +1165,7 @@ export function settleProviderRequest(
       errorCode,
       finishReason,
       errorMessage,
+      Date.now(),
       id,
     )
 }
@@ -1194,6 +1224,8 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     runId: r.run_id,
     turnIndex: r.turn_index,
     retryIndex: r.retry_index,
+    providerName: r.provider_name,
+    providerKind: r.provider_kind,
     model: r.model,
     status: r.status,
     measuredInputTokens: r.measured_input_tokens,
@@ -1206,9 +1238,13 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     errorCode: r.error_code,
     errorMessage: r.error_message,
     payloadHash: r.payload_hash,
+    requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,
     sentAt: r.sent_at,
+    firstEventAt: r.first_event_at,
+    firstContentAt: r.first_content_at,
+    completedAt: r.completed_at,
     createdAt: r.created_at,
   }
 }

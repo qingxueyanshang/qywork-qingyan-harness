@@ -76,7 +76,7 @@ export function ModelPicker() {
    * 档位面与当前选定档**取自目录里同一行**。
    *
    * 分两处取必然出现「档位面是 A 模型的、选定值是 B 模型的」——两者都逐模型
-   * 不同（Claude 五档、DeepSeek 两档、Qwen 一档没有），而用户随时会切模型。
+   * 不同（Claude 五档、DeepSeek 三档、Qwen 三档），而用户随时会切模型。
    */
   const levels = () => activeModelRow()?.effortLevels ?? []
   const selected = () => activeModelRow()?.effort ?? null
@@ -92,7 +92,7 @@ export function ModelPicker() {
    * 目录由 `saveServerConfig` 落盘成功后统一重算，**这里再补一笔就是第二本账**：
    * 写盘失败时界面会显示一个从未落盘的档，而下一轮实际发出去的还是旧值。
    */
-  const pickEffort = async (lv: EffortLevel) => {
+  const pickEffort = async (lv: EffortLevel | null) => {
     const ref = activeModel()
     if (!ref) return
     await setEffort(ref.provider, ref.model, lv)
@@ -128,26 +128,22 @@ export function ModelPicker() {
             <IconChevron size={11} dir="right" />
           </button>
 
-          {/* **这一行常在，一档都调不了时禁用。** 按有没有档位决定显不显示的话，
-              在上面那一行换个模型就会让这一格当场出现或消失，一级面板跟着缩一格
-              （B9）——而换模型正是这个面板最常做的事。 */}
-          <button
-            class="model-entry"
-            classList={{ open: sub() === 'effort' }}
-            type="button"
-            disabled={levels().length === 0}
-            aria-expanded={sub() === 'effort'}
-            data-tip="改的是这个模型的档位，所有会话通用"
-            onClick={() => flip('effort')}
-          >
-            <span class="model-entry-label">推理等级</span>
-            {/* 没选过档时发不出思考字段，跑的是厂商默认——这一格空着会被
-                读成还没加载出来。 */}
-            <span class="model-entry-value truncate">
-              {levels().length === 0 ? '不支持' : (selected() ?? '默认')}
-            </span>
-            <IconChevron size={11} dir="right" />
-          </button>
+          {/* 没有可调档位时整个入口不存在。“不支持”不是一种可选思考状态。 */}
+          <Show when={levels().length > 0}>
+            <button
+              class="model-entry"
+              classList={{ open: sub() === 'effort' }}
+              type="button"
+              aria-expanded={sub() === 'effort'}
+              data-tip="改的是这个模型的档位，所有会话通用"
+              onClick={() => flip('effort')}
+            >
+              <span class="model-entry-label">推理等级</span>
+              {/* 未选择不是一个档位：请求省略字段，沿用厂商默认。 */}
+              <span class="model-entry-value truncate">{selected() ?? '未选择'}</span>
+              <IconChevron size={11} dir="right" />
+            </button>
+          </Show>
 
           <Show when={sub() === 'model'}>
             <div class="model-sub" role="listbox">
@@ -198,6 +194,19 @@ export function ModelPicker() {
 
           <Show when={sub() === 'effort'}>
             <div class="model-sub" role="listbox">
+              <button
+                class="model-item"
+                classList={{ active: selected() === null }}
+                type="button"
+                role="option"
+                aria-selected={selected() === null}
+                onClick={() => {
+                  void pickEffort(null)
+                  setSub(null)
+                }}
+              >
+                <span class="model-name truncate">未选择（模型默认）</span>
+              </button>
               <For each={levels()}>
                 {(lv) => (
                   <button

@@ -16,7 +16,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { softLimit } from '@qywork/agent'
-import { emptyBreakdown, emptyOmitted } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, type ProviderKind } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -61,12 +61,16 @@ function send(
     measured: number
     categories?: Partial<ReturnType<typeof emptyBreakdown>>
     fingerprint?: string
+    providerName?: string
+    providerKind?: ProviderKind
   },
 ) {
   const row = openProviderRequest(store, {
     runId,
     turnIndex: turn++,
     retryIndex: 0,
+    ...(opts.providerName ? { providerName: opts.providerName } : {}),
+    ...(opts.providerKind ? { providerKind: opts.providerKind } : {}),
     model: 'm',
     measuredInputTokens: opts.measured,
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
@@ -214,12 +218,13 @@ describe('上下文面板', () => {
     settleProviderRequest(store, second, 'received', null, null)
 
     const after = contextPanel(store, conversationId, M(1_000_000))
-    // 数字不许掉——上下文只多不少，而这次请求没有任何证据说明它变小了。
-    expect(after.total).toBe(33_000)
-    expect(after.source).toBe('actual')
+    // 锚点输入真值 32,000 / 本地 3,000：新增的本地 200 按同一比值折成 2,133。
+    // 不冻结在 33,000，也不跌回裸估算 3,200。
+    expect(after.total).toBe(34_133)
+    expect(after.source).toBe('calibrated')
     // 分组明细跟着最近一次已发送的请求走，与锚点是两条判据；
     // 但会按对账把差额摊进可变桶，所以和恒等于总数。
-    expect(sum(after.breakdown)).toBe(33_000)
+    expect(sum(after.breakdown)).toBe(34_133)
   })
 
   /**
@@ -392,6 +397,32 @@ describe('锚点认模型', () => {
   })
 })
 
+describe('校准认接口路线', () => {
+  test('同名模型换接口后不复用上一条路线的 usage 比值', () => {
+    const { store, conversationId, runId } = fixture()
+    const id = send(store, runId, {
+      measured: 3000,
+      providerName: 'relay-a',
+      providerKind: 'openai_chat_completions',
+    })
+    settleProviderRequest(
+      store,
+      id,
+      'received',
+      { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+
+    const otherRoute = contextPanel(store, conversationId, {
+      ...M(1_000_000),
+      providerName: 'relay-b',
+      providerKind: 'openai_chat_completions',
+    })
+    expect(otherRoute.source).toBe('estimated')
+    expect(otherRoute.total).toBe(3000)
+  })
+})
+
 describe('压缩触发线', () => {
   test('与 loop 的软阈值同源', () => {
     const { store, conversationId, runId } = fixture()
@@ -487,7 +518,7 @@ describe('信封换一份只换头部', () => {
   test('指纹不同时按头部差修正，指纹相同时原样', () => {
     const { store, conversationId, runId } = fixture()
     const anchored = send(store, runId, {
-      measured: 3000,
+      measured: 30_000,
       categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 0 },
       fingerprint: 'env-a',
     })
@@ -503,14 +534,15 @@ describe('信封换一份只换头部', () => {
 
     // 装了一个 MCP：头部从 10,000 变成 14,000，消息侧一个字没变。
     send(store, runId, {
-      measured: 3000,
+      // 新工具头部 +4,000；上一轮可见输出在本地尺上约 +300。
+      measured: 34_300,
       categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 4000 },
       fingerprint: 'env-b',
     })
     const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.total).toBe(101_000 - 10_000 + 14_000)
-    // 标签不变：修正的是头部那一段，不是整条退回估算。
-    expect(panel.source).toBe('actual')
+    // 头部差逐字加，消息侧的 300 按真值比折成 1,000。
+    expect(panel.source).toBe('calibrated')
   })
 
   test('换模型仍然整条退回估算，头部修正不参与', () => {

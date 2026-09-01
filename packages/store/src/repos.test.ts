@@ -16,8 +16,12 @@ import {
   listConversationHistoryPage,
   listConversations,
   listMessages,
+  listProviderRequests,
   listRunContextSnapshots,
   listSteps,
+  markProviderRequestFirstContent,
+  markProviderRequestFirstEvent,
+  markProviderRequestSent,
   openProviderRequest,
   providerFinishRates,
   setConversationTitle,
@@ -32,6 +36,53 @@ function fresh() {
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
   return { store, ws }
 }
+
+describe('逐请求传输证据', () => {
+  test('路线、体积、首事件、首内容与终态逐项落库', () => {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'transport-evidence',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const request = openProviderRequest(store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      providerName: 'relay',
+      providerKind: 'openai_responses',
+      model: 'm',
+      measuredInputTokens: 123,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'h',
+      requestBytes: 4096,
+    })
+    markProviderRequestSent(store, request.id)
+    markProviderRequestFirstEvent(store, request.id)
+    markProviderRequestFirstContent(store, request.id)
+    settleProviderRequest(store, request.id, 'received', null, null, 'completed')
+
+    const found = listProviderRequests(store, run.id)[0]!
+    expect(found).toMatchObject({
+      providerName: 'relay',
+      providerKind: 'openai_responses',
+      requestBytes: 4096,
+      status: 'received',
+      finishReason: 'completed',
+    })
+    expect(found.sentAt).toBeNumber()
+    expect(found.firstEventAt).toBeNumber()
+    expect(found.firstContentAt).toBeNumber()
+    expect(found.completedAt).toBeNumber()
+    store.close()
+  })
+})
 
 describe('会话列表排序', () => {
   /**

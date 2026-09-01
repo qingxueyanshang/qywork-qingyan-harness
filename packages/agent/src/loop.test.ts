@@ -37,6 +37,7 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
       // 面板的总数就是这个值，而分组明细是同一次装配的估算，两者相等是恒等式。
       // 给一个与请求无关的常数，等于让假适配器造出真适配器造不出的状态。
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
+      yield { type: 'response_started' }
       if (calls) {
         yield { type: 'tool_calls', calls }
       } else {
@@ -865,6 +866,7 @@ describe('上下文分组占用', () => {
       // 真值远大于这点历史的本地估算，差额必须被摊回可变桶而不是消失。
       anchor: {
         tokens: 33_000,
+        scale: 0.5,
         throughMessageId: 'ms_8',
         model: 'claude-opus-5',
         headTokens: 0,
@@ -878,7 +880,7 @@ describe('上下文分组占用', () => {
     const ctx = events.find((e) => e.type === 'context')
     expect(ctx?.type).toBe('context')
     if (ctx?.type !== 'context') return
-    expect(ctx.source).toBe('actual')
+    expect(ctx.source).toBe('calibrated')
     expect(Object.values(ctx.breakdown).reduce((n, v) => n + v, 0)).toBe(ctx.tokens)
     // 摊法是吸收不是缩放：逐字可数的固定类目保实测值，不许被差额改写。
     expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys', DEFAULT_DENSITY))
@@ -1671,6 +1673,55 @@ describe('effort 传到请求上', () => {
   })
 })
 
+describe('逐请求传输证据不改变请求内容', () => {
+  test('记录接口、协议、字节数以及首事件和首内容', async () => {
+    const base = noopPersistence()
+    let opened: Parameters<LoopPersistence['openRequest']>[0] | null = null
+    let firstEvents = 0
+    let firstContents = 0
+    const marks: string[] = []
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([null]),
+      providerName: 'relay-a',
+      registry: new ToolRegistry(),
+      systemPrompt: 'stable-system',
+      persist: {
+        ...base,
+        openRequest: (input) => {
+          opened = input
+          return 'pr_metrics'
+        },
+        markRequestFirstEvent: () => {
+          firstEvents++
+          marks.push('event')
+        },
+        markRequestFirstContent: () => {
+          firstContents++
+          marks.push('content')
+        },
+      },
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    for await (const _ of loop.run({
+      runId: 'rn_metrics' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 跑完整条流，证据由 persistence 捕获。
+    }
+
+    expect(opened).toMatchObject({
+      providerName: 'relay-a',
+      providerKind: 'anthropic_messages',
+      model: 'claude-opus-5',
+    })
+    expect(opened!.requestBytes).toBeGreaterThan(0)
+    expect(firstEvents).toBe(1)
+    expect(firstContents).toBe(1)
+    expect(marks).toEqual(['event', 'content'])
+  })
+})
+
 /**
  * 一轮的花费带着它自己的币种。
  *
@@ -1794,7 +1845,7 @@ describe('上下文读数：一把尺', () => {
    * 第二次起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
    * 用户实测报的「一个轮会话里上下文跳了好几次」，跨轮的那一半就是它。
    */
-  test('带着上一轮真值开跑，首个读数就是 actual 而不是估算', async () => {
+  test('带着上一轮真值开跑，首个读数按真值比校准新增内容', async () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
@@ -1822,6 +1873,8 @@ describe('上下文读数：一把尺', () => {
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
       anchor: {
         tokens: 33_000,
+        // 上一份请求本地估算是真值的两倍；新增历史必须换回真值尺再相加。
+        scale: 0.5,
         throughMessageId: 'ms_8',
         model: 'claude-opus-5',
         headTokens: 0,
@@ -1833,9 +1886,9 @@ describe('上下文读数：一把尺', () => {
     }
 
     const ctx = events.find((e) => e.type === 'context')
-    expect(ctx?.type === 'context' && ctx.source).toBe('actual')
-    // 锚点 + 锚点之后新增的那条消息，不是 fakeAdapter 报的 10。
-    expect(ctx?.type === 'context' && ctx.tokens).toBeGreaterThanOrEqual(33_000)
+    expect(ctx?.type === 'context' && ctx.source).toBe('calibrated')
+    // “继续”本地估 7 token，按 0.5 折为 4；不能原样把两把尺加成 33,007。
+    expect(ctx?.type === 'context' && ctx.tokens).toBe(33_004)
   })
 
   test('没有锚点时如实标 estimated，不假装是实测', async () => {

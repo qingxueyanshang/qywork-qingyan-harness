@@ -5,11 +5,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import type { EffortLevel } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
-import type { ProviderProfile, WireMessage } from '../types.ts'
+import type { ProviderEvent, ProviderProfile, WireMessage } from '../types.ts'
 import { AnthropicAdapter } from './anthropic.ts'
 
 const bodies: Record<string, unknown>[] = []
+let lastEvents: ProviderEvent[] = []
 let server: ReturnType<typeof Bun.serve>
 let base = ''
 
@@ -61,7 +63,10 @@ beforeAll(() => {
 
 afterAll(() => server.stop(true))
 
-async function send(messages: WireMessage[]): Promise<Record<string, unknown>> {
+async function send(
+  messages: WireMessage[],
+  effort?: EffortLevel,
+): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
     kind: 'anthropic_messages',
@@ -70,18 +75,42 @@ async function send(messages: WireMessage[]): Promise<Record<string, unknown>> {
     baseUrl: base,
   }
   const adapter = new AnthropicAdapter(profile, lookupModel('claude-opus-5', 'anthropic_messages'))
-  for await (const _ of adapter.stream({
+  lastEvents = []
+  for await (const event of adapter.stream({
     model: 'claude-opus-5',
     system: [],
     messages,
     tools: [],
     maxOutputTokens: 64,
+    ...(effort ? { effort } : {}),
     signal: new AbortController().signal,
   })) {
-    // 读完即可，产出不关心。
+    lastEvents.push(event)
   }
   return bodies[0]!
 }
+
+describe('思考档位严格遵守用户选择', () => {
+  test('message_start 早于模型内容进入遥测', async () => {
+    await send([{ role: 'user', content: 'hi' }])
+    const started = lastEvents.findIndex((e) => e.type === 'response_started')
+    const content = lastEvents.findIndex(
+      (e) => e.type === 'thinking_delta' || e.type === 'text_delta',
+    )
+    expect(started).toBeGreaterThan(0)
+    expect(content).toBeGreaterThan(started)
+  })
+
+  test('模型明确支持的档位原样发送', async () => {
+    const body = await send([{ role: 'user', content: 'hi' }], 'max')
+    expect(body.output_config).toEqual({ effort: 'max' })
+  })
+
+  test('模型不支持的档位省略，不静默换成最高档', async () => {
+    const body = await send([{ role: 'user', content: 'hi' }], 'minimal')
+    expect(body).not.toHaveProperty('output_config')
+  })
+})
 
 describe('工具结果带图片', () => {
   test('tool_result 落在 user 轮里，text 与 image 块顺序保留', async () => {

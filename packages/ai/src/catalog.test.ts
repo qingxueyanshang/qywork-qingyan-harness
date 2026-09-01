@@ -39,6 +39,7 @@ describe('同一模型在不同协议下能力不同', () => {
   /** 两条协议的档位必须各记各的——合并之后其中一边必然与实际能力不符。 */
   test('两条协议的档位互不覆盖', () => {
     expect(lookupModel('deepseek-v4-flash', 'openai_chat_completions').effortLevels).toEqual([
+      'low',
       'high',
       'max',
     ])
@@ -55,7 +56,7 @@ describe('同一模型在不同协议下能力不同', () => {
   test('vision 在两条协议下各有一条', () => {
     const chat = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
     expect(chat.thinking).toBe('deepseek_thinking')
-    expect(chat.effortLevels).toEqual(['high', 'max'])
+    expect(chat.effortLevels).toEqual(['low', 'high', 'max'])
 
     const resp = lookupModel('deepseek-v4-flash-vision-exp', 'openai_responses')
     expect(resp.thinking).toBe('reasoning_effort')
@@ -664,7 +665,7 @@ describe('目录里的价格与档位', () => {
     expect(spec('qwen3.8-max').pricing.input).toBe(12)
     expect(spec('qwen3.8-max').pricing.currency).toBe('CNY')
     expect(spec('qwen3.8-max').maxOutputTokens).toBe(131_072)
-    expect(spec('qwen3.8-max').effortLevels).toEqual(['none', 'low', 'medium', 'xhigh'])
+    expect(spec('qwen3.8-max').effortLevels).toEqual(['low', 'medium', 'xhigh'])
     expect(spec('qwen3.8-max').chatReasoningProtocol).toBe('qwen_preserved')
     expect(spec('qwen3.8-max').chatToolSchema).toBe('openai_strict')
   })

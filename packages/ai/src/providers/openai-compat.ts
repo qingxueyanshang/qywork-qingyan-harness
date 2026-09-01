@@ -96,6 +96,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
         },
       )) as unknown as AsyncIterable<CompatChunk>
 
+      // SDK promise 在流响应建立后 resolve；此刻还没有消费首个 SSE chunk。
+      yield { type: 'response_started' }
+
       let chunks = 0
       for await (const chunk of stream) {
         chunks++

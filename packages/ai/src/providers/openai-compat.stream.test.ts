@@ -83,6 +83,14 @@ async function run(sse: string): Promise<{ events: ProviderEvent[]; err: unknown
 }
 
 describe('流没按协议收尾', () => {
+  test('流对象建立事件早于模型内容', async () => {
+    const { events } = await run(TRUNCATED)
+    const started = events.findIndex((e) => e.type === 'response_started')
+    const content = events.findIndex((e) => e.type === 'thinking_delta' || e.type === 'text_delta')
+    expect(started).toBeGreaterThan(0)
+    expect(content).toBeGreaterThan(started)
+  })
+
   test('思考中途断流报错，不落成正常完成', async () => {
     const { events, err } = await run(CUT)
     expect(err).toBeInstanceOf(ProviderError)

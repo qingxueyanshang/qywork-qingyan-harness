@@ -16,6 +16,7 @@ import type {
   ConversationId,
   Currency,
   MessageId,
+  ProviderKind,
   ProviderRequestId,
   ProviderRequestStatus,
   ResourceId,
@@ -1047,6 +1048,22 @@ ALTER TABLE runs DROP COLUMN superseded_by;
      */
     sql: `ALTER TABLE runs ADD COLUMN context_snapshot TEXT;`,
   },
+  {
+    id: 33,
+    name: 'provider_request_transport_metrics',
+    /**
+     * 只记录传输旁路事实，不保存请求正文：接口/协议用于分路线，字节数与四个时刻
+     * 用来区分请求放大、首包等待和生成阶段。NULL 表示迁移前旧行，没有就不编 0。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN provider_name TEXT;
+ALTER TABLE provider_requests ADD COLUMN provider_kind TEXT;
+ALTER TABLE provider_requests ADD COLUMN request_bytes INTEGER;
+ALTER TABLE provider_requests ADD COLUMN first_event_at INTEGER;
+ALTER TABLE provider_requests ADD COLUMN first_content_at INTEGER;
+ALTER TABLE provider_requests ADD COLUMN completed_at INTEGER;
+`,
+  },
 ]
 
 /**
@@ -1168,6 +1185,8 @@ export interface ProviderRequestRow {
   run_id: RunId
   turn_index: number
   retry_index: number
+  provider_name: string | null
+  provider_kind: ProviderKind | null
   model: string
   /** `CHECK (status IN ('pending','in_flight','received','uncertain','rejected'))`。 */
   status: ProviderRequestStatus
@@ -1182,8 +1201,12 @@ export interface ProviderRequestRow {
   error_code: string | null
   error_message: string | null
   payload_hash: string
+  request_bytes: number | null
   cache_route_fingerprint: string | null
   sent_at: number | null
+  first_event_at: number | null
+  first_content_at: number | null
+  completed_at: number | null
   created_at: number
 }
 
@@ -1281,6 +1304,8 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'run_id',
     'turn_index',
     'retry_index',
+    'provider_name',
+    'provider_kind',
     'model',
     'status',
     'measured_input_tokens',
@@ -1294,8 +1319,12 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'error_code',
     'error_message',
     'payload_hash',
+    'request_bytes',
     'cache_route_fingerprint',
     'sent_at',
+    'first_event_at',
+    'first_content_at',
+    'completed_at',
     'created_at',
   ],
   intermediate_resources: [
