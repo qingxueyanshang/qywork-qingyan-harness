@@ -193,18 +193,17 @@
 }
 
 /*
- * 面板里所有「一列行」的滚动容器**都要预留滚动条的槽**。
+ * 右侧带读数的滚动列表预留滚动条槽。
  *
  * 不预留的代价是：内容一超过一屏，那条 12px 的经典滚动条就地从内容宽里切走
  * ——行被压窄、右对齐的读数（变更列表的 `+N −M`）被压进滚动条底下，而滚动条
  * 出现/消失那一下整列还会横向跳一格。
  *
- * 用 `stable` 而不是 `stable both-edges`：这几列都是左对齐的行，左边再留一道
- * 空槽只是白占面板本来就不宽的横向空间。会话流那边用 both-edges 是因为它的正文
- * 居中，两侧不对称会把中线推歪（见 transcript.css）。
+ * 文件树不在这里：它上面有一个固定宽度的搜索框，`stable` 会在没有滚动条时也永久
+ * 挖掉右侧 12px，导致文件选中横条明显比搜索框短。树在实际溢出时再由浏览器占槽。
+ * 用 `stable` 而不是 `stable both-edges`：下面两列都是左对齐的行，左边再留一道空槽
+ * 只是白占面板本来就不宽的横向空间。
  */
-.tree.tree-top,
-.tree-hits,
 .change-list,
 .preview-board {
   scrollbar-gutter: stable;
@@ -482,27 +481,45 @@
   padding: 0;
   display: flex;
   flex-direction: column;
+  /* 与左侧会话列表一致：相邻状态底色之间露出 2px 背景，不粘成一整块。 */
+  gap: 2px;
 }
 /* li 里装的是「本行 + 展开后的子树」，所以它自己也得排成一列。 */
 .tree li {
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+/* 只给仍含目录的分支画层级线。纯文件列表已经是末级，继续拉线会像多出一层。 */
+.tree:not(.tree-top):not(.tree-terminal) {
+  position: relative;
+}
+.tree:not(.tree-top):not(.tree-terminal)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--tree-guide-left);
+  width: 1px;
+  background: var(--border-subtle);
+  pointer-events: none;
 }
 /* 树自己滚，根目录行和搜索框不跟着走——它们是这一列的常驻头部。 */
 .tree.tree-top {
   flex: 1;
   overflow-y: auto;
-  padding: 0 4px var(--s-2);
+  /* 选中横条与上方搜索框的 6px 外边界完全共线。 */
+  padding: 0 6px var(--s-2);
 }
 
 .tree-item {
   display: flex;
   align-items: center;
-  /* 图标紧跟文字：4px。再宽一点点，一列文件名读起来就散成两栏。 */
+  /* 每行只有一个 13px 主图标位；图标与名称保持 4px。 */
   gap: 4px;
   width: 100%;
-  /* 左内距被行内样式按层级覆盖（`depth * 12 + 8`），这里的 8 只落在搜索命中
-     与根目录名上——那两处没有层级。三处同值，整块面板的文字才在一条竖线上。 */
+  /* 左内距被行内样式按层级覆盖（`depth * 6 + 2`）。初始图标贴近搜索框左边界，
+     后续每一级最左侧的可见图标只递进 6px。 */
   padding: 1px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-secondary);
@@ -510,19 +527,47 @@
   line-height: 1.5;
   text-align: left;
 }
-/*
- * 文件 / 目录行的命中区和选中底色收在内容宽度内。
- *
- * 通用 `.tree-item` 原先写死 `width: 100%`，一条短文件名也会画出贯穿整列的灰框；
- * 根目录名仍要占掉操作按钮左边的剩余空间，所以只排除 `.tree-root-name`。长名字由
- * `max-width` 卡在树宽内，里面的 `.truncate` 继续负责省略。
- */
-.file-tree-col .tree-item:not(.tree-root-name) {
-  width: fit-content;
-  max-width: 100%;
-}
 .tree-item svg {
   flex: none;
+}
+/*
+ * 目录用箭头，文件用类型图标，两者共用一个 13px 主图标位。常规目录不再叠加
+ * 文件夹图标，否则同一行会多出一列，层级起点与名称列都会失去连续关系。
+ */
+.tree-chevron-slot,
+.tree-node-icon,
+.file-type-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+}
+.file-type-icon {
+  /* 类型靠字形区分，颜色保持和原文件图标一致的中性灰。 */
+  --file-icon-tone: var(--text-tertiary);
+  color: var(--file-icon-tone);
+}
+.file-type-icon > span {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--file-icon-tone) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--file-icon-tone) 24%, transparent);
+  font-family: var(--font-ui);
+  font-size: 6px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.35px;
+}
+.file-type-icon[data-file-kind="json"] > span,
+.file-type-icon[data-file-kind="style"] > span,
+.file-type-icon[data-file-kind="markup"] > span {
+  background: transparent;
+  box-shadow: none;
+  font-size: 8px;
 }
 .tree-item:not(.selected):hover {
   background: var(--bg-hover);
@@ -534,8 +579,7 @@
  * 底色是 `--bg-active`，**和左栏会话选中的那一档是同一个灰**——「点中的那一行」
  * 全应用一种灰，不为这棵树另调一档（更深的那档实测偏重，整列读起来发灰）。
  */
-.tree-item.selected,
-.tree-root.selected {
+.tree-item.selected {
   background: var(--bg-active);
   color: var(--text-primary);
 }
@@ -546,31 +590,31 @@
  * **四颗按钮长在这一行上，不另起一条工具条。** 单独一条细带子会在搜索框和树之间
  * 插一层横条，而这四颗做的事全都发生在这个根之下。
  *
- * hover 与选中**画在整行上**（这个容器），不是画在名字那颗按钮上：按钮只占到
- * 图标之前，高亮跟着它就只框住半行，看起来像只选中了标题。
+ * 根只负责展开和操作，不参与文件/目录选中；hover 只由整行容器画一层。
  */
 .tree-root {
   flex: none;
   display: flex;
   align-items: center;
-  margin: 0 4px;
+  /* 与搜索框同为 6px 外边界，灰色横条和输入框严格等宽。 */
+  margin: 0 6px;
   border-radius: var(--r-xs);
 }
-/* 选中的行不吃 hover 底色：那层半透明比 `--accent-soft` 浅，指针一划过去
-   就像选中丢了（同 `.side-tab` 那条）。 */
-.tree-root:not(.selected):hover {
+.tree-root:hover {
   background: var(--bg-hover);
 }
 .tree-root-name {
   flex: 1 1 auto;
   min-width: 0;
-  font-weight: 600;
-  color: var(--text-primary);
+  /* 11px 箭头在 13px 槽内还自带路径留白；这里 2px 后，实际箭头线条距左边约 5.6px，
+     与右侧 14px 折叠图标在 20px 按钮中的约 5.8px 视觉留白对称。 */
+  padding-left: 2px;
 }
-/* 名字那颗按钮不再自己画底色——整行的高亮归 `.tree-root`。 */
-.tree-root-name:hover,
-.tree-root.selected .tree-root-name {
+/* `.tree-item:not(.selected):hover` 会给标题按钮再画一层，所以带上根容器提升优先级：
+   标题自身透明，只保留 `.tree-root:hover` 那一层完整灰底。 */
+.tree-root .tree-root-name:hover {
   background: none;
+  color: var(--text-secondary);
 }
 .tree-root-acts {
   flex: none;
@@ -668,7 +712,7 @@
 .tree-hits {
   flex: 1;
   overflow-y: auto;
-  padding: 0 4px var(--s-2);
+  padding: 0 6px var(--s-2);
 }
 /* 树上方的一句话：搜索没命中、命中过多、树取不回来。
    横排是给最后那一种用的——它后面跟着一颗「重试」，不排成一行的话按钮会掉到
