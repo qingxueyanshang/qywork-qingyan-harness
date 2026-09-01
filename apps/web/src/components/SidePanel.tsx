@@ -363,7 +363,7 @@ export default function SidePanel() {
             >
               <IconPlus size={15} />
             </button>
-            {/* 放大：正文让位，只留输入框和这块面板。窄屏不显示——那里的面板
+            {/* 放大：正文让位，输入框收成底部悬浮触发条。窄屏不显示——那里的面板
                 本来就盖满全屏，没有「放大」可言（样式见 utility.css）。 */}
             <button
               class="icon-btn panel-max-btn"
