@@ -587,19 +587,9 @@
   color: var(--text-primary);
   font-size: var(--fs-sm);
 }
-.ctx-head-title {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-}
 .ctx-head-nums {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.ctx-source {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 /* 堆叠条：段宽按占**窗口**的比例，不是占已用量的比例——

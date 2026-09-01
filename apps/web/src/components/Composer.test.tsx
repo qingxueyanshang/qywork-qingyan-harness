@@ -13,6 +13,7 @@ beforeAll(() => {
 afterEach(async () => {
   const store = await import('../lib/store/index.ts')
   store.setPanelMaximized(false)
+  store.setState('context', null)
   document.body.replaceChildren()
 })
 afterAll(async () => {
@@ -41,6 +42,7 @@ async function mountComposer(maximized = true) {
       dispose()
       store.client.api = originalApi
     },
+    host,
     reveal,
     textarea,
     wrap,
@@ -76,6 +78,43 @@ function input(textarea: HTMLTextAreaElement, value: string) {
 }
 
 describe('放大面板里的输入区', () => {
+  test('上下文详情不显示计量来源字段', async () => {
+    const { dispose, host } = await mountComposer(false)
+    try {
+      const store = await import('../lib/store/index.ts')
+      store.setState('context', {
+        tokens: 32_000,
+        limit: 200_000,
+        percent: 16,
+        compactAt: 160_000,
+        breakdown: {
+          systemPrompt: 1000,
+          systemTools: 1000,
+          mcpTools: 0,
+          memory: 0,
+          skills: 0,
+          workspaceState: 0,
+          historyMessages: 30_000,
+          summary: 0,
+          executionRecords: 0,
+          intermediateContent: 0,
+        },
+        omitted: { historyOriginal: 0, intermediateOriginal: 0 },
+      })
+      click(host.querySelector('.ctx-meter') as HTMLButtonElement)
+
+      const dialog = host.querySelector('[aria-label="上下文占用明细"]')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).not.toContain('真值投影')
+      expect(dialog?.textContent).not.toContain('真值校准')
+      expect(dialog?.textContent).not.toContain('实际统计')
+      expect(dialog?.textContent).not.toContain('估算统计')
+      expect(dialog?.querySelector('.ctx-source')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
   test('空输入默认收起，悬浮立即展开，离开后延迟收回', async () => {
     const { dispose, reveal, wrap } = await mountComposer()
     try {

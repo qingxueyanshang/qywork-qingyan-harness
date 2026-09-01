@@ -1321,18 +1321,7 @@ function ContextMeter() {
           <Show when={open()}>
             <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
               <div class="ctx-head">
-                <span class="ctx-head-title">
-                  上下文
-                  {/* 成色紧跟标题，不另起一行：它是「上下文」这个数的定语，
-                      不是一条独立信息。百分比不重复——弹层正下方那个按钮就是它。 */}
-                  <span class="ctx-source">
-                    {c().source === 'actual'
-                      ? '实际统计'
-                      : c().source === 'projected'
-                        ? '真值投影'
-                        : '估算统计'}
-                  </span>
-                </span>
+                <span>上下文</span>
                 <span class="ctx-head-nums">
                   {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
                 </span>

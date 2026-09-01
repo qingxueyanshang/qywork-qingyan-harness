@@ -204,13 +204,12 @@ export interface AppState {
    * 上下文占用。`breakdown` 回答「被谁占的」，`omitted` 回答「什么被拿掉了」——
    * 只有前者是半张账：用户看到占用下降却不知道降在哪里。
    *
-   * `source` 必须显示出来。总数是实测还是估算，直接决定这个数字能不能拿来做决定。
+   * 计量来源只在服务端用于诊断，不进入界面状态。
    */
   context: {
     tokens: number
     limit: number
     percent: number
-    source: 'actual' | 'projected' | 'estimated'
     /** 越过它就会在下一次发送前压一次。读数条上那道刻度。 */
     compactAt: number
     breakdown: ContextBreakdown

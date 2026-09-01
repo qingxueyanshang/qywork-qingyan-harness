@@ -600,7 +600,6 @@ function foldRunState(ev: AgentEvent): void {
         tokens: ev.tokens,
         limit: ev.limit,
         percent: ev.percent,
-        source: ev.source,
         compactAt: ev.compactAt,
         breakdown: ev.breakdown,
         omitted: ev.omitted,
@@ -641,7 +640,6 @@ interface StoredContextPanel {
   total: number
   limit: number
   percent: number
-  source: 'actual' | 'projected' | 'estimated'
   compactAt: number
   breakdown: ContextBreakdown
   omitted: ContextOmitted
@@ -1105,7 +1103,6 @@ export async function reloadActiveConversation(): Promise<void> {
               tokens: ctx.total,
               limit: ctx.limit,
               percent: ctx.percent,
-              source: ctx.source,
               compactAt: ctx.compactAt,
               breakdown: ctx.breakdown,
               omitted: ctx.omitted,
