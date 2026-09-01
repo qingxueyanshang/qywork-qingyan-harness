@@ -761,28 +761,52 @@ textarea.code-area::placeholder {
 }
 .lib-table {
   width: 100%;
+  min-width: 720px;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: var(--fs-sm);
+}
+/* 每家各有一张表，列宽必须共用同一组值，否则内容多少会改变标题位置。
+   第一列只保留模型 id 所需宽度，其余空间留给思考强度。 */
+.lib-table th:nth-child(1) {
+  width: 136px;
+}
+.lib-table th:nth-child(2) {
+  width: 76px;
+}
+.lib-table th:nth-child(3) {
+  width: 64px;
+}
+.lib-table th:nth-child(4) {
+  width: 64px;
+}
+.lib-table th:nth-child(5),
+.lib-table th:nth-child(6) {
+  width: 44px;
+}
+.lib-table th:nth-child(7),
+.lib-table th:nth-child(8) {
+  width: 68px;
 }
 .lib-table th,
 .lib-table td {
-  padding: 4px var(--s-3);
+  padding: 4px var(--s-2);
   text-align: left;
   vertical-align: middle;
 }
-/* 首末两列贴着卡边，所以外缘按卡内的 `--s-4` 给；列与列之间仍是 `--s-3`。 */
+/* 首末两列的外缘略宽于列间距，保留卡片边界同时压缩横向占用。 */
 .lib-table th:first-child,
 .lib-table td:first-child {
-  padding-left: var(--s-4);
+  padding-left: var(--s-3);
 }
 .lib-table th:last-child,
 .lib-table td:last-child {
-  padding-right: var(--s-4);
+  padding-right: var(--s-3);
 }
 /* **只有这一行标题**：厂商名坐在第一列，其余是列名。
    再单开一条灰色的厂商栏就是同一件事写两遍，上下各占一行。 */
 .lib-table thead th {
-  padding: 5px var(--s-3);
+  padding: 5px var(--s-2);
   background: var(--bg-inset);
   border-bottom: 1px solid var(--border-default);
   color: var(--text-tertiary);
@@ -801,10 +825,8 @@ textarea.code-area::placeholder {
 .lib-table .lv {
   white-space: nowrap;
 }
-/* 数字列右对齐 + 等宽数字：不对齐的话 `$0.2` 和 `$12.5` 的小数点错位，
-   量级差看着像不差。 */
+/* 所有列都从左边缘起排；数字只保留等宽字形，标题与正文不会出现两套对齐。 */
 .lib-table .num {
-  text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -816,9 +838,12 @@ textarea.code-area::placeholder {
    `nowrap`，因此表格把全部挤压量都摊给唯一能换行的这一列，一个名字能占三行。
    撑不下时整张表横向滚（`.lib-scroll`）。 */
 .lib-id {
+  display: block;
+  overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* 「上面那个是标准价」这类话是能力边界，占满一整行、不降对比度。
