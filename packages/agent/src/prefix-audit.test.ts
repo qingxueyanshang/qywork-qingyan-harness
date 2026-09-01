@@ -205,6 +205,8 @@ describe('审真实的系统提示词', () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     const p = buildSystemPrompt(ALL)
     for (const tool of GATES) expect(p).toContain(tool)
+    expect(p).toContain('主会话验收后可能要求原子会话返工')
+    expect(p).toContain('revise 回流')
   })
 
   /**

@@ -143,7 +143,7 @@ export class RuntimeCompaction implements CompactionPort {
       out.push(
         condenseKey !== null &&
           key <= condenseKey &&
-          // 最近整表保留真实参数；其后的子任务完成事实照常收纳成小信封。
+          // 最近整表保留真实参数；其后的待验收子任务回执照常收纳成小信封。
           key !== todoTable?.key
           ? condenseMessage(msg)
           : msg,
@@ -511,7 +511,7 @@ export class RuntimeCompaction implements CompactionPort {
 interface TodoFact<T extends { key: string; messages: WireMessage[] }> {
   key: string
   messages: WireMessage[]
-  kind: 'table' | 'completion'
+  kind: 'table' | 'receipt'
   source: T
 }
 
@@ -531,8 +531,9 @@ function messageUnits(history: readonly WireMessage[]): { key: string; messages:
 }
 
 /**
- * 当前待办的最小事实链：最近成功整表，以及它之后明确绑定父待办的成功子任务。
- * 新整表出现就整组替换；失败或未绑定的子任务不是待办事实。
+ * 当前待办的最小验收链：最近成功整表，以及它之后明确绑定父待办的成功子任务回执。
+ * 回执不是 completed；钉住它是为了长会话压缩后父会话仍能验收或决定返工。
+ * 新整表表示父会话已经作出更新，因此替换此前的待验收链。
  */
 function currentTodoFacts<T extends { key: string; messages: WireMessage[] }>(
   units: readonly T[],
@@ -554,7 +555,7 @@ function currentTodoFacts<T extends { key: string; messages: WireMessage[] }>(
       facts.push({
         key: unit.key,
         messages: unit.messages,
-        kind: 'completion',
+        kind: 'receipt',
         source: unit,
       })
     }
@@ -562,7 +563,7 @@ function currentTodoFacts<T extends { key: string; messages: WireMessage[] }>(
   return facts
 }
 
-/** 整表逐字保留；子任务只留调用摘录与成功摘要，不能把大段产出钉在窗口里。 */
+/** 整表逐字保留；待验收回执只留调用摘录与成功摘要，不能把大段产出钉在窗口里。 */
 function todoFactMessages(fact: TodoFact<{ key: string; messages: WireMessage[] }>): WireMessage[] {
   return fact.kind === 'table' ? fact.messages : fact.messages.map(condenseMessage)
 }

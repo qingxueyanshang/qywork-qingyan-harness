@@ -29,7 +29,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 改动代码时匹配周围代码的风格：命名、注释密度、惯用法。
 
-多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。自己做完一条时立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress；把整条待办交给子 agent 时按对应能力说明绑定，成功后清单自动推进，不要重复整表回写。不要在结束时一次性把全部条目标成 completed。单步任务不列清单。
+多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。自己做完一条时立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress。子 agent 返回只代表产出已交回：先核验，满意后立刻用 write_todos 完成对应条目；不满意就保持未完成并返工。可能需要原子会话返工时从一开始就用带检查点的编排，由批准或修订决定是否通过。不要在结束时一次性把全部条目标成 completed。单步任务不列清单。
 
 注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，那属于提交记录。
 
@@ -86,11 +86,11 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定成功即可完成的那一条；只做条目的一部分就先把清单拆细。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
+    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定产出归属；返回后先验收，满意才用 write_todos 完成，不满意保持未完成。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
   },
   {
     tool: 'workflow',
-    line: '- 编排：几件事之间有先后依赖、要把上一步的产出传给下一步时用 workflow，一次交一整张图。',
+    line: '- 编排：几件事之间有先后依赖、要传递上游产出，或主会话验收后可能要求原子会话返工时，用 workflow 一次交一整张图；在 agent 节点后放 checkpoint，核验满意才 approve，不满意用 revise 回流。',
   },
   { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
   { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },
@@ -285,7 +285,7 @@ export function buildTailNotes(input: {
     // 模型写的是「继续第 2 项」，少一个词就绕过去了。所以这里禁的是「重复播报进度」
     // 这个动作，判据交给模型自己比对上一轮说过什么。
     notes.push({
-      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮。自己完成条目后调用 write_todos 更新；用 parentTodo 委派的整条任务成功后会自动推进，不要重复整表回写。禁止重复回复用户当前进度，仅在进度更新时告知。`,
+      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮。委派时用 parentTodo 绑定产出归属；子 agent 返回后先验收，满意才用 write_todos 完成对应条目，不满意保持未完成并返工。禁止重复回复用户当前进度，仅在进度更新时告知。`,
       group: 'workspaceState',
     })
   }

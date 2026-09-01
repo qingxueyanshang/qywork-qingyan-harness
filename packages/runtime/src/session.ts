@@ -871,8 +871,8 @@ export class Session {
         mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
       },
       /*
-       * 待办同样绑到**会话**，而且**只读**：整表提交与绑定父待办的子任务完成
-       * 都是原本就要落的 tool step，`latestTodos` 从这一本账折叠当前快照。
+       * 待办同样绑到**会话**，而且**只读**：父会话整表提交与子任务待验收回执
+       * 都是原本就要落的 tool step；只有 `write_todos` 改变当前快照。
        * 这里读回来给动作词、委派归属与 loop 收尾共用；run 级的 `ctx.state`
        * 跨轮查不到这些会话事实。
        */
