@@ -24,7 +24,8 @@ export const workflowTool: ToolSpec = {
       goal: { type: 'string', description: '整个 workflow 的目标（首次调用）' },
       nodes: {
         type: 'array',
-        description: '首次调用的 DAG 节点；agent 执行任务，checkpoint 将回执交回当前会话审查',
+        description:
+          '首次调用的 DAG 节点；直接传数组，不要传 JSON 字符串。agent 执行任务，checkpoint 将回执交回当前会话审查',
         items: {
           type: 'object',
           properties: {
@@ -54,7 +55,7 @@ export const workflowTool: ToolSpec = {
       note: { type: 'string', description: '本次审批或修订说明' },
       revisions: {
         type: 'array',
-        description: 'revise 时要向原节点续发的指令',
+        description: 'revise 时要向原节点续发的指令；直接传数组，不要传 JSON 字符串',
         items: {
           type: 'object',
           properties: {

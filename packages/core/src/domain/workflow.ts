@@ -91,48 +91,78 @@ export interface WorkflowProjection {
 export type WorkflowParseResult = { ok: true; call: WorkflowCall } | { ok: false; error: string }
 
 const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
-const nullish = (value: unknown): boolean => value === undefined || value === null
+const nullish = (value: unknown): boolean =>
+  value === undefined ||
+  value === null ||
+  (typeof value === 'string' && ['', 'null'].includes(value.trim().toLowerCase()))
+const wireText = (value: unknown): string => (nullish(value) ? '' : text(value))
+const omittedStructured = (value: unknown): boolean =>
+  nullish(value) || (Array.isArray(value) && value.length === 0)
+
+/**
+ * 个别 OpenAI-compatible provider 会把 schema 中的数组再次 JSON 编码成字符串。
+ * 只在声明为结构化值的入口解一层，解析失败仍交给原有校验报错。
+ */
+function structuredWireValue(value: unknown): unknown {
+  if (nullish(value) || typeof value !== 'string') return value
+  const source = value.trim()
+  if (!source.startsWith('[') && !source.startsWith('{')) return value
+  try {
+    return JSON.parse(source)
+  } catch {
+    return value
+  }
+}
 
 function needsOf(value: unknown): string[] | null {
-  if (value === undefined || value === null) return []
-  if (!Array.isArray(value)) return null
-  const out = value.map(text)
+  if (nullish(value)) return []
+  const structured = structuredWireValue(value)
+  if (!Array.isArray(structured)) return null
+  const out = structured.map(wireText)
   return out.every(Boolean) ? out : null
 }
 
-/** strict wire 会把源码层可选字段补成 null；所有判别都按非 null 值。 */
+/** strict wire 会补 null；部分兼容端会补 "null" 或把结构值再次 JSON 编码。 */
 export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseResult {
-  const hasNodes = !nullish(args.nodes)
-  const hasWorkflow = !nullish(args.workflowId)
+  const wireArgs: Record<string, unknown> = {
+    ...args,
+    nodes: structuredWireValue(args.nodes),
+    revisions: structuredWireValue(args.revisions),
+  }
+  const hasWorkflow = !nullish(wireArgs.workflowId)
+  // 有 workflowId 时，部分 strict 兼容端会给非本分支的 nodes 补空数组。
+  const hasNodes = !nullish(wireArgs.nodes) && !(hasWorkflow && omittedStructured(wireArgs.nodes))
   if (hasNodes === hasWorkflow) {
     return { ok: false, error: '首次派发必须只带 nodes，审查动作必须只带 workflowId' }
   }
 
   if (hasNodes) {
     for (const key of ['workflowId', 'checkpointId', 'decision', 'revisions']) {
-      if (!nullish(args[key])) return { ok: false, error: `首次派发不能带 ${key}` }
+      const omitted =
+        key === 'revisions' ? omittedStructured(wireArgs[key]) : nullish(wireArgs[key])
+      if (!omitted) return { ok: false, error: `首次派发不能带 ${key}` }
     }
-    const goal = text(args.goal)
+    const goal = wireText(wireArgs.goal)
     if (!goal) return { ok: false, error: '这张图整体要达成什么，得写清楚' }
-    if (!Array.isArray(args.nodes) || args.nodes.length === 0) {
+    if (!Array.isArray(wireArgs.nodes) || wireArgs.nodes.length === 0) {
       return { ok: false, error: '图里一个节点都没有' }
     }
     const nodes: WorkflowNode[] = []
     const ids = new Set<string>()
-    for (const raw of args.nodes) {
+    for (const raw of wireArgs.nodes) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: false, error: '每个节点都必须是对象' }
       }
       const node = raw as Record<string, unknown>
-      const id = text(node.id)
+      const id = wireText(node.id)
       if (!id) return { ok: false, error: '每个节点都要有 id' }
       if (ids.has(id)) return { ok: false, error: `节点 id 重复：${id}` }
       ids.add(id)
-      const kind = nullish(node.kind) ? 'agent' : text(node.kind)
+      const kind = nullish(node.kind) ? 'agent' : wireText(node.kind)
       const needs = needsOf(node.needs)
       if (!needs) return { ok: false, error: `节点 ${id} 的 needs 必须是非空字符串数组` }
       if (kind === 'checkpoint') {
-        const label = text(node.label)
+        const label = wireText(node.label)
         if (!label) return { ok: false, error: `检查点 ${id} 必须有 label` }
         if (needs.length === 0) return { ok: false, error: `检查点 ${id} 必须依赖上一批节点` }
         // 扁平 strict schema 里 passInput 同时服务 agent 节点；部分 provider 会把它
@@ -145,10 +175,10 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         continue
       }
       if (kind !== 'agent') return { ok: false, error: `节点 ${id} 的 kind 不支持 ${kind}` }
-      const task = text(node.task)
+      const task = wireText(node.task)
       if (!task) return { ok: false, error: `节点 ${id} 必须有 task` }
-      const agent = text(node.agent) || 'ad-hoc'
-      const model = text(node.model)
+      const agent = wireText(node.agent) || 'ad-hoc'
+      const model = wireText(node.model)
       nodes.push({
         id,
         kind: 'agent',
@@ -163,12 +193,13 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
   }
 
   for (const key of ['goal', 'nodes']) {
-    if (!nullish(args[key])) return { ok: false, error: `审查动作不能带 ${key}` }
+    const omitted = key === 'nodes' ? omittedStructured(wireArgs[key]) : nullish(wireArgs[key])
+    if (!omitted) return { ok: false, error: `审查动作不能带 ${key}` }
   }
-  const workflowId = text(args.workflowId)
-  const checkpointId = text(args.checkpointId)
-  const decision = text(args.decision)
-  const note = text(args.note)
+  const workflowId = wireText(wireArgs.workflowId)
+  const checkpointId = wireText(wireArgs.checkpointId)
+  const decision = wireText(wireArgs.decision)
+  const note = wireText(wireArgs.note)
   if (!workflowId || !checkpointId) {
     return { ok: false, error: '审查动作必须带 workflowId 和 checkpointId' }
   }
@@ -176,24 +207,26 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
     return { ok: false, error: 'decision 只能是 approve 或 revise' }
   }
   if (decision === 'approve') {
-    if (!nullish(args.revisions)) return { ok: false, error: 'approve 不能带 revisions' }
+    if (!omittedStructured(wireArgs.revisions)) {
+      return { ok: false, error: 'approve 不能带 revisions' }
+    }
     return {
       ok: true,
       call: { kind: 'review', workflowId, checkpointId, decision, note, revisions: [] },
     }
   }
-  if (!Array.isArray(args.revisions) || args.revisions.length === 0) {
+  if (!Array.isArray(wireArgs.revisions) || wireArgs.revisions.length === 0) {
     return { ok: false, error: 'revise 必须带至少一条 revisions' }
   }
   const revisions: WorkflowRevision[] = []
   const revised = new Set<string>()
-  for (const raw of args.revisions) {
+  for (const raw of wireArgs.revisions) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return { ok: false, error: '每条 revision 都必须是对象' }
     }
     const row = raw as Record<string, unknown>
-    const nodeId = text(row.nodeId)
-    const instruction = text(row.instruction)
+    const nodeId = wireText(row.nodeId)
+    const instruction = wireText(row.instruction)
     if (!nodeId || !instruction)
       return { ok: false, error: '每条 revision 都要有 nodeId 和 instruction' }
     if (revised.has(nodeId)) return { ok: false, error: `revision 节点重复：${nodeId}` }
