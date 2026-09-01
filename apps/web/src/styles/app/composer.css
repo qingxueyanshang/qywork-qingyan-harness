@@ -969,3 +969,125 @@
 .composer-wrap.drag-over .composer-body {
   border-color: var(--accent);
 }
+
+/* ── 面板放大时的底部停靠 ──
+ *
+ * 放在全部输入区基础规则之后：这一段只覆盖放大态。如果写在文件开头，后面的
+ * `.composer` / `.run-status` 会形成“低特异性规则写在高特异性之后”的假顺序。 */
+
+/* 普通会话里没有第二种输入形态；底部触发条只属于宽屏面板放大态。 */
+.composer-reveal {
+  display: none;
+}
+
+@media (min-width: 821px) {
+  /*
+   * 面板放大后输入框默认不遮文件正文，只在底部留一枚 72 × 24 的命中区。
+   * 实际画出来的是中间那根 36px 细线：够发现，但不会读成又一颗工具按钮。
+   */
+  .app.panel-max .composer-wrap {
+    padding-bottom: calc(28px + var(--safe-bottom));
+  }
+  .app.panel-max .composer-reveal {
+    position: absolute;
+    z-index: 3;
+    left: 50%;
+    bottom: calc(2px + var(--safe-bottom));
+    display: grid;
+    place-items: center;
+    width: 72px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--text-tertiary);
+    transform: translateX(-50%);
+    pointer-events: auto;
+    transition: color var(--t-fast) var(--ease);
+  }
+  .app.panel-max .composer-reveal:hover,
+  .app.panel-max .composer-reveal:focus-visible {
+    color: var(--text-secondary);
+    outline: none;
+  }
+  .app.panel-max .composer-reveal > span {
+    width: 36px;
+    height: 3px;
+    border-radius: var(--r-full);
+    background: currentColor;
+    transition: width var(--t-fast) var(--ease);
+  }
+  .app.panel-max .composer-reveal:hover > span,
+  .app.panel-max .composer-reveal:focus-visible > span {
+    width: 46px;
+  }
+
+  /*
+   * 四块都属于同一份输入表面：运行位置、整轮状态、补全面板和输入卡。
+   * 收起时保留布局高度但不接指针，面板下方的文字仍能选中；展开只做 10px 位移，
+   * 不缩放文字，避免 CodeMirror 旁边出现一瞬间的模糊字体。
+   */
+  .app.panel-max .composer-wrap > .run-context,
+  .app.panel-max .composer-wrap > .run-status,
+  .app.panel-max .composer-wrap > .composer-pop,
+  .app.panel-max .composer-wrap > .composer {
+    visibility: hidden;
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+    pointer-events: none;
+  }
+  /*
+   * 放大布局先无动画落到收起态，再由组件在下一帧加 ready。这样模式切换不会把
+   * 普通输入框的可见状态过渡成一次闪烁，后续悬浮开合仍保留完整动效。
+   */
+  .app.panel-max .composer-wrap.panel-dock-ready > .run-context,
+  .app.panel-max .composer-wrap.panel-dock-ready > .run-status,
+  .app.panel-max .composer-wrap.panel-dock-ready > .composer-pop,
+  .app.panel-max .composer-wrap.panel-dock-ready > .composer {
+    will-change: opacity, transform;
+    transition:
+      opacity 100ms var(--ease),
+      transform 140ms var(--ease),
+      visibility 0s linear 140ms;
+  }
+  .app.panel-max .composer-wrap.panel-dock-open > .run-context,
+  .app.panel-max .composer-wrap.panel-dock-open > .run-status,
+  .app.panel-max .composer-wrap.panel-dock-open > .composer-pop,
+  .app.panel-max .composer-wrap.panel-dock-open > .composer {
+    visibility: visible;
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition:
+      opacity 150ms var(--ease),
+      transform 180ms var(--ease),
+      visibility 0s;
+  }
+  .app.panel-max .composer-wrap.panel-dock-open > .run-context,
+  .app.panel-max .composer-wrap.panel-dock-open > .composer-pop,
+  .app.panel-max .composer-wrap.panel-dock-open > .composer {
+    pointer-events: auto;
+  }
+  /* 状态条本身仍不截整行指针，只有里面那枚 chip 可点；沿用既有命中边界。 */
+  .app.panel-max .composer-wrap.panel-dock-open > .run-status {
+    pointer-events: none;
+  }
+  .app.panel-max .composer-wrap.panel-dock-open .changes-chip {
+    pointer-events: auto;
+  }
+  /* 悬在文件正文上时比普通上下布局多一档阴影，边界看得清但不加新的描边。 */
+  .app.panel-max .composer-wrap.panel-dock-open .composer-body {
+    box-shadow: var(--shadow-md);
+  }
+}
+
+@media (min-width: 821px) and (prefers-reduced-motion: reduce) {
+  .app.panel-max .composer-wrap > .run-context,
+  .app.panel-max .composer-wrap > .run-status,
+  .app.panel-max .composer-wrap > .composer-pop,
+  .app.panel-max .composer-wrap > .composer,
+  .app.panel-max .composer-reveal,
+  .app.panel-max .composer-reveal > span {
+    transition: none;
+  }
+}

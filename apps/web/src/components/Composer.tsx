@@ -24,6 +24,7 @@ import {
   loadTeam,
   loadTeamClis,
   loadTools,
+  panelMaximized,
   pickFiles,
   resumeGoal,
   type SkillMeta,
@@ -396,6 +397,9 @@ export function Composer() {
   const [pending, setPending] = createSignal<Attachment[]>([])
   const [uploading, setUploading] = createSignal(0)
   const [dragOver, setDragOver] = createSignal(false)
+  const [panelDockOpen, setPanelDockOpen] = createSignal(false)
+  const [panelDockFocused, setPanelDockFocused] = createSignal(false)
+  const [panelDockReady, setPanelDockReady] = createSignal(false)
   const [skillOptions, setSkillOptions] = createSignal<MentionOption[]>([])
   const [targetOptions, setTargetOptions] = createSignal<MentionOption[]>([])
   const [skillLoad, setSkillLoad] = createSignal<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -411,6 +415,13 @@ export function Composer() {
   const localThumbs = new Map<string, string>()
   /** 输入框里有没有可发的内容。主按钮的四态与 `submit()` 共用这一条判据。 */
   const hasInput = () => text().trim().length > 0 || pending().length > 0
+  /**
+   * 面板放大时输入区默认收起，但不能把正在编辑的草稿从用户眼前拿走。
+   * 上传中的附件也算草稿：它还没变成 `pending`，此时收起会像是上传被吞了。
+   */
+  const panelDockPinned = () => hasInput() || uploading() > 0 || dragOver()
+  const panelDockVisible = () =>
+    panelMaximized() && (panelDockOpen() || panelDockFocused() || panelDockPinned())
   /** 有本地预览就带上，没有就整个键不出现——`exactOptionalPropertyTypes` 不收 undefined。 */
   const thumbProps = (path: string): { localUrl?: string } => {
     const u = localThumbs.get(path)
@@ -420,6 +431,56 @@ export function Composer() {
   let filePicker!: HTMLInputElement
   let wrap: HTMLDivElement | undefined
   let stopVoiceForSubmit = () => {}
+  let panelDockCloseTimer: ReturnType<typeof setTimeout> | undefined
+  let panelDockReadyTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * 悬浮展开要即时，收起要留出从底部触发条移到输入框的时间。
+   * 160ms 足够跨过两者间的小缝，同时避免鼠标已经离开后浮层仍明显滞留。
+   */
+  const clearPanelDockClose = () => {
+    if (panelDockCloseTimer) clearTimeout(panelDockCloseTimer)
+    panelDockCloseTimer = undefined
+  }
+  const cancelPanelDockReady = () => {
+    if (panelDockReadyTimer) clearTimeout(panelDockReadyTimer)
+    panelDockReadyTimer = undefined
+  }
+  const revealPanelDock = () => {
+    if (!panelMaximized()) return
+    clearPanelDockClose()
+    setPanelDockOpen(true)
+  }
+  const closePanelDockSoon = () => {
+    if (!panelMaximized()) return
+    clearPanelDockClose()
+    panelDockCloseTimer = setTimeout(() => {
+      panelDockCloseTimer = undefined
+      if (panelDockFocused() || panelDockPinned()) return
+      setPanelDockOpen(false)
+    }, 160)
+  }
+
+  createEffect(() => {
+    const maximized = panelMaximized()
+    clearPanelDockClose()
+    cancelPanelDockReady()
+    setPanelDockOpen(false)
+    setPanelDockFocused(false)
+    setPanelDockReady(false)
+    if (!maximized) return
+
+    // 先强制提交无过渡的隐藏样式，再启用悬浮动效；短定时不受后台帧节流影响。
+    wrap?.getBoundingClientRect()
+    panelDockReadyTimer = setTimeout(() => {
+      panelDockReadyTimer = undefined
+      setPanelDockReady(true)
+    }, 16)
+  })
+  onCleanup(() => {
+    clearPanelDockClose()
+    cancelPanelDockReady()
+  })
 
   /*
    * 候选按项目失效。Composer 本身切项目时不会重挂，如果把第一次加载的结果一直
@@ -756,7 +817,50 @@ export function Composer() {
   }
 
   return (
-    <div class="composer-wrap" classList={{ 'drag-over': dragOver() }} ref={wrap}>
+    <div
+      class="composer-wrap"
+      classList={{
+        'drag-over': dragOver(),
+        'panel-dock-open': panelDockVisible(),
+        'panel-dock-ready': panelDockReady(),
+      }}
+      ref={wrap}
+      onPointerEnter={revealPanelDock}
+      onPointerLeave={closePanelDockSoon}
+      onFocusIn={() => {
+        if (!panelMaximized()) return
+        setPanelDockFocused(true)
+        revealPanelDock()
+      }}
+      onFocusOut={() => {
+        queueMicrotask(() => {
+          if (!panelMaximized()) {
+            setPanelDockFocused(false)
+            return
+          }
+          if (wrap?.contains(document.activeElement)) return
+          setPanelDockFocused(false)
+          closePanelDockSoon()
+        })
+      }}
+    >
+      {/*
+       * 只在右侧面板放大时出现。视觉是一根底部把手，但命中区是一颗完整按钮：
+       * 鼠标悬浮直接展开，键盘 Tab 能到，点击后焦点落进正文输入，不制造第二套输入入口。
+       */}
+      <button
+        class="composer-reveal"
+        type="button"
+        aria-label="展开输入框"
+        aria-controls="conversation-composer"
+        aria-expanded={panelDockVisible()}
+        onClick={() => {
+          revealPanelDock()
+          ta.focus()
+        }}
+      >
+        <span aria-hidden="true" />
+      </button>
       {/* 空会话时的「这一轮会跑在哪」。**不写标语**——一句口号不携带任何信息，
           而 B7 的判据是「删掉这句用户还能不能用」。留下的 chip 每一个都在
           回答一个真问题，而且每一个都点得动。
@@ -832,6 +936,7 @@ export function Composer() {
       </Show>
 
       <form
+        id="conversation-composer"
         class="composer"
         onSubmit={(e) => {
           e.preventDefault()
@@ -954,6 +1059,14 @@ export function Composer() {
                   if (option) pickOption(option)
                   return
                 }
+              }
+              // 放大面板里的空输入区可用 Escape 当场收回；有草稿时绝不替用户藏。
+              if (e.key === 'Escape' && panelMaximized() && !hasInput()) {
+                e.preventDefault()
+                clearPanelDockClose()
+                setPanelDockOpen(false)
+                ta.blur()
+                return
               }
               // isComposing：中文/日文输入法组合期的回车属于选词，不能当发送。
               // Ctrl/Cmd+Enter 走与默认档相反的那一档；会话空闲时两者等价。
