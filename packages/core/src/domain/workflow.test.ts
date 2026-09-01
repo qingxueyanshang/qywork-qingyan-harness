@@ -59,6 +59,88 @@ describe('workflow 调用判别', () => {
     })
   })
 
+  test('兼容端把可空字段写成 "null" 时仍按首次派发解析', () => {
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', task: '先做', needs: '[]', kind: 'null', agent: 'null' }],
+        workflowId: 'null',
+        checkpointId: 'null',
+        decision: 'null',
+        note: 'null',
+        revisions: 'null',
+      }),
+    ).toEqual({
+      ok: true,
+      call: {
+        kind: 'start',
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'agent', agent: 'ad-hoc', task: '先做' }],
+      },
+    })
+  })
+
+  test('strict 兼容端给非当前分支的结构字段补空数组时按省略处理', () => {
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', task: '先做' }],
+        workflowId: null,
+        checkpointId: null,
+        decision: null,
+        revisions: [],
+      }),
+    ).toMatchObject({ ok: true, call: { kind: 'start' } })
+
+    expect(
+      parseWorkflowCall({
+        goal: '',
+        nodes: [],
+        workflowId: 'wf',
+        checkpointId: 'cp',
+        decision: 'approve',
+        revisions: [],
+      }),
+    ).toMatchObject({ ok: true, call: { kind: 'review', decision: 'approve' } })
+  })
+
+  test('兼容端把 nodes 与 revisions 再次 JSON 编码时只在结构入口解一层', () => {
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: JSON.stringify([
+          { id: 'a', task: '先做' },
+          { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+        ]),
+        workflowId: '',
+        checkpointId: '',
+        decision: '',
+        revisions: '',
+      }),
+    ).toMatchObject({ ok: true, call: { kind: 'start', nodes: [{ id: 'a' }, { id: 'cp' }] } })
+
+    expect(
+      parseWorkflowCall({
+        workflowId: 'wf',
+        checkpointId: 'cp',
+        decision: 'revise',
+        revisions: JSON.stringify([{ nodeId: 'a', instruction: '重做' }]),
+        goal: 'null',
+        nodes: 'null',
+      }),
+    ).toMatchObject({
+      ok: true,
+      call: { kind: 'review', decision: 'revise', revisions: [{ nodeId: 'a' }] },
+    })
+  })
+
+  test('损坏的结构字符串仍由原有校验拒绝', () => {
+    expect(parseWorkflowCall({ goal: '做完', nodes: '[{"id":' })).toEqual({
+      ok: false,
+      error: '图里一个节点都没有',
+    })
+  })
+
   test('approve 与 revise 的字段互斥', () => {
     expect(
       parseWorkflowCall({
