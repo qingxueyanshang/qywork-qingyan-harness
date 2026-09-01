@@ -436,7 +436,7 @@ export class Session {
      */
     const latestAnchor = latestAnchoredProviderRequest(store, conversationId)
     /*
-     * 校准属于「接口 × 协议 × 模型」这条路线，不只属于模型名。
+     * 真值锚点属于「接口 × 协议 × 模型」这条路线，不只属于模型名。
      * 同一个 model id 挂在两个中转站上时，usage 口径与实际 tokenizer 都可能不同；
      * 新账本行带路线证据后必须严格匹配。null 只放行迁移前没有记录过路线的旧行。
      */
@@ -456,17 +456,6 @@ export class Session {
             (anchored.providerCachedTokens ?? 0) +
             (anchored.providerCacheWriteTokens ?? 0) +
             (anchored.providerOutputTokens ?? 0),
-          scale:
-            anchored.measuredInputTokens > 0 &&
-            (anchored.providerInputTokens ?? 0) +
-              (anchored.providerCachedTokens ?? 0) +
-              (anchored.providerCacheWriteTokens ?? 0) >
-              0
-              ? ((anchored.providerInputTokens ?? 0) +
-                  (anchored.providerCachedTokens ?? 0) +
-                  (anchored.providerCacheWriteTokens ?? 0)) /
-                anchored.measuredInputTokens
-              : 1,
           throughMessageId: anchorRun?.messageIdUpperBound ?? null,
           model: anchored.model,
           headTokens: envelopeHeadTokens(anchored.sentCategories),

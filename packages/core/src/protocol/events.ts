@@ -361,13 +361,13 @@ export interface ContextEvent {
   /** 保留一位小数。1M 窗口下取整会把 2139 显示成 0%，那一位是有信息量的。 */
   percent: number
   /**
-   * 这个总数是**实测**、由最近真值校准，还是纯本地估算。
+   * 这个总数是**实测**、由最近真值向前投影，还是纯本地估算。
    *
-   * 必须显式说出来。`actual` 是当前请求回执，`calibrated` 是最近真值加已换尺增量，
+   * 必须显式说出来。`actual` 是当前请求回执，`projected` 是最近真值加本地增量，
    * `estimated` 才是纯字符上界。**不要退回 `max(全量估算, provider 真值)`**：
    * 两个数出自两把尺，锚点一失效显示值会无理由跳回字符上界。
    */
-  source: 'actual' | 'calibrated' | 'estimated'
+  source: 'actual' | 'projected' | 'estimated'
   /**
    * 越过它就会在下一次发送前压一次。
    *
