@@ -1192,6 +1192,7 @@ export class AgentLoop {
           } catch (err) {
             const pe = err instanceof ProviderError ? err : null
             const code = pe?.code ?? 'internal_error'
+            const interrupted = input.signal.aborted
 
             /*
              * 终态判据是**「provider 有没有答复过」**，不是错误码。
@@ -1208,17 +1209,19 @@ export class AgentLoop {
              */
             persist.settleRequest(
               requestId,
-              pe?.status !== undefined ? 'rejected' : 'uncertain',
+              interrupted ? 'uncertain' : pe?.status !== undefined ? 'rejected' : 'uncertain',
               pe?.usage ?? null,
-              code,
+              interrupted ? null : code,
               rawStop,
-              pe?.status !== undefined && typeof pe.detail?.providerMessage === 'string'
+              !interrupted &&
+                pe?.status !== undefined &&
+                typeof pe.detail?.providerMessage === 'string'
                 ? pe.detail.providerMessage
                 : null,
             )
 
             // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
-            if (input.signal.aborted) throw err
+            if (interrupted) throw err
 
             /*
              * ── 容量拒绝：压一次再重发 ──

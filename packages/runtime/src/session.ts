@@ -1180,12 +1180,12 @@ const NEWLINE = String.fromCharCode(10)
  * 大小上限不在这里判，在 `materialize` 那一刻判——路径型附件指向用户自己的文件，
  * 它在被引用之后还会继续长，而这里只是记下位置。
  */
-async function withAttachments(
+export async function withAttachments(
   workspaceRoot: string,
   text: string,
   attachments: Attachment[],
   includeMedia = true,
-): Promise<ContentBlock[]> {
+): Promise<string | ContentBlock[]> {
   const blocks: ContentBlock[] = []
   const notes: string[] = []
 
@@ -1228,6 +1228,7 @@ async function withAttachments(
 
   // 文本块放最后：附件是这句话的**语境**，先看图再读要求更符合阅读顺序。
   const body = notes.length ? [text, ...notes].join(NEWLINE) : text
+  if (blocks.length === 0) return body
   blocks.push({ type: 'text', text: body })
   return blocks
 }

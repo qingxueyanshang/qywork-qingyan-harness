@@ -29,7 +29,7 @@ import {
 } from '@qywork/store'
 import { configPath, type QyConfig } from './config.ts'
 import { buildTailNotes } from './prompt.ts'
-import { Session } from './session.ts'
+import { Session, withAttachments } from './session.ts'
 
 const config: QyConfig = {
   active: { provider: 'p', model: 'deepseek-v4-flash' },
@@ -54,6 +54,31 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
       .map((t) => t.name)
   return { s, store, names }
 }
+
+describe('附件请求形状', () => {
+  test('历史媒体降级为普通文本，只有当前媒体使用内容块数组', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
+    await writeFile(join(root, 'chart.png'), Buffer.from([0]))
+    const attachment = {
+      type: 'image' as const,
+      name: 'chart.png',
+      mime: 'image/png',
+      size: 1,
+      path: 'chart.png',
+    }
+
+    const historical = await withAttachments(root, '继续分析', [attachment], false)
+    expect(typeof historical).toBe('string')
+    expect(historical).toContain('历史附件 chart.png')
+
+    const current = await withAttachments(root, '分析这张图', [attachment])
+    expect(Array.isArray(current)).toBe(true)
+    expect(current).toEqual([
+      expect.objectContaining({ type: 'image' }),
+      { type: 'text', text: '分析这张图' },
+    ])
+  })
+})
 
 describe('工具集', () => {
   test('不传 allowedTools 时是全部内置工具', async () => {

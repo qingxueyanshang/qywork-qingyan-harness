@@ -278,7 +278,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(3)
+    expect(parsed.schemaVersion).toBe(4)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
@@ -344,10 +344,58 @@ describe('诊断导出', () => {
     })
     expect(parsed.coverage).toMatchObject({
       messages: 'full',
-      steps: 'full',
+      steps: 'full_except_tool_result_media',
+      toolResultMedia: 'metadata_only',
       rawProviderBodies: 'not_persisted',
       configuredCredentials: 'redacted',
     })
+    store.close()
+  })
+
+  test('工具图片在诊断包中只留元数据，完整 JSON 存档仍保留原始结果', () => {
+    const { store, conversationId } = fixture()
+    const run = collect(store, conversationId).runs[0]!
+    appendStep(store, {
+      runId: run.id,
+      seq: 4,
+      kind: 'tool_action',
+      toolName: 'view_image',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { path: 'chart.png' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '读取图片',
+          data: {
+            note: '保留非媒体诊断信息',
+            images: [{ mime: 'image/png', data: 'QUJDRA==' }],
+          },
+        },
+      },
+    })
+
+    const text = exportConversationDiagnostics(store, conversationId, {
+      active: { provider: 'p', model: 'deepseek-v4-flash' },
+      providers: {
+        p: {
+          kind: 'openai_chat_completions',
+          apiKey: 'secret-api-key',
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+    })
+    const parsed = JSON.parse(text)
+    const imageStep = parsed.runs[0].steps.find(
+      (step: { toolName?: string }) => step.toolName === 'view_image',
+    )
+    expect(text).not.toContain('QUJDRA==')
+    expect(imageStep.payload.outcome.data).toEqual({
+      note: '保留非媒体诊断信息',
+      images: [{ mime: 'image/png', base64Chars: 8, bytesOmitted: true }],
+    })
+    expect(exportConversation(store, conversationId, 'json')).toContain('QUJDRA==')
     store.close()
   })
 
@@ -557,7 +605,7 @@ describe('诊断导出', () => {
         (signal: { conversationId: string }) => signal.conversationId === grandchild.id,
       ),
     ).toBe(true)
-    expect(parsed.coverage.childConversations).toBe('recursive_full')
+    expect(parsed.coverage.childConversations).toBe('recursive_full_except_tool_result_media')
     expect(text).not.toContain('root-secret')
     expect(text).not.toContain('child-secret')
     store.close()
