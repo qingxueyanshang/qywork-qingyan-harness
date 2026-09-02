@@ -22,6 +22,7 @@ import {
   firstString,
   hitRate,
   listOf,
+  resultImages,
   sanitizeTarget,
   statusWord,
   stopReasonLabel,
@@ -230,6 +231,25 @@ describe('结果取值', () => {
     // 混入非字符串就不是「一行一条」那种形状。
     expect(listOf({ files: ['a', 1] })).toBeNull()
     expect(listOf({ other: ['a'] })).toBeNull()
+  })
+
+  test('图片结果只接受落盘协议里的四种栅格格式', () => {
+    expect(
+      resultImages({
+        images: [
+          { data: 'aGVsbG8=', mime: 'image/png' },
+          { data: 'd29ybGQ=', mime: 'image/webp' },
+          { data: '<svg/>', mime: 'image/svg+xml' },
+          { data: '', mime: 'image/jpeg' },
+          { data: 42, mime: 'image/gif' },
+        ],
+      }),
+    ).toEqual([
+      { data: 'aGVsbG8=', mime: 'image/png' },
+      { data: 'd29ybGQ=', mime: 'image/webp' },
+    ])
+    expect(resultImages(undefined)).toEqual([])
+    expect(resultImages({ images: 'not-an-array' })).toEqual([])
   })
 
   test('截断要说清还剩多少', () => {

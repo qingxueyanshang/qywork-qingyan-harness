@@ -152,6 +152,40 @@ export function listOf(data: Record<string, unknown>): string[] | null {
   return null
 }
 
+export interface ResultImage {
+  data: string
+  mime: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+}
+
+/**
+ * 从工具结果里取可直接展示的图片。
+ *
+ * 这份形状由 `read_file` 产出并原样落进 step 账本；实时与刷新回放都读这里，不能
+ * 再依赖已经可能被覆盖的文件路径。只接受模型接口同样支持的四种栅格格式，第三方
+ * 工具塞进任意 data URL 或 SVG 时不替它扩大执行面。
+ */
+export function resultImages(data: unknown): ResultImage[] {
+  if (!data || typeof data !== 'object') return []
+  const raw = (data as { images?: unknown }).images
+  if (!Array.isArray(raw)) return []
+
+  const allowed = new Set<ResultImage['mime']>([
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  ])
+  const images: ResultImage[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const { data: bytes, mime } = item as { data?: unknown; mime?: unknown }
+    if (typeof bytes !== 'string' || bytes.length === 0) continue
+    if (typeof mime !== 'string' || !allowed.has(mime as ResultImage['mime'])) continue
+    images.push({ data: bytes, mime: mime as ResultImage['mime'] })
+  }
+  return images
+}
+
 /** 参数表：跳过空值与大值——长文本走专用块，塞进键值表会把卡片撑开。 */
 export function argsRows(args: Record<string, unknown>): [string, string][] {
   const rows: [string, string][] = []
