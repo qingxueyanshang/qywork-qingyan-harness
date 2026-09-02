@@ -30,12 +30,31 @@ interface PreviewResult {
  * 只想聊天的用户不该为它付首屏成本。
  */
 export default function FileView(props: { path: string; refresh?: number }) {
-  // 判据带上改动累计与手动刷新次数：只报路径的话，agent 改了正开着的文件，旁边的树
-  // 刷新了而这块内容还是旧的；只报改动累计的话，用户点文件页刷新也重取不了正文。
-  const [result] = createResource(
-    () => `${props.path}:${fileRevision(props.path)}:${props.refresh ?? 0}`,
+  // 路径与手动刷新直接走资源判据。agent 的改动累计不能直接拼在这里：新一轮
+  // `run.started` 会把「上一轮改了哪些文件」清空，非空 → 空也会被资源当成一次变化，
+  // 因此用户每发一条消息，没变的文件也重取、阅读位置跟着回到开头。
+  const [result, { refetch }] = createResource(
+    () => `${props.path}:${props.refresh ?? 0}`,
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
+
+  let watchedPath = props.path
+  let previousRevision = fileRevision(watchedPath)
+  createEffect(() => {
+    const path = props.path
+    const revision = fileRevision(path)
+    if (path !== watchedPath) {
+      watchedPath = path
+      previousRevision = revision
+      return
+    }
+
+    // 空值只是新一轮开始时清掉了摘要，不代表磁盘内容变回去了；记下这道边界但不重取。
+    // 下一轮即使产生了和上一轮完全相同的 +x/-y，空 → 非空仍会触发一次真实刷新。
+    const changed = revision !== '' && revision !== previousRevision
+    previousRevision = revision
+    if (changed) void refetch()
+  })
 
   return (
     <div class="preview">
@@ -98,11 +117,12 @@ export default function FileView(props: { path: string; refresh?: number }) {
 function CodeView(props: { content: string; path: string }) {
   let host!: HTMLDivElement
   let view: EditorView | null = null
+  let mountedPath: string | null = null
   /** 只有最后一次装配算数：语言包是动态 import，两次改动挨得近时后发的可能先到。 */
   let generation = 0
 
-  // 路径或内容变了就整块重建：CodeMirror 换语言包需要重建 state，
-  // 增量更新反而更复杂且容易漏掉语言切换。
+  // 只有路径变了才整块重建（语言包跟路径走）。同一个文件的正文更新直接派发到
+  // 现有 CodeMirror：重建实例会把 `.cm-scroller` 换掉，用户读到中间时就回到顶部。
   //
   // 装在 `createEffect` 里，不装在 `ref` 回调里：ref 只在建元素那一下跑一次，
   // 而外层的 `Show` 不是 keyed，内容变了这个组件实例是留着的。
@@ -110,6 +130,17 @@ function CodeView(props: { content: string; path: string }) {
     const content = props.content
     const path = props.path
     const mine = ++generation
+
+    if (view && mountedPath === path) {
+      if (view.state.doc.toString() === content) return
+      const { scrollLeft, scrollTop } = view.scrollDOM
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content } })
+      // 全文替换会重算文档高度；恢复像素位置，内容变短时浏览器自然夹到新的底部。
+      view.scrollDOM.scrollLeft = scrollLeft
+      view.scrollDOM.scrollTop = scrollTop
+      return
+    }
+
     void (async () => {
       const next = await createReadonlyEditor(host, content, path)
       if (mine !== generation) {
@@ -118,6 +149,7 @@ function CodeView(props: { content: string; path: string }) {
       }
       view?.destroy()
       view = next
+      mountedPath = path
     })()
   })
 

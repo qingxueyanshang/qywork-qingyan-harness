@@ -25,6 +25,7 @@ afterEach(async () => {
   store.setOpenFile(null)
   store.setSidePanel(null)
   store.setWorkspace(null)
+  store.setState({ activeConversation: null, fileChanges: [] })
 })
 
 afterAll(async () => {
@@ -101,6 +102,72 @@ describe('文件页刷新', () => {
       () => treeCalls >= 2 && previewCalls >= 2,
       () => `tree=${treeCalls}, preview=${previewCalls}`,
     )
+  })
+
+  test('开始新一轮不重取未变文件，真实更新保留阅读位置', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    let previewCalls = 0
+
+    ;(
+      store.client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string) => {
+      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      previewCalls += 1
+      return {
+        path: 'long.txt',
+        kind: 'text',
+        mime: 'text/plain',
+        size: 100,
+        content: previewCalls === 1 ? '第一版\n'.repeat(80) : '第二版\n'.repeat(80),
+        truncated: false,
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+
+    store.setState({
+      activeConversation: 'cv_file_scroll',
+      fileChanges: [{ path: 'long.txt', additions: 4, deletions: 1, changeType: 'modified' }],
+    })
+
+    const { render } = await import('solid-js/web')
+    const { default: FileView } = await import('./FileView.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <FileView path="long.txt" />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => previewCalls === 1 && host.querySelector('.cm-scroller') !== null,
+      () => `preview=${previewCalls}, editor=${host.querySelector('.cm-scroller') !== null}`,
+    )
+    const scroller = host.querySelector<HTMLElement>('.cm-scroller')!
+    scroller.scrollTop = 160
+
+    // run.started 清的是「本轮改动摘要」，磁盘没有因此变化，不能把它当成文件刷新。
+    store.setState('fileChanges', [])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(previewCalls).toBe(1)
+    expect(host.querySelector('.cm-scroller')).toBe(scroller)
+    expect(scroller.scrollTop).toBe(160)
+
+    // 下一轮真的又改了同一个文件，即使 +x/-y 与上一轮相同也必须重取；正文原位更新，
+    // 阅读位置与编辑器 DOM 都保留。
+    store.setState('fileChanges', [
+      { path: 'long.txt', additions: 4, deletions: 1, changeType: 'modified' },
+    ])
+    await waitFor(
+      () =>
+        previewCalls === 2 &&
+        host.querySelector('.cm-content')?.textContent?.includes('第二版') === true,
+      () =>
+        `preview=${previewCalls}, text=${host.querySelector('.cm-content')?.textContent?.slice(0, 12)}`,
+    )
+    expect(host.querySelector('.cm-scroller')).toBe(scroller)
+    expect(scroller.scrollTop).toBe(160)
   })
 })
 
