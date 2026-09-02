@@ -17,6 +17,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::mpsc::Receiver;
+
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const RESTART_MAX_DELAY_MS: u64 = 15_000;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SidecarInfo {
@@ -25,50 +29,220 @@ pub struct SidecarInfo {
     pub base: String,
 }
 
-/// 子进程句柄。放进 Tauri 的 state，退出时由 `shutdown` 收走。
 #[derive(Default)]
-pub struct SidecarHandle(pub Arc<Mutex<Option<CommandChild>>>);
+struct SidecarState {
+    child: Option<CommandChild>,
+    /** 正常退出与异常终止的唯一分界。置上后监督循环绝不再拉起进程。 */
+    stopping: bool,
+}
+
+/// 子进程句柄与生命周期终态。放进 Tauri state，退出与监督循环共用这一份。
+#[derive(Default)]
+pub struct SidecarHandle(Arc<Mutex<SidecarState>>);
+
+/**
+ * 拉起一份 qy serve。首次启动允许内核选择端口与令牌；异常恢复固定复用原值，
+ * 这样已经加载的 WebView 和手机端都不需要第二套端点更新协议。
+ */
+fn spawn_process(
+    app: &AppHandle,
+    port: u16,
+    token: Option<&str>,
+    workspace: &str,
+) -> Result<(Receiver<CommandEvent>, CommandChild)> {
+    let mut args = vec![
+        "serve".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+        // 只绑本机：局域网访问由用户在应用内显式开启（扫码配对），
+        // 不能一启动就把工作区暴露在整个 Wi-Fi 上。
+        "--host".to_string(),
+        "127.0.0.1".to_string(),
+        "--print-token".to_string(),
+        // 宿主异常退出时 sidecar 自己收场，不留 SQLite 锁与监听端口。
+        "--parent-pid".to_string(),
+        std::process::id().to_string(),
+    ];
+    if !workspace.is_empty() {
+        args.push("--cwd".to_string());
+        args.push(workspace.to_string());
+    }
+
+    let mut command = app
+        .shell()
+        .sidecar("qy")
+        .map_err(|e| anyhow!("找不到 qy sidecar：{e}"))?
+        .args(args);
+    if let Some(value) = token {
+        // CLI 的 serve 以这一变量作为显式令牌。恢复时必须复用，否则旧 WebView
+        // 会拿原令牌连到同一端口，再被永久判成 unauthorized。
+        command = command.env("QYWORK_TOKEN", value);
+    }
+    command
+        .spawn()
+        .map_err(|e| anyhow!("启动 qy serve 失败：{e}"))
+}
+
+/** 把当前子进程交给生命周期 state；退出已经开始时，当场收掉新进程。 */
+fn hold_child(handle: &SidecarHandle, child: CommandChild) -> bool {
+    let mut state = handle.0.lock();
+    if state.stopping {
+        drop(state);
+        let _ = child.kill();
+        return false;
+    }
+    state.child = Some(child);
+    true
+}
+
+/** 只收当前进程，不把整个监督器置成停止。用于启动失败后的下一次重试。 */
+fn kill_current(handle: &SidecarHandle) {
+    let child = handle.0.lock().child.take();
+    if let Some(child) = child {
+        let _ = child.kill();
+    }
+}
+
+/** 从 sidecar 的稳定两行输出中取回真正开始监听后的端点。 */
+async fn await_handshake(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo> {
+    let mut token: Option<String> = None;
+    let mut port: Option<u16> = None;
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(line) => {
+                let text = String::from_utf8_lossy(&line);
+                for raw in text.lines() {
+                    if let Some(v) = raw.trim().strip_prefix("QYWORK_TOKEN=") {
+                        token = Some(v.to_string());
+                    }
+                    if let Some(v) = raw.trim().strip_prefix("QYWORK_PORT=") {
+                        port = v.parse().ok();
+                    }
+                }
+                if let (Some(t), Some(p)) = (&token, port) {
+                    return Ok(SidecarInfo {
+                        token: t.clone(),
+                        port: p,
+                        base: format!("http://127.0.0.1:{p}"),
+                    });
+                }
+            }
+            CommandEvent::Stderr(line) => {
+                eprint!("{}", String::from_utf8_lossy(&line));
+            }
+            CommandEvent::Error(error) => {
+                return Err(anyhow!("读取 qy serve 输出失败：{error}"));
+            }
+            CommandEvent::Terminated(payload) => {
+                return Err(anyhow!(
+                    "qy serve 在报出令牌前退出，code={:?}",
+                    payload.code
+                ));
+            }
+            _ => {}
+        }
+    }
+    Err(anyhow!("qy serve 输出结束但未报出令牌"))
+}
+
+async fn handshake_with_timeout(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, await_handshake(rx)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌")),
+    }
+}
+
+/**
+ * 持续消费进程事件并监督异常退出。
+ *
+ * 以前握手一完成就丢掉 receiver，也再没人观察 CommandEvent::Terminated：长任务里
+ * sidecar 一旦退出，前端只会永远重连旧端口。现在恢复仍复用同一端口与令牌；新的
+ * streamId 会让连接层走已有的 resync，全量从账本重建会话。
+ */
+fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let reason = loop {
+                match rx.recv().await {
+                    Some(CommandEvent::Stderr(line)) => {
+                        eprint!("{}", String::from_utf8_lossy(&line));
+                    }
+                    Some(CommandEvent::Error(error)) => {
+                        eprintln!("[qywork] 读取 qy serve 输出失败：{error}");
+                    }
+                    Some(CommandEvent::Terminated(payload)) => {
+                        break format!("进程退出，code={:?}", payload.code);
+                    }
+                    Some(_) => {}
+                    None => break "进程输出通道关闭".to_string(),
+                }
+            };
+
+            let handle = app.state::<SidecarHandle>();
+            {
+                let mut state = handle.0.lock();
+                if state.stopping {
+                    return;
+                }
+                // Terminated 后句柄只是一份已结束进程的所有权；通道异常关闭时也先
+                // kill，避免一份失联进程与新进程同时争同一端口。
+                if let Some(child) = state.child.take() {
+                    let _ = child.kill();
+                }
+            }
+            eprintln!("[qywork] qy serve 异常终止（{reason}），准备恢复");
+
+            let mut delay_ms = 400_u64;
+            loop {
+                if handle.0.lock().stopping {
+                    return;
+                }
+
+                match spawn_process(&app, info.port, Some(&info.token), "") {
+                    Ok((mut next_rx, child)) => {
+                        if !hold_child(&handle, child) {
+                            return;
+                        }
+                        match handshake_with_timeout(&mut next_rx).await {
+                            Ok(next) if next.port == info.port && next.token == info.token => {
+                                eprintln!("[qywork] qy serve 已在原端点恢复 :{}", info.port);
+                                rx = next_rx;
+                                break;
+                            }
+                            Ok(next) => {
+                                eprintln!(
+                                    "[qywork] qy serve 恢复端点不一致：期望 :{}，实际 :{}",
+                                    info.port, next.port
+                                );
+                                kill_current(&handle);
+                            }
+                            Err(error) => {
+                                eprintln!("[qywork] qy serve 恢复失败：{error}");
+                                kill_current(&handle);
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("[qywork] qy serve 重新拉起失败：{error}"),
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms = (delay_ms * 2).min(RESTART_MAX_DELAY_MS);
+            }
+        }
+    });
+}
 
 /// 启动 sidecar 并等它报出令牌与端口。
 ///
 /// `--port 0` 让内核挑空闲端口：写死端口会在用户同时开两个工作区时直接撞车。
 pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
-    let (mut rx, child) = app
-        .shell()
-        .sidecar("qy")
-        .map_err(|e| anyhow!("找不到 qy sidecar：{e}"))?
-        .args([
-            "serve",
-            "--port",
-            "0",
-            // 只绑本机：局域网访问由用户在应用内显式开启（扫码配对），
-            // 不能一启动就把工作区暴露在整个 Wi-Fi 上。
-            "--host",
-            "127.0.0.1",
-            "--print-token",
-            // 让 sidecar 自己盯着宿主进程：`shutdown` 只在正常退出路径上跑，
-            // 崩溃或被强杀时不会触发（实测 Stop-Process 就会留下孤儿 qy，
-            // 它占着端口和 SQLite 的 WAL 锁，下次启动直接起不来）。
-            "--parent-pid",
-            &std::process::id().to_string(),
-        ])
-        // 空字符串 = 「没有可用的上次工作区」，这时**不传 --cwd**：
-        // 传的话服务端会把外壳的启动目录登记成项目（安装目录 / src-tauri），
-        // 那是一个用户从未打开过的项目。不传则由服务端自己决定——账本里有项目就用
-        // 最近打开的，一个都没有才建默认工作区（见 server.ts 的 bootstrapWorkspace）。
-        .args(if workspace.is_empty() {
-            Vec::new()
-        } else {
-            vec!["--cwd", workspace]
-        })
-        .spawn()
-        .map_err(|e| anyhow!("启动 qy serve 失败：{e}"))?;
+    let (mut rx, child) = spawn_process(app, 0, None, workspace)?;
 
     let handle = app.state::<SidecarHandle>();
-    *handle.0.lock() = Some(child);
-
-    let mut token: Option<String> = None;
-    let mut port: Option<u16> = None;
+    if !hold_child(&handle, child) {
+        return Err(anyhow!("应用已经开始退出，取消启动 qy serve"));
+    }
 
     /*
      * 握手要有上限。
@@ -82,52 +256,15 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
      * 20 秒：冷启动要读配置、开 SQLite、可能还要预热扩展，给得比感觉上宽一些；
      * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
      */
-    let handshake = async {
-        // 握手输出格式固定为两行 KEY=VALUE，见 cli 的 --print-token。
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    let text = String::from_utf8_lossy(&line);
-                    for raw in text.lines() {
-                        if let Some(v) = raw.trim().strip_prefix("QYWORK_TOKEN=") {
-                            token = Some(v.to_string());
-                        }
-                        if let Some(v) = raw.trim().strip_prefix("QYWORK_PORT=") {
-                            port = v.parse().ok();
-                        }
-                    }
-                    if let (Some(t), Some(p)) = (&token, port) {
-                        return Ok(SidecarInfo {
-                            token: t.clone(),
-                            port: p,
-                            base: format!("http://127.0.0.1:{p}"),
-                        });
-                    }
-                }
-                CommandEvent::Stderr(line) => {
-                    // sidecar 的人读输出走 stderr（启动横幅、二维码）。原样转发到
-                    // 宿主终端，方便 `tauri dev` 时排查。
-                    eprint!("{}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Terminated(payload) => {
-                    return Err(anyhow!(
-                        "qy serve 在报出令牌前退出，code={:?}",
-                        payload.code
-                    ));
-                }
-                _ => {}
-            }
+    match handshake_with_timeout(&mut rx).await {
+        Ok(info) => {
+            supervise(app.clone(), info.clone(), rx);
+            Ok(info)
         }
-
-        Err(anyhow!("qy serve 输出结束但未报出令牌"))
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(20), handshake).await {
-        Ok(result) => result,
-        Err(_) => {
-            // 超时了就把它收掉再报错，别留一个既不服务又占着端口的进程。
-            shutdown_handle(&handle);
-            Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌，已终止"))
+        Err(error) => {
+            // 首次启动仍然是可见终态：收干净后让 lib.rs 弹启动失败对话框。
+            kill_current(&handle);
+            Err(error)
         }
     }
 }
@@ -139,7 +276,11 @@ pub fn shutdown(app: &AppHandle) {
 
 /// 同上，但直接拿句柄——握手超时那条路径上还没有可用的 app state 引用。
 fn shutdown_handle(handle: &SidecarHandle) {
-    let child = handle.0.lock().take();
+    let child = {
+        let mut state = handle.0.lock();
+        state.stopping = true;
+        state.child.take()
+    };
     if let Some(c) = child {
         // kill 失败只能记日志——此时进程可能已经自己退了，
         // 不该因此阻断应用退出。
