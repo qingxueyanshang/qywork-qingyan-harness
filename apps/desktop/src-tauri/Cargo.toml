@@ -1,6 +1,6 @@
 [package]
 name = "qywork"
-version = "0.1.7"
+version = "0.1.8"
 description = "qywork —— 开源本地编程 agent"
 authors = ["qywork"]
 edition = "2021"
