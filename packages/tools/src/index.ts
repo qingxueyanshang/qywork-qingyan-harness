@@ -90,8 +90,8 @@ export {
   scopePaths,
   scopeRoots,
 } from './scopes.ts'
-// 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证
-export { scrubEnv } from './secrets.ts'
+// 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证；runtime 落诊断前要剥异常原文。
+export { redactSecrets, scrubEnv } from './secrets.ts'
 // 环境变量的默认豁免名单：server/api 下发给设置页当留空时的实际值
 export { DEFAULT_ENV_ALLOW, resolveCommandTimeout } from './shell.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页

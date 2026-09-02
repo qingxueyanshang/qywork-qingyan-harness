@@ -463,6 +463,10 @@ describe('四条防失控', () => {
 
       await settle()
       expect(currentGoal(store, cv)?.status).toBe('paused')
+      expect(listRuns(store, cv).at(-1)?.interruption).toMatchObject({
+        source: 'user',
+        ambiguousToolExecution: false,
+      })
     } finally {
       hang.release?.()
     }

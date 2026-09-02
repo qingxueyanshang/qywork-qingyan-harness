@@ -40,6 +40,7 @@ import type {
   FollowUp,
   GoalWriteResult,
   RunId,
+  RunInterruption,
   Step,
 } from '@qywork/core'
 import {
@@ -78,6 +79,7 @@ import {
   openProviderRequest,
   recordFileRead,
   recordLoadedTools,
+  recordProviderRequestDiagnostic,
   recordUsage,
   type Store,
   setConversationTitle,
@@ -96,6 +98,7 @@ import {
   makeLoadToolTool,
   normalizeAdditionalDirectories,
   PendingToolPool,
+  redactSecrets,
   registerBuiltinTools,
   scanSkills,
   scopeRoots,
@@ -557,11 +560,16 @@ export class Session {
         if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
         if (ev.type === 'run.finished') {
           finished = true
+          const interruption =
+            ev.stopReason === 'user_interrupt'
+              ? interruptionFrom(this.opts.signal, 'user', false)
+              : null
           finishRun(store, run.id, {
             status: ev.status,
             stopReason: ev.stopReason,
-            errorMessage: failure?.message ?? null,
+            errorMessage: failure?.message ?? interruptionMessage(interruption),
             errorCode: failure?.code ?? null,
+            interruption,
           })
           // 账本在**收尾时记一次**。中途的 usage 是累计值，每次都记会把同一笔钱
           // 记很多遍；而 run 上那份 usage 会随会话删除一起消失，答不了
@@ -591,7 +599,20 @@ export class Session {
       // 生成器被提前关闭（用户 Ctrl-C、客户端断连）时也要给 run 一个终态，
       // 否则账本里会永远躺着一条 running 的孤儿记录。
       if (!finished) {
-        finishRun(store, run.id, { status: 'interrupted', stopReason: 'user_interrupt' })
+        const ambiguous = listSteps(store, run.id).some(
+          (step) => step.status === 'running' && step.executionStartedAt !== null,
+        )
+        const interruption = interruptionFrom(
+          this.opts.signal,
+          this.opts.signal.aborted ? 'user' : 'consumer_closed',
+          ambiguous,
+        )
+        finishRun(store, run.id, {
+          status: 'interrupted',
+          stopReason: ambiguous ? 'internal_guard' : 'user_interrupt',
+          errorMessage: interruptionMessage(interruption),
+          interruption,
+        })
       }
       // **step 也要落终态，不只是 run。**
       //
@@ -795,6 +816,16 @@ export class Session {
           finishReason,
           errorMessage,
         ),
+      recordRequestDiagnostic: (requestId, diagnostic) => {
+        const secrets = collectSecrets(this.opts.config)
+        recordProviderRequestDiagnostic(store, requestId as never, {
+          ...diagnostic,
+          causes: diagnostic.causes.map((cause) => ({
+            ...cause,
+            message: redactSecrets(cause.message, secrets),
+          })),
+        })
+      },
     }
   }
 
@@ -1184,6 +1215,47 @@ function announce(result: GoalWriteResult, emit: (e: AgentEvent) => void): GoalW
 
 /** 心跳间隔。回收那边按 60 秒判过期（`store/repos.ts`），六倍余量。 */
 const HEARTBEAT_MS = 10_000
+
+type InterruptionSource = RunInterruption['source']
+
+/** AbortSignal.reason 是进程内中止来源；旧调用方没带 reason 时保守沿用 fallback。 */
+function interruptionFrom(
+  signal: AbortSignal,
+  fallback: InterruptionSource,
+  ambiguousToolExecution: boolean,
+): RunInterruption {
+  const raw = signal.reason
+  const reason =
+    typeof raw === 'object' && raw !== null
+      ? (raw as { source?: unknown; observedAt?: unknown })
+      : null
+  const allowed: ReadonlySet<InterruptionSource> = new Set([
+    'user',
+    'server_shutdown',
+    'consumer_closed',
+  ])
+  const source =
+    typeof reason?.source === 'string' && allowed.has(reason.source as InterruptionSource)
+      ? (reason.source as InterruptionSource)
+      : fallback
+  const observedAt =
+    typeof reason?.observedAt === 'number' && Number.isFinite(reason.observedAt)
+      ? reason.observedAt
+      : Date.now()
+  return {
+    source,
+    observedAt,
+    recordedAt: Date.now(),
+    ambiguousToolExecution,
+  }
+}
+
+function interruptionMessage(interruption: RunInterruption | null): string | null {
+  if (!interruption || interruption.source === 'user') return null
+  if (interruption.source === 'server_shutdown') return '服务正常关闭，本轮随之中断'
+  if (interruption.source === 'consumer_closed') return '执行流被调用方提前关闭，本轮中断'
+  return null
+}
 
 const NEWLINE = String.fromCharCode(10)
 

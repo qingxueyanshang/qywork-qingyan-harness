@@ -321,6 +321,32 @@ export type StopReason =
    */
   | 'internal_guard'
 
+/**
+ * 一轮被中断时，本机实际观察到的终止来源。
+ *
+ * `stopReason` 回答「这一轮还能不能信」；这里回答「是谁/什么让它停下」。两条轴不能
+ * 合并：桌面 sidecar 被系统杀掉和用户点停止，都可能发生在没有工具执行中的时刻，
+ * 但排查方向完全不同。
+ */
+export interface RunInterruption {
+  source: 'user' | 'server_shutdown' | 'consumer_closed' | 'desktop_sidecar' | 'orphan_recovery'
+  /** 终止首次被观察到的时间。 */
+  observedAt: number
+  /** 恢复进程把事实写回账本的时间；正常进程内收尾时与 observedAt 相同。 */
+  recordedAt: number
+  /** 上一进程的归属与最后心跳。只有启动恢复能拿到。 */
+  ownerPid?: number | null
+  lastHeartbeatAt?: number | null
+  /** 桌面外壳观察到的系统退出码/信号。拿不到就不编。 */
+  exitCode?: number | null
+  signal?: number | null
+  exitKind?: 'terminated' | 'output_channel_closed' | null
+  /** qy serve 退出前最后一段 stderr，已在持久化边界脱敏并限制长度。 */
+  stderrTail?: string | null
+  /** true = 有工具已进入执行器但没有终态，禁止自动重放。 */
+  ambiguousToolExecution: boolean
+}
+
 export interface Run {
   id: RunId
   conversationId: ConversationId
@@ -343,6 +369,8 @@ export interface Run {
 
   errorMessage: string | null
   errorCode: string | null
+  /** 中断来源的结构化事实。NULL = 正常完成、普通失败或迁移前旧记录。 */
+  interruption: RunInterruption | null
 
   // 上下文读数不在这里。真源是 `ProviderRequest`——一个 run 有 N 次请求，
   // 账就该有 N 行；挂在 run 上的标量每 step 覆盖一次，只剩最后一次的读数。
@@ -1031,6 +1059,8 @@ export interface ProviderRequest {
   errorCode: string | null
   /** provider 返回的错误正文。NULL = 没给、连接层失败，或存量请求。 */
   errorMessage: string | null
+  /** 失败现场与重试裁决；NULL = 成功、迁移前记录，或进程在裁决落账前消失。 */
+  diagnostic: ProviderRequestDiagnostic | null
   /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
   payloadHash: string
   /** 模型可见请求主体的 UTF-8 字节数；不含凭证和传输头。 */
@@ -1047,6 +1077,42 @@ export interface ProviderRequest {
 }
 
 export type ProviderRequestStatus = 'pending' | 'in_flight' | 'received' | 'uncertain' | 'rejected'
+
+export type ProviderRetryDecision =
+  | 'resend'
+  | 'interrupted'
+  | 'not_retryable'
+  | 'visible_output'
+  | 'tool_calls_received'
+  | 'limit_exhausted'
+  | 'context_compaction'
+  | 'context_compaction_failed'
+  | 'process_exit'
+
+/** 单个异常链节点。message 在 runtime 持久化边界脱敏。 */
+export interface ProviderFailureCause {
+  name: string
+  code: string | null
+  message: string
+}
+
+/**
+ * 一次失败请求的可导出诊断。它仍属于 `provider_requests` 这一行，不另造重试状态表。
+ */
+export interface ProviderRequestDiagnostic {
+  causes: ProviderFailureCause[]
+  providerEvents: number | null
+  silentMs: number | null
+  assistantChars: number | null
+  toolCallCount: number | null
+  retry: {
+    decision: ProviderRetryDecision
+    /** 即将进行第几次自动重发，从 1 起；不重发时为 null。 */
+    attempt: number | null
+    max: number
+    backoffMs: number | null
+  }
+}
 
 // ─────────────────────────────── 上下文压缩 ───────────────────────────────
 

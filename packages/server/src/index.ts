@@ -7,5 +7,7 @@
 
 // 局域网候选地址：CLI 的 `qy serve` 要把它们连同二维码一起打出来
 export { lanCandidates } from './pairing.ts'
+// 桌面外壳异常拉起后的单次退出现场；CLI 解析后交回 serve 的恢复路径。
+export { processExitObservationFromEnv } from './process-exit.ts'
 // 服务入口
 export { serve } from './server.ts'

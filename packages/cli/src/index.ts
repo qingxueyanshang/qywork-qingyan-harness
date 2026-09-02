@@ -27,7 +27,7 @@ import {
   MCP_CONFIG,
   Session,
 } from '@qywork/runtime'
-import { lanCandidates, serve } from '@qywork/server'
+import { lanCandidates, processExitObservationFromEnv, serve } from '@qywork/server'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import {
   detectSandbox,
@@ -261,6 +261,17 @@ async function runServe(args: string[]): Promise<number> {
   const problems = [...diagnoseConfig(config), ...configNotices(config)]
 
   const store = new Store({ path: dataPath() })
+  const previousProcessExit = processExitObservationFromEnv(process.env)
+  // 退出现场只消费一次。runner 与之后的命令都不需要继承这段 stderr。
+  for (const name of [
+    'QYWORK_PREVIOUS_EXIT_KIND',
+    'QYWORK_PREVIOUS_EXIT_AT_MS',
+    'QYWORK_PREVIOUS_EXIT_CODE',
+    'QYWORK_PREVIOUS_EXIT_SIGNAL',
+    'QYWORK_PREVIOUS_STDERR_TAIL',
+  ]) {
+    delete process.env[name]
+  }
 
   /*
    * **必须在 `serve()` 之前**。
@@ -287,6 +298,7 @@ async function runServe(args: string[]): Promise<number> {
     ...(flags.static ? { staticDir: resolve(flags.static) } : {}),
     // Tauri spawn 时用环境变量把令牌传进来，桌面端就不必再走扫码。
     ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
+    ...(previousProcessExit ? { previousProcessExit } : {}),
   })
 
   // 父进程守望。
