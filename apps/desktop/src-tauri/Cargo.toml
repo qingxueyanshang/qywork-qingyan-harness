@@ -23,9 +23,9 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-# 只为 `timeout`（sidecar 握手上限）。tokio 本来就在依赖树里（tauri 的运行时就是它），
-# 写成直接依赖只是让它可以被命名，不新增任何 crate。
-tokio = { version = "1", features = ["time"] }
+# 用于 sidecar 输出通道与握手/恢复计时。tokio 本来就在依赖树里（tauri 的运行时就是它），
+# 写成直接依赖只是让这些类型和函数可以被命名，不新增任何 crate。
+tokio = { version = "1", features = ["sync", "time"] }
 serde_json = "1"
 parking_lot = "0.12"
 anyhow = "1"
