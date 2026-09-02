@@ -271,7 +271,7 @@ export function exportConversationDiagnostics(
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 4,
+      schemaVersion: 5,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,
@@ -286,6 +286,9 @@ export function exportConversationDiagnostics(
         childConversations: 'recursive_full_except_tool_result_media',
         runContextSnapshots: 'full',
         providerRequestLedger: 'full',
+        providerFailureAndRetryDecisions: 'persisted_when_observed',
+        runInterruptionSources: 'persisted_when_observed',
+        sidecarExitCodeSignalAndStderrTail: 'persisted_on_supervised_restart',
         intermediateResources: 'metadata_and_references',
         attachmentBytes: 'references_only',
         toolResultMedia: 'metadata_only',

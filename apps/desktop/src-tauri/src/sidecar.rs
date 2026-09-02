@@ -21,6 +21,36 @@ use tokio::sync::mpsc::Receiver;
 
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const RESTART_MAX_DELAY_MS: u64 = 15_000;
+const STDERR_TAIL_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone)]
+struct PreviousExit {
+    kind: &'static str,
+    code: Option<i32>,
+    signal: Option<i32>,
+    observed_at_ms: u64,
+    stderr_tail: String,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/** 只留退出前最后 8 KiB；按 UTF-8 字符边界裁，也避免撑满 Windows 环境块。 */
+fn append_stderr_tail(tail: &mut String, text: &str) {
+    tail.push_str(text);
+    if tail.len() <= STDERR_TAIL_BYTES {
+        return;
+    }
+    let mut cut = tail.len() - STDERR_TAIL_BYTES;
+    while !tail.is_char_boundary(cut) {
+        cut += 1;
+    }
+    tail.drain(..cut);
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SidecarInfo {
@@ -49,6 +79,7 @@ fn spawn_process(
     port: u16,
     token: Option<&str>,
     workspace: &str,
+    previous_exit: Option<&PreviousExit>,
 ) -> Result<(Receiver<CommandEvent>, CommandChild)> {
     let mut args = vec![
         "serve".to_string(),
@@ -77,6 +108,23 @@ fn spawn_process(
         // CLI 的 serve 以这一变量作为显式令牌。恢复时必须复用，否则旧 WebView
         // 会拿原令牌连到同一端口，再被永久判成 unauthorized。
         command = command.env("QYWORK_TOKEN", value);
+    }
+    if let Some(exit) = previous_exit {
+        command = command
+            .env("QYWORK_PREVIOUS_EXIT_KIND", exit.kind)
+            .env(
+                "QYWORK_PREVIOUS_EXIT_AT_MS",
+                exit.observed_at_ms.to_string(),
+            )
+            .env(
+                "QYWORK_PREVIOUS_EXIT_CODE",
+                exit.code.map(|v| v.to_string()).unwrap_or_default(),
+            )
+            .env(
+                "QYWORK_PREVIOUS_EXIT_SIGNAL",
+                exit.signal.map(|v| v.to_string()).unwrap_or_default(),
+            )
+            .env("QYWORK_PREVIOUS_STDERR_TAIL", &exit.stderr_tail);
     }
     command
         .spawn()
@@ -162,20 +210,41 @@ async fn handshake_with_timeout(rx: &mut Receiver<CommandEvent>) -> Result<Sidec
  */
 fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) {
     tauri::async_runtime::spawn(async move {
+        let mut stderr_tail = String::new();
         loop {
-            let reason = loop {
+            let previous_exit = loop {
                 match rx.recv().await {
                     Some(CommandEvent::Stderr(line)) => {
-                        eprint!("{}", String::from_utf8_lossy(&line));
+                        let text = String::from_utf8_lossy(&line);
+                        eprint!("{text}");
+                        append_stderr_tail(&mut stderr_tail, &text);
                     }
                     Some(CommandEvent::Error(error)) => {
                         eprintln!("[qywork] 读取 qy serve 输出失败：{error}");
+                        append_stderr_tail(
+                            &mut stderr_tail,
+                            &format!("[sidecar output error] {error}\n"),
+                        );
                     }
                     Some(CommandEvent::Terminated(payload)) => {
-                        break format!("进程退出，code={:?}", payload.code);
+                        break PreviousExit {
+                            kind: "terminated",
+                            code: payload.code,
+                            signal: payload.signal,
+                            observed_at_ms: now_ms(),
+                            stderr_tail: stderr_tail.clone(),
+                        };
                     }
                     Some(_) => {}
-                    None => break "进程输出通道关闭".to_string(),
+                    None => {
+                        break PreviousExit {
+                            kind: "output_channel_closed",
+                            code: None,
+                            signal: None,
+                            observed_at_ms: now_ms(),
+                            stderr_tail: stderr_tail.clone(),
+                        };
+                    }
                 }
             };
 
@@ -191,7 +260,10 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                     let _ = child.kill();
                 }
             }
-            eprintln!("[qywork] qy serve 异常终止（{reason}），准备恢复");
+            eprintln!(
+                "[qywork] qy serve 异常终止（kind={} code={:?} signal={:?}），准备恢复",
+                previous_exit.kind, previous_exit.code, previous_exit.signal
+            );
 
             let mut delay_ms = 400_u64;
             loop {
@@ -199,7 +271,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                     return;
                 }
 
-                match spawn_process(&app, info.port, Some(&info.token), "") {
+                match spawn_process(&app, info.port, Some(&info.token), "", Some(&previous_exit)) {
                     Ok((mut next_rx, child)) => {
                         if !hold_child(&handle, child) {
                             return;
@@ -208,6 +280,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                             Ok(next) if next.port == info.port && next.token == info.token => {
                                 eprintln!("[qywork] qy serve 已在原端点恢复 :{}", info.port);
                                 rx = next_rx;
+                                stderr_tail.clear();
                                 break;
                             }
                             Ok(next) => {
@@ -237,7 +310,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
 ///
 /// `--port 0` 让内核挑空闲端口：写死端口会在用户同时开两个工作区时直接撞车。
 pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
-    let (mut rx, child) = spawn_process(app, 0, None, workspace)?;
+    let (mut rx, child) = spawn_process(app, 0, None, workspace, None)?;
 
     let handle = app.state::<SidecarHandle>();
     if !hold_child(&handle, child) {
@@ -381,4 +454,19 @@ fn dirs_home() -> Option<PathBuf> {
         .or_else(|_| std::env::var("HOME"))
         .ok()
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_stderr_tail, STDERR_TAIL_BYTES};
+
+    #[test]
+    fn stderr_tail_is_bounded_and_keeps_utf8_boundary() {
+        let mut tail = "早期日志".repeat(STDERR_TAIL_BYTES);
+        append_stderr_tail(&mut tail, "\npanic: 最后一条根因\n");
+
+        assert!(tail.len() <= STDERR_TAIL_BYTES);
+        assert!(tail.ends_with("panic: 最后一条根因\n"));
+        assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
 }

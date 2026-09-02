@@ -278,7 +278,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(4)
+    expect(parsed.schemaVersion).toBe(5)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
@@ -347,6 +347,9 @@ describe('诊断导出', () => {
       steps: 'full_except_tool_result_media',
       toolResultMedia: 'metadata_only',
       rawProviderBodies: 'not_persisted',
+      providerFailureAndRetryDecisions: 'persisted_when_observed',
+      runInterruptionSources: 'persisted_when_observed',
+      sidecarExitCodeSignalAndStderrTail: 'persisted_on_supervised_restart',
       configuredCredentials: 'redacted',
     })
     store.close()

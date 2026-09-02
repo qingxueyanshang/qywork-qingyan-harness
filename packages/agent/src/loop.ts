@@ -39,7 +39,10 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   FileChange,
+  ProviderFailureCause,
   ProviderKind,
+  ProviderRequestDiagnostic,
+  ProviderRetryDecision,
   RunId,
   RunUsage,
   StopReason,
@@ -302,6 +305,8 @@ export interface LoopPersistence {
     /** provider 返回的错误正文。连接层失败或没有正文时为 null。 */
     errorMessage?: string | null,
   ): void
+  /** 失败现场与重试裁决。可选只为兼容轻量测试夹具，生产装配必须提供。 */
+  recordRequestDiagnostic?(requestId: string, diagnostic: ProviderRequestDiagnostic): void
 }
 
 export interface RunInput {
@@ -466,6 +471,28 @@ function transportReading(providerEvents: number, silentMs: number): string {
   const secs = Math.round(silentMs / 1000)
   if (providerEvents === 0) return `${secs} 秒未收到响应`
   return `${secs} 秒未收到后续数据`
+}
+
+/**
+ * 保留归类错误到最底层 cause 的短链。只取四层，既覆盖 SDK 包装又防损坏对象成环。
+ * 原文在 runtime 持久化边界按配置凭证与常见 key 形状脱敏。
+ */
+function failureCauseChain(error: unknown): ProviderFailureCause[] {
+  const out: ProviderFailureCause[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current !== null && current !== undefined && out.length < 4 && !seen.has(current)) {
+    seen.add(current)
+    const record = typeof current === 'object' ? (current as Record<string, unknown>) : null
+    const code = record?.code
+    out.push({
+      name: current instanceof Error ? current.name || 'Error' : typeof current,
+      code: typeof code === 'string' || typeof code === 'number' ? String(code) : null,
+      message: current instanceof Error ? current.message : String(current),
+    })
+    current = record?.cause
+  }
+  return out
 }
 
 /**
@@ -1231,6 +1258,21 @@ export class AgentLoop {
             const pe = err instanceof ProviderError ? err : null
             const code = pe?.code ?? 'internal_error'
             const interrupted = input.signal.aborted
+            const silentMs = Math.max(0, Date.now() - lastEventAt)
+            const recordDecision = (
+              decision: ProviderRetryDecision,
+              attempt: number | null = null,
+              backoffMs: number | null = null,
+            ): void => {
+              persist.recordRequestDiagnostic?.(requestId, {
+                causes: failureCauseChain(err),
+                providerEvents,
+                silentMs,
+                assistantChars: assistantText.length,
+                toolCallCount: calls.length,
+                retry: { decision, attempt, max: MAX_RESENDS, backoffMs },
+              })
+            }
 
             /*
              * 终态判据是**「provider 有没有答复过」**，不是错误码。
@@ -1258,8 +1300,11 @@ export class AgentLoop {
                 : null,
             )
 
-            // 用户按了停止：不重发，也不改写正文，交给外层认成中断。
-            if (interrupted) throw err
+            // 中止来源由 runtime 的 AbortSignal reason 落到 run；请求行只记本次不重发。
+            if (interrupted) {
+              recordDecision('interrupted')
+              throw err
+            }
 
             /*
              * ── 容量拒绝：压一次再重发 ──
@@ -1317,6 +1362,7 @@ export class AgentLoop {
               )
               if (outcome.status === 'aborted') {
                 stopReason = 'user_interrupt'
+                recordDecision('interrupted')
                 throw err
               }
               if (outcome.status === 'compacted') {
@@ -1339,6 +1385,7 @@ export class AgentLoop {
                   anchor = null
                   req = rebuilt
                   breakdown = breakdownOf(req, density)
+                  recordDecision('context_compaction')
                   continue
                 }
               }
@@ -1356,16 +1403,22 @@ export class AgentLoop {
                 reasonCode,
               })
               yield { type: 'compaction', runId: input.runId, phase, reasonCode }
+              recordDecision('context_compaction_failed')
               throw err
             }
 
             // 不在重发表里的原样上抛：provider 已经说清是什么了（参数错、没权限、
             // 模型不存在），重发拿回来的是同一个拒绝。
-            if (!pe) throw err
+            if (!pe) {
+              recordDecision('not_retryable')
+              throw err
+            }
             const backoffMs = resendBackoffMs(pe, resends)
-            if (backoffMs === undefined) throw err
+            if (backoffMs === undefined) {
+              recordDecision('not_retryable')
+              throw err
+            }
 
-            const silentMs = Date.now() - lastEventAt
             /*
              * 原始错误形状只写日志。
              *
@@ -1391,6 +1444,7 @@ export class AgentLoop {
              * 次数照算——那一轮已经真的发出去过那么多次，换个码不该把账清零。
              */
             if (resends < MAX_RESENDS && assistantText === '' && calls.length === 0) {
+              recordDecision('resend', resends + 1, backoffMs)
               resends++
               /*
                * 重发是**重新生成**，不是接着上次那半截写。所以本次尝试的痕迹要一起处置：
@@ -1416,6 +1470,16 @@ export class AgentLoop {
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
               continue
             }
+
+            recordDecision(
+              resends >= MAX_RESENDS
+                ? 'limit_exhausted'
+                : assistantText !== ''
+                  ? 'visible_output'
+                  : calls.length > 0
+                    ? 'tool_calls_received'
+                    : 'not_retryable',
+            )
 
             /*
              * 分类短语 + 现场读数 + 是否自动重发过，一行说完。

@@ -16,11 +16,13 @@ import type {
   MessageId,
   ProviderKind,
   ProviderRequest,
+  ProviderRequestDiagnostic,
   ProviderRequestId,
   ProviderRequestStatus,
   Run,
   RunContextSegment,
   RunId,
+  RunInterruption,
   RunUsage,
   Step,
   StepId,
@@ -659,6 +661,7 @@ export function createRun(
     stepCount: 0,
     errorMessage: null,
     errorCode: null,
+    interruption: null,
     createdAt: now,
     finishedAt: null,
   }
@@ -760,12 +763,13 @@ export function finishRun(
     assistantMessageId?: MessageId | null
     errorMessage?: string | null
     errorCode?: string | null
+    interruption?: RunInterruption | null
   },
 ): void {
   store.db
     .query(
       `UPDATE runs SET status = ?, stop_reason = ?, assistant_message_id = COALESCE(?, assistant_message_id),
-       error_message = ?, error_code = ?, finished_at = ? WHERE id = ?`,
+       error_message = ?, error_code = ?, interruption_detail = ?, finished_at = ? WHERE id = ?`,
     )
     .run(
       input.status,
@@ -773,6 +777,7 @@ export function finishRun(
       input.assistantMessageId ?? null,
       input.errorMessage ?? null,
       input.errorCode ?? null,
+      input.interruption ? writeJson(input.interruption) : null,
       Date.now(),
       id,
     )
@@ -804,7 +809,19 @@ export function finishRun(
  * 区的 sidecar、开发态热重载、终端里的 `qy exec`），扫全库就是**后起的进程把别的进程正在跑的那一轮
  * 判死**。判据见 `isOrphan`，两个信号缺一不可。
  */
-export function recoverStaleRuns(store: Store): {
+export interface ProcessExitObservation {
+  source: 'desktop_sidecar'
+  observedAt: number
+  exitKind: 'terminated' | 'output_channel_closed'
+  exitCode: number | null
+  signal: number | null
+  stderrTail: string | null
+}
+
+export function recoverStaleRuns(
+  store: Store,
+  previousExit?: ProcessExitObservation,
+): {
   recovered: number
   ambiguous: number
   /** 有归属、且那个归属仍在运行，本次跳过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
@@ -839,7 +856,7 @@ export function recoverStaleRuns(store: Store): {
   const now = Date.now()
   const finishStmt = store.db.query(
     `UPDATE runs SET status = 'interrupted', stop_reason = ?, error_code = ?, error_message = ?,
-     finished_at = ? WHERE id = ?`,
+     interruption_detail = ?, finished_at = ? WHERE id = ?`,
   )
 
   store.db.transaction(() => {
@@ -852,11 +869,38 @@ export function recoverStaleRuns(store: Store): {
        * 同步落成 uncertain；继续挂在 in_flight 会让账本永远声称后台仍在执行。
        * usage 保持原样（通常为 NULL），绝不能补 0 或借上一条回报填充。
        */
+      const interruption: RunInterruption = {
+        source: previousExit?.source ?? 'orphan_recovery',
+        observedAt: previousExit?.observedAt ?? now,
+        recordedAt: now,
+        ownerPid: r.ownerPid,
+        lastHeartbeatAt: r.heartbeatAt,
+        ...(previousExit
+          ? {
+              exitKind: previousExit.exitKind,
+              exitCode: previousExit.exitCode,
+              signal: previousExit.signal,
+              stderrTail: previousExit.stderrTail,
+            }
+          : {}),
+        ambiguousToolExecution: isAmbiguous,
+      }
+      const requestDiagnostic: ProviderRequestDiagnostic = {
+        causes: [],
+        providerEvents: null,
+        silentMs: null,
+        assistantChars: null,
+        toolCallCount: null,
+        retry: { decision: 'process_exit', attempt: null, max: 5, backoffMs: null },
+      }
       store.db
         .query(
-          "UPDATE provider_requests SET status = 'uncertain' WHERE run_id = ? AND status = 'in_flight'",
+          `UPDATE provider_requests
+           SET status = 'uncertain', completed_at = COALESCE(completed_at, ?),
+               diagnostic = COALESCE(diagnostic, ?)
+           WHERE run_id = ? AND status = 'in_flight'`,
         )
-        .run(r.id)
+        .run(now, writeJson(requestDiagnostic), r.id)
       finishStmt.run(
         // 干净那条是 `process_exit`，**不是 `user_interrupt`**——上面那段注释要求的
         // 「事后分得出崩了和用户点了停止」，写成 user_interrupt 就当场作废：
@@ -865,7 +909,14 @@ export function recoverStaleRuns(store: Store): {
         isAmbiguous ? 'internal_error' : null,
         // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
         // 完全兼容一个已经跑了几十步、恰好停在等模型回复那一刻的 run。
-        isAmbiguous ? '上次进程在工具执行期间退出，结果不可信' : '上次进程退出，本轮中断',
+        isAmbiguous
+          ? previousExit?.exitCode !== null && previousExit?.exitCode !== undefined
+            ? `服务进程在工具执行期间退出（exit code ${previousExit.exitCode}），结果不可信`
+            : '服务进程在工具执行期间退出，结果不可信'
+          : previousExit?.exitCode !== null && previousExit?.exitCode !== undefined
+            ? `服务进程退出（exit code ${previousExit.exitCode}），本轮中断`
+            : '服务进程退出，本轮中断',
+        writeJson(interruption),
         now,
         r.id,
       )
@@ -893,13 +944,22 @@ export function recoverStaleRuns(store: Store): {
 
     // 与上面的孤儿 step 同理：旧版本可能先把 run 收尾，却漏掉已发送请求的终态。
     // 终态 run 不可能仍合法持有 in_flight；只能按“是否送达未知”收敛为 uncertain。
+    const orphanRequestDiagnostic: ProviderRequestDiagnostic = {
+      causes: [],
+      providerEvents: null,
+      silentMs: null,
+      assistantChars: null,
+      toolCallCount: null,
+      retry: { decision: 'process_exit', attempt: null, max: 5, backoffMs: null },
+    }
     store.db
       .query(
-        `UPDATE provider_requests SET status = 'uncertain'
+        `UPDATE provider_requests SET status = 'uncertain', completed_at = COALESCE(completed_at, ?),
+             diagnostic = COALESCE(diagnostic, ?)
          WHERE status = 'in_flight'
            AND run_id IN (SELECT id FROM runs WHERE status NOT IN ('running','queued'))`,
       )
-      .run()
+      .run(now, writeJson(orphanRequestDiagnostic))
   })()
 
   return { recovered: rows.length, ambiguous, heldByOthers }
@@ -1067,6 +1127,7 @@ export function openProviderRequest(
     omittedCategories: input.omittedCategories,
     errorCode: null,
     errorMessage: null,
+    diagnostic: null,
     payloadHash: input.payloadHash,
     requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
@@ -1170,6 +1231,17 @@ export function settleProviderRequest(
     )
 }
 
+/** 失败现场与重试裁决写回同一请求行；不另建一份重试状态。 */
+export function recordProviderRequestDiagnostic(
+  store: Store,
+  id: ProviderRequestId,
+  diagnostic: ProviderRequestDiagnostic,
+): void {
+  store.db
+    .query('UPDATE provider_requests SET diagnostic = ? WHERE id = ?')
+    .run(writeJson(diagnostic), id)
+}
+
 /** 本会话最近一次**已发送**的请求。面板的锚点从这里取。 */
 export function latestSentProviderRequest(
   store: Store,
@@ -1237,6 +1309,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
     errorCode: r.error_code,
     errorMessage: r.error_message,
+    diagnostic: readJson(r.diagnostic, null),
     payloadHash: r.payload_hash,
     requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',
@@ -1517,6 +1590,7 @@ function rowToRun(r: RunRow): Run {
     stepCount: r.step_count,
     errorMessage: r.error_message,
     errorCode: r.error_code,
+    interruption: readJson(r.interruption_detail, null),
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   }

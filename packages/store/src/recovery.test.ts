@@ -97,6 +97,38 @@ describe('崩溃恢复', () => {
      * 用户看到的是一个自己没做过的动作。判据写在 `recoverStaleRuns` 顶上。
      */
     expect(after.stopReason).toBe('process_exit')
+    expect(after.interruption).toMatchObject({
+      source: 'orphan_recovery',
+      ownerPid: process.pid,
+      ambiguousToolExecution: false,
+    })
+    store.close()
+  })
+
+  test('桌面外壳观察到的退出码和 stderr 尾段跟着 run 落库', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    markRunRunning(store, run.id)
+
+    recoverStaleRuns(store, {
+      source: 'desktop_sidecar',
+      observedAt: 1_725_000_000_000,
+      exitKind: 'terminated',
+      exitCode: -1_073_741_819,
+      signal: null,
+      stderrTail: 'panic at packages/server/src/server.ts:173',
+    })
+
+    const after = getRun(store, run.id)!
+    expect(after.errorMessage).toContain('exit code -1073741819')
+    expect(after.interruption).toMatchObject({
+      source: 'desktop_sidecar',
+      observedAt: 1_725_000_000_000,
+      exitKind: 'terminated',
+      exitCode: -1_073_741_819,
+      stderrTail: 'panic at packages/server/src/server.ts:173',
+      ambiguousToolExecution: false,
+    })
     store.close()
   })
 
@@ -123,6 +155,8 @@ describe('崩溃恢复', () => {
     expect(after?.providerOutputTokens).toBeNull()
     expect(after?.providerCachedTokens).toBeNull()
     expect(after?.providerCacheWriteTokens).toBeNull()
+    expect(after?.completedAt).not.toBeNull()
+    expect(after?.diagnostic?.retry.decision).toBe('process_exit')
     store.close()
   })
 

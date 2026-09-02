@@ -262,12 +262,15 @@ export class RunManager {
   interrupt(runId: RunId): boolean {
     const run = this.active.get(runId)
     if (!run) return false
-    run.controller.abort()
+    run.controller.abort({ source: 'user', observedAt: Date.now() })
     return true
   }
 
   interruptAll(): void {
-    for (const run of this.active.values()) run.controller.abort()
+    const observedAt = Date.now()
+    for (const run of this.active.values()) {
+      run.controller.abort({ source: 'server_shutdown', observedAt })
+    }
   }
 
   listActive(): ActiveRun[] {

@@ -363,8 +363,21 @@ function LedgerLink() {
 /** 一次请求的结局。成功和明确拒绝都优先给 provider 原话，能给就给原话。 */
 function requestOutcome(q: ProviderRequest): string {
   if (q.status === 'received') return q.finishReason || '已回报'
-  if (q.status === 'uncertain') return '结果不明'
-  if (q.status === 'rejected') return q.errorMessage || q.errorCode || '被拒绝'
+  const retry = q.diagnostic?.retry.decision
+  const suffix =
+    retry === 'resend'
+      ? '，已自动重发'
+      : retry === 'limit_exhausted'
+        ? '，重试已用尽'
+        : retry === 'visible_output'
+          ? '，已有输出未重发'
+          : retry === 'tool_calls_received'
+            ? '，已有工具调用未重发'
+            : retry === 'process_exit'
+              ? '，服务退出未重发'
+              : ''
+  if (q.status === 'uncertain') return `${q.errorCode || '结果不明'}${suffix}`
+  if (q.status === 'rejected') return `${q.errorMessage || q.errorCode || '被拒绝'}${suffix}`
   return q.status === 'in_flight' ? '进行中' : '未发出'
 }
 
@@ -378,9 +391,20 @@ function requestTransport(q: ProviderRequest): { text: string; title: string } {
   const firstEvent = elapsed(q.sentAt, q.firstEventAt)
   const total = elapsed(q.sentAt, q.completedAt)
   const route = [q.providerName, q.providerKind].filter(Boolean).join(' / ') || '旧账本未记录路线'
+  const causes = q.diagnostic?.causes
+    .map((cause) => `${cause.name}${cause.code ? `(${cause.code})` : ''}: ${cause.message}`)
+    .join(' ← ')
+  const retry = q.diagnostic?.retry
+  const retryFact = retry
+    ? `重试裁决 ${retry.decision}${retry.attempt ? `，第 ${retry.attempt}/${retry.max} 次` : ''}${
+        retry.backoffMs === null ? '' : `，等待 ${retry.backoffMs}ms`
+      }`
+    : '旧账本未记录重试裁决'
   return {
     text: `${size} / ${firstContent}`,
-    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}`,
+    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}；${retryFact}${
+      causes ? `；异常链 ${causes}` : ''
+    }`,
   }
 }
 

@@ -14,8 +14,8 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame, Workspace } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { acquireExtensions, configDir, releaseExtensions } from '@qywork/runtime'
-import type { Store } from '@qywork/store'
+import { acquireExtensions, collectSecrets, configDir, releaseExtensions } from '@qywork/runtime'
+import type { ProcessExitObservation, Store } from '@qywork/store'
 import {
   ContentStore,
   contentPathFor,
@@ -35,6 +35,7 @@ import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
+import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
 
@@ -62,6 +63,8 @@ export interface ServeOptions {
   staticDir?: string
   /** 由外部注入的令牌（Tauri spawn 时用环境变量传），不传则自己生成。 */
   token?: string
+  /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
+  previousProcessExit?: ProcessExitObservation
 }
 
 /** 首次运行时建的那个工作区叫什么。已落盘的目录名是历史事实，别改（D2）。 */
@@ -170,7 +173,10 @@ export function serve(opts: ServeOptions) {
   // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。无差别
   // 回收的话，本进程一启动就把别的进程正在跑的那一轮判成中断——账本是共享的，
   // 而一台机器上同时可以有好几个写入者。
-  const stale = recoverStaleRuns(opts.store)
+  const previousExit = opts.previousProcessExit
+    ? sanitizeProcessExitObservation(opts.previousProcessExit, collectSecrets(opts.config))
+    : undefined
+  const stale = recoverStaleRuns(opts.store, previousExit)
   if (stale.recovered > 0) {
     process.stderr.write(
       `[qy] 已回收上次残留的 ${stale.recovered} 个执行记录` +

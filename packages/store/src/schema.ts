@@ -1064,6 +1064,19 @@ ALTER TABLE provider_requests ADD COLUMN first_content_at INTEGER;
 ALTER TABLE provider_requests ADD COLUMN completed_at INTEGER;
 `,
   },
+  {
+    id: 34,
+    name: 'execution_failure_diagnostics',
+    /**
+     * 补齐两段此前只活在进程内的事实：run 是被谁中断的，以及一次 provider 失败
+     * 为什么重发/为什么没有重发。两列都存 JSON，因为它们是同一事实的结构化详情，
+     * 不是供 SQL 聚合的第二套状态；终态仍由 runs / provider_requests 原列负责。
+     */
+    sql: `
+ALTER TABLE runs ADD COLUMN interruption_detail TEXT;
+ALTER TABLE provider_requests ADD COLUMN diagnostic TEXT;
+`,
+  },
 ]
 
 /**
@@ -1152,6 +1165,8 @@ export interface RunRow {
   step_count: number
   error_message: string | null
   error_code: string | null
+  /** `RunInterruption` JSON。NULL = 未中断、普通失败或迁移前记录。 */
+  interruption_detail: string | null
   /** NULL = 迁移前存量；新 run 写入 `RunContextSegment[]` JSON。 */
   context_snapshot: string | null
   owner_pid: number | null
@@ -1200,6 +1215,8 @@ export interface ProviderRequestRow {
   finish_reason: string
   error_code: string | null
   error_message: string | null
+  /** `ProviderRequestDiagnostic` JSON。 */
+  diagnostic: string | null
   payload_hash: string
   request_bytes: number | null
   cache_route_fingerprint: string | null
@@ -1276,6 +1293,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'step_count',
     'error_message',
     'error_code',
+    'interruption_detail',
     'context_snapshot',
     'owner_pid',
     'heartbeat_at',
@@ -1318,6 +1336,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'finish_reason',
     'error_code',
     'error_message',
+    'diagnostic',
     'payload_hash',
     'request_bytes',
     'cache_route_fingerprint',

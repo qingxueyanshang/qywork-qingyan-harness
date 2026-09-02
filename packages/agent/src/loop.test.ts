@@ -9,7 +9,12 @@ import {
   lookupModel,
   ProviderError,
 } from '@qywork/ai'
-import type { AgentEvent, ContextBreakdown, TodoItem } from '@qywork/core'
+import type {
+  AgentEvent,
+  ContextBreakdown,
+  ProviderRequestDiagnostic,
+  TodoItem,
+} from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
 import {
@@ -2272,6 +2277,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   interface Recorded {
     opened: number[]
     settled: { status: string; errorCode: string | null; errorMessage?: string }[]
+    diagnostics: ProviderRequestDiagnostic[]
     /** 开过的思考 step，按顺序。 */
     thinking: string[]
     /** 被落成失败终态的那几条。 */
@@ -2300,6 +2306,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
           ...(errorMessage === null || errorMessage === undefined ? {} : { errorMessage }),
         })
       },
+      recordRequestDiagnostic: (_id, diagnostic) => rec.diagnostics.push(diagnostic),
     }
   }
 
@@ -2433,7 +2440,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   }
 
   async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
-    const rec: Recorded = { opened: [], settled: [], thinking: [], failed: [] }
+    const rec: Recorded = { opened: [], settled: [], diagnostics: [], thinking: [], failed: [] }
     const events: AgentEvent[] = []
     for await (const ev of run(adapter, rec)) events.push(ev)
     return { rec, events }
@@ -2444,6 +2451,13 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
 
     // 两行账，`retry_index` 0 和 1。顶掉上一行的话「真的发过两次」就不见了。
     expect(rec.opened).toEqual([0, 1])
+    expect(rec.diagnostics[0]).toMatchObject({
+      causes: [
+        { name: 'ProviderError', code: 'network_error', message: '连接被断开' },
+        { name: 'Error', code: 'ECONNRESET' },
+      ],
+      retry: { decision: 'resend', attempt: 1, max: MAX_RESENDS, backoffMs: 0 },
+    })
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
@@ -2548,7 +2562,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
 
   test('等待限速退避时可以停止', async () => {
     const controller = new AbortController()
-    const rec: Recorded = { opened: [], settled: [], thinking: [], failed: [] }
+    const rec: Recorded = { opened: [], settled: [], diagnostics: [], thinking: [], failed: [] }
     const events: AgentEvent[] = []
     for await (const ev of run(scriptedAdapter(['rate-limit', 'ok']), rec, controller.signal)) {
       events.push(ev)
@@ -2583,6 +2597,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
 
     expect(rec.opened).toEqual([0])
     expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+    expect(rec.diagnostics[0]?.retry.decision).toBe('not_retryable')
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('invalid_request')
     expect(err?.type === 'run.error' && err.message).toContain('image_url is not supported')
