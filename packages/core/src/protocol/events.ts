@@ -423,7 +423,8 @@ export interface CompactionEvent {
 
 /**
  * 文件变更广播。实时预览的核心：agent 一改文件，桌面和手机同时看到。
- * 由工具的文件变更结果产出，按路径去重。
+ * 有可靠明细时按路径去重；执行类工具只能确定文件快照可能改变时，`changes` 为空，
+ * 消费方仍须让文件视图失效，但不能据此编造增删统计。
  */
 export interface FileChangedEvent {
   type: 'file.changed'

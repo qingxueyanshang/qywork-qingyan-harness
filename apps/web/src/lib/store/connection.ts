@@ -573,6 +573,9 @@ function foldRunState(ev: AgentEvent): void {
     case 'file.changed':
       setState(
         produce((s) => {
+          // 即使 `changes` 为空也要推进：空数组表示执行类工具使文件快照失效，
+          // 但没有可靠的逐路径增删明细，不能为刷新 UI 去伪造一条变更。
+          s.fileVersion += 1
           for (const c of ev.changes) {
             const existing = s.fileChanges.find((f) => f.path === c.path)
             if (existing) {

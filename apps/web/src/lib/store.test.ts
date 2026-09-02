@@ -58,7 +58,6 @@ const {
   closePanelTab,
   explainApiError,
   holdPanelTab,
-  fileRevision,
   isRunning,
   ledgerRevision,
   loadOlderConversation,
@@ -874,14 +873,8 @@ describe('账本修订号跟着落库走', () => {
   })
 })
 
-/**
- * 打开的文件的重取判据（`store/state.ts` 的 `fileRevision`）。
- *
- * 原始失败形状：主区开着一个文件，agent 改了它，旁边的树刷新了而内容还是旧的。
- * 第二条锁的是同一个文件改第二次——`fileChanges` 是原地累加，条目数不动，
- * 所以判据不能拿条目数当信号。
- */
-describe('打开的文件跟着改动重取', () => {
+/** 文件快照统一失效；它与给用户看的逐路径变更摘要不是一份状态。 */
+describe('文件快照失效序号', () => {
   const changed = (seq: number, path: string, additions: number, deletions: number) =>
     applyEvent({
       seq,
@@ -894,28 +887,13 @@ describe('打开的文件跟着改动重取', () => {
       },
     } as never)
 
-  test('改一次就换一个号', () => {
-    setState({ activeConversation: 'cv_1', fileChanges: [] })
-    const before = fileRevision('src/main.ts')
+  test('每条事件都推进一次，同一文件连续修改也不漏', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0 })
     changed(1, 'src/main.ts', 3, 1)
-    expect(fileRevision('src/main.ts')).not.toBe(before)
-  })
-
-  test('同一个文件改第二次照样换号', () => {
-    setState({ activeConversation: 'cv_1', fileChanges: [] })
-    changed(1, 'src/main.ts', 3, 1)
-    const afterFirst = fileRevision('src/main.ts')
+    expect(state.fileVersion).toBe(1)
     changed(2, 'src/main.ts', 2, 0)
     expect(state.fileChanges.length).toBe(1)
-    expect(fileRevision('src/main.ts')).not.toBe(afterFirst)
-  })
-
-  test('改的是别的文件，这个文件的号不动', () => {
-    setState({ activeConversation: 'cv_1', fileChanges: [] })
-    changed(1, 'src/main.ts', 3, 1)
-    const mine = fileRevision('src/main.ts')
-    changed(2, 'src/util.ts', 9, 9)
-    expect(fileRevision('src/main.ts')).toBe(mine)
+    expect(state.fileVersion).toBe(2)
   })
 })
 
