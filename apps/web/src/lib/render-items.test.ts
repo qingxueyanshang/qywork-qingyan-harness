@@ -71,6 +71,22 @@ describe('分组规则', () => {
     expect(kinds(out)).toEqual(['tool', 'group'])
   })
 
+  test('带图片结果的工具不埋进工具组', () => {
+    const out = buildRenderItems([
+      tool('文件'),
+      tool('图片', 'read', {
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '读取 image.png（图片）',
+          data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+        },
+      }),
+      tool('文件'),
+    ])
+    expect(kinds(out)).toEqual(['tool', 'tool', 'tool'])
+  })
+
   test('只有 assistant 正文打断分组', () => {
     const out = buildRenderItems([
       tool('a.ts'),

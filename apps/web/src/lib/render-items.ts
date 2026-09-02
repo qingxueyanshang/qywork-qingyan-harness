@@ -14,6 +14,7 @@
  */
 
 import { type ActionKind, foldWorkflow, workflowGroupId, workflowTransitionOf } from '@qywork/core'
+import { resultImages } from './step-view.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 export type RenderItem =
@@ -33,6 +34,10 @@ export type RenderItem =
  * 「修改 2 个待办，运行 1 个编排，查询 1 个文件」那一行，图一个节点都看不见。
  */
 const STANDALONE = new Set(['subagent', 'workflow'])
+
+function carriesVisibleImages(item: TranscriptItem): boolean {
+  return item.kind === 'tool' && resultImages(item.outcome?.data).length > 0
+}
 
 export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
   transcript = collapseWorkflowItems(transcript)
@@ -98,7 +103,10 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
       out.push({ kind: 'run', id: item.id, item })
       continue
     }
-    if (item.kind === 'tool' && STANDALONE.has(item.toolName ?? '')) {
+    if (
+      item.kind === 'tool' &&
+      (STANDALONE.has(item.toolName ?? '') || carriesVisibleImages(item))
+    ) {
       flush()
       out.push({ kind: 'tool', id: item.id, item })
       continue

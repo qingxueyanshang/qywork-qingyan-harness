@@ -38,10 +38,62 @@ async function resetStore() {
     busyConversations: [],
     views: {},
     todos: [],
+    fileVersion: 0,
     fileChanges: [],
     lastRunId: null,
   })
 }
+
+describe('工具图片回放', () => {
+  test('从历史 step 的 outcome 直接恢复图片，且不要求展开工具卡', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          error: null,
+          todos: [],
+          transcript: [
+            {
+              id: 'tool-image-history',
+              kind: 'tool',
+              text: '',
+              toolName: 'read_file',
+              action: { kind: 'read', objectLabel: '文件', target: 'art/result.png' },
+              args: { path: 'art/result.png' },
+              status: 'success',
+              outcome: {
+                status: 'success',
+                executed: true,
+                message: '读取 art/result.png（图片）',
+                data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    try {
+      const image = host.querySelector<HTMLImageElement>('.tool-images img')
+      expect(image).not.toBeNull()
+      expect(image?.src).toBe('data:image/png;base64,aGVsbG8=')
+      expect((host.querySelector('details') as HTMLDetailsElement | null)?.open).toBe(false)
+    } finally {
+      dispose()
+      host.remove()
+    }
+  })
+})
 
 const CV = 'cv_prose'
 

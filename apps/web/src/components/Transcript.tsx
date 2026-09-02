@@ -40,6 +40,7 @@ import {
   type GraphNode,
   hitRate,
   listOf,
+  resultImages,
   sanitizeTarget,
   statusWord,
   stopReasonLabel,
@@ -1227,21 +1228,39 @@ function cardTitle(item: TranscriptItem): string {
 
 function ToolCard(props: { item: TranscriptItem }) {
   const changes = () => fileDelta(props.item.outcome?.fileChanges)
+  const images = () => resultImages(props.item.outcome?.data)
   // 派活的那两个画成图，不套折叠：它们各自是一整条子会话的入口，
   // 而产出正文在那条子会话（或那个 CLI 进程的输出流）里本来就有。
   if (props.item.toolName === 'workflow' || props.item.toolName === 'subagent') {
     return <DelegateCard item={props.item} />
   }
   return (
-    <Fold
-      failed={props.item.status === 'failure'}
-      label={actionLabel(props.item)}
-      statusWord={statusWord(props.item.status)}
-      {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}
-      {...(changes() ? { changes: changes()! } : {})}
-    >
-      <StepBody item={props.item} />
-    </Fold>
+    <>
+      <Fold
+        failed={props.item.status === 'failure'}
+        label={actionLabel(props.item)}
+        statusWord={statusWord(props.item.status)}
+        {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}
+        {...(changes() ? { changes: changes()! } : {})}
+      >
+        <StepBody item={props.item} />
+      </Fold>
+      {/* 图片字节已经随 outcome 落账本。直接画在会话流里，不埋进工具折叠：
+          否则实时看不到，刷新后即使数据还在，用户看到的仍像“图片丢了”。 */}
+      <Show when={images().length > 0}>
+        <div class="tool-images">
+          <For each={images()}>
+            {(img, index) => (
+              <img
+                src={`data:${img.mime};base64,${img.data}`}
+                alt={`${props.item.action?.target ?? '工具结果'} 图片 ${index() + 1}`}
+                loading="lazy"
+              />
+            )}
+          </For>
+        </div>
+      </Show>
+    </>
   )
 }
 

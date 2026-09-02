@@ -102,3 +102,66 @@ describe('代码块的复制按钮', () => {
     expect(called).toBe(false)
   })
 })
+
+describe('连接恢复', () => {
+  test('先恢复项目，再按该项目重建活动会话', async () => {
+    const store = await import('./lib/store/index.ts')
+    const { restoreWorkspaceSession } = await import('./App.tsx')
+    const originalApi = store.client.api
+    const calls: string[] = []
+    const workspaceAtConversationLoads: (string | null)[] = []
+
+    ;(
+      store.client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string) => {
+      calls.push(path)
+      if (path.startsWith('/api/workspace')) {
+        return {
+          id: 'ws_restore',
+          root: 'C:\\work',
+          rootPath: 'C:\\work',
+          name: 'work',
+          pendingTrust: [],
+        }
+      }
+      if (path.startsWith('/api/conversations/cv_restore/history')) {
+        return { messages: [], runs: [], steps: [], todos: [], nextCursor: null }
+      }
+      if (path.startsWith('/api/conversations/cv_restore/context')) return { context: null }
+      if (path.startsWith('/api/conversations/cv_restore/goal')) return { goal: null }
+      if (path.startsWith('/api/conversations/cv_restore/queue')) return { queue: [] }
+      if (path.startsWith('/api/conversations')) {
+        workspaceAtConversationLoads.push(store.workspace()?.id ?? null)
+        return {
+          conversations: [
+            {
+              id: 'cv_restore',
+              title: '绘画会话',
+              provider: 'openai',
+              model: 'gpt-5',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        }
+      }
+      throw new Error(`没有桩这条：${path}`)
+    }
+
+    store.setWorkspace(null)
+    store.setState({ activeConversation: null, conversations: [], views: {} })
+    try {
+      await restoreWorkspaceSession()
+      expect(store.workspace()?.id).toBe('ws_restore')
+      expect(store.state.activeConversation).toBe('cv_restore')
+      expect(calls[0]).toBe('/api/workspace')
+      expect(workspaceAtConversationLoads).toEqual(['ws_restore'])
+    } finally {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+      store.setWorkspace(null)
+      store.setState({ activeConversation: null, conversations: [], views: {} })
+    }
+  })
+})

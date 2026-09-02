@@ -1,4 +1,4 @@
-import { createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
+import { createEffect, createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
@@ -61,6 +61,13 @@ export function openLink(e: MouseEvent): void {
 /** 复制回执停留的时长。短于这个数看不清图标换过，长了会跨到下一次点击。 */
 const COPY_DONE_MS = 1200
 
+/** 连接恢复后的全量入口。顺序是协议的一部分：先恢复项目，再按该项目拉会话。 */
+export async function restoreWorkspaceSession(): Promise<void> {
+  const ws = await loadWorkspace()
+  setWorkspace(ws)
+  await loadConversations()
+}
+
 /**
  * 代码块右上角的复制按钮。
  *
@@ -109,16 +116,32 @@ export function App() {
     if (exportReceipt) clearTimeout(exportReceipt)
   })
 
+  /*
+   * 每次连接真正可用时，从服务端恢复当前项目与会话。
+   *
+   * 不能把这两次 REST 请求只挂在 `onMount`：刷新恰好撞上 sidecar 重启时，首发会
+   * 失败；即使 WebSocket 随后成功重连，页面仍停在空的「新对话」。这里认
+   * `reconnecting -> ready` 的状态翻转，因此首次握手与异常恢复走的是同一条路径。
+   *
+   * 先取项目再取会话。`client.api` 会按当前项目自动补 `ws=`；顺序反过来时，重连后
+   * 的第一份会话可能仍按上一个项目查询。失败留给下一次连接翻转重试，不在这里另造
+   * 一套定时器——连接是否可用只有 WebSocket 那一份权威。
+   */
+  createEffect((wasReady: boolean) => {
+    const ready = state.connection === 'ready'
+    if (ready && !wasReady) {
+      void restoreWorkspaceSession().catch((error) => {
+        setState('notice', {
+          reason: 'restore_failed',
+          message: `恢复项目与会话失败：${error instanceof Error ? error.message : String(error)}`,
+        })
+      })
+    }
+    return ready
+  }, false)
+
   onMount(() => {
     client.connect()
-    void loadConversations().catch(() => {
-      // 首次拉取失败不阻塞界面——连接层会自己重试，状态条会显示进度。
-    })
-    // 首屏的活动项目 = 服务端「最近打开」的那个。名字要尽早出现：
-    // 它是「会话列表为什么是空的」唯一的自诊断线索。
-    void loadWorkspace()
-      .then(setWorkspace)
-      .catch(() => {})
 
     /*
      * 空闲时先把面板那块代码取回来。
