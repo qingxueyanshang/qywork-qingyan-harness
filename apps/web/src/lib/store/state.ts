@@ -262,6 +262,14 @@ export interface AppState {
    */
   notice: { message: string; reason: string } | null
 
+  /**
+   * 工作区文件视图的失效序号。每收到一条 `file.changed` 就递增一次。
+   *
+   * `fileChanges` 是给用户看的精确增删摘要，不能拿它的长度兼任刷新信号：同一个文件
+   * 改第二次长度不变，`run_command` / 格式化器只能确认「可能改了文件」而列不出路径。
+   * 这个数不描述磁盘内容，只表达“上一份文件快照已经过期”。
+   */
+  fileVersion: number
   fileChanges: { path: string; additions: number; deletions: number; changeType: string }[]
   git: Omit<GitStateEvent, 'type'> | null
 }
@@ -276,6 +284,7 @@ const initial: AppState = {
   busyConversations: [],
   usage: null,
   context: null,
+  fileVersion: 0,
   fileChanges: [],
   git: null,
   followUps: [],
@@ -418,20 +427,6 @@ export function ledgerRevision(): string {
     state.usage?.turns.length ?? 0,
   ]
   return marks.join(':')
-}
-
-/**
- * 这个文件被这一轮改过多少。**同样只当「该重取了」的信号用。**
- *
- * 主区打开的文件要跟着 agent 的改动重取，判据只报路径的话内容停在打开那一刻。
- * 取累计而不是 `fileChanges.length`：同一个文件改第二次是原地累加
- * （见 `applyEvent` 的 `file.changed` 分支），条目数不动。
- *
- * 边界：只认写类工具回报的改动，shell 里 sed 改的文件不在里面（同变更页）。
- */
-export function fileRevision(path: string): string {
-  const c = state.fileChanges.find((f) => f.path === path)
-  return c ? `${c.additions}+${c.deletions}` : ''
 }
 
 /** 记下 / 抹掉「这条会话在跑」。幂等，重复到达的忙闲事件不会写出两行。 */

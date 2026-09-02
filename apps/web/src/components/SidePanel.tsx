@@ -538,10 +538,14 @@ interface TreeCtx {
 const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
 
 function FileBrowser() {
+  const treeSource = () => {
+    const id = workspace()?.id
+    return state.connection === 'ready' && id ? `${id}:${state.fileVersion}` : (false as const)
+  }
   const [tree, { refetch }] = createResource(
-    // 依赖 fileChanges 长度：agent 改了文件后自动刷新树，
-    // 不需要用户手动点刷新。
-    () => state.fileChanges.length,
+    // 连接没好时不发一条注定失败的请求；恢复成 ready 后同一份资源自动重取。
+    // fileVersion 同时覆盖精确文件工具与只能粗粒度失效的命令/子流程。
+    treeSource,
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
   )
 
@@ -571,6 +575,16 @@ function FileBrowser() {
    * 用户看到的就是「刷新点不动」。这个递增值只表达一次命令，不另存任何文件状态。
    */
   const [manualRefresh, setManualRefresh] = createSignal(0)
+
+  /*
+   * 根树重取时，展开目录的懒加载缓存也必须一起失效。只重取根节点会让展开着的目录
+   * 继续优先显示 `kids` 里的旧内容，表现为根目录更新了、里面那层仍然不动。
+   */
+  createEffect<string | false>((previous) => {
+    const current = treeSource()
+    if (current && current !== previous) setKids(new Map())
+    return current
+  }, false)
 
   // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
   // 也在里面），而用户通常只展开一两层。
@@ -815,7 +829,7 @@ function FileBrowser() {
       <Show when={openFile()}>
         {(path) => (
           <Suspense fallback={<div class="preview" />}>
-            <FileView path={path()} refresh={manualRefresh()} />
+            <FileView path={path()} refresh={manualRefresh() + state.fileVersion} />
           </Suspense>
         )}
       </Show>

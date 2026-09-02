@@ -4,7 +4,7 @@
  * 它在「树 + 已打开文件」共用的文件页里，用户点的是整页刷新，不是只重读左边索引。
  * 原始失败形状是：树请求发出去了，右边已经打开的文件仍停在旧正文上，看起来像按钮没反应。
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 beforeAll(() => {
@@ -13,6 +13,11 @@ beforeAll(() => {
 
 let dispose: (() => void) | undefined
 let restoreApi: (() => void) | undefined
+
+beforeEach(async () => {
+  const store = await import('../lib/store/index.ts')
+  store.setState({ connection: 'ready', fileVersion: 0 })
+})
 
 afterEach(async () => {
   dispose?.()
@@ -25,7 +30,13 @@ afterEach(async () => {
   store.setOpenFile(null)
   store.setSidePanel(null)
   store.setWorkspace(null)
-  store.setState({ activeConversation: null, fileChanges: [] })
+  store.setState({
+    activeConversation: null,
+    connection: 'connecting',
+    fileVersion: 0,
+    fileChanges: [],
+    views: {},
+  })
 })
 
 afterAll(async () => {
@@ -131,6 +142,15 @@ describe('文件页刷新', () => {
 
     store.setState({
       activeConversation: 'cv_file_scroll',
+      views: {
+        cv_file_scroll: {
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          error: null,
+          todos: [],
+          transcript: [],
+        },
+      },
       fileChanges: [{ path: 'long.txt', additions: 4, deletions: 1, changeType: 'modified' }],
     })
 
@@ -138,7 +158,10 @@ describe('文件页刷新', () => {
     const { default: FileView } = await import('./FileView.tsx')
     const host = document.createElement('div')
     document.body.append(host)
-    dispose = render(() => <FileView path="long.txt" />, host as unknown as HTMLElement)
+    dispose = render(
+      () => <FileView path="long.txt" refresh={store.state.fileVersion} />,
+      host as unknown as HTMLElement,
+    )
 
     await waitFor(
       () => previewCalls === 1 && host.querySelector('.cm-scroller') !== null,
@@ -156,9 +179,16 @@ describe('文件页刷新', () => {
 
     // 下一轮真的又改了同一个文件，即使 +x/-y 与上一轮相同也必须重取；正文原位更新，
     // 阅读位置与编辑器 DOM 都保留。
-    store.setState('fileChanges', [
-      { path: 'long.txt', additions: 4, deletions: 1, changeType: 'modified' },
-    ])
+    store.applyEvent({
+      seq: 1,
+      at: Date.now(),
+      conversationId: 'cv_file_scroll',
+      event: {
+        type: 'file.changed',
+        runId: 'rn_file_scroll',
+        changes: [{ path: 'long.txt', additions: 4, deletions: 1, changeType: 'modified' }],
+      },
+    } as never)
     await waitFor(
       () =>
         previewCalls === 2 &&
@@ -168,6 +198,57 @@ describe('文件页刷新', () => {
     )
     expect(host.querySelector('.cm-scroller')).toBe(scroller)
     expect(scroller.scrollTop).toBe(160)
+  })
+
+  test('连接恢复后自动重取文件树，不保留失败时的空快照', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    let treeCalls = 0
+
+    ;(
+      store.client as unknown as {
+        api: (path: string, init?: RequestInit) => Promise<unknown>
+      }
+    ).api = async (path: string) => {
+      if (!path.startsWith('/api/files/tree')) throw new Error(`没有桩这条：${path}`)
+      treeCalls += 1
+      return {
+        nodes: [
+          {
+            name: treeCalls === 1 ? 'before.txt' : 'after.png',
+            path: treeCalls === 1 ? 'before.txt' : 'after.png',
+            kind: 'file',
+            size: 1,
+            mtime: treeCalls,
+          },
+        ],
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+
+    store.setWorkspace({ id: 'ws_reconnect_tree', root: 'C:\\work', name: 'work' })
+    store.setSidePanel('files')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => treeCalls === 1 && host.textContent?.includes('before.txt') === true,
+      () => `tree=${treeCalls}, text=${host.textContent}`,
+    )
+    store.setState('connection', 'reconnecting')
+    await Promise.resolve()
+    store.setState('connection', 'ready')
+
+    await waitFor(
+      () => treeCalls === 2 && host.textContent?.includes('after.png') === true,
+      () => `tree=${treeCalls}, text=${host.textContent}`,
+    )
   })
 })
 

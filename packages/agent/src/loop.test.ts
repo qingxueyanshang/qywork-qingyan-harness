@@ -506,6 +506,47 @@ describe('ToolContext 生命周期', () => {
   })
 })
 
+describe('工作区文件失效', () => {
+  test('执行类工具没有逐路径明细也广播一次空变更', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'generator',
+      description: '模拟会生成文件但无法枚举路径的命令。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'code',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'execute',
+      async fn() {
+        // 非零退出前也可能已经写过文件；只要确实执行过，磁盘快照就不能继续复用。
+        return { status: 'failure', message: 'exit 1' }
+      },
+    })
+
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('generator')], null]),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    const invalidations: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_file_invalidation' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'file.changed') invalidations.push(ev)
+    }
+
+    expect(invalidations).toHaveLength(1)
+    expect(invalidations[0]?.type === 'file.changed' && invalidations[0].changes).toEqual([])
+  })
+})
+
 describe('权限拒绝', () => {
   test('被拒的调用不执行，理由回到模型手里，循环继续', async () => {
     const registry = new ToolRegistry()
@@ -568,6 +609,7 @@ describe('权限拒绝', () => {
 
     // 被拒的调用绝不能真的执行。
     expect(executed).toBe(0)
+    expect(events.some((e) => e.type === 'file.changed')).toBe(false)
 
     // 拒绝是一条工具失败结果，不是 run 的终点。裁决方给的理由必须随下一轮请求
     // 发出去——`auto` 模式下那是模型唯一能拿到的信号，收不到它就只能原样重试。

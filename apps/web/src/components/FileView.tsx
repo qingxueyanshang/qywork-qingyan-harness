@@ -2,7 +2,7 @@ import type { EditorView } from '@codemirror/view'
 import { createEffect, createResource, Match, onCleanup, Show, Switch } from 'solid-js'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
-import { absPath, client, explainApiError, fileRevision, setOpenFile } from '../lib/store/index.ts'
+import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
 import { IconX } from './Icons.tsx'
 
 interface PreviewResult {
@@ -30,31 +30,12 @@ interface PreviewResult {
  * 只想聊天的用户不该为它付首屏成本。
  */
 export default function FileView(props: { path: string; refresh?: number }) {
-  // 路径与手动刷新直接走资源判据。agent 的改动累计不能直接拼在这里：新一轮
-  // `run.started` 会把「上一轮改了哪些文件」清空，非空 → 空也会被资源当成一次变化，
-  // 因此用户每发一条消息，没变的文件也重取、阅读位置跟着回到开头。
-  const [result, { refetch }] = createResource(
+  // 路径与文件页的统一失效序号直接走资源判据。失效序号不在 `run.started` 清空，
+  // 因此发起新一轮不会把“摘要从非空变空”误判成一次磁盘改动。
+  const [result] = createResource(
     () => `${props.path}:${props.refresh ?? 0}`,
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
-
-  let watchedPath = props.path
-  let previousRevision = fileRevision(watchedPath)
-  createEffect(() => {
-    const path = props.path
-    const revision = fileRevision(path)
-    if (path !== watchedPath) {
-      watchedPath = path
-      previousRevision = revision
-      return
-    }
-
-    // 空值只是新一轮开始时清掉了摘要，不代表磁盘内容变回去了；记下这道边界但不重取。
-    // 下一轮即使产生了和上一轮完全相同的 +x/-y，空 → 非空仍会触发一次真实刷新。
-    const changed = revision !== '' && revision !== previousRevision
-    previousRevision = revision
-    if (changed) void refetch()
-  })
 
   return (
     <div class="preview">

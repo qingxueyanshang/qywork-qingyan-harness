@@ -1741,9 +1741,25 @@ export class AgentLoop {
               s.durationMs,
             )
 
-            if (s.outcome.fileChanges?.length) {
-              fileChanges.push(...s.outcome.fileChanges)
-              yield { type: 'file.changed', runId: input.runId, changes: s.outcome.fileChanges }
+            const exactFileChanges = s.outcome.fileChanges ?? []
+            if (exactFileChanges.length) {
+              fileChanges.push(...exactFileChanges)
+            }
+
+            /*
+             * 文件页要失效的判据来自工具声明的副作用，不猜命令正文。
+             *
+             * write/delete/execute 都可能落盘；文件工具会给精确明细，shell、格式化器、
+             * 构建器和子流程通常只能确认“执行过”。后者发空 changes：刷新磁盘快照，但
+             * 不把未知路径伪装成变更记录。权限拒绝 (`executed:false`) 没真正执行，不发。
+             */
+            const effect = resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments)
+            if (
+              exactFileChanges.length > 0 ||
+              (s.outcome.executed !== false &&
+                (effect === 'write' || effect === 'delete' || effect === 'execute'))
+            ) {
+              yield { type: 'file.changed', runId: input.runId, changes: exactFileChanges }
             }
 
             yield {
