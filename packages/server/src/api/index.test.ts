@@ -655,7 +655,15 @@ describe('模型目录', () => {
       'zhipu',
     ])
     const all = b.library.flatMap((v) => v.models)
-    for (const id of ['gpt-5.6-sol', 'gemini-3.1-pro-preview', 'grok-4.6', 'kimi-k3', 'glm-5.2']) {
+    for (const id of [
+      'claude-fable-5-1',
+      'gpt-5.6-sol',
+      'gemini-3.8-flash',
+      'gemini-3.1-pro-preview',
+      'grok-4.6',
+      'kimi-k3',
+      'glm-5.2',
+    ]) {
       expect(all.some((m) => m.id === id)).toBe(true)
     }
   })
@@ -691,6 +699,9 @@ describe('模型目录', () => {
     const opus = all.find((m) => m.id === 'claude-opus-5')!
     expect(opus.cacheRead).toBe(0.5)
     expect(opus.cacheWrite).toBe(6.25)
+    const fable = all.find((m) => m.id === 'claude-fable-5-1')!
+    expect(fable.cacheRead).toBe(0.25)
+    expect(fable.cacheWrite).toBe(12.5)
     // DeepSeek 的自动前缀缓存写入不收费，那是个真值不是缺值。
     expect(all.find((m) => m.id === 'deepseek-v4-flash')?.cacheWrite).toBe(0)
   })

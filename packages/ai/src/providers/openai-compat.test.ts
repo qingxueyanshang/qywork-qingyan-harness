@@ -232,6 +232,7 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
   })
 
   test('Gemini 同样走这条', async () => {
+    expect((await send('gemini-3.8-flash', 'high')).reasoning_effort).toBe('high')
     expect((await send('gemini-3.1-pro-preview', 'low')).reasoning_effort).toBe('low')
   })
 })
