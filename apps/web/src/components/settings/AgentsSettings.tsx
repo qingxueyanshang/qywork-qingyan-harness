@@ -1,3 +1,4 @@
+import { ROLE_COMMAND } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import {
@@ -15,7 +16,7 @@ import { EmptyBox, EntryCard, Section } from './Page.tsx'
  * Agent Team。
  *
  * **这一页是两件事，不是一件事的两种形态**：
- * - **角色**＝子 agent，跑在本进程的 agent 循环上。它的配置是提示词、模型与工具范围。
+ * - **角色**：持久定义，建子 agent 时按 id 引用。它的配置是提示词、模型与工具范围。
  * - **外部 CLI**＝本机装着的别家 agent 程序。它由探测得到，**没有配置面**——
  *   用户改不了「怎么调它」，那是厂商表的事（`packages/team/src/cli-detect.ts`）。
  *
@@ -29,8 +30,8 @@ import { EmptyBox, EntryCard, Section } from './Page.tsx'
  * 界面上**没有原文编辑框**：表单盖不住的那几样（编排图、规则）要懂 JSON 结构才填得对，
  * 那不是用户在设置页里该判断的事。
  *
- * **加一条角色走对话，不在这里填表。** 角色要写的是系统提示词与能用哪些工具，面板里几个格
- * 子填不全。同记忆 / 技能 / MCP / 插件 / 定时任务五页，「添加」把话头递给模型。
+ * **加一条角色走 /role 命令，不在这里填表。** 角色要写的是系统提示词与能用哪些工具，面板里几个格
+ * 子填不全。「添加」把命令送进输入框，用户接着写描述，模型按这条明确要求建角色。
  *
  * **编排跟着仓库走。** 角色与编排图全是项目属性，跟到别的仓库去只会派错人。所以配置在工作区的
  * `.qy/team.json`，不在用户全局配置里。
@@ -57,10 +58,6 @@ interface RoleForm {
   systemPrompt: string
   model: string
 }
-
-/** 「添加」递给模型的话头。 */
-const NEW_ROLE =
-  '我们一起来加一个子 agent 吧。先说明子 agent 在 qywork 里怎么工作、配置写在哪个文件；然后问我要它干什么、能用哪些工具。'
 
 export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
@@ -120,7 +117,7 @@ export default function AgentsSettings() {
    * 迟早只改一处，而空的时候用户看到的是空态框里那一份。
    */
   const RoleActions = () => (
-    <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_ROLE)}>
+    <button class="btn-ghost sm" type="button" onClick={() => askInChat(`${ROLE_COMMAND} `)}>
       添加
     </button>
   )

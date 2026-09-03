@@ -64,6 +64,23 @@ const delegate: DelegatePort = {
   runGraph: async () => ({ ok: true }),
 }
 
+describe('派活工具只给有派活通道的会话', () => {
+  test('顶层会话有 define_role、subagent、workflow；成员会话一个都没有', async () => {
+    const top = await session({ delegate })
+    expect(top.names()).toContain('define_role')
+    expect(top.names()).toContain('subagent')
+    expect(top.names()).toContain('workflow')
+    top.s.dispose()
+    top.store.close()
+    const member = await session()
+    expect(member.names()).not.toContain('define_role')
+    expect(member.names()).not.toContain('subagent')
+    expect(member.names()).not.toContain('workflow')
+    member.s.dispose()
+    member.store.close()
+  })
+})
+
 describe('附件请求形状', () => {
   test('历史媒体降级为普通文本，只有当前媒体使用内容块数组', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))

@@ -232,12 +232,12 @@ describe('审真实的系统提示词', () => {
   test('输入区显式引用绑定技能、外部工具与子 agent', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     const p = buildSystemPrompt(
-      new Set(['read_skill', 'load_tool', 'define_subagent', 'subagent', 'mcp__github__search']),
+      new Set(['read_skill', 'load_tool', 'define_role', 'subagent', 'mcp__github__search']),
     )
     expect(p).toContain('#技能名')
     expect(p).toContain('@工具注册名')
     expect(p).toContain('@角色id')
-    expect(p).toContain('/subagent 角色描述')
+    expect(p).toContain('/role')
     expect(p).toContain('可长期复用')
     expect(p).not.toContain('`@subagent`')
     expect(p).toContain('直接调用该工具')

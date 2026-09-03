@@ -1,5 +1,8 @@
 /**
- * 建一个子 agent（角色），写进工作区的 `.qy/team.json`。
+ * 建一个角色，写进工作区的 `.qy/team.json`。
+ *
+ * 角色是持久定义，不是运行中的子 agent。只在用户明确要求创建或修改角色时使用
+ * （`/role` 命令或一句明确的话），模型没有自主建角色的权限。
  *
  * **为什么必须是一个专门的工具。** `.qy` 是受保护目录（`paths.ts` 的 `PROTECTED_DIRS`），
  * `write_file` 写不进去。那道墙挡的是**自我提权**——改 `.agents/` 就是给自己加工具。但「建一个角
@@ -22,13 +25,12 @@ const TEAM_CONFIG = '.qy/team.json'
 /** id 只收这几类字符：它要出现在编排图里被引用，也要能当文件里的键。 */
 const ID_OK = /^[a-zA-Z0-9_-]{1,40}$/
 
-export const defineSubagentTool: ToolSpec = {
-  name: 'define_subagent',
+export const defineRoleTool: ToolSpec = {
+  name: 'define_role',
   description:
-    '建一个子 agent（角色）或改一个已有的，写进工作区的 .qy/team.json。' +
-    '角色是可以被 subagent / workflow 派活的对象：它有自己的系统提示词、可选的模型与工具范围。' +
-    '只有要长期复用的人设才建角色；一次性任务把人设直接写进 subagent 或 workflow 节点的 task。' +
-    '同名 id 直接覆盖。',
+    '用户明确要求创建或修改角色时（/role 命令或一句明确的话），把角色写进工作区的 .qy/team.json；' +
+    '用户没有要求就不建。角色是持久定义：有自己的系统提示词、可选的模型与工具范围，' +
+    '之后建子 agent 时按 role id 引用。同名 id 直接覆盖。',
   parameters: {
     type: 'object',
     properties: {
@@ -58,14 +60,14 @@ export const defineSubagentTool: ToolSpec = {
     additionalProperties: false,
   },
   actionKind: 'write',
-  objectLabel: '子 agent',
+  objectLabel: '角色',
   category: 'session',
   facet: '协作',
-  summary: '建一个子 agent',
+  summary: '建一个角色',
   targetExtractor: (a) => (typeof a.id === 'string' ? a.id : null),
   permissionEffect: 'write',
   parallelSafe: false,
-  resourceKeys: (a) => [`subagent:${String(a.id ?? '*')}`],
+  resourceKeys: (a) => [`role:${String(a.id ?? '*')}`],
 
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const id = String(args.id ?? '').trim()
@@ -139,7 +141,7 @@ export const defineSubagentTool: ToolSpec = {
     await writeFile(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
     return {
       status: 'success' as const,
-      message: `${replaced ? '改好了' : '建好了'}子 agent ${name}（${id}），现在可以派活给它`,
+      message: `${replaced ? '改好了' : '建好了'}角色 ${name}（${id}），建子 agent 时按 role 引用`,
       data: { id, replaced, path: TEAM_CONFIG },
     }
   },

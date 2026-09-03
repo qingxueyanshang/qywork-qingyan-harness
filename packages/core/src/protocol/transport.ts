@@ -370,6 +370,12 @@ export function encodePairingUrl(p: PairingPayload): string {
   return `${p.url}/m#${frag.toString()}`
 }
 
+/**
+ * 创建角色的斜杠命令。客户端把命令原文作为用户消息发出，提示词按同一个前缀向模型说明。
+ * 两端都用这一个常量，不各自写字面量。
+ */
+export const ROLE_COMMAND = '/role'
+
 export function decodePairingUrl(raw: string): PairingPayload | null {
   let u: URL
   try {
