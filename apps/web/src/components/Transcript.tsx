@@ -945,6 +945,87 @@ function ToolGroup(props: { members: TranscriptItem[] }) {
   )
 }
 
+const WF_NODE_MAX = 160
+const WF_LAYER_GAP = 12
+
+/**
+ * 同一语义层保持等宽列。宽度充足时节点不超过 160px；宽度不足时每列共同收窄，
+ * 由节点正文承担有限换行，不把整张图扩成横向滚动区域。
+ */
+function workflowLayerStyle(size: number): JSX.CSSProperties {
+  return {
+    'grid-template-columns': `repeat(${size}, minmax(0, 1fr))`,
+    'max-width': `${size * WF_NODE_MAX + Math.max(0, size - 1) * WF_LAYER_GAP}px`,
+  }
+}
+
+interface WorkflowEdgeSegment {
+  axis: 'horizontal' | 'vertical'
+  fixed: number
+  from: number
+  to: number
+  live: boolean
+}
+
+/**
+ * 多条依赖共享入口或出口时会产生共线区间。先按坐标切成最小区间，再合并相邻且状态
+ * 相同的区间，可保证每一段像素只绘制一次；共享区间只要有一条活动依赖就显示活动态。
+ */
+export function mergeWorkflowEdgeSegments(
+  segments: readonly WorkflowEdgeSegment[],
+): { d: string; live: boolean }[] {
+  const groups = new Map<
+    string,
+    { axis: WorkflowEdgeSegment['axis']; fixed: number; parts: WorkflowEdgeSegment[] }
+  >()
+  for (const segment of segments) {
+    const from = Math.min(segment.from, segment.to)
+    const to = Math.max(segment.from, segment.to)
+    if (from === to) continue
+    const normalized = { ...segment, from, to }
+    const key = `${segment.axis}:${segment.fixed}`
+    const group = groups.get(key)
+    if (group) group.parts.push(normalized)
+    else groups.set(key, { axis: segment.axis, fixed: segment.fixed, parts: [normalized] })
+  }
+
+  const paths: { d: string; live: boolean }[] = []
+  for (const group of groups.values()) {
+    const points = [...new Set(group.parts.flatMap((part) => [part.from, part.to]))].sort(
+      (a, b) => a - b,
+    )
+    let run: { from: number; to: number; live: boolean } | null = null
+    const flush = () => {
+      if (!run) return
+      paths.push({
+        d:
+          group.axis === 'horizontal'
+            ? `M${run.from} ${group.fixed}H${run.to}`
+            : `M${group.fixed} ${run.from}V${run.to}`,
+        live: run.live,
+      })
+      run = null
+    }
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const from = points[i]!
+      const to = points[i + 1]!
+      const covering = group.parts.filter((part) => part.from <= from && part.to >= to)
+      if (covering.length === 0) {
+        flush()
+        continue
+      }
+      const live = covering.some((part) => part.live)
+      if (run && run.to === from && run.live === live) run.to = to
+      else {
+        flush()
+        run = { from, to, live }
+      }
+    }
+    flush()
+  }
+  return paths
+}
+
 /**
  * 派活的图卡。**派一件与派一张图共用这一张**——一次派活就是一张只有一格的图，
  * 两种画法并存的代价是同一件事在会话流里长两个样。
@@ -1063,7 +1144,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
     const b = box.getBoundingClientRect()
     // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
     const at = (v: number) => Math.round(v) + 0.5
-    const out: { d: string; live: boolean }[] = []
+    const segments: WorkflowEdgeSegment[] = []
     const g = graph()
     for (const n of g.nodes) {
       const to = refs.get(n.key)
@@ -1078,7 +1159,13 @@ function DelegateCard(props: { item: TranscriptItem }) {
         // 三格横排时每条边只连一对格子：左格右缘中点画到右格左缘中点，一条直线。
         const r = sources[0]!.getBoundingClientRect()
         const y = at(t.top + t.height / 2 - b.top)
-        out.push({ d: `M${at(r.right - b.left)} ${y}H${at(t.left - b.left)}`, live })
+        segments.push({
+          axis: 'horizontal',
+          fixed: y,
+          from: at(r.right - b.left),
+          to: at(t.left - b.left),
+          live,
+        })
         continue
       }
       const tx = at(t.left + t.width / 2 - b.left)
@@ -1094,14 +1181,22 @@ function DelegateCard(props: { item: TranscriptItem }) {
        * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
        */
       for (const [i, r] of rects.entries()) {
-        out.push({ d: `M${xs[i]} ${at(r.bottom - b.top)}V${bus}`, live })
+        segments.push({
+          axis: 'vertical',
+          fixed: xs[i]!,
+          from: at(r.bottom - b.top),
+          to: bus,
+          live,
+        })
       }
       const left = Math.min(...xs, tx)
       const right = Math.max(...xs, tx)
-      if (right > left) out.push({ d: `M${left} ${bus}H${right}`, live })
-      out.push({ d: `M${tx} ${bus}V${ty}`, live })
+      if (right > left) {
+        segments.push({ axis: 'horizontal', fixed: bus, from: left, to: right, live })
+      }
+      segments.push({ axis: 'vertical', fixed: tx, from: bus, to: ty, live })
     }
-    setEdges(out)
+    setEdges(mergeWorkflowEdgeSegments(segments))
   }
 
   const ro = new ResizeObserver(() => measure())
@@ -1115,9 +1210,8 @@ function DelegateCard(props: { item: TranscriptItem }) {
   })
 
   /**
-   * 容器自己也要观察。**节点定宽，所以拖面板时它们的尺寸一个都不变**——只观察节点的话
-   * 观察器不回调，而居中的那一行整体挪了位，线停在上一次的坐标上。
-   * 容器宽度是所有节点位置的唯一变量，观察它就补齐了这一类布局变化。
+   * 容器自己也要观察。拖动面板时节点会随等宽列共同缩放，容器与节点的观察结果
+   * 一起触发重算，使线始终使用本帧的实际坐标。
    */
   const holdBox = (el: HTMLDivElement) => {
     box = el
@@ -1145,7 +1239,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
         </svg>
         <For each={graph().layers}>
           {(layer) => (
-            <div class="wf-layer">
+            <div
+              class="wf-layer"
+              style={graph().horizontal ? undefined : workflowLayerStyle(layer.length)}
+            >
               <For each={layer}>
                 {(n) => {
                   const st = () => stateOf(n)
@@ -1187,7 +1284,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                       >
                         {/* 主行是那一格的名字：一张图里区分得开谁是谁的就是它。
                             执行者压一档——同一张图里常常四格都是同一个。 */}
-                        <span class="wf-node-name truncate">{name()}</span>
+                        <span class="wf-node-name">{name()}</span>
                         <span class="wf-node-who truncate">
                           <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
                           <Show when={st()?.durationMs}>
