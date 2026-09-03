@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_MAX_CONCURRENT,
   foldWorkflow,
   parseWorkflowCall,
   type WorkflowCallRecord,
@@ -57,6 +58,7 @@ describe('workflow 调用判别', () => {
           { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '先做' },
           { id: 'review', kind: 'checkpoint', label: '当前会话审查', needs: ['a'] },
         ],
+        maxConcurrent: DEFAULT_MAX_CONCURRENT,
       },
     })
   })
@@ -78,6 +80,7 @@ describe('workflow 调用判别', () => {
         kind: 'start',
         goal: '做完',
         nodes: [{ id: 'a', kind: 'agent', agent: 'ad-hoc', task: '先做' }],
+        maxConcurrent: DEFAULT_MAX_CONCURRENT,
       },
     })
   })
@@ -134,6 +137,30 @@ describe('workflow 调用判别', () => {
       ok: true,
       call: { kind: 'review', decision: 'revise', revisions: [{ nodeId: 'a' }] },
     })
+  })
+
+  test('maxConcurrent 缺省回默认值，正整数原样带出，非正整数拒绝', () => {
+    expect(parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }] })).toMatchObject({
+      ok: true,
+      call: { maxConcurrent: DEFAULT_MAX_CONCURRENT },
+    })
+    expect(
+      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }], maxConcurrent: 5 }),
+    ).toMatchObject({ ok: true, call: { maxConcurrent: 5 } })
+    expect(
+      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }], maxConcurrent: 0 }),
+    ).toEqual({ ok: false, error: 'maxConcurrent 必须是正整数' })
+  })
+
+  test('审查动作带 maxConcurrent 被拒，与 goal / nodes 同一条规则', () => {
+    expect(
+      parseWorkflowCall({
+        workflowId: 'wf',
+        checkpointId: 'cp',
+        decision: 'approve',
+        maxConcurrent: 3,
+      }),
+    ).toEqual({ ok: false, error: '审查动作不能带 maxConcurrent' })
   })
 
   test('损坏的结构字符串仍由原有校验拒绝', () => {

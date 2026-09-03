@@ -344,9 +344,11 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   // 的结果落库。留一个手写的 `plan` 字段就是两个来源同一个执行器。
   const dropped = ((obj.roles as unknown[]) ?? []).length - roles.length
 
+  // rules 只认 `shared`：并发上限由 workflow 每次调用给，这个文件里写不了它。
+  const shared = (obj.rules as TeamRules | undefined)?.shared
   return {
     roles,
-    rules: (obj.rules as TeamRules) ?? {},
+    rules: shared ? { shared } : {},
     error: dropped > 0 ? `${dropped} 条角色少了 id，已忽略` : null,
   }
 }

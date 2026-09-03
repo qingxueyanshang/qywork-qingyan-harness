@@ -5,7 +5,7 @@
  * 会话后，由当前会话决定 approve 或 revise；续发仍使用同一个 workflowId。
  */
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
+import { DEFAULT_MAX_CONCURRENT, parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
@@ -53,6 +53,12 @@ export const workflowTool: ToolSpec = {
           },
           required: ['id'],
         },
+      },
+      maxConcurrent: {
+        type: ['integer', 'null'],
+        description:
+          `同时最多跑几个 agent 节点，默认 ${DEFAULT_MAX_CONCURRENT}，超出的排队；` +
+          '图里互不依赖的节点数多于它时按需调高。只在首次调用填写。',
       },
       workflowId: { type: 'string', description: '续接既有 workflow 时使用首次返回的 ID' },
       checkpointId: { type: 'string', description: '当前待审查 checkpoint ID' },

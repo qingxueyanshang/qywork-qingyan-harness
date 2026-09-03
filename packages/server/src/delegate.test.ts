@@ -19,7 +19,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
+import {
+  type AgentEvent,
+  type ConversationId,
+  DEFAULT_MAX_CONCURRENT,
+  type EventEnvelope,
+  type RunId,
+} from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   appendMessage,
@@ -640,7 +646,7 @@ describe('workflow 从父会话账本续接', () => {
     const first = await invoke(
       1,
       { goal: '两批完成', nodes },
-      { kind: 'start', goal: '两批完成', nodes },
+      { kind: 'start', goal: '两批完成', nodes, maxConcurrent: DEFAULT_MAX_CONCURRENT },
     )
     expect(first.result.transition?.phase).toBe('waiting_review')
     expect(first.result.transition?.checkpointId).toBe('cp1')

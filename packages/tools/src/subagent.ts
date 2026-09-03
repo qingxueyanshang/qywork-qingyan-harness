@@ -25,6 +25,7 @@ export const subagentTool: ToolSpec = {
     '要并行铺开去查、去读、去验证时用这一种，不必先定义角色。' +
     '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
     '或 cli:<id> 派给本机安装的外部 agent CLI。' +
+    '一次发几个调用就几个并行，没有上限。' +
     '适合可以独立完成、产出是一段文字的整块工作；当前有未完成待办时，' +
     '必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
     '父待办仍需当前会话验收并用 write_todos 完成。可能需要原子会话返工时改用带 checkpoint 的 workflow；' +
@@ -86,7 +87,7 @@ export const subagentTool: ToolSpec = {
    * 用户看到的是第一格跑完第二格才开始。
    *
    * 边界：并发的子 agent 各自会动这个工作区的文件，这里不做冲突检测。
-   * 一张图里的节点本来就是这么跑的（编排器按 `maxConcurrent` 并发），
+   * 一张图里的节点本来就是这么跑的（编排器按调用参数 `maxConcurrent` 并发），
    * 派一件与派一张图必须是同一种行为，否则同一件事换个工具名就换一种语义。
    */
   parallelSafe: true,

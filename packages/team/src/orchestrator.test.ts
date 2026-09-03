@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { DEFAULT_MAX_CONCURRENT } from '@qywork/core'
 import { TeamOrchestrator, validatePlan } from './orchestrator.ts'
 import type { NodeResult, Role, TeamConfig } from './types.ts'
 
@@ -11,7 +12,10 @@ function role(id: string): Role {
   }
 }
 
-function deps(run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>) {
+function deps(
+  run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>,
+  maxConcurrent = DEFAULT_MAX_CONCURRENT,
+) {
   const order: string[] = []
   const prompts: string[] = []
   const events: Record<string, unknown>[] = []
@@ -23,6 +27,7 @@ function deps(run: (agent: string, prompt: string) => Promise<{ ok: boolean; out
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_t' as never,
+      maxConcurrent,
       emit: (event: Record<string, unknown>) => events.push(event),
       resolveCli: () => undefined,
       runBuiltin: async ({ role: r, prompt }: { role: Role; prompt: string }) => {
@@ -112,6 +117,7 @@ describe('编排执行', () => {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_model_pair' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
       emit: () => {},
       resolveCli: () => undefined,
       runBuiltin: async (input: { provider?: string; model?: string }) => {
@@ -256,10 +262,9 @@ describe('编排执行', () => {
     expect(d.order).toEqual(['a'])
   })
 
-  test('无依赖的节点可并行，受 maxConcurrent 限制', async () => {
+  test('无依赖的节点可并行，受调用参数 maxConcurrent 限制', async () => {
     const config: TeamConfig = {
       name: 't',
-      rules: { maxConcurrent: 2 },
       roles: [role('r')],
       plan: [
         { id: 'a', agent: 'r', task: '1' },
@@ -276,11 +281,34 @@ describe('编排执行', () => {
       await Bun.sleep(20)
       inFlight--
       return { ok: true, output: 'x' }
-    })
+    }, 2)
     const { receipts: results } = await new TeamOrchestrator(config, d.deps as never).run('目标')
 
     expect(results.filter((r) => r.status === 'done')).toHaveLength(4)
     expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  test('调用参数把并发放宽到 5 时五个节点同时启动', async () => {
+    const config: TeamConfig = {
+      name: 't',
+      roles: [role('r')],
+      plan: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+    }
+    let inFlight = 0
+    let peak = 0
+    const d = deps(async () => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await Bun.sleep(20)
+      inFlight--
+      return { ok: true, output: 'x' }
+    }, 5)
+
+    const { receipts } = await new TeamOrchestrator(config, d.deps as never).run('目标')
+
+    expect(receipts).toHaveLength(5)
+    expect(peak).toBe(5)
+    expect(d.events.some((event) => event.phase === 'queued')).toBe(false)
   })
 
   test('未配置并发闸时四个节点同时启动，超出的节点明确报等待槽位', async () => {
@@ -330,6 +358,7 @@ describe('主会话检查点', () => {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_checkpoint' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
       emit: () => {},
       resolveCli: () => undefined,
       runBuiltin: async ({ prompt }: { prompt: string }) => {
@@ -379,6 +408,7 @@ describe('主会话检查点', () => {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_revise' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
       emit: () => {},
       resolveCli: () => undefined,
       runBuiltin: async (input: { prompt: string; existingConversationId?: string }) => {
@@ -426,6 +456,7 @@ describe('主会话检查点', () => {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_missing_handle' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
       emit: () => {},
       resolveCli: () => undefined,
       runBuiltin: async () => {
@@ -473,6 +504,7 @@ describe('主会话检查点', () => {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_cli_no_resume' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
       emit: () => {},
       resolveCli: () => ({
         id: 'plain',
@@ -542,6 +574,7 @@ describe('成员子会话', () => {
         workspaceRoot: '/tmp',
         signal: new AbortController().signal,
         runId: 'rn_t' as never,
+        maxConcurrent: DEFAULT_MAX_CONCURRENT,
         emit: (e: Record<string, unknown>) => events.push(e),
         runBuiltin: async ({ role: r }: { role: Role }) => run(r.id),
       },

@@ -41,8 +41,11 @@ export interface WorkflowRevision {
   instruction: string
 }
 
+/** 首派没写 `maxConcurrent` 时同时跑几个 agent 节点。工具描述里写的就是这个值。 */
+export const DEFAULT_MAX_CONCURRENT = 4
+
 export type WorkflowCall =
-  | { kind: 'start'; goal: string; nodes: WorkflowNode[] }
+  | { kind: 'start'; goal: string; nodes: WorkflowNode[]; maxConcurrent: number }
   | {
       kind: 'review'
       workflowId: string
@@ -80,6 +83,8 @@ export interface WorkflowProjection {
   workflowId: string
   goal: string
   nodes: WorkflowNode[]
+  /** 首派调用参数里那个数。续接调用不再带它，调度并发始终按首派那次的约定。 */
+  maxConcurrent: number
   phase: WorkflowPhase
   checkpointId?: string
   /** 每个 agent 节点最近一次回执。 */
@@ -116,6 +121,13 @@ function structuredWireValue(value: unknown): unknown {
   }
 }
 
+/** 并发上限：缺省回默认值，非正整数回 null 交给调用方报错。 */
+function concurrencyOf(value: unknown): number | null {
+  if (nullish(value)) return DEFAULT_MAX_CONCURRENT
+  const n = typeof value === 'number' ? value : Number(text(value))
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
 function needsOf(value: unknown): string[] | null {
   if (nullish(value)) return []
   const structured = structuredWireValue(value)
@@ -146,6 +158,8 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
     }
     const goal = wireText(wireArgs.goal)
     if (!goal) return { ok: false, error: '这张图整体要达成什么，得写清楚' }
+    const maxConcurrent = concurrencyOf(wireArgs.maxConcurrent)
+    if (maxConcurrent === null) return { ok: false, error: 'maxConcurrent 必须是正整数' }
     if (!Array.isArray(wireArgs.nodes) || wireArgs.nodes.length === 0) {
       return { ok: false, error: '图里一个节点都没有' }
     }
@@ -195,10 +209,10 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         ...(model ? { model } : {}),
       })
     }
-    return { ok: true, call: { kind: 'start', goal, nodes } }
+    return { ok: true, call: { kind: 'start', goal, nodes, maxConcurrent } }
   }
 
-  for (const key of ['goal', 'nodes']) {
+  for (const key of ['goal', 'nodes', 'maxConcurrent']) {
     const omitted = key === 'nodes' ? omittedStructured(wireArgs[key]) : nullish(wireArgs[key])
     if (!omitted) return { ok: false, error: `审查动作不能带 ${key}` }
   }
@@ -397,6 +411,7 @@ export function foldWorkflow(
     workflowId,
     goal: parsed.call.goal,
     nodes: parsed.call.nodes,
+    maxConcurrent: parsed.call.maxConcurrent,
     phase: 'running',
     results: {},
     attempts: {},

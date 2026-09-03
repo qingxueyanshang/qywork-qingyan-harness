@@ -32,6 +32,8 @@ export interface OrchestratorDeps {
   }): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }>
   emit(event: AgentEvent): void
   runId: RunId
+  /** 一张图里同时最多几个 agent 节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
+  maxConcurrent: number
 }
 
 export interface OrchestratorReview {
@@ -58,7 +60,6 @@ export interface OrchestratorRunResult {
 
 const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
 const isAgent = (node: PlanNode): node is WorkflowAgentNode => node.kind !== 'checkpoint'
-const DEFAULT_MAX_CONCURRENT = 4
 
 export class TeamOrchestrator {
   constructor(
@@ -135,7 +136,7 @@ export class TeamOrchestrator {
       }
     }
 
-    const maxConcurrent = this.config.rules?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT
+    const maxConcurrent = this.deps.maxConcurrent
     const running = new Map<string, Promise<void>>()
     const announcedQueued = new Set<string>()
 

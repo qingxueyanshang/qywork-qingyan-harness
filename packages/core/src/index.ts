@@ -106,6 +106,7 @@ export {
 // workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各算一份。
 export {
   checkpointOutput,
+  DEFAULT_MAX_CONCURRENT,
   foldWorkflow,
   parseWorkflowCall,
   type RevisionClosureResult,
