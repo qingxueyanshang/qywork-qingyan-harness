@@ -83,6 +83,26 @@ describe('计划校验', () => {
     ).toThrow(/重复/)
   })
 
+  /**
+   * 每个节点的成败都要有检查点裁决。没有的话终态只能按「任一回执非 done 即失败」粗判，
+   * 而失败之后没有回流入口——这正是四个节点全部失败后只能新开子会话的形状。
+   */
+  test('节点后面没有检查点直接拒绝', () => {
+    expect(() => validatePlan([{ id: 'a', agent: 'dev', task: '干完' }], [role('dev')])).toThrow(
+      /节点 a 后面没有检查点/,
+    )
+    expect(() =>
+      validatePlan(
+        [
+          { id: 'a', agent: 'dev', task: '第一批' },
+          { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+          { id: 'b', agent: 'dev', task: '检查点之后还有一节', needs: ['cp'] },
+        ],
+        [role('dev')],
+      ),
+    ).toThrow(/节点 b 后面没有检查点/)
+  })
+
   test('不允许有分支绕过主会话检查点', () => {
     expect(() =>
       validatePlan(
@@ -111,6 +131,7 @@ describe('编排执行', () => {
           provider: '官方/中转',
           model: 'anthropic/claude-opus-5',
         },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['impl'] },
       ],
     }
     const d = {
@@ -141,6 +162,7 @@ describe('编排执行', () => {
       plan: [
         { id: 'design', agent: '设计', task: '设计：{goal}' },
         { id: 'impl', agent: '实现', task: '实现，参考：{input}', needs: ['design'] },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['impl'] },
       ],
     }
     const d = deps(ok)
@@ -169,6 +191,7 @@ describe('编排执行', () => {
       plan: [
         { id: 'design', agent: '设计', task: '设计：{goal}' },
         { id: 'review', agent: '评审', task: '复核一下', needs: ['design'] },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['review'] },
       ],
     }
     const d = deps(ok)
@@ -184,6 +207,7 @@ describe('编排执行', () => {
       plan: [
         { id: 'build', agent: '构建', task: '构建' },
         { id: 'test', agent: '测试', task: '跑测试', needs: ['build'], passInput: false },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['test'] },
       ],
     }
     const d = deps(ok)
@@ -203,6 +227,7 @@ describe('编排执行', () => {
       plan: [
         { id: 'a', agent: 'dev', task: '执行任务' },
         { id: 'b', agent: 'cli:nope', task: '交给外面那位' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
       ],
     }
     const d = deps(ok)
@@ -219,7 +244,10 @@ describe('编排执行', () => {
     const config: TeamConfig = {
       name: 't',
       roles: [role('dev')],
-      plan: [{ id: 'a', agent: 'dev', task: '执行任务' }],
+      plan: [
+        { id: 'a', agent: 'dev', task: '执行任务' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -231,7 +259,10 @@ describe('编排执行', () => {
       name: 't',
       rules: { shared: '禁止修改 CI 配置' },
       roles: [role('dev')],
-      plan: [{ id: 'a', agent: 'dev', task: '执行任务' }],
+      plan: [
+        { id: 'a', agent: 'dev', task: '执行任务' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
     }
     const d = deps(ok)
     await new TeamOrchestrator(config, d.deps as never).run('目标')
@@ -249,6 +280,7 @@ describe('编排执行', () => {
       plan: [
         { id: 'n1', agent: 'a', task: 'x' },
         { id: 'n2', agent: 'b', task: 'y', needs: ['n1'] },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['n2'] },
       ],
     }
     const d = deps(async (id) =>
@@ -271,6 +303,7 @@ describe('编排执行', () => {
         { id: 'b', agent: 'r', task: '2' },
         { id: 'c', agent: 'r', task: '3' },
         { id: 'd', agent: 'r', task: '4' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b', 'c', 'd'] },
       ],
     }
     let inFlight = 0
@@ -292,7 +325,10 @@ describe('编排执行', () => {
     const config: TeamConfig = {
       name: 't',
       roles: [role('r')],
-      plan: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+      plan: [
+        ...['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+        { id: 'cp', kind: 'checkpoint' as const, label: '审查', needs: ['a', 'b', 'c', 'd', 'e'] },
+      ],
     }
     let inFlight = 0
     let peak = 0
@@ -315,7 +351,10 @@ describe('编排执行', () => {
     const config: TeamConfig = {
       name: 't',
       roles: [role('r')],
-      plan: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+      plan: [
+        ...['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+        { id: 'cp', kind: 'checkpoint' as const, label: '审查', needs: ['a', 'b', 'c', 'd', 'e'] },
+      ],
     }
     let inFlight = 0
     let peak = 0
@@ -349,6 +388,7 @@ describe('主会话检查点', () => {
       { id: 'b', agent: 'r', task: '查 B' },
       { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a', 'b'] },
       { id: 'c', agent: 'r', task: '汇总 {input}', needs: ['review'] },
+      { id: 'final', kind: 'checkpoint', label: '收尾审查', needs: ['c'] },
     ],
   }
 
@@ -384,7 +424,9 @@ describe('主会话检查点', () => {
         revisions: [],
       },
     })
-    expect(second.phase).toBe('completed')
+    // 图以检查点收尾，所以批准 review 之后停在 final 等第二次审查，不直接完成。
+    expect(second.phase).toBe('waiting_review')
+    expect(second.checkpointId).toBe('final')
     expect(second.review?.decision).toBe('approve')
     expect(second.receipts.map((receipt) => receipt.nodeId)).toEqual(['c'])
     expect(calls[2]).toContain('回执合格')
@@ -448,6 +490,203 @@ describe('主会话检查点', () => {
     expect(resumed.at(-2)?.prompt).toContain('补充两条可核验证据')
     expect(resumed.at(-1)?.prompt).toContain('修订稿')
     expect(second.receipts.map((receipt) => receipt.conversationId)).toEqual(['cv_1', 'cv_2'])
+  })
+
+  /**
+   * 原始失败形状：四个 agent 节点全部失败，主会话仍在检查点批准，此后要让某一个节点
+   * 在它自己那条子会话里继续做。批准即解散的话，模型只剩 subagent，而那条每次新建会话。
+   */
+  test('批准之后仍能 revise：撤销该检查点的批准，并向原子会话续发', async () => {
+    const graph: TeamConfig = {
+      name: 'reflow',
+      roles: [role('r')],
+      plan: [
+        { id: 'build-glm', agent: 'r', task: '做 glm 版' },
+        { id: 'build-qwen', agent: 'r', task: '做 qwen 版' },
+        {
+          id: 'audit-builds',
+          kind: 'checkpoint',
+          label: '主会话验收',
+          needs: ['build-glm', 'build-qwen'],
+        },
+      ],
+    }
+    const resumed: Array<{ prompt: string; existing?: string }> = []
+    let fresh = 0
+    const d = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_reflow' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async (input: { prompt: string; existingConversationId?: string }) => {
+        resumed.push({
+          prompt: input.prompt,
+          ...(input.existingConversationId ? { existing: input.existingConversationId } : {}),
+        })
+        if (!input.existingConversationId) {
+          fresh += 1
+          return {
+            ok: false,
+            output: '半成品',
+            error: '步数用尽，任务没做完',
+            conversationId: `cv_${fresh}`,
+          }
+        }
+        return { ok: true, output: '修好了', conversationId: input.existingConversationId }
+      },
+    }
+
+    const first = await new TeamOrchestrator(graph, d as never).run('四个模型各做一版')
+    expect(first.phase).toBe('waiting_review')
+    const results = Object.fromEntries(first.receipts.map((receipt) => [receipt.nodeId, receipt]))
+    expect(results['build-qwen']?.status).toBe('failed')
+
+    // 对含失败回执的检查点批准：终态不再由回执粗判，approve 把接受了什么列出来。
+    const approved = await new TeamOrchestrator(graph, d as never).run('四个模型各做一版', {
+      results,
+      approvals: {},
+      checkpointId: 'audit-builds',
+      review: {
+        checkpointId: 'audit-builds',
+        decision: 'approve',
+        note: '均已产生代码，现批准',
+        revisions: [],
+      },
+    })
+    expect(approved.phase).toBe('completed')
+    expect(approved.review?.acceptedFailures?.map((item) => item.nodeId).sort()).toEqual([
+      'build-glm',
+      'build-qwen',
+    ])
+    expect(approved.review?.acceptedFailures?.[0]?.reason).toContain('步数用尽')
+
+    const approvals = { 'audit-builds': '已接受的上游回执' }
+    const revised = await new TeamOrchestrator(graph, d as never).run('四个模型各做一版', {
+      results,
+      approvals,
+      review: {
+        checkpointId: 'audit-builds',
+        decision: 'revise',
+        note: '继续优化 qwen 版',
+        revisions: [{ nodeId: 'build-qwen', instruction: '按 bug 列表继续改' }],
+      },
+    })
+    expect(revised.phase).toBe('waiting_review')
+    expect(revised.checkpointId).toBe('audit-builds')
+    expect(revised.receipts.map((receipt) => receipt.nodeId)).toEqual(['build-qwen'])
+    // 续发到首派那条子会话，不是新开一条。
+    expect(resumed.at(-1)?.existing).toBe(results['build-qwen']?.conversationId)
+    expect(resumed.at(-1)?.prompt).toContain('按 bug 列表继续改')
+  })
+
+  test('中断时终态是 failed，没被中断就是 completed', async () => {
+    const graph: TeamConfig = {
+      name: 'abort',
+      roles: [role('r')],
+      plan: [
+        { id: 'a', agent: 'r', task: '做' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
+    }
+    const controller = new AbortController()
+    controller.abort()
+    const d = {
+      workspaceRoot: '/tmp',
+      signal: controller.signal,
+      runId: 'rn_abort' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async () => ({ ok: true, output: '不该执行' }),
+    }
+    expect((await new TeamOrchestrator(graph, d as never).run('目标')).phase).toBe('failed')
+
+    const done = await new TeamOrchestrator(graph, {
+      ...d,
+      signal: new AbortController().signal,
+    } as never).run('目标', {
+      results: {
+        a: {
+          nodeId: 'a',
+          agent: 'r',
+          label: 'r',
+          status: 'failed',
+          output: '',
+          error: '没做完',
+          durationMs: 1,
+        },
+      },
+      approvals: {},
+      checkpointId: 'cp',
+      review: { checkpointId: 'cp', decision: 'approve', note: '接受', revisions: [] },
+    })
+    expect(done.phase).toBe('completed')
+  })
+
+  /**
+   * 上一轮被中断时，只有部分节点留下了带子会话 id 的回执。revise 要能对留下回执的那个
+   * 续发，同时让没跑过的节点正常起跑；要求检查点回执齐全的话，中断之后整张图只能重派。
+   */
+  test('检查点回执不齐时仍能 revise：有回执的续发，没跑过的新起', async () => {
+    const graph: TeamConfig = {
+      name: 'partial',
+      roles: [role('r')],
+      plan: [
+        { id: 'a', agent: 'r', task: '做 A' },
+        { id: 'b', agent: 'r', task: '做 B' },
+        { id: 'c', agent: 'r', task: '做 C' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b', 'c'] },
+      ],
+    }
+    const seen: Array<{ nodeId: string; existing?: string }> = []
+    const d = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_partial' as never,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async (input: { prompt: string; existingConversationId?: string }) => {
+        seen.push({
+          nodeId: input.prompt.includes('做 A') ? 'a' : 'c',
+          ...(input.existingConversationId ? { existing: input.existingConversationId } : {}),
+        })
+        return {
+          ok: true,
+          output: '产出',
+          conversationId: input.existingConversationId ?? 'cv_new',
+        }
+      },
+    }
+    const receipt = (nodeId: string) => ({
+      nodeId,
+      agent: 'r',
+      label: 'r',
+      status: 'failed' as const,
+      output: '',
+      error: '调用中断',
+      durationMs: 0,
+      conversationId: `cv_${nodeId}`,
+    })
+
+    const result = await new TeamOrchestrator(graph, d as never).run('目标', {
+      results: { a: receipt('a'), b: receipt('b') },
+      approvals: {},
+      review: {
+        checkpointId: 'cp',
+        decision: 'revise',
+        note: '接着做',
+        revisions: [{ nodeId: 'a', instruction: '已完成则复述最终产出，否则继续' }],
+      },
+    })
+
+    expect(result.phase).toBe('waiting_review')
+    expect(seen.find((call) => call.nodeId === 'a')?.existing).toBe('cv_a')
+    expect(seen.find((call) => call.nodeId === 'c')?.existing).toBeUndefined()
+    // b 的回执没被点名也没被作废，检查点直接用它。
+    expect(result.receipts.map((r) => r.nodeId).sort()).toEqual(['a', 'c'])
   })
 
   test('上一轮缺少 conversationId 时明确失败，不偷偷新建会话', async () => {
@@ -584,7 +823,10 @@ describe('成员子会话', () => {
   const cfg: TeamConfig = {
     name: 't',
     roles: [role('dev')],
-    plan: [{ id: 'n1', agent: 'dev', task: '执行任务' }],
+    plan: [
+      { id: 'n1', agent: 'dev', task: '执行任务' },
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['n1'] },
+    ],
   }
 
   test('内置后端返回了会话 id，就出现在 done 事件上', async () => {

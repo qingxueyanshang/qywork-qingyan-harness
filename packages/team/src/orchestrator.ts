@@ -80,20 +80,29 @@ export class TeamOrchestrator {
 
     if (state.review) {
       const review = state.review
-      if (state.checkpointId !== review.checkpointId) {
-        throw new Error(
-          `当前待审查检查点是 ${state.checkpointId ?? '无'}，不是 ${review.checkpointId}`,
-        )
-      }
       const checkpoint = plan.find(
         (node): node is WorkflowCheckpointNode =>
           isCheckpoint(node) && node.id === review.checkpointId,
       )
       if (!checkpoint) throw new Error(`找不到检查点 ${review.checkpointId}`)
-      if (approvals.has(checkpoint.id))
-        throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
-      if (!checkpoint.needs.every((id) => this.dependencyResolved(id, results, approvals))) {
-        throw new Error(`检查点 ${checkpoint.id} 的上游回执尚未齐全`)
+      /*
+       * 三道前置条件只约束 approve：必须是当前检查点、不能重复批准、上游回执齐全。
+       *
+       * revise 一条都不设：批准之后要能返工（否则一次 approve 等于解散整张图），
+       * 上一轮被中断、只有部分节点留下回执时也要能对留下回执的那个续发。
+       * revise 自己的前置条件在下面——被修订节点必须有带会话句柄的上一轮回执。
+       */
+      if (review.decision === 'approve') {
+        if (state.checkpointId !== review.checkpointId) {
+          throw new Error(
+            `当前待审查检查点是 ${state.checkpointId ?? '无'}，不是 ${review.checkpointId}`,
+          )
+        }
+        if (approvals.has(checkpoint.id))
+          throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
+        if (!checkpoint.needs.every((id) => this.dependencyResolved(id, results, approvals))) {
+          throw new Error(`检查点 ${checkpoint.id} 的上游回执尚未齐全`)
+        }
       }
 
       appliedReview = {
@@ -102,6 +111,14 @@ export class TeamOrchestrator {
         note: review.note,
       }
       if (review.decision === 'approve') {
+        const acceptedFailures = checkpoint.needs
+          .map((id) => results.get(id))
+          .filter((result): result is NodeResult => !!result && result.status !== 'done')
+          .map((result) => ({
+            nodeId: result.nodeId,
+            reason: result.error || `状态 ${result.status}`,
+          }))
+        if (acceptedFailures.length > 0) appliedReview = { ...appliedReview, acceptedFailures }
         approvals.set(
           checkpoint.id,
           checkpointOutput(checkpoint, Object.fromEntries(results), review.note),
@@ -119,6 +136,7 @@ export class TeamOrchestrator {
           if (!prior) throw new Error(`节点 ${revision.nodeId} 没有可续接的上一轮回执`)
           correction.set(revision.nodeId, revision.instruction)
         }
+        for (const id of closure.revokedCheckpointIds) approvals.delete(id)
 
         // 被修订节点和它在本批次内的下游都失效。先保留会话句柄，再删投影结果；
         // 这样是向原会话续发，不是另起一条看似相同的新任务。
@@ -168,6 +186,9 @@ export class TeamOrchestrator {
           (node.needs ?? []).every((id) => this.dependencyResolved(id, results, approvals)),
       )
 
+      // 跳过不经过 await，本轮没有任何 Promise 可等。不重新入循环的话，跳过的节点
+      // 下游那个检查点这一轮不会被重新判定就绪，会被当成「依赖无法继续」抛出去。
+      let skippedThisPass = false
       for (const node of ready) {
         if (running.size >= maxConcurrent) {
           // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
@@ -195,6 +216,7 @@ export class TeamOrchestrator {
           }
           results.set(node.id, skipped)
           receipts.push(skipped)
+          skippedThisPass = true
           continue
         }
 
@@ -219,6 +241,7 @@ export class TeamOrchestrator {
         await Promise.race(running.values())
         continue
       }
+      if (skippedThisPass) continue
 
       const unresolvedAgents = plan.filter(
         (node): node is WorkflowAgentNode => isAgent(node) && !results.has(node.id),
@@ -226,11 +249,11 @@ export class TeamOrchestrator {
       const unresolvedCheckpoints = plan.filter(
         (node) => isCheckpoint(node) && !approvals.has(node.id),
       )
+      // 每个节点都在某个检查点下游（`validatePlan` 保证），所以走到这里说明每一份回执
+      // 都已被某次 approve 接受或被 revise 重跑过。终态只由「是否被中断」决定，
+      // 中断那条在循环开头返回 failed。
       if (unresolvedAgents.length === 0 && unresolvedCheckpoints.length === 0) {
-        const phase = [...results.values()].some((result) => result.status !== 'done')
-          ? 'failed'
-          : 'completed'
-        return this.finish(phase, receipts, appliedReview)
+        return this.finish('completed', receipts, appliedReview)
       }
       throw new Error(
         `依赖无法继续：${[...unresolvedAgents, ...unresolvedCheckpoints].map((node) => node.id).join('、')}`,
@@ -530,6 +553,15 @@ export function validatePlan(plan: PlanNode[], roles: Role[]): void {
       if (!ancestorOf(plan, node.id, checkpoint.id) && !ancestorOf(plan, checkpoint.id, node.id)) {
         throw new Error(`节点 ${node.id} 会绕过检查点 ${checkpoint.id}`)
       }
+    }
+  }
+  // 每个 agent 节点的成败都必须由某个检查点裁决。没有下游检查点的节点谁都没验收过，
+  // 终态只能靠「任一回执非 done 即失败」这种粗判，而失败之后没有回流入口。
+  // 不需要验收的一次性派活归 subagent，不画图。
+  for (const node of plan) {
+    if (isCheckpoint(node)) continue
+    if (!checkpoints.some((checkpoint) => ancestorOf(plan, node.id, checkpoint.id))) {
+      throw new Error(`节点 ${node.id} 后面没有检查点，无法验收`)
     }
   }
 }

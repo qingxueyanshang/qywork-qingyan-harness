@@ -24,6 +24,7 @@ import {
   type ConversationId,
   DEFAULT_MAX_CONCURRENT,
   type EventEnvelope,
+  foldWorkflow,
   type RunId,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
@@ -581,6 +582,188 @@ describe('workflow 从父会话账本续接', () => {
     expect(result.transition?.receipts[0]?.error).toContain('不属于当前工作流节点')
     expect(result.transition?.receipts[0]?.conversationId).toBe(ordinary.id)
     expect(listRuns(store, ordinary.id)).toHaveLength(0)
+  })
+
+  /**
+   * 原始失败形状：agent 节点全部失败，主会话仍在检查点批准，此后要让其中一个节点
+   * 在它自己那条子会话里继续做。批准即解散时模型只剩 subagent，而那条每次新建会话。
+   */
+  test('approve 之后 revise 仍向首派那条子会话续发', async () => {
+    const parent = conversation()
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-reflow',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const nodes = [
+      { id: 'build-glm', kind: 'agent' as const, agent: 'ad-hoc', task: '做 glm 版' },
+      { id: 'build-qwen', kind: 'agent' as const, agent: 'ad-hoc', task: '做 qwen 版' },
+      {
+        id: 'audit-builds',
+        kind: 'checkpoint' as const,
+        label: '主会话验收',
+        needs: ['build-glm', 'build-qwen'],
+      },
+    ]
+    const invoke = async (
+      seq: number,
+      args: Record<string, unknown>,
+      call: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]['call'],
+    ) => {
+      const step = appendStep(store, {
+        runId: run.id,
+        seq,
+        kind: 'tool_action',
+        toolName: 'workflow',
+        toolCallId: `call_reflow_${seq}`,
+        status: 'running',
+        payload: { kind: 'tool_call', args },
+      })
+      const result = await delegate(parent).runGraph({
+        call,
+        runId: run.id,
+        stepId: step.id,
+        signal: new AbortController().signal,
+      })
+      if (!result.transition) throw new Error(result.error ?? '没有 transition')
+      settleToolStep(store, step.id, result.ok ? 'success' : 'failure', {
+        kind: 'tool_result',
+        args,
+        outcome: {
+          status: result.ok ? 'success' : 'failure',
+          executed: true,
+          message: result.transition.phase,
+          data: result.transition as unknown as Record<string, unknown>,
+        },
+      })
+      return { step, result }
+    }
+
+    script = [
+      () => new Response(textTurn('glm 初稿'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('qwen 初稿'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('qwen 修订稿'), { headers: SSE_HEADERS }),
+    ]
+    const startArgs = { goal: '各做一版', nodes }
+    const first = await invoke(1, startArgs, {
+      kind: 'start',
+      goal: '各做一版',
+      nodes,
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
+    })
+    expect(first.result.transition?.phase).toBe('waiting_review')
+    const qwenChild = first.result.transition?.receipts.find(
+      (receipt) => receipt.nodeId === 'build-qwen',
+    )?.conversationId
+    expect(qwenChild).toBeTruthy()
+
+    const approveArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'audit-builds',
+      decision: 'approve' as const,
+      note: '均已产生代码，现批准',
+    }
+    const approved = await invoke(2, approveArgs, {
+      kind: 'review',
+      ...approveArgs,
+      revisions: [],
+    })
+    expect(approved.result.transition?.phase).toBe('completed')
+
+    const reviseArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'audit-builds',
+      decision: 'revise' as const,
+      note: '继续优化 qwen 版',
+      revisions: [{ nodeId: 'build-qwen', instruction: '按 bug 列表继续改' }],
+    }
+    const revised = await invoke(3, reviseArgs, { kind: 'review', ...reviseArgs })
+    expect(revised.result.transition?.phase).toBe('waiting_review')
+    expect(revised.result.transition?.checkpointId).toBe('audit-builds')
+    expect(revised.result.transition?.receipts.map((receipt) => receipt.nodeId)).toEqual([
+      'build-qwen',
+    ])
+    // 续发到首派那条子会话，不是新开一条。
+    expect(revised.result.transition?.receipts[0]?.conversationId).toBe(qwenChild)
+    expect(
+      listMessages(store, qwenChild as ConversationId)
+        .filter((message) => message.role === 'user')
+        .at(-1)?.content,
+    ).toContain('按 bug 列表继续改')
+
+    const folded = foldWorkflow(
+      listSteps(store, run.id)
+        .filter((step) => step.toolName === 'workflow')
+        .map((step) => ({
+          stepId: step.id,
+          ...(step.payload?.kind === 'tool_result' && step.payload.args
+            ? { args: step.payload.args }
+            : {}),
+          ...(step.payload?.kind === 'tool_result' ? { outcome: step.payload.outcome } : {}),
+          status: step.status === 'success' ? ('success' as const) : ('failure' as const),
+        })),
+      first.step.id,
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('waiting_review')
+    expect(folded.projection.approvals['audit-builds']).toBeUndefined()
+    expect(script).toHaveLength(0)
+  })
+
+  test('首派落失败终态之后 review 报重新派发，不再说不是待审查状态', async () => {
+    const parent = conversation()
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-dead',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const args = {
+      goal: '目标',
+      nodes: [
+        { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '做' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
+    }
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_dead',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    // 进程退出收尾把 running 的 step 原地落成没有 transition 数据的失败终态。
+    settleToolStep(store, step.id, 'failure', {
+      kind: 'tool_result',
+      args,
+      outcome: { status: 'failure', executed: true, message: '上一轮在工具执行期间中断' },
+    })
+
+    const result = await delegate(parent).runGraph({
+      call: {
+        kind: 'review',
+        workflowId: step.id,
+        checkpointId: 'cp',
+        decision: 'revise',
+        note: '继续',
+        revisions: [{ nodeId: 'a', instruction: '继续' }],
+      },
+      runId: run.id,
+      stepId: 'st_dead_review',
+      signal: new AbortController().signal,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('已失败，请重新派发')
   })
 
   test('start → revise → approve 下一批 → approve 完成全程从同一父账本推进', async () => {
