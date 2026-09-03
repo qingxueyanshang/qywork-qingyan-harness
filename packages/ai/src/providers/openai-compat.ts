@@ -12,6 +12,8 @@
  *    依赖前缀逐字节稳定，所以工具排序和消息装配的确定性在这里比在 Anthropic 更关键。
  */
 
+import { stat } from 'node:fs/promises'
+import { basename } from 'node:path'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
@@ -46,26 +48,48 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
    * 不会因为这个改动开始收到它不认识的字段。
    */
-  get transmits(): { effort: boolean; video: boolean } {
+  get transmits(): { effort: boolean; video: boolean; mediaPaths?: boolean } {
     // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
     // 恒 true 会让 `qy probe` 的 effort 探针在发不出该字段的模型上全部假通过。
-    return { effort: effortIsTransmittable(this.spec), video: true }
+    return {
+      effort: effortIsTransmittable(this.spec),
+      video: true,
+      ...(this.dashScopeMedia ? { mediaPaths: true } : {}),
+    }
   }
   readonly spec: ModelSpec
   private readonly client: OpenAI
+  private readonly apiKey: string
+  private readonly baseUrl: string
+  private readonly dashScopeMedia: boolean
+  private readonly uploadedMedia = new Map<string, Promise<string>>()
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
+    this.apiKey = profile.apiKey || 'unset'
+    this.baseUrl = normalizeBaseUrl(profile.baseUrl)
+    this.dashScopeMedia = isDashScopeMediaEndpoint(this.baseUrl)
     this.client = new OpenAI({
-      apiKey: profile.apiKey || 'unset',
+      apiKey: this.apiKey,
       ...PROVIDER_HTTP,
-      baseURL: normalizeBaseUrl(profile.baseUrl),
+      baseURL: this.baseUrl,
       ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
     })
   }
 
   async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-    const body = this.buildBody(req)
+    let prepared: ChatRequest
+    let body: ReturnType<OpenAICompatAdapter['buildBody']>
+    let mediaHeaders: Record<string, string>
+    try {
+      prepared = this.dashScopeMedia ? await this.prepareDashScopeMedia(req) : req
+      body = this.buildBody(prepared)
+      mediaHeaders = dashScopeMediaHeaders(this.dashScopeMedia, prepared)
+    } catch (err) {
+      // 本地读取和临时上传都发生在主模型请求之前；失败时不能先报 request_prepared，
+      // 否则上层会把一条尚未发出的模型请求标成 sent。
+      throw classifyProviderError('openai_chat_completions', err)
+    }
 
     yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, this.spec.density) }
 
@@ -90,8 +114,16 @@ export class OpenAICompatAdapter implements LlmAdapter {
         { ...body, stream: true, stream_options: { include_usage: true } } as never,
         {
           ...(req.signal ? { signal: req.signal } : {}),
-          ...(req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id'
-            ? { headers: { 'x-grok-conv-id': req.cacheKey } }
+          ...(Object.keys(mediaHeaders).length ||
+          (req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id')
+            ? {
+                headers: {
+                  ...mediaHeaders,
+                  ...(req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id'
+                    ? { 'x-grok-conv-id': req.cacheKey }
+                    : {}),
+                },
+              }
             : {}),
         },
       )) as unknown as AsyncIterable<CompatChunk>
@@ -263,6 +295,26 @@ export class OpenAICompatAdapter implements LlmAdapter {
         : {}),
     }
   }
+
+  private async prepareDashScopeMedia(req: ChatRequest): Promise<ChatRequest> {
+    return prepareDashScopeMedia(req, async (media) => {
+      const key = `${req.model}\0${media.path}\0${media.size}\0${media.mtimeMs}`
+      let uploaded = this.uploadedMedia.get(key)
+      if (!uploaded) {
+        uploaded = uploadDashScopeMedia({
+          apiKey: this.apiKey,
+          baseUrl: this.baseUrl,
+          model: req.model,
+          path: media.path,
+          size: media.size,
+          ...(req.signal ? { signal: req.signal } : {}),
+        })
+        this.uploadedMedia.set(key, uploaded)
+        void uploaded.catch(() => this.uploadedMedia.delete(key))
+      }
+      return uploaded
+    })
+  }
 }
 
 /**
@@ -285,6 +337,166 @@ export function normalizeBaseUrl(raw: string | undefined): string {
   const url = (raw ?? '').trim().replace(/\/+$/, '')
   if (!url) return 'https://api.openai.com/v1'
   return /\/v\d+$/i.test(url) ? url : `${url}/v1`
+}
+
+/** Base64 会增加约三分之一，7 MB 原文件可稳定落在百炼的 10 MB Data URL 上限内。 */
+export const DASHSCOPE_INLINE_SOURCE_BYTES = 7 * 1024 * 1024
+/** 百炼临时文件服务的官方硬上限；模型/凭证仍可返回更小的动态上限。 */
+const DASHSCOPE_TEMP_FILE_MAX_BYTES = 1024 * 1024 * 1024
+
+export async function prepareDashScopeMedia(
+  req: ChatRequest,
+  upload: (media: { path: string; size: number; mtimeMs: number }) => Promise<string>,
+): Promise<ChatRequest> {
+  const messages = await Promise.all(
+    req.messages.map(async (message) => {
+      if (typeof message.content === 'string') return message
+      const content = await Promise.all(
+        message.content.map(async (block) => {
+          if (block.type === 'text' || block.source.kind !== 'path') return block
+          const info = await stat(block.source.path)
+          if (info.size <= DASHSCOPE_INLINE_SOURCE_BYTES) {
+            const data = Buffer.from(await Bun.file(block.source.path).arrayBuffer()).toString(
+              'base64',
+            )
+            return { ...block, source: { kind: 'base64' as const, data } }
+          }
+          const url = await upload({
+            path: block.source.path,
+            size: info.size,
+            mtimeMs: info.mtimeMs,
+          })
+          return { ...block, source: { kind: 'url' as const, url } }
+        }),
+      )
+      return { ...message, content }
+    }),
+  )
+  return { ...req, messages }
+}
+
+export function isDashScopeMediaEndpoint(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase()
+    return (
+      host === 'dashscope.aliyuncs.com' ||
+      host === 'dashscope-intl.aliyuncs.com' ||
+      host === 'dashscope-us.aliyuncs.com' ||
+      host.endsWith('.maas.aliyuncs.com')
+    )
+  } catch {
+    return false
+  }
+}
+
+export function dashScopeMediaHeaders(enabled: boolean, req: ChatRequest): Record<string, string> {
+  const hasUri = req.messages.some(
+    (message) =>
+      typeof message.content !== 'string' &&
+      message.content.some(
+        (block) =>
+          block.type !== 'text' &&
+          block.source.kind === 'url' &&
+          block.source.url.startsWith('oss://'),
+      ),
+  )
+  return enabled && hasUri ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}
+}
+
+interface DashScopeUploadPolicy {
+  policy: string
+  signature: string
+  upload_dir: string
+  upload_host: string
+  max_file_size_mb?: string | number
+  oss_access_key_id: string
+  x_oss_object_acl: string
+  x_oss_forbid_overwrite: string
+}
+
+export async function uploadDashScopeMedia(input: {
+  apiKey: string
+  baseUrl: string
+  model: string
+  path: string
+  size: number
+  signal?: AbortSignal
+  fetcher?: typeof fetch
+}): Promise<string> {
+  if (input.size > DASHSCOPE_TEMP_FILE_MAX_BYTES) {
+    throw new Error('媒体超过百炼临时文件协议的 1 GB 上限')
+  }
+  const send = input.fetcher ?? fetch
+  const source = new URL(input.baseUrl)
+  // 工作区专属域名的 Key 与 workspace 绑定。官方 Base URL 规则要求只替换路径，
+  // 不能擅自切回 dashscope.aliyuncs.com，否则同一把 Key 可能失去所属空间。
+  const policyUrl = new URL('/api/v1/uploads', source.origin)
+  policyUrl.searchParams.set('action', 'getPolicy')
+  policyUrl.searchParams.set('model', input.model)
+  const policyResponse = await send(policyUrl, {
+    headers: {
+      authorization: `Bearer ${input.apiKey}`,
+      'content-type': 'application/json',
+    },
+    ...(input.signal ? { signal: input.signal } : {}),
+  })
+  if (!policyResponse.ok) throw await providerHttpError(policyResponse)
+  const payload = (await policyResponse.json()) as { data?: Partial<DashScopeUploadPolicy> }
+  const policy = payload.data
+  if (!policy) throw new Error('百炼上传凭证响应缺少 data')
+  const required = [
+    'policy',
+    'signature',
+    'upload_dir',
+    'upload_host',
+    'oss_access_key_id',
+    'x_oss_object_acl',
+    'x_oss_forbid_overwrite',
+  ] as const
+  for (const field of required) {
+    if (typeof policy[field] !== 'string' || !policy[field]) {
+      throw new Error(`百炼上传凭证响应缺少 ${field}`)
+    }
+  }
+  const ready = policy as DashScopeUploadPolicy
+  const maxFileSizeMb = Number(ready.max_file_size_mb)
+  if (
+    Number.isFinite(maxFileSizeMb) &&
+    maxFileSizeMb > 0 &&
+    input.size > maxFileSizeMb * 1024 * 1024
+  ) {
+    throw new Error(`媒体超过百炼上传凭证允许的 ${maxFileSizeMb} MB`)
+  }
+
+  const uploadUrl = new URL(ready.upload_host)
+  if (uploadUrl.protocol !== 'https:' || !uploadUrl.hostname.endsWith('.aliyuncs.com')) {
+    throw new Error('百炼上传凭证返回了无效的 OSS 地址')
+  }
+  const key = `${ready.upload_dir}/${crypto.randomUUID().slice(0, 8)}-${basename(input.path)}`
+  const form = new FormData()
+  form.set('OSSAccessKeyId', ready.oss_access_key_id)
+  form.set('Signature', ready.signature)
+  form.set('policy', ready.policy)
+  form.set('x-oss-object-acl', ready.x_oss_object_acl)
+  form.set('x-oss-forbid-overwrite', ready.x_oss_forbid_overwrite)
+  form.set('key', key)
+  form.set('success_action_status', '200')
+  form.set('file', Bun.file(input.path), basename(input.path))
+  const uploadResponse = await send(uploadUrl, {
+    method: 'POST',
+    body: form,
+    ...(input.signal ? { signal: input.signal } : {}),
+  })
+  if (!uploadResponse.ok) throw await providerHttpError(uploadResponse)
+  return `oss://${key}`
+}
+
+async function providerHttpError(response: Response): Promise<Error> {
+  const message = (await response.text().catch(() => '')).trim()
+  return Object.assign(new Error(message || `HTTP ${response.status}`), {
+    status: response.status,
+    headers: response.headers,
+  })
 }
 
 /**
@@ -516,12 +728,22 @@ function toMultimodal(content: Exclude<WireMessage['content'], string>) {
     if (b.type === 'image') {
       return {
         type: 'image_url',
-        image_url: { url: `data:${b.mimeType};base64,${imageData(b.source)}` },
+        image_url: {
+          url:
+            b.source.kind === 'url'
+              ? b.source.url
+              : `data:${b.mimeType};base64,${imageData(b.source)}`,
+        },
       }
     }
     return {
       type: 'video_url',
-      video_url: { url: `data:${b.mimeType};base64,${videoData(b.source)}` },
+      video_url: {
+        url:
+          b.source.kind === 'url'
+            ? b.source.url
+            : `data:${b.mimeType};base64,${videoData(b.source)}`,
+      },
     }
   })
 }

@@ -770,8 +770,8 @@ export function setExtraEnabled(
  * 桌面端拖入和原生选择器给的是源文件路径，那条路在 `Composer` 里就地组装，
  * 一个字节都不搬。
  *
- * 走原始字节而不是 base64 JSON：base64 会让传输体积涨三分之一，
- * 而这是本机回环，没有任何理由为它多付这一份。
+ * 直接用 File 作请求体，不先转 ArrayBuffer。浏览器和服务端都按流处理，附件大小
+ * 不会变成同等大小的临时内存副本。
  *
  * 带上会话 id：附件落在 `~/.qywork/attachments/<会话id>/`，删会话时整个目录一起删。
  */
@@ -785,7 +785,7 @@ export async function uploadAttachment(file: File, conversationId: string): Prom
         // 文件名可能带中文与空格，必须编码后再进 header。
         'x-attachment-name': encodeURIComponent(file.name),
       },
-      body: await file.arrayBuffer(),
+      body: file,
     },
   )
   return res.attachment

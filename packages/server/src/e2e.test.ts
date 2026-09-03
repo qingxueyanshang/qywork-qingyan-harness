@@ -322,7 +322,7 @@ describe('HTTP 面', () => {
    * 组装，不经过这个接口。所以这里测的是「剪贴板位图 / 浏览器上传」那一条：
    * 落进会话自己的目录，删会话时整个目录一起走。
    */
-  test('附件上传：落进会话目录，回可直接发的 Attachment，超限 413', async () => {
+  test('附件上传：流式落进会话目录，回可直接发的 Attachment', async () => {
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
@@ -380,20 +380,26 @@ describe('HTTP 面', () => {
     const third = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
     expect(second.attachment.path).not.toBe(third.attachment.path)
 
-    // 超限挡在写盘之前。
-    const tooBig = await fetch(
-      `${base()}/api/attachments?conversation=${encodeURIComponent(cid)}`,
-      {
-        method: 'POST',
-        headers: {
-          ...auth(),
-          'content-type': 'application/octet-stream',
-          'x-attachment-name': 'b.bin',
-        },
-        body: new Uint8Array(10 * 1024 * 1024 + 1),
-      },
+    // qywork 不用统一媒体阈值替 Provider 裁决。
+    const large = new Uint8Array(10 * 1024 * 1024 + 1)
+    large[0] = 7
+    large[large.length - 1] = 9
+    const largeResponse = await post('clip.mp4', large)
+    expect(largeResponse.status).toBe(200)
+    const largeAttachment = (await largeResponse.json()) as {
+      attachment: { path: string; size: number }
+    }
+    expect(largeAttachment.attachment.size).toBe(large.length)
+    const storedLarge = await readFile(largeAttachment.attachment.path)
+    expect(storedLarge.byteLength).toBe(large.length)
+    expect(storedLarge[0]).toBe(7)
+    expect(storedLarge[storedLarge.length - 1]).toBe(9)
+    // 缩略图回读仍有自己的浏览器内存保护；它不影响原文件落盘和模型发送。
+    const largeRaw = await fetch(
+      `${base()}/api/attachments/raw?path=${encodeURIComponent(largeAttachment.attachment.path)}`,
+      { headers: auth() },
     )
-    expect(tooBig.status).toBe(413)
+    expect(largeRaw.status).toBe(413)
 
     /*
      * 删会话把目录一起带走——这就是「附件属于会话」的全部实现，

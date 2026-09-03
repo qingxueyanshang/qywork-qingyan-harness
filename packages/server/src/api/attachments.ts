@@ -15,11 +15,11 @@
  * 放在工作区里（`.qy/attachments/`）不行：会话在全局库、附件在项目里，删掉项目目录
  * 或换工作区之后会话还在而附件全断，历史只剩一行「附件已不存在」。
  *
- * **大小上限挡在写盘之前。** 超限直接 413 且**一个字节都不写**。写一半再删的话，中途崩溃就会留下垃
- * 圾，而现在没有任何清理路径会回收那些残留。
+ * 请求体直接流式写入同目录临时文件，完成后原子改名。不要先读进 ArrayBuffer；浏览器兜底上传
+ * 的文件大小不应决定模型协议的媒体限制，且整块缓冲会让大视频占用等量内存。
  */
 
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { type Attachment, attachmentTypeOf, toPosixPath } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
@@ -27,18 +27,10 @@ import type { ApiHandler } from './types.ts'
 import { json } from './types.ts'
 
 /**
- * 单个附件上限 10 MB。
+ * 缩略图回读的上限，4 MB。
  *
- * 图片要整块进模型请求体，10 MB 的 base64 约 13 MB，已经接近多数 provider 的单请求
- * 上限。再大就该让用户先压缩，而不是让他等一次注定失败的请求。
- */
-const MAX_BYTES = 10 * 1024 * 1024
-
-/**
- * 预览回读的上限，4 MB。
- *
- * 与 `files.ts` 的 `MAX_INLINE_BYTES` 是同一个数：同一张图走文件预览和走这条路
- * 不该给出两种答案。超过就不给字节，界面退回文件名 chip。
+ * 这不是模型输入上限：只约束 `attachmentBlobUrl()` 为一张缩略图在浏览器内存里
+ * 创建多大的 Blob。原始附件照常保留，发送时由 Provider 协议决定内联还是上传。
  */
 const MAX_PREVIEW_BYTES = 4 * 1024 * 1024
 
@@ -96,25 +88,43 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
   const mime = req.headers.get('content-type') ?? 'application/octet-stream'
   const name = safeName(decodeURIComponent(req.headers.get('x-attachment-name') ?? ''))
 
-  const bytes = new Uint8Array(await req.arrayBuffer())
-  if (bytes.byteLength === 0) return json({ error: 'invalid', message: '空文件' }, 422)
-  if (bytes.byteLength > MAX_BYTES) {
-    return json(
-      {
-        error: 'too_large',
-        message: `附件最大 ${Math.floor(MAX_BYTES / 1024 / 1024)} MB，当前 ${(
-          bytes.byteLength / 1024 / 1024
-        ).toFixed(1)} MB——先压缩一下`,
-      },
-      413,
-    )
-  }
-
   // 前缀去重：同名文件反复粘贴不能互相覆盖，否则上一条消息引用的图会被下一条换掉。
   const dir = attachmentsDirOf(conversationId)
-  const fileName = `${crypto.randomUUID().slice(0, 8)}-${name}`
+  const id = crypto.randomUUID()
+  const fileName = `${id.slice(0, 8)}-${name}`
+  const path = join(dir, fileName)
+  const pending = join(dir, `.${id}.part`)
   await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, fileName), bytes)
+  if (!req.body) return json({ error: 'invalid', message: '空文件' }, 422)
+  const reader = req.body.getReader()
+  const writer = Bun.file(pending).writer({ highWaterMark: 1024 * 1024 })
+  let size = 0
+  let writerClosed = false
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      writer.write(chunk.value)
+    }
+    await writer.end()
+    writerClosed = true
+    if (size === 0) {
+      await rm(pending, { force: true })
+      return json({ error: 'invalid', message: '空文件' }, 422)
+    }
+    await rename(pending, path)
+  } catch (error) {
+    if (!writerClosed) {
+      await Promise.resolve(
+        writer.end(error instanceof Error ? error : new Error(String(error))),
+      ).catch(() => {})
+    }
+    await rm(pending, { force: true }).catch(() => {})
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
 
   const attachment: Attachment = {
     // 分类按扩展名，与「发出去时内联哪些」同一份判据（`core` 的 `attachmentTypeOf`）。
@@ -122,8 +132,8 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
     type: attachmentTypeOf(name),
     name,
     mime,
-    size: bytes.byteLength,
-    path: toPosixPath(join(dir, fileName)),
+    size,
+    path: toPosixPath(path),
   }
   return json({ attachment })
 }

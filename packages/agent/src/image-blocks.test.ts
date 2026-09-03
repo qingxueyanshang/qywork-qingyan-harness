@@ -38,7 +38,11 @@ const envelope = JSON.stringify({
 })
 
 const req = (messages: WireMessage[]) => ({ model: 'm', system: [], messages, tools: [] }) as never
-const media = (image: boolean | null, video = false) => ({ image, video })
+const media = (image: boolean | null, video = false, mediaPaths = false) => ({
+  image,
+  video,
+  mediaPaths,
+})
 
 describe('工具结果里的图像块', () => {
   test('没有 images 时仍然是纯字符串', () => {
@@ -227,6 +231,52 @@ describe('materialize', () => {
     expect((out.messages[0]!.content as ContentBlock[])[0]).toMatchObject({
       type: 'video',
       source: { kind: 'base64', data: bytes.toString('base64') },
+    })
+  })
+
+  test('大于 10 MB 的本地视频仍进入请求副本', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-video-large-'))
+    const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
+    const bytes = Buffer.alloc(10 * 1024 * 1024 + 1)
+    bytes[0] = 7
+    bytes[bytes.length - 1] = 9
+    await writeFile(path, bytes)
+
+    const out = await materialize(
+      req([
+        {
+          role: 'user',
+          content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+        },
+      ]),
+      media(true, true),
+    )
+    const block = (out.messages[0]!.content as ContentBlock[])[0]
+    expect(block).toMatchObject({ type: 'video', source: { kind: 'base64' } })
+    if (block?.type !== 'video' || block.source.kind !== 'base64') throw new Error('视频未物化')
+    const decoded = Buffer.from(block.source.data, 'base64')
+    expect(decoded.byteLength).toBe(bytes.length)
+    expect(decoded[0]).toBe(7)
+    expect(decoded[decoded.length - 1]).toBe(9)
+  })
+
+  test('支持路径媒体的适配器接收原路径', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-video-path-'))
+    const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
+    await writeFile(path, 'video')
+    const out = await materialize(
+      req([
+        {
+          role: 'user',
+          content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+        },
+      ]),
+      media(true, true, true),
+    )
+    expect((out.messages[0]?.content as ContentBlock[])[0]).toEqual({
+      type: 'video',
+      mimeType: 'video/mp4',
+      source: { kind: 'path', path },
     })
   })
 

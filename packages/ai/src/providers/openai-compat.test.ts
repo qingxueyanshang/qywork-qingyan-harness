@@ -10,13 +10,20 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { lookupModel, unknownModel } from '../catalog.ts'
-import type { ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
+import type { ChatRequest, ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
 import {
   createThinkingSplitter,
+  dashScopeMediaHeaders,
+  isDashScopeMediaEndpoint,
   normalizeBaseUrl,
   OpenAICompatAdapter,
+  prepareDashScopeMedia,
   strictify,
+  uploadDashScopeMedia,
 } from './openai-compat.ts'
 
 const bodies: Record<string, unknown>[] = []
@@ -202,6 +209,231 @@ describe('用户消息带视频', () => {
       { type: 'video_url', video_url: { url: 'data:video/mp4;base64,QUJD' } },
       { type: 'text', text: '描述视频内容' },
     ])
+  })
+
+  test('百炼临时 URL 按 video_url 发送', async () => {
+    const body = await send(
+      'qwen3.8-flash',
+      undefined,
+      [],
+      [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'video',
+              mimeType: 'video/mp4',
+              source: { kind: 'url', url: 'oss://dashscope-instant/example/clip.mp4' },
+            },
+            { type: 'text', text: '描述视频内容' },
+          ],
+        },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages[0]?.content).toEqual([
+      {
+        type: 'video_url',
+        video_url: { url: 'oss://dashscope-instant/example/clip.mp4' },
+      },
+      { type: 'text', text: '描述视频内容' },
+    ])
+    // 这台假服务不是百炼官方域名，不能向任意兼容端点泄漏供应商专用头。
+    expect(requestHeaders[0]?.get('x-dashscope-ossresourceresolve')).toBeNull()
+  })
+})
+
+describe('百炼媒体上传', () => {
+  test('只在百炼官方端点保留本地路径', () => {
+    expect(
+      isDashScopeMediaEndpoint(
+        'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      ),
+    ).toBe(true)
+    expect(isDashScopeMediaEndpoint('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBe(true)
+    expect(isDashScopeMediaEndpoint('https://dashscope-us.aliyuncs.com/compatible-mode/v1')).toBe(
+      true,
+    )
+    expect(isDashScopeMediaEndpoint('https://relay.example.com/v1')).toBe(false)
+    const official = new OpenAICompatAdapter(
+      {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-test',
+        model: 'qwen3.8-flash',
+        baseUrl: 'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      },
+      lookupModel('qwen3.8-flash', 'openai_chat_completions'),
+    )
+    expect(official.transmits.mediaPaths).toBe(true)
+  })
+
+  test('只有百炼端点且请求含 oss URI 时才加解析头', () => {
+    const request: ChatRequest = {
+      model: 'qwen3.8-flash',
+      system: [],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'video',
+              mimeType: 'video/mp4',
+              source: { kind: 'url', url: 'oss://dashscope-instant/test/clip.mp4' },
+            },
+          ],
+        },
+      ],
+      tools: [],
+      maxOutputTokens: 16,
+    }
+    expect(dashScopeMediaHeaders(false, request)).toEqual({})
+    expect(dashScopeMediaHeaders(true, request)).toEqual({
+      'X-DashScope-OssResourceResolve': 'enable',
+    })
+  })
+
+  test('小文件内联，大文件交给临时 URL 上传', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-media-'))
+    const small = join(dir, 'small.mp4')
+    const large = join(dir, 'large.mp4')
+    await writeFile(small, 'abc')
+    await writeFile(large, Buffer.alloc(7 * 1024 * 1024 + 1))
+    const uploaded: { path: string; size: number }[] = []
+    const prepared = await prepareDashScopeMedia(
+      {
+        model: 'qwen3.8-flash',
+        system: [],
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: small } },
+              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: large } },
+            ],
+          },
+        ],
+        tools: [],
+        maxOutputTokens: 16,
+      },
+      async (media) => {
+        uploaded.push(media)
+        return 'oss://dashscope-instant/test/large.mp4'
+      },
+    )
+    const blocks = prepared.messages[0]?.content
+    if (!Array.isArray(blocks)) throw new Error('媒体没有保留内容块')
+    expect(blocks[0]).toEqual({
+      type: 'video',
+      mimeType: 'video/mp4',
+      source: { kind: 'base64', data: Buffer.from('abc').toString('base64') },
+    })
+    expect(blocks[1]).toEqual({
+      type: 'video',
+      mimeType: 'video/mp4',
+      source: { kind: 'url', url: 'oss://dashscope-instant/test/large.mp4' },
+    })
+    expect(uploaded).toHaveLength(1)
+    expect(uploaded[0]).toMatchObject({ path: large, size: 7 * 1024 * 1024 + 1 })
+  })
+
+  test('按官方凭证表单上传并返回 oss URI', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-upload-'))
+    const path = join(dir, 'clip.mp4')
+    await writeFile(path, 'video-bytes')
+    const calls: { url: string; init?: RequestInit }[] = []
+    const fetcher = (async (target: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(target), ...(init ? { init } : {}) })
+      if (calls.length === 1) {
+        return Response.json({
+          data: {
+            policy: 'policy',
+            signature: 'signature',
+            upload_dir: 'dashscope-instant/account/session',
+            upload_host: 'https://bucket.oss-cn-beijing.aliyuncs.com',
+            max_file_size_mb: '100',
+            oss_access_key_id: 'temporary-key',
+            x_oss_object_acl: 'private',
+            x_oss_forbid_overwrite: 'true',
+          },
+        })
+      }
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+
+    const uri = await uploadDashScopeMedia({
+      apiKey: 'sk-test',
+      baseUrl: 'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      model: 'qwen3.8-flash',
+      path,
+      size: 11,
+      fetcher,
+    })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.url).toBe(
+      'https://llm-example.cn-beijing.maas.aliyuncs.com/api/v1/uploads?action=getPolicy&model=qwen3.8-flash',
+    )
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: 'Bearer sk-test' })
+    expect(calls[1]?.url).toBe('https://bucket.oss-cn-beijing.aliyuncs.com/')
+    const form = calls[1]?.init?.body
+    if (!(form instanceof FormData)) throw new Error('上传请求不是 multipart form')
+    expect(form.get('OSSAccessKeyId')).toBe('temporary-key')
+    expect(form.get('success_action_status')).toBe('200')
+    const file = form.get('file')
+    if (!(file instanceof File)) throw new Error('上传表单缺少文件')
+    expect(file.size).toBe(11)
+    expect(uri).toMatch(/^oss:\/\/dashscope-instant\/account\/session\/[a-f0-9]{8}-clip\.mp4$/)
+  })
+
+  test('凭证里的字符串大小上限在上传前生效', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-limit-'))
+    const path = join(dir, 'clip.mp4')
+    await writeFile(path, 'video-bytes')
+    let calls = 0
+    const fetcher = (async () => {
+      calls++
+      return Response.json({
+        data: {
+          policy: 'policy',
+          signature: 'signature',
+          upload_dir: 'dashscope-instant/account/session',
+          upload_host: 'https://bucket.oss-cn-beijing.aliyuncs.com',
+          max_file_size_mb: '0.000001',
+          oss_access_key_id: 'temporary-key',
+          x_oss_object_acl: 'private',
+          x_oss_forbid_overwrite: 'true',
+        },
+      })
+    }) as unknown as typeof fetch
+
+    await expect(
+      uploadDashScopeMedia({
+        apiKey: 'sk-test',
+        baseUrl: 'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen3.8-flash',
+        path,
+        size: 11,
+        fetcher,
+      }),
+    ).rejects.toThrow(/0\.000001 MB/)
+    expect(calls).toBe(1)
+  })
+
+  test('临时文件协议的 1 GB 硬上限在取凭证前生效', async () => {
+    let called = false
+    await expect(
+      uploadDashScopeMedia({
+        apiKey: 'sk-test',
+        baseUrl: 'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen3.8-flash',
+        path: '不用读取的占位路径.mp4',
+        size: 1024 * 1024 * 1024 + 1,
+        fetcher: (async () => {
+          called = true
+          throw new Error('不应取凭证')
+        }) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/1 GB/)
+    expect(called).toBe(false)
   })
 })
 

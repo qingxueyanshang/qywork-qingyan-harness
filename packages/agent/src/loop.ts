@@ -662,6 +662,7 @@ export class AgentLoop {
         await materialize(req, {
           image: adapter.spec.vision,
           video: adapter.spec.video && adapter.transmits.video === true,
+          mediaPaths: adapter.transmits.mediaPaths === true,
         }),
       )
       [Symbol.asyncIterator]()
@@ -2323,14 +2324,10 @@ export function envelopeResult(
   return Object.keys(rest).length ? rest : undefined
 }
 
-/** 图像块进请求体的上限。10 MB 的 base64 约 13 MB，已经贴着多数 provider 的单请求上限。 */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
-/** 本地视频当前走 Data URL，与浏览器附件入口保持同一个请求体上限。 */
-const MAX_VIDEO_BYTES = 10 * 1024 * 1024
-
 export interface InputMediaCapabilities {
   image: boolean | null
   video: boolean
+  mediaPaths?: boolean
 }
 
 /**
@@ -2348,7 +2345,8 @@ export interface InputMediaCapabilities {
  *
  * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输。
  *
- * 文件不存在、超过上限或能力不支持时换成文本说明，不让整轮静默丢失媒体。
+ * 文件不存在或能力不支持时换成文本说明，不让整轮静默丢失媒体。媒体大小由实际
+ * Provider 协议裁决；这里使用统一阈值会把支持大文件的端点提前截断。
  */
 export async function materialize(
   req: ChatRequest,
@@ -2393,8 +2391,7 @@ async function loadBlock(
 
   const info = await stat(path).catch(() => null)
   if (!info?.isFile()) return note('已不存在')
-  const limit = b.type === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
-  if (info.size > limit) return note('超过当前 10 MB 传输上限，未发送')
+  if (capabilities.mediaPaths) return b
   const bytes = await readFile(path).catch(() => null)
   if (!bytes) return note('读取失败')
   return {

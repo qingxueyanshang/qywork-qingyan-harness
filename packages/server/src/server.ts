@@ -71,6 +71,15 @@ export interface ServeOptions {
 const DEFAULT_WORKSPACE_NAME = '默认工作区'
 
 /**
+ * HTTP 入口的资源安全线，不是图片/视频的模型能力线。
+ *
+ * 浏览器拿不到绝对路径时才会把附件传给本机服务；桌面拖入始终只传路径。百炼官方
+ * 临时文件协议的硬上限是 1 GB，因此允许这条兜底链覆盖到同一数量级，同时阻止一个
+ * 已配对客户端用无界请求耗尽磁盘。具体模型更小的限制由 Provider 凭证/请求裁决。
+ */
+const MAX_HTTP_REQUEST_BODY_BYTES = 1024 * 1024 * 1024
+
+/**
  * 决定启动时挂在哪个项目上。**这是「首次运行挂哪儿」的唯一权威。**
  *
  * 三条路，优先级从高到低：
@@ -313,6 +322,7 @@ export function serve(opts: ServeOptions) {
   const handlers = {
     // agent 的一轮可能跑很久，默认超时会把 WebSocket 掐掉。
     idleTimeout: 255,
+    maxRequestBodySize: MAX_HTTP_REQUEST_BODY_BYTES,
 
     async fetch(req: Request, srv: Bun.Server<SocketData>) {
       const url = new URL(req.url)
