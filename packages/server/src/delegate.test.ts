@@ -390,8 +390,8 @@ describe('派一件的进度', () => {
     expect(members().map((m) => m.state.phase)).toEqual(['working', 'failed'])
   })
 
-  /** 中断走的也是终态那条路：用户点停止之后，那一格不能还转着。 */
-  test('中断时也落 failed', async () => {
+  /** 中断走的也是终态那条路：用户点停止之后，那一格不能还转着，而且落的是「中断」不是「失败」。 */
+  test('中断时落 interrupted', async () => {
     const cid = conversation()
     const ctl = new AbortController()
     ctl.abort()
@@ -403,7 +403,7 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members().map((m) => m.state.phase)).toEqual(['working', 'failed'])
+    expect(members().map((m) => m.state.phase)).toEqual(['working', 'interrupted'])
   })
 
   /**
