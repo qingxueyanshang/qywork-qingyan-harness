@@ -11,6 +11,7 @@
 
 import { createResource, Show } from 'solid-js'
 import {
+  conversationRunClosed,
   isConversationRunning,
   loadConversationView,
   tabConversationId,
@@ -46,7 +47,10 @@ export default function ConversationPanel(props: { id: string }) {
           items={viewOf(cid()).transcript}
           live={() => isConversationRunning(cid())}
         />
-        <Show when={isConversationRunning(cid()) && viewOf(cid()).runStartedAt !== null}>
+        {/* 与主会话同一判据：忙态一成立就挂。打开页面时即使错过 run.started，
+            也不能让“是否有状态条”取决于这条瞬时事件；run 收尾后再由同一条
+            transcript 里的终态条目完成交接，避免短暂画出两条。 */}
+        <Show when={isConversationRunning(cid()) && !conversationRunClosed(cid())}>
           <LiveRunBar conversationId={cid()} />
         </Show>
       </div>

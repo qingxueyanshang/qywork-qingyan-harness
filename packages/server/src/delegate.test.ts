@@ -345,6 +345,11 @@ describe('派一件的进度', () => {
     const inner = events.filter((f) => f.conversationId === child)
     expect(inner.map((f) => f.event.type)).toContain('run.started')
     expect(inner.map((f) => f.event.type)).toContain('run.finished')
+    const busy = events
+      .filter((f) => f.event.type === 'conversation.busy' && f.event.conversationId === child)
+      .map((f) => (f.event.type === 'conversation.busy' ? f.event.busy : null))
+    expect(busy).toEqual([true, false])
+    expect(runs.isBusy(child)).toBe(false)
     // 父会话那条上只有图卡进度，没有子会话的内层事件。
     expect(
       events
