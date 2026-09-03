@@ -25,6 +25,7 @@ export interface OrchestratorDeps {
     role: Role
     prompt: string
     signal: AbortSignal
+    provider?: string
     model?: string
     existingConversationId?: ConversationId
     onConversation?: (conversationId: ConversationId) => void
@@ -348,6 +349,7 @@ export class TeamOrchestrator {
             role: role!,
             prompt,
             signal: this.deps.signal,
+            ...(node.provider ? { provider: node.provider } : {}),
             ...(node.model ? { model: node.model } : {}),
             ...(prior?.conversationId
               ? { existingConversationId: prior.conversationId as ConversationId }

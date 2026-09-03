@@ -47,6 +47,7 @@ function stub(result: Ran) {
   const calls: {
     target: string
     task: string
+    provider?: string
     model?: string
     resume?: string
     runId: string
@@ -55,6 +56,10 @@ function stub(result: Ran) {
   return {
     calls,
     port: {
+      resolveModel: (name: string, provider?: string) => ({
+        provider: provider ?? 'fake',
+        model: name,
+      }),
       targets: async () => [
         { id: 'reviewer', kind: 'role' as const, description: '代码审查' },
         { id: 'cli:claude', kind: 'cli' as const, description: 'Anthropic · 已接入' },
@@ -62,6 +67,7 @@ function stub(result: Ran) {
       run: async (input: {
         target: string
         task: string
+        provider?: string
         model?: string
         resume?: string
         runId: string
@@ -70,6 +76,7 @@ function stub(result: Ran) {
         calls.push({
           target: input.target,
           task: input.task,
+          ...(input.provider ? { provider: input.provider } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.resume ? { resume: input.resume } : {}),
           runId: input.runId,
@@ -161,8 +168,20 @@ describe('派活', () => {
 
     // 真的点名了照常带出去，别把这条修成「所有 model 都吞掉」。
     const s3 = stub({ ok: true, output: '查完了' })
-    await subagentTool.fn({ task: '去查一下', model: 'anthropic/claude-opus-5' }, ctx(s3.port))
+    await subagentTool.fn(
+      { task: '去查一下', provider: '官方/接口', model: 'anthropic/claude-opus-5' },
+      ctx(s3.port),
+    )
+    expect(s3.calls[0]).toHaveProperty('provider', '官方/接口')
     expect(s3.calls[0]).toHaveProperty('model', 'anthropic/claude-opus-5')
+  })
+
+  test('provider 与 model 必须成对，不能把半套覆盖传给执行器', async () => {
+    const s = stub({ ok: true, output: '不应执行' })
+    const res = await subagentTool.fn({ task: '去查一下', provider: '智谱接口' }, ctx(s.port))
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('同时指定 model')
+    expect(s.calls).toHaveLength(0)
   })
 
   test('指名道姓派给不存在的目标时才拒，并提示可以临时起一个', async () => {
@@ -336,6 +355,7 @@ describe('编排', () => {
     return {
       seen,
       port: {
+        resolveModel: (name: string) => ({ provider: 'fake', model: name }),
         targets: async () => [],
         run: async () => ({ ok: true, output: '' }),
         runGraph: async (
@@ -488,6 +508,7 @@ describe('临时子 agent 在图里', () => {
   test('节点不写 agent 时兜底成内置的那条，不是当场拒', async () => {
     const seen: { agent: string }[] = []
     const port = {
+      resolveModel: (name: string) => ({ provider: 'fake', model: name }),
       targets: async () => [],
       run: async () => ({ ok: true, output: '' }),
       runGraph: async (input: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]) => {

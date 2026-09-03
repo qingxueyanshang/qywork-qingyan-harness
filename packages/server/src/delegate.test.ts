@@ -28,6 +28,7 @@ import {
   contentPathFor,
   createConversation,
   createRun,
+  getConversation,
   listMessages,
   listRuns,
   listSteps,
@@ -98,6 +99,12 @@ beforeAll(async () => {
         apiKey: 'sk-fake',
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
         models: { 'deepseek-v4-flash': {} },
+      },
+      '另/接口': {
+        kind: 'openai_responses',
+        apiKey: 'sk-fake',
+        baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+        models: { 'qwen/model-3.8': {} },
       },
     },
     mode: 'auto',
@@ -207,6 +214,25 @@ function members(): MemberEvent[] {
 const at = { runId: 'rn_1' as RunId, stepId: 'st_1' }
 
 describe('派一件的进度', () => {
+  test('结构化 provider + model 一路写进成员会话，不经过字符串拆分', async () => {
+    const cid = conversation()
+    script = [() => new Response(textTurn('选型正确'), { headers: SSE_HEADERS })]
+
+    const res = await delegate(cid).run({
+      target: '',
+      task: '去执行',
+      provider: '另/接口',
+      model: 'qwen/model-3.8',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    expect(res.ok).toBe(true)
+    const child = getConversation(store, res.conversationId as ConversationId)
+    expect(child?.provider).toBe('另/接口')
+    expect(child?.model).toBe('qwen/model-3.8')
+  })
+
   test('跑成时按 working → done 走，都挂在这张卡上', async () => {
     const cid = conversation()
     script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]

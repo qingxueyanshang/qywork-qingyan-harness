@@ -10,6 +10,8 @@ export interface WorkflowAgentNode {
   task: string
   needs?: string[]
   passInput?: boolean
+  /** 与 model 配对的接口名；两列始终分开，不使用 `接口/模型` 拼接串。 */
+  provider?: string
   model?: string
 }
 
@@ -168,7 +170,7 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         // 扁平 strict schema 里 passInput 同时服务 agent 节点；部分 provider 会把它
         // 补成默认 true，而不是 null。检查点不消费这个字段，忽略它即可——若因
         // 严格补全拒绝整张图，模型重试会在界面留下另一张失败卡。
-        for (const key of ['agent', 'task', 'model']) {
+        for (const key of ['agent', 'task', 'provider', 'model']) {
           if (!nullish(node[key])) return { ok: false, error: `检查点 ${id} 不能带 ${key}` }
         }
         nodes.push({ id, kind: 'checkpoint', label, needs })
@@ -178,7 +180,10 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
       const task = wireText(node.task)
       if (!task) return { ok: false, error: `节点 ${id} 必须有 task` }
       const agent = wireText(node.agent) || 'ad-hoc'
+      const provider = wireText(node.provider)
       const model = wireText(node.model)
+      if (provider && !model)
+        return { ok: false, error: `节点 ${id} 指定 provider 时必须同时指定 model` }
       nodes.push({
         id,
         kind: 'agent',
@@ -186,6 +191,7 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         task,
         ...(needs.length ? { needs } : {}),
         ...(node.passInput === false ? { passInput: false } : {}),
+        ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
       })
     }

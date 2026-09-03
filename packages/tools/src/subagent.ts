@@ -48,10 +48,15 @@ export const subagentTool: ToolSpec = {
           '这次子任务产出归属的父待办，逐字复制当前清单里的 content。' +
           '当前有未完成待办时必填；返回后该条仍保持未完成，等待当前会话验收。',
       },
+      provider: {
+        type: 'string',
+        description:
+          '**只在填写 model 时才填**：逐字使用运行上下文「已配置模型」清单中同一行的 provider 参数。',
+      },
       model: {
         type: 'string',
         description:
-          '**只在用户点名了模型时才填**：写模型 id，同一个 id 挂在多个接口下时写 接口/模型。' +
+          '**只在用户点名了模型时才填**：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
           '不填 = 跟当前会话同一个模型。外部 CLI 用它自己的模型，填了会被拒。',
       },
       resume: {
@@ -96,9 +101,13 @@ export const subagentTool: ToolSpec = {
     const target = idArg(args.agent)
     const task = typeof args.task === 'string' ? args.task.trim() : ''
     const parentTodo = typeof args.parentTodo === 'string' ? args.parentTodo.trim() : ''
+    const provider = idArg(args.provider)
     const model = idArg(args.model)
     const resume = idArg(args.resume)
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
+    if (provider && !model) {
+      return { status: 'failure' as const, message: '指定 provider 时必须同时指定 model' }
+    }
 
     /*
      * 子任务与父清单的归属在派出之前钉死。回来之后靠自然语言猜「它属于哪条」
@@ -149,6 +158,7 @@ export const subagentTool: ToolSpec = {
     const res = await delegate.run({
       target,
       task,
+      ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
       ...(resume ? { resume } : {}),
       // 进度挂在这次调用那张卡上。拿不到卡片 id 时照跑，只是没有运行期状态——

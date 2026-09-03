@@ -40,7 +40,16 @@ export const workflowTool: ToolSpec = {
             label: { type: 'string', description: 'checkpoint 显示名称' },
             needs: { type: 'array', items: { type: 'string' }, description: '依赖节点 ID' },
             passInput: { type: 'boolean', description: '是否把上游输出传入任务，默认 true' },
-            model: { type: 'string', description: '该 agent 节点的模型覆盖' },
+            provider: {
+              type: 'string',
+              description:
+                '覆盖模型所属接口；填写 model 时逐字使用运行上下文「已配置模型」清单中同一行的 provider 参数',
+            },
+            model: {
+              type: 'string',
+              description:
+                '该 agent 节点的模型覆盖；逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider',
+            },
           },
           required: ['id'],
         },

@@ -373,12 +373,23 @@ export class Session {
     const memories = (await listScopedEntries(roots).catch(() => [])).filter(
       (memory) => !disabled.has(`memory:${memory.key}`),
     )
+    const canAssignModels = ['define_subagent', 'subagent', 'workflow'].some((name) =>
+      this.registry.has(name),
+    )
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
       platform: process.platform,
       mode: this.opts.config.mode ?? 'auto',
       skills,
       memories,
+      // 派活工具存在才给；成员会话没有 delegate，既看不到清单也无法递归派活。
+      ...(canAssignModels
+        ? {
+            models: Object.entries(config.providers).flatMap(([provider, stored]) =>
+              Object.keys(stored.models).map((model) => ({ provider, model })),
+            ),
+          }
+        : {}),
       externalTools: this.pendingTools?.index() ?? [],
       todos: latestTodos(store, conversationId),
     })
