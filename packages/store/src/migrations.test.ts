@@ -1,5 +1,6 @@
 /**
- * 迁移的行为回归。**覆盖范围**：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`。
+ * 迁移的行为回归。**覆盖范围**：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`、
+ * `db.ts` 的迁移执行，以及 `repos.ts` 的启动恢复查询。
  *
  * 只测「转换数据」的那几条。纯建表的不测——建错了任何一条查询都会红，
  * 而数据转换错了是静默的：代码全绿、界面上冒出一个 `undefined` 或者一句旧文案。
@@ -7,20 +8,30 @@
 
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Store } from './db.ts'
+import { recoverStaleRuns } from './repos.ts'
 import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
+
+function executeMigration(db: Database, migration: (typeof MIGRATIONS)[number]): void {
+  if (migration.sql) db.exec(migration.sql)
+  migration.apply?.(db)
+}
 
 /** 跑到某一条迁移之前的库。外键默认关着，所以可以只插 steps 不建父行。 */
 function dbBefore(id: number): Database {
   const db = new Database(':memory:')
   for (const m of MIGRATIONS) {
     if (m.id >= id) break
-    db.exec(m.sql)
+    executeMigration(db, m)
   }
   return db
 }
 
 function applyOne(db: Database, id: number): void {
-  db.exec(MIGRATIONS.find((m) => m.id === id)!.sql)
+  executeMigration(db, MIGRATIONS.find((m) => m.id === id)!)
 }
 
 function insertStep(db: Database, id: string, toolName: string, payload: unknown): void {
@@ -565,7 +576,7 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')
-    for (const m of MIGRATIONS) db.exec(m.sql)
+    for (const m of MIGRATIONS) executeMigration(db, m)
 
     for (const [table, declared] of Object.entries(ROW_COLUMNS)) {
       const actual = db
@@ -575,5 +586,45 @@ describe('行类型与 DDL 对齐', () => {
       expect({ [table]: [...actual].sort() }).toEqual({ [table]: [...declared].sort() })
     }
     db.close()
+  })
+})
+
+describe('迁移 35：诊断列结构收敛', () => {
+  test('迁移 34 已被其他历史结构占用时仍能启动并执行恢复查询', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'migration-35-'))
+    const path = join(dir, 'qywork.sqlite3')
+    try {
+      const raw = new Database(path, { create: true })
+      raw.exec(
+        'CREATE TABLE _migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)',
+      )
+      const insert = raw.query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
+      for (const migration of MIGRATIONS) {
+        if (migration.id >= 34) break
+        executeMigration(raw, migration)
+        insert.run(migration.id, migration.name, 0)
+      }
+      insert.run(34, 'provider_route_usage_index', 0)
+      raw.close()
+
+      const store = new Store({ path })
+      try {
+        expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0, heldByOthers: 0 })
+        expect(
+          store.db
+            .query<{ name: string }, [number]>('SELECT name FROM _migrations WHERE id = ?')
+            .get(34),
+        ).toEqual({ name: 'provider_route_usage_index' })
+        expect(
+          store.db
+            .query<{ name: string }, [number]>('SELECT name FROM _migrations WHERE id = ?')
+            .get(35),
+        ).toEqual({ name: 'ensure_execution_failure_diagnostics' })
+      } finally {
+        store.close()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

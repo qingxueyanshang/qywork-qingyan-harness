@@ -1,12 +1,23 @@
 /**
  * 覆盖范围：`reload-supervisor.ts` 的全部策略（防抖合并、有活时不换、换的过程中
- * 又来改动、restart 抛错后不卡死），以及 `isSourceChange` 的过滤。
+ * 又来改动、restart 抛错后不卡死），`isSourceChange` 的过滤，以及 `dev.ts` 初次启动
+ * 立即失败时的退出路径。
  *
  * 定时器是注入的假的：真等 300ms / 2s 会让这份测试变成秒级，而且时序断言会随机红。
  */
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createReloadSupervisor, isSourceChange } from './reload-supervisor.ts'
+
+function unusedPort(): number {
+  const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
+  const port = listener.port
+  listener.stop(true)
+  return port
+}
 
 /** 手动推进的定时器。同一时刻只可能有一个待触发的——策略本身就是这么设计的。 */
 function clock() {
@@ -249,4 +260,27 @@ describe('sidecar 自己没了', () => {
     await Bun.sleep(0)
     expect(starts).toBe(before + 1)
   })
+})
+
+describe('开发编排初次启动', () => {
+  test('sidecar 立即退出时打印原始失败，不访问未初始化的 supervisor', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dev-start-'))
+    try {
+      writeFileSync(join(dir, 'qywork.sqlite3'), 'not a sqlite database')
+      const proc = Bun.spawn([process.execPath, 'run', 'scripts/dev.ts'], {
+        cwd: join(import.meta.dir, '..'),
+        env: { ...process.env, QYWORK_HOME: dir, QYWORK_PORT: String(unusedPort()) },
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'pipe',
+      })
+      const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+
+      expect(code).toBe(1)
+      expect(stderr).toContain('[dev] sidecar 启动失败')
+      expect(stderr).not.toContain("Cannot access 'supervisor' before initialization")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 10_000)
 })
