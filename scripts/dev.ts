@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * 开发编排：两端都从源码跑，两端都自动重载。
+ * 开发编排：两端都从源码跑，并在同一个安全点一起换代。
  *
  * **为什么要有这个脚本。** 桌面外壳跑的是**预编译的 `bin/qy`**（`externalBin`），因此改了
  * `packages/server` 之后不重编就完全看不出来——而且症状会伪装成前端 bug。实测形状：旧二
@@ -12,11 +12,14 @@
  * 所以这里换掉那条路——**开发时不用那个二进制**：
  *
  * - sidecar：直接跑 `packages/cli/src/index.ts`，源码变了由本脚本换进程（见下）。
- * - 前端：vite 自己的 HMR，由 `tauri dev` 的 `beforeDevCommand` 拉起。
+ * - 前端：由 Vite 提供，但桌面协调模式关闭 HMR；源码变化也进入下面同一个监督器。
  * - 外壳：`sidecar::from_env()` 看见 `QYWORK_TOKEN` + `QYWORK_PORT` 就复用外部
  *   sidecar，不再自己 spawn（`apps/desktop/src-tauri/src/lib.rs`）。
  *
- * 两端都从同一棵源码树跑，「客户端和服务端不是同一批出的」在开发路径上不再可能。
+ * **不能让两端各自热更新。** 当前 run 可能为了不中断而继续留在旧 sidecar；如果
+ * Vite 此时先把页面 HMR 成新代码，同一个窗口就会变成「新前端 + 旧后端」。所以所有
+ * package 与 web 源码变化都先进入同一个空闲闸门：run 结束后重启 sidecar，客户端
+ * 看到新的 streamId 再整页刷新。两端因此只在同一个时刻换代。
  *
  * **换代码的判据是「文件变了，且手上没有 run」。** 不要换回 `bun --watch`：它的判据只有文件 mtime，
  * 对「这个进程手上有没有活」一无所知，因此保存一次源码就把正在跑的那一轮从中间掐断。实测形状：
@@ -33,7 +36,7 @@ import { randomBytes } from 'node:crypto'
 import { watch } from 'node:fs'
 import { join } from 'node:path'
 import { dataPath } from '@qywork/runtime'
-import { createReloadSupervisor, isSourceChange } from './reload-supervisor.ts'
+import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
@@ -90,7 +93,14 @@ if (!(await bindable(PORT))) {
   process.exit(1)
 }
 
-const env = { ...process.env, QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) }
+const env = {
+  ...process.env,
+  QYWORK_TOKEN: TOKEN,
+  QYWORK_PORT: String(PORT),
+  // QYWORK_* 给 vite.config.ts 关 HMR；VITE_* 给页面接收 sidecar 换代信号后整页刷新。
+  QYWORK_COORDINATED_RELOAD: '1',
+  VITE_QYWORK_COORDINATED_RELOAD: '1',
+}
 
 /**
  * 用**正在跑的这个 bun**，不写裸名 `bun`。
@@ -213,6 +223,12 @@ supervising = true
 
 watch(join(ROOT, 'packages'), { recursive: true }, (_event, file) => {
   if (isSourceChange(file)) supervisor.onChange()
+})
+
+// 前端也必须经过同一条空闲闸门。只盯 packages 会让 Vite 页面先换代，正是
+// 「新建 subagent 后状态条消失」的根因；这里只登记变化，不在运行中杀进程。
+watch(join(ROOT, 'apps/web/src'), { recursive: true }, (_event, file) => {
+  if (isWebSourceChange(file)) supervisor.onChange()
 })
 
 /*

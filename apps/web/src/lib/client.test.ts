@@ -45,12 +45,14 @@ function client(token = 'tk') {
   const frames: EventEnvelope<AgentEvent>[] = []
   const rejected: CommandRejectedFrame[] = []
   const resyncs: number[] = []
+  const streamChanges: number[] = []
   const busy: ConversationId[][] = []
   const c = new QyClient(
     {
       onEvent: (f) => frames.push(f),
       onState: (state, detail) => states.push({ state, ...(detail ? { detail } : {}) }),
       onResync: () => resyncs.push(1),
+      onStreamChanged: () => streamChanges.push(1),
       onCapabilities: () => {},
       onBusy: (ids) => busy.push(ids),
       onRejected: (f) => rejected.push(f),
@@ -64,7 +66,7 @@ function client(token = 'tk') {
       },
     },
   )
-  return { c, sockets, states, frames, rejected, resyncs, busy }
+  return { c, sockets, states, frames, rejected, resyncs, streamChanges, busy }
 }
 
 describe('握手', () => {
@@ -400,6 +402,29 @@ describe('断线重连报的位置', () => {
     sockets[0]!.fire('open')
     sockets[0]!.deliver(helloOk('stream-a', 40, true))
     expect(resyncs).toHaveLength(1)
+    c.close()
+  })
+
+  test('首连不算换代；重连到另一条服务端事件流才通知换代', () => {
+    const { c, sockets, streamChanges } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    sockets[0]!.deliver(helloOk('stream-a', 0))
+    expect(streamChanges).toHaveLength(0)
+
+    // 普通断线仍连回同一个 sidecar，不该刷新整页。
+    sockets[0]!.fire('close')
+    c.connect()
+    sockets[1]!.fire('open')
+    sockets[1]!.deliver(helloOk('stream-a', 0))
+    expect(streamChanges).toHaveLength(0)
+
+    // sidecar 安全重启后 streamId 变化，只通知一次；页面据此加载同一代前端。
+    sockets[1]!.fire('close')
+    c.connect()
+    sockets[2]!.fire('open')
+    sockets[2]!.deliver(helloOk('stream-b', 0))
+    expect(streamChanges).toHaveLength(1)
     c.close()
   })
 })

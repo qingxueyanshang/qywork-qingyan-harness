@@ -5,8 +5,8 @@
 .DESCRIPTION
   两种模式：
 
-    desktop（默认）  Tauri 原生窗口。外壳自己用 `--port 0` 拉一个 qy sidecar，
-                     不占固定端口；前端走 vite dev server，改代码热更新。
+    desktop（默认）  Tauri 原生窗口。dev.ts 从源码拉起 qy sidecar；前后端源码变化
+                     共用空闲换代闸门，不会在活动 run 中更新成两个版本。
     web              浏览器 / 手机。qy serve 固定在 7717，vite 在 5180 代理过去，
                      脚本把带令牌的地址打出来并自动开浏览器。
 
@@ -127,11 +127,12 @@ if ($Mode -eq 'desktop') {
   # 因此改了 packages/server 不重编就完全看不出来，现象还会表现成前端 bug。
   # 实际踩到过：旧二进制少一条路由，前端抛的是 undefined.id；旧二进制还在按
   # 老规矩报协议版本，新前端已经不发这个字段，界面上是「服务端协议版本 2，
-  # 客户端 undefined」。dev.ts 让 sidecar 从源码跑（bun --watch）并把令牌和端口
-  # 灌给两边，两端同源，这类漂移在开发路径上不再可能。
+  # 客户端 undefined」。dev.ts 让 sidecar 从源码跑并把令牌和端口
+  # 灌给两边。前端 HMR 在桌面协调模式下关闭，packages 与 web 源码变化共用同一条
+  # 空闲闸门；sidecar 换代后页面再按新 streamId 刷新，不会出现新前端配旧后端。
   #
-  # 工作区钉到仓库根这件事由 dev.ts 自己做（它 spawn 外壳时设 QYWORK_WORKSPACE）,
-  # 这里不再设第二遍——设了也会被它覆盖，留着就是两本账。
+  # dev.ts 不设 QYWORK_WORKSPACE：当前项目由服务端按账本中最近打开的工作区恢复，
+  # 不会把 qywork 源码仓库误登记成用户项目。
   Say 'dev 编排启动中：sidecar 从源码跑，外壳首次编译较慢，之后约 20 秒…'
   Say "工作区 $root"
   Say '窗口出来即可用。Ctrl-C 或关窗口退出，sidecar 会跟着退。'
