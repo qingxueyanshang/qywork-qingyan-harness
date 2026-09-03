@@ -1145,6 +1145,24 @@ WHERE stop_reason = 'max_steps'
 `)
     },
   },
+  {
+    id: 37,
+    name: 'conversation_parent',
+    /**
+     * 子会话属于哪条父会话。派活时就写死，此后账本汇总、级联删除、运行页三件事
+     * 都从这一列推出来，不再从 step 的 JSON 里反查两种形状。
+     *
+     * `ON DELETE CASCADE`：删父会话时子会话跟着走，不留孤儿。账目不受影响——
+     * `usage_ledger` 没有外键，那些行按设计比业务数据活得久。
+     *
+     * NULL = 顶层会话，或迁移之前建的子会话。
+     */
+    sql: `
+ALTER TABLE conversations
+  ADD COLUMN parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE;
+CREATE INDEX idx_conv_parent ON conversations(parent_conversation_id);
+`,
+  },
 ]
 
 /**
@@ -1194,6 +1212,8 @@ export interface ConversationRow {
   /** CHECK 没管这一列，但写入侧只写这两个值中的一个。 */
   source: 'workflow' | null
   source_ref: string | null
+  /** 派活建出来的子会话指向它的父会话；顶层会话为 NULL。 */
+  parent_conversation_id: ConversationId | null
   archived_at: number | null
   created_at: number
   updated_at: number
@@ -1334,6 +1354,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'cache_generation',
     'source',
     'source_ref',
+    'parent_conversation_id',
     'archived_at',
     'created_at',
     'updated_at',

@@ -1027,6 +1027,11 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* 能力边界，不是解释：这一页没有第二处说得出外部 CLI 的钱在别家账上。 */
+.run-sum-note {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 
 /* 读数卡：三列两行，格与格之间只留间距不画线——六个数本来就是一组，
    画上格线就成了一张需要横竖对着读的表。
@@ -1134,6 +1139,12 @@
 .run-model {
   flex: 0 1 auto;
   color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 派给谁。与模型名同档，但先收缩的是模型名——角色 id 是这一行区分得开谁是谁的那一格。 */
+.run-role {
+  flex: 0 2 auto;
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
 }
 .run-meta {

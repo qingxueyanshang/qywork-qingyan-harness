@@ -301,6 +301,7 @@ export function makeDelegate(ctx: {
           {
             deps,
             workspaceRoot,
+            parentConversationId: conversationId,
             ...picked,
             onConversation: (cid) => {
               // 先落账再广播。用户此刻切走父会话会错过广播，但切回来从同一条 step
@@ -430,6 +431,7 @@ export function makeDelegate(ctx: {
             return runBuiltinMember(member, {
               deps,
               workspaceRoot,
+              parentConversationId: conversationId,
               ...picked,
               // 先落账再广播，同 `run` 那条：切走父会话会错过广播，切回来从这条 step
               // 回放时仍要能点开正在跑的那一格。键是节点 id，一张图上每格各一条。

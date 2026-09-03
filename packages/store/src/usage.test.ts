@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
+import { createConversation, upsertWorkspace } from './repos.ts'
 import {
   pruneUsage,
   recordUsage,
@@ -28,6 +29,42 @@ function entry(over: Partial<UsageEntry> = {}): UsageEntry {
 function fresh(): Store {
   return new Store({ path: ':memory:' })
 }
+
+/**
+ * 「这条会话花了多少」含它派出去的子会话：账仍记在各自的 conversation_id 下，
+ * 汇总时按 `parent_conversation_id` 收回来。不含的话运行页看不到子 agent 的钱。
+ */
+describe('会话口径含子会话', () => {
+  test('父 + 两子的合计等于三者之和，币种分桶', () => {
+    const s = fresh()
+    const ws = upsertWorkspace(s, '/tmp/ws', 'ws')
+    const parent = createConversation(s, { workspaceId: ws.id, provider: 'openai', model: 'm' })
+    const kids = ['build-glm', 'build-qwen'].map((roleId) =>
+      createConversation(s, {
+        workspaceId: ws.id,
+        provider: 'openai',
+        model: 'm',
+        source: 'workflow',
+        sourceRef: roleId,
+        parentConversationId: parent.id,
+      }),
+    )
+    const other = createConversation(s, { workspaceId: ws.id, provider: 'openai', model: 'm' })
+
+    recordUsage(s, entry({ conversationId: parent.id, cost: 1 }))
+    recordUsage(s, entry({ conversationId: kids[0]!.id, cost: 2 }))
+    recordUsage(s, entry({ conversationId: kids[1]!.id, cost: 4, currency: 'CNY' }))
+    // 别人家的会话不进来。
+    recordUsage(s, entry({ conversationId: other.id, cost: 8 }))
+
+    const totals = usageTotals(s, { conversationId: parent.id })
+    expect(totals.entries).toBe(3)
+    expect(totals.cost.USD).toBeCloseTo(3, 6)
+    expect(totals.cost.CNY).toBeCloseTo(4, 6)
+    expect(usageEntries(s, { conversationId: parent.id })).toHaveLength(3)
+    s.close()
+  })
+})
 
 describe('记账', () => {
   test('记一笔能查回总数', () => {

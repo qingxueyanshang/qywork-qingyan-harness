@@ -242,6 +242,8 @@ export function createConversation(
     title?: string
     source?: Conversation['source']
     sourceRef?: string
+    /** 派活建子会话时必须给：归属只在建的时候写得对，事后从任何地方都推不回来。 */
+    parentConversationId?: ConversationId
   },
 ): Conversation {
   const now = Date.now()
@@ -255,14 +257,15 @@ export function createConversation(
     cacheGeneration: 0,
     source: input.source ?? null,
     sourceRef: input.sourceRef ?? null,
+    parentConversationId: input.parentConversationId ?? null,
     createdAt: now,
     updatedAt: now,
   }
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, parent_conversation_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
@@ -274,10 +277,21 @@ export function createConversation(
       0,
       conv.source,
       conv.sourceRef,
+      conv.parentConversationId,
       now,
       now,
     )
   return conv
+}
+
+/** 这条会话派出去的那些子会话，按建立时间。顶层会话没有子会话时是空数组。 */
+export function listChildConversations(store: Store, id: ConversationId): Conversation[] {
+  return store.db
+    .query<ConversationRow, [string]>(
+      'SELECT * FROM conversations WHERE parent_conversation_id = ? ORDER BY created_at',
+    )
+    .all(id)
+    .map(rowToConversation)
 }
 
 export function getConversation(store: Store, id: ConversationId): Conversation | null {
@@ -1577,6 +1591,7 @@ function rowToConversation(r: ConversationRow): Conversation {
     cacheGeneration: r.cache_generation,
     source: r.source,
     sourceRef: r.source_ref,
+    parentConversationId: r.parent_conversation_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }

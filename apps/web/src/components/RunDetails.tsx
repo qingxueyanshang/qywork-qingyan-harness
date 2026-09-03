@@ -1,4 +1,5 @@
 import type {
+  ConversationRunsResponse,
   ConversationUsageResponse,
   Currency,
   ProviderRequest,
@@ -42,8 +43,8 @@ export default function RunDetails() {
 
   const [runData, { refetch: refetchRuns }] = createResource(key, async (k) =>
     k.id === null
-      ? { runs: [] as Run[] }
-      : await client.api<{ runs: Run[] }>(`/api/conversations/${k.id}/runs`),
+      ? { runs: [] as Run[], childRuns: [] as ConversationRunsResponse['childRuns'] }
+      : await client.api<ConversationRunsResponse>(`/api/conversations/${k.id}/runs`),
   )
   const [ledger, { refetch: refetchLedger }] = createResource(key, async (k) =>
     k.id === null
@@ -53,14 +54,32 @@ export default function RunDetails() {
 
   // `loaded()` 而不是 `data()`：后者出错时 `throw`，而这个应用没有 `ErrorBoundary`。
   const runs = createMemo(() => [...(loaded(runData)?.runs ?? [])].reverse())
+  /** 子会话的轮次：派出去的那几件，钱记在同一条会话名下。 */
+  const childRuns = createMemo(() => loaded(runData)?.childRuns ?? [])
   /** 账本里非轮次的那几笔（压缩摘要等）。轮次那几笔由 `runs` 提供，它带得动展开区。 */
   const extras = createMemo(() => (loaded(ledger)?.entries ?? []).filter((e) => e.kind !== 'run'))
 
-  /** 清单：轮次与非轮次按时间倒序并成一列。 */
+  /** 清单：本会话轮次、子会话轮次与非轮次按时间倒序并成一列。 */
   const rows = createMemo(() =>
     [
-      ...runs().map((r) => ({ at: r.createdAt, run: r, extra: null as UsageLedgerRow | null })),
-      ...extras().map((e) => ({ at: e.occurredAt, run: null as Run | null, extra: e })),
+      ...runs().map((r) => ({
+        at: r.createdAt,
+        run: r,
+        roleId: '',
+        extra: null as UsageLedgerRow | null,
+      })),
+      ...childRuns().map((c) => ({
+        at: c.run.createdAt,
+        run: c.run,
+        roleId: c.roleId,
+        extra: null as UsageLedgerRow | null,
+      })),
+      ...extras().map((e) => ({
+        at: e.occurredAt,
+        run: null as Run | null,
+        roleId: '',
+        extra: e,
+      })),
     ].sort((a, b) => b.at - a.at),
   )
 
@@ -85,7 +104,10 @@ export default function RunDetails() {
         >
           {/* 一笔都没有就空着：摆一排 0 是把「还没开始」说成「花了零元」。 */}
           <Show when={rows().length > 0}>
-            <Summary runs={runs()} ledger={loaded(ledger)!.totals} />
+            <Summary
+              runs={[...runs(), ...childRuns().map((c) => c.run)]}
+              ledger={loaded(ledger)!.totals}
+            />
             <ul class="run-list">
               <For each={rows()}>
                 {(row) => (
@@ -93,6 +115,7 @@ export default function RunDetails() {
                     {(r) => (
                       <RunRow
                         run={r}
+                        roleId={row.roleId}
                         open={picked() === r.id}
                         onPick={() => setPicked((cur) => (cur === r.id ? null : r.id))}
                       />
@@ -174,6 +197,8 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
         <span class="run-sum-scope">本会话</span>
         <span class="run-sum-cost">{money(totals().cost)}</span>
       </div>
+      {/* 边界：外部 CLI 是本机另一个进程，它的钱花在别家账上，这里拿不到。 */}
+      <div class="run-sum-note">不含外部 CLI</div>
       <div class="run-stats">
         <Stat label="轮次" value={String(props.runs.length)} />
         {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
@@ -194,7 +219,7 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
  * 模型名与步数耗时不进展开区——放进去等于给同一轮做两个标题，上面一个时间、
  * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的内容：逐请求的账。
  */
-function RunRow(props: { run: Run; open: boolean; onPick: () => void }) {
+function RunRow(props: { run: Run; roleId: string; open: boolean; onPick: () => void }) {
   const r = () => props.run
   const mark = () => runMark(r())
   /** 跑完才给耗时。还在跑的那一轮由「进行中」标记说，两处都说就是同一件事说两遍。 */
@@ -208,6 +233,8 @@ function RunRow(props: { run: Run; open: boolean; onPick: () => void }) {
       <button class="run-row" type="button" aria-expanded={props.open} onClick={props.onPick}>
         <IconChevron size={10} dir={props.open ? 'down' : 'right'} />
         <span class="run-when">{clockOf(r().createdAt)}</span>
+        {/* 派给谁。本会话自己那几轮没有这一格——那一行就是用户正在看的这条会话。 */}
+        <Show when={props.roleId}>{(role) => <span class="run-role truncate">{role()}</span>}</Show>
         {/* 模型名是这一行唯一长度不可控的一格，所以只有它让位。 */}
         <span class="run-model truncate">{r().model}</span>
         <span class="run-meta">{r().stepCount} 步</span>
@@ -471,7 +498,6 @@ function addMaybe(acc: number | null, v: number | null | undefined): number | nu
 const KIND_LABEL: Record<string, string> = {
   summary: '压缩摘要',
   classifier: '权限裁决',
-  team: '协作成员',
 }
 
 /** 没有活动会话时的空账。给一份而不是不取，界面才有恒定的形状。 */
