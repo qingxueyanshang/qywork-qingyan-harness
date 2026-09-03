@@ -777,7 +777,7 @@ describe('workflow 从父会话账本续接', () => {
     expect(script).toHaveLength(0)
   })
 
-  test('首派落失败终态之后 review 报重新派发，不再说不是待审查状态', async () => {
+  test('首派落失败终态之后 approve 报重新派发，不再说不是待审查状态', async () => {
     const parent = conversation()
     const run = createRun(store, {
       conversationId: parent,
@@ -816,9 +816,9 @@ describe('workflow 从父会话账本续接', () => {
         kind: 'review',
         workflowId: step.id,
         checkpointId: 'cp',
-        decision: 'revise',
-        note: '继续',
-        revisions: [{ nodeId: 'a', instruction: '继续' }],
+        decision: 'approve',
+        note: '接受',
+        revisions: [],
       },
       runId: run.id,
       stepId: 'st_dead_review',
@@ -826,6 +826,79 @@ describe('workflow 从父会话账本续接', () => {
     })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('已失败，请重新派发')
+  })
+
+  test('首派被打断后对留下子会话的节点 revise，续跑原子会话而不是被 failed 闸挡住', async () => {
+    const parent = conversation()
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-interrupted',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      source: 'workflow',
+      sourceRef: 'ad-hoc',
+      parentConversationId: parent,
+    }).id
+    const args = {
+      goal: '目标',
+      nodes: [
+        { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '做' },
+        { id: 'b', kind: 'agent', agent: 'ad-hoc', task: '也做' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+      ],
+    }
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_interrupted',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    // 进程退出收尾：没有 transition，只留下 a 起跑时落库的子会话 id；b 还没起跑。
+    settleToolStep(store, step.id, 'failure', {
+      kind: 'tool_result',
+      args,
+      children: { a: child },
+      outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
+    })
+
+    script = [
+      () => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('新起的做完了'), { headers: SSE_HEADERS }),
+    ]
+    const result = await delegate(parent).runGraph({
+      call: {
+        kind: 'review',
+        workflowId: step.id,
+        checkpointId: 'cp',
+        decision: 'revise',
+        note: '继续',
+        revisions: [{ nodeId: 'a', instruction: '已完成则复述最终产出，否则接着做' }],
+      },
+      runId: run.id,
+      stepId: 'st_interrupted_review',
+      signal: new AbortController().signal,
+    })
+    if (!result.transition) throw new Error(result.error ?? '没有 transition')
+    expect(result.transition.phase).toBe('waiting_review')
+    const resumed = result.transition.receipts.find((receipt) => receipt.nodeId === 'a')
+    expect(resumed?.status).toBe('done')
+    // 续跑的是首派留下的那条子会话，不是另起一条。
+    expect(resumed?.conversationId).toBe(child)
+    expect(listRuns(store, child)).toHaveLength(1)
+    const started = result.transition.receipts.find((receipt) => receipt.nodeId === 'b')
+    expect(started?.status).toBe('done')
+    expect(started?.conversationId).not.toBe(child)
   })
 
   test('start → revise → approve 下一批 → approve 完成全程从同一父账本推进', async () => {

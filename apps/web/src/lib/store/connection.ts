@@ -1226,6 +1226,7 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
       ...(s.payload?.childConversationId
         ? { childConversationId: s.payload.childConversationId }
         : {}),
+      ...(s.payload?.children ? { children: s.payload.children } : {}),
       // 图跑着的时候切走再切回来：这条 step 还没有 outcome，逐节点终态也就不存在，
       // `$.children` 是那一刻唯一落了库的节点事实。**只在 running 时还原**——
       // 终态之后回执自带 conversationId，再补一份会盖掉真实的 phase 与耗时。

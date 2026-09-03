@@ -82,6 +82,8 @@ export interface WorkflowCallRecord {
   args?: Record<string, unknown>
   outcome?: ToolOutcomeWire
   status?: 'running' | 'success' | 'failure'
+  /** 这次调用起过的节点子会话，键是节点 id。被打断的调用没有回执，这是它留下的唯一节点事实。 */
+  children?: Record<string, string>
 }
 
 export interface WorkflowProjection {
@@ -458,9 +460,30 @@ export function foldWorkflow(
     }
     if (!transition) {
       if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
-      // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
-      // 不投影成 failed 的话它永远停在 running，review 只能收到「当前不是待审查状态」。
-      if (record.status === 'failure' && record.stepId === workflowId) projection.phase = 'failed'
+      if (record.status === 'failure') {
+        // 被打断的调用没有回执，`children` 是它留下的唯一节点事实：按它折出「调用中断」回执，
+        // revise 才找得到要续的会话。attempts 不计，这一次没有跑到终态。
+        for (const [nodeId, conversationId] of Object.entries(record.children ?? {})) {
+          const node = projection.nodes.find(
+            (candidate): candidate is WorkflowAgentNode =>
+              candidate.kind !== 'checkpoint' && candidate.id === nodeId,
+          )
+          if (!node) continue
+          projection.results[nodeId] = {
+            nodeId,
+            agent: node.agent,
+            label: node.agent,
+            status: 'failed',
+            output: '',
+            error: '调用中断',
+            durationMs: 0,
+            conversationId,
+          }
+        }
+        // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
+        // 不投影成 failed 的话它永远停在 running，approve 只能收到「当前不是待审查状态」。
+        if (record.stepId === workflowId) projection.phase = 'failed'
+      }
       continue
     }
     if (transition.workflowId !== workflowId) {

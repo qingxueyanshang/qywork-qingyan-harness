@@ -146,6 +146,7 @@ export function collapseWorkflowItems(transcript: TranscriptItem[]): TranscriptI
       ...(item.args ? { args: item.args } : {}),
       ...(item.outcome ? { outcome: item.outcome } : {}),
       ...(item.status ? { status: item.status } : {}),
+      ...(item.children ? { children: item.children } : {}),
     }))
     const folded = foldWorkflow(records, workflowId)
     if (!folded.ok) continue

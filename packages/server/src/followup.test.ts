@@ -2,7 +2,7 @@
  * 跟进消息（排队 / 注入）的端到端回归。**用假 provider，不花钱、不联网。**
  *
  * **覆盖范围**：`runs.ts` 的队列（入队幂等、翻转、删除、取走、复位）、
- * `commands.ts` 的 `message.send` 忙闲裁决与两条 `followup.*` 分支、
+ * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的回绝与两条 `followup.*` 分支、
  * `run-control.ts` 收尾时的火发与它同目标续起的优先级、
  * `agent/loop.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把那条
  * `kind='user'` 的 step 投影回历史。
@@ -279,6 +279,39 @@ describe('会话在跑时发消息', () => {
       await idle(cv)
     }
   }, 20_000)
+})
+
+describe('子会话不接受直接消息', () => {
+  test('向 workflow 建的子会话发消息被回绝，不入队也不起轮', async () => {
+    const parent = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      source: 'workflow',
+      sourceRef: 'ad-hoc',
+      parentConversationId: parent,
+    }).id
+    const sock = socket()
+    await handleCommand(
+      {
+        type: 'message.send',
+        clientRequestId: 'req-child',
+        conversationId: child,
+        content: '直接说一句',
+      } as never,
+      { ...deps(), ws: sock.ws },
+    )
+    expect(sock.sent.at(-1)).toMatchObject({
+      type: 'command.rejected',
+      reason: 'conflict',
+      clientRequestId: 'req-child',
+    })
+    expect(runs.queueOf(child)).toEqual([])
+    expect(runs.isBusy(child)).toBe(false)
+    expect(listRuns(store, child)).toEqual([])
+    expect(listMessages(store, child)).toEqual([])
+  })
 })
 
 describe('收尾之后的火发', () => {

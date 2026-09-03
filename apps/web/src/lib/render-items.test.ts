@@ -215,6 +215,25 @@ describe('workflow 始终是一张卡', () => {
     ...(data ? { outcome: { status: 'success', executed: true, message: 'ok', data } } : {}),
   })
 
+  test('被打断的首派按 children 折出节点状态，卡上那一格仍能点开', () => {
+    const out = buildRenderItems([
+      {
+        ...workflow('st_root', { goal: '目标', nodes }, undefined, 'failure'),
+        outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
+        children: { a: 'cv_a' },
+      },
+    ])
+    expect(out.map((row) => row.kind)).toEqual(['tool'])
+    const card = out[0]
+    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    expect(card.item.workflow?.phase).toBe('failed')
+    expect(card.item.workflow?.results.a).toMatchObject({
+      status: 'failed',
+      error: '调用中断',
+      conversationId: 'cv_a',
+    })
+  })
+
   test('首轮与 revise 只保留同一张卡，并累计次数与原 conversationId', () => {
     const out = buildRenderItems([
       workflow(

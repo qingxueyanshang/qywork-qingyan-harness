@@ -409,6 +409,41 @@ describe('workflow 投影', () => {
     expect(folded.projection.phase).toBe('failed')
   })
 
+  test('被打断的首派按 children 折出「调用中断」回执，revise 才找得到要续的会话', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', task: '做' },
+              { id: 'b', task: '也做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+            ],
+          },
+          status: 'failure',
+          children: { a: 'cv_a', b: 'cv_b' },
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('failed')
+    expect(folded.projection.results.a).toMatchObject({
+      status: 'failed',
+      error: '调用中断',
+      conversationId: 'cv_a',
+    })
+    expect(folded.projection.results.b).toMatchObject({
+      status: 'failed',
+      error: '调用中断',
+      conversationId: 'cv_b',
+    })
+    expect(folded.projection.attempts).toEqual({})
+  })
+
   test('运行中的续调立刻按 args.workflowId 归回首轮', () => {
     expect(workflowGroupId({ stepId: 'current', args: { workflowId: 'anchor' } })).toBe('anchor')
   })
