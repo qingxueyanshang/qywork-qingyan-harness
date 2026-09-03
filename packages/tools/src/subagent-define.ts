@@ -27,6 +27,7 @@ export const defineSubagentTool: ToolSpec = {
   description:
     '建一个子 agent（角色）或改一个已有的，写进工作区的 .qy/team.json。' +
     '角色是可以被 subagent / workflow 派活的对象：它有自己的系统提示词、可选的模型与工具范围。' +
+    '只有要长期复用的人设才建角色；一次性任务把人设直接写进 subagent 或 workflow 节点的 task。' +
     '同名 id 直接覆盖。',
   parameters: {
     type: 'object',

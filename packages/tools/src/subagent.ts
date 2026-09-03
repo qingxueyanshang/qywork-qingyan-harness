@@ -26,9 +26,11 @@ export const subagentTool: ToolSpec = {
     '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
     '或 cli:<id> 派给本机安装的外部 agent CLI。' +
     '一次发几个调用就几个并行，没有上限。' +
+    '一次性、不验收：产出回来就结束。要验收或可能返工的改用 workflow，哪怕只有一个节点。' +
+    '被中断就只能整件重派，可能中途被打断还要接着做的长任务同样用 workflow。' +
     '适合可以独立完成、产出是一段文字的整块工作；当前有未完成待办时，' +
     '必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
-    '父待办仍需当前会话验收并用 write_todos 完成。可能需要原子会话返工时改用带 checkpoint 的 workflow；' +
+    '父待办仍需当前会话验收并用 write_todos 完成。' +
     '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
   parameters: {
     type: 'object',
