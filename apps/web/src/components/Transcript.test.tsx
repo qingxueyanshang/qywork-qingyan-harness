@@ -460,6 +460,82 @@ describe('子会话与主会话共用流式外壳', () => {
       ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
     }
   })
+
+  test('旧进程漏报子忙态时，只按精确指向它的运行中父步骤恢复流式 UI', async () => {
+    const store = await import('../lib/store/index.ts')
+    const apiBefore = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path,
+    ) => {
+      if (!path.includes('/cv_child_legacy/history')) throw new Error(`未预期请求：${path}`)
+      return { messages: [], steps: [], runs: [], todos: [], nextCursor: null }
+    }
+
+    store.openConversationTab('cv_child_legacy', '旧进程成员')
+    store.syncViews()
+    store.setState({
+      activeConversation: 'cv_parent',
+      busyConversations: ['cv_parent'],
+      connection: 'ready',
+      views: {
+        cv_parent: {
+          transcript: [
+            {
+              id: 'delegate-running',
+              kind: 'tool',
+              text: '',
+              toolName: 'subagent',
+              args: { agent: 'qwen-racer', task: '继续修复' },
+              status: 'running',
+              childConversationId: 'cv_child_legacy',
+            },
+          ],
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: 100,
+          usage: null,
+          lastEventAt: 100,
+          retry: null,
+          error: null,
+        },
+        cv_child_legacy: {
+          transcript: [{ id: 'thinking-child', kind: 'thinking', text: '仍在处理最新内容' }],
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
+          error: null,
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { default: ConversationPanel } = await import('./ConversationPanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ConversationPanel id="conversation-cv_child_legacy" />,
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      await Promise.resolve()
+      expect(host.querySelector('.run-strip')).not.toBeNull()
+      expect(host.querySelector('.fold-label')?.textContent).toContain('思考中')
+
+      // 父步骤一收尾，兼容桥立即撤掉；不能把结束后的子页钉在运行中。
+      store.setState('views', 'cv_parent', 'transcript', 0, 'status', 'success')
+      await Promise.resolve()
+      expect(host.querySelector('.run-strip')).toBeNull()
+      expect(host.querySelector('.fold-label')?.textContent).toContain('已思考')
+    } finally {
+      dispose()
+      host.remove()
+      store.closePanelTab('conversation-cv_child_legacy')
+      store.syncViews()
+      ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    }
+  })
 })
 
 const CV = 'cv_prose'
