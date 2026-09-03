@@ -48,7 +48,8 @@ export class Store {
       if (applied.has(m.id)) continue
       // 每条迁移一个事务：失败就整条回滚，不留半迁移状态。
       this.db.transaction(() => {
-        this.db.exec(m.sql)
+        if (m.sql) this.db.exec(m.sql)
+        m.apply?.(this.db)
         this.db
           .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
           .run(m.id, m.name, Date.now())

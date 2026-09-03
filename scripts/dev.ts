@@ -135,7 +135,10 @@ async function waitReady(): Promise<boolean> {
 
 /** 收尾中：这时候的退出由本脚本发起，不该被当成崩溃补起来。 */
 let stopping = false
+/** 初次启动由下方就绪检查收尾，成功后才把退出交给自动重载。 */
+let supervising = false
 let agent!: ReturnType<typeof Bun.spawn>
+let supervisor!: ReturnType<typeof createReloadSupervisor>
 
 /**
  * 起一个 sidecar 并盯着它的退出。
@@ -148,7 +151,7 @@ let agent!: ReturnType<typeof Bun.spawn>
 function startAgent(): void {
   agent = spawnAgent()
   void agent.exited.then((code) => {
-    if (!stopping) supervisor.onExit(code)
+    if (!stopping && supervising) supervisor.onExit(code)
   })
 }
 
@@ -191,7 +194,7 @@ function busy(pid: number): boolean {
   }
 }
 
-const supervisor = createReloadSupervisor({
+supervisor = createReloadSupervisor({
   busy: () => busy(agent.pid),
   restart: async () => {
     agent.kill()
@@ -206,6 +209,7 @@ const supervisor = createReloadSupervisor({
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   log: (line) => void process.stderr.write(`[dev] ${line}\n`),
 })
+supervising = true
 
 watch(join(ROOT, 'packages'), { recursive: true }, (_event, file) => {
   if (isSourceChange(file)) supervisor.onChange()

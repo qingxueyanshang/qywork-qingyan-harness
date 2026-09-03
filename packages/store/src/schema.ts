@@ -12,6 +12,7 @@
  * - **cached_tokens 可空。** null=provider 未回报，与真实 0 命中是两回事。
  */
 
+import type { Database } from 'bun:sqlite'
 import type {
   ConversationId,
   Currency,
@@ -30,7 +31,26 @@ import type {
   WorkspaceId,
 } from '@qywork/core'
 
-export const MIGRATIONS: { id: number; name: string; sql: string }[] = [
+interface Migration {
+  id: number
+  name: string
+  sql?: string
+  apply?: (db: Database) => void
+}
+
+function addTextColumnIfMissing(
+  db: Database,
+  table: 'provider_requests' | 'runs',
+  column: 'diagnostic' | 'interruption_detail',
+): void {
+  const exists = db
+    .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+    .all()
+    .some((item) => item.name === column)
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
+}
+
+export const MIGRATIONS: Migration[] = [
   {
     id: 1,
     name: 'initial',
@@ -1076,6 +1096,18 @@ ALTER TABLE provider_requests ADD COLUMN completed_at INTEGER;
 ALTER TABLE runs ADD COLUMN interruption_detail TEXT;
 ALTER TABLE provider_requests ADD COLUMN diagnostic TEXT;
 `,
+  },
+  {
+    id: 35,
+    name: 'ensure_execution_failure_diagnostics',
+    /**
+     * 按真实表结构补列，不改写已落盘的迁移标记。开发数据库可能已经用其他结构占用
+     * 迁移编号 34，仅按编号跳过会让运行期查询引用不存在的列。
+     */
+    apply(db) {
+      addTextColumnIfMissing(db, 'runs', 'interruption_detail')
+      addTextColumnIfMissing(db, 'provider_requests', 'diagnostic')
+    },
   },
 ]
 
