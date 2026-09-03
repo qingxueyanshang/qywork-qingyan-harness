@@ -360,6 +360,22 @@ export function hasRunStatus(): boolean {
 }
 
 /**
+ * 某条会话的运行中读数是否已经交接给流里的终态条目。
+ *
+ * `conversation.busy=false` 比 `run.finished` 晚一帧到达；这期间如果只按忙态挂
+ * `LiveRunBar`，流尾会同时出现完成条与运行条。反过来，不能再要求
+ * `runStartedAt !== null`：晚打开的子会话可能没收到瞬时的 run.started，但服务端
+ * 的 RunManager 已经明确告诉它正在忙，隐藏状态条就是把权威事实丢了。
+ *
+ * 终态条只可能由 `run.finished` 落在流尾；仍在运行但尚未恢复开始时间的会话，
+ * 流尾不会有它这一轮的 run 条目，因此照常显示状态条，只暂时省略耗时。
+ */
+export function conversationRunClosed(id: string | null): boolean {
+  const items = viewOf(id).transcript
+  return viewOf(id).runStartedAt === null && items[items.length - 1]?.kind === 'run'
+}
+
+/**
  * 输入框上方除了输入框自己还挂着块：整轮状态条 / 目标条 / 排着的跟进消息。
  *
  * 会话流底部那段留白按它给。下面紧挨着一个块时贴住它——那一段是输入框上方

@@ -283,6 +283,57 @@ describe('编排画布', () => {
 })
 
 describe('子会话与主会话共用流式外壳', () => {
+  test('权威忙态已到但 run.started 尚未回放时也立即显示运行条', async () => {
+    const store = await import('../lib/store/index.ts')
+    const apiBefore = store.client.api
+    let finishLoad!: (value: unknown) => void
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = () =>
+      new Promise((resolve) => {
+        finishLoad = resolve
+      })
+
+    store.openConversationTab('cv_child_starting', '子 agent')
+    store.syncViews()
+    store.setState({
+      activeConversation: null,
+      busyConversations: ['cv_child_starting'],
+      connection: 'ready',
+      views: {
+        cv_child_starting: {
+          transcript: [],
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
+          error: null,
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { default: ConversationPanel } = await import('./ConversationPanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ConversationPanel id="conversation-cv_child_starting" />,
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      expect(host.querySelector('.run-strip')).not.toBeNull()
+      expect(host.querySelector('.run-galaxy')).not.toBeNull()
+    } finally {
+      finishLoad({ messages: [], steps: [], runs: [], todos: [], nextCursor: null })
+      await Promise.resolve()
+      dispose()
+      host.remove()
+      store.closePanelTab('conversation-cv_child_starting')
+      store.syncViews()
+      ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    }
+  })
+
   test('不重复挂待办，并显示自己的运行条与贴底跟随', async () => {
     const store = await import('../lib/store/index.ts')
     const apiBefore = store.client.api

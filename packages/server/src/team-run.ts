@@ -9,7 +9,7 @@
  * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了。
  */
 
-import type { AgentEvent, ConversationId, StopReason } from '@qywork/core'
+import type { AgentEvent, ConversationId, RunId, StopReason } from '@qywork/core'
 import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
@@ -166,12 +166,29 @@ export async function runBuiltinMember(
   if ('error' in active) return { ok: false, output: '', error: active.error }
   const config = { ...deps.config, active }
 
+  /*
+   * 子会话也必须进入和主会话相同的 RunManager 生命周期。
+   *
+   * 旧链路只把 `run.started` / 正文 / `run.finished` 转发到事件总线，却从未 register
+   * 子 run。后果不是少一条装饰性事件：握手与 `conversation.busy` 都不知道子会话
+   * 在运行。用户在它开跑后才点开时，前端虽然能从账本拉到正文，却没有权威忙态，
+   * 因而不挂实时状态条；这正是主会话与子会话表现分叉的根因。
+   *
+   * 调用方只给 AbortSignal，所以这里建一个可登记的 controller，并把父信号单向
+   * 传进来。这样父会话停止仍会中断成员；RunManager 的统一停止/关服路径也能直接
+   * 中断这条子 run，不需要另造一份“子会话忙闲”。
+   */
+  const controller = new AbortController()
+  const abortFromParent = () => controller.abort(input.signal.reason)
+  if (input.signal.aborted) abortFromParent()
+  else input.signal.addEventListener('abort', abortFromParent, { once: true })
+
   const session = new Session({
     store: deps.store,
     config,
     content: deps.content,
     workspaceRoot: ctx.workspaceRoot,
-    signal: input.signal,
+    signal: controller.signal,
     ...(role.systemPrompt ? { extraSystem: role.systemPrompt } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
   })
@@ -179,6 +196,7 @@ export async function runBuiltinMember(
   let text = ''
   let error: string | null = null
   let conversationId: ConversationId | undefined
+  let runId: RunId | null = null
   let stop: StopReason | null = null
 
   try {
@@ -193,6 +211,15 @@ export async function runBuiltinMember(
     })) {
       if (ev.type === 'run.started') {
         conversationId = ev.conversationId
+        runId = ev.runId
+        // 先登记忙态，再暴露子会话入口。用户拿到入口立刻点开时，加载侧已经能从
+        // 同一张权威表确认“正在运行”，不会依赖自己是否碰巧赶上 run.started。
+        deps.runs.register({
+          runId,
+          conversationId,
+          controller,
+          startedAt: Date.now(),
+        })
         ctx.onConversation?.(conversationId)
       } else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
@@ -204,6 +231,8 @@ export async function runBuiltinMember(
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
   } finally {
+    if (runId) deps.runs.unregister(runId)
+    input.signal.removeEventListener('abort', abortFromParent)
     session.dispose()
   }
 
