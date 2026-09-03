@@ -5,6 +5,7 @@
  * 自己的可见入口，不再为它们维护一套搜索导航。
  */
 
+import { ROLE_COMMAND } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import { IconNewChat, IconSpinner, IconTarget, IconUsers } from '../components/Icons.tsx'
 import { slashQuery } from './slash.ts'
@@ -55,15 +56,15 @@ export function buildCommands(): Command[] {
       run: (objective) => setGoal(objective ?? ''),
     },
     {
-      id: 'subagent',
-      label: '创建 Agent 角色',
-      slash: 'subagent',
+      id: 'role',
+      label: '创建角色',
+      slash: ROLE_COMMAND.slice(1),
       hint: '写入当前项目 Agent Team，之后可用 @ 点名',
       arg: { placeholder: '描述角色的职责与工作方式' },
       icon: IconUsers,
-      // 原文作为用户消息进入同一条会话；运行时能力约定把这个前缀绑定到
-      // `define_subagent`，创建的是持久角色，不是一次性的临时派活。
-      run: (description) => sendMessage(`/subagent ${description ?? ''}`.trimEnd()),
+      // 原文作为用户消息进入同一条会话；提示词按这个前缀说明这是一次明确的建角色要求。
+      // 角色是持久定义，不是这次任务的子 agent。
+      run: (description) => sendMessage(`${ROLE_COMMAND} ${description ?? ''}`.trimEnd()),
     },
   ]
 }

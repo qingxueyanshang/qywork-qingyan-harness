@@ -160,5 +160,6 @@ export {
   type HelloOkFrame,
   type PairingPayload,
   type ResumePosition,
+  ROLE_COMMAND,
   type ServerCapabilities,
 } from './protocol/transport.ts'

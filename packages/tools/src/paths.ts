@@ -330,7 +330,7 @@ function decodeSafely(input: string): string {
  * 那颗按钮等于点了没反应（B5）。
  *
  * 角色（`.qy/team.json` 的 `roles`）同理不给新能力，但它和门禁同在一个文件里，
- * 所以走 `define_subagent` 那条只动 `roles` 的写入路径，不是把整个 `.qy/` 放开。
+ * 所以走 `define_role` 那条只动 `roles` 的写入路径，不是把整个 `.qy/` 放开。
  *
  * **`full` 下不挡**（判据在 `resolveWritablePath` 的 `unrestricted`）：那个模式下
  * `run_command` 全放行，`echo > .agents/mcp.json` 一行就写进去了，只拦文件工具就是

@@ -81,8 +81,8 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单只列名字，用 load_tool 加载后才能调用。用户用 `@工具注册名` 明确点名时，加载并调用该工具。',
   },
   {
-    tool: 'define_subagent',
-    line: '- 角色定义：只有要长期复用的人设才用 define_subagent 建成角色，一次性任务把人设写进 task。用户消息以 `/subagent 角色描述` 开头时，按描述创建一个可长期复用、之后能被 `@角色id` 点名的角色；不要把它当成一次临时派活。',
+    tool: 'define_role',
+    line: '- 角色定义：用户明确要求创建或修改角色，或消息以 /role 开头时，用 define_role 把可长期复用的角色写进当前项目 Agent Team，之后建子 agent 时按 role id 引用；用户没有要求就不建。角色是持久定义，不是这次任务的子 agent。',
   },
   {
     tool: 'subagent',
@@ -271,7 +271,7 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
-        '用户只说厂商、系列或简称（例如 glm）时，从这份清单中语义匹配并自主选择最符合任务的已配置项；不要把用户的模糊写法直接填进工具。调用 define_subagent、subagent 或 workflow 覆盖模型时，逐字使用同一行的 provider 与 model 两个参数，不要使用清单外的值。',
+        '用户只说厂商、系列或简称（例如 glm）时，从这份清单中语义匹配并自主选择最符合任务的已配置项；不要把用户的模糊写法直接填进工具。调用 define_role、subagent 或 workflow 覆盖模型时，逐字使用同一行的 provider 与 model 两个参数，不要使用清单外的值。',
       group: 'workspaceState',
     })
   }

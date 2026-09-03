@@ -379,7 +379,7 @@ export class Session {
     const memories = (await listScopedEntries(roots).catch(() => [])).filter(
       (memory) => !disabled.has(`memory:${memory.key}`),
     )
-    const canAssignModels = ['define_subagent', 'subagent', 'workflow'].some((name) =>
+    const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
       this.registry.has(name),
     )
     const contextSnapshot = buildTailNotes({
