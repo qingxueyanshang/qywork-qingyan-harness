@@ -85,12 +85,11 @@ export function makeDelegate(ctx: {
    * 父会话当前的「接口 × 模型」。成员没点名接口时跟着它跑，而不是跟着 `config.active`。
    *
    * **每次现读**：模型是会话级属性，用户在界面上随时能切；这一轮开始时读到的那一对
-   * 才是他要的那一对。迁移 24 之前建的会话 `provider` 是空串，这种回 undefined，
-   * 由下游落回配置默认。
+   * 才是他要的那一对。无法证明接口归属的旧会话不会进入执行；这里也不回配置默认。
    */
   const inherited = () => {
     const c = getConversation(deps.store, conversationId)
-    return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
+    return c ? { provider: c.provider, model: c.model } : undefined
   }
 
   /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */

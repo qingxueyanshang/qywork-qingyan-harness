@@ -13,7 +13,7 @@
  * - **派活的那两个不进组**（见 `STANDALONE`）。
  */
 
-import { type ActionKind, foldWorkflow, workflowGroupId, workflowTransitionOf } from '@qywork/core'
+import { type ActionKind, foldWorkflow, workflowGroupId } from '@qywork/core'
 import { resultImages } from './step-view.ts'
 import type { TranscriptItem } from './store/index.ts'
 
@@ -150,11 +150,6 @@ export function collapseWorkflowItems(transcript: TranscriptItem[]): TranscriptI
     }))
     const folded = foldWorkflow(records, workflowId)
     if (!folded.ok) continue
-    const isCheckpointWorkflow = folded.projection.nodes.some((node) => node.kind === 'checkpoint')
-    const hasTransition = rows.some(({ item }) => workflowTransitionOf(item.outcome))
-    // 迁移前的一次性 workflow 没有 transition，保持原卡原样，不能伪装成运行中。
-    if (!isCheckpointWorkflow && !hasTransition && rows.length === 1) continue
-
     const first = rows[0]!.item
     const last = rows.at(-1)!
     for (const row of rows.slice(0, -1)) hidden.add(row.index)

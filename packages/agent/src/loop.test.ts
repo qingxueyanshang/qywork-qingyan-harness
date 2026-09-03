@@ -2774,10 +2774,15 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   })
 
   test('失败那次的思考 step 落失败终态——不落就会被投影回传给 provider', async () => {
-    const { rec } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
+    const { rec, events } = await collect(scriptedAdapter(['break-after-thinking', 'ok']))
 
     expect(rec.thinking).toHaveLength(1)
     expect(rec.failed).toEqual(rec.thinking)
+    const retrying = events.find((e) => e.type === 'run.retrying')
+    expect(retrying?.type).toBe('run.retrying')
+    expect(
+      retrying?.type === 'run.retrying' ? retrying.failedThinkingStepIds.map(String) : [],
+    ).toEqual(rec.thinking)
   })
 
   test('重发后新思考另开一条 step，不拼进失败那条', async () => {

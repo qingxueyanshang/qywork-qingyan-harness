@@ -273,10 +273,6 @@ export class RunManager {
     }
   }
 
-  listActive(): ActiveRun[] {
-    return [...this.active.values()]
-  }
-
   conversationsOf(workspaceId: string): ConversationId[] {
     return listConversations(this.store, workspaceId as never).map((c) => c.id)
   }

@@ -144,9 +144,9 @@ export function contextPanel(
   model: {
     id: string
     contextWindow: number
-    /** 有值时把真值锚点限制在同一条接口路线上；旧行没有路线证据时仍可作锚。 */
-    providerName?: string
-    providerKind?: ProviderRequest['providerKind']
+    /** 真值锚点必须与当前接口路线完全一致。 */
+    providerName: string
+    providerKind: Exclude<ProviderRequest['providerKind'], null>
   },
 ): ContextPanel {
   const limit = Math.max(1, model.contextWindow)
@@ -212,12 +212,8 @@ export function contextPanel(
   const anchored =
     latest &&
     latest.model === model.id &&
-    (latest.providerName === null ||
-      model.providerName === undefined ||
-      latest.providerName === model.providerName) &&
-    (latest.providerKind === null ||
-      model.providerKind === undefined ||
-      latest.providerKind === model.providerKind)
+    latest.providerName === model.providerName &&
+    latest.providerKind === model.providerKind
       ? latest
       : null
 

@@ -26,6 +26,7 @@ import {
   openProviderRequest,
   providerFinishRates,
   setConversationTitle,
+  setStepChildConversation,
   settleProviderRequest,
   settleToolStep,
   upsertWorkspace,
@@ -298,6 +299,43 @@ describe('工具 step 原地更新', () => {
     expect(steps).toHaveLength(1)
     expect(steps[0]?.status).toBe('success')
     expect(steps[0]?.payload?.kind).toBe('tool_result')
+    store.close()
+  })
+
+  test('子会话入口随原行进入终态，不再依赖 outcome 回读', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'child-entry',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: 'c1',
+      providerBatchId: 'bt1',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    setStepChildConversation(store, step.id, 'cv_child' as never)
+
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: {},
+      outcome: { status: 'success', executed: true, message: 'ok' },
+    })
+
+    expect(listSteps(store, run.id)[0]?.payload).toMatchObject({
+      kind: 'tool_result',
+      childConversationId: 'cv_child',
+    })
     store.close()
   })
 

@@ -51,8 +51,7 @@ export function memberModel(
 }
 
 /**
- * 用户点名的模型解析成一对「接口 × 模型」。新调用方分列传 `provider` 与 `name`；
- * 旧角色配置里已经存在的 `接口/模型` 选择串继续兼容读取，但不再对模型生成这种串。
+ * 用户点名的模型解析成一对「接口 × 模型」。接口与模型始终分列传递。
  *
  * **同一个模型 id 挂在两个接口下时报错，不按枚举顺序挑一个**：挑错了是端点、key、
  * 价目表三样一起换掉，而且不报错。
@@ -79,12 +78,6 @@ export function resolveModel(
       error: `${name} 挂在多个接口下（${hits.map(([n]) => n).join('、')}），请同时指定 provider 与 model`,
     }
   }
-  const legacy = Object.entries(config.providers).flatMap(([provider, stored]) =>
-    Object.keys(stored.models)
-      .filter((model) => `${provider}/${model}` === name)
-      .map((model) => ({ provider, model })),
-  )
-  if (legacy.length === 1) return legacy[0]!
   return { error: `配置里没有模型 ${name}。现在能用的是：${modelList(config)}` }
 }
 

@@ -35,7 +35,12 @@ import { contextPanel } from './context-panel.ts'
 const sum = (b: Record<string, number>) => Object.values(b).reduce((n, v) => n + v, 0)
 
 /** 夹具里的会话与逐请求账都记在模型 `m` 上。 */
-const M = (contextWindow: number) => ({ id: 'm', contextWindow })
+const M = (contextWindow: number) => ({
+  id: 'm',
+  contextWindow,
+  providerName: 'p',
+  providerKind: 'openai_chat_completions' as const,
+})
 
 function fixture() {
   const store = new Store({ path: ':memory:' })
@@ -69,8 +74,8 @@ function send(
     runId,
     turnIndex: turn++,
     retryIndex: 0,
-    ...(opts.providerName ? { providerName: opts.providerName } : {}),
-    ...(opts.providerKind ? { providerKind: opts.providerKind } : {}),
+    providerName: opts.providerName ?? 'p',
+    providerKind: opts.providerKind ?? 'openai_chat_completions',
     model: 'm',
     measuredInputTokens: opts.measured,
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
@@ -349,7 +354,10 @@ describe('锚点认模型', () => {
     expect(contextPanel(store, conversationId, M(1_000_000)).source).toBe('actual')
 
     // 会话切到另一个模型：那条回执描述的不是这个模型看到的上下文。
-    const other = contextPanel(store, conversationId, { id: 'other', contextWindow: 200_000 })
+    const other = contextPanel(store, conversationId, {
+      ...M(200_000),
+      id: 'other',
+    })
     expect(other.source).toBe('estimated')
     expect(other.total).not.toBe(33_000)
     expect(other.limit).toBe(200_000)
@@ -420,6 +428,33 @@ describe('真值锚点认接口路线', () => {
     })
     expect(otherRoute.source).toBe('estimated')
     expect(otherRoute.total).toBe(3000)
+  })
+
+  test('缺接口证据的旧请求只保留诊断，不再当当前路线锚点', () => {
+    const { store, conversationId, runId } = fixture()
+    const id = openProviderRequest(store, {
+      runId,
+      turnIndex: turn++,
+      retryIndex: 0,
+      model: 'm',
+      measuredInputTokens: 3000,
+      sentCategories: emptyBreakdown(),
+      omittedCategories: emptyOmitted(),
+      payloadHash: 'old-route-less',
+    }).id
+    markProviderRequestSent(store, id)
+    settleProviderRequest(
+      store,
+      id,
+      'received',
+      { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
+      null,
+    )
+
+    const panel = contextPanel(store, conversationId, M(1_000_000))
+    expect(panel.source).toBe('estimated')
+    expect(panel.total).toBe(3000)
+    store.close()
   })
 })
 
@@ -559,7 +594,10 @@ describe('信封换一份只换头部', () => {
       { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
     )
-    const other = contextPanel(store, conversationId, { id: 'other', contextWindow: 200_000 })
+    const other = contextPanel(store, conversationId, {
+      ...M(200_000),
+      id: 'other',
+    })
     expect(other.source).toBe('estimated')
     expect(other.total).toBe(3000)
   })

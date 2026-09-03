@@ -45,6 +45,19 @@ export const client = new QyClient({
     // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
     void reloadActiveConversation()
   },
+  onStreamChanged: () => {
+    /*
+     * 桌面源码开发走「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
+     * 等当前 run 跑完，再由 dev.ts 重启 sidecar。streamId 变更就是后端换代完成的
+     * 可靠信号，此时刷新整页，才会加载与它同一棵源码的 UI。
+     *
+     * 不能把这件事挂到普通 reconnect 或 resync 上：网络闪断也会走那两条路，
+     * 手机端和打包版不该因此整页刷新。
+     */
+    if (import.meta.env.DEV && import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
+      location.reload()
+    }
+  },
   onEvent: (frame) => applyEvent(frame),
   onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
 })
@@ -291,9 +304,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
           // 子会话 id 要逐条保留。它在 `working` 那条补上来，后面每条都得带着——
           // 不带的话 `done` 到达时这一格重新变回点不开的。外部 CLI 那几格没有这个字段。
           const child = ev.childConversationId ?? nodes[i]?.conversationId
-          // 单次 subagent 也走 team.member 通道。实时事件里的会话 id 原本只落在
-          // nodes[0]，而刷新回放后却落在卡片顶层，导致同一张卡刷新前后是两种形状。
-          // 这里在事件入口就归一；右侧子会话的运行判定与点击入口都只认同一份事实。
+          // 单次 subagent 的入口只落卡片顶层；workflow 才按节点保存入口。
+          // 两种工具各有一个规范形状，不让同一 subagent 同时存在顶层与 nodes[0]。
           if (card.toolName === 'subagent' && child) card.childConversationId = child
           const next: WorkflowNodeState = {
             nodeId: ev.memberId,
@@ -301,7 +313,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
             label: ev.roleName,
             phase: ev.phase,
             ...(ev.summary ? { summary: ev.summary } : {}),
-            ...(child ? { conversationId: child } : {}),
+            ...(card.toolName === 'workflow' && child ? { conversationId: child } : {}),
           }
           if (i >= 0) nodes[i] = next
           else nodes.push(next)
@@ -377,6 +389,23 @@ function foldContent(cid: string, ev: AgentEvent): void {
         }),
       )
       return
+
+    case 'run.retrying': {
+      if (ev.failedThinkingStepIds.length === 0) return
+      const failed = new Set<string>(ev.failedThinkingStepIds)
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          // 重发事件带 AgentLoop 本次尝试真正开过的 step id。不能删「末尾思考」：
+          // 同一 run 的前几个工具轮也有已经完成的思考，按位置删会把真内容一起抹掉。
+          v.transcript = v.transcript.filter(
+            (item) => item.kind !== 'thinking' || !failed.has(item.id),
+          )
+        }),
+      )
+      return
+    }
 
     case 'tool.started':
       setState(
@@ -1158,17 +1187,19 @@ export async function reloadActiveConversation(): Promise<void> {
 /**
  * 一条 step 折成界面上的若干条。
  *
- * **一条 step 不等于一条界面条目**：`tool_action` 一条要展开成「思考 + 工具卡」两条。
- * 思考本身有自己的 step（`kind: 'thinking'`），但迁移 26 之前它寄生在批次首条工具行的
- * `content` 上，那些存量行只能从这里读——**漏掉任何一条的表现都是刷新一次页面、
- * 切一次会话，整轮思考就没了**，而思考是「模型为什么做了这些」的唯一现场。
+ * **一条 step 不等于一条界面条目**：不同 kind 投影成不同的会话条目。
+ * 思考只来自独立的 `kind='thinking'`；迁移 37 已把旧工具行正文转成这种结构。
  */
 function stepToItems(s: StoredStep): TranscriptItem[] {
   if (s.kind === 'text') {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
   if (s.kind === 'thinking') {
-    return s.content ? [{ id: s.id, kind: 'thinking', text: s.content }] : []
+    // 失败尝试的半截思考保留在账本供诊断，但已被随后的重发取代。普通会话流只展示
+    // 最终采用的生成；否则刷新后两段残句又会回来，实时态与回放态也不一致。
+    return s.status !== 'failure' && s.content
+      ? [{ id: s.id, kind: 'thinking', text: s.content }]
+      : []
   }
   // run 内注入的那句用户消息。刷新后要原位重建，`id` 用 stepId——
   // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。
@@ -1189,15 +1220,14 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   // 「这里压缩过」就没了，而它是解释「上下文为什么降了」的唯一线索。
   if (s.kind === 'compaction') {
     const p = s.payload
+    if (p?.kind !== 'compaction' || !p.phase) return []
     return [
       {
         id: s.id,
         kind: 'compaction',
         text: '',
         compaction: {
-          // 终态取 payload 的 `phase`。旧行没有这个键，按 status 列回落——
-          // 那时 skipped 与 failed 还共用一条通道，分不出来是历史事实。
-          phase: p?.phase ?? (s.status === 'failure' ? 'failed' : 'done'),
+          phase: p.phase,
           ...(p?.reasonCode ? { reasonCode: p.reasonCode } : {}),
           ...(p?.summarized === undefined ? {} : { summarized: p.summarized }),
           ...(p?.compactedMessages ? { compactedMessages: p.compactedMessages } : {}),
@@ -1207,38 +1237,34 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   }
   if (s.kind === 'tool_action') {
     const outcome = s.payload?.outcome
-    const out: TranscriptItem[] = []
-    // 迁移 26 之前的存量行：思考在这批工具**之前**发生，位置就在工具卡上面。
-    // id 由 step id 派生——每次重拉都要算出同一个值，`reconcileRenderItems` 按 id 配对。
-    // 新行走上面的 `kind === 'thinking'` 分支，这里恒为空。
-    if (s.content?.trim()) out.push({ id: `think_${s.id}`, kind: 'thinking', text: s.content })
     // action 来自后端落库的解析结果，是这张卡的全部标题（动词 + 对象 + 目标）。
     // **`ToolSpec` 上 `actionKind` / `objectLabel` 都是必填，所以它一定在**——
     // 别为「万一没有」加回落：回落成 `execute` 的话，刷新一次页面一整轮的读文件
     // 全变成「执行」；回落成工具名则是给同一件事再造一套显示。
-    out.push({
-      id: s.id,
-      kind: 'tool',
-      text: '',
-      toolName: s.toolName ?? '',
-      ...(s.payload?.action ? { action: s.payload.action } : {}),
-      ...(s.payload?.args ? { args: s.payload.args } : {}),
-      ...(s.payload?.childConversationId
-        ? { childConversationId: s.payload.childConversationId }
-        : {}),
-      ...(s.payload?.children ? { children: s.payload.children } : {}),
-      // 图跑着的时候切走再切回来：这条 step 还没有 outcome，逐节点终态也就不存在，
-      // `$.children` 是那一刻唯一落了库的节点事实。**只在 running 时还原**——
-      // 终态之后回执自带 conversationId，再补一份会盖掉真实的 phase 与耗时。
-      ...(s.status === 'running' && s.payload?.children
-        ? { nodes: liveNodesOf(s.payload.children) }
-        : {}),
-      status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
-      ...(outcome ? { outcome } : {}),
-      // 存量行没有这个数，那时不显示耗时——不为它编一个。
-      ...(s.durationMs === null ? {} : { durationMs: s.durationMs }),
-    })
-    return out
+    return [
+      {
+        id: s.id,
+        kind: 'tool',
+        text: '',
+        toolName: s.toolName ?? '',
+        ...(s.payload?.action ? { action: s.payload.action } : {}),
+        ...(s.payload?.args ? { args: s.payload.args } : {}),
+        ...(s.payload?.childConversationId
+          ? { childConversationId: s.payload.childConversationId }
+          : {}),
+        ...(s.payload?.children ? { children: s.payload.children } : {}),
+        // 图跑着的时候切走再切回来：这条 step 还没有 outcome，逐节点终态也就不存在，
+        // `$.children` 是那一刻唯一落了库的节点事实。**只在 running 时还原**——
+        // 终态之后回执自带 conversationId，再补一份会盖掉真实的 phase 与耗时。
+        ...(s.status === 'running' && s.payload?.children
+          ? { nodes: liveNodesOf(s.payload.children) }
+          : {}),
+        status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
+        ...(outcome ? { outcome } : {}),
+        // 存量行没有这个数，那时不显示耗时——不为它编一个。
+        ...(s.durationMs === null ? {} : { durationMs: s.durationMs }),
+      },
+    ]
   }
   return []
 }
