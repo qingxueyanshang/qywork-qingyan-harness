@@ -3,7 +3,7 @@
  * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
 
 /* ── 会话流 ── */
-.transcript {
+.conversation-scroll {
   flex: 1;
   /* flex 子项的默认 min-height 是 auto——它拒绝收缩到内容高度以下，因此这一块
      把 .main 撑破 100%，上面的 overflow-y 不生效，滚动落到最外层：现象是
@@ -11,6 +11,11 @@
      同一个成因在 .sidebar-scroll 上出现过一次。 */
   min-height: 0;
   overflow-y: auto;
+  /* 展开思考时由共享滚动状态机决定是否跟随，浏览器不能另记一份锚点。 */
+  overflow-anchor: none;
+}
+
+.transcript {
   /*
    * 两侧都预留滚动条槽。
    *
@@ -24,14 +29,18 @@
    * 写死的数字去追一个由系统滚动条宽度决定的值。
    */
   scrollbar-gutter: stable both-edges;
-  /* 滚动锚定：新内容插入时不让浏览器把视口往回跳 */
-  overflow-anchor: none;
 }
 
 /* 条目间距 8px。
  *
  * gap 10 + `.fold` 的 margin 6/2 得到「正文↔折叠 16px、折叠↔正文 12px」，那套数
  * 适合 320px 宽的窄栏；这里是 760px 宽的主列，同样的数字看起来就散，所以收一档。 */
+.conversation-stream-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .transcript-inner {
   max-width: 760px;
   margin: 0 auto;
@@ -40,9 +49,6 @@
   /* 底部留白 = 滚到末尾时正文与输入框之间的距离。放在这里而不是输入区的
      padding-top——理由写在 `.composer-wrap` 上。 */
   padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 /* 输入框上方挂着占流的块（目标条 / 跟进卡片）时，正文贴住它：留白换成这一列
@@ -1058,14 +1064,14 @@
   min-width: 0;
   gap: 26px;
 }
-/* 只派了一件事时三格横着摆：竖排要占三行约 180px，横排一行 44px，
-   而三格加两段间距约 600px——`.transcript-inner` 是 760px 宽，卡内放得下。 */
+/* 只派了一件事时三格横着摆。中间列就是画布中线，两侧对称吸收剩余宽度：
+   不能居中三个定宽层组成的整组，画布留白一旦不对称，中间 agent 就会跟着偏。 */
 .wf-graph.across {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 160px) minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
   min-width: 0;
-  gap: 40px;
+  column-gap: 40px;
 }
 /* 连线。`overflow: visible` 是必需的：折线的横段可能落在盒子边界上。 */
 .wf-edges {
@@ -1112,9 +1118,10 @@
 }
 .wf-graph.across .wf-layer {
   display: flex;
-  flex: none;
-  width: 160px;
+  width: 100%;
+  min-width: 0;
   margin-inline: 0;
+  justify-content: center;
 }
 /* 一个节点：点开它那条子会话。状态只走底色与边框，不加图标——
    一排小图标读起来像一排开关，而这里每个节点只有「点开」这一个动作。
@@ -1180,6 +1187,10 @@
   border-color: var(--border-default);
   color: var(--text-secondary);
   cursor: default;
+}
+.wf-graph.across .wf-node.session {
+  /* 窄面板里两侧端点可以收缩，但中间 agent 始终占据容器的几何中线。 */
+  max-width: 100%;
 }
 /* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
 .wf-node-name {

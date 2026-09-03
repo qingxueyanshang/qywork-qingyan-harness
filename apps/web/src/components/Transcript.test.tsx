@@ -425,6 +425,8 @@ describe('子会话与主会话共用流式外壳', () => {
 
       const scroller = host.querySelector<HTMLElement>('.child-cv')!
       const inner = host.querySelector<HTMLElement>('.child-cv-inner')!
+      expect(scroller.classList.contains('conversation-scroll')).toBe(true)
+      expect(inner.classList.contains('conversation-stream-inner')).toBe(true)
       let height = 300
       Object.defineProperties(scroller, {
         scrollHeight: { configurable: true, get: () => height },
@@ -433,12 +435,18 @@ describe('子会话与主会话共用流式外壳', () => {
       resize(inner)
       expect(scroller.scrollTop).toBe(300)
 
-      // 展开思考/工具卡会让 inner 长高；仍贴底时必须跟着新高度走。
+      // 鼠标或键盘展开 details 后，浏览器会为焦点自行滚动；这不是用户上翻。
+      details
+        .querySelector('summary')
+        ?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+      scroller.scrollTop = 120
+      scroller.dispatchEvent(new Event('scroll'))
       height = 480
       resize(inner)
       expect(scroller.scrollTop).toBe(480)
 
       // 用户主动上翻后尊重阅读位置，后续增长不再强拽到底。
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
       scroller.scrollTop = 40
       scroller.dispatchEvent(new Event('scroll'))
       height = 620
@@ -569,6 +577,44 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     expect(host.textContent).toContain('首次展开后才能看见的输出')
 
     dispose()
+  })
+
+  test('运行中的思考首次展开即滚到内层最新内容', async () => {
+    const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('fold-pre') ? 240 : 0
+      },
+    })
+
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={[{ id: 'thinking-live', kind: 'thinking', text: '正在形成最新结论' }]}
+          live={() => true}
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const details = host.querySelector('details') as HTMLDetailsElement
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+      await Promise.resolve()
+
+      const pre = host.querySelector('.fold-pre') as HTMLPreElement
+      expect(pre).toBeTruthy()
+      expect(pre.scrollTop).toBe(240)
+    } finally {
+      dispose()
+      if (height) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', height)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight')
+    }
   })
 
   test('下一批工具一条条起来，那段正文的节点还是原来那个', async () => {

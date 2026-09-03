@@ -129,6 +129,8 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scroller!: HTMLDivElement
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
+  let scrollIntent = false
+  let scrollbarDrag = false
   /**
    * 本组件写下去的那个 scrollTop（写完读回来的值）。`-1` = 还没写过。
    *
@@ -159,25 +161,61 @@ export function createConversationScroll(conversationId: () => string | null) {
   }
 
   /*
-   * 跟不跟随，**只由用户的手势改，不由某一次滚动事件里的几何决定**。
+   * 跟不跟随，**只由用户的滚动手势改，不由某一次 scroll 事件里的几何决定**。
    *
-   * 判据不能只看「这次事件里离底多少」：滚动事件不保证在几何稳定的那一刻到达——
-   * 补偿后写下去的那次滚动，其事件排在下一帧，而那一帧可能已经又落了一段内容。因此处理器读到的是
-   * 「新的 scrollHeight ＋旧的 scrollTop」= 离底几十像素，被判成「用户往上翻了」，
-   * 跟随就此关掉；关掉之后离底只会越来越大，**再也不会自己回来**。
+   * `scroll` 并不等于「用户滚了」：展开 `<details>` 后，浏览器会为了保住焦点和滚动
+   * 锚点自行调整 scrollTop；ResizeObserver 的贴底写入也会再派发一次 scroll。把这些事件
+   * 当成用户上翻，思考一展开就会把跟随关掉，后面的新内容全长在视口下面。
+   *
+   * 因此 wheel / touch / 滚动键 / 拖滚动条先明确武装一次意图，随后那次 scroll 才能改
+   * `pinned`。没有手势来源的 scroll 保持原状态，由内容增长继续贴底。
    *
    * 实测（真服务真前端，假 provider 驱动一轮四步：`.probe-ws`）：跟随在第 5 秒关掉，
    * 之后 379 个安静帧稳定停在离底 253px——新来的内容全在视口下面，读数条被顶出屏幕。
    * 不要用 `position: sticky` 粘住读数条：粘住的只是那一条，滚动位置仍停在离底
    * 两百多像素，正文仍不可见，而「跳」变成「每次内容变矮时对回一次」。
    *
-   * 正确做法是先认出本组件写入的那次滚动并放过它（`mine`），剩下的才是用户手势。
-   * 容差 2px 只留给分数像素（scrollTop 是小数，另两个是整数）。
+   * `followTop` 仍用来认出本组件自己的写入；用户恰好滚回这个位置时，手势优先，不能
+   * 因为数值相等而漏掉重新贴底。容差 2px 只留给分数像素。
    */
   const onScroll = () => {
     const mine = Math.abs(scroller.scrollTop - followTop) < 1
     const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-    setPinned(mine || gap <= 2)
+    if (scrollIntent || scrollbarDrag) setPinned(gap <= 2)
+    else if (!mine && gap <= 2) setPinned(true)
+    scrollIntent = false
+  }
+
+  const onWheel = () => {
+    scrollIntent = true
+  }
+  const onTouchMove = () => {
+    scrollIntent = true
+  }
+  const onPointerDown = (event: PointerEvent) => {
+    // 点正文（尤其是 details 的 summary）不是滚动意图；滚动条的事件目标才是盒子自己。
+    if (event.target === scroller) scrollbarDrag = true
+  }
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (
+      event.key === ' ' &&
+      event.target instanceof Element &&
+      event.target.closest('summary, button, input, textarea, select, a')
+    ) {
+      // Space 在这些控件上是点击/开合，不是翻页；尤其不能让键盘展开思考关闭贴底。
+      return
+    }
+    if (
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown' ||
+      event.key === 'PageUp' ||
+      event.key === 'PageDown' ||
+      event.key === 'Home' ||
+      event.key === 'End' ||
+      event.key === ' '
+    ) {
+      scrollIntent = true
+    }
   }
 
   /*
@@ -202,7 +240,24 @@ export function createConversationScroll(conversationId: () => string | null) {
     })
     ro.observe(inner, { box: 'border-box' })
     ro.observe(scroller)
-    onCleanup(() => ro.disconnect())
+    const endScrollbarDrag = () => {
+      scrollbarDrag = false
+    }
+    scroller.addEventListener('wheel', onWheel, { passive: true })
+    scroller.addEventListener('touchmove', onTouchMove, { passive: true })
+    scroller.addEventListener('pointerdown', onPointerDown)
+    scroller.addEventListener('keydown', onKeyDown)
+    window.addEventListener('pointerup', endScrollbarDrag)
+    window.addEventListener('pointercancel', endScrollbarDrag)
+    onCleanup(() => {
+      ro.disconnect()
+      scroller.removeEventListener('wheel', onWheel)
+      scroller.removeEventListener('touchmove', onTouchMove)
+      scroller.removeEventListener('pointerdown', onPointerDown)
+      scroller.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('pointerup', endScrollbarDrag)
+      window.removeEventListener('pointercancel', endScrollbarDrag)
+    })
   })
 
   return {
@@ -218,23 +273,42 @@ export function createConversationScroll(conversationId: () => string | null) {
 }
 
 /**
- * 会话流。
- *
- * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
- * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
- * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠共享的贴底跟随。
+ * 一条会话的完整视口。主会话和右侧子会话只在宽度、留白与附加提示上有差别；历史、
+ * 正文、流式判定、滚动状态机和运行条都从这里落 DOM，避免修好一边、另一边继续缺件。
  */
-export function Transcript() {
-  const follow = createConversationScroll(() => state.activeConversation)
+export function ConversationStream(props: {
+  conversationId: string | null
+  items: TranscriptItem[]
+  live: () => boolean
+  closed: () => boolean
+  variant: 'main' | 'panel'
+  leading?: JSX.Element
+  trailing?: JSX.Element
+  stacked?: boolean
+  hasRunStatus?: boolean
+}) {
+  const follow = createConversationScroll(() => props.conversationId)
+  const main = () => props.variant === 'main'
 
   return (
-    <div class="transcript" ref={follow.scrollerRef} onScroll={follow.onScroll}>
+    <div
+      class="conversation-scroll"
+      classList={{ transcript: main(), 'child-cv': !main() }}
+      ref={follow.scrollerRef}
+      onScroll={follow.onScroll}
+    >
       <div
-        class="transcript-inner"
-        classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }}
+        class="conversation-stream-inner"
+        classList={{
+          'transcript-inner': main(),
+          'child-cv-inner': !main(),
+          'with-stack': !!props.stacked,
+          'with-run-status': !!props.hasRunStatus,
+        }}
         ref={follow.innerRef}
       >
-        <Show when={state.activeConversation}>
+        {props.leading}
+        <Show when={props.conversationId}>
           {(id) => (
             <ConversationHistoryBoundary
               conversationId={id()}
@@ -242,50 +316,70 @@ export function Transcript() {
             />
           )}
         </Show>
-        <TranscriptRows items={transcript()} />
-
-        {/*
-         * 没有 run 收尾条可挂的那些错误。
-         *
-         * **报错正文的正常落点是读数条**（`run.finished` 时并进那一轮的条目里），
-         * 一句话一个地方。这里只收另一半：`run.error` 之后没有 `run.finished`
-         * 的那些——没配 key、档案解析失败、会话已有任务在跑、找不到项目目录。
-         * 它们连 run 行都没有，不在这儿说就一个字都看不到。
-         *
-         * 不给引导文案、不给重试按钮：正文本身已经说了该干什么
-         * （`ai/src/errors.ts` 的分类文案就是按「用户的下一步动作」写的），
-         * 再挂一句是同一件事说两遍；要重发，输入框一直在。
-         */}
-        <Show when={view().error}>
-          {(e) => (
-            <div class="error-card" role="alert">
-              {e().message}
-            </div>
-          )}
-        </Show>
-
-        {/* 指令被拒绝的回执。fail-closed 的 UI 落点：拒绝必须被看见。
-            用 <output> 而不是 div+role="status"：隐含语义一样，少一个属性。 */}
-        <Show when={state.notice}>
-          {(n) => (
-            <output class="notice-card">
-              <span>{n().message}</span>
-              <button class="ghost-btn" type="button" onClick={() => setState('notice', null)}>
-                知道了
-              </button>
-            </output>
-          )}
-        </Show>
-
-        {/* 还在跑的那一轮没有 run 行可读，挂在流尾；跑完由 `run.finished`
-            落成条目，位置就在它那一轮的最后一步之后。
-            收尾条一落下就撤（`runClosed`），不等 `conversation.busy` 那一帧——
-            两帧之间画出来的是同一个位置上下两条读数条。 */}
-        <Show when={isRunning() && !runClosed()}>
-          <LiveRunBar conversationId={state.activeConversation!} />
+        <TranscriptRows items={props.items} live={props.live} />
+        {props.trailing}
+        <Show when={props.live() && !props.closed() && props.conversationId}>
+          <LiveRunBar conversationId={props.conversationId!} />
         </Show>
       </div>
     </div>
+  )
+}
+
+/**
+ * 会话流。
+ *
+ * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
+ * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
+ * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠共享的贴底跟随。
+ */
+export function Transcript() {
+  return (
+    <ConversationStream
+      conversationId={state.activeConversation}
+      items={transcript()}
+      live={isRunning}
+      closed={runClosed}
+      variant="main"
+      stacked={composerStackAbove()}
+      hasRunStatus={hasRunStatus()}
+      trailing={
+        <>
+          {/*
+           * 没有 run 收尾条可挂的那些错误。
+           *
+           * **报错正文的正常落点是读数条**（`run.finished` 时并进那一轮的条目里），
+           * 一句话一个地方。这里只收另一半：`run.error` 之后没有 `run.finished`
+           * 的那些——没配 key、档案解析失败、会话已有任务在跑、找不到项目目录。
+           * 它们连 run 行都没有，不在这儿说就一个字都看不到。
+           *
+           * 不给引导文案、不给重试按钮：正文本身已经说了该干什么
+           * （`ai/src/errors.ts` 的分类文案就是按「用户的下一步动作」写的），
+           * 再挂一句是同一件事说两遍；要重发，输入框一直在。
+           */}
+          <Show when={view().error}>
+            {(e) => (
+              <div class="error-card" role="alert">
+                {e().message}
+              </div>
+            )}
+          </Show>
+
+          {/* 指令被拒绝的回执。fail-closed 的 UI 落点：拒绝必须被看见。
+            用 <output> 而不是 div+role="status"：隐含语义一样，少一个属性。 */}
+          <Show when={state.notice}>
+            {(n) => (
+              <output class="notice-card">
+                <span>{n().message}</span>
+                <button class="ghost-btn" type="button" onClick={() => setState('notice', null)}>
+                  知道了
+                </button>
+              </output>
+            )}
+          </Show>
+        </>
+      }
+    />
   )
 }
 
@@ -486,6 +580,8 @@ function Fold(props: {
   /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
+  /** 首次或再次展开后的 DOM 已挂载通知；用于把仍在增长的内层内容对到最新位置。 */
+  onOpen?: () => void
   children: JSX.Element
 }) {
   /*
@@ -509,7 +605,11 @@ function Fold(props: {
       class="fold"
       classList={{ 'fold-dim': props.dim, failed: props.failed }}
       onToggle={(e) => {
-        if (e.currentTarget.open) setMounted(true)
+        if (e.currentTarget.open) {
+          setMounted(true)
+          // 正文由上面的 signal 在本轮挂载；等 Solid 落完 DOM 再交给调用方定位。
+          queueMicrotask(() => props.onOpen?.())
+        }
       }}
     >
       {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
@@ -563,13 +663,16 @@ function ThinkingFold(props: { item: TranscriptItem }) {
    * 只在流式期跟随：停下来之后用户往回翻，不该被强制滚回底部（那正是外层刻意避免的）。
    */
   let pre: HTMLPreElement | undefined
+  const stickPreToBottom = () => {
+    if (streaming() && pre) pre.scrollTop = pre.scrollHeight
+  }
   createEffect(() => {
     void props.item.text
-    if (streaming() && pre) pre.scrollTop = pre.scrollHeight
+    stickPreToBottom()
   })
 
   return (
-    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()}>
+    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()} onOpen={stickPreToBottom}>
       <pre class="fold-pre" ref={pre}>
         {props.item.text}
       </pre>
