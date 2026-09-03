@@ -36,10 +36,8 @@ import {
   listChildConversations,
   listConversationHistoryPage,
   listConversations,
-  listMessages,
   listProviderRequests,
   listRuns,
-  listSteps,
   setConversationTitle,
   usageEntries,
   usageTotals,
@@ -391,7 +389,6 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       })
       return json(page)
     }
-    if (convMatch[2] === 'messages') return json({ messages: listMessages(d.store, id) })
     if (convMatch[2] === 'runs') {
       // 子会话的轮次并进来：它们不在这条会话的对话流里，花的却是同一笔钱。
       // 角色 id 取子会话的 sourceRef——派活时写死的那个，不从 step 参数反查。
@@ -423,19 +420,18 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     const id = ctxMatch[1] as ConversationId
     const conv = getConversation(d.store, id)
     if (!conv) return json({ error: 'conversation not found' }, 404)
+    if (!conv.provider) return json({ error: '这条旧会话尚未绑定接口，请重新选择模型' }, 409)
     // 窗口按**这条会话的接口 × 模型**解析。`active.provider` 是接口名不是协议名，
     // 拿它当 kind 会让中转站上的 claude 走错目录条目。
-    const stored = resolveModel(
-      d.config,
-      conv.provider ? { provider: conv.provider, model: conv.model } : conv.model,
-    )
-    const kind = stored?.kind ?? d.config.providers[d.config.active.provider]?.kind
-    const spec = lookupModel(conv.model, kind ?? 'openai_chat_completions')
+    const stored = resolveModel(d.config, { provider: conv.provider, model: conv.model })
+    if (!stored) return json({ error: '会话绑定的接口或模型已不在配置中' }, 409)
+    const kind = stored.kind
+    const spec = lookupModel(conv.model, kind)
     return json({
       context: contextPanel(d.store, id, {
         ...spec,
-        ...(conv.provider ? { providerName: conv.provider } : {}),
-        ...(kind ? { providerKind: kind } : {}),
+        providerName: conv.provider,
+        providerKind: kind,
       }),
     })
   }
@@ -452,11 +448,6 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     return json({ goal: currentGoal(d.store, id) })
   }
 
-  const stepMatch = /^\/api\/runs\/([^/]+)\/steps$/.exec(p)
-  if (stepMatch) {
-    return json({ steps: listSteps(d.store, stepMatch[1] as RunId) })
-  }
-
   /*
    * 逐请求账本。
    *
@@ -467,12 +458,6 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const requestMatch = /^\/api\/runs\/([^/]+)\/requests$/.exec(p)
   if (requestMatch) {
     return json({ requests: listProviderRequests(d.store, requestMatch[1] as RunId) })
-  }
-
-  if (p === '/api/runs/active') {
-    return json({
-      active: d.runs.listActive().map((r) => ({ runId: r.runId, startedAt: r.startedAt })),
-    })
   }
 
   return null

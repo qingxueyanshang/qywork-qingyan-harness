@@ -138,8 +138,8 @@ export interface Conversation {
    * （两家中转站都转 `claude-opus-5`），只存模型的话「这条会话归谁」在落盘那一刻
    * 就不存在了，后面每一层都只能按 id 反查，查出哪个取决于对象键的枚举顺序。
    *
-   * 空串 = 迁移 24 之前建的会话，没记过接口；按模型 id 反查，与迁移前行为一致。
-   * 新建会话一律写实名。
+   * 新建会话一律写实名。迁移 37 只会按历史请求的唯一证据补旧会话；仍为空串说明
+   * 归属无法证明，必须由用户重新选择，运行时不会按模型名猜接口。
    */
   provider: string
   model: string
@@ -718,8 +718,8 @@ export type StepPayload =
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
       /**
-       * 崩溃恢复会在原 payload 上把 tool_call 改成 tool_result，因此早先写入的入口
-       * 仍可能留在这里。正常终态同时会在 outcome.data.conversationId 里带一份。
+       * 子会话入口的唯一元数据字段。`settleToolStep` 会从运行中的 tool_call 保留下来；
+       * outcome 里的同名业务结果不参与 UI、归档或忙闲判定。
        */
       childConversationId?: ConversationId
       /** 同 `tool_call` 的 `children`；崩溃恢复改写 payload 时它是唯一留下的节点事实。 */
@@ -730,10 +730,9 @@ export type StepPayload =
       /**
        * 压缩终态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡按它重建。
        *
-       * **可缺**：这个键之前不存在，旧行读出 `undefined`。历史事实不回改，
-       * 消费方按「已压缩」显示。
+       * 迁移 37 已把旧行补齐；新写入也必须带。
        */
-      phase?: 'done' | 'skipped' | 'failed'
+      phase: 'done' | 'skipped' | 'failed'
       manifestRevision: number
       compactedMessages: number
       /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */

@@ -22,8 +22,9 @@ import type { Attachment, PermissionMode } from '../domain/model.ts'
  * 一个只在有人记得时才生效的检查，比没有检查更坏——它看起来像保护。
  *
  * 漂移改成从源头消灭，不靠对数字：
- * - 开发：`bun run dev` 两端都从**同一棵源码树**跑，sidecar 走 `bun --watch`
- *   自动重载，前端走 vite HMR（`scripts/dev.ts`）；
+ * - 开发：`bun run dev` 两端都从**同一棵源码树**跑，且共用一个空闲换代闸门；
+ *   活动 run 跑完后才重启 sidecar，再以新的 `streamId` 触发前端整页刷新
+ *   （`scripts/dev.ts`），不会出现新前端配旧后端；
  * - 打包：`tauri:build` 先 `build:agent` 再打包，前端产物与 sidecar 出自同一次构建；
  * - 手机：页面由那个 sidecar 自己托管，本来就是同一份。
  *

@@ -59,6 +59,14 @@ export interface ClientOptions {
   onState(state: ConnectionState, detail?: string): void
   /** 服务端补发不上时触发，调用方须重拉全量。 */
   onResync(): void
+  /**
+   * 已经握过手之后，服务端事件流身份发生了变化。
+   *
+   * 这是「同一连接断了又连上」和「sidecar 已经换成另一个进程」之间唯一可靠的
+   * 区分。开发编排用它在后端安全换代后刷新整页，让页面也在同一时刻换代；
+   * 普通断线重连不会触发。
+   */
+  onStreamChanged(): void
   onCapabilities(caps: ServerCapabilities): void
   /**
    * 握手报的「此刻哪几条会话在跑」。**每次握手都要照单整表替换**：
@@ -287,13 +295,17 @@ export class QyClient {
         this.attempt = 0
         // 换了一条流（服务端重启过）与服务端放弃补发，两种情形下手里那个 seq
         // 都不再是有效位置，一律对齐到服务端当前值。
-        const sameStream = ok.streamId === this.streamId
+        const previousStreamId = this.streamId
+        const sameStream = ok.streamId === previousStreamId
         this.streamId = ok.streamId
         if (!sameStream || ok.resync) this.lastSeq = ok.currentSeq
         this.opts.onCapabilities(ok.capabilities)
         this.opts.onBusy(ok.busyConversations)
         this.opts.onState('ready')
         if (ok.resync) this.opts.onResync()
+        // 首次握手没有「上一代」，不能刷新；否则刷新后的新 client 会再次把首连
+        // 当成换代，形成无限刷新。只有已经连过一代、现在拿到另一条流才通知。
+        if (previousStreamId !== null && !sameStream) this.opts.onStreamChanged()
         return
       }
       if (msg.type === 'hello.err') {

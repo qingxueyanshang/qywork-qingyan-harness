@@ -1201,7 +1201,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
         phase: live?.phase ?? settled ?? 'working',
         label: live?.label ?? '',
         // 这一格不印耗时：派一件的耗时就是这次调用的耗时，卡顶动作行已经印过。
-        conversationId: live?.conversationId ?? delegateConversationId(props.item),
+        conversationId: delegateConversationId(props.item),
       }
     }
     if (live) {
@@ -1223,32 +1223,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
         attempts: props.item.workflow?.attempts[n.key],
       }
     }
-    // 回放这条路读的是落库的结果，**字段名与事件那条路不同**：结果里是
-    // `status`（done/failed/skipped），事件里是 `phase`（还多 spawned/working）。
-    // 照着事件的名字去读结果，每个节点都会退化成「等着跑」——刷新一次整张图全灰。
-    const back = (
-      props.item.outcome?.data as
-        | {
-            nodes?: {
-              nodeId: string
-              agent: string
-              label?: string
-              status: string
-              durationMs?: number
-              conversationId?: string
-            }[]
-          }
-        | undefined
-    )?.nodes?.find((n2) => n2.nodeId === n.key)
-    return back
-      ? {
-          phase: back.status,
-          label: back.label || back.agent,
-          durationMs: back.durationMs,
-          conversationId: back.conversationId,
-          attempts: undefined,
-        }
-      : null
+    return null
   }
 
   /**

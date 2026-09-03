@@ -331,7 +331,7 @@ describe('workflow 始终是一张卡', () => {
     expect(buildRenderItems([one, two]).map((row) => row.id)).toEqual(['st_one', 'st_two'])
   })
 
-  test('旧版一次性 workflow 没有 transition 时保持原样', () => {
+  test('旧版 outcome.data.nodes 不再成为渲染结果来源', () => {
     const old = workflow(
       'st_old',
       { goal: '旧图', nodes: [{ id: 'a', agent: 'dev', task: '查' }] },
@@ -340,8 +340,10 @@ describe('workflow 始终是一张卡', () => {
     const out = buildRenderItems([old])
     expect(out).toHaveLength(1)
     if (out[0]?.kind !== 'tool') throw new Error('没有旧卡')
-    expect(out[0].item).toBe(old)
-    expect(out[0].item.workflow).toBeUndefined()
+    expect(out[0].item.workflow?.results).toEqual({})
+    expect(out[0].item.workflow?.nodes).toEqual([
+      { id: 'a', kind: 'agent', agent: 'dev', task: '查' },
+    ])
   })
 })
 

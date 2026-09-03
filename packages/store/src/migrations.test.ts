@@ -677,3 +677,215 @@ describe('迁移 36：运行失败文案收敛', () => {
     db.close()
   })
 })
+
+describe('迁移 37：运行记录收口为唯一结构', () => {
+  test('旧 step 一次迁成 child、workflow、compaction、batch 与独立思考', () => {
+    const db = dbBefore(37)
+    db.query(
+      `INSERT INTO conversations
+       (id, workspace_id, title, provider, model, compaction_manifest, created_at, updated_at)
+       VALUES ('cv', 'ws', '', '', 'm', ?, 0, 0)`,
+    ).run(
+      JSON.stringify({
+        revision: 1,
+        compactedThroughMessageId: null,
+        compactedThroughStep: 'rn:000000003',
+        condensedThrough: { messageId: 'msg', step: 'rn:000000002' },
+        compactedMessageCount: 0,
+        summary: '',
+        facts: { filesTouched: [], openItems: [], userConstraints: [], resources: [] },
+        createdAt: 0,
+      }),
+    )
+    db.exec(`
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status, step_count, created_at)
+VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 3, 0);
+`)
+    const insert = db.query(
+      `INSERT INTO steps
+       (id, run_id, seq, kind, tool_name, content, payload, status, created_at)
+       VALUES (?, 'rn', ?, ?, ?, ?, ?, ?, 0)`,
+    )
+    insert.run(
+      'st_child',
+      1,
+      'tool_action',
+      'subagent',
+      '先分析',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {},
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: 'ok',
+          data: { conversationId: 'cv_child' },
+        },
+      }),
+      'success',
+    )
+    insert.run(
+      'st_workflow',
+      2,
+      'tool_action',
+      'workflow',
+      null,
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { goal: '做完', nodes: [{ id: 'a', agent: 'builder', task: '实现' }] },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: 'done',
+          data: {
+            nodes: [
+              {
+                nodeId: 'a',
+                agent: 'builder',
+                status: 'done',
+                output: '完成',
+                durationMs: 12,
+                conversationId: 'cv_worker',
+              },
+            ],
+          },
+        },
+      }),
+      'success',
+    )
+    insert.run(
+      'st_compact',
+      3,
+      'compaction',
+      null,
+      null,
+      JSON.stringify({ kind: 'compaction', manifestRevision: 1, compactedMessages: 2 }),
+      'done',
+    )
+    db.query(
+      `INSERT INTO provider_requests
+       (id, run_id, turn_index, provider_name, provider_kind, model, status,
+        measured_input_tokens, sent_categories, payload_hash, created_at)
+       VALUES ('pr', 'rn', 0, 'relay', 'openai_chat_completions', 'm', 'received',
+               1, '{}', 'hash', 0)`,
+    ).run()
+
+    applyOne(db, 37)
+
+    expect(payloadJson(db, 'st_child')).toMatchObject({ childConversationId: 'cv_child' })
+    const workflow = payloadJson(db, 'st_workflow') as {
+      outcome: { data: Record<string, unknown> }
+    }
+    expect(workflow.outcome.data).toMatchObject({
+      workflowId: 'st_workflow',
+      phase: 'completed',
+      receipts: [
+        {
+          nodeId: 'a',
+          agent: 'builder',
+          label: 'builder',
+          status: 'done',
+          output: '完成',
+          durationMs: 12,
+          conversationId: 'cv_worker',
+        },
+      ],
+    })
+    expect(workflow.outcome.data.nodes).toBeUndefined()
+    expect(payloadJson(db, 'st_compact')).toMatchObject({ phase: 'done' })
+
+    const steps = db
+      .query<
+        {
+          id: string
+          seq: number
+          kind: string
+          content: string | null
+          provider_batch_id: string | null
+        },
+        []
+      >(
+        `SELECT id, seq, kind, content, provider_batch_id
+         FROM steps ORDER BY seq`,
+      )
+      .all()
+    expect(steps).toEqual([
+      {
+        id: 'st_migrated_thinking_st_child',
+        seq: 2,
+        kind: 'thinking',
+        content: '先分析',
+        provider_batch_id: null,
+      },
+      {
+        id: 'st_child',
+        seq: 3,
+        kind: 'tool_action',
+        content: null,
+        provider_batch_id: 'migrated:st_child',
+      },
+      {
+        id: 'st_workflow',
+        seq: 5,
+        kind: 'tool_action',
+        content: null,
+        provider_batch_id: 'migrated:st_workflow',
+      },
+      {
+        id: 'st_compact',
+        seq: 7,
+        kind: 'compaction',
+        content: null,
+        provider_batch_id: null,
+      },
+    ])
+    const manifest = db
+      .query<{ compaction_manifest: string }, []>(
+        `SELECT compaction_manifest FROM conversations WHERE id = 'cv'`,
+      )
+      .get()!
+    expect(JSON.parse(manifest.compaction_manifest)).toMatchObject({
+      compactedThroughStep: 'rn:000000007',
+      condensedThrough: { step: 'rn:000000005' },
+    })
+    expect(
+      db
+        .query<{ provider: string }, []>(`SELECT provider FROM conversations WHERE id = 'cv'`)
+        .get(),
+    ).toEqual({ provider: 'relay' })
+    expect(
+      db.query<{ step_count: number }, []>(`SELECT step_count FROM runs WHERE id = 'rn'`).get(),
+    ).toEqual({
+      step_count: 4,
+    })
+    db.close()
+  })
+
+  test('接口证据冲突时不猜 provider', () => {
+    const db = dbBefore(37)
+    db.exec(`
+INSERT INTO conversations
+  (id, workspace_id, title, provider, model, created_at, updated_at)
+VALUES ('cv', 'ws', '', '', 'm', 0, 0);
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status, created_at)
+VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 0);
+INSERT INTO provider_requests
+  (id, run_id, turn_index, provider_name, provider_kind, model, status,
+   measured_input_tokens, sent_categories, payload_hash, created_at)
+VALUES
+  ('pr1', 'rn', 0, 'relay-a', 'openai_chat_completions', 'm', 'received', 1, '{}', 'a', 0),
+  ('pr2', 'rn', 1, 'relay-b', 'openai_chat_completions', 'm', 'received', 1, '{}', 'b', 0);
+`)
+
+    applyOne(db, 37)
+
+    expect(
+      db
+        .query<{ provider: string }, []>(`SELECT provider FROM conversations WHERE id = 'cv'`)
+        .get(),
+    ).toEqual({ provider: '' })
+    db.close()
+  })
+})

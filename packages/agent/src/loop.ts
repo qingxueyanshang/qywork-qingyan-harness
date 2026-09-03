@@ -45,6 +45,7 @@ import type {
   ProviderRetryDecision,
   RunId,
   RunUsage,
+  StepId,
   StopReason,
   ToolOutcomeWire,
 } from '@qywork/core'
@@ -208,8 +209,8 @@ export interface LoopPersistence {
   /**
    * 轮内自动重发前，把失败那次留下的思考 step 落成失败终态。
    *
-   * 边界：只标不删——那些 step 真实发生过，也已经渲染给用户。投影侧据这个终态
-   * 把它们排除在模型视图之外，不排除就会与重发那次的思考拼成一条回传给 provider。
+   * 边界：只标不删——那些 step 真实发生过，诊断账本必须保留。模型历史与普通
+   * 会话投影都据这个终态排除；不排除就会与重发那次的思考拼成一条。
    */
   failThinkingSteps(stepIds: string[]): void
   appendText(stepId: string, delta: string): void
@@ -907,7 +908,7 @@ export class AgentLoop {
          * 本次尝试开过的思考 step。自动重发时这批要落成失败终态——它们装的是被丢弃
          * 的那次生成。**每次尝试开头清空**，读它的只有下面那条重发分支。
          */
-        let attemptThinking: string[] = []
+        let attemptThinking: StepId[] = []
         /** 拿到该写的 step；通道换了就先封上旧的、开一条新的。**懒开**，不产生空 step。 */
         const stepFor = (kind: 'text' | 'thinking'): string => {
           if (open?.kind !== kind) {
@@ -915,7 +916,7 @@ export class AgentLoop {
               kind === 'text'
                 ? persist.openTextStep(input.runId, nextSeq())
                 : persist.openThinkingStep(input.runId, nextSeq())
-            if (kind === 'thinking') attemptThinking.push(id)
+            if (kind === 'thinking') attemptThinking.push(id as StepId)
             open = { kind, id }
           }
           return open.id
@@ -1463,6 +1464,7 @@ export class AgentLoop {
                 runId: input.runId,
                 attempt: resends,
                 max: MAX_RESENDS,
+                failedThinkingStepIds: [...attemptThinking],
               }
               // 等待必须可中断：退避的这几秒内用户点停止，不中断等待就是按钮无响应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))

@@ -598,9 +598,10 @@ export async function compactConversation(
     const adapter = buildAdapter(summaryProfile(deps, conversationId))
     const spec = adapter.spec
     const providerName = getConversation(deps.store, conversationId)?.provider
+    if (!providerName) throw new Error('这条旧会话尚未绑定接口，请重新选择模型')
     const panel = contextPanel(deps.store, conversationId, {
       ...spec,
-      ...(providerName ? { providerName } : {}),
+      providerName,
       providerKind: adapter.kind,
     })
     const outcome = await compaction.run({
@@ -624,7 +625,7 @@ export async function compactConversation(
       // 重算并广播；否则模型下一轮已看到压缩投影，面板却一直停在压缩前。
       const updated = contextPanel(deps.store, conversationId, {
         ...spec,
-        ...(providerName ? { providerName } : {}),
+        providerName,
         providerKind: adapter.kind,
       })
       emit({

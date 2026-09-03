@@ -104,19 +104,12 @@ describe('请求结果只显示产品文案', () => {
 })
 
 describe('派活子会话入口', () => {
-  test('运行中优先从持久化 step 恢复入口', () => {
-    expect(
-      delegateConversationId({
-        childConversationId: 'cv_running_child',
-        outcome: { data: { conversationId: 'cv_finished_child' } },
-      }),
-    ).toBe('cv_running_child')
+  test('只从持久化 step 的规范字段恢复入口', () => {
+    expect(delegateConversationId({ childConversationId: 'cv_child' })).toBe('cv_child')
   })
 
-  test('已结束的历史步骤继续读取 outcome', () => {
-    expect(
-      delegateConversationId({ outcome: { data: { conversationId: 'cv_finished_child' } } }),
-    ).toBe('cv_finished_child')
+  test('没有规范字段就没有入口', () => {
+    expect(delegateConversationId({})).toBeUndefined()
   })
 })
 

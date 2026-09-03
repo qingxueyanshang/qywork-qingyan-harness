@@ -50,6 +50,224 @@ function addTextColumnIfMissing(
   if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
 }
 
+function parsedObject(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function textValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * 迁移 26 之前寄生在工具行上的思考正文，改成当前独立 step。
+ *
+ * 受影响 run 的 seq 全部映射成 `old * 2 + 1`，新思考落在 `old * 2`。这样顺序与
+ * batch 的终止戳都可机械换算，不需要猜哪里有“空位”。会话压缩边界只含两处 step
+ * 戳，一并重写；迁移完成后运行时便不再读取 `tool_action.content`。
+ */
+function migrateEmbeddedThinking(db: Database): void {
+  const rows = db
+    .query<{ id: string; run_id: string; seq: number; content: string; created_at: number }, []>(
+      `SELECT id, run_id, seq, content, created_at
+       FROM steps
+       WHERE kind = 'tool_action' AND trim(COALESCE(content, '')) <> ''
+       ORDER BY run_id, seq`,
+    )
+    .all()
+  if (rows.length === 0) return
+
+  const runs = new Set(rows.map((row) => row.run_id))
+  const updateSeq = db.query('UPDATE steps SET seq = seq * 2 + 1 WHERE run_id = ?')
+  for (const runId of runs) updateSeq.run(runId)
+
+  const insert = db.query(
+    `INSERT INTO steps
+     (id, run_id, seq, kind, content, status, created_at)
+     VALUES (?, ?, ?, 'thinking', ?, 'done', ?)`,
+  )
+  const clear = db.query(`UPDATE steps SET content = NULL WHERE id = ?`)
+  const added = new Map<string, number>()
+  for (const row of rows) {
+    insert.run(
+      `st_migrated_thinking_${row.id}`,
+      row.run_id,
+      row.seq * 2,
+      row.content,
+      row.created_at,
+    )
+    clear.run(row.id)
+    added.set(row.run_id, (added.get(row.run_id) ?? 0) + 1)
+  }
+  const count = db.query('UPDATE runs SET step_count = step_count + ? WHERE id = ?')
+  for (const [runId, amount] of added) count.run(amount, runId)
+
+  const rewriteStamp = (value: unknown): unknown => {
+    if (typeof value !== 'string') return value
+    for (const runId of runs) {
+      const prefix = `${runId}:`
+      if (!value.startsWith(prefix)) continue
+      const seq = Number(value.slice(prefix.length))
+      if (!Number.isSafeInteger(seq) || seq < 0) return value
+      return `${prefix}${String(seq * 2 + 1).padStart(9, '0')}`
+    }
+    return value
+  }
+  const manifests = db
+    .query<{ id: string; compaction_manifest: string }, []>(
+      `SELECT id, compaction_manifest FROM conversations WHERE compaction_manifest IS NOT NULL`,
+    )
+    .all()
+  const updateManifest = db.query('UPDATE conversations SET compaction_manifest = ? WHERE id = ?')
+  for (const row of manifests) {
+    const manifest = parsedObject(row.compaction_manifest)
+    if (!manifest) continue
+    let changed = false
+    if (typeof manifest.compactedThroughStep === 'string') {
+      const next = rewriteStamp(manifest.compactedThroughStep)
+      changed ||= next !== manifest.compactedThroughStep
+      manifest.compactedThroughStep = next
+    }
+    const condensed = manifest.condensedThrough
+    if (condensed && typeof condensed === 'object' && !Array.isArray(condensed)) {
+      const cut = condensed as Record<string, unknown>
+      if (typeof cut.step === 'string') {
+        const next = rewriteStamp(cut.step)
+        changed ||= next !== cut.step
+        cut.step = next
+      }
+    }
+    if (changed) updateManifest.run(JSON.stringify(manifest), row.id)
+  }
+}
+
+/** 把能从旧账本本身证明的字段改成当前唯一结构；未知事实绝不按配置猜。 */
+function canonicalizeRuntimeRecords(db: Database): void {
+  migrateEmbeddedThinking(db)
+
+  // 旧投影把缺 batch id 的每条工具行各自当一批；把这个既有语义固化进账本。
+  db.exec(`
+UPDATE steps
+SET provider_batch_id = 'migrated:' || id
+WHERE kind = 'tool_action' AND trim(COALESCE(provider_batch_id, '')) = '';
+`)
+
+  const rows = db
+    .query<
+      {
+        id: string
+        kind: string
+        tool_name: string | null
+        payload: string | null
+        status: string
+      },
+      []
+    >(`SELECT id, kind, tool_name, payload, status FROM steps WHERE payload IS NOT NULL`)
+    .all()
+  const updatePayload = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+  for (const row of rows) {
+    const payload = parsedObject(row.payload)
+    if (!payload) continue
+    let changed = false
+
+    if (row.kind === 'tool_action') {
+      const outcome =
+        payload.outcome && typeof payload.outcome === 'object' && !Array.isArray(payload.outcome)
+          ? (payload.outcome as Record<string, unknown>)
+          : null
+      const data =
+        outcome?.data && typeof outcome.data === 'object' && !Array.isArray(outcome.data)
+          ? (outcome.data as Record<string, unknown>)
+          : null
+      const child = textValue(data?.conversationId)
+      if (row.tool_name === 'subagent' && !textValue(payload.childConversationId) && child) {
+        payload.childConversationId = child
+        changed = true
+      }
+
+      if (
+        row.tool_name === 'workflow' &&
+        data &&
+        !Array.isArray(data.receipts) &&
+        Array.isArray(data.nodes)
+      ) {
+        const receipts = data.nodes.map((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+          const node = value as Record<string, unknown>
+          const nodeId = textValue(node.nodeId)
+          const agent = textValue(node.agent)
+          const status = node.status
+          const durationMs = node.durationMs
+          if (
+            !nodeId ||
+            !agent ||
+            (status !== 'done' && status !== 'failed' && status !== 'skipped') ||
+            typeof durationMs !== 'number'
+          ) {
+            return null
+          }
+          return {
+            nodeId,
+            agent,
+            label: textValue(node.label) || agent,
+            status,
+            output: typeof node.output === 'string' ? node.output : '',
+            ...(typeof node.error === 'string' ? { error: node.error } : {}),
+            durationMs,
+            ...(typeof node.session === 'string' ? { session: node.session } : {}),
+            ...(typeof node.conversationId === 'string'
+              ? { conversationId: node.conversationId }
+              : {}),
+          }
+        })
+        if (receipts.every((receipt) => receipt !== null)) {
+          const args =
+            payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args)
+              ? (payload.args as Record<string, unknown>)
+              : null
+          data.workflowId = textValue(data.workflowId) || textValue(args?.workflowId) || row.id
+          data.phase = outcome?.status === 'success' ? 'completed' : 'failed'
+          data.receipts = receipts
+          delete data.nodes
+          changed = true
+        }
+      }
+    } else if (row.kind === 'compaction' && !textValue(payload.phase)) {
+      payload.phase = row.status === 'failure' ? 'failed' : 'done'
+      changed = true
+    }
+
+    if (changed) updatePayload.run(JSON.stringify(payload), row.id)
+  }
+
+  // 旧会话只有在逐请求账能唯一证明接口时才补。零证据或多条路线都保持空串，
+  // 新运行路径会明确要求重新选择，不能拿当前默认接口伪造历史归属。
+  const conversations = db
+    .query<{ id: string; model: string }, []>(
+      `SELECT id, model FROM conversations WHERE trim(provider) = ''`,
+    )
+    .all()
+  const routes = db.query<{ provider_name: string }, [string, string]>(
+    `SELECT DISTINCT pr.provider_name
+     FROM provider_requests pr
+     JOIN runs r ON r.id = pr.run_id
+     WHERE r.conversation_id = ? AND pr.model = ?
+       AND trim(COALESCE(pr.provider_name, '')) <> ''`,
+  )
+  const updateProvider = db.query('UPDATE conversations SET provider = ? WHERE id = ?')
+  for (const conversation of conversations) {
+    const hits = routes.all(conversation.id, conversation.model)
+    if (hits.length === 1) updateProvider.run(hits[0]!.provider_name, conversation.id)
+  }
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     id: 1,
@@ -841,8 +1059,8 @@ CREATE TABLE conversation_loaded_tools (
      * `claude-opus-5` 时这个猜必错一半，而错的表现是请求发去了另一个端点、
      * 用了另一把 key、按另一份价目表记账——三样都不报错。
      *
-     * 空串 = 本次迁移之前建的会话，没有记过接口，仍按模型 id 反查。
-     * 新建会话一律写实名，所以空串只存在于存量行，不会再产生。
+     * 空串 = 本次迁移之前建的会话，没有记过接口。迁移 37 会按逐请求账的唯一证据
+     * 补齐；无法证明的保持空串并要求用户重新选择，不再按模型 id 猜。
      */
     sql: `ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT '';`,
   },
@@ -882,9 +1100,8 @@ ALTER TABLE provider_requests DROP COLUMN measurement_exact;
      * 一并把 `artifact` 与 `progress` 从 CHECK 里去掉：`StepKind` 里没有它们，
      * 没有任何生产者能写出这两个值，留着只是给下一个人一个误用的机会（同迁移 5）。
      *
-     * **存量行的思考留在 `tool_action.content` 里，不搬。** seq 是密排的，
-     * 没有空位插新行；重排 seq 会打断 `compaction_manifest` 里已经持久化的单元戳。
-     * 投影侧因此保留一条只读旧行的回落，见 `runtime/transcript.ts`。
+     * 这一版先保留 `tool_action.content`；迁移 37 会在可同时改写 compaction step 戳时
+     * 把它们转成独立 thinking step，运行时不再保留第二种读取形状。
      */
     sql: `
 CREATE TABLE steps_new (
@@ -1147,6 +1364,19 @@ WHERE stop_reason = 'max_steps'
   },
   {
     id: 37,
+    name: 'canonical_runtime_records',
+    /**
+     * 旧结构在这里一次性收口，读路径不再长期维护两套语义。
+     *
+     * 可证明的事实原地迁移；provider 归属若没有唯一账本证据则宁可保持未绑定，
+     * 由用户重新选择，也不按当前配置枚举顺序猜错端点、key 与计价。
+     */
+    apply(db) {
+      canonicalizeRuntimeRecords(db)
+    },
+  },
+  {
+    id: 38,
     name: 'conversation_parent',
     /**
      * 子会话属于哪条父会话。派活时就写死，此后账本汇总、级联删除、运行页三件事
