@@ -1,4 +1,4 @@
-import type { RunContextSegment, TodoItem } from '@qywork/core'
+import type { RunContextSegment, TodoItem, WorkflowPhase, WorkflowProjection } from '@qywork/core'
 
 /**
  * 三层冻结前缀：system → environment → rules。
@@ -233,6 +233,14 @@ export function buildTailNotes(input: {
    * 全部完成的清单属于上一件事，只留在历史里，不再冒充下一条指令的“当前待办”。
    */
   todos?: TodoItem[] | null
+  /**
+   * run 开始时本会话还没走完的 workflow 投影。
+   *
+   * 压缩会把工具结果压成 320 字摘录，workflowId 与 checkpointId 可能整个不在里面；
+   * 没有这一段，模型手上就没有续接这张图的任何 id，只能整张重派。
+   * 真相仍在 step 账本里，这里只是把它送回模型眼前，不产生第二份可写状态。
+   */
+  workflows?: WorkflowProjection[]
 }): TailNote[] {
   const today = new Date().toISOString().slice(0, 10)
   const lines = [
@@ -315,5 +323,43 @@ export function buildTailNotes(input: {
       group: 'workspaceState',
     })
   }
+  if (input.workflows?.length) {
+    const list = input.workflows.map(workflowLine).join('\n')
+    notes.push({
+      content:
+        `## 未完成的 workflow（本次运行快照）\n${list}\n\n` +
+        '续接用同一个 workflowId 与该图当前的 checkpointId 调用 workflow：' +
+        'approve 进入下一批，revise 让点名的节点在它原来的子会话里继续。' +
+        '被中断的节点续发时写清「已完成则复述最终产出，否则接着做」——中断之前的产出不在这份快照里。',
+      group: 'workspaceState',
+    })
+  }
   return notes
+}
+
+const WORKFLOW_PHASE: Record<WorkflowPhase, string> = {
+  running: '执行中',
+  waiting_review: '等待审查',
+  completed: '已完成',
+  failed: '已中断',
+}
+
+/** 一张未完成的图一行，后面缩进列出每个 agent 节点的最近状态与能不能续接。 */
+function workflowLine(projection: WorkflowProjection): string {
+  const head = [
+    `- workflowId=${projection.workflowId}`,
+    `目标：${oneLine(projection.goal)}`,
+    `状态：${WORKFLOW_PHASE[projection.phase]}`,
+    ...(projection.checkpointId ? [`当前检查点：${projection.checkpointId}`] : []),
+  ].join('｜')
+  const nodes = projection.nodes
+    .filter((node) => node.kind !== 'checkpoint')
+    .map((node) => {
+      const result = projection.results[node.id]
+      if (!result) return `  - ${node.id}：还没有回执`
+      const reason = result.error ? `：${oneLine(result.error)}` : ''
+      const resumable = result.conversationId || result.session ? '，可续接原会话' : ''
+      return `  - ${node.id}：${result.status}${reason}${resumable}`
+    })
+  return [head, ...nodes].join('\n')
 }

@@ -42,10 +42,12 @@ import type {
   RunId,
   RunInterruption,
   Step,
+  WorkflowProjection,
 } from '@qywork/core'
 import {
   deriveConversationTitle,
   envelopeHeadTokens,
+  foldWorkflow,
   isInlineImage,
   isInlineVideo,
   mimeOf,
@@ -71,6 +73,7 @@ import {
   listMessages,
   listRuns,
   listSteps,
+  listWorkflowRecords,
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
   markProviderRequestSent,
@@ -90,6 +93,7 @@ import {
   updateGoal,
   updateRunUsage,
   upsertWorkspace,
+  workflowIdsOf,
 } from '@qywork/store'
 import {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
@@ -395,6 +399,8 @@ export class Session {
         : {}),
       externalTools: this.pendingTools?.index() ?? [],
       todos: latestTodos(store, conversationId),
+      // 未走完的图跟着快照一起冻结。没有派活通道就没有图，也不必查。
+      ...(canAssignModels ? { workflows: unfinishedWorkflows(store, conversationId) } : {}),
     })
 
     const userMessageId = appendMessage(store, {
@@ -1345,4 +1351,20 @@ export async function withAttachments(
   if (blocks.length === 0) return body
   blocks.push({ type: 'text', text: body })
   return blocks
+}
+
+/**
+ * 本会话里还没走完的那些图。
+ *
+ * 折叠失败的（首派参数已经不合法）整条跳过：那张图本来就续接不了，
+ * 把一条错误信息塞进运行上下文只会让模型去修一份它读不到的记录。
+ */
+function unfinishedWorkflows(store: Store, conversationId: ConversationId): WorkflowProjection[] {
+  const records = listWorkflowRecords(store, conversationId)
+  const out: WorkflowProjection[] = []
+  for (const workflowId of workflowIdsOf(records)) {
+    const folded = foldWorkflow(records, workflowId)
+    if (folded.ok && folded.projection.phase !== 'completed') out.push(folded.projection)
+  }
+  return out
 }
