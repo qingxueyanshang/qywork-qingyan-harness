@@ -96,19 +96,20 @@ describe('点名的模型解析成一对', () => {
     expect(resolveModel('m-cheap', config)).toEqual({ provider: '便宜接口', model: 'm-cheap' })
   })
 
-  test('接口/模型 这种写法照收', () => {
-    expect(resolveModel('默认接口/m-other', config)).toEqual({
-      provider: '默认接口',
-      model: 'm-other',
+  test('接口/模型 拼接串不再作为第二种选择协议', () => {
+    expect(resolveModel('默认接口/m-other', config)).toMatchObject({
+      error: expect.stringContaining('配置里没有模型'),
     })
   })
 
-  test('旧选择串里的接口名自带斜杠也能按配置组合恢复', () => {
+  test('带斜杠的接口只能通过结构化 provider 与 model 选择', () => {
     const legacy = {
       active: { provider: '官方/中转', model: 'm' },
       providers: { '官方/中转': { models: { m: {} } } },
     } as unknown as QyConfig
-    expect(resolveModel('官方/中转/m', legacy)).toEqual({ provider: '官方/中转', model: 'm' })
+    expect(resolveModel('官方/中转/m', legacy)).toMatchObject({
+      error: expect.stringContaining('配置里没有模型'),
+    })
   })
 
   test('结构化接口与模型不受两边自带斜杠影响', () => {

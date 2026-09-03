@@ -77,8 +77,7 @@ export interface ChildConversationLink {
   parentRunId: Run['id']
   parentStepId: Step['id']
   childConversationId: ConversationId
-  /** 新账本直接记在 step 上；旧账本从最终工具回执里回退读取。 */
-  source: 'step_payload' | 'outcome_fallback'
+  source: 'step_payload'
 }
 
 export interface ConversationTree {
@@ -201,11 +200,7 @@ function childConversationFrom(
   if (payload.childConversationId) {
     return { id: payload.childConversationId, source: 'step_payload' }
   }
-  if (payload.kind !== 'tool_result') return null
-  const historical = payload.outcome.data?.conversationId
-  return typeof historical === 'string' && historical.length > 0
-    ? { id: historical as ConversationId, source: 'outcome_fallback' }
-    : null
+  return null
 }
 
 /**

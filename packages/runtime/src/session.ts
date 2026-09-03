@@ -330,17 +330,16 @@ export class Session {
     // 下一轮又被配置文件里的默认值静默改回。
     const conversation = getConversation(store, conversationId)
     const model = options?.model ?? conversation?.model ?? config.active.model
+    if (conversation && !options?.model && !conversation.provider) {
+      throw new Error('这条旧会话没有可证明的接口归属，请重新选择一次模型后再继续')
+    }
     /*
-     * 这一轮发给哪个接口。
-     *
      * 会话记着接口名就按那一对发，**不再按模型 id 反查**——两个接口挂同一个
      * 模型 id 时反查的结果取决于枚举顺序，而错了是换端点换 key 换价目表，不报错。
-     *
-     * 两种情况退回裸模型名：单轮显式 `--model`（用户点的是模型，不是接口），
-     * 以及迁移 24 之前建的会话（`provider` 是空串）。
+     * 单轮显式 `--model` 仍是用户主动要求的裸模型选择，不属于旧会话回退。
      */
     const target: string | ModelRef =
-      !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
+      !options?.model && conversation ? { provider: conversation.provider, model } : model
     // 思考强度**按这一轮真正要用的那个模型解析**，真源是配置里
     // 「接口 × 模型」那一格。不存会话级的第二份，也不共用一个全局值——
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。
@@ -445,14 +444,14 @@ export class Session {
     /*
      * 真值锚点属于「接口 × 协议 × 模型」这条路线，不只属于模型名。
      * 同一个 model id 挂在两个中转站上时，usage 口径与实际 tokenizer 都可能不同；
-     * 新账本行带路线证据后必须严格匹配。null 只放行迁移前没有记录过路线的旧行。
+     * 只有完整路线证据才可复用。迁移前缺接口或协议的旧行仍保留作诊断账，
+     * 但不能参与当前上下文裁决。
      */
     const anchored =
       latestAnchor &&
       latestAnchor.model === adapter.spec.id &&
-      (latestAnchor.providerName === null ||
-        latestAnchor.providerName === resolvedTarget?.provider) &&
-      (latestAnchor.providerKind === null || latestAnchor.providerKind === adapter.kind)
+      latestAnchor.providerName === resolvedTarget?.provider &&
+      latestAnchor.providerKind === adapter.kind
         ? latestAnchor
         : null
     const anchorRun = anchored ? getRun(store, anchored.runId) : null

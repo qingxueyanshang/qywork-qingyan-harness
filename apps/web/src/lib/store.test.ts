@@ -524,7 +524,7 @@ describe('事件按会话归属过滤', () => {
     syncViews()
   })
 
-  test('新派出的单个子 agent 在实时事件入口就保存子会话 id', () => {
+  test('新派出的单个子 agent 只在卡片规范字段保存子会话 id', () => {
     reset('cv_parent')
     applyEvent({
       seq: 1,
@@ -557,7 +557,7 @@ describe('事件按会话归属过滤', () => {
 
     const card = transcript().find((item) => item.id === 'st_delegate')
     expect(card?.childConversationId).toBe('cv_child_live')
-    expect(card?.nodes?.[0]?.conversationId).toBe('cv_child_live')
+    expect(card?.nodes?.[0]?.conversationId).toBeUndefined()
   })
 
   test('子会话历史里的待办不另建顶部投影，也不写进父会话清单', async () => {
@@ -992,12 +992,12 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     }
   }
 
-  const toolStep = (thinking: string) => ({
+  const toolStep = () => ({
     id: 'st_1',
     seq: 1,
     kind: 'tool_action',
     toolName: 'run_command',
-    content: thinking,
+    content: null,
     payload: {
       kind: 'tool_result',
       args: { command: 'nvidia-smi -L' },
@@ -1017,15 +1017,24 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     usage: null,
   }
 
-  /**
-   * **原始失败形状**：一轮跑了十分钟，大半时间产出的是思考；进程被掐断、界面重拉
-   * 之后，思考一条不剩。它落在批次首条工具 step 的 `content` 上（后端
-   * `session.ts` 的 `openToolStep`），只读 `payload` 的话就会漏掉。
-   */
-  test('思考正文跟着工具 step 折回来，位置在工具卡之前', async () => {
+  test('独立思考 step 折回来，位置在工具卡之前', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
-    stub([toolStep('先看看这台机器的显卡')], [interruptedRun])
+    stub(
+      [
+        {
+          id: 'st_thinking',
+          seq: 0,
+          kind: 'thinking',
+          content: '先看看这台机器的显卡',
+          payload: null,
+          status: 'done',
+          createdAt: 1,
+        },
+        toolStep(),
+      ],
+      [interruptedRun],
+    )
     await reloadActiveConversation()
 
     expect(transcript().map((t) => t.kind)).toEqual(['user', 'thinking', 'tool', 'run'])
@@ -1035,7 +1044,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   test('没有思考的工具 step 不平白多出一条空折叠', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
-    stub([toolStep('')], [interruptedRun])
+    stub([toolStep()], [interruptedRun])
     await reloadActiveConversation()
 
     expect(transcript().map((t) => t.kind)).toEqual(['user', 'tool', 'run'])
@@ -1047,7 +1056,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     stub(
       [
         {
-          ...toolStep(''),
+          ...toolStep(),
           toolName: 'subagent',
           payload: {
             kind: 'tool_call',
@@ -1075,7 +1084,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   test('账本里那一轮是中断态，重拉之后收尾条目在，执行中不再由账本决定', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
-    stub([toolStep('思考')], [interruptedRun])
+    stub([toolStep()], [interruptedRun])
     await reloadActiveConversation()
 
     expect(isRunning()).toBe(false)
@@ -1087,7 +1096,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
-      [toolStep('思考')],
+      [toolStep()],
       [{ ...interruptedRun, finishedAt: null, stopReason: null, status: 'running' }],
     )
     await reloadActiveConversation()
@@ -1122,7 +1131,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
       busyConversations: ['cv_1'],
     })
     freshView('cv_1')
-    stub([toolStep('思考')], [liveRun])
+    stub([toolStep()], [liveRun])
     await reloadActiveConversation()
 
     // 重拉不许把忙闲那张表洗掉：它由握手快照与 `conversation.busy` 维持。

@@ -461,7 +461,7 @@ describe('子会话与主会话共用流式外壳', () => {
     }
   })
 
-  test('旧进程漏报子忙态时，只按精确指向它的运行中父步骤恢复流式 UI', async () => {
+  test('父步骤不能替子会话伪造忙态', async () => {
     const store = await import('../lib/store/index.ts')
     const apiBefore = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -527,12 +527,6 @@ describe('子会话与主会话共用流式外壳', () => {
     )
 
     try {
-      await Promise.resolve()
-      expect(host.querySelector('.run-strip')).not.toBeNull()
-      expect(host.querySelector('.fold-label')?.textContent).toContain('思考中')
-
-      // 父步骤一收尾，兼容桥立即撤掉；不能把结束后的子页钉在运行中。
-      store.setState('views', 'cv_parent', 'transcript', 0, 'status', 'success')
       await Promise.resolve()
       expect(host.querySelector('.run-strip')).toBeNull()
       expect(host.querySelector('.fold-label')?.textContent).toContain('已思考')

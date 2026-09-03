@@ -32,16 +32,10 @@ export default function CliPanel(props: { id: string }) {
   const body = () => {
     const live = card()?.nodes?.find((n) => n.nodeId === where().nodeId)?.output
     if (live) return live
-    const data = card()?.outcome?.data as
-      | { output?: unknown; nodes?: { nodeId: string; output?: string }[] }
-      | undefined
+    const data = card()?.outcome?.data as { output?: unknown } | undefined
     // 一张图的产出按节点分开落；派一件只有一格，产出就在结果顶层。
     if (card()?.toolName === 'workflow') {
-      return (
-        card()?.workflow?.results[where().nodeId]?.output ??
-        data?.nodes?.find((n) => n.nodeId === where().nodeId)?.output ??
-        ''
-      )
+      return card()?.workflow?.results[where().nodeId]?.output ?? ''
     }
     return typeof data?.output === 'string' ? data.output : ''
   }
