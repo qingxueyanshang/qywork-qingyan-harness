@@ -348,16 +348,23 @@ export function makeDelegate(ctx: {
         const folded = foldWorkflow(workflowRecords(input.stepId), workflowId)
         if (!folded.ok) return { ok: false, error: folded.error }
         const projection = folded.projection
-        if (projection.phase !== 'waiting_review') {
-          return {
-            ok: false,
-            error: `工作流 ${workflowId} 当前不是待审查状态（${projection.phase}）`,
-          }
+        if (projection.phase === 'failed') {
+          return { ok: false, error: `工作流 ${workflowId} 已失败，请重新派发` }
         }
-        if (projection.checkpointId !== input.call.checkpointId) {
-          return {
-            ok: false,
-            error: `工作流 ${workflowId} 当前待审查的是 ${projection.checkpointId ?? '无'}，不是 ${input.call.checkpointId}`,
+        // 这两道闸只拦 approve。revise 对任意检查点都成立，包括已批准的那些——
+        // 「批准 = 解散」正是返工只能另起一条新子会话的根因。
+        if (input.call.decision === 'approve') {
+          if (projection.phase !== 'waiting_review') {
+            return {
+              ok: false,
+              error: `工作流 ${workflowId} 当前不是待审查状态（${projection.phase}）`,
+            }
+          }
+          if (projection.checkpointId !== input.call.checkpointId) {
+            return {
+              ok: false,
+              error: `工作流 ${workflowId} 当前待审查的是 ${projection.checkpointId ?? '无'}，不是 ${input.call.checkpointId}`,
+            }
           }
         }
         goal = projection.goal
@@ -366,7 +373,7 @@ export function makeDelegate(ctx: {
         state = {
           results: projection.results,
           approvals: projection.approvals,
-          checkpointId: projection.checkpointId,
+          ...(projection.checkpointId ? { checkpointId: projection.checkpointId } : {}),
           review: {
             checkpointId: input.call.checkpointId,
             decision: input.call.decision,

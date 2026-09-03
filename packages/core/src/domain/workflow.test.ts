@@ -306,6 +306,109 @@ describe('workflow 投影', () => {
     expect(folded.projection.approvals.cp).toContain('对')
   })
 
+  /**
+   * 编排器与投影共用 `revisionClosure`，所以这条锁的是两边同一份行为：批准之后 revise
+   * 仍然成立，且该检查点的批准被撤销。撤不掉的话卡片上会显示成「已通过」而服务端在重跑。
+   */
+  test('对已批准的检查点 revise：撤销批准、只作废选中节点', () => {
+    const nodes = [
+      { id: 'build-glm', task: '做 glm 版' },
+      { id: 'build-qwen', task: '做 qwen 版' },
+      {
+        id: 'audit-builds',
+        kind: 'checkpoint',
+        label: '主会话验收',
+        needs: ['build-glm', 'build-qwen'],
+      },
+    ]
+    const receipt = (nodeId: string, output: string) => ({
+      nodeId,
+      agent: 'ad-hoc',
+      label: nodeId,
+      status: 'done' as const,
+      output,
+      durationMs: 1,
+      conversationId: `cv_${nodeId}`,
+    })
+    const records: WorkflowCallRecord[] = [
+      {
+        stepId: 'wf',
+        args: { goal: '四个模型各做一版', nodes },
+        status: 'success',
+        outcome: outcome({
+          workflowId: 'wf',
+          phase: 'waiting_review',
+          checkpointId: 'audit-builds',
+          receipts: [receipt('build-glm', 'glm 初稿'), receipt('build-qwen', 'qwen 初稿')],
+        }),
+      },
+      {
+        stepId: 'approve',
+        args: {
+          workflowId: 'wf',
+          checkpointId: 'audit-builds',
+          decision: 'approve',
+          note: '均已产生代码，现批准',
+        },
+        status: 'success',
+        outcome: outcome({
+          workflowId: 'wf',
+          phase: 'completed',
+          review: {
+            checkpointId: 'audit-builds',
+            decision: 'approve',
+            note: '均已产生代码，现批准',
+          },
+          receipts: [],
+        }),
+      },
+      {
+        stepId: 'revise',
+        args: {
+          workflowId: 'wf',
+          checkpointId: 'audit-builds',
+          decision: 'revise',
+          note: '继续优化 qwen 版',
+          revisions: [{ nodeId: 'build-qwen', instruction: '按 bug 列表继续改' }],
+        },
+        status: 'running',
+      },
+    ]
+    const folded = foldWorkflow(records, 'wf')
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.approvals['audit-builds']).toBeUndefined()
+    expect(folded.projection.results['build-qwen']).toBeUndefined()
+    // 没被点名的那个节点结果留着：它不需要重跑，检查点等它的回执。
+    expect(folded.projection.results['build-glm']?.output).toBe('glm 初稿')
+  })
+
+  /**
+   * 首派被进程退出截断时投影必须落 failed。停在 running 的话 review 只会收到
+   * 「当前不是待审查状态（running）」，图上也一直转圈。
+   */
+  test('首派没有 transition 且已落失败终态时投影为 failed', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', task: '做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+            ],
+          },
+          status: 'failure',
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('failed')
+  })
+
   test('运行中的续调立刻按 args.workflowId 归回首轮', () => {
     expect(workflowGroupId({ stepId: 'current', args: { workflowId: 'anchor' } })).toBe('anchor')
   })

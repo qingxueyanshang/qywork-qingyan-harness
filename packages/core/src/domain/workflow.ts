@@ -59,6 +59,11 @@ export interface WorkflowAppliedReview {
   checkpointId: string
   decision: 'approve' | 'revise'
   note: string
+  /**
+   * approve 时该检查点 needs 里状态非 done 的节点。主会话接受了这些失败，
+   * 工具回执要把它们列出来，否则模型只看到「已完成」而不知道自己批了什么。
+   */
+  acceptedFailures?: { nodeId: string; reason: string }[]
 }
 
 /**
@@ -345,9 +350,17 @@ function ancestorOf(nodes: WorkflowNode[], ancestor: string, nodeId: string): bo
   return visit(nodeId)
 }
 
-export type RevisionClosureResult = { ok: true; nodeIds: string[] } | { ok: false; error: string }
+export type RevisionClosureResult =
+  | { ok: true; nodeIds: string[]; revokedCheckpointIds: string[] }
+  | { ok: false; error: string }
 
-/** revise 的失效范围：选中节点及其在当前检查点前的后继。server 与 UI 共用。 */
+/**
+ * revise 的失效范围。**编排器与 `foldWorkflow` 必须调用同一份**，否则内存状态与回放投影分叉。
+ *
+ * 三步：撤销该检查点及其下游检查点的批准 · 作废下游全部 agent 节点结果 ·
+ * 在该检查点的当前批次内按依赖传播作废选中节点及其后继。
+ * 批准可撤销是这里的前提——检查点批准之后仍要能回流。
+ */
 export function revisionClosure(
   nodes: WorkflowNode[],
   checkpointId: string,
@@ -359,16 +372,20 @@ export function revisionClosure(
       node.kind === 'checkpoint' && node.id === checkpointId,
   )
   if (!checkpoint) return { ok: false, error: `找不到检查点 ${checkpointId}` }
+  const revokedCheckpointIds = approvedCheckpointIds.filter(
+    (id) => id === checkpoint.id || ancestorOf(nodes, checkpoint.id, id),
+  )
+  const stillApproved = approvedCheckpointIds.filter((id) => !revokedCheckpointIds.includes(id))
+  const agentNodes = nodes.filter((node): node is WorkflowAgentNode => node.kind !== 'checkpoint')
   const revisable = new Set(
-    nodes
-      .filter((node): node is WorkflowAgentNode => node.kind !== 'checkpoint')
+    agentNodes
       .filter((node) => ancestorOf(nodes, node.id, checkpoint.id))
-      .filter(
-        (node) => !approvedCheckpointIds.some((approved) => ancestorOf(nodes, node.id, approved)),
-      )
+      .filter((node) => !stillApproved.some((approved) => ancestorOf(nodes, node.id, approved)))
       .map((node) => node.id),
   )
-  const invalidated = new Set<string>()
+  const invalidated = new Set<string>(
+    agentNodes.filter((node) => ancestorOf(nodes, checkpoint.id, node.id)).map((node) => node.id),
+  )
   for (const nodeId of selectedNodeIds) {
     if (!revisable.has(nodeId)) {
       return { ok: false, error: `节点 ${nodeId} 不属于检查点 ${checkpoint.id} 的当前批次` }
@@ -387,7 +404,7 @@ export function revisionClosure(
       }
     }
   }
-  return { ok: true, nodeIds: [...invalidated] }
+  return { ok: true, nodeIds: [...invalidated], revokedCheckpointIds }
 }
 
 export type WorkflowFoldResult =
@@ -436,10 +453,14 @@ export function foldWorkflow(
         review.revisions.map((revision) => revision.nodeId),
       )
       if (!closure.ok) return closure
+      for (const id of closure.revokedCheckpointIds) delete projection.approvals[id]
       for (const nodeId of closure.nodeIds) delete projection.results[nodeId]
     }
     if (!transition) {
       if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
+      // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
+      // 不投影成 failed 的话它永远停在 running，review 只能收到「当前不是待审查状态」。
+      if (record.status === 'failure' && record.stepId === workflowId) projection.phase = 'failed'
       continue
     }
     if (transition.workflowId !== workflowId) {
