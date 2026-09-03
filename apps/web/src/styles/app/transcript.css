@@ -1054,6 +1054,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
   gap: 26px;
 }
 /* 只派了一件事时三格横着摆：竖排要占三行约 180px，横排一行 44px，
@@ -1062,6 +1064,7 @@
   flex-direction: row;
   align-items: center;
   justify-content: center;
+  min-width: 0;
   gap: 40px;
 }
 /* 连线。`overflow: visible` 是必需的：折线的横段可能落在盒子边界上。 */
@@ -1097,12 +1100,21 @@
     animation: none;
   }
 }
-/* 同一层的节点并排且居中：它们真的在并行跑，左对齐会让右边空出一大片。 */
+/* 同一层固定为等宽 grid。列数和最大宽度由组件按该层真实节点数写入；窄卡片中
+   各列共同收缩，节点文字在自身内部换行，不产生画布级横向滚动。 */
 .wf-layer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  margin-inline: auto;
+  justify-items: center;
   gap: var(--s-3);
+}
+.wf-graph.across .wf-layer {
+  display: flex;
+  flex: none;
+  width: 160px;
+  margin-inline: 0;
 }
 /* 一个节点：点开它那条子会话。状态只走底色与边框，不加图标——
    一排小图标读起来像一排开关，而这里每个节点只有「点开」这一个动作。
@@ -1119,8 +1131,9 @@
    * 耗时多一位数字（5.5s → 53.0s）就让那一层的中线偏出去几个像素，
    * 因此上面下来的竖线和下面进节点的竖线错开一截，看起来像线断了。
    */
-  width: 160px;
-  max-width: 100%;
+  width: 100%;
+  min-width: 0;
+  max-width: 160px;
   padding: 6px var(--s-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
@@ -1169,8 +1182,14 @@
 }
 /* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
 .wf-node-name {
+  display: -webkit-box;
+  overflow: hidden;
   max-width: 100%;
+  overflow-wrap: anywhere;
   font-weight: 500;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 /* 次行：执行者 + 耗时。同一张图里常常四个节点都是同一个执行者，压一档。 */
 .wf-node-who {

@@ -95,6 +95,82 @@ describe('工具图片回放', () => {
   })
 })
 
+describe('编排画布', () => {
+  test('四个并行节点使用可收缩等宽列，画布不再套横向滚动容器', async () => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={
+            [
+              {
+                id: 'wf-four',
+                kind: 'tool',
+                text: '',
+                toolName: 'workflow',
+                action: { kind: 'run', objectLabel: '编排', target: '四个候选' },
+                args: {
+                  goal: '四个候选',
+                  nodes: [
+                    { id: 'a', agent: 'glm' },
+                    { id: 'b', agent: 'qwen' },
+                    { id: 'c', agent: 'deepseek' },
+                    { id: 'd', agent: 'gemini' },
+                  ],
+                },
+                status: 'running',
+              },
+            ] as never
+          }
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const layers = host.querySelectorAll<HTMLElement>('.wf-layer')
+      expect(layers).toHaveLength(3)
+      expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(0, 1fr))')
+      expect(layers[1]?.style.maxWidth).toBe('676px')
+      expect(host.querySelector('.wf-viewport')).toBeNull()
+      expect(layers[1]?.querySelector('.wf-node-name')?.classList.contains('truncate')).toBe(false)
+    } finally {
+      dispose()
+    }
+  })
+
+  test('共享入口的共线区间只生成一份路径', async () => {
+    const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
+    const paths = mergeWorkflowEdgeSegments([
+      { axis: 'vertical', fixed: 100.5, from: 20.5, to: 40.5, live: false },
+      { axis: 'vertical', fixed: 100.5, from: 20.5, to: 40.5, live: false },
+      { axis: 'horizontal', fixed: 40.5, from: 20.5, to: 100.5, live: false },
+      { axis: 'horizontal', fixed: 40.5, from: 60.5, to: 100.5, live: false },
+      { axis: 'horizontal', fixed: 40.5, from: 100.5, to: 180.5, live: false },
+    ])
+
+    expect(paths).toEqual([
+      { d: 'M100.5 20.5V40.5', live: false },
+      { d: 'M20.5 40.5H180.5', live: false },
+    ])
+  })
+
+  test('活动依赖与静态依赖共线时切成不重叠区间', async () => {
+    const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
+    const paths = mergeWorkflowEdgeSegments([
+      { axis: 'horizontal', fixed: 40.5, from: 20.5, to: 100.5, live: false },
+      { axis: 'horizontal', fixed: 40.5, from: 60.5, to: 100.5, live: true },
+    ])
+
+    expect(paths).toEqual([
+      { d: 'M20.5 40.5H60.5', live: false },
+      { d: 'M60.5 40.5H100.5', live: true },
+    ])
+  })
+})
+
 const CV = 'cv_prose'
 
 describe('定稿的正文不跟着会话流的增长重建', () => {
