@@ -1416,6 +1416,34 @@ export function setStepChildConversation(
     .run(conversationId, id)
 }
 
+/**
+ * 同上，但写的是 workflow 图上某一个节点的子会话入口（`$.children.<nodeId>`）。
+ *
+ * 节点 id 由模型给，可能含点号或方括号，所以走 `json_object` 构键再 `json_patch` 合并，
+ * 不要改成把 id 拼进 JSON 路径字符串——那样的 id 会被当成路径分隔符解释掉。
+ */
+export function setStepNodeConversation(
+  store: Store,
+  id: StepId,
+  nodeId: string,
+  conversationId: ConversationId,
+): void {
+  store.db
+    .query(
+      `UPDATE steps
+       SET payload = json_set(
+             coalesce(payload, '{}'),
+             '$.children',
+             json_patch(
+               coalesce(json_extract(payload, '$.children'), json('{}')),
+               json_object(?, ?)
+             )
+           )
+       WHERE id = ? AND kind = 'tool_action' AND status = 'running'`,
+    )
+    .run(nodeId, conversationId, id)
+}
+
 /** 一次调用一行，原地从 running 更新到终态；不产生第二行。 */
 export function settleToolStep(
   store: Store,

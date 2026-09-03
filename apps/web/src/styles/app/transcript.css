@@ -1047,6 +1047,28 @@
 .wf-card.failed {
   border-color: var(--danger-soft);
 }
+/* 卡顶动作行：这张卡是什么、成没成、跑了多久。与折叠行同字号同灰度，
+   但**不共用 `.fold-*` 选择器**——那几条挂在 `details > summary` 上，
+   删掉折叠体会把这一行的排版一起带走。不印目标：图上每个节点已经是它。 */
+.wf-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+}
+.wf-action {
+  flex: none;
+}
+.wf-word {
+  flex: none;
+  color: var(--danger);
+}
+.wf-time {
+  flex: none;
+}
 /* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。
    **只给一行**：它是这张图的名字，不是任务书；长了截断，展开体里有全文。 */
 .wf-goal {

@@ -585,6 +585,68 @@ describe('workflow 从父会话账本续接', () => {
   })
 
   /**
+   * 原始失败形状：图跑着时刷新页面，正在跑的节点回到「等着跑」且点不开。逐节点终态要等
+   * 工具收尾才有，运行期的 `team.member` 不落库，所以子会话 id 必须在创建时按节点写进
+   * 这条 step。节点 id 用带点号的那种：拼进 JSON 路径的写法会把它当成路径分隔符。
+   */
+  test('图跑着的时候每个节点的子会话入口已经按节点落库', async () => {
+    const parent = conversation()
+    const run = createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'workflow-children',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const nodes = [
+      { id: 'build.glm', kind: 'agent' as const, agent: 'ad-hoc', task: '做 glm 版' },
+      { id: 'build.qwen', kind: 'agent' as const, agent: 'ad-hoc', task: '做 qwen 版' },
+      {
+        id: 'audit',
+        kind: 'checkpoint' as const,
+        label: '验收',
+        needs: ['build.glm', 'build.qwen'],
+      },
+    ]
+    const args = { goal: '两个候选', nodes }
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_children',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    script = [
+      () => new Response(textTurn('glm 稿'), { headers: SSE_HEADERS }),
+      () => new Response(textTurn('qwen 稿'), { headers: SSE_HEADERS }),
+    ]
+
+    const result = await delegate(parent).runGraph({
+      call: { kind: 'start', goal: '两个候选', nodes, maxConcurrent: DEFAULT_MAX_CONCURRENT },
+      runId: run.id,
+      stepId: step.id,
+      signal: new AbortController().signal,
+    })
+
+    // 外层工具循环尚未 settle：这就是切走父会话再切回来时会读到的形状。
+    const replay = listSteps(store, run.id).find((s) => s.id === step.id)
+    expect(replay?.status).toBe('running')
+    const children = replay?.payload?.kind === 'tool_call' ? replay.payload.children : undefined
+    const byNode = Object.fromEntries(
+      (result.transition?.receipts ?? []).map((receipt) => [
+        receipt.nodeId,
+        receipt.conversationId,
+      ]),
+    )
+    expect(children).toEqual(byNode as Record<string, never>)
+    expect(Object.keys(children ?? {}).sort()).toEqual(['build.glm', 'build.qwen'])
+  })
+
+  /**
    * 原始失败形状：agent 节点全部失败，主会话仍在检查点批准，此后要让其中一个节点
    * 在它自己那条子会话里继续做。批准即解散时模型只剩 subagent，而那条每次新建会话。
    */

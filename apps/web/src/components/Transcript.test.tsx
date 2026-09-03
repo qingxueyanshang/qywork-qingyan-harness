@@ -239,6 +239,60 @@ describe('编排画布', () => {
     ])
   })
 
+  /**
+   * 卡顶那一行说清这张卡是什么、成没成。没有它时卡顶印的是任务第一行，读起来像一句正文，
+   * 而「派给已有角色」与「临时起一个」在界面上分不开。
+   */
+  test('派活卡顶部印动作与失败字样', async () => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={
+            [
+              {
+                id: 'wf-head',
+                kind: 'tool',
+                text: '',
+                toolName: 'workflow',
+                action: { kind: 'run', objectLabel: '编排', target: '四个候选' },
+                args: { goal: '四个候选', nodes: [{ id: 'a', agent: 'glm', task: '做' }] },
+                status: 'failure',
+                durationMs: 2500,
+              },
+              {
+                id: 'sub-head',
+                kind: 'tool',
+                text: '',
+                toolName: 'subagent',
+                action: { kind: 'run', objectLabel: '子 agent', target: 'qwen-racer' },
+                args: { agent: 'qwen-racer', task: '继续优化' },
+                status: 'failure',
+              },
+            ] as never
+          }
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const heads = [...host.querySelectorAll<HTMLElement>('.wf-head')]
+      expect(heads).toHaveLength(2)
+      expect(heads[0]?.textContent).toContain('运行编排')
+      expect(heads[0]?.textContent).toContain('失败')
+      expect(heads[0]?.textContent).toContain('2.5s')
+      expect(heads[1]?.textContent).toContain('运行子 agent')
+      expect(heads[1]?.textContent).toContain('失败')
+      // 目标不印：图上每个节点已经是它。
+      expect(heads[1]?.textContent).not.toContain('qwen-racer')
+    } finally {
+      dispose()
+    }
+  })
+
   test('排队节点明确说明是在等待并发槽位', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')

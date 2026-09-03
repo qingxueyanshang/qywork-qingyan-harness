@@ -687,6 +687,8 @@ interface StoredStep {
     outcome?: ToolOutcomeWire
     action?: ActionDescriptor
     childConversationId?: string
+    /** workflow 逐节点的子会话入口，见 `StepPayload`。 */
+    children?: Record<string, string>
     /** kind='compaction' 专有，见 `StepPayload`。 */
     phase?: 'done' | 'skipped' | 'failed'
     summarized?: boolean
@@ -699,6 +701,17 @@ interface StoredStep {
   createdAt: number
   /** 这次调用跑了多久。迁移 28 之前的行没有这个数。 */
   durationMs: number | null
+}
+
+/** 运行中的图：落了库的节点子会话入口还原成节点状态，名字与耗时留给终态那条路补。 */
+function liveNodesOf(children: Record<string, string>): WorkflowNodeState[] {
+  return Object.entries(children).map(([nodeId, conversationId]) => ({
+    nodeId,
+    agent: '',
+    label: '',
+    phase: 'working' as const,
+    conversationId,
+  }))
 }
 
 /** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
@@ -1212,6 +1225,12 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
       ...(s.payload?.args ? { args: s.payload.args } : {}),
       ...(s.payload?.childConversationId
         ? { childConversationId: s.payload.childConversationId }
+        : {}),
+      // 图跑着的时候切走再切回来：这条 step 还没有 outcome，逐节点终态也就不存在，
+      // `$.children` 是那一刻唯一落了库的节点事实。**只在 running 时还原**——
+      // 终态之后回执自带 conversationId，再补一份会盖掉真实的 phase 与耗时。
+      ...(s.status === 'running' && s.payload?.children
+        ? { nodes: liveNodesOf(s.payload.children) }
         : {}),
       status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
       ...(outcome ? { outcome } : {}),

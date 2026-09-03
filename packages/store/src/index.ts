@@ -60,6 +60,7 @@ export {
   setConversationModel,
   setConversationTitle,
   setStepChildConversation,
+  setStepNodeConversation,
   settleProviderRequest,
   settleRunningSteps,
   settleToolStep,

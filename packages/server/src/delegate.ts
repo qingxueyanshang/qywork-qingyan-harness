@@ -25,7 +25,13 @@ import {
   type WorkflowTransition,
 } from '@qywork/core'
 import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
-import { getConversation, listRuns, listSteps, setStepChildConversation } from '@qywork/store'
+import {
+  getConversation,
+  listRuns,
+  listSteps,
+  setStepChildConversation,
+  setStepNodeConversation,
+} from '@qywork/store'
 import {
   CLI_PREFIX,
   detectClis,
@@ -425,7 +431,12 @@ export function makeDelegate(ctx: {
               deps,
               workspaceRoot,
               ...picked,
-              ...(member.onConversation ? { onConversation: member.onConversation } : {}),
+              // 先落账再广播，同 `run` 那条：切走父会话会错过广播，切回来从这条 step
+              // 回放时仍要能点开正在跑的那一格。键是节点 id，一张图上每格各一条。
+              onConversation: (cid) => {
+                setStepNodeConversation(deps.store, input.stepId as StepId, member.nodeId, cid)
+                member.onConversation?.(cid)
+              },
               // 子会话的事件按**它自己的会话 id** 发。这条与上面那个 `emit` 不是一回事：
               // 那个发的是图卡进度，归属是父会话。
               onEvent: (ev, cid) => deps.bus.publish(ev, cid),
