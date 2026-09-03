@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createReloadSupervisor, isSourceChange } from './reload-supervisor.ts'
+import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
 
 function unusedPort(): number {
   const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
@@ -184,6 +184,15 @@ describe('哪些文件算源码变了', () => {
   test('拿不到文件名时不算', () => {
     expect(isSourceChange(null)).toBe(false)
     expect(isSourceChange(undefined)).toBe(false)
+  })
+
+  test('前端 TSX、样式和资源都进入同一个换代闸门，测试文件不进入', () => {
+    expect(isWebSourceChange('components\\ConversationPanel.tsx')).toBe(true)
+    expect(isWebSourceChange('styles\\transcript.css')).toBe(true)
+    expect(isWebSourceChange('assets\\status.svg')).toBe(true)
+    expect(isWebSourceChange('components\\ConversationPanel.test.tsx')).toBe(false)
+    expect(isWebSourceChange('__tests__\\fixture.ts')).toBe(false)
+    expect(isWebSourceChange(null)).toBe(false)
   })
 })
 describe('sidecar 自己没了', () => {

@@ -119,3 +119,17 @@ export function isSourceChange(file: unknown): boolean {
   const path = file.replaceAll('\\', '/')
   return path.endsWith('.ts') && !path.endsWith('.test.ts') && path.includes('/src/')
 }
+
+/**
+ * `apps/web/src` 下面的文件是否会改变正在运行的页面。
+ *
+ * watch 的根已经限定在 web/src，所以这里不用再猜目录；只排除测试。扩展名不设白名单：
+ * TSX、CSS、字体和图片都可能进入 Vite 的模块图，漏掉任意一种都会重新制造
+ * 「后端已换代、前端还停在上一代」的窗口。
+ */
+export function isWebSourceChange(file: unknown): boolean {
+  if (typeof file !== 'string') return false
+  const path = file.replaceAll('\\', '/')
+  if (!path || path.endsWith('/')) return false
+  return !/(^|\/)(__tests__)(\/|$)/.test(path) && !/\.(test|spec)\.[^/]+$/.test(path)
+}

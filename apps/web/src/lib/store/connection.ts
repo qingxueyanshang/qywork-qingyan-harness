@@ -45,6 +45,19 @@ export const client = new QyClient({
     // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
     void reloadActiveConversation()
   },
+  onStreamChanged: () => {
+    /*
+     * 桌面源码开发走「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
+     * 等当前 run 跑完，再由 dev.ts 重启 sidecar。streamId 变更就是后端换代完成的
+     * 可靠信号，此时刷新整页，才会加载与它同一棵源码的 UI。
+     *
+     * 不能把这件事挂到普通 reconnect 或 resync 上：网络闪断也会走那两条路，
+     * 手机端和打包版不该因此整页刷新。
+     */
+    if (import.meta.env.DEV && import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
+      location.reload()
+    }
+  },
   onEvent: (frame) => applyEvent(frame),
   onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
 })
