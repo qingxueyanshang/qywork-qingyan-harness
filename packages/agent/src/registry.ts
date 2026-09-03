@@ -415,6 +415,11 @@ export interface HistoryPort {
    * 搜比让模型去猜 id 快得多，也省得多。
    */
   search(query: string, limit: number): { id: string; kind: 'message' | 'step'; line: string }[]
+  /**
+   * 本会话派出去的某个子 agent 的历史，同一套方法按它的会话取。
+   * 不属于本会话的 id 返回 null：子 agent 只归建立它的那条会话看。
+   */
+  forSubagent(id: string): HistoryPort | null
 }
 
 export interface ToolContext {

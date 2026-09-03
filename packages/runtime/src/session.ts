@@ -12,6 +12,7 @@ import {
   type CompactionPort,
   type DelegatePort,
   decideCommand,
+  type HistoryPort,
   type LoopPersistence,
   type PermissionVerdict,
   type PluginPort,
@@ -382,6 +383,14 @@ export class Session {
     const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
       this.registry.has(name),
     )
+    // 角色、外部 CLI、本会话已有的子 agent：模型据此按 id 引用，不猜名字。
+    const delegateFacts =
+      canAssignModels && this.opts.delegate
+        ? {
+            team: await this.opts.delegate.targets(),
+            subagents: await this.opts.delegate.subagents(),
+          }
+        : {}
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
       platform: process.platform,
@@ -396,6 +405,7 @@ export class Session {
             ),
           }
         : {}),
+      ...delegateFacts,
       externalTools: this.pendingTools?.index() ?? [],
       todos: latestTodos(store, conversationId),
       // 未走完的图跟着快照一起冻结。没有派活通道就没有图，也不必查。
@@ -976,97 +986,7 @@ export class Session {
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
-      history: (() => {
-        /**
-         * 摘要里的 `<runId>:<stepId>` 解析成那条 step。
-         *
-         * 单独一个 step id 跨 run 不唯一，而摘要引用的是远期记录，所以地址必须带 runId。
-         */
-        const compositeStep = (id: string): Step | null => {
-          const cut = id.indexOf(':')
-          if (cut <= 0) return null
-          const runId = id.slice(0, cut) as RunId
-          const stepId = id.slice(cut + 1)
-          return listSteps(store, runId).find((x) => String(x.id) === stepId) ?? null
-        }
-        const userStepOf = (id: string): Step | null => {
-          const st = compositeStep(id)
-          return st?.kind === 'user' ? st : null
-        }
-        return {
-          message: (id) => {
-            const m = listMessages(store, conversationId, null).find((x) => x.id === id)
-            if (m) return { role: m.role, content: m.content }
-            /*
-             * run 内注入的那句用户消息不在 `messages` 表里，摘要给的是
-             * `<runId>:<stepId>`。少了这一条回落，用户中途改方向的那句话
-             * 一旦被折进摘要就再也取不回来——摘要里印着地址，取回却报「不存在」。
-             */
-            const st = userStepOf(id)
-            return st ? { role: 'user' as const, content: st.content ?? '' } : null
-          },
-          step: (id) => {
-            const st = compositeStep(id)
-            // 注入的用户消息由 `message` 取回：这里的返回形状是
-            // `{tool,status,args,outcome}`，套上去只会回一个 `tool:'unknown'`
-            // 加两个空 JSON——看起来被处理了，实际什么都没答。
-            if (!st || st.kind === 'user') return null
-            const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
-            return {
-              tool: st.toolName ?? 'unknown',
-              status: st.status,
-              args: JSON.stringify(payload.args ?? {}),
-              outcome: JSON.stringify(payload.outcome ?? {}),
-            }
-          },
-          byCallId: (callId) => {
-            for (const run of listRuns(store, conversationId)) {
-              const st = listSteps(store, run.id).find((x) => x.toolCallId === callId)
-              if (!st) continue
-              const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
-              return {
-                tool: st.toolName ?? 'unknown',
-                status: st.status,
-                args: JSON.stringify(payload.args ?? {}),
-                outcome: JSON.stringify(payload.outcome ?? {}),
-              }
-            }
-            return null
-          },
-          search: (query, limit) => {
-            const hits: { id: string; kind: 'message' | 'step'; line: string }[] = []
-            const needle = query.toLowerCase()
-            for (const m of listMessages(store, conversationId, null)) {
-              if (hits.length >= limit) return hits
-              if (m.content.toLowerCase().includes(needle)) {
-                hits.push({ id: m.id, kind: 'message', line: m.content })
-              }
-            }
-            for (const run of listRuns(store, conversationId)) {
-              for (const st of listSteps(store, run.id)) {
-                if (hits.length >= limit) return hits
-                /*
-                 * run 内注入的用户消息按**消息**报，不按执行记录报：正文在 `content`
-                 * 列而不是 payload 里，取回也由 `message` 负责。报成 step 的话
-                 * 摘录印的是空 payload，而模型拿着那个 id 去 `step` 只会得到 null。
-                 */
-                if (st.kind === 'user') {
-                  const text = st.content ?? ''
-                  if (text.toLowerCase().includes(needle)) {
-                    hits.push({ id: `${run.id}:${st.id}`, kind: 'message', line: text })
-                  }
-                  continue
-                }
-                const body = `${st.toolName ?? ''} ${JSON.stringify(st.payload ?? {})}`
-                if (body.toLowerCase().includes(needle)) {
-                  hits.push({ id: `${run.id}:${st.id}`, kind: 'step', line: body })
-                }
-              }
-            }
-            return hits
-          },
-        }
-      })(),
+      history: historyPortFor(store, conversationId as ConversationId),
       signal: this.opts.signal,
       emitTodos: (todos) => {
         emit({ type: 'todos', runId, todos })
@@ -1366,4 +1286,109 @@ function unfinishedWorkflows(store: Store, conversationId: ConversationId): Work
     if (folded.ok && folded.projection.phase !== 'completed') out.push(folded.projection)
   }
   return out
+}
+
+/**
+ * 一条会话的历史端口。子 agent 的历史用同一份实现按它的会话 id 建，
+ * `forSubagent` 只认本会话派出去的那些。
+ */
+function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
+  const port: Omit<HistoryPort, 'forSubagent'> = (() => {
+    /**
+     * 摘要里的 `<runId>:<stepId>` 解析成那条 step。
+     *
+     * 单独一个 step id 跨 run 不唯一，而摘要引用的是远期记录，所以地址必须带 runId。
+     */
+    const compositeStep = (id: string): Step | null => {
+      const cut = id.indexOf(':')
+      if (cut <= 0) return null
+      const runId = id.slice(0, cut) as RunId
+      const stepId = id.slice(cut + 1)
+      return listSteps(store, runId).find((x) => String(x.id) === stepId) ?? null
+    }
+    const userStepOf = (id: string): Step | null => {
+      const st = compositeStep(id)
+      return st?.kind === 'user' ? st : null
+    }
+    return {
+      message: (id) => {
+        const m = listMessages(store, cid, null).find((x) => x.id === id)
+        if (m) return { role: m.role, content: m.content }
+        /*
+         * run 内注入的那句用户消息不在 `messages` 表里，摘要给的是
+         * `<runId>:<stepId>`。少了这一条回落，用户中途改方向的那句话
+         * 一旦被折进摘要就再也取不回来——摘要里印着地址，取回却报「不存在」。
+         */
+        const st = userStepOf(id)
+        return st ? { role: 'user' as const, content: st.content ?? '' } : null
+      },
+      step: (id) => {
+        const st = compositeStep(id)
+        // 注入的用户消息由 `message` 取回：这里的返回形状是
+        // `{tool,status,args,outcome}`，套上去只会回一个 `tool:'unknown'`
+        // 加两个空 JSON——看起来被处理了，实际什么都没答。
+        if (!st || st.kind === 'user') return null
+        const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
+        return {
+          tool: st.toolName ?? 'unknown',
+          status: st.status,
+          args: JSON.stringify(payload.args ?? {}),
+          outcome: JSON.stringify(payload.outcome ?? {}),
+        }
+      },
+      byCallId: (callId) => {
+        for (const run of listRuns(store, cid)) {
+          const st = listSteps(store, run.id).find((x) => x.toolCallId === callId)
+          if (!st) continue
+          const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
+          return {
+            tool: st.toolName ?? 'unknown',
+            status: st.status,
+            args: JSON.stringify(payload.args ?? {}),
+            outcome: JSON.stringify(payload.outcome ?? {}),
+          }
+        }
+        return null
+      },
+      search: (query, limit) => {
+        const hits: { id: string; kind: 'message' | 'step'; line: string }[] = []
+        const needle = query.toLowerCase()
+        for (const m of listMessages(store, cid, null)) {
+          if (hits.length >= limit) return hits
+          if (m.content.toLowerCase().includes(needle)) {
+            hits.push({ id: m.id, kind: 'message', line: m.content })
+          }
+        }
+        for (const run of listRuns(store, cid)) {
+          for (const st of listSteps(store, run.id)) {
+            if (hits.length >= limit) return hits
+            /*
+             * run 内注入的用户消息按**消息**报，不按执行记录报：正文在 `content`
+             * 列而不是 payload 里，取回也由 `message` 负责。报成 step 的话
+             * 摘录印的是空 payload，而模型拿着那个 id 去 `step` 只会得到 null。
+             */
+            if (st.kind === 'user') {
+              const text = st.content ?? ''
+              if (text.toLowerCase().includes(needle)) {
+                hits.push({ id: `${run.id}:${st.id}`, kind: 'message', line: text })
+              }
+              continue
+            }
+            const body = `${st.toolName ?? ''} ${JSON.stringify(st.payload ?? {})}`
+            if (body.toLowerCase().includes(needle)) {
+              hits.push({ id: `${run.id}:${st.id}`, kind: 'step', line: body })
+            }
+          }
+        }
+        return hits
+      },
+    }
+  })()
+  return {
+    ...port,
+    forSubagent: (id) => {
+      const child = getConversation(store, id as ConversationId)
+      return child?.parentConversationId === cid ? historyPortFor(store, child.id) : null
+    },
+  }
 }

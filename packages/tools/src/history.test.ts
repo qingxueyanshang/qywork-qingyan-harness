@@ -29,7 +29,18 @@ function memHistory(): HistoryPort {
   }
   // 收纳过的工具结果只剩信封，信封里的 call_id 是它唯一的地址。
   const byCall: Record<string, string> = { call_9: 'rn_1:7' }
+  const child: HistoryPort = {
+    message: (id) => (id === 'ms_c' ? { role: 'assistant', content: '子 agent 的产出' } : null),
+    step: () => null,
+    byCallId: () => null,
+    search: (query) =>
+      '子 agent 的产出'.includes(query)
+        ? [{ id: 'ms_c', kind: 'message' as const, line: '子 agent 的产出' }]
+        : [],
+    forSubagent: () => null,
+  }
   return {
+    forSubagent: (id) => (id === 'cv_child' ? child : null),
     message: (id) => messages[id] ?? null,
     step: (id) => steps[id] ?? null,
     byCallId: (callId) => steps[byCall[callId] ?? ''] ?? null,
@@ -68,6 +79,22 @@ function ctx(history: HistoryPort | undefined): ToolContext {
 }
 
 const run = (args: Record<string, unknown>) => readHistoryTool.fn(args, ctx(memHistory()))
+
+describe('读子 agent 的历史', () => {
+  test('填 subagent 时读的是那个子 agent 的会话', async () => {
+    const r = await run({ subagent: 'cv_child', message_id: 'ms_c' })
+    expect(r.status).toBe('success')
+    expect((r.data as { content: string }).content).toBe('子 agent 的产出')
+    const hits = await run({ subagent: 'cv_child', query: '产出' })
+    expect((hits.data as { hits: string[] }).hits[0]).toContain('ms_c')
+  })
+
+  test('不属于本会话的子 agent id 如实回绝', async () => {
+    const r = await run({ subagent: 'cv_other', message_id: 'ms_c' })
+    expect(r.status).toBe('failure')
+    expect(r.message).toContain('没有子 agent cv_other')
+  })
+})
 
 describe('前置校验', () => {
   test('端口没接时如实说，不谎称找不到', async () => {

@@ -58,7 +58,8 @@ export const readHistoryTool: ToolSpec = {
     '[action:xxx] 标记，传入标记中的 id 返回该条的完整内容。' +
     'id 未知时传 query 检索（返回命中行与对应 id）。' +
     '被收纳过的工具结果只剩信封，传入信封里的 call_id 返回完整的参数与结果。' +
-    '注意它读的是会话历史；工具落盘的大块输出（rs_xxx）用 read_resource。',
+    '注意它读的是会话历史；工具落盘的大块输出（rs_xxx）用 read_resource。' +
+    '传 subagent（本会话子 agent 的 id）时读的是那个子 agent 的历史，其余参数含义不变。',
   parameters: {
     type: 'object',
     properties: {
@@ -74,6 +75,10 @@ export const readHistoryTool: ToolSpec = {
       query: {
         type: 'string',
         description: '在整条会话历史里搜这个子串，返回命中项与各自的 id。id 未知时使用。',
+      },
+      subagent: {
+        type: 'string',
+        description: '本会话子 agent 的 id。填了就读它的历史，不填读本会话自己的。',
       },
     },
     additionalProperties: false,
@@ -96,7 +101,15 @@ export const readHistoryTool: ToolSpec = {
   parallelSafe: true,
 
   async fn(args, ctx) {
-    const history = ctx.history
+    const subagent = typeof args.subagent === 'string' ? args.subagent.trim() : ''
+    const history = subagent ? ctx.history?.forSubagent(subagent) : ctx.history
+    if (subagent && ctx.history && !history) {
+      return {
+        status: 'failure',
+        message: `本会话里没有子 agent ${subagent}`,
+        errorKind: 'not_found',
+      }
+    }
     if (!history) {
       // 如实说没有这条通道，不要报「找不到」——后者会让模型把它当成 id 写错，
       // 然后拿几轮去猜一个取不到的 id。
