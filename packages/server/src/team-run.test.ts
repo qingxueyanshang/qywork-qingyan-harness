@@ -150,14 +150,10 @@ describe('成员算不算做成了', () => {
     expect(memberOutcome({ error: null, stop: 'completed', output: '结论' })).toEqual({ ok: true })
   })
 
-  /**
-   * 复现的失败形状：子 agent 被步数掐断，但它前面说过话——照「有文字就算成功」判，
-   * 父会话收到的是「做完了」，然后拿着半截产出继续往下走。
-   */
-  test('被掐断时算失败，并把原因带回去', () => {
-    const r = memberOutcome({ error: null, stop: 'max_steps', output: '写了一半' })
+  test('真实空转时算失败，并把原因带回去', () => {
+    const r = memberOutcome({ error: null, stop: 'no_progress', output: '写了一半' })
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('步数用尽')
+    expect(r.error).toContain('没有任何进展')
   })
 
   test('没有终态一样不算成', () => {

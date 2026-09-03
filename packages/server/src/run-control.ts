@@ -282,7 +282,7 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
  * 白名单而不是黑名单：漏了一种停止原因时，白名单的表现是「停下来问一句」，
  * 黑名单的表现是「按一个没人想过的状态接着自动跑」。
  */
-const CONTINUABLE: StopReason[] = ['completed', 'max_steps']
+const CONTINUABLE: StopReason[] = ['completed']
 
 /**
  * 停下来的说法。**每一种都要有话说**——没理由的 blocked 是最坏的一种停：

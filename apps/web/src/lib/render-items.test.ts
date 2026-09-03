@@ -71,7 +71,7 @@ describe('分组规则', () => {
     expect(kinds(out)).toEqual(['tool', 'group'])
   })
 
-  test('带图片结果的工具不埋进工具组', () => {
+  test('模型视觉输入默认仍是普通工具结果，不冒充会话图片', () => {
     const out = buildRenderItems([
       tool('文件'),
       tool('图片', 'read', {
@@ -80,6 +80,23 @@ describe('分组规则', () => {
           executed: true,
           message: '读取 image.png（图片）',
           data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+        },
+      }),
+      tool('文件'),
+    ])
+    expect(kinds(out)).toEqual(['group'])
+  })
+
+  test('明确声明 inline 的图片结果不埋进工具组', () => {
+    const out = buildRenderItems([
+      tool('文件'),
+      tool('图片', 'read', {
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '生成 image.png',
+          data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+          presentation: { images: 'inline' },
         },
       }),
       tool('文件'),

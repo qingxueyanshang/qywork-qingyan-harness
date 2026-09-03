@@ -15,7 +15,7 @@ import { EmptyBox, EntryCard, Section } from './Page.tsx'
  * Agent Team。
  *
  * **这一页是两件事，不是一件事的两种形态**：
- * - **角色**＝子 agent，跑在本进程的 agent 循环上。它的配置是提示词、模型、步数。
+ * - **角色**＝子 agent，跑在本进程的 agent 循环上。它的配置是提示词、模型与工具范围。
  * - **外部 CLI**＝本机装着的别家 agent 程序。它由探测得到，**没有配置面**——
  *   用户改不了「怎么调它」，那是厂商表的事（`packages/team/src/cli-detect.ts`）。
  *
@@ -29,7 +29,7 @@ import { EmptyBox, EntryCard, Section } from './Page.tsx'
  * 界面上**没有原文编辑框**：表单盖不住的那几样（编排图、规则）要懂 JSON 结构才填得对，
  * 那不是用户在设置页里该判断的事。
  *
- * **加一条角色走对话，不在这里填表。** 角色要写的是系统提示词、能用哪些工具、步数上限，面板里几个格
+ * **加一条角色走对话，不在这里填表。** 角色要写的是系统提示词与能用哪些工具，面板里几个格
  * 子填不全。同记忆 / 技能 / MCP / 插件 / 定时任务五页，「添加」把话头递给模型。
  *
  * **编排跟着仓库走。** 角色与编排图全是项目属性，跟到别的仓库去只会派错人。所以配置在工作区的
@@ -43,7 +43,6 @@ interface RoleJson {
   systemPrompt?: string
   provider?: string
   model?: string
-  maxSteps?: number
 }
 interface TeamJson {
   roles?: RoleJson[]
@@ -57,12 +56,11 @@ interface RoleForm {
   description: string
   systemPrompt: string
   model: string
-  maxSteps: string
 }
 
 /** 「添加」递给模型的话头。 */
 const NEW_ROLE =
-  '我们一起来加一个子 agent 吧。先说明子 agent 在 qywork 里怎么工作、配置写在哪个文件；然后问我要它干什么、能用哪些工具、步数给多少。'
+  '我们一起来加一个子 agent 吧。先说明子 agent 在 qywork 里怎么工作、配置写在哪个文件；然后问我要它干什么、能用哪些工具。'
 
 export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
@@ -140,7 +138,6 @@ export default function AgentsSettings() {
       description: r.description ?? '',
       systemPrompt: r.systemPrompt ?? '',
       model: r.model ?? '',
-      maxSteps: r.maxSteps === undefined ? '' : String(r.maxSteps),
     })
   }
 
@@ -148,10 +145,6 @@ export default function AgentsSettings() {
     void writeConfig((cfg) => {
       const id = f.id.trim()
       if (!id) return '标识不能为空'
-      const steps = Number(f.maxSteps)
-      if (f.maxSteps.trim() && (!Number.isInteger(steps) || steps <= 0)) {
-        return '步数上限要是正整数'
-      }
       cfg.roles ??= []
       const roles = cfg.roles
       const at = roles.findIndex((x) => x.id === id)
@@ -161,7 +154,6 @@ export default function AgentsSettings() {
         description: f.description.trim(),
         systemPrompt: f.systemPrompt,
         ...(f.model.trim() ? { model: f.model.trim() } : {}),
-        ...(f.maxSteps.trim() ? { maxSteps: steps } : {}),
       }
       if (at >= 0) roles[at] = next
       else roles.push(next)
@@ -280,21 +272,6 @@ export default function AgentsSettings() {
                           value={f().model}
                           placeholder="跟随会话"
                           onInput={(e) => setRoleForm({ ...f(), model: e.currentTarget.value })}
-                        />
-                      </div>
-                    </div>
-                    <div class="setting-row">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">步数上限</span>
-                        <span class="setting-row-hint">留空不限</span>
-                      </div>
-                      <div class="setting-row-control">
-                        <input
-                          type="text"
-                          inputmode="numeric"
-                          value={f().maxSteps}
-                          placeholder="不限"
-                          onInput={(e) => setRoleForm({ ...f(), maxSteps: e.currentTarget.value })}
                         />
                       </div>
                     </div>

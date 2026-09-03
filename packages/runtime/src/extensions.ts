@@ -337,7 +337,6 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
       // allowedTools 的空数组与不填**语义不同**（前者=不给任何工具，后者=继承全部），
       // 所以只在字段真的存在时才写入。
       ...(Array.isArray(r.allowedTools) ? { allowedTools: r.allowedTools.map(String) } : {}),
-      ...(r.maxSteps ? { maxSteps: Number(r.maxSteps) } : {}),
     })
   }
 

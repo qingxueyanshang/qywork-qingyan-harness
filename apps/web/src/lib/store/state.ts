@@ -36,8 +36,8 @@ export interface TranscriptItem {
   /**
    * kind='run' 专有：这一轮的收尾读数（停止原因 + 真实用量 + 耗时）。
    *
-   * **它必须是条目，不能是全局状态。** 挂在 `state.usage` / `state.stopReason`
-   * 那几个全局字段上的话，整个会话只有一份：第二轮跑完把第一轮冲掉，刷新一次全没。
+   * **它必须是条目，不能读运行中那份 `ConversationView.usage`。** 后者每条会话也只有
+   * 一份：第二轮跑完会清空，刷新后只恢复当前运行中的那一轮。
    * 而 run 行本来就逐轮落库（`runs` 表带 usage / stop_reason / created_at /
    * finished_at），投影层照着折回来即可。
    */
@@ -107,7 +107,7 @@ export interface WorkflowNodeState {
   agent: string
   /** 显示用的名字：角色名或「厂商 + CLI 名」。 */
   label: string
-  phase: 'spawned' | 'working' | 'done' | 'failed' | 'skipped'
+  phase: 'queued' | 'spawned' | 'working' | 'done' | 'failed' | 'skipped'
   /** done/failed 时那一段产出的开头，卡上只显示这一截。 */
   summary?: string
   /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
@@ -129,14 +129,12 @@ export interface WorkflowNodeState {
  * 另一条会话——派活起的子会话，它和当前会话同时在收事件。单例的时候两条会话的正文
  * 会写进同一个数组，而界面上没有任何地方说得出哪一段是谁的。
  *
- * 表里只放**这条会话是什么**，不放运行读数。子会话页除了 transcript 也显示它自己的
- * 待办，所以清单跟会话 id 存；用量、上下文、目标、跟进队列仍只有当前会话消费者，
- * 不在这里复制。
+ * 表里还放这条会话**正在跑的那一轮**的易失读数。当前会话与右侧子会话会同时收事件，
+ * 用量、重试与静默时刻不带会话这一维就必然互相覆盖。跑完后的终态仍落成 transcript
+ * 里的 run 条目，不在这里留第二份。
  */
 export interface ConversationView {
   transcript: TranscriptItem[]
-  /** 这条会话自己的待办投影；子会话页只读展示，绝不混进父会话的全局面板。 */
-  todos: TodoItem[]
   /**
    * 历史 REST 的纯界面态。正文真源仍是 messages/runs/steps，这里只回答：
    * 请求在不在飞、还能不能往前翻、失败后该重试哪一页。
@@ -154,6 +152,12 @@ export interface ConversationView {
    * 而用户看的是本机时钟。跑完之后耗时归条目管，这里清空。
    */
   runStartedAt: number | null
+  /** 运行中这一轮的实时用量；收尾后转入 run 条目并清空。 */
+  usage: RunUsage | null
+  /** 这条会话最后收到事件的本地时刻，用来识别静默。 */
+  lastEventAt: number | null
+  /** 这条会话正在原样重发第几次；真源是服务端的 `run.retrying`。 */
+  retry: { attempt: number; max: number } | null
   /**
    * 这条会话最后一次报错。
    *
@@ -166,9 +170,11 @@ export interface ConversationView {
 /** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
-  todos: Object.freeze([]) as unknown as TodoItem[],
   history: Object.freeze({ loading: null, nextCursor: null, error: null }),
   runStartedAt: null,
+  usage: null,
+  lastEventAt: null,
+  retry: null,
   error: null,
 })
 
@@ -195,11 +201,6 @@ export interface AppState {
    * 快照在握手里给（`HelloOkFrame.busyConversations`）。
    */
   busyConversations: string[]
-  /**
-   * 运行中那一轮的实时用量。**只在运行期有意义**——跑完由 `run.finished`
-   * 落进那一轮的条目里，这里清空。收尾读数不再有第二份全局账。
-   */
-  usage: RunUsage | null
   /**
    * 上下文占用。`breakdown` 回答「被谁占的」，`omitted` 回答「什么被拿掉了」——
    * 只有前者是半张账：用户看到占用下降却不知道降在哪里。
@@ -236,25 +237,6 @@ export interface AppState {
   /** 当前会话最后一个 run，重试的目标。 */
   lastRunId: string | null
   /**
-   * 这一轮最后一次收到事件的时刻（本地时钟，毫秒）。
-   *
-   * 它与 `ConversationView.runStartedAt` 回答的是两件事：那个说「这轮跑了多久」，这个说
-   * 「多久没动静了」。**只有后者能区分「还在想」和「链路断了」**——实测一次断流里
-   * 服务端 262 秒一个字节都没收到，而界面靠总耗时只能显示一个越走越大的数字，
-   * 配着一句「正在思考…」，两者都没说出真相。
-   *
-   * 不需要新协议字段：每一帧的到达时刻，客户端本地就有。
-   */
-  lastEventAt: number | null
-  /**
-   * 正在原样重发第几次，以及上限。`null` = 没在重发。
-   *
-   * **纯显示态，真源在服务端**（`agent/loop.ts` 的尝试循环）。上限也由事件带过来，
-   * 不在前端写第二份。它由新那次的第一条输出收场，收场判据只有 `connection.ts`
-   * 入口那一处——散到各 case 里就是三十次忘记清的机会。
-   */
-  retry: { attempt: number; max: number } | null
-  /**
    * 服务端拒绝指令的提示。
    *
    * 这是 fail-closed 在 UI 上的落点：拒绝必须被看见。只存最后一条——
@@ -282,7 +264,6 @@ const initial: AppState = {
   activeConversation: null,
   views: {},
   busyConversations: [],
-  usage: null,
   context: null,
   fileVersion: 0,
   fileChanges: [],
@@ -291,8 +272,6 @@ const initial: AppState = {
   todos: [],
   goal: null,
   lastRunId: null,
-  lastEventAt: null,
-  retry: null,
   notice: null,
 }
 
@@ -324,9 +303,11 @@ export function openView(id: string): void {
   if (state.views[id]) return
   setState('views', id, {
     transcript: [],
-    todos: [],
     history: { loading: null, nextCursor: null, error: null },
     runStartedAt: null,
+    usage: null,
+    lastEventAt: null,
+    retry: null,
     error: null,
   })
 }
@@ -356,7 +337,11 @@ export function dropView(id: string): void {
  * 谁盖过谁只能靠每个写点自觉，那就是第二本账。
  */
 export function isRunning(): boolean {
-  const id = state.activeConversation
+  return isConversationRunning(state.activeConversation)
+}
+
+/** 任意一条已打开会话的忙闲状态；父子页共用服务端的同一张权威表。 */
+export function isConversationRunning(id: string | null): boolean {
   return id !== null && state.busyConversations.includes(id)
 }
 
@@ -424,7 +409,7 @@ export function ledgerRevision(): string {
     state.lastRunId ?? '',
     isRunning() ? '1' : '0',
     transcript().length,
-    state.usage?.turns.length ?? 0,
+    view().usage?.turns.length ?? 0,
   ]
   return marks.join(':')
 }

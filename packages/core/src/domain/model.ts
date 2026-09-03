@@ -288,12 +288,10 @@ export interface RunContextSegment {
  */
 export type StopReason =
   | 'completed'
-  | 'max_steps'
   /**
    * 原地打转：同样的执行周期、同样的结果或待办快照、没有任何副作用，连续三次。
-   *
-   * 与 `max_steps` 严格区分——那是「步数不够」，这是「多给一百步也一样」。
-   * 判据见 `@qywork/agent` 的 `repeatsNoProgress`。
+   * 判据见 `@qywork/agent` 的 `repeatsNoProgress`。执行循环没有回合总上限；
+   * 真正的空转必须由这条进展判据识别，不能靠固定步数掐断正常长任务。
    */
   | 'no_progress'
   | 'user_interrupt'
@@ -744,6 +742,11 @@ export interface ToolOutcomeWire {
   executed: boolean
   message: string
   data?: Record<string, unknown>
+  /**
+   * 可选的用户界面展示意图。工具结果默认只供模型与账本消费；只有生产者明确声明，
+   * 前端才把其中的图片展开到会话正文。模型视觉输入与用户展示不是同一件事。
+   */
+  presentation?: { images?: 'inline' }
   /** 文件类工具产出的变更摘要，供实时预览与 diff 面板消费。 */
   fileChanges?: FileChange[]
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */

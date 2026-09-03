@@ -481,21 +481,50 @@ describe('事件按会话归属过滤', () => {
         todos: [{ id: 'todo_1', content: '子任务自己的清单', status: 'in_progress' }],
       },
     } as never)
+    applyEvent({
+      seq: 4,
+      at: 0,
+      conversationId: 'cv_child',
+      event: {
+        type: 'usage',
+        runId: 'run_1',
+        usage: {
+          inputTokens: 12,
+          outputTokens: 3,
+          cachedTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          cost: 0,
+          currency: 'USD',
+          turns: [],
+        },
+      },
+    } as never)
+    applyEvent({
+      seq: 5,
+      at: 0,
+      conversationId: 'cv_child',
+      event: { type: 'run.retrying', runId: 'run_1', attempt: 2, max: 5 },
+    } as never)
 
     expect(
       viewOf('cv_child')
         .transcript.map((t) => t.text)
         .join(''),
     ).toContain('子 agent 在写的话')
-    expect(viewOf('cv_child').todos.map((todo) => todo.content)).toEqual(['子任务自己的清单'])
     // 当前会话这一份一个字都不该多。
     expect(transcript()).toHaveLength(0)
     expect(state.todos).toHaveLength(0)
+    expect(viewOf('cv_child').lastEventAt).not.toBe(null)
+    expect(viewOf('cv_child').usage?.inputTokens).toBe(12)
+    expect(viewOf('cv_child').retry).toEqual({ attempt: 2, max: 5 })
+    expect(view().usage).toBe(null)
+    expect(view().retry).toBe(null)
     closePanelTab('conversation-cv_child')
     syncViews()
   })
 
-  test('已完成的子会话从历史接口读回自己的待办', async () => {
+  test('子会话历史里的待办不另建顶部投影，也不写进父会话清单', async () => {
     reset('cv_now')
     openConversationTab('cv_child_done', '已完成的子 agent')
     syncViews()
@@ -517,9 +546,7 @@ describe('事件按会话归属过滤', () => {
       ;(client as unknown as { api: typeof client.api }).api = apiBefore
     }
 
-    expect(viewOf('cv_child_done').todos.map((todo) => [todo.content, todo.status])).toEqual([
-      ['已经做完', 'completed'],
-    ])
+    expect('todos' in viewOf('cv_child_done')).toBe(false)
     expect(state.todos).toHaveLength(0)
     closePanelTab('conversation-cv_child_done')
     syncViews()
@@ -707,14 +734,12 @@ describe('事件按会话归属过滤', () => {
 
   test('重发的进度照收，界面据此把阶段改口', () => {
     reset('cv_now')
-    setState({ retry: null })
     applyEvent(retryFrame(1, 3))
-    expect(state.retry).toEqual({ attempt: 3, max: 5 })
+    expect(viewOf('cv_now').retry).toEqual({ attempt: 3, max: 5 })
   })
 
   test('新那次一出思考就收场——不收场的话整轮跑完还钉在「正在重连」上', () => {
     reset('cv_now')
-    setState({ retry: null })
     applyEvent(retryFrame(1, 1))
     applyEvent({
       seq: 2,
@@ -722,24 +747,22 @@ describe('事件按会话归属过滤', () => {
       conversationId: 'cv_now',
       event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_2', delta: '重来一遍' },
     } as never)
-    expect(state.retry).toBe(null)
+    expect(viewOf('cv_now').retry).toBe(null)
   })
 
   test('工作区级事件不收场——后台一次文件改动不该把这句话抹掉', () => {
     reset('cv_now')
-    setState({ retry: null })
     applyEvent(retryFrame(1, 2))
     applyEvent({
       seq: 2,
       at: 0,
       event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
     } as never)
-    expect(state.retry).toEqual({ attempt: 2, max: 5 })
+    expect(viewOf('cv_now').retry).toEqual({ attempt: 2, max: 5 })
   })
 
   test('额度用满整轮报错，也要收场', () => {
     reset('cv_now')
-    setState({ retry: null })
     applyEvent(retryFrame(1, 5))
     applyEvent({
       seq: 2,
@@ -752,19 +775,19 @@ describe('事件按会话归属过滤', () => {
         message: '连接被断开，已重发 5 次',
       },
     } as never)
-    expect(state.retry).toBe(null)
+    expect(viewOf('cv_now').retry).toBe(null)
   })
 
   /** 别的会话开跑不算这条会话「有动静」——算进去的话静默检测永远报不出来。 */
   test('别的会话的忙闲不刷新「上一次有动静」', () => {
     reset('cv_now')
-    setState({ lastEventAt: 1 })
+    setState('views', 'cv_now', 'lastEventAt', 1)
     applyEvent({
       seq: 7,
       at: 0,
       event: { type: 'conversation.busy', conversationId: 'cv_other', busy: true },
     } as never)
-    expect(state.lastEventAt).toBe(1)
+    expect(viewOf('cv_now').lastEventAt).toBe(1)
   })
 
   /**
@@ -803,7 +826,7 @@ describe('事件按会话归属过滤', () => {
  */
 describe('账本修订号跟着落库走', () => {
   const startRun = () => {
-    setState({ activeConversation: 'cv_1', busyConversations: [], usage: null })
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     applyEvent({
       seq: 1,
@@ -868,7 +891,7 @@ describe('账本修订号跟着落库走', () => {
   test('「上一次有动静」变了不换号', () => {
     startRun()
     const before = ledgerRevision()
-    setState({ lastEventAt: 123456 })
+    setState('views', 'cv_1', 'lastEventAt', 123456)
     expect(ledgerRevision()).toBe(before)
   })
 })
@@ -1061,7 +1084,6 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     setState({
       activeConversation: 'cv_1',
       busyConversations: ['cv_1'],
-      usage: null,
     })
     freshView('cv_1')
     stub([toolStep('思考')], [liveRun])
@@ -1069,8 +1091,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
 
     // 重拉不许把忙闲那张表洗掉：它由握手快照与 `conversation.busy` 维持。
     expect(isRunning()).toBe(true)
-    expect(state.usage?.inputTokens).toBe(30_000)
-    expect(state.usage?.cost).toBe(0.02)
+    expect(viewOf('cv_1').usage?.inputTokens).toBe(30_000)
+    expect(viewOf('cv_1').usage?.cost).toBe(0.02)
   })
 
   test('首屏和更早页各只发一个历史请求，前插后顺序不乱', async () => {
@@ -1376,10 +1398,10 @@ describe('事件到达时刻按帧记下来', () => {
     }) as never
 
   test('任何一帧到达都刷新「上一次有动静」', () => {
-    setState({ activeConversation: 'cv_now', lastEventAt: null })
+    setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     applyEvent(frame('todos', { todos: [] }))
-    const first = state.lastEventAt
+    const first = viewOf('cv_now').lastEventAt
     expect(first).not.toBe(null)
   })
 
@@ -1388,15 +1410,16 @@ describe('事件到达时刻按帧记下来', () => {
    * 前台这条就被判成「刚有动静」，静默永远不会显示出来。
    */
   test('别的会话的帧不刷新它', () => {
-    setState({ activeConversation: 'cv_now', lastEventAt: 1 })
+    setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
+    setState('views', 'cv_now', 'lastEventAt', 1)
     applyEvent({
       seq: 10,
       at: 0,
       conversationId: 'cv_other',
       event: { type: 'todos', runId: 'run_1', todos: [] },
     } as never)
-    expect(state.lastEventAt).toBe(1)
+    expect(viewOf('cv_now').lastEventAt).toBe(1)
   })
 
   /** 收尾之后清掉：留着的话下一轮开头会拿上一轮的时刻算，起手就报出错误的静默时长。 */
@@ -1404,9 +1427,9 @@ describe('事件到达时刻按帧记下来', () => {
     setState({
       activeConversation: 'cv_now',
       busyConversations: ['cv_now'],
-      lastEventAt: 1,
     })
     freshView('cv_now')
+    setState('views', 'cv_now', 'lastEventAt', 1)
     applyEvent(
       frame('run.finished', {
         status: 'done',
@@ -1417,7 +1440,7 @@ describe('事件到达时刻按帧记下来', () => {
         fileChanges: [],
       }),
     )
-    expect(state.lastEventAt).toBe(null)
+    expect(viewOf('cv_now').lastEventAt).toBe(null)
   })
 })
 

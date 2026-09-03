@@ -628,3 +628,52 @@ describe('迁移 35：诊断列结构收敛', () => {
     }
   })
 })
+
+describe('迁移 36：运行失败文案收敛', () => {
+  test('重复超时只合并相同读数，废弃步数状态从账本移除', () => {
+    const db = dbBefore(36)
+    const insert = db.query(
+      `INSERT INTO runs
+       (id, conversation_id, workspace_id, model, client_request_id, status,
+        stop_reason, error_message, created_at)
+       VALUES (?, 'cv', 'ws', 'model', ?, 'failed', ?, ?, 0)`,
+    )
+    insert.run(
+      'r_same',
+      'req_same',
+      'provider_error',
+      '连接超时：60 秒内没有收到响应，60 秒未收到响应，已重发 5 次',
+    )
+    insert.run(
+      'r_different',
+      'req_different',
+      'provider_error',
+      '连接超时：60 秒内没有收到响应，30 秒未收到响应',
+    )
+    insert.run('r_steps', 'req_steps', 'max_steps', '旧版本：已达步数上限')
+    insert.run('r_steps_detail', 'req_steps_detail', 'max_steps', '另一个真实错误')
+
+    applyOne(db, 36)
+
+    const rows = db
+      .query<{ id: string; stop_reason: string | null; error_message: string | null }, []>(
+        `SELECT id, stop_reason, error_message FROM runs ORDER BY id`,
+      )
+      .all()
+    expect(rows).toEqual([
+      {
+        id: 'r_different',
+        stop_reason: 'provider_error',
+        error_message: '连接超时：60 秒内没有收到响应，30 秒未收到响应',
+      },
+      {
+        id: 'r_same',
+        stop_reason: 'provider_error',
+        error_message: '连接超时，60 秒未收到响应，已重发 5 次',
+      },
+      { id: 'r_steps', stop_reason: null, error_message: null },
+      { id: 'r_steps_detail', stop_reason: null, error_message: '另一个真实错误' },
+    ])
+    db.close()
+  })
+})

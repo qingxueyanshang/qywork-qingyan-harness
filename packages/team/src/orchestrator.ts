@@ -58,6 +58,7 @@ export interface OrchestratorRunResult {
 
 const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
 const isAgent = (node: PlanNode): node is WorkflowAgentNode => node.kind !== 'checkpoint'
+const DEFAULT_MAX_CONCURRENT = 4
 
 export class TeamOrchestrator {
   constructor(
@@ -134,8 +135,9 @@ export class TeamOrchestrator {
       }
     }
 
-    const maxConcurrent = this.config.rules?.maxConcurrent ?? 3
+    const maxConcurrent = this.config.rules?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT
     const running = new Map<string, Promise<void>>()
+    const announcedQueued = new Set<string>()
 
     while (true) {
       if (this.deps.signal.aborted && running.size === 0) {
@@ -166,7 +168,16 @@ export class TeamOrchestrator {
       )
 
       for (const node of ready) {
-        if (running.size >= maxConcurrent) break
+        if (running.size >= maxConcurrent) {
+          // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
+          // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
+          if (!announcedQueued.has(node.id)) {
+            announcedQueued.add(node.id)
+            this.emitQueued(node)
+          }
+          continue
+        }
+        announcedQueued.delete(node.id)
         const upstreamFailed = (node.needs ?? []).some((id) => {
           const result = results.get(id)
           return result ? result.status !== 'done' : false
@@ -246,6 +257,17 @@ export class TeamOrchestrator {
     approvals: Map<string, string>,
   ): boolean {
     return results.has(id) || approvals.has(id)
+  }
+
+  private emitQueued(node: WorkflowAgentNode): void {
+    this.deps.emit({
+      type: 'team.member',
+      runId: this.deps.runId,
+      memberId: node.id,
+      roleName: this.labelOf(node.agent),
+      backend: node.agent.startsWith(CLI_PREFIX) ? 'custom' : 'builtin',
+      phase: 'queued',
+    })
   }
 
   private async execute(

@@ -21,8 +21,8 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  * - `timeout` 只覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里
  *   `clearTimeout`），所以 60 秒不会掐断一次长生成——它只掐「连不上」。
  *   **不要因为「怕打断长回答」把它调大**，那是在给一个它管不到的场景让路。
- * - `maxRetries: 0`：连不上时 SDK 自己重试两次，用户看到的就是三倍的等待，
- *   而这里从来不做自动重试——重发由人决定。
+ * - `maxRetries: 0`：连不上时 SDK 自己重试两次，用户看到的就是三倍的等待。
+ *   自动重发由 AgentLoop 的统一判据负责，适配器不能再暗中叠一条重试链。
  */
 export const PROVIDER_HTTP = { timeout: 60_000, maxRetries: 0 } as const
 

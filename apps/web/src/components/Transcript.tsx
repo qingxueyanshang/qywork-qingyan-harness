@@ -49,6 +49,7 @@ import {
 import {
   composerStackAbove,
   hasRunStatus,
+  isConversationRunning,
   isRunning,
   loadOlderConversation,
   retryConversationHistory,
@@ -121,13 +122,10 @@ export function ConversationHistoryBoundary(props: {
 }
 
 /**
- * 会话流。
- *
- * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
- * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
- * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠下面那条贴底跟随。
+ * 一条会话流的贴底跟随。父会话与右侧子会话共用：正文新增、思考展开、工具卡
+ * 补输出都会改变真实 DOM 高度，不能各自列一张“哪些字段会长高”的清单。
  */
-export function Transcript() {
+export function createConversationScroll(conversationId: () => string | null) {
   let scroller!: HTMLDivElement
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
@@ -145,12 +143,14 @@ export function Transcript() {
   }
 
   /** 前插一页后补偿新增高度，让点击前视口里的第一行仍停在原处。 */
-  const loadOlderAnchored = async (id: string) => {
+  const loadOlderAnchored = async () => {
+    const id = conversationId()
+    if (!id) return
     const beforeHeight = scroller.scrollHeight
     const beforeTop = scroller.scrollTop
     setPinned(false)
     const loaded = await loadOlderConversation(id)
-    if (!loaded || state.activeConversation !== id) return
+    if (!loaded || conversationId() !== id) return
     // Markdown 的 effect 与布局要到下一帧才全部落定。只等一个 microtask 时，
     // ResizeObserver 可能在补偿之后又收到后续高度变化，把视口带走。
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -205,18 +205,40 @@ export function Transcript() {
     onCleanup(() => ro.disconnect())
   })
 
+  return {
+    scrollerRef: (el: HTMLDivElement) => {
+      scroller = el
+    },
+    innerRef: (el: HTMLDivElement) => {
+      inner = el
+    },
+    onScroll,
+    loadOlderAnchored,
+  }
+}
+
+/**
+ * 会话流。
+ *
+ * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
+ * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
+ * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠共享的贴底跟随。
+ */
+export function Transcript() {
+  const follow = createConversationScroll(() => state.activeConversation)
+
   return (
-    <div class="transcript" ref={scroller} onScroll={onScroll}>
+    <div class="transcript" ref={follow.scrollerRef} onScroll={follow.onScroll}>
       <div
         class="transcript-inner"
         classList={{ 'with-stack': composerStackAbove(), 'with-run-status': hasRunStatus() }}
-        ref={inner}
+        ref={follow.innerRef}
       >
         <Show when={state.activeConversation}>
           {(id) => (
             <ConversationHistoryBoundary
               conversationId={id()}
-              onLoadOlder={() => loadOlderAnchored(id())}
+              onLoadOlder={follow.loadOlderAnchored}
             />
           )}
         </Show>
@@ -260,7 +282,7 @@ export function Transcript() {
             收尾条一落下就撤（`runClosed`），不等 `conversation.busy` 那一帧——
             两帧之间画出来的是同一个位置上下两条读数条。 */}
         <Show when={isRunning() && !runClosed()}>
-          <LiveRunBar />
+          <LiveRunBar conversationId={state.activeConversation!} />
         </Show>
       </div>
     </div>
@@ -304,8 +326,9 @@ const SILENT_MS = 30_000
  * **静默那一档为什么要绕开两种情形。** 工具还在跑时绕开：一次构建十分钟很正常，而它自己
  * 会出 stdout，那种情况下报静默是假话。
  */
-function liveStatus(now: number): string {
-  const items = transcript()
+function liveStatus(now: number, conversationId: string): string {
+  const current = viewOf(conversationId)
+  const items = current.transcript
   const last = items[items.length - 1]
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
@@ -323,10 +346,10 @@ function liveStatus(now: number): string {
    * 重发中的那一段：末条是失败那次留下的半截思考，按流的位置判会说成「正在思考…」
    * ——而此刻模型一个字都没在写。上限的数由事件带来，不在这里写死。
    */
-  const retry = state.retry
+  const retry = current.retry
   if (retry) return `正在重连 ${retry.attempt} / ${retry.max}…`
 
-  const since = state.lastEventAt ?? view().runStartedAt
+  const since = current.lastEventAt ?? current.runStartedAt
   if (since !== null && now - since >= SILENT_MS) {
     return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
   }
@@ -578,7 +601,7 @@ function LiveOutput(props: { item: TranscriptItem }) {
 /**
  * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
  *
- * **为什么收数据靠 props 而不是读 store。** 读 `state.usage` / `state.stopReason` /
+ * **为什么收数据靠 props 而不是读运行中那份 view。** 读 `ConversationView.usage` /
  * `runStartedAt` 那几个会话级字段的话，整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新
  * 更是一条不剩。而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，才是它本来
  * 的形状。
@@ -621,11 +644,11 @@ function RunStatusBar(props: {
    */
   const reason = () => {
     const detail = props.errorMessage?.split(NEWLINE)[0]?.trim()
-    return detail || stopReasonLabel(props.stopReason!)
+    return detail ? detail : props.stopReason ? stopReasonLabel(props.stopReason) : null
   }
   const showReason = () =>
     !props.running &&
-    Boolean(props.stopReason) &&
+    Boolean(reason()) &&
     (props.stopReason !== 'completed' || Boolean(props.errorMessage?.trim()))
 
   return (
@@ -696,26 +719,26 @@ function RunStatusBar(props: {
  *
  * 停止原因恒为 null——还没停，没有原因可说。
  */
-function LiveRunBar() {
+export function LiveRunBar(props: { conversationId: string }) {
   const [now, setNow] = createSignal(Date.now())
   createEffect(() => {
-    if (!isRunning()) return
+    if (!isConversationRunning(props.conversationId)) return
     const t = setInterval(() => setNow(Date.now()), 100)
     onCleanup(() => clearInterval(t))
   })
 
   const elapsed = () => {
-    const from = view().runStartedAt
+    const from = viewOf(props.conversationId).runStartedAt
     return from === null ? null : (now() - from) / 1000
   }
 
   return (
     <RunStatusBar
-      usage={state.usage}
+      usage={viewOf(props.conversationId).usage}
       stopReason={null}
       elapsed={elapsed()}
       running={true}
-      liveNote={liveStatus(now())}
+      liveNote={liveStatus(now(), props.conversationId)}
     />
   )
 }
@@ -798,7 +821,7 @@ function compactionFailureLabel(code: string | undefined): string {
  * 会话流的正文行。父会话与右侧面板里那条只读子会话**共用这一份**——
  * 各画一遍的话，将来加一种条目必然漏掉其中一处。
  *
- * 滚动跟随不在这里：那件事只有父会话要，它在 `Transcript` 里。
+ * 滚动跟随不在行组件里：父页与子页各自的滚动盒都调用 `createConversationScroll`。
  */
 /**
  * 这一列正文属于哪条流，以及那条流还在不在长。
@@ -1286,7 +1309,14 @@ function DelegateCard(props: { item: TranscriptItem }) {
                             执行者压一档——同一张图里常常四格都是同一个。 */}
                         <span class="wf-node-name">{name()}</span>
                         <span class="wf-node-who truncate">
-                          <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
+                          <Show
+                            when={st()?.phase === 'queued'}
+                            fallback={
+                              <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
+                            }
+                          >
+                            等待并发槽位
+                          </Show>
                           <Show when={st()?.durationMs}>
                             {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
                           </Show>
@@ -1325,7 +1355,10 @@ function cardTitle(item: TranscriptItem): string {
 
 function ToolCard(props: { item: TranscriptItem }) {
   const changes = () => fileDelta(props.item.outcome?.fileChanges)
-  const images = () => resultImages(props.item.outcome?.data)
+  const images = () =>
+    props.item.outcome?.presentation?.images === 'inline'
+      ? resultImages(props.item.outcome.data)
+      : []
   // 派活的那两个画成图，不套折叠：它们各自是一整条子会话的入口，
   // 而产出正文在那条子会话（或那个 CLI 进程的输出流）里本来就有。
   if (props.item.toolName === 'workflow' || props.item.toolName === 'subagent') {
@@ -1342,8 +1375,8 @@ function ToolCard(props: { item: TranscriptItem }) {
       >
         <StepBody item={props.item} />
       </Fold>
-      {/* 图片字节已经随 outcome 落账本。直接画在会话流里，不埋进工具折叠：
-          否则实时看不到，刷新后即使数据还在，用户看到的仍像“图片丢了”。 */}
+      {/* 模型视觉输入默认不公开展示。只有工具结果明确声明 inline，才把同一份账本图片
+          画进会话流；这样 read_file 的内部观察不会冒充用户附件。 */}
       <Show when={images().length > 0}>
         <div class="tool-images">
           <For each={images()}>

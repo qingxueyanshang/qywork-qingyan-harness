@@ -8,7 +8,13 @@
  * 判据很简单：**不碰 DOM、不读 store 的，都不该待在组件文件里。**
  */
 
-import { SUBAGENT_NODE_ID } from '@qywork/core'
+import {
+  type ErrorCode,
+  type ProviderRequestStatus,
+  type ProviderRetryDecision,
+  type StopReason,
+  SUBAGENT_NODE_ID,
+} from '@qywork/core'
 
 const NEWLINE = String.fromCharCode(10)
 const CARRIAGE_RETURN = String.fromCharCode(13)
@@ -158,11 +164,11 @@ export interface ResultImage {
 }
 
 /**
- * 从工具结果里取可直接展示的图片。
+ * 从明确要求展示的工具结果里校验图片字节。
  *
- * 这份形状由 `read_file` 产出并原样落进 step 账本；实时与刷新回放都读这里，不能
- * 再依赖已经可能被覆盖的文件路径。只接受模型接口同样支持的四种栅格格式，第三方
- * 工具塞进任意 data URL 或 SVG 时不替它扩大执行面。
+ * 图片字节随结果原样落进 step 账本，供模型视觉输入与历史重建使用；是否展示由
+ * `ToolOutcomeWire.presentation` 单独裁决。这里只接受模型接口同样支持的四种栅格格式，
+ * 第三方工具塞进任意 data URL 或 SVG 时不替它扩大执行面。
  */
 export function resultImages(data: unknown): ResultImage[] {
   if (!data || typeof data !== 'object') return []
@@ -287,29 +293,102 @@ export function diffFrom(args: Record<string, unknown>): { removed: string; adde
  * 停止原因的说法。
  *
  * **住在这里而不是组件里**：会话流的收尾条和运行详情面板都要显示它。
- * 抄第二份的代价是面板那边会把 `max_steps` 这种英文码直接贴给用户。
+ * 抄第二份的代价是面板那边会把协议停止码直接贴给用户。
  *
- * 认不出的码原样返回：协议里这是个封闭枚举，落到这里说明前后端版本对不上，
- * 显示原码比显示一句编出来的话诚实。
+ * 协议词只负责传输，界面只显示这张完整映射里的产品文案。认不出的值省略：
+ * 把内部枚举直接贴给用户既不能解释问题，也会在前后端短暂错版时制造“新状态”。
  */
-export function stopReasonLabel(reason: string): string {
-  const map: Record<string, string> = {
+export function stopReasonLabel(reason: string): string | null {
+  const map: Record<StopReason, string> = {
     completed: '已完成',
-    max_steps: '已达步数上限',
-    // 与 max_steps 分开说：那是步数不够，这是多给步数也没用。
+    // 当前真正负责制止空转的是进展判据，多给轮数也没有用。
     no_progress: '模型执行出错，多次重复，已暂停',
     user_interrupt: '已中断',
     // 与「已中断」分开说：用户没点过停止，是服务进程退出了（热重载、崩溃、关机）。
     // 两句都说「已中断」的话，用户看到的是一个自己没做过的动作。
     process_exit: '服务进程退出',
-    // 不再产生：权限拒绝是工具级失败，不是 run 的终点。留着认旧记录——
-    // 库里已有的 run 存着这个码，删掉它们的收尾条就显示成英文原码。
-    permission_denied: '授权被拒绝',
     output_truncated: '输出被截断',
     provider_error: '模型服务出错',
     internal_guard: '进程中途退出，结果不可信',
   }
-  return map[reason] ?? reason
+  return map[reason as StopReason] ?? null
+}
+
+const ERROR_LABELS: Record<ErrorCode, string> = {
+  no_api_key: '未配置 API Key',
+  auth_failed: '鉴权失败',
+  rate_limited: '触发限速',
+  insufficient_quota: '账户额度不足',
+  context_overflow: '上下文超出模型窗口',
+  model_not_found: '模型不存在',
+  invalid_request: '请求不合法',
+  provider_unavailable: '模型服务暂不可用',
+  network_error: '网络连接失败',
+  stream_idle_timeout: '模型响应中断',
+  tool_execution_failed: '工具执行失败',
+  workspace_unavailable: '工作区不可用',
+  internal_error: '内部错误',
+}
+
+const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
+  resend: '已自动重发',
+  interrupted: '已中断，结果不明',
+  not_retryable: '未重发',
+  visible_output: '已有输出，未重发',
+  tool_calls_received: '已有工具调用，未重发',
+  limit_exhausted: '重试已用尽',
+  context_compaction: '已压缩后重发',
+  context_compaction_failed: '压缩失败，未重发',
+  process_exit: '服务进程退出，结果不明',
+}
+
+interface RequestOutcomeLike {
+  status: ProviderRequestStatus
+  finishReason: string
+  errorCode: string | null
+  errorMessage: string | null
+  diagnostic: { retry: { decision: ProviderRetryDecision } } | null
+}
+
+function finishReasonLabel(reason: string): string {
+  const normalized = reason.trim().toLowerCase()
+  if (!normalized) return '已回报'
+  if (/tool_calls|tool_use/.test(normalized)) return '调用工具'
+  if (/max_(?:output_)?tokens|length|output_truncated/.test(normalized)) return '输出被截断'
+  if (/pause_turn/.test(normalized)) return '已暂停，继续生成'
+  if (/refusal|content_filter/.test(normalized)) return '请求被拒绝'
+  if (/stop|end_turn|completed|success/.test(normalized)) return '已完成'
+  return '已回报'
+}
+
+function errorLabel(code: string | null): string | null {
+  return code ? (ERROR_LABELS[code as ErrorCode] ?? null) : null
+}
+
+function appendFact(base: string, fact: string): string {
+  return `${base.replace(/[，。,.;；]+$/u, '')}，${fact}`
+}
+
+/**
+ * 一次 provider 请求的用户可见结局。
+ *
+ * provider 原始 finish reason、错误码和重试裁决都保留在账本，但不能直接当 UI 文案；
+ * 这一个出口穷举重试裁决，避免结果列与悬浮说明各维护半张映射。
+ */
+export function requestOutcome(q: RequestOutcomeLike): string {
+  if (q.status === 'received') return finishReasonLabel(q.finishReason)
+  if (q.status === 'in_flight') return '进行中'
+  if (q.status === 'pending') return '未发出'
+
+  const decision = q.diagnostic?.retry.decision
+  if (decision === 'interrupted' || decision === 'process_exit') return RETRY_LABELS[decision]
+
+  const message = q.errorMessage ? firstLine(q.errorMessage).trim() : ''
+  const base =
+    message ||
+    errorLabel(q.errorCode) ||
+    (q.status === 'uncertain' ? '结果不明' : q.status === 'rejected' ? '被拒绝' : '请求失败')
+  return decision ? appendFact(base, RETRY_LABELS[decision]) : base
 }
 
 // ─────────────────────────────── 派活图 ───────────────────────────────

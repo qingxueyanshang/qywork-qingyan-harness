@@ -96,6 +96,21 @@ describe('建子 agent', () => {
     expect(doc.roles[0].name).toBe('改了名')
   })
 
+  test('覆盖旧角色时移除遗留 maxSteps，不再把步数限制写回配置', async () => {
+    const root = await ws()
+    await mkdir(join(root, '.qy'), { recursive: true })
+    await writeFile(
+      join(root, '.qy', 'team.json'),
+      JSON.stringify({ roles: [{ ...role, maxSteps: 40 }] }),
+      'utf8',
+    )
+
+    await defineSubagentTool.fn(role, ctx(root))
+
+    const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
+    expect(doc.roles[0].maxSteps).toBeUndefined()
+  })
+
   test('坏 JSON 不覆盖，如实说解析不了', async () => {
     const root = await ws()
     await mkdir(join(root, '.qy'), { recursive: true })

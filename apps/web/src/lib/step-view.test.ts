@@ -22,6 +22,7 @@ import {
   firstString,
   hitRate,
   listOf,
+  requestOutcome,
   resultImages,
   sanitizeTarget,
   statusWord,
@@ -32,6 +33,74 @@ import {
 
 test('重复失败的停止原因使用标准短句', () => {
   expect(stopReasonLabel('no_progress')).toBe('模型执行出错，多次重复，已暂停')
+})
+
+test('未知停止码不把内部枚举贴到界面', () => {
+  expect(stopReasonLabel('future_internal_reason')).toBeNull()
+})
+
+describe('请求结果只显示产品文案', () => {
+  const outcome = (over: {
+    status?: 'pending' | 'in_flight' | 'received' | 'uncertain' | 'rejected'
+    finishReason?: string
+    errorCode?: string | null
+    errorMessage?: string | null
+    decision?:
+      | 'resend'
+      | 'interrupted'
+      | 'not_retryable'
+      | 'visible_output'
+      | 'tool_calls_received'
+      | 'limit_exhausted'
+      | 'context_compaction'
+      | 'context_compaction_failed'
+      | 'process_exit'
+  }) =>
+    requestOutcome({
+      status: over.status ?? 'rejected',
+      finishReason: over.finishReason ?? '',
+      errorCode: over.errorCode ?? null,
+      errorMessage: over.errorMessage ?? null,
+      diagnostic: over.decision ? { retry: { decision: over.decision } } : null,
+    })
+
+  test('provider 停止码归一化，不显示 stop/tool_calls 等协议值', () => {
+    expect(outcome({ status: 'received', finishReason: 'stop' })).toBe('已完成')
+    expect(outcome({ status: 'received', finishReason: 'tool_calls' })).toBe('调用工具')
+    expect(outcome({ status: 'received', finishReason: 'completed:max_output_tokens' })).toBe(
+      '输出被截断',
+    )
+    expect(outcome({ status: 'received', finishReason: 'provider_new_value' })).toBe('已回报')
+  })
+
+  test('没有 provider 原文时把错误码翻译成用户文案', () => {
+    expect(outcome({ status: 'uncertain', errorCode: 'network_error' })).toBe('网络连接失败')
+    expect(outcome({ errorCode: 'internal_error' })).toBe('内部错误')
+    expect(outcome({ errorCode: 'future_internal_code' })).toBe('被拒绝')
+  })
+
+  test('九种重试裁决全部有唯一结果文案', () => {
+    const decisions = [
+      ['resend', '请求失败，已自动重发'],
+      ['interrupted', '已中断，结果不明'],
+      ['not_retryable', '请求失败，未重发'],
+      ['visible_output', '请求失败，已有输出，未重发'],
+      ['tool_calls_received', '请求失败，已有工具调用，未重发'],
+      ['limit_exhausted', '请求失败，重试已用尽'],
+      ['context_compaction', '请求失败，已压缩后重发'],
+      ['context_compaction_failed', '请求失败，压缩失败，未重发'],
+      ['process_exit', '服务进程退出，结果不明'],
+    ] as const
+    for (const [decision, expected] of decisions) {
+      expect(outcome({ errorMessage: '请求失败。', decision })).toBe(expected)
+    }
+  })
+
+  test('错误正文只取第一行，重试说明不会被会话栏截到第二行', () => {
+    expect(outcome({ errorMessage: '第一行原因\n第二行详情', decision: 'limit_exhausted' })).toBe(
+      '第一行原因，重试已用尽',
+    )
+  })
 })
 
 describe('派活子会话入口', () => {

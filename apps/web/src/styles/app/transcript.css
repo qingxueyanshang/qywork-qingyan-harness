@@ -618,7 +618,7 @@
   color: var(--danger);
 }
 
-/* 工具读取到的图片是结果正文，不是附件 chip，也不藏进工具折叠。
+/* 只有工具明确声明 inline 的用户可见图片才走这里。模型内部读取的图片不渲染。
    原比例完整展示；大图限制在会话列内，长图允许自然向下延伸。 */
 .tool-images {
   display: grid;
@@ -1167,6 +1167,7 @@
 }
 /* 等着跑的那些压暗：它们在图上是为了让人看见全貌，不是当前的焦点。 */
 .wf-node.waiting,
+.wf-node.queued,
 .wf-node.skipped {
   opacity: 0.5;
 }

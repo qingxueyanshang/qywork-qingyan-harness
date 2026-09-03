@@ -9,7 +9,7 @@ import type {
 import { formatCosts, formatMoney } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
-import { compact, stopReasonLabel } from '../lib/step-view.ts'
+import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
 import { client, ledgerRevision, openSettings, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
@@ -321,10 +321,7 @@ function RequestLedger(props: { run: Run }) {
                     <td>{num(q.providerCachedTokens)}</td>
                     <td>{num(q.providerCacheWriteTokens)}</td>
                     <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : NA}</td>
-                    {/* 原话长度不可控（`completed:max_output_tokens`），截断，全文留 title。 */}
-                    <td class="run-req-out" title={outcome}>
-                      {outcome}
-                    </td>
+                    <td class="run-req-out">{outcome}</td>
                   </tr>
                 )
               }}
@@ -360,49 +357,23 @@ function LedgerLink() {
   )
 }
 
-/** 一次请求的结局。成功和明确拒绝都优先给 provider 原话，能给就给原话。 */
-function requestOutcome(q: ProviderRequest): string {
-  if (q.status === 'received') return q.finishReason || '已回报'
-  const retry = q.diagnostic?.retry.decision
-  const suffix =
-    retry === 'resend'
-      ? '，已自动重发'
-      : retry === 'limit_exhausted'
-        ? '，重试已用尽'
-        : retry === 'visible_output'
-          ? '，已有输出未重发'
-          : retry === 'tool_calls_received'
-            ? '，已有工具调用未重发'
-            : retry === 'process_exit'
-              ? '，服务退出未重发'
-              : ''
-  if (q.status === 'uncertain') return `${q.errorCode || '结果不明'}${suffix}`
-  if (q.status === 'rejected') return `${q.errorMessage || q.errorCode || '被拒绝'}${suffix}`
-  return q.status === 'in_flight' ? '进行中' : '未发出'
-}
-
 /**
  * 不把“请求很大”和“上游首内容慢”揉成一个结论：单元格给紧凑读数，title 保留
- * 路线、首事件和总耗时。旧账本没有这些字段时显示 N/A，不伪造成 0ms / 0B。
+ * 路线、首事件、总耗时与异常链。没有这些字段时显示 N/A，不伪造成 0ms / 0B。
+ * 重试结论只在结果列出现，这里不再重复一份映射。
  */
 function requestTransport(q: ProviderRequest): { text: string; title: string } {
   const size = byteSize(q.requestBytes)
   const firstContent = elapsed(q.sentAt, q.firstContentAt)
   const firstEvent = elapsed(q.sentAt, q.firstEventAt)
   const total = elapsed(q.sentAt, q.completedAt)
-  const route = [q.providerName, q.providerKind].filter(Boolean).join(' / ') || '旧账本未记录路线'
+  const route = [q.providerName, q.providerKind].filter(Boolean).join(' / ') || NA
   const causes = q.diagnostic?.causes
     .map((cause) => `${cause.name}${cause.code ? `(${cause.code})` : ''}: ${cause.message}`)
     .join(' ← ')
-  const retry = q.diagnostic?.retry
-  const retryFact = retry
-    ? `重试裁决 ${retry.decision}${retry.attempt ? `，第 ${retry.attempt}/${retry.max} 次` : ''}${
-        retry.backoffMs === null ? '' : `，等待 ${retry.backoffMs}ms`
-      }`
-    : '旧账本未记录重试裁决'
   return {
     text: `${size} / ${firstContent}`,
-    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}；${retryFact}${
+    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}${
       causes ? `；异常链 ${causes}` : ''
     }`,
   }
@@ -428,7 +399,8 @@ function elapsed(start: number | null, end: number | null): string {
 function runMark(r: Run): { text: string; bad?: boolean } | null {
   // 中文说法和会话流里的收尾条共用一张表，别在这里直接贴英文码。
   if (r.stopReason && r.stopReason !== 'completed') {
-    return { text: stopReasonLabel(r.stopReason), bad: true }
+    const text = stopReasonLabel(r.stopReason)
+    return text ? { text, bad: true } : null
   }
   if (r.finishedAt === null) return { text: '进行中' }
   return null

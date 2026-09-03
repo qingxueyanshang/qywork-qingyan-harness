@@ -134,13 +134,6 @@ export interface SessionOptions {
    */
   allowedTools?: string[]
   /**
-   * 本会话单轮的步数上限。不传 = 用 loop 的默认值。
-   *
-   * 存在的理由是 Agent Team 的 `Role.maxSteps`：一个角色失控会把整轮拖垮。
-   * 少了这一手，那个字段就是**解析了但没有任何人消费**——配了不生效。
-   */
-  maxSteps?: number
-  /**
    * 派活通道。见 `DelegatePort`。
    *
    * **只给顶层会话传**：成员会话不传，因此它那边连 `subagent` 工具都不注册，
@@ -559,7 +552,6 @@ export class Session {
         runId: run.id,
         history,
         ...(effort ? { effort } : {}),
-        ...(this.opts.maxSteps ? { maxSteps: this.opts.maxSteps } : {}),
         cacheKey: conversationId,
         ...(userMessageId ? { userMessageId } : {}),
         signal: this.opts.signal,
@@ -1183,6 +1175,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
           code: 'stream_idle_timeout',
           message: '模型响应中断',
           provider: adapter.spec.provider,
+          timedOut: true,
           cause: err,
         })
       }

@@ -145,8 +145,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       if (connect.signal.aborted) {
         throw new ProviderError({
           code: 'network_error',
-          message: `连接超时：${PROVIDER_HTTP.timeout / 1000} 秒内没有收到响应`,
+          // 只报失败分类；实际静默时长与重发次数由 AgentLoop 统一拼装。
+          message: '连接超时',
           provider: 'openai_responses',
+          timedOut: true,
         })
       }
       throw classifyProviderError('openai_responses', err)

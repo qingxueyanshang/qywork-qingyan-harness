@@ -146,8 +146,10 @@ describe('文件页刷新', () => {
         cv_file_scroll: {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
           error: null,
-          todos: [],
           transcript: [],
         },
       },

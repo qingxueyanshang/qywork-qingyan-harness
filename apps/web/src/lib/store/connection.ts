@@ -184,14 +184,13 @@ export function discardPace(): void {
  * 已订阅的会话」：`subscribe` 指令发出到服务端处理之间有一段消不掉的窗口，
  * 那一段里旧会话还在推。
  *
- * **两条折法，按会话分工：**
+ * **三条折法，按会话分工：**
  *
- * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、待办、收尾条。
+ * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、收尾条。
  *   每条收着事件的会话各折各的，当前会话和它派出去的子会话同时在跑是常态。
- * - `foldRunState`——**这一轮跑得怎么样**：用量、上下文、当前会话待办面板、目标、
- *   跟进队列、重发、这一轮改了哪些文件。只折当前会话那一条：子会话页没有运行读数
- *   与输入框，
- *   折过去等于让另一条会话的数字改写用户正看着的这一份，而界面上没有一处说得出这是谁的。
+ * - `foldConversationRunState`——每条会话运行中的用量、静默时刻与重试次数，按 cid
+ *   落进各自 view；父子页据此共用同一根运行条。
+ * - `foldRunState`——只有当前会话才消费的上下文、待办面板、目标、跟进队列与文件变化。
  *
  * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。分工只在这里判。
  *
@@ -237,20 +236,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   if (from && !state.views[from]) return
 
   /*
-   * **「有动静」的唯一落点，就是这里。**
-   *
-   * 判在入口而不是给三十个 case 各补一句：那是三十次忘记的机会（同上面归属那条理由）。
-   * 语义也正好——一帧到了就是有动静，与它是哪种事件无关。
-   *
-   * **只认当前会话那条**：子会话在后台收着事件，不说明用户正看着的这一轮还在出数据。
-   */
-  if (mine) {
-    setState('lastEventAt', Date.now())
-    // 收场判据的唯一落点，理由见 `RESUMED`。
-    if (state.retry && RESUMED.has(ev.type)) setState('retry', null)
-  }
-
-  /*
    * 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
    * 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
    *
@@ -265,7 +250,20 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   const cid = from ?? state.activeConversation
-  if (cid) foldContent(cid, ev)
+  if (cid) {
+    /*
+     * **「有动静」的唯一落点，就是这里，而且跟着会话 id 落。**
+     * 父会话与几个子会话会同时出帧；放在 AppState 单例上时，后台任意一条都会改写
+     * 当前页的静默时长。归到 view 后，每一页只读自己的现场。
+     */
+    setState('views', cid, 'lastEventAt', Date.now())
+    // 收场判据的唯一落点，理由见 `RESUMED`。
+    if (state.views[cid]?.retry && RESUMED.has(ev.type)) {
+      setState('views', cid, 'retry', null)
+    }
+    foldContent(cid, ev)
+    foldConversationRunState(cid, ev)
+  }
   if (mine) foldRunState(ev)
 }
 
@@ -278,12 +276,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
  */
 function foldContent(cid: string, ev: AgentEvent): void {
   switch (ev.type) {
-    case 'todos':
-      // 每条会话各收自己的整表。父会话另投影到 `state.todos` 给全局面板消费；
-      // 子会话只读这里这一份，不能把它的事件写进父面板。
-      setState('views', cid, 'todos', ev.todos)
-      return
-
     case 'team.member':
       // 进度落到那张图卡上。**没带 stepId 就整条丢弃**：一条会话里可能有好几张图卡，
       // 认不出是哪一张时挂在任意一张上，用户看到的是另一件事的进度。
@@ -517,7 +509,49 @@ function foldContent(cid: string, ev: AgentEvent): void {
 }
 
 /**
- * **这一轮跑得怎么样**：读数、待办、目标、跟进队列、重发、这一轮改了哪些文件。
+ * 每条已订阅会话自己的运行中读数。它与正文同样按 cid 归属，主会话与子会话
+ * 因而能复用同一个状态条，而不会拿父会话的 token、静默时长或重试次数冒充子会话。
+ */
+function foldConversationRunState(cid: string, ev: AgentEvent): void {
+  switch (ev.type) {
+    case 'run.started':
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          v.usage = null
+          v.retry = null
+        }),
+      )
+      return
+
+    case 'run.retrying':
+      setState('views', cid, 'retry', { attempt: ev.attempt, max: ev.max })
+      return
+
+    case 'usage':
+      setState('views', cid, 'usage', ev.usage)
+      return
+
+    case 'run.finished':
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          v.usage = null
+          v.lastEventAt = null
+          v.retry = null
+        }),
+      )
+      return
+
+    default:
+      return
+  }
+}
+
+/**
+ * 当前会话独有的外围状态：待办、目标、跟进队列、上下文与这一轮改了哪些文件。
  *
  * 只有当前会话那一条走到这里，理由见 `applyEvent`。
  */
@@ -549,7 +583,6 @@ function foldRunState(ev: AgentEvent): void {
     case 'run.started':
       setState(
         produce((s) => {
-          s.usage = null
           s.notice = null
           s.fileChanges = []
           // **待办不清。** 它是这条会话的进度，不是这一轮的临时读数——
@@ -560,14 +593,6 @@ function foldRunState(ev: AgentEvent): void {
           s.lastRunId = ev.runId
         }),
       )
-      return
-
-    /*
-     * 断流后原样重发。这一格只改阶段那句话——失败那次的思考条目留在原地，
-     * 它是用户判断「模型刚才想到哪了」的现场，抹掉它等于把重发变成一次静默倒带。
-     */
-    case 'run.retrying':
-      setState('retry', { attempt: ev.attempt, max: ev.max })
       return
 
     case 'file.changed':
@@ -594,10 +619,6 @@ function foldRunState(ev: AgentEvent): void {
       )
       return
 
-    case 'usage':
-      setState('usage', ev.usage)
-      return
-
     case 'context':
       setState('context', {
         tokens: ev.tokens,
@@ -615,15 +636,6 @@ function foldRunState(ev: AgentEvent): void {
       // 它看起来完全合理，盖上去没人会怀疑它是别人的。
       if (ev.workspaceId !== workspace()?.id) return
       setState('git', { workspaceId: ev.workspaceId, branch: ev.branch })
-      return
-
-    case 'run.finished':
-      setState(
-        produce((s) => {
-          s.usage = null
-          s.lastEventAt = null
-        }),
-      )
       return
 
     default:
@@ -851,6 +863,9 @@ export async function loadConversationView(id: string): Promise<void> {
     const page = await fetchConversationPage(id, null, lease.controller.signal)
     if (canceledByNewerRequest(lease)) return
     const items = foldTranscript(page)
+    const live = state.busyConversations.includes(id)
+      ? (page.runs.find((run) => run.status === 'running') ?? null)
+      : null
     setState(
       produce((s) => {
         const v = s.views[id]
@@ -859,8 +874,17 @@ export async function loadConversationView(id: string): Promise<void> {
         // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
         const known = new Set(items.map((i) => i.id))
         v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
-        v.todos = page.todos
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+        if (live) {
+          v.runStartedAt ??= live.createdAt
+          v.usage ??= live.usage
+          v.lastEventAt ??= Date.now()
+        } else if (!s.busyConversations.includes(id)) {
+          v.runStartedAt = null
+          v.usage = null
+          v.lastEventAt = null
+          v.retry = null
+        }
       }),
     )
   } catch (error) {
@@ -1035,7 +1059,7 @@ export async function reloadActiveConversation(): Promise<void> {
     /*
      * **run 作用域的状态一律从这里派生，不靠事件残留。**
      *
-     * 这些字段（lastRunId / todos / usage / context）只有当前会话那一份，
+     * 这些字段（lastRunId / todos / context）只有当前会话那一份，
      * 没有「属于哪条会话」这一维。切会话时若只重置正文流，它们会连同上一条会话的
      * run 一起留在界面上；而上一条会话的表在切走那一刻就撤了（`dropView`），
      * 它那条 run 的 `run.finished` **结构性地永远到不了**，
@@ -1049,7 +1073,9 @@ export async function reloadActiveConversation(): Promise<void> {
      * ——账本那行在服务进程崩过之后可能还挂着 `running`，照它写就会把界面永久
      * 钉在执行中，而 `RunManager` 早就没有这条 run 了。
      */
-    const live = runs.find((r) => r.status === 'running') ?? null
+    const live = state.busyConversations.includes(id)
+      ? (runs.find((r) => r.status === 'running') ?? null)
+      : null
 
     setState(
       produce((s) => {
@@ -1060,35 +1086,16 @@ export async function reloadActiveConversation(): Promise<void> {
           v.transcript = [...items, ...v.transcript.filter((item) => !known.has(item.id))]
           v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
           v.runStartedAt = live ? live.createdAt : null
+          v.usage = live?.usage ?? null
+          // 重拉之后「上一次有动静」只能从此刻算起：之前收过什么事件已经无从得知。
+          v.lastEventAt = live ? Date.now() : null
+          // 重连计数活在 AgentLoop 调用栈，账本没有对应字段，重拉只能清空。
+          v.retry = null
           // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
           v.error = null
         }
         s.followUps = queue
         s.lastRunId = live?.id ?? null
-        // 重拉之后「上一次有动静」只能从此刻算起：这条会话之前收过什么事件，
-        // 换页/重连之后已经无从得知，拿 `createdAt` 冒充会立刻谎报一个巨大的静默时长。
-        s.lastEventAt = live ? Date.now() : null
-        /*
-         * 重连计数是这里仅有的一处清空，因为它确实无处可读——它活在 `AgentLoop`
-         * 的调用栈上，账本里没有表也没有列。
-         *
-         * 图卡的节点态**不在这里清**：它跟着 transcript 条目走，而条目是从账本重投
-         * 出来的。重投之后仍在运行的那几个节点回落到 outcome 里的终态（跑完的那些），
-         * 正在跑的那几个要等它们下一次报进度才长回来——代价照实说。
-         */
-        s.retry = null
-        /*
-         * **用量跟着那一轮走，不清空。**
-         *
-         * 它不属于上面那几项：`runs` 行有这一列，而且是每收到一次 provider 的
-         * usage 就写一次（`agent/loop.ts` 的 `saveUsage`），所以正在跑的那一轮
-         * 此刻累计了多少，这里读得到。
-         *
-         * 清成 null 的表现是：跑了一半重连或切回来，读数条上的 `↓入 ↑出 / 命中 /
-         * 金额` 整组消失，要等下一次模型调用回报 usage 才凭空长回来——一轮里
-         * 这一等可能是几分钟，用户看到的是「数字自己丢了又自己回来」。
-         */
-        s.usage = live?.usage ?? null
         // **待办从同一份 steps 账本投影回来，不新增持久化路径。**
         // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。`write_todos` step
         // 提交整表，之后明确绑定的成功 `subagent` step 推进单条；历史接口已按这个

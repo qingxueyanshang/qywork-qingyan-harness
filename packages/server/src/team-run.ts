@@ -120,8 +120,7 @@ function modelList(config: QyConfig): string {
  * 压成一句「没做成」的话，模型除了原样重派没有别的选择，而重派必然又撞同一堵墙。
  */
 const CUT_SHORT: Partial<Record<StopReason, string>> = {
-  max_steps: '步数用尽，任务没做完',
-  no_progress: '连着两轮没有任何进展，自己停了',
+  no_progress: '连续三轮没有任何进展，自己停了',
   user_interrupt: '被中断',
   process_exit: '进程退出',
   output_truncated: '产出被模型的单次长度上限截断',
@@ -175,7 +174,6 @@ export async function runBuiltinMember(
     signal: input.signal,
     ...(role.systemPrompt ? { extraSystem: role.systemPrompt } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
-    ...(role.maxSteps ? { maxSteps: role.maxSteps } : {}),
   })
 
   let text = ''
@@ -220,8 +218,8 @@ export async function runBuiltinMember(
 /**
  * 一个成员算不算做成了。
  *
- * **权威是这一轮的终态，不是「有没有文字」。** 只看文字的话，步数用尽或原地打转
- * 被掐断的子 agent——它前面说过的话还在——会被报成「做完了」，父会话据此往下走。
+ * **权威是这一轮的终态，不是「有没有文字」。** 只看文字的话，原地打转或被中断的
+ * 子 agent——它前面说过的话还在——会被报成「做完了」，父会话据此往下走。
  * 反过来，没报错但一个字也没产出同样算失败：ok + 空串会被下游当成
  * 「认真看过，确实没什么可说的」，那是另一件事。
  */

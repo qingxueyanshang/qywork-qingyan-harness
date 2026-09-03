@@ -40,8 +40,6 @@ export interface Role {
    * undefined = 继承全部。**显式的空数组和不填是两回事**，不要合并。
    */
   allowedTools?: string[]
-  /** 该角色单次任务的步数上限，防止一个角色失控拖垮整轮。 */
-  maxSteps?: number
 }
 
 /**
@@ -82,7 +80,7 @@ export interface CliAgent {
 export interface TeamRules {
   /** 追加到**所有**角色系统提示词的公共约束。 */
   shared?: string
-  /** 一张图里同时最多几个节点在跑。默认 3——再多，用户就看不过来了。同一轮里 `subagent` 派出去的那几件不受它约束。 */
+  /** 一张图里同时最多几个节点在跑。默认 4；同一轮里 `subagent` 派出去的那几件不受它约束。 */
   maxConcurrent?: number
 }
 
