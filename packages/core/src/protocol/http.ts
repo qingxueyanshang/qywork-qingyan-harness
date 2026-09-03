@@ -11,9 +11,10 @@
  * 同一份。
  */
 
-import type { MessageId } from '../domain/ids.ts'
+import type { ConversationId, MessageId } from '../domain/ids.ts'
 import type {
   Message,
+  NodePhase,
   Run,
   Step,
   TodoItem,
@@ -21,6 +22,7 @@ import type {
   UsageLedgerRow,
   UsageTotals,
 } from '../domain/model.ts'
+import type { WorkflowPhase } from '../domain/workflow.ts'
 
 /**
  * `GET /api/conversations/:id/history` —— 会话流的一页完整轮次。
@@ -39,6 +41,33 @@ export interface ConversationHistoryPageResponse {
   steps: Step[]
   todos: TodoItem[]
   nextCursor: MessageId | null
+}
+
+/**
+ * `GET /api/conversations/:id/subagents` —— 这条会话派出去过的子 agent 与建过的工作流。
+ *
+ * 子 agent 按建立顺序；工作流按首派顺序，阶段与每一格的状态由同一份账本折叠得到，
+ * 与图卡上画的是同一个来源。
+ */
+export interface ConversationSubagentsResponse {
+  subagents: {
+    id: ConversationId
+    kind: 'role' | 'temp' | 'cli'
+    name: string
+    provider: string
+    model: string
+    /** running = 它有一轮在跑；failed = 最近一轮没跑完；idle = 空着。 */
+    status: 'running' | 'idle' | 'failed'
+    createdAt: number
+  }[]
+  workflows: {
+    workflowId: string
+    goal: string
+    phase: WorkflowPhase
+    checkpointId?: string
+    /** 图上的 agent 格，按图的顺序。 */
+    nodes: { id: string; label: string; phase: NodePhase; subagentId?: ConversationId }[]
+  }[]
 }
 
 /**

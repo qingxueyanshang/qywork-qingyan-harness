@@ -79,6 +79,7 @@ const FileView = lazy(() => import('./FileView.tsx'))
 
 // 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该为它付首屏成本。
 const RunDetails = lazy(() => import('./RunDetails.tsx'))
+const SubagentsPanel = lazy(() => import('./SubagentsPanel.tsx'))
 
 interface FileNode {
   name: string
@@ -104,6 +105,8 @@ interface FileNode {
 const VIEWS: { view: PanelView; label: string }[] = [
   // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
   { view: 'todos', label: '待办' },
+  // 子 agent 紧跟待办：派出去的那几件也是「这一轮在干什么」。
+  { view: 'subagents', label: '子 agent' },
   { view: 'files', label: '文件' },
   { view: 'changes', label: '变更' },
   // 运行排在末位：查账是事后动作，不与「现在在做什么」争第一眼。
@@ -415,6 +418,9 @@ export default function SidePanel() {
               <Switch>
                 <Match when={sidePanel() === 'todos'}>
                   <TodoPanel />
+                </Match>
+                <Match when={sidePanel() === 'subagents'}>
+                  <SubagentsPanel />
                 </Match>
                 <Match when={sidePanel() === 'files'}>
                   <FileBrowser />

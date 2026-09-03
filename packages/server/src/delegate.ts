@@ -11,10 +11,11 @@
  * 外部 CLI 那一行只有元数据与外部会话句柄（`externalSession`），正文在 CLI 自己那边。
  */
 
-import type { DelegatePort, SubagentSummary } from '@qywork/agent'
+import type { DelegatePort } from '@qywork/agent'
 import {
   type Conversation,
   type ConversationId,
+  type ConversationSubagentsResponse,
   foldWorkflow,
   type NodeState,
   type RunId,
@@ -58,6 +59,33 @@ interface Resolved {
   role: Role | null
   cli: CliAgent | null
   created: boolean
+}
+
+/**
+ * 一条会话的子 agent 清单：种类、模型、此刻的状态。运行快照与右栏那一页读的是同一份。
+ * 状态按账本判：有一轮在跑是 running，最近一轮没跑完是 failed，其余 idle。
+ */
+export function listSubagents(
+  deps: Pick<DelegateDeps, 'store' | 'runs'>,
+  conversationId: ConversationId,
+): ConversationSubagentsResponse['subagents'] {
+  return listChildConversations(deps.store, conversationId).map((c) => {
+    const runs = listRuns(deps.store, c.id)
+    const last = runs[runs.length - 1]
+    return {
+      id: c.id,
+      kind: c.source === 'cli' ? 'cli' : c.source === 'role' ? 'role' : 'temp',
+      name: c.title,
+      provider: c.provider,
+      model: c.model,
+      status: deps.runs.isBusy(c.id)
+        ? 'running'
+        : last?.status === 'failed' || last?.status === 'interrupted'
+          ? 'failed'
+          : 'idle',
+      createdAt: c.createdAt,
+    }
+  })
 }
 
 export function makeDelegate(ctx: {
@@ -329,22 +357,7 @@ export function makeDelegate(ctx: {
     },
 
     async subagents() {
-      return children().map((c): SubagentSummary => {
-        const runs = listRuns(deps.store, c.id)
-        const last = runs[runs.length - 1]
-        return {
-          id: c.id,
-          kind: c.source === 'cli' ? 'cli' : c.source === 'role' ? 'role' : 'temp',
-          name: c.title,
-          provider: c.provider,
-          model: c.model,
-          status: deps.runs.isBusy(c.id)
-            ? 'running'
-            : last?.status === 'failed' || last?.status === 'interrupted'
-              ? 'failed'
-              : 'idle',
-        }
-      })
+      return listSubagents(deps, conversationId)
     },
 
     dispatch,
