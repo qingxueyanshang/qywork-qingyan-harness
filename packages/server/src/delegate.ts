@@ -337,10 +337,12 @@ export function makeDelegate(ctx: {
       const workflowId = input.call.kind === 'start' ? input.stepId : input.call.workflowId
       let goal: string
       let nodes: WorkflowNode[]
+      let maxConcurrent: number
       let state: OrchestratorState
       if (input.call.kind === 'start') {
         goal = input.call.goal
         nodes = input.call.nodes
+        maxConcurrent = input.call.maxConcurrent
         state = {}
       } else {
         const folded = foldWorkflow(workflowRecords(input.stepId), workflowId)
@@ -360,6 +362,7 @@ export function makeDelegate(ctx: {
         }
         goal = projection.goal
         nodes = projection.nodes
+        maxConcurrent = projection.maxConcurrent
         state = {
           results: projection.results,
           approvals: projection.approvals,
@@ -381,6 +384,7 @@ export function makeDelegate(ctx: {
           signal: input.signal,
           secrets: collectSecrets(deps.config),
           runId: input.runId as RunId,
+          maxConcurrent,
           resolveCli: (id) => clis.find((c) => c.id === id),
           // 进度带上 stepId：前端按它认领是哪一张图卡。不带的话事件到了也无处可落。
           emit: (ev: AgentEvent) =>
