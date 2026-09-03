@@ -138,8 +138,8 @@ export interface WireMessage {
 /**
  * 图像块的字节从哪来。**判据是「这是一个引用，还是一次观察」。**
  *
- * 两档不是同一件事的两个阶段，是**两种来源**，会同时出现在一次请求里。
- * `materialize`（`agent/loop.ts`）只把 path 那档换成字节，base64 那档原样通过。
+ * path 与 base64 是进入适配器前的两种来源。url 只存在于一次 Provider 请求副本，
+ * 用于必须先上传媒体再引用的协议，不进入会话历史。
  */
 export type MediaSource =
   /**
@@ -156,6 +156,7 @@ export type MediaSource =
    * 覆盖之后历史里那一张就永远取不回来——而捕获只能发生在观察的那一刻。
    */
   | { kind: 'base64'; data: string }
+  | { kind: 'url'; url: string }
 
 export type ImageSource = MediaSource
 export type VideoSource = MediaSource
@@ -180,12 +181,12 @@ export type ContentBlock =
  */
 export function imageData(source: ImageSource): string {
   if (source.kind === 'base64') return source.data
-  throw new Error(`图像块还是路径形态（${source.path}），materialize 没跑到`)
+  throw new Error(`图像块不是 base64 形态（${source.kind}），当前适配器无法发送`)
 }
 
 export function videoData(source: VideoSource): string {
   if (source.kind === 'base64') return source.data
-  throw new Error(`视频块还是路径形态（${source.path}），materialize 没跑到`)
+  throw new Error(`视频块不是 base64 形态（${source.kind}），当前适配器无法发送`)
 }
 
 export interface WireToolCall {
@@ -288,6 +289,11 @@ export interface LlmAdapter {
    * **必须按 `spec` 算，不能是类级常量**，且判据只有 `effortIsTransmittable`
    * 一份——协议支持不等于这条模型的参数格式发得出去。
    */
-  readonly transmits: { effort: boolean; video?: boolean }
+  readonly transmits: {
+    effort: boolean
+    video?: boolean
+    /** 本地路径由适配器内联或上传；Agent 不预先读取整份媒体。 */
+    mediaPaths?: boolean
+  }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
 }
