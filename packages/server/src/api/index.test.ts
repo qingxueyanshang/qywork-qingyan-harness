@@ -20,7 +20,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ConversationHistoryPageResponse, MessageId } from '@qywork/core'
+import type {
+  ConversationHistoryPageResponse,
+  ConversationRunsResponse,
+  ConversationUsageResponse,
+  MessageId,
+} from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -33,6 +38,7 @@ import {
   listConversations,
   listWorkspaces,
   openProviderRequest,
+  recordUsage,
   Store,
   setConversationTitle,
   settleProviderRequest,
@@ -1130,6 +1136,72 @@ describe('会话诊断导出接口', () => {
     expect(payload.conversationTree.links).toMatchObject([
       { parentConversationId: conv.id, childConversationId: child.id },
     ])
+  })
+
+  /**
+   * 运行页问的是「这条会话花了多少」，而子 agent 的钱记在它自己那条会话上。
+   * 不按父子树取的话，四条子会话跑掉的钱在这一页上一分都看不到。
+   */
+  test('会话用量与轮次含子会话，币种分桶', async () => {
+    const d = deps()
+    const parent = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const kids = ['build-glm', 'build-qwen'].map((roleId) =>
+      createConversation(d.store, {
+        workspaceId: d.wsId as never,
+        provider: 'p',
+        model: 'm',
+        source: 'workflow',
+        sourceRef: roleId,
+        parentConversationId: parent.id,
+      }),
+    )
+    const bill = (conversationId: string, cost: number, currency?: 'CNY') => {
+      recordUsage(d.store, {
+        kind: 'run',
+        conversationId,
+        model: 'm',
+        provider: 'p',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedTokens: null,
+        reasoningTokens: 0,
+        cost,
+        ...(currency ? { currency } : {}),
+      })
+    }
+    bill(parent.id, 1)
+    bill(kids[0]!.id, 2)
+    bill(kids[1]!.id, 4, 'CNY')
+    for (const conversation of [parent, ...kids]) {
+      const run = createRun(d.store, {
+        conversationId: conversation.id,
+        workspaceId: d.wsId as never,
+        model: 'm',
+        clientRequestId: `req_${conversation.id}`,
+        userMessageId: null,
+        messageIdUpperBound: null,
+        contextSnapshot: [],
+      })
+      finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+    }
+
+    const usage = (await (
+      await call(`/api/conversations/${parent.id}/usage`, undefined, d)
+    )?.json()) as ConversationUsageResponse
+    expect(usage.totals.entries).toBe(3)
+    expect(usage.totals.cost.USD).toBeCloseTo(3, 6)
+    expect(usage.totals.cost.CNY).toBeCloseTo(4, 6)
+
+    const runs = (await (
+      await call(`/api/conversations/${parent.id}/runs`, undefined, d)
+    )?.json()) as ConversationRunsResponse
+    expect(runs.runs).toHaveLength(1)
+    expect(runs.childRuns.map((row) => row.roleId).sort()).toEqual(['build-glm', 'build-qwen'])
+    expect(runs.childRuns.every((row) => row.run.id !== runs.runs[0]?.id)).toBe(true)
   })
 
   test('不存在的会话回 404，不生成空诊断包', async () => {

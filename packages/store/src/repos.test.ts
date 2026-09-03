@@ -13,6 +13,7 @@ import {
   finishRun,
   getConversation,
   getRun,
+  listChildConversations,
   listConversationHistoryPage,
   listConversations,
   listMessages,
@@ -30,6 +31,7 @@ import {
   upsertWorkspace,
   workspaceOf,
 } from './repos.ts'
+import { recordUsage, usageTotals } from './usage.ts'
 
 function fresh() {
   const store = new Store({ path: ':memory:' })
@@ -477,6 +479,47 @@ describe('会话的最近修改时间', () => {
   test('会话不存在时重命名返回 null，不静默成功', () => {
     const { store } = fresh()
     expect(setConversationTitle(store, 'cv_nope' as never, 'x')).toBeNull()
+    store.close()
+  })
+})
+
+/**
+ * 派活建出来的子会话属于父会话。删父会话时它们跟着走，否则库里留下点不开的孤儿会话；
+ * 账目不跟着走——`usage_ledger` 没有外键，那些行按设计比业务数据活得久。
+ */
+describe('子会话归属', () => {
+  test('删父会话时子会话跟着删，账本行留着', () => {
+    const { store, ws } = fresh()
+    const parent = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'openai',
+      model: 'm',
+    })
+    const child = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'openai',
+      model: 'm',
+      source: 'workflow',
+      sourceRef: 'build-glm',
+      parentConversationId: parent.id,
+    })
+    expect(getConversation(store, child.id)?.parentConversationId).toBe(parent.id)
+    expect(listChildConversations(store, parent.id).map((c) => c.id)).toEqual([child.id])
+    recordUsage(store, {
+      kind: 'run',
+      conversationId: child.id,
+      model: 'm',
+      provider: 'openai',
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedTokens: null,
+      reasoningTokens: 0,
+      cost: 0.5,
+    })
+
+    expect(deleteConversation(store, parent.id)).toBe(true)
+    expect(getConversation(store, child.id)).toBeNull()
+    expect(usageTotals(store).entries).toBe(1)
     store.close()
   })
 })

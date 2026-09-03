@@ -63,6 +63,16 @@ export interface UsageResponse {
  * `entries` 逐笔给，不只给合计：合计里含压缩摘要那种不属于任何一轮的开销，
  * 只给合计的话界面上「总数比轮次加起来大」没有出处。
  */
+/**
+ * 一条会话的轮次。**子会话的轮次单列**：它们不属于这条会话的对话流，
+ * 但花的是同一笔钱，运行页要把它们并进同一份清单与合计。
+ */
+export interface ConversationRunsResponse {
+  runs: Run[]
+  /** 子会话的轮次。`roleId` 来自子会话的 `sourceRef`，也就是派给谁。 */
+  childRuns: { roleId: string; run: Run }[]
+}
+
 export interface ConversationUsageResponse {
   totals: UsageTotals
   entries: UsageLedgerRow[]

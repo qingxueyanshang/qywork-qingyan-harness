@@ -161,6 +161,13 @@ export interface Conversation {
    */
   source: 'workflow' | null
   sourceRef: string | null
+  /**
+   * 派活建出来的子会话属于哪条父会话；顶层会话是 `null`。
+   *
+   * 账本汇总、级联删除、运行页三件事都从这一个字段推出来。它在建会话时写死，
+   * 之后不改——一条子会话换爹这件事不存在。
+   */
+  parentConversationId: ConversationId | null
   createdAt: number
   updatedAt: number
 }
@@ -473,7 +480,7 @@ export interface UsageTurn {
  * 频次可能比 run 本身高一个量级，所以必须能单独查——
  * `qy usage --by kind` 才答得出「裁决占了多少」，以及要不要换个更小的模型。
  */
-export type UsageKind = 'run' | 'summary' | 'team' | 'classifier'
+export type UsageKind = 'run' | 'summary' | 'classifier'
 
 export interface UsageTotals {
   entries: number

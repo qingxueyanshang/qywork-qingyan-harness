@@ -94,9 +94,9 @@ export interface UsageQuery {
   until?: number
   workspaceId?: string
   /**
-   * 只看这一条会话。**它包含这条会话引发的全部开销**，不只是对话轮次——
-   * 压缩摘要那次调用同样带着会话 id 落账（`makeSummarizer`），
-   * 「这条会话花了多少」要的就是这个口径。
+   * 只看这一条会话。**它包含这条会话引发的全部开销**：对话轮次、压缩摘要那次调用
+   * （`makeSummarizer` 同样带着会话 id 落账），以及它派出去的子会话。
+   * 外部 CLI 的钱花在别家账上，这里拿不到。
    */
   conversationId?: string
   kind?: UsageKind
@@ -118,8 +118,13 @@ function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
     args.push(q.workspaceId)
   }
   if (q.conversationId) {
-    parts.push('conversation_id = ?')
-    args.push(q.conversationId)
+    // 子会话的账记在它自己的 conversation_id 下，父会话按 parent_conversation_id 收回来。
+    // 子会话已被删掉时它的账本行留着但不再匹配——账目按设计比业务数据活得久，
+    // 而「这条会话花了多少」问的是现在还挂在它名下的那些。
+    parts.push(
+      '(conversation_id = ? OR conversation_id IN (SELECT id FROM conversations WHERE parent_conversation_id = ?))',
+    )
+    args.push(q.conversationId, q.conversationId)
   }
   if (q.kind) {
     parts.push('kind = ?')

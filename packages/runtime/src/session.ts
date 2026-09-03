@@ -180,6 +180,13 @@ export interface AskOptions {
    */
   source?: Conversation['source']
   sourceRef?: string
+  /**
+   * 这一轮**新建**会话时它属于哪条父会话（续跑已有会话时无效）。
+   *
+   * 派活建出来的子会话必须填：账本汇总、级联删除、运行页三件事都从这一个字段推出来，
+   * 而归属只在建会话的这一刻写得对，事后从任何地方都推不回来。
+   */
+  parentConversationId?: ConversationId
 }
 
 export class Session {
@@ -323,6 +330,9 @@ export class Session {
         model: options?.model ?? config.active.model,
         ...(options?.source ? { source: options.source } : {}),
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
+        ...(options?.parentConversationId
+          ? { parentConversationId: options.parentConversationId }
+          : {}),
       }).id
 
     // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。

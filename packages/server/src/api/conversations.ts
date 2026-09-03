@@ -13,6 +13,7 @@ import {
 import type {
   ConversationHistoryPageResponse,
   ConversationId,
+  ConversationRunsResponse,
   ConversationUsageResponse,
   EffortLevel,
   MessageId,
@@ -32,6 +33,7 @@ import {
   currentGoal,
   deleteConversation,
   getConversation,
+  listChildConversations,
   listConversationHistoryPage,
   listConversations,
   listMessages,
@@ -390,7 +392,17 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       return json(page)
     }
     if (convMatch[2] === 'messages') return json({ messages: listMessages(d.store, id) })
-    if (convMatch[2] === 'runs') return json({ runs: listRuns(d.store, id) })
+    if (convMatch[2] === 'runs') {
+      // 子会话的轮次并进来：它们不在这条会话的对话流里，花的却是同一笔钱。
+      // 角色 id 取子会话的 sourceRef——派活时写死的那个，不从 step 参数反查。
+      const payload: ConversationRunsResponse = {
+        runs: listRuns(d.store, id),
+        childRuns: listChildConversations(d.store, id).flatMap((child) =>
+          listRuns(d.store, child.id).map((run) => ({ roleId: child.sourceRef ?? '', run })),
+        ),
+      }
+      return json(payload)
+    }
     // 排着的跟进消息。刷新与重连之后卡片靠它重建；与 `queue.changed` 同源，
     // 都读 `RunManager` 那一份，不存在快照与增量各说各话。
     if (convMatch[2] === 'queue') return json({ queue: d.runs.queueOf(id) })
