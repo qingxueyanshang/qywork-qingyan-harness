@@ -59,8 +59,13 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
 
 const delegate: DelegatePort = {
   resolveModel: (name, provider) => ({ provider: provider ?? 'p', model: name }),
-  targets: async () => ({ roles: [], clis: [] }),
-  subagents: async () => [],
+  targets: async () => ({
+    roles: [{ id: 'reviewer', name: '审查员', description: '看代码', provider: 'p', model: 'm' }],
+    clis: [{ id: 'codex', vendor: 'OpenAI', connected: true }],
+  }),
+  subagents: async () => [
+    { id: 'cv_sub', kind: 'temp', name: '查资料', provider: 'p', model: 'm', status: 'idle' },
+  ],
   dispatch: async () => ({ ok: true, output: '' }),
   runGraph: async () => ({ ok: true }),
 }
@@ -197,6 +202,10 @@ describe('顶层会话的可分配模型快照', () => {
       .join('\n')
     expect(snapshot).toContain('provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`')
     expect(snapshot).toContain('provider 参数 `千问接口`；model 参数 `qwen/model-3.8`')
+    // 角色、外部 CLI、本会话已有的子 agent 同一份快照里给出，模型按 id 引用。
+    expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型 p / m')
+    expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，已接入')
+    expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型 p / m，空闲')
     expect(snapshot).not.toContain('sk-never-send-this')
     expect(snapshot).not.toContain('private-relay.example')
     expect(snapshot).not.toContain('also-secret')
@@ -213,6 +222,8 @@ describe('顶层会话的可分配模型快照', () => {
       .segments.map((segment) => segment.content)
       .join('\n')
     expect(snapshot).not.toContain('可分配给子 agent 的已配置模型')
+    expect(snapshot).not.toContain('当前项目的角色与外部 CLI')
+    expect(snapshot).not.toContain('本会话的子 agent')
     store.close()
   })
 

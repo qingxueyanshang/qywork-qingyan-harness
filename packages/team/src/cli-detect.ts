@@ -174,7 +174,24 @@ export interface DetectedCli extends CliAgent {
  *
  * `env` 可注入是为了测试；生产上就是 `process.env`。
  */
+/**
+ * 一次识别的结果在进程内缓存这么久。识别要按 PATH 的每个目录逐个探文件，Windows 上
+ * 一次要上千次 stat；每一轮开始都要这份清单，不缓存的话每轮都付这个代价。
+ * 装卸 CLI 是机器级操作，半分钟内看不到新装的那个是可接受的边界。
+ */
+const DETECT_CACHE_MS = 30_000
+let detected: { env: NodeJS.ProcessEnv; at: number; value: DetectedCli[] } | null = null
+
 export async function detectClis(env: NodeJS.ProcessEnv = process.env): Promise<DetectedCli[]> {
+  if (detected && detected.env === env && Date.now() - detected.at < DETECT_CACHE_MS) {
+    return detected.value
+  }
+  const value = await scanClis(env)
+  detected = { env, at: Date.now(), value }
+  return value
+}
+
+async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
   const home = homedir()
   const found: DetectedCli[] = []
   for (const k of KNOWN) {

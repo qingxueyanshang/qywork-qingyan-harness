@@ -1,3 +1,4 @@
+import type { SubagentSummary } from '@qywork/agent'
 import type { RunContextSegment, TodoItem, WorkflowPhase, WorkflowProjection } from '@qywork/core'
 
 /**
@@ -221,6 +222,13 @@ export function buildTailNotes(input: {
    * 两者不能合并，否则后者会诱使模型继续凭空编一个名称。
    */
   models?: { provider: string; model: string }[]
+  /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有派活能力。 */
+  team?: {
+    roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
+    clis: { id: string; vendor: string; connected: boolean }[]
+  }
+  /** 本会话已有的子 agent。`undefined` = 本会话没有派活能力。 */
+  subagents?: SubagentSummary[]
   /**
    * 待加载的外部工具：只有工具名 + 一句话，完整参数说明由模型按需 load_tool 拉。
    *
@@ -272,6 +280,41 @@ export function buildTailNotes(input: {
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
         '用户只说厂商、系列或简称（例如 glm）时，从这份清单中语义匹配并自主选择最符合任务的已配置项；不要把用户的模糊写法直接填进工具。调用 define_role、subagent 或 workflow 覆盖模型时，逐字使用同一行的 provider 与 model 两个参数，不要使用清单外的值。',
+      group: 'workspaceState',
+    })
+  }
+
+  if (input.team) {
+    const roles = input.team.roles.map(
+      (role) =>
+        `- 角色 id \`${role.id}\`：${role.name}${role.description ? `，${oneLine(role.description)}` : ''}；模型 ${
+          role.provider && role.model ? `${role.provider} / ${role.model}` : '跟随会话'
+        }`,
+    )
+    const clis = input.team.clis.map(
+      (cli) =>
+        `- 外部 CLI id \`${cli.id}\`：${cli.vendor}，${cli.connected ? '已接入' : '未见凭证'}`,
+    )
+    const list = [...roles, ...clis].join('\n') || '- 当前项目没有角色，本机没有外部 CLI'
+    notes.push({
+      content:
+        `## 当前项目的角色与外部 CLI（本次运行快照）\n${list}\n\n` +
+        '新建子 agent 时 role 填角色 id，cli 填外部 CLI 的 id，逐字使用清单里的值。',
+      group: 'workspaceState',
+    })
+  }
+  if (input.subagents) {
+    const list =
+      input.subagents
+        .map(
+          (item) =>
+            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}`,
+        )
+        .join('\n') || '- 本会话还没有子 agent'
+    notes.push({
+      content:
+        `## 本会话的子 agent（本次运行快照）\n${list}\n\n` +
+        '给已有子 agent 派任务时 subagent 填这里的 id，它接着自己的上下文继续。',
       group: 'workspaceState',
     })
   }
@@ -335,6 +378,18 @@ export function buildTailNotes(input: {
     })
   }
   return notes
+}
+
+const SUBAGENT_KIND: Record<SubagentSummary['kind'], string> = {
+  role: '角色',
+  temp: '临时',
+  cli: '外部 CLI',
+}
+
+const SUBAGENT_STATUS: Record<SubagentSummary['status'], string> = {
+  running: '进行中',
+  idle: '空闲',
+  failed: '上一轮没跑完',
 }
 
 const WORKFLOW_PHASE: Record<WorkflowPhase, string> = {
