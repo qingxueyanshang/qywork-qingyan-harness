@@ -44,6 +44,18 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
        * 的话，桌面端和手机端几乎同时发的两条消息会双双读到「不忙」，
        * 因此两个 AgentLoop 对着同一个工作区一起写文件（`runs.ts` 的 `reserve` 注释）。
        */
+      // 子会话只归建立它的那张图管：直接发消息会绕过 workflow 的回执与续接，图的投影
+      // 不知道这一轮发生过。界面没有这个入口，配对端走同一条指令，边界在这里补齐。
+      if (getConversation(deps.store, cmd.conversationId)?.source) {
+        reject(
+          deps.ws,
+          cmd.type,
+          'conflict',
+          '子会话只能由父会话的 workflow 续发',
+          cmd.clientRequestId,
+        )
+        return
+      }
       if (deps.runs.isBusy(cmd.conversationId)) {
         deps.runs.enqueue(cmd.conversationId, {
           id: cmd.clientRequestId,

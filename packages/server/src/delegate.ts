@@ -323,12 +323,12 @@ export function makeDelegate(ctx: {
         )
         if (!folded.ok) return { ok: false, error: folded.error }
         const projection = folded.projection
-        if (projection.phase === 'failed') {
-          return { ok: false, error: `工作流 ${workflowId} 已失败，请重新派发` }
-        }
-        // 这两道闸只拦 approve。revise 对任意检查点都成立，包括已批准的那些——
-        // 「批准 = 解散」正是返工只能另起一条新子会话的根因。
+        // 这几道闸只拦 approve。revise 对任意检查点都成立，包括已批准的与被打断的：
+        // 「批准 = 解散」正是返工只能另起一条新子会话的根因，被打断的图也靠 revise 续跑原子会话。
         if (input.call.decision === 'approve') {
+          if (projection.phase === 'failed') {
+            return { ok: false, error: `工作流 ${workflowId} 已失败，请重新派发` }
+          }
           if (projection.phase !== 'waiting_review') {
             return {
               ok: false,

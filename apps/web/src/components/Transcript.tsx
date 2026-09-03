@@ -1200,8 +1200,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
       return {
         phase: live?.phase ?? settled ?? 'working',
         label: live?.label ?? '',
-        // 耗时不在进度事件里，它随 `tool.finished` 落进这条 step。
-        durationMs: props.item.durationMs,
+        // 这一格不印耗时：派一件的耗时就是这次调用的耗时，卡顶动作行已经印过。
         conversationId: live?.conversationId ?? delegateConversationId(props.item),
       }
     }

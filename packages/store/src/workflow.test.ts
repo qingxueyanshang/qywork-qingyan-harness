@@ -3,6 +3,7 @@
  * 认出哪几条是首派。**这是 workflow 唯一的恢复权威**，没有第二份运行表。
  */
 import { describe, expect, test } from 'bun:test'
+import type { ConversationId } from '@qywork/core'
 import { Store } from './db.ts'
 import {
   appendStep,
@@ -89,6 +90,30 @@ describe('workflow 调用记录', () => {
       first.id,
     ])
     expect(listWorkflowRecords(store, conversation.id)[0]?.status).toBe('success')
+    store.close()
+  })
+
+  test('被打断的调用把节点子会话 id 一并带出', () => {
+    const { store, conversation, run } = fresh()
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_1',
+      status: 'running',
+      payload: { kind: 'tool_call', args: START_ARGS },
+    })
+    settleToolStep(store, step.id, 'failure', {
+      kind: 'tool_result',
+      args: START_ARGS,
+      children: { a: 'cv_a' as ConversationId },
+      outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
+    })
+    expect(listWorkflowRecords(store, conversation.id)[0]).toMatchObject({
+      status: 'failure',
+      children: { a: 'cv_a' },
+    })
     store.close()
   })
 

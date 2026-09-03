@@ -1137,6 +1137,40 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(transcript().find((item) => item.id === 'st_1')?.nodes).toBeUndefined()
   })
 
+  /** 被打断的 step 没有 transition，children 要随条目带出去，折叠时才折得出节点状态。 */
+  test('被打断的 workflow step 把 children 带进条目', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    stub(
+      [
+        {
+          ...toolStep(''),
+          toolName: 'workflow',
+          payload: {
+            kind: 'tool_result',
+            args: {
+              goal: '目标',
+              nodes: [
+                { id: 'a', task: '做' },
+                { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+              ],
+            },
+            action: { kind: 'run', objectLabel: '编排' },
+            children: { a: 'cv_a' },
+            outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
+          },
+          status: 'failure',
+        },
+      ],
+      [interruptedRun],
+    )
+    await reloadActiveConversation()
+
+    const card = transcript().find((item) => item.id === 'st_1')
+    expect(card?.children).toEqual({ a: 'cv_a' })
+    expect(card?.nodes).toBeUndefined()
+  })
+
   /**
    * 后台进程被杀之后，账本里那一轮已经是 `interrupted`，界面要据此把那一轮的收尾
    * 画出来。**「在不在跑」不从这里读**：账本那行在进程崩过之后可能还挂着

@@ -96,6 +96,8 @@ export interface TranscriptItem {
    * 同一个值在 outcome.data.conversationId，两个阶段只会有一个入口。
    */
   childConversationId?: string
+  /** workflow 逐节点的子会话入口，随 step payload 回放；被打断的图靠它折出节点状态。 */
+  children?: Record<string, string>
   batchId?: string
   waveIndex?: number
 }
