@@ -524,6 +524,42 @@ describe('事件按会话归属过滤', () => {
     syncViews()
   })
 
+  test('新派出的单个子 agent 在实时事件入口就保存子会话 id', () => {
+    reset('cv_parent')
+    applyEvent({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_parent',
+      event: {
+        type: 'tool.started',
+        runId: 'run_parent',
+        stepId: 'st_delegate',
+        toolName: 'subagent',
+        args: { agent: 'glm-racer', task: '复验' },
+        action: { kind: 'run', objectLabel: '子 agent', target: 'glm-racer' },
+      },
+    } as never)
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_parent',
+      event: {
+        type: 'team.member',
+        runId: 'run_parent',
+        stepId: 'st_delegate',
+        memberId: 'child',
+        roleName: 'GLM 赛车开发者',
+        backend: 'builtin',
+        phase: 'working',
+        childConversationId: 'cv_child_live',
+      },
+    } as never)
+
+    const card = transcript().find((item) => item.id === 'st_delegate')
+    expect(card?.childConversationId).toBe('cv_child_live')
+    expect(card?.nodes?.[0]?.conversationId).toBe('cv_child_live')
+  })
+
   test('子会话历史里的待办不另建顶部投影，也不写进父会话清单', async () => {
     reset('cv_now')
     openConversationTab('cv_child_done', '已完成的子 agent')

@@ -291,6 +291,10 @@ function foldContent(cid: string, ev: AgentEvent): void {
           // 子会话 id 要逐条保留。它在 `working` 那条补上来，后面每条都得带着——
           // 不带的话 `done` 到达时这一格重新变回点不开的。外部 CLI 那几格没有这个字段。
           const child = ev.childConversationId ?? nodes[i]?.conversationId
+          // 单次 subagent 也走 team.member 通道。实时事件里的会话 id 原本只落在
+          // nodes[0]，而刷新回放后却落在卡片顶层，导致同一张卡刷新前后是两种形状。
+          // 这里在事件入口就归一；右侧子会话的运行判定与点击入口都只认同一份事实。
+          if (card.toolName === 'subagent' && child) card.childConversationId = child
           const next: WorkflowNodeState = {
             nodeId: ev.memberId,
             agent: nodes[i]?.agent ?? ev.roleName,

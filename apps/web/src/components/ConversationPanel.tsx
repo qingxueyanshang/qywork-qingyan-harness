@@ -33,7 +33,8 @@ export function delegatedParentStillRunning(conversationId: string): boolean {
   return Object.values(state.views).some((parent) =>
     parent.transcript.some((item) => {
       if (item.kind !== 'tool' || item.status !== 'running') return false
-      if (item.toolName === 'subagent') return delegateConversationId(item) === conversationId
+      if (item.toolName === 'subagent' && delegateConversationId(item) === conversationId)
+        return true
       return item.nodes?.some(
         (node) =>
           node.conversationId === conversationId &&

@@ -487,7 +487,15 @@ describe('子会话与主会话共用流式外壳', () => {
               toolName: 'subagent',
               args: { agent: 'qwen-racer', task: '继续修复' },
               status: 'running',
-              childConversationId: 'cv_child_legacy',
+              nodes: [
+                {
+                  nodeId: 'child',
+                  agent: 'qwen-racer',
+                  label: 'Qwen 赛车开发者',
+                  phase: 'working',
+                  conversationId: 'cv_child_legacy',
+                },
+              ],
             },
           ],
           history: { loading: null, nextCursor: null, error: null },
