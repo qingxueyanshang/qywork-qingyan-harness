@@ -37,7 +37,7 @@ export function listWorkflowRecords(
         stepId: step.id,
         ...(payload.args ? { args: payload.args } : {}),
         ...(payload.kind === 'tool_result' ? { outcome: payload.outcome } : {}),
-        ...(payload.children ? { children: payload.children } : {}),
+        ...(payload.nodes ? { nodes: payload.nodes } : {}),
         status:
           step.status === 'running' ? 'running' : step.status === 'success' ? 'success' : 'failure',
       })

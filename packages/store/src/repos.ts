@@ -14,6 +14,8 @@ import type {
   ConversationId,
   Message,
   MessageId,
+  NodePhase,
+  NodeState,
   ProviderKind,
   ProviderRequest,
   ProviderRequestDiagnostic,
@@ -1053,6 +1055,23 @@ function pidAlive(pid: number): boolean {
  * 看不出它是哪一步崩的。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
+  // 派活卡上没跑完的格先标成中断，再给 step 补终态：那几格的子 agent 不会再有回执。
+  const cards = store.db
+    .query<{ id: string; payload: string }, [string]>(
+      `SELECT id, payload FROM steps
+       WHERE run_id = ? AND status = 'running' AND json_type(payload, '$.nodes') = 'object'`,
+    )
+    .all(runId)
+  for (const card of cards) {
+    const payload = JSON.parse(card.payload) as { nodes: Record<string, NodeState> }
+    for (const [nodeId, state] of Object.entries(payload.nodes)) {
+      if (SETTLED_PHASES.has(state.phase)) continue
+      payload.nodes[nodeId] = { ...state, phase: 'interrupted', error: '调用中断' }
+    }
+    store.db
+      .query('UPDATE steps SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(payload), card.id)
+  }
   const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
     store.db
       .query(
@@ -1420,54 +1439,32 @@ export function markStepExecuting(store: Store, id: StepId): void {
   store.db.query('UPDATE steps SET execution_started_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
-/**
- * 子会话一创建就把入口写回正在执行的工具 step。
- *
- * 不能等 `settleToolStep`：用户可能在子 agent 运行期间切走父会话，切回来会从账本
- * 重建卡片；那时工具尚无 outcome，而运行期的 `team.member` 事件已经错过，节点会永久
- * 变成不可点击。这里只补一个 JSON 字段，保留原有 args / action；正常终态随后由
- * `settleToolStep` 把同一字段带进结果，进程中断则由 `settleRunningSteps` 原地补 outcome。
- */
-export function setStepChildConversation(
-  store: Store,
-  id: StepId,
-  conversationId: ConversationId,
-): void {
-  store.db
-    .query(
-      `UPDATE steps
-       SET payload = json_set(coalesce(payload, '{}'), '$.childConversationId', ?)
-       WHERE id = ? AND kind = 'tool_action' AND status = 'running'`,
-    )
-    .run(conversationId, id)
-}
+const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipped', 'interrupted'])
 
 /**
- * 同上，但写的是 workflow 图上某一个节点的子会话入口（`$.children.<nodeId>`）。
+ * 派活卡上一格的状态写回正在执行的工具 step（`$.nodes.<nodeId>`）。
+ *
+ * 每次变化当场写，不等 `settleToolStep`：用户可能在子 agent 运行期间切走父会话，
+ * 切回来从账本重建卡片，那时运行期的 `team.member` 已经错过。
  *
  * 节点 id 由模型给，可能含点号或方括号，所以走 `json_object` 构键再 `json_patch` 合并，
  * 不要改成把 id 拼进 JSON 路径字符串——那样的 id 会被当成路径分隔符解释掉。
  */
-export function setStepNodeConversation(
-  store: Store,
-  id: StepId,
-  nodeId: string,
-  conversationId: ConversationId,
-): void {
+export function setStepNodeState(store: Store, id: StepId, nodeId: string, state: NodeState): void {
   store.db
     .query(
       `UPDATE steps
        SET payload = json_set(
              coalesce(payload, '{}'),
-             '$.children',
+             '$.nodes',
              json_patch(
-               coalesce(json_extract(payload, '$.children'), json('{}')),
-               json_object(?, ?)
+               coalesce(json_extract(payload, '$.nodes'), json('{}')),
+               json_object(?, json(?))
              )
            )
        WHERE id = ? AND kind = 'tool_action' AND status = 'running'`,
     )
-    .run(nodeId, conversationId, id)
+    .run(nodeId, JSON.stringify(state), id)
 }
 
 /** 一次调用一行，原地从 running 更新到终态；不产生第二行。 */
@@ -1486,12 +1483,9 @@ export function settleToolStep(
     .query<{ payload: string | null }, [string]>('SELECT payload FROM steps WHERE id = ?')
     .get(id)
   const before = readJson<Step['payload']>(current?.payload ?? null, null)
-  const child =
-    before?.kind === 'tool_call' || before?.kind === 'tool_result'
-      ? before.childConversationId
-      : undefined
-  const settled =
-    payload?.kind === 'tool_result' && child ? { ...payload, childConversationId: child } : payload
+  const nodes =
+    before?.kind === 'tool_call' || before?.kind === 'tool_result' ? before.nodes : undefined
+  const settled = payload?.kind === 'tool_result' && nodes ? { ...payload, nodes } : payload
   store.db
     .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
     .run(status, writeJson(settled), durationMs ?? null, id)

@@ -179,7 +179,7 @@ describe('编排画布', () => {
                 kind: 'tool',
                 text: '',
                 toolName: 'workflow',
-                action: { kind: 'run', objectLabel: '编排', target: '四个候选' },
+                action: { kind: 'run', objectLabel: '工作流', target: '四个候选' },
                 args: {
                   goal: '四个候选',
                   nodes: [
@@ -257,7 +257,7 @@ describe('编排画布', () => {
                 kind: 'tool',
                 text: '',
                 toolName: 'workflow',
-                action: { kind: 'run', objectLabel: '编排', target: '四个候选' },
+                action: { kind: 'run', objectLabel: '工作流', target: '四个候选' },
                 args: {
                   goal: '四个候选',
                   nodes: [{ id: 'a', kind: 'temp', name: 'glm', task: '做' }],
@@ -284,7 +284,7 @@ describe('编排画布', () => {
     try {
       const heads = [...host.querySelectorAll<HTMLElement>('.wf-head')]
       expect(heads).toHaveLength(2)
-      expect(heads[0]?.textContent).toContain('运行编排')
+      expect(heads[0]?.textContent).toContain('运行工作流')
       expect(heads[0]?.textContent).toContain('失败')
       expect(heads[0]?.textContent).toContain('2.5s')
       expect(heads[1]?.textContent).toContain('运行子 agent')
@@ -315,13 +315,7 @@ describe('编排画布', () => {
                   nodes: [{ id: 'fifth', kind: 'temp', name: 'gemini', task: '实现第五版' }],
                 },
                 status: 'running',
-                nodes: [
-                  {
-                    nodeId: 'fifth',
-                    label: 'Gemini 开发者',
-                    phase: 'queued',
-                  },
-                ],
+                nodes: { fifth: { label: 'Gemini 开发者', phase: 'queued' } },
               },
             ] as never
           }
@@ -331,7 +325,7 @@ describe('编排画布', () => {
     )
 
     try {
-      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('等待并发槽位')
+      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('排队')
     } finally {
       dispose()
     }
@@ -543,14 +537,13 @@ describe('子会话与主会话共用流式外壳', () => {
               toolName: 'subagent',
               args: { kind: 'role', role: 'qwen-racer', task: '继续修复' },
               status: 'running',
-              nodes: [
-                {
-                  nodeId: 'child',
+              nodes: {
+                child: {
                   label: 'Qwen 赛车开发者',
                   phase: 'working',
-                  conversationId: 'cv_child_legacy',
+                  subagentId: 'cv_child_legacy',
                 },
-              ],
+              },
             },
           ],
           history: { loading: null, nextCursor: null, error: null },

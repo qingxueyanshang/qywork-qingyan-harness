@@ -38,23 +38,19 @@ function deps(
   const events: Record<string, unknown>[] = []
   const describe = (target: SubagentTarget) => {
     if ('subagent' in target) {
-      return KNOWN.subagents.has(target.subagent)
-        ? { label: target.subagent, backend: 'builtin' as const }
-        : null
+      return KNOWN.subagents.has(target.subagent) ? { label: target.subagent } : null
     }
-    if (target.kind === 'temp') return { label: target.name, backend: 'builtin' as const }
+    if (target.kind === 'temp') return { label: target.name }
     if (target.kind === 'role') {
-      return KNOWN.roles.has(target.role)
-        ? { label: target.role, backend: 'builtin' as const }
-        : null
+      return KNOWN.roles.has(target.role) ? { label: target.role } : null
     }
-    return KNOWN.clis.has(target.cli) ? { label: target.cli, backend: 'custom' as const } : null
+    return KNOWN.clis.has(target.cli) ? { label: target.cli } : null
   }
   const d: OrchestratorDeps = {
     signal: new AbortController().signal,
     runId: 'rn_t' as never,
     maxConcurrent,
-    emit: (event) => events.push(event as unknown as Record<string, unknown>),
+    node: (nodeId, state) => events.push({ nodeId, ...state }),
     describe,
     dispatch: async (input) => {
       const label = describe(input.target)?.label ?? '?'
@@ -317,12 +313,8 @@ describe('编排执行', () => {
 
     expect(receipts).toHaveLength(5)
     expect(peak).toBe(4)
-    expect(d.events).toContainEqual(
-      expect.objectContaining({ type: 'team.member', memberId: 'e', phase: 'queued' }),
-    )
-    expect(d.events).toContainEqual(
-      expect.objectContaining({ type: 'team.member', memberId: 'e', phase: 'working' }),
-    )
+    expect(d.events).toContainEqual(expect.objectContaining({ nodeId: 'e', phase: 'queued' }))
+    expect(d.order).toHaveLength(5)
   })
 
   test('指向本会话已有子 agent 的节点按 id 派发，不新建', async () => {
@@ -628,11 +620,8 @@ function byId(results: NodeResult[], id: string): NodeResult {
 }
 
 /**
- * 子 agent 的 id 要带出去。
- *
- * 子 agent 的会话不进会话列表——**`team.member` 事件里的这个 id 是它的入口**。
- * 断在这一环的表现最难查：面板照常显示「完成」，只是那个子 agent 读了什么、跑了哪些命令
- * 永远看不到，而且没有任何报错。
+ * 子 agent 的 id 与耗时随回执带出去：子 agent 的会话不进会话列表，这个 id 是续接它的
+ * 唯一入口；耗时以派发方量的为准，卡上那一格与回执是同一个数。
  */
 describe('子 agent 入口', () => {
   const plan: PlanNode[] = [
@@ -640,23 +629,41 @@ describe('子 agent 入口', () => {
     { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['n1'] },
   ]
 
-  test('派发端返回了子 agent id，就出现在 done 事件与回执上', async () => {
+  test('派发端返回的子 agent id 与耗时原样进回执', async () => {
     const d = deps(async (label) => ({
       ok: true,
       output: `${label} 的产出`,
       subagentId: 'cv_child',
+      durationMs: 1234,
     }))
     const { receipts } = await new TeamOrchestrator(plan, d.deps, KNOWN).run('目标')
-    const done = d.events.find((e) => e.phase === 'done')
-    expect(done?.childConversationId).toBe('cv_child')
     expect(receipts[0]?.subagentId).toBe('cv_child')
+    expect(receipts[0]?.durationMs).toBe(1234)
   })
 
-  /** 没有子 agent id 时这个键必须**缺席**，不是 undefined：界面据它判断这行能不能点。 */
+  /** 没有子 agent id 时这个键必须**缺席**，不是 undefined：续接按它判断有没有可续的。 */
   test('没有子 agent id 时不带这个键', async () => {
     const d = deps(async (label) => ({ ok: true, output: `${label} 的产出` }))
-    await new TeamOrchestrator(plan, d.deps, KNOWN).run('目标')
-    const done = d.events.find((e) => e.phase === 'done')
-    expect('childConversationId' in (done ?? {})).toBe(false)
+    const { receipts } = await new TeamOrchestrator(plan, d.deps, KNOWN).run('目标')
+    expect('subagentId' in (receipts[0] ?? {})).toBe(false)
+  })
+
+  /** 卡上每一格的状态由编排器报：开跑先等待，排队、跳过与派发之外的失败各报一次。 */
+  test('开跑先把每一格标成等待，派发方找不到目标时那一格失败', async () => {
+    const d = deps(ok)
+    const bad: PlanNode[] = [
+      node('a', '做'),
+      node('b', '也做', { target: { kind: 'role', role: 'nobody' } }),
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+    ]
+    await new TeamOrchestrator(bad, d.deps, {
+      ...KNOWN,
+      roles: new Set([...KNOWN.roles, 'nobody']),
+    }).run('目标')
+    expect(d.events.slice(0, 2)).toEqual([
+      { nodeId: 'a', phase: 'waiting', label: 'r' },
+      { nodeId: 'b', phase: 'waiting', label: 'nobody' },
+    ])
+    expect(d.events.at(-1)).toMatchObject({ nodeId: 'b', phase: 'failed', error: '找不到派发目标' })
   })
 })

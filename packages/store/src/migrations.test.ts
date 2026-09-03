@@ -573,6 +573,69 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
  *
  * 比的是**集合**不是顺序：`SELECT *` 取的是名字，列的物理顺序改了不影响任何调用方。
  */
+describe('迁移 40：派活卡的节点事实收成 nodes', () => {
+  test('派一件与一张图的旧键都折成每格的状态与名字', () => {
+    const db = dbBefore(40)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', 0, 0), ('cv_a', 'ws', 'GLM 版', 'p', 'm', 0, 0),
+         ('cv_b', 'ws', 'Qwen 版', 'p', 'm', 0, 0), ('cv_c', 'ws', '查资料', 'p', 'm', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', ?, ?, ?, 0)`,
+    )
+    insert.run(
+      'st_one',
+      1,
+      'subagent',
+      JSON.stringify({ kind: 'tool_result', args: {}, outcome: {}, childConversationId: 'cv_c' }),
+      'success',
+    )
+    insert.run(
+      'st_graph',
+      2,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {},
+        outcome: {},
+        children: { 'build.glm': 'cv_a', 'build.qwen': 'cv_b' },
+      }),
+      'failure',
+    )
+    insert.run(
+      'st_plain',
+      3,
+      'read_file',
+      JSON.stringify({ kind: 'tool_result', args: {} }),
+      'success',
+    )
+
+    applyOne(db, 40)
+
+    expect(payloadJson(db, 'st_one')).toEqual({
+      kind: 'tool_result',
+      args: {},
+      outcome: {},
+      nodes: { child: { phase: 'done', label: '查资料', subagentId: 'cv_c' } },
+    })
+    expect(payloadJson(db, 'st_graph')).toEqual({
+      kind: 'tool_result',
+      args: {},
+      outcome: {},
+      nodes: {
+        'build.glm': { phase: 'failed', label: 'GLM 版', subagentId: 'cv_a' },
+        'build.qwen': { phase: 'failed', label: 'Qwen 版', subagentId: 'cv_b' },
+      },
+    })
+    expect(payloadJson(db, 'st_plain')).toEqual({ kind: 'tool_result', args: {} })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')

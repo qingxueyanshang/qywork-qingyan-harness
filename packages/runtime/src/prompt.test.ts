@@ -176,6 +176,7 @@ describe('尾区注记', () => {
           subagentId: 'cv_qwen',
         },
       },
+      states: {},
       attempts: {},
       approvals: {},
     }

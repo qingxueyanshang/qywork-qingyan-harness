@@ -18,6 +18,7 @@ import type {
   FileChange,
   FollowUp,
   Goal,
+  NodeState,
   RunUsage,
   StopReason,
   TodoItem,
@@ -467,30 +468,23 @@ export interface GitStateEvent {
  * 单次派活那张卡上唯一那个子节点的 id。
  *
  * 一次 `subagent` 调用就是一张只有一个节点的图，与编排共用下面这条通道，
- * 而通道按 `memberId` 认领节点，所以两侧要用同一个值。
+ * 而通道按节点 id 认领格子，所以两侧要用同一个值。
  *
  * 它不进界面：界面上那一格显示的是执行者的名字。
  */
 export const SUBAGENT_NODE_ID = 'child'
 
-/** Agent Team 的成员状态。父会话据此画协作视图。 */
+/**
+ * 派活卡上一格的状态变了。与写进 step payload `nodes` 的是同一份 `NodeState`：
+ * 流式期看这条，刷新之后读落库的那份，两边同形。
+ */
 export interface TeamMemberEvent {
   type: 'team.member'
   runId: RunId
-  memberId: string
-  roleName: string
-  /** 该成员背后的执行器：内置 loop 或外部 CLI。 */
-  backend: 'builtin' | 'codex' | 'claude' | 'grok' | 'custom'
-  /** queued = 依赖已满足，但正在等 workflow 的并发槽位。 */
-  phase: 'queued' | 'spawned' | 'working' | 'done' | 'failed'
-  summary?: string
-  childConversationId?: ConversationId
-  /**
-   * 这一轮编排挂在哪张工具卡上（`workflow` 那次调用的 step id）。
-   *
-   * 图卡按它认领进度：不带的话事件到了前端也无处可落——一条会话里可能有好几张图卡。
-   */
-  stepId?: string
+  /** 哪张卡：派活那次调用的 step id。一条会话里可能有好几张图卡。 */
+  stepId: string
+  nodeId: string
+  state: NodeState
 }
 
 /**
@@ -502,16 +496,15 @@ export interface TeamMemberEvent {
  * 与 `tool.delta` 分开是因为多了一维：一张图里可以有好几个 CLI 节点同时在跑，
  * 混进同一个 `stepId` 的缓冲就再也分不出哪一段是谁的。
  *
- * **不落库**，与 `team.member` 同一条口径：流式期间看这条，刷新之后看落库的
- * 逐节点终态（`NodeResult.output`）。
+ * **不落库**：流式期间看这条，刷新之后看落库的逐节点产出。
  */
 export interface TeamOutputEvent {
   type: 'team.output'
   runId: RunId
-  /** 哪一张图卡。与 `team.member` 同理，不带的话前端无处可落。 */
-  stepId?: string
+  /** 哪一张图卡。 */
+  stepId: string
   /** 哪个节点。 */
-  memberId: string
+  nodeId: string
   /**
    * 两条流合成一条。**不分 stdout / stderr**：观察一个进程执行时它们本来就是交织的，
    * 而分开要么多一份状态，要么多一个没人读的字段。执行失败的诊断另有出口——

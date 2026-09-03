@@ -17,6 +17,7 @@ import type {
   EventEnvelope,
   FollowUp,
   Goal,
+  NodeState,
   RunUsage,
   StopReason,
   ToolOutcomeWire,
@@ -25,15 +26,7 @@ import { createEffect, createRoot } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
-import {
-  dropView,
-  markBusy,
-  openView,
-  setState,
-  state,
-  type TranscriptItem,
-  type WorkflowNodeState,
-} from './state.ts'
+import { dropView, markBusy, openView, setState, state, type TranscriptItem } from './state.ts'
 import { panelTabs, tabConversationId, workspace } from './ui.ts'
 
 export const client = new QyClient({
@@ -139,15 +132,17 @@ const toolFrames = createFramer({ write: appendStdout, schedule })
  * 只按卡认的话它们的输出会混成一段，再也分不出谁是谁。
  */
 function appendNodeOutput(key: string, chunk: string): void {
-  const [cid, stepId, memberId] = key.split(SEP)
+  const [cid, stepId, nodeId] = key.split(SEP)
   setState(
     produce((s) => {
       const card = s.views[cid ?? '']?.transcript.find((t) => t.id === stepId)
-      const node = card?.nodes?.find((n) => n.nodeId === memberId)
-      if (!node) return
-      const next = (node.output ?? '') + chunk
+      if (!card || !nodeId) return
+      const next = (card.cliOutput?.[nodeId] ?? '') + chunk
       // 与工具卡的 stdout 同一个上限：再多也读不完，只会推高内存与渲染开销。
-      node.output = next.length > 8000 ? next.slice(-8000) : next
+      card.cliOutput = {
+        ...(card.cliOutput ?? {}),
+        [nodeId]: next.length > 8000 ? next.slice(-8000) : next,
+      }
     }),
   )
 }
@@ -290,34 +285,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 function foldContent(cid: string, ev: AgentEvent): void {
   switch (ev.type) {
     case 'team.member':
-      // 进度落到那张图卡上。**没带 stepId 就整条丢弃**：一条会话里可能有好几张图卡，
-      // 认不出是哪一张时挂在任意一张上，用户看到的是另一件事的进度。
-      if (!ev.stepId) return
       setState(
         produce((s) => {
           const card = s.views[cid]?.transcript.find((t) => t.id === ev.stepId)
           if (!card) return
-          const nodes = card.nodes ?? []
-          // 原地更新而不是追加：同一个节点会连发 spawned → working → done，
-          // 追加的话图上会出现同一个节点的三份。
-          const i = nodes.findIndex((n) => n.nodeId === ev.memberId)
-          // 子会话 id 要逐条保留。它在 `working` 那条补上来，后面每条都得带着——
-          // 不带的话 `done` 到达时这一格重新变回点不开的。外部 CLI 那几格没有这个字段。
-          const child = ev.childConversationId ?? nodes[i]?.conversationId
-          // 单次 subagent 的入口只落卡片顶层；workflow 才按节点保存入口。
-          // 两种工具各有一个规范形状，不让同一 subagent 同时存在顶层与 nodes[0]。
-          if (card.toolName === 'subagent' && child) card.childConversationId = child
-          const next: WorkflowNodeState = {
-            nodeId: ev.memberId,
-            agent: nodes[i]?.agent ?? ev.roleName,
-            label: ev.roleName,
-            phase: ev.phase,
-            ...(ev.summary ? { summary: ev.summary } : {}),
-            ...(card.toolName === 'workflow' && child ? { conversationId: child } : {}),
-          }
-          if (i >= 0) nodes[i] = next
-          else nodes.push(next)
-          card.nodes = nodes
+          // 整份替换而不是改字段：卡片按 `nodes` 的引用重画，连线跟着状态一起变。
+          card.nodes = { ...(card.nodes ?? {}), [ev.nodeId]: ev.state }
         }),
       )
       return
@@ -430,9 +403,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
       return
 
     case 'team.output':
-      // 认不出是哪张卡就整条丢弃，与 `team.member` 同一条理由。
-      if (!ev.stepId) return
-      nodeFrames.push(bufKey(cid, ev.stepId, ev.memberId), ev.delta)
+      nodeFrames.push(bufKey(cid, ev.stepId, ev.nodeId), ev.delta)
       return
 
     case 'tool.finished':
@@ -715,9 +686,8 @@ interface StoredStep {
     args?: Record<string, unknown>
     outcome?: ToolOutcomeWire
     action?: ActionDescriptor
-    childConversationId?: string
-    /** workflow 逐节点的子会话入口，见 `StepPayload`。 */
-    children?: Record<string, string>
+    /** 派活卡每一格的状态，见 `StepPayload`。 */
+    nodes?: Record<string, NodeState>
     /** kind='compaction' 专有，见 `StepPayload`。 */
     phase?: 'done' | 'skipped' | 'failed'
     summarized?: boolean
@@ -730,17 +700,6 @@ interface StoredStep {
   createdAt: number
   /** 这次调用跑了多久。迁移 28 之前的行没有这个数。 */
   durationMs: number | null
-}
-
-/** 运行中的图：落了库的节点子会话入口还原成节点状态，名字与耗时留给终态那条路补。 */
-function liveNodesOf(children: Record<string, string>): WorkflowNodeState[] {
-  return Object.entries(children).map(([nodeId, conversationId]) => ({
-    nodeId,
-    agent: '',
-    label: '',
-    phase: 'working' as const,
-    conversationId,
-  }))
 }
 
 /** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
@@ -1249,16 +1208,7 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
         toolName: s.toolName ?? '',
         ...(s.payload?.action ? { action: s.payload.action } : {}),
         ...(s.payload?.args ? { args: s.payload.args } : {}),
-        ...(s.payload?.childConversationId
-          ? { childConversationId: s.payload.childConversationId }
-          : {}),
-        ...(s.payload?.children ? { children: s.payload.children } : {}),
-        // 图跑着的时候切走再切回来：这条 step 还没有 outcome，逐节点终态也就不存在，
-        // `$.children` 是那一刻唯一落了库的节点事实。**只在 running 时还原**——
-        // 终态之后回执自带 conversationId，再补一份会盖掉真实的 phase 与耗时。
-        ...(s.status === 'running' && s.payload?.children
-          ? { nodes: liveNodesOf(s.payload.children) }
-          : {}),
+        ...(s.payload?.nodes ? { nodes: s.payload.nodes } : {}),
         status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
         ...(outcome ? { outcome } : {}),
         // 存量行没有这个数，那时不显示耗时——不为它编一个。

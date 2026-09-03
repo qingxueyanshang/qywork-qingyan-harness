@@ -1,4 +1,4 @@
-import type { ToolOutcomeWire } from './model.ts'
+import type { NodeState, ToolOutcomeWire } from './model.ts'
 
 export type WorkflowPhase = 'running' | 'waiting_review' | 'completed' | 'failed'
 
@@ -89,8 +89,8 @@ export interface WorkflowCallRecord {
   args?: Record<string, unknown>
   outcome?: ToolOutcomeWire
   status?: 'running' | 'success' | 'failure'
-  /** 这次调用起过的节点子会话，键是节点 id。被打断的调用没有回执，这是它留下的唯一节点事实。 */
-  children?: Record<string, string>
+  /** 这次调用里每一格的状态，键是节点 id。被打断的调用没有回执，这是它留下的唯一节点事实。 */
+  nodes?: Record<string, NodeState>
 }
 
 export interface WorkflowProjection {
@@ -103,6 +103,8 @@ export interface WorkflowProjection {
   checkpointId?: string
   /** 每个 agent 节点最近一次回执。 */
   results: Record<string, WorkflowReceipt>
+  /** 每一格最近一次状态，按调用顺序折叠。界面画图只认它，回执不参与。 */
+  states: Record<string, NodeState>
   /** 每个 agent 节点累计真实执行次数，由回执序列折叠，不单独持久化。 */
   attempts: Record<string, number>
   /** 已批准 checkpoint 的可传递输出。 */
@@ -491,6 +493,7 @@ export function foldWorkflow(
     maxConcurrent: parsed.call.maxConcurrent,
     phase: 'running',
     results: {},
+    states: {},
     attempts: {},
     approvals: {},
   }
@@ -498,6 +501,7 @@ export function foldWorkflow(
   for (const record of records) {
     if (workflowGroupId(record) !== workflowId) continue
     const transition = workflowTransitionOf(record.outcome)
+    Object.assign(projection.states, record.nodes)
     const parsedRecord = record.args ? parseWorkflowCall(record.args) : null
     const review =
       parsedRecord?.ok && parsedRecord.call.kind === 'review' ? parsedRecord.call : null
@@ -519,9 +523,10 @@ export function foldWorkflow(
     if (!transition) {
       if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
       if (record.status === 'failure') {
-        // 被打断的调用没有回执，`children` 是它留下的唯一节点事实：按它折出「调用中断」回执，
-        // revise 才找得到要续的会话。attempts 不计，这一次没有跑到终态。
-        for (const [nodeId, conversationId] of Object.entries(record.children ?? {})) {
+        // 被打断的调用没有回执，`nodes` 是它留下的唯一节点事实：建过子 agent 的格折出
+        // 「调用中断」回执，revise 才找得到要续的会话。attempts 不计，这一次没有跑到终态。
+        for (const [nodeId, state] of Object.entries(record.nodes ?? {})) {
+          if (!state.subagentId) continue
           const node = projection.nodes.find(
             (candidate): candidate is WorkflowAgentNode =>
               candidate.kind !== 'checkpoint' && candidate.id === nodeId,
@@ -529,12 +534,12 @@ export function foldWorkflow(
           if (!node) continue
           projection.results[nodeId] = {
             nodeId,
-            subagentId: conversationId,
-            label: targetLabel(node.target),
+            subagentId: state.subagentId,
+            label: state.label || targetLabel(node.target),
             status: 'failed',
             output: '',
             error: '调用中断',
-            durationMs: 0,
+            durationMs: state.durationMs ?? 0,
           }
         }
         // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。

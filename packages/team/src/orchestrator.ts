@@ -6,9 +6,9 @@
  * 不区分内置子 agent 与外部 CLI。
  */
 import {
-  type AgentEvent,
   type ConversationId,
   checkpointOutput,
+  type NodeState,
   type RunId,
   revisionClosure,
   type SubagentTarget,
@@ -24,9 +24,10 @@ export interface OrchestratorDeps {
   runId: RunId
   /** 一张图里同时最多几个节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
   maxConcurrent: number
-  emit(event: AgentEvent): void
-  /** 一格的名字与执行器。发进度事件之前就要有；认不出目标返回 null。 */
-  describe(target: SubagentTarget): { label: string; backend: 'builtin' | 'custom' } | null
+  /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
+  node(nodeId: string, state: NodeState): void
+  /** 一格的名字。写状态之前就要有；认不出目标返回 null。 */
+  describe(target: SubagentTarget): { label: string } | null
   /**
    * 派给一个子 agent。目标是新建还是已有由 `target` 决定，实现方负责建记录与跑；
    * 编排器只拿回执与子 agent id。
@@ -38,9 +39,14 @@ export interface OrchestratorDeps {
     signal: AbortSignal
     provider?: string
     model?: string
-    /** 子 agent 定下来就交出去，不等跑完：图卡那一格靠它点得开。 */
-    onSubagent?: (subagentId: string) => void
-  }): Promise<{ ok: boolean; output: string; error?: string; subagentId?: string }>
+  }): Promise<{
+    ok: boolean
+    output: string
+    error?: string
+    subagentId?: string
+    /** 派发方量的耗时，回执与卡上那一格都用它。 */
+    durationMs?: number
+  }>
 }
 
 /** 加载期校验引用用的已知集合：角色 id、CLI id、本会话已有子 agent id。 */
@@ -169,6 +175,13 @@ export class TeamOrchestrator {
       }
     }
 
+    // 图一开跑就把还没结果的格标成等待：刷新之后也看得见全貌，不只看见跑过的那几格。
+    for (const node of plan) {
+      if (isAgent(node) && !results.has(node.id)) {
+        this.deps.node(node.id, { phase: 'waiting', label: this.labelOf(node.target) })
+      }
+    }
+
     const maxConcurrent = this.deps.maxConcurrent
     const running = new Map<string, Promise<void>>()
     const announcedQueued = new Set<string>()
@@ -210,7 +223,7 @@ export class TeamOrchestrator {
           // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
           if (!announcedQueued.has(node.id)) {
             announcedQueued.add(node.id)
-            this.emitQueued(node)
+            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node.target) })
           }
           continue
         }
@@ -230,6 +243,11 @@ export class TeamOrchestrator {
           }
           results.set(node.id, skipped)
           receipts.push(skipped)
+          this.deps.node(node.id, {
+            phase: 'skipped',
+            label: skipped.label,
+            error: '上游节点未成功',
+          })
           skippedThisPass = true
           continue
         }
@@ -301,21 +319,6 @@ export class TeamOrchestrator {
     return this.deps.describe(target)?.label ?? targetLabel(target)
   }
 
-  private backendOf(target: SubagentTarget): 'builtin' | 'custom' {
-    return this.deps.describe(target)?.backend ?? 'builtin'
-  }
-
-  private emitQueued(node: WorkflowAgentNode): void {
-    this.deps.emit({
-      type: 'team.member',
-      runId: this.deps.runId,
-      memberId: node.id,
-      roleName: this.labelOf(node.target),
-      backend: this.backendOf(node.target),
-      phase: 'queued',
-    })
-  }
-
   private async execute(
     node: WorkflowAgentNode,
     goal: string,
@@ -330,7 +333,6 @@ export class TeamOrchestrator {
       return this.failed(node, targetLabel(node.target), started, '找不到派发目标')
     }
     const label = described.label
-    const backend = described.backend
 
     // 上一轮跑过就续接同一个子 agent；没留下 id 的回执续不了，只能原样报出来。
     let target: SubagentTarget = node.target
@@ -357,24 +359,6 @@ export class TeamOrchestrator {
       ? `## 主会话续发指令\n\n${correction}\n\n## 原任务与最新输入\n\n${originalTask}`
       : originalTask
 
-    this.deps.emit({
-      type: 'team.member',
-      runId: this.deps.runId,
-      memberId: node.id,
-      roleName: label,
-      backend,
-      phase: 'spawned',
-    })
-    this.deps.emit({
-      type: 'team.member',
-      runId: this.deps.runId,
-      memberId: node.id,
-      roleName: label,
-      backend,
-      phase: 'working',
-      ...(prior?.subagentId ? { childConversationId: prior.subagentId as ConversationId } : {}),
-    })
-
     try {
       const res = await this.deps.dispatch({
         nodeId: node.id,
@@ -384,30 +368,8 @@ export class TeamOrchestrator {
         // 续接已有子 agent 时模型跟着它自己的会话走，节点上的覆盖只在新建时生效。
         ...(!continuing && node.provider ? { provider: node.provider } : {}),
         ...(!continuing && node.model ? { model: node.model } : {}),
-        onSubagent: (subagentId) =>
-          this.deps.emit({
-            type: 'team.member',
-            runId: this.deps.runId,
-            memberId: node.id,
-            roleName: label,
-            backend,
-            phase: 'working',
-            childConversationId: subagentId as ConversationId,
-          }),
       })
       const subagentId = res.subagentId ?? prior?.subagentId
-
-      this.deps.emit({
-        type: 'team.member',
-        runId: this.deps.runId,
-        memberId: node.id,
-        roleName: label,
-        backend,
-        phase: res.ok ? 'done' : 'failed',
-        summary: res.output.slice(0, 200),
-        ...(subagentId ? { childConversationId: subagentId as ConversationId } : {}),
-      })
-
       return {
         nodeId: node.id,
         ...(subagentId ? { subagentId } : {}),
@@ -415,34 +377,44 @@ export class TeamOrchestrator {
         status: res.ok ? 'done' : 'failed',
         output: res.output,
         ...(res.error ? { error: res.error } : {}),
-        durationMs: Date.now() - started,
+        // 耗时以派发方量的为准：卡上那一格印的就是它，回执不另量一次。
+        durationMs: res.durationMs ?? Date.now() - started,
       }
     } catch (error) {
-      return {
-        ...this.failed(
-          node,
-          label,
-          started,
-          error instanceof Error ? error.message : String(error),
-        ),
-        ...(prior?.subagentId ? { subagentId: prior.subagentId } : {}),
-      }
+      return this.failed(
+        node,
+        label,
+        started,
+        error instanceof Error ? error.message : String(error),
+        prior?.subagentId,
+      )
     }
   }
 
+  /** 派发之外的失败：目标不存在、续不了、派发方抛了异常。回执与卡上那一格一起落。 */
   private failed(
     node: WorkflowAgentNode,
     label: string,
     started: number,
     error: string,
+    subagentId?: string,
   ): NodeResult {
+    const durationMs = Date.now() - started
+    this.deps.node(node.id, {
+      phase: 'failed',
+      label,
+      durationMs,
+      error,
+      ...(subagentId ? { subagentId: subagentId as ConversationId } : {}),
+    })
     return {
       nodeId: node.id,
+      ...(subagentId ? { subagentId } : {}),
       label,
       status: 'failed',
       output: '',
       error,
-      durationMs: Date.now() - started,
+      durationMs,
     }
   }
 }

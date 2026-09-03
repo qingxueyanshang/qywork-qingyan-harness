@@ -32,11 +32,6 @@ export function compact(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
-/** 派活卡上的子会话入口只认迁移后 step 顶层的规范字段。 */
-export function delegateConversationId(item: { childConversationId?: string }): string | undefined {
-  return item.childConversationId || undefined
-}
-
 /** 命中率要用到的那几格。写成结构类型而不是 import `RunUsage`：这个文件要能被单测直接喂数据。 */
 interface UsageLike {
   inputTokens: number

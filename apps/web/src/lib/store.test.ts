@@ -553,17 +553,17 @@ describe('事件按会话归属过滤', () => {
         type: 'team.member',
         runId: 'run_parent',
         stepId: 'st_delegate',
-        memberId: 'child',
-        roleName: 'GLM 赛车开发者',
-        backend: 'builtin',
-        phase: 'working',
-        childConversationId: 'cv_child_live',
+        nodeId: 'child',
+        state: { phase: 'working', label: 'GLM 赛车开发者', subagentId: 'cv_child_live' },
       },
     } as never)
 
     const card = transcript().find((item) => item.id === 'st_delegate')
-    expect(card?.childConversationId).toBe('cv_child_live')
-    expect(card?.nodes?.[0]?.conversationId).toBeUndefined()
+    expect(card?.nodes?.child).toEqual({
+      phase: 'working',
+      label: 'GLM 赛车开发者',
+      subagentId: 'cv_child_live' as never,
+    })
   })
 
   test('子会话历史里的待办不另建顶部投影，也不写进父会话清单', async () => {
@@ -1143,7 +1143,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
             kind: 'tool_call',
             args: { task: '并行排查' },
             action: { kind: 'run', objectLabel: '子 agent' },
-            childConversationId: 'cv_child_replayed',
+            nodes: { child: { phase: 'working', label: '子', subagentId: 'cv_child_replayed' } },
           },
           status: 'running',
         },
@@ -1153,13 +1153,12 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     await reloadActiveConversation()
 
     const card = transcript().find((item) => item.id === 'st_1')
-    expect(card?.childConversationId).toBe('cv_child_replayed')
+    expect(card?.nodes?.child?.subagentId).toBe('cv_child_replayed' as never)
   })
 
   /**
    * 原始失败形状：图跑着时刷新页面，正在跑的节点回到「等着跑」且点不开，直到整批结束。
-   * 逐节点终态要等工具收尾才有，运行期的 `team.member` 已经错过，只剩这条 step 的
-   * `$.children`。
+   * 运行期的 `team.member` 已经错过，这条 step 的 `$.nodes` 是每一格状态的唯一来源。
    */
   test('运行中的 workflow 节点入口按节点随 step 回放', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
@@ -1184,8 +1183,11 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
                 },
               ],
             },
-            action: { kind: 'run', objectLabel: '编排' },
-            children: { 'build-glm': 'cv_glm', 'build-qwen': 'cv_qwen' },
+            action: { kind: 'run', objectLabel: '工作流' },
+            nodes: {
+              'build-glm': { phase: 'working', label: 'glm', subagentId: 'cv_glm' },
+              'build-qwen': { phase: 'queued', label: 'qwen' },
+            },
           },
           status: 'running',
         },
@@ -1195,14 +1197,16 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     await reloadActiveConversation()
 
     const card = transcript().find((item) => item.id === 'st_1')
-    expect(card?.nodes?.map((node) => [node.nodeId, node.conversationId, node.phase])).toEqual([
+    expect(
+      Object.entries(card?.nodes ?? {}).map(([id, node]) => [id, node.subagentId, node.phase]),
+    ).toEqual([
       ['build-glm', 'cv_glm', 'working'],
-      ['build-qwen', 'cv_qwen', 'working'],
+      ['build-qwen', undefined, 'queued'],
     ])
   })
 
-  /** 终态之后回执自带 conversationId，再从 children 补一份会盖掉真实 phase 与耗时。 */
-  test('已收尾的 workflow step 不再从 children 造节点状态', async () => {
+  /** 终态之后每一格的状态照样从 step 回放：耗时、子会话入口都在 `nodes` 里。 */
+  test('已收尾的 workflow step 的节点状态随 step 回放', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
@@ -1213,8 +1217,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
           payload: {
             kind: 'tool_result',
             args: { goal: '目标', nodes: [{ id: 'a', task: '做' }] },
-            action: { kind: 'run', objectLabel: '编排' },
-            children: { a: 'cv_a' },
+            action: { kind: 'run', objectLabel: '工作流' },
+            nodes: { a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 5 } },
             outcome: { status: 'success', executed: true, message: '完成' },
           },
           status: 'success',
@@ -1224,11 +1228,16 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     )
     await reloadActiveConversation()
 
-    expect(transcript().find((item) => item.id === 'st_1')?.nodes).toBeUndefined()
+    expect(transcript().find((item) => item.id === 'st_1')?.nodes?.a).toEqual({
+      phase: 'done',
+      label: 'a',
+      subagentId: 'cv_a' as never,
+      durationMs: 5,
+    })
   })
 
-  /** 被打断的 step 没有 transition，children 要随条目带出去，折叠时才折得出节点状态。 */
-  test('被打断的 workflow step 把 children 带进条目', async () => {
+  /** 被打断的 step 没有 transition，nodes 要随条目带出去，折叠时才折得出节点状态。 */
+  test('被打断的 workflow step 把 nodes 带进条目', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
@@ -1245,8 +1254,10 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
                 { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
               ],
             },
-            action: { kind: 'run', objectLabel: '编排' },
-            children: { a: 'cv_a' },
+            action: { kind: 'run', objectLabel: '工作流' },
+            nodes: {
+              a: { phase: 'interrupted', label: 'a', subagentId: 'cv_a', error: '调用中断' },
+            },
             outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
           },
           status: 'failure',
@@ -1257,8 +1268,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     await reloadActiveConversation()
 
     const card = transcript().find((item) => item.id === 'st_1')
-    expect(card?.children).toEqual({ a: 'cv_a' })
-    expect(card?.nodes).toBeUndefined()
+    expect(card?.nodes?.a).toMatchObject({ phase: 'interrupted', subagentId: 'cv_a' })
   })
 
   /**

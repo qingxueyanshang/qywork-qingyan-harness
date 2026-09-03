@@ -29,7 +29,6 @@ import {
   clamp,
   collapseCarriageReturns,
   compact,
-  delegateConversationId,
   delegateGraph,
   diffFrom,
   displayTarget,
@@ -1155,9 +1154,9 @@ export function mergeWorkflowEdgeSegments(
  * 派活的图卡。**派一件与派一张图共用这一张**——一次派活就是一张只有一格的图，
  * 两种画法并存的代价是同一件事在会话流里长两个样。
  *
- * **形状来自参数，状态来自事件或结果。** 参数随 `tool.started` 就到，所以第一帧就能
- * 把整张图画全，等着跑的格子也在图上；状态在流式期来自 `team.member` 事件
- * （`item.nodes`），刷新之后来自落库的终态。两条路各管一段，不互相兜底——进度事件不落库。
+ * **形状来自参数，状态只有一个来源。** 参数随 `tool.started` 就到，所以第一帧就能
+ * 把整张图画全，等着跑的格子也在图上；状态是 `item.nodes`（一张图折成 `workflow.states`），
+ * 流式期由 `team.member` 逐格替换，刷新之后从 step payload 整份带回。
  *
  * 按依赖分层排：同一层的并排（它们真的在并行跑），层与层之间一条竖线。
  * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
@@ -1166,14 +1165,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
   const graph = () => delegateGraph(props.item)
 
   /**
-   * 一格现在什么状态。会话端点没有状态——它是这条会话本身。
-   *
-   * **三条来源各管一段**：进度事件（流式）· 编排结果里的逐节点终态（刷新之后的一张图）·
-   * 这条 step 自己（刷新之后的一次派活——那一格就是这条 step）。
-   * 第三条与前两条不是兜底关系：派一件的结果里本来就没有逐节点终态，
-   * 那一格的成败、耗时全在 step 账上。
+   * 一格现在什么状态。会话端点没有状态——它是这条会话本身；检查点那一格由审查记录决定。
+   * agent 格只读 `nodes`：一张图读折叠后的 `workflow.states`，派一件读这条 step 自己的。
    */
-  const stateOf = (n: GraphNode) => {
+  const stateOf = (n: GraphNode): NodeView | null => {
     if (n.kind === 'session') {
       const checkpoint = props.item.workflow?.nodes.find(
         (node) => node.kind === 'checkpoint' && node.id === n.key,
@@ -1192,37 +1187,18 @@ function DelegateCard(props: { item: TranscriptItem }) {
         label: checkpoint.label,
       }
     }
-    const live = props.item.nodes?.find((x) => x.nodeId === n.key)
-    if (props.item.toolName !== 'workflow') {
-      const settled =
-        props.item.status === 'success' ? 'done' : props.item.status === 'failure' ? 'failed' : null
-      return {
-        phase: live?.phase ?? settled ?? 'working',
-        label: live?.label ?? '',
-        // 这一格不印耗时：派一件的耗时就是这次调用的耗时，卡顶动作行已经印过。
-        conversationId: delegateConversationId(props.item),
-      }
+    const state = props.item.workflow
+      ? props.item.workflow.states[n.key]
+      : props.item.nodes?.[n.key]
+    return {
+      phase: state?.phase ?? 'waiting',
+      label: state?.label ?? '',
+      ...(state?.durationMs ? { durationMs: state.durationMs } : {}),
+      ...(state?.subagentId ? { conversationId: state.subagentId } : {}),
+      ...(props.item.workflow?.attempts[n.key]
+        ? { attempts: props.item.workflow.attempts[n.key] }
+        : {}),
     }
-    if (live) {
-      return {
-        phase: live.phase,
-        label: live.label,
-        durationMs: live.durationMs,
-        conversationId: live.conversationId,
-        attempts: props.item.workflow?.attempts[n.key],
-      }
-    }
-    const projected = props.item.workflow?.results[n.key]
-    if (projected) {
-      return {
-        phase: projected.status,
-        label: projected.label,
-        durationMs: projected.durationMs,
-        conversationId: projected.subagentId,
-        attempts: props.item.workflow?.attempts[n.key],
-      }
-    }
-    return null
   }
 
   /**
@@ -1252,7 +1228,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
       if (sources.length === 0) continue
       // 这一组边流不流动，看它汇进去的那个节点在不在跑。
       const phase = stateOf(n)?.phase
-      const live = phase === 'spawned' || phase === 'working'
+      const live = phase === 'working'
       const t = to.getBoundingClientRect()
       if (g.horizontal) {
         // 三格横排时每条边只连一对格子：左格右缘中点画到右格左缘中点，一条直线。
@@ -1333,9 +1309,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
     >
       <div class="wf-head">
         <span class="wf-action">{actionLabel(props.item)}</span>
-        <Show when={statusWord(props.item.status)}>
-          {(word) => <span class="wf-word">{word()}</span>}
-        </Show>
+        <Show when={cardWord(props.item)}>{(word) => <span class="wf-word">{word()}</span>}</Show>
         <Show when={props.item.durationMs}>
           {(ms) => <span class="wf-time">{(ms() / 1000).toFixed(1)}s</span>}
         </Show>
@@ -1365,8 +1339,8 @@ function DelegateCard(props: { item: TranscriptItem }) {
                   const name = () => (n.agentLabel ? n.title : st()?.label || n.title)
                   const open = () => {
                     const cid = st()?.conversationId
-                    if (cid) openConversationTab(cid, name())
-                    else if (cli()) openCliTab(props.item.id, n.key, name())
+                    if (cli()) openCliTab(props.item.id, n.key, name())
+                    else if (cid) openConversationTab(cid, name())
                   }
                   return (
                     <Show
@@ -1386,7 +1360,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                         type="button"
                         class="wf-node"
                         classList={{ [st()?.phase ?? 'waiting']: true }}
-                        disabled={!st()?.conversationId && !(cli() && st())}
+                        disabled={cli() ? st()?.phase === 'waiting' : !st()?.conversationId}
                         onClick={open}
                         ref={hold(n.key)}
                       >
@@ -1394,14 +1368,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
                             执行者压一档——同一张图里常常四格都是同一个。 */}
                         <span class="wf-node-name">{name()}</span>
                         <span class="wf-node-who truncate">
-                          <Show
-                            when={st()?.phase === 'queued'}
-                            fallback={
-                              <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
-                            }
-                          >
-                            等待并发槽位
+                          <Show when={n.agentLabel}>
+                            <span>{st()?.label || n.agentLabel}</span>
                           </Show>
+                          <span>{NODE_PHASE[st()?.phase ?? 'waiting']}</span>
                           <Show when={st()?.durationMs}>
                             {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
                           </Show>
@@ -1430,6 +1400,39 @@ function DelegateCard(props: { item: TranscriptItem }) {
       </Show>
     </div>
   )
+}
+
+/** 一格的显示状态：agent 格来自 `NodeState`，检查点格来自审查记录。 */
+interface NodeView {
+  phase: string
+  label: string
+  durationMs?: number
+  conversationId?: string
+  attempts?: number
+}
+
+const NODE_PHASE: Record<string, string> = {
+  waiting: '等待',
+  queued: '排队',
+  working: '进行中',
+  done: '完成',
+  failed: '失败',
+  skipped: '跳过',
+  interrupted: '中断',
+}
+
+const CARD_WORD = { running: '进行中', success: '完成', failure: '失败' } as const
+const WORKFLOW_WORD = {
+  running: '进行中',
+  waiting_review: '待审查',
+  completed: '已完成',
+  failed: '失败',
+} as const
+
+/** 卡顶的状态词：一张图按折叠后的阶段，派一件按这条 step 的状态。 */
+function cardWord(item: TranscriptItem): string {
+  if (item.workflow) return WORKFLOW_WORD[item.workflow.phase]
+  return item.status ? CARD_WORD[item.status] : ''
 }
 
 /** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */

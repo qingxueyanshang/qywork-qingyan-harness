@@ -26,7 +26,7 @@ import {
   openProviderRequest,
   providerFinishRates,
   setConversationTitle,
-  setStepChildConversation,
+  setStepNodeState,
   settleProviderRequest,
   settleToolStep,
   upsertWorkspace,
@@ -324,7 +324,11 @@ describe('工具 step 原地更新', () => {
       status: 'running',
       payload: { kind: 'tool_call', args: {} },
     })
-    setStepChildConversation(store, step.id, 'cv_child' as never)
+    setStepNodeState(store, step.id, 'child', {
+      phase: 'working',
+      label: '子',
+      subagentId: 'cv_child' as never,
+    })
 
     settleToolStep(store, step.id, 'success', {
       kind: 'tool_result',
@@ -334,7 +338,7 @@ describe('工具 step 原地更新', () => {
 
     expect(listSteps(store, run.id)[0]?.payload).toMatchObject({
       kind: 'tool_result',
-      childConversationId: 'cv_child',
+      nodes: { child: { phase: 'working', label: '子', subagentId: 'cv_child' } },
     })
     store.close()
   })

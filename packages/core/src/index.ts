@@ -67,6 +67,8 @@ export {
   isInlineVideo,
   type Message,
   mimeOf,
+  type NodePhase,
+  type NodeState,
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderFailureCause,

@@ -214,12 +214,12 @@ describe('workflow 始终是一张卡', () => {
     ...(data ? { outcome: { status: 'success', executed: true, message: 'ok', data } } : {}),
   })
 
-  test('被打断的首派按 children 折出节点状态，卡上那一格仍能点开', () => {
+  test('被打断的首派按 nodes 折出节点状态，卡上那一格仍能点开', () => {
     const out = buildRenderItems([
       {
         ...workflow('st_root', { goal: '目标', nodes }, undefined, 'failure'),
         outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
-        children: { a: 'cv_a' },
+        nodes: { a: { phase: 'interrupted', label: '开发', subagentId: 'cv_a' as never } },
       },
     ])
     expect(out.map((row) => row.kind)).toEqual(['tool'])

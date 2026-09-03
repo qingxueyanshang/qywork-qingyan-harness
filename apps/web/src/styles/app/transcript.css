@@ -1179,8 +1179,7 @@
 .wf-node:disabled {
   cursor: default;
 }
-.wf-node.working,
-.wf-node.spawned {
+.wf-node.working {
   border-color: var(--accent);
 }
 .wf-node.session.waiting_review {
@@ -1193,6 +1192,10 @@
 .wf-node.failed {
   border-color: var(--danger);
   color: var(--danger);
+}
+.wf-node.interrupted {
+  border-color: var(--warning);
+  color: var(--warning);
 }
 /* 等着跑的那些压暗：它们在图上是为了让人看见全貌，不是当前的焦点。 */
 .wf-node.waiting,

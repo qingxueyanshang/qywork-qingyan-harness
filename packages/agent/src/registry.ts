@@ -114,8 +114,6 @@ export interface DelegatePort {
     stepId?: string
     nodeId?: string
     signal: AbortSignal
-    /** 子 agent 定下来就交出去，不等跑完。 */
-    onSubagent?: (subagentId: string) => void
   }): Promise<{
     ok: boolean
     output: string
@@ -125,6 +123,8 @@ export interface DelegatePort {
     name?: string
     /** 这次派发是不是新建了它。 */
     created?: boolean
+    /** 从派出到回执的耗时。卡上那一格印的就是这个数。 */
+    durationMs?: number
   }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。

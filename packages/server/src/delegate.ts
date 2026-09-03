@@ -13,10 +13,10 @@
 
 import type { DelegatePort, SubagentSummary } from '@qywork/agent'
 import {
-  type AgentEvent,
   type Conversation,
   type ConversationId,
   foldWorkflow,
+  type NodeState,
   type RunId,
   type StepId,
   SUBAGENT_NODE_ID,
@@ -32,8 +32,7 @@ import {
   listRuns,
   listWorkflowRecords,
   setConversationExternalSession,
-  setStepChildConversation,
-  setStepNodeConversation,
+  setStepNodeState,
 } from '@qywork/store'
 import {
   type CliAgent,
@@ -187,56 +186,44 @@ export function makeDelegate(ctx: {
     return { conversation, role, cli: null, created: true }
   }
 
-  /**
-   * 一格的名字与执行器，给编排器发进度事件用。同步：角色、CLI、已有子 agent 三份清单
-   * 在图开跑前读一次。
-   */
+  /** 一格的名字，给编排器写状态用。同步：角色、CLI、已有子 agent 三份清单在图开跑前读一次。 */
   const describeWith =
     (roles: Role[], clis: CliAgent[], existing: Conversation[]) =>
-    (target: SubagentTarget): { label: string; backend: 'builtin' | 'custom' } | null => {
+    (target: SubagentTarget): { label: string } | null => {
       if ('subagent' in target) {
         const c = existing.find((x) => x.id === target.subagent)
-        return c ? { label: c.title, backend: c.source === 'cli' ? 'custom' : 'builtin' } : null
+        return c ? { label: c.title } : null
       }
-      if (target.kind === 'temp') return { label: target.name, backend: 'builtin' }
+      if (target.kind === 'temp') return { label: target.name }
       if (target.kind === 'role') {
         const r = roles.find((x) => x.id === target.role)
-        return r ? { label: target.name ?? r.name, backend: 'builtin' } : null
+        return r ? { label: target.name ?? r.name } : null
       }
       const cli = clis.find((x) => x.id === target.cli)
-      return cli ? { label: target.name ?? `${cli.vendor} ${cli.id}`, backend: 'custom' } : null
+      return cli ? { label: target.name ?? `${cli.vendor} ${cli.id}` } : null
     }
 
+  /** 每张卡上各格最近一次状态。跑一张图收场时据此把没到终态的格标成中断。 */
+  const latest = new Map<string, Map<string, NodeState>>()
+
   /**
-   * 一格的进度，派一件与图上的节点共用 `team.member`：派一件就是一张只有一格的图。
-   * **没有 `stepId` 就整条不发**：前端按它认领卡片，认不出的一律丢弃。
+   * 一格的状态变了：先写进那张卡的 step，再广播。派一件与图上的节点同一条路——派一件就是
+   * 一张只有一格的图。**先落账再广播**：切走父会话会错过广播，切回来从 step 回放。
+   * 没有 `stepId` 的调用（没有卡）什么都不记。
    */
-  const progress = (
-    at: { runId: string; stepId?: string },
-    nodeId: string,
-    label: string,
-    backend: 'builtin' | 'custom',
-  ) => {
-    return (
-      phase: 'working' | 'done' | 'failed',
-      extra?: { summary?: string; childConversationId?: ConversationId },
-    ) => {
+  const note =
+    (at: { runId: string; stepId?: string }, nodeId: string) =>
+    (state: NodeState): void => {
       if (!at.stepId) return
+      const card = latest.get(at.stepId) ?? new Map<string, NodeState>()
+      latest.set(at.stepId, card)
+      card.set(nodeId, state)
+      setStepNodeState(deps.store, at.stepId as StepId, nodeId, state)
       deps.bus.publish(
-        {
-          type: 'team.member',
-          runId: at.runId as RunId,
-          memberId: nodeId,
-          roleName: label,
-          backend,
-          phase,
-          stepId: at.stepId,
-          ...extra,
-        },
+        { type: 'team.member', runId: at.runId as RunId, stepId: at.stepId, nodeId, state },
         conversationId,
       )
     }
-  }
 
   const dispatch: DelegatePort['dispatch'] = async (input) => {
     const resolved = await resolveTarget(input.target, input.model, input.provider)
@@ -245,17 +232,22 @@ export function makeDelegate(ctx: {
     const id = conversation.id
     const label = conversation.title
     const nodeId = input.nodeId ?? SUBAGENT_NODE_ID
-    const say = progress(input, nodeId, label, cli ? 'custom' : 'builtin')
-
-    // 先落账再广播：切走父会话会错过广播，切回来从这条 step 回放时仍要能点开这一格。
-    if (input.stepId) {
-      if (input.nodeId) setStepNodeConversation(deps.store, input.stepId as StepId, nodeId, id)
-      else setStepChildConversation(deps.store, input.stepId as StepId, id)
-    }
-    say('working', { childConversationId: id })
-    input.onSubagent?.(id)
+    const say = note(input, nodeId)
+    const started = Date.now()
+    say({ phase: 'working', label, subagentId: id })
 
     const base = { subagentId: id, name: label, created }
+    const settle = (ok: boolean, error?: string) => {
+      const durationMs = Date.now() - started
+      say({
+        phase: ok ? 'done' : 'failed',
+        label,
+        subagentId: id,
+        durationMs,
+        ...(error ? { error } : {}),
+      })
+      return { ok, ...(error ? { error } : {}), durationMs, ...base }
+    }
     try {
       if (cli) {
         // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到。
@@ -275,7 +267,7 @@ export function makeDelegate(ctx: {
                       type: 'team.output',
                       runId: input.runId as RunId,
                       stepId,
-                      memberId: nodeId,
+                      nodeId,
                       delta,
                     },
                     conversationId,
@@ -290,8 +282,7 @@ export function makeDelegate(ctx: {
           : r.timedOut
             ? '超时'
             : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`
-        say(r.ok ? 'done' : 'failed', { summary: r.output.slice(0, 200), childConversationId: id })
-        return { ok: r.ok, output: r.output, ...(error ? { error } : {}), ...base }
+        return { output: r.output, ...settle(r.ok, error) }
       }
 
       const { rules } = await team()
@@ -310,21 +301,11 @@ export function makeDelegate(ctx: {
           onEvent: (ev, cid) => deps.bus.publish(ev, cid),
         },
       )
-      say(res.ok ? 'done' : 'failed', {
-        summary: res.output.slice(0, 200),
-        childConversationId: id,
-      })
-      return { ok: res.ok, output: res.output, ...(res.error ? { error: res.error } : {}), ...base }
+      return { output: res.output, ...settle(res.ok, res.error) }
     } catch (err) {
       // 成员会话自己 try/catch 不抛（`team-run.ts`），走到这里的是装配期的意外。
       // **必须落终态**：抛出去的话卡上那个节点停在「进行中」，而这一轮已经结束了。
-      say('failed', { childConversationId: id })
-      return {
-        ok: false,
-        output: '',
-        error: err instanceof Error ? err.message : String(err),
-        ...base,
-      }
+      return { output: '', ...settle(false, err instanceof Error ? err.message : String(err)) }
     }
   }
 
@@ -426,20 +407,22 @@ export function makeDelegate(ctx: {
           },
         }
       }
+      // 图没跑完就收场（中断、图不合法）：还没到终态的格标成中断，不留一格永远「进行中」。
+      const interruptUnfinished = () => {
+        for (const [nodeId, state] of latest.get(input.stepId) ?? []) {
+          if (state.phase === 'waiting' || state.phase === 'queued' || state.phase === 'working') {
+            note(input, nodeId)({ ...state, phase: 'interrupted', error: '调用中断' })
+          }
+        }
+        latest.delete(input.stepId)
+      }
       const orchestrator = new TeamOrchestrator(
         nodes,
         {
           signal: input.signal,
           runId: input.runId as RunId,
           maxConcurrent,
-          // 进度带上 stepId：前端按它认领是哪一张图卡。不带的话事件到了也无处可落。
-          emit: (ev: AgentEvent) =>
-            deps.bus.publish(
-              ev.type === 'team.member' || ev.type === 'team.output'
-                ? { ...ev, stepId: input.stepId }
-                : ev,
-              conversationId,
-            ),
+          node: (nodeId, state) => note(input, nodeId)(state),
           describe: describeWith(roles, clis, existing),
           dispatch: (member) =>
             dispatch({
@@ -451,7 +434,6 @@ export function makeDelegate(ctx: {
               stepId: input.stepId,
               nodeId: member.nodeId,
               signal: member.signal,
-              ...(member.onSubagent ? { onSubagent: member.onSubagent } : {}),
             }),
         },
         {
@@ -462,6 +444,8 @@ export function makeDelegate(ctx: {
       )
       try {
         const result = await orchestrator.run(goal, state)
+        if (result.phase === 'failed') interruptUnfinished()
+        else latest.delete(input.stepId)
         const transition: WorkflowTransition = {
           workflowId,
           phase: result.phase,
@@ -478,6 +462,7 @@ export function makeDelegate(ctx: {
       } catch (err) {
         // 图本身不合法（成环、悬空依赖、引用不到目标）在这里落地：
         // 它是模型写错了参数，要原样告诉它，不能压成一句「工具执行出错」。
+        interruptUnfinished()
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },

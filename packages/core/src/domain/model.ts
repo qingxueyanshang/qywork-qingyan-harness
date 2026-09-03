@@ -675,6 +675,31 @@ export interface Step {
   durationMs: number | null
 }
 
+/** 派活卡上一格的进度。 */
+export type NodePhase =
+  | 'waiting'
+  | 'queued'
+  | 'working'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'interrupted'
+
+/**
+ * 派活卡上一格的状态。派一件与图上的节点同一形状，落在 step payload 的 `nodes` 里，
+ * 流式期的 `team.member` 事件带的也是它：界面只认这一个来源。
+ */
+export interface NodeState {
+  phase: NodePhase
+  /** 那一格的名字：子 agent 的名字。 */
+  label: string
+  /** 子 agent 的会话 id。建好之后每条状态都带着。 */
+  subagentId?: ConversationId
+  durationMs?: number
+  /** failed / skipped / interrupted 的原因。 */
+  error?: string
+}
+
 /**
  * `action` 随 step 一起落库，而不是让前端按工具名回猜。
  *
@@ -687,15 +712,11 @@ export type StepPayload =
       args: Record<string, unknown>
       action?: ActionDescriptor
       /**
-       * 内置子 agent 的会话入口。子会话一创建就写入，不等工具跑完：用户切走父会话
-       * 再切回来时，运行中的 step 还没有 outcome，回放仍要能点开那条子会话。
+       * 派活卡上每一格的进度，键是节点 id（派一件用 `SUBAGENT_NODE_ID`）。
+       * 每次状态变化都当场写入，不等工具跑完：切走再切回、刷新之后都从这里重画，
+       * 与流式期的 `team.member` 事件同一形状。
        */
-      childConversationId?: ConversationId
-      /**
-       * workflow 逐节点的子会话入口，键是节点 id。与 `childConversationId` 分工：
-       * 那个是单次派活那一格，这个是图上每一格。同样在子会话创建时就写入。
-       */
-      children?: Record<string, ConversationId>
+      nodes?: Record<string, NodeState>
     }
   | {
       kind: 'tool_result'
@@ -714,12 +735,10 @@ export type StepPayload =
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
       /**
-       * 子会话入口的唯一元数据字段。`settleToolStep` 会从运行中的 tool_call 保留下来；
-       * outcome 里的同名业务结果不参与 UI、归档或忙闲判定。
+       * 同 `tool_call` 的 `nodes`。`settleToolStep` 从运行中的行保留下来；
+       * 崩溃恢复把没跑完的格标成中断。
        */
-      childConversationId?: ConversationId
-      /** 同 `tool_call` 的 `children`；崩溃恢复改写 payload 时它是唯一留下的节点事实。 */
-      children?: Record<string, ConversationId>
+      nodes?: Record<string, NodeState>
     }
   | {
       kind: 'compaction'
