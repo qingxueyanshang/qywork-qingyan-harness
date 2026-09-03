@@ -215,6 +215,13 @@ export function buildTailNotes(input: {
   /** 记忆索引：只有 key + 首行摘要，正文由模型按需 read_memory 拉取。 */
   memories?: { key: string; preview: string }[]
   /**
+   * 顶层会话可分配的真实模型。只传接口名与模型 id，不把 key、端点、headers 带进提示词。
+   *
+   * `undefined` = 本会话没有派活能力，不展示；空数组 = 有派活能力但当前没配模型，
+   * 两者不能合并，否则后者会诱使模型继续凭空编一个名称。
+   */
+  models?: { provider: string; model: string }[]
+  /**
    * 待加载的外部工具：只有工具名 + 一句话，完整参数说明由模型按需 load_tool 拉。
    *
    * 这份清单属于 run 快照，不能进冻结 system 前缀——它随用户装卸 MCP / 插件而变。
@@ -241,6 +248,25 @@ export function buildTailNotes(input: {
   )
 
   const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]
+
+  /*
+   * 模型清单放动态快照，不放冻结 system 前缀：设置页保存后，下一轮就应看到新配置，
+   * 同一 run 内则必须保持不变。接口与模型始终分列：两边都允许自由文本，任何分隔符
+   * 都可能本来就在名字里，拼成一个选择串就没有结构性无歧义可言。
+   */
+  if (input.models) {
+    const list = input.models.length
+      ? input.models
+          .map((item) => `- provider 参数 \`${item.provider}\`；model 参数 \`${item.model}\``)
+          .join('\n')
+      : '- 当前没有配置可用模型；不要填写 provider 或 model 参数。'
+    notes.push({
+      content:
+        `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
+        '用户只说厂商、系列或简称（例如 glm）时，从这份清单中语义匹配并自主选择最符合任务的已配置项；不要把用户的模糊写法直接填进工具。调用 define_subagent、subagent 或 workflow 覆盖模型时，逐字使用同一行的 provider 与 model 两个参数，不要使用清单外的值。',
+      group: 'workspaceState',
+    })
+  }
 
   //
   // 技能与记忆都**只放标题**：正文全放进来，十来条就能占掉几万 token，而一次任务

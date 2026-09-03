@@ -31,6 +31,27 @@ function ctx(root: string): ToolContext {
   }
 }
 
+function withModels(root: string, models: { provider: string; model: string }[]): ToolContext {
+  return {
+    ...ctx(root),
+    delegate: {
+      resolveModel: (name, provider) => {
+        const hits = models.filter(
+          (item) => item.model === name && (!provider || item.provider === provider),
+        )
+        return hits.length === 1
+          ? hits[0]!
+          : {
+              error: `配置里没有模型 ${name}。现在能用的是：${models.map((item) => item.model).join('、')}`,
+            }
+      },
+      targets: async () => [],
+      run: async () => ({ ok: true, output: '' }),
+      runGraph: async () => ({ ok: true }),
+    },
+  }
+}
+
 const role = { id: 'reviewer', name: '审查员', description: '看代码', systemPrompt: '只读' }
 
 async function ws(): Promise<string> {
@@ -90,6 +111,37 @@ describe('建子 agent', () => {
     await defineSubagentTool.fn({ ...role, allowedTools: [] }, ctx(root))
     const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
     expect(doc.roles[0].allowedTools).toEqual([])
+  })
+
+  test('模型名写错时不落盘，并把可用模型交回去', async () => {
+    const root = await ws()
+    const res = await defineSubagentTool.fn(
+      { ...role, model: 'glm5.3flash' },
+      withModels(root, [{ provider: '智谱接口', model: 'glm-5.3-flash' }]),
+    )
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('glm-5.3-flash')
+    expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('配置里的接口与模型作为两列校验并落盘', async () => {
+    const root = await ws()
+    const res = await defineSubagentTool.fn(
+      { ...role, provider: '智谱/中转', model: 'glm/model-5.3-flash' },
+      withModels(root, [{ provider: '智谱/中转', model: 'glm/model-5.3-flash' }]),
+    )
+    expect(res.status).toBe('success')
+    const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
+    expect(doc.roles[0].provider).toBe('智谱/中转')
+    expect(doc.roles[0].model).toBe('glm/model-5.3-flash')
+  })
+
+  test('只给 provider 不给 model 时拒绝，不写半套角色配置', async () => {
+    const root = await ws()
+    const res = await defineSubagentTool.fn({ ...role, provider: '智谱接口' }, withModels(root, []))
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('同时指定 model')
+    expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
   })
 
   test('id 不合法当场拒绝', async () => {

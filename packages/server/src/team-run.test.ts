@@ -50,14 +50,36 @@ describe('成员会话的选型', () => {
     })
   })
 
+  test('点了一个没有模型的接口时本地拒绝', () => {
+    const empty = {
+      ...config,
+      providers: { ...config.providers, 空接口: { kind: 'openai', models: {} } },
+    } as unknown as QyConfig
+    const r = memberModel({ id: 'r', provider: '空接口' }, empty, 继承)
+    expect('error' in r && r.error).toContain('没有配置模型')
+  })
+
   test('点了不存在的接口当场失败，不静默回落', () => {
     const r = memberModel({ id: 'r', provider: '查无此接口' }, config, 继承)
     expect('error' in r && r.error).toContain('查无此接口')
   })
 
-  /** 只点模型不点接口的那条路按裸模型名发请求，接口靠反查——这一对不能换。 */
-  test('角色只点了模型时保持配置默认那一对', () => {
-    expect(memberModel({ id: 'r', model: 'm-other' }, config, 继承)).toEqual(config.active)
+  /** 只点模型也要在起会话前钉住接口，不能先挂到默认接口再靠裸名称猜。 */
+  test('角色只点模型时反查并钉住它所属的接口', () => {
+    expect(memberModel({ id: 'r', model: 'm-cheap' }, config, 继承)).toEqual({
+      provider: '便宜接口',
+      model: 'm-cheap',
+    })
+  })
+
+  test('角色模型不存在时本地拒绝，不回落到默认接口', () => {
+    const r = memberModel({ id: 'r', model: '写错的模型' }, config, 继承)
+    expect('error' in r && r.error).toContain('配置里没有模型')
+  })
+
+  test('角色钉住接口时，模型也必须属于该接口', () => {
+    const r = memberModel({ id: 'r', provider: '默认接口', model: 'm-cheap' }, config, 继承)
+    expect('error' in r && r.error).toContain('不存在的模型')
   })
 
   /** 用户这一次点名要换个模型跑，角色自己钉的那一对也得让开。 */
@@ -81,6 +103,32 @@ describe('点名的模型解析成一对', () => {
     })
   })
 
+  test('旧选择串里的接口名自带斜杠也能按配置组合恢复', () => {
+    const legacy = {
+      active: { provider: '官方/中转', model: 'm' },
+      providers: { '官方/中转': { models: { m: {} } } },
+    } as unknown as QyConfig
+    expect(resolveModel('官方/中转/m', legacy)).toEqual({ provider: '官方/中转', model: 'm' })
+  })
+
+  test('结构化接口与模型不受两边自带斜杠影响', () => {
+    const slash = {
+      active: { provider: '官方/中转', model: 'anthropic/claude-opus-5' },
+      providers: {
+        '官方/中转': { models: { 'anthropic/claude-opus-5': {} } },
+      },
+    } as unknown as QyConfig
+    expect(resolveModel('anthropic/claude-opus-5', slash, '官方/中转')).toEqual({
+      provider: '官方/中转',
+      model: 'anthropic/claude-opus-5',
+    })
+  })
+
+  test('结构化接口存在但模型不属于它时本地拒绝', () => {
+    const r = resolveModel('m-cheap', config, '默认接口')
+    expect('error' in r && r.error).toContain('接口 默认接口 下没有模型 m-cheap')
+  })
+
   /** 挑错接口是端点、key、价目表三样一起换掉且不报错，所以宁可拒。 */
   test('同一个 id 挂在两个接口下时拒绝，不按顺序挑', () => {
     const 撞名 = {
@@ -88,12 +136,12 @@ describe('点名的模型解析成一对', () => {
       providers: { a: { models: { same: {} } }, b: { models: { same: {} } } },
     } as unknown as QyConfig
     const r = resolveModel('same', 撞名)
-    expect('error' in r && r.error).toContain('接口/模型')
+    expect('error' in r && r.error).toContain('同时指定 provider 与 model')
   })
 
   test('没配过的模型把能用的列出来', () => {
     const r = resolveModel('查无此模型', config)
-    expect('error' in r && r.error).toContain('便宜接口/m-cheap')
+    expect('error' in r && r.error).toContain('provider="便宜接口", model="m-cheap"')
   })
 })
 

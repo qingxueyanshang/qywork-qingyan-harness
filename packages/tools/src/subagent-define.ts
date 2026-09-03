@@ -39,7 +39,15 @@ export const defineSubagentTool: ToolSpec = {
         description: '一句话说明它擅长什么、该把什么交给它。派活时按这句挑人。',
       },
       systemPrompt: { type: 'string', description: '它的系统提示词：身份、纪律、产出要求' },
-      model: { type: 'string', description: '指定模型。留空跟着当前会话' },
+      provider: {
+        type: 'string',
+        description: '指定模型时，同时逐字填写运行上下文「已配置模型」清单中的 provider 参数',
+      },
+      model: {
+        type: 'string',
+        description:
+          '指定模型。逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider；不要直接填写用户说的简称。留空跟着当前会话',
+      },
       allowedTools: {
         type: 'array',
         items: { type: 'string' },
@@ -71,6 +79,22 @@ export const defineSubagentTool: ToolSpec = {
     if (!name || !description || !systemPrompt) {
       return { status: 'failure' as const, message: 'name、description、systemPrompt 都不能为空' }
     }
+    const provider = typeof args.provider === 'string' ? args.provider.trim() : ''
+    const model = typeof args.model === 'string' ? args.model.trim() : ''
+    if (provider && !model) {
+      return { status: 'failure' as const, message: '指定 provider 时必须同时指定 model' }
+    }
+    let resolvedModel: { provider: string; model: string } | undefined
+    if (model) {
+      if (!ctx.delegate) {
+        return { status: 'failure' as const, message: '本次执行拿不到模型配置，不能校验角色模型' }
+      }
+      const resolved = ctx.delegate.resolveModel(model, provider || undefined)
+      if ('error' in resolved) {
+        return { status: 'failure' as const, message: resolved.error }
+      }
+      resolvedModel = resolved
+    }
 
     const file = join(ctx.workspaceRoot, ...TEAM_CONFIG.split('/'))
     const raw = await readFile(file, 'utf8').catch(() => null)
@@ -100,7 +124,9 @@ export const defineSubagentTool: ToolSpec = {
       name,
       description,
       systemPrompt,
-      ...(typeof args.model === 'string' && args.model.trim() ? { model: args.model.trim() } : {}),
+      // 校验得到的结构化真值直接落盘。尤其是撞名模型，不能把临时的
+      // `接口/模型` 选择串塞进 model 字段，Role 本来就有独立的 provider。
+      ...(resolvedModel ? { provider: resolvedModel.provider, model: resolvedModel.model } : {}),
       // 空数组与不填是两回事：前者是「一个工具都不给」，后者是「全给」。
       ...(Array.isArray(args.allowedTools) ? { allowedTools: args.allowedTools.map(String) } : {}),
       ...(typeof args.maxSteps === 'number' && args.maxSteps > 0

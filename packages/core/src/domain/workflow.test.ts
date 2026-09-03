@@ -26,6 +26,7 @@ describe('workflow 调用判别', () => {
           agent: null,
           needs: null,
           passInput: true,
+          provider: null,
           model: null,
         },
         {
@@ -37,6 +38,7 @@ describe('workflow 调用判别', () => {
           task: null,
           // OpenAI strict 参数补全实测可能给 checkpoint 填默认 true；该字段无语义。
           passInput: true,
+          provider: null,
           model: null,
         },
       ],
@@ -139,6 +141,30 @@ describe('workflow 调用判别', () => {
       ok: false,
       error: '图里一个节点都没有',
     })
+  })
+
+  test('agent 节点把 provider 与 model 分列保留，provider 不允许单独出现', () => {
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [
+          {
+            id: 'a',
+            task: '先做',
+            provider: '官方/中转',
+            model: 'anthropic/claude-opus-5',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      ok: true,
+      call: {
+        nodes: [{ provider: '官方/中转', model: 'anthropic/claude-opus-5' }],
+      },
+    })
+    expect(
+      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做', provider: '官方' }] }),
+    ).toEqual({ ok: false, error: '节点 a 指定 provider 时必须同时指定 model' })
   })
 
   test('approve 与 revise 的字段互斥', () => {

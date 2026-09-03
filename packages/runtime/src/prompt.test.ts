@@ -52,6 +52,37 @@ describe('尾区注记', () => {
     expect(tools).toContain('load_tool')
   })
 
+  test('把模糊模型意图约束到本轮真实配置，并给出可直接调用的精确参数', () => {
+    const notes = buildTailNotes({
+      ...base,
+      models: [
+        { provider: '智谱', model: 'glm-5.3-flash' },
+        { provider: '官方/中转', model: 'qwen/model-3.8' },
+        { provider: '接口甲', model: 'shared-model' },
+        { provider: '接口乙', model: 'shared-model' },
+      ],
+    })
+    const models = notes.find((item) => item.content.includes('## 可分配给子 agent'))?.content ?? ''
+
+    expect(models).toContain('provider 参数 `智谱`；model 参数 `glm-5.3-flash`')
+    // 两列分开后，接口名与模型 id 各自带斜杠也不需要解析分隔符。
+    expect(models).toContain('provider 参数 `官方/中转`；model 参数 `qwen/model-3.8`')
+    // 同名模型由 provider 列区分，model 字段仍是配置中的原始 id。
+    expect(models).toContain('provider 参数 `接口甲`；model 参数 `shared-model`')
+    expect(models).toContain('provider 参数 `接口乙`；model 参数 `shared-model`')
+    expect(models).toContain('厂商、系列或简称')
+    expect(models).toContain('语义匹配并自主选择')
+    expect(models).toContain('不要把用户的模糊写法直接填进工具')
+  })
+
+  test('有派活能力但没有配置模型时明确禁止编造，没派活能力则不注入清单', () => {
+    const empty = buildTailNotes({ ...base, models: [] })
+    expect(empty.some((item) => item.content.includes('当前没有配置可用模型'))).toBe(true)
+
+    const unavailable = buildTailNotes(base)
+    expect(unavailable.some((item) => item.content.includes('可分配给子 agent'))).toBe(false)
+  })
+
   /**
    * MCP 与插件的 summary 就是第三方给的 description 原文，可以是好几段。
    * 不截的话这份「省 token 的清单」自己就能涨到几千 token——实测四个真实

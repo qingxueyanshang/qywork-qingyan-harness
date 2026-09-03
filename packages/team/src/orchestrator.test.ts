@@ -91,6 +91,41 @@ describe('计划校验', () => {
 })
 
 describe('编排执行', () => {
+  test('节点的 provider 与 model 两列原样交给内置执行器', async () => {
+    const seen: Array<{ provider?: string; model?: string }> = []
+    const config: TeamConfig = {
+      name: 'model-pair',
+      roles: [role('实现')],
+      plan: [
+        {
+          id: 'impl',
+          agent: '实现',
+          task: '实现',
+          provider: '官方/中转',
+          model: 'anthropic/claude-opus-5',
+        },
+      ],
+    }
+    const d = {
+      workspaceRoot: '/tmp',
+      signal: new AbortController().signal,
+      runId: 'rn_model_pair' as never,
+      emit: () => {},
+      resolveCli: () => undefined,
+      runBuiltin: async (input: { provider?: string; model?: string }) => {
+        seen.push({
+          ...(input.provider ? { provider: input.provider } : {}),
+          ...(input.model ? { model: input.model } : {}),
+        })
+        return { ok: true, output: '完成' }
+      },
+    }
+
+    await new TeamOrchestrator(config, d as never).run('目标')
+
+    expect(seen).toEqual([{ provider: '官方/中转', model: 'anthropic/claude-opus-5' }])
+  })
+
   test('按依赖顺序执行，上游产出注入下游', async () => {
     const config: TeamConfig = {
       name: 't',

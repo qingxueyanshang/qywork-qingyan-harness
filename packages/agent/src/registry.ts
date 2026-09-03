@@ -69,12 +69,25 @@ export interface SinkPort {
 export interface DelegatePort {
   /** 现在能派给谁。角色与外部 CLI 混在一张表里，`id` 直接可用于 `run`。 */
   targets(): Promise<{ id: string; kind: 'role' | 'cli'; description: string }[]>
+  /**
+   * 把模型名钉成配置里真实存在的「接口 × 模型」。
+   *
+   * 建角色与真正派活必须共用同一把尺：前者若只收一段自由文本，错误名称会先被
+   * 写进 team.json，再在每次派活时重复撞 provider。失败返回可用列表，让调用方
+   * 在产生子会话与外部请求之前纠正。
+   */
+  resolveModel(
+    name: string,
+    provider?: string,
+  ): { provider: string; model: string } | { error: string }
   /** 派出去并等它做完。失败是返回值不是异常——模型要按原因换做法。 */
   run(input: {
     target: string
     task: string
     /** 用户点名了模型时才有；不给就跟当前会话同一个。 */
     model?: string
+    /** 与 model 配对的接口名；结构化传递，避免把两列拼成一个有歧义的字符串。 */
+    provider?: string
     /**
      * 接着某条外部 CLI 会话继续问（上一次回执里那个 `session`）。
      * 它记得上一轮干了什么，所以回执不清楚时追问比重新派一遍便宜。

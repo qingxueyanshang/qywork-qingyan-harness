@@ -36,7 +36,7 @@ import {
   TeamOrchestrator,
 } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
-import { resolveModel, runBuiltinMember } from './team-run.ts'
+import { resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
 
 /** 派活只用到装配三件套（账本、正文库、配置），不碰那条 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
@@ -125,9 +125,11 @@ export function makeDelegate(ctx: {
   /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */
   const pick = (
     named?: string,
+    provider?: string,
   ): { explicit: ModelRef } | { inherit: ModelRef } | Record<string, never> | { error: string } => {
+    if (provider && !named) return { error: `指定接口 ${provider} 时必须同时指定模型` }
     if (named) {
-      const r = resolveModel(named, deps.config)
+      const r = resolveMemberModel(named, deps.config, provider)
       return 'error' in r ? r : { explicit: r }
     }
     const pair = inherited()
@@ -175,6 +177,10 @@ export function makeDelegate(ctx: {
   }
 
   return {
+    resolveModel(name, provider) {
+      return resolveMemberModel(name, deps.config, provider)
+    },
+
     async targets() {
       const [rs, clis] = await Promise.all([roles(), detectClis()])
       return [
@@ -197,6 +203,7 @@ export function makeDelegate(ctx: {
       target: string
       task: string
       model?: string
+      provider?: string
       resume?: string
       runId: string
       stepId?: string
@@ -206,8 +213,12 @@ export function makeDelegate(ctx: {
         const id = input.target.slice(CLI_PREFIX.length)
         // 外部 CLI 用它自己的模型，接不了这个参数。当场说出来，
         // 不要照跑一遍，那在界面上等同于换过了模型。
-        if (input.model) {
-          return { ok: false, output: '', error: `${id} 用它自己的模型，指定不了 ${input.model}` }
+        if (input.model || input.provider) {
+          return {
+            ok: false,
+            output: '',
+            error: `${id} 用它自己的模型，指定不了 ${input.provider ? `${input.provider}/` : ''}${input.model ?? ''}`,
+          }
         }
         const cli = await findCli(id)
         if (!cli) return { ok: false, output: '', error: `本机没有识别到 ${id}` }
@@ -274,7 +285,7 @@ export function makeDelegate(ctx: {
       }
       const role = input.target ? (await roles()).find((r) => r.id === input.target) : AD_HOC_ROLE
       if (!role) return { ok: false, output: '', error: `这个项目里没有角色 ${input.target}` }
-      const picked = pick(input.model)
+      const picked = pick(input.model, input.provider)
       if ('error' in picked) return { ok: false, output: '', error: picked.error }
       const say = progress(input, role.name, 'builtin')
       say('working')
@@ -380,7 +391,7 @@ export function makeDelegate(ctx: {
               conversationId,
             ),
           runBuiltin: async (member) => {
-            const picked = pick(member.model)
+            const picked = pick(member.model, member.provider)
             if ('error' in picked) return { ok: false, output: '', error: picked.error }
             if (member.existingConversationId) {
               const parent = getConversation(deps.store, conversationId)

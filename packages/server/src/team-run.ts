@@ -21,8 +21,9 @@ import type { CommandDeps } from './deps.ts'
  * 用户在界面上切到便宜模型之后派活，不继承就仍然按 `config.active` 发请求——
  * 而工具描述向模型承诺的是「当前模型」。
  *
- * 角色只点了模型没点接口时**保持那一对不动**：那条路径按裸模型名发请求，接口靠反查，
- * 换一对进去只会让落库的接口名与实际发出去的那家对不上。
+ * 角色只点了模型没点接口时先按配置反查并钉住接口；找不到或撞名就本地拒绝。
+ * 不能把未知名称挂到当前接口上试：那会让四个写错的模型都请求同一家 provider，
+ * 子会话账本里的接口也跟真正命中的接口对不上。
  */
 export function memberModel(
   role: Pick<Role, 'id' | 'provider' | 'model'>,
@@ -36,42 +37,64 @@ export function memberModel(
     // 静默回落到当前接口会让「用便宜模型跑审查」这类配置失效，而账单记在另一边。
     const pinned = config.providers[role.provider]
     if (!pinned) return { error: `角色 ${role.id} 指定的接口不存在：${role.provider}` }
-    return {
-      provider: role.provider,
-      // 角色没点名模型时用这个接口下的第一个。**不能沿用当前 active.model**：
-      // 那个模型属于另一个接口，拿它去发请求就是「换了 key 没换模型名」。
-      model: role.model ?? Object.keys(pinned.models)[0] ?? config.active.model,
+    if (role.model && !pinned.models[role.model]) {
+      return {
+        error: `角色 ${role.id} 在接口 ${role.provider} 下指定了不存在的模型 ${role.model}。现在能用的是：${modelList(config)}`,
+      }
     }
+    const model = role.model ?? Object.keys(pinned.models)[0]
+    if (!model) return { error: `角色 ${role.id} 指定的接口 ${role.provider} 没有配置模型` }
+    return { provider: role.provider, model }
   }
-  if (role.model) return config.active
+  if (role.model) return resolveModel(role.model, config)
   return pick?.inherit ?? config.active
 }
 
 /**
- * 用户点名的模型解析成一对「接口 × 模型」。接受 `模型 id`，也接受 `接口/模型`。
+ * 用户点名的模型解析成一对「接口 × 模型」。新调用方分列传 `provider` 与 `name`；
+ * 旧角色配置里已经存在的 `接口/模型` 选择串继续兼容读取，但不再对模型生成这种串。
  *
  * **同一个模型 id 挂在两个接口下时报错，不按枚举顺序挑一个**：挑错了是端点、key、
  * 价目表三样一起换掉，而且不报错。
  */
-export function resolveModel(name: string, config: QyConfig): ModelRef | { error: string } {
+export function resolveModel(
+  name: string,
+  config: QyConfig,
+  provider?: string,
+): ModelRef | { error: string } {
+  if (provider) {
+    const pinned = config.providers[provider]
+    if (!pinned) return { error: `配置里没有接口 ${provider}。现在能用的是：${modelList(config)}` }
+    if (!pinned.models[name]) {
+      return {
+        error: `接口 ${provider} 下没有模型 ${name}。现在能用的是：${modelList(config)}`,
+      }
+    }
+    return { provider, model: name }
+  }
   const hits = Object.entries(config.providers).filter(([, p]) => p.models[name])
   if (hits.length === 1) return { provider: hits[0]![0], model: name }
   if (hits.length > 1) {
-    return { error: `${name} 挂在多个接口下（${hits.map(([n]) => n).join('、')}），写成 接口/模型` }
+    return {
+      error: `${name} 挂在多个接口下（${hits.map(([n]) => n).join('、')}），请同时指定 provider 与 model`,
+    }
   }
-  const cut = name.indexOf('/')
-  if (cut > 0) {
-    const provider = name.slice(0, cut)
-    const model = name.slice(cut + 1)
-    const p = config.providers[provider]
-    if (p?.models[model]) return { provider, model }
-  }
+  const legacy = Object.entries(config.providers).flatMap(([provider, stored]) =>
+    Object.keys(stored.models)
+      .filter((model) => `${provider}/${model}` === name)
+      .map((model) => ({ provider, model })),
+  )
+  if (legacy.length === 1) return legacy[0]!
   return { error: `配置里没有模型 ${name}。现在能用的是：${modelList(config)}` }
 }
 
 function modelList(config: QyConfig): string {
   return Object.entries(config.providers)
-    .flatMap(([name, p]) => Object.keys(p.models).map((m) => `${name}/${m}`))
+    .flatMap(([provider, stored]) =>
+      Object.keys(stored.models).map(
+        (model) => `(provider=${JSON.stringify(provider)}, model=${JSON.stringify(model)})`,
+      ),
+    )
     .join('、')
 }
 
@@ -162,10 +185,8 @@ export async function runBuiltinMember(
 
   try {
     for await (const ev of session.ask(input.prompt, input.existingConversationId, {
-      // 点名过模型时不再带角色那一个：裸模型名会盖过上面刚定下的那一对。
-      ...(role.model && !ctx.explicit && !input.existingConversationId
-        ? { model: role.model }
-        : {}),
+      // `config.active` 已经是上面解析好的「接口 × 模型」。这里不再递一遍裸模型名：
+      // 它会让新会话把模型写对、接口却仍记成旧的 active，后续续跑重新走错接口。
       // 成员子会话不进会话列表——`listConversations` 的判据是 `source IS NULL`。
       // 不打这个标记的话，每跑一次 team，用户列表里就多出 N 条以成员 prompt
       // 开头的条目，而点进去只有半截独白。

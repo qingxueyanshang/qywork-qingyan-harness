@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext, ToolRegistry } from '@qywork/agent'
+import type { DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
 import {
   appendStep,
@@ -53,6 +53,13 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
       .schemas()
       .map((t) => t.name)
   return { s, store, names }
+}
+
+const delegate: DelegatePort = {
+  resolveModel: (name, provider) => ({ provider: provider ?? 'p', model: name }),
+  targets: async () => [],
+  run: async () => ({ ok: true, output: '' }),
+  runGraph: async () => ({ ok: true }),
 }
 
 describe('附件请求形状', () => {
@@ -132,6 +139,89 @@ describe('角色约束', () => {
       }
     ).deps.systemPrompt
     expect(prompt).not.toContain('## 角色')
+    store.close()
+  })
+})
+
+describe('顶层会话的可分配模型快照', () => {
+  const firstEvent = async (s: Session, prompt = '让 glm、qwen 分别建角色处理') => {
+    for await (const ev of s.ask(prompt)) return ev
+    return null
+  }
+
+  test('从当前配置只提取接口与模型，随 run 落库供规划模型选择', async () => {
+    const liveConfig: QyConfig = {
+      active: { provider: '智谱接口', model: 'glm-5.3-flash' },
+      providers: {
+        智谱接口: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-never-send-this',
+          baseUrl: 'https://private-relay.example/v1',
+          headers: { Authorization: 'Bearer also-secret' },
+          models: { 'glm-5.3-flash': {} },
+        },
+        千问接口: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-qwen-secret',
+          models: { 'qwen/model-3.8': {} },
+        },
+      },
+    }
+    const { s, store } = await session({ config: liveConfig, delegate })
+
+    await firstEvent(s, '第一轮')
+
+    const conv = listRecentConversations(store, 1)[0]!
+    const snapshot = listRunContextSnapshots(store, conv.id)[0]!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(snapshot).toContain('provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`')
+    expect(snapshot).toContain('provider 参数 `千问接口`；model 参数 `qwen/model-3.8`')
+    expect(snapshot).not.toContain('sk-never-send-this')
+    expect(snapshot).not.toContain('private-relay.example')
+    expect(snapshot).not.toContain('also-secret')
+    store.close()
+  })
+
+  test('没有派活工具的成员或普通 runtime 会话不携带模型清单', async () => {
+    const { s, store } = await session()
+
+    await firstEvent(s)
+
+    const conv = listRecentConversations(store, 1)[0]!
+    const snapshot = listRunContextSnapshots(store, conv.id)[0]!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(snapshot).not.toContain('可分配给子 agent 的已配置模型')
+    store.close()
+  })
+
+  test('会话构造后配置发生变化，下一轮快照读取新值而不是旧前缀缓存', async () => {
+    const liveConfig: QyConfig = {
+      active: { provider: '主接口', model: 'glm-5.3-flash' },
+      providers: {
+        主接口: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-test-only',
+          models: { 'glm-5.3-flash': {} },
+        },
+      },
+    }
+    const { s, store } = await session({ config: liveConfig, delegate })
+    await firstEvent(s)
+
+    liveConfig.providers.新增接口 = {
+      kind: 'openai_chat_completions',
+      apiKey: 'sk-test-only',
+      models: { 'qwen/model-3.8': {} },
+    }
+    await firstEvent(s, '第二轮')
+
+    const second = listRecentConversations(store).find((item) => item.title === '第二轮')!
+    const latest = listRunContextSnapshots(store, second.id)[0]!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(latest).toContain('provider 参数 `新增接口`；model 参数 `qwen/model-3.8`')
     store.close()
   })
 })
