@@ -390,6 +390,23 @@ function foldContent(cid: string, ev: AgentEvent): void {
       )
       return
 
+    case 'run.retrying': {
+      if (ev.failedThinkingStepIds.length === 0) return
+      const failed = new Set<string>(ev.failedThinkingStepIds)
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          // 重发事件带 AgentLoop 本次尝试真正开过的 step id。不能删「末尾思考」：
+          // 同一 run 的前几个工具轮也有已经完成的思考，按位置删会把真内容一起抹掉。
+          v.transcript = v.transcript.filter(
+            (item) => item.kind !== 'thinking' || !failed.has(item.id),
+          )
+        }),
+      )
+      return
+    }
+
     case 'tool.started':
       setState(
         produce((s) => {
@@ -1165,7 +1182,11 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
   if (s.kind === 'thinking') {
-    return s.content ? [{ id: s.id, kind: 'thinking', text: s.content }] : []
+    // 失败尝试的半截思考保留在账本供诊断，但已被随后的重发取代。普通会话流只展示
+    // 最终采用的生成；否则刷新后两段残句又会回来，实时态与回放态也不一致。
+    return s.status !== 'failure' && s.content
+      ? [{ id: s.id, kind: 'thinking', text: s.content }]
+      : []
   }
   // run 内注入的那句用户消息。刷新后要原位重建，`id` 用 stepId——
   // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。

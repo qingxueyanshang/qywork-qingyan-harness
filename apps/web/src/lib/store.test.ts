@@ -504,7 +504,13 @@ describe('事件按会话归属过滤', () => {
       seq: 5,
       at: 0,
       conversationId: 'cv_child',
-      event: { type: 'run.retrying', runId: 'run_1', attempt: 2, max: 5 },
+      event: {
+        type: 'run.retrying',
+        runId: 'run_1',
+        attempt: 2,
+        max: 5,
+        failedThinkingStepIds: [],
+      },
     } as never)
 
     expect(
@@ -765,13 +771,53 @@ describe('事件按会话归属过滤', () => {
       seq,
       at: 0,
       conversationId: 'cv_now',
-      event: { type: 'run.retrying', runId: 'run_1', attempt, max: 5 },
+      event: {
+        type: 'run.retrying',
+        runId: 'run_1',
+        attempt,
+        max: 5,
+        failedThinkingStepIds: [],
+      },
     }) as never
 
   test('重发的进度照收，界面据此把阶段改口', () => {
     reset('cv_now')
     applyEvent(retryFrame(1, 3))
     expect(viewOf('cv_now').retry).toEqual({ attempt: 3, max: 5 })
+  })
+
+  test('重发按 AgentLoop 给出的 step id 撤掉失败半截，已完成思考不受影响', () => {
+    reset('cv_now')
+    applyEvent({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_done', delta: '前一轮思考' },
+    } as never)
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_failed', delta: '失败的半截' },
+    } as never)
+    applyEvent({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.retrying',
+        runId: 'run_1',
+        attempt: 1,
+        max: 5,
+        failedThinkingStepIds: ['st_failed'],
+      },
+    } as never)
+
+    expect(
+      viewOf('cv_now')
+        .transcript.filter((item) => item.kind === 'thinking')
+        .map((item) => item.id),
+    ).toEqual(['st_done'])
   })
 
   test('新那次一出思考就收场——不收场的话整轮跑完还钉在「正在重连」上', () => {
@@ -1039,6 +1085,41 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
 
     expect(transcript().map((t) => t.kind)).toEqual(['user', 'thinking', 'tool', 'run'])
     expect(transcript()[1]?.text).toBe('先看看这台机器的显卡')
+  })
+
+  test('失败重发留下的半截思考只留在诊断账本，不折回普通会话流', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    stub(
+      [
+        {
+          id: 'st_failed_thinking',
+          seq: 0,
+          kind: 'thinking',
+          content: 'Note: index.html references vendor but the response stopped h',
+          payload: null,
+          status: 'failure',
+          createdAt: 1,
+        },
+        {
+          id: 'st_done_thinking',
+          seq: 1,
+          kind: 'thinking',
+          content: '重发后完整的思考',
+          payload: null,
+          status: 'done',
+          createdAt: 2,
+        },
+      ],
+      [interruptedRun],
+    )
+    await reloadActiveConversation()
+
+    expect(
+      transcript()
+        .filter((item) => item.kind === 'thinking')
+        .map((item) => item.text),
+    ).toEqual(['重发后完整的思考'])
   })
 
   test('没有思考的工具 step 不平白多出一条空折叠', async () => {
