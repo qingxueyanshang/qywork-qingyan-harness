@@ -148,19 +148,15 @@ export interface Conversation {
   /** 用户显式重置缓存时递增；稳定路由键含该值，旧 provider 缓存自然隔离。 */
   cacheGeneration: number
   /**
-   * null=用户会话，会出现在会话列表里；`'workflow'`=编排产生的机器会话，不出现。
+   * null = 用户会话，出现在会话列表里；其余三个值 = 子 agent 的种类，不出现。
+   * 子 agent 的 id 就是这条会话的 id，三种种类一个 id 空间。
    *
-   * **只有这两个值，因为它只回答一个问题**：这条会话要不要进列表。
-   *
-   * 名字刻意取执行层的说法而不是 `'team'`：**Agent Team 是配置项**
-   * （`.qy/team.json` 里的角色与编排图），不是底层执行概念。领域模型按配置功能
-   * 命名，等于把「今天恰好只有这一种编排」写死进了数据形状——明天多一种编排，
-   * 要么再加一个并列的值（两个值回答同一个问题），要么让新的编排顶着 `team` 的名字跑。
-   *
-   * 「是哪一次编排、哪个角色」由 `sourceRef` 带，那才是该区分的地方。
+   * `sourceRef`：`role` 存角色 id，`cli` 存 CLI id，`temp` 为 null。名字在 `title`。
    */
-  source: 'workflow' | null
+  source: 'role' | 'temp' | 'cli' | null
   sourceRef: string | null
+  /** 外部 CLI 子 agent 的会话句柄，续接时交回给它；内置子 agent 为 null。 */
+  externalSession: string | null
   /**
    * 派活建出来的子会话属于哪条父会话；顶层会话是 `null`。
    *

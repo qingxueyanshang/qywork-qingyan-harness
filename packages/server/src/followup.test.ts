@@ -288,7 +288,7 @@ describe('子会话不接受直接消息', () => {
       workspaceId: workspaceId as never,
       provider: 'fake',
       model: 'deepseek-v4-flash',
-      source: 'workflow',
+      source: 'temp',
       sourceRef: 'ad-hoc',
       parentConversationId: parent,
     }).id

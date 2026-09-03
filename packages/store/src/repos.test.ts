@@ -112,7 +112,7 @@ describe('会话列表排序', () => {
       provider: 'p',
       model: 'm',
       title: '子代理的',
-      source: 'workflow',
+      source: 'temp',
     })
     expect(listConversations(store, ws.id).map((c) => c.title)).toEqual(['用户的'])
     store.close()
@@ -537,7 +537,7 @@ describe('子会话归属', () => {
       workspaceId: ws.id,
       provider: 'openai',
       model: 'm',
-      source: 'workflow',
+      source: 'temp',
       sourceRef: 'build-glm',
       parentConversationId: parent.id,
     })

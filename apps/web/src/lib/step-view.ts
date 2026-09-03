@@ -395,14 +395,6 @@ export function requestOutcome(q: RequestOutcomeLike): string {
 const ENTRY = `${String.fromCharCode(0)}entry`
 const EXIT = `${String.fromCharCode(0)}exit`
 
-/**
- * 派活目标指向外部 CLI 时的前缀。
- *
- * 不从 `@qywork/team` 取：那个包在依赖图上不朝界面这边走，为一个前缀反向引一次
- * 不划算。前端这一侧只有这一处认这个前缀，改的时候两边一起改。
- */
-export const CLI_PREFIX = 'cli:'
-
 /** 图上的一格。 */
 export interface GraphNode {
   /** 认领进度与连线定位都用它。子 agent 那一格的 key 就是 `team.member` 的 memberId。 */
@@ -411,8 +403,8 @@ export interface GraphNode {
   title: string
   /** 会话端点不可点开，也没有执行者。 */
   kind: 'session' | 'agent'
-  /** 派给谁：角色 id 或 `cli:<id>`，临时子 agent 是空串。会话端点没有这一项。 */
-  agent: string
+  /** 这一格是外部 CLI：点开的是它写出来的那段流，不是子会话。 */
+  cli: boolean
   /**
    * 次行印的执行者。**派一件时缺席**：那一格的主行已经是执行者，
    * 次行再印一遍是同一个词读两遍。
@@ -454,10 +446,10 @@ export function delegateGraph(item: {
   const needsExit =
     leafNodes.some((node) => node.kind === 'agent') || (leaves.length === 0 && kids.length > 0)
   const nodes: GraphNode[] = [
-    { key: ENTRY, title: '当前会话', kind: 'session', agent: '', needs: [] },
+    { key: ENTRY, title: '当前会话', kind: 'session', cli: false, needs: [] },
     ...kids.map((n) => (n.needs.length ? n : { ...n, needs: [ENTRY] })),
     ...(needsExit
-      ? [{ key: EXIT, title: '当前会话', kind: 'session' as const, agent: '', needs: leaves }]
+      ? [{ key: EXIT, title: '当前会话', kind: 'session' as const, cli: false, needs: leaves }]
       : []),
   ]
   return { nodes, layers: layered(nodes), horizontal: kids.length === 1 }
@@ -476,35 +468,41 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
           key: id,
           title: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : '当前会话审查',
           kind: 'session' as const,
-          agent: '',
+          cli: false,
           needs,
         }
       }
-      const agent = String(o.agent ?? '')
       // 主行是节点 id：一张图里常常四格都是同一个执行者，区分得开的就是它。
-      // 次行的执行者**一定要有个字**——节点没点名执行者时它是临时子 agent，
-      // 填空串的话次行整行消失，而那一格看起来就像少了半截。
+      // 次行印子 agent 的名字，运行期事件带的名字更全时以事件为准。
       return {
         key: id,
         title: id,
         kind: 'agent' as const,
-        agent,
-        agentLabel: agentTitle(agent),
+        cli: o.kind === 'cli',
+        agentLabel: targetTitle(o),
         needs,
       }
     })
   }
-  const agent = typeof item.args?.agent === 'string' ? item.args.agent.trim() : ''
-  return [{ key: SUBAGENT_NODE_ID, title: agentTitle(agent), kind: 'agent', agent, needs: [] }]
+  const args = item.args ?? {}
+  return [
+    {
+      key: SUBAGENT_NODE_ID,
+      title: targetTitle(args),
+      kind: 'agent',
+      cli: args.kind === 'cli',
+      needs: [],
+    },
+  ]
 }
 
 /**
- * 派一件那一格的主行。运行期事件带的名字更全（厂商 + CLI 名），这里是刷新之后的回落，
- * 那时只剩调用参数。
+ * 一格的名字，只凭调用参数就能算：刷新之后回放、进度事件没到之前都用它。
+ * 与 core 的 `targetLabel` 同一条规则，这里读的是未解析的原始参数。
  */
-function agentTitle(agent: string): string {
-  if (!agent) return '临时子 agent'
-  return agent.startsWith(CLI_PREFIX) ? agent.slice(CLI_PREFIX.length) : agent
+function targetTitle(o: Record<string, unknown>): string {
+  const pick = (key: string) => (typeof o[key] === 'string' ? (o[key] as string).trim() : '')
+  return pick('subagent') || pick('name') || pick('role') || pick('cli') || '子 agent'
 }
 
 /** 按依赖分层：一格落在「它所有上游的最深层 + 1」。 */

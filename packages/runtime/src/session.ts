@@ -178,7 +178,7 @@ export interface AskOptions {
    * 这一轮**新建**会话时给它打的来源标记（续跑已有会话时无效）。
    *
    * 不填 = `null` = 用户会话，会出现在会话列表里。编排产生的成员子会话
-   * 必须填 `'workflow'`：`listConversations` 的判据是 `source IS NULL`，
+   * 子 agent 的会话必须填它的种类：`listConversations` 的判据是 `source IS NULL`，
    * 不填的话每跑一次 team、列表里就多出 N 条以成员 prompt 开头的条目，
    * 而那些会话用户点进去也没有意义——它们由父会话的协作视图展示。
    */

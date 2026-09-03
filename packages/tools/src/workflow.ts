@@ -34,11 +34,30 @@ export const workflowTool: ToolSpec = {
             id: { type: 'string', description: '节点唯一 ID' },
             kind: {
               type: ['string', 'null'],
-              enum: ['agent', 'checkpoint', null],
-              description: '默认 agent；checkpoint 是主会话审查关口',
+              enum: ['role', 'temp', 'cli', 'checkpoint', null],
+              description:
+                '节点种类。role：按角色库里的角色新建子 agent，同时填 role；temp：新建临时子 agent，同时填 name；' +
+                'cli：外部 CLI，同时填 cli；checkpoint：当前会话审查关口。指向本会话已有子 agent 时不填 kind，改填 subagent。',
             },
-            agent: { type: 'string', description: '角色名或 cli:<id>；agent 节点可省略' },
-            task: { type: 'string', description: 'agent 节点任务' },
+            role: {
+              type: 'string',
+              description: '角色 id，运行上下文「角色」清单里的一项。kind 为 role 时填',
+            },
+            name: {
+              type: 'string',
+              description:
+                '子 agent 的名字。kind 为 temp 时必填；role / cli 可选，不填用角色名或 CLI 名',
+            },
+            cli: {
+              type: 'string',
+              description: '外部 CLI 的 id，运行上下文清单里的一项。kind 为 cli 时填',
+            },
+            subagent: {
+              type: 'string',
+              description:
+                '本会话已有子 agent 的 id。填了它这一格就是接着它的上下文继续，不再填 kind、role、name、cli',
+            },
+            task: { type: 'string', description: '子 agent 节点任务' },
             label: { type: 'string', description: 'checkpoint 显示名称' },
             needs: { type: 'array', items: { type: 'string' }, description: '依赖节点 ID' },
             passInput: { type: 'boolean', description: '是否把上游输出传入任务，默认 true' },

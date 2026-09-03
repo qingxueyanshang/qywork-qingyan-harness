@@ -44,7 +44,7 @@ describe('会话口径含子会话', () => {
         workspaceId: ws.id,
         provider: 'openai',
         model: 'm',
-        source: 'workflow',
+        source: 'temp',
         sourceRef: roleId,
         parentConversationId: parent.id,
       }),

@@ -1393,6 +1393,21 @@ ALTER TABLE conversations
 CREATE INDEX idx_conv_parent ON conversations(parent_conversation_id);
 `,
   },
+  {
+    id: 39,
+    name: 'subagent_kind',
+    /**
+     * 子会话的 `source` 改记子 agent 的种类：`role` / `temp` / `cli`。之前一律写
+     * `workflow`，角色与临时靠 `source_ref` 是不是 `ad-hoc` 区分。
+     * 新列 `external_session` 存外部 CLI 的会话句柄，续接时交回给它。
+     */
+    sql: `
+ALTER TABLE conversations ADD COLUMN external_session TEXT;
+UPDATE conversations SET source = 'temp', source_ref = NULL
+  WHERE source = 'workflow' AND source_ref = 'ad-hoc';
+UPDATE conversations SET source = 'role' WHERE source = 'workflow';
+`,
+  },
 ]
 
 /**
@@ -1440,8 +1455,9 @@ export interface ConversationRow {
   compaction_manifest: string | null
   cache_generation: number
   /** CHECK 没管这一列，但写入侧只写这两个值中的一个。 */
-  source: 'workflow' | null
+  source: 'role' | 'temp' | 'cli' | null
   source_ref: string | null
+  external_session: string | null
   /** 派活建出来的子会话指向它的父会话；顶层会话为 NULL。 */
   parent_conversation_id: ConversationId | null
   archived_at: number | null
@@ -1585,6 +1601,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'source',
     'source_ref',
     'parent_conversation_id',
+    'external_session',
     'archived_at',
     'created_at',
     'updated_at',

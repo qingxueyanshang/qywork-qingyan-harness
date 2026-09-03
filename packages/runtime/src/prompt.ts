@@ -358,7 +358,7 @@ function workflowLine(projection: WorkflowProjection): string {
       const result = projection.results[node.id]
       if (!result) return `  - ${node.id}：还没有回执`
       const reason = result.error ? `：${oneLine(result.error)}` : ''
-      const resumable = result.conversationId || result.session ? '，可续接原会话' : ''
+      const resumable = result.subagentId ? '，可续接原会话' : ''
       return `  - ${node.id}：${result.status}${reason}${resumable}`
     })
   return [head, ...nodes].join('\n')

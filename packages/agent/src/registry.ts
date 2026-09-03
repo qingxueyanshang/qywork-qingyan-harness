@@ -20,6 +20,8 @@ import type {
   GoalWriteResult,
   IntermediateResourceRef,
   ResourceCoverage,
+  SubagentKind,
+  SubagentTarget,
   TodoItem,
   ToolOutcomeWire,
   WorkflowCall,
@@ -66,9 +68,24 @@ export interface SinkPort {
  * **子 agent 不得再派活。** 装配方只给顶层会话注入它。成员会话拿不到这个端口，也就不可能递归下去
  * —— 递归派活没有终止条件，一次失控会把整台机器的进程数拖垮。
  */
+export interface SubagentSummary {
+  id: string
+  kind: SubagentKind
+  name: string
+  provider: string
+  model: string
+  /** running = 它的会话此刻在跑；failed = 最近一轮没跑完；idle = 空闲。 */
+  status: 'running' | 'idle' | 'failed'
+}
+
 export interface DelegatePort {
-  /** 现在能派给谁。角色与外部 CLI 混在一张表里，`id` 直接可用于 `run`。 */
-  targets(): Promise<{ id: string; kind: 'role' | 'cli'; description: string }[]>
+  /** 当前项目能派的目标：角色库里的角色，与本机识别到的外部 CLI。 */
+  targets(): Promise<{
+    roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
+    clis: { id: string; vendor: string; connected: boolean }[]
+  }>
+  /** 本会话已有的子 agent。 */
+  subagents(): Promise<SubagentSummary[]>
   /**
    * 把模型名钉成配置里真实存在的「接口 × 模型」。
    *
@@ -80,52 +97,42 @@ export interface DelegatePort {
     name: string,
     provider?: string,
   ): { provider: string; model: string } | { error: string }
-  /** 派出去并等它做完。失败是返回值不是异常——模型要按原因换做法。 */
-  run(input: {
-    target: string
+  /**
+   * 派给一个子 agent 并等它做完。目标是新建（按种类）还是已有（按 id）由 `target` 决定；
+   * 失败是返回值不是异常——模型要按原因换做法。
+   *
+   * `stepId` 是这次调用那张卡的 id，实现方按它广播进度；`nodeId` 是图上哪一格，
+   * 派一件时不给，实现方用单格的固定 id。
+   */
+  dispatch(input: {
+    target: SubagentTarget
     task: string
-    /** 用户点名了模型时才有；不给就跟当前会话同一个。 */
-    model?: string
-    /** 与 model 配对的接口名；结构化传递，避免把两列拼成一个有歧义的字符串。 */
+    /** 只在新建时生效：用户点名了模型才有。 */
     provider?: string
-    /**
-     * 接着某条外部 CLI 会话继续问（上一次回执里那个 `session`）。
-     * 它记得上一轮干了什么，所以回执不清楚时追问比重新派一遍便宜。
-     */
-    resume?: string
-    /**
-     * 进度事件挂在哪一轮、哪张卡上。**两个都要**：`runId` 是 `team.member` 的必填字段，
-     * `stepId` 是前端认领卡片的依据。
-     *
-     * `stepId` 允许缺席，那时实现方整条不发——形状来自调用参数、终态来自这条 step 自己，
-     * 两样都不依赖这条通道，丢的只有运行期状态与外部 CLI 的中途输出。
-     * 这一点与 `runGraph` 不同：那边没有 stepId 整张图画不出状态，所以工具直接拒绝执行。
-     */
+    model?: string
     runId: string
     stepId?: string
+    nodeId?: string
     signal: AbortSignal
+    /** 子 agent 定下来就交出去，不等跑完。 */
+    onSubagent?: (subagentId: string) => void
   }): Promise<{
     ok: boolean
     output: string
     error?: string
-    conversationId?: string
-    /**
-     * 外部 CLI 那条会话的 id，**下一次要接着问就靠它**。
-     * 内置角色没有（那边是子会话，见 `conversationId`）；
-     * 认不出 id 的那几家 CLI 也没有，那种只能重新派一次。
-     */
-    session?: string
+    /** 派给了谁。连记录都没建成时缺席。 */
+    subagentId?: string
+    name?: string
+    /** 这次派发是不是新建了它。 */
+    created?: boolean
   }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
    *
    * **调度不在这里，在实现方**：依赖就绪才启动、并发上限都由那边的编排器
-   * 按图执行。工具只负责把图交出去、把结果拿回来——把调度搬进工具就等于每次跑的
-   * 形状都由模型当场决定，出问题无法复现也无法归因。
+   * 按图执行。工具只负责把图交出去、把结果拿回来。
    *
    * `stepId` 是这次工具调用的卡片 id，实现方按它广播进度，前端据此认领那张图卡。
-   * 逐节点的终态要原样回来（含子会话 id）：进度事件不落库，刷新之后能重画这张图的
-   * 只有这次调用的返回值。
    */
   runGraph(input: {
     call: WorkflowCall

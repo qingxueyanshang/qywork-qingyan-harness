@@ -26,7 +26,6 @@ import {
 } from '../lib/render-items.ts'
 import {
   argsRows,
-  CLI_PREFIX,
   clamp,
   collapseCarriageReturns,
   compact,
@@ -1217,9 +1216,9 @@ function DelegateCard(props: { item: TranscriptItem }) {
     if (projected) {
       return {
         phase: projected.status,
-        label: projected.label || projected.agent,
+        label: projected.label,
         durationMs: projected.durationMs,
-        conversationId: projected.conversationId,
+        conversationId: projected.subagentId,
         attempts: props.item.workflow?.attempts[n.key],
       }
     }
@@ -1360,7 +1359,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                    * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
                    * 两者都没有时（还没跑到）点不开。
                    */
-                  const cli = () => n.agent.startsWith(CLI_PREFIX)
+                  const cli = () => n.cli
                   // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
                   // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
                   const name = () => (n.agentLabel ? n.title : st()?.label || n.title)

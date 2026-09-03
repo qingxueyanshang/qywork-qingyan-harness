@@ -183,10 +183,10 @@ describe('编排画布', () => {
                 args: {
                   goal: '四个候选',
                   nodes: [
-                    { id: 'a', agent: 'glm' },
-                    { id: 'b', agent: 'qwen' },
-                    { id: 'c', agent: 'deepseek' },
-                    { id: 'd', agent: 'gemini' },
+                    { id: 'a', kind: 'temp', name: 'glm' },
+                    { id: 'b', kind: 'temp', name: 'qwen' },
+                    { id: 'c', kind: 'temp', name: 'deepseek' },
+                    { id: 'd', kind: 'temp', name: 'gemini' },
                   ],
                 },
                 status: 'running',
@@ -258,7 +258,10 @@ describe('编排画布', () => {
                 text: '',
                 toolName: 'workflow',
                 action: { kind: 'run', objectLabel: '编排', target: '四个候选' },
-                args: { goal: '四个候选', nodes: [{ id: 'a', agent: 'glm', task: '做' }] },
+                args: {
+                  goal: '四个候选',
+                  nodes: [{ id: 'a', kind: 'temp', name: 'glm', task: '做' }],
+                },
                 status: 'failure',
                 durationMs: 2500,
               },
@@ -268,7 +271,7 @@ describe('编排画布', () => {
                 text: '',
                 toolName: 'subagent',
                 action: { kind: 'run', objectLabel: '子 agent', target: 'qwen-racer' },
-                args: { agent: 'qwen-racer', task: '继续优化' },
+                args: { kind: 'role', role: 'qwen-racer', task: '继续优化' },
                 status: 'failure',
               },
             ] as never
@@ -309,13 +312,12 @@ describe('编排画布', () => {
                 toolName: 'workflow',
                 args: {
                   goal: '并行执行',
-                  nodes: [{ id: 'fifth', agent: 'gemini', task: '实现第五版' }],
+                  nodes: [{ id: 'fifth', kind: 'temp', name: 'gemini', task: '实现第五版' }],
                 },
                 status: 'running',
                 nodes: [
                   {
                     nodeId: 'fifth',
-                    agent: 'gemini',
                     label: 'Gemini 开发者',
                     phase: 'queued',
                   },
@@ -539,12 +541,11 @@ describe('子会话与主会话共用流式外壳', () => {
               kind: 'tool',
               text: '',
               toolName: 'subagent',
-              args: { agent: 'qwen-racer', task: '继续修复' },
+              args: { kind: 'role', role: 'qwen-racer', task: '继续修复' },
               status: 'running',
               nodes: [
                 {
                   nodeId: 'child',
-                  agent: 'qwen-racer',
                   label: 'Qwen 赛车开发者',
                   phase: 'working',
                   conversationId: 'cv_child_legacy',

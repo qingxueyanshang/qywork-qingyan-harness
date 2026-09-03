@@ -413,7 +413,7 @@ describe('诊断导出', () => {
       provider: 'child-provider',
       model: 'child-model',
       title: '研究员子会话',
-      source: 'workflow',
+      source: 'temp',
       sourceRef: 'researcher',
     })
     const childMessage = appendMessage(store, {
@@ -455,7 +455,7 @@ describe('诊断导出', () => {
       provider: 'child-provider',
       model: 'child-model',
       title: '孙会话',
-      source: 'workflow',
+      source: 'temp',
       sourceRef: 'reviewer',
     })
     const grandchildMessage = appendMessage(store, {
@@ -557,7 +557,7 @@ describe('诊断导出', () => {
       ),
     ).toEqual([child.id, grandchild.id])
     expect(parsed.conversationTree.childConversations[0]).toMatchObject({
-      conversation: { id: child.id, source: 'workflow', sourceRef: 'researcher' },
+      conversation: { id: child.id, source: 'temp', sourceRef: 'researcher' },
       messages: [{ content: '调查工具为什么循环' }],
       runs: [
         {

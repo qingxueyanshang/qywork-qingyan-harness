@@ -123,43 +123,27 @@ const CUT_SHORT: Partial<Record<StopReason, string>> = {
 
 export async function runBuiltinMember(
   input: {
+    /** 运行约束：角色的提示词与工具面；临时子 agent 两者都空。 */
     role: Role
     prompt: string
     signal: AbortSignal
-    /** workflow revise 时续用上一轮子会话；不提供才新建。 */
-    existingConversationId?: ConversationId
+    /** 子 agent 的会话。派活端口在派之前就建好了它，接口与模型都记在那一行上。 */
+    conversationId: ConversationId
   },
   ctx: {
     // 只要装配三件套：派活端口（`delegate.ts`）在没有 WebSocket 的地方也要调它。
     deps: Omit<CommandDeps, 'ws'>
     /** 父会话所在的项目目录。成员会话跑在同一个根下——一轮编排不跨项目。 */
     workspaceRoot: string
-    /** 派活的那条会话。子会话按它归属，用量汇总与级联删除都读这一列。 */
-    parentConversationId: ConversationId
-    /** 父会话当前的「接口 × 模型」，谁都没点名时成员跟着它跑。 */
-    inherit?: ModelRef
-    /** 用户这一次点名的那一对，盖过角色与父会话。 */
-    explicit?: ModelRef
-    /**
-     * 子会话 id 一拿到就交出去，不等这一趟跑完。
-     *
-     * 图卡上那一格靠它才点得开（`team.member` 的 `childConversationId`）。
-     * 拖到返回值里交的话，「跑着的时候点开看它在做什么」这件事在语义上就不成立了。
-     */
-    onConversation?: (conversationId: ConversationId) => void
+    /** team.json 里追加给所有内置子 agent 的公共约束。 */
+    shared?: string
     /** 子会话的每一条事件，带着它自己的会话 id。见本文件头那段。 */
     onEvent?: (event: AgentEvent, conversationId: ConversationId) => void
   },
-): Promise<{ ok: boolean; output: string; error?: string; conversationId?: ConversationId }> {
+): Promise<{ ok: boolean; output: string; error?: string }> {
   const { role } = input
   const { deps } = ctx
-
-  const active = memberModel(role, deps.config, {
-    ...(ctx.explicit ? { explicit: ctx.explicit } : {}),
-    ...(ctx.inherit ? { inherit: ctx.inherit } : {}),
-  })
-  if ('error' in active) return { ok: false, output: '', error: active.error }
-  const config = { ...deps.config, active }
+  const extraSystem = [role.systemPrompt, ctx.shared].filter(Boolean).join('\n\n')
 
   /*
    * 子会话也必须进入和主会话相同的 RunManager 生命周期。
@@ -180,33 +164,24 @@ export async function runBuiltinMember(
 
   const session = new Session({
     store: deps.store,
-    config,
+    config: deps.config,
     content: deps.content,
     workspaceRoot: ctx.workspaceRoot,
     signal: controller.signal,
-    ...(role.systemPrompt ? { extraSystem: role.systemPrompt } : {}),
+    ...(extraSystem ? { extraSystem } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
   })
 
   let text = ''
   let error: string | null = null
-  let conversationId: ConversationId | undefined
+  const conversationId = input.conversationId
   let runId: RunId | null = null
   let stop: StopReason | null = null
 
   try {
-    for await (const ev of session.ask(input.prompt, input.existingConversationId, {
-      // `config.active` 已经是上面解析好的「接口 × 模型」。这里不再递一遍裸模型名：
-      // 它会让新会话把模型写对、接口却仍记成旧的 active，后续续跑重新走错接口。
-      // 成员子会话不进会话列表——`listConversations` 的判据是 `source IS NULL`。
-      // 不打这个标记的话，每跑一次 team，用户列表里就多出 N 条以成员 prompt
-      // 开头的条目，而点进去只有半截独白。
-      source: 'workflow',
-      sourceRef: role.id,
-      parentConversationId: ctx.parentConversationId,
-    })) {
+    // 会话已经存在，接口与模型记在它那一行上；这里不再递模型名。
+    for await (const ev of session.ask(input.prompt, conversationId)) {
       if (ev.type === 'run.started') {
-        conversationId = ev.conversationId
         runId = ev.runId
         // 先登记忙态，再暴露子会话入口。用户拿到入口立刻点开时，加载侧已经能从
         // 同一张权威表确认“正在运行”，不会依赖自己是否碰巧赶上 run.started。
@@ -216,13 +191,10 @@ export async function runBuiltinMember(
           controller,
           startedAt: Date.now(),
         })
-        ctx.onConversation?.(conversationId)
       } else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
       else if (ev.type === 'run.finished') stop = ev.stopReason
-      // `run.started` 之前没有会话 id，那几条无处归属，只能丢。
-      // 实际只有装配期的意外事件落在那一段，正常路径第一条就是 `run.started`。
-      if (conversationId) ctx.onEvent?.(ev, conversationId)
+      ctx.onEvent?.(ev, conversationId)
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
@@ -233,11 +205,7 @@ export async function runBuiltinMember(
   }
 
   const output = text.trim()
-  return {
-    ...memberOutcome({ error, stop, output }),
-    output,
-    ...(conversationId ? { conversationId } : {}),
-  }
+  return { ...memberOutcome({ error, stop, output }), output }
 }
 
 /**

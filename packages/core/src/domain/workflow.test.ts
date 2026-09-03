@@ -22,9 +22,10 @@ describe('workflow 调用判别', () => {
       nodes: [
         {
           id: 'a',
-          kind: null,
+          kind: 'temp',
+          name: 'a',
           task: '先做',
-          agent: null,
+          subagent: null,
           needs: null,
           passInput: true,
           provider: null,
@@ -35,7 +36,7 @@ describe('workflow 调用判别', () => {
           kind: 'checkpoint',
           label: '当前会话审查',
           needs: ['a'],
-          agent: null,
+          name: null,
           task: null,
           // OpenAI strict 参数补全实测可能给 checkpoint 填默认 true；该字段无语义。
           passInput: true,
@@ -55,7 +56,7 @@ describe('workflow 调用判别', () => {
         kind: 'start',
         goal: '做完',
         nodes: [
-          { id: 'a', kind: 'agent', agent: 'ad-hoc', task: '先做' },
+          { id: 'a', kind: 'subagent', target: { kind: 'temp', name: 'a' }, task: '先做' },
           { id: 'review', kind: 'checkpoint', label: '当前会话审查', needs: ['a'] },
         ],
         maxConcurrent: DEFAULT_MAX_CONCURRENT,
@@ -67,7 +68,17 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', task: '先做', needs: '[]', kind: 'null', agent: 'null' }],
+        nodes: [
+          {
+            id: 'a',
+            task: '先做',
+            needs: '[]',
+            kind: 'temp',
+            name: 'a',
+            role: 'null',
+            subagent: 'null',
+          },
+        ],
         workflowId: 'null',
         checkpointId: 'null',
         decision: 'null',
@@ -79,7 +90,7 @@ describe('workflow 调用判别', () => {
       call: {
         kind: 'start',
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'agent', agent: 'ad-hoc', task: '先做' }],
+        nodes: [{ id: 'a', kind: 'subagent', target: { kind: 'temp', name: 'a' }, task: '先做' }],
         maxConcurrent: DEFAULT_MAX_CONCURRENT,
       },
     })
@@ -89,7 +100,7 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', task: '先做' }],
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
         workflowId: null,
         checkpointId: null,
         decision: null,
@@ -114,7 +125,7 @@ describe('workflow 调用判别', () => {
       parseWorkflowCall({
         goal: '做完',
         nodes: JSON.stringify([
-          { id: 'a', task: '先做' },
+          { id: 'a', kind: 'temp', name: 'a', task: '先做' },
           { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
         ]),
         workflowId: '',
@@ -140,15 +151,28 @@ describe('workflow 调用判别', () => {
   })
 
   test('maxConcurrent 缺省回默认值，正整数原样带出，非正整数拒绝', () => {
-    expect(parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }] })).toMatchObject({
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+      }),
+    ).toMatchObject({
       ok: true,
       call: { maxConcurrent: DEFAULT_MAX_CONCURRENT },
     })
     expect(
-      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }], maxConcurrent: 5 }),
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        maxConcurrent: 5,
+      }),
     ).toMatchObject({ ok: true, call: { maxConcurrent: 5 } })
     expect(
-      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做' }], maxConcurrent: 0 }),
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        maxConcurrent: 0,
+      }),
     ).toEqual({ ok: false, error: 'maxConcurrent 必须是正整数' })
   })
 
@@ -177,6 +201,8 @@ describe('workflow 调用判别', () => {
         nodes: [
           {
             id: 'a',
+            kind: 'temp',
+            name: 'a',
             task: '先做',
             provider: '官方/中转',
             model: 'anthropic/claude-opus-5',
@@ -190,7 +216,10 @@ describe('workflow 调用判别', () => {
       },
     })
     expect(
-      parseWorkflowCall({ goal: '做完', nodes: [{ id: 'a', task: '先做', provider: '官方' }] }),
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', provider: '官方' }],
+      }),
     ).toEqual({ ok: false, error: '节点 a 指定 provider 时必须同时指定 model' })
   })
 
@@ -226,9 +255,9 @@ describe('workflow 投影', () => {
         args: {
           goal: '做完',
           nodes: [
-            { id: 'a', task: '做 A' },
+            { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
-            { id: 'b', task: '做 B', needs: ['cp'] },
+            { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['cp'] },
           ],
         },
         status: 'success',
@@ -239,7 +268,6 @@ describe('workflow 投影', () => {
           receipts: [
             {
               nodeId: 'a',
-              agent: 'ad-hoc',
               label: 'A',
               status: 'done',
               output: '错',
@@ -266,7 +294,6 @@ describe('workflow 投影', () => {
           receipts: [
             {
               nodeId: 'a',
-              agent: 'ad-hoc',
               label: 'A',
               status: 'done',
               output: '对',
@@ -286,7 +313,6 @@ describe('workflow 投影', () => {
           receipts: [
             {
               nodeId: 'b',
-              agent: 'ad-hoc',
               label: 'B',
               status: 'done',
               output: '完成',
@@ -312,8 +338,8 @@ describe('workflow 投影', () => {
    */
   test('对已批准的检查点 revise：撤销批准、只作废选中节点', () => {
     const nodes = [
-      { id: 'build-glm', task: '做 glm 版' },
-      { id: 'build-qwen', task: '做 qwen 版' },
+      { id: 'build-glm', kind: 'temp', name: 'build-glm', task: '做 glm 版' },
+      { id: 'build-qwen', kind: 'temp', name: 'build-qwen', task: '做 qwen 版' },
       {
         id: 'audit-builds',
         kind: 'checkpoint',
@@ -323,12 +349,11 @@ describe('workflow 投影', () => {
     ]
     const receipt = (nodeId: string, output: string) => ({
       nodeId,
-      agent: 'ad-hoc',
       label: nodeId,
       status: 'done' as const,
       output,
       durationMs: 1,
-      conversationId: `cv_${nodeId}`,
+      subagentId: `cv_${nodeId}`,
     })
     const records: WorkflowCallRecord[] = [
       {
@@ -395,7 +420,7 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', task: '做' },
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
             ],
           },
@@ -417,8 +442,8 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', task: '做' },
-              { id: 'b', task: '也做' },
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
             ],
           },
@@ -434,12 +459,12 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.a).toMatchObject({
       status: 'failed',
       error: '调用中断',
-      conversationId: 'cv_a',
+      subagentId: 'cv_a',
     })
     expect(folded.projection.results.b).toMatchObject({
       status: 'failed',
       error: '调用中断',
-      conversationId: 'cv_b',
+      subagentId: 'cv_b',
     })
     expect(folded.projection.attempts).toEqual({})
   })
@@ -455,8 +480,8 @@ describe('workflow 投影', () => {
         args: {
           goal: '目标',
           nodes: [
-            { id: 'a', task: '研究' },
-            { id: 'b', task: '复核', needs: ['a'] },
+            { id: 'a', kind: 'temp', name: 'a', task: '研究' },
+            { id: 'b', kind: 'temp', name: 'b', task: '复核', needs: ['a'] },
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['b'] },
           ],
         },
@@ -468,7 +493,6 @@ describe('workflow 投影', () => {
           receipts: [
             {
               nodeId: 'a',
-              agent: 'ad-hoc',
               label: 'A',
               status: 'done',
               output: '旧 A',
@@ -476,7 +500,6 @@ describe('workflow 投影', () => {
             },
             {
               nodeId: 'b',
-              agent: 'ad-hoc',
               label: 'B',
               status: 'done',
               output: '旧 B',
