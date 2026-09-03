@@ -5,7 +5,7 @@
  * 需求 11 的硬要求）。目录只提供三件事——已知模型的能力约束、计价、以及请求参数的合法性
  * 校验。未知模型走 `unknownModel()` 的保守默认值，不阻止发送。
  *
- * 口径来源：Anthropic 官方文档（2026-06-24 快照）。改动这里前先核对，别凭记忆写。
+ * 口径来源：Anthropic 官方文档（2026-09-02 快照）。改动这里前先核对，别凭记忆写。
  */
 
 import type {
@@ -592,20 +592,9 @@ function anthropicPricing(input: number, output: number): Pricing {
 const round = (n: number) => Math.round(n * 1e6) / 1e6
 
 /**
- * Sonnet 5 的 $2/$10 是限时引入价，2026-08-31 之后回到 $3/$15。
- * 按当前时间取值，不写死——否则账单会从九月一号起静默算错。
- */
-const SONNET_5_INTRO_ENDS = Date.UTC(2026, 7, 31, 23, 59, 59)
-
-function sonnet5Pricing(now = Date.now()): Pricing {
-  return now <= SONNET_5_INTRO_ENDS ? anthropicPricing(2, 10) : anthropicPricing(3, 15)
-}
-
-/**
- * Gemini 3.6 / 3.7 Flash 的促销价，2026-12-31 之后回到 $1.50 / $7.50 / $0.15。
+ * Gemini 3.6 / 3.7 / 3.8 Flash 的促销价，2026-12-31 之后回到 $1.50 / $7.50 / $0.15。
  *
- * 与 `sonnet5Pricing` 同一个形状、同一条理由：**按当前时间取值，不写死**，
- * 否则账单会从一月一号起静默算错。
+ * **按当前时间取值，不写死**，否则账单会从一月一号起静默算错。
  */
 const GEMINI_FLASH_PROMO_ENDS = Date.UTC(2026, 11, 31, 23, 59, 59)
 
@@ -618,8 +607,8 @@ function geminiFlashPromo(now: number): Pricing {
 /**
  * GLM-5.3-Flash 国内站限时半价，有效期至 2026-08-31；北京时间九月一日零点恢复原价。
  *
- * 与 `sonnet5Pricing`、`geminiFlashPromo` 同一个形状、同一条理由：**按当前时间取值，
- * 不写死**，否则账单会从九月一日起静默算错。
+ * 与 `geminiFlashPromo` 同一个形状、同一条理由：**按当前时间取值，不写死**，
+ * 否则账单会从九月一日起静默算错。
  */
 const GLM_53_FLASH_PROMO_EXPIRES = Date.UTC(2026, 7, 31, 16, 0, 0)
 
@@ -667,8 +656,18 @@ const CLAUDE_BASE = {
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
 }
 
-export function claudeCatalog(now = Date.now()): ModelSpec[] {
+export function claudeCatalog(): ModelSpec[] {
   return [
+    {
+      ...CLAUDE_BASE,
+      id: 'claude-fable-5-1',
+      displayName: 'Claude Fable 5.1',
+      // 5.1 的缓存读取是输入价的 0.025 倍；写入仍是 1.25 / 2 倍。
+      pricing: { ...anthropicPricing(10, 50), cacheRead: 0.25 },
+      thinking: 'always_on',
+      thinksByDefault: true,
+      minCacheablePrefix: 512,
+    },
     {
       ...CLAUDE_BASE,
       id: 'claude-opus-5',
@@ -681,7 +680,7 @@ export function claudeCatalog(now = Date.now()): ModelSpec[] {
       ...CLAUDE_BASE,
       id: 'claude-sonnet-5',
       displayName: 'Claude Sonnet 5',
-      pricing: sonnet5Pricing(now),
+      pricing: anthropicPricing(2, 10),
       thinksByDefault: true,
       minCacheablePrefix: 1024,
     },
@@ -1103,11 +1102,12 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── Google Gemini ──
      *
-     * 官方定价页（2026-08）逐字，单位 $/百万：
+     * 官方定价页（2026-09）逐字，单位 $/百万：
      *
      * | 模型 | 输入 | 输出 | 缓存 | 备注 |
      * |---|---|---|---|---|
      * | gemini-3.1-pro-preview | 2.00 | 12.00 | 0.20 | >200k：4.00 / 18.00 / 0.40 |
+     * | gemini-3.8-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
      * | gemini-3.7-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
      * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
      * | gemini-3.5-flash | 1.50 | 9.00 | 0.15 | |
@@ -1115,8 +1115,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * **这三条容易记错**：Flash 不是 0.3/2.5，Pro 有长上下文档，
      * 而且 Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
-     * 3.6 / 3.5 Flash 另有 `minimal`；3.7 Flash 与 3.1 Pro 从 `low` 起。
-     * 四条模型页均给出 1,048,576 输入与 65,536 输出上限。
+     * 3.6 / 3.5 Flash 另有 `minimal`；3.8 / 3.7 Flash 与 3.1 Pro 从 `low` 起。
+     * 五条模型页均给出 1,048,576 输入与 65,536 输出上限。
      */
     {
       ...base,
@@ -1130,6 +1130,18 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       maxOutputTokens: 65_536,
       pricing: usd(2, 12, 0.2),
       longContext: [GEMINI_31_PRO_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-3.8-flash',
+      displayName: 'Gemini 3.8 Flash',
+      vendor: 'google',
+      vision: true,
+      density: GOOGLE_DENSITY,
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      pricing: geminiFlashPromo(now),
     },
     {
       ...base,
@@ -1578,7 +1590,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
 
 /** 全部内置模型。仅用于能力约束与计价，不是可用模型的白名单。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [...claudeCatalog(now), ...deepseekCatalog(), ...openAiCompatCatalog(now)]
+  return [...claudeCatalog(), ...deepseekCatalog(), ...openAiCompatCatalog(now)]
 }
 
 /**

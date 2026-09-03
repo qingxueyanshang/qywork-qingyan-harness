@@ -9,8 +9,8 @@
  * 就消灭会 400 的组合**——不是发出去挨一个错误再兜底：
  *
  * 1. 采样参数（temperature/top_p/top_k）在 Claude 5 系一律 400 → 不提供入口。
- * 2. `budget_tokens` 在 Opus 5 / Sonnet 5 / Fable 5 / Opus 4.7+ 一律 400 → 按 spec.thinking 分派。
- * 3. Fable 5 思考恒开，连 `{type:'disabled'}` 都 400 → 直接省略 thinking 字段。
+ * 2. `budget_tokens` 在 Opus 5 / Sonnet 5 / Fable 5 系 / Opus 4.7+ 一律 400 → 按 spec.thinking 分派。
+ * 3. Fable 5 系思考恒开，连 `{type:'disabled'}` 都 400 → 直接省略 thinking 字段。
  * 4. Opus 5 关思考只允许到 effort=high，配 xhigh/max 会 400 → 装配期降档并记录。
  * 5. Opus 5 / Sonnet 5 **省略 thinking 也会思考**，而 max_tokens 同时封顶思考与正文
  *    → 按 thinksByDefault 抬高输出预算下限，否则回答会从中间被截断。
@@ -224,7 +224,7 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 
   /**
-   * 思考配置。返回 undefined 表示**整个省略 thinking 字段**——这对 Fable 5 是唯一
+   * 思考配置。返回 undefined 表示**整个省略 thinking 字段**——这对 Fable 5 系是唯一
    * 合法写法，对 Opus 5 / Sonnet 5 则等价于 adaptive（它们默认就思考）。
    *
    * 只按 `spec.thinking` 分派：调用方不请求思考形态，强度由 `output_config.effort`

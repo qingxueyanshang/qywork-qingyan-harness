@@ -297,6 +297,7 @@ describe('视频输入', () => {
   })
 
   test('原生模型支持但当前协议未接通时仍不放行', () => {
+    expect(lookupModel('gemini-3.8-flash', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('gemini-3.7-flash', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('gpt-5.6-sol', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('claude-opus-5', 'anthropic_messages').video).toBe(false)
@@ -583,8 +584,23 @@ describe('目录里的价格与档位', () => {
     expect(spec('gpt-5.6-cyber').contextWindow).toBe(400_000)
   })
 
-  test('Gemini Flash 两代同价，3.5 更贵', () => {
-    // 三条都不是 0.3/2.5。
+  test('Gemini 3.8 Flash 的规格、档位与促销价逐项对官方模型页', () => {
+    const flash = spec('gemini-3.8-flash')
+    expect(flash.displayName).toBe('Gemini 3.8 Flash')
+    expect(flash.vendor).toBe('google')
+    expect(flash.contextWindow).toBe(1_048_576)
+    expect(flash.maxOutputTokens).toBe(65_536)
+    expect(flash.vision).toBe(true)
+    expect(flash.video).toBe(false)
+    expect(flash.thinking).toBe('reasoning_effort')
+    expect(flash.thinksByDefault).toBe(true)
+    expect(flash.effortLevels).toEqual(['low', 'medium', 'high'])
+    expect(flash.pricing).toMatchObject({ input: 0.75, output: 3.75, cacheRead: 0.075 })
+  })
+
+  test('Gemini Flash 三代同促销价，3.5 更贵', () => {
+    // 四条都不是 0.3/2.5。
+    expect(spec('gemini-3.8-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.7-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.6-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.5-flash').pricing.input).toBe(1.5)
@@ -592,6 +608,15 @@ describe('目录里的价格与档位', () => {
     expect(spec('gemini-3.6-flash').effortLevels).toEqual(['minimal', 'low', 'medium', 'high'])
     expect(spec('gemini-3.7-flash').contextWindow).toBe(1_048_576)
     expect(spec('gemini-3.7-flash').maxOutputTokens).toBe(65_536)
+  })
+
+  test('Gemini 3.8 Flash 在促销结束后恢复标准价', () => {
+    const pricing = lookupModel(
+      'gemini-3.8-flash',
+      'openai_chat_completions',
+      Date.UTC(2027, 0, 1),
+    ).pricing
+    expect(pricing).toMatchObject({ input: 1.5, output: 7.5, cacheRead: 0.15 })
   })
 
   test('Grok 的档位面：4.6 有 xhigh，4.5 没有，都没有 max', () => {
@@ -606,15 +631,47 @@ describe('目录里的价格与档位', () => {
     }
   })
 
+  test('Claude Fable 5.1 的规格与价格逐项对官方模型页', () => {
+    const fable = spec('claude-fable-5-1', 'anthropic_messages')
+    expect(fable.displayName).toBe('Claude Fable 5.1')
+    expect(fable.contextWindow).toBe(1_000_000)
+    expect(fable.maxOutputTokens).toBe(128_000)
+    expect(fable.vision).toBe(true)
+    expect(fable.video).toBe(false)
+    expect(fable.thinking).toBe('always_on')
+    expect(fable.thinksByDefault).toBe(true)
+    expect(fable.minCacheablePrefix).toBe(512)
+    expect(fable.pricing).toMatchObject({
+      input: 10,
+      output: 50,
+      cacheRead: 0.25,
+      cacheWrite5m: 12.5,
+      cacheWrite1h: 20,
+    })
+    // 5.1 才降到 0.025 倍；Fable 5 的缓存读取仍是 0.1 倍。
+    expect(spec('claude-fable-5', 'anthropic_messages').pricing.cacheRead).toBe(1)
+  })
+
+  test('Sonnet 5 的引入价已转为长期标准价', () => {
+    const afterPlannedIncrease = lookupModel(
+      'claude-sonnet-5',
+      'anthropic_messages',
+      Date.UTC(2026, 8, 1),
+    ).pricing
+    expect(afterPlannedIncrease).toMatchObject({ input: 2, output: 10, cacheRead: 0.2 })
+  })
+
   /** effort 支持名单里没有 Haiku 4.5；Sonnet 4.6 有 max 但没有 xhigh。 */
   test('Claude 的档位面逐条对官方名单', () => {
-    expect(spec('claude-opus-5', 'anthropic_messages').effortLevels).toEqual([
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-    ])
+    for (const id of ['claude-fable-5-1', 'claude-opus-5']) {
+      expect(spec(id, 'anthropic_messages').effortLevels).toEqual([
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ])
+    }
     expect(spec('claude-sonnet-4-6', 'anthropic_messages').effortLevels).toEqual([
       'low',
       'medium',
