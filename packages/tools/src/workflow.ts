@@ -105,7 +105,7 @@ export const workflowTool: ToolSpec = {
     required: [],
   },
   actionKind: 'run',
-  objectLabel: '编排',
+  objectLabel: '工作流',
   category: 'session',
   facet: '协作',
   summary: '分批执行并由当前会话审查一张图',

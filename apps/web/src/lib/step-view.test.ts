@@ -13,7 +13,6 @@ import {
   clamp,
   collapseCarriageReturns,
   compact,
-  delegateConversationId,
   delegateGraph,
   diffFrom,
   displayTarget,
@@ -103,36 +102,6 @@ describe('请求结果只显示产品文案', () => {
   })
 })
 
-describe('派活子会话入口', () => {
-  test('只从持久化 step 的规范字段恢复入口', () => {
-    expect(delegateConversationId({ childConversationId: 'cv_child' })).toBe('cv_child')
-  })
-
-  test('没有规范字段就没有入口', () => {
-    expect(delegateConversationId({})).toBeUndefined()
-  })
-})
-
-/** 命中率的入参只用到这几格，其余字段测里一律不造。 */
-function usage(over: {
-  inputTokens?: number
-  cachedTokens?: number | null
-  cacheWriteTokens?: number | null
-  turns?: {
-    input: number
-    cached: number | null
-    cacheWrite: number | null
-    source?: 'provider' | 'estimated'
-  }[]
-}) {
-  return {
-    inputTokens: over.inputTokens ?? 0,
-    cachedTokens: over.cachedTokens === undefined ? 0 : over.cachedTokens,
-    cacheWriteTokens: over.cacheWriteTokens ?? null,
-    turns: (over.turns ?? []).map((t) => ({ source: 'provider' as const, ...t })),
-  }
-}
-
 describe('target 截断方向', () => {
   test('短的原样返回，空白压成单个空格', () => {
     expect(sanitizeTarget('src/lib.ts')).toBe('src/lib.ts')
@@ -189,6 +158,26 @@ describe('改了多少行', () => {
     expect(fileDelta([{ additions: 0, deletions: 12 }])).toEqual({ additions: 0, deletions: 12 })
   })
 })
+
+/** 命中率的入参只用到这几格，其余字段测里一律不造。 */
+function usage(over: {
+  inputTokens?: number
+  cachedTokens?: number | null
+  cacheWriteTokens?: number | null
+  turns?: {
+    input: number
+    cached: number | null
+    cacheWrite: number | null
+    source?: 'provider' | 'estimated'
+  }[]
+}) {
+  return {
+    inputTokens: over.inputTokens ?? 0,
+    cachedTokens: over.cachedTokens === undefined ? 0 : over.cachedTokens,
+    cacheWriteTokens: over.cacheWriteTokens ?? null,
+    turns: (over.turns ?? []).map((t) => ({ source: 'provider' as const, ...t })),
+  }
+}
 
 describe('读数格式', () => {
   test('大数收成 K / M，小数不动', () => {

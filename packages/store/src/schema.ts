@@ -1408,6 +1408,37 @@ UPDATE conversations SET source = 'temp', source_ref = NULL
 UPDATE conversations SET source = 'role' WHERE source = 'workflow';
 `,
   },
+  {
+    id: 40,
+    name: 'step_nodes',
+    /**
+     * 派活卡的节点事实收成 `$.nodes` 一份：之前派一件写 `$.childConversationId`、
+     * 一张图写 `$.children`，两个键都只有子会话 id，没有状态。旧行按 step 的终态
+     * 折出每一格的 phase，名字取子会话标题。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(
+      json_remove(payload, '$.childConversationId'),
+      '$.nodes',
+      json_object('child', json_object(
+        'phase', CASE status WHEN 'success' THEN 'done' WHEN 'failure' THEN 'failed' ELSE 'interrupted' END,
+        'label', coalesce((SELECT title FROM conversations
+                           WHERE id = json_extract(steps.payload, '$.childConversationId')), ''),
+        'subagentId', json_extract(payload, '$.childConversationId'))))
+WHERE kind = 'tool_action' AND json_type(payload, '$.childConversationId') = 'text';
+UPDATE steps
+SET payload = json_set(
+      json_remove(payload, '$.children'),
+      '$.nodes',
+      (SELECT json_group_object(je.key, json_object(
+         'phase', CASE steps.status WHEN 'success' THEN 'done' WHEN 'failure' THEN 'failed' ELSE 'interrupted' END,
+         'label', coalesce((SELECT title FROM conversations WHERE id = je.value), ''),
+         'subagentId', je.value))
+       FROM json_each(steps.payload, '$.children') je))
+WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
+`,
+  },
 ]
 
 /**

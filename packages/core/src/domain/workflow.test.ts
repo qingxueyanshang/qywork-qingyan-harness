@@ -448,7 +448,10 @@ describe('workflow 投影', () => {
             ],
           },
           status: 'failure',
-          children: { a: 'cv_a', b: 'cv_b' },
+          nodes: {
+            a: { phase: 'interrupted', label: 'a', subagentId: 'cv_a' as never },
+            b: { phase: 'interrupted', label: 'b', subagentId: 'cv_b' as never },
+          },
         },
       ],
       'wf',

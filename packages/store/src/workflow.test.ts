@@ -107,12 +107,12 @@ describe('workflow 调用记录', () => {
     settleToolStep(store, step.id, 'failure', {
       kind: 'tool_result',
       args: START_ARGS,
-      children: { a: 'cv_a' as ConversationId },
+      nodes: { a: { phase: 'interrupted', label: 'a', subagentId: 'cv_a' as ConversationId } },
       outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
     })
     expect(listWorkflowRecords(store, conversation.id)[0]).toMatchObject({
       status: 'failure',
-      children: { a: 'cv_a' },
+      nodes: { a: { phase: 'interrupted', subagentId: 'cv_a' } },
     })
     store.close()
   })

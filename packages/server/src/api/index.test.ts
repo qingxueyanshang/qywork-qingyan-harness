@@ -1083,7 +1083,7 @@ describe('会话诊断导出接口', () => {
         kind: 'tool_result',
         args: { task: '调查' },
         outcome: { status: 'success', executed: true, message: '调查完成' },
-        childConversationId: child.id,
+        nodes: { child: { phase: 'done', label: '调查', subagentId: child.id } },
       },
     })
     const request = openProviderRequest(d.store, {

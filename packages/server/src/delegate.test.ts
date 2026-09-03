@@ -259,7 +259,7 @@ describe('派一件的进度', () => {
     expect(res.ok).toBe(true)
     expect(res.output).toBe('查完了')
     // 子 agent 的记录在派之前就建好，第一条 `working` 就带着它的 id。
-    expect(members().map((m) => m.phase)).toEqual(['working', 'done'])
+    expect(members().map((m) => m.state.phase)).toEqual(['working', 'done'])
     // 不带 stepId 的事件前端认不出是哪张卡，整条丢弃。
     expect(members().every((m) => m.stepId === 'st_1')).toBe(true)
     expect(members().every((m) => m.runId === 'rn_1')).toBe(true)
@@ -282,14 +282,14 @@ describe('派一件的进度', () => {
     })
 
     const live = members()
-      .filter((m) => m.phase === 'working')
+      .filter((m) => m.state.phase === 'working')
       .at(-1)
-    expect(live?.childConversationId).toBe(res.subagentId as ConversationId)
-    expect(live?.childConversationId).toBeTruthy()
+    expect(live?.state.subagentId).toBe(res.subagentId as ConversationId)
+    expect(live?.state.subagentId).toBeTruthy()
 
     const done = members().at(-1)
-    expect(done?.phase).toBe('done')
-    expect(done?.childConversationId).toBe(res.subagentId as ConversationId)
+    expect(done?.state.phase).toBe('done')
+    expect(done?.state.subagentId).toBe(res.subagentId as ConversationId)
   })
 
   /**
@@ -331,9 +331,11 @@ describe('派一件的进度', () => {
     expect(replay?.status).toBe('running')
     const payload = replay?.payload
     expect(payload?.kind).toBe('tool_call')
-    expect(payload?.kind === 'tool_call' ? payload.childConversationId : undefined).toBe(
-      res.subagentId as ConversationId | undefined,
-    )
+    expect(payload?.kind === 'tool_call' ? payload.nodes?.child : undefined).toMatchObject({
+      phase: 'done',
+      label: '临时',
+      subagentId: res.subagentId,
+    })
   })
 
   /**
@@ -385,7 +387,7 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members().map((m) => m.phase)).toEqual(['working', 'failed'])
+    expect(members().map((m) => m.state.phase)).toEqual(['working', 'failed'])
   })
 
   /** 中断走的也是终态那条路：用户点停止之后，那一格不能还转着。 */
@@ -401,7 +403,7 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members().map((m) => m.phase)).toEqual(['working', 'failed'])
+    expect(members().map((m) => m.state.phase)).toEqual(['working', 'failed'])
   })
 
   /**
@@ -639,12 +641,15 @@ describe('workflow 从父会话账本续接', () => {
     // 外层工具循环尚未 settle：这就是切走父会话再切回来时会读到的形状。
     const replay = listSteps(store, run.id).find((s) => s.id === step.id)
     expect(replay?.status).toBe('running')
-    const children = replay?.payload?.kind === 'tool_call' ? replay.payload.children : undefined
+    const states = replay?.payload?.kind === 'tool_call' ? replay.payload.nodes : undefined
     const byNode = Object.fromEntries(
       (result.transition?.receipts ?? []).map((receipt) => [receipt.nodeId, receipt.subagentId]),
     )
-    expect(children).toEqual(byNode as Record<string, never>)
-    expect(Object.keys(children ?? {}).sort()).toEqual(['build.glm', 'build.qwen'])
+    expect(
+      Object.fromEntries(Object.entries(states ?? {}).map(([id, state]) => [id, state.subagentId])),
+    ).toEqual(byNode as Record<string, never>)
+    expect(Object.keys(states ?? {}).sort()).toEqual(['build.glm', 'build.qwen'])
+    expect(Object.values(states ?? {}).map((state) => state.phase)).toEqual(['done', 'done'])
   })
 
   /**
@@ -864,7 +869,7 @@ describe('workflow 从父会话账本续接', () => {
     settleToolStep(store, step.id, 'failure', {
       kind: 'tool_result',
       args,
-      children: { a: child },
+      nodes: { a: { phase: 'interrupted', label: 'a', subagentId: child } },
       outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
     })
 
@@ -1016,7 +1021,11 @@ describe('workflow 从父会话账本续接', () => {
     const memberEvents = members()
     expect(
       memberEvents
-        .filter((event) => event.memberId === 'c' || event.memberId === 'd')
+        // 首派那张卡上 c、d 已经以「等待」出现；跑起来之后的状态才归第二批那张卡。
+        .filter(
+          (event) =>
+            (event.nodeId === 'c' || event.nodeId === 'd') && event.state.phase !== 'waiting',
+        )
         .every((event) => event.stepId === secondBatch.step.id),
     ).toBe(true)
     expect(listSteps(store, run.id).filter((step) => step.toolName === 'workflow')).toHaveLength(4)

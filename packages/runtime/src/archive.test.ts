@@ -481,7 +481,7 @@ describe('诊断导出', () => {
     })
     finishRun(store, grandchildRun.id, { status: 'done', stopReason: 'completed' })
 
-    // 新账本：父 step 上直接有 childConversationId。
+    // 子会话入口在父 step 的 nodes 里。
     appendStep(store, {
       runId: parentRun.id,
       seq: 10,
@@ -497,7 +497,7 @@ describe('诊断导出', () => {
           message: '研究完成',
           data: { conversationId: child.id },
         },
-        childConversationId: child.id,
+        nodes: { child: { phase: 'done', label: '子', subagentId: child.id } },
       },
     })
     // 子会话入口始终在 step 顶层；outcome 里的同名业务结果不是归档关系来源。
@@ -516,7 +516,7 @@ describe('诊断导出', () => {
           message: '复核完成',
           data: { conversationId: grandchild.id },
         },
-        childConversationId: grandchild.id,
+        nodes: { child: { phase: 'done', label: '孙', subagentId: grandchild.id } },
       },
     })
     // 损坏账本可能形成环；应保留这条关系，但不能再次导出根正文或无限递归。
@@ -530,7 +530,7 @@ describe('诊断导出', () => {
         kind: 'tool_result',
         args: { task: '错误回指' },
         outcome: { status: 'success', executed: true, message: '回指父会话' },
-        childConversationId: conversationId,
+        nodes: { child: { phase: 'done', label: '回指', subagentId: conversationId } },
       },
     })
 
@@ -628,7 +628,7 @@ describe('诊断导出', () => {
         kind: 'tool_result',
         args: { task: '丢失的子会话' },
         outcome: { status: 'failure', executed: true, message: '子会话记录丢失' },
-        childConversationId: 'cv_missing_child' as never,
+        nodes: { child: { phase: 'failed', label: '丢', subagentId: 'cv_missing_child' as never } },
       },
     })
 

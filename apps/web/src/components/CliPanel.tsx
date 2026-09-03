@@ -26,11 +26,10 @@ export default function CliPanel(props: { id: string }) {
   /**
    * 运行期间是攒起来的中途输出，跑完 / 刷新之后是落库的那段产出。
    *
-   * 两条各管一段，不互相兜底：中途输出不落库（`team.output` 与 `team.member` 同一条
-   * 口径），而产出只有跑完才有。
+   * 两条各管一段，不互相兜底：中途输出不落库（`team.output`），而产出只有跑完才有。
    */
   const body = () => {
-    const live = card()?.nodes?.find((n) => n.nodeId === where().nodeId)?.output
+    const live = card()?.cliOutput?.[where().nodeId]
     if (live) return live
     const data = card()?.outcome?.data as { output?: unknown } | undefined
     // 一张图的产出按节点分开落；派一件只有一格，产出就在结果顶层。

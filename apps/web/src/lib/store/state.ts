@@ -19,6 +19,7 @@ import type {
   FollowUp,
   GitStateEvent,
   Goal,
+  NodeState,
   RunUsage,
   ServerCapabilities,
   StopReason,
@@ -82,45 +83,19 @@ export interface TranscriptItem {
   /** 长工具的中途输出 */
   stdout?: string
   /**
-   * 派活那两个工具专有：这张图现在跑到哪了。派一件时只有一格。
-   *
-   * **流式期间来自事件，回放时另有来源。** 进度事件不落库，所以刷新之后
-   * 这个字段是空的：一张图由 workflow transition 纯折叠重画，一次派活由那条
-   * step 自己的状态与耗时重画——各管一段，不互相兜底。
+   * 派活那两个工具专有：卡上每一格的状态，键是节点 id。流式期由 `team.member` 逐格替换，
+   * 回放时从 step payload 整份带回，两边同一形状——画图只认这一个字段。
    */
-  nodes?: WorkflowNodeState[]
+  nodes?: Record<string, NodeState>
+  /**
+   * 外部 CLI 节点运行期间写出来的输出（`team.output` 攒起来的），键是节点 id。
+   * **不落库**：刷新之后是空的，那时看落库的产出。
+   */
+  cliOutput?: Record<string, string>
   /** 同一 workflow 的多次 tool step 由 transcript 纯折叠得到的累计视图。 */
   workflow?: WorkflowProjection
-  /**
-   * 内置子 agent 会话入口。实时事件与回放都归一到 step payload 的同一个顶层字段。
-   */
-  childConversationId?: string
-  /** workflow 逐节点的子会话入口，随 step payload 回放；被打断的图靠它折出节点状态。 */
-  children?: Record<string, string>
   batchId?: string
   waveIndex?: number
-}
-
-/** 图卡上的一个节点。 */
-export interface WorkflowNodeState {
-  nodeId: string
-  /** 派给谁：角色 id 或 `cli:<id>`。 */
-  agent: string
-  /** 显示用的名字：角色名或「厂商 + CLI 名」。 */
-  label: string
-  phase: 'queued' | 'spawned' | 'working' | 'done' | 'failed' | 'skipped'
-  /** done/failed 时那一段产出的开头，卡上只显示这一截。 */
-  summary?: string
-  /** 点开看它那条会话。外部 CLI 没有子会话，这个字段缺席。 */
-  conversationId?: string
-  /**
-   * 外部 CLI 节点运行期间写出来的输出（`team.output` 攒起来的）。
-   *
-   * **只有外部 CLI 有**：内置子 agent 的过程在它那条子会话里。**不落库**，
-   * 刷新之后这里是空的，那时看的是落库的终态产出——与图卡的状态同一条口径。
-   */
-  output?: string
-  durationMs?: number
 }
 
 /**

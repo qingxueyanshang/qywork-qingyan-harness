@@ -162,28 +162,28 @@ function collectConversationTree(
     const parentConversationId = parent.conversation!.id
     for (const run of parent.runs) {
       for (const step of run.steps) {
-        const child = childConversationFrom(step)
-        if (!child) continue
-        const link: ChildConversationLink = {
-          parentConversationId,
-          parentRunId: run.id,
-          parentStepId: step.id,
-          childConversationId: child.id,
-          source: child.source,
-        }
-        links.push(link)
-        if (visited.has(child.id)) continue
-        visited.add(child.id)
+        for (const child of childConversationsFrom(step)) {
+          const link: ChildConversationLink = {
+            parentConversationId,
+            parentRunId: run.id,
+            parentStepId: step.id,
+            childConversationId: child.id,
+            source: child.source,
+          }
+          links.push(link)
+          if (visited.has(child.id)) continue
+          visited.add(child.id)
 
-        try {
-          const bundle = collect(store, child.id)
-          childConversations.push(bundle)
-          pending.push(bundle)
-        } catch (error) {
-          unresolvedChildren.push({
-            link,
-            error: error instanceof Error ? error.message : String(error),
-          })
+          try {
+            const bundle = collect(store, child.id)
+            childConversations.push(bundle)
+            pending.push(bundle)
+          } catch (error) {
+            unresolvedChildren.push({
+              link,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
         }
       }
     }
@@ -192,15 +192,15 @@ function collectConversationTree(
   return { rootConversationId, childConversations, links, unresolvedChildren }
 }
 
-function childConversationFrom(
+/** 一条派活 step 起过的子会话：卡上每一格建过的那个子 agent。 */
+function childConversationsFrom(
   step: Step,
-): { id: ConversationId; source: ChildConversationLink['source'] } | null {
+): { id: ConversationId; source: ChildConversationLink['source'] }[] {
   const payload = step.payload
-  if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') return null
-  if (payload.childConversationId) {
-    return { id: payload.childConversationId, source: 'step_payload' }
-  }
-  return null
+  if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') return []
+  return Object.values(payload.nodes ?? {}).flatMap((node) =>
+    node.subagentId ? [{ id: node.subagentId, source: 'step_payload' as const }] : [],
+  )
 }
 
 /**
