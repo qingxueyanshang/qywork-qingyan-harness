@@ -1,5 +1,5 @@
 /**
- * 思考选择器的产品边界：不支持时没有入口；支持时只有正向档位，且能恢复未选择。
+ * 思考选择器的产品边界：不支持时没有入口；支持时只能选择真实强度档位。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -19,7 +19,7 @@ function click(button: HTMLButtonElement) {
   else button.dispatchEvent(event)
 }
 
-test('不支持时隐藏；支持时可恢复未选择且从不出现 none', async () => {
+test('不支持时隐藏；支持时只显示并保存真实强度档位', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../lib/store/index.ts')
   const { ModelPicker } = await import('./ModelPicker.tsx')
@@ -71,7 +71,7 @@ test('不支持时隐藏；支持时可恢复未选择且从不出现 none', asy
     if (path === '/api/models') return catalog as T
     if (path === '/api/config' && init?.method === 'PUT') {
       saved = JSON.parse(String(init.body)) as Record<string, unknown>
-      catalog.providers[0]!.models[1]!.effort = null
+      catalog.providers[0]!.models[1]!.effort = 'low'
       return { ok: true } as T
     }
     if (path === '/api/config') {
@@ -108,17 +108,21 @@ test('不支持时隐藏；支持时可恢复未选择且从不出现 none', asy
       (button) => button.textContent?.includes('推理等级'),
     )!
     click(effortEntry)
-    expect(host.textContent).toContain('未选择（模型默认）')
+    expect(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.model-sub .model-item')).map(
+        (button) => button.textContent,
+      ),
+    ).toEqual(['low', 'high'])
     expect(host.textContent).not.toContain('none')
 
-    const reset = Array.from(host.querySelectorAll<HTMLButtonElement>('.model-item')).find(
-      (button) => button.textContent?.includes('未选择（模型默认）'),
+    const low = Array.from(host.querySelectorAll<HTMLButtonElement>('.model-item')).find(
+      (button) => button.textContent === 'low',
     )!
-    click(reset)
+    click(low)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(saved).not.toBeNull()
     const body = saved as unknown as { config: typeof config }
-    expect(body.config.providers.p.models.reasoning).not.toHaveProperty('effort')
+    expect(body.config.providers.p.models.reasoning.effort).toBe('low')
   } finally {
     dispose()
     store.client.api = originalApi

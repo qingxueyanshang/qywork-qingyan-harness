@@ -185,14 +185,13 @@ export function setModel(provider: string, model: string): void {
 export async function setEffort(
   provider: string,
   model: string,
-  effort: EffortLevel | null,
+  effort: EffortLevel,
 ): Promise<void> {
   const payload = await loadServerConfig()
   const owner = payload.config.providers[provider]
   if (!owner) return
   const entry = { ...owner.models[model] }
-  if (effort) entry.effort = effort
-  else delete entry.effort
+  entry.effort = effort
   await saveServerConfig({
     ...payload.config,
     providers: {

@@ -92,7 +92,7 @@ export function ModelPicker() {
    * 目录由 `saveServerConfig` 落盘成功后统一重算，**这里再补一笔就是第二本账**：
    * 写盘失败时界面会显示一个从未落盘的档，而下一轮实际发出去的还是旧值。
    */
-  const pickEffort = async (lv: EffortLevel | null) => {
+  const pickEffort = async (lv: EffortLevel) => {
     const ref = activeModel()
     if (!ref) return
     await setEffort(ref.provider, ref.model, lv)
@@ -139,7 +139,7 @@ export function ModelPicker() {
               onClick={() => flip('effort')}
             >
               <span class="model-entry-label">推理等级</span>
-              {/* 未选择不是一个档位：请求省略字段，沿用厂商默认。 */}
+              {/* 旧配置可能还没有落过档位，但下拉里只提供真实强度。 */}
               <span class="model-entry-value truncate">{selected() ?? '未选择'}</span>
               <IconChevron size={11} dir="right" />
             </button>
@@ -194,19 +194,6 @@ export function ModelPicker() {
 
           <Show when={sub() === 'effort'}>
             <div class="model-sub" role="listbox">
-              <button
-                class="model-item"
-                classList={{ active: selected() === null }}
-                type="button"
-                role="option"
-                aria-selected={selected() === null}
-                onClick={() => {
-                  void pickEffort(null)
-                  setSub(null)
-                }}
-              >
-                <span class="model-name truncate">未选择（模型默认）</span>
-              </button>
               <For each={levels()}>
                 {(lv) => (
                   <button
