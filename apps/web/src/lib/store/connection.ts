@@ -894,7 +894,7 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
 /**
  * 只读投影另一条会话，给右侧面板里的子会话页用。
  *
- * 子 agent 的会话不在会话列表里（`source='workflow'`），点开它的入口只有工具卡上
+ * 子 agent 的会话不在会话列表里（`source` 记着它的种类），点开它的入口只有工具卡上
  * 带回来的那个 id；而它一旦跑完就不再有事件，投影一次即可，不需要订阅。
  */
 export async function loadConversationView(id: string): Promise<void> {

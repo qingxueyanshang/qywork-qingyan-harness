@@ -442,17 +442,25 @@ describe('派活图', () => {
     expect(g.layers).toHaveLength(3)
   })
 
-  /** 不指定 agent = 临时起一个。那一格的名字不能是空的。 */
-  test('派一件：没点名执行者时那一格叫「临时子 agent」', () => {
-    const g = delegateGraph({ toolName: 'subagent', args: { task: '查' } })
-    expect(g.nodes[1]?.title).toBe('临时子 agent')
+  /** 临时子 agent 的名字来自派发参数；一个字段都没有时印总称。 */
+  test('派一件：那一格印子 agent 的名字', () => {
+    const g = delegateGraph({
+      toolName: 'subagent',
+      args: { kind: 'temp', name: '查资料', task: '查' },
+    })
+    expect(g.nodes[1]?.title).toBe('查资料')
+    const bare = delegateGraph({ toolName: 'subagent', args: { task: '查' } })
+    expect(bare.nodes[1]?.title).toBe('子 agent')
   })
 
-  /** 前缀是内部写法，不进界面。 */
-  test('派一件：外部 CLI 那一格去掉前缀', () => {
-    const g = delegateGraph({ toolName: 'subagent', args: { agent: 'cli:claude', task: '改' } })
+  /** 外部 CLI 那一格按 kind 认，点开的是它写出来的流。 */
+  test('派一件：外部 CLI 那一格印 CLI 名并标成 CLI', () => {
+    const g = delegateGraph({
+      toolName: 'subagent',
+      args: { kind: 'cli', cli: 'claude', task: '改' },
+    })
     expect(g.nodes[1]?.title).toBe('claude')
-    expect(g.nodes[1]?.agent).toBe('cli:claude')
+    expect(g.nodes[1]?.cli).toBe(true)
   })
 
   /**
@@ -460,11 +468,14 @@ describe('派活图', () => {
    * 一张图里则相反——四格常常是同一个执行者，主行是节点 id，执行者压次行。
    */
   test('次行印不印执行者，两种卡不同', () => {
-    const one = delegateGraph({ toolName: 'subagent', args: { agent: 'reviewer', task: '看' } })
+    const one = delegateGraph({
+      toolName: 'subagent',
+      args: { kind: 'role', role: 'reviewer', task: '看' },
+    })
     expect(one.nodes[1]?.agentLabel).toBeUndefined()
     const many = delegateGraph({
       toolName: 'workflow',
-      args: { goal: '做完', nodes: [{ id: 'n1', agent: 'reviewer' }] },
+      args: { goal: '做完', nodes: [{ id: 'n1', kind: 'role', role: 'reviewer' }] },
     })
     expect(many.nodes[1]?.title).toBe('n1')
     expect(many.nodes[1]?.agentLabel).toBe('reviewer')
@@ -477,17 +488,17 @@ describe('派活图', () => {
   test('图里没点名执行者的那一格，主行仍是节点 id', () => {
     const g = delegateGraph({
       toolName: 'workflow',
-      args: { goal: '做完', nodes: [{ id: 'api', agent: '' }] },
+      args: { goal: '做完', nodes: [{ id: 'api', kind: 'temp', name: '接口' }] },
     })
     expect(g.nodes[1]?.title).toBe('api')
-    expect(g.nodes[1]?.agentLabel).toBe('临时子 agent')
+    expect(g.nodes[1]?.agentLabel).toBe('接口')
   })
 
   /** 只有一格的图与一次派活形状相同，本来就该长得一样。 */
   test('一个节点的编排也横排', () => {
     const g = delegateGraph({
       toolName: 'workflow',
-      args: { goal: '做完', nodes: [{ id: 'n1', agent: 'dev' }] },
+      args: { goal: '做完', nodes: [{ id: 'n1', kind: 'role', role: 'dev' }] },
     })
     expect(g.horizontal).toBe(true)
   })
@@ -498,8 +509,8 @@ describe('派活图', () => {
       args: {
         goal: '做完',
         nodes: [
-          { id: 'a', agent: 'dev' },
-          { id: 'b', agent: 'dev' },
+          { id: 'a', kind: 'role', role: 'dev' },
+          { id: 'b', kind: 'role', role: 'dev' },
         ],
       },
     })
@@ -516,9 +527,9 @@ describe('派活图', () => {
       args: {
         goal: '做完',
         nodes: [
-          { id: 'a', agent: 'dev' },
-          { id: 'b', agent: 'dev' },
-          { id: 'c', agent: 'dev', needs: ['a', 'b'] },
+          { id: 'a', kind: 'role', role: 'dev' },
+          { id: 'b', kind: 'role', role: 'dev' },
+          { id: 'c', kind: 'role', role: 'dev', needs: ['a', 'b'] },
         ],
       },
     })
@@ -537,9 +548,9 @@ describe('派活图', () => {
       args: {
         goal: '做完',
         nodes: [
-          { id: 'a', agent: 'dev' },
-          { id: 'b', agent: 'dev' },
-          { id: 'c', agent: 'dev', needs: ['a', 'b'] },
+          { id: 'a', kind: 'role', role: 'dev' },
+          { id: 'b', kind: 'role', role: 'dev' },
+          { id: 'c', kind: 'role', role: 'dev', needs: ['a', 'b'] },
         ],
       },
     })
@@ -552,8 +563,8 @@ describe('派活图', () => {
       args: {
         goal: '做完',
         nodes: [
-          { id: 'a', agent: 'dev' },
-          { id: 'b', agent: 'dev' },
+          { id: 'a', kind: 'role', role: 'dev' },
+          { id: 'b', kind: 'role', role: 'dev' },
           { id: 'review', kind: 'checkpoint', label: '主会话审批', needs: ['a', 'b'] },
         ],
       },
@@ -569,8 +580,8 @@ describe('派活图', () => {
       args: {
         goal: '做完',
         nodes: [
-          { id: 'a', agent: 'dev', needs: ['b'] },
-          { id: 'b', agent: 'dev', needs: ['a'] },
+          { id: 'a', kind: 'role', role: 'dev', needs: ['b'] },
+          { id: 'b', kind: 'role', role: 'dev', needs: ['a'] },
         ],
       },
     })

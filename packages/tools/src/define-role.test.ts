@@ -45,8 +45,9 @@ function withModels(root: string, models: { provider: string; model: string }[])
               error: `配置里没有模型 ${name}。现在能用的是：${models.map((item) => item.model).join('、')}`,
             }
       },
-      targets: async () => [],
-      run: async () => ({ ok: true, output: '' }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, output: '' }),
       runGraph: async () => ({ ok: true }),
     },
   }

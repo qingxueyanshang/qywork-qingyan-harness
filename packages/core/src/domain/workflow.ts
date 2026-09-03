@@ -2,15 +2,23 @@ import type { ToolOutcomeWire } from './model.ts'
 
 export type WorkflowPhase = 'running' | 'waiting_review' | 'completed' | 'failed'
 
+/** 子 agent 的三种建法：定义来自角色库、写在这次调用里、外部 CLI。 */
+export type SubagentSpec =
+  | { kind: 'role'; role: string; name?: string }
+  | { kind: 'temp'; name: string }
+  | { kind: 'cli'; cli: string; name?: string }
+export type SubagentKind = SubagentSpec['kind']
+/** 派给谁：新建（按种类）或本会话已有的子 agent（按 id）。 */
+export type SubagentTarget = SubagentSpec | { subagent: string }
+
 export interface WorkflowAgentNode {
   id: string
-  /** 旧的内部 team 配置可省略；工具入口会统一规范成 agent。 */
-  kind?: 'agent'
-  agent: string
+  kind: 'subagent'
+  target: SubagentTarget
   task: string
   needs?: string[]
   passInput?: boolean
-  /** 与 model 配对的接口名；两列始终分开，不使用 `接口/模型` 拼接串。 */
+  /** 与 model 配对的接口名；两列始终分开，不使用 `接口/模型` 拼接串。只在新建时生效。 */
   provider?: string
   model?: string
 }
@@ -26,14 +34,13 @@ export type WorkflowNode = WorkflowAgentNode | WorkflowCheckpointNode
 
 export interface WorkflowReceipt {
   nodeId: string
-  agent: string
+  /** 这一格派给的子 agent。连记录都没建成时缺席。 */
+  subagentId?: string
   label: string
   status: 'done' | 'failed' | 'skipped'
   output: string
   error?: string
   durationMs: number
-  session?: string
-  conversationId?: string
 }
 
 export interface WorkflowRevision {
@@ -135,6 +142,54 @@ function concurrencyOf(value: unknown): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
+export type SubagentTargetParse =
+  | { ok: true; target: SubagentTarget }
+  | { ok: false; error: string }
+
+/**
+ * 派发目标：`subagent` 工具的参数与图节点共用同一套字段。
+ * 种类在字段上，id 从运行上下文清单里抄，两者互斥；都没有就是没说清。
+ */
+export function parseSubagentTarget(raw: Record<string, unknown>): SubagentTargetParse {
+  const kind = wireText(raw.kind)
+  const role = wireText(raw.role)
+  const name = wireText(raw.name)
+  const cli = wireText(raw.cli)
+  const subagent = wireText(raw.subagent)
+  if (subagent) {
+    if (kind || role || cli || name) {
+      return { ok: false, error: '填了 subagent 就不再填 kind、role、name、cli' }
+    }
+    return { ok: true, target: { subagent } }
+  }
+  if (kind === 'role') {
+    if (!role) return { ok: false, error: 'kind 是 role 时必须填 role' }
+    if (cli) return { ok: false, error: 'role 种类不能填 cli' }
+    return { ok: true, target: { kind: 'role', role, ...(name ? { name } : {}) } }
+  }
+  if (kind === 'temp') {
+    if (!name) return { ok: false, error: 'kind 是 temp 时必须填 name' }
+    if (role || cli) return { ok: false, error: 'temp 种类不能填 role 或 cli' }
+    return { ok: true, target: { kind: 'temp', name } }
+  }
+  if (kind === 'cli') {
+    if (!cli) return { ok: false, error: 'kind 是 cli 时必须填 cli' }
+    if (role) return { ok: false, error: 'cli 种类不能填 role' }
+    return { ok: true, target: { kind: 'cli', cli, ...(name ? { name } : {}) } }
+  }
+  return {
+    ok: false,
+    error: kind ? `kind 不支持 ${kind}` : '必须写 kind（role / temp / cli）或 subagent',
+  }
+}
+
+/** 一格的名字，只凭调用参数就能算：刷新之后回放、进度事件没到之前都用它。 */
+export function targetLabel(target: SubagentTarget): string {
+  if ('subagent' in target) return target.subagent
+  if (target.kind === 'temp') return target.name
+  return target.name ?? (target.kind === 'role' ? target.role : target.cli)
+}
+
 function needsOf(value: unknown): string[] | null {
   if (nullish(value)) return []
   const structured = structuredWireValue(value)
@@ -181,34 +236,37 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
       if (!id) return { ok: false, error: '每个节点都要有 id' }
       if (ids.has(id)) return { ok: false, error: `节点 id 重复：${id}` }
       ids.add(id)
-      const kind = nullish(node.kind) ? 'agent' : wireText(node.kind)
       const needs = needsOf(node.needs)
       if (!needs) return { ok: false, error: `节点 ${id} 的 needs 必须是非空字符串数组` }
-      if (kind === 'checkpoint') {
+      if (wireText(node.kind) === 'checkpoint') {
         const label = wireText(node.label)
         if (!label) return { ok: false, error: `检查点 ${id} 必须有 label` }
         if (needs.length === 0) return { ok: false, error: `检查点 ${id} 必须依赖上一批节点` }
-        // 扁平 strict schema 里 passInput 同时服务 agent 节点；部分 provider 会把它
+        // 扁平 strict schema 里 passInput 同时服务子 agent 节点；部分 provider 会把它
         // 补成默认 true，而不是 null。检查点不消费这个字段，忽略它即可——若因
         // 严格补全拒绝整张图，模型重试会在界面留下另一张失败卡。
-        for (const key of ['agent', 'task', 'provider', 'model']) {
+        for (const key of ['role', 'name', 'cli', 'subagent', 'task', 'provider', 'model']) {
           if (!nullish(node[key])) return { ok: false, error: `检查点 ${id} 不能带 ${key}` }
         }
         nodes.push({ id, kind: 'checkpoint', label, needs })
         continue
       }
-      if (kind !== 'agent') return { ok: false, error: `节点 ${id} 的 kind 不支持 ${kind}` }
+      const target = parseSubagentTarget(node)
+      if (!target.ok) return { ok: false, error: `节点 ${id}：${target.error}` }
       const task = wireText(node.task)
       if (!task) return { ok: false, error: `节点 ${id} 必须有 task` }
-      const agent = wireText(node.agent) || 'ad-hoc'
       const provider = wireText(node.provider)
       const model = wireText(node.model)
       if (provider && !model)
         return { ok: false, error: `节点 ${id} 指定 provider 时必须同时指定 model` }
+      if (model && 'subagent' in target.target)
+        return { ok: false, error: `节点 ${id} 指向已有子 agent，不能再指定模型` }
+      if (model && !('subagent' in target.target) && target.target.kind === 'cli')
+        return { ok: false, error: `节点 ${id} 的外部 CLI 用它自己的模型` }
       nodes.push({
         id,
-        kind: 'agent',
-        agent,
+        kind: 'subagent',
+        target: target.target,
         task,
         ...(needs.length ? { needs } : {}),
         ...(node.passInput === false ? { passInput: false } : {}),
@@ -304,7 +362,7 @@ function receiptLike(value: unknown): value is WorkflowReceipt {
   const row = value as Record<string, unknown>
   return (
     !!text(row.nodeId) &&
-    typeof row.agent === 'string' &&
+    (row.subagentId === undefined || typeof row.subagentId === 'string') &&
     typeof row.label === 'string' &&
     (row.status === 'done' || row.status === 'failed' || row.status === 'skipped') &&
     typeof row.output === 'string' &&
@@ -471,13 +529,12 @@ export function foldWorkflow(
           if (!node) continue
           projection.results[nodeId] = {
             nodeId,
-            agent: node.agent,
-            label: node.agent,
+            subagentId: conversationId,
+            label: targetLabel(node.target),
             status: 'failed',
             output: '',
             error: '调用中断',
             durationMs: 0,
-            conversationId,
           }
         }
         // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。

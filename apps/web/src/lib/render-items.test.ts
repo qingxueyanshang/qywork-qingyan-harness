@@ -188,17 +188,16 @@ describe('分组规则', () => {
 
 describe('workflow 始终是一张卡', () => {
   const nodes = [
-    { id: 'a', kind: 'agent', agent: 'dev', task: '查' },
+    { id: 'a', kind: 'role', role: 'dev', task: '查' },
     { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
   ]
   const receipt = (output: string) => ({
     nodeId: 'a',
-    agent: 'dev',
     label: '开发',
     status: 'done' as const,
     output,
     durationMs: 10,
-    conversationId: 'cv_a',
+    subagentId: 'cv_a',
   })
   const workflow = (
     id: string,
@@ -230,7 +229,7 @@ describe('workflow 始终是一张卡', () => {
     expect(card.item.workflow?.results.a).toMatchObject({
       status: 'failed',
       error: '调用中断',
-      conversationId: 'cv_a',
+      subagentId: 'cv_a',
     })
   })
 
@@ -271,7 +270,7 @@ describe('workflow 始终是一张卡', () => {
     if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
     expect(card.item.workflow?.attempts.a).toBe(2)
     expect(card.item.workflow?.results.a?.output).toBe('修订稿')
-    expect(card.item.workflow?.results.a?.conversationId).toBe('cv_a')
+    expect(card.item.workflow?.results.a?.subagentId).toBe('cv_a')
   })
 
   test('下一次 review 刚 started 时也立刻归入原卡，不闪出第二张', () => {
@@ -332,18 +331,17 @@ describe('workflow 始终是一张卡', () => {
   })
 
   test('旧版 outcome.data.nodes 不再成为渲染结果来源', () => {
-    const old = workflow(
-      'st_old',
-      { goal: '旧图', nodes: [{ id: 'a', agent: 'dev', task: '查' }] },
-      { nodes: [receipt('旧结果')] },
-    )
+    const old = workflow('st_old', { goal: '旧图', nodes }, { nodes: [receipt('旧结果')] })
     const out = buildRenderItems([old])
     expect(out).toHaveLength(1)
     if (out[0]?.kind !== 'tool') throw new Error('没有旧卡')
     expect(out[0].item.workflow?.results).toEqual({})
-    expect(out[0].item.workflow?.nodes).toEqual([
-      { id: 'a', kind: 'agent', agent: 'dev', task: '查' },
-    ])
+    expect(out[0].item.workflow?.nodes[0]).toEqual({
+      id: 'a',
+      kind: 'subagent',
+      target: { kind: 'role', role: 'dev' },
+      task: '查',
+    })
   })
 })
 

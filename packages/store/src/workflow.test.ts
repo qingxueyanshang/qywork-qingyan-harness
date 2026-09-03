@@ -37,7 +37,7 @@ function fresh() {
 const START_ARGS = {
   goal: '两个候选',
   nodes: [
-    { id: 'a', task: '做 A' },
+    { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
     { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
   ],
 }

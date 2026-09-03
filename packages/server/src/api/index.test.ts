@@ -1065,7 +1065,7 @@ describe('会话诊断导出接口', () => {
       provider: 'p',
       model: 'm',
       title: '子 Agent',
-      source: 'workflow',
+      source: 'temp',
       sourceRef: 'researcher',
     })
     appendMessage(d.store, {
@@ -1154,7 +1154,7 @@ describe('会话诊断导出接口', () => {
         workspaceId: d.wsId as never,
         provider: 'p',
         model: 'm',
-        source: 'workflow',
+        source: 'temp',
         sourceRef: roleId,
         parentConversationId: parent.id,
       }),

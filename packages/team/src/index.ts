@@ -11,4 +11,3 @@ export { type DetectedCli, detectClis, findCli } from './cli-detect.ts'
 export { type OrchestratorState, TeamOrchestrator } from './orchestrator.ts'
 // 配置形状：runtime 解析、server 消费
 export type { CliAgent, PlanNode, Role, TeamRules } from './types.ts'
-export { CLI_PREFIX } from './types.ts'

@@ -52,6 +52,7 @@ export {
   RESULT_BUDGET_RATIO,
   resetBatchBudget,
   type SinkPort,
+  type SubagentSummary,
   sanitizeToolName,
   TOOL_CATEGORIES,
   type ToolCategory,

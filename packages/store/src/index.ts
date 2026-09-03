@@ -58,6 +58,7 @@ export {
   recoverStaleRuns,
   removeWorkspace,
   setCompactionManifest,
+  setConversationExternalSession,
   setConversationModel,
   setConversationTitle,
   setStepChildConversation,

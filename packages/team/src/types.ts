@@ -15,9 +15,6 @@
 
 import type { EffortLevel, WorkflowNode, WorkflowReceipt } from '@qywork/core'
 
-/** 目标是外部 CLI 时，`PlanNode.agent` 用这个前缀。角色 id 不带前缀。 */
-export const CLI_PREFIX = 'cli:'
-
 /**
  * 一个角色 = 一个子 agent。
  *
@@ -80,17 +77,6 @@ export interface CliAgent {
 export interface TeamRules {
   /** 追加到**所有**角色系统提示词的公共约束。 */
   shared?: string
-}
-
-export interface TeamConfig {
-  name: string
-  rules?: TeamRules
-  roles: Role[]
-  /**
-   * 编排图。**每次由调用方交进来**（模型这一次画的那张），不来自 `.qy/team.json`
-   * ——那个字段连同它的解析、回传、显示已经删了，编排图只有一个来源。
-   */
-  plan: PlanNode[]
 }
 
 /** 编排图与持久化回执共用 core 的 wire 契约，避免工具、服务端、UI 各维护一份。 */

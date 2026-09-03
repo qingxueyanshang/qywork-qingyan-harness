@@ -59,8 +59,9 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
 
 const delegate: DelegatePort = {
   resolveModel: (name, provider) => ({ provider: provider ?? 'p', model: name }),
-  targets: async () => [],
-  run: async () => ({ ok: true, output: '' }),
+  targets: async () => ({ roles: [], clis: [] }),
+  subagents: async () => [],
+  dispatch: async () => ({ ok: true, output: '' }),
   runGraph: async () => ({ ok: true }),
 }
 
@@ -263,8 +264,8 @@ describe('未完成 workflow 的运行快照', () => {
     const args = {
       goal: '两个模型各做一版',
       nodes: [
-        { id: 'build-glm', kind: 'agent', agent: 'ad-hoc', task: '做 glm 版' },
-        { id: 'build-qwen', kind: 'agent', agent: 'ad-hoc', task: '做 qwen 版' },
+        { id: 'build-glm', kind: 'temp', name: 'build-glm', task: '做 glm 版' },
+        { id: 'build-qwen', kind: 'temp', name: 'build-qwen', task: '做 qwen 版' },
         {
           id: 'audit-builds',
           kind: 'checkpoint',
@@ -296,22 +297,20 @@ describe('未完成 workflow 的运行快照', () => {
           receipts: [
             {
               nodeId: 'build-glm',
-              agent: 'ad-hoc',
               label: 'glm',
               status: 'done',
               output: '做完了',
               durationMs: 1,
-              conversationId: 'cv_glm',
+              subagentId: 'cv_glm',
             },
             {
               nodeId: 'build-qwen',
-              agent: 'ad-hoc',
               label: 'qwen',
               status: 'failed',
               output: '',
               error: '步数用尽，任务没做完',
               durationMs: 1,
-              conversationId: 'cv_qwen',
+              subagentId: 'cv_qwen',
             },
           ],
         },
@@ -662,8 +661,8 @@ describe('新建会话的来源', () => {
    * 复现原始失败形状：team 成员的子会话不打来源标记的话，每跑一次 team，
    * 用户的会话列表里就多出 N 条以成员 prompt 开头的条目。
    */
-  test("source: 'workflow' 的会话不进会话列表", async () => {
-    const { store, root } = await askOnce({ source: 'workflow', sourceRef: 'reviewer' })
+  test("source: 'temp' 的会话不进会话列表", async () => {
+    const { store, root } = await askOnce({ source: 'temp', sourceRef: 'reviewer' })
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toEqual([])
     expect(listRecentConversations(store)).toEqual([])

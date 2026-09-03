@@ -1,45 +1,56 @@
 /**
- * 把一段任务交给一个子 agent。
+ * 派发一个子 agent。
  *
- * **三类目标，一个工具**：
- * - **临时子 agent**（不指定 `agent`）：当前模型、全套工具，任务结束即销毁。
- *   并行铺开去查、去读、去验证时用它——为了几件小事先定义几个角色，没人会这么用。
- * - **角色**：项目里配置好的那个，有自己的提示词与工具面。
- * - **外部 CLI**：本机安装的别家 agent 程序。
- *
- * 三者的配置面毫不相干，但对调用方是同一件事：交出去、拿回产出。拆成三个工具，
- * 模型就要先判断「这个名字属于哪一类」——而那正是这里该替它做的。
+ * 子 agent 是这条会话里的实体：第一次派发按种类建（角色 / 临时 / 外部 CLI），
+ * 返回它的 id；之后填 id 再派就是接着它的上下文继续。三种种类都能续。
+ * 两个及以上子 agent 用 `workflow`，这个工具一次只派一个，不并行。
  *
  * **失败是返回值。** 派不出去（目标不存在、外部 CLI 没装、执行失败）都如实回 failure 并带原因，
  * 不抛异常：注册表会把异常压成一句「工具执行出错」，模型据此换不了做法。
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { parseSubagentTarget } from '@qywork/core'
 import { idArg } from './args.ts'
 
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
-    '把一段任务交给一个子 agent，等待其完成并返回产出。' +
-    '**不指定 agent 则临时起一个**：用当前模型与全套工具，任务结束即销毁；' +
-    '要并行铺开去查、去读、去验证时用这一种，不必先定义角色。' +
-    '指定 agent 时派给项目里配置好的角色（各有提示词与工具面），' +
-    '或 cli:<id> 派给本机安装的外部 agent CLI。' +
-    '一次发几个调用就几个并行，没有上限。' +
-    '一次性、不验收：产出回来就结束。要验收或可能返工的改用 workflow，哪怕只有一个节点。' +
-    '被中断就只能整件重派，可能中途被打断还要接着做的长任务同样用 workflow。' +
-    '适合可以独立完成、产出是一段文字的整块工作；当前有未完成待办时，' +
-    '必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
+    '派发一个子 agent，等它完成并返回产出。' +
+    '第一次派发按 kind 建：role 按角色库里的角色建，temp 临时子 agent（定义写在这次调用里），cli 外部 CLI；' +
+    '返回它的 subagentId。之后给同一个子 agent 派任务填 subagent 为那个 id，它接着自己的上下文继续，三种都能续。' +
+    '一次只派一个，两个及以上子 agent 用 workflow。' +
+    '当前有未完成待办时，必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
     '父待办仍需当前会话验收并用 write_todos 完成。' +
-    '依赖当前会话上下文的任务不要委派——子 agent 不接收本会话内容。',
+    '子 agent 看不到这条会话的内容，背景要写进 task。',
   parameters: {
     type: 'object',
     properties: {
-      agent: {
+      kind: {
+        type: ['string', 'null'],
+        enum: ['role', 'temp', 'cli', null],
+        description:
+          '新建子 agent 的种类。role：按角色库里的角色建，同时填 role；temp：临时子 agent，同时填 name；' +
+          'cli：外部 CLI，同时填 cli。续接已有子 agent 时不填 kind，改填 subagent。',
+      },
+      role: {
+        type: 'string',
+        description: '角色 id，运行上下文「角色」清单里的一项。kind 为 role 时填。',
+      },
+      name: {
         type: 'string',
         description:
-          '派给谁。留空 = 临时起一个子 agent（当前模型、全套工具）；' +
-          '填角色 id = 派给配置好的角色；填 cli:<id> = 派给本机的外部 CLI。',
+          '子 agent 的名字。kind 为 temp 时必填；role / cli 可选，不填用角色名或 CLI 名。',
+      },
+      cli: {
+        type: 'string',
+        description: '外部 CLI 的 id，运行上下文清单里的一项。kind 为 cli 时填。',
+      },
+      subagent: {
+        type: 'string',
+        description:
+          '本会话已有子 agent 的 id（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id）。' +
+          '填了它就是接着它的上下文继续，不再填 kind、role、name、cli。',
       },
       task: {
         type: 'string',
@@ -54,20 +65,13 @@ export const subagentTool: ToolSpec = {
       provider: {
         type: 'string',
         description:
-          '**只在填写 model 时才填**：逐字使用运行上下文「已配置模型」清单中同一行的 provider 参数。',
+          '只在填写 model 时才填：逐字使用运行上下文「已配置模型」清单中同一行的 provider 参数。',
       },
       model: {
         type: 'string',
         description:
-          '**只在用户点名了模型时才填**：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
-          '不填 = 跟当前会话同一个模型。外部 CLI 用它自己的模型，填了会被拒。',
-      },
-      resume: {
-        type: 'string',
-        description:
-          '续接指定的外部 CLI 会话：填上一次调用返回的 session。' +
-          '该会话保留上一轮上下文，可直接就其产出追问；' +
-          '不填则新建会话，任务会被重新执行一遍。仅外部 CLI 支持。',
+          '只在用户点名了模型时才填：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
+          '不填 = 用当前会话的模型（角色钉了模型用角色的）。只在新建时生效；外部 CLI 用它自己的模型，填了会被拒。',
       },
     },
     additionalProperties: false,
@@ -76,23 +80,22 @@ export const subagentTool: ToolSpec = {
   objectLabel: '子 agent',
   category: 'session',
   facet: '协作',
-  summary: '把一段任务交给子 agent 或外部 CLI',
-  targetExtractor: (a) => (typeof a.agent === 'string' ? a.agent : null),
+  summary: '派发一个子 agent',
+  targetExtractor: (a) =>
+    typeof a.subagent === 'string' && a.subagent
+      ? a.subagent
+      : typeof a.name === 'string' && a.name
+        ? a.name
+        : typeof a.role === 'string' && a.role
+          ? a.role
+          : typeof a.cli === 'string'
+            ? a.cli
+            : null,
   // 子 agent 用它自己那套工具，权限在那一侧按它的会话逐次裁决；
   // 外部 CLI 是本机上的另一个进程。两者都算「起一件会动这台机器的事」。
   permissionEffect: 'execute',
-  /*
-   * **派几件就是几件一起跑。**
-   *
-   * 不开的话同一批调用被 `planWaves` 拆成一波一件串着跑，而工具描述与提示词
-   * （`prompt.ts`）承诺的都是「互不依赖的可以一次派几个」——承诺了并行却串行执行，
-   * 用户看到的是第一格跑完第二格才开始。
-   *
-   * 边界：并发的子 agent 各自会动这个工作区的文件，这里不做冲突检测。
-   * 一张图里的节点本来就是这么跑的（编排器按调用参数 `maxConcurrent` 并发），
-   * 派一件与派一张图必须是同一种行为，否则同一件事换个工具名就换一种语义。
-   */
-  parallelSafe: true,
+  // 一次只派一个：同一轮里多次调用串行跑。要并行只有 workflow。
+  parallelSafe: false,
 
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const delegate = ctx.delegate
@@ -101,12 +104,12 @@ export const subagentTool: ToolSpec = {
       return { status: 'failure' as const, message: '本次执行没有派活通道' }
     }
 
-    const target = idArg(args.agent)
+    const target = parseSubagentTarget(args)
+    if (!target.ok) return { status: 'failure' as const, message: target.error }
     const task = typeof args.task === 'string' ? args.task.trim() : ''
     const parentTodo = typeof args.parentTodo === 'string' ? args.parentTodo.trim() : ''
     const provider = idArg(args.provider)
     const model = idArg(args.model)
-    const resume = idArg(args.resume)
     if (!task) return { status: 'failure' as const, message: '要它做什么得写清楚' }
     if (provider && !model) {
       return { status: 'failure' as const, message: '指定 provider 时必须同时指定 model' }
@@ -141,60 +144,37 @@ export const subagentTool: ToolSpec = {
       }
     }
 
-    // 只有指名道姓派给某个角色 / CLI 时才校验它在不在。**临时子 agent 不需要先定义**，
-    // 那正是它存在的理由：为了铺开去做几件小事而先建几个角色，没人会这么用。
-    if (target) {
-      const targets = await delegate.targets()
-      if (!targets.some((t) => t.id === target)) {
-        return {
-          status: 'failure' as const,
-          message:
-            targets.length === 0
-              ? `没有 ${target}：这个项目没有配置角色，本机也没识别到外部 CLI。不指定 agent 可以临时起一个。`
-              : `没有 ${target}。现在能派的是：${targets.map((t) => t.id).join('、')}`,
-          errorKind: 'not_found',
-        }
-      }
-    }
-
-    const who = target || '临时子 agent'
-    const res = await delegate.run({
-      target,
+    const res = await delegate.dispatch({
+      target: target.target,
       task,
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
-      ...(resume ? { resume } : {}),
-      // 进度挂在这次调用那张卡上。拿不到卡片 id 时照跑，只是没有运行期状态——
-      // 与 `workflow` 不同，这里的形状与终态都不依赖事件（见 `DelegatePort.run`）。
+      // 进度挂在这次调用那张卡上。拿不到卡片 id 时照跑，只是没有运行期状态。
       runId: ctx.runId,
       ...(ctx.stepId ? { stepId: ctx.stepId } : {}),
       signal: ctx.signal,
     })
-    /*
-     * 两个 id 无论成败都交出去。
-     *
-     * `session` 是接着问外部 CLI 的唯一入口，`conversationId` 是点开那条子会话的唯一入口
-     * （进度事件不落库，刷新之后就靠它）。失败时更需要：没做成的那条会话正是要翻开看的
-     * 那一条，而回执说不清楚时追问比重派一遍便宜。
-     */
+    // id 无论成败都交出去：没做成的那个子 agent 正是要翻开看、要接着派的那一个。
     const ids = {
-      ...(res.session ? { session: res.session } : {}),
-      ...(res.conversationId ? { conversationId: res.conversationId } : {}),
+      ...(res.subagentId ? { subagentId: res.subagentId } : {}),
+      ...(res.name ? { name: res.name } : {}),
     }
+    const who = res.name ? `子 agent ${res.name}` : '子 agent'
     if (!res.ok) {
       return {
         status: 'failure' as const,
         message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
-        ...(res.output || res.session || res.conversationId
-          ? { data: { output: res.output, ...ids } }
-          : {}),
+        ...(res.output || res.subagentId ? { data: { output: res.output, ...ids } } : {}),
       }
     }
+    const head = res.created
+      ? `已创建${who}（subagentId ${res.subagentId}）并返回产出`
+      : `${who} 已返回`
     return {
       status: 'success' as const,
       message: parentTodo
-        ? `${who} 已返回；父待办仍待验收：${parentTodo}。满意后用 write_todos 完成，不满意则继续处理或返工。`
-        : `${who} 已返回`,
+        ? `${head}；父待办仍待验收：${parentTodo}。满意后用 write_todos 完成，不满意则继续派给它。`
+        : head,
       data: { output: res.output, ...ids },
     }
   },

@@ -130,9 +130,24 @@ describe('尾区注记', () => {
       goal: '四个模型各做一版\n第二行不进快照',
       maxConcurrent: 4,
       nodes: [
-        { id: 'build-glm', kind: 'agent' as const, agent: 'ad-hoc', task: '做 glm 版' },
-        { id: 'build-qwen', kind: 'agent' as const, agent: 'ad-hoc', task: '做 qwen 版' },
-        { id: 'build-gemini', kind: 'agent' as const, agent: 'ad-hoc', task: '做 gemini 版' },
+        {
+          id: 'build-glm',
+          kind: 'subagent' as const,
+          target: { kind: 'temp' as const, name: '做 glm 版' },
+          task: '做 glm 版',
+        },
+        {
+          id: 'build-qwen',
+          kind: 'subagent' as const,
+          target: { kind: 'temp' as const, name: '做 qwen 版' },
+          task: '做 qwen 版',
+        },
+        {
+          id: 'build-gemini',
+          kind: 'subagent' as const,
+          target: { kind: 'temp' as const, name: '做 gemini 版' },
+          task: '做 gemini 版',
+        },
         {
           id: 'audit-builds',
           kind: 'checkpoint' as const,
@@ -145,22 +160,20 @@ describe('尾区注记', () => {
       results: {
         'build-glm': {
           nodeId: 'build-glm',
-          agent: 'ad-hoc',
           label: 'glm',
           status: 'done' as const,
           output: '做完了',
           durationMs: 1,
-          conversationId: 'cv_glm',
+          subagentId: 'cv_glm',
         },
         'build-qwen': {
           nodeId: 'build-qwen',
-          agent: 'ad-hoc',
           label: 'qwen',
           status: 'failed' as const,
           output: '',
           error: '调用中断',
           durationMs: 0,
-          conversationId: 'cv_qwen',
+          subagentId: 'cv_qwen',
         },
       },
       attempts: {},

@@ -244,6 +244,7 @@ export function createConversation(
     sourceRef?: string
     /** 派活建子会话时必须给：归属只在建的时候写得对，事后从任何地方都推不回来。 */
     parentConversationId?: ConversationId
+    externalSession?: string
   },
 ): Conversation {
   const now = Date.now()
@@ -258,14 +259,15 @@ export function createConversation(
     source: input.source ?? null,
     sourceRef: input.sourceRef ?? null,
     parentConversationId: input.parentConversationId ?? null,
+    externalSession: input.externalSession ?? null,
     createdAt: now,
     updatedAt: now,
   }
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, parent_conversation_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, parent_conversation_id, external_session, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
@@ -278,10 +280,20 @@ export function createConversation(
       conv.source,
       conv.sourceRef,
       conv.parentConversationId,
+      conv.externalSession,
       now,
       now,
     )
   return conv
+}
+
+/** 外部 CLI 子 agent 跑完一次回报的会话句柄，下一次续接交回给它。 */
+export function setConversationExternalSession(
+  store: Store,
+  id: ConversationId,
+  session: string,
+): void {
+  store.db.query('UPDATE conversations SET external_session = ? WHERE id = ?').run(session, id)
 }
 
 /** 这条会话派出去的那些子会话，按建立时间。顶层会话没有子会话时是空数组。 */
@@ -1602,6 +1614,7 @@ function rowToConversation(r: ConversationRow): Conversation {
     source: r.source,
     sourceRef: r.source_ref,
     parentConversationId: r.parent_conversation_id,
+    externalSession: r.external_session,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
