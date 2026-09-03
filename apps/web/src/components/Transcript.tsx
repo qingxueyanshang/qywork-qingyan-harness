@@ -1358,6 +1358,15 @@ function DelegateCard(props: { item: TranscriptItem }) {
           : props.item.status === 'failure',
       }}
     >
+      <div class="wf-head">
+        <span class="wf-action">{actionLabel(props.item)}</span>
+        <Show when={statusWord(props.item.status)}>
+          {(word) => <span class="wf-word">{word()}</span>}
+        </Show>
+        <Show when={props.item.durationMs}>
+          {(ms) => <span class="wf-time">{(ms() / 1000).toFixed(1)}s</span>}
+        </Show>
+      </div>
       <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">

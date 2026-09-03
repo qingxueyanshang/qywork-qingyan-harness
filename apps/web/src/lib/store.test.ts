@@ -1067,6 +1067,77 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
+   * 原始失败形状：图跑着时刷新页面，正在跑的节点回到「等着跑」且点不开，直到整批结束。
+   * 逐节点终态要等工具收尾才有，运行期的 `team.member` 已经错过，只剩这条 step 的
+   * `$.children`。
+   */
+  test('运行中的 workflow 节点入口按节点随 step 回放', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    stub(
+      [
+        {
+          ...toolStep(''),
+          toolName: 'workflow',
+          payload: {
+            kind: 'tool_call',
+            args: {
+              goal: '四个候选',
+              nodes: [
+                { id: 'build-glm', task: '做 glm 版' },
+                { id: 'build-qwen', task: '做 qwen 版' },
+                {
+                  id: 'audit',
+                  kind: 'checkpoint',
+                  label: '验收',
+                  needs: ['build-glm', 'build-qwen'],
+                },
+              ],
+            },
+            action: { kind: 'run', objectLabel: '编排' },
+            children: { 'build-glm': 'cv_glm', 'build-qwen': 'cv_qwen' },
+          },
+          status: 'running',
+        },
+      ],
+      [{ ...interruptedRun, finishedAt: null, stopReason: null, status: 'running' }],
+    )
+    await reloadActiveConversation()
+
+    const card = transcript().find((item) => item.id === 'st_1')
+    expect(card?.nodes?.map((node) => [node.nodeId, node.conversationId, node.phase])).toEqual([
+      ['build-glm', 'cv_glm', 'working'],
+      ['build-qwen', 'cv_qwen', 'working'],
+    ])
+  })
+
+  /** 终态之后回执自带 conversationId，再从 children 补一份会盖掉真实 phase 与耗时。 */
+  test('已收尾的 workflow step 不再从 children 造节点状态', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    stub(
+      [
+        {
+          ...toolStep(''),
+          toolName: 'workflow',
+          payload: {
+            kind: 'tool_result',
+            args: { goal: '目标', nodes: [{ id: 'a', task: '做' }] },
+            action: { kind: 'run', objectLabel: '编排' },
+            children: { a: 'cv_a' },
+            outcome: { status: 'success', executed: true, message: '完成' },
+          },
+          status: 'success',
+        },
+      ],
+      [interruptedRun],
+    )
+    await reloadActiveConversation()
+
+    expect(transcript().find((item) => item.id === 'st_1')?.nodes).toBeUndefined()
+  })
+
+  /**
    * 后台进程被杀之后，账本里那一轮已经是 `interrupted`，界面要据此把那一轮的收尾
    * 画出来。**「在不在跑」不从这里读**：账本那行在进程崩过之后可能还挂着
    * `running`，照它写就会把界面永久钉在执行中，而新进程的 `RunManager` 里

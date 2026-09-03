@@ -22,6 +22,8 @@ export interface OrchestratorDeps {
   secrets?: { values: string[] }
   resolveCli(id: string): CliAgent | undefined
   runBuiltin(input: {
+    /** 图上哪一格。实现方按它把子会话 id 落到这次调用的 step 上。 */
+    nodeId: string
     role: Role
     prompt: string
     signal: AbortSignal
@@ -392,6 +394,7 @@ export class TeamOrchestrator {
             ...(result.session ? { session: result.session } : {}),
           }))
         : await this.deps.runBuiltin({
+            nodeId: node.id,
             role: role!,
             prompt,
             signal: this.deps.signal,

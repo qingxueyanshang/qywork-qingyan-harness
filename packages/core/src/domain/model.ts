@@ -688,6 +688,11 @@ export type StepPayload =
        * 再切回来时，运行中的 step 还没有 outcome，回放仍要能点开那条子会话。
        */
       childConversationId?: ConversationId
+      /**
+       * workflow 逐节点的子会话入口，键是节点 id。与 `childConversationId` 分工：
+       * 那个是单次派活那一格，这个是图上每一格。同样在子会话创建时就写入。
+       */
+      children?: Record<string, ConversationId>
     }
   | {
       kind: 'tool_result'
@@ -710,6 +715,8 @@ export type StepPayload =
        * 仍可能留在这里。正常终态同时会在 outcome.data.conversationId 里带一份。
        */
       childConversationId?: ConversationId
+      /** 同 `tool_call` 的 `children`；崩溃恢复改写 payload 时它是唯一留下的节点事实。 */
+      children?: Record<string, ConversationId>
     }
   | {
       kind: 'compaction'
