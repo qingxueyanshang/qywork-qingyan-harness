@@ -82,15 +82,15 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'define_subagent',
-    line: '- 角色定义：用 define_subagent 新建或修改当前项目 Agent Team 里的真实角色。用户消息以 `/subagent 角色描述` 开头时，按描述创建一个可长期复用、之后能被 `@角色id` 点名的角色；不要把它当成一次临时派活。',
+    line: '- 角色定义：只有要长期复用的人设才用 define_subagent 建成角色，一次性任务把人设写进 task。用户消息以 `/subagent 角色描述` 开头时，按描述创建一个可长期复用、之后能被 `@角色id` 点名的角色；不要把它当成一次临时派活。',
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：调查要翻很多文件而结论只有一小段时派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定产出归属；返回后先验收，满意才用 write_todos 完成，不满意保持未完成。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
+    line: '- 子 agent：一次性、不验收的整件事派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。要验收或可能返工的改用 workflow，哪怕只有一个节点；被中断后还要接着做的长任务同样用 workflow。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定产出归属；返回后先验收，满意才用 write_todos 完成，不满意保持未完成。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
   },
   {
     tool: 'workflow',
-    line: '- 编排：几件事之间有先后依赖、要传递上游产出，或主会话验收后可能要求原子会话返工时，用 workflow 一次交一整张图；在 agent 节点后放 checkpoint，核验满意才 approve，不满意用 revise 回流。',
+    line: '- 编排：要验收、可能返工，或几件事之间有先后依赖要传递上游产出时，用 workflow 一次交一整张图；每个 agent 节点后面都要有 checkpoint，核验满意才 approve，不满意用 revise 回流，批准之后仍可 revise。角色、临时子 agent、外部 CLI 都能当节点，临时节点要换模型就在该节点上写 provider 与 model。',
   },
   { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
   { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },

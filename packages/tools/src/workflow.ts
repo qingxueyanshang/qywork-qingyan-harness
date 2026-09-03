@@ -13,10 +13,12 @@ export const workflowTool: ToolSpec = {
     '把复杂任务按 DAG 分批交给子 agent。agent 节点按 needs 并行或串行执行；checkpoint 节点' +
     '把上一批回执交回当前会话审查。到 checkpoint 只代表本次调度返回，不代表整个 workflow 完成：' +
     '核验后必须再次调用本工具，用同一 workflowId 对该 checkpoint approve 或 revise。' +
-    'revise 会向原子会话续发，approve 才启动下一批。' +
-    '节点不指定 agent 就临时起一个子 agent（当前模型、全套工具），' +
+    'revise 会向原子会话续发，approve 才启动下一批；检查点批准之后仍可 revise。' +
+    '每个 agent 节点后面都必须有检查点，否则整张图在加载期被拒。' +
+    '角色、临时子 agent、外部 CLI 三种都能当节点：不指定 agent 就临时起一个，' +
+    '临时节点要换模型就在该节点上写 provider 与 model；' +
     '指定则派给配置好的角色或 cli:<id> 的外部 CLI。' +
-    '只派一件事用 subagent。用户明确要求先设计流程时，先用普通回复展示完整图并等待确认，' +
+    '一次性、不需要验收的一件事用 subagent。用户明确要求先设计流程时，先用普通回复展示完整图并等待确认，' +
     '确认前不要调用本工具。',
   parameters: {
     type: 'object',

@@ -205,8 +205,11 @@ describe('审真实的系统提示词', () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     const p = buildSystemPrompt(ALL)
     for (const tool of GATES) expect(p).toContain(tool)
-    expect(p).toContain('主会话验收后可能要求原子会话返工')
+    // 两个派活工具的选择判据必须发到：一次性归 subagent，要验收或可能返工归 workflow。
+    expect(p).toContain('一次性、不验收')
+    expect(p).toContain('要验收、可能返工')
     expect(p).toContain('revise 回流')
+    expect(p).toContain('批准之后仍可 revise')
   })
 
   /**
