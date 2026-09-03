@@ -221,6 +221,14 @@ export interface RunRetryingEvent {
   attempt: number
   /** 上限。真源是 `agent` 的 `MAX_RESENDS`，界面不自己写死这个数。 */
   max: number
+  /**
+   * 被这次重发取代的思考 step。
+   *
+   * 失败的半截仍留在账本供诊断，但不能继续留在普通会话流里；否则新生成紧跟在
+   * 它后面，看起来像思考被截断并重复。ID 由产生这些 step 的 AgentLoop 给出，
+   * 前端不按「末尾几条」猜。
+   */
+  failedThinkingStepIds: StepId[]
 }
 
 export type ErrorCode =
