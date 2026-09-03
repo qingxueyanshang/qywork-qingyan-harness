@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
+import type { ConversationId } from '@qywork/core'
 import {
   appendStep,
   createConversation,
@@ -25,6 +26,7 @@ import {
   Store,
   setConversationTitle,
   setExtraEnabled,
+  settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
 import { configPath, type QyConfig } from './config.ts'
@@ -222,6 +224,117 @@ describe('顶层会话的可分配模型快照', () => {
       .segments.map((segment) => segment.content)
       .join('\n')
     expect(latest).toContain('provider 参数 `新增接口`；model 参数 `qwen/model-3.8`')
+    store.close()
+  })
+})
+
+/**
+ * 压缩会把工具结果压成 320 字摘录，workflowId 与 checkpointId 可能整个不在里面。
+ * 快照必须把这张图的 id 与各节点续接情况送回模型，否则它只能整张重派。
+ */
+describe('未完成 workflow 的运行快照', () => {
+  const seedWaitingGraph = (store: Store, conversationId: ConversationId) => {
+    const run = createRun(store, {
+      conversationId,
+      workspaceId: listRecentConversations(store, 1)[0]!.workspaceId,
+      model: 'deepseek-v4-flash',
+      clientRequestId: 'seed-graph',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const args = {
+      goal: '两个模型各做一版',
+      nodes: [
+        { id: 'build-glm', kind: 'agent', agent: 'ad-hoc', task: '做 glm 版' },
+        { id: 'build-qwen', kind: 'agent', agent: 'ad-hoc', task: '做 qwen 版' },
+        {
+          id: 'audit-builds',
+          kind: 'checkpoint',
+          label: '主会话验收',
+          needs: ['build-glm', 'build-qwen'],
+        },
+      ],
+    }
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_seed_graph',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args,
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '等待审查',
+        data: {
+          workflowId: step.id,
+          phase: 'waiting_review',
+          checkpointId: 'audit-builds',
+          receipts: [
+            {
+              nodeId: 'build-glm',
+              agent: 'ad-hoc',
+              label: 'glm',
+              status: 'done',
+              output: '做完了',
+              durationMs: 1,
+              conversationId: 'cv_glm',
+            },
+            {
+              nodeId: 'build-qwen',
+              agent: 'ad-hoc',
+              label: 'qwen',
+              status: 'failed',
+              output: '',
+              error: '步数用尽，任务没做完',
+              durationMs: 1,
+              conversationId: 'cv_qwen',
+            },
+          ],
+        },
+      },
+    })
+    return step.id
+  }
+
+  test('第二轮快照带上待审查的 workflowId、检查点与各节点续接情况', async () => {
+    const { s, store } = await session({ delegate })
+    for await (const _ of s.ask('第一轮')) break
+    const conversation = listRecentConversations(store, 1)[0]!
+    const workflowId = seedWaitingGraph(store, conversation.id)
+
+    for await (const _ of s.ask('第二轮', conversation.id)) break
+
+    const latest = listRunContextSnapshots(store, conversation.id)
+      .at(-1)!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(latest).toContain('未完成的 workflow')
+    expect(latest).toContain(`workflowId=${workflowId}`)
+    expect(latest).toContain('当前检查点：audit-builds')
+    expect(latest).toContain('build-qwen：failed：步数用尽，任务没做完，可续接原会话')
+    store.close()
+  })
+
+  test('没有派活通道的会话不带这一段', async () => {
+    const { s, store } = await session()
+    for await (const _ of s.ask('第一轮')) break
+    const conversation = listRecentConversations(store, 1)[0]!
+    seedWaitingGraph(store, conversation.id)
+
+    for await (const _ of s.ask('第二轮', conversation.id)) break
+
+    const latest = listRunContextSnapshots(store, conversation.id)
+      .at(-1)!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(latest).not.toContain('未完成的 workflow')
     store.close()
   })
 })

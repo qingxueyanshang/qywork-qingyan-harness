@@ -121,6 +121,78 @@ describe('尾区注记', () => {
   })
 
   /**
+   * 原始失败形状：压缩把工具结果压成 320 字摘录，workflowId 与 checkpointId 整个不在
+   * 里面，模型手上没有任何 id 能续接那张图，只能整张重派——四条子会话白跑。
+   */
+  test('未完成的图连同 workflowId、检查点与各节点续接情况一起进快照', () => {
+    const projection = {
+      workflowId: 'st_first',
+      goal: '四个模型各做一版\n第二行不进快照',
+      maxConcurrent: 4,
+      nodes: [
+        { id: 'build-glm', kind: 'agent' as const, agent: 'ad-hoc', task: '做 glm 版' },
+        { id: 'build-qwen', kind: 'agent' as const, agent: 'ad-hoc', task: '做 qwen 版' },
+        { id: 'build-gemini', kind: 'agent' as const, agent: 'ad-hoc', task: '做 gemini 版' },
+        {
+          id: 'audit-builds',
+          kind: 'checkpoint' as const,
+          label: '主会话验收',
+          needs: ['build-glm', 'build-qwen', 'build-gemini'],
+        },
+      ],
+      phase: 'waiting_review' as const,
+      checkpointId: 'audit-builds',
+      results: {
+        'build-glm': {
+          nodeId: 'build-glm',
+          agent: 'ad-hoc',
+          label: 'glm',
+          status: 'done' as const,
+          output: '做完了',
+          durationMs: 1,
+          conversationId: 'cv_glm',
+        },
+        'build-qwen': {
+          nodeId: 'build-qwen',
+          agent: 'ad-hoc',
+          label: 'qwen',
+          status: 'failed' as const,
+          output: '',
+          error: '调用中断',
+          durationMs: 0,
+          conversationId: 'cv_qwen',
+        },
+      },
+      attempts: {},
+      approvals: {},
+    }
+    const all = buildTailNotes({ ...base, workflows: [projection] })
+      .filter((n) => n.group === 'workspaceState')
+      .map((n) => n.content)
+      .join('\n')
+
+    expect(all).toContain('workflowId=st_first')
+    expect(all).toContain('当前检查点：audit-builds')
+    expect(all).toContain('状态：等待审查')
+    // 目标只取首行：多行目标会把这一段撑成一篇正文。
+    expect(all).toContain('目标：四个模型各做一版｜')
+    expect(all).not.toContain('第二行不进快照')
+    expect(all).toContain('build-glm：done，可续接原会话')
+    expect(all).toContain('build-qwen：failed：调用中断，可续接原会话')
+    // 没跑过的那个照实说，不编一个状态。
+    expect(all).toContain('build-gemini：还没有回执')
+    // 检查点不是 agent 节点，不逐个列。
+    expect(all).not.toContain('- audit-builds：')
+
+    // 一张未完成的图都没有时整段不出现。
+    expect(
+      buildTailNotes(base)
+        .map((n) => n.content)
+        .join('\n'),
+    ).not.toContain('未完成的 workflow')
+  })
+
+  /**
    * 分组必须带出来。一律标 `workspaceState` 的话，面板上「记忆内容」与
    * 「技能清单」两行永远是 0——数据一直在发，只是没人按组去量。
    */

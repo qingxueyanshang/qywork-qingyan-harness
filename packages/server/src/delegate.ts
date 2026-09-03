@@ -20,15 +20,13 @@ import {
   type RunId,
   type StepId,
   SUBAGENT_NODE_ID,
-  type WorkflowCallRecord,
   type WorkflowNode,
   type WorkflowTransition,
 } from '@qywork/core'
 import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
 import {
   getConversation,
-  listRuns,
-  listSteps,
+  listWorkflowRecords,
   setStepChildConversation,
   setStepNodeConversation,
 } from '@qywork/store'
@@ -93,39 +91,6 @@ export function makeDelegate(ctx: {
   const inherited = () => {
     const c = getConversation(deps.store, conversationId)
     return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
-  }
-
-  /**
-   * workflow 没有第二份运行表：同一父会话里已经落库的 workflow tool step
-   * 就是恢复权威。当前正在执行的 step 尚无结果，必须排除，避免把请求当成事实。
-   */
-  const workflowRecords = (currentStepId: string): WorkflowCallRecord[] => {
-    const records: WorkflowCallRecord[] = []
-    for (const run of listRuns(deps.store, conversationId)) {
-      for (const step of listSteps(deps.store, run.id)) {
-        if (
-          step.id === currentStepId ||
-          step.kind !== 'tool_action' ||
-          step.toolName !== 'workflow'
-        ) {
-          continue
-        }
-        const payload = step.payload
-        if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') continue
-        records.push({
-          stepId: step.id,
-          ...(payload.args ? { args: payload.args } : {}),
-          ...(payload.kind === 'tool_result' ? { outcome: payload.outcome } : {}),
-          status:
-            step.status === 'running'
-              ? 'running'
-              : step.status === 'success'
-                ? 'success'
-                : 'failure',
-        })
-      }
-    }
-    return records
   }
 
   /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */
@@ -352,7 +317,10 @@ export function makeDelegate(ctx: {
         maxConcurrent = input.call.maxConcurrent
         state = {}
       } else {
-        const folded = foldWorkflow(workflowRecords(input.stepId), workflowId)
+        const folded = foldWorkflow(
+          listWorkflowRecords(deps.store, conversationId, input.stepId as StepId),
+          workflowId,
+        )
         if (!folded.ok) return { ok: false, error: folded.error }
         const projection = folded.projection
         if (projection.phase === 'failed') {
