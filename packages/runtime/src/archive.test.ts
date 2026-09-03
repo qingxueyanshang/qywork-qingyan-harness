@@ -402,7 +402,7 @@ describe('诊断导出', () => {
     store.close()
   })
 
-  test('父会话递归带出子 Agent 与孙会话，历史回退可用且循环引用不重复正文', () => {
+  test('父会话按规范入口递归带出子 Agent 与孙会话，循环引用不重复正文', () => {
     const { store, conversationId } = fixture()
     const parent = collect(store, conversationId)
     const parentRun = parent.runs[0]!
@@ -500,7 +500,7 @@ describe('诊断导出', () => {
         childConversationId: child.id,
       },
     })
-    // 旧账本：没有直接字段，只能从最终 outcome.data 回退。
+    // 子会话入口始终在 step 顶层；outcome 里的同名业务结果不是归档关系来源。
     appendStep(store, {
       runId: childRun.id,
       seq: 2,
@@ -516,6 +516,7 @@ describe('诊断导出', () => {
           message: '复核完成',
           data: { conversationId: grandchild.id },
         },
+        childConversationId: grandchild.id,
       },
     })
     // 损坏账本可能形成环；应保留这条关系，但不能再次导出根正文或无限递归。
@@ -583,7 +584,7 @@ describe('诊断导出', () => {
       expect.objectContaining({
         parentConversationId: child.id,
         childConversationId: grandchild.id,
-        source: 'outcome_fallback',
+        source: 'step_payload',
       }),
       expect.objectContaining({
         parentConversationId: grandchild.id,

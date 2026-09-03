@@ -1399,8 +1399,8 @@ export function markStepExecuting(store: Store, id: StepId): void {
  *
  * 不能等 `settleToolStep`：用户可能在子 agent 运行期间切走父会话，切回来会从账本
  * 重建卡片；那时工具尚无 outcome，而运行期的 `team.member` 事件已经错过，节点会永久
- * 变成不可点击。这里只补一个 JSON 字段，保留原有 args / action；正常终态随后仍由
- * `settleToolStep` 整体写入，进程中断则由 `settleRunningSteps` 原地补 outcome。
+ * 变成不可点击。这里只补一个 JSON 字段，保留原有 args / action；正常终态随后由
+ * `settleToolStep` 把同一字段带进结果，进程中断则由 `settleRunningSteps` 原地补 outcome。
  */
 export function setStepChildConversation(
   store: Store,
@@ -1428,9 +1428,19 @@ export function settleToolStep(
    */
   durationMs?: number,
 ): void {
+  const current = store.db
+    .query<{ payload: string | null }, [string]>('SELECT payload FROM steps WHERE id = ?')
+    .get(id)
+  const before = readJson<Step['payload']>(current?.payload ?? null, null)
+  const child =
+    before?.kind === 'tool_call' || before?.kind === 'tool_result'
+      ? before.childConversationId
+      : undefined
+  const settled =
+    payload?.kind === 'tool_result' && child ? { ...payload, childConversationId: child } : payload
   store.db
     .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
-    .run(status, writeJson(payload), durationMs ?? null, id)
+    .run(status, writeJson(settled), durationMs ?? null, id)
 }
 
 /**

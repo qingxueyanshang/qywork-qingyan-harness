@@ -233,13 +233,13 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
       continue
     }
 
-    // 收齐**连续的**同批次调用。批次 id 缺失的存量行按位置各成一批，
-    // 免得两次无关的调用因为同为 null 被并成一个 assistant 轮。
-    const batchId = step.providerBatchId ?? `legacy:${i}`
+    // 收齐**连续的**同批次调用。迁移 37 已给旧行固化唯一 batch id；这里不猜。
+    const batchId = step.providerBatchId
+    if (!batchId) throw new Error(`工具步骤 ${step.id} 缺少 providerBatchId`)
     const batch: Step[] = []
     while (i < steps.length) {
       const s = steps[i]!
-      if (s.kind !== 'tool_action' || (s.providerBatchId ?? `legacy:${i}`) !== batchId) break
+      if (s.kind !== 'tool_action' || s.providerBatchId !== batchId) break
       batch.push(s)
       i += 1
     }
@@ -259,17 +259,8 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
       arguments: toolPayloadOf(s).args ?? {},
     }))
 
-    /*
-     * 思考正文来自本轮的 `thinking` step。
-     *
-     * `batch[0].content` 是**只读旧行的回落**：迁移 26 之前思考寄生在批次首条
-     * 工具行的 `content` 上，那些行的 seq 是密排的、没有空位插新行，重排 seq
-     * 又会打断 `compaction_manifest` 里已经持久化的单元戳，所以不搬。
-     * 缺这一段的后果不是显示问题——DeepSeek 类兼容端点对带 tool_calls 却没有
-     * `reasoning_content` 的历史消息在第二轮就 400。
-     * 存量会话清空后这条回落可以删掉。
-     */
-    const reasoning = pendingReasoning || (batch[0]?.content ?? '')
+    // 思考正文只来自独立 thinking step；迁移 37 已把旧工具行正文搬过去。
+    const reasoning = pendingReasoning
     pendingReasoning = ''
     // 戳取批次里最大的 seq：活的 transcript 那侧是「一波跑完时的高水位」，同一个数。
     const stamp = stepStamp(batch[0]!.runId, Math.max(...batch.map((s) => s.seq)))

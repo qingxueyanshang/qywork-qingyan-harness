@@ -185,10 +185,11 @@ describe('steps 投影', () => {
    * `reasoning_content`，**否则后续轮次 400**（`ai/types.ts` 与
    * `openai-compat.ts` 都记着这条，标注「这不是可选优化」）。
    */
-  test('思考正文从批次首条读回，挂在 assistant 上', () => {
+  test('思考正文从独立 step 读回，挂在 assistant 上', () => {
     const out = stepsToWireMessages([
-      step({ seq: 1, toolCallId: 'A', callIndex: 0, content: '让我先看看这个文件。' }),
-      step({ seq: 2, toolCallId: 'B', callIndex: 1 }),
+      step({ seq: 1, kind: 'thinking', content: '让我先看看这个文件。' }),
+      step({ seq: 2, toolCallId: 'A', callIndex: 0 }),
+      step({ seq: 3, toolCallId: 'B', callIndex: 1 }),
     ])
     expect(out[0]!.reasoningContent).toBe('让我先看看这个文件。')
   })
@@ -509,13 +510,8 @@ describe('思考的投影', () => {
     expect(out[0]?.reasoningContent).toBe('重发那段')
   })
 
-  /**
-   * 迁移 26 之前的行没有独立的 thinking step，思考在首条工具行的 `content` 里。
-   * 这条回落删掉的后果不是显示问题：DeepSeek 类兼容端点对带 tool_calls 却没有
-   * `reasoning_content` 的历史消息在第二轮直接 400。
-   */
-  test('存量行的思考仍从首条工具行读得回来', () => {
-    const legacy = stepsToWireMessages([step({ id: 'st1' as never, seq: 1, content: '旧的思考' })])
-    expect(legacy[0]?.reasoningContent).toBe('旧的思考')
+  test('工具行正文不再是思考的第二来源', () => {
+    const out = stepsToWireMessages([step({ id: 'st1' as never, seq: 1, content: '错误旧形状' })])
+    expect(out[0]?.reasoningContent).toBeUndefined()
   })
 })
