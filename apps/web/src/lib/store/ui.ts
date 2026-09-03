@@ -19,7 +19,7 @@ import { isDesktopShell, tauriInvoke } from './shell.ts'
  *
  * 终端不在这里：它是可多开、可关掉的一页，见 `PanelTabKind`。
  */
-export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
+export type PanelView = 'todos' | 'subagents' | 'files' | 'changes' | 'runs'
 
 /**
  * 可多开的那几种页。

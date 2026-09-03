@@ -14,11 +14,13 @@ import type {
   ConversationHistoryPageResponse,
   ConversationId,
   ConversationRunsResponse,
+  ConversationSubagentsResponse,
   ConversationUsageResponse,
   EffortLevel,
   MessageId,
   RunId,
 } from '@qywork/core'
+import { foldWorkflow, targetLabel } from '@qywork/core'
 import {
   catalogKey,
   contextPanel,
@@ -38,10 +40,13 @@ import {
   listConversations,
   listProviderRequests,
   listRuns,
+  listWorkflowRecords,
   setConversationTitle,
   usageEntries,
   usageTotals,
+  workflowIdsOf,
 } from '@qywork/store'
+import { listSubagents } from '../delegate.ts'
 import { attachmentsDirOf } from './attachments.ts'
 import { type ApiHandler, json } from './types.ts'
 
@@ -372,7 +377,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     })
   }
 
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(history|messages|runs|usage|queue)$/.exec(p)
+  const convMatch =
+    /^\/api\/conversations\/([^/]+)\/(history|messages|runs|usage|queue|subagents)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
@@ -397,6 +403,40 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         childRuns: listChildConversations(d.store, id).flatMap((child) =>
           listRuns(d.store, child.id).map((run) => ({ roleId: child.sourceRef ?? '', run })),
         ),
+      }
+      return json(payload)
+    }
+    if (convMatch[2] === 'subagents') {
+      // 工作流从同一份账本折叠：阶段与每一格的状态和图卡上画的是同一个来源。
+      const records = listWorkflowRecords(d.store, id)
+      const workflows = workflowIdsOf(records).flatMap((workflowId) => {
+        const folded = foldWorkflow(records, workflowId)
+        if (!folded.ok) return []
+        const projection = folded.projection
+        return [
+          {
+            workflowId,
+            goal: projection.goal,
+            phase: projection.phase,
+            ...(projection.checkpointId ? { checkpointId: projection.checkpointId } : {}),
+            nodes: projection.nodes.flatMap((node) => {
+              if (node.kind === 'checkpoint') return []
+              const state = projection.states[node.id]
+              return [
+                {
+                  id: node.id,
+                  label: state?.label || targetLabel(node.target),
+                  phase: state?.phase ?? ('waiting' as const),
+                  ...(state?.subagentId ? { subagentId: state.subagentId } : {}),
+                },
+              ]
+            }),
+          },
+        ]
+      })
+      const payload: ConversationSubagentsResponse = {
+        subagents: listSubagents(d, id),
+        workflows,
       }
       return json(payload)
     }
