@@ -643,6 +643,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         if (opts.stallAfterFirst) {
           yield { type: 'request_prepared', measuredInputTokens: 10 }
+          yield { type: 'response_started' }
         }
         await new Promise<void>((resolve) => {
           req.signal?.addEventListener('abort', () => {
@@ -670,29 +671,39 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   test('首个事件就迟迟不来 —— 报 stream_idle_timeout 并收尾', async () => {
     const events: string[] = []
     let code: string | undefined
+    let message = ''
     for await (const ev of loopWith(stallingAdapter({ stallAfterFirst: false })).run({
       runId: 'rn_1' as never,
       history: [],
       signal: new AbortController().signal,
     })) {
       events.push(ev.type)
-      if (ev.type === 'run.error') code = ev.code
+      if (ev.type === 'run.error') {
+        code = ev.code
+        message = ev.message
+      }
     }
     expect(code).toBe('stream_idle_timeout')
+    expect(message).toMatch(/模型响应中断，\d+ 秒未收到响应，已重发 \d+ 次/)
     // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
 
   test('流到一半断供也判超时', async () => {
     let code: string | undefined
+    let message = ''
     for await (const ev of loopWith(stallingAdapter({ stallAfterFirst: true })).run({
       runId: 'rn_2' as never,
       history: [],
       signal: new AbortController().signal,
     })) {
-      if (ev.type === 'run.error') code = ev.code
+      if (ev.type === 'run.error') {
+        code = ev.code
+        message = ev.message
+      }
     }
     expect(code).toBe('stream_idle_timeout')
+    expect(message).toMatch(/模型响应中断，\d+ 秒未收到后续数据，已重发 \d+ 次/)
   }, 10_000)
 
   test('超时会中止底层请求 —— 不然那条连接一直挂着', async () => {
@@ -999,8 +1010,8 @@ describe('上下文分组占用', () => {
 describe('原地打转', () => {
   /**
    * 复现要挡的形状：模型用一模一样的参数反复调同一个只读工具，拿到一模一样的
-   * 结果。不挡的话它会一直跑到 `max_steps`——几十轮 provider 往返，最后报一个
-   * 「已达步数上限」，而那个原因是错的：多给一百步也一样。
+   * 结果。不挡的话它会无限请求 provider。这里必须按实际行为判空转；固定轮数只会
+   * 把长任务误杀，而且无法说明模型卡在了哪里。
    */
   test('同样的调用同样的结果三轮之后停下，stopReason=no_progress', async () => {
     const registry = new ToolRegistry()
@@ -1058,6 +1069,54 @@ describe('原地打转', () => {
     expect(stopReason).toBe('no_progress')
     // 停在第三轮，不是第十轮——这条数字就是这个改动的全部价值。
     expect(executed).toBe(3)
+  })
+
+  test('连续三轮收到相同 pause_turn 时按真实空转停下', async () => {
+    let requests = 0
+    const base = fakeAdapter([])
+    const adapter: LlmAdapter = {
+      ...base,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests++
+        yield {
+          type: 'request_prepared',
+          measuredInputTokens: estimateRequest(req, base.spec.density),
+        }
+        yield { type: 'response_started' }
+        yield { type: 'text_delta', delta: '仍停在同一个位置' }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedTokens: null,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+            source: 'provider',
+          },
+        }
+        yield { type: 'done', stopReason: 'pause_turn', rawStopReason: 'pause_turn' }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+
+    let stopReason: string | null = null
+    for await (const event of loop.run({
+      runId: 'rn_pause_stuck' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (event.type === 'run.finished') stopReason = event.stopReason
+    }
+
+    expect(stopReason).toBe('no_progress')
+    expect(requests).toBe(3)
   })
 
   /**
@@ -1433,14 +1492,13 @@ describe('正常响应结束不冒充任务完成', () => {
 
   async function runToEnd(
     loop: AgentLoop,
-    input: { runId: string; maxSteps?: number } = { runId: 'rn_todos' },
+    input: { runId: string } = { runId: 'rn_todos' },
   ): Promise<AgentEvent> {
     let finished: AgentEvent | null = null
     for await (const ev of loop.run({
       runId: input.runId as never,
       history: [],
       signal: new AbortController().signal,
-      ...(input.maxSteps === undefined ? {} : { maxSteps: input.maxSteps }),
     })) {
       if (ev.type === 'run.finished') finished = ev
     }
@@ -1633,20 +1691,44 @@ describe('正常响应结束不冒充任务完成', () => {
     }
   })
 
-  test('最后一步仍有未完成待办时，如实落 max_steps', async () => {
+  test('超过旧默认 120 轮仍继续执行，直到任务自然完成', async () => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'advance',
+      description: '每轮推进一次长任务。',
+      parameters: {
+        type: 'object',
+        properties: { index: { type: 'number' } },
+        required: ['index'],
+        additionalProperties: false,
+      },
+      actionKind: 'write',
+      objectLabel: '长任务',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        executed++
+        return { status: 'success', message: `推进到 ${executed}` }
+      },
+    })
+    const turns: (WireToolCall[] | null)[] = [
+      ...Array.from({ length: 121 }, (_, index) => [call('advance', { index })]),
+      null,
+    ]
     const loop = new AgentLoop({
-      adapter: fakeAdapter([null]),
-      registry: new ToolRegistry(),
+      adapter: fakeAdapter(turns),
+      registry,
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (runId) => ({
-        ...baseCtx(runId),
-        todos: { read: () => structuredClone(unfinished) },
-      }),
+      makeToolContext: (runId) => baseCtx(runId),
     })
 
-    const finished = await runToEnd(loop, { runId: 'rn_todos_limit', maxSteps: 1 })
-    expect(finished.type === 'run.finished' && finished.stopReason).toBe('max_steps')
+    const finished = await runToEnd(loop, { runId: 'rn_beyond_old_limit' })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+    expect(executed).toBe(121)
   })
 })
 
@@ -2319,10 +2401,13 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   function scriptedAdapter(
     script: (
       | 'break'
+      | 'connect-timeout'
       | 'break-after-text'
       | 'break-after-thinking'
+      | 'protocol-failure'
       | 'reject'
       | 'reject-relay'
+      | 'reject-upstream-forbidden'
       | 'reject-opaque-invalid'
       | 'reject-image'
       | 'rate-limit'
@@ -2340,17 +2425,30 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         const act = script[i++] ?? 'ok'
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        if (act === 'break' || act === 'break-after-text' || act === 'break-after-thinking') {
+        if (
+          act === 'break' ||
+          act === 'connect-timeout' ||
+          act === 'break-after-text' ||
+          act === 'break-after-thinking'
+        ) {
           if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
           if (act === 'break-after-thinking')
             yield { type: 'thinking_delta', delta: '失败那段思考' }
           throw new ProviderError({
             code: 'network_error',
-            message: '连接被断开',
+            message: act === 'connect-timeout' ? '连接超时' : '连接被断开',
             provider: 'anthropic_messages',
+            ...(act === 'connect-timeout' ? { timedOut: true } : {}),
             cause: Object.assign(new Error('The socket connection was closed unexpectedly.'), {
               code: 'ECONNRESET',
             }),
+          })
+        }
+        if (act === 'protocol-failure') {
+          throw new ProviderError({
+            code: 'provider_unavailable',
+            message: '响应为 200 但不含任何 SSE 数据\n协议解析明细',
+            provider: 'anthropic_messages',
           })
         }
         if (act === 'reject') {
@@ -2369,6 +2467,12 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
             Object.assign(new Error('{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'), {
               status: 400,
             }),
+          )
+        }
+        if (act === 'reject-upstream-forbidden') {
+          throw classifyProviderError(
+            'openai_responses',
+            Object.assign(new Error('Upstream returned HTTP 403 Forbidden'), { status: 400 }),
           )
         }
         if (act === 'reject-opaque-invalid') {
@@ -2499,6 +2603,27 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
+  test('中转站包装的上游 403：零输出时重发，下一条渠道可用就继续原 run', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['reject-upstream-forbidden', 'ok']))
+
+    expect(rec.opened).toEqual([0, 1])
+    expect(rec.settled[0]).toEqual({
+      status: 'rejected',
+      errorCode: 'provider_unavailable',
+      errorMessage: 'Upstream returned HTTP 403 Forbidden',
+    })
+    expect(rec.diagnostics[0]?.retry).toEqual({
+      decision: 'resend',
+      attempt: 1,
+      max: MAX_RESENDS,
+      backoffMs: UNAVAILABLE_BACKOFF_MS,
+    })
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([
+      expect.objectContaining({ attempt: 1, max: MAX_RESENDS }),
+    ])
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+  })
+
   test('中转站用无参数细节的 400 拒绝：零输出时走统一五次重发路径', async () => {
     const { rec, events } = await collect(scriptedAdapter(['reject-opaque-invalid', 'ok']))
 
@@ -2518,7 +2643,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('provider_unavailable')
     expect(err?.type === 'run.error' && err.message).toBe(
-      'Request contains an invalid argument.，已重发 5 次',
+      'Request contains an invalid argument，已重发 5 次',
     )
   })
 
@@ -2620,6 +2745,18 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(message).not.toMatch(/秒未收到响应/)
   })
 
+  test('无状态码的协议失败不冒充超时，重试说明留在首行', async () => {
+    const { events } = await collect(
+      scriptedAdapter(Array(MAX_RESENDS + 1).fill('protocol-failure')),
+    )
+
+    const err = events.find((e) => e.type === 'run.error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    expect(message).toBe(`响应为 200 但不含任何 SSE 数据，已重发 ${MAX_RESENDS} 次`)
+    expect(message).not.toContain('秒未收到')
+    expect(message).not.toContain('\n')
+  })
+
   /*
    * ── 断在思考里 ──
    *
@@ -2664,14 +2801,26 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(err?.type === 'run.error' && err.code).toBe('network_error')
   })
 
-  test('重发过还是断：正文要带现场读数，并说出重发了几次', async () => {
+  test('重发过还是立即断开：只说重发次数，不伪造超时读数', async () => {
     const { events } = await collect(scriptedAdapter(Array(MAX_RESENDS + 1).fill('break')))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    // 分类短语来自 errors.ts，读数与「重发了几次」由 loop 补——三段都要在。
+    // ECONNRESET 是立即断开，不是计时器超时；没有资格补“N 秒未收到响应”。
     expect(message).toContain('连接被断开')
-    expect(message).toMatch(/秒未收到响应/)
+    expect(message).not.toMatch(/秒未收到/)
+    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+  })
+
+  test('连接超时的终态只出现一次「未收到响应」', async () => {
+    const { events } = await collect(
+      scriptedAdapter(Array(MAX_RESENDS + 1).fill('connect-timeout')),
+    )
+
+    const err = events.find((e) => e.type === 'run.error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    expect(message).toContain('连接超时')
+    expect(message.match(/未收到响应/g)).toHaveLength(1)
     expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
   })
 
@@ -2713,13 +2862,12 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(retrying.every((e) => e.type === 'run.retrying' && e.max === MAX_RESENDS)).toBe(true)
   })
 
-  test('吐过字的断流：读数报的是「多久没动静」，不是「一个字节都没有」', async () => {
+  test('吐过字后立即断流：同样不伪造成超时', async () => {
     const { events } = await collect(scriptedAdapter(['break-after-text']))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    expect(message).toMatch(/\d+ 秒未收到后续数据/)
-    expect(message).not.toMatch(/秒未收到响应/)
+    expect(message).not.toMatch(/秒未收到/)
   })
 })
 /**

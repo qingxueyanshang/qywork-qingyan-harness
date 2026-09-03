@@ -41,6 +41,13 @@ export class ProviderError extends Error {
   readonly usage: ProviderUsage | undefined
   /** Provider 要求的重试等待时间。null 表示响应没有给出有效等待值。 */
   readonly retryAfterMs: number | null
+  /**
+   * 这次失败是否由本地等待计时器判定为超时。
+   *
+   * 不能拿“没有 HTTP 状态码”代替：断流、协议错误与本地超时都可能没有状态码，
+   * 只有这个事实为真时，上层才有资格补“静默了多久”。
+   */
+  readonly timedOut: boolean
 
   constructor(opts: {
     code: ErrorCode
@@ -51,6 +58,7 @@ export class ProviderError extends Error {
     capacity?: CapacityRejection
     usage?: ProviderUsage
     retryAfterMs?: number
+    timedOut?: boolean
     cause?: unknown
   }) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined)
@@ -62,6 +70,7 @@ export class ProviderError extends Error {
     this.capacity = opts.capacity
     this.usage = opts.usage
     this.retryAfterMs = opts.retryAfterMs ?? null
+    this.timedOut = opts.timedOut ?? false
   }
 }
 
@@ -168,7 +177,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
     ...(retryAfterMs !== null ? { retryAfterMs } : {}),
   }
 
-  const build = (code: ErrorCode, msg?: string) =>
+  const build = (code: ErrorCode, msg?: string, timedOut = false) =>
     new ProviderError({
       code,
       message: msg ?? message,
@@ -176,6 +185,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
       ...(status !== undefined ? { status } : {}),
       detail,
       ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+      ...(timedOut ? { timedOut: true } : {}),
       cause: err,
     })
 
@@ -197,6 +207,35 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
       capacity,
       cause: err,
     })
+  }
+
+  /*
+   * Responses API 的失败不一定走非 2xx：SSE 已经建立以后，限速、过载等会作为
+   * `response.failed` / `error` 事件到达。适配器把这类事件保留为 status=200，
+   * 这里必须按事件里的结构化 code/type 分类；否则它们全落成 internal_error，
+   * 现有重试链就永远看不到本来可恢复的限速或服务抖动。
+   */
+  if (status !== undefined && status >= 200 && status < 300) {
+    // code/type 最稳；个别中转站会把它们剥掉，最后把原文并入同一窄词表兜底。
+    const reported = `${providerCode ?? ''} ${providerType ?? ''} ${message}`.toLowerCase()
+    if (quotaExhausted(err, message)) return build('insufficient_quota', '账户额度不足')
+    if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) {
+      return build('rate_limited', '触发限速')
+    }
+    if (
+      /authentication|unauthorized|invalid[\s_-]?api[\s_-]?key|permission|forbidden/.test(reported)
+    ) {
+      return build('auth_failed', '当前凭证无权完成请求')
+    }
+    if (/model[\s_-]?not[\s_-]?found/.test(reported)) {
+      return build('model_not_found', '模型不存在：检查模型 ID 与接口地址')
+    }
+    if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) {
+      return build('invalid_request', message)
+    }
+    // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时
+    // 保留原文，同时让它进入已有的“零可见输出才重发”判据。
+    return build('provider_unavailable', message)
   }
 
   switch (status) {
@@ -248,7 +287,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
   }
 
   const transport = classifyTransport(err, message)
-  if (transport) return build('network_error', transport)
+  if (transport) return build('network_error', transport.text, transport.timedOut)
 
   return build('internal_error')
 }
@@ -270,6 +309,17 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
 function looksRetryableRejection(status: number, message: string): boolean {
   const normalized = message.trim()
   if (status === 400 && /^request contains an invalid argument\.?$/i.test(normalized)) return true
+  /*
+   * 聚合中转站会把自己选中的上游渠道所回的 403 再包成 400 / 422。它与配置端点
+   * 直接回 403 不是一件事：前者下一次请求可能换到可用渠道，后者才是当前 Key
+   * 对这个端点的稳定权限拒绝。只收现场出现过的整句话，不能把普通 403 整类放开。
+   */
+  if (
+    (status === 400 || status === 422) &&
+    /^upstream returned http 403 forbidden\.?$/i.test(normalized)
+  ) {
+    return true
+  }
   return /暂不可用|暂时不可用|稍后(?:再试|重试)|服务(?:繁忙|不可用)|系统繁忙|上游(?:负载|不可用)|无可用渠道|temporarily unavailable|service unavailable|try again later|overloaded|server is busy|no available channel/i.test(
     normalized,
   )
@@ -300,35 +350,49 @@ function looksRetryableRejection(status: number, message: string): boolean {
  * 用）。判成可重试的代价是多打几次白工，判成不可重试的代价是一次抖动打断用户的任务。后者贵得多，
  * 所以选前者——但文案要**同时点出**这两种可能，别让一个配错代理的人对着「连不上」长时间排查网络。
  */
-const TRANSPORT_SHAPES: { code: RegExp; message: RegExp; text: string }[] = [
+const TRANSPORT_SHAPES: {
+  code: RegExp
+  message: RegExp
+  text: string
+  timedOut: boolean
+}[] = [
   {
     code: /CERT|SSL|TLS|SELF_SIGNED|LEAF_SIGNATURE/,
     message: /certificate|ssl|tls handshake/i,
     text: 'TLS 握手失败：可能是网络抖动，也可能是代理或自签名证书未被信任',
+    timedOut: false,
   },
   {
     code: /^(ECONNRESET|ECONNABORTED|EPIPE|ERR_SOCKET_CLOSED|UND_ERR_SOCKET|CONNECTION(CLOSED|RESET|ABORTED))/,
     message:
       /socket connection was closed|socket hang up|premature close|http\/2 stream failed|connection (closed|reset|aborted)|\b(ECONNRESET|ECONNABORTED|EPIPE)\b/i,
     text: '连接被断开',
+    timedOut: false,
   },
   {
     code: /^(ETIMEDOUT|ERR_TIMEOUT|TIMEOUT|CONNECTIONTIMEOUT|UND_ERR_(HEADERS|BODY)_TIMEOUT)/,
     message: /timed out|timeout|\bETIMEDOUT\b/i,
     text: '请求超时',
+    timedOut: true,
   },
   {
     code: /^(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN|ERR_NETWORK|UND_ERR_|CONNECTION)/,
     message:
       /fetch failed|unable to connect|connection (refused|error)|network|\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN)\b/i,
     text: '连不上接口：检查接口地址与代理',
+    timedOut: false,
   },
 ]
 
-function classifyTransport(err: unknown, message: string): string | null {
+function classifyTransport(
+  err: unknown,
+  message: string,
+): { text: string; timedOut: boolean } | null {
   const code = String((err as { code?: unknown })?.code ?? '').toUpperCase()
   for (const shape of TRANSPORT_SHAPES) {
-    if (shape.code.test(code) || shape.message.test(message)) return shape.text
+    if (shape.code.test(code) || shape.message.test(message)) {
+      return { text: shape.text, timedOut: shape.timedOut }
+    }
   }
   return null
 }

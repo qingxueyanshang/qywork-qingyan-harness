@@ -14,14 +14,16 @@ function role(id: string): Role {
 function deps(run: (agent: string, prompt: string) => Promise<{ ok: boolean; output: string }>) {
   const order: string[] = []
   const prompts: string[] = []
+  const events: Record<string, unknown>[] = []
   return {
     order,
     prompts,
+    events,
     deps: {
       workspaceRoot: '/tmp',
       signal: new AbortController().signal,
       runId: 'rn_t' as never,
-      emit: () => {},
+      emit: (event: Record<string, unknown>) => events.push(event),
       resolveCli: () => undefined,
       runBuiltin: async ({ role: r, prompt }: { role: Role; prompt: string }) => {
         order.push(r.id)
@@ -279,6 +281,34 @@ describe('编排执行', () => {
 
     expect(results.filter((r) => r.status === 'done')).toHaveLength(4)
     expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  test('未配置并发闸时四个节点同时启动，超出的节点明确报等待槽位', async () => {
+    const config: TeamConfig = {
+      name: 't',
+      roles: [role('r')],
+      plan: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, agent: 'r', task: id })),
+    }
+    let inFlight = 0
+    let peak = 0
+    const d = deps(async () => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await Bun.sleep(20)
+      inFlight--
+      return { ok: true, output: 'x' }
+    })
+
+    const { receipts } = await new TeamOrchestrator(config, d.deps as never).run('目标')
+
+    expect(receipts).toHaveLength(5)
+    expect(peak).toBe(4)
+    expect(d.events).toContainEqual(
+      expect.objectContaining({ type: 'team.member', memberId: 'e', phase: 'queued' }),
+    )
+    expect(d.events).toContainEqual(
+      expect.objectContaining({ type: 'team.member', memberId: 'e', phase: 'working' }),
+    )
   })
 })
 

@@ -473,7 +473,8 @@ export interface TeamMemberEvent {
   roleName: string
   /** 该成员背后的执行器：内置 loop 或外部 CLI。 */
   backend: 'builtin' | 'codex' | 'claude' | 'grok' | 'custom'
-  phase: 'spawned' | 'working' | 'done' | 'failed'
+  /** queued = 依赖已满足，但正在等 workflow 的并发槽位。 */
+  phase: 'queued' | 'spawned' | 'working' | 'done' | 'failed'
   summary?: string
   childConversationId?: ConversationId
   /**

@@ -21,7 +21,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
 import { ProviderError } from '../errors.ts'
-import type { ProviderEvent, ProviderUsage } from '../types.ts'
+import { PROVIDER_HTTP, type ProviderEvent, type ProviderUsage } from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
 // ───────────────────────── 实测报文 ─────────────────────────
@@ -203,13 +203,19 @@ const TRUNCATED = sse([
 
 // ───────────────────────── fixture server ─────────────────────────
 
-let script: { status: number; body: string; contentType: string; headers: Record<string, string> } =
-  {
-    status: 200,
-    body: TEXT_RUN,
-    contentType: 'text/event-stream',
-    headers: {},
-  }
+let script: {
+  status: number
+  body: string
+  contentType: string
+  headers: Record<string, string>
+  delayMs: number
+} = {
+  status: 200,
+  body: TEXT_RUN,
+  contentType: 'text/event-stream',
+  headers: {},
+  delayMs: 0,
+}
 /** 上一次发出去的请求体。用来断言**发出去**的内容，不只是收回来的；只声明这份测试真的读的那几格。 */
 interface SentBody {
   input?: { type: string }[]
@@ -224,6 +230,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(req) {
     lastBody = ((await req.json().catch(() => ({}))) ?? {}) as SentBody
+    if (script.delayMs > 0) await Bun.sleep(script.delayMs)
     return new Response(script.body, {
       status: script.status,
       headers: { 'content-type': script.contentType, ...script.headers },
@@ -246,12 +253,14 @@ async function run(
   over: Partial<Parameters<OpenAIResponsesAdapter['stream']>[0]> = {},
   status = 200,
   headers: Record<string, string> = {},
+  delayMs = 0,
 ): Promise<ProviderEvent[]> {
   script = {
     status,
     body,
     contentType: status === 200 ? 'text/event-stream' : 'application/json',
     headers,
+    delayMs,
   }
   const events: ProviderEvent[] = []
   for await (const ev of adapter().stream({
@@ -389,6 +398,24 @@ describe('错误路径', () => {
     await expect(run(body, {}, 400)).rejects.toThrow(/reasoning_text/)
   })
 
+  test('中转站用 400 包装上游 403 时保留外层状态并归为临时渠道不可用', async () => {
+    const body = JSON.stringify({
+      error: { message: 'Upstream returned HTTP 403 Forbidden' },
+    })
+    let caught: unknown
+    try {
+      await run(body, {}, 400)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(ProviderError)
+    expect(caught).toMatchObject({
+      code: 'provider_unavailable',
+      status: 400,
+      detail: { providerMessage: 'Upstream returned HTTP 403 Forbidden' },
+    })
+  })
+
   test('429 的错误码、正文与 Retry-After 一起进入分类结果', async () => {
     const body = JSON.stringify({
       error: { code: 'rate_limit_exceeded', message: 'Too many requests' },
@@ -408,9 +435,34 @@ describe('错误路径', () => {
   })
 
   /** SSE 已经 200 了，流内错误只能从事件里出。不认它的表现是「流正常结束但什么都没有」。 */
-  test('流内 response.failed 抛出来，不当成正常结束', async () => {
+  test('流内 response.failed 抛出来，并进入可重试的服务失败分类', async () => {
     const body = sse([{ type: 'response.failed', response: { error: { message: '模型过载' } } }])
-    await expect(run(body)).rejects.toThrow(/模型过载/)
+    let caught: unknown
+    try {
+      await run(body)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toMatchObject({ code: 'provider_unavailable', message: '模型过载' })
+  })
+
+  test('流内限速保留结构化错误码，不能因 HTTP 已是 200 而落成内部错误', async () => {
+    const body = sse([
+      {
+        type: 'response.failed',
+        response: { error: { code: 'rate_limit_exceeded', message: 'Too many requests' } },
+      },
+    ])
+    let caught: unknown
+    try {
+      await run(body)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toMatchObject({
+      code: 'rate_limited',
+      detail: { providerCode: 'rate_limit_exceeded' },
+    })
   })
 
   /**
@@ -486,6 +538,28 @@ describe('思考字段', () => {
  * 靠的是「谁真的 abort 了」，不是 fetch 抛出来的错误长什么样（两边都是 AbortError）。
  */
 describe('停止与超时分开认', () => {
+  test('连接超时只上报分类，不在适配器里重复拼静默时长', async () => {
+    const http = PROVIDER_HTTP as unknown as { timeout: number }
+    const timeout = http.timeout
+    http.timeout = 1
+    try {
+      let caught: unknown
+      try {
+        await run(TEXT_RUN, {}, 200, {}, 25)
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(ProviderError)
+      expect(caught).toMatchObject({
+        code: 'network_error',
+        message: '连接超时',
+        timedOut: true,
+      })
+    } finally {
+      http.timeout = timeout
+    }
+  })
+
   test('用户按停止报「已取消」，不报连接超时', async () => {
     const ctl = new AbortController()
     ctl.abort()

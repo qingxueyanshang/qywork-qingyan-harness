@@ -300,7 +300,7 @@ describe('派活', () => {
 
   /** 没做成的那条子会话正是要翻开看的那一条，所以失败那次也得把它交出去。 */
   test('失败那次也带回子会话 id', async () => {
-    const s = stub({ ok: false, output: '', error: '步数用尽', conversationId: 'cv_9' })
+    const s = stub({ ok: false, output: '', error: '原地打转', conversationId: 'cv_9' })
     const res = await subagentTool.fn({ agent: 'reviewer', task: '看一眼' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect((res.data as { conversationId?: string }).conversationId).toBe('cv_9')

@@ -243,26 +243,20 @@
   display: flex;
   flex-direction: column;
 }
-/* 子会话页：一条跑完的子 agent 会话的回放。会话流那些行的样式是全局的，
-   这里只负责给它一个能滚的盒子与左右留白——不套 `.transcript-inner` 的
-   760px 居中，面板本来就窄，再居中会挤成一条。 */
+/* 子会话页：滚动盒与内容盒分开，和主会话的 `.transcript` / `.transcript-inner`
+   形状一致，ResizeObserver 才能同时观察视口与真实内容高度。不套 760px 居中，
+   面板本来就窄，再居中会挤成一条。 */
 .child-cv {
-  display: flex;
   flex: 1;
-  flex-direction: column;
-  gap: 8px;
   min-height: 0;
-  padding: var(--s-3) var(--s-4) var(--s-6);
   overflow-y: auto;
 }
-.child-cv-todos {
-  padding-bottom: var(--s-3);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.child-cv-section-title {
-  margin-bottom: var(--s-2);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
+.child-cv-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+  padding: var(--s-3) var(--s-4) var(--s-6);
 }
 
 /* 外部 CLI 页：一段只读的流。等宽字，长行照样折——面板本来就窄，

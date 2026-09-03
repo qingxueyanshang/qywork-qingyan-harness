@@ -15,12 +15,24 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
+const resizeCallbacks = new Map<Element, ResizeObserverCallback>()
+
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
   // happy-dom 没有 ResizeObserver，而会话流的贴底跟随挂在它上面。
   ;(globalThis as Record<string, unknown>).ResizeObserver = class {
-    observe(): void {}
-    disconnect(): void {}
+    private readonly targets: Element[] = []
+
+    constructor(private readonly callback: ResizeObserverCallback) {}
+
+    observe(target: Element): void {
+      this.targets.push(target)
+      resizeCallbacks.set(target, this.callback)
+    }
+
+    disconnect(): void {
+      for (const target of this.targets) resizeCallbacks.delete(target)
+    }
   }
 })
 afterAll(async () => {
@@ -44,8 +56,12 @@ async function resetStore() {
   })
 }
 
+function resize(target: Element) {
+  resizeCallbacks.get(target)?.([], {} as ResizeObserver)
+}
+
 describe('工具图片回放', () => {
-  test('从历史 step 的 outcome 直接恢复图片，且不要求展开工具卡', async () => {
+  test('read_file 图片只给模型，不自动渲染成会话图片', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: CV,
@@ -54,8 +70,10 @@ describe('工具图片回放', () => {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
           error: null,
-          todos: [],
           transcript: [
             {
               id: 'tool-image-history',
@@ -70,6 +88,57 @@ describe('工具图片回放', () => {
                 executed: true,
                 message: '读取 art/result.png（图片）',
                 data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    try {
+      const image = host.querySelector<HTMLImageElement>('.tool-images img')
+      expect(image).toBeNull()
+      expect((host.querySelector('details') as HTMLDetailsElement | null)?.open).toBe(false)
+    } finally {
+      dispose()
+      host.remove()
+    }
+  })
+
+  test('只有 outcome 明确声明 inline 才恢复图片', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
+          error: null,
+          transcript: [
+            {
+              id: 'tool-image-inline',
+              kind: 'tool',
+              text: '',
+              toolName: 'generate_image',
+              action: { kind: 'run', objectLabel: '图片', target: 'art/result.png' },
+              args: { path: 'art/result.png' },
+              status: 'success',
+              outcome: {
+                status: 'success',
+                executed: true,
+                message: '生成 art/result.png',
+                data: { images: [{ data: 'aGVsbG8=', mime: 'image/png' }] },
+                presentation: { images: 'inline' },
               },
             },
           ],
@@ -169,6 +238,169 @@ describe('编排画布', () => {
       { d: 'M60.5 40.5H100.5', live: true },
     ])
   })
+
+  test('排队节点明确说明是在等待并发槽位', async () => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={
+            [
+              {
+                id: 'wf-queued',
+                kind: 'tool',
+                text: '',
+                toolName: 'workflow',
+                args: {
+                  goal: '并行执行',
+                  nodes: [{ id: 'fifth', agent: 'gemini', task: '实现第五版' }],
+                },
+                status: 'running',
+                nodes: [
+                  {
+                    nodeId: 'fifth',
+                    agent: 'gemini',
+                    label: 'Gemini 开发者',
+                    phase: 'queued',
+                  },
+                ],
+              },
+            ] as never
+          }
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('等待并发槽位')
+    } finally {
+      dispose()
+    }
+  })
+})
+
+describe('子会话与主会话共用流式外壳', () => {
+  test('不重复挂待办，并显示自己的运行条与贴底跟随', async () => {
+    const store = await import('../lib/store/index.ts')
+    const apiBefore = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path,
+    ) => {
+      if (!path.includes('/cv_child/history')) throw new Error(`未预期请求：${path}`)
+      return {
+        messages: [],
+        steps: [],
+        runs: [
+          {
+            id: 'rn_child',
+            userMessageId: null,
+            createdAt: 100,
+            finishedAt: null,
+            stopReason: null,
+            status: 'running',
+            usage: {
+              inputTokens: 1200,
+              outputTokens: 300,
+              cachedTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              cost: 0,
+              currency: 'USD',
+              turns: [],
+            },
+            errorMessage: null,
+          },
+        ],
+        todos: [{ id: 'todo_1', content: '实现赛车', status: 'in_progress' }],
+        nextCursor: null,
+      }
+    }
+
+    store.openConversationTab('cv_child', '子 agent')
+    store.syncViews()
+    store.setState({
+      activeConversation: null,
+      busyConversations: ['cv_child'],
+      connection: 'ready',
+      views: {
+        cv_child: {
+          transcript: [
+            {
+              id: 'st_todos',
+              kind: 'tool',
+              text: '',
+              toolName: 'write_todos',
+              action: { kind: 'write', objectLabel: '待办' },
+              args: {
+                todos: [{ id: 'todo_1', content: '实现赛车', status: 'in_progress' }],
+              },
+              status: 'success',
+            },
+          ],
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: 100,
+          usage: null,
+          lastEventAt: 100,
+          retry: null,
+          error: null,
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { default: ConversationPanel } = await import('./ConversationPanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ConversationPanel id="conversation-cv_child" />,
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(host.querySelector('.child-cv-todos')).toBeNull()
+      expect(host.querySelector('.run-strip')).not.toBeNull()
+      expect(host.querySelector('.run-galaxy')).not.toBeNull()
+
+      const details = host.querySelector<HTMLDetailsElement>('details')!
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+      await Promise.resolve()
+      expect(host.querySelector('.todo-list')).not.toBeNull()
+      expect(host.querySelectorAll('.todo-list')).toHaveLength(1)
+
+      const scroller = host.querySelector<HTMLElement>('.child-cv')!
+      const inner = host.querySelector<HTMLElement>('.child-cv-inner')!
+      let height = 300
+      Object.defineProperties(scroller, {
+        scrollHeight: { configurable: true, get: () => height },
+        clientHeight: { configurable: true, get: () => 100 },
+      })
+      resize(inner)
+      expect(scroller.scrollTop).toBe(300)
+
+      // 展开思考/工具卡会让 inner 长高；仍贴底时必须跟着新高度走。
+      height = 480
+      resize(inner)
+      expect(scroller.scrollTop).toBe(480)
+
+      // 用户主动上翻后尊重阅读位置，后续增长不再强拽到底。
+      scroller.scrollTop = 40
+      scroller.dispatchEvent(new Event('scroll'))
+      height = 620
+      resize(inner)
+      expect(scroller.scrollTop).toBe(40)
+    } finally {
+      dispose()
+      host.remove()
+      store.closePanelTab('conversation-cv_child')
+      store.syncViews()
+      ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    }
+  })
 })
 
 const CV = 'cv_prose'
@@ -191,8 +423,10 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
           error: null,
-          todos: [],
           transcript: [
             { id: 'u-short', kind: 'user', text: '短消息' },
             { id: 'u-long', kind: 'user', text: '这是一条需要收敛的长消息。'.repeat(12) },
@@ -296,8 +530,10 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
           runStartedAt: Date.now(),
+          usage: null,
+          lastEventAt: null,
+          retry: null,
           error: null,
-          todos: [],
           transcript: [
             { id: 'u1', kind: 'user', text: '问一句' },
             { id: 't1', kind: 'text', text: '# 标题\n\n一段正文。\n\n另一段正文。' },
@@ -427,6 +663,48 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     dispose()
   })
 
+  test('未知停止码不渲染成内部枚举', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      lastRunId: 'run_unknown_stop',
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          error: null,
+          transcript: [
+            { id: 'u-unknown', kind: 'user', text: '开始' },
+            {
+              id: 'run-run_unknown_stop',
+              kind: 'run',
+              text: '',
+              run: {
+                runId: 'run_unknown_stop',
+                stopReason: 'future_internal_reason',
+                usage: null,
+                startedAt: 1_000,
+                endedAt: 1_500,
+                errorMessage: null,
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+
+    expect(host.querySelector('.run-reason')).toBeNull()
+    expect(host.textContent).not.toContain('future_internal_reason')
+
+    dispose()
+  })
+
   test('历史加载、失败重试和更早页入口都有可见反馈', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
@@ -436,8 +714,10 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
         [CV]: {
           history: { loading: 'initial', nextCursor: null, error: null },
           runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
           error: null,
-          todos: [],
           transcript: [],
         },
       },

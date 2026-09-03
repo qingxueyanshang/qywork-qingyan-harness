@@ -35,8 +35,11 @@ export type RenderItem =
  */
 const STANDALONE = new Set(['subagent', 'workflow'])
 
-function carriesVisibleImages(item: TranscriptItem): boolean {
-  return item.kind === 'tool' && resultImages(item.outcome?.data).length > 0
+/** 只有生产者明确要求内联展示、且结果里确有合法图片时，图片工具才独立成条。 */
+function carriesPresentedImages(item: TranscriptItem): boolean {
+  return (
+    item.outcome?.presentation?.images === 'inline' && resultImages(item.outcome.data).length > 0
+  )
 }
 
 export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
@@ -105,7 +108,7 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
     }
     if (
       item.kind === 'tool' &&
-      (STANDALONE.has(item.toolName ?? '') || carriesVisibleImages(item))
+      (STANDALONE.has(item.toolName ?? '') || carriesPresentedImages(item))
     ) {
       flush()
       out.push({ kind: 'tool', id: item.id, item })

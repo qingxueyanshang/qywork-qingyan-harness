@@ -34,11 +34,13 @@ describe('传输层失败必须可重试', () => {
   test('Bun 实测：The operation timed out.', () => {
     const e = classifyProviderError(P, transport('ETIMEDOUT', 'The operation timed out.'))
     expect(e.code).toBe('network_error')
+    expect(e.timedOut).toBe(true)
   })
 
   test('Bun 实测：The socket connection was closed unexpectedly.', () => {
     const e = classifyProviderError(P, new Error('The socket connection was closed unexpectedly.'))
     expect(e.code).toBe('network_error')
+    expect(e.timedOut).toBe(false)
   })
 
   test('中转站实测：Upstream HTTP/2 stream failed', () => {
@@ -159,6 +161,24 @@ describe('用户中断不是错误', () => {
 })
 
 describe('按用户的下一步动作分类', () => {
+  test('SSE 建连后的 200 错误事件仍按结构化错误分类', () => {
+    const reported = (code: string, type = '') =>
+      Object.assign(new Error('provider reported failure'), {
+        status: 200,
+        error: { code, type, message: 'provider reported failure' },
+      })
+
+    expect(classifyProviderError(P, reported('rate_limit_exceeded')).code).toBe('rate_limited')
+    expect(classifyProviderError(P, reported('insufficient_quota')).code).toBe('insufficient_quota')
+    expect(classifyProviderError(P, reported('server_error')).code).toBe('provider_unavailable')
+    expect(classifyProviderError(P, reported('invalid_request_error')).code).toBe('invalid_request')
+    expect(classifyProviderError(P, reported('invalid_api_key')).code).toBe('auth_failed')
+    expect(classifyProviderError(P, reported('model_not_found')).code).toBe('model_not_found')
+    expect(
+      classifyProviderError(P, Object.assign(new Error('Too many requests'), { status: 200 })).code,
+    ).toBe('rate_limited')
+  })
+
   test('401 未配置与 401 key 无效是两条不同的引导', () => {
     expect(classifyProviderError(P, http(401, 'API key missing')).code).toBe('no_api_key')
     expect(classifyProviderError(P, http(401, 'Incorrect API key')).code).toBe('auth_failed')
@@ -260,6 +280,16 @@ describe('按用户的下一步动作分类', () => {
     expect(e.code).toBe('provider_unavailable')
     expect(e.capacity).toBeUndefined()
     expect(e.message).toBe('Request contains an invalid argument.')
+  })
+
+  test('中转站包装的上游 403 可换渠道重试，端点直接 403 仍是权限拒绝', () => {
+    for (const status of [400, 422]) {
+      const relayed = classifyProviderError(P, http(status, 'Upstream returned HTTP 403 Forbidden'))
+      expect(relayed.code).toBe('provider_unavailable')
+      expect(relayed.message).toBe('Upstream returned HTTP 403 Forbidden')
+    }
+
+    expect(classifyProviderError(P, http(403, 'Forbidden')).code).toBe('auth_failed')
   })
 
   /**

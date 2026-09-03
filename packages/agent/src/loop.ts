@@ -313,7 +313,6 @@ export interface RunInput {
   runId: RunId
   history: WireMessage[]
   effort?: ChatRequest['effort']
-  maxSteps?: number
   cacheKey?: string
   signal: AbortSignal
   /**
@@ -366,8 +365,6 @@ export interface RunInput {
 
 /** 换行。日志里用，避免转义在工具链上被折半。 */
 const NEWLINE = String.fromCharCode(10)
-
-const DEFAULT_MAX_STEPS = 120
 
 /**
  * 流空闲超时。**两个事件之间**超过这个时长没有新事件就判定流卡死。
@@ -459,11 +456,12 @@ function resendBackoffMs(error: ProviderError, resends: number): number | undefi
 }
 
 /**
- * 传输失败的现场读数。
+ * 本地计时器确认超时后的现场读数。
  *
- * 分类短语（「连接被断开」「请求超时」「模型响应中断」）由 `ai/src/errors.ts` 与
- * `openStream` 给，它们拿不到静默时长，也不知道这次收到过数据没有；而这两项区分
- * 请求未落地（一个字节都没收到）与传输中断（收到过之后停了）。
+ * 分类短语由 `ai/src/errors.ts` 与 `openStream` 给，它们拿不到静默时长，
+ * 也不知道这次收到过数据没有；而这两项区分请求未落地（一个字节都没收到）
+ * 与生成中断（收到过之后停了）。只有 `ProviderError.timedOut` 为真才调用这里，
+ * 立即断流与协议失败不能借一段“静默了多久”伪装成超时。
  *
  * 这句只在这里拼，全项目只有这一个拼装处。
  */
@@ -682,6 +680,7 @@ export class AgentLoop {
               // （`transportReading`）——两处各拼一半的话，同一句话就有了两个作者。
               message: '模型响应中断',
               provider,
+              timedOut: true,
             }),
           )
         }, idleMs)
@@ -711,8 +710,6 @@ export class AgentLoop {
     const { adapter, registry, persist } = this.deps
     // 这一轮那把尺。三个消费者（读数、压缩触发、申报钳位）共用它。
     const density = adapter.spec.density
-    const maxSteps = input.maxSteps ?? DEFAULT_MAX_STEPS
-
     const usage: RunUsage = {
       inputTokens: 0,
       outputTokens: 0,
@@ -817,9 +814,9 @@ export class AgentLoop {
     const occupancyOf = (req: ChatRequest): number =>
       anchor ? meter(0).tokens : estimateRequest(req, density)
 
-    // 只有自然耗尽 for-loop 才保留这个值；所有提前终止都在现场覆盖。
-    // 默认成 completed 会让最后一步的 `continue`（例如 pause_turn）假报完成。
-    let stopReason: StopReason = 'max_steps'
+    // 无限循环没有自然耗尽这一支。默认失败闭合，所有合法出口都必须在现场覆盖；
+    // 将来若误加一条裸 `break`，也不会把半成品假报成 completed。
+    let stopReason: StopReason = 'internal_guard'
     /**
      * 溢出恢复用过没有。**状态机，不是重试计数。**
      *
@@ -849,7 +846,7 @@ export class AgentLoop {
     const ctx = this.deps.makeToolContext(input.runId, (e) => emitQueue.push(e))
 
     try {
-      for (let step = 0; step < maxSteps; step++) {
+      for (let requestTurn = 0; ; requestTurn++) {
         if (input.signal.aborted) {
           stopReason = 'user_interrupt'
           break
@@ -1123,7 +1120,7 @@ export class AgentLoop {
           const payload = payloadSnapshotOf(req)
           requestId = persist.openRequest({
             runId: input.runId,
-            turnIndex: step,
+            turnIndex: requestTurn,
             retryIndex,
             ...(this.deps.providerName ? { providerName: this.deps.providerName } : {}),
             providerKind: adapter.kind,
@@ -1433,7 +1430,7 @@ export class AgentLoop {
              */
             const raw = (err as { cause?: unknown }).cause
             process.stderr.write(
-              `[qy] 请求失败 turn=${step} retry=${retryIndex} code=${code} errno=${String(
+              `[qy] 请求失败 turn=${requestTurn} retry=${retryIndex} code=${code} errno=${String(
                 (raw as { code?: unknown })?.code ?? '-',
               )} events=${providerEvents} silent=${Math.round(silentMs / 1000)}s | ${
                 raw instanceof Error ? raw.message : pe.message
@@ -1482,24 +1479,24 @@ export class AgentLoop {
                     : 'not_retryable',
             )
 
-            /*
-             * 分类短语 + 现场读数 + 是否自动重发过，一行说完。
-             *
-             * 现场读数只给传输层，判据是**上游答复过没有**（同 `settleRequest`
-             * 那一处），不逐个码列举：有状态码就是它明确回绝了，
-             * 给这一类拼「N 秒未收到响应」等于告诉用户请求没落地。
-             */
+            /* 分类短语 + 已证实的超时读数 + 是否自动重发过，一行说完。 */
+            const headline = pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
+            const facts = [
+              headline,
+              ...(pe.timedOut ? [transportReading(providerEvents, silentMs)] : []),
+              ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
+            ]
             throw new ProviderError({
               code: pe.code,
-              message: [
-                pe.message,
-                ...(pe.status !== undefined ? [] : [transportReading(providerEvents, silentMs)]),
-                ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
-              ].join('，'),
+              message:
+                facts.length === 1
+                  ? headline
+                  : [headline.replace(/[，。,.;；]+$/u, ''), ...facts.slice(1)].join('，'),
               provider: pe.provider,
               ...(pe.status !== undefined ? { status: pe.status } : {}),
               ...(pe.detail !== undefined ? { detail: pe.detail } : {}),
               ...(pe.retryAfterMs !== null ? { retryAfterMs: pe.retryAfterMs } : {}),
+              ...(pe.timedOut ? { timedOut: true } : {}),
               cause: err,
             })
           }
@@ -1606,8 +1603,26 @@ export class AgentLoop {
           // `pause_turn` 不是「说完了」，是「服务端把这一轮切开了，原样再发一次继续」。
           // 当成结束的表现是：用户拿到一个**半截**回答，而 run 显示成功完成、
           // 既不报错也不续写。本轮 assistant 输出已经在上面进了 transcript，
-          // 直接进下一步就是官方要的那个「原样重发」。maxSteps 兜住反复暂停的情形。
-          if (providerStop === 'pause_turn') continue
+          // 直接进下一轮就是官方要的那个「原样重发」。执行循环没有总回合上限，
+          // 因此反复返回同一段暂停内容必须走现有的空转判据，不能再靠固定步数兜底。
+          if (providerStop === 'pause_turn') {
+            progress.push({
+              cycle: cycleFingerprint(
+                'provider_pause_turn',
+                {},
+                {
+                  status: 'paused',
+                  data: { text: assistantText, reasoning: thinkingText },
+                },
+              ),
+              noProgress: true,
+            })
+            if (repeatsNoProgress(progress)) {
+              stopReason = 'no_progress'
+              break
+            }
+            continue
+          }
 
           /*
            * **provider 声明要调工具，而一条都没解析出来 = 故障，不是完成。**
@@ -1646,7 +1661,7 @@ export class AgentLoop {
            *
            * 本轮正文已在上面进 transcript，直接继续会让模型下一次看到自己刚说过的话。
            * 同一份未完成清单下连续三次只说不做，则复用已有的无进展监督器停下来，
-           * 免得把一次误完成改成 120 次空转。
+           * 免得把一次误完成改成无限空转。
            */
           const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
           if (unfinished.length) {
@@ -1884,7 +1899,7 @@ export class AgentLoop {
         // 原地打转：同样的调用、同样的结果、没有副作用，连着三个周期。
         // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
         // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
-        // provider 直接 400。代价是晚一轮才停，仍然远好过烧满 maxSteps。
+        // provider 直接 400。代价是晚一轮才停，仍然远好过继续空转。
 
         if (repeatsNoProgress(progress)) {
           stopReason = 'no_progress'
@@ -1936,7 +1951,7 @@ export class AgentLoop {
       status:
         stopReason === 'user_interrupt'
           ? 'interrupted'
-          : stopReason === 'completed' || stopReason === 'max_steps'
+          : stopReason === 'completed'
             ? 'done'
             : 'failed',
       stopReason,

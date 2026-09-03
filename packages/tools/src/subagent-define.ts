@@ -27,7 +27,7 @@ export const defineSubagentTool: ToolSpec = {
   name: 'define_subagent',
   description:
     '建一个子 agent（角色）或改一个已有的，写进工作区的 .qy/team.json。' +
-    '角色是可以被 subagent / workflow 派活的对象：它有自己的系统提示词、可选的模型与步数上限。' +
+    '角色是可以被 subagent / workflow 派活的对象：它有自己的系统提示词、可选的模型与工具范围。' +
     '同名 id 直接覆盖。',
   parameters: {
     type: 'object',
@@ -53,7 +53,6 @@ export const defineSubagentTool: ToolSpec = {
         items: { type: 'string' },
         description: '只给它这几样工具。空数组 = 一个都不给（纯分析角色）；不填 = 全给',
       },
-      maxSteps: { type: 'number', description: '单次任务的步数上限，防止它跑飞' },
     },
     required: ['id', 'name', 'description', 'systemPrompt'],
     additionalProperties: false,
@@ -129,9 +128,6 @@ export const defineSubagentTool: ToolSpec = {
       ...(resolvedModel ? { provider: resolvedModel.provider, model: resolvedModel.model } : {}),
       // 空数组与不填是两回事：前者是「一个工具都不给」，后者是「全给」。
       ...(Array.isArray(args.allowedTools) ? { allowedTools: args.allowedTools.map(String) } : {}),
-      ...(typeof args.maxSteps === 'number' && args.maxSteps > 0
-        ? { maxSteps: Math.floor(args.maxSteps) }
-        : {}),
     }
     const at = roles.findIndex((r) => String(r.id ?? '') === id)
     const replaced = at >= 0

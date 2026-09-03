@@ -630,6 +630,8 @@ export interface ToolOutcome {
   executed?: boolean
   message: string
   data?: Record<string, unknown>
+  /** 明确的用户界面展示意图；缺省结果只进入模型上下文与账本。 */
+  presentation?: { images?: 'inline' }
   fileChanges?: FileChange[]
   /** 本次调用落盘的中间资源。必须原样进账本——压缩层要靠它判断正文还在不在。 */
   resources?: IntermediateResourceRef[]
@@ -870,6 +872,7 @@ export class ToolRegistry {
         executed: out.executed ?? true,
         message: out.message,
         ...(out.data ? { data: out.data } : {}),
+        ...(out.presentation ? { presentation: out.presentation } : {}),
         ...(out.fileChanges ? { fileChanges: out.fileChanges } : {}),
         ...(out.resources?.length ? { resources: out.resources } : {}),
         ...(out.errorKind ? { errorKind: out.errorKind } : {}),

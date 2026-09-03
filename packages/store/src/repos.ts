@@ -891,7 +891,8 @@ export function recoverStaleRuns(
         silentMs: null,
         assistantChars: null,
         toolCallCount: null,
-        retry: { decision: 'process_exit', attempt: null, max: 5, backoffMs: null },
+        // 进程已经退出，没有“还能重发几次”这一事实；0 明确表示恢复流程不发请求。
+        retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null },
       }
       store.db
         .query(
@@ -950,7 +951,7 @@ export function recoverStaleRuns(
       silentMs: null,
       assistantChars: null,
       toolCallCount: null,
-      retry: { decision: 'process_exit', attempt: null, max: 5, backoffMs: null },
+      retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null },
     }
     store.db
       .query(
