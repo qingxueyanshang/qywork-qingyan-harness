@@ -267,8 +267,9 @@ export function makeDelegate(ctx: {
     const base = { subagentId: id, name: label, created }
     const settle = (ok: boolean, error?: string) => {
       const durationMs = Date.now() - started
+      // 父会话叫停的那一格是「中断」不是「失败」：它没做错，是没让它做完。
       say({
-        phase: ok ? 'done' : 'failed',
+        phase: ok ? 'done' : input.signal.aborted ? 'interrupted' : 'failed',
         label,
         subagentId: id,
         durationMs,
