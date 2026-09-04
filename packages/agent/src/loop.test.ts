@@ -1071,6 +1071,57 @@ describe('原地打转', () => {
     expect(executed).toBe(3)
   })
 
+  /**
+   * 停之前先让模型知道：第二次相同的轮次之后，下一次请求末尾附一条事实；第三次才停，
+   * 停机依据带上重复的工具名。
+   */
+  test('第二次相同先把事实交给下一次请求，第三次停并说清重复的是什么', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'stuck',
+      description: '永远返回同一个结果。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '空',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      fn: async () => ({ status: 'success' as const, message: '还是这些' }),
+    })
+    const inner = fakeAdapter(Array.from({ length: 10 }, () => [call('stuck')]))
+    const tails: { role: string; content: unknown }[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        tails.push(req.messages[req.messages.length - 1]!)
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    let finished: Extract<AgentEvent, { type: 'run.finished' }> | null = null
+    for await (const ev of loop.run({
+      runId: 'rn_stall_notice' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') finished = ev
+    }
+    expect(tails).toHaveLength(3)
+    // 第一、二次请求末尾是工具结果；第三次请求末尾是那条事实。
+    expect(tails[1]?.role).toBe('tool')
+    expect(tails[2]?.role).toBe('user')
+    expect(String(tails[2]?.content)).toContain('上一轮与这一轮的动作、参数与结果完全相同')
+    expect(finished?.stopReason).toBe('no_progress')
+    expect(finished?.stopDetail).toBe('连续三轮相同的调用与结果：stuck')
+  })
+
   test('连续三轮收到相同 pause_turn 时按真实空转停下', async () => {
     let requests = 0
     const base = fakeAdapter([])
@@ -1626,6 +1677,36 @@ describe('正常响应结束不冒充任务完成', () => {
 
     expect(beforeAcceptance.map((todo) => todo.status)).toEqual(['in_progress', 'pending'])
     expect(events.some((event) => event.type === 'todos')).toBe(false)
+  })
+
+  /** 续起那一次请求的末尾要带着「清单还有几项未完成」这条事实，而不是静默续起。 */
+  test('待办未完成时续起，下一次请求带着未完成的清单', async () => {
+    const inner = fakeAdapter([null, null, null])
+    const tails: { role: string; content: unknown }[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        tails.push(req.messages[req.messages.length - 1]!)
+        yield* inner.stream(req)
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(unfinished) },
+      }),
+    })
+    const finished = await runToEnd(loop, { runId: 'rn_todos_notice' })
+    expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
+      '待办未完成时连续三次只回话不动手',
+    )
+    expect(tails[1]?.role).toBe('user')
+    expect(String(tails[1]?.content)).toContain('待办清单还有 2 项未完成：完成第 7 步；完成第 8 步')
+    expect(String(tails[1]?.content)).toContain('上一条回复不是结束，这一轮继续')
   })
 
   test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {

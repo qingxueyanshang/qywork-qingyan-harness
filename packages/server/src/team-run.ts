@@ -140,7 +140,7 @@ export async function runBuiltinMember(
     /** 子会话的每一条事件，带着它自己的会话 id。见本文件头那段。 */
     onEvent?: (event: AgentEvent, conversationId: ConversationId) => void
   },
-): Promise<{ ok: boolean; output: string; error?: string }> {
+): Promise<{ ok: boolean; output: string; error?: string; stop: StopReason | null }> {
   const { role } = input
   const { deps } = ctx
   const extraSystem = [role.systemPrompt, ctx.shared].filter(Boolean).join('\n\n')
@@ -177,6 +177,7 @@ export async function runBuiltinMember(
   const conversationId = input.conversationId
   let runId: RunId | null = null
   let stop: StopReason | null = null
+  let detail: string | null = null
 
   try {
     // 会话已经存在，接口与模型记在它那一行上；这里不再递模型名。
@@ -193,7 +194,10 @@ export async function runBuiltinMember(
         })
       } else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
-      else if (ev.type === 'run.finished') stop = ev.stopReason
+      else if (ev.type === 'run.finished') {
+        stop = ev.stopReason
+        detail = ev.stopDetail ?? null
+      }
       ctx.onEvent?.(ev, conversationId)
     }
   } catch (err) {
@@ -205,7 +209,7 @@ export async function runBuiltinMember(
   }
 
   const output = text.trim()
-  return { ...memberOutcome({ error, stop, output }), output }
+  return { ...memberOutcome({ error, stop, detail, output }), output, stop }
 }
 
 /**
@@ -219,12 +223,15 @@ export async function runBuiltinMember(
 export function memberOutcome(input: {
   error: string | null
   stop: StopReason | null
+  /** 停机的具体依据（`RunFinishedEvent.stopDetail`），接在文案后交给父会话。 */
+  detail?: string | null
   output: string
 }): { ok: boolean; error?: string } {
   const { error, stop, output } = input
   if (error) return { ok: false, error }
   if (stop !== 'completed') {
-    return { ok: false, error: (stop && CUT_SHORT[stop]) ?? `提前停止（${stop ?? '没有终态'}）` }
+    const text = (stop && CUT_SHORT[stop]) ?? `提前停止（${stop ?? '没有终态'}）`
+    return { ok: false, error: input.detail ? `${text}：${input.detail}` : text }
   }
   if (!output) return { ok: false, error: '该角色没有产出任何内容' }
   return { ok: true }

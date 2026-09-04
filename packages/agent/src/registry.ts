@@ -74,8 +74,13 @@ export interface SubagentSummary {
   name: string
   provider: string
   model: string
-  /** running = 它的会话此刻在跑；failed = 最近一轮没跑完；idle = 空闲。 */
+  /** 按它最后一次出现在卡上的那一格判：working = running，failed / interrupted = failed，其余 idle。 */
   status: 'running' | 'idle' | 'failed'
+  /**
+   * 续派它是不是接着上一轮。角色与临时子 agent 恒为 true；外部 CLI 要它给了会话号、
+   * 而且那家 CLI 支持续接，否则续派等于新开会话，它不记得上一轮。
+   */
+  resumable: boolean
 }
 
 export interface DelegatePort {
@@ -125,6 +130,8 @@ export interface DelegatePort {
     created?: boolean
     /** 从派出到回执的耗时。卡上那一格印的就是这个数。 */
     durationMs?: number
+    /** 这次派发里模型该知道的事实：续接时会话没接上、角色已不在等。原样交回模型。 */
+    note?: string
   }>
   /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。

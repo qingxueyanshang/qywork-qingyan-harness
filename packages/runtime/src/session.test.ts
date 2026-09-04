@@ -64,7 +64,24 @@ const delegate: DelegatePort = {
     clis: [{ id: 'codex', vendor: 'OpenAI', connected: true }],
   }),
   subagents: async () => [
-    { id: 'cv_sub', kind: 'temp', name: '查资料', provider: 'p', model: 'm', status: 'idle' },
+    {
+      id: 'cv_sub',
+      kind: 'temp',
+      name: '查资料',
+      provider: 'p',
+      model: 'm',
+      status: 'idle',
+      resumable: true,
+    },
+    {
+      id: 'cv_cli',
+      kind: 'cli',
+      name: 'OpenAI codex',
+      provider: 'cli',
+      model: 'codex',
+      status: 'idle',
+      resumable: false,
+    },
   ],
   dispatch: async () => ({ ok: true, output: '' }),
   runGraph: async () => ({ ok: true }),
@@ -206,6 +223,9 @@ describe('顶层会话的可分配模型快照', () => {
     expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型 p / m')
     expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，已接入')
     expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型 p / m，空闲')
+    expect(snapshot).toContain(
+      'subagentId `cv_cli`：OpenAI codex，外部 CLI，模型 cli / codex，空闲，不可续接：没有会话号，续派它不记得上一轮',
+    )
     expect(snapshot).not.toContain('sk-never-send-this')
     expect(snapshot).not.toContain('private-relay.example')
     expect(snapshot).not.toContain('also-secret')

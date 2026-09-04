@@ -7,7 +7,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { cycleFingerprint, type ProgressEvidence, repeatsNoProgress } from './progress.ts'
+import {
+  cycleFingerprint,
+  MAX_CYCLE_WIDTH,
+  type ProgressEvidence,
+  repeatsNoProgress,
+} from './progress.ts'
 
 function ev(action: string, result: string, noProgress = true): ProgressEvidence {
   return { cycle: `${action}|${result}`, noProgress }
@@ -72,6 +77,14 @@ describe('指纹', () => {
     expect(of(big).length).toBeLessThan(64)
     expect(of(big)).toBe(of(big))
     expect(of(big)).not.toBe(of(`${big}B`))
+  })
+})
+
+describe('按两次判', () => {
+  test('同样的调用同样的结果连着两次，按 2 判成立、按 3 判不成立', () => {
+    const h = [ev('A', 'r'), ev('A', 'r')]
+    expect(repeatsNoProgress(h, MAX_CYCLE_WIDTH, 2)).toBe(true)
+    expect(repeatsNoProgress(h)).toBe(false)
   })
 })
 

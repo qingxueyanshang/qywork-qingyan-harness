@@ -23,7 +23,6 @@ import { join } from 'node:path'
 import type {
   ConversationHistoryPageResponse,
   ConversationRunsResponse,
-  ConversationSubagentsResponse,
   ConversationUsageResponse,
   MessageId,
 } from '@qywork/core'
@@ -1203,91 +1202,6 @@ describe('会话诊断导出接口', () => {
     expect(runs.runs).toHaveLength(1)
     expect(runs.childRuns.map((row) => row.roleId).sort()).toEqual(['build-glm', 'build-qwen'])
     expect(runs.childRuns.every((row) => row.run.id !== runs.runs[0]?.id)).toBe(true)
-  })
-
-  /** 右栏那一页要列全：子 agent 按账本，工作流从同一份 step 折叠，与图卡同源。 */
-  test('会话的子 agent 与工作流清单从账本列出', async () => {
-    const d = deps()
-    const parent = createConversation(d.store, {
-      workspaceId: d.wsId as never,
-      provider: 'p',
-      model: 'm',
-    })
-    const child = createConversation(d.store, {
-      workspaceId: d.wsId as never,
-      provider: 'p',
-      model: 'glm',
-      title: 'GLM 版',
-      source: 'temp',
-      parentConversationId: parent.id,
-    })
-    const childRun = createRun(d.store, {
-      conversationId: child.id,
-      workspaceId: d.wsId as never,
-      model: 'glm',
-      clientRequestId: 'req_child',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    finishRun(d.store, childRun.id, { status: 'failed', stopReason: 'user_interrupt' })
-    const run = createRun(d.store, {
-      conversationId: parent.id,
-      workspaceId: d.wsId as never,
-      model: 'm',
-      clientRequestId: 'req_parent',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const args = {
-      goal: '两个候选\n第二行不进清单',
-      nodes: [
-        { id: 'build.glm', kind: 'temp', name: 'GLM 版', task: '做' },
-        { id: 'build.qwen', kind: 'temp', name: 'Qwen 版', task: '做' },
-        { id: 'audit', kind: 'checkpoint', label: '验收', needs: ['build.glm', 'build.qwen'] },
-      ],
-    }
-    appendStep(d.store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      status: 'failure',
-      payload: {
-        kind: 'tool_result',
-        args,
-        nodes: {
-          'build.glm': { phase: 'failed', label: 'GLM 版', subagentId: child.id, durationMs: 9 },
-          'build.qwen': { phase: 'interrupted', label: 'Qwen 版' },
-        },
-        outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
-      },
-    })
-
-    const res = (await (
-      await call(`/api/conversations/${parent.id}/subagents`, undefined, d)
-    )?.json()) as ConversationSubagentsResponse
-    expect(res.subagents).toEqual([
-      expect.objectContaining({
-        id: child.id,
-        kind: 'temp',
-        name: 'GLM 版',
-        model: 'glm',
-        status: 'failed',
-      }),
-    ])
-    expect(res.workflows).toEqual([
-      {
-        workflowId: expect.any(String),
-        goal: '两个候选\n第二行不进清单',
-        phase: 'failed',
-        nodes: [
-          { id: 'build.glm', label: 'GLM 版', phase: 'failed', subagentId: child.id },
-          { id: 'build.qwen', label: 'Qwen 版', phase: 'interrupted' },
-        ],
-      },
-    ])
   })
 
   test('不存在的会话回 404，不生成空诊断包', async () => {

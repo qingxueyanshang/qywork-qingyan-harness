@@ -12,7 +12,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from './repos.ts'
-import { listWorkflowRecords, workflowIdsOf } from './workflow.ts'
+import { latestSubagentPhases, listWorkflowRecords, workflowIdsOf } from './workflow.ts'
 
 function fresh() {
   const store = new Store({ path: ':memory:' })
@@ -41,6 +41,35 @@ const START_ARGS = {
     { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
   ],
 }
+
+describe('子 agent 最后一次的格子状态', () => {
+  test('按 step 顺序后者覆盖前者，键是子 agent 的会话 id', () => {
+    const { store, conversation, run } = fresh()
+    const step = (seq: number, toolName: 'workflow' | 'subagent', nodes: Record<string, unknown>) =>
+      appendStep(store, {
+        runId: run.id,
+        seq,
+        kind: 'tool_action',
+        toolName,
+        toolCallId: `c${seq}`,
+        status: 'success',
+        payload: {
+          kind: 'tool_result',
+          args: {},
+          nodes,
+          outcome: { status: 'success', executed: true, message: '' },
+        } as never,
+      })
+    step(1, 'workflow', { a: { phase: 'failed', label: 'a', subagentId: 'cv_a' } })
+    step(2, 'workflow', { a: { phase: 'done', label: 'a', subagentId: 'cv_a' } })
+    step(3, 'subagent', { child: { phase: 'working', label: 'b', subagentId: 'cv_b' } })
+    expect([...latestSubagentPhases(store, conversation.id)]).toEqual([
+      ['cv_a', 'done'],
+      ['cv_b', 'working'],
+    ])
+    store.close()
+  })
+})
 
 describe('workflow 调用记录', () => {
   test('只取 workflow 工具的 step，并按传入的 stepId 排除当前那一步', () => {

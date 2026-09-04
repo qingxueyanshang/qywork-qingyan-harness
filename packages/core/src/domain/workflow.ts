@@ -41,6 +41,8 @@ export interface WorkflowReceipt {
   output: string
   error?: string
   durationMs: number
+  /** 派发时模型该知道的事实（续接没接上、角色已不在等），随回执交回。 */
+  note?: string
 }
 
 export interface WorkflowRevision {

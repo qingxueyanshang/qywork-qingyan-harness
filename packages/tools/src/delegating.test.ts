@@ -264,8 +264,9 @@ describe('派一个子 agent', () => {
       withTodos(ctx(exact.port), todos),
     )
     expect(exactResult.status).toBe('success')
-    expect(exactResult.message).toContain('父待办仍待验收：服务端审计')
-    expect(exactResult.message).toContain('write_todos')
+    // 结果只报事实：父待办仍未完成。怎么完成它写在工具描述里，不在每条结果里重复。
+    expect(exactResult.message).toContain('父待办 服务端审计 仍未完成')
+    expect(exactResult.message).not.toContain('write_todos')
     expect(exact.calls).toHaveLength(1)
   })
 

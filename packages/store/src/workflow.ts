@@ -7,6 +7,7 @@
 
 import {
   type ConversationId,
+  type NodePhase,
   parseWorkflowCall,
   type StepId,
   type WorkflowCallRecord,
@@ -44,6 +45,29 @@ export function listWorkflowRecords(
     }
   }
   return records
+}
+
+/**
+ * 这条会话派出去的每个子 agent 最后一次出现在卡上时的状态，键是子 agent 的会话 id。
+ * 派一件与图上的格子同一份来源（step payload 的 `nodes`），按 step 顺序后者覆盖前者。
+ */
+export function latestSubagentPhases(
+  store: Store,
+  conversationId: ConversationId,
+): Map<string, NodePhase> {
+  const out = new Map<string, NodePhase>()
+  for (const run of listRuns(store, conversationId)) {
+    for (const step of listSteps(store, run.id)) {
+      if (step.kind !== 'tool_action') continue
+      if (step.toolName !== 'workflow' && step.toolName !== 'subagent') continue
+      const payload = step.payload
+      if (payload?.kind !== 'tool_call' && payload?.kind !== 'tool_result') continue
+      for (const state of Object.values(payload.nodes ?? {})) {
+        if (state.subagentId) out.set(state.subagentId, state.phase)
+      }
+    }
+  }
+  return out
 }
 
 /**

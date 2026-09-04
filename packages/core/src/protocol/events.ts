@@ -183,6 +183,8 @@ export interface RunFinishedEvent {
   status: 'done' | 'failed' | 'interrupted'
   /** 永远非空——不存在「静默完成」。 */
   stopReason: StopReason
+  /** 停机的具体依据。`no_progress` 时写重复的是什么；其余终态没有。 */
+  stopDetail?: string
   usage: RunUsage
   /**
    * 本 run 累计的文件变更汇总，供「N 个文件已更改 +x -y」条展示。
