@@ -249,9 +249,6 @@ export function makeDelegate(ctx: {
       return cli ? { label: target.name ?? `${cli.vendor} ${cli.id}` } : null
     }
 
-  /** 每张卡上各格最近一次状态。跑一张图收场时据此把没到终态的格标成中断。 */
-  const latest = new Map<string, Map<string, NodeState>>()
-
   /**
    * 一格的状态变了：先写进那张卡的 step，再广播。派一件与图上的节点同一条路——派一件就是
    * 一张只有一格的图。**先落账再广播**：切走父会话会错过广播，切回来从 step 回放。
@@ -261,15 +258,26 @@ export function makeDelegate(ctx: {
     (at: { runId: string; stepId?: string }, nodeId: string) =>
     (state: NodeState): void => {
       if (!at.stepId) return
-      const card = latest.get(at.stepId) ?? new Map<string, NodeState>()
-      latest.set(at.stepId, card)
-      card.set(nodeId, state)
       setStepNodeState(deps.store, at.stepId as StepId, nodeId, state)
       deps.bus.publish(
         { type: 'team.member', runId: at.runId as RunId, stepId: at.stepId, nodeId, state },
         conversationId,
       )
     }
+
+  /**
+   * 这一轮派出去的子 agent，键是子会话 id。**进程内的句柄，不是账**：格与回执才是事实。
+   * 一格失败先交回父会话后，其余格照跑，下一次调用按子会话 id 在这里汇合它们；
+   * 父会话这一轮结束时还没跑完的在这里被中断。条目随汇合或这一轮结束删除。
+   */
+  interface Inflight {
+    runId: string
+    name: string
+    controller: AbortController
+    settled: boolean
+    promise: Promise<Awaited<ReturnType<DelegatePort['dispatch']>>>
+  }
+  const inflight = new Map<string, Inflight>()
 
   const dispatch: DelegatePort['dispatch'] = async (input) => {
     const resolved = await resolveTarget(input.target, input.model, input.provider)
@@ -285,6 +293,31 @@ export function makeDelegate(ctx: {
       })
       return { ok: false, output: '', error: resolved.error }
     }
+    // 每次派发一个 controller，链到父会话这一轮的信号：父会话停，它停；这一轮结束时
+    // 还没跑完的由 `settleRun` 单独停，不动父会话的信号。
+    const controller = new AbortController()
+    const abortFromRun = () => controller.abort(input.signal.reason)
+    if (input.signal.aborted) abortFromRun()
+    else input.signal.addEventListener('abort', abortFromRun, { once: true })
+    const entry: Inflight = {
+      runId: input.runId,
+      name: resolved.conversation.title,
+      controller,
+      settled: false,
+      promise: perform(resolved, input, controller.signal).finally(() => {
+        entry.settled = true
+        input.signal.removeEventListener('abort', abortFromRun)
+      }),
+    }
+    inflight.set(resolved.conversation.id, entry)
+    return entry.promise
+  }
+
+  const perform = async (
+    resolved: Resolved,
+    input: Parameters<DelegatePort['dispatch']>[0],
+    signal: AbortSignal,
+  ): ReturnType<DelegatePort['dispatch']> => {
     const { conversation, role, cli, created } = resolved
     const notes: string[] = resolved.note ? [resolved.note] : []
     const id = conversation.id
@@ -297,8 +330,8 @@ export function makeDelegate(ctx: {
     const base = { subagentId: id, name: conversation.title, created }
     const settle = (ok: boolean, error?: string, stop?: StopReason | null) => {
       const durationMs = Date.now() - started
-      // 被叫停的那一格是「中断」不是「失败」：父会话停的、在它自己页签里停的都算。
-      const interrupted = input.signal.aborted || stop === 'user_interrupt'
+      // 被叫停的那一格是「中断」不是「失败」：父会话停的、这一轮结束时停的、在它自己页签里停的都算。
+      const interrupted = signal.aborted || stop === 'user_interrupt'
       say({
         phase: ok ? 'done' : interrupted ? 'interrupted' : 'failed',
         label,
@@ -321,7 +354,7 @@ export function makeDelegate(ctx: {
         const r = await runCli(cli, {
           prompt: input.task,
           workspaceRoot,
-          signal: input.signal,
+          signal,
           ...(conversation.externalSession ? { resume: conversation.externalSession } : {}),
           // 外部 CLI 要它自己的 key 才能执行，但 qywork 配置里那几把它一把用不上。
           secrets: collectSecrets(deps.config),
@@ -359,7 +392,7 @@ export function makeDelegate(ctx: {
         {
           role: role ?? tempRole(label),
           prompt: input.task,
-          signal: input.signal,
+          signal,
           conversationId: id,
         },
         {
@@ -378,7 +411,7 @@ export function makeDelegate(ctx: {
     }
   }
 
-  return {
+  const port: DelegatePort = {
     resolveModel(name, provider) {
       return resolveMemberModel(name, deps.config, provider)
     },
@@ -402,6 +435,29 @@ export function makeDelegate(ctx: {
     },
 
     dispatch,
+
+    async join({ subagentId }) {
+      const entry = inflight.get(subagentId)
+      if (!entry) return { ok: false, output: '' }
+      inflight.delete(subagentId)
+      return entry.promise
+    },
+
+    settleRun(runId) {
+      for (const [id, entry] of inflight) {
+        if (entry.runId !== runId) continue
+        inflight.delete(id)
+        if (!entry.settled) {
+          entry.controller.abort({ source: 'parent_finished', observedAt: Date.now() })
+        }
+      }
+    },
+
+    inflight(runId) {
+      return [...inflight.values()]
+        .filter((entry) => entry.runId === runId && !entry.settled)
+        .map((entry) => ({ name: entry.name }))
+    },
 
     /**
      * 跑一整张图。依赖就绪才启动、并发闸都在编排器那边，
@@ -429,7 +485,7 @@ export function makeDelegate(ctx: {
         const projection = folded.projection
         // 这几道闸只拦 approve。revise 对任意检查点都成立，包括已批准的与被打断的：
         // 「批准 = 解散」正是返工只能另起一个子 agent 的根因，被打断的图也靠 revise 续跑原子 agent。
-        if (input.call.decision === 'approve') {
+        if (input.call.kind === 'review' && input.call.decision === 'approve') {
           if (projection.phase === 'failed') {
             return { ok: false, error: `工作流 ${workflowId} 已失败，请重新派发` }
           }
@@ -451,24 +507,20 @@ export function makeDelegate(ctx: {
         maxConcurrent = projection.maxConcurrent
         state = {
           results: projection.results,
+          states: projection.states,
           approvals: projection.approvals,
           ...(projection.checkpointId ? { checkpointId: projection.checkpointId } : {}),
-          review: {
-            checkpointId: input.call.checkpointId,
-            decision: input.call.decision,
-            note: input.call.note,
-            revisions: input.call.revisions,
-          },
+          ...(input.call.kind === 'review'
+            ? {
+                review: {
+                  checkpointId: input.call.checkpointId,
+                  decision: input.call.decision,
+                  note: input.call.note,
+                  revisions: input.call.revisions,
+                },
+              }
+            : {}),
         }
-      }
-      // 图没跑完就收场（中断、图不合法）：还没到终态的格标成中断，不留一格永远「进行中」。
-      const interruptUnfinished = () => {
-        for (const [nodeId, state] of latest.get(input.stepId) ?? []) {
-          if (state.phase === 'waiting' || state.phase === 'queued' || state.phase === 'working') {
-            note(input, nodeId)({ ...state, phase: 'interrupted', error: '调用中断' })
-          }
-        }
-        latest.delete(input.stepId)
       }
       const orchestrator = new TeamOrchestrator(
         nodes,
@@ -488,6 +540,7 @@ export function makeDelegate(ctx: {
               nodeId: member.nodeId,
               signal: member.signal,
             }),
+          join: (member) => port.join(member),
         },
         {
           roles: new Set(roles.map((r) => r.id)),
@@ -497,14 +550,13 @@ export function makeDelegate(ctx: {
       )
       try {
         const result = await orchestrator.run(goal, state)
-        if (result.phase === 'failed') interruptUnfinished()
-        else latest.delete(input.stepId)
         const transition: WorkflowTransition = {
           workflowId,
           phase: result.phase,
           receipts: result.receipts,
           ...(result.checkpointId ? { checkpointId: result.checkpointId } : {}),
           ...(result.review ? { review: result.review } : {}),
+          ...(result.running ? { running: result.running } : {}),
         }
         return {
           ok:
@@ -515,9 +567,9 @@ export function makeDelegate(ctx: {
       } catch (err) {
         // 图本身不合法（成环、悬空依赖、引用不到目标）在这里落地：
         // 它是模型写错了参数，要原样告诉它，不能压成一句「工具执行出错」。
-        interruptUnfinished()
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   }
+  return port
 }

@@ -1082,18 +1082,22 @@ function pidAlive(pid: number): boolean {
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
   // 派活卡上没跑完的格先标成中断，再给 step 补终态：那几格的子 agent 不会再有回执。
+  // 卡不限于还在 running 的：一格失败先交回后卡已返回，其余格照跑，这一轮结束时它们还在卡上。
   const cards = store.db
     .query<{ id: string; payload: string }, [string]>(
       `SELECT id, payload FROM steps
-       WHERE run_id = ? AND status = 'running' AND json_type(payload, '$.nodes') = 'object'`,
+       WHERE run_id = ? AND json_type(payload, '$.nodes') = 'object'`,
     )
     .all(runId)
   for (const card of cards) {
     const payload = JSON.parse(card.payload) as { nodes: Record<string, NodeState> }
+    let changed = false
     for (const [nodeId, state] of Object.entries(payload.nodes)) {
       if (SETTLED_PHASES.has(state.phase)) continue
       payload.nodes[nodeId] = { ...state, phase: 'interrupted', error: '调用中断' }
+      changed = true
     }
+    if (!changed) continue
     store.db
       .query('UPDATE steps SET payload = ? WHERE id = ?')
       .run(JSON.stringify(payload), card.id)
@@ -1476,6 +1480,10 @@ const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipp
  * 节点 id 由模型给，可能含点号或方括号，所以走 `json_object` 构键再 `json_patch` 合并，
  * 不要改成把 id 拼进 JSON 路径字符串——那样的 id 会被当成路径分隔符解释掉。
  */
+/**
+ * 写一格的状态。不限卡的状态：一格失败先交回父会话后卡已返回，其余格照跑，
+ * 它们的终态还是写在派出它们的这张卡上。
+ */
 export function setStepNodeState(store: Store, id: StepId, nodeId: string, state: NodeState): void {
   store.db
     .query(
@@ -1488,7 +1496,7 @@ export function setStepNodeState(store: Store, id: StepId, nodeId: string, state
                json_object(?, json(?))
              )
            )
-       WHERE id = ? AND kind = 'tool_action' AND status = 'running'`,
+       WHERE id = ? AND kind = 'tool_action'`,
     )
     .run(nodeId, JSON.stringify(state), id)
 }

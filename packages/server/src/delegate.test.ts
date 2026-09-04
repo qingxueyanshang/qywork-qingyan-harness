@@ -69,16 +69,16 @@ function textTurn(text: string): string {
   ])
 }
 
-/** 这次请求怎么答。用完就 401——那一档当场终结，不会让子会话自己接着转。 */
-let script: (() => Response)[] = []
+/** 这次请求怎么答。用完就 401——那一档当场终结，不会让子会话自己接着转。正文交给条目，按任务分流用。 */
+let script: ((body: string) => Response)[] = []
 
 const provider = Bun.serve({
   port: 0,
   async fetch(req) {
-    await req.text()
+    const body = await req.text()
     const next = script.shift()
     if (!next) return new Response('脚本已用完', { status: 401 })
-    return next()
+    return next(body)
   },
 })
 
@@ -1120,5 +1120,151 @@ describe('workflow 从父会话账本续接', () => {
         .every((event) => event.stepId === secondBatch.step.id),
     ).toBe(true)
     expect(listSteps(store, run.id).filter((step) => step.toolName === 'workflow')).toHaveLength(4)
+  })
+})
+
+describe('一格失败先交回，其余格照跑', () => {
+  /** 请求正文里带着任务原文，按它分流：快的当场 401，慢的等放行。 */
+  const gated = () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const slow = () =>
+      new Response(
+        new ReadableStream({
+          async start(controller) {
+            await gate
+            controller.enqueue(new TextEncoder().encode(textTurn('慢的做完了')))
+            controller.close()
+          },
+        }),
+        { headers: SSE_HEADERS },
+      )
+    const route = (body: string) =>
+      body.includes('做快的') ? new Response('拒绝', { status: 401 }) : slow()
+    return { release: () => release(), route }
+  }
+  const until = async (ready: () => boolean) => {
+    for (let i = 0; i < 500; i++) {
+      if (ready()) return
+      await Bun.sleep(10)
+    }
+    throw new Error('等不到')
+  }
+  const parentRun = (parent: ConversationId, key: string) =>
+    createRun(store, {
+      conversationId: parent,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: key,
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+
+  test('失败的先交回，慢的在已返回的卡上落终态，只带 workflowId 汇合它', async () => {
+    const parent = conversation()
+    const run = parentRun(parent, 'early-return')
+    const nodes = [
+      { id: 'fast', kind: 'temp', name: 'fast', task: '做快的' },
+      { id: 'slow', kind: 'temp', name: 'slow', task: '做慢的' },
+      { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['fast', 'slow'] },
+    ]
+    const args = { goal: '快慢各一', nodes }
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_early',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    const { release, route } = gated()
+    script = [route, route]
+    const port = delegate(parent)
+
+    const first = await port.runGraph({
+      call: parsedStart(args),
+      runId: run.id,
+      stepId: step.id,
+      signal: new AbortController().signal,
+    })
+    expect(first.ok).toBe(false)
+    expect(first.transition).toMatchObject({
+      phase: 'waiting_review',
+      checkpointId: 'cp',
+      running: ['slow'],
+    })
+    expect(first.transition?.receipts.map((r) => [r.nodeId, r.status])).toEqual([
+      ['fast', 'failed'],
+    ])
+    expect(port.inflight(run.id)).toEqual([{ name: 'slow' }])
+
+    // 外层工具循环把这次调用收成终态；慢的那格还在跑，终态仍写回这张卡。
+    settleToolStep(store, step.id, 'failure', {
+      kind: 'tool_result',
+      args,
+      outcome: {
+        status: 'failure',
+        executed: true,
+        message: '先交回',
+        data: first.transition as never,
+      },
+    })
+    release()
+    await until(() => members().some((m) => m.nodeId === 'slow' && m.state.phase === 'done'))
+    const card = listSteps(store, run.id).find((s) => s.id === step.id)
+    expect(card?.status).toBe('failure')
+    const cells = (card?.payload as { nodes?: Record<string, { phase: string }> }).nodes
+    expect(cells?.slow?.phase).toBe('done')
+    expect(cells?.fast?.phase).toBe('failed')
+
+    const waitStep = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_wait',
+      status: 'running',
+      payload: { kind: 'tool_call', args: { workflowId: step.id } },
+    })
+    const second = await port.runGraph({
+      call: { kind: 'wait', workflowId: step.id },
+      runId: run.id,
+      stepId: waitStep.id,
+      signal: new AbortController().signal,
+    })
+    expect(second.ok).toBe(true)
+    expect(second.transition).toMatchObject({ phase: 'waiting_review', checkpointId: 'cp' })
+    expect(second.transition?.running).toBeUndefined()
+    expect(second.transition?.receipts.map((r) => [r.nodeId, r.status, r.output])).toEqual([
+      ['slow', 'done', '慢的做完了'],
+    ])
+    expect(port.inflight(run.id)).toEqual([])
+  })
+
+  test('这一轮结束时还在跑的子 agent 被中断，可续接', async () => {
+    const cid = conversation()
+    script = [() => new Response(new ReadableStream({ start() {} }), { headers: SSE_HEADERS })]
+    const port = delegate(cid)
+    const pending = port.dispatch({
+      target: { kind: 'temp', name: '慢' },
+      task: '一直做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+    await until(() => members().some((m) => m.state.phase === 'working'))
+    expect(port.inflight(at.runId)).toEqual([{ name: '慢' }])
+
+    port.settleRun(at.runId)
+    const res = await pending
+    expect(res.ok).toBe(false)
+    expect(members().at(-1)?.state.phase).toBe('interrupted')
+    expect(port.inflight(at.runId)).toEqual([])
+    const child = listRuns(store, res.subagentId as never)[0]
+    expect(child?.status).toBe('interrupted')
+    expect(child?.interruption?.source).toBe('parent_finished')
   })
 })

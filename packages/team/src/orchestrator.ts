@@ -2,7 +2,10 @@
  * 确定性的 workflow 调度器：并行只发生在同一批就绪节点之间；checkpoint
  * 一旦就绪就把回执交回父会话，不在后台替父会话作审批决定。
  *
- * 节点派给谁、怎么建、怎么续，全在实现方的 `dispatch`：编排器只管依赖、并发与回执，
+ * 一格失败而同批还有格在跑时也交回：失败的回执先到，其余格照跑，由下一次调用汇合。
+ * 不这样的话父会话要等整批跑完才知道有一格早就失败了。
+ *
+ * 节点派给谁、怎么建、怎么续，全在实现方的 `dispatch` / `join`：编排器只管依赖、并发与回执，
  * 不区分内置子 agent 与外部 CLI。
  */
 import {
@@ -37,16 +40,24 @@ export interface OrchestratorDeps {
     signal: AbortSignal
     provider?: string
     model?: string
-  }): Promise<{
-    ok: boolean
-    output: string
-    error?: string
-    subagentId?: string
-    /** 派发方量的耗时，回执与卡上那一格都用它。 */
-    durationMs?: number
-    /** 派发时模型该知道的事实，原样进回执。 */
-    note?: string
-  }>
+  }): Promise<DispatchResult>
+  /**
+   * 汇合上一次调用派出、这次调用开始时还没有回执的子 agent：等它的回执，不重派。
+   * 进程内找不到它（这一轮之前派的、进程重启过）时返回 `ok: false` 且不带 error，
+   * 原因由编排器按格上的事实补。
+   */
+  join(input: { nodeId: string; subagentId: string }): Promise<DispatchResult>
+}
+
+export interface DispatchResult {
+  ok: boolean
+  output: string
+  error?: string
+  subagentId?: string
+  /** 派发方量的耗时，回执与卡上那一格都用它。 */
+  durationMs?: number
+  /** 派发时模型该知道的事实，原样进回执。 */
+  note?: string
 }
 
 /** 加载期校验引用用的已知集合：角色 id、CLI id、本会话已有子 agent id。 */
@@ -65,6 +76,8 @@ export interface OrchestratorReview {
 
 export interface OrchestratorState {
   results?: Record<string, NodeResult>
+  /** 每一格最近一次状态。没有回执却已派出子 agent 的格由它认出来，这次汇合而不是重派。 */
+  states?: Record<string, NodeState>
   approvals?: Record<string, string>
   checkpointId?: string
   review?: OrchestratorReview
@@ -76,6 +89,8 @@ export interface OrchestratorRunResult {
   phase: 'waiting_review' | 'completed' | 'failed'
   checkpointId?: string
   review?: WorkflowAppliedReview
+  /** 返回时还在跑的节点。只在一格失败先交回时有。 */
+  running?: string[]
 }
 
 const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
@@ -93,6 +108,17 @@ export class TeamOrchestrator {
     validatePlan(plan, this.known)
 
     const results = new Map<string, NodeResult>(Object.entries(state.results ?? {}))
+    const states = state.states ?? {}
+    /** 拿到过回执的节点。按进来时的回执判，revise 删掉回执的节点不算没回执。 */
+    const receipted = new Set(results.keys())
+    /** 上一次调用派出、还没有回执的格。这次汇合它，不重派。 */
+    const inflightOf = (id: string): NodeState | undefined => {
+      const cell = states[id]
+      if (!cell?.subagentId || receipted.has(id)) return undefined
+      return cell.phase === 'working' || cell.phase === 'done' || cell.phase === 'failed'
+        ? cell
+        : undefined
+    }
     const approvals = new Map<string, string>(Object.entries(state.approvals ?? {}))
     const receipts: NodeResult[] = []
     const priorForResume = new Map<string, NodeResult>()
@@ -121,8 +147,15 @@ export class TeamOrchestrator {
         }
         if (approvals.has(checkpoint.id))
           throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
-        if (!checkpoint.needs.every((id) => this.dependencyResolved(id, results, approvals))) {
-          throw new Error(`检查点 ${checkpoint.id} 的上游回执尚未齐全`)
+        const missing = checkpoint.needs.filter(
+          (id) => !this.dependencyResolved(id, results, approvals),
+        )
+        if (missing.length) {
+          const live = missing.filter((id) => inflightOf(id))
+          throw new Error(
+            `检查点 ${checkpoint.id} 的上游回执尚未齐全：${missing.join('、')}` +
+              (live.length ? `（${live.join('、')} 还在跑）` : ''),
+          )
         }
       }
 
@@ -154,7 +187,13 @@ export class TeamOrchestrator {
         if (!closure.ok) throw new Error(closure.error)
         for (const revision of review.revisions) {
           const prior = results.get(revision.nodeId)
-          if (!prior) throw new Error(`节点 ${revision.nodeId} 没有可续接的上一轮回执`)
+          if (!prior) {
+            throw new Error(
+              inflightOf(revision.nodeId)
+                ? `节点 ${revision.nodeId} 还在跑，等它的回执再修订`
+                : `节点 ${revision.nodeId} 没有可续接的上一轮回执`,
+            )
+          }
           correction.set(revision.nodeId, revision.instruction)
         }
         for (const id of closure.revokedCheckpointIds) approvals.delete(id)
@@ -162,6 +201,7 @@ export class TeamOrchestrator {
         // 被修订节点和它在本批次内的下游都失效。先保留子 agent 句柄，再删投影结果；
         // 这样是向原子 agent 续发，不是另起一个看似相同的新任务。
         for (const id of closure.nodeIds) {
+          if (inflightOf(id)) throw new Error(`节点 ${id} 还在跑，等它的回执再修订它的上游`)
           const prior = results.get(id)
           if (prior) priorForResume.set(id, prior)
           results.delete(id)
@@ -176,8 +216,9 @@ export class TeamOrchestrator {
     }
 
     // 图一开跑就把还没结果的格标成等待：刷新之后也看得见全貌，不只看见跑过的那几格。
+    // 还在跑的格不动：它的状态由派出它的那张卡写。
     for (const node of plan) {
-      if (isAgent(node) && !results.has(node.id)) {
+      if (isAgent(node) && !results.has(node.id) && !inflightOf(node.id)) {
         this.deps.node(node.id, { phase: 'waiting', label: this.labelOf(node) })
       }
     }
@@ -185,9 +226,23 @@ export class TeamOrchestrator {
     const maxConcurrent = this.deps.maxConcurrent
     const running = new Map<string, Promise<void>>()
     const announcedQueued = new Set<string>()
+    let failedLanded = false
+    /** 图没跑完就收场：还没派出的格标成中断。已派出的由派发方在自己的收尾里落终态。 */
+    const abandon = () => {
+      for (const node of plan) {
+        if (isAgent(node) && !results.has(node.id) && !running.has(node.id)) {
+          this.deps.node(node.id, {
+            phase: 'interrupted',
+            label: this.labelOf(node),
+            error: '调用中断',
+          })
+        }
+      }
+    }
 
     while (true) {
       if (this.deps.signal.aborted && running.size === 0) {
+        abandon()
         return this.finish('failed', receipts, appliedReview)
       }
 
@@ -214,20 +269,13 @@ export class TeamOrchestrator {
           (node.needs ?? []).every((id) => this.dependencyResolved(id, results, approvals)),
       )
 
+      // 一格失败、同批还有格在跑：这一趟只把被它拖累的下游标成跳过，不再起新的，然后交回父会话。
+      // 被中断时不交回，等在跑的格都落终态后走开头那条 failed。
+      const handBack = failedLanded && running.size > 0 && !this.deps.signal.aborted
       // 跳过不经过 await，本轮没有任何 Promise 可等。不重新入循环的话，跳过的节点
       // 下游那个检查点这一轮不会被重新判定就绪，会被当成「依赖无法继续」抛出去。
       let skippedThisPass = false
       for (const node of ready) {
-        if (running.size >= maxConcurrent) {
-          // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
-          // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
-          if (!announcedQueued.has(node.id)) {
-            announcedQueued.add(node.id)
-            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node) })
-          }
-          continue
-        }
-        announcedQueued.delete(node.id)
         const upstreamFailed = (node.needs ?? []).some((id) => {
           const result = results.get(id)
           return result ? result.status !== 'done' : false
@@ -251,6 +299,17 @@ export class TeamOrchestrator {
           skippedThisPass = true
           continue
         }
+        if (handBack) continue
+        if (running.size >= maxConcurrent) {
+          // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
+          // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
+          if (!announcedQueued.has(node.id)) {
+            announcedQueued.add(node.id)
+            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node) })
+          }
+          continue
+        }
+        announcedQueued.delete(node.id)
 
         running.set(
           node.id,
@@ -261,14 +320,25 @@ export class TeamOrchestrator {
             approvals,
             priorForResume.get(node.id),
             correction.get(node.id),
+            inflightOf(node.id),
           ).then((result) => {
             results.set(node.id, result)
             receipts.push(result)
             running.delete(node.id)
+            if (result.status === 'failed') failedLanded = true
           }),
         )
       }
 
+      if (handBack) {
+        return this.finish(
+          'waiting_review',
+          receipts,
+          appliedReview,
+          this.nextCheckpoint(plan, approvals),
+          [...running.keys()],
+        )
+      }
       if (running.size > 0) {
         await Promise.race(running.values())
         continue
@@ -287,6 +357,7 @@ export class TeamOrchestrator {
       if (unresolvedAgents.length === 0 && unresolvedCheckpoints.length === 0) {
         return this.finish('completed', receipts, appliedReview)
       }
+      abandon()
       throw new Error(
         `依赖无法继续：${[...unresolvedAgents, ...unresolvedCheckpoints].map((node) => node.id).join('、')}`,
       )
@@ -298,13 +369,27 @@ export class TeamOrchestrator {
     receipts: NodeResult[],
     review?: WorkflowAppliedReview,
     checkpointId?: string,
+    running?: string[],
   ): OrchestratorRunResult {
     return {
       receipts,
       phase,
       ...(checkpointId ? { checkpointId } : {}),
       ...(review ? { review } : {}),
+      ...(running?.length ? { running } : {}),
     }
+  }
+
+  /** 链上最近的未批准检查点。`validatePlan` 保证检查点单链且每个节点后面都有检查点。 */
+  private nextCheckpoint(plan: PlanNode[], approvals: Map<string, string>): string {
+    const pending = plan.filter(
+      (node): node is WorkflowCheckpointNode => isCheckpoint(node) && !approvals.has(node.id),
+    )
+    const first = pending.find(
+      (checkpoint) =>
+        !pending.some((other) => other !== checkpoint && ancestorOf(plan, other.id, checkpoint.id)),
+    )
+    return first!.id
   }
 
   private dependencyResolved(
@@ -326,6 +411,7 @@ export class TeamOrchestrator {
     approvals: Map<string, string>,
     prior?: NodeResult,
     correction?: string,
+    live?: NodeState,
   ): Promise<NodeResult> {
     const started = Date.now()
     const described = this.deps.describe(node.target)
@@ -333,6 +419,30 @@ export class TeamOrchestrator {
       return this.failed(node, targetLabel(node.target), started, '找不到派发目标')
     }
     const label = described.label
+
+    // 上一次调用派出、还没有回执的：等它，不重派。进程内找不到它时回执按格上的事实补原因。
+    if (live?.subagentId) {
+      try {
+        const res = await this.deps.join({ nodeId: node.id, subagentId: live.subagentId })
+        const error =
+          res.error ?? (res.ok ? undefined : (live.error ?? '回执没有送达：它不在这一轮里'))
+        return this.receipt(
+          node,
+          label,
+          { ...res, ...(error ? { error } : {}) },
+          live.subagentId,
+          started,
+        )
+      } catch (error) {
+        return this.failed(
+          node,
+          label,
+          started,
+          error instanceof Error ? error.message : String(error),
+          live.subagentId,
+        )
+      }
+    }
 
     // 上一轮跑过就续接同一个子 agent；没留下 id 的回执续不了，只能原样报出来。
     let target: SubagentTarget = node.target
@@ -377,18 +487,7 @@ export class TeamOrchestrator {
         ...(!continuing && node.provider ? { provider: node.provider } : {}),
         ...(!continuing && node.model ? { model: node.model } : {}),
       })
-      const subagentId = res.subagentId ?? prior?.subagentId
-      return {
-        nodeId: node.id,
-        ...(subagentId ? { subagentId } : {}),
-        label,
-        status: res.ok ? 'done' : 'failed',
-        output: res.output,
-        ...(res.error ? { error: res.error } : {}),
-        // 耗时以派发方量的为准：卡上那一格印的就是它，回执不另量一次。
-        durationMs: res.durationMs ?? Date.now() - started,
-        ...(res.note ? { note: res.note } : {}),
-      }
+      return this.receipt(node, label, res, prior?.subagentId, started)
     } catch (error) {
       return this.failed(
         node,
@@ -397,6 +496,27 @@ export class TeamOrchestrator {
         error instanceof Error ? error.message : String(error),
         prior?.subagentId,
       )
+    }
+  }
+
+  private receipt(
+    node: WorkflowAgentNode,
+    label: string,
+    res: DispatchResult,
+    fallbackSubagentId: string | undefined,
+    started: number,
+  ): NodeResult {
+    const subagentId = res.subagentId ?? fallbackSubagentId
+    return {
+      nodeId: node.id,
+      ...(subagentId ? { subagentId } : {}),
+      label,
+      status: res.ok ? 'done' : 'failed',
+      output: res.output,
+      ...(res.error ? { error: res.error } : {}),
+      // 耗时以派发方量的为准：卡上那一格印的就是它，回执不另量一次。
+      durationMs: res.durationMs ?? Date.now() - started,
+      ...(res.note ? { note: res.note } : {}),
     }
   }
 

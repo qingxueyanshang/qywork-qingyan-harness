@@ -972,3 +972,83 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     dispose()
   })
 })
+
+describe('检查点那一格', () => {
+  const wireNodes = [
+    { id: 'a', kind: 'temp', name: 'A', task: '做 A' },
+    { id: 'b', kind: 'temp', name: 'B', task: '做 B' },
+    { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b'] },
+  ]
+  /** 一张按真实回执折叠的卡：到了终态的格有回执，还在跑的格只在 running 里。 */
+  const item = (
+    states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
+  ) => {
+    const settled = Object.entries(states).filter(([, s]) => s.phase !== 'working')
+    return {
+      id: 'wf-cp',
+      kind: 'tool',
+      text: '',
+      toolName: 'workflow',
+      action: { kind: 'run', objectLabel: '工作流', target: '并行' },
+      args: { goal: '并行', nodes: wireNodes },
+      status: 'failure',
+      nodes: states,
+      outcome: {
+        status: 'failure',
+        executed: true,
+        message: '先交回',
+        data: {
+          workflowId: 'wf-cp',
+          phase: 'waiting_review',
+          checkpointId: 'cp',
+          receipts: settled.map(([nodeId, s]) => ({
+            nodeId,
+            label: s.label,
+            status: s.phase,
+            output: '',
+            durationMs: 3,
+          })),
+          running: Object.keys(states).filter((id) => states[id]?.phase === 'working'),
+        },
+      },
+    }
+  }
+  const mount = async (
+    states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
+  ) => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => <TranscriptRows items={[item(states)] as never} />,
+      host as unknown as HTMLElement,
+    )
+    return { host, dispose }
+  }
+
+  /** 一格失败先交回后其余格还在跑，检查点在等它们，不是在等父会话审查。 */
+  test('上游还有格在跑时不算待审查', async () => {
+    const { host, dispose } = await mount({
+      a: { phase: 'failed', label: 'A', error: '连不上' },
+      b: { phase: 'working', label: 'B' },
+    })
+    try {
+      expect(host.querySelector('.wf-node.session.working')).not.toBeNull()
+      expect(host.querySelector('.wf-node.session.waiting_review')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
+  test('上游都落了终态才待审查', async () => {
+    const { host, dispose } = await mount({
+      a: { phase: 'failed', label: 'A', error: '连不上' },
+      b: { phase: 'done', label: 'B', durationMs: 5 },
+    })
+    try {
+      expect(host.querySelector('.wf-node.session.waiting_review')).not.toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+})

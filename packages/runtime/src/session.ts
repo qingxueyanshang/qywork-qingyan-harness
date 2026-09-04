@@ -643,6 +643,8 @@ export class Session {
           interruption,
         })
       }
+      // 这一轮派出去、还在跑的子 agent 先停：它们的生命期不超过这一轮。
+      this.opts.delegate?.settleRun(run.id)
       // **step 也要落终态，不只是 run。**
       //
       // 只收 run 是不够的：`tool.started` 的 yield 处被 `.return()` 掐断时，
@@ -1173,6 +1175,7 @@ function interruptionFrom(
     'user',
     'server_shutdown',
     'consumer_closed',
+    'parent_finished',
   ])
   const source =
     typeof reason?.source === 'string' && allowed.has(reason.source as InterruptionSource)
@@ -1194,6 +1197,7 @@ function interruptionMessage(interruption: RunInterruption | null): string | nul
   if (!interruption || interruption.source === 'user') return null
   if (interruption.source === 'server_shutdown') return '服务正常关闭，本轮随之中断'
   if (interruption.source === 'consumer_closed') return '执行流被调用方提前关闭，本轮中断'
+  if (interruption.source === 'parent_finished') return '父会话这一轮已结束，本轮随之中断'
   return null
 }
 

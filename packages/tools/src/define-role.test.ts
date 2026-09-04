@@ -48,6 +48,9 @@ function withModels(root: string, models: { provider: string; model: string }[])
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
       runGraph: async () => ({ ok: true }),
     },
   }

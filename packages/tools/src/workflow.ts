@@ -13,7 +13,10 @@ export const workflowTool: ToolSpec = {
     '把两个及以上子 agent 的任务按 DAG 一次交出去。子 agent 节点按 needs 并行或串行执行，' +
     'checkpoint 节点把上一批回执交回当前会话。到 checkpoint 只代表本次调度返回；之后用同一 workflowId ' +
     '对该 checkpoint approve（进下一批）或 revise（让点名的节点在它原来的子会话里继续，只发修订指令与最新上游产出），' +
-    '批准之后仍可 revise。每个子 agent 节点后面都要有 checkpoint，没有的图在加载期被拒。' +
+    '批准之后仍可 revise。一格失败而同批还有格在跑时也会返回，失败的回执先到，其余格照跑；' +
+    '只带 workflowId 再调一次就是等它们，到下一个事件返回。' +
+    '三种调用各带的参数：首派只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions；等只带 workflowId。' +
+    '每个子 agent 节点后面都要有 checkpoint，没有的图在加载期被拒。' +
     '节点按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；指向本会话已有子 agent 的节点填 subagent。',
   parameters: {
     type: 'object',
@@ -151,6 +154,16 @@ function transitionMessage(transition: WorkflowTransition): string {
     ? ` 本次批准接受了未完成的节点：${accepted.map((item) => `${item.nodeId}（${item.reason}）`).join('、')}。`
     : ''
   if (transition.phase === 'waiting_review') {
+    const running = transition.running ?? []
+    if (running.length) {
+      // 一格失败先交回：父会话此刻能做的只有重派它或等其余的，两条路各说一次。
+      return (
+        `有节点失败，先交回 ${count} 个回执；还在跑：${running.join('、')}。` +
+        ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +
+        '要在跑的回执：只带 workflowId 再调一次。重派失败的：对该 checkpoint revise 点名它，同一次调用也会等在跑的。' +
+        `这一轮结束时在跑的会被中断。${noteLine}`
+      )
+    }
     return (
       `本次调度已返回 ${count} 个回执；整个 workflow 尚未完成。` +
       ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +

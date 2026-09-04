@@ -84,6 +84,9 @@ const delegate: DelegatePort = {
     },
   ],
   dispatch: async () => ({ ok: true, output: '' }),
+  join: async () => ({ ok: true, output: '' }),
+  settleRun: () => {},
+  inflight: () => [],
   runGraph: async () => ({ ok: true }),
 }
 

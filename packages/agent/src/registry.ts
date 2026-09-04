@@ -134,6 +134,25 @@ export interface DelegatePort {
     note?: string
   }>
   /**
+   * 汇合这一轮里派出、上一次调用返回时还在跑的子 agent：等它的回执，不重派。
+   * 进程内没有它（这一轮之前派的、进程重启过）时回 `ok: false` 且不带 error，原因由调用方按格上的事实补。
+   */
+  join(input: { nodeId: string; subagentId: string }): Promise<{
+    ok: boolean
+    output: string
+    error?: string
+    subagentId?: string
+    durationMs?: number
+    note?: string
+  }>
+  /**
+   * 这一轮结束：还没跑完的子 agent 一律中断。子 agent 的生命期不超过派它的那一轮，
+   * 否则它跑在一个没人收回执的地方。
+   */
+  settleRun(runId: string): void
+  /** 这一轮里还在跑的子 agent。循环在 end_turn 时读它，有就把这条事实交给下一次请求。 */
+  inflight(runId: string): { name: string }[]
+  /**
    * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
    *
    * **调度不在这里，在实现方**：依赖就绪才启动、并发上限都由那边的编排器

@@ -1176,12 +1176,18 @@ function DelegateCard(props: { item: TranscriptItem }) {
       if (!checkpoint || checkpoint.kind !== 'checkpoint') return null
       const approved = props.item.workflow?.approvals[n.key]
       const current = props.item.workflow?.checkpointId === n.key
+      // 上游还有格没到终态就不算待审查：一格失败先交回后其余格照跑，检查点还在等它们。
+      const states = props.item.workflow?.states ?? {}
+      const upstreamRunning = checkpoint.needs.some((id) => {
+        const phase = states[id]?.phase
+        return phase === 'working' || phase === 'queued' || phase === 'waiting'
+      })
       return {
         phase: approved
           ? 'done'
-          : current && props.item.workflow?.phase === 'waiting_review'
+          : current && props.item.workflow?.phase === 'waiting_review' && !upstreamRunning
             ? 'waiting_review'
-            : current && props.item.workflow?.phase === 'running'
+            : current && (props.item.workflow?.phase === 'running' || upstreamRunning)
               ? 'working'
               : 'waiting',
         label: checkpoint.label,

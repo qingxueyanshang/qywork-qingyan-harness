@@ -28,6 +28,7 @@ import {
   setConversationTitle,
   setStepNodeState,
   settleProviderRequest,
+  settleRunningSteps,
   settleToolStep,
   upsertWorkspace,
   workspaceOf,
@@ -777,6 +778,64 @@ describe('按模型的请求收尾率', () => {
       payloadHash: 'h',
     })
     expect(providerFinishRates(store, Date.now() + 60_000)).toHaveLength(0)
+    store.close()
+  })
+})
+
+describe('卡返回后格仍可落终态', () => {
+  /** 一张已经收成终态的派活卡。一格失败先交回后，其余格的终态还写在它上面。 */
+  function returnedCard() {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'returned-card',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'c1',
+      providerBatchId: 'bt1',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    setStepNodeState(store, step.id, 'fast', { phase: 'failed', label: '快', error: '连不上' })
+    setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
+    settleToolStep(store, step.id, 'failure', {
+      kind: 'tool_result',
+      args: {},
+      outcome: { status: 'failure', executed: true, message: '先交回' },
+    })
+    const nodes = () =>
+      (
+        listSteps(store, run.id)[0]?.payload as {
+          nodes?: Record<string, { phase: string; error?: string }>
+        }
+      ).nodes
+    return { store, run, step, nodes }
+  }
+
+  test('已返回的卡上仍能写格', () => {
+    const { store, run, step, nodes } = returnedCard()
+    setStepNodeState(store, step.id, 'slow', { phase: 'done', label: '慢', durationMs: 9 })
+    expect(nodes()?.slow?.phase).toBe('done')
+    expect(listSteps(store, run.id)[0]?.status).toBe('failure')
+    store.close()
+  })
+
+  test('这一轮收尾也扫已返回的卡：没到终态的格标中断，到了的不动', () => {
+    const { store, run, nodes } = returnedCard()
+    settleRunningSteps(store, run.id)
+    expect(nodes()?.slow).toMatchObject({ phase: 'interrupted', error: '调用中断' })
+    expect(nodes()?.fast).toMatchObject({ phase: 'failed', error: '连不上' })
+    expect(listSteps(store, run.id)[0]?.status).toBe('failure')
     store.close()
   })
 })
