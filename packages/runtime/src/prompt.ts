@@ -30,7 +30,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 改动代码时匹配周围代码的风格：命名、注释密度、惯用法。
 
-多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。自己做完一条时立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress。子 agent 返回只代表产出已交回：先核验，满意后立刻用 write_todos 完成对应条目；不满意就保持未完成并返工。可能需要原子会话返工时从一开始就用带检查点的编排，由批准或修订决定是否通过。不要在结束时一次性把全部条目标成 completed。单步任务不列清单。
+多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。做完一条立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress；清单按条推进，每条完成时各标一次。单步任务不列清单。
 
 注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，那属于提交记录。
 
@@ -83,15 +83,15 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'define_role',
-    line: '- 角色定义：用户明确要求创建或修改角色，或消息以 /role 开头时，用 define_role 把可长期复用的角色写进当前项目 Agent Team，之后建子 agent 时按 role id 引用；用户没有要求就不建。角色是持久定义，不是这次任务的子 agent。',
+    line: '- 角色：用户明确要求创建或修改角色（/role 命令或一句明确的话）时，用 define_role 把可长期复用的角色写进当前项目的 Agent Team；没有要求就不建。角色是持久定义，之后建子 agent 时按 role id 引用。',
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：一次性、不验收的整件事派给 subagent，它的中间过程不占你的上下文。互不依赖的可以一次派几个。要验收或可能返工的改用 workflow，哪怕只有一个节点；被中断后还要接着做的长任务同样用 workflow。当前有未完成待办时，每次调用都要用 parentTodo 逐字绑定产出归属；返回后先验收，满意才用 write_todos 完成，不满意保持未完成。模型自行判断需要临时子 agent 时，不指定 agent 直接派出；用户用 `@角色id` / `@cli:id` 点名时，必须派给该现有目标。',
+    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。第一次按 kind 建（role / temp / cli），之后按 subagentId 续接，三种都能续。用户用 `@角色id` 或 `@cli:id` 点名时，就派给那个目标。',
   },
   {
     tool: 'workflow',
-    line: '- 编排：要验收、可能返工，或几件事之间有先后依赖要传递上游产出时，用 workflow 一次交一整张图；每个 agent 节点后面都要有 checkpoint，核验满意才 approve，不满意用 revise 回流，批准之后仍可 revise。角色、临时子 agent、外部 CLI 都能当节点，临时节点要换模型就在该节点上写 provider 与 model。',
+    line: '- 工作流：两个及以上子 agent、要验收或有先后依赖时，用 workflow 一次交一整张图。到检查点后回到你这里：approve 进下一批，revise 让点名的节点在它原来的子会话里继续，批准之后仍可 revise。',
   },
   { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
   { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },
@@ -279,7 +279,7 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
-        '用户只说厂商、系列或简称（例如 glm）时，从这份清单中语义匹配并自主选择最符合任务的已配置项；不要把用户的模糊写法直接填进工具。调用 define_role、subagent 或 workflow 覆盖模型时，逐字使用同一行的 provider 与 model 两个参数，不要使用清单外的值。',
+        'provider 与 model 两个参数只接受清单里同一行的值；用户说的厂商、系列或简称（例如 glm）对应哪一行，由你按语义判断。',
       group: 'workspaceState',
     })
   }
@@ -357,14 +357,11 @@ export function buildTailNotes(input: {
     const list = input.todos
       .map((t, i) => `${i + 1}. [${TODO_LABEL[t.status]}] ${t.content}`)
       .join('\n')
-    // 仅列出状态时模型会把清单读成背景信息；未完成时的第一句是继续执行的指令。
-    //
-    // **末句管的是行为，不是措辞。** 这条注记每轮重发、清单就摆在眼前，模型每轮都会
-    // 在回复开头复述一遍进度。按措辞禁是打地鼠：冻结前缀里禁的是「继续执行第 N 项」，
-    // 模型写的是「继续第 2 项」，少一个词就绕过去了。所以这里禁的是「重复播报进度」
-    // 这个动作，判据交给模型自己比对上一轮说过什么。
+    // 仅列出状态时模型会把清单读成背景信息，所以要说清「未完成则本轮不结束」这一事实。
+    // 末句说的是「进度只在变化时说一次」这个规则本身，不是措辞：按措辞禁是打地鼠。
+    // 派活相关的规则（parentTodo、验收）只写在那两个工具的参数描述里，这里不重复。
     notes.push({
-      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n检查 todo 进度，如有未完成内容，继续执行，不要结束本轮。委派时用 parentTodo 绑定产出归属；子 agent 返回后先验收，满意才用 write_todos 完成对应条目，不满意保持未完成并返工。禁止重复回复用户当前进度，仅在进度更新时告知。`,
+      content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n清单还有未完成项时本轮不结束；进度在变化时说一次，没变化不重复说。`,
       group: 'workspaceState',
     })
   }
