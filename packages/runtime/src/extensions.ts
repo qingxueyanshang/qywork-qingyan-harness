@@ -303,7 +303,7 @@ export async function loadScopedMcpConfig(
  * 读工作区的 team 配置。
  *
  * 这里只有**角色（子 agent）与编排图**。外部 CLI 不进这个文件：它由本机探测得到
- * （`@qywork/team` 的 `detectClis`），编排图里用 `cli:<id>` 指向它。
+ * （`@qywork/team` 的 `detectClis`），图上的节点用 kind cli 与它的 id 指向它。
  */
 export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTeamConfig> {
   const empty: WorkspaceTeamConfig = { roles: [], rules: {}, error: null }

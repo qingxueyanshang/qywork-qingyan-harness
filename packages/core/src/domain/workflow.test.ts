@@ -327,7 +327,6 @@ describe('workflow 投影', () => {
     if (!folded.ok) return
     expect(folded.projection.phase).toBe('completed')
     expect(folded.projection.results.a?.output).toBe('对')
-    expect(folded.projection.attempts.a).toBe(2)
     expect(folded.projection.approvals.cp).toContain('通过')
     expect(folded.projection.approvals.cp).toContain('对')
   })
@@ -469,7 +468,6 @@ describe('workflow 投影', () => {
       error: '调用中断',
       subagentId: 'cv_b',
     })
-    expect(folded.projection.attempts).toEqual({})
   })
 
   test('运行中的续调立刻按 args.workflowId 归回首轮', () => {
@@ -529,6 +527,5 @@ describe('workflow 投影', () => {
     expect(folded.projection.phase).toBe('running')
     expect(folded.projection.results.a).toBeUndefined()
     expect(folded.projection.results.b).toBeUndefined()
-    expect(folded.projection.attempts).toEqual({ a: 1, b: 1 })
   })
 })

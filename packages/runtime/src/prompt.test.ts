@@ -177,7 +177,6 @@ describe('尾区注记', () => {
         },
       },
       states: {},
-      attempts: {},
       approvals: {},
     }
     const all = buildTailNotes({ ...base, workflows: [projection] })

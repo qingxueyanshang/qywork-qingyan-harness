@@ -48,7 +48,6 @@ function deps(
   }
   const d: OrchestratorDeps = {
     signal: new AbortController().signal,
-    runId: 'rn_t' as never,
     maxConcurrent,
     node: (nodeId, state) => events.push({ nodeId, ...state }),
     describe,

@@ -239,10 +239,7 @@ describe('编排画布', () => {
     ])
   })
 
-  /**
-   * 卡顶那一行说清这张卡是什么、成没成。没有它时卡顶印的是任务第一行，读起来像一句正文，
-   * 而「派给已有角色」与「临时起一个」在界面上分不开。
-   */
+  /** 失败只有红边与底部那一行原因：卡顶没有动作、状态与耗时，同一件事不印两遍。 */
   test('失败的卡没有卡头，原因只印在底部那一行', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')

@@ -1535,19 +1535,21 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
      * 那张图就折不起来。旧行按同一规则改写；续接调用的逐格状态从它的回执折出来。
      */
     apply(db) {
-      const rows = db
-        .query<{ id: string; tool_name: string; payload: string }, []>(
-          `SELECT id, tool_name, payload FROM steps
-           WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL`,
-        )
-        .all()
-      const update = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+      const select = db.prepare<{ id: string; tool_name: string; payload: string }, []>(
+        `SELECT id, tool_name, payload FROM steps
+         WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL`,
+      )
+      const rows = select.all()
+      select.finalize()
+      if (rows.length === 0) return
+      const update = db.prepare('UPDATE steps SET payload = ? WHERE id = ?')
       for (const row of rows) {
         const payload = JSON.parse(row.payload) as Record<string, unknown>
         if (rewriteDelegationPayload(payload, row.tool_name)) {
           update.run(JSON.stringify(payload), row.id)
         }
       }
+      update.finalize()
     },
   },
   {
@@ -1558,13 +1560,14 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
      * 卡上任务行与格子名因此是同一句话。名字是任务正文开头的那些行改回「临时子 agent」。
      */
     apply(db) {
-      const rows = db
-        .query<{ id: string; payload: string }, []>(
-          `SELECT id, payload FROM steps
-           WHERE kind = 'tool_action' AND tool_name = 'subagent' AND payload IS NOT NULL`,
-        )
-        .all()
-      const update = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+      const select = db.prepare<{ id: string; payload: string }, []>(
+        `SELECT id, payload FROM steps
+         WHERE kind = 'tool_action' AND tool_name = 'subagent' AND payload IS NOT NULL`,
+      )
+      const rows = select.all()
+      select.finalize()
+      if (rows.length === 0) return
+      const update = db.prepare('UPDATE steps SET payload = ? WHERE id = ?')
       for (const row of rows) {
         const payload = JSON.parse(row.payload) as {
           args?: { kind?: unknown; name?: unknown; task?: unknown }
@@ -1585,6 +1588,7 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
         if (child) child.label = TEMP_LABEL
         update.run(JSON.stringify(payload), row.id)
       }
+      update.finalize()
     },
   },
   {
