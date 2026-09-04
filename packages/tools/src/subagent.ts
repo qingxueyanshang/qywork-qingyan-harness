@@ -17,11 +17,9 @@ export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
     '派发一个子 agent，等它完成并返回产出。' +
-    '第一次派发按 kind 建：role 按角色库里的角色建，temp 临时子 agent（定义写在这次调用里），cli 外部 CLI；' +
-    '返回它的 subagentId。之后给同一个子 agent 派任务填 subagent 为那个 id，它接着自己的上下文继续，三种都能续。' +
-    '一次只派一个，两个及以上子 agent 用 workflow。' +
-    '当前有未完成待办时，必须用 parentTodo 精确绑定本次产出归属的那一条；子 agent 成功只表示产出返回，' +
-    '父待办仍需当前会话验收并用 write_todos 完成。' +
+    '第一次按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；返回它的 subagentId。' +
+    '之后给同一个子 agent 派任务填 subagent 为那个 id，它接着自己的会话继续，三种都能续。' +
+    '一次只派一个，两个及以上用 workflow。' +
     '子 agent 看不到这条会话的内容，背景要写进 task。',
   parameters: {
     type: 'object',

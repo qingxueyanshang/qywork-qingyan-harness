@@ -34,11 +34,11 @@ export const defineRoleTool: ToolSpec = {
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: '角色标识，编排图按它引用。字母数字与 - _' },
+      id: { type: 'string', description: '角色 id，之后建子 agent 时按它引用。字母数字与 - _' },
       name: { type: 'string', description: '给人看的名字，如「代码审查员」' },
       description: {
         type: 'string',
-        description: '一句话说明它擅长什么、该把什么交给它。派活时按这句挑人。',
+        description: '一句话说明它擅长什么。',
       },
       systemPrompt: { type: 'string', description: '它的系统提示词：身份、纪律、产出要求' },
       provider: {
@@ -48,7 +48,7 @@ export const defineRoleTool: ToolSpec = {
       model: {
         type: 'string',
         description:
-          '指定模型。逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider；不要直接填写用户说的简称。留空跟着当前会话',
+          '指定模型：运行上下文「已配置模型」清单里的 model 参数，逐字，并同时填 provider。留空跟着当前会话',
       },
       allowedTools: {
         type: 'array',

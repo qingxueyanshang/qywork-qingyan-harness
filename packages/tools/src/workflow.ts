@@ -10,16 +10,11 @@ import { DEFAULT_MAX_CONCURRENT, parseWorkflowCall, type WorkflowTransition } fr
 export const workflowTool: ToolSpec = {
   name: 'workflow',
   description:
-    '把复杂任务按 DAG 分批交给子 agent。agent 节点按 needs 并行或串行执行；checkpoint 节点' +
-    '把上一批回执交回当前会话审查。到 checkpoint 只代表本次调度返回，不代表整个 workflow 完成：' +
-    '核验后必须再次调用本工具，用同一 workflowId 对该 checkpoint approve 或 revise。' +
-    'revise 会向原子会话续发，approve 才启动下一批；检查点批准之后仍可 revise。' +
-    '每个 agent 节点后面都必须有检查点，否则整张图在加载期被拒。' +
-    '节点按 kind 建子 agent：role 按角色 id 建、temp 临时（写 name）、cli 外部 CLI；' +
-    '指向本会话已有子 agent 的节点填 subagent。用户点名了模型就在该节点上写 provider 与 model，' +
-    '没点名就跟当前会话。' +
-    '一次性、不需要验收的一件事用 subagent。用户明确要求先设计流程时，先用普通回复展示完整图并等待确认，' +
-    '确认前不要调用本工具。',
+    '把两个及以上子 agent 的任务按 DAG 一次交出去。子 agent 节点按 needs 并行或串行执行，' +
+    'checkpoint 节点把上一批回执交回当前会话。到 checkpoint 只代表本次调度返回；之后用同一 workflowId ' +
+    '对该 checkpoint approve（进下一批）或 revise（让点名的节点在它原来的子会话里继续，只发修订指令与最新上游产出），' +
+    '批准之后仍可 revise。每个子 agent 节点后面都要有 checkpoint，没有的图在加载期被拒。' +
+    '节点按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；指向本会话已有子 agent 的节点填 subagent。',
   parameters: {
     type: 'object',
     properties: {
@@ -27,7 +22,7 @@ export const workflowTool: ToolSpec = {
       nodes: {
         type: 'array',
         description:
-          '首次调用的 DAG 节点；直接传数组，不要传 JSON 字符串。agent 执行任务，checkpoint 将回执交回当前会话审查',
+          '首次调用的 DAG 节点，直接传数组（不是 JSON 字符串）。子 agent 节点执行任务，checkpoint 节点把回执交回当前会话审查',
         items: {
           type: 'object',
           properties: {
@@ -69,7 +64,8 @@ export const workflowTool: ToolSpec = {
             model: {
               type: 'string',
               description:
-                '该 agent 节点的模型覆盖；逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider',
+                '只在用户点名了模型时填：运行上下文「已配置模型」清单里的 model 参数，逐字，并同时填 provider。' +
+                '不填 = 跟当前会话（角色钉了模型用角色的）；指向已有子 agent 或外部 CLI 的节点不接受',
             },
           },
           required: ['id'],
@@ -91,7 +87,7 @@ export const workflowTool: ToolSpec = {
       note: { type: 'string', description: '本次审批或修订说明' },
       revisions: {
         type: 'array',
-        description: 'revise 时要向原节点续发的指令；直接传数组，不要传 JSON 字符串',
+        description: 'revise 时向点名节点续发的指令，直接传数组（不是 JSON 字符串）',
         items: {
           type: 'object',
           properties: {

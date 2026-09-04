@@ -71,8 +71,8 @@ describe('尾区注记', () => {
     expect(models).toContain('provider 参数 `接口甲`；model 参数 `shared-model`')
     expect(models).toContain('provider 参数 `接口乙`；model 参数 `shared-model`')
     expect(models).toContain('厂商、系列或简称')
-    expect(models).toContain('语义匹配并自主选择')
-    expect(models).toContain('不要把用户的模糊写法直接填进工具')
+    expect(models).toContain('只接受清单里同一行的值')
+    expect(models).toContain('由你按语义判断')
   })
 
   test('有派活能力但没有配置模型时明确禁止编造，没派活能力则不注入清单', () => {
@@ -277,10 +277,9 @@ describe('尾区注记', () => {
     expect(todo).toContain('3. [未开始] 汇总 bug 与证据')
     // 枚举原值不进提示词，同「平台：win32」那条。
     expect(todo).not.toContain('in_progress')
-    expect(todo).toContain('不要结束本轮')
-    expect(todo).toContain('parentTodo')
-    expect(todo).toContain('先验收')
-    expect(todo).toContain('不满意保持未完成')
+    expect(todo).toContain('清单还有未完成项时本轮不结束')
+    // 派活的规则只写在工具参数里，待办注记不重复。
+    expect(todo).not.toContain('parentTodo')
   })
 
   test('旧清单全部完成后不再冒充下一轮当前待办', () => {
