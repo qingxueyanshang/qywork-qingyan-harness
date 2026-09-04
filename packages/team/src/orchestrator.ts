@@ -26,11 +26,8 @@ export interface OrchestratorDeps {
   maxConcurrent: number
   /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
   node(nodeId: string, state: NodeState): void
-  /**
-   * 一格的名字：角色是角色名，外部 CLI 是 CLI 名，临时子 agent 是它的模型名——节点上点了
-   * 模型就是那个，没点就跟当前会话。写状态之前就要有；认不出目标返回 null。
-   */
-  describe(target: SubagentTarget, model?: string): { label: string } | null
+  /** 一格的名字：角色名、CLI 名，或临时子 agent 建时给的名字。写状态之前就要有；认不出目标返回 null。 */
+  describe(target: SubagentTarget): { label: string } | null
   /**
    * 派给一个子 agent。目标是新建还是已有由 `target` 决定，实现方负责建记录与跑；
    * 编排器只拿回执与子 agent id。
@@ -319,7 +316,7 @@ export class TeamOrchestrator {
   }
 
   private labelOf(node: WorkflowAgentNode): string {
-    return this.deps.describe(node.target, node.model)?.label ?? targetLabel(node.target)
+    return this.deps.describe(node.target)?.label ?? targetLabel(node.target)
   }
 
   private async execute(
@@ -331,7 +328,7 @@ export class TeamOrchestrator {
     correction?: string,
   ): Promise<NodeResult> {
     const started = Date.now()
-    const described = this.deps.describe(node.target, node.model)
+    const described = this.deps.describe(node.target)
     if (!described) {
       return this.failed(node, targetLabel(node.target), started, '找不到派发目标')
     }

@@ -490,12 +490,10 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
 
 /**
  * 一格的名字，只凭调用参数就能算：刷新之后回放、进度事件没到之前都用它。
- * 角色是角色 id（状态到了换成角色名），外部 CLI 是 CLI id，临时子 agent 是模型名——
- * 参数里没点模型时先用它的名字，状态到了换成实际跑的模型。
+ * 临时子 agent 是建时给的名字，角色是角色 id（状态到了换成角色名），外部 CLI 是 CLI id。
  */
 function targetTitle(o: Record<string, unknown>): string {
   const pick = (key: string) => (typeof o[key] === 'string' ? (o[key] as string).trim() : '')
-  if (o.kind === 'temp') return pick('model') || pick('name') || '子 agent'
   return pick('subagent') || pick('name') || pick('role') || pick('cli') || '子 agent'
 }
 
