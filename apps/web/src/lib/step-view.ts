@@ -400,11 +400,8 @@ export interface GraphNode {
   kind: 'session' | 'agent'
   /** 这一格是外部 CLI：点开的是它写出来的那段流，不是子会话。 */
   cli: boolean
-  /**
-   * 次行印的执行者。**派一件时缺席**：那一格的主行已经是执行者，
-   * 次行再印一遍是同一个词读两遍。
-   */
-  agentLabel?: string
+  /** 次行印的指令内容：任务的第一行。 */
+  task?: string
   needs: string[]
 }
 
@@ -467,14 +464,13 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
           needs,
         }
       }
-      // 主行是节点 id：一张图里常常四格都是同一个执行者，区分得开的就是它。
-      // 次行印子 agent 的名字，运行期事件带的名字更全时以事件为准。
+      // 主行是那一格的名字，次行是它的指令；节点 id 只用来连线与认领进度。
       return {
         key: id,
-        title: id,
+        title: targetTitle(o),
         kind: 'agent' as const,
         cli: o.kind === 'cli',
-        agentLabel: targetTitle(o),
+        task: firstLine(typeof o.task === 'string' ? o.task : ''),
         needs,
       }
     })
@@ -486,6 +482,7 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
       title: targetTitle(args),
       kind: 'agent',
       cli: args.kind === 'cli',
+      task: firstLine(typeof args.task === 'string' ? args.task : ''),
       needs: [],
     },
   ]
@@ -493,10 +490,12 @@ function childNodes(item: { toolName?: string; args?: Record<string, unknown> })
 
 /**
  * 一格的名字，只凭调用参数就能算：刷新之后回放、进度事件没到之前都用它。
- * 与 core 的 `targetLabel` 同一条规则，这里读的是未解析的原始参数。
+ * 角色是角色 id（状态到了换成角色名），外部 CLI 是 CLI id，临时子 agent 是模型名——
+ * 参数里没点模型时先用它的名字，状态到了换成实际跑的模型。
  */
 function targetTitle(o: Record<string, unknown>): string {
   const pick = (key: string) => (typeof o[key] === 'string' ? (o[key] as string).trim() : '')
+  if (o.kind === 'temp') return pick('model') || pick('name') || '子 agent'
   return pick('subagent') || pick('name') || pick('role') || pick('cli') || '子 agent'
 }
 

@@ -331,9 +331,10 @@ describe('派一件的进度', () => {
     expect(replay?.status).toBe('running')
     const payload = replay?.payload
     expect(payload?.kind).toBe('tool_call')
+    // 临时子 agent 那一格印的是它跑的模型，不是派发时起的名字。
     expect(payload?.kind === 'tool_call' ? payload.nodes?.child : undefined).toMatchObject({
       phase: 'done',
-      label: '临时',
+      label: 'deepseek-v4-flash',
       subagentId: res.subagentId,
     })
   })

@@ -452,31 +452,31 @@ describe('派活图', () => {
     expect(g.nodes[1]?.cli).toBe(true)
   })
 
-  /**
-   * 派一件那一格的次行不印执行者：主行已经是它了。
-   * 一张图里则相反——四格常常是同一个执行者，主行是节点 id，执行者压次行。
-   */
-  test('次行印不印执行者，两种卡不同', () => {
+  /** 两种卡的格子同一条规则：主行是名字（临时子 agent 是模型名），次行是指令首行。 */
+  test('主行按种类取名，次行是指令的第一行', () => {
     const one = delegateGraph({
       toolName: 'subagent',
-      args: { kind: 'role', role: 'reviewer', task: '看' },
+      args: { kind: 'role', role: 'reviewer', task: '看一眼\n第二行不上卡' },
     })
-    expect(one.nodes[1]?.title).toBe('reviewer')
-    expect(one.nodes[1]?.agentLabel).toBeUndefined()
+    expect(one.nodes[1]).toMatchObject({ title: 'reviewer', task: '看一眼' })
     const many = delegateGraph({
       toolName: 'workflow',
       args: {
         goal: '做完',
         nodes: [
-          { id: 'n1', kind: 'role', role: 'reviewer' },
-          { id: 'api', kind: 'temp', name: '接口' },
+          { id: 'n1', kind: 'role', role: 'reviewer', task: '审' },
+          { id: 'api', kind: 'temp', name: '接口', task: '写接口' },
+          { id: 'glm', kind: 'temp', name: 'GLM 车组', model: 'glm-5.3-flash', task: '做车' },
+          { id: 'cx', kind: 'cli', cli: 'codex', task: '跑' },
         ],
       },
     })
-    expect(many.nodes[1]?.title).toBe('n1')
-    expect(many.nodes[1]?.agentLabel).toBe('reviewer')
-    expect(many.nodes[2]?.title).toBe('api')
-    expect(many.nodes[2]?.agentLabel).toBe('接口')
+    expect(many.nodes.slice(1, 5).map((n) => [n.key, n.title, n.task])).toEqual([
+      ['n1', 'reviewer', '审'],
+      ['api', '接口', '写接口'],
+      ['glm', 'glm-5.3-flash', '做车'],
+      ['cx', 'codex', '跑'],
+    ])
   })
 
   /** 只有一格的图与一次派活形状相同，本来就该长得一样。 */

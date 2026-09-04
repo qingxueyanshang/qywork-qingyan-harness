@@ -1212,17 +1212,16 @@
   max-width: 100%;
 }
 /* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
+/* 主行只有一行：名字长了截断，不换行。 */
 .wf-node-name {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
   max-width: 100%;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
-/* 次行：执行者 + 耗时。同一张图里常常四个节点都是同一个执行者，压一档。 */
+/* 次行：指令内容 + 耗时，压一档。 */
 .wf-node-who {
   display: flex;
   gap: var(--s-2);
@@ -1232,8 +1231,8 @@
   font-size: var(--fs-xs);
 }
 /* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
-/* 执行者名让位给耗时：名字截断，数字不截。裸文本在 flex 里缩不了，所以要有这一层。 */
-.wf-node-agent {
+/* 指令让位给耗时：文字截断，数字不截。裸文本在 flex 里缩不了，所以要有这一层。 */
+.wf-node-task {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -1600,13 +1600,13 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
      * 仍被占用，Windows 上删不掉。
      */
     apply(db) {
-      const rows = db
-        .query<{ id: string; tool_name: string; payload: string }, []>(
-          `SELECT id, tool_name, payload FROM steps
-           WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL
-           ORDER BY created_at ASC, seq ASC`,
-        )
-        .all()
+      const select = db.prepare<{ id: string; tool_name: string; payload: string }, []>(
+        `SELECT id, tool_name, payload FROM steps
+         WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL
+         ORDER BY created_at ASC, seq ASC`,
+      )
+      const rows = select.all()
+      select.finalize()
       if (rows.length === 0) return
       const convOf = db.prepare<{ title: string; model: string }, [string]>(
         'SELECT title, model FROM conversations WHERE id = ?',
@@ -1649,6 +1649,41 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
               changed = true
             }
           }
+        }
+        if (changed) update.run(JSON.stringify(payload), row.id)
+      }
+      convOf.finalize()
+      update.finalize()
+    },
+  },
+  {
+    id: 44,
+    name: 'temp_cells_by_model',
+    /** 临时子 agent 那一格印的是它的模型名。此前各版给它起过节点 id、给定名等几种名字，统一。 */
+    apply(db) {
+      const select = db.prepare<{ id: string; payload: string }, []>(
+        `SELECT id, payload FROM steps
+         WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent')
+           AND json_type(payload, '$.nodes') = 'object'`,
+      )
+      const rows = select.all()
+      select.finalize()
+      if (rows.length === 0) return
+      const convOf = db.prepare<{ source: string | null; model: string }, [string]>(
+        'SELECT source, model FROM conversations WHERE id = ?',
+      )
+      const update = db.prepare('UPDATE steps SET payload = ? WHERE id = ?')
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload) as {
+          nodes: Record<string, { label?: unknown; subagentId?: unknown }>
+        }
+        let changed = false
+        for (const state of Object.values(payload.nodes)) {
+          if (typeof state.subagentId !== 'string') continue
+          const conversation = convOf.get(state.subagentId)
+          if (conversation?.source !== 'temp' || state.label === conversation.model) continue
+          state.label = conversation.model
+          changed = true
         }
         if (changed) update.run(JSON.stringify(payload), row.id)
       }
