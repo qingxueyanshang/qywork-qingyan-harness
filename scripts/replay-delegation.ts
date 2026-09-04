@@ -9,6 +9,7 @@
  *   bun run scripts/replay-delegation.ts                  # 首派 → 中断 → 继续 → 验收
  *   bun run scripts/replay-delegation.ts --no-interrupt   # 首派 →（一格失败先交回 → 汇合）→ 验收
  *   bun run scripts/replay-delegation.ts --round-min=120  # 一轮最多等多少分钟，默认 45
+ *   bun run scripts/replay-delegation.ts --parent=deepseek/deepseek-v4-flash  # 父会话换一对接口 × 模型
  *
  * 不中断那条线上，只要有一格比其余格先失败，就一并验「失败回执先到」：首派在其余格还在跑时
  * 返回、回执带 running；父会话下一次调用是等或 revise 同一张图；其余格的终态仍落在首派那张卡上。
@@ -57,6 +58,13 @@ const EXPECTED_MODELS: { name: string; matches: (model: string) => boolean }[] =
 ]
 
 const INTERRUPT = !process.argv.includes('--no-interrupt')
+/** 父会话用哪一对接口 × 模型。不给就用配置里当前生效的；某家接口连不上时换一家跑父会话。 */
+const PARENT = (() => {
+  const raw = process.argv.find((a) => a.startsWith('--parent='))?.slice('--parent='.length)
+  if (!raw) return null
+  const at = raw.indexOf('/')
+  return at > 0 ? { provider: raw.slice(0, at), model: raw.slice(at + 1) } : null
+})()
 /** 四个都跑起来之后再等这么久才中断：要让它们各自留下一段真实上下文。 */
 const INTERRUPT_AFTER_MS = 120_000
 /** 父会话从收到原话到四格起跑的上限。glm-5.3-flash 实测组一次参数要 4 分钟，被挡回一次再加 1 分钟。 */
@@ -90,16 +98,15 @@ async function main(): Promise<number> {
   const h = serve({ store, config, workspaceRoot: WS_DIR, port: 0, host: '127.0.0.1' })
   const base = `http://127.0.0.1:${h.port}`
   const auth = { authorization: `Bearer ${h.token}` }
-  log(
-    `服务已起：${base}（父会话模型 ${config.active.provider} / ${config.active.model}）；账本 ${DB}`,
-  )
+  const parent = PARENT ?? config.active
+  log(`服务已起：${base}（父会话模型 ${parent.provider} / ${parent.model}）；账本 ${DB}`)
 
   try {
     const created = (await (
       await fetch(`${base}/api/conversations`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ title: '真机复刻' }),
+        body: JSON.stringify({ title: '真机复刻', ...(PARENT ?? {}) }),
       })
     ).json()) as { conversation?: { id?: string } }
     const conversationId = (created.conversation?.id ?? '') as ConversationId
