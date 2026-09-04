@@ -16,7 +16,8 @@ export const workflowTool: ToolSpec = {
     '批准之后仍可 revise。一格失败而同批还有格在跑时也会返回，失败的回执先到，其余格照跑；' +
     '只带 workflowId 再调一次就是等它们，到下一个事件返回。' +
     '三种调用各带的参数：首派只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions；等只带 workflowId。' +
-    '每个子 agent 节点后面都要有 checkpoint，没有的图在加载期被拒。' +
+    'checkpoint 的接法：并行的子 agent 节点共用一个 checkpoint（needs 列出它们全部），不是每个节点各接一个；' +
+    'checkpoint 之间串成一条链；每个子 agent 节点都要在某个 checkpoint 的上游。不合这条的图在加载期被拒。' +
     '节点按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；指向本会话已有子 agent 的节点填 subagent。',
   parameters: {
     type: 'object',

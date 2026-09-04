@@ -7,8 +7,11 @@
  * 不另起四个；最后父会话自己验收。
  *
  *   bun run scripts/replay-delegation.ts                  # 首派 → 中断 → 继续 → 验收
- *   bun run scripts/replay-delegation.ts --no-interrupt   # 首派 → 验收
+ *   bun run scripts/replay-delegation.ts --no-interrupt   # 首派 →（一格失败先交回 → 汇合）→ 验收
  *   bun run scripts/replay-delegation.ts --round-min=120  # 一轮最多等多少分钟，默认 45
+ *
+ * 不中断那条线上，只要有一格比其余格先失败，就一并验「失败回执先到」：首派在其余格还在跑时
+ * 返回、回执带 running；父会话下一次调用是等或 revise 同一张图；其余格的终态仍落在首派那张卡上。
  *
  * 配置（含密钥）读 `~/.qywork/config.json`；工作区与账本落 `.tmp/replay-ws/<时间戳>/`，跑完不删。
  */
@@ -56,7 +59,8 @@ const EXPECTED_MODELS: { name: string; matches: (model: string) => boolean }[] =
 const INTERRUPT = !process.argv.includes('--no-interrupt')
 /** 四个都跑起来之后再等这么久才中断：要让它们各自留下一段真实上下文。 */
 const INTERRUPT_AFTER_MS = 120_000
-const FIRST_DISPATCH_TIMEOUT_MS = 6 * 60_000
+/** 父会话从收到原话到四格起跑的上限。glm-5.3-flash 实测组一次参数要 4 分钟，被挡回一次再加 1 分钟。 */
+const FIRST_DISPATCH_TIMEOUT_MS = 12 * 60_000
 const ROUND_TIMEOUT_MS =
   Number(
     process.argv.find((a) => a.startsWith('--round-min='))?.slice('--round-min='.length) || 45,
@@ -108,6 +112,8 @@ async function main(): Promise<number> {
     })
 
     const events: AgentEvent[] = []
+    /** 与 events 同下标：收到那条事件的本机时刻。算「失败落格到调用返回」的间隔用。 */
+    const stamps: number[] = []
     let text = ''
     let runId = ''
     let roundDone = Promise.withResolvers<AgentEvent>()
@@ -119,6 +125,7 @@ async function main(): Promise<number> {
       if (!msg.seq || !msg.event) return
       const ev = msg.event as AgentEvent
       events.push(ev)
+      stamps.push(Date.now())
       switch (ev.type) {
         case 'run.started':
           runId = ev.runId
@@ -375,12 +382,119 @@ async function main(): Promise<number> {
         kidsAfter.map((c) => [c.title, listRuns(store, c.id).length]),
       )
     } else {
-      const ended = await endOfRound(ROUND_TIMEOUT_MS)
-      check(
-        '这一轮正常收尾',
-        ended.type === 'run.finished' && ended.stopReason === 'completed',
-        ended,
-      )
+      // ── 一格失败先交回 ──
+      // 等首派那次调用返回。有格失败而其余还在跑时它先返回，回执带 running；没有这种情形时它跑到检查点才返回。
+      const firstReturn = await (async (): Promise<Finished | null> => {
+        const deadline = Date.now() + ROUND_TIMEOUT_MS
+        let settled = false
+        roundDone.promise.then(
+          () => {
+            settled = true
+          },
+          () => {
+            settled = true
+          },
+        )
+        while (Date.now() < deadline && !settled) {
+          const hit = finishedOf('workflow').find((c) => c.toolCallId === first.toolCallId)
+          if (hit) return hit
+          await Bun.sleep(500)
+        }
+        return null
+      })()
+      const data = firstReturn?.outcome?.data as
+        | {
+            phase?: string
+            receipts?: { nodeId: string; status: string; error?: string }[]
+            running?: string[]
+          }
+        | undefined
+      const running = data?.running ?? []
+      if (firstReturn && running.length) {
+        process.stdout.write('\n一格失败先交回\n')
+        const failed = (data?.receipts ?? []).filter((r) => r.status === 'failed')
+        check(
+          `首派在其余格还在跑时返回：失败 ${failed.map((r) => r.nodeId).join('、')}，还在跑 ${running.join('、')}`,
+          failed.length > 0 && data?.phase === 'waiting_review',
+          data,
+        )
+        const returnIndex = events.indexOf(firstReturn)
+        const failedIndex = events.findIndex(
+          (ev): ev is Member =>
+            ev.type === 'team.member' &&
+            ev.state.phase === 'failed' &&
+            failed.some((r) => r.nodeId === ev.nodeId),
+        )
+        const lag = (stamps[returnIndex] ?? 0) - (stamps[failedIndex] ?? 0)
+        check(
+          `失败落格到调用返回相隔 ${(lag / 1000).toFixed(1)}s`,
+          failedIndex >= 0 && lag < 15_000,
+        )
+        check(
+          '返回那一刻其余格都还没到终态',
+          running.every(
+            (id) =>
+              !events
+                .slice(0, returnIndex)
+                .some(
+                  (ev) =>
+                    ev.type === 'team.member' &&
+                    ev.nodeId === id &&
+                    ['done', 'failed', 'interrupted', 'skipped'].includes(ev.state.phase),
+                ),
+          ),
+        )
+        const [next] = await waitFor(
+          '父会话对同一张图的下一次调用',
+          (ev): ev is Started =>
+            started('workflow')(ev) &&
+            events.indexOf(ev) > returnIndex &&
+            (ev.args as { workflowId?: string }).workflowId === firstWorkflowId,
+          1,
+          FIRST_DISPATCH_TIMEOUT_MS,
+        )
+        const nextArgs = next!.args as { decision?: string; revisions?: { nodeId: string }[] }
+        check(
+          `下一次调用是${nextArgs.decision ? ` ${nextArgs.decision}` : '等'}同一张图，没有另起一张`,
+          !nextArgs.decision || nextArgs.decision === 'revise',
+          nextArgs,
+        )
+        check(
+          '没有对还在跑的节点重派',
+          !(nextArgs.revisions ?? []).some((r) => running.includes(r.nodeId)),
+          nextArgs.revisions,
+        )
+        const ended = await endOfRound(ROUND_TIMEOUT_MS)
+        check(
+          '这一轮正常收尾',
+          ended.type === 'run.finished' && ended.stopReason === 'completed',
+          ended,
+        )
+        const card = stepOf()?.payload
+        const cardNodes = card?.kind === 'tool_result' ? card.nodes : undefined
+        check(
+          '其余格的终态落在首派那张卡上',
+          !!cardNodes &&
+            running.every((id) =>
+              ['done', 'failed', 'interrupted'].includes(cardNodes[id]?.phase ?? ''),
+            ),
+          cardNodes,
+        )
+        check(
+          '首派的四条子会话都还在',
+          listChildConversations(store, conversationId).filter((c) =>
+            [...byNode.values()].includes(c.id),
+          ).length === 4,
+        )
+      } else {
+        if (firstReturn) log('首派一次跑到检查点，没有出现一格先失败的情形')
+        const ended = await endOfRound(ROUND_TIMEOUT_MS)
+        check(
+          '这一轮正常收尾',
+          ended.type === 'run.finished' && ended.stopReason === 'completed',
+          ended,
+        )
+      }
     }
 
     // ── 验收 ──
@@ -392,9 +506,13 @@ async function main(): Promise<number> {
       workflows.length === 1 && workflows[0]?.phase === 'completed',
       workflows.map((w) => [w.workflowId, w.phase, w.checkpointId]),
     )
+    // 接口连不上的那一格父会话可以接受失败后批准：验的是没有一格停在半路。
+    const phases = Object.entries(workflows[0]?.states ?? {}).map(([id, n]) => `${id}=${n.phase}`)
     check(
-      '四格最终都是完成',
-      Object.values(workflows[0]?.states ?? {}).every((n) => n.phase === 'done'),
+      `四格都到了终态（${phases.join('，')}）`,
+      Object.values(workflows[0]?.states ?? {}).every((n) =>
+        ['done', 'failed', 'skipped'].includes(n.phase),
+      ),
       workflows[0]?.states,
     )
     const calls = finishedOf('workflow')

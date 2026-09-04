@@ -328,10 +328,13 @@ export function makeDelegate(ctx: {
     say({ phase: 'working', label, subagentId: id })
 
     const base = { subagentId: id, name: conversation.title, created }
-    const settle = (ok: boolean, error?: string, stop?: StopReason | null) => {
+    const settle = (ok: boolean, stopped?: string, stop?: StopReason | null) => {
       const durationMs = Date.now() - started
       // 被叫停的那一格是「中断」不是「失败」：父会话停的、这一轮结束时停的、在它自己页签里停的都算。
       const interrupted = signal.aborted || stop === 'user_interrupt'
+      // 这一轮结束时停的要说出原因：格上只写「被中断」的话，看不出是谁停的。
+      const source = (signal.reason as { source?: unknown } | undefined)?.source
+      const error = source === 'parent_finished' ? '父会话这一轮已结束，随之中断' : stopped
       say({
         phase: ok ? 'done' : interrupted ? 'interrupted' : 'failed',
         label,
@@ -436,11 +439,11 @@ export function makeDelegate(ctx: {
 
     dispatch,
 
+    // 汇合不删条目：汇合它的那次调用可能因为另一格失败先返回，下一次调用还要再汇合一次。
+    // 条目只在这一轮结束时删。
     async join({ subagentId }) {
       const entry = inflight.get(subagentId)
-      if (!entry) return { ok: false, output: '' }
-      inflight.delete(subagentId)
-      return entry.promise
+      return entry ? entry.promise : { ok: false, output: '' }
     },
 
     settleRun(runId) {
