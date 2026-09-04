@@ -852,6 +852,149 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+describe('迁移 42：拿任务正文当名字的临时子 agent 改回原名', () => {
+  test('名字是任务开头的改回临时子 agent，模型起的短名不动', () => {
+    const db = dbBefore(42)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', 'subagent', ?, 'success', 0)`,
+    )
+    insert.run(
+      'st_task_named',
+      1,
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {
+          kind: 'temp',
+          name: '你是画面评审员。工作区 C:\\w 下有四个…',
+          task: '你是画面评审员。工作区 C:\\w 下有四个目录，请逐一评估。',
+        },
+        nodes: {
+          child: {
+            phase: 'done',
+            label: '你是画面评审员。工作区 C:\\w 下有四个…',
+            subagentId: 'cv_x',
+          },
+        },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+    )
+    insert.run(
+      'st_short_named',
+      2,
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: '画面评审员', task: '你是画面评审员，请逐一评估。' },
+        nodes: { child: { phase: 'done', label: '画面评审员', subagentId: 'cv_y' } },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+    )
+
+    applyOne(db, 42)
+
+    expect(payloadJson(db, 'st_task_named')).toMatchObject({
+      args: { kind: 'temp', name: '临时子 agent' },
+      nodes: { child: { label: '临时子 agent', subagentId: 'cv_x' } },
+    })
+    expect(payloadJson(db, 'st_short_named')).toMatchObject({
+      args: { kind: 'temp', name: '画面评审员' },
+      nodes: { child: { label: '画面评审员' } },
+    })
+  })
+})
+
+describe('迁移 43：子 agent 的名字只有一份', () => {
+  test('抄来的标题与「临时子 agent」换成目标名或模型 id', () => {
+    const db = dbBefore(43)
+    const task = '你是资深网页游戏开发者。任务是从零开发…'
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', 0, 0),
+         ('cv_role', 'ws', '${task}', 'p', 'glm', 0, 0),
+         ('cv_tmp', 'ws', '${task}', 'p', 'vision-x', 0, 0),
+         ('cv_new', 'ws', '画面评审', 'p', 'm', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', ?, ?, 'success', ?)`,
+    )
+    insert.run(
+      'st_start',
+      1,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { goal: '目标', nodes: [{ id: 'a', kind: 'role', role: 'racer', task: '做' }] },
+        nodes: { a: { phase: 'failed', label: task, subagentId: 'cv_role' } },
+        outcome: { status: 'failure', executed: true, message: '中断' },
+      }),
+      1,
+    )
+    insert.run(
+      'st_review',
+      2,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {
+          workflowId: 'st_start',
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '',
+          revisions: [],
+        },
+        nodes: { a: { phase: 'done', label: '赛车组', subagentId: 'cv_role', durationMs: 3 } },
+        outcome: { status: 'success', executed: true, message: '到检查点' },
+      }),
+      2,
+    )
+    insert.run(
+      'st_tmp',
+      3,
+      'subagent',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: '临时子 agent', task: '看图' },
+        nodes: { child: { phase: 'done', label: '临时子 agent', subagentId: 'cv_tmp' } },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+      3,
+    )
+    insert.run(
+      'st_new',
+      4,
+      'subagent',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: '画面评审', task: '看图' },
+        nodes: { child: { phase: 'done', label: '画面评审', subagentId: 'cv_new' } },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+      4,
+    )
+
+    applyOne(db, 43)
+
+    expect(payloadJson(db, 'st_start')).toMatchObject({ nodes: { a: { label: 'racer' } } })
+    expect(payloadJson(db, 'st_review')).toMatchObject({ nodes: { a: { label: '赛车组' } } })
+    expect(payloadJson(db, 'st_tmp')).toMatchObject({
+      args: { kind: 'temp', name: 'vision-x' },
+      nodes: { child: { label: 'vision-x' } },
+    })
+    expect(payloadJson(db, 'st_new')).toMatchObject({ args: { name: '画面评审' } })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')

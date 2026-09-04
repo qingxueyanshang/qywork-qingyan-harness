@@ -1550,6 +1550,112 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
       }
     },
   },
+  {
+    id: 42,
+    name: 'temp_subagent_names',
+    /**
+     * 迁移 41 的第一版给旧的临时子 agent 起的名字是子会话标题，而旧服务的标题就是任务正文，
+     * 卡上任务行与格子名因此是同一句话。名字是任务正文开头的那些行改回「临时子 agent」。
+     */
+    apply(db) {
+      const rows = db
+        .query<{ id: string; payload: string }, []>(
+          `SELECT id, payload FROM steps
+           WHERE kind = 'tool_action' AND tool_name = 'subagent' AND payload IS NOT NULL`,
+        )
+        .all()
+      const update = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload) as {
+          args?: { kind?: unknown; name?: unknown; task?: unknown }
+          nodes?: Record<string, { label?: unknown }>
+        }
+        const args = payload.args
+        if (
+          args?.kind !== 'temp' ||
+          typeof args.name !== 'string' ||
+          typeof args.task !== 'string'
+        ) {
+          continue
+        }
+        const head = args.name.replace(/…$/, '')
+        if (!head || !args.task.startsWith(head)) continue
+        args.name = TEMP_LABEL
+        const child = payload.nodes?.child
+        if (child) child.label = TEMP_LABEL
+        update.run(JSON.stringify(payload), row.id)
+      }
+    },
+  },
+  {
+    id: 43,
+    name: 'subagent_names',
+    /**
+     * 子 agent 的名字只有一份：新建时给的 name（角色按 role id，外部 CLI 按 cli id），
+     * 子会话标题与卡上那一格用的都是它。旧行的格子名是子会话标题（旧服务写的是任务正文），
+     * 迁移 42 又把单派的临时子 agent 叫成了「临时子 agent」——都不是名字。
+     * 格子名取派发参数里的目标名，没有名字的临时子 agent 取它的模型 id。
+     *
+     * 预编译语句用 prepare 并在末尾 finalize：留着没执行过的缓存语句会让库文件在 close 之后
+     * 仍被占用，Windows 上删不掉。
+     */
+    apply(db) {
+      const rows = db
+        .query<{ id: string; tool_name: string; payload: string }, []>(
+          `SELECT id, tool_name, payload FROM steps
+           WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL
+           ORDER BY created_at ASC, seq ASC`,
+        )
+        .all()
+      if (rows.length === 0) return
+      const convOf = db.prepare<{ title: string; model: string }, [string]>(
+        'SELECT title, model FROM conversations WHERE id = ?',
+      )
+      const update = db.prepare('UPDATE steps SET payload = ? WHERE id = ?')
+      const nameOf = (target: Record<string, unknown>, subagentId?: string): string | undefined => {
+        for (const key of ['name', 'role', 'cli']) {
+          const value = target[key]
+          if (typeof value === 'string' && value && value !== TEMP_LABEL) return value
+        }
+        if (target.kind === 'temp' && subagentId) return convOf.get(subagentId)?.model
+        return undefined
+      }
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload) as {
+          args?: Record<string, unknown>
+          nodes?: Record<string, { label?: unknown; subagentId?: unknown }>
+        }
+        const targets: Record<string, Record<string, unknown>> = {}
+        if (row.tool_name === 'subagent' && payload.args) targets.child = payload.args
+        if (row.tool_name === 'workflow' && Array.isArray(payload.args?.nodes)) {
+          for (const raw of payload.args.nodes) {
+            const node = raw as Record<string, unknown>
+            if (typeof node.id === 'string') targets[node.id] = node
+          }
+        }
+        let changed = false
+        for (const [id, state] of Object.entries(payload.nodes ?? {})) {
+          const subagentId = typeof state.subagentId === 'string' ? state.subagentId : undefined
+          const label = typeof state.label === 'string' ? state.label : ''
+          const copied =
+            label === TEMP_LABEL ||
+            (subagentId !== undefined && label === convOf.get(subagentId)?.title)
+          const target = targets[id]
+          if (copied && target) {
+            const name = nameOf(target, subagentId)
+            if (name && name !== label) {
+              state.label = name
+              if (target.kind === 'temp' && target.name === TEMP_LABEL) target.name = name
+              changed = true
+            }
+          }
+        }
+        if (changed) update.run(JSON.stringify(payload), row.id)
+      }
+      convOf.finalize()
+      update.finalize()
+    },
+  },
 ]
 
 /**

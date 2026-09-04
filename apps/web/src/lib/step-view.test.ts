@@ -461,26 +461,22 @@ describe('派活图', () => {
       toolName: 'subagent',
       args: { kind: 'role', role: 'reviewer', task: '看' },
     })
+    expect(one.nodes[1]?.title).toBe('reviewer')
     expect(one.nodes[1]?.agentLabel).toBeUndefined()
     const many = delegateGraph({
       toolName: 'workflow',
-      args: { goal: '做完', nodes: [{ id: 'n1', kind: 'role', role: 'reviewer' }] },
+      args: {
+        goal: '做完',
+        nodes: [
+          { id: 'n1', kind: 'role', role: 'reviewer' },
+          { id: 'api', kind: 'temp', name: '接口' },
+        ],
+      },
     })
     expect(many.nodes[1]?.title).toBe('n1')
     expect(many.nodes[1]?.agentLabel).toBe('reviewer')
-  })
-
-  /**
-   * 原始失败形状：图里没点名执行者的那一格，主行印成了「临时子 agent」、次行整行消失
-   * ——判据错在拿次行有没有内容去认「这是哪种卡」，而空串正好两头都不是。
-   */
-  test('图里没点名执行者的那一格，主行仍是节点 id', () => {
-    const g = delegateGraph({
-      toolName: 'workflow',
-      args: { goal: '做完', nodes: [{ id: 'api', kind: 'temp', name: '接口' }] },
-    })
-    expect(g.nodes[1]?.title).toBe('api')
-    expect(g.nodes[1]?.agentLabel).toBe('接口')
+    expect(many.nodes[2]?.title).toBe('api')
+    expect(many.nodes[2]?.agentLabel).toBe('接口')
   })
 
   /** 只有一格的图与一次派活形状相同，本来就该长得一样。 */
