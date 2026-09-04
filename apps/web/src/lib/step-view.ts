@@ -334,6 +334,8 @@ const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
 
 interface RequestOutcomeLike {
   status: ProviderRequestStatus
+  /** 不给按主请求算。摘要请求的产出就是压缩摘要，结果列写它。 */
+  purpose?: 'turn' | 'summary'
   finishReason: string
   errorCode: string | null
   errorMessage: string | null
@@ -366,7 +368,12 @@ function appendFact(base: string, fact: string): string {
  * 这一个出口穷举重试裁决，避免结果列与悬浮说明各维护半张映射。
  */
 export function requestOutcome(q: RequestOutcomeLike): string {
-  if (q.status === 'received') return finishReasonLabel(q.finishReason)
+  if (q.status === 'received') {
+    const label = finishReasonLabel(q.finishReason)
+    // 截断与拒绝仍按原样说：那正是摘要段没做成的原因。
+    if (q.purpose === 'summary' && (label === '已完成' || label === '已回报')) return '上下文压缩'
+    return label
+  }
   if (q.status === 'in_flight') return '进行中'
   if (q.status === 'pending') return '未发出'
 

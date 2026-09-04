@@ -54,9 +54,11 @@ describe('请求结果只显示产品文案', () => {
       | 'context_compaction'
       | 'context_compaction_failed'
       | 'process_exit'
+    purpose?: 'turn' | 'summary'
   }) =>
     requestOutcome({
       status: over.status ?? 'rejected',
+      ...(over.purpose ? { purpose: over.purpose } : {}),
       finishReason: over.finishReason ?? '',
       errorCode: over.errorCode ?? null,
       errorMessage: over.errorMessage ?? null,
@@ -70,6 +72,19 @@ describe('请求结果只显示产品文案', () => {
       '输出被截断',
     )
     expect(outcome({ status: 'received', finishReason: 'provider_new_value' })).toBe('已回报')
+  })
+
+  test('摘要请求的结果写「上下文压缩」，截断与拒绝仍按原样说', () => {
+    expect(outcome({ status: 'received', purpose: 'summary', finishReason: 'end_turn' })).toBe(
+      '上下文压缩',
+    )
+    expect(outcome({ status: 'received', purpose: 'summary', finishReason: '' })).toBe('上下文压缩')
+    expect(outcome({ status: 'received', purpose: 'summary', finishReason: 'max_tokens' })).toBe(
+      '输出被截断',
+    )
+    expect(outcome({ status: 'received', purpose: 'turn', finishReason: 'end_turn' })).toBe(
+      '已完成',
+    )
   })
 
   test('没有 provider 原文时把错误码翻译成用户文案', () => {
