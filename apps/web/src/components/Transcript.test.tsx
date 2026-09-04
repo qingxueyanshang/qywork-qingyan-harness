@@ -243,7 +243,7 @@ describe('编排画布', () => {
    * 卡顶那一行说清这张卡是什么、成没成。没有它时卡顶印的是任务第一行，读起来像一句正文，
    * 而「派给已有角色」与「临时起一个」在界面上分不开。
    */
-  test('派活卡顶部印动作与失败字样', async () => {
+  test('失败的卡没有卡头，原因只印在底部那一行', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -264,6 +264,11 @@ describe('编排画布', () => {
                 },
                 status: 'failure',
                 durationMs: 2500,
+                outcome: {
+                  status: 'failure',
+                  executed: true,
+                  message: 'Workflow 执行失败，本次返回 0 个回执',
+                },
               },
               {
                 id: 'sub-head',
@@ -273,6 +278,7 @@ describe('编排画布', () => {
                 action: { kind: 'run', objectLabel: '子 agent', target: 'qwen-racer' },
                 args: { kind: 'role', role: 'qwen-racer', task: '继续优化' },
                 status: 'failure',
+                outcome: { status: 'failure', executed: true, message: 'qwen-racer 没做成：超时' },
               },
             ] as never
           }
@@ -282,10 +288,12 @@ describe('编排画布', () => {
     )
 
     try {
-      // 卡头只在失败时出现，只印那一个词：动作与耗时都不上卡头。
-      const heads = [...host.querySelectorAll<HTMLElement>('.wf-head')]
-      expect(heads).toHaveLength(2)
-      expect(heads.map((h) => h.textContent)).toEqual(['失败', '失败'])
+      expect(host.querySelectorAll('.wf-head')).toHaveLength(0)
+      expect([...host.querySelectorAll('.wf-error')].map((e) => e.textContent)).toEqual([
+        'Workflow 执行失败，本次返回 0 个回执',
+        'qwen-racer 没做成：超时',
+      ])
+      expect(host.querySelectorAll('.wf-card.failed')).toHaveLength(2)
     } finally {
       dispose()
     }

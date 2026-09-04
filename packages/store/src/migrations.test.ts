@@ -1033,6 +1033,50 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+describe('迁移 45：派一件那一格的耗时从 step 抄过来', () => {
+  test('格子没有耗时的抄 step 的，已有的不动', () => {
+    const db = dbBefore(45)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, duration_ms, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', 'subagent', ?, 'success', ?, 0)`,
+    )
+    insert.run(
+      'st_old',
+      1,
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: 'x', task: '看' },
+        nodes: { child: { phase: 'done', label: 'm', subagentId: 'cv_x' } },
+        outcome: {},
+      }),
+      45918,
+    )
+    insert.run(
+      'st_new',
+      2,
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: 'y', task: '看' },
+        nodes: { child: { phase: 'done', label: 'm', subagentId: 'cv_y', durationMs: 5 } },
+        outcome: {},
+      }),
+      7,
+    )
+
+    applyOne(db, 45)
+
+    expect(payloadJson(db, 'st_old')).toMatchObject({ nodes: { child: { durationMs: 45918 } } })
+    expect(payloadJson(db, 'st_new')).toMatchObject({ nodes: { child: { durationMs: 5 } } })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')
