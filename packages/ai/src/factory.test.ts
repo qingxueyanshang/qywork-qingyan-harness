@@ -89,9 +89,9 @@ describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => 
 describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', () => {
   const clientOf = (a: unknown) => (a as { client: { timeout: number; maxRetries: number } }).client
 
-  test('openai 兼容协议：60 秒、不自动重试', () => {
+  test('openai 兼容协议：兜底 600 秒、不自动重试', () => {
     const c = clientOf(buildAdapter({ ...base, apiKey: 'sk-x' }))
-    expect(c.timeout).toBe(60_000)
+    expect(c.timeout).toBe(600_000)
     expect(c.maxRetries).toBe(0)
   })
 
@@ -99,7 +99,7 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
     const c = clientOf(
       buildAdapter({ kind: 'anthropic_messages', model: 'claude-opus-5', apiKey: 'sk-x' }),
     )
-    expect(c.timeout).toBe(60_000)
+    expect(c.timeout).toBe(600_000)
     expect(c.maxRetries).toBe(0)
   })
 
@@ -113,7 +113,7 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
         headers: { 'x-foo': 'bar' },
       }),
     )
-    expect(c.timeout).toBe(60_000)
+    expect(c.timeout).toBe(600_000)
     expect(c.maxRetries).toBe(0)
   })
 })
