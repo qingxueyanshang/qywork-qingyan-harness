@@ -452,7 +452,7 @@ describe('派活图', () => {
     expect(g.nodes[1]?.cli).toBe(true)
   })
 
-  /** 两种卡的格子同一条规则：主行是名字（临时子 agent 是模型名），次行是指令首行。 */
+  /** 两种卡的格子同一条规则：主行是名字（临时子 agent 是建时给的名字），次行是指令首行。 */
   test('主行按种类取名，次行是指令的第一行', () => {
     const one = delegateGraph({
       toolName: 'subagent',
@@ -474,7 +474,7 @@ describe('派活图', () => {
     expect(many.nodes.slice(1, 5).map((n) => [n.key, n.title, n.task])).toEqual([
       ['n1', 'reviewer', '审'],
       ['api', '接口', '写接口'],
-      ['glm', 'glm-5.3-flash', '做车'],
+      ['glm', 'GLM 车组', '做车'],
       ['cx', 'codex', '跑'],
     ])
   })

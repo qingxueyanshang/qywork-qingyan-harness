@@ -50,9 +50,6 @@ import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } fro
 /** 派活只用到装配三件套（账本、正文库、配置），不碰那条 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
 
-/** 卡上那一格印的名字：角色与外部 CLI 是它的标题，临时子 agent 是它的模型名。 */
-const cellLabel = (c: Conversation): string => (c.source === 'temp' ? c.model : c.title)
-
 /** 临时子 agent 的运行约束：没有系统提示词、不限工具。名字来自派发参数。 */
 const tempRole = (name: string): Role => ({ id: 'temp', name, description: '', systemPrompt: '' })
 
@@ -220,12 +217,12 @@ export function makeDelegate(ctx: {
   /** 一格的名字，给编排器写状态用。同步：角色、CLI、已有子 agent 三份清单在图开跑前读一次。 */
   const describeWith =
     (roles: Role[], clis: CliAgent[], existing: Conversation[]) =>
-    (target: SubagentTarget, model?: string): { label: string } | null => {
+    (target: SubagentTarget): { label: string } | null => {
       if ('subagent' in target) {
         const c = existing.find((x) => x.id === target.subagent)
-        return c ? { label: cellLabel(c) } : null
+        return c ? { label: c.title } : null
       }
-      if (target.kind === 'temp') return { label: model ?? inherited()?.model ?? target.name }
+      if (target.kind === 'temp') return { label: target.name }
       if (target.kind === 'role') {
         const r = roles.find((x) => x.id === target.role)
         return r ? { label: target.name ?? r.name } : null
@@ -261,7 +258,7 @@ export function makeDelegate(ctx: {
     if ('error' in resolved) return { ok: false, output: '', error: resolved.error }
     const { conversation, role, cli, created } = resolved
     const id = conversation.id
-    const label = cellLabel(conversation)
+    const label = conversation.title
     const nodeId = input.nodeId ?? SUBAGENT_NODE_ID
     const say = note(input, nodeId)
     const started = Date.now()

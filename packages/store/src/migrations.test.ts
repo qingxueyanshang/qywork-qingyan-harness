@@ -1077,6 +1077,60 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+describe('迁移 46：临时子 agent 的格子名回到它的名字', () => {
+  test('临时的格子名与单派参数的 name 都改成子会话标题，角色的不动', () => {
+    const db = dbBefore(46)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, source, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', NULL, 0, 0),
+         ('cv_tmp', 'ws', '画面评审员', 'p', 'vision-x', 'temp', 0, 0),
+         ('cv_role', 'ws', '审查员', 'p', 'm', 'role', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', ?, ?, 'success', 0)`,
+    )
+    insert.run(
+      'st_solo',
+      1,
+      'subagent',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: 'vision-x', task: '看图' },
+        nodes: { child: { phase: 'done', label: 'vision-x', subagentId: 'cv_tmp' } },
+        outcome: {},
+      }),
+    )
+    insert.run(
+      'st_graph',
+      2,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {},
+        nodes: {
+          a: { phase: 'done', label: 'vision-x', subagentId: 'cv_tmp' },
+          b: { phase: 'done', label: '审查员', subagentId: 'cv_role' },
+        },
+        outcome: {},
+      }),
+    )
+
+    applyOne(db, 46)
+
+    expect(payloadJson(db, 'st_solo')).toMatchObject({
+      args: { kind: 'temp', name: '画面评审员' },
+      nodes: { child: { label: '画面评审员' } },
+    })
+    expect(payloadJson(db, 'st_graph')).toMatchObject({
+      nodes: { a: { label: '画面评审员' }, b: { label: '审查员' } },
+    })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')
