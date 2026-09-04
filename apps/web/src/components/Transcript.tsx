@@ -1400,7 +1400,7 @@ interface NodeView {
 
 /** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */
 function cardTitle(item: TranscriptItem): string {
-  const raw = item.toolName === 'workflow' ? item.args?.goal : item.args?.task
+  const raw = item.args?.goal
   return firstLine(typeof raw === 'string' ? raw.trim() : '')
 }
 

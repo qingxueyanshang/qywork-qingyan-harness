@@ -233,6 +233,6 @@ export function memberOutcome(input: {
     const text = (stop && CUT_SHORT[stop]) ?? `提前停止（${stop ?? '没有终态'}）`
     return { ok: false, error: input.detail ? `${text}：${input.detail}` : text }
   }
-  if (!output) return { ok: false, error: '该角色没有产出任何内容' }
+  if (!output) return { ok: false, error: '子 agent 没有产出任何内容' }
   return { ok: true }
 }

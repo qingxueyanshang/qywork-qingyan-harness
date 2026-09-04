@@ -107,8 +107,6 @@ export interface WorkflowProjection {
   results: Record<string, WorkflowReceipt>
   /** 每一格最近一次状态，按调用顺序折叠。界面画图只认它，回执不参与。 */
   states: Record<string, NodeState>
-  /** 每个 agent 节点累计真实执行次数，由回执序列折叠，不单独持久化。 */
-  attempts: Record<string, number>
   /** 已批准 checkpoint 的可传递输出。 */
   approvals: Record<string, string>
 }
@@ -496,7 +494,6 @@ export function foldWorkflow(
     phase: 'running',
     results: {},
     states: {},
-    attempts: {},
     approvals: {},
   }
 
@@ -526,7 +523,7 @@ export function foldWorkflow(
       if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
       if (record.status === 'failure') {
         // 被打断的调用没有回执，`nodes` 是它留下的唯一节点事实：建过子 agent 的格折出
-        // 「调用中断」回执，revise 才找得到要续的会话。attempts 不计，这一次没有跑到终态。
+        // 「调用中断」回执，revise 才找得到要续的会话。
         for (const [nodeId, state] of Object.entries(record.nodes ?? {})) {
           if (!state.subagentId) continue
           const node = projection.nodes.find(
@@ -578,7 +575,6 @@ export function foldWorkflow(
     for (const receipt of transition.receipts) {
       projection.results[receipt.nodeId] = receipt
       if (receipt.status !== 'skipped') {
-        projection.attempts[receipt.nodeId] = (projection.attempts[receipt.nodeId] ?? 0) + 1
       }
     }
     projection.phase = transition.phase

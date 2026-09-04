@@ -474,7 +474,6 @@ export function makeDelegate(ctx: {
         nodes,
         {
           signal: input.signal,
-          runId: input.runId as RunId,
           maxConcurrent,
           node: (nodeId, state) => note(input, nodeId)(state),
           describe: describeWith(roles, clis, existing),

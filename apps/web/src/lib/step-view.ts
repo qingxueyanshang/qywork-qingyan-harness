@@ -392,7 +392,7 @@ const EXIT = `${String.fromCharCode(0)}exit`
 
 /** 图上的一格。 */
 export interface GraphNode {
-  /** 认领进度与连线定位都用它。子 agent 那一格的 key 就是 `team.member` 的 memberId。 */
+  /** 认领进度与连线定位都用它。子 agent 那一格的 key 就是 `team.member` 的 nodeId。 */
   key: string
   /** 主行。 */
   title: string

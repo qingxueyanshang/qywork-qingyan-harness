@@ -9,7 +9,6 @@ import {
   type ConversationId,
   checkpointOutput,
   type NodeState,
-  type RunId,
   revisionClosure,
   type SubagentTarget,
   targetLabel,
@@ -21,7 +20,6 @@ import type { NodeResult, PlanNode } from './types.ts'
 
 export interface OrchestratorDeps {
   signal: AbortSignal
-  runId: RunId
   /** 一张图里同时最多几个节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
   maxConcurrent: number
   /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
@@ -350,13 +348,14 @@ export class TeamOrchestrator {
       .map((id) => results.get(id)?.output ?? approvals.get(id) ?? '')
       .filter(Boolean)
       .join('\n\n---\n\n')
-    const withGoal = node.task.replaceAll('{goal}', goal)
     const wantsInput = node.passInput !== false && upstream !== ''
-    const originalTask = withGoal.includes('{input}')
-      ? withGoal.replaceAll('{input}', wantsInput ? upstream : '')
-      : wantsInput
-        ? `${withGoal}\n\n## 上游产出\n\n${upstream}`
-        : withGoal
+    /** 首派的任务正文：{goal} / {input} 占位替换，没写 {input} 的上游产出追加在末尾。 */
+    const originalTask = (): string => {
+      const withGoal = node.task.replaceAll('{goal}', goal)
+      if (withGoal.includes('{input}'))
+        return withGoal.replaceAll('{input}', wantsInput ? upstream : '')
+      return wantsInput ? `${withGoal}\n\n## 上游产出\n\n${upstream}` : withGoal
+    }
     // 续接的子 agent 接的是它自己的会话，原任务早在它的历史里：只发修订指令与上游产出，
     // 不把整段任务再抄一遍——那会让它每一轮都从头读同一段话，卡上也一遍遍重复。
     const prompt = continuing
@@ -366,7 +365,7 @@ export class TeamOrchestrator {
         ]
           .filter(Boolean)
           .join('\n\n')
-      : originalTask
+      : originalTask()
 
     try {
       const res = await this.deps.dispatch({

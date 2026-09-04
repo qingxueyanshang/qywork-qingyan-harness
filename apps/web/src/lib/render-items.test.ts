@@ -268,7 +268,6 @@ describe('workflow 始终是一张卡', () => {
     const card = out[1]
     expect(card?.id).toBe('st_root')
     if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
-    expect(card.item.workflow?.attempts.a).toBe(2)
     expect(card.item.workflow?.results.a?.output).toBe('修订稿')
     expect(card.item.workflow?.results.a?.subagentId).toBe('cv_a')
   })
