@@ -1262,9 +1262,55 @@ describe('一格失败先交回，其余格照跑', () => {
     const res = await pending
     expect(res.ok).toBe(false)
     expect(members().at(-1)?.state.phase).toBe('interrupted')
+    expect(members().at(-1)?.state.error).toBe('父会话这一轮已结束，随之中断')
     expect(port.inflight(at.runId)).toEqual([])
     const child = listRuns(store, res.subagentId as never)[0]
     expect(child?.status).toBe('interrupted')
     expect(child?.interruption?.source).toBe('parent_finished')
+  })
+})
+
+describe('汇合可以重复', () => {
+  /**
+   * 真机上出过的形状：revise 那次调用汇合了三个在跑的格，随后因为另一格失败先返回；
+   * 下一次「等」再汇合时句柄已经没了，三个格被当成回执没送达。汇合不能删句柄。
+   */
+  test('汇合它的那次调用先返回了，下一次调用还能再汇合同一个子 agent', async () => {
+    const cid = conversation()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    script = [
+      () =>
+        new Response(
+          new ReadableStream({
+            async start(controller) {
+              await gate
+              controller.enqueue(new TextEncoder().encode(textTurn('慢的做完了')))
+              controller.close()
+            },
+          }),
+          { headers: SSE_HEADERS },
+        ),
+    ]
+    const port = delegate(cid)
+    const pending = port.dispatch({
+      target: { kind: 'temp', name: '慢' },
+      task: '慢慢做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+    for (let i = 0; i < 500 && !members().some((m) => m.state.phase === 'working'); i++) {
+      await Bun.sleep(10)
+    }
+    const subagentId = members()[0]?.state.subagentId as string
+    const first = port.join({ nodeId: 'slow', subagentId })
+    const second = port.join({ nodeId: 'slow', subagentId })
+    release()
+    expect(await pending).toMatchObject({ ok: true })
+    expect(await first).toMatchObject({ ok: true, output: '慢的做完了' })
+    expect(await second).toMatchObject({ ok: true, output: '慢的做完了' })
+    expect(port.inflight(at.runId)).toEqual([])
   })
 })
