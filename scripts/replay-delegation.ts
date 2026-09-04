@@ -217,13 +217,13 @@ async function main(): Promise<number> {
     // ── 首派 ──
     process.stdout.write('\n首派：用户原话\n')
     send(INSTRUCTION)
-    const [first] = await waitFor(
-      'workflow 首派',
-      started('workflow'),
-      1,
-      FIRST_DISPATCH_TIMEOUT_MS,
+    // 首派以真正起了节点的那次调用为准：参数被挡回的那次不算，模型会按回执补全重派。
+    const live = await waitFor('四个节点 working', working, 4, FIRST_DISPATCH_TIMEOUT_MS)
+    const first = events.find(
+      (ev): ev is Started => started('workflow')(ev) && ev.stepId === live[0]!.stepId,
     )
-    const args = first!.args as {
+    if (!first) throw new Error('起了节点却找不到对应的 workflow 调用')
+    const args = first.args as {
       goal?: string
       nodes?: { id: string; kind?: string; name?: string; model?: string; provider?: string }[]
       maxConcurrent?: number
@@ -250,7 +250,6 @@ async function main(): Promise<number> {
     )
     check('并发够四个同时跑', (args.maxConcurrent ?? 4) >= 4, args.maxConcurrent)
 
-    const live = await waitFor('四个节点 working', working, 4, 3 * 60_000)
     const byNode = new Map(live.map((m) => [m.nodeId, m.state.subagentId as string]))
     check(`四个节点各有子 agent（${byNode.size}）`, byNode.size >= 4, [...byNode])
     const kids = listChildConversations(store, conversationId)
@@ -278,7 +277,7 @@ async function main(): Promise<number> {
     const stepOf = () =>
       listRuns(store, conversationId)
         .flatMap((r) => listSteps(store, r.id))
-        .find((s) => s.id === first!.stepId)
+        .find((s) => s.id === first.stepId)
     const persisted = stepOf()?.payload
     const nodesOnStep =
       persisted?.kind === 'tool_call' || persisted?.kind === 'tool_result'
@@ -293,7 +292,7 @@ async function main(): Promise<number> {
       nodesOnStep,
     )
 
-    const firstWorkflowId = first!.stepId
+    const firstWorkflowId = first.stepId
     /** 账本里这条会话的每张工作流折出来的投影。 */
     const ledgerWorkflows = () => {
       const records = listWorkflowRecords(store, conversationId)
@@ -340,9 +339,14 @@ async function main(): Promise<number> {
       // ── 继续 ──
       process.stdout.write('\n继续：一句「继续」\n')
       send('继续')
-      await waitFor('续跑的 workflow 调用', started('workflow'), 2, FIRST_DISPATCH_TIMEOUT_MS)
-      const resumeCall = events.filter(started('workflow'))[1]!
-      const resumeArgs = resumeCall.args as {
+      const [resumeCall] = await waitFor(
+        '续跑的 revise 调用',
+        (ev): ev is Started =>
+          started('workflow')(ev) && (ev.args as { decision?: string }).decision === 'revise',
+        1,
+        FIRST_DISPATCH_TIMEOUT_MS,
+      )
+      const resumeArgs = resumeCall!.args as {
         workflowId?: string
         decision?: string
         revisions?: { nodeId: string }[]
