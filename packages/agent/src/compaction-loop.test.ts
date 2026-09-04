@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { classifyProviderError, DEFAULT_DENSITY, lookupModel } from '@qywork/ai'
-import type { AgentEvent } from '@qywork/core'
+import type { AgentEvent, RunUsage } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -1212,5 +1212,174 @@ describe('结果形态对用户可见', () => {
     }
     expect(recorded[0]?.phase).toBe('skipped')
     expect(recorded[0]?.reasonCode).toBe('nothing_to_fold')
+  })
+})
+
+/**
+ * 会调摘要器的压缩端口：通过 `trace` 把摘要请求记成这一轮的普通请求。
+ * 投影在压过之后变小，重发才有意义。
+ */
+function summarizingCompaction(outcome: CompactionOutcome) {
+  const state = { runs: 0, folded: false }
+  const port: CompactionPort = {
+    project: (messages) =>
+      state.folded ? messages.map((m) => ({ ...m, content: '折' })) : messages,
+    run: async (runInput: CompactionRunInput) => {
+      state.runs++
+      state.folded = true
+      const trace = runInput.trace
+      if (trace) {
+        const id = trace.open({
+          model: 'claude-opus-5',
+          system: [{ text: '你是会话摘要器。' }],
+          messages: [{ role: 'user', content: '摘要提示词' }],
+          tools: [],
+          maxOutputTokens: null,
+        })
+        trace.sent(id)
+        trace.firstEvent(id)
+        trace.settle(
+          id,
+          'received',
+          {
+            inputTokens: 7,
+            outputTokens: 3,
+            cachedTokens: null,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+            source: 'provider',
+          },
+          null,
+          'end_turn',
+        )
+      }
+      return outcome
+    },
+  }
+  return { port, state }
+}
+
+/** 与 `okAdapter` 同形，只多回报一次 usage：这里要看 usage 里有没有两笔。 */
+function usageAdapter(): LlmAdapter {
+  return {
+    kind: 'anthropic_messages',
+    transmits: { effort: true },
+    spec: lookupModel('claude-opus-5', 'anthropic_messages'),
+    async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
+      yield { type: 'text_delta', delta: '完成' }
+      yield {
+        type: 'usage',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: 0,
+          source: 'provider',
+        },
+      }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+    },
+  }
+}
+
+function storedRun() {
+  const store = new Store({ path: ':memory:' })
+  const ws = upsertWorkspace(store, 'C:/ws', 'ws')
+  const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+  const run = createRun(store, {
+    conversationId: conv.id,
+    workspaceId: ws.id,
+    model: 'm',
+    clientRequestId: 'req-summary',
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  const persist: LoopPersistence = {
+    ...noopPersistence(),
+    openRequest: (input) => openProviderRequest(store, input).id,
+    markRequestSent: (id) => markProviderRequestSent(store, id as never),
+    settleRequest: (id, status, usage, errorCode, finishReason) =>
+      settleProviderRequest(store, id as never, status, usage, errorCode, finishReason),
+  }
+  return { store, run, persist }
+}
+
+/**
+ * 压缩时的摘要请求是这一轮的普通请求：发出前落 provider_requests（purpose = summary），
+ * 占一个 turn 编号，回报的 usage 并进这一轮。锁的失败形状：它原来只记在账本里，
+ * 逐请求表看不见它，运行面板另立一行按时间排。
+ */
+describe('摘要请求按普通请求记账', () => {
+  test('发送前压缩：摘要请求占 turn 0，主请求顺延到 turn 1，usage 含两笔', async () => {
+    const { store, run, persist } = storedRun()
+    const comp = summarizingCompaction(okOutcome)
+    const saved: RunUsage[] = []
+    const loop = new AgentLoop({
+      adapter: usageAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: { ...persist, saveUsage: (_id, usage) => saved.push(structuredClone(usage)) },
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      runId: run.id,
+      history: [],
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    expect(comp.state.runs).toBe(1)
+    const rows = listProviderRequests(store, run.id)
+    expect(rows.map((r) => [r.turnIndex, r.retryIndex, r.purpose, r.status])).toEqual([
+      [0, 0, 'summary', 'received'],
+      [1, 0, 'turn', 'received'],
+    ])
+    expect(rows[0]?.providerOutputTokens).toBe(3)
+    // 压缩一结束就有一条 usage 事件，此时只有摘要那一笔。
+    const first = events.find((e) => e.type === 'usage')
+    expect(first?.type === 'usage' && first.usage.inputTokens).toBe(7)
+    const last = saved.at(-1)
+    expect(last?.turns.map((t) => [t.turnIndex, t.input])).toEqual([
+      [0, 7],
+      [1, 10],
+    ])
+    expect(last?.inputTokens).toBe(17)
+    store.close()
+  })
+
+  test('容量拒绝后压缩：被拒、摘要、重发各占一个 turn，按发生顺序排', async () => {
+    const { store, run, persist } = storedRun()
+    const comp = summarizingCompaction(okOutcome)
+    const { adapter, state } = rejectingAdapter(1)
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events = await collectWith(loop, run.id, bulkyHistory())
+    expect(events.some((e) => e.type === 'run.error')).toBe(false)
+    expect(state.attempts).toBe(2)
+    const rows = listProviderRequests(store, run.id)
+    expect(rows.map((r) => [r.turnIndex, r.retryIndex, r.purpose, r.status])).toEqual([
+      [0, 0, 'turn', 'rejected'],
+      [1, 0, 'summary', 'received'],
+      [2, 0, 'turn', 'received'],
+    ])
+    store.close()
   })
 })

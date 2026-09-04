@@ -6,6 +6,7 @@
  */
 
 import { createSignal } from 'solid-js'
+import { createStore } from 'solid-js/store'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 
 /**
@@ -529,4 +530,24 @@ export function setFollowUpMode(next: FollowUpMode): void {
   } catch {
     // 同上：这一次的选择已经生效，存不下只影响下次启动。
   }
+}
+
+/**
+ * 会话流里折叠条目的开合，按条目 key。**开合的权威在这里，不在 `<details>` 节点上**：
+ * 节点的寿命由渲染投影决定——组卡多一个成员、单条工具并进组卡，节点就换新，
+ * 记在节点上的展开态跟着丢。只有用户点开合才写；没记过的条目视为合着。
+ */
+const [folds, setFolds] = createStore<Record<string, boolean>>({})
+
+export function foldOpen(key: string): boolean {
+  return folds[key] ?? false
+}
+
+export function setFoldOpen(key: string, open: boolean): void {
+  setFolds(key, open)
+}
+
+/** 只在这条还没记过决定时写：给新出生的组卡定初始开合用，之后归用户。 */
+export function seedFoldOpen(key: string, open: boolean): void {
+  if (folds[key] === undefined) setFolds(key, open)
 }

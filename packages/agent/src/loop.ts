@@ -42,6 +42,7 @@ import type {
   ProviderFailureCause,
   ProviderKind,
   ProviderRequestDiagnostic,
+  ProviderRequestPurpose,
   ProviderRetryDecision,
   RunId,
   RunUsage,
@@ -56,7 +57,7 @@ import {
   newBatchId,
   reconcileBreakdown,
 } from '@qywork/core'
-import type { CompactionOutcome } from './compaction.ts'
+import type { CompactionOutcome, SummaryTrace } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import { drainUntil, EventQueue } from './event-queue.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
@@ -140,6 +141,8 @@ export interface CompactionPort {
 export interface CompactionRunInput {
   /** 中断信号。**可缺**：手动压缩不属于任何 run，没有 run 信号。 */
   signal?: AbortSignal
+  /** 一轮之内压缩时的记账钩子：摘要请求按这一轮的普通请求记。手动压缩不给。 */
+  trace?: SummaryTrace
   /**
    * 自动触发允许「只收纳、不摘要」；手动触发代表用户明确要求生成压缩投影。
    * 两者仍走同一个端口、同一份 manifest，只在选界和是否必须尝试摘要上有差别。
@@ -276,6 +279,7 @@ export interface LoopPersistence {
     runId: RunId
     turnIndex: number
     retryIndex: number
+    purpose: ProviderRequestPurpose
     providerName?: string
     providerKind: ProviderKind
     model: string
@@ -663,6 +667,62 @@ export class AgentLoop {
    * `request_prepared`，所以这里拉到的恒是它，真正的网络往返发生在调用方的
    * `for await` 里——重发与终态判定因此必须写在那一侧，不能写在这。
    */
+  /**
+   * 一轮之内压缩时摘要请求的记账。摘要请求按这一轮的普通请求处理：发出前落
+   * `provider_requests`（purpose = summary，占 turnIndex 这个编号），回报的 usage 并进这一轮。
+   * `opened` / `merged` 告诉调用方编号占没占、usage 变没变。
+   */
+  private summaryTrace(
+    persist: LoopPersistence,
+    runId: RunId,
+    adapter: LlmAdapter,
+    usage: RunUsage,
+    turnIndex: number,
+    density: TokenDensity,
+  ): SummaryTrace & { opened: boolean; merged: boolean } {
+    const providerName = this.deps.providerName
+    const trace = {
+      opened: false,
+      merged: false,
+      open: (req: ChatRequest): string => {
+        trace.opened = true
+        const payload = payloadSnapshotOf(req)
+        return persist.openRequest({
+          runId,
+          turnIndex,
+          retryIndex: 0,
+          purpose: 'summary',
+          ...(providerName ? { providerName } : {}),
+          providerKind: adapter.kind,
+          model: req.model,
+          measuredInputTokens: estimateRequest(req, density),
+          sentCategories: emptyBreakdown(),
+          omittedCategories: emptyOmitted(),
+          payloadHash: payload.hash,
+          requestBytes: payload.bytes,
+          cacheRouteFingerprint: envelopeHashOf(req),
+        })
+      },
+      sent: (requestId: string): void => persist.markRequestSent(requestId),
+      firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
+      settle: (
+        requestId: string,
+        status: 'received' | 'uncertain' | 'rejected',
+        u: ProviderUsage | null,
+        errorCode: string | null,
+        finishReason?: string,
+      ): void => {
+        if (u) {
+          mergeUsage(usage, u, adapter, turnIndex)
+          persist.saveUsage(runId, usage)
+          trace.merged = true
+        }
+        persist.settleRequest(requestId, status, u, errorCode, finishReason)
+      },
+    }
+    return trace
+  }
+
   private async openStream(
     adapter: LlmAdapter,
     req: ChatRequest,
@@ -1025,10 +1085,20 @@ export class AgentLoop {
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
             // `provider_requests`，账本上连「卡在哪」都看不出来。
+            // 摘要请求占下一个 turn 编号；主请求顺延。
+            const trace = this.summaryTrace(
+              persist,
+              input.runId,
+              adapter,
+              usage,
+              requestTurn,
+              density,
+            )
             const outcome = await untilAborted(
               input.signal,
               this.compaction.run({
                 signal: input.signal,
+                trace,
                 trigger: 'automatic',
                 model: adapter.spec.id,
                 occupancy,
@@ -1037,6 +1107,13 @@ export class AgentLoop {
                 density,
               }),
             )
+            if (trace.opened) {
+              requestTurn++
+              turnIndex++
+              if (trace.merged) {
+                yield { type: 'usage', runId: input.runId, usage: structuredClone(usage) }
+              }
+            }
             if (outcome.status === 'aborted') {
               /*
                * 中断的压缩什么都没落库，所以这里什么都不发、什么都不记：
@@ -1152,6 +1229,7 @@ export class AgentLoop {
             runId: input.runId,
             turnIndex: requestTurn,
             retryIndex,
+            purpose: 'turn',
             ...(this.deps.providerName ? { providerName: this.deps.providerName } : {}),
             providerKind: adapter.kind,
             model: adapter.spec.id,
@@ -1375,10 +1453,23 @@ export class AgentLoop {
               // 收纳段可能落了库却一个 token 没省。
               const sizeBefore = estimateRequest(req, density)
               yield { type: 'compaction', runId: input.runId, phase: 'started' }
+              /*
+               * 被拒的那次已占着 (requestTurn, retry)。摘要请求记到下一个 turn；压缩后重发的
+               * 是另一份内容（历史已换成摘要），不再算同一 turn 的重试，也另起一个 turn。
+               */
+              const trace = this.summaryTrace(
+                persist,
+                input.runId,
+                adapter,
+                usage,
+                requestTurn + 1,
+                density,
+              )
               const outcome = await untilAborted(
                 input.signal,
                 this.compaction.run({
                   signal: input.signal,
+                  trace,
                   trigger: 'automatic',
                   model: adapter.spec.id,
                   occupancy: cap.reportedInputTokens ?? occupancyOf(req),
@@ -1388,6 +1479,14 @@ export class AgentLoop {
                   density,
                 }),
               )
+              if (trace.opened) {
+                requestTurn += 2
+                turnIndex += 2
+                sendIndex = 0
+                if (trace.merged) {
+                  yield { type: 'usage', runId: input.runId, usage: structuredClone(usage) }
+                }
+              }
               if (outcome.status === 'aborted') {
                 stopReason = 'user_interrupt'
                 recordDecision('interrupted')

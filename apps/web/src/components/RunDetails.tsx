@@ -56,10 +56,16 @@ export default function RunDetails() {
   const runs = createMemo(() => [...(loaded(runData)?.runs ?? [])].reverse())
   /** 子会话的轮次：派出去的那几件，钱记在同一条会话名下。 */
   const childRuns = createMemo(() => loaded(runData)?.childRuns ?? [])
-  /** 账本里非轮次的那几笔（压缩摘要等）。轮次那几笔由 `runs` 提供，它带得动展开区。 */
-  const extras = createMemo(() => (loaded(ledger)?.entries ?? []).filter((e) => e.kind !== 'run'))
+  /**
+   * 账本里不属于任何一轮的那几笔（手动压缩的摘要等）。轮次那几笔由 `runs` 提供，它带得动展开区。
+   * 一轮之内的压缩请求是这一轮的普通请求，在那一轮的逐请求表里；带 runId 的账本行属于那一轮，
+   * 不单列。
+   */
+  const extras = createMemo(() =>
+    (loaded(ledger)?.entries ?? []).filter((e) => e.kind !== 'run' && e.runId === null),
+  )
 
-  /** 清单：本会话轮次、子会话轮次与非轮次按时间倒序并成一列。 */
+  /** 清单：本会话轮次、子会话轮次与不属于任何一轮的那几笔按时间倒序并成一列。 */
   const rows = createMemo(() =>
     [
       ...runs().map((r) => ({
@@ -143,7 +149,7 @@ function Stat(props: { label: string; value: string }) {
 }
 
 /**
- * 会话合计：金额跟在「本会话」右边，下面一张六格读数卡。
+ * 会话合计：「本会话」旁边是边界一句，金额靠右，下面一张六格读数卡。
  *
  * **六格是一份完整的账。** 轮次 / 输入 / 输出 / 命中率 / 缓存命中 / 缓存写入，与中转站后台的读数同
  * 名同序。少任何一格都会让「这条会话的花销构成」缺一块：命中率答「缓存生效没有」，命中与写入答
@@ -195,10 +201,10 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
     <header class="run-sum">
       <div class="run-sum-top">
         <span class="run-sum-scope">本会话</span>
+        {/* 边界：外部 CLI 是本机另一个进程，它的钱花在别家账上，这里拿不到。 */}
+        <span class="run-sum-note">不含外部 CLI</span>
         <span class="run-sum-cost">{money(totals().cost)}</span>
       </div>
-      {/* 边界：外部 CLI 是本机另一个进程，它的钱花在别家账上，这里拿不到。 */}
-      <div class="run-sum-note">不含外部 CLI</div>
       <div class="run-stats">
         <Stat label="轮次" value={String(props.runs.length)} />
         {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
@@ -256,9 +262,9 @@ function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => vo
 }
 
 /**
- * 不属于任何一轮的那一笔（压缩摘要）。
+ * 不属于任何一轮的那一笔（手动压缩的摘要）。
  *
- * **列出来是为了合计对得上**：这笔钱真花了，只是它发生在两轮之间。
+ * **列出来是为了合计对得上**：这笔钱真花了，只是它不在任何一轮的 usage 里。
  * 它没有 run，所以没有展开区，也不给折叠符号——占位空格保证时间列还在同一条竖线上。
  */
 function ExtraRow(props: { entry: UsageLedgerRow }) {
@@ -291,7 +297,7 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
  * 者按 `turnIndex` 对齐：成功那次对得上，重发失败那次对不上——而对不上正是实话，那一次收没收费不知
  * 道。
  *
- * **列序对齐中转站后台。** 传输证据放在请求编号之后，账单字段仍保持
+ * **列序对齐中转站后台。** 请求编号之后是账单字段：
  * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，同序逐行扫下来。
  */
 function RequestLedger(props: { run: Run }) {
@@ -315,7 +321,6 @@ function RequestLedger(props: { run: Run }) {
                   （每段思考、每段正文、每次工具调用各一条），这里数的是模型往返次数，
                   两个数不该、也不会相等。列名把单位说出来，省掉一次「为什么对不上」。 */}
               <th>请求</th>
-              <th title="模型可见请求体 / 发出到首段内容">传输</th>
               <th>输入</th>
               <th>输出</th>
               <th>命中</th>
@@ -334,7 +339,6 @@ function RequestLedger(props: { run: Run }) {
                     : q.providerInputTokens + (q.providerCachedTokens ?? 0)
                 const cost = costOf(q.turnIndex)
                 const outcome = requestOutcome(q)
-                const transport = requestTransport(q)
                 return (
                   <tr>
                     {/* 重发是同一轮的第 N 次，编号要看得出来，否则两行长得一样。 */}
@@ -342,7 +346,6 @@ function RequestLedger(props: { run: Run }) {
                       {q.turnIndex + 1}
                       {q.retryIndex > 0 ? `.${q.retryIndex + 1}` : ''}
                     </td>
-                    <td title={transport.title}>{transport.text}</td>
                     <td>{num(input)}</td>
                     <td>{num(q.providerOutputTokens)}</td>
                     <td>{num(q.providerCachedTokens)}</td>
@@ -382,41 +385,6 @@ function LedgerLink() {
       <IconChevron size={11} dir="right" />
     </button>
   )
-}
-
-/**
- * 不把“请求很大”和“上游首内容慢”揉成一个结论：单元格给紧凑读数，title 保留
- * 路线、首事件、总耗时与异常链。没有这些字段时显示 N/A，不伪造成 0ms / 0B。
- * 重试结论只在结果列出现，这里不再重复一份映射。
- */
-function requestTransport(q: ProviderRequest): { text: string; title: string } {
-  const size = byteSize(q.requestBytes)
-  const firstContent = elapsed(q.sentAt, q.firstContentAt)
-  const firstEvent = elapsed(q.sentAt, q.firstEventAt)
-  const total = elapsed(q.sentAt, q.completedAt)
-  const route = [q.providerName, q.providerKind].filter(Boolean).join(' / ') || NA
-  const causes = q.diagnostic?.causes
-    .map((cause) => `${cause.name}${cause.code ? `(${cause.code})` : ''}: ${cause.message}`)
-    .join(' ← ')
-  return {
-    text: `${size} / ${firstContent}`,
-    title: `${route}；请求体 ${size}；首事件 ${firstEvent}；首内容 ${firstContent}；完成 ${total}${
-      causes ? `；异常链 ${causes}` : ''
-    }`,
-  }
-}
-
-function byteSize(n: number | null): string {
-  if (n === null) return NA
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
-
-function elapsed(start: number | null, end: number | null): string {
-  if (start === null || end === null) return NA
-  const ms = Math.max(0, end - start)
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
 }
 
 /**

@@ -251,34 +251,20 @@ export function actionLabel(item: TranscriptItem): string {
 }
 
 /**
- * 让没变的行保持**同一个对象引用**。
+ * 两个包装指的是不是同一份内容：id 与 kind 相同，且底下指的还是同一条 transcript 条目
+ * （组卡则是同一组成员、同一顺序）。
  *
- * `<For>` 是按引用配对的（不是按 id），而 `buildRenderItems` 每次都产出全新的包装
- * 对象——因此 transcript 每 push 一条（每个工具启动、每段思考、每次收尾），
- * 整列 DOM 全部销毁重建。两个后果：长会话里每来一条就重建一次全表；
- * 更严重的是**展开着的折叠会自己合上**——`<details>` 的 open 是原生状态，
- * 存在 DOM 节点上，节点没了状态就没了。运行中点开一张工具卡，
- * 下一个工具启动的瞬间它就关了。
- *
- * 这里不改 `buildRenderItems`（它是纯的、有测试），只在它之后补一次对账：
- * id 与 kind 相同、且底下指的还是同一条 transcript 条目，就沿用上一轮那个包装。
- * 正文增量不影响——store 的条目是代理对象，原地改字段时引用不变，
- * 行内的文本靠细粒度响应自己更新。
+ * `<For>` 按引用配对，而 `buildRenderItems` 每轮都产出全新的包装对象。行的 DOM 不能
+ * 直接挂在包装上：包装一换整行销毁重建，`<details>` 的展开态是原生状态、存在节点上，
+ * 节点没了状态就没了。所以 `TranscriptRows` 给每个 id 一个固定的壳，壳里的信号以这个
+ * 判据决定要不要更新——store 的条目是代理对象，原地改字段时引用不变，行内的文本靠
+ * 细粒度响应自己更新，不需要换包装。
  */
-export function reconcileRenderItems(prev: RenderItem[], next: RenderItem[]): RenderItem[] {
-  if (prev.length === 0) return next
-  const byId = new Map(prev.map((p) => [p.id, p]))
-
-  return next.map((n) => {
-    const old = byId.get(n.id)
-    if (!old || old.kind !== n.kind) return n
-    if (n.kind === 'group') {
-      const o = old as Extract<RenderItem, { kind: 'group' }>
-      const same =
-        o.members.length === n.members.length && o.members.every((m, i) => m === n.members[i])
-      return same ? o : n
-    }
-    const o = old as Exclude<RenderItem, { kind: 'group' }>
-    return o.item === n.item ? o : n
-  })
+export function sameRenderItem(a: RenderItem, b: RenderItem): boolean {
+  if (a.id !== b.id || a.kind !== b.kind) return false
+  if (a.kind === 'group' && b.kind === 'group') {
+    return a.members.length === b.members.length && a.members.every((m, i) => m === b.members[i])
+  }
+  if (a.kind === 'group' || b.kind === 'group') return false
+  return a.item === b.item
 }

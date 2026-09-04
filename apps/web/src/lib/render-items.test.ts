@@ -7,13 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  actionLabel,
-  buildRenderItems,
-  groupTitle,
-  reconcileRenderItems,
-  verb,
-} from './render-items.ts'
+import { actionLabel, buildRenderItems, groupTitle, sameRenderItem, verb } from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
@@ -428,38 +422,38 @@ describe('动词与单条文案', () => {
   })
 })
 
-describe('对账：没变的行保持同一个引用', () => {
-  /**
-   * 直接复现原始失败形状：`<For>` 按引用配对，而每次 build 都产出全新包装对象，
-   * 因此每 push 一条就整列重建 DOM——展开着的 `<details>` 随之合上。
-   * 所以这里断言的是**引用相等**，不是内容相等。
-   */
-  test('追加一条时，先前的行仍是同一个对象', () => {
+describe('相等判据：壳里的信号要不要更新', () => {
+  test('底下还是同一条 transcript 条目就算没变', () => {
     const a = item('user', { text: '问' })
-    const b = item('text', { text: '答' })
-
-    const first = buildRenderItems([a, b])
-    const second = reconcileRenderItems(
-      first,
-      buildRenderItems([a, b, item('text', { text: '又' })]),
-    )
-
-    expect(second.length).toBe(first.length + 1)
-    expect(second[0]).toBe(first[0])
-    expect(second[1]).toBe(first[1])
+    const [first] = buildRenderItems([a])
+    const [second] = buildRenderItems([a])
+    expect(sameRenderItem(first!, second!)).toBe(true)
   })
 
-  test('底下那条 transcript 换了对象就不能复用', () => {
+  test('同一个 id 换了对象就算变了', () => {
     const a = item('user', { text: '问' })
-    const first = buildRenderItems([a])
-    // 同一个 id、不同对象：内容变了，必须换新包装，否则行内容不刷新。
-    const replaced = { ...a, text: '改过了' } as TranscriptItem
-    const second = reconcileRenderItems(first, buildRenderItems([replaced]))
-    expect(second[0]).not.toBe(first[0])
+    const [first] = buildRenderItems([a])
+    const [second] = buildRenderItems([{ ...a, text: '改过了' } as TranscriptItem])
+    expect(sameRenderItem(first!, second!)).toBe(false)
   })
 
-  test('首次构建原样返回，不做无谓分配', () => {
-    const built = buildRenderItems([item('user', { text: '问' })])
-    expect(reconcileRenderItems([], built)).toBe(built)
+  /** 复现的失败形状：运行中点开的组卡，下一个工具启动时成员多了一个，卡就合上了。 */
+  test('组卡成员多了一个就算变了，成员相同就算没变', () => {
+    const a = tool('a.ts')
+    const b = tool('b.ts')
+    const [two] = buildRenderItems([a, b])
+    const [twoAgain] = buildRenderItems([a, b])
+    const [three] = buildRenderItems([a, b, tool('c.ts')])
+    expect(two!.kind).toBe('group')
+    expect(sameRenderItem(two!, twoAgain!)).toBe(true)
+    expect(sameRenderItem(two!, three!)).toBe(false)
+  })
+
+  test('kind 变了就算变了', () => {
+    const a = tool('a.ts')
+    const [single] = buildRenderItems([a])
+    const [group] = buildRenderItems([a, tool('b.ts')])
+    expect(single!.id).toBe(group!.id)
+    expect(sameRenderItem(single!, group!)).toBe(false)
   })
 })

@@ -312,6 +312,7 @@ export class RuntimeCompaction implements CompactionPort {
         typicalSummaryTokens: summaryOutputPercentile(store, workspaceId, SUMMARY_PERCENTILE),
         condensedRegionTokens: condensedRegion,
         foldedMessageCount,
+        ...(input.trace ? { trace: input.trace } : {}),
       },
       this.deps.summarize,
       input.signal,

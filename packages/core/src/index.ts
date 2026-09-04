@@ -75,6 +75,7 @@ export {
   type ProviderKind,
   type ProviderRequest,
   type ProviderRequestDiagnostic,
+  type ProviderRequestPurpose,
   type ProviderRequestStatus,
   type ProviderRetryDecision,
   REASONING_ECHOES,

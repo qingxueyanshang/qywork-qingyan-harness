@@ -1058,6 +1058,8 @@ export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
  * **usage 四个字段允许为 null。** `null` = provider 没回报，与真实的 0 是两回事。中转站漏 usage 是
  * 常态，把没回报记成 0 会让上下文锚点误判成「这次请求什么都没占」。
  */
+export type ProviderRequestPurpose = 'turn' | 'summary'
+
 export interface ProviderRequest {
   id: ProviderRequestId
   runId: RunId
@@ -1065,6 +1067,12 @@ export interface ProviderRequest {
   turnIndex: number
   /** 同一 turn 的第几次重试，从 0 起。与 turnIndex 一起构成唯一键。 */
   retryIndex: number
+  /**
+   * 这次往返是哪一种：主模型的一轮（turn），或一轮之内压缩时的摘要请求（summary）。
+   * 摘要请求同样占一个 turn 编号、计入这一轮的 usage；但它发的不是会话上下文，
+   * 上下文锚点与命中率只看 turn。
+   */
+  purpose: ProviderRequestPurpose
   /** 请求发出时绑定的接口名。null = 迁移前旧行或测试夹具未提供。 */
   providerName: string | null
   /** 请求实际走的协议。与接口名一起区分同模型的不同路线。 */
