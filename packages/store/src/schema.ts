@@ -268,6 +268,92 @@ WHERE kind = 'tool_action' AND trim(COALESCE(provider_batch_id, '')) = '';
   }
 }
 
+/** 旧服务给临时子 agent 的显示名，迁移 41 沿用它，不拿任务正文当名字。 */
+const TEMP_LABEL = '临时子 agent'
+
+/**
+ * 旧的派活目标字段 `agent` 换成按 kind 记：`ad-hoc` 与空值是临时子 agent，
+ * `cli:<id>` 是外部 CLI，其余是角色 id。临时子 agent 的名字用给定的回落名。
+ */
+function kindFieldsOf(agent: unknown, fallbackName: string): Record<string, string> {
+  if (typeof agent !== 'string' || agent === '' || agent === 'ad-hoc') {
+    return { kind: 'temp', name: fallbackName }
+  }
+  if (agent.startsWith('cli:')) return { kind: 'cli', cli: agent.slice('cli:'.length) }
+  return { kind: 'role', role: agent }
+}
+
+/**
+ * 迁移 41 对一条派活 step 的改写。返回 false = 这一行已经是新形状，不用写回。
+ *
+ * 回执里的逐节点终态是每一格状态的真值：续接调用没有逐格状态的从回执折出来，
+ * 首派那条由迁移 40 按 step 终态估出来的也以回执为准。
+ */
+function rewriteDelegationPayload(payload: Record<string, unknown>, toolName: string): boolean {
+  let changed = false
+  const args = payload.args as Record<string, unknown> | undefined
+  const nodes = (payload.nodes ?? {}) as Record<string, Record<string, unknown>>
+  if (toolName === 'subagent' && args && 'agent' in args) {
+    const { agent, ...rest } = args
+    const target = kindFieldsOf(agent, TEMP_LABEL)
+    payload.args = { ...target, ...rest }
+    // 旧服务给临时子会话起的标题是任务正文，迁移 40 把它抄成了格子的名字，与卡上的任务行重复。
+    if (target.kind === 'temp' && nodes.child) nodes.child.label = TEMP_LABEL
+    changed = true
+  }
+  if (toolName === 'workflow' && args && Array.isArray(args.nodes)) {
+    args.nodes = args.nodes.map((raw) => {
+      const node = raw as Record<string, unknown>
+      if (node.kind === 'checkpoint' || !('agent' in node || node.kind === 'agent')) return node
+      const { kind: _kind, agent, ...rest } = node
+      changed = true
+      return { ...kindFieldsOf(agent, TEMP_LABEL), ...rest }
+    })
+  }
+  const data = (payload.outcome as { data?: Record<string, unknown> } | undefined)?.data
+  const receipts = data?.receipts
+  if (data && Array.isArray(receipts)) {
+    const rewritten = receipts.map((raw) => {
+      const receipt = raw as Record<string, unknown>
+      if (!('agent' in receipt) && !('conversationId' in receipt)) return receipt
+      const { agent: _agent, conversationId, ...rest } = receipt
+      changed = true
+      return {
+        ...rest,
+        ...(typeof conversationId === 'string' ? { subagentId: conversationId } : {}),
+      }
+    })
+    data.receipts = rewritten
+    for (const raw of rewritten) {
+      const receipt = raw as Record<string, unknown>
+      const id = typeof receipt.nodeId === 'string' ? receipt.nodeId : ''
+      if (!id) continue
+      const status = receipt.status
+      const known = nodes[id]
+      const subagentId =
+        typeof receipt.subagentId === 'string' ? receipt.subagentId : known?.subagentId
+      const state = {
+        phase: status === 'done' ? 'done' : status === 'skipped' ? 'skipped' : 'failed',
+        label: typeof receipt.label === 'string' ? receipt.label : (known?.label ?? ''),
+        ...(typeof subagentId === 'string' ? { subagentId } : {}),
+        ...(typeof receipt.durationMs === 'number' ? { durationMs: receipt.durationMs } : {}),
+        ...(typeof receipt.error === 'string' && receipt.error ? { error: receipt.error } : {}),
+      }
+      if (JSON.stringify(known) !== JSON.stringify(state)) {
+        nodes[id] = state
+        changed = true
+      }
+    }
+    if (Object.keys(nodes).length) payload.nodes = nodes
+  }
+  const action = payload.action as { objectLabel?: string } | undefined
+  if (action?.objectLabel === '编排') {
+    action.objectLabel = '工作流'
+    changed = true
+  }
+  return changed
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     id: 1,
@@ -1438,6 +1524,31 @@ SET payload = json_set(
        FROM json_each(steps.payload, '$.children') je))
 WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
 `,
+  },
+  {
+    id: 41,
+    name: 'delegation_kind_args',
+    /**
+     * 派活参数与回执改按 kind 记之后，旧行还按旧形状写着：节点 `kind: 'agent'` 加
+     * `agent`（角色 id / `ad-hoc` / `cli:<id>`），单派的 `agent` 为空表示临时，
+     * 回执带 `agent` 与 `conversationId`，卡头对象名是「编排」。新解析器认不出旧行，
+     * 那张图就折不起来。旧行按同一规则改写；续接调用的逐格状态从它的回执折出来。
+     */
+    apply(db) {
+      const rows = db
+        .query<{ id: string; tool_name: string; payload: string }, []>(
+          `SELECT id, tool_name, payload FROM steps
+           WHERE kind = 'tool_action' AND tool_name IN ('workflow', 'subagent') AND payload IS NOT NULL`,
+        )
+        .all()
+      const update = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload) as Record<string, unknown>
+        if (rewriteDelegationPayload(payload, row.tool_name)) {
+          update.run(JSON.stringify(payload), row.id)
+        }
+      }
+    },
   },
 ]
 

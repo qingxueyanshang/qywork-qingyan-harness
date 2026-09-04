@@ -128,7 +128,14 @@ describe('激活项目复用服务端返回的会话列表', () => {
         }
       }
       if (path.includes('/history')) {
-        return { messages: [], runs: [], steps: [], todos: [], nextCursor: null }
+        return {
+          messages: [],
+          runs: [],
+          steps: [],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+        }
       }
       throw new Error(`投影不可用：${path}`)
     }
@@ -578,6 +585,7 @@ describe('事件按会话归属过滤', () => {
         runs: [],
         steps: [],
         todos: [{ id: 'todo_1', content: '已经做完', status: 'completed' }],
+        workflowStarts: [],
         nextCursor: null,
       }
     }
@@ -1011,7 +1019,7 @@ describe('文件快照失效序号', () => {
  * 用假的 `client.api` 喂账本回体，走的是真的折叠逻辑。
  */
 describe('重拉会话：账本里有的，界面上就得有', () => {
-  const stub = (steps: unknown[], runs: unknown[]) => {
+  const stub = (steps: unknown[], runs: unknown[], workflowStarts: unknown[] = []) => {
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/history')) {
         return {
@@ -1031,6 +1039,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
             runId: (runs[0] as { id?: string } | undefined)?.id ?? 'rn_1',
           })),
           todos: [],
+          workflowStarts,
           nextCursor: null,
         }
       }
@@ -1203,6 +1212,94 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
       ['build-glm', 'cv_glm', 'working'],
       ['build-qwen', undefined, 'queued'],
     ])
+  })
+
+  /**
+   * 原始失败形状：续接调用所在的页里没有首派，图的形状无处可取，那张卡只剩「当前会话」一格。
+   * 服务端把被引用的首派随页带回，前端先把它放进流，折叠时就能画全。
+   */
+  test('页里只有续接调用时，随页带回的首派进流并折成一张带节点的卡', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    const start = {
+      ...toolStep(),
+      id: 'st_wf',
+      runId: 'rn_0',
+      toolName: 'workflow',
+      payload: {
+        kind: 'tool_result',
+        args: {
+          goal: '目标',
+          nodes: [
+            { id: 'a', kind: 'temp', name: 'a', task: '做' },
+            { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+          ],
+        },
+        action: { kind: 'run', objectLabel: '工作流' },
+        nodes: { a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 3 } },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '到检查点',
+          data: {
+            workflowId: 'st_wf',
+            phase: 'waiting_review',
+            checkpointId: 'cp',
+            receipts: [
+              {
+                nodeId: 'a',
+                label: 'a',
+                status: 'done',
+                output: '稿',
+                durationMs: 3,
+                subagentId: 'cv_a',
+              },
+            ],
+          },
+        },
+      },
+      status: 'success',
+    }
+    stub(
+      [
+        {
+          ...toolStep(),
+          toolName: 'workflow',
+          payload: {
+            kind: 'tool_result',
+            args: { workflowId: 'st_wf', checkpointId: 'cp', decision: 'approve', note: '好' },
+            action: { kind: 'run', objectLabel: '工作流' },
+            outcome: {
+              status: 'success',
+              executed: true,
+              message: '完成',
+              data: {
+                workflowId: 'st_wf',
+                phase: 'completed',
+                receipts: [],
+                review: { checkpointId: 'cp', decision: 'approve', note: '好' },
+              },
+            },
+          },
+          status: 'success',
+        },
+      ],
+      [interruptedRun],
+      [start],
+    )
+    await reloadActiveConversation()
+
+    expect(transcript().map((item) => item.kind)).toEqual(['tool', 'user', 'tool', 'run'])
+    expect(transcript()[0]?.id).toBe('st_wf')
+    const { buildRenderItems } = await import('./render-items.ts')
+    const cards = buildRenderItems(transcript()).filter((row) => row.kind === 'tool')
+    expect(cards).toHaveLength(1)
+    const card = cards[0]
+    if (card?.kind !== 'tool') throw new Error('没有卡')
+    expect(card.item.id).toBe('st_wf')
+    expect(card.item.workflow?.phase).toBe('completed')
+    expect(card.item.workflow?.states.a).toMatchObject({ phase: 'done', subagentId: 'cv_a' })
+    expect((card.item.args?.nodes as unknown[]).length).toBe(2)
   })
 
   /** 终态之后每一格的状态照样从 step 回放：耗时、子会话入口都在 `nodes` 里。 */
@@ -1389,6 +1486,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
             },
           ],
           todos: [{ id: 'todo-old', content: '跨页待办', status: 'pending' }],
+          workflowStarts: [],
           nextCursor: older ? null : 'ms_3',
         }
       }
@@ -1453,6 +1551,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
           runs: [],
           steps: [],
           todos: [],
+          workflowStarts: [],
           nextCursor: null,
         }
       }
@@ -1525,7 +1624,14 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     freshView('cv_1')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/history')) {
-        return { messages: [], runs: [], steps: [], todos: [], nextCursor: null }
+        return {
+          messages: [],
+          runs: [],
+          steps: [],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+        }
       }
       if (p.includes('/goal')) {
         return {

@@ -325,7 +325,7 @@ describe('编排画布', () => {
     )
 
     try {
-      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('排队')
+      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('等待并发槽位')
     } finally {
       dispose()
     }

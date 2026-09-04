@@ -40,6 +40,11 @@ export interface ConversationHistoryPageResponse {
   runs: Run[]
   steps: Step[]
   todos: TodoItem[]
+  /**
+   * 这一页里的续接调用所引用、却不在这一页的 workflow 首派 step。
+   * 图的形状只在首派参数里，少了它那张卡画不出来；它自己那一行由折叠藏起来。
+   */
+  workflowStarts: Step[]
   nextCursor: MessageId | null
 }
 

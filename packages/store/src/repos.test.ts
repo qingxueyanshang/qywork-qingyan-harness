@@ -266,6 +266,62 @@ describe('会话历史分页', () => {
   })
 })
 
+describe('历史页带回被引用的 workflow 首派', () => {
+  test('续接调用在页里而首派不在时，首派随页带回；都在页里时不重复带', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const round = (content: string) => {
+      const user = appendMessage(store, { conversationId: conv.id, role: 'user', content })
+      const run = createRun(store, {
+        conversationId: conv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `wf-${content}`,
+        userMessageId: user.id,
+        messageIdUpperBound: user.id,
+        contextSnapshot: [],
+      })
+      return run
+    }
+    const first = round('派')
+    const start = appendStep(store, {
+      runId: first.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { goal: '目标', nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '做' }] },
+        outcome: { status: 'success', executed: true, message: '到检查点' },
+      },
+    })
+    finishRun(store, first.id, { status: 'done', stopReason: 'completed' })
+    const second = round('批准')
+    appendStep(store, {
+      runId: second.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      status: 'success',
+      payload: {
+        kind: 'tool_result',
+        args: { workflowId: start.id, checkpointId: 'cp', decision: 'approve', note: '好' },
+        outcome: { status: 'success', executed: true, message: '完成' },
+      },
+    })
+    finishRun(store, second.id, { status: 'done', stopReason: 'completed' })
+
+    const latest = listConversationHistoryPage(store, conv.id, { limit: 1 })
+    expect(latest.steps.map((step) => step.runId)).toEqual([second.id])
+    expect(latest.workflowStarts.map((step) => step.id)).toEqual([start.id])
+
+    const both = listConversationHistoryPage(store, conv.id, { limit: 2 })
+    expect(both.workflowStarts).toEqual([])
+    store.close()
+  })
+})
+
 describe('工具 step 原地更新', () => {
   test('一次调用只有一行，从 running 更新到终态', () => {
     const { store, ws } = fresh()

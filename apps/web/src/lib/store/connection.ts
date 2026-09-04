@@ -711,7 +711,14 @@ interface Folded {
 
 interface HistoryPage extends Folded {
   todos: ConversationHistoryPageResponse['todos']
+  /** 这一页引用却不在页里的 workflow 首派，见 `ConversationHistoryPageResponse`。 */
+  workflowStarts: StoredStep[]
   nextCursor: string | null
+}
+
+/** 一页折成会话流：首派先进流，它自己那一行由 workflow 折叠藏起来，只为把那张卡画全。 */
+function foldPage(page: HistoryPage): TranscriptItem[] {
+  return [...page.workflowStarts.flatMap(stepToItems), ...foldTranscript(page)]
 }
 
 // 600 轮 / 16.9 MiB 级会话实测：30 轮首屏虽能在 400ms 内出现第一行，
@@ -786,6 +793,7 @@ async function fetchConversationPage(
     runs: page.runs,
     stepsByRun,
     todos: page.todos,
+    workflowStarts: page.workflowStarts as unknown as StoredStep[],
     nextCursor: page.nextCursor,
   }
 }
@@ -922,7 +930,7 @@ export async function loadOlderConversation(id: string): Promise<boolean> {
   try {
     const page = await fetchConversationPage(id, before, lease.controller.signal)
     if (canceledByNewerRequest(lease)) return false
-    const items = foldTranscript(page)
+    const items = foldPage(page)
     setState(
       produce((s) => {
         const v = s.views[id]
@@ -1054,7 +1062,7 @@ export async function reloadActiveConversation(): Promise<void> {
     ])
 
     const { runs } = folded
-    const items = foldTranscript(folded)
+    const items = foldPage(folded)
 
     // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
     // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的

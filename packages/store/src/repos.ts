@@ -602,6 +602,7 @@ export function listConversationHistoryPage(
       runs: [],
       steps: [],
       todos: latestTodos(store, conversationId) ?? [],
+      workflowStarts: [],
       nextCursor: null,
     }
   }
@@ -649,12 +650,37 @@ export function listConversationHistoryPage(
         .map(rowToStep)
     : []
 
+  // 续接调用引用的首派不在这一页时补进来：图的形状只在首派参数里。只认本会话的 step。
+  const inPage = new Set<string>(steps.map((step) => step.id))
+  const wanted = new Set<string>()
+  for (const step of steps) {
+    if (step.toolName !== 'workflow') continue
+    const payload = step.payload
+    const workflowId =
+      payload?.kind === 'tool_call' || payload?.kind === 'tool_result'
+        ? payload.args?.workflowId
+        : undefined
+    if (typeof workflowId === 'string' && workflowId && !inPage.has(workflowId)) {
+      wanted.add(workflowId)
+    }
+  }
+  const workflowStarts = [...wanted].flatMap((id) => {
+    const row = store.db
+      .query<StepRow, [string, string]>(
+        `SELECT s.* FROM steps s JOIN runs r ON r.id = s.run_id
+         WHERE s.id = ? AND r.conversation_id = ?`,
+      )
+      .get(id, conversationId)
+    return row ? [rowToStep(row)] : []
+  })
+
   return {
     messages,
     runs,
     steps,
     // 与 tools/runtime 读待办复用同一条账本投影；不是分页结果的一部分。
     todos: latestTodos(store, conversationId) ?? [],
+    workflowStarts,
     nextCursor: hasMore ? (oldest as MessageId) : null,
   }
 }
