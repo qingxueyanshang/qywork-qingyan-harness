@@ -467,7 +467,9 @@ export function makeDelegate(ctx: {
      * 这里只负责把图递进去、把进度广播出来、把终态收回来。
      */
     async runGraph(input) {
+      const startedAt = Date.now()
       const [{ roles }, clis] = await Promise.all([team(), detectClis()])
+      const listedAt = Date.now()
       const existing = children()
       const workflowId = input.call.kind === 'start' ? input.stepId : input.call.workflowId
       let goal: string
@@ -524,6 +526,13 @@ export function makeDelegate(ctx: {
               }
             : {}),
         }
+      }
+      // 真机上出现过工具已开始执行、编排器几分钟后才写第一格的情形，来源未定；起跑前的耗时超过两秒就记一行。
+      const foldedAt = Date.now()
+      if (foldedAt - startedAt > 2000) {
+        process.stderr.write(
+          `[qy] workflow 起跑前 ${foldedAt - startedAt}ms（角色与 CLI 清单 ${listedAt - startedAt}ms，账本折叠 ${foldedAt - listedAt}ms）\n`,
+        )
       }
       const orchestrator = new TeamOrchestrator(
         nodes,
