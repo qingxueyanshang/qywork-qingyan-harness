@@ -1059,15 +1059,9 @@
   font-size: var(--fs-sm);
   color: var(--text-tertiary);
 }
-.wf-action {
-  flex: none;
-}
 .wf-word {
   flex: none;
   color: var(--danger);
-}
-.wf-time {
-  flex: none;
 }
 /* 目标一行，压一档灰：图上每个节点说的是「谁做什么」，这一行说的是「为了什么」。
    **只给一行**：它是这张图的名字，不是任务书；长了截断，展开体里有全文。 */
@@ -1238,7 +1232,15 @@
   font-size: var(--fs-xs);
 }
 /* 耗时只在跑完之后有。等宽数字：一列节点的耗时要能竖着比。 */
+/* 执行者名让位给耗时：名字截断，数字不截。裸文本在 flex 里缩不了，所以要有这一层。 */
+.wf-node-agent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wf-node-time {
+  flex: none;
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }

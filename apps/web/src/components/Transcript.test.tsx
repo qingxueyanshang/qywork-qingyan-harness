@@ -282,15 +282,10 @@ describe('编排画布', () => {
     )
 
     try {
+      // 卡头只在失败时出现，只印那一个词：动作与耗时都不上卡头。
       const heads = [...host.querySelectorAll<HTMLElement>('.wf-head')]
       expect(heads).toHaveLength(2)
-      expect(heads[0]?.textContent).toContain('运行工作流')
-      expect(heads[0]?.textContent).toContain('失败')
-      expect(heads[0]?.textContent).toContain('2.5s')
-      expect(heads[1]?.textContent).toContain('运行子 agent')
-      expect(heads[1]?.textContent).toContain('失败')
-      // 目标不印：图上每个节点已经是它。
-      expect(heads[1]?.textContent).not.toContain('qwen-racer')
+      expect(heads.map((h) => h.textContent)).toEqual(['失败', '失败'])
     } finally {
       dispose()
     }
