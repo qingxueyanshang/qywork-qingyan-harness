@@ -63,8 +63,8 @@ describe('运行页', () => {
         return {
           runs: [run('rn_parent', 1, 'USD')],
           childRuns: [
-            { roleId: 'build-glm', run: run('rn_glm', 2, 'USD') },
-            { roleId: 'build-qwen', run: run('rn_qwen', 4, 'CNY') },
+            { name: 'GLM 车组', run: run('rn_glm', 2, 'USD') },
+            { name: 'Qwen 车组', run: run('rn_qwen', 4, 'CNY') },
           ],
         }
       }
@@ -101,7 +101,7 @@ describe('运行页', () => {
       () => `清单里只有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     const roles = [...host.querySelectorAll('.run-role')].map((el) => el.textContent)
-    expect(roles.sort()).toEqual(['build-glm', 'build-qwen'])
+    expect(roles.sort()).toEqual(['GLM 车组', 'Qwen 车组'])
     // 轮次合计数的是三条，不是本会话那一条。
     const stats = [...host.querySelectorAll('.run-stat')].map((el) => el.textContent)
     expect(stats.some((text) => text?.startsWith('轮次3'))).toBe(true)

@@ -391,11 +391,11 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     }
     if (convMatch[2] === 'runs') {
       // 子会话的轮次并进来：它们不在这条会话的对话流里，花的却是同一笔钱。
-      // 角色 id 取子会话的 sourceRef——派活时写死的那个，不从 step 参数反查。
+      // 名字取子会话标题，就是卡上那一格印的名字。
       const payload: ConversationRunsResponse = {
         runs: listRuns(d.store, id),
         childRuns: listChildConversations(d.store, id).flatMap((child) =>
-          listRuns(d.store, child.id).map((run) => ({ roleId: child.sourceRef ?? '', run })),
+          listRuns(d.store, child.id).map((run) => ({ name: child.title, run })),
         ),
       }
       return json(payload)

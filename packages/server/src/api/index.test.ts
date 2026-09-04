@@ -1149,13 +1149,13 @@ describe('会话诊断导出接口', () => {
       provider: 'p',
       model: 'm',
     })
-    const kids = ['build-glm', 'build-qwen'].map((roleId) =>
+    const kids = ['GLM 车组', 'Qwen 车组'].map((name) =>
       createConversation(d.store, {
         workspaceId: d.wsId as never,
         provider: 'p',
         model: 'm',
+        title: name,
         source: 'temp',
-        sourceRef: roleId,
         parentConversationId: parent.id,
       }),
     )
@@ -1200,7 +1200,7 @@ describe('会话诊断导出接口', () => {
       await call(`/api/conversations/${parent.id}/runs`, undefined, d)
     )?.json()) as ConversationRunsResponse
     expect(runs.runs).toHaveLength(1)
-    expect(runs.childRuns.map((row) => row.roleId).sort()).toEqual(['build-glm', 'build-qwen'])
+    expect(runs.childRuns.map((row) => row.name).sort()).toEqual(['GLM 车组', 'Qwen 车组'])
     expect(runs.childRuns.every((row) => row.run.id !== runs.runs[0]?.id)).toBe(true)
   })
 
