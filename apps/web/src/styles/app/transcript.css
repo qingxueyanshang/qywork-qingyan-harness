@@ -1068,8 +1068,8 @@
    不能居中三个定宽层组成的整组，画布留白一旦不对称，中间 agent 就会跟着偏。 */
 .wf-graph.across {
   display: grid;
-  /* 中间那一格定宽 160px，与图上的格子同宽；名字长短不改变格子的宽度。 */
-  grid-template-columns: minmax(0, 1fr) 160px minmax(0, 1fr);
+  /* 中间那一格定宽 220px：独占一行比图上的格子略宽；名字长短不改变格子的宽度。 */
+  grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
   column-gap: 40px;
@@ -1195,6 +1195,9 @@
 .wf-graph.across .wf-node.session {
   /* 窄面板里两侧端点可以收缩，但中间 agent 始终占据容器的几何中线。 */
   max-width: 100%;
+}
+.wf-graph.across .wf-node:not(.session) {
+  max-width: 220px;
 }
 /* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
 /* 主行只有一行：名字长了截断，不换行。 */
