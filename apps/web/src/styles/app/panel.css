@@ -1050,6 +1050,14 @@
   flex-direction: column;
   min-width: 0;
 }
+/* 三列各贴一边：左列靠左、中列居中、右列靠右。三列都靠左的话，值短的那两列右边
+   空出一大块，六个数读起来像挤在卡片左半边。 */
+.run-stat:nth-child(3n + 2) {
+  text-align: center;
+}
+.run-stat:nth-child(3n) {
+  text-align: right;
+}
 /* 名字在值上面：先知道这是什么，再读数。反过来的话六个数字先糊成一片。 */
 .run-stat-label {
   color: var(--text-tertiary);

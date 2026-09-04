@@ -20,6 +20,7 @@ import type {
   ProviderRequest,
   ProviderRequestDiagnostic,
   ProviderRequestId,
+  ProviderRequestPurpose,
   ProviderRequestStatus,
   Run,
   RunContextSegment,
@@ -1173,6 +1174,8 @@ export function openProviderRequest(
     runId: RunId
     turnIndex: number
     retryIndex: number
+    /** 不给就是主请求；摘要请求由主循环标成 summary。 */
+    purpose?: ProviderRequestPurpose
     providerName?: string
     providerKind?: ProviderKind
     model: string
@@ -1189,6 +1192,7 @@ export function openProviderRequest(
     runId: input.runId,
     turnIndex: input.turnIndex,
     retryIndex: input.retryIndex,
+    purpose: input.purpose ?? 'turn',
     providerName: input.providerName ?? null,
     providerKind: input.providerKind ?? null,
     model: input.model,
@@ -1216,17 +1220,19 @@ export function openProviderRequest(
   store.db
     .query(
       `INSERT INTO provider_requests
-       (id, run_id, turn_index, retry_index, provider_name, provider_kind, model, status, measured_input_tokens,
-        provider_input_tokens, provider_output_tokens, provider_cached_tokens, provider_cache_write_tokens,
-        sent_categories, omitted_categories, error_code, payload_hash, request_bytes, cache_route_fingerprint,
-        sent_at, first_event_at, first_content_at, completed_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,?)`,
+       (id, run_id, turn_index, retry_index, purpose, provider_name, provider_kind, model, status,
+        measured_input_tokens, provider_input_tokens, provider_output_tokens, provider_cached_tokens,
+        provider_cache_write_tokens, sent_categories, omitted_categories, error_code, payload_hash,
+        request_bytes, cache_route_fingerprint, sent_at, first_event_at, first_content_at, completed_at,
+        created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,?)`,
     )
     .run(
       row.id,
       row.runId,
       row.turnIndex,
       row.retryIndex,
+      row.purpose,
       row.providerName,
       row.providerKind,
       row.model,
@@ -1319,6 +1325,10 @@ export function recordProviderRequestDiagnostic(
 }
 
 /** 本会话最近一次**已发送**的请求。面板的锚点从这里取。 */
+/**
+ * 会话上下文最近一次发出 / 最近一次有回报的请求。**只看主请求**：摘要请求发的是摘要提示词，
+ * 它的输入量与会话占用无关，当锚点会把面板读数换成摘要那一次的大小。
+ */
 export function latestSentProviderRequest(
   store: Store,
   conversationId: ConversationId,
@@ -1327,7 +1337,7 @@ export function latestSentProviderRequest(
     .query<ProviderRequestRow, [string]>(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
-       WHERE r.conversation_id = ? AND pr.sent_at IS NOT NULL
+       WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.sent_at IS NOT NULL
        ORDER BY pr.sent_at DESC, pr.id DESC
        LIMIT 1`,
     )
@@ -1349,7 +1359,7 @@ export function latestAnchoredProviderRequest(
     .query<ProviderRequestRow, [string]>(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
-       WHERE r.conversation_id = ? AND pr.provider_input_tokens IS NOT NULL
+       WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.provider_input_tokens IS NOT NULL
        ORDER BY pr.sent_at DESC, pr.id DESC
        LIMIT 1`,
     )
@@ -1372,6 +1382,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     runId: r.run_id,
     turnIndex: r.turn_index,
     retryIndex: r.retry_index,
+    purpose: r.purpose as ProviderRequestPurpose,
     providerName: r.provider_name,
     providerKind: r.provider_kind,
     model: r.model,

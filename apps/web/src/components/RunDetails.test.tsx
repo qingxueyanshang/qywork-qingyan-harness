@@ -112,4 +112,79 @@ describe('运行页', () => {
     // 边界只留这一句。
     expect(host.querySelector('.run-sum-note')?.textContent).toBe('不含外部 CLI')
   })
+
+  /** 一轮之内的压缩请求在那一轮的逐请求表里；带 runId 的账本行不再单列成一行。 */
+  test('带 runId 的摘要账本行不单列，没记轮次的按时间排在轮次之间', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const entry = (id: string, runId: string | null, occurredAt: number) => ({
+      id,
+      kind: 'summary',
+      runId,
+      model: 'omen-alpha',
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+      cost: 0,
+      currency: 'USD',
+      occurredAt,
+    })
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.endsWith('/runs')) {
+        return {
+          runs: [
+            run('rn_a', 1, 'USD'),
+            {
+              ...run('rn_b', 1, 'USD'),
+              createdAt: 1_700_000_100_000,
+              finishedAt: 1_700_000_200_000,
+            },
+          ],
+          childRuns: [],
+        }
+      }
+      if (path.endsWith('/usage')) {
+        return {
+          totals: {
+            entries: 4,
+            inputTokens: 2,
+            outputTokens: 2,
+            cachedTokens: null,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+            cost: { USD: 2 },
+          },
+          entries: [
+            entry('ug_in', 'rn_b', 1_700_000_150_000),
+            entry('ug_loose', null, 1_700_000_050_000),
+          ],
+        }
+      }
+      if (path.startsWith('/api/usage')) return { totals: { cost: { USD: 9 } } }
+      return {}
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: unknown }).api = originalApi
+    }
+    store.setState({ activeConversation: 'cv_parent', connection: 'ready' })
+
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <RunDetails />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.run-row').length === 3,
+      () => `清单里只有 ${host.querySelectorAll('.run-row').length} 行`,
+    )
+    const rows = [...host.querySelectorAll('.run-row')]
+    // 倒序：rn_b、没记轮次的那笔、rn_a；带 runId 的那笔不出现。
+    expect(rows[1]!.classList.contains('static')).toBe(true)
+    expect(rows[1]!.querySelector('.run-mark')?.textContent).toBe('压缩摘要')
+    expect(host.querySelectorAll('.run-row.static')).toHaveLength(1)
+  })
 })

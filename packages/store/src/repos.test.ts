@@ -13,6 +13,8 @@ import {
   finishRun,
   getConversation,
   getRun,
+  latestAnchoredProviderRequest,
+  latestSentProviderRequest,
   listChildConversations,
   listConversationHistoryPage,
   listConversations,
@@ -836,6 +838,56 @@ describe('卡返回后格仍可落终态', () => {
     expect(nodes()?.slow).toMatchObject({ phase: 'interrupted', error: '调用中断' })
     expect(nodes()?.fast).toMatchObject({ phase: 'failed', error: '连不上' })
     expect(listSteps(store, run.id)[0]?.status).toBe('failure')
+    store.close()
+  })
+})
+
+/** 摘要请求发的是摘要提示词，它的输入量与会话占用无关，锚点与「最近发出」都不认它。 */
+describe('摘要请求与主请求分开看', () => {
+  test('锚点与最近发出只看主请求', () => {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'anchor-vs-summary',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const open = (turnIndex: number, purpose: 'turn' | 'summary', measured: number) =>
+      openProviderRequest(store, {
+        runId: run.id,
+        turnIndex,
+        retryIndex: 0,
+        purpose,
+        model: 'm',
+        measuredInputTokens: measured,
+        sentCategories: {} as never,
+        omittedCategories: {} as never,
+        payloadHash: `h${turnIndex}`,
+      })
+    const main = open(0, 'turn', 100)
+    markProviderRequestSent(store, main.id)
+    settleProviderRequest(store, main.id, 'received', {
+      inputTokens: 90,
+      outputTokens: 5,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+    })
+    const summary = open(1, 'summary', 9000)
+    markProviderRequestSent(store, summary.id)
+    settleProviderRequest(store, summary.id, 'received', {
+      inputTokens: 9000,
+      outputTokens: 300,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+    })
+
+    expect(listProviderRequests(store, run.id).map((r) => r.purpose)).toEqual(['turn', 'summary'])
+    expect(latestSentProviderRequest(store, cv.id)?.id).toBe(main.id)
+    expect(latestAnchoredProviderRequest(store, cv.id)?.id).toBe(main.id)
     store.close()
   })
 })

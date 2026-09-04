@@ -1,9 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
-import { createConversation, upsertWorkspace } from './repos.ts'
+import {
+  createConversation,
+  createRun,
+  openProviderRequest,
+  settleProviderRequest,
+  upsertWorkspace,
+} from './repos.ts'
 import {
   pruneUsage,
   recordUsage,
+  summaryOutputPercentile,
   type UsageEntry,
   usageBy,
   usageEntries,
@@ -94,6 +101,16 @@ describe('记账', () => {
     expect(recordUsage(s, entry({ runId: 'rn_1' }))).toBe(true)
     expect(recordUsage(s, entry({ runId: 'rn_1' }))).toBe(false)
     expect(usageTotals(s).entries).toBe(1)
+    s.close()
+  })
+
+  /** 摘要行记它所在的那一轮；唯一索引只挡轮次收尾那一行，不挡它。 */
+  test('摘要行带 run id，不与这一轮的收尾行相撞，也可以有多笔', () => {
+    const s = fresh()
+    expect(recordUsage(s, entry({ runId: 'rn_1' }))).toBe(true)
+    expect(recordUsage(s, entry({ kind: 'summary', runId: 'rn_1' }))).toBe(true)
+    expect(recordUsage(s, entry({ kind: 'summary', runId: 'rn_1' }))).toBe(true)
+    expect(usageTotals(s).entries).toBe(3)
     s.close()
   })
 
@@ -368,5 +385,45 @@ describe('按会话结账', () => {
     recordUsage(store, entry({ conversationId: 'cv_c', runId: 'run_9', cacheWriteTokens: 7 }))
     expect(usageTotals(store, { conversationId: 'cv_c' }).cacheWriteTokens).toBe(7)
     store.close()
+  })
+})
+
+/** 摘要长度的样本来自两处：一轮之内的在请求表（purpose = summary），手动压缩的在账本。 */
+describe('摘要长度统计', () => {
+  test('请求表里的摘要请求与账本里的摘要行一起进样本', () => {
+    const s = fresh()
+    const ws = upsertWorkspace(s, '/tmp/ws', 'ws')
+    const cv = createConversation(s, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(s, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'pct',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const req = openProviderRequest(s, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      purpose: 'summary',
+      model: 'm',
+      measuredInputTokens: 1,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'h',
+    })
+    settleProviderRequest(s, req.id, 'received', {
+      inputTokens: 1,
+      outputTokens: 300,
+      cachedTokens: null,
+      cacheWriteTokens: null,
+    })
+    recordUsage(s, entry({ kind: 'summary', runId: null, workspaceId: ws.id, outputTokens: 100 }))
+
+    expect(summaryOutputPercentile(s, ws.id, 0)).toBe(100)
+    expect(summaryOutputPercentile(s, ws.id, 0.99)).toBe(300)
+    s.close()
   })
 })

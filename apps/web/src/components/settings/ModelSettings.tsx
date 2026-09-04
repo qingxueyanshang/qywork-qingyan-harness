@@ -488,7 +488,7 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
     return { text: `连接正常　${effort}`, bad: false }
   }
   return (
-    <span class="probe-line" classList={{ bad: text().bad }} title={text().text}>
+    <span class="probe-line" classList={{ bad: text().bad }} data-tip={text().text}>
       {text().text}
     </span>
   )

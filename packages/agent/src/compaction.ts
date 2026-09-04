@@ -25,7 +25,13 @@
  *    加一条例外就是两条规则，而重算一次压缩的成本是零次模型调用。
  */
 
-import type { TokenDensity, WireMessage, WireToolCall } from '@qywork/ai'
+import type {
+  ChatRequest,
+  ProviderUsage,
+  TokenDensity,
+  WireMessage,
+  WireToolCall,
+} from '@qywork/ai'
 import { estimateMessages, estimateText } from '@qywork/ai'
 import type { ActionKind, CompactionCut, CompactionFacts, CompactionManifest } from '@qywork/core'
 
@@ -243,6 +249,8 @@ export interface CompactionInput {
   condensedRegionTokens: number
   /** 本次进入摘要线的会话消息条数。 */
   foldedMessageCount: number
+  /** 一轮之内压缩时的记账钩子；手动压缩不给。 */
+  trace?: SummaryTrace
 }
 
 export type CompactionOutcome =
@@ -262,8 +270,30 @@ export type CompactionOutcome =
    */
   | { status: 'aborted' }
 
+/**
+ * 摘要请求的记账钩子。一轮之内压缩时由主循环提供：摘要请求按这一轮的普通请求落
+ * `provider_requests`，回报的 usage 并进这一轮。手动压缩不在任何一轮里，不给钩子。
+ */
+export interface SummaryTrace {
+  /** 发出之前登记，返回请求 id。 */
+  open(req: ChatRequest): string
+  sent(requestId: string): void
+  firstEvent(requestId: string): void
+  settle(
+    requestId: string,
+    status: 'received' | 'uncertain' | 'rejected',
+    usage: ProviderUsage | null,
+    errorCode: string | null,
+    finishReason?: string,
+  ): void
+}
+
 /** 由调用方注入的摘要生成器。预算是 token。返回 null = 空摘要或被输出上限截断。 */
-export type Summarizer = (prompt: string, budgetTokens: number) => Promise<string | null>
+export type Summarizer = (
+  prompt: string,
+  budgetTokens: number,
+  trace?: SummaryTrace,
+) => Promise<string | null>
 
 /**
  * 摘要调用是不是被中断掐掉的。
@@ -325,6 +355,7 @@ export async function compact(
         budget,
       ),
       budget,
+      input.trace,
     )
   } catch (err) {
     // 中断与 provider 失败必须分开：中断整次丢弃，其余只是摘要段没做成。

@@ -14,7 +14,7 @@ import type { Store } from './db.ts'
 
 export interface UsageEntry {
   kind: UsageKind
-  /** 有 run 的记 run；摘要调用没有 run，留空。 */
+  /** 有 run 的记 run；手动压缩的摘要调用没有 run，留空。 */
   runId?: string | null
   conversationId?: string | null
   workspaceId?: string | null
@@ -316,13 +316,20 @@ export function summaryOutputPercentile(
   workspaceId: string,
   percentile: number,
 ): number | null {
+  // 摘要请求记在两处，各记各的：一轮之内的在 provider_requests（purpose = summary），
+  // 手动压缩的在账本（kind = summary）。两处并起来才是全部样本。
   const rows = store.db
-    .query<{ output_tokens: number }, [string]>(
-      `SELECT output_tokens FROM usage_ledger
-        WHERE kind = 'summary' AND workspace_id = ? AND output_tokens > 0
+    .query<{ output_tokens: number }, [string, string]>(
+      `SELECT output_tokens FROM (
+         SELECT pr.provider_output_tokens AS output_tokens
+           FROM provider_requests pr JOIN runs r ON r.id = pr.run_id
+          WHERE pr.purpose = 'summary' AND r.workspace_id = ? AND pr.provider_output_tokens > 0
+         UNION ALL
+         SELECT output_tokens FROM usage_ledger
+          WHERE kind = 'summary' AND workspace_id = ? AND output_tokens > 0)
         ORDER BY output_tokens ASC`,
     )
-    .all(workspaceId)
+    .all(workspaceId, workspaceId)
   if (rows.length === 0) return null
   const index = Math.min(rows.length - 1, Math.floor(rows.length * percentile))
   return rows[index]!.output_tokens

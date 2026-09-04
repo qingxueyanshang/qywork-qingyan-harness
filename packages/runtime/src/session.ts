@@ -23,6 +23,7 @@ import {
 } from '@qywork/agent'
 import {
   buildAdapter,
+  type ChatRequest,
   type ContentBlock,
   computeCost,
   type LlmAdapter,
@@ -1043,7 +1044,7 @@ export interface SummarizerOptions {
  * null：半份摘要比没有更坏——它看起来完整。
  */
 export function makeSummarizer(opts: SummarizerOptions): Summarizer {
-  return async (prompt, budgetTokens) => {
+  return async (prompt, budgetTokens, trace) => {
     const profile = opts.profile()
     const adapter = buildAdapter(profile)
     const selectedEffort = opts.effort?.()
@@ -1071,42 +1072,67 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     let text = ''
     /** 摘要被输出上限截断。**截断的摘要一律不采用**——半份摘要看起来完整。 */
     let truncated = false
-    // 摘要也花钱。它不属于任何一个 run 的 usage，所以在账本出现之前
-    // **这笔钱是完全看不见的**——压缩越频繁，账单和界面上的数字差得越多。
+    let finish: string | undefined
+    // 摘要也花钱。一轮之内的摘要请求由 trace 记进这一轮（provider_requests + 这一轮的 usage）；
+    // 手动压缩不在任何一轮里，在下面单独记一笔账本行。
     let spent: { cost: number; u: ProviderUsage } | null = null
+    const req: ChatRequest = {
+      model: adapter.spec.id,
+      system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
+      messages: [{ role: 'user', content: prompt }],
+      tools: [],
+      /*
+       * **会思考的模型不能拿正文预算当 `max_tokens`。**
+       *
+       * 思考与正文共用这一个上限，而思考**不进投影**——压成正文预算的话，
+       * 模型在思考阶段就把额度耗尽，正文没写完即被截断，整份作废
+       * （实测 deepseek-v4-flash：一句话摘要花 259 个思考 token，
+       * 正文只有 10 个字）。因此摘要段恒失败，压缩退化成只有收纳段。
+       *
+       * 正文长度由提示词里那句字数要求约束，这里只负责让模型有地方把话说完。
+       * 不思考的模型上正文就是全部输出，直申预算即可。
+       */
+      maxOutputTokens: willThink
+        ? adapter.spec.maxOutputTokens
+        : Math.min(adapter.spec.maxOutputTokens ?? budgetTokens, budgetTokens),
+      ...(effort ? { effort } : {}),
+      signal: ac.signal,
+    }
+    const requestId = trace?.open(req)
+    let sawEvent = false
     try {
       // 首个事件之前就要起计时：没回过一个字节是最典型的卡死形状。
       bump()
-      for await (const ev of adapter.stream({
-        model: adapter.spec.id,
-        system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
-        messages: [{ role: 'user', content: prompt }],
-        tools: [],
-        /*
-         * **会思考的模型不能拿正文预算当 `max_tokens`。**
-         *
-         * 思考与正文共用这一个上限，而思考**不进投影**——压成正文预算的话，
-         * 模型在思考阶段就把额度耗尽，正文没写完即被截断，整份作废
-         * （实测 deepseek-v4-flash：一句话摘要花 259 个思考 token，
-         * 正文只有 10 个字）。因此摘要段恒失败，压缩退化成只有收纳段。
-         *
-         * 正文长度由提示词里那句字数要求约束，这里只负责让模型有地方把话说完。
-         * 不思考的模型上正文就是全部输出，直申预算即可。
-         */
-        maxOutputTokens: willThink
-          ? adapter.spec.maxOutputTokens
-          : Math.min(adapter.spec.maxOutputTokens ?? budgetTokens, budgetTokens),
-        ...(effort ? { effort } : {}),
-        signal: ac.signal,
-      })) {
+      if (trace && requestId) trace.sent(requestId)
+      for await (const ev of adapter.stream(req)) {
         bump()
+        if (trace && requestId && !sawEvent && ev.type !== 'request_prepared') {
+          sawEvent = true
+          trace.firstEvent(requestId)
+        }
         if (ev.type === 'text_delta') text += ev.delta
-        else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
-        else if (ev.type === 'usage') {
+        else if (ev.type === 'done') {
+          truncated = ev.stopReason === 'max_tokens'
+          finish = ev.rawStopReason
+        } else if (ev.type === 'usage') {
           spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
         }
       }
     } catch (err) {
+      const pe = err instanceof ProviderError ? err : null
+      if (trace && requestId) {
+        // 与主请求同一套终态：被拒是 rejected，其余（掐流、中断、断连）都是 uncertain。
+        trace.settle(
+          requestId,
+          !stalled && pe?.status !== undefined ? 'rejected' : 'uncertain',
+          pe?.usage ?? null,
+          stalled
+            ? 'stream_idle_timeout'
+            : ac.signal.aborted
+              ? null
+              : (pe?.code ?? 'internal_error'),
+        )
+      }
       // 掐流与用户按停止在适配器那侧是同一个 AbortError，`stalled` 是唯一的区分依据。
       if (stalled) {
         throw new ProviderError({
@@ -1123,7 +1149,8 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       opts.signal?.removeEventListener('abort', followOuter)
     }
 
-    if (spent) {
+    if (trace && requestId) trace.settle(requestId, 'received', spent?.u ?? null, null, finish)
+    else if (spent) {
       recordUsage(opts.store, {
         kind: 'summary',
         conversationId: opts.conversationId,

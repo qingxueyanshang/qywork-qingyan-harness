@@ -19,6 +19,7 @@ export {
   cutKey,
   projectManifest,
   type Summarizer,
+  type SummaryTrace,
   stepStamp,
   summaryCutOf,
   unitKey,

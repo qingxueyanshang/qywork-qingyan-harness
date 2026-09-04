@@ -428,8 +428,8 @@ export interface DelegateGraph {
  * 返回边，是因为返回边要绕回起点，那条线必然横穿已经分好的层。
  */
 export function delegateGraph(item: {
-  toolName?: string
-  args?: Record<string, unknown>
+  toolName?: string | undefined
+  args?: Record<string, unknown> | undefined
 }): DelegateGraph {
   const kids = childNodes(item)
   // 没有下游的那几格汇进收回端；没有上游的那几格从派出端接出来。
@@ -447,7 +447,10 @@ export function delegateGraph(item: {
   return { nodes, layers: layered(nodes), horizontal: kids.length === 1 }
 }
 
-function childNodes(item: { toolName?: string; args?: Record<string, unknown> }): GraphNode[] {
+function childNodes(item: {
+  toolName?: string | undefined
+  args?: Record<string, unknown> | undefined
+}): GraphNode[] {
   if (item.toolName === 'workflow') {
     const raw = item.args?.nodes
     if (!Array.isArray(raw)) return []

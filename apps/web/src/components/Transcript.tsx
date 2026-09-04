@@ -1,6 +1,6 @@
 import type { RunUsage, StopReason } from '@qywork/core'
 import { formatMoney } from '@qywork/core'
-import type { JSX } from 'solid-js'
+import type { Accessor, JSX, Setter } from 'solid-js'
 import {
   createContext,
   createEffect,
@@ -8,6 +8,7 @@ import {
   createSignal,
   createUniqueId,
   For,
+  Index,
   Match,
   onCleanup,
   onMount,
@@ -22,7 +23,7 @@ import {
   buildRenderItems,
   groupTitle,
   type RenderItem,
-  reconcileRenderItems,
+  sameRenderItem,
 } from '../lib/render-items.ts'
 import {
   argsRows,
@@ -46,12 +47,15 @@ import {
 } from '../lib/step-view.ts'
 import {
   composerStackAbove,
+  foldOpen,
   hasRunStatus,
   isConversationRunning,
   isRunning,
   loadOlderConversation,
   retryConversationHistory,
   runClosed,
+  seedFoldOpen,
+  setFoldOpen,
   setState,
   state,
   type TranscriptItem,
@@ -565,7 +569,13 @@ function Prose(props: { item: TranscriptItem }) {
  * 用原生 `<details>` 而不是自己管 open 状态：键盘语义、`Enter`/`Space` 展开、
  * 屏幕阅读器的展开态播报都由元素自带，自写 button + signal 每一样都要补。
  */
+/** 折叠条目在 `foldOpen` 里的 key：组卡与它的首个成员 id 相同，靠 kind 分开。 */
+function foldKey(kind: 'tool' | 'thinking' | 'group', id: string): string {
+  return `${kind}:${id}`
+}
+
 function Fold(props: {
+  id: string
   label: string
   /** 终态字样。**成功不写字**——一屏几十行全是「成功」等于没有信息。 */
   statusWord?: string
@@ -594,21 +604,24 @@ function Fold(props: {
    * 收起态并不少信息：思考那条的标签里带着**实时更新的正文摘要**，工具组的标题写着
    * 干了什么。要看全的自己点开——点开之后也不会被自动合上。
    *
-   * 开合完全归 `<details>` 自己管，不绑定 `open` 属性。`mounted` 只记录正文是否被
-   * 展开请求过，首次展开后保持为 true；它不裁决开合，也不复制原生状态。
+   * 开合的权威是 `foldOpen(id)`：`open` 绑定它，`toggle` 写回它。不要改回不绑定、
+   * 让 `<details>` 自己记：节点的寿命由渲染投影决定——单条工具并进组卡时节点换新，
+   * 记在节点上的展开态跟着丢。`mounted` 只记录正文是否展开过，首次展开后保持为 true，
+   * 合上再点开不重建正文。
    */
-  const [mounted, setMounted] = createSignal(false)
+  const open = () => foldOpen(props.id)
+  const mounted = createMemo<boolean>((was) => was || open(), false)
+  createEffect(() => {
+    if (!open()) return
+    // 正文由 mounted 在本轮挂载；等 Solid 落完 DOM 再交给调用方定位。
+    queueMicrotask(() => props.onOpen?.())
+  })
   return (
     <details
       class="fold"
       classList={{ 'fold-dim': props.dim, failed: props.failed }}
-      onToggle={(e) => {
-        if (e.currentTarget.open) {
-          setMounted(true)
-          // 正文由上面的 signal 在本轮挂载；等 Solid 落完 DOM 再交给调用方定位。
-          queueMicrotask(() => props.onOpen?.())
-        }
-      }}
+      open={open()}
+      onToggle={(e) => setFoldOpen(props.id, e.currentTarget.open)}
     >
       {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
       <summary class="fold-head">
@@ -670,7 +683,12 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   })
 
   return (
-    <Fold dim label={preview() ? `${verb()} — ${preview()}` : verb()} onOpen={stickPreToBottom}>
+    <Fold
+      id={foldKey('thinking', props.item.id)}
+      dim
+      label={preview() ? `${verb()} — ${preview()}` : verb()}
+      onOpen={stickPreToBottom}
+    >
       <pre class="fold-pre" ref={pre}>
         {props.item.text}
       </pre>
@@ -990,24 +1008,51 @@ function UserBubble(props: { text: string }) {
   )
 }
 
+/** 一行的固定壳：`<For>` 按它配对，内容从 `node` 读；同一个 id 只有一个壳。 */
+interface RenderRow {
+  id: string
+  node: Accessor<RenderItem>
+}
+
+/**
+ * 把每轮全新的投影折成按 id 固定的壳。壳里的信号以 `sameRenderItem` 为相等判据，
+ * 内容没变就不通知。不要把 `buildRenderItems` 的结果直接交给 `<For>`：它按引用配对，
+ * 组卡每来一个成员、workflow 折叠项每个进度事件都是新包装，整行 DOM 会销毁重建——
+ * 展开着的折叠合上，连线的虚线动画从头起跳。
+ */
+function keyedRows(source: () => RenderItem[]): Accessor<RenderRow[]> {
+  let cells = new Map<string, { row: RenderRow; set: Setter<RenderItem> }>()
+  return createMemo(() => {
+    const next = new Map<string, { row: RenderRow; set: Setter<RenderItem> }>()
+    const rows = source().map((item) => {
+      let cell = cells.get(item.id)
+      if (cell) cell.set(item)
+      else {
+        const [node, set] = createSignal(item, { equals: sameRenderItem })
+        cell = { row: { id: item.id, node }, set }
+      }
+      next.set(item.id, cell)
+      return cell.row
+    })
+    cells = next
+    return rows
+  })
+}
+
 export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => boolean }) {
-  // 带对账的投影：没变的行沿用上一轮的对象，`<For>` 才不会把整列 DOM 重建掉
-  // （重建的代价是展开着的折叠会自己合上，见 reconcileRenderItems）。
-  const items = createMemo<RenderItem[]>((prev = []) =>
-    reconcileRenderItems(prev, buildRenderItems(props.items)),
-  )
+  const rows = keyedRows(() => buildRenderItems(props.items))
   return (
     <RowStream.Provider value={{ items: () => props.items, live: props.live ?? isRunning }}>
-      <For each={items()}>
-        {(node) => (
+      <For each={rows()}>
+        {({ node }) => (
           <Switch>
-            <Match when={node.kind === 'user'}>
+            <Match when={node().kind === 'user'}>
               <div class="row user">
                 <div class="user-col">
                   {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
-                  <Show when={(node as { item: TranscriptItem }).item.attachments?.length}>
+                  <Show when={(node() as { item: TranscriptItem }).item.attachments?.length}>
                     <div class="attach-row sent">
-                      <For each={(node as { item: TranscriptItem }).item.attachments}>
+                      <For each={(node() as { item: TranscriptItem }).item.attachments}>
                         {(a) => (
                           <span class="attach-chip" data-tip={a.path}>
                             <AttachmentThumb path={a.path} name={a.name} box={44} />
@@ -1017,29 +1062,32 @@ export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => bo
                       </For>
                     </div>
                   </Show>
-                  <Show when={(node as { item: TranscriptItem }).item.text}>
-                    <UserBubble text={(node as { item: TranscriptItem }).item.text} />
+                  <Show when={(node() as { item: TranscriptItem }).item.text}>
+                    <UserBubble text={(node() as { item: TranscriptItem }).item.text} />
                   </Show>
                 </div>
               </div>
             </Match>
-            <Match when={node.kind === 'text'}>
-              <Prose item={(node as { item: TranscriptItem }).item} />
+            <Match when={node().kind === 'text'}>
+              <Prose item={(node() as { item: TranscriptItem }).item} />
             </Match>
-            <Match when={node.kind === 'thinking'}>
-              <ThinkingFold item={(node as { item: TranscriptItem }).item} />
+            <Match when={node().kind === 'thinking'}>
+              <ThinkingFold item={(node() as { item: TranscriptItem }).item} />
             </Match>
-            <Match when={node.kind === 'tool'}>
-              <ToolCard item={(node as { item: TranscriptItem }).item} />
+            <Match when={node().kind === 'tool'}>
+              <ToolCard item={(node() as { item: TranscriptItem }).item} />
             </Match>
-            <Match when={node.kind === 'compaction'}>
-              <CompactionCard item={(node as { item: TranscriptItem }).item} />
+            <Match when={node().kind === 'compaction'}>
+              <CompactionCard item={(node() as { item: TranscriptItem }).item} />
             </Match>
-            <Match when={node.kind === 'run'}>
-              <RunCard item={(node as { item: TranscriptItem }).item} />
+            <Match when={node().kind === 'run'}>
+              <RunCard item={(node() as { item: TranscriptItem }).item} />
             </Match>
-            <Match when={node.kind === 'group'}>
-              <ToolGroup members={(node as { members: TranscriptItem[] }).members} />
+            <Match when={node().kind === 'group'}>
+              <ToolGroup
+                id={node().id}
+                members={(node() as { members: TranscriptItem[] }).members}
+              />
             </Match>
           </Switch>
         )}
@@ -1048,14 +1096,25 @@ export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => bo
   )
 }
 
-function ToolGroup(props: { members: TranscriptItem[] }) {
+function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
   const tools = () => props.members.filter((m) => m.kind === 'tool')
   const failed = () => tools().some((t) => t.status === 'failure')
+  /*
+   * 组卡出生时的开合等于它包住的内容在出生那一刻是否可见。单条工具展开着看，下一个工具
+   * 启动把它并进组卡——组卡合着出生就把正在看的内容盖掉了。只写一次，之后组卡
+   * 与成员各自归用户。
+   */
+  seedFoldOpen(
+    foldKey('group', props.id),
+    props.members.some(
+      (m) => (m.kind === 'tool' || m.kind === 'thinking') && foldOpen(foldKey(m.kind, m.id)),
+    ),
+  )
 
   // 组头文案里已经带了「，N 个失败」，右侧不再挂一个计数——
   // 那个数字回答不了任何问题，只是把行尾占满。
   return (
-    <Fold failed={failed()} label={groupTitle(props.members)}>
+    <Fold id={foldKey('group', props.id)} failed={failed()} label={groupTitle(props.members)}>
       <div class="fold-group">
         <For each={props.members}>
           {(m) => (
@@ -1162,7 +1221,17 @@ export function mergeWorkflowEdgeSegments(
  * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
  */
 function DelegateCard(props: { item: TranscriptItem }) {
-  const graph = () => delegateGraph(props.item)
+  /**
+   * 图的形状只由 `toolName` 与 `args` 决定，一次派活里两者不变。不要写成
+   * `() => delegateGraph(props.item)`：折叠后的 workflow 条目随每个进度事件重造，
+   * `props.item` 每次都是新对象，图跟着重算，每一格按钮的 DOM 换新、连线重量。
+   */
+  const shape = createMemo(
+    () => ({ toolName: props.item.toolName, args: props.item.args }),
+    undefined,
+    { equals: (a, b) => a.toolName === b.toolName && a.args === b.args },
+  )
+  const graph = createMemo(() => delegateGraph(shape()))
 
   /**
    * 一格现在什么状态。会话端点没有状态——它是这条会话本身；检查点那一格由审查记录决定。
@@ -1212,6 +1281,9 @@ function DelegateCard(props: { item: TranscriptItem }) {
    * `ResizeObserver`：它在布局之后、绘制之前回调，所以线和方块同一帧落地，
    * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
    * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
+   *
+   * 画的时候用 `<Index>` 按位置复用 `<path>`：每次量完都是一份新数组，`<For>` 会把
+   * 全部节点换新，虚线动画随之从头起跳；进度事件一多，线就在抖。
    */
   const [edges, setEdges] = createSignal<{ d: string; live: boolean }[]>([])
   let box!: HTMLDivElement
@@ -1316,7 +1388,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
       </Show>
       <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">
-          <For each={edges()}>{(e) => <path d={e.d} classList={{ live: e.live }} />}</For>
+          <Index each={edges()}>{(e) => <path d={e().d} classList={{ live: e().live }} />}</Index>
         </svg>
         <For each={graph().layers}>
           {(layer) => (
@@ -1424,6 +1496,7 @@ function ToolCard(props: { item: TranscriptItem }) {
   return (
     <>
       <Fold
+        id={foldKey('tool', props.item.id)}
         failed={props.item.status === 'failure'}
         label={actionLabel(props.item)}
         statusWord={statusWord(props.item.status)}

@@ -1052,3 +1052,176 @@ describe('检查点那一格', () => {
     }
   })
 })
+
+/**
+ * 行的 DOM 挂在按 id 固定的壳上，不挂在每轮全新的投影包装上。锁两条真实失败形状：
+ * 运行中点开的组卡在下一个工具启动的瞬间合上；workflow 卡每个进度事件整张重建，
+ * 连线的 `<path>` 全部换新，虚线动画从头起跳。
+ */
+describe('行的 DOM 不随投影重建', () => {
+  const rect = (el: Element, left: number, top: number, width: number, height: number) => {
+    Object.defineProperty(el, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left, top, width, height, right: left + width, bottom: top + height }),
+    })
+  }
+
+  test('组卡展开着，下一个工具启动后还是同一个 details 且仍展开', async () => {
+    const { createSignal } = await import('solid-js')
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const tool = (id: string, status: string) => ({
+      id,
+      kind: 'tool',
+      text: '',
+      toolName: 'read_file',
+      status,
+      action: { kind: 'read', objectLabel: `${id}.ts` },
+    })
+    const a = tool('a', 'success')
+    const b = tool('b', 'running')
+    const [items, setItems] = createSignal([a, b])
+    const host = document.createElement('div')
+    const dispose = render(
+      () => <TranscriptRows items={items() as never} />,
+      host as unknown as HTMLElement,
+    )
+    try {
+      const details = host.querySelector<HTMLDetailsElement>('details.fold')!
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+      await Promise.resolve()
+      expect(host.querySelectorAll('.fold-group > details.fold')).toHaveLength(2)
+
+      setItems([a, b, tool('c', 'running')])
+
+      expect(host.querySelector('details.fold')).toBe(details)
+      expect(details.open).toBe(true)
+      expect(host.querySelectorAll('.fold-group > details.fold')).toHaveLength(3)
+    } finally {
+      dispose()
+    }
+  })
+
+  test('进度事件到了，workflow 卡与连线的 path 还是原来那些节点', async () => {
+    const { createSignal } = await import('solid-js')
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    // 形状来自 args，一次派活里是同一个对象；进度事件整份替换 nodes。
+    const args = {
+      goal: '并行',
+      nodes: [
+        { id: 'a', kind: 'temp', name: 'glm', task: '做 A' },
+        { id: 'b', kind: 'temp', name: 'qwen', task: '做 B' },
+      ],
+    }
+    const wf = (nodes: Record<string, { phase: string; label: string }>) => ({
+      id: 'wf-live',
+      kind: 'tool',
+      text: '',
+      toolName: 'workflow',
+      status: 'running',
+      action: { kind: 'run', objectLabel: '工作流', target: '并行' },
+      args,
+      nodes,
+    })
+    const [items, setItems] = createSignal([wf({ a: { phase: 'working', label: 'glm' } })])
+    const host = document.createElement('div')
+    const dispose = render(
+      () => <TranscriptRows items={items() as never} />,
+      host as unknown as HTMLElement,
+    )
+    try {
+      const card = host.querySelector('.wf-card')!
+      const box = host.querySelector('.wf-graph')!
+      const nodes = host.querySelectorAll('.wf-node')
+      expect(nodes).toHaveLength(4)
+      rect(box, 0, 0, 400, 230)
+      rect(nodes[0]!, 150, 0, 100, 30)
+      rect(nodes[1]!, 50, 100, 100, 40)
+      rect(nodes[2]!, 250, 100, 100, 40)
+      rect(nodes[3]!, 150, 200, 100, 30)
+      resize(box)
+      const paths = [...host.querySelectorAll('.wf-edges path')]
+      expect(paths.length).toBeGreaterThan(0)
+      expect(paths.some((p) => p.classList.contains('live'))).toBe(true)
+
+      setItems([wf({ a: { phase: 'working', label: 'glm · 第 2 轮' } })])
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(host.querySelector('.wf-card')).toBe(card)
+      expect(host.querySelectorAll('.wf-node')[1]).toBe(nodes[1]!)
+      expect(nodes[1]!.querySelector('.wf-node-name')?.textContent).toBe('glm · 第 2 轮')
+      const after = [...host.querySelectorAll('.wf-edges path')]
+      expect(after).toHaveLength(paths.length)
+      expect(after.every((p, i) => p === paths[i])).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+})
+
+/**
+ * 展开态归 step id，不归 `<details>` 节点。锁的失败形状：单条工具展开着看，
+ * 下一个工具启动把它并进组卡，组卡合着出生、那条也合上了，正在看的内容消失。
+ */
+describe('展开态跟着 step id 走', () => {
+  const tool = (id: string) => ({
+    id,
+    kind: 'tool',
+    text: '',
+    toolName: 'read_file',
+    status: 'success',
+    action: { kind: 'read', objectLabel: `${id}.ts` },
+    outcome: { status: 'success', executed: true, message: '', data: { content: `${id} 的内容` } },
+  })
+  const mount = async (first: ReturnType<typeof tool>) => {
+    const { createSignal } = await import('solid-js')
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const [items, setItems] = createSignal([first])
+    const host = document.createElement('div')
+    const dispose = render(
+      () => <TranscriptRows items={items() as never} />,
+      host as unknown as HTMLElement,
+    )
+    return { host, dispose, setItems }
+  }
+
+  test('单条展开着，并进组卡后组卡开着出生，那条仍展开', async () => {
+    const a = tool('fold-open-a')
+    const { host, dispose, setItems } = await mount(a)
+    try {
+      const single = host.querySelector<HTMLDetailsElement>('details.fold')!
+      single.open = true
+      single.dispatchEvent(new Event('toggle'))
+      expect(host.textContent).toContain('fold-open-a 的内容')
+
+      setItems([a, tool('fold-open-b')])
+
+      const folds = host.querySelectorAll<HTMLDetailsElement>('details.fold')
+      expect(folds).toHaveLength(3)
+      expect(folds[0]!.open).toBe(true)
+      expect(folds[1]!.open).toBe(true)
+      expect(folds[2]!.open).toBe(false)
+      expect(host.textContent).toContain('fold-open-a 的内容')
+    } finally {
+      dispose()
+    }
+  })
+
+  test('单条合着，并进组卡后组卡合着出生', async () => {
+    const a = tool('fold-shut-a')
+    const { host, dispose, setItems } = await mount(a)
+    try {
+      setItems([a, tool('fold-shut-b')])
+      // 组卡合着，成员正文没挂载，只有组卡这一个 details。
+      const folds = host.querySelectorAll<HTMLDetailsElement>('details.fold')
+      expect(folds).toHaveLength(1)
+      expect(folds[0]!.open).toBe(false)
+      expect(host.textContent).not.toContain('fold-shut-a 的内容')
+    } finally {
+      dispose()
+    }
+  })
+})

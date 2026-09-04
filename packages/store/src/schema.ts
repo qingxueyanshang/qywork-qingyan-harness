@@ -1768,6 +1768,47 @@ WHERE kind = 'tool_action' AND json_type(payload, '$.children') = 'object';
       update.finalize()
     },
   },
+  {
+    id: 47,
+    name: 'usage_summary_keeps_run_id',
+    /**
+     * 摘要那笔账记上它发生在哪一轮。唯一索引只约束轮次收尾那一行（一次 run 只写一行），
+     * 摘要行带同一个 run_id 不再与它相撞；手动压缩不在任何一轮里，run_id 仍为空。
+     */
+    sql: `
+DROP INDEX uq_usage_run;
+CREATE UNIQUE INDEX uq_usage_run ON usage_ledger(run_id) WHERE run_id IS NOT NULL AND kind = 'run';
+`,
+  },
+  {
+    id: 48,
+    name: 'usage_summary_backfill_run_id',
+    /**
+     * 迁移 47 之前写的摘要行没记 run_id。同一会话的轮次不重叠，摘要落在哪一轮的时间窗内
+     * 就属于哪一轮；手动压缩只在没有轮次在跑时发生，落不进任何窗内，仍为空。
+     */
+    sql: `
+UPDATE usage_ledger SET run_id = (
+  SELECT r.id FROM runs r
+   WHERE r.conversation_id = usage_ledger.conversation_id
+     AND r.created_at <= usage_ledger.occurred_at
+     AND (r.finished_at IS NULL OR usage_ledger.occurred_at <= r.finished_at)
+   ORDER BY r.created_at DESC LIMIT 1)
+ WHERE kind = 'summary' AND run_id IS NULL AND conversation_id IS NOT NULL;
+`,
+  },
+  {
+    id: 49,
+    name: 'provider_requests_purpose',
+    /**
+     * 一轮之内压缩时的摘要请求按这一轮的普通请求落表（占一个 turn 编号，usage 计入这一轮），
+     * 靠这一列与主请求分开：上下文锚点、命中率只看 turn，摘要长度统计只看 summary。
+     * 旧行都是主请求。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn' CHECK (purpose IN ('turn','summary'));
+`,
+  },
 ]
 
 /**
@@ -1894,6 +1935,7 @@ export interface ProviderRequestRow {
   run_id: RunId
   turn_index: number
   retry_index: number
+  purpose: string
   provider_name: string | null
   provider_kind: ProviderKind | null
   model: string
@@ -2018,6 +2060,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'run_id',
     'turn_index',
     'retry_index',
+    'purpose',
     'provider_name',
     'provider_kind',
     'model',
