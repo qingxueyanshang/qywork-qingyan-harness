@@ -10,17 +10,24 @@
  *   bun run scripts/replay-delegation.ts --no-interrupt   # 首派 → 验收
  *   bun run scripts/replay-delegation.ts --round-min=120  # 一轮最多等多少分钟，默认 45
  *
- * 配置（含密钥）读 `~/.qywork/config.json`；工作区与账本落 `.tmp/replay-ws/`。
+ * 配置（含密钥）读 `~/.qywork/config.json`；工作区与账本落 `.tmp/replay-ws/<时间戳>/`，跑完不删。
  */
 
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId, ConversationSubagentsResponse } from '@qywork/core'
 import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import { getConversation, listChildConversations, listRuns, listSteps, Store } from '@qywork/store'
 
-const ROOT = join(import.meta.dir, '..', '.tmp', 'replay-ws')
+/** 每次跑一个带时间戳的目录，旧的一律留着：账本是事后排查子 agent 为什么停的唯一证据。 */
+const ROOT = join(
+  import.meta.dir,
+  '..',
+  '.tmp',
+  'replay-ws',
+  new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-'),
+)
 const WS_DIR = join(ROOT, 'racer')
 const DB = join(ROOT, 'replay.sqlite3')
 
@@ -63,7 +70,6 @@ const stamp = () => new Date().toISOString().slice(11, 19)
 const log = (line: string) => process.stdout.write(`[${stamp()}] ${line}\n`)
 
 async function main(): Promise<number> {
-  await rm(ROOT, { recursive: true, force: true })
   await mkdir(WS_DIR, { recursive: true })
 
   const store = new Store({ path: DB })
@@ -71,7 +77,9 @@ async function main(): Promise<number> {
   const h = serve({ store, config, workspaceRoot: WS_DIR, port: 0, host: '127.0.0.1' })
   const base = `http://127.0.0.1:${h.port}`
   const auth = { authorization: `Bearer ${h.token}` }
-  log(`服务已起：${base}（父会话模型 ${config.active.provider} / ${config.active.model}）`)
+  log(
+    `服务已起：${base}（父会话模型 ${config.active.provider} / ${config.active.model}）；账本 ${DB}`,
+  )
 
   try {
     const created = (await (
