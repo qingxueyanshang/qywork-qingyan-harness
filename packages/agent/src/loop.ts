@@ -449,11 +449,16 @@ export const MAX_RESENDS = 5
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['network_error', 0],
-  ['stream_idle_timeout', 0],
   ['provider_unavailable', UNAVAILABLE_BACKOFF_MS],
 ])
 
+/**
+ * 超时的一律不重发。静默分不出是对面死了还是还在想：中转站要等上游思考结束才回响应头，
+ * 掐掉再原样重发，是让上游把同一份推理再跑一遍，父会话与用户多等的正是重发那几倍时间。
+ * 事实（多少秒没响应）随错误交回，重来与否由模型或用户定。
+ */
 function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
+  if (error.timedOut) return undefined
   if (error.code === 'rate_limited') {
     if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
     return Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** resends, RATE_LIMIT_BACKOFF_MAX_MS)
@@ -1437,7 +1442,8 @@ export class AgentLoop {
               throw err
             }
             const backoffMs = resendBackoffMs(pe, resends)
-            if (backoffMs === undefined) {
+            // 超时的不重发，但终态要带上静默读数，所以不在这里抛，走下面的拼装。
+            if (backoffMs === undefined && !pe.timedOut) {
               recordDecision('not_retryable')
               throw err
             }
@@ -1447,7 +1453,7 @@ export class AgentLoop {
              *
              * `errno` 与英文原文对排查是全部，对界面是噪音——归类之后那句中文说的是
              * 「哪一类」，说不出「是哪个码」。少了这行，账本里只剩中文，
-             * 回头分不出 `ECONNRESET`（对端重置）和本地 60 秒空闲超时中止的。
+             * 回头分不出 `ECONNRESET`（对端重置）和本地空闲超时中止的。
              *
              * 取的是 `cause` 而不是 `err`：走到这里 `err` 已经是归类后的
              * `ProviderError`，它的 `code` 是 `network_error` 这种分类码，
@@ -1466,7 +1472,12 @@ export class AgentLoop {
              * **额度是整轮的，不按码各记一份。** 一轮里先断流再被拒的话，前面用掉的
              * 次数照算——那一轮已经真的发出去过那么多次，换个码不该把账清零。
              */
-            if (resends < MAX_RESENDS && assistantText === '' && calls.length === 0) {
+            if (
+              backoffMs !== undefined &&
+              resends < MAX_RESENDS &&
+              assistantText === '' &&
+              calls.length === 0
+            ) {
               recordDecision('resend', resends + 1, backoffMs)
               resends++
               /*

@@ -14,17 +14,16 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
 /**
  * 三个适配器构造 SDK 客户端时共用的传输参数。**一份，不许各写各的。**
  *
- * 两个 SDK 的出厂值都是 `timeout: 600_000` + `maxRetries: 2`，在网络断掉时
- * 表现为「界面挂着『正在执行』五分钟，然后才报网络不可达」（实测：一次
- * 381.9s 的 run，最后一次模型回包之后空等了 301s）。
- *
  * - `timeout` 只覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里
- *   `clearTimeout`），所以 60 秒不会掐断一次长生成——它只掐「连不上」。
- *   **不要因为「怕打断长回答」把它调大**，那是在给一个它管不到的场景让路。
+ *   `clearTimeout`）。「多久没字节算死」不在这里判，归 AgentLoop 的流空闲看门狗
+ *   （`STREAM_IDLE_TIMEOUT_MS`，按思考档位放宽，最高 540 秒），它从请求发出就计时。
+ *   这个数只是没有看门狗的调用方（探针）的兜底，**必须大于看门狗的上限**，否则会抢在
+ *   看门狗前面把一次正常的慢请求掐掉：有的中转站要等上游思考结束才回响应头，
+ *   实测 gemini-3.8-flash 接「写整个游戏」的请求，响应头 39.7 秒才到，长上下文更久。
  * - `maxRetries: 0`：连不上时 SDK 自己重试两次，用户看到的就是三倍的等待。
  *   自动重发由 AgentLoop 的统一判据负责，适配器不能再暗中叠一条重试链。
  */
-export const PROVIDER_HTTP = { timeout: 60_000, maxRetries: 0 } as const
+export const PROVIDER_HTTP = { timeout: 600_000, maxRetries: 0 } as const
 
 /**
  * 具体接口路线的传输能力。模型有哪些档位由官方目录回答；这里仅回答当前端点

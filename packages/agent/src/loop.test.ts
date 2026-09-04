@@ -684,7 +684,8 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       }
     }
     expect(code).toBe('stream_idle_timeout')
-    expect(message).toMatch(/模型响应中断，\d+ 秒未收到响应，已重发 \d+ 次/)
+    // 静默不重发：分不出是死了还是还在想，重发只是让上游再跑一遍。
+    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到响应$/)
     // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
@@ -703,7 +704,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       }
     }
     expect(code).toBe('stream_idle_timeout')
-    expect(message).toMatch(/模型响应中断，\d+ 秒未收到后续数据，已重发 \d+ 次/)
+    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到后续数据$/)
   }, 10_000)
 
   test('超时会中止底层请求 —— 不然那条连接一直挂着', async () => {
@@ -2936,16 +2937,21 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
   })
 
-  test('连接超时的终态只出现一次「未收到响应」', async () => {
-    const { events } = await collect(
-      scriptedAdapter(Array(MAX_RESENDS + 1).fill('connect-timeout')),
-    )
+  /**
+   * 超时一次都不重发：静默分不出是对面死了还是还在想，原样重发只是让上游再跑一遍同样的推理。
+   * 终态里「未收到响应」只出现一次，且没有「已重发」。
+   */
+  test('连接超时不重发，终态只出现一次「未收到响应」', async () => {
+    const { rec, events } = await collect(scriptedAdapter(['connect-timeout', 'ok']))
 
+    expect(rec.opened).toEqual([0])
+    expect(rec.diagnostics[0]?.retry.decision).toBe('not_retryable')
+    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('连接超时')
     expect(message.match(/未收到响应/g)).toHaveLength(1)
-    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+    expect(message).not.toContain('已重发')
   })
 
   /*
