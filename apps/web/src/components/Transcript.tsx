@@ -1304,13 +1304,6 @@ function DelegateCard(props: { item: TranscriptItem }) {
           : props.item.status === 'failure',
       }}
     >
-      <Show when={statusWord(props.item.status)}>
-        {(word) => (
-          <div class="wf-head">
-            <span class="wf-word">{word()}</span>
-          </div>
-        )}
-      </Show>
       {/* 目标只有一张图才有；派一件的指令就在那一格的次行上。 */}
       <Show when={props.item.toolName === 'workflow'}>
         <div class="wf-goal truncate">{cardTitle(props.item)}</div>
