@@ -23,7 +23,7 @@ import {
   RATE_LIMIT_BACKOFF_MAX_MS,
   UNAVAILABLE_BACKOFF_MS,
 } from './loop.ts'
-import { ToolRegistry, type ToolSpec } from './registry.ts'
+import { type DelegatePort, ToolRegistry, type ToolSpec } from './registry.ts'
 
 /** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
@@ -1734,6 +1734,44 @@ describe('正常响应结束不冒充任务完成', () => {
 
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
     expect(requests).toBe(3)
+  })
+
+  /** 这一轮派出去的子 agent 还在跑时，结束这一条响应就得中断它们：事实交给下一次请求，三次不等才停。 */
+  test('子 agent 还在跑时续起，下一次请求带着这条事实；连续三次只回话则停', async () => {
+    const inner = fakeAdapter([null, null, null])
+    const tails: { role: string; content: unknown }[] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        tails.push(req.messages[req.messages.length - 1]!)
+        yield* inner.stream(req)
+      },
+    }
+    const delegate: DelegatePort = {
+      resolveModel: (name) => ({ provider: 'p', model: name }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [{ name: '赛车-glm' }, { name: '赛车-qwen' }],
+      runGraph: async () => ({ ok: true }),
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({ ...baseCtx(runId), delegate }),
+    })
+    const finished = await runToEnd(loop, { runId: 'rn_inflight_notice' })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
+    expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
+      '子 agent 还在跑时连续三次只回话不等',
+    )
+    expect(tails[1]?.role).toBe('user')
+    expect(String(tails[1]?.content)).toContain('还有 2 个子 agent 在跑：赛车-glm、赛车-qwen')
+    expect(String(tails[1]?.content)).toContain('workflow 只带 workflowId')
   })
 
   test('没有清单或清单全部完成，保留一次正常 completed', async () => {

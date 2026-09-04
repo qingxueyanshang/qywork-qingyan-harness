@@ -52,6 +52,9 @@ function stub(result: DispatchResult) {
       calls.push(input)
       return result
     },
+    join: async () => ({ ok: true, output: '' }),
+    settleRun: () => {},
+    inflight: () => [],
     runGraph: async () => ({
       ok: true,
       transition: { workflowId: 'unused', phase: 'completed' as const, receipts: [] },
@@ -339,6 +342,9 @@ describe('编排', () => {
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push({
@@ -452,6 +458,9 @@ describe('编排', () => {
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push(
@@ -482,5 +491,82 @@ describe('编排', () => {
       { kind: 'cli', cli: 'codex' },
       { subagent: 'cv_old' },
     ])
+  })
+})
+
+describe('一格失败先交回', () => {
+  const graph = (nodes: Record<string, unknown>[]) => ({
+    goal: '目标',
+    nodes: [
+      ...nodes,
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: nodes.map((n) => n.id) },
+    ],
+  })
+
+  test('回执说清谁失败、谁还在跑、怎么等', async () => {
+    const port: Port = {
+      resolveModel: (name) => ({ provider: 'fake', model: name }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
+      runGraph: async () => ({
+        ok: false,
+        transition: {
+          workflowId: 'st_test',
+          phase: 'waiting_review',
+          checkpointId: 'cp',
+          receipts: [
+            {
+              nodeId: 'b',
+              subagentId: 'cv_b',
+              label: 'B',
+              status: 'failed',
+              output: '',
+              error: '接口连不上',
+              durationMs: 3,
+            },
+          ],
+          running: ['a', 'c'],
+        },
+      }),
+    }
+    const res = await workflowTool.fn(
+      graph([
+        { id: 'a', kind: 'temp', name: 'A', task: '一' },
+        { id: 'b', kind: 'temp', name: 'B', task: '二' },
+        { id: 'c', kind: 'temp', name: 'C', task: '三' },
+      ]),
+      ctx(port),
+    )
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('还在跑：a、c')
+    expect(res.message).toContain('只带 workflowId 再调一次')
+    expect(res.message).toContain('checkpointId=cp')
+  })
+
+  test('只带 workflowId 交给端口的是等', async () => {
+    let seen: unknown = null
+    const port: Port = {
+      resolveModel: (name) => ({ provider: 'fake', model: name }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
+      runGraph: async (input) => {
+        seen = input.call
+        return {
+          ok: true,
+          transition: { workflowId: 'wf_1', phase: 'completed', receipts: [] },
+        }
+      },
+    }
+    const res = await workflowTool.fn({ workflowId: 'wf_1' }, ctx(port))
+    expect(res.status).toBe('success')
+    expect(seen).toEqual({ kind: 'wait', workflowId: 'wf_1' })
   })
 })

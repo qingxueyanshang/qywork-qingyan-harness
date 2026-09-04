@@ -6,6 +6,7 @@ import {
   type WorkflowCallRecord,
   type WorkflowTransition,
   workflowGroupId,
+  workflowTransitionOf,
 } from './workflow.ts'
 
 const outcome = (data: WorkflowTransition) => ({
@@ -527,5 +528,90 @@ describe('workflow 投影', () => {
     expect(folded.projection.phase).toBe('running')
     expect(folded.projection.results.a).toBeUndefined()
     expect(folded.projection.results.b).toBeUndefined()
+  })
+})
+
+describe('一格失败先交回', () => {
+  test('只带 workflowId 解析成等在跑的节点', () => {
+    expect(parseWorkflowCall({ workflowId: 'wf' })).toEqual({
+      ok: true,
+      call: { kind: 'wait', workflowId: 'wf' },
+    })
+  })
+
+  test('等的调用不接受审查字段', () => {
+    const got = parseWorkflowCall({ workflowId: 'wf', note: '等' })
+    expect(got.ok).toBe(false)
+    if (!got.ok) expect(got.error).toBe('等在跑的节点只带 workflowId')
+  })
+
+  test('返回值里还在跑的节点原样读回', () => {
+    const transition = workflowTransitionOf(
+      outcome({
+        workflowId: 'wf',
+        phase: 'waiting_review',
+        checkpointId: 'cp',
+        receipts: [],
+        running: ['a', 'c'],
+      }),
+    )
+    expect(transition?.running).toEqual(['a', 'c'])
+  })
+
+  /** 卡返回之后其余格照跑，父会话这一轮结束时它们被中断：这些格也要折出可续接的回执。 */
+  test('卡返回后被中断的格也折出「调用中断」回执', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+            ],
+          },
+          status: 'failure',
+          outcome: outcome({
+            workflowId: 'wf',
+            phase: 'waiting_review',
+            checkpointId: 'cp',
+            receipts: [
+              {
+                nodeId: 'b',
+                subagentId: 'cv_b',
+                label: 'b',
+                status: 'failed',
+                output: '',
+                error: '连不上',
+                durationMs: 3,
+              },
+            ],
+            running: ['a'],
+          }),
+          nodes: {
+            a: {
+              phase: 'interrupted',
+              label: 'a',
+              subagentId: 'cv_a' as never,
+              error: '父会话这一轮已结束',
+            },
+            b: { phase: 'failed', label: 'b', subagentId: 'cv_b' as never, error: '连不上' },
+          },
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('waiting_review')
+    expect(folded.projection.checkpointId).toBe('cp')
+    expect(folded.projection.results.a).toMatchObject({
+      status: 'failed',
+      error: '父会话这一轮已结束',
+      subagentId: 'cv_a',
+    })
+    expect(folded.projection.results.b).toMatchObject({ status: 'failed', error: '连不上' })
   })
 })

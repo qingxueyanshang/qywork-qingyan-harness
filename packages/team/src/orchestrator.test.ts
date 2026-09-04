@@ -57,6 +57,7 @@ function deps(
       prompts.push(input.prompt)
       return run(label, input)
     },
+    join: async () => ({ ok: false, output: '' }),
   }
   return { order, prompts, events, deps: d }
 }
@@ -711,5 +712,174 @@ describe('子 agent 入口', () => {
       { nodeId: 'b', phase: 'waiting', label: 'nobody' },
     ])
     expect(d.events.at(-1)).toMatchObject({ nodeId: 'b', phase: 'failed', error: '找不到派发目标' })
+  })
+})
+
+describe('一格失败先交回', () => {
+  const temp = (id: string, task: string, extra: Partial<PlanNode> = {}): PlanNode =>
+    node(id, task, { target: { kind: 'temp', name: id.toUpperCase() }, ...extra })
+  const graph = (): PlanNode[] => [
+    temp('a', '做 A'),
+    temp('b', '做 B'),
+    temp('c', '做 C'),
+    temp('d', '做 D', { needs: ['b'] }),
+    { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b', 'c', 'd'] },
+  ]
+  const never = () => new Promise<never>(() => {})
+  const failedB: NodeResult = {
+    nodeId: 'b',
+    subagentId: 'cv_b',
+    label: 'B',
+    status: 'failed',
+    output: '',
+    error: '接口连不上',
+    durationMs: 1,
+  }
+  const skippedD: NodeResult = {
+    nodeId: 'd',
+    label: 'D',
+    status: 'skipped',
+    output: '',
+    error: '上游节点未成功',
+    durationMs: 0,
+  }
+  const doneOf = (id: string): NodeResult => ({
+    nodeId: id,
+    subagentId: `cv_${id}`,
+    label: id.toUpperCase(),
+    status: 'done',
+    output: `${id} 的产出`,
+    durationMs: 1,
+  })
+
+  /** 父会话拿到失败的唯一出口是调用返回：失败的与被它拖累的先交回，其余格照跑。 */
+  test('并行批里一格失败、其余还在跑时立即返回，回执只含已落的', async () => {
+    const d = deps(async (label) =>
+      label === 'B' ? { ok: false, output: '', error: '接口连不上', subagentId: 'cv_b' } : never(),
+    )
+    const res = await new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标')
+    expect(res.phase).toBe('waiting_review')
+    expect(res.checkpointId).toBe('cp')
+    expect(res.receipts.map((r) => [r.nodeId, r.status])).toEqual([
+      ['b', 'failed'],
+      ['d', 'skipped'],
+    ])
+    expect(res.running?.sort()).toEqual(['a', 'c'])
+    expect(d.order.sort()).toEqual(['A', 'B', 'C'])
+  })
+
+  /** 下一次调用汇合还在跑的格：不重派、不重写它的状态，等它的回执。 */
+  test('下一次调用汇合还在跑的格，回执齐了才到检查点', async () => {
+    const d = deps(async () => ({ ok: true, output: '不该重派' }))
+    const joined: string[] = []
+    d.deps.join = async ({ nodeId, subagentId }) => {
+      joined.push(`${nodeId}:${subagentId}`)
+      return { ok: true, output: `${nodeId} 的产出`, subagentId }
+    }
+    const res = await new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标', {
+      results: { b: failedB, d: skippedD },
+      states: {
+        a: { phase: 'working', label: 'A', subagentId: 'cv_a' as never },
+        b: { phase: 'failed', label: 'B', subagentId: 'cv_b' as never, error: '接口连不上' },
+        c: { phase: 'done', label: 'C', subagentId: 'cv_c' as never },
+        d: { phase: 'skipped', label: 'D' },
+      },
+      approvals: {},
+      checkpointId: 'cp',
+    })
+    expect(d.order).toEqual([])
+    expect(joined.sort()).toEqual(['a:cv_a', 'c:cv_c'])
+    expect(d.events.filter((e) => e.phase === 'waiting')).toEqual([])
+    expect(res.phase).toBe('waiting_review')
+    expect(res.checkpointId).toBe('cp')
+    expect(res.running).toBeUndefined()
+    expect(res.receipts.map((r) => [r.nodeId, r.status, r.subagentId]).sort()).toEqual([
+      ['a', 'done', 'cv_a'],
+      ['c', 'done', 'cv_c'],
+    ])
+  })
+
+  /** 进程内没有它时不编回执：格已失败的用格上的原因，其余说明回执没送到，都带子 agent id 供续接。 */
+  test('汇合不到的格按格上的事实出回执', async () => {
+    const d = deps(async () => ({ ok: true, output: '不该重派' }))
+    const res = await new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标', {
+      results: { b: doneOf('b'), d: doneOf('d') },
+      states: {
+        a: { phase: 'failed', label: 'A', subagentId: 'cv_a' as never, error: '模型服务出错' },
+        c: { phase: 'done', label: 'C', subagentId: 'cv_c' as never },
+      },
+      approvals: {},
+      checkpointId: 'cp',
+    })
+    expect(d.order).toEqual([])
+    const byId = Object.fromEntries(res.receipts.map((r) => [r.nodeId, r]))
+    expect(byId.a).toMatchObject({ status: 'failed', error: '模型服务出错', subagentId: 'cv_a' })
+    expect(byId.c).toMatchObject({ status: 'failed', subagentId: 'cv_c' })
+    expect(byId.c?.error).toContain('回执没有送达')
+    expect(res.phase).toBe('waiting_review')
+  })
+
+  test('上游还在跑时 approve 被拒，理由列出还在跑的节点', async () => {
+    const d = deps(ok)
+    await expect(
+      new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标', {
+        results: { b: failedB, d: skippedD },
+        states: { a: { phase: 'working', label: 'A', subagentId: 'cv_a' as never } },
+        approvals: {},
+        checkpointId: 'cp',
+        review: { checkpointId: 'cp', decision: 'approve', note: '接受', revisions: [] },
+      }),
+    ).rejects.toThrow('检查点 cp 的上游回执尚未齐全：a、c（a 还在跑）')
+  })
+
+  test('还在跑的节点不能修订，它的上游也不能', async () => {
+    const d = deps(ok)
+    await expect(
+      new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标', {
+        results: { b: failedB, d: skippedD },
+        states: { a: { phase: 'working', label: 'A', subagentId: 'cv_a' as never } },
+        approvals: {},
+        checkpointId: 'cp',
+        review: {
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '改',
+          revisions: [{ nodeId: 'a', instruction: '换个做法' }],
+        },
+      }),
+    ).rejects.toThrow('节点 a 还在跑，等它的回执再修订')
+    await expect(
+      new TeamOrchestrator(graph(), d.deps, KNOWN).run('目标', {
+        results: { b: failedB },
+        states: { d: { phase: 'working', label: 'D', subagentId: 'cv_d' as never } },
+        approvals: {},
+        checkpointId: 'cp',
+        review: {
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '改',
+          revisions: [{ nodeId: 'b', instruction: '重做' }],
+        },
+      }),
+    ).rejects.toThrow('节点 d 还在跑，等它的回执再修订它的上游')
+  })
+
+  test('被中断时还没派出的格标成中断', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const d = deps(async () => ({ ok: true, output: '不该执行' }))
+    const res = await new TeamOrchestrator(
+      graph(),
+      { ...d.deps, signal: controller.signal },
+      KNOWN,
+    ).run('目标')
+    expect(res.phase).toBe('failed')
+    expect(d.order).toEqual([])
+    expect(d.events.filter((e) => e.phase === 'interrupted').map((e) => e.nodeId)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ])
   })
 })

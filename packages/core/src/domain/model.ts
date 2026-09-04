@@ -330,7 +330,14 @@ export type StopReason =
  * 但排查方向完全不同。
  */
 export interface RunInterruption {
-  source: 'user' | 'server_shutdown' | 'consumer_closed' | 'desktop_sidecar' | 'orphan_recovery'
+  source:
+    | 'user'
+    | 'server_shutdown'
+    | 'consumer_closed'
+    | 'desktop_sidecar'
+    | 'orphan_recovery'
+    /** 子会话：派它的父会话那一轮结束了，它还没跑完。 */
+    | 'parent_finished'
   /** 终止首次被观察到的时间。 */
   observedAt: number
   /** 恢复进程把事实写回账本的时间；正常进程内收尾时与 observedAt 相同。 */

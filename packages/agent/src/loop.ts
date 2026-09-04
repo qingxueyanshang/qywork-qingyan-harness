@@ -1712,6 +1712,29 @@ export class AgentLoop {
             continue
           }
 
+          // 这一轮派出去的子 agent 还在跑时，这一条响应同样不是结束：结束就得中断它们。
+          const inflight = ctx.delegate?.inflight(input.runId) ?? []
+          if (inflight.length) {
+            const names = inflight.map((member) => member.name)
+            progress.push({
+              cycle: cycleFingerprint(
+                'assistant_end_turn',
+                {},
+                { status: 'inflight', data: names },
+              ),
+              noProgress: true,
+            })
+            if (stalled()) {
+              stopReason = 'no_progress'
+              stopDetail = '子 agent 还在跑时连续三次只回话不等'
+              break
+            }
+            notices.push(
+              `还有 ${names.length} 个子 agent 在跑：${names.join('、')}。这一轮不结束；要它们的回执，workflow 只带 workflowId 再调一次。`,
+            )
+            continue
+          }
+
           stopReason = 'completed'
           break
         }

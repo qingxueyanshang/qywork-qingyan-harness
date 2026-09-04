@@ -55,6 +55,8 @@ export const DEFAULT_MAX_CONCURRENT = 4
 
 export type WorkflowCall =
   | { kind: 'start'; goal: string; nodes: WorkflowNode[]; maxConcurrent: number }
+  /** 只带 workflowId：等上一次调用返回时还在跑的节点，到下一个事件再返回。 */
+  | { kind: 'wait'; workflowId: string }
   | {
       kind: 'review'
       workflowId: string
@@ -84,6 +86,8 @@ export interface WorkflowTransition {
   checkpointId?: string
   receipts: WorkflowReceipt[]
   review?: WorkflowAppliedReview
+  /** 返回时还在跑的节点。一格失败先交回父会话、其余格照跑时才有；下一次调用汇合它们。 */
+  running?: string[]
 }
 
 export interface WorkflowCallRecord {
@@ -287,7 +291,13 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
   const checkpointId = wireText(wireArgs.checkpointId)
   const decision = wireText(wireArgs.decision)
   const note = wireText(wireArgs.note)
-  if (!workflowId || !checkpointId) {
+  if (!checkpointId && !decision) {
+    if (note || !omittedStructured(wireArgs.revisions)) {
+      return { ok: false, error: '等在跑的节点只带 workflowId' }
+    }
+    return { ok: true, call: { kind: 'wait', workflowId } }
+  }
+  if (!checkpointId) {
     return { ok: false, error: '审查动作必须带 workflowId 和 checkpointId' }
   }
   if (decision !== 'approve' && decision !== 'revise') {
@@ -350,12 +360,16 @@ export function workflowTransitionOf(
   if (receipts.length !== data.receipts.length) return null
   const checkpointId = text(data.checkpointId)
   const review = reviewLike(data.review) ? data.review : undefined
+  const running = Array.isArray(data.running)
+    ? data.running.filter((id): id is string => typeof id === 'string')
+    : []
   return {
     workflowId,
     phase,
     receipts,
     ...(checkpointId ? { checkpointId } : {}),
     ...(review ? { review } : {}),
+    ...(running.length ? { running } : {}),
   }
 }
 
@@ -521,65 +535,60 @@ export function foldWorkflow(
     }
     if (!transition) {
       if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
-      if (record.status === 'failure') {
-        // 被打断的调用没有回执，`nodes` 是它留下的唯一节点事实：建过子 agent 的格折出
-        // 「调用中断」回执，revise 才找得到要续的会话。
-        for (const [nodeId, state] of Object.entries(record.nodes ?? {})) {
-          if (!state.subagentId) continue
-          const node = projection.nodes.find(
-            (candidate): candidate is WorkflowAgentNode =>
-              candidate.kind !== 'checkpoint' && candidate.id === nodeId,
-          )
-          if (!node) continue
-          projection.results[nodeId] = {
-            nodeId,
-            subagentId: state.subagentId,
-            label: state.label || targetLabel(node.target),
-            status: 'failed',
-            output: '',
-            error: '调用中断',
-            durationMs: state.durationMs ?? 0,
-          }
-        }
-        // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
-        // 不投影成 failed 的话它永远停在 running，approve 只能收到「当前不是待审查状态」。
-        if (record.stepId === workflowId) projection.phase = 'failed'
+      // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
+      // 不投影成 failed 的话它永远停在 running，approve 只能收到「当前不是待审查状态」。
+      if (record.status === 'failure' && record.stepId === workflowId) projection.phase = 'failed'
+    } else {
+      if (transition.workflowId !== workflowId) {
+        return { ok: false, error: `步骤 ${record.stepId} 的 workflowId 与调用参数不一致` }
       }
-      continue
+      if (
+        transition.review &&
+        (!review ||
+          review.checkpointId !== transition.review.checkpointId ||
+          review.decision !== transition.review.decision ||
+          review.note !== transition.review.note)
+      ) {
+        return { ok: false, error: `步骤 ${record.stepId} 的审查参数与结果不一致` }
+      }
+      if (transition.review?.decision === 'approve') {
+        const checkpoint = projection.nodes.find(
+          (node): node is WorkflowCheckpointNode =>
+            node.kind === 'checkpoint' && node.id === transition.review?.checkpointId,
+        )
+        if (!checkpoint)
+          return { ok: false, error: `找不到已批准的检查点 ${transition.review.checkpointId}` }
+        projection.approvals[checkpoint.id] = checkpointOutput(
+          checkpoint,
+          projection.results,
+          transition.review.note,
+        )
+      }
+      for (const receipt of transition.receipts) projection.results[receipt.nodeId] = receipt
+      projection.phase = transition.phase
+      if (transition.checkpointId) projection.checkpointId = transition.checkpointId
+      else delete projection.checkpointId
     }
-    if (transition.workflowId !== workflowId) {
-      return { ok: false, error: `步骤 ${record.stepId} 的 workflowId 与调用参数不一致` }
-    }
-    if (
-      transition.review &&
-      (!review ||
-        review.checkpointId !== transition.review.checkpointId ||
-        review.decision !== transition.review.decision ||
-        review.note !== transition.review.note)
-    ) {
-      return { ok: false, error: `步骤 ${record.stepId} 的审查参数与结果不一致` }
-    }
-    if (transition.review?.decision === 'approve') {
-      const checkpoint = projection.nodes.find(
-        (node): node is WorkflowCheckpointNode =>
-          node.kind === 'checkpoint' && node.id === transition.review?.checkpointId,
+    // 记录上被中断、又没有回执的格折出「调用中断」回执，revise 才找得到要续的会话。
+    // 中断不只发生在被打断的调用上：卡返回后还在跑的格，父会话这一轮结束时同样中断。
+    const receiptIds = new Set(transition?.receipts.map((receipt) => receipt.nodeId) ?? [])
+    for (const [nodeId, state] of Object.entries(record.nodes ?? {})) {
+      if (state.phase !== 'interrupted' || !state.subagentId || receiptIds.has(nodeId)) continue
+      const node = projection.nodes.find(
+        (candidate): candidate is WorkflowAgentNode =>
+          candidate.kind !== 'checkpoint' && candidate.id === nodeId,
       )
-      if (!checkpoint)
-        return { ok: false, error: `找不到已批准的检查点 ${transition.review.checkpointId}` }
-      projection.approvals[checkpoint.id] = checkpointOutput(
-        checkpoint,
-        projection.results,
-        transition.review.note,
-      )
-    }
-    for (const receipt of transition.receipts) {
-      projection.results[receipt.nodeId] = receipt
-      if (receipt.status !== 'skipped') {
+      if (!node) continue
+      projection.results[nodeId] = {
+        nodeId,
+        subagentId: state.subagentId,
+        label: state.label || targetLabel(node.target),
+        status: 'failed',
+        output: '',
+        error: state.error ?? '调用中断',
+        durationMs: state.durationMs ?? 0,
       }
     }
-    projection.phase = transition.phase
-    if (transition.checkpointId) projection.checkpointId = transition.checkpointId
-    else delete projection.checkpointId
   }
   return { ok: true, projection }
 }
