@@ -995,6 +995,44 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+describe('迁移 44：临时子 agent 的格子名统一为模型名', () => {
+  test('临时的换成模型名，角色的不动', () => {
+    const db = dbBefore(44)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, source, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', NULL, 0, 0),
+         ('cv_tmp', 'ws', 'GLM 车组', 'p', 'glm-5.3-flash', 'temp', 0, 0),
+         ('cv_role', 'ws', '审查员', 'p', 'm', 'role', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES ('st', 'rn', 1, 'tool_action', 'workflow', ?, 'success', 0)`,
+    ).run(
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {},
+        nodes: {
+          a: { phase: 'done', label: 'GLM 车组', subagentId: 'cv_tmp' },
+          b: { phase: 'done', label: '审查员', subagentId: 'cv_role' },
+        },
+        outcome: {},
+      }),
+    )
+
+    applyOne(db, 44)
+
+    expect(payloadJson(db, 'st')).toMatchObject({
+      nodes: {
+        a: { label: 'glm-5.3-flash', subagentId: 'cv_tmp' },
+        b: { label: '审查员', subagentId: 'cv_role' },
+      },
+    })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')

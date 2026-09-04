@@ -1195,9 +1195,6 @@ function DelegateCard(props: { item: TranscriptItem }) {
       label: state?.label ?? '',
       ...(state?.durationMs ? { durationMs: state.durationMs } : {}),
       ...(state?.subagentId ? { conversationId: state.subagentId } : {}),
-      ...(props.item.workflow?.attempts[n.key]
-        ? { attempts: props.item.workflow.attempts[n.key] }
-        : {}),
     }
   }
 
@@ -1314,7 +1311,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
           </div>
         )}
       </Show>
-      <div class="wf-goal truncate">{cardTitle(props.item)}</div>
+      {/* 目标只有一张图才有；派一件的指令就在那一格的次行上。 */}
+      <Show when={props.item.toolName === 'workflow'}>
+        <div class="wf-goal truncate">{cardTitle(props.item)}</div>
+      </Show>
       <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
         <svg class="wf-edges" aria-hidden="true">
           <For each={edges()}>{(e) => <path d={e.d} classList={{ live: e.live }} />}</For>
@@ -1336,7 +1336,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                   const cli = () => n.cli
                   // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
                   // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
-                  const name = () => (n.agentLabel ? n.title : st()?.label || n.title)
+                  const name = () => st()?.label || n.title
                   const open = () => {
                     const cid = st()?.conversationId
                     if (cli()) openCliTab(props.item.id, n.key, name())
@@ -1364,25 +1364,14 @@ function DelegateCard(props: { item: TranscriptItem }) {
                         onClick={open}
                         ref={hold(n.key)}
                       >
-                        {/* 主行是那一格的名字：一张图里区分得开谁是谁的就是它。
-                            执行者压一档——同一张图里常常四格都是同一个。 */}
+                        {/* 主行是那一格的名字，次行是它的指令与耗时；两种卡同一条规则。 */}
                         <span class="wf-node-name">{name()}</span>
-                        <span class="wf-node-who truncate">
-                          <Show
-                            when={st()?.phase === 'queued'}
-                            fallback={
-                              <Show when={n.agentLabel}>
-                                <span class="wf-node-agent">{st()?.label || n.agentLabel}</span>
-                              </Show>
-                            }
-                          >
-                            等待并发槽位
+                        <span class="wf-node-who">
+                          <Show when={n.task}>
+                            <span class="wf-node-task">{n.task}</span>
                           </Show>
                           <Show when={st()?.durationMs}>
                             {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
-                          </Show>
-                          <Show when={(st()?.attempts ?? 0) > 1}>
-                            <span class="wf-node-time">×{st()?.attempts}</span>
                           </Show>
                         </span>
                       </button>
@@ -1414,7 +1403,6 @@ interface NodeView {
   label: string
   durationMs?: number
   conversationId?: string
-  attempts?: number
 }
 
 /** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */

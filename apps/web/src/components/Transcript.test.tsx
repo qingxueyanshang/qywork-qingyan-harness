@@ -291,7 +291,7 @@ describe('编排画布', () => {
     }
   })
 
-  test('排队节点明确说明是在等待并发槽位', async () => {
+  test('排队的格子只靠样式压暗，次行仍是它的指令', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -320,7 +320,9 @@ describe('编排画布', () => {
     )
 
     try {
-      expect(host.querySelector('.wf-node.queued')?.textContent).toContain('等待并发槽位')
+      const cell = host.querySelector('.wf-node.queued')
+      expect(cell?.querySelector('.wf-node-name')?.textContent).toBe('Gemini 开发者')
+      expect(cell?.querySelector('.wf-node-task')?.textContent).toBe('实现第五版')
     } finally {
       dispose()
     }

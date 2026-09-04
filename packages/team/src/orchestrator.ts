@@ -26,8 +26,11 @@ export interface OrchestratorDeps {
   maxConcurrent: number
   /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
   node(nodeId: string, state: NodeState): void
-  /** 一格的名字。写状态之前就要有；认不出目标返回 null。 */
-  describe(target: SubagentTarget): { label: string } | null
+  /**
+   * 一格的名字：角色是角色名，外部 CLI 是 CLI 名，临时子 agent 是它的模型名——节点上点了
+   * 模型就是那个，没点就跟当前会话。写状态之前就要有；认不出目标返回 null。
+   */
+  describe(target: SubagentTarget, model?: string): { label: string } | null
   /**
    * 派给一个子 agent。目标是新建还是已有由 `target` 决定，实现方负责建记录与跑；
    * 编排器只拿回执与子 agent id。
@@ -178,7 +181,7 @@ export class TeamOrchestrator {
     // 图一开跑就把还没结果的格标成等待：刷新之后也看得见全貌，不只看见跑过的那几格。
     for (const node of plan) {
       if (isAgent(node) && !results.has(node.id)) {
-        this.deps.node(node.id, { phase: 'waiting', label: this.labelOf(node.target) })
+        this.deps.node(node.id, { phase: 'waiting', label: this.labelOf(node) })
       }
     }
 
@@ -223,7 +226,7 @@ export class TeamOrchestrator {
           // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
           if (!announcedQueued.has(node.id)) {
             announcedQueued.add(node.id)
-            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node.target) })
+            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node) })
           }
           continue
         }
@@ -235,7 +238,7 @@ export class TeamOrchestrator {
         if (upstreamFailed) {
           const skipped: NodeResult = {
             nodeId: node.id,
-            label: this.labelOf(node.target),
+            label: this.labelOf(node),
             status: 'skipped',
             output: '',
             error: '上游节点未成功',
@@ -315,8 +318,8 @@ export class TeamOrchestrator {
     return results.has(id) || approvals.has(id)
   }
 
-  private labelOf(target: SubagentTarget): string {
-    return this.deps.describe(target)?.label ?? targetLabel(target)
+  private labelOf(node: WorkflowAgentNode): string {
+    return this.deps.describe(node.target, node.model)?.label ?? targetLabel(node.target)
   }
 
   private async execute(
@@ -328,7 +331,7 @@ export class TeamOrchestrator {
     correction?: string,
   ): Promise<NodeResult> {
     const started = Date.now()
-    const described = this.deps.describe(node.target)
+    const described = this.deps.describe(node.target, node.model)
     if (!described) {
       return this.failed(node, targetLabel(node.target), started, '找不到派发目标')
     }
