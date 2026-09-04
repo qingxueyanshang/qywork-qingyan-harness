@@ -58,7 +58,8 @@ export const readHistoryTool: ToolSpec = {
     '[action:xxx] 标记，传入标记中的 id 返回该条的完整内容。' +
     'id 未知时传 query 检索（返回命中行与对应 id）。' +
     '被收纳过的工具结果只剩信封，传入信封里的 call_id 返回完整的参数与结果。' +
-    '注意它读的是会话历史；工具落盘的大块输出（rs_xxx）用 read_resource。' +
+    '读的范围是本会话与本会话派出的子 agent 的历史，范围外的 id 回「没有这条」；' +
+    '工具落盘的大块输出（rs_xxx）用 read_resource。' +
     '传 subagent（本会话子 agent 的 id）时读的是那个子 agent 的历史，其余参数含义不变。',
   parameters: {
     type: 'object',

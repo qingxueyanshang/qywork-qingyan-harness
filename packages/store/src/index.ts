@@ -91,4 +91,4 @@ export {
   usageEntries,
   usageTotals,
 } from './usage.ts'
-export { listWorkflowRecords, workflowIdsOf } from './workflow.ts'
+export { latestSubagentPhases, listWorkflowRecords, workflowIdsOf } from './workflow.ts'

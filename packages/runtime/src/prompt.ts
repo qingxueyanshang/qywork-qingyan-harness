@@ -308,7 +308,9 @@ export function buildTailNotes(input: {
       input.subagents
         .map(
           (item) =>
-            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}`,
+            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}${
+              item.resumable ? '' : '，不可续接：没有会话号，续派它不记得上一轮'
+            }`,
         )
         .join('\n') || '- 本会话还没有子 agent'
     notes.push({

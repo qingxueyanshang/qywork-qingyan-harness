@@ -11,11 +11,10 @@
  * 外部 CLI 那一行只有元数据与外部会话句柄（`externalSession`），正文在 CLI 自己那边。
  */
 
-import type { DelegatePort } from '@qywork/agent'
+import type { DelegatePort, SubagentSummary } from '@qywork/agent'
 import {
   type Conversation,
   type ConversationId,
-  type ConversationSubagentsResponse,
   foldWorkflow,
   type NodeState,
   type RunId,
@@ -29,8 +28,8 @@ import { collectSecrets, loadTeamConfig, type ModelRef } from '@qywork/runtime'
 import {
   createConversation,
   getConversation,
+  latestSubagentPhases,
   listChildConversations,
-  listRuns,
   listWorkflowRecords,
   setConversationExternalSession,
   setStepNodeState,
@@ -59,33 +58,41 @@ interface Resolved {
   role: Role | null
   cli: CliAgent | null
   created: boolean
+  /** 解析时发现的、模型该知道的事实：续接没接上、角色已不在。 */
+  note?: string
 }
 
 /**
  * 一条会话的子 agent 清单：种类、模型、此刻的状态。运行快照与右栏那一页读的是同一份。
  * 状态按账本判：有一轮在跑是 running，最近一轮没跑完是 failed，其余 idle。
  */
-export function listSubagents(
-  deps: Pick<DelegateDeps, 'store' | 'runs'>,
+export async function listSubagents(
+  deps: Pick<DelegateDeps, 'store'>,
   conversationId: ConversationId,
-): ConversationSubagentsResponse['subagents'] {
-  return listChildConversations(deps.store, conversationId).map((c) => {
-    const runs = listRuns(deps.store, c.id)
-    const last = runs[runs.length - 1]
-    return {
+): Promise<(SubagentSummary & { createdAt: number })[]> {
+  // 状态取自它最后一次出现在卡上的那一格，三种同一条规则：外部 CLI 不建 run，按 runs 判永远是空闲。
+  const phases = latestSubagentPhases(deps.store, conversationId)
+  const out: (SubagentSummary & { createdAt: number })[] = []
+  for (const c of listChildConversations(deps.store, conversationId)) {
+    const phase = phases.get(c.id)
+    const cli = c.source === 'cli' && c.sourceRef ? await findCli(c.sourceRef) : null
+    out.push({
       id: c.id,
       kind: c.source === 'cli' ? 'cli' : c.source === 'role' ? 'role' : 'temp',
       name: c.title,
       provider: c.provider,
       model: c.model,
-      status: deps.runs.isBusy(c.id)
-        ? 'running'
-        : last?.status === 'failed' || last?.status === 'interrupted'
-          ? 'failed'
-          : 'idle',
+      status:
+        phase === 'working'
+          ? 'running'
+          : phase === 'failed' || phase === 'interrupted'
+            ? 'failed'
+            : 'idle',
+      resumable: c.source !== 'cli' || (!!c.externalSession && !!cli?.resumeArgs),
       createdAt: c.createdAt,
-    }
-  })
+    })
+  }
+  return out
 }
 
 export function makeDelegate(ctx: {
@@ -156,17 +163,26 @@ export function makeDelegate(ctx: {
       if (conversation.source === 'cli') {
         const cli = conversation.sourceRef ? await findCli(conversation.sourceRef) : null
         if (!cli) return { error: `本机没有识别到 ${conversation.sourceRef}` }
-        if (conversation.externalSession && !cli.resumeArgs) {
-          return { error: `${cli.id} 不支持续接会话` }
-        }
-        return { conversation, role: null, cli, created: false }
+        // 接不上会话照跑，但把事实交回：模型知道它只收到了这次的指令。
+        const note = !conversation.externalSession
+          ? '这家 CLI 上次没有给会话号，这次是新开的会话，它只收到了这次的指令'
+          : !cli.resumeArgs
+            ? `${cli.id} 不支持续接会话，这次是新开的会话，它只收到了这次的指令`
+            : undefined
+        return { conversation, role: null, cli, created: false, ...(note ? { note } : {}) }
       }
-      const role =
-        conversation.source === 'role'
-          ? ((await team()).roles.find((r) => r.id === conversation.sourceRef) ??
-            tempRole(conversation.title))
-          : tempRole(conversation.title)
-      return { conversation, role, cli: null, created: false }
+      if (conversation.source === 'role') {
+        const found = (await team()).roles.find((r) => r.id === conversation.sourceRef)
+        if (found) return { conversation, role: found, cli: null, created: false }
+        return {
+          conversation,
+          role: tempRole(conversation.title),
+          cli: null,
+          created: false,
+          note: `角色 ${conversation.sourceRef} 已不在 team.json，这次按临时子 agent 跑（没有系统提示词与工具限制）`,
+        }
+      }
+      return { conversation, role: tempRole(conversation.title), cli: null, created: false }
     }
 
     if (target.kind === 'cli') {
@@ -257,6 +273,7 @@ export function makeDelegate(ctx: {
     const resolved = await resolveTarget(input.target, input.model, input.provider)
     if ('error' in resolved) return { ok: false, output: '', error: resolved.error }
     const { conversation, role, cli, created } = resolved
+    const notes: string[] = resolved.note ? [resolved.note] : []
     const id = conversation.id
     const label = conversation.title
     const nodeId = input.nodeId ?? SUBAGENT_NODE_ID
@@ -275,7 +292,13 @@ export function makeDelegate(ctx: {
         durationMs,
         ...(error ? { error } : {}),
       })
-      return { ok, ...(error ? { error } : {}), durationMs, ...base }
+      return {
+        ok,
+        ...(error ? { error } : {}),
+        durationMs,
+        ...base,
+        ...(notes.length ? { note: notes.join('；') } : {}),
+      }
     }
     try {
       if (cli) {
@@ -306,6 +329,9 @@ export function makeDelegate(ctx: {
         })
         // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。
         if (r.session) setConversationExternalSession(deps.store, id, r.session)
+        else if (!conversation.externalSession) {
+          notes.push('这家 CLI 没有给会话号，续派它不记得这次的内容，任务要写全')
+        }
         const error = r.ok
           ? undefined
           : r.timedOut

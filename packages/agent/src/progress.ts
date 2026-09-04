@@ -106,12 +106,14 @@ export const REQUIRED_REPEATS = 3
 export function repeatsNoProgress(
   history: readonly ProgressEvidence[],
   maxWidth = MAX_CYCLE_WIDTH,
+  /** 要求的重复次数。停机按 3 判；按 2 判一次是为了在停之前把「你在重复」当事实交给模型。 */
+  repeats = REQUIRED_REPEATS,
 ): boolean {
-  if (history.length < REQUIRED_REPEATS) return false
-  const upper = Math.min(Math.max(1, maxWidth), Math.floor(history.length / REQUIRED_REPEATS))
+  if (history.length < repeats) return false
+  const upper = Math.min(Math.max(1, maxWidth), Math.floor(history.length / repeats))
   for (let w = 1; w <= upper; w++) {
     const windows: ProgressEvidence[][] = []
-    for (let k = REQUIRED_REPEATS; k >= 1; k--) {
+    for (let k = repeats; k >= 1; k--) {
       windows.push(history.slice(history.length - k * w, history.length - (k - 1) * w))
     }
     if (!windows.flat().every((e) => e.noProgress)) continue

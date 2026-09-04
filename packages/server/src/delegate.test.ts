@@ -226,6 +226,78 @@ function parsedStart(args: Record<string, unknown>) {
   return parsed.call
 }
 
+describe('派发时的事实交回模型', () => {
+  /** 角色中途被删：照跑，但回执要写明这次是按临时子 agent 跑的。 */
+  test('续接一个角色已不在的子 agent，回执带上这一事实', async () => {
+    const cid = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      title: '幽灵',
+      source: 'role',
+      sourceRef: 'ghost',
+      parentConversationId: cid,
+    })
+    script = [() => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS })]
+    const res = await delegate(cid).dispatch({
+      target: { subagent: child.id },
+      task: '接着做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+    expect(res.ok).toBe(true)
+    expect(res.note).toContain('角色 ghost 已不在')
+  })
+
+  /** 清单里的状态取自卡上那一格：派失败的子 agent 是 failed，派成的是 idle。 */
+  test('子 agent 清单的状态取自它最后一次出现在卡上的那一格', async () => {
+    const cid = conversation()
+    const run = createRun(store, {
+      conversationId: cid,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: `status-${cid}`,
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const stepOf = (seq: number, toolCallId: string) =>
+      appendStep(store, {
+        runId: run.id,
+        seq,
+        kind: 'tool_action',
+        toolName: 'subagent',
+        toolCallId,
+        status: 'running',
+        payload: { kind: 'tool_call', args: { task: '看' } },
+      })
+    script = [() => new Response(textTurn('好了'), { headers: SSE_HEADERS })]
+    const good = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '成了的' },
+      task: '看',
+      runId: run.id,
+      stepId: stepOf(1, `ok-${cid}`).id,
+      signal: new AbortController().signal,
+    })
+    script = []
+    const bad = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '败了的' },
+      task: '看',
+      runId: run.id,
+      stepId: stepOf(2, `bad-${cid}`).id,
+      signal: new AbortController().signal,
+    })
+    expect(good.ok).toBe(true)
+    expect(bad.ok).toBe(false)
+    const listed = await delegate(cid).subagents()
+    expect(listed.map((s) => [s.name, s.status, s.resumable])).toEqual([
+      ['成了的', 'idle', true],
+      ['败了的', 'failed', true],
+    ])
+  })
+})
+
 describe('派一件的进度', () => {
   test('结构化 provider + model 一路写进成员会话，不经过字符串拆分', async () => {
     const cid = conversation()

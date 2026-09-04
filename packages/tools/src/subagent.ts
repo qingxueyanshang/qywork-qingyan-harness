@@ -160,10 +160,12 @@ export const subagentTool: ToolSpec = {
       ...(res.name ? { name: res.name } : {}),
     }
     const who = res.name ? `子 agent ${res.name}` : '子 agent'
+    // 派发时的事实接在消息后：续接没接上、角色已不在。它是给模型的输入，不是产出。
+    const note = res.note ? `；${res.note}` : ''
     if (!res.ok) {
       return {
         status: 'failure' as const,
-        message: `${who} 没做成：${res.error ?? '没有说明原因'}`,
+        message: `${who} 没做成：${res.error ?? '没有说明原因'}${note}`,
         ...(res.output || res.subagentId ? { data: { output: res.output, ...ids } } : {}),
       }
     }
@@ -172,9 +174,7 @@ export const subagentTool: ToolSpec = {
       : `${who} 已返回`
     return {
       status: 'success' as const,
-      message: parentTodo
-        ? `${head}；父待办仍待验收：${parentTodo}。满意后用 write_todos 完成，不满意则继续派给它。`
-        : head,
+      message: `${parentTodo ? `${head}；父待办 ${parentTodo} 仍未完成` : head}${note}`,
       data: { output: res.output, ...ids },
     }
   },

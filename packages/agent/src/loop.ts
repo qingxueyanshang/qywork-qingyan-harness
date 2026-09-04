@@ -60,7 +60,12 @@ import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import { drainUntil, EventQueue } from './event-queue.ts'
 import { describeDrift, PrefixAudit } from './prefix-audit.ts'
-import { cycleFingerprint, type ProgressEvidence, repeatsNoProgress } from './progress.ts'
+import {
+  cycleFingerprint,
+  MAX_CYCLE_WIDTH,
+  type ProgressEvidence,
+  repeatsNoProgress,
+} from './progress.ts'
 import {
   isParallelSafe,
   type PermissionEffect,
@@ -610,6 +615,10 @@ function declaredMaxOutput(
   return Math.min(spec.maxOutputTokens, Math.max(1, spec.contextWindow - occupancy - margin))
 }
 
+/** 第二次出现相同的轮次时交给模型的事实。第三次就停，这句话说的就是这条规则。 */
+const REPEAT_NOTICE =
+  '上一轮与这一轮的动作、参数与结果完全相同，没有产生任何变化。再出现一次相同的轮次，这次运行会以「无进展」停止。'
+
 export class AgentLoop {
   /**
    * 前缀审计。
@@ -818,6 +827,8 @@ export class AgentLoop {
     // 无限循环没有自然耗尽这一支。默认失败闭合，所有合法出口都必须在现场覆盖；
     // 将来若误加一条裸 `break`，也不会把半成品假报成 completed。
     let stopReason: StopReason = 'internal_guard'
+    /** 停机的具体依据，随 run.finished 交出去。 */
+    let stopDetail: string | undefined
     /**
      * 溢出恢复用过没有。**状态机，不是重试计数。**
      *
@@ -837,6 +848,17 @@ export class AgentLoop {
     let compactedAt = -1
     /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
     const progress: ProgressEvidence[] = []
+    /**
+     * 交给下一次请求的事实，一次性。**不落账本、不进界面**：它是给模型的输入，
+     * 不是会话内容。装配时以 user 消息附在末尾（见 `buildRequest`）。
+     */
+    const notices: string[] = []
+    /** 空转判据：满三次就停；满两次先把「你在重复」当事实交给下一次请求。 */
+    const stalled = (): boolean => {
+      if (repeatsNoProgress(progress)) return true
+      if (repeatsNoProgress(progress, MAX_CYCLE_WIDTH, 2)) notices.push(REPEAT_NOTICE)
+      return false
+    }
     let turnIndex = 0
 
     // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的状态
@@ -947,7 +969,9 @@ export class AgentLoop {
          */
         // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
         // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
-        let req = this.buildRequest(input, transcript, occupancyOf)
+        const turnNotice = notices.length ? notices.join('\n') : null
+        notices.length = 0
+        let req = this.buildRequest(input, transcript, occupancyOf, turnNotice)
         /*
          * 分组明细。**在信封判定之前算**——头部修正要用本轮的头部占用，而只有
          * 装配完才知道这一次的信封长什么样。`req` 每次重新装配都要跟着重算。
@@ -1045,7 +1069,7 @@ export class AgentLoop {
                */
               anchor = null
               // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
-              req = this.buildRequest(input, transcript, occupancyOf)
+              req = this.buildRequest(input, transcript, occupancyOf, turnNotice)
               breakdown = breakdownOf(req, density)
             } else {
               // 压不动不是致命错：照常发出去，让 provider 来判。
@@ -1365,7 +1389,7 @@ export class AgentLoop {
                 throw err
               }
               if (outcome.status === 'compacted') {
-                const rebuilt = this.buildRequest(input, transcript, occupancyOf)
+                const rebuilt = this.buildRequest(input, transcript, occupancyOf, turnNotice)
                 if (estimateRequest(rebuilt, density) < sizeBefore) {
                   persist.recordCompaction(input.runId, nextSeq(), {
                     phase: 'done',
@@ -1619,8 +1643,9 @@ export class AgentLoop {
               ),
               noProgress: true,
             })
-            if (repeatsNoProgress(progress)) {
+            if (stalled()) {
               stopReason = 'no_progress'
+              stopDetail = 'provider 连续三次暂停在同一段内容'
               break
             }
             continue
@@ -1661,9 +1686,9 @@ export class AgentLoop {
            * `write_todos` 已经是任务清单的唯一账本；这里读同一份只读端口，
            * 不另造完成状态。清单没有未完成项时保留原语义。
            *
-           * 本轮正文已在上面进 transcript，直接继续会让模型下一次看到自己刚说过的话。
-           * 同一份未完成清单下连续三次只说不做，则复用已有的无进展监督器停下来，
-           * 免得把一次误完成改成无限空转。
+           * 续起时把「清单还有几项没完成、这一轮没有结束」当事实交给下一次请求：
+           * 不说的话模型只看到自己刚说过的话。同一份未完成清单下连续三次只说不做，
+           * 则复用已有的无进展监督器停下来，免得把一次误完成改成无限空转。
            */
           const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
           if (unfinished.length) {
@@ -1676,10 +1701,14 @@ export class AgentLoop {
               ),
               noProgress: true,
             })
-            if (repeatsNoProgress(progress)) {
+            if (stalled()) {
               stopReason = 'no_progress'
+              stopDetail = '待办未完成时连续三次只回话不动手'
               break
             }
+            notices.push(
+              `待办清单还有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。上一条回复不是结束，这一轮继续。`,
+            )
             continue
           }
 
@@ -1903,8 +1932,9 @@ export class AgentLoop {
         // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
         // provider 直接 400。代价是晚一轮才停，仍然远好过继续空转。
 
-        if (repeatsNoProgress(progress)) {
+        if (stalled()) {
           stopReason = 'no_progress'
+          stopDetail = `连续三轮相同的调用与结果：${[...new Set(calls.map((c) => c.name))].join('、')}`
           break
         }
       }
@@ -1957,6 +1987,7 @@ export class AgentLoop {
             ? 'done'
             : 'failed',
       stopReason,
+      ...(stopDetail ? { stopDetail } : {}),
       usage,
       fileChanges,
     }
@@ -1974,6 +2005,8 @@ export class AgentLoop {
     input: RunInput,
     transcript: WireMessage[],
     occupancyOf: (req: ChatRequest) => number,
+    /** 只交给这一次请求的事实（见 `notices`）。附在末尾、在缓存断点之后，不落账本。 */
+    notice: string | null = null,
   ): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
 
@@ -2032,6 +2065,7 @@ export class AgentLoop {
     if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
       messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
     }
+    if (notice) messages.push({ role: 'user', content: notice, _group: 'workspaceState' })
 
     const assembled: ChatRequest = {
       model: adapter.spec.id,

@@ -142,6 +142,12 @@ export const workflowTool: ToolSpec = {
 
 function transitionMessage(transition: WorkflowTransition): string {
   const count = transition.receipts.length
+  // 派发时的事实逐节点带回：续接没接上、角色已不在。模型据此决定要不要重派或把任务写全。
+  const notes = transition.receipts
+    .filter((receipt) => receipt.note)
+    .map((receipt) => ` ${receipt.nodeId}：${receipt.note}`)
+    .join('；')
+  const noteLine = notes ? `${notes}。` : ''
   // 批准接受了哪些未完成节点必须说出来：approve 之后终态一律是 completed，
   // 只凭 phase 判断的话，一次接受四个失败节点的批准读起来与四个都成功没有区别。
   const accepted = transition.review?.acceptedFailures ?? []
@@ -152,11 +158,11 @@ function transitionMessage(transition: WorkflowTransition): string {
     return (
       `本次调度已返回 ${count} 个回执；整个 workflow 尚未完成。` +
       ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +
-      `请核验回执后，再以 approve 或 revise 续接。${acceptedNote}`
+      `请核验回执后，再以 approve 或 revise 续接。${acceptedNote}${noteLine}`
     )
   }
   if (transition.phase === 'completed') {
-    return `Workflow 已完成，本次返回 ${count} 个回执。${acceptedNote}`
+    return `Workflow 已完成，本次返回 ${count} 个回执。${acceptedNote}${noteLine}`
   }
-  return `Workflow 执行失败，本次返回 ${count} 个回执`
+  return `Workflow 执行失败，本次返回 ${count} 个回执。${noteLine}`
 }

@@ -150,7 +150,6 @@ export { SUBAGENT_NODE_ID } from './protocol/events.ts'
 export type {
   ConversationHistoryPageResponse,
   ConversationRunsResponse,
-  ConversationSubagentsResponse,
   ConversationUsageResponse,
   UsageResponse,
 } from './protocol/http.ts'

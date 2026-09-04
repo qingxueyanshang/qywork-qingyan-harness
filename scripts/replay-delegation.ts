@@ -15,10 +15,19 @@
 
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent, ConversationId, ConversationSubagentsResponse } from '@qywork/core'
+import { type AgentEvent, type ConversationId, foldWorkflow } from '@qywork/core'
 import { loadConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
-import { getConversation, listChildConversations, listRuns, listSteps, Store } from '@qywork/store'
+import {
+  getConversation,
+  latestSubagentPhases,
+  listChildConversations,
+  listRuns,
+  listSteps,
+  listWorkflowRecords,
+  Store,
+  workflowIdsOf,
+} from '@qywork/store'
 
 /** 每次跑一个带时间戳的目录，旧的一律留着：账本是事后排查子 agent 为什么停的唯一证据。 */
 const ROOT = join(
@@ -285,6 +294,14 @@ async function main(): Promise<number> {
     )
 
     const firstWorkflowId = first!.stepId
+    /** 账本里这条会话的每张工作流折出来的投影。 */
+    const ledgerWorkflows = () => {
+      const records = listWorkflowRecords(store, conversationId)
+      return workflowIdsOf(records).flatMap((id) => {
+        const folded = foldWorkflow(records, id)
+        return folded.ok ? [folded.projection] : []
+      })
+    }
     if (INTERRUPT) {
       // ── 中断 ──
       log(`四个都在跑，${INTERRUPT_AFTER_MS / 1000}s 后中断`)
@@ -307,18 +324,17 @@ async function main(): Promise<number> {
           ),
         afterNodes,
       )
-      const listed = (await (
-        await fetch(`${base}/api/conversations/${conversationId}/subagents`, { headers: auth })
-      ).json()) as ConversationSubagentsResponse
+      const phases = [...latestSubagentPhases(store, conversationId).values()]
       check(
-        '子 agent 页列出四个，状态都不是进行中',
-        listed.subagents.length === 4 && listed.subagents.every((s) => s.status !== 'running'),
-        listed.subagents,
+        '账本里四个子 agent 的最后状态都不是进行中',
+        phases.length === 4 && phases.every((phase) => phase !== 'working'),
+        phases,
       )
       check(
-        '子 agent 页列出这张工作流且已失败',
-        listed.workflows.length === 1 && listed.workflows[0]?.phase === 'failed',
-        listed.workflows,
+        '账本里这张工作流折出来是失败',
+        ledgerWorkflows()
+          .map((w) => w.phase)
+          .join() === 'failed',
       )
 
       // ── 继续 ──
@@ -365,19 +381,17 @@ async function main(): Promise<number> {
 
     // ── 验收 ──
     process.stdout.write('\n验收\n')
-    const listed = (await (
-      await fetch(`${base}/api/conversations/${conversationId}/subagents`, { headers: auth })
-    ).json()) as ConversationSubagentsResponse
+    const workflows = ledgerWorkflows()
     check('全程没有 define_role', events.filter(started('define_role')).length === 0)
     check(
       '工作流只有一张，且已完成',
-      listed.workflows.length === 1 && listed.workflows[0]?.phase === 'completed',
-      listed.workflows.map((w) => [w.workflowId, w.phase, w.checkpointId]),
+      workflows.length === 1 && workflows[0]?.phase === 'completed',
+      workflows.map((w) => [w.workflowId, w.phase, w.checkpointId]),
     )
     check(
       '四格最终都是完成',
-      listed.workflows[0]?.nodes.every((n) => n.phase === 'done') ?? false,
-      listed.workflows[0]?.nodes,
+      Object.values(workflows[0]?.states ?? {}).every((n) => n.phase === 'done'),
+      workflows[0]?.states,
     )
     const calls = finishedOf('workflow')
     // 有节点失败的那一轮回 failure 是对的：回执带着失败原因交回检查点。要挡的是图不合法那种错。
@@ -390,7 +404,9 @@ async function main(): Promise<number> {
     check('父会话给出了验收与横向对比', text.length > 200, text.slice(0, 200))
     process.stdout.write(`\n父会话最后一段：\n${text.slice(0, 2000)}\n`)
     process.stdout.write(
-      `\n会话 ${conversationId}；子会话：${listed.subagents.map((s) => `${s.name}=${s.id}`).join('，')}\n`,
+      `\n会话 ${conversationId}；子会话：${listChildConversations(store, conversationId)
+        .map((c) => `${c.title}=${c.id}`)
+        .join('，')}\n`,
     )
 
     ws.close()

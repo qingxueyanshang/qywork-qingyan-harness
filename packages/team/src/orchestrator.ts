@@ -46,6 +46,8 @@ export interface OrchestratorDeps {
     subagentId?: string
     /** 派发方量的耗时，回执与卡上那一格都用它。 */
     durationMs?: number
+    /** 派发时模型该知道的事实，原样进回执。 */
+    note?: string
   }>
 }
 
@@ -386,6 +388,7 @@ export class TeamOrchestrator {
         ...(res.error ? { error: res.error } : {}),
         // 耗时以派发方量的为准：卡上那一格印的就是它，回执不另量一次。
         durationMs: res.durationMs ?? Date.now() - started,
+        ...(res.note ? { note: res.note } : {}),
       }
     } catch (error) {
       return this.failed(

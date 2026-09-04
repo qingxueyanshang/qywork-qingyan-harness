@@ -595,7 +595,8 @@ export class Session {
           finishRun(store, run.id, {
             status: ev.status,
             stopReason: ev.stopReason,
-            errorMessage: failure?.message ?? interruptionMessage(interruption),
+            errorMessage:
+              failure?.message ?? interruptionMessage(interruption) ?? ev.stopDetail ?? null,
             errorCode: failure?.code ?? null,
             interruption,
           })
@@ -1304,6 +1305,8 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
       if (cut <= 0) return null
       const runId = id.slice(0, cut) as RunId
       const stepId = id.slice(cut + 1)
+      // 只认这条会话的 run：别的会话的 step id 回「没有这条」。
+      if (!listRuns(store, cid).some((run) => run.id === runId)) return null
       return listSteps(store, runId).find((x) => String(x.id) === stepId) ?? null
     }
     const userStepOf = (id: string): Step | null => {
