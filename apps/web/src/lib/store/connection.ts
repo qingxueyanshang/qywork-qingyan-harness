@@ -875,7 +875,7 @@ export async function loadConversationView(id: string): Promise<void> {
   try {
     const page = await fetchConversationPage(id, null, lease.controller.signal)
     if (canceledByNewerRequest(lease)) return
-    const items = foldTranscript(page)
+    const items = foldPage(page)
     const live = state.busyConversations.includes(id)
       ? (page.runs.find((run) => run.status === 'running') ?? null)
       : null

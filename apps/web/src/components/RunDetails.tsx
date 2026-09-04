@@ -65,19 +65,19 @@ export default function RunDetails() {
       ...runs().map((r) => ({
         at: r.createdAt,
         run: r,
-        roleId: '',
+        name: '',
         extra: null as UsageLedgerRow | null,
       })),
       ...childRuns().map((c) => ({
         at: c.run.createdAt,
         run: c.run,
-        roleId: c.roleId,
+        name: c.name,
         extra: null as UsageLedgerRow | null,
       })),
       ...extras().map((e) => ({
         at: e.occurredAt,
         run: null as Run | null,
-        roleId: '',
+        name: '',
         extra: e,
       })),
     ].sort((a, b) => b.at - a.at),
@@ -115,7 +115,7 @@ export default function RunDetails() {
                     {(r) => (
                       <RunRow
                         run={r}
-                        roleId={row.roleId}
+                        name={row.name}
                         open={picked() === r.id}
                         onPick={() => setPicked((cur) => (cur === r.id ? null : r.id))}
                       />
@@ -219,7 +219,7 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
  * 模型名与步数耗时不进展开区——放进去等于给同一轮做两个标题，上面一个时间、
  * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的内容：逐请求的账。
  */
-function RunRow(props: { run: Run; roleId: string; open: boolean; onPick: () => void }) {
+function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => void }) {
   const r = () => props.run
   const mark = () => runMark(r())
   /** 跑完才给耗时。还在跑的那一轮由「进行中」标记说，两处都说就是同一件事说两遍。 */
@@ -234,7 +234,7 @@ function RunRow(props: { run: Run; roleId: string; open: boolean; onPick: () => 
         <IconChevron size={10} dir={props.open ? 'down' : 'right'} />
         <span class="run-when">{clockOf(r().createdAt)}</span>
         {/* 派给谁。本会话自己那几轮没有这一格——那一行就是用户正在看的这条会话。 */}
-        <Show when={props.roleId}>{(role) => <span class="run-role truncate">{role()}</span>}</Show>
+        <Show when={props.name}>{(name) => <span class="run-role truncate">{name()}</span>}</Show>
         {/* 模型名是这一行唯一长度不可控的一格，所以只有它让位。 */}
         <span class="run-model truncate">{r().model}</span>
         <span class="run-meta">{r().stepCount} 步</span>

@@ -226,6 +226,24 @@ function parsedStart(args: Record<string, unknown>) {
   return parsed.call
 }
 
+describe('目标不成立', () => {
+  /** 解析失败也是这一格的终态：不写的话卡上那格永远停在等待，而回执说失败。 */
+  test('续接不属于本会话的子 agent，那一格记失败并带原因', async () => {
+    const cid = conversation()
+    const res = await delegate(cid).dispatch({
+      target: { subagent: 'cv_nobody' },
+      task: '接着做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+    expect(res.ok).toBe(false)
+    expect(members().map((m) => [m.nodeId, m.state.phase, m.state.label])).toEqual([
+      ['child', 'failed', 'cv_nobody'],
+    ])
+    expect(members()[0]?.state.error).toContain('没有子 agent cv_nobody')
+  })
+})
+
 describe('派发时的事实交回模型', () => {
   /** 角色中途被删：照跑，但回执要写明这次是按临时子 agent 跑的。 */
   test('续接一个角色已不在的子 agent，回执带上这一事实', async () => {
@@ -496,8 +514,8 @@ describe('派一件的进度', () => {
     expect(members()).toHaveLength(0)
   })
 
-  /** 派不出去就不该在图上留一个跑着的格子——那一格从头到尾没人在跑。 */
-  test('目标不存在时不发任何进度', async () => {
+  /** 派不出去那一格直接记失败：没有「跑着」那一帧，也不留一格永远等待。 */
+  test('目标不存在时那一格只有一条失败状态', async () => {
     const cid = conversation()
     const res = await delegate(cid).dispatch({
       target: { kind: 'role', role: '查无此角色' },
@@ -507,7 +525,8 @@ describe('派一件的进度', () => {
     })
 
     expect(res.ok).toBe(false)
-    expect(members()).toHaveLength(0)
+    expect(members().map((m) => m.state.phase)).toEqual(['failed'])
+    expect(members()[0]?.state.error).toContain('查无此角色')
   })
 })
 

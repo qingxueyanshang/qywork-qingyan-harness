@@ -1,6 +1,7 @@
 import { ROLE_COMMAND } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
+import { nextRole } from '../../lib/role-form.ts'
 import {
   askInChat,
   loadTeam,
@@ -145,13 +146,7 @@ export default function AgentsSettings() {
       cfg.roles ??= []
       const roles = cfg.roles
       const at = roles.findIndex((x) => x.id === id)
-      const next: RoleJson = {
-        id,
-        name: f.name.trim() || id,
-        description: f.description.trim(),
-        systemPrompt: f.systemPrompt,
-        ...(f.model.trim() ? { model: f.model.trim() } : {}),
-      }
+      const next = nextRole(at >= 0 ? roles[at] : undefined, f)
       if (at >= 0) roles[at] = next
       else roles.push(next)
       setRoleForm(null)

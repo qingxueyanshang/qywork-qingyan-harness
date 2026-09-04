@@ -74,8 +74,8 @@ export interface UsageResponse {
  */
 export interface ConversationRunsResponse {
   runs: Run[]
-  /** 子会话的轮次。`roleId` 来自子会话的 `sourceRef`，也就是派给谁。 */
-  childRuns: { roleId: string; run: Run }[]
+  /** 子会话的轮次。`name` 是那个子 agent 的名字（子会话标题），三种子 agent 同一条规则。 */
+  childRuns: { name: string; run: Run }[]
 }
 
 export interface ConversationUsageResponse {

@@ -19,8 +19,10 @@ import {
   type NodeState,
   type RunId,
   type StepId,
+  type StopReason,
   SUBAGENT_NODE_ID,
   type SubagentTarget,
+  targetLabel,
   type WorkflowNode,
   type WorkflowTransition,
 } from '@qywork/core'
@@ -271,7 +273,18 @@ export function makeDelegate(ctx: {
 
   const dispatch: DelegatePort['dispatch'] = async (input) => {
     const resolved = await resolveTarget(input.target, input.model, input.provider)
-    if ('error' in resolved) return { ok: false, output: '', error: resolved.error }
+    if ('error' in resolved) {
+      // 目标不成立也是这一格的终态：不写的话卡上那格永远停在等待，而回执说失败。
+      note(
+        input,
+        input.nodeId ?? SUBAGENT_NODE_ID,
+      )({
+        phase: 'failed',
+        label: targetLabel(input.target),
+        error: resolved.error,
+      })
+      return { ok: false, output: '', error: resolved.error }
+    }
     const { conversation, role, cli, created } = resolved
     const notes: string[] = resolved.note ? [resolved.note] : []
     const id = conversation.id
@@ -282,11 +295,12 @@ export function makeDelegate(ctx: {
     say({ phase: 'working', label, subagentId: id })
 
     const base = { subagentId: id, name: conversation.title, created }
-    const settle = (ok: boolean, error?: string) => {
+    const settle = (ok: boolean, error?: string, stop?: StopReason | null) => {
       const durationMs = Date.now() - started
-      // 父会话叫停的那一格是「中断」不是「失败」：它没做错，是没让它做完。
+      // 被叫停的那一格是「中断」不是「失败」：父会话停的、在它自己页签里停的都算。
+      const interrupted = input.signal.aborted || stop === 'user_interrupt'
       say({
-        phase: ok ? 'done' : input.signal.aborted ? 'interrupted' : 'failed',
+        phase: ok ? 'done' : interrupted ? 'interrupted' : 'failed',
         label,
         subagentId: id,
         durationMs,
@@ -356,7 +370,7 @@ export function makeDelegate(ctx: {
           onEvent: (ev, cid) => deps.bus.publish(ev, cid),
         },
       )
-      return { output: res.output, ...settle(res.ok, res.error) }
+      return { output: res.output, ...settle(res.ok, res.error, res.stop) }
     } catch (err) {
       // 成员会话自己 try/catch 不抛（`team-run.ts`），走到这里的是装配期的意外。
       // **必须落终态**：抛出去的话卡上那个节点停在「进行中」，而这一轮已经结束了。
