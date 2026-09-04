@@ -1309,7 +1309,9 @@ function DelegateCard(props: { item: TranscriptItem }) {
     >
       <div class="wf-head">
         <span class="wf-action">{actionLabel(props.item)}</span>
-        <Show when={cardWord(props.item)}>{(word) => <span class="wf-word">{word()}</span>}</Show>
+        <Show when={statusWord(props.item.status)}>
+          {(word) => <span class="wf-word">{word()}</span>}
+        </Show>
         <Show when={props.item.durationMs}>
           {(ms) => <span class="wf-time">{(ms() / 1000).toFixed(1)}s</span>}
         </Show>
@@ -1368,10 +1370,14 @@ function DelegateCard(props: { item: TranscriptItem }) {
                             执行者压一档——同一张图里常常四格都是同一个。 */}
                         <span class="wf-node-name">{name()}</span>
                         <span class="wf-node-who truncate">
-                          <Show when={n.agentLabel}>
-                            <span>{st()?.label || n.agentLabel}</span>
+                          <Show
+                            when={st()?.phase === 'queued'}
+                            fallback={
+                              <Show when={n.agentLabel}>{st()?.label || n.agentLabel}</Show>
+                            }
+                          >
+                            等待并发槽位
                           </Show>
-                          <span>{NODE_PHASE[st()?.phase ?? 'waiting']}</span>
                           <Show when={st()?.durationMs}>
                             {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
                           </Show>
@@ -1409,30 +1415,6 @@ interface NodeView {
   durationMs?: number
   conversationId?: string
   attempts?: number
-}
-
-const NODE_PHASE: Record<string, string> = {
-  waiting: '等待',
-  queued: '排队',
-  working: '进行中',
-  done: '完成',
-  failed: '失败',
-  skipped: '跳过',
-  interrupted: '中断',
-}
-
-const CARD_WORD = { running: '进行中', success: '完成', failure: '失败' } as const
-const WORKFLOW_WORD = {
-  running: '进行中',
-  waiting_review: '待审查',
-  completed: '已完成',
-  failed: '失败',
-} as const
-
-/** 卡顶的状态词：一张图按折叠后的阶段，派一件按这条 step 的状态。 */
-function cardWord(item: TranscriptItem): string {
-  if (item.workflow) return WORKFLOW_WORD[item.workflow.phase]
-  return item.status ? CARD_WORD[item.status] : ''
 }
 
 /** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */

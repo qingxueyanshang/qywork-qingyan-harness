@@ -636,6 +636,222 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+describe('迁移 41：派活参数与回执改按 kind 记', () => {
+  test('节点的 agent 改成 kind 字段，回执改名，续接调用从回执折出逐格状态，卡头对象名换新', () => {
+    const db = dbBefore(41)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
+INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at)
+  VALUES ('cv', 'ws', '', 'p', 'm', 0, 0);
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn', 'cv', 'ws', 'm', 'r', 0, 'done');
+`)
+    const insert = db.query(
+      `INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+       VALUES (?, 'rn', ?, 'tool_action', ?, ?, ?, 0)`,
+    )
+    insert.run(
+      'st_start',
+      1,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {
+          goal: '目标',
+          nodes: [
+            {
+              id: 'glm',
+              kind: 'agent',
+              agent: 'racer-glm',
+              task: '做',
+              model: 'glm',
+              provider: 'glm',
+            },
+            { id: 'tmp', kind: 'agent', agent: 'ad-hoc', task: '也做' },
+            { id: 'cx', agent: 'cli:codex', task: '再做' },
+            { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['glm', 'tmp', 'cx'] },
+          ],
+        },
+        action: { kind: 'run', objectLabel: '编排', target: '目标' },
+        nodes: {
+          glm: { phase: 'failed', label: 'GLM', subagentId: 'cv_glm' },
+          tmp: { phase: 'failed', label: '临时', subagentId: 'cv_tmp' },
+        },
+        outcome: {
+          status: 'failure',
+          executed: true,
+          message: '到检查点',
+          data: {
+            workflowId: 'st_start',
+            phase: 'waiting_review',
+            checkpointId: 'cp',
+            receipts: [
+              {
+                nodeId: 'glm',
+                agent: 'racer-glm',
+                label: 'GLM',
+                status: 'done',
+                output: '稿',
+                durationMs: 5,
+                conversationId: 'cv_glm',
+              },
+              {
+                nodeId: 'tmp',
+                agent: 'ad-hoc',
+                label: '临时',
+                status: 'failed',
+                output: '',
+                error: '超时',
+                durationMs: 7,
+                conversationId: 'cv_tmp',
+              },
+              {
+                nodeId: 'cx',
+                agent: 'cli:codex',
+                label: 'OpenAI codex',
+                status: 'skipped',
+                output: '',
+                error: '上游节点未成功',
+                durationMs: 0,
+              },
+            ],
+          },
+        },
+      }),
+      'failure',
+    )
+    insert.run(
+      'st_review',
+      2,
+      'workflow',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: {
+          workflowId: 'st_start',
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '返工',
+          revisions: [{ nodeId: 'tmp', instruction: '再来' }],
+        },
+        action: { kind: 'run', objectLabel: '编排', target: 'st_start' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '到检查点',
+          data: {
+            workflowId: 'st_start',
+            phase: 'waiting_review',
+            checkpointId: 'cp',
+            receipts: [
+              {
+                nodeId: 'tmp',
+                agent: 'ad-hoc',
+                label: '临时',
+                status: 'done',
+                output: '新稿',
+                durationMs: 9,
+                conversationId: 'cv_tmp',
+              },
+            ],
+            review: { checkpointId: 'cp', decision: 'revise', note: '返工' },
+          },
+        },
+      }),
+      'success',
+    )
+    insert.run(
+      'st_solo',
+      3,
+      'subagent',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { agent: null, task: '看一眼' },
+        action: { kind: 'run', objectLabel: '子 agent', target: null },
+        nodes: { child: { phase: 'done', label: '看一眼的那个', subagentId: 'cv_solo' } },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+      'success',
+    )
+    insert.run(
+      'st_new',
+      4,
+      'subagent',
+      JSON.stringify({
+        kind: 'tool_result',
+        args: { kind: 'temp', name: '已是新形状', task: '看' },
+        action: { kind: 'run', objectLabel: '子 agent', target: '已是新形状' },
+        outcome: { status: 'success', executed: true, message: '返回了' },
+      }),
+      'success',
+    )
+
+    applyOne(db, 41)
+
+    const start = payloadJson(db, 'st_start') as {
+      args: { nodes: Record<string, unknown>[] }
+      action: { objectLabel: string }
+      nodes: Record<string, unknown>
+      outcome: { data: { receipts: Record<string, unknown>[] } }
+    }
+    expect(start.args.nodes).toEqual([
+      { id: 'glm', kind: 'role', role: 'racer-glm', task: '做', model: 'glm', provider: 'glm' },
+      { id: 'tmp', kind: 'temp', name: '临时子 agent', task: '也做' },
+      { id: 'cx', kind: 'cli', cli: 'codex', task: '再做' },
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['glm', 'tmp', 'cx'] },
+    ])
+    expect(start.action.objectLabel).toBe('工作流')
+    expect(start.outcome.data.receipts).toEqual([
+      {
+        nodeId: 'glm',
+        label: 'GLM',
+        status: 'done',
+        output: '稿',
+        durationMs: 5,
+        subagentId: 'cv_glm',
+      },
+      {
+        nodeId: 'tmp',
+        label: '临时',
+        status: 'failed',
+        output: '',
+        error: '超时',
+        durationMs: 7,
+        subagentId: 'cv_tmp',
+      },
+      {
+        nodeId: 'cx',
+        label: 'OpenAI codex',
+        status: 'skipped',
+        output: '',
+        error: '上游节点未成功',
+        durationMs: 0,
+      },
+    ])
+    // 首派那条由迁移 40 按 step 终态估的状态以回执为准：glm 实际是 done。
+    expect(start.nodes).toEqual({
+      glm: { phase: 'done', label: 'GLM', subagentId: 'cv_glm', durationMs: 5 },
+      tmp: { phase: 'failed', label: '临时', subagentId: 'cv_tmp', durationMs: 7, error: '超时' },
+      cx: { phase: 'skipped', label: 'OpenAI codex', durationMs: 0, error: '上游节点未成功' },
+    })
+    const review = payloadJson(db, 'st_review') as {
+      nodes: Record<string, unknown>
+      action: { objectLabel: string }
+    }
+    expect(review.nodes).toEqual({
+      tmp: { phase: 'done', label: '临时', subagentId: 'cv_tmp', durationMs: 9 },
+    })
+    expect(review.action.objectLabel).toBe('工作流')
+    expect(payloadJson(db, 'st_solo')).toMatchObject({
+      args: { kind: 'temp', name: '临时子 agent', task: '看一眼' },
+      nodes: { child: { phase: 'done', label: '临时子 agent', subagentId: 'cv_solo' } },
+    })
+    // 已经是新形状的行原样不动。
+    expect(payloadJson(db, 'st_new')).toMatchObject({
+      args: { kind: 'temp', name: '已是新形状', task: '看' },
+    })
+  })
+})
+
 describe('行类型与 DDL 对齐', () => {
   test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
     const db = new Database(':memory:')

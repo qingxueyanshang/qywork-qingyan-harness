@@ -355,8 +355,15 @@ export class TeamOrchestrator {
       : wantsInput
         ? `${withGoal}\n\n## 上游产出\n\n${upstream}`
         : withGoal
-    const prompt = correction
-      ? `## 主会话续发指令\n\n${correction}\n\n## 原任务与最新输入\n\n${originalTask}`
+    // 续接的子 agent 接的是它自己的会话，原任务早在它的历史里：只发修订指令与上游产出，
+    // 不把整段任务再抄一遍——那会让它每一轮都从头读同一段话，卡上也一遍遍重复。
+    const prompt = continuing
+      ? [
+          correction ?? '接着上一轮继续，把原任务做完。',
+          wantsInput ? `## 上游产出（最新）\n\n${upstream}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
       : originalTask
 
     try {

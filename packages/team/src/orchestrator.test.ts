@@ -613,6 +613,53 @@ describe('主会话检查点', () => {
   })
 })
 
+/**
+ * 续发不重抄原任务。子 agent 接的是自己的会话，原任务在它的历史里；每一轮都把两千字的任务
+ * 再发一遍，卡上就是一遍遍同样的话。修订节点只收指令，下游节点只收「上游改了」加最新上游产出。
+ */
+describe('续发的内容', () => {
+  test('被修订的节点只收指令，下游节点收最新上游产出，都不再带原任务正文', async () => {
+    const d = deps(ok)
+    const plan: PlanNode[] = [
+      node('a', '研究这个题目'),
+      node('b', '按研究写稿', { needs: ['a'] }),
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+    ]
+    await new TeamOrchestrator(plan, d.deps, KNOWN).run('目标', {
+      results: {
+        a: {
+          nodeId: 'a',
+          subagentId: 'cv_known',
+          label: 'r',
+          status: 'done',
+          output: '旧研究',
+          durationMs: 1,
+        },
+        b: {
+          nodeId: 'b',
+          subagentId: 'cv_b',
+          label: 'r',
+          status: 'done',
+          output: '旧稿',
+          durationMs: 1,
+        },
+      },
+      approvals: {},
+      checkpointId: 'cp',
+      review: {
+        checkpointId: 'cp',
+        decision: 'revise',
+        note: '',
+        revisions: [{ nodeId: 'a', instruction: '补两个来源' }],
+      },
+    })
+    expect(d.prompts[0]).toBe('补两个来源')
+    expect(d.prompts[1]).toContain('上游结果已被主会话要求修订')
+    expect(d.prompts[1]).toContain('## 上游产出（最新）\n\ncv_known 的产出')
+    expect(d.prompts[1]).not.toContain('按研究写稿')
+  })
+})
+
 function byId(results: NodeResult[], id: string): NodeResult {
   const r = results.find((x) => x.nodeId === id)
   if (!r) throw new Error(`没有节点 ${id}`)
