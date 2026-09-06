@@ -1,12 +1,23 @@
 /**
  * 覆盖范围：`subagent.ts`（派一个子 agent）与 `workflow.ts`（派一张图），
  * 以及两者在 `index.ts` 里的注册条件。
+ *
+ * 投递闸那一段用 `read_resource` 验落盘的正文读得回来，覆盖的是定位符可用，
+ * 不是 `resources.ts` 自己的分页行为（那条在 `resources.test.ts`）。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { type ToolContext, ToolRegistry } from '@qywork/agent'
+import {
+  chargeBatchBudget,
+  deliveredTokens,
+  deliveryBudget,
+  type SinkPort,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
+import { readResourceTool } from './resources.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
 
@@ -36,6 +47,32 @@ function ctx(delegate?: Port): ToolContext {
 
 function withTodos(c: ToolContext, todos: NonNullable<ToolContext['todos']>): ToolContext {
   return { ...c, todos }
+}
+
+function withSink(c: ToolContext, sink: SinkPort): ToolContext {
+  return { ...c, sink }
+}
+
+/** 内存假 sink：落下的正文留在 Map 里，够验证「投出去的那段之外还读得回来」。 */
+function memSink(): SinkPort {
+  const bodies = new Map<string, Uint8Array>()
+  let seq = 0
+  return {
+    land: ({ body }) => {
+      seq += 1
+      const resourceId = `rs_${seq}`
+      bodies.set(resourceId, body)
+      return { resourceId, contentHash: 'sha256:x' }
+    },
+    read: (id, start, length) => {
+      const raw = bodies.get(id)
+      return raw ? raw.subarray(start, Math.min(start + length, raw.byteLength)) : null
+    },
+    stat: (id) => {
+      const raw = bodies.get(id)
+      return raw ? { sizeBytes: raw.byteLength, mimeType: 'text/plain' } : null
+    },
+  }
 }
 
 /** 一个假的派活端口：记下派了什么，回一个预设结果。 */
@@ -334,6 +371,140 @@ describe('派一个子 agent', () => {
   })
 })
 
+describe('产出过投递闸', () => {
+  const budget = deliveryBudget(200_000).perCall
+  const middle = '被摘录切掉的那一句'
+  /** 一份三十万字符的审查：投给模型的必须是有界摘要，被切掉的那段仍读得回。 */
+  const huge = '审查结论。'.repeat(30_000) + middle + '审查结论。'.repeat(30_000)
+
+  test('超长产出落盘，交给模型的是有界摘要加定位符', async () => {
+    const sink = memSink()
+    const s = stub({ ok: true, output: huge, subagentId: 'cv_1', name: '审查员', created: true })
+    const c = withSink(ctx(s.port), sink)
+    const res = await subagentTool.fn({ kind: 'temp', name: '审查员', task: '审一遍' }, c)
+
+    expect(res.status).toBe('success')
+    const data = res.data as { output: string; outputCoverage?: Record<string, unknown> }
+    expect(deliveredTokens(data.output, DEFAULT_DENSITY)).toBeLessThanOrEqual(budget)
+    expect(data.output).not.toContain(middle)
+    // 覆盖事实要跟着投出去：少了它模型会把摘要当成全部。
+    expect(data.outputCoverage?.truncated).toBe(true)
+    expect(data.outputCoverage?.totalBytes).toBe(new TextEncoder().encode(huge).byteLength)
+
+    const ref = res.resources?.[0]
+    expect(ref?.resourceId).toBeTruthy()
+    // 摘要里被切掉的那段仍在正文库里：定位符不是摆设。
+    const back = await readResourceTool.fn({ resource_id: ref?.resourceId, query: middle }, c)
+    expect((back.data?.hits as unknown[]).length).toBe(1)
+  })
+
+  test('没超预算的原样交出，不落盘', async () => {
+    const sink = memSink()
+    const s = stub({ ok: true, output: '三行结论', subagentId: 'cv_1', name: '审查员' })
+    const res = await subagentTool.fn(
+      { kind: 'temp', name: '审查员', task: '审一遍' },
+      withSink(ctx(s.port), sink),
+    )
+    expect((res.data as { output: string }).output).toBe('三行结论')
+    expect(res.data).not.toHaveProperty('outputCoverage')
+    expect(res.resources).toBeUndefined()
+  })
+
+  /** 没做成那次的产出同样没有上界：被杀在半路的外部 CLI 正是最长的那一份。 */
+  test('失败那次的产出也过闸', async () => {
+    const sink = memSink()
+    const s = stub({ ok: false, output: huge, error: '静默已终止', subagentId: 'cv_1' })
+    const res = await subagentTool.fn(
+      { kind: 'cli', cli: 'claude', task: '审一遍' },
+      withSink(ctx(s.port), sink),
+    )
+    expect(res.status).toBe('failure')
+    const data = res.data as { output: string }
+    expect(deliveredTokens(data.output, DEFAULT_DENSITY)).toBeLessThanOrEqual(budget)
+    expect(res.resources?.[0]?.resourceId).toBeTruthy()
+  })
+
+  /** 摘录记进本批预算：同一波里其余读取工具看到的余额必须已经扣过这一笔。 */
+  test('投递量记进本批预算', async () => {
+    const s = stub({ ok: true, output: huge, subagentId: 'cv_1', name: '审查员' })
+    const c = withSink(ctx(s.port), memSink())
+    const before = chargeBatchBudget(c, 0).batchRemaining
+    const res = await subagentTool.fn({ kind: 'temp', name: '审查员', task: '审一遍' }, c)
+    const after = chargeBatchBudget(c, 0).batchRemaining
+    const spent = deliveredTokens((res.data as { output: string }).output, DEFAULT_DENSITY)
+    expect(spent).toBeGreaterThan(0)
+    expect(before - after).toBe(spent)
+  })
+
+  /** 一张图，每格的产出由调用方给；格数与产出条数一致。 */
+  const runGraph = (outputs: string[]) => {
+    const receipts = outputs.map((output, index) => ({
+      nodeId: `n${index}`,
+      label: `格 ${index}`,
+      status: 'done' as const,
+      output,
+      durationMs: 1,
+    }))
+    const port: Port = {
+      resolveModel: (name) => ({ provider: 'fake', model: name }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, output: '' }),
+      join: async () => ({ ok: true, output: '' }),
+      settleRun: () => {},
+      inflight: () => [],
+      runGraph: async () => ({
+        ok: true,
+        transition: { workflowId: 'st_test', phase: 'completed' as const, receipts },
+      }),
+    }
+    return workflowTool.fn(
+      {
+        goal: '目标',
+        nodes: [
+          ...outputs.map((_, index) => ({
+            id: `n${index}`,
+            kind: 'temp',
+            name: `格 ${index}`,
+            task: '做',
+          })),
+          {
+            id: 'cp',
+            kind: 'checkpoint',
+            label: '审查',
+            needs: outputs.map((_, index) => `n${index}`),
+          },
+        ],
+      },
+      withSink(ctx(port), memSink()),
+    )
+  }
+
+  const outputsOf = (res: Awaited<ReturnType<typeof runGraph>>) =>
+    (res.data as { receipts: { output: string }[] }).receipts.map((receipt) => receipt.output)
+
+  test('图的每条回执各自过闸，短的原样留着', async () => {
+    const res = await runGraph([huge, '短结论'])
+    const outputs = outputsOf(res)
+    expect(deliveredTokens(outputs[0]!, DEFAULT_DENSITY)).toBeLessThanOrEqual(budget)
+    expect(outputs[1]).toBe('短结论')
+    expect(res.resources).toHaveLength(1)
+  })
+
+  /**
+   * 一次调用只有一份单次预算。每条各拿一份的话内联总量随回执数线性增长，
+   * 而批级保留预算的前提是刚进来的那一波必然完整保留。
+   */
+  test('有产出的几条平分这一次的预算', async () => {
+    const alone = outputsOf(await runGraph([huge]))
+    const shared = outputsOf(await runGraph([huge, huge]))
+    for (const output of shared) {
+      expect(output.length).toBeLessThan(alone[0]!.length * 0.6)
+      expect(output.length).toBeGreaterThan(alone[0]!.length * 0.4)
+    }
+  })
+})
+
 describe('编排', () => {
   const graphPort = (result: Awaited<ReturnType<Port['runGraph']>>) => {
     const seen: { goal: string; count: number; stepId: string }[] = []
@@ -568,5 +739,50 @@ describe('一格失败先交回', () => {
     const res = await workflowTool.fn({ workflowId: 'wf_1' }, ctx(port))
     expect(res.status).toBe('success')
     expect(seen).toEqual({ kind: 'wait', workflowId: 'wf_1' })
+  })
+})
+
+/**
+ * 回执里的称呼按种类给。种类来自派发方的回执：续派的参数里只有一个 id，
+ * 工具这边判不出派的是哪一种，「调度 cli」与「调度子 agent」两种说法就是这么来的。
+ */
+describe('回执按种类称呼子 agent', () => {
+  test('外部 CLI 没做成，消息印它的种类与名字', async () => {
+    const s = stub({
+      ok: false,
+      output: '',
+      error: '超时',
+      subagentId: 'cv_cli',
+      name: 'claude 代码审查',
+      kind: 'cli',
+    })
+    const res = await subagentTool.fn({ subagent: 'cv_cli', task: '接着审' }, ctx(s.port))
+    expect(res.status).toBe('failure')
+    expect(res.message).toBe('外部 CLI claude 代码审查 没做成：超时')
+  })
+
+  test('角色与临时各按自己的说法', async () => {
+    const role = stub({
+      ok: true,
+      output: '看完了',
+      subagentId: 'cv_r',
+      name: '审查员',
+      kind: 'role',
+    })
+    expect(
+      (await subagentTool.fn({ subagent: 'cv_r', task: '再看一遍' }, ctx(role.port))).message,
+    ).toBe('角色 审查员 已返回')
+    const temp = stub({
+      ok: true,
+      output: '查完了',
+      subagentId: 'cv_t',
+      name: '查资料',
+      kind: 'temp',
+      created: true,
+    })
+    expect(
+      (await subagentTool.fn({ kind: 'temp', name: '查资料', task: '去查一下' }, ctx(temp.port)))
+        .message,
+    ).toBe('已创建临时 查资料（subagentId cv_t）并返回产出')
   })
 })

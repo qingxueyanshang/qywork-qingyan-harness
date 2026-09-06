@@ -1199,6 +1199,20 @@
 .wf-graph.across .wf-node:not(.session) {
   max-width: 220px;
 }
+/* 主行一行放两样：左边名字，右边种类。名字长了截断，种类不缩。 */
+.wf-node-head {
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+  max-width: 100%;
+}
+/* 派给的是角色、临时子 agent 还是外部 CLI。点开哪一页由它决定，所以这一格要认得出。 */
+.wf-node-kind {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
 /* 主行：节点 id。一张图里区分谁是谁的就是它，所以它是主的。 */
 /* 主行只有一行：名字长了截断，不换行。 */
 .wf-node-name {

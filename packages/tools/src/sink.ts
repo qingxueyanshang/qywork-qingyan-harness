@@ -18,8 +18,20 @@
  * 信息下结论——那比不给它更糟，因为它不知道自己不知道。
  */
 
-import type { SinkPort } from '@qywork/agent'
-import type { ResourceCoverage, ResourceStatus } from '@qywork/core'
+import {
+  chargeBatchBudget,
+  deliveredTokens,
+  deliveryBudget,
+  type SinkPort,
+  type ToolContext,
+} from '@qywork/agent'
+import type { TokenDensity } from '@qywork/ai'
+import type {
+  IntermediateResourceRef,
+  ResourceCoverage,
+  ResourceId,
+  ResourceStatus,
+} from '@qywork/core'
 
 export type { SinkPort }
 
@@ -37,6 +49,10 @@ export const CONTENT_AUTHORITY_TOOLS: ReadonlySet<string> = new Set([
   'run_command',
   'web_fetch',
   'web_search',
+  // 子 agent 的产出再派一次拿不回来：它跑在自己的会话里，那一轮的上下文与外部 CLI
+  // 的那个进程都已经结束，重派得到的是另一次执行的结果。
+  'subagent',
+  'workflow',
 ])
 
 export function isContentAuthority(toolName: string): boolean {
@@ -193,5 +209,64 @@ export function deliver(
       coverage: { ...baseCoverage, landFailed: true },
       status: 'partial',
     }
+  }
+}
+
+/**
+ * 单次投递预算（token）折成摘录字节数。
+ *
+ * `deliver` 按字节裁剪，投递预算按 token 记账，两边必须是同一把尺
+ * （`estimateJson`，见 `deliveredTokens`）。按每字节 token 数的**上界**反算：
+ * 纯 ASCII 每字节 `1 / jsonCharsPerToken` 个 token；中文一个字在 UTF-8 里至少三字节、
+ * 算 `cjkTokensPerChar` 个 token。取两者较大的那个，结果对任何正文都不超预算。
+ */
+function budgetBytes(perCallTokens: number, density: TokenDensity): number {
+  const perByte = Math.max(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
+  return Math.max(1, Math.floor(perCallTokens / perByte))
+}
+
+/**
+ * 子 agent 与 workflow 的产出过闸。
+ *
+ * 与 `run_command` 的两条流同形，差别只在预算：命令输出用 8 KB 默认摘录，
+ * 子 agent 的产出是它整件事的交付物，摘录预算取单次投递预算
+ * （`deliveryBudget(...).perCall`）折成的字节数。**不要改回 8 KB 默认值**：
+ * 一份三千余字的中文审查就是 10 KB，会被从中间切开。
+ *
+ * **`share` 是分母：一次工具调用只有一份 perCall。** 一次返回 n 条产出时每条拿
+ * `perCall / n`，不是每条各拿一份——后者会让内联总量随回执数线性增长，
+ * 而批级保留预算（`batchCap`）的前提是「刚进来的那一波必然完整保留」。
+ *
+ * `coverage` 只在截断时给：没截断就没有「看不到的部分」，调用方不必往结果里放。
+ */
+export function deliverAgentOutput(
+  ctx: Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>,
+  input: { toolName: string; sourceType: string; body: string; share?: number },
+): { text: string; coverage: ResourceCoverage | null; resource: IntermediateResourceRef | null } {
+  const perCall = deliveryBudget(ctx.contextWindow).perCall
+  const share = Math.max(1, input.share ?? 1)
+  const landed = deliver(ctx.sink, {
+    toolName: input.toolName,
+    sourceType: input.sourceType,
+    body: new TextEncoder().encode(input.body),
+    mimeType: 'text/plain',
+    budget: budgetBytes(Math.floor(perCall / share), ctx.density),
+  })
+  // 摘录记进本批预算，与 `run_command` 同形：`ok` 不必判，副作用已经发生，
+  // 这一笔是给同一波里其余读取工具看的余额。
+  chargeBatchBudget(ctx, deliveredTokens(landed.text, ctx.density))
+  return {
+    text: landed.text,
+    coverage: landed.coverage.truncated ? landed.coverage : null,
+    resource: landed.resourceId
+      ? {
+          resourceId: landed.resourceId as ResourceId,
+          status: landed.status,
+          contentHash: null,
+          sizeBytes: landed.coverage.totalBytes ?? 0,
+          mimeType: 'text/plain',
+          coverage: landed.coverage,
+        }
+      : null,
   }
 }

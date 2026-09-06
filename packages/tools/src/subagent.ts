@@ -10,8 +10,9 @@
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { parseSubagentTarget } from '@qywork/core'
+import { parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import { idArg } from './args.ts'
+import { deliverAgentOutput } from './sink.ts'
 
 export const subagentTool: ToolSpec = {
   name: 'subagent',
@@ -157,14 +158,36 @@ export const subagentTool: ToolSpec = {
       ...(res.subagentId ? { subagentId: res.subagentId } : {}),
       ...(res.name ? { name: res.name } : {}),
     }
-    const who = res.name ? `子 agent ${res.name}` : '子 agent'
+    // 种类来自回执：续派时参数里只有一个 id，判不出派的是哪一种。
+    const kindLabel = res.kind ? SUBAGENT_KIND_LABEL[res.kind] : '子 agent'
+    const who = res.name ? `${kindLabel} ${res.name}` : kindLabel
     // 派发时的事实接在消息后：续接没接上、角色已不在。它是给模型的输入，不是产出。
     const note = res.note ? `；${res.note}` : ''
+    /*
+     * 产出过投递闸。**这一步不能省**：子 agent 的产出没有上界，一份被杀在半路的
+     * 外部 CLI 回执实测二十六万字符，整段进上下文之后压缩层已经无从下手
+     * （单条结果超过整个批级保留预算），那一轮的读数会直接越过窗口。
+     */
+    const delivered = res.output
+      ? deliverAgentOutput(ctx, {
+          toolName: 'subagent',
+          sourceType: 'subagent',
+          body: res.output,
+        })
+      : null
+    const data = {
+      output: delivered ? delivered.text : res.output,
+      // 覆盖事实必须进 data：模型读 message 和 data，读不到它就不知道自己看的是几分之几。
+      ...(delivered?.coverage ? { outputCoverage: delivered.coverage } : {}),
+      ...ids,
+    }
+    const resources = delivered?.resource ? [delivered.resource] : []
     if (!res.ok) {
       return {
         status: 'failure' as const,
         message: `${who} 没做成：${res.error ?? '没有说明原因'}${note}`,
-        ...(res.output || res.subagentId ? { data: { output: res.output, ...ids } } : {}),
+        ...(res.output || res.subagentId ? { data } : {}),
+        ...(resources.length ? { resources } : {}),
       }
     }
     const head = res.created
@@ -173,7 +196,8 @@ export const subagentTool: ToolSpec = {
     return {
       status: 'success' as const,
       message: `${parentTodo ? `${head}；父待办 ${parentTodo} 仍未完成` : head}${note}`,
-      data: { output: res.output, ...ids },
+      data,
+      ...(resources.length ? { resources } : {}),
     }
   },
 }

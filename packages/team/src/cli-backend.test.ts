@@ -1,7 +1,8 @@
 /**
- * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案），
- * 以及 `runCli` 交出去的两项——追加给它的回执约定、接着问要用的会话 id。
- * 后两条用 `node` 当替身跑，不需要本机装着那几家 CLI。
+ * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案）、
+ * 流里取正文的那个解析点（实时页与回执共用），以及 `runCli` 交出去的两项——
+ * 追加给它的回执约定、接着问要用的会话 id。后三条用 `node` 当替身跑，
+ * 不需要本机装着那几家 CLI。
  *
  * 厂商表本身（调什么、参数长什么样）由真机冒烟覆盖：那是最容易过期的地方，
  * 而替身证明不了它。
@@ -18,12 +19,12 @@ const jsonl = (lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join('\n
 
 describe('取答案', () => {
   test('text 模式原样回整段', () => {
-    expect(extract('  可以  \n', { output: 'text' })).toBe('可以')
+    expect(extract('  可以  \n', { output: 'text' }, '')).toBe('可以')
   })
 
   test('顶层字段（claude 那种）', () => {
     const out = jsonl([{ type: 'system' }, { result: '可以' }])
-    expect(extract(out, { output: 'jsonl', resultField: 'result' })).toBe('可以')
+    expect(extract(out, { output: 'jsonl', resultField: 'result' }, '')).toBe('可以')
   })
 
   /**
@@ -38,12 +39,12 @@ describe('取答案', () => {
       { type: 'item.completed', item: { type: 'agent_message', text: '0.1.0' } },
       { type: 'turn.completed', usage: { input_tokens: 1 } },
     ])
-    expect(extract(out, { output: 'jsonl', resultField: 'item.text' })).toBe('0.1.0')
+    expect(extract(out, { output: 'jsonl', resultField: 'item.text' }, '')).toBe('0.1.0')
   })
 
   test('路径中途不是对象时跳过那一行，不炸', () => {
     const out = jsonl([{ item: '不是对象' }, { item: { text: '答案' } }])
-    expect(extract(out, { output: 'jsonl', resultField: 'item.text' })).toBe('答案')
+    expect(extract(out, { output: 'jsonl', resultField: 'item.text' }, '')).toBe('答案')
   })
 
   /**
@@ -52,16 +53,20 @@ describe('取答案', () => {
    */
   test('整段一个对象（grok 那种）', () => {
     const out = JSON.stringify({ text: '有三个文件', sessionId: 'gk-1' }, null, 2)
-    expect(extract(out, { output: 'json', resultField: 'text' })).toBe('有三个文件')
+    expect(extract(out, { output: 'json', resultField: 'text' }, '')).toBe('有三个文件')
     // 同一段按逐行解析取不到——这正是它需要单独一档的理由。
-    expect(extract(out, { output: 'jsonl', resultField: 'text' })).toBe(out)
+    expect(extract(out, { output: 'jsonl', resultField: 'text' }, '')).toBe('')
   })
 
-  /** 一行都取不到时回退整段：回空串在调用方看来是「跑成了但没产出」。 */
-  test('取不到就回退整段 stdout', () => {
-    expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' })).toBe(
-      '横幅\n乱七八糟',
+  /**
+   * 复现的失败形状：被杀在半路的 stream-json 没有 `result` 行，回退整段就是把
+   * 二十六万字符的计数事件当成子 agent 的产出交给模型，一条结果撑满整个窗口。
+   */
+  test('jsonl 取不到 result 时给流里的正文，不回退整段', () => {
+    expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' }, '读完了')).toBe(
+      '读完了',
     )
+    expect(extract('横幅\n乱七八糟', { output: 'jsonl', resultField: 'result' }, '')).toBe('')
   })
 })
 
@@ -135,5 +140,88 @@ describe('接着问', () => {
     })
     expect(got.output.startsWith('sess-7|你刚才改了什么')).toBe(true)
     expect(got.output).toContain('### 回执')
+  })
+})
+
+/**
+ * 一个输出 stream-json 的「CLI」替身。
+ *
+ * `hang` 为真时末行带换行符、写完不退出，用来验被中断时回执里剩下什么；
+ * 为假时末行**不带**换行符，那正是进程结束时缓冲里还压着一行的形状。
+ */
+function streamer(lines: unknown[], hang = false): CliAgent {
+  const payload = lines.map((l) => JSON.stringify(l)).join('\n') + (hang ? '\n' : '')
+  return {
+    id: 'streamer',
+    vendor: '替身',
+    command: 'node',
+    args: [
+      '-e',
+      `process.stdout.write(${JSON.stringify(payload)});${hang ? 'setInterval(function(){},1000)' : ''}`,
+    ],
+    output: 'jsonl',
+    resultField: 'result',
+    narrate: { text: 'message.content[].text', tool: 'message.content[].name' },
+  }
+}
+
+const spoke = {
+  type: 'assistant',
+  message: { content: [{ type: 'text', text: '先读一遍 game.js。' }] },
+}
+const called = {
+  type: 'assistant',
+  message: { content: [{ type: 'tool_use', name: 'Read', input: {} }] },
+}
+const inited = { type: 'system', subtype: 'init', session_id: 'sess-1' }
+
+describe('流里取正文', () => {
+  test('实时页拿到的是正文与工具名，不是原始 JSON 行', async () => {
+    const chunks: string[] = []
+    const got = await runCli(streamer([inited, spoke, called]), {
+      prompt: '审一遍',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: new AbortController().signal,
+      onChunk: (text) => chunks.push(text),
+    })
+    const live = chunks.join('')
+    expect(live).toContain('先读一遍 game.js。')
+    expect(live).toContain('Read')
+    // 计数与状态行不转发，信封字段一个都不该出现在实时页上。
+    expect(live).not.toContain('session_id')
+    expect(live).not.toContain('"type"')
+    // 没有 result 行时回执就是这段正文，与实时页同一次解析的产物。
+    expect(got.output).toContain('先读一遍 game.js。')
+    expect(got.output).not.toContain('session_id')
+  })
+
+  /**
+   * 复现的失败形状：进程被杀在半路，流里没有 `result` 行。回退整段 stdout 时
+   * 模型拿到的是几十万字符的事件流，而不是子 agent 已经说出口的那几句。
+   */
+  test('被中断时回执是已经说出口的正文', async () => {
+    const controller = new AbortController()
+    const got = await runCli(streamer([inited, spoke], true), {
+      prompt: '审一遍',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: controller.signal,
+      onChunk: () => controller.abort(),
+    })
+    expect(got.output).toBe('先读一遍 game.js。')
+  })
+
+  /** 表项不齐时退化为不转发：`json` 那一档要整段结束才解析得出，流里没有可转发的。 */
+  test('没声明正文路径的那几家不转发，也不报错', async () => {
+    const chunks: string[] = []
+    const quiet: CliAgent = { ...streamer([inited, spoke]), output: 'json' }
+    delete quiet.narrate
+    const got = await runCli(quiet, {
+      prompt: '审一遍',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: new AbortController().signal,
+      onChunk: (text) => chunks.push(text),
+    })
+    expect(chunks).toEqual([])
+    expect(got.output).toBe('')
   })
 })

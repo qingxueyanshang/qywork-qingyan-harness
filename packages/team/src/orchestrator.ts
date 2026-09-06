@@ -13,6 +13,7 @@ import {
   checkpointOutput,
   type NodeState,
   revisionClosure,
+  type SubagentKind,
   type SubagentTarget,
   targetLabel,
   type WorkflowAgentNode,
@@ -27,8 +28,11 @@ export interface OrchestratorDeps {
   maxConcurrent: number
   /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
   node(nodeId: string, state: NodeState): void
-  /** 一格的名字：角色名、CLI 名，或临时子 agent 建时给的名字。写状态之前就要有；认不出目标返回 null。 */
-  describe(target: SubagentTarget): { label: string } | null
+  /**
+   * 一格的名字与种类：角色名、CLI 名，或临时子 agent 建时给的名字。写状态之前就要有；
+   * 认不出目标返回 null。种类由实现方按记录判，编排器不从 target 猜。
+   */
+  describe(target: SubagentTarget): { label: string; kind?: SubagentKind } | null
   /**
    * 派给一个子 agent。目标是新建还是已有由 `target` 决定，实现方负责建记录与跑；
    * 编排器只拿回执与子 agent id。
@@ -219,7 +223,7 @@ export class TeamOrchestrator {
     // 还在跑的格不动：它的状态由派出它的那张卡写。
     for (const node of plan) {
       if (isAgent(node) && !results.has(node.id) && !inflightOf(node.id)) {
-        this.deps.node(node.id, { phase: 'waiting', label: this.labelOf(node) })
+        this.deps.node(node.id, { phase: 'waiting', ...this.describeOf(node) })
       }
     }
 
@@ -233,7 +237,7 @@ export class TeamOrchestrator {
         if (isAgent(node) && !results.has(node.id) && !running.has(node.id)) {
           this.deps.node(node.id, {
             phase: 'interrupted',
-            label: this.labelOf(node),
+            ...this.describeOf(node),
             error: '调用中断',
           })
         }
@@ -281,9 +285,10 @@ export class TeamOrchestrator {
           return result ? result.status !== 'done' : false
         })
         if (upstreamFailed) {
+          const described = this.describeOf(node)
           const skipped: NodeResult = {
             nodeId: node.id,
-            label: this.labelOf(node),
+            label: described.label,
             status: 'skipped',
             output: '',
             error: '上游节点未成功',
@@ -293,7 +298,7 @@ export class TeamOrchestrator {
           receipts.push(skipped)
           this.deps.node(node.id, {
             phase: 'skipped',
-            label: skipped.label,
+            ...described,
             error: '上游节点未成功',
           })
           skippedThisPass = true
@@ -305,7 +310,7 @@ export class TeamOrchestrator {
           // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
           if (!announcedQueued.has(node.id)) {
             announcedQueued.add(node.id)
-            this.deps.node(node.id, { phase: 'queued', label: this.labelOf(node) })
+            this.deps.node(node.id, { phase: 'queued', ...this.describeOf(node) })
           }
           continue
         }
@@ -400,8 +405,9 @@ export class TeamOrchestrator {
     return results.has(id) || approvals.has(id)
   }
 
-  private labelOf(node: WorkflowAgentNode): string {
-    return this.deps.describe(node.target)?.label ?? targetLabel(node.target)
+  /** 一格的名字与种类；认不出目标时只剩按 target 印的名字。 */
+  private describeOf(node: WorkflowAgentNode): { label: string; kind?: SubagentKind } {
+    return this.deps.describe(node.target) ?? { label: targetLabel(node.target) }
   }
 
   private async execute(
@@ -416,7 +422,7 @@ export class TeamOrchestrator {
     const started = Date.now()
     const described = this.deps.describe(node.target)
     if (!described) {
-      return this.failed(node, targetLabel(node.target), started, '找不到派发目标')
+      return this.failed(node, { label: targetLabel(node.target) }, started, '找不到派发目标')
     }
     const label = described.label
 
@@ -436,7 +442,7 @@ export class TeamOrchestrator {
       } catch (error) {
         return this.failed(
           node,
-          label,
+          described,
           started,
           error instanceof Error ? error.message : String(error),
           live.subagentId,
@@ -448,7 +454,7 @@ export class TeamOrchestrator {
     let target: SubagentTarget = node.target
     if (prior && prior.status !== 'skipped') {
       if (!prior.subagentId) {
-        return this.failed(node, label, started, `${node.id} 的上一轮回执没有可续接的子 agent`)
+        return this.failed(node, described, started, `${node.id} 的上一轮回执没有可续接的子 agent`)
       }
       target = { subagent: prior.subagentId }
     }
@@ -491,7 +497,7 @@ export class TeamOrchestrator {
     } catch (error) {
       return this.failed(
         node,
-        label,
+        described,
         started,
         error instanceof Error ? error.message : String(error),
         prior?.subagentId,
@@ -523,7 +529,7 @@ export class TeamOrchestrator {
   /** 派发之外的失败：目标不存在、续不了、派发方抛了异常。回执与卡上那一格一起落。 */
   private failed(
     node: WorkflowAgentNode,
-    label: string,
+    described: { label: string; kind?: SubagentKind },
     started: number,
     error: string,
     subagentId?: string,
@@ -531,7 +537,7 @@ export class TeamOrchestrator {
     const durationMs = Date.now() - started
     this.deps.node(node.id, {
       phase: 'failed',
-      label,
+      ...described,
       durationMs,
       error,
       ...(subagentId ? { subagentId: subagentId as ConversationId } : {}),
@@ -539,7 +545,7 @@ export class TeamOrchestrator {
     return {
       nodeId: node.id,
       ...(subagentId ? { subagentId } : {}),
-      label,
+      label: described.label,
       status: 'failed',
       output: '',
       error,

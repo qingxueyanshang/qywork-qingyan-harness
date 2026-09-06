@@ -8,6 +8,12 @@ export type SubagentSpec =
   | { kind: 'temp'; name: string }
   | { kind: 'cli'; cli: string; name?: string }
 export type SubagentKind = SubagentSpec['kind']
+/** 三种种类的说法。提示词、回执文案与界面共用这一份，不另写第二张词表。 */
+export const SUBAGENT_KIND_LABEL: Record<SubagentKind, string> = {
+  role: '角色',
+  temp: '临时',
+  cli: '外部 CLI',
+}
 /** 派给谁：新建（按种类）或本会话已有的子 agent（按 id）。 */
 export type SubagentTarget = SubagentSpec | { subagent: string }
 

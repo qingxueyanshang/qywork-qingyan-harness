@@ -59,6 +59,10 @@ const KNOWN: KnownCli[] = [
     ],
     output: 'jsonl',
     resultField: 'result',
+    // 正文与工具名都在 `assistant` 那种行的内容块数组里：文本块有 `text`，
+    // 工具调用块有 `name`。不声明这两条路径的话，实时页显示的是 `thinking_tokens`
+    // 这类计数事件的原始 JSON 行，而没有 `result` 行时回执也取不到正文。
+    narrate: { text: 'message.content[].text', tool: 'message.content[].name' },
     // 会话 id 在顶层 `session_id` 上（`system/init` 与 `result` 两行都带）。
     // **不能写 `result.session_id`**：末行那个 `result` 是答案正文，是字符串不是对象。
     sessionField: 'session_id',
@@ -90,6 +94,9 @@ const KNOWN: KnownCli[] = [
     output: 'jsonl',
     // 答案在 `item.completed` 那种行的 `item.text` 上，顶层没有 `result`。
     resultField: 'item.text',
+    // 中途的每条 `item.text` 都是它这一步说的话，正文路径与答案同一条；
+    // 工具名不在这个路径下（命令行在 `item.command` 上），因此只声明正文。
+    narrate: { text: 'item.text' },
     // 会话 id 在第一行 `thread.started` 的顶层 `thread_id` 上。
     sessionField: 'thread_id',
     resumeArgs: ['exec', 'resume', '{session}', '--json', '--skip-git-repo-check', '{prompt}'],
@@ -207,7 +214,8 @@ async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
       // 这两项漏抄的话「接着问」会静默失效：表里写着，跑起来却没有。
       ...(k.sessionField ? { sessionField: k.sessionField } : {}),
       ...(k.resumeArgs ? { resumeArgs: k.resumeArgs } : {}),
-      ...(k.timeoutMs ? { timeoutMs: k.timeoutMs } : {}),
+      // 漏抄它的表现是实时页只有原始 JSON 行、没有 result 行的那次回执为空。
+      ...(k.narrate ? { narrate: k.narrate } : {}),
       path,
       connected: await hasCredentials(k, home, env),
     })

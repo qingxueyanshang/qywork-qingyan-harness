@@ -405,8 +405,6 @@ export interface GraphNode {
   title: string
   /** 会话端点不可点开，也没有执行者。 */
   kind: 'session' | 'agent'
-  /** 这一格是外部 CLI：点开的是它写出来的那段流，不是子会话。 */
-  cli: boolean
   /** 次行印的指令内容：任务的第一行。 */
   task?: string
   needs: string[]
@@ -445,10 +443,10 @@ export function delegateGraph(item: {
   const needsExit =
     leafNodes.some((node) => node.kind === 'agent') || (leaves.length === 0 && kids.length > 0)
   const nodes: GraphNode[] = [
-    { key: ENTRY, title: '当前会话', kind: 'session', cli: false, needs: [] },
+    { key: ENTRY, title: '当前会话', kind: 'session', needs: [] },
     ...kids.map((n) => (n.needs.length ? n : { ...n, needs: [ENTRY] })),
     ...(needsExit
-      ? [{ key: EXIT, title: '当前会话', kind: 'session' as const, cli: false, needs: leaves }]
+      ? [{ key: EXIT, title: '当前会话', kind: 'session' as const, needs: leaves }]
       : []),
   ]
   return { nodes, layers: layered(nodes), horizontal: kids.length === 1 }
@@ -470,7 +468,6 @@ function childNodes(item: {
           key: id,
           title: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : '当前会话审查',
           kind: 'session' as const,
-          cli: false,
           needs,
         }
       }
@@ -479,7 +476,6 @@ function childNodes(item: {
         key: id,
         title: targetTitle(o),
         kind: 'agent' as const,
-        cli: o.kind === 'cli',
         task: firstLine(typeof o.task === 'string' ? o.task : ''),
         needs,
       }
@@ -491,7 +487,6 @@ function childNodes(item: {
       key: SUBAGENT_NODE_ID,
       title: targetTitle(args),
       kind: 'agent',
-      cli: args.kind === 'cli',
       task: firstLine(typeof args.task === 'string' ? args.task : ''),
       needs: [],
     },

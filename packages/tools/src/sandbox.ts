@@ -1110,7 +1110,7 @@ export interface CollectedProcess {
   exitCode: number
   stdout: string
   stderr: string
-  /** 超时到点，进程树已被杀。 */
+  /** `timeoutMs` 或 `idleMs` 到点，进程树已被杀。 */
   timedOut: boolean
   /**
    * 进程已经退出，但仍有后代持有输出管道，读取由本地主动结束。
@@ -1124,6 +1124,14 @@ export interface CollectedProcess {
 export interface CollectOptions {
   /** 到点树杀。不给就不设超时——只有形状上不可能长跑的命令才该这么用。 */
   timeoutMs?: number
+  /**
+   * 静默上限：任一条流每来一片就重置计时，到点树杀并报 `timedOut`。
+   *
+   * 与 `timeoutMs` 各自成立，两者都给时先到的那个生效。**判据不同**：
+   * `timeoutMs` 量的是总时长，分不出「仍在产出」与「已经停止响应」；
+   * `idleMs` 量的是两片输出之间的间隔，只要还在写就一直等。
+   */
+  idleMs?: number
   /** 中断信号。abort 即树杀，这样用户点停止时子进程真的会停。 */
   signal?: AbortSignal
   /** 每片解码后的文本先过它，**返回值**才计入结果。脱敏与流式回传都在这里做。 */
@@ -1169,6 +1177,23 @@ export async function collectProcess(
   // Bun 的那个全局声明（多一个 `readMany`），与 `node:stream/web` 的那个对不上。
   const readers: ReturnType<ReadableStream<Uint8Array>['getReader']>[] = []
 
+  // 静默计时。每片输出重置一次，所以它量的是两片之间的间隔而不是总时长。
+  // 进程退出后必须停掉：退出之后还有一段捞缓冲的时间，那段没有输出是正常的，
+  // 不停的话一次正常退出会被报成 `timedOut`。
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const stopIdle = () => {
+    if (idleTimer !== null) clearTimeout(idleTimer)
+    idleTimer = null
+  }
+  const armIdle = () => {
+    if (opts.idleMs === undefined) return
+    stopIdle()
+    idleTimer = setTimeout(() => {
+      timedOut = true
+      killTree(proc)
+    }, opts.idleMs)
+  }
+
   // 用显式 reader 而不是 `for await`：后者把流锁在循环里，收尾时外面调
   // `stream.cancel()` 直接抛 `locked`；而不 cancel、只是丢开这个 promise 的话，
   // 孤儿进程往管道里写多少，这里就涨多少——那是内存泄漏。
@@ -1180,6 +1205,7 @@ export async function collectProcess(
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
+        armIdle()
         const decoded = decode(value)
         text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
         if (opts.maxChars !== undefined && text[channel].length >= opts.maxChars) {
@@ -1195,9 +1221,11 @@ export async function collectProcess(
     }
   }
 
+  // 先起计时再开泵：一个字节都不写的进程同样要到点被杀。
+  armIdle()
   const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
 
-  // 超时与中断都走**树杀**：起的是一个 shell 或一个会派生子进程的程序，
+  // 总时长到点、静默到点与中断都走**树杀**：起的是一个 shell 或一个会派生子进程的程序，
   // 只杀它自己的话，实际执行的那个仍在运行（详见 `killTree`）。
   const timer =
     opts.timeoutMs === undefined
@@ -1211,6 +1239,7 @@ export async function collectProcess(
 
   try {
     const exitCode = await proc.exited
+    stopIdle()
     const drained = await Promise.race([
       pumping.then(() => true),
       Bun.sleep(DRAIN_AFTER_EXIT_MS).then(() => false),
@@ -1223,6 +1252,7 @@ export async function collectProcess(
     return { exitCode, stdout: text.stdout, stderr: text.stderr, timedOut, backgroundHeld }
   } finally {
     if (timer !== null) clearTimeout(timer)
+    stopIdle()
     opts.signal?.removeEventListener('abort', onAbort)
   }
 }

@@ -70,7 +70,14 @@ export interface CliAgent {
   sessionField?: string
   /** 接着问时用的参数模板。`{session}` 换成上一次的会话 id，`{prompt}` 同 `args`。 */
   resumeArgs?: string[]
-  timeoutMs?: number
+  /**
+   * 流里的正文与工具名埋在哪个路径上。路径语法同 `resultField` 的点分，
+   * 段尾 `[]` 表示遍历该数组。
+   *
+   * **只有 `jsonl` 那几家给得出**：`text` 没有结构可取，`json` 要整段结束才解析得出。
+   * 不声明的那几家实时页不转发正文，也不是错误。
+   */
+  narrate?: { text: string; tool?: string }
 }
 
 /** 规则约束：跨角色生效的硬性纪律。 */

@@ -457,14 +457,13 @@ describe('派活图', () => {
     expect(bare.nodes[1]?.title).toBe('子 agent')
   })
 
-  /** 外部 CLI 那一格按 kind 认，点开的是它写出来的流。 */
-  test('派一件：外部 CLI 那一格印 CLI 名并标成 CLI', () => {
+  /** 图的形状只来自参数，参数里认得出的只有名字：种类归状态，这里不猜。 */
+  test('派一件：外部 CLI 那一格印 CLI 名', () => {
     const g = delegateGraph({
       toolName: 'subagent',
       args: { kind: 'cli', cli: 'claude', task: '改' },
     })
     expect(g.nodes[1]?.title).toBe('claude')
-    expect(g.nodes[1]?.cli).toBe(true)
   })
 
   /** 两种卡的格子同一条规则：主行是名字（临时子 agent 是建时给的名字），次行是指令首行。 */

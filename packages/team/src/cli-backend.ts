@@ -16,10 +16,8 @@
  * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
  */
 
-import { collectProcess, scrubEnv } from '@qywork/tools'
+import { collectProcess, MAX_TIMEOUT_MS, scrubEnv } from '@qywork/tools'
 import type { CliAgent } from './types.ts'
-
-const DEFAULT_TIMEOUT = 10 * 60 * 1000
 
 /**
  * 追加在任务后面的输出格式约定。
@@ -46,6 +44,7 @@ export interface CliRunResult {
   ok: boolean
   output: string
   exitCode: number
+  /** 静默到点被终止。额度是 `MAX_TIMEOUT_MS`，与总时长无关。 */
   timedOut: boolean
   stderr: string
   /**
@@ -78,6 +77,9 @@ export async function runCli(
     /**
      * 边跑边给一块。**不给这个回调就等于跑完才有输出**——外部 CLI 是本机另一个进程，
      * 它写了什么在结束之前一个字都看不到。
+     *
+     * 给的是解析出来的正文与工具名，不是原始流：厂商表声明了 `narrate` 的那几家按路径取，
+     * `text` 那一档原样过，`json` 那一档流里出不了正文、一片都不给。
      */
     onChunk?: (text: string) => void
   },
@@ -88,14 +90,13 @@ export async function runCli(
       .replaceAll('{prompt}', input.prompt + REPORT_CONTRACT)
       .replaceAll('{session}', input.resume ?? ''),
   )
-  const timeout = agent.timeoutMs ?? DEFAULT_TIMEOUT
 
   // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
   // 它自己的工作目录不该由这里的配置面再开一个旋钮。
   const proc = Bun.spawn([agent.command, ...args], {
     cwd: input.workspaceRoot,
     // 关掉 stdin：被调度的 CLI 若想交互提问，这里没有人能回答，
-    // 开着只会让它挂到超时。
+    // 开着只会让它静默等到被终止。
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -117,29 +118,42 @@ export async function runCli(
     },
   })
 
-  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时与中断都走**树杀**。
+  const narrator = createNarrator(agent)
+
+  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，到点与中断都走**树杀**。
   // 被调度的 CLI 自己也在跑一个 agent，必然派生子进程；只杀它一个的话那些仍在运行，
   // 因此用户点了停止、这里却还在等一个永远不会到的 EOF。
+  //
+  // **判据是静默，不是总时长。** 总时长分不出「仍在执行」与「已经停止响应」，而外部 CLI
+  // 在自己跑构建与测试时流本来就是停的，一次审查跑几分钟是常态。
+  // 额度取本机一次工具执行的上限（`MAX_TIMEOUT_MS`）：CLI 内部一次工具执行同额。
+  // 只要它还在输出就一直等，上界由用户按停止或父会话这一轮结束给。
   const got = await collectProcess(proc, {
-    timeoutMs: timeout,
+    idleMs: MAX_TIMEOUT_MS,
     signal: input.signal,
     // `onText` 的返回值是「真正记进结果的那一段」，所以必须原样回传：
-    // 它是脱敏器的挂点，不是给旁观者用的。这里只额外复制一份出去。
-    ...(input.onChunk
-      ? {
-          onText: (_channel: 'stdout' | 'stderr', text: string) => {
-            input.onChunk?.(text)
-            return text
-          },
-        }
-      : {}),
+    // 它是脱敏器的挂点，不是给旁观者用的。
+    //
+    // 解析只在这里做一次，同一段正文给两个消费者：实时页（`onChunk`）与回执
+    // （`narrator.narration()`）。**不要在 `extract` 里再解析一遍流**——那会让
+    // 实时页看到的和回执里的是两次解析的结果，格式漂移时只有一侧变。
+    onText: (channel: 'stdout' | 'stderr', text: string) => {
+      if (channel === 'stdout') {
+        const narrated = narrator.feed(text)
+        if (narrated) input.onChunk?.(narrated)
+      }
+      return text
+    },
   })
+  // 末行没有换行符时留在缓冲里，不冲掉就丢了。
+  const tail = narrator.flush()
+  if (tail) input.onChunk?.(tail)
 
   const session = agent.sessionField ? field(got.stdout, agent, agent.sessionField) : ''
 
   return {
     ok: got.exitCode === 0 && !got.timedOut,
-    output: extract(got.stdout, agent),
+    output: extract(got.stdout, agent, narrator.narration()),
     exitCode: got.exitCode,
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
@@ -161,14 +175,7 @@ export async function runCli(
  * codex 的答案在 `item.text`。
  */
 function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): string {
-  const keys = path.split('.')
-  const walk = (root: unknown): string => {
-    let v = root
-    for (const key of keys) {
-      v = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
-    }
-    return typeof v === 'string' && v.trim() ? v : ''
-  }
+  const walk = (root: unknown): string => pick(root, path).at(-1) ?? ''
   if (agent.output === 'text') return ''
   if (agent.output === 'json') {
     try {
@@ -192,12 +199,104 @@ function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): s
 }
 
 /**
- * 从 stdout 提取结果。
+ * 按点分路径取值，段尾 `[]` 表示遍历该数组。返回按出现顺序的非空字符串。
  *
- * 取不到时回退到整段 stdout——返回空字符串在调用方看来是任务成功但没产出，
- * 比给出原始输出更糟。
+ * 各家埋的深浅不同：claude 的答案与会话 id 在顶层、正文在 `message.content[].text`
+ * 那个数组里，codex 的答案在 `item.text`。
  */
-export function extract(stdout: string, agent: Pick<CliAgent, 'output' | 'resultField'>): string {
+function pick(root: unknown, path: string): string[] {
+  const keys = path.split('.')
+  const out: string[] = []
+  const walk = (value: unknown, depth: number): void => {
+    if (depth === keys.length) {
+      if (typeof value === 'string' && value.trim()) out.push(value)
+      return
+    }
+    const key = keys[depth]!
+    const array = key.endsWith('[]')
+    const name = array ? key.slice(0, -2) : key
+    const next =
+      value && typeof value === 'object' ? (value as Record<string, unknown>)[name] : undefined
+    if (!array) {
+      walk(next, depth + 1)
+      return
+    }
+    if (!Array.isArray(next)) return
+    for (const item of next) walk(item, depth + 1)
+  }
+  walk(root, 0)
+  return out
+}
+
+/**
+ * jsonl 流的解析点。实时页与回执共用它，正文只解析一次。
+ *
+ * **必须按行缓冲。** `onText` 交来的是管道切片，一行 JSON 会被切成两片，
+ * 逐片解析对被切开的那一行永远失败，而失败的是最长的那几行——正文所在的行。
+ *
+ * 三种输出各自的形态：`jsonl` 且厂商表声明了 `narrate` 的按路径取；`text` 没有结构，
+ * 原样过；`json` 要整段结束才解析得出，流里出不了正文，回空串。
+ */
+function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
+  const narrate = agent.output === 'jsonl' ? agent.narrate : undefined
+  const parts: string[] = []
+  let buffer = ''
+
+  const take = (line: string): string => {
+    if (!narrate || !line.trim()) return ''
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line.trim())
+    } catch {
+      // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
+      return ''
+    }
+    const pieces = pick(parsed, narrate.text)
+    if (narrate.tool) pieces.push(...pick(parsed, narrate.tool).map((name) => `[工具 ${name}]`))
+    if (pieces.length === 0) return ''
+    const text = `${pieces.join('\n')}\n`
+    parts.push(text)
+    return text
+  }
+
+  return {
+    /** 喂一片 stdout，返回这一片里解析出来的正文。 */
+    feed(chunk: string): string {
+      if (agent.output === 'text') return chunk
+      if (!narrate) return ''
+      buffer += chunk
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      return lines.map(take).join('')
+    },
+    /** 流结束时冲掉缓冲里最后一行。 */
+    flush(): string {
+      const rest = buffer
+      buffer = ''
+      return take(rest)
+    },
+    /** 到此为止解析出的全部正文。`text` 与 `json` 两档恒为空串。 */
+    narration: (): string => parts.join(''),
+  }
+}
+
+/**
+ * 从 stdout 提取交付物正文。
+ *
+ * jsonl 取不到 `resultField` 时用流里解析出的正文，**不回退整段 stdout**：
+ * 一份 stream-json 里绝大多数行是计数与状态事件，整段交给模型既不是它的产出，
+ * 又能一次把上下文窗口撑满（实测一次被杀的派活留下 261,929 字符、507 行，
+ * 其中 480 行是 `thinking_tokens`）。被杀在半路时正文正是它已经说出口的那些话。
+ *
+ * `json` 解析不出时回空串：那说明退出码非零或格式漂移，由调用方按失败处理。
+ */
+export function extract(
+  stdout: string,
+  agent: Pick<CliAgent, 'output' | 'resultField'>,
+  narration: string,
+): string {
   if (agent.output === 'text') return stdout.trim()
-  return field(stdout, agent, agent.resultField ?? 'result') || stdout.trim()
+  const got = field(stdout, agent, agent.resultField ?? 'result')
+  if (got) return got
+  return agent.output === 'jsonl' ? narration.trim() : ''
 }

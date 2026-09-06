@@ -115,6 +115,7 @@ export {
   parseWorkflowCall,
   type RevisionClosureResult,
   revisionClosure,
+  SUBAGENT_KIND_LABEL,
   type SubagentKind,
   type SubagentSpec,
   type SubagentTarget,

@@ -224,7 +224,7 @@ describe('顶层会话的可分配模型快照', () => {
     expect(snapshot).toContain('provider 参数 `千问接口`；model 参数 `qwen/model-3.8`')
     // 角色、外部 CLI、本会话已有的子 agent 同一份快照里给出，模型按 id 引用。
     expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型 p / m')
-    expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，已接入')
+    expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，本机进程，自带模型与账号，已接入')
     expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型 p / m，空闲')
     expect(snapshot).toContain(
       'subagentId `cv_cli`：OpenAI codex，外部 CLI，模型 cli / codex，空闲，不可续接：没有会话号，续派它不记得上一轮',

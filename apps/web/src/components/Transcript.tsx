@@ -1,4 +1,4 @@
-import type { RunUsage, StopReason } from '@qywork/core'
+import type { RunUsage, StopReason, SubagentKind } from '@qywork/core'
 import { formatMoney } from '@qywork/core'
 import type { Accessor, JSX, Setter } from 'solid-js'
 import {
@@ -1268,6 +1268,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
     return {
       phase: state?.phase ?? 'waiting',
       label: state?.label ?? '',
+      ...(state?.kind ? { kind: state.kind } : {}),
       ...(state?.durationMs ? { durationMs: state.durationMs } : {}),
       ...(state?.subagentId ? { conversationId: state.subagentId } : {}),
     }
@@ -1403,8 +1404,11 @@ function DelegateCard(props: { item: TranscriptItem }) {
                    * 点一格 = 翻开它。两种格子翻开的内容不同：内置子 agent 有一条
                    * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
                    * 两者都没有时（还没跑到）点不开。
+                   *
+                   * 种类只认状态。调用参数在续派时只有一个子 agent id，按它猜种类会把
+                   * 外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
                    */
-                  const cli = () => n.cli
+                  const cli = () => st()?.kind === 'cli'
                   // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
                   // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
                   const name = () => st()?.label || n.title
@@ -1435,8 +1439,13 @@ function DelegateCard(props: { item: TranscriptItem }) {
                         onClick={open}
                         ref={hold(n.key)}
                       >
-                        {/* 主行是那一格的名字，次行是它的指令与耗时；两种卡同一条规则。 */}
-                        <span class="wf-node-name">{name()}</span>
+                        {/* 主行是那一格的名字与种类，次行是它的指令与耗时；两种卡同一条规则。 */}
+                        <span class="wf-node-head">
+                          <span class="wf-node-name">{name()}</span>
+                          <Show when={st()?.kind}>
+                            {(kind) => <span class="wf-node-kind">{kind()}</span>}
+                          </Show>
+                        </span>
                         <span class="wf-node-who">
                           <Show when={n.task}>
                             <span class="wf-node-task">{n.task}</span>
@@ -1472,6 +1481,8 @@ function DelegateCard(props: { item: TranscriptItem }) {
 interface NodeView {
   phase: string
   label: string
+  /** 派给的是哪一种子 agent；检查点格与还没有状态的格没有。 */
+  kind?: SubagentKind
   durationMs?: number
   conversationId?: string
 }

@@ -699,3 +699,99 @@ describe('命令正文逐字节到达', () => {
     expect(got.stdout.trim()).toBe('1')
   }, 30_000)
 })
+
+/**
+ * 静默判据。**量的是两片输出之间的间隔，不是总时长。**
+ *
+ * 复现的失败形状：被调度的进程在自己跑构建与测试时流是停的，按总时长判到点就把
+ * 一个仍在执行的进程杀掉，只剩半截输出。
+ *
+ * 起真进程，所以慢；纯函数测不出这条——判据成立与否发生在管道上。
+ */
+describe('静默计时', () => {
+  /** 端口挑一个不太可能撞上的；撞上了这条测试会以「起不来」失败，不会误判成功。 */
+  const PORT = 18948
+  /** 每 50ms 一行的产出源，`limit` 行之后停下让进程自己退出；不给就一直写。 */
+  const ticker = (limit?: number) =>
+    `var n=0,t=setInterval(function(){process.stdout.write('tick'+String.fromCharCode(10));` +
+    `${limit === undefined ? '' : `if(++n===${limit})clearInterval(t)`}},50)`
+
+  const hit = async (): Promise<boolean> => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(1000) })
+      return r.ok
+    } catch {
+      return false
+    }
+  }
+
+  test('每片输出重置计时，一直在产出就不杀', async () => {
+    // 12 行 × 50ms = 600ms，静默额度 200ms：按总时长判早就到点了。
+    const proc = Bun.spawn(['node', '-e', ticker(12)], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+    })
+    const got = await collectProcess(proc, { idleMs: 200 })
+    expect(got.timedOut).toBe(false)
+    expect(got.exitCode).toBe(0)
+    expect(got.stdout.split('tick').length - 1).toBe(12)
+  }, 20_000)
+
+  test('两个计时器各自成立：还在产出，总时长到点照样杀', async () => {
+    const proc = Bun.spawn(['node', '-e', ticker()], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+    })
+    const got = await collectProcess(proc, { idleMs: 30_000, timeoutMs: 500 })
+    expect(got.timedOut).toBe(true)
+  }, 20_000)
+
+  test('写完一行后静默，到点树杀，孙进程随之退出', async () => {
+    // 与 killTree 那组同一个形状：spawn 的是 shell，监听端口的是它的子进程。
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
+    const src =
+      `require('http').createServer(function(_,r){r.end('alive')}).listen(${PORT},'127.0.0.1');` +
+      `process.stdout.write('started'+String.fromCharCode(10))`
+    // 三个流的形态写在类型里：带 spread 的字面量会被推成 `'inherit'`，
+    // 那样 `proc.stderr` 是可能 undefined，`collectProcess` 收不下它。
+    const opts = {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+      // 非 Windows 上自成进程组，`killTree` 才有整组可杀。
+      ...(process.platform === 'win32' ? {} : { detached: true }),
+    } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
+    const proc = Bun.spawn([...shell.argv, `node -e "${src}"`], opts)
+
+    try {
+      const collecting = collectProcess(proc, { idleMs: 3000 })
+
+      // 端口起不来就不是在测静默了，直接失败。
+      let up = false
+      for (let i = 0; i < 20 && !up; i++) {
+        await Bun.sleep(100)
+        up = await hit()
+      }
+      expect(up).toBe(true)
+
+      const got = await collecting
+      expect(got.timedOut).toBe(true)
+      // 被杀之前写出来的那一行要留在结果里。
+      expect(got.stdout).toContain('started')
+
+      // 树杀才算数：只杀 shell 的话，监听端口的那个仍在运行。
+      let down = false
+      for (let i = 0; i < 20 && !down; i++) {
+        await Bun.sleep(100)
+        down = !(await hit())
+      }
+      expect(down).toBe(true)
+    } finally {
+      // 测试失败也要清理，否则孤儿会占着端口让下一次运行误判。
+      killTree(proc)
+    }
+  }, 30_000)
+})

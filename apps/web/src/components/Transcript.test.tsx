@@ -332,6 +332,110 @@ describe('编排画布', () => {
       dispose()
     }
   })
+
+  /** 种类是状态里的一个字段，主行右边印它的小写原词；没有状态的那一格什么都不印。 */
+  test('每一格按状态里的种类印标签', async () => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={
+            [
+              {
+                id: 'wf-kind',
+                kind: 'tool',
+                text: '',
+                toolName: 'workflow',
+                args: {
+                  goal: '三种各一格',
+                  nodes: [
+                    { id: 'r', kind: 'role', role: 'reviewer', task: '审' },
+                    { id: 't', kind: 'temp', name: '查资料', task: '查' },
+                    { id: 'c', kind: 'cli', cli: 'claude', task: '改' },
+                    { id: 'n', kind: 'temp', name: '还没派', task: '等' },
+                  ],
+                },
+                status: 'running',
+                nodes: {
+                  r: { label: '审查员', phase: 'working', kind: 'role' },
+                  t: { label: '查资料', phase: 'working', kind: 'temp' },
+                  c: { label: 'Anthropic claude', phase: 'working', kind: 'cli' },
+                },
+              },
+            ] as never
+          }
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      expect([...host.querySelectorAll('.wf-node-kind')].map((e) => e.textContent)).toEqual([
+        'role',
+        'temp',
+        'cli',
+      ])
+    } finally {
+      dispose()
+    }
+  })
+
+  /**
+   * 原始失败形状：续派的参数里只有一个子 agent id，按参数猜种类会把外部 CLI 认成
+   * 内置子 agent，点开是一条没有正文的子会话。种类只从状态取。
+   */
+  test('续派的外部 CLI 那一格点开的是 CLI 页', async () => {
+    const { delegateEvents, render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { closePanelTab, panelTabs } = await import('../lib/store/index.ts')
+    // 点击走 solid 的事件委托：处理器挂在 document 上，所以这一块要在文档里，
+    // 而委托只在模块首次加载时挂过一次，那时的 document 是别的文件注册的那一份。
+    const host = document.createElement('div')
+    document.body.append(host)
+    delegateEvents(['click'])
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={
+            [
+              {
+                id: 'st_cli',
+                kind: 'tool',
+                text: '',
+                toolName: 'subagent',
+                args: { subagent: 'cv_cli', task: '接着审' },
+                status: 'running',
+                nodes: {
+                  child: {
+                    label: 'claude 代码审查',
+                    phase: 'working',
+                    kind: 'cli',
+                    subagentId: 'cv_cli',
+                  },
+                },
+              },
+            ] as never
+          }
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const cell = host.querySelector<HTMLButtonElement>('button.wf-node')
+      expect(cell?.disabled).toBe(false)
+      cell?.click()
+      expect(panelTabs().map((t) => [t.id, t.kind, t.title])).toEqual([
+        ['cli-st_cli-child', 'cli', 'claude 代码审查'],
+      ])
+    } finally {
+      for (const tab of panelTabs()) closePanelTab(tab.id)
+      dispose()
+      host.remove()
+    }
+  })
 })
 
 describe('子会话与主会话共用流式外壳', () => {

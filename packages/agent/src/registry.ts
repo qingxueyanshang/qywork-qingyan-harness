@@ -126,6 +126,8 @@ export interface DelegatePort {
     /** 派给了谁。连记录都没建成时缺席。 */
     subagentId?: string
     name?: string
+    /** 派给的是哪一种子 agent。回执文案按它取称呼；连记录都没建成时缺席。 */
+    kind?: SubagentKind
     /** 这次派发是不是新建了它。 */
     created?: boolean
     /** 从派出到回执的耗时。卡上那一格印的就是这个数。 */

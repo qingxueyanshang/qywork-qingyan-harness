@@ -24,7 +24,8 @@ type Dispatch = OrchestratorDeps['dispatch']
 
 /**
  * 假的派发端：按目标名字记下调用顺序与提示词。
- * `describe` 按已知集合给名字，名字就是角色 id / 临时名 / CLI id / 子 agent id。
+ * `describe` 按已知集合给名字与种类，名字就是角色 id / 临时名 / CLI id / 子 agent id；
+ * 已有子 agent 的种类来自它自己的记录，这里固定成外部 CLI。
  */
 function deps(
   run: (
@@ -38,13 +39,15 @@ function deps(
   const events: Record<string, unknown>[] = []
   const describe = (target: SubagentTarget) => {
     if ('subagent' in target) {
-      return KNOWN.subagents.has(target.subagent) ? { label: target.subagent } : null
+      return KNOWN.subagents.has(target.subagent)
+        ? { label: target.subagent, kind: 'cli' as const }
+        : null
     }
-    if (target.kind === 'temp') return { label: target.name }
+    if (target.kind === 'temp') return { label: target.name, kind: 'temp' as const }
     if (target.kind === 'role') {
-      return KNOWN.roles.has(target.role) ? { label: target.role } : null
+      return KNOWN.roles.has(target.role) ? { label: target.role, kind: 'role' as const } : null
     }
-    return KNOWN.clis.has(target.cli) ? { label: target.cli } : null
+    return KNOWN.clis.has(target.cli) ? { label: target.cli, kind: 'cli' as const } : null
   }
   const d: OrchestratorDeps = {
     signal: new AbortController().signal,
@@ -708,10 +711,43 @@ describe('子 agent 入口', () => {
       roles: new Set([...KNOWN.roles, 'nobody']),
     }).run('目标')
     expect(d.events.slice(0, 2)).toEqual([
-      { nodeId: 'a', phase: 'waiting', label: 'r' },
+      { nodeId: 'a', phase: 'waiting', label: 'r', kind: 'role' },
+      // 认不出的目标只剩按 target 印的名字，种类无从判起。
       { nodeId: 'b', phase: 'waiting', label: 'nobody' },
     ])
     expect(d.events.at(-1)).toMatchObject({ nodeId: 'b', phase: 'failed', error: '找不到派发目标' })
+  })
+
+  /**
+   * 卡上的标签只来自状态，所以起跑前那两帧就要带种类：三种新建各按目标判，
+   * 续派已有子 agent 时按它自己的记录判——那时参数里只有一个 id。
+   */
+  test('等待与排队的状态都带种类', async () => {
+    const plan: PlanNode[] = [
+      node('a', '做'),
+      node('t', '做', { target: { kind: 'temp', name: 'T' } }),
+      node('cx', '做', { target: { kind: 'cli', cli: 'codex' } }),
+      node('again', '做', { target: { subagent: 'cv_known' } }),
+      node('e', '做'),
+      { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 't', 'cx', 'again', 'e'] },
+    ]
+    const d = deps(async () => {
+      await Bun.sleep(20)
+      return { ok: true, output: 'x' }
+    })
+
+    await new TeamOrchestrator(plan, d.deps, KNOWN).run('目标')
+
+    expect(d.events.filter((e) => e.phase === 'waiting').map((e) => [e.nodeId, e.kind])).toEqual([
+      ['a', 'role'],
+      ['t', 'temp'],
+      ['cx', 'cli'],
+      ['again', 'cli'],
+      ['e', 'role'],
+    ])
+    expect(d.events.filter((e) => e.phase === 'queued').map((e) => [e.nodeId, e.kind])).toEqual([
+      ['e', 'role'],
+    ])
   })
 })
 

@@ -21,6 +21,7 @@ import {
   type StepId,
   type StopReason,
   SUBAGENT_NODE_ID,
+  type SubagentKind,
   type SubagentTarget,
   targetLabel,
   type WorkflowNode,
@@ -45,6 +46,7 @@ import {
   runCli,
   TeamOrchestrator,
 } from '@qywork/team'
+import { MAX_TIMEOUT_MS } from '@qywork/tools'
 import type { CommandDeps } from './deps.ts'
 import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
 
@@ -232,21 +234,24 @@ export function makeDelegate(ctx: {
     return { conversation, role, cli: null, created: true }
   }
 
-  /** 一格的名字，给编排器写状态用。同步：角色、CLI、已有子 agent 三份清单在图开跑前读一次。 */
+  /**
+   * 一格的名字与种类，给编排器写状态用。同步：角色、CLI、已有子 agent 三份清单在图开跑前读一次。
+   * 续接已有子 agent 时种类只能从那条会话记录取——参数里只有一个 id。
+   */
   const describeWith =
     (roles: Role[], clis: CliAgent[], existing: Conversation[]) =>
-    (target: SubagentTarget): { label: string } | null => {
+    (target: SubagentTarget): { label: string; kind?: SubagentKind } | null => {
       if ('subagent' in target) {
         const c = existing.find((x) => x.id === target.subagent)
-        return c ? { label: c.title } : null
+        return c ? { label: c.title, ...(c.source ? { kind: c.source } : {}) } : null
       }
-      if (target.kind === 'temp') return { label: target.name }
+      if (target.kind === 'temp') return { label: target.name, kind: 'temp' }
       if (target.kind === 'role') {
         const r = roles.find((x) => x.id === target.role)
-        return r ? { label: target.name ?? r.name } : null
+        return r ? { label: target.name ?? r.name, kind: 'role' } : null
       }
       const cli = clis.find((x) => x.id === target.cli)
-      return cli ? { label: target.name ?? `${cli.vendor} ${cli.id}` } : null
+      return cli ? { label: target.name ?? `${cli.vendor} ${cli.id}`, kind: 'cli' } : null
     }
 
   /**
@@ -289,6 +294,8 @@ export function makeDelegate(ctx: {
       )({
         phase: 'failed',
         label: targetLabel(input.target),
+        // 只给了子 agent id 时判不出种类：那条会话没解析成，记录取不到。
+        ...('subagent' in input.target ? {} : { kind: input.target.kind }),
         error: resolved.error,
       })
       return { ok: false, output: '', error: resolved.error }
@@ -325,9 +332,11 @@ export function makeDelegate(ctx: {
     const nodeId = input.nodeId ?? SUBAGENT_NODE_ID
     const say = note(input, nodeId)
     const started = Date.now()
-    say({ phase: 'working', label, subagentId: id })
+    // 种类取会话记录，不取派发参数：续派只给一个 id，参数里判不出它是哪一种。
+    const kindOf = conversation.source ? { kind: conversation.source } : {}
+    say({ phase: 'working', label, ...kindOf, subagentId: id })
 
-    const base = { subagentId: id, name: conversation.title, created }
+    const base = { subagentId: id, name: conversation.title, ...kindOf, created }
     const settle = (ok: boolean, stopped?: string, stop?: StopReason | null) => {
       const durationMs = Date.now() - started
       // 被叫停的那一格是「中断」不是「失败」：父会话停的、这一轮结束时停的、在它自己页签里停的都算。
@@ -338,6 +347,7 @@ export function makeDelegate(ctx: {
       say({
         phase: ok ? 'done' : interrupted ? 'interrupted' : 'failed',
         label,
+        ...kindOf,
         subagentId: id,
         durationMs,
         ...(error ? { error } : {}),
@@ -385,7 +395,7 @@ export function makeDelegate(ctx: {
         const error = r.ok
           ? undefined
           : r.timedOut
-            ? '超时'
+            ? `静默 ${MAX_TIMEOUT_MS / 1000} 秒，已终止`
             : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`
         return { output: r.output, ...settle(r.ok, error) }
       }

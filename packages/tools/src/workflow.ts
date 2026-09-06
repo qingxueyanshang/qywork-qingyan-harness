@@ -5,7 +5,13 @@
  * 会话后，由当前会话决定 approve 或 revise；续发仍使用同一个 workflowId。
  */
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { DEFAULT_MAX_CONCURRENT, parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
+import {
+  DEFAULT_MAX_CONCURRENT,
+  type IntermediateResourceRef,
+  parseWorkflowCall,
+  type WorkflowTransition,
+} from '@qywork/core'
+import { deliverAgentOutput } from './sink.ts'
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
@@ -132,10 +138,31 @@ export const workflowTool: ToolSpec = {
     if (!res.transition) return { status: 'failure', message: 'Workflow 没有返回状态转移' }
 
     const transition = res.transition
+    /*
+     * 每条回执的产出各自过投递闸，与 `subagent` 同一道。超长的落盘，回执里留定位符，
+     * 模型用 `read_resource` 按需读回。**回执本身不加字段**：截了多少、总共多少
+     * 写在正文末尾那一行里，逐条再挂一份覆盖事实是同一件事印两处。
+     *
+     * 一次调用只有一份单次投递预算，有产出的几条平分它（`share`）。
+     */
+    const resources: IntermediateResourceRef[] = []
+    const share = transition.receipts.filter((receipt) => receipt.output).length
+    const receipts = transition.receipts.map((receipt) => {
+      if (!receipt.output) return receipt
+      const delivered = deliverAgentOutput(ctx, {
+        toolName: 'workflow',
+        sourceType: `workflow:${receipt.nodeId}`,
+        body: receipt.output,
+        share,
+      })
+      if (delivered.resource) resources.push(delivered.resource)
+      return { ...receipt, output: delivered.text }
+    })
     return {
       status: res.ok ? 'success' : 'failure',
       message: transitionMessage(transition),
-      data: transition as unknown as Record<string, unknown>,
+      data: { ...transition, receipts } as unknown as Record<string, unknown>,
+      ...(resources.length ? { resources } : {}),
     }
   },
 }

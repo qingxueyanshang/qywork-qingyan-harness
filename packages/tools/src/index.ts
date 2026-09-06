@@ -92,8 +92,10 @@ export {
 } from './scopes.ts'
 // 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证；runtime 落诊断前要剥异常原文。
 export { redactSecrets, scrubEnv } from './secrets.ts'
-// 环境变量的默认豁免名单：server/api 下发给设置页当留空时的实际值
-export { DEFAULT_ENV_ALLOW, resolveCommandTimeout } from './shell.ts'
+// 环境变量的默认豁免名单：server/api 下发给设置页当留空时的实际值。
+// `MAX_TIMEOUT_MS` 是本机一次工具执行的额度：team 拿它当外部 CLI 的静默上限，
+// server 拿它拼那条终止说明，三处共用一个数。
+export { DEFAULT_ENV_ALLOW, MAX_TIMEOUT_MS, resolveCommandTimeout } from './shell.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
 // 外部工具按需加载：runtime/session.ts 量一次决定全量常驻还是进池子；

@@ -22,6 +22,7 @@ import type {
   StepId,
   WorkspaceId,
 } from './ids.ts'
+import type { SubagentKind } from './workflow.ts'
 
 // ──────────────────────────── 共享词表 ────────────────────────────
 //
@@ -700,6 +701,11 @@ export interface NodeState {
   phase: NodePhase
   /** 那一格的名字：子 agent 的名字。 */
   label: string
+  /**
+   * 派给的是哪一种子 agent。界面按它印标签、决定点开哪一页。
+   * 目标不成立且只给了子 agent id 时缺席：那时没有记录可以判种类。
+   */
+  kind?: SubagentKind
   /** 子 agent 的会话 id。建好之后每条状态都带着。 */
   subagentId?: ConversationId
   durationMs?: number

@@ -1,5 +1,11 @@
 import type { SubagentSummary } from '@qywork/agent'
-import type { RunContextSegment, TodoItem, WorkflowPhase, WorkflowProjection } from '@qywork/core'
+import {
+  type RunContextSegment,
+  SUBAGENT_KIND_LABEL,
+  type TodoItem,
+  type WorkflowPhase,
+  type WorkflowProjection,
+} from '@qywork/core'
 
 /**
  * 三层冻结前缀：system → environment → rules。
@@ -87,7 +93,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。第一次按 kind 建（role / temp / cli），之后按 subagentId 续接，三种都能续。用户用 `@角色id` 或 `@cli:id` 点名时，就派给那个目标。',
+    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。第一次按 kind 建：role 按角色，temp 临时；cli 是本机另一个进程，用它自己的模型和账号，过程看不到，只在用户用 `@cli:id` 点名或明确要求时派。之后按 subagentId 续接，三种都能续。用户用 `@角色id` 点名时，就派给那个角色。',
   },
   {
     tool: 'workflow',
@@ -293,7 +299,7 @@ export function buildTailNotes(input: {
     )
     const clis = input.team.clis.map(
       (cli) =>
-        `- 外部 CLI id \`${cli.id}\`：${cli.vendor}，${cli.connected ? '已接入' : '未见凭证'}`,
+        `- 外部 CLI id \`${cli.id}\`：${cli.vendor}，本机进程，自带模型与账号，${cli.connected ? '已接入' : '未见凭证'}`,
     )
     const list = [...roles, ...clis].join('\n') || '- 当前项目没有角色，本机没有外部 CLI'
     notes.push({
@@ -308,7 +314,7 @@ export function buildTailNotes(input: {
       input.subagents
         .map(
           (item) =>
-            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}${
+            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND_LABEL[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}${
               item.resumable ? '' : '，不可续接：没有会话号，续派它不记得上一轮'
             }`,
         )
@@ -377,12 +383,6 @@ export function buildTailNotes(input: {
     })
   }
   return notes
-}
-
-const SUBAGENT_KIND: Record<SubagentSummary['kind'], string> = {
-  role: '角色',
-  temp: '临时',
-  cli: '外部 CLI',
 }
 
 const SUBAGENT_STATUS: Record<SubagentSummary['status'], string> = {

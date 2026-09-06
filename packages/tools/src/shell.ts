@@ -45,7 +45,14 @@ import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
-const MAX_TIMEOUT_MS = 600_000
+
+/**
+ * 一条命令能跑多久的上限。
+ *
+ * **导出是因为「本机一次工具执行的额度」只该有一个数。** 外部 CLI 自己也在跑
+ * 构建与测试，它那侧的静默额度取的就是这个数；各写一份必然漂移。
+ */
+export const MAX_TIMEOUT_MS = 600_000
 
 /**
  * 命令退出了，但它留下的后代进程还握着输出管道。

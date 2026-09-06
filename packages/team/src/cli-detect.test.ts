@@ -31,6 +31,17 @@ describe('外部 CLI 识别', () => {
     expect(claude?.resumeArgs?.join(' ')).toContain('{session}')
   })
 
+  /**
+   * 正文路径漏抄的表现同样是静默失效：实时页只剩原始 JSON 行，
+   * 而没有 `result` 行的那次回执取不到正文。
+   */
+  test('jsonl 那几家的正文路径跟着识别结果出来', async () => {
+    const dir = await fakeBin('claude')
+    const [claude] = await detectClis({ PATH: dir, PATHEXT: '.CMD' })
+    expect(claude?.narrate?.text).toBeTruthy()
+    expect(claude?.narrate?.tool).toBeTruthy()
+  })
+
   test('PATH 上有就认出来，没有的不出现', async () => {
     const dir = await fakeBin('claude')
     const found = await detectClis({ PATH: dir, PATHEXT: '.CMD' })

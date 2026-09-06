@@ -2,8 +2,8 @@
  * 派一件的进度通道。**用假 provider 跑真链路，不花钱、不联网。**
  *
  * 覆盖范围：`delegate.ts` 的 `makeDelegate().run()` 广播出来的 `team.member`
- * ——内置分支的完整序列、终态里的子会话 id、拿不到卡片 id 时的降级、
- * 以及派不出去时不留半截状态。
+ * ——内置分支的完整序列、终态里的子会话 id、每条状态上的种类、
+ * 拿不到卡片 id 时的降级、以及派不出去时不留半截状态。
  *
  * **为什么走真链路。** 这条通道的形状就是「派出去之后，卡上那一格跟着动」。
  * 把 `runBuiltinMember` 换成桩，测到的只是「桩被调用了」；真正会坏的是装配——
@@ -527,6 +527,84 @@ describe('派一件的进度', () => {
     expect(res.ok).toBe(false)
     expect(members().map((m) => m.state.phase)).toEqual(['failed'])
     expect(members()[0]?.state.error).toContain('查无此角色')
+  })
+})
+
+/**
+ * 卡上那一格要认得出派的是哪一种。种类取自会话记录，不取自派发参数：续派只给一个
+ * 子 agent id，按参数判会把外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
+ */
+describe('状态带种类', () => {
+  test('新建临时子 agent：working 与终态都带 temp', async () => {
+    const cid = conversation()
+    script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    expect(res.ok).toBe(true)
+    expect(res.kind).toBe('temp')
+    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([
+      ['working', 'temp'],
+      ['done', 'temp'],
+    ])
+  })
+
+  /** 续派的参数里只有一个 id：种类只能从那条会话记录取，取不到就是原始失败形状。 */
+  test('续派已有子 agent，种类取自那条会话记录', async () => {
+    const cid = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      title: '审查员',
+      source: 'role',
+      sourceRef: 'reviewer',
+      parentConversationId: cid,
+    })
+    script = [() => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS })]
+    const res = await delegate(cid).dispatch({
+      target: { subagent: child.id },
+      task: '接着做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    expect(res.ok).toBe(true)
+    expect(res.kind).toBe('role')
+    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([
+      ['working', 'role'],
+      ['done', 'role'],
+    ])
+  })
+
+  /** 目标不成立时没有会话记录，种类只能按派发参数判；判不出的不写。 */
+  test('外部 CLI 不在本机，那一格仍标成 cli', async () => {
+    const cid = conversation()
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'cli', cli: '本机没有的' },
+      task: '审一遍',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    expect(res.ok).toBe(false)
+    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([['failed', 'cli']])
+  })
+
+  test('只给子 agent id 又解析不成时不写种类', async () => {
+    const cid = conversation()
+    await delegate(cid).dispatch({
+      target: { subagent: 'cv_nobody' },
+      task: '接着做',
+      ...at,
+      signal: new AbortController().signal,
+    })
+
+    expect(members().map((m) => m.state.kind)).toEqual([undefined])
   })
 })
 
