@@ -26,6 +26,19 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
 export const PROVIDER_HTTP = { timeout: 600_000, maxRetries: 0 } as const
 
 /**
+ * 每次请求都新开连接，不复用空闲的 keep-alive 连接。
+ *
+ * 第三方接口会掐掉空闲连接：实测（2026-09-06，deepseek 与 gemini 两家第三方）空闲 250 秒后
+ * 复用旧连接的第一次请求当场 `ECONNRESET`，自动重发可能落到池里另一条同样已死的连接上，
+ * 一个字节都不回，直到看门狗 180 秒到点，这一轮以 provider_error 收尾。
+ * 派活是事件之后，一次请求常常跟在几分钟的空等之后（等子 agent 回执、等一条长命令），
+ * 这条路必然踩到。代价是每次请求多一次 TLS 握手，远小于一次模型往返。
+ *
+ * 三个适配器都要带上，缺一个那一家就还会挂。
+ */
+export const PROVIDER_HEADERS = { connection: 'close' } as const
+
+/**
  * 具体接口路线的传输能力。模型有哪些档位由官方目录回答；这里仅回答当前端点
  * 是否透传相应控制面。undefined = 未校准，沿用协议/目录结论。
  */

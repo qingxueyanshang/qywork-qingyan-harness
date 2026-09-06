@@ -65,7 +65,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 import { normalizeBaseUrl, strictify } from './openai-compat.ts'
 
@@ -88,6 +88,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     // 而那种失败是静默的（0 事件、0 token、当成正常完成）。
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
     this.headers = {
+      ...PROVIDER_HEADERS,
       'content-type': 'application/json',
       ...(profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : {}),
       ...(profile.headers ?? {}),

@@ -29,7 +29,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HTTP, videoData } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, videoData } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
@@ -73,7 +73,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       apiKey: this.apiKey,
       ...PROVIDER_HTTP,
       baseURL: this.baseUrl,
-      ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
+      defaultHeaders: { ...PROVIDER_HEADERS, ...profile.headers },
     })
   }
 

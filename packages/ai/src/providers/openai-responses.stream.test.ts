@@ -225,10 +225,12 @@ interface SentBody {
 }
 
 let lastBody: SentBody = {}
+let lastHeaders: Headers | null = null
 
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
+    lastHeaders = new Headers(req.headers)
     lastBody = ((await req.json().catch(() => ({}))) ?? {}) as SentBody
     if (script.delayMs > 0) await Bun.sleep(script.delayMs)
     return new Response(script.body, {
@@ -571,5 +573,13 @@ describe('停止与超时分开认', () => {
       expect(message).toBe('已取消')
       expect(message).not.toContain('超时')
     }
+  })
+})
+
+describe('连接', () => {
+  test('每次请求都声明不复用连接', async () => {
+    await run(TEXT_RUN)
+    // 第三方接口会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    expect(lastHeaders?.get('connection')).toBe('close')
   })
 })

@@ -11,6 +11,7 @@ import type { ProviderEvent, ProviderProfile, WireMessage } from '../types.ts'
 import { AnthropicAdapter } from './anthropic.ts'
 
 const bodies: Record<string, unknown>[] = []
+const requestHeaders: Headers[] = []
 let lastEvents: ProviderEvent[] = []
 let server: ReturnType<typeof Bun.serve>
 let base = ''
@@ -54,6 +55,7 @@ beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
+      requestHeaders.push(new Headers(req.headers))
       bodies.push((await req.json()) as Record<string, unknown>)
       return new Response(SSE, { headers: { 'content-type': 'text/event-stream' } })
     },
@@ -196,5 +198,14 @@ describe('工具结果带图片', () => {
     expect((toolTurns[0]!.content as { tool_use_id?: string }[]).map((b) => b.tool_use_id)).toEqual(
       ['c_1', 'c_2'],
     )
+  })
+})
+
+describe('连接', () => {
+  test('每次请求都声明不复用连接', async () => {
+    requestHeaders.length = 0
+    await send([{ role: 'user', content: 'hi' }])
+    // 第三方接口会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    expect(requestHeaders[0]?.get('connection')).toBe('close')
   })
 })

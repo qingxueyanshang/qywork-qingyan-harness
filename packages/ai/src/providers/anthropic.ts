@@ -38,7 +38,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 
 /**
@@ -75,7 +75,7 @@ export class AnthropicAdapter implements LlmAdapter {
       apiKey: profile.apiKey || 'unset',
       ...PROVIDER_HTTP,
       ...(profile.baseUrl ? { baseURL: profile.baseUrl } : {}),
-      ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
+      defaultHeaders: { ...PROVIDER_HEADERS, ...profile.headers },
     })
   }
 

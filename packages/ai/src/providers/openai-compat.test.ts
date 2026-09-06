@@ -1044,3 +1044,11 @@ describe('运行上下文的上线形状', () => {
     expect(messages).toHaveLength(2)
   })
 })
+
+describe('连接', () => {
+  test('每次请求都声明不复用连接', async () => {
+    await send('deepseek-v4-flash')
+    // 第三方接口会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    expect(requestHeaders[0]?.get('connection')).toBe('close')
+  })
+})
