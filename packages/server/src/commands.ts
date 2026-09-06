@@ -6,10 +6,15 @@
  */
 
 import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@qywork/core'
-import { getConversation, setConversationModel } from '@qywork/store'
+import {
+  getConversation,
+  interruptRunningNodes,
+  listRuns,
+  setConversationModel,
+} from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
-import { compactConversation, resumeGoal, setGoal, startRun } from './run-control.ts'
+import { compactConversation, resumeGoal, setGoal, submitMessage } from './run-control.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
@@ -19,30 +24,51 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       deps.bus.setSubscription(deps.ws.data.id, cmd.conversationIds)
       return
 
-    case 'run.interrupt':
+    case 'conversation.interrupt': {
       /*
-       * `interrupt` 找不到那条 run 时返回 false，**这个返回值必须答回去**。
+       * 停这条会话手上的活：这一轮，以及派出去还没回来的子 agent。两样都停不到时
+       * **必须答回去**。
        *
-       * 丢掉它的现象就是本文件头那句话说的形状，而且是最难查的一种：用户点了停止，
+       * 丢掉那个返回值的现象就是本文件头那句话说的形状，而且是最难查的一种：用户点了停止，
        * 按钮没反应、转圈还在转、一条日志都没有——他无法区分「服务端在处理」和
-       * 「这条指令没人接」。实测形状：注册表里已经没有这条 run（收尾跑完了
+       * 「这条指令没人接」。实测形状：注册表里已经没有这条会话的 run（收尾跑完了
        * 或者还停在 reserve 没 register），而账本那行还挂着 running，因此界面一直
        * 显示在跑，用户唯一的出路是重启应用。
        */
-      if (!deps.runs.interrupt(cmd.runId)) {
+      const stoppedRun = deps.runs.interruptConversation(cmd.conversationId)
+      const stoppedSubagents = deps.subagents.interruptConversation(cmd.conversationId)
+      if (!stoppedRun && !stoppedSubagents) {
         reject(deps.ws, cmd.type, 'conflict', '这一轮已经不在跑了')
+        return
+      }
+      /*
+       * 图上还没派出去的格跟着落终态。不落的话它永远等在那里：approve 过不去
+       * （上游回执不齐），revise 也过不去（点名的格没有终态），那张图再没有出口。
+       */
+      for (const run of listRuns(deps.store, cmd.conversationId)) {
+        for (const changed of interruptRunningNodes(deps.store, run.id)) {
+          deps.bus.publish(
+            {
+              type: 'team.member',
+              runId: run.id,
+              stepId: changed.stepId,
+              nodeId: changed.nodeId,
+              state: changed.state,
+            },
+            cmd.conversationId,
+          )
+        }
       }
       return
+    }
 
     case 'message.send': {
       /*
        * 会话在跑时**不再回绝**，这一条排进队列，去向由 `steer` 决定：
        * 注入当前这一轮，或者等这一轮收尾后作为下一轮发起。
        *
-       * **判忙与起轮必须在同一个同步块里**：`startRun` 的 `reserve()` 之前没有
-       * await，所以「读 `isBusy` → 调 `startRun`」整段是原子的。中间插一个 await
-       * 的话，桌面端和手机端几乎同时发的两条消息会双双读到「不忙」，
-       * 因此两个 AgentLoop 对着同一个工作区一起写文件（`runs.ts` 的 `reserve` 注释）。
+       * 判忙与起轮在 `submitMessage` 里，子 agent 的回执走的是同一个函数：
+       * 那一段必须是同一个同步块（理由见它那段注释与 `runs.ts` 的 `reserve`）。
        */
       // 子会话只归建立它的那张图管：直接发消息会绕过 workflow 的回执与续接，图的投影
       // 不知道这一轮发生过。界面没有这个入口，配对端走同一条指令，边界在这里补齐。
@@ -56,18 +82,19 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         )
         return
       }
-      if (deps.runs.isBusy(cmd.conversationId)) {
-        deps.runs.enqueue(cmd.conversationId, {
+      // 附件随消息一起转发。协议、存储、模型侧都支持，漏掉 `cmd.attachments`
+      // 这一手的话，整条链路就是有类型没数据。
+      await submitMessage(
+        cmd.conversationId,
+        {
           id: cmd.clientRequestId,
           content: cmd.content,
           ...(cmd.attachments?.length ? { attachments: cmd.attachments } : {}),
           steer: cmd.steer === true,
-        })
-        return
-      }
-      // 附件随消息一起转发。协议、存储、模型侧都支持，漏掉 `cmd.attachments`
-      // 这一手的话，整条链路就是有类型没数据。
-      await startRun(cmd.conversationId, cmd.content, cmd.model, deps, cmd.attachments)
+        },
+        deps,
+        cmd.model,
+      )
       return
     }
 
@@ -77,7 +104,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
        * 两态在同一个同步块里裁决，理由同 `message.send`：客户端手里的忙闲是上一次
        * 事件留下的值，它点下去那一刻可能已经不成立。
        */
-      if (deps.runs.isBusy(cmd.conversationId)) {
+      if (deps.runs.hasRun(cmd.conversationId)) {
         if (!deps.runs.setSteer(cmd.conversationId, cmd.id, cmd.steer)) {
           reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
         }
@@ -88,7 +115,8 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         reject(deps.ws, cmd.type, 'conflict', '这条跟进消息已经不在队列里')
         return
       }
-      await startRun(cmd.conversationId, item.content, undefined, deps, item.attachments)
+      // 走同一个函数：那一条如果是子 agent 的回执，起轮时来源要跟着落到消息行上。
+      await submitMessage(cmd.conversationId, item, deps)
       return
     }
 
@@ -141,7 +169,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
 
     case 'goal.resume': {
       // 停下来的目标重新跑起来，并**当场**发起一轮——不能等下一次别的 run 收尾。
-      // 没有对应的 pause 指令：跑起来之后要停它就是中断这一轮（`run.interrupt`），
+      // 没有对应的 pause 指令：跑起来之后要停它就是中断这条会话（`conversation.interrupt`），
       // run 收尾时会把目标置回 paused。
       const result = resumeGoal(cmd.conversationId, deps)
       if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
@@ -151,6 +179,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
     case 'conversation.compact': {
       // 手动压缩走的是与自动触发同一个 `compaction.run()`，只是判据换成用户的
       // 显式意图——不要在这里另起一条压缩路径。
+      // 闸认 `isBusy`：子 agent 的回执随时会起一轮，而压缩改的正是那一轮要读的历史。
       if (deps.runs.isBusy(cmd.conversationId)) {
         reject(deps.ws, cmd.type, 'conflict', '该会话正在执行，请先中断再压缩')
         return

@@ -153,6 +153,13 @@ export interface MessageInjectedEvent {
   followUpId: string
   content: string
   attachments?: Attachment[]
+  /**
+   * 同 `Message.origin`：这一句是谁投进来的，缺席 = 用户本人。
+   *
+   * 界面按它决定这一帧画回执行还是用户气泡。**必须与落库那侧同值**
+   * （step 的 `payload.origin`），否则实时画成气泡、刷新之后变回执行。
+   */
+  origin?: 'subagent' | 'workflow'
 }
 
 // ─────────────────────────────── run 生命周期 ───────────────────────────────
@@ -173,8 +180,16 @@ export interface RunStartedEvent {
    *
    * 客户端按正文与最后一条用户气泡比对：对得上就把 id 换成这里的真值
    * （乐观插入用的是本地 id），对不上就补一条。
+   *
+   * `origin` 同 `Message.origin`：这一条是谁投进来的，缺席 = 用户本人。界面按它决定
+   * 这一帧画回执行还是用户气泡。**必须与落库那侧同值**（`messages.origin`），
+   * 否则实时画成气泡、刷新之后变回执行。
    */
-  userMessage: { content: string; attachments?: Attachment[] } | null
+  userMessage: {
+    content: string
+    attachments?: Attachment[]
+    origin?: 'subagent' | 'workflow'
+  } | null
 }
 
 export interface RunFinishedEvent {

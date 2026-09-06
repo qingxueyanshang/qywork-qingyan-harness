@@ -108,12 +108,15 @@ export {
 
 // workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各算一份。
 export {
+  applyRevision,
   checkpointOutput,
   DEFAULT_MAX_CONCURRENT,
   foldWorkflow,
+  nodeSettled,
   parseSubagentTarget,
   parseWorkflowCall,
   type RevisionClosureResult,
+  readyCheckpoint,
   revisionClosure,
   SUBAGENT_KIND_LABEL,
   type SubagentKind,
@@ -135,6 +138,7 @@ export {
   type WorkflowRevision,
   type WorkflowTransition,
   workflowGroupId,
+  workflowResults,
   workflowTransitionOf,
 } from './domain/workflow.ts'
 

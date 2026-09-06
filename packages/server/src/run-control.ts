@@ -14,7 +14,15 @@
  */
 
 import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
-import type { AgentEvent, Attachment, ConversationId, Goal, RunId, StopReason } from '@qywork/core'
+import type {
+  AgentEvent,
+  Attachment,
+  ConversationId,
+  FollowUp,
+  Goal,
+  RunId,
+  StopReason,
+} from '@qywork/core'
 import {
   configPath,
   contextPanel,
@@ -31,6 +39,46 @@ import { makePluginPort } from './plugin-port.ts'
 import type { GoalArm } from './runs.ts'
 
 /**
+ * 这一轮是谁发起的。
+ *
+ * 唯一的作用是把「人在说话」和另外两种发起分开：人的动作一进来就把待续起标记
+ * 清掉（人类消息优先），而目标续起与子 agent 回执都不是人的动作，清了循环最多跑一轮。
+ * 缺席 = 人（发消息、重试、定时触发）。
+ */
+export type RoundSource =
+  | { kind: 'goal'; arm: GoalArm }
+  | { kind: 'receipt'; origin: 'subagent' | 'workflow' }
+
+/**
+ * 一条消息进这条会话：有 run 在跑就排进队列，闲着就当场起一轮。
+ *
+ * **用户发的消息与子 agent 的回执走同一个函数。** 两处各写一遍的话，
+ * 「判忙与起轮在同一个同步块里」这条要守两次，而漏掉的那一次不会报错。
+ *
+ * **闸是 `hasRun` 不是 `isBusy`**：只有子 agent 在跑时这条会话没有可注入的那一轮，
+ * 排进队列就没有人会去消费它。
+ */
+export async function submitMessage(
+  conversationId: ConversationId,
+  item: FollowUp,
+  deps: Omit<CommandDeps, 'ws'>,
+  model?: string,
+): Promise<void> {
+  if (deps.runs.hasRun(conversationId)) {
+    deps.runs.enqueue(conversationId, item)
+    return
+  }
+  await startRun(
+    conversationId,
+    item.content,
+    model,
+    deps,
+    item.attachments,
+    item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
+  )
+}
+
+/**
  * 发起一轮。
  *
  * deps 里**不含 `ws`**：这条路径除了 `handleCommand`，还要给定时任务用，
@@ -43,14 +91,7 @@ export async function startRun(
   model: string | undefined,
   deps: Omit<CommandDeps, 'ws'>,
   attachments?: Attachment[],
-  /**
-   * 这一轮是**目标自动续起**的那一轮，带着发起时的预留。
-   *
-   * 唯一的作用是把这一轮和「人在说话」区分开：其余三条入口都代表人的动作，
-   * 一进来就把待续起标记清掉（人类消息优先）；续起自己那一轮不能清，
-   * 清了循环最多跑一轮。
-   */
-  goalRound?: GoalArm,
+  source?: RoundSource,
 ): Promise<void> {
   /*
    * 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
@@ -78,9 +119,10 @@ export async function startRun(
    * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
    * 续起就作废——他插的这一句才是这条会话现在该干的事。
    *
+   * 目标续起与子 agent 回执都不清：它们不是人的动作。
    * 放在 reserve 成功之后：被回绝的消息没有发生，不该动任何状态。
    */
-  if (!goalRound) deps.runs.disarm(conversationId)
+  if (!source) deps.runs.disarm(conversationId)
 
   /*
    * 这一轮跑在哪个目录下，**按会话查，不问进程**。
@@ -117,7 +159,26 @@ export async function startRun(
     signal: controller.signal,
     // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，因此它那边连
     // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
-    delegate: makeDelegate({ deps, workspaceRoot: ws.rootPath, conversationId }),
+    delegate: makeDelegate({
+      deps,
+      workspaceRoot: ws.rootPath,
+      conversationId,
+      // 回执可能在这一轮结束很久之后才到，那时这个 Session 早已 dispose：
+      // 投递走的是会话级的那条路，与用户发消息同一个函数。
+      deliver: (followUp) => {
+        void submitMessage(conversationId, followUp, deps).catch((err) => {
+          deps.bus.publish(
+            {
+              type: 'run.error',
+              runId: '' as RunId,
+              code: 'internal_error',
+              message: err instanceof Error ? err.message : String(err),
+            },
+            conversationId,
+          )
+        })
+      },
+    }),
     // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
     plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
     // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
@@ -143,6 +204,8 @@ export async function startRun(
       for await (const ev of session.ask(content, conversationId, {
         ...(model ? { model } : {}),
         ...(attachments?.length ? { attachments } : {}),
+        // 回执起的那一轮，消息行上要写清是谁投的：界面按它渲染成回执行而不是用户气泡。
+        ...(source?.kind === 'receipt' ? { origin: source.origin } : {}),
       })) {
         // 并非所有事件都带 runId（git.state / file.changed 是工作区级的），
         // 取之前先窄化，不能假设字段存在。
@@ -253,11 +316,18 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
   const item = deps.runs.takeNext(conversationId)
   if (!item) return false
   setTimeout(() => {
-    if (deps.runs.isBusy(conversationId)) {
+    if (deps.runs.hasRun(conversationId)) {
       deps.runs.enqueueFront(conversationId, item)
       return
     }
-    void startRun(conversationId, item.content, undefined, deps, item.attachments).catch((err) => {
+    void startRun(
+      conversationId,
+      item.content,
+      undefined,
+      deps,
+      item.attachments,
+      item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
+    ).catch((err) => {
       // 塞回队首而不是吞掉：卡片重新出现，用户看得见它没发出去。
       deps.runs.enqueueFront(conversationId, item)
       deps.bus.publish(
@@ -428,8 +498,8 @@ async function fireGoalRound(
    * revision 就变了，下一次排队自己判成陈旧退出。
    */
   await startRun(conversationId, goalRoundPrompt(goal), undefined, deps, undefined, {
-    goalId: goal.id,
-    revision: goal.revision,
+    kind: 'goal',
+    arm: { goalId: goal.id, revision: goal.revision },
   })
 }
 
@@ -446,7 +516,8 @@ export function setGoal(
   objective: string,
   deps: Omit<CommandDeps, 'ws'>,
 ): { ok: true } | { ok: false; message: string } {
-  if (deps.runs.isBusy(conversationId)) {
+  // 起轮的闸只认 run：子 agent 在跑不挡立目标，那一轮与它们并行，与发消息同一条规矩。
+  if (deps.runs.hasRun(conversationId)) {
     return { ok: false, message: '该会话已有任务在执行，先停下这一轮再立目标' }
   }
   try {
@@ -483,7 +554,7 @@ export function resumeGoal(
   conversationId: ConversationId,
   deps: Omit<CommandDeps, 'ws'>,
 ): { ok: true } | { ok: false; message: string } {
-  if (deps.runs.isBusy(conversationId)) {
+  if (deps.runs.hasRun(conversationId)) {
     return { ok: false, message: '该会话已有任务在执行' }
   }
   try {

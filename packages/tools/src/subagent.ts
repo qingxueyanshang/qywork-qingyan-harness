@@ -5,19 +5,21 @@
  * 返回它的 id；之后填 id 再派就是接着它的上下文继续。三种种类都能续。
  * 两个及以上子 agent 用 `workflow`，这个工具一次只派一个，不并行。
  *
- * **失败是返回值。** 派不出去（目标不存在、外部 CLI 没装、执行失败）都如实回 failure 并带原因，
+ * **派出即返回。** 这次调用只回答「派出去了没有」，产出由派活通道在它做完之后
+ * 作为一条消息送进这条会话。
+ *
+ * **失败是返回值。** 派不出去（目标不存在、外部 CLI 没装）如实回 failure 并带原因，
  * 不抛异常：注册表会把异常压成一句「工具执行出错」，模型据此换不了做法。
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
 import { parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import { idArg } from './args.ts'
-import { deliverAgentOutput } from './sink.ts'
 
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
-    '派发一个子 agent，等它完成并返回产出。' +
+    '把一件事派给一个子 agent。派出去就返回，它做完之后回执会作为一条消息送到本会话，不要为了等回执反复调用。' +
     '第一次按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；返回它的 subagentId。' +
     '之后给同一个子 agent 派任务填 subagent 为那个 id，它接着自己的会话继续，三种都能续。' +
     '一次只派一个，两个及以上用 workflow。' +
@@ -151,53 +153,27 @@ export const subagentTool: ToolSpec = {
       // 进度挂在这次调用那张卡上。拿不到卡片 id 时照跑，只是没有运行期状态。
       runId: ctx.runId,
       ...(ctx.stepId ? { stepId: ctx.stepId } : {}),
-      signal: ctx.signal,
     })
-    // id 无论成败都交出去：没做成的那个子 agent 正是要翻开看、要接着派的那一个。
-    const ids = {
-      ...(res.subagentId ? { subagentId: res.subagentId } : {}),
-      ...(res.name ? { name: res.name } : {}),
-    }
-    // 种类来自回执：续派时参数里只有一个 id，判不出派的是哪一种。
+    // 种类来自派发结果：续派时参数里只有一个 id，判不出派的是哪一种。
     const kindLabel = res.kind ? SUBAGENT_KIND_LABEL[res.kind] : '子 agent'
     const who = res.name ? `${kindLabel} ${res.name}` : kindLabel
     // 派发时的事实接在消息后：续接没接上、角色已不在。它是给模型的输入，不是产出。
     const note = res.note ? `；${res.note}` : ''
-    /*
-     * 产出过投递闸。**这一步不能省**：子 agent 的产出没有上界，一份被杀在半路的
-     * 外部 CLI 回执实测二十六万字符，整段进上下文之后压缩层已经无从下手
-     * （单条结果超过整个批级保留预算），那一轮的读数会直接越过窗口。
-     */
-    const delivered = res.output
-      ? deliverAgentOutput(ctx, {
-          toolName: 'subagent',
-          sourceType: 'subagent',
-          body: res.output,
-        })
-      : null
-    const data = {
-      output: delivered ? delivered.text : res.output,
-      // 覆盖事实必须进 data：模型读 message 和 data，读不到它就不知道自己看的是几分之几。
-      ...(delivered?.coverage ? { outputCoverage: delivered.coverage } : {}),
-      ...ids,
-    }
-    const resources = delivered?.resource ? [delivered.resource] : []
-    if (!res.ok) {
+    if (!res.ok || !res.subagentId) {
       return {
         status: 'failure' as const,
-        message: `${who} 没做成：${res.error ?? '没有说明原因'}${note}`,
-        ...(res.output || res.subagentId ? { data } : {}),
-        ...(resources.length ? { resources } : {}),
+        message: `${who} 派不出去：${res.error ?? '没有说明原因'}${note}`,
       }
     }
-    const head = res.created
-      ? `已创建${who}（subagentId ${res.subagentId}）并返回产出`
-      : `${who} 已返回`
+    const head = `已派出${who}（subagentId ${res.subagentId}），回执会作为一条消息送到本会话`
     return {
       status: 'success' as const,
       message: `${parentTodo ? `${head}；父待办 ${parentTodo} 仍未完成` : head}${note}`,
-      data,
-      ...(resources.length ? { resources } : {}),
+      data: {
+        subagentId: res.subagentId,
+        ...(res.kind ? { kind: res.kind } : {}),
+        ...(res.name ? { name: res.name } : {}),
+      },
     }
   },
 }

@@ -1809,6 +1809,17 @@ UPDATE usage_ledger SET run_id = (
 ALTER TABLE provider_requests ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn' CHECK (purpose IN ('turn','summary'));
 `,
   },
+  {
+    id: 50,
+    name: 'message_origin',
+    /**
+     * 子 agent 与 workflow 的回执以 user 角色进模型，落库时靠这一列与用户本人说的话分开。
+     * 可空：旧行与用户发的消息都是 NULL，没有回填。
+     */
+    sql: `
+ALTER TABLE messages ADD COLUMN origin TEXT CHECK (origin IN ('subagent','workflow'));
+`,
+  },
 ]
 
 /**
@@ -1873,6 +1884,8 @@ export interface MessageRow {
   role: 'user' | 'assistant'
   content: string
   attachments: string | null
+  /** `CHECK (origin IN ('subagent','workflow'))`。NULL = 用户本人发的。 */
+  origin: 'subagent' | 'workflow' | null
   created_at: number
 }
 
@@ -2008,7 +2021,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
-  messages: ['id', 'conversation_id', 'role', 'content', 'attachments', 'created_at'],
+  messages: ['id', 'conversation_id', 'role', 'content', 'attachments', 'origin', 'created_at'],
   runs: [
     'id',
     'conversation_id',

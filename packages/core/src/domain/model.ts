@@ -190,6 +190,17 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   attachments: Attachment[]
+  /**
+   * 这条消息是谁投进来的：子 agent 的回执、workflow 的回执，`null` = 用户本人。
+   *
+   * wire 上三者都是 user 角色（provider 不接受脱离调用的 tool 角色），
+   * 分辨只能靠这一格：界面按它决定渲染成回执行还是用户气泡，
+   * 账本按它把人说的话与回执分开。
+   *
+   * **必填且允许 `null`**，不要写成可选：落盘列可空，读回来的必须是显式的 `null`，
+   * 缺键会让消费方把「没有来源」与「这条记录没带来源」判成同一件事。
+   */
+  origin: 'subagent' | 'workflow' | null
   createdAt: number
 }
 
@@ -331,14 +342,7 @@ export type StopReason =
  * 但排查方向完全不同。
  */
 export interface RunInterruption {
-  source:
-    | 'user'
-    | 'server_shutdown'
-    | 'consumer_closed'
-    | 'desktop_sidecar'
-    | 'orphan_recovery'
-    /** 子会话：派它的父会话那一轮结束了，它还没跑完。 */
-    | 'parent_finished'
+  source: 'user' | 'server_shutdown' | 'consumer_closed' | 'desktop_sidecar' | 'orphan_recovery'
   /** 终止首次被观察到的时间。 */
   observedAt: number
   /** 恢复进程把事实写回账本的时间；正常进程内收尾时与 observedAt 相同。 */
@@ -696,6 +700,10 @@ export type NodePhase =
 /**
  * 派活卡上一格的状态。派一件与图上的节点同一形状，落在 step payload 的 `nodes` 里，
  * 流式期的 `team.member` 事件带的也是它：界面只认这一个来源。
+ *
+ * **它同时是这一格的回执**：终态那一条带着 `output` / `note`，`foldWorkflow` 按它
+ * 折出 `WorkflowProjection.results`。工具返回值里没有第二份——派出即返回，
+ * 那时还没有产出。
  */
 export interface NodeState {
   phase: NodePhase
@@ -711,6 +719,14 @@ export interface NodeState {
   durationMs?: number
   /** failed / skipped / interrupted 的原因。 */
   error?: string
+  /**
+   * 终态那一条带上的产出摘录，已经过投递闸（超预算的落盘、正文里留定位符）。
+   * 下游格的输入与检查点的可传递输出都取它，所以**不要改成完整正文**：
+   * 它随 step payload 落库，也随 `team.member` 事件广播。
+   */
+  output?: string
+  /** 派发时模型该知道的事实：续接没接上、角色已不在。随终态一起交回。 */
+  note?: string
 }
 
 /**
@@ -774,6 +790,8 @@ export type StepPayload =
        */
       kind: 'user'
       attachments?: Attachment[]
+      /** 同 `Message.origin`：这一句是谁投进来的，缺席 = 用户本人。 */
+      origin?: 'subagent' | 'workflow'
     }
 
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
@@ -814,6 +832,13 @@ export interface FollowUp {
   attachments?: Attachment[]
   /** true = 在当前 run 的下一个 step 边界注入；false = 等这一轮收尾后发起下一轮。 */
   steer: boolean
+  /**
+   * 同 `Message.origin`：这一条是谁投进来的，缺席 = 用户本人。
+   *
+   * 队列不落盘，这一格只负责把来源带到落库那一步——注入时进 step 的
+   * `payload.origin`，起轮时进 `messages.origin`。
+   */
+  origin?: 'subagent' | 'workflow'
 }
 
 // ─────────────────────────── 中间资源 ───────────────────────────

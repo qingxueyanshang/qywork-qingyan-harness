@@ -1,68 +1,27 @@
 /**
- * 确定性的 workflow 调度器：并行只发生在同一批就绪节点之间；checkpoint
- * 一旦就绪就把回执交回父会话，不在后台替父会话作审批决定。
+ * workflow 的推进器：给定这张图此刻的格状态与批准，算出**这一趟该派哪几格**、
+ * 哪几格因为上游没成功而跳过、到了哪个检查点。
  *
- * 一格失败而同批还有格在跑时也交回：失败的回执先到，其余格照跑，由下一次调用汇合。
- * 不这样的话父会话要等整批跑完才知道有一格早就失败了。
+ * **纯函数，不等任何一格。** 派出去、写状态、发回执由派活通道做；一格跑完它再调一次
+ * 这里。并行只发生在同一批就绪节点之间，上限沿用首派那次的约定。
  *
- * 节点派给谁、怎么建、怎么续，全在实现方的 `dispatch` / `join`：编排器只管依赖、并发与回执，
+ * 节点派给谁、怎么建、怎么续，全在派活通道：这里只管依赖、并发与检查点，
  * 不区分内置子 agent 与外部 CLI。
  */
 import {
-  type ConversationId,
+  applyRevision,
   checkpointOutput,
   type NodeState,
-  revisionClosure,
-  type SubagentKind,
+  readyCheckpoint,
   type SubagentTarget,
   targetLabel,
   type WorkflowAgentNode,
   type WorkflowAppliedReview,
   type WorkflowCheckpointNode,
+  type WorkflowReceipt,
+  workflowResults,
 } from '@qywork/core'
-import type { NodeResult, PlanNode } from './types.ts'
-
-export interface OrchestratorDeps {
-  signal: AbortSignal
-  /** 一张图里同时最多几个节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
-  maxConcurrent: number
-  /** 一格的状态变了。实现方负责写进卡片并广播；编排器只报事实。 */
-  node(nodeId: string, state: NodeState): void
-  /**
-   * 一格的名字与种类：角色名、CLI 名，或临时子 agent 建时给的名字。写状态之前就要有；
-   * 认不出目标返回 null。种类由实现方按记录判，编排器不从 target 猜。
-   */
-  describe(target: SubagentTarget): { label: string; kind?: SubagentKind } | null
-  /**
-   * 派给一个子 agent。目标是新建还是已有由 `target` 决定，实现方负责建记录与跑；
-   * 编排器只拿回执与子 agent id。
-   */
-  dispatch(input: {
-    nodeId: string
-    target: SubagentTarget
-    prompt: string
-    signal: AbortSignal
-    provider?: string
-    model?: string
-  }): Promise<DispatchResult>
-  /**
-   * 汇合上一次调用派出、这次调用开始时还没有回执的子 agent：等它的回执，不重派。
-   * 进程内找不到它（这一轮之前派的、进程重启过）时返回 `ok: false` 且不带 error，
-   * 原因由编排器按格上的事实补。
-   */
-  join(input: { nodeId: string; subagentId: string }): Promise<DispatchResult>
-}
-
-export interface DispatchResult {
-  ok: boolean
-  output: string
-  error?: string
-  subagentId?: string
-  /** 派发方量的耗时，回执与卡上那一格都用它。 */
-  durationMs?: number
-  /** 派发时模型该知道的事实，原样进回执。 */
-  note?: string
-}
+import type { PlanNode } from './types.ts'
 
 /** 加载期校验引用用的已知集合：角色 id、CLI id、本会话已有子 agent id。 */
 export interface PlanKnown {
@@ -78,479 +37,237 @@ export interface OrchestratorReview {
   revisions: Array<{ nodeId: string; instruction: string }>
 }
 
-export interface OrchestratorState {
-  results?: Record<string, NodeResult>
-  /** 每一格最近一次状态。没有回执却已派出子 agent 的格由它认出来，这次汇合而不是重派。 */
-  states?: Record<string, NodeState>
-  approvals?: Record<string, string>
-  checkpointId?: string
+export interface AdvanceInput {
+  plan: PlanNode[]
+  goal: string
+  /** 一张图里同时最多几个节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
+  maxConcurrent: number
+  /** 每一格最近一次状态。回执与「在不在跑」都从它读，没有第二份。 */
+  states: Record<string, NodeState>
+  approvals: Record<string, string>
+  /** 这次调用带的审查动作。一格跑完后的推进不带。 */
   review?: OrchestratorReview
 }
 
-export interface OrchestratorRunResult {
-  /** 只含本次工具调用实际产生的增量；累计状态由父会话 transcript 折叠。 */
-  receipts: NodeResult[]
-  phase: 'waiting_review' | 'completed' | 'failed'
-  checkpointId?: string
+/** 一格要怎么派：目标与任务正文都算好了，派活通道照着发。 */
+export interface NodeDispatch {
+  nodeId: string
+  target: SubagentTarget
+  prompt: string
+  provider?: string
+  model?: string
+}
+
+export interface AdvanceResult {
+  dispatch: NodeDispatch[]
+  /** 上游没成功、这一趟直接判跳过的格。它们是终态，检查点据此往下走。 */
+  skipped: { nodeId: string; state: NodeState }[]
+  /** 依赖齐了但撞并发闸的格。 */
+  queued: { nodeId: string; state: NodeState }[]
+  /** 上游全部终态、还没批准的检查点。到了就发检查点回执。 */
+  checkpoint: string | null
+  /** 全部格终态、全部检查点已批准。 */
+  completed: boolean
+  /** 这次调用应用下去的审查，随转移落库。 */
   review?: WorkflowAppliedReview
-  /** 返回时还在跑的节点。只在一格失败先交回时有。 */
-  running?: string[]
 }
 
 const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
 const isAgent = (node: PlanNode): node is WorkflowAgentNode => node.kind !== 'checkpoint'
 
-export class TeamOrchestrator {
-  constructor(
-    private readonly plan: PlanNode[],
-    private readonly deps: OrchestratorDeps,
-    private readonly known: PlanKnown,
-  ) {}
+/** 续接原子 agent 时，没有点名指令的那几格发这一句。 */
+const RESUME_INSTRUCTION =
+  '上游结果已被主会话要求修订。请重新核验原任务，并基于更新后的上游产出给出新版结果。'
 
-  async run(goal: string, state: OrchestratorState = {}): Promise<OrchestratorRunResult> {
-    const plan = this.plan
-    validatePlan(plan, this.known)
+/**
+ * 推进一趟。**入参不被修改**：状态怎么落是调用方的事。
+ *
+ * 审查不成立（检查点不存在、重复批准、点名的格还没有终态）直接抛：那是模型写错了
+ * 参数，要原样交回去，不能压成一句「工具执行出错」。
+ */
+export function advance(input: AdvanceInput): AdvanceResult {
+  const { plan, goal, maxConcurrent } = input
+  const states: Record<string, NodeState> = { ...input.states }
+  const approvals: Record<string, string> = { ...input.approvals }
+  const corrections = new Map<string, string>()
+  let review: WorkflowAppliedReview | undefined
 
-    const results = new Map<string, NodeResult>(Object.entries(state.results ?? {}))
-    const states = state.states ?? {}
-    /** 拿到过回执的节点。按进来时的回执判，revise 删掉回执的节点不算没回执。 */
-    const receipted = new Set(results.keys())
-    /** 上一次调用派出、还没有回执的格。这次汇合它，不重派。 */
-    const inflightOf = (id: string): NodeState | undefined => {
-      const cell = states[id]
-      if (!cell?.subagentId || receipted.has(id)) return undefined
-      return cell.phase === 'working' || cell.phase === 'done' || cell.phase === 'failed'
-        ? cell
-        : undefined
-    }
-    const approvals = new Map<string, string>(Object.entries(state.approvals ?? {}))
-    const receipts: NodeResult[] = []
-    const priorForResume = new Map<string, NodeResult>()
-    const correction = new Map<string, string>()
-    let appliedReview: WorkflowAppliedReview | undefined
+  if (input.review) {
+    review = applyReview(plan, states, approvals, input.review, corrections)
+  }
 
-    if (state.review) {
-      const review = state.review
-      const checkpoint = plan.find(
-        (node): node is WorkflowCheckpointNode =>
-          isCheckpoint(node) && node.id === review.checkpointId,
-      )
-      if (!checkpoint) throw new Error(`找不到检查点 ${review.checkpointId}`)
-      /*
-       * 三道前置条件只约束 approve：必须是当前检查点、不能重复批准、上游回执齐全。
-       *
-       * revise 一条都不设：批准之后要能返工（否则一次 approve 等于解散整张图），
-       * 上一轮被中断、只有部分节点留下回执时也要能对留下回执的那个续发。
-       * revise 自己的前置条件在下面——被修订节点必须有带子 agent id 的上一轮回执。
-       */
-      if (review.decision === 'approve') {
-        if (state.checkpointId !== review.checkpointId) {
-          throw new Error(
-            `当前待审查检查点是 ${state.checkpointId ?? '无'}，不是 ${review.checkpointId}`,
-          )
-        }
-        if (approvals.has(checkpoint.id))
-          throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
-        const missing = checkpoint.needs.filter(
-          (id) => !this.dependencyResolved(id, results, approvals),
-        )
-        if (missing.length) {
-          const live = missing.filter((id) => inflightOf(id))
-          throw new Error(
-            `检查点 ${checkpoint.id} 的上游回执尚未齐全：${missing.join('、')}` +
-              (live.length ? `（${live.join('、')} 还在跑）` : ''),
-          )
-        }
+  let results = workflowResults(plan, states)
+  const skipped: { nodeId: string; state: NodeState }[] = []
+  /*
+   * 上游没成功的格判跳过，而且跳过会传播：不判到不动为止的话，它下游那个检查点
+   * 这一趟不会被判成就绪，图就停在没有人能推进的地方。
+   */
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const node of plan.filter(isAgent)) {
+      if (results[node.id] || !dependenciesResolved(node, results, approvals)) continue
+      if (!(node.needs ?? []).some((id) => results[id] && results[id]?.status !== 'done')) continue
+      const state: NodeState = {
+        ...(states[node.id] ?? { phase: 'waiting', label: targetLabel(node.target) }),
+        phase: 'skipped',
+        error: '上游节点未成功',
       }
-
-      appliedReview = {
-        checkpointId: checkpoint.id,
-        decision: review.decision,
-        note: review.note,
-      }
-      if (review.decision === 'approve') {
-        const acceptedFailures = checkpoint.needs
-          .map((id) => results.get(id))
-          .filter((result): result is NodeResult => !!result && result.status !== 'done')
-          .map((result) => ({
-            nodeId: result.nodeId,
-            reason: result.error || `状态 ${result.status}`,
-          }))
-        if (acceptedFailures.length > 0) appliedReview = { ...appliedReview, acceptedFailures }
-        approvals.set(
-          checkpoint.id,
-          checkpointOutput(checkpoint, Object.fromEntries(results), review.note),
-        )
-      } else {
-        const closure = revisionClosure(
-          plan,
-          checkpoint.id,
-          [...approvals.keys()],
-          review.revisions.map((revision) => revision.nodeId),
-        )
-        if (!closure.ok) throw new Error(closure.error)
-        for (const revision of review.revisions) {
-          const prior = results.get(revision.nodeId)
-          if (!prior) {
-            throw new Error(
-              inflightOf(revision.nodeId)
-                ? `节点 ${revision.nodeId} 还在跑，等它的回执再修订`
-                : `节点 ${revision.nodeId} 没有可续接的上一轮回执`,
-            )
-          }
-          correction.set(revision.nodeId, revision.instruction)
-        }
-        for (const id of closure.revokedCheckpointIds) approvals.delete(id)
-
-        // 被修订节点和它在本批次内的下游都失效。先保留子 agent 句柄，再删投影结果；
-        // 这样是向原子 agent 续发，不是另起一个看似相同的新任务。
-        for (const id of closure.nodeIds) {
-          if (inflightOf(id)) throw new Error(`节点 ${id} 还在跑，等它的回执再修订它的上游`)
-          const prior = results.get(id)
-          if (prior) priorForResume.set(id, prior)
-          results.delete(id)
-          if (!correction.has(id)) {
-            correction.set(
-              id,
-              '上游结果已被主会话要求修订。请重新核验原任务，并基于更新后的上游产出给出新版结果。',
-            )
-          }
-        }
-      }
-    }
-
-    // 图一开跑就把还没结果的格标成等待：刷新之后也看得见全貌，不只看见跑过的那几格。
-    // 还在跑的格不动：它的状态由派出它的那张卡写。
-    for (const node of plan) {
-      if (isAgent(node) && !results.has(node.id) && !inflightOf(node.id)) {
-        this.deps.node(node.id, { phase: 'waiting', ...this.describeOf(node) })
-      }
-    }
-
-    const maxConcurrent = this.deps.maxConcurrent
-    const running = new Map<string, Promise<void>>()
-    const announcedQueued = new Set<string>()
-    let failedLanded = false
-    /** 图没跑完就收场：还没派出的格标成中断。已派出的由派发方在自己的收尾里落终态。 */
-    const abandon = () => {
-      for (const node of plan) {
-        if (isAgent(node) && !results.has(node.id) && !running.has(node.id)) {
-          this.deps.node(node.id, {
-            phase: 'interrupted',
-            ...this.describeOf(node),
-            error: '调用中断',
-          })
-        }
-      }
-    }
-
-    while (true) {
-      if (this.deps.signal.aborted && running.size === 0) {
-        abandon()
-        return this.finish('failed', receipts, appliedReview)
-      }
-
-      const readyCheckpoints = plan.filter(
-        (node): node is WorkflowCheckpointNode =>
-          isCheckpoint(node) &&
-          !approvals.has(node.id) &&
-          node.needs.every((id) => this.dependencyResolved(id, results, approvals)),
-      )
-      if (readyCheckpoints.length > 1) {
-        throw new Error(
-          `同时有多个检查点就绪：${readyCheckpoints.map((node) => node.id).join('、')}`,
-        )
-      }
-      if (readyCheckpoints.length === 1 && running.size === 0) {
-        return this.finish('waiting_review', receipts, appliedReview, readyCheckpoints[0]!.id)
-      }
-
-      const ready = plan.filter(
-        (node): node is WorkflowAgentNode =>
-          isAgent(node) &&
-          !results.has(node.id) &&
-          !running.has(node.id) &&
-          (node.needs ?? []).every((id) => this.dependencyResolved(id, results, approvals)),
-      )
-
-      // 一格失败、同批还有格在跑：这一趟只把被它拖累的下游标成跳过，不再起新的，然后交回父会话。
-      // 被中断时不交回，等在跑的格都落终态后走开头那条 failed。
-      const handBack = failedLanded && running.size > 0 && !this.deps.signal.aborted
-      // 跳过不经过 await，本轮没有任何 Promise 可等。不重新入循环的话，跳过的节点
-      // 下游那个检查点这一轮不会被重新判定就绪，会被当成「依赖无法继续」抛出去。
-      let skippedThisPass = false
-      for (const node of ready) {
-        const upstreamFailed = (node.needs ?? []).some((id) => {
-          const result = results.get(id)
-          return result ? result.status !== 'done' : false
-        })
-        if (upstreamFailed) {
-          const described = this.describeOf(node)
-          const skipped: NodeResult = {
-            nodeId: node.id,
-            label: described.label,
-            status: 'skipped',
-            output: '',
-            error: '上游节点未成功',
-            durationMs: 0,
-          }
-          results.set(node.id, skipped)
-          receipts.push(skipped)
-          this.deps.node(node.id, {
-            phase: 'skipped',
-            ...described,
-            error: '上游节点未成功',
-          })
-          skippedThisPass = true
-          continue
-        }
-        if (handBack) continue
-        if (running.size >= maxConcurrent) {
-          // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
-          // 无说明的灰块，用户无法区分“正在排队”和“调度器漏掉了它”。
-          if (!announcedQueued.has(node.id)) {
-            announcedQueued.add(node.id)
-            this.deps.node(node.id, { phase: 'queued', ...this.describeOf(node) })
-          }
-          continue
-        }
-        announcedQueued.delete(node.id)
-
-        running.set(
-          node.id,
-          this.execute(
-            node,
-            goal,
-            results,
-            approvals,
-            priorForResume.get(node.id),
-            correction.get(node.id),
-            inflightOf(node.id),
-          ).then((result) => {
-            results.set(node.id, result)
-            receipts.push(result)
-            running.delete(node.id)
-            if (result.status === 'failed') failedLanded = true
-          }),
-        )
-      }
-
-      if (handBack) {
-        return this.finish(
-          'waiting_review',
-          receipts,
-          appliedReview,
-          this.nextCheckpoint(plan, approvals),
-          [...running.keys()],
-        )
-      }
-      if (running.size > 0) {
-        await Promise.race(running.values())
-        continue
-      }
-      if (skippedThisPass) continue
-
-      const unresolvedAgents = plan.filter(
-        (node): node is WorkflowAgentNode => isAgent(node) && !results.has(node.id),
-      )
-      const unresolvedCheckpoints = plan.filter(
-        (node) => isCheckpoint(node) && !approvals.has(node.id),
-      )
-      // 每个节点都在某个检查点下游（`validatePlan` 保证），所以走到这里说明每一份回执
-      // 都已被某次 approve 接受或被 revise 重跑过。终态只由「是否被中断」决定，
-      // 中断那条在循环开头返回 failed。
-      if (unresolvedAgents.length === 0 && unresolvedCheckpoints.length === 0) {
-        return this.finish('completed', receipts, appliedReview)
-      }
-      abandon()
-      throw new Error(
-        `依赖无法继续：${[...unresolvedAgents, ...unresolvedCheckpoints].map((node) => node.id).join('、')}`,
-      )
+      states[node.id] = state
+      skipped.push({ nodeId: node.id, state })
+      results = workflowResults(plan, states)
+      changed = true
     }
   }
 
-  private finish(
-    phase: OrchestratorRunResult['phase'],
-    receipts: NodeResult[],
-    review?: WorkflowAppliedReview,
-    checkpointId?: string,
-    running?: string[],
-  ): OrchestratorRunResult {
-    return {
-      receipts,
-      phase,
-      ...(checkpointId ? { checkpointId } : {}),
-      ...(review ? { review } : {}),
-      ...(running?.length ? { running } : {}),
-    }
-  }
-
-  /** 链上最近的未批准检查点。`validatePlan` 保证检查点单链且每个节点后面都有检查点。 */
-  private nextCheckpoint(plan: PlanNode[], approvals: Map<string, string>): string {
-    const pending = plan.filter(
-      (node): node is WorkflowCheckpointNode => isCheckpoint(node) && !approvals.has(node.id),
-    )
-    const first = pending.find(
-      (checkpoint) =>
-        !pending.some((other) => other !== checkpoint && ancestorOf(plan, other.id, checkpoint.id)),
-    )
-    return first!.id
-  }
-
-  private dependencyResolved(
-    id: string,
-    results: Map<string, NodeResult>,
-    approvals: Map<string, string>,
-  ): boolean {
-    return results.has(id) || approvals.has(id)
-  }
-
-  /** 一格的名字与种类；认不出目标时只剩按 target 印的名字。 */
-  private describeOf(node: WorkflowAgentNode): { label: string; kind?: SubagentKind } {
-    return this.deps.describe(node.target) ?? { label: targetLabel(node.target) }
-  }
-
-  private async execute(
-    node: WorkflowAgentNode,
-    goal: string,
-    results: Map<string, NodeResult>,
-    approvals: Map<string, string>,
-    prior?: NodeResult,
-    correction?: string,
-    live?: NodeState,
-  ): Promise<NodeResult> {
-    const started = Date.now()
-    const described = this.deps.describe(node.target)
-    if (!described) {
-      return this.failed(node, { label: targetLabel(node.target) }, started, '找不到派发目标')
-    }
-    const label = described.label
-
-    // 上一次调用派出、还没有回执的：等它，不重派。进程内找不到它时回执按格上的事实补原因。
-    if (live?.subagentId) {
-      try {
-        const res = await this.deps.join({ nodeId: node.id, subagentId: live.subagentId })
-        const error =
-          res.error ?? (res.ok ? undefined : (live.error ?? '回执没有送达：它不在这一轮里'))
-        return this.receipt(
-          node,
-          label,
-          { ...res, ...(error ? { error } : {}) },
-          live.subagentId,
-          started,
-        )
-      } catch (error) {
-        return this.failed(
-          node,
-          described,
-          started,
-          error instanceof Error ? error.message : String(error),
-          live.subagentId,
-        )
-      }
-    }
-
-    // 上一轮跑过就续接同一个子 agent；没留下 id 的回执续不了，只能原样报出来。
-    let target: SubagentTarget = node.target
-    if (prior && prior.status !== 'skipped') {
-      if (!prior.subagentId) {
-        return this.failed(node, described, started, `${node.id} 的上一轮回执没有可续接的子 agent`)
-      }
-      target = { subagent: prior.subagentId }
-    }
-    const continuing = 'subagent' in target
-
-    const upstream = (node.needs ?? [])
-      .map((id) => results.get(id)?.output ?? approvals.get(id) ?? '')
-      .filter(Boolean)
-      .join('\n\n---\n\n')
-    const wantsInput = node.passInput !== false && upstream !== ''
-    /** 首派的任务正文：{goal} / {input} 占位替换，没写 {input} 的上游产出追加在末尾。 */
-    const originalTask = (): string => {
-      const withGoal = node.task.replaceAll('{goal}', goal)
-      if (withGoal.includes('{input}'))
-        return withGoal.replaceAll('{input}', wantsInput ? upstream : '')
-      return wantsInput ? `${withGoal}\n\n## 上游产出\n\n${upstream}` : withGoal
-    }
-    // 续接的子 agent 接的是它自己的会话，原任务早在它的历史里：只发修订指令与上游产出，
-    // 不把整段任务再抄一遍——那会让它每一轮都从头读同一段话，卡上也一遍遍重复。
-    const prompt = continuing
-      ? [
-          correction ?? '接着上一轮继续，把原任务做完。',
-          wantsInput ? `## 上游产出（最新）\n\n${upstream}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      : originalTask()
-
-    try {
-      const res = await this.deps.dispatch({
+  const working = plan.filter(
+    (node) => isAgent(node) && states[node.id]?.phase === 'working',
+  ).length
+  const dispatch: NodeDispatch[] = []
+  const queued: { nodeId: string; state: NodeState }[] = []
+  for (const node of plan.filter(isAgent)) {
+    if (results[node.id] || states[node.id]?.phase === 'working') continue
+    if (!dependenciesResolved(node, results, approvals)) continue
+    if (working + dispatch.length >= maxConcurrent) {
+      // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
+      // 无说明的灰块，用户无法区分「正在排队」和「调度器漏掉了它」。
+      const prior = states[node.id]
+      if (prior?.phase === 'queued') continue
+      queued.push({
         nodeId: node.id,
-        target,
-        prompt,
-        signal: this.deps.signal,
-        // 续接已有子 agent 时模型跟着它自己的会话走，节点上的覆盖只在新建时生效。
-        ...(!continuing && node.provider ? { provider: node.provider } : {}),
-        ...(!continuing && node.model ? { model: node.model } : {}),
+        state: { ...(prior ?? { label: targetLabel(node.target) }), phase: 'queued' },
       })
-      return this.receipt(node, label, res, prior?.subagentId, started)
-    } catch (error) {
-      return this.failed(
-        node,
-        described,
-        started,
-        error instanceof Error ? error.message : String(error),
-        prior?.subagentId,
-      )
+      continue
+    }
+    dispatch.push(planDispatch(node, goal, results, approvals, states, corrections))
+  }
+
+  const checkpoint = readyCheckpoint(plan, results, approvals)
+  const allSettled = plan.every((node) => !isAgent(node) || results[node.id] !== undefined)
+  const allApproved = plan.every((node) => !isCheckpoint(node) || approvals[node.id] !== undefined)
+  return {
+    dispatch,
+    skipped,
+    queued,
+    checkpoint: checkpoint?.id ?? null,
+    completed: !checkpoint && allSettled && allApproved,
+    ...(review ? { review } : {}),
+  }
+}
+
+/**
+ * 批准或修订落到状态上。
+ *
+ * 三道前置条件只约束 approve：必须还没批准过、上游回执齐全、检查点存在。
+ * revise 一条都不设：批准之后要能返工（否则一次 approve 等于解散整张图），
+ * 上一轮被中断、只有部分节点留下回执时也要能对留下回执的那个续发。
+ * revise 自己的前置条件是**被点名的格已经终态**——还在跑的格改不了，
+ * 它的回执马上就到。
+ */
+function applyReview(
+  plan: PlanNode[],
+  states: Record<string, NodeState>,
+  approvals: Record<string, string>,
+  review: OrchestratorReview,
+  corrections: Map<string, string>,
+): WorkflowAppliedReview {
+  const checkpoint = plan.find(
+    (node): node is WorkflowCheckpointNode => isCheckpoint(node) && node.id === review.checkpointId,
+  )
+  if (!checkpoint) throw new Error(`找不到检查点 ${review.checkpointId}`)
+  const results = workflowResults(plan, states)
+
+  if (review.decision === 'approve') {
+    if (approvals[checkpoint.id] !== undefined) {
+      throw new Error(`检查点 ${checkpoint.id} 已经批准，不能重复审查`)
+    }
+    const missing = checkpoint.needs.filter(
+      (id) => results[id] === undefined && approvals[id] === undefined,
+    )
+    if (missing.length) {
+      throw new Error(`检查点 ${checkpoint.id} 的上游回执尚未齐全：${missing.join('、')}`)
+    }
+    const acceptedFailures = checkpoint.needs
+      .map((id) => results[id])
+      .filter((result): result is WorkflowReceipt => !!result && result.status !== 'done')
+      .map((result) => ({ nodeId: result.nodeId, reason: result.error || `状态 ${result.status}` }))
+    approvals[checkpoint.id] = checkpointOutput(checkpoint, results, review.note)
+    return {
+      checkpointId: checkpoint.id,
+      decision: 'approve',
+      note: review.note,
+      ...(acceptedFailures.length ? { acceptedFailures } : {}),
     }
   }
 
-  private receipt(
-    node: WorkflowAgentNode,
-    label: string,
-    res: DispatchResult,
-    fallbackSubagentId: string | undefined,
-    started: number,
-  ): NodeResult {
-    const subagentId = res.subagentId ?? fallbackSubagentId
-    return {
-      nodeId: node.id,
-      ...(subagentId ? { subagentId } : {}),
-      label,
-      status: res.ok ? 'done' : 'failed',
-      output: res.output,
-      ...(res.error ? { error: res.error } : {}),
-      // 耗时以派发方量的为准：卡上那一格印的就是它，回执不另量一次。
-      durationMs: res.durationMs ?? Date.now() - started,
-      ...(res.note ? { note: res.note } : {}),
+  for (const revision of review.revisions) {
+    if (!results[revision.nodeId]) {
+      throw new Error(`节点 ${revision.nodeId} 还没有终态，等它的回执再修订`)
     }
+    corrections.set(revision.nodeId, revision.instruction)
   }
+  const applied = applyRevision(plan, states, approvals, review)
+  if (!applied.ok) throw new Error(applied.error)
+  return { checkpointId: checkpoint.id, decision: 'revise', note: review.note }
+}
 
-  /** 派发之外的失败：目标不存在、续不了、派发方抛了异常。回执与卡上那一格一起落。 */
-  private failed(
-    node: WorkflowAgentNode,
-    described: { label: string; kind?: SubagentKind },
-    started: number,
-    error: string,
-    subagentId?: string,
-  ): NodeResult {
-    const durationMs = Date.now() - started
-    this.deps.node(node.id, {
-      phase: 'failed',
-      ...described,
-      durationMs,
-      error,
-      ...(subagentId ? { subagentId: subagentId as ConversationId } : {}),
-    })
-    return {
-      nodeId: node.id,
-      ...(subagentId ? { subagentId } : {}),
-      label: described.label,
-      status: 'failed',
-      output: '',
-      error,
-      durationMs,
-    }
+function dependenciesResolved(
+  node: WorkflowAgentNode,
+  results: Record<string, WorkflowReceipt>,
+  approvals: Record<string, string>,
+): boolean {
+  return (node.needs ?? []).every((id) => results[id] !== undefined || approvals[id] !== undefined)
+}
+
+/**
+ * 一格派出去时的目标与任务正文。
+ *
+ * 格上留着子 agent id 又没有回执，说明它跑过、被 revise 作废了：向**原子 agent**
+ * 续发，只发修订指令与最新上游产出。把整段任务再抄一遍会让它每一轮都从头读同一段话。
+ *
+ * **判据是这一格跑过没有，不是目标像不像已有子 agent。** 首次派给一个已有子 agent 的格
+ * 要发它自己的 `task`——按目标判的话那段任务一个字都发不出去。
+ */
+function planDispatch(
+  node: WorkflowAgentNode,
+  goal: string,
+  results: Record<string, WorkflowReceipt>,
+  approvals: Record<string, string>,
+  states: Record<string, NodeState>,
+  corrections: Map<string, string>,
+): NodeDispatch {
+  const resumeId = states[node.id]?.subagentId
+  const target: SubagentTarget = resumeId ? { subagent: resumeId } : node.target
+  const continuing = !!resumeId
+
+  const upstream = (node.needs ?? [])
+    .map((id) => results[id]?.output ?? approvals[id] ?? '')
+    .filter(Boolean)
+    .join('\n\n---\n\n')
+  const wantsInput = node.passInput !== false && upstream !== ''
+
+  const original = (): string => {
+    const withGoal = node.task.replaceAll('{goal}', goal)
+    if (withGoal.includes('{input}'))
+      return withGoal.replaceAll('{input}', wantsInput ? upstream : '')
+    return wantsInput ? `${withGoal}\n\n## 上游产出\n\n${upstream}` : withGoal
+  }
+  const prompt = continuing
+    ? [
+        corrections.get(node.id) ?? RESUME_INSTRUCTION,
+        wantsInput ? `## 上游产出（最新）\n\n${upstream}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    : original()
+
+  return {
+    nodeId: node.id,
+    target,
+    prompt,
+    // 续接已有子 agent 时模型跟着它自己的会话走，节点上的覆盖只在新建时生效。
+    ...(!continuing && node.provider ? { provider: node.provider } : {}),
+    ...(!continuing && node.model ? { model: node.model } : {}),
   }
 }
 

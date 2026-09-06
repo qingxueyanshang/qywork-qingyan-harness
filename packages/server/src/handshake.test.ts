@@ -19,6 +19,7 @@ import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 const c1 = 'cv_one' as ConversationId
 const delta = (s: string): AgentEvent =>
@@ -62,7 +63,7 @@ function fakeSocket() {
 function shake(
   bus: EventBus,
   frame: Omit<HelloFrame, 'type' | 'token' | 'origin'>,
-  runs = new RunManager(null as never, bus),
+  runs = new RunManager(null as never, bus, new SubagentRegistry()),
 ) {
   const sock = fakeSocket()
   handleHello(
@@ -90,7 +91,7 @@ function shake(
 describe('握手报此刻谁在跑', () => {
   test('报的是 RunManager 手里那份，不是账本', () => {
     const bus = new EventBus()
-    const runs = new RunManager(null as never, bus)
+    const runs = new RunManager(null as never, bus, new SubagentRegistry())
     runs.reserve(c1)
     expect(shake(bus, {}, runs).ok().busyConversations).toEqual([c1])
   })

@@ -2,8 +2,9 @@
  * 跟进消息（排队 / 注入）的端到端回归。**用假 provider，不花钱、不联网。**
  *
  * **覆盖范围**：`runs.ts` 的队列（入队幂等、翻转、删除、取走、复位）、
- * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的回绝与两条 `followup.*` 分支、
- * `run-control.ts` 收尾时的火发与它同目标续起的优先级、
+ * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的回绝、两条 `followup.*` 分支与
+ * `conversation.interrupt` 的三样一起停、`run-control.ts` 的 `submitMessage`
+ * （用户消息与子 agent 回执同一条路）、收尾时的火发与它同目标续起的优先级、
  * `agent/loop.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把那条
  * `kind='user'` 的 step 投影回历史。
  *
@@ -20,6 +21,7 @@ import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
 import { buildHistory, type QyConfig } from '@qywork/runtime'
 import {
+  appendStep,
   ContentStore,
   contentPathFor,
   createConversation,
@@ -29,12 +31,14 @@ import {
   listRuns,
   listSteps,
   Store,
+  setStepNodeState,
   upsertWorkspace,
 } from '@qywork/store'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
-import { startRun } from './run-control.ts'
+import { startRun, submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 // ───────────────────────── 假 provider ─────────────────────────
 
@@ -122,6 +126,7 @@ let store: Store
 let content: ContentStore
 let bus: EventBus
 let runs: RunManager
+let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 let events: EventEnvelope[] = []
@@ -132,7 +137,8 @@ beforeAll(async () => {
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
-  runs = new RunManager(store, bus)
+  subagents = new SubagentRegistry()
+  runs = new RunManager(store, bus, subagents)
   config = {
     active: { provider: 'fake', model: 'deepseek-v4-flash' },
     providers: {
@@ -162,7 +168,7 @@ afterAll(async () => {
 })
 
 function deps() {
-  return { store, content, config, bus, runs }
+  return { store, content, config, bus, runs, subagents }
 }
 
 /** 收到指令的假连接：只记回执，不真的开 socket。 */
@@ -382,8 +388,8 @@ describe('收尾之后的火发', () => {
     script = [held.turn, ok(textTurn('跟进那一轮也完了。'))]
     const sock = socket()
     void startRun(cv, '第一句', undefined, deps(), undefined, {
-      goalId: live.id,
-      revision: live.revision,
+      kind: 'goal',
+      arm: { goalId: live.id, revision: live.revision },
     })
     await waitFor((e) => e.type === 'run.started')
     await handleCommand(
@@ -603,4 +609,166 @@ describe('卡片上的两个可点物', () => {
     // 删掉之后不该有第二轮。
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句'])
   }, 30_000)
+})
+
+/**
+ * 子 agent 的回执与用户发的消息走同一个函数（`submitMessage`）：忙就排进队列在下一个
+ * step 边界注入，闲就当场起一轮。两处各写一遍的话，「判忙与起轮在同一个同步块里」
+ * 这条要守两次，而漏掉的那一次不会报错。
+ */
+describe('回执进的是同一条队列', () => {
+  const receipt = (id: string, content: string) => ({
+    id,
+    content,
+    steer: true,
+    origin: 'subagent' as const,
+  })
+
+  test('有 run 在跑：排进队列，在下一个 step 边界注入，来源随 step 落盘', async () => {
+    const cv = conversation()
+    const held = gate(toolTurn('call_receipt'))
+    script = [held.turn, ok(textTurn('看到回执了。'))]
+    void startRun(cv, '先派个活', undefined, deps())
+    await waitFor((e) => e.type === 'run.started')
+
+    await submitMessage(cv, receipt('rc_1', '[子 agent 回执] 临时 查资料 已返回'), deps())
+    expect(runs.queueOf(cv).map((f) => f.origin)).toEqual(['subagent'])
+    held.release()
+
+    const injected = await waitFor((e) => e.type === 'message.injected')
+    expect(injected?.type === 'message.injected' && injected.content).toContain('子 agent 回执')
+    // 事件与落库同值：界面按它决定这一帧画回执行还是气泡，两侧不同口径的话，
+    // 实时画成气泡、刷新之后同一条变回执行。
+    expect(injected?.type === 'message.injected' && injected.origin).toBe('subagent')
+    await idle(cv)
+
+    const step = listRuns(store, cv)
+      .flatMap((r) => listSteps(store, r.id))
+      .find((s) => s.kind === 'user')
+    expect(step?.payload).toMatchObject({ kind: 'user', origin: 'subagent' })
+    // 回执不是人说的话：它不该在 messages 表里多出一行。
+    expect(listMessages(store, cv).map((m) => m.content)).toEqual(['先派个活'])
+  }, 30_000)
+
+  test('会话闲着：当场起一轮，消息行记下来源', async () => {
+    const cv = conversation()
+    script = [ok(textTurn('收到回执，接着做。'))]
+
+    await submitMessage(cv, receipt('rc_2', '[子 agent 回执] 临时 查资料 已返回'), deps())
+    await idle(cv)
+
+    expect(listRuns(store, cv)).toHaveLength(1)
+    const rows = listMessages(store, cv)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.origin).toBe('subagent')
+    expect(runs.queueOf(cv)).toEqual([])
+    // 起轮事件也带来源：这一轮的正文只从这条事件到界面，缺了它实时画成用户气泡。
+    const started = await waitFor((e) => e.type === 'run.started')
+    expect(started?.type === 'run.started' && started.userMessage?.origin).toBe('subagent')
+  }, 30_000)
+
+  /**
+   * 回执不是人的动作：它起的那一轮不能把目标的待续起标记清掉，
+   * 清了循环最多再跑一轮就停在半路。
+   */
+  test('回执起的那一轮不清目标续起标记', async () => {
+    const cv = conversation()
+    // 用 gate 扣住这一轮：标记要在**这一轮还在跑的时候**看，收尾之后它由目标自己的收尾裁决。
+    const held = gate(textTurn('收到回执。'))
+    script = [held.turn]
+    const seeded = createGoal(store, { conversationId: cv, objective: '把这件事做完' })
+    if (!seeded.ok) throw new Error(seeded.message)
+    runs.arm(cv, { goalId: seeded.goal.id, revision: seeded.goal.revision })
+
+    await submitMessage(cv, receipt('rc_3', '[子 agent 回执] 临时 查资料 已返回'), deps())
+    await waitFor((e) => e.type === 'run.started')
+    expect(runs.armedOf(cv)).not.toBeNull()
+
+    // 换成人发的那一句：他一说话，排着的那次自动续起就作废。
+    await handleCommand(
+      {
+        type: 'message.send',
+        clientRequestId: 'req-human',
+        conversationId: cv,
+        content: '人插的这一句',
+        steer: false,
+      } as never,
+      { ...deps(), ws: socket().ws },
+    )
+    held.release()
+    await idle(cv)
+    expect(runs.armedOf(cv)).toBeNull()
+  }, 30_000)
+})
+
+/**
+ * 停止按会话全停：这一轮、派出去的子 agent，以及图上还没派的格。
+ * 少停一样的形状都一样——界面上那条会话还在转，而用户已经按过停止。
+ */
+describe('按会话停止', () => {
+  test('run 与子 agent 一起停，图上没落终态的格扫成中断', async () => {
+    const cv = conversation()
+    const held = gate(textTurn('不会用到。'))
+    script = [held.turn]
+    const sock = socket()
+    void startRun(cv, '先跑起来', undefined, deps())
+    const started = await waitFor((e) => e.type === 'run.started')
+    const runId = started?.type === 'run.started' ? started.runId : ''
+    const step = appendStep(store, {
+      runId: runId as never,
+      seq: 99,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_stop',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
+    const controller = new AbortController()
+    subagents.add(cv, 'cv_child', { name: '慢', kind: 'temp', controller })
+
+    await handleCommand({ type: 'conversation.interrupt', conversationId: cv } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+
+    // 一样都不许漏：回绝也不能发，那条指令确实做了事。
+    expect(sock.sent).toEqual([])
+    expect(controller.signal.aborted).toBe(true)
+    const nodes = (
+      listSteps(store, runId as never).find((s) => s.id === step.id)?.payload as {
+        nodes?: Record<string, { phase: string }>
+      }
+    ).nodes
+    expect(nodes?.slow?.phase).toBe('interrupted')
+    expect(events.some((f) => f.event.type === 'team.member')).toBe(true)
+    held.release()
+    subagents.remove(cv, 'cv_child')
+    await idle(cv)
+  }, 30_000)
+
+  test('只有子 agent 在跑时也停得到，不回绝', async () => {
+    const cv = conversation()
+    const sock = socket()
+    const controller = new AbortController()
+    subagents.add(cv, 'cv_only', { name: '慢', kind: 'temp', controller })
+
+    await handleCommand({ type: 'conversation.interrupt', conversationId: cv } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+    expect(controller.signal.aborted).toBe(true)
+    expect(sock.sent).toEqual([])
+    subagents.remove(cv, 'cv_only')
+  })
+
+  test('什么都没在跑时如实回绝', async () => {
+    const cv = conversation()
+    const sock = socket()
+    await handleCommand({ type: 'conversation.interrupt', conversationId: cv } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+    expect(sock.sent[0]).toMatchObject({ type: 'command.rejected', reason: 'conflict' })
+  })
 })

@@ -93,11 +93,11 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。第一次按 kind 建：role 按角色，temp 临时；cli 是本机另一个进程，用它自己的模型和账号，过程看不到，只在用户用 `@cli:id` 点名或明确要求时派。之后按 subagentId 续接，三种都能续。用户用 `@角色id` 点名时，就派给那个角色。',
+    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。派出去就返回，它做完之后回执会作为一条消息送到本会话，不要为了等回执反复调用。第一次按 kind 建：role 按角色，temp 临时；cli 是本机另一个进程，用它自己的模型和账号，过程看不到，只在用户用 `@cli:id` 点名或明确要求时派。之后按 subagentId 续接，三种都能续。用户用 `@角色id` 点名时，就派给那个角色。',
   },
   {
     tool: 'workflow',
-    line: '- 工作流：两个及以上子 agent、要验收或有先后依赖时，用 workflow 一次交一整张图。到检查点后回到你这里：approve 进下一批，revise 让点名的节点在它原来的子会话里继续，批准之后仍可 revise。',
+    line: '- 工作流：两个及以上子 agent、要验收或有先后依赖时，用 workflow 一次交一整张图。调用只把就绪的格派出去就返回；每格的回执与检查点回执都会作为消息送到本会话。收到检查点回执后再决定：approve 进下一批，revise 让点名的节点在它原来的子会话里继续，批准之后仍可 revise。',
   },
   { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
   { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },
@@ -376,6 +376,7 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 未完成的 workflow（本次运行快照）\n${list}\n\n` +
+        '还在跑的格会把回执作为消息送到本会话，不要为了等它们调用 workflow。' +
         '续接用同一个 workflowId 与该图当前的 checkpointId 调用 workflow：' +
         'approve 进入下一批，revise 让点名的节点在它原来的子会话里继续。' +
         '被中断的节点续发时写清「已完成则复述最终产出，否则接着做」——中断之前的产出不在这份快照里。',

@@ -1,14 +1,14 @@
 /**
- * 派一件的进度通道。**用假 provider 跑真链路，不花钱、不联网。**
+ * 派活通道的事件形状。**用假 provider 跑真链路，不花钱、不联网。**
  *
- * 覆盖范围：`delegate.ts` 的 `makeDelegate().run()` 广播出来的 `team.member`
- * ——内置分支的完整序列、终态里的子会话 id、每条状态上的种类、
- * 拿不到卡片 id 时的降级、以及派不出去时不留半截状态。
+ * 覆盖范围：`delegate.ts` 的 `makeDelegate()` —— 派出即返回、完成回调落格状态与回执、
+ * 回执正文的形状、按会话停止、图的推进（首派 → 一格跑完派下游 → 一格失败先交回 →
+ * 上游齐了发检查点回执 → approve / revise），以及 `subagents.ts` 那张在跑表。
  *
- * **为什么走真链路。** 这条通道的形状就是「派出去之后，卡上那一格跟着动」。
+ * **为什么走真链路。** 这条通道的形状就是「派出去之后，卡上那一格跟着动、回执自己回来」。
  * 把 `runBuiltinMember` 换成桩，测到的只是「桩被调用了」；真正会坏的是装配——
  * 事件带没带 stepId（不带前端整条丢弃）、终态发没发（不发那一格永远停在进行中）、
- * 子会话 id 有没有随终态出来（没有就点不开）。
+ * 回执投没投（不投这次派活就等于丢了）。
  *
  * 外部 CLI 那一支这里覆盖不到：`findCli` 探测的是本机装了什么，测试环境不可控。
  * 它由真机验收。
@@ -18,14 +18,16 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext } from '@qywork/agent'
 import {
   type AgentEvent,
   type ConversationId,
   type EventEnvelope,
+  type FollowUp,
   foldWorkflow,
   parseWorkflowCall,
   type RunId,
+  type StepId,
+  type WorkflowCall,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
@@ -46,6 +48,7 @@ import {
 import { EventBus } from './bus.ts'
 import { makeDelegate } from './delegate.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 const SSE_HEADERS = { 'content-type': 'text/event-stream' }
 
@@ -69,13 +72,50 @@ function textTurn(text: string): string {
   ])
 }
 
-/** 这次请求怎么答。用完就 401——那一档当场终结，不会让子会话自己接着转。正文交给条目，按任务分流用。 */
+const say = (text: string) => () => new Response(textTurn(text), { headers: SSE_HEADERS })
+
+/**
+ * 扣住一次请求：等它真的发出来，再把响应放出去。
+ *
+ * **必须先等 `arrived()`**：派出即返回，子 agent 的请求在 `runGraph` 返回之后才发出去，
+ * 提前放响应放的是上一个 resolver，那次请求会一直挂着。
+ */
+function gate() {
+  let release: (response: Response) => void = () => {}
+  let arrived = false
+  return {
+    respond: () =>
+      new Promise<Response>((resolve) => {
+        release = resolve
+        arrived = true
+      }),
+    arrived: () => arrived,
+    open: (text: string) => release(new Response(textTurn(text), { headers: SSE_HEADERS })),
+  }
+}
+
+/**
+ * 按任务正文分流。并行的格谁先发出请求不定，按下标发会串台；
+ * 认不出的任务当场 401，那一格落失败终态，不会让子会话自己接着转。
+ */
+function byTask(map: Record<string, string>) {
+  return (body: string) => {
+    for (const [needle, text] of Object.entries(map)) {
+      if (body.includes(needle)) return new Response(textTurn(text), { headers: SSE_HEADERS })
+    }
+    return new Response('脚本没有匹配项', { status: 401 })
+  }
+}
+
+/** 这次请求怎么答。按顺序用完就 401；`router` 非空时改按正文分流。 */
 let script: ((body: string) => Response)[] = []
+let router: ((body: string) => Response | Promise<Response>) | null = null
 
 const provider = Bun.serve({
   port: 0,
   async fetch(req) {
     const body = await req.text()
+    if (router) return router(body)
     const next = script.shift()
     if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
@@ -87,9 +127,11 @@ let store: Store
 let content: ContentStore
 let bus: EventBus
 let runs: RunManager
+let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 let events: EventEnvelope[] = []
+let receipts: FollowUp[] = []
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'qywork-delegate-'))
@@ -97,7 +139,8 @@ beforeAll(async () => {
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
-  runs = new RunManager(store, bus)
+  subagents = new SubagentRegistry()
+  runs = new RunManager(store, bus, subagents)
   config = {
     active: { provider: 'fake', model: 'deepseek-v4-flash' },
     providers: {
@@ -135,7 +178,9 @@ afterAll(async () => {
 /** 每个用例一条干净的会话与一份干净的脚本。 */
 function conversation(): ConversationId {
   script = []
+  router = null
   events = []
+  receipts = []
   return createConversation(store, {
     workspaceId: workspaceId as never,
     provider: 'fake',
@@ -146,63 +191,20 @@ function conversation(): ConversationId {
 
 function delegate(conversationId: ConversationId) {
   return makeDelegate({
-    deps: { store, content, config, bus, runs },
+    deps: { store, content, config, bus, runs, subagents },
     workspaceRoot: dir,
     conversationId,
+    deliver: (followUp) => receipts.push(followUp),
   })
 }
 
-function seedWaitingWorkflow(parent: ConversationId, child: ConversationId, key: string) {
-  const run = createRun(store, {
-    conversationId: parent,
-    workspaceId: workspaceId as never,
-    model: 'deepseek-v4-flash',
-    clientRequestId: `workflow-${key}`,
-    userMessageId: null,
-    messageIdUpperBound: null,
-    contextSnapshot: [],
-  })
-  const args = {
-    goal: '形成可靠结论',
-    nodes: [
-      { id: 'a', kind: 'temp', name: 'a', task: '研究并给出证据' },
-      { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
-    ],
+/** 派出即返回，所以每条断言前都要等那件事真的发生。 */
+async function until(check: () => boolean, label: string): Promise<void> {
+  for (let i = 0; i < 600; i += 1) {
+    if (check()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  const step = appendStep(store, {
-    runId: run.id,
-    seq: 1,
-    kind: 'tool_action',
-    toolName: 'workflow',
-    toolCallId: `call_${key}`,
-    status: 'running',
-    payload: { kind: 'tool_call', args },
-  })
-  settleToolStep(store, step.id, 'success', {
-    kind: 'tool_result',
-    args,
-    outcome: {
-      status: 'success',
-      executed: true,
-      message: '等待审查',
-      data: {
-        workflowId: step.id,
-        phase: 'waiting_review',
-        checkpointId: 'review',
-        receipts: [
-          {
-            nodeId: 'a',
-            label: '临时子 agent',
-            status: 'done',
-            output: '初稿',
-            durationMs: 5,
-            subagentId: child,
-          },
-        ],
-      },
-    },
-  })
-  return step
+  throw new Error(`等不到：${label}`)
 }
 
 /**
@@ -217,242 +219,162 @@ function members(): MemberEvent[] {
   return events.map((f) => f.event).filter((e): e is MemberEvent => e.type === 'team.member')
 }
 
-const at = { runId: 'rn_1' as RunId, stepId: 'st_1' }
+function phasesOf(nodeId: string): string[] {
+  return members()
+    .filter((m) => m.nodeId === nodeId)
+    .map((m) => m.state.phase)
+}
+
+/** 这一格挂在哪：run 必须是真实的一行，落盘的正文按它登记。 */
+function spot(conversationId: ConversationId): { runId: RunId; stepId: string } {
+  return { runId: run(conversationId, 'spot'), stepId: 'st_1' }
+}
 
 /** 首派参数与真实入口同一条解析路径，节点字段的形状只在 core 定义一次。 */
-function parsedStart(args: Record<string, unknown>) {
+function parsedStart(args: Record<string, unknown>): WorkflowCall {
   const parsed = parseWorkflowCall(args)
   if (!parsed.ok) throw new Error(parsed.error)
   return parsed.call
 }
 
-describe('目标不成立', () => {
-  /** 解析失败也是这一格的终态：不写的话卡上那格永远停在等待，而回执说失败。 */
-  test('续接不属于本会话的子 agent，那一格记失败并带原因', async () => {
-    const cid = conversation()
-    const res = await delegate(cid).dispatch({
-      target: { subagent: 'cv_nobody' },
-      task: '接着做',
-      ...at,
-      signal: new AbortController().signal,
-    })
-    expect(res.ok).toBe(false)
-    expect(members().map((m) => [m.nodeId, m.state.phase, m.state.label])).toEqual([
-      ['child', 'failed', 'cv_nobody'],
-    ])
-    expect(members()[0]?.state.error).toContain('没有子 agent cv_nobody')
+/** 一次真实的 workflow 调用：开卡 → 推进 → 按返回值落终态，与工具那条路同形。 */
+async function invoke(
+  parent: ConversationId,
+  runId: RunId,
+  seq: number,
+  args: Record<string, unknown>,
+  call: WorkflowCall,
+) {
+  const step = appendStep(store, {
+    runId,
+    seq,
+    kind: 'tool_action',
+    toolName: 'workflow',
+    toolCallId: `call_${seq}_${runId}`,
+    status: 'running',
+    payload: { kind: 'tool_call', args },
   })
-})
+  const result = await delegate(parent).runGraph({ call, runId, stepId: step.id })
+  if (result.transition) {
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args,
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '已起跑',
+        data: result.transition as unknown as Record<string, unknown>,
+      },
+    })
+  }
+  return { step, result }
+}
 
-describe('派发时的事实交回模型', () => {
-  /** 角色中途被删：照跑，但回执要写明这次是按临时子 agent 跑的。 */
-  test('续接一个角色已不在的子 agent，回执带上这一事实', async () => {
+function run(conversationId: ConversationId, key: string): RunId {
+  return createRun(store, {
+    conversationId,
+    workspaceId: workspaceId as never,
+    model: 'deepseek-v4-flash',
+    clientRequestId: `${key}-${conversationId}`,
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  }).id
+}
+
+describe('派出即返回', () => {
+  test('派出去就回派出事实，产出不在返回值里', async () => {
     const cid = conversation()
-    const child = createConversation(store, {
-      workspaceId: workspaceId as never,
-      provider: 'fake',
-      model: 'deepseek-v4-flash',
-      title: '幽灵',
-      source: 'role',
-      sourceRef: 'ghost',
-      parentConversationId: cid,
-    })
-    script = [() => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS })]
+    const where = spot(cid)
+    script = [say('查完了')]
     const res = await delegate(cid).dispatch({
-      target: { subagent: child.id },
-      task: '接着做',
-      ...at,
-      signal: new AbortController().signal,
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...where,
     })
+
     expect(res.ok).toBe(true)
-    expect(res.note).toContain('角色 ghost 已不在')
+    expect(res.subagentId).toBeTruthy()
+    expect(res).toMatchObject({ name: '临时', kind: 'temp', created: true })
+    expect(res).not.toHaveProperty('output')
+    // 返回的那一刻它才刚起跑：卡上是「进行中」，不是终态。
+    expect(phasesOf('child')).toEqual(['working'])
+    expect(members()[0]?.state.subagentId).toBe(res.subagentId as ConversationId)
+
+    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    expect(phasesOf('child')).toEqual(['working', 'done'])
+    expect(members().every((m) => m.stepId === 'st_1' && m.runId === where.runId)).toBe(true)
   })
 
-  /** 清单里的状态取自卡上那一格：派失败的子 agent 是 failed，派成的是 idle。 */
-  test('子 agent 清单的状态取自它最后一次出现在卡上的那一格', async () => {
-    const cid = conversation()
-    const run = createRun(store, {
-      conversationId: cid,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: `status-${cid}`,
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const stepOf = (seq: number, toolCallId: string) =>
-      appendStep(store, {
-        runId: run.id,
-        seq,
-        kind: 'tool_action',
-        toolName: 'subagent',
-        toolCallId,
-        status: 'running',
-        payload: { kind: 'tool_call', args: { task: '看' } },
-      })
-    script = [() => new Response(textTurn('好了'), { headers: SSE_HEADERS })]
-    const good = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '成了的' },
-      task: '看',
-      runId: run.id,
-      stepId: stepOf(1, `ok-${cid}`).id,
-      signal: new AbortController().signal,
-    })
-    script = []
-    const bad = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '败了的' },
-      task: '看',
-      runId: run.id,
-      stepId: stepOf(2, `bad-${cid}`).id,
-      signal: new AbortController().signal,
-    })
-    expect(good.ok).toBe(true)
-    expect(bad.ok).toBe(false)
-    const listed = await delegate(cid).subagents()
-    expect(listed.map((s) => [s.name, s.status, s.resumable])).toEqual([
-      ['成了的', 'idle', true],
-      ['败了的', 'failed', true],
-    ])
-  })
-})
-
-describe('派一件的进度', () => {
   test('结构化 provider + model 一路写进成员会话，不经过字符串拆分', async () => {
     const cid = conversation()
-    script = [() => new Response(textTurn('选型正确'), { headers: SSE_HEADERS })]
-
+    script = [say('选型正确')]
     const res = await delegate(cid).dispatch({
       target: { kind: 'temp', name: '临时' },
       task: '去执行',
       provider: '另/接口',
       model: 'qwen/model-3.8',
-      ...at,
-      signal: new AbortController().signal,
+      ...spot(cid),
     })
 
     expect(res.ok).toBe(true)
     const child = getConversation(store, res.subagentId as ConversationId)
     expect(child?.provider).toBe('另/接口')
     expect(child?.model).toBe('qwen/model-3.8')
+    await until(() => !runs.isBusy(cid), '子 agent 结束')
   })
 
-  test('跑成时按 working → done 走，都挂在这张卡上', async () => {
+  /** 派不出去那一格直接记失败：没有「跑着」那一帧，也不留一格永远等待。 */
+  test('目标不存在时那一格只有一条失败状态，也没有回执', async () => {
     const cid = conversation()
-    script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'role', role: '查无此角色' },
+      task: '执行任务',
+      ...spot(cid),
+    })
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('查无此角色')
+    expect(members().map((m) => m.state.phase)).toEqual(['failed'])
+    expect(receipts).toEqual([])
+  })
+
+  /**
+   * 拿不到卡片 id 时整条不发。发出去也没有卡片认领它（前端按 stepId 找），
+   * 只是白广播——而派活本身照跑，回执与终态都不依赖这条通道。
+   */
+  test('没有卡片 id 时一条状态都不发，活照派、回执照回', async () => {
+    const cid = conversation()
+    script = [say('查完了')]
     const res = await delegate(cid).dispatch({
       target: { kind: 'temp', name: '临时' },
       task: '去查一下',
-      ...at,
-      signal: new AbortController().signal,
+      runId: 'rn_2',
     })
 
     expect(res.ok).toBe(true)
-    expect(res.output).toBe('查完了')
-    // 子 agent 的记录在派之前就建好，第一条 `working` 就带着它的 id。
-    expect(members().map((m) => m.state.phase)).toEqual(['working', 'done'])
-    // 不带 stepId 的事件前端认不出是哪张卡，整条丢弃。
-    expect(members().every((m) => m.stepId === 'st_1')).toBe(true)
-    expect(members().every((m) => m.runId === 'rn_1')).toBe(true)
-  })
-
-  /**
-   * 子会话不进会话列表，这个 id 是点开它的唯一入口。
-   *
-   * **跑着的时候就得带上**，不能只在终态带：这是原始失败形状——只有终态带的话，
-   * 子 agent 跑完之前那一格是灰的，而正在跑的那一格恰好是用户要翻开的。
-   */
-  test('跑着的时候那一格就带上子会话 id，终态照旧带着', async () => {
-    const cid = conversation()
-    script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '临时' },
-      task: '看一眼',
-      ...at,
-      signal: new AbortController().signal,
-    })
-
-    const live = members()
-      .filter((m) => m.state.phase === 'working')
-      .at(-1)
-    expect(live?.state.subagentId).toBe(res.subagentId as ConversationId)
-    expect(live?.state.subagentId).toBeTruthy()
-
-    const done = members().at(-1)
-    expect(done?.state.phase).toBe('done')
-    expect(done?.state.subagentId).toBe(res.subagentId as ConversationId)
-  })
-
-  /**
-   * 原始失败形状：子 agent 跑着时切到另一条会话，再切回来会从正在执行的 step 回放。
-   * `team.member` 只活在订阅期，入口若等工具终态才落库，这张回放卡没有 id、节点被禁用。
-   */
-  test('父会话切走前，运行中的 step 已经落下子会话入口', async () => {
-    const cid = conversation()
-    const run = createRun(store, {
-      conversationId: cid,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: `early-child-${cid}`,
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const step = appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'subagent',
-      toolCallId: `call_${cid}`,
-      status: 'running',
-      payload: { kind: 'tool_call', args: { task: '看一眼' } },
-    })
-    script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
-
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '临时' },
-      task: '看一眼',
-      runId: run.id,
-      stepId: step.id,
-      signal: new AbortController().signal,
-    })
-
-    // 外层工具循环尚未 settle：这里就是切换父会话时会读到的形状。
-    const replay = listSteps(store, run.id).find((s) => s.id === step.id)
-    expect(replay?.status).toBe('running')
-    const payload = replay?.payload
-    expect(payload?.kind).toBe('tool_call')
-    expect(payload?.kind === 'tool_call' ? payload.nodes?.child : undefined).toMatchObject({
-      phase: 'done',
-      label: '临时',
-      subagentId: res.subagentId,
-    })
+    await until(() => receipts.length > 0, '回执')
+    expect(members()).toHaveLength(0)
   })
 
   /**
    * 子会话的事件按**它自己的会话 id** 广播。右侧那一页订阅的就是这个 id——
    * 不发的话它在子 agent 跑完之前一个字都画不出来。
-   *
-   * 归属必须是子会话，不能是父会话：那些 runId 在父会话里不存在，
-   * 挂过去前端会按陌生 runId 建出一条并不存在的 run。
    */
   test('子会话的事件按它自己的 id 发出去，不挂在父会话上', async () => {
     const cid = conversation()
-    script = [() => new Response(textTurn('看完了'), { headers: SSE_HEADERS })]
+    script = [say('看完了')]
     const res = await delegate(cid).dispatch({
       target: { kind: 'temp', name: '临时' },
       task: '看一眼',
-      ...at,
-      signal: new AbortController().signal,
+      ...spot(cid),
     })
+    await until(() => receipts.length > 0, '回执')
 
     const child = res.subagentId as ConversationId
     const inner = events.filter((f) => f.conversationId === child)
     expect(inner.map((f) => f.event.type)).toContain('run.started')
     expect(inner.map((f) => f.event.type)).toContain('run.finished')
-    const busy = events
-      .filter((f) => f.event.type === 'conversation.busy' && f.event.conversationId === child)
-      .map((f) => (f.event.type === 'conversation.busy' ? f.event.busy : null))
-    expect(busy).toEqual([true, false])
     expect(runs.isBusy(child)).toBe(false)
     // 父会话那条上只有图卡进度，没有子会话的内层事件。
     expect(
@@ -463,362 +385,325 @@ describe('派一件的进度', () => {
   })
 
   /**
-   * 没做成也必须落终态。**这是原始失败形状**：不发的话卡上那一格停在「进行中」，
-   * 而这一轮早就结束了——用户看到的是一个永远转下去的格子。
+   * 原始失败形状：子 agent 跑着时切到另一条会话，再切回来会从正在执行的 step 回放。
+   * `team.member` 只活在订阅期，入口若等终态才落库，这张回放卡没有 id、节点被禁用。
    */
-  test('没做成时落 failed，不是停在 working', async () => {
+  test('派出去那一刻子会话入口已经落进这条 step', async () => {
+    const cid = conversation()
+    const runId = run(cid, 'early-child')
+    const step = appendStep(store, {
+      runId,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: `call_${cid}`,
+      status: 'running',
+      payload: { kind: 'tool_call', args: { task: '看一眼' } },
+    })
+    script = [say('看完了')]
+
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '看一眼',
+      runId,
+      stepId: step.id,
+    })
+
+    const replay = listSteps(store, runId).find((s) => s.id === step.id)
+    const payload = replay?.payload
+    expect(payload?.kind).toBe('tool_call')
+    expect(payload?.kind === 'tool_call' ? payload.nodes?.child : undefined).toMatchObject({
+      phase: 'working',
+      label: '临时',
+      subagentId: res.subagentId,
+    })
+    await until(() => !runs.isBusy(cid), '子 agent 结束')
+  })
+})
+
+describe('回执是一条消息', () => {
+  test('做成了：种类、名字、id、产出摘录与续派接法各占一行', async () => {
+    const cid = conversation()
+    script = [say('查完了，结论是这样')]
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '查资料' },
+      task: '去查一下',
+      ...spot(cid),
+    })
+    await until(() => receipts.length > 0, '回执')
+
+    const receipt = receipts[0]!
+    expect(receipt.origin).toBe('subagent')
+    expect(receipt.steer).toBe(true)
+    const lines = receipt.content.split('\n')
+    expect(lines[0]).toBe(`[子 agent 回执] 临时 查资料（subagentId ${res.subagentId}）已返回`)
+    expect(receipt.content).toContain('查完了，结论是这样')
+    expect(lines.at(-1)).toBe(`接着派它：subagent 填 subagent="${res.subagentId}"。`)
+  })
+
+  test('没做成：第一行就写清原因', async () => {
     const cid = conversation()
     // 脚本空着 = 401，子会话当场终结。
     const res = await delegate(cid).dispatch({
       target: { kind: 'temp', name: '临时' },
       task: '去查一下',
-      ...at,
-      signal: new AbortController().signal,
+      ...spot(cid),
     })
+    await until(() => receipts.length > 0, '回执')
 
-    expect(res.ok).toBe(false)
-    expect(members().map((m) => m.state.phase)).toEqual(['working', 'failed'])
+    expect(receipts[0]?.content.split('\n')[0]).toContain(
+      `[子 agent 回执] 临时 临时（subagentId ${res.subagentId}）没做成：`,
+    )
+    expect(phasesOf('child')).toEqual(['working', 'failed'])
   })
 
-  /** 中断走的也是终态那条路：用户点停止之后，那一格不能还转着，而且落的是「中断」不是「失败」。 */
-  test('中断时落 interrupted', async () => {
+  /** 产出过投递闸：一份没有上界的正文整段进上下文，压缩层已经无从下手。 */
+  test('超长产出在回执里是有界摘录加定位符', async () => {
     const cid = conversation()
-    const ctl = new AbortController()
-    ctl.abort()
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '临时' },
-      task: '去查一下',
-      ...at,
-      signal: ctl.signal,
-    })
-
-    expect(res.ok).toBe(false)
-    expect(members().map((m) => m.state.phase)).toEqual(['working', 'interrupted'])
-  })
-
-  /**
-   * 拿不到卡片 id 时整条不发。发出去也没有卡片认领它（前端按 stepId 找），
-   * 只是白广播——而派活本身照跑，形状与终态都不依赖这条通道。
-   */
-  test('没有卡片 id 时一条都不发，活照派', async () => {
-    const cid = conversation()
-    script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '临时' },
-      task: '去查一下',
-      runId: 'rn_2' as RunId,
-      signal: new AbortController().signal,
-    })
-
-    expect(res.ok).toBe(true)
-    expect(members()).toHaveLength(0)
-  })
-
-  /** 派不出去那一格直接记失败：没有「跑着」那一帧，也不留一格永远等待。 */
-  test('目标不存在时那一格只有一条失败状态', async () => {
-    const cid = conversation()
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'role', role: '查无此角色' },
-      task: '执行任务',
-      ...at,
-      signal: new AbortController().signal,
-    })
-
-    expect(res.ok).toBe(false)
-    expect(members().map((m) => m.state.phase)).toEqual(['failed'])
-    expect(members()[0]?.state.error).toContain('查无此角色')
-  })
-})
-
-/**
- * 卡上那一格要认得出派的是哪一种。种类取自会话记录，不取自派发参数：续派只给一个
- * 子 agent id，按参数判会把外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
- */
-describe('状态带种类', () => {
-  test('新建临时子 agent：working 与终态都带 temp', async () => {
-    const cid = conversation()
-    script = [() => new Response(textTurn('查完了'), { headers: SSE_HEADERS })]
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'temp', name: '临时' },
-      task: '去查一下',
-      ...at,
-      signal: new AbortController().signal,
-    })
-
-    expect(res.ok).toBe(true)
-    expect(res.kind).toBe('temp')
-    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([
-      ['working', 'temp'],
-      ['done', 'temp'],
-    ])
-  })
-
-  /** 续派的参数里只有一个 id：种类只能从那条会话记录取，取不到就是原始失败形状。 */
-  test('续派已有子 agent，种类取自那条会话记录', async () => {
-    const cid = conversation()
-    const child = createConversation(store, {
-      workspaceId: workspaceId as never,
-      provider: 'fake',
-      model: 'deepseek-v4-flash',
-      title: '审查员',
-      source: 'role',
-      sourceRef: 'reviewer',
-      parentConversationId: cid,
-    })
-    script = [() => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS })]
-    const res = await delegate(cid).dispatch({
-      target: { subagent: child.id },
-      task: '接着做',
-      ...at,
-      signal: new AbortController().signal,
-    })
-
-    expect(res.ok).toBe(true)
-    expect(res.kind).toBe('role')
-    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([
-      ['working', 'role'],
-      ['done', 'role'],
-    ])
-  })
-
-  /** 目标不成立时没有会话记录，种类只能按派发参数判；判不出的不写。 */
-  test('外部 CLI 不在本机，那一格仍标成 cli', async () => {
-    const cid = conversation()
-    const res = await delegate(cid).dispatch({
-      target: { kind: 'cli', cli: '本机没有的' },
-      task: '审一遍',
-      ...at,
-      signal: new AbortController().signal,
-    })
-
-    expect(res.ok).toBe(false)
-    expect(members().map((m) => [m.state.phase, m.state.kind])).toEqual([['failed', 'cli']])
-  })
-
-  test('只给子 agent id 又解析不成时不写种类', async () => {
-    const cid = conversation()
+    const huge = '审查结论。'.repeat(40_000)
+    script = [say(huge)]
     await delegate(cid).dispatch({
-      target: { subagent: 'cv_nobody' },
-      task: '接着做',
-      ...at,
-      signal: new AbortController().signal,
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...spot(cid),
     })
+    await until(() => receipts.length > 0, '回执')
 
-    expect(members().map((m) => m.state.kind)).toEqual([undefined])
+    const content = receipts[0]!.content
+    expect(content.length).toBeLessThan(huge.length)
+    expect(content).toContain('read_resource')
   })
 })
 
-describe('workflow 从父会话账本续接', () => {
-  test('revise 读回首轮回执，并把二次指令发进同一个子会话', async () => {
+describe('在跑表按会话', () => {
+  test('派出与结束各报一次忙态，子 agent 在跑时会话是忙的', async () => {
+    const cid = conversation()
+    script = [say('查完了')]
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...spot(cid),
+    })
+
+    expect(runs.isBusy(cid)).toBe(true)
+    // 起轮的闸不含子 agent：它在跑不该挡住这条会话开新一轮。
+    expect(runs.hasRun(cid)).toBe(false)
+    expect(subagents.listOf(cid)).toEqual([
+      { subagentId: res.subagentId as string, name: '临时', kind: 'temp' },
+    ])
+
+    await until(() => !runs.isBusy(cid), '子 agent 结束')
+    expect(subagents.listOf(cid)).toEqual([])
+    const busy = events
+      .filter((f) => f.event.type === 'conversation.busy' && f.event.conversationId === cid)
+      .map((f) => (f.event.type === 'conversation.busy' ? f.event.busy : null))
+    expect(busy).toEqual([true, false])
+  })
+
+  /** 停止按会话全停：格落中断，而且**不发回执**——投一条进去等于停完又起一轮。 */
+  test('按会话停止：格落中断，不投回执', async () => {
+    const cid = conversation()
+    router = () =>
+      new Response(sse([{ type: 'response.created', response: { id: 'r' } }]), {
+        headers: SSE_HEADERS,
+      })
+    await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...spot(cid),
+    })
+    expect(subagents.interruptConversation(cid)).toBe(true)
+
+    await until(() => phasesOf('child').includes('interrupted'), '格落中断')
+    expect(receipts).toEqual([])
+    expect(runs.isBusy(cid)).toBe(false)
+  })
+
+  test('没有在跑的子 agent 时停止返回 false', () => {
+    const cid = conversation()
+    expect(subagents.interruptConversation(cid)).toBe(false)
+  })
+})
+
+describe('图按事件推进', () => {
+  const twoStage = {
+    goal: '两段做完',
+    nodes: [
+      { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+      { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
+      { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['cp'] },
+      { id: 'cp2', kind: 'checkpoint', label: '再审查', needs: ['b'] },
+    ],
+  }
+
+  test('首派只派就绪的格，全图先标等待', async () => {
     const parent = conversation()
-    const child = createConversation(store, {
-      workspaceId: workspaceId as never,
-      provider: 'fake',
-      model: 'deepseek-v4-flash',
-      title: '节点 a',
-      source: 'temp',
-      parentConversationId: parent,
-    })
-    appendMessage(store, { conversationId: child.id, role: 'user', content: '先给一个初稿' })
-    appendMessage(store, {
-      conversationId: child.id,
-      role: 'assistant',
-      content: '初稿：只有一个来源',
-    })
-    const hiddenBefore = store.db
-      .query<{ count: number }, []>(
-        'SELECT count(*) AS count FROM conversations WHERE source IS NOT NULL',
-      )
-      .get()?.count
-
-    const run = createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-seed',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const first = appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      toolCallId: 'call_workflow_seed',
-      status: 'running',
-      payload: {
-        kind: 'tool_call',
-        args: {
-          goal: '形成可靠结论',
-          nodes: [
-            { id: 'a', kind: 'temp', name: 'a', task: '研究并给出证据' },
-            { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
-          ],
-        },
-      },
-    })
-    settleToolStep(store, first.id, 'success', {
-      kind: 'tool_result',
-      args: {
-        goal: '形成可靠结论',
-        nodes: [
-          { id: 'a', kind: 'temp', name: 'a', task: '研究并给出证据' },
-          { id: 'review', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
-        ],
-      },
-      outcome: {
-        status: 'success',
-        executed: true,
-        message: '等待审查',
-        data: {
-          workflowId: first.id,
-          phase: 'waiting_review',
-          checkpointId: 'review',
-          receipts: [
-            {
-              nodeId: 'a',
-              label: '临时子 agent',
-              status: 'done',
-              output: '初稿：只有一个来源',
-              durationMs: 5,
-              subagentId: child.id,
-            },
-          ],
-        },
-      },
-    })
-
-    script = [() => new Response(textTurn('修订稿：已经补充两条证据'), { headers: SSE_HEADERS })]
-    const result = await delegate(parent).runGraph({
-      call: {
-        kind: 'review',
-        workflowId: first.id,
-        checkpointId: 'review',
-        decision: 'revise',
-        note: '证据不足',
-        revisions: [{ nodeId: 'a', instruction: '补充两条可核验证据' }],
-      },
-      runId: 'rn_review',
-      stepId: 'st_review',
-      signal: new AbortController().signal,
-    })
+    router = byTask({ '做 A': 'A 的产出' })
+    const runId = run(parent, 'wf-first')
+    const { result } = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
 
     expect(result.ok).toBe(true)
-    expect(result.transition?.phase).toBe('waiting_review')
-    expect(result.transition?.review?.decision).toBe('revise')
-    expect(result.transition?.receipts[0]?.subagentId).toBe(child.id)
-    expect(result.transition?.receipts[0]?.output).toBe('修订稿：已经补充两条证据')
-    const messages = listMessages(store, child.id)
-    expect(messages.filter((message) => message.role === 'user').at(-1)?.content).toContain(
-      '补充两条可核验证据',
-    )
-    const resumedRun = listRuns(store, child.id).at(-1)
-    expect(
-      resumedRun
-        ? listSteps(store, resumedRun.id)
-            .filter((step) => step.kind === 'text')
-            .map((step) => step.content)
-            .join('')
-        : '',
-    ).toBe('修订稿：已经补充两条证据')
-    const hidden = store.db
-      .query<{ count: number }, []>(
-        'SELECT count(*) AS count FROM conversations WHERE source IS NOT NULL',
-      )
-      .get()
-    expect(hidden?.count).toBe(hiddenBefore)
-  })
-
-  test('普通会话不能被伪装成 workflow 子节点续接', async () => {
-    const parent = conversation()
-    const ordinary = createConversation(store, {
-      workspaceId: workspaceId as never,
-      provider: 'fake',
-      model: 'deepseek-v4-flash',
-      title: '普通会话',
-    })
-    const first = seedWaitingWorkflow(parent, ordinary.id, 'ordinary-child')
-    const result = await delegate(parent).runGraph({
-      call: {
-        kind: 'review',
-        workflowId: first.id,
-        checkpointId: 'review',
-        decision: 'revise',
-        note: '返工',
-        revisions: [{ nodeId: 'a', instruction: '继续' }],
-      },
-      runId: 'rn_bad_child',
-      stepId: 'st_bad_child',
-      signal: new AbortController().signal,
-    })
-    expect(result.ok).toBe(false)
-    expect(result.transition?.receipts[0]?.status).toBe('failed')
-    expect(result.transition?.receipts[0]?.error).toContain('本会话里没有子 agent')
-    expect(result.transition?.receipts[0]?.subagentId).toBe(ordinary.id)
-    expect(listRuns(store, ordinary.id)).toHaveLength(0)
+    expect(result.transition?.dispatched).toEqual(['a'])
+    expect(result.completed).toBe(false)
+    // 刷新之后要看得见全貌：没派的格也有一帧等待。
+    expect(phasesOf('b')).toEqual(['waiting'])
+    await until(() => receipts.length > 0, '检查点回执')
   })
 
   /**
-   * 原始失败形状：图跑着时刷新页面，正在跑的节点回到「等着跑」且点不开。逐节点终态要等
-   * 工具收尾才有，运行期的 `team.member` 不落库，所以子会话 id 必须在创建时按节点写进
-   * 这条 step。节点 id 用带点号的那种：拼进 JSON 路径的写法会把它当成路径分隔符。
+   * 解析目标要 await（读角色库、探测 CLI）。那段窗口里另一格跑完会重新推进一次，
+   * 而那时这一格在账本上还没有状态——推进器会把它再派一次，同一格因此有两个子 agent。
    */
-  test('图跑着的时候每个节点的子会话入口已经按节点落库', async () => {
+  test('推进返回时派出去的格在账本上已经是 working', async () => {
     const parent = conversation()
-    const run = createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-children',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const nodes = [
-      { id: 'build.glm', kind: 'temp' as const, name: 'build.glm', task: '做 glm 版' },
-      { id: 'build.qwen', kind: 'temp' as const, name: 'build.qwen', task: '做 qwen 版' },
-      {
-        id: 'audit',
-        kind: 'checkpoint' as const,
-        label: '验收',
-        needs: ['build.glm', 'build.qwen'],
-      },
-    ]
-    const args = { goal: '两个候选', nodes }
-    const step = appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      toolCallId: 'call_children',
-      status: 'running',
-      payload: { kind: 'tool_call', args },
-    })
-    script = [
-      () => new Response(textTurn('glm 稿'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('qwen 稿'), { headers: SSE_HEADERS }),
-    ]
+    const slow = gate()
+    router = slow.respond
+    const runId = run(parent, 'wf-reserve')
+    const { step } = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
 
-    const result = await delegate(parent).runGraph({
-      call: parsedStart({ goal: '两个候选', nodes }),
-      runId: run.id,
-      stepId: step.id,
-      signal: new AbortController().signal,
-    })
+    // 同步断言：这一刻子 agent 连请求都还没发出去，格上却已经写着「进行中」。
+    const states = (
+      listSteps(store, runId).find((s) => s.id === step.id)?.payload as {
+        nodes?: Record<string, { phase: string }>
+      }
+    ).nodes
+    expect(states?.a?.phase).toBe('working')
 
-    // 外层工具循环尚未 settle：这就是切走父会话再切回来时会读到的形状。
-    const replay = listSteps(store, run.id).find((s) => s.id === step.id)
-    expect(replay?.status).toBe('running')
-    const states = replay?.payload?.kind === 'tool_call' ? replay.payload.nodes : undefined
-    const byNode = Object.fromEntries(
-      (result.transition?.receipts ?? []).map((receipt) => [receipt.nodeId, receipt.subagentId]),
-    )
-    expect(
-      Object.fromEntries(Object.entries(states ?? {}).map(([id, state]) => [id, state.subagentId])),
-    ).toEqual(byNode as Record<string, never>)
+    await until(slow.arrived, '子 agent 发出请求')
+    slow.open('A 的产出')
+    await until(() => receipts.length > 0, '检查点回执')
+  })
+
+  test('一格跑完到检查点：回执列出上游各格，末行给接法', async () => {
+    const parent = conversation()
+    router = byTask({ '做 A': 'A 的产出' })
+    const runId = run(parent, 'wf-checkpoint')
+    const { step } = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
+    await until(() => receipts.length > 0, '检查点回执')
+
+    const receipt = receipts[0]!
+    expect(receipt.origin).toBe('workflow')
+    expect(receipt.content).toContain('[workflow 回执] 检查点 主会话审查 的上游已经全部返回')
+    expect(receipt.content).toContain('### a（a）已返回')
+    expect(receipt.content).toContain('A 的产出')
+    expect(receipt.content).toContain(`workflowId=${step.id}，checkpointId=cp`)
+    expect(receipt.content).toContain('approve')
+  })
+
+  test('approve 之后派下一批，全部批准且格全终态时报完成', async () => {
+    const parent = conversation()
+    router = byTask({ '做 A': 'A 的产出', '做 B': 'B 的产出' })
+    const runId = run(parent, 'wf-approve')
+    const first = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
+    await until(() => receipts.length > 0, '检查点回执')
+
+    const approveArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp',
+      decision: 'approve' as const,
+      note: '通过',
+    }
+    const second = await invoke(parent, runId, 2, approveArgs, {
+      kind: 'review',
+      ...approveArgs,
+      revisions: [],
+    })
+    expect(second.result.transition?.dispatched).toEqual(['b'])
+    expect(second.result.transition?.review).toMatchObject({
+      checkpointId: 'cp',
+      decision: 'approve',
+    })
+    await until(() => receipts.length > 1, '第二个检查点回执')
+    expect(receipts[1]?.content).toContain('checkpointId=cp2')
+
+    const cp2Args = {
+      workflowId: first.step.id,
+      checkpointId: 'cp2',
+      decision: 'approve' as const,
+      note: '收工',
+    }
+    const third = await invoke(parent, runId, 3, cp2Args, {
+      kind: 'review',
+      ...cp2Args,
+      revisions: [],
+    })
+    expect(third.result.completed).toBe(true)
+  })
+
+  test('一格失败：先单发失败回执，其余格照跑', async () => {
+    const parent = conversation()
+    const parallel = {
+      goal: '两个候选',
+      nodes: [
+        { id: 'x', kind: 'temp', name: 'x', task: '做 X' },
+        { id: 'y', kind: 'temp', name: 'y', task: '做 Y' },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['x', 'y'] },
+      ],
+    }
+    const slow = gate()
+    router = (body) => {
+      if (body.includes('做 X')) return new Response('脚本没有匹配项', { status: 401 })
+      // Y 慢：失败回执必须在它跑完之前就到。
+      return slow.respond()
+    }
+    const runId = run(parent, 'wf-fail')
+    await invoke(parent, runId, 1, parallel, parsedStart(parallel))
+
+    await until(() => receipts.length > 0, '失败回执')
+    expect(receipts[0]?.origin).toBe('workflow')
+    expect(receipts[0]?.content).toContain('[workflow 回执] x（x）没做成')
+    expect(receipts[0]?.content).toContain('其余格照跑')
+    expect(phasesOf('y').at(-1)).toBe('working')
+
+    await until(slow.arrived, 'Y 发出请求')
+    slow.open('Y 的产出')
+    await until(() => receipts.length > 1, '检查点回执')
+    expect(receipts[1]?.content).toContain('检查点 验收 的上游已经全部返回')
+    expect(receipts[1]?.content).toContain('### x（x）没做成')
+  })
+
+  test('上游没成功时下游跳过，检查点照样到得了', async () => {
+    const parent = conversation()
+    const chain = {
+      goal: '串起来',
+      nodes: [
+        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+        { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['a'] },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['b'] },
+      ],
+    }
+    router = () => new Response('脚本没有匹配项', { status: 401 })
+    const runId = run(parent, 'wf-skip')
+    await invoke(parent, runId, 1, chain, parsedStart(chain))
+
+    await until(() => phasesOf('b').includes('skipped'), 'b 落跳过')
+    await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
+  })
+
+  /** 图跑着时刷新页面要能重画：子会话 id 必须在派出时按节点写进这条 step。 */
+  test('每个节点的子会话入口按节点落库，节点 id 带点号也不当路径解析', async () => {
+    const parent = conversation()
+    const dotted = {
+      goal: '两个候选',
+      nodes: [
+        { id: 'build.glm', kind: 'temp', name: 'build.glm', task: '做 glm 版' },
+        { id: 'build.qwen', kind: 'temp', name: 'build.qwen', task: '做 qwen 版' },
+        { id: 'audit', kind: 'checkpoint', label: '验收', needs: ['build.glm', 'build.qwen'] },
+      ],
+    }
+    router = byTask({ '做 glm 版': 'glm 稿', '做 qwen 版': 'qwen 稿' })
+    const runId = run(parent, 'wf-dotted')
+    const { step } = await invoke(parent, runId, 1, dotted, parsedStart(dotted))
+    await until(() => receipts.length > 0, '检查点回执')
+
+    const replay = listSteps(store, runId).find((s) => s.id === step.id)
+    const states = replay?.payload?.kind === 'tool_result' ? replay.payload.nodes : undefined
     expect(Object.keys(states ?? {}).sort()).toEqual(['build.glm', 'build.qwen'])
-    expect(Object.values(states ?? {}).map((state) => state.phase)).toEqual(['done', 'done'])
+    for (const state of Object.values(states ?? {})) {
+      expect(state.phase).toBe('done')
+      expect(state.subagentId).toBeTruthy()
+      expect(state.output).toBeTruthy()
+    }
   })
 
   /**
@@ -827,70 +712,45 @@ describe('workflow 从父会话账本续接', () => {
    */
   test('approve 之后 revise 仍向首派那条子会话续发', async () => {
     const parent = conversation()
-    const run = createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-reflow',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const nodes = [
-      { id: 'build-glm', kind: 'temp' as const, name: 'build-glm', task: '做 glm 版' },
-      { id: 'build-qwen', kind: 'temp' as const, name: 'build-qwen', task: '做 qwen 版' },
-      {
-        id: 'audit-builds',
-        kind: 'checkpoint' as const,
-        label: '主会话验收',
-        needs: ['build-glm', 'build-qwen'],
-      },
-    ]
-    const invoke = async (
-      seq: number,
-      args: Record<string, unknown>,
-      call: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]['call'],
-    ) => {
-      const step = appendStep(store, {
-        runId: run.id,
-        seq,
-        kind: 'tool_action',
-        toolName: 'workflow',
-        toolCallId: `call_reflow_${seq}`,
-        status: 'running',
-        payload: { kind: 'tool_call', args },
-      })
-      const result = await delegate(parent).runGraph({
-        call,
-        runId: run.id,
-        stepId: step.id,
-        signal: new AbortController().signal,
-      })
-      if (!result.transition) throw new Error(result.error ?? '没有 transition')
-      settleToolStep(store, step.id, result.ok ? 'success' : 'failure', {
-        kind: 'tool_result',
-        args,
-        outcome: {
-          status: result.ok ? 'success' : 'failure',
-          executed: true,
-          message: result.transition.phase,
-          data: result.transition as unknown as Record<string, unknown>,
+    const both = {
+      goal: '各做一版',
+      nodes: [
+        { id: 'build-glm', kind: 'temp', name: 'build-glm', task: '做 glm 版' },
+        { id: 'build-qwen', kind: 'temp', name: 'build-qwen', task: '做 qwen 版' },
+        {
+          id: 'audit-builds',
+          kind: 'checkpoint',
+          label: '主会话验收',
+          needs: ['build-glm', 'build-qwen'],
         },
-      })
-      return { step, result }
+      ],
     }
+    router = byTask({
+      '做 glm 版': 'glm 初稿',
+      '做 qwen 版': 'qwen 初稿',
+      '按 bug 列表继续改': 'qwen 修订稿',
+    })
+    const runId = run(parent, 'wf-reflow')
+    const first = await invoke(parent, runId, 1, both, parsedStart(both))
+    await until(() => receipts.length > 0, '检查点回执')
 
-    script = [
-      () => new Response(textTurn('glm 初稿'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('qwen 初稿'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('qwen 修订稿'), { headers: SSE_HEADERS }),
-    ]
-    const startArgs = { goal: '各做一版', nodes }
-    const first = await invoke(1, startArgs, parsedStart(startArgs))
-    expect(first.result.transition?.phase).toBe('waiting_review')
-    const qwenChild = first.result.transition?.receipts.find(
-      (receipt) => receipt.nodeId === 'build-qwen',
-    )?.subagentId
+    const folded = foldWorkflow(
+      listSteps(store, runId)
+        .filter((s) => s.toolName === 'workflow')
+        .map((s) => ({
+          stepId: s.id,
+          ...(s.payload?.kind === 'tool_result' && s.payload.args ? { args: s.payload.args } : {}),
+          ...(s.payload?.kind === 'tool_result' ? { outcome: s.payload.outcome } : {}),
+          ...(s.payload?.kind === 'tool_result' && s.payload.nodes
+            ? { nodes: s.payload.nodes }
+            : {}),
+          status: 'success' as const,
+        })),
+      first.step.id,
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    const qwenChild = folded.projection.results['build-qwen']?.subagentId
     expect(qwenChild).toBeTruthy()
 
     const approveArgs = {
@@ -899,12 +759,12 @@ describe('workflow 从父会话账本续接', () => {
       decision: 'approve' as const,
       note: '均已产生代码，现批准',
     }
-    const approved = await invoke(2, approveArgs, {
+    const approved = await invoke(parent, runId, 2, approveArgs, {
       kind: 'review',
       ...approveArgs,
       revisions: [],
     })
-    expect(approved.result.transition?.phase).toBe('completed')
+    expect(approved.result.completed).toBe(true)
 
     const reviseArgs = {
       workflowId: first.step.id,
@@ -913,51 +773,19 @@ describe('workflow 从父会话账本续接', () => {
       note: '继续优化 qwen 版',
       revisions: [{ nodeId: 'build-qwen', instruction: '按 bug 列表继续改' }],
     }
-    const revised = await invoke(3, reviseArgs, { kind: 'review', ...reviseArgs })
-    expect(revised.result.transition?.phase).toBe('waiting_review')
-    expect(revised.result.transition?.checkpointId).toBe('audit-builds')
-    expect(revised.result.transition?.receipts.map((receipt) => receipt.nodeId)).toEqual([
-      'build-qwen',
-    ])
+    const revised = await invoke(parent, runId, 3, reviseArgs, { kind: 'review', ...reviseArgs })
+    expect(revised.result.transition?.dispatched).toEqual(['build-qwen'])
     // 续发到首派那条子会话，不是新开一条。
-    expect(revised.result.transition?.receipts[0]?.subagentId).toBe(qwenChild)
-    expect(
+    const lastAsked = () =>
       listMessages(store, qwenChild as ConversationId)
         .filter((message) => message.role === 'user')
-        .at(-1)?.content,
-    ).toContain('按 bug 列表继续改')
-
-    const folded = foldWorkflow(
-      listSteps(store, run.id)
-        .filter((step) => step.toolName === 'workflow')
-        .map((step) => ({
-          stepId: step.id,
-          ...(step.payload?.kind === 'tool_result' && step.payload.args
-            ? { args: step.payload.args }
-            : {}),
-          ...(step.payload?.kind === 'tool_result' ? { outcome: step.payload.outcome } : {}),
-          status: step.status === 'success' ? ('success' as const) : ('failure' as const),
-        })),
-      first.step.id,
-    )
-    expect(folded.ok).toBe(true)
-    if (!folded.ok) return
-    expect(folded.projection.phase).toBe('waiting_review')
-    expect(folded.projection.approvals['audit-builds']).toBeUndefined()
-    expect(script).toHaveLength(0)
+        .at(-1)?.content ?? ''
+    await until(() => lastAsked().includes('按 bug 列表继续改'), '续发指令进原子会话')
   })
 
   test('首派落失败终态之后 approve 报重新派发，不再说不是待审查状态', async () => {
     const parent = conversation()
-    const run = createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-dead',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
+    const runId = run(parent, 'wf-dead')
     const args = {
       goal: '目标',
       nodes: [
@@ -966,7 +794,7 @@ describe('workflow 从父会话账本续接', () => {
       ],
     }
     const step = appendStep(store, {
-      runId: run.id,
+      runId,
       seq: 1,
       kind: 'tool_action',
       toolName: 'workflow',
@@ -990,405 +818,78 @@ describe('workflow 从父会话账本续接', () => {
         note: '接受',
         revisions: [],
       },
-      runId: run.id,
-      stepId: 'st_dead_review',
-      signal: new AbortController().signal,
+      runId,
+      stepId: 'st_dead_review' as StepId,
     })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('已失败，请重新派发')
   })
 
-  test('首派被打断后对留下子会话的节点 revise，续跑原子会话而不是被 failed 闸挡住', async () => {
+  test('普通会话不能被伪装成 workflow 子节点续接', async () => {
     const parent = conversation()
-    const run = createRun(store, {
-      conversationId: parent,
+    const ordinary = createConversation(store, {
       workspaceId: workspaceId as never,
+      provider: 'fake',
       model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-interrupted',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
+      title: '普通会话',
     })
+    const args = {
+      goal: '目标',
+      nodes: [
+        { id: 'a', subagent: ordinary.id, task: '接着做' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
+    }
+    const runId = run(parent, 'wf-foreign')
+    const step = appendStep(store, {
+      runId,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      toolCallId: 'call_foreign',
+      status: 'running',
+      payload: { kind: 'tool_call', args },
+    })
+    const result = await delegate(parent).runGraph({
+      call: parsedStart(args),
+      runId,
+      stepId: step.id,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('不在本会话里')
+    expect(listRuns(store, ordinary.id)).toHaveLength(0)
+  })
+
+  /** 续接已有子 agent 的格接的是它自己的会话：历史在那边，任务不重抄一遍。 */
+  test('续接已有子 agent 的格发进同一条子会话', async () => {
+    const parent = conversation()
     const child = createConversation(store, {
       workspaceId: workspaceId as never,
       provider: 'fake',
       model: 'deepseek-v4-flash',
+      title: '节点 a',
       source: 'temp',
-      sourceRef: 'ad-hoc',
       parentConversationId: parent,
-    }).id
+    })
+    appendMessage(store, { conversationId: child.id, role: 'user', content: '先给一个初稿' })
     const args = {
       goal: '目标',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做' },
-        { id: 'b', kind: 'temp', name: 'b', task: '也做' },
-        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+        { id: 'a', subagent: child.id, task: '补充两条可核验证据' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
       ],
     }
-    const step = appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      toolCallId: 'call_interrupted',
-      status: 'running',
-      payload: { kind: 'tool_call', args },
-    })
-    // 进程退出收尾：没有 transition，只留下 a 起跑时落库的子会话 id；b 还没起跑。
-    settleToolStep(store, step.id, 'failure', {
-      kind: 'tool_result',
-      args,
-      nodes: { a: { phase: 'interrupted', label: 'a', subagentId: child } },
-      outcome: { status: 'failure', executed: true, message: '执行期间被中断，结果未知' },
-    })
+    router = byTask({ 补充两条可核验证据: '修订稿：已经补充两条证据' })
+    const runId = run(parent, 'wf-resume')
+    await invoke(parent, runId, 1, args, parsedStart(args))
+    await until(() => receipts.length > 0, '检查点回执')
 
-    script = [
-      () => new Response(textTurn('接着做完了'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('新起的做完了'), { headers: SSE_HEADERS }),
-    ]
-    const result = await delegate(parent).runGraph({
-      call: {
-        kind: 'review',
-        workflowId: step.id,
-        checkpointId: 'cp',
-        decision: 'revise',
-        note: '继续',
-        revisions: [{ nodeId: 'a', instruction: '已完成则复述最终产出，否则接着做' }],
-      },
-      runId: run.id,
-      stepId: 'st_interrupted_review',
-      signal: new AbortController().signal,
-    })
-    if (!result.transition) throw new Error(result.error ?? '没有 transition')
-    expect(result.transition.phase).toBe('waiting_review')
-    const resumed = result.transition.receipts.find((receipt) => receipt.nodeId === 'a')
-    expect(resumed?.status).toBe('done')
-    // 续跑的是首派留下的那条子会话，不是另起一条。
-    expect(resumed?.subagentId).toBe(child)
-    expect(listRuns(store, child)).toHaveLength(1)
-    const started = result.transition.receipts.find((receipt) => receipt.nodeId === 'b')
-    expect(started?.status).toBe('done')
-    expect(started?.subagentId).not.toBe(child)
-  })
-
-  test('start → revise → approve 下一批 → approve 完成全程从同一父账本推进', async () => {
-    const parent = conversation()
-    const run = createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: 'workflow-full-loop',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const nodes = [
-      { id: 'a', kind: 'temp' as const, name: 'a', task: '第一批 A' },
-      { id: 'b', kind: 'temp' as const, name: 'b', task: '第一批 B' },
-      { id: 'cp1', kind: 'checkpoint' as const, label: '审查第一批', needs: ['a', 'b'] },
-      { id: 'c', kind: 'temp' as const, name: 'c', task: '第二批 C', needs: ['cp1'] },
-      { id: 'd', kind: 'temp' as const, name: 'd', task: '第二批 D', needs: ['cp1'] },
-      { id: 'cp2', kind: 'checkpoint' as const, label: '最终审查', needs: ['c', 'd'] },
-    ]
-    const invoke = async (
-      seq: number,
-      args: Record<string, unknown>,
-      call: Parameters<NonNullable<ToolContext['delegate']>['runGraph']>[0]['call'],
-    ) => {
-      const step = appendStep(store, {
-        runId: run.id,
-        seq,
-        kind: 'tool_action',
-        toolName: 'workflow',
-        toolCallId: `call_full_${seq}`,
-        status: 'running',
-        payload: { kind: 'tool_call', args },
-      })
-      const result = await delegate(parent).runGraph({
-        call,
-        runId: run.id,
-        stepId: step.id,
-        signal: new AbortController().signal,
-      })
-      if (!result.transition) throw new Error(result.error ?? '没有 transition')
-      settleToolStep(store, step.id, result.ok ? 'success' : 'failure', {
-        kind: 'tool_result',
-        args,
-        outcome: {
-          status: result.ok ? 'success' : 'failure',
-          executed: true,
-          message: result.transition.phase,
-          data: result.transition as unknown as Record<string, unknown>,
-        },
-      })
-      return { step, result }
-    }
-
-    script = [
-      () => new Response(textTurn('第一批结果 1'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('第一批结果 2'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('A 的修订结果'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('第二批结果 1'), { headers: SSE_HEADERS }),
-      () => new Response(textTurn('第二批结果 2'), { headers: SSE_HEADERS }),
-    ]
-    const first = await invoke(
-      1,
-      { goal: '两批完成', nodes },
-      parsedStart({ goal: '两批完成', nodes }),
-    )
-    expect(first.result.transition?.phase).toBe('waiting_review')
-    expect(first.result.transition?.checkpointId).toBe('cp1')
-    expect(first.result.transition?.receipts.map((receipt) => receipt.nodeId).sort()).toEqual([
-      'a',
-      'b',
-    ])
-    const firstA = first.result.transition?.receipts.find((receipt) => receipt.nodeId === 'a')
-
-    const reviseArgs = {
-      workflowId: first.step.id,
-      checkpointId: 'cp1',
-      decision: 'revise' as const,
-      note: 'A 需要修订',
-      revisions: [{ nodeId: 'a', instruction: '纠正 A' }],
-    }
-    const revised = await invoke(2, reviseArgs, { kind: 'review', ...reviseArgs })
-    expect(revised.result.transition?.phase).toBe('waiting_review')
-    expect(revised.result.transition?.receipts.map((receipt) => receipt.nodeId)).toEqual(['a'])
-    expect(revised.result.transition?.receipts[0]?.subagentId).toBe(firstA?.subagentId)
-
-    const approveFirstArgs = {
-      workflowId: first.step.id,
-      checkpointId: 'cp1',
-      decision: 'approve' as const,
-      note: '第一批通过',
-    }
-    const secondBatch = await invoke(3, approveFirstArgs, {
-      kind: 'review',
-      ...approveFirstArgs,
-      revisions: [],
-    })
-    expect(secondBatch.result.transition?.phase).toBe('waiting_review')
-    expect(secondBatch.result.transition?.checkpointId).toBe('cp2')
-    expect(secondBatch.result.transition?.receipts.map((receipt) => receipt.nodeId).sort()).toEqual(
-      ['c', 'd'],
-    )
-
-    const approveFinalArgs = {
-      workflowId: first.step.id,
-      checkpointId: 'cp2',
-      decision: 'approve' as const,
-      note: '最终通过',
-    }
-    const completed = await invoke(4, approveFinalArgs, {
-      kind: 'review',
-      ...approveFinalArgs,
-      revisions: [],
-    })
-    expect(completed.result.transition?.phase).toBe('completed')
-    expect(completed.result.transition?.receipts).toEqual([])
-    expect(script).toHaveLength(0)
-    const memberEvents = members()
     expect(
-      memberEvents
-        // 首派那张卡上 c、d 已经以「等待」出现；跑起来之后的状态才归第二批那张卡。
-        .filter(
-          (event) =>
-            (event.nodeId === 'c' || event.nodeId === 'd') && event.state.phase !== 'waiting',
-        )
-        .every((event) => event.stepId === secondBatch.step.id),
-    ).toBe(true)
-    expect(listSteps(store, run.id).filter((step) => step.toolName === 'workflow')).toHaveLength(4)
-  })
-})
-
-describe('一格失败先交回，其余格照跑', () => {
-  /** 请求正文里带着任务原文，按它分流：快的当场 401，慢的等放行。 */
-  const gated = () => {
-    let release: () => void = () => {}
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const slow = () =>
-      new Response(
-        new ReadableStream({
-          async start(controller) {
-            await gate
-            controller.enqueue(new TextEncoder().encode(textTurn('慢的做完了')))
-            controller.close()
-          },
-        }),
-        { headers: SSE_HEADERS },
-      )
-    const route = (body: string) =>
-      body.includes('做快的') ? new Response('拒绝', { status: 401 }) : slow()
-    return { release: () => release(), route }
-  }
-  const until = async (ready: () => boolean) => {
-    for (let i = 0; i < 500; i++) {
-      if (ready()) return
-      await Bun.sleep(10)
-    }
-    throw new Error('等不到')
-  }
-  const parentRun = (parent: ConversationId, key: string) =>
-    createRun(store, {
-      conversationId: parent,
-      workspaceId: workspaceId as never,
-      model: 'deepseek-v4-flash',
-      clientRequestId: key,
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-
-  test('失败的先交回，慢的在已返回的卡上落终态，只带 workflowId 汇合它', async () => {
-    const parent = conversation()
-    const run = parentRun(parent, 'early-return')
-    const nodes = [
-      { id: 'fast', kind: 'temp', name: 'fast', task: '做快的' },
-      { id: 'slow', kind: 'temp', name: 'slow', task: '做慢的' },
-      { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['fast', 'slow'] },
-    ]
-    const args = { goal: '快慢各一', nodes }
-    const step = appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      toolCallId: 'call_early',
-      status: 'running',
-      payload: { kind: 'tool_call', args },
-    })
-    const { release, route } = gated()
-    script = [route, route]
-    const port = delegate(parent)
-
-    const first = await port.runGraph({
-      call: parsedStart(args),
-      runId: run.id,
-      stepId: step.id,
-      signal: new AbortController().signal,
-    })
-    expect(first.ok).toBe(false)
-    expect(first.transition).toMatchObject({
-      phase: 'waiting_review',
-      checkpointId: 'cp',
-      running: ['slow'],
-    })
-    expect(first.transition?.receipts.map((r) => [r.nodeId, r.status])).toEqual([
-      ['fast', 'failed'],
-    ])
-    expect(port.inflight(run.id)).toEqual([{ name: 'slow' }])
-
-    // 外层工具循环把这次调用收成终态；慢的那格还在跑，终态仍写回这张卡。
-    settleToolStep(store, step.id, 'failure', {
-      kind: 'tool_result',
-      args,
-      outcome: {
-        status: 'failure',
-        executed: true,
-        message: '先交回',
-        data: first.transition as never,
-      },
-    })
-    release()
-    await until(() => members().some((m) => m.nodeId === 'slow' && m.state.phase === 'done'))
-    const card = listSteps(store, run.id).find((s) => s.id === step.id)
-    expect(card?.status).toBe('failure')
-    const cells = (card?.payload as { nodes?: Record<string, { phase: string }> }).nodes
-    expect(cells?.slow?.phase).toBe('done')
-    expect(cells?.fast?.phase).toBe('failed')
-
-    const waitStep = appendStep(store, {
-      runId: run.id,
-      seq: 2,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      toolCallId: 'call_wait',
-      status: 'running',
-      payload: { kind: 'tool_call', args: { workflowId: step.id } },
-    })
-    const second = await port.runGraph({
-      call: { kind: 'wait', workflowId: step.id },
-      runId: run.id,
-      stepId: waitStep.id,
-      signal: new AbortController().signal,
-    })
-    expect(second.ok).toBe(true)
-    expect(second.transition).toMatchObject({ phase: 'waiting_review', checkpointId: 'cp' })
-    expect(second.transition?.running).toBeUndefined()
-    expect(second.transition?.receipts.map((r) => [r.nodeId, r.status, r.output])).toEqual([
-      ['slow', 'done', '慢的做完了'],
-    ])
-    expect(port.inflight(run.id)).toEqual([])
-  })
-
-  test('这一轮结束时还在跑的子 agent 被中断，可续接', async () => {
-    const cid = conversation()
-    script = [() => new Response(new ReadableStream({ start() {} }), { headers: SSE_HEADERS })]
-    const port = delegate(cid)
-    const pending = port.dispatch({
-      target: { kind: 'temp', name: '慢' },
-      task: '一直做',
-      ...at,
-      signal: new AbortController().signal,
-    })
-    await until(() => members().some((m) => m.state.phase === 'working'))
-    expect(port.inflight(at.runId)).toEqual([{ name: '慢' }])
-
-    port.settleRun(at.runId)
-    const res = await pending
-    expect(res.ok).toBe(false)
-    expect(members().at(-1)?.state.phase).toBe('interrupted')
-    expect(members().at(-1)?.state.error).toBe('父会话这一轮已结束，随之中断')
-    expect(port.inflight(at.runId)).toEqual([])
-    const child = listRuns(store, res.subagentId as never)[0]
-    expect(child?.status).toBe('interrupted')
-    expect(child?.interruption?.source).toBe('parent_finished')
-  })
-})
-
-describe('汇合可以重复', () => {
-  /**
-   * 真机上出过的形状：revise 那次调用汇合了三个在跑的格，随后因为另一格失败先返回；
-   * 下一次「等」再汇合时句柄已经没了，三个格被当成回执没送达。汇合不能删句柄。
-   */
-  test('汇合它的那次调用先返回了，下一次调用还能再汇合同一个子 agent', async () => {
-    const cid = conversation()
-    let release: () => void = () => {}
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    script = [
-      () =>
-        new Response(
-          new ReadableStream({
-            async start(controller) {
-              await gate
-              controller.enqueue(new TextEncoder().encode(textTurn('慢的做完了')))
-              controller.close()
-            },
-          }),
-          { headers: SSE_HEADERS },
-        ),
-    ]
-    const port = delegate(cid)
-    const pending = port.dispatch({
-      target: { kind: 'temp', name: '慢' },
-      task: '慢慢做',
-      ...at,
-      signal: new AbortController().signal,
-    })
-    for (let i = 0; i < 500 && !members().some((m) => m.state.phase === 'working'); i++) {
-      await Bun.sleep(10)
-    }
-    const subagentId = members()[0]?.state.subagentId as string
-    const first = port.join({ nodeId: 'slow', subagentId })
-    const second = port.join({ nodeId: 'slow', subagentId })
-    release()
-    expect(await pending).toMatchObject({ ok: true })
-    expect(await first).toMatchObject({ ok: true, output: '慢的做完了' })
-    expect(await second).toMatchObject({ ok: true, output: '慢的做完了' })
-    expect(port.inflight(at.runId)).toEqual([])
+      listMessages(store, child.id)
+        .filter((message) => message.role === 'user')
+        .at(-1)?.content,
+    ).toContain('补充两条可核验证据')
+    expect(receipts[0]?.content).toContain('修订稿：已经补充两条证据')
+    expect(listRuns(store, child.id)).toHaveLength(1)
   })
 })

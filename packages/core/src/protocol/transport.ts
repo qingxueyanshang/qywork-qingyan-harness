@@ -5,7 +5,7 @@
  * 只有 `origin` 字段用于审计和「谁批准了权限」这类跨端提示。
  */
 
-import type { ConversationId, RunId } from '../domain/ids.ts'
+import type { ConversationId } from '../domain/ids.ts'
 import type { Attachment, PermissionMode } from '../domain/model.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
@@ -195,7 +195,7 @@ export interface HelloErrFrame {
 
 export type ClientCommand =
   | SendMessageCommand
-  | InterruptRunCommand
+  | InterruptConversationCommand
   | SubscribeCommand
   | SetModelCommand
   | CompactCommand
@@ -225,9 +225,16 @@ export interface SendMessageCommand {
   steer?: boolean
 }
 
-export interface InterruptRunCommand {
-  type: 'run.interrupt'
-  runId: RunId
+/**
+ * 停这条会话手上的活。
+ *
+ * **按会话寻址，不按 run。** 一条会话正在跑的不只有 run：派出去的子 agent
+ * 比派它的那一轮存活更久，按 runId 停只停得掉其中一样，而界面上只有一个停止按钮。
+ * 客户端也因此不必先判定哪个 runId 仍未收尾。
+ */
+export interface InterruptConversationCommand {
+  type: 'conversation.interrupt'
+  conversationId: ConversationId
 }
 
 export interface SubscribeCommand {
@@ -282,8 +289,8 @@ export interface CompactCommand {
  * 才动：那时候用户已经等了不知道多久，而界面上什么都没发生。
  * 服务端因此走的是与自动续起完全同一个排队入口（`run-control.ts`）。
  *
- * **没有对应的「暂停」指令。** 循环跑起来之后停它的动作就是中断这一轮
- * （`run.interrupt`），run 收尾时会把目标置回 `paused` 并解除续起标记——
+ * **没有对应的「暂停」指令。** 循环跑起来之后停它的动作就是中断这条会话
+ * （`conversation.interrupt`），run 收尾时会把目标置回 `paused` 并解除续起标记——
  * 再开一条指令等于给同一件事开第二个入口。
  */
 export interface GoalResumeCommand {

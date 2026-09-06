@@ -1,27 +1,21 @@
 /**
  * 一张可暂停、可审查、可续发的 DAG。
  *
- * workflow 每次调用只推进到下一个 checkpoint 或结束。检查点回执回到当前
- * 会话后，由当前会话决定 approve 或 revise；续发仍使用同一个 workflowId。
+ * 每次调用只把此刻就绪的格派出去就返回。格跑完的回执、到检查点的回执都由派活通道
+ * 作为消息送进当前会话；当前会话据此决定 approve 或 revise，续发仍使用同一个 workflowId。
  */
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import {
-  DEFAULT_MAX_CONCURRENT,
-  type IntermediateResourceRef,
-  parseWorkflowCall,
-  type WorkflowTransition,
-} from '@qywork/core'
-import { deliverAgentOutput } from './sink.ts'
+import { DEFAULT_MAX_CONCURRENT, parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
   description:
     '把两个及以上子 agent 的任务按 DAG 一次交出去。子 agent 节点按 needs 并行或串行执行，' +
-    'checkpoint 节点把上一批回执交回当前会话。到 checkpoint 只代表本次调度返回；之后用同一 workflowId ' +
-    '对该 checkpoint approve（进下一批）或 revise（让点名的节点在它原来的子会话里继续，只发修订指令与最新上游产出），' +
-    '批准之后仍可 revise。一格失败而同批还有格在跑时也会返回，失败的回执先到，其余格照跑；' +
-    '只带 workflowId 再调一次就是等它们，到下一个事件返回。' +
-    '三种调用各带的参数：首派只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions；等只带 workflowId。' +
+    'checkpoint 节点把上一批回执交回当前会话。' +
+    '调用只把此刻就绪的格派出去就返回：每格跑完的回执、一格失败的回执、到 checkpoint 的回执都会作为消息送到本会话，不要为了等回执反复调用。' +
+    '收到 checkpoint 回执后用同一 workflowId 对该 checkpoint approve（进下一批）或 revise' +
+    '（让点名的节点在它原来的子会话里继续，只发修订指令与最新上游产出），批准之后仍可 revise。' +
+    '两种调用各带的参数：首派只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions。' +
     'checkpoint 的接法：并行的子 agent 节点共用一个 checkpoint（needs 列出它们全部），不是每个节点各接一个；' +
     'checkpoint 之间串成一条链；每个子 agent 节点都要在某个 checkpoint 的上游。不合这条的图在加载期被拒。' +
     '节点按 kind 建：role 按角色 id 建、temp 临时（name 必填）、cli 外部 CLI；指向本会话已有子 agent 的节点填 subagent。',
@@ -132,74 +126,33 @@ export const workflowTool: ToolSpec = {
       call: parsed.call,
       runId: ctx.runId,
       stepId: ctx.stepId,
-      signal: ctx.signal,
     })
     if (res.error) return { status: 'failure', message: `这张图跑不起来：${res.error}` }
     if (!res.transition) return { status: 'failure', message: 'Workflow 没有返回状态转移' }
 
-    const transition = res.transition
-    /*
-     * 每条回执的产出各自过投递闸，与 `subagent` 同一道。超长的落盘，回执里留定位符，
-     * 模型用 `read_resource` 按需读回。**回执本身不加字段**：截了多少、总共多少
-     * 写在正文末尾那一行里，逐条再挂一份覆盖事实是同一件事印两处。
-     *
-     * 一次调用只有一份单次投递预算，有产出的几条平分它（`share`）。
-     */
-    const resources: IntermediateResourceRef[] = []
-    const share = transition.receipts.filter((receipt) => receipt.output).length
-    const receipts = transition.receipts.map((receipt) => {
-      if (!receipt.output) return receipt
-      const delivered = deliverAgentOutput(ctx, {
-        toolName: 'workflow',
-        sourceType: `workflow:${receipt.nodeId}`,
-        body: receipt.output,
-        share,
-      })
-      if (delivered.resource) resources.push(delivered.resource)
-      return { ...receipt, output: delivered.text }
-    })
     return {
-      status: res.ok ? 'success' : 'failure',
-      message: transitionMessage(transition),
-      data: { ...transition, receipts } as unknown as Record<string, unknown>,
-      ...(resources.length ? { resources } : {}),
+      status: 'success',
+      message: transitionMessage(res.transition, res.completed === true),
+      data: { ...res.transition } as unknown as Record<string, unknown>,
     }
   },
 }
 
-function transitionMessage(transition: WorkflowTransition): string {
-  const count = transition.receipts.length
-  // 派发时的事实逐节点带回：续接没接上、角色已不在。模型据此决定要不要重派或把任务写全。
-  const notes = transition.receipts
-    .filter((receipt) => receipt.note)
-    .map((receipt) => ` ${receipt.nodeId}：${receipt.note}`)
-    .join('；')
-  const noteLine = notes ? `${notes}。` : ''
-  // 批准接受了哪些未完成节点必须说出来：approve 之后终态一律是 completed，
-  // 只凭 phase 判断的话，一次接受四个失败节点的批准读起来与四个都成功没有区别。
+function transitionMessage(transition: WorkflowTransition, completed: boolean): string {
+  // 批准接受了哪些未完成节点必须说出来：approve 之后那几格不再回流，
+  // 只凭「已批准」判断的话，一次接受四个失败节点的批准读起来与四个都成功没有区别。
   const accepted = transition.review?.acceptedFailures ?? []
   const acceptedNote = accepted.length
     ? ` 本次批准接受了未完成的节点：${accepted.map((item) => `${item.nodeId}（${item.reason}）`).join('、')}。`
     : ''
-  if (transition.phase === 'waiting_review') {
-    const running = transition.running ?? []
-    if (running.length) {
-      // 一格失败先交回：父会话此刻能做的只有重派它或等其余的，两条路各说一次。
-      return (
-        `有节点失败，先交回 ${count} 个回执；还在跑：${running.join('、')}。` +
-        ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +
-        '要在跑的回执：只带 workflowId 再调一次。重派失败的：对该 checkpoint revise 点名它，同一次调用也会等在跑的。' +
-        `这一轮结束时在跑的会被中断。${noteLine}`
-      )
-    }
-    return (
-      `本次调度已返回 ${count} 个回执；整个 workflow 尚未完成。` +
-      ` workflowId=${transition.workflowId}，checkpointId=${transition.checkpointId}。` +
-      `请核验回执后，再以 approve 或 revise 续接。${acceptedNote}${noteLine}`
-    )
-  }
-  if (transition.phase === 'completed') {
-    return `Workflow 已完成，本次返回 ${count} 个回执。${acceptedNote}${noteLine}`
-  }
-  return `Workflow 执行失败，本次返回 ${count} 个回执。${noteLine}`
+  if (completed) return `Workflow 已完成。${acceptedNote}`
+  const dispatched = transition.dispatched
+  const head = dispatched.length
+    ? `已起跑，在跑 ${dispatched.length} 格：${dispatched.join('、')}。`
+    : '这一趟没有可派的格，在跑的格跑完会送回执。'
+  return (
+    `${head} workflowId=${transition.workflowId}。` +
+    '每格跑完的回执会作为消息送到本会话，到 checkpoint 时收到检查点回执再 approve 或 revise。' +
+    acceptedNote
+  )
 }

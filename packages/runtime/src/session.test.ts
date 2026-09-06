@@ -26,6 +26,7 @@ import {
   Store,
   setConversationTitle,
   setExtraEnabled,
+  setStepNodeState,
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
@@ -83,10 +84,7 @@ const delegate: DelegatePort = {
       resumable: false,
     },
   ],
-  dispatch: async () => ({ ok: true, output: '' }),
-  join: async () => ({ ok: true, output: '' }),
-  settleRun: () => {},
-  inflight: () => [],
+  dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
   runGraph: async () => ({ ok: true }),
 }
 
@@ -317,37 +315,29 @@ describe('未完成 workflow 的运行快照', () => {
       status: 'running',
       payload: { kind: 'tool_call', args },
     })
+    // 回执就是格的终态：两格都落了终态，检查点因此是待审查那一个。
+    setStepNodeState(store, step.id, 'build-glm', {
+      phase: 'done',
+      label: 'glm',
+      output: '做完了',
+      durationMs: 1,
+      subagentId: 'cv_glm' as never,
+    })
+    setStepNodeState(store, step.id, 'build-qwen', {
+      phase: 'failed',
+      label: 'qwen',
+      error: '步数用尽，任务没做完',
+      durationMs: 1,
+      subagentId: 'cv_qwen' as never,
+    })
     settleToolStep(store, step.id, 'success', {
       kind: 'tool_result',
       args,
       outcome: {
         status: 'success',
         executed: true,
-        message: '等待审查',
-        data: {
-          workflowId: step.id,
-          phase: 'waiting_review',
-          checkpointId: 'audit-builds',
-          receipts: [
-            {
-              nodeId: 'build-glm',
-              label: 'glm',
-              status: 'done',
-              output: '做完了',
-              durationMs: 1,
-              subagentId: 'cv_glm',
-            },
-            {
-              nodeId: 'build-qwen',
-              label: 'qwen',
-              status: 'failed',
-              output: '',
-              error: '步数用尽，任务没做完',
-              durationMs: 1,
-              subagentId: 'cv_qwen',
-            },
-          ],
-        },
+        message: '已起跑',
+        data: { workflowId: step.id, dispatched: ['build-glm', 'build-qwen'] },
       },
     })
     return step.id

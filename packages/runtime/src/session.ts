@@ -177,6 +177,11 @@ export interface AskOptions {
    */
   attachments?: Attachment[]
   /**
+   * 这一句是谁投进来的：子 agent 的回执、workflow 的回执，缺席 = 用户本人。
+   * 落 `messages.origin`，界面按它把回执行与用户气泡分开。
+   */
+  origin?: 'subagent' | 'workflow'
+  /**
    * 这一轮**新建**会话时给它打的来源标记（续跑已有会话时无效）。
    *
    * 不填 = `null` = 用户会话，会出现在会话列表里。编排产生的成员子会话
@@ -307,6 +312,7 @@ export class Session {
                     ? await withAttachments(this.opts.workspaceRoot, f.content, f.attachments)
                     : f.content,
                   ...(f.attachments?.length ? { attachments: f.attachments } : {}),
+                  ...(f.origin ? { origin: f.origin } : {}),
                 })),
               )
             },
@@ -418,6 +424,7 @@ export class Session {
       role: 'user',
       content: prompt,
       ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+      ...(options?.origin ? { origin: options.origin } : {}),
     }).id
 
     /*
@@ -529,6 +536,9 @@ export class Session {
       userMessage: {
         content: prompt,
         ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+        // 与上面写进 `messages.origin` 的那一格同值：两侧不同口径的话，
+        // 回执起的这一轮实时画成用户气泡、刷新之后才变回执行。
+        ...(options?.origin ? { origin: options.origin } : {}),
       },
     }
 
@@ -644,8 +654,6 @@ export class Session {
           interruption,
         })
       }
-      // 这一轮派出去、还在跑的子 agent 先停：它们的生命期不超过这一轮。
-      this.opts.delegate?.settleRun(run.id)
       // **step 也要落终态，不只是 run。**
       //
       // 只收 run 是不够的：`tool.started` 的 yield 处被 `.return()` 掐断时，
@@ -793,6 +801,7 @@ export class Session {
           payload: {
             kind: 'user',
             ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+            ...(input.origin ? { origin: input.origin } : {}),
           },
         }).id,
       failThinkingSteps: (stepIds) => failThinkingSteps(store, stepIds as never),
@@ -1202,7 +1211,6 @@ function interruptionFrom(
     'user',
     'server_shutdown',
     'consumer_closed',
-    'parent_finished',
   ])
   const source =
     typeof reason?.source === 'string' && allowed.has(reason.source as InterruptionSource)
@@ -1224,7 +1232,6 @@ function interruptionMessage(interruption: RunInterruption | null): string | nul
   if (!interruption || interruption.source === 'user') return null
   if (interruption.source === 'server_shutdown') return '服务正常关闭，本轮随之中断'
   if (interruption.source === 'consumer_closed') return '执行流被调用方提前关闭，本轮中断'
-  if (interruption.source === 'parent_finished') return '父会话这一轮已结束，本轮随之中断'
   return null
 }
 

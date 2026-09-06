@@ -1,4 +1,4 @@
-import type { NodeState, ToolOutcomeWire } from './model.ts'
+import type { NodePhase, NodeState, ToolOutcomeWire } from './model.ts'
 
 export type WorkflowPhase = 'running' | 'waiting_review' | 'completed' | 'failed'
 
@@ -61,8 +61,6 @@ export const DEFAULT_MAX_CONCURRENT = 4
 
 export type WorkflowCall =
   | { kind: 'start'; goal: string; nodes: WorkflowNode[]; maxConcurrent: number }
-  /** 只带 workflowId：等上一次调用返回时还在跑的节点，到下一个事件再返回。 */
-  | { kind: 'wait'; workflowId: string }
   | {
       kind: 'review'
       workflowId: string
@@ -84,16 +82,17 @@ export interface WorkflowAppliedReview {
 }
 
 /**
- * 一次 workflow 工具调用真正落下的状态转移。只记这一轮，不记累计快照。
+ * 一次 workflow 工具调用真正做了什么：派出去哪几格、批准或修订了什么。
+ *
+ * **这里没有回执，也没有 phase。** 派出即返回，调用结束时格还在跑；
+ * 回执是格状态（`NodeState`）的终态那一条，phase 由 `foldWorkflow` 从格状态与
+ * 批准派生。往这里补一份就是第二本账。
  */
 export interface WorkflowTransition {
   workflowId: string
-  phase: Exclude<WorkflowPhase, 'running'>
-  checkpointId?: string
-  receipts: WorkflowReceipt[]
+  /** 这次调用派出去的格。空数组 = 这次没有可派的，等在跑的格回执。 */
+  dispatched: string[]
   review?: WorkflowAppliedReview
-  /** 返回时还在跑的节点。一格失败先交回父会话、其余格照跑时才有；下一次调用汇合它们。 */
-  running?: string[]
 }
 
 export interface WorkflowCallRecord {
@@ -111,11 +110,16 @@ export interface WorkflowProjection {
   nodes: WorkflowNode[]
   /** 首派调用参数里那个数。续接调用不再带它，调度并发始终按首派那次的约定。 */
   maxConcurrent: number
+  /**
+   * 派生值：某检查点上游全部终态且未批准 = `waiting_review`；全部批准且格全终态 =
+   * `completed`；首派调用自己失败 = `failed`；其余 `running`。不落库。
+   */
   phase: WorkflowPhase
+  /** `waiting_review` 时是那个检查点。 */
   checkpointId?: string
-  /** 每个 agent 节点最近一次回执。 */
+  /** 每个 agent 节点的回执，由终态那条格状态折出。 */
   results: Record<string, WorkflowReceipt>
-  /** 每一格最近一次状态，按调用顺序折叠。界面画图只认它，回执不参与。 */
+  /** 每一格最近一次状态，按调用顺序折叠。界面画图与回执都出自它。 */
   states: Record<string, NodeState>
   /** 已批准 checkpoint 的可传递输出。 */
   approvals: Record<string, string>
@@ -297,12 +301,6 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
   const checkpointId = wireText(wireArgs.checkpointId)
   const decision = wireText(wireArgs.decision)
   const note = wireText(wireArgs.note)
-  if (!checkpointId && !decision) {
-    if (note || !omittedStructured(wireArgs.revisions)) {
-      return { ok: false, error: '等在跑的节点只带 workflowId' }
-    }
-    return { ok: true, call: { kind: 'wait', workflowId } }
-  }
   if (!checkpointId) {
     return { ok: false, error: '审查动作必须带 workflowId 和 checkpointId' }
   }
@@ -354,42 +352,11 @@ export function workflowTransitionOf(
   const data = outcome?.data
   if (!data || typeof data !== 'object') return null
   const workflowId = text(data.workflowId)
-  const phase = data.phase
-  if (
-    !workflowId ||
-    (phase !== 'waiting_review' && phase !== 'completed' && phase !== 'failed') ||
-    !Array.isArray(data.receipts)
-  ) {
-    return null
-  }
-  const receipts = data.receipts.filter(receiptLike) as WorkflowReceipt[]
-  if (receipts.length !== data.receipts.length) return null
-  const checkpointId = text(data.checkpointId)
+  if (!workflowId || !Array.isArray(data.dispatched)) return null
+  const dispatched = data.dispatched.filter((id): id is string => typeof id === 'string')
+  if (dispatched.length !== data.dispatched.length) return null
   const review = reviewLike(data.review) ? data.review : undefined
-  const running = Array.isArray(data.running)
-    ? data.running.filter((id): id is string => typeof id === 'string')
-    : []
-  return {
-    workflowId,
-    phase,
-    receipts,
-    ...(checkpointId ? { checkpointId } : {}),
-    ...(review ? { review } : {}),
-    ...(running.length ? { running } : {}),
-  }
-}
-
-function receiptLike(value: unknown): value is WorkflowReceipt {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const row = value as Record<string, unknown>
-  return (
-    !!text(row.nodeId) &&
-    (row.subagentId === undefined || typeof row.subagentId === 'string') &&
-    typeof row.label === 'string' &&
-    (row.status === 'done' || row.status === 'failed' || row.status === 'skipped') &&
-    typeof row.output === 'string' &&
-    typeof row.durationMs === 'number'
-  )
+  return { workflowId, dispatched, ...(review ? { review } : {}) }
 }
 
 function reviewLike(value: unknown): value is WorkflowAppliedReview {
@@ -421,7 +388,7 @@ export function checkpointOutput(
     .join('\n\n')
 }
 
-function ancestorOf(nodes: WorkflowNode[], ancestor: string, nodeId: string): boolean {
+function ancestorOf(nodes: readonly WorkflowNode[], ancestor: string, nodeId: string): boolean {
   const seen = new Set<string>()
   const visit = (id: string): boolean => {
     if (seen.has(id)) return false
@@ -444,7 +411,7 @@ export type RevisionClosureResult =
  * 批准可撤销是这里的前提——检查点批准之后仍要能回流。
  */
 export function revisionClosure(
-  nodes: WorkflowNode[],
+  nodes: readonly WorkflowNode[],
   checkpointId: string,
   approvedCheckpointIds: readonly string[],
   selectedNodeIds: readonly string[],
@@ -493,8 +460,104 @@ export type WorkflowFoldResult =
   | { ok: true; projection: WorkflowProjection }
   | { ok: false; error: string }
 
+/** 落了终态的格：它有回执，下游可以往下走。 */
+const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipped', 'interrupted'])
+
+export function nodeSettled(state: NodeState | undefined): boolean {
+  return !!state && SETTLED_PHASES.has(state.phase)
+}
+
+/**
+ * 一格的终态折成回执。没落终态回 null。
+ *
+ * **回执只有这一个来源。** 工具返回值里没有第二份——派出即返回，那时还没有产出。
+ */
+export function nodeReceipt(
+  node: WorkflowAgentNode,
+  state: NodeState | undefined,
+): WorkflowReceipt | null {
+  if (!nodeSettled(state) || !state) return null
+  const status = state.phase === 'done' ? 'done' : state.phase === 'skipped' ? 'skipped' : 'failed'
+  const error = state.phase === 'interrupted' ? (state.error ?? '调用中断') : state.error
+  return {
+    nodeId: node.id,
+    ...(state.subagentId ? { subagentId: state.subagentId } : {}),
+    label: state.label || targetLabel(node.target),
+    status,
+    output: state.output ?? '',
+    ...(error ? { error } : {}),
+    durationMs: state.durationMs ?? 0,
+    ...(state.note ? { note: state.note } : {}),
+  }
+}
+
+/** 每个 agent 节点的回执，由终态那条格状态折出。 */
+export function workflowResults(
+  nodes: readonly WorkflowNode[],
+  states: Record<string, NodeState>,
+): Record<string, WorkflowReceipt> {
+  const out: Record<string, WorkflowReceipt> = {}
+  for (const node of nodes) {
+    if (node.kind === 'checkpoint') continue
+    const receipt = nodeReceipt(node, states[node.id])
+    if (receipt) out[node.id] = receipt
+  }
+  return out
+}
+
+/**
+ * revise 落到格状态上：作废的格回 `waiting`，**保留子 agent 的 id**——
+ * 续发是向原子 agent 接着说，不是另起一个看似相同的新任务。
+ *
+ * `foldWorkflow` 与推进器必须调用这一份，否则回放出来的投影与内存里的不是一张图。
+ */
+export function applyRevision(
+  nodes: readonly WorkflowNode[],
+  states: Record<string, NodeState>,
+  approvals: Record<string, string>,
+  review: { checkpointId: string; revisions: readonly WorkflowRevision[] },
+): { ok: true } | { ok: false; error: string } {
+  const closure = revisionClosure(
+    nodes,
+    review.checkpointId,
+    Object.keys(approvals),
+    review.revisions.map((revision) => revision.nodeId),
+  )
+  if (!closure.ok) return { ok: false, error: closure.error }
+  for (const id of closure.revokedCheckpointIds) delete approvals[id]
+  for (const nodeId of closure.nodeIds) {
+    const state = states[nodeId]
+    if (!state) continue
+    states[nodeId] = {
+      phase: 'waiting',
+      label: state.label,
+      ...(state.kind ? { kind: state.kind } : {}),
+      ...(state.subagentId ? { subagentId: state.subagentId } : {}),
+    }
+  }
+  return { ok: true }
+}
+
+/** 链上第一个还没批准、而且上游全部终态的检查点。 */
+export function readyCheckpoint(
+  nodes: readonly WorkflowNode[],
+  results: Record<string, WorkflowReceipt>,
+  approvals: Record<string, string>,
+): WorkflowCheckpointNode | null {
+  const pending = nodes.filter(
+    (node): node is WorkflowCheckpointNode => node.kind === 'checkpoint' && !approvals[node.id],
+  )
+  const ready = pending.filter((checkpoint) =>
+    checkpoint.needs.every((id) => results[id] !== undefined || approvals[id] !== undefined),
+  )
+  return ready.find((c) => !ready.some((o) => o !== c && ancestorOf(nodes, o.id, c.id))) ?? null
+}
+
 /**
  * 从同一父会话里按时间排列的 workflow 调用重建投影。没有 I/O，也不保存状态。
+ *
+ * `phase` 与 `checkpointId` 是**派生值**：格状态与批准是唯一权威，工具返回值里
+ * 不记它们。首派调用自己失败（进程退出、装配失败）是唯一的例外，它没有格可以说话。
  */
 export function foldWorkflow(
   records: readonly WorkflowCallRecord[],
@@ -516,35 +579,18 @@ export function foldWorkflow(
     states: {},
     approvals: {},
   }
+  let startFailed = false
 
   for (const record of records) {
     if (workflowGroupId(record) !== workflowId) continue
     const transition = workflowTransitionOf(record.outcome)
-    Object.assign(projection.states, record.nodes)
     const parsedRecord = record.args ? parseWorkflowCall(record.args) : null
     const review =
       parsedRecord?.ok && parsedRecord.call.kind === 'review' ? parsedRecord.call : null
-    if (review?.workflowId !== workflowId) {
-      if (review)
-        return { ok: false, error: `步骤 ${record.stepId} 的 workflowId 与调用参数不一致` }
+    if (review && review.workflowId !== workflowId) {
+      return { ok: false, error: `步骤 ${record.stepId} 的 workflowId 与调用参数不一致` }
     }
-    if (review?.decision === 'revise' && (transition || record.status === 'running')) {
-      const closure = revisionClosure(
-        projection.nodes,
-        review.checkpointId,
-        Object.keys(projection.approvals),
-        review.revisions.map((revision) => revision.nodeId),
-      )
-      if (!closure.ok) return closure
-      for (const id of closure.revokedCheckpointIds) delete projection.approvals[id]
-      for (const nodeId of closure.nodeIds) delete projection.results[nodeId]
-    }
-    if (!transition) {
-      if (record.status === 'running' && record.stepId !== workflowId) projection.phase = 'running'
-      // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
-      // 不投影成 failed 的话它永远停在 running，approve 只能收到「当前不是待审查状态」。
-      if (record.status === 'failure' && record.stepId === workflowId) projection.phase = 'failed'
-    } else {
+    if (transition) {
       if (transition.workflowId !== workflowId) {
         return { ok: false, error: `步骤 ${record.stepId} 的 workflowId 与调用参数不一致` }
       }
@@ -557,44 +603,60 @@ export function foldWorkflow(
       ) {
         return { ok: false, error: `步骤 ${record.stepId} 的审查参数与结果不一致` }
       }
-      if (transition.review?.decision === 'approve') {
-        const checkpoint = projection.nodes.find(
-          (node): node is WorkflowCheckpointNode =>
-            node.kind === 'checkpoint' && node.id === transition.review?.checkpointId,
-        )
-        if (!checkpoint)
-          return { ok: false, error: `找不到已批准的检查点 ${transition.review.checkpointId}` }
-        projection.approvals[checkpoint.id] = checkpointOutput(
-          checkpoint,
-          projection.results,
-          transition.review.note,
-        )
-      }
-      for (const receipt of transition.receipts) projection.results[receipt.nodeId] = receipt
-      projection.phase = transition.phase
-      if (transition.checkpointId) projection.checkpointId = transition.checkpointId
-      else delete projection.checkpointId
     }
-    // 记录上被中断、又没有回执的格折出「调用中断」回执，revise 才找得到要续的会话。
-    // 中断不只发生在被打断的调用上：卡返回后还在跑的格，父会话这一轮结束时同样中断。
-    const receiptIds = new Set(transition?.receipts.map((receipt) => receipt.nodeId) ?? [])
-    for (const [nodeId, state] of Object.entries(record.nodes ?? {})) {
-      if (state.phase !== 'interrupted' || !state.subagentId || receiptIds.has(nodeId)) continue
-      const node = projection.nodes.find(
-        (candidate): candidate is WorkflowAgentNode =>
-          candidate.kind !== 'checkpoint' && candidate.id === nodeId,
+    /*
+     * 还在跑的那次调用按它的参数算数。
+     *
+     * 派出即返回之后，一格跑完的回调随时会重建这份投影，而那时发起它的那次
+     * workflow 调用可能还没落终态。不认它的话，刚批准的检查点在几毫秒内又被判成
+     * 「上游齐了、还没批准」，同一个检查点回执因此发两遍。
+     */
+    const applied = transition?.review ?? (record.status === 'running' ? review : null)
+    if (applied?.decision === 'approve') {
+      const checkpoint = projection.nodes.find(
+        (node): node is WorkflowCheckpointNode =>
+          node.kind === 'checkpoint' && node.id === applied.checkpointId,
       )
-      if (!node) continue
-      projection.results[nodeId] = {
-        nodeId,
-        subagentId: state.subagentId,
-        label: state.label || targetLabel(node.target),
-        status: 'failed',
-        output: '',
-        error: state.error ?? '调用中断',
-        durationMs: state.durationMs ?? 0,
-      }
+      if (!checkpoint) return { ok: false, error: `找不到已批准的检查点 ${applied.checkpointId}` }
+      projection.approvals[checkpoint.id] = checkpointOutput(
+        checkpoint,
+        workflowResults(projection.nodes, projection.states),
+        applied.note,
+      )
     }
+    if (applied?.decision === 'revise' && review) {
+      const revised = applyRevision(
+        projection.nodes,
+        projection.states,
+        projection.approvals,
+        review,
+      )
+      if (!revised.ok) return revised
+    }
+    /*
+     * 这一次调用写下的格状态最后落。
+     *
+     * 不要提到 revise 之前：revise 作废的是它之前那些格，而重新派出的那几格
+     * 由这同一条记录写，先落就会被作废动作抹掉。
+     */
+    Object.assign(projection.states, record.nodes)
+    // 首派没有 transition 又已落终态：这一轮被进程退出或装配失败截断，图不会自己继续。
+    if (record.status === 'failure' && record.stepId === workflowId) startFailed = true
   }
+
+  projection.results = workflowResults(projection.nodes, projection.states)
+  const ready = readyCheckpoint(projection.nodes, projection.results, projection.approvals)
+  const allSettled = projection.nodes.every(
+    (node) => node.kind === 'checkpoint' || projection.results[node.id] !== undefined,
+  )
+  const allApproved = projection.nodes.every(
+    (node) => node.kind !== 'checkpoint' || projection.approvals[node.id] !== undefined,
+  )
+  if (startFailed) projection.phase = 'failed'
+  else if (ready) {
+    projection.phase = 'waiting_review'
+    projection.checkpointId = ready.id
+  } else if (allSettled && allApproved) projection.phase = 'completed'
+  else projection.phase = 'running'
   return { ok: true, projection }
 }

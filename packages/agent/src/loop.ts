@@ -187,6 +187,8 @@ export interface FollowUpInput {
   /** 装配后的正文（附件已解析成内容块），进 transcript。 */
   content: string | ContentBlock[]
   attachments?: Attachment[]
+  /** 谁投进来的：子 agent 的回执、workflow 的回执，缺席 = 用户本人。 */
+  origin?: 'subagent' | 'workflow'
 }
 
 export interface LoopPersistence {
@@ -200,7 +202,7 @@ export interface LoopPersistence {
   landUserStep(
     runId: RunId,
     seq: number,
-    input: { text: string; attachments?: Attachment[] },
+    input: { text: string; attachments?: Attachment[]; origin?: 'subagent' | 'workflow' },
   ): string
   openTextStep(runId: RunId, seq: number): string
   /**
@@ -959,6 +961,7 @@ export class AgentLoop {
             const stepId = persist.landUserStep(input.runId, seq, {
               text: f.text,
               ...(f.attachments?.length ? { attachments: f.attachments } : {}),
+              ...(f.origin ? { origin: f.origin } : {}),
             })
             transcript.push({
               role: 'user',
@@ -974,6 +977,8 @@ export class AgentLoop {
               followUpId: f.id,
               content: f.text,
               ...(f.attachments?.length ? { attachments: f.attachments } : {}),
+              // 与上面落库的那一格同值：两侧不同口径的话，这一帧画气泡、刷新后画回执行。
+              ...(f.origin ? { origin: f.origin } : {}),
             }
           }
         }
@@ -1818,29 +1823,6 @@ export class AgentLoop {
             }
             notices.push(
               `待办清单还有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。上一条回复不是结束，这一轮继续。`,
-            )
-            continue
-          }
-
-          // 这一轮派出去的子 agent 还在跑时，这一条响应同样不是结束：结束就得中断它们。
-          const inflight = ctx.delegate?.inflight(input.runId) ?? []
-          if (inflight.length) {
-            const names = inflight.map((member) => member.name)
-            progress.push({
-              cycle: cycleFingerprint(
-                'assistant_end_turn',
-                {},
-                { status: 'inflight', data: names },
-              ),
-              noProgress: true,
-            })
-            if (stalled()) {
-              stopReason = 'no_progress'
-              stopDetail = '子 agent 还在跑时连续三次只回话不等'
-              break
-            }
-            notices.push(
-              `还有 ${names.length} 个子 agent 在跑：${names.join('、')}。这一轮不结束；要它们的回执，workflow 只带 workflowId 再调一次。`,
             )
             continue
           }

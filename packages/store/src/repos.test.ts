@@ -13,6 +13,7 @@ import {
   finishRun,
   getConversation,
   getRun,
+  interruptRunningNodes,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
   listChildConversations,
@@ -176,6 +177,54 @@ describe('run 上下文快照', () => {
       { runId: run.id, userMessageId: user.id, segments },
     ])
     expect(Object.hasOwn(getRun(store, run.id) as object, 'contextSnapshot')).toBe(false)
+    store.close()
+  })
+})
+
+describe('消息来源', () => {
+  /**
+   * 回执与用户本人的话都以 user 角色落库，分辨只剩这一列。读回来丢掉它的话，
+   * 界面把回执渲染成用户气泡，账本把回执算进用户说过的话。
+   */
+  test('带来源的写读回原值，不带的读回 null', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const mine = appendMessage(store, { conversationId: conv.id, role: 'user', content: '开工' })
+    const sub = appendMessage(store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '[子 agent 回执] 已返回',
+      origin: 'subagent',
+    })
+    const flow = appendMessage(store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '[检查点回执] 上游已齐',
+      origin: 'workflow',
+    })
+
+    expect([mine.origin, sub.origin, flow.origin]).toEqual([null, 'subagent', 'workflow'])
+    expect(listMessages(store, conv.id).map((m) => m.origin)).toEqual([
+      null,
+      'subagent',
+      'workflow',
+    ])
+    expect(
+      listConversationHistoryPage(store, conv.id, { limit: 10 }).messages.map((m) => m.origin),
+    ).toEqual([null, 'subagent', 'workflow'])
+    store.close()
+  })
+
+  test('列上有约束：来源只认这两个值', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    expect(() =>
+      store.db
+        .query(
+          'INSERT INTO messages (id, conversation_id, role, content, origin, created_at) VALUES (?,?,?,?,?,?)',
+        )
+        .run('ms_bad', conv.id, 'user', '正文', 'human', 0),
+    ).toThrow()
     store.close()
   })
 })
@@ -832,9 +881,22 @@ describe('卡返回后格仍可落终态', () => {
     store.close()
   })
 
-  test('这一轮收尾也扫已返回的卡：没到终态的格标中断，到了的不动', () => {
+  /**
+   * run 收尾**不动格**：子 agent 的生命期跟着会话，这一轮结束时它还在跑，
+   * 回执几分钟后才到。扫成中断的话那份回执回来时格上写的是「中断」。
+   */
+  test('这一轮收尾不碰格', () => {
     const { store, run, nodes } = returnedCard()
     settleRunningSteps(store, run.id)
+    expect(nodes()?.slow).toMatchObject({ phase: 'working' })
+    store.close()
+  })
+
+  /** 重启回收才扫：进程里没有任何人在收那份回执了，格留在「进行中」那张图就没有出口。 */
+  test('重启回收把没到终态的格标中断，到了的不动', () => {
+    const { store, run, nodes } = returnedCard()
+    const changed = interruptRunningNodes(store, run.id)
+    expect(changed.map((row) => row.nodeId)).toEqual(['slow'])
     expect(nodes()?.slow).toMatchObject({ phase: 'interrupted', error: '调用中断' })
     expect(nodes()?.fast).toMatchObject({ phase: 'failed', error: '连不上' })
     expect(listSteps(store, run.id)[0]?.status).toBe('failure')

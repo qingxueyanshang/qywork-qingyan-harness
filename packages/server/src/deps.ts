@@ -10,6 +10,7 @@ import type { ContentStore, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { EventBus } from './bus.ts'
 import type { RunManager } from './runs.ts'
+import type { SubagentRegistry } from './subagents.ts'
 
 /**
  * **这里没有 `workspaceRoot`。**
@@ -26,6 +27,8 @@ export interface CommandDeps {
   config: QyConfig
   bus: EventBus
   runs: RunManager
+  /** 在跑的子 agent。生命期跟会话，所以它与 `runs` 同级，不挂在派活通道上。 */
+  subagents: SubagentRegistry
 }
 
 /** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */

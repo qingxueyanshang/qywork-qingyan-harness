@@ -67,6 +67,9 @@ export interface SinkPort {
  *
  * **子 agent 不得再派活。** 装配方只给顶层会话注入它。成员会话拿不到这个端口，也就不可能递归下去
  * —— 递归派活没有终止条件，一次失控会把整台机器的进程数拖垮。
+ *
+ * **派出即返回，完成是事件。** 端口上没有等、没有汇合、没有「这一轮结束就停掉它们」：
+ * 子 agent 的生命期跟着会话，回执由实现方作为一条消息投回这条会话。
  */
 export interface SubagentSummary {
   id: string
@@ -103,8 +106,11 @@ export interface DelegatePort {
     provider?: string,
   ): { provider: string; model: string } | { error: string }
   /**
-   * 派给一个子 agent 并等它做完。目标是新建（按种类）还是已有（按 id）由 `target` 决定；
-   * 失败是返回值不是异常——模型要按原因换做法。
+   * 派出一个子 agent，**当场返回**。目标是新建（按种类）还是已有（按 id）由 `target` 决定；
+   * 派不出去是返回值不是异常——模型要按原因换做法。
+   *
+   * **产出不在这里。** 子 agent 做完之后，实现方把回执作为一条消息投进这条会话
+   * （忙就在下一个 step 边界注入，闲就当场起一轮），调用方不必等、也等不到。
    *
    * `stepId` 是这次调用那张卡的 id，实现方按它广播进度；`nodeId` 是图上哪一格，
    * 派一件时不给，实现方用单格的固定 id。
@@ -118,59 +124,35 @@ export interface DelegatePort {
     runId: string
     stepId?: string
     nodeId?: string
-    signal: AbortSignal
   }): Promise<{
     ok: boolean
-    output: string
+    /** 派不出去的原因：目标不存在、外部 CLI 没装、模型指定不合法。 */
     error?: string
     /** 派给了谁。连记录都没建成时缺席。 */
     subagentId?: string
     name?: string
-    /** 派给的是哪一种子 agent。回执文案按它取称呼；连记录都没建成时缺席。 */
+    /** 派给的是哪一种子 agent。文案按它取称呼；连记录都没建成时缺席。 */
     kind?: SubagentKind
     /** 这次派发是不是新建了它。 */
     created?: boolean
-    /** 从派出到回执的耗时。卡上那一格印的就是这个数。 */
-    durationMs?: number
     /** 这次派发里模型该知道的事实：续接时会话没接上、角色已不在等。原样交回模型。 */
     note?: string
   }>
   /**
-   * 汇合这一轮里派出、上一次调用返回时还在跑的子 agent：等它的回执，不重派。
-   * 进程内没有它（这一轮之前派的、进程重启过）时回 `ok: false` 且不带 error，原因由调用方按格上的事实补。
-   */
-  join(input: { nodeId: string; subagentId: string }): Promise<{
-    ok: boolean
-    output: string
-    error?: string
-    subagentId?: string
-    durationMs?: number
-    note?: string
-  }>
-  /**
-   * 这一轮结束：还没跑完的子 agent 一律中断。子 agent 的生命期不超过派它的那一轮，
-   * 否则它跑在一个没人收回执的地方。
-   */
-  settleRun(runId: string): void
-  /** 这一轮里还在跑的子 agent。循环在 end_turn 时读它，有就把这条事实交给下一次请求。 */
-  inflight(runId: string): { name: string }[]
-  /**
-   * 跑一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
+   * 推进一整张图：一次交清楚拆成哪几件事、谁做、谁等谁。
    *
-   * **调度不在这里，在实现方**：依赖就绪才启动、并发上限都由那边的编排器
-   * 按图执行。工具只负责把图交出去、把结果拿回来。
+   * **调度不在这里，在实现方**：依赖就绪才启动、并发上限都由那边的推进器按图算。
+   * 与 `dispatch` 同一条规矩——把此刻就绪的格派出去就返回，格跑完的回执、
+   * 到检查点的回执都作为消息送到这条会话。
    *
    * `stepId` 是这次工具调用的卡片 id，实现方按它广播进度，前端据此认领那张图卡。
    */
-  runGraph(input: {
-    call: WorkflowCall
-    runId: string
-    stepId: string
-    signal: AbortSignal
-  }): Promise<{
+  runGraph(input: { call: WorkflowCall; runId: string; stepId: string }): Promise<{
     ok: boolean
     error?: string
     transition?: WorkflowTransition
+    /** 这次推进之后整张图是不是已经全部终态且全部批准。 */
+    completed?: boolean
   }>
 }
 

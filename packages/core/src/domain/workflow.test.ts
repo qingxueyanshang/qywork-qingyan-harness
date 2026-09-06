@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { NodeState } from './model.ts'
 import {
   DEFAULT_MAX_CONCURRENT,
   foldWorkflow,
@@ -248,8 +249,24 @@ describe('workflow 调用判别', () => {
   })
 })
 
+const cell = (input: {
+  label: string
+  phase?: NodeState['phase']
+  output?: string
+  error?: string
+  subagentId?: string
+}): NodeState => ({
+  phase: input.phase ?? 'done',
+  label: input.label,
+  durationMs: 1,
+  ...(input.output ? { output: input.output } : {}),
+  ...(input.error ? { error: input.error } : {}),
+  ...(input.subagentId ? { subagentId: input.subagentId as never } : {}),
+})
+
 describe('workflow 投影', () => {
-  test('首轮回执、返工和批准只从转移序列折叠', () => {
+  /** 回执只有一个来源：格的终态。转移里只剩「派了谁、批了什么」。 */
+  test('回执从格状态折出，批准把上游产出定格进 approvals', () => {
     const records: WorkflowCallRecord[] = [
       {
         stepId: 'wf1',
@@ -262,20 +279,8 @@ describe('workflow 投影', () => {
           ],
         },
         status: 'success',
-        outcome: outcome({
-          workflowId: 'wf1',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: [
-            {
-              nodeId: 'a',
-              label: 'A',
-              status: 'done',
-              output: '错',
-              durationMs: 1,
-            },
-          ],
-        }),
+        outcome: outcome({ workflowId: 'wf1', dispatched: ['a'] }),
+        nodes: { a: cell({ label: 'A', output: '错' }) },
       },
       {
         stepId: 'wf2',
@@ -289,19 +294,10 @@ describe('workflow 投影', () => {
         status: 'success',
         outcome: outcome({
           workflowId: 'wf1',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
+          dispatched: ['a'],
           review: { checkpointId: 'cp', decision: 'revise', note: '改正' },
-          receipts: [
-            {
-              nodeId: 'a',
-              label: 'A',
-              status: 'done',
-              output: '对',
-              durationMs: 1,
-            },
-          ],
         }),
+        nodes: { a: cell({ label: 'A', output: '对' }) },
       },
       {
         stepId: 'wf3',
@@ -309,18 +305,10 @@ describe('workflow 投影', () => {
         status: 'success',
         outcome: outcome({
           workflowId: 'wf1',
-          phase: 'completed',
+          dispatched: ['b'],
           review: { checkpointId: 'cp', decision: 'approve', note: '通过' },
-          receipts: [
-            {
-              nodeId: 'b',
-              label: 'B',
-              status: 'done',
-              output: '完成',
-              durationMs: 1,
-            },
-          ],
         }),
+        nodes: { b: cell({ label: 'B', output: '完成' }) },
       },
     ]
     const folded = foldWorkflow(records, 'wf1')
@@ -330,6 +318,65 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.a?.output).toBe('对')
     expect(folded.projection.approvals.cp).toContain('通过')
     expect(folded.projection.approvals.cp).toContain('对')
+  })
+
+  /** 派生的 phase：上游全部终态且没批准，那个检查点就是当前待审查的。 */
+  test('上游全部终态、检查点未批准时投影为待审查', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+            ],
+          },
+          status: 'success',
+          outcome: outcome({ workflowId: 'wf', dispatched: ['a', 'b'] }),
+          nodes: {
+            a: cell({ label: 'a', output: '甲' }),
+            b: cell({ label: 'b', phase: 'failed', error: '连不上' }),
+          },
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('waiting_review')
+    expect(folded.projection.checkpointId).toBe('cp')
+    expect(folded.projection.results.b).toMatchObject({ status: 'failed', error: '连不上' })
+  })
+
+  /** 还有格在跑时不算到达检查点：它没有终态，也就没有回执。 */
+  test('有格还在跑时投影为执行中', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
+            ],
+          },
+          status: 'success',
+          outcome: outcome({ workflowId: 'wf', dispatched: ['a', 'b'] }),
+          nodes: { a: cell({ label: 'a', output: '甲' }), b: { phase: 'working', label: 'b' } },
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.phase).toBe('running')
+    expect(folded.projection.checkpointId).toBeUndefined()
+    expect(folded.projection.results.b).toBeUndefined()
   })
 
   /**
@@ -347,25 +394,16 @@ describe('workflow 投影', () => {
         needs: ['build-glm', 'build-qwen'],
       },
     ]
-    const receipt = (nodeId: string, output: string) => ({
-      nodeId,
-      label: nodeId,
-      status: 'done' as const,
-      output,
-      durationMs: 1,
-      subagentId: `cv_${nodeId}`,
-    })
     const records: WorkflowCallRecord[] = [
       {
         stepId: 'wf',
         args: { goal: '四个模型各做一版', nodes },
         status: 'success',
-        outcome: outcome({
-          workflowId: 'wf',
-          phase: 'waiting_review',
-          checkpointId: 'audit-builds',
-          receipts: [receipt('build-glm', 'glm 初稿'), receipt('build-qwen', 'qwen 初稿')],
-        }),
+        outcome: outcome({ workflowId: 'wf', dispatched: ['build-glm', 'build-qwen'] }),
+        nodes: {
+          'build-glm': cell({ label: 'build-glm', output: 'glm 初稿', subagentId: 'cv_glm' }),
+          'build-qwen': cell({ label: 'build-qwen', output: 'qwen 初稿', subagentId: 'cv_qwen' }),
+        },
       },
       {
         stepId: 'approve',
@@ -378,13 +416,12 @@ describe('workflow 投影', () => {
         status: 'success',
         outcome: outcome({
           workflowId: 'wf',
-          phase: 'completed',
+          dispatched: [],
           review: {
             checkpointId: 'audit-builds',
             decision: 'approve',
             note: '均已产生代码，现批准',
           },
-          receipts: [],
         }),
       },
       {
@@ -406,6 +443,11 @@ describe('workflow 投影', () => {
     expect(folded.projection.results['build-qwen']).toBeUndefined()
     // 没被点名的那个节点结果留着：它不需要重跑，检查点等它的回执。
     expect(folded.projection.results['build-glm']?.output).toBe('glm 初稿')
+    // 作废的格保留子 agent id：续发是向原子 agent 接着说，不是另起一个。
+    expect(folded.projection.states['build-qwen']).toMatchObject({
+      phase: 'waiting',
+      subagentId: 'cv_qwen',
+    })
   })
 
   /**
@@ -434,7 +476,7 @@ describe('workflow 投影', () => {
     expect(folded.projection.phase).toBe('failed')
   })
 
-  test('被打断的首派按 children 折出「调用中断」回执，revise 才找得到要续的会话', () => {
+  test('被中断的格折出「调用中断」回执，revise 才找得到要续的会话', () => {
     const folded = foldWorkflow(
       [
         {
@@ -447,7 +489,8 @@ describe('workflow 投影', () => {
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
             ],
           },
-          status: 'failure',
+          status: 'success',
+          outcome: outcome({ workflowId: 'wf', dispatched: ['a', 'b'] }),
           nodes: {
             a: { phase: 'interrupted', label: 'a', subagentId: 'cv_a' as never },
             b: { phase: 'interrupted', label: 'b', subagentId: 'cv_b' as never },
@@ -458,7 +501,8 @@ describe('workflow 投影', () => {
     )
     expect(folded.ok).toBe(true)
     if (!folded.ok) return
-    expect(folded.projection.phase).toBe('failed')
+    // 中断也是终态：检查点因此仍然到得了，图不会卡在没有出口的地方。
+    expect(folded.projection.phase).toBe('waiting_review')
     expect(folded.projection.results.a).toMatchObject({
       status: 'failed',
       error: '调用中断',
@@ -469,6 +513,44 @@ describe('workflow 投影', () => {
       error: '调用中断',
       subagentId: 'cv_b',
     })
+  })
+
+  /**
+   * 派出即返回之后，一格跑完的回调随时会重建投影，而那时批准那次调用可能还没落终态。
+   * 不认它的话同一个检查点会被判成第二次就绪，回执发两遍。
+   */
+  test('还在跑的批准也算数', () => {
+    const folded = foldWorkflow(
+      [
+        {
+          stepId: 'wf',
+          args: {
+            goal: '目标',
+            nodes: [
+              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+              { id: 'b', kind: 'temp', name: 'b', task: '再做', needs: ['cp'] },
+              { id: 'cp2', kind: 'checkpoint', label: '再审查', needs: ['b'] },
+            ],
+          },
+          status: 'success',
+          outcome: outcome({ workflowId: 'wf', dispatched: ['a'] }),
+          nodes: { a: cell({ label: 'a', output: '甲' }) },
+        },
+        {
+          stepId: 'approve',
+          args: { workflowId: 'wf', checkpointId: 'cp', decision: 'approve', note: '通过' },
+          status: 'running',
+          nodes: { b: { phase: 'working', label: 'b' } },
+        },
+      ],
+      'wf',
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    expect(folded.projection.approvals.cp).toContain('通过')
+    expect(folded.projection.phase).toBe('running')
+    expect(folded.projection.checkpointId).toBeUndefined()
   })
 
   test('运行中的续调立刻按 args.workflowId 归回首轮', () => {
@@ -488,27 +570,11 @@ describe('workflow 投影', () => {
           ],
         },
         status: 'success',
-        outcome: outcome({
-          workflowId: 'wf',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: [
-            {
-              nodeId: 'a',
-              label: 'A',
-              status: 'done',
-              output: '旧 A',
-              durationMs: 1,
-            },
-            {
-              nodeId: 'b',
-              label: 'B',
-              status: 'done',
-              output: '旧 B',
-              durationMs: 1,
-            },
-          ],
-        }),
+        outcome: outcome({ workflowId: 'wf', dispatched: ['a'] }),
+        nodes: {
+          a: cell({ label: 'A', output: '旧 A' }),
+          b: cell({ label: 'B', output: '旧 B' }),
+        },
       },
       {
         stepId: 'review',
@@ -529,89 +595,64 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.a).toBeUndefined()
     expect(folded.projection.results.b).toBeUndefined()
   })
-})
 
-describe('一格失败先交回', () => {
-  test('只带 workflowId 解析成等在跑的节点', () => {
-    expect(parseWorkflowCall({ workflowId: 'wf' })).toEqual({
-      ok: true,
-      call: { kind: 'wait', workflowId: 'wf' },
-    })
-  })
-
-  test('等的调用不接受审查字段', () => {
-    const got = parseWorkflowCall({ workflowId: 'wf', note: '等' })
-    expect(got.ok).toBe(false)
-    if (!got.ok) expect(got.error).toBe('等在跑的节点只带 workflowId')
-  })
-
-  test('返回值里还在跑的节点原样读回', () => {
-    const transition = workflowTransitionOf(
-      outcome({
-        workflowId: 'wf',
-        phase: 'waiting_review',
-        checkpointId: 'cp',
-        receipts: [],
-        running: ['a', 'c'],
-      }),
-    )
-    expect(transition?.running).toEqual(['a', 'c'])
-  })
-
-  /** 卡返回之后其余格照跑，父会话这一轮结束时它们被中断：这些格也要折出可续接的回执。 */
-  test('卡返回后被中断的格也折出「调用中断」回执', () => {
-    const folded = foldWorkflow(
-      [
-        {
-          stepId: 'wf',
-          args: {
-            goal: '目标',
-            nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
-              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
-              { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
-            ],
-          },
-          status: 'failure',
-          outcome: outcome({
-            workflowId: 'wf',
-            phase: 'waiting_review',
-            checkpointId: 'cp',
-            receipts: [
-              {
-                nodeId: 'b',
-                subagentId: 'cv_b',
-                label: 'b',
-                status: 'failed',
-                output: '',
-                error: '连不上',
-                durationMs: 3,
-              },
-            ],
-            running: ['a'],
-          }),
-          nodes: {
-            a: {
-              phase: 'interrupted',
-              label: 'a',
-              subagentId: 'cv_a' as never,
-              error: '父会话这一轮已结束',
-            },
-            b: { phase: 'failed', label: 'b', subagentId: 'cv_b' as never, error: '连不上' },
-          },
+  /** revise 的那次调用自己派出去的格不能被它自己作废，否则重派立刻就丢了。 */
+  test('revise 那一次调用写下的格状态压过作废', () => {
+    const records: WorkflowCallRecord[] = [
+      {
+        stepId: 'wf',
+        args: {
+          goal: '目标',
+          nodes: [
+            { id: 'a', kind: 'temp', name: 'a', task: '研究' },
+            { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+          ],
         },
-      ],
-      'wf',
-    )
+        status: 'success',
+        outcome: outcome({ workflowId: 'wf', dispatched: ['a'] }),
+        nodes: { a: cell({ label: 'A', output: '旧 A', subagentId: 'cv_a' }) },
+      },
+      {
+        stepId: 'review',
+        args: {
+          workflowId: 'wf',
+          checkpointId: 'cp',
+          decision: 'revise',
+          note: '返工',
+          revisions: [{ nodeId: 'a', instruction: '补证据' }],
+        },
+        status: 'running',
+        nodes: { a: { phase: 'working', label: 'A', subagentId: 'cv_a' as never } },
+      },
+    ]
+    const folded = foldWorkflow(records, 'wf')
     expect(folded.ok).toBe(true)
     if (!folded.ok) return
-    expect(folded.projection.phase).toBe('waiting_review')
-    expect(folded.projection.checkpointId).toBe('cp')
-    expect(folded.projection.results.a).toMatchObject({
-      status: 'failed',
-      error: '父会话这一轮已结束',
-      subagentId: 'cv_a',
-    })
-    expect(folded.projection.results.b).toMatchObject({ status: 'failed', error: '连不上' })
+    expect(folded.projection.states.a?.phase).toBe('working')
+    expect(folded.projection.phase).toBe('running')
+  })
+})
+
+describe('转移只记这次调用做了什么', () => {
+  test('只带 workflowId 不成立：审查动作必须点名检查点', () => {
+    const got = parseWorkflowCall({ workflowId: 'wf' })
+    expect(got.ok).toBe(false)
+    if (!got.ok) expect(got.error).toBe('审查动作必须带 workflowId 和 checkpointId')
+  })
+
+  test('派出去的格原样读回', () => {
+    const transition = workflowTransitionOf(outcome({ workflowId: 'wf', dispatched: ['a', 'c'] }))
+    expect(transition).toEqual({ workflowId: 'wf', dispatched: ['a', 'c'] })
+  })
+
+  test('没有 dispatched 的结果不是转移', () => {
+    expect(
+      workflowTransitionOf({
+        status: 'success',
+        executed: true,
+        message: 'ok',
+        data: { workflowId: 'wf' },
+      }),
+    ).toBeNull()
   })
 })

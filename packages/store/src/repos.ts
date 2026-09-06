@@ -470,6 +470,8 @@ export function appendMessage(
     role: Message['role']
     content: string
     attachments?: Message['attachments']
+    /** 缺席 = 用户本人发的，落 NULL。见 `Message.origin`。 */
+    origin?: 'subagent' | 'workflow'
   },
 ): Message {
   const msg: Message = {
@@ -478,11 +480,12 @@ export function appendMessage(
     role: input.role,
     content: input.content,
     attachments: input.attachments ?? [],
+    origin: input.origin ?? null,
     createdAt: Date.now(),
   }
   store.db
     .query(
-      'INSERT INTO messages (id, conversation_id, role, content, attachments, created_at) VALUES (?,?,?,?,?,?)',
+      'INSERT INTO messages (id, conversation_id, role, content, attachments, origin, created_at) VALUES (?,?,?,?,?,?,?)',
     )
     .run(
       msg.id,
@@ -490,6 +493,7 @@ export function appendMessage(
       msg.role,
       msg.content,
       writeJson(msg.attachments),
+      msg.origin,
       msg.createdAt,
     )
   /*
@@ -919,6 +923,7 @@ export function recoverStaleRuns(
       const isAmbiguous = Number(r.ambiguous) === 1
       if (isAmbiguous) ambiguous++
       settleRunningSteps(store, r.id)
+      interruptRunningNodes(store, r.id)
       /*
        * 已发出但进程退出的 provider 请求，送达与计费都无法确认。run 收尾时必须
        * 同步落成 uncertain；继续挂在 in_flight 会让账本永远声称后台仍在执行。
@@ -989,14 +994,29 @@ export function recoverStaleRuns(
     // batch（provider 要求每个 tool call 有配对结果），一条孤儿会让**同一批次里
     // 已经成功的写文件结果一起从历史里消失**。跨轮记忆修好了，中断过的那一轮
     // 反而还是失忆的。
+    //
+    // 派活卡上没落终态的格同理，而且它连 running step 都不剩：派出即返回，
+    // 子 agent 的生命期跟着会话，它的终态写在一张早就返回的卡上。重启之后
+    // 进程里没有任何人在收那份回执，格留在「进行中」的话，那张图既 approve
+    // 不了也 revise 不了。
     const orphanRuns = store.db
       .query<{ run_id: string }, []>(
         `SELECT DISTINCT s.run_id AS run_id FROM steps s
          JOIN runs r ON r.id = s.run_id
-         WHERE s.status = 'running' AND r.status NOT IN ('running','queued')`,
+         WHERE r.status NOT IN ('running','queued')
+           AND (s.status = 'running'
+                OR (json_type(s.payload, '$.nodes') = 'object'
+                    AND EXISTS (
+                      SELECT 1 FROM json_each(s.payload, '$.nodes') n
+                      WHERE json_extract(n.value, '$.phase')
+                            NOT IN ('done','failed','skipped','interrupted')
+                    )))`,
       )
       .all()
-    for (const o of orphanRuns) settleRunningSteps(store, o.run_id as RunId)
+    for (const o of orphanRuns) {
+      settleRunningSteps(store, o.run_id as RunId)
+      interruptRunningNodes(store, o.run_id as RunId)
+    }
 
     // 与上面的孤儿 step 同理：旧版本可能先把 run 收尾，却漏掉已发送请求的终态。
     // 终态 run 不可能仍合法持有 in_flight；只能按“是否送达未知”收敛为 uncertain。
@@ -1082,27 +1102,6 @@ function pidAlive(pid: number): boolean {
  * 看不出它是哪一步崩的。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
-  // 派活卡上没跑完的格先标成中断，再给 step 补终态：那几格的子 agent 不会再有回执。
-  // 卡不限于还在 running 的：一格失败先交回后卡已返回，其余格照跑，这一轮结束时它们还在卡上。
-  const cards = store.db
-    .query<{ id: string; payload: string }, [string]>(
-      `SELECT id, payload FROM steps
-       WHERE run_id = ? AND json_type(payload, '$.nodes') = 'object'`,
-    )
-    .all(runId)
-  for (const card of cards) {
-    const payload = JSON.parse(card.payload) as { nodes: Record<string, NodeState> }
-    let changed = false
-    for (const [nodeId, state] of Object.entries(payload.nodes)) {
-      if (SETTLED_PHASES.has(state.phase)) continue
-      payload.nodes[nodeId] = { ...state, phase: 'interrupted', error: '调用中断' }
-      changed = true
-    }
-    if (!changed) continue
-    store.db
-      .query('UPDATE steps SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(payload), card.id)
-  }
   const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
     store.db
       .query(
@@ -1124,6 +1123,44 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
     executed: false,
     message: '未开始执行即被中断',
   })
+}
+
+/**
+ * 把这一轮派活卡上没落终态的格标成中断，返回改动过的格。
+ *
+ * **不在 run 收尾时调它。** 子 agent 的生命期跟着会话，不跟着派它的那一轮：
+ * 收尾时扫一遍会把还在跑的格记成中断，而它的回执几分钟后才到。
+ * 调用点只有两处——用户按会话停止，以及重启回收（进程里没有任何人在收这些回执了）。
+ *
+ * 卡不限于还在 running 的：派出即返回，格的终态写在一张已经返回的卡上。
+ */
+export function interruptRunningNodes(
+  store: Store,
+  runId: RunId,
+): { stepId: string; nodeId: string; state: NodeState }[] {
+  const cards = store.db
+    .query<{ id: string; payload: string }, [string]>(
+      `SELECT id, payload FROM steps
+       WHERE run_id = ? AND json_type(payload, '$.nodes') = 'object'`,
+    )
+    .all(runId)
+  const changed: { stepId: string; nodeId: string; state: NodeState }[] = []
+  for (const card of cards) {
+    const payload = JSON.parse(card.payload) as { nodes: Record<string, NodeState> }
+    let dirty = false
+    for (const [nodeId, state] of Object.entries(payload.nodes)) {
+      if (SETTLED_PHASES.has(state.phase)) continue
+      const next: NodeState = { ...state, phase: 'interrupted', error: '调用中断' }
+      payload.nodes[nodeId] = next
+      changed.push({ stepId: card.id, nodeId, state: next })
+      dirty = true
+    }
+    if (!dirty) continue
+    store.db
+      .query('UPDATE steps SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(payload), card.id)
+  }
+  return changed
 }
 
 export function listRuns(store: Store, conversationId: ConversationId): Run[] {
@@ -1666,6 +1703,7 @@ function rowToMessage(r: MessageRow): Message {
     role: r.role,
     content: r.content,
     attachments: readJson(r.attachments, []),
+    origin: r.origin,
     createdAt: r.created_at,
   }
 }

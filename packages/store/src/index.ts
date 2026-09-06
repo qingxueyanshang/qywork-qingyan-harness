@@ -31,6 +31,7 @@ export {
   getRun,
   getWorkspace,
   getWorkspaceByPath,
+  interruptRunningNodes,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
   listChildConversations,

@@ -1,15 +1,17 @@
 /**
  * `runs.ts` 的并发边界。
  *
- * 覆盖范围：`RunManager` 的会话占位（reserve / release / isBusy）、忙闲广播
- * （conversation.busy）与待应答授权的读回（pendingFor）。授权的应答链路由
- * `e2e.test.ts` 走真实链路覆盖，这里不重复。
+ * 覆盖范围：`RunManager` 的会话占位（reserve / release）、忙态的两问
+ * （hasRun / isBusy）、忙闲广播（conversation.busy）与按会话中断
+ * （interruptConversation）。指令入口那一层的回绝由 `goal-loop.test.ts` 覆盖，
+ * 在跑表本身（`subagents.ts`）由 `delegate.test.ts` 覆盖，这里不重复。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
 import { EventBus } from './bus.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 describe('同会话只允许一个 run', () => {
   /**
@@ -20,7 +22,7 @@ describe('同会话只允许一个 run', () => {
    * 这里测的就是「检查与占位是不是同一个同步动作」，不测调用次数。
    */
   test('并发 reserve 只有第一个拿得到', () => {
-    const runs = new RunManager(null as never, new EventBus())
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_1' as never
     expect(runs.reserve(cv)).toBe(true)
     expect(runs.reserve(cv)).toBe(false)
@@ -28,7 +30,7 @@ describe('同会话只允许一个 run', () => {
   })
 
   test('没跑起来时 release 要把会话放开 —— 否则它被永久锁死', () => {
-    const runs = new RunManager(null as never, new EventBus())
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_2' as never
     expect(runs.reserve(cv)).toBe(true)
     runs.release(cv)
@@ -37,7 +39,7 @@ describe('同会话只允许一个 run', () => {
   })
 
   test('不同会话互不影响', () => {
-    const runs = new RunManager(null as never, new EventBus())
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     expect(runs.reserve('cv_a' as never)).toBe(true)
     expect(runs.reserve('cv_b' as never)).toBe(true)
   })
@@ -66,7 +68,7 @@ describe('忙闲要播给所有人', () => {
   test('占位到注销，两头各播一次，退订了会话的客户端照样收得到', () => {
     const bus = new EventBus()
     const got = frames(bus)
-    const runs = new RunManager(null as never, bus)
+    const runs = new RunManager(null as never, bus, new SubagentRegistry())
     const cv = 'cv_1' as ConversationId
 
     runs.reserve(cv)
@@ -90,7 +92,7 @@ describe('忙闲要播给所有人', () => {
   test('register 之后再 release 报的仍是「在跑」—— 现算，不认调用方给的值', () => {
     const bus = new EventBus()
     const got = frames(bus)
-    const runs = new RunManager(null as never, bus)
+    const runs = new RunManager(null as never, bus, new SubagentRegistry())
     const cv = 'cv_2' as ConversationId
 
     runs.reserve(cv)
@@ -105,5 +107,87 @@ describe('忙闲要播给所有人', () => {
     const busy = got.filter((f) => f.event.type === 'conversation.busy')
     expect((busy[busy.length - 1]?.event as { busy: boolean }).busy).toBe(true)
     expect(runs.busyConversations()).toEqual([cv])
+  })
+})
+
+/**
+ * 停止按钮按会话寻址：客户端手里没有 runId，也不该去判定哪一个仍未收尾。
+ */
+describe('按会话中断', () => {
+  function running(runs: RunManager, cv: ConversationId, runId: string): AbortController {
+    const controller = new AbortController()
+    runs.reserve(cv)
+    runs.register({ runId: runId as never, conversationId: cv, controller, startedAt: 0 })
+    return controller
+  }
+
+  test('中断到的是这条会话的那一轮，别的会话不受影响', () => {
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
+    const mine = running(runs, 'cv_1' as ConversationId, 'rn_1')
+    const other = running(runs, 'cv_2' as ConversationId, 'rn_2')
+
+    expect(runs.interruptConversation('cv_1' as ConversationId)).toBe(true)
+    expect(mine.signal.aborted).toBe(true)
+    expect(other.signal.aborted).toBe(false)
+    expect((mine.signal.reason as { source: string }).source).toBe('user')
+  })
+
+  test('没有 run 在跑时返回 false —— 指令入口要据此回绝，不能静默', () => {
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
+    expect(runs.interruptConversation('cv_idle' as ConversationId)).toBe(false)
+
+    const cv = 'cv_3' as ConversationId
+    running(runs, cv, 'rn_3')
+    runs.unregister('rn_3' as never)
+    expect(runs.interruptConversation(cv)).toBe(false)
+  })
+
+  test('只占了位还没起 run 的会话中断不到 —— 占位没有可中断的执行', () => {
+    const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
+    const cv = 'cv_4' as ConversationId
+    runs.reserve(cv)
+    expect(runs.isBusy(cv)).toBe(true)
+    expect(runs.interruptConversation(cv)).toBe(false)
+  })
+})
+
+/**
+ * 忙态与起轮的闸拆成两问。
+ *
+ * 原始失败形状：子 agent 的生命期跟着会话，它在跑时会话是「忙」的（界面要显示、
+ * 停止按钮要在），但那不是一轮 run——回执与用户的消息此时必须能起新一轮，
+ * 用同一个判据的话它们会排进一个没有人会去消费的队列。
+ */
+describe('忙态含子 agent，起轮的闸不含', () => {
+  const cv = 'cv_sub' as ConversationId
+
+  function withSubagent(): { runs: RunManager; table: SubagentRegistry } {
+    const table = new SubagentRegistry()
+    const runs = new RunManager(null as never, new EventBus(), table)
+    table.add(cv, 'cv_child', {
+      name: '临时',
+      kind: 'temp',
+      controller: new AbortController(),
+    })
+    return { runs, table }
+  }
+
+  test('只有子 agent 在跑：isBusy 真、hasRun 假、reserve 放行', () => {
+    const { runs } = withSubagent()
+    expect(runs.isBusy(cv)).toBe(true)
+    expect(runs.hasRun(cv)).toBe(false)
+    expect(runs.reserve(cv)).toBe(true)
+  })
+
+  test('握手快照把只有子 agent 在跑的会话也报出来', () => {
+    const { runs } = withSubagent()
+    expect(runs.busyConversations()).toEqual([cv])
+  })
+
+  test('子 agent 结束后忙态跟着落', () => {
+    const { runs, table } = withSubagent()
+    table.remove(cv, 'cv_child')
+    expect(runs.isBusy(cv)).toBe(false)
+    expect(runs.busyConversations()).toEqual([])
   })
 })

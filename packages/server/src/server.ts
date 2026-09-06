@@ -38,6 +38,7 @@ import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 export interface ServeOptions {
   store: Store
@@ -120,7 +121,9 @@ function bootstrapWorkspace(
 
 export function serve(opts: ServeOptions) {
   const bus = new EventBus()
-  const runs = new RunManager(opts.store, bus)
+  // 在跑的子 agent 与 run 同级：它们的生命期跟着会话，不跟着派它们的那一轮。
+  const subagents = new SubagentRegistry()
+  const runs = new RunManager(opts.store, bus, subagents)
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
   const pairing = new Pairing({
@@ -177,7 +180,7 @@ export function serve(opts: ServeOptions) {
     })
 
   // 回收上次进程留下的 running run。必须在开始服务**之前**做：
-  // 留着不管的话 isBusy 会一直判真，用户在那个会话里发不出任何消息——会话被永久锁死。
+  // 留着不管的话 hasRun 会一直判真，用户在那个会话里发不出任何消息——会话被永久锁死。
   //
   // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。无差别
   // 回收的话，本进程一启动就把别的进程正在跑的那一轮判成中断——账本是共享的，
@@ -257,6 +260,7 @@ export function serve(opts: ServeOptions) {
           config: opts.config,
           bus,
           runs,
+          subagents,
         })
       } catch (err) {
         // 失败也要把 lastRunAt 留在已更新的状态：否则下一个 tick 会立刻重试，
@@ -381,6 +385,7 @@ export function serve(opts: ServeOptions) {
                 config: opts.config,
                 bus,
                 runs,
+                subagents,
               })
             },
             watchGit: () => gitWatch.retarget(),
@@ -429,6 +434,7 @@ export function serve(opts: ServeOptions) {
           config: opts.config,
           bus,
           runs,
+          subagents,
         })
       },
       close(ws: ServerWebSocket<SocketData>) {
@@ -466,6 +472,8 @@ export function serve(opts: ServeOptions) {
     stop() {
       gitWatch.stop()
       runs.interruptAll()
+      // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。
+      subagents.interruptAll()
       disableLan()
       server.stop(true)
       // 插件是子进程，不显式关会留下孤儿——sidecar 与截图脚本上是同一条约束。

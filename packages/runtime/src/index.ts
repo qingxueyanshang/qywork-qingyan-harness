@@ -56,6 +56,8 @@ export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。
 export { makeSummarizer, Session } from './session.ts'
+// 正文落盘：会话内的工具产出与服务端的子 agent 回执共用同一份实现
+export { RuntimeSink } from './sink.ts'
 // 历史投影：`Session.ask` 内部用它装配这一轮的历史，回归测试用它验证
 // 「活的 transcript 与跨 run 投影回来的那一份逐条同位」。
 export { buildHistory } from './transcript.ts'

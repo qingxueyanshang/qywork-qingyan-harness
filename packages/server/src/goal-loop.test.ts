@@ -34,6 +34,7 @@ import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import { resumeGoal, setGoal, startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 // ───────────────────────── 假 provider ─────────────────────────
 
@@ -121,6 +122,7 @@ let store: Store
 let content: ContentStore
 let bus: EventBus
 let runs: RunManager
+let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 
@@ -133,7 +135,8 @@ beforeAll(async () => {
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
-  runs = new RunManager(store, bus)
+  subagents = new SubagentRegistry()
+  runs = new RunManager(store, bus, subagents)
   config = {
     active: { provider: 'fake', model: 'deepseek-v4-flash' },
     providers: {
@@ -163,7 +166,7 @@ afterAll(async () => {
 })
 
 function deps() {
-  return { store, content, config, bus, runs }
+  return { store, content, config, bus, runs, subagents }
 }
 
 /** 每个用例一条干净的会话与一份干净的脚本。 */
@@ -544,11 +547,11 @@ describe('goal.set 指令', () => {
 /**
  * 停止按钮那一格。
  *
- * `runs.interrupt` 一直返回 `boolean`，而指令入口把它丢了。丢掉的表现是这一整类
+ * 按会话中断返回 `boolean`，指令入口必须把它答回去。丢掉它的现象是这一整类
  * 里最难查的一种：用户点了停止，按钮没反应、转圈继续转、一条日志都没有，
  * 「服务端在处理」和「这条指令没人接」在界面上完全一样。
  */
-describe('run.interrupt 指令', () => {
+describe('conversation.interrupt 指令', () => {
   function socket() {
     const sent: Record<string, unknown>[] = []
     return {
@@ -560,15 +563,15 @@ describe('run.interrupt 指令', () => {
     }
   }
 
-  test('注册表里没有这条 run 时必须回绝，不能静默', async () => {
+  test('这条会话没有 run 在跑时必须回绝，不能静默', async () => {
     const sock = socket()
-    await handleCommand({ type: 'run.interrupt', runId: 'rn_not_running' } as never, {
+    await handleCommand({ type: 'conversation.interrupt', conversationId: 'cv_idle' } as never, {
       ...deps(),
       ws: sock.ws,
     })
     expect(sock.sent).toHaveLength(1)
     expect(sock.sent[0]?.type).toBe('command.rejected')
-    expect(sock.sent[0]?.command).toBe('run.interrupt')
+    expect(sock.sent[0]?.command).toBe('conversation.interrupt')
   })
 
   test('真的中断到了就不发回执 —— 回执只在拒绝时发', async () => {
@@ -581,7 +584,7 @@ describe('run.interrupt 指令', () => {
       controller,
     } as never)
 
-    await handleCommand({ type: 'run.interrupt', runId: 'rn_live' } as never, {
+    await handleCommand({ type: 'conversation.interrupt', conversationId: 'cv_live' } as never, {
       ...d,
       ws: sock.ws,
     })

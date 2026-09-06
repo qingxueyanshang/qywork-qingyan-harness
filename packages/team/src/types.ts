@@ -13,7 +13,7 @@
  * 后端这个概念，而且删掉一个 CLI 会让引用它的角色整条消失。
  */
 
-import type { EffortLevel, WorkflowNode, WorkflowReceipt } from '@qywork/core'
+import type { EffortLevel, WorkflowNode } from '@qywork/core'
 
 /**
  * 一个角色 = 一个子 agent。
@@ -88,4 +88,3 @@ export interface TeamRules {
 
 /** 编排图与持久化回执共用 core 的 wire 契约，避免工具、服务端、UI 各维护一份。 */
 export type PlanNode = WorkflowNode
-export type NodeResult = WorkflowReceipt

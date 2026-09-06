@@ -18,6 +18,8 @@ import {
   recordFileRead,
   recoverStaleRuns,
   setConversationModel,
+  setStepNodeState,
+  settleToolStep,
   touchRun,
   upsertWorkspace,
 } from './repos.ts'
@@ -462,6 +464,47 @@ describe('终态 run 底下的孤儿 step', () => {
     expect(settled?.status).toBe('failure')
     // 已进执行器 → 保守标「可能已执行」，不能说没执行。
     expect((settled?.payload as { outcome?: { executed?: boolean } })?.outcome?.executed).toBe(true)
+    store.close()
+  })
+})
+
+/**
+ * 派活卡上的格不跟着 run 收尾走：子 agent 的生命期跟着会话，回执可能几分钟后才到。
+ * 重启之后进程里没有任何人在收那份回执了，所以回收要把它们扫成中断——
+ * 不扫的话那张图既 approve 不了（上游回执不齐）也 revise 不了（点名的格没有终态）。
+ */
+describe('重启回收扫派活卡上的格', () => {
+  test('终态 run 底下没落终态的格扫成中断，已终态的不动', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    markRunRunning(store, run.id)
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} } as never,
+    })
+    setStepNodeState(store, step.id, 'fast', { phase: 'done', label: '快', durationMs: 1 })
+    setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
+    // 工具已经返回：派出即返回，格的终态写在一张已经收成终态的卡上。
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: {},
+      outcome: { status: 'success', executed: true, message: '已起跑' },
+    })
+    finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+
+    recoverStaleRuns(store)
+
+    const nodes = (
+      listSteps(store, run.id)[0]?.payload as {
+        nodes?: Record<string, { phase: string; error?: string }>
+      }
+    ).nodes
+    expect(nodes?.slow).toMatchObject({ phase: 'interrupted', error: '调用中断' })
+    expect(nodes?.fast).toMatchObject({ phase: 'done' })
     store.close()
   })
 })

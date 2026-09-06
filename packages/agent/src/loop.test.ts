@@ -1737,42 +1737,27 @@ describe('正常响应结束不冒充任务完成', () => {
     expect(requests).toBe(3)
   })
 
-  /** 这一轮派出去的子 agent 还在跑时，结束这一条响应就得中断它们：事实交给下一次请求，三次不等才停。 */
-  test('子 agent 还在跑时续起，下一次请求带着这条事实；连续三次只回话则停', async () => {
-    const inner = fakeAdapter([null, null, null])
-    const tails: { role: string; content: unknown }[] = []
-    const adapter: LlmAdapter = {
-      ...inner,
-      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
-        tails.push(req.messages[req.messages.length - 1]!)
-        yield* inner.stream(req)
-      },
-    }
+  /**
+   * 派出即返回：子 agent 的生命期跟着会话，不跟着这一轮。循环因此不认识「还有几个在跑」，
+   * 模型说完就是说完——扣住这一轮等它们，正是 10 分钟一次往返那条路的起点。
+   */
+  test('派出过子 agent 之后 end_turn 照常结束', async () => {
     const delegate: DelegatePort = {
       resolveModel: (name) => ({ provider: 'p', model: name }),
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
-      dispatch: async () => ({ ok: true, output: '' }),
-      join: async () => ({ ok: true, output: '' }),
-      settleRun: () => {},
-      inflight: () => [{ name: '赛车-glm' }, { name: '赛车-qwen' }],
+      dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '赛车-glm', kind: 'temp' }),
       runGraph: async () => ({ ok: true }),
     }
     const loop = new AgentLoop({
-      adapter,
+      adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
       makeToolContext: (runId) => ({ ...baseCtx(runId), delegate }),
     })
-    const finished = await runToEnd(loop, { runId: 'rn_inflight_notice' })
-    expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
-    expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
-      '子 agent 还在跑时连续三次只回话不等',
-    )
-    expect(tails[1]?.role).toBe('user')
-    expect(String(tails[1]?.content)).toContain('还有 2 个子 agent 在跑：赛车-glm、赛车-qwen')
-    expect(String(tails[1]?.content)).toContain('workflow 只带 workflowId')
+    const finished = await runToEnd(loop, { runId: 'rn_subagent_end_turn' })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
   test('没有清单或清单全部完成，保留一次正常 completed', async () => {

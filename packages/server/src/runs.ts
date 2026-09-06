@@ -15,6 +15,12 @@ import type { Store } from '@qywork/store'
 import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
 
+/** 忙态要问在跑表的那两句。整张表在 `subagents.ts`，这里只要这两个查询。 */
+export interface SubagentInflight {
+  has(conversationId: ConversationId): boolean
+  conversations(): ConversationId[]
+}
+
 export interface ActiveRun {
   runId: RunId
   conversationId: ConversationId
@@ -62,19 +68,49 @@ export class RunManager {
   constructor(
     private readonly store: Store,
     private readonly bus: EventBus,
+    /**
+     * 在跑的子 agent（`subagents.ts`）。忙态含它，**起轮的闸不含**：
+     * 子 agent 在跑不该挡住这条会话开新一轮。
+     */
+    private readonly subagents: SubagentInflight,
   ) {}
 
-  isBusy(conversationId: ConversationId): boolean {
+  /**
+   * 这条会话有没有一轮在跑（含只占了位还没拿到 runId 的）。
+   *
+   * **起轮的闸只认它。** 子 agent 在跑时照样能发消息、能起下一轮——那正是
+   * 回执要走的路：闲着就当场起一轮。用 `isBusy` 当闸的话，回执与用户的消息
+   * 都会排进一个没有人会去消费的队列。
+   */
+  hasRun(conversationId: ConversationId): boolean {
     return this.byConversation.has(conversationId) || this.reserved.has(conversationId)
   }
 
-  /** 此刻在跑的全部会话。握手快照读它，见 `HelloOkFrame.busyConversations`。 */
+  /**
+   * 这条会话此刻在不在执行：有 run，或者有派出去还没回来的子 agent。
+   *
+   * **界面与停止按钮认它。** 只认 run 的话，一条只有子 agent 在跑的会话在界面上
+   * 是闲的，而停止按钮不显示——用户没有入口停掉它们。
+   */
+  isBusy(conversationId: ConversationId): boolean {
+    return this.hasRun(conversationId) || this.subagents.has(conversationId)
+  }
+
+  /** 此刻在忙的全部会话。握手快照读它，见 `HelloOkFrame.busyConversations`。 */
   busyConversations(): ConversationId[] {
-    return [...new Set([...this.byConversation.keys(), ...this.reserved])] as ConversationId[]
+    return [
+      ...new Set([
+        ...this.byConversation.keys(),
+        ...this.reserved,
+        ...this.subagents.conversations(),
+      ]),
+    ] as ConversationId[]
   }
 
   /**
-   * 把「这条会话在不在跑」播出去。**下面四个改点各调一次，别处不许发这条事件。**
+   * 把「这条会话在不在忙」播出去。**忙态的每一个改点各调一次，别处不许发这条事件。**
+   * 改点是这个类里的四处（占位、释放、登记、注销）加上派活通道的两处
+   * （子 agent 派出、子 agent 结束）。
    *
    * 两个约束：
    *
@@ -85,7 +121,7 @@ export class RunManager {
    *   `release()` 在 run 已经 register 之后也会被调到，传字面量必然报出
    *   一个此刻不成立的 false。
    */
-  private announce(conversationId: ConversationId): void {
+  announce(conversationId: ConversationId): void {
     this.bus.publish({
       type: 'conversation.busy',
       conversationId,
@@ -105,7 +141,7 @@ export class RunManager {
    * 返回 false = 已经有人在跑，调用方必须直接回绝。
    */
   reserve(conversationId: ConversationId): boolean {
-    if (this.isBusy(conversationId)) return false
+    if (this.hasRun(conversationId)) return false
     this.reserved.add(conversationId)
     this.announce(conversationId)
     return true
@@ -264,6 +300,16 @@ export class RunManager {
     if (!run) return false
     run.controller.abort({ source: 'user', observedAt: Date.now() })
     return true
+  }
+
+  /**
+   * 中断这条会话在跑的那一轮。返回 false = 此刻没有 run 在跑。
+   *
+   * 走 `interrupt(runId)`，不自己 abort：中断语义（`source:'user'`）只有一处。
+   */
+  interruptConversation(conversationId: ConversationId): boolean {
+    const runId = this.byConversation.get(conversationId)
+    return runId ? this.interrupt(runId) : false
   }
 
   interruptAll(): void {

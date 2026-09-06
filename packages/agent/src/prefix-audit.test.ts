@@ -210,6 +210,9 @@ describe('审真实的系统提示词', () => {
     expect(p).toContain('两个及以上子 agent')
     expect(p).toContain('revise 让点名的节点在它原来的子会话里继续')
     expect(p).toContain('批准之后仍可 revise')
+    // 完成是事件：两条派活线都要说清回执自己会回来，否则模型会为了等它反复调用。
+    expect(p).toContain('回执会作为一条消息送到本会话，不要为了等回执反复调用')
+    expect(p).toContain('每格的回执与检查点回执都会作为消息送到本会话')
     // CLI 的派出判据：只在用户点名或明确要求时派，不是默认目标。
     expect(p).toContain('只在用户用 `@cli:id` 点名或明确要求时派')
   })

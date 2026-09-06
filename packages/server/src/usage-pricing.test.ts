@@ -30,6 +30,7 @@ import {
 import { EventBus } from './bus.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
 
 /** 一轮纯文本收尾，usage 写死——账本上的数只由「单价 × 这几个 token」决定。 */
 const IN_TOKENS = 10
@@ -66,6 +67,7 @@ let store: Store
 let content: ContentStore
 let bus: EventBus
 let runs: RunManager
+let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 let events: EventEnvelope[] = []
@@ -76,7 +78,8 @@ beforeAll(async () => {
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
-  runs = new RunManager(store, bus)
+  subagents = new SubagentRegistry()
+  runs = new RunManager(store, bus, subagents)
   config = {
     active: { provider: 'fake', model: '第三方接口上的某个模型' },
     providers: {
@@ -133,7 +136,7 @@ test('模型库里改过的单价直接进账本', async () => {
     model: '第三方接口上的某个模型',
   }).id as ConversationId
 
-  await startRun(cv, '说点什么', undefined, { store, content, config, bus, runs })
+  await startRun(cv, '说点什么', undefined, { store, content, config, bus, runs, subagents })
   const finished = await waitFor((e) => e.type === 'run.finished')
   expect(finished).not.toBeNull()
 
@@ -164,7 +167,7 @@ test('人民币模型落账落在 CNY，金额与计价函数同源', async () =
   }).id as ConversationId
 
   const before = usageTotals(store, {}).cost.CNY ?? 0
-  await startRun(cv, '说点什么', undefined, { store, content, config, bus, runs })
+  await startRun(cv, '说点什么', undefined, { store, content, config, bus, runs, subagents })
   expect(await waitFor((e) => e.type === 'run.finished')).not.toBeNull()
 
   const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
