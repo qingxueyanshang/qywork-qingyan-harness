@@ -204,7 +204,7 @@ describe('指令发不出去要有回执', () => {
   test('连接已放弃时说的是「断开」，不是「稍后重试」——后者永远不会好', () => {
     const { c, rejected } = client()
     c.close()
-    c.send({ type: 'run.interrupt', runId: 'run_1' as never })
+    c.send({ type: 'conversation.interrupt', conversationId: 'cv_1' as never })
     expect(rejected[0]?.message).toContain('断开')
   })
 
@@ -212,9 +212,9 @@ describe('指令发不出去要有回执', () => {
     const { c, sockets, rejected } = client()
     c.connect()
     sockets[0]!.fire('open')
-    c.send({ type: 'run.interrupt', runId: 'run_1' as never })
+    c.send({ type: 'conversation.interrupt', conversationId: 'cv_1' as never })
     expect(rejected).toHaveLength(0)
-    expect(sockets[0]!.sent.some((s) => s.includes('run.interrupt'))).toBe(true)
+    expect(sockets[0]!.sent.some((s) => s.includes('conversation.interrupt'))).toBe(true)
   })
 })
 

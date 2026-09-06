@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { actionLabel, buildRenderItems, groupTitle, sameRenderItem, verb } from './render-items.ts'
+import {
+  actionLabel,
+  buildRenderItems,
+  groupTitle,
+  sameRenderItem,
+  verb,
+  workingSubagents,
+} from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
@@ -109,6 +116,21 @@ describe('分组规则', () => {
     expect(kinds(out)).toEqual(['group', 'text', 'group'])
   })
 
+  /** 回执正文是下一轮的输入，卷进折叠着的工具组就等于没有。 */
+  test('回执独立成项，不并进相邻的工具组', () => {
+    const out = buildRenderItems([
+      tool('a.ts'),
+      tool('b.ts'),
+      item('receipt', {
+        text: '[子 agent 回执] 角色 审查员（subagentId cv_1）已返回',
+        origin: 'subagent',
+      }),
+      tool('c.ts'),
+      tool('d.ts'),
+    ])
+    expect(kinds(out)).toEqual(['group', 'receipt', 'group'])
+  })
+
   test('user 与 compaction 同样打断分组', () => {
     expect(kinds(buildRenderItems([tool('a'), tool('b'), item('user')]))).toEqual(['group', 'user'])
     expect(kinds(buildRenderItems([tool('a'), tool('b'), item('compaction')]))).toEqual([
@@ -185,13 +207,15 @@ describe('workflow 始终是一张卡', () => {
     { id: 'a', kind: 'role', role: 'dev', task: '查' },
     { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
   ]
-  const receipt = (output: string) => ({
-    nodeId: 'a',
-    label: '开发',
-    status: 'done' as const,
-    output,
-    durationMs: 10,
-    subagentId: 'cv_a',
+  /** 回执就是那一格的终态：卡上按格状态折，转移里只剩「派了谁」。 */
+  const cell = (output: string) => ({
+    a: {
+      phase: 'done' as const,
+      label: '开发',
+      output,
+      durationMs: 10,
+      subagentId: 'cv_a' as never,
+    },
   })
   const workflow = (
     id: string,
@@ -229,34 +253,36 @@ describe('workflow 始终是一张卡', () => {
 
   test('首轮与 revise 只保留同一张卡，并累计次数与原 conversationId', () => {
     const out = buildRenderItems([
-      workflow(
-        'st_root',
-        { goal: '目标', nodes },
-        {
-          workflowId: 'st_root',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: [receipt('初稿')],
-        },
-      ),
+      {
+        ...workflow(
+          'st_root',
+          { goal: '目标', nodes },
+          {
+            workflowId: 'st_root',
+            dispatched: ['a'],
+          },
+        ),
+        nodes: cell('初稿'),
+      },
       item('text', { text: '主会话发现证据不足' }),
-      workflow(
-        'st_review',
-        {
-          workflowId: 'st_root',
-          checkpointId: 'cp',
-          decision: 'revise',
-          note: '补证据',
-          revisions: [{ nodeId: 'a', instruction: '补证据' }],
-        },
-        {
-          workflowId: 'st_root',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: [receipt('修订稿')],
-          review: { checkpointId: 'cp', decision: 'revise', note: '补证据' },
-        },
-      ),
+      {
+        ...workflow(
+          'st_review',
+          {
+            workflowId: 'st_root',
+            checkpointId: 'cp',
+            decision: 'revise',
+            note: '补证据',
+            revisions: [{ nodeId: 'a', instruction: '补证据' }],
+          },
+          {
+            workflowId: 'st_root',
+            dispatched: ['a'],
+            review: { checkpointId: 'cp', decision: 'revise', note: '补证据' },
+          },
+        ),
+        nodes: cell('修订稿'),
+      },
     ])
     expect(out.map((row) => row.kind)).toEqual(['text', 'tool'])
     const card = out[1]
@@ -268,16 +294,17 @@ describe('workflow 始终是一张卡', () => {
 
   test('下一次 review 刚 started 时也立刻归入原卡，不闪出第二张', () => {
     const out = buildRenderItems([
-      workflow(
-        'st_root',
-        { goal: '目标', nodes },
-        {
-          workflowId: 'st_root',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: [receipt('初稿')],
-        },
-      ),
+      {
+        ...workflow(
+          'st_root',
+          { goal: '目标', nodes },
+          {
+            workflowId: 'st_root',
+            dispatched: ['a'],
+          },
+        ),
+        nodes: cell('初稿'),
+      },
       workflow(
         'st_live',
         {
@@ -300,31 +327,25 @@ describe('workflow 始终是一张卡', () => {
   })
 
   test('两张独立 workflow 不会互相吞并', () => {
-    const one = workflow(
-      'st_one',
-      { goal: '一', nodes },
-      {
-        workflowId: 'st_one',
-        phase: 'waiting_review',
-        checkpointId: 'cp',
-        receipts: [receipt('一')],
-      },
-    )
-    const two = workflow(
-      'st_two',
-      { goal: '二', nodes },
-      {
-        workflowId: 'st_two',
-        phase: 'waiting_review',
-        checkpointId: 'cp',
-        receipts: [receipt('二')],
-      },
-    )
+    const one = {
+      ...workflow('st_one', { goal: '一', nodes }, { workflowId: 'st_one', dispatched: ['a'] }),
+      nodes: cell('一'),
+    }
+    const two = {
+      ...workflow('st_two', { goal: '二', nodes }, { workflowId: 'st_two', dispatched: ['a'] }),
+      nodes: cell('二'),
+    }
     expect(buildRenderItems([one, two]).map((row) => row.id)).toEqual(['st_one', 'st_two'])
   })
 
   test('旧版 outcome.data.nodes 不再成为渲染结果来源', () => {
-    const old = workflow('st_old', { goal: '旧图', nodes }, { nodes: [receipt('旧结果')] })
+    const old = workflow(
+      'st_old',
+      { goal: '旧图', nodes },
+      {
+        nodes: [{ nodeId: 'a', label: '开发', status: 'done', output: '旧结果', durationMs: 10 }],
+      },
+    )
     const out = buildRenderItems([old])
     expect(out).toHaveLength(1)
     if (out[0]?.kind !== 'tool') throw new Error('没有旧卡')
@@ -335,6 +356,50 @@ describe('workflow 始终是一张卡', () => {
       target: { kind: 'role', role: 'dev' },
       task: '查',
     })
+  })
+
+  /** 读数条那句「N 个子 agent 在跑」的 N。同一格在两次调用里各带一份状态，只能算一次。 */
+  test('同一个 workflow 的多次调用不把同一格数两遍', () => {
+    const working = {
+      a: { phase: 'working' as const, label: '开发', subagentId: 'cv_a' as never },
+    }
+    expect(
+      workingSubagents([
+        {
+          ...workflow(
+            'st_root',
+            { goal: '目标', nodes },
+            { workflowId: 'st_root', dispatched: ['a'] },
+          ),
+          nodes: working,
+        },
+        {
+          ...workflow(
+            'st_again',
+            { workflowId: 'st_root', checkpointId: 'cp', decision: 'approve', note: '' },
+            { workflowId: 'st_root', dispatched: [] },
+          ),
+          nodes: working,
+        },
+      ]),
+    ).toBe(1)
+  })
+})
+
+describe('在跑的格数', () => {
+  const card = (phase: string) =>
+    item('tool', {
+      toolName: 'subagent',
+      status: 'success',
+      nodes: { agent: { phase, label: '审查员' } } as TranscriptItem['nodes'],
+    })
+
+  test('只数 working，几张派活卡各算各的', () => {
+    expect(workingSubagents([card('working'), card('done'), card('working')])).toBe(2)
+  })
+
+  test('没有派活卡就是 0', () => {
+    expect(workingSubagents([item('user'), item('text')])).toBe(0)
   })
 })
 

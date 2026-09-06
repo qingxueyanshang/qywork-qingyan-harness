@@ -32,7 +32,11 @@ import type { ConnectionState } from '../client.ts'
 
 export interface TranscriptItem {
   id: string
-  kind: 'user' | 'text' | 'tool' | 'thinking' | 'compaction' | 'run'
+  /**
+   * `receipt` 是子 agent / workflow 投回来的那条消息。它在 wire 上与用户消息同为 user
+   * 角色，分辨只有 `origin` 这一格：缺席才是用户本人打的字。
+   */
+  kind: 'user' | 'receipt' | 'text' | 'tool' | 'thinking' | 'compaction' | 'run'
   text: string
   /**
    * kind='run' 专有：这一轮的收尾读数（停止原因 + 真实用量 + 耗时）。
@@ -68,6 +72,8 @@ export interface TranscriptItem {
   }
   /** kind='user' 专有：这条消息带的附件，只存定位事实不存字节。 */
   attachments?: Attachment[]
+  /** kind='receipt' 专有：谁投的回执。标题行按它决定去掉哪一个来源前缀。 */
+  origin?: 'subagent' | 'workflow'
   /** kind='tool' 专有 */
   toolName?: string
   action?: ActionDescriptor
@@ -382,6 +388,17 @@ export function runClosed(): boolean {
   const t = transcript()
   const last = t[t.length - 1]
   return last?.kind === 'run' && last.run?.runId === state.lastRunId
+}
+
+/**
+ * 当前会话有没有一轮在跑。
+ *
+ * **发消息排不排队只由它答**，不由忙闲答：忙态含在跑的子 agent，而服务端的闸是
+ * 有没有 run（`runs.hasRun`）。乐观队列卡与卡上那枚档位词必须读同一个判据，
+ * 各写一份必然漂成「界面排着队、服务端已经起了一轮」。
+ */
+export function hasRun(): boolean {
+  return isRunning() && !runClosed()
 }
 
 /**

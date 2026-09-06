@@ -58,6 +58,7 @@ const {
   closePanelTab,
   explainApiError,
   holdPanelTab,
+  interrupt,
   isRunning,
   ledgerRevision,
   loadOlderConversation,
@@ -697,7 +698,8 @@ describe('事件按会话归属过滤', () => {
       },
     } as never)
     expect(state.lastRunId).toBe(null)
-    // 中断按钮发的是 lastRunId，串台的表现是「点停止停掉了别人那一轮」。
+    // `lastRunId` 是收尾判据与重取判据的锚（runClosed / ledgerRevision），
+    // 串台的现象是当前会话跟着别人那一轮转圈。
     expect(view().runStartedAt).toBe(null)
   })
 
@@ -1236,26 +1238,14 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
           ],
         },
         action: { kind: 'run', objectLabel: '工作流' },
-        nodes: { a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 3 } },
+        nodes: {
+          a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 3, output: '稿' },
+        },
         outcome: {
           status: 'success',
           executed: true,
-          message: '到检查点',
-          data: {
-            workflowId: 'st_wf',
-            phase: 'waiting_review',
-            checkpointId: 'cp',
-            receipts: [
-              {
-                nodeId: 'a',
-                label: 'a',
-                status: 'done',
-                output: '稿',
-                durationMs: 3,
-                subagentId: 'cv_a',
-              },
-            ],
-          },
+          message: '已起跑',
+          data: { workflowId: 'st_wf', dispatched: ['a'] },
         },
       },
       status: 'success',
@@ -1275,8 +1265,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
               message: '完成',
               data: {
                 workflowId: 'st_wf',
-                phase: 'completed',
-                receipts: [],
+                dispatched: [],
                 review: { checkpointId: 'cp', decision: 'approve', note: '好' },
               },
             },
@@ -2004,5 +1993,312 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
     applyEvent(started('run_b'))
     expect(transcript()[transcript().length - 1]?.kind).toBe('run')
     expect(runClosed()).toBe(false)
+  })
+})
+
+describe('停止按会话寻址', () => {
+  const capture = () => {
+    const sent: { type: string; conversationId?: string }[] = []
+    const before = client.send
+    ;(client as unknown as { send: (cmd: unknown) => void }).send = (cmd) => {
+      sent.push(cmd as { type: string })
+    }
+    return {
+      // 切会话的订阅指令与它同走 `client.send`，只看中断这一种。
+      interrupts: () => sent.filter((c) => c.type === 'conversation.interrupt'),
+      restore: () => {
+        ;(client as unknown as { send: typeof before }).send = before
+      },
+    }
+  }
+
+  test('发的是当前会话的中断指令', () => {
+    const { interrupts, restore } = capture()
+    try {
+      setState({ activeConversation: 'cv_stop' })
+      interrupt()
+    } finally {
+      restore()
+    }
+    expect(interrupts()).toEqual([{ type: 'conversation.interrupt', conversationId: 'cv_stop' }])
+  })
+
+  /** 一条会话都没打开时点不到停止按钮，指令也不该发出去。 */
+  test('没有活动会话就不发', () => {
+    const { interrupts, restore } = capture()
+    try {
+      setState({ activeConversation: null })
+      interrupt()
+    } finally {
+      restore()
+    }
+    expect(interrupts()).toEqual([])
+  })
+})
+
+/**
+ * 回执与人打的字在 wire 上都是 user 角色，分辨只有 `origin`。两条投影路各锁一次：
+ * 起轮那条落 `messages.origin`，run 内注入那条落 step 的 `payload.origin`。
+ */
+describe('带 origin 的用户消息折成回执条目', () => {
+  const CV = 'cv_receipt'
+  const run = {
+    id: 'rn_1',
+    userMessageId: 'ms_1',
+    createdAt: 1,
+    finishedAt: 9,
+    stopReason: 'completed',
+    status: 'done',
+    usage: null,
+    errorMessage: null,
+  }
+
+  const message = (id: string, content: string, origin: string | null) => ({
+    id,
+    conversationId: CV,
+    role: 'user',
+    content,
+    attachments: [],
+    origin,
+    createdAt: 1,
+  })
+
+  const userStep = (id: string, content: string, payload: Record<string, unknown>) => ({
+    id,
+    runId: 'rn_1',
+    seq: 1,
+    kind: 'user',
+    toolName: null,
+    content,
+    payload,
+    status: 'done',
+    createdAt: 2,
+    durationMs: null,
+  })
+
+  const stub = (messages: unknown[], steps: unknown[]) => {
+    const before = client.api
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/history')) {
+        return { messages, runs: [run], steps, todos: [], workflowStarts: [], nextCursor: null }
+      }
+      throw new Error('没有上下文面板')
+    }
+    return () => {
+      ;(client as unknown as { api: typeof before }).api = before
+    }
+  }
+
+  const load = async (messages: unknown[], steps: unknown[]) => {
+    setState({ activeConversation: CV, busyConversations: [] })
+    freshView(CV)
+    const restore = stub(messages, steps)
+    try {
+      await reloadActiveConversation()
+    } finally {
+      restore()
+    }
+  }
+
+  test('起轮的那条回执不画成气泡，人打的字照旧', async () => {
+    await load(
+      [
+        message('ms_1', '为什么动不了', null),
+        message('ms_2', '[子 agent 回执] 外部 CLI claude 已返回', 'subagent'),
+      ],
+      [],
+    )
+    expect(transcript().map((t) => t.kind)).toEqual(['user', 'run', 'receipt'])
+    expect(transcript().at(-1)).toMatchObject({
+      kind: 'receipt',
+      origin: 'subagent',
+      text: '[子 agent 回执] 外部 CLI claude 已返回',
+    })
+  })
+
+  test('run 内注入的那条按 payload.origin 分，同一轮里两种都在', async () => {
+    await load(
+      [message('ms_1', '为什么动不了', null)],
+      [
+        userStep('st_receipt', '[workflow 回执] 检查点 主会话审查 的上游已经全部返回', {
+          kind: 'user',
+          origin: 'workflow',
+        }),
+        { ...userStep('st_human', '接着干', { kind: 'user' }), seq: 2 },
+      ],
+    )
+    expect(transcript().map((t) => t.kind)).toEqual(['user', 'receipt', 'user', 'run'])
+    expect(transcript()[1]).toMatchObject({ kind: 'receipt', origin: 'workflow' })
+  })
+})
+
+/**
+ * 排队与否的闸在服务端是「有没有 run」（`runs.hasRun`），而忙态含在跑的子 agent。
+ * 按忙态判的话，只有子 agent 在跑时用户发的消息在界面上排进队列卡，
+ * 服务端却当场起了一轮。
+ */
+describe('只有子 agent 在跑时发消息不排队', () => {
+  const CV = 'cv_send'
+  const runItem = {
+    id: 'run_rn_1',
+    kind: 'run',
+    text: '',
+    run: {
+      runId: 'rn_1',
+      stopReason: 'completed',
+      usage: null,
+      startedAt: 1,
+      endedAt: 2,
+      errorMessage: null,
+    },
+  }
+
+  const seed = (tail: unknown[]) => {
+    setState({ activeConversation: CV, busyConversations: [CV], lastRunId: 'rn_1', followUps: [] })
+    freshView(CV)
+    setState('views', CV, 'transcript', tail as never)
+    const before = client.send
+    ;(client as unknown as { send: (cmd: unknown) => void }).send = () => {}
+    return () => {
+      ;(client as unknown as { send: typeof before }).send = before
+    }
+  }
+
+  test('收尾条在流尾：消息进会话流，不出乐观队列卡', () => {
+    const restore = seed([runItem])
+    try {
+      sendMessage('再看一眼那个文件')
+    } finally {
+      restore()
+    }
+    expect(state.followUps).toEqual([])
+    expect(transcript().at(-1)).toMatchObject({ kind: 'user', text: '再看一眼那个文件' })
+  })
+
+  test('run 还在跑就照旧排队', () => {
+    const restore = seed([{ id: 'st_text', kind: 'text', text: '在查了' }])
+    try {
+      sendMessage('顺带看看日志')
+    } finally {
+      restore()
+    }
+    expect(state.followUps.map((f) => f.content)).toEqual(['顺带看看日志'])
+    expect(transcript().at(-1)).toMatchObject({ kind: 'text' })
+  })
+})
+
+/**
+ * 实时到达的那一帧与刷新后折出来的那一条必须同 id、同形态。
+ * 只分一处的话，回执在页面开着时画成用户气泡，刷新一次才变回执行。
+ */
+describe('实时到达的回执也建成回执条目', () => {
+  const CV = 'cv_receipt_live'
+  const RECEIPT = '[子 agent 回执] 临时 查资料 已返回'
+
+  const frame = (event: Record<string, unknown>) =>
+    ({ seq: 1, at: 0, conversationId: CV, event }) as never
+
+  const open = () => {
+    setState({ activeConversation: CV, busyConversations: [CV], lastRunId: null, followUps: [] })
+    freshView(CV)
+  }
+
+  const injected = (stepId: string, content: string, origin?: string) =>
+    frame({
+      type: 'message.injected',
+      runId: 'rn_1',
+      stepId,
+      followUpId: `q_${stepId}`,
+      content,
+      ...(origin ? { origin } : {}),
+    })
+
+  const started = (userMessageId: string, content: string, origin?: string) =>
+    frame({
+      type: 'run.started',
+      runId: 'rn_1',
+      conversationId: CV,
+      model: 'm',
+      userMessageId,
+      userMessage: { content, ...(origin ? { origin } : {}) },
+    })
+
+  test('run 内注入的回执是回执行，人打的字仍是气泡', () => {
+    open()
+    applyEvent(injected('st_receipt', RECEIPT, 'subagent'))
+    applyEvent(injected('st_human', '接着干'))
+    expect(transcript().map((t) => t.kind)).toEqual(['receipt', 'user'])
+    expect(transcript()[0]).toMatchObject({ id: 'st_receipt', origin: 'subagent' })
+  })
+
+  test('回执起的那一轮不走气泡对齐，当场建成回执行', () => {
+    open()
+    applyEvent(started('ms_1', '[workflow 回执] 检查点 主会话审查 的上游已经全部返回', 'workflow'))
+    expect(transcript().map((t) => t.kind)).toEqual(['receipt'])
+    expect(transcript()[0]).toMatchObject({ id: 'ms_1', origin: 'workflow' })
+  })
+
+  test('刷新之后账本折出来的是同一条，不是第二条', async () => {
+    open()
+    applyEvent(started('ms_1', RECEIPT, 'subagent'))
+    applyEvent(injected('st_receipt', RECEIPT, 'subagent'))
+    setState('busyConversations', [])
+
+    const before = client.api
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/history')) {
+        return {
+          messages: [
+            {
+              id: 'ms_1',
+              conversationId: CV,
+              role: 'user',
+              content: RECEIPT,
+              attachments: [],
+              origin: 'subagent',
+              createdAt: 1,
+            },
+          ],
+          runs: [
+            {
+              id: 'rn_1',
+              userMessageId: 'ms_1',
+              createdAt: 1,
+              finishedAt: 9,
+              stopReason: 'completed',
+              status: 'done',
+              usage: null,
+              errorMessage: null,
+            },
+          ],
+          steps: [
+            {
+              id: 'st_receipt',
+              runId: 'rn_1',
+              seq: 1,
+              kind: 'user',
+              toolName: null,
+              content: RECEIPT,
+              payload: { kind: 'user', origin: 'subagent' },
+              status: 'done',
+              createdAt: 2,
+              durationMs: null,
+            },
+          ],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+        }
+      }
+      throw new Error('没有上下文面板')
+    }
+    try {
+      await reloadActiveConversation()
+    } finally {
+      ;(client as unknown as { api: typeof before }).api = before
+    }
+
+    expect(transcript().map((t) => t.id)).toEqual(['ms_1', 'st_receipt', 'run_rn_1'])
+    expect(transcript().map((t) => t.kind)).toEqual(['receipt', 'receipt', 'run'])
   })
 })

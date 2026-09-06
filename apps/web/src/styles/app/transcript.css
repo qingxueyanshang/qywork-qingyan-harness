@@ -181,6 +181,93 @@
 }
 
 /*
+ * 子 agent / workflow 的回执行。形状同折叠行：一行标题，点开是正文。
+ *
+ * **规则自带一整套，不与 `.fold` 共用选择器。** 共用的话，改动折叠行的行高、缩进或
+ * 那条左竖线会连带改掉这里，而 CSS 不会为此报任何错。
+ */
+.receipt {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px 0 2px;
+  font-size: var(--fs-base);
+}
+.receipt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 箭头按它定位。 */
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+  user-select: none;
+  list-style: none;
+  transition: color var(--t-fast) var(--ease);
+}
+.receipt-head::-webkit-details-marker {
+  display: none;
+}
+.receipt-head:hover {
+  color: var(--text-primary);
+}
+/* 展开箭头。**绝对定位，不当 flex 子项**：占流的话这一行的右边界比同列的正文与
+   读数条往里缩一截，那道空白看着像行尾有一块看不见的元素。
+   字面量的 "›" 不用转义序列：转义经过任何一层字符串处理都可能被当成八进制解释掉。 */
+.receipt-head::after {
+  content: "›";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(calc(-50% - 1px));
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  transition:
+    transform 0.15s,
+    opacity 0.15s;
+}
+.receipt-head:hover::after,
+.receipt-head:focus-visible::after {
+  opacity: 1;
+}
+/* 位移必须一并写上：只写 rotate 会把上面那条 translateY 整个覆掉，箭头当场掉半行。 */
+.receipt[open] > .receipt-head::after {
+  transform: translateY(calc(-50% - 1px)) rotate(90deg);
+  opacity: 1;
+}
+.receipt-label {
+  flex: none;
+}
+/* 槽里唯一会被截的：第一行长度不定，另两格短且定长，各截各的会出现两个省略号。 */
+.receipt-line {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.receipt-size {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.receipt-body {
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px 0 4px 10px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  overflow-x: auto;
+}
+
+/*
  * 助手正文。
  *
  * **不能写 `white-space: pre-wrap`。** 这个 div 拿到的是 markdown 渲染后的 HTML，

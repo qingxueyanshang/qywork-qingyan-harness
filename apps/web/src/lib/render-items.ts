@@ -19,6 +19,7 @@ import type { TranscriptItem } from './store/index.ts'
 
 export type RenderItem =
   | { kind: 'user'; id: string; item: TranscriptItem }
+  | { kind: 'receipt'; id: string; item: TranscriptItem }
   | { kind: 'text'; id: string; item: TranscriptItem }
   | { kind: 'thinking'; id: string; item: TranscriptItem }
   | { kind: 'tool'; id: string; item: TranscriptItem }
@@ -85,6 +86,12 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
     if (item.kind === 'user') {
       flush()
       out.push({ kind: 'user', id: item.id, item })
+      continue
+    }
+    if (item.kind === 'receipt') {
+      // 回执是会话级事件，正文是下一轮的输入，卷进工具组的折叠里就看不见了。
+      flush()
+      out.push({ kind: 'receipt', id: item.id, item })
       continue
     }
     if (item.kind === 'text') {
@@ -165,6 +172,24 @@ export function collapseWorkflowItems(transcript: TranscriptItem[]): TranscriptI
     if (hidden.has(index)) return []
     return [replacements.get(index) ?? item]
   })
+}
+
+/**
+ * 会话卡片上还在跑的格数。
+ *
+ * **必须先走 `collapseWorkflowItems`**：同一个 workflow 的多次调用各带一份 `nodes`，
+ * 不折的话同一格会被数两遍。折出来的那一条以 `workflow.states` 为准，它按节点 id 去重。
+ */
+export function workingSubagents(transcript: TranscriptItem[]): number {
+  let count = 0
+  for (const item of collapseWorkflowItems(transcript)) {
+    const states = item.workflow?.states ?? item.nodes
+    if (!states) continue
+    for (const state of Object.values(states)) {
+      if (state.phase === 'working') count++
+    }
+  }
+  return count
 }
 
 /**

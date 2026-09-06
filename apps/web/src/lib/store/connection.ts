@@ -299,12 +299,18 @@ function foldContent(cid: string, ev: AgentEvent): void {
       setState(
         produce((s) => {
           // id 用 stepId——与刷新后 `stepToItems` 重建出来的那条同源，不会闪重。
-          s.views[cid]?.transcript.push({
-            id: ev.stepId,
-            kind: 'user',
-            text: ev.content,
-            ...(ev.attachments?.length ? { attachments: ev.attachments } : {}),
-          })
+          // 形态也按 `origin` 分，与那侧同一条规则：只分一处的话，实时画成气泡、
+          // 刷新之后同一条变成回执行。
+          s.views[cid]?.transcript.push(
+            ev.origin
+              ? { id: ev.stepId, kind: 'receipt', text: ev.content, origin: ev.origin }
+              : {
+                  id: ev.stepId,
+                  kind: 'user',
+                  text: ev.content,
+                  ...(ev.attachments?.length ? { attachments: ev.attachments } : {}),
+                },
+          )
         }),
       )
       return
@@ -323,8 +329,17 @@ function foldContent(cid: string, ev: AgentEvent): void {
            * 定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条事件来。
            * 两种情况用同一条规则收：正文对得上就把 id 换成账本里的真值，
            * 对不上就补一条——补完之后活的这份与刷新后从账本投影出来的那份同 id。
+           *
+           * 回执起的那一轮不走对齐：它没有乐观插入可对，形态也不是气泡。
            */
-          if (ev.userMessage && ev.userMessageId) {
+          if (ev.userMessage && ev.userMessageId && ev.userMessage.origin) {
+            v.transcript.push({
+              id: ev.userMessageId,
+              kind: 'receipt',
+              text: ev.userMessage.content,
+              origin: ev.userMessage.origin,
+            })
+          } else if (ev.userMessage && ev.userMessageId) {
             let last = v.transcript.length - 1
             while (last >= 0 && v.transcript[last]!.kind !== 'user') last--
             const hit = last >= 0 ? v.transcript[last]! : null
@@ -652,6 +667,8 @@ interface StoredMessage {
   role: string
   content: string
   attachments?: Attachment[]
+  /** 见 `Message.origin`：null = 用户本人打的字，其余两值是回执。 */
+  origin: 'subagent' | 'workflow' | null
   createdAt: number
 }
 /** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
@@ -695,6 +712,8 @@ interface StoredStep {
     compactedMessages?: number
     /** kind='user' 专有：注入消息带的附件，见 `StepPayload`。 */
     attachments?: Attachment[]
+    /** kind='user' 专有：谁投的，见 `StepPayload`。缺席 = 用户本人。 */
+    origin?: 'subagent' | 'workflow'
   } | null
   status: string
   createdAt: number
@@ -814,12 +833,18 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
   const items: TranscriptItem[] = []
   for (const m of messages) {
     if (m.role === 'user') {
-      items.push({
-        id: m.id,
-        kind: 'user',
-        text: m.content,
-        ...(m.attachments?.length ? { attachments: m.attachments } : {}),
-      })
+      // 回执与人打的字都是 user 角色，且都能起轮：条目形态按 origin 分，名下的
+      // run 与 steps 两种一样折。
+      items.push(
+        m.origin
+          ? { id: m.id, kind: 'receipt', text: m.content, origin: m.origin }
+          : {
+              id: m.id,
+              kind: 'user',
+              text: m.content,
+              ...(m.attachments?.length ? { attachments: m.attachments } : {}),
+            },
+      )
       for (const r of runsByUserMessage.get(m.id) ?? []) {
         for (const s of stepsByRun.get(r.id) ?? []) {
           for (const item of stepToItems(s)) {
@@ -1171,17 +1196,19 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
   // run 内注入的那句用户消息。刷新后要原位重建，`id` 用 stepId——
   // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。
   if (s.kind === 'user') {
-    const files = s.payload?.kind === 'user' ? s.payload.attachments : undefined
-    return s.content
-      ? [
-          {
-            id: s.id,
-            kind: 'user',
-            text: s.content,
-            ...(files?.length ? { attachments: files } : {}),
-          },
-        ]
-      : []
+    const payload = s.payload?.kind === 'user' ? s.payload : undefined
+    if (!s.content) return []
+    const origin = payload?.origin
+    if (origin) return [{ id: s.id, kind: 'receipt', text: s.content, origin }]
+    const files = payload?.attachments
+    return [
+      {
+        id: s.id,
+        kind: 'user',
+        text: s.content,
+        ...(files?.length ? { attachments: files } : {}),
+      },
+    ]
   }
   // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
   // 「这里压缩过」就没了，而它是解释「上下文为什么降了」的唯一线索。

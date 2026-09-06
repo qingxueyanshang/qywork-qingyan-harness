@@ -17,6 +17,7 @@ import {
   composerSeed,
   dropFollowUp,
   followUpMode,
+  hasRun,
   interrupt,
   isDesktopShell,
   isRunning,
@@ -299,7 +300,7 @@ function FollowUpCards(props: {
                   type="button"
                   onClick={() => steerFollowUp(f.id, !f.steer)}
                 >
-                  {!isRunning() ? '发送' : f.steer ? '加入队列' : '调整方向'}
+                  {!hasRun() ? '发送' : f.steer ? '加入队列' : '调整方向'}
                 </button>
                 <button
                   class="followup-act icon"

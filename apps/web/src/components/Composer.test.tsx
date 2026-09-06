@@ -3,6 +3,8 @@
  *
  * CSS 负责“藏到哪、怎么浮出来”，这里锁状态边界：空输入默认收起、悬浮展开并延迟
  * 收回；草稿属于用户未提交的数据，鼠标离开也不能替他藏起来。
+ *
+ * 另锁主按钮的一条判据：忙态含在跑的子 agent，那时它仍是停止。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -173,6 +175,57 @@ describe('放大面板里的输入区', () => {
       expect(wrap.classList.contains('panel-dock-ready')).toBe(true)
     } finally {
       dispose()
+    }
+  })
+})
+
+/**
+ * 主按钮的判据是忙态，而忙态含在跑的子 agent。这一轮收尾之后仍有格在跑时，
+ * 那枚按钮必须还是停止——否则界面上没有第二个地方停得掉它们。
+ */
+describe('只有子 agent 在跑时主按钮仍是停止', () => {
+  test('收尾条已在流尾、输入为空，按钮是停止', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: 'cv_subagent_only',
+      busyConversations: ['cv_subagent_only'],
+      lastRunId: 'rn_1',
+      followUps: [{ id: 'q_1', content: '顺带看看日志', steer: false }],
+    })
+    store.openView('cv_subagent_only')
+    store.setState('views', 'cv_subagent_only', 'transcript', [
+      {
+        id: 'run_rn_1',
+        kind: 'run',
+        text: '',
+        run: {
+          runId: 'rn_1',
+          stopReason: 'completed',
+          usage: null,
+          startedAt: 1,
+          endedAt: 2,
+          errorMessage: null,
+        },
+      },
+    ] as never)
+
+    const { dispose, host } = await mountComposer(false)
+    try {
+      expect(store.runClosed()).toBe(true)
+      expect(store.isRunning()).toBe(true)
+      expect(host.querySelector('.send-btn')?.getAttribute('aria-label')).toBe('停止')
+      // 队列卡上那枚按钮与 `sendMessage` 读同一个判据：没有 run 在跑就是「发送」，
+      // 两处分开写的话，卡上写着「加入队列」而服务端当场起了一轮。
+      expect(host.querySelector('.followup-act')?.textContent).toBe('发送')
+    } finally {
+      dispose()
+      store.dropView('cv_subagent_only')
+      store.setState({
+        activeConversation: null,
+        busyConversations: [],
+        lastRunId: null,
+        followUps: [],
+      })
     }
   })
 })

@@ -19,7 +19,7 @@ import {
   type WorkspaceInput,
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
-import { isRunning, markBusy, setState, state } from './state.ts'
+import { hasRun, isRunning, markBusy, setState, state } from './state.ts'
 import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
 
 /**
@@ -111,16 +111,14 @@ export async function selectConversation(id: string): Promise<void> {
 }
 
 /**
- * 中断当前 run。
+ * 停当前会话手上的活。
  *
- * 发的必须是 `run.started` 事件带回来的**真实 runId**。
- * 拿 `transcript.find(status === 'running').id` 是**步骤 id**，服务端查 run 查不到，
- * 因此静默什么也不做——中断按钮从来不生效，而 UI 上完全看不出来。
+ * 按会话寻址：这条会话在跑的不只有 run，界面上的停止按钮只有一个。
  */
 export function interrupt(): void {
-  const runId = state.lastRunId
-  if (!runId) return
-  client.send({ type: 'run.interrupt', runId: runId as never })
+  const id = state.activeConversation
+  if (!id) return
+  client.send({ type: 'conversation.interrupt', conversationId: id as never })
 }
 
 /**
@@ -367,10 +365,10 @@ export async function newConversation(): Promise<void> {
 }
 
 /**
- * 发一条消息。会话在跑时它不再被回绝，而是**排进队列**——去向由 `steer` 决定。
+ * 发一条消息。有 run 在跑时它不再被回绝，而是**排进队列**——去向由 `steer` 决定。
  *
  * `steer` 由调用方给：Enter 走默认档，Ctrl+Enter 走相反档（`Composer.tsx`）。
- * 会话空闲时这一格无意义，两种取值都是当场起一轮。
+ * 没有 run 在跑时这一格无意义，两种取值都是当场起一轮。
  */
 export function sendMessage(content: string, attachments?: Attachment[], steer = false): void {
   const id = state.activeConversation
@@ -378,7 +376,7 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
   // 逼用户再打几个字没有道理。
   if (!id || (!content.trim() && !attachments?.length)) return
   const requestId = crypto.randomUUID()
-  const queued = state.busyConversations.includes(id)
+  const queued = hasRun()
   setState(
     produce((s) => {
       /*

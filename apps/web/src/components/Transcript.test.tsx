@@ -10,6 +10,9 @@
  * 判据用节点身份：innerHTML 被重新赋值的话，原来那个子节点对象就不在了。
  * 流式转定稿那一次重渲染是应该的，所以基准取在它之后。
  *
+ * 同文件另锁三块要 DOM 才成立的口径：工具图片的回放、编排画布与展开态的归属、
+ * 回执行的标题与展开体、读数条在只有子 agent 在跑时说什么。
+ *
  * DOM 在这里装、用完卸掉，动态 import 的理由同 `settings/LoadState.test.tsx`。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -1083,40 +1086,25 @@ describe('检查点那一格', () => {
     { id: 'b', kind: 'temp', name: 'B', task: '做 B' },
     { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b'] },
   ]
-  /** 一张按真实回执折叠的卡：到了终态的格有回执，还在跑的格只在 running 里。 */
+  /** 一张按格状态折叠的卡：回执就是终态那条格状态，还在跑的格没有回执。 */
   const item = (
     states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
-  ) => {
-    const settled = Object.entries(states).filter(([, s]) => s.phase !== 'working')
-    return {
-      id: 'wf-cp',
-      kind: 'tool',
-      text: '',
-      toolName: 'workflow',
-      action: { kind: 'run', objectLabel: '工作流', target: '并行' },
-      args: { goal: '并行', nodes: wireNodes },
-      status: 'failure',
-      nodes: states,
-      outcome: {
-        status: 'failure',
-        executed: true,
-        message: '先交回',
-        data: {
-          workflowId: 'wf-cp',
-          phase: 'waiting_review',
-          checkpointId: 'cp',
-          receipts: settled.map(([nodeId, s]) => ({
-            nodeId,
-            label: s.label,
-            status: s.phase,
-            output: '',
-            durationMs: 3,
-          })),
-          running: Object.keys(states).filter((id) => states[id]?.phase === 'working'),
-        },
-      },
-    }
-  }
+  ) => ({
+    id: 'wf-cp',
+    kind: 'tool',
+    text: '',
+    toolName: 'workflow',
+    action: { kind: 'run', objectLabel: '工作流', target: '并行' },
+    args: { goal: '并行', nodes: wireNodes },
+    status: 'success',
+    nodes: states,
+    outcome: {
+      status: 'success',
+      executed: true,
+      message: '已起跑',
+      data: { workflowId: 'wf-cp', dispatched: Object.keys(states) },
+    },
+  })
   const mount = async (
     states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
   ) => {
@@ -1324,6 +1312,163 @@ describe('展开态跟着 step id 走', () => {
       expect(folds).toHaveLength(1)
       expect(folds[0]!.open).toBe(false)
       expect(host.textContent).not.toContain('fold-shut-a 的内容')
+    } finally {
+      dispose()
+    }
+  })
+})
+
+/**
+ * 子 agent / workflow 的回执。它在 wire 上与用户消息同为 user 角色，
+ * 分辨只有 `origin`；画成气泡的话，用户读到的是自己没说过的话。
+ */
+describe('回执行', () => {
+  const RECEIPT = '[子 agent 回执] 外部 CLI claude（subagentId cv_x）已返回\n\n改完了 `src/a.ts`。'
+
+  const mount = async (items: unknown[]) => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <TranscriptRows items={items as never} />,
+      host as unknown as HTMLElement,
+    )
+    return {
+      host,
+      dispose: () => {
+        dispose()
+        host.remove()
+      },
+    }
+  }
+
+  test('标题只有三样：回执、去掉来源前缀的第一行、正文字数', async () => {
+    const { host, dispose } = await mount([
+      { id: 'ms_receipt_head', kind: 'receipt', text: RECEIPT, origin: 'subagent' },
+    ])
+    try {
+      const head = host.querySelector('.receipt-head')!
+      expect([...head.children].map((c) => c.textContent)).toEqual([
+        '回执',
+        '外部 CLI claude（subagentId cv_x）已返回',
+        `${Array.from(RECEIPT).length} 字`,
+      ])
+      expect(host.querySelector('.bubble')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
+  test('展开才渲染正文，走会话流的 markdown', async () => {
+    const store = await import('../lib/store/index.ts')
+    const { host, dispose } = await mount([
+      { id: 'ms_receipt_body', kind: 'receipt', text: RECEIPT, origin: 'workflow' },
+    ])
+    try {
+      expect(host.querySelector('.receipt-body')).toBeNull()
+
+      const row = host.querySelector<HTMLDetailsElement>('details.receipt')!
+      row.open = true
+      row.dispatchEvent(new Event('toggle'))
+
+      const body = host.querySelector('.receipt-body')!
+      expect(body.classList.contains('markdown')).toBe(true)
+      expect(body.querySelector('code')?.textContent).toBe('src/a.ts')
+    } finally {
+      store.setFoldOpen('receipt:ms_receipt_body', false)
+      dispose()
+    }
+  })
+
+  test('没有 origin 的用户消息仍是气泡', async () => {
+    const { host, dispose } = await mount([{ id: 'ms_plain', kind: 'user', text: '为什么动不了' }])
+    try {
+      expect(host.querySelector('.bubble')?.textContent).toBe('为什么动不了')
+      expect(host.querySelector('.receipt')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+})
+
+/** 忙态含子 agent：这一轮收尾之后仍有格在跑时，读数条说的是那几格。 */
+describe('读数条按撑着忙态的是谁说话', () => {
+  const seed = async (nodePhase: string) => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [CV],
+      lastRunId: 'rn_live',
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          runStartedAt: null,
+          usage: null,
+          lastEventAt: null,
+          retry: null,
+          error: null,
+          transcript: [
+            {
+              id: 'st_sub',
+              kind: 'tool',
+              text: '',
+              toolName: 'subagent',
+              action: { kind: 'call', objectLabel: '子 agent', target: 'claude' },
+              args: { kind: 'cli', cli: 'claude', task: '审一遍' },
+              status: 'success',
+              nodes: { agent: { phase: nodePhase, label: 'claude', subagentId: 'cv_x' } },
+            },
+            {
+              id: 'run_rn_live',
+              kind: 'run',
+              text: '',
+              run: {
+                runId: 'rn_live',
+                stopReason: 'completed',
+                usage: null,
+                startedAt: 1,
+                endedAt: 2,
+                errorMessage: null,
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+    store.setState('connection', 'ready')
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    return {
+      host,
+      dispose: () => {
+        dispose()
+        host.remove()
+      },
+    }
+  }
+
+  test('没有 run 在跑时报格数，且不显示已结束那一轮的计时', async () => {
+    const { host, dispose } = await seed('working')
+    try {
+      expect(host.querySelector('.run-live')?.textContent).toBe('1 个子 agent 在跑')
+      // 读数条有两条：跑完那一轮的条目也在流里，计时只能出现在它那一条上。
+      expect(host.querySelectorAll('.run-elapsed')).toHaveLength(1)
+      expect(host.querySelector('.run-strip:not(.done) .run-elapsed')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
+  test('一格都不在跑就收起来，不与收尾条并存', async () => {
+    const { host, dispose } = await seed('done')
+    try {
+      expect(host.querySelectorAll('.run-strip')).toHaveLength(1)
+      expect(host.querySelector('.run-live')).toBeNull()
     } finally {
       dispose()
     }
