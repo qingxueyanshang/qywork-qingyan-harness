@@ -350,6 +350,175 @@ describe('投影三区', () => {
     store.close()
   })
 
+  /**
+   * 待办表与大回执落在同一个执行波次时的粒度。
+   *
+   * 保留粒度取单元的话，同批的子 agent 回执跟着钉在窗口里：收纳线前移、
+   * 投影一个 token 不降，此后每轮都判 `nothing_to_fold` 直到撞窗。
+   */
+  test('待办表与大回执同批时只保留整表那一条调用与结果', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'todo-same-batch',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const todo = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      toolCallId: 'todo_same_batch',
+      providerBatchId: 'mixed_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, todo.id, 'success', {
+      kind: 'tool_result',
+      args: {
+        todos: [
+          { content: '派外部 CLI 审查 game.js', status: 'in_progress' },
+          { content: '汇总审查结论', status: 'pending' },
+        ],
+      },
+      outcome: { status: 'success', executed: true, message: '第 1/2 步' },
+    })
+    // 同一个 providerBatchId：`stepsToUnits` 把两条调用并进同一个可折单元。
+    const receipt = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: 'cli_same_batch',
+      providerBatchId: 'mixed_batch',
+      callIndex: 1,
+      status: 'running',
+    })
+    settleToolStep(store, receipt.id, 'success', {
+      kind: 'tool_result',
+      args: { task: '审查 game.js', kind: 'cli' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '外部 CLI claude 已返回',
+        data: { output: 'z'.repeat(300_000), conversationId: 'cv_cli' },
+      },
+    })
+    // 尾部要攒够保留预算，否则那个大单元自己就落在收纳线之后，测不到粒度。
+    addToolWaves(store, run.id, 24, 12_000, 3)
+
+    const p = port(store, conv.id)
+    const before = await history(store, conv.id)
+    const outcome = await p.run(await pressure(store, conv.id))
+    expect(outcome.status).toBe('compacted')
+
+    const projected = p.project(before)
+    const assistant = projected.find((message) =>
+      message.toolCalls?.some((call) => call.id === 'todo_same_batch'),
+    )
+    expect(assistant).toBeDefined()
+    // 整表逐字：调用参数一字不改。
+    expect(assistant!.toolCalls!.find((call) => call.id === 'todo_same_batch')!.arguments).toEqual({
+      todos: [
+        { content: '派外部 CLI 审查 game.js', status: 'in_progress' },
+        { content: '汇总审查结论', status: 'pending' },
+      ],
+    })
+    const table = projected.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'todo_same_batch',
+    )
+    expect(JSON.parse(String(table?.content)).status).toBe('success')
+
+    // 同批的大回执换信封：正文不再上线。
+    const envelope = JSON.parse(
+      String(
+        projected.find(
+          (message) => message.role === 'tool' && message.toolCallId === 'cli_same_batch',
+        )?.content,
+      ),
+    ) as { status: string; summary: string; result_omitted?: boolean }
+    expect(envelope.status).toBe('success')
+    expect(envelope.summary).toBe('外部 CLI claude 已返回')
+    expect(envelope.result_omitted).toBe(true)
+    expect(projected.every((message) => !String(message.content).includes('z'.repeat(100)))).toBe(
+      true,
+    )
+
+    // 收纳确实回收了体积，不是只把线往前推。
+    expect(estimateMessages(projected, DEFAULT_DENSITY)).toBeLessThan(
+      estimateMessages(before, DEFAULT_DENSITY) / 2,
+    )
+    store.close()
+  })
+
+  /**
+   * 落库的读数与投影必须是同一份内容量出来的。
+   *
+   * `contextAfter.measured` 由 `estimateProjection` 算，模型看到的由 `project` 拼；
+   * 两处对「哪几条逐字保留」判得不一样时，面板报的回收量达不到，而两边都不报错。
+   */
+  test('落库读数与投影口径一致', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'todo-estimate',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const todo = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      toolCallId: 'todo_estimate',
+      providerBatchId: 'mixed_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, todo.id, 'success', {
+      kind: 'tool_result',
+      args: { todos: [{ content: '派外部 CLI 审查', status: 'in_progress' }] },
+      outcome: { status: 'success', executed: true, message: '第 1/1 步' },
+    })
+    const receipt = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      toolCallId: 'cli_estimate',
+      providerBatchId: 'mixed_batch',
+      callIndex: 1,
+      status: 'running',
+    })
+    settleToolStep(store, receipt.id, 'success', {
+      kind: 'tool_result',
+      args: { task: '审查 game.js', kind: 'cli' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '外部 CLI claude 已返回',
+        data: { output: 'z'.repeat(300_000) },
+      },
+    })
+    addToolWaves(store, run.id, 24, 12_000, 3)
+
+    const p = port(store, conv.id)
+    const before = await history(store, conv.id)
+    const outcome = await p.run(await pressure(store, conv.id))
+    expect(outcome.status).toBe('compacted')
+
+    const measured = getConversation(store, conv.id)!.compactionManifest!.contextAfter!.measured
+    expect(measured).toBe(estimateMessages(p.project(before), DEFAULT_DENSITY))
+    store.close()
+  })
+
   test('没有 _messageId 的投影消息一律保留', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)

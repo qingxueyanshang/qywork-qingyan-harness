@@ -141,11 +141,8 @@ export class RuntimeCompaction implements CompactionPort {
         continue
       }
       out.push(
-        condenseKey !== null &&
-          key <= condenseKey &&
-          // 最近整表保留真实参数；其后的待验收子任务回执照常收纳成小信封。
-          key !== todoTable?.key
-          ? condenseMessage(msg)
+        condenseKey !== null && key <= condenseKey
+          ? condenseExcept(msg, pinsAt(key, todoTable))
           : msg,
       )
     }
@@ -210,7 +207,7 @@ export class RuntimeCompaction implements CompactionPort {
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
     const todoFacts = currentTodoFacts(units)
-    const latestTodo = todoFacts[0]?.source
+    const todoTable = todoFacts[0]
 
     // 收纳段：折叠线以内的工具正文换信封。**零模型调用**，回收量当场估得出。
     const messages: CompactionInput['messages'] = []
@@ -234,8 +231,9 @@ export class RuntimeCompaction implements CompactionPort {
       }
       actions.push(...u.actions)
 
+      const pinned = pinsAt(u.key, todoTable)
       const condensed = estimateMessages(
-        u === latestTodo ? u.messages : u.messages.map(condenseMessage),
+        u.messages.map((message) => condenseExcept(message, pinned)),
         input.density,
       )
       condensedRegion += condensed
@@ -369,7 +367,7 @@ export class RuntimeCompaction implements CompactionPort {
     const summaryKey = summary ? cutKey(summary) : null
     const condenseKey = condense ? cutKey(condense) : null
     const todoFacts = currentTodoFacts(units)
-    const latestTodo = todoFacts[0]?.source
+    const todoTable = todoFacts[0]
     const latestContext = this.latestContextUserMessageId
       ? units.find(
           (unit) =>
@@ -387,10 +385,15 @@ export class RuntimeCompaction implements CompactionPort {
         folded++
         continue
       }
-      if (condenseKey !== null && unit.key <= condenseKey && unit !== latestTodo) {
+      if (condenseKey !== null && unit.key <= condenseKey) {
         const messageTokens = estimateMessages(unit.messages, density)
         const attachmentTokens = Math.max(0, unit.tokens - messageTokens)
-        total += estimateMessages(unit.messages.map(condenseMessage), density) + attachmentTokens
+        const pinned = pinsAt(unit.key, todoTable)
+        total +=
+          estimateMessages(
+            unit.messages.map((message) => condenseExcept(message, pinned)),
+            density,
+          ) + attachmentTokens
       } else {
         total += unit.tokens
       }
@@ -509,12 +512,20 @@ export class RuntimeCompaction implements CompactionPort {
   }
 }
 
-interface TodoFact<T extends { key: string; messages: WireMessage[] }> {
+interface TodoFact {
   key: string
   messages: WireMessage[]
-  kind: 'table' | 'receipt'
-  source: T
+  /**
+   * 这条事实里逐字保留的调用 id。整表是 `write_todos` 那一条，回执为空集。
+   *
+   * 粒度必须是调用，不是单元：同一个执行波次里还有别的工具，实测一份 261,929
+   * 字符的子 agent 回执与 `write_todos` 同批，按单元保留会把它一并钉在窗口里，
+   * 收纳线前移而占用不降。
+   */
+  pinned: ReadonlySet<string>
 }
+
+const NO_PINS: ReadonlySet<string> = new Set()
 
 /** 把 wire history 按执行单元分组；同一波 assistant 调用与所有结果必须同进同出。 */
 function messageUnits(history: readonly WireMessage[]): { key: string; messages: WireMessage[] }[] {
@@ -536,56 +547,87 @@ function messageUnits(history: readonly WireMessage[]): { key: string; messages:
  * 回执不是 completed；钉住它是为了长会话压缩后父会话仍能验收或决定返工。
  * 新整表表示父会话已经作出更新，因此替换此前的待验收链。
  */
-function currentTodoFacts<T extends { key: string; messages: WireMessage[] }>(
-  units: readonly T[],
-): TodoFact<T>[] {
-  let facts: TodoFact<T>[] = []
+function currentTodoFacts(units: readonly { key: string; messages: WireMessage[] }[]): TodoFact[] {
+  let facts: TodoFact[] = []
   for (const unit of units) {
-    if (hasSuccessfulCall(unit.messages, 'write_todos')) {
-      facts = [{ key: unit.key, messages: unit.messages, kind: 'table', source: unit }]
+    const table = successfulCallIds(unit.messages, 'write_todos')
+    if (table.length > 0) {
+      facts = [{ key: unit.key, messages: unit.messages, pinned: new Set(table) }]
       continue
     }
     if (
       facts.length > 0 &&
-      hasSuccessfulCall(
+      successfulCallIds(
         unit.messages,
         'subagent',
         (args) => typeof args.parentTodo === 'string' && args.parentTodo.trim().length > 0,
-      )
+      ).length > 0
     ) {
-      facts.push({
-        key: unit.key,
-        messages: unit.messages,
-        kind: 'receipt',
-        source: unit,
-      })
+      facts.push({ key: unit.key, messages: unit.messages, pinned: NO_PINS })
     }
   }
   return facts
 }
 
-/** 整表逐字保留；待验收回执只留调用摘录与成功摘要，不能把大段产出钉在窗口里。 */
-function todoFactMessages(fact: TodoFact<{ key: string; messages: WireMessage[] }>): WireMessage[] {
-  return fact.kind === 'table' ? fact.messages : fact.messages.map(condenseMessage)
+/**
+ * 整表那条调用与它的结果逐字保留；同一波次的其余消息与待验收回执只留调用摘录
+ * 与成功摘要，不能把大段产出钉在窗口里。
+ */
+function todoFactMessages(fact: TodoFact): WireMessage[] {
+  return fact.messages.map((message) => condenseExcept(message, fact.pinned))
 }
 
-function hasSuccessfulCall(
+/** 某个单元在收纳区里逐字保留的调用 id。只有最近整表所在的那个单元有。 */
+function pinsAt(key: string, table: TodoFact | undefined): ReadonlySet<string> {
+  return table?.key === key ? table.pinned : NO_PINS
+}
+
+/**
+ * 收纳一条消息，但 `pinned` 里那几个调用逐字保留：它们的参数与结果不换信封，
+ * 同一条消息里的其余调用、同一单元里的其余消息照常收纳。
+ *
+ * 投影、收纳量估算、事实清单三处共用这一个函数——三处各写一份判断必然漂移，
+ * 而口径不一致时压缩会报出一个自己都达不到的回收量。
+ */
+function condenseExcept(message: WireMessage, pinned: ReadonlySet<string>): WireMessage {
+  // 绝大多数消息不在事实里，走原路径不重建对象：投影每次构造请求都跑一遍。
+  if (pinned.size === 0) return condenseMessage(message)
+  if (message.role === 'tool') {
+    return message.toolCallId && pinned.has(message.toolCallId) ? message : condenseMessage(message)
+  }
+  const condensed = condenseMessage(message)
+  if (!condensed.toolCalls) return condensed
+  return {
+    ...condensed,
+    toolCalls: condensed.toolCalls.map(
+      (call) =>
+        (pinned.has(call.id)
+          ? message.toolCalls?.find((original) => original.id === call.id)
+          : null) ?? call,
+    ),
+  }
+}
+
+function successfulCallIds(
   messages: readonly WireMessage[],
   name: string,
   accepts: (args: Record<string, unknown>) => boolean = () => true,
-): boolean {
-  const calls = messages
+): string[] {
+  return messages
     .filter((message) => message.role === 'assistant')
     .flatMap((message) => message.toolCalls ?? [])
-    .filter((call) => call.name === name && accepts(call.arguments))
-  return calls.some((call) =>
-    messages.some(
-      (message) =>
-        message.role === 'tool' &&
-        message.toolCallId === call.id &&
-        toolEnvelopeStatus(message.content) === 'success',
-    ),
-  )
+    .filter(
+      (call) =>
+        call.name === name &&
+        accepts(call.arguments) &&
+        messages.some(
+          (message) =>
+            message.role === 'tool' &&
+            message.toolCallId === call.id &&
+            toolEnvelopeStatus(message.content) === 'success',
+        ),
+    )
+    .map((call) => call.id)
 }
 
 function toolEnvelopeStatus(content: WireMessage['content']): string | null {
