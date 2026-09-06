@@ -2,12 +2,18 @@
 /**
  * 真机全场景复刻：用户原话起一轮，真实模型、真实子 agent，服务与账本另起一份不碰 `~/.qywork`。
  *
- * 验的是单元测试验不到的一段：模型按运行快照建临时子 agent 而不建角色、四个模型各归各、
+ * 两条线共用同一套骨架（起服务、建会话、发消息、读事件与账本），按参数二选一。
+ *
+ * 默认线验的是单元测试验不到的一段：模型按运行快照建临时子 agent 而不建角色、四个模型各归各、
  * 四个子 agent 并行起跑且状态当场落库；中断之后一句「继续」续跑原来那四个子 agent，
  * 不另起四个；最后父会话自己验收。
  *
+ * `--cli` 线验外部 CLI 那一种：格状态带种类、实时页收到的是正文而不是原始 JSON 行、
+ * 回执过投递闸、长任务全程不被中途终止、续派认同一条子会话。
+ *
  *   bun run scripts/replay-delegation.ts                  # 首派 → 中断 → 继续 → 验收
  *   bun run scripts/replay-delegation.ts --no-interrupt   # 首派 →（一格失败先交回 → 汇合）→ 验收
+ *   bun run scripts/replay-delegation.ts --cli            # 外部 CLI：成功 / 静默 / 续派 / 长思考
  *   bun run scripts/replay-delegation.ts --round-min=120  # 一轮最多等多少分钟，默认 45
  *   bun run scripts/replay-delegation.ts --parent=deepseek/deepseek-v4-flash  # 父会话换一对接口 × 模型
  *
@@ -15,23 +21,40 @@
  * 返回、回执带 running；父会话下一次调用是等或 revise 同一张图；其余格的终态仍落在首派那张卡上。
  *
  * 配置（含密钥）读 `~/.qywork/config.json`；工作区与账本落 `.tmp/replay-ws/<时间戳>/`，跑完不删。
+ * 每一行进度与结论同时追加到该目录的 `replay.log`：一条线要跑几十分钟，分段查看只能看它。
  */
 
+import { appendFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { type AgentEvent, type ConversationId, foldWorkflow } from '@qywork/core'
-import { loadConfig } from '@qywork/runtime'
+import { deliveryBudget } from '@qywork/agent'
+import { buildAdapter } from '@qywork/ai'
+import {
+  type AgentEvent,
+  type ConversationId,
+  foldWorkflow,
+  type NodeState,
+  type RunId,
+  type Step,
+  SUBAGENT_NODE_ID,
+} from '@qywork/core'
+import { loadConfig, type ModelRef, type QyConfig, resolveModel } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
   getConversation,
   latestSubagentPhases,
   listChildConversations,
+  listProviderRequests,
   listRuns,
   listSteps,
   listWorkflowRecords,
   Store,
   workflowIdsOf,
 } from '@qywork/store'
+import { MAX_TIMEOUT_MS } from '@qywork/tools'
+
+/** 外部 CLI 那条线。两条线各自的工作区、用户原话与判据都不同，只共用骨架。 */
+const CLI = process.argv.includes('--cli')
 
 /** 每次跑一个带时间戳的目录，旧的一律留着：账本是事后排查子 agent 为什么停的唯一证据。 */
 const ROOT = join(
@@ -41,8 +64,9 @@ const ROOT = join(
   'replay-ws',
   new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-'),
 )
-const WS_DIR = join(ROOT, 'racer')
+const WS_DIR = join(ROOT, CLI ? 'checkout' : 'racer')
 const DB = join(ROOT, 'replay.sqlite3')
+const LOG = join(ROOT, 'replay.log')
 
 /** 用户原话，一字不改。 */
 const INSTRUCTION =
@@ -58,10 +82,15 @@ const EXPECTED_MODELS: { name: string; matches: (model: string) => boolean }[] =
 ]
 
 const INTERRUPT = !process.argv.includes('--no-interrupt')
-/** 父会话用哪一对接口 × 模型。不给就用配置里当前生效的；某家接口连不上时换一家跑父会话。 */
-const PARENT = (() => {
+/**
+ * 父会话用哪一对接口 × 模型。不给就用配置里当前生效的；某家接口连不上时换一家跑父会话。
+ *
+ * `--cli` 线另有默认值：那条线验的是外部 CLI，父会话只负责派活与转述，
+ * 用一台便宜模型跑；不定死默认值的话每次都要在命令行上补一遍。
+ */
+const PARENT = ((): ModelRef | null => {
   const raw = process.argv.find((a) => a.startsWith('--parent='))?.slice('--parent='.length)
-  if (!raw) return null
+  if (!raw) return CLI ? { provider: 'deepseek', model: 'deepseek-v4-flash' } : null
   const at = raw.indexOf('/')
   return at > 0 ? { provider: raw.slice(0, at), model: raw.slice(at + 1) } : null
 })()
@@ -77,21 +106,435 @@ const ROUND_TIMEOUT_MS =
 type Started = Extract<AgentEvent, { type: 'tool.started' }>
 type Finished = Extract<AgentEvent, { type: 'tool.finished' }>
 type Member = Extract<AgentEvent, { type: 'team.member' }>
+type Output = Extract<AgentEvent, { type: 'team.output' }>
+
+/** 终端与 `replay.log` 同时收一份。跑一条线要几十分钟，中途只能靠这个文件看进度。 */
+function out(line: string): void {
+  process.stdout.write(`${line}\n`)
+  appendFileSync(LOG, `${line}\n`)
+}
 
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown): void {
-  process.stdout.write(`${ok ? '  ✓' : '  ✗'} ${label}\n`)
+  out(`${ok ? '  ✓' : '  ✗'} ${label}`)
   if (!ok) {
     failures++
-    if (detail !== undefined)
-      process.stdout.write(`      ${JSON.stringify(detail).slice(0, 800)}\n`)
+    if (detail !== undefined) out(`      ${JSON.stringify(detail).slice(0, 800)}`)
   }
 }
 const stamp = () => new Date().toISOString().slice(11, 19)
-const log = (line: string) => process.stdout.write(`[${stamp()}] ${line}\n`)
+const log = (line: string) => out(`[${stamp()}] ${line}`)
+
+/**
+ * `--cli` 线的工作区：一个小 JS 项目，每个文件都短到能被一次读完，且各留着可指认的缺陷，
+ * 审查任务因此有确定的产出。跑之前现生成，不进仓库。
+ */
+const FIXTURE: Record<string, string> = {
+  'package.json': `{
+  "name": "checkout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node src/index.js" }
+}
+`,
+  'README.md': `# checkout
+
+购物车结算：库存、折扣、金额格式化。入口 src/index.js。
+`,
+  'src/cart.js': `export function createCart() {
+  return { items: [] }
+}
+
+export function addItem(cart, item) {
+  const found = cart.items.find((x) => x.sku === item.sku)
+  if (found) {
+    found.qty = item.qty
+    return cart
+  }
+  cart.items.push({ ...item })
+  return cart
+}
+
+export function removeItem(cart, sku) {
+  const at = cart.items.findIndex((x) => x.sku === sku)
+  cart.items.splice(at, 1)
+  return cart
+}
+
+export function subtotal(cart) {
+  let sum = 0
+  for (let i = 0; i <= cart.items.length; i++) {
+    sum += cart.items[i].price * cart.items[i].qty
+  }
+  return sum
+}
+`,
+  'src/discount.js': `export const CODES = {
+  NONE: 0,
+  SAVE10: 10,
+  SAVE25: 25,
+  HALF: 50,
+}
+
+export function applyDiscount(amount, code) {
+  const percent = CODES[code]
+  if (!percent) return amount
+  return amount - (amount * percent) / 100
+}
+
+export function applyFlat(amount, off) {
+  return amount - off
+}
+
+export function stack(amount, codes) {
+  let out = amount
+  for (const code of codes) out = applyDiscount(out, code)
+  return out
+}
+`,
+  'src/inventory.js': `const stock = { 'sku-1': 3, 'sku-2': 0, 'sku-3': 12 }
+
+export function inStock(sku) {
+  return stock[sku] > 0
+}
+
+export function reserve(cart) {
+  for (const item of cart.items) stock[item.sku] = stock[item.sku] - item.qty
+  return cart
+}
+
+export function restock(sku, qty) {
+  stock[sku] += qty
+}
+`,
+  'src/format.js': `export function money(value) {
+  return '¥' + Math.round(value * 100) / 100
+}
+
+export function line(item) {
+  return item.sku + ' x' + item.qty + ' = ' + money(item.price * item.qty)
+}
+`,
+  'src/index.js': `import { addItem, createCart, subtotal } from './cart.js'
+import { stack } from './discount.js'
+import { line, money } from './format.js'
+import { reserve } from './inventory.js'
+
+const cart = createCart()
+addItem(cart, { sku: 'sku-1', price: 19.9, qty: 2 })
+addItem(cart, { sku: 'sku-3', price: 4.05, qty: 3 })
+reserve(cart)
+
+for (const item of cart.items) console.log(line(item))
+console.log('合计', money(stack(subtotal(cart), ['SAVE10'])))
+`,
+}
+
+async function writeFixture(): Promise<void> {
+  await mkdir(join(WS_DIR, 'src'), { recursive: true })
+  for (const [rel, body] of Object.entries(FIXTURE)) await Bun.write(join(WS_DIR, rel), body)
+}
+
+/**
+ * `--cli` 线的四段用户原话。**每段都要带 `@cli:claude`**：系统提示规定外部 CLI
+ * 只在用户点名或明确要求时派，不点名的话模型会建一个临时子 agent。
+ *
+ * 等待那一段**不要改回 `sleep 700`**：claude 2.1.261 的 Bash 工具拦下独立的长 sleep
+ * （原话「Blocked: standalone sleep」），并在拦截信息里给出 until 循环这一种写法。
+ *
+ * 它的边界：量得到的是一次长时间执行之后的回执与它在下一次请求里占的份额，
+ * **量不到静默额度**——同一版本在工具执行期间每 30 秒发一条 `tool_progress` 心跳，
+ * 流不会静默到额度，到点终止由 `packages/tools/src/sandbox.test.ts` 的静默计时用例锁着。
+ */
+const CLI_MESSAGES = {
+  review:
+    '派 @cli:claude 审查这个项目里的 src/cart.js。任务就写：只读 src/cart.js，不要修改任何文件，' +
+    '列出这个文件的缺陷并给一句总体结论。它返回之后把它的结论转述给我。',
+  wait:
+    '再新建一个 @cli:claude 子 agent（不要续用上一个）。任务就写：用 Bash 工具执行 ' +
+    '`until [ -f wait-done ]; do sleep 2; done` 等工作区根目录下的 wait-done 出现，' +
+    '该工具的 timeout 参数填 750000；到点没等到就如实说，然后汇报 src 目录下有几个 js 文件。' +
+    '这一次不管它成没成，都不要重派，把回执如实转述给我。',
+  resume: (id: string) =>
+    `让刚才那个 claude 子 agent（subagentId ${id}）再看一眼 src/discount.js：用 subagent 工具，` +
+    `subagent 填 ${id}，任务是只读 src/discount.js 并指出这个文件的缺陷。`,
+  heavy:
+    '再派 @cli:claude 做一件重活。任务就写：读完 src 下的全部 js 文件与 package.json，' +
+    '逐个文件写一份问题清单（每个文件至少三条，说清行为缺陷与边界处理），' +
+    '再写一份整体重构建议（模块划分、错误处理、测试策略），不要修改任何文件。',
+}
+
+/**
+ * 原始 stream-json 行的特征字段。实时页与回执里出现任何一个，都说明取到的是整段流
+ * 而不是解析出来的正文。
+ */
+const RAW_FIELDS = /"type"\s*:|session_id|"subtype"\s*:/
+
+/** 骨架交给 `--cli` 线的入口：服务、会话、事件流与发消息都已就绪。 */
+interface Line {
+  store: Store
+  conversationId: ConversationId
+  events: AgentEvent[]
+  send: (content: string) => void
+  config: QyConfig
+  parent: ModelRef
+}
+
+/** 一次派活在事件流与账本里的全部落点，四条路径的判据都从这里取。 */
+interface Dispatch {
+  call: Started
+  finished: Finished
+  step: Step | undefined
+  node: NodeState | undefined
+  /** 这一格的实时输出，按到达顺序。 */
+  deltas: string[]
+  data: { output?: string; outputCoverage?: unknown; subagentId?: string }
+  runId: RunId
+}
+
+const firstLine = (text: string): string =>
+  (text.split('\n').find((l) => l.trim()) ?? '').trim().slice(0, 160)
+
+/** 实时页那一段的原样开头，换行压成竖线：判据看的是它长什么样，不是它有多长。 */
+const sample = (text: string): string => text.trim().replaceAll('\n', ' | ').slice(0, 200)
+
+/**
+ * 外部 CLI 的四条路径：成功、长时间等待、续派、长思考。
+ *
+ * 每条一轮，判据全部读复刻的账本与这一轮的事件流，不读 `~/.qywork`。
+ * 任一轮抛出（没有收尾、没有派出去）就记一条未通过并停下，汇总照常打印。
+ */
+async function cliLine(ctx: Line): Promise<void> {
+  const { store, conversationId, events } = ctx
+  const stored = resolveModel(ctx.config, ctx.parent)
+  if (!stored) throw new Error(`配置里没有 ${ctx.parent.provider} / ${ctx.parent.model}`)
+  // 单次投递预算按父模型的窗口算，与执行时那一处同源：写死一个数的话，换模型就对不上。
+  const spec = buildAdapter({
+    kind: stored.kind,
+    apiKey: stored.apiKey ?? '',
+    model: stored.model,
+    ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
+    ...(stored.headers ? { headers: stored.headers } : {}),
+    ...(stored.spec ? { spec: stored.spec } : {}),
+    ...(stored.transport ? { transport: stored.transport } : {}),
+  }).spec
+  const { perCall } = deliveryBudget(spec.contextWindow)
+  log(`父模型窗口 ${spec.contextWindow}，单次投递预算 ${perCall} token`)
+
+  const stepOf = (stepId: string): Step | undefined =>
+    listRuns(store, conversationId)
+      .flatMap((r) => listSteps(store, r.id))
+      .find((s) => s.id === stepId)
+
+  const nodesOf = (step: Step | undefined): Record<string, NodeState> | undefined => {
+    const payload = step?.payload
+    if (!payload) return undefined
+    return payload.kind === 'tool_call' || payload.kind === 'tool_result'
+      ? payload.nodes
+      : undefined
+  }
+
+  /** 这一轮最后一次 subagent 调用。参数被挡回的那次不算：模型会按回执补全重派。 */
+  const dispatchOf = (from: number, label: string): Dispatch => {
+    const slice = events.slice(from)
+    const call = slice
+      .filter((ev): ev is Started => ev.type === 'tool.started' && ev.toolName === 'subagent')
+      .at(-1)
+    if (!call) throw new Error(`${label}：这一轮没有派出 subagent`)
+    const finished = slice.find(
+      (ev): ev is Finished => ev.type === 'tool.finished' && ev.toolCallId === call.toolCallId,
+    )
+    if (!finished) throw new Error(`${label}：subagent 调用没有终态`)
+    const step = stepOf(call.stepId)
+    return {
+      call,
+      finished,
+      step,
+      node: nodesOf(step)?.[SUBAGENT_NODE_ID],
+      deltas: slice
+        .filter((ev): ev is Output => ev.type === 'team.output' && ev.stepId === call.stepId)
+        .map((ev) => ev.delta),
+      data: (finished.outcome.data ?? {}) as Dispatch['data'],
+      runId: call.runId,
+    }
+  }
+
+  const readings: string[] = []
+  /**
+   * 发一句，等**这一轮自己**收尾，返回它在事件流里的起点。
+   *
+   * **收尾要按 runId 认。** 一轮报错时 `run.error` 与 `run.finished` 会先后发两条，
+   * 只等「下一条终态事件」的话，后到的那条会当场把下一轮判成已收尾。
+   */
+  const round = async (title: string, content: string): Promise<number> => {
+    out(`\n${title}`)
+    const from = events.length
+    ctx.send(content)
+    const deadline = Date.now() + ROUND_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      const slice = events.slice(from)
+      const runId = slice.find((ev) => ev.type === 'run.started')?.runId
+      const ended = runId
+        ? slice.find(
+            (ev) => (ev.type === 'run.finished' || ev.type === 'run.error') && ev.runId === runId,
+          )
+        : undefined
+      if (ended) {
+        if (ended.type === 'run.error') check(`${title}：这一轮没有报错`, false, ended)
+        return from
+      }
+      await Bun.sleep(500)
+    }
+    throw new Error(`${title}：这一轮 ${ROUND_TIMEOUT_MS / 1000}s 没有收尾`)
+  }
+
+  let subagentId = ''
+  try {
+    // ── 6.1 成功路径 ──
+    const from = await round('6.1 成功路径：点名 @cli:claude 审查一个文件', CLI_MESSAGES.review)
+    const d = dispatchOf(from, '6.1')
+    subagentId = d.data.subagentId ?? ''
+    const output = d.data.output ?? ''
+    check('6.1 这一格做成了', d.finished.status === 'success' && d.node?.phase === 'done', [
+      d.finished.status,
+      d.node?.phase,
+      d.finished.outcome.message,
+    ])
+    check('6.1 卡上那格的种类是 cli', d.node?.kind === 'cli', d.node)
+    check('6.1 实时页收到了正文', d.deltas.length > 0)
+    check(
+      '6.1 实时页不是原始 JSON 行',
+      d.deltas.length > 0 && !d.deltas.some((t) => RAW_FIELDS.test(t)),
+      d.deltas.find((t) => RAW_FIELDS.test(t)),
+    )
+    check(
+      '6.1 实时页带工具名标记',
+      d.deltas.some((t) => t.includes('[工具 ')),
+      sample(d.deltas.join('')),
+    )
+    check(
+      '6.1 回执是审查正文',
+      output.trim().length > 0 && !output.trimStart().startsWith('{') && !RAW_FIELDS.test(output),
+      output.slice(0, 300),
+    )
+    check('6.1 正常篇幅没有被截断', d.data.outputCoverage === undefined, d.data.outputCoverage)
+    check('6.1 回执带回了 subagentId', !!subagentId)
+    readings.push(
+      `6.1 durationMs=${d.node?.durationMs ?? d.finished.durationMs}，回执 ${output.length} 字符，实时页 ${d.deltas.length} 片`,
+    )
+    readings.push(`6.1 实时页样例：${sample(d.deltas.join(''))}`)
+    readings.push(`6.1 回执样例：${firstLine(output)}`)
+
+    // ── 6.2 静默路径 ──
+    const from2 = await round('6.2 静默路径：让它等一个不会出现的文件', CLI_MESSAGES.wait)
+    const d2 = dispatchOf(from2, '6.2')
+    const idle = d2.node?.durationMs ?? d2.finished.durationMs
+    const output2 = d2.data.output ?? ''
+    check(
+      `6.2 静默到点被终止（${(idle / 1000).toFixed(1)}s，额度 ${MAX_TIMEOUT_MS / 1000}s）`,
+      idle >= MAX_TIMEOUT_MS && idle <= MAX_TIMEOUT_MS + 60_000,
+      idle,
+    )
+    check(
+      '6.2 回执文案说的是静默终止',
+      d2.finished.outcome.message.includes(`静默 ${MAX_TIMEOUT_MS / 1000} 秒，已终止`),
+      d2.finished.outcome.message,
+    )
+    check(
+      '6.2 回执是被终止前已说出口的正文',
+      output2.trim().length > 0 && !RAW_FIELDS.test(output2),
+      output2.slice(0, 300),
+    )
+    const compactions = listSteps(store, d2.runId).filter((s) => s.kind === 'compaction')
+    check(
+      '6.2 这一轮没有压缩',
+      compactions.length === 0,
+      compactions.map((s) => s.payload),
+    )
+    // 带着回执的是这次调用之后开出的那一次请求。**按执行起点分前后，不按事件到达时刻**：
+    // 请求开出与 `tool.finished` 到达同在一毫秒内，用后者比不出先后。
+    const at = d2.step?.executionStartedAt ?? 0
+    const turns = listProviderRequests(store, d2.runId).filter((r) => r.purpose === 'turn')
+    const before = turns.filter((r) => r.createdAt <= at).at(-1)
+    const after = turns.find((r) => r.createdAt > at)
+    const grew =
+      (after?.sentCategories.intermediateContent ?? 0) -
+      (before?.sentCategories.intermediateContent ?? 0)
+    check(
+      `6.2 回执之后 intermediateContent 只涨 ${grew}，不超过单次预算 ${perCall}`,
+      !!after && grew <= perCall,
+      {
+        before: before?.sentCategories.intermediateContent,
+        after: after?.sentCategories.intermediateContent,
+        perCall,
+      },
+    )
+    readings.push(
+      `6.2 durationMs=${idle}，回执 ${output2.length} 字符，压缩 step ${compactions.length} 条`,
+    )
+    readings.push(
+      `6.2 intermediateContent ${before?.sentCategories.intermediateContent ?? '—'} → ${after?.sentCategories.intermediateContent ?? '—'}（预算 ${perCall}）`,
+    )
+    readings.push(`6.2 回执样例：${firstLine(output2)}`)
+
+    // ── 6.3 续派路径 ──
+    // 点名要用 6.1 那个 id：不写出来的话「刚才那个」在 6.2 之后指向不明。
+    if (!subagentId) throw new Error('6.3：6.1 没有回 subagentId，续派无从点名')
+    const from3 = await round(
+      '6.3 续派路径：对同一个子 agent 再派一次',
+      CLI_MESSAGES.resume(subagentId),
+    )
+    const d3 = dispatchOf(from3, '6.3')
+    check('6.3 续派填的是 6.1 那个 subagentId', d3.call.args.subagent === subagentId, d3.call.args)
+    // 模型会把没用到的可选参数一律填空串，所以判的是「没有值」而不是「没有这个键」。
+    check('6.3 续派参数不带种类，种类只能来自会话记录', !d3.call.args.kind, d3.call.args)
+    check('6.3 卡上那格仍是 cli', d3.node?.kind === 'cli', d3.node)
+    check(
+      '6.3 实时页是正文，不是原始 JSON 行',
+      d3.deltas.length > 0 && !d3.deltas.some((t) => RAW_FIELDS.test(t)),
+      d3.deltas.find((t) => RAW_FIELDS.test(t)),
+    )
+    readings.push(
+      `6.3 durationMs=${d3.node?.durationMs ?? d3.finished.durationMs}，回执 ${(d3.data.output ?? '').length} 字符`,
+    )
+    readings.push(`6.3 实时页样例：${sample(d3.deltas.join(''))}`)
+
+    // ── 6.4 长思考路径 ──
+    const from4 = await round('6.4 长思考路径：读全部文件再写重构建议', CLI_MESSAGES.heavy)
+    const d4 = dispatchOf(from4, '6.4')
+    const long = d4.node?.durationMs ?? d4.finished.durationMs
+    check(
+      '6.4 事件持续流动时不被终止，重任务跑完',
+      d4.finished.status === 'success' && d4.node?.phase === 'done',
+      [d4.finished.status, d4.node?.phase, d4.finished.outcome.message],
+    )
+    readings.push(`6.4 durationMs=${long}，回执 ${(d4.data.output ?? '').length} 字符`)
+    if (long <= MAX_TIMEOUT_MS) {
+      readings.push(`6.4 未到 ${MAX_TIMEOUT_MS / 1000} s，总时长上限已删这件事不算被这条验证`)
+    }
+  } catch (err) {
+    check('四条路径跑完', false, err instanceof Error ? err.message : String(err))
+  }
+
+  out('\n汇总')
+  for (const line of readings) out(`  ${line}`)
+  out(`  复刻目录 ${ROOT}`)
+  out(
+    `  会话 ${conversationId}；子会话：${listChildConversations(store, conversationId)
+      .map((c) => `${c.title}=${c.id}(${c.source})`)
+      .join('，')}`,
+  )
+}
 
 async function main(): Promise<number> {
   await mkdir(WS_DIR, { recursive: true })
+  if (CLI) {
+    await writeFixture()
+    // claude 的 Bash 工具自己也有执行上限，默认与这里的静默额度同数。它先到点的话
+    // 沉默会被它那一侧结束，静默路径量不到 qywork 这一侧的判据，所以抬高它那个上限。
+    process.env.BASH_MAX_TIMEOUT_MS = String(MAX_TIMEOUT_MS + 300_000)
+  }
 
   const store = new Store({ path: DB })
   const config = await loadConfig()
@@ -227,6 +670,12 @@ async function main(): Promise<number> {
           throw new Error(`这一轮 ${ms / 1000}s 没有收尾`)
         }),
       ])
+
+    if (CLI) {
+      await cliLine({ store, conversationId, events, send, config, parent })
+      ws.close()
+      return failures
+    }
 
     // ── 首派 ──
     process.stdout.write('\n首派：用户原话\n')
@@ -547,5 +996,5 @@ async function main(): Promise<number> {
 }
 
 const n = await main()
-process.stdout.write(`\n${n === 0 ? '全部通过' : `${n} 项未通过`}\n`)
+out(`\n${n === 0 ? '全部通过' : `${n} 项未通过`}`)
 process.exit(n === 0 ? 0 : 1)
