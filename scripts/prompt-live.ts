@@ -110,7 +110,7 @@ async function turn(live: Live, conversationId: string, content: string): Promis
   const timer = setTimeout(() => {
     timedOut = true
     if (!runId) return done.reject(new Error('这一轮超时'))
-    ws.send(JSON.stringify({ type: 'run.interrupt', runId }))
+    ws.send(JSON.stringify({ type: 'conversation.interrupt', conversationId }))
     interruptTimer = setTimeout(() => done.reject(new Error('这一轮超时，中断后仍未收尾')), 10_000)
   }, RUN_TIMEOUT_MS)
   try {
