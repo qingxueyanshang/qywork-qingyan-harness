@@ -149,6 +149,27 @@ function appendNodeOutput(key: string, chunk: string): void {
 const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
 
 /**
+ * 思考正文，按 step 认自己那一条，不按「末项是不是思考」认：同一次调用里出现第二段思考时，
+ * 后者会把它并进第一段，而那两段是分开到达的。
+ *
+ * 走合帧器而不是逐条写：思考 token 一秒几十到上百条，四条子会话流同时开着时每条都同步写
+ * store，标签预览、`<pre>` 重设、滚到末尾各跑一遍，主线程被占满，别的页面点起来就有延迟。
+ */
+function appendThinking(key: string, chunk: string): void {
+  const [cid, stepId] = key.split(SEP) as [string, string]
+  setState(
+    produce((s) => {
+      const items = s.views[cid]?.transcript
+      if (!items) return
+      const last = items[items.length - 1]
+      if (last?.kind === 'thinking' && last.id === stepId) last.text += chunk
+      else items.push({ id: stepId, kind: 'thinking', text: chunk })
+    }),
+  )
+}
+const thinkFrames = createFramer({ write: appendThinking, schedule })
+
+/**
  * 不落 transcript 的事件——它们不该冲正文缓冲。
  *
  * `git.state` 由服务端在握手时、切项目时、以及 `.git/HEAD` 变了的时候广播——
@@ -181,6 +202,7 @@ export function discardPace(): void {
   pacer.discard()
   toolFrames.discard()
   nodeFrames.discard()
+  thinkFrames.discard()
 }
 
 /**
@@ -251,10 +273,13 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    * 把那一层直接关掉。`tool.delta` 尤其不能冲正文——它按 stepId 改的是已经存在的
    * 那张卡片，不动 transcript 末项，没有顺序风险，而它一秒有几百条。
    */
-  if (ev.type !== 'text.delta' && ev.type !== 'tool.delta' && !OFF_TRANSCRIPT.has(ev.type)) {
+  const streaming =
+    ev.type === 'text.delta' || ev.type === 'tool.delta' || ev.type === 'thinking.delta'
+  if (!streaming && !OFF_TRANSCRIPT.has(ev.type)) {
     pacer.flush()
     toolFrames.flush()
     nodeFrames.flush()
+    thinkFrames.flush()
   }
 
   const cid = from ?? state.activeConversation
@@ -360,22 +385,16 @@ function foldContent(cid: string, ev: AgentEvent): void {
       )
       return
 
+    // 思考与正文各自合帧，先来的先落地：正文到了先把攒着的思考写下去，反之亦然，
+    // 否则同一次回复里「思考 → 正文 → 第二段思考」会落成乱序。
     case 'text.delta':
+      thinkFrames.flush()
       pacer.push(bufKey(cid, ev.stepId), ev.delta)
       return
 
-    // 与 `text.delta` 同构：按 stepId 认自己那一条，不按「末条是不是思考」认。
-    // 后者在同一次调用里出现第二段思考时会把它并进第一段，而那两段是分开到达的。
     case 'thinking.delta':
-      setState(
-        produce((s) => {
-          const items = s.views[cid]?.transcript
-          if (!items) return
-          const last = items[items.length - 1]
-          if (last?.kind === 'thinking' && last.id === ev.stepId) last.text += ev.delta
-          else items.push({ id: ev.stepId, kind: 'thinking', text: ev.delta })
-        }),
-      )
+      pacer.flush()
+      thinkFrames.push(bufKey(cid, ev.stepId), ev.delta)
       return
 
     case 'run.retrying': {

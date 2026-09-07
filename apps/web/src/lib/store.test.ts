@@ -50,6 +50,7 @@ const {
   activePanelTab,
   activateWorkspace,
   applyEvent,
+  discardPace,
   client,
   dropView,
   modelCatalog,
@@ -2300,5 +2301,44 @@ describe('实时到达的回执也建成回执条目', () => {
 
     expect(transcript().map((t) => t.id)).toEqual(['ms_1', 'st_receipt', 'run_rn_1'])
     expect(transcript().map((t) => t.kind)).toEqual(['receipt', 'receipt', 'run'])
+  })
+})
+
+/**
+ * 思考流走合帧器（`store/connection.ts` 的 `thinking.delta`）：一帧合一次写，不逐 token 写。
+ * 正文到了先把攒着的思考落地，否则同一次回复里思考会排到正文后面。
+ */
+describe('思考流合帧', () => {
+  const think = (stepId: string, delta: string) =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_think',
+      event: { type: 'thinking.delta', runId: 'run_1', stepId, delta },
+    }) as never
+  const text = (stepId: string, delta: string) =>
+    ({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_think',
+      event: { type: 'text.delta', runId: 'run_1', stepId, delta },
+    }) as never
+
+  test('几片思考合成一条，正文到达时先落地', () => {
+    setState({ activeConversation: 'cv_think' })
+    freshView('cv_think')
+    applyEvent(think('st_think', '先想'))
+    applyEvent(think('st_think', '再想'))
+    // 攒着，还没写进 transcript。
+    expect(viewOf('cv_think').transcript.find((t) => t.id === 'st_think')).toBeUndefined()
+    applyEvent(text('st_text', '完成'))
+    const items = viewOf('cv_think').transcript
+    const thinking = items.findIndex((t) => t.id === 'st_think')
+    expect(items[thinking]?.text).toBe('先想再想')
+    // 正文还在节拍器里或已落在思考之后，思考不能排在它后面。
+    const textAt = items.findIndex((t) => t.id === 'st_text')
+    expect(textAt === -1 || textAt > thinking).toBe(true)
+    // 正文还攒在节拍器里，不丢掉的话它的定时器会让进程退不出去。
+    discardPace()
   })
 })
