@@ -55,7 +55,7 @@ import {
 const arg = (name: string): string | undefined =>
   process.argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1)
 
-const ALL_PATHS = ['6.1', '6.2', '6.3', '6.4', '6.5'] as const
+const ALL_PATHS = ['6.1', '6.2', '6.3', '6.4', '6.5', 'assign'] as const
 type PathId = (typeof ALL_PATHS)[number]
 
 const SELECTED: PathId[] = (() => {
@@ -310,6 +310,9 @@ const MESSAGES = {
     '收到检查点回执再决定：第一个 checkpoint 核验后 approve 进第二批，第二个 checkpoint 到了也 approve，' +
     '最后把总报告转述给我。',
   recall: '你手上还有没有没跑完的子 agent？只回答这一句，不要派活、不要调用任何工具。',
+  assign:
+    '帮我设立4个子agent，然后分别安排glm5.3flash、qwen3.8flash、deepseek4.0flash version、Gemini3.8flash。' +
+    '同时做一个赛车游戏，要3d的，漫画风格，最后你来做验收和横向对比，主要是看游戏有没有bug还有可玩性，有bug让他们继续优化,，利用workflow的功能，来完成这件事',
 }
 
 // ─────────────────────────── 服务进程 ───────────────────────────
@@ -1229,6 +1232,55 @@ const RUNNERS: Record<PathId, () => Promise<void>> = {
   '6.3': pathStop,
   '6.4': pathGraph,
   '6.5': pathRestart,
+  assign: pathAssign,
+}
+
+/**
+ * 模型绑定实验：用户原话点名四个模型，看父会话把不把它们填进节点的 provider / model。
+ * 只看派活调用的参数（被拒的那几次也算，参数已经写出来了），随后全停，不让子 agent 真跑。
+ */
+async function pathAssign(): Promise<void> {
+  out('\n══ assign 模型绑定：用户点名四个模型，父会话填不填参数 ══')
+  const conversationId = await createConversation('assign 模型绑定')
+  const feed = await openFeed(conversationId)
+  try {
+    const from = feed.events.length
+    feed.send(MESSAGES.assign)
+    const isDispatch = (ev: AgentEvent): boolean =>
+      ev.type === 'tool.started' && (ev.toolName === 'workflow' || ev.toolName === 'subagent')
+    await waitIndex(feed, 'assign 首次派活调用', from, isDispatch, ROUND_TIMEOUT_MS)
+    await tryRound(feed, 'assign 首轮', from, 90_000)
+    feed.interrupt()
+    const calls = feed.events.slice(from).filter((ev): ev is Started => isDispatch(ev))
+    const agentNodes = (call: Started): Record<string, unknown>[] => {
+      const args = call.args as Record<string, unknown>
+      const nodes = Array.isArray(args.nodes) ? (args.nodes as Record<string, unknown>[]) : [args]
+      return nodes.filter((n) => n.kind !== 'checkpoint')
+    }
+    calls.forEach((call, i) => {
+      const line = agentNodes(call)
+        .map(
+          (n) =>
+            String(n.name ?? n.id ?? '?') +
+            ' → provider=' +
+            JSON.stringify(n.provider ?? null) +
+            ' model=' +
+            JSON.stringify(n.model ?? null),
+        )
+        .join('；')
+      note('assign 调用 ' + String(i + 1) + '（' + call.toolName + '）：' + line)
+    })
+    const last = calls.at(-1)
+    const nodes = last ? agentNodes(last) : []
+    const bound = nodes.filter((n) => typeof n.model === 'string' && n.model)
+    check(
+      'assign 最后一次派活调用里每个 agent 节点都填了 model',
+      nodes.length > 0 && bound.length === nodes.length,
+      nodes.map((n) => [n.name ?? n.id, n.provider ?? null, n.model ?? null]),
+    )
+  } finally {
+    feed.close()
+  }
 }
 
 async function main(): Promise<number> {

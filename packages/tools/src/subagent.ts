@@ -71,7 +71,8 @@ export const subagentTool: ToolSpec = {
       model: {
         type: 'string',
         description:
-          '只在用户点名了模型时才填：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
+          '用户点名了模型就填这里：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
+          '写在 task 正文里不生效，子 agent 不会自己换模型。' +
           '不填 = 用当前会话的模型（角色钉了模型用角色的）。只在新建时生效；外部 CLI 用它自己的模型，填了会被拒。',
       },
     },

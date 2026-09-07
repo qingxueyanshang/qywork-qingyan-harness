@@ -285,7 +285,8 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
-        'provider 与 model 两个参数只接受清单里同一行的值；用户说的厂商、系列或简称（例如 glm）对应哪一行，由你按语义判断。',
+        'provider 与 model 两个参数只接受清单里同一行的值；用户点名了模型就填进这两个参数，写在任务正文里不生效。' +
+        '用户说的厂商、系列或简称（例如 glm）对应哪一行，由你按语义判断。',
       group: 'workspaceState',
     })
   }

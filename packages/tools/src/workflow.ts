@@ -63,12 +63,13 @@ export const workflowTool: ToolSpec = {
             provider: {
               type: 'string',
               description:
-                '覆盖模型所属接口；填写 model 时逐字使用运行上下文「已配置模型」清单中同一行的 provider 参数',
+                '与 model 同一行的 provider 参数，逐字取自运行上下文「已配置模型」清单；填了 model 就必须填它',
             },
             model: {
               type: 'string',
               description:
                 '只在用户点名了模型时填：运行上下文「已配置模型」清单里的 model 参数，逐字，并同时填 provider。' +
+                '写在 task 正文里不生效，子 agent 不会自己换模型。' +
                 '不填 = 跟当前会话（角色钉了模型用角色的）；指向已有子 agent 或外部 CLI 的节点不接受',
             },
           },

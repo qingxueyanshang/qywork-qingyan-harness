@@ -232,7 +232,12 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
     for (const key of ['workflowId', 'checkpointId', 'decision', 'revisions']) {
       const omitted =
         key === 'revisions' ? omittedStructured(wireArgs[key]) : nullish(wireArgs[key])
-      if (!omitted) return { ok: false, error: `首次派发不能带 ${key}` }
+      if (!omitted) {
+        return {
+          ok: false,
+          error: `首次派发只填 goal、nodes、maxConcurrent，workflowId、checkpointId、decision、note、revisions 都填 null；这次带了 ${key}`,
+        }
+      }
     }
     const goal = wireText(wireArgs.goal)
     if (!goal) return { ok: false, error: '这张图整体要达成什么，得写清楚' }
