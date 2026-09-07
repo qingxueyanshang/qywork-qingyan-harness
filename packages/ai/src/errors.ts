@@ -234,7 +234,7 @@ export function classifyProviderError(provider: ProviderKind, err: unknown): Pro
       return build('invalid_request', message)
     }
     // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时
-    // 保留原文，同时让它进入已有的“零可见输出才重发”判据。
+    // 保留原文，同时让它进入 `loop.ts` 的重发表。
     return build('provider_unavailable', message)
   }
 
