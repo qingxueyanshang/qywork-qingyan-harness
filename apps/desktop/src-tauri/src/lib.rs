@@ -20,6 +20,34 @@ mod terminal;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+/// 运行时的 warn / error 日志写到 stderr，最后一条 error 留给启动失败的对话框。
+///
+/// tauri 运行时把窗口创建失败只写进 `log::error!` 就当成功返回（`build()` 仍是 Ok），
+/// 没有 logger 那句话就消失：进程带着托盘空转，一个窗口都没有。
+struct StderrLog;
+
+static LOGGER: StderrLog = StderrLog;
+static LAST_ERROR: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let line = format!("{}: {}", record.target(), record.args());
+        eprintln!("[qywork] {} {line}", record.level());
+        if record.level() == log::Level::Error {
+            *LAST_ERROR.lock() = Some(line);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 /// 选一个目录当工作区。
 ///
 /// 目录选择器只能在这一层做：WebView 里没有真实文件系统，
@@ -152,7 +180,7 @@ fn window_is_maximized(window: tauri::Window) -> Result<bool, String> {
 /// `shadow(false)`：**投影和那道边框线在 tao 里由同一个开关控制**，所以它只能
 /// 用来去线，投影得另外要回来（下面那个函数）。细节见 `extend_frame_for_shadow`。
 fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
-    let _window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title("qywork")
         .decorations(false)
         .shadow(false)
@@ -166,8 +194,18 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         .initialization_script(script)
         .build()?;
 
+    // `build()` 返回 Ok 不等于窗口存在：运行时把创建失败写进 log 后照样返回。
+    // 任何一个 getter 拿不到就是没建起来，原因在 `StderrLog` 留住的那一条里。
+    if window.is_visible().is_err() {
+        let reason = LAST_ERROR
+            .lock()
+            .take()
+            .unwrap_or_else(|| "运行时没有给出原因".to_owned());
+        return Err(anyhow::anyhow!("主窗口没有建起来：{reason}").into());
+    }
+
     #[cfg(windows)]
-    extend_frame_for_shadow(&_window);
+    extend_frame_for_shadow(&window);
 
     Ok(())
 }
@@ -324,6 +362,11 @@ fn remember_workspace(path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 只能装一次；装不上（已有别的 logger）就沿用那一个。
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+
     /*
      * 这三个插件是给 **Rust 侧**用的，不给 WebView 里的 JS 用。
      *

@@ -2668,6 +2668,7 @@ name = "qywork"
 version = "0.1.9"
 dependencies = [
  "anyhow",
+ "log",
  "parking_lot",
  "portable-pty",
  "serde",

@@ -31,6 +31,9 @@ serde_json = "1"
 parking_lot = "0.12"
 anyhow = "1"
 portable-pty = "0.9"
+# tauri 运行时把窗口创建失败只写进 `log::error!` 就当成功返回；没有 logger 那句话就消失。
+# 见 lib.rs 的 `StderrLog`。log 本来就在依赖树里。
+log = "0.4"
 
 # 只有 Windows 需要：无装饰窗口的投影要自己向 DWM 要，见 lib.rs 的
 # `extend_frame_for_shadow`。版本跟 tauri 传递依赖的那份对齐（0.61），
