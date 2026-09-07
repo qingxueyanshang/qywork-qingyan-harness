@@ -633,21 +633,26 @@ describe('权限拒绝', () => {
  * 就那么挂着，既不出错也不结束，界面持续转圈。
  */
 describe('流卡死要有终态，不能无限期挂着', () => {
-  /** 吐第一个事件之后就沉默，直到被 abort。 */
-  function stallingAdapter(opts: { stallAfterFirst: boolean }): LlmAdapter & { aborted: boolean } {
+  /**
+   * 响应头之后沉默，直到被 abort。`connectMs` 是响应头之前的等待：看门狗从响应头之后
+   * 起计，这一段不该被它掐。`text` 为真时先输出一个字再沉默，用来压住重发。
+   */
+  function stallingAdapter(
+    opts: { connectMs?: number; text?: boolean } = {},
+  ): LlmAdapter & { aborted: number } {
     const self = {
       kind: 'anthropic_messages' as const,
       transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      aborted: false,
+      aborted: 0,
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-        if (opts.stallAfterFirst) {
-          yield { type: 'request_prepared', measuredInputTokens: 10 }
-          yield { type: 'response_started' }
-        }
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        if (opts.connectMs) await new Promise((resolve) => setTimeout(resolve, opts.connectMs))
+        yield { type: 'response_started' }
+        if (opts.text) yield { type: 'text_delta', delta: '半' }
         await new Promise<void>((resolve) => {
           req.signal?.addEventListener('abort', () => {
-            self.aborted = true
+            self.aborted++
             resolve()
           })
         })
@@ -668,11 +673,12 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     })
   }
 
-  test('首个事件就迟迟不来 —— 报 stream_idle_timeout 并收尾', async () => {
+  test('响应头之前的等待不归看门狗，响应头之后的静默才判超时', async () => {
     const events: string[] = []
     let code: string | undefined
     let message = ''
-    for await (const ev of loopWith(stallingAdapter({ stallAfterFirst: false })).run({
+    // 响应头前等 300ms，超过 150ms 的空闲上限；之后吐过字再沉默，不重发，只看这一次。
+    for await (const ev of loopWith(stallingAdapter({ connectMs: 300, text: true })).run({
       runId: 'rn_1' as never,
       history: [],
       signal: new AbortController().signal,
@@ -684,31 +690,39 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       }
     }
     expect(code).toBe('stream_idle_timeout')
-    // 静默不重发：分不出是死了还是还在想，重发只是让上游再跑一遍。
-    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到响应$/)
+    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到后续数据$/)
+    expect(events).not.toContain('run.retrying')
     // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
 
-  test('流到一半断供也判超时', async () => {
+  test('正文之前的静默原样重发，额度用尽才落终态', async () => {
+    const adapter = stallingAdapter()
     let code: string | undefined
     let message = ''
-    for await (const ev of loopWith(stallingAdapter({ stallAfterFirst: true })).run({
+    let retrying = 0
+    for await (const ev of loopWith(adapter).run({
       runId: 'rn_2' as never,
       history: [],
       signal: new AbortController().signal,
     })) {
+      if (ev.type === 'run.retrying') retrying++
       if (ev.type === 'run.error') {
         code = ev.code
         message = ev.message
       }
     }
     expect(code).toBe('stream_idle_timeout')
-    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到后续数据$/)
+    expect(retrying).toBe(MAX_RESENDS)
+    expect(message).toMatch(
+      new RegExp(`^模型响应中断，\\d+ 秒未收到后续数据，已重发 ${MAX_RESENDS} 次$`),
+    )
+    // 每次尝试都要中止自己那条连接，不然被判死的流一直占着。
+    expect(adapter.aborted).toBe(MAX_RESENDS + 1)
   }, 10_000)
 
   test('超时会中止底层请求 —— 不然那条连接一直挂着', async () => {
-    const adapter = stallingAdapter({ stallAfterFirst: false })
+    const adapter = stallingAdapter({ text: true })
     for await (const _ of loopWith(adapter).run({
       runId: 'rn_3' as never,
       history: [],
@@ -716,7 +730,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     })) {
       // 只是把流跑完
     }
-    expect(adapter.aborted).toBe(true)
+    expect(adapter.aborted).toBe(1)
   }, 10_000)
 
   test('正常流不受影响 —— 超时计的是间隔不是总时长', async () => {
@@ -2996,20 +3010,28 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   })
 
   /**
-   * 超时一次都不重发：静默分不出是对面死了还是还在想，原样重发只是让上游再跑一遍同样的推理。
-   * 终态里「未收到响应」只出现一次，且没有「已重发」。
+   * 连接超时与断连同价：响应头等了 `PROVIDER_HTTP.timeout` 还没回，掐断已经是超时那一层
+   * 的决定，不重发等于必败。
    */
-  test('连接超时不重发，终态只出现一次「未收到响应」', async () => {
+  test('连接超时原样重发，第二次成功就当无事发生', async () => {
     const { rec, events } = await collect(scriptedAdapter(['connect-timeout', 'ok']))
 
-    expect(rec.opened).toEqual([0])
-    expect(rec.diagnostics[0]?.retry.decision).toBe('not_retryable')
-    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+    expect(rec.opened).toEqual([0, 1])
+    expect(rec.diagnostics[0]?.retry.decision).toBe('resend')
+    expect(events.filter((e) => e.type === 'run.retrying')).toHaveLength(1)
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+  })
+
+  test('连接超时到额度用尽：终态带读数与重发次数，读数只拼一次', async () => {
+    const { events } = await collect(
+      scriptedAdapter(Array.from({ length: MAX_RESENDS + 1 }, () => 'connect-timeout' as const)),
+    )
+
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('连接超时')
     expect(message.match(/未收到响应/g)).toHaveLength(1)
-    expect(message).not.toContain('已重发')
+    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
   })
 
   /*

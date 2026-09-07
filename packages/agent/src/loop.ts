@@ -379,15 +379,21 @@ export interface RunInput {
 const NEWLINE = String.fromCharCode(10)
 
 /**
- * 流空闲超时。**两个事件之间**超过这个时长没有新事件就判定流卡死。
+ * 流空闲超时。响应头到达之后，**两个事件之间**超过这个时长没有新事件就判定流卡死。
  *
  * 没有这条超时，provider 侧断流之后 run 既不出错也不结束：界面持续转圈，日志无输出。
  * `stream_idle_timeout` 这个码因此必须有生产者——它是少数**只能靠事件不出现**
  * 才发现得了的死链路。
  *
  * 计的是**间隔**不是总时长：一轮 agent 跑十分钟是正常的，十分钟里一个字节都没有不是。
- * 180 秒给得比较宽，因为首个事件之前要等首 token，长 prompt 上这一段本来就慢；
+ * 响应头之前不归它管：有的第三方接口要等上游思考结束才回响应头，那一段只有一个上限，
+ * 是 ai 包的 `PROVIDER_HTTP.timeout`。不要让看门狗从发出就计时——那样 180 秒会先于
+ * 600 秒掐掉一次正在思考的请求，两个超时管同一段就是两本账。
+ * 180 秒留给响应头之后、首个 delta 之前：思考不回传的模型在这段一个字节都没有。
  * 判错的代价（把一次正常的慢请求掐掉）比判漏（无限期挂住）大。
+ *
+ * 运行时自带的 socket 空闲超时在适配器里已关掉（`PROVIDER_HTTP.fetchOptions`），
+ * 不然静默 300 秒就被它先掐，这个数超过 300 的部分从不生效。
  */
 export const STREAM_IDLE_TIMEOUT_MS = 180_000
 
@@ -452,19 +458,21 @@ export const MAX_RESENDS = 5
  * 给不接受图片的模型发一张图，用户看到的是「正在重连 1 / 5」一直数到 5，
  * 而真正的原因——这个模型不接受图片——一个字都没出现。第三方接口已证实可恢复的模糊
  * 拒绝由 `ai/errors.ts` 精确归成 `provider_unavailable`，不要在这里再按文案分叉。
+ *
+ * **超时与断连同价。** `stream_idle_timeout` 是看门狗掐断的流，连接已经判死，立刻原样重发；
+ * 连接超时（`timedOut` 的 `network_error`）是响应头等了 `PROVIDER_HTTP.timeout` 还没回，
+ * 同样。掐了不重发等于这一轮必败，重复推理的代价由重发窗口限住：正文出过字就不重发。
+ * 「静默可能是上游还在想」只对响应头之前成立，那一段看门狗不计时（见 `openStream`），
+ * 不存在第三方接口还在等上游思考、这边掐了再发让它重跑一遍的情形。
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
   ['network_error', 0],
+  ['stream_idle_timeout', 0],
   ['provider_unavailable', UNAVAILABLE_BACKOFF_MS],
 ])
 
-/**
- * 超时的一律不重发。静默分不出是对面死了还是还在想：第三方接口要等上游思考结束才回响应头，
- * 掐掉再原样重发，是让上游把同一份推理再跑一遍，父会话与用户多等的正是重发那几倍时间。
- * 事实（多少秒没响应）随错误交回，重来与否由模型或用户定。
- */
+/** 重发前等多久。不在表里的失败返回 undefined：不重发。 */
 function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
-  if (error.timedOut) return undefined
   if (error.code === 'rate_limited') {
     if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
     return Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** resends, RATE_LIMIT_BACKOFF_MAX_MS)
@@ -742,8 +750,20 @@ export class AgentLoop {
       )
       [Symbol.asyncIterator]()
 
-    /** 等一个事件，超时就判流卡死并中止本次请求。 */
+    /**
+     * 收到过 provider 事件才算流开了。此前的等待（连接、响应头，缓冲型第三方接口还包括
+     * 上游整段思考）由 `PROVIDER_HTTP.timeout` 管，看门狗不计时；三个适配器都在响应头
+     * 到达处 yield `response_started`。
+     */
+    let opened = false
+
+    /** 等一个事件。流开了之后超时就判流卡死并中止本次请求。 */
     const step = async (): Promise<IteratorResult<ProviderEvent>> => {
+      if (!opened) {
+        const result = await it.next()
+        if (!result.done && result.value.type !== 'request_prepared') opened = true
+        return result
+      }
       let timer: ReturnType<typeof setTimeout> | undefined
       const stalled = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
@@ -1546,8 +1566,7 @@ export class AgentLoop {
               throw err
             }
             const backoffMs = resendBackoffMs(pe, resends)
-            // 超时的不重发，但终态要带上静默读数，所以不在这里抛，走下面的拼装。
-            if (backoffMs === undefined && !pe.timedOut) {
+            if (backoffMs === undefined) {
               recordDecision('not_retryable')
               throw err
             }
