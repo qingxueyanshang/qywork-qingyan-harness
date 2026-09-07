@@ -24,7 +24,6 @@ import {
   groupTitle,
   type RenderItem,
   sameRenderItem,
-  workingSubagents,
 } from '../lib/render-items.ts'
 import {
   argsRows,
@@ -48,7 +47,6 @@ import {
 } from '../lib/step-view.ts'
 import {
   composerStackAbove,
-  conversationRunClosed,
   foldOpen,
   hasRunStatus,
   isConversationRunning,
@@ -322,15 +320,8 @@ export function ConversationStream(props: {
         </Show>
         <TranscriptRows items={props.items} live={props.live} />
         {props.trailing}
-        {/* 忙态含子 agent：这一轮收尾之后仍有格在跑时，读数条留着说它们。
-            没有格在跑的那一帧照旧收起来——收尾条与读数条不并存。 */}
-        <Show
-          when={
-            props.live() &&
-            props.conversationId &&
-            (!props.closed() || workingSubagents(props.items) > 0)
-          }
-        >
+        {/* 收尾条与读数条不并存：这一轮收尾之后仍有格在跑时，那几格的数印在收尾条上。 */}
+        <Show when={props.live() && !props.closed() && props.conversationId}>
           <LiveRunBar conversationId={props.conversationId!} />
         </Show>
       </div>
@@ -431,17 +422,11 @@ const SILENT_MS = 30_000
  *
  * **静默那一档为什么要绕开两种情形。** 工具还在跑时绕开：一次构建十分钟很正常，而它自己
  * 会出 stdout，那种情况下报静默是假话。
- *
- * 还有一档不描述这一轮：没有 run 在跑、忙态由子 agent 撑着时，这一格说的是那几格。
- * 那时上面五态一个都不成立——这一轮已经收尾了。
  */
-function liveStatus(now: number, conversationId: string, subagents: number): string {
+function liveStatus(now: number, conversationId: string): string {
   const current = viewOf(conversationId)
   const items = current.transcript
   const last = items[items.length - 1]
-  if (subagents > 0 && conversationRunClosed(conversationId)) {
-    return `${subagents} 个子 agent 在跑`
-  }
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
   /*
@@ -678,7 +663,8 @@ function ThinkingFold(props: { item: TranscriptItem }) {
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
   // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
   const verb = () => (streaming() ? '思考中' : '已思考')
-  const preview = () => props.item.text.replace(/\s+/g, ' ').trim().slice(0, 80)
+  // 只看开头一段再压空白：整段思考能有几万字，每来一帧都扫一遍就是随长度变慢。
+  const preview = () => props.item.text.slice(0, 240).replace(/\s+/g, ' ').trim().slice(0, 80)
 
   /*
    * 思考块自己滚到底。
@@ -866,16 +852,13 @@ export function LiveRunBar(props: { conversationId: string }) {
     const from = viewOf(props.conversationId).runStartedAt
     return from === null ? null : (now() - from) / 1000
   }
-  // memo 而不是取值函数：这一层每 100ms 走一格，而格数只随 transcript 变。
-  const subagents = createMemo(() => workingSubagents(viewOf(props.conversationId).transcript))
-
   return (
     <RunStatusBar
       usage={viewOf(props.conversationId).usage}
       stopReason={null}
       elapsed={elapsed()}
       running={true}
-      liveNote={liveStatus(now(), props.conversationId, subagents())}
+      liveNote={liveStatus(now(), props.conversationId)}
     />
   )
 }
@@ -1026,48 +1009,6 @@ function UserBubble(props: { text: string }) {
   )
 }
 
-/** 回执正文第一行的来源前缀，按 `origin` 取。标题行去掉它，剩下那句写的是种类、名字与结果。 */
-const RECEIPT_PREFIX: Record<'subagent' | 'workflow', string> = {
-  subagent: '[子 agent 回执]',
-  workflow: '[workflow 回执]',
-}
-
-/**
- * 子 agent / workflow 投回来的那条消息。
- *
- * 不画成用户气泡：气泡这一列的位置表达的是「谁说的」，而这条不是人打的字。
- * 正文与工具卡同一种折叠形状，展开体走会话正文的 markdown。
- */
-function ReceiptRow(props: { item: TranscriptItem }) {
-  const key = () => `receipt:${props.item.id}`
-  const open = () => foldOpen(key())
-  const mounted = createMemo<boolean>((was) => was || open(), false)
-  const headline = () => {
-    const line = firstLine(props.item.text)
-    const prefix = props.item.origin ? RECEIPT_PREFIX[props.item.origin] : ''
-    return prefix && line.startsWith(prefix) ? line.slice(prefix.length).trim() : line
-  }
-  const size = () => Array.from(props.item.text).length
-
-  return (
-    <details
-      class="receipt"
-      open={open()}
-      onToggle={(e) => setFoldOpen(key(), e.currentTarget.open)}
-    >
-      <summary class="receipt-head">
-        <span class="receipt-label">回执</span>
-        <span class="receipt-line truncate">{headline()}</span>
-        <span class="receipt-size">{size()} 字</span>
-      </summary>
-      <Show when={mounted()}>
-        {/* 正文经 markdown.ts 净化后才进 DOM —— 子 agent 的产出不可信。 */}
-        <div class="receipt-body markdown" innerHTML={renderMarkdown(props.item.text)} />
-      </Show>
-    </details>
-  )
-}
-
 /** 一行的固定壳：`<For>` 按它配对，内容从 `node` 读；同一个 id 只有一个壳。 */
 interface RenderRow {
   id: string
@@ -1127,9 +1068,6 @@ export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => bo
                   </Show>
                 </div>
               </div>
-            </Match>
-            <Match when={node().kind === 'receipt'}>
-              <ReceiptRow item={(node() as { item: TranscriptItem }).item} />
             </Match>
             <Match when={node().kind === 'text'}>
               <Prose item={(node() as { item: TranscriptItem }).item} />

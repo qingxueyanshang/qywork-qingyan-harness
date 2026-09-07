@@ -1748,6 +1748,7 @@ describe('正常响应结束不冒充任务完成', () => {
       subagents: async () => [],
       dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '赛车-glm', kind: 'temp' }),
       runGraph: async () => ({ ok: true }),
+      inflight: () => [],
     }
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
@@ -1758,6 +1759,78 @@ describe('正常响应结束不冒充任务完成', () => {
     })
     const finished = await runToEnd(loop, { runId: 'rn_subagent_end_turn' })
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+  })
+  /**
+   * 清单没完成而活在子 agent 手里时，这一轮结束是对的：回执到了会再起一轮。
+   * 扣住不放的后果实测过：模型没事找事（读磁盘、读会话历史），连续两条回复中间
+   * 没有 user 消息，deepseek 思考模式当场 400。
+   */
+  test('清单未完成但有子 agent 在跑：end_turn 照常结束，不塞续起提示', async () => {
+    const inner = fakeAdapter(Array.from({ length: 5 }, () => null))
+    let requests = 0
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        requests++
+        yield* inner.stream(req)
+      },
+    }
+    const delegate: DelegatePort = {
+      resolveModel: (name) => ({ provider: 'p', model: name }),
+      targets: async () => ({ roles: [], clis: [] }),
+      subagents: async () => [],
+      dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '审查员', kind: 'temp' }),
+      runGraph: async () => ({ ok: true }),
+      inflight: () => [{ name: '审查员' }],
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        delegate,
+        todos: { read: () => structuredClone(unfinished) },
+      }),
+    })
+    const finished = await runToEnd(loop, { runId: 'rn_todos_delegated' })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+    expect(requests).toBe(1)
+  })
+
+  /**
+   * 续起提示只进请求不落 transcript，模型接下来那条与上一条 assistant 之间没有 user 消息。
+   * deepseek 思考模式要求同一轮里每条 assistant 都带回推理正文，只挂工具轮的话下一次请求 400。
+   */
+  test('守卫续起时，刚结束的那条回复带上它的推理正文', async () => {
+    const inner = fakeAdapter([null, null, null])
+    const seen: (string | undefined)[][] = []
+    const adapter: LlmAdapter = {
+      ...inner,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        seen.push(req.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent))
+        yield { type: 'request_prepared', measuredInputTokens: 1 }
+        yield { type: 'response_started' }
+        yield { type: 'thinking_delta', delta: '想一想' }
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: { read: () => structuredClone(unfinished) },
+      }),
+    })
+    await runToEnd(loop, { runId: 'rn_todos_reasoning' })
+    // 第二次请求里，第一条 assistant（被续起的那条）已经带着推理正文。
+    expect(seen[1]).toEqual(['想一想'])
+    expect(seen[2]).toEqual(['想一想', '想一想'])
   })
 
   test('没有清单或清单全部完成，保留一次正常 completed', async () => {

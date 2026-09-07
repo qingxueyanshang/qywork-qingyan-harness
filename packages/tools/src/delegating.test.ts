@@ -63,6 +63,7 @@ function stub(result: DispatchResult) {
       return result
     },
     runGraph: async () => GRAPH_DONE,
+    inflight: () => [],
   }
   return { calls, port }
 }
@@ -333,6 +334,7 @@ describe('推进一张图', () => {
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => sent(),
+      inflight: () => [],
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push({
@@ -462,6 +464,7 @@ describe('推进一张图', () => {
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => sent(),
+      inflight: () => [],
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push(

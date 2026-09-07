@@ -1806,7 +1806,10 @@ export class AgentLoop {
            * 则复用已有的无进展监督器停下来，免得把一次误完成改成无限空转。
            */
           const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
-          if (unfinished.length) {
+          // 派出去的子 agent 还在跑时，清单没完成是它们在做：这一轮结束是对的，
+          // 回执到了会再起一轮。逼模型继续只会得到一段没事找事的话。
+          const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
+          if (unfinished.length && !delegated) {
             const snapshot = unfinished.map((todo) => [todo.id, todo.content, todo.status])
             progress.push({
               cycle: cycleFingerprint(
@@ -1824,6 +1827,15 @@ export class AgentLoop {
             notices.push(
               `待办清单还有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。上一条回复不是结束，这一轮继续。`,
             )
+            /*
+             * 续起之后，这一条与模型接下来那条 assistant 之间没有 user 消息（提示只进请求、
+             * 不落 transcript）。DeepSeek 思考模式要求同一轮里每一条 assistant 都带回
+             * reasoning_content，只挂工具轮的话，下一次请求就是 400。
+             */
+            const last = transcript[transcript.length - 1]
+            if (last?.role === 'assistant' && thinkingText && !last.reasoningContent) {
+              last.reasoningContent = thinkingText
+            }
             continue
           }
 

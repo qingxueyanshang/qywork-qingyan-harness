@@ -438,7 +438,9 @@ describe('回执是一条消息', () => {
     const lines = receipt.content.split('\n')
     expect(lines[0]).toBe(`[子 agent 回执] 临时 查资料（subagentId ${res.subagentId}）已返回`)
     expect(receipt.content).toContain('查完了，结论是这样')
-    expect(lines.at(-1)).toBe(`接着派它：subagent 填 subagent="${res.subagentId}"。`)
+    // 只有事实：接法在工具描述里，回执里再写一遍就是给模型的口水。
+    expect(receipt.content).not.toContain('接着派它')
+    expect(lines).toHaveLength(2)
   })
 
   test('没做成：第一行就写清原因', async () => {
@@ -574,7 +576,7 @@ describe('图按事件推进', () => {
     await until(() => receipts.length > 0, '检查点回执')
   })
 
-  test('一格跑完到检查点：回执列出上游各格，末行给接法', async () => {
+  test('一格跑完到检查点：回执列出上游各格，末行只有 id', async () => {
     const parent = conversation()
     router = byTask({ '做 A': 'A 的产出' })
     const runId = run(parent, 'wf-checkpoint')
@@ -587,7 +589,8 @@ describe('图按事件推进', () => {
     expect(receipt.content).toContain('### a（a）已返回')
     expect(receipt.content).toContain('A 的产出')
     expect(receipt.content).toContain(`workflowId=${step.id}，checkpointId=cp`)
-    expect(receipt.content).toContain('approve')
+    // 接法在工具描述里，回执不再教一遍。
+    expect(receipt.content).not.toContain('approve')
   })
 
   test('approve 之后派下一批，全部批准且格全终态时报完成', async () => {
@@ -652,7 +655,8 @@ describe('图按事件推进', () => {
     await until(() => receipts.length > 0, '失败回执')
     expect(receipts[0]?.origin).toBe('workflow')
     expect(receipts[0]?.content).toContain('[workflow 回执] x（x）没做成')
-    expect(receipts[0]?.content).toContain('其余格照跑')
+    expect(receipts[0]?.content).toContain('workflowId=')
+    expect(receipts[0]?.content).not.toContain('其余格照跑')
     expect(phasesOf('y').at(-1)).toBe('working')
 
     await until(slow.arrived, 'Y 发出请求')

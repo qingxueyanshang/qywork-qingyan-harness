@@ -554,12 +554,7 @@ export function makeDelegate(ctx: {
       continueGraph(at.workflow.workflowId, at, { nodeId, failed: !outcome.ok })
       return
     }
-    send(
-      [head(resolved, outcome.ok, error), output, `接着派它：subagent 填 subagent="${id}"。`]
-        .filter(Boolean)
-        .join('\n'),
-      'subagent',
-    )
+    send([head(resolved, outcome.ok, error), output].filter(Boolean).join('\n'), 'subagent')
   }
 
   /** 回执第一行：谁、什么结果。种类词与界面、提示词同一张表。 */
@@ -672,7 +667,7 @@ export function makeDelegate(ctx: {
       send(
         [
           `[workflow 回执] ${just.nodeId}（${receipt?.label ?? just.nodeId}）没做成：${receipt?.error ?? '没有说明原因'}`,
-          `workflowId=${workflowId}。其余格照跑；要它返工，收到检查点回执后对该 checkpoint revise 点名它。`,
+          `workflowId=${workflowId}`,
         ].join('\n'),
         'workflow',
       )
@@ -701,8 +696,7 @@ export function makeDelegate(ctx: {
       [
         `[workflow 回执] 检查点 ${checkpoint.label} 的上游已经全部返回`,
         ...cells,
-        `workflowId=${projection.workflowId}，checkpointId=${checkpoint.id}。` +
-          '核验后 approve 进下一批，或 revise 点名要返工的格。',
+        `workflowId=${projection.workflowId}，checkpointId=${checkpoint.id}`,
       ].join('\n\n'),
       'workflow',
     )
@@ -732,6 +726,10 @@ export function makeDelegate(ctx: {
     },
 
     dispatch,
+
+    inflight() {
+      return deps.subagents.listOf(conversationId).map((entry) => ({ name: entry.name }))
+    },
 
     /**
      * 推进一张图。首派校验并把就绪的格派出去，审查动作先落批准或修订再派下一批，

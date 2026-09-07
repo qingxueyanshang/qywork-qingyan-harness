@@ -49,6 +49,7 @@ function withModels(root: string, models: { provider: string; model: string }[])
       subagents: async () => [],
       dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
       runGraph: async () => ({ ok: true }),
+      inflight: () => [],
     },
   }
 }

@@ -86,6 +86,7 @@ const delegate: DelegatePort = {
   ],
   dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
   runGraph: async () => ({ ok: true }),
+  inflight: () => [],
 }
 
 describe('派活工具只给有派活通道的会话', () => {

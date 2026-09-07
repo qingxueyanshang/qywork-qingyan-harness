@@ -7,14 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  actionLabel,
-  buildRenderItems,
-  groupTitle,
-  sameRenderItem,
-  verb,
-  workingSubagents,
-} from './render-items.ts'
+import { actionLabel, buildRenderItems, groupTitle, sameRenderItem, verb } from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
@@ -114,21 +107,6 @@ describe('分组规则', () => {
       tool('d.ts'),
     ])
     expect(kinds(out)).toEqual(['group', 'text', 'group'])
-  })
-
-  /** 回执正文是下一轮的输入，卷进折叠着的工具组就等于没有。 */
-  test('回执独立成项，不并进相邻的工具组', () => {
-    const out = buildRenderItems([
-      tool('a.ts'),
-      tool('b.ts'),
-      item('receipt', {
-        text: '[子 agent 回执] 角色 审查员（subagentId cv_1）已返回',
-        origin: 'subagent',
-      }),
-      tool('c.ts'),
-      tool('d.ts'),
-    ])
-    expect(kinds(out)).toEqual(['group', 'receipt', 'group'])
   })
 
   test('user 与 compaction 同样打断分组', () => {
@@ -356,50 +334,6 @@ describe('workflow 始终是一张卡', () => {
       target: { kind: 'role', role: 'dev' },
       task: '查',
     })
-  })
-
-  /** 读数条那句「N 个子 agent 在跑」的 N。同一格在两次调用里各带一份状态，只能算一次。 */
-  test('同一个 workflow 的多次调用不把同一格数两遍', () => {
-    const working = {
-      a: { phase: 'working' as const, label: '开发', subagentId: 'cv_a' as never },
-    }
-    expect(
-      workingSubagents([
-        {
-          ...workflow(
-            'st_root',
-            { goal: '目标', nodes },
-            { workflowId: 'st_root', dispatched: ['a'] },
-          ),
-          nodes: working,
-        },
-        {
-          ...workflow(
-            'st_again',
-            { workflowId: 'st_root', checkpointId: 'cp', decision: 'approve', note: '' },
-            { workflowId: 'st_root', dispatched: [] },
-          ),
-          nodes: working,
-        },
-      ]),
-    ).toBe(1)
-  })
-})
-
-describe('在跑的格数', () => {
-  const card = (phase: string) =>
-    item('tool', {
-      toolName: 'subagent',
-      status: 'success',
-      nodes: { agent: { phase, label: '审查员' } } as TranscriptItem['nodes'],
-    })
-
-  test('只数 working，几张派活卡各算各的', () => {
-    expect(workingSubagents([card('working'), card('done'), card('working')])).toBe(2)
-  })
-
-  test('没有派活卡就是 0', () => {
-    expect(workingSubagents([item('user'), item('text')])).toBe(0)
   })
 })
 

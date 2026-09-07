@@ -115,6 +115,11 @@ export interface DelegatePort {
    * `stepId` 是这次调用那张卡的 id，实现方按它广播进度；`nodeId` 是图上哪一格，
    * 派一件时不给，实现方用单格的固定 id。
    */
+  /**
+   * 本会话此刻在跑的子 agent。只是一个事实，不等它们：循环在 end_turn 时读它，
+   * 清单没完成而活在它们手里时，这一轮照常结束。
+   */
+  inflight(): { name: string }[]
   dispatch(input: {
     target: SubagentTarget
     task: string
