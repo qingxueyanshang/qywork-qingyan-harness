@@ -141,6 +141,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         headers: this.headers,
         body: JSON.stringify({ ...body, stream: true }),
         signal,
+        // 关掉运行时的 socket 空闲超时，理由见 PROVIDER_HTTP。SDK 适配器由 SDK 合进去，这里手写 fetch 要自己展开。
+        ...PROVIDER_HTTP.fetchOptions,
       })
     } catch (err) {
       if (connect.signal.aborted) {

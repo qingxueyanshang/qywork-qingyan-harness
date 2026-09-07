@@ -14,16 +14,28 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
 /**
  * 三个适配器构造 SDK 客户端时共用的传输参数。**一份，不许各写各的。**
  *
- * - `timeout` 只覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里
- *   `clearTimeout`）。「多久没字节算死」不在这里判，归 AgentLoop 的流空闲看门狗
- *   （`STREAM_IDLE_TIMEOUT_MS`，按思考档位放宽，最高 540 秒），它从请求发出就计时。
- *   这个数只是没有看门狗的调用方（探针）的兜底，**必须大于看门狗的上限**，否则会抢在
- *   看门狗前面把一次正常的慢请求掐掉：有的第三方接口要等上游思考结束才回响应头，
- *   实测 gemini-3.8-flash 接「写整个游戏」的请求，响应头 39.7 秒才到，长上下文更久。
+ * - `timeout` 覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里 `clearTimeout`，
+ *   `openai-responses` 手写的定时器同样）。响应头之前这一段只有它一个上限：有的第三方接口要等
+ *   上游思考结束才回响应头，实测 gemini-3.8-flash 接「写整个游戏」的请求，响应头 39.7 秒
+ *   才到，长上下文更久。响应头之后归 AgentLoop 的流空闲看门狗（`STREAM_IDLE_TIMEOUT_MS`，
+ *   按思考档位放宽，最高 540 秒）。两段各一个权威，不要让任何一个跨段。
  * - `maxRetries: 0`：连不上时 SDK 自己重试两次，用户看到的就是三倍的等待。
  *   自动重发由 AgentLoop 的统一判据负责，适配器不能再暗中叠一条重试链。
+ * - `fetchOptions.timeout: false`：关掉 Bun 的 socket 空闲超时。它默认 300 秒
+ *   （`BUN_CONFIG_HTTP_IDLE_TIMEOUT`），正文静默到点就以 `TimeoutError` 掐断流，抢在看门狗
+ *   前面：实测（2026-09-07，Bun 1.3.14）静默 300.6 秒被掐，deepseek-v4-pro max 档一轮
+ *   思考中静默 320 秒就是这样失败的。两个 SDK 把它合进每次 fetch 的 init，手写 fetch 的
+ *   适配器要自己展开。标准 `RequestInit` 没有这个键，SDK 的 `fetchOptions` 又不收
+ *   body / headers / method / signal 四个键，类型按去掉这四个键的 `RequestInit` 声明。
  */
-export const PROVIDER_HTTP = { timeout: 600_000, maxRetries: 0 } as const
+export const PROVIDER_HTTP = {
+  timeout: 600_000,
+  maxRetries: 0,
+  fetchOptions: { timeout: false } as Omit<
+    RequestInit,
+    'body' | 'headers' | 'method' | 'signal'
+  > & { timeout: false },
+} as const
 
 /**
  * 每次请求都新开连接，不复用空闲的 keep-alive 连接。
