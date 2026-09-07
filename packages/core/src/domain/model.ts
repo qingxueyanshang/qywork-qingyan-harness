@@ -1159,8 +1159,6 @@ export type ProviderRetryDecision =
   | 'resend'
   | 'interrupted'
   | 'not_retryable'
-  | 'visible_output'
-  | 'tool_calls_received'
   | 'limit_exhausted'
   | 'context_compaction'
   | 'context_compaction_failed'

@@ -947,6 +947,12 @@ export class AgentLoop {
       return false
     }
     let turnIndex = 0
+    /**
+     * 带上下文续发时交给下一轮的重发次数。正文已显示的请求断开后，下一次请求是新的一轮
+     * （transcript 多了模型的上一条），额度必须跟过去：不跟，断一次续一次就没有上限。
+     * 正常收尾的一轮清零。
+     */
+    let carriedResends = 0
 
     // ToolContext 必须**整个 run 只建一个**。工具往 ctx.state 里回写的状态
     // （files 插件记录的「哪些文件本轮读过」、目录大小缓存等）要跨调用可见；
@@ -956,7 +962,7 @@ export class AgentLoop {
     const ctx = this.deps.makeToolContext(input.runId, (e) => emitQueue.push(e))
 
     try {
-      for (let requestTurn = 0; ; requestTurn++) {
+      turns: for (let requestTurn = 0; ; requestTurn++) {
         if (input.signal.aborted) {
           stopReason = 'user_interrupt'
           break
@@ -1207,17 +1213,14 @@ export class AgentLoop {
 `)
 
         /*
-         * ── 发送与消费：一次尝试，断了原样再来，至多 `MAX_RESENDS` 次 ──
+         * ── 发送与消费：一次尝试，断了带着当前上下文再来，至多 `MAX_RESENDS` 次 ──
          *
-         * **重发的窗口是「模型可见输出为零」**：正文一个字都没有、也没有 tool_calls。
-         * 重发是重新生成，模型不会接着上次那半截往下写；半截**正文**已经输出后再重发，
-         * 界面上就得表达「刚才那段作废」，而一轮之内没有第二条 run 行可以挂这个语义
-         * ——所以正文出现后不再重发。
+         * 断开时收到的内容按两种情形处置，与 `runtime/transcript.ts` 的投影同形：
          *
-         * 半截**思考**不在此列：它本来就不进模型视图（活侧只在 `calls.length` 时挂
-         * `reasoningContent`，投影侧 `flushText` 直接清空 `pendingReasoning`），
-         * 丢弃它不改写任何模型可见状态。代价是失败那次的思考 step 要落失败终态，
-         * 见下面重发分支。
+         * - 正文一个字都没显示：上下文没变，原样重发。失败那次的思考不进模型视图，
+         *   step 落失败终态；没收完的工具调用丢掉。
+         * - 正文已经显示：它是模型说过的话，作为上一条推进 transcript，再起一轮让它接着做。
+         *   没收完的工具调用同样丢掉，模型会重新发。
          *
          * `request_prepared` 不算 provider 事件——三个适配器都在发请求**之前**
          * 先 yield 它（见各 `stream()` 首行），所以「只收到过它」就等于
@@ -1228,12 +1231,13 @@ export class AgentLoop {
         /** 本轮已经开过几行账。`uq_provider_run_turn` 的第三段取的就是它。 */
         let sendIndex = 0
         /**
-         * 这一轮自动重发过几次。上限 `MAX_RESENDS`。
+         * 这一轮自动重发过几次。上限 `MAX_RESENDS`；带上下文续发的一轮从上一轮接着数。
          *
          * **不要拿 `sendIndex` 代替它计数**：那个数还会被压缩重发推进，共用一个数
          * 等于压一次就消耗一次重发额度，界面上报的次数也跟着虚高。
          */
-        let resends = 0
+        let resends = carriedResends
+        carriedResends = 0
         for (;;) {
           attemptThinking = []
           // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
@@ -1595,49 +1599,71 @@ export class AgentLoop {
              * **额度是整轮的，不按码各记一份。** 一轮里先断流再被拒的话，前面用掉的
              * 次数照算——那一轮已经真的发出去过那么多次，换个码不该把账清零。
              */
-            if (
-              backoffMs !== undefined &&
-              resends < MAX_RESENDS &&
-              assistantText === '' &&
-              calls.length === 0
-            ) {
+            if (backoffMs !== undefined && resends < MAX_RESENDS) {
               recordDecision('resend', resends + 1, backoffMs)
               resends++
+              if (assistantText === '') {
+                /*
+                 * 正文一个字都没显示：原样重发，本次尝试的痕迹一起处置。
+                 *
+                 * - 思考 step 落失败终态。不落的话它们与重发那次的思考在同一个 run 里
+                 *   相邻，投影时被 `pendingReasoning` 拼成一条回传给 provider。
+                 * - `open` 必须置空。不置空的话重发后第一个 thinking_delta 经 `stepFor`
+                 *   命中旧 id，新生成被 `appendText` 拼进已失败的那条 step。
+                 * - `thinkingText` 同理，不清就是两次生成首尾相接后一起挂上
+                 *   `reasoningContent`。
+                 * - 没收完的工具调用丢掉：流干净结束而没有 finish_reason 时适配器会把它们
+                 *   交出来，参数可能不完整。
+                 */
+                persist.failThinkingSteps(attemptThinking)
+                open = null
+                thinkingText = ''
+                calls.length = 0
+                // 界面此刻的末条是失败那次的半截思考，不发这条事件它会一直显示「正在思考…」。
+                yield {
+                  type: 'run.retrying',
+                  runId: input.runId,
+                  attempt: resends,
+                  max: MAX_RESENDS,
+                  failedThinkingStepIds: [...attemptThinking],
+                }
+                // 等待必须可中断：退避的这几秒内用户点停止，不中断等待就是按钮无响应。
+                if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
+                continue
+              }
+
               /*
-               * 重发是**重新生成**，不是接着上次那半截写。所以本次尝试的痕迹要一起处置：
-               *
-               * - 思考 step 落失败终态。不落的话它们与重发那次的思考在同一个 run 里
-               *   相邻，投影时被 `pendingReasoning` 拼成一条回传给 provider。
-               * - `open` 必须置空。不置空的话重发后第一个 thinking_delta 经 `stepFor`
-               *   命中旧 id，新生成被 `appendText` 拼进已失败的那条 step。
-               * - `thinkingText` 同理，不清就是两次生成首尾相接后一起挂上
-               *   `reasoningContent`。
+               * 正文已经显示：它是模型说过的话，作为上一条推进 transcript，再起一轮让它接着做。
+               * 形状与投影一致（`runtime/transcript.ts`）：正文成 assistant 消息，没收完的
+               * 工具调用不带。思考挂上去：续起后这一条与下一条 assistant 之间没有落账的
+               * user 消息，DeepSeek 思考模式要求同一轮里每条 assistant 都带 reasoning_content
+               * （与待办守卫续起时同一条理由）。
                */
-              persist.failThinkingSteps(attemptThinking)
-              open = null
-              thinkingText = ''
-              // 界面此刻的末条是失败那次的半截思考，不发这条事件它会一直显示「正在思考…」。
+              const unitStart = transcript.length
+              transcript.push({
+                role: 'assistant',
+                content: assistantText,
+                ...(thinkingText ? { reasoningContent: thinkingText } : {}),
+                _group: 'executionRecords',
+              })
+              stampUnit(unitStart)
+              notices.push(
+                '上一条回复发到这里连接断了，后面的没有收到。接着做；已经做完就直接结束。',
+              )
+              carriedResends = resends
+              turnIndex++
               yield {
                 type: 'run.retrying',
                 runId: input.runId,
                 attempt: resends,
                 max: MAX_RESENDS,
-                failedThinkingStepIds: [...attemptThinking],
+                failedThinkingStepIds: [],
               }
-              // 等待必须可中断：退避的这几秒内用户点停止，不中断等待就是按钮无响应。
               if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
-              continue
+              continue turns
             }
 
-            recordDecision(
-              resends >= MAX_RESENDS
-                ? 'limit_exhausted'
-                : assistantText !== ''
-                  ? 'visible_output'
-                  : calls.length > 0
-                    ? 'tool_calls_received'
-                    : 'not_retryable',
-            )
+            recordDecision(resends >= MAX_RESENDS ? 'limit_exhausted' : 'not_retryable')
 
             /* 分类短语 + 已证实的超时读数 + 是否自动重发过，一行说完。 */
             const headline = pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'

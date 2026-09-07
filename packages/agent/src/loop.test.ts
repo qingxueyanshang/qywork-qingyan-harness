@@ -677,8 +677,8 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     const events: string[] = []
     let code: string | undefined
     let message = ''
-    // 响应头前等 300ms，超过 150ms 的空闲上限；之后吐过字再沉默，不重发，只看这一次。
-    for await (const ev of loopWith(stallingAdapter({ connectMs: 300, text: true })).run({
+    // 响应头前等 300ms，超过 150ms 的空闲上限：这一段不该被掐，读数必须是「未收到后续数据」。
+    for await (const ev of loopWith(stallingAdapter({ connectMs: 300 })).run({
       runId: 'rn_1' as never,
       history: [],
       signal: new AbortController().signal,
@@ -690,8 +690,8 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       }
     }
     expect(code).toBe('stream_idle_timeout')
-    expect(message).toMatch(/^模型响应中断，\d+ 秒未收到后续数据$/)
-    expect(events).not.toContain('run.retrying')
+    expect(message).toMatch(/未收到后续数据/)
+    expect(message).not.toMatch(/未收到响应/)
     // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
@@ -722,6 +722,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   }, 10_000)
 
   test('超时会中止底层请求 —— 不然那条连接一直挂着', async () => {
+    // 正文已出：每次都带着正文续发，直到额度用尽；每一次尝试都要中止自己那条连接。
     const adapter = stallingAdapter({ text: true })
     for await (const _ of loopWith(adapter).run({
       runId: 'rn_3' as never,
@@ -730,7 +731,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     })) {
       // 只是把流跑完
     }
-    expect(adapter.aborted).toBe(1)
+    expect(adapter.aborted).toBe(MAX_RESENDS + 1)
   }, 10_000)
 
   test('正常流不受影响 —— 超时计的是间隔不是总时长', async () => {
@@ -2608,13 +2609,16 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       | 'quota'
       | 'ok'
     )[],
-  ): LlmAdapter {
+  ): LlmAdapter & { requests: ChatRequest['messages'][] } {
     let i = 0
     return {
       kind: 'anthropic_messages',
       transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+      /** 每次请求的消息，按发送顺序。带上下文续发的断言要看第二次带了什么。 */
+      requests: [],
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        this.requests.push(req.messages)
         const act = script[i++] ?? 'ok'
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (
@@ -2870,11 +2874,15 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(err?.type === 'run.error' && err.code).toBe('insufficient_quota')
   })
 
-  test('429 前已有正文时不重发', async () => {
-    const { rec, events } = await collect(scriptedAdapter(['rate-limit-after-text', 'ok']))
+  test('429 前已有正文：退避后带着正文续发', async () => {
+    const adapter = scriptedAdapter(['rate-limit-after-text', 'ok'])
+    const { rec, events } = await collect(adapter)
 
-    expect(rec.opened).toEqual([0])
-    expect(events.filter((e) => e.type === 'run.retrying')).toEqual([])
+    expect(rec.opened).toEqual([0, 0])
+    expect(events.filter((e) => e.type === 'run.retrying')).toHaveLength(1)
+    expect(
+      (adapter.requests[1] ?? []).some((m) => m.role === 'assistant' && m.content === '已输出'),
+    ).toBe(true)
   })
 
   test('等待限速退避时可以停止', async () => {
@@ -2990,12 +2998,38 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(rec.failed).toEqual(rec.thinking)
   })
 
-  test('已经吐过字就不重发——重发是重新生成，用户会看到两段不一样的话', async () => {
-    const { rec, events } = await collect(scriptedAdapter(['break-after-text', 'ok']))
+  /**
+   * 正文已经显示时断开：正文是模型说过的话，作为上一条带进上下文再请求，让它接着做。
+   * 第二次请求里要能看到那段正文和「接着做」的提示；这是新的一轮，不是同一轮的第二次尝试。
+   */
+  test('正文已出后断开：带着正文续发，第二次成功就当无事发生', async () => {
+    const adapter = scriptedAdapter(['break-after-text', 'ok'])
+    const { rec, events } = await collect(adapter)
 
-    expect(rec.opened).toEqual([0])
+    expect(rec.opened).toEqual([0, 0])
+    expect(rec.diagnostics[0]?.retry.decision).toBe('resend')
+    expect(events.filter((e) => e.type === 'run.retrying')).toHaveLength(1)
+    expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
+    const second = adapter.requests[1] ?? []
+    expect(second.some((m) => m.role === 'assistant' && m.content === '我先看看')).toBe(true)
+    const last = second[second.length - 1]
+    expect(last?.role).toBe('user')
+    expect(last?.content).toContain('连接断了')
+  })
+
+  test('正文已出后连续断开：续发次数与原样重发共用额度，用尽才落终态', async () => {
+    const adapter = scriptedAdapter(Array(MAX_RESENDS + 1).fill('break-after-text'))
+    const { events } = await collect(adapter)
+
+    expect(adapter.requests).toHaveLength(MAX_RESENDS + 1)
+    // 每次续发都把上一段正文带上：最后一次请求里有前面全部 MAX_RESENDS 段。
+    const final = adapter.requests[MAX_RESENDS] ?? []
+    expect(final.filter((m) => m.role === 'assistant' && m.content === '我先看看')).toHaveLength(
+      MAX_RESENDS,
+    )
     const err = events.find((e) => e.type === 'run.error')
-    expect(err?.type === 'run.error' && err.code).toBe('network_error')
+    const message = err?.type === 'run.error' ? err.message : ''
+    expect(message).toBe(`连接被断开，已重发 ${MAX_RESENDS} 次`)
   })
 
   test('重发过还是立即断开：只说重发次数，不伪造超时读数', async () => {

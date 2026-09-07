@@ -324,8 +324,6 @@ const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   resend: '已自动重发',
   interrupted: '已中断，结果不明',
   not_retryable: '未重发',
-  visible_output: '已有输出，未重发',
-  tool_calls_received: '已有工具调用，未重发',
   limit_exhausted: '重试已用尽',
   context_compaction: '已压缩后重发',
   context_compaction_failed: '压缩失败，未重发',
