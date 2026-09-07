@@ -18,7 +18,7 @@ mod sidecar;
 mod terminal;
 
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// 选一个目录当工作区。
 ///
@@ -122,8 +122,9 @@ fn window_toggle_maximize(window: tauri::Window) -> Result<bool, String> {
 
 #[tauri::command]
 fn window_close(window: tauri::Window) -> Result<(), String> {
-    // close() 走正常退出路径，RunEvent::ExitRequested 会触发 sidecar 清理。
-    // 直接 destroy() 会绕过它，把 qy 留成孤儿进程。
+    // close() 触发 `WindowEvent::CloseRequested`，`run()` 里的处理把窗口收进托盘。
+    // 不要改成 hide()：那会让关闭按钮与 Alt+F4 走两条路径。
+    // 也不要改成 destroy()：它绕过 CloseRequested，直接销毁窗口。
     window.close().map_err(|e| e.to_string())
 }
 
@@ -169,6 +170,61 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
     extend_frame_for_shadow(&_window);
 
     Ok(())
+}
+
+/// 托盘图标。关闭按钮只把主窗口隐藏，进程从这里退出。
+///
+/// 左键单击与菜单「打开」都只显示已存在的主窗口，不重建窗口。
+/// 「退出」走 `app.exit(0)`，它触发 `RunEvent::ExitRequested`，sidecar 与终端的清理
+/// 挂在那里。不要改成 `std::process::exit`：那会绕过清理，把 qy 留成孤儿进程。
+#[cfg(desktop)]
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("tauri.conf.json 的 bundle.icon 为空，托盘没有图标"))?;
+    let open = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("qywork")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let shown = window
+        .show()
+        .and_then(|()| window.unminimize())
+        .and_then(|()| window.set_focus());
+    if let Err(e) = shown {
+        eprintln!("[qywork] 主窗口显示失败：{e}");
+    }
 }
 
 /// 把投影还给窗口，但**不**把那道边框线一起还回来。
@@ -334,11 +390,23 @@ pub fn run() {
                 let script = sidecar::init_script(&info);
 
                 build_main_window(&handle, &script)?;
+                #[cfg(desktop)]
+                build_tray(&handle)?;
 
                 Ok::<(), Box<dyn std::error::Error>>(())
             })?;
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关闭 = 收进托盘。关闭按钮（`window_close` 的 `close()`）与 Alt+F4 都到这里；
+            // 进程只从托盘菜单「退出」结束。
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Err(e) = window.hide() {
+                    eprintln!("[qywork] 主窗口隐藏失败：{e}");
+                }
+            }
         })
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

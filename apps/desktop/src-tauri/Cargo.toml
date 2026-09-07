@@ -18,7 +18,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon`：关闭按钮只把主窗口收进托盘，进程从托盘菜单退出，见 lib.rs 的 `build_tray`。
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

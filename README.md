@@ -56,6 +56,8 @@ qywork 的 Harness 负责三件核心工作：
 4. 添加模型服务，填写 API Key、Base URL 和模型名称。
 5. 点击“新建 work”，选择已有项目目录或创建新目录，然后输入任务。
 
+关闭窗口只把它收进系统托盘；退出程序用托盘图标右键菜单里的“退出”。
+
 当前安装包尚未进行 Authenticode 签名，Windows 可能显示 SmartScreen 提示。Release 页面提供
 `SHA256SUMS.txt`，可用于核对安装包完整性。
 
