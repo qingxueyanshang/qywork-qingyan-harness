@@ -1133,7 +1133,9 @@ describe('原地打转', () => {
     // 第一、二次请求末尾是工具结果；第三次请求末尾是那条事实。
     expect(tails[1]?.role).toBe('tool')
     expect(tails[2]?.role).toBe('user')
-    expect(String(tails[2]?.content)).toContain('上一轮与这一轮的动作、参数与结果完全相同')
+    expect(String(tails[2]?.content)).toBe(
+      '工具调用、参数与结果已连续两轮相同；连续三轮相同时本次运行停止。',
+    )
     expect(finished?.stopReason).toBe('no_progress')
     expect(finished?.stopDetail).toBe('连续三轮相同的调用与结果：stuck')
   })
@@ -1721,8 +1723,8 @@ describe('正常响应结束不冒充任务完成', () => {
       '待办未完成时连续三次只回话不动手',
     )
     expect(tails[1]?.role).toBe('user')
-    expect(String(tails[1]?.content)).toContain('待办清单还有 2 项未完成：完成第 7 步；完成第 8 步')
-    expect(String(tails[1]?.content)).toContain('上一条回复不是结束，这一轮继续')
+    expect(String(tails[1]?.content)).toContain('待办清单尚有 2 项未完成：完成第 7 步；完成第 8 步')
+    expect(String(tails[1]?.content)).toContain('本轮未结束')
   })
 
   test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {
@@ -3014,7 +3016,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
     expect(second.some((m) => m.role === 'assistant' && m.content === '我先看看')).toBe(true)
     const last = second[second.length - 1]
     expect(last?.role).toBe('user')
-    expect(last?.content).toContain('连接断了')
+    expect(last?.content).toBe('上一条回复在此处中断，其后内容未送达。')
   })
 
   test('正文已出后连续断开：续发次数与原样重发共用额度，用尽才落终态', async () => {

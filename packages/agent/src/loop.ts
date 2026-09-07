@@ -635,8 +635,7 @@ function declaredMaxOutput(
 }
 
 /** 第二次出现相同的轮次时交给模型的事实。第三次就停，这句话说的就是这条规则。 */
-const REPEAT_NOTICE =
-  '上一轮与这一轮的动作、参数与结果完全相同，没有产生任何变化。再出现一次相同的轮次，这次运行会以「无进展」停止。'
+const REPEAT_NOTICE = '工具调用、参数与结果已连续两轮相同；连续三轮相同时本次运行停止。'
 
 export class AgentLoop {
   /**
@@ -1647,9 +1646,7 @@ export class AgentLoop {
                 _group: 'executionRecords',
               })
               stampUnit(unitStart)
-              notices.push(
-                '上一条回复发到这里连接断了，后面的没有收到。接着做；已经做完就直接结束。',
-              )
+              notices.push('上一条回复在此处中断，其后内容未送达。')
               carriedResends = resends
               turnIndex++
               yield {
@@ -1870,7 +1867,7 @@ export class AgentLoop {
               break
             }
             notices.push(
-              `待办清单还有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。上一条回复不是结束，这一轮继续。`,
+              `待办清单尚有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。本轮未结束。`,
             )
             /*
              * 续起之后，这一条与模型接下来那条 assistant 之间没有 user 消息（提示只进请求、
