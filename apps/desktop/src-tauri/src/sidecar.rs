@@ -363,30 +363,14 @@ fn shutdown_handle(handle: &SidecarHandle) {
     }
 }
 
-/// 从环境变量读取开发期外挂的 sidecar（`bun run serve` 手动起的那个）。
+/// 读取 dev.ts 交给外壳的 sidecar 端点。只在 devUrl 模式下调用：页面来自 Vite 源码，
+/// 后端必须是同一棵源码树里起的那个。
 ///
-/// 开发时通常已经有一个 `qy serve` 在跑；再让 Tauri 拉一个会撞端口、
-/// 撞 SQLite 锁。设了这两个变量就直接复用。
+/// 不探活。端口上暂时没有进程在听（dev.ts 正在换代 sidecar）由 WebView 的连接层
+/// 重连处理；探不通就改用别的后端，会把源码页面绑到预编译的 `bin/qy` 上。
 pub fn from_env() -> Option<SidecarInfo> {
     let token = std::env::var("QYWORK_TOKEN").ok()?;
     let port: u16 = std::env::var("QYWORK_PORT").ok()?.parse().ok()?;
-
-    // **必须探活。** 这两个变量是开发时手动 export 的，很容易在那个 qy 早就退出之后
-    // 还留在 shell 环境里；打包版从这样的 shell 启动，就会拿着一个死端口直接开窗口，
-    // 界面连不上任何后端。而唯一的提示是 `eprintln!`——release 没有控制台，看不见。
-    //
-    // 探不通就**当作没有这个变量**，落回正常的 spawn 路径。自愈比报一个看不见的错好；
-    // 也正因为会自愈，这里不需要再对用户说什么。
-    if std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        std::time::Duration::from_millis(300),
-    )
-    .is_err()
-    {
-        eprintln!("[qywork] QYWORK_PORT={port} 上没有在监听的服务，忽略这两个环境变量");
-        return None;
-    }
-
     Some(SidecarInfo {
         token,
         port,
@@ -458,7 +442,26 @@ fn dirs_home() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_stderr_tail, STDERR_TAIL_BYTES};
+    use super::{append_stderr_tail, from_env, STDERR_TAIL_BYTES};
+
+    /// 端口上没有进程在听也不能改用别的后端：外壳可能在 dev.ts 换代 sidecar 的间隙里启动。
+    #[test]
+    fn from_env_keeps_the_given_port_even_when_nothing_listens() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        std::env::set_var("QYWORK_TOKEN", "t");
+        std::env::set_var("QYWORK_PORT", port.to_string());
+        let info = from_env();
+        std::env::remove_var("QYWORK_TOKEN");
+        std::env::remove_var("QYWORK_PORT");
+
+        let info = info.expect("两个变量都设了就必须返回端点");
+        assert_eq!(info.port, port);
+        assert_eq!(info.token, "t");
+        assert_eq!(info.base, format!("http://127.0.0.1:{port}"));
+    }
 
     #[test]
     fn stderr_tail_is_bounded_and_keeps_utf8_boundary() {

@@ -13,8 +13,9 @@
  *
  * - sidecar：直接跑 `packages/cli/src/index.ts`，源码变了由本脚本换进程（见下）。
  * - 前端：由 Vite 提供，但桌面协调模式关闭 HMR；源码变化也进入下面同一个监督器。
- * - 外壳：`sidecar::from_env()` 看见 `QYWORK_TOKEN` + `QYWORK_PORT` 就复用外部
- *   sidecar，不再自己 spawn（`apps/desktop/src-tauri/src/lib.rs`）。
+ * - 外壳：devUrl 构建只认 `QYWORK_TOKEN` + `QYWORK_PORT` 指向的 sidecar，不探活、
+ *   不 spawn `bin/qy`；缺这两个变量直接报错退出（`apps/desktop/src-tauri/src/lib.rs`）。
+ *   端口上暂时没人时由页面的连接层重连，与下面换代 sidecar 时的路径相同。
  *
  * **不能让两端各自热更新。** 当前 run 可能为了不中断而继续留在旧 sidecar；如果
  * Vite 此时先把页面 HMR 成新代码，同一个窗口就会变成「新前端 + 旧后端」。所以所有

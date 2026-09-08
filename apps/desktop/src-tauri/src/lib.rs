@@ -408,20 +408,25 @@ pub fn run() {
             let workspace = resolve_workspace();
 
             tauri::async_runtime::block_on(async move {
-                // 开发时通常已经手动起了一个 qy serve；再拉一个会撞端口和 SQLite 锁。
-                let info = match sidecar::from_env() {
-                    Some(existing) => {
-                        eprintln!("[qywork] 复用外部 sidecar :{}", existing.port);
-                        existing
-                    }
+                // 后端与页面必须出自同一次构建。devUrl 模式下页面是 Vite 里的源码，
+                // 后端只能是 dev.ts 从同一棵源码树起的那个；`bin/qy` 是上一次
+                // build:agent 的产物，在这里 spawn 它就是「源码页面 + 旧后端」。
+                // release 下页面与 `bin/qy` 由 tauri:build 一次产出，只 spawn，不读环境变量。
+                let info = if tauri::is_dev() {
+                    let existing = sidecar::from_env().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "开发模式缺少 QYWORK_TOKEN / QYWORK_PORT，请通过 bun run dev 启动"
+                        )
+                    })?;
+                    eprintln!("[qywork] 复用 dev.ts 的 sidecar :{}", existing.port);
+                    existing
+                } else {
                     // 空串 = 没有显式指定，让服务端自己决定挂哪个项目。
-                    None => {
-                        let arg = workspace
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        sidecar::spawn(&handle, &arg).await?
-                    }
+                    let arg = workspace
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    sidecar::spawn(&handle, &arg).await?
                 };
 
                 // 令牌走初始化脚本注入，而不是等前端来调命令：
@@ -465,11 +470,13 @@ pub fn run() {
              * 弹一个系统对话框再退。它不依赖 WebView，正好覆盖「窗口还没建出来」
              * 这段时间。
              */
-            let msg = format!(
-                "qywork 启动失败：{e}\n\n\
-                 常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
+            let hint = if tauri::is_dev() {
+                ""
+            } else {
+                "\n\n常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
                  （apps/desktop/src-tauri/bin/qy-*.exe）。"
-            );
+            };
+            let msg = format!("qywork 启动失败：{e}{hint}");
             eprintln!("[qywork] {msg}");
             show_fatal(&msg);
             std::process::exit(1);
