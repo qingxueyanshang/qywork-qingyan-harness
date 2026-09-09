@@ -172,8 +172,9 @@
    住在右侧面板里。钉在会话流上方的话，同一件事被摊在三处说：
    顶部卡片、输入区状态条、展开后的清单。这里按密度分层——状态条只报
    「第 N / M 步」，完整清单要点开面板才看。 */
+/* 左右 8px = 变更页清单的 6px 外边距 + 第 0 层 2px 内距：标记与那边的折叠符号同一列。 */
 .todo-panel {
-  padding: var(--s-3);
+  padding: var(--s-3) 8px;
 }
 .todo-list {
   list-style: none;
@@ -204,7 +205,8 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 14px;
+  /* 同 `.tree-chevron-slot` 的 13px 图标位。 */
+  width: 13px;
   /* 与首行文字等高，标记才落在第一行上而不是整块的中线上。 */
   height: calc(var(--fs-sm) * 1.6);
   color: var(--text-tertiary);
