@@ -13,6 +13,7 @@ import type {
   Attachment,
   ContextBreakdown,
   ContextOmitted,
+  ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   EventEnvelope,
   FollowUp,
@@ -26,7 +27,17 @@ import { createEffect, createRoot } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
-import { dropView, markBusy, openView, setState, state, type TranscriptItem } from './state.ts'
+import {
+  type ChangeStep,
+  type ChangesView,
+  type ChangeTurn,
+  dropView,
+  markBusy,
+  openView,
+  setState,
+  state,
+  type TranscriptItem,
+} from './state.ts'
 import { panelTabs, tabConversationId, workspace } from './ui.ts'
 
 export const client = new QyClient({
@@ -318,6 +329,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
           card.nodes = { ...(card.nodes ?? {}), [ev.nodeId]: ev.state }
         }),
       )
+      if (NODE_SETTLED.has(ev.state.phase)) void refreshLatestChangeTurn(cid)
       return
 
     case 'message.injected':
@@ -347,6 +359,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
           if (!v) return
           v.error = null
           v.runStartedAt = Date.now()
+          v.runUserMessageId = ev.userMessageId
           /*
            * 对齐这一轮回答的那条用户气泡。
            *
@@ -443,11 +456,32 @@ function foldContent(cid: string, ev: AgentEvent): void {
     case 'tool.finished':
       setState(
         produce((s) => {
-          const item = s.views[cid]?.transcript.find((t) => t.id === ev.stepId)
-          if (!item) return
+          const v = s.views[cid]
+          const item = v?.transcript.find((t) => t.id === ev.stepId)
+          if (!v || !item) return
           item.status = ev.status === 'success' ? 'success' : 'failure'
           item.outcome = ev.outcome
           item.durationMs = ev.durationMs
+          // 变更面板取过才追加；没取过的在打开时整页从账本来。没有用户消息的轮
+          // 服务端也不计（`listConversationChangesPage` 只选有 user_message_id 的 run）。
+          if (v.changes && v.runUserMessageId && ev.outcome.fileChanges?.length) {
+            const message = v.transcript.find((t) => t.id === v.runUserMessageId)
+            appendChange(
+              v.changes,
+              {
+                userMessageId: v.runUserMessageId,
+                text: message?.text ?? '',
+                origin: message?.kind === 'receipt' ? (message.origin ?? null) : null,
+              },
+              {
+                id: ev.stepId,
+                toolName: item.toolName ?? '',
+                ...(item.args ? { args: item.args } : {}),
+                fileChanges: ev.outcome.fileChanges,
+                via: null,
+              },
+            )
+          }
         }),
       )
       return
@@ -642,13 +676,13 @@ function foldRunState(ev: AgentEvent): void {
           for (const c of ev.changes) {
             const existing = s.fileChanges.find((f) => f.path === c.path)
             if (existing) {
-              existing.additions += c.additions
-              existing.deletions += c.deletions
+              existing.additions = addCount(existing.additions, c.additions)
+              existing.deletions = addCount(existing.deletions, c.deletions)
             } else {
               s.fileChanges.push({
                 path: c.path,
-                additions: c.additions,
-                deletions: c.deletions,
+                additions: c.additions ?? null,
+                deletions: c.deletions ?? null,
                 changeType: c.changeType,
               })
             }
@@ -1001,6 +1035,177 @@ export async function loadOlderConversation(id: string): Promise<boolean> {
   }
 }
 
+// ───────────────────────── 变更面板 ─────────────────────────
+
+const CHANGES_PAGE_SIZE = 10
+/** 派活的一格到了这些状态就不会再写文件。 */
+const NODE_SETTLED: ReadonlySet<string> = new Set(['done', 'failed', 'skipped', 'interrupted'])
+
+/** 行数相加，任一方不可知则结果不可知：不把「不知道」算成 0。 */
+function addCount(a: number | null, b: number | undefined): number | null {
+  return a === null || b === undefined ? null : a + b
+}
+
+async function fetchChangesPage(
+  id: string,
+  before: string | null,
+  limit = CHANGES_PAGE_SIZE,
+): Promise<Pick<ChangesView, 'turns' | 'totals' | 'nextCursor'>> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (before) query.set('before', before)
+  const page = await client.api<ConversationChangesPageResponse>(
+    `/api/conversations/${id}/changes?${query}`,
+    { signal: AbortSignal.timeout(HISTORY_TIMEOUT_MS) },
+  )
+  return { turns: page.turns, totals: page.totals, nextCursor: page.nextCursor }
+}
+
+/**
+ * 派活的一格落了终态：子 agent 的写入在它自己的子会话里，父会话收不到那边的回执；
+ * 外部 CLI 的写入挂在这一格上。两种都由服务端投影归到父轮，这里重取最新的那一轮替换进去。
+ * `limit=1` 取到的是最新一个有写入的轮：这一轮有写入就是它；没有则拿到更早那轮，替换等于没变。
+ */
+async function refreshLatestChangeTurn(id: string): Promise<void> {
+  const changes = state.views[id]?.changes
+  if (!changes || changes.loading !== null) return
+  try {
+    const page = await fetchChangesPage(id, null, 1)
+    setState(
+      produce((s) => {
+        const c = s.views[id]?.changes
+        if (!c) return
+        c.totals = page.totals
+        for (const turn of page.turns) {
+          const at = c.turns.findIndex((t) => t.userMessageId === turn.userMessageId)
+          if (at >= 0) c.turns[at] = turn
+          else c.turns.unshift(turn)
+        }
+      }),
+    )
+  } catch (error) {
+    setState(
+      produce((s) => {
+        const c = s.views[id]?.changes
+        if (c) c.error = changesErrorMessage(error)
+      }),
+    )
+  }
+}
+
+function changesErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'TimeoutError') return '加载历史记录超时，请重试'
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 把一条写入并进变更面板。同 id 不重复进：首页在飞时到达的事件会与响应重合。
+ * 这一轮还没有节就新建一节放最前——实时到达的一定属于最新的轮。
+ */
+function appendChange(
+  changes: ChangesView,
+  seed: Pick<ChangeTurn, 'userMessageId' | 'text' | 'origin'>,
+  step: ChangeStep,
+): void {
+  if (changes.turns.some((t) => t.steps.some((s) => s.id === step.id))) return
+  let turn = changes.turns.find((t) => t.userMessageId === seed.userMessageId)
+  if (!turn) {
+    turn = { ...seed, createdAt: Date.now(), steps: [] }
+    changes.turns.unshift(turn)
+  }
+  turn.steps.push(step)
+  for (const c of step.fileChanges) {
+    if (!changes.totals.paths.includes(c.path)) changes.totals.paths.push(c.path)
+    changes.totals.additions += c.additions ?? 0
+    changes.totals.deletions += c.deletions ?? 0
+  }
+}
+
+/**
+ * 变更面板首页。面板打开时调；已取过或正在取就不再取，之后由实时追加保持新鲜。
+ * 失败后再调一次即重试：从首页重来，已翻出的更早几页由哨兵再取。
+ *
+ * 落地时以账本页为准：请求期间实时追加的写入按 step id 去重后并回去，
+ * 合计取账本值再加上没并进去的那几条——与 `loadOlderConversation` 的去重口径相同。
+ */
+export async function loadConversationChanges(id: string): Promise<void> {
+  const current = state.views[id]
+  if (!current) return
+  if (current.changes && (current.changes.loading !== null || current.changes.error === null))
+    return
+  if (current.changes) {
+    setState('views', id, 'changes', { loading: 'initial', error: null })
+  } else {
+    setState('views', id, 'changes', {
+      turns: [],
+      totals: { paths: [], additions: 0, deletions: 0 },
+      nextCursor: null,
+      loading: 'initial',
+      error: null,
+    })
+  }
+  try {
+    const page = await fetchChangesPage(id, null)
+    setState(
+      produce((s) => {
+        const changes = s.views[id]?.changes
+        if (!changes) return
+        const known = new Set(page.turns.flatMap((t) => t.steps.map((step) => step.id)))
+        const pending = changes.turns.map((turn) => ({
+          turn,
+          steps: turn.steps.filter((step) => !known.has(step.id)),
+        }))
+        changes.turns = page.turns
+        changes.totals = page.totals
+        changes.nextCursor = page.nextCursor
+        changes.loading = null
+        for (const { turn, steps } of pending) {
+          for (const step of steps) appendChange(changes, turn, step)
+        }
+      }),
+    )
+  } catch (error) {
+    setState(
+      produce((s) => {
+        const changes = s.views[id]?.changes
+        if (!changes) return
+        changes.loading = null
+        changes.error = changesErrorMessage(error)
+      }),
+    )
+  }
+}
+
+/** 往前再取一页写过文件的轮。没有更早的、或正在取时直接返回 false。 */
+export async function loadOlderConversationChanges(id: string): Promise<boolean> {
+  const changes = state.views[id]?.changes
+  if (!changes || changes.loading !== null || !changes.nextCursor) return false
+  const before = changes.nextCursor
+  setState('views', id, 'changes', { loading: 'older', error: null })
+  try {
+    const page = await fetchChangesPage(id, before)
+    setState(
+      produce((s) => {
+        const c = s.views[id]?.changes
+        if (!c) return
+        c.turns.push(...page.turns)
+        c.nextCursor = page.nextCursor
+        c.loading = null
+      }),
+    )
+    return true
+  } catch (error) {
+    setState(
+      produce((s) => {
+        const c = s.views[id]?.changes
+        if (!c) return
+        c.loading = null
+        c.error = changesErrorMessage(error)
+      }),
+    )
+    return false
+  }
+}
+
 /** 初次加载失败与“更早记录”失败共用一个重试入口。 */
 export async function retryConversationHistory(id: string): Promise<void> {
   const error = state.views[id]?.history.error
@@ -1143,6 +1348,7 @@ export async function reloadActiveConversation(): Promise<void> {
           v.transcript = [...items, ...v.transcript.filter((item) => !known.has(item.id))]
           v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
           v.runStartedAt = live ? live.createdAt : null
+          v.runUserMessageId = live?.userMessageId ?? null
           v.usage = live?.usage ?? null
           // 重拉之后「上一次有动静」只能从此刻算起：之前收过什么事件已经无从得知。
           v.lastEventAt = live ? Date.now() : null

@@ -109,6 +109,7 @@ export {
   makeLoadToolTool,
   PendingToolPool,
 } from './tool-pool.ts'
+export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import { defineRoleTool } from './define-role.ts'
 import { readHistoryTool } from './history.ts'

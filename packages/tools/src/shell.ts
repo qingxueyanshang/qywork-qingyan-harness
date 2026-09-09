@@ -43,6 +43,7 @@ import {
 } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { deliver } from './sink.ts'
+import { openChangeWindow } from './workspace-watch.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 
@@ -202,6 +203,10 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         },
       })
 
+      // 命令改了哪些文件由工作区观察器给：shell 没有精确明细，路径与变更类型是它能知道的全部。
+      // 在进程起来之后才开窗：子进程从启动到第一次写盘远长于开窗那一下，先开则 spawn 抛错时窗口泄漏。
+      const changeWindow = openChangeWindow(ctx.workspaceRoot)
+
       // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
       const redactors = {
         stdout: createStreamRedactor(secrets),
@@ -226,17 +231,20 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeUrl !== null) {
         const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
         const got = await collecting
+        const fileChanges = await changeWindow.close()
         const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
         return {
           status: probe.ok ? 'success' : 'failure',
           message: probe.message + (got.backgroundHeld ? BACKGROUND_HELD : ''),
           data: { ...probe.data, ...delivered.data },
+          ...(fileChanges.length ? { fileChanges } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
           ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
         }
       }
 
       const got = await collecting
+      const fileChanges = await changeWindow.close()
       const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
 
       if (got.timedOut) {
@@ -244,6 +252,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
           status: 'failure',
           message: `命令超时（${timeout}ms）已终止${got.backgroundHeld ? BACKGROUND_HELD : ''}`,
           data: { ...delivered.data, timedOut: true },
+          ...(fileChanges.length ? { fileChanges } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
           errorKind: 'timeout',
         }
@@ -258,6 +267,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
             : `命令退出码 ${got.exitCode}${sandboxHint(sandbox.active, got.stderr)}`) +
           (got.backgroundHeld ? BACKGROUND_HELD : ''),
         data: { exitCode: got.exitCode, ...delivered.data },
+        ...(fileChanges.length ? { fileChanges } : {}),
         ...(delivered.resources.length ? { resources: delivered.resources } : {}),
       }
     },

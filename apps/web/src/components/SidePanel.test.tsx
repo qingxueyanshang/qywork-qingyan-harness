@@ -145,6 +145,8 @@ describe('文件页刷新', () => {
       views: {
         cv_file_scroll: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -468,5 +470,239 @@ describe('页签栏横向滚轮', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     // happy-dom 不执行原生横向滚动；旧动画若没被取消，这里已经向 100 移动了。
     expect(tabs.scrollLeft).toBe(40)
+  })
+})
+
+/**
+ * 变更页按轮：最新一轮默认展开、更早的收起；表头是整会话合计；清单末尾的哨兵进视口就翻页。
+ * happy-dom 没有 IntersectionObserver，这里用一个只记回调的替身，由测试自己触发相交。
+ */
+describe('变更页按轮', () => {
+  class FakeObserver {
+    static instances: FakeObserver[] = []
+    observed: Element[] = []
+    constructor(readonly callback: IntersectionObserverCallback) {
+      FakeObserver.instances.push(this)
+    }
+    observe(el: Element) {
+      this.observed.push(el)
+    }
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return []
+    }
+    intersect() {
+      this.callback([{ isIntersecting: true } as IntersectionObserverEntry], this as never)
+    }
+  }
+
+  const step = (id: string, path: string, additions: number, deletions: number) => ({
+    id,
+    toolName: 'edit_file',
+    args: { path },
+    fileChanges: [{ path, changeType: 'modified' as const, additions, deletions }],
+    via: null,
+  })
+  /** 账本页里的写入与 store 里的 `ChangeStep` 同一形状。 */
+  const wireStep = step
+  const turn = (userMessageId: string, text: string, steps: unknown[]) => ({
+    userMessageId,
+    text,
+    origin: null,
+    createdAt: 1,
+    steps,
+  })
+  const viewWith = (changes: unknown) => ({
+    transcript: [],
+    history: { loading: null, nextCursor: null, error: null },
+    changes: changes as never,
+    runUserMessageId: null,
+    runStartedAt: null,
+    usage: null,
+    lastEventAt: null,
+    retry: null,
+    error: null,
+  })
+
+  const mount = async () => {
+    ;(globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = FakeObserver
+    FakeObserver.instances = []
+    const store = await import('../lib/store/index.ts')
+    store.setWorkspace({ id: 'ws_changes', root: 'C:work', name: 'work' })
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    return host
+  }
+
+  test('最新一轮展开、更早的收起；表头是整会话合计，不是已加载几页的和', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
+      throw new Error(`不该有请求：${p}`)
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    store.setState({
+      activeConversation: 'cv_changes',
+      views: {
+        cv_changes: viewWith({
+          turns: [
+            turn('ms_2', '再改一次', [
+              step('st_2', 'a.ts', 2, 0),
+              step('st_3', 'a.ts', 1, 1),
+              // 子 agent 的写入带来源；外部 CLI 的写入由观察器判出，没有行数
+              { ...step('st_5', 'b.ts', 1, 0), via: { name: '写手' } },
+              {
+                id: 'st_4',
+                toolName: 'cli',
+                fileChanges: [{ path: 'notes.md', changeType: 'modified' as const }],
+                via: { name: 'codex' },
+              },
+            ]),
+            turn('ms_1', '先改 a 和 b', [step('st_1', 'a.ts', 3, 1), step('st_0', 'b.ts', 5, 0)]),
+          ],
+          totals: { paths: ['a.ts', 'b.ts', 'c.ts'], additions: 20, deletions: 4 },
+          nextCursor: null,
+          loading: null,
+          error: null,
+        }),
+      },
+    })
+    store.setSidePanel('changes')
+    const host = await mount()
+
+    await waitFor(
+      () => host.querySelectorAll('.change-turn').length === 2,
+      () => host.innerHTML,
+    )
+    expect(host.querySelector('.change-head')?.textContent).toBe('变更 3 个文件+20−4')
+    const turns = [...host.querySelectorAll<HTMLButtonElement>('.change-turn')]
+    expect(turns.map((t) => t.querySelector('.truncate')?.textContent)).toEqual([
+      '再改一次',
+      '先改 a 和 b',
+    ])
+    expect(turns.map((t) => t.getAttribute('aria-expanded'))).toEqual(['true', 'false'])
+    // 最新一轮里同一个文件改了两次：一行、「2 次」；这一轮的合计只加已知的行数
+    const rows = [...host.querySelectorAll<HTMLButtonElement>('.change-files .change-row')]
+    expect(rows.map((r) => r.querySelector('.truncate')?.textContent)).toEqual([
+      'a.ts',
+      'b.ts',
+      'notes.md',
+    ])
+    expect(rows[0]?.querySelector('.change-times')?.textContent).toBe('2 次')
+    expect(turns[0]?.querySelector('.change-delta')?.textContent).toBe('+4−1')
+    // 没有行数的行印变更类型，不画 +0 −0
+    expect(rows[2]?.querySelector('.change-delta')).toBeNull()
+    expect(rows[2]?.querySelector('.change-kind')?.textContent).toBe('已修改')
+    // 展开：逐次的来源标签
+    rows[1]?.click()
+    rows[2]?.click()
+    await waitFor(
+      () => host.querySelectorAll('.edit-head').length === 2,
+      () => host.innerHTML,
+    )
+    expect(
+      [...host.querySelectorAll('.edit-head')].map((e) => e.textContent?.replace(/\s+/g, '')),
+    ).toEqual(['#1写手·编辑+1−0', '#1codex·CLI已修改'])
+
+    turns[1]?.click()
+    await waitFor(
+      () => host.querySelectorAll('.change-files .change-row').length === 5,
+      () => host.innerHTML,
+    )
+  })
+
+  test('清单末尾的哨兵进视口就取更早的轮，接在末尾', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const requested: string[] = []
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
+      requested.push(p)
+      return {
+        turns: [turn('ms_0', '最早那次', [wireStep('st_x', 'z.ts', 1, 0)])],
+        totals: { paths: ['a.ts', 'z.ts'], additions: 3, deletions: 0 },
+        nextCursor: null,
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    store.setState({
+      activeConversation: 'cv_changes',
+      views: {
+        cv_changes: viewWith({
+          turns: [turn('ms_1', '后来', [step('st_1', 'a.ts', 2, 0)])],
+          totals: { paths: ['a.ts', 'z.ts'], additions: 3, deletions: 0 },
+          nextCursor: 'ms_1',
+          loading: null,
+          error: null,
+        }),
+      },
+    })
+    store.setSidePanel('changes')
+    const host = await mount()
+    await waitFor(
+      () => host.querySelectorAll('.change-turn').length === 1,
+      () => host.innerHTML,
+    )
+    const observer = FakeObserver.instances.at(-1)
+    expect(observer?.observed[0]?.classList.contains('change-more')).toBe(true)
+    observer?.intersect()
+    await waitFor(
+      () => host.querySelectorAll('.change-turn').length === 2,
+      () => `requested=${requested.join(',')} html=${host.innerHTML}`,
+    )
+    expect(requested).toHaveLength(1)
+    expect(requested[0]).toContain('/api/conversations/cv_changes/changes?')
+    expect(requested[0]).toContain('before=ms_1')
+    const turns = [...host.querySelectorAll<HTMLButtonElement>('.change-turn')]
+    expect(turns.map((t) => t.querySelector('.truncate')?.textContent)).toEqual([
+      '后来',
+      '最早那次',
+    ])
+    expect(turns.map((t) => t.getAttribute('aria-expanded'))).toEqual(['true', 'false'])
+    expect(turns[1]?.querySelector('.change-count')?.textContent).toBe('1 个文件')
+  })
+
+  test('首页失败有终态：报错加重试', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    let calls = 0
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => {
+      calls += 1
+      if (calls === 1) throw new Error('网络断开')
+      return {
+        turns: [turn('ms_1', '后来', [wireStep('st_1', 'a.ts', 2, 0)])],
+        totals: { paths: ['a.ts'], additions: 2, deletions: 0 },
+        nextCursor: null,
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    store.setState({
+      activeConversation: 'cv_changes',
+      views: { cv_changes: viewWith(null) },
+    })
+    store.setSidePanel('changes')
+    const host = await mount()
+    await waitFor(
+      () =>
+        host
+          .querySelector('[role="alert"]')
+          ?.textContent?.includes('历史记录加载失败：网络断开') === true,
+      () => host.innerHTML,
+    )
+    host.querySelector<HTMLButtonElement>('.change-more .ghost-btn')?.click()
+    await waitFor(
+      () => host.querySelectorAll('.change-turn').length === 1,
+      () => `calls=${calls} html=${host.innerHTML}`,
+    )
+    expect(calls).toBe(2)
   })
 })

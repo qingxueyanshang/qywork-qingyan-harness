@@ -10,8 +10,11 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   Conversation,
+  ConversationChangeStep,
+  ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationId,
+  FileChange,
   Message,
   MessageId,
   NodePhase,
@@ -687,6 +690,199 @@ export function listConversationHistoryPage(
     todos: latestTodos(store, conversationId) ?? [],
     workflowStarts,
     nextCursor: hasMore ? (oldest as MessageId) : null,
+  }
+}
+
+/**
+ * 变更面板的一页：这条会话里**写过文件的轮**，最新在前。
+ *
+ * 与历史页分开：历史页按完整用户轮次切，一页里可能一个文件都没写，面板拿它翻页
+ * 会把整段会话流一起拉进主区。这里只选名下有写入的用户消息；游标与历史页同为
+ * 用户消息 id、排他上界。
+ *
+ * 一轮的写入有三个来源，交出同一形状（`ConversationChangeStep`）：
+ * - 本会话 step 的 `outcome.fileChanges`；
+ * - 内置子 agent 在子会话里的 step：父 step 的 `nodes[*].subagentId` 指向子会话，
+ *   子会话里 `runs.created_at` 落在父 step 执行窗口内的写入归这一轮。按窗口而不按
+ *   会话整体归，因为续派会复用同一个子会话；
+ * - 外部 CLI 节点：父 step 的 `nodes[*].fileChanges`，观察器给的，不带行数。
+ *
+ * `totals` 是整条会话的合计，三个来源一起算，只加已知的行数。选轮与合计只取
+ * fileChange 的三个字段，不把 args（整份文件内容）读进内存。
+ */
+export function listConversationChangesPage(
+  store: Store,
+  conversationId: ConversationId,
+  input: { before?: MessageId | null; limit: number },
+): ConversationChangesPageResponse {
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)))
+  const before = input.before ?? null
+  type Params = Record<string, string | number>
+  const base: Params = { $conv: conversationId, $now: Date.now() }
+  const rows = <T>(sql: string, extra: Params = {}): T[] =>
+    store.db.query<T, [Params]>(sql).all({ ...base, ...extra })
+
+  // 三个来源的写入清单，不含 args。`delegated` 的窗口：父 step 创建到收尾。没有 `duration_ms`
+  // 的老行（迁移 28 之前）用父 run 的收尾时刻，两者都没有的（还在跑）到此刻。窗口必须收口：
+  // 续派复用同一个子会话，不收口的话它在下一轮的写入也会算进这一轮。
+  const cte = `
+    WITH own AS (
+      SELECT r.user_message_id AS turn_id, s.id AS step_id
+      FROM runs r JOIN steps s ON s.run_id = r.id
+      WHERE r.conversation_id = $conv AND r.user_message_id IS NOT NULL
+        AND json_array_length(json_extract(s.payload, '$.outcome.fileChanges')) > 0
+    ),
+    nodes AS (
+      SELECT r.user_message_id AS turn_id, s.id AS step_id, s.created_at AS at,
+             coalesce(s.duration_ms, r.finished_at - s.created_at, $now - s.created_at) AS duration,
+             n.key AS node_id,
+             json_extract(n.value, '$.subagentId') AS subagent_id,
+             json_extract(n.value, '$.label') AS label,
+             coalesce(json_array_length(json_extract(n.value, '$.fileChanges')), 0) AS cli_writes
+      FROM runs r
+      JOIN steps s ON s.run_id = r.id AND s.payload IS NOT NULL
+        AND json_type(s.payload, '$.nodes') = 'object'
+      JOIN json_each(s.payload, '$.nodes') n
+      WHERE r.conversation_id = $conv AND r.user_message_id IS NOT NULL
+    ),
+    delegated AS (
+      SELECT nd.turn_id, cs.id AS step_id, nd.label AS label
+      FROM nodes nd
+      JOIN runs cr ON cr.conversation_id = nd.subagent_id
+        AND cr.created_at >= nd.at AND cr.created_at <= nd.at + nd.duration
+      JOIN steps cs ON cs.run_id = cr.id
+      WHERE nd.subagent_id IS NOT NULL
+        AND json_array_length(json_extract(cs.payload, '$.outcome.fileChanges')) > 0
+    )`
+
+  type TurnRow = Pick<MessageRow, 'id' | 'content' | 'origin' | 'created_at'>
+  const turnRows = rows<TurnRow>(
+    `${cte}
+     SELECT m.id, m.content, m.origin, m.created_at FROM messages m
+     WHERE m.conversation_id = $conv AND m.role = 'user' ${before ? 'AND m.id < $before' : ''}
+       AND (EXISTS (SELECT 1 FROM own WHERE own.turn_id = m.id)
+         OR EXISTS (SELECT 1 FROM delegated WHERE delegated.turn_id = m.id)
+         OR EXISTS (SELECT 1 FROM nodes WHERE nodes.turn_id = m.id AND nodes.cli_writes > 0))
+     ORDER BY m.id DESC LIMIT $limit`,
+    { $limit: limit + 1, ...(before ? { $before: before } : {}) },
+  )
+
+  const totalRows = rows<{ path: string; additions: number | null; deletions: number | null }>(
+    `${cte}
+     SELECT path, additions, deletions FROM (
+       SELECT json_extract(c.value, '$.path') AS path, json_extract(c.value, '$.additions') AS additions,
+              json_extract(c.value, '$.deletions') AS deletions, s.rowid AS ord
+       FROM own JOIN steps s ON s.id = own.step_id
+       JOIN json_each(s.payload, '$.outcome.fileChanges') c
+       UNION ALL
+       SELECT json_extract(c.value, '$.path'), json_extract(c.value, '$.additions'),
+              json_extract(c.value, '$.deletions'), cs.rowid
+       FROM delegated JOIN steps cs ON cs.id = delegated.step_id
+       JOIN json_each(cs.payload, '$.outcome.fileChanges') c
+       UNION ALL
+       SELECT json_extract(c.value, '$.path'), json_extract(c.value, '$.additions'),
+              json_extract(c.value, '$.deletions'), s.rowid
+       FROM nodes JOIN steps s ON s.id = nodes.step_id
+       JOIN json_each(s.payload, '$.nodes') n ON n.key = nodes.node_id
+       JOIN json_each(n.value, '$.fileChanges') c
+       WHERE nodes.cli_writes > 0
+     ) WHERE path IS NOT NULL ORDER BY ord`,
+  )
+  const totals = { paths: [] as string[], additions: 0, deletions: 0 }
+  for (const row of totalRows) {
+    if (!totals.paths.includes(row.path)) totals.paths.push(row.path)
+    totals.additions += row.additions ?? 0
+    totals.deletions += row.deletions ?? 0
+  }
+
+  const hasMore = turnRows.length > limit
+  const selected = turnRows.slice(0, limit)
+  if (selected.length === 0) return { turns: [], totals, nextCursor: null }
+  const ids = JSON.stringify(selected.map((row) => row.id))
+  const inSelected = 'IN (SELECT value FROM json_each($ids))'
+
+  interface WriteRow {
+    turn_id: string
+    id: string
+    tool_name: string | null
+    payload: string | null
+    at: number
+    seq: number
+    label: string | null
+    via: 0 | 1
+  }
+  const writeRows = [
+    ...rows<WriteRow>(
+      `${cte}
+       SELECT own.turn_id, s.id, s.tool_name, s.payload, s.created_at AS at, s.seq, NULL AS label, 0 AS via
+       FROM own JOIN steps s ON s.id = own.step_id WHERE own.turn_id ${inSelected}`,
+      { $ids: ids },
+    ),
+    ...rows<WriteRow>(
+      `${cte}
+       SELECT d.turn_id, cs.id, cs.tool_name, cs.payload, cs.created_at AS at, cs.seq, d.label, 1 AS via
+       FROM delegated d JOIN steps cs ON cs.id = d.step_id WHERE d.turn_id ${inSelected}`,
+      { $ids: ids },
+    ),
+  ]
+  interface CliRow {
+    turn_id: string
+    step_id: string
+    node_id: string
+    label: string | null
+    at: number
+    duration: number
+    changes: string
+  }
+  const cliRows = rows<CliRow>(
+    `${cte}
+     SELECT nodes.turn_id, nodes.step_id, nodes.node_id, nodes.label, nodes.at, nodes.duration,
+            json_extract(n.value, '$.fileChanges') AS changes
+     FROM nodes JOIN steps s ON s.id = nodes.step_id
+     JOIN json_each(s.payload, '$.nodes') n ON n.key = nodes.node_id
+     WHERE nodes.cli_writes > 0 AND nodes.turn_id ${inSelected}`,
+    { $ids: ids },
+  )
+
+  const byTurn = new Map<string, { at: number; seq: number; step: ConversationChangeStep }[]>()
+  const push = (turnId: string, at: number, seq: number, step: ConversationChangeStep) => {
+    const list = byTurn.get(turnId) ?? []
+    list.push({ at, seq, step })
+    byTurn.set(turnId, list)
+  }
+  for (const row of writeRows) {
+    const payload = readJson<Step['payload']>(row.payload, null)
+    if (payload?.kind !== 'tool_result' || !payload.outcome.fileChanges?.length) continue
+    push(row.turn_id, row.at, row.seq, {
+      id: row.id,
+      toolName: row.tool_name ?? '',
+      ...(payload.args ? { args: payload.args } : {}),
+      fileChanges: payload.outcome.fileChanges,
+      via: row.via ? { name: row.label ?? '' } : null,
+    })
+  }
+  for (const row of cliRows) {
+    // 排在派活 step 收尾那一刻；同一毫秒内排在子会话的写入之后。
+    push(row.turn_id, row.at + row.duration, Number.MAX_SAFE_INTEGER, {
+      id: `${row.step_id}:${row.node_id}`,
+      toolName: 'cli',
+      fileChanges: readJson<FileChange[]>(row.changes, []),
+      via: { name: row.label ?? '' },
+    })
+  }
+
+  return {
+    turns: selected.map((row) => ({
+      userMessageId: row.id as MessageId,
+      text: row.content,
+      origin: row.origin,
+      createdAt: row.created_at,
+      steps: (byTurn.get(row.id) ?? [])
+        .sort((a, b) => a.at - b.at || a.seq - b.seq)
+        .map((entry) => entry.step),
+    })),
+    totals,
+    nextCursor: hasMore ? (selected.at(-1)?.id as MessageId) : null,
   }
 }
 

@@ -21,6 +21,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
+  ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationRunsResponse,
   ConversationUsageResponse,
@@ -1291,5 +1292,73 @@ describe('会话的重命名 / 归档 / 删除', () => {
     const d = deps()
     const c = conv(d)
     expect(await call(`/api/conversations/${c.id}`, undefined, d)).toBe(null)
+  })
+})
+
+describe('会话变更分页接口', () => {
+  test('按写过文件的轮分页，带整会话合计与游标', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const ids: MessageId[] = []
+    for (let i = 1; i <= 2; i++) {
+      const msg = appendMessage(d.store, {
+        conversationId: conv.id,
+        role: 'user',
+        content: `改动 ${i}`,
+      })
+      ids.push(msg.id)
+      const run = createRun(d.store, {
+        conversationId: conv.id,
+        workspaceId: workspaceId as never,
+        model: 'm',
+        clientRequestId: `changes-${i}`,
+        userMessageId: msg.id,
+        messageIdUpperBound: msg.id,
+        contextSnapshot: [],
+      })
+      appendStep(d.store, {
+        runId: run.id,
+        seq: 1,
+        kind: 'tool_action',
+        toolName: 'write_file',
+        status: 'success',
+        payload: {
+          kind: 'tool_result',
+          args: { path: `f${i}.ts`, content: 'x' },
+          outcome: {
+            status: 'success',
+            executed: true,
+            message: '',
+            fileChanges: [{ path: `f${i}.ts`, changeType: 'created', additions: i, deletions: 0 }],
+          },
+        },
+      })
+      finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+    }
+
+    const res = await call(`/api/conversations/${conv.id}/changes?limit=1`, undefined, d)
+    expect(res?.status).toBe(200)
+    const page = (await res?.json()) as ConversationChangesPageResponse
+    expect(page.turns.map((t) => t.text)).toEqual(['改动 2'])
+    expect(page.turns[0]?.steps.map((s) => s.toolName)).toEqual(['write_file'])
+    expect(page.totals).toEqual({ paths: ['f1.ts', 'f2.ts'], additions: 3, deletions: 0 })
+    expect(page.nextCursor).toBe(ids[1]!)
+  })
+
+  test('非法页大小回 422', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const res = await call(`/api/conversations/${conv.id}/changes?limit=0`, undefined, d)
+    expect(res?.status).toBe(422)
   })
 })

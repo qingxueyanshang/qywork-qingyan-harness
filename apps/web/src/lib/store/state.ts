@@ -16,6 +16,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   Conversation,
+  ConversationChangeStep,
   FollowUp,
   GitStateEvent,
   Goal,
@@ -115,6 +116,31 @@ export interface TranscriptItem {
  * 用量、重试与静默时刻不带会话这一维就必然互相覆盖。跑完后的终态仍落成 transcript
  * 里的 run 条目，不在这里留第二份。
  */
+/** 一次写入，与服务端投影同一形状：三种来源（本会话、子 agent、shell / 外部 CLI）都是它。 */
+export type ChangeStep = ConversationChangeStep
+
+/** 一轮里写过文件的调用。键是这一轮的用户消息 id，与服务端 `runs.user_message_id` 同一个。 */
+export interface ChangeTurn {
+  userMessageId: string
+  text: string
+  origin: 'subagent' | 'workflow' | null
+  createdAt: number
+  steps: ChangeStep[]
+}
+
+/**
+ * 变更面板的数据。服务端按「写过文件的轮」投影分页（`/changes`），实时期由
+ * `tool.finished` 的回执追加进来。`totals` 是整条会话的合计，`paths` 是去重后的路径。
+ */
+export interface ChangesView {
+  /** 最新的轮在前。 */
+  turns: ChangeTurn[]
+  totals: { paths: string[]; additions: number; deletions: number }
+  nextCursor: string | null
+  loading: 'initial' | 'older' | null
+  error: string | null
+}
+
 export interface ConversationView {
   transcript: TranscriptItem[]
   /**
@@ -126,6 +152,13 @@ export interface ConversationView {
     nextCursor: string | null
     error: { phase: 'initial' | 'older'; message: string } | null
   }
+  /** 变更面板那一页。`null` = 还没取过，面板打开时才取。 */
+  changes: ChangesView | null
+  /**
+   * 正在跑的这一轮回答的是哪条用户消息。实时到达的变更按它归轮，
+   * 与服务端 `runs.user_message_id` 同一个键——两边的归轮口径必须一致。
+   */
+  runUserMessageId: string | null
   /**
    * 这一轮什么时候开始的（本地时钟，毫秒）。`null` = 没在跑。
    *
@@ -153,6 +186,8 @@ export interface ConversationView {
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
   history: Object.freeze({ loading: null, nextCursor: null, error: null }),
+  changes: null,
+  runUserMessageId: null,
   runStartedAt: null,
   usage: null,
   lastEventAt: null,
@@ -234,7 +269,13 @@ export interface AppState {
    * 这个数不描述磁盘内容，只表达“上一份文件快照已经过期”。
    */
   fileVersion: number
-  fileChanges: { path: string; additions: number; deletions: number; changeType: string }[]
+  /** 行数 null = 不可知（观察器判出来的写入），合计只加已知的。 */
+  fileChanges: {
+    path: string
+    additions: number | null
+    deletions: number | null
+    changeType: string
+  }[]
   git: Omit<GitStateEvent, 'type'> | null
 }
 
@@ -286,6 +327,8 @@ export function openView(id: string): void {
   setState('views', id, {
     transcript: [],
     history: { loading: null, nextCursor: null, error: null },
+    changes: null,
+    runUserMessageId: null,
     runStartedAt: null,
     usage: null,
     lastEventAt: null,

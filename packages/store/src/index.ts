@@ -35,6 +35,7 @@ export {
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
   listChildConversations,
+  listConversationChangesPage,
   listConversationHistoryPage,
   listConversations,
   listMessages,

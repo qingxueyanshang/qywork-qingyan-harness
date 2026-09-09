@@ -123,16 +123,17 @@ export function statusWord(status: 'running' | 'success' | 'failure' | undefined
  * 算的）。一次调用可能动多个文件，所以求和。
  *
  * **两个数都是 0 就不给角标**：`+0 −0` 占着行尾却什么也没说。
+ * 没有行数的写入（工作区观察器判出来的，shell 与外部 CLI）不计入。
  */
 export function fileDelta(
-  changes: readonly { additions: number; deletions: number }[] | undefined,
+  changes: readonly { additions?: number; deletions?: number }[] | undefined,
 ): { additions: number; deletions: number } | null {
   if (!changes || changes.length === 0) return null
   let additions = 0
   let deletions = 0
   for (const c of changes) {
-    additions += c.additions
-    deletions += c.deletions
+    additions += c.additions ?? 0
+    deletions += c.deletions ?? 0
   }
   return additions === 0 && deletions === 0 ? null : { additions, deletions }
 }

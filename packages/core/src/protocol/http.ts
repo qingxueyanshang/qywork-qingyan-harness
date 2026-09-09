@@ -13,6 +13,7 @@
 
 import type { MessageId } from '../domain/ids.ts'
 import type {
+  FileChange,
   Message,
   Run,
   Step,
@@ -44,6 +45,47 @@ export interface ConversationHistoryPageResponse {
    */
   workflowStarts: Step[]
   nextCursor: MessageId | null
+}
+
+/**
+ * `GET /api/conversations/:id/changes?before&limit` —— 这条会话改过的文件，按轮分页。
+ *
+ * 与 `todos` 同一类：服务端从 steps 账本投影出的视图，不是第二本账。
+ * 不塞进历史页：历史页按完整用户轮次分页，一页里可能一个文件都没写，变更面板
+ * 拿它翻页会把整段会话流连同 Markdown 一起挂进主区。这里按「写过文件的轮」分页，
+ * 没写文件的轮在查询里直接跳过。`before` 与历史页同为用户消息 id、排他上界。
+ *
+ * `totals` 是整条会话的合计，不是这一页的。`paths` 给去重后的路径而不只给个数：
+ * 实时追加一条变更时，客户端要判断这个路径是否已经计入，只有个数无从判断。
+ */
+export interface ConversationChangesPageResponse {
+  /** 最新的轮在前。 */
+  turns: ConversationChangeTurn[]
+  totals: { paths: string[]; additions: number; deletions: number }
+  nextCursor: MessageId | null
+}
+
+export interface ConversationChangeTurn {
+  userMessageId: MessageId
+  text: string
+  origin: 'subagent' | 'workflow' | null
+  createdAt: number
+  /** 这一轮里的每一次写入，按发生先后。 */
+  steps: ConversationChangeStep[]
+}
+
+/**
+ * 一次写入。三种来源同一形状：
+ * - 本会话的文件类工具：`via` 为 null，`args` 是那一步的调用参数（正文从它来）；
+ * - 内置子 agent 的文件类工具：来自子会话的 step，`via` 是那个子 agent；
+ * - shell 与外部 CLI：来自工作区观察器，`fileChanges` 不带行数；外部 CLI 的 `via` 是那个节点。
+ */
+export interface ConversationChangeStep {
+  id: string
+  toolName: string
+  args?: Record<string, unknown>
+  fileChanges: FileChange[]
+  via: { name: string } | null
 }
 
 /**

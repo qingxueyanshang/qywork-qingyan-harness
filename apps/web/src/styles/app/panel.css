@@ -204,7 +204,6 @@
  * 用 `stable` 而不是 `stable both-edges`：下面两列都是左对齐的行，左边再留一道空槽
  * 只是白占面板本来就不宽的横向空间。
  */
-.change-list,
 .preview-board {
   scrollbar-gutter: stable;
 }
@@ -825,8 +824,9 @@
 
 /* ── 会话变更记录 ──
  *
- * 密度跟文件树对齐：同一块面板里的两张列表，行高不一样会被读成两套控件。
- * 行高 20px、图标与文字 4px、行之间不留缝。 */
+ * 行不另写样式：轮与文件行都用 `.tree` / `.tree-item`，缩进走同一条 `depth * 6 + 2`。
+ * 这一页与文件页在同一块面板里切换，两张列表的行高、字色、缩进由同一份规则决定，
+ * 不存在第二份「对齐过的」数值。 */
 .change-panel {
   flex: 1;
   min-height: 0;
@@ -843,44 +843,22 @@
   gap: var(--s-2);
   flex: none;
   height: 31px;
-  padding: 0 var(--s-3);
-  border-bottom: 1px solid var(--border-subtle);
+  /* 与下面的行对齐：行的折叠符号从 6（清单外边距）+ 2（第 0 层内距）= 8px 起，
+     行尾读数止于 6 + 8（行内距）= 14px。 */
+  padding: 0 14px 0 8px;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
   font-weight: 600;
 }
-.change-list {
-  list-style: none;
-  margin: 0;
-  padding: var(--s-1) 4px var(--s-2);
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.change-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  padding: 1px var(--s-2);
-  border-radius: var(--r-xs);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  text-align: left;
-}
-.change-row svg {
-  flex: none;
-}
-.change-gone {
+/* 没有行数的行印变更类型（已删除 / 已修改 / 新建），占增删数的位置。 */
+.change-kind {
   flex: none;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
-/* 「改了几次」压暗：它是次要读数，不该和增删数抢眼。 */
-.change-times {
+/* 「改了几次」「几个文件」压暗：它们是次要读数，不该和增删数抢眼。 */
+.change-times,
+.change-count {
   flex: none;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
@@ -888,19 +866,26 @@
 }
 
 /* 展开之后：这个文件的每一次改动，按先后。
-   左缩进跟着 `.change-row` 的内边距走：8（行内边距）+ 11（折叠符号）+ 4（间距）
-   = 23 是文件图标的位置，再留 2px，竖线才不贴着符号。改行内边距时这里要跟着改。 */
+   它是文件行（第 1 层）下面的第 2 层：文字从 14 + 13（图标位）+ 4（间距）= 31px 起，
+   层级线画在第 2 层的缩进位 14px，与树里的层级线同一条算法。 */
 .change-edits {
+  position: relative;
   list-style: none;
   margin: 0 0 4px;
-  padding: 0 0 0 25px;
+  padding: 0 0 0 31px;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.change-edit {
-  border-left: 1px solid var(--border-subtle);
-  padding-left: var(--s-2);
+.change-edits::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 14px;
+  width: 1px;
+  background: var(--border-subtle);
+  pointer-events: none;
 }
 .edit-head {
   display: flex;
@@ -943,20 +928,7 @@
 .change-body .del {
   color: var(--danger);
 }
-/* 选中的行不吃 hover 底色（同文件树那条）。 */
-.change-row:not(.selected):hover {
-  background: var(--bg-hover);
-}
-/* 选中 = 文件那一页正开着它。灰与文件树、会话列表同一档。 */
-.change-row.selected {
-  background: var(--bg-active);
-  color: var(--text-primary);
-}
-/* 路径占满中间，增删数钉在行尾不收缩。 */
-.change-path {
-  flex: 1 1 auto;
-  min-width: 0;
-}
+/* 增删数钉在行尾不收缩。 */
 .change-delta {
   flex: none;
   display: inline-flex;
@@ -969,6 +941,23 @@
 }
 .change-delta .del {
   color: var(--danger);
+}
+/* 变更清单预留滚动条槽，理由同上面 `.preview-board` 那条：行尾的 +N −M 不能被滚动条压住。
+   文件树不预留，那边的理由也写在那条注释里。 */
+.change-panel > .tree {
+  scrollbar-gutter: stable;
+}
+/* 清单末尾：翻页的落点。加载中与失败各占一行；到头时是空的零高元素，只给观察器当哨兵。 */
+.change-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.change-more:not(:empty) {
+  min-height: 24px;
 }
 
 /* ── 运行 ──

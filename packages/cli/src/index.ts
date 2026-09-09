@@ -390,8 +390,8 @@ function renderHuman(ev: AgentEvent): void {
         `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存命中 ${cached} · ${formatMoney(u.cost, u.currency)}${RESET}\n`,
       )
       if (ev.fileChanges.length) {
-        const adds = ev.fileChanges.reduce((s, c) => s + c.additions, 0)
-        const dels = ev.fileChanges.reduce((s, c) => s + c.deletions, 0)
+        const adds = ev.fileChanges.reduce((s, c) => s + (c.additions ?? 0), 0)
+        const dels = ev.fileChanges.reduce((s, c) => s + (c.deletions ?? 0), 0)
         process.stdout.write(
           `${BOLD}${ev.fileChanges.length} 个文件已更改${RESET} ${GREEN}+${adds}${RESET} ${RED}-${dels}${RESET}\n`,
         )

@@ -20,6 +20,7 @@ import { applySpecOverride, lookupModel, type TokenDensity } from '@qywork/ai'
 import {
   type Conversation,
   type ConversationId,
+  type FileChange,
   type FollowUp,
   foldWorkflow,
   type NodeState,
@@ -65,7 +66,7 @@ import {
   runCli,
   validatePlan,
 } from '@qywork/team'
-import { deliverAgentOutput, MAX_TIMEOUT_MS } from '@qywork/tools'
+import { deliverAgentOutput, MAX_TIMEOUT_MS, openChangeWindow } from '@qywork/tools'
 import type { CommandDeps } from './deps.ts'
 import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
 
@@ -101,6 +102,8 @@ interface Outcome {
   error?: string
   stop?: StopReason | null
   note?: string
+  /** 只有外部 CLI 有：它是本机另一个进程，改了什么只有工作区观察器看得见。 */
+  fileChanges?: FileChange[]
 }
 
 /**
@@ -447,6 +450,7 @@ export function makeDelegate(ctx: {
       if (cli) {
         // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到。
         const stepId = at.stepId
+        const changeWindow = openChangeWindow(workspaceRoot)
         const r = await runCli(cli, {
           prompt: task,
           workspaceRoot,
@@ -464,6 +468,7 @@ export function makeDelegate(ctx: {
               }
             : {}),
         })
+        const fileChanges = await changeWindow.close()
         // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。
         if (r.session) setConversationExternalSession(deps.store, conversation.id, r.session)
         else if (!conversation.externalSession) {
@@ -479,6 +484,7 @@ export function makeDelegate(ctx: {
           output: r.output,
           ...(error ? { error } : {}),
           ...(notes.length ? { note: notes.join('；') } : {}),
+          ...(fileChanges.length ? { fileChanges } : {}),
         }
       }
 
@@ -547,6 +553,7 @@ export function makeDelegate(ctx: {
       ...(error ? { error } : {}),
       ...(output ? { output } : {}),
       ...(outcome.note ? { note: outcome.note } : {}),
+      ...(outcome.fileChanges?.length ? { fileChanges: outcome.fileChanges } : {}),
     })
     if (interrupted) return
 

@@ -52,6 +52,8 @@ async function afterPreviousRun() {
       [CV]: {
         transcript: [],
         history: { loading: null, nextCursor: null, error: null },
+        changes: null,
+        runUserMessageId: null,
         runStartedAt: null,
         usage: null,
         lastEventAt: null,

@@ -38,8 +38,9 @@ export function RunStatus() {
   const progress = () => todoProgress(todos())
   const inProgress = () => todos().some((t) => t.status !== 'completed')
   const files = () => state.fileChanges
-  const additions = () => files().reduce((s, c) => s + c.additions, 0)
-  const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
+  // 行数 null = 不可知，只加已知的。
+  const additions = () => files().reduce((s, c) => s + (c.additions ?? 0), 0)
+  const deletions = () => files().reduce((s, c) => s + (c.deletions ?? 0), 0)
 
   return (
     <Show when={hasRunStatus()}>

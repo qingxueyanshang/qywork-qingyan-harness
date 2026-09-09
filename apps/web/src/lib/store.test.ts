@@ -63,7 +63,9 @@ const {
   isRunning,
   ledgerRevision,
   loadOlderConversation,
+  loadConversationChanges,
   loadConversationView,
+  loadOlderConversationChanges,
   openBrowserTab,
   openConversationTab,
   openView,
@@ -2340,5 +2342,300 @@ describe('思考流合帧', () => {
     expect(textAt === -1 || textAt > thinking).toBe(true)
     // 正文还攒在节拍器里，不丢掉的话它的定时器会让进程退不出去。
     discardPace()
+  })
+})
+
+/**
+ * 变更面板的数据：账本页（`/changes`）与实时回执（`tool.finished`）要落成同一份。
+ *
+ * 锁三件事：首页在飞时到达的写入不丢也不重；没取过面板时实时回执不追加；
+ * 翻页只在有游标时发请求。
+ */
+describe('变更面板：账本页与实时回执落成同一份', () => {
+  const change = (path: string, additions: number, deletions: number) => ({
+    path,
+    changeType: 'modified',
+    additions,
+    deletions,
+  })
+  const wireStep = (id: string, path: string, additions: number, deletions: number) => ({
+    id,
+    toolName: 'edit_file',
+    args: { path },
+    fileChanges: [change(path, additions, deletions)],
+    via: null,
+  })
+  const finished = (stepId: string, path: string, additions: number, deletions: number) =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'tool.finished',
+        runId: 'rn_1',
+        stepId,
+        toolCallId: 'c',
+        status: 'success',
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '',
+          fileChanges: [change(path, additions, deletions)],
+        },
+        durationMs: 1,
+      },
+    }) as never
+  const toolItem = (id: string, path: string) => ({
+    id,
+    kind: 'tool' as const,
+    text: '',
+    toolName: 'edit_file',
+    args: { path },
+    status: 'running' as const,
+  })
+  const stubApi = (handler: (path: string) => Promise<unknown>) => {
+    const before = client.api
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = handler
+    return () => {
+      ;(client as unknown as { api: typeof client.api }).api = before
+    }
+  }
+
+  test('首页在飞时到达的写入：页里有的去重，页里没有的并回去，合计只加没并进去的', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    setState('views', 'cv_1', 'transcript', [
+      { id: 'ms_1', kind: 'user', text: '改 a' },
+      toolItem('st_1', 'a.ts'),
+      toolItem('st_2', 'b.ts'),
+    ])
+    setState('views', 'cv_1', 'runUserMessageId', 'ms_1')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const restore = stubApi(async (p) => {
+      if (!p.includes('/changes')) throw new Error('意外请求 ' + p)
+      await gate
+      return {
+        turns: [
+          {
+            userMessageId: 'ms_1',
+            text: '改 a',
+            origin: null,
+            createdAt: 1,
+            steps: [wireStep('st_1', 'a.ts', 3, 1)],
+          },
+        ],
+        totals: { paths: ['a.ts'], additions: 3, deletions: 1 },
+        nextCursor: null,
+      }
+    })
+    try {
+      const loading = loadConversationChanges('cv_1')
+      expect(viewOf('cv_1').changes?.loading).toBe('initial')
+      applyEvent(finished('st_1', 'a.ts', 3, 1))
+      applyEvent(finished('st_2', 'b.ts', 2, 0))
+      release()
+      await loading
+      const changes = viewOf('cv_1').changes
+      expect(changes?.loading).toBeNull()
+      expect(changes?.error).toBeNull()
+      expect(changes?.turns.map((t) => [t.text, t.steps.map((s) => s.id)])).toEqual([
+        ['改 a', ['st_1', 'st_2']],
+      ])
+      expect(changes?.totals).toEqual({ paths: ['a.ts', 'b.ts'], additions: 5, deletions: 1 })
+      // 再来一遍同一条回执：不重复进账
+      applyEvent(finished('st_2', 'b.ts', 2, 0))
+      expect(viewOf('cv_1').changes?.totals.additions).toBe(5)
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
+  test('没取过面板时回执不追加；取过之后新一轮的写入按 run.started 的用户消息新建一节放最前', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    setState('views', 'cv_1', 'transcript', [
+      { id: 'ms_1', kind: 'user', text: '改 a' },
+      toolItem('st_1', 'a.ts'),
+    ])
+    setState('views', 'cv_1', 'runUserMessageId', 'ms_1')
+    applyEvent(finished('st_1', 'a.ts', 1, 0))
+    expect(viewOf('cv_1').changes).toBeNull()
+
+    const restore = stubApi(async () => ({
+      turns: [
+        {
+          userMessageId: 'ms_1',
+          text: '改 a',
+          origin: null,
+          createdAt: 1,
+          steps: [wireStep('st_1', 'a.ts', 1, 0)],
+        },
+      ],
+      totals: { paths: ['a.ts'], additions: 1, deletions: 0 },
+      nextCursor: null,
+    }))
+    try {
+      await loadConversationChanges('cv_1')
+      applyEvent({
+        seq: 2,
+        at: 0,
+        conversationId: 'cv_1',
+        event: {
+          type: 'run.started',
+          runId: 'rn_2',
+          conversationId: 'cv_1',
+          model: 'm',
+          userMessageId: 'ms_2',
+          userMessage: { content: '再改' },
+        },
+      } as never)
+      setState('views', 'cv_1', 'transcript', (items) => [...items, toolItem('st_2', 'a.ts')])
+      applyEvent(finished('st_2', 'a.ts', 4, 2))
+      const changes = viewOf('cv_1').changes
+      expect(changes?.turns.map((t) => [t.userMessageId, t.text, t.steps.length])).toEqual([
+        ['ms_2', '再改', 1],
+        ['ms_1', '改 a', 1],
+      ])
+      expect(changes?.totals).toEqual({ paths: ['a.ts'], additions: 5, deletions: 2 })
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
+  test('翻页：有游标才发请求，新页接在末尾；到头后不再发', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    const requested: string[] = []
+    const restore = stubApi(async (p) => {
+      requested.push(p)
+      if (p.includes('before=ms_1')) {
+        return {
+          turns: [{ userMessageId: 'ms_0', text: '最早', origin: null, createdAt: 0, steps: [] }],
+          totals: { paths: ['a.ts'], additions: 2, deletions: 0 },
+          nextCursor: null,
+        }
+      }
+      return {
+        turns: [{ userMessageId: 'ms_1', text: '后来', origin: null, createdAt: 1, steps: [] }],
+        totals: { paths: ['a.ts'], additions: 2, deletions: 0 },
+        nextCursor: 'ms_1',
+      }
+    })
+    try {
+      await loadConversationChanges('cv_1')
+      expect(viewOf('cv_1').changes?.nextCursor).toBe('ms_1')
+      expect(await loadOlderConversationChanges('cv_1')).toBe(true)
+      expect(viewOf('cv_1').changes?.turns.map((t) => t.text)).toEqual(['后来', '最早'])
+      expect(viewOf('cv_1').changes?.nextCursor).toBeNull()
+      expect(await loadOlderConversationChanges('cv_1')).toBe(false)
+      expect(requested).toHaveLength(2)
+      // 已取过就不再取
+      await loadConversationChanges('cv_1')
+      expect(requested).toHaveLength(2)
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
+  test('派活的一格落终态：重取最新一轮替换进去，合计以账本为准', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    const requested: string[] = []
+    let phase = 0
+    const restore = stubApi(async (p) => {
+      requested.push(p)
+      if (phase === 0) {
+        return {
+          turns: [
+            {
+              userMessageId: 'ms_1',
+              text: '派活',
+              origin: null,
+              createdAt: 1,
+              steps: [wireStep('st_1', 'a.ts', 1, 0)],
+            },
+          ],
+          totals: { paths: ['a.ts'], additions: 1, deletions: 0 },
+          nextCursor: null,
+        }
+      }
+      return {
+        turns: [
+          {
+            userMessageId: 'ms_1',
+            text: '派活',
+            origin: null,
+            createdAt: 1,
+            steps: [
+              wireStep('st_1', 'a.ts', 1, 0),
+              { ...wireStep('st_c', 'c.ts', 4, 4), via: { name: '写手' } },
+            ],
+          },
+        ],
+        totals: { paths: ['a.ts', 'c.ts'], additions: 5, deletions: 4 },
+        nextCursor: null,
+      }
+    })
+    try {
+      await loadConversationChanges('cv_1')
+      phase = 1
+      applyEvent({
+        seq: 3,
+        at: 0,
+        conversationId: 'cv_1',
+        event: {
+          type: 'team.member',
+          runId: 'rn_1',
+          stepId: 'st_w',
+          nodeId: 'n1',
+          state: { phase: 'done', label: '写手', subagentId: 'cv_child' },
+        },
+      } as never)
+      for (let i = 0; i < 50 && requested.length < 2; i += 1) await Bun.sleep(5)
+      expect(requested[1]).toContain('limit=1')
+      await Bun.sleep(10)
+      const changes = viewOf('cv_1').changes
+      expect(changes?.turns.map((t) => t.steps.map((s) => [s.id, s.via?.name ?? null]))).toEqual([
+        [
+          ['st_1', null],
+          ['st_c', '写手'],
+        ],
+      ])
+      expect(changes?.totals).toEqual({ paths: ['a.ts', 'c.ts'], additions: 5, deletions: 4 })
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
+  test('首页失败有终态，再调一次即重试', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    let fail = true
+    const restore = stubApi(async () => {
+      if (fail) throw new Error('网络断开')
+      return {
+        turns: [],
+        totals: { paths: [], additions: 0, deletions: 0 },
+        nextCursor: null,
+      }
+    })
+    try {
+      await loadConversationChanges('cv_1')
+      expect(viewOf('cv_1').changes?.error).toBe('网络断开')
+      expect(viewOf('cv_1').changes?.loading).toBeNull()
+      fail = false
+      await loadConversationChanges('cv_1')
+      expect(viewOf('cv_1').changes?.error).toBeNull()
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
   })
 })

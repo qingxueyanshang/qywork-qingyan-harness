@@ -11,6 +11,7 @@ import {
   VENDORS,
 } from '@qywork/ai'
 import type {
+  ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationId,
   ConversationRunsResponse,
@@ -34,6 +35,7 @@ import {
   deleteConversation,
   getConversation,
   listChildConversations,
+  listConversationChangesPage,
   listConversationHistoryPage,
   listConversations,
   listProviderRequests,
@@ -372,7 +374,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     })
   }
 
-  const convMatch = /^\/api\/conversations\/([^/]+)\/(history|messages|runs|usage|queue)$/.exec(p)
+  const convMatch =
+    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
@@ -384,6 +387,19 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       }
       const before = url.searchParams.get('before')?.trim() || null
       const page: ConversationHistoryPageResponse = listConversationHistoryPage(d.store, id, {
+        limit,
+        before: before as MessageId | null,
+      })
+      return json(page)
+    }
+    if (convMatch[2] === 'changes') {
+      const rawLimit = url.searchParams.get('limit')
+      const limit = rawLimit === null ? 10 : Number(rawLimit)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return json({ error: 'limit 必须是 1 到 100 的整数' }, 422)
+      }
+      const before = url.searchParams.get('before')?.trim() || null
+      const page: ConversationChangesPageResponse = listConversationChangesPage(d.store, id, {
         limit,
         before: before as MessageId | null,
       })

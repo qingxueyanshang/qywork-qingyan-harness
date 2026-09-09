@@ -8,6 +8,7 @@ import {
   For,
   lazy,
   Match,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -20,11 +21,15 @@ import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
   absPath,
   activePanelTab,
+  type ChangesView,
+  type ChangeTurn,
   client,
   closePanel,
   closePanelTab,
   explainApiError,
   isDesktopShell,
+  loadConversationChanges,
+  loadOlderConversationChanges,
   openFile,
   openFileInPanel,
   openPanelTab,
@@ -39,7 +44,7 @@ import {
   sidePanel,
   state,
   togglePanelMax,
-  transcript,
+  view,
   workspace,
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -56,6 +61,7 @@ import {
   IconGlobe,
   IconPlus,
   IconRefresh,
+  IconSpinner,
   IconTerminal,
   IconX,
 } from './Icons.tsx'
@@ -1231,187 +1237,342 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
  */
 interface ChangeEdit {
   tool: string
-  additions: number
-  deletions: number
+  /** 谁做的：子 agent 或外部 CLI 节点的名字；本会话自己做的是 null。 */
+  via: string | null
+  changeType: FileChange['changeType']
+  /** 缺席 = 行数不可知：shell 与外部 CLI 的写入由观察器判出，拿不到改动前的内容。 */
+  additions?: number
+  deletions?: number
   body: { removed: string; added: string } | { written: string } | null
 }
 
 /**
  * 这一步的正文。**按入参形状认，不按工具名认**（同 `step-view.ts` 的 `diffFrom`）。
  *
- * 两档不会互相抢：整份写出的入参里没有 old/new，编辑的入参里没有 content。
+ * 三档不会互相抢：整份写出的入参里没有 old/new，编辑的入参里没有 content，
+ * shell 的入参只有 command——那一次的正文就是跑的那条命令。
  * 不要给整份写出编一份红绿——旧内容只在工具执行的那一瞬间存在，没落过库。
  */
 function bodyOf(args: Record<string, unknown> | undefined): ChangeEdit['body'] {
   if (!args) return null
   const diff = diffFrom(args)
   if (diff) return diff
-  const written = firstString(args, 'content', 'text')
+  const written = firstString(args, 'content', 'text', 'command')
   return written ? { written: clamp(written) } : null
 }
 
-/** 这条会话在一个文件上写了多少。路径同账本：工作区相对、posix 分隔符。 */
+/** 一轮里对一个文件的改动汇总。路径同账本：工作区相对、posix 分隔符。 */
 interface ChangedFile {
   path: string
+  /** 只加已知的行数。 */
   additions: number
   deletions: number
-  /** 最后一次对它做的是什么。`deleted` 那一档没有行数、也打不开。 */
+  /** 有没有任何一次带行数。一次都没有的行不画 +0 −0。 */
+  counted: boolean
+  /** 这一轮最后一次对它做的是什么。`deleted` 那一档没有行数、也打不开。 */
   changeType: FileChange['changeType']
   /** 每一次改动，按先后。**同一个文件改十次就是十条**，这才是「记录」。 */
   edits: ChangeEdit[]
 }
 
+/** 一轮的写入按路径折成文件行。顺序是这一轮里第一次被改到的先后，不排字典序。 */
+function foldTurn(turn: ChangeTurn): ChangedFile[] {
+  const byPath = new Map<string, ChangedFile>()
+  for (const step of turn.steps) {
+    for (const c of step.fileChanges) {
+      // 这一步的入参就在账本里，正文从它来——不另存一份。
+      const edit: ChangeEdit = {
+        tool: step.toolName,
+        via: step.via?.name ?? null,
+        changeType: c.changeType,
+        ...(c.additions === undefined ? {} : { additions: c.additions }),
+        ...(c.deletions === undefined ? {} : { deletions: c.deletions }),
+        body: bodyOf(step.args),
+      }
+      const counted = c.additions !== undefined
+      const cur = byPath.get(c.path)
+      if (cur) {
+        cur.additions += c.additions ?? 0
+        cur.deletions += c.deletions ?? 0
+        cur.counted ||= counted
+        // 后一次说了算：删掉又重建的文件，最后那次是「建」。
+        cur.changeType = c.changeType
+        cur.edits.push(edit)
+      } else {
+        byPath.set(c.path, {
+          path: c.path,
+          additions: c.additions ?? 0,
+          deletions: c.deletions ?? 0,
+          counted,
+          changeType: c.changeType,
+          edits: [edit],
+        })
+      }
+    }
+  }
+  return [...byPath.values()]
+}
+
 /**
- * 这条会话改过哪些文件。**不接 git。**
+ * 这条会话改过哪些文件，按轮。**不接 git。**
  *
- * 真源是 step 账本：每个写类工具的回执自带 `fileChanges`（改了谁、增删多少行），
- * 它随 step 落库，会话重载时原样折回 transcript（`store/connection.ts` 的
- * `stepToItems`）。所以这是一份永久记录——刷新、重启、进程换掉之后都还在
- * （账本是本机那份 sqlite），**而且在没有 git 的目录里照样有内容**。
+ * 真源是 step 账本：每个写类工具的回执自带 `fileChanges`（改了谁、增删多少行）。
+ * 服务端按「写过文件的轮」投影分页（`/changes`），实时期的回执直接追加进同一份
+ * （`store/connection.ts`）。**不从会话流折**：会话流只加载最后几轮，从它折出来的
+ * 记录在长会话里不全，表头的数也跟着错。
  *
  * 不接 git 不是因为拿不到，是因为 git 回答的是另一个问题：「工作区相对 HEAD
  * 有什么差别」里混着用户自己在编辑器里改的、上一条会话改的、以及全部未跟踪的
  * 文件。这一页只回答「这条会话干了什么」。两个问题摆进同一块面板就是两本账。
  *
- * 四条口径：
- * - **一个文件一行，展开是它的每一次改动**。行上的数是这条会话在它上面写了多少
- *   （多次累加），不是「它和初始状态差多少」——后者要整份前后文，账本里没有。
- * - **顺序是第一次被改到的先后**，不排字典序：记录读的就是先后。
+ * 口径：
+ * - **一轮一节**，最新在上、默认展开，更早的收起只露节头。节头是用户那句话。
+ * - 节内一个文件一行，行上的数是这一轮在它上面写了多少；展开是它的每一次改动。
+ * - 表头的数是整条会话的合计，由服务端算，不是已加载几页的和。
  * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
  * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
  *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的文件这里看不到。
  */
 function ChangeRecord() {
-  const rows = createMemo(() => {
-    const byPath = new Map<string, ChangedFile>()
-    for (const item of transcript()) {
-      for (const c of item.outcome?.fileChanges ?? []) {
-        // 这一步的入参就在账本里，正文从它来——不另存一份。
-        const edit: ChangeEdit = {
-          tool: item.toolName ?? '',
-          additions: c.additions,
-          deletions: c.deletions,
-          body: bodyOf(item.args),
-        }
-        const cur = byPath.get(c.path)
-        if (cur) {
-          cur.additions += c.additions
-          cur.deletions += c.deletions
-          // 后一次说了算：删掉又重建的文件，最后那次是「建」。
-          cur.changeType = c.changeType
-          cur.edits.push(edit)
-        } else {
-          byPath.set(c.path, {
-            path: c.path,
-            additions: c.additions,
-            deletions: c.deletions,
-            changeType: c.changeType,
-            edits: [edit],
-          })
-        }
-      }
-    }
-    return [...byPath.values()]
-  })
-  const additions = () => rows().reduce((n, r) => n + r.additions, 0)
-  const deletions = () => rows().reduce((n, r) => n + r.deletions, 0)
+  const conversationId = () => state.activeConversation
+  const changes = () => view().changes
+  createEffect(
+    on(conversationId, (id) => {
+      if (id) void loadConversationChanges(id)
+    }),
+  )
+  const retry = () => {
+    const id = conversationId()
+    if (id) void loadConversationChanges(id)
+  }
 
-  /** 展开了哪几个文件。默认全收——一屏先看清改了哪些文件，再点开要看的那个。 */
-  const [open, setOpen] = createSignal<ReadonlySet<string>>(new Set())
-  const toggle = (path: string) =>
-    setOpen((cur) => {
+  return (
+    <Switch>
+      <Match when={changes()?.turns.length === 0 && changes()?.error}>
+        {(error) => (
+          <div class="change-more" role="alert">
+            <span>历史记录加载失败：{error()}</span>
+            <button class="ghost-btn" type="button" onClick={retry}>
+              重试
+            </button>
+          </div>
+        )}
+      </Match>
+      {/* 一条都没有就整页留白：空态不写引导语。 */}
+      <Match when={changes()?.turns.length ? changes() : null}>
+        {(loaded) => (
+          <div class="change-panel">
+            <div class="change-head">
+              <span>变更 {loaded().totals.paths.length} 个文件</span>
+              <span class="change-delta">
+                <span class="add">+{loaded().totals.additions}</span>
+                <span class="del">−{loaded().totals.deletions}</span>
+              </span>
+            </div>
+            <ChangeList changes={loaded()} conversationId={conversationId()} />
+          </div>
+        )}
+      </Match>
+    </Switch>
+  )
+}
+
+/**
+ * 轮的清单。单独成组件是为了让哨兵观察器跟着这棵子树的生命周期走：
+ * 面板留白时它不存在，也就没有观察器。
+ */
+function ChangeList(props: { changes: ChangesView; conversationId: string | null }) {
+  /**
+   * 明确开合过的轮。没记录的按默认：最新一轮开、其余关。
+   * 记「明确值」而不是「翻转过」：新一轮到达后原先最上面那轮退到第二位，
+   * 它若没被点过就按默认收起，被点过就保持用户定的状态。
+   */
+  const [explicit, setExplicit] = createSignal<ReadonlyMap<string, boolean>>(new Map())
+  const turnOpen = (turnId: string, index: number) => explicit().get(turnId) ?? index === 0
+  const toggleTurn = (turnId: string, index: number) =>
+    setExplicit((cur) => new Map(cur).set(turnId, !turnOpen(turnId, index)))
+
+  /** 展开了哪几个文件，键是「轮 + 路径」：同一个文件在两轮里各自开合。 */
+  const [openFiles, setOpenFiles] = createSignal<ReadonlySet<string>>(new Set())
+  const fileKey = (turnId: string, path: string) => `${turnId}\n${path}`
+  const toggleFile = (key: string) =>
+    setOpenFiles((cur) => {
       const next = new Set(cur)
-      if (!next.delete(path)) next.add(path)
+      if (!next.delete(key)) next.add(key)
       return next
     })
 
-  // 一条都没有就整页留白：空态不写引导语。
+  let list!: HTMLUListElement
+  let sentinel!: HTMLLIElement
+  const loadOlder = async () => {
+    if (!props.conversationId) return false
+    return loadOlderConversationChanges(props.conversationId)
+  }
+  onMount(() => {
+    const io = new IntersectionObserver(
+      async (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return
+        if (!(await loadOlder())) return
+        // 一页落地后哨兵可能仍在视口里，观察器不会为此再报一次：重挂一次拿初始通知。
+        io.unobserve(sentinel)
+        io.observe(sentinel)
+      },
+      { root: list },
+    )
+    io.observe(sentinel)
+    onCleanup(() => io.disconnect())
+  })
+
   return (
-    <Show when={rows().length > 0}>
-      <div class="change-panel">
-        <div class="change-head">
-          <span>变更 {rows().length} 个文件</span>
-          <span class="change-delta">
-            <span class="add">+{additions()}</span>
-            <span class="del">−{deletions()}</span>
-          </span>
-        </div>
-        <ul class="change-list">
-          <For each={rows()}>
-            {(r) => (
-              <li>
-                {/* 点一行 = 展开它的每一次改动。**不做成「打开文件」**：文件正文在
-                    「文件」那一页，这一页要回答的是「这条会话对它做了什么」。 */}
-                <button
-                  class="change-row"
-                  classList={{ selected: open().has(r.path) }}
-                  type="button"
-                  aria-expanded={open().has(r.path)}
-                  data-tip={nativePath(r.path)}
-                  onClick={() => toggle(r.path)}
-                >
-                  <IconChevron size={11} dir={open().has(r.path) ? 'down' : 'right'} />
-                  <FileTypeIcon name={r.path} />
-                  <span class="change-path truncate-left">
-                    <span dir="ltr">{nativePath(r.path)}</span>
+    <ul class="tree tree-top" ref={list}>
+      <For each={props.changes.turns}>
+        {(turn, index) => {
+          const files = createMemo(() => foldTurn(turn))
+          const additions = () => files().reduce((n, f) => n + f.additions, 0)
+          const deletions = () => files().reduce((n, f) => n + f.deletions, 0)
+          const open = () => turnOpen(turn.userMessageId, index())
+          return (
+            <li>
+              {/* 行与文件树同一套类和缩进（`depth * 6 + 2`）：轮是第 0 层，文件是第 1 层。
+                  不另写一套「对齐」的数值——两份数值迟早漂开。 */}
+              <button
+                class="tree-item change-turn"
+                type="button"
+                style={{ 'padding-left': '2px' }}
+                aria-expanded={open()}
+                onClick={() => toggleTurn(turn.userMessageId, index())}
+              >
+                <span class="tree-chevron-slot" aria-hidden="true">
+                  <IconChevron size={11} dir={open() ? 'down' : 'right'} />
+                </span>
+                <span class="truncate">{turn.text}</span>
+                <span class="change-count">{files().length} 个文件</span>
+                <Show when={files().some((f) => f.counted)}>
+                  <span class="change-delta">
+                    <span class="add">+{additions()}</span>
+                    <span class="del">−{deletions()}</span>
                   </span>
-                  {/* 改了几次只在重复改过时说：写一次的文件标「1 次」是废话。 */}
-                  <Show when={r.edits.length > 1}>
-                    <span class="change-times">{r.edits.length} 次</span>
-                  </Show>
-                  {/* 删掉的不报行数：`delete_memory` 给的是 0/0，画成 +0 −0
-                      会被读成「什么都没改」。 */}
-                  <Show
-                    when={r.changeType !== 'deleted'}
-                    fallback={<span class="change-gone">已删除</span>}
-                  >
-                    <span class="change-delta">
-                      <span class="add">+{r.additions}</span>
-                      <span class="del">−{r.deletions}</span>
-                    </span>
-                  </Show>
-                </button>
-                <Show when={open().has(r.path)}>
-                  <ol class="change-edits">
-                    <For each={r.edits}>
-                      {(e, i) => (
-                        <li class="change-edit">
-                          <div class="edit-head">
-                            <span class="edit-no">#{i() + 1}</span>
-                            <span class="edit-tool">{editLabel(e.tool)}</span>
-                            <span class="change-delta">
-                              <span class="add">+{e.additions}</span>
-                              <span class="del">−{e.deletions}</span>
-                            </span>
-                          </div>
-                          <Switch>
-                            <Match when={e.body && 'written' in e.body ? e.body : null}>
-                              {(w) => <pre class="change-body">{w().written}</pre>}
-                            </Match>
-                            <Match when={e.body && 'removed' in e.body ? e.body : null}>
-                              {(d) => (
-                                <pre class="change-body">
-                                  <Show when={d().removed}>
-                                    <span class="del">{d().removed}</span>
-                                  </Show>
-                                  <Show when={d().added}>
-                                    <span class="add">{d().added}</span>
-                                  </Show>
-                                </pre>
-                              )}
-                            </Match>
-                          </Switch>
-                        </li>
-                      )}
-                    </For>
-                  </ol>
                 </Show>
-              </li>
+              </button>
+              <Show when={open()}>
+                <ul class="tree tree-terminal change-files">
+                  <For each={files()}>
+                    {(r) => {
+                      const key = fileKey(turn.userMessageId, r.path)
+                      const fileOpen = () => openFiles().has(key)
+                      return (
+                        <li>
+                          {/* 点一行 = 展开它的每一次改动，展开着的行亮着（同树里选中那一档）。
+                              **不做成「打开文件」**：文件正文在「文件」那一页，这一页要回答的是
+                              「这一轮对它做了什么」。 */}
+                          <button
+                            class="tree-item change-row"
+                            classList={{ selected: fileOpen() }}
+                            type="button"
+                            style={{ 'padding-left': '8px' }}
+                            aria-expanded={fileOpen()}
+                            data-tip={nativePath(r.path)}
+                            onClick={() => toggleFile(key)}
+                          >
+                            {/* 这一行是可展开的节点，图标位放折叠符号，同树里的目录行。 */}
+                            <span class="tree-chevron-slot" aria-hidden="true">
+                              <IconChevron size={11} dir={fileOpen() ? 'down' : 'right'} />
+                            </span>
+                            {/* 行上印工作区相对路径，末尾截断才留得住文件名；绝对路径在悬停提示里。 */}
+                            <span class="truncate">{r.path}</span>
+                            {/* 改了几次只在重复改过时说：写一次的文件标「1 次」是废话。 */}
+                            <Show when={r.edits.length > 1}>
+                              <span class="change-times">{r.edits.length} 次</span>
+                            </Show>
+                            {/* 没有行数的只印变更类型：删除给的是 0/0，观察器判出来的写入
+                                没有行数，画成 +0 −0 会被读成「什么都没改」。 */}
+                            <Show
+                              when={r.counted && r.changeType !== 'deleted'}
+                              fallback={<span class="change-kind">{kindLabel(r.changeType)}</span>}
+                            >
+                              <span class="change-delta">
+                                <span class="add">+{r.additions}</span>
+                                <span class="del">−{r.deletions}</span>
+                              </span>
+                            </Show>
+                          </button>
+                          <Show when={fileOpen()}>
+                            <ol class="change-edits">
+                              <For each={r.edits}>
+                                {(e, i) => (
+                                  <li class="change-edit">
+                                    <div class="edit-head">
+                                      <span class="edit-no">#{i() + 1}</span>
+                                      <span class="edit-tool">
+                                        {e.via ? `${e.via} · ` : ''}
+                                        {editLabel(e.tool)}
+                                      </span>
+                                      <Show
+                                        when={
+                                          e.additions !== undefined && e.changeType !== 'deleted'
+                                        }
+                                        fallback={
+                                          <span class="change-kind">{kindLabel(e.changeType)}</span>
+                                        }
+                                      >
+                                        <span class="change-delta">
+                                          <span class="add">+{e.additions}</span>
+                                          <span class="del">−{e.deletions}</span>
+                                        </span>
+                                      </Show>
+                                    </div>
+                                    <Switch>
+                                      <Match when={e.body && 'written' in e.body ? e.body : null}>
+                                        {(w) => <pre class="change-body">{w().written}</pre>}
+                                      </Match>
+                                      <Match when={e.body && 'removed' in e.body ? e.body : null}>
+                                        {(d) => (
+                                          <pre class="change-body">
+                                            <Show when={d().removed}>
+                                              <span class="del">{d().removed}</span>
+                                            </Show>
+                                            <Show when={d().added}>
+                                              <span class="add">{d().added}</span>
+                                            </Show>
+                                          </pre>
+                                        )}
+                                      </Match>
+                                    </Switch>
+                                  </li>
+                                )}
+                              </For>
+                            </ol>
+                          </Show>
+                        </li>
+                      )
+                    }}
+                  </For>
+                </ul>
+              </Show>
+            </li>
+          )
+        }}
+      </For>
+      {/* 清单末尾是翻页的落点：加载中、失败各占一行；到头时空着，只给观察器当哨兵。 */}
+      <li class="change-more" ref={sentinel}>
+        <Switch>
+          <Match when={props.changes.loading === 'older'}>
+            <IconSpinner size={13} />
+            正在加载更早记录…
+          </Match>
+          <Match when={props.changes.error}>
+            {(error) => (
+              <>
+                <span role="alert">历史记录加载失败：{error()}</span>
+                <button class="ghost-btn" type="button" onClick={() => void loadOlder()}>
+                  重试
+                </button>
+              </>
             )}
-          </For>
-        </ul>
-      </div>
-    </Show>
+          </Match>
+        </Switch>
+      </li>
+    </ul>
   )
 }
 
@@ -1424,9 +1585,19 @@ function ChangeRecord() {
 function editLabel(tool: string): string {
   if (tool === 'edit_file') return '编辑'
   if (tool === 'write_file') return '整份写出'
-  if (tool === 'save_memory') return '记忆'
+  if (tool === 'write_memory') return '记忆'
   if (tool === 'delete_memory') return '删除记忆'
+  if (tool === 'move_memory') return '移动记忆'
+  if (tool === 'run_command') return '运行命令'
+  if (tool === 'cli') return 'CLI'
   return tool
+}
+
+function kindLabel(kind: FileChange['changeType']): string {
+  if (kind === 'created') return '新建'
+  if (kind === 'deleted') return '已删除'
+  if (kind === 'renamed') return '重命名'
+  return '已修改'
 }
 
 /**

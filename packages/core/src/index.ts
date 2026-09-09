@@ -154,6 +154,9 @@ export type {
 // 单次派活那张卡上那个子节点的 id：服务端发事件、前端画节点，两侧要用同一个值
 export { SUBAGENT_NODE_ID } from './protocol/events.ts'
 export type {
+  ConversationChangeStep,
+  ConversationChangesPageResponse,
+  ConversationChangeTurn,
   ConversationHistoryPageResponse,
   ConversationRunsResponse,
   ConversationUsageResponse,

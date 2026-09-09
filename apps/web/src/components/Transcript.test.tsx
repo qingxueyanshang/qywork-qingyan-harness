@@ -72,6 +72,8 @@ describe('工具图片回放', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -122,6 +124,8 @@ describe('工具图片回放', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -461,6 +465,8 @@ describe('子会话与主会话共用流式外壳', () => {
         cv_child_starting: {
           transcript: [],
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -551,6 +557,8 @@ describe('子会话与主会话共用流式外壳', () => {
             },
           ],
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: 100,
           usage: null,
           lastEventAt: 100,
@@ -656,6 +664,8 @@ describe('子会话与主会话共用流式外壳', () => {
             },
           ],
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: 100,
           usage: null,
           lastEventAt: 100,
@@ -665,6 +675,8 @@ describe('子会话与主会话共用流式外壳', () => {
         cv_child_legacy: {
           transcript: [{ id: 'thinking-child', kind: 'thinking', text: '仍在处理最新内容' }],
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -716,6 +728,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
@@ -772,6 +786,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           error: null,
           transcript: [
@@ -861,6 +877,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: Date.now(),
           usage: null,
           lastEventAt: null,
@@ -921,6 +939,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           error: null,
           transcript: [
@@ -963,6 +983,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           error: null,
           transcript: [
@@ -1004,6 +1026,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           error: null,
           transcript: [
@@ -1045,6 +1069,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
       views: {
         [CV]: {
           history: { loading: 'initial', nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
           runStartedAt: null,
           usage: null,
           lastEventAt: null,

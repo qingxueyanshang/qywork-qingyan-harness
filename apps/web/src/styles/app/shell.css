@@ -558,7 +558,7 @@
    只切这一条）：`deepseek-deepseek-v4-flash-vision-exp` 那行的图标从 15px
    被压到 9.78px，另外两行压到 13.27 / 13.81——三行各压成不同大小，
    同一列里图标忽大忽小。
-   与 `.tree-item svg` / `.run-row > svg` / `.change-row svg` 同一条规则。 */
+   与 `.tree-item svg` / `.run-row > svg` 同一条规则。 */
 .project-open > svg {
   flex: none;
 }

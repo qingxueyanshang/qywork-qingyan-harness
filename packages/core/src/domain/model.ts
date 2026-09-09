@@ -727,6 +727,11 @@ export interface NodeState {
   output?: string
   /** 派发时模型该知道的事实：续接没接上、角色已不在。随终态一起交回。 */
   note?: string
+  /**
+   * 外部 CLI 节点执行期间工作区观察器看到的写入。只有外部 CLI 有：内置子 agent 的写入
+   * 是它自己那条子会话里的 step，变更投影按 `subagentId` 去那边取。
+   */
+  fileChanges?: FileChange[]
 }
 
 /**
@@ -873,9 +878,15 @@ export interface IntermediateResourceRef {
 
 export interface FileChange {
   path: string
+  /** 观察器判出来的 created 是估算：原子保存（写临时文件再改名）也会得到窗口内的创建时间。 */
   changeType: 'created' | 'modified' | 'deleted' | 'renamed'
-  additions: number
-  deletions: number
+  /**
+   * 增删行数。**文件类工具一定给**；工作区观察器判出来的写入（shell、外部 CLI）
+   * 拿不到改动前的内容，两个字段一起缺席。缺席不是 0：消费方只把已知的数相加，
+   * 界面上这类行不印增删数。
+   */
+  additions?: number
+  deletions?: number
   renamedFrom?: string
 }
 
