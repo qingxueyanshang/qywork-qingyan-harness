@@ -187,14 +187,16 @@ export interface DetectedCli extends CliAgent {
  * 装卸 CLI 是机器级操作，半分钟内看不到新装的那个是可接受的边界。
  */
 const DETECT_CACHE_MS = 30_000
-let detected: { env: NodeJS.ProcessEnv; at: number; value: DetectedCli[] } | null = null
+/** 缓存按 PATH 的内容认，不按 env 对象认：`process.env` 永远是同一个对象，PATH 改了也得重扫。 */
+let detected: { path: string; at: number; value: DetectedCli[] } | null = null
 
 export async function detectClis(env: NodeJS.ProcessEnv = process.env): Promise<DetectedCli[]> {
-  if (detected && detected.env === env && Date.now() - detected.at < DETECT_CACHE_MS) {
+  const path = env.PATH ?? env.Path ?? ''
+  if (detected && detected.path === path && Date.now() - detected.at < DETECT_CACHE_MS) {
     return detected.value
   }
   const value = await scanClis(env)
-  detected = { env, at: Date.now(), value }
+  detected = { path, at: Date.now(), value }
   return value
 }
 

@@ -10,12 +10,12 @@
  * 事件带没带 stepId（不带前端整条丢弃）、终态发没发（不发那一格永远停在进行中）、
  * 回执投没投（不投这次派活就等于丢了）。
  *
- * 外部 CLI 那一支这里覆盖不到：`findCli` 探测的是本机装了什么，测试环境不可控。
- * 它由真机验收。
+ * 外部 CLI 那一支只覆盖「派出去、跑完、格里落了写入」：PATH 上放一个假的 `codex.cmd`。
+ * 真正的 CLI 会不会照约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -38,6 +38,7 @@ import {
   createConversation,
   createRun,
   getConversation,
+  listConversationChangesPage,
   listMessages,
   listRuns,
   listSteps,
@@ -123,6 +124,8 @@ const provider = Bun.serve({
 })
 
 let dir = ''
+/** 账本放工作区外面：工作区观察窗口扫的是工作区，账本的 WAL 不该被扫成「改动」。 */
+let dbDir = ''
 let store: Store
 let content: ContentStore
 let bus: EventBus
@@ -135,7 +138,8 @@ let receipts: FollowUp[] = []
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'qywork-delegate-'))
-  const dbPath = join(dir, 'delegate.sqlite3')
+  dbDir = await mkdtemp(join(tmpdir(), 'qywork-delegate-db-'))
+  const dbPath = join(dbDir, 'delegate.sqlite3')
   store = new Store({ path: dbPath })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
@@ -173,6 +177,7 @@ afterAll(async () => {
   store?.close()
   content?.close()
   await rm(dir, { recursive: true, force: true }).catch(() => {})
+  await rm(dbDir, { recursive: true, force: true }).catch(() => {})
 })
 
 /** 每个用例一条干净的会话与一份干净的脚本。 */
@@ -895,5 +900,146 @@ describe('图按事件推进', () => {
     ).toContain('补充两条可核验证据')
     expect(receipts[0]?.content).toContain('修订稿：已经补充两条证据')
     expect(listRuns(store, child.id)).toHaveLength(1)
+  })
+})
+
+/**
+ * 变更页并进子 agent 与外部 CLI 的写入，走真链路：
+ * - 内置子 agent：假 provider 让子会话真的调 `write_file`，写入落在子会话的 step 里，
+ *   投影按父 step 的 `subagentId` 与执行窗口归到父轮；
+ * - 外部 CLI：PATH 上放一个假的 `codex.cmd`，它往工作区写一个文件，
+ *   派活期间的工作区观察窗口把路径写进那一格，投影从格里取。
+ */
+describe('变更页并进子 agent 与外部 CLI 的写入', () => {
+  /** 子会话第一轮：调 write_file 往工作区写一个文件。 */
+  function writeTurn(path: string, content: string): string {
+    return sse([
+      { type: 'response.created', response: { id: 'resp_write' } },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'function_call', id: 'fc_w', call_id: 'call_w', name: 'write_file' },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_w',
+        delta: JSON.stringify({ path, content }),
+      },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call' } },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_write',
+          status: 'completed',
+          usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 } },
+        },
+      },
+    ])
+  }
+
+  /** 父会话里一条有用户消息的轮，派活 step 是真实的一行：投影按它归轮。 */
+  function parentTurn(cid: ConversationId, text: string) {
+    const user = appendMessage(store, { conversationId: cid, role: 'user', content: text })
+    const runId = createRun(store, {
+      conversationId: cid,
+      workspaceId: workspaceId as never,
+      model: 'deepseek-v4-flash',
+      clientRequestId: `changes-${cid}`,
+      userMessageId: user.id,
+      messageIdUpperBound: user.id,
+      contextSnapshot: [],
+    }).id
+    const step = appendStep(store, {
+      runId,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'subagent',
+      status: 'running',
+      payload: { kind: 'tool_call', args: { task: text } },
+    })
+    return { runId, step }
+  }
+
+  function settle(stepId: string, task: string) {
+    settleToolStep(store, stepId as StepId, 'success', {
+      kind: 'tool_result',
+      args: { task },
+      outcome: { status: 'success', executed: true, message: '已派出' },
+    })
+  }
+
+  test('子会话里的 write_file 出现在父轮里，标着子 agent 的名字', async () => {
+    const cid = conversation()
+    const { runId, step } = parentTurn(cid, '派个写手')
+    script = [
+      () => new Response(writeTurn('sub.txt', 'hello\n'), { headers: SSE_HEADERS }),
+      say('写完了'),
+    ]
+
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '写手' },
+      task: '写一个文件',
+      runId,
+      stepId: step.id,
+    })
+    expect(res.ok).toBe(true)
+    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    settle(step.id, '派个写手')
+
+    expect(await Bun.file(join(dir, 'sub.txt')).text()).toBe('hello\n')
+    const page = listConversationChangesPage(store, cid, { limit: 10 })
+    expect(page.turns.map((t) => t.text)).toEqual(['派个写手'])
+    expect(
+      page.turns[0]?.steps.map((s) => [
+        s.toolName,
+        s.via?.name,
+        s.fileChanges.map((c) => [c.path, c.changeType, typeof c.additions === 'number']),
+      ]),
+    ).toEqual([['write_file', '写手', [['sub.txt', 'created', true]]]])
+    expect(page.totals.paths).toEqual(['sub.txt'])
+    expect(page.totals.additions).toBeGreaterThan(0)
+  })
+
+  test('外部 CLI 改的文件出现在父轮里，标着节点名，没有行数', async () => {
+    const bin = join(dir, 'fake-bin')
+    await mkdir(bin, { recursive: true })
+    // 假的 codex：不看参数，往当前目录写一个文件，再按 codex 的 jsonl 形状报一句结果。
+    await writeFile(
+      join(bin, 'codex.cmd'),
+      '@echo off\r\necho made> "%CD%\\cli-made.txt"\r\necho {"type":"item.completed","item":{"text":"done"}}\r\n',
+    )
+    const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
+    // 只留假 CLI 与系统目录（`.cmd` 要靠 cmd.exe 起）；凭证判据是这个变量有值。
+    process.env.PATH = `${bin};${join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')}`
+    process.env.OPENAI_API_KEY = 'sk-test'
+    try {
+      const cid = conversation()
+      const { runId, step } = parentTurn(cid, '派给 codex')
+      const res = await delegate(cid).dispatch({
+        target: { kind: 'cli', cli: 'codex', name: 'codex 节点' },
+        task: '改一个文件',
+        runId,
+        stepId: step.id,
+      })
+      expect(res).toMatchObject({ ok: true, kind: 'cli' })
+      await until(() => phasesOf('child').includes('done'), 'CLI 落终态')
+      settle(step.id, '派给 codex')
+
+      expect(await Bun.file(join(dir, 'cli-made.txt')).exists()).toBe(true)
+      const page = listConversationChangesPage(store, cid, { limit: 10 })
+      expect(page.turns.map((t) => t.text)).toEqual(['派给 codex'])
+      expect(
+        page.turns[0]?.steps.map((s) => [
+          s.toolName,
+          s.via?.name,
+          s.fileChanges.map((c) => [c.path, c.changeType, c.additions]),
+        ]),
+      ).toEqual([['cli', 'codex 节点', [['cli-made.txt', 'created', undefined]]]])
+      expect(page.totals).toEqual({ paths: ['cli-made.txt'], additions: 0, deletions: 0 })
+    } finally {
+      process.env.PATH = env.PATH
+      if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = env.OPENAI_API_KEY
+    }
   })
 })
