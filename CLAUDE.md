@@ -215,6 +215,11 @@ F 是明确不采纳的，写出来是为了不被重新抄进来。
   `scripts/temp-dir.test.ts` 在门禁里扫住——根级点目录不入 git 状态
   （目录本身与 `*.sqlite3` 都被忽略），没有守卫就只在文件管理器里堆着，
   且每加一个都要往 `.gitignore` 与 `biome.json` 各补一行。
+- **会话里的临时脚本与中间产物落 `.tmp/scratch/`**：`.claude/settings.json` 把
+  `CLAUDE_SCRATCHPAD` 定义为这个相对仓库根的路径，Bash 与 PowerShell 都读得到，
+  SessionStart 钩子建好目录。Claude Code 本身不设这个变量，Git Bash 里未定义的变量
+  展开为空，`"$CLAUDE_SCRATCHPAD/x"` 会写进 Git 的安装根目录而不报错。
+  相对路径以仓库根为基准，命令里不 `cd`。
 
 ## B7　UI 文案少而精
 

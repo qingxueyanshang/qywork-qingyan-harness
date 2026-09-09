@@ -1,0 +1,17 @@
+{
+  "env": {
+    "CLAUDE_SCRATCHPAD": ".tmp/scratch"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run scripts/session-env.ts"
+          }
+        ]
+      }
+    ]
+  }
+}
