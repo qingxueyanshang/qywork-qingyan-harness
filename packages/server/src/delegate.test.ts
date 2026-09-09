@@ -891,14 +891,24 @@ describe('图按事件推进', () => {
     router = byTask({ 补充两条可核验证据: '修订稿：已经补充两条证据' })
     const runId = run(parent, 'wf-resume')
     await invoke(parent, runId, 1, args, parsedStart(args))
-    await until(() => receipts.length > 0, '检查点回执')
+    await until(
+      () =>
+        listMessages(store, child.id)
+          .filter((message) => message.role === 'user')
+          .at(-1)
+          ?.content.includes('补充两条可核验证据') === true &&
+        receipts.some((receipt) => receipt.content.includes('修订稿：已经补充两条证据')),
+      '续接任务与检查点回执',
+    )
 
     expect(
       listMessages(store, child.id)
         .filter((message) => message.role === 'user')
         .at(-1)?.content,
     ).toContain('补充两条可核验证据')
-    expect(receipts[0]?.content).toContain('修订稿：已经补充两条证据')
+    expect(receipts.some((receipt) => receipt.content.includes('修订稿：已经补充两条证据'))).toBe(
+      true,
+    )
     expect(listRuns(store, child.id)).toHaveLength(1)
   })
 })
@@ -983,7 +993,16 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       stepId: step.id,
     })
     expect(res.ok).toBe(true)
-    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    await until(
+      () =>
+        members().some(
+          (member) =>
+            member.nodeId === 'child' &&
+            member.state.subagentId === res.subagentId &&
+            member.state.phase === 'done',
+        ),
+      '本次子 agent 落终态',
+    )
     settle(step.id, '派个写手')
 
     expect(await Bun.file(join(dir, 'sub.txt')).text()).toBe('hello\n')
