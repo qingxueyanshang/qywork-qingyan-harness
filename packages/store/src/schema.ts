@@ -1820,6 +1820,110 @@ ALTER TABLE provider_requests ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn' CH
 ALTER TABLE messages ADD COLUMN origin TEXT CHECK (origin IN ('subagent','workflow'));
 `,
   },
+  {
+    id: 51,
+    name: 'run_dispatch',
+    /**
+     * 子会话的每一轮是哪次派活派出来的，建 run 时就记在行上：父会话里那张派活卡的 step 与卡上那一格。
+     * 变更投影按它把子会话的写入归到父轮，不按时间推断——派活是派出即返回，父 step 一百多毫秒收尾，
+     * 子会话的 run 在那之后才建，按执行窗口推断会把它们全部排除。
+     * 旧行回填：归建在这一轮之前、最近一次派它的那格。
+     */
+    sql: `
+ALTER TABLE runs ADD COLUMN dispatch_step_id TEXT;
+ALTER TABLE runs ADD COLUMN dispatch_node_id TEXT;
+CREATE INDEX idx_runs_dispatch ON runs(dispatch_step_id);
+UPDATE runs SET
+  dispatch_step_id = (
+    SELECT s.id FROM steps s
+    JOIN runs pr ON pr.id = s.run_id
+    JOIN json_each(s.payload, '$.nodes') n
+    WHERE pr.conversation_id = (SELECT parent_conversation_id FROM conversations WHERE id = runs.conversation_id)
+      AND s.payload IS NOT NULL
+      AND json_extract(n.value, '$.subagentId') = runs.conversation_id
+      AND s.created_at <= runs.created_at
+    ORDER BY s.created_at DESC, n.key LIMIT 1),
+  dispatch_node_id = (
+    SELECT n.key FROM steps s
+    JOIN runs pr ON pr.id = s.run_id
+    JOIN json_each(s.payload, '$.nodes') n
+    WHERE pr.conversation_id = (SELECT parent_conversation_id FROM conversations WHERE id = runs.conversation_id)
+      AND s.payload IS NOT NULL
+      AND json_extract(n.value, '$.subagentId') = runs.conversation_id
+      AND s.created_at <= runs.created_at
+    ORDER BY s.created_at DESC, n.key LIMIT 1)
+WHERE conversation_id IN (SELECT id FROM conversations WHERE parent_conversation_id IS NOT NULL);
+`,
+  },
+  {
+    id: 52,
+    name: 'watcher_hidden_dirs',
+    /**
+     * 工作区观察器不再报隐藏目录（`.xxx/`）下的路径：那里是程序自己的运行状态，一条命令起个
+     * headless chrome 就往 `.chk/` 写几千个文件。已经记进账本的这类条目按同一条规则清掉：
+     * 只清观察器判出来的（没有 `additions` 的），文件类工具的精确明细不动；派活格上的
+     * `fileChanges` 全部来自观察器，按路径清。
+     */
+    sql: `
+UPDATE steps SET payload = json_set(payload, '$.outcome.fileChanges',
+  (SELECT json_group_array(json(c.value)) FROM json_each(steps.payload, '$.outcome.fileChanges') c
+    WHERE NOT (json_extract(c.value, '$.additions') IS NULL
+               AND (json_extract(c.value, '$.path') LIKE '.%/%'
+                    OR json_extract(c.value, '$.path') LIKE '%/.%/%'))))
+WHERE json_type(payload, '$.outcome.fileChanges') = 'array'
+  AND EXISTS (SELECT 1 FROM json_each(steps.payload, '$.outcome.fileChanges') c
+              WHERE json_extract(c.value, '$.additions') IS NULL
+                AND (json_extract(c.value, '$.path') LIKE '.%/%'
+                     OR json_extract(c.value, '$.path') LIKE '%/.%/%'));
+UPDATE steps SET payload = json_set(payload, '$.nodes',
+  (SELECT json_group_object(n.key,
+     CASE WHEN json_type(n.value, '$.fileChanges') = 'array'
+          THEN json(json_set(n.value, '$.fileChanges',
+                 (SELECT json_group_array(json(c.value)) FROM json_each(n.value, '$.fileChanges') c
+                   WHERE NOT (json_extract(c.value, '$.path') LIKE '.%/%'
+                              OR json_extract(c.value, '$.path') LIKE '%/.%/%'))))
+          ELSE json(n.value) END)
+   FROM json_each(steps.payload, '$.nodes') n))
+WHERE json_type(payload, '$.nodes') = 'object'
+  AND EXISTS (SELECT 1 FROM json_each(steps.payload, '$.nodes') n, json_each(n.value, '$.fileChanges') c
+              WHERE json_extract(c.value, '$.path') LIKE '.%/%'
+                 OR json_extract(c.value, '$.path') LIKE '%/.%/%');
+`,
+  },
+  {
+    id: 53,
+    name: 'watcher_dot_paths',
+    /**
+     * 观察器的规则从「隐藏目录」收紧到「任何以点开头的路径段」：脚本留下的 `.tmp-verify`、
+     * `.fin` 这类临时标记与被删掉的 `.chk` 本身也不是项目改动。迁移 52 已在账本上跑过，
+     * 跑过的迁移不改内容，剩下的这一档另起一条，清法与 52 相同。
+     */
+    sql: `
+UPDATE steps SET payload = json_set(payload, '$.outcome.fileChanges',
+  (SELECT json_group_array(json(c.value)) FROM json_each(steps.payload, '$.outcome.fileChanges') c
+    WHERE NOT (json_extract(c.value, '$.additions') IS NULL
+               AND (json_extract(c.value, '$.path') LIKE '.%'
+                    OR json_extract(c.value, '$.path') LIKE '%/.%'))))
+WHERE json_type(payload, '$.outcome.fileChanges') = 'array'
+  AND EXISTS (SELECT 1 FROM json_each(steps.payload, '$.outcome.fileChanges') c
+              WHERE json_extract(c.value, '$.additions') IS NULL
+                AND (json_extract(c.value, '$.path') LIKE '.%'
+                     OR json_extract(c.value, '$.path') LIKE '%/.%'));
+UPDATE steps SET payload = json_set(payload, '$.nodes',
+  (SELECT json_group_object(n.key,
+     CASE WHEN json_type(n.value, '$.fileChanges') = 'array'
+          THEN json(json_set(n.value, '$.fileChanges',
+                 (SELECT json_group_array(json(c.value)) FROM json_each(n.value, '$.fileChanges') c
+                   WHERE NOT (json_extract(c.value, '$.path') LIKE '.%'
+                              OR json_extract(c.value, '$.path') LIKE '%/.%'))))
+          ELSE json(n.value) END)
+   FROM json_each(steps.payload, '$.nodes') n))
+WHERE json_type(payload, '$.nodes') = 'object'
+  AND EXISTS (SELECT 1 FROM json_each(steps.payload, '$.nodes') n, json_each(n.value, '$.fileChanges') c
+              WHERE json_extract(c.value, '$.path') LIKE '.%'
+                 OR json_extract(c.value, '$.path') LIKE '%/.%');
+`,
+  },
 ]
 
 /**
@@ -1919,6 +2023,9 @@ export interface RunRow {
   context_snapshot: string | null
   owner_pid: number | null
   heartbeat_at: number | null
+  /** 派活来源，见 `Run.dispatchStepId`。NULL = 不是派出来的。 */
+  dispatch_step_id: StepId | null
+  dispatch_node_id: string | null
   created_at: number
   finished_at: number | null
 }
@@ -2050,6 +2157,8 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'heartbeat_at',
     'created_at',
     'finished_at',
+    'dispatch_step_id',
+    'dispatch_node_id',
   ],
   steps: [
     'id',

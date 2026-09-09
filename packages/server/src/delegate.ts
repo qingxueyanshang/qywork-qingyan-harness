@@ -495,6 +495,7 @@ export function makeDelegate(ctx: {
           prompt: task,
           signal,
           conversationId: conversation.id,
+          ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
         },
         {
           deps,

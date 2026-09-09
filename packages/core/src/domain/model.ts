@@ -384,6 +384,13 @@ export interface Run {
   errorCode: string | null
   /** 中断来源的结构化事实。NULL = 正常完成、普通失败或迁移前旧记录。 */
   interruption: RunInterruption | null
+  /**
+   * 这一轮是哪次派活派出来的：父会话里那张派活卡的 step 与卡上那一格。建 run 时写死，
+   * 变更投影按它把子会话的写入归到父轮。`null` = 不是派出来的（用户自己的会话）。
+   * 必填且允许 null，同 `Message.origin` 的理由。
+   */
+  dispatchStepId: StepId | null
+  dispatchNodeId: string | null
 
   // 上下文读数不在这里。真源是 `ProviderRequest`——一个 run 有 N 次请求，
   // 账就该有 N 行；挂在 run 上的标量每 step 覆盖一次，只剩最后一次的读数。

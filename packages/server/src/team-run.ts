@@ -9,7 +9,7 @@
  * 两条都落到这里。**没有第三条**——`team.run` 那条指令连同它的前端入口一起删了。
  */
 
-import type { AgentEvent, ConversationId, RunId, StopReason } from '@qywork/core'
+import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qywork/core'
 import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
@@ -129,6 +129,8 @@ export async function runBuiltinMember(
     signal: AbortSignal
     /** 子 agent 的会话。派活端口在派之前就建好了它，接口与模型都记在那一行上。 */
     conversationId: ConversationId
+    /** 哪张卡的哪一格派的。没有卡（没有 stepId 的调用）就没有。 */
+    dispatch?: { stepId: StepId; nodeId: string }
   },
   ctx: {
     // 只要装配三件套：派活端口（`delegate.ts`）在没有 WebSocket 的地方也要调它。
@@ -181,7 +183,11 @@ export async function runBuiltinMember(
 
   try {
     // 会话已经存在，接口与模型记在它那一行上；这里不再递模型名。
-    for await (const ev of session.ask(input.prompt, conversationId)) {
+    for await (const ev of session.ask(
+      input.prompt,
+      conversationId,
+      input.dispatch ? { dispatch: input.dispatch } : undefined,
+    )) {
       if (ev.type === 'run.started') {
         runId = ev.runId
         // 先登记忙态，再暴露子会话入口。用户拿到入口立刻点开时，加载侧已经能从

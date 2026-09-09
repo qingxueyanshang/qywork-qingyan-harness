@@ -563,6 +563,21 @@ describe('变更页按轮', () => {
                 fileChanges: [{ path: 'notes.md', changeType: 'modified' as const }],
                 via: { name: 'codex' },
               },
+              // 同一轮里先建后改：行上是净效果「新建」
+              {
+                id: 'st_6',
+                toolName: 'run_command',
+                args: { command: 'python shoot.py' },
+                fileChanges: [{ path: 'shots/a.png', changeType: 'created' as const }],
+                via: { name: '写手' },
+              },
+              {
+                id: 'st_7',
+                toolName: 'run_command',
+                args: { command: 'python shoot.py' },
+                fileChanges: [{ path: 'shots/a.png', changeType: 'modified' as const }],
+                via: { name: '写手' },
+              },
             ]),
             turn('ms_1', '先改 a 和 b', [step('st_1', 'a.ts', 3, 1), step('st_0', 'b.ts', 5, 0)]),
           ],
@@ -593,12 +608,15 @@ describe('变更页按轮', () => {
       'a.ts',
       'b.ts',
       'notes.md',
+      'shots/a.png',
     ])
     expect(rows[0]?.querySelector('.change-times')?.textContent).toBe('2 次')
     expect(turns[0]?.querySelector('.change-delta')?.textContent).toBe('+4−1')
     // 没有行数的行印变更类型，不画 +0 −0
     expect(rows[2]?.querySelector('.change-delta')).toBeNull()
     expect(rows[2]?.querySelector('.change-kind')?.textContent).toBe('已修改')
+    expect(rows[3]?.querySelector('.change-times')?.textContent).toBe('2 次')
+    expect(rows[3]?.querySelector('.change-kind')?.textContent).toBe('新建')
     // 展开：逐次的来源标签
     rows[1]?.click()
     rows[2]?.click()
@@ -612,7 +630,7 @@ describe('变更页按轮', () => {
 
     turns[1]?.click()
     await waitFor(
-      () => host.querySelectorAll('.change-files .change-row').length === 5,
+      () => host.querySelectorAll('.change-files .change-row').length === 6,
       () => host.innerHTML,
     )
   })

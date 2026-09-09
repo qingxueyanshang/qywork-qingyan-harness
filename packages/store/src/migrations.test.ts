@@ -1447,3 +1447,136 @@ VALUES
     db.close()
   })
 })
+
+describe('迁移 51：子会话轮次的派活来源', () => {
+  test('回填归建在这一轮之前、最近一次派它的那格；此前没有派过的留空', () => {
+    const db = dbBefore(51)
+    db.exec(`
+INSERT INTO conversations
+  (id, workspace_id, title, provider, model, created_at, updated_at, parent_conversation_id)
+VALUES ('cv', 'ws', '', 'p', 'm', 0, 0, NULL),
+       ('cc', 'ws', '写手', 'p', 'm', 0, 0, 'cv');
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status, created_at)
+VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 0),
+       ('c0', 'cc', 'ws', 'm', 'c0', 'done', 50),
+       ('c1', 'cc', 'ws', 'm', 'c1', 'done', 150),
+       ('c2', 'cc', 'ws', 'm', 'c2', 'done', 350);
+INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+VALUES ('st1', 'rn', 1, 'tool_action', 'workflow',
+        '{"kind":"tool_result","args":{},"outcome":{"status":"success","executed":true,"message":""},"nodes":{"n1":{"phase":"done","label":"写手","subagentId":"cc"}}}',
+        'success', 100),
+       ('st2', 'rn', 2, 'tool_action', 'subagent',
+        '{"kind":"tool_result","args":{},"outcome":{"status":"success","executed":true,"message":""},"nodes":{"child":{"phase":"done","label":"写手","subagentId":"cc"}}}',
+        'success', 300);
+`)
+
+    applyOne(db, 51)
+
+    const rows = db
+      .query<{ id: string; dispatch_step_id: string | null; dispatch_node_id: string | null }, []>(
+        'SELECT id, dispatch_step_id, dispatch_node_id FROM runs ORDER BY id',
+      )
+      .all()
+    expect(rows).toEqual([
+      { id: 'c0', dispatch_step_id: null, dispatch_node_id: null },
+      { id: 'c1', dispatch_step_id: 'st1', dispatch_node_id: 'n1' },
+      { id: 'c2', dispatch_step_id: 'st2', dispatch_node_id: 'child' },
+      { id: 'rn', dispatch_step_id: null, dispatch_node_id: null },
+    ])
+    db.close()
+  })
+})
+
+describe('迁移 52：清掉观察器记在隐藏目录下的路径', () => {
+  test('只清没有行数的隐藏目录条目；工具的精确明细与隐藏文件不动；派活格按路径清', () => {
+    const db = dbBefore(52)
+    db.exec(`
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status, created_at)
+VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 0);
+INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+VALUES ('sh', 'rn', 1, 'tool_action', 'run_command',
+        '{"kind":"tool_result","args":{"command":"x"},"outcome":{"status":"success","executed":true,"message":"",
+          "fileChanges":[{"path":".chk/prof/Local State","changeType":"modified"},
+                         {"path":"src/a.ts","changeType":"modified"},
+                         {"path":".env","changeType":"created"},
+                         {"path":"a/.cache/x","changeType":"created"}]}}',
+        'success', 1),
+       ('mem', 'rn', 2, 'tool_action', 'write_memory',
+        '{"kind":"tool_result","args":{},"outcome":{"status":"success","executed":true,"message":"",
+          "fileChanges":[{"path":".agents/memory/x.md","changeType":"created","additions":3,"deletions":0}]}}',
+        'success', 2),
+       ('wf', 'rn', 3, 'tool_action', 'workflow',
+        '{"kind":"tool_result","args":{},"outcome":{"status":"success","executed":true,"message":""},
+          "nodes":{"n1":{"phase":"done","label":"codex","fileChanges":[{"path":".chk/y","changeType":"created"},{"path":"out/z.html","changeType":"created"}]},
+                   "n2":{"phase":"done","label":"写手","subagentId":"cc"}}}',
+        'success', 3);
+`)
+
+    applyOne(db, 52)
+
+    const paths = (id: string, path: string) =>
+      db
+        .query<{ v: string | null }, [string]>(
+          `SELECT json_extract(payload, '${path}') AS v FROM steps WHERE id = ?`,
+        )
+        .get(id)?.v
+    expect(
+      JSON.parse(paths('sh', '$.outcome.fileChanges') ?? '[]').map((c: { path: string }) => c.path),
+    ).toEqual(['src/a.ts', '.env'])
+    expect(JSON.parse(paths('mem', '$.outcome.fileChanges') ?? '[]')).toEqual([
+      { path: '.agents/memory/x.md', changeType: 'created', additions: 3, deletions: 0 },
+    ])
+    expect(
+      JSON.parse(paths('wf', '$.nodes.n1.fileChanges') ?? '[]').map(
+        (c: { path: string }) => c.path,
+      ),
+    ).toEqual(['out/z.html'])
+    expect(JSON.parse(paths('wf', '$.nodes.n2') ?? '{}')).toEqual({
+      phase: 'done',
+      label: '写手',
+      subagentId: 'cc',
+    })
+    db.close()
+  })
+})
+
+describe('迁移 53：清掉观察器记在点开头路径下的条目', () => {
+  test('隐藏文件与被删掉的隐藏目录本身也清；工具的精确明细不动', () => {
+    const db = dbBefore(53)
+    db.exec(`
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status, created_at)
+VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 0);
+INSERT INTO steps (id, run_id, seq, kind, tool_name, payload, status, created_at)
+VALUES ('sh', 'rn', 1, 'tool_action', 'run_command',
+        '{"kind":"tool_result","args":{"command":"x"},"outcome":{"status":"success","executed":true,"message":"",
+          "fileChanges":[{"path":".chk","changeType":"deleted"},
+                         {"path":".tmp-verify","changeType":"created"},
+                         {"path":"src/a.ts","changeType":"modified"},
+                         {"path":"a/.env","changeType":"created"}]}}',
+        'success', 1),
+       ('mem', 'rn', 2, 'tool_action', 'write_memory',
+        '{"kind":"tool_result","args":{},"outcome":{"status":"success","executed":true,"message":"",
+          "fileChanges":[{"path":".agents/memory/x.md","changeType":"created","additions":3,"deletions":0}]}}',
+        'success', 2);
+`)
+
+    applyOne(db, 53)
+
+    const paths = (id: string) =>
+      db
+        .query<{ v: string | null }, [string]>(
+          `SELECT json_extract(payload, '$.outcome.fileChanges') AS v FROM steps WHERE id = ?`,
+        )
+        .get(id)?.v
+    expect(JSON.parse(paths('sh') ?? '[]').map((c: { path: string }) => c.path)).toEqual([
+      'src/a.ts',
+    ])
+    expect(JSON.parse(paths('mem') ?? '[]').map((c: { path: string }) => c.path)).toEqual([
+      '.agents/memory/x.md',
+    ])
+    db.close()
+  })
+})

@@ -13,15 +13,19 @@
  * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
  * 并行执行时的归属因此是估算。
  *
- * 只知道路径，拿不到改动前的内容，所以 `FileChange` 不带行数。`changeType` 按收尾时的
- * 磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
+ * 拿不到改动前的内容，所以改过的与删掉的不带行数；新建的文本文件按落盘内容数行，
+ * 口径与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 切开的段数）。
+ * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
  * 临时文件（窗口内建、收尾前删）不进结果；原子保存（写临时文件再改名）会被判成 created。
  *
- * 跳过 `IGNORED_DIRS` 下的路径：构建期间 dist / node_modules 会报成千上万条。
+ * 跳过 `IGNORED_DIRS` 与任何以点开头的路径段：构建期间 dist / node_modules 会报成千上万条；
+ * 点开头的是工具与运行时的状态（浏览器 profile、缓存、虚拟环境、脚本的临时标记），一条命令
+ * 起个 headless chrome 就往 `.chk/` 写几千个文件，它们不是项目改动。
+ * 工具直接写的隐藏路径（记忆、技能、`.env`）由工具自己带精确明细，不经这里。
  */
 
 import { type Dirent, type FSWatcher, watch } from 'node:fs'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
 import { IGNORED_DIRS } from './paths.ts'
@@ -32,6 +36,8 @@ export interface ChangeWindow {
 }
 
 const MAX_WALK_ENTRIES = 50_000
+/** 数行只读这么大以内的文件：更大的通常是产物或数据，行数对它没有意义。 */
+const MAX_COUNT_BYTES = 4 * 1024 * 1024
 /** 文件时间戳允许比本机时钟快这么多；再往后的是时钟不对的文件，不能每次都算成改过。 */
 const CLOCK_SLACK_MS = 1_000
 
@@ -53,8 +59,33 @@ interface Shared {
 
 const shared = new Map<string, Shared>()
 
+/** 任一段命中噪音清单或以点开头就跳过。 */
 function ignored(rel: string): boolean {
-  return rel.split('/').some((segment) => IGNORED_DIRS.has(segment))
+  return rel.split('/').some((segment) => IGNORED_DIRS.has(segment) || segment.startsWith('.'))
+}
+
+/**
+ * 新建的文本文件按内容数行；二进制（前 8 KiB 里有 NUL）或过大的不数。
+ * 返回 null = 不带行数。
+ */
+async function countCreated(abs: string, size: number): Promise<number | null> {
+  if (size > MAX_COUNT_BYTES) return null
+  const bytes = await readFile(abs)
+  const head = bytes.subarray(0, 8192)
+  if (head.includes(0)) return null
+  return bytes.length === 0 ? 0 : bytes.toString('utf8').split('\n').length
+}
+
+/** 收尾时这个路径的变更事实；目录不算。 */
+async function describe(root: string, rel: string, since: number): Promise<FileChange | null> {
+  const abs = join(root, rel)
+  const s = await stat(abs)
+  if (s.isDirectory()) return null
+  if (s.birthtimeMs < since) return { path: rel, changeType: 'modified' }
+  const lines = await countCreated(abs, s.size)
+  return lines === null
+    ? { path: rel, changeType: 'created' }
+    : { path: rel, changeType: 'created', additions: lines, deletions: 0 }
 }
 
 async function firstSeen(root: string, rel: string, since: number): Promise<FirstSeen | null> {
@@ -84,10 +115,10 @@ async function touchedSince(root: string, since: number, until: number): Promise
       if (++seen > MAX_WALK_ENTRIES) return out
       const child = rel ? `${rel}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) queue.push(child)
+        if (!IGNORED_DIRS.has(entry.name) && !entry.name.startsWith('.')) queue.push(child)
         continue
       }
-      if (!entry.isFile()) continue
+      if (!entry.isFile() || entry.name.startsWith('.')) continue
       checks.push(
         stat(join(root, child)).then(
           (s) => {
@@ -142,12 +173,8 @@ export function openChangeWindow(root: string): ChangeWindow {
         const first = await seen
         done.add(rel)
         try {
-          const s = await stat(join(root, rel))
-          if (s.isDirectory()) continue
-          out.push({
-            path: rel,
-            changeType: s.birthtimeMs >= window.startedAt ? 'created' : 'modified',
-          })
+          const change = await describe(root, rel, window.startedAt)
+          if (change) out.push(change)
         } catch {
           // 窗口内才出现、收尾前又没了：临时文件，不是用户的文件被删。
           if (first?.bornInWindow) continue
@@ -156,12 +183,8 @@ export function openChangeWindow(root: string): ChangeWindow {
       }
       for (const rel of await touchedSince(root, window.startedAt, closedAt + CLOCK_SLACK_MS)) {
         if (done.has(rel)) continue
-        const s = await stat(join(root, rel)).catch(() => null)
-        if (!s) continue
-        out.push({
-          path: rel,
-          changeType: s.birthtimeMs >= window.startedAt ? 'created' : 'modified',
-        })
+        const change = await describe(root, rel, window.startedAt).catch(() => null)
+        if (change) out.push(change)
       }
       return out
     },

@@ -1070,7 +1070,7 @@ describe('变更页按写过文件的轮分页', () => {
 })
 
 describe('变更页并进子 agent 与外部 CLI 的写入', () => {
-  test('子会话的写入按 subagentId 与父 step 的执行窗口归轮；CLI 节点的写入来自它的格', async () => {
+  test('子会话的写入按 run 上的派活来源归父轮；CLI 节点的写入来自它的格', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const child = createConversation(store, {
@@ -1083,7 +1083,11 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       parentConversationId: conv.id,
     })
     let seq = 0
-    const childRound = (content: string, path: string) => {
+    const childRound = (
+      content: string,
+      path: string,
+      dispatch?: { stepId: string; nodeId: string },
+    ) => {
       const user = appendMessage(store, { conversationId: child.id, role: 'user', content })
       const run = createRun(store, {
         conversationId: child.id,
@@ -1093,6 +1097,9 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
         userMessageId: user.id,
         messageIdUpperBound: user.id,
         contextSnapshot: [],
+        ...(dispatch
+          ? { dispatch: { stepId: dispatch.stepId as never, nodeId: dispatch.nodeId } }
+          : {}),
       })
       appendStep(store, {
         runId: run.id,
@@ -1113,45 +1120,48 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       })
       finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
     }
-
-    // 子会话里早于本轮的写入不归本轮：续派会复用同一个子会话。
-    childRound('之前的活', 'early.ts')
-    await Bun.sleep(5)
-
-    const user = appendMessage(store, { conversationId: conv.id, role: 'user', content: '派活' })
-    const run = createRun(store, {
-      conversationId: conv.id,
-      workspaceId: ws.id,
-      model: 'm',
-      clientRequestId: 'parent-1',
-      userMessageId: user.id,
-      messageIdUpperBound: user.id,
-      contextSnapshot: [],
-    })
-    appendStep(store, {
-      runId: run.id,
-      seq: 1,
-      kind: 'tool_action',
-      toolName: 'workflow',
-      status: 'success',
-      payload: {
-        kind: 'tool_result',
-        args: { goal: 'x' },
-        outcome: { status: 'success', executed: true, message: '' },
-        nodes: {
-          n1: { phase: 'done', label: '写手', subagentId: child.id },
-          n2: {
-            phase: 'done',
-            label: 'codex',
-            kind: 'cli',
-            fileChanges: [{ path: 'cli.txt', changeType: 'modified' }],
-          },
+    const parentRound = (content: string, key: string, nodes: Record<string, unknown>) => {
+      const user = appendMessage(store, { conversationId: conv.id, role: 'user', content })
+      const run = createRun(store, {
+        conversationId: conv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: key,
+        userMessageId: user.id,
+        messageIdUpperBound: user.id,
+        contextSnapshot: [],
+      })
+      const step = appendStep(store, {
+        runId: run.id,
+        seq: 1,
+        kind: 'tool_action',
+        toolName: 'workflow',
+        status: 'success',
+        payload: {
+          kind: 'tool_result',
+          args: { goal: 'x' },
+          outcome: { status: 'success', executed: true, message: '' },
+          nodes: nodes as never,
         },
+      })
+      finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+      return step
+    }
+
+    // 没有派活来源的轮不归任何父轮：不按时间猜。
+    childRound('自己跑的', 'early.ts')
+
+    const step = parentRound('派活', 'parent-1', {
+      n1: { phase: 'done', label: '写手', subagentId: child.id },
+      n2: {
+        phase: 'done',
+        label: 'codex',
+        kind: 'cli',
+        fileChanges: [{ path: 'cli.txt', changeType: 'modified' }],
       },
     })
-    childRound('写 c', 'c.ts')
-    finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
     await Bun.sleep(5)
+    childRound('写 c', 'c.ts', { stepId: step.id, nodeId: 'n1' })
 
     const page = listConversationChangesPage(store, conv.id, { limit: 10 })
     expect(page.turns.map((t) => t.text)).toEqual(['派活'])
@@ -1162,11 +1172,25 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
         s.fileChanges.map((c) => c.path),
       ]),
     ).toEqual([
-      ['edit_file', '写手', ['c.ts']],
+      // CLI 那条排在派活 step 收尾那一刻；子会话的写入在那之后。
       ['cli', 'codex', ['cli.txt']],
+      ['edit_file', '写手', ['c.ts']],
     ])
     // 行数只加已知的：CLI 那条没有
     expect(page.totals).toEqual({ paths: ['cli.txt', 'c.ts'], additions: 4, deletions: 4 })
+
+    // 续派：带后一次来源的轮归后一轮，前一轮不再变。
+    const step2 = parentRound('再派', 'parent-2', {
+      child: { phase: 'done', label: '写手', subagentId: child.id },
+    })
+    childRound('写 d', 'd.ts', { stepId: step2.id, nodeId: 'child' })
+    const two = listConversationChangesPage(store, conv.id, { limit: 10 })
+    expect(
+      two.turns.map((t) => [t.text, t.steps.flatMap((s) => s.fileChanges.map((c) => c.path))]),
+    ).toEqual([
+      ['再派', ['d.ts']],
+      ['派活', ['cli.txt', 'c.ts']],
+    ])
     store.close()
   })
 })

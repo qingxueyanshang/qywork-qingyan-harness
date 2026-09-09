@@ -44,6 +44,7 @@ import type {
   RunId,
   RunInterruption,
   Step,
+  StepId,
   WorkflowProjection,
 } from '@qywork/core'
 import {
@@ -181,6 +182,11 @@ export interface AskOptions {
    * 落 `messages.origin`，界面按它把回执行与用户气泡分开。
    */
   origin?: 'subagent' | 'workflow'
+  /**
+   * 这一轮是哪次派活派出来的：父会话里那张派活卡的 step 与卡上那一格。
+   * 落 `runs.dispatch_step_id / dispatch_node_id`，变更投影按它把这一轮的写入归到父轮。
+   */
+  dispatch?: { stepId: StepId; nodeId: string }
   /**
    * 这一轮**新建**会话时给它打的来源标记（续跑已有会话时无效）。
    *
@@ -447,6 +453,7 @@ export class Session {
       // 高水位：本轮定格在刚写入的消息。排队期间新到的消息不进本轮视野。
       messageIdUpperBound: userMessageId,
       contextSnapshot,
+      ...(options?.dispatch ? { dispatch: options.dispatch } : {}),
     })
     markRunRunning(store, run.id)
 

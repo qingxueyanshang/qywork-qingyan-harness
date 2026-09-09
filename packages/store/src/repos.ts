@@ -702,9 +702,8 @@ export function listConversationHistoryPage(
  *
  * 一轮的写入有三个来源，交出同一形状（`ConversationChangeStep`）：
  * - 本会话 step 的 `outcome.fileChanges`；
- * - 内置子 agent 在子会话里的 step：父 step 的 `nodes[*].subagentId` 指向子会话，
- *   子会话里 `runs.created_at` 落在父 step 执行窗口内的写入归这一轮。按窗口而不按
- *   会话整体归，因为续派会复用同一个子会话；
+ * - 内置子 agent 在子会话里的 step：子会话的 run 建行时记了 `dispatch_step_id`（父会话里
+ *   那张派活卡的 step），按它归到父轮。这是建 run 时写下的事实，不是按时间推断的；
  * - 外部 CLI 节点：父 step 的 `nodes[*].fileChanges`，观察器给的，不带行数。
  *
  * `totals` 是整条会话的合计，三个来源一起算，只加已知的行数。选轮与合计只取
@@ -722,9 +721,8 @@ export function listConversationChangesPage(
   const rows = <T>(sql: string, extra: Params = {}): T[] =>
     store.db.query<T, [Params]>(sql).all({ ...base, ...extra })
 
-  // 三个来源的写入清单，不含 args。`delegated` 的窗口：父 step 创建到收尾。没有 `duration_ms`
-  // 的老行（迁移 28 之前）用父 run 的收尾时刻，两者都没有的（还在跑）到此刻。窗口必须收口：
-  // 续派复用同一个子会话，不收口的话它在下一轮的写入也会算进这一轮。
+  // 三个来源的写入清单，不含 args。`delegated` 按子会话 run 上的 `dispatch_step_id` 归父轮；
+  // 名字取子会话标题，与派活卡上那一格的 label 同源。
   const cte = `
     WITH own AS (
       SELECT r.user_message_id AS turn_id, s.id AS step_id
@@ -746,12 +744,13 @@ export function listConversationChangesPage(
       WHERE r.conversation_id = $conv AND r.user_message_id IS NOT NULL
     ),
     delegated AS (
-      SELECT nd.turn_id, cs.id AS step_id, nd.label AS label
-      FROM nodes nd
-      JOIN runs cr ON cr.conversation_id = nd.subagent_id
-        AND cr.created_at >= nd.at AND cr.created_at <= nd.at + nd.duration
+      SELECT r.user_message_id AS turn_id, cs.id AS step_id,
+             (SELECT title FROM conversations WHERE id = cr.conversation_id) AS label
+      FROM runs r
+      JOIN steps s ON s.run_id = r.id
+      JOIN runs cr ON cr.dispatch_step_id = s.id
       JOIN steps cs ON cs.run_id = cr.id
-      WHERE nd.subagent_id IS NOT NULL
+      WHERE r.conversation_id = $conv AND r.user_message_id IS NOT NULL
         AND json_array_length(json_extract(cs.payload, '$.outcome.fileChanges')) > 0
     )`
 
@@ -898,6 +897,8 @@ export function createRun(
     userMessageId: MessageId | null
     messageIdUpperBound: MessageId | null
     contextSnapshot: RunContextSegment[]
+    /** 派活派出来的轮次带上来源；用户自己的会话不带。 */
+    dispatch?: { stepId: StepId; nodeId: string }
   },
 ): Run {
   const now = Date.now()
@@ -910,6 +911,8 @@ export function createRun(
     assistantMessageId: null,
     model: input.model,
     clientRequestId: input.clientRequestId,
+    dispatchStepId: input.dispatch?.stepId ?? null,
+    dispatchNodeId: input.dispatch?.nodeId ?? null,
     status: 'queued',
     stopReason: null,
     usage: { ...EMPTY_USAGE },
@@ -926,8 +929,8 @@ export function createRun(
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
          cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
-         context_snapshot, created_at, finished_at, owner_pid, heartbeat_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?)`,
+         context_snapshot, created_at, finished_at, owner_pid, heartbeat_at, dispatch_step_id, dispatch_node_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?)`,
     )
     .run(
       run.id,
@@ -947,6 +950,8 @@ export function createRun(
       // 但归属如果只在跑起来之后才补，同一条路径上会多出一段判据不同的窗口。
       process.pid,
       now,
+      run.dispatchStepId,
+      run.dispatchNodeId,
     )
   return run
 }
@@ -1931,6 +1936,8 @@ function rowToRun(r: RunRow): Run {
     errorMessage: r.error_message,
     errorCode: r.error_code,
     interruption: readJson(r.interruption_detail, null),
+    dispatchStepId: r.dispatch_step_id,
+    dispatchNodeId: r.dispatch_node_id,
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   }

@@ -30,6 +30,12 @@ describe('执行窗口内的工作区变更', () => {
     await settle()
     await rm(join(root, 'tmp.swp'))
     await writeFile(join(root, 'node_modules', 'dep', 'index.js'), 'noise')
+    // 点开头的是程序自己的状态与临时标记，不报。
+    await mkdir(join(root, '.chk', 'prof'), { recursive: true })
+    await writeFile(join(root, '.chk', 'prof', 'Local State'), 'x')
+    await writeFile(join(root, '.tmp-verify'), '1')
+    // 新建的二进制不数行
+    await writeFile(join(root, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]))
     await settle()
     const changes = await window.close()
 
@@ -39,8 +45,18 @@ describe('执行窗口内的工作区变更', () => {
     expect(byPath.get('gone.txt')).toBe('deleted')
     expect(byPath.has('tmp.swp')).toBe(false)
     expect([...byPath.keys()].some((p) => p.startsWith('node_modules'))).toBe(false)
-    // 行数不可知：不带 additions / deletions
-    expect(changes.every((c) => c.additions === undefined && c.deletions === undefined)).toBe(true)
+    expect([...byPath.keys()].some((p) => p.startsWith('.'))).toBe(false)
+    // 新建的文本按内容数行，口径同文件工具（'b\n' 切成两段）；改过的与删掉的拿不到旧内容，不带行数
+    const byFull = new Map(changes.map((c) => [c.path, c]))
+    expect(byFull.get('src/new.ts')).toEqual({
+      path: 'src/new.ts',
+      changeType: 'created',
+      additions: 2,
+      deletions: 0,
+    })
+    expect(byFull.get('shot.png')).toEqual({ path: 'shot.png', changeType: 'created' })
+    expect(byFull.get('src/old.ts')?.additions).toBeUndefined()
+    expect(byFull.get('gone.txt')?.additions).toBeUndefined()
   })
 
   test('两个窗口同时开着时，事件归最早打开的那个', async () => {

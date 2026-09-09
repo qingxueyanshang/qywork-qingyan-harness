@@ -970,12 +970,19 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     return { runId, step }
   }
 
+  /** 派出即返回：真实的循环在派出后立刻收尾这一步，时长只有一百多毫秒，子会话还在跑。 */
   function settle(stepId: string, task: string) {
-    settleToolStep(store, stepId as StepId, 'success', {
-      kind: 'tool_result',
-      args: { task },
-      outcome: { status: 'success', executed: true, message: '已派出' },
-    })
+    settleToolStep(
+      store,
+      stepId as StepId,
+      'success',
+      {
+        kind: 'tool_result',
+        args: { task },
+        outcome: { status: 'success', executed: true, message: '已派出' },
+      },
+      1,
+    )
   }
 
   test('子会话里的 write_file 出现在父轮里，标着子 agent 的名字', async () => {
@@ -993,6 +1000,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       stepId: step.id,
     })
     expect(res.ok).toBe(true)
+    settle(step.id, '派个写手')
     await until(
       () =>
         members().some(
@@ -1003,9 +1011,12 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
         ),
       '本次子 agent 落终态',
     )
-    settle(step.id, '派个写手')
-
     expect(await Bun.file(join(dir, 'sub.txt')).text()).toBe('hello\n')
+    // 来源在建 run 时就写上了：投影按它归轮，不看时间。
+    expect(listRuns(store, res.subagentId as ConversationId).at(-1)).toMatchObject({
+      dispatchStepId: step.id,
+      dispatchNodeId: 'child',
+    })
     const page = listConversationChangesPage(store, cid, { limit: 10 })
     expect(page.turns.map((t) => t.text)).toEqual(['派个写手'])
     expect(
@@ -1019,7 +1030,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     expect(page.totals.additions).toBeGreaterThan(0)
   })
 
-  test('外部 CLI 改的文件出现在父轮里，标着节点名，没有行数', async () => {
+  test('外部 CLI 改的文件出现在父轮里，标着节点名；新建的文本按内容数行', async () => {
     const bin = join(dir, 'fake-bin')
     await mkdir(bin, { recursive: true })
     // 假的 codex：不看参数，往当前目录写一个文件，再按 codex 的 jsonl 形状报一句结果。
@@ -1041,8 +1052,8 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
         stepId: step.id,
       })
       expect(res).toMatchObject({ ok: true, kind: 'cli' })
-      await until(() => phasesOf('child').includes('done'), 'CLI 落终态')
       settle(step.id, '派给 codex')
+      await until(() => phasesOf('child').includes('done'), 'CLI 落终态')
 
       expect(await Bun.file(join(dir, 'cli-made.txt')).exists()).toBe(true)
       const page = listConversationChangesPage(store, cid, { limit: 10 })
@@ -1053,8 +1064,8 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
           s.via?.name,
           s.fileChanges.map((c) => [c.path, c.changeType, c.additions]),
         ]),
-      ).toEqual([['cli', 'codex 节点', [['cli-made.txt', 'created', undefined]]]])
-      expect(page.totals).toEqual({ paths: ['cli-made.txt'], additions: 0, deletions: 0 })
+      ).toEqual([['cli', 'codex 节点', [['cli-made.txt', 'created', 2]]]])
+      expect(page.totals).toEqual({ paths: ['cli-made.txt'], additions: 2, deletions: 0 })
     } finally {
       process.env.PATH = env.PATH
       if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY

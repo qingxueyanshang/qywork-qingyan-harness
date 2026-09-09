@@ -1295,8 +1295,14 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
         cur.additions += c.additions ?? 0
         cur.deletions += c.deletions ?? 0
         cur.counted ||= counted
-        // 后一次说了算：删掉又重建的文件，最后那次是「建」。
-        cur.changeType = c.changeType
+        // 行上是这一轮的净效果：这一轮里建过的就是「新建」（建了再改仍是新建），
+        // 最后被删的是「已删除」，删掉又重建的仍是「新建」，其余按最后一次。
+        cur.changeType =
+          c.changeType === 'deleted'
+            ? 'deleted'
+            : cur.changeType === 'created'
+              ? 'created'
+              : c.changeType
         cur.edits.push(edit)
       } else {
         byPath.set(c.path, {
