@@ -195,9 +195,9 @@ describe('模型库覆盖', () => {
    * 锁的是**方向**不是那个具体的数：给小了每轮提前压缩，白花钱又丢上下文，
    * 而且完全静默——不会有任何一处报「压早了」。
    */
-  test('未收录模型的窗口给 256K，且能被那一格改掉', () => {
+  test('未收录模型的窗口给 500K，且能被那一格改掉', () => {
     const unknown = lookupModel('第三方接口上的某个模型', 'openai_chat_completions')
-    expect(unknown.contextWindow).toBe(256_000)
+    expect(unknown.contextWindow).toBe(500_000)
     expect(applySpecOverride(unknown, { contextWindow: 1_000_000 }).contextWindow).toBe(1_000_000)
   })
 

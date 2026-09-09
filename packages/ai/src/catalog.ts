@@ -925,13 +925,13 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      * 白花钱又丢上下文，而且完全静默；给大了撞窗拿到的是带 `capacity` 的
      * `context_overflow`，`loop.ts` 据它压一次再重发，有终态。
      *
-     * 取 256K 不取 1M：1M 是当前发布里最常见的标称档，但第三方接口按自己的策略截、
+     * 取 500K 不取 1M：1M 是当前发布里最常见的标称档，但第三方接口按自己的策略截、
      * 本地 ollama 按 `num_ctx` 给，实际可用窗口小于标称是常态。
      * 知道确切窗口就在模型库那一格填 `contextWindow`。
      */
     // 未收录 = 没标定过，走上界档。读数偏高，但不会把超限的请求判成装得下。
     density: DEFAULT_DENSITY,
-    contextWindow: 256_000,
+    contextWindow: 500_000,
     /*
      * **不申报输出上限。** 未收录 = 没测过，而这一格编一个数的代价是静默截断：
      * 8192 之上的正常回答会在那里断掉，界面上只有一个 `max_tokens` 停止原因。
