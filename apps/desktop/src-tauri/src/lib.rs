@@ -334,13 +334,7 @@ fn show_fatal(message: &str) {
 /// 「双击没反应」，而 sidecar 缺失、被安全软件删掉、或在报出令牌前退出正是最常见的
 /// 一类启动故障。对话框不依赖 WebView，覆盖「窗口还没建出来」这段时间。
 fn fatal_exit(error: &dyn std::fmt::Display) -> ! {
-    let hint = if tauri::is_dev() {
-        ""
-    } else {
-        "\n\n常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
-         （apps/desktop/src-tauri/bin/qy-*.exe）。"
-    };
-    let msg = format!("qywork 启动失败：{error}{hint}");
+    let msg = format!("qywork 启动失败：{error}");
     eprintln!("[qywork] {msg}");
     show_fatal(&msg);
     std::process::exit(1);
