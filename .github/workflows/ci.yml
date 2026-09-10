@@ -1,0 +1,43 @@
+name: CI
+
+# 日常门禁：每次 push 与每个 pull request 都跑一遍完整的 `bun run gate` 加 Web 构建。
+# 发布工作流只在手动触发时跑，它的绿灯不能替日常提交作证。
+#
+# 只跑 Windows：这是目前唯一有发布产物的平台，也是 sidecar 与 cargo check 的目标平台。
+# 前置步骤与发布工作流共用 .github/actions/setup-build，不在这里另抄一份。
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# 同一分支/PR 上新的一次推送取消旧的这条。group 名与发布工作流的 windows-release
+# 不重合——重合会让一次 push 取消正在出安装包的那次发布。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Gate on Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: ./.github/actions/setup-build
+
+      - name: Run gate
+        run: bun run gate
+
+      - name: Build web
+        run: bun run build:web

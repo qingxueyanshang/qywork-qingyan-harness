@@ -18,7 +18,7 @@
  * `GlobalRegistrator.register()`，用完卸掉（样例见 `LoadState.test.tsx`）。
  */
 import { mkdirSync } from 'node:fs'
-import { relative, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { transformSync } from '@babel/core'
 import presetTypeScript from '@babel/preset-typescript'
 import presetSolid from 'babel-preset-solid'
@@ -34,6 +34,13 @@ if (!/^\.tmp\/tests\/run-[^/]+$/.test(testTempPath)) {
 mkdirSync(testTemp, { recursive: true })
 for (const name of ['TEMP', 'TMP', 'TMPDIR']) process.env[name] = testTemp
 process.env.GIT_CEILING_DIRECTORIES = testTemp
+/*
+ * 全局层的根同样落进隔离目录。`globalScopeRoot()` 缺省是 `~/.qywork`，那里躺着开发者本人的
+ * 明文 key、账本与定时任务文件；任何一条起 `serve()` 或读配置的测试忘了自己设这个变量，
+ * 就会按真实数据跑，甚至改名真实文件。自己设了 `QYWORK_HOME` 的测试照旧覆盖这一份。
+ */
+process.env.QYWORK_HOME = join(testTemp, 'home')
+mkdirSync(process.env.QYWORK_HOME, { recursive: true })
 
 plugin({
   name: 'solid-jsx',

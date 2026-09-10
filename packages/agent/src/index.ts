@@ -5,7 +5,6 @@
  * 包内互相引用与测试走相对路径，不受这份清单约束。
  */
 
-// 分类器：runtime 装配 Session 时注入 AskFn 与缓存
 // 压缩：runtime 的压缩端口与 server 的手动压缩入口共用同一份实现
 // CompactionOutcome 没有被谁 import，但它出现在 runtime 的公开签名的推断类型里——
 // 不导出会让那个类型无法命名（TS2742）。这类「隐式对外」同样是承诺。
@@ -36,7 +35,7 @@ export {
   softLimit,
   toolResultContent,
 } from './loop.ts'
-// 静态规则：runtime 在分类器之前先问它
+// run_command 的拒绝清单：runtime 的 Session 在放行之前问它
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
@@ -52,6 +51,7 @@ export {
   type PluginPort,
   RESULT_BUDGET_RATIO,
   resetBatchBudget,
+  type SchedulePort,
   type SinkPort,
   type SubagentSummary,
   sanitizeToolName,

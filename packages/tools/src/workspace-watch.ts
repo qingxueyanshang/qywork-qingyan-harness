@@ -5,9 +5,8 @@
  * - `fs.watch`（递归）收路径。**它会丢事件**：实测 Bun 在 Windows 上，同一批通知里「修改」
  *   后面紧跟「删除 / 改名」时前一条不见了，而 `sed -i`、原子保存正是这种写法。
  *   删除只有它看得见——文件没了，扫描扫不到。
- * - 收尾时扫一遍工作区，`mtime` 落在窗口内的就是改过的。扫描要 stat 每个文件，本仓
- *   （约六千个文件，跳过噪音目录）实测约 200 ms；超过 `MAX_WALK_ENTRIES` 停止，
- *   之后只剩事件那份，结果可能不全。
+ * - 收尾时扫一遍工作区，`mtime` 落在窗口内的就是改过的。扫描要 stat 每个文件；
+ *   超过 `MAX_WALK_ENTRIES` 就停，此时结果按 `incomplete` 交出去。
  *
  * 一个工作区根只开一个 `fs.watch`，窗口按打开先后排队；同一时刻有几个窗口开着时，
  * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
@@ -18,28 +17,64 @@
  * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
  * 临时文件（窗口内建、收尾前删）不进结果；原子保存（写临时文件再改名）会被判成 created。
  *
- * 跳过 `IGNORED_DIRS` 与任何以点开头的路径段：构建期间 dist / node_modules 会报成千上万条；
- * 点开头的是工具与运行时的状态（浏览器 profile、缓存、虚拟环境、脚本的临时标记），一条命令
- * 起个 headless chrome 就往 `.chk/` 写几千个文件，它们不是项目改动。
- * 工具直接写的隐藏路径（记忆、技能、`.env`）由工具自己带精确明细，不经这里。
+ * **哪些路径不报告由 Git 裁决，事件收集与收尾扫描共用这一条策略。**
+ * 任何路径段是 `.git`（版本库元数据）或 `.tmp`（本项目的临时产物目录）的一律不报；
+ * 其余候选在窗口收尾时一次性交给 `git check-ignore --stdin -z`（按仓库根执行），
+ * 命中忽略规则的丢掉。**不要另写一层「这个文件跟踪了没有」的判断**：`check-ignore`
+ * 默认查索引，已跟踪的路径即使命中忽略模式也不报告，加 `--no-index` 才会。
+ * 非 Git 目录没有忽略规则可依，`IGNORED_DIRS` 这份运行产物目录清单就是全部依据，
+ * 其余路径包括点路径照报。
+ *
+ * **`IGNORED_DIRS` 目录在 Git 仓库里只经索引观察，其中未跟踪的文件不报告。**
+ * 剪枝是性能手段——收尾扫描进 `node_modules` 要 stat 全仓，本仓实测约 470 ms 对约 15 ms；
+ * 覆盖由索引补齐：收尾时对被剪掉的目录起一次 `git ls-files -z`，取回其中已跟踪的文件，
+ * `mtime` 落在窗口内的进候选。**被剪目录里的删除不报告**：那里没有事件可依，
+ * 索引里的残留项（文件已删、没跑过 `git rm`）归不到任何一个窗口，报出来就是每个窗口一条假删除。
+ *
+ * **不要按文件名前缀推断用途。** 点开头的既有浏览器 profile 与缓存，也有
+ * `.github/workflows`、`.gitignore`、`.editorconfig` 和用户自己的点目录，
+ * 按前缀排除会把项目文件一并丢掉。
  */
 
-import { type Dirent, type FSWatcher, watch } from 'node:fs'
+import { type Dirent, existsSync, type FSWatcher, watch } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { FileChange } from '@qywork/core'
 import { IGNORED_DIRS } from './paths.ts'
+import { collectProcess } from './sandbox.ts'
+
+/** 一个执行窗口看到的工作区变更。 */
+export interface ObservedChanges {
+  changes: FileChange[]
+  /**
+   * 观察范围不完整：Git 判定没跑成，或收尾扫描到界停止。
+   *
+   * 调用方**必须**把它说给上游——不说的话，一次没跑完的过滤与一次真的没有改动
+   * 在结果里长得一模一样。
+   */
+  incomplete: boolean
+}
 
 export interface ChangeWindow {
   /** 收尾：停止归集，按此刻磁盘状态判每个路径的变更类型。 */
-  close(): Promise<FileChange[]>
+  close(): Promise<ObservedChanges>
 }
+
+/**
+ * 按种类计的 git 子进程数。只增不减。
+ *
+ * 供测试断言一个窗口收尾最多起两个进程，且多少次 fs 事件都不增加；生产代码不读它。
+ */
+export const gitProcessCount = { checkIgnore: 0, lsFiles: 0 }
 
 const MAX_WALK_ENTRIES = 50_000
 /** 数行只读这么大以内的文件：更大的通常是产物或数据，行数对它没有意义。 */
 const MAX_COUNT_BYTES = 4 * 1024 * 1024
 /** 文件时间戳允许比本机时钟快这么多；再往后的是时钟不对的文件，不能每次都算成改过。 */
 const CLOCK_SLACK_MS = 1_000
+/** 单次 git 查询的时长上限。到点树杀，结果按判定没跑成处理。 */
+const GIT_TIMEOUT_MS = 15_000
+const NO_STDIN = new Uint8Array(0)
 
 /** 一个路径第一次被报上来时的磁盘状态。null = 那一刻已不存在。 */
 interface FirstSeen {
@@ -50,18 +85,139 @@ interface Window {
   /** 本窗口开始拥有事件与扫描结果的时刻：排在最前时是打开时刻，否则是前一个窗口收尾的时刻。 */
   startedAt: number
   paths: Map<string, Promise<FirstSeen | null>>
+  /** 事件命中运行产物目录而被剪掉时记下的目录，收尾时交给索引补齐。 */
+  prunedDirs: Set<string>
 }
 
 interface Shared {
   watcher: FSWatcher
   windows: Window[]
+  /** 含工作区根的 Git 仓库根；null = 不在仓库里。 */
+  repoRoot: string | null
+  /** 工作区根相对仓库根的位置，posix 分隔符；工作区就是仓库根时为空串。 */
+  prefix: string
 }
 
 const shared = new Map<string, Shared>()
 
-/** 任一段命中噪音清单或以点开头就跳过。 */
-function ignored(rel: string): boolean {
-  return rel.split('/').some((segment) => IGNORED_DIRS.has(segment) || segment.startsWith('.'))
+/**
+ * 含 `root` 的 Git 仓库根；不在仓库里回 null。
+ *
+ * 向上找 `.git` 而不是起 `git rev-parse`：判仓库不该起进程，进程只在收尾时起。
+ * 上界与 git 自己的发现规则取同一个来源 `GIT_CEILING_DIRECTORIES`，
+ * 列在里面的目录不再往上走。
+ */
+function repoRootOf(root: string): string | null {
+  const ceilings = new Set(
+    (process.env.GIT_CEILING_DIRECTORIES ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .map((p) => resolve(p)),
+  )
+  let dir = resolve(root)
+  for (;;) {
+    if (ceilings.has(dir)) return null
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+/**
+ * 这一段路径怎么处理。
+ *
+ * `hard` = 一律不报也不补：版本库元数据与本项目的临时产物目录。
+ * `pruned` = 不走事件也不进扫描，但目录名记下来，Git 仓库里由索引补齐其中已跟踪的文件。
+ * `.git` 同在 `IGNORED_DIRS` 里，必须先判 `hard`——把它交给索引补齐等于把整个版本库报成改动。
+ */
+function classifySegment(segment: string): 'hard' | 'pruned' | 'none' {
+  if (segment === '.git' || segment === '.tmp') return 'hard'
+  return IGNORED_DIRS.has(segment) ? 'pruned' : 'none'
+}
+
+/** 起一个 git 子进程并收回它写的字节。返回 null = 它没跑起来。 */
+async function runGit(
+  repoRoot: string,
+  args: string[],
+  stdin: Uint8Array,
+): Promise<{ exitCode: number; stdout: string } | null> {
+  try {
+    const proc = Bun.spawn(['git', '--no-optional-locks', ...args], {
+      cwd: repoRoot,
+      stdin,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+    })
+    const got = await collectProcess(proc, { timeoutMs: GIT_TIMEOUT_MS })
+    return { exitCode: got.exitCode, stdout: got.stdout }
+  } catch {
+    // 这台机器上没装 git：`Bun.spawn` 找不到可执行文件是同步抛。
+    return null
+  }
+}
+
+/** NUL 分隔的仓库根相对路径，转回工作区相对。 */
+function stripPrefix(stdout: string, prefix: string): string[] {
+  const out: string[] = []
+  for (const path of stdout.split('\0')) {
+    if (path) out.push(prefix ? path.slice(prefix.length + 1) : path)
+  }
+  return out
+}
+
+/**
+ * 候选里被 Git 忽略的那些，工作区相对路径。返回 null = 判定没跑成。
+ *
+ * `--no-optional-locks`：这条查询会一并刷新索引，不加就会去抢 `index.lock`，
+ * 用户同时在终端里 `git commit` 会随机失败。
+ */
+async function gitIgnored(
+  repoRoot: string,
+  prefix: string,
+  rels: string[],
+): Promise<Set<string> | null> {
+  gitProcessCount.checkIgnore++
+  const payload = rels.map((rel) => (prefix ? `${prefix}/${rel}` : rel)).join('\0')
+  // `-z` 让输入输出都按 NUL 分隔，路径原样进出：带空格、中文、换行的文件名
+  // 在默认的行分隔加引号格式下解析不回来。
+  const got = await runGit(
+    repoRoot,
+    ['check-ignore', '--stdin', '-z'],
+    new TextEncoder().encode(`${payload}\0`),
+  )
+  // 0 = 有候选命中忽略规则，1 = 一条都没命中。其余是它自己没跑成。
+  if (got === null || (got.exitCode !== 0 && got.exitCode !== 1)) return null
+  return new Set(stripPrefix(got.stdout, prefix))
+}
+
+/**
+ * 被剪掉的目录里已跟踪、且 `mtime` 落在窗口内的文件。返回 null = 查询没跑成。
+ *
+ * **磁盘上已经不在的一律丢掉，不要改成报 deleted。** 索引里的残留项在此后每一次收尾
+ * 都会被取回来，而它归不到任何一个窗口，报出来就是每条命令往账本灌一条假删除。
+ */
+async function trackedInPruned(
+  repoRoot: string,
+  prefix: string,
+  root: string,
+  dirs: string[],
+  since: number,
+  until: number,
+): Promise<string[] | null> {
+  gitProcessCount.lsFiles++
+  const paths = dirs.map((dir) => (prefix ? `${prefix}/${dir}` : dir))
+  const got = await runGit(repoRoot, ['ls-files', '-z', '--', ...paths], NO_STDIN)
+  if (got === null || got.exitCode !== 0) return null
+  const touched: string[] = []
+  await Promise.all(
+    stripPrefix(got.stdout, prefix).map(async (rel) => {
+      const s = await stat(join(root, rel)).catch(() => null)
+      if (s && s.mtimeMs >= since && s.mtimeMs <= until) touched.push(rel)
+    }),
+  )
+  return touched
 }
 
 /**
@@ -97,9 +253,18 @@ async function firstSeen(root: string, rel: string, since: number): Promise<Firs
   }
 }
 
+interface Walked {
+  paths: string[]
+  /** 命中运行产物目录清单、没有走进去的目录。 */
+  pruned: Set<string>
+  /** 到界停止，剩下的目录没扫。 */
+  truncated: boolean
+}
+
 /** 工作区里 mtime 落在 [since, until] 内的文件，工作区相对、posix 分隔符。 */
-async function touchedSince(root: string, since: number, until: number): Promise<string[]> {
+async function touchedSince(root: string, since: number, until: number): Promise<Walked> {
   const out: string[] = []
+  const pruned = new Set<string>()
   const queue: string[] = ['']
   let seen = 0
   while (queue.length) {
@@ -112,13 +277,15 @@ async function touchedSince(root: string, since: number, until: number): Promise
     }
     const checks: Promise<void>[] = []
     for (const entry of entries) {
-      if (++seen > MAX_WALK_ENTRIES) return out
+      if (++seen > MAX_WALK_ENTRIES) return { paths: out, pruned, truncated: true }
       const child = rel ? `${rel}/${entry.name}` : entry.name
+      const skip = classifySegment(entry.name)
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name) && !entry.name.startsWith('.')) queue.push(child)
+        if (skip === 'pruned') pruned.add(child)
+        else if (skip === 'none') queue.push(child)
         continue
       }
-      if (!entry.isFile() || entry.name.startsWith('.')) continue
+      if (!entry.isFile() || skip !== 'none') continue
       checks.push(
         stat(join(root, child)).then(
           (s) => {
@@ -130,20 +297,37 @@ async function touchedSince(root: string, since: number, until: number): Promise
     }
     await Promise.all(checks)
   }
-  return out
+  return { paths: out, pruned, truncated: false }
 }
 
 export function openChangeWindow(root: string): ChangeWindow {
-  const window: Window = { startedAt: Date.now(), paths: new Map() }
+  const window: Window = { startedAt: Date.now(), paths: new Map(), prunedDirs: new Set() }
   let entry = shared.get(root)
   if (!entry) {
-    const created: Shared = { windows: [], watcher: null as unknown as FSWatcher }
+    const repoRoot = repoRootOf(root)
+    const created: Shared = {
+      windows: [],
+      watcher: null as unknown as FSWatcher,
+      repoRoot,
+      prefix: repoRoot === null ? '' : relative(repoRoot, resolve(root)).replaceAll('\\', '/'),
+    }
     created.watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (typeof filename !== 'string' || !filename) return
       const rel = filename.replaceAll('\\', '/')
-      if (ignored(rel)) return
       const owner = created.windows[0]
-      if (!owner || owner.paths.has(rel)) return
+      if (!owner) return
+      const segments = rel.split('/')
+      let prunedAt: string | null = null
+      for (const [i, segment] of segments.entries()) {
+        const skip = classifySegment(segment)
+        if (skip === 'hard') return
+        if (skip === 'pruned' && prunedAt === null) prunedAt = segments.slice(0, i + 1).join('/')
+      }
+      if (prunedAt !== null) {
+        owner.prunedDirs.add(prunedAt)
+        return
+      }
+      if (owner.paths.has(rel)) return
       owner.paths.set(rel, firstSeen(root, rel, owner.startedAt))
     })
     created.watcher.on('error', () => {
@@ -167,26 +351,53 @@ export function openChangeWindow(root: string): ChangeWindow {
         if (shared.get(root) === owner) shared.delete(root)
       }
 
-      const out: FileChange[] = []
-      const done = new Set<string>()
+      const until = closedAt + CLOCK_SLACK_MS
+      const walked = await touchedSince(root, window.startedAt, until)
+      const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
+      const prunedDirs = [...new Set([...window.prunedDirs, ...walked.pruned])]
+
+      let incomplete = walked.truncated
+      let tracked: string[] = []
+      if (owner.repoRoot !== null && prunedDirs.length > 0) {
+        const got = await trackedInPruned(
+          owner.repoRoot,
+          owner.prefix,
+          root,
+          prunedDirs,
+          window.startedAt,
+          until,
+        )
+        if (got === null) incomplete = true
+        else tracked = got
+      }
+
+      const candidates = [...window.paths.keys(), ...walkOnly, ...tracked]
+      const ignored =
+        owner.repoRoot === null || candidates.length === 0
+          ? new Set<string>()
+          : await gitIgnored(owner.repoRoot, owner.prefix, candidates)
+      if (ignored === null) incomplete = true
+      const skip = ignored ?? new Set<string>()
+
+      const changes: FileChange[] = []
       for (const [rel, seen] of window.paths) {
         const first = await seen
-        done.add(rel)
+        if (skip.has(rel)) continue
         try {
           const change = await describe(root, rel, window.startedAt)
-          if (change) out.push(change)
+          if (change) changes.push(change)
         } catch {
           // 窗口内才出现、收尾前又没了：临时文件，不是用户的文件被删。
           if (first?.bornInWindow) continue
-          out.push({ path: rel, changeType: 'deleted' })
+          changes.push({ path: rel, changeType: 'deleted' })
         }
       }
-      for (const rel of await touchedSince(root, window.startedAt, closedAt + CLOCK_SLACK_MS)) {
-        if (done.has(rel)) continue
+      for (const rel of [...walkOnly, ...tracked]) {
+        if (skip.has(rel)) continue
         const change = await describe(root, rel, window.startedAt).catch(() => null)
-        if (change) out.push(change)
+        if (change) changes.push(change)
       }
-      return out
+      return { changes, incomplete }
     },
   }
 }

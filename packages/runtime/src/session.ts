@@ -63,7 +63,9 @@ import {
   type ContentStore,
   createConversation,
   createRun,
+  createSchedule,
   currentGoal,
+  deleteSchedule,
   failThinkingSteps,
   fileReadHash,
   finishRun,
@@ -75,6 +77,7 @@ import {
   listLoadedTools,
   listMessages,
   listRuns,
+  listSchedules,
   listSteps,
   listWorkflowRecords,
   markProviderRequestFirstContent,
@@ -992,6 +995,15 @@ export class Session {
       goals: {
         read: () => currentGoal(store, conversationId),
         update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
+      },
+      /*
+       * 定时任务绑到**当前工作区**：任务表是全机一份，端口在这里把归属钉死，
+       * 工具那侧没有跨项目的入口。写入与调度 tick 走同一份仓储，不另开一条落盘路径。
+       */
+      schedules: {
+        list: () => listSchedules(store, this.opts.workspaceRoot, Date.now()),
+        create: (draft) => createSchedule(store, this.opts.workspaceRoot, draft),
+        remove: (id) => deleteSchedule(store, id, this.opts.workspaceRoot),
       },
       /*
        * 被折叠历史的回读。**压缩是投影不是删除**，所以原文一直在账本里，

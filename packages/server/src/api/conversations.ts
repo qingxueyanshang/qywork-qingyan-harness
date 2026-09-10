@@ -353,7 +353,20 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
        * 删不掉不改变接口结果：回收的是磁盘空间，不是正确性。
        */
       await rm(attachmentsDirOf(id), { recursive: true, force: true }).catch(() => {})
-      return json({ ok: true })
+      /*
+       * 正文回收放在主库删除**提交之后**。放进同一个事务里的话，事务回滚会把引用恢复回来，
+       * 而已经删掉的字节恢复不了——那正是悬空引用。
+       *
+       * 回收失败单独回一条，不掺进 `error`：会话已经不在账本里了，报删除失败会让用户
+       * 再点一次然后收到 404。这一次没收掉的空间，下一次启动或下一次删除会再收。
+       */
+      let reclaimError: string | null = null
+      try {
+        d.collectGarbage()
+      } catch (err) {
+        reclaimError = `已删除，但正文空间没回收：${err instanceof Error ? err.message : String(err)}`
+      }
+      return json(reclaimError ? { ok: true, reclaimError } : { ok: true })
     }
   }
 

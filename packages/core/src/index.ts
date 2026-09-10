@@ -106,6 +106,18 @@ export {
   type Workspace,
 } from './domain/model.ts'
 
+// 定时任务：仓储（store）、HTTP 面、模型工具与面板共用同一份类型与时间判定
+export {
+  diagnoseSchedule,
+  isDue,
+  nextRunAt,
+  type Schedule,
+  type ScheduleDraft,
+  type ScheduleKind,
+  type ScheduleLastRun,
+  type ScheduleView,
+} from './domain/schedule.ts'
+
 // workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各算一份。
 export {
   applyRevision,

@@ -12,20 +12,25 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame, Workspace } from '@qywork/core'
+import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { acquireExtensions, collectSecrets, configDir, releaseExtensions } from '@qywork/runtime'
+import {
+  acquireExtensions,
+  collectResourceGarbage,
+  collectSecrets,
+  configDir,
+  importLegacySchedules,
+  releaseExtensions,
+} from '@qywork/runtime'
 import type { ProcessExitObservation, Store } from '@qywork/store'
 import {
   ContentStore,
   contentPathFor,
-  createConversation,
   getWorkspaceByPath,
   mostRecentWorkspace,
   recoverStaleRuns,
   upsertWorkspace,
 } from '@qywork/store'
-import { isDue, loadSchedules, type Schedule, updateSchedules } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { handleApi, json } from './api/index.ts'
 import { EventBus } from './bus.ts'
@@ -38,6 +43,7 @@ import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
+import { startScheduler } from './scheduler.ts'
 import { SubagentRegistry } from './subagents.ts'
 
 export interface ServeOptions {
@@ -66,6 +72,13 @@ export interface ServeOptions {
   token?: string
   /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
   previousProcessExit?: ProcessExitObservation
+  /**
+   * 调度 tick 间隔，毫秒。缺省 `SCHEDULER_TICK_MS`。
+   *
+   * 唯一的用途是让回归测试用真实计时器驱动生产的那条推进路径，而不是把等待时间拉到分钟级。
+   * 不要用它调节生产精度：到期判定是分钟级的，改这个数只会让 tick 空转。
+   */
+  schedulerTickMs?: number
 }
 
 /** 首次运行时建的那个工作区叫什么。已落盘的目录名是历史事实，别改（D2）。 */
@@ -97,26 +110,22 @@ const MAX_HTTP_REQUEST_BODY_BYTES = 1024 * 1024 * 1024
  * 目录用 `mkdirSync`：账本这一行必须和目录同生共死，异步建目录会留下一段
  * 「行已经在了、目录还没有」的窗口，而那段时间里任何工具调用都会因为根不存在而炸。
  */
-function bootstrapWorkspace(
-  store: Store,
-  explicitRoot?: string,
-): { workspace: Workspace; rootPath: string } {
+function bootstrapWorkspace(store: Store, explicitRoot?: string): string {
   if (explicitRoot) {
     const name = explicitRoot.split(/[\\/]/).filter(Boolean).pop() ?? 'workspace'
     const known = getWorkspaceByPath(store, explicitRoot)
-    return {
-      workspace: upsertWorkspace(store, explicitRoot, known?.name ?? name),
-      rootPath: explicitRoot,
-    }
+    upsertWorkspace(store, explicitRoot, known?.name ?? name)
+    return explicitRoot
   }
 
   const recent = mostRecentWorkspace(store)
-  if (recent) return { workspace: recent, rootPath: recent.rootPath }
+  if (recent) return recent.rootPath
 
   const rootPath = join(configDir(), 'workspaces', DEFAULT_WORKSPACE_NAME)
   mkdirSync(rootPath, { recursive: true })
   process.stderr.write(`[qy] 首次运行，已创建默认工作区 ${rootPath}\n`)
-  return { workspace: upsertWorkspace(store, rootPath, DEFAULT_WORKSPACE_NAME), rootPath }
+  upsertWorkspace(store, rootPath, DEFAULT_WORKSPACE_NAME)
+  return rootPath
 }
 
 export function serve(opts: ServeOptions) {
@@ -143,7 +152,7 @@ export function serve(opts: ServeOptions) {
    * 目录上」——桌面端的启动目录是这个仓库自己，用户拿到的默认项目会是 qywork
    * 的源码树。
    */
-  const { workspace, rootPath: workspaceRoot } = bootstrapWorkspace(opts.store, opts.workspaceRoot)
+  const workspaceRoot = bootstrapWorkspace(opts.store, opts.workspaceRoot)
 
   // 正文库与主账本挨着放。开在这里而不是每个 run 现开：SQLite 连接有成本，
   // 而且 GC 需要一个跨 run 存活的句柄。
@@ -204,82 +213,56 @@ export function serve(opts: ServeOptions) {
     )
   }
 
+  /*
+   * `~/.qywork/schedules.json` 的一次性导入。**必须在开始服务之前**：导入之后任务表的
+   * 唯一权威是账本，调度、HTTP 面与模型工具都只读账本，运行期不再读那个文件。
+   *
+   * 文件不合法时抛出，沿既有启动失败路径退出并保留原字节——静默当成空表等于界面上定时任务
+   * 全部消失，用户会再建一遍。
+   */
+  const importedSchedules = importLegacySchedules(opts.store)
+  if (importedSchedules !== null) {
+    process.stderr.write(`[qy] 已把 ${importedSchedules} 条定时任务导入账本\n`)
+  }
+
+  /*
+   * 正文回收。放在残留 run 回收与任务导入**之后**、开始接受执行之前：引用集合要等账本
+   * 稳定下来才算数，而这一次回收要清掉的正是上次进程在登记引用之前退出留下的孤儿。
+   *
+   * 失败只写一行 stderr，不拦启动：回收的是磁盘空间，不是正确性；下一次启动或下一次
+   * 删除会话会再收一次。这里不加定时器，也不按时间删仍有引用的正文。
+   */
+  const collectGarbage = () => collectResourceGarbage(opts.store, content)
+  try {
+    const { removed } = collectGarbage()
+    if (removed > 0) process.stderr.write(`[qy] 已回收 ${removed} 份无人引用的正文\n`)
+  } catch (err) {
+    process.stderr.write(`[qy] 正文回收失败：${err instanceof Error ? err.message : String(err)}\n`)
+  }
+
   const unsubscribers = new Map<string, () => void>()
 
-  /**
-   * 定时任务调度器。
+  /*
+   * 定时任务调度。推进函数在 `scheduler.ts`，这里只负责启停。
    *
-   * **触发语义（这是本功能唯一真正的设计问题，不是工作量问题）**：
-   * - **跑在哪个会话**：每次触发**新建一个会话**，标题取任务标题。
-   *   复用同一个会话的话，几十次触发之后上下文会长到每一轮都在压缩，
-   *   而且任务之间会互相看见——「每天的日报」不该记得昨天那次的中间过程。
-   *   新建会话也让每次触发都留下一个可以点开的现场。
-   * - **权限按谁算**：与手动发消息完全一致（同一个 `startRun`、同一份 config）。
-   *   给定时任务单开一档权限等于造一条绕过裁决的路。
-   * - **失败了谁看得见**：`lastError` 落进任务本身，界面上和这条任务显示在一起。
-   *   只广播事件是不够的——触发时没人开着界面，事件没有接收者。
-   * - **会话忙就跳过**：上一轮还没跑完就不叠加，跳过并记一句原因。
-   *
-   * **30 秒一跳。** 调度精度是分钟级（`diagnoseSchedule` 拒绝小于 1 分钟的间隔），
-   * 30 秒的 tick 保证分钟边界不会被整体错过一格。
-   * `unref()` 让它不阻止进程退出——定时任务不该成为「关不掉」的理由。
+   * 装配用的依赖与手动发消息完全一致：同一个 `startRun`、同一份 config。
    */
-  const SCHEDULER_TICK_MS = 30_000
-  const schedulerTimer = setInterval(() => {
-    void tickSchedules()
-  }, SCHEDULER_TICK_MS)
-  schedulerTimer.unref?.()
-
-  async function tickSchedules(): Promise<void> {
-    const all = await loadSchedules().catch(() => [] as Schedule[])
-    // 只管本工作区的：一台机器上可能同时开着两个工作区的 sidecar，
-    // 不加这条过滤会让同一条任务被触发两次。
-    const mine = all.filter((s) => s.workspaceRoot === workspaceRoot)
-    if (!mine.length) return
-
-    const now = Date.now()
-    // 先收集要打的补丁，最后**在一次串行的读-改-写里**落盘。
-    // 直接改这份快照再整表回写的话，这段 await 期间用户在设置页新建 / 删除的任务
-    // 会被这份过期快照抹掉——两条写入路径各拿各的快照，就是标准的丢更新。
-    const patches = new Map<string, Partial<Schedule>>()
-    for (const s of mine) {
-      if (!isDue(s, now)) continue
-      const patch: Partial<Schedule> = { lastRunAt: now }
-      patches.set(s.id, patch)
-      try {
-        const conv = createConversation(opts.store, {
-          workspaceId: workspace.id as never,
-          provider: opts.config.active.provider,
-          model: opts.config.active.model,
-          title: s.title,
-        })
-        patch.lastRunConversationId = conv.id
-        await startRun(conv.id, s.prompt, undefined, {
+  const scheduler = startScheduler(
+    {
+      store: opts.store,
+      config: opts.config,
+      start: (conversationId, prompt) =>
+        startRun(conversationId, prompt, undefined, {
           store: opts.store,
           content,
           config: opts.config,
           bus,
           runs,
           subagents,
-        })
-      } catch (err) {
-        // 失败也要把 lastRunAt 留在已更新的状态：否则下一个 tick 会立刻重试，
-        // 一个稳定失败的任务会变成每 30 秒刷一个新会话。
-        patch.lastError = err instanceof Error ? err.message : String(err)
-      }
-    }
-    if (patches.size === 0) return
-
-    await updateSchedules((cur) =>
-      cur.map((s) => {
-        const patch = patches.get(s.id)
-        if (!patch) return s
-        // 成功那次要把上一轮的错误清掉；`lastError` 在补丁里没有就是「这次没错」。
-        const { lastError: _prev, ...rest } = s
-        return { ...rest, ...patch }
-      }),
-    ).catch(() => {})
-  }
+        }),
+    },
+    opts.schedulerTickMs,
+  )
 
   /**
    * 局域网监听控制。
@@ -389,6 +372,7 @@ export function serve(opts: ServeOptions) {
               })
             },
             watchGit: () => gitWatch.retarget(),
+            collectGarbage,
           })
           if (res) return withCors(res)
         } catch (err) {
@@ -470,6 +454,7 @@ export function serve(opts: ServeOptions) {
     pairingUrl: () => pairing.qrUrl(boundPort),
     lanUrl: () => `http://${preferredLanAddress()}:${boundPort}`,
     stop() {
+      scheduler.stop()
       gitWatch.stop()
       runs.interruptAll()
       // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。

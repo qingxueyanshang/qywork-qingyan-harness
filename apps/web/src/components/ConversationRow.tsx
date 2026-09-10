@@ -200,11 +200,12 @@ export function ConversationRow(props: {
         confirmLabel={armed() === 'delete' ? '删除' : '归档'}
         danger={armed() === 'delete'}
         onConfirm={() =>
-          void run(() =>
-            armed() === 'delete'
-              ? deleteConversation(props.conversation.id)
-              : archiveConversation(props.conversation.id),
-          )
+          void run(async () => {
+            if (armed() !== 'delete') return archiveConversation(props.conversation.id)
+            // 删掉了但空间没收回来：走 onError 那一格，与删除失败同一处显示。
+            const reclaimError = await deleteConversation(props.conversation.id)
+            if (reclaimError) props.onError?.(reclaimError)
+          })
         }
         onCancel={() => setArmed(null)}
       />

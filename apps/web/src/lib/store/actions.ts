@@ -333,10 +333,19 @@ export async function exportActiveConversation(): Promise<'saved' | 'cancelled'>
   return 'saved'
 }
 
-/** 删除：服务端是硬删，消息、run、步骤一并没了。 */
-export async function deleteConversation(id: string): Promise<void> {
-  await client.api(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' })
+/**
+ * 删除：服务端是硬删，消息、run、步骤一并没了。
+ *
+ * 返回值是**回收失败**那一句，不是删除失败——会话这时已经不在账本里了。
+ * 两者混成一个异常的话，用户看到「删除失败」会再点一次，然后收到 404。
+ */
+export async function deleteConversation(id: string): Promise<string | null> {
+  const res = await client.api<{ reclaimError?: string }>(
+    `/api/conversations/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  )
   await dropConversation(id)
+  return res.reclaimError ?? null
 }
 
 /**

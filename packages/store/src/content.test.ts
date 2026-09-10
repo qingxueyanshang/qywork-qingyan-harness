@@ -1,4 +1,8 @@
-import { describe, expect, test } from 'bun:test'
+import { Database } from 'bun:sqlite'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { CHUNK_BYTES, ContentStore, ContentStoreError, contentPathFor } from './content.ts'
 
 const enc = new TextEncoder()
@@ -191,6 +195,82 @@ describe('回收', () => {
     s.collectGarbage([])
     const n = s.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM pending_writes').get()!.n
     expect(n).toBe(1)
+    s.close()
+  })
+})
+
+describe('auto_vacuum 转档', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'qywork-av-'))
+    dirs.push(dir)
+    return dir
+  }
+
+  test('新建的正文库头部就是 INCREMENTAL', () => {
+    const s = new ContentStore(join(tempDir(), 'c.sqlite3'))
+    expect(s.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(2)
+    s.close()
+  })
+
+  /**
+   * 旧库的头部写的是 NONE：`PRAGMA auto_vacuum` 排在 `journal_mode = WAL` 之后设时，
+   * 头已经落下，那句 pragma 不作数。
+   *
+   * 造这样一份旧库不手抄一遍建表 SQL：把一个正常库按 `auto_vacuum = NONE` 整份
+   * `VACUUM INTO` 出来，得到的就是同一套表、同一批正文、头部为 NONE 的文件。
+   */
+  function legacyNoneDb(dir: string, bodies: string[]): { path: string; hashes: string[] } {
+    const seed = new ContentStore(join(dir, 'seed.sqlite3'))
+    const hashes = bodies.map((b) => seed.put(enc.encode(b)).contentHash)
+    const path = join(dir, 'legacy.sqlite3')
+    seed.db.exec('PRAGMA auto_vacuum = NONE')
+    seed.db.query('VACUUM INTO ?').run(path)
+    seed.close()
+    return { path, hashes }
+  }
+
+  test('头部是 NONE 的旧库打开时转档，正文一份不少', () => {
+    const dir = tempDir()
+    const { path, hashes } = legacyNoneDb(dir, ['第一份', '第二份', '第三份'])
+
+    const check = new Database(path)
+    expect(check.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(
+      0,
+    )
+    check.close()
+
+    const s = new ContentStore(path)
+    expect(s.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(2)
+    expect(hashes.map((h) => dec.decode(s.readAll(h)!))).toEqual(['第一份', '第二份', '第三份'])
+    s.close()
+
+    // 转档只做一次：头部已经是 INCREMENTAL，再开一次不会再 VACUUM。
+    const again = new ContentStore(path)
+    expect(
+      again.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum,
+    ).toBe(2)
+    expect(dec.decode(again.readAll(hashes[0]!)!)).toBe('第一份')
+    again.close()
+  })
+
+  test('回收之后页数与文件字节数都降下来', () => {
+    const dir = tempDir()
+    const path = join(dir, 'c.sqlite3')
+    const s = new ContentStore(path)
+    s.put(new Uint8Array(4 * 1024 * 1024))
+    const pages = () =>
+      s.db.query<{ page_count: number }, []>('PRAGMA page_count').get()?.page_count ?? -1
+    const before = { pages: pages(), bytes: statSync(path).size }
+
+    s.collectGarbage([])
+
+    expect(pages()).toBeLessThan(before.pages)
+    expect(statSync(path).size).toBeLessThan(before.bytes)
     s.close()
   })
 })

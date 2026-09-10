@@ -5,7 +5,8 @@
  *
  * - 每个事件有全局单调 seq，客户端重连时报上 `lastSeq`，服务端补发缺口。
  * - 保留窗口是**环形缓冲**，不是无界数组——一个跑了两小时的 run 能产生几十万条
- *   事件，无界保留会耗尽内存。
+ *   事件，无界保留会耗尽内存。**帧数与字节数两条上限都要有**：单帧大小无上限，
+ *   只封顶帧数挡不住内存。
  * - 缺口超出保留窗口时明确回 `resync`，让客户端改走全量拉取，而不是静默少几条
  *   事件、让界面停在一个不完整的状态上且不给任何提示。
  */
@@ -14,6 +15,15 @@ import type { AgentEvent, ConversationId, EventEnvelope, ResumePosition } from '
 
 /** 保留窗口。够覆盖几分钟的断线；再长就该走全量重拉了。 */
 const RETAIN = 5000
+
+/**
+ * 保留窗口的字节上限。
+ *
+ * 帧数封顶挡不住内存：一帧 `tool.delta` 带的是一整片命令输出，实测单帧约 109 KB，
+ * 5000 帧就是几百 MB。32 MB 约合 300 帧最大 delta，仍够覆盖几分钟的断线；
+ * 超出的按同一条路淘汰，客户端走既有 `resync`。
+ */
+const RETAIN_BYTES = 32 * 1024 * 1024
 
 export interface Subscriber {
   id: string
@@ -57,7 +67,11 @@ export class EventBus {
    */
   readonly streamId: string = crypto.randomUUID()
   private seq = 0
-  private readonly ring: EventEnvelope[] = []
+  /**
+   * 保留窗口。字节数与帧存在一起、入环时量一次——分成两个数组会漂。
+   */
+  private readonly ring: { frame: EventEnvelope; bytes: number }[] = []
+  private ringBytes = 0
   private readonly subscribers = new Map<string, Subscriber>()
 
   get currentSeq(): number {
@@ -89,8 +103,15 @@ export class EventBus {
       event,
     }
 
-    this.ring.push(frame)
-    if (this.ring.length > RETAIN) this.ring.shift()
+    const bytes = JSON.stringify(frame).length
+    this.ring.push({ frame, bytes })
+    this.ringBytes += bytes
+    // 最新一帧留着不淘汰：单帧比整个预算还大时清空环，等于每次重连都 resync。
+    while (this.ring.length > RETAIN || (this.ringBytes > RETAIN_BYTES && this.ring.length > 1)) {
+      const dropped = this.ring.shift()
+      if (!dropped) break
+      this.ringBytes -= dropped.bytes
+    }
 
     for (const sub of this.subscribers.values()) {
       if (!visibleTo(sub, frame)) continue
@@ -124,8 +145,10 @@ export class EventBus {
     if (from.lastSeq >= this.seq) return []
     const oldest = this.ring[0]
     // 环里最老的一条比客户端下一条需要的还新 → 中间那段已经被挤掉了。
-    if (!oldest || oldest.seq > from.lastSeq + 1) return null
-    return this.ring.filter((f) => f.seq > from.lastSeq && visibleTo(sub, f))
+    if (!oldest || oldest.frame.seq > from.lastSeq + 1) return null
+    return this.ring
+      .filter((e) => e.frame.seq > from.lastSeq && visibleTo(sub, e.frame))
+      .map((e) => e.frame)
   }
 
   subscriberCount(): number {

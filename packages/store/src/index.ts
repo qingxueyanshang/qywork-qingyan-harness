@@ -80,6 +80,16 @@ export {
   referencedContentHashes,
   registerResource,
 } from './resources.ts'
+// 定时任务：调度 tick 的认领事务、HTTP 面与模型工具端口共用同一份仓储
+export {
+  claimDueSchedules,
+  claimScheduleNow,
+  createSchedule,
+  deleteSchedule,
+  insertSchedules,
+  listSchedules,
+  updateSchedule,
+} from './schedules.ts'
 // 落盘 schema 版本。**真源就在 schema.ts，不设中心登记表**（CLAUDE.md D2）
 export { SCHEMA_VERSION } from './schema.ts'
 // 待办：只读回，不另写——真源是父会话验收后提交的 write_todos tool step

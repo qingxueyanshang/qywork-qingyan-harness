@@ -1119,7 +1119,10 @@ export function recoverStaleRuns(
      interruption_detail = ?, finished_at = ? WHERE id = ?`,
   )
 
-  store.db.transaction(() => {
+  // 走 `store.tx()` 而不是裸 `db.transaction`：这一段先 SELECT 再 UPDATE，DEFERRED 事务
+  // 遇到其他进程持有写锁时是从读事务升级，SQLite 直接回 SQLITE_BUSY 且不走 busy_timeout。
+  // 两个实例同时启动是正常情形（两个工作区的 sidecar、开发态热重载）。
+  store.tx(() => {
     for (const r of rows) {
       const isAmbiguous = Number(r.ambiguous) === 1
       if (isAmbiguous) ambiguous++
@@ -1237,7 +1240,7 @@ export function recoverStaleRuns(
            AND run_id IN (SELECT id FROM runs WHERE status NOT IN ('running','queued'))`,
       )
       .run(now, writeJson(orphanRequestDiagnostic))
-  })()
+  })
 
   return { recovered: rows.length, ambiguous, heldByOthers }
 }

@@ -6,7 +6,7 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { MIGRATIONS } from './schema.ts'
+import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
 
 export interface StoreOptions {
   /** 数据库文件路径；':memory:' 用于测试。 */
@@ -23,6 +23,14 @@ export class Store {
   }
 
   private applyPragmas(): void {
+    /*
+     * 并发写等待。桌面端 + 手机端同时操作时避免直接 SQLITE_BUSY。
+     *
+     * **必须是第一条。** 下面那条 `journal_mode` 本身就要取锁：两个进程同时开同一个
+     * WAL 库时，先到的那个在做 WAL 恢复并持有排他锁，后到的收到 SQLITE_BUSY_RECOVERY。
+     * 等待上限还没设，这一条就没有重试余地，构造函数当场抛。
+     */
+    this.db.exec('PRAGMA busy_timeout = 5000')
     // WAL：读写不互相阻塞。agent 边写 step 边有 UI 在读，没有 WAL 会互相卡住。
     this.db.exec('PRAGMA journal_mode = WAL')
     // NORMAL：WAL 下已经足够安全（崩溃不丢已提交事务，只可能丢最后一次 checkpoint），
@@ -30,8 +38,6 @@ export class Store {
     this.db.exec('PRAGMA synchronous = NORMAL')
     // 外键必须开：schema 里的 ON DELETE CASCADE 全靠它，默认是关的。
     this.db.exec('PRAGMA foreign_keys = ON')
-    // 并发写等待。桌面端 + 手机端同时操作时避免直接 SQLITE_BUSY。
-    this.db.exec('PRAGMA busy_timeout = 5000')
   }
 
   private migrate(): void {
@@ -44,16 +50,36 @@ export class Store {
         .all()
         .map((r) => r.id),
     )
+    /*
+     * 库里有本程序不认识的迁移 = 这个文件被更新的版本写过。此时必须停在打开这一步。
+     *
+     * `migrate()` 只补自己没跑过的那几条，认不出的照样放行；放行之后本程序会按旧的表
+     * 结构继续读写同一个文件，新版本加的列与表在这里没有写入方，两个版本轮流启动即
+     * 互相覆盖。不设降级、只读或跳过开关：任何一种都让这条路径重新出现。
+     */
+    const ahead = [...applied].filter((id) => id > SCHEMA_VERSION)
+    if (ahead.length > 0) {
+      const newest = Math.max(...ahead)
+      const file = this.db.filename
+      this.db.close()
+      throw new Error(
+        `数据库的结构版本 ${newest} 高于本程序的 ${SCHEMA_VERSION}，请升级 qywork 后再打开：${file}`,
+      )
+    }
     for (const m of MIGRATIONS) {
       if (applied.has(m.id)) continue
       // 每条迁移一个事务：失败就整条回滚，不留半迁移状态。
-      this.db.transaction(() => {
-        if (m.sql) this.db.exec(m.sql)
-        m.apply?.(this.db)
-        this.db
-          .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
-          .run(m.id, m.name, Date.now())
-      })()
+      // IMMEDIATE 在进回调前取写权：`apply()` 可能先读后写，DEFERRED 下的升级在另一个
+      // 实例同时初始化时直接回 SQLITE_BUSY，不走 busy_timeout。
+      this.db
+        .transaction(() => {
+          if (m.sql) this.db.exec(m.sql)
+          m.apply?.(this.db)
+          this.db
+            .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
+            .run(m.id, m.name, Date.now())
+        })
+        .immediate()
     }
   }
 

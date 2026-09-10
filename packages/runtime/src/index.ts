@@ -53,11 +53,14 @@ export {
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+// 全机任务文件导入账本：server 在开始服务之前调一次
+export { importLegacySchedules } from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。
 export { makeSummarizer, Session } from './session.ts'
-// 正文落盘：会话内的工具产出与服务端的子 agent 回执共用同一份实现
-export { RuntimeSink } from './sink.ts'
+// 正文落盘：会话内的工具产出与服务端的子 agent 回执共用同一份实现。
+// `collectResourceGarbage` 与它同一条锁顺序，删会话之后与开库之后各调一次。
+export { collectResourceGarbage, RuntimeSink } from './sink.ts'
 // 历史投影：`Session.ask` 内部用它装配这一轮的历史，回归测试用它验证
 // 「活的 transcript 与跨 run 投影回来的那一份逐条同位」。
 export { buildHistory } from './transcript.ts'

@@ -10,14 +10,15 @@
  * 事件带没带 stepId（不带前端整条丢弃）、终态发没发（不发那一格永远停在进行中）、
  * 回执投没投（不投这次派活就等于丢了）。
  *
- * 外部 CLI 那一支只覆盖「派出去、跑完、格里落了写入」：PATH 上放一个假的 `codex.cmd`。
+ * 外部 CLI 那一支覆盖「派出去、跑完、格里落了写入」与观察器的忽略判定：
+ * PATH 上放一个假的 `codex.cmd`。
  * 真正的 CLI 会不会照约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   type AgentEvent,
   type ConversationId,
@@ -1030,17 +1031,36 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     expect(page.totals.additions).toBeGreaterThan(0)
   })
 
-  test('外部 CLI 改的文件出现在父轮里，标着节点名；新建的文本按内容数行', async () => {
+  test('外部 CLI 改的文件出现在父轮里，标着节点名；项目点路径进账，被忽略的缓存不进', async () => {
     const bin = join(dir, 'fake-bin')
     await mkdir(bin, { recursive: true })
-    // 假的 codex：不看参数，往当前目录写一个文件，再按 codex 的 jsonl 形状报一句结果。
+    // 假的 codex：不看参数，往当前目录写三个文件（普通、项目点路径、被忽略的缓存），
+    // 再按 codex 的 jsonl 形状报一句结果。
     await writeFile(
       join(bin, 'codex.cmd'),
-      '@echo off\r\necho made> "%CD%\\cli-made.txt"\r\necho {"type":"item.completed","item":{"text":"done"}}\r\n',
+      [
+        '@echo off',
+        'echo made> "%CD%\\cli-made.txt"',
+        'mkdir "%CD%\\.github\\workflows" 2>nul',
+        'echo ci> "%CD%\\.github\\workflows\\ci.yml"',
+        'mkdir "%CD%\\.profile-cache" 2>nul',
+        'echo x> "%CD%\\.profile-cache\\state.bin"',
+        'echo {"type":"item.completed","item":{"text":"done"}}',
+        '',
+      ].join('\r\n'),
     )
+    // 观察器的忽略判定问的是 git，忽略规则得有来源，所以这条测试把夹具目录做成仓库。
+    const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
+    git('init', '-q', '-b', 'main', '.')
+    git('config', 'user.email', 't@t')
+    git('config', 'user.name', 't')
+    await writeFile(join(dir, '.gitignore'), '.profile-cache/\n')
     const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
-    // 只留假 CLI 与系统目录（`.cmd` 要靠 cmd.exe 起）；凭证判据是这个变量有值。
-    process.env.PATH = `${bin};${join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')}`
+    // 只留假 CLI、系统目录（`.cmd` 要靠 cmd.exe 起）与 git 所在目录；凭证判据是这个变量有值。
+    // git 必须留着：观察器收尾时要起它判忽略规则，找不到就只能报观察范围不完整。
+    const gitDir = dirname(Bun.which('git') ?? '')
+    const sys = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+    process.env.PATH = `${bin};${sys};${gitDir}`
     process.env.OPENAI_API_KEY = 'sk-test'
     try {
       const cid = conversation()
@@ -1056,16 +1076,29 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       await until(() => phasesOf('child').includes('done'), 'CLI 落终态')
 
       expect(await Bun.file(join(dir, 'cli-made.txt')).exists()).toBe(true)
+      expect(await Bun.file(join(dir, '.profile-cache', 'state.bin')).exists()).toBe(true)
       const page = listConversationChangesPage(store, cid, { limit: 10 })
       expect(page.turns.map((t) => t.text)).toEqual(['派给 codex'])
       expect(
         page.turns[0]?.steps.map((s) => [
           s.toolName,
           s.via?.name,
-          s.fileChanges.map((c) => [c.path, c.changeType, c.additions]),
+          s.fileChanges.map((c) => [c.path, c.changeType, c.additions]).sort(),
         ]),
-      ).toEqual([['cli', 'codex 节点', [['cli-made.txt', 'created', 2]]]])
-      expect(page.totals).toEqual({ paths: ['cli-made.txt'], additions: 2, deletions: 0 })
+      ).toEqual([
+        [
+          'cli',
+          'codex 节点',
+          [
+            ['.github/workflows/ci.yml', 'created', 2],
+            ['cli-made.txt', 'created', 2],
+          ],
+        ],
+      ])
+      // 项目的点路径进账，被 `.gitignore` 挡住的缓存不进。
+      expect([...page.totals.paths].sort()).toEqual(['.github/workflows/ci.yml', 'cli-made.txt'])
+      expect(page.totals.additions).toBe(4)
+      expect(page.totals.deletions).toBe(0)
     } finally {
       process.env.PATH = env.PATH
       if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY

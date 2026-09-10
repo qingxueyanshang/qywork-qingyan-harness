@@ -24,6 +24,7 @@ import type {
   ResourceStatus,
   RunId,
   RunStatus,
+  ScheduleKind,
   StepId,
   StepKind,
   StopReason,
@@ -1859,10 +1860,12 @@ WHERE conversation_id IN (SELECT id FROM conversations WHERE parent_conversation
     id: 52,
     name: 'watcher_hidden_dirs',
     /**
-     * 工作区观察器不再报隐藏目录（`.xxx/`）下的路径：那里是程序自己的运行状态，一条命令起个
-     * headless chrome 就往 `.chk/` 写几千个文件。已经记进账本的这类条目按同一条规则清掉：
+     * 清掉工作区观察器按点前缀排除那一档规则生效期间记进账本的隐藏目录路径（`.xxx/` 下的）。
      * 只清观察器判出来的（没有 `additions` 的），文件类工具的精确明细不动；派活格上的
      * `fileChanges` 全部来自观察器，按路径清。
+     *
+     * 观察器此后按 Git 的忽略规则判定，项目自己的点路径不再被排除。本迁移不重跑，
+     * 也不补回它清掉的记录。
      */
     sql: `
 UPDATE steps SET payload = json_set(payload, '$.outcome.fileChanges',
@@ -1894,9 +1897,11 @@ WHERE json_type(payload, '$.nodes') = 'object'
     id: 53,
     name: 'watcher_dot_paths',
     /**
-     * 观察器的规则从「隐藏目录」收紧到「任何以点开头的路径段」：脚本留下的 `.tmp-verify`、
-     * `.fin` 这类临时标记与被删掉的 `.chk` 本身也不是项目改动。迁移 52 已在账本上跑过，
-     * 跑过的迁移不改内容，剩下的这一档另起一条，清法与 52 相同。
+     * 迁移 52 清的是隐藏目录下的路径，点开头的单个文件（脚本留下的 `.tmp-verify`、`.fin`
+     * 这类临时标记）与被删掉的 `.chk` 本身还留在账本里。跑过的迁移不改内容，
+     * 剩下的这一档另起一条，清法与 52 相同。
+     *
+     * 同 52：观察器此后按 Git 的忽略规则判定，本迁移不重跑。
      */
     sql: `
 UPDATE steps SET payload = json_set(payload, '$.outcome.fileChanges',
@@ -1922,6 +1927,39 @@ WHERE json_type(payload, '$.nodes') = 'object'
   AND EXISTS (SELECT 1 FROM json_each(steps.payload, '$.nodes') n, json_each(n.value, '$.fileChanges') c
               WHERE json_extract(c.value, '$.path') LIKE '.%'
                  OR json_extract(c.value, '$.path') LIKE '%/.%');
+`,
+  },
+  {
+    id: 54,
+    name: 'schedules',
+    /**
+     * 定时任务从全机一份的 JSON 迁进主账本。
+     *
+     * 到期判定、认领与建会话必须在同一个写事务里完成，否则两个服务实例会对同一条到期
+     * 任务各起一轮；JSON 只能在单进程内排队，跨进程无从裁决。
+     *
+     * 表里只有配置与触发游标：上一次跑成什么样按 `last_run_conversation_id` 关联的 Run 读。
+     * 会话被删除时置空该列，`last_run_at` 保留——触发发生过是事实，执行记录没了是另一回事。
+     *
+     * 建表不带数据搬运：旧文件的读取与改名由运行装配层执行，迁移不读开发机的全局配置目录。
+     */
+    sql: `
+CREATE TABLE schedules (
+  id                       TEXT PRIMARY KEY,
+  workspace_root           TEXT NOT NULL,
+  title                    TEXT NOT NULL,
+  prompt                   TEXT NOT NULL,
+  kind                     TEXT NOT NULL CHECK (kind IN ('interval','daily')),
+  every_minutes            INTEGER,
+  at_hour                  INTEGER,
+  at_minute                INTEGER,
+  enabled                  INTEGER NOT NULL,
+  created_at               INTEGER NOT NULL,
+  last_run_at              INTEGER,
+  last_run_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_schedules_workspace ON schedules(workspace_root);
+CREATE INDEX idx_schedules_last_conversation ON schedules(last_run_conversation_id);
 `,
   },
 ]
@@ -2098,6 +2136,24 @@ export interface IntermediateResourceRow {
   created_at: number
 }
 
+export interface ScheduleRow {
+  id: string
+  workspace_root: string
+  title: string
+  prompt: string
+  /** `CHECK (kind IN ('interval','daily'))`。 */
+  kind: ScheduleKind
+  every_minutes: number | null
+  at_hour: number | null
+  at_minute: number | null
+  /** SQLite 没有布尔：0/1。 */
+  enabled: number
+  created_at: number
+  last_run_at: number | null
+  /** `ON DELETE SET NULL`：关联会话被删除后置空，触发游标保留。 */
+  last_run_conversation_id: string | null
+}
+
 /**
  * 表名 → 这张表的列名。**给比对测试用**——接口的键在运行时取不到，所以列名单独列一份，
  * 而这份与接口写在同一处、同一次修改里，漏改一处会被测试逮到。
@@ -2219,5 +2275,19 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'mime_type',
     'coverage',
     'created_at',
+  ],
+  schedules: [
+    'id',
+    'workspace_root',
+    'title',
+    'prompt',
+    'kind',
+    'every_minutes',
+    'at_hour',
+    'at_minute',
+    'enabled',
+    'created_at',
+    'last_run_at',
+    'last_run_conversation_id',
   ],
 }

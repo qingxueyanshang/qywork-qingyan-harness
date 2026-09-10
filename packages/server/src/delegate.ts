@@ -468,7 +468,9 @@ export function makeDelegate(ctx: {
               }
             : {}),
         })
-        const fileChanges = await changeWindow.close()
+        const watched = await changeWindow.close()
+        // 观察范围不完整要说出来：不说的话，一次没跑完的过滤与一次真的没有改动分不开。
+        if (watched.incomplete) notes.push('工作区观察范围不完整，这次的文件改动清单可能有遗漏')
         // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。
         if (r.session) setConversationExternalSession(deps.store, conversation.id, r.session)
         else if (!conversation.externalSession) {
@@ -484,7 +486,7 @@ export function makeDelegate(ctx: {
           output: r.output,
           ...(error ? { error } : {}),
           ...(notes.length ? { note: notes.join('；') } : {}),
-          ...(fileChanges.length ? { fileChanges } : {}),
+          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
         }
       }
 

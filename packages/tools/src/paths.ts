@@ -354,9 +354,9 @@ export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json']
 /**
  * **模型**遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
  *
- * **为什么必须是一份。** 两处消费它：`tools/search.ts`（glob / grep）与
- * `tools/files.ts`（list_dir）。各抄一份的话会漂——实测漂到过 13 / 12 / 11 条。**后果不是不整洁，是两处对「这个目录存不存
- * 在」给出不同答案**：`list_dir` 把 `coverage/` 列出来、`grep` 又搜不进去，模型据此去读一份构建产物
+ * **为什么必须是一份。** 模型侧三处消费它：`tools/search.ts`（glob / grep）、`tools/files.ts`（list_dir）
+ * 与 `tools/workspace-watch.ts`（命令改了哪些文件）。各抄一份的话会漂——实测漂到过 13 / 12 / 11 条。
+ * **后果不是不整洁，是几处对「这个目录存不存在」给出不同答案**：`list_dir` 把 `coverage/` 列出来、`grep` 又搜不进去，模型据此去读一份构建产物
  * 当源码，或者报告「在 coverage/lcov-report/x.html 里找到了」。
  *
  * **界面文件树不用它**（`server/files.ts`）：那是用户自己的文件浏览器，磁盘上

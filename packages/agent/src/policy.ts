@@ -69,8 +69,8 @@ export interface PolicyContext {
  * 命令位：串首，或任意组合符号之后，允许跳过 sudo / env 前缀。
  *
  * 硬拒绝的模式必须锚在命令位上，否则 `git log --grep="shutdown"` 会因为字符串里
- * 出现了 shutdown 就被拒。deny 是终局判决，没有分类器兜底，它的误伤代价比 undecided
- * 高一个数量级——宁可锚窄。
+ * 出现了 shutdown 就被拒。deny 是终局判决，命中之后没有第二档兜底，
+ * 误伤的代价比漏判高一个数量级——宁可锚窄。
  *
  * **`{` 也算命令位**，这条是 Windows PowerShell 5.1 逼出来的：那边 `&&` 是解析错误，
  * 「上一条成功才继续」的标准写法是 `if ($?) { … }`——而 `run_command` 的描述里正是
@@ -176,23 +176,20 @@ const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|${OUTSIDE_SYMBOL_RE}|(?
  *
  * 入选门槛：**没有任何合法的工作区用途**。不是「危险」，是「在一个写代码的 agent
  * 手里不可能有正当理由」。凡是能想出「万一用户真要这么干」的，都不该进这张表——
- * 它们该落 undecided，让分类器结合上下文判。
+ * 表外一律放行。
  */
 export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string }[] = [
   {
     /**
      * 命令里引用了家目录或系统目录 = 效果一定越出工作区。
      *
-     * **为什么这条要放进确定性规则，而不是交给分类器。** 实测抓到的：
-     * `Get-ChildItem $HOME -Recurse -Filter *.pem` **同一条命令两次跑出了两个不同结论**——一次拦
-     * 一次放。分类器是概率判断，而「`$HOME` 在工作区外」是一个**事实**，不该每次重新赌一遍。
-     *
-     * 这和 `.qy/` 那条是同一类错误：把确定的知识交给了概率。
-     * 凡是能用确定性规则表达的边界，就不要留给模型推。
+     * **它必须是确定性规则。** 「`$HOME` 在工作区外」是一个事实，不该每次重新判一遍：
+     * 交给一次模型调用去判时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 这一条实测
+     * 连跑两次给出过两个相反结论。凡是能用确定性规则表达的边界，就不要留给模型推。
      *
      * **为什么只收这几个，不收所有绝对路径。** 家目录、`/etc`、`C:\Windows` 在一个工作区内的编码任
      * 务里**没有正当用途**，符合硬拒绝的入选门槛。而一个随便的绝对路径可能是用户的另一个项目目录，
-     * 那种要结合上下文判——留给分类器。
+     * 拒掉它的误伤代价太高，所以放行。
      *
      * **`~` 必须带分隔符。** 裸 `~` 不行：`git diff HEAD~1` 里就有一个。只认 `~/` 和 `~\`。
      * 这条差点写错，而写错的后果是把最常用的 git 命令之一拒掉。
@@ -210,7 +207,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
   },
   {
     // rm -rf / | rm -fr /* | rm -Rf ~ | rm --recursive --force ~/
-    // 目标必须是根或家目录本身：`rm -rf /home/x/build` 不在此列，那是分类器的活。
+    // 目标必须是根或家目录本身：`rm -rf /home/x/build` 不在此列，它照常放行。
     pattern: atCommandStart(
       String.raw`rm\b[^\n]*?\s-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive|force)[^\n]*?\s(?:\/|~)[*/]*(?=\s|$)`,
     ),
@@ -268,7 +265,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
      * 那是项目文件、不该拦读，但值不该原样进上下文）。
      *
      * **为什么 `~/.qywork/config.json` 也在里面。** 那是**本程序自己的**全局配置：明文 apiKey、权限
-     * 模式、classifier 指向都在那一个文件里。它躺在家目录，所以「工作区外写」那条已经挡住了写；这
+     * 模式、额外根目录都在那一个文件里。它躺在家目录，所以「工作区外写」那条已经挡住了写；这
      * 里补上读——key 被读走的代价和私钥一样。
      *
      * 注意它与工作区里的 `.qy/` / `.agents/` 是**两回事**：后者是项目自己的
@@ -356,16 +353,12 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
  * 家目录的**字面写法**。命中返回拒绝理由，否则 `null`。
  *
  * **这是上面那条硬拒绝漏掉的另一半。** `OUTSIDE_LOCATION_RULE` 那条正则只认**符号写法**——`~/`、
- * `$HOME`、`%USERPROFILE%`。实测（Windows，工作区在 `<home>\Desktop\qywork`）：
+ * `$HOME`、`%USERPROFILE%`、`$env:APPDATA`。同一个位置写成字面绝对路径
+ * （`C:\Users\<user>\notes`）它就不匹配，而 Windows 上工作区本来就在家目录里，
+ * 模型写出来的往往正是字面路径。
  *
- * ```
- * deny      | Get-Content $env:USERPROFILE\.qywork\config.json
- * undecided | type C:\Users\<user>\.qywork\config.json
- * ```
- *
- * **同一个文件，两种拼法，两种结论。** 后者掉到分类器，而分类器是概率判断。
- * 一条确定性规则只认得出目标的一半写法，等于没有这条规则——
- * 绕过它不需要任何技巧，把 `~` 展开一下就行。
+ * **同一个位置，两种拼法，两种结论。** 一条确定性规则只认得出目标的一半写法，
+ * 等于没有这条规则——绕过它不需要任何技巧，把 `~` 展开一下就行。
  *
  * **为什么不是把正则改宽一点。** 因为要判的不是「长得像不像家目录」，是「**这个路径在不在允许的范围
  * 里**」，而那必须拿真实的 homedir 和工作区去比。Windows 上工作区几乎总是在家目录**里面**
@@ -421,7 +414,7 @@ function literalOutsideHome(command: string, ctx: PolicyContext): string | null 
  * `cat ~/.ssh/id_rsa` 会一起被放行——那是把一个精确的授权当成了一张通行证。
  *
  * **fail-closed。** 解析不出一个具体路径（比如 `$HOME` 后面跟的是变量而不是字面量），
- * 就当它**没被覆盖**，规则照常拒绝。这条规则是 deny 终局判决，没有分类器兜底，
+ * 就当它**没被覆盖**，规则照常拒绝。这条规则是 deny 终局判决，没有第二档兜底，
  * 所以「拿不准」的正确方向是保持拒绝，而不是放行一次。
  *
  * **`$env:USERPROFILE` 这类展开不了的写法。** `$env:USERPROFILE\notes` 里的 `\notes` 是字面量，

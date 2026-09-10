@@ -33,6 +33,8 @@
     "smoke:compaction": "bun run scripts/compaction-fidelity.ts",
     "smoke:context": "bun run scripts/context-scale-live.ts",
     "seed:demo": "bun run scripts/seed-demo.ts",
+    "load:serve": "bun run scripts/load-serve.ts",
+    "load:ui": "node scripts/load-ui.mjs",
     "shoot": "node scripts/shoot-ui.mjs",
     "check:attachments": "node scripts/check-attachments.mjs",
     "icon": "node scripts/make-icon.mjs && bun run --cwd apps/desktop tauri icon ../../.tmp/icon/source.png"

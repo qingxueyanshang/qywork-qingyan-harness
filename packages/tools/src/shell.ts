@@ -67,6 +67,14 @@ const BACKGROUND_HELD =
   '本次结果只含命令自身的输出，那个进程此后的输出不在其中。'
 
 /**
+ * 工作区观察器的忽略判定没跑成，或收尾扫描到界停止。
+ *
+ * 必须说出来：一次没跑完的过滤与一次真的没有改动，在结果里长得一模一样。
+ */
+const WATCH_INCOMPLETE =
+  '。注意：本次文件改动的观察范围不完整，清单可能有遗漏，也可能混进了被忽略的产物。'
+
+/**
  * 这条调用实际会在多少毫秒后被强制终止。
  *
  * **导出是因为裁决层要用同一个数。** 超时到点是无条件树杀，而完成判据是进程退出、
@@ -231,28 +239,32 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeUrl !== null) {
         const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
         const got = await collecting
-        const fileChanges = await changeWindow.close()
+        const watched = await changeWindow.close()
         const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
         return {
           status: probe.ok ? 'success' : 'failure',
-          message: probe.message + (got.backgroundHeld ? BACKGROUND_HELD : ''),
+          message:
+            probe.message +
+            (got.backgroundHeld ? BACKGROUND_HELD : '') +
+            (watched.incomplete ? WATCH_INCOMPLETE : ''),
           data: { ...probe.data, ...delivered.data },
-          ...(fileChanges.length ? { fileChanges } : {}),
+          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
           ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
         }
       }
 
       const got = await collecting
-      const fileChanges = await changeWindow.close()
+      const watched = await changeWindow.close()
       const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
+      const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
 
       if (got.timedOut) {
         return {
           status: 'failure',
-          message: `命令超时（${timeout}ms）已终止${got.backgroundHeld ? BACKGROUND_HELD : ''}`,
+          message: `命令超时（${timeout}ms）已终止${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
           data: { ...delivered.data, timedOut: true },
-          ...(fileChanges.length ? { fileChanges } : {}),
+          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
           errorKind: 'timeout',
         }
@@ -265,9 +277,10 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
           (got.exitCode === 0
             ? '命令执行成功'
             : `命令退出码 ${got.exitCode}${sandboxHint(sandbox.active, got.stderr)}`) +
-          (got.backgroundHeld ? BACKGROUND_HELD : ''),
+          (got.backgroundHeld ? BACKGROUND_HELD : '') +
+          watchNote,
         data: { exitCode: got.exitCode, ...delivered.data },
-        ...(fileChanges.length ? { fileChanges } : {}),
+        ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
         ...(delivered.resources.length ? { resources: delivered.resources } : {}),
       }
     },

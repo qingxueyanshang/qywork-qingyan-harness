@@ -5,7 +5,13 @@
  * 它们加起来比会话链路还长，混在一起会让读 store 的人把这些当成热路径。
  */
 
-import type { Attachment, Conversation, EffortLevel, PermissionMode } from '@qywork/core'
+import type {
+  Attachment,
+  Conversation,
+  EffortLevel,
+  PermissionMode,
+  ScheduleView,
+} from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
 import { tauriInvoke } from './shell.ts'
@@ -499,24 +505,8 @@ export function rememberWorkspace(path: string): Promise<void> {
 
 // ───────────────────────── 定时任务 ─────────────────────────
 
-export interface ScheduleItem {
-  id: string
-  title: string
-  prompt: string
-  kind: 'interval' | 'daily'
-  everyMinutes?: number
-  atHour?: number
-  atMinute?: number
-  enabled: boolean
-  createdAt: number
-  lastRunAt?: number
-  lastRunConversationId?: string
-  lastError?: string
-  nextRunAt: number | null
-  due: boolean
-}
 export interface SchedulesPayload {
-  schedules: ScheduleItem[]
+  schedules: ScheduleView[]
   /** 由服务端下发而不是每个客户端各写一遍：这是功能前提，不是补充说明。 */
   runtimeOnly: string
 }
@@ -535,8 +525,8 @@ async function scheduleWrite<T>(path: string, init: RequestInit): Promise<T> {
 
 export function updateSchedule(
   id: string,
-  s: Partial<ScheduleItem>,
-): Promise<{ schedule: ScheduleItem }> {
+  s: Partial<ScheduleView>,
+): Promise<{ schedule: ScheduleView }> {
   return scheduleWrite(`/api/schedules/${id}`, { method: 'PUT', body: JSON.stringify(s) })
 }
 export function deleteSchedule(id: string): Promise<{ ok: boolean }> {

@@ -19,6 +19,11 @@
  * **为什么内容寻址。** 同一个网页抓两次、同一段输出重复出现，只存一份。去重是副产品；
  * 主要目的是**哈希即身份**：分页读取的游标绑定 content_hash，
  * 正文变了游标立刻失效，而不是返回错位内容。
+ *
+ * **本文件的写事务一律 IMMEDIATE。** 三处事务都先读后写（下一个分片序号、
+ * 是否已有同哈希的 blob、全部 blob 列表）。DEFERRED 从读事务升级成写事务时，
+ * 另一个进程正持有写锁的话 SQLite 直接回 SQLITE_BUSY，不走 `busy_timeout`；
+ * 在事务起点取写权才会等待。
  */
 
 import { Database } from 'bun:sqlite'
@@ -60,21 +65,29 @@ export class ContentStore {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     this.db = new Database(path, { create: true })
+    // 等待上限必须先设，理由与主库的 `applyPragmas` 相同：`journal_mode` 自己就要取锁。
+    this.db.exec('PRAGMA busy_timeout = 5000')
+    /*
+     * auto_vacuum 记在数据库头里，只有在头写下之前设才作数，而 `journal_mode = WAL`
+     * 就会写头——所以这一条必须排在它前面。正文是会被大量删除的，没有它文件只增不减，
+     * `collectGarbage` 末尾那句 `incremental_vacuum` 也退化成空操作。
+     */
+    this.db.exec('PRAGMA auto_vacuum = INCREMENTAL')
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA synchronous = NORMAL')
     this.db.exec('PRAGMA foreign_keys = ON')
-    this.db.exec('PRAGMA busy_timeout = 5000')
+    /*
+     * 头部已经写成别的档位的库，只能靠 VACUUM 转档：它按当前连接的 auto_vacuum
+     * 设置整份重写，写完头里就是 INCREMENTAL。
+     *
+     * **只在头部不是 INCREMENTAL 时跑这一次**，跑过之后这个判断恒假，不会再进来。
+     */
+    const mode = this.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()
+    if (mode?.auto_vacuum !== 2) this.db.exec('VACUUM')
     this.ensureSchema()
   }
 
   private ensureSchema(): void {
-    // auto_vacuum 必须在建表**之前**设置，建表后再设是空操作。
-    // 正文是会被大量删除的，没有它文件只增不减。
-    const hasTables = this.db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table'")
-      .get()
-    if ((hasTables?.n ?? 0) === 0) this.db.exec('PRAGMA auto_vacuum = INCREMENTAL')
-
     this.db.exec(/* sql */ `
       CREATE TABLE IF NOT EXISTS content_meta (
         key   TEXT PRIMARY KEY,
@@ -174,18 +187,20 @@ export class ContentStore {
     const stmt = this.db.query(
       'INSERT INTO pending_chunks (write_id, chunk_index, data, stored_bytes) VALUES (?,?,?,?)',
     )
-    this.db.transaction(() => {
-      let idx = nextIndex
-      for (let off = 0; off < data.byteLength; off += CHUNK_BYTES) {
-        const slice = data.subarray(off, Math.min(off + CHUNK_BYTES, data.byteLength))
-        stmt.run(writeId, idx++, slice, slice.byteLength)
-      }
-      this.db
-        .query(
-          'UPDATE pending_writes SET observed_bytes = observed_bytes + ?, updated_at = ? WHERE write_id = ?',
-        )
-        .run(data.byteLength, Date.now(), writeId)
-    })()
+    this.db
+      .transaction(() => {
+        let idx = nextIndex
+        for (let off = 0; off < data.byteLength; off += CHUNK_BYTES) {
+          const slice = data.subarray(off, Math.min(off + CHUNK_BYTES, data.byteLength))
+          stmt.run(writeId, idx++, slice, slice.byteLength)
+        }
+        this.db
+          .query(
+            'UPDATE pending_writes SET observed_bytes = observed_bytes + ?, updated_at = ? WHERE write_id = ?',
+          )
+          .run(data.byteLength, Date.now(), writeId)
+      })
+      .immediate()
 
     return data.byteLength
   }
@@ -215,29 +230,31 @@ export class ContentStore {
       )
       .get(contentHash)
 
-    this.db.transaction(() => {
-      if (!existing) {
-        const count =
+    this.db
+      .transaction(() => {
+        if (!existing) {
+          const count =
+            this.db
+              .query<{ n: number }, [string]>(
+                'SELECT COUNT(*) AS n FROM pending_chunks WHERE write_id = ?',
+              )
+              .get(writeId)?.n ?? 0
           this.db
-            .query<{ n: number }, [string]>(
-              'SELECT COUNT(*) AS n FROM pending_chunks WHERE write_id = ?',
+            .query(
+              'INSERT INTO content_blobs (content_hash, original_bytes, chunk_count, created_at) VALUES (?,?,?,?)',
             )
-            .get(writeId)?.n ?? 0
-        this.db
-          .query(
-            'INSERT INTO content_blobs (content_hash, original_bytes, chunk_count, created_at) VALUES (?,?,?,?)',
-          )
-          .run(contentHash, meta.observed_bytes, count, Date.now())
-        this.db
-          .query(
-            `INSERT INTO content_chunks (content_hash, chunk_index, data, stored_bytes)
+            .run(contentHash, meta.observed_bytes, count, Date.now())
+          this.db
+            .query(
+              `INSERT INTO content_chunks (content_hash, chunk_index, data, stored_bytes)
              SELECT ?, chunk_index, data, stored_bytes FROM pending_chunks WHERE write_id = ?`,
-          )
-          .run(contentHash, writeId)
-      }
-      // 无论是否去重，暂存都要清掉。
-      this.db.query('DELETE FROM pending_writes WHERE write_id = ?').run(writeId)
-    })()
+            )
+            .run(contentHash, writeId)
+        }
+        // 无论是否去重，暂存都要清掉。
+        this.db.query('DELETE FROM pending_writes WHERE write_id = ?').run(writeId)
+      })
+      .immediate()
 
     return {
       contentHash,
@@ -341,18 +358,20 @@ export class ContentStore {
       .all()
     let removed = 0
     const del = this.db.query('DELETE FROM content_blobs WHERE content_hash = ?')
-    this.db.transaction(() => {
-      for (const row of all) {
-        if (keep.has(row.content_hash)) continue
-        del.run(row.content_hash)
-        removed++
-      }
-      // 超过 24 小时还没定稿的暂存写入 = 上次进程崩在写入途中，内存里的哈希器早已丢失，
-      // 续写不可能，留着纯占空间。
-      this.db
-        .query('DELETE FROM pending_writes WHERE updated_at < ?')
-        .run(Date.now() - 24 * 60 * 60 * 1000)
-    })()
+    this.db
+      .transaction(() => {
+        for (const row of all) {
+          if (keep.has(row.content_hash)) continue
+          del.run(row.content_hash)
+          removed++
+        }
+        // 超过 24 小时还没定稿的暂存写入 = 上次进程崩在写入途中，内存里的哈希器早已丢失，
+        // 续写不可能，留着纯占空间。
+        this.db
+          .query('DELETE FROM pending_writes WHERE updated_at < ?')
+          .run(Date.now() - 24 * 60 * 60 * 1000)
+      })
+      .immediate()
     if (removed > 0) this.db.exec('PRAGMA incremental_vacuum')
     return { removed }
   }

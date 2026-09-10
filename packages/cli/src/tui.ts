@@ -17,10 +17,12 @@
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import {
+  collectResourceGarbage,
   configNotices,
   dataPath,
   diagnoseConfig,
   exportConversation,
+  importLegacySchedules,
   loadConfig,
   type QyConfig,
   Session,
@@ -53,7 +55,21 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   }
 
   const store = new Store({ path: dataPath() })
+  // 定时任务的旧文件在这里也要导：本次会话注入了定时任务端口，不导的话在 `qy serve`
+  // 跑过之前 `list_schedules` 读不到已经排好的任务。不合法就抛，与 serve 同一条语义。
+  importLegacySchedules(store)
   const content = new ContentStore(contentPathFor(dataPath()))
+  /*
+   * 正文回收。两库都开好之后、跑这一轮之前收一次：要清掉的是上次进程在登记引用之前
+   * 退出留下的孤儿，与 `qy serve` 走同一个协调器。
+   *
+   * 失败只写一行 stderr，不拦这一轮：回收的是磁盘空间，不是正确性。
+   */
+  try {
+    collectResourceGarbage(store, content)
+  } catch (err) {
+    process.stderr.write(`[qy] 正文回收失败：${err instanceof Error ? err.message : String(err)}\n`)
+  }
 
   let conversationId: ConversationId | undefined
   let model = config.active.model

@@ -66,17 +66,6 @@ export {
   setCommandRunner,
   spawnGuarded,
 } from './sandbox.ts'
-// 定时任务：server 的调度 tick 与 HTTP 面读写的是同一张表。
-// 它落在这个包而不是 runtime，是因为模型侧的三个工具必须在这里，
-// 而 tools(L3) 不许依赖 runtime(L5)——理由写在 `schedules.ts` 顶部。
-export {
-  diagnoseSchedule,
-  isDue,
-  loadSchedules,
-  nextRunAt,
-  type Schedule,
-  updateSchedules,
-} from './schedules.ts'
 // 作用域：runtime 与 server 都要按同一份规则算三层的根
 export {
   AGENTS_DIR,

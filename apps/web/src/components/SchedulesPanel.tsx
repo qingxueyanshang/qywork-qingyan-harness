@@ -1,3 +1,4 @@
+import type { ScheduleView } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import {
@@ -5,8 +6,9 @@ import {
   deleteSchedule,
   loadSchedules,
   runScheduleNow,
-  type ScheduleItem,
+  state,
   updateSchedule,
+  workspace,
 } from '../lib/store/index.ts'
 import { IconTrash } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
@@ -15,8 +17,8 @@ import { LoadState } from './settings/LoadState.tsx'
  * 定时任务。
  *
  * **界面上必须写死一句话。** 「仅在应用运行时触发」。这不是提示，是这个功能的**前提**：sidecar 的生
- * 命周期挂在窗口上，关掉应用就不会触发，错过的也不补。一条界面上显示已排期、实际不会触发的定时任
- * 务，比没有这个功能坏得多。
+ * 命周期挂在窗口上，关掉应用就不会触发；重新打开后已到期的任务跑一次，关闭期间欠下的次数不逐次
+ * 补跑。一条界面上显示已排期、实际不会触发的定时任务，比没有这个功能坏得多。
  *
  * 这句话由服务端下发（`runtimeOnly`），不在前端各写一遍——措辞漂移会让
  * 手机端和桌面端对同一件事给出两种说法。
@@ -29,7 +31,16 @@ const NEW_SCHEDULE =
   '我们一起来设一个定时任务吧。先说明定时任务在 qywork 里怎么工作、到点之后跑在哪；然后问我要它做什么、什么时候跑。'
 
 export function SchedulesPanel() {
-  const [data, { refetch }] = createResource(loadSchedules)
+  /*
+   * 重取的判据挂在两个已有事实上：当前项目，以及在跑的会话集合。
+   *
+   * 后台触发不经过这个面板，只有 `conversation.busy` 会把这次触发的会话进出记到状态里；
+   * 拿它当失效信号，一轮跑完就能读到新的终态。不加轮询定时器：这一页可能一直开着。
+   */
+  const [data, { refetch }] = createResource(
+    () => `${workspace()?.id ?? ''}|${state.busyConversations.join(',')}`,
+    loadSchedules,
+  )
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
 
@@ -87,13 +98,13 @@ export function SchedulesPanel() {
                   <div class="field-hint">{describe(s)}</div>
                   <div class="schedule-prompt">{s.prompt}</div>
 
-                  {/* 失败要贴在这条任务上。触发的时候没人开着界面，
-                      只发事件等于没有接收者。 */}
-                  <Show when={s.lastError}>
-                    {(e) => <div class="field-hint bad">上次失败：{e()}</div>}
-                  </Show>
+                  {/* 上次触发的结果贴在这条任务上：触发的时候没人开着界面，
+                      只发事件等于没有接收者。正文取自那一次的 Run。 */}
                   <Show when={s.lastRunAt}>
                     {(t) => <div class="field-hint">上次触发 {fmt(t())}</div>}
+                  </Show>
+                  <Show when={outcome(s)}>
+                    {(text) => <div class="field-hint bad">{text()}</div>}
                   </Show>
                   <Show when={s.enabled && s.nextRunAt}>
                     {(t) => <div class="field-hint">下次 {fmt(t())}</div>}
@@ -131,10 +142,25 @@ export function SchedulesPanel() {
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
-function describe(s: ScheduleItem): string {
+function describe(s: ScheduleView): string {
   return s.kind === 'daily'
     ? `每天 ${pad(s.atHour ?? 0)}:${pad(s.atMinute ?? 0)}`
     : `每 ${s.everyMinutes} 分钟`
+}
+
+/**
+ * 上次触发的结果。正常跑完与从没触发过都返回 null——那一行只在有话说时出现。
+ *
+ * 有触发时刻却没有执行记录，如实说出来：认领之后、起轮之前进程退出会留下这个状态，
+ * 把它显示成成功是给账本注水。
+ */
+function outcome(s: ScheduleView): string | null {
+  if (s.lastRunAt === undefined) return null
+  const run = s.lastRun
+  if (run === null || run.runId === null) return '没有执行记录'
+  if (run.status === 'failed') return `上次失败：${run.errorMessage ?? '没有报错正文'}`
+  if (run.status === 'interrupted') return '上次被中断'
+  return null
 }
 
 /** 用本机时区显示。定时任务的语义就是本地时间，显示成 UTC 会对不上用户设的那个点。 */

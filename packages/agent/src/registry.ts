@@ -20,6 +20,9 @@ import type {
   GoalWriteResult,
   IntermediateResourceRef,
   ResourceCoverage,
+  Schedule,
+  ScheduleDraft,
+  ScheduleView,
   SubagentKind,
   SubagentTarget,
   TodoItem,
@@ -216,6 +219,27 @@ export interface McpConfigPort {
     toPath?: string
     restartRequired?: boolean
   }>
+}
+
+/**
+ * 定时任务端口。
+ *
+ * **为什么是端口。** 与 `GoalPort` 同一条理由：任务表在账本（`@qywork/store`），而工具不持有账本
+ * 句柄——写进哪一份账本、算哪个工作区的，由装配方决定。接口定义在这里，实现由 runtime 注入。
+ *
+ * **按当前工作区收窄。** 任务表是全机一份，方法上不带工作区参数——带了就等于允许模型列出、
+ * 甚至删掉另一个项目排的任务，而那些任务它从没见过。
+ *
+ * 可选：直接构造 `ToolContext` 的测试夹具接不上。三个工具必须能降级——明确报「本次执行没有
+ * 定时任务表」，不能假装记下了。
+ */
+export interface SchedulePort {
+  /** 当前工作区的全部任务，带上次执行的 Run 终态投影。 */
+  list(): ScheduleView[]
+  /** 建一条。校验由调用方先做，这里只负责落盘。 */
+  create(draft: ScheduleDraft): Schedule
+  /** 删一条；不存在或不属于当前工作区时返回 null。 */
+  remove(id: string): Schedule | null
 }
 
 /**
@@ -521,6 +545,13 @@ export interface ToolContext {
   /** MCP 配置通道；没接时 `write_mcp_server` / `move_mcp_server` 不注册。 */
   mcpConfig?: McpConfigPort
   /**
+   * 定时任务通道。见 `SchedulePort`。
+   *
+   * 可选而不是必填可空：没接上时三个工具明确报「没有定时任务表」，那是**更严**的一侧
+   * （排不进去），漏接不会让任何任务被静默丢弃。
+   */
+  schedules?: SchedulePort
+  /**
    * 长工具的中途输出回传通道（shell stdout、下载进度）。
    *
    * **只能由 loop 按 step 绑定**：这条通道产出的 `tool.delta` 要带 stepId 才认得出
@@ -589,10 +620,11 @@ export interface ToolContext {
    *
    * 它主动放宽安全边界，所以有三条硬要求，缺一条就会退化成一个静默无效的选项：
    *
-   * 1. **必须同时传给三层**——路径解析、`policy.ts` 的静态规则、沙箱 bind 清单。
+   * 1. **必须同时传给三层**——路径解析、`policy.ts` 的拒绝清单、沙箱 bind 清单。
    *    只接一层的表现都是「配了但不管用」，而三层各自的错误信息完全不同。
    * 2. **只接受绝对路径**，且已经过 `normalizeAdditionalDirectories` 校验。
-   * 3. **`full` 模式不豁免它**——它是路径边界不是裁决，与凭证剥离同级。
+   * 3. **它是 `auto` 的机制。** `full` 下路径边界整个不设，这份清单配不配都一样，
+   *    不要写成「`full` 不豁免它」——那与 `unrestrictedPaths` 相反。
    */
   additionalDirectories?: string[]
   /**
@@ -604,8 +636,11 @@ export interface ToolContext {
    *
    * 与权限闸是同一个模式的两面：`session.ts` 的 `decide` 在 `full` 下一进来就
    * 返回 allowed，所以 `run_command` 早就全放行了。路径层不跟着放开的结果不是
-   * 「更安全」，是模型 `read_file` 被拒、转头 `run_command` 读到——账本里
-   * 账本里有一次实证（会话 `cv_0msw3jst9`）。
+   * 「更安全」，是模型 `read_file` 被拒、转头 `run_command` 读到——账本里有一次
+   * 实证（会话 `cv_0msw3jst9`）。
+   *
+   * **它不影响内核沙箱那一层。** `shell.ts` 组装 `SandboxPolicy` 时不读这个字段，
+   * 所以有 bubblewrap / seatbelt 的平台上，`full` 下 shell 子进程仍受写边界约束。
    */
   unrestrictedPaths?: boolean
   /**

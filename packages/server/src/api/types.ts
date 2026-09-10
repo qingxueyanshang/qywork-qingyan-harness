@@ -39,6 +39,16 @@ export interface ApiDeps {
    * 而监听盯的就是「最近打开的那个」。
    */
   watchGit(): void
+  /**
+   * 回收无人引用的正文，返回删掉的 blob 数。
+   *
+   * 只交这一个回调，不把 `ContentStore` 交给各域：正文库上还有 `put` / `collectGarbage`
+   * 这类能直接删字节的方法，而 API 这一层需要的只是「删完会话之后收一次空间」。
+   *
+   * 抛出即回收失败。**调用方必须把它与删除本身分开报**：会话已经删掉了，
+   * 报成删除失败会让用户再删一次，而那一次收到的是 404。
+   */
+  collectGarbage(): { removed: number }
 }
 
 /**

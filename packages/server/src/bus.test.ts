@@ -212,3 +212,61 @@ describe('换了一条流就不能按位置比大小', () => {
     expect(new EventBus().streamId).not.toBe(new EventBus().streamId)
   })
 })
+
+/**
+ * 保留窗口的字节上限。
+ *
+ * 原始失败形状：`qy serve` 在持续负载下 RSS 从约 105 MB 单调涨到约 430 MB，重启即回落。
+ * 持有者是这个环——`tool.delta` 每帧带一整片命令输出（实测约 109 KB），
+ * 帧数封顶 5000 换算成几百 MB。
+ */
+describe('保留窗口按字节封顶', () => {
+  const sub = (): Subscriber => ({
+    id: 'b',
+    origin: 'desktop',
+    conversations: null,
+    send: () => {},
+  })
+
+  /** 一帧约 1 MB 的命令输出，形状与 `tool.delta` 一致。 */
+  const bigDelta = (): AgentEvent =>
+    ({
+      type: 'tool.delta',
+      runId: 'run_x',
+      stepId: 'st_x',
+      channel: 'stdout',
+      delta: 'x'.repeat(1024 * 1024),
+    }) as AgentEvent
+
+  test('大帧攒够字节就淘汰，环长度远不到帧数上限', () => {
+    const bus = new EventBus()
+    for (let i = 0; i < 200; i++) bus.publish(bigDelta(), c1)
+
+    // 环里还剩几帧只能从补发口径反推：最老那一帧之前的位置都补不上。
+    let retained = 0
+    for (let lastSeq = bus.currentSeq; lastSeq > 0; lastSeq--) {
+      if (bus.replayFrom({ streamId: bus.streamId, lastSeq: lastSeq - 1 }, sub()) === null) break
+      retained++
+    }
+    expect(retained).toBeLessThan(200)
+    expect(retained).toBeGreaterThan(0)
+  })
+
+  test('最早的位置补不上（走 resync），最新的仍补得上', () => {
+    const bus = new EventBus()
+    for (let i = 0; i < 200; i++) bus.publish(bigDelta(), c1)
+
+    expect(bus.replayFrom({ streamId: bus.streamId, lastSeq: 0 }, sub())).toBe(null)
+    const tail = bus.replayFrom({ streamId: bus.streamId, lastSeq: bus.currentSeq - 1 }, sub())
+    expect(tail?.length).toBe(1)
+    expect(tail?.[0]?.seq).toBe(bus.currentSeq)
+  })
+
+  test('小帧不触发字节淘汰 —— 帧数上限内的全部补得回来', () => {
+    const bus = new EventBus()
+    for (let i = 0; i < 4000; i++) bus.publish(delta(String(i)), c1)
+
+    const all = bus.replayFrom({ streamId: bus.streamId, lastSeq: 0 }, sub())
+    expect(all?.length).toBe(4000)
+  })
+})
