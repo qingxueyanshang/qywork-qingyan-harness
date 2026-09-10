@@ -22,7 +22,8 @@ import { collect, exportConversation, exportConversationDiagnostics } from './ar
 
 function fixture(): { store: Store; conversationId: ConversationId } {
   const store = new Store({ path: ':memory:' })
-  const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
+  // 已归一的绝对路径：仓储层按 `normalizeWorkspaceRoot` 落盘，回读的是这一份。
+  const ws = upsertWorkspace(store, 'C:\\tmp\\ws', 'ws')
   const conv = createConversation(store, {
     workspaceId: ws.id,
     provider: 'p',
@@ -140,7 +141,7 @@ describe('采集', () => {
   test('工作区、会话状态、运行上下文、消息、step、资源与逐请求账本都取到了', () => {
     const { store, conversationId } = fixture()
     const b = collect(store, conversationId)
-    expect(b.workspace?.rootPath).toBe('/tmp/ws')
+    expect(b.workspace?.rootPath).toBe('C:\\tmp\\ws')
     expect(b.conversation?.id).toBe(conversationId)
     expect(b.messages).toHaveLength(1)
     expect(b.sessionState.goal?.objective).toBe('修好 calc.js')

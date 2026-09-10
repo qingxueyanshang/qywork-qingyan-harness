@@ -25,14 +25,14 @@
     },
     "apps/desktop": {
       "name": "@qywork/desktop",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "devDependencies": {
         "@tauri-apps/cli": "^2.11.4",
       },
     },
     "apps/web": {
       "name": "@qywork/web",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@codemirror/lang-css": "^6.3.1",
         "@codemirror/lang-html": "^6.4.9",
@@ -62,7 +62,7 @@
     },
     "packages/agent": {
       "name": "@qywork/agent",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/ai": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -71,7 +71,7 @@
     },
     "packages/ai": {
       "name": "@qywork/ai",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.80.0",
         "@qywork/core": "workspace:*",
@@ -80,11 +80,12 @@
     },
     "packages/cli": {
       "name": "@qywork/cli",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "bin": {
         "qy": "./src/index.ts",
       },
       "dependencies": {
+        "@qywork/ai": "workspace:*",
         "@qywork/core": "workspace:*",
         "@qywork/runtime": "workspace:*",
         "@qywork/server": "workspace:*",
@@ -98,11 +99,11 @@
     },
     "packages/core": {
       "name": "@qywork/core",
-      "version": "0.1.9",
+      "version": "0.1.12",
     },
     "packages/mcp": {
       "name": "@qywork/mcp",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -110,7 +111,7 @@
     },
     "packages/plugins": {
       "name": "@qywork/plugins",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -118,7 +119,7 @@
     },
     "packages/runtime": {
       "name": "@qywork/runtime",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -132,7 +133,7 @@
     },
     "packages/server": {
       "name": "@qywork/server",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -147,14 +148,14 @@
     },
     "packages/store": {
       "name": "@qywork/store",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/core": "workspace:*",
       },
     },
     "packages/team": {
       "name": "@qywork/team",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/core": "workspace:*",
         "@qywork/tools": "workspace:*",
@@ -162,7 +163,7 @@
     },
     "packages/tools": {
       "name": "@qywork/tools",
-      "version": "0.1.9",
+      "version": "0.1.12",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",

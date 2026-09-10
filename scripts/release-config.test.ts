@@ -1,6 +1,13 @@
+/**
+ * 发布链路的回归。**覆盖范围**：`apps/desktop/src-tauri/tauri.conf.json` 与
+ * `.github/` 下的工作流清单，以及 `scripts/collect-installer.ts` 的收集与清理。
+ */
+
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { collect } from './collect-installer.ts'
 
 const ROOT = join(import.meta.dir, '..')
 
@@ -81,5 +88,45 @@ describe('桌面发布清单', () => {
     expect(notes).toContain('## 本次更新')
     expect(workflow).toContain('.github/release-notes/v$version.md')
     expect(workflow).toContain('releaseBody: $' + '{{ steps.release_notes.outputs.body }}')
+  })
+})
+
+describe('本地安装包收集', () => {
+  test('只删收过的安装包，release 下的编译产物留在原处', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'collect-'))
+    const target = join(base, 'cargo-target')
+    const bundle = join(target, 'release', 'bundle', 'nsis')
+    const deps = join(target, 'release', 'deps')
+    mkdirSync(bundle, { recursive: true })
+    mkdirSync(deps, { recursive: true })
+    writeFileSync(join(bundle, 'qywork_9.9.9_x64-setup.exe'), 'setup')
+    writeFileSync(join(deps, 'qywork.rlib'), 'rlib')
+    const out = join(base, 'installer')
+
+    try {
+      expect(await collect(target, out)).toBe(0)
+
+      expect(existsSync(join(out, 'qywork_9.9.9_x64-setup.exe'))).toBe(true)
+      expect(readFileSync(join(out, 'SHA256SUMS.txt'), 'utf8')).toContain(
+        'qywork_9.9.9_x64-setup.exe',
+      )
+      expect(existsSync(join(bundle, 'qywork_9.9.9_x64-setup.exe'))).toBe(false)
+      // 冷编译三分钟就是从这里来的：往上溯到 release/ 会把它一起删掉。
+      expect(existsSync(join(deps, 'qywork.rlib'))).toBe(true)
+      expect(existsSync(join(target, 'release'))).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('没有安装包时以 1 退出，不建输出目录', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'collect-empty-'))
+    const out = join(base, 'installer')
+    try {
+      expect(await collect(join(base, 'cargo-target'), out)).toBe(1)
+      expect(existsSync(out)).toBe(false)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })

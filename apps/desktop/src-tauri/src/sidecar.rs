@@ -22,6 +22,9 @@ use tokio::sync::mpsc::Receiver;
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const RESTART_MAX_DELAY_MS: u64 = 15_000;
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
+/// 启动失败对话框里带多少 stderr。比 `STDERR_TAIL_BYTES` 小得多：MessageBox 不滚动，
+/// 文本撑出屏幕高度时确定按钮就点不到了。取尾部——退出前最后打印的那段就是错误本身。
+const FATAL_STDERR_TAIL_BYTES: usize = 1024;
 
 #[derive(Debug, Clone)]
 struct PreviousExit {
@@ -39,17 +42,25 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/** 只留退出前最后 8 KiB；按 UTF-8 字符边界裁，也避免撑满 Windows 环境块。 */
-fn append_stderr_tail(tail: &mut String, text: &str) {
-    tail.push_str(text);
-    if tail.len() <= STDERR_TAIL_BYTES {
-        return;
+/** 尾部至多 `max` 字节，按 UTF-8 字符边界切。 */
+fn tail_of(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
     }
-    let mut cut = tail.len() - STDERR_TAIL_BYTES;
-    while !tail.is_char_boundary(cut) {
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
         cut += 1;
     }
-    tail.drain(..cut);
+    &text[cut..]
+}
+
+/** 只留退出前最后 8 KiB；上限同时避免撑满 Windows 环境块。 */
+fn append_stderr_tail(tail: &mut String, text: &str) {
+    tail.push_str(text);
+    let keep = tail_of(tail, STDERR_TAIL_BYTES).len();
+    if keep < tail.len() {
+        tail.drain(..tail.len() - keep);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -151,8 +162,11 @@ fn kill_current(handle: &SidecarHandle) {
     }
 }
 
-/** 从 sidecar 的稳定两行输出中取回真正开始监听后的端点。 */
-async fn await_handshake(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo> {
+/// 从 sidecar 的稳定两行输出中取回真正开始监听后的端点。
+///
+/// stderr 边转发边攒进 `tail`：握手失败时那一段是唯一说得出原因的证据，
+/// 而 release 下没有控制台，转发出去的那份谁也看不见。
+async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> Result<SidecarInfo> {
     let mut token: Option<String> = None;
     let mut port: Option<u16> = None;
 
@@ -177,7 +191,9 @@ async fn await_handshake(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo>
                 }
             }
             CommandEvent::Stderr(line) => {
-                eprint!("{}", String::from_utf8_lossy(&line));
+                let text = String::from_utf8_lossy(&line);
+                eprint!("{text}");
+                append_stderr_tail(tail, &text);
             }
             CommandEvent::Error(error) => {
                 return Err(anyhow!("读取 qy serve 输出失败：{error}"));
@@ -194,8 +210,11 @@ async fn await_handshake(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo>
     Err(anyhow!("qy serve 输出结束但未报出令牌"))
 }
 
-async fn handshake_with_timeout(rx: &mut Receiver<CommandEvent>) -> Result<SidecarInfo> {
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, await_handshake(rx)).await {
+async fn handshake_with_timeout(
+    rx: &mut Receiver<CommandEvent>,
+    tail: &mut String,
+) -> Result<SidecarInfo> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, await_handshake(rx, tail)).await {
         Ok(result) => result,
         Err(_) => Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌")),
     }
@@ -276,7 +295,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                         if !hold_child(&handle, child) {
                             return;
                         }
-                        match handshake_with_timeout(&mut next_rx).await {
+                        match handshake_with_timeout(&mut next_rx, &mut stderr_tail).await {
                             Ok(next) if next.port == info.port && next.token == info.token => {
                                 eprintln!("[qywork] qy serve 已在原端点恢复 :{}", info.port);
                                 rx = next_rx;
@@ -329,15 +348,23 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
      * 20 秒：冷启动要读配置、开 SQLite、可能还要预热扩展，给得比感觉上宽一些；
      * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
      */
-    match handshake_with_timeout(&mut rx).await {
+    let mut tail = String::new();
+    match handshake_with_timeout(&mut rx, &mut tail).await {
         Ok(info) => {
             supervise(app.clone(), info.clone(), rx);
             Ok(info)
         }
         Err(error) => {
             // 首次启动仍然是可见终态：收干净后让 lib.rs 弹启动失败对话框。
+            // 错误本身只说得出「在报出令牌前退出」，退出的原因在 sidecar 的 stderr 里，
+            // 所以把尾巴一并带上——对话框是用户唯一能看到的输出。
             kill_current(&handle);
-            Err(error)
+            let tail = tail_of(tail.trim_end(), FATAL_STDERR_TAIL_BYTES);
+            Err(if tail.is_empty() {
+                error
+            } else {
+                anyhow!("{error}\n\n{tail}")
+            })
         }
     }
 }

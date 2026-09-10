@@ -713,23 +713,12 @@ async function main(): Promise<number> {
   }
 
   /** 停掉两条任务、等在跑的收尾，取三次静止读数，再恢复。 */
-  /**
-   * 启停一条任务。
-   *
-   * 时间字段必须一并回传：`PUT /api/schedules/:id` 只从请求体取
-   * `everyMinutes` / `atHour` / `atMinute`，不从当前值兜底，少给一个就是 422。
-   */
+  /** 启停一条任务。只发 `enabled`，与面板的开关走同一条部分更新路径。 */
   const setEnabled = async (name: 'A' | 'B', enabled: boolean): Promise<void> => {
     const res = await api(`/api/schedules/${scheduleIds[name]}?ws=${wsIds[name]}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        enabled,
-        title: `负载任务 ${name}`,
-        prompt: `${name} 的固定负载：读一遍 payload.txt 并汇报字节数。`,
-        kind: 'interval',
-        everyMinutes: 1,
-      }),
+      body: JSON.stringify({ enabled }),
     })
     if (!res.ok) failures.push(`任务 ${name} 启停返回 ${res.status}：${await res.text()}`)
   }

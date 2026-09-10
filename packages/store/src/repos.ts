@@ -5,6 +5,7 @@
  * （step 原地更新、usage 累加口径、run 终态唯一）必须集中在这里，散到调用方就守不住。
  */
 
+import { resolve } from 'node:path'
 import type {
   CompactionManifest,
   ContextBreakdown,
@@ -72,11 +73,25 @@ const EMPTY_USAGE: RunUsage = {
 
 // ─────────────────────────────── 工作区 ───────────────────────────────
 
+/**
+ * 工作区根路径的落盘形式：绝对路径 + 本平台分隔符。
+ *
+ * `root_path` 是 UNIQUE，但比较按字符串做。Windows 上同一个目录写成 `C:/x/ws` 与
+ * `C:\x\ws` 会各建一行，同一个目录下的会话因此分裂成两个项目。**写入与按根查找
+ * 都必须先过这里**，`schedules.ts` 的 `workspace_root` 同用这一份。
+ *
+ * 边界：不查文件系统。符号链接、盘符大小写、8.3 短名不在归一范围内。
+ */
+export function normalizeWorkspaceRoot(rootPath: string): string {
+  return resolve(rootPath)
+}
+
 export function upsertWorkspace(store: Store, rootPath: string, name: string): Workspace {
   const now = Date.now()
+  const root = normalizeWorkspaceRoot(rootPath)
   const existing = store.db
     .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
-    .get(rootPath)
+    .get(root)
   if (existing) {
     // `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
     // 它的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
@@ -88,7 +103,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
   const ws: Workspace = {
     id: newWorkspaceId(),
     name,
-    rootPath,
+    rootPath: root,
     lastOpenedAt: now,
     createdAt: now,
   }
@@ -163,7 +178,7 @@ export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolea
 export function getWorkspaceByPath(store: Store, rootPath: string): Workspace | null {
   const row = store.db
     .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
-    .get(rootPath)
+    .get(normalizeWorkspaceRoot(rootPath))
   return row ? rowToWorkspace(row) : null
 }
 

@@ -1,5 +1,5 @@
 import type { RunUsage, StopReason, SubagentKind } from '@qywork/core'
-import { formatMoney } from '@qywork/core'
+import { formatMoney, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import type { Accessor, JSX, Setter } from 'solid-js'
 import {
   createContext,
@@ -1131,14 +1131,21 @@ function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
 
 const WF_NODE_MAX = 160
 const WF_LAYER_GAP = 12
+/**
+ * 一格的最小宽度：左右内边距与边框 26px + 名字四个汉字 48px + 8px 间隙 +
+ * 种类里最长的那个说法「外部 CLI」44px。
+ */
+const WF_NODE_MIN = 128
 
 /**
- * 同一语义层保持等宽列。宽度充足时节点不超过 160px；宽度不足时每列共同收窄，
- * 由节点正文承担有限换行，不把整张图扩成横向滚动区域。
+ * 同一语义层保持等宽列。宽度充足时节点不超过 `WF_NODE_MAX`；宽度不足时列宽停在
+ * `WF_NODE_MIN`，整张图在 `.wf-scroll` 里横向滚动。
+ * **列的下限不能改回 0**：节点数一多，每格分到的宽度会小于名字的一个字，
+ * 图上只剩种类与耗时。
  */
 function workflowLayerStyle(size: number): JSX.CSSProperties {
   return {
-    'grid-template-columns': `repeat(${size}, minmax(0, 1fr))`,
+    'grid-template-columns': `repeat(${size}, minmax(${WF_NODE_MIN}px, 1fr))`,
     'max-width': `${size * WF_NODE_MAX + Math.max(0, size - 1) * WF_LAYER_GAP}px`,
   }
 }
@@ -1388,81 +1395,92 @@ function DelegateCard(props: { item: TranscriptItem }) {
       <Show when={props.item.toolName === 'workflow'}>
         <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       </Show>
-      <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
-        <svg class="wf-edges" aria-hidden="true">
-          <Index each={edges()}>{(e) => <path d={e().d} classList={{ live: e().live }} />}</Index>
-        </svg>
-        <For each={graph().layers}>
-          {(layer) => (
-            <div
-              class="wf-layer"
-              style={graph().horizontal ? undefined : workflowLayerStyle(layer.length)}
-            >
-              <For each={layer}>
-                {(n) => {
-                  const st = () => stateOf(n)
-                  /*
-                   * 点一格 = 翻开它。两种格子翻开的内容不同：内置子 agent 有一条
-                   * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
-                   * 两者都没有时（还没跑到）点不开。
-                   *
-                   * 种类只认状态。调用参数在续派时只有一个子 agent id，按它猜种类会把
-                   * 外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
-                   */
-                  const cli = () => st()?.kind === 'cli'
-                  // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
-                  // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
-                  const name = () => st()?.label || n.title
-                  const open = () => {
-                    const cid = st()?.conversationId
-                    if (cli()) openCliTab(props.item.id, n.key, name())
-                    else if (cid) openConversationTab(cid, name())
-                  }
-                  return (
-                    <Show
-                      when={n.kind === 'agent'}
-                      fallback={
-                        // 两端是这条会话自己：交出去、收回来。不可点——它就是用户正在看的这一页。
-                        <div
-                          class="wf-node session"
+      {/*
+        横向滚动挂在这一层，不挂在 `.wf-graph` 上：`.wf-edges` 是以 `.wf-graph` 为
+        包含块的绝对定位层，`.wf-graph` 自己一旦滚动，线的坐标就与量出来的节点位置
+        差一个 `scrollLeft`。
+      */}
+      <div class="wf-scroll">
+        <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
+          <svg class="wf-edges" aria-hidden="true">
+            <Index each={edges()}>{(e) => <path d={e().d} classList={{ live: e().live }} />}</Index>
+          </svg>
+          <For each={graph().layers}>
+            {(layer) => (
+              <div
+                class="wf-layer"
+                style={graph().horizontal ? undefined : workflowLayerStyle(layer.length)}
+              >
+                <For each={layer}>
+                  {(n) => {
+                    const st = () => stateOf(n)
+                    /*
+                     * 点一格 = 翻开它。两种格子翻开的内容不同：内置子 agent 有一条
+                     * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
+                     * 两者都没有时（还没跑到）点不开。
+                     *
+                     * 种类只认状态。调用参数在续派时只有一个子 agent id，按它猜种类会把
+                     * 外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
+                     */
+                    const cli = () => st()?.kind === 'cli'
+                    // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
+                    // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
+                    const name = () => st()?.label || n.title
+                    const open = () => {
+                      const cid = st()?.conversationId
+                      if (cli()) openCliTab(props.item.id, n.key, name())
+                      else if (cid) openConversationTab(cid, name())
+                    }
+                    return (
+                      <Show
+                        when={n.kind === 'agent'}
+                        fallback={
+                          // 两端是这条会话自己：交出去、收回来。不可点——它就是用户正在看的这一页。
+                          <div
+                            class="wf-node session"
+                            classList={{ [st()?.phase ?? 'waiting']: true }}
+                            ref={hold(n.key)}
+                          >
+                            <span class="wf-node-name truncate">{n.title}</span>
+                          </div>
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="wf-node"
                           classList={{ [st()?.phase ?? 'waiting']: true }}
+                          disabled={cli() ? st()?.phase === 'waiting' : !st()?.conversationId}
+                          onClick={open}
                           ref={hold(n.key)}
                         >
-                          <span class="wf-node-name truncate">{n.title}</span>
-                        </div>
-                      }
-                    >
-                      <button
-                        type="button"
-                        class="wf-node"
-                        classList={{ [st()?.phase ?? 'waiting']: true }}
-                        disabled={cli() ? st()?.phase === 'waiting' : !st()?.conversationId}
-                        onClick={open}
-                        ref={hold(n.key)}
-                      >
-                        {/* 主行是那一格的名字与种类，次行是它的指令与耗时；两种卡同一条规则。 */}
-                        <span class="wf-node-head">
-                          <span class="wf-node-name">{name()}</span>
-                          <Show when={st()?.kind}>
-                            {(kind) => <span class="wf-node-kind">{kind()}</span>}
-                          </Show>
-                        </span>
-                        <span class="wf-node-who">
-                          <Show when={n.task}>
-                            <span class="wf-node-task">{n.task}</span>
-                          </Show>
-                          <Show when={st()?.durationMs}>
-                            {(ms) => <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>}
-                          </Show>
-                        </span>
-                      </button>
-                    </Show>
-                  )
-                }}
-              </For>
-            </div>
-          )}
-        </For>
+                          {/* 主行是那一格的名字与种类，次行是它的指令与耗时；两种卡同一条规则。 */}
+                          <span class="wf-node-head">
+                            <span class="wf-node-name">{name()}</span>
+                            <Show when={st()?.kind}>
+                              {(kind) => (
+                                <span class="wf-node-kind">{SUBAGENT_KIND_LABEL[kind()]}</span>
+                              )}
+                            </Show>
+                          </span>
+                          <span class="wf-node-who">
+                            <Show when={n.task}>
+                              <span class="wf-node-task">{n.task}</span>
+                            </Show>
+                            <Show when={st()?.durationMs}>
+                              {(ms) => (
+                                <span class="wf-node-time">{(ms() / 1000).toFixed(1)}s</span>
+                              )}
+                            </Show>
+                          </span>
+                        </button>
+                      </Show>
+                    )
+                  }}
+                </For>
+              </div>
+            )}
+          </For>
+        </div>
       </div>
       {/* 失败原因。**只印这一处**：边框已经说了「失败了」，这一行说的是为什么。 */}
       <Show

@@ -490,12 +490,8 @@ export interface UsageTurn {
  * 每一条都是**独立于 run 的一笔开销**，不加进来就意味着那笔钱在界面上不存在。
  * `summary`（压缩时的摘要调用）是典型：不进账本它就完全看不见，
  * 压缩越频繁账单和界面差得越多。
- *
- * `classifier` 是权限裁决的那次小模型调用。它按**每条待判命令**计费，
- * 频次可能比 run 本身高一个量级，所以必须能单独查——
- * `qy usage --by kind` 才答得出「裁决占了多少」，以及要不要换个更小的模型。
  */
-export type UsageKind = 'run' | 'summary' | 'classifier'
+export type UsageKind = 'run' | 'summary'
 
 export interface UsageTotals {
   entries: number

@@ -291,10 +291,10 @@ describe('清账', () => {
  * 现象是功能全部正常、账本一行没有、哪里都不报错——最难查的那种。
  */
 describe('记账失败要说出来', () => {
-  test('新的 kind 能记进去 —— CHECK 约束跟着 TS 类型一起放开了', () => {
+  test('run 以外的 kind 能记进去 —— CHECK 约束覆盖 TS 类型的每一个值', () => {
     const store = new Store({ path: ':memory:' })
     const ok = recordUsage(store, {
-      kind: 'classifier',
+      kind: 'summary',
       model: 'm',
       provider: 'openai_chat_completions',
       inputTokens: 10,
@@ -302,7 +302,7 @@ describe('记账失败要说出来', () => {
       cost: 0.0001,
     })
     expect(ok).toBe(true)
-    expect(usageTotals(store, { kind: 'classifier' }).entries).toBe(1)
+    expect(usageTotals(store, { kind: 'summary' }).entries).toBe(1)
     store.close()
   })
 

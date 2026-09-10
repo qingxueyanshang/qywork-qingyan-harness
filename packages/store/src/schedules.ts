@@ -22,7 +22,7 @@ import type {
 } from '@qywork/core'
 import { isDue, nextRunAt } from '@qywork/core'
 import type { Store } from './db.ts'
-import { createConversation } from './repos.ts'
+import { createConversation, normalizeWorkspaceRoot } from './repos.ts'
 import type { ScheduleRow } from './schema.ts'
 
 /** 认领成功的一次触发。调用方在事务提交之后按它起轮。 */
@@ -105,7 +105,7 @@ export function listSchedules(store: Store, workspaceRoot: string, now: number):
     .query<ScheduleRow, [string]>(
       'SELECT * FROM schedules WHERE workspace_root = ? ORDER BY created_at ASC, id ASC',
     )
-    .all(workspaceRoot)
+    .all(normalizeWorkspaceRoot(workspaceRoot))
     .map((r) => scheduleView(store, rowToSchedule(r), now))
 }
 
@@ -145,7 +145,7 @@ export function createSchedule(
   const s: Schedule = {
     ...draft,
     id: `sch_${crypto.randomUUID().slice(0, 12)}`,
-    workspaceRoot,
+    workspaceRoot: normalizeWorkspaceRoot(workspaceRoot),
     enabled: true,
     createdAt: Date.now(),
   }
@@ -180,7 +180,7 @@ export function updateSchedule(
       next.atMinute ?? null,
       next.enabled ? 1 : 0,
       id,
-      workspaceRoot,
+      normalizeWorkspaceRoot(workspaceRoot),
     ).changes
   return changed === 0 ? null : readOne(store, id)
 }
@@ -188,7 +188,7 @@ export function updateSchedule(
 /** 删一条任务；不存在或不属于这个工作区时返回 null。 */
 export function deleteSchedule(store: Store, id: string, workspaceRoot: string): Schedule | null {
   const found = readOne(store, id)
-  if (found === null || found.workspaceRoot !== workspaceRoot) return null
+  if (found === null || found.workspaceRoot !== normalizeWorkspaceRoot(workspaceRoot)) return null
   store.db.query('DELETE FROM schedules WHERE id = ?').run(id)
   return found
 }
@@ -201,7 +201,9 @@ export function deleteSchedule(store: Store, id: string, workspaceRoot: string):
  * 报错，整个事务随之回滚。
  */
 export function insertSchedules(store: Store, list: Schedule[]): void {
-  for (const s of list) insert(store, s)
+  for (const s of list) {
+    insert(store, { ...s, workspaceRoot: normalizeWorkspaceRoot(s.workspaceRoot) })
+  }
 }
 
 /** 工作区必须仍然登记且未移除，否则这条任务不触发。 */
@@ -210,7 +212,7 @@ function workspaceIdForRoot(store: Store, root: string): WorkspaceId | null {
     .query<{ id: string }, [string]>(
       'SELECT id FROM workspaces WHERE root_path = ? AND removed_at IS NULL',
     )
-    .get(root)
+    .get(normalizeWorkspaceRoot(root))
   return row === null ? null : (row.id as WorkspaceId)
 }
 
@@ -314,7 +316,9 @@ export function claimScheduleNow(
 ): ScheduleClaimResult {
   return store.tx(() => {
     const s = readOne(store, id)
-    if (s === null || s.workspaceRoot !== workspaceRoot) return { ok: false, reason: 'not_found' }
+    if (s === null || s.workspaceRoot !== normalizeWorkspaceRoot(workspaceRoot)) {
+      return { ok: false, reason: 'not_found' }
+    }
     return claimInTx(store, s, input, false)
   })
 }

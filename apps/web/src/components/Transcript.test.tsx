@@ -172,7 +172,7 @@ describe('工具图片回放', () => {
 })
 
 describe('编排画布', () => {
-  test('四个并行节点使用可收缩等宽列，画布不再套横向滚动容器', async () => {
+  test('并行节点的列有最小宽度，排不下时由卡内的滚动层承担', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -208,9 +208,10 @@ describe('编排画布', () => {
     try {
       const layers = host.querySelectorAll<HTMLElement>('.wf-layer')
       expect(layers).toHaveLength(3)
-      expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(0, 1fr))')
+      expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(128px, 1fr))')
       expect(layers[1]?.style.maxWidth).toBe('676px')
-      expect(host.querySelector('.wf-viewport')).toBeNull()
+      // 滚动层在卡里、图在滚动层里：卡宽不随节点数变，滚的只有图那一层。
+      expect(host.querySelector('.wf-card > .wf-scroll > .wf-graph')).not.toBeNull()
       expect(layers[1]?.querySelector('.wf-node-name')?.classList.contains('truncate')).toBe(false)
     } finally {
       dispose()
@@ -340,7 +341,10 @@ describe('编排画布', () => {
     }
   })
 
-  /** 种类是状态里的一个字段，主行右边印它的小写原词；没有状态的那一格什么都不印。 */
+  /**
+   * 种类是状态里的一个字段，主行右边印 `SUBAGENT_KIND_LABEL` 里的说法；
+   * 没有状态的那一格什么都不印。不要改成印字段原值，那是内部枚举名。
+   */
   test('每一格按状态里的种类印标签', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
@@ -380,9 +384,9 @@ describe('编排画布', () => {
 
     try {
       expect([...host.querySelectorAll('.wf-node-kind')].map((e) => e.textContent)).toEqual([
-        'role',
-        'temp',
-        'cli',
+        '角色',
+        '临时',
+        '外部 CLI',
       ])
     } finally {
       dispose()

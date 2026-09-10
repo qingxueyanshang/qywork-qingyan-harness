@@ -13,6 +13,7 @@ import {
   finishRun,
   getConversation,
   getRun,
+  getWorkspaceByPath,
   interruptRunningNodes,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
@@ -24,6 +25,7 @@ import {
   listProviderRequests,
   listRunContextSnapshots,
   listSteps,
+  listWorkspaces,
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
   markProviderRequestSent,
@@ -582,8 +584,9 @@ describe('会话所属项目', () => {
     const ca = createConversation(store, { workspaceId: a.id, provider: 'p', model: 'm' })
     const cb = createConversation(store, { workspaceId: b.id, provider: 'p', model: 'm' })
 
-    expect(workspaceOf(store, ca.id)?.rootPath).toBe('/tmp/a')
-    expect(workspaceOf(store, cb.id)?.rootPath).toBe('/tmp/b')
+    expect(workspaceOf(store, ca.id)?.rootPath).toBe(a.rootPath)
+    expect(workspaceOf(store, cb.id)?.rootPath).toBe(b.rootPath)
+    expect(a.rootPath).not.toBe(b.rootPath)
     store.close()
   })
 
@@ -593,6 +596,25 @@ describe('会话所属项目', () => {
     const store = new Store({ path: ':memory:' })
     upsertWorkspace(store, '/tmp/a', 'a')
     expect(workspaceOf(store, 'cv_nope' as never)).toBeNull()
+    store.close()
+  })
+})
+
+/*
+ * `root_path` 是 UNIQUE，但比较按字符串做：两种分隔符写法各建一行的话，
+ * 同一个目录下的会话会分裂在两个项目里，侧栏出现两个同名项目。
+ */
+describe('工作区根路径归一', () => {
+  test('两种分隔符写法只得一行，第二次是更新不是新建', () => {
+    const store = new Store({ path: ':memory:' })
+    const slash = upsertWorkspace(store, 'C:/ws/demo', '正斜杠')
+    const back = upsertWorkspace(store, 'C:\\ws\\demo', '反斜杠')
+
+    expect(back.id).toBe(slash.id)
+    expect(back.rootPath).toBe('C:\\ws\\demo')
+    expect(listWorkspaces(store).length).toBe(1)
+    expect(getWorkspaceByPath(store, 'C:/ws/demo')?.id).toBe(slash.id)
+    expect(getWorkspaceByPath(store, 'C:\\ws\\demo')?.id).toBe(slash.id)
     store.close()
   })
 })

@@ -102,7 +102,8 @@ describe('派发', () => {
     const res = await call('/api/workspace', undefined, d)
     expect(await res?.json()).toEqual({
       id: (d as unknown as { wsId: string }).wsId,
-      root: 'C:/ws/demo',
+      // 账本里的根是归一后的形式（`upsertWorkspace`），派发照抄它。
+      root: 'C:\\ws\\demo',
       name: 'demo',
       // 这个目录不存在，读不到项目层配置，所以没有待决定的信任。
       pendingTrust: [],
@@ -110,8 +111,8 @@ describe('派发', () => {
   })
 
   test('根目录这种取不出目录名时回落到整条路径，不回空串', async () => {
-    const res = await call('/api/workspace', undefined, deps('/'))
-    expect(((await res?.json()) as { name: string }).name).toBe('/')
+    const res = await call('/api/workspace', undefined, deps('C:/'))
+    expect(((await res?.json()) as { name: string }).name).toBe('C:\\')
   })
 
   /* 指了一个不存在的项目要 404，**不能静默回落到最近打开的那个**——
@@ -388,7 +389,7 @@ describe('移除项目', () => {
     const res = await call(`/api/workspaces/${currentId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(200)
     // 不回 next 的话，客户端手里的 ?ws= 指着刚被移除的那个，随后每条请求都 404
-    expect(await res?.json()).toEqual({ ok: true, next: { id: oldId, rootPath: 'C:/ws/old' } })
+    expect(await res?.json()).toEqual({ ok: true, next: { id: oldId, rootPath: 'C:\\ws\\old' } })
     expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(currentId)
   })
 
@@ -862,7 +863,7 @@ describe('按 ?ws= 解析项目', () => {
     const { d, a, b } = twoProjects()
     // b 是后 upsert 的，缺省会落到它身上——所以这条能证明参数真的起作用。
     const res = await call(`/api/workspace?ws=${a.id}`, undefined, d)
-    expect(await res?.json()).toEqual({ id: a.id, root: 'C:/ws/a', name: 'a', pendingTrust: [] })
+    expect(await res?.json()).toEqual({ id: a.id, root: 'C:\\ws\\a', name: 'a', pendingTrust: [] })
     const fallback = await call('/api/workspace', undefined, d)
     expect(((await fallback?.json()) as { id: string }).id).toBe(b.id)
   })

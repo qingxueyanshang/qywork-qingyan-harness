@@ -1054,14 +1054,24 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+/* 图的滚动层。它是卡里唯一会横向滚的一层：卡的边框、目标行与失败原因都留在原位。
+   `overflow-x` 之外的那一轴由此变成 `auto`，图在纵向没有溢出，不会出现第二条滚动条。 */
+.wf-scroll {
+  overflow-x: auto;
+}
 /* 图本体。层竖着排，层间那段空白是留给连线的——连线是绝对定位的 SVG，
-   不占布局，间距小了折线就贴着方块走。 */
+   不占布局，间距小了折线就贴着方块走。
+
+   宽度取 `max-content` 并以滚动层宽度托底：层里每列有最小宽度，节点数多时图比卡宽，
+   由 `.wf-scroll` 滚；节点数少时图仍占满卡宽，各层按自身 `margin-inline: auto` 居中。
+   **不要把它自己设成滚动容器**：`.wf-edges` 以它为包含块，它一滚，线与量出来的节点
+   坐标就差一个 `scrollLeft`。 */
 .wf-graph {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   gap: 26px;
 }
 /* 只派了一件事时三格横着摆。中间列就是画布中线，两侧对称吸收剩余宽度：
@@ -1071,6 +1081,8 @@
   /* 中间那一格定宽 220px：独占一行比图上的格子略宽；名字长短不改变格子的宽度。 */
   grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
   align-items: center;
+  /* 三格横排要的是「两侧吸收剩余宽度」，所以这一支取满宽，不取 `max-content`。 */
+  width: 100%;
   min-width: 0;
   column-gap: 40px;
 }
@@ -1107,8 +1119,8 @@
     animation: none;
   }
 }
-/* 同一层固定为等宽 grid。列数和最大宽度由组件按该层真实节点数写入；窄卡片中
-   各列共同收缩，节点文字在自身内部换行，不产生画布级横向滚动。 */
+/* 同一层固定为等宽 grid。列数、最小宽度与最大宽度由组件按该层真实节点数写入；
+   列宽收到最小宽度就不再收，此后由 `.wf-scroll` 横向滚动。 */
 .wf-layer {
   display: grid;
   width: 100%;

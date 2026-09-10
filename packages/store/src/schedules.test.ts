@@ -27,8 +27,9 @@ import {
 } from './schedules.ts'
 
 let store: Store
-const ROOT_A = 'C:/ws/a'
-const ROOT_B = 'C:/ws/b'
+// 已归一的形式（`normalizeWorkspaceRoot`）：仓储层落盘与回读都是这一份。
+const ROOT_A = 'C:\\ws\\a'
+const ROOT_B = 'C:\\ws\\b'
 let wsA: WorkspaceId
 
 const CLAIM = { provider: 'p', model: 'm' }
@@ -101,6 +102,23 @@ describe('读写', () => {
     })
     expect(listSchedules(store, ROOT_A, Date.now()).map((s) => s.title)).toEqual(['我的'])
     expect(listSchedules(store, ROOT_B, Date.now()).map((s) => s.title)).toEqual(['别人的'])
+  })
+
+  /*
+   * `workspace_root` 与 `workspaces.root_path` 走同一份归一。不归一的话，
+   * 用正斜杠建的任务在反斜杠的那次列表里查不到，而工作区是同一个。
+   */
+  test('两种分隔符写法指同一个工作区', () => {
+    const s = createSchedule(store, 'C:/ws/a', {
+      title: '正斜杠建的',
+      prompt: 'p',
+      kind: 'interval',
+      everyMinutes: 30,
+    })
+    expect(s.workspaceRoot).toBe(ROOT_A)
+    expect(listSchedules(store, ROOT_A, Date.now()).map((t) => t.title)).toEqual(['正斜杠建的'])
+    expect(listSchedules(store, 'C:/ws/a', Date.now()).map((t) => t.title)).toEqual(['正斜杠建的'])
+    expect(deleteSchedule(store, s.id, 'C:/ws/a')?.id).toBe(s.id)
   })
 
   test('改不到别的工作区的任务，删也删不掉', () => {

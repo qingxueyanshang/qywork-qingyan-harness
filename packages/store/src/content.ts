@@ -35,6 +35,13 @@ export const CHUNK_BYTES = 256 * 1024
 
 export const CONTENT_SCHEMA_VERSION = 1
 
+/**
+ * 已有库转成增量回收要跑一次全库 VACUUM，这是它的体积上限。
+ *
+ * 本机实测 6.3 ms/MB（1 GB 5.2 秒、2 GB 12.7 秒），512 MB 约 3 秒。
+ */
+const VACUUM_LIMIT_BYTES = 512 * 1024 * 1024
+
 export class ContentStoreError extends Error {
   constructor(
     readonly code: string,
@@ -62,7 +69,7 @@ export class ContentStore {
   /** 进行中的写入：write_id → 滚动哈希器。哈希器不能存 SQLite，只能在内存里滚。 */
   private readonly hashers = new Map<string, Bun.CryptoHasher>()
 
-  constructor(path: string) {
+  constructor(path: string, opts?: { vacuumLimitBytes?: number }) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     this.db = new Database(path, { create: true })
     // 等待上限必须先设，理由与主库的 `applyPragmas` 相同：`journal_mode` 自己就要取锁。
@@ -81,10 +88,32 @@ export class ContentStore {
      * 设置整份重写，写完头里就是 INCREMENTAL。
      *
      * **只在头部不是 INCREMENTAL 时跑这一次**，跑过之后这个判断恒假，不会再进来。
+     *
+     * **超过 `VACUUM_LIMIT_BYTES` 的库不转档。** 构造函数在 `serve()`、`qy exec`、`qy tui`
+     * 三处都排在开始服务之前，这一次 VACUUM 是同步的；本机实测 6.3 ms/MB，2 GB 要 12.7 秒，
+     * 桌面端表现为窗口起来之前先黑十几秒。512 MB 约 3 秒，是启动路径上可接受的一次性上限。
+     * 不转档的库照常可读可写，只是删除后文件不缩小，成因每次打开都写一行 stderr。
      */
     const mode = this.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()
-    if (mode?.auto_vacuum !== 2) this.db.exec('VACUUM')
+    if (mode?.auto_vacuum !== 2) {
+      const limit = opts?.vacuumLimitBytes ?? VACUUM_LIMIT_BYTES
+      const bytes = this.pageBytes()
+      if (bytes <= limit) this.db.exec('VACUUM')
+      else {
+        process.stderr.write(
+          `[qy] 正文库 ${path} 为 ${Math.round(bytes / 1048576)} MB，` +
+            '未转为增量回收：删除后页可复用但文件不缩小\n',
+        )
+      }
+    }
     this.ensureSchema()
+  }
+
+  /** 当前占用的字节数。取 `page_count * page_size`，不用 `stat`——WAL 里还压着一段。 */
+  private pageBytes(): number {
+    const pages = this.db.query<{ page_count: number }, []>('PRAGMA page_count').get()?.page_count
+    const size = this.db.query<{ page_size: number }, []>('PRAGMA page_size').get()?.page_size
+    return (pages ?? 0) * (size ?? 0)
   }
 
   private ensureSchema(): void {

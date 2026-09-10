@@ -10,6 +10,7 @@
     "build": "bun build ./src/index.ts --compile --minify --outfile ../../dist/qy"
   },
   "dependencies": {
+    "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*",
     "@qywork/runtime": "workspace:*",
     "@qywork/server": "workspace:*",

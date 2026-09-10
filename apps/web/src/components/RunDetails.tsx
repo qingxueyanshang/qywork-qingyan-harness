@@ -462,10 +462,9 @@ function addMaybe(acc: number | null, v: number | null | undefined): number | nu
   return v === null || v === undefined ? acc : (acc ?? 0) + v
 }
 
-/** 账本里非轮次那几笔的中文名。键与 `UsageKind` 一一对应。 */
+/** 账本里非轮次那一笔的中文名。键取自 `UsageKind`。 */
 const KIND_LABEL: Record<string, string> = {
   summary: '压缩摘要',
-  classifier: '权限裁决',
 }
 
 /** 没有活动会话时的空账。给一份而不是不取，界面才有恒定的形状。 */

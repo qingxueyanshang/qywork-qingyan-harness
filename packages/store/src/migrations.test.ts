@@ -1580,3 +1580,89 @@ VALUES ('sh', 'rn', 1, 'tool_action', 'run_command',
     db.close()
   })
 })
+
+describe('迁移 55：工作区根路径按分隔符归一', () => {
+  test('两种写法合并成最早那一行，会话与账目改指向它，任务的根跟着改', () => {
+    const db = dbBefore(55)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at)
+VALUES ('ws_old', '正斜杠', 'C:/ws/demo', 10, 10),
+       ('ws_new', '反斜杠', 'C:\\ws\\demo', 20, 20),
+       ('ws_only', '只有一种写法', 'C:/ws/solo', 30, 30),
+       ('ws_posix', 'POSIX', '/srv/ws', 40, 40);
+INSERT INTO conversations
+  (id, workspace_id, title, model, cache_generation, created_at, updated_at, provider)
+VALUES ('cv_a', 'ws_old', 'A', 'm', 0, 1, 1, 'p'),
+       ('cv_b', 'ws_new', 'B', 'm', 0, 2, 2, 'p');
+INSERT INTO runs
+  (id, conversation_id, workspace_id, model, client_request_id, status,
+   input_tokens, output_tokens, reasoning_tokens, cost, usage_turns, step_count, created_at, currency)
+VALUES ('rn_b', 'cv_b', 'ws_new', 'm', 'req', 'done', 0, 0, 0, 0, '[]', 0, 2, 'USD');
+INSERT INTO permission_rules (id, workspace_id, scope, effect, created_at)
+VALUES ('pr_old', 'ws_old', 'run_command:git', 'allow', 1),
+       ('pr_dup', 'ws_new', 'run_command:git', 'deny', 2),
+       ('pr_more', 'ws_new', 'write_file:src', 'allow', 3);
+INSERT INTO permission_audit (id, workspace_id, action, scope, granted, resolved_by, created_at)
+VALUES ('pa_b', 'ws_new', 'run_command', 'run_command:git', 1, 'user', 2);
+INSERT INTO usage_ledger
+  (id, kind, workspace_id, model, provider, input_tokens, output_tokens, reasoning_tokens,
+   cost, occurred_at, currency)
+VALUES ('ul_b', 'run', 'ws_new', 'm', 'p', 1, 2, 0, 0.5, 2, 'USD');
+INSERT INTO schedules
+  (id, workspace_root, title, prompt, kind, every_minutes, enabled, created_at)
+VALUES ('sch_a', 'C:/ws/demo', '日报', 'p', 'interval', 30, 1, 1),
+       ('sch_p', '/srv/ws', 'POSIX 的', 'p', 'interval', 30, 1, 2);
+`)
+
+    applyOne(db, 55)
+
+    expect(
+      db.query<{ id: string; root_path: string }, []>('SELECT id, root_path FROM workspaces').all(),
+    ).toEqual([
+      { id: 'ws_old', root_path: 'C:\\ws\\demo' },
+      { id: 'ws_only', root_path: 'C:\\ws\\solo' },
+      { id: 'ws_posix', root_path: '/srv/ws' },
+    ])
+
+    const owner = (id: string) =>
+      db
+        .query<{ workspace_id: string }, [string]>(
+          'SELECT workspace_id FROM conversations WHERE id = ?',
+        )
+        .get(id)?.workspace_id
+    expect([owner('cv_a'), owner('cv_b')]).toEqual(['ws_old', 'ws_old'])
+    expect(db.query<{ workspace_id: string }, []>('SELECT workspace_id FROM runs').all()).toEqual([
+      { workspace_id: 'ws_old' },
+    ])
+    expect(
+      db.query<{ workspace_id: string }, []>('SELECT workspace_id FROM permission_audit').all(),
+    ).toEqual([{ workspace_id: 'ws_old' }])
+    expect(
+      db.query<{ workspace_id: string }, []>('SELECT workspace_id FROM usage_ledger').all(),
+    ).toEqual([{ workspace_id: 'ws_old' }])
+
+    // 同 scope 两边都有，留最早那个工作区的那条；不同 scope 的跟着改归属。
+    expect(
+      db
+        .query<{ id: string; workspace_id: string; effect: string }, []>(
+          'SELECT id, workspace_id, effect FROM permission_rules ORDER BY id',
+        )
+        .all(),
+    ).toEqual([
+      { id: 'pr_more', workspace_id: 'ws_old', effect: 'allow' },
+      { id: 'pr_old', workspace_id: 'ws_old', effect: 'allow' },
+    ])
+
+    expect(
+      db
+        .query<{ id: string; workspace_root: string }, []>(
+          'SELECT id, workspace_root FROM schedules ORDER BY id',
+        )
+        .all(),
+    ).toEqual([
+      { id: 'sch_a', workspace_root: 'C:\\ws\\demo' },
+      { id: 'sch_p', workspace_root: '/srv/ws' },
+    ])
+    db.close()
+  })
+})

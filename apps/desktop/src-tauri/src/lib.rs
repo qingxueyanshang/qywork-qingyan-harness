@@ -326,6 +326,26 @@ fn show_fatal(message: &str) {
     eprintln!("[qywork] {message}");
 }
 
+/// 启动失败的唯一终态：弹对话框，再以非 0 退出码结束进程。
+///
+/// **setup 钩子里的错误必须在钩子内部走到这里，不能返回 `Err`。** tauri 拿到 `Err`
+/// 就 `panic!("Failed to setup app")`，而 release 下 `panic = "abort"` 且
+/// `windows_subsystem = "windows"`（没有控制台）：进程无声消失，用户唯一的感知是
+/// 「双击没反应」，而 sidecar 缺失、被安全软件删掉、或在报出令牌前退出正是最常见的
+/// 一类启动故障。对话框不依赖 WebView，覆盖「窗口还没建出来」这段时间。
+fn fatal_exit(error: &dyn std::fmt::Display) -> ! {
+    let hint = if tauri::is_dev() {
+        ""
+    } else {
+        "\n\n常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
+         （apps/desktop/src-tauri/bin/qy-*.exe）。"
+    };
+    let msg = format!("qywork 启动失败：{error}{hint}");
+    eprintln!("[qywork] {msg}");
+    show_fatal(&msg);
+    std::process::exit(1);
+}
+
 /// 在系统文件管理器里定位一个目录。
 ///
 /// 走 Rust 侧的 `OpenerExt`，**不是**给 WebView 授 `opener:*` 权限。
@@ -407,7 +427,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let workspace = resolve_workspace();
 
-            tauri::async_runtime::block_on(async move {
+            let started = tauri::async_runtime::block_on(async move {
                 // 后端与页面必须出自同一次构建。devUrl 模式下页面是 Vite 里的源码，
                 // 后端只能是 dev.ts 从同一棵源码树起的那个；`bin/qy` 是上一次
                 // build:agent 的产物，在这里 spawn 它就是「源码页面 + 旧后端」。
@@ -442,8 +462,12 @@ pub fn run() {
                 build_tray(&handle)?;
 
                 Ok::<(), Box<dyn std::error::Error>>(())
-            })?;
+            });
 
+            // 错误就地转成对话框：返回 Err 会被 tauri panic 掉，见 `fatal_exit`。
+            if let Err(e) = started {
+                fatal_exit(&e);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -456,31 +480,10 @@ pub fn run() {
                 }
             }
         })
+        // 插件初始化、上下文生成这几类失败走 build() 的 Result；不能 `.expect(...)`，
+        // 理由与 setup 钩子那条相同，见 `fatal_exit`。
         .build(tauri::generate_context!())
-        .unwrap_or_else(|e| {
-            /*
-             * **起不来也要有终态。**
-             *
-             * **不能用 `.expect(...)`**：release 下 `panic = "abort"` 且
-             * `windows_subsystem = "windows"`（没有控制台），因此 sidecar 缺失、
-             * 损坏、或在报出令牌前退出时，进程无声消失——没有窗口、没有对话框、
-             * 没有任何可见输出。用户唯一的感知是「双击没反应」，而这是
-             * 最常见的一类启动故障（`bin/qy-*.exe` 没构建、被杀毒删了）。
-             *
-             * 弹一个系统对话框再退。它不依赖 WebView，正好覆盖「窗口还没建出来」
-             * 这段时间。
-             */
-            let hint = if tauri::is_dev() {
-                ""
-            } else {
-                "\n\n常见原因是 sidecar 可执行文件缺失或被安全软件拦截\
-                 （apps/desktop/src-tauri/bin/qy-*.exe）。"
-            };
-            let msg = format!("qywork 启动失败：{e}{hint}");
-            eprintln!("[qywork] {msg}");
-            show_fatal(&msg);
-            std::process::exit(1);
-        })
+        .unwrap_or_else(|e| fatal_exit(&e))
         .run(|app, event| {
             // Windows 上父进程退出不会带走子进程：残留的 qy serve 会占着端口和
             // SQLite 的 WAL 锁，下次启动直接起不来。所以退出路径必须显式收干净。

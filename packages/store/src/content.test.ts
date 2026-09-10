@@ -258,6 +258,37 @@ describe('auto_vacuum 转档', () => {
     again.close()
   })
 
+  test('超过体积上限的旧库不转档：正文照读，成因写一行 stderr', () => {
+    const dir = tempDir()
+    const { path, hashes } = legacyNoneDb(dir, ['第一份', '第二份'])
+
+    const written: string[] = []
+    const original = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string) => {
+      written.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+    // 上限压到 1 字节：转档要跑的是全库 VACUUM，启动路径上必须有一条体积闸。
+    const s = new ContentStore(path, { vacuumLimitBytes: 1 })
+    process.stderr.write = original
+
+    expect(s.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(0)
+    expect(hashes.map((h) => dec.decode(s.readAll(h)!))).toEqual(['第一份', '第二份'])
+    s.close()
+
+    expect(written.length).toBe(1)
+    expect(written[0]).toContain('未转为增量回收：删除后页可复用但文件不缩小')
+    expect(written[0]).toContain(path)
+
+    // 上限之内的同一份库照旧转档：不转档是体积裁决，不是把这条路关掉。
+    const ok = new ContentStore(path)
+    expect(ok.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(
+      2,
+    )
+    expect(dec.decode(ok.readAll(hashes[0]!)!)).toBe('第一份')
+    ok.close()
+  })
+
   test('回收之后页数与文件字节数都降下来', () => {
     const dir = tempDir()
     const path = join(dir, 'c.sqlite3')

@@ -72,9 +72,8 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
     // （收尾逻辑被走两遍时不该让账目翻倍）。
     //
     // 写成 `catch {}` 会把**所有**错误一起吞掉，因此有一类很难查的故障：给 kind 加新值
-    // （如 `classifier`）而 schema 上的 CHECK 约束没跟着改，插入直接抛——
-    // 而这里静默 return false。
-    // 现象是分类器正常工作、命令正常放行、账本里一行都没有，任何地方都不报错。
+    // 而 schema 上的 CHECK 约束没跟着改，插入直接抛——而这里静默 return false。
+    // 现象是那笔开销照常发生、账本里一行都没有，任何地方都不报错。
     //
     // 所以只吞那一种，其余一律说出来。
     // **仍然不抛**：账本是旁路记账，不该让一次已经跑完的 run 在收尾时失败——
