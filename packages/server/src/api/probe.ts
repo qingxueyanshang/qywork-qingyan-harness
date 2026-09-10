@@ -67,8 +67,8 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
     model: target.model,
     ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
     ...(target.headers ? { headers: target.headers } : {}),
-    // **不带模型库里那条覆盖**：带上等于让上一次的结论影响这一次，
-    // 探出来的就不再是端点的事实，而是「上次那个结论有没有自洽」。
+    ...(target.spec ? { spec: target.spec } : {}),
+    // 模型规格包含用户声明的协议和档位；只忽略上次的 transport 校准。
   })
 
   const { values } = collectSecrets(d.config)

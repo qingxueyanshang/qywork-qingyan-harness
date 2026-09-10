@@ -33,7 +33,7 @@ qywork 的 Harness 负责三件核心工作：
   不为不同入口维护第二套会话或执行逻辑。
 - **兼容所有通过主流协议接入的模型**：模型目录不是白名单，可以填写任意 model id；通过
   Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 接入云模型、第三方接口以及
-  Ollama、LM Studio、vLLM 等本地端点。未收录模型也能运行，并可用 `qy probe --save` 标定能力。
+  Ollama、LM Studio、vLLM 等本地端点。未收录模型也可用 `qy probe --save` 检测思考档位。
 - **连续任务缓存命中率实测可达 90%+**：稳定提示词、工具顺序和缓存断点保持固定，工作区状态放在
   动态尾区；Skills、Memory、MCP 和 Plugins 按需加载，避免每轮重复发送整套上下文。实际命中率
   以模型服务商回报为准，并记录在每次运行的用量中。
@@ -83,6 +83,43 @@ cd qywork-qingyan-harness
 ```
 
 启动脚本会在首次运行时自动执行 `bun install`。桌面模式第一次编译 Rust 可能需要几分钟。
+
+### 未收录模型的思考档位
+
+点击模型旁的“检测”或运行 `qy probe my-model --save`，优先校验模型库已声明的档位，
+端点检测只能缩小这个集合。例如 DeepSeek 的 `medium`、`xhigh` 都映射到 `high`，
+所以仍按模型库的 `low / high / max` 三档处理。
+没有档位声明的模型会逐一尝试 `low / medium / high / xhigh / max`，不需要先修改内置库。
+
+检测还会发送一个非法档位作为对照。如果非法值也被接受，或某次请求超时、限速，结果标为未确认，
+保留已保存的配置。未知模型的结果标为“接口接受”，不保证这些值对应不同的实际推理强度。
+同名模型在不同接口的检测结果分别保存，检测不会修改全局模型规格。
+
+使用特殊参数格式时，可在 `~/.qywork/config.json` 的 `catalog` 中按“模型 ID|接口协议”声明。
+例如，自定义模型使用 DeepSeek 的思考开关和历史回传规则：
+
+```json
+{
+  "catalog": {
+    "my-model|openai_chat_completions": {
+      "thinking": "deepseek_thinking",
+      "effortLevels": ["low", "high", "max"],
+      "chatReasoningProtocol": "deepseek_preserved",
+      "thinksByDefault": true
+    }
+  }
+}
+```
+
+将这段合并到已有配置，模型 ID 须与接口中填写的一致。普通 `reasoning_effort` 接口使用
+`thinking: "reasoning_effort"`；Responses 同样使用该值，协议键改为 `openai_responses`。
+需要回传明文推理的 Responses 接口还应填写 `reasoningEcho: "reasoning_text"`。
+`chatReasoningProtocol` 声明完整历史回传规则，DeepSeek 使用 `deepseek_preserved`；普通接口可省略。
+保存后重新检测即可。显式填写 `effortLevels` 时按该列表校验；未声明档位时才尝试五个候选值。
+
+DeepSeek 官方接口使用 `deepseek-flash`，支持图片及 `low / high / max` 三档思考；
+`medium / xhigh` 等属于映射值。[模型规格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)、
+[思考参数](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)。
 
 ## 适合的任务
 

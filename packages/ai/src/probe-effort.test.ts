@@ -1,142 +1,157 @@
-/**
- * effort 校准：**档位表只从内置库取，探测只回答「这条链路接不接受」。**
- *
- * **覆盖范围**：`probe.ts` 的 effort 那一段。探针的其余部分（只写回真的探过的轴、
- * 报告怎么措辞）在 `probe.test.ts`。
- *
- * **要复现的形状。** OpenAI 兼容端点对 `reasoning_effort` 一律照收，不认识的值直接忽略。
- * 按「没被 400」逐档打满的话五档全过，探测器就往配置里写一个凭空的能力，
- * 界面照着画出厂商没有的档（grok-4.6 官方只有 low/medium/high/xhigh）。
- * 那是一个**端点行为**，纯函数测不出来，所以起一个照收不误的假端点。
- */
-
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+/** 覆盖五档实际请求、未知模型、非法值对照、部分失败与重测。 */
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import type { EffortLevel } from '@qywork/core'
+import { buildAdapter } from './factory.ts'
 import { probeModel, toTransportCapabilities } from './probe.ts'
 import type { ProviderProfile } from './types.ts'
 
-/** 端点拒不拒这个 effort 值。默认全收——这正是要复现的行为。 */
-let rejects: (effort: string | undefined) => boolean = () => false
-/** true = 回一个 200 的网页，复现「Base URL 少了 /v1」那个形状。 */
-let htmlInstead = false
-/** effort 请求临时返回 503；最小请求仍成功。 */
-let transientEffort = false
-/** 收到过的 effort 值，按顺序。用来验「试了几档」。 */
+const levels: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+let accepted = new Set<string>(levels)
+let ignoreAll = false
+let transient: string | undefined
+let html = false
 let seen: (string | undefined)[] = []
-
 let server: ReturnType<typeof Bun.serve>
-let base = ''
-
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
-      if (htmlInstead) {
-        return new Response('<!doctype html><html><body>relay home</body></html>', {
-          headers: { 'content-type': 'text/html' },
-        })
-      }
       const body = (await req.json()) as { reasoning_effort?: string }
-      seen.push(body.reasoning_effort)
-      if (transientEffort && body.reasoning_effort) {
+      const effort = body.reasoning_effort
+      seen.push(effort)
+      if (html)
+        return new Response('<html>relay home</html>', { headers: { 'content-type': 'text/html' } })
+      const status =
+        effort && effort === transient
+          ? 503
+          : effort && !accepted.has(effort) && !ignoreAll
+            ? 400
+            : 200
+      if (status !== 200)
         return new Response(
-          JSON.stringify({ error: { message: 'upstream temporarily unavailable' } }),
-          {
-            status: 503,
-            headers: { 'content-type': 'application/json' },
-          },
+          JSON.stringify({
+            error: { message: status === 400 ? 'unsupported effort' : 'upstream unavailable' },
+          }),
+          { status, headers: { 'content-type': 'application/json' } },
         )
-      }
-      if (rejects(body.reasoning_effort)) {
-        return new Response(JSON.stringify({ error: { message: 'unsupported effort' } }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      const sse =
-        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n' +
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n' +
-        'data: [DONE]\n\n'
-      return new Response(sse, { headers: { 'content-type': 'text/event-stream' } })
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
     },
   })
-  base = `http://127.0.0.1:${server.port}/v1`
 })
-
 afterAll(() => server.stop(true))
-
-const profile = (model = 'grok-4.6'): ProviderProfile => ({
+beforeEach(() => {
+  accepted = new Set(levels)
+  ignoreAll = false
+  transient = undefined
+  html = false
+  seen = []
+})
+const profile = (model = 'custom'): ProviderProfile => ({
   kind: 'openai_chat_completions',
   apiKey: 'sk-x',
   model,
-  baseUrl: base,
+  baseUrl: `http://127.0.0.1:${server.port}/v1`,
 })
 
-describe('effort 校准', () => {
-  /**
-   * **端点全收，也只报库里那几档。**
-   *
-   * grok-4.6 官方是 low/medium/high/xhigh，没有 max。逐档打满的老写法在这里
-   * 会写回五档，而那个 max 选了不会有任何反应。
-   */
-  test('档位以内置库为准，端点收下多的也不采信', async () => {
-    seen = []
-    rejects = () => false
+describe('五档逐一检测', () => {
+  test('未收录模型也真正发送五档和非法对照，并能在后续请求使用', async () => {
     const r = await probeModel(profile(), { gapMs: 0 })
-    expect(r.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
-    // 而且**没有**试过 max —— 库里没有的档不发。
-    expect(seen).not.toContain('max')
+    expect(seen.slice(0, 6)).toEqual([undefined, ...levels])
+    expect(seen[6]).not.toBeUndefined()
+    expect(seen[6]).toBe('__qy_probe_invalid_effort__')
+    expect(r.effortLevels).toEqual(levels)
+    expect(r.effortSource).toBe('probe')
+    expect(r.inconclusive).toEqual([])
+    const transport = toTransportCapabilities(r)
+    expect(buildAdapter({ ...profile(), transport }).spec.effortLevels).toEqual(levels)
+    expect(buildAdapter({ ...profile(), transport }).transmits.effort).toBe(true)
   })
-
-  /** 试通一档就够，不逐档打满：控制面成立之后档位表以库为准。 */
-  test('通了一档就整份采纳，不再逐档试', async () => {
-    seen = []
-    rejects = () => false
-    await probeModel(profile(), { gapMs: 0 })
-    expect(seen.filter((e) => e !== undefined)).toEqual(['low'])
+  test('逐档保留通过值，不因一档通过而采纳整份名单', async () => {
+    accepted = new Set(['low', 'high', 'max'])
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(seen.slice(1, 6)).toEqual(levels)
+    expect(r.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(toTransportCapabilities(r).effortLevels).toEqual(['low', 'high', 'max'])
   })
-
-  /** 两档都被拒 = 这条第三方不接受这个控制面，报空并说清是谁拒的。 */
-  test('链路拒了就报空，且说得出是链路拒的', async () => {
-    seen = []
-    rejects = (e) => e !== undefined
+  test('DeepSeek 接受五个值但声明三档，只校验三档并纠正旧结果', async () => {
+    const base = { ...profile('deepseek-flash'), transport: { effort: true, effortLevels: levels } }
+    expect(buildAdapter(base).spec.effortLevels).toEqual(['low', 'high', 'max'])
+    const r = await probeModel(base, { gapMs: 0 })
+    expect(seen).toEqual([undefined, 'low', 'high', 'max', '__qy_probe_invalid_effort__'])
+    expect(r.effortSource).toBe('catalog')
+    expect(r.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(
+      buildAdapter({ ...base, transport: toTransportCapabilities(r) }).spec.effortLevels,
+    ).toEqual(['low', 'high', 'max'])
+  })
+  test('内置明确没有档位时仅检测连接，不凭请求成功添加档位', async () => {
+    const r = await probeModel(
+      { ...profile('claude-haiku-4-5'), spec: { effortLevels: [] }, transport: { effort: false } },
+      { gapMs: 0 },
+    )
+    expect(seen).toEqual([undefined])
+    expect(r.effortSource).toBe('catalog')
+    expect(r.effortLevels).toEqual([])
+    expect(toTransportCapabilities(r).effort).toBe(false)
+  })
+  test('旧检测为 false 不阻止重测，但仍以模型库候选档位为准', async () => {
+    const r = await probeModel(
+      { ...profile('deepseek-flash'), transport: { effort: false } },
+      { gapMs: 0 },
+    )
+    expect(r.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(toTransportCapabilities(r).effort).toBe(true)
+  })
+  test('模型库档位被当前端点拒绝时只收窄，不添加库外档位', async () => {
+    accepted = new Set(['low', 'max', 'medium', 'xhigh'])
+    const r = await probeModel(profile('deepseek-flash'), { gapMs: 0 })
+    expect(r.effortLevels).toEqual(['low', 'max'])
+    expect(
+      buildAdapter({ ...profile('deepseek-flash'), transport: toTransportCapabilities(r) }).spec
+        .effortLevels,
+    ).toEqual(['low', 'max'])
+  })
+  test('五档都被拒时保存空列表', async () => {
+    accepted.clear()
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual([])
-    expect(r.probes.find((p) => p.name === 'effort 控制面')?.detail).toContain('本链路拒绝')
-    // 只试前两档，不把库里的档全打一遍。
-    expect(seen.filter((e) => e !== undefined)).toEqual(['low', 'medium'])
+    expect(toTransportCapabilities(r)).toMatchObject({ effort: false, effortLevels: [] })
   })
-
-  test('effort 请求只遇到暂时失败时不写成不支持', async () => {
-    seen = []
-    rejects = () => false
-    transientEffort = true
+  test('模型库声明的格式与当前协议不匹配时不伪报检测通过', async () => {
+    const r = await probeModel(profile('claude-opus-5'), { gapMs: 0 })
+    expect(seen).toEqual([undefined])
+    expect(r.untested).toEqual(['effort'])
+    expect(toTransportCapabilities(r)).toEqual({})
+  })
+  test('端点连非法值也接受时报告不确定，不把五档写成已验证', async () => {
+    ignoreAll = true
     const r = await probeModel(profile(), { gapMs: 0 })
-    transientEffort = false
-    expect(r.effortLevels).toEqual([])
+    expect(r.effortLevels).toEqual(levels)
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(r.probes.at(-1)?.detail).toContain('非法档位')
+    expect(toTransportCapabilities(r)).toEqual({})
+  })
+  test('某一档临时失败也继续其余档，但不覆盖已保存的结果', async () => {
+    transient = 'medium'
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(seen.slice(1, 6)).toEqual(levels)
+    expect(r.effortLevels).toEqual(['low', 'high', 'xhigh', 'max'])
     expect(r.inconclusive).toEqual(['effort'])
     expect(toTransportCapabilities(r)).toEqual({})
   })
-
-  /** 库里没有 effort 的模型一个请求都不该发。 */
-  test('库里没有档位就不发请求', async () => {
-    seen = []
-    rejects = () => false
-    const r = await probeModel(profile('claude-haiku-4-5'), { gapMs: 0 })
-    expect(r.effortLevels).toEqual([])
-    expect(seen.filter((e) => e !== undefined)).toEqual([])
-  })
-
-  /**
-   * 端点回了 200 但不是 SSE 流（Base URL 少了 `/v1` 时第三方接口会回一个网页）。
-   *
-   * 这条是那次真实故障的形状：`测连接` 显示通，而每一条真实请求都 0 token、
-   * 0 步骤、`completed` —— 界面上是「发出去了什么也没发生」，账本里查不到原因。
-   */
-  test('端点回的不是流 —— 报不通，不是报通', async () => {
-    htmlInstead = true
+  test('非法值对照临时失败也不能形成结论', async () => {
+    transient = '__qy_probe_invalid_effort__'
     const r = await probeModel(profile(), { gapMs: 0 })
-    htmlInstead = false
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(toTransportCapabilities(r)).toEqual({})
+  })
+  test('HTML 响应不是连接成功', async () => {
+    html = true
+    const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.reachable).toBe(false)
-    expect(r.probes[0]?.detail).toContain('SSE')
+    expect(seen).toEqual([undefined])
   })
 })

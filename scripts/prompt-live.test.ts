@@ -19,9 +19,7 @@ describe('工作区目录名', () => {
    */
   test('常规接口与模型名原样保留，不出现下划线', () => {
     expect(nameOf('deepseek', 'deepseek-v4-pro')).toBe('deepseek-deepseek-v4-pro')
-    expect(nameOf('deepseek', 'deepseek-v4-flash-vision-exp')).toBe(
-      'deepseek-deepseek-v4-flash-vision-exp',
-    )
+    expect(nameOf('deepseek', 'deepseek-flash')).toBe('deepseek-deepseek-flash')
     expect(nameOf('anthropic', 'claude-opus-5')).toBe('anthropic-claude-opus-5')
   })
 

@@ -117,9 +117,9 @@ describe('输出上限：没测过就整个字段不发', () => {
   })
 
   test('收录的模型照常申报，且按规格上限钳住', async () => {
-    const body = await sendWithCap('deepseek-v4-flash', 999_999_999)
+    const body = await sendWithCap('deepseek-flash', 999_999_999)
     expect(body.max_tokens).toBe(
-      lookupModel('deepseek-v4-flash', 'openai_chat_completions').maxOutputTokens,
+      lookupModel('deepseek-flash', 'openai_chat_completions').maxOutputTokens,
     )
   })
 
@@ -141,7 +141,7 @@ describe('输出上限：没测过就整个字段不发', () => {
 describe('工具结果带图片', () => {
   test('tool 消息发成 text + image_url 数组，call id 与块顺序保留', async () => {
     const body = await send(
-      'deepseek-v4-flash',
+      'deepseek-flash',
       undefined,
       [],
       [
@@ -174,7 +174,7 @@ describe('工具结果带图片', () => {
   test('纯文本工具结果仍是字符串，不改发数组', async () => {
     const omitted = '{"call_id":"c_t","status":"success","images_omitted":true}'
     const body = await send(
-      'deepseek-v4-flash',
+      'deepseek-flash',
       undefined,
       [],
       [
@@ -444,13 +444,13 @@ describe('DeepSeek 要两个字段一起发', () => {
    * `thinking` 开关没开，思考没启动。
    */
   test('thinking 开关和档位同时出现在请求体里', async () => {
-    const body = await send('deepseek-v4-flash', 'max')
+    const body = await send('deepseek-flash', 'max')
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('max')
   })
 
   test('没指定档位就一个字段都不发', async () => {
-    const body = await send('deepseek-v4-flash')
+    const body = await send('deepseek-flash')
     expect('thinking' in body).toBe(false)
     expect('reasoning_effort' in body).toBe(false)
   })
@@ -475,6 +475,16 @@ describe('逐模型的历史思考协议', () => {
     { role: 'assistant', content: '第一答', reasoningContent: '完整思考' },
     { role: 'user', content: '继续' },
   ]
+
+  test('DeepSeek 三档同时发送开关和强度，并保留纯文本轮思考', async () => {
+    for (const effort of ['low', 'high', 'max'] as const) {
+      const body = await send('deepseek-flash', effort, [], history)
+      expect(body.thinking).toEqual({ type: 'enabled' })
+      expect(body.reasoning_effort).toBe(effort)
+      expect(body.preserve_thinking).toBeUndefined()
+      expect((body.messages as Record<string, unknown>[])[1]?.reasoning_content).toBe('完整思考')
+    }
+  })
 
   test('Qwen3.8 始终声明保留思考，并发官方档位', async () => {
     const bare = await send('qwen3.8-flash')
@@ -522,9 +532,9 @@ describe('逐模型的历史思考协议', () => {
  * 各带各的模型。越界值到这里不拦，就是发给 provider 的一个 400。
  */
 describe('越界的档位不发', () => {
-  /** DeepSeek 只有 high/max。`xhigh` 是 Claude 那边的档，它在这里不存在。 */
+  /** DeepSeek 声明 low/high/max；`xhigh` 是 high 的映射值，不作为独立档位发送。 */
   test('DeepSeek 收不到 xhigh', async () => {
-    const body = await send('deepseek-v4-flash', 'xhigh')
+    const body = await send('deepseek-flash', 'xhigh')
     expect('thinking' in body).toBe(false)
     expect('reasoning_effort' in body).toBe(false)
   })
@@ -536,7 +546,7 @@ describe('越界的档位不发', () => {
 
   /** 档位面里的照常发——这道闸只拦越界的，不是把 effort 整个关掉。 */
   test('档位面里的照常发', async () => {
-    const body = await send('deepseek-v4-flash', 'high')
+    const body = await send('deepseek-flash', 'high')
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('high')
   })
@@ -630,14 +640,14 @@ describe('无名工具调用', () => {
         {
           kind: 'openai_chat_completions',
           apiKey: 'sk-x',
-          model: 'deepseek-v4-flash',
+          model: 'deepseek-flash',
           baseUrl: `http://127.0.0.1:${drop.port}/v1`,
         },
-        lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+        lookupModel('deepseek-flash', 'openai_chat_completions'),
       )
       const run = async () => {
         for await (const _ of adapter.stream({
-          model: 'deepseek-v4-flash',
+          model: 'deepseek-flash',
           system: [],
           messages: [{ role: 'user', content: 'hi' }],
           tools: [],
@@ -671,13 +681,13 @@ describe('缓存路由亲和键', () => {
       {
         kind: 'openai_chat_completions',
         apiKey: 'sk-x',
-        model: 'deepseek-v4-flash',
+        model: 'gpt-5.6-sol',
         baseUrl: base,
       },
-      lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+      lookupModel('gpt-5.6-sol', 'openai_chat_completions'),
     )
     for await (const _ of adapter.stream({
-      model: 'deepseek-v4-flash',
+      model: 'gpt-5.6-sol',
       system: [],
       messages: [{ role: 'user', content: '嗨' }],
       tools: [],
@@ -721,7 +731,7 @@ describe('缓存路由亲和键', () => {
 
   /** 没有键就一个字节都不发——自建端点不该因为这个开始收到它不认识的字段。 */
   test('没有 cacheKey 时不出现这个字段', async () => {
-    const body = await send('deepseek-v4-flash')
+    const body = await send('deepseek-flash')
     expect('prompt_cache_key' in body).toBe(false)
   })
 
@@ -965,7 +975,7 @@ describe('strict 工具定义', () => {
   })
 
   test('请求体里带 strict，且发的是重排后的 schema', async () => {
-    const body = await send('deepseek-v4-flash', undefined, [readFile])
+    const body = await send('deepseek-flash', undefined, [readFile])
     const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
     expect(tool.strict).toBe(true)
     expect((tool.parameters as Record<string, unknown>).required).toEqual([
@@ -1016,7 +1026,7 @@ describe('strict 工具定义', () => {
 describe('运行上下文的上线形状', () => {
   test('上下文并入所属真实用户，不增加 system 或 user 轮次', async () => {
     bodies.length = 0
-    const model = 'deepseek-v4-flash'
+    const model = 'deepseek-flash'
     const adapter = new OpenAICompatAdapter(
       { kind: 'openai_chat_completions', apiKey: 'sk-x', model, baseUrl: base },
       lookupModel(model, 'openai_chat_completions'),
@@ -1047,7 +1057,7 @@ describe('运行上下文的上线形状', () => {
 
 describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
-    await send('deepseek-v4-flash')
+    await send('deepseek-flash')
     // 第三方接口会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
     expect(requestHeaders[0]?.get('connection')).toBe('close')
   })

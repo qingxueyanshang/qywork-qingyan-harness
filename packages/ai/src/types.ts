@@ -6,7 +6,7 @@
 
 // `ContextGroup` 的真源在 `core/domain/model.ts`。这里只转出去给 `_group` 用——
 // 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
-import type { ContextGroup, EffortLevel, ProviderKind } from '@qywork/core'
+import type { ContextGroup, EffortLevel, ProviderKind, ThinkingMode } from '@qywork/core'
 import type { ModelSpec, SpecOverride } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
@@ -51,11 +51,13 @@ export const PROVIDER_HTTP = {
 export const PROVIDER_HEADERS = { connection: 'close' } as const
 
 /**
- * 具体接口路线的传输能力。模型有哪些档位由官方目录回答；这里仅回答当前端点
- * 是否透传相应控制面。undefined = 未校准，沿用协议/目录结论。
+ * 当前接口接受的思考参数值与格式。undefined = 未校准，沿用协议/目录结论。
+ * 检测结果只作用于这个接口，不修改全局模型的价格、窗口或其他能力。
  */
 export interface TransportCapabilities {
   effort?: boolean
+  effortLevels?: EffortLevel[]
+  thinking?: ThinkingMode
 }
 
 export interface ProviderProfile {

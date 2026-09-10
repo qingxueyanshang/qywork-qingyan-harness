@@ -65,7 +65,7 @@ const ENDPOINTS: Endpoint[] = [
     label: process.env.QY_RESPONSES_LABEL ?? 'DeepSeek',
     key: process.env.DEEPSEEK_API_KEY ?? process.env.QY_RESPONSES_KEY ?? '',
     baseUrl: process.env.QY_RESPONSES_BASE_URL ?? 'https://api.deepseek.com/v1',
-    model: process.env.QY_RESPONSES_MODEL ?? 'deepseek-v4-flash',
+    model: process.env.QY_RESPONSES_MODEL ?? 'deepseek-flash',
   },
   {
     label: process.env.QY_RESPONSES_LABEL_2 ?? '第二端点',

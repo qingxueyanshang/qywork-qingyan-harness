@@ -39,7 +39,7 @@ const PRESETS: Preset[] = [
       baseUrl: 'https://api.deepseek.com/v1',
       models: {},
     },
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     keyUrl: 'https://platform.deepseek.com/api_keys',
   },
   {

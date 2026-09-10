@@ -396,13 +396,13 @@ async function main(): Promise<number> {
     const conv2 = createConversation(store2, {
       workspaceId: ws2.id,
       provider: 'deepseek',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       title: '崩溃遗留',
     })
     const stale = createRun(store2, {
       conversationId: conv2.id,
       workspaceId: ws2.id,
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       clientRequestId: crypto.randomUUID(),
       userMessageId: null,
       messageIdUpperBound: null,

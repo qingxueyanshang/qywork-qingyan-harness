@@ -68,18 +68,19 @@ afterAll(() => server.stop(true))
 async function send(
   messages: WireMessage[],
   effort?: EffortLevel,
+  model = 'claude-opus-5',
 ): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
     kind: 'anthropic_messages',
     apiKey: 'sk-x',
-    model: 'claude-opus-5',
+    model,
     baseUrl: base,
   }
-  const adapter = new AnthropicAdapter(profile, lookupModel('claude-opus-5', 'anthropic_messages'))
+  const adapter = new AnthropicAdapter(profile, lookupModel(model, 'anthropic_messages'))
   lastEvents = []
   for await (const event of adapter.stream({
-    model: 'claude-opus-5',
+    model,
     system: [],
     messages,
     tools: [],
@@ -93,6 +94,32 @@ async function send(
 }
 
 describe('思考档位严格遵守用户选择', () => {
+  test('DeepSeek 三档使用 output_config，并完整回传文本轮和工具轮思考', async () => {
+    const messages: WireMessage[] = [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答', reasoningContent: '第一轮思考' },
+      { role: 'user', content: '查一下' },
+      {
+        role: 'assistant',
+        content: '',
+        reasoningContent: '工具轮思考',
+        toolCalls: [{ id: 'call_1', name: 'lookup', arguments: {} }],
+      },
+      { role: 'tool', content: '结果', toolCallId: 'call_1' },
+    ]
+    for (const effort of ['low', 'high', 'max'] as const) {
+      const body = await send(messages, effort, 'deepseek-flash')
+      expect(body.output_config).toEqual({ effort })
+      expect(body.thinking).toBeUndefined()
+      const history = body.messages as { content: Record<string, unknown>[] }[]
+      expect(history[1]?.content).toEqual([
+        { type: 'thinking', thinking: '第一轮思考' },
+        { type: 'text', text: '第一答' },
+      ])
+      expect(history[3]?.content[0]).toEqual({ type: 'thinking', thinking: '工具轮思考' })
+    }
+  })
+
   test('message_start 早于模型内容进入遥测', async () => {
     await send([{ role: 'user', content: 'hi' }])
     const started = lastEvents.findIndex((e) => e.type === 'response_started')

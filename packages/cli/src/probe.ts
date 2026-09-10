@@ -43,6 +43,7 @@ export async function runProbe(args: string[]): Promise<number> {
     model: stored.model,
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),
+    ...(stored.spec ? { spec: stored.spec } : {}),
     // 不带上次的 transport 结论：否则被判定为不透传后，下一次探测自己也不再发
     // effort，探出来的只会是「上次那个结论有没有自洽」。
   })
@@ -71,7 +72,7 @@ export async function runProbe(args: string[]): Promise<number> {
   }
   if (outcome.inconclusive.length) {
     process.stderr.write(
-      `\n${DIM}未得出结论的轴：${outcome.inconclusive.join(' / ')}（请求超时、限速或上游暂不可用），` +
+      `\n${DIM}未得出结论的轴：${outcome.inconclusive.join(' / ')}（请求失败或接口未通过非法值对照），` +
         `配置保持不变。${RESET}\n`,
     )
   }
@@ -83,8 +84,7 @@ export async function runProbe(args: string[]): Promise<number> {
     return 0
   }
 
-  // 只写当前接口下的模型格子。模型档位来自官方目录；探测回答的是这个具体端点
-  // 是否透传控制面，不能写进 model + protocol 的全局目录污染其他第三方。
+  // 只写当前接口下的模型格子，不改全局模型目录。
   const owner = config.providers[stored.provider]
   const model = owner?.models[stored.model]
   if (!owner || !model) return 2

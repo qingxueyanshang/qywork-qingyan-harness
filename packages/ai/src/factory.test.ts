@@ -3,7 +3,7 @@ import { lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
 
-const base = { kind: 'openai_chat_completions' as const, model: 'deepseek-v4-flash' }
+const base = { kind: 'openai_chat_completions' as const, model: 'deepseek-flash' }
 
 function grab(fn: () => unknown): ProviderError {
   try {
@@ -39,7 +39,7 @@ describe('空 key 在本地就判定，不发请求', () => {
   })
 
   test('有 key 时正常建出适配器', () => {
-    expect(buildAdapter({ ...base, apiKey: 'sk-x' }).spec.id).toBe('deepseek-v4-flash')
+    expect(buildAdapter({ ...base, apiKey: 'sk-x' }).spec.id).toBe('deepseek-flash')
   })
 })
 
@@ -51,7 +51,7 @@ describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => 
     'https://ollama.localhost/v1',
   ]) {
     test(`${url} 允许空 key`, () => {
-      expect(buildAdapter({ ...base, apiKey: '', baseUrl: url }).spec.id).toBe('deepseek-v4-flash')
+      expect(buildAdapter({ ...base, apiKey: '', baseUrl: url }).spec.id).toBe('deepseek-flash')
     })
   }
 
@@ -119,11 +119,10 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
 })
 
 /**
- * 模型规格只有「目录 seed → 模型库」两层。端点 transport 是独立的传输门控：
- * 它只能收起当前路线发不出去的控制面，不能改模型窗口、价格或凭空增加档位。
+ * 模型规格由目录 seed 与用户模型库声明；端点检测只覆盖思考参数，不改窗口或价格。
  */
 describe('两层解析：目录 seed → 模型库', () => {
-  const seed = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
+  const seed = () => lookupModel('deepseek-flash', 'openai_chat_completions')
 
   test('库里写的上限直接生效，不与目录取小', () => {
     expect(

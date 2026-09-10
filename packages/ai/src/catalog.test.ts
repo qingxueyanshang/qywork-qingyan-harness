@@ -9,99 +9,104 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { applySpecOverride, builtinCatalog, computeCost, lookupModel, priceAt } from './catalog.ts'
+import {
+  applySpecOverride,
+  applyTransportCapabilities,
+  builtinCatalog,
+  computeCost,
+  lookupModel,
+  priceAt,
+} from './catalog.ts'
 
-describe('同一模型在不同协议下能力不同', () => {
-  /**
-   * `deepseek-v4-flash` 走两种协议，**思考的控制面完全是两套**：
-   *
-   * - chat/completions：`thinking:{type:'enabled'}` + `reasoning_effort`
-   *   两个字段一起发，两档（high / max）。
-   * - Responses：只有 `reasoning.effort` 一个旋钮，实测四档全部「接受但不采纳」，
-   *   只有 `'none'` 真的关得掉。
-   *
-   * 一个目录条目描述不了两种协议，所以 `lookupModel` 必须先按
-   * `(id, provider)` 精确匹配。只按 id 找的话，命中的是「先声明的那条」——
-   * 一个跟正确性毫无关系的顺序。
-   */
-  test('Responses 下是 reasoning.effort 那一套', () => {
-    const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
-    expect(spec.provider).toBe('openai_responses')
-    expect(spec.thinking).toBe('reasoning_effort')
+describe('模型库与端点校验的优先级', () => {
+  const transport = {
+    effort: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
+    thinking: 'reasoning_effort' as const,
+  }
+  const probed = () => ({ ...transport, effortLevels: [...transport.effortLevels] })
+  test('旧探测名单不能扩张内置档位或覆盖参数格式', () => {
+    const spec = applyTransportCapabilities(
+      lookupModel('deepseek-flash', 'openai_chat_completions'),
+      probed(),
+    )
+    expect(spec.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(spec.thinking).toBe('deepseek_thinking')
+    expect(
+      applyTransportCapabilities(lookupModel('claude-haiku-4-5', 'anthropic_messages'), probed())
+        .effortLevels,
+    ).toEqual([])
   })
-
-  test('chat/completions 下是 DeepSeek 自己那一套', () => {
-    const spec = lookupModel('deepseek-v4-flash', 'openai_chat_completions')
-    expect(spec.provider).toBe('openai_chat_completions')
+  test('人工声明档位（含空列表）和格式不被检测扩张', () => {
+    const seed = lookupModel('custom', 'openai_chat_completions')
+    expect(
+      applyTransportCapabilities(seed, probed(), { effortLevels: ['high', 'max'] }).effortLevels,
+    ).toEqual(['high', 'max'])
+    const spec = applyTransportCapabilities(seed, probed(), {
+      effortLevels: [],
+      thinking: 'deepseek_thinking',
+    })
+    expect(spec.effortLevels).toEqual([])
     expect(spec.thinking).toBe('deepseek_thinking')
   })
-
-  /** 两条协议的档位必须各记各的——合并之后其中一边必然与实际能力不符。 */
-  test('两条协议的档位互不覆盖', () => {
-    expect(lookupModel('deepseek-v4-flash', 'openai_chat_completions').effortLevels).toEqual([
-      'low',
-      'high',
-      'max',
-    ])
-    expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
-  })
-
-  /**
-   * 视觉模型两条协议都在目录里。
-   *
-   * 只收录 chat/completions 那一条的话，Responses 下会走到
-   * `lookupModel` 的兑底分支（改写 provider 保留能力约束），
-   * 因此把 chat 那套思考字段当成 Responses 的能力拿出来用。
-   */
-  test('vision 在两条协议下各有一条', () => {
-    const chat = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
-    expect(chat.thinking).toBe('deepseek_thinking')
-    expect(chat.effortLevels).toEqual(['low', 'high', 'max'])
-
-    const resp = lookupModel('deepseek-v4-flash-vision-exp', 'openai_responses')
-    expect(resp.thinking).toBe('reasoning_effort')
-    expect(resp.reasoningEcho).toBe('reasoning_text')
-    expect(resp.effortLevels).toEqual([])
-  })
-
-  /** 别名不进目录：指向哪个模型由服务端说了算，随时可改。填了就按未收录处理。 */
-  test('别名（deepseek-chat / deepseek-reasoner）不在目录里', () => {
-    for (const id of ['deepseek-chat', 'deepseek-reasoner']) {
-      expect(lookupModel(id, 'openai_chat_completions').catalogued).toBe(false)
-    }
+  test('未知模型只补录价格不影响探测候选值生效', () => {
+    const spec = applyTransportCapabilities(
+      lookupModel('custom', 'openai_chat_completions'),
+      probed(),
+      { input: 1 },
+    )
+    expect(spec.catalogued).toBe(true)
+    expect(spec.effortLevels).toEqual([...transport.effortLevels])
+    expect(spec.thinking).toBe('reasoning_effort')
   })
 })
 
-describe('实测修正过的字段', () => {
-  /**
-   * 这一条是 `qy probe` 实测的（「省略字段时自己思考：是」）。写成 `false` 就是
-   * 在目录里放一个与实测相反的事实。
-   */
-  test('deepseek 省略字段时自己思考', () => {
-    for (const p of ['openai_chat_completions', 'openai_responses'] as const) {
-      expect(lookupModel('deepseek-v4-flash', p).thinksByDefault).toBe(true)
-      expect(lookupModel('deepseek-v4-pro', p).thinksByDefault).toBe(true)
+describe('DeepSeek 当前规格', () => {
+  const before = Date.UTC(2026, 8, 10)
+  const cutover = Date.UTC(2026, 8, 14, 4)
+  test('正式目录只列 Flash 和 Pro，Flash 支持图片和三档思考', () => {
+    for (const kind of [
+      'openai_chat_completions',
+      'openai_responses',
+      'anthropic_messages',
+    ] as const) {
+      const models = builtinCatalog(before).filter(
+        (m) => m.vendor === 'deepseek' && m.provider === kind,
+      )
+      expect(models.map((m) => m.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
+      const flash = lookupModel('deepseek-flash', kind, before)
+      expect(flash.vision).toBe(true)
+      expect(flash.thinksByDefault).toBe(true)
+      expect(flash.effortLevels).toEqual(['low', 'high', 'max'])
+      expect(flash.contextWindow).toBe(1_000_000)
+      expect(flash.maxOutputTokens).toBe(384_000)
     }
   })
-
-  /**
-   * Responses 下的 `effortLevels: []` 是**实测结论**，不是「还没探」的保守默认。
-   *
-   * minimal / low / medium / high 全部返回 200，而 reasoning_tokens 三次采样
-   * 都是 899~900（`max_output_tokens=900`），**没有一档被采纳**。
-   * 只有 `none` 有效果，而它是「关掉」不是「一档 effort」。
-   *
-   * 把四档写上去等于宣称一个不存在的能力——面板会显示「已按 high 运行」，
-   * 那是一句假话。
-   *
-   * 这条**只管 Responses**。chat/completions 那边是另一套字段，见上面那个 describe。
-   */
-  test('Responses 下 deepseek 没有可用的 effort 档位（accepted ≠ works）', () => {
-    expect(lookupModel('deepseek-v4-flash', 'openai_responses').effortLevels).toEqual([])
+  test('Chat 和 Responses 使用各自的思考控制参数', () => {
+    expect(lookupModel('deepseek-flash', 'openai_chat_completions').thinking).toBe(
+      'deepseek_thinking',
+    )
+    const responses = lookupModel('deepseek-flash', 'openai_responses')
+    expect(responses.thinking).toBe('reasoning_effort')
+    expect(responses.reasoningEcho).toBe('reasoning_text')
+    expect(responses.cacheRouting).toBe('none')
   })
-
-  /** Haiku 4.5 走 budget_tokens，没有 effort 档。 */
-  test('haiku-4-5 仍然没有 effort 档', () => {
+  test('Pro 在公告时间切换到 Flash 的能力与价格', () => {
+    for (const kind of [
+      'openai_chat_completions',
+      'openai_responses',
+      'anthropic_messages',
+    ] as const) {
+      const pro = lookupModel('deepseek-v4-pro', kind, cutover - 1)
+      expect(pro.vision).toBe(false)
+      expect(pro.pricing.output).toBe(27)
+      const routed = lookupModel('deepseek-v4-pro', kind, cutover)
+      expect(routed.id).toBe('deepseek-v4-pro')
+      expect(routed.vision).toBe(true)
+      expect(routed.pricing).toEqual(lookupModel('deepseek-flash', kind, cutover).pricing)
+    }
+  })
+  test('Haiku 的预算模式不声明 effort 档位', () => {
     expect(lookupModel('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 })
@@ -134,7 +139,7 @@ describe('计价', () => {
    * 两者不能重复计——适配器已把用量归一成排他口径。
    */
   test('缓存命中按 cacheRead 计，不重复计进 input', () => {
-    const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
+    const spec = lookupModel('deepseek-flash', 'openai_responses')
     const withCache = computeCost(spec, { inputTokens: 100, outputTokens: 0, cachedTokens: 900 })
     const withoutCache = computeCost(spec, { inputTokens: 1000, outputTokens: 0, cachedTokens: 0 })
     // 同样一千个输入 token，全靠缓存要便宜得多。等价说明缓存没被计入折扣。
@@ -150,6 +155,16 @@ describe('计价', () => {
  */
 describe('模型库覆盖', () => {
   const opus = () => lookupModel('claude-opus-5', 'anthropic_messages')
+
+  test('未知模型可显式声明完整历史思考回放', () => {
+    const spec = applySpecOverride(lookupModel('custom', 'openai_chat_completions'), {
+      thinking: 'deepseek_thinking',
+      effortLevels: ['low', 'high', 'max'],
+      chatReasoningProtocol: 'deepseek_preserved',
+    })
+    expect(spec.chatReasoningProtocol).toBe('deepseek_preserved')
+    expect(spec.effortLevels).toEqual(['low', 'high', 'max'])
+  })
 
   test('只覆盖写了的字段，没写的照 seed', () => {
     const s = applySpecOverride(opus(), { contextWindow: 200_000 })
@@ -262,14 +277,6 @@ describe('图片输入', () => {
     expect(lookupModel('qwen3.7-plus', 'openai_chat_completions').video).toBe(true)
     expect(lookupModel('第三方接口上的某个模型', 'openai_chat_completions').video).toBe(false)
   })
-
-  /** DeepSeek 那两条的唯一差别就是这一项，两条协议下都成立。 */
-  test('DeepSeek 视觉条目与普通条目分得开', () => {
-    for (const kind of ['openai_chat_completions', 'openai_responses'] as const) {
-      expect(lookupModel('deepseek-v4-flash', kind).vision).toBe(false)
-      expect(lookupModel('deepseek-v4-flash-vision-exp', kind).vision).toBe(true)
-    }
-  })
 })
 
 describe('视频输入', () => {
@@ -301,7 +308,7 @@ describe('视频输入', () => {
     expect(lookupModel('gemini-3.7-flash', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('gpt-5.6-sol', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('claude-opus-5', 'anthropic_messages').video).toBe(false)
-    expect(lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions').video).toBe(false)
+    expect(lookupModel('deepseek-flash', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('第三方接口上的某个模型', 'openai_chat_completions').video).toBe(false)
   })
 })
@@ -317,41 +324,41 @@ describe('视频输入', () => {
  * （填空闲价时折扣没生效就少记一半钱，账本向偏低的方向出错）。
  */
 describe('分时段定价', () => {
-  const flash = () => lookupModel('deepseek-v4-flash', 'openai_chat_completions')
-  /** 2026-08-18（周二）的这一刻。星期也参与判档，所以日期不能随便换。 */
-  const at = (utcHour: number, utcMinute = 0) => Date.UTC(2026, 7, 18, utcHour, utcMinute)
+  const flash = () => lookupModel('deepseek-flash', 'openai_chat_completions')
+  /** 2026-09-08（周二）的这一刻。星期也参与判档，所以日期不能随便换。 */
+  const at = (utcHour: number, utcMinute = 0) => Date.UTC(2026, 8, 8, utcHour, utcMinute)
 
   test('目录里填的是高峰价，人民币', () => {
     const p = flash().pricing
     expect(p.currency).toBe('CNY')
-    expect(p.input).toBe(3)
-    expect(p.output).toBe(9)
-    expect(p.cacheRead).toBe(0.1)
+    expect(p.input).toBe(2)
+    expect(p.output).toBe(8)
+    expect(p.cacheRead).toBe(0.04)
     // 自动前缀缓存，写入不收费。
     expect(p.cacheWrite5m).toBe(0)
   })
 
   test('高峰时段按原价', () => {
     // 北京时间 10:00 = UTC 02:00，落在第一段高峰里。
-    expect(priceAt(flash(), { now: at(2) }).output).toBe(9)
+    expect(priceAt(flash(), { now: at(2) }).output).toBe(8)
     // 北京时间 15:00 = UTC 07:00，落在第二段。
-    expect(priceAt(flash(), { now: at(7) }).output).toBe(9)
+    expect(priceAt(flash(), { now: at(7) }).output).toBe(8)
   })
 
   test('空闲时段五折，每一档都打', () => {
     // 北京时间 13:00 = UTC 05:00，卡在两段高峰之间。
     const p = priceAt(flash(), { now: at(5) })
-    expect(p.input).toBe(1.5)
-    expect(p.output).toBe(4.5)
-    expect(p.cacheRead).toBe(0.05)
+    expect(p.input).toBe(1)
+    expect(p.output).toBe(4)
+    expect(p.cacheRead).toBe(0.02)
   })
 
   /** 半开区间：起点算高峰，终点不算。差一个小时就是差一倍的钱。 */
   test('窗口边界是左闭右开', () => {
-    expect(priceAt(flash(), { now: at(1) }).output).toBe(9) // 北京 9:00 整，高峰第一分钟
-    expect(priceAt(flash(), { now: at(0, 59) }).output).toBe(4.5) // 北京 8:59，还没开始
-    expect(priceAt(flash(), { now: at(4) }).output).toBe(4.5) // 北京 12:00 整，已经结束
-    expect(priceAt(flash(), { now: at(3, 59) }).output).toBe(9) // 北京 11:59，还在里面
+    expect(priceAt(flash(), { now: at(1) }).output).toBe(8) // 北京 9:00 整，高峰第一分钟
+    expect(priceAt(flash(), { now: at(0, 59) }).output).toBe(4) // 北京 8:59，还没开始
+    expect(priceAt(flash(), { now: at(4) }).output).toBe(4) // 北京 12:00 整，已经结束
+    expect(priceAt(flash(), { now: at(3, 59) }).output).toBe(8) // 北京 11:59，还在里面
   })
 
   /**
@@ -362,10 +369,10 @@ describe('分时段定价', () => {
    */
   test('高峰只在周一至周五', () => {
     const hour = (day: number, utcHour: number) => Date.UTC(2026, 7, day, utcHour)
-    expect(priceAt(flash(), { now: hour(22, 2) }).output).toBe(4.5) // 周六，第一段窗口内
-    expect(priceAt(flash(), { now: hour(23, 7) }).output).toBe(4.5) // 周日，第二段窗口内
-    expect(priceAt(flash(), { now: hour(17, 2) }).output).toBe(9) // 周一，在
-    expect(priceAt(flash(), { now: hour(21, 7) }).output).toBe(9) // 周五，在
+    expect(priceAt(flash(), { now: hour(22, 2) }).output).toBe(4) // 周六，第一段窗口内
+    expect(priceAt(flash(), { now: hour(23, 7) }).output).toBe(4) // 周日，第二段窗口内
+    expect(priceAt(flash(), { now: hour(17, 2) }).output).toBe(8) // 周一，在
+    expect(priceAt(flash(), { now: hour(21, 7) }).output).toBe(8) // 周五，在
   })
 
   /**
@@ -377,7 +384,7 @@ describe('分时段定价', () => {
    */
   test('判档只认 UTC', () => {
     const utcNoon = Date.UTC(2026, 7, 18, 12, 0) // UTC 12:00 = 北京 20:00，空闲
-    expect(priceAt(flash(), { now: utcNoon }).output).toBe(4.5)
+    expect(priceAt(flash(), { now: utcNoon }).output).toBe(4)
   })
 
   test('没有分时段的模型原样返回，不新建对象', () => {
@@ -387,32 +394,16 @@ describe('分时段定价', () => {
 
   test('算钱按算的那一刻取价', () => {
     const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000 }
-    expect(computeCost(flash(), usage, at(2))).toBe(12) // 高峰 3 + 9
-    expect(computeCost(flash(), usage, at(5))).toBe(6) // 空闲 1.5 + 4.5
+    expect(computeCost(flash(), usage, at(2))).toBe(10) // 高峰 2 + 8
+    expect(computeCost(flash(), usage, at(5))).toBe(5) // 空闲 1 + 4
   })
 
   test('v4-pro 的两档', () => {
-    const pro = lookupModel('deepseek-v4-pro', 'openai_chat_completions')
+    const pro = lookupModel('deepseek-v4-pro', 'openai_chat_completions', Date.UTC(2026, 8, 10))
     expect(pro.pricing.input).toBe(9)
     expect(pro.pricing.output).toBe(27)
     expect(priceAt(pro, { now: at(5) }).input).toBe(4.5)
     expect(priceAt(pro, { now: at(5) }).output).toBe(13.5)
-  })
-
-  /**
-   * 视觉模型与 flash 同价，分时段一起打折。
-   *
-   * 逐档断言而不是比整个 `pricing` 对象：漏收录（id 写错）时 `lookupModel`
-   * 返回 `unknownModel`，四档全零而不报错——账本从此报 ¥0。
-   */
-  test('vision 与 flash 同价', () => {
-    const v = lookupModel('deepseek-v4-flash-vision-exp', 'openai_chat_completions')
-    expect(v.catalogued).not.toBe(false)
-    expect(v.pricing.currency).toBe('CNY')
-    expect(v.pricing.input).toBe(3)
-    expect(v.pricing.output).toBe(9)
-    expect(v.pricing.cacheRead).toBe(0.1)
-    expect(priceAt(v, { now: at(5) }).output).toBe(4.5)
   })
 })
 

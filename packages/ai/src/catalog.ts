@@ -16,6 +16,7 @@ import type {
   ThinkingMode,
 } from '@qywork/core'
 import { DEFAULT_DENSITY, type TokenDensity } from './tokens.ts'
+import type { TransportCapabilities } from './types.ts'
 
 /**
  * 每百万 token 的单价。
@@ -36,6 +37,15 @@ export interface Pricing {
   /** 缓存写入（1 小时 TTL），通常是 input 的 2 倍。 */
   cacheWrite1h: number
 }
+
+/** 历史思考内容的回放规则；自定义模型覆盖与内置目录共用。 */
+export const CHAT_REASONING_PROTOCOLS = [
+  'standard',
+  'qwen_preserved',
+  'glm_preserved',
+  'deepseek_preserved',
+] as const
+export type ChatReasoningProtocol = (typeof CHAT_REASONING_PROTOCOLS)[number]
 
 export interface ModelSpec {
   id: string
@@ -95,10 +105,10 @@ export interface ModelSpec {
    * Chat Completions 的历史思考协议。
    *
    * `standard` 保持原有行为：只给带 tool_calls 的 assistant 回放 `reasoning_content`。
-   * 另外两档是厂商明确要求的完整历史协议；它们同时决定请求开关和纯文本轮回放，
+   * 其余值声明厂商要求的完整历史回放，其中 Qwen / GLM 还需要请求开关，
    * 避免「请求体开了保留、历史投影却仍丢思考」这种半套实现。
    */
-  chatReasoningProtocol: 'standard' | 'qwen_preserved' | 'glm_preserved'
+  chatReasoningProtocol: ChatReasoningProtocol
   /**
    * Chat Completions 的工具参数 schema 协议。
    *
@@ -737,150 +747,59 @@ export function claudeCatalog(): ModelSpec[] {
   ]
 }
 
-/**
- * DeepSeek。
- *
- * 口径与 Anthropic 有三处实质差异，都体现在下面的数字里：
- * - **按人民币标价**（官方价目页就是 ¥）。记成美元的话数字差七倍。
- * - 缓存**写入不收费**（自动前缀缓存，没有 Anthropic 那样的 1.25x 写入溢价），
- *   所以 cacheWrite 两档都是 0。
- * - `input` 填的是**缓存未命中**单价；命中部分走 cacheRead。适配器已把
- *   `prompt_tokens` 归一成排他口径，两者不会重复计。
- * - **分高峰 / 空闲两档**，见 `DEEPSEEK_OFF_PEAK`。下面填的是高峰价。
- *
- * 价目来源：官方文档「模型 & 价格」页，2026-08-17 生效的那版：
- *
- * | 模型 | 时段 | 命中输入 | 未命中输入 | 输出 |
- * |---|---|---|---|---|
- * | v4-flash | 高峰 | ¥0.10 | ¥3.0 | ¥9.0 |
- * | v4-flash | 空闲 | ¥0.05 | ¥1.5 | ¥4.5 |
- * | v4-pro | 高峰 | ¥0.30 | ¥9.0 | ¥27.0 |
- * | v4-pro | 空闲 | ¥0.15 | ¥4.5 | ¥13.5 |
- * | v4-flash-vision-exp | 高峰 | ¥0.10 | ¥3.0 | ¥9.0 |
- * | v4-flash-vision-exp | 空闲 | ¥0.05 | ¥1.5 | ¥4.5 |
- *
- * 实测（2026-08）：`deepseek-chat` 与 `deepseek-reasoner` 都被服务端解析成
- * `deepseek-v4-flash`。**别名不进目录**——指向哪个模型由服务端说了算、随时可改，
- * 而目录里一条别名对用户就是「多一个看起来不一样的模型」。真要用别名就自己填 id，
- * 届时按未收录处理（`configNotices` 会点名说清）。
- */
-function deepseekCatalog(): ModelSpec[] {
-  const base = {
-    provider: 'openai_chat_completions' as const,
+/** DeepSeek 当前模型规格。价格为人民币高峰价，空闲时段五折。 */
+function deepseekCatalog(now: number): ModelSpec[] {
+  const flash: ModelSpec = {
+    id: 'deepseek-flash',
+    displayName: 'DeepSeek V4.1 Flash',
+    provider: 'openai_chat_completions',
     vendor: 'deepseek',
     contextWindow: 1_000_000,
-    density: DEEPSEEK_DENSITY,
+    density: DEFAULT_DENSITY,
     maxOutputTokens: 384_000,
-    /**
-     * 只描述模型，不描述本适配器发不发思考字段——填 `'none'` 是后者，那是错的。
-     *
-     * 这一支是 chat/completions（Responses 那支见下面）：`thinking:{type:'enabled'}`
-     * 和 `reasoning_effort` 必须**一起发**，三档 low / high / max。
-     *
-     * **这两档没有在本仓实测过。** 要坐实就跑 `qy probe`——它会把实际接受的档位
-     * 写回档案覆盖这里。
-     */
-    thinking: 'deepseek_thinking' as const,
-    // 只有下面那条视觉实验模型收图片，flash 与 pro 都不收。
-    vision: false,
-    video: false,
-    // chat/completions 那支的回传由 `openai-compat` 无条件发 `reasoning_content`，
-    // 不读这一格。要回传的是下面 Responses 那支。
-    reasoningEcho: 'none' as const,
-    chatReasoningProtocol: 'standard' as const,
-    chatToolSchema: 'openai_strict' as const,
-    effortLevels: ['low', 'high', 'max'] as EffortLevel[],
-    thinksByDefault: false,
-    // 兼容协议没有显式缓存断点，命中完全靠前缀逐字节稳定。
-    minCacheablePrefix: 0,
-    cacheRouting: 'prompt_cache_key' as const,
-    offPeak: DEEPSEEK_OFF_PEAK,
-  }
-  const flash: ModelSpec = {
-    ...base,
-    id: 'deepseek-v4-flash',
-    displayName: 'DeepSeek V4 Flash',
-    pricing: {
-      input: 3,
-      output: 9,
-      currency: 'CNY',
-      cacheRead: 0.1,
-      cacheWrite5m: 0,
-      cacheWrite1h: 0,
-    },
-  }
-  const pro: ModelSpec = {
-    ...base,
-    id: 'deepseek-v4-pro',
-    displayName: 'DeepSeek V4 Pro',
-    pricing: {
-      input: 9,
-      output: 27,
-      currency: 'CNY',
-      cacheRead: 0.3,
-      cacheWrite5m: 0,
-      cacheWrite1h: 0,
-    },
-  }
-  /**
-   * 视觉实验模型。窗口、输出上限、思考控制面、计价与 flash 完全相同，
-   * 唯一差别是接受图片输入。
-   *
-   * 图片缩放后按输入 token 计入，单张上限 384 token，**没有单独的图片价目**——
-   * 不要为它在 `Pricing` 上加一条轴，那会是一个零消费者的字段。
-   *
-   * 边界：只接受 JPEG / PNG / GIF / WebP，不接受 PDF 与文档。
-   */
-  const vision: ModelSpec = {
-    ...base,
-    id: 'deepseek-v4-flash-vision-exp',
-    displayName: 'DeepSeek V4 Flash Vision',
+    thinking: 'deepseek_thinking',
     vision: true,
-    pricing: { ...flash.pricing },
-  }
-
-  /**
-   * Responses 协议下的同一批模型，**能力不同所以单独一条**。
-   *
-   * 差别不是「协议名不一样」，是**思考能不能被控制**：
-   * - 走 chat/completions 时客户端不发思考相关字段，无从控制 → `thinking: 'none'`。
-   * - 走 Responses 时 `reasoning.effort:'none'` 能真的关掉 → `thinking: 'reasoning_effort'`。
-   *
-   * `thinksByDefault` 两边都是 **true**：省略字段它自己就思考，`qy probe` 实测过。
-   *
-   * `effortLevels` 仍然是 **`[]`**，这是实测结论不是保守默认：
-   * minimal / low / medium / high 全部返回 200，而 reasoning_tokens 三次采样
-   * 都是 899~900，**没有一档被采纳**。把四档写上去等于宣称一个不存在的能力。
-   */
-  const responses = (m: ModelSpec): ModelSpec => ({
-    ...m,
-    provider: 'openai_responses',
-    thinking: 'reasoning_effort',
-    /*
-     * 带 tool_calls 的历史不回传 `reasoning_text` 就 400，实测原话与回传规则
-     * 记在 `providers/openai-responses.ts` 的文件头。
-     *
-     * **`thinking` 与 OpenAI 同为 `reasoning_effort` 不代表这一格也同**：
-     * 那条轴说的是 effort 旋钮，这条说的是回传要求，两者正交。
-     */
-    reasoningEcho: 'reasoning_text',
+    video: false,
+    reasoningEcho: 'none',
+    chatReasoningProtocol: 'deepseek_preserved',
+    chatToolSchema: 'openai_strict',
+    effortLevels: ['low', 'high', 'max'],
     thinksByDefault: true,
-    // **这一格的实测是在这条协议下做的，与上面 chat/completions 那条各自独立。**
-    // Responses 只有 `reasoning.effort` 一个旋钮，没有 DeepSeek 那个 `thinking`
-    // 开关可配；实测四档全部返回 200 而 reasoning_tokens 都是 899~900，
-    // 一档都没被采纳。chat/completions 那边两个字段一起发是另一回事，
-    // 各自的结论各自记，不合并。
-    effortLevels: [],
-  })
-
-  return [
-    { ...flash, thinksByDefault: true },
-    { ...pro, thinksByDefault: true },
-    { ...vision, thinksByDefault: true },
-    responses(flash),
-    responses(pro),
-    responses(vision),
-  ]
+    minCacheablePrefix: 0,
+    cacheRouting: 'none',
+    offPeak: DEEPSEEK_OFF_PEAK,
+    pricing: {
+      input: 2,
+      output: 8,
+      currency: 'CNY',
+      cacheRead: 0.04,
+      cacheWrite5m: 0,
+      cacheWrite1h: 0,
+    },
+  }
+  // 北京时间 2026-09-14 12:00 起，Pro 请求由 V4.1 Flash 服务并按 Flash 计价。
+  const pro: ModelSpec =
+    now >= Date.UTC(2026, 8, 14, 4)
+      ? { ...flash, id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro（路由至 V4.1 Flash）' }
+      : {
+          ...flash,
+          id: 'deepseek-v4-pro',
+          displayName: 'DeepSeek V4 Pro',
+          density: DEEPSEEK_DENSITY,
+          vision: false,
+          pricing: { ...flash.pricing, input: 9, output: 27, cacheRead: 0.3 },
+        }
+  return [flash, pro].flatMap((model): ModelSpec[] => [
+    model,
+    {
+      ...model,
+      provider: 'openai_responses',
+      thinking: 'reasoning_effort',
+      reasoningEcho: 'reasoning_text',
+    },
+    // 默认开启思考；Anthropic 兼容接口通过 output_config.effort 选择档位。
+    { ...model, provider: 'anthropic_messages', thinking: 'deepseek_thinking' },
+  ])
 }
 
 /**
@@ -1534,6 +1453,8 @@ export interface SpecOverride {
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
+  /** 需要完整回传历史思考的自定义模型，必须显式声明回放协议。 */
+  chatReasoningProtocol?: ChatReasoningProtocol
   /**
    * 回传推理原文。探针不覆盖这一轴（探不出来的不猜），只能手填——
    * 第三方接口把 DeepSeek 挂在自定义模型名下时，内置目录认不出它，这一格是唯一出口。
@@ -1571,6 +1492,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     // 布尔，`false` 是有效覆盖（正是「挡住图片」那一档），只能按 `undefined` 判缺省。
     ...(o.vision !== undefined ? { vision: o.vision } : {}),
     ...(o.thinking ? { thinking: o.thinking } : {}),
+    ...(o.chatReasoningProtocol ? { chatReasoningProtocol: o.chatReasoningProtocol } : {}),
     ...(o.reasoningEcho ? { reasoningEcho: o.reasoningEcho } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
     ...(o.cacheRouting ? { cacheRouting: o.cacheRouting } : {}),
@@ -1588,18 +1510,53 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
   }
 }
 
-/** 全部内置模型。仅用于能力约束与计价，不是可用模型的白名单。 */
+/** 必须传入未覆盖的目录 seed；计价覆盖不会把未知档位变成已知。 */
+export function declaredEffortLevels(
+  seed: ModelSpec,
+  override?: SpecOverride,
+): EffortLevel[] | undefined {
+  return override?.effortLevels ?? (seed.catalogued !== false ? seed.effortLevels : undefined)
+}
+
+/**
+ * 运行时与模型选择器共用的规格合并。模型库声明档位，端点校验只能缩小该集合；
+ * 只有未声明档位的模型才采用探测候选值。参数被接受不意味着它是独立的强度。
+ */
+export function applyTransportCapabilities(
+  seed: ModelSpec,
+  transport?: TransportCapabilities,
+  override?: SpecOverride,
+): ModelSpec {
+  const spec = applySpecOverride(seed, override)
+  if (!transport) return spec
+  const levels = declaredEffortLevels(seed, override)
+  return {
+    ...spec,
+    ...(seed.catalogued === false && override?.thinking === undefined && transport.thinking
+      ? { thinking: transport.thinking }
+      : {}),
+    ...(transport.effortLevels
+      ? {
+          effortLevels:
+            levels?.filter((level) => transport.effortLevels!.includes(level)) ??
+            transport.effortLevels,
+        }
+      : {}),
+    ...(transport.effort === false ? { effortLevels: [] } : {}),
+  }
+}
+
+/** 全部内置模型。提供默认规格与计价，不限制未收录模型的接入或探测。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [...claudeCatalog(), ...deepseekCatalog(), ...openAiCompatCatalog(now)]
+  return [...claudeCatalog(), ...deepseekCatalog(now), ...openAiCompatCatalog(now)]
 }
 
 /**
  * 查目录。
  *
- * **先按 `(id, provider)` 精确匹配：同一个模型在不同协议下能力不一样。** 实测（2026-08）
- * `deepseek-v4-flash`：走 chat/completions 时客户端不发思考相关字段，思考无从控制；走 Responses
- * 时 `reasoning.effort:'none'` 能真的关掉它。一个条目描述不了两种协议，所以目录允许同 id 多条、按
- * provider 区分。
+ * **先按 `(id, provider)` 精确匹配：同一个模型在不同协议下请求字段不一样。**
+ * DeepSeek 的三条协议分别使用 thinking + reasoning_effort、reasoning.effort、
+ * output_config.effort，因此目录允许同 id 按 provider 分开声明。
  *
  * 只按 id 找（`.find(m => m.id === id)`）的话，两条里永远只命中先声明的那条，
  * 而「先声明的那条」是个跟正确性毫无关系的顺序。

@@ -7,7 +7,12 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { lookupModel, type TransportCapabilities } from '@qywork/ai'
+import {
+  CHAT_REASONING_PROTOCOLS,
+  type ChatReasoningProtocol,
+  lookupModel,
+  type TransportCapabilities,
+} from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
@@ -235,6 +240,7 @@ export interface StoredCatalogEntry {
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
+  chatReasoningProtocol?: ChatReasoningProtocol
   /**
    * 带 tool_calls 的历史要不要回传推理原文。同属「这条模型在这条协议上的能力」，
    * 只有 Responses 适配器消费它——保存会把同一条 entry 扇出到该 id 用到的每种协议，
@@ -255,7 +261,7 @@ export interface StoredCatalogEntry {
  * 一个模型挂在**这个接口下**的那一格。
  *
  * 模型能力全在模型库里，按「模型 × 协议」索引；这里存用户偏好，以及当前接口
- * 是否透传某个控制面的实测结论。后者只能收窄这条路线，不能增加官方档位。
+ * 接受哪些思考档位的实测结论。后者只作用于当前路线，不修改官方模型目录。
  */
 export interface StoredModel {
   /**
@@ -473,6 +479,29 @@ function migrateDisabledEffort(cfg: QyConfig): string[] {
   return notices
 }
 
+/** 正式 Flash 名称更新后，清掉未使用的旧思考记录，避免它们被当作自建模型。 */
+function migrateRetiredDeepSeekOverrides(cfg: QyConfig): string[] {
+  const retired = new Set(['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
+  const used = new Set(
+    Object.values(cfg.providers ?? {}).flatMap((p) => Object.keys(p.models ?? {})),
+  )
+  const notices: string[] = []
+  for (const [key, entry] of Object.entries(cfg.catalog ?? {})) {
+    const id = key.split('|')[0]!
+    if (!retired.has(id) || used.has(id)) continue
+    // 有人工维护的价格、窗口等规格时保留；这里只清理由旧探测留下的思考记录。
+    if (
+      Object.keys(entry).some(
+        (field) => !['thinking', 'effortLevels', 'thinksByDefault'].includes(field),
+      )
+    )
+      continue
+    delete cfg.catalog![key]
+    notices.push(`已移除未使用的旧模型 ${id} 的思考记录；正式名称为 deepseek-flash。`)
+  }
+  return notices
+}
+
 export async function loadConfig(): Promise<QyConfig> {
   const raw = await readFile(configPath(), 'utf8').catch(() => null)
   if (raw === null) return structuredClone(DEFAULT_CONFIG)
@@ -492,6 +521,7 @@ export async function loadConfig(): Promise<QyConfig> {
   // 而 `configNotices` 拿到的已经是迁完的配置，看不见旧键了。
   for (const n of migrateModelLibrary(cfg)) process.stderr.write(`[qy] ${n}\n`)
   for (const n of migrateDisabledEffort(cfg)) process.stderr.write(`[qy] ${n}\n`)
+  for (const n of migrateRetiredDeepSeekOverrides(cfg)) process.stderr.write(`[qy] ${n}\n`)
 
   /*
    * 接口表**不与默认值合并**。
@@ -628,6 +658,16 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
             `  它只表示当前接口是否透传 effort，不定义模型有哪些档位。`,
         )
       }
+      const levels = m.transport?.effortLevels
+      if (
+        levels !== undefined &&
+        (!Array.isArray(levels) || levels.some((level) => !EFFORT_ORDER.includes(level)))
+      ) {
+        problems.push(`${name} / ${id} 的 transport.effortLevels 必须是有效思考档位数组。`)
+      }
+      if (m.transport?.thinking !== undefined && !THINKING_MODES.includes(m.transport.thinking)) {
+        problems.push(`${name} / ${id} 的 transport.thinking 不是有效参数格式。`)
+      }
     }
   }
 
@@ -644,6 +684,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    */
   const vocabularies = [
     ['thinking', THINKING_MODES],
+    ['chatReasoningProtocol', CHAT_REASONING_PROTOCOLS],
     ['reasoningEcho', REASONING_ECHOES],
     ['cacheRouting', CACHE_ROUTINGS],
   ] as const
@@ -772,11 +813,11 @@ export function configNotices(cfg: QyConfig): string[] {
     const spec = lookupModel(active.model, active.kind)
     if (spec.catalogued === false) {
       notices.push(
-        `模型 ${active.model} 不在内置目录中，能力按**最保守**假设处理：\n` +
-          `- 不请求思考（reasoning_tokens 恒为 0），即使该模型支持\n` +
+        `模型 ${active.model} 不在内置目录中：\n` +
+          `- 思考档位按当前接口的端点探测结果或模型规格配置确定\n` +
           `- 计价按 0 计算，用量显示为 $0\n` +
           `- 上下文按 ${Math.round(spec.contextWindow / 1000)}K 假设，真实窗口更大时压缩会提前触发\n` +
-          `\n端点探测只能校验接口是否透传控制字段，不能补出官方档位、窗口和价格；要准确请在模型库对应条目中明确填写。`,
+          `\n端点探测可以检测当前接口接受的思考档位，不能补出窗口和价格；这些规格需在模型库对应条目中明确填写。`,
       )
     }
   }

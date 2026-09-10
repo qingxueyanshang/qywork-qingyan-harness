@@ -29,7 +29,7 @@ if (!dbPath || !workspaceRoot) {
  * 会话记的是**接口 + 模型**一对，不是单一个模型名。接口名取 `qy init` 的预置键，
  * 种出来的数据形状才和真实运行一致（模型选择的第一层就是接口）。
  */
-const REF = { provider: 'deepseek', model: 'deepseek-v4-flash' } as const
+const REF = { provider: 'deepseek', model: 'deepseek-flash' } as const
 
 const store = new Store({ path: dbPath })
 const ws = upsertWorkspace(store, workspaceRoot, 'qywork')

@@ -24,7 +24,11 @@ import {
 
 const D = DEFAULT_DENSITY
 /** 已标定那一档，取自目录本身——这一并锁住那条模型确实带着 density。 */
-const DEEPSEEK = lookupModel('deepseek-v4-flash', 'openai_chat_completions').density
+const DEEPSEEK = lookupModel(
+  'deepseek-v4-pro',
+  'openai_chat_completions',
+  Date.UTC(2026, 8, 10),
+).density
 
 describe('文本口径', () => {
   test('空值一律 0', () => {

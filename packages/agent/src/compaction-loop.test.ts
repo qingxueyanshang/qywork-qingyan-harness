@@ -839,7 +839,7 @@ describe('transcript 的可折单元', () => {
  */
 describe('软阈值只由窗口决定', () => {
   test('1M / 384K 档：触发线是 800,000，不是 366,000', () => {
-    expect(softLimit(lookupModel('deepseek-v4-flash', 'openai_chat_completions'))).toBe(800_000)
+    expect(softLimit(lookupModel('deepseek-flash', 'openai_chat_completions'))).toBe(800_000)
   })
 
   test('每一档都是窗口的 80%', () => {
@@ -851,7 +851,7 @@ describe('软阈值只由窗口决定', () => {
 
   /** 触发线不许随模型的输出上限漂移——那正是 366,000 与 622,000 并存的成因。 */
   test('同一窗口下换输出上限，线不动', () => {
-    const a = lookupModel('deepseek-v4-flash', 'openai_chat_completions')
+    const a = lookupModel('deepseek-flash', 'openai_chat_completions')
     const b = lookupModel('claude-opus-5', 'anthropic_messages')
     expect(a.maxOutputTokens).not.toBe(b.maxOutputTokens)
     expect(softLimit(a)).toBe(softLimit(b))
@@ -937,7 +937,7 @@ describe('缓存断点', () => {
     const adapter: LlmAdapter = {
       kind: 'openai_chat_completions',
       transmits: { effort: false },
-      spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+      spec: lookupModel('deepseek-flash', 'openai_chat_completions'),
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         seen.push(req)
         yield { type: 'request_prepared', measuredInputTokens: 10 }

@@ -465,25 +465,25 @@ describe('模型目录', () => {
    * 请求按当前接口发出去，端点、key、价目表全是另一家的，而且不报错。
    */
   test('只列接口下挂着的模型，不并入内置目录', async () => {
-    const list = await models(withConfig('openai_chat_completions', 'deepseek-v4-flash'))
-    expect(list.map((m) => m.id)).toEqual(['deepseek-v4-flash'])
+    const list = await models(withConfig('openai_chat_completions', 'deepseek-flash'))
+    expect(list.map((m) => m.id)).toEqual(['deepseek-flash'])
   })
 
   /** 第一层是接口。名字是用户起的，界面按它分组——没有它就没法切接口。 */
   test('按接口分组，接口名原样带出', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
-      active: { provider: '官方', model: 'deepseek-v4-flash' },
+      active: { provider: '官方', model: 'deepseek-flash' },
       providers: {
-        官方: { kind: 'openai_chat_completions', models: { 'deepseek-v4-flash': {} } },
-        第三方接口: { kind: 'openai_chat_completions', models: { 'deepseek-v4-flash': {} } },
+        官方: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
+        第三方接口: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
       },
     }
     const b = await body(d)
     expect(b.providers.map((p) => p.name)).toEqual(['官方', '第三方接口'])
     // 同一个模型 id 挂在两个接口下是常态，两条都要在，各归各的组。
-    expect(b.providers.every((p) => p.models[0]?.id === 'deepseek-v4-flash')).toBe(true)
-    expect(b.active).toEqual({ provider: '官方', model: 'deepseek-v4-flash' })
+    expect(b.providers.every((p) => p.models[0]?.id === 'deepseek-flash')).toBe(true)
+    expect(b.active).toEqual({ provider: '官方', model: 'deepseek-flash' })
   })
 
   test('内置目录里有的用显示名，没有的用 id 本身', async () => {
@@ -532,35 +532,60 @@ describe('模型目录', () => {
     expect(relay.find((m) => m.id === 'claude-opus-5')?.effortLevels).toEqual([])
   })
 
-  /** DeepSeek 两条协议的档位不一样，报的必须是接口实际用的那条。 */
+  /** 各协议都按自身目录声明可用档位。 */
   test('DeepSeek 按接口协议报档位', async () => {
-    const compat = await models(withConfig('openai_chat_completions', 'deepseek-v4-flash'))
-    expect(compat.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual([
+    const compat = await models(withConfig('openai_chat_completions', 'deepseek-flash'))
+    expect(compat.find((m) => m.id === 'deepseek-flash')?.effortLevels).toEqual([
       'low',
       'high',
       'max',
     ])
 
-    const responses = await models(withConfig('openai_responses', 'deepseek-v4-flash'))
-    expect(responses.find((m) => m.id === 'deepseek-v4-flash')?.effortLevels).toEqual([])
+    const responses = await models(withConfig('openai_responses', 'deepseek-flash'))
+    expect(responses.find((m) => m.id === 'deepseek-flash')?.effortLevels).toEqual([
+      'low',
+      'high',
+      'max',
+    ])
+  })
+
+  test('已保存的 DeepSeek 五档探测不能覆盖内置三档，旧的无效选择不回显', async () => {
+    const d = withConfig('openai_chat_completions', 'deepseek-flash')
+    const provider = Object.values(d.config.providers)[0]!
+    provider.models['deepseek-flash'] = {
+      effort: 'xhigh',
+      transport: {
+        effort: true,
+        effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        thinking: 'deepseek_thinking',
+      },
+    }
+    const response = await body(d)
+    expect(response.providers[0]!.models[0]!.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(response.providers[0]!.models[0]!.effort).toBeNull()
+    expect(
+      response.library
+        .find((v) => v.id === 'deepseek')!
+        .models.find((m) => m.id === 'deepseek-flash')!.effortLevels,
+    ).toEqual(['low', 'high', 'max'])
   })
 
   /** 人工维护的模型规格覆盖内置 seed；它不是某个第三方接口的探测结果。 */
   test('模型库里人工维护的档位覆盖内置目录', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
-      active: { provider: 'p', model: 'deepseek-v4-flash' },
+      active: { provider: 'p', model: 'deepseek-flash' },
       providers: {
-        p: { kind: 'openai_chat_completions', models: { 'deepseek-v4-flash': {} } },
+        p: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
       },
       catalog: {
-        'deepseek-v4-flash|openai_chat_completions': {
+        'deepseek-flash|openai_chat_completions': {
           thinking: 'reasoning_effort',
           effortLevels: ['low', 'medium'],
         },
       },
     }
-    const row = (await models(d)).find((m) => m.id === 'deepseek-v4-flash')!
+    const row = (await models(d)).find((m) => m.id === 'deepseek-flash')!
     // 内置目录写的是 high/max，人工规格覆盖成 low/medium。
     expect(row.effortLevels).toEqual(['low', 'medium'])
   })
@@ -597,17 +622,17 @@ describe('模型目录', () => {
   test('同模型的端点传输校准互不污染', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
-      active: { provider: 'blocked', model: 'deepseek-v4-flash' },
+      active: { provider: 'blocked', model: 'deepseek-flash' },
       providers: {
         blocked: {
           kind: 'openai_chat_completions',
           models: {
-            'deepseek-v4-flash': { effort: 'high', transport: { effort: false } },
+            'deepseek-flash': { effort: 'high', transport: { effort: false } },
           },
         },
         untouched: {
           kind: 'openai_chat_completions',
-          models: { 'deepseek-v4-flash': { effort: 'high' } },
+          models: { 'deepseek-flash': { effort: 'high' } },
         },
       },
     }
@@ -631,16 +656,16 @@ describe('模型目录', () => {
   test('选定档随模型目录下发，各取各的', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
-      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      active: { provider: 'ds', model: 'deepseek-flash' },
       providers: {
         ds: {
           kind: 'openai_chat_completions',
-          models: { 'deepseek-v4-flash': { effort: 'max' }, 'deepseek-v4-pro': {} },
+          models: { 'deepseek-flash': { effort: 'max' }, 'deepseek-v4-pro': {} },
         },
       },
     }
     const list = await models(d)
-    const flash = list.find((m) => m.id === 'deepseek-v4-flash')!
+    const flash = list.find((m) => m.id === 'deepseek-flash')!
     expect(flash.effort).toBe('max')
     expect(flash.effortLevels).toEqual(['low', 'high', 'max'])
     // 同接口的另一个模型没选过就是 null，不跟着变。
@@ -710,7 +735,7 @@ describe('模型目录', () => {
     expect(fable.cacheRead).toBe(0.25)
     expect(fable.cacheWrite).toBe(12.5)
     // DeepSeek 的自动前缀缓存写入不收费，那是个真值不是缺值。
-    expect(all.find((m) => m.id === 'deepseek-v4-flash')?.cacheWrite).toBe(0)
+    expect(all.find((m) => m.id === 'deepseek-flash')?.cacheWrite).toBe(0)
   })
 
   /**
@@ -724,16 +749,40 @@ describe('模型目录', () => {
     const ds = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.find(
       (v) => v.id === 'deepseek',
     )!
-    expect(ds.models.map((m) => m.id)).toEqual([
-      'deepseek-v4-flash',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash-vision-exp',
-    ])
+    expect(ds.models.map((m) => m.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
   })
 
   test('未收录的模型不假装支持 effort', async () => {
     const list = await models(withConfig('openai_chat_completions', '自建的'))
     expect(list.find((m) => m.id === '自建的')?.effortLevels).toEqual([])
+  })
+
+  test('未收录模型的逐档检测结果进入选择器，仅影响当前接口', async () => {
+    const d = deps()
+    ;(d as { config: unknown }).config = {
+      active: { provider: 'tested', model: 'custom' },
+      providers: {
+        tested: {
+          kind: 'openai_chat_completions',
+          models: {
+            custom: {
+              effort: 'max',
+              transport: {
+                effort: true,
+                effortLevels: ['low', 'high', 'max'],
+                thinking: 'reasoning_effort',
+              },
+            },
+          },
+        },
+        other: { kind: 'openai_chat_completions', models: { custom: {} } },
+      },
+    }
+    const result = await body(d)
+    const tested = result.providers.find((p) => p.name === 'tested')!.models[0]!
+    expect(tested.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(tested.effort).toBe('max')
+    expect(result.providers.find((p) => p.name === 'other')!.models[0]!.effortLevels).toEqual([])
   })
 
   /**

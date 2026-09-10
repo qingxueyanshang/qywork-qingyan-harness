@@ -129,8 +129,8 @@ async function control(): Promise<string> {
 
 const [anthropic, compat, responses, raw] = await Promise.all([
   drain('anthropic_messages', 'claude-opus-5'),
-  drain('openai_chat_completions', 'deepseek-v4-flash'),
-  drain('openai_responses', 'deepseek-v4-flash'),
+  drain('openai_chat_completions', 'deepseek-flash'),
+  drain('openai_responses', 'deepseek-flash'),
   control(),
 ])
 server.stop(true)

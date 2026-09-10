@@ -38,6 +38,8 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   openai_responses: 'openai_responses',
 }
 
+const probeKey = (provider: string, model: string) => JSON.stringify([provider, model])
+
 /**
  * 模型配置：**接口一层，模型一层**。
  *
@@ -70,7 +72,7 @@ export function ModelSettings() {
    * 而这两块本来也不需要同时看——配接口时看接口，查参数时看库。
    */
   const [showLibrary, setShowLibrary] = createSignal(false)
-  /** 每个模型最近一次探测的结果，键是模型 id。**不落盘**——它描述的是「刚才那一下」。 */
+  /** 最近一次探测结果按接口与模型区分，不落盘。 */
   const [probes, setProbes] = createSignal<Record<string, ProbeResult | { error: string }>>({})
   const [probing, setProbing] = createSignal<string | null>(null)
 
@@ -187,10 +189,11 @@ export function ModelSettings() {
   }
 
   const runProbe = async (provider: string, model: string) => {
-    setProbing(model)
+    const key = probeKey(provider, model)
+    setProbing(key)
     try {
       const r = await probeModel(provider, model)
-      setProbes((prev) => ({ ...prev, [model]: r }))
+      setProbes((prev) => ({ ...prev, [key]: r }))
       // 探测只校准当前接口是否透传控制面，不改写全局模型能力。
       if (Object.keys(r.transport).length > 0) {
         void replaceConfig((cur) => {
@@ -216,7 +219,7 @@ export function ModelSettings() {
     } catch (e) {
       setProbes((prev) => ({
         ...prev,
-        [model]: { error: e instanceof Error ? e.message : String(e) },
+        [key]: { error: e instanceof Error ? e.message : String(e) },
       }))
     } finally {
       setProbing(null)
@@ -350,7 +353,7 @@ export function ModelSettings() {
                         {(id) => {
                           const isDefault = () =>
                             c().active.provider === name() && c().active.model === id
-                          const result = () => probes()[id]
+                          const result = () => probes()[probeKey(name(), id)]
                           return (
                             <div class="model-row" classList={{ active: isDefault() }}>
                               <div class="model-row-main">
@@ -379,7 +382,7 @@ export function ModelSettings() {
                                   disabled={probing() !== null || configBusy()}
                                   onClick={() => void runProbe(name(), id)}
                                 >
-                                  {probing() === id ? '检测中…' : '检测'}
+                                  {probing() === probeKey(name(), id) ? '检测中…' : '检测'}
                                 </button>
                                 <button
                                   class="icon-btn"
@@ -477,18 +480,25 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
     }
     // 思考那一格只说用户能拿它做什么：有哪几档，或者为什么一档都没有。
     const levels = o.effortLevels
-    const effort =
-      levels.length > 0
-        ? levels.join(' / ')
-        : o.untested.includes('effort')
-          ? '发不出思考档位'
-          : o.inconclusive.includes('effort')
-            ? '思考档位未确认'
-            : '无思考档位'
+    const effort = o.inconclusive.includes('effort')
+      ? '思考档位未确认'
+      : o.untested.includes('effort')
+        ? '思考档位未检测'
+        : levels.length > 0
+          ? `${o.effortSource === 'catalog' ? '模型库' : '接口接受'}：${levels.join(' / ')}`
+          : '无思考档位'
     return { text: `连接正常　${effort}`, bad: false }
   }
   return (
-    <span class="probe-line" classList={{ bad: text().bad }} data-tip={text().text}>
+    <span
+      class="probe-line"
+      classList={{ bad: text().bad }}
+      data-tip={
+        'outcome' in props.result
+          ? `${text().text}\n${props.result.outcome.effortSource === 'probe' ? '参数接受不代表独立强度已确认，接口可能将多个值映射到同一档。\n' : ''}${props.result.outcome.probes.map((p) => `${p.name}：${p.detail}`).join('\n')}`
+          : text().text
+      }
+    >
       {text().text}
     </span>
   )

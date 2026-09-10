@@ -15,7 +15,10 @@ export type { CapacityRejection } from './capacity.ts'
 // 模型目录与计价：装配、读数、探测三处都要
 export {
   applySpecOverride,
+  applyTransportCapabilities,
   builtinCatalog,
+  CHAT_REASONING_PROTOCOLS,
+  type ChatReasoningProtocol,
   computeCost,
   effortIsTransmittable,
   lookupModel,

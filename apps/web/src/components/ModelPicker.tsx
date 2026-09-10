@@ -80,6 +80,7 @@ export function ModelPicker() {
    */
   const levels = () => activeModelRow()?.effortLevels ?? []
   const selected = () => activeModelRow()?.effort ?? null
+  const label = () => activeModelRow()?.label ?? activeModel()?.model ?? '选择模型'
 
   const isLive = (provider: string, id: string) => {
     const ref = activeModel()
@@ -109,7 +110,7 @@ export function ModelPicker() {
         data-tip="模型与推理等级"
         onClick={toggle}
       >
-        <span class="truncate">{activeModel()?.model ?? '选择模型'}</span>
+        <span class="truncate">{label()}</span>
         <Show when={selected()}>{(lv) => <span class="model-chip-effort">{lv()}</span>}</Show>
         <IconChevron size={11} dir={open() ? 'up' : 'down'} />
       </button>
@@ -124,7 +125,7 @@ export function ModelPicker() {
             onClick={() => flip('model')}
           >
             <span class="model-entry-label">模型</span>
-            <span class="model-entry-value truncate">{activeModel()?.model ?? '选择模型'}</span>
+            <span class="model-entry-value truncate">{label()}</span>
             <IconChevron size={11} dir="right" />
           </button>
 

@@ -5,7 +5,7 @@
  * 经第三方接口以 OpenAI 协议调 Claude 是常见配置，按名字猜会把它路由到错误的协议上。
  */
 
-import { applySpecOverride, lookupModel } from './catalog.ts'
+import { applyTransportCapabilities, lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { AnthropicAdapter } from './providers/anthropic.ts'
 import { OpenAICompatAdapter } from './providers/openai-compat.ts'
@@ -55,10 +55,12 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
     })
   }
 
-  // 模型事实仍只有两层：官方目录 seed → 用户模型库覆盖。端点传输校准只做否决闸，
-  // 不新增档位、不改厂商默认，避免一个第三方的探测结果污染同模型的其他接口。
-  const declared = applySpecOverride(lookupModel(profile.model, profile.kind, now), profile.spec)
-  const spec = profile.transport?.effort === false ? { ...declared, effortLevels: [] } : declared
+  // 端点校验只作用于当前接口，不修改全局模型规格。
+  const spec = applyTransportCapabilities(
+    lookupModel(profile.model, profile.kind, now),
+    profile.transport,
+    profile.spec,
+  )
 
   switch (profile.kind) {
     case 'anthropic_messages':

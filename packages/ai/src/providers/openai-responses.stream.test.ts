@@ -245,8 +245,8 @@ afterAll(() => server.stop(true))
 
 function adapter() {
   return new OpenAIResponsesAdapter(
-    { kind: 'openai_responses', apiKey: 'sk-test', baseUrl: BASE, model: 'deepseek-v4-flash' },
-    lookupModel('deepseek-v4-flash', 'openai_responses'),
+    { kind: 'openai_responses', apiKey: 'sk-test', baseUrl: BASE, model: 'deepseek-flash' },
+    lookupModel('deepseek-flash', 'openai_responses'),
   )
 }
 
@@ -266,7 +266,7 @@ async function run(
   }
   const events: ProviderEvent[] = []
   for await (const ev of adapter().stream({
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     system: [],
     messages: [{ role: 'user', content: '你好' }],
     tools: [],
@@ -508,9 +508,9 @@ describe('发出去的请求', () => {
     expect(lastBody.store).toBe(false)
   })
 
-  test('cacheKey 变成 prompt_cache_key', async () => {
+  test('DeepSeek 自动管理缓存，不发送 prompt_cache_key', async () => {
     await run(TEXT_RUN, { cacheKey: 'cv_1' })
-    expect(lastBody.prompt_cache_key).toBe('cv_1')
+    expect(lastBody.prompt_cache_key).toBeUndefined()
   })
 })
 
@@ -520,14 +520,12 @@ describe('思考字段', () => {
     expect(lastBody.reasoning?.summary).toBe('auto')
   })
 
-  /**
-   * `effortLevels` 是 `[]` 是**实测结论**不是保守默认：四档全被接受，
-   * 但 reasoning_tokens 三次采样都是 899~900，没有一档被采纳。
-   * 所以即使调用方指定了 effort，也不该发出去——发一个不起作用的字段，
-   * 只会让面板上显示的「已按 high 运行」变成一句假话。
-   */
-  test('目录说没有可用 effort 档位时，不发 effort 字段', async () => {
-    await run(TEXT_RUN, { effort: 'high' })
+  test('DeepSeek 三档分别发送，映射别名不当成额外档位', async () => {
+    for (const effort of ['low', 'high', 'max'] as const) {
+      await run(TEXT_RUN, { effort })
+      expect(lastBody.reasoning?.effort).toBe(effort)
+    }
+    await run(TEXT_RUN, { effort: 'xhigh' })
     expect(lastBody.reasoning?.effort).toBeUndefined()
   })
 })

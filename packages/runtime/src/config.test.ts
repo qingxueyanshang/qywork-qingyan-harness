@@ -449,6 +449,7 @@ describe('模型库枚举校验', () => {
     expect(diagnoseConfig(withEntry({ thinking: 'anthropic_effort' }))).toHaveLength(1)
     expect(diagnoseConfig(withEntry({ reasoningEcho: '要' }))).toHaveLength(1)
     expect(diagnoseConfig(withEntry({ cacheRouting: '发' }))).toHaveLength(1)
+    expect(diagnoseConfig(withEntry({ chatReasoningProtocol: 'unknown' }))).toHaveLength(1)
   })
 
   test('词表里的值放行', () => {
@@ -462,6 +463,7 @@ describe('模型库枚举校验', () => {
       ),
     ).toEqual([])
     expect(diagnoseConfig(withEntry({ cacheRouting: 'x_grok_conv_id' }))).toEqual([])
+    expect(diagnoseConfig(withEntry({ chatReasoningProtocol: 'deepseek_preserved' }))).toEqual([])
   })
 
   /** 没填 = 照内置值，不是问题。 */
@@ -646,6 +648,41 @@ describe('模型库一次性迁移', () => {
     expect(currentSpec(migrated, 'ds', 'deepseek-v4-flash')).toEqual(
       legacySpec(raw, 'ds', 'deepseek-v4-flash'),
     )
+  })
+
+  test('切换到正式 Flash 后旧探测记录不再变成自定义模型，且清理幂等', async () => {
+    const raw: LegacyConfig = {
+      active: { provider: 'ds', model: 'deepseek-flash' },
+      providers: { ds: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } } },
+      catalog: {
+        'deepseek-v4-flash|openai_chat_completions': {
+          effortLevels: ['high', 'max'],
+          thinksByDefault: true,
+        },
+        'deepseek-v4-flash-vision-exp|openai_chat_completions': {
+          effortLevels: ['high', 'max'],
+          thinksByDefault: true,
+        },
+      },
+    }
+    const once = await load(raw)
+    expect(once.catalog).toEqual({})
+    await writeFile(join(home, 'config.json'), JSON.stringify(once), 'utf8')
+    expect(await loadConfig()).toEqual(once)
+  })
+
+  test('旧名称仍在使用、人工补录规格和真正的自定义模型不被清理', async () => {
+    const catalog = {
+      'deepseek-v4-flash|openai_chat_completions': { effortLevels: ['high'] },
+      'deepseek-v4-flash-vision-exp|openai_chat_completions': { input: 3 },
+      'my-model|openai_chat_completions': { effortLevels: ['max'] },
+    } satisfies NonNullable<QyConfig['catalog']>
+    const migrated = await load({
+      active: { provider: 'ds', model: 'deepseek-v4-flash' },
+      providers: { ds: { kind: 'openai_chat_completions', models: { 'deepseek-v4-flash': {} } } },
+      catalog,
+    })
+    expect(migrated.catalog).toEqual(catalog)
   })
 
   test('旧配置里的 none 迁成未选择，不再向 provider 发送关闭命令', async () => {

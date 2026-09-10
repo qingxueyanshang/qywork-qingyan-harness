@@ -214,6 +214,7 @@ export class AnthropicAdapter implements LlmAdapter {
         this.spec.minCacheablePrefix,
         estimateSchemas(req.tools, this.spec.density) +
           req.system.reduce((n, b) => n + estimateText(b.text, this.spec.density), 0),
+        this.spec.chatReasoningProtocol === 'deepseek_preserved',
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
@@ -358,6 +359,7 @@ interface AnthropicFinalMessage {
 export interface AnthropicBlock {
   type: string
   text?: string
+  thinking?: string
   /** 装配时可能还没有（`WireMessage.toolCallId` 可缺），JSON 里的 undefined 等同不带这个键。 */
   tool_use_id?: string | undefined
   content?: string | AnthropicBlock[]
@@ -400,6 +402,7 @@ function buildMessages(
   density: TokenDensity,
   minPrefix = 0,
   prefixTokens = 0,
+  preserveReasoning = false,
 ): Anthropic.MessageParam[] {
   const out: AnthropicOutMessage[] = []
   // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
@@ -429,6 +432,9 @@ function buildMessages(
 
     if (m.role === 'assistant' && m.toolCalls?.length) {
       const content: AnthropicBlock[] = []
+      if (preserveReasoning && m.reasoningContent) {
+        content.push({ type: 'thinking', thinking: m.reasoningContent })
+      }
       if (typeof m.content === 'string' && m.content) {
         content.push({ type: 'text', text: m.content })
       }
@@ -442,7 +448,17 @@ function buildMessages(
 
     out.push({
       role: m.role,
-      content: typeof m.content === 'string' ? m.content : toBlocks(m.content),
+      content:
+        preserveReasoning && m.role === 'assistant' && m.reasoningContent
+          ? [
+              { type: 'thinking', thinking: m.reasoningContent },
+              ...(typeof m.content === 'string'
+                ? [{ type: 'text', text: m.content }]
+                : toBlocks(m.content)),
+            ]
+          : typeof m.content === 'string'
+            ? m.content
+            : toBlocks(m.content),
     })
     if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
   }

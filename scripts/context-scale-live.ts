@@ -604,7 +604,7 @@ async function main(): Promise<number> {
   const store = new Store({ path: DB })
   const config = await loadConfig()
 
-  // 不给参数就只跑配置里当前生效的那一条；给了就逐条跑，形如 `deepseek/deepseek-v4-flash`。
+  // 不给参数就只跑配置里当前生效的那一条；给了就逐条跑，形如 `deepseek/deepseek-flash`。
   const args = process.argv.slice(2)
   const refs: ModelRef[] = args.length
     ? args.map((a) => {

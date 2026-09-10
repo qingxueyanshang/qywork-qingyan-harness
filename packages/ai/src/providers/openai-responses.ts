@@ -350,16 +350,6 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
    * **协议层的 `none` 与 `minimal` 不是一回事。** 本产品不提供“关闭思考”档：
    * 用户未选择时省略整个 `effort`，由模型使用默认值；绝不能为了提速在后台发送
    * `none`，也不能把关闭意图伪装成 `minimal`。
-   * 实测（deepseek-v4-flash，`max_output_tokens=900`，各三次）：
-   *
-   * ```
-   * effort=none      reasoning_tokens  0,   0,   0
-   * effort=minimal   reasoning_tokens  900, 900, 900
-   * ```
-   *
-   * `minimal` 不是「少想一点」，它跟 high 一样把整个输出预算烧在推理上，
-   * 正文直接被截断。**用户要求不思考，拿到的是全额思考并且付钱**——
-   * 而且因为没报错，这件事完全静默。
    */
   private buildReasoning(req: ChatRequest): Record<string, unknown> {
     if (this.spec.thinking === 'none') return {}
@@ -454,6 +444,9 @@ export function buildInput(
     // 而错误信息只说「content 无效」，不说是哪一条。
     const role = m.role
     const isAssistant = role === 'assistant'
+    if (isAssistant && echoesReasoning && m.reasoningContent) {
+      items.push(reasoningItem(m.reasoningContent))
+    }
     if (typeof m.content === 'string') {
       items.push({
         type: 'message',

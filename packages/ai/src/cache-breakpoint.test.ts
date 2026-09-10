@@ -166,13 +166,13 @@ describe('兼容协议上这个字段是惰性的', () => {
     const compat = {
       kind: 'openai_chat_completions' as const,
       apiKey: 'sk-x',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
     }
     const adapter = buildAdapter(compat) as unknown as {
       buildBody(req: ChatRequest): Record<string, unknown>
     }
     const base: ChatRequest = {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       system: [{ text: '系统提示词' }],
       messages: [{ role: 'user', content: long(8000) }],
       tools: [],

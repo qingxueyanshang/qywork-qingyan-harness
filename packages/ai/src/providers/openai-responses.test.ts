@@ -256,11 +256,7 @@ describe('思考内容回传', () => {
     expect(reasoning.content[0]!.text.trim().length).toBeGreaterThan(0)
   })
 
-  /**
-   * 触发点必须留在 `toolCalls` 分支里：纯文本轮在落盘投影那侧本来就不带思考
-   * （`runtime/transcript.ts`），扩到文本轮会跟投影形状打架。
-   */
-  test('没有工具调用的 assistant 轮不回传', () => {
+  test('声明完整回传时，纯文本 assistant 轮也保留思考', () => {
     const items = buildInput(
       [
         { role: 'user', content: 'hi' },
@@ -268,7 +264,9 @@ describe('思考内容回传', () => {
       ],
       'reasoning_text',
     )
-    expect(items.some((i) => i.type === 'reasoning')).toBe(false)
+    expect(items.filter((i) => i.type === 'reasoning')).toEqual([
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: '打个招呼' }] },
+    ])
   })
 })
 

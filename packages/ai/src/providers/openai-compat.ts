@@ -528,7 +528,7 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
    * 这条别只判「有没有给」就把 `effort` 原样发出去。
    *
    * 档位选定值挂在「接口 × 模型」那一格，同一个模型换条协议档位面就变
-   * （DeepSeek 走 chat/completions 是 high/max，走 Responses 一档都没有），
+   * （不同协议的目录条目各自声明可用档位），
    * Agent Team 的角色还各带各的模型。越界值到这里必须被拦下，
    * 否则就是发给 provider 的一个 400，而错误信息里只有它的原话。
    *

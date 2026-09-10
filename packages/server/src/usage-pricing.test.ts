@@ -87,11 +87,11 @@ beforeAll(async () => {
         kind: 'openai_responses',
         apiKey: 'sk-fake',
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
-        models: { 第三方接口上的某个模型: {}, 'deepseek-v4-flash': {} },
+        models: { 第三方接口上的某个模型: {}, 'deepseek-flash': {} },
       },
     },
     /*
-     * 覆盖挂在一个**目录里没有**的模型上，不挂 deepseek-v4-flash。
+     * 覆盖挂在一个**目录里没有**的模型上，不挂 deepseek-flash。
      *
      * DeepSeek 现在有分时段折扣，空闲时段单价减半——挂在它上面的话，
      * 这条断言的期望值会随这台机器跑测试的钟点变，是一条会随机红的测试。
@@ -163,14 +163,14 @@ test('人民币模型落账落在 CNY，金额与计价函数同源', async () =
   const cv = createConversation(store, {
     workspaceId: workspaceId as never,
     provider: 'fake',
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
   }).id as ConversationId
 
   const before = usageTotals(store, {}).cost.CNY ?? 0
   await startRun(cv, '说点什么', undefined, { store, content, config, bus, runs, subagents })
   expect(await waitFor((e) => e.type === 'run.finished')).not.toBeNull()
 
-  const spec = lookupModel('deepseek-v4-flash', 'openai_responses')
+  const spec = lookupModel('deepseek-flash', 'openai_responses')
   const expected = computeCost(spec, { inputTokens: IN_TOKENS, outputTokens: OUT_TOKENS })
   const totals = usageTotals(store, {})
   expect(totals.cost.CNY).toBeCloseTo(before + expected, 9)

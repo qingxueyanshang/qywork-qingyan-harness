@@ -4,6 +4,7 @@ import { rm } from 'node:fs/promises'
 import type { ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
+  applyTransportCapabilities,
   builtinCatalog,
   effortIsTransmittable,
   lookupModel,
@@ -231,14 +232,12 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         const declared = provider.models[id]
         // 模型能力与参数按「模型 + 协议」从官方目录/模型库取；当前第三方是否透传
         // 控制面则只看接口下这一格的 transport，不能写回全局目录。
-        const spec = applySpecOverride(
+        const spec = applyTransportCapabilities(
           lookupModel(id, provider.kind),
+          declared?.transport,
           overrides[catalogKey(id, provider.kind)],
         )
-        const effortLevels =
-          declared?.transport?.effort === false || !effortIsTransmittable(spec)
-            ? []
-            : spec.effortLevels
+        const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
         return {
           id,
           label: spec.catalogued === false ? id : spec.displayName,

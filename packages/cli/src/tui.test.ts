@@ -13,9 +13,9 @@ import { createConversation, recordUsage, Store, upsertWorkspace } from '@qywork
 import { type CommandContext, handleCommand } from './tui.ts'
 
 const config: QyConfig = {
-  active: { provider: 'ds', model: 'deepseek-v4-flash' },
+  active: { provider: 'ds', model: 'deepseek-flash' },
   providers: {
-    ds: { kind: 'openai_chat_completions', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+    ds: { kind: 'openai_chat_completions', apiKey: 'sk-x', models: { 'deepseek-flash': {} } },
     cl: { kind: 'anthropic_messages', apiKey: 'sk-y', models: { 'claude-opus-5': {} } },
   },
 }
@@ -24,7 +24,7 @@ function ctx(over: Partial<{ conversationId: ConversationId | undefined; model: 
   const store = new Store({ path: ':memory:' })
   const state = {
     conversationId: over.conversationId,
-    model: over.model ?? 'deepseek-v4-flash',
+    model: over.model ?? 'deepseek-flash',
   }
   const c: CommandContext = {
     store,
@@ -83,14 +83,14 @@ describe('会话与模型', () => {
   test('/model 不带参数只查看，不改', async () => {
     const { c, state, store } = ctx()
     await handleCommand('/model', c)
-    expect(state.model).toBe('deepseek-v4-flash')
+    expect(state.model).toBe('deepseek-flash')
     store.close()
   })
 
   test('/model 带空白参数当作查看，不把模型改成空串', async () => {
     const { c, state, store } = ctx()
     await handleCommand('/model    ', c)
-    expect(state.model).toBe('deepseek-v4-flash')
+    expect(state.model).toBe('deepseek-flash')
     store.close()
   })
 })
@@ -104,7 +104,7 @@ describe('未知命令', () => {
     const { c, state, store } = ctx({ conversationId: 'cv_1' as ConversationId })
     expect(await handleCommand('/nope', c)).toBe('ok')
     expect(state.conversationId).toBe('cv_1' as ConversationId)
-    expect(state.model).toBe('deepseek-v4-flash')
+    expect(state.model).toBe('deepseek-flash')
     store.close()
   })
 

@@ -16,6 +16,7 @@ function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
     reachable: true,
     untested: [],
     inconclusive: [],
+    effortSource: 'catalog',
     effortLevels: ['low', 'high'],
     thinksByDefault: true,
     probes: [],
@@ -25,7 +26,10 @@ function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
 
 describe('只写回真的探过的轴', () => {
   test('官方档位在当前端点通过时只写透传结论', () => {
-    expect(toTransportCapabilities(outcome())).toEqual({ effort: true })
+    expect(toTransportCapabilities(outcome())).toEqual({
+      effort: true,
+      effortLevels: ['low', 'high'],
+    })
   })
 
   /**
@@ -42,16 +46,12 @@ describe('只写回真的探过的轴', () => {
     ).toEqual({})
   })
 
-  /**
-   * **思考参数的格式一个字都不写回。**
-   *
-   * 本项目从不请求思考形态，探针发的 body 与不发时一模一样，所以「端点接受了
-   * adaptive」只是 `spec.thinking` 的回声。把回声写回覆盖层，会在 Responses 协议上
-   * 把格式从 `reasoning_effort` 改成 `adaptive_only`，因此 effort 整片消失——
-   * 校准一次思考，反而再也选不出档位。
-   */
-  test('写回里没有档位、默认行为或思考参数格式', () => {
-    expect(toTransportCapabilities(outcome())).toEqual({ effort: true })
+  /** 请求接受情况不改写默认思考行为或其他模型事实。 */
+  test('只写端点接受的档位，不修改默认思考行为', () => {
+    expect(toTransportCapabilities(outcome())).toEqual({
+      effort: true,
+      effortLevels: ['low', 'high'],
+    })
   })
 
   /**
@@ -65,7 +65,10 @@ describe('只写回真的探过的轴', () => {
   })
 
   test('探出当前端点拒绝 effort 时写 false，不改官方档位', () => {
-    expect(toTransportCapabilities(outcome({ effortLevels: [] }))).toEqual({ effort: false })
+    expect(toTransportCapabilities(outcome({ effortLevels: [] }))).toEqual({
+      effort: false,
+      effortLevels: [],
+    })
   })
 })
 
@@ -100,7 +103,7 @@ describe('报告要能区分三种状态', () => {
       'x',
     )
     expect(t).toContain('? effort=low')
-    expect(t).toContain('未得出结论')
+    expect(t).toContain('未确认')
     expect(t).not.toContain('（不支持）')
   })
 
@@ -138,8 +141,8 @@ describe('适配器如实声明自己发不发 effort', () => {
   test('openai_chat_completions 按参数格式发 effort', async () => {
     const { OpenAICompatAdapter } = await import('./providers/openai-compat.ts')
     const a = new OpenAICompatAdapter(
-      { kind: 'openai_chat_completions', apiKey: 'sk-x', model: 'deepseek-v4-flash' },
-      lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
+      { kind: 'openai_chat_completions', apiKey: 'sk-x', model: 'deepseek-flash' },
+      lookupModel('deepseek-flash', 'openai_chat_completions'),
     )
     expect(a.transmits).toEqual({ effort: true, video: true })
   })
@@ -154,7 +157,7 @@ describe('探测结果真的会影响请求装配', () => {
     const base = {
       kind: 'openai_chat_completions' as const,
       apiKey: 'sk-x',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
     }
     expect(buildAdapter(base).spec.effortLevels).toEqual(['low', 'high', 'max'])
 

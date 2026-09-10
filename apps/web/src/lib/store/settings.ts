@@ -11,6 +11,7 @@ import type {
   EffortLevel,
   PermissionMode,
   ScheduleView,
+  ThinkingMode,
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
@@ -38,7 +39,7 @@ export interface RedactedModel {
    */
   effort?: EffortLevel
   /** 当前接口路线的控制面透传结论；不写入全局模型目录。 */
-  transport?: { effort?: boolean }
+  transport?: { effort?: boolean; effortLevels?: EffortLevel[]; thinking?: ThinkingMode }
 }
 
 /** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
@@ -314,19 +315,21 @@ export interface ProbeStep {
   inconclusive?: boolean
 }
 export interface ProbeOutcome {
+  effortSource: 'catalog' | 'probe'
   reachable: boolean
   /** 这条链路上无从探测的轴。**与「探了、被拒了」不是一回事**，不能合并显示。 */
   untested: 'effort'[]
   /** 已尝试但没有形成能力结论；不得写成“不支持”。 */
   inconclusive: 'effort'[]
   effortLevels: EffortLevel[]
+  thinking?: ThinkingMode
   thinksByDefault: boolean
   probes: ProbeStep[]
 }
 export interface ProbeResult {
   outcome: ProbeOutcome
   /** 当前接口路线的传输校准；没探过的轴一条都不含。 */
-  transport: { effort?: boolean }
+  transport: NonNullable<RedactedModel['transport']>
 }
 
 /**
