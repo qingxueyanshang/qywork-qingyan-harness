@@ -31,10 +31,11 @@
   scrollbar-gutter: stable both-edges;
 }
 
-/* 条目间距 8px。
+/* 条目间距只由这一个 gap 决定。
  *
- * gap 10 + `.fold` 的 margin 6/2 得到「正文↔折叠 16px、折叠↔正文 12px」，那套数
- * 适合 320px 宽的窄栏；这里是 760px 宽的主列，同样的数字看起来就散，所以收一档。 */
+ * 不要再给 `.fold` 这类子项加上下 margin：margin 与 gap 叠加后，折叠↔折叠、
+ * 折叠↔正文、正文↔折叠得到三个不同的距离，一条思考行看起来就贴着下面的正文、
+ * 离上面的工具行远。 */
 .conversation-stream-inner {
   display: flex;
   flex-direction: column;
@@ -440,8 +441,6 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  /* 折叠行之间比段落更紧：它们是过程记录，不是正文。 */
-  margin: 4px 0 2px;
   font-size: var(--fs-base);
 }
 

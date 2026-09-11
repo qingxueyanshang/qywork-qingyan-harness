@@ -380,6 +380,86 @@ describe('流式通道的顺序', () => {
     }
     expect(opened).toHaveLength(1)
   })
+
+  /**
+   * 回归：账本里一轮 39 条 step 有 12 条正文只是一两个空格，全在每条模型消息开头、
+   * 思考或工具调用之前。它们各是一条零高度的正文条目，在会话列里占一道 8px 的缝，
+   * 还把本该合并的工具组切开。
+   */
+  test('只含空白的前导正文不开 step，随首个可见字符一并写入', async () => {
+    const opened: string[] = []
+    const written = new Map<string, string>()
+    let seq = 0
+    const persist: LoopPersistence = {
+      ...noopPersistence(),
+      nextSeq: () => ++seq,
+      openTextStep: () => {
+        const id = `st_text_${seq}`
+        opened.push(id)
+        return id
+      },
+      openThinkingStep: () => {
+        const id = `st_think_${seq}`
+        opened.push(id)
+        return id
+      },
+      appendText: (stepId, delta) => written.set(stepId, (written.get(stepId) ?? '') + delta),
+    }
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'probe',
+      description: '测试夹具',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'run',
+      objectLabel: '命令',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        return { status: 'success', message: 'ok' }
+      },
+    })
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'openai_chat_completions',
+      transmits: { effort: true },
+      spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        if (turn++ === 0) {
+          yield { type: 'text_delta', delta: ' ' }
+          yield { type: 'thinking_delta', delta: '想' }
+          yield { type: 'tool_calls', calls: [call('probe')] }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
+          return
+        }
+        yield { type: 'text_delta', delta: '  ' }
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    const textDeltas: string[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_test' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'text.delta') textDeltas.push(ev.delta)
+    }
+    // 第一轮那个空格没有开出 step；第二轮的正文一条 step、一条事件，前导空白跟着进去。
+    expect(opened.filter((id) => id.startsWith('st_text_'))).toHaveLength(1)
+    expect(opened.filter((id) => id.startsWith('st_think_'))).toHaveLength(1)
+    expect([...written.values()]).toEqual(['想', '  完成'])
+    expect(textDeltas).toEqual(['  完成'])
+  })
 })
 
 describe('ToolContext 生命周期', () => {

@@ -1022,7 +1022,7 @@ export class AgentLoop {
          * 端点若逐 chunk 交替两个通道，这里就逐 chunk 开新 step。
          * **不要为此加防抖**：那等于为顺序再记一本账，而顺序的真源只能有一份。
          */
-        let open: { kind: 'text' | 'thinking'; id: string } | null = null
+        let open = null as { kind: 'text' | 'thinking'; id: string } | null
         /**
          * 本次尝试开过的思考 step。自动重发时这批要落成失败终态——它们装的是被丢弃
          * 的那次生成。**每次尝试开头清空**，读它的只有下面那条重发分支。
@@ -1041,6 +1041,13 @@ export class AgentLoop {
           return open.id
         }
         let assistantText = ''
+        /**
+         * 正文通道开头收到、尚未落任何可见字符的空白。正文 step 只在第一个含可见字符的
+         * 增量到达时才开：模型消息常以一个只含空格的 `text_delta` 起头，为它开出的 step
+         * 落盘后是一条零高度的空正文条目，在会话列里占一道缝，还把本该合并的工具组切开。
+         * 攒下的空白随首个可见增量一并写入，缩进类前导空白不丢；通道切到思考时清空。
+         */
+        let pendingText = ''
         let thinkingText = ''
         const calls: WireToolCall[] = []
         let providerStop: string = 'end_turn'
@@ -1341,6 +1348,7 @@ export class AgentLoop {
                   break
                 }
                 case 'thinking_delta': {
+                  pendingText = ''
                   thinkingText += ev.delta
                   const stepId = stepFor('thinking')
                   persist.appendText(stepId, ev.delta)
@@ -1354,14 +1362,20 @@ export class AgentLoop {
                   break
                 }
                 case 'text_delta': {
+                  if (open?.kind !== 'text' && !/\S/.test(ev.delta)) {
+                    pendingText += ev.delta
+                    break
+                  }
+                  const delta = pendingText + ev.delta
+                  pendingText = ''
                   const stepId = stepFor('text')
-                  assistantText += ev.delta
-                  persist.appendText(stepId, ev.delta)
+                  assistantText += delta
+                  persist.appendText(stepId, delta)
                   yield {
                     type: 'text.delta',
                     runId: input.runId,
                     stepId: stepId as never,
-                    delta: ev.delta,
+                    delta,
                   }
                   break
                 }
@@ -1618,6 +1632,7 @@ export class AgentLoop {
                  */
                 persist.failThinkingSteps(attemptThinking)
                 open = null
+                pendingText = ''
                 thinkingText = ''
                 calls.length = 0
                 // 界面此刻的末条是失败那次的半截思考，不发这条事件它会一直显示「正在思考…」。
