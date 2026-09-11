@@ -130,6 +130,28 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     dispose()
   })
 
+  test('同一文件先由文件工具写、再由观察器判出一次无行数写入，读数只加已知的', async () => {
+    const store = await afterPreviousRun()
+    const { host, dispose } = await mount()
+    store.sendMessage('接着干')
+    store.applyEvent(startedFrame('run_now'))
+    const changed = (changes: unknown[]) =>
+      ({
+        seq: 3,
+        at: 0,
+        conversationId: CV,
+        event: { type: 'file.changed', changes, runId: 'run_now' },
+      }) as never
+    store.applyEvent(
+      changed([{ path: 'p.html', changeType: 'created', additions: 442, deletions: 49 }]),
+    )
+    store.applyEvent(changed([{ path: 'p.html', changeType: 'modified' }]))
+
+    expect(host.textContent).toContain('1 个文件+442-49')
+
+    dispose()
+  })
+
   test('收尾条一落下就撤，不等 conversation.busy 那一帧', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()

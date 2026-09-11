@@ -679,20 +679,7 @@ function foldRunState(ev: AgentEvent): void {
           // 即使 `changes` 为空也要推进：空数组表示执行类工具使文件快照失效，
           // 但没有可靠的逐路径增删明细，不能为刷新 UI 去伪造一条变更。
           s.fileVersion += 1
-          for (const c of ev.changes) {
-            const existing = s.fileChanges.find((f) => f.path === c.path)
-            if (existing) {
-              existing.additions = addCount(existing.additions, c.additions)
-              existing.deletions = addCount(existing.deletions, c.deletions)
-            } else {
-              s.fileChanges.push({
-                path: c.path,
-                additions: c.additions ?? null,
-                deletions: c.deletions ?? null,
-                changeType: c.changeType,
-              })
-            }
-          }
+          s.fileChanges.push(...ev.changes)
         }),
       )
       return
@@ -1048,10 +1035,6 @@ const CHANGES_PAGE_SIZE = 10
 const NODE_SETTLED: ReadonlySet<string> = new Set(['done', 'failed', 'skipped', 'interrupted'])
 
 /** 行数相加，任一方不可知则结果不可知：不把「不知道」算成 0。 */
-function addCount(a: number | null, b: number | undefined): number | null {
-  return a === null || b === undefined ? null : a + b
-}
-
 async function fetchChangesPage(
   id: string,
   before: string | null,

@@ -1054,7 +1054,7 @@ describe('文件快照失效序号', () => {
     changed(1, 'src/main.ts', 3, 1)
     expect(state.fileVersion).toBe(1)
     changed(2, 'src/main.ts', 2, 0)
-    expect(state.fileChanges.length).toBe(1)
+    expect(state.fileChanges.length).toBe(2)
     expect(state.fileVersion).toBe(2)
   })
 })

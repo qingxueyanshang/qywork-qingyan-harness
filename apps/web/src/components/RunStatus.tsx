@@ -1,4 +1,4 @@
-import { todoProgress } from '@qywork/core'
+import { foldFileChanges, todoProgress } from '@qywork/core'
 import { Show } from 'solid-js'
 import { hasRunStatus, openPanel, state } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
@@ -31,16 +31,16 @@ import { IconSpinner } from './Icons.tsx'
  * 两段各自的条件：
  *
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
- * - **文件**：这一轮的读数，`run.started` 时清空。
+ * - **文件**：这一轮的读数，`run.started` 时清空。建了又删的不算，同变更页。
  */
 export function RunStatus() {
   const todos = () => state.todos
   const progress = () => todoProgress(todos())
   const inProgress = () => todos().some((t) => t.status !== 'completed')
-  const files = () => state.fileChanges
-  // 行数 null = 不可知，只加已知的。
-  const additions = () => files().reduce((s, c) => s + (c.additions ?? 0), 0)
-  const deletions = () => files().reduce((s, c) => s + (c.deletions ?? 0), 0)
+  // 与变更页同一份折叠：观察器判出来的写入不带行数，缺席跳过而不是让合计变成不可知。
+  const files = () => foldFileChanges(state.fileChanges)
+  const additions = () => files().reduce((s, c) => s + c.additions, 0)
+  const deletions = () => files().reduce((s, c) => s + c.deletions, 0)
 
   return (
     <Show when={hasRunStatus()}>

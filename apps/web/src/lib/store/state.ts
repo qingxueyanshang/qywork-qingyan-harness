@@ -17,6 +17,7 @@ import type {
   ContextOmitted,
   Conversation,
   ConversationChangeStep,
+  FileChange,
   FollowUp,
   GitStateEvent,
   Goal,
@@ -264,18 +265,13 @@ export interface AppState {
   /**
    * 工作区文件视图的失效序号。每收到一条 `file.changed` 就递增一次。
    *
-   * `fileChanges` 是给用户看的精确增删摘要，不能拿它的长度兼任刷新信号：同一个文件
-   * 改第二次长度不变，`run_command` / 格式化器只能确认「可能改了文件」而列不出路径。
+   * `fileChanges` 是给用户看的精确增删摘要，不能拿它的长度兼任刷新信号：
+   * `run_command` / 格式化器只能确认「可能改了文件」而列不出路径。
    * 这个数不描述磁盘内容，只表达“上一份文件快照已经过期”。
    */
   fileVersion: number
-  /** 行数 null = 不可知（观察器判出来的写入），合计只加已知的。 */
-  fileChanges: {
-    path: string
-    additions: number | null
-    deletions: number | null
-    changeType: string
-  }[]
+  /** 这一轮的每一次写入，按到达先后；净效果由 `foldFileChanges` 折，与变更页同一份口径。 */
+  fileChanges: FileChange[]
   git: Omit<GitStateEvent, 'type'> | null
 }
 
