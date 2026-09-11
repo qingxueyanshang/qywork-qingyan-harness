@@ -205,8 +205,8 @@
   flex: none;
   display: grid;
   place-items: center;
-  /* 同 `.tree-chevron-slot` 的 13px 图标位。 */
-  width: 13px;
+  /* 同 `.tree-chevron-slot` 的 15px 图标位。 */
+  width: 15px;
   /* 与首行文字等高，标记才落在第一行上而不是整块的中线上。 */
   height: calc(var(--fs-sm) * 1.6);
   color: var(--text-tertiary);

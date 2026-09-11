@@ -486,7 +486,8 @@
   flex-direction: column;
   gap: 2px;
 }
-/* 只给仍含目录的分支画层级线。纯文件列表已经是末级，继续拉线会像多出一层。 */
+/* 只给仍含目录的分支画层级线。纯文件列表已经是末级，继续拉线会像多出一层。
+   线的 x 由 `treeIndent` 给：父行箭头线条的中心，子行图标位在它右侧 3px 起。 */
 .tree:not(.tree-top):not(.tree-terminal) {
   position: relative;
 }
@@ -511,11 +512,10 @@
 .tree-item {
   display: flex;
   align-items: center;
-  /* 每行只有一个 13px 主图标位；图标与名称保持 4px。 */
+  /* 每行只有一个 15px 主图标位；图标与名称保持 4px。 */
   gap: 4px;
   width: 100%;
-  /* 左内距被行内样式按层级覆盖（`depth * 6 + 2`）。初始图标贴近搜索框左边界，
-     后续每一级最左侧的可见图标只递进 6px。 */
+  /* 左内距被行内样式按层级覆盖（`treeIndent`，每级 10px）。初始图标贴近搜索框左边界。 */
   padding: 1px var(--s-2);
   border-radius: var(--r-xs);
   color: var(--text-secondary);
@@ -527,17 +527,29 @@
   flex: none;
 }
 /*
- * 目录用箭头，文件用类型图标，两者共用一个 13px 主图标位。常规目录不再叠加
+ * 目录用箭头，文件用类型图标，两者共用一个 15px 主图标位。常规目录不再叠加
  * 文件夹图标，否则同一行会多出一列，层级起点与名称列都会失去连续关系。
+ *
+ * 图标靠左摆、以箭头线条为基准：11px 箭头 svg 左移 1px 后线条从槽内约 5px 起，
+ * 徽标与文件图标的左边缘补到同一个 x（1.5px 描边的视觉左沿在 4px）。不要改成居中：徽标比箭头线条宽，
+ * 居中后徽标左边缘会落在箭头左侧。
  */
 .tree-chevron-slot,
 .tree-node-icon,
 .file-type-icon {
   flex: none;
   display: grid;
-  place-items: center;
-  width: 13px;
+  align-items: center;
+  justify-items: start;
+  width: 15px;
   height: 13px;
+}
+.tree-chevron-slot > svg {
+  margin-left: 1px;
+}
+.tree-node-icon > svg,
+.file-type-icon > svg {
+  margin-left: 2px;
 }
 .file-type-icon {
   /* 类型靠字形区分，颜色保持和原文件图标一致的中性灰。 */
@@ -547,23 +559,18 @@
 .file-type-icon > span {
   display: grid;
   place-items: center;
-  width: 12px;
+  /* 徽标左边缘对齐箭头线条（槽内 4px），宽 10px；三字母标签用 5.5px 字才放得下。 */
+  margin-left: 4px;
+  width: 10px;
   height: 12px;
   border-radius: 3px;
   background: color-mix(in srgb, var(--file-icon-tone) 15%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--file-icon-tone) 24%, transparent);
   font-family: var(--font-ui);
-  font-size: 6px;
+  font-size: 5.5px;
   font-weight: 750;
   line-height: 1;
   letter-spacing: -0.35px;
-}
-.file-type-icon[data-file-kind="json"] > span,
-.file-type-icon[data-file-kind="style"] > span,
-.file-type-icon[data-file-kind="markup"] > span {
-  background: transparent;
-  box-shadow: none;
-  font-size: 8px;
 }
 .tree-item:not(.selected):hover {
   background: var(--bg-hover);
@@ -824,7 +831,7 @@
 
 /* ── 会话变更记录 ──
  *
- * 行不另写样式：轮与文件行都用 `.tree` / `.tree-item`，缩进走同一条 `depth * 6 + 2`。
+ * 行不另写样式：轮与文件行都用 `.tree` / `.tree-item`，缩进走同一条 `treeIndent`。
  * 这一页与文件页在同一块面板里切换，两张列表的行高、字色、缩进由同一份规则决定，
  * 不存在第二份「对齐过的」数值。 */
 .change-panel {

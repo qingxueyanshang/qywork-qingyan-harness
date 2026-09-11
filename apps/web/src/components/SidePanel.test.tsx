@@ -319,8 +319,8 @@ describe('文件树层级', () => {
     const root = host.querySelector<HTMLElement>('.tree-root')
     const dir = rows.find((row) => row.textContent?.includes('目录'))
     const file = rows.find((row) => row.textContent?.includes('同层文件.md'))
-    expect(dir?.style.paddingLeft).toBe('8px')
-    expect(file?.style.paddingLeft).toBe('8px')
+    expect(dir?.style.paddingLeft).toBe('12px')
+    expect(file?.style.paddingLeft).toBe('12px')
     expect(dir?.querySelector('.tree-chevron-slot')).not.toBeNull()
     expect(file?.querySelector('.tree-chevron-slot')).toBeNull()
     expect(dir?.children.length).toBe(2)
@@ -339,16 +339,16 @@ describe('文件树层级', () => {
     const childDir = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-item')).find(
       (row) => row.textContent?.includes('子目录'),
     )
-    expect(childFile?.style.paddingLeft).toBe('14px')
+    expect(childFile?.style.paddingLeft).toBe('22px')
     expect(childFile?.querySelector('.tree-chevron-slot')).toBeNull()
     expect(childFile?.querySelector('.file-type-icon')?.getAttribute('data-file-kind')).toBe(
       'markdown',
     )
-    expect(childDir?.style.paddingLeft).toBe('14px')
+    expect(childDir?.style.paddingLeft).toBe('22px')
     expect(childDir?.querySelector('.tree-chevron-slot')).not.toBeNull()
     expect(childDir?.children.length).toBe(2)
     const childTree = host.querySelector<HTMLElement>('.tree:not(.tree-top)')
-    expect(childTree?.style.getPropertyValue('--tree-guide-left')).toBe('14px')
+    expect(childTree?.style.getPropertyValue('--tree-guide-left')).toBe('19px')
     expect(childTree?.classList.contains('tree-terminal')).toBe(false)
 
     childDir?.click()
@@ -357,7 +357,7 @@ describe('文件树层级', () => {
       () => `trees=${host.querySelectorAll('.tree:not(.tree-top)').length}`,
     )
     const grandchildTree = host.querySelectorAll<HTMLElement>('.tree:not(.tree-top)')[1]
-    expect(grandchildTree?.style.getPropertyValue('--tree-guide-left')).toBe('20px')
+    expect(grandchildTree?.style.getPropertyValue('--tree-guide-left')).toBe('29px')
     expect(grandchildTree?.classList.contains('tree-terminal')).toBe(true)
     expect(childDir?.classList.contains('selected')).toBe(true)
     expect(root?.classList.contains('selected')).toBe(false)

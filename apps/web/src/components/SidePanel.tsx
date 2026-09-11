@@ -1000,6 +1000,13 @@ function TreeMenu(props: {
 }
 
 /**
+ * 第 depth 层行的左内距。每层递进 10px：子行的层级线画在父行箭头线条的中心
+ * （父内距 + 7），子行的图标位从这条线右侧 3px 起，图标线条离线 8px。
+ * 不要缩到 6px：徽标会贴着层级线。
+ */
+const treeIndent = (depth: number): number => depth * 10 + 2
+
+/**
  * 按名字搜出来的命中，扁平一列，替代树显示。
  *
  * **搜索跳依赖树与构建产物**（服务端 `findByName`），而树不跳。这条边界必须
@@ -1072,7 +1079,7 @@ function Tree(props: { ctx: TreeCtx; dir: string; nodes: FileNode[]; depth: numb
         'tree-top': props.depth === 1,
         'tree-terminal': props.nodes.every((node) => node.kind !== 'dir'),
       }}
-      style={{ '--tree-guide-left': `${props.depth * 6 + 2}px` } as JSX.CSSProperties}
+      style={{ '--tree-guide-left': `${treeIndent(props.depth) - 3}px` } as JSX.CSSProperties}
     >
       {/* 新建那一行**就在这个目录的第一个孩子的位置**，和 Qoder 一样：
           它建在哪里，输入框就出现在哪里。 */}
@@ -1126,7 +1133,7 @@ function NameRow(props: {
   })
 
   return (
-    <div class="tree-edit" style={{ 'padding-left': `${props.depth * 6 + 2}px` }}>
+    <div class="tree-edit" style={{ 'padding-left': `${treeIndent(props.depth)}px` }}>
       <Show when={props.chevronDir}>
         {(dir) => (
           <span class="tree-chevron-slot" aria-hidden="true">
@@ -1180,7 +1187,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
       class="tree-item"
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
-      style={{ 'padding-left': `${props.depth * 6 + 2}px` }}
+      style={{ 'padding-left': `${treeIndent(props.depth)}px` }}
       onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault()
@@ -1419,7 +1426,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
           const open = () => turnOpen(turn.userMessageId, index())
           return (
             <li>
-              {/* 行与文件树同一套类和缩进（`depth * 6 + 2`）：轮是第 0 层，文件是第 1 层。
+              {/* 行与文件树同一套类和缩进（`treeIndent`）：轮是第 0 层，文件是第 1 层。
                   不另写一套「对齐」的数值——两份数值迟早漂开。 */}
               <button
                 class="tree-item change-turn"
@@ -1455,7 +1462,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
                             class="tree-item change-row"
                             classList={{ selected: fileOpen() }}
                             type="button"
-                            style={{ 'padding-left': '8px' }}
+                            style={{ 'padding-left': `${treeIndent(1)}px` }}
                             aria-expanded={fileOpen()}
                             data-tip={nativePath(r.path)}
                             onClick={() => toggleFile(key)}
