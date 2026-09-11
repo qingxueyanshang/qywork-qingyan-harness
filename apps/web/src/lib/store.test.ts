@@ -886,6 +886,50 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
+   * 原始失败形状：一轮结束后服务端紧接着广播工作区级的 `git.state`，用户几分钟后再发一句，
+   * 回车那一刻乐观置忙、状态行立刻按「上一次有动静」计时——基准要是这条 `git.state`，
+   * 下一轮开头就会闪出一句「已 N 秒没有新数据」，直到 `run.started` 到达才消失。
+   * 只有带 runId 的事件才算这一轮「有动静」；`goal` 同样在收尾之后发、同样不算。
+   */
+  test('轮次结束后到达的工作区级事件与 goal 不算这条会话「有动静」', () => {
+    reset('cv_now')
+    applyEvent({
+      seq: 8,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'run.finished', runId: 'run_1', stopReason: 'end_turn', usage: null },
+    } as never)
+    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    applyEvent({
+      seq: 9,
+      at: 0,
+      event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
+    } as never)
+    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    applyEvent({
+      seq: 10,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'goal', goal: null },
+    } as never)
+    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    // 下一轮真的开始才算：`run.started` 带 runId。
+    applyEvent({
+      seq: 11,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.started',
+        runId: 'run_2',
+        conversationId: 'cv_now',
+        model: 'm',
+        userMessageId: null,
+      },
+    } as never)
+    expect(viewOf('cv_now').lastEventAt).not.toBe(null)
+  })
+
+  /**
    * 反过来的那一半：`conversation.updated` 改的是**左栏列表**，不是 transcript，
    * 对后台会话同样有意义。一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。
    */

@@ -299,8 +299,12 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
      * **「有动静」的唯一落点，就是这里，而且跟着会话 id 落。**
      * 父会话与几个子会话会同时出帧；放在 AppState 单例上时，后台任意一条都会改写
      * 当前页的静默时长。归到 view 后，每一页只读自己的现场。
+     *
+     * **只有带 runId 的事件算。** 服务端在 `run.finished` 之后还会发 `goal` 与工作区级的
+     * `git.state`，它们不属于任何一轮；记进去的话，下一句发出、`run.started` 到达之前，
+     * 状态行会按这个过期时刻报「已 N 秒没有新数据」。
      */
-    setState('views', cid, 'lastEventAt', Date.now())
+    if ('runId' in ev && ev.runId !== null) setState('views', cid, 'lastEventAt', Date.now())
     // 收场判据的唯一落点，理由见 `RESUMED`。
     if (state.views[cid]?.retry && RESUMED.has(ev.type)) {
       setState('views', cid, 'retry', null)
