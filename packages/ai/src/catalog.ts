@@ -370,6 +370,16 @@ const GEMINI_31_PRO_LONG: LongContextTier = {
   note: '提示词超过 20 万 token 后整条请求按 $4 / $18（缓存 $0.4）计价',
 }
 
+const GPT_6_ASTRA_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 20,
+  output: 75,
+  cacheRead: 2,
+  cacheWrite5m: 25,
+  cacheWrite1h: 25,
+  note: '提示词超过 272K token 后整条请求按 $20 / $75（缓存 $2）计价',
+}
+
 const GPT_56_SOL_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 8,
@@ -954,6 +964,20 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
   const GPT_56_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
   return [
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6-astra',
+      displayName: 'GPT-6 Astra',
+      vendor: 'openai',
+      // Astra 的工具调用要求 Responses API。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(10, 50, 1, 12.5),
+      longContext: [GPT_6_ASTRA_LONG],
+    },
     /*
      * ── OpenAI GPT-5.6 ──
      *

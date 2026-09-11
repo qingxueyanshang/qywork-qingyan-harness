@@ -673,6 +673,35 @@ describe('模型目录', () => {
     expect(list.find((m) => m.id === 'deepseek-v4-pro')?.effort).toBeNull()
   })
 
+  test('GPT-6 Astra 的规格同时进入模型库与已配置的模型列表', async () => {
+    const b = await body(withConfig('openai_responses', 'gpt-6-astra'))
+    const rows = b.library
+      .find((v) => v.id === 'openai')!
+      .models.filter((m) => m.id === 'gpt-6-astra')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      label: 'GPT-6 Astra',
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      vision: true,
+      thinksByDefault: true,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+      currency: 'USD',
+    })
+    expect(b.providers[0]!.models[0]).toMatchObject({
+      id: 'gpt-6-astra',
+      label: 'GPT-6 Astra',
+      known: true,
+      vision: true,
+      video: false,
+      effortLevels: rows[0]!.effortLevels,
+    })
+  })
+
   /** 内置库不能被改小：少一家厂商，设置页上那一整组模型就没了。 */
   test('内置库覆盖九家厂商', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))

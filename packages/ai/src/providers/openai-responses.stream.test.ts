@@ -19,8 +19,9 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
-import { lookupModel } from '../catalog.ts'
+import { builtinCatalog, lookupModel } from '../catalog.ts'
 import { ProviderError } from '../errors.ts'
+import { buildAdapter } from '../factory.ts'
 import { PROVIDER_HTTP, type ProviderEvent, type ProviderUsage } from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
@@ -286,6 +287,49 @@ test('响应建立事件早于模型内容', async () => {
   const content = events.findIndex((e) => e.type === 'thinking_delta' || e.type === 'text_delta')
   expect(started).toBeGreaterThan(0)
   expect(content).toBeGreaterThan(started)
+})
+
+test('GPT-6 Astra 内置规格通过 Responses 发送工具、输出上限与推理档位', async () => {
+  const spec = builtinCatalog().find((m) => m.id === 'gpt-6-astra')!
+  expect(spec.provider).toBe('openai_responses')
+  const astra = buildAdapter({
+    kind: spec.provider,
+    model: spec.id,
+    baseUrl: BASE,
+    apiKey: 'sk-test',
+  })
+  script = {
+    status: 200,
+    body: TEXT_RUN,
+    contentType: 'text/event-stream',
+    headers: {},
+    delayMs: 0,
+  }
+  for (const effort of [undefined, 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+    const events: ProviderEvent[] = []
+    for await (const event of astra.stream({
+      model: spec.id,
+      system: [],
+      messages: [{ role: 'user', content: '读取文件' }],
+      tools: [{ name: 'read_file', description: '读取文件', parameters: { type: 'object' } }],
+      maxOutputTokens: 200_000,
+      cacheKey: 'astra-session',
+      ...(effort ? { effort } : {}),
+    })) {
+      events.push(event)
+    }
+    expect(events.at(-1)?.type).toBe('done')
+    expect(lastBody).toMatchObject({
+      model: 'gpt-6-astra',
+      max_output_tokens: 128_000,
+      prompt_cache_key: 'astra-session',
+      tools: [{ type: 'function', name: 'read_file' }],
+    })
+    expect(lastBody.reasoning?.effort).toBe(effort)
+    for (const field of ['temperature', 'top_p', 'top_logprobs', 'prompt_cache_retention']) {
+      expect(lastBody).not.toHaveProperty(field)
+    }
+  }
 })
 
 describe('推理增量：两种事件名都要认', () => {

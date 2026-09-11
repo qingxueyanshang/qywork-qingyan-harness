@@ -479,6 +479,18 @@ describe('长上下文阶梯价', () => {
     expect(long.cacheRead).toBe(0.4)
   })
 
+  test('GPT-6 Astra 按含缓存的输入总量切换整条请求的价格', () => {
+    const astra = lookupModel('gpt-6-astra', 'openai_responses')
+    const usage = {
+      inputTokens: 100_000,
+      cachedTokens: 100_000,
+      cacheWriteTokens: 72_000,
+      outputTokens: 10_000,
+    }
+    expect(computeCost(astra, usage)).toBe(2.5)
+    expect(computeCost(astra, { ...usage, cacheWriteTokens: 72_001 })).toBe(4.750025)
+  })
+
   test('GPT-5.6 长上下文连缓存写入价一起换档', () => {
     const sol = lookupModel('gpt-5.6-sol', 'openai_chat_completions')
     expect(priceAt(sol, { promptTokens: 272_000 }).cacheWrite5m).toBe(5)
