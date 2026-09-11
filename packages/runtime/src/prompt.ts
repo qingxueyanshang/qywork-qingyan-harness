@@ -56,7 +56,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'run_command',
-    line: '- 命令：用 run_command 执行 shell 命令。临时文件、缓存、浏览器 profile 放工作区的 .tmp/，那里不计入变更。',
+    line: '- 命令：用 run_command 执行 shell 命令。临时文件、缓存放工作区的 .tmp/，那里不计入变更。起 Chrome 必须带 --user-data-dir=.tmp/chrome，不带时每次启动都在临时目录留一份删不掉的崩溃指标文件。',
   },
   {
     tool: 'write_memory',

@@ -1,8 +1,8 @@
 /**
  * 尾区注记的装配。
  *
- * 覆盖范围：`prompt.ts` 的 `buildTailNotes`（`buildSystemPrompt` 由
- * `agent/prefix-audit.test.ts` 审）。
+ * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，以及 `buildSystemPrompt` 里 run_command
+ * 那一行的措辞（前缀稳定性由 `agent/prefix-audit.test.ts` 审）。
  *
  * 锁的是**技能、记忆、外部工具都只进标题**：正文（外部工具是完整参数说明）
  * 一旦被塞回尾区，每轮都要全量重发一遍，而这件事不会有任何报错——
@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { buildTailNotes } from './prompt.ts'
+import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
 const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
@@ -304,5 +304,16 @@ describe('尾区注记', () => {
       'memory',
       'workspaceState',
     ])
+  })
+})
+
+describe('能力段', () => {
+  test('有 run_command 时点明 Chrome 要带 --user-data-dir，落在 .tmp/ 下', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command']))
+    expect(prompt).toContain('--user-data-dir=.tmp/chrome')
+  })
+
+  test('没有 run_command 就不提 Chrome', () => {
+    expect(buildSystemPrompt(new Set(['read_file']))).not.toContain('--user-data-dir')
   })
 })
