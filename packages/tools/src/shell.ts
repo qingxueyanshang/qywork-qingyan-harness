@@ -29,9 +29,11 @@
  * 那是给人用的，与这里无关。
  */
 
+import { mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
+import { join } from 'node:path'
 import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
-import type { IntermediateResourceRef } from '@qywork/core'
+import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import {
@@ -73,6 +75,41 @@ const BACKGROUND_HELD =
  */
 const WATCH_INCOMPLETE =
   '。注意：本次文件改动的观察范围不完整，清单可能有遗漏，也可能混进了被忽略的产物。'
+
+/**
+ * 本轮已经报出去的工作区相对路径，存在 `ctx.state`（run 级，一条消息一个）。
+ *
+ * 观察器拿它对账：删掉整个目录时递归 watch 只给目录一条事件，其中的文件两条来源
+ * 都看不见，不对账就停在最后一次看见的状态。
+ */
+const REPORTED_PATHS_KEY = 'shell.reportedPaths'
+
+function turnReported(state: Map<string, unknown>): Set<string> {
+  const known = state.get(REPORTED_PATHS_KEY)
+  if (known instanceof Set) return known as Set<string>
+  const fresh = new Set<string>()
+  state.set(REPORTED_PATHS_KEY, fresh)
+  return fresh
+}
+
+function trackReported(reported: Set<string>, changes: FileChange[]): void {
+  for (const c of changes) {
+    if (c.changeType === 'deleted') reported.delete(c.path)
+    else reported.add(c.path)
+  }
+}
+
+/**
+ * 子进程的临时目录，工作区根下的 `.tmp`。
+ *
+ * 观察器硬排除这个目录，所以模型往里写的缓存、中间产物、浏览器 profile 不进变更清单。
+ * 必须排在 `scrubEnv` 之后：那三个变量本来就在环境里，不覆盖就仍指向系统临时目录。
+ */
+async function tmpEnv(workspaceRoot: string): Promise<Record<string, string>> {
+  const dir = join(workspaceRoot, '.tmp')
+  await mkdir(dir, { recursive: true })
+  return { TMP: dir, TEMP: dir, TMPDIR: dir }
+}
 
 /**
  * 这条调用实际会在多少毫秒后被强制终止。
@@ -208,12 +245,19 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         env: {
           ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
           ...NON_INTERACTIVE_ENV,
+          ...(await tmpEnv(ctx.workspaceRoot)),
         },
       })
 
       // 命令改了哪些文件由工作区观察器给：shell 没有精确明细，路径与变更类型是它能知道的全部。
       // 在进程起来之后才开窗：子进程从启动到第一次写盘远长于开窗那一下，先开则 spawn 抛错时窗口泄漏。
-      const changeWindow = openChangeWindow(ctx.workspaceRoot)
+      const reported = turnReported(ctx.state)
+      const changeWindow = openChangeWindow(ctx.workspaceRoot, { reported })
+      const closeWindow = async () => {
+        const observed = await changeWindow.close()
+        trackReported(reported, observed.changes)
+        return observed
+      }
 
       // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
       const redactors = {
@@ -239,7 +283,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeUrl !== null) {
         const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
         const got = await collecting
-        const watched = await changeWindow.close()
+        const watched = await closeWindow()
         const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
         return {
           status: probe.ok ? 'success' : 'failure',
@@ -255,7 +299,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       const got = await collecting
-      const watched = await changeWindow.close()
+      const watched = await closeWindow()
       const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
       const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
 

@@ -1,12 +1,16 @@
 /**
  * 执行期间工作区里改了哪些文件。给没有精确明细的执行器用：shell、外部 CLI。
  *
- * 两条来源合起来才完整：
+ * 三条来源合起来才完整：
  * - `fs.watch`（递归）收路径。**它会丢事件**：实测 Bun 在 Windows 上，同一批通知里「修改」
  *   后面紧跟「删除 / 改名」时前一条不见了，而 `sed -i`、原子保存正是这种写法。
  *   删除只有它看得见——文件没了，扫描扫不到。
  * - 收尾时扫一遍工作区，`mtime` 落在窗口内的就是改过的。扫描要 stat 每个文件；
  *   超过 `MAX_WALK_ENTRIES` 就停，此时结果按 `incomplete` 交出去。
+ * - 调用方给的 `reported`：本轮之前已经报过的路径，收尾时逐个 stat 对账。
+ *   整个目录被删时前两条都给不出其中的文件——递归 watch 只给目录一条事件
+ *   （Windows 实测 `rm -rf d`：`d/a.txt` 与 `d` 有事件，`d/sub/b.txt` 没有），
+ *   而扫描扫不到已经不存在的文件。不对账的话，这些文件停在最后一次看见的状态。
  *
  * 一个工作区根只开一个 `fs.watch`，窗口按打开先后排队；同一时刻有几个窗口开着时，
  * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
@@ -16,6 +20,7 @@
  * 口径与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 切开的段数）。
  * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
  * 临时文件（窗口内建、收尾前删）不进结果；原子保存（写临时文件再改名）会被判成 created。
+ * 结果里只有文件：仍在磁盘上的按 `stat` 判，已经不在的按同一批里有没有路径以它为父段判。
  *
  * **哪些路径不报告由 Git 裁决，事件收集与收尾扫描共用这一条策略。**
  * 任何路径段是 `.git`（版本库元数据）或 `.tmp`（本项目的临时产物目录）的一律不报；
@@ -58,6 +63,16 @@ export interface ObservedChanges {
 export interface ChangeWindow {
   /** 收尾：停止归集，按此刻磁盘状态判每个路径的变更类型。 */
   close(): Promise<ObservedChanges>
+}
+
+export interface ChangeWindowOptions {
+  /**
+   * 本轮之前各窗口报过 created / modified 的工作区相对路径。
+   *
+   * 调用方自己维护这份累计集合：报过的加进去、报成 deleted 的移出来。
+   * 只放文件路径——目录从来不进结果，也就不会从这条来源报出删除。
+   */
+  reported?: ReadonlySet<string>
 }
 
 /**
@@ -300,7 +315,41 @@ async function touchedSince(root: string, since: number, until: number): Promise
   return { paths: out, pruned, truncated: false }
 }
 
-export function openChangeWindow(root: string): ChangeWindow {
+/**
+ * 这批变更里出现过的父段。
+ *
+ * 判目录用的：路径不存在时 stat 问不出它是文件还是目录，而删掉整个目录时递归 watch
+ * 会给出目录本身那一条事件，报出去就是一行「已删除」的假文件。
+ * 文件不可能是另一个路径的父段，所以同一批里被当成父段的那些是目录。
+ */
+function parentsOf(changes: FileChange[]): Set<string> {
+  const out = new Set<string>()
+  for (const c of changes) {
+    for (let i = c.path.indexOf('/'); i > 0; i = c.path.indexOf('/', i + 1)) {
+      out.add(c.path.slice(0, i))
+    }
+  }
+  return out
+}
+
+/** `reported` 里此刻已经不在磁盘上、而本窗口又没见到的那些：这次被删的。 */
+async function goneFrom(
+  root: string,
+  reported: ReadonlySet<string>,
+  seen: ReadonlySet<string>,
+): Promise<string[]> {
+  const out: string[] = []
+  await Promise.all(
+    [...reported].map(async (rel) => {
+      if (seen.has(rel)) return
+      const s = await stat(join(root, rel)).catch(() => null)
+      if (!s) out.push(rel)
+    }),
+  )
+  return out
+}
+
+export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): ChangeWindow {
   const window: Window = { startedAt: Date.now(), paths: new Map(), prunedDirs: new Set() }
   let entry = shared.get(root)
   if (!entry) {
@@ -397,7 +446,20 @@ export function openChangeWindow(root: string): ChangeWindow {
         const change = await describe(root, rel, window.startedAt).catch(() => null)
         if (change) changes.push(change)
       }
-      return { changes, incomplete }
+      if (opts.reported) {
+        // 本轮报过、本窗口两条来源都没见到的路径按磁盘对账。这些路径上一次报出时
+        // 已经过了忽略判定，不再判一次。
+        const seen = new Set([...window.paths.keys(), ...walkOnly, ...tracked])
+        for (const rel of await goneFrom(root, opts.reported, seen)) {
+          changes.push({ path: rel, changeType: 'deleted' })
+        }
+      }
+      // 只对删除判一次：还在磁盘上的那些，`describe` 已经按 `stat` 把目录挡掉了。
+      const dirs = parentsOf(changes)
+      return {
+        changes: changes.filter((c) => c.changeType !== 'deleted' || !dirs.has(c.path)),
+        incomplete,
+      }
     },
   }
 }

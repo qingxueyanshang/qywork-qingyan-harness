@@ -893,6 +893,58 @@ export interface FileChange {
   renamedFrom?: string
 }
 
+/** 一轮里一个文件的净效果。`counted` = 这一轮至少有一次带了行数，都没带的不印增删数。 */
+export interface FoldedFileChange {
+  path: string
+  changeType: FileChange['changeType']
+  additions: number
+  deletions: number
+  counted: boolean
+}
+
+/**
+ * 一轮的写入按路径折成净效果，输入按发生先后，输出按路径第一次被改到的先后。
+ *
+ * **这一轮里建起来又删掉的整行丢掉**：它对工作区没有净效果，与观察器在单个窗口内
+ * 把「建了又删」判成临时文件是同一条规则，只是范围放到整轮。浏览器 profile、
+ * 构建缓存这类几百上千个文件的目录正是这个形状。改过之后被删的留着——
+ * 那是用户原有的文件没了。
+ *
+ * 其余三条：建了再改仍是新建，删掉又重建仍是新建，其余按最后一次；
+ * 行数只加已知的（缺席不是 0，见 `FileChange.additions`）。
+ *
+ * **变更页的行与表头合计都从这里来。** 界面折一次、服务端另算一份合计的话，
+ * 被丢掉的那几百行会从行里消失、却还留在表头的数里。
+ */
+export function foldFileChanges(changes: readonly FileChange[]): FoldedFileChange[] {
+  const byPath = new Map<string, FoldedFileChange>()
+  const bornHere = new Set<string>()
+  for (const c of changes) {
+    const cur = byPath.get(c.path)
+    if (!cur) {
+      if (c.changeType === 'created') bornHere.add(c.path)
+      byPath.set(c.path, {
+        path: c.path,
+        changeType: c.changeType,
+        additions: c.additions ?? 0,
+        deletions: c.deletions ?? 0,
+        counted: c.additions !== undefined,
+      })
+      continue
+    }
+    cur.additions += c.additions ?? 0
+    cur.deletions += c.deletions ?? 0
+    cur.counted ||= c.additions !== undefined
+    cur.changeType =
+      c.changeType === 'deleted'
+        ? 'deleted'
+        : cur.changeType === 'created'
+          ? 'created'
+          : c.changeType
+  }
+  return [...byPath.values()].filter((f) => !(f.changeType === 'deleted' && bornHere.has(f.path)))
+}
+
 // ─────────────────────────────── 产物 ───────────────────────────────
 
 // ─────────────────────────────── 上下文分组 ───────────────────────────────

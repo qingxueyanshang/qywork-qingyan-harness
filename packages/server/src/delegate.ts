@@ -155,6 +155,15 @@ export function makeDelegate(ctx: {
   const { deps, workspaceRoot, conversationId, deliver } = ctx
 
   /**
+   * 本轮各次外部 CLI 已经报出去的工作区相对路径。一个 `makeDelegate` 对应一个
+   * `Session`，也就是一轮（`run-control.ts` 每条消息新建）。
+   *
+   * 观察器拿它对账：删掉整个目录时递归 watch 只给目录一条事件，其中的文件
+   * 两条来源都看不见，不对账就停在最后一次看见的状态。
+   */
+  const reported = new Set<string>()
+
+  /**
    * 角色与团队规则**每次直接读文件**，不走 `acquireExtensions`。
    *
    * 那份扩展是引用计数缓存的，服务全程持有一份——因此模型这一轮用 `define_role`
@@ -450,7 +459,7 @@ export function makeDelegate(ctx: {
       if (cli) {
         // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到。
         const stepId = at.stepId
-        const changeWindow = openChangeWindow(workspaceRoot)
+        const changeWindow = openChangeWindow(workspaceRoot, { reported })
         const r = await runCli(cli, {
           prompt: task,
           workspaceRoot,
@@ -469,6 +478,10 @@ export function makeDelegate(ctx: {
             : {}),
         })
         const watched = await changeWindow.close()
+        for (const c of watched.changes) {
+          if (c.changeType === 'deleted') reported.delete(c.path)
+          else reported.add(c.path)
+        }
         // 观察范围不完整要说出来：不说的话，一次没跑完的过滤与一次真的没有改动分不开。
         if (watched.incomplete) notes.push('工作区观察范围不完整，这次的文件改动清单可能有遗漏')
         // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。

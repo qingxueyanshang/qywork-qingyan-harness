@@ -54,7 +54,10 @@ export const ENVIRONMENT_LAYER = `## 工作方式
  * files 与 code 不在这里：身份段已经点名，planning 由「工作方式」的待办段落管。
  */
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
-  { tool: 'run_command', line: '- 命令：用 run_command 执行 shell 命令。' },
+  {
+    tool: 'run_command',
+    line: '- 命令：用 run_command 执行 shell 命令。临时文件、缓存、浏览器 profile 放工作区的 .tmp/，那里不计入变更。',
+  },
   {
     tool: 'write_memory',
     line: '- 记忆写入：用户说明的偏好、项目约定、下次还用得上的结论用 write_memory 存。默认 scope=project；用户明确指定全局时必须传 scope=global。',

@@ -41,6 +41,7 @@ import type {
 import {
   emptyBreakdown,
   emptyOmitted,
+  foldFileChanges,
   newConversationId,
   newMessageId,
   newProviderRequestId,
@@ -721,8 +722,8 @@ export function listConversationHistoryPage(
  *   那张派活卡的 step），按它归到父轮。这是建 run 时写下的事实，不是按时间推断的；
  * - 外部 CLI 节点：父 step 的 `nodes[*].fileChanges`，观察器给的，不带行数。
  *
- * `totals` 是整条会话的合计，三个来源一起算，只加已知的行数。选轮与合计只取
- * fileChange 的三个字段，不把 args（整份文件内容）读进内存。
+ * `totals` 是整条会话的合计：三个来源一起算，**按轮各折一次再相加**——界面上那些行
+ * 用的是同一个 `foldFileChanges`，两边各折一套的话表头对不上行。
  */
 export function listConversationChangesPage(
   store: Store,
@@ -781,32 +782,63 @@ export function listConversationChangesPage(
     { $limit: limit + 1, ...(before ? { $before: before } : {}) },
   )
 
-  const totalRows = rows<{ path: string; additions: number | null; deletions: number | null }>(
+  /*
+   * 整条会话的合计。**按轮折了再加**：一个路径在一轮里建了又删就不该计进来
+   * （`foldFileChanges`），而那件事只在同一轮的范围内成立。
+   *
+   * 三个来源与选轮同一套 CTE；排序取 `steps.rowid`——三条支路取的都是这张表，
+   * rowid 就是落库先后，而折叠只认先后。选轮与合计只读 fileChange 的四个字段，
+   * 不把 args（整份文件内容）读进内存。
+   */
+  const totalRows = rows<{
+    turn_id: string
+    path: string
+    change_type: FileChange['changeType']
+    additions: number | null
+    deletions: number | null
+  }>(
     `${cte}
-     SELECT path, additions, deletions FROM (
-       SELECT json_extract(c.value, '$.path') AS path, json_extract(c.value, '$.additions') AS additions,
+     SELECT turn_id, path, change_type, additions, deletions FROM (
+       SELECT own.turn_id AS turn_id, json_extract(c.value, '$.path') AS path,
+              json_extract(c.value, '$.changeType') AS change_type,
+              json_extract(c.value, '$.additions') AS additions,
               json_extract(c.value, '$.deletions') AS deletions, s.rowid AS ord
        FROM own JOIN steps s ON s.id = own.step_id
        JOIN json_each(s.payload, '$.outcome.fileChanges') c
        UNION ALL
-       SELECT json_extract(c.value, '$.path'), json_extract(c.value, '$.additions'),
+       SELECT delegated.turn_id, json_extract(c.value, '$.path'),
+              json_extract(c.value, '$.changeType'), json_extract(c.value, '$.additions'),
               json_extract(c.value, '$.deletions'), cs.rowid
        FROM delegated JOIN steps cs ON cs.id = delegated.step_id
        JOIN json_each(cs.payload, '$.outcome.fileChanges') c
        UNION ALL
-       SELECT json_extract(c.value, '$.path'), json_extract(c.value, '$.additions'),
+       SELECT nodes.turn_id, json_extract(c.value, '$.path'),
+              json_extract(c.value, '$.changeType'), json_extract(c.value, '$.additions'),
               json_extract(c.value, '$.deletions'), s.rowid
        FROM nodes JOIN steps s ON s.id = nodes.step_id
        JOIN json_each(s.payload, '$.nodes') n ON n.key = nodes.node_id
        JOIN json_each(n.value, '$.fileChanges') c
        WHERE nodes.cli_writes > 0
-     ) WHERE path IS NOT NULL ORDER BY ord`,
+     ) WHERE path IS NOT NULL ORDER BY turn_id, ord`,
   )
-  const totals = { paths: [] as string[], additions: 0, deletions: 0 }
+  const perTurn = new Map<string, FileChange[]>()
   for (const row of totalRows) {
-    if (!totals.paths.includes(row.path)) totals.paths.push(row.path)
-    totals.additions += row.additions ?? 0
-    totals.deletions += row.deletions ?? 0
+    const list = perTurn.get(row.turn_id) ?? []
+    list.push({
+      path: row.path,
+      changeType: row.change_type,
+      ...(row.additions === null ? {} : { additions: row.additions }),
+      ...(row.deletions === null ? {} : { deletions: row.deletions }),
+    })
+    perTurn.set(row.turn_id, list)
+  }
+  const totals = { paths: [] as string[], additions: 0, deletions: 0 }
+  for (const list of perTurn.values()) {
+    for (const folded of foldFileChanges(list)) {
+      if (!totals.paths.includes(folded.path)) totals.paths.push(folded.path)
+      totals.additions += folded.additions
+      totals.deletions += folded.deletions
+    }
   }
 
   const hasMore = turnRows.length > limit

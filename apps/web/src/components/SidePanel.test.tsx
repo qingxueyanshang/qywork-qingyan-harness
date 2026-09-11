@@ -635,6 +635,71 @@ describe('变更页按轮', () => {
     )
   })
 
+  test('这一轮里建了又删的不出现，改过再删的显示已删除', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
+      throw new Error(`不该有请求：${p}`)
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    const ran = (id: string, command: string, changes: unknown[]) => ({
+      id,
+      toolName: 'run_command',
+      args: { command },
+      fileChanges: changes,
+      via: null,
+    })
+    store.setState({
+      activeConversation: 'cv_changes',
+      views: {
+        cv_changes: viewWith({
+          turns: [
+            turn('ms_2', '跑一轮脚本', [
+              ran('st_1', 'python snap.py', [
+                { path: 'cache/profile/a.bin', changeType: 'created' as const },
+                { path: 'notes.md', changeType: 'modified' as const, additions: 2, deletions: 1 },
+              ]),
+              ran('st_2', 'rm -rf cache notes.md', [
+                { path: 'cache/profile/a.bin', changeType: 'deleted' as const },
+                { path: 'notes.md', changeType: 'deleted' as const },
+              ]),
+            ]),
+            // 这一轮的写入全被折叠丢掉：节头都不出。
+            turn('ms_1', '建了又删', [
+              ran('st_0', 'python warm.py', [
+                { path: 'cache/profile/b.bin', changeType: 'created' as const },
+              ]),
+              ran('st_00', 'rm -rf cache', [
+                { path: 'cache/profile/b.bin', changeType: 'deleted' as const },
+              ]),
+            ]),
+          ],
+          // 服务端按同一个 `foldFileChanges` 折过再给的：建了又删的两个路径不在里面。
+          totals: { paths: ['notes.md'], additions: 2, deletions: 1 },
+          nextCursor: null,
+          loading: null,
+          error: null,
+        }),
+      },
+    })
+    store.setSidePanel('changes')
+    const host = await mount()
+
+    await waitFor(
+      () => host.querySelectorAll('.change-row').length === 1,
+      () => host.innerHTML,
+    )
+    expect(host.querySelectorAll('.change-turn')).toHaveLength(1)
+    const row = host.querySelector<HTMLButtonElement>('.change-files .change-row')
+    expect(row?.querySelector('.truncate')?.textContent).toBe('notes.md')
+    expect(row?.querySelector('.change-kind')?.textContent).toBe('已删除')
+    // 表头与行同一份账：建了又删的那两个文件既不在行上，也不在表头的数里。
+    expect(host.querySelector('.change-head')?.textContent).toBe('变更 1 个文件+2−1')
+    expect(host.innerHTML).not.toContain('cache/profile')
+  })
+
   test('清单末尾的哨兵进视口就取更早的轮，接在末尾', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api

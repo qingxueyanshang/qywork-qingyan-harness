@@ -55,7 +55,9 @@ export interface ConversationHistoryPageResponse {
  * 拿它翻页会把整段会话流连同 Markdown 一起挂进主区。这里按「写过文件的轮」分页，
  * 没写文件的轮在查询里直接跳过。`before` 与历史页同为用户消息 id、排他上界。
  *
- * `totals` 是整条会话的合计，不是这一页的。`paths` 给去重后的路径而不只给个数：
+ * `totals` 是整条会话的合计，不是这一页的：每一轮的写入先经 `foldFileChanges` 折成
+ * 净效果再相加，与界面上那些行折的是同一个函数——两边各折一次的话，建了又删的那些
+ * 文件会从行里消失、却还留在表头的数里。`paths` 给去重后的路径而不只给个数：
  * 实时追加一条变更时，客户端要判断这个路径是否已经计入，只有个数无从判断。
  */
 export interface ConversationChangesPageResponse {

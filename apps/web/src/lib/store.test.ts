@@ -2385,6 +2385,43 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
         durationMs: 1,
       },
     }) as never
+  /** 一次实时回执，变更类型任选：折叠规则要按它分档。 */
+  const changed = (stepId: string, path: string, changeType: 'created' | 'deleted') =>
+    ({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'tool.finished',
+        runId: 'rn_1',
+        stepId,
+        toolCallId: 'c',
+        status: 'success',
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '',
+          fileChanges: [{ path, changeType }],
+        },
+        durationMs: 1,
+      },
+    }) as never
+  const runFinished = (runId: string) =>
+    ({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_1',
+      event: {
+        type: 'run.finished',
+        runId,
+        status: 'done',
+        stopReason: 'completed',
+        usage: null,
+        stepCount: 1,
+        durationMs: 5,
+        fileChanges: [],
+      },
+    }) as never
   const toolItem = (id: string, path: string) => ({
     id,
     kind: 'tool' as const,
@@ -2608,6 +2645,53 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
         ],
       ])
       expect(changes?.totals).toEqual({ paths: ['a.ts', 'c.ts'], additions: 5, deletions: 4 })
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
+  test('这一轮跑完了：重取那一节，建了又删的路径行上与合计里一起消失', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
+    freshView('cv_1')
+    const requested: string[] = []
+    // 账本那一份两边都折过：那个路径在这一轮没有净效果，行与合计都不含它。
+    const restore = stubApi(async (p) => {
+      requested.push(p)
+      return {
+        turns: [
+          {
+            userMessageId: 'ms_1',
+            text: '跑一轮脚本',
+            origin: null,
+            createdAt: 1,
+            steps: [wireStep('st_keep', 'keep.ts', 2, 0)],
+          },
+        ],
+        totals: { paths: ['keep.ts'], additions: 2, deletions: 0 },
+        nextCursor: null,
+      }
+    })
+    try {
+      await loadConversationChanges('cv_1')
+      setState('views', 'cv_1', 'transcript', [
+        { id: 'ms_1', kind: 'user', text: '跑一轮脚本' },
+        toolItem('st_1', 'cache/a.bin'),
+        toolItem('st_2', 'cache/a.bin'),
+      ])
+      setState('views', 'cv_1', 'runUserMessageId', 'ms_1')
+      applyEvent(changed('st_1', 'cache/a.bin', 'created'))
+      applyEvent(changed('st_2', 'cache/a.bin', 'deleted'))
+      // 实时追加只加到达的那一条：这时它还在行上、也在合计里。
+      expect(viewOf('cv_1').changes?.totals.paths).toContain('cache/a.bin')
+
+      applyEvent(runFinished('rn_1'))
+      for (let i = 0; i < 50 && requested.length < 2; i += 1) await Bun.sleep(5)
+      await Bun.sleep(10)
+      const changes = viewOf('cv_1').changes
+      expect(requested[1]).toContain('limit=1')
+      expect(changes?.turns.flatMap((t) => t.steps.map((s) => s.id))).toEqual(['st_keep'])
+      expect(changes?.totals).toEqual({ paths: ['keep.ts'], additions: 2, deletions: 0 })
     } finally {
       restore()
       dropView('cv_1')

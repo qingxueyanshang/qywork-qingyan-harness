@@ -1,4 +1,4 @@
-import type { FileChange } from '@qywork/core'
+import { type FileChange, type FoldedFileChange, foldFileChanges } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import {
   createEffect,
@@ -1261,25 +1261,25 @@ function bodyOf(args: Record<string, unknown> | undefined): ChangeEdit['body'] {
   return written ? { written: clamp(written) } : null
 }
 
-/** 一轮里对一个文件的改动汇总。路径同账本：工作区相对、posix 分隔符。 */
-interface ChangedFile {
-  path: string
-  /** 只加已知的行数。 */
-  additions: number
-  deletions: number
-  /** 有没有任何一次带行数。一次都没有的行不画 +0 −0。 */
-  counted: boolean
-  /** 这一轮最后一次对它做的是什么。`deleted` 那一档没有行数、也打不开。 */
-  changeType: FileChange['changeType']
+/** 一轮里对一个文件的改动汇总。净效果那几格由 `foldFileChanges` 给，这里只补每一次的明细。 */
+interface ChangedFile extends FoldedFileChange {
   /** 每一次改动，按先后。**同一个文件改十次就是十条**，这才是「记录」。 */
   edits: ChangeEdit[]
 }
 
-/** 一轮的写入按路径折成文件行。顺序是这一轮里第一次被改到的先后，不排字典序。 */
+/**
+ * 一轮的写入按路径折成文件行。
+ *
+ * **折叠规则不在这里，在 `foldFileChanges`（`@qywork/core`）**：表头那个合计由服务端
+ * 对每一轮调同一个函数算出来，两处各折一次必然对不上——被丢掉的行会从行里消失、
+ * 却还留在表头的数里。这里只按同一个顺序把每一次改动挂回折出来的那一行上。
+ */
 function foldTurn(turn: ChangeTurn): ChangedFile[] {
-  const byPath = new Map<string, ChangedFile>()
+  const flat: FileChange[] = []
+  const edits = new Map<string, ChangeEdit[]>()
   for (const step of turn.steps) {
     for (const c of step.fileChanges) {
+      flat.push(c)
       // 这一步的入参就在账本里，正文从它来——不另存一份。
       const edit: ChangeEdit = {
         tool: step.toolName,
@@ -1289,34 +1289,12 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
         ...(c.deletions === undefined ? {} : { deletions: c.deletions }),
         body: bodyOf(step.args),
       }
-      const counted = c.additions !== undefined
-      const cur = byPath.get(c.path)
-      if (cur) {
-        cur.additions += c.additions ?? 0
-        cur.deletions += c.deletions ?? 0
-        cur.counted ||= counted
-        // 行上是这一轮的净效果：这一轮里建过的就是「新建」（建了再改仍是新建），
-        // 最后被删的是「已删除」，删掉又重建的仍是「新建」，其余按最后一次。
-        cur.changeType =
-          c.changeType === 'deleted'
-            ? 'deleted'
-            : cur.changeType === 'created'
-              ? 'created'
-              : c.changeType
-        cur.edits.push(edit)
-      } else {
-        byPath.set(c.path, {
-          path: c.path,
-          additions: c.additions ?? 0,
-          deletions: c.deletions ?? 0,
-          counted,
-          changeType: c.changeType,
-          edits: [edit],
-        })
-      }
+      const known = edits.get(c.path)
+      if (known) known.push(edit)
+      else edits.set(c.path, [edit])
     }
   }
-  return [...byPath.values()]
+  return foldFileChanges(flat).map((f) => ({ ...f, edits: edits.get(f.path) ?? [] }))
 }
 
 /**
@@ -1334,7 +1312,8 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
  * 口径：
  * - **一轮一节**，最新在上、默认展开，更早的收起只露节头。节头是用户那句话。
  * - 节内一个文件一行，行上的数是这一轮在它上面写了多少；展开是它的每一次改动。
- * - 表头的数是整条会话的合计，由服务端算，不是已加载几页的和。
+ * - 表头的数是整条会话的合计，由服务端算，不是已加载几页的和；它与行折的是同一个
+ *   函数（`foldFileChanges`），所以建了又删的那几百个文件两边一起丢掉。
  * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
  * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
  *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的文件这里看不到。
@@ -1431,7 +1410,8 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
 
   return (
     <ul class="tree tree-top" ref={list}>
-      <For each={props.changes.turns}>
+      {/* 整轮净效果为空的那几轮不出节头：`foldTurn` 把它们的行全丢掉了，节展开也是空的。 */}
+      <For each={props.changes.turns.filter((t) => foldTurn(t).length > 0)}>
         {(turn, index) => {
           const files = createMemo(() => foldTurn(turn))
           const additions = () => files().reduce((n, f) => n + f.additions, 0)

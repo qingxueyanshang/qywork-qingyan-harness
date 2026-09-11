@@ -573,6 +573,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
           v.runStartedAt = null
         }),
       )
+      // 这一轮跑完了，把它那一节重取回来：实时回执是一条条加进去的，折不出整轮净效果。
+      void refreshLatestChangeTurn(cid)
       return
 
     default:
@@ -1061,9 +1063,16 @@ async function fetchChangesPage(
 }
 
 /**
- * 派活的一格落了终态：子 agent 的写入在它自己的子会话里，父会话收不到那边的回执；
- * 外部 CLI 的写入挂在这一格上。两种都由服务端投影归到父轮，这里重取最新的那一轮替换进去。
+ * 重取最新那一轮，连同整条会话的合计。两处调：
+ *
+ * - **派活的一格落了终态**：子 agent 的写入在它自己的子会话里，父会话收不到那边的回执；
+ *   外部 CLI 的写入挂在这一格上。两种都由服务端投影归到父轮。
+ * - **这一轮跑完了**：实时回执是一条条追加的，加的是那一次报了什么；而面板上一行
+ *   是整轮的净效果（`foldFileChanges`），一轮里建了又删的路径行上当场没了、
+ *   合计却还算着它。服务端那份两边都折过，重取一次就都回到折叠后的口径。
+ *
  * `limit=1` 取到的是最新一个有写入的轮：这一轮有写入就是它；没有则拿到更早那轮，替换等于没变。
+ * 没打开过变更面板的会话没有这张表，当场返回，不发请求。
  */
 async function refreshLatestChangeTurn(id: string): Promise<void> {
   const changes = state.views[id]?.changes

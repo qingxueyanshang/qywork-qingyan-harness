@@ -290,6 +290,73 @@ describe('执行窗口内的工作区变更', () => {
     expect(got.incomplete).toBe(false)
   })
 
+  /**
+   * 递归 watch 对整个目录被删只给目录一条事件（Windows 实测），收尾扫描又扫不到
+   * 已经不存在的文件，所以深一层的文件只能靠本轮已报路径对账才报得出来。
+   */
+  test('整个目录被删：按本轮已报路径对账，其中的文件报出删除', async () => {
+    const root = await gitRepo()
+    const reported = new Set<string>()
+    const track = (changes: FileChange[]) => {
+      for (const c of changes) {
+        if (c.changeType === 'deleted') reported.delete(c.path)
+        else reported.add(c.path)
+      }
+    }
+    await Bun.sleep(20)
+
+    const first = openChangeWindow(root, { reported })
+    await settle()
+    await mkdir(join(root, 'd', 'sub'), { recursive: true })
+    await writeFile(join(root, 'd', 'a.txt'), 'a\n')
+    await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b\n')
+    await writeFile(join(root, 'd', 'sub', 'c.txt'), 'c\n')
+    await settle()
+    track((await first.close()).changes)
+
+    const second = openChangeWindow(root, { reported })
+    await settle()
+    await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b2\n')
+    await settle()
+    track((await second.close()).changes)
+    expect([...reported].sort()).toEqual(['d/a.txt', 'd/sub/b.txt', 'd/sub/c.txt'])
+
+    const third = openChangeWindow(root, { reported })
+    await settle()
+    await rm(join(root, 'd'), { recursive: true, force: true })
+    await settle()
+    const got = await third.close()
+
+    // 三个文件都报删除，三个目录自己一个都不报。
+    expect(got.changes.map((c) => [c.path, c.changeType]).sort()).toEqual([
+      ['d/a.txt', 'deleted'],
+      ['d/sub/b.txt', 'deleted'],
+      ['d/sub/c.txt', 'deleted'],
+    ])
+    expect(got.incomplete).toBe(false)
+  })
+
+  /**
+   * 不给已报路径就只剩事件与扫描两条来源，行为与对账之前一样：目录里深一层的文件
+   * 报不出来。**不要断言浅一层那个文件报得出来**——那一条只有事件看得见，而事件会丢。
+   */
+  test('不传已报路径时，目录被删报不出其中的文件', async () => {
+    const root = await gitRepo()
+    await mkdir(join(root, 'd', 'sub'), { recursive: true })
+    await writeFile(join(root, 'd', 'a.txt'), 'a\n')
+    await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b\n')
+    await Bun.sleep(20)
+
+    const window = openChangeWindow(root)
+    await settle()
+    await rm(join(root, 'd'), { recursive: true, force: true })
+    await settle()
+    const got = await window.close()
+
+    expect(typeOf(got.changes).has('d/sub/b.txt')).toBe(false)
+    expect(got.incomplete).toBe(false)
+  })
+
   test('两个窗口同时开着时，事件归最早打开的那个', async () => {
     const root = await gitRepo()
     const first = openChangeWindow(root)
