@@ -1,6 +1,6 @@
 name: CI
 
-# 日常门禁：每次 push 与每个 pull request 都跑一遍完整的 `bun run gate` 加 Web 构建。
+# 日常门禁：每次分支 push 与每个 pull request 都跑一遍完整的 `bun run gate` 加 Web 构建。
 # 发布工作流只在手动触发时跑，它的绿灯不能替日常提交作证。
 #
 # 只跑 Windows：这是目前唯一有发布产物的平台，也是 sidecar 与 cargo check 的目标平台。
@@ -8,6 +8,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:

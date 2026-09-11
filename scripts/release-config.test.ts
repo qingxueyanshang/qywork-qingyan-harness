@@ -61,11 +61,12 @@ describe('桌面发布清单', () => {
    * CI 不许持有写权限，也不许放过一部分门禁：它是提交与 PR 的唯一自动证据，
    * 降一格就等于没有。
    */
-  test('CI 只读、跑全量门禁、按分支取消旧的那次', () => {
+  test('CI 只读、只接分支 push、跑全量门禁、按分支取消旧的那次', () => {
     const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
 
     expect(workflow).toContain('contents: read')
     expect(workflow).not.toContain('contents: write')
+    expect(workflow).toContain('branches:\n      - "**"')
     expect(workflow).toContain('run: bun run gate')
     expect(workflow).toContain('run: bun run build:web')
     expect(workflow).not.toContain('continue-on-error')
