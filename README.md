@@ -1,185 +1,153 @@
 # qywork
 
-qywork 是一个面向真实软件工程任务的**开源 Agent Harness**，同时提供可以直接使用的本地 AI
-编程 Agent。
+**多模型接入、多 Agent 协作的轻量化开源 Agent Harness。**
 
-打开一个项目目录后，你可以直接让它阅读代码、修改文件、运行命令和测试。每次任务的执行过程、
-文件变化、模型请求、token 用量和停止原因都会保存在本机。
-
-## Agent = Model + Harness
-
-模型提供理解与判断能力。Harness 负责把模型放进真实环境，让它能够使用工具、根据执行结果继续
-判断，并把一项任务稳定地运行到完成或明确停止。
-
-qywork 的 Harness 负责三件核心工作：
-
-- **理解环境**：把工作区、项目状态和必要上下文交给模型；
-- **执行任务**：让模型读取和修改文件、运行命令与测试，并根据结果继续工作；
-- **记录过程**：保存每次 Run 的步骤、工具结果、文件变化、用量和停止原因。
-
-模型可以替换，工具和扩展可以增加，但任务始终沿同一条运行主线执行，桌面端、浏览器和主动开启
-后的手机访问看到的也是同一份状态。
+Agent = Model + Harness。模型负责推理，qywork 提供工具执行、上下文管理、记忆、技能与任务编排，
+并将它们集成进本地工作台。可以直接用于编程，也可以组合领域知识、工具和角色，定制自己的 Agent。
 
 [下载 Windows 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
-[从源码启动](#从源码启动) · [开发文档](docs/INDEX.md)
+[快速开始](#快速开始) · [从源码启动](#从源码启动) · [文档](docs/INDEX.md)
 
-![qywork 工作台：会话、并行子 Agent、文件与运行状态](docs/images/qywork-workbench-dark.png)
+![qywork 工作台：项目与会话、并行子 Agent、工作区文件](docs/images/qywork-workbench-dark.png)
 
 ## 核心特色
 
-- **本地优先的完整工作台**：不需要注册 qywork 账号。会话、文件、Git 变更、运行详情、用量、
-  终端、内嵌浏览器和扩展设置集中在同一个桌面界面中。
-- **一个内核，同一份任务状态**：桌面端、浏览器和主动开启后的手机访问都连接 `qy`，
-  不为不同入口维护第二套会话或执行逻辑。
-- **兼容所有通过主流协议接入的模型**：模型目录不是白名单，可以填写任意 model id；通过
-  Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 接入云模型、第三方接口以及
-  Ollama、LM Studio、vLLM 等本地端点。未收录模型也可用 `qy probe --save` 检测思考档位。
-- **连续任务缓存命中率实测可达 90%+**：稳定提示词、工具顺序和缓存断点保持固定，工作区状态放在
-  动态尾区；Skills、Memory、MCP 和 Plugins 按需加载，避免每轮重复发送整套上下文。实际命中率
-  以模型服务商回报为准，并记录在每次运行的用量中。
-- **多 Agent 并行与依赖编排**：独立任务交给多个子 Agent 并行处理；有先后关系的步骤使用
-  workflow，并可在检查点审查、批准或要求原任务继续修订。
-- **每次运行都有完整记录**：Run、步骤、工具结果、文件变化、模型请求、token、缓存、费用和
-  停止原因写入本地账本；刷新或重连不会把任务降级成一段普通聊天文本。
-- **能力可以自由组合**：通过 Skills、Memory、MCP、Plugins 和 Agent Team 增加领域知识、
-  外部工具与角色分工，不需要改写 Agent Loop。
+### 多模型接入，自由组合模型与服务
 
-## 怎么启动
+- 支持 **Anthropic Messages、OpenAI Chat Completions、OpenAI Responses** 三类接口，可接入官方服务、第三方接口和兼容协议的本地模型服务。
+- 同时配置多个服务与模型，在会话中切换；支持自定义模型 ID，不受内置模型目录限制。
+- 按模型能力选择思考档位，查看上下文容量、价格与实际用量；支持检测当前端点的思考参数。
+- 主 Agent 与子 Agent 可以使用不同的模型，同一张任务图可以跨模型、跨服务分工。
 
-### 方式一：安装 Windows 桌面版
+常规接入在系统设置中完成，特殊端点配置见[模型接入](docs/models.md)。
 
-这是普通用户最简单的方式。
+### 提示词缓存复用，近期实测平均命中率 90%+
 
-1. 打开 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest)。
-2. 下载 Windows x64 的 `.exe` 安装程序并完成安装。
-3. 启动 qywork，在左下角打开“系统设置”。
-4. 添加模型服务，填写 API Key、Base URL 和模型名称。
-5. 点击“新建 work”，选择已有项目目录或创建新目录，然后输入任务。
+**本机最近 7 天实测：逐请求平均缓存命中率 90.88%，按输入 token 加权为 94.68%。**[^cache]
 
-关闭窗口只把它收进系统托盘；退出程序用托盘图标右键菜单里的“退出”。
+系统提示与已提交的对话前缀保持稳定，连续工作时复用服务商的提示词缓存。
+项目状态、技能和记忆索引按轮次追加，避免每轮改写前缀。缓存命中量与费用直接显示在工作台中。
 
-当前安装包尚未进行 Authenticode 签名，Windows 可能显示 SmartScreen 提示。Release 页面提供
-`SHA256SUMS.txt`，可用于核对安装包完整性。
+[^cache]: 2026-09-11 统计：最近 7 天本机 1,185 次回报缓存用量且输入总量大于零的模型请求。单次命中率 = 缓存读取 token ÷（未命中输入 + 缓存读取 + 缓存写入 token）；未回报缓存字段的请求不计入样本。属于实际使用样本，不是全历史均值或跨服务商保证；效果取决于端点缓存支持、前缀稳定性与任务连续性。
 
-### 方式二：从源码启动
+### 多 Agent 协作，不同模型组成 Graph
 
-先安装 [Bun](https://bun.sh)。启动原生桌面窗口还需要 [Rust](https://rustup.rs/)。
+**任务可以并行分工，也可以按依赖组成有向无环图（DAG）。**
+
+- **独立上下文**：每个内置子 Agent 有自己的会话，过程不全部挤进主会话；后续任务可沿用同一个子 Agent 的上下文。
+- **跨模型分工**：分别指定分析、实现、复核所用的模型与服务，也可以复用预先配置的角色。
+- **异步执行**：派发后主会话无需阻塞等待；节点完成或失败时自动送回结果，互不依赖的节点按并发上限同时运行。
+- **检查点审查**：主 Agent 验收上一批结果，再批准下一批；需要返工时，向指定节点的原会话续发修订要求。
+- **可视化跟进**：会话中展示 Graph 的依赖、节点状态与检查点，点开内置子 Agent 可查看执行过程。
+
+例如，让两个模型并行分析前后端，再交给另一个模型实施：
+
+```mermaid
+flowchart LR
+    A["前端分析 · 模型 A"] --> R["主 Agent 审查"]
+    B["后端分析 · 模型 B"] --> R
+    R --> C["实施修改 · 模型 C"]
+    C --> V["主 Agent 验收"]
+```
+
+Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 Agent、配置角色和本机已接入的
+外部 Agent CLI 可以混合编排；外部 CLI 使用它自己的模型与账号。详见[协作文档](docs/team.md)。
+
+### 模块化 Harness，按业务组合能力
+
+模型、执行循环、工具、上下文、存储和界面分层。领域定制通过模型配置、知识与工具扩展完成，
+复用同一套任务执行和记录机制。
+
+| 模块 | 能力 |
+|---|---|
+| **Skills** | 保存可复用的操作步骤与领域方法；支持项目和全局作用域，正文按需读取 |
+| **Memory** | 保存项目约定、用户偏好与任务结论；支持项目和全局作用域、检索与迁移 |
+| **MCP** | 接入外部工具与资源，在设置中管理项目或全局服务 |
+| **Plugins** | 通过独立进程提供自定义工具，声明所需宿主能力 |
+| **Agent Team** | 配置角色提示词、模型、思考档位和工具范围，供单个子任务或 Graph 使用 |
+
+这些模块有对应的设置与管理入口，不必只靠编辑配置文件。
+例如，组合行业技能、项目记忆、业务系统 MCP 和审查角色，可在同一个工作台中运行领域任务。
+接入方式见[扩展文档](docs/INDEX.md#扩展能力)。
+
+### 轻量交付，小系统提示词
+
+- **约 30 MiB 的 Windows x64 安装包**：2026-09-11 发布包实测，包含 Bun 编译的执行内核；Tauri 2 桌面外壳使用系统 WebView。
+- **安装即可运行**：桌面版无需用户另装 Bun、Rust 或部署后端。
+- **基础系统提示正文 1,120 字符**，启用全部内置能力说明后为 **2,468 字符**：2026-09-11 [源码测量](packages/runtime/src/prompt.ts)，不包含工具参数、角色提示和会话上下文。
+- **按需装配上下文**：Skills、Memory 先提供索引，再读取正文；外部工具说明超过预算时转为按需加载。
+
+### 工作台覆盖执行、协作与产出检查
+
+| 工作区域 | 已支持的操作 |
+|---|---|
+| 项目与会话 | 管理多个工作区与会话，切换模型，查看历史记录 |
+| 会话流 | 查看思考、工具调用、待办进度、子 Agent 与 Graph 状态 |
+| 文件与变更 | 浏览文件树，查看和编辑源码，检查文件差异 |
+| 浏览器与终端 | 多标签浏览器预览、桌面端交互式终端，可与任务并排查看 |
+| 产出预览 | 查看图片、PDF、音视频以及文本文件 |
+| 运行与用量 | 查看逐次模型请求、token、缓存、费用和停止原因；汇总内置子 Agent 用量 |
+
+支持明暗主题、可调整侧栏与多标签面板。流式回复采用增量 Markdown 渲染，
+复用已定稿内容；代码编辑器、终端和子会话等面板按需加载。
+
+### 长任务管理：上下文、目标与定时任务
+
+- **上下文压缩**：长输出先收纳为可按需读取的资源，长会话再生成摘要；原始消息与工具结果保留，可回查历史。
+- **目标与待办**：待办跟进具体步骤；用户设定目标后可跨轮次继续推进，直至完成、受阻或由用户停止。
+- **定时任务**：为项目设置重复执行的任务，支持暂停、修改和立即运行；仅在应用运行时触发。
+- **执行记录**：刷新或重连后仍可查看已落盘的步骤、工具结果与文件变化，并导出会话或诊断信息。
+
+### 本地数据，同一服务多端访问
+
+无需注册 qywork 账号，配置、会话、记忆与用量保存在本机。模型请求发往你配置的服务，
+不提供 qywork 云同步，也不采集产品遥测。
+
+桌面和浏览器共用同一内核；主动开启局域网访问后，手机也可连接本机服务。
+交互式终端仅在桌面端提供。
+
+## 快速开始
+
+1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载 Windows x64 的 `.exe` 安装包。
+2. 打开“系统设置”，添加模型服务，填写接口地址、API Key 和模型名称。
+3. 点击“新建 work”，选择项目目录，输入任务。
+
+关闭窗口会收进系统托盘；完全退出使用托盘菜单中的“退出”。
+安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示；
+Release 中的 `SHA256SUMS.txt` 可用于校验文件完整性。
+
+## 从源码启动
+
+安装 [Bun](https://bun.sh) 后克隆仓库：
 
 ```powershell
 git clone https://github.com/qingxueyanshang/qywork-qingyan-harness.git
 cd qywork-qingyan-harness
 ```
 
-只使用浏览器界面，不编译 Rust 桌面外壳：
+启动浏览器界面：
 
 ```powershell
 .\start.bat web
 ```
 
-启动 Tauri 原生桌面窗口：
+启动原生桌面窗口还需 [Rust](https://rustup.rs/) 与 Tauri 的系统构建依赖：
 
 ```powershell
 .\start.bat
 ```
 
-启动脚本会在首次运行时自动执行 `bun install`。桌面模式第一次编译 Rust 可能需要几分钟。
+脚本首次启动会安装 JavaScript 依赖。
 
-### 未收录模型的思考档位
+## 使用边界
 
-点击模型旁的“检测”或运行 `qy probe my-model --save`，优先校验模型库已声明的档位，
-端点检测只能缩小这个集合。例如 DeepSeek 的 `medium`、`xhigh` 都映射到 `high`，
-所以仍按模型库的 `low / high / max` 三档处理。
-没有档位声明的模型会逐一尝试 `low / medium / high / xhigh / max`，不需要先修改内置库。
+- Agent 可以修改文件和运行命令，权限模式与平台沙箱边界见[权限说明](docs/permissions.md)。
+- Word、PPT、Excel 专用面板、无限画布和插件自定义预览器尚未接入，不属于当前已交付能力。
 
-检测还会发送一个非法档位作为对照。如果非法值也被接受，或某次请求超时、限速，结果标为未确认，
-保留已保存的配置。未知模型的结果标为“接口接受”，不保证这些值对应不同的实际推理强度。
-同名模型在不同接口的检测结果分别保存，检测不会修改全局模型规格。
+## 文档与许可
 
-使用特殊参数格式时，可在 `~/.qywork/config.json` 的 `catalog` 中按“模型 ID|接口协议”声明。
-例如，自定义模型使用 DeepSeek 的思考开关和历史回传规则：
+[文档索引](docs/INDEX.md) · [架构决策](ARCHITECTURE.md) · [模型接入](docs/models.md) ·
+[MCP](docs/mcp.md) · [插件](docs/plugins.md) · [子 Agent 与 Graph](docs/team.md)
 
-```json
-{
-  "catalog": {
-    "my-model|openai_chat_completions": {
-      "thinking": "deepseek_thinking",
-      "effortLevels": ["low", "high", "max"],
-      "chatReasoningProtocol": "deepseek_preserved",
-      "thinksByDefault": true
-    }
-  }
-}
-```
-
-将这段合并到已有配置，模型 ID 须与接口中填写的一致。普通 `reasoning_effort` 接口使用
-`thinking: "reasoning_effort"`；Responses 同样使用该值，协议键改为 `openai_responses`。
-需要回传明文推理的 Responses 接口还应填写 `reasoningEcho: "reasoning_text"`。
-`chatReasoningProtocol` 声明完整历史回传规则，DeepSeek 使用 `deepseek_preserved`；普通接口可省略。
-保存后重新检测即可。显式填写 `effortLevels` 时按该列表校验；未声明档位时才尝试五个候选值。
-
-DeepSeek 官方接口使用 `deepseek-flash`，支持图片及 `low / high / max` 三档思考；
-`medium / xhigh` 等属于映射值。[模型规格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)、
-[思考参数](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)。
-
-## 适合的任务
-
-- **理解与排查**：梳理项目结构和调用链，结合代码、日志与 Git 状态定位问题。
-- **修复与实现**：修改跨文件功能、补充测试，并根据真实运行结果继续调整。
-- **验证与审查**：运行测试、类型检查和构建，检查 diff、风险与未验证边界。
-- **复杂任务编排**：让多个子 Agent 并行调查、实现和复核，再由主会话汇总结论。
-
-## 技术结构
-
-```text
-          Tauri 桌面端 / Web / 手机
-                     │ HTTP + WebSocket
-                     ▼
-          qy serve · API / 订阅 / Run 管理
-                     ▼
-              Session · Runtime
-  工作区 / 模型 / 上下文 / 权限 / 工具与扩展装配
-                     ▼
-                 Agent Loop
-          ┌──────────┼──────────┐
-          ▼          ▼          ▼
-      模型适配器    内置工具   MCP / Plugins / Team
-Anthropic / Chat / Responses
-          └──────────┼──────────┘
-                     ▼
-             Event Stream · Sink
-          ┌──────────┴──────────┐
-          ▼                     ▼
-SQLite 账本 + Content Store   WebSocket 界面投影
-```
-
-桌面端、Web 和手机端通过 `qy serve` 进入 Runtime。Session 负责按工作区装配模型、上下文、工具、
-权限和扩展，Agent Loop 负责模型调用与工具执行。
-
-Agent Loop 产生统一事件；Sink 将步骤、Provider Request 和用量写入 SQLite，并把需要完整保留的
-大内容放入 Content Store；同一批运行事件再通过 WebSocket 投影到界面。持久化记录是任务状态的
-权威，界面只负责展示和发出指令。长会话压缩只改变下一次发给模型的上下文投影，不删除原始消息、
-工具结果和 Provider Request。
-
-更具体的模块边界、状态真源和设计依据见[架构决策](ARCHITECTURE.md)。
-
-## 本地数据与安全边界
-
-- 不需要注册 qywork 账号，不提供 qywork 云同步，也不采集产品遥测；
-- API Key、配置、会话和用量记录默认保存在 `~/.qywork/`；
-- 模型请求发送到你配置的服务商或本地模型端点；
-- Agent 可以修改文件和运行命令，使用前应确认工作区和权限模式；
-- 原生 Windows 与 WSL1 当前没有内核级命令沙箱，详见[权限与沙箱](docs/permissions.md)。
-
-## 文档
-
-- [文档索引](docs/INDEX.md)
-- [架构决策](ARCHITECTURE.md)
-- [权限与沙箱](docs/permissions.md)
-- [MCP](docs/mcp.md)
-- [插件](docs/plugins.md)
-- [子 Agent 与外部 CLI](docs/team.md)
-
-## 许可
-
-qywork 使用 [Apache License 2.0](LICENSE)。第三方依赖许可证见
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+采用 [Apache License 2.0](LICENSE)，第三方依赖许可证见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
