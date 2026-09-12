@@ -239,7 +239,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                         append_stderr_tail(&mut stderr_tail, &text);
                     }
                     Some(CommandEvent::Error(error)) => {
-                        eprintln!("[qywork] 读取 qy serve 输出失败：{error}");
+                        log::error!("读取 qy serve 输出失败：{error}");
                         append_stderr_tail(
                             &mut stderr_tail,
                             &format!("[sidecar output error] {error}\n"),
@@ -279,9 +279,14 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                     let _ = child.kill();
                 }
             }
-            eprintln!(
-                "[qywork] qy serve 异常终止（kind={} code={:?} signal={:?}），准备恢复",
-                previous_exit.kind, previous_exit.code, previous_exit.signal
+            // 尾部原样带上：这是 sidecar 退出原因唯一留在壳这边的记录。续行缩进四格，
+            // 与 sidecar 自己的日志行格式一致。
+            log::error!(
+                "qy serve 异常终止（kind={} code={:?} signal={:?}），准备恢复\n    {}",
+                previous_exit.kind,
+                previous_exit.code,
+                previous_exit.signal,
+                previous_exit.stderr_tail.trim_end().replace('\n', "\n    ")
             );
 
             let mut delay_ms = 400_u64;
@@ -297,25 +302,26 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                         }
                         match handshake_with_timeout(&mut next_rx, &mut stderr_tail).await {
                             Ok(next) if next.port == info.port && next.token == info.token => {
-                                eprintln!("[qywork] qy serve 已在原端点恢复 :{}", info.port);
+                                log::info!("qy serve 已在原端点恢复 :{}", info.port);
                                 rx = next_rx;
                                 stderr_tail.clear();
                                 break;
                             }
                             Ok(next) => {
-                                eprintln!(
-                                    "[qywork] qy serve 恢复端点不一致：期望 :{}，实际 :{}",
-                                    info.port, next.port
+                                log::error!(
+                                    "qy serve 恢复端点不一致：期望 :{}，实际 :{}",
+                                    info.port,
+                                    next.port
                                 );
                                 kill_current(&handle);
                             }
                             Err(error) => {
-                                eprintln!("[qywork] qy serve 恢复失败：{error}");
+                                log::error!("qy serve 恢复失败：{error}");
                                 kill_current(&handle);
                             }
                         }
                     }
-                    Err(error) => eprintln!("[qywork] qy serve 重新拉起失败：{error}"),
+                    Err(error) => log::error!("qy serve 重新拉起失败：{error}"),
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -330,6 +336,7 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
 /// `--port 0` 让内核挑空闲端口：写死端口会在用户同时开两个工作区时直接撞车。
 pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     let (mut rx, child) = spawn_process(app, 0, None, workspace, None)?;
+    let pid = child.pid();
 
     let handle = app.state::<SidecarHandle>();
     if !hold_child(&handle, child) {
@@ -351,6 +358,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     let mut tail = String::new();
     match handshake_with_timeout(&mut rx, &mut tail).await {
         Ok(info) => {
+            log::info!("qy serve 已拉起 pid={pid} port={}", info.port);
             supervise(app.clone(), info.clone(), rx);
             Ok(info)
         }
@@ -385,7 +393,7 @@ fn shutdown_handle(handle: &SidecarHandle) {
         // kill 失败只能记日志——此时进程可能已经自己退了，
         // 不该因此阻断应用退出。
         if let Err(e) = c.kill() {
-            eprintln!("[qywork] 停止 qy serve 失败：{e}");
+            log::error!("停止 qy serve 失败：{e}");
         }
     }
 }
@@ -424,11 +432,7 @@ pub fn init_script(info: &SidecarInfo) -> String {
 ///
 /// 存成一行纯文本而不是 JSON：它只有一个值，加一层结构只会让手动修正变麻烦。
 fn last_workspace_file() -> Option<PathBuf> {
-    let dir = std::env::var("QYWORK_HOME")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| dirs_home().map(|h| h.join(".qywork")))?;
-    Some(dir.join("last-workspace"))
+    Some(crate::logfile::data_dir()?.join("last-workspace"))
 }
 
 pub fn read_last_workspace() -> Option<PathBuf> {
@@ -456,15 +460,8 @@ pub fn write_last_workspace(path: &str) {
     }
     // 写失败只记日志：记不住上次的工作区是体验问题，不该让切换本身失败。
     if let Err(e) = std::fs::write(&file, path) {
-        eprintln!("[qywork] 记录工作区失败：{e}");
+        log::error!("记录工作区失败：{e}");
     }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .map(PathBuf::from)
 }
 
 #[cfg(test)]

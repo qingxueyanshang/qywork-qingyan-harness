@@ -9,7 +9,7 @@
  */
 
 import type { Currency, UsageBucket, UsageKind, UsageLedgerRow, UsageTotals } from '@qywork/core'
-import { newUsageId } from '@qywork/core'
+import { log, newUsageId } from '@qywork/core'
 import type { Store } from './db.ts'
 
 export interface UsageEntry {
@@ -80,7 +80,7 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
     // 但「不失败」不等于「不吭声」。
     const msg = err instanceof Error ? err.message : String(err)
     if (!/UNIQUE constraint failed/i.test(msg)) {
-      process.stderr.write(`[qy] 记账失败（kind=${entry.kind}）：${msg}\n`)
+      log.error('usage', `记账失败：${msg}`, { kind: entry.kind })
     }
     return false
   }

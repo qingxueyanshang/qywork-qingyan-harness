@@ -53,6 +53,7 @@ import {
   foldWorkflow,
   isInlineImage,
   isInlineVideo,
+  log,
   mimeOf,
   toPosixPath,
 } from '@qywork/core'
@@ -692,8 +693,7 @@ export class Session {
     conversationId?: ConversationId,
   ): Promise<void> {
     const ext = await acquireExtensions(this.opts.workspaceRoot, (line) =>
-      process.stderr.write(`${line}
-`),
+      log.info('extensions', line),
     )
     this.extensions = ext
 
@@ -744,8 +744,7 @@ export class Session {
         try {
           this.registry.register(spec)
         } catch (err) {
-          process.stderr.write(`[qy] 工具注册失败 ${spec.name}：${String(err)}
-`)
+          log.warn('session', `工具注册失败 ${spec.name}：${String(err)}`)
         }
       }
     }
@@ -759,17 +758,15 @@ export class Session {
     if (allow) {
       const invalid = [...allow].filter((n) => !this.registry.has(n))
       if (invalid.length) {
-        process.stderr.write(
-          `[qy] 角色 allowedTools 含无效工具引用，已忽略：${invalid.join('、')}\n`,
-        )
+        log.warn('session', `角色 allowedTools 含无效工具引用，已忽略：${invalid.join('、')}`)
       }
     }
 
     for (const f of ext.plugins.failures) {
-      process.stderr.write(`[qy] 插件加载失败 ${f.dir}：${f.reason}\n`)
+      log.warn('extensions', `插件加载失败 ${f.dir}：${f.reason}`)
     }
     for (const f of ext.mcp.failures) {
-      process.stderr.write(`[qy] MCP ${f.server}：${f.reason}\n`)
+      log.warn('extensions', `MCP ${f.server}：${f.reason}`)
     }
   }
 

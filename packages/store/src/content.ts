@@ -29,6 +29,7 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { log } from '@qywork/core'
 
 /** 分片大小。太小则行数暴涨，太大则单次读放大明显。 */
 export const CHUNK_BYTES = 256 * 1024
@@ -100,10 +101,10 @@ export class ContentStore {
       const bytes = this.pageBytes()
       if (bytes <= limit) this.db.exec('VACUUM')
       else {
-        process.stderr.write(
-          `[qy] 正文库 ${path} 为 ${Math.round(bytes / 1048576)} MB，` +
-            '未转为增量回收：删除后页可复用但文件不缩小\n',
-        )
+        log.warn('content', '正文库过大，未转为增量回收：删除后页可复用但文件不缩小', {
+          path,
+          mb: Math.round(bytes / 1048576),
+        })
       }
     }
     this.ensureSchema()

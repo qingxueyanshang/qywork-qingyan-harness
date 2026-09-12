@@ -10,6 +10,7 @@
  */
 
 import type { EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
+import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
@@ -46,6 +47,7 @@ export function handleHello(
   },
 ) {
   if (frame.token !== deps.token) {
+    log.warn('ws', '握手被拒：令牌无效', { id: ws.data.id, origin: frame.origin })
     ws.send(JSON.stringify({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' }))
     ws.close(1008, 'unauthorized')
     return
@@ -80,6 +82,13 @@ export function handleHello(
     if (replay === null) resync = true
     else backlog = replay
   }
+  log.info('ws', '握手成功', {
+    id: ws.data.id,
+    origin: frame.origin,
+    resume: frame.resume ? (resync ? 'resync' : `replay ${backlog.length}`) : 'none',
+    sameStream: frame.resume ? frame.resume.streamId === deps.bus.streamId : null,
+    subscribe: frame.subscribe ? frame.subscribe.length : null,
+  })
 
   const ok: HelloOkFrame = {
     type: 'hello.ok',

@@ -49,6 +49,8 @@ export {
   releaseExtensions,
   toolNamePrefix,
 } from './extensions.ts'
+// 日志文件 sink：`qy serve` 启动时装上，之后各包的 `log.*` 都落到 `<configDir>/logs/`
+export { type FileLogSink, fileLogSink, LOG_FILE } from './log-file.ts'
 // MCP 配置：server 的导入接口与会话里的模型工具共用同一份写入实现
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）

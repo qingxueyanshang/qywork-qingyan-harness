@@ -20,6 +20,7 @@
  */
 
 import type { ConversationId } from '@qywork/core'
+import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { claimDueSchedules, type Store } from '@qywork/store'
 
@@ -56,9 +57,10 @@ export async function tickSchedules(deps: SchedulerDeps): Promise<void> {
     try {
       await deps.start(claim.conversationId, claim.schedule.prompt)
     } catch (err) {
-      process.stderr.write(
-        `[qy] 定时任务「${claim.schedule.title}」（${claim.schedule.id}）起轮失败：` +
-          `${err instanceof Error ? err.message : String(err)}\n`,
+      log.error(
+        'scheduler',
+        `定时任务「${claim.schedule.title}」起轮失败：${err instanceof Error ? err.message : String(err)}`,
+        { scheduleId: claim.schedule.id },
       )
     }
   }
@@ -73,8 +75,9 @@ export async function tickSchedules(deps: SchedulerDeps): Promise<void> {
 export function startScheduler(deps: SchedulerDeps, tickMs = SCHEDULER_TICK_MS): { stop(): void } {
   const timer = setInterval(() => {
     void tickSchedules(deps).catch((err) => {
-      process.stderr.write(
-        `[qy] 定时任务认领失败：${err instanceof Error ? err.message : String(err)}\n`,
+      log.error(
+        'scheduler',
+        `定时任务认领失败：${err instanceof Error ? err.message : String(err)}`,
       )
     })
   }, tickMs)

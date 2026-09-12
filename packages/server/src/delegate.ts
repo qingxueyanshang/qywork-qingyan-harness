@@ -23,6 +23,7 @@ import {
   type FileChange,
   type FollowUp,
   foldWorkflow,
+  log,
   type NodeState,
   type RunId,
   type StepId,
@@ -819,9 +820,11 @@ export function makeDelegate(ctx: {
       // 真机上出现过工具已开始执行、几分钟后才写第一格的情形，来源未定；起跑前的耗时超过两秒就记一行。
       const foldedAt = Date.now()
       if (foldedAt - startedAt > 2000) {
-        process.stderr.write(
-          `[qy] workflow 起跑前 ${foldedAt - startedAt}ms（角色与 CLI 清单 ${listedAt - startedAt}ms，账本折叠 ${foldedAt - listedAt}ms）\n`,
-        )
+        log.warn('workflow', '起跑前耗时过长', {
+          totalMs: foldedAt - startedAt,
+          listMs: listedAt - startedAt,
+          foldMs: foldedAt - listedAt,
+        })
       }
 
       let result: AdvanceResult

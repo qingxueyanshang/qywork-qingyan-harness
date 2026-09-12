@@ -36,4 +36,6 @@ export interface SocketData {
   id: string
   authed: boolean
   origin: 'desktop' | 'mobile' | 'cli' | 'external'
+  /** 升级成功的时刻，关闭时算这条连接活了多久。 */
+  openedAt: number
 }

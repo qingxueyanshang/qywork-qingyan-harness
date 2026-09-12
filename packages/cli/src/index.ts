@@ -14,9 +14,9 @@
  */
 
 import { mkdir } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { AgentEvent } from '@qywork/core'
-import { formatMoney } from '@qywork/core'
+import { formatMoney, log, setLogSink } from '@qywork/core'
 import {
   collectResourceGarbage,
   configDir,
@@ -24,6 +24,7 @@ import {
   configPath,
   dataPath,
   diagnoseConfig,
+  fileLogSink,
   importLegacySchedules,
   loadConfig,
   MCP_CONFIG,
@@ -266,6 +267,22 @@ async function runServe(args: string[]): Promise<number> {
   const workspaceRoot = flags.cwd ? resolve(flags.cwd) : null
 
   await mkdir(configDir(), { recursive: true })
+  /*
+   * 日志落盘要在读配置之前装上：配置解析失败与迁移提示都走 `log.*`。
+   *
+   * 进程级兜底只记一行然后照样退出，不吞。Bun 对未捕获异常与未处理拒绝的默认行为
+   * 就是退出码 1；这里保住那个终态，只补上「为什么」——发布版没有控制台，
+   * 这一行是 sidecar 退出后唯一说得出原因的记录。
+   */
+  setLogSink(fileLogSink(join(configDir(), 'logs')))
+  const die = (kind: string, reason: unknown): void => {
+    log.error('process', `${kind}，进程退出`, {
+      error: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+    })
+    process.exit(1)
+  }
+  process.on('uncaughtException', (err) => die('未捕获异常', err))
+  process.on('unhandledRejection', (reason) => die('未处理的拒绝', reason))
   const config = await loadConfig()
 
   // serve 与 exec 相反：配置有问题**照样启动**。
@@ -324,7 +341,7 @@ async function runServe(args: string[]): Promise<number> {
   // 下次启动直接起不来。所以由 sidecar 自己盯着父进程，谁死都不会留孤儿。
   if (flags.parentPid) {
     watchParent(flags.parentPid, () => {
-      process.stderr.write('\n父进程已退出，停止服务\n')
+      log.info('serve', '父进程已退出，停止服务', { parentPid: flags.parentPid })
       handle.stop()
       store.close()
       process.exit(0)
@@ -338,6 +355,13 @@ async function runServe(args: string[]): Promise<number> {
   }
 
   const local = `http://127.0.0.1:${handle.port}`
+  log.info('serve', '已启动', {
+    version: await version(),
+    pid: process.pid,
+    port: handle.port,
+    host: flags.host ?? '0.0.0.0',
+    workspace: handle.workspaceRoot,
+  })
   process.stderr.write(`\n${BOLD}qy serve${RESET} 已启动\n`)
   for (const p of problems) process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
   process.stderr.write(`  工作区  ${handle.workspaceRoot}\n`)
@@ -360,6 +384,7 @@ async function runServe(args: string[]): Promise<number> {
   await new Promise<void>((done) => {
     const stop = () => {
       process.stderr.write('\n正在停止…\n')
+      log.info('serve', '收到停止信号，停止服务')
       handle.stop()
       store.close()
       done()

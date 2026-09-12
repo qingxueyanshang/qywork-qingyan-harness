@@ -54,6 +54,7 @@ import {
   emptyBreakdown,
   emptyOmitted,
   envelopeHeadTokens,
+  log,
   newBatchId,
   reconcileBreakdown,
 } from '@qywork/core'
@@ -1117,10 +1118,10 @@ export class AgentLoop {
           const occupancy = occupancyOf(req)
           if (occupancy > softLimit(adapter.spec)) {
             compactedAt = transcript.length
-            process.stderr.write(
-              `[qy] 发送前检查触发压缩：占用约 ${occupancy}，软阈值 ${softLimit(adapter.spec)}
-`,
-            )
+            log.info('agent', '发送前检查触发压缩', {
+              occupancy,
+              softLimit: softLimit(adapter.spec),
+            })
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
             // `provider_requests`，账本上连「卡在哪」都看不出来。
@@ -1216,9 +1217,7 @@ export class AgentLoop {
         // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
         // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
         const drift = this.audit.observe(input.cacheKey ?? input.runId, req.system)
-        if (drift)
-          process.stderr.write(`[qy] ${describeDrift(drift)}
-`)
+        if (drift) log.warn('agent', describeDrift(drift))
 
         /*
          * ── 发送与消费：一次尝试，断了带着当前上下文再来，至多 `MAX_RESENDS` 次 ──
@@ -1602,13 +1601,14 @@ export class AgentLoop {
              * 真正的 errno 挂在被它包住的那个原始错误上。
              */
             const raw = (err as { cause?: unknown }).cause
-            process.stderr.write(
-              `[qy] 请求失败 turn=${requestTurn} retry=${retryIndex} code=${code} errno=${String(
-                (raw as { code?: unknown })?.code ?? '-',
-              )} events=${providerEvents} silent=${Math.round(silentMs / 1000)}s | ${
-                raw instanceof Error ? raw.message : pe.message
-              }\n`,
-            )
+            log.warn('agent', `请求失败：${raw instanceof Error ? raw.message : pe.message}`, {
+              turn: requestTurn,
+              retry: retryIndex,
+              code,
+              errno: String((raw as { code?: unknown })?.code ?? '-'),
+              events: providerEvents,
+              silentSeconds: Math.round(silentMs / 1000),
+            })
 
             /*
              * **额度是整轮的，不按码各记一份。** 一轮里先断流再被拒的话，前面用掉的
@@ -1777,10 +1777,10 @@ export class AgentLoop {
            * 把进展判据清零，下一次发送前检查就会重新折一次。
            */
           if (total >= adapter.spec.contextWindow) {
-            process.stderr.write(
-              `[qy] provider 静默截断：自报输入 ${total} 顶到窗口 ${adapter.spec.contextWindow}` +
-                NEWLINE,
-            )
+            log.warn('agent', 'provider 静默截断：自报输入顶到窗口', {
+              input: total,
+              contextWindow: adapter.spec.contextWindow,
+            })
             compactedAt = -1
           } else {
             // 装得下了。此后再撞窗是新情况，恢复通道重新可用。

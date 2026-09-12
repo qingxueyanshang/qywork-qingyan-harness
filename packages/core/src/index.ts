@@ -155,7 +155,15 @@ export {
   workflowResults,
   workflowTransitionOf,
 } from './domain/workflow.ts'
-
+// 运行日志：各包只调 `log.*`，落到哪里由 `setLogSink` 注入的 sink 决定
+export {
+  formatLogLine,
+  type LogLevel,
+  type LogRecord,
+  type LogSink,
+  log,
+  setLogSink,
+} from './log.ts'
 // 服务端 → 客户端的事件
 export type {
   ActionDescriptor,
@@ -176,7 +184,6 @@ export type {
   ConversationUsageResponse,
   UsageResponse,
 } from './protocol/http.ts'
-
 // 客户端 → 服务端的指令、握手与配对
 export {
   type ClientCommand,

@@ -8,6 +8,7 @@
  * 先开库、装配完，再去碰屏障——竞争窗口要落在两个进程都准备好之后。
  */
 
+import { formatLogLine, setLogSink } from '@qywork/core'
 import { loadConfig } from '@qywork/runtime'
 import { Store } from '@qywork/store'
 import { serve } from './server.ts'
@@ -16,6 +17,11 @@ const [dbPath, home, workspaceRoot, barrierPort, holdMs] = Bun.argv.slice(2)
 if (!dbPath || !home || !workspaceRoot || !barrierPort || !holdMs) {
   throw new Error('用法：schedule-race-child <db> <home> <workspaceRoot> <barrierPort> <holdMs>')
 }
+
+// 父测试按「stderr 为空」判子进程没出错。info 级的启动 / 停止记录不是错误，只放行 warn 与 error。
+setLogSink((record) => {
+  if (record.level !== 'info') process.stderr.write(`${formatLogLine(record)}\n`)
+})
 
 process.env.QYWORK_HOME = home
 const store = new Store({ path: dbPath })

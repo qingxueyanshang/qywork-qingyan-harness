@@ -23,6 +23,7 @@ import type {
   RunId,
   StopReason,
 } from '@qywork/core'
+import { log } from '@qywork/core'
 import {
   configPath,
   contextPanel,
@@ -597,7 +598,9 @@ function abortGoalLoop(
   err: unknown,
 ): void {
   deps.runs.disarm(conversationId)
-  process.stderr.write(`[qy] 目标续起中止：${err instanceof Error ? err.message : String(err)}\n`)
+  log.error('goal', `目标续起中止：${err instanceof Error ? err.message : String(err)}`, {
+    conversationId,
+  })
 }
 
 function publishGoal(deps: Omit<CommandDeps, 'ws'>, goal: Goal): void {

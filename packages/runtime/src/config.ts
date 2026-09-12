@@ -18,6 +18,7 @@ import {
   type CacheRouting,
   EFFORT_ORDER,
   type EffortLevel,
+  log,
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderKind,
@@ -511,17 +512,17 @@ export async function loadConfig(): Promise<QyConfig> {
     parsed = JSON.parse(raw) as Partial<QyConfig>
   } catch {
     // 配置坏了不能让整个 CLI 起不来：用默认值继续，并让调用方看得见这件事。
-    process.stderr.write(`[qy] 配置文件解析失败，已使用默认配置：${configPath()}\n`)
+    log.error('config', '配置文件解析失败，已使用默认配置', { path: configPath() })
     return structuredClone(DEFAULT_CONFIG)
   }
 
   const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
 
-  // 模型库的旧形状就地迁成两维键。冲突点名走 stderr：这一步在解析阶段，
+  // 模型库的旧形状就地迁成两维键。冲突点名在这里记：这一步在解析阶段，
   // 而 `configNotices` 拿到的已经是迁完的配置，看不见旧键了。
-  for (const n of migrateModelLibrary(cfg)) process.stderr.write(`[qy] ${n}\n`)
-  for (const n of migrateDisabledEffort(cfg)) process.stderr.write(`[qy] ${n}\n`)
-  for (const n of migrateRetiredDeepSeekOverrides(cfg)) process.stderr.write(`[qy] ${n}\n`)
+  for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
+  for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
+  for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
 
   /*
    * 接口表**不与默认值合并**。

@@ -106,6 +106,10 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 桌面和浏览器共用同一内核；主动开启局域网访问后，手机也可连接本机服务。
 交互式终端仅在桌面端提供。
 
+运行日志在 `~/.qywork/logs/`（设置了 `QYWORK_HOME` 时以它为根）：`qy.log` 是服务端，
+`qywork.log` 是桌面壳，各超过 5 MB 时改名为 `.1` 保留一份。连接开合、握手结果、
+服务端退出与桌面壳重新拉起它的记录都在这里。
+
 ## 快速开始
 
 1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载 Windows x64 的 `.exe` 安装包。

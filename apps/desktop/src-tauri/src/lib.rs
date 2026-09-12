@@ -14,35 +14,45 @@
 //! 机器上跑任意命令」开到局域网上。再要开例外，先说清楚为什么这件事**在结构上**
 //! 到不了另一端，而不只是这边实现起来更简单。
 
+mod logfile;
 mod sidecar;
 mod terminal;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-/// 运行时的 warn / error 日志写到 stderr，最后一条 error 留给启动失败的对话框。
+/// 运行时的日志写到 stderr 与 `logs/qywork.log`，最后一条 error 留给启动失败的对话框。
 ///
 /// tauri 运行时把窗口创建失败只写进 `log::error!` 就当成功返回（`build()` 仍是 Ok），
 /// 没有 logger 那句话就消失：进程带着托盘空转，一个窗口都没有。
-struct StderrLog;
+///
+/// release 是 `windows_subsystem = "windows"`，stderr 没人看得见；文件那份是唯一留得下的记录。
+struct ShellLog;
 
-static LOGGER: StderrLog = StderrLog;
+static LOGGER: ShellLog = ShellLog;
 static LAST_ERROR: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
 
-impl log::Log for StderrLog {
+impl log::Log for ShellLog {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
+        metadata.level() <= log::Level::Info
     }
 
     fn log(&self, record: &log::Record) {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let line = format!("{}: {}", record.target(), record.args());
-        eprintln!("[qywork] {} {line}", record.level());
+        let line = format!(
+            "{} {:<5} [{}] {}",
+            logfile::utc_now(),
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        eprintln!("{line}");
         if record.level() == log::Level::Error {
-            *LAST_ERROR.lock() = Some(line);
+            *LAST_ERROR.lock() = Some(format!("{}: {}", record.target(), record.args()));
         }
+        logfile::append(&line);
     }
 
     fn flush(&self) {}
@@ -195,7 +205,7 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         .build()?;
 
     // `build()` 返回 Ok 不等于窗口存在：运行时把创建失败写进 log 后照样返回。
-    // 任何一个 getter 拿不到就是没建起来，原因在 `StderrLog` 留住的那一条里。
+    // 任何一个 getter 拿不到就是没建起来，原因在 `ShellLog` 留住的那一条里。
     if window.is_visible().is_err() {
         let reason = LAST_ERROR
             .lock()
@@ -256,12 +266,13 @@ fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    log::info!("主窗口从托盘打开");
     let shown = window
         .show()
         .and_then(|()| window.unminimize())
         .and_then(|()| window.set_focus());
     if let Err(e) = shown {
-        eprintln!("[qywork] 主窗口显示失败：{e}");
+        log::error!("主窗口显示失败：{e}");
     }
 }
 
@@ -289,7 +300,7 @@ fn extend_frame_for_shadow(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::Controls::MARGINS;
 
     let Ok(hwnd) = window.hwnd() else {
-        eprintln!("[qywork] 拿不到窗口句柄，投影未启用");
+        log::warn!("拿不到窗口句柄，投影未启用");
         return;
     };
     let margins = MARGINS {
@@ -299,7 +310,7 @@ fn extend_frame_for_shadow(window: &tauri::WebviewWindow) {
         cyBottomHeight: 0,
     };
     if let Err(e) = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) } {
-        eprintln!("[qywork] 窗口投影未启用：{e}");
+        log::warn!("窗口投影未启用：{e}");
     }
 }
 
@@ -335,7 +346,7 @@ fn show_fatal(message: &str) {
 /// 一类启动故障。对话框不依赖 WebView，覆盖「窗口还没建出来」这段时间。
 fn fatal_exit(error: &dyn std::fmt::Display) -> ! {
     let msg = format!("qywork 启动失败：{error}");
-    eprintln!("[qywork] {msg}");
+    log::error!("{msg}");
     show_fatal(&msg);
     std::process::exit(1);
 }
@@ -378,8 +389,9 @@ fn remember_workspace(path: String) -> Result<(), String> {
 pub fn run() {
     // 只能装一次；装不上（已有别的 logger）就沿用那一个。
     if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(log::LevelFilter::Warn);
+        log::set_max_level(log::LevelFilter::Info);
     }
+    log::info!("qywork 启动 version={} pid={}", env!("CARGO_PKG_VERSION"), std::process::id());
 
     /*
      * 这三个插件是给 **Rust 侧**用的，不给 WebView 里的 JS 用。
@@ -432,7 +444,7 @@ pub fn run() {
                             "开发模式缺少 QYWORK_TOKEN / QYWORK_PORT，请通过 bun run dev 启动"
                         )
                     })?;
-                    eprintln!("[qywork] 复用 dev.ts 的 sidecar :{}", existing.port);
+                    log::info!("复用 dev.ts 的 sidecar :{}", existing.port);
                     existing
                 } else {
                     // 空串 = 没有显式指定，让服务端自己决定挂哪个项目。
@@ -469,8 +481,9 @@ pub fn run() {
             // 进程只从托盘菜单「退出」结束。
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                log::info!("主窗口收进托盘");
                 if let Err(e) = window.hide() {
-                    eprintln!("[qywork] 主窗口隐藏失败：{e}");
+                    log::error!("主窗口隐藏失败：{e}");
                 }
             }
         })

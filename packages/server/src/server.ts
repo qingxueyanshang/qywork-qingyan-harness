@@ -13,6 +13,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
+import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   acquireExtensions,
@@ -123,7 +124,7 @@ function bootstrapWorkspace(store: Store, explicitRoot?: string): string {
 
   const rootPath = join(configDir(), 'workspaces', DEFAULT_WORKSPACE_NAME)
   mkdirSync(rootPath, { recursive: true })
-  process.stderr.write(`[qy] 首次运行，已创建默认工作区 ${rootPath}\n`)
+  log.info('server', '首次运行，已创建默认工作区', { rootPath })
   upsertWorkspace(store, rootPath, DEFAULT_WORKSPACE_NAME)
   return rootPath
 }
@@ -173,19 +174,19 @@ export function serve(opts: ServeOptions) {
    * 异步、不阻塞服务启动——一个慢插件不该让整个服务起不来。
    */
   let pluginTeardown: (() => void) | null = null
-  void acquireExtensions(workspaceRoot, (line) => process.stderr.write(`${line}\n`))
+  void acquireExtensions(workspaceRoot, (line) => log.info('extensions', line))
     .then((ext) => {
       for (const f of ext.mcp.failures) {
-        process.stderr.write(`[qy] MCP ${f.server}：${f.reason}\n`)
+        log.warn('extensions', `MCP ${f.server}：${f.reason}`)
       }
       for (const f of ext.plugins.failures) {
-        process.stderr.write(`[qy] 插件加载失败 ${f.dir}：${f.reason}\n`)
+        log.warn('extensions', `插件加载失败 ${f.dir}：${f.reason}`)
       }
-      if (ext.team.error) process.stderr.write(`[qy] team 配置：${ext.team.error}\n`)
+      if (ext.team.error) log.warn('extensions', `team 配置：${ext.team.error}`)
       pluginTeardown = () => releaseExtensions(workspaceRoot)
     })
     .catch((err) => {
-      process.stderr.write(`[qy] 扩展加载失败：${String(err)}\n`)
+      log.error('extensions', `扩展加载失败：${String(err)}`)
     })
 
   // 回收上次进程留下的 running run。必须在开始服务**之前**做：
@@ -199,18 +200,19 @@ export function serve(opts: ServeOptions) {
     : undefined
   const stale = recoverStaleRuns(opts.store, previousExit)
   if (stale.recovered > 0) {
-    process.stderr.write(
-      `[qy] 已回收上次残留的 ${stale.recovered} 个执行记录` +
-        (stale.ambiguous > 0 ? `，其中 ${stale.ambiguous} 个在工具执行期间中断，结果不可信` : '') +
-        '\n',
-    )
+    log.warn('runs', '已回收上次残留的执行记录', {
+      recovered: stale.recovered,
+      // 在工具执行期间中断的那些结果不可信
+      ambiguous: stale.ambiguous,
+      previousExit: previousExit?.exitKind ?? null,
+    })
   }
   // 跳过的也要说。不说的话「回收了 0 个」有两种含义（没有残留 / 有但都还在运行），
   // 而这两种在排查「为什么那条会话还显示执行中」时是完全不同的方向。
   if (stale.heldByOthers > 0) {
-    process.stderr.write(
-      `[qy] 另有 ${stale.heldByOthers} 个执行记录由其它运行中的进程持有，未回收\n`,
-    )
+    log.info('runs', '另有执行记录由其它运行中的进程持有，未回收', {
+      heldByOthers: stale.heldByOthers,
+    })
   }
 
   /*
@@ -222,7 +224,7 @@ export function serve(opts: ServeOptions) {
    */
   const importedSchedules = importLegacySchedules(opts.store)
   if (importedSchedules !== null) {
-    process.stderr.write(`[qy] 已把 ${importedSchedules} 条定时任务导入账本\n`)
+    log.info('scheduler', '已把定时任务文件导入账本', { count: importedSchedules })
   }
 
   /*
@@ -235,9 +237,9 @@ export function serve(opts: ServeOptions) {
   const collectGarbage = () => collectResourceGarbage(opts.store, content)
   try {
     const { removed } = collectGarbage()
-    if (removed > 0) process.stderr.write(`[qy] 已回收 ${removed} 份无人引用的正文\n`)
+    if (removed > 0) log.info('content', '已回收无人引用的正文', { removed })
   } catch (err) {
-    process.stderr.write(`[qy] 正文回收失败：${err instanceof Error ? err.message : String(err)}\n`)
+    log.error('content', `正文回收失败：${err instanceof Error ? err.message : String(err)}`)
   }
 
   const unsubscribers = new Map<string, () => void>()
@@ -325,6 +327,7 @@ export function serve(opts: ServeOptions) {
             id: crypto.randomUUID(),
             authed: true,
             origin: (url.searchParams.get('origin') as SocketData['origin']) ?? 'external',
+            openedAt: Date.now(),
           },
         })
         return ok ? undefined : new Response('upgrade failed', { status: 400 })
@@ -421,7 +424,22 @@ export function serve(opts: ServeOptions) {
           subagents,
         })
       },
-      close(ws: ServerWebSocket<SocketData>) {
+      open(ws: ServerWebSocket<SocketData>) {
+        log.info('ws', 'open', { id: ws.data.id, origin: ws.data.origin })
+      },
+      /*
+       * 关闭码与原因是「谁先断的」唯一线索：1000/1001 是对端正常关，1006 是没收到关闭帧
+       * （对端进程没了、连接被掐），1008 是本端握手拒绝。时长用来区分「刚连上就断」
+       * 与「挂了几小时才断」。
+       */
+      close(ws: ServerWebSocket<SocketData>, code: number, reason: string) {
+        log.info('ws', 'close', {
+          id: ws.data.id,
+          origin: ws.data.origin,
+          code,
+          reason,
+          seconds: Math.round((Date.now() - ws.data.openedAt) / 1000),
+        })
         unsubscribers.get(ws.data.id)?.()
         unsubscribers.delete(ws.data.id)
       },
@@ -434,6 +452,12 @@ export function serve(opts: ServeOptions) {
     hostname: opts.host,
   })
   boundPort = server.port ?? opts.port
+  log.info('server', '开始服务', {
+    port: boundPort,
+    host: opts.host,
+    workspace: workspaceRoot,
+    streamId: bus.streamId,
+  })
 
   // 分支名跟着 `.git/HEAD` 走，理由与边界都在 `git-watch.ts`。
   gitWatch.retarget()
@@ -454,6 +478,7 @@ export function serve(opts: ServeOptions) {
     pairingUrl: () => pairing.qrUrl(boundPort),
     lanUrl: () => `http://${preferredLanAddress()}:${boundPort}`,
     stop() {
+      log.info('server', '停止服务', { port: boundPort })
       scheduler.stop()
       gitWatch.stop()
       runs.interruptAll()
