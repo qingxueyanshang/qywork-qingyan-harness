@@ -135,7 +135,9 @@ ode.exe
   消毒可能制造碰撞（`a.b` 与 `a_b` 同名），撞了的那个会被丢弃并记进 failures。
 - `permissions` 必须覆盖你所有工具的 `permissionEffect`——声明 `read` 的工具而清单里
   没有 `workspace:read`，加载期直接拒绝。用户在安装提示里看到的权限清单必须和插件
-  实际能做的事自洽。
+  实际能做的事自洽。`permissionEffect` 可选 `read` / `write` / `delete` / `execute` /
+  `network` / `browser`，分别要 `workspace:read` / `workspace:write` /
+  `workspace:write` / `process:exec` / `network` / `browser:control`。
 - **动作语义与对象名不在清单里声明。** 插件工具在会话里一律显示成「调用 插件 ·
   `plugin:<id>/<工具名>`」——它是跨进程请来的外置能力，这件事由宿主判定。清单里写
   `actionKind` / `objectLabel` 不报错，但不会被读。
@@ -184,11 +186,22 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 `message` 缺失时补默认值；返回非对象直接判失败。第三方代码返回什么形状都有可能，
 这个收敛必须在信任边界上做。
 
-你调宿主能力：
+你调宿主能力。**必须带上 `parentCallId`**，也就是宿主发给你的那次 `call` 的 `id`：
 
 ```json
-{"type":"host","id":"<uuid>","method":"fs.read","params":{"path":"a.txt"}}
+{"type":"host","id":"<uuid>","parentCallId":"<call 的 id>","method":"fs.read","params":{"path":"a.txt"}}
 ```
+
+宿主按 `parentCallId` 取回这次调用的工作区、会话与 Run——**参数里自报的身份不作数**。
+这次调用结束、超时或被取消之后，这个 id 立即失效，之后的宿主调用会被拒
+（`error.kind` 是 `call_context_gone`）。超时、取消、宿主退出三种情况下宿主会先发一帧
+告诉你（你自己答完的那次不发）：
+
+```json
+{"type":"call.cancelled","id":"<call 的 id>"}
+```
+
+收到它就停下这次调用手里的活，别再发宿主请求。
 
 宿主回：
 
@@ -212,6 +225,16 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 | `net.fetch` | `network` | `url`, `method?`, `headers?`, `body?` | `{status, url, contentType, body, redirects}` |
 | `exec.run` | `process:exec` | `command`, `cwd?`, `timeoutMs?` | `{exitCode, stdout, stderr, timedOut}` |
 | `storage.get` / `set` / `delete` / `list` | `storage` | `key`, `value?` | 见实现 |
+| `browser.tabs` | `browser:control` | — | `{tabs:[{tabId,url,title,controlled}]}` |
+| `browser.open` | `browser:control` | `url` | `{tabId,url,title,controlled}` |
+| `browser.bind` | `browser:control` | `tabId` | `{tabId,url,title,controlled}` |
+| `browser.close` | `browser:control` | `tabId` | `{closed}` |
+| `browser.navigate` | `browser:control` | `tabId`, `action`（`goto`/`back`/`forward`/`reload`）, `url?` | `{tabId,url,title,controlled}` |
+| `browser.observe` | `browser:control` | `tabId`, `frame?`, `screenshot?`, `offset?` | `{url,title,observationId,elements,truncated,image?}` |
+| `browser.act` | `browser:control` | `tabId`, `observationId`, `action`, `ref?`, `text?`, `key?`, `deltaY?` | `{element?,point?}` |
+| `browser.wait` | `browser:control` | `tabId`, `selector`, `timeoutMs?` | `{found,reason?}` |
+| `browser.upload` | `browser:control` + `workspace:read` | `tabId`, `observationId`, `ref`, `paths` | `{files}` |
+| `browser.download` | `browser:control` + `workspace:write` | `tabId`, `observationId`, `ref`, `path` | `{path,bytes}` 或 `{blocked,suggestedName?}` |
 
 几条会咬人的限制：
 
@@ -227,6 +250,32 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 
 未登记的方法一律拒绝，而不是放行——忘了登记的后果是「新能力用不了」，
 不是「新能力对所有插件无条件开放」。
+
+### `browser:control`：操作内置浏览器
+
+这个权限给的是**归本会话的那些页**，不是整个浏览器。归属键是会话 id，跨消息稳定。
+
+- 页有两条来路：`browser.open` 新建一页，它归开它的这条会话，之后该会话的每一条消息都能
+  **直接**操作，不需要任何交接；`browser.bind` 把用户自己开的页接管到本会话。
+  `browser.tabs` 只列本会话的页（`controlled:true`）与用户手动开的页（`controlled:false`）——
+  别的会话的页不出现。用户页操作会被拒，直到用户在聊天里点名要你用他开的某一页，你再用
+  `browser.bind` 带那个 `tabId` 接管它；已归别的会话的页拒绝接管。归属只认会话 id，
+  页面内容和你给的 `tabId` 都改不了它。
+- **元素引用有效期只到下一次变化。** `browser.observe` 返回 `observationId` 和一批
+  元素 `ref`；动作必须带上同一个 `observationId`。导航、重新观察、节点被替换之后，
+  旧引用一律拒绝并要求重新观察，不会被重新定位到另一个同名元素上。
+- **动作只发浏览器内部的输入事件**，不动系统鼠标键盘、不置前任何窗口。
+  可打印文本走 `action:'fill'`，`action:'press'` 只认一张固定的功能键表。
+- **上传下载的路径按工作区规则裁决**，且遵循**当前会话**的 `additionalDirectories`
+  与「完全访问」语义——与内置文件工具同一份判定（`fs.*` 的根是插件装配时固定的那一个，
+  这一点上两者不同）。下载是「先授权再触发」：目标文件已存在时宿主拒绝覆盖，
+  结果里带 `blocked`。
+- **截图按需产生**，放在 `data.images` 里，与其他工具的图片走同一条通道。
+- 用户停止这一轮，或宿主断开之后，本次执行的 CDP 连接立即作废：后续调用拿到明确失败。
+  归属不随之丢失——页仍归这条会话，下一条消息用新一轮接着操作。已经发到网站上的点击和提交
+  不会被撤回，如实按失败记录，**不要自动重试有副作用的动作**。
+
+这个权限换不到别的：它不映射 `process:exec`，也不等价 `network`。
 
 私有存储落成 `.qy/plugin-data/<插件 id>.json`。不放 SQLite 是因为插件行为异常时
 「用户能直接打开看、直接删」比性能重要得多。
@@ -265,11 +314,12 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\n')
 const waiting = new Map()
 
-const host = (method, params) => {
+// parentCallId 是宿主发来的那次 call 的 id。不带它的宿主调用会被拒。
+const host = (parentCallId, method, params) => {
   const id = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve, reject })
-    send({ type: 'host', id, method, params })
+    send({ type: 'host', id, parentCallId, method, params })
   })
 }
 
@@ -297,7 +347,7 @@ process.stdin.on('data', (chunk) => {
 
 async function handle(msg) {
   try {
-    const { content } = await host('fs.read', { path: msg.params.path })
+    const { content } = await host(msg.id, 'fs.read', { path: msg.params.path })
     const lines = content.split('\n').length
     send({ id: msg.id, ok: true, result: { status: 'success', message: `共 ${lines} 行`, data: { lines } } })
   } catch (err) {

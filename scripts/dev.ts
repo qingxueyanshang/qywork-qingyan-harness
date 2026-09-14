@@ -12,7 +12,9 @@
  * 所以这里换掉那条路——**开发时不用那个二进制**：
  *
  * - sidecar：直接跑 `packages/cli/src/index.ts`，源码变了由本脚本换进程（见下）。
- * - 前端：由 Vite 提供，但桌面协调模式关闭 HMR；源码变化也进入下面同一个监督器。
+ * - 前端：由本脚本直接起 Vite，桌面协调模式关闭 HMR；源码变化也进入下面同一个监督器。
+ *   **不挂在 `beforeDevCommand` 上**：那条命令由 Tauri CLI 派生，会继承外壳的整份环境，
+ *   而宿主凭据只能到 sidecar 与外壳为止。
  * - 外壳：devUrl 构建只认 `QYWORK_TOKEN` + `QYWORK_PORT` 指向的 sidecar，不探活、
  *   不 spawn `bin/qy`；缺这两个变量直接报错退出（`apps/desktop/src-tauri/src/lib.rs`）。
  *   端口上暂时没人时由页面的连接层重连，与下面换代 sidecar 时的路径相同。
@@ -43,6 +45,13 @@ const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
 /** 每次开发会话现生成一个。不写死在仓库里——那就是一个入库的凭证。 */
 const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
+/**
+ * 原生浏览器宿主连接的凭据，同样每次现生成。
+ *
+ * 只交给 sidecar 与外壳两个进程：拿到它就能注册浏览器宿主，而 Vite 既不需要它，
+ * 也会把整份环境继续传给它自己派生的进程。
+ */
+const BROWSER_KEY = randomBytes(24).toString('hex')
 
 /** 那个端口上有没有一个**能应答的** qywork。用来等就绪，不用来判占用。 */
 async function answers(port: number): Promise<boolean> {
@@ -103,6 +112,9 @@ const env = {
   VITE_QYWORK_COORDINATED_RELOAD: '1',
 }
 
+/** 只有这两个进程拿得到宿主凭据。 */
+const privilegedEnv = { ...env, QYWORK_BROWSER_KEY: BROWSER_KEY }
+
 /**
  * 用**正在跑的这个 bun**，不写裸名 `bun`。
  *
@@ -130,7 +142,7 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       // （用户拿到的第一个项目会是 qywork 的源码树）。不传则由服务端决定——
       // 账本里有项目就用最近打开的，一个都没有才建默认工作区。
     ],
-    { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
+    { cwd: ROOT, env: privilegedEnv, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
   )
 }
 
@@ -241,9 +253,34 @@ watch(join(ROOT, 'apps/web/src'), { recursive: true }, (_event, file) => {
  * （`server.ts` 的 `bootstrapWorkspace`）：账本里有项目就用最近打开的，
  * 一个都没有才建默认工作区。
  */
-const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
+/**
+ * 按进程树收掉一个子进程。
+ *
+ * Windows 上 `kill()` 只结束直接子进程，而 vite 真正的开发服务器是它下面那个 node：
+ * 只杀外层的话 5180 一直被占着，下一次 `bun run dev` 因为 `strictPort` 直接失败。
+ */
+function killTree(proc: ReturnType<typeof Bun.spawn>): void {
+  if (process.platform === 'win32') {
+    Bun.spawnSync(['taskkill', '/PID', String(proc.pid), '/T', '/F'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    return
+  }
+  proc.kill()
+}
+
+const web = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/web'), 'dev'], {
   cwd: ROOT,
   env,
+  stdout: 'inherit',
+  stderr: 'inherit',
+  stdin: 'ignore',
+})
+
+const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
+  cwd: ROOT,
+  env: privilegedEnv,
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'inherit',
@@ -260,6 +297,7 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
 const stopAll = () => {
   stopping = true
   agent.kill()
+  killTree(web)
   shell.kill()
 }
 process.on('SIGINT', stopAll)
@@ -268,4 +306,5 @@ process.on('SIGTERM', stopAll)
 const code = await shell.exited
 stopping = true
 agent.kill()
+killTree(web)
 process.exit(code)
