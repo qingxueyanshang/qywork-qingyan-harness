@@ -1,0 +1,140 @@
+{
+  "manifestVersion": 1,
+  "id": "qywork.browser",
+  "name": "内置浏览器",
+  "version": "0.1.0",
+  "description": "在 qywork 内置浏览器里观察网页、点击、输入、等待、上传与下载",
+  "main": "index.mjs",
+  "permissions": ["browser:control", "workspace:read", "workspace:write"],
+  "contributes": {
+    "tools": [
+      {
+        "name": "tabs",
+        "description": "列出内置浏览器的标签页，或新开一页、接管一页、关掉一页。create 打开的页归本会话，本会话之后每条消息都能直接对它 observe/act，不需要任何交接。list 返回的 controlled=true 是归本会话的页；controlled=false 是用户手动开的页，默认操作不了——只有用户在聊天里点名要你用他开的某一页时，才用 action=bind 带那个 tabId 接管它。别的会话的页不会出现在列表里。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["list", "create", "bind", "close"] },
+            "url": { "type": "string", "description": "action=create 时要打开的 http/https 地址" },
+            "tabId": {
+              "type": "string",
+              "description": "action=bind 要接管、action=close 要关掉的标签页"
+            }
+          },
+          "required": ["action"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "navigate",
+        "description": "在已控制的标签页里跳转、后退、前进或重新加载。换文档之后所有元素编号失效，必须重新观察。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "action": { "type": "string", "enum": ["goto", "back", "forward", "reload"] },
+            "url": { "type": "string", "description": "action=goto 时的 http/https 地址" }
+          },
+          "required": ["tabId", "action"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "observe",
+        "description": "看一页现在是什么样：实际地址、标题、可操作元素与页面正文。返回的 observationId 与元素 ref 是做动作的前提。页面变化、点过按钮、跳过页之后都要重新观察一次，旧编号会被拒绝。truncated=true 时用 offset 取后面的元素。screenshot=true 才截图，只在元素表说不清版面时才要。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "frame": {
+              "type": "string",
+              "description": "只看某个跨站 iframe，取自元素的 frame 字段"
+            },
+            "screenshot": { "type": "boolean" },
+            "offset": { "type": "integer", "description": "从第几个元素开始返回" }
+          },
+          "required": ["tabId"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "act",
+        "description": "在刚观察到的元素上做一个动作：click 点击、fill 覆盖输入框内容、select 选下拉项、scroll 滚动、press 按一个功能键。observationId 必须是最近一次观察的返回值。返回 stale 或 ambiguous 说明页面已经变了，重新观察后再来，不要换个编号重试。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "observationId": { "type": "string" },
+            "action": { "type": "string", "enum": ["click", "fill", "select", "scroll", "press"] },
+            "ref": {
+              "type": "string",
+              "description": "元素编号。scroll 与 press 可以不给，作用在整页上"
+            },
+            "text": {
+              "type": "string",
+              "description": "fill 要输入的文本，或 select 要选中的选项"
+            },
+            "key": {
+              "type": "string",
+              "description": "press 的按键：Enter Tab Escape Backspace Delete ArrowUp ArrowDown ArrowLeft ArrowRight Home End PageUp PageDown Space"
+            },
+            "deltaY": { "type": "number", "description": "scroll 的滚动量，向下为正" }
+          },
+          "required": ["tabId", "observationId", "action"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "wait",
+        "description": "等一个 CSS 选择器出现，最多 60 秒。用它替代反复观察轮询。等到之后仍要重新观察拿新的元素编号。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "selector": { "type": "string" },
+            "timeoutMs": { "type": "integer" }
+          },
+          "required": ["tabId", "selector"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "upload",
+        "description": "把工作区里的文件交给页面上的文件输入框。ref 必须指向一个 input[type=file]。路径按工作区规则裁决，越界会被拒绝。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "observationId": { "type": "string" },
+            "ref": { "type": "string" },
+            "paths": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["tabId", "observationId", "ref", "paths"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      },
+      {
+        "name": "download",
+        "description": "点一个下载链接或按钮，把文件存到工作区的指定路径。目标文件已存在时会被拒绝，换个路径再来。结果里带 blocked 说明这次下载被宿主拦下了，原因一并给出。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tabId": { "type": "string" },
+            "observationId": { "type": "string" },
+            "ref": { "type": "string", "description": "触发下载的元素编号" },
+            "path": { "type": "string", "description": "工作区内的目标路径" }
+          },
+          "required": ["tabId", "observationId", "ref", "path"],
+          "additionalProperties": false
+        },
+        "permissionEffect": "browser"
+      }
+    ]
+  }
+}
