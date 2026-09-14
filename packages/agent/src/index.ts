@@ -39,6 +39,15 @@ export {
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
+  type BrowserActInput,
+  type BrowserActionKind,
+  type BrowserActResult,
+  type BrowserDownloadResult,
+  type BrowserElement,
+  type BrowserObservation,
+  type BrowserPort,
+  type BrowserTabInfo,
+  type BrowserWaitResult,
   chargeBatchBudget,
   type DelegatePort,
   deliveredTokens,

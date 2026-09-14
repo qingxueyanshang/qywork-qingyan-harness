@@ -39,6 +39,7 @@ export {
   normalizeAdditionalDirectories,
   PROTECTED_DIRS,
   resolveInWorkspace,
+  rootsOf,
 } from './paths.ts'
 // 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
 // 隐藏的 `runner` 子命令是它那一侧的入口。

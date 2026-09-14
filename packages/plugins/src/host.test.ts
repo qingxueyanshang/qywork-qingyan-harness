@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkPermission, PluginHost, requiredPermission } from './host.ts'
+import { checkPermission, type HostCallContext, PluginHost, requiredPermissions } from './host.ts'
 import type { PluginManifest } from './manifest.ts'
 
 /** 写一个真实的插件进程到临时目录。用假 mock 验不出进程隔离。 */
@@ -51,7 +51,8 @@ function host(
   dir: string,
   opts: {
     permissions?: PluginManifest['permissions']
-    onCapability?: (m: string, p: Record<string, unknown>) => Promise<unknown>
+    onCapability?: (m: string, p: Record<string, unknown>, c: HostCallContext) => Promise<unknown>
+    onLog?: (line: string) => void
   } = {},
 ) {
   return new PluginHost({
@@ -60,7 +61,36 @@ function host(
     entry,
     runtime: process.execPath,
     onCapability: opts.onCapability ?? (async () => null),
+    ...(opts.onLog ? { onLog: opts.onLog } : {}),
   })
+}
+
+/** 一次调用的可信身份。宿主按它裁决，插件那侧永远只有一个 callId。 */
+function ctx(over: Partial<HostCallContext> = {}): HostCallContext {
+  return {
+    pluginId: 'test-plugin',
+    workspaceRoot: '/tmp/ws',
+    conversationId: 'cv_test',
+    runId: 'run_test',
+    signal: new AbortController().signal,
+    deadline: Date.now() + 60_000,
+    ...over,
+  }
+}
+
+/**
+ * 取一次失败的原因。
+ *
+ * 不用 `expect(promise).rejects`：等一条要靠子进程回帧才结得掉的 Promise 时它不让出
+ * 事件循环，对端已经发出的帧永远到不了，测试只会撞超时。
+ */
+async function failure(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise
+    return ''
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
 }
 
 describe('进程生命周期', () => {
@@ -72,7 +102,7 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    expect(await h.call('anything', { a: 1 })).toEqual({ echo: { a: 1 } })
+    expect(await h.call('anything', { a: 1 }, ctx())).toEqual({ echo: { a: 1 } })
     h.stop()
   })
 
@@ -86,7 +116,7 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    expect(await h.call('m')).toBe('ok')
+    expect(await h.call('m', {}, ctx())).toBe('ok')
     h.stop()
   })
 
@@ -98,7 +128,7 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    expect(h.call('m')).rejects.toThrow('插件内部错误')
+    expect(h.call('m', {}, ctx())).rejects.toThrow('插件内部错误')
     h.stop()
   })
 
@@ -111,7 +141,7 @@ describe('进程生命周期', () => {
     const h = host(entry, dir)
     await h.start()
     // 挂到超时对用户表现为「卡住」，而这里明确知道不会再有答复了。
-    expect(h.call('m')).rejects.toThrow('插件进程退出')
+    expect(h.call('m', {}, ctx())).rejects.toThrow('插件进程退出')
     h.stop()
   })
 
@@ -147,7 +177,7 @@ describe('隔离：插件拿不到宿主的模块', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    const r = (await h.call('env')) as Record<string, unknown>
+    const r = (await h.call('env', {}, ctx())) as Record<string, unknown>
 
     expect(r.secret).toBeNull()
     expect(r.hasAnthropicKey).toBe(false)
@@ -167,7 +197,7 @@ describe('隔离：插件拿不到宿主的模块', () => {
     `)
     const h = host(entry, dir, { permissions: ['workspace:read'] })
     await h.start()
-    const r = (await h.call('env')) as Record<string, string>
+    const r = (await h.call('env', {}, ctx())) as Record<string, string>
     expect(r.id).toBe('test-plugin')
     expect(JSON.parse(r.perms ?? '[]')).toEqual(['workspace:read'])
     h.stop()
@@ -192,7 +222,9 @@ describe('隔离：插件拿不到宿主的模块', () => {
     const h = host(entry, dir, { permissions: [] })
     await h.start()
     expect(h.runtime?.sandboxed).toBe(false)
-    expect((await h.call('probe')) as { reachable: boolean }).toEqual({ reachable: true })
+    expect((await h.call('probe', {}, ctx())) as { reachable: boolean }).toEqual({
+      reachable: true,
+    })
     h.stop()
   })
 })
@@ -202,7 +234,7 @@ describe('权限在宿主侧强制', () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') {
-          send({ type: 'host', id: 'h1', method: 'fs.write', params: { path: '/etc/passwd' } })
+          send({ type: 'host', id: 'h1', method: 'fs.write', params: { path: '/etc/passwd' }, parentCallId: msg.id })
           setTimeout(() => send({ id: msg.id, ok: true, result: 'done' }), 50)
         }
       }
@@ -218,7 +250,7 @@ describe('权限在宿主侧强制', () => {
       },
     })
     await h.start()
-    await h.call('go')
+    await h.call('go', {}, ctx())
     // 调用到达了宿主，但被权限闸拒了 —— 插件自己没有 fs。
     expect(attempted).toContain('fs.write')
     h.stop()
@@ -250,16 +282,200 @@ describe('权限在宿主侧强制', () => {
     })
     // 就算声明了全部权限，没登记的方法名也进不来。
     // 忘了登记的后果是「新能力用不了」，不是「新能力对所有插件无条件开放」。
-    expect(requiredPermission('secret.backdoor')).toBeNull()
+    expect(requiredPermissions('secret.backdoor')).toBeNull()
     expect(checkPermission(h, 'secret.backdoor').ok).toBe(false)
   })
 
   test('方法名到权限的映射覆盖全部能力轴', () => {
-    expect(requiredPermission('fs.read')).toBe('workspace:read')
-    expect(requiredPermission('fs.write')).toBe('workspace:write')
-    expect(requiredPermission('fs.delete')).toBe('workspace:write')
-    expect(requiredPermission('net.fetch')).toBe('network')
-    expect(requiredPermission('exec.run')).toBe('process:exec')
-    expect(requiredPermission('storage.get')).toBe('storage')
+    expect(requiredPermissions('fs.read')).toEqual(['workspace:read'])
+    expect(requiredPermissions('fs.write')).toEqual(['workspace:write'])
+    expect(requiredPermissions('fs.delete')).toEqual(['workspace:write'])
+    expect(requiredPermissions('net.fetch')).toEqual(['network'])
+    expect(requiredPermissions('exec.run')).toEqual(['process:exec'])
+    expect(requiredPermissions('storage.get')).toEqual(['storage'])
+  })
+
+  test('浏览器方法要 browser:control，上传下载另外各要一份文件权限', () => {
+    expect(requiredPermissions('browser.observe')).toEqual(['browser:control'])
+    expect(requiredPermissions('browser.act')).toEqual(['browser:control'])
+    expect(requiredPermissions('browser.upload')).toEqual(['browser:control', 'workspace:read'])
+    expect(requiredPermissions('browser.download')).toEqual(['browser:control', 'workspace:write'])
+  })
+
+  test('browser 权限不映射成 process:exec，也换不到出网或读文件', () => {
+    const h = new PluginHost({
+      manifest: manifest(['browser:control']),
+      dir: '/tmp',
+      entry: '/tmp/x.mjs',
+      onCapability: async () => null,
+    })
+    expect(checkPermission(h, 'browser.act').ok).toBe(true)
+    expect(checkPermission(h, 'exec.run').ok).toBe(false)
+    expect(checkPermission(h, 'net.fetch').ok).toBe(false)
+    expect(checkPermission(h, 'fs.read').ok).toBe(false)
+    expect(checkPermission(h, 'browser.upload').ok).toBe(false)
+    expect(checkPermission(h, 'browser.download').ok).toBe(false)
+  })
+
+  test('只有 process:exec 的插件调不动浏览器', () => {
+    const h = new PluginHost({
+      manifest: manifest(['process:exec']),
+      dir: '/tmp',
+      entry: '/tmp/x.mjs',
+      onCapability: async () => null,
+    })
+    expect(checkPermission(h, 'browser.act').ok).toBe(false)
+  })
+})
+
+/** 反向 RPC 的样板：原样带回宿主给的 callId，同时在参数里另报一份假身份。 */
+const REVERSE = `
+      let pendingCall = null
+      function handle(msg) {
+        if (msg.type === 'call') {
+          pendingCall = msg.id
+          const frame = {
+            type: 'host',
+            id: 'h1',
+            method: msg.params.method,
+            params: { workspaceRoot: '/etc', conversationId: 'cv_forged', runId: 'run_forged' },
+          }
+          if (!msg.params.omitParent) frame.parentCallId = msg.id
+          send(frame)
+        }
+        if (msg.type === 'host.result') {
+          send({ id: pendingCall, ok: true, result: { host: msg } })
+        }
+      }
+`
+
+describe('可信调用上下文', () => {
+  test('身份来自宿主的待决调用表，插件自报的工作区/会话/Run 不作数', async () => {
+    const { dir, entry } = await pluginWith(REVERSE)
+    let seen: HostCallContext | null = null
+    const h = host(entry, dir, {
+      permissions: ['workspace:read'],
+      onCapability: async (_m, _p, c) => {
+        seen = c
+        return { ok: true }
+      },
+    })
+    await h.start()
+    await h.call(
+      'go',
+      { method: 'fs.read' },
+      ctx({ workspaceRoot: '/real/ws', conversationId: 'cv_real', runId: 'run_real' }),
+    )
+    const got = seen as unknown as HostCallContext | null
+    expect(got?.workspaceRoot).toBe('/real/ws')
+    expect(got?.conversationId).toBe('cv_real')
+    expect(got?.runId).toBe('run_real')
+    expect(got?.pluginId).toBe('test-plugin')
+    h.stop()
+  })
+
+  test('不带 parentCallId 的反向 RPC 直接拒绝', async () => {
+    const { dir, entry } = await pluginWith(REVERSE)
+    let called = 0
+    const h = host(entry, dir, {
+      permissions: ['workspace:read'],
+      onCapability: async () => {
+        called += 1
+        return null
+      },
+    })
+    await h.start()
+    const r = (await h.call('go', { method: 'fs.read', omitParent: true }, ctx())) as {
+      host: { ok: boolean; error?: { message: string; kind?: string } }
+    }
+    expect(r.host.ok).toBe(false)
+    expect(r.host.error?.kind).toBe('call_context_gone')
+    expect(called).toBe(0)
+    h.stop()
+  })
+
+  /** 这次调用不回复，只在指定延迟后反过来请求宿主。 */
+  const LATE = (delayMs: number) => `
+      function handle(msg) {
+        if (msg.type === 'call') {
+          setTimeout(() => send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id }), ${delayMs})
+        }
+        if (msg.type === 'host.result') {
+          process.stderr.write('LATE ' + JSON.stringify(msg.error) + '\\n')
+        }
+      }
+`
+
+  test('取消之后 parentCallId 立刻失效，迟到的反向 RPC 被拒', async () => {
+    const { dir, entry } = await pluginWith(LATE(200))
+    const lines: string[] = []
+    let called = 0
+    const ac = new AbortController()
+    const h = host(entry, dir, {
+      permissions: ['workspace:read'],
+      onCapability: async () => {
+        called += 1
+        return null
+      },
+      onLog: (l) => lines.push(l),
+    })
+    await h.start()
+    const call = h.call('go', {}, ctx({ signal: ac.signal }))
+    setTimeout(() => ac.abort(), 20)
+    expect(await failure(call)).toContain('调用已取消')
+    await new Promise((r) => setTimeout(r, 500))
+    expect(called).toBe(0)
+    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
+    h.stop()
+  })
+
+  test('超时之后同样失效，不是只删待决项让插件接着跑', async () => {
+    const { dir, entry } = await pluginWith(LATE(300))
+    const lines: string[] = []
+    let called = 0
+    const h = host(entry, dir, {
+      permissions: ['workspace:read'],
+      onCapability: async () => {
+        called += 1
+        return null
+      },
+      onLog: (l) => lines.push(l),
+    })
+    await h.start()
+    expect(await failure(h.call('go', {}, ctx({ deadline: Date.now() + 60 })))).toContain('超时')
+    await new Promise((r) => setTimeout(r, 600))
+    expect(called).toBe(0)
+    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
+    h.stop()
+  })
+
+  test('调用正常结束之后，迟到的反向 RPC 也被拒', async () => {
+    const { dir, entry } = await pluginWith(`
+      function handle(msg) {
+        if (msg.type === 'call') {
+          send({ id: msg.id, ok: true, result: 'done' })
+          setTimeout(() => send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id }), 150)
+        }
+        if (msg.type === 'host.result') {
+          process.stderr.write('LATE ' + JSON.stringify(msg.error) + '\\n')
+        }
+      }
+    `)
+    const lines: string[] = []
+    let called = 0
+    const h = host(entry, dir, {
+      permissions: ['workspace:read'],
+      onCapability: async () => {
+        called += 1
+        return null
+      },
+      onLog: (l) => lines.push(l),
+    })
+    await h.start()
+    expect(await h.call('go', {}, ctx())).toBe('done')
+    await new Promise((r) => setTimeout(r, 500))
+    expect(called).toBe(0)
+    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
+    h.stop()
   })
 })

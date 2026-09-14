@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
+import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
 import type { ConversationId } from '@qywork/core'
 import {
@@ -31,6 +31,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { configPath, type QyConfig } from './config.ts'
+import { globalPluginsDir } from './extensions.ts'
 import { buildTailNotes } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
@@ -873,4 +874,163 @@ const HOME_BEFORE = process.env.QYWORK_HOME
 afterEach(() => {
   if (HOME_BEFORE === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = HOME_BEFORE
+})
+
+describe('浏览器控制跟着这一轮执行走', () => {
+  /** 只记下它被怎么用过。断言的是「什么时候释放」，不是调了几次。 */
+  function fakeBrowser(): { port: BrowserPort; released: () => number } {
+    let released = 0
+    const tab = { tabId: 'bt_1', url: 'https://a', title: 'A', controlled: true }
+    const port = {
+      tabs: async () => [tab],
+      open: async () => tab,
+      bind: async () => tab,
+      close: async () => {},
+      navigate: async () => tab,
+      observe: async () => ({
+        tabId: 'bt_1',
+        url: 'https://a',
+        title: 'A',
+        observationId: 'ob_1',
+        elements: [],
+        truncated: false,
+      }),
+      act: async () => ({}),
+      wait: async () => ({ found: true }),
+      upload: async () => ({ files: [] }),
+      download: async () => ({}),
+      armDownload: async () => {},
+      disarmDownload: async () => false,
+      release: async () => {
+        released += 1
+      },
+    } satisfies BrowserPort
+    return { port, released: () => released }
+  }
+
+  test('用户停止的那一刻就撤销控制，不等这一轮收尾', async () => {
+    const browser = fakeBrowser()
+    const ac = new AbortController()
+    const { s, store } = await session({ browser: browser.port, signal: ac.signal })
+    expect(browser.released()).toBe(0)
+    ac.abort()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(browser.released()).toBe(1)
+    s.dispose()
+    store.close()
+  })
+
+  test('收尾同样释放一次，重复调用由端口自己吸收', async () => {
+    const browser = fakeBrowser()
+    const { s, store } = await session({ browser: browser.port })
+    s.dispose()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(browser.released()).toBe(1)
+    store.close()
+  })
+
+  /** 装一个只贡献浏览器工具的插件。判据是清单里的 browser:control，不是插件名。 */
+  async function workspaceWithBrowserPlugin(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-sess-br-'))
+    process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-sess-home-'))
+    const dir = join(globalPluginsDir(), 'demo.browser')
+    await mkdir(dir, { recursive: true })
+    const NL = String.fromCharCode(10)
+    await writeFile(
+      join(dir, 'index.mjs'),
+      `process.stdout.write(JSON.stringify({ type: 'ready' }) + ${JSON.stringify(NL)})${NL}`,
+      'utf8',
+    )
+    await writeFile(
+      join(dir, 'qywork.plugin.json'),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: 'demo.browser',
+        name: '演示浏览器',
+        version: '1.0.0',
+        description: '只贡献一个浏览器工具',
+        main: 'index.mjs',
+        permissions: ['browser:control'],
+        contributes: {
+          tools: [
+            {
+              name: 'act',
+              description: '动一下',
+              parameters: { type: 'object', properties: {} },
+              permissionEffect: 'browser',
+            },
+          ],
+        },
+      }),
+      'utf8',
+    )
+    return root
+  }
+
+  test('没有浏览器时浏览器工具不注册，不留一个必然报错的名字', async () => {
+    const root = await workspaceWithBrowserPlugin()
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      store,
+      config,
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+    })
+    await (
+      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
+    ).loadExtensionTools(DEFAULT_DENSITY)
+    const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+      .schemas()
+      .map((t) => t.name)
+    expect(names).not.toContain('demo_browser__act')
+    s.dispose()
+    store.close()
+  }, 20_000)
+
+  test('接上浏览器之后同一个工具就注册进来', async () => {
+    const browser = fakeBrowser()
+    const root = await workspaceWithBrowserPlugin()
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      store,
+      config,
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+      browser: browser.port,
+    })
+    await (
+      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
+    ).loadExtensionTools(DEFAULT_DENSITY)
+    const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+      .schemas()
+      .map((t) => t.name)
+    expect(names).toContain('demo_browser__act')
+    s.dispose()
+    store.close()
+  }, 20_000)
+
+  test('没有端口时工具上下文里就没有浏览器通道', async () => {
+    const { s, store } = await session()
+    const ctx = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, t: string, c: string): ToolContext
+      }
+    ).makeToolContext('run_1', () => {}, 'deepseek-v4-flash', 'cv_1')
+    expect(ctx.browser).toBeUndefined()
+    s.dispose()
+    store.close()
+  })
+
+  test('有端口时原样透传给工具上下文', async () => {
+    const browser = fakeBrowser()
+    const { s, store } = await session({ browser: browser.port })
+    const ctx = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, t: string, c: string): ToolContext
+      }
+    ).makeToolContext('run_1', () => {}, 'deepseek-v4-flash', 'cv_1')
+    expect(ctx.browser).toBe(browser.port)
+    s.dispose()
+    store.close()
+  })
 })

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ToolRegistry } from '@qywork/agent'
+import { type ToolContext, ToolRegistry } from '@qywork/agent'
 import { configPath, isWorkspaceTrusted, type QyConfig, setWorkspaceTrust } from './config.ts'
 import {
   acquireExtensions,
@@ -67,17 +67,17 @@ process.stdin.on('data', (c) => {
 })
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n')
 
-function host(method, params) {
+function host(parentCallId, method, params) {
   const id = 'h' + Math.random().toString(36).slice(2)
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve, reject })
-    send({ type: 'host', id, method, params })
+    send({ type: 'host', id, parentCallId, method, params })
   })
 }
 
 async function handle(msg) {
   try {
-    const r = await host(msg.params.method, msg.params.params ?? {})
+    const r = await host(msg.id, msg.params.method, msg.params.params ?? {})
     send({ id: msg.id, ok: true, result: { status: 'success', message: 'ok', data: { r } } })
   } catch (err) {
     send({ id: msg.id, ok: true, result: { status: 'failure', message: String(err.message) } })
@@ -120,7 +120,7 @@ async function workspaceWith(extra: string[]) {
         contributes: {
           tools: [
             {
-              name: 'probe',
+              name: 'run',
               description: '调一次宿主能力',
               parameters: { type: 'object', properties: {}, additionalProperties: true },
               permissionEffect: 'read',
@@ -135,9 +135,17 @@ async function workspaceWith(extra: string[]) {
     const ext = await loadExtensions(root)
     // 注册名是消毒过的：插件 id 是 `test.probe`（反向域名风格），
     // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`——点会被换成下划线。
-    const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__probe')
+    const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
+    // 工具上下文里只有插件这条路用得到的那几项。身份由宿主按 callId 保管，
+    // 插件那侧只拿得到一个 parentCallId。
+    const ctx = {
+      workspaceRoot: root,
+      conversationId: 'cv_test',
+      runId: 'run_test',
+      signal: new AbortController().signal,
+    } as unknown as ToolContext
     const probe = async (method: string, params: Record<string, unknown> = {}) =>
-      tool!.fn({ method, params }, {} as never)
+      tool!.fn({ method, params }, ctx)
     return { root, ext, probe, stop: () => ext.stop() }
   })
 }
@@ -146,14 +154,14 @@ describe('插件端到端', () => {
   test('插件加载成功且工具被注册', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.plugins.failures).toEqual([])
-    expect(ext.toolSpecs.map((t) => t.name)).toContain('test_probe__probe')
+    expect(ext.toolSpecs.map((t) => t.name)).toContain('test_probe__run')
     stop()
   })
 
   /** 动作是宿主判定的：清单里没有、也不该有这个字段，插件工具一律记「调用」。 */
   test('插件工具的动作恒为 call', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
-    expect(ext.toolSpecs.find((t) => t.name === 'test_probe__probe')?.actionKind).toBe('call')
+    expect(ext.toolSpecs.find((t) => t.name === 'test_probe__run')?.actionKind).toBe('call')
     stop()
   })
 
@@ -164,9 +172,9 @@ describe('插件端到端', () => {
    */
   test('对象名恒为「插件」，具体是哪个工具归 target', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
-    const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__probe')
+    const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
     expect(spec?.objectLabel).toBe('插件')
-    expect(spec?.targetExtractor?.({})).toBe('plugin:test.probe/probe')
+    expect(spec?.targetExtractor?.({})).toBe('plugin:test.probe/run')
     stop()
   })
 
@@ -280,7 +288,7 @@ describe('插件端到端', () => {
         contributes: {
           tools: [
             {
-              name: 'probe',
+              name: 'run',
               description: '调一次宿主能力',
               parameters: { type: 'object', properties: {}, additionalProperties: true },
               permissionEffect: 'read',
@@ -294,7 +302,7 @@ describe('插件端到端', () => {
     const ext = await withTempHome(() => loadExtensions(root))
     expect(ext.plugins.plugins).toHaveLength(0)
     expect(ext.plugins.failures).toHaveLength(0)
-    expect(ext.toolSpecs.map((t) => t.name)).not.toContain('test_probe__probe')
+    expect(ext.toolSpecs.map((t) => t.name)).not.toContain('test_probe__run')
     ext.stop()
   })
 })

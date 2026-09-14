@@ -1,4 +1,12 @@
+/**
+ * 插件清单校验。
+ *
+ * 覆盖范围：`manifest.ts`，外加 `extensions/browser-control/qywork.plugin.json`
+ * ——那份清单装进插件目录之前必须先在这里过一遍，写错了装上才发现太晚。
+ */
+
 import { describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import { MANIFEST_VERSION, parseManifest } from './manifest.ts'
 
 const base = {
@@ -52,6 +60,93 @@ describe('插件清单校验', () => {
 
     const fixed = { ...withTool, permissions: ['workspace:read', 'workspace:write'] }
     expect(parseManifest(fixed, 'p').contributes.tools).toHaveLength(1)
+  })
+
+  test('browser 效果要 browser:control，不认 process:exec 顶替', () => {
+    const tool = {
+      name: 'act',
+      description: 'x',
+      parameters: {},
+      permissionEffect: 'browser',
+    }
+    expect(() =>
+      parseManifest(
+        { ...base, permissions: ['process:exec'], contributes: { tools: [tool] } },
+        'p',
+      ),
+    ).toThrow(/需要权限 browser:control/)
+    const ok = parseManifest(
+      { ...base, permissions: ['browser:control'], contributes: { tools: [tool] } },
+      'p',
+    )
+    expect(ok.permissions).toEqual(['browser:control'])
+  })
+
+  /**
+   * 工具名不得以 id 的主题段开头。注册名是 `<id 消毒>__<工具名>`，主题段已经在前缀里，
+   * 再带一遍就是 `qywork_browser__browser_tabs` 这种重复。命中报错并给去前缀的建议。
+   */
+  test('工具名以插件主题段开头被拒，并给出去前缀的建议', () => {
+    const withThemePrefix = {
+      ...base,
+      id: 'qywork.browser',
+      permissions: ['browser:control'],
+      contributes: {
+        tools: [
+          { name: 'browser_tabs', description: 'x', parameters: {}, permissionEffect: 'browser' },
+        ],
+      },
+    }
+    expect(() => parseManifest(withThemePrefix, 'p')).toThrow(/主题段「browser」/)
+    expect(() => parseManifest(withThemePrefix, 'p')).toThrow(/改成「tabs」/)
+
+    // 与主题段同名（不带下划线后缀）也拒，且提示去掉前缀。
+    const exact = {
+      ...withThemePrefix,
+      contributes: {
+        tools: [{ name: 'browser', description: 'x', parameters: {}, permissionEffect: 'browser' }],
+      },
+    }
+    expect(() => parseManifest(exact, 'p')).toThrow(/去掉这个前缀/)
+
+    // 去掉前缀后通过。
+    const fixed = {
+      ...withThemePrefix,
+      contributes: {
+        tools: [{ name: 'tabs', description: 'x', parameters: {}, permissionEffect: 'browser' }],
+      },
+    }
+    expect((parseManifest(fixed, 'p').contributes.tools ?? []).map((t) => t.name)).toEqual(['tabs'])
+
+    // 只是恰好含主题段、但不在开头，不拦（`open_browser`）。
+    const midword = {
+      ...withThemePrefix,
+      contributes: {
+        tools: [
+          { name: 'open_browser', description: 'x', parameters: {}, permissionEffect: 'browser' },
+        ],
+      },
+    }
+    expect((parseManifest(midword, 'p').contributes.tools ?? []).map((t) => t.name)).toEqual([
+      'open_browser',
+    ])
+  })
+
+  test('内置浏览器插件的清单是合法的', async () => {
+    const raw = await Bun.file(
+      join(import.meta.dir, '../../../extensions/browser-control/qywork.plugin.json'),
+    ).json()
+    const m = parseManifest(raw, 'extensions/browser-control')
+    expect(m.permissions.sort()).toEqual(['browser:control', 'workspace:read', 'workspace:write'])
+    expect((m.contributes.tools ?? []).map((t) => t.name).sort()).toEqual([
+      'act',
+      'download',
+      'navigate',
+      'observe',
+      'tabs',
+      'upload',
+      'wait',
+    ])
   })
 
   test('自定义渲染器必须给出 render 导出名', () => {

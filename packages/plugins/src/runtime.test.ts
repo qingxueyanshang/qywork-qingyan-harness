@@ -232,7 +232,18 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
       onCapability: async () => null,
     })
     await h.start()
-    const out = (await h.call('probe')) as Record<string, string>
+    const out = (await h.call(
+      'probe',
+      {},
+      {
+        pluginId: manifest.id,
+        workspaceRoot: dir,
+        conversationId: 'cv_test',
+        runId: 'run_test',
+        signal: new AbortController().signal,
+        deadline: Date.now() + 60_000,
+      },
+    )) as Record<string, string>
     const sandboxed = h.runtime?.sandboxed === true
     const netGuarded = h.runtime?.netGuarded === true
     h.stop()
@@ -359,7 +370,18 @@ describe('出网闸实测：每条逃逸路径', () => {
       onCapability: async () => null,
     })
     await h.start()
-    const out = (await h.call('probe')) as Record<string, string>
+    const out = (await h.call(
+      'probe',
+      {},
+      {
+        pluginId: manifest.id,
+        workspaceRoot: dir,
+        conversationId: 'cv_test',
+        runId: 'run_test',
+        signal: new AbortController().signal,
+        deadline: Date.now() + 60_000,
+      },
+    )) as Record<string, string>
     const netGuarded = h.runtime?.netGuarded === true
     h.stop()
     return { out, netGuarded, keys: probes.map(([k]) => k) }

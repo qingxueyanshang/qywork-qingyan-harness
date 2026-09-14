@@ -51,6 +51,13 @@ export type PluginPermission =
   | 'network'
   /** 读写自己的私有存储 */
   | 'storage'
+  /**
+   * 操作内置浏览器里本次执行控制的页面。
+   *
+   * 不用 `process:exec` 顶替：那条等于给出运行任意子进程的权力。也不等价 `network`
+   * ——这些页面带着用户的登录态，而 `net.fetch` 走的是另一条不带登录态的出网闸。
+   */
+  | 'browser:control'
 
 /**
  * 一个工具贡献。
@@ -64,7 +71,7 @@ export interface ToolContribution {
   name: string
   description: string
   parameters: Record<string, unknown>
-  permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network'
+  permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network' | 'browser'
 }
 
 export interface PreviewerContribution {
@@ -129,6 +136,9 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
   if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(id)) {
     return fail('id 必须是 3~64 位小写字母、数字、点、横线或下划线')
   }
+  // 注册名是 `<id 消毒>__<工具名>`（`qywork.browser` → `qywork_browser__`），
+  // id 的主题段已经在前缀里。工具再以它开头就是 `qywork_browser__browser_tabs` 这种重复。
+  const idTheme = id.split('.').pop() ?? id
   for (const field of ['name', 'version', 'description'] as const) {
     if (typeof m[field] !== 'string' || !(m[field] as string).trim()) {
       return fail(`缺少 ${field}`)
@@ -142,6 +152,7 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
     'process:exec',
     'network',
     'storage',
+    'browser:control',
   ]
   for (const p of permissions) {
     if (!known.includes(p as PluginPermission)) return fail(`未知权限：${String(p)}`)
@@ -156,6 +167,16 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
   // 就能让下面这道闸整个不生效——一个拼写错误换来免检，方向反了。
   for (const t of contributes.tools ?? []) {
     if (!t.name || typeof t.name !== 'string') return fail('工具贡献缺少 name')
+    // 工具名不得以 id 的主题段开头：注册名前缀已经带了它，再带一遍是冗余。
+    if (t.name === idTheme || t.name.startsWith(`${idTheme}_`)) {
+      const suggestion = t.name.slice(idTheme.length).replace(/^_+/, '')
+      const prefix = `${id.replace(/[^a-z0-9_]/g, '_')}__`
+      return fail(
+        `工具 ${t.name} 不能以插件主题段「${idTheme}」开头` +
+          `（注册名会是 ${prefix}${t.name}，主题段重复了一遍）` +
+          (suggestion ? `，改成「${suggestion}」` : '，去掉这个前缀'),
+      )
+    }
     if (!KNOWN_EFFECTS.includes(t.permissionEffect)) {
       return fail(
         `工具 ${t.name} 的 permissionEffect 无法识别：${String(t.permissionEffect)}` +
@@ -197,6 +218,7 @@ const KNOWN_EFFECTS: ToolContribution['permissionEffect'][] = [
   'delete',
   'execute',
   'network',
+  'browser',
 ]
 
 function requiredPermission(effect: ToolContribution['permissionEffect']): PluginPermission | null {
@@ -210,6 +232,8 @@ function requiredPermission(effect: ToolContribution['permissionEffect']): Plugi
       return 'process:exec'
     case 'network':
       return 'network'
+    case 'browser':
+      return 'browser:control'
     default:
       return null
   }

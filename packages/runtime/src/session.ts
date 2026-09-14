@@ -9,6 +9,7 @@ import { stat } from 'node:fs/promises'
 import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
+  type BrowserPort,
   type CompactionPort,
   type DelegatePort,
   decideCommand,
@@ -158,6 +159,13 @@ export interface SessionOptions {
    */
   plugins?: PluginPort
   /**
+   * 内置浏览器通道。见 `BrowserPort`。
+   *
+   * 由装配方按「现在有没有可用的原生宿主」现判后传入；没传即这一轮没有浏览器能力。
+   * 会话结束时 `dispose` 会释放它占着的控制权与未消费的下载授权。
+   */
+  browser?: BrowserPort
+  /**
    * 取走此刻标了「调整方向」的跟进消息。**每个 step 边界调一次。**
    *
    * 队列的真源在服务端的 `RunManager`（进程内，不落盘）；这里把它接到 loop
@@ -236,6 +244,26 @@ export class Session {
 
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
+
+    /*
+     * 用户按下停止的**那一刻**就撤销浏览器控制，不等这一轮收尾。
+     *
+     * 只在 `dispose()` 里释放的话，中断信号要先穿过 agent 循环、工具执行器和
+     * 事件流才轮到它——那段时间里排队的动作还会发到网站上。`release()` 是幂等的，
+     * 收尾时再调一次是空操作，不是第二条路径。
+     */
+    opts.signal.addEventListener(
+      'abort',
+      () => {
+        void this.opts.browser?.release().catch((err) => {
+          log.warn(
+            'browser',
+            `停止时释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+      },
+      { once: true },
+    )
 
     // 派活与装插件都跟着各自的通道走：成员会话两条都拿不到，因此它那边既没有
     // `subagent`（子 agent 不得再派活，递归没有终止条件），也没有 `install_plugin`
@@ -709,8 +737,22 @@ export class Session {
       const plugin = /^(.+?)__/.exec(spec.name)
       return plugin ? disabled.has(`plugin:${plugin[1]}`) : false
     }
+    /*
+     * **没有浏览器就不注册浏览器工具。**
+     *
+     * 判据是工具声明的 `browser` 效果，它由清单里的 `browser:control` 强制要求
+     * （`manifest.ts` 的校验），不按插件名猜。宿主没连上、运行时版本不达标、
+     * 这一轮是成员会话——三种情况装配方都不注入端口，此时注册进来的就是一个
+     * 点了必然报错的名字，而模型会反复去调它。
+     */
+    const noBrowser = (spec: { permissionEffect: unknown }) =>
+      !this.opts.browser && spec.permissionEffect === 'browser'
     const eligible = ext.toolSpecs.filter(
-      (spec) => !(allow && !allow.has(spec.name)) && !off(spec) && !this.registry.has(spec.name),
+      (spec) =>
+        !(allow && !allow.has(spec.name)) &&
+        !off(spec) &&
+        !noBrowser(spec) &&
+        !this.registry.has(spec.name),
     )
 
     /*
@@ -780,6 +822,15 @@ export class Session {
    * 起一套插件子进程，一个都不会关——公开方法有定义不等于有人调。
    */
   dispose(): void {
+    /*
+     * 浏览器控制跟着会话走：这一轮收尾即撤销控制归属与未消费的下载授权，页面保留
+     * 给用户接手。不释放的话下一轮起来会拿到 busy，而没有任何入口能解开它。
+     *
+     * 失败只记一行：宿主可能已经断开，而断开路径本身也撤销了这两样。
+     */
+    this.opts.browser?.release().catch((err) => {
+      log.warn('browser', `释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`)
+    })
     if (!this.extensions) return
     this.extensions = null
     releaseExtensions(this.opts.workspaceRoot)
@@ -895,7 +946,8 @@ export class Session {
    *   `resolveInWorkspace` 锁死、外发已经过 SSRF 闸，都是**确定性**判断，
    *   越界的根本走不到这里。所以放行，不必再花一次往返去问模型。
    * - **MCP 与插件工具**：是用户显式配置/安装的，属于知情同意，放行——
-   *   不为用户自己选的扩展造第三套闸。
+   *   不为用户自己选的扩展造第三套闸。内置浏览器工具（`browser` 效果）走的是同一条：
+   *   它由插件贡献，装不装由用户决定，目标页只能是本次执行自己开出来的那些。
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
    *   （命令字符串里的路径不经过参数解析）。只有它需要真正的裁决。
    */
@@ -1014,6 +1066,7 @@ export class Session {
       // 这里不做「没有就造一个空的」——那会让 `subagent` 注册进来却派不出去。
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
+      ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       history: historyPortFor(store, conversationId as ConversationId),
       signal: this.opts.signal,

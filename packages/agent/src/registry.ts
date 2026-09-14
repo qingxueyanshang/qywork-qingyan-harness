@@ -59,6 +59,186 @@ export interface SinkPort {
 }
 
 /**
+ * 内置浏览器端口 —— 本机原生浏览器资源的窄接口。
+ *
+ * **为什么是端口。** 同 `SinkPort`：真实浏览器由桌面外壳持有，服务端经宿主连接
+ * 操作它，而那两样在依赖图上都**高于** tools。所以接口在这里、实现由装配方注入。
+ *
+ * **不注入就没有这个能力。** 没有原生宿主连上来时装配方不注入，对应的工具也就
+ * 不注册——没有浏览器的浏览器工具没有降级形态。
+ *
+ * **控制权跟着这一次执行走。** 一个宿主同一时刻只允许一个执行控制浏览器，
+ * 抢不到的一方得到明确失败，不排队；这一轮结束由装配方调 `release`，
+ * 未消费的下载授权随之作废，页面保留给用户接手。
+ */
+export interface BrowserTabInfo {
+  tabId: string
+  url: string
+  title: string
+  /**
+   * 这一页归不归本会话（能不能直接操作）。
+   *
+   * 归本会话的页 `true`——AI 在本会话开的页跨消息都是它，直接 observe/act 即可。
+   * 用户手动开的页 `false`，要用户在聊天里点名后 `bind` 才归本会话。别的会话的页
+   * 不在这份清单里。
+   */
+  controlled: boolean
+}
+
+/**
+ * 一次观察里的一个元素。
+ *
+ * `ref` 只在**同一次观察、同一 tab、同一帧、同一份文档**内有效。导航、重连、
+ * 重新观察之后旧编号一律作废，实现方在动作前复核节点仍连接且身份匹配。
+ */
+export interface BrowserElement {
+  ref: string
+  /** 可访问性角色，来自 AX 树。 */
+  role: string
+  /** 可访问名。 */
+  name: string
+  tag: string
+  /** 表单控件的 type 属性。 */
+  inputType?: string
+  value?: string
+  checked?: boolean
+  disabled?: boolean
+  /** 正文摘要，按上限截断，不是整段 HTML。 */
+  text?: string
+  /** 跨站 iframe 的帧编号；缺席表示主文档。 */
+  frame?: string
+}
+
+export interface BrowserObservation {
+  tabId: string
+  /** 页面此刻的实际地址，不是请求过的那个。 */
+  url: string
+  title: string
+  /** 观察编号。动作必须带上它；重新观察即换号，旧号作废。 */
+  observationId: string
+  elements: BrowserElement[]
+  /** 元素数超过上限而截断。调用方要知道这一页不是全部。 */
+  truncated: boolean
+  /** 按需截图，`screenshot` 为真时才产生。 */
+  image?: { data: string; mime: string }
+}
+
+export type BrowserActionKind = 'click' | 'fill' | 'select' | 'scroll' | 'press'
+
+export interface BrowserActInput {
+  tabId: string
+  observationId: string
+  action: BrowserActionKind
+  /** 元素引用。`scroll` 与 `press` 可省略，此时作用于文档。 */
+  ref?: string
+  /** `fill` 要输入的文本，或 `select` 要选中的选项值。 */
+  text?: string
+  /** `press` 的按键名。按键表由 CDP 客户端维护，不接受任意字符串。 */
+  key?: string
+  /** `scroll` 的滚动量，向下为正。 */
+  deltaY?: number
+}
+
+export interface BrowserActResult {
+  /** 动作真正作用到的元素，供调用方核对打在了哪儿。 */
+  element?: string
+  /** 命中点，坐标动作才有。 */
+  point?: { x: number; y: number }
+}
+
+export interface BrowserWaitResult {
+  found: boolean
+  /** 没等到时的原因：`timeout` 或 `cancelled`。 */
+  reason?: string
+}
+
+export interface BrowserDownloadResult {
+  /** 落盘的绝对路径。被拦下时缺席。 */
+  path?: string
+  bytes?: number
+  /** 宿主拦下这次下载的原因，原样取自 `download.blocked`。 */
+  blocked?: string
+  /** 网站建议的文件名。被拦时用它说明拦的是哪一个。 */
+  suggestedName?: string
+}
+
+export interface BrowserPort {
+  /** 宿主此刻的存活页，含用户手动开的那些。 */
+  tabs(): Promise<BrowserTabInfo[]>
+  /** 新建一页并取得控制权。不切换系统焦点，也不置前任何窗口。 */
+  open(url: string): Promise<BrowserTabInfo>
+  /**
+   * 把一页接管到本会话。
+   *
+   * 归属判定在宿主：用户手动开的页 → 归本会话（用户在聊天里点名后模型才这么做）；
+   * 已归本会话 → 幂等；已归另一条会话 → 失败，不抢占。**本会话自己开的页不需要
+   * `bind`**：后续 observe/act 按归属自动附页。
+   */
+  bind(tabId: string): Promise<BrowserTabInfo>
+  /** 关掉一页。只释放这一页的资源，profile 与其他页不受影响。 */
+  close(tabId: string): Promise<void>
+  /** 地址栏级导航。`goto` 必须带 url，其余三种不带。 */
+  navigate(input: {
+    tabId: string
+    action: 'goto' | 'back' | 'forward' | 'reload'
+    url?: string
+  }): Promise<BrowserTabInfo>
+  /** 观察一页：实际地址、标题、元素与按需截图。 */
+  observe(input: {
+    tabId: string
+    /** 只看某个跨站 iframe。缺省覆盖主文档与其全部子帧。 */
+    frame?: string
+    screenshot?: boolean
+    /** 从第几个元素起返回，配合 `truncated` 翻页。 */
+    offset?: number
+  }): Promise<BrowserObservation>
+  /** 在已观察的元素上做一次有限动作。 */
+  act(input: BrowserActInput): Promise<BrowserActResult>
+  /** 等一个 CSS 选择器出现。有限超时，取消时一并清理页内等待器。 */
+  wait(input: { tabId: string; selector: string; timeoutMs: number }): Promise<BrowserWaitResult>
+  /**
+   * 把本机文件交给一个文件输入元素。
+   *
+   * `paths` 必须是**已经过路径裁决**的绝对路径：这里只调浏览器接口，不做工作区判断。
+   */
+  upload(input: {
+    tabId: string
+    observationId: string
+    ref: string
+    paths: string[]
+  }): Promise<{ files: string[] }>
+  /**
+   * 点一个元素触发下载，并等它落到指定路径。
+   *
+   * `absolutePath` 同 `armDownload`：必须已经过路径裁决。目标已存在时宿主拒绝覆盖，
+   * 结果里带回拦截原因。
+   */
+  download(input: {
+    tabId: string
+    observationId: string
+    ref: string
+    absolutePath: string
+    timeoutMs: number
+  }): Promise<BrowserDownloadResult>
+  /**
+   * 为一次下载登记一次性授权。
+   *
+   * `absolutePath` 必须是**已经过路径裁决**的绝对路径：宿主只按这份授权写盘，
+   * 不做工作区判断。授权在消费、撤销、超期、断连、接管时消亡。
+   */
+  armDownload(tabId: string, absolutePath: string, deadlineMs: number): Promise<void>
+  /** 撤销尚未消费的授权。返回是否确实撤下了一份。 */
+  disarmDownload(tabId: string): Promise<boolean>
+  /**
+   * 释放本次执行的全部控制。可重复调用。
+   *
+   * **释放之后这个端口就报废了**：后续任何操作都失败，不会重新抢回控制权。
+   * 用户接管后旧 Run 再调工具拿到的是明确失败，页面留给人工。
+   */
+  release(): Promise<void>
+}
+
+/**
  * 派活端口 —— 把一段任务交给一个子 agent（角色）或本机装着的外部 agent CLI。
  *
  * **为什么是端口。** 同 `SinkPort`：跑一个子会话要 `Session` 与账本，那两样都在依赖图上**高于**
@@ -545,6 +725,13 @@ export interface ToolContext {
   /** MCP 配置通道；没接时 `write_mcp_server` / `move_mcp_server` 不注册。 */
   mcpConfig?: McpConfigPort
   /**
+   * 内置浏览器通道。见 `BrowserPort`。
+   *
+   * 没接上时浏览器工具不注册——同 `delegate` 那条：没有浏览器的浏览器工具
+   * 没有任何降级形态。
+   */
+  browser?: BrowserPort
+  /**
    * 定时任务通道。见 `SchedulePort`。
    *
    * 可选而不是必填可空：没接上时三个工具明确报「没有定时任务表」，那是**更严**的一侧
@@ -757,6 +944,13 @@ export type PermissionEffect =
   | 'delete'
   | 'execute'
   | 'network'
+  /**
+   * 操作内置浏览器里已受控的页面。
+   *
+   * 单列一条而不是并进 `network`：这些页面带着用户的登录态，副作用发生在网站上，
+   * 与一次无登录态的出网请求不是同一类事。
+   */
+  | 'browser'
   /** 纯内部控制（如 todo 记账），不受权限闸约束。 */
   | 'internal_control'
 

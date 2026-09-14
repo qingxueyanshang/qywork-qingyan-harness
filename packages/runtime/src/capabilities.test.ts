@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { BrowserPort } from '@qywork/agent'
+import type { HostCallContext } from '@qywork/plugins'
 import { HOST_CAPABILITIES, makeCapabilityHandler } from './capabilities.ts'
 
 /** 「把某个环境变量原样打出来」。命令一律跑 bash（`commandShell()`），所以只有一种写法。 */
@@ -15,7 +18,21 @@ async function fixture() {
   const call = makeCapabilityHandler({ workspaceRoot: root, storageRoot: join(root, '.store') })
   return {
     root,
-    call: (m: string, p: Record<string, unknown> = {}, id = 'test.plugin') => call(m, p, id),
+    call: (m: string, p: Record<string, unknown> = {}, over: Partial<HostCallContext> = {}) =>
+      call(m, p, context(root, over)),
+  }
+}
+
+/** 一次调用的可信身份。宿主能力只读它，不读插件参数里自报的那些。 */
+function context(root: string, over: Partial<HostCallContext> = {}): HostCallContext {
+  return {
+    pluginId: 'test.plugin',
+    workspaceRoot: root,
+    conversationId: 'cv_test',
+    runId: 'run_test',
+    signal: new AbortController().signal,
+    deadline: Date.now() + 60_000,
+    ...over,
   }
 }
 
@@ -194,29 +211,35 @@ describe('插件私有存储', () => {
 
   test('两个插件的存储互相看不见', async () => {
     const { call } = await fixture()
-    await call('storage.set', { key: 'k', value: '甲的' }, 'plugin.a')
-    await call('storage.set', { key: 'k', value: '乙的' }, 'plugin.b')
-    expect(((await call('storage.get', { key: 'k' }, 'plugin.a')) as StorageGet).value).toBe('甲的')
-    expect(((await call('storage.get', { key: 'k' }, 'plugin.b')) as StorageGet).value).toBe('乙的')
+    await call('storage.set', { key: 'k', value: '甲的' }, { pluginId: 'plugin.a' })
+    await call('storage.set', { key: 'k', value: '乙的' }, { pluginId: 'plugin.b' })
+    expect(
+      ((await call('storage.get', { key: 'k' }, { pluginId: 'plugin.a' })) as StorageGet).value,
+    ).toBe('甲的')
+    expect(
+      ((await call('storage.get', { key: 'k' }, { pluginId: 'plugin.b' })) as StorageGet).value,
+    ).toBe('乙的')
   })
 
   test('list 只列自己的 key', async () => {
     const { call } = await fixture()
-    await call('storage.set', { key: 'x', value: 1 }, 'plugin.a')
-    await call('storage.set', { key: 'y', value: 1 }, 'plugin.b')
-    expect(await call('storage.list', {}, 'plugin.a')).toEqual({ keys: ['x'] })
+    await call('storage.set', { key: 'x', value: 1 }, { pluginId: 'plugin.a' })
+    await call('storage.set', { key: 'y', value: 1 }, { pluginId: 'plugin.b' })
+    expect(await call('storage.list', {}, { pluginId: 'plugin.a' })).toEqual({ keys: ['x'] })
   })
 
   test('id 里的路径穿越直接拒绝，不试图消毒后继续', async () => {
     const { call } = await fixture()
     // 合法 id 在 manifest 解析期就限死了，能走到这里说明上游校验被绕过——
     // 那种情况下「尽力消毒后继续」是错的，应该停。
-    expect(call('storage.set', { key: 'k', value: 1 }, '../../evil')).rejects.toThrow('非法插件 id')
+    expect(call('storage.set', { key: 'k', value: 1 }, { pluginId: '../../evil' })).rejects.toThrow(
+      '非法插件 id',
+    )
   })
 
   test('斜杠被消掉而不是变成子目录', async () => {
     const { root, call } = await fixture()
-    await call('storage.set', { key: 'k', value: 1 }, 'a/b')
+    await call('storage.set', { key: 'k', value: 1 }, { pluginId: 'a/b' })
     expect(await Bun.file(join(root, '.store', 'a_b.json')).exists()).toBe(true)
   })
 
@@ -275,5 +298,217 @@ describe('未登记的方法', () => {
       const err = await call(m, {}).catch((e: Error) => e.message)
       expect(String(err)).not.toContain('尚未实现')
     }
+  })
+})
+
+describe('浏览器能力', () => {
+  /** 记下端口收到了什么。断言的是「宿主传下去的是什么」，不是调了几次。 */
+  function fakeBrowser(): { port: BrowserPort; calls: { method: string; input: unknown }[] } {
+    const calls: { method: string; input: unknown }[] = []
+    const note = (method: string, input: unknown) => {
+      calls.push({ method, input })
+    }
+    const port: BrowserPort = {
+      tabs: async () => {
+        note('tabs', null)
+        return [{ tabId: 'bt_1', url: 'https://a', title: 'A', controlled: true }]
+      },
+      open: async (url) => {
+        note('open', url)
+        return { tabId: 'bt_1', url, title: '', controlled: true }
+      },
+      bind: async (tabId) => {
+        note('bind', tabId)
+        return { tabId, url: '', title: '', controlled: true }
+      },
+      close: async (tabId) => note('close', tabId),
+      navigate: async (input) => {
+        note('navigate', input)
+        return {
+          tabId: input.tabId,
+          url: input.url ?? '',
+          title: '',
+          controlled: true,
+        }
+      },
+      observe: async (input) => {
+        note('observe', input)
+        return {
+          tabId: input.tabId,
+          url: 'https://a',
+          title: 'A',
+          observationId: 'ob_1',
+          elements: [],
+          truncated: false,
+        }
+      },
+      act: async (input) => {
+        note('act', input)
+        return {}
+      },
+      wait: async (input) => {
+        note('wait', input)
+        return { found: true }
+      },
+      upload: async (input) => {
+        note('upload', input)
+        return { files: input.paths }
+      },
+      download: async (input) => {
+        note('download', input)
+        return { path: input.absolutePath, bytes: 3 }
+      },
+      armDownload: async () => {},
+      disarmDownload: async () => false,
+      release: async () => {},
+    }
+    return { port, calls }
+  }
+
+  test('没有端口时明确失败，不静默成功', async () => {
+    const { call } = await fixture()
+    expect(
+      await call('browser.observe', { tabId: 'bt_1' }).catch((e: Error) => e.message),
+    ).toContain('没有内置浏览器控制')
+  })
+
+  test('只放行 http 与 https', async () => {
+    const { call } = await fixture()
+    const { port } = fakeBrowser()
+    const fail = (url: string) =>
+      call('browser.open', { url }, { browser: port }).catch((e: Error) => e.message)
+    expect(await fail('file:///C:/Windows/win.ini')).toContain('只支持 http 与 https')
+    expect(await fail('javascript:alert(1)')).toContain('只支持 http 与 https')
+    expect(await call('browser.open', { url: 'https://a/' }, { browser: port })).toMatchObject({
+      tabId: 'bt_1',
+    })
+  })
+
+  test('动作名与按键不认的直接拒绝，不猜一个近似的', async () => {
+    const { call } = await fixture()
+    const { port } = fakeBrowser()
+    const err = await call(
+      'browser.act',
+      { tabId: 'bt_1', observationId: 'ob_1', action: 'drag', ref: 'e1' },
+      { browser: port },
+    ).catch((e: Error) => e.message)
+    expect(String(err)).toContain('action 只能是')
+  })
+
+  test('上传路径先过工作区裁决，越界的进不到端口', async () => {
+    const { root, call } = await fixture()
+    const { port, calls } = fakeBrowser()
+    const ok = (await call(
+      'browser.upload',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', paths: ['a.txt'] },
+      { browser: port },
+    )) as { files: string[] }
+    expect(ok.files[0]).toBe(join(realpathSync(root), 'a.txt'))
+    expect(calls.at(-1)?.method).toBe('upload')
+
+    const err = await call(
+      'browser.upload',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', paths: ['../../../etc/hosts'] },
+      { browser: port },
+    ).catch((e: Error) => e.message)
+    expect(String(err)).not.toBe('')
+    // 越界那次没有走到端口。
+    expect(calls.filter((c) => c.method === 'upload')).toHaveLength(1)
+  })
+
+  test('下载路径同样先裁决，端口拿到的是绝对路径', async () => {
+    const { root, call } = await fixture()
+    const { port, calls } = fakeBrowser()
+    const got = (await call(
+      'browser.download',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', path: 'out/x.bin' },
+      { browser: port },
+    )) as { path: string }
+    expect(got.path).toBe(join(realpathSync(root), 'out', 'x.bin'))
+    const sent = calls.at(-1)?.input as { absolutePath: string }
+    expect(sent.absolutePath).toBe(join(realpathSync(root), 'out', 'x.bin'))
+
+    const err = await call(
+      'browser.download',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', path: '../escape.bin' },
+      { browser: port },
+    ).catch((e: Error) => e.message)
+    expect(String(err)).not.toBe('')
+    expect(calls.filter((c) => c.method === 'download')).toHaveLength(1)
+  })
+
+  test('额外根目录与完全访问的语义跟着这一轮会话走', async () => {
+    const { root, call } = await fixture()
+    const { port } = fakeBrowser()
+    const outside = join(root, '..', 'qywork-cap-outside.bin')
+    const denied = await call(
+      'browser.download',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', path: outside },
+      { browser: port },
+    ).catch((e: Error) => e.message)
+    expect(String(denied)).not.toBe('')
+
+    const allowed = (await call(
+      'browser.download',
+      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', path: outside },
+      { browser: port, unrestrictedPaths: true },
+    )) as { path: string }
+    expect(allowed.path).toContain('qywork-cap-outside.bin')
+  })
+
+  test('停止之后不再发起新动作', async () => {
+    const { call } = await fixture()
+    const { port, calls } = fakeBrowser()
+    const ac = new AbortController()
+    ac.abort()
+    const err = await call(
+      'browser.act',
+      { tabId: 'bt_1', observationId: 'ob_1', action: 'click', ref: 'e1' },
+      { browser: port, signal: ac.signal },
+    ).catch((e: Error) => e.message)
+    expect(String(err)).toContain('已停止')
+    expect(calls).toHaveLength(0)
+  })
+
+  test('模型把可选参数写成 null 时按缺席处理，不当成非法值拒绝', async () => {
+    const { call } = await fixture()
+    const { port, calls } = fakeBrowser()
+    await call(
+      'browser.observe',
+      { tabId: 'bt_1', frame: null, offset: null, screenshot: null },
+      { browser: port },
+    )
+    expect(calls.at(-1)?.input).toEqual({ tabId: 'bt_1' })
+
+    await call(
+      'browser.act',
+      { tabId: 'bt_1', observationId: 'ob_1', action: 'click', ref: 'e1', text: null, key: null },
+      { browser: port },
+    )
+    expect(calls.at(-1)?.input).toEqual({
+      tabId: 'bt_1',
+      observationId: 'ob_1',
+      action: 'click',
+      ref: 'e1',
+    })
+
+    // 空文本对 fill 是有意义的：它是「清空这个输入框」。
+    await call(
+      'browser.act',
+      { tabId: 'bt_1', observationId: 'ob_1', action: 'fill', ref: 'e1', text: '' },
+      { browser: port },
+    )
+    expect((calls.at(-1)?.input as { text?: string }).text).toBe('')
+  })
+
+  test('等待时长有上限，不接受任意值', async () => {
+    const { call } = await fixture()
+    const { port, calls } = fakeBrowser()
+    await call(
+      'browser.wait',
+      { tabId: 'bt_1', selector: '#x', timeoutMs: 9_999_999 },
+      { browser: port },
+    )
+    expect((calls.at(-1)?.input as { timeoutMs: number }).timeoutMs).toBe(60_000)
   })
 })

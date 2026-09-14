@@ -44,18 +44,46 @@
  * - 插件的诊断输出走 stderr，由宿主转发到日志。
  *
  * **权限在宿主侧强制，不在插件侧。** 插件请求宿主能力时，宿主按 manifest 声明的权限校验，插件运行时
- * 的声明不作数。校验表在本文件末尾的 `requiredPermission()`，未登记的方法一律拒绝。
+ * 的声明不作数。校验表在本文件末尾的 `requiredPermissions()`，未登记的方法一律拒绝。
  */
 
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
+import type { BrowserPort } from '@qywork/agent'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
 /** 单次插件调用的超时。插件卡住不能把整轮 agent 拖死。 */
-const CALL_TIMEOUT_MS = 60_000
+export const CALL_TIMEOUT_MS = 60_000
 /** 启动握手超时。 */
 const READY_TIMEOUT_MS = 10_000
+
+/**
+ * 一次工具调用的可信身份，由宿主按 `ToolContext` 组装。
+ *
+ * **插件参数里的工作区、会话、Run 一律不作数。** 插件的反向 RPC 只带 `parentCallId`，
+ * 宿主从待决调用表取回这份上下文；调用结束、超时、取消之后 parentCallId 立即失效，
+ * 迟到的反向 RPC 因此没有身份可用。
+ *
+ * `signal` 与 `browser` 是宿主进程内的对象，**不跨 RPC 边界**——插件拿到的始终只有
+ * 一个 callId。
+ */
+export interface HostCallContext {
+  pluginId: string
+  workspaceRoot: string
+  conversationId: string
+  runId: string
+  stepId?: string
+  signal: AbortSignal
+  /** 这次调用的绝对期限（毫秒时间戳）。宿主按它拒绝超期的反向 RPC。 */
+  deadline: number
+  /** 工作区之外额外可读写的绝对路径，来自会话配置。 */
+  additionalDirectories?: string[]
+  /** 「完全访问」模式：路径层不裁决。 */
+  unrestrictedPaths?: boolean
+  /** 本次执行的内置浏览器控制。没接上时浏览器宿主方法一律失败。 */
+  browser?: BrowserPort
+}
 
 export interface HostRequest {
   id: string
@@ -70,10 +98,11 @@ export interface HostResponse {
   error?: { message: string; kind?: string }
 }
 
-/** 插件反过来请求宿主能力时走这个。宿主按权限放行或拒绝。 */
+/** 插件反过来请求宿主能力时走这个。宿主按权限放行或拒绝，身份由待决调用表给出。 */
 export type HostCapabilityHandler = (
   method: string,
   params: Record<string, unknown>,
+  context: HostCallContext,
 ) => Promise<unknown>
 
 export interface PluginHostOptions {
@@ -103,6 +132,8 @@ export class PluginHost {
       resolve: (v: unknown) => void
       reject: (e: Error) => void
       timer: ReturnType<typeof setTimeout>
+      context: HostCallContext
+      unlisten: () => void
     }
   >()
   private buffer = ''
@@ -177,11 +208,9 @@ export class PluginHost {
       this.proc = null
       // 进程死了，所有在飞的调用都不会有答复了。**必须逐个拒绝**——
       // 留着它们会让调用方永远等到超时，而超时对用户表现为「卡住」。
-      for (const [, p] of this.pending) {
-        clearTimeout(p.timer)
-        p.reject(new Error(`插件进程退出（code=${code} signal=${signal}）`))
+      for (const [id] of [...this.pending]) {
+        this.settle(id)?.reject(new Error(`插件进程退出（code=${code} signal=${signal}）`))
       }
-      this.pending.clear()
     })
 
     await this.waitReady()
@@ -227,13 +256,30 @@ export class PluginHost {
       return
     }
 
-    // 插件调宿主能力。
+    // 插件调宿主能力。身份只从待决调用表取，不看参数里插件自己写了什么。
     if (msg.type === 'host' && typeof msg.id === 'string') {
       const id = msg.id
+      const parent = typeof msg.parentCallId === 'string' ? msg.parentCallId : ''
+      const context = this.pending.get(parent)?.context
+      if (!context) {
+        this.send({
+          type: 'host.result',
+          id,
+          ok: false,
+          error: {
+            message: parent
+              ? `调用 ${parent} 已结束，宿主能力不再受理`
+              : '宿主调用缺少 parentCallId，已拒绝',
+            kind: 'call_context_gone',
+          },
+        })
+        return
+      }
       try {
         const result = await this.opts.onCapability(
           String(msg.method ?? ''),
           (msg.params as Record<string, unknown>) ?? {},
+          context,
         )
         this.send({ type: 'host.result', id, ok: true, result })
       } catch (err) {
@@ -249,9 +295,8 @@ export class PluginHost {
 
     // 插件回复宿主的调用。
     if (typeof msg.id === 'string' && this.pending.has(msg.id)) {
-      const p = this.pending.get(msg.id)!
-      this.pending.delete(msg.id)
-      clearTimeout(p.timer)
+      // 插件自己答完了，不必再告诉它这次调用作废。
+      const p = this.settle(msg.id, false)!
       if (msg.ok === false) {
         const e = msg.error as { message?: string } | undefined
         p.reject(new Error(e?.message ?? '插件返回失败'))
@@ -267,19 +312,68 @@ export class PluginHost {
     stdin.write(`${JSON.stringify(payload)}\n`)
   }
 
-  /** 调用插件导出的方法。超时会拒绝，但**不杀进程**——可能只是这一次调用慢。 */
-  async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  /**
+   * 调用插件导出的方法。
+   *
+   * 超时、取消、进程退出**都走 `settle`**：只删待决项而留着调用身份的话，
+   * 插件那一侧的执行照旧能反过来操作宿主——在浏览器控制上这意味着用户按下
+   * 停止之后仍有点击到达网站。`settle` 同时告知插件这次调用作废，让它自己停下。
+   *
+   * 超时与取消都**不杀进程**：可能只是这一次调用慢，别的调用还在正常跑。
+   */
+  async call(
+    method: string,
+    params: Record<string, unknown>,
+    context: HostCallContext,
+  ): Promise<unknown> {
     if (!this.proc) throw new Error(`插件未启动：${this.opts.manifest.id}`)
     const id = crypto.randomUUID()
 
     return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.settle(id)?.reject(new Error(`调用已取消：${method}`))
+      }
+      // 期限取上下文那一份，上限是本地常量。两处各记一个超时就是两本账，
+      // 而先到的那个会让另一处的期限永远不生效。
+      const timeoutMs = Math.max(1, Math.min(CALL_TIMEOUT_MS, context.deadline - Date.now()))
       const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`插件调用超时（${CALL_TIMEOUT_MS}ms）：${method}`))
-      }, CALL_TIMEOUT_MS)
-      this.pending.set(id, { resolve, reject, timer })
+        this.settle(id)?.reject(new Error(`插件调用超时（${timeoutMs}ms）：${method}`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        context,
+        unlisten: () => context.signal.removeEventListener('abort', onAbort),
+      })
+      if (context.signal.aborted) {
+        onAbort()
+        return
+      }
+      context.signal.addEventListener('abort', onAbort, { once: true })
       this.send({ type: 'call', id, method, params })
     })
+  }
+
+  /**
+   * 结束一次调用：摘掉待决项、停表、撤销身份。
+   *
+   * `notifyPlugin` 为真时再发一帧告诉插件这次调用作废——超时、取消、进程退出三条路要发，
+   * 插件自己答完的那条不发：它已经结束了，再发一帧只会让它的作废表白长一条。
+   *
+   * 返回 `null` 表示这次调用已经结束过——重复结束是空操作，不是错误。
+   */
+  private settle(
+    id: string,
+    notifyPlugin = true,
+  ): { resolve: (v: unknown) => void; reject: (e: Error) => void } | null {
+    const p = this.pending.get(id)
+    if (!p) return null
+    this.pending.delete(id)
+    clearTimeout(p.timer)
+    p.unlisten()
+    if (notifyPlugin) this.send({ type: 'call.cancelled', id })
+    return { resolve: p.resolve, reject: p.reject }
   }
 
   stop(): void {
@@ -302,12 +396,17 @@ export class PluginHost {
  * 这是刻意的 fail-closed：忘了登记的后果是「新能力用不了」，
  * 而不是「新能力对所有插件无条件开放」。
  */
-export function requiredPermission(method: string): PluginPermission | null {
-  if (method.startsWith('fs.read')) return 'workspace:read'
-  if (method.startsWith('fs.write') || method.startsWith('fs.delete')) return 'workspace:write'
-  if (method.startsWith('net.')) return 'network'
-  if (method.startsWith('exec.')) return 'process:exec'
-  if (method.startsWith('storage.')) return 'storage'
+export function requiredPermissions(method: string): PluginPermission[] | null {
+  if (method.startsWith('fs.read')) return ['workspace:read']
+  if (method.startsWith('fs.write') || method.startsWith('fs.delete')) return ['workspace:write']
+  if (method.startsWith('net.')) return ['network']
+  if (method.startsWith('exec.')) return ['process:exec']
+  if (method.startsWith('storage.')) return ['storage']
+  // 上传要读工作区文件、下载要往工作区写文件，两条各自再要一份文件权限；
+  // 不由 `browser:control` 一并代表——否则声明一个浏览器权限就换来了整个工作区。
+  if (method === 'browser.upload') return ['browser:control', 'workspace:read']
+  if (method === 'browser.download') return ['browser:control', 'workspace:write']
+  if (method.startsWith('browser.')) return ['browser:control']
   return null
 }
 
@@ -315,14 +414,16 @@ export function checkPermission(
   host: PluginHost,
   method: string,
 ): { ok: true } | { ok: false; message: string } {
-  const needed = requiredPermission(method)
+  const needed = requiredPermissions(method)
   if (needed === null) {
     return { ok: false, message: `未登记的宿主方法，已拒绝：${method}` }
   }
-  if (!host.has(needed)) {
-    return {
-      ok: false,
-      message: `插件未声明 ${needed} 权限，拒绝调用 ${method}`,
+  for (const permission of needed) {
+    if (!host.has(permission)) {
+      return {
+        ok: false,
+        message: `插件未声明 ${permission} 权限，拒绝调用 ${method}`,
+      }
     }
   }
   return { ok: true }

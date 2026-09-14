@@ -15,8 +15,8 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { sanitizeToolName, type ToolSpec } from '@qywork/agent'
-import { checkPermission, PluginHost } from './host.ts'
+import { sanitizeToolName, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { CALL_TIMEOUT_MS, checkPermission, type HostCallContext, PluginHost } from './host.ts'
 import {
   ManifestError,
   type PluginManifest,
@@ -68,15 +68,16 @@ export interface PluginRegistry {
 }
 
 /**
- * 宿主能力实现。第三个参数是**发起调用的插件 id**。
+ * 宿主能力实现。第三个参数是这次工具调用的**可信身份**。
  *
- * 它不能由实现方自己推断：一个 handler 服务所有插件，而私有存储、配额、
- * 审计日志都得知道是谁在调。让 handler 去猜等于给了所有插件同一份存储。
+ * 它不能由实现方自己推断，也不能由插件自报：一个 handler 服务所有插件，而私有存储、
+ * 配额、路径裁决、浏览器控制都得知道是谁在调、替哪一轮执行在调。身份由
+ * `PluginHost` 按 callId 保管，插件那侧只有一个 parentCallId。
  */
 export type PluginCapabilityHandler = (
   method: string,
   params: Record<string, unknown>,
-  pluginId: string,
+  context: HostCallContext,
 ) => Promise<unknown>
 
 export interface LoadOptions {
@@ -156,12 +157,12 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
     dir,
     entry,
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
-    onCapability: async (method, params) => {
+    onCapability: async (method, params, context) => {
       // **权限在这里强制**，不信任插件运行时的声明。
       const verdict = checkPermission(host, method)
       if (!verdict.ok) throw new Error(verdict.message)
       if (!options.onCapability) throw new Error(`宿主未提供能力实现：${method}`)
-      return options.onCapability(method, params, manifest.id)
+      return options.onCapability(method, params, context)
     },
     ...(options.onLog ? { onLog: options.onLog } : {}),
   })
@@ -213,12 +214,13 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       category: 'external',
       facet: plugin.manifest.id,
       summary: t.description,
-      // 跨进程调用。**不传 ctx**——它带着 sink 句柄、AbortSignal、
-      // 权限回调这些宿主内部对象，序列化过去等于把它们交出去。
-      // 插件要用宿主能力就走 host.* RPC，那条路上有权限闸。
-      fn: async (args) => {
+      // 跨进程调用。**ctx 不出宿主进程**——它带着 sink 句柄、AbortSignal、
+      // 浏览器端口这些宿主内部对象，序列化过去等于把它们交出去。这里只从 ctx
+      // 取出这次调用的身份留在宿主内存里，插件那侧拿到的仍然只有一个 callId；
+      // 它要用宿主能力就走 host.* RPC，那条路上有权限闸，身份按 callId 取回。
+      fn: async (args, ctx) => {
         try {
-          const result = await host.call(t.name, args)
+          const result = await host.call(t.name, args, callContext(manifest.id, ctx))
           return normalizeOutcome(result, t.name)
         } catch (err) {
           return {
@@ -254,6 +256,27 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
   }
   for (const pr of manifest.contributes.providers ?? []) {
     registry.providers.set(`${manifest.id}:${pr.id}`, { plugin: manifest.id, contribution: pr })
+  }
+}
+
+/**
+ * 从工具上下文摘出这次调用的可信身份。
+ *
+ * 只取插件能力需要的那几项。**`signal` 与 `browser` 是宿主进程内的对象**，留在宿主
+ * 内存里按 callId 取回；它们不进 RPC 帧。
+ */
+function callContext(pluginId: string, ctx: ToolContext): HostCallContext {
+  return {
+    pluginId,
+    workspaceRoot: ctx.workspaceRoot,
+    conversationId: ctx.conversationId,
+    runId: ctx.runId,
+    ...(ctx.stepId ? { stepId: ctx.stepId } : {}),
+    signal: ctx.signal,
+    deadline: Date.now() + CALL_TIMEOUT_MS,
+    ...(ctx.additionalDirectories ? { additionalDirectories: ctx.additionalDirectories } : {}),
+    ...(ctx.unrestrictedPaths ? { unrestrictedPaths: true } : {}),
+    ...(ctx.browser ? { browser: ctx.browser } : {}),
   }
 }
 
