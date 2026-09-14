@@ -271,6 +271,17 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
+  /*
+   * 内置浏览器能力：**进程级事件**，与握手里的 `capabilities.browser` 是同一份投影。
+   *
+   * 原生宿主是应用启动之后才连上来的，只有握手那一份时界面要等下一次重连
+   * 才看得见浏览器入口。同样在归属判定之前处理：它不属于任何一条会话。
+   */
+  if (ev.type === 'browser.state') {
+    setState('capabilities', (caps) => (caps ? { ...caps, browser: ev.browser } : caps))
+    return
+  }
+
   const from = frame.conversationId
   // 没有归属的是工作区级事件（git 状态那类），按当前会话算。
   const mine = !from || from === state.activeConversation

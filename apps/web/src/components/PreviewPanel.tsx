@@ -3,8 +3,11 @@ import { panelTabUrl, setPanelTabUrl } from '../lib/store/index.ts'
 import { IconRefresh } from './Icons.tsx'
 
 /**
- * 浏览器预览页：一条地址栏加一个 iframe。用来看本机起的服务（dev server、
+ * 网页预览页：一条地址栏加一个 iframe。用来看本机起的服务（dev server、
  * 自己写的页面），所以地址由用户给——**不猜端口**，猜出来的地址打不开比空着更费解。
+ *
+ * **它不是内置浏览器。** 内置浏览器是 Windows 桌面外壳里的原生子 WebView，
+ * 有登录状态、AI 操作得了（`BrowserPanel.tsx`）；这一页只能看。
  *
  * **只做「看」，不做浏览器的壳。** 没有前进 / 后退，也不回读当前地址：iframe 里是另一个源，
  * `contentWindow.history` 与 `location` 既读不到也调不动（同源策略）。做出来的按钮点了什么也不会发
@@ -33,7 +36,7 @@ function normalize(raw: string): string {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`
 }
 
-export default function BrowserPanel(props: { id: string }) {
+export default function PreviewPanel(props: { id: string }) {
   // 地址记在页签记录上，不记在组件里：收起面板这个组件就没了（见 `PanelTab.url`）。
   const url = () => panelTabUrl(props.id)
   const [draft, setDraft] = createSignal(url())

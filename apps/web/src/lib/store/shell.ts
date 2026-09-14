@@ -17,6 +17,18 @@ export function isDesktopShell(): boolean {
   return typeof (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ === 'object'
 }
 
+/**
+ * 这一端有没有内置浏览器的宿主实现。
+ *
+ * 内置浏览器是 Windows 桌面外壳独有的：它是挂在主窗口底下的原生子 WebView。
+ * **按 UA 判本机，不按服务端报的平台判**：服务端可能跑在另一台机器上，
+ * 而这里问的是「这个界面所在的窗口里能不能摆得下原生子视图」。
+ * 别的端走的是另一种能力（HTTP 网页预览），不是内置浏览器的降级形态。
+ */
+export function isNativeBrowserShell(): boolean {
+  return isDesktopShell() && /Windows/i.test(navigator.userAgent)
+}
+
 interface TauriInternals {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>
   /** 把一个 JS 回调换成 Rust 那边能 emit 回来的数字句柄。 */

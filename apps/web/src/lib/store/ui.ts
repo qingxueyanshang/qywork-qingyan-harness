@@ -5,7 +5,7 @@
  * 混进业务 store 只会让每次事件推送都要绕过大量与服务端无关的字段。
  */
 
-import { createSignal } from 'solid-js'
+import { createEffect, createSignal, onCleanup } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 
@@ -25,15 +25,17 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
 /**
  * 可多开的那几种页。
  *
- * `terminal` 只有桌面端有（PTY 是本机进程和一对系统句柄），`browser` 每一端都有
- * （就是一个 iframe）。**这一层不判端**：判在入口那边（`SidePanel` 的看板按
- * `isDesktopShell()` 决定列不列），这里只管开了哪几页。
+ * `terminal` 只有桌面端有（PTY 是本机进程和一对系统句柄）。`browser` 是 Windows
+ * 桌面外壳里的内置浏览器，一页就是一个原生子 WebView，页签 id 由宿主给；
+ * `preview` 是别的端上的 HTTP 网页预览，一页就是一个 iframe，地址由用户给。
+ * **两者不是同一件事的两档**：一个能被 AI 操作、有登录状态，另一个只能看。
+ * **这一层不判端**：判在入口那边（`SidePanel` 的看板），这里只管开了哪几页。
  *
  * `conversation` 与 `cli` 都没有看板入口：只能从图卡上点开（看哪一条由那张卡说了算），
  * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的来源不同：
  * 一个是子会话（有正文、有工具卡），一个是本机另一个进程写出来的一段流。
  */
-export type PanelTabKind = 'terminal' | 'browser' | 'conversation' | 'cli'
+export type PanelTabKind = 'terminal' | 'browser' | 'preview' | 'conversation' | 'cli'
 
 export interface PanelTab {
   id: string
@@ -46,11 +48,13 @@ export interface PanelTab {
    */
   title: string
   /**
-   * 浏览器页现在指着的地址。**这一页的地址只有这一份**：收起面板会把 `BrowserPanel`
+   * 网页预览页现在指着的地址。**这一页的地址只有这一份**：收起面板会把 `PreviewPanel`
    * 卸载，地址记在组件里的话再展开就是一个空地址栏。其余几种页没有这个字段。
    *
    * 只记地址，不保页面状态：iframe 从 DOM 上摘下来再插回去就是重新加载，
    * 这是浏览器的行为，前端这一侧没有第二条路。
+   *
+   * **内置浏览器页没有这个字段**：那一页的地址在原生宿主手里，前端只投影。
    */
   url?: string
 }
@@ -100,11 +104,11 @@ function disposeTab(id: string): void {
  * 每种页各自的序号。**只增不减**：关掉「终端 1」之后剩下那页仍然叫「终端 2」，
  * 不在用户眼皮底下改名。
  */
-const TAB_LABEL = { terminal: '终端', browser: '浏览器' } as const
+const TAB_LABEL = { terminal: '终端', preview: '网页预览' } as const
 type NumberedKind = keyof typeof TAB_LABEL
-const tabSeq: Record<NumberedKind, number> = { terminal: 0, browser: 0 }
+const tabSeq: Record<NumberedKind, number> = { terminal: 0, preview: 0 }
 
-/** 新开一页并翻到它。`url` 只有浏览器页用得上：新开出来就指着它。 */
+/** 新开一页并翻到它。`url` 只有网页预览页用得上：新开出来就指着它。 */
 export function openPanelTab(kind: NumberedKind, url?: string): void {
   tabSeq[kind] += 1
   const n = tabSeq[kind]
@@ -117,28 +121,58 @@ export function openPanelTab(kind: NumberedKind, url?: string): void {
 }
 
 /**
- * 在浏览器页里打开一个地址：正文里的链接点下去落在这里。
+ * 在网页预览页里打开一个地址。
  *
  * **已经有一页指着这个地址就翻回去**，不并排开出第二页——两页看同一个地址，
  * 内容逐字相同（同 `openConversationTab`）。
  */
-export function openBrowserTab(url: string): void {
-  const open = panelTabs().find((t) => t.kind === 'browser' && t.url === url)
+export function openPreviewTab(url: string): void {
+  const open = panelTabs().find((t) => t.kind === 'preview' && t.url === url)
   if (open) {
     setSidePanel({ tab: open.id })
     return
   }
-  openPanelTab('browser', url)
+  openPanelTab('preview', url)
 }
 
-/** 某一页现在指着的地址。没有地址（或不是浏览器页）时是空串。 */
+/** 某一页现在指着的地址。没有地址（或不是网页预览页）时是空串。 */
 export function panelTabUrl(id: string): string {
   return panelTabs().find((t) => t.id === id)?.url ?? ''
 }
 
-/** 浏览器页跳到另一个地址。 */
+/** 网页预览页跳到另一个地址。 */
 export function setPanelTabUrl(id: string, url: string): void {
   setTabs((list) => list.map((t) => (t.id === id ? { ...t, url } : t)))
+}
+
+/**
+ * 按宿主的存活页对齐内置浏览器的页签。**只投影**：这里加出来或去掉的页签
+ * 不反过来决定宿主开着哪几页，页签 id 就是宿主给的 tabId。
+ *
+ * 少了它，整页刷新之后页签是空的而原生页还在——那几页只能等应用退出时被收掉
+ * （同 `restoreTerminalTabs`）。
+ *
+ * 宿主那边已经没了的页**不走 `tabDisposers`**：它是「关掉这一页」的收尾，
+ * 而这一页已经被关掉了，再走一次就是对着一个不存在的 tabId 再关一次。
+ */
+export function syncBrowserTabs(tabs: readonly { id: string; title: string }[]): void {
+  const list = panelTabs()
+  const wanted = new Set(tabs.map((t) => t.id))
+  const known = new Set(list.map((t) => t.id))
+  const gone = list.filter((t) => t.kind === 'browser' && !wanted.has(t.id))
+  const added = tabs
+    .filter((t) => !known.has(t.id))
+    .map((t): PanelTab => ({ id: t.id, kind: 'browser', title: t.title }))
+  if (!gone.length && !added.length) return
+  const current = activePanelTab()
+  const orphaned = gone.find((t) => t.id === current)
+  for (const t of gone) tabDisposers.delete(t.id)
+  const kept = list.filter((t) => !gone.includes(t))
+  setTabs([...kept, ...added])
+  if (!orphaned) return
+  const i = list.indexOf(orphaned)
+  const next = list[i + 1] ?? list[i - 1]
+  setSidePanel(next && !gone.includes(next) ? { tab: next.id } : 'files')
 }
 
 /**
@@ -240,6 +274,33 @@ export function closeAllPanelTabs(): void {
   for (const t of panelTabs()) disposeTab(t.id)
   setTabs([])
   if (current) setSidePanel('files')
+}
+
+/**
+ * 此刻盖着多少个浮层（设置、确认框、新建项目）。
+ *
+ * **原生子视图按它让位。** 内置浏览器那一页是窗口的子 HWND，画在所有 DOM 之上，
+ * 浮层的 `z-index` 对它无效；不让位的话浮层被网页盖在下面。
+ * 浮层自己占一格而不是由这里嗅探 DOM：嗅探要挑一个 class 当判据，
+ * 而那个 class 改名不会有任何报错。
+ */
+const [overlays, setOverlays] = createSignal(0)
+
+export function overlayOpen(): boolean {
+  return overlays() > 0
+}
+
+/**
+ * 浮层出现时占一格，收起或组件卸载时还回去。必须在组件作用域里调。
+ *
+ * 收 `open` 而不是只看挂载：确认框那一类组件一直挂着，只有内容按 `open` 显示。
+ */
+export function holdOverlay(open: () => boolean): void {
+  createEffect(() => {
+    if (!open()) return
+    setOverlays((n) => n + 1)
+    onCleanup(() => setOverlays((n) => Math.max(0, n - 1)))
+  })
 }
 
 /**

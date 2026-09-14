@@ -13,6 +13,10 @@
  *
  * `localStorage` 是同样的理由：面板宽度要落盘，没有它整条走进 catch。
  *
+ * 覆盖范围（B6：一个 test 覆盖多个源文件时要在这里列清楚）：`store/ui.ts` 的面板宽度与
+ * 页签、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
+ * 归属过滤与能力投影替换、`store/settings.ts` 的 API 错误解释。
+ *
  * **别在这里断言「模块加载时读出来的宽度」**：`bun test` 一次跑多个文件共用一份
  * 模块表，`client.test.ts` 先一步 import 过 `client.ts`，`store/ui.ts` 在这几行
  * 补全局之前就已经求值完了。断言它的结果，单跑这个文件是绿的，跑全量是红的。
@@ -66,7 +70,7 @@ const {
   loadConversationChanges,
   loadConversationView,
   loadOlderConversationChanges,
-  openBrowserTab,
+  openPreviewTab,
   openConversationTab,
   openView,
   openPanel,
@@ -83,6 +87,7 @@ const {
   sendMessage,
   setPanelTabUrl,
   setSidePanel,
+  syncBrowserTabs,
   setState,
   sidePanel,
   state,
@@ -286,28 +291,57 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(activePanelTab()).toBe(panelTabs()[0]!.id)
   })
 
-  test('正文里的链接开出浏览器页，同一个地址再点是翻回去', () => {
+  test('正文里的链接开出网页预览页，同一个地址再点是翻回去', () => {
     reset()
-    openBrowserTab('http://localhost:8000')
+    openPreviewTab('http://localhost:8000')
     const [tab] = panelTabs()
-    expect(tab!.kind).toBe('browser')
+    expect(tab!.kind).toBe('preview')
     expect(tab!.url).toBe('http://localhost:8000')
 
     setSidePanel('files')
-    openBrowserTab('http://localhost:8000')
+    openPreviewTab('http://localhost:8000')
     expect(panelTabs().length).toBe(1)
     expect(activePanelTab()).toBe(tab!.id)
 
     // 地址栏跳走之后记的是新地址，翻回去认的也是它。
     setPanelTabUrl(tab!.id, 'http://localhost:8000/about')
-    openBrowserTab('http://localhost:8000')
+    openPreviewTab('http://localhost:8000')
     expect(panelTabs().length).toBe(2)
+  })
+
+  /**
+   * 内置浏览器的页签是**宿主存活页的投影**：整页刷新之后清单从宿主重建，
+   * 宿主那边关掉的页在这里消失，而且不回头再关一次那个已经没了的 tabId。
+   */
+  test('内置浏览器页签跟着宿主的存活页走', () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_1', title: '浏览器 1' },
+      { id: 'bt_2', title: '浏览器 2' },
+    ])
+    expect(panelTabs().map((t) => [t.id, t.kind, t.title])).toEqual([
+      ['bt_1', 'browser', '浏览器 1'],
+      ['bt_2', 'browser', '浏览器 2'],
+    ])
+
+    // 页签 id 就是宿主的 tabId，前端不另编一个。
+    setSidePanel({ tab: 'bt_2' })
+    let closed = 0
+    holdPanelTab('bt_2', () => {
+      closed += 1
+    })
+
+    // 宿主那边关掉 bt_2：页签跟着没，落到左边那页，收尾**不再走一遍**。
+    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1' }])
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_1'])
+    expect(activePanelTab()).toBe('bt_1')
+    expect(closed).toBe(0)
   })
 
   test('关掉当前那一页 —— 落到右边那页，不收起面板', () => {
     reset()
     openPanelTab('terminal')
-    openPanelTab('browser')
+    openPanelTab('preview')
     const [first, second] = panelTabs()
     setSidePanel({ tab: first!.id })
     closePanelTab(first!.id)
@@ -317,7 +351,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('关掉最右那一页 —— 落到左边那页', () => {
     reset()
     openPanelTab('terminal')
-    openPanelTab('browser')
+    openPanelTab('preview')
     const [first, second] = panelTabs()
     setSidePanel({ tab: second!.id })
     closePanelTab(second!.id)
@@ -326,7 +360,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
 
   test('关掉最后一页 —— 回文件视图而不是把面板收起来', () => {
     reset()
-    openPanelTab('browser')
+    openPanelTab('preview')
     closePanelTab(panelTabs()[0]!.id)
     expect(panelTabs().length).toBe(0)
     expect(sidePanel()).toBe('files')
@@ -335,7 +369,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('关掉的不是当前那一页 —— 当前这页不动', () => {
     reset()
     openPanelTab('terminal')
-    openPanelTab('browser')
+    openPanelTab('preview')
     const [first, second] = panelTabs()
     setSidePanel({ tab: second!.id })
     closePanelTab(first!.id)
@@ -364,7 +398,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('换项目把每一页都收掉', () => {
     reset()
     openPanelTab('terminal')
-    openPanelTab('browser')
+    openPanelTab('preview')
     let closed = 0
     for (const t of panelTabs()) {
       holdPanelTab(t.id, () => {
@@ -2765,5 +2799,38 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
       restore()
       dropView('cv_1')
     }
+  })
+})
+
+/**
+ * 内置浏览器能力投影（`store/connection.ts` 对 `browser.state` 的处理）。
+ *
+ * 原生宿主是应用启动之后才连上来的，握手那一份能力里它还没到；`browser.state`
+ * 是进程级事件，整份替换 `capabilities.browser`，界面据此决定露不露出浏览器入口。
+ */
+describe('内置浏览器能力投影', () => {
+  const caps = (connected: boolean) =>
+    ({
+      sandbox: { backend: 'none', active: false, reason: '' },
+      environment: [],
+      mode: 'auto',
+      browser: { connected, runtimeSupported: connected, pluginInstalled: connected },
+    }) as never
+
+  test('browser.state 整份替换能力投影，不是第二份状态', () => {
+    setState('capabilities', caps(false))
+    expect(state.capabilities?.browser.connected).toBe(false)
+    applyEvent({
+      seq: 2,
+      at: 0,
+      event: {
+        type: 'browser.state',
+        browser: { connected: true, runtimeSupported: true, pluginInstalled: true },
+      },
+    } as never)
+    expect(state.capabilities?.browser.connected).toBe(true)
+    expect(state.capabilities?.browser.runtimeSupported).toBe(true)
+    // 同一份投影里别的格子不受影响。
+    expect(state.capabilities?.mode).toBe('auto')
   })
 })

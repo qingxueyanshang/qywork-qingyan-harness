@@ -397,7 +397,7 @@
   color: var(--text-secondary);
 }
 
-/* ── 浏览器预览 ── */
+/* ── 内置浏览器与网页预览 ── */
 
 .web-panel {
   flex: 1;
@@ -433,6 +433,27 @@
   min-height: 0;
   width: 100%;
   border: none;
+}
+/* 内置浏览器的占位容器。网页是窗口的原生子视图，由宿主按这块地方的矩形摆上去，
+   所以这里不画底色也不画边框——画了只在子视图让位的那一刻闪一下。 */
+.web-view {
+  flex: 1;
+  min-height: 0;
+}
+/* 「交给 AI」与「停止」共用这一颗按钮。**宽度写死**：两个词长度不同，
+   不定宽的话地址栏会跟着变宽变窄，而用户正瞄着地址栏里的光标。 */
+.web-own {
+  flex: none;
+  width: 76px;
+  justify-content: center;
+}
+.web-error {
+  flex: none;
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  color: var(--danger);
 }
 
 /* ── 文件：内容 + 树 ── */

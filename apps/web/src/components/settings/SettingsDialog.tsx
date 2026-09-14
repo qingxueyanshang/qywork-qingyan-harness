@@ -1,5 +1,5 @@
 import { createEffect, lazy, Match, onCleanup, Suspense, Switch } from 'solid-js'
-import { closeSettings, settingsPage } from '../../lib/store/index.ts'
+import { closeSettings, holdOverlay, settingsPage } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
 import { GeneralSettings } from './GeneralSettings.tsx'
@@ -41,6 +41,9 @@ const SchedulesPanel = lazy(() =>
  * **尺寸写死。** 见 `settings.css` 里 `.settings-dialog` 那段：切类目不许改变对话框尺寸。
  */
 export function SettingsDialog() {
+  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  holdOverlay(() => true)
+
   createEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {

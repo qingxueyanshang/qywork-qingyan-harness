@@ -789,3 +789,54 @@ describe('变更页按轮', () => {
     expect(calls).toBe(2)
   })
 })
+
+/**
+ * 新开预览看板上那一行是哪一种页。
+ *
+ * 内置浏览器是 Windows 桌面外壳里的原生子视图，别的端摆不下它——服务端报宿主连着
+ * 也不能给这一端一个内置浏览器的入口，那是一个点了必然摆不出网页的按钮（B5）。
+ *
+ * 反过来，「网页预览」那一行**按端给，不按宿主连没连上给**：它是别的端真实的能力，
+ * 不是内置浏览器的备用路线。
+ */
+describe('看板按这一端真有的能力列行', () => {
+  test('不是桌面外壳时给网页预览，服务端报宿主连着也不给内置浏览器', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
+      nodes: [],
+    })
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    store.setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      environment: [],
+      mode: 'auto',
+      browser: {
+        connected: true,
+        runtimeSupported: true,
+        pluginInstalled: true,
+      },
+    })
+    store.setWorkspace({ id: 'ws_board', root: 'C:work', name: 'work' })
+    store.setSidePanel('files')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    host.querySelector<HTMLButtonElement>('[aria-label="新开预览"]')?.click()
+    await waitFor(
+      () => host.querySelectorAll('.board-item').length > 0,
+      () => host.innerHTML,
+    )
+    const labels = [...host.querySelectorAll('.board-label')].map((el) => el.textContent)
+    expect(labels).toContain('网页预览')
+    expect(labels).not.toContain('浏览器')
+    // 终端同理：PTY 在外壳的 Rust 侧，网页端没有。
+    expect(labels).not.toContain('终端')
+  })
+})

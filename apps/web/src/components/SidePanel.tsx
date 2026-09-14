@@ -21,6 +21,7 @@ import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
   absPath,
   activePanelTab,
+  browserReady,
   type ChangesView,
   type ChangeTurn,
   client,
@@ -28,8 +29,10 @@ import {
   closePanelTab,
   explainApiError,
   isDesktopShell,
+  isNativeBrowserShell,
   loadConversationChanges,
   loadOlderConversationChanges,
+  openBrowserTab,
   openFile,
   openFileInPanel,
   openPanelTab,
@@ -73,6 +76,9 @@ const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
 
 // 同样懒加载：不开浏览器页的人不必为它付首屏成本。
 const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
+
+// 网页预览页：没有内置浏览器的那几端用它。
+const PreviewPanel = lazy(() => import('./PreviewPanel.tsx'))
 
 // 子会话页：只有从工具卡上点开子 agent 才会加载。
 const ConversationPanel = lazy(() => import('./ConversationPanel.tsx'))
@@ -127,8 +133,9 @@ const DESKTOP = isDesktopShell()
  * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
  * 看板那段 JSX 一行不用改。
  *
- * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；浏览器就是一个
- * iframe，每一端都有。无限画布没有实现；Word / PPT 不在
+ * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；内置浏览器是
+ * Windows 桌面外壳里的原生子 WebView，要宿主连上才有，别的端换成 HTTP 网页预览
+ * （一个 iframe，只能看）。无限画布没有实现；Word / PPT 不在
  * `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
  * 二进制、走到 `looksBinary` 就退成「无法以文本预览」——真能开的只有 csv / tsv，
  * 那条路文件那一页本来就有。
@@ -139,24 +146,43 @@ const PREVIEW_SOURCES: {
   icon: (p: { size?: number }) => JSX.Element
   /** 缺席 = 这一项还没有后端。 */
   open?: () => void
-  /** 这一端不可能有，整行不渲染——和「以后会接上」的置灰是两回事。 */
-  desktopOnly?: true
+  /** 这一端没有，整行不渲染——和「以后会接上」的置灰是两回事。 */
+  show?: () => boolean
 }[] = [
   {
     key: 'terminal',
     label: '终端',
     icon: IconTerminal,
-    desktopOnly: true,
+    show: () => DESKTOP,
     open: () => openPanelTab('terminal'),
   },
-  { key: 'browser', label: '浏览器', icon: IconGlobe, open: () => openPanelTab('browser') },
+  {
+    key: 'browser',
+    label: '浏览器',
+    icon: IconGlobe,
+    show: browserReady,
+    open: () => void openBrowserTab(),
+  },
+  {
+    /*
+     * 网页预览**只在没有内置浏览器的那几端有**，不按「宿主连没连上」判。
+     * 按可用性判的话，Windows 外壳上宿主起不来就退成了 iframe——用户拿到的是一个
+     * 看起来一样、却没有登录状态也不受 AI 控制的页面，而他分辨不出来。
+     */
+    key: 'preview',
+    label: '网页预览',
+    icon: IconGlobe,
+    show: () => !isNativeBrowserShell(),
+    open: () => openPanelTab('preview'),
+  },
   { key: 'word', label: 'Word', icon: IconFile },
   { key: 'ppt', label: 'PPT', icon: IconFile },
   { key: 'excel', label: 'Excel', icon: IconFile },
   { key: 'canvas', label: '无限画布', icon: IconCanvas },
 ]
 
-const BOARD_ROWS = PREVIEW_SOURCES.filter((s) => DESKTOP || !s.desktopOnly)
+/** 每次渲染现算：内置浏览器要等宿主连上，那是应用启动之后才发生的事。 */
+const boardRows = () => PREVIEW_SOURCES.filter((s) => s.show?.() ?? true)
 
 /**
  * 右侧面板容器。固定的那几格（`VIEWS`）和可多开的那些页（`panelTabs`）共用同一块区域，
@@ -449,9 +475,12 @@ export default function SidePanel() {
                 {(t) => (
                   <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
                     <Suspense fallback={<div class="pane-loading" />}>
-                      <Switch fallback={<BrowserPanel id={t.id} />}>
+                      <Switch fallback={<PreviewPanel id={t.id} />}>
                         <Match when={t.kind === 'terminal'}>
                           <TerminalPanel id={t.id} />
+                        </Match>
+                        <Match when={t.kind === 'browser'}>
+                          <BrowserPanel id={t.id} />
                         </Match>
                         <Match when={t.kind === 'conversation'}>
                           <ConversationPanel id={t.id} />
@@ -489,7 +518,7 @@ export default function SidePanel() {
 function PreviewBoard(props: { onPick: () => void }) {
   return (
     <div class="preview-board">
-      <For each={BOARD_ROWS}>
+      <For each={boardRows()}>
         {(s) => (
           <button
             class="board-item"

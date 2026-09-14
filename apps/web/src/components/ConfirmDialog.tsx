@@ -1,4 +1,5 @@
 import { createEffect, onCleanup, Show } from 'solid-js'
+import { holdOverlay } from '../lib/store/index.ts'
 
 /**
  * 确认弹窗。
@@ -22,6 +23,9 @@ export function ConfirmDialog(props: {
   onConfirm: () => void
   onCancel: () => void
 }) {
+  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  holdOverlay(() => props.open)
+
   createEffect(() => {
     if (!props.open) return
     const onKey = (e: KeyboardEvent) => {

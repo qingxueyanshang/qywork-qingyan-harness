@@ -1,7 +1,10 @@
 /**
- * 覆盖 `App.tsx` 挂在根上的两个委托：`openLink`（正文里的链接落到右侧面板的浏览器页）
+ * 覆盖 `App.tsx` 挂在根上的两个委托：`openLink`（正文里的链接落到右侧面板）
  * 与 `copyCode`（代码块右上角的复制按钮）。两者的触发元素全部由 markdown 渲染产出，
  * 根上这一处是它们唯一的落点。
+ *
+ * 这里没有桌面外壳，因此链接落在网页预览页上；内置浏览器那条路要真实原生宿主，
+ * 由真实桌面应用上的验收覆盖。
  *
  * DOM 在这里装、用完卸掉，理由同 `components/RunStatus.test.tsx`。
  */
@@ -27,18 +30,18 @@ async function clickLink(html: string) {
 }
 
 describe('正文里的链接', () => {
-  test('落到右侧面板的浏览器页，并挡下默认跳转', async () => {
+  test('落到右侧面板的网页预览页，并挡下默认跳转', async () => {
     const store = await import('./lib/store/index.ts')
     store.closeAllPanelTabs()
     const event = await clickLink('<a href="http://localhost:8000">http://localhost:8000</a>')
     expect(event.defaultPrevented).toBe(true)
     const [tab] = store.panelTabs()
-    expect(tab?.kind).toBe('browser')
+    expect(tab?.kind).toBe('preview')
     expect(tab?.url).toBe('http://localhost:8000')
     store.closeAllPanelTabs()
   })
 
-  test('http(s) 之外的 scheme 不接管 —— 浏览器页只加载得了 http(s)', async () => {
+  test('http(s) 之外的 scheme 不接管 —— 那两种页都只加载得了 http(s)', async () => {
     const store = await import('./lib/store/index.ts')
     store.closeAllPanelTabs()
     const event = await clickLink('<a href="mailto:a@b.com">a@b.com</a>')

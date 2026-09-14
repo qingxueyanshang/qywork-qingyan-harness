@@ -22,7 +22,7 @@ import {
   exportActiveConversation,
   loadConversations,
   loadWorkspace,
-  openBrowserTab,
+  openLinkInPanel,
   PANEL_MIN,
   panelMaximized,
   panelWidth,
@@ -39,7 +39,7 @@ import {
 } from './lib/store/index.ts'
 
 /**
- * 正文里的链接落到右侧面板的浏览器页。
+ * 正文里的链接落到右侧面板：有内置浏览器就开一页真的网页，否则开网页预览。
  *
  * **挂在根上，不在每个渲染点各接一次**：应用里的 `<a>` 全部由 markdown 渲染产出
  * （模型正文、配置提醒），没有手写的锚点。
@@ -47,15 +47,16 @@ import {
  * 桌面外壳里 `target="_blank"` 什么也不会发生——WebView 没有开新窗口这回事，
  * 点了没反应。http(s) 之外的 scheme 不接管：浏览器页只加载得了 http(s)。
  *
- * **外站不一定框得进来**：`X-Frame-Options` / `frame-ancestors` 拒绝时那一页是空白，
- * 而跨源 iframe 的加载结果读不到，这一侧看不出被拒。
+ * **网页预览那条路上外站不一定框得进来**：`X-Frame-Options` / `frame-ancestors`
+ * 拒绝时那一页是空白，而跨源 iframe 的加载结果读不到，这一侧看不出被拒。
+ * 内置浏览器不受此限，它是真实的浏览器页。
  */
 export function openLink(e: MouseEvent): void {
   const link = (e.target as Element).closest('a')
   const href = link?.getAttribute('href') ?? ''
   if (!/^https?:\/\//i.test(href)) return
   e.preventDefault()
-  openBrowserTab(href)
+  openLinkInPanel(href)
 }
 
 /** 复制回执停留的时长。短于这个数看不清图标换过，长了会跨到下一次点击。 */

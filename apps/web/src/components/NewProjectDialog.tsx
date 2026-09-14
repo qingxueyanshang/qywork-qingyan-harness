@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
-import { pickWorkspace, type WorkspaceInput } from '../lib/store/index.ts'
+import { holdOverlay, pickWorkspace, type WorkspaceInput } from '../lib/store/index.ts'
 import { IconFolder, IconPlus } from './Icons.tsx'
 
 /**
@@ -26,6 +26,9 @@ export function NewProjectDialog(props: {
   const [folder, setFolder] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+
+  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  holdOverlay(() => props.open)
 
   // 每次打开都是干净的一张表：留着上一次的输入读起来像是它记住了什么。
   createEffect(() => {
