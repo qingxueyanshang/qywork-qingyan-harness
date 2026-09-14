@@ -25,6 +25,7 @@ import type {
   ToolActionStatus,
   ToolOutcomeWire,
 } from '../domain/model.ts'
+import type { BrowserCapability } from './transport.ts'
 
 export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
   /** 本连接内全序单调递增，从 1 开始。 */
@@ -72,6 +73,7 @@ export type AgentEvent =
   // ── 工作区实时性 ──
   | FileChangedEvent
   | GitStateEvent
+  | BrowserStateEvent
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
@@ -479,6 +481,18 @@ export interface GitStateEvent {
    * 不走这条事件。
    */
   branch: string
+}
+
+/**
+ * 内置浏览器能力变了。**进程级事件，信封上不带 `conversationId`。**
+ *
+ * 握手只报一次，而原生宿主是应用启动后才连上来的：只有握手那一份时，
+ * 界面要等下一次重连才看得见浏览器入口。这条事件与握手里的 `capabilities.browser`
+ * 是同一份投影，客户端就地替换。
+ */
+export interface BrowserStateEvent {
+  type: 'browser.state'
+  browser: BrowserCapability
 }
 
 // ─────────────────────────────── 多智能体 ───────────────────────────────

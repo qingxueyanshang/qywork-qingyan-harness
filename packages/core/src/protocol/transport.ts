@@ -137,10 +137,34 @@ export interface ServerCapabilities {
    * 客户端只显示与请求修改，不自己存一份。
    */
   mode: PermissionMode
+  /**
+   * 内置浏览器。**三件事分开报，不合成一个布尔。**
+   *
+   * 合成之后「插件没装」会被读成「浏览器用不了」，而手动浏览此时照常可用；
+   * 反过来把插件装上也不会让一个版本不达标的运行时变得可控。
+   *
+   * 与 PTY 不同，这条服务端知情：原生宿主是连到服务端的，版本由它上报，
+   * 插件装在全局目录里。宿主连接变化时由 `browser.state` 事件更新同一份投影。
+   */
+  browser: BrowserCapability
   // 思考强度**不在这里**。它是「接口 × 模型」那一格的属性，而握手是连接级、
   // 只报一次——报上来的那个值在用户切一次模型之后就不再成立。
   // 它随模型目录一起下发（`/api/models` 每行的 `effort`），与该模型的
   // `effortLevels` 同源，前端一处读。
+}
+
+/**
+ * 内置浏览器此刻可用到什么程度。
+ *
+ * `connected` 单独成立即可手动浏览；AI 控制要三项同时成立。
+ */
+export interface BrowserCapability {
+  /** 原生浏览器宿主已连上服务端。手动浏览的唯一判据。 */
+  connected: boolean
+  /** 宿主上报的 WebView2 Runtime 版本达到 AI 控制的下限。宿主没连上时为 `false`。 */
+  runtimeSupported: boolean
+  /** 全局插件目录里装着声明 `browser:control` 的插件。 */
+  pluginInstalled: boolean
 }
 
 /**

@@ -1,0 +1,58 @@
+{
+  "hostReady": {
+    "type": "host.ready",
+    "hostInstanceId": "6f2a0c11",
+    "connectionEpoch": 3,
+    "platform": "windows",
+    "runtimeVersion": "152.0.4191.66",
+    "debugPort": 51234,
+    "tabs": [
+      {
+        "tabId": "bt_1",
+        "url": "http://127.0.0.1:9000/page",
+        "title": "夹具页",
+        "marker": "9a3f",
+        "conversationId": "cv_a1"
+      },
+      {
+        "tabId": "bt_2",
+        "url": "http://127.0.0.1:9000/page",
+        "title": "夹具页",
+        "marker": "b1c4",
+        "conversationId": null
+      }
+    ]
+  },
+  "request": {
+    "type": "browser.request",
+    "requestId": "br_12",
+    "connectionEpoch": 3,
+    "deadline": 1757744400000,
+    "op": "download.arm",
+    "tabId": "bt_1",
+    "conversationId": "cv_a1",
+    "path": "D:\\work\\out.bin"
+  },
+  "result": {
+    "type": "browser.result",
+    "requestId": "br_12",
+    "connectionEpoch": 3,
+    "ok": true,
+    "data": {
+      "tabId": "bt_1",
+      "marker": "9a3f",
+      "url": "http://127.0.0.1:9000/page",
+      "title": "夹具页"
+    }
+  },
+  "event": {
+    "type": "browser.event",
+    "connectionEpoch": 3,
+    "seq": 11,
+    "kind": "download.blocked",
+    "tabId": "bt_1",
+    "url": "http://127.0.0.1:9000/file.bin",
+    "reason": "unauthorized",
+    "suggestedName": "file.bin"
+  }
+}

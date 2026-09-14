@@ -169,6 +169,7 @@ export type {
   ActionDescriptor,
   ActionKind,
   AgentEvent,
+  BrowserStateEvent,
   ErrorCode,
   EventEnvelope,
   GitStateEvent,
@@ -184,8 +185,24 @@ export type {
   ConversationUsageResponse,
   UsageResponse,
 } from './protocol/http.ts'
+// 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按这一份编解码
+export {
+  BROWSER_EVENT_KINDS,
+  type BrowserEventFrame,
+  type BrowserEventKind,
+  type BrowserOp,
+  type BrowserRequestFrame,
+  type BrowserResultFrame,
+  type BrowserTabSnapshot,
+  type DownloadBlockReason,
+  type HostReadyFrame,
+  NATIVE_BROWSER_KEY_HEADER,
+  NATIVE_BROWSER_PATH,
+  type NativeBrowserUpFrame,
+} from './protocol/native-browser.ts'
 // 客户端 → 服务端的指令、握手与配对
 export {
+  type BrowserCapability,
   type ClientCommand,
   type ClientOrigin,
   type CommandRejectedFrame,
