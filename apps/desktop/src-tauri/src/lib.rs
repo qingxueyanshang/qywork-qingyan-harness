@@ -14,6 +14,7 @@
 //! 机器上跑任意命令」开到局域网上。再要开例外，先说清楚为什么这件事**在结构上**
 //! 到不了另一端，而不只是这边实现起来更简单。
 
+mod browser;
 mod logfile;
 mod sidecar;
 mod terminal;
@@ -263,7 +264,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(desktop)]
 fn show_main_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+    // 必须按窗口取，不能按 webview window 取：浏览器宿主给主窗口加了子 webview 之后，
+    // 同一个窗口下的 webview label 不再只有一个，`get_webview_window` 恒为 None。
+    let Some(window) = app.get_window("main") else {
         return;
     };
     log::info!("主窗口从托盘打开");
@@ -385,6 +388,26 @@ fn remember_workspace(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 宿主连接的凭据。
+///
+/// 发布版由本进程现生成并经环境变量交给它自己拉起的 sidecar；开发版的 sidecar 由
+/// `scripts/dev.ts` 拉起，凭据由它生成，这里只接收。两种模式走同一条宿主路径。
+///
+/// 非 Windows 没有原生浏览器宿主，返回 `None` 即这条能力整条不存在。
+#[cfg(windows)]
+fn browser_host_key() -> Option<String> {
+    if tauri::is_dev() {
+        std::env::var("QYWORK_BROWSER_KEY").ok().filter(|v| !v.is_empty())
+    } else {
+        Some(browser::new_host_key()).filter(|v| !v.is_empty())
+    }
+}
+
+#[cfg(not(windows))]
+fn browser_host_key() -> Option<String> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 只能装一次；装不上（已有别的 logger）就沿用那一个。
@@ -428,11 +451,17 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
+            browser::commands::browser_tabs,
+            browser::commands::browser_open,
+            browser::commands::browser_close,
+            browser::commands::browser_navigate,
+            browser::commands::browser_layout,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             let workspace = resolve_workspace();
 
+            let browser_key = browser_host_key();
             let started = tauri::async_runtime::block_on(async move {
                 // 后端与页面必须出自同一次构建。devUrl 模式下页面是 Vite 里的源码，
                 // 后端只能是 dev.ts 从同一棵源码树起的那个；`bin/qy` 是上一次
@@ -452,7 +481,7 @@ pub fn run() {
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    sidecar::spawn(&handle, &arg).await?
+                    sidecar::spawn(&handle, &arg, browser_key.as_deref()).await?
                 };
 
                 // 令牌走初始化脚本注入，而不是等前端来调命令：
@@ -466,6 +495,12 @@ pub fn run() {
                 build_main_window(&handle, &script)?;
                 #[cfg(desktop)]
                 build_tray(&handle)?;
+
+                // 宿主要在主窗口之后起：子 WebView 挂在它底下。
+                #[cfg(windows)]
+                if let Some(key) = browser_key {
+                    browser::start(&handle, info.port, key);
+                }
 
                 Ok::<(), Box<dyn std::error::Error>>(())
             });
@@ -498,6 +533,8 @@ pub fn run() {
                 // 终端里的 shell 也是子进程，同一条理由要显式杀掉：留下来会持有
                 // 工作区里的文件句柄，用户下一次删目录会被拒。
                 terminal::shutdown(&app.state::<terminal::TerminalHandle>());
+                #[cfg(windows)]
+                browser::shutdown();
                 sidecar::shutdown(app);
             }
         });

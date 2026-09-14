@@ -32,6 +32,9 @@ apps/web/dist/
 packages/*/dist/
 # tauri-build 每次构建重生成；`capabilities/default.json` 只把它当 IDE 的 $schema 指针用。
 apps/desktop/src-tauri/gen/
+# 应用命令的 ACL 权限文件，由 build.rs 按 `APP_COMMANDS` 逐条生成。
+# 入库等于把那份命令清单再抄一遍，改一处就会漂移。
+apps/desktop/src-tauri/permissions/
 
 # 脚本的临时工作区与产物。全部落 `.tmp/<用途>`，根目录不再各开一个点目录；
 # 由 scripts/temp-dir.test.ts 在门禁里扫住。

@@ -19,7 +19,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # `tray-icon`：关闭按钮只把主窗口收进托盘，进程从托盘菜单退出，见 lib.rs 的 `build_tray`。
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable`：`Window::add_child` 只在这个开关下存在，浏览器宿主的子 WebView 靠它建出。
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -44,6 +45,10 @@ windows = { version = "0.61", features = [
   "Win32_UI_Controls",
   # 启动失败时弹 MessageBoxW。它不依赖 WebView，正好覆盖「窗口还没建出来」那段。
   "Win32_UI_WindowsAndMessaging",
+  # 浏览器 profile 的本机占用锁（CreateMutexW）与宿主凭据的随机数（BCryptGenRandom）。
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_System_Threading",
 ] }
 
 [features]

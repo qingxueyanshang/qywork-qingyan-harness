@@ -91,6 +91,7 @@ fn spawn_process(
     token: Option<&str>,
     workspace: &str,
     previous_exit: Option<&PreviousExit>,
+    browser_key: Option<&str>,
 ) -> Result<(Receiver<CommandEvent>, CommandChild)> {
     let mut args = vec![
         "serve".to_string(),
@@ -119,6 +120,11 @@ fn spawn_process(
         // CLI 的 serve 以这一变量作为显式令牌。恢复时必须复用，否则旧 WebView
         // 会拿原令牌连到同一端口，再被永久判成 unauthorized。
         command = command.env("QYWORK_TOKEN", value);
+    }
+    if let Some(value) = browser_key {
+        // 浏览器宿主连接的凭据。只交给这一个子进程：它不注入页面、不进命令行参数、
+        // 不落盘，也不传给插件。恢复时复用同一份，否则宿主连不回新起的 sidecar。
+        command = command.env("QYWORK_BROWSER_KEY", value);
     }
     if let Some(exit) = previous_exit {
         command = command
@@ -227,7 +233,12 @@ async fn handshake_with_timeout(
  * sidecar 一旦退出，前端只会永远重连旧端口。现在恢复仍复用同一端口与令牌；新的
  * streamId 会让连接层走已有的 resync，全量从账本重建会话。
  */
-fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) {
+fn supervise(
+    app: AppHandle,
+    info: SidecarInfo,
+    mut rx: Receiver<CommandEvent>,
+    browser_key: Option<String>,
+) {
     tauri::async_runtime::spawn(async move {
         let mut stderr_tail = String::new();
         loop {
@@ -295,7 +306,14 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
                     return;
                 }
 
-                match spawn_process(&app, info.port, Some(&info.token), "", Some(&previous_exit)) {
+                match spawn_process(
+                    &app,
+                    info.port,
+                    Some(&info.token),
+                    "",
+                    Some(&previous_exit),
+                    browser_key.as_deref(),
+                ) {
                     Ok((mut next_rx, child)) => {
                         if !hold_child(&handle, child) {
                             return;
@@ -334,8 +352,12 @@ fn supervise(app: AppHandle, info: SidecarInfo, mut rx: Receiver<CommandEvent>) 
 /// 启动 sidecar 并等它报出令牌与端口。
 ///
 /// `--port 0` 让内核挑空闲端口：写死端口会在用户同时开两个工作区时直接撞车。
-pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
-    let (mut rx, child) = spawn_process(app, 0, None, workspace, None)?;
+pub async fn spawn(
+    app: &AppHandle,
+    workspace: &str,
+    browser_key: Option<&str>,
+) -> Result<SidecarInfo> {
+    let (mut rx, child) = spawn_process(app, 0, None, workspace, None, browser_key)?;
     let pid = child.pid();
 
     let handle = app.state::<SidecarHandle>();
@@ -359,7 +381,7 @@ pub async fn spawn(app: &AppHandle, workspace: &str) -> Result<SidecarInfo> {
     match handshake_with_timeout(&mut rx, &mut tail).await {
         Ok(info) => {
             log::info!("qy serve 已拉起 pid={pid} port={}", info.port);
-            supervise(app.clone(), info.clone(), rx);
+            supervise(app.clone(), info.clone(), rx, browser_key.map(str::to_owned));
             Ok(info)
         }
         Err(error) => {

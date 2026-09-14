@@ -1,7 +1,29 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "qywork 桌面外壳所需的最小权限集。这里只授给 WebView 里的 JS——Rust 侧调用不经这层 ACL，所以能删的都删了，见 README 段注释。",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "description": "qywork 桌面外壳所需的最小权限集。这里只授给主界面 WebView 里的 JS——Rust 侧调用不经这层 ACL，所以能删的都删了，见 README 段注释。作用域按 webview 而不是 window：主窗口底下还挂着浏览器宿主的外部网页子视图，按 window 授权会把它们一并放进来。",
+  "webviews": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-pick-workspace",
+    "allow-pick-files",
+    "allow-save-session-export",
+    "allow-reveal-workspace",
+    "allow-remember-workspace",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-close",
+    "allow-window-is-maximized",
+    "allow-terminal-open",
+    "allow-terminal-list",
+    "allow-terminal-write",
+    "allow-terminal-resize",
+    "allow-terminal-close",
+    "allow-browser-tabs",
+    "allow-browser-open",
+    "allow-browser-close",
+    "allow-browser-navigate",
+    "allow-browser-layout"
+  ]
 }
