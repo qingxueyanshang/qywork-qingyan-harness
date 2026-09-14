@@ -298,6 +298,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
     // 已经归档过的回 false。这里当成功处理：用户要的终态（不在列表里）已经成立。
     archiveConversation(d.store, id)
+    // 归档即关它名下的内置浏览器 AI 页——归档后它不再在列表里，页留着就是孤儿。
+    await d.closeBrowserPages(id)
     return json({ ok: true })
   }
 
@@ -342,6 +344,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (req.method === 'DELETE') {
       if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
       if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
+      // 先关它名下的内置浏览器 AI 页：会话没了，页归属就无从追溯，留着即孤儿。
+      await d.closeBrowserPages(id)
       deleteConversation(d.store, id)
       /*
        * 附件目录跟着会话一起走。**只删这一个目录，不按 `Attachment.path` 逐条删**

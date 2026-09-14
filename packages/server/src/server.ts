@@ -13,7 +13,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
-import { log } from '@qywork/core'
+import { log, NATIVE_BROWSER_PATH } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   acquireExtensions,
@@ -34,6 +34,9 @@ import {
 } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import { handleApi, json } from './api/index.ts'
+import { BrowserBridge } from './browser/bridge.ts'
+import { browserCapability } from './browser/capability.ts'
+import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -71,6 +74,13 @@ export interface ServeOptions {
   staticDir?: string
   /** 由外部注入的令牌（Tauri spawn 时用环境变量传），不传则自己生成。 */
   token?: string
+  /**
+   * 原生浏览器宿主连接的凭据（桌面外壳 spawn 时用环境变量传）。
+   *
+   * **不传就没有这条路径**：`/native/browser` 不接受任何连接，浏览器控制能力
+   * 整条不发布。不给它一个默认值——默认值等于人人都能注册宿主。
+   */
+  browserHostKey?: string
   /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
   previousProcessExit?: ProcessExitObservation
   /**
@@ -134,6 +144,21 @@ export function serve(opts: ServeOptions) {
   // 在跑的子 agent 与 run 同级：它们的生命期跟着会话，不跟着派它们的那一轮。
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
+  /*
+   * 浏览器宿主连接与控制协调器。**没有凭据就没有这两样**：宿主路径不接受连接，
+   * 会话装配也拿不到端口，界面上不会出现一个点了报错的入口。
+   */
+  const browserBridge = opts.browserHostKey ? new BrowserBridge(opts.browserHostKey) : null
+  const browser = browserBridge ? new BrowserCoordinator(browserBridge) : null
+  /*
+   * 宿主连上 / 断开时把能力投影重播一份。
+   *
+   * 握手只报一次，而宿主是应用起来之后才连上来的：只有握手那一份的话，界面要等
+   * 下一次重连才看得见浏览器入口。判定与握手共用 `browserCapability`。
+   */
+  const offBrowserHost = browserBridge?.onHostChange(() => {
+    bus.publish({ type: 'browser.state', browser: browserCapability(browserBridge) })
+  })
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
   const pairing = new Pairing({
@@ -261,6 +286,7 @@ export function serve(opts: ServeOptions) {
           bus,
           runs,
           subagents,
+          ...(browser ? { browser } : {}),
         }),
     },
     opts.schedulerTickMs,
@@ -316,6 +342,28 @@ export function serve(opts: ServeOptions) {
     async fetch(req: Request, srv: Bun.Server<SocketData>) {
       const url = new URL(req.url)
 
+      /*
+       * ── 原生浏览器宿主连接 ──
+       *
+       * 必须排在 `/stream` 之前单独判：它不验配对令牌，验的是宿主凭据加回环地址，
+       * 而且升级后走的是另一条帧处理路径。
+       */
+      if (url.pathname === NATIVE_BROWSER_PATH) {
+        if (!browserBridge?.accepts(req, srv.requestIP(req)?.address ?? null)) {
+          return new Response('unauthorized', { status: 401 })
+        }
+        const ok = srv.upgrade(req, {
+          data: {
+            id: crypto.randomUUID(),
+            authed: true,
+            origin: 'cli' as const,
+            native: true,
+            openedAt: Date.now(),
+          },
+        })
+        return ok ? undefined : new Response('upgrade failed', { status: 400 })
+      }
+
       // ── WebSocket 升级 ──
       if (url.pathname === '/stream') {
         // 握手期就验令牌：不让未授权连接进入 ws 生命周期。
@@ -327,6 +375,7 @@ export function serve(opts: ServeOptions) {
             id: crypto.randomUUID(),
             authed: true,
             origin: (url.searchParams.get('origin') as SocketData['origin']) ?? 'external',
+            native: false,
             openedAt: Date.now(),
           },
         })
@@ -372,10 +421,13 @@ export function serve(opts: ServeOptions) {
                 bus,
                 runs,
                 subagents,
+                ...(browser ? { browser } : {}),
               })
             },
             watchGit: () => gitWatch.retarget(),
             collectGarbage,
+            closeBrowserPages: (conversationId) =>
+              browser?.closeConversation(conversationId) ?? Promise.resolve(),
           })
           if (res) return withCors(res)
         } catch (err) {
@@ -394,6 +446,11 @@ export function serve(opts: ServeOptions) {
 
     websocket: {
       async message(ws: ServerWebSocket<SocketData>, raw: string | Buffer) {
+        // 宿主连接只走资源操作，聊天指令一概不在这条路径上解析。
+        if (ws.data.native) {
+          browserBridge?.message(ws, String(raw))
+          return
+        }
         let frame: HelloFrame | ClientCommand
         try {
           frame = JSON.parse(String(raw))
@@ -409,6 +466,7 @@ export function serve(opts: ServeOptions) {
             unsubscribers,
             config: opts.config,
             runs,
+            browser: () => browserCapability(browserBridge),
             announceGit: () => gitWatch.announce(),
           })
           return
@@ -422,9 +480,15 @@ export function serve(opts: ServeOptions) {
           bus,
           runs,
           subagents,
+          ...(browser ? { browser } : {}),
         })
       },
       open(ws: ServerWebSocket<SocketData>) {
+        if (ws.data.native) {
+          browserBridge?.open(ws)
+          log.info('ws', 'open', { id: ws.data.id, origin: 'native-browser' })
+          return
+        }
         log.info('ws', 'open', { id: ws.data.id, origin: ws.data.origin })
       },
       /*
@@ -440,6 +504,10 @@ export function serve(opts: ServeOptions) {
           reason,
           seconds: Math.round((Date.now() - ws.data.openedAt) / 1000),
         })
+        if (ws.data.native) {
+          browserBridge?.close(ws)
+          return
+        }
         unsubscribers.get(ws.data.id)?.()
         unsubscribers.delete(ws.data.id)
       },
@@ -468,6 +536,7 @@ export function serve(opts: ServeOptions) {
     runs,
     content,
     token,
+    browser,
     port: boundPort,
     // 启动横幅要显示的是**真正生效的**工作区。调用方传进来的可能是 null
     // （没给 --cwd），那时由 bootstrapWorkspace 决定用哪个，只有这里知道结果。
@@ -481,6 +550,8 @@ export function serve(opts: ServeOptions) {
       log.info('server', '停止服务', { port: boundPort })
       scheduler.stop()
       gitWatch.stop()
+      offBrowserHost?.()
+      browser?.stop()
       runs.interruptAll()
       // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。
       subagents.interruptAll()

@@ -67,6 +67,8 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
     // 而集成部分 `e2e.test.ts` 已经覆盖了。
     runs: { isBusy: () => false },
     bus: { publish: () => {} },
+    // 归档 / 删除会话时关它名下的内置浏览器页。没有宿主时是一次空操作。
+    closeBrowserPages: async () => {},
     enableLan: () => {
       lan = true
       return { port: 7788 }

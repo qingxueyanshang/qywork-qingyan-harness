@@ -11,6 +11,7 @@
 
 import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qywork/core'
 import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
+import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
 
@@ -159,6 +160,13 @@ export async function runBuiltinMember(
    * 传进来。这样父会话停止仍会中断成员；RunManager 的统一停止/关服路径也能直接
    * 中断这条子 run，不需要另造一份“子会话忙闲”。
    */
+  /*
+   * 派它的那条顶层会话。子会话的归属只在建的时候写得对，事后从别处推不回来，
+   * 所以直接读账本那一格；没有父会话的（顶层自己跑）就是它自己。
+   */
+  const ownerConversation =
+    getConversation(deps.store, input.conversationId)?.parentConversationId ?? input.conversationId
+
   const controller = new AbortController()
   const abortFromParent = () => controller.abort(input.signal.reason)
   if (input.signal.aborted) abortFromParent()
@@ -172,6 +180,16 @@ export async function runBuiltinMember(
     signal: controller.signal,
     ...(extraSystem ? { extraSystem } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
+    /*
+     * 成员会话与顶层会话走同一条判定，也各自领一份控制身份：一个宿主同一时刻
+     * 只有一个执行控制浏览器，第二个拿到 busy。不接这里的代价是另一条入口
+     * 默认没有浏览器却也说不出原因。
+     *
+     * **控制归属记的是派它的那条顶层会话**：界面上的「停止」发
+     * `conversation.interrupt`，而那条指令只认顶层会话（它连带停掉名下的子 agent）。
+     * 记成员会话 id 的话，那颗按钮停不到任何一轮。
+     */
+    ...(deps.browser?.available() ? { browser: deps.browser.portFor(ownerConversation) } : {}),
   })
 
   let text = ''

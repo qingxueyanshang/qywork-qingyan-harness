@@ -75,6 +75,11 @@ function shake(
       unsubscribers: new Map(),
       config: { active: { provider: 'p', model: 'm' }, providers: {} },
       runs,
+      browser: () => ({
+        connected: false,
+        runtimeSupported: false,
+        pluginInstalled: false,
+      }),
       announceGit: () => {},
     },
   )

@@ -60,7 +60,7 @@ function generateToken(): string {
  * 定长比较。长度不同直接返回 false 是可以的（长度本身不是秘密），
  * 但内容比较必须走完全程，不能命中第一个不同字符就返回。
  */
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   let diff = 0
   for (let i = 0; i < a.length; i++) {

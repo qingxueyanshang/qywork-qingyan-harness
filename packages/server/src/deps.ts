@@ -8,6 +8,7 @@
 import type { QyConfig } from '@qywork/runtime'
 import type { ContentStore, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
+import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
 import type { RunManager } from './runs.ts'
 import type { SubagentRegistry } from './subagents.ts'
@@ -29,6 +30,11 @@ export interface CommandDeps {
   runs: RunManager
   /** 在跑的子 agent。生命期跟会话，所以它与 `runs` 同级，不挂在派活通道上。 */
   subagents: SubagentRegistry
+  /**
+   * 内置浏览器的控制协调器。**没有原生宿主时不传**——会话装配据此决定
+   * 要不要给这一轮浏览器能力，不给一个必然报错的端口。
+   */
+  browser?: BrowserCoordinator
 }
 
 /** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */
@@ -36,6 +42,13 @@ export interface SocketData {
   id: string
   authed: boolean
   origin: 'desktop' | 'mobile' | 'cli' | 'external'
+  /**
+   * 这是不是原生浏览器宿主连接。
+   *
+   * **由服务端在升级时判定并写死**，不看客户端自报的 `origin`：宿主帧与聊天指令
+   * 走两条完全不同的处理路径，靠自报字段区分等于让任何已配对客户端注册宿主。
+   */
+  native: boolean
   /** 升级成功的时刻，关闭时算这条连接活了多久。 */
   openedAt: number
 }

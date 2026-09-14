@@ -9,7 +9,7 @@
  * 打包时出自同一次构建。完整理由写在 `HelloFrame` 的注释里。
  */
 
-import type { EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
+import type { BrowserCapability, EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
 import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
@@ -37,6 +37,13 @@ export function handleHello(
     config: QyConfig
     /** 报「此刻哪几条会话在跑」的那份权威，见 `busyConversations`。 */
     runs: RunManager
+    /**
+     * 内置浏览器此刻可用到什么程度。
+     *
+     * **现取而不是传一份快照**：宿主是应用启动后才连上来的，握手与
+     * `browser.state` 事件必须读同一份判定，各存一份必然在重连那一刻分叉。
+     */
+    browser(): BrowserCapability
     /**
      * 当前分支名广播一份。
      *
@@ -114,6 +121,7 @@ export function handleHello(
       // 而不是让用户重启整个服务——他不会知道要重启。这几个探针都不缓存。
       environment: probeEnvironment(),
       mode: deps.config.mode ?? 'auto',
+      browser: deps.browser(),
     },
   }
   ws.send(JSON.stringify(ok))
