@@ -72,7 +72,8 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   }
 
   let conversationId: ConversationId | undefined
-  let model = config.active.model
+  // 出厂不预设模型：没配时是 undefined，`/model` 可切、发送时由 session.ask 兜底拒绝。
+  let model = config.active?.model
   /** 当前这一轮的中断句柄。null = 空闲。 */
   let running: AbortController | null = null
   let quitting = false
@@ -92,7 +93,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
 
   process.stdout.write(
     `${BOLD}qywork${RESET} ${DIM}${workspaceRoot}${RESET}\n` +
-      `${DIM}模型 ${model} · /help 看命令${RESET}\n\n`,
+      `${DIM}模型 ${model ?? '未配置（/model 选一个或去设置里配）'} · /help 看命令${RESET}\n\n`,
   )
 
   try {
@@ -134,7 +135,9 @@ export async function runTui(workspaceRoot: string): Promise<number> {
       })
 
       try {
-        for await (const ev of session.ask(input, conversationId, { model })) {
+        for await (const ev of session.ask(input, conversationId, {
+          ...(model ? { model } : {}),
+        })) {
           if (ev.type === 'run.started') conversationId = ev.conversationId
           render(ev)
         }
@@ -163,7 +166,7 @@ export interface CommandContext {
   config: QyConfig
   readonly conversationId: ConversationId | undefined
   setConversation(id: ConversationId | undefined): void
-  readonly model: string
+  readonly model: string | undefined
   setModel(m: string): void
 }
 
@@ -189,7 +192,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       if (!arg) {
         const names = Object.values(ctx.config.providers).flatMap((p) => Object.keys(p.models))
         process.stdout.write(
-          `当前 ${BOLD}${ctx.model}${RESET}\n${DIM}配置里有：${names.join('、')}${RESET}\n`,
+          `当前 ${BOLD}${ctx.model ?? '未配置'}${RESET}\n${DIM}配置里有：${names.join('、') || '（空）'}${RESET}\n`,
         )
         return 'ok'
       }

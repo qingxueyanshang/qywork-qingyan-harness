@@ -140,8 +140,10 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
               : [
                   createConversation(d.store, {
                     workspaceId: workspace.id,
-                    provider: d.config.active.provider,
-                    model: d.config.active.model,
+                    // 没配默认模型时留空：会话建得出来，发送在起 run 前被 no_model 拦下，
+                    // 界面引导用户在选择器里挑一个模型。
+                    provider: d.config.active?.provider ?? '',
+                    model: d.config.active?.model ?? '',
                   }),
                 ]
           return { workspace, conversations }

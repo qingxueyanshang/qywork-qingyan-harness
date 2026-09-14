@@ -126,7 +126,7 @@ async function main(): Promise<number> {
 
   const store = new Store({ path: DB })
   const config = await loadConfig()
-  process.stdout.write(`\n父会话模型 ${config.active.model}\n\n`)
+  process.stdout.write(`\n父会话模型 ${config.active?.model ?? '（未配置）'}\n\n`)
 
   {
     const h = serve({ store, config, workspaceRoot: WS_GIT, port: 0, host: '127.0.0.1' })

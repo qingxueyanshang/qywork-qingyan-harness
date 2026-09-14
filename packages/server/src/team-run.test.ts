@@ -31,7 +31,16 @@ describe('成员会话的选型', () => {
   })
 
   test('没有可继承的那一对时才落回配置默认', () => {
-    expect(memberModel({ id: 'ad-hoc' }, config)).toEqual(config.active)
+    expect(memberModel({ id: 'ad-hoc' }, config)).toEqual({
+      provider: '默认接口',
+      model: 'm-default',
+    })
+  })
+
+  test('既没继承也没配置默认模型时明确回错，不返回一个没有模型的对', () => {
+    const noModel = { providers: config.providers } as unknown as QyConfig
+    const r = memberModel({ id: 'ad-hoc' }, noModel)
+    expect('error' in r).toBe(true)
   })
 
   test('角色点名了接口，父会话盖不过它', () => {

@@ -12,6 +12,7 @@ import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
+  activeModel,
   activeModelRow,
   type CliAgentRow,
   composerSeed,
@@ -25,6 +26,7 @@ import {
   loadTeam,
   loadTeamClis,
   loadTools,
+  modelCatalog,
   panelMaximized,
   pickFiles,
   resumeGoal,
@@ -784,6 +786,20 @@ export function Composer() {
     }
     if (dispatch.kind === 'await_argument') {
       runSlash(dispatch.command)
+      return
+    }
+
+    /*
+     * 没配模型就拦下：当前会话没有模型、也没有默认可回落时，发出去只会在起 run 时
+     * 被 no_model 拒绝。就地给出与选择器空态同一句引导，草稿与附件保留。
+     * 目录还没拉回来（cat 为 null）时不拦——让服务端那道 no_model 兜底，避免误拦。
+     */
+    const cat = modelCatalog()
+    if (!activeModel()?.model && cat !== null && !cat.active) {
+      setState('notice', {
+        message: '未配置模型：在模型选择器里挑一个，没有可选就先去设置里配置接口',
+        reason: 'no_model',
+      })
       return
     }
 

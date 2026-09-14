@@ -28,7 +28,14 @@ export async function runProbe(args: string[]): Promise<number> {
   const stored = resolveModel(config, name)
   if (!stored) {
     const known = Object.keys(config.providers).join('、') || '（空）'
-    process.stderr.write(`配置里没有名为 "${config.active.provider}" 的接口。已有：${known}\n`)
+    if (!name && !config.active) {
+      process.stderr.write(
+        `未配置模型。给 qy probe 指定一个模型名，或先在设置里配。已有接口：${known}\n`,
+      )
+      return 2
+    }
+    const target = name ?? config.active?.provider
+    process.stderr.write(`配置里没有名为 "${target}" 的接口。已有：${known}\n`)
     return 2
   }
 

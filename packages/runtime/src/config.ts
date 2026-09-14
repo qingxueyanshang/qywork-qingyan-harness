@@ -59,8 +59,11 @@ export interface ModelRef {
 }
 
 export interface QyConfig {
-  /** 当前生效的「接口 × 模型」。 */
-  active: ModelRef
+  /**
+   * 当前生效的「接口 × 模型」。**可缺省**：出厂不预设模型，用户配好之前它就是没有。
+   * 缺省时新会话不带默认模型、发送在起 run 前被明确拒绝（`no_model`），不回落到任何模型。
+   */
+  active?: ModelRef
   providers: Record<string, StoredProvider>
   /** 用户改过的模型参数，键由 `catalogKey` 造。见 `StoredCatalogEntry`。 */
   catalog?: Record<string, StoredCatalogEntry>
@@ -332,23 +335,23 @@ export function dataPath(): string {
   return join(configDir(), 'qywork.sqlite3')
 }
 
+/**
+ * 没有可用模型时的拒绝文案。起 run 的路径（`session.ask`、`run-control`、`team-run`）
+ * 共用这一句，不各写一份。界面另有就地引导（选择器空态、发送拦截），文字对齐这一句。
+ */
+export const NO_MODEL_MESSAGE = '未配置模型：请先在设置中选择一个接口和模型'
+
+/**
+ * 出厂配置：**不预设任何模型**，只有一个空接口表和默认权限模式。
+ * 没有 active、没有内置接口——首次启动就是「还没配」，由界面引导用户去配。
+ */
 const DEFAULT_CONFIG: QyConfig = {
-  active: { provider: 'anthropic', model: 'claude-opus-5' },
-  providers: {
-    anthropic: {
-      kind: 'anthropic_messages',
-      models: { 'claude-opus-5': {} },
-    },
-  },
+  providers: {},
   mode: 'auto',
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function isModelRef(v: unknown): v is ModelRef {
-  return isRecord(v) && typeof v.provider === 'string' && typeof v.model === 'string'
 }
 
 /**
@@ -525,26 +528,26 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
 
   /*
-   * 接口表**不与默认值合并**。
+   * `providers` 是对象就是两层新格式，原样加载。
    *
-   * **不要写成 `{ ...DEFAULT.profiles, ...parsed.profiles }`**：那样内置那条
-   * anthropic 删不掉——设置页删掉它、落盘也确实没有了，下次启动又长回来。
-   * 默认值的职责只是「一个字都没配时也有一个可用接口」，不是每次加载都往里塞一条。
+   * **active 缺席是合法的**——出厂不预设模型，用户配好之前它就是没有。这里不再
+   * 校验 active 是否为 ModelRef：坏的 active 由 `diagnoseConfig` / `resolveModel` 兜，
+   * 空的 active 是正常状态。
    */
-  if (isModelRef(parsed.active) && isRecord(parsed.providers)) return cfg
+  if (isRecord(parsed.providers)) return cfg
 
   /*
-   * 旧的扁平档案（`profiles`）**不迁移**。
+   * 剩下的是旧的扁平档案（`profiles`）或损坏配置：模型这一块整块回空。
    *
    * 一条旧档案要拆成「一个接口 + 一个模型」，而两条同 kind 同 baseUrl 的档案
    * 该并成一个接口还是两个、key 归谁，只能猜。猜错的表现是「配置看起来还在，
    * 请求发去了另一个端点」——比明说「重配一次」糟得多。
    *
-   * 所以模型那部分整块回默认值，其余设置（权限、额外目录、思考强度）照旧保留，
+   * 所以模型那部分整块清空、其余设置（权限、额外目录、思考强度）照旧保留，
    * 再由 `configNotices` 点名说清楚。先例是 `autoApprove`：一律忽略，但必须说出来。
    */
-  cfg.active = structuredClone(DEFAULT_CONFIG.active)
-  cfg.providers = structuredClone(DEFAULT_CONFIG.providers)
+  delete cfg.active
+  cfg.providers = {}
   return cfg
 }
 
@@ -574,17 +577,19 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
  */
 export function resolveModel(cfg: QyConfig, model?: string | ModelRef): ResolvedModel | undefined {
   const ref = typeof model === 'object' ? model : undefined
-  const wanted = typeof model === 'object' ? model.model : (model ?? cfg.active.model)
+  const wanted = typeof model === 'object' ? model.model : (model ?? cfg.active?.model)
+  // 既没点名模型、也没有当前默认 → 无从解析。
+  if (wanted === undefined) return undefined
 
-  let name: string
+  let name: string | undefined
   if (ref) {
     name = ref.provider
   } else {
     const owners = Object.keys(cfg.providers).filter((n) => cfg.providers[n]?.models[wanted])
-    name = owners.includes(cfg.active.provider)
-      ? cfg.active.provider
-      : (owners[0] ?? cfg.active.provider)
+    const preferred = cfg.active?.provider
+    name = preferred && owners.includes(preferred) ? preferred : (owners[0] ?? preferred)
   }
+  if (name === undefined) return undefined
 
   const provider = cfg.providers[name]
   if (!provider) return undefined
@@ -710,6 +715,13 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       }
     }
   }
+
+  /*
+   * 没有 active 不是致命问题——出厂就是这个状态，也是保存中间态（删光模型再存）的合法形状。
+   * **不能报成 problem**：`/api/config` PUT 见 problem 就回 422 且不落盘，那样用户删光最后
+   * 一个模型就再也存不下。「没模型」的拦截在起 run 的路径上（`no_model`），不在这里。
+   */
+  if (!cfg.active) return problems
 
   const stored = cfg.providers[cfg.active.provider]
 

@@ -65,7 +65,15 @@ export function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConf
       ...(apiKey ? { apiKey } : {}),
     }
   }
-  return { ...current, ...incoming, providers }
+  const merged: QyConfig = { ...current, ...incoming, providers }
+  /*
+   * active 不脱敏，前端来的那份是权威：它没带就是真的没有默认模型（删光了最后一个），
+   * 不能靠 `{ ...current, ...incoming }` 把旧的默认留下来——那样删光模型后会保存被 422 挡住
+   * （active 指向已删的接口）。
+   */
+  if (incoming.active) merged.active = incoming.active
+  else delete merged.active
+  return merged
 }
 
 export const handleConfigApi: ApiHandler = async (url, req, d) => {

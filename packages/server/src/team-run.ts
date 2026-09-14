@@ -10,7 +10,7 @@
  */
 
 import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qywork/core'
-import { type ModelRef, type QyConfig, Session } from '@qywork/runtime'
+import { type ModelRef, NO_MODEL_MESSAGE, type QyConfig, Session } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import type { CommandDeps } from './deps.ts'
@@ -48,7 +48,8 @@ export function memberModel(
     return { provider: role.provider, model }
   }
   if (role.model) return resolveModel(role.model, config)
-  return pick?.inherit ?? config.active
+  // 角色没点模型、父会话也没传下来时才回落到默认；默认也没有 = 全局都没配模型。
+  return pick?.inherit ?? config.active ?? { error: NO_MODEL_MESSAGE }
 }
 
 /**
