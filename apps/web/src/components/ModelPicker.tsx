@@ -80,8 +80,7 @@ export function ModelPicker() {
    */
   const levels = () => activeModelRow()?.effortLevels ?? []
   const selected = () => activeModelRow()?.effort ?? null
-  // `||` 不用 `??`：没配模型的会话 model 是空串，空串要落到「选择模型」而不是显示成空。
-  const label = () => activeModelRow()?.label || activeModel()?.model || '选择模型'
+  const label = () => activeModelRow()?.label ?? activeModel()?.model ?? '选择模型'
 
   const isLive = (provider: string, id: string) => {
     const ref = activeModel()

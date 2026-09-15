@@ -116,13 +116,7 @@ import {
   scopeRoots,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
-import {
-  collectSecrets,
-  type ModelRef,
-  NO_MODEL_MESSAGE,
-  type QyConfig,
-  resolveModel,
-} from './config.ts'
+import { collectSecrets, type ModelRef, type QyConfig, resolveModel } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
@@ -309,9 +303,8 @@ export class Session {
     const { providers, active } = this.opts.config
     const stored = resolveModel(this.opts.config, target)
     if (!stored) {
-      const who = typeof target === 'object' ? target.provider : (active?.provider ?? '（未配置）')
       throw new Error(
-        `配置里没有名为 "${who}" 的接口。可用：${Object.keys(providers).join(', ') || '（空）'}`,
+        `配置里没有名为 "${active.provider}" 的接口。可用：${Object.keys(providers).join(', ') || '（空）'}`,
       )
     }
     return {
@@ -378,23 +371,13 @@ export class Session {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const { store, config } = this.opts
 
-    // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
-    // **会话是权威**——config 只在会话还没有模型时兜底，否则用户在界面上切了模型，
-    // 下一轮又被配置文件里的默认值静默改回。用 `||` 不用 `??`：没配模型的会话
-    // provider/model 落的是空串，空串要当作「未设」继续回退。
-    const prior = existing ? getConversation(store, existing) : undefined
-    const model = options?.model || prior?.model || config.active?.model
-    // 三处都取不到 = 用户还没配模型，起 run 前就在这里拒绝，不建会话、不发请求。
-    // 服务端在 `run-control` 里已先拦一道并回结构化 `no_model`；这条是 CLI 与直调的兜底。
-    if (!model) throw new Error(NO_MODEL_MESSAGE)
-
     const conversationId =
       existing ??
       createConversation(store, {
         workspaceId: this.workspaceId as never,
-        // 新会话记默认那一对；没有默认接口时按谁挂了这个模型反查。
-        provider: config.active?.provider || resolveModel(config, model)?.provider || '',
-        model,
+        // 单轮显式指定的只是模型名，指不出接口，所以新会话一律记默认那一对。
+        provider: config.active.provider,
+        model: options?.model ?? config.active.model,
         ...(options?.source ? { source: options.source } : {}),
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
         ...(options?.parentConversationId
@@ -402,11 +385,12 @@ export class Session {
           : {}),
       }).id
 
+    // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
+    // **会话是权威**——config 只在会话还没有模型时兜底，否则用户在界面上切了模型，
+    // 下一轮又被配置文件里的默认值静默改回。
     const conversation = getConversation(store, conversationId)
-    // 旧会话记着模型却证明不出接口归属（迁移前的扁平档案）时要求重选一次，不按 id 反查。
-    // 但**只针对「有模型、无接口」的旧会话**：没配默认模型时新建的会话两格都空，
-    // 上面 `model` 已回落到当前默认，按默认那一对发就行，不该报「旧会话」。
-    if (conversation && !options?.model && conversation.model && !conversation.provider) {
+    const model = options?.model ?? conversation?.model ?? config.active.model
+    if (conversation && !options?.model && !conversation.provider) {
       throw new Error('这条旧会话没有可证明的接口归属，请重新选择一次模型后再继续')
     }
     /*
@@ -415,7 +399,7 @@ export class Session {
      * 单轮显式 `--model` 仍是用户主动要求的裸模型选择，不属于旧会话回退。
      */
     const target: string | ModelRef =
-      !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
+      !options?.model && conversation ? { provider: conversation.provider, model } : model
     // 思考强度**按这一轮真正要用的那个模型解析**，真源是配置里
     // 「接口 × 模型」那一格。不存会话级的第二份，也不共用一个全局值——
     // 档位集合逐模型不同（见 `StoredModel.effort`），全局值套过去必然错配。

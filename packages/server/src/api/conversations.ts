@@ -271,15 +271,14 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       }
       // 接口和模型是一对：给了模型没给接口就退回整对默认值，
       // 而不是把新模型挂到默认接口下——那个组合用户从没配过。
-      // 没配默认模型时留空：发送在起 run 前被 no_model 拦下，界面引导去选择器挑一个。
       const ref =
         body.provider && body.model
           ? { provider: body.provider, model: body.model }
           : d.config.active
       const conv = createConversation(d.store, {
         workspaceId: d.workspaceId as never,
-        provider: ref?.provider ?? '',
-        model: ref?.model ?? '',
+        provider: ref.provider,
+        model: ref.model,
         ...(body.title ? { title: body.title } : {}),
       })
       return json({ conversation: conv })

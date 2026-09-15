@@ -10,7 +10,6 @@
 
 import type { Schedule } from '@qywork/core'
 import { diagnoseSchedule } from '@qywork/core'
-import { NO_MODEL_MESSAGE } from '@qywork/runtime'
 import { claimScheduleNow, deleteSchedule, listSchedules, updateSchedule } from '@qywork/store'
 import { type ApiHandler, json } from './types.ts'
 
@@ -81,8 +80,6 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
   // 下午点过一次试跑而当天不再自动触发。上一轮还没落终态时回 409，不叠加第二轮。
   const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
   if (schedRunMatch && req.method === 'POST') {
-    // 没配默认模型就没法建会话起轮；当场回 422，而不是建一条发不出请求的会话。
-    if (!d.config.active) return json({ error: NO_MODEL_MESSAGE }, 422)
     const claimed = claimScheduleNow(d.store, schedRunMatch[1]!, d.workspaceRoot, {
       now: Date.now(),
       provider: d.config.active.provider,

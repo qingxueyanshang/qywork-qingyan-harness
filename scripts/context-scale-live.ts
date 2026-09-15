@@ -611,13 +611,7 @@ async function main(): Promise<number> {
         const i = a.indexOf('/')
         return { provider: a.slice(0, i), model: a.slice(i + 1) }
       })
-    : config.active
-      ? [config.active]
-      : []
-  if (refs.length === 0) {
-    process.stdout.write('未配置默认模型；给一个 provider/model 参数，或先在配置里选一个。\n')
-    process.exit(2)
-  }
+    : [config.active]
 
   for (const ref of refs) {
     try {

@@ -28,7 +28,6 @@ import {
   configPath,
   contextPanel,
   makeSummarizer,
-  NO_MODEL_MESSAGE,
   RuntimeCompaction,
   resolveModel,
   Session,
@@ -145,22 +144,6 @@ export async function startRun(
         code: 'internal_error',
         message: '这个会话找不到对应的项目目录，无法执行',
       },
-      conversationId,
-    )
-    return
-  }
-
-  /*
-   * 没有可用模型就不起这一轮。真源是「本轮显式 > 会话当前 > 配置默认」这条链
-   * （与 `session.ask` 同一条），三者皆空 = 用户还没配模型。**在这里拦下并回结构化
-   * `no_model`**，而不是拿一个不存在的接口发出去等 401。界面另有就地拦截，这条是兜底。
-   */
-  const runModel =
-    model || getConversation(deps.store, conversationId)?.model || deps.config.active?.model
-  if (!runModel) {
-    deps.runs.release(conversationId)
-    deps.bus.publish(
-      { type: 'run.error', runId: '' as RunId, code: 'no_model', message: NO_MODEL_MESSAGE },
       conversationId,
     )
     return
@@ -768,9 +751,9 @@ export async function compactConversation(
  * 就漏过一次）的表现是手动摘要按另一套上限发出去，两条入口的产出从此不可比。
  */
 function summaryProfile(deps: CommandDeps, conversationId: ConversationId): ProviderProfile {
-  const model = getConversation(deps.store, conversationId)?.model || deps.config.active?.model
-  const stored = model ? resolveModel(deps.config, model) : undefined
-  if (!stored) throw new Error(model ? `配置里没有模型 "${model}"` : NO_MODEL_MESSAGE)
+  const model = getConversation(deps.store, conversationId)?.model ?? deps.config.active.model
+  const stored = resolveModel(deps.config, model)
+  if (!stored) throw new Error(`配置里没有模型 "${model}"`)
   return {
     kind: stored.kind,
     apiKey: stored.apiKey ?? '',
