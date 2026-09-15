@@ -30,7 +30,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
-import { configPath, type QyConfig } from './config.ts'
+import { configPath, NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { globalPluginsDir } from './extensions.ts'
 import { buildTailNotes } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
@@ -701,6 +701,33 @@ describe('新建会话的来源', () => {
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toHaveLength(1)
     expect(listConversations(store, ws.id)[0]?.source).toBeNull()
+  })
+
+  /**
+   * 没配模型时发送被拒：起 run 前就抛，且**不建会话**——不能先落一条没有模型、
+   * 发不出请求的会话再报错。这测的是行为，不是「调了几次」。
+   */
+  test('没配模型时起 run 前就拒绝，且不建会话', async () => {
+    const store = new Store({ path: ':memory:' })
+    const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
+    const noModel = { providers: {} } as QyConfig
+    const s = new Session({
+      store,
+      config: noModel,
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+    })
+    let threw: unknown = null
+    try {
+      for await (const _ of s.ask('随便问一句')) break
+    } catch (e) {
+      threw = e
+    }
+    s.dispose()
+    expect((threw as Error | null)?.message).toBe(NO_MODEL_MESSAGE)
+    const ws = upsertWorkspace(store, root, 'x')
+    expect(listConversations(store, ws.id)).toEqual([])
+    store.close()
   })
 })
 

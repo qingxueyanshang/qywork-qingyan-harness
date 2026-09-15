@@ -312,6 +312,7 @@ const ERROR_LABELS: Record<ErrorCode, string> = {
   insufficient_quota: '账户额度不足',
   context_overflow: '上下文超出模型窗口',
   model_not_found: '模型不存在',
+  no_model: '未配置模型',
   invalid_request: '请求不合法',
   provider_unavailable: '模型服务暂不可用',
   network_error: '网络连接失败',

@@ -23,6 +23,7 @@ export {
   isWorkspaceTrusted,
   loadConfig,
   type ModelRef,
+  NO_MODEL_MESSAGE,
   type QyConfig,
   resolveModel,
   type StoredCatalogEntry,

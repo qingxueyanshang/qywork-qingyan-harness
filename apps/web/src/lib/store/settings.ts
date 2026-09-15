@@ -72,7 +72,8 @@ export interface RedactedProvider {
  * 字段不会被抹掉」钉住——改这里之前先看那条。
  */
 export interface RedactedConfig {
-  active: ModelRef
+  /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型，删光最后一个模型后也没有。 */
+  active?: ModelRef
   providers: Record<string, RedactedProvider>
   /**
    * 模型参数的覆盖，键是「模型 id | 协议」。
@@ -252,7 +253,8 @@ export interface LibraryVendor {
 export interface ModelCatalog {
   /** 可选的：配置里真有的接口 × 模型。 */
   providers: ProviderModels[]
-  active: { provider: string; model: string }
+  /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型时它不存在。 */
+  active?: { provider: string; model: string }
   /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，就按它从这里查参数。 */
   library: LibraryVendor[]
 }

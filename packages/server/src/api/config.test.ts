@@ -287,7 +287,7 @@ describe('落盘门禁', () => {
       })
       expect(res!.status).toBe(422)
       // 没写进去：进程内那份的 active 未被改动。
-      expect(d.config.active.provider).toBe('main')
+      expect(d.config.active?.provider).toBe('main')
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev

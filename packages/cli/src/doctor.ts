@@ -138,12 +138,22 @@ async function checkConfig(): Promise<Line[]> {
     })
   }
   if (problems.length === 0) {
-    const active = resolveModel(cfg)
-    out.push({
-      level: 'ok',
-      text: `接口 ${cfg.active.provider}（${active?.kind} · ${cfg.active.model}）`,
-      detail: configPath(),
-    })
+    if (!cfg.active) {
+      // 没配模型就发不出任何请求，和「没有 key」一样是阻断项——判 fail，
+      // 让 `qy doctor` 在一台还没配好的机器上退非零。
+      out.push({
+        level: 'fail',
+        text: '未配置模型',
+        detail: '在设置里选一个接口和模型，或运行 qy init',
+      })
+    } else {
+      const active = resolveModel(cfg)
+      out.push({
+        level: 'ok',
+        text: `接口 ${cfg.active.provider}（${active?.kind} · ${cfg.active.model}）`,
+        detail: configPath(),
+      })
+    }
   }
 
   for (const n of configNotices(cfg)) {

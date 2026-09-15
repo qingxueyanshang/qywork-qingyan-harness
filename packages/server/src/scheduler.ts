@@ -48,10 +48,14 @@ export interface SchedulerDeps {
  * 「有会话、无 Run」，界面按「没有执行记录」显示，成因写进 stderr。
  */
 export async function tickSchedules(deps: SchedulerDeps): Promise<void> {
+  // 没配默认模型就不认领：定时任务要按 active 建会话，没有 active 就无从起轮。
+  // 不认领 = 任务留在到期状态，配好模型后照常触发，不静默丢一次。
+  const active = deps.config.active
+  if (!active) return
   const claims = claimDueSchedules(deps.store, {
     now: Date.now(),
-    provider: deps.config.active.provider,
-    model: deps.config.active.model,
+    provider: active.provider,
+    model: active.model,
   })
   for (const claim of claims) {
     try {

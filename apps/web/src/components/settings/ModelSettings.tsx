@@ -81,7 +81,7 @@ export function ModelSettings() {
   const current = () => {
     const c = config()
     if (!c) return null
-    const name = picked() ?? c.active.provider
+    const name = picked() ?? c.active?.provider ?? ''
     return name in c.providers ? name : (names()[0] ?? null)
   }
 
@@ -118,10 +118,16 @@ export function ModelSettings() {
     setPicked(null)
     void replaceConfig((cur) => {
       const { [name]: _drop, ...rest } = cur.providers
-      // 删掉的正好是当前接口时要同时改 active，否则保存会被服务端顶回来，
+      const next: RedactedConfig = { ...cur, providers: rest }
+      // 删掉的正好是当前默认接口时要同时改 active，否则保存会被服务端顶回来，
       // 而报错说的是「active 指向不存在的接口」，与刚才那次删除对不上号。
-      const active = cur.active.provider === name ? (firstModelRef(rest) ?? cur.active) : cur.active
-      return { ...cur, providers: rest, active }
+      // 没有别的可挑就没有默认——删光最后一个接口是合法的「回到没配」。
+      if (cur.active?.provider === name) {
+        const fallback = firstModelRef(rest)
+        if (fallback) next.active = fallback
+        else delete next.active
+      }
+      return next
     })
   }
 
@@ -138,7 +144,7 @@ export function ModelSettings() {
       return {
         ...cur,
         providers: { ...rest, [to]: moved },
-        ...(cur.active.provider === from ? { active: { ...cur.active, provider: to } } : {}),
+        ...(cur.active?.provider === from ? { active: { ...cur.active, provider: to } } : {}),
       }
     })
   }
@@ -184,11 +190,12 @@ export function ModelSettings() {
         providers: { ...cur.providers, [provider]: { ...owner, models } },
       }
       // 删掉的正好是默认那一格，就近换一个，别留一个指向空处的 active。
-      if (cur.active.provider === provider && cur.active.model === id) {
+      // 这个接口空了、别处也没有模型，就没有默认——删光最后一个模型是合法的「回到没配」。
+      if (cur.active?.provider === provider && cur.active.model === id) {
         const fallback = Object.keys(models)[0]
-        next.active = fallback
-          ? { provider, model: fallback }
-          : (firstModelRef(next.providers) ?? cur.active)
+        const nextActive = fallback ? { provider, model: fallback } : firstModelRef(next.providers)
+        if (nextActive) next.active = nextActive
+        else delete next.active
       }
       return next
     })
@@ -247,7 +254,7 @@ export function ModelSettings() {
                     class="tab-chip"
                     classList={{
                       active: !showLibrary() && current() === n,
-                      live: c().active.provider === n,
+                      live: c().active?.provider === n,
                     }}
                     type="button"
                     onClick={() => {
@@ -358,7 +365,7 @@ export function ModelSettings() {
                       <For each={models()}>
                         {(id) => {
                           const isDefault = () =>
-                            c().active.provider === name() && c().active.model === id
+                            c().active?.provider === name() && c().active?.model === id
                           const result = () => probes()[probeKey(name(), id)]
                           return (
                             <div class="model-row" classList={{ active: isDefault() }}>
