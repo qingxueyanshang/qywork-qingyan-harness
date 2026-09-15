@@ -75,6 +75,17 @@ export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
 }
 
 /**
+ * 上一次写的收尾。**所有配置写排在这条链上，一次只跑一个。**
+ *
+ * 每次写是「读回服务端整份 → 应用这次改法 → 整份 PUT」。不串行的话，两次改一格
+ * 若重叠，后发的那次会在前一次落盘前 GET 到旧值——最典型的坏法：先填 API Key、
+ * 紧接着填 Base URL，url 那次读到「还没有 key」的脱敏配置（`hasApiKey:false`），
+ * 整份写回时把刚落盘的 key 覆盖成空。排队让每次写都在前一次落盘之后才读，
+ * 因此改哪几格、按什么顺序改都不丢。链上一环失败不阻断后续（`.catch`）。
+ */
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+/**
  * 改配置。**传的是改法，不是改完的那份。**
  *
  * 保存走整份 PUT，写进文件的就是这里交出去的整份。传一份算好的结果，
@@ -91,8 +102,15 @@ export async function replaceConfig(
   if (!prev) return
   const optimistic = edit(prev.config)
   if (!optimistic) return
-  // 乐观：控件先反映用户的操作，不然点一下要等一个来回才动。
+  // 乐观更新立即做，不进队列：控件要马上反映操作。此刻 payload 已含前一次的乐观值，
+  // 所以连续改两格叠加正确；真正要串行的只是下面读服务端 + PUT 那一段。
   setPayload({ ...prev, config: optimistic })
+  const run = writeQueue.then(() => flushWrite(edit))
+  writeQueue = run.catch(() => {})
+  return run
+}
+
+async function flushWrite(edit: (cur: RedactedConfig) => RedactedConfig | null): Promise<void> {
   setBusy(true)
   try {
     const fresh = await loadServerConfig()

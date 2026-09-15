@@ -14,6 +14,7 @@ import {
   collectSecrets,
   configNotices,
   diagnoseConfig,
+  diagnoseRunnable,
   loadConfig,
   type QyConfig,
   resolveModel,
@@ -118,17 +119,21 @@ describe('配置体检', () => {
       },
     })
 
-  test('没配 key 时给出配置文件路径与最小示例', () => {
-    const [p] = diagnoseConfig(noKey())
+  test('没配 key 是运行前置，不拦保存', () => {
+    // 拦运行的是 diagnoseRunnable，带上配置文件路径与最小示例。
+    const [p] = diagnoseRunnable(noKey())
     expect(p).toBeDefined()
     expect(p).toContain('config.json')
     expect(p).toContain('qy init')
     // 光说「没配」不够——用户得知道往里写什么形状的配置。
     expect(p).toContain('"apiKey"')
+    // 但 diagnoseConfig 放行：没 key 是配置中间态，拦保存会让「加接口→加模型→再填 key」走不通。
+    expect(diagnoseConfig(noKey())).toEqual([])
   })
 
   test('配了 key 就没问题', () => {
     expect(diagnoseConfig(cfg())).toEqual([])
+    expect(diagnoseRunnable(cfg())).toEqual([])
   })
 
   test('active 指向不存在的接口时列出实际有哪些', () => {
@@ -152,7 +157,7 @@ describe('配置体检', () => {
         },
       },
     })
-    expect(diagnoseConfig(local)).toEqual([])
+    expect(diagnoseRunnable(local)).toEqual([])
   })
 
   test('不验证 key 是否有效 —— 那只有 provider 能回答', () => {

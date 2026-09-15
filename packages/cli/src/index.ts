@@ -24,6 +24,7 @@ import {
   configPath,
   dataPath,
   diagnoseConfig,
+  diagnoseRunnable,
   fileLogSink,
   importLegacySchedules,
   loadConfig,
@@ -123,7 +124,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`配置文件：${configPath()}\n账本：${dataPath()}\n\n`)
     process.stdout.write(`${JSON.stringify(cfg, null, 2)}\n`)
     // 体检结果走 stderr：stdout 那份 JSON 要能直接管道给 jq，掺了中文提示就不是 JSON 了。
-    for (const p of [...diagnoseConfig(cfg), ...configNotices(cfg)]) {
+    for (const p of [...diagnoseConfig(cfg), ...diagnoseRunnable(cfg), ...configNotices(cfg)]) {
       process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
     }
     /*
@@ -182,8 +183,9 @@ async function runExec(args: string[]): Promise<number> {
   // 配置不可用就在这里停，不建库、不发请求。
   //
   // 让它跑下去的话，用户拿到的是 provider 返回的 401，该消息不含配置文件路径，
-  // 也不含缺失的字段名——这两项本地都有。
-  const problems = diagnoseConfig(config)
+  // 也不含缺失的字段名——这两项本地都有。没配 key 属于运行前置（`diagnoseRunnable`），
+  // 在这条真要发请求的路径上和不成形的问题一样拦下。
+  const problems = [...diagnoseConfig(config), ...diagnoseRunnable(config)]
   if (problems.length) {
     for (const p of problems) process.stderr.write(`\n${RED}✗${RESET} ${p}\n`)
     return 2
@@ -291,7 +293,11 @@ async function runServe(args: string[]): Promise<number> {
   // 界面在应用里。翻旧会话、改配置都不需要 key，只有真的发起一轮才需要——
   // 那时 buildAdapter 会抛 no_api_key，前端据此引导。
   // serve 本来就不因配置问题退出，所以两者都只是打印，合并即可。
-  const problems = [...diagnoseConfig(config), ...configNotices(config)]
+  const problems = [
+    ...diagnoseConfig(config),
+    ...diagnoseRunnable(config),
+    ...configNotices(config),
+  ]
 
   const store = new Store({ path: dataPath() })
   const previousProcessExit = processExitObservationFromEnv(process.env)

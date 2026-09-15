@@ -27,6 +27,7 @@ import {
   configPath,
   dataPath,
   diagnoseConfig,
+  diagnoseRunnable,
   globalPluginsDir,
   loadConfig,
   loadExtensions,
@@ -127,7 +128,7 @@ async function checkConfig(): Promise<Line[]> {
   const out: Line[] = []
   const cfg = await loadConfig()
 
-  const problems = diagnoseConfig(cfg)
+  const problems = [...diagnoseConfig(cfg), ...diagnoseRunnable(cfg)]
   for (const p of problems) {
     const [head, ...rest] = p.split('\n')
     out.push({

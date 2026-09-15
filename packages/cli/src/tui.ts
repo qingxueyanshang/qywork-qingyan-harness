@@ -21,6 +21,7 @@ import {
   configNotices,
   dataPath,
   diagnoseConfig,
+  diagnoseRunnable,
   exportConversation,
   importLegacySchedules,
   loadConfig,
@@ -50,7 +51,11 @@ ${DIM}直接输入内容就是提问。跑的时候 Ctrl-C 中断这一轮，空
 
 export async function runTui(workspaceRoot: string): Promise<number> {
   const config = await loadConfig()
-  for (const p of [...diagnoseConfig(config), ...configNotices(config)]) {
+  for (const p of [
+    ...diagnoseConfig(config),
+    ...diagnoseRunnable(config),
+    ...configNotices(config),
+  ]) {
     process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
   }
 

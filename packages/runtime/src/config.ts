@@ -625,14 +625,17 @@ export function collectSecrets(cfg: QyConfig): { values: string[] } {
 }
 
 /**
- * 配置体检。
+ * 配置体检：**只查不成形的配置**——落盘它会静默破坏后续请求。
  *
- * `buildAdapter` 已经会在空 key 时抛 `no_api_key`，但那条消息只能说「没配」——
- * 它在 `@qywork/ai` 里，不知道配置文件在哪，更不知道该往里写什么。
- * 这个函数补的就是这一段：**告诉用户改哪个文件、改成什么样**。
+ * 两类：思考档位、模型库那几个枚举值必须在词表里（落盘一个词表外的值，下一轮就被
+ * 原样发给 provider 换一条 400，或让某字段从此不发送而界面看着像生效）；`active`
+ * 必须指向一个存在的接口。这两类都拦保存（`/api/config` 回 422 不落盘）也拦运行。
  *
- * 返回空数组 = 配置至少能发出第一个请求。它不验证 key 是否有效——那只有 provider
- * 能回答，本地假装验证只会多一层猜。
+ * **「没配 key」不在此列**——那是成形但没配全，归 `diagnoseRunnable`：拦运行、不拦保存。
+ * 把它也当成拦保存的问题，会让「加接口 → 加模型 → 再回头填 key」这条最自然的配置顺序
+ * 走不通（active 一切到新接口，还没 key 的那一刻起任何保存都被 422 顶回）。
+ *
+ * 返回空数组 = 配置成形，可以落盘。它不验证 key 是否有效——那只有 provider 能回答。
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
@@ -712,7 +715,6 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   }
 
   const stored = cfg.providers[cfg.active.provider]
-
   if (!stored) {
     const names = Object.keys(cfg.providers)
     problems.push(
@@ -720,20 +722,33 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         `  已有接口：${names.length ? names.join('、') : '（无）'}\n` +
         `  修改 ${configPath()} 中的 "active.provider"，或运行 qy init 重建配置。`,
     )
-    return problems
-  }
-
-  const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i.test(stored.baseUrl ?? '')
-  if (!stored.apiKey && !local) {
-    problems.push(
-      `未配置 API Key：接口 "${cfg.active.provider}" 的 apiKey 为空。\n` +
-        `  配置文件：${configPath()}\n` +
-        `  推荐做法：运行 qy init\n` +
-        `  或手动改为：\n${indent(exampleProvider(cfg.active, stored))}`,
-    )
   }
 
   return problems
+}
+
+/**
+ * 运行前置：能不能真的发出第一个请求。**与 `diagnoseConfig` 分开**，因为两者拦的时机
+ * 不同。`diagnoseConfig` 查「配置是否成形」，成形才允许落盘；本函数查「成形但没配全」
+ * ——`active` 指向的接口还没填 key。没填 key 是配置过程中的正常中间态，**只拦运行、
+ * 不拦保存**：设置页据此显示提醒，但照常落盘；`qy exec` 把它和 `diagnoseConfig` 一起
+ * 当退出条件——没 key 发不出请求，早退能给出带配置文件路径的消息，而不是 provider 的
+ * 一条 401（`buildAdapter` 抛的 `no_api_key` 不知道配置文件在哪）。
+ *
+ * 本机端点（localhost / 127.0.0.1）不要求 key。`active` 指向不存在的接口属「不成形」，
+ * 归 `diagnoseConfig`，这里直接放过。
+ */
+export function diagnoseRunnable(cfg: QyConfig): string[] {
+  const stored = cfg.providers[cfg.active.provider]
+  if (!stored) return []
+  const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i.test(stored.baseUrl ?? '')
+  if (stored.apiKey || local) return []
+  return [
+    `未配置 API Key：接口 "${cfg.active.provider}" 的 apiKey 为空。\n` +
+      `  配置文件：${configPath()}\n` +
+      `  推荐做法：运行 qy init\n` +
+      `  或手动改为：\n${indent(exampleProvider(cfg.active, stored))}`,
+  ]
 }
 
 /**

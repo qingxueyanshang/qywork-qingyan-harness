@@ -12,6 +12,7 @@ import {
   configNotices,
   configPath,
   diagnoseConfig,
+  diagnoseRunnable,
   loadConfig,
   type QyConfig,
   type StoredProvider,
@@ -89,7 +90,9 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
       path: configPath(),
       config: redactConfig(d.config),
       notices: configNotices(d.config),
-      problems: diagnoseConfig(d.config),
+      // 保存拦不成形的配置（`diagnoseConfig`），没配 key 只显示不拦保存（`diagnoseRunnable`）。
+      // 设置页把两者并成一列显示；PUT 只据前者回 422，见下。
+      problems: [...diagnoseConfig(d.config), ...diagnoseRunnable(d.config)],
       // `envAllowList` 留空时真正生效的那一份。设置页拿它当占位符显示——
       // 不下发的话界面只能写一句「留空用默认名单」，而那份名单里有什么无从得知。
       defaultEnvAllowList: DEFAULT_ENV_ALLOW,
@@ -100,8 +103,10 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     const body = (await req.json().catch(() => null)) as { config?: RedactedConfig } | null
     if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
     const merged = mergeConfig(d.config, body.config)
+    // 只据 `diagnoseConfig`（不成形）回 422。不要加 `diagnoseRunnable`：没配 key 是配置
+    // 中间态，拦保存会让「加接口 → 加模型 → 再填 key」走不通（active 一切到新接口就再存不下）。
     const problems = diagnoseConfig(merged)
-    // 有致命问题就不落盘。写进去再让 CLI 起不来，比拒绝保存糟得多。
+    // 不成形就不落盘。写进去再让 CLI 起不来，比拒绝保存糟得多。
     if (problems.length) return json({ error: 'invalid', problems }, 422)
     await saveConfig(merged)
     // 就地更新运行中的这份：不更新的话，保存成功但本进程仍用旧配置，

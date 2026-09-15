@@ -2,7 +2,7 @@
  * 配置脱敏与回填。
  *
  * **覆盖范围**：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
- * `GET /api/config` 的读盘时机。
+ * `GET /api/config` 的读盘时机、`PUT /api/config` 的落盘门禁。
  *
  * 这两个函数是**明文 key 不出进程**这条边界的全部实现，所以这里测得比别处细。
  * 最严重的一条不是「key 泄漏了」——那种当场就看得出来；是**「打开设置页看一眼再保存」
@@ -214,6 +214,80 @@ describe('读盘时机', () => {
       await write('openai_responses')
       expect((await get(d)).config.providers.main?.kind).toBe('openai_responses')
       expect(d.config.providers.main?.kind).toBe('openai_responses')
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+})
+
+describe('落盘门禁', () => {
+  const put = async (d: ApiDeps, config: unknown) => {
+    const url = new URL('http://127.0.0.1/api/config')
+    return handleConfigApi(
+      url,
+      new Request(url.href, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ config }),
+      }),
+      d as never,
+    )
+  }
+  const get = async (d: ApiDeps) => {
+    const url = new URL('http://127.0.0.1/api/config')
+    const res = await handleConfigApi(url, new Request(url.href, { method: 'GET' }), d as never)
+    return (await res!.json()) as { config: RedactedConfig; problems: string[] }
+  }
+
+  /**
+   * 没配 key 不拦保存。原始失败形状：加一个新接口、给它挂第一个模型（active 随之切到
+   * 这个还没填 key 的接口），保存被 422 顶回，模型加不进去；先填 key 还是先填 url 也因此
+   * 变得有讲究。这里锁的是「active 接口没 key 也能落盘」，key 稍后再填。
+   */
+  test('active 接口没 key 也能保存，只在 problems 里提示', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      const res = await put(d, {
+        active: { provider: 'newp', model: 'm1' },
+        providers: {
+          main: { kind: 'anthropic_messages', hasApiKey: true, models: { 'claude-opus-5': {} } },
+          newp: { kind: 'openai_chat_completions', hasApiKey: false, models: { m1: {} } },
+        },
+        mode: 'auto',
+      })
+      expect(res!.status).toBe(200)
+      // 落盘了：新接口在，main 的 key 也没被 hasApiKey:true 抹掉。
+      expect(d.config.providers.newp?.models.m1).toBeDefined()
+      expect(d.config.providers.main?.apiKey).toBe('sk-real-secret-value')
+      // 但要显示出来——GET 的 problems 带上「没配 key」，用户看得见还差一步。
+      expect((await get(d)).problems.some((p) => p.includes('未配置 API Key'))).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /** 不成形仍然拦：active 指向不存在的接口，422 且不落盘。 */
+  test('active 指向不存在的接口仍 422，不落盘', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      const res = await put(d, {
+        active: { provider: '不存在', model: 'm1' },
+        providers: {
+          main: { kind: 'anthropic_messages', hasApiKey: true, models: { 'claude-opus-5': {} } },
+        },
+        mode: 'auto',
+      })
+      expect(res!.status).toBe(422)
+      // 没写进去：进程内那份的 active 未被改动。
+      expect(d.config.active.provider).toBe('main')
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev
