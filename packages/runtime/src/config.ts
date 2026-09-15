@@ -564,6 +564,11 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
  * `Object.values(...).find(...)`，取的是对象键的枚举顺序——用户选了 A 接口，
  * 请求可能发去 B，而且换个顺序保存一次结果就变了。
  *
+ * 多个接口都声明了它、又都不是当前接口时**返回 undefined，不按枚举顺序挑**：
+ * 挑错了是端点、key、价目表三样一起换，还不报错。宁可解析失败让调用方报错。
+ * 这只在裸模型名入口（CLI `--model`、单轮指定、手动压缩）遇到多接口同名时发生；
+ * 传 `ModelRef` 的路径接口已经写死，不到这里。
+ *
  * 传 `ModelRef` 则**接口是指定死的**，不再去猜：`classifier` 这类配置写的就是
  * 「哪个接口的哪个模型」，猜一遍只会把用户写死的那一项改掉。
  *
@@ -581,9 +586,14 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     name = ref.provider
   } else {
     const owners = Object.keys(cfg.providers).filter((n) => cfg.providers[n]?.models[wanted])
-    name = owners.includes(cfg.active.provider)
-      ? cfg.active.provider
-      : (owners[0] ?? cfg.active.provider)
+    if (owners.includes(cfg.active.provider)) {
+      name = cfg.active.provider
+    } else if (owners.length > 1) {
+      // 多接口同名、又都不是当前接口：不猜。见函数头说明。
+      return undefined
+    } else {
+      name = owners[0] ?? cfg.active.provider
+    }
   }
 
   const provider = cfg.providers[name]

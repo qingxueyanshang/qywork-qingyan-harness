@@ -95,6 +95,23 @@ describe('模型解析', () => {
     expect(resolveModel(elsewhere, 'deepseek-v4-pro')?.provider).toBe('ds')
   })
 
+  test('裸模型名挂在多个接口、又都不是当前接口时返回 undefined，不按枚举顺序挑', () => {
+    // flash 同时在 ds 和 mirror 下，active 指向第三个接口（都不含 flash）。
+    const third = cfg({
+      providers: {
+        ds: two.providers.ds!,
+        mirror: two.providers.mirror!,
+        other: { kind: 'openai_chat_completions', models: { x: {} } },
+      },
+      active: { provider: 'other', model: 'x' },
+    })
+    expect(resolveModel(third, 'deepseek-v4-flash')).toBeUndefined()
+    // 但指定死接口的 ModelRef 不受影响，照常解析。
+    expect(resolveModel(third, { provider: 'mirror', model: 'deepseek-v4-flash' })?.provider).toBe(
+      'mirror',
+    )
+  })
+
   /** 传 ref 是「用户写死了哪个接口」，不能再去猜——classifier 就是这么配的。 */
   test('传 ModelRef 时接口是指定死的，不参与猜测', () => {
     const r = resolveModel(two, { provider: 'mirror', model: 'deepseek-v4-pro' })
