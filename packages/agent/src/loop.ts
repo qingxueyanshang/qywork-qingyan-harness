@@ -30,6 +30,7 @@ import {
   estimateRequest,
   estimateSchemas,
   estimateText,
+  mediaBytes,
   ProviderError,
 } from '@qywork/ai'
 import type {
@@ -70,6 +71,7 @@ import {
 } from './progress.ts'
 import {
   isParallelSafe,
+  MEDIA_BYTES_SOFT_LIMIT,
   type PermissionEffect,
   resetBatchBudget,
   resolveAction,
@@ -1116,11 +1118,15 @@ export class AgentLoop {
 
         if (transcript.length > compactedAt) {
           const occupancy = occupancyOf(req)
-          if (occupancy > softLimit(adapter.spec)) {
+          // 两把尺各判一次：token 对窗口，媒体字节对网关的请求体上限。
+          const bytes = mediaBytes(req.messages)
+          if (occupancy > softLimit(adapter.spec) || bytes > MEDIA_BYTES_SOFT_LIMIT) {
             compactedAt = transcript.length
             log.info('agent', '发送前检查触发压缩', {
               occupancy,
               softLimit: softLimit(adapter.spec),
+              mediaBytes: bytes,
+              mediaBytesSoftLimit: MEDIA_BYTES_SOFT_LIMIT,
             })
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写

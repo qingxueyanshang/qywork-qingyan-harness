@@ -548,6 +548,22 @@ export function deliveryBudget(contextWindow: number): { perCall: number; batchC
 }
 
 /**
+ * 单次请求体的字节上限。
+ *
+ * Anthropic Messages API 文档给的上限是 32 MB；DeepSeek 网关实测 47.8 MB 放行、
+ * 52.9 MB 返回 413。取小者。token 尺量不到这一维：图像块按 `MEDIA_TOKENS` 固定计，
+ * 一张 2.5 MB 的截图只算 2000 token，二十几张就撞网关而窗口占用不到三成。
+ */
+export const REQUEST_BYTES_LIMIT = 32 * 1024 * 1024
+
+/**
+ * 媒体字节的压缩触发线与尾部保留额，与 token 侧的 `softLimit` / `batchCap` 同构：
+ * 过半触发收纳，收纳后尾部最多留四分之一。保留额必须低于触发线，否则收纳之后仍越线。
+ */
+export const MEDIA_BYTES_SOFT_LIMIT = REQUEST_BYTES_LIMIT / 2
+export const MEDIA_BYTES_RETAIN = REQUEST_BYTES_LIMIT / 4
+
+/**
  * 一段将要作为工具结果投递的正文有多大。**闸门与请求共用这一把尺。**
  *
  * 按 JSON 档量而不是散文档：它最终躺在 `{call_id, tool, status, executed,

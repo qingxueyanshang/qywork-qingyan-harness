@@ -19,6 +19,7 @@ import {
   estimateSchemas,
   estimateText,
   MEDIA_TOKENS,
+  mediaBytes,
   type TokenDensity,
 } from './tokens.ts'
 
@@ -195,5 +196,48 @@ describe('整个请求', () => {
     const total = estimateRequest(req, d)
     expect(total).toBeGreaterThan(10 + 10)
     expect(total).toBe(10 + estimateSchemas(req.tools, d) + estimateMessages(req.messages, d))
+  })
+})
+
+describe('媒体字节', () => {
+  /**
+   * token 尺对图按固定值计，字节尺必须按 base64 长度计——两把尺量的是两个上限
+   * （窗口与网关请求体），混用其中任何一把都量不到另一件事。
+   */
+  test('只数 base64 形态的图像与视频块，文本与路径形态计 0', () => {
+    const png = 'A'.repeat(3000)
+    const messages = [
+      { role: 'user' as const, content: 'x'.repeat(5000) },
+      {
+        role: 'tool' as const,
+        toolCallId: 'c1',
+        content: [
+          { type: 'text' as const, text: '{"call_id":"c1"}' },
+          {
+            type: 'image' as const,
+            mimeType: 'image/png',
+            source: { kind: 'base64' as const, data: png },
+          },
+          {
+            type: 'video' as const,
+            mimeType: 'video/mp4',
+            source: { kind: 'base64' as const, data: 'B'.repeat(500) },
+          },
+        ],
+      },
+      {
+        role: 'user' as const,
+        content: [
+          {
+            type: 'image' as const,
+            mimeType: 'image/png',
+            source: { kind: 'path' as const, path: '/a.png' },
+          },
+        ],
+      },
+    ]
+    expect(mediaBytes(messages)).toBe(3500)
+    // 同一份内容，token 尺看到的是固定值，与字节无关。
+    expect(estimateMessages(messages.slice(1, 2), D)).toBeLessThan(MEDIA_TOKENS * 3)
   })
 })

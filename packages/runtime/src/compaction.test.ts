@@ -6,9 +6,9 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { CompactionRunInput, Summarizer } from '@qywork/agent'
-import { softLimit } from '@qywork/agent'
+import { MEDIA_BYTES_RETAIN, MEDIA_BYTES_SOFT_LIMIT, softLimit } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
-import { DEFAULT_DENSITY, estimateMessages } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateMessages, mediaBytes } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
 import {
   appendMessage,
@@ -611,6 +611,73 @@ describe('投影三区', () => {
     expect(String(env.summary)).toContain('.png')
     // 字节一个都不许留在信封里。
     expect(condensed.every((m) => !(m.content as string).includes('AAAA'))).toBe(true)
+    store.close()
+  })
+
+  /**
+   * **占用远低于窗口，字节先撞网关。**
+   *
+   * 实测形状：1M 窗口的会话读了 22 张截图，每张 base64 约 2.5 M 字符，token 占用 26 万
+   * （软阈值 80 万），请求体 52.9 MB 被网关 413 拒掉。选界只按 token 保留尾部时，
+   * 收纳线落不到图上，压一次不省一个字节。
+   */
+  test('尾部媒体字节超保留额时折叠线前移，投影后的字节落到保留额以内', async () => {
+    const { store, ws, conv, ids } = fresh(4)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const shot = 'A'.repeat(2_500_000)
+    for (let w = 0; w < 22; w++) {
+      const step = appendStep(store, {
+        runId: run.id,
+        seq: 1 + w,
+        kind: 'tool_action',
+        toolName: 'read_file',
+        toolCallId: `call_${w}`,
+        providerBatchId: `bt_${w}`,
+        callIndex: 0,
+        status: 'running',
+      })
+      settleToolStep(store, step.id, 'success', {
+        kind: 'tool_result',
+        args: { path: `shot_${w}.png` },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: `读取 shot_${w}.png（图片）`,
+          data: { images: [{ data: shot, mime: 'image/png' }] },
+        },
+      } as never)
+    }
+
+    const p = port(store, conv.id)
+    const before = await history(store, conv.id)
+    const contextWindow = 1_000_000
+    const occupancy = estimateMessages(before, DEFAULT_DENSITY)
+    expect(occupancy).toBeLessThan(softLimit({ contextWindow }))
+    expect(mediaBytes(before)).toBeGreaterThan(MEDIA_BYTES_SOFT_LIMIT)
+
+    const outcome = await p.run({
+      trigger: 'automatic',
+      model: 'm',
+      occupancy,
+      estimatedOccupancy: occupancy,
+      contextWindow,
+      density: DEFAULT_DENSITY,
+    })
+    expect(outcome.status).toBe('compacted')
+    const projected = p.project(before)
+    const bytes = mediaBytes(projected)
+    expect(bytes).toBeGreaterThan(0)
+    // 越过保留额的那个单元整体保留，所以尾部至多比保留额多一张图；触发线以下才是目的。
+    expect(bytes).toBeLessThanOrEqual(MEDIA_BYTES_RETAIN + shot.length)
+    expect(bytes).toBeLessThan(MEDIA_BYTES_SOFT_LIMIT)
     store.close()
   })
 
