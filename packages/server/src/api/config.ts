@@ -8,6 +8,7 @@
  * 会静默清掉用户的 key——这类破坏是不可见的，直到下一次调用才报错。
  */
 
+import { createHash } from 'node:crypto'
 import {
   configNotices,
   configPath,
@@ -20,6 +21,18 @@ import {
 } from '@qywork/runtime'
 import { DEFAULT_ENV_ALLOW } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
+
+/**
+ * 配置内容的版本指纹。保存时客户端带上它编辑所基于的那一版，服务端据此发现
+ * 「读出去到写回来之间，配置被别处改过」。
+ *
+ * 取内容哈希而不是自增计数：计数得单独存一处、还要跨重启，又是一本账；哈希只依赖
+ * 当前这份配置本身，任何字段改了它就变。含明文 key（`d.config` 全量），因此改 key
+ * 也会变版本——正是要挡的那类改动。
+ */
+function configVersion(cfg: QyConfig): string {
+  return createHash('sha1').update(JSON.stringify(cfg)).digest('hex').slice(0, 16)
+}
 
 /** 接口的对外形状：`apiKey` 换成一个布尔。 */
 export type RedactedProvider = Omit<StoredProvider, 'apiKey'> & { hasApiKey: boolean }
@@ -89,6 +102,8 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     return json({
       path: configPath(),
       config: redactConfig(d.config),
+      // 客户端保存时带回来，服务端据此发现读到写之间配置被别处改过（见 PUT）。
+      version: configVersion(d.config),
       notices: configNotices(d.config),
       // 保存拦不成形的配置（`diagnoseConfig`），没配 key 只显示不拦保存（`diagnoseRunnable`）。
       // 设置页把两者并成一列显示；PUT 只据前者回 422，见下。
@@ -100,8 +115,20 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
   }
 
   if (p === '/api/config' && req.method === 'PUT') {
-    const body = (await req.json().catch(() => null)) as { config?: RedactedConfig } | null
+    const body = (await req.json().catch(() => null)) as {
+      config?: RedactedConfig
+      baseVersion?: string
+    } | null
     if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
+    /*
+     * 乐观并发：客户端带上它编辑所基于的版本。保存走整份 PUT，两个窗口/两台设备
+     * 同时改同一份配置时，后写的那次基于的是改动前的整份，整份写回会把前一次刚落盘
+     * 的字段（最典型是 API Key）覆盖掉。基线版本对不上就拒，让客户端重读最新内容、
+     * 在其上重放这次编辑再提交。不带 baseVersion 的老客户端与脚本照旧放行。
+     */
+    if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
+      return json({ error: 'conflict', message: '配置在别处被改动，已基于最新内容重试' }, 409)
+    }
     const merged = mergeConfig(d.config, body.config)
     // 只据 `diagnoseConfig`（不成形）回 422。不要加 `diagnoseRunnable`：没配 key 是配置
     // 中间态，拦保存会让「加接口 → 加模型 → 再填 key」走不通（active 一切到新接口就再存不下）。

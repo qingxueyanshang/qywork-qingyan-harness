@@ -14,6 +14,7 @@ import type {
   ThinkingMode,
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
+import { ApiError } from '../client.ts'
 import { client } from './connection.ts'
 import { tauriInvoke } from './shell.ts'
 import type { WorkspaceInfo } from './ui.ts'
@@ -89,6 +90,8 @@ export interface RedactedConfig {
 export interface ConfigPayload {
   path: string
   config: RedactedConfig
+  /** 这份配置的版本指纹，保存时原样回传给服务端做乐观并发校验（见 `saveServerConfig`）。 */
+  version: string
   notices: string[]
   problems: string[]
   /** `envAllowList` 留空时真正生效的那一份，由服务端下发（真源在 `tools/shell.ts`）。 */
@@ -138,14 +141,22 @@ export function explainApiError(e: unknown, fallback: string): string {
  * `422 /api/config: {"error":"invalid","problems":[...]}`——直接显示给用户
  * 是一串原始 JSON。这里把 `problems` 挖出来还原成人话：保存失败必须说清
  * **哪一条**不合格，「保存失败」和一整段 JSON 是同一个层次的不可用。
+ *
+ * `baseVersion` 是这次编辑所基于的那一版指纹；服务端发现配置被别处改过会回 409，
+ * 由 `configStore` 重读重放。**409 原样抛出（`ApiError`）**，不在这里包成字符串——
+ * 调用方要按状态码判断是否重试。
  */
-export async function saveServerConfig(config: RedactedConfig): Promise<ConfigPayload> {
+export async function saveServerConfig(
+  config: RedactedConfig,
+  baseVersion?: string,
+): Promise<ConfigPayload> {
   try {
     await client.api<{ ok: boolean }>('/api/config', {
       method: 'PUT',
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, ...(baseVersion ? { baseVersion } : {}) }),
     })
   } catch (e) {
+    if (e instanceof ApiError && e.status === 409) throw e
     throw new Error(explainApiError(e, '保存失败'))
   }
   // 配置是模型目录的唯一权威，落盘之后就地重算。**这是目录唯一的失效点**——

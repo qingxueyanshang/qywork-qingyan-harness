@@ -222,14 +222,14 @@ describe('读盘时机', () => {
 })
 
 describe('落盘门禁', () => {
-  const put = async (d: ApiDeps, config: unknown) => {
+  const put = async (d: ApiDeps, config: unknown, baseVersion?: string) => {
     const url = new URL('http://127.0.0.1/api/config')
     return handleConfigApi(
       url,
       new Request(url.href, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ config }),
+        body: JSON.stringify({ config, ...(baseVersion ? { baseVersion } : {}) }),
       }),
       d as never,
     )
@@ -237,7 +237,7 @@ describe('落盘门禁', () => {
   const get = async (d: ApiDeps) => {
     const url = new URL('http://127.0.0.1/api/config')
     const res = await handleConfigApi(url, new Request(url.href, { method: 'GET' }), d as never)
-    return (await res!.json()) as { config: RedactedConfig; problems: string[] }
+    return (await res!.json()) as { config: RedactedConfig; problems: string[]; version: string }
   }
 
   /**
@@ -288,6 +288,44 @@ describe('落盘门禁', () => {
       expect(res!.status).toBe(422)
       // 没写进去：进程内那份的 active 未被改动。
       expect(d.config.active.provider).toBe('main')
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /**
+   * 乐观并发：带一个过期的 baseVersion（模拟另一个窗口已经改过）保存，回 409 且不落盘。
+   * 带当前 version 的正常保存放行。不带 baseVersion 的老客户端/脚本照旧放行。
+   */
+  test('baseVersion 对不上回 409 不落盘，对得上放行', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      // GET 会把 d.config 按盘上（这个空 temp home）刷成默认；current 是那一版的指纹。
+      const current = (await get(d)).version
+      const body = {
+        active: { provider: 'main', model: 'claude-opus-5' },
+        providers: {
+          main: { kind: 'anthropic_messages', hasApiKey: true, models: { 'claude-opus-5': {} } },
+        },
+        mode: 'auto' as const,
+      }
+
+      const stale = await put(d, body, 'deadbeefdeadbeef')
+      expect(stale!.status).toBe(409)
+      // 没落盘：这次 PUT 的接口 main 没进 d.config。
+      expect(d.config.providers.main).toBeUndefined()
+
+      const ok = await put(d, body, current)
+      expect(ok!.status).toBe(200)
+      expect(d.config.providers.main).toBeDefined()
+
+      // 不带 baseVersion：老客户端照旧放行。
+      const legacy = await put(d, body)
+      expect(legacy!.status).toBe(200)
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev

@@ -47,6 +47,14 @@ export const configError = error
 export const configWriteError = writeError
 export const configBusy = busy
 
+/**
+ * 把一次**本地**校验失败显示到同一处写错误位（如添加了已存在的模型 id）。
+ * 走这条而不是各控件自己画一行：失败提示只该有一处，下一次成功写入自动清空。
+ */
+export function reportConfigWriteError(message: string): void {
+  setWriteError(message)
+}
+
 /** 第一次有页面要用它时才拉。重复调用无副作用。 */
 export function ensureConfig(): void {
   if (started) return
@@ -110,12 +118,34 @@ export async function replaceConfig(
   return run
 }
 
+/** 保存被服务端以「配置在别处改过」（HTTP 409）拒绝：唯一带 `status` 的那类错误。 */
+function isConflict(e: unknown): boolean {
+  return (
+    typeof (e as { status?: unknown }).status === 'number' &&
+    (e as { status: number }).status === 409
+  )
+}
+
 async function flushWrite(edit: (cur: RedactedConfig) => RedactedConfig | null): Promise<void> {
   setBusy(true)
   try {
-    const fresh = await loadServerConfig()
-    const next = edit(fresh.config)
-    setPayload(next ? await saveServerConfig(next) : fresh)
+    // 409 = 配置在别处刚被改过。重读最新整份、在其上重放这次编辑再提交；
+    // 有界重试，防止两端互相顶着无限转。同一客户端内的写已被队列串行，不会自撞。
+    for (let attempt = 0; ; attempt++) {
+      const fresh = await loadServerConfig()
+      const next = edit(fresh.config)
+      if (!next) {
+        setPayload(fresh)
+        break
+      }
+      try {
+        setPayload(await saveServerConfig(next, fresh.version))
+        break
+      } catch (e) {
+        if (isConflict(e) && attempt < 5) continue
+        throw e
+      }
+    }
     setWriteError(null)
   } catch (e) {
     // 失败必须回滚到服务端真值，否则界面显示的是一个从未落盘的值。

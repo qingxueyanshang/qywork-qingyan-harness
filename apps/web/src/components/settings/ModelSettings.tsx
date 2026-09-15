@@ -20,6 +20,7 @@ import {
   ensureConfig,
   reloadConfig,
   replaceConfig,
+  reportConfigWriteError,
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { ModelLibrary } from './ModelLibrary.tsx'
@@ -151,7 +152,12 @@ export function ModelSettings() {
   const addModel = (provider: string, id: string) => {
     const base = config()
     const p = base?.providers[provider]
-    if (!base || !p || !id || id in p.models) return
+    if (!base || !p || !id) return
+    // 已经挂着这个 id：过去静默返回，用户回车后什么都不发生，看着像坏了。把它说出来。
+    if (id in p.models) {
+      reportConfigWriteError(`模型 ${id} 已经在接口 ${provider} 下了`)
+      return
+    }
     void replaceConfig((cur) => {
       const owner = cur.providers[provider]
       if (!owner || id in owner.models) return null

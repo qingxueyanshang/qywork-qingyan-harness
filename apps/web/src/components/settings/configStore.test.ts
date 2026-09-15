@@ -1,13 +1,14 @@
 /**
- * 配置写串行化（`configStore.ts` 的 `replaceConfig`）。
+ * 配置写串行化与乐观并发（`configStore.ts` 的 `replaceConfig`）。
  *
- * 锁一个真实竞态：先填 API Key、紧接着填 Base URL，两次「读服务端整份 → 改一格 →
- * 整份 PUT」重叠时，url 那次在 key 落盘前 GET 到旧的脱敏配置（`hasApiKey:false`），
- * 整份写回把刚存的 key 覆盖成空。串行化后每次写都在前一次落盘之后才读，改哪几格、
- * 按什么顺序改都不丢。
+ * 锁两个真实的丢 key：
+ * 1. 同一页面里先填 API Key、紧接着填 Base URL，两次「读整份 → 改一格 → 整份 PUT」
+ *    重叠，url 那次在 key 落盘前读到旧值，写回把 key 覆盖成空。串行化让写不重叠。
+ * 2. 两个窗口/设备同时改，后写的那次基于旧整份，把前一次刚落的字段盖掉。服务端按
+ *    版本指纹回 409，客户端重读最新整份、在其上重放这次编辑再提交，两处改动都留住。
  *
- * 服务端用一个内存 map 模拟，`saveServerConfig` 复刻 `mergeConfig` 的语义
- * （`hasApiKey:false` 且不带明文 = 清 key）——竞态正是这条语义被喂了旧输入造成的。
+ * 服务端用一个内存 map 模拟，`saveServerConfig` 复刻真实语义：`mergeConfig` 的
+ * `hasApiKey:false` 且不带明文 = 清 key；`baseVersion` 对不上当前版本 = 抛 409。
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -24,6 +25,9 @@ let server: {
   mode: PermissionMode
   providers: Record<string, ServerProvider>
 }
+let serverVersion = 0
+/** 下一次 saveServerConfig 先注入一次「别处的并发改动」，逼出一次 409。 */
+let injectConflictOnce: (() => void) | null = null
 
 function payloadFromServer(): ConfigPayload {
   const providers: Record<string, RedactedProvider> = {}
@@ -37,6 +41,7 @@ function payloadFromServer(): ConfigPayload {
   }
   return {
     path: '',
+    version: String(serverVersion),
     notices: [],
     problems: [],
     defaultEnvAllowList: [],
@@ -45,7 +50,12 @@ function payloadFromServer(): ConfigPayload {
 }
 
 const loadServerConfig = mock(() => Promise.resolve(payloadFromServer()))
-const saveServerConfig = mock((config: RedactedConfig) => {
+const saveServerConfig = mock((config: RedactedConfig, baseVersion?: string) => {
+  injectConflictOnce?.()
+  injectConflictOnce = null
+  if (baseVersion !== undefined && baseVersion !== String(serverVersion)) {
+    return Promise.reject(Object.assign(new Error('409 conflict'), { status: 409 }))
+  }
   for (const [name, p] of Object.entries(config.providers)) {
     const { hasApiKey, apiKey: explicit, baseUrl } = p
     const prior = server.providers[name]?.apiKey
@@ -56,6 +66,7 @@ const saveServerConfig = mock((config: RedactedConfig) => {
       ...(baseUrl ? { baseUrl } : {}),
     }
   }
+  serverVersion++
   return Promise.resolve(payloadFromServer())
 })
 
@@ -80,13 +91,15 @@ const setUrl =
     providers: { ...cur.providers, ds: { ...cur.providers.ds!, baseUrl: url } },
   })
 
-describe('配置写串行化', () => {
+describe('配置写串行化与乐观并发', () => {
   beforeEach(async () => {
     server = {
       active: { provider: 'ds', model: 'm' },
       mode: 'auto',
       providers: { ds: { kind: 'openai_chat_completions' } },
     }
+    serverVersion = 0
+    injectConflictOnce = null
     await reloadConfig()
   })
 
@@ -105,5 +118,17 @@ describe('配置写串行化', () => {
     await Promise.all([a, b])
     expect(server.providers.ds?.apiKey).toBe('sk-y')
     expect(server.providers.ds?.baseUrl).toBe('https://api.example.com/v1')
+  })
+
+  test('别处并发改配置引发 409：重读重放，两处改动都留住', async () => {
+    // 本次要填 key。保存那一刻，模拟另一个窗口刚把 baseUrl 写了进去（版本随之变）。
+    injectConflictOnce = () => {
+      server.providers.ds = { kind: 'openai_chat_completions', baseUrl: 'https://other.example/v1' }
+      serverVersion++
+    }
+    await replaceConfig(setKey('sk-z'))
+    // 第一次 save 撞 409；重读拿到别处那次的 baseUrl，重放本次 setKey 后再存。
+    expect(server.providers.ds?.apiKey).toBe('sk-z')
+    expect(server.providers.ds?.baseUrl).toBe('https://other.example/v1')
   })
 })
