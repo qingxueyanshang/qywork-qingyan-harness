@@ -336,14 +336,14 @@ export function dataPath(): string {
 }
 
 /**
- * 没有可用模型时的拒绝文案。起 run 的路径（`session.ask`、`run-control`、`team-run`）
- * 共用这一句，不各写一份。界面另有就地引导（选择器空态、发送拦截），文字对齐这一句。
+ * 无可用模型时的拒绝文案。启动 run 的路径（`session.ask`、`run-control`、`team-run`）
+ * 共用此常量；界面端在选择器空态与提交拦截处显示相同文案。
  */
 export const NO_MODEL_MESSAGE = '未配置模型'
 
 /**
- * 出厂配置：**不预设任何模型**，只有一个空接口表和默认权限模式。
- * 没有 active、没有内置接口——首次启动就是「还没配」，由界面引导用户去配。
+ * 出厂配置：不预设任何模型，仅含空接口表与默认权限模式。首次启动即为未配置状态，
+ * 由界面提示用户配置。
  */
 const DEFAULT_CONFIG: QyConfig = {
   providers: {},
@@ -642,17 +642,13 @@ export function collectSecrets(cfg: QyConfig): { values: string[] } {
 }
 
 /**
- * 配置体检：**只查不成形的配置**——落盘它会静默破坏后续请求。
+ * 配置合规性检查：仅检出结构性错误——此类配置落盘后会静默破坏后续请求。包含两类：
+ * 思考档位与模型库枚举值须在允许集合内（越界值将原样发送至 provider 并返回 400，或导致
+ * 对应字段不再发送）；`active` 须指向已存在的接口。两类均阻止保存（返回 422 且不落盘）。
  *
- * 两类：思考档位、模型库那几个枚举值必须在词表里（落盘一个词表外的值，下一轮就被
- * 原样发给 provider 换一条 400，或让某字段从此不发送而界面看着像生效）；`active`
- * 必须指向一个存在的接口。这两类都拦保存（`/api/config` 回 422 不落盘）也拦运行。
- *
- * **「没配 key」不在此列**——那是成形但没配全，归 `diagnoseRunnable`：拦运行、不拦保存。
- * 把它也当成拦保存的问题，会让「加接口 → 加模型 → 再回头填 key」这条最自然的配置顺序
- * 走不通（active 一切到新接口，还没 key 的那一刻起任何保存都被 422 顶回）。
- *
- * 返回空数组 = 配置成形，可以落盘。它不验证 key 是否有效——那只有 provider 能回答。
+ * 缺少 API Key 不属此列，由 `diagnoseRunnable` 处理：若将其计为保存阻断，则「新增接口、
+ * 新增模型、随后补填 Key」的配置顺序无法完成。返回空数组表示结构合规、允许落盘；
+ * 本函数不校验 Key 的有效性。
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
@@ -752,15 +748,11 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
 }
 
 /**
- * 运行前置：能不能真的发出第一个请求。**与 `diagnoseConfig` 分开**，因为两者拦的时机
- * 不同。`diagnoseConfig` 查「配置是否成形」，成形才允许落盘；本函数查「成形但没配全」
- * ——`active` 指向的接口还没填 key。没填 key 是配置过程中的正常中间态，**只拦运行、
- * 不拦保存**：设置页据此显示提醒，但照常落盘；`qy exec` 把它和 `diagnoseConfig` 一起
- * 当退出条件——没 key 发不出请求，早退能给出带配置文件路径的消息，而不是 provider 的
- * 一条 401（`buildAdapter` 抛的 `no_api_key` 不知道配置文件在哪）。
- *
- * 本机端点（localhost / 127.0.0.1）不要求 key。`active` 指向不存在的接口属「不成形」，
- * 归 `diagnoseConfig`，这里直接放过。
+ * 运行前置检查：`active` 接口是否已配置 API Key。与 `diagnoseConfig` 区分——缺少 Key
+ * 属配置过程中的合法中间态，仅阻止运行、不阻止保存：设置页据此提示，配置照常落盘；
+ * `qy exec` 据此提前退出并给出配置文件路径，而非 provider 返回的 401。本机端点
+ * （localhost / 127.0.0.1）不要求 Key。`active` 指向不存在的接口属结构性错误，
+ * 由 `diagnoseConfig` 处理。
  */
 export function diagnoseRunnable(cfg: QyConfig): string[] {
   // 出厂没有 active 是正常状态。「没配模型」的拦截在起 run 的路径上（no_model），不在这里。

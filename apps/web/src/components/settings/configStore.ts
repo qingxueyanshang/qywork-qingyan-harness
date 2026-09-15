@@ -83,13 +83,10 @@ export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
 }
 
 /**
- * 上一次写的收尾。**所有配置写排在这条链上，一次只跑一个。**
- *
- * 每次写是「读回服务端整份 → 应用这次改法 → 整份 PUT」。不串行的话，两次改一格
- * 若重叠，后发的那次会在前一次落盘前 GET 到旧值——最典型的坏法：先填 API Key、
- * 紧接着填 Base URL，url 那次读到「还没有 key」的脱敏配置（`hasApiKey:false`），
- * 整份写回时把刚落盘的 key 覆盖成空。排队让每次写都在前一次落盘之后才读，
- * 因此改哪几格、按什么顺序改都不丢。链上一环失败不阻断后续（`.catch`）。
+ * 配置写入串行队列，同一时刻仅执行一次。并发写入若不串行，后发起的一次会在前一次
+ * 落盘前读到旧配置，整体回写时覆盖前一次已保存的字段（例如先后写入 API Key 与
+ * Base URL 时丢失 Key）。串行化保证每次写入读到的均为前一次落盘后的结果；队列内
+ * 单次失败不阻断后续写入。
  */
 let writeQueue: Promise<unknown> = Promise.resolve()
 
@@ -118,7 +115,7 @@ export async function replaceConfig(
   return run
 }
 
-/** 保存被服务端以「配置在别处改过」（HTTP 409）拒绝：唯一带 `status` 的那类错误。 */
+/** 服务端以 409（配置已被其他客户端修改）拒绝保存：唯一携带 `status` 的错误。 */
 function isConflict(e: unknown): boolean {
   return (
     typeof (e as { status?: unknown }).status === 'number' &&
@@ -129,8 +126,8 @@ function isConflict(e: unknown): boolean {
 async function flushWrite(edit: (cur: RedactedConfig) => RedactedConfig | null): Promise<void> {
   setBusy(true)
   try {
-    // 409 = 配置在别处刚被改过。重读最新整份、在其上重放这次编辑再提交；
-    // 有界重试，防止两端互相顶着无限转。同一客户端内的写已被队列串行，不会自撞。
+    // 409 表示配置已被其他客户端修改。重新读取完整配置、在其上重放本次编辑后再次提交；
+    // 有界重试以避免两端反复冲突。同一客户端的写入已由队列串行，不会与自身冲突。
     for (let attempt = 0; ; attempt++) {
       const fresh = await loadServerConfig()
       const next = edit(fresh.config)

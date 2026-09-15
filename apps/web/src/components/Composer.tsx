@@ -790,9 +790,9 @@ export function Composer() {
     }
 
     /*
-     * 没配模型就拦下：当前会话没有模型、也没有默认可回落时，发出去只会在起 run 时
-     * 被 no_model 拒绝，就地显示「未配置模型」，草稿与附件保留。
-     * 目录还没拉回来（cat 为 null）时不拦——让服务端那道 no_model 兜底，避免误拦。
+     * 未配置模型时拦截：当前会话无模型且无默认可回退时，提交只会在启动 run 时被
+     * no_model 拒绝，此处直接显示「未配置模型」并保留草稿与附件。目录尚未加载
+     * （cat 为 null）时不拦截，由服务端的 no_model 兜底，避免误拦。
      */
     const cat = modelCatalog()
     if (!activeModel()?.model && cat !== null && !cat.active) {

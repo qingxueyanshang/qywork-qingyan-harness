@@ -23,12 +23,9 @@ import { DEFAULT_ENV_ALLOW } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 配置内容的版本指纹。保存时客户端带上它编辑所基于的那一版，服务端据此发现
- * 「读出去到写回来之间，配置被别处改过」。
- *
- * 取内容哈希而不是自增计数：计数得单独存一处、还要跨重启，又是一本账；哈希只依赖
- * 当前这份配置本身，任何字段改了它就变。含明文 key（`d.config` 全量），因此改 key
- * 也会变版本——正是要挡的那类改动。
+ * 配置内容的版本指纹，用于保存时的乐观并发校验（见 PUT 分支）。采用内容哈希而非自增
+ * 计数：自增计数需额外持久化并跨重启维护，哈希仅由当前配置内容决定。哈希基于完整配置
+ * （含明文 key），故 key 变更亦改变版本。
  */
 function configVersion(cfg: QyConfig): string {
   return createHash('sha1').update(JSON.stringify(cfg)).digest('hex').slice(0, 16)
@@ -129,10 +126,9 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     } | null
     if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
     /*
-     * 乐观并发：客户端带上它编辑所基于的版本。保存走整份 PUT，两个窗口/两台设备
-     * 同时改同一份配置时，后写的那次基于的是改动前的整份，整份写回会把前一次刚落盘
-     * 的字段（最典型是 API Key）覆盖掉。基线版本对不上就拒，让客户端重读最新内容、
-     * 在其上重放这次编辑再提交。不带 baseVersion 的老客户端与脚本照旧放行。
+     * 乐观并发校验：多个客户端同时修改时，后发起的写入基于修改前的完整配置，整体回写
+     * 会覆盖前一次已保存的字段（典型为 API Key）。基线版本不一致时拒绝，由客户端重新
+     * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
      */
     if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
       return json({ error: 'conflict', message: '配置在别处被改动，已基于最新内容重试' }, 409)
