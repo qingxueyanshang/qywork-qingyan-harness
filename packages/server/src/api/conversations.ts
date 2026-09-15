@@ -472,7 +472,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   // 当前目标。**按会话读账本，和上下文面板同一条理由**——`goal` 事件只在变更
   // 那一刻发一次，界面刷新、切走再切回来就什么都没有了。而目标是跨轮、
   // 跨进程存在的状态：续起标记不落盘，重启之后账本里那个 `active` 的目标
-  // 静静躺着等人点继续，界面看不见它就等于那个循环凭空消失了。
+  // 处于等待用户点击继续的状态；界面不可见即等同于该循环消失。
   const goalMatch = /^\/api\/conversations\/([^/]+)\/goal$/.exec(p)
   if (goalMatch) {
     const id = goalMatch[1] as ConversationId

@@ -104,7 +104,7 @@ describe('allow 白名单的边界', () => {
 
   test('放行不了「值命中」—— 值就是用户的 key 时叫什么名字都不算数', () => {
     // 优先级取反的后果就是白名单变成了绕过通道：用户放行 GITHUB_TOKEN，
-    // 而那个变量里躺着的是 DeepSeek 的 key。
+    // 而那个变量里留有的是 DeepSeek 的 key。
     const out = scrubEnv({ GITHUB_TOKEN: DEEPSEEK }, secretsOf(), { allow: ['GITHUB_TOKEN'] })
     expect(out.GITHUB_TOKEN).toBeUndefined()
   })
@@ -129,7 +129,7 @@ describe('必需变量', () => {
   })
 
   test('必需变量的值里混进了 secret 时，保留变量但屏蔽片段', () => {
-    // 整个删掉 PATH 会让命令根本跑不起来；只换掉命中的那段，明文一样进不了子进程。
+    // 删除整个 PATH 会使命令无法执行；仅替换命中的片段，明文同样不会进入子进程。
     const out = scrubEnv({ PATH: `/usr/bin:/opt/${ANTHROPIC}/bin` }, secretsOf())
     expect(out.PATH).toBe(`/usr/bin:/opt/${REDACTED}/bin`)
     expect(out.PATH).not.toContain(ANTHROPIC)

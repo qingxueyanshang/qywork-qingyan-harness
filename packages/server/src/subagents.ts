@@ -2,11 +2,11 @@
  * 在跑的子 agent，按会话记。
  *
  * **服务级，与 `RunManager` 同级。** 派活通道每一轮新建一个（`run-control.ts` 装 Session
- * 时），而子 agent 的生命期跟着会话：挂在通道上的话，派它的那一轮一结束这张表就没了，
+ * 时），而子 agent 的生命期跟着会话：挂在通道上的话，派发它的那一轮结束后，此表即被销毁，
  * 停止按钮再也停不到它。
  *
  * **这里是进程内的句柄，不是账。** 格状态与回执才是事实（`NodeState`、`messages.origin`）；
- * 这张表只回答两件事：这条会话此刻有没有子 agent 在跑、停止时要 abort 谁。
+ * 这张表只回答两件事：该会话当前是否有子 agent 正在运行、停止时要 abort 谁。
  */
 
 import type { ConversationId, SubagentKind } from '@qywork/core'

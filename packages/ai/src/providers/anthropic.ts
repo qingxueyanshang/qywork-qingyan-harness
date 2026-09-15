@@ -48,7 +48,7 @@ import { mergeContextIntoUsers } from './context.ts'
 const MIN_TOKENS_WHEN_THINKING = 16_000
 
 /**
- * 谁都不申报时这条协议只能自己填的那个数。
+ * 各方均未申报时，本协议只能自行填入的默认值。
  *
  * **这条协议的 `max_tokens` 是必填的**，所以「不申报」在这里没有对应写法——
  * 另两条协议整个不发这个字段，这条不行。取 64K 是 Anthropic 系当前的普遍上限；
@@ -139,7 +139,7 @@ export class AnthropicAdapter implements LlmAdapter {
             } else if (d?.type === 'input_json_delta') {
               const slot = partial.get(ev.index)
               // **必须兜住缺席**：直接拼接会把字符串 `undefined` 接进 JSON，
-              // 随后 `JSON.parse` 抛，整次工具调用的参数就没了。
+              // 随后 `JSON.parse` 抛错，整次工具调用的参数将丢失。
               if (slot) slot.json += d.partial_json ?? ''
             }
             break
@@ -155,7 +155,7 @@ export class AnthropicAdapter implements LlmAdapter {
             // 必须先看 stop_reason 再读它，反过来会漏判。
             if (raw === 'refusal' && ev.delta?.stop_details) {
               // 键不存在与键为 undefined 在 `exactOptionalPropertyTypes` 下不是一回事，
-              // 所以按有没有决定加不加这个键（同 `store` 的 `rowToWorkspace`）。
+              // 因此依据是否存在，决定是否添加此键（同 `store` 的 `rowToWorkspace`）。
               refusal = {
                 category: ev.delta.stop_details.category ?? null,
                 ...(ev.delta.stop_details.explanation === undefined

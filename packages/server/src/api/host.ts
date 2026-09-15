@@ -38,7 +38,7 @@ import { type ApiHandler, json } from './types.ts'
  * 一条依赖随这台机器变的那三格。
  *
  * `required` 也在里面而不是写死在 `DepSpec` 上：bash 缺了算不算硬伤，
- * 取决于这台机器还有没有别的 shell（`resolveBashRow`）。其余三条是常量，
+ * 取决于本机是否还存在其他 shell（`resolveBashRow`）。其余三条是常量，
  * 照样从这里出——两种写法并存的话，读表的人得先分辨哪条是哪种。
  */
 interface DepState {
@@ -144,14 +144,14 @@ export function resolveBashRow(deps: {
     return {
       path: null,
       required: true,
-      hint: `bash、pwsh、powershell 都没有，模型手里根本没有 run_command：${bash.reason}`,
+      hint: `bash、pwsh、powershell 均不可用，模型无法使用 run_command：${bash.reason}`,
     }
   }
   return {
     path: null,
     required: false,
     hint:
-      `命令照样跑得了，但语法换了：现在交给 ${shell.path}，模型按 PowerShell 写而不是 POSIX` +
+      `命令仍可执行，但语法不同：当前交由 ${shell.path}，模型需按 PowerShell 而非 POSIX 语法编写` +
       '（2>/dev/null 要写成 2>$null）；落在 Windows PowerShell 5.1（System32 里那个）时，' +
       '&& 与 || 更是解析错误，只能用 ; 与 if ($?) { }。装上 bash 就切回 POSIX。',
   }
@@ -175,7 +175,7 @@ const DEPS: DepSpec[] = [
     probe: () => ({
       path: onPath('git'),
       required: true,
-      hint: '装上之后版本面板才读得到状态；Git for Windows 同时带上面那个 bash。',
+      hint: '安装后版本面板才能读取状态；Git for Windows 会一并提供上述 bash。',
     }),
   },
   {
@@ -186,7 +186,7 @@ const DEPS: DepSpec[] = [
     probe: () => ({
       path: onPath('rg'),
       required: false,
-      hint: '不装也能搜——内置遍历顶上，大仓库慢一些。',
+      hint: '未安装时由内置遍历兜底，大型仓库速度较慢。',
     }),
   },
   {

@@ -65,7 +65,7 @@ const PLAIN_LANGS = new Set(['text', 'plaintext', 'txt', 'plain', ''])
 
 const WHITELIST = {
   ...getDefaultWhiteList(),
-  // 高亮和角标依赖 class；不放行 class 等于高亮全废。
+  // 高亮与角标依赖 class；不放行 class 将使高亮完全失效。
   span: ['class'],
   code: ['class'],
   pre: ['class'],

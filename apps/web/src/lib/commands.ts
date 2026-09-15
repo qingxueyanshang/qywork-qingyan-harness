@@ -50,7 +50,7 @@ export function buildCommands(): Command[] {
       label: '立目标',
       slash: 'goal',
       // 边界：它会自己一轮轮跑下去。
-      hint: '一轮接一轮做下去，直到做完或你按停止',
+      hint: '持续逐轮执行，直到完成或你点击停止',
       arg: { placeholder: '要做到什么' },
       icon: IconTarget,
       run: (objective) => setGoal(objective ?? ''),
@@ -59,7 +59,7 @@ export function buildCommands(): Command[] {
       id: 'role',
       label: '创建角色',
       slash: ROLE_COMMAND.slice(1),
-      hint: '写入当前项目 Agent Team，之后可用 @ 点名',
+      hint: '写入当前项目的 Agent Team，之后可用 @ 指名调用',
       arg: { placeholder: '描述角色的职责与工作方式' },
       icon: IconUsers,
       // 原文作为用户消息进入同一条会话；提示词按这个前缀说明这是一次明确的建角色要求。

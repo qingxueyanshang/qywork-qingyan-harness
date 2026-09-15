@@ -136,7 +136,7 @@ export function rootsOf(ctx: {
  * 而分叉的表现是「体检说没问题，运行时不生效」。
  *
  * 拒绝而不是静默修正：一条被静默忽略的额外目录，用户看到的是「配了却还是被拒」，
- * 而错误出在他自己那一行上，本来一句话就能说清。
+ * 而错误出在用户自己的配置行上，本可用一句提示说明。
  */
 export function normalizeAdditionalDirectories(raw: readonly string[] | undefined): {
   dirs: string[]

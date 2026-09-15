@@ -77,7 +77,7 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
     //
     // 所以只吞那一种，其余一律说出来。
     // **仍然不抛**：账本是旁路记账，不该让一次已经跑完的 run 在收尾时失败——
-    // 但「不失败」不等于「不吭声」。
+    // 但「不失败」不等于「不报告」。
     const msg = err instanceof Error ? err.message : String(err)
     if (!/UNIQUE constraint failed/i.test(msg)) {
       log.error('usage', `记账失败：${msg}`, { kind: entry.kind })

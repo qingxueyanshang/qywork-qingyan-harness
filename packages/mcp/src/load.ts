@@ -35,7 +35,7 @@ export interface LoadedServer {
    *
    * **这个字段的存在就是为了消灭一种静默失败**：一个只提供 `prompts` 的 server
    * 会连上、握手成功、`tools/list` 返回空、注册 0 个工具，**不报任何错**。
-   * 用户看到「配了但什么都没发生」，日志里干干净净。
+   * 用户看到「已配置却毫无反应」，而日志中没有任何记录。
    */
   unsupported: string[]
 }
@@ -175,7 +175,7 @@ export async function loadMcpServers(
          *   只是换了个方向，而且更难查：注册 0 个工具不是因为 server 真的没有，
          *   而是因为客户端没问。
          *
-         * 所以：调用失败时，只有在 server **没有**声明 tools 的情况下才咽下去
+         * 所以：调用失败时，只有在 server **没有**声明 tools 的情况下才忽略
          * （那说明它本来就不提供工具，比如一个 resource-only 的 server）。
          */
         let tools: McpToolDef[] = []
@@ -207,7 +207,7 @@ export async function loadMcpServers(
     const seen = new Set(out.toolSpecs.map((s) => s.name))
     for (const def of item.tools) {
       const full = toolName(item.name, def.name)
-      // 重名不能静默覆盖——覆盖会无声吞掉一整个 server 的某个工具。
+      // 重名不能静默覆盖——覆盖会静默丢弃某个 server 的一个工具。
       // （同名只可能来自同一个 server 重复声明，server 名已经在前缀里了。）
       if (seen.has(full)) {
         out.failures.push({ server: item.name, reason: `工具名重复：${full}` })
@@ -238,7 +238,7 @@ export async function loadMcpServers(
      * 连上了、握手成功了、一个工具都没注册出来——**这件事必须说出来**。
      *
      * 这就是要修的那个静默失败：用户看到的是「配了 MCP 但什么都没发生」，
-     * 而 failures 是空的、日志是干净的，无从下手。
+     * 而 failures 为空、日志无记录，无从排查。
      *
      * 判据是「产出为零」而不是「没声明能力」：后者只覆盖其中一种成因，
      * 而用户关心的是结果。理由里带上 server 声明了什么，

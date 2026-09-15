@@ -48,7 +48,7 @@ function fixture(root: string) {
  * 等那个分支名出现。
  *
  * 不写死一个 sleep：这条路上串着文件系统回调、120ms 的合并窗口和一次 git 子进程，
- * 三样的耗时都由机器决定。写死的那个数在别人的机器上要么白等要么不够。
+ * 三样的耗时都由机器决定。硬编码的数值在其他机器上要么造成空等，要么不足。
  */
 async function until(branches: string[], name: string, ms = 5000): Promise<boolean> {
   for (let waited = 0; waited < ms; waited += 50) {

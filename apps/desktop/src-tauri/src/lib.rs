@@ -25,7 +25,7 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, Wind
 /// 运行时的日志写到 stderr 与 `logs/qywork.log`，最后一条 error 留给启动失败的对话框。
 ///
 /// tauri 运行时把窗口创建失败只写进 `log::error!` 就当成功返回（`build()` 仍是 Ok），
-/// 没有 logger 那句话就消失：进程带着托盘空转，一个窗口都没有。
+/// 没有 logger 时该日志将丢失：进程保留托盘图标空转，不出现任何窗口。
 ///
 /// release 是 `windows_subsystem = "windows"`，stderr 没人看得见；文件那份是唯一留得下的记录。
 struct ShellLog;
@@ -548,7 +548,7 @@ pub fn run() {
 /// **最后一级不能省。** 从开始菜单快捷方式启动时，
 /// `current_dir()` 是安装目录（perMachine 安装下就是 `C:\Program Files\qywork`）——
 /// 那里既不是用户的代码，又是只读的。只跑 `cargo check` 不打包时这条路径走不到，
-/// 而它的现象是「装完一打开，工作区里全是程序自身的文件，写任何文件都 EPERM」。
+/// 其现象是：安装后首次打开，工作区指向的全是程序自身的文件，写入任何文件都返回 EPERM。
 /// 启动时**显式**指定过的工作区。没有就回 `None`，交给服务端决定。
 ///
 /// **不要回落到 cwd / 家目录**：那把「没指定」静默变成「就用启动目录」，而桌面端的

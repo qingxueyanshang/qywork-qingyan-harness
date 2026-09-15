@@ -374,7 +374,7 @@ export function buildBwrapArgv(
 
   /*
    * /tmp 必须可写：编译器、包管理器、git 都往那儿写。
-   * 用 tmpfs 而不是 bind：宿主 /tmp 里可能躺着别的进程写下的临时凭证文件。
+   * 用 tmpfs 而不是 bind：宿主 /tmp 里可能留有别的进程写下的临时凭证文件。
    *
    * **它必须排在可写 bind 之前。** bwrap 按出现顺序叠加，反过来写的话
    * 一个位于 /tmp 下的工作区会被随后的 tmpfs 整个盖掉——而且**不报错**：
@@ -859,7 +859,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
   const isWindows = process.platform === 'win32'
 
   // `run_command` 在一个 shell 都没有时不注册，所以正常路径到不了这里；
-  // 插件的 `exec.run` 走的是同一个函数，它需要一个说得清的错而不是崩在 argv 上。
+  // 插件的 `exec.run` 走的是同一个函数，它需要一个明确的错误信息，而非在 argv 处崩溃。
   const shell = commandShell()
   if (shell === null) {
     // 说 bash 那一档的原因：三档里只有它给得出「下一步怎么办」（装 Git for Windows），

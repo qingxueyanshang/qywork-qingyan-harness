@@ -65,7 +65,7 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
       deps.log(`重启 sidecar 失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       // **必须在 finally 里放**：restart 抛出去而这个标志还立着的话，
-      // 此后每一次改动都只会被排到后面，再也不会换代码，而且一声不吭。
+      // 此后每一次改动都只会被排到队尾，不再切换代码，且没有任何提示。
       reloading = false
     }
   }

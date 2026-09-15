@@ -123,13 +123,13 @@ function ModeChip() {
  *   循环已经停下，而用户只看见「受阻」两个字。
  * - `active` 却没有一轮在跑，说的是「续行没开着」。**续起标记不落盘**
  *   （`server/runs.ts` 的 `GoalArm`：落盘的话一个失控后崩溃的循环会在下次
- *   启动时自己复活），所以进程重启、会话恢复之后目标还在账本里躺着，但不会
+ *   启动时自己复活），所以进程重启、会话恢复之后目标还在账本里留有，但不会
  *   自己再起一轮。这句话不说清楚，界面上就是「目标还在、什么都没发生」。
  */
 function goalNote(goal: Goal, running: boolean): string {
   if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '没给理由'}`
   if (goal.status === 'paused') return '已暂停'
-  return running ? '自动续行中' : '没在自动跑，点继续接上'
+  return running ? '自动续行中' : '自动续行未开启，点击「继续」接续上一轮'
 }
 
 /**
@@ -806,7 +806,7 @@ export function Composer() {
      */
     if (activeModelRow()?.vision === false && files.some((f) => f.type === 'image')) {
       setState('notice', {
-        message: '当前模型不属于多模态，请取消图片发送',
+        message: '当前模型不支持图片输入，请移除图片后再发送',
         reason: 'model_without_vision',
       })
       return
@@ -1113,7 +1113,7 @@ export function Composer() {
               class="icon-btn"
               type="button"
               aria-label="添加附件"
-              data-tip="添加附件（也可直接粘贴或拖入）"
+              data-tip="添加附件，也可直接粘贴或拖入"
               onClick={() => {
                 if (isDesktopShell()) {
                   void pickFiles().then(takePaths)

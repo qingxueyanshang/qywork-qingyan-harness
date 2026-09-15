@@ -364,7 +364,7 @@ export interface MemoryEntry {
  * 知道「有哪些记忆」，需要哪条再单独读。
  *
  * 摘要就是首行原文，这里不做任何加工——加工出来的一句话和文件里写着的那句
- * 不一致时，用户在设置页看到的和模型看到的就是两回事。
+ * 不一致时，用户在设置页看到的内容将与模型看到的不一致。
  */
 export async function listEntries(dir: string, scope: Scope = 'project'): Promise<MemoryEntry[]> {
   const names = await readdir(dir).catch(() => [] as string[])

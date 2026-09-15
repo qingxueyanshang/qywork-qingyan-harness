@@ -165,7 +165,7 @@ test('没配任何模型时 chip 显示「选择模型」，模型面给出去�
       (button) => button.textContent?.includes('模型'),
     )!
     click(modelEntry)
-    expect(host.textContent).toContain('先在设置')
+    expect(host.textContent).toContain('尚未配置模型')
     // 一档都没有的模型不冒出「推理等级」入口。
     expect(host.textContent).not.toContain('推理等级')
   } finally {

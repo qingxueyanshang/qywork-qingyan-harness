@@ -254,7 +254,7 @@ export class QyClient {
      */
     if (this.ws) return
     if (!this.endpoint.token) {
-      this.opts.onState('unauthorized', '未配对：请在桌面端扫码')
+      this.opts.onState('unauthorized', '未配对，请在桌面端扫码配对')
       return
     }
 
@@ -313,7 +313,7 @@ export class QyClient {
         this.terminalReported = true
         // **握手被拒是终态**，不按 reason 分支。
         //
-        // 服务端只会发 `bad_token`，而它重连一万次带的还是同一个令牌。
+        // 服务端只会返回 bad_token，而它重连再多次携带的仍是同一个令牌。
         //
         // 以后真出现「等等就好」的原因（连接数超限之类），在这里按 reason
         // 分支。现在不预留那个分支：没有生产者的分支会被下一个人当成生效的逻辑。
@@ -389,7 +389,7 @@ export class QyClient {
       type: 'command.rejected',
       command: cmd.type,
       reason: 'not_ready',
-      message: this.closed ? '连接已断开，请重新打开应用' : '正在重连，稍后再试',
+      message: this.closed ? '连接已断开，请重新打开应用' : '连接已断开，请重新打开应用',
     })
   }
 

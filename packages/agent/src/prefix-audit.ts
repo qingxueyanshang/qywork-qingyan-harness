@@ -98,7 +98,7 @@ const VOLATILE_PATTERNS: { kind: string; re: RegExp; why: string }[] = [
   },
 ]
 
-/** 扫一段冻结文本里有没有天生会变的字段。 */
+/** 扫描一段冻结文本中是否存在本身就会变化的字段。 */
 export function auditFrozenText(text: string): VolatileHit[] {
   const hits: VolatileHit[] = []
   for (const p of VOLATILE_PATTERNS) {

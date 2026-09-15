@@ -35,7 +35,7 @@ mkdirSync(testTemp, { recursive: true })
 for (const name of ['TEMP', 'TMP', 'TMPDIR']) process.env[name] = testTemp
 process.env.GIT_CEILING_DIRECTORIES = testTemp
 /*
- * 全局层的根同样落进隔离目录。`globalScopeRoot()` 缺省是 `~/.qywork`，那里躺着开发者本人的
+ * 全局层的根同样落进隔离目录。`globalScopeRoot()` 缺省是 `~/.qywork`，那里留有开发者本人的
  * 明文 key、账本与定时任务文件；任何一条起 `serve()` 或读配置的测试忘了自己设这个变量，
  * 就会按真实数据跑，甚至改名真实文件。自己设了 `QYWORK_HOME` 的测试照旧覆盖这一份。
  */

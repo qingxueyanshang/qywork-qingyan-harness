@@ -46,7 +46,7 @@ const KNOWN: KnownCli[] = [
     // `--permission-mode acceptEdits` 不是可选项：不给的话它**一个字节都写不了**。
     // 实测（2026-08-24）派它建一个文件加改一行，四种写法（Write / Edit / Bash 重定向 /
     // PowerShell）全被它自己的权限闸拦下，原话「requested permissions to write … but you
-    // haven't granted it yet」——stdin 是关的，那道闸没有人能应答。**它退出码仍是 0**，
+    // haven't granted it yet」——stdin 已关闭，无人能应答该权限请求。**它退出码仍是 0**，
     // 因此这一侧照样算它做成了。它接受的只是工作目录内的编辑，边界与派活这件事本身同宽。
     args: [
       '-p',

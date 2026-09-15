@@ -51,7 +51,7 @@ export function BranchPicker() {
       setList(r.branches)
     } catch (e) {
       setList([])
-      setError(said(e, '分支列表拉不到'))
+      setError(said(e, '无法加载分支列表'))
     }
   }
 

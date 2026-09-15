@@ -70,7 +70,7 @@ describe('缩放策略', () => {
     expect((await shrinkImage(bytes, 'image/png')).bytes).toBe(bytes)
   })
 
-  /** 超标但解不开（这里的头是伪造的）不能抛——一张图缩不了不该让整轮起不来。 */
+  /** 超出上限但无法解码（此处文件头是伪造的）时不能抛错；单张图片无法压缩，不应导致整轮失败。 */
   test('超标但解码失败时原样返回，不抛', async () => {
     const bytes = png(4000, 3000)
     const out = await shrinkImage(bytes, 'image/png')

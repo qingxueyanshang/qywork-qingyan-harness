@@ -299,7 +299,7 @@ export async function renameEntry(
  * 删除。目录连着里面一起删。
  *
  * `force: false` 是有意的：不存在时要抛，让上面回 404。`force: true` 会把
- * 「删掉了」和「本来就没有」说成同一句话，而用户点的是删除，他需要知道有没有删掉。
+ * 「删掉了」和「本来就没有」说成同一句话，而用户执行的是删除操作，需要确认是否已删除。
  */
 export async function deleteEntry(workspaceRoot: string, relPath: string): Promise<void> {
   await rm(join(workspaceRoot, relPath), { recursive: true, force: false })
@@ -332,7 +332,7 @@ export async function findByName(
   workspaceRoot: string,
   query: string,
 ): Promise<{ matches: FindHit[]; truncated: boolean }> {
-  // 空查询回空结果，**判定放在这里而不是调用方**：空串是「谁都匹配」，
+  // 空查询回空结果，**判定放在这里而不是调用方**：空字符串表示「匹配全部」，
   // 由 HTTP 那层挡的话，第二个调用方一来就会拿到整棵树。
   const needle = query.trim().toLowerCase()
   if (!needle) return { matches: [], truncated: false }

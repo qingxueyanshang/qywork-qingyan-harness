@@ -4,7 +4,7 @@
  * 这条是实测撞出来的，而且只在**真实产物 + 真实 provider**下才会出现：
  * 装一个 id 叫 `demo.lines` 的插件（反向域名风格，清单文档自己推荐的写法），
  * 工具名成了 `demo.lines__count`，然后每一轮 run 都被
- * `Invalid 'tools[0].function.name'` 400 打死——而错误信息不说是哪个插件。
+ * `Invalid 'tools[0].function.name'` 400 拒绝——而错误信息不说是哪个插件。
  *
  * 单测、typecheck、本地跑 agent 全都是绿的：内置工具名里没有点。
  */

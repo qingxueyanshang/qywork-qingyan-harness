@@ -159,7 +159,7 @@ export class McpClient {
    * **必须留着：不能只取 `protocolVersion` 和 `serverInfo`、把 `capabilities` 丢掉。**
    * 丢掉的后果是：一个只提供 `resources`（不提供 `tools`）的 server 表现为
    * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具、**没有任何错误**。
-   * 用户看到的是「配了但什么都没发生」，而日志里干干净净。
+   * 用户看到的是「已配置却毫无反应」，而日志中没有任何记录。
    *
    * 客户端目前只消费 `tools`。声明了但未接入的能力（`resources` / `prompts`）
    * 必须在加载时**说出来**——那句话是用户唯一能拿到的线索。
@@ -264,7 +264,7 @@ export class McpClient {
    * 三条都要照顾到，缺一条就会有一类 server 静默地少注册工具：
    *
    * 1. **只在协商结果 ≥ 2026-07-28 时才问。** 对旧 server 发这条只会拿到
-   *    `Method not found`，白花一次往返。
+   *    `Method not found`，多一次无效的往返。
    * 2. **失败不算错。** 有的 server 声明了新版本却没实现这个方法。
    *    这时 `initialize` 里那份（如果有）仍然算数。
    * 3. **是合并不是替换。** 两处都给了就取并集——少的那一方是「没说」，
@@ -375,7 +375,7 @@ export class McpClient {
   ): Promise<unknown> {
     const dead = this.transport?.deadReason() ?? (this.transport ? null : '未启动')
     if (dead !== null) {
-      // 带上死因。只说「未运行」的话，用户看到的是一条无从下手的错误。
+      // 带上失败原因。只说「未运行」的话，用户看到的是一条无从下手的错误。
       const why = this.closedReason ?? dead
       return Promise.reject(new Error(`MCP server 未运行：${this.opts.name}（${why}）`))
     }

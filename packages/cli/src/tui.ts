@@ -2,9 +2,9 @@
  * 交互式模式：`qy` 不带参数时进这里。
  *
  * **为什么是行式 REPL 而不是全屏 TUI。** 全屏方案（备用缓冲区、自绘光标、鼠标）在 Windows 的
- * conhost 上是雷区：resize 事件、宽字符光标定位、Ctrl-C 的传递各有各的坑，而它换来的收益 ——固定
+ * conhost 上是问题密集区：resize 事件、宽字符光标定位、Ctrl-C 的传递各有各的坑，而它换来的收益 ——固定
  * 的输入框、滚动区——对一个「说一句、看它执行」的循环并不是必需的。行式 REPL 把渲染交给终端本身，
- * 代价是没有花哨的界面，收益是它在哪都能跑。
+ * 代价是界面较为简单，收益是它在哪都能跑。
  *
  * **与 `qy exec` 的关键差别。** 不是「exec 加个循环」。**会话是连续的**：同一个 conversationId 跨轮
  * 复用，所以模型看得到上一轮说了什么，提示缓存也能命中。exec 每次都是新会话——那正是它作为「一次
@@ -44,10 +44,10 @@ const HELP = `${BOLD}命令${RESET}
   /usage          最近 30 天的用量
   /export [文件]  导出当前会话为 markdown
   /cost           本会话花了多少
-  /help           这个
+  /help           显示本帮助
   /quit           退出
 
-${DIM}直接输入内容就是提问。跑的时候 Ctrl-C 中断这一轮，空闲时 Ctrl-C 退出。${RESET}`
+${DIM}直接输入内容即为提问。执行时按 Ctrl-C 中断本轮，空闲时按 Ctrl-C 退出。${RESET}`
 
 export async function runTui(workspaceRoot: string): Promise<number> {
   const config = await loadConfig()
@@ -246,7 +246,9 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
     default:
       // 未知命令**明确拒绝**，不要当成提问发给模型——
       // 用户打错一个斜杠命令却收到一段模型回答，是最让人困惑的那种反馈。
-      process.stdout.write(`${RED}未知命令 /${cmd}${RESET}${DIM}，/help 看可用的${RESET}\n`)
+      process.stdout.write(
+        `${RED}未知命令 /${cmd}${RESET}${DIM}，输入 /help 查看可用命令${RESET}\n`,
+      )
       return 'ok'
   }
 }

@@ -53,7 +53,7 @@ import type { BrowserPort } from '@qywork/agent'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
-/** 单次插件调用的超时。插件卡住不能把整轮 agent 拖死。 */
+/** 单次插件调用的超时。插件阻塞不得阻塞整轮 agent。 */
 export const CALL_TIMEOUT_MS = 60_000
 /** 启动握手超时。 */
 const READY_TIMEOUT_MS = 10_000
@@ -174,7 +174,7 @@ export class PluginHost {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         // **不透传宿主环境变量。** process.env 里有 API Key、令牌、代理配置——
-        // 一个插件进程本不需要它们，透传等于把凭证白送出去。
+        // 一个插件进程本不需要它们，透传等同于将凭证泄露出去。
         // 只给最必要的几个。
         PATH: process.env.PATH ?? '',
         ...(process.platform === 'win32'
@@ -187,7 +187,7 @@ export class PluginHost {
     this.proc = proc
 
     // stdin 上必须挂 error 监听。插件进程崩溃的瞬间宿主可能正在往它的管道里写，
-    // 而**没有监听者的 stream error 事件会直接掀掉整个宿主进程**——
+    // 而**没有监听者的 stream error 事件会直接终止整个宿主进程**——
     // 一个装错的插件不该有能力做到这件事，那正是本文件开头承诺过的边界。
     // MCP 那条传输链上是同一件事，见 `mcp/src/transport.ts`。
     proc.stdin?.on('error', (err: Error) => {
@@ -359,7 +359,7 @@ export class PluginHost {
    * 结束一次调用：摘掉待决项、停表、撤销身份。
    *
    * `notifyPlugin` 为真时再发一帧告诉插件这次调用作废——超时、取消、进程退出三条路要发，
-   * 插件自己答完的那条不发：它已经结束了，再发一帧只会让它的作废表白长一条。
+   * 插件自己答完的那条不发：它已经结束了，再发送一帧只会使其作废表无谓地增加一条。
    *
    * 返回 `null` 表示这次调用已经结束过——重复结束是空操作，不是错误。
    */

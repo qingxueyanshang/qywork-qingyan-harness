@@ -33,7 +33,7 @@ export interface ActiveRun {
  *
  * **为什么挂在这里，而且**绝不落盘**。** 「循环开着」是**进程内**的事实，不是账本里的事实。落盘的
  * 话，一个失控之后崩掉的循环会在下次启动时自己复活——而没有人再点过「继续」。挂在 `RunManager`
- * 上恰好等价于「不持久化」：进程重启即空表，账本里那个 `active` 的目标就静静躺着，等用户明确点继续
+ * 上恰好等价于「不持久化」：进程重启即空表，账本里那个 `active` 的目标就静静留有，等用户明确点继续
  * （`goal.resume`）。
  *
  * **不挂 Session**：服务端每条消息新建一个 Session，它活不过这一条消息，
@@ -49,7 +49,7 @@ export interface GoalArm {
 
 export class RunManager {
   private readonly active = new Map<string, ActiveRun>()
-  /** 同一会话同时只允许一个 run —— 两个 run 并发改同一批文件必然互相踩。 */
+  /** 同一会话同时只允许一个 run —— 两个 run 并发改同一批文件必然相互冲突。 */
   private readonly byConversation = new Map<string, RunId>()
   /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
   private readonly reserved = new Set<string>()
@@ -58,7 +58,7 @@ export class RunManager {
   /**
    * 排着的跟进消息，按会话分。**进程内，不落盘**，理由同 `GoalArm`。
    *
-   * 代价说破：进程崩溃时排着还没跑的正文就没了，卡片随之消失。这与本仓
+   * 代价明确：进程崩溃时，队列中尚未执行的正文将丢失，卡片随之消失。这与本仓
    * 「输入框里没发出去的草稿刷新即丢」同级，而且丢得见得到。
    * 换成落盘要多两条路径——删卡片变成删一行账、崩溃残留行的终态定义——
    * 而它们服务的仍是一个进程内的意图。
@@ -76,7 +76,7 @@ export class RunManager {
   ) {}
 
   /**
-   * 这条会话有没有一轮在跑（含只占了位还没拿到 runId 的）。
+   * 该会话是否有一轮正在运行（含只占了位还没拿到 runId 的）。
    *
    * **起轮的闸只认它。** 子 agent 在跑时照样能发消息、能起下一轮——那正是
    * 回执要走的路：闲着就当场起一轮。用 `isBusy` 当闸的话，回执与用户的消息
@@ -288,7 +288,7 @@ export class RunManager {
     )
   }
 
-  /** 空队列不留空数组：`queueOf` 与「有没有排着的」两处判据因此只有一种写法。 */
+  /** 空队列不留空数组：`queueOf` 与「是否存在排队项」两处判据因此只有一种写法。 */
   private setQueue(conversationId: ConversationId, next: FollowUp[]): void {
     if (next.length) this.queues.set(conversationId, next)
     else this.queues.delete(conversationId)

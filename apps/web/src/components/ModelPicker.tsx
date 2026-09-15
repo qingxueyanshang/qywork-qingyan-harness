@@ -189,7 +189,9 @@ export function ModelPicker() {
               </For>
               {/* 一个模型都没配 = 这个选择器无事可做。说清出口，别留一个空框。 */}
               <Show when={modelCatalog()?.providers.every((p) => p.models.length === 0)}>
-                <div class="model-menu-error">先在设置 → 模型里给接口挂一个模型</div>
+                <div class="model-menu-error">
+                  尚未配置模型，请在设置的「模型」中为接口添加一个模型
+                </div>
               </Show>
             </div>
           </Show>

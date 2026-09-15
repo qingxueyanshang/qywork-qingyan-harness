@@ -167,7 +167,7 @@ export function setWorkspaceTrust(
  *
  * **凭证挂在接口这一层，不挂在模型上。** 扁平档案（一个档案一个模型）会让
  * 同一家的三个模型把同一把 key 和同一个 baseUrl 各存三份——
- * 改一次端点得改三处，漏一处的表现是「有的模型好使有的不好使」。
+ * 改一次端点得改三处，漏一处的表现是「有的模型可用有的不可用」。
  */
 export interface StoredProvider {
   kind: ProviderKind

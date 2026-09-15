@@ -98,7 +98,7 @@ async function main(): Promise<number> {
   })
 
   // 造长会话：埋入的事实按 turn 落位，其余轮次是噪音。
-  // 噪音不是凑数——没有它，摘要面对的是一份「每句都重要」的输入，
+  // 噪声并非凑数：没有它，摘要面对的是一份「每句都重要」的输入，
   // 而真实会话里绝大多数内容是可丢的过程性探索。
   for (let i = 1; i <= TOTAL_TURNS; i++) {
     const planted = FACTS.find((f) => f.turn === i)
@@ -164,7 +164,7 @@ async function main(): Promise<number> {
      * **走真实装配**，不要在这里自己拼一个摘要器。
      *
      * 自拼的那个不降思考档：配了 `effort: max` 的模型会把输出预算全花在思考上，
-     * 正文一个字吐不出来，因此脚本量到的是 `summary_empty` 而线上不是——
+     * 正文没有任何输出，因此脚本测得的是 summary_empty，而线上并非如此——
      * 验证工具与被验证的实现走两条路，验出来的结论不作数。
      */
     summarize: async (prompt, budgetTokens) => {
@@ -183,7 +183,7 @@ async function main(): Promise<number> {
    * 造一个刚好越线、但摘要仍放得下的窗口。
    *
    * **不要把窗口设成等于占用**：那样软阈值（80%）扣掉保留预算之后几乎不剩空间，
-   * 摘要段拿到一个几十 token 的预算，模型一个字都吐不出来，结果是
+   * 摘要段仅分配到数十 token 的预算，模型无法产出正文，结果是
    * `summary_empty`——而线上 1M 窗口占用 80 万时触发，预算是六位数。
    * 夹具与线上走不同的数量级，验出来的结论不作数。
    *

@@ -384,7 +384,7 @@ const CONTINUABLE: StopReason[] = ['completed']
  * 循环不动了，而界面上只有「受阻」两个字。
  */
 const STOP_NOTE: Record<string, string> = {
-  provider_error: '上一轮出错停了',
+  provider_error: '上一轮因出错而中断',
   no_progress: '上一轮在原地打转',
   output_truncated: '上一轮输出被截断',
 }
@@ -614,7 +614,7 @@ export function resumeGoal(
  *
  * 回放是 fail-closed 的（`store/goals.ts` 直接抛）。这里不重试也不吞：
  * 重试只会把一次破损变成一串一模一样的报错，吞掉则是一个自己停了、
- * 谁也不知道为什么的循环。
+ * 无法判定成因的循环。
  */
 function abortGoalLoop(
   conversationId: ConversationId,

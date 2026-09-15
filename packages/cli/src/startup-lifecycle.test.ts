@@ -64,7 +64,7 @@ interface Fixture {
 }
 
 /**
- * 一份「上一个进程留下的现场」：旧任务文件还在，正文库里躺着一条没登记完的孤儿，
+ * 一份「上一个进程留下的现场」：旧任务文件还在，正文库中存在一条尚未登记完成的孤儿记录，
  * 另有一条仍被引用的正文。两库都关掉再交给子进程——Windows 上同一个文件两个写句柄要撞锁。
  */
 async function fixture(name: string): Promise<Fixture> {

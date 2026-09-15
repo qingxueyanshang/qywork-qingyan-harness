@@ -488,7 +488,7 @@ export function makeDelegate(ctx: {
         // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。
         if (r.session) setConversationExternalSession(deps.store, conversation.id, r.session)
         else if (!conversation.externalSession) {
-          notes.push('这家 CLI 没有给会话号，续派它不记得这次的内容，任务要写全')
+          notes.push('该 CLI 未提供会话号，续派时不会保留本次内容，任务需完整描述')
         }
         const error = r.ok
           ? undefined

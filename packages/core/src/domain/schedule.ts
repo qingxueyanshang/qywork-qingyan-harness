@@ -15,7 +15,7 @@ export type ScheduleKind = 'interval' | 'daily'
  * 一条定时任务。**这里只有配置与触发游标，没有执行结果。**
  *
  * 上一次跑成什么样由 `lastRunConversationId` 关联的 Run 回答（见 `ScheduleView.lastRun`）。
- * 在这里再存一份 status/error 就是第二本账：Run 落终态与任务表回写之间隔着进程退出的
+ * 在此另存一份 status/error 将构成独立的第二份状态：Run 落终态与任务表回写之间隔着进程退出的
  * 窗口，两份必然分叉。
  */
 export interface Schedule {

@@ -87,7 +87,7 @@ describe('记账', () => {
   test('空账本返回 0 而不是抛', () => {
     const s = fresh()
     expect(usageTotals(s).entries).toBe(0)
-    // 空账本是 `{}` 不是 `{USD: 0}`：「这段区间没花钱」不该凭空冒出一个币种。
+    // 空账本是 `{}` 不是 `{USD: 0}`：无花费的区间不应出现币种标记。
     expect(usageTotals(s).cost).toEqual({})
     s.close()
   })

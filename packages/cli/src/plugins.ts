@@ -1,5 +1,5 @@
 /**
- * `qy plugins` —— 看一眼装了哪些插件、被关住了没有。
+ * `qy plugins` —— 查看已安装了哪些插件、隔离到何种程度。
  *
  * **为什么必须有这条命令。** 它是 `sandboxed` 与 `netGuarded` 的**唯一用户可达出口**。没有它，这两
  * 个值在 `packages/plugins` 之外一个消费者都没有，唯一的痕迹是 `PluginHost.start()` 里的一行

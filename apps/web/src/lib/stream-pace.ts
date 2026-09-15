@@ -236,7 +236,7 @@ export function createPacer(host: PacerHost): Pacer {
 
   return {
     push(id, delta) {
-      // 换了一条 text step：上一条必须先落干净，否则它的尾巴会被记到新的这条上。
+      // 换了一条 text step：上一条必须先结算完毕，否则其末段字符会被计入新的一条。
       if (stepId !== id) {
         stop()
         if (stepId) host.write(stepId, takeAll(state))

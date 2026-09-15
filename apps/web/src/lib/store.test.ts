@@ -736,7 +736,7 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(state.lastRunId).toBe(null)
     // `lastRunId` 是收尾判据与重取判据的锚（runClosed / ledgerRevision），
-    // 串台的现象是当前会话跟着别人那一轮转圈。
+    // 串台的现象是当前会话随其他会话的那一轮一同进入运行态。
     expect(view().runStartedAt).toBe(null)
   })
 

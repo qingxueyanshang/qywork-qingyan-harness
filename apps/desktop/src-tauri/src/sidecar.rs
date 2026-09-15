@@ -374,7 +374,7 @@ pub async fn spawn(
      * （`lib.rs` 的 `build_main_window`）。表现是 qywork.exe 和 qy.exe 都在后台
      * 都在运行、桌面上没有窗口，任务管理器里只剩一条常驻的 qy.exe。
      *
-     * 20 秒：冷启动要读配置、开 SQLite、可能还要预热扩展，给得比感觉上宽一些；
+     * 20 秒：冷启动需读取配置、打开 SQLite、并可能预热扩展，因此留出比预估更宽裕的时间。；
      * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
      */
     let mut tail = String::new();

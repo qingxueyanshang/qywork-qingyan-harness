@@ -41,7 +41,7 @@ async function loadLayer(workspaceRoot: string, scope: WritableMcpScope): Promis
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    return { ok: false, error: `${scope} 层的 mcp.json 解析不了，先修好它：${String(err)}` }
+    return { ok: false, error: `${scope} 层的 mcp.json 解析失败，请先修复：${String(err)}` }
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return { ok: false, error: `${scope} 层的 mcp.json 最外层不是对象` }

@@ -772,7 +772,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
     expect(code).toBe('stream_idle_timeout')
     expect(message).toMatch(/未收到后续数据/)
     expect(message).not.toMatch(/未收到响应/)
-    // 关键：必须有终态。没有 run.finished 的话账本里躺着一条永远 running 的记录。
+    // 关键：必须有终态。没有 run.finished 的话账本里留有一条永远 running 的记录。
     expect(events).toContain('run.finished')
   }, 10_000)
 

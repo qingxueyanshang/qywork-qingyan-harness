@@ -211,7 +211,7 @@ function tokenInt(raw: string | undefined): number | null {
 }
 
 /**
- * 从消息里抠出 provider 自报的「用了多少 / 上限多少」。
+ * 从消息中提取 provider 自报的用量与上限。
  *
  * 各家的措辞和**数字顺序**都不一样，所以每条 pattern 要单独标注哪个数在前。
  * `reversed` 那条是 OpenAI 系：先说上限再说请求量。取反了会得到

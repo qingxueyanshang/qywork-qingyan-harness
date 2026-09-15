@@ -38,7 +38,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       const stoppedRun = deps.runs.interruptConversation(cmd.conversationId)
       const stoppedSubagents = deps.subagents.interruptConversation(cmd.conversationId)
       if (!stoppedRun && !stoppedSubagents) {
-        reject(deps.ws, cmd.type, 'conflict', '这一轮已经不在跑了')
+        reject(deps.ws, cmd.type, 'conflict', '本轮已结束')
         return
       }
       /*

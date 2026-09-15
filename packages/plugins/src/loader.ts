@@ -184,7 +184,7 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
     //
     // **必须消毒**：清单推荐反向域名风格的 id（`com.example.tool`），
     // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`。不转的话装一个带点的插件，
-    // 之后每一轮 run 都被 400 打死，错误信息还不说是谁干的。
+    // 之后每一轮 run 都被 400 拒绝，错误信息还不说是谁干的。
     const name = pluginToolName(manifest.id, t.name)
     if (registry.toolSpecs.some((s) => s.name === name)) {
       // 消毒会制造碰撞（`a.b` 与 `a_b` 同名）。查重并报出来，不静默覆盖。

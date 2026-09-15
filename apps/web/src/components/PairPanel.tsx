@@ -92,7 +92,7 @@ export default function PairPanel() {
               </div>
             </Show>
 
-            <p class="pair-hint">扫不通就换一个地址</p>
+            <p class="pair-hint">若扫描无法接通，请更换其他地址</p>
           </Show>
         </div>
       )}

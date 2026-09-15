@@ -56,7 +56,7 @@ describe('bash 路径解析', () => {
   })
 
   test('环境变量指到不存在的位置就当没有，不回落到搜索', () => {
-    // 回落的后果是「跑起来了，但跑的不是指定的那个」——那要靠对比输出才发现。
+    // 回落的后果是命令可执行，但执行的并非指定的 bash，需对比输出才能发现。
     const got = resolveBashPath({
       env: { [BASH_PATH_ENV]: 'D:/nope/bash.exe' },
       platform: 'win32',
@@ -292,7 +292,7 @@ describe('bwrap 参数生成', () => {
   })
 
   test('/tmp 总是换成 tmpfs', () => {
-    // 宿主 /tmp 里可能躺着别的进程写下的临时凭证文件。
+    // 宿主 /tmp 里可能留有别的进程写下的临时凭证文件。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(tmpfsTargets(argv)).toContain('/tmp')
   })

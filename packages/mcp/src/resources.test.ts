@@ -321,7 +321,7 @@ describe('协议版本协商', () => {
   })
 
   test('旧 server：不发 server/discover，沿用 initialize 的能力', async () => {
-    // 对旧 server 发这条只会拿到 Method not found，白花一次往返。
+    // 对旧 server 发这条只会拿到 Method not found，多一次无效的往返。
     const { reg, logs } = await load({
       version: '2025-06-18',
       capabilities: { resources: {} },

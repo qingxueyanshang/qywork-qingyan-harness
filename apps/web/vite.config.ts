@@ -27,7 +27,7 @@ export default defineConfig({
     ...(COORDINATED_RELOAD ? { hmr: false } : {}),
     // 开发时前端和 qy serve 分开跑，代理过去省得配 CORS。
     // **端口跟着 `QYWORK_PORT` 走**：`scripts/dev.ts` 起不来 7717 时会往上挪一个
-    // （上次留下的后台进程可能还攥着那个端口），写死在这里就代理到一个空端口上。
+    // （上次留下的后台进程可能还占用那个端口），写死在这里就代理到一个空端口上。
     proxy: {
       '/api': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
       '/stream': { target: `ws://127.0.0.1:${AGENT_PORT}`, ws: true },

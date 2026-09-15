@@ -38,7 +38,7 @@ export type RedactedConfig = Omit<QyConfig, 'providers'> & {
 }
 
 /**
- * 明文 key 不出进程。只脱 `apiKey`，换成一个「有没有」的布尔。
+ * 明文 key 不出进程。仅脱去 `apiKey`，替换为一个表示「是否已配置」的布尔值。
  */
 export function redactConfig(cfg: QyConfig): RedactedConfig {
   const providers: Record<string, RedactedProvider> = {}
@@ -135,7 +135,7 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     }
     const merged = mergeConfig(d.config, body.config)
     // 只据 `diagnoseConfig`（不成形）回 422。不要加 `diagnoseRunnable`：没配 key 是配置
-    // 中间态，拦保存会让「加接口 → 加模型 → 再填 key」走不通（active 一切到新接口就再存不下）。
+    // 中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成（active 一切到新接口就再存不下）。
     const problems = diagnoseConfig(merged)
     // 不成形就不落盘。写进去再让 CLI 起不来，比拒绝保存糟得多。
     if (problems.length) return json({ error: 'invalid', problems }, 422)

@@ -228,7 +228,7 @@ export function buildTailNotes(input: {
    * 顶层会话可分配的真实模型。只传接口名与模型 id，不把 key、端点、headers 带进提示词。
    *
    * `undefined` = 本会话没有派活能力，不展示；空数组 = 有派活能力但当前没配模型，
-   * 两者不能合并，否则后者会诱使模型继续凭空编一个名称。
+   * 两者不能合并，否则后者会诱使模型继续无依据地生成一个名称。
    */
   models?: { provider: string; model: string }[]
   /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有派活能力。 */

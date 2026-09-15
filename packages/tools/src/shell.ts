@@ -196,12 +196,12 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       const timeout = resolveCommandTimeout(args.timeout_ms)
 
       /*
-       * 探测地址**只准回环**，而且拿不准就当没给。
+       * 探测地址**只准回环**，并且无法确定时按未提供处理。
        *
        * 这是本仓第二条能发起出站请求的路径，第一条 `web_fetch` 刻意挡掉了
        * 本机（`net-safety.ts` 开头那段：127.0.0.1 后面可能是 qy 自己的 API）。
        * 这里方向相反、边界也相反：**只有回环允许**，别的一律拒。
-       * 放宽一点点，它就成了绕开那道 SSRF 闸的第二条出网通道。
+       * 任何放宽都会使它成为绕开 SSRF 闸的第二条出网通道。
        */
       const probeRaw = typeof args.probe_url === 'string' ? args.probe_url.trim() : ''
       let probeUrl: URL | null = null

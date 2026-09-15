@@ -233,7 +233,7 @@ impl BrowserHost {
                 title: tab.title.clone(),
             })
             .collect();
-        // HashMap 的遍历顺序每次都不同，页签条会跟着跳。按 tabId 排出稳定顺序。
+        // HashMap 的遍历顺序每次都不同，页签条会随之变动。按 tabId 排出稳定顺序。
         list.sort_by(|a, b| a.tab_id.cmp(&b.tab_id));
         list
     }

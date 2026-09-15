@@ -62,7 +62,7 @@ function safeKey(raw: string): string | null {
  * 默认项目层——模型写入与用户手动记录都该落在跟着项目走的那份。全局层要显式指定，
  * 因为它对所有工作区生效，那个决定不该由默认值替用户做。
  *
- * **内置层不可写**：它随程序发布，写进去下次升级就没了，而界面会显示保存成功。
+ * **内置层不可写**：它随程序一同发布，写入后将在下次升级时丢失，而界面会显示保存成功。
  */
 function writableScope(raw: string | null): Scope | null {
   if (raw === null || raw === 'project') return 'project'
@@ -82,7 +82,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/memory' && req.method === 'GET') {
     const roots = scopeRoots(d.workspaceRoot)
     return json({
-      // 每一层的目录都报出来，有没有内容都报——「该去哪儿加」比「这里是空的」有用。
+      // 每一层的目录都报出来，无论是否有内容都予以报出：「应在何处添加」比「此处为空」更有价值。
       dirs: scopePaths(roots, MEMORY_SUBDIR),
       // **全部层的全部条目，被盖住的也回**：设置页按层分列，去重之后被项目层
       // 盖住的那条全局记忆会从界面上消失，而用户正是要在全局那一栏里找到它、
@@ -142,7 +142,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
         return json(
           {
             error: 'invalid',
-            message: `单条记忆最多 ${MAX_ENTRY_CHARS} 字符，当前 ${content.length}——这么长该写成文档`,
+            message: `单条记忆最多 ${MAX_ENTRY_CHARS} 字符，当前 ${content.length}；内容过长时应改写为文档`,
           },
           422,
         )

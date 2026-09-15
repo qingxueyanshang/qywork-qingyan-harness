@@ -97,7 +97,7 @@ describe('装插件', () => {
     expect(p.installs).toEqual([{ dir: 'demo', replace: true }])
   })
 
-  /** 装完不是当场生效——不说清楚的话，模型会在同一轮里反复找那个新工具。 */
+  /** 安装后不会立即生效；若不说明，模型会在同一轮内反复查找该新工具。 */
   test('装完的提示里说清下一条消息才生效', async () => {
     const p = port(good)
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))

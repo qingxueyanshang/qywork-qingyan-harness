@@ -22,7 +22,7 @@ import type { EventBus } from './bus.ts'
 import { publishGitState } from './http-util.ts'
 
 /**
- * 攒一下再问 git。
+ * 累积一段时间后再查询 git。
  *
  * 一次 checkout 在 `.git` 上会连着回调好几次（`HEAD.lock` 改名、`index` 重写各算一次），
  * 逐次问就是逐次起一个 `git` 子进程。

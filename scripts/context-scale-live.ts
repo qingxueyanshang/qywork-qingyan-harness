@@ -104,7 +104,7 @@ process.stdin.on('data', (c) => {
  * 只发一种就只量到半把尺。
  */
 const BULK = [
-  '压缩把一段历史换成摘要、把工具结果换成定位符之后，原文仍在账本里躺着。',
+  '压缩把一段历史换成摘要、把工具结果换成定位符之后，原文仍在账本里留有。',
   'The projection budget answers how many tokens the summary may occupy after the fold line moves.',
   '锚点是上一次 provider 真值描述的那个上下文，信封换一份时只换头部。',
   'Token estimation is only used for the panel and for budget decisions; exact values come from usage.',
@@ -308,7 +308,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 实际: getConversation(store, conv as ConversationId)?.model },
   )
   await turn(live, conv, '只回两个字：收到。不要调用任何工具。')
-  // 第二轮塞一大段进去：斜率法要两次请求的体量差得开，差几十 token 量不出斜率。
+  // 第二轮加入一大段内容：斜率法要求两次请求的体量差足够大，差几十 token 量不出斜率。
   await turn(
     live,
     conv,

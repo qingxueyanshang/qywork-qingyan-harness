@@ -28,7 +28,7 @@ const MAX_RESULT_CHARS = 60_000
 /**
  * 注册名。**必须消毒**：server 名来自用户配置、工具名来自第三方 server，
  * 两者都可能带 `.` `:` `/`，而 provider 只接受 `^[a-zA-Z0-9_-]+$`。
- * 不转的话配一个叫 `my.server` 的 MCP，之后每一轮 run 都被 400 打死。
+ * 不转的话配一个叫 `my.server` 的 MCP，之后每一轮 run 都被 400 拒绝。
  */
 export function toolName(server: string, tool: string): string {
   return sanitizeToolName(`mcp__${server}__${tool}`)
@@ -40,7 +40,7 @@ export function toolName(server: string, tool: string): string {
  * **必须走这里，不要自己拼 `mcp__${name}__`。** 注册名是消毒过的，
  * 一个叫 `my.server` 的 server 注册出来是 `mcp__my_server__foo`，
  * 拿未消毒的名字拼前缀一条都匹配不上——`load.ts` 的「产出为零」判定和三个
- * CLI 的工具计数都栽在这上面，表现是「装好了却报 0 个工具 / 报注册失败」。
+ * CLI 的工具计数都因此归零，表现是「装好了却报 0 个工具 / 报注册失败」。
  */
 export function toolNamePrefix(server: string): string {
   return sanitizeToolName(`mcp__${server}__`)
@@ -85,7 +85,7 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     permissionEffect: destructive ? 'delete' : 'execute',
 
     // 不并行。MCP server 是外部进程，它对并发的处理无从预知，
-    // 而并行带来的收益远小于「两个调用互相踩」的排查成本。
+    // 而并行带来的收益远小于「两个调用并发冲突」的排查成本。
     parallelSafe: false,
 
     async fn(args, ctx) {

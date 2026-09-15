@@ -877,7 +877,7 @@ describe('增量压缩', () => {
     store.close()
   })
 
-  test('没有新单元时跳过，不白花一次摘要调用', async () => {
+  test('没有新单元时跳过，不多一次无效的摘要调用', async () => {
     const { store, conv } = fresh()
     let calls = 0
     const p = port(store, conv.id, async () => {

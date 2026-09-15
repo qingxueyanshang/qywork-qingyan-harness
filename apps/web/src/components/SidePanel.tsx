@@ -891,7 +891,7 @@ function FileBrowser() {
         title={doomed()?.kind === 'dir' ? '删除文件夹' : '删除文件'}
         message={
           doomed()?.kind === 'dir'
-            ? `${doomed()?.path} 连同里面的内容一起删掉，删了拿不回来。`
+            ? `${doomed()?.path} 及其中的全部内容将一并删除，且删除后无法恢复。`
             : `${doomed()?.path} 删了拿不回来。`
         }
         confirmLabel="删除"
@@ -1625,7 +1625,7 @@ function kindLabel(kind: FileChange['changeType']): string {
 /**
  * 账本里的路径 → 本机绝对路径。
  *
- * **账本里也躺着本来就是绝对路径的条目**：写到工作区外面时（`full` 模式、
+ * **账本里也留有本来就是绝对路径的条目**：写到工作区外面时（`full` 模式、
  * 额外目录）`displayPath` 回的就是绝对路径。不认这一档会拼出
  * `C:\项目\C:\别处\x.ts`。
  */

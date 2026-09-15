@@ -468,7 +468,7 @@ export function setConversationModel(
  *
  * 只动 conversations.compaction_manifest 这一列——**Message / Step / 正文库一个字节不动**。
  * 压缩是投影不是销毁：历史面板永远显示完整会话，压缩可撤销、可重放。
- * 做成「删掉旧消息换成摘要」的话，用户翻历史会发现前面的对话凭空消失。
+ * 做成「删掉旧消息换成摘要」的话，用户翻阅历史时会发现前面的对话缺失。
  */
 export function setCompactionManifest(
   store: Store,
@@ -530,7 +530,7 @@ export function appendMessage(
  * 记下这个会话读到某个文件时的内容哈希。写前的新鲜度校验就靠它。
  *
  * 同一文件重复读只留最近那次：判据是「手上那份还是不是磁盘上这份」，
- * 旧哈希对这个问题没有任何贡献，留着只会让表白涨。
+ * 旧哈希对这个问题没有任何贡献，保留只会使该表无谓增长。
  */
 export function recordFileRead(
   store: Store,
@@ -1236,7 +1236,7 @@ export function recoverStaleRuns(
 
     // **终态 run 底下也会留孤儿 step。** 上面那次扫描按 run 状态取，漏掉了它们。
     //
-    // 产生路径是真实的：`tool.started` 的 yield 处被生成器 `.return()` 掐断
+    // 产生路径是真实的：`tool.started` 的 yield 处被生成器 `.return()` 终止
     // （客户端断连、用户切走），step 已经 openToolStep 成 running 但没人收尾；
     // 随后 session 的 finally 把 run 标成 interrupted 终态。因此这条 step
     // **永远碰不到恢复流程**，在库里永久保持 running。
@@ -1296,7 +1296,7 @@ export function recoverStaleRuns(
 const HEARTBEAT_STALE_MS = 60_000
 
 /**
- * 这条 run 还有没有活人在跑。
+ * 该 run 是否仍有进程在运行。
  *
  * **四条判据的顺序是有意的**，每一条堵的都是前一条的漏：
  *

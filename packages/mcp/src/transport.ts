@@ -102,9 +102,9 @@ export class StdioTransport implements McpTransport {
 
     // stdin 上必须挂 error 监听。进程刚起来就退出时（命令不存在、启动即崩），
     // 那条 `initialize` 很可能已经写出去了，写向一个已经关掉的管道
-    // 会抛 EPIPE——而没有监听者的 stream error 事件会**直接掀掉整个宿主进程**。
+    // 会抛 EPIPE——而没有监听者的 stream error 事件会直接终止整个宿主进程。
     // 一个装错的 MCP server 不该有能力做到这件事。
-    // 真正的死因由 exit 处理器给出（带 stderr 尾巴），这里只需要不让它炸。
+    // 真正的失败原因由 exit 处理器给出（带 stderr 尾巴），这里只需避免其崩溃。
     proc.stdin?.on('error', (err: Error) => {
       handlers.onLog?.(`[mcp:${this.name}] 写入失败：${err.message}`)
     })
@@ -203,7 +203,7 @@ export class StdioTransport implements McpTransport {
  *
  * 比 stdio 短：本地进程慢是它在执行，远端不响应通常是它已经不可用。
  * 不过 SSE 流一旦开始出数据就不再受这个限制——那是**建立连接**的超时，
- * 不是「整个调用」的超时，否则一个正常的长工具调用会被拦腰掐断。
+ * 不是「整个调用」的超时，否则一个正常的长工具调用会被中途切断。
  */
 const HTTP_CONNECT_TIMEOUT_MS = 30_000
 
@@ -213,7 +213,7 @@ export class HttpTransport implements McpTransport {
   private dead: string | null = null
   private handlers: TransportHandlers | null = null
   private stopped = false
-  /** 在飞的 SSE 读取。stop() 时要一起掐掉，否则进程退不出去。 */
+  /** 在飞的 SSE 读取。stop() 时需一并中止，否则进程退不出去。 */
   private readonly inflight = new Set<AbortController>()
 
   constructor(
@@ -285,7 +285,7 @@ export class HttpTransport implements McpTransport {
 
     if (type.includes('text/event-stream')) {
       // **不 await**：SSE 流会一直开着直到 server 关掉它，而这次 `send` 的语义
-      // 是「消息发出去了」。await 的话，一个长流会把调用方钉在这儿，
+      // 是「消息发出去了」。await 的话，一个长流会阻塞调用方，
       // 而调用方等的是那条 id 对应的响应——它会从 onMessage 送达。
       void this.pumpSse(res, abort, payload.id as string | number)
       return

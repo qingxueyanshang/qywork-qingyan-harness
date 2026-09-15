@@ -325,7 +325,7 @@ export class RuntimeCompaction implements CompactionPort {
        * 之后落库的那份 manifest，是他没有等到、也无从撤销的。
        *
        * 落库与内存的顺序不能反：反过来中途崩溃会留下「内存说压过了、库里没有」，
-       * 下次启动投影就丢了，而模型会突然又看到全部历史。
+       * 下次启动时该投影将丢失，而模型会突然又看到全部历史。
        */
       if (input.signal?.aborted) return { status: 'aborted' }
       const before = this.estimateProjection(units, previous, input.density)
@@ -420,7 +420,7 @@ export class RuntimeCompaction implements CompactionPort {
    *
    * 口径与 `buildHistory` 一致：被接替的 run 不收（失败尝试说过的话不该进摘要），
    * 还在 running 的批次不收（结果未知不能当已完成，`stepsToUnits` 整批跳过）。
-   * **本 run 已终结的 step 在内**——run 内涨起来的正是它们，压不到就等于压了个寂寞。
+   * **本 run 已终结的 step 在内**——run 内涨起来的正是它们，无法压缩到目标即没有实际压缩效果。
    */
   private collectUnits(density: TokenDensity): Unit[] {
     const { store, conversationId, messageIdUpperBound } = this.deps
@@ -643,7 +643,7 @@ function toolEnvelopeStatus(content: WireMessage['content']): string | null {
 }
 
 /**
- * 折叠线：最后一个**不**保留的单元的下标。`-1` = 尾部还没攒够保留预算，无可折。
+ * 折叠线：最后一个**不**保留的单元的下标。`-1` = 尾部尚未累积足够的保留预算，无可折。
  *
  * 先加后判，所以把总量顶过预算的那个单元自己也留着——至少保留最后一个单元。
  */

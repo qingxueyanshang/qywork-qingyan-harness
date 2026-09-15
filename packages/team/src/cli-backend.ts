@@ -8,7 +8,7 @@
  * 才能执行** （codex 要 OPENAI_API_KEY，claude 要 ANTHROPIC_API_KEY），所以不能像 `run_command` 那
  * 样按名字一律剥掉。
  *
- * 但 qywork 自己配置里那些 key 它一把都用不上——按**值**剥掉即可：
+ * 但 qywork 自身配置中的那些 key，该后端完全用不上——按**值**剥掉即可：
  * 用户在 `~/.qywork/config.json` 里配的 DeepSeek key 没有任何理由出现在
  * codex 的进程里。这条剥的是「多余的凭证」，不影响后端正常工作。
  *
@@ -156,7 +156,7 @@ export async function runCli(
     output: extract(got.stdout, agent, narrator.narration()),
     exitCode: got.exitCode,
     timedOut: got.timedOut,
-    // stderr 只留尾部：CLI 的进度条能刷出几万行，全留会把上下文撑爆。
+    // stderr 只留尾部：CLI 的进度条可输出数万行，全部保留会超出上下文预算。
     stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
     ...(session ? { session } : {}),
   }
@@ -285,7 +285,7 @@ function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
  *
  * jsonl 取不到 `resultField` 时用流里解析出的正文，**不回退整段 stdout**：
  * 一份 stream-json 里绝大多数行是计数与状态事件，整段交给模型既不是它的产出，
- * 又能一次把上下文窗口撑满（实测一次被杀的派活留下 261,929 字符、507 行，
+ * 又会一次性占满上下文窗口（实测一次被杀的派活留下 261,929 字符、507 行，
  * 其中 480 行是 `thinking_tokens`）。被杀在半路时正文正是它已经说出口的那些话。
  *
  * `json` 解析不出时回空串：那说明退出码非零或格式漂移，由调用方按失败处理。

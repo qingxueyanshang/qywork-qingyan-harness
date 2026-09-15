@@ -22,7 +22,7 @@ import { type ApiHandler, json } from './types.ts'
  *
  * 跟账本同根（`~/.qywork/`，可由 `QYWORK_HOME` 改）：它们是同一类数据——
  * 这台机器上 qywork 自己的数据，卸载时一并带走。放进用户主目录会多出一个
- * 谁都不知道能不能删的文件夹。要打开它有菜单里的「在资源管理器中打开」。
+ * 无法判定能否删除的文件夹。要打开它有菜单里的「在资源管理器中打开」。
  */
 function defaultWorkspacesRoot(): string {
   return join(configDir(), 'workspaces')
@@ -167,7 +167,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
         return json(result)
       }
 
-      if (!rawName) return json({ error: '要么给 path，要么给 name' }, 422)
+      if (!rawName) return json({ error: '需提供 path 或 name' }, 422)
       const folder = folderNameFrom(rawName)
       if (!folder) {
         return json({ error: `这个名字不能当文件夹名：${rawName}` }, 422)
@@ -258,7 +258,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/workspace') {
     const { isWorkspaceTrusted, loadConfig, loadScopedMcpConfig } = await import('@qywork/runtime')
     /*
-     * `pendingTrust` 列的是**这个项目里要先点头才会执行的配置项**，不是「有没有配 MCP」。
+     * `pendingTrust` 列的是**这个项目里要先点头才会执行的配置项**，而非「是否配置了 MCP」。
      * 空数组有两种成因（没有项目层配置 / 已经信任过），调用方不需要区分：
      * 两种都表示这里没有待决定的事。
      *

@@ -133,10 +133,10 @@ export function VoiceButton(props: {
 /** 错误码 → 用户能据以行动的一句话。看不懂的原样带出来，不糊成「识别失败」。 */
 function errorLabel(code: string): string {
   const map: Record<string, string> = {
-    'not-allowed': '麦克风权限被拒绝，去系统设置里放开',
-    'service-not-allowed': '这个 WebView 没有可用的语音服务',
-    network: '语音服务连不上（这个 WebView 可能不带识别后端）',
-    'no-speech': '没听到声音',
+    'not-allowed': '麦克风权限被拒绝，请在系统设置中开启',
+    'service-not-allowed': '当前 WebView 无可用的语音服务',
+    network: '无法连接语音服务，当前 WebView 可能不含识别后端',
+    'no-speech': '未检测到语音输入',
     'audio-capture': '找不到麦克风',
     aborted: '',
   }

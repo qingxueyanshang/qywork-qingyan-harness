@@ -21,7 +21,7 @@ export const handleGitApi: ApiHandler = async (url, req, d) => {
   if (url.pathname === '/api/git/switch' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { branch?: unknown } | null
     const name = typeof body?.branch === 'string' ? body.branch.trim() : ''
-    if (!name) return json({ error: '要切到哪条分支' }, 422)
+    if (!name) return json({ error: '缺少目标分支名' }, 422)
 
     /*
      * **跑着的时候照切，不拦。** 文件在模型读过之后变了这件事，权威在文件工具那边：

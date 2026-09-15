@@ -93,7 +93,7 @@ export default function AgentsSettings() {
   const writeConfig = async (mutate: (cfg: TeamJson) => string | null) => {
     const cfg = config()
     if (cfg === null) {
-      setError('team.json 解析不了，修好它再用表单')
+      setError('team.json 解析失败，请修复后再使用表单')
       return
     }
     const refused = mutate(cfg)
@@ -126,7 +126,7 @@ export default function AgentsSettings() {
   const openRole = (id: string) => {
     const r = config()?.roles?.find((x) => x.id === id)
     if (!r) {
-      setError('这条角色在 team.json 里找不到，原文可能刚被改过')
+      setError('在 team.json 中找不到该角色，其定义可能已被修改')
       return
     }
     setError(null)

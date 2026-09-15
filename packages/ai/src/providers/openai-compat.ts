@@ -173,7 +173,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         }
       }
 
-      // 攒着没等到闭合标签的，原样当正文输出。放在工具调用之前：
+      // 已累积但未等到闭合标签的部分，原样作为正文输出。放在工具调用之前：
       // 它是正文的一部分，顺序不能倒。
       const tail = splitter.flush()
       if (tail) yield { type: 'text_delta', delta: tail }
@@ -183,7 +183,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
         // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
         // 抹掉，上层因此拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
-        // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「有没有工具调用」更靠前。
+        // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「是否存在工具调用」更靠前。
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls }
       }
@@ -504,7 +504,7 @@ async function providerHttpError(response: Response): Promise<Error> {
  *
  * **「发不发」由 `effortIsTransmittable` 一处裁决**，这里只决定「用哪套字段」。
  * 两件事各判一遍的实测后果：`transmits` 说发得出去而这里按参数格式省掉，
- * 因此探针恒通过，把一个凭空的结论写回目录。
+ * 因此探针恒通过，将一个无依据的结论写回目录。
  *
  * 不认识的模型 `thinking` 是 `'none'`，被门禁挡在外面，一个字节都不会多发；
  * 自建端点和第三方接口不会因为这个函数收到没见过的键。
@@ -782,7 +782,7 @@ const THINKING_CLOSE = '</thinking>'
  * 而那是静默的内容丢失。
  *
  * **一个字节都不删也不丢。** 认出来的整块送思考通道；形状对不上的原样送正文；
- * 流在闭合之前就结束，攒着的连同开标签一起原样当正文输出。
+ * 流在闭合之前结束时，已累积的部分连同起始标签一起原样作为正文输出。
  * 所以判错的最坏结果是显示在错的区，不会是内容消失。
  *
  * 代价：块内内容攒到闭合标签才输出，那一段不是逐字出现的。这种块实测是一行摘要，
@@ -799,7 +799,7 @@ export function createThinkingSplitter(): {
       if (phase === 'body') return { thinking: '', text: delta }
       held += delta
       if (phase === 'head') {
-        // 还看不出来是不是这个开头，继续攒。攒的上界是开标签本身的长度。
+        // 尚不能判定是否为该起始标签，继续累积；累积上界为起始标签本身的长度。
         if (THINKING_OPEN.startsWith(held)) return { thinking: '', text: '' }
         if (!held.startsWith(THINKING_OPEN)) {
           const text = held

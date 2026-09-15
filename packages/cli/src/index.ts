@@ -157,7 +157,7 @@ async function main(argv: string[]): Promise<number> {
    */
   if (cmd === 'runner') {
     runCommandRunner()
-    // 靠 IPC 通道钉住事件循环；父进程一退，这一侧的 stdin 关闭，随之退出。
+    // 依靠 IPC 通道保持事件循环存活；父进程一退，这一侧的 stdin 关闭，随之退出。
     return new Promise<number>(() => {})
   }
   if (cmd === 'serve') return runServe(rest)
@@ -316,8 +316,8 @@ async function runServe(args: string[]): Promise<number> {
    * **必须在 `serve()` 之前**。
    *
    * Windows 上句柄是继承的：端口绑好之后再 spawn 出去的进程都会拿到那个监听
-   * socket，而命令自己派生的后台服务活得比 sidecar 久——因此 sidecar 退出之后
-   * 端口仍然被攥着（实测与推理都在 `tools/runner.ts` 的模块注释里）。
+   * socket，而命令派生的后台服务存活时间长于 sidecar——因此 sidecar 退出之后
+   * 端口仍然被占用（实测与推理都在 `tools/runner.ts` 的模块注释里）。
    * runner 出生在绑端口之前，它和它的子孙手里都没有那份句柄。
    *
    * 源码直跑时要把入口脚本带上（`bun <入口>.ts runner`），打包之后只有二进制
@@ -524,7 +524,7 @@ function watchParent(pid: number, onGone: () => void): void {
       onGone()
     }
   }, 3000)
-  // 不让这个定时器把进程钉住：它只是守望，不该阻止正常退出。
+  // 不让该定时器阻止进程退出：它只是守望，不该阻止正常退出。
   timer.unref?.()
 }
 

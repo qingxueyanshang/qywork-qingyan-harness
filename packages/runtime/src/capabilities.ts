@@ -233,7 +233,7 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
         const serialized = `${JSON.stringify(store, null, 2)}\n`
         if (Buffer.byteLength(serialized, 'utf8') > MAX_STORAGE_BYTES) {
           throw new Error(
-            `插件私有存储超出上限（${MAX_STORAGE_BYTES} 字节）。存大块内容请写工作区文件。`,
+            `插件私有存储超出上限（${MAX_STORAGE_BYTES} 字节）。大体量内容请写入工作区文件。`,
           )
         }
         await writeStore(storageRoot, pluginId, serialized)

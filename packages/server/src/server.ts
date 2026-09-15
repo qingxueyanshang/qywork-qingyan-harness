@@ -65,7 +65,7 @@ export interface ServeOptions {
    * 账本里有项目就用最近打开的那个，一个都没有才建默认工作区。
    *
    * 把进程 cwd 当默认值是错的：桌面外壳的 cwd 是安装目录或 `src-tauri`，
-   * 登记进去就成了一个谁也没要过的项目。
+   * 一经登记便会产生一个无人请求过的项目。
    */
   workspaceRoot?: string
   port: number

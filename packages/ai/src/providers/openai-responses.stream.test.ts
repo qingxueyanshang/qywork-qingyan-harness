@@ -336,7 +336,7 @@ describe('推理增量：两种事件名都要认', () => {
   /**
    * 这条是这个文件存在的理由。DeepSeek 发 `response.reasoning_text.delta`，
    * 只认 OpenAI 的 `reasoning_summary_text` 时**一个错都不报**，只是思考内容
-   * 凭空消失。断言「有 thinking_delta」才抓得住「什么都没有」。
+   * 因缺少对应事件而消失；断言存在 thinking_delta 才能捕获「无任何内容」的情形。
    */
   test('DeepSeek 的 reasoning_text.delta 变成 thinking_delta', async () => {
     const events = await run(TEXT_RUN)

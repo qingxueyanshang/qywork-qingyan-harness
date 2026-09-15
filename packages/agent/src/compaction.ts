@@ -255,7 +255,7 @@ export interface CompactionInput {
 
 export type CompactionOutcome =
   /**
-   * `summarized` = 摘要线有没有跟着前移。false 时 `reasonCode` 说明摘要段为什么
+   * `summarized` 表示摘要线是否随之前移。false 时 `reasonCode` 说明摘要段为什么
    * 没做成；没有 `reasonCode` 就是不需要调模型（收纳段已经够了）。
    */
   | { status: 'compacted'; manifest: CompactionManifest; summarized: boolean; reasonCode?: string }
@@ -522,7 +522,7 @@ function dedupeKeepLatest(list: string[]): string[] {
  *
  * 收的顺序就是裁旧的反序：**约束最后被裁**，其次未解决项与落盘定位符，
  * 文件清单最先让位——文件路径重读一次就有，而「永远不要 force-push」这类
- * 第一天定下的铁律丢了就没了。每类内部从最近往早收。
+ * 该不变量一旦丢失将无法恢复。每类内部从最近往早收。
  *
  * 顺序写成代码不写成配置：它是正确性判断，不是口味。
  */

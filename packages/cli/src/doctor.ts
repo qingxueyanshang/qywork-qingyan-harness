@@ -271,7 +271,7 @@ async function checkStore(): Promise<Line[]> {
   } catch (e) {
     out.push({
       level: 'fail',
-      text: '配置目录不可写——用量记不进账本，配置也保存不了',
+      text: '配置目录不可写：用量无法写入账本，配置也无法保存',
       detail: `${configDir()}\n${e instanceof Error ? e.message : String(e)}`,
     })
   }

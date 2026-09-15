@@ -926,7 +926,7 @@ PORT=3000
  * 与权限模式无关（实测：开了完全访问照样只等到 output_truncated）。
  *
  * 这一组先测边界再测功能：边界写错的代价是多一条绕开 SSRF 闸的出网通道，
- * 比功能不好使严重得多。
+ * 比功能不可用严重得多。
  */
 describe('probe_url', () => {
   const run = (root: string, command: string, probe_url: string, timeout_ms = 15_000) =>
@@ -1326,7 +1326,7 @@ describe('read_file 认图片', () => {
     expect(out.status).toBe('failure')
     expect(out.message).toContain('当前模型不接受图片输入')
     expect(out.message).toContain('不要再读')
-    // 一个字节都没读出来：读了再丢等于白跑一次缩放、白扣一次投递预算。
+    // 一个字节都没读出来：读了再丢等于徒劳一次缩放、白扣一次投递预算。
     expect(out.data).toBeUndefined()
 
     const ok = await registry().execute(

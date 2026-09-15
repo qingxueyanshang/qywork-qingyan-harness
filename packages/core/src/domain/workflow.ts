@@ -86,7 +86,7 @@ export interface WorkflowAppliedReview {
  *
  * **这里没有回执，也没有 phase。** 派出即返回，调用结束时格还在跑；
  * 回执是格状态（`NodeState`）的终态那一条，phase 由 `foldWorkflow` 从格状态与
- * 批准派生。往这里补一份就是第二本账。
+ * 批准派生。在此另存一份将构成独立的第二份状态。
  */
 export interface WorkflowTransition {
   workflowId: string

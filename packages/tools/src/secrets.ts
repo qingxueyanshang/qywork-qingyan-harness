@@ -163,7 +163,7 @@ export function scrubEnv(
     const essential = ESSENTIAL_ENV_NAMES.has(upper)
 
     if (values.some((v) => value.includes(v))) {
-      // 必需变量整个删掉会让命令直接跑不起来（没有 PATH 连 ls 都找不到），
+      // 整体删除必需变量会使命令无法执行（缺少 PATH 时连 ls 都无法定位），
       // 而把命中的片段换成标记同样达到了「明文不进子进程」的目的。
       if (essential) out[name] = redactSecrets(value, secrets)
       continue
@@ -211,7 +211,7 @@ export function redactSecrets(text: string, secrets: SecretSet): string {
  * 这一层不需要事先知道值是什么，这正是它存在的理由。
  *
  * **不做通用「高熵字符串」检测**：那会把 commit sha、base64 资源、UUID、
- * minified 代码全打成 [REDACTED]，输出变得没法读，而模型看不懂输出就会反复重试。
+ * minified 代码全打成 [REDACTED]，输出变得不可读，而模型无法解析输出便会反复重试。
  * 宁可只抓有明确标志的那些，漏掉的靠路径规则挡在前面。
  */
 export function redactByShape(text: string): string {
@@ -226,7 +226,7 @@ export function redactByShape(text: string): string {
  * 凭证的形状。导出供测试与文档。
  *
  * 每条都要求**足够长的尾巴**：只匹配前缀的话，一句「把 key 放进 sk- 开头的
- * 变量里」这种说明文字也会被打码，而那种误伤读起来像输出坏了。
+ * 变量里」这类说明文字也会被打码，而这种误伤读起来像输出损坏。
  */
 export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
   {
@@ -262,7 +262,7 @@ export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
  * 正确的顺序是先对整个缓冲脱敏：之后缓冲里不可能再有**完整**的 secret，
  * 尾巴里最多是个残缺前缀。那段尾巴留到下一片一起处理，重复脱敏是幂等的。
  *
- * `flush()` 把最后那段尾巴交出去。**忘了调 flush 会静默丢掉输出末尾**，
+ * `flush()` 把最后那段尾巴交出去。未调用 flush 会静默丢弃输出末尾，
  * 所以调用方在流结束后必须调一次。
  */
 export function createStreamRedactor(secrets: SecretSet): {

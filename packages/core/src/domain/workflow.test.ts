@@ -596,7 +596,7 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.b).toBeUndefined()
   })
 
-  /** revise 的那次调用自己派出去的格不能被它自己作废，否则重派立刻就丢了。 */
+  /** revise 的那次调用自己派出去的格不能被它自己作废，否则重新派发的内容将立即丢失。 */
   test('revise 那一次调用写下的格状态压过作废', () => {
     const records: WorkflowCallRecord[] = [
       {

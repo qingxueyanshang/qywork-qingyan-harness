@@ -45,7 +45,7 @@ const probeKey = (provider: string, model: string) => JSON.stringify([provider, 
  * 模型配置：**接口一层，模型一层**。
  *
  * **为什么是两层。** 扁平档案（一条档案一个模型）的话，同一家的三个模型要把同一把 key 和同一个
- * baseUrl 各抄三份。改一次端点得改三处，漏一处的表现是「有的模型好使有的不好使」，
+ * baseUrl 各抄三份。改一次端点得改三处，漏一处的表现是「有的模型可用有的不可用」，
  * 而界面上三条卡片长得一模一样，看不出哪条漏了。
  *
  * **协议只在这一页选。** 协议（`kind`）是**接口**的属性：同一个模型经第三方接口以 OpenAI 协议调 Claude
@@ -159,9 +159,9 @@ export function ModelSettings() {
     const base = config()
     const p = base?.providers[provider]
     if (!base || !p || !id) return
-    // 已经挂着这个 id：过去静默返回，用户回车后什么都不发生，看着像坏了。把它说出来。
+    // 已存在该 id：此前静默返回会使回车后毫无反馈、看似失效，应明确报出。
     if (id in p.models) {
-      reportConfigWriteError(`模型 ${id} 已经在接口 ${provider} 下了`)
+      reportConfigWriteError(`模型 ${id} 已存在于接口 ${provider} 下`)
       return
     }
     void replaceConfig((cur) => {

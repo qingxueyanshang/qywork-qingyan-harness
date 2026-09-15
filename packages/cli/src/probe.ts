@@ -30,7 +30,7 @@ export async function runProbe(args: string[]): Promise<number> {
     const known = Object.keys(config.providers).join('、') || '（空）'
     if (!name && !config.active) {
       process.stderr.write(
-        `未配置模型。给 qy probe 指定一个模型名，或先在设置里配。已有接口：${known}\n`,
+        `未配置模型。请为 qy probe 指定模型名，或先在设置中配置。已有接口：${known}\n`,
       )
       return 2
     }

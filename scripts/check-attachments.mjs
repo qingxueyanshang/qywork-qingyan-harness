@@ -132,7 +132,7 @@ try {
 
   // 令牌走 fragment，与手机扫码进来的路径一致。
   // **不用 `networkidle`**：WebSocket 是常驻连接，那个条件永远不会 settle，
-  // 脚本会静默挂死到超时。
+  // 脚本会静默阻塞直至超时。
   await page.goto(`http://127.0.0.1:${port}/#t=${token}`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('.composer-input', { timeout: 20_000 })
   await page.waitForTimeout(1200)

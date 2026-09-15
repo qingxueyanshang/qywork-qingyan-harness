@@ -135,10 +135,10 @@ function refusal(stderr: string): string {
       : files.join('、')
 
   if (raw.includes('local changes to the following files')) {
-    return `${list} 有未提交的改动，先提交再切`
+    return `${list} 有未提交的改动，请先提交再切换`
   }
   if (raw.includes('untracked working tree files')) {
-    return `${list} 没跟踪，先挪走再切`
+    return `${list} 未被跟踪，请先移走再切换`
   }
   return raw
 }

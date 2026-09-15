@@ -34,7 +34,7 @@ export async function runExport(args: string[]): Promise<number> {
         process.stderr.write('还没有任何会话。\n')
         return 1
       }
-      process.stderr.write('挑一个会话 id：\n\n')
+      process.stderr.write('请选择一个会话 id：\n\n')
       for (const c of rows) {
         process.stderr.write(
           `  ${c.id}  ${DIM}${new Date(c.updatedAt).toISOString().slice(0, 16).replace('T', ' ')}${RESET}  ${c.title || '未命名'}\n`,

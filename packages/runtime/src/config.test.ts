@@ -144,7 +144,7 @@ describe('配置体检', () => {
     expect(p).toContain('qy init')
     // 光说「没配」不够——用户得知道往里写什么形状的配置。
     expect(p).toContain('"apiKey"')
-    // 但 diagnoseConfig 放行：没 key 是配置中间态，拦保存会让「加接口→加模型→再填 key」走不通。
+    // 但 diagnoseConfig 放行：没 key 是配置中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成。
     expect(diagnoseConfig(noKey())).toEqual([])
   })
 
@@ -199,7 +199,7 @@ describe('配置体检', () => {
  * 收集凭证。
  *
  * 这是「凭证不进子进程」那条防线的**输入端**——收漏了一把 key，
- * 脱敏层再对也拦不住它。所以这一组测的全是「有没有收全」。
+ * 脱敏层再对也拦不住它。因此这一组测试全部针对「是否完整接收」。
  */
 describe('收集凭证', () => {
   /**

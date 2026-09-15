@@ -131,7 +131,7 @@ export async function runInit(args: string[]): Promise<number> {
   // 本机服务不需要 key，不要显示一个不需要填的输入框。
   if (preset.key !== 'local') {
     if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
-    process.stderr.write('API Key（直接回车则跳过，之后可以在设置页里补）：')
+    process.stderr.write('API Key（直接回车跳过，稍后可在设置页补填）：')
     const key = (await readLine()).trim()
     if (key) provider.apiKey = key
   }
@@ -150,7 +150,7 @@ export async function runInit(args: string[]): Promise<number> {
 
   process.stderr.write(`\n${BOLD}已写入${RESET} ${configPath()}\n`)
   if (!provider.apiKey && preset.key !== 'local') {
-    process.stderr.write(`${DIM}还差 key：往配置文件里加 "apiKey"，或在设置页里填。${RESET}\n`)
+    process.stderr.write(`${DIM}尚缺 key：在配置文件中添加 "apiKey"，或在设置页填写。${RESET}\n`)
   } else {
     process.stderr.write(`${DIM}试一下：qy exec "介绍一下这个目录里的代码"${RESET}\n`)
   }

@@ -74,7 +74,7 @@ function missingHost(permissions: string[]): string | null {
 
 /** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
 const NEW_PLUGIN =
-  '我们一起来做一个插件吧。先说明插件在 qywork 里怎么加载、跑在哪、能拿到什么权限，目录里要有哪些文件；然后问我这个插件要提供什么工具。'
+  '新建一个插件。请先说明插件在 qywork 中如何加载、运行在何处、可获得哪些权限，以及目录需包含哪些文件；然后询问该插件要提供哪些工具。'
 
 export function PluginsPanel() {
   const [data, { refetch }] = createResource(() => client.api<PluginsPayload>('/api/plugins'))

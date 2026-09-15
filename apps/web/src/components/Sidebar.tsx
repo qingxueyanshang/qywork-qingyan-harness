@@ -142,7 +142,7 @@ export function Sidebar(props: { onClose?: () => void }) {
             而这两件事该做的下一步完全相反：取不到时用户看到的是项目全没了。 */}
         <Show when={known.error}>
           <div class="side-error">
-            项目清单没取到
+            无法加载项目列表
             <button class="ghost-btn" type="button" onClick={() => void refetchWorkspaces()}>
               重试
             </button>

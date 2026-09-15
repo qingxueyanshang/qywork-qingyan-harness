@@ -48,7 +48,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     const rel = body?.path?.trim()
     const kind = body?.kind
     if (!rel || (kind !== 'file' && kind !== 'dir')) {
-      return json({ error: 'invalid', message: '要建的路径和类型都得给' }, 422)
+      return json({ error: 'invalid', message: '缺少路径或类型' }, 422)
     }
     try {
       await resolveInWorkspace(d.workspaceRoot, rel)
@@ -72,7 +72,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     const body = (await req.json().catch(() => null)) as { path?: string; name?: string } | null
     const rel = body?.path?.trim()
     const name = body?.name?.trim()
-    if (!rel || !name) return json({ error: 'invalid', message: '路径和新名字都得给' }, 422)
+    if (!rel || !name) return json({ error: 'invalid', message: '缺少路径或新名称' }, 422)
     if (/[/\\]/.test(name) || name === '.' || name === '..') {
       return json({ error: 'invalid', message: '名字里不能带路径分隔符' }, 422)
     }
@@ -97,7 +97,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/files/delete' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string } | null
     const rel = body?.path?.trim()
-    if (!rel) return json({ error: 'invalid', message: '要删的路径得给' }, 422)
+    if (!rel) return json({ error: 'invalid', message: '缺少要删除的路径' }, 422)
     try {
       await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
     } catch {

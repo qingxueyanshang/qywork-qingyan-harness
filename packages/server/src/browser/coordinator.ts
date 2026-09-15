@@ -268,7 +268,7 @@ export class BrowserCoordinator {
     try {
       await this.#attach(control, tabId, marker)
     } catch (err) {
-      // 附不上就把刚建出来的这一页收掉：它是本次调用的产物，留着等于一个谁也管不到的页。
+      // 附不上就把刚建出来的这一页收掉：它是本次调用的产物，保留将产生一个无归属、无法回收的页面。
       await this.#bridge.request('close', { tabId }).catch(() => {})
       throw err
     }

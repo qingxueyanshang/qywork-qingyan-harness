@@ -2,7 +2,7 @@
  * `qy usage` —— 问「这个月花了多少」。
  *
  * `runs` 上的 usage 答不了这个问题：它按 run 存，而删会话是正常操作。
- * 账本是独立的一张表，没有外键，所以账目比业务数据活得久。
+ * 账本是独立的一张表，没有外键，因此账目的留存时间长于业务数据。
  *
  *   qy usage                 最近 30 天
  *   qy usage --days 7        最近 7 天
@@ -28,7 +28,7 @@ export async function runUsage(args: string[]): Promise<number> {
   const by = byFlag >= 0 ? (args[byFlag + 1] as GroupBy) : 'model'
 
   if (!Number.isFinite(days) || days <= 0) {
-    process.stderr.write(`--days 要是一个正数，收到：${args[daysFlag + 1]}\n`)
+    process.stderr.write(`--days 必须为正数，收到：${args[daysFlag + 1]}\n`)
     return 2
   }
   if (!GROUPS.includes(by)) {

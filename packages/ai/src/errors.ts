@@ -402,7 +402,7 @@ function classifyTransport(
  *
  * 有 provider 自报的数字就报数字——「用了 213000，上限 200000」比
  * 「上下文超出模型窗口」有用得多，用户能据此判断该删多少。
- * 没有数字时不编，也不拿本地估算冒充 provider 的口径。
+ * 没有数字时不编，也不以本地估算充当 provider 的口径。
  */
 function capacityMessage(c: CapacityRejection): string {
   const { reportedInputTokens: used, reportedLimitTokens: limit } = c

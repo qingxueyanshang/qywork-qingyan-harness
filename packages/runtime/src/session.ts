@@ -167,7 +167,7 @@ export interface SessionOptions {
   /**
    * 内置浏览器通道。见 `BrowserPort`。
    *
-   * 由装配方按「现在有没有可用的原生宿主」现判后传入；没传即这一轮没有浏览器能力。
+   * 由装配方依据当前是否存在可用的原生宿主实时判定后传入；没传即这一轮没有浏览器能力。
    * 会话结束时 `dispose` 会释放它占着的控制权与未消费的下载授权。
    */
   browser?: BrowserPort
@@ -192,7 +192,7 @@ export interface AskOptions {
    *
    * **只存定位事实（工作区相对路径），不把字节塞进消息**——这是 `Attachment`
    * 本来的约定（`core/domain/model.ts`）。正文在装配请求时才从磁盘读，
-   * 所以历史里躺着的是路径，几十轮之后读历史也不会拖着几 MB base64。
+   * 所以历史里留有的是路径，几十轮之后读历史也不会拖着几 MB base64。
    */
   attachments?: Attachment[]
   /**
@@ -692,7 +692,7 @@ export class Session {
       // 无论下面哪一步抛异常都不会留下一个还在推心跳的定时器。
       clearInterval(heartbeat)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断连）时也要给 run 一个终态，
-      // 否则账本里会永远躺着一条 running 的孤儿记录。
+      // 否则账本里会永远留有一条 running 的孤儿记录。
       if (!finished) {
         const ambiguous = listSteps(store, run.id).some(
           (step) => step.status === 'running' && step.executionStartedAt !== null,

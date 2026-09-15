@@ -387,7 +387,7 @@ function axCandidates(
   return candidates
 }
 
-/** DOM 快照里有没有可交互元素。AX 树没建起来时靠它判断该不该重取。 */
+/** DOM 快照中是否存在可交互元素。AX 树没建起来时靠它判断该不该重取。 */
 function domHasActionable(
   byBackend: Map<number, { tag: string; attrs: Record<string, string> }>,
 ): boolean {

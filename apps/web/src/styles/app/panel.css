@@ -1125,7 +1125,7 @@
     scrollbar-color: transparent transparent;
   }
 }
-/* 收起的行只有三格：什么时候、出没出事、贵不贵。模型名、步数、耗时、token
+/* 收起的行只有三列：时间、是否出错、金额。模型名、步数、耗时、token
    都在展开区——它们是选中之后才要的，印在这里就是把档案摊在目录页上。 */
 .run-row {
   display: flex;

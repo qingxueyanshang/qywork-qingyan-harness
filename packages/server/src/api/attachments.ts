@@ -147,7 +147,7 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
  */
 async function serveRaw(url: URL, workspaceRoot: string): Promise<Response> {
   const rel = url.searchParams.get('path')
-  if (!rel) return json({ error: 'invalid', message: '要读的路径得给' }, 422)
+  if (!rel) return json({ error: 'invalid', message: '缺少要读取的路径' }, 422)
 
   const abs = resolveAttachmentPath(workspaceRoot, rel)
   const info = await stat(abs).catch(() => null)

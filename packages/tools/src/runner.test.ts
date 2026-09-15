@@ -118,7 +118,7 @@ describe('命令由 runner 代跑', () => {
     }
   })
 
-  /** runner 死了就说清楚，不假装还能跑——重启一次意味着重建「哪些命令还在跑」那本账。 */
+  /** runner 退出后须明确报告，不伪装为仍可执行；重启一次意味着重建「哪些命令仍在运行」的记录。 */
   test('runner 退出之后再发命令会抛', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)
     runner.stop()

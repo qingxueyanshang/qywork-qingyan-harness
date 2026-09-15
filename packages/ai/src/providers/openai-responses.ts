@@ -30,7 +30,7 @@
  * 这两条各有各的坑，**错法不一样**：
  *
  * - 只认 `reasoning_summary_text` 的后果是**静默的**——流跑完、正文正常、
- *   一个 `thinking_delta` 都没有。没有报错，只是思考过程凭空消失。
+ *   一个 `thinking_delta` 都没有。没有报错，思考流因缺少对应事件而中断。
  *   所以两个事件名都收进 `thinking_delta`：显示这一侧两家都要。
  * - 回传方向两边都会 400，**方向相反**：不要求回传的那侧多发一个条目，
  *   得到 `Invalid 'input[N].content': array too long. Expected an array with
@@ -74,7 +74,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
   // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按这条模型的参数格式算**：
   // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
   // 各写一份的实测后果：这里说「发得出去」而那边按参数格式省掉，
-  // 因此探针恒通过，把凭空的结论写回目录。
+  // 因此探针恒通过，将无依据的结论写回目录。
   get transmits(): { effort: boolean } {
     return { effort: effortIsTransmittable(this.spec) }
   }
@@ -544,7 +544,7 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
  * provider 的原话：`status` 加上不完整时的具体原因。
  *
  * Responses 协议的终态分两层——`status` 说完没完，`incomplete_details.reason`
- * 说为什么没完。只记一层的话，`incomplete` 这个词说不出是撞了输出上限还是被过滤。
+ * 说为什么没完。只记一层的话，`incomplete` 一词无法区分是达到输出上限还是被过滤。
  */
 function rawStatusOf(response: Record<string, unknown>): string {
   const status = typeof response.status === 'string' ? response.status : ''

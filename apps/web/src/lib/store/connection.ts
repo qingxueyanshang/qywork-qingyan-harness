@@ -1249,7 +1249,7 @@ export function syncViews(): void {
     dropView(id)
   }
   // 没变就不报：这个函数既由下面那个 effect 触发，也在切会话那条路上被显式调一次，
-  // 同一组会话报两遍只是两条白发的指令。
+  // 同一组会话上报两次，只是两条无效指令。
   const line = [...want].sort().join(',')
   if (line === reported) return
   reported = line
@@ -1320,7 +1320,7 @@ export async function reloadActiveConversation(): Promise<void> {
     const { runs } = folded
     const items = foldPage(folded)
 
-    // 慢的那次请求不许写。快速连点 A→B 时两次重拉在飞，谁后返回谁盖上去——
+    // 慢的那次请求不许写。快速连点 A→B 时，两次重新拉取并发在途，后返回者覆盖先返回者——
     // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
     // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
     if (state.activeConversation !== id || canceledByNewerRequest(lease)) return

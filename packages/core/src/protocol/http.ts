@@ -30,7 +30,7 @@ import type {
  * 兜底消息，`runs` 与 `steps` 则是这些用户消息名下的完整事实。这样翻页不会把
  * 一轮工具调用从中间劈开。`nextCursor` 是下一页的排他上界；null = 已到最早。
  *
- * `todos` 不是第二本账，只是服务端从同一批 steps 账本里投影出的当前快照。
+ * `todos` 不构成独立的第二份状态，仅是服务端由同一批 steps 记录投影出的当前快照。
  * 它必须随首屏一起回：最新一次 `write_todos` 可能早于当前页，前端不能为了找它
  * 又把全部历史拉一遍。
  */
@@ -50,7 +50,7 @@ export interface ConversationHistoryPageResponse {
 /**
  * `GET /api/conversations/:id/changes?before&limit` —— 这条会话改过的文件，按轮分页。
  *
- * 与 `todos` 同一类：服务端从 steps 账本投影出的视图，不是第二本账。
+ * 与 `todos` 同一类：服务端由 steps 记录投影出的视图，不构成独立的第二份状态。
  * 不塞进历史页：历史页按完整用户轮次分页，一页里可能一个文件都没写，变更面板
  * 拿它翻页会把整段会话流连同 Markdown 一起挂进主区。这里按「写过文件的轮」分页，
  * 没写文件的轮在查询里直接跳过。`before` 与历史页同为用户消息 id、排他上界。
