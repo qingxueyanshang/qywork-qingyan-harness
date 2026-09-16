@@ -6,8 +6,8 @@
  * 1. **待决请求由本客户端拒绝。** 断开、超时、取消都在本地结束 pending，
  *    不假定远端返回或 detach 会代劳；按 id 查不到待决项的迟到回包直接丢弃，
  *    不得完成另一请求。
- * 2. **取消之后发送口只放行 teardown。** 清理命令（detach、等待器 dispose、
- *    收尾 keyUp）必须能发出去，否则页面留着按下状态，人工接管后按键行为不对。
+ * 2. **取消之后发送口只放行 teardown。** 清理命令（detach、等待器 dispose、收尾 keyUp 与
+ *    mouseReleased）必须能发出去，否则页面留着按下状态，人工接管后输入行为不对。
  * 3. **方法集是白名单。** 不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`。
  * 4. **等待只观察，不执行动作。** 页内等待器用 `MutationObserver` 加 `setTimeout`，
  *    不用 `requestAnimationFrame`：子视图移出可视区时不再出帧，靠出帧驱动的轮询会挂住。
@@ -33,20 +33,20 @@ const ALLOWED_BROWSER_METHODS = new Set(['Browser.getVersion'])
  * 取消之后仍允许发出的命令。
  *
  * 只把这条规则写进文档而不落成白名单的代价是实测过的：取消关掉发送口之后，
- * 按业务路径补发的 keyUp 会被自己的取消挡掉，页面因此留着按下状态。
+ * 按业务路径补发的 keyUp 会被自己的取消挡掉，页面因此留着按下状态。鼠标同理。
  */
-const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup'])
+const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup'])
 
-export type TeardownTag = 'detach' | 'dispose' | 'keyup'
+export type TeardownTag = 'detach' | 'dispose' | 'keyup' | 'mouseup'
 
 /**
- * `press` 认的按键。
+ * 功能键。
  *
  * 表在客户端维护，不接受调用方给的任意字符串：`Input.dispatchKeyEvent` 的
  * `key` / `code` / `windowsVirtualKeyCode` 三项必须自洽，缺一项网页就收到一个
- * 认不出的按键而不报错。可打印字符走 `fill`，不从这里造。
+ * 认不出的按键而不报错。
  */
-const KEY_TABLE: Record<string, KeySpec> = {
+const FUNCTION_KEYS: Record<string, KeySpec> = {
   Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
   Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
   Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
@@ -63,17 +63,134 @@ const KEY_TABLE: Record<string, KeySpec> = {
   Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
 }
 
+/**
+ * US 布局的可打印键：物理 `code`、Windows 虚拟键码、无 Shift 字符、按住 Shift 的字符。
+ *
+ * **不要改成按字符码点算键码。** 虚拟键码是物理键的编号，与字符不是一一对应：`;` 与 `:`
+ * 同一个键（186），而按码点算会得到 59 与 58 两个不存在的键；字母 `a` 与 `A` 同为 65。
+ * 平台布局固定为 US，不按系统当前布局推断。
+ */
+const PRINTABLE_KEYS: [code: string, keyCode: number, plain: string, shifted: string][] = [
+  ['Backquote', 192, '`', '~'],
+  ['Digit1', 49, '1', '!'],
+  ['Digit2', 50, '2', '@'],
+  ['Digit3', 51, '3', '#'],
+  ['Digit4', 52, '4', '$'],
+  ['Digit5', 53, '5', '%'],
+  ['Digit6', 54, '6', '^'],
+  ['Digit7', 55, '7', '&'],
+  ['Digit8', 56, '8', '*'],
+  ['Digit9', 57, '9', '('],
+  ['Digit0', 48, '0', ')'],
+  ['Minus', 189, '-', '_'],
+  ['Equal', 187, '=', '+'],
+  ['BracketLeft', 219, '[', '{'],
+  ['BracketRight', 221, ']', '}'],
+  ['Backslash', 220, '\\', '|'],
+  ['Semicolon', 186, ';', ':'],
+  ['Quote', 222, "'", '"'],
+  ['Comma', 188, ',', '<'],
+  ['Period', 190, '.', '>'],
+  ['Slash', 191, '/', '?'],
+]
+
+for (let i = 0; i < 26; i++) {
+  const lower = String.fromCharCode(97 + i)
+  PRINTABLE_KEYS.push([`Key${lower.toUpperCase()}`, 65 + i, lower, lower.toUpperCase()])
+}
+
+/** 字符 → 按键规格。大写字母与上排符号带 `shift`，调用方据此补按 Shift。 */
+const CHAR_KEYS = new Map<string, KeySpec>()
+/** 物理键 → 不按 Shift 时的规格。快捷键里的字母按物理键算，用它当主键。 */
+const PLAIN_BY_CODE = new Map<string, KeySpec>()
+for (const [code, keyCode, plain, shifted] of PRINTABLE_KEYS) {
+  const spec: KeySpec = { key: plain, code, keyCode, text: plain }
+  CHAR_KEYS.set(plain, spec)
+  PLAIN_BY_CODE.set(code, spec)
+  CHAR_KEYS.set(shifted, { key: shifted, code, keyCode, text: shifted, shift: true })
+}
+CHAR_KEYS.set(' ', { key: ' ', code: 'Space', keyCode: 32, text: ' ' })
+
 export interface KeySpec {
   key: string
   code: string
   keyCode: number
+  /** 这个键产生的字符。没有字符的功能键缺席，缺席即发 `rawKeyDown`。 */
   text?: string
+  /** 产生这个字符要按住 Shift。 */
+  shift?: boolean
 }
 
-export const PRESS_KEYS = Object.keys(KEY_TABLE)
+/** `Input.dispatchKeyEvent` 的 `modifiers` 位。 */
+const MODIFIER_BITS = { Alt: 1, Ctrl: 2, Meta: 4, Shift: 8 } as const
 
+export type ModifierName = keyof typeof MODIFIER_BITS
+
+const MODIFIER_KEYS: Record<ModifierName, KeySpec> = {
+  Alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+  Ctrl: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+  Meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
+  Shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+}
+
+/** 一次按键：先按下的修饰键，再主键。 */
+export interface KeyStroke {
+  modifiers: ModifierName[]
+  key: KeySpec
+}
+
+export const PRESS_KEYS = Object.keys(FUNCTION_KEYS)
+
+/** 一个主键名对应的规格。`Plus` 表示加号本身——`+` 是组合键的分隔符。 */
 export function keySpec(name: string): KeySpec | null {
-  return KEY_TABLE[name] ?? null
+  if (name === 'Plus') return CHAR_KEYS.get('+') ?? null
+  return FUNCTION_KEYS[name] ?? CHAR_KEYS.get(name) ?? null
+}
+
+/**
+ * 解析一次按键：`Ctrl+Shift+Enter` 这样的写法，末段是主键，之前各段是修饰键。
+ *
+ * 空段、重复修饰键、认不出的修饰键或主键一律返回 `null`，由调用方拒绝整次动作。
+ */
+export function keyStroke(input: string): KeyStroke | null {
+  const parts = input.split('+')
+  if (parts.some((part) => part === '')) return null
+  const main = parts.pop()
+  if (main === undefined) return null
+  const key = keySpec(main)
+  if (!key) return null
+  const modifiers: ModifierName[] = []
+  for (const part of parts) {
+    if (!(part in MODIFIER_BITS)) return null
+    const name = part as ModifierName
+    if (modifiers.includes(name)) return null
+    modifiers.push(name)
+  }
+  if (key.shift !== true || modifiers.includes('Shift')) return { modifiers, key }
+  // 大写字母与上排符号要按住 Shift 才产生，补上它，否则页面收到的是另一个字符。
+  // 快捷键里的字母是例外：`Ctrl+A` 说的是 Ctrl 加 A 键，补 Shift 会变成另一个快捷键，
+  // 而页面在真实的 Ctrl+A 上看到的 `key` 本来就是 `a`。
+  if (key.code.startsWith('Key') && modifiers.some((name) => name !== 'Shift')) {
+    return { modifiers, key: PLAIN_BY_CODE.get(key.code) ?? key }
+  }
+  modifiers.push('Shift')
+  return { modifiers, key }
+}
+
+function bitsOf(names: readonly ModifierName[]): number {
+  let bits = 0
+  for (const name of names) bits |= MODIFIER_BITS[name]
+  return bits
+}
+
+/** 一条按键事件里描述这个键的三项。三项必须自洽，缺一项网页收到的是认不出的按键。 */
+function keyFields(spec: KeySpec): Record<string, unknown> {
+  return {
+    key: spec.key,
+    code: spec.code,
+    windowsVirtualKeyCode: spec.keyCode,
+    nativeVirtualKeyCode: spec.keyCode,
+  }
 }
 
 export class CdpError extends Error {}
@@ -137,6 +254,8 @@ export interface CancelSummary {
   rejectedPending: number
   waiterStats: WaiterStats[]
   keysReleased: string[]
+  /** 补发过 `mouseReleased` 的按下状态，形如 `会话|按键`。 */
+  mouseReleased: string[]
   detached: string[]
 }
 
@@ -233,6 +352,13 @@ export class CdpClient {
   #childSessions = new Map<string, { parent: string; targetId: string }>()
   /** 本客户端按下但尚未释放的键。取消时按它补发 keyUp。 */
   #heldKeys = new Map<string, { sessionId: string; params: Record<string, unknown> }>()
+  /**
+   * 本客户端按下但尚未释放的鼠标键，连同最后一次移动到的坐标。
+   *
+   * 只记本客户端自己发出去的按下：收尾时按它补 `mouseReleased`，不对别的会话或用户
+   * 桌面释放输入。不靠成功路径最后那一条 `mouseReleased` ——拖动中途失败时它发不出来。
+   */
+  #heldMouse = new Map<string, { sessionId: string; button: string; x: number; y: number }>()
   /** 短寿命事件订阅。每一项只服务一次调用，由建立方在结束时摘掉。 */
   #watchers = new Set<{ sessionId: string; listener: (event: CdpEvent) => void }>()
   #businessClosed = false
@@ -301,6 +427,9 @@ export class CdpClient {
     const id = this.#seq
     if (method === 'Input.dispatchKeyEvent' && !teardown) {
       this.#trackKey(options.sessionId, params)
+    }
+    if (method === 'Input.dispatchMouseEvent' && !teardown) {
+      this.#trackMouse(options.sessionId, params)
     }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -427,26 +556,45 @@ export class CdpClient {
     for (const [key, held] of [...this.#heldKeys]) {
       if (held.sessionId === pageSessionId) this.#heldKeys.delete(key)
     }
+    for (const [key, held] of [...this.#heldMouse]) {
+      if (held.sessionId === pageSessionId) this.#heldMouse.delete(key)
+    }
   }
 
-  /** 按表里的规格发一次按下加抬起。按下状态进收尾表，中途取消时补 keyUp。 */
-  async pressKey(sessionId: string, spec: KeySpec): Promise<void> {
-    const base = {
-      key: spec.key,
-      code: spec.code,
-      windowsVirtualKeyCode: spec.keyCode,
-      nativeVirtualKeyCode: spec.keyCode,
+  /**
+   * 发一次按键：修饰键依次按下 → 主键按下抬起 → 修饰键逆序抬起。
+   *
+   * 每条事件的 `modifiers` 与发出它那一刻的按下集合一致：修饰键自己的 keyDown 含自身，
+   * keyUp 不含自身。含 Ctrl / Alt / Meta 时主键不附 `text` ——那时页面收到的是快捷键，
+   * 附上文本会让输入框同时插进一个字符。
+   *
+   * 中途失败不在这里补抬起：按下的键留在按下表里，由调用方走收尾原语统一释放。
+   */
+  async pressStroke(sessionId: string, stroke: KeyStroke, timeoutMs?: number): Promise<void> {
+    const limit = timeoutMs === undefined ? {} : { timeoutMs }
+    const down: ModifierName[] = []
+    const send = (params: Record<string, unknown>) =>
+      this.send('Input.dispatchKeyEvent', params, { sessionId, ...limit })
+    for (const name of stroke.modifiers) {
+      const spec = MODIFIER_KEYS[name]
+      down.push(name)
+      await send({ type: 'rawKeyDown', ...keyFields(spec), modifiers: bitsOf(down) })
     }
-    await this.send(
-      'Input.dispatchKeyEvent',
-      {
-        type: spec.text ? 'keyDown' : 'rawKeyDown',
-        ...base,
-        ...(spec.text ? { text: spec.text } : {}),
-      },
-      { sessionId },
-    )
-    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, { sessionId })
+    const modifiers = bitsOf(down)
+    // 快捷键没有文本：Ctrl / Alt / Meta 按下时主键不产生字符。
+    const text = down.some((n) => n !== 'Shift') ? undefined : stroke.key.text
+    await send({
+      type: text === undefined ? 'rawKeyDown' : 'keyDown',
+      ...keyFields(stroke.key),
+      modifiers,
+      ...(text === undefined ? {} : { text }),
+    })
+    await send({ type: 'keyUp', ...keyFields(stroke.key), modifiers })
+    for (let i = down.length - 1; i >= 0; i--) {
+      const name = down[i] as ModifierName
+      down.pop()
+      await send({ type: 'keyUp', ...keyFields(MODIFIER_KEYS[name]), modifiers: bitsOf(down) })
+    }
   }
 
   async #initChildSession(sessionId: string): Promise<void> {
@@ -549,13 +697,24 @@ export class CdpClient {
   /**
    * 取消：关业务发送口 → 本地拒绝 pending → 清页内等待器 → 收尾按下的键 →
    * detach 子会话与页会话。原生页不关。重复调用是空操作。
+   *
+   * `deadline` 是整次收尾的绝对截止时刻，每条清理命令的超时从剩余时间取小。
+   * 按页各给满额度的话，收尾时长随本客户端控制的页数线性增长。
    */
-  async cancel(reason = '已取消'): Promise<CancelSummary> {
+  async cancel(reason = '已取消', deadline?: number): Promise<CancelSummary> {
     if (this.#cancelled) {
-      return { rejectedPending: 0, waiterStats: [], keysReleased: [], detached: [] }
+      return {
+        rejectedPending: 0,
+        waiterStats: [],
+        keysReleased: [],
+        mouseReleased: [],
+        detached: [],
+      }
     }
     this.#cancelled = true
     this.#businessClosed = true
+    const left = (cap: number) =>
+      deadline === undefined ? cap : Math.max(1, Math.min(cap, deadline - Date.now()))
     const rejectedPending = this.#failPending(new CdpCancelledError(reason))
     const waiterStats: WaiterStats[] = []
     for (const sessionId of this.#pageSessions) {
@@ -566,21 +725,22 @@ export class CdpClient {
             expression: 'window.__qyworkDisposeAll ? window.__qyworkDisposeAll() : null',
             returnByValue: true,
           },
-          { sessionId, teardown: 'dispose', timeoutMs: 5_000 },
+          { sessionId, teardown: 'dispose', timeoutMs: left(5_000) },
         )
         if (r.result.value) waiterStats.push(r.result.value)
       } catch (err) {
         log.warn('browser', `等待器清理失败：${err instanceof Error ? err.message : String(err)}`)
       }
     }
-    const keysReleased = await this.releaseHeldKeys()
+    const keysReleased = await this.releaseHeldKeys(deadline)
+    const mouseReleased = await this.releaseHeldMouse(deadline)
     const detached: string[] = []
     for (const sessionId of [...this.#childSessions.keys(), ...this.#pageSessions]) {
       try {
         await this.send(
           'Target.detachFromTarget',
           { sessionId },
-          { teardown: 'detach', timeoutMs: 3_000 },
+          { teardown: 'detach', timeoutMs: left(3_000) },
         )
         detached.push(sessionId)
       } catch (err) {
@@ -589,11 +749,11 @@ export class CdpClient {
     }
     this.#childSessions.clear()
     this.#pageSessions.clear()
-    return { rejectedPending, waiterStats, keysReleased, detached }
+    return { rejectedPending, waiterStats, keysReleased, mouseReleased, detached }
   }
 
   /** 把已按下未释放的键补一次 keyUp。走 teardown 身份，不是新的业务动作。 */
-  async releaseHeldKeys(): Promise<string[]> {
+  async releaseHeldKeys(deadline?: number): Promise<string[]> {
     const released: string[] = []
     for (const [key, held] of [...this.#heldKeys]) {
       this.#heldKeys.delete(key)
@@ -607,7 +767,12 @@ export class CdpClient {
             windowsVirtualKeyCode: held.params.windowsVirtualKeyCode,
             modifiers: held.params.modifiers ?? 0,
           },
-          { sessionId: held.sessionId, teardown: 'keyup', timeoutMs: 3_000 },
+          {
+            sessionId: held.sessionId,
+            teardown: 'keyup',
+            timeoutMs:
+              deadline === undefined ? 3_000 : Math.max(1, Math.min(3_000, deadline - Date.now())),
+          },
         )
         released.push(key)
       } catch (err) {
@@ -617,8 +782,47 @@ export class CdpClient {
     return released
   }
 
+  /**
+   * 把已按下未释放的鼠标键补一次 `mouseReleased`。走 teardown 身份，不是新的业务动作。
+   *
+   * 坐标取最后一次移动到的位置：在起点释放会让拖动落回原处，而那不是页面此刻的状态。
+   */
+  async releaseHeldMouse(deadline?: number): Promise<string[]> {
+    const released: string[] = []
+    for (const [key, held] of [...this.#heldMouse]) {
+      this.#heldMouse.delete(key)
+      try {
+        await this.send(
+          'Input.dispatchMouseEvent',
+          {
+            type: 'mouseReleased',
+            x: held.x,
+            y: held.y,
+            button: held.button,
+            buttons: 0,
+            clickCount: 1,
+          },
+          {
+            sessionId: held.sessionId,
+            teardown: 'mouseup',
+            timeoutMs:
+              deadline === undefined ? 3_000 : Math.max(1, Math.min(3_000, deadline - Date.now())),
+          },
+        )
+        released.push(key)
+      } catch (err) {
+        log.warn('browser', `收尾鼠标失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return released
+  }
+
   heldKeys(): string[] {
     return [...this.#heldKeys.keys()]
+  }
+
+  heldMouse(): string[] {
+    return [...this.#heldMouse.keys()]
   }
 
   close(): void {
@@ -632,6 +836,33 @@ export class CdpClient {
       this.#heldKeys.set(key, { sessionId: sessionId ?? '', params })
     }
     if (type === 'keyUp') this.#heldKeys.delete(key)
+  }
+
+  /** 鼠标按下状态：按下登记、抬起摘掉、移动更新坐标。滚轮不改按下状态。 */
+  #trackMouse(sessionId: string | undefined, params: Record<string, unknown>): void {
+    const session = sessionId ?? ''
+    const button = String(params.button ?? 'left')
+    const key = `${session}|${button}`
+    const type = params.type
+    if (type === 'mousePressed') {
+      this.#heldMouse.set(key, {
+        sessionId: session,
+        button,
+        x: Number(params.x ?? 0),
+        y: Number(params.y ?? 0),
+      })
+      return
+    }
+    if (type === 'mouseReleased') {
+      this.#heldMouse.delete(key)
+      return
+    }
+    if (type !== 'mouseMoved') return
+    for (const held of this.#heldMouse.values()) {
+      if (held.sessionId !== session) continue
+      held.x = Number(params.x ?? held.x)
+      held.y = Number(params.y ?? held.y)
+    }
   }
 
   #onMessage(raw: string): void {

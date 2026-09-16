@@ -67,8 +67,8 @@ export interface SinkPort {
  * **不注入就没有这个能力。** 没有原生宿主连上来时装配方不注入，对应的工具也就
  * 不注册——没有浏览器的浏览器工具没有降级形态。
  *
- * **控制权跟着这一次执行走。** 一个宿主同一时刻只允许一个执行控制浏览器，
- * 抢不到的一方得到明确失败，不排队；这一轮结束由装配方调 `release`，
+ * **控制权按会话分配，跟着这一次执行走。** 不同会话可以同时各自控制自己的页；
+ * 同一条会话的第二个执行得到明确失败，不排队。这一轮结束由装配方调 `release`，
  * 未消费的下载授权随之作废，页面保留给用户接手。
  */
 export interface BrowserTabInfo {
@@ -83,6 +83,38 @@ export interface BrowserTabInfo {
    * 不在这份清单里。
    */
   controlled: boolean
+}
+
+/**
+ * `select` 的一个选项。
+ *
+ * `disabled` 与 `selected` 只在为真时出现，缺席即为假。`disabled` 并入了 optgroup
+ * 的禁用状态：optgroup 禁用时它下面的选项一律不可选。
+ */
+export interface BrowserSelectOption {
+  /** 显示文本。`label` 属性在时取它，否则取选项正文。 */
+  label: string
+  value: string
+  disabled?: boolean
+  selected?: boolean
+}
+
+/**
+ * 一页选项。观察的 `optionsFor` 模式返回它，不产生新的观察编号。
+ *
+ * `observationId` 与 `ref` 是读取时用的那一份旧观察。`items` 按当前 DOM 实时读取，
+ * 选项增删之后要重读：两次读取拼起来不是同一时刻的快照。
+ */
+export interface BrowserOptionsPage {
+  tabId: string
+  observationId: string
+  ref: string
+  items: BrowserSelectOption[]
+  /** 这个 select 此刻的选项总数。 */
+  total: number
+  offset: number
+  /** 还有后续选项时的下一个 `offset`；缺席表示已经读到末尾。 */
+  nextOffset?: number
 }
 
 /**
@@ -102,7 +134,17 @@ export interface BrowserElement {
   inputType?: string
   value?: string
   checked?: boolean
+  /** AX 的展开状态。缺席表示这个角色没有这一项，不表示收起。 */
+  expanded?: boolean
+  /** AX 的选中状态，用于 tab、option 这类角色；与 `checked` 不是同一项。 */
+  selected?: boolean
   disabled?: boolean
+  /** `select` 的选项摘要，按当前 DOM 现读。缺席表示没有读到，不表示没有选项。 */
+  options?: BrowserSelectOption[]
+  /** `select` 此刻的选项总数。`options` 不足这个数时用 `optionsFor` 继续读。 */
+  optionsTotal?: number
+  /** 选项摘要没有列全。 */
+  optionsTruncated?: boolean
   /** 正文摘要，按上限截断，不是整段 HTML。 */
   text?: string
   /** 跨站 iframe 的帧编号；缺席表示主文档。 */
@@ -123,7 +165,17 @@ export interface BrowserObservation {
   image?: { data: string; mime: string }
 }
 
-export type BrowserActionKind = 'click' | 'fill' | 'select' | 'scroll' | 'press'
+export type BrowserActionKind =
+  | 'click'
+  | 'dblclick'
+  | 'rightclick'
+  | 'hover'
+  | 'fill'
+  | 'type'
+  | 'select'
+  | 'scroll'
+  | 'press'
+  | 'drag'
 
 export interface BrowserActInput {
   tabId: string
@@ -131,9 +183,15 @@ export interface BrowserActInput {
   action: BrowserActionKind
   /** 元素引用。`scroll` 与 `press` 可省略，此时作用于文档。 */
   ref?: string
-  /** `fill` 要输入的文本，或 `select` 要选中的选项值。 */
+  /** `drag` 的终点，必须是同一份观察里的元素。 */
+  toRef?: string
+  /** `fill` / `type` 要输入的文本，或 `select` 要选中的选项值与显示文本。 */
   text?: string
-  /** `press` 的按键名。按键表由 CDP 客户端维护，不接受任意字符串。 */
+  /**
+   * `press` 的按键：功能键名，或 `Ctrl` / `Shift` / `Alt` / `Meta` 加主键的组合，
+   * 例如 `Ctrl+A`、`Shift+Tab`、`Ctrl+Shift+Enter`、`Ctrl+Plus`。按键表由 CDP 客户端
+   * 维护，不接受任意字符串。
+   */
   key?: string
   /** `scroll` 的滚动量，向下为正。 */
   deltaY?: number
@@ -158,12 +216,30 @@ export type FollowUpObservation =
     }
   | { observation: null; observationError: string }
 
+/**
+ * 多事件动作的执行回执。
+ *
+ * `completed` 只表示命令序列已经确认，**不表示业务成功**：页面收没收下这次输入要看
+ * 动作之后的观察。已确认前缀之后本地终止是 `partial`；有事件已发出但没等到确认是
+ * `unknown`，那一条可能已经在页面上生效，调用方先观察再决定，不重放。
+ */
+export interface BrowserExecution {
+  state: 'completed' | 'partial' | 'unknown'
+  /**
+   * 已确认的单元数。单元按动作定义：`type` 是 Unicode 码点，`drag` 是鼠标事件，
+   * `dblclick` 是按下抬起轮数。
+   */
+  confirmedUnits?: number
+}
+
 /** 底层动作回执。观察由协调器在动作之后补上。 */
 export interface BrowserActReceipt {
   /** 动作真正作用到的元素，供调用方核对打在了哪儿。 */
   element?: string
   /** 命中点，坐标动作才有。 */
   point?: { x: number; y: number }
+  /** 多事件动作的执行结果。`type` / `drag` / `dblclick` 必带，单事件动作缺席。 */
+  execution?: BrowserExecution
 }
 
 /** 底层等待回执。 */
@@ -213,7 +289,11 @@ export interface BrowserPort {
     action: 'goto' | 'back' | 'forward' | 'reload'
     url?: string
   }): Promise<FollowUpObservation>
-  /** 观察一页：实际地址、标题、元素与按需截图。 */
+  /**
+   * 观察一页：实际地址、标题、元素与按需截图；`optionsFor` 改为读一页选项。
+   *
+   * 两种返回互斥，按 `optionsFor` 给没给区分。
+   */
   observe(input: {
     tabId: string
     /** 只看某个跨站 iframe。缺省覆盖主文档与其全部子帧。 */
@@ -221,7 +301,14 @@ export interface BrowserPort {
     screenshot?: boolean
     /** 从第几个元素起返回，配合 `truncated` 翻页。 */
     offset?: number
-  }): Promise<BrowserObservation>
+    /**
+     * 读一个 `select` 的选项：按这份旧观察里的 `ref` 定位，实时读取。
+     *
+     * 不采新观察、不发编号、不移动页面；引用失效即要求重新观察。与 `frame` /
+     * `screenshot` / `offset` 互斥——本模式返回选项页，不是元素表。
+     */
+    optionsFor?: { observationId: string; ref: string; offset?: number }
+  }): Promise<BrowserObservation | BrowserOptionsPage>
   /** 在已观察的元素上做一次有限动作，并带回动作之后的观察。 */
   act(input: BrowserActInput): Promise<BrowserActResult>
   /**
@@ -244,8 +331,8 @@ export interface BrowserPort {
   /**
    * 点一个元素触发下载，并等它落到指定路径。
    *
-   * `absolutePath` 同 `armDownload`：必须已经过路径裁决。目标已存在时宿主拒绝覆盖，
-   * 结果里带回拦截原因。
+   * `absolutePath` 必须是**已经过路径裁决**的绝对路径：实现方按它给宿主登记一次性
+   * 授权，不做工作区判断。目标已存在时宿主拒绝覆盖，结果里带回拦截原因。
    */
   download(input: {
     tabId: string
@@ -254,15 +341,6 @@ export interface BrowserPort {
     absolutePath: string
     timeoutMs: number
   }): Promise<BrowserDownloadResult>
-  /**
-   * 为一次下载登记一次性授权。
-   *
-   * `absolutePath` 必须是**已经过路径裁决**的绝对路径：宿主只按这份授权写盘，
-   * 不做工作区判断。授权在消费、撤销、超期、断连、接管时消亡。
-   */
-  armDownload(tabId: string, absolutePath: string, deadlineMs: number): Promise<void>
-  /** 撤销尚未消费的授权。返回是否确实撤下了一份。 */
-  disarmDownload(tabId: string): Promise<boolean>
   /**
    * 释放本次执行的全部控制。可重复调用。
    *

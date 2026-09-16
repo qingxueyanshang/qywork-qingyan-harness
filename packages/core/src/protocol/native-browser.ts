@@ -109,6 +109,13 @@ export interface BrowserRequestFrame {
   url?: string
   /** `download.arm` 的已裁决绝对路径。 */
   path?: string
+  /**
+   * 这一次下载的身份，`download.arm` 与 `download.disarm` 必带。
+   *
+   * 服务端每次调用生成一个不复用的值，宿主把它绑在授权上并随终态事件原样回报。
+   * 少了它，同一页上一次调用的迟到终态会结算这一次——按 tabId 只分得开页，分不开新旧调用。
+   */
+  downloadId?: string
 }
 
 /** 操作结果。`data` 的字段按 op 取用，认不出的 op 只会回 `ok:false`。 */
@@ -149,6 +156,13 @@ export interface BrowserEventFrame {
   success?: boolean
   reason?: DownloadBlockReason
   suggestedName?: string
+  /**
+   * `download.finished` / `download.blocked` 专有：宿主消费掉的那份授权的身份。
+   *
+   * 缺席即这次下载没有命中任何授权（用户页的下载，或 AI 页上未经授权的下载），
+   * **它不得结算任何工具调用**。
+   */
+  downloadId?: string
 }
 
 /** 宿主发往服务端的帧。 */

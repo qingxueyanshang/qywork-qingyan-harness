@@ -8,12 +8,12 @@
  *
  * 1. **端口只从 `ctx.browser` 取。** 参数里自报的会话、Run、工作区根一概不读。
  *    没有端口时这七个工具不注册（`index.ts` 按通道注册），工具体里仍判一次并如实报错。
- * 2. **注册表不按 schema 校验实参。** 必需参数、取值范围、数值有限性都在这里判，
- *    判完之前不调端口。
+ * 2. **注册表不按 schema 校验实参。** 必需参数、取值范围、数值有限性、动作的参数
+ *    适用范围都在这里判，判完之前不调端口。
  * 3. **`null` 与空串按缺席算。** OpenAI 兼容协议的 strict 改写会把可选字段标成
  *    nullable，模型因此常把没填的字段显式写成 `null`；按「给了一个非法值」拒绝的话，
- *    一次正常调用会被一个没打算填的字段挡下来。例外是 `fill` 的 `text`：
- *    空串表示清空输入框，只有 `null` 才算未提供。
+ *    一次正常调用会被一个没打算填的字段挡下来。例外是 `fill` 与 `select` 的 `text`：
+ *    空串分别是清空输入框与选中值为空的选项，只有 `null` 才算未提供。
  * 4. **上传下载的路径先裁决再交给端口。** 走这一轮会话的根目录清单（`rootsOf`），
  *    与内置文件工具同一份判定；端口只按裁决后的绝对路径操作。
  *
@@ -23,7 +23,9 @@
 
 import type {
   BrowserActionKind,
+  BrowserExecution,
   BrowserObservation,
+  BrowserOptionsPage,
   BrowserPort,
   FollowUpObservation,
   ToolContext,
@@ -42,6 +44,8 @@ const DEFAULT_WAIT_MS = 10_000
 const DOWNLOAD_TIMEOUT_MS = 120_000
 /** 单次上传的文件数上限。 */
 const MAX_UPLOAD_FILES = 10
+/** `type` 一次输入的 Unicode 码点上限。 */
+const MAX_TYPE_POINTS = 2000
 
 /**
  * 调用端口之前判出来的参数错。
@@ -88,6 +92,127 @@ function nonNegative(raw: unknown, field: string): number {
   const value = finite(raw, field)
   if (value < 0) throw new ArgError(`${field} 必须是非负整数`)
   return Math.floor(value)
+}
+
+/**
+ * 读选项模式的实参。缺席即普通观察。
+ *
+ * 与 `frame` / `screenshot` / `offset` 互斥：那三个说的是采哪一份元素表，而本模式
+ * 不采元素表，两者同时给即是写错，在调端口前拒绝。
+ */
+function optionsForArg(
+  args: Record<string, unknown>,
+): { observationId: string; ref: string; offset?: number } | undefined {
+  const raw = args.optionsFor
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ArgError(`optionsFor 必须是对象，收到 ${JSON.stringify(raw)}`)
+  }
+  if (given(args.frame) || args.screenshot === true || given(args.offset)) {
+    throw new ArgError('optionsFor 不能与 frame、screenshot、offset 同时给')
+  }
+  const one = raw as Record<string, unknown>
+  return {
+    observationId: str(one.observationId, 'optionsFor.observationId'),
+    ref: str(one.ref, 'optionsFor.ref'),
+    ...(given(one.offset) ? { offset: nonNegative(one.offset, 'optionsFor.offset') } : {}),
+  }
+}
+
+/**
+ * 每个动作用得上的可选参数。
+ *
+ * 表外的参数给了就是写错，在调端口前拒绝：静默忽略的话，`click` 带 `toRef` 会得到
+ * 一次成功的点击，而调用方按拖动已完成继续下一步。
+ */
+const ACT_FIELDS: Record<BrowserActionKind, readonly string[]> = {
+  click: ['ref'],
+  dblclick: ['ref'],
+  rightclick: ['ref'],
+  hover: ['ref'],
+  fill: ['ref', 'text'],
+  type: ['ref', 'text'],
+  select: ['ref', 'text'],
+  scroll: ['ref', 'deltaY'],
+  press: ['ref', 'key'],
+  drag: ['ref', 'toRef'],
+}
+
+const ACT_KINDS = Object.keys(ACT_FIELDS) as BrowserActionKind[]
+
+/** 动作的可选参数全集，逐个按 `ACT_FIELDS` 核适用范围。 */
+const ACT_OPTIONAL = ['ref', 'toRef', 'text', 'key', 'deltaY'] as const
+
+/** 组合键里认的修饰键。 */
+const MODIFIER_KEYS = new Set(['Ctrl', 'Shift', 'Alt', 'Meta'])
+
+/**
+ * `press` 的键名预检：按 `+` 切段，末段是主键，之前各段是不重复的修饰键。
+ *
+ * 只判结构不判主键名——键表由 CDP 客户端维护，在这里再写一份两边会各自漂移。
+ * 加号本身写 `Plus`：`Ctrl++` 切出来的空段分不出是主键还是漏写。
+ */
+function pressKey(raw: unknown): string {
+  const key = str(raw, 'key')
+  const parts = key.split('+').map((part) => part.trim())
+  if (parts.some((part) => part === '')) {
+    throw new ArgError(`key 的每一段都不能为空，收到 ${JSON.stringify(key)}；加号本身写 Plus`)
+  }
+  const seen = new Set<string>()
+  for (const mod of parts.slice(0, -1)) {
+    if (!MODIFIER_KEYS.has(mod)) {
+      throw new ArgError(`修饰键只能是 Ctrl / Shift / Alt / Meta，收到 ${mod}`)
+    }
+    if (seen.has(mod)) throw new ArgError(`修饰键 ${mod} 重复：${key}`)
+    seen.add(mod)
+  }
+  return parts.join('+')
+}
+
+/** 换行与制表以外的 C0/C1 控制字符。返回第一个命中的字符。 */
+function unsupportedControl(text: string): string | undefined {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0
+    if (code === 0x09 || code === 0x0a) continue
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return ch
+  }
+  return undefined
+}
+
+/**
+ * `type` 的文本预检。
+ *
+ * 整段检完才发第一个事件：发到一半再发现超长的话，前半段已经输入到页面，
+ * 而输入事件不能撤回。CRLF 与单独的 CR 一律归一为换行，按 Enter 发出。
+ */
+function typeText(raw: unknown): string {
+  if (raw === undefined || raw === null || String(raw) === '') {
+    throw new ArgError('type 必须给 text')
+  }
+  const text = String(raw).replace(/\r\n?/g, '\n')
+  const points = [...text].length
+  if (points > MAX_TYPE_POINTS) {
+    throw new ArgError(`type 的 text 最多 ${MAX_TYPE_POINTS} 个字符，收到 ${points} 个`)
+  }
+  const bad = unsupportedControl(text)
+  if (bad !== undefined) {
+    const code = (bad.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
+    throw new ArgError(`type 的 text 含不支持的控制字符 U+${code}`)
+  }
+  return text
+}
+
+/**
+ * `text` 的取值。
+ *
+ * `fill` 与 `select` 的空串是清空输入框与值为空的选项，只有 `null` 才算未提供；
+ * `type` 走整段预检；其余动作用不上这个字段，到这里已被适用范围挡下。
+ */
+function textField(action: BrowserActionKind, raw: unknown): { text?: string } {
+  if (action === 'type') return { text: typeText(raw) }
+  if (action !== 'fill' && action !== 'select') return {}
+  if (raw === undefined || raw === null) return {}
+  return { text: String(raw) }
 }
 
 /**
@@ -183,6 +308,19 @@ function observationLine(ob: BrowserObservation): string {
   )
 }
 
+/** 选项页与元素表按形状分：只有选项页带 `items`。 */
+function isOptionsPage(r: BrowserObservation | BrowserOptionsPage): r is BrowserOptionsPage {
+  return 'items' in r
+}
+
+function optionsLine(page: BrowserOptionsPage): string {
+  const shown = page.items.length
+  return (
+    `${page.ref} 的选项 ${shown === 0 ? 0 : page.offset + 1}-${page.offset + shown}/${page.total}` +
+    (page.nextOffset === undefined ? '' : `（还有更多，optionsFor.offset=${page.nextOffset}）`)
+  )
+}
+
 /**
  * 把动作回执与后续观察合成一个结果。
  *
@@ -214,6 +352,61 @@ function withFollowUp(
     message: `${opts.lead}没有取得新的观察：${follow.observationError}。${opts.advice}`,
     data: { ...receipt, observationError: follow.observationError },
     errorKind: 'browser_observation_unavailable',
+  }
+}
+
+/** 后续观察的三个键由 `withFollowUp` 单独投递，不算回执字段。 */
+const FOLLOW_KEYS = new Set(['observation', 'observationError', 'settle'])
+
+/**
+ * 端口回执原样进结果。
+ *
+ * 逐个字段挑的话，动作那侧新增的字段（规范化后的值、约束不满足的原因）到不了
+ * 调用方，结果里只剩一次没有下文的失败。
+ */
+function receiptOf(result: object): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(result).filter(([key, value]) => !FOLLOW_KEYS.has(key) && value !== undefined),
+  )
+}
+
+/**
+ * 部分完成与结果未知的投递。
+ *
+ * 动作命令已经发到网站，重放一次等于在网站上多做一次，所以一律是失败且
+ * `executed` 为真。观察在就展开，让调用方据此判断实际做到了哪一步。
+ */
+function incompleteAct(
+  action: BrowserActionKind,
+  execution: BrowserExecution,
+  receipt: Record<string, unknown>,
+  follow: FollowUpObservation,
+): ToolOutcome {
+  const partial = execution.state === 'partial'
+  const units =
+    execution.confirmedUnits === undefined ? '' : `，已确认 ${execution.confirmedUnits} 个单元`
+  const lead = partial ? `${action} 已部分发出${units}。` : `${action} 的结果未知。`
+  const advice = '先 browser_observe 确认页面实际状态，不要重放这个动作。'
+  const errorKind = partial ? 'browser_partial' : 'browser_unknown'
+  if (follow.observation) {
+    return {
+      status: 'failure',
+      executed: true,
+      message: `${lead}${observationLine(follow.observation)}。${advice}`,
+      data: {
+        ...receipt,
+        ...observationData(follow.observation),
+        ...(follow.settle ? { settle: follow.settle } : {}),
+      },
+      errorKind,
+    }
+  }
+  return {
+    status: 'failure',
+    executed: true,
+    message: `${lead}没有取得新的观察：${follow.observationError}。${advice}`,
+    data: { ...receipt, observationError: follow.observationError },
+    errorKind,
   }
 }
 
@@ -343,7 +536,12 @@ export const browserObserveTool: ToolSpec = {
     '返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提。' +
     'truncated=true 时用 offset 取后续元素。' +
     'screenshot=true 才截图，仅在元素表不足以判断版面时使用。' +
-    'frame 只看某个跨站 iframe，取自元素的 frame 字段。',
+    'frame 只看某个跨站 iframe，取自元素的 frame 字段。' +
+    '元素上的 expanded 与 selected 缺席表示这个角色没有这一项，不表示收起或未选中；' +
+    'options 是 select 的选项摘要，按当前页面现读。' +
+    '元素上的 optionsTruncated=true 表示这个 select 的选项没有列全：' +
+    '用 optionsFor 按该元素继续读，返回的是选项页而不是新观察，' +
+    'observationId 与 ref 沿用原来那一份；optionsFor 不能与 frame、screenshot、offset 同时给。',
   parameters: {
     type: 'object',
     properties: {
@@ -351,6 +549,17 @@ export const browserObserveTool: ToolSpec = {
       frame: { type: 'string', description: '只看某个跨站 iframe，取自元素的 frame 字段' },
       screenshot: { type: 'boolean' },
       offset: { type: 'integer', description: '从第几个元素开始返回' },
+      optionsFor: {
+        type: 'object',
+        description: '读一个 select 的选项，不产生新观察也不移动页面',
+        properties: {
+          observationId: { type: 'string', description: '这个 ref 所属的那一份观察' },
+          ref: { type: 'string', description: 'select 元素的编号' },
+          offset: { type: 'integer', description: '从第几个选项开始读，默认 0' },
+        },
+        required: ['observationId', 'ref'],
+        additionalProperties: false,
+      },
     },
     required: ['tabId'],
     additionalProperties: false,
@@ -361,14 +570,19 @@ export const browserObserveTool: ToolSpec = {
 
   fn: (args, ctx) =>
     onBrowser(ctx, async (browser, send) => {
+      const optionsFor = optionsForArg(args)
       const input = {
         tabId: str(args.tabId, 'tabId'),
         ...(given(args.frame) ? { frame: str(args.frame, 'frame') } : {}),
         ...(args.screenshot === true ? { screenshot: true } : {}),
         ...(given(args.offset) ? { offset: nonNegative(args.offset, 'offset') } : {}),
+        ...(optionsFor ? { optionsFor } : {}),
       }
-      const ob = await send(() => browser.observe(input))
-      return { status: 'success', message: observationLine(ob), data: observationData(ob) }
+      const r = await send(() => browser.observe(input))
+      if (isOptionsPage(r)) {
+        return { status: 'success', message: optionsLine(r), data: { ...r } }
+      }
+      return { status: 'success', message: observationLine(r), data: observationData(r) }
     }),
 }
 
@@ -376,24 +590,38 @@ export const browserActTool: ToolSpec = {
   ...BASE,
   name: 'browser_act',
   description:
-    '对观察返回的元素执行动作：click 点击、fill 覆盖输入框内容、select 选下拉项、' +
-    'scroll 滚动、press 按功能键。observationId 取自 observe、act、navigate 或 wait 返回的那一份。' +
+    '对观察返回的元素执行动作：click 点击、dblclick 双击、rightclick 右键、hover 悬停、' +
+    'fill 覆盖输入框内容、type 在当前光标处逐字输入、select 选下拉项、scroll 滚动、' +
+    'press 按键、drag 从 ref 拖到 toRef。' +
+    'observationId 取自 observe、act、navigate 或 wait 返回的那一份。' +
     '动作之后取得新观察时结果里直接带回新的元素表与 observationId，据此继续下一步，' +
     '不必再调 browser_observe；settle=quiet 只表示页面短暂没有变化，不代表网站业务已完成，' +
     '后续目标还没出现时用 browser_wait。' +
+    'hover 之后的观察是采集那一刻的页面，延时展开的层可能还没出现，用 browser_wait 等它。' +
+    'type 的非键盘字符按文本插入，不产生完整的键盘与输入法事件。' +
+    'drag 只覆盖指针事件驱动的拖动，不支持 HTML5 原生拖放。' +
+    '日期一类输入框的 fill 按该类型的格式写入，格式非法时不改动原值。' +
     '未取得观察时结果为失败而动作可能已经发出，先 browser_observe 确认，不要重复同一个动作。',
   parameters: {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
       observationId: { type: 'string' },
-      action: { type: 'string', enum: ['click', 'fill', 'select', 'scroll', 'press'] },
-      ref: { type: 'string', description: '元素编号。scroll 与 press 可省略，作用于整页' },
-      text: { type: 'string', description: 'fill 要输入的文本，或 select 要选中的选项' },
+      action: { type: 'string', enum: ACT_KINDS },
+      ref: {
+        type: 'string',
+        description: '元素编号，drag 时是起点。scroll 与 press 可省略，作用于整页',
+      },
+      toRef: { type: 'string', description: 'drag 的终点元素编号，与 ref 不能相同' },
+      text: {
+        type: 'string',
+        description:
+          'fill 覆盖输入框原有内容；type 在当前光标处逐字输入，换行按 Enter，单行控件可能因此提交；select 是要选中的选项',
+      },
       key: {
         type: 'string',
         description:
-          'press 的按键：Enter Tab Escape Backspace Delete ArrowUp ArrowDown ArrowLeft ArrowRight Home End PageUp PageDown Space',
+          '功能键或组合键：Enter、Tab、Escape 等，或 Ctrl+A、Shift+Tab、Ctrl+Shift+Enter；主键可为单个字母数字标点，加号写 Plus；按 US 布局解释',
       },
       deltaY: { type: 'number', description: 'scroll 的滚动量，向下为正' },
     },
@@ -401,44 +629,49 @@ export const browserActTool: ToolSpec = {
     additionalProperties: false,
   },
   actionKind: 'call',
-  summary: '在观察到的元素上点击、输入、选择、滚动或按键',
+  summary: '在观察到的元素上点击、悬停、输入、选择、滚动、按键或拖动',
   targetExtractor: tabTarget,
 
   fn: (args, ctx) =>
     onBrowser(ctx, async (browser, send) => {
-      const action: BrowserActionKind = oneOf(
-        args.action,
-        ['click', 'fill', 'select', 'scroll', 'press'] as const,
-        'action',
-      )
+      const action: BrowserActionKind = oneOf(args.action, ACT_KINDS, 'action')
+      // 用不上的参数是写错，不是可以忽略的多余项；判在调端口之前。
+      for (const field of ACT_OPTIONAL) {
+        if (!ACT_FIELDS[action].includes(field) && given(args[field])) {
+          throw new ArgError(`${action} 不接受 ${field}`)
+        }
+      }
       const ref = given(args.ref) ? str(args.ref, 'ref') : undefined
-      // 元素动作没有 ref 就无从定位，press 没有 key 就没有要按的键：两者在调端口前判，
+      // 元素动作没有 ref 就无从定位，drag 少一端就不知道拖到哪里：都在调端口前判，
       // 否则一次必然失败的调用会被记成「动作已发出」，而那是禁止重试的一侧。
       if (ref === undefined && action !== 'scroll' && action !== 'press') {
         throw new ArgError(`${action} 必须给 ref`)
       }
-      if (action === 'press' && !given(args.key)) throw new ArgError('press 必须给 key')
+      const toRef = action === 'drag' ? str(args.toRef, 'toRef') : undefined
+      if (toRef !== undefined && toRef === ref) {
+        throw new ArgError('drag 的 ref 与 toRef 不能是同一个元素')
+      }
 
       const input = {
         tabId: str(args.tabId, 'tabId'),
         observationId: str(args.observationId, 'observationId'),
         action,
         ...(ref !== undefined ? { ref } : {}),
-        // 空文本对 fill 是有意义的（清空输入框），所以它只按 null 判缺席。
-        ...(args.text !== undefined && args.text !== null ? { text: String(args.text) } : {}),
-        ...(given(args.key) ? { key: str(args.key, 'key') } : {}),
+        ...(toRef !== undefined ? { toRef } : {}),
+        ...textField(action, args.text),
+        ...(action === 'press' ? { key: pressKey(args.key) } : {}),
         ...(given(args.deltaY) ? { deltaY: finite(args.deltaY, 'deltaY') } : {}),
       }
       const r = await send(() => browser.act(input))
-      return withFollowUp(
-        { ...(r.element ? { element: r.element } : {}), ...(r.point ? { point: r.point } : {}) },
-        r,
-        {
-          lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
-          ok: true,
-          advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
-        },
-      )
+      const receipt = receiptOf(r)
+      if (r.execution && r.execution.state !== 'completed') {
+        return incompleteAct(action, r.execution, receipt, r)
+      }
+      return withFollowUp(receipt, r, {
+        lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
+        ok: true,
+        advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
+      })
     }),
 }
 

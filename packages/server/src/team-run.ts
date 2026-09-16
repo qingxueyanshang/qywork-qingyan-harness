@@ -182,8 +182,8 @@ export async function runBuiltinMember(
     ...(extraSystem ? { extraSystem } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
     /*
-     * 成员会话与顶层会话走同一条判定，也各自领一份控制身份：一个宿主同一时刻
-     * 只有一个执行控制浏览器，第二个拿到 busy。不接这里的代价是另一条入口
+     * 成员会话与顶层会话走同一条判定，也各自领一份控制身份：控制槽按顶层会话分配，
+     * 同一条会话的第二个执行拿到 busy。不接这里的代价是另一条入口
      * 默认不含浏览器时也无法给出原因。
      *
      * **控制归属记的是派它的那条顶层会话**：界面上的「停止」发

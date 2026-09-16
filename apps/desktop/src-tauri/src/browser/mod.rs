@@ -54,6 +54,20 @@ use ws::WsSender;
 /// 进程内唯一的宿主。一个 qywork 进程只打开一份 profile，这个静态就是那份权威。
 static HOST: OnceLock<Arc<BrowserHost>> = OnceLock::new();
 
+/// 一次下载的裁决结果，由原生下载钩子执行。
+///
+/// `Allow` 带着被消费掉的那份授权的 downloadId：钩子把它绑到下载对象上，终态按它回报。
+/// 少了这个身份，同一页上的旧终态会结算新调用。
+#[cfg(windows)]
+pub enum DownloadVerdict {
+    /// 用户页：沿用浏览器提议的路径，不绑身份，也不回报终态。
+    Default,
+    /// 命中授权：写这个绝对路径，终态按这个身份回报。
+    Allow(std::path::PathBuf, String),
+    /// 取消。`download.blocked` 已经在裁决时发出。
+    Cancel,
+}
+
 #[cfg(windows)]
 pub struct BrowserHost {
     /// 发 `browser:tabs` 用。界面那份标签页清单是这份状态的投影，只能由这里推。
@@ -285,16 +299,19 @@ impl BrowserHost {
                 frame.tab_id.as_deref().ok_or("download.arm 缺少 tabId")?,
                 frame.path.as_deref().ok_or("download.arm 缺少 path")?,
                 frame.conversation_id.as_deref().ok_or("download.arm 缺少 conversationId")?,
+                frame.download_id.as_deref().ok_or("download.arm 缺少 downloadId")?,
                 frame.deadline,
             ),
             "download.disarm" => {
                 let tab_id = frame.tab_id.as_deref().ok_or("download.disarm 缺少 tabId")?;
+                let download_id =
+                    frame.download_id.as_deref().ok_or("download.disarm 缺少 downloadId")?;
                 let removed = self
                     .state
                     .lock()
                     .expect("宿主状态锁被污染")
                     .arms
-                    .disarm(tab_id);
+                    .disarm(tab_id, Some(download_id));
                 Ok(ResultData { removed: Some(removed), ..ResultData::default() })
             }
             other => Err(format!("认不出的操作 {other}")),
@@ -349,7 +366,7 @@ impl BrowserHost {
     fn close(&self, tab_id: &str) -> Result<ResultData, String> {
         let tab = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
-            state.arms.disarm(tab_id);
+            state.arms.disarm(tab_id, None);
             state.tabs.remove(tab_id)
         };
         let tab = tab.ok_or_else(|| format!("认不出的标签页 {tab_id}"))?;
@@ -409,7 +426,7 @@ impl BrowserHost {
                 .collect();
             let mut closed = Vec::new();
             for id in ids {
-                state.arms.disarm(&id);
+                state.arms.disarm(&id, None);
                 if let Some(tab) = state.tabs.remove(&id) {
                     tab.close();
                     closed.push(id);
@@ -429,6 +446,7 @@ impl BrowserHost {
         tab_id: &str,
         path: &str,
         conversation_id: &str,
+        download_id: &str,
         deadline: u64,
     ) -> Result<ResultData, String> {
         let mut state = self.state.lock().expect("宿主状态锁被污染");
@@ -439,9 +457,14 @@ impl BrowserHost {
         if tab.conversation_id.as_deref() != Some(conversation_id) {
             return Err("该标签页不归本会话".to_owned());
         }
-        state
-            .arms
-            .arm(tab_id.to_owned(), Arm { path: path.into(), deadline_ms: deadline });
+        state.arms.arm(
+            tab_id.to_owned(),
+            Arm {
+                path: path.into(),
+                deadline_ms: deadline,
+                download_id: download_id.to_owned(),
+            },
+        )?;
         Ok(ResultData::default())
     }
 
@@ -466,14 +489,16 @@ impl BrowserHost {
         self.changed();
     }
 
-    /// `on_download` 的 `Requested` 分支。返回 `Some(路径)` 表示放行到该路径，
-    /// 返回 `None` 表示沿用默认目录放行，返回 `Err` 表示取消。
+    /// `DownloadStarting` 的裁决。授权表是唯一判据，拦下的那一次就地发 `download.blocked`。
+    ///
+    /// 拦截事件带上被消费掉的授权身份；没有消费到授权（页面自己发起的下载）时不带，
+    /// 服务端因此不会用它结算任何工具调用。
     fn decide_download(
         &self,
         tab_id: &str,
         url: &str,
         suggested: Option<String>,
-    ) -> Result<Option<std::path::PathBuf>, ()> {
+    ) -> DownloadVerdict {
         let decision = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             let manual = state
@@ -484,24 +509,34 @@ impl BrowserHost {
             state.arms.decide(tab_id, manual, now_ms())
         };
         match decision {
-            Decision::AllowDefault => Ok(None),
-            Decision::Allow(path) => Ok(Some(path)),
-            Decision::Block(reason) => {
+            Decision::AllowDefault => DownloadVerdict::Default,
+            Decision::Allow(path, download_id) => DownloadVerdict::Allow(path, download_id),
+            Decision::Block(reason, download_id) => {
                 let url = url.to_owned();
                 self.emit("download.blocked", tab_id.to_owned(), move |f| {
                     f.reason = Some(reason);
                     f.url = Some(url);
                     f.suggested_name = suggested;
+                    f.download_id = download_id;
                 });
-                Err(())
+                DownloadVerdict::Cancel
             }
         }
     }
 
-    fn note_download_finished(&self, tab_id: &str, path: Option<String>, success: bool) {
-        self.emit("download.finished", tab_id.to_owned(), |f| {
+    /// 下载对象报出终态。只有消费过授权的下载走到这里，身份因此一定在。
+    fn note_download_finished(
+        &self,
+        tab_id: &str,
+        path: Option<String>,
+        success: bool,
+        download_id: &str,
+    ) {
+        let download_id = download_id.to_owned();
+        self.emit("download.finished", tab_id.to_owned(), move |f| {
             f.path = path;
             f.success = Some(success);
+            f.download_id = Some(download_id);
         });
     }
 }

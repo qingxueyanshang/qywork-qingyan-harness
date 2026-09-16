@@ -9,8 +9,9 @@
  * 2. **语义来自 AX 树与节点属性，不是整页 HTML。** 每一步把整页 HTML 塞进模型既装不下
  *    也读不准；元素表给角色、名称、类型、状态与正文摘要，超出上限时如实报截断。
  * 3. **鼠标坐标一律在顶层文档的坐标系里，键盘落在元素自己的会话上。** 跨站 iframe 的
- *    元素矩形是它自己文档里的值，必须叠加帧在父文档中的偏移；而焦点与文本插入由该帧
- *    的渲染进程处理，发到顶层会话会落在别处。
+ *    元素矩形是它自己文档里的值，必须逐层叠加帧在父文档中的偏移；偏移在动作准备里
+ *    现取，观察时量到的那一份在父页滚动后不成立。焦点与文本插入由该帧的渲染进程处理，
+ *    发到顶层会话会落在别处。
  * 4. **动作只发 CDP 的 Input 事件。** 不调系统鼠标键盘，不置前窗口。
  */
 
@@ -18,16 +19,37 @@ import type {
   BrowserActInput,
   BrowserActReceipt,
   BrowserElement,
+  BrowserExecution,
   BrowserObservation,
+  BrowserOptionsPage,
+  BrowserSelectOption,
   BrowserWaitReceipt,
 } from '@qywork/agent'
 import { log } from '@qywork/core'
-import { type CdpClient, CdpError, keySpec, PRESS_KEYS } from './cdp.ts'
+import {
+  CdpCancelledError,
+  type CdpClient,
+  CdpDisconnectedError,
+  CdpError,
+  CdpTimeoutError,
+  type KeyStroke,
+  keySpec,
+  keyStroke,
+  PRESS_KEYS,
+} from './cdp.ts'
 
 /** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
 const MAX_ELEMENTS = 120
 /** 元素名称与正文摘要的字符上限。 */
 const MAX_TEXT = 200
+/** 遮挡元素与选项样例的名称上限。 */
+const MAX_LABEL = 60
+/** 单个 select 一次返回的选项上限。 */
+const MAX_SELECT_OPTIONS = 30
+/** 一份普通观察里所有 select 的选项摘要合计上限。 */
+const MAX_OBSERVATION_OPTIONS = 100
+/** 选不中时错误里带几个选项样例。 */
+const SELECT_SAMPLE = 5
 /** 截图的字节上限。超过就降质量重拍一次，仍超过则不给图。 */
 const MAX_SHOT_BYTES = 1_500_000
 /** 单个跨站子帧的观察上限。它不答的时候主文档照样要能观察出来。 */
@@ -51,6 +73,33 @@ const COLLECT_TIMEOUT_MS = 15_000
 /** 单次截图的上限。 */
 const SHOT_TIMEOUT_MS = 20_000
 
+/**
+ * 一次坐标动作的准备预算：身份核对、滚入可视区、重新量取与命中复核合用。
+ *
+ * 布局持续变化时按它退出，不在同一个动作里反复滚动重量。
+ */
+const PREPARE_BUDGET_MS = 10_000
+/** 准备阶段单条命令的上限。剩余预算更少时按剩余预算发。 */
+const PREPARE_TIMEOUT_MS = 5_000
+/** 帧链最多走几层。超过即判定失败，不继续向上找。 */
+const MAX_FRAME_DEPTH = 8
+
+/**
+ * 多事件动作（type / drag / dblclick）的绝对期限。
+ *
+ * 定位、布局复核与全部业务事件合用它，单条命令从剩余预算取小。**不要改成每条命令
+ * 各给一份额度**：2000 个码点乘以单条上限，一次调用能挂住几十分钟。
+ */
+const ACTION_BUDGET_MS = 30_000
+/** 单条输入事件的上限。剩余预算更少时按剩余预算发。 */
+const EVENT_TIMEOUT_MS = 5_000
+/** 输入收尾的独立预算。业务预算用尽之后仍要能把按下的键与鼠标放开。 */
+const TEARDOWN_BUDGET_MS = 3_000
+/** `type` 一次最多输入多少个 Unicode 码点。整段预检通过才发第一个事件。 */
+const MAX_TYPE_UNITS = 2_000
+/** 拖动按下之后最多为终点推进几次滚动。 */
+const MAX_DRAG_SCROLLS = 2
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 距截止时间还剩多少毫秒。 */
@@ -68,6 +117,86 @@ export class BrowserAmbiguousRefError extends CdpError {}
 /** 预算内没能采到一份前后一致的快照。调用方保留已经发出的动作回执，不重做动作。 */
 export class BrowserObserveTimeoutError extends CdpError {}
 
+/**
+ * 多事件动作的发送记账。
+ *
+ * 一个单元就是回执里 `confirmedUnits` 的一格。`confirm` 只在命令回包之后调用：
+ * 已发出却没等到确认的那一条决定终态是 `unknown` 而不是 `partial` ——它可能已经在
+ * 页面上生效了，说成「没做」会诱使调用方重放。
+ */
+class Execution {
+  /** 本次动作的绝对期限。定位、布局复核与业务事件共用它。 */
+  readonly deadline = Date.now() + ACTION_BUDGET_MS
+  #confirmed = 0
+  #unknown = false
+  #stopped = false
+  #finished = false
+
+  /** 还能不能继续发业务事件：没停过、预算未尽、客户端未取消。 */
+  open(client: CdpClient): boolean {
+    return !this.#stopped && !client.cancelled && leftMs(this.deadline) > 0
+  }
+
+  /** 计划里的单元一个不少地确认完了。 */
+  finish(): void {
+    this.#finished = true
+  }
+
+  /** 本地判定要停：节点换了、焦点转走了、坐标量不定。已发出的事件不受影响。 */
+  stop(): void {
+    this.#stopped = true
+  }
+
+  /**
+   * 发一个单元并记账。返回还能不能接着发。
+   *
+   * 失败分两类：本地拒绝与协议错误回包都没有在页面上生效，按已确认前缀收场；
+   * 超时、断连、取消是「已入网未确认」，整次动作按 `unknown` 收场。
+   */
+  async run(task: () => Promise<void>): Promise<boolean> {
+    try {
+      await task()
+    } catch (err) {
+      this.#stopped = true
+      if (
+        err instanceof CdpTimeoutError ||
+        err instanceof CdpDisconnectedError ||
+        err instanceof CdpCancelledError
+      ) {
+        this.#unknown = true
+      }
+      return false
+    }
+    this.#confirmed += 1
+    return true
+  }
+
+  receipt(): BrowserExecution {
+    if (this.#unknown) return { state: 'unknown', confirmedUnits: this.#confirmed }
+    return {
+      state: this.#finished ? 'completed' : 'partial',
+      confirmedUnits: this.#confirmed,
+    }
+  }
+}
+
+/**
+ * 输入收尾：把本客户端还按着的键与鼠标放开。成功、失败、取消同一条路径。
+ *
+ * 用独立的清理预算，不从动作预算里扣：动作预算耗尽正是最需要收尾的时候。
+ */
+async function settleInput(client: CdpClient): Promise<void> {
+  const deadline = Date.now() + TEARDOWN_BUDGET_MS
+  await client.releaseHeldKeys(deadline)
+  await client.releaseHeldMouse(deadline)
+}
+
+/**
+ * 一个元素编号背后的定位信息。
+ *
+ * **不存帧偏移**：偏移随父页滚动变化，观察时量到的那一份在动作时可能已经不成立。
+ * 坐标一律在动作准备里现取，见 `prepareAction`。
+ */
 interface RefRecord {
   backendNodeId: number
   /** 元素所在的 CDP 会话：主文档是页会话，跨站 iframe 是它的子会话。 */
@@ -75,9 +204,6 @@ interface RefRecord {
   frame?: string
   /** `标签|id|name|type`。动作前页内重算一遍，对不上即判失效。 */
   identity: string
-  /** 该帧在顶层文档中的偏移，主文档为 0。 */
-  offsetX: number
-  offsetY: number
 }
 
 export interface ObservationRecord {
@@ -106,7 +232,7 @@ const DOC_TOKEN = `(() => {
  * 一次往返答完全部问题。分成几次的代价是它们之间页面可能又变了，
  * 那样「复核通过」说的就不是最终发事件时的状态。
  */
-const INSPECT_FN = `function () {
+const INSPECT_FN = `function qyInspect() {
   const el = this
   const tag = (el.tagName || '').toLowerCase()
   const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
@@ -114,12 +240,16 @@ const INSPECT_FN = `function () {
   const r = el.getBoundingClientRect()
   const x = r.x + r.width / 2
   const y = r.y + r.height / 2
+  const view = el.ownerDocument.defaultView
+  // 可视区判定用元素自己文档的视口。这一层通过只说明它在本文档内可见，
+  // 跨站 iframe 还要逐层核对父文档，见 framePoint。
+  const inView = x >= 0 && y >= 0 && x <= view.innerWidth && y <= view.innerHeight
   // 命中测试要在元素自己的根里做：文档级的 elementFromPoint 对 shadow 内容返回的是
   // 宿主元素，而 contains 不穿透 shadow 边界，按文档级结果判会把每一次影子内点击
   // 都判成被覆盖。
   const root = el.getRootNode()
   const scope = typeof root.elementFromPoint === 'function' ? root : el.ownerDocument
-  const hit = scope.elementFromPoint(x, y)
+  const hit = inView ? scope.elementFromPoint(x, y) : null
   let sameTree = false
   if (hit) sameTree = hit === el || el.contains(hit) || hit.contains(el)
   return {
@@ -129,44 +259,194 @@ const INSPECT_FN = `function () {
     y,
     width: r.width,
     height: r.height,
+    inView,
     sameTree,
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
+    hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
     disabled: el.disabled === true,
-    label: (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim().slice(0, 60) || tag,
+    label: (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim().slice(0, ${MAX_LABEL}) || tag,
   }
 }`
 
-/** 选择框设值并派发事件。直接改 value 不派发的话，网站的监听器收不到这次变化。 */
-const SELECT_FN = `function (value) {
+/**
+ * 滚到可视区，只滚必要的那一段。
+ *
+ * `block/inline: 'nearest'` 已经可见时不滚；`behavior: 'instant'` 不受页面
+ * `scroll-behavior: smooth` 影响——按 auto 走的话，滚动在动画中途，随后量到的矩形
+ * 不是发事件那一刻的位置。
+ */
+const SCROLL_FN = `function qyScrollIntoView() {
+  this.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+  return true
+}`
+
+/**
+ * 把子帧里的一个点换算到父文档，并在父文档里复核这个点打在本帧上。
+ *
+ * 加的是内容盒左上角，不是边框盒：iframe 的内容从内边距内侧开始，按边框盒算会整体
+ * 偏掉一个边框宽度。父层遮罩盖住 iframe 时 `sameTree` 为假，那一层就是遮挡点。
+ */
+const FRAME_POINT_FN = `function qyFramePoint(x, y) {
+  const el = this
+  const r = el.getBoundingClientRect()
+  const view = el.ownerDocument.defaultView
+  const cs = view.getComputedStyle(el)
+  const px = r.x + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.paddingLeft) || 0) + x
+  const py = r.y + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.paddingTop) || 0) + y
+  const inView = px >= 0 && py >= 0 && px <= view.innerWidth && py <= view.innerHeight
+  const hit = inView ? el.ownerDocument.elementFromPoint(px, py) : null
+  let sameTree = false
+  if (hit) sameTree = hit === el || el.contains(hit) || hit.contains(el)
+  return {
+    x: px,
+    y: py,
+    width: r.width,
+    height: r.height,
+    inView,
+    sameTree,
+    hit: hit ? (hit.tagName || '').toLowerCase() : null,
+    hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
+  }
+}`
+
+/**
+ * 读一段选项。`total` 是此刻的总数，调用方据此判断还有没有后续。
+ *
+ * 取 `el.options` 而不是子元素：它把 optgroup 里的选项一并铺平，顺序与用户看到的
+ * 一致。禁用状态并入 optgroup——optgroup 禁用时它下面的选项一律不可选。
+ */
+const OPTIONS_FN = `function qyOptions(start, limit) {
+  const el = this
+  if (el.tagName !== 'SELECT') return { ok: false }
+  const all = el.options
+  const items = []
+  for (let i = start; i < all.length && items.length < limit; i++) {
+    const o = all[i]
+    const group = o.parentElement && o.parentElement.tagName === 'OPTGROUP' ? o.parentElement : null
+    const disabled = o.disabled === true || (group ? group.disabled === true : false)
+    const item = { label: (o.label || o.text || '').trim().slice(0, ${MAX_TEXT}), value: String(o.value).slice(0, ${MAX_TEXT}) }
+    if (disabled) item.disabled = true
+    if (o.selected === true) item.selected = true
+    items.push(item)
+  }
+  return { ok: true, total: all.length, items }
+}`
+
+/**
+ * 选择框设值并派发事件。直接改 value 不派发的话，网站的监听器收不到这次变化。
+ *
+ * 选不中时只回原因、总数与有界样例。**不要改成回完整选项表**：一个上千项的
+ * `select` 会把整份工具输出撑掉，继续读取走 `optionsFor`。
+ */
+const SELECT_FN = `function qySelect(value) {
   const el = this
   if (el.tagName !== 'SELECT') return { ok: false, reason: 'not_select' }
-  const options = Array.from(el.options).map((o) => o.value)
-  const labels = Array.from(el.options).map((o) => (o.label || o.text || '').trim())
-  let index = options.indexOf(value)
-  if (index < 0) index = labels.indexOf(value)
-  if (index < 0) return { ok: false, reason: 'no_option', options, labels }
+  const all = el.options
+  let index = -1
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].value === value) { index = i; break }
+  }
+  if (index < 0) {
+    for (let i = 0; i < all.length; i++) {
+      if ((all[i].label || all[i].text || '').trim() === value) { index = i; break }
+    }
+  }
+  if (index < 0) {
+    const sample = []
+    for (let i = 0; i < all.length && sample.length < ${SELECT_SAMPLE}; i++) {
+      sample.push((all[i].label || all[i].text || '').trim().slice(0, ${MAX_LABEL}))
+    }
+    return { ok: false, reason: 'no_option', total: all.length, sample }
+  }
+  const opt = all[index]
+  const group = opt.parentElement && opt.parentElement.tagName === 'OPTGROUP' ? opt.parentElement : null
+  if (opt.disabled === true || (group && group.disabled === true)) {
+    return { ok: false, reason: 'option_disabled', label: (opt.label || opt.text || '').trim().slice(0, ${MAX_LABEL}) }
+  }
   el.selectedIndex = index
   el.dispatchEvent(new Event('input', { bubbles: true }))
   el.dispatchEvent(new Event('change', { bubbles: true }))
   return { ok: true, value: el.value }
 }`
 
-/** 把现有内容选中，让随后的 insertText 顶替而不是追加。只动选区，不改 value。 */
-const SELECT_ALL_FN = `function () {
+/**
+ * 覆盖输入一个控件的值。
+ *
+ * 三段：写前拒绝（禁用、只读、类型不能清空）→ 在同类型的临时控件上预检格式与约束 →
+ * 对目标用原生 setter 写入、派发 input/change、回读实际值。
+ *
+ * **预检必须在临时控件上做。** 直接往目标上试一次再看结果的话，非法值已经把原值冲掉了。
+ * 写入用 `HTMLInputElement.prototype` 上的原生 setter：受控组件把 `value` 换成了自己的
+ * 访问器，直接赋值它收不到这次变化，框架状态与页面显示会从此不一致。
+ * `range` 对越界值是静默钳到边界，不报错，所以它的「规范化后不等于原值」按约束不满足处理。
+ */
+const FILL_FN = `function qyFill(value) {
   const el = this
-  if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
-    el.setSelectionRange(0, el.value.length)
-    return { ok: true, had: el.value.length }
+  const tag = (el.tagName || '').toLowerCase()
+  if (el.disabled === true) return { ok: false, reason: 'disabled' }
+  if (el.readOnly === true) return { ok: false, reason: 'readonly' }
+  const cut = (s) => String(s).slice(0, ${MAX_TEXT})
+  const fire = () => {
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
   }
-  if (el.isContentEditable) {
-    const range = el.ownerDocument.createRange()
-    range.selectNodeContents(el)
-    const sel = el.ownerDocument.defaultView.getSelection()
-    sel.removeAllRanges()
-    sel.addRange(range)
-    return { ok: true, had: (el.innerText || '').length }
+  if (tag !== 'input' && tag !== 'textarea') {
+    if (el.isContentEditable !== true) return { ok: false, reason: 'not_fillable' }
+    el.focus()
+    el.textContent = value
+    fire()
+    const after = el.textContent === null ? '' : el.textContent
+    if (after !== value) return { ok: false, reason: 'rejected', value: cut(after) }
+    return { ok: true, type: 'contenteditable', value: cut(after), normalized: false }
   }
-  return { ok: false, had: 0 }
+  const type = tag === 'textarea' ? 'textarea' : String(el.type || 'text').toLowerCase()
+  if (value === '' && (type === 'range' || type === 'color')) {
+    return { ok: false, reason: 'no_empty', type: type }
+  }
+  let normalized = value
+  if (tag === 'input') {
+    const probe = el.ownerDocument.createElement('input')
+    probe.type = type
+    if (probe.type !== type) return { ok: false, reason: 'bad_type', type: type }
+    for (const attr of ['min', 'max', 'step']) {
+      if (el.hasAttribute(attr)) probe.setAttribute(attr, el.getAttribute(attr))
+    }
+    probe.value = value
+    normalized = probe.value
+    if (value !== '' && normalized === '') return { ok: false, reason: 'bad_format', type: type }
+    if (type === 'range' && normalized !== value) {
+      return { ok: false, reason: 'constraint', type: type, value: cut(normalized) }
+    }
+    const v = probe.validity
+    if (v && (v.rangeUnderflow || v.rangeOverflow || v.stepMismatch)) {
+      return { ok: false, reason: 'constraint', type: type, value: cut(normalized) }
+    }
+  }
+  const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set
+  el.focus()
+  setter.call(el, value)
+  fire()
+  const after = String(el.value)
+  if (after !== normalized) {
+    return { ok: false, reason: 'rejected', type: type, value: cut(after), wanted: cut(normalized) }
+  }
+  return { ok: true, type: type, value: cut(after), normalized: after !== value }
+}`
+
+/**
+ * 逐字输入前的复核：节点还在、还是同一个、焦点还在它身上。
+ *
+ * 每个码点发一次。少了这一层，节点被替换或焦点转移之后，后面的字符会进另一个控件，
+ * 而那一段输入的去向在回执里看不出来。
+ */
+const TYPING_GUARD_FN = `function qyTypingTarget() {
+  const el = this
+  const tag = (el.tagName || '').toLowerCase()
+  const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
+  const root = el.getRootNode()
+  const active = root && root.activeElement ? root.activeElement : el.ownerDocument.activeElement
+  return { connected: el.isConnected === true, identity, focused: active === el }
 }`
 
 interface DomNode {
@@ -257,6 +537,9 @@ export async function readDocument(
  * **采集前后各核一次主文档令牌与地址**：期间换了文档或地址，这份结果里混着两个页面的
  * 元素，整份丢掉在剩余预算内重采，不登记「旧令牌配新元素」的观察。预算耗尽抛
  * `BrowserObserveTimeoutError`。采集一致不等于 DOM 与业务状态从此不再变化。
+ *
+ * **观察只读，不滚动页面**：要滚动的是动作，见 `prepareAction`。返回的 select 另带一份
+ * 当前选项摘要，合计有上限，未列全的用 `readSelectOptions` 继续读。
  */
 export async function observePage(
   page: PageHandle,
@@ -272,6 +555,7 @@ export async function observePage(
     const all = await collectAll(client, sessionId, opts, deadline)
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
+    await attachOptions(client, shown, deadline)
     const image = opts.screenshot ? await capture(client, sessionId, deadline) : null
     const after = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
     if (after.token !== before.token || after.url !== before.url) continue
@@ -306,16 +590,10 @@ async function collectAll(
   opts: { frame?: string },
   deadline: number,
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
-  const frames: FrameScope[] = [{ sessionId, offsetX: 0, offsetY: 0 }]
+  const frames: FrameScope[] = [{ sessionId }]
   for (const child of client.childSessionsOf(sessionId)) {
     if (opts.frame && child.targetId !== opts.frame) continue
-    const offset = await frameOffset(client, sessionId, child.targetId, deadline)
-    frames.push({
-      sessionId: child.sessionId,
-      frame: child.targetId,
-      offsetX: offset.x,
-      offsetY: offset.y,
-    })
+    frames.push({ sessionId: child.sessionId, frame: child.targetId })
   }
   // 指定了帧就只看那一个，主文档不掺进来——否则「只看这个 iframe」返回的仍是整页。
   const scope = opts.frame ? frames.filter((f) => f.frame === opts.frame) : frames
@@ -337,7 +615,7 @@ async function collectAll(
   return all
 }
 
-type FrameScope = { sessionId: string; frame?: string; offsetX: number; offsetY: number }
+type FrameScope = { sessionId: string; frame?: string }
 
 /** 编号在筛完之后才发，所以候选里只有除 `ref` 之外的那些字段。 */
 interface Candidate {
@@ -424,6 +702,10 @@ function axCandidates(
         ...(attrs.type ? { inputType: attrs.type } : {}),
         ...(value !== undefined ? { value: String(value).slice(0, MAX_TEXT) } : {}),
         ...(props.get('checked') !== undefined ? { checked: props.get('checked') === 'true' } : {}),
+        // expanded / selected 缺席即这个角色没有这一项，补 false 会把「没有这一项」
+        // 说成「收起」「未选中」。
+        ...boolProp(props, 'expanded'),
+        ...boolProp(props, 'selected'),
         ...(props.get('disabled') === true ? { disabled: true } : {}),
         ...(frame.frame ? { frame: frame.frame } : {}),
       },
@@ -432,12 +714,26 @@ function axCandidates(
         sessionId: frame.sessionId,
         ...(frame.frame ? { frame: frame.frame } : {}),
         identity: [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
-        offsetX: frame.offsetX,
-        offsetY: frame.offsetY,
       },
     })
   }
   return candidates
+}
+
+/**
+ * 按 AX 的实际布尔取一项状态。
+ *
+ * 缺席、或值不是布尔时不写这一项：`expanded` 只在可展开的角色上存在，
+ * 补一个 false 等于说它是收起的。
+ */
+function boolProp(
+  props: Map<string, unknown>,
+  name: 'expanded' | 'selected',
+): Record<string, boolean> {
+  const raw = props.get(name)
+  if (raw === true || raw === 'true') return { [name]: true }
+  if (raw === false || raw === 'false') return { [name]: false }
+  return {}
 }
 
 /** DOM 快照中是否存在可交互元素。AX 树没建起来时靠它判断该不该重取。 */
@@ -489,8 +785,6 @@ function domCandidates(
         sessionId: frame.sessionId,
         ...(frame.frame ? { frame: frame.frame } : {}),
         identity: [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
-        offsetX: frame.offsetX,
-        offsetY: frame.offsetY,
       },
     })
   }
@@ -540,28 +834,105 @@ function flatten(
   if (node.contentDocument) flatten(node.contentDocument, out)
 }
 
-/** 跨站 iframe 在父文档中的位置。子帧里的矩形要叠上它才是可发事件的坐标。 */
-async function frameOffset(
+/**
+ * 给这一页要返回的 select 补一份当前选项摘要。
+ *
+ * 只给实际返回的那些 select 采：没进这一页元素表的 select 采了也传不出去。
+ * 合计上限用尽之后仍读一次总数（limit 取 0），让调用方知道要用 `optionsFor` 继续读
+ * ——摘要缺席与「这个 select 没有选项」必须能分开。单个 select 读失败时整项不写，
+ * 不写成空选项表。
+ */
+async function attachOptions(
   client: CdpClient,
-  pageSession: string,
-  frameId: string,
+  shown: { element: BrowserElement; ref: RefRecord }[],
   deadline: number,
-): Promise<{ x: number; y: number }> {
-  try {
-    const owner = await client.send<{ backendNodeId: number }>(
-      'DOM.getFrameOwner',
-      { frameId },
-      { sessionId: pageSession, ...within(deadline, FRAME_TIMEOUT_MS) },
-    )
-    const box = await client.send<{ model: { content: number[] } }>(
-      'DOM.getBoxModel',
-      { backendNodeId: owner.backendNodeId },
-      { sessionId: pageSession, ...within(deadline, FRAME_TIMEOUT_MS) },
-    )
-    return { x: box.model.content[0] ?? 0, y: box.model.content[1] ?? 0 }
-  } catch {
-    // 帧已经不在父文档里了。偏移取 0，随后的身份复核会把这个 ref 判成失效。
-    return { x: 0, y: 0 }
+): Promise<void> {
+  let used = 0
+  for (const item of shown) {
+    if (item.element.tag !== 'select') continue
+    if (leftMs(deadline) <= 0) return
+    const limit = Math.max(0, Math.min(MAX_SELECT_OPTIONS, MAX_OBSERVATION_OPTIONS - used))
+    const subject = `元素 ${item.element.ref}`
+    const read = await readOptionsOf(client, item.ref, 0, limit, deadline, subject).catch((err) => {
+      log.warn('browser', `选项摘要跳过：${err instanceof Error ? err.message : String(err)}`)
+      return null
+    })
+    if (!read) continue
+    used += read.items.length
+    item.element = {
+      ...item.element,
+      ...(read.items.length > 0 ? { options: read.items } : {}),
+      optionsTotal: read.total,
+      ...(read.items.length < read.total ? { optionsTruncated: true } : {}),
+    }
+  }
+}
+
+/** 按引用记录解析出节点再读一段选项。`limit` 为 0 时只取总数。 */
+async function readOptionsOf(
+  client: CdpClient,
+  entry: RefRecord,
+  offset: number,
+  limit: number,
+  deadline: number,
+  subject: string,
+): Promise<{ items: BrowserSelectOption[]; total: number }> {
+  const resolved = await client.send<{ object: { objectId?: string } }>(
+    'DOM.resolveNode',
+    { backendNodeId: entry.backendNodeId },
+    { sessionId: entry.sessionId, ...within(deadline, COLLECT_TIMEOUT_MS) },
+  )
+  const objectId = resolved.object.objectId
+  if (!objectId) throw new BrowserStaleRefError(`${subject} 已经不在页面上，请重新观察`)
+  const r = await client.send<{
+    result: { value: { ok: boolean; total?: number; items?: BrowserSelectOption[] } }
+  }>(
+    'Runtime.callFunctionOn',
+    {
+      objectId,
+      functionDeclaration: OPTIONS_FN,
+      arguments: [{ value: offset }, { value: limit }],
+      returnByValue: true,
+    },
+    { sessionId: entry.sessionId, ...within(deadline, COLLECT_TIMEOUT_MS) },
+  )
+  if (!r.result.value.ok) throw new CdpError(`${subject} 不是选择框`)
+  return { items: r.result.value.items ?? [], total: r.result.value.total ?? 0 }
+}
+
+/**
+ * 读一个 select 的一页选项。
+ *
+ * 按旧观察定位、实时读取：不采新观察、不发新编号、不滚动页面。选项在两次读取之间
+ * 增删时页与页拼不成一份快照，调用方按 `total` 重读。
+ */
+export async function readSelectOptions(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  offset: number,
+): Promise<BrowserOptionsPage> {
+  await assertDoc(page, record)
+  // 深度读取与一次观察共用同一份预算，不让每个 select 各拿一份满额度。
+  const deadline = Date.now() + OBSERVE_BUDGET_MS
+  const { entry } = await resolveRef(page, record, ref, deadline)
+  const read = await readOptionsOf(
+    page.client,
+    entry,
+    offset,
+    MAX_SELECT_OPTIONS,
+    deadline,
+    `元素 ${ref}`,
+  )
+  const next = offset + read.items.length
+  return {
+    tabId: page.tabId,
+    observationId: record.observationId,
+    ref,
+    items: read.items,
+    total: read.total,
+    offset,
+    ...(next < read.total ? { nextOffset: next } : {}),
   }
 }
 
@@ -591,10 +962,26 @@ interface Inspection {
   y?: number
   width?: number
   height?: number
+  /** 中心点落在本文档视口内。跨站 iframe 还要逐层核父文档。 */
+  inView?: boolean
   sameTree?: boolean
   hit?: string | null
+  /** 命中到的那个元素的名称摘要，取 `aria-label` 或可取得文本，有界。 */
+  hitLabel?: string
   disabled?: boolean
   label?: string
+}
+
+/** 一层帧的换算结果：点已经在父文档坐标系里，命中字段说的是这一层。 */
+interface FramePoint {
+  x: number
+  y: number
+  width?: number
+  height?: number
+  inView?: boolean
+  sameTree?: boolean
+  hit?: string | null
+  hitLabel?: string
 }
 
 /**
@@ -621,6 +1008,7 @@ async function resolveRef(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
+  deadline = Date.now() + PREPARE_BUDGET_MS,
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
   const { client } = page
   const entry = record.refs.get(ref)
@@ -630,31 +1018,209 @@ async function resolveRef(
     .send<{ object: { objectId?: string } }>(
       'DOM.resolveNode',
       { backendNodeId: entry.backendNodeId },
-      { sessionId: entry.sessionId },
+      { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
     )
     .catch(() => null)
   const objectId = resolved?.object.objectId
   if (!objectId) throw new BrowserStaleRefError(`元素 ${ref} 已经不在页面上，请重新观察`)
 
+  const inspect = await inspectNode(client, entry.sessionId, objectId, deadline)
+  assertSameNode(ref, entry, inspect, '')
+  return { entry, objectId, inspect }
+}
+
+/** 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。 */
+async function inspectNode(
+  client: CdpClient,
+  sessionId: string,
+  objectId: string,
+  deadline: number,
+): Promise<Inspection> {
   const inspected = await client.send<{ result: { value: Inspection } }>(
     'Runtime.callFunctionOn',
     { objectId, functionDeclaration: INSPECT_FN, returnByValue: true },
-    { sessionId: entry.sessionId },
+    { sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
   )
-  const inspect = inspected.result.value
+  return inspected.result.value
+}
+
+/** 节点还是不是原来那一个。`when` 说明这次复核发生在哪一步。 */
+function assertSameNode(ref: string, entry: RefRecord, inspect: Inspection, when: string): void {
   if (!inspect.connected) {
-    throw new BrowserStaleRefError(`元素 ${ref} 已从文档中移除，请重新观察`)
+    throw new BrowserStaleRefError(`元素 ${ref} ${when}已从文档中移除，请重新观察`)
   }
   if (inspect.identity !== entry.identity) {
-    throw new BrowserStaleRefError(`元素 ${ref} 指向的已经是另一个节点，请重新观察`)
+    throw new BrowserStaleRefError(`元素 ${ref} ${when}指向的已经是另一个节点，请重新观察`)
   }
-  return { entry, objectId, inspect }
+}
+
+/**
+ * 坐标动作的准备：核身份 → 按需滚入可视区 → 重新量取矩形与整条帧链 → 在实际输入
+ * 坐标系里复核命中 → 交给调用方发事件。
+ *
+ * **坐标一律现取**，不用观察时记下的帧偏移：父页滚过之后那份偏移指的是另一个位置。
+ * 查不到父帧的 owner 或盒子就判定位失败，不补零——补零会把事件发到页面左上角。
+ * 滚动只发一次并重量一次，布局持续变化时按准备预算退出。
+ *
+ * `scroll` 为假只重新量取，不动页面（观察与读选项按它调用）；`hit` 为假不做
+ * 可命中裁决，只要坐标（滚动到元素上这类动作按落点发事件即可）。`deadline` 缺省时
+ * 自带一份准备预算，多事件动作传自己的绝对期限进来，不另起一份时钟。
+ */
+async function prepareAction(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  opts: { scroll: boolean; hit: boolean; deadline?: number },
+): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection; point: Point }> {
+  const deadline = opts.deadline ?? Date.now() + PREPARE_BUDGET_MS
+  const { client } = page
+  const { entry, objectId, inspect } = await resolveRef(page, record, ref, deadline)
+  let view = inspect
+  if (opts.scroll && (await scrollIntoView(client, entry, objectId, view, deadline))) {
+    view = await inspectNode(client, entry.sessionId, objectId, deadline)
+    assertSameNode(ref, entry, view, '滚动后')
+  }
+  if (opts.hit && view.disabled === true) throw new CdpError(`元素 ${ref} 当前不可用`)
+  if (opts.hit) assertHittable(`元素 ${ref}`, view)
+  const point = await toInputPoint(page, entry, view, ref, deadline, opts.hit)
+  return { entry, objectId, inspect: view, point }
+}
+
+type Point = { x: number; y: number }
+
+/**
+ * 需要时把元素滚进可视区，返回是否真的发了滚动命令。
+ *
+ * 跨站 iframe 里的元素一律滚一次：帧内可见不代表这个帧在父页的可视区内，而把父页带上
+ * 只有 `scrollIntoView` 做得到。已经可见时 `nearest` 不动页面。
+ */
+async function scrollIntoView(
+  client: CdpClient,
+  entry: RefRecord,
+  objectId: string,
+  view: Inspection,
+  deadline: number,
+): Promise<boolean> {
+  if (entry.frame === undefined && view.inView === true && view.sameTree === true) return false
+  await client.send(
+    'Runtime.callFunctionOn',
+    { objectId, functionDeclaration: SCROLL_FN, returnByValue: true },
+    { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+  )
+  return true
+}
+
+/**
+ * 把元素在自己文档里的中心点换算成页会话的输入坐标。
+ *
+ * 主文档的点不用换算。跨站 iframe 逐层向上：每一层现取 owner 与盒子，换算之后在
+ * 那一层复核命中，父层遮罩因此拦得住。任一层查不到就抛失效，不继续用一个半成品坐标。
+ */
+async function toInputPoint(
+  page: PageHandle,
+  entry: RefRecord,
+  view: Inspection,
+  ref: string,
+  deadline: number,
+  requireHit: boolean,
+): Promise<Point> {
+  let point: Point = { x: view.x ?? 0, y: view.y ?? 0 }
+  let frame = entry.frame
+  for (let depth = 0; frame; depth += 1) {
+    if (depth >= MAX_FRAME_DEPTH) {
+      throw new BrowserStaleRefError(`元素 ${ref} 的帧层数超过上限，无法定位，请重新观察`)
+    }
+    if (leftMs(deadline) <= 0) {
+      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标没能在动作期限内量定，请重新观察`)
+    }
+    const hop = await frameHop(page, frame, point, ref, deadline)
+    if (requireHit) assertHittable(`元素 ${ref} 所在的 iframe`, hop.mapped)
+    point = { x: hop.mapped.x, y: hop.mapped.y }
+    frame = hop.parentFrame
+  }
+  return point
+}
+
+/**
+ * 走一层帧：找到承载这一帧的文档，把点换算过去。
+ *
+ * 父文档按试探定位：`DOM.getFrameOwner` 只在这一帧的父会话里答得出来，页会话先试，
+ * 不中再试其余子会话——嵌套的跨站 iframe 的父文档也是一个子会话。
+ */
+async function frameHop(
+  page: PageHandle,
+  frame: string,
+  point: Point,
+  ref: string,
+  deadline: number,
+): Promise<{ mapped: FramePoint; parentFrame: string | undefined }> {
+  const { client } = page
+  const children = client.childSessionsOf(page.sessionId)
+  const candidates: { sessionId: string; frame?: string }[] = [
+    { sessionId: page.sessionId },
+    ...children
+      .filter((c) => c.targetId !== frame)
+      .map((c) => ({ sessionId: c.sessionId, frame: c.targetId })),
+  ]
+  for (const candidate of candidates) {
+    const owner = await client
+      .send<{ backendNodeId: number }>(
+        'DOM.getFrameOwner',
+        { frameId: frame },
+        { sessionId: candidate.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+      )
+      .catch(() => null)
+    if (!owner) continue
+    const resolved = await client
+      .send<{ object: { objectId?: string } }>(
+        'DOM.resolveNode',
+        { backendNodeId: owner.backendNodeId },
+        { sessionId: candidate.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+      )
+      .catch(() => null)
+    const objectId = resolved?.object.objectId
+    if (!objectId) break
+    const mapped = await client.send<{ result: { value: FramePoint } }>(
+      'Runtime.callFunctionOn',
+      {
+        objectId,
+        functionDeclaration: FRAME_POINT_FN,
+        arguments: [{ value: point.x }, { value: point.y }],
+        returnByValue: true,
+      },
+      { sessionId: candidate.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+    )
+    return { mapped: mapped.result.value, parentFrame: candidate.frame }
+  }
+  throw new BrowserStaleRefError(`元素 ${ref} 所在的 iframe 已经不在页面上，请重新观察`)
+}
+
+/**
+ * 命中裁决。视口外、零尺寸、被遮各自成句，不一律叫被遮——三者的下一步不一样。
+ *
+ * 在动作准备的最后一步调用：滚动已经做过，这时仍命中别的元素才是遮挡。
+ */
+function assertHittable(subject: string, view: Inspection | FramePoint): void {
+  if (view.width === 0 || view.height === 0) {
+    throw new BrowserAmbiguousRefError(`${subject} 当前尺寸为 0，无法在它上面发事件，请重新观察`)
+  }
+  if (view.inView !== true) {
+    throw new BrowserAmbiguousRefError(`${subject} 滚动后仍在可视区外，请重新观察`)
+  }
+  if (view.sameTree !== true) {
+    const hit = view.hit ? `${view.hit}${view.hitLabel ? `（${view.hitLabel}）` : ''}` : '空白'
+    throw new BrowserAmbiguousRefError(`${subject} 的命中点落在 ${hit} 上，请重新观察`)
+  }
 }
 
 /**
  * 在已观察的元素上做一次有限动作，返回动作回执。
  *
  * 动作之后的观察由协调器补，这里不采。
+ *
+ * **发出第一个事件之前的失败一律抛错**：参数不合、引用失效、命中不成立都属于没有动过
+ * 页面。已经发出事件之后不再抛错，改为在回执的 `execution` 里如实给出已确认的单元数
+ * ——那时页面可能已经变了，抛异常会让调用方按「没执行」重放。
  */
 export async function actOnPage(
   page: PageHandle,
@@ -679,45 +1245,40 @@ export async function actOnPage(
   }
   if (!input.ref) throw new CdpError(`${input.action} 需要元素引用`)
 
-  const { entry, objectId, inspect } = await resolveRef(page, record, input.ref)
-  const point = {
-    x: (inspect.x ?? 0) + entry.offsetX,
-    y: (inspect.y ?? 0) + entry.offsetY,
-  }
-
   switch (input.action) {
-    case 'click': {
-      if (inspect.disabled) throw new CdpError(`元素 ${input.ref} 当前不可用`)
-      if (inspect.sameTree !== true) {
-        throw new BrowserAmbiguousRefError(
-          `元素 ${input.ref} 的命中点落在 ${inspect.hit ?? '空白'} 上，页面可能已变化，请重新观察`,
-        )
-      }
-      await clickPoint(client, sessionId, point)
+    case 'click':
+      return clickOnPage(page, record, input.ref, 'left')
+    case 'rightclick':
+      return clickOnPage(page, record, input.ref, 'right')
+    case 'hover': {
+      const { inspect, point } = await prepareAction(page, record, input.ref, {
+        scroll: true,
+        hit: true,
+      })
+      // 只移动，不按下。悬停层什么时候出现由页面决定，动作之后的观察采到什么就是什么。
+      await mouseEvent(client, sessionId, 'mouseMoved', point, { button: 'none', buttons: 0 })
       return { element: inspect.label ?? input.ref, point }
     }
-    case 'fill': {
-      await client.send(
-        'DOM.focus',
-        { backendNodeId: entry.backendNodeId },
-        { sessionId: entry.sessionId },
-      )
-      await client.send(
-        'Runtime.callFunctionOn',
-        { objectId, functionDeclaration: SELECT_ALL_FN, returnByValue: true },
-        { sessionId: entry.sessionId },
-      )
-      // 文本插入发到元素自己的会话：焦点由该帧的渲染进程持有，发到顶层会落在别处。
-      await client.send(
-        'Input.insertText',
-        { text: input.text ?? '' },
-        { sessionId: entry.sessionId },
-      )
-      return { element: inspect.label ?? input.ref }
-    }
+    case 'dblclick':
+      return doubleClickOnPage(page, record, input.ref)
+    case 'drag':
+      return dragOnPage(page, record, input.ref, input.toRef)
+    case 'type':
+      return typeOnPage(page, record, input.ref, input.text ?? '')
+    case 'fill':
+      return fillOnPage(page, record, input.ref, input.text ?? '')
     case 'select': {
+      const { entry, objectId, inspect } = await resolveRef(page, record, input.ref)
       const r = await client.send<{
-        result: { value: { ok: boolean; reason?: string; options?: string[] } }
+        result: {
+          value: {
+            ok: boolean
+            reason?: string
+            total?: number
+            sample?: string[]
+            label?: string
+          }
+        }
       }>(
         'Runtime.callFunctionOn',
         {
@@ -729,16 +1290,15 @@ export async function actOnPage(
         { sessionId: entry.sessionId },
       )
       const value = r.result.value
-      if (!value.ok) {
-        throw new CdpError(
-          value.reason === 'no_option'
-            ? `没有这个选项：${input.text}（可选：${(value.options ?? []).join('、')}）`
-            : `元素 ${input.ref} 不是选择框`,
-        )
-      }
+      if (!value.ok) throw selectFailure(input.ref, input.text ?? '', value)
       return { element: inspect.label ?? input.ref }
     }
     case 'scroll': {
+      // 滚动落点不做可命中裁决：滚轮事件打在被遮住的位置上一样滚得动。
+      const { inspect, point } = await prepareAction(page, record, input.ref, {
+        scroll: false,
+        hit: false,
+      })
       await client.send(
         'Input.dispatchMouseEvent',
         {
@@ -754,6 +1314,7 @@ export async function actOnPage(
       return { element: inspect.label ?? input.ref, point }
     }
     case 'press': {
+      const { entry, inspect } = await resolveRef(page, record, input.ref)
       await client.send(
         'DOM.focus',
         { backendNodeId: entry.backendNodeId },
@@ -765,28 +1326,437 @@ export async function actOnPage(
   }
 }
 
+/**
+ * 选不中时的失败说明。
+ *
+ * 带总数与有界样例，并给出继续读取的出口；**不回完整选项表**，长列表会把整份工具
+ * 输出撑掉。
+ */
+function selectFailure(
+  ref: string,
+  wanted: string,
+  value: { reason?: string; total?: number; sample?: string[]; label?: string },
+): CdpError {
+  if (value.reason === 'no_option') {
+    const sample = (value.sample ?? []).join('、')
+    return new CdpError(
+      `没有这个选项：${wanted}（共 ${value.total ?? 0} 项` +
+        (sample ? `，前几项：${sample}` : '') +
+        `；用 optionsFor 按 ${ref} 读取全部选项）`,
+    )
+  }
+  if (value.reason === 'option_disabled') {
+    return new CdpError(`选项 ${value.label ?? wanted} 当前不可选`)
+  }
+  return new CdpError(`元素 ${ref} 不是选择框`)
+}
+
+/** 按一次键或组合键。成功、失败都走同一条输入收尾，不把修饰键留在按下状态。 */
 async function pressOn(
   page: PageHandle,
   sessionId: string,
   key: string | undefined,
 ): Promise<void> {
-  const spec = keySpec(key ?? '')
-  if (!spec) throw new CdpError(`不支持的按键：${key}（可用：${PRESS_KEYS.join('、')}）`)
-  await page.client.pressKey(sessionId, spec)
+  const stroke = keyStroke(key ?? '')
+  if (!stroke) {
+    throw new CdpError(
+      `不支持的按键：${key}（功能键 ${PRESS_KEYS.join('、')}，或字母数字标点；` +
+        '可加 Ctrl / Shift / Alt / Meta 修饰键，加号写成 Plus）',
+    )
+  }
+  try {
+    await page.client.pressStroke(sessionId, stroke)
+  } finally {
+    await settleInput(page.client)
+  }
+}
+
+/** 按名字取一次按键。只用于表里一定有的那几个键，取不到即按键表被改坏。 */
+function requireStroke(name: string): KeyStroke {
+  const stroke = keyStroke(name)
+  if (!stroke) throw new CdpError(`按键表里没有 ${name}`)
+  return stroke
+}
+
+/** 发一条鼠标事件。坐标一律在页会话（顶层文档）的坐标系里。 */
+async function mouseEvent(
+  client: CdpClient,
+  sessionId: string,
+  type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
+  point: Point,
+  extra: Record<string, unknown>,
+  deadline?: number,
+): Promise<void> {
+  await client.send(
+    'Input.dispatchMouseEvent',
+    { type, x: point.x, y: point.y, ...extra },
+    { sessionId, ...(deadline === undefined ? {} : within(deadline, EVENT_TIMEOUT_MS)) },
+  )
 }
 
 async function clickPoint(
   client: CdpClient,
   sessionId: string,
-  point: { x: number; y: number },
+  point: Point,
+  button: 'left' | 'right' = 'left',
 ): Promise<void> {
+  const buttonsOf = (down: boolean) => (down ? (button === 'right' ? 2 : 1) : 0)
   for (const type of ['mousePressed', 'mouseReleased'] as const) {
-    await client.send(
-      'Input.dispatchMouseEvent',
-      { type, x: point.x, y: point.y, button: 'left', clickCount: 1 },
-      { sessionId },
+    await mouseEvent(client, sessionId, type, point, {
+      button,
+      buttons: buttonsOf(type === 'mousePressed'),
+      clickCount: 1,
+    })
+  }
+}
+
+/** 单次点击。右键只换 `button`，定位、滚动与命中说明与左键同一套。 */
+async function clickOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  button: 'left' | 'right',
+): Promise<BrowserActReceipt> {
+  const { client, sessionId } = page
+  const { inspect, point } = await prepareAction(page, record, ref, { scroll: true, hit: true })
+  try {
+    await clickPoint(client, sessionId, point, button)
+  } finally {
+    await settleInput(client)
+  }
+  return { element: inspect.label ?? ref, point }
+}
+
+/**
+ * 双击：两轮按下抬起，`clickCount` 依次 1 与 2。
+ *
+ * 第二轮的 `clickCount: 2` 是浏览器判定 `dblclick` 的依据，两轮都发 `clickCount: 1`
+ * 得到的是两次单击。
+ */
+async function doubleClickOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+): Promise<BrowserActReceipt> {
+  const { client, sessionId } = page
+  const run = new Execution()
+  const { inspect, point } = await prepareAction(page, record, ref, {
+    scroll: true,
+    hit: true,
+    deadline: run.deadline,
+  })
+  let done = true
+  for (const clickCount of [1, 2]) {
+    if (!run.open(client)) {
+      done = false
+      break
+    }
+    const sent = await run.run(async () => {
+      await mouseEvent(
+        client,
+        sessionId,
+        'mousePressed',
+        point,
+        { button: 'left', buttons: 1, clickCount },
+        run.deadline,
+      )
+      await mouseEvent(
+        client,
+        sessionId,
+        'mouseReleased',
+        point,
+        { button: 'left', buttons: 0, clickCount },
+        run.deadline,
+      )
+    })
+    if (!sent) {
+      done = false
+      break
+    }
+  }
+  if (done) run.finish()
+  await settleInput(client)
+  return { element: inspect.label ?? ref, point, execution: run.receipt() }
+}
+
+/** `type` 的一个单元：一次按键，或一个走文本插入的码点。 */
+type TypeUnit = { stroke: KeyStroke } | { text: string }
+
+/**
+ * 归一并切成可发的单元。
+ *
+ * 整段检完才发第一个事件：发到一半再发现超长的话，前半段已经进了页面，而输入事件
+ * 撤不回来。CRLF 与单独的 CR 归一为换行，换行按 Enter 发——单行控件可能因此提交。
+ * 布局表里的字符走按键序列，其余码点走 `Input.insertText`：不给中文造虚拟键码，
+ * 也不承诺 IME composition 与完整的 keydown/keyup 链。
+ */
+function planType(text: string): TypeUnit[] {
+  const units: TypeUnit[] = []
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
+    if (ch === '\n') {
+      units.push({ stroke: requireStroke('Enter') })
+      continue
+    }
+    if (ch === '\t') {
+      units.push({ stroke: requireStroke('Tab') })
+      continue
+    }
+    const code = ch.codePointAt(0) ?? 0
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+      const hex = code.toString(16).toUpperCase().padStart(4, '0')
+      throw new CdpError(`不能输入控制字符 U+${hex}`)
+    }
+    const spec = keySpec(ch)
+    if (spec) units.push({ stroke: { modifiers: spec.shift === true ? ['Shift'] : [], key: spec } })
+    else units.push({ text: ch })
+  }
+  if (units.length > MAX_TYPE_UNITS) {
+    throw new CdpError(`一次最多输入 ${MAX_TYPE_UNITS} 个字符，这次给了 ${units.length} 个`)
+  }
+  return units
+}
+
+function sendTypeUnit(
+  client: CdpClient,
+  sessionId: string,
+  unit: TypeUnit,
+  deadline: number,
+): Promise<void> {
+  if ('text' in unit) {
+    // 文本插入发到元素自己的会话：焦点由该帧的渲染进程持有，发到顶层会落在别处。
+    return client
+      .send(
+        'Input.insertText',
+        { text: unit.text },
+        { sessionId, ...within(deadline, EVENT_TIMEOUT_MS) },
+      )
+      .then(() => {})
+  }
+  return client.pressStroke(sessionId, unit.stroke, within(deadline, EVENT_TIMEOUT_MS).timeoutMs)
+}
+
+/** 目标还在、还是同一个、焦点还在它身上。任一项不成立即停止输入。 */
+async function onTypingTarget(
+  client: CdpClient,
+  entry: RefRecord,
+  objectId: string,
+  deadline: number,
+): Promise<boolean> {
+  const read = await client
+    .send<{ result: { value: { connected: boolean; identity: string; focused: boolean } } }>(
+      'Runtime.callFunctionOn',
+      { objectId, functionDeclaration: TYPING_GUARD_FN, returnByValue: true },
+      { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+    )
+    .catch(() => null)
+  if (!read) return false
+  const view = read.result.value
+  return view.connected && view.identity === entry.identity && view.focused
+}
+
+/**
+ * 逐字输入：聚焦目标后在当前选区输入，**不全选也不清空**，覆盖输入是 `fill` 的事。
+ *
+ * 每个码点发送前复核目标，节点被替换、移除或焦点转移时立刻停止，不继续发往另一个控件。
+ * 默认不加人为延时：需要等异步候选层的应用分段 type 之后自己 wait。
+ */
+async function typeOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  text: string,
+): Promise<BrowserActReceipt> {
+  const units = planType(text)
+  const { client } = page
+  const run = new Execution()
+  const { entry, objectId, inspect } = await resolveRef(page, record, ref, run.deadline)
+  await client.send(
+    'DOM.focus',
+    { backendNodeId: entry.backendNodeId },
+    { sessionId: entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
+  )
+  let done = true
+  for (const unit of units) {
+    if (!run.open(client) || !(await onTypingTarget(client, entry, objectId, run.deadline))) {
+      done = false
+      break
+    }
+    if (!(await run.run(() => sendTypeUnit(client, entry.sessionId, unit, run.deadline)))) {
+      done = false
+      break
+    }
+  }
+  if (done) run.finish()
+  await settleInput(client)
+  return { element: inspect.label ?? ref, execution: run.receipt() }
+}
+
+/** `FILL_FN` 的回包。`ok` 为假时 `reason` 决定给调用方哪一句说明。 */
+interface FillOutcome {
+  ok: boolean
+  reason?: string
+  type?: string
+  /** 实际读回的值，或预检规范化之后的值。 */
+  value?: string
+  /** 预检认可的值。回读与它不一致即页面把这次写入改掉了。 */
+  wanted?: string
+  normalized?: boolean
+}
+
+/**
+ * 覆盖输入。预检不通过时原值一个字都没动，回读不一致时如实说页面已经改过。
+ *
+ * 不发键盘事件：受控组件要的是 `input` / `change`，而日期、颜色这类控件没有可逐字
+ * 输入的键序列。逐字交互走 `type`。
+ */
+async function fillOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  text: string,
+): Promise<BrowserActReceipt> {
+  const { client } = page
+  const { entry, objectId, inspect } = await resolveRef(page, record, ref)
+  const r = await client.send<{ result: { value: FillOutcome } }>(
+    'Runtime.callFunctionOn',
+    {
+      objectId,
+      functionDeclaration: FILL_FN,
+      arguments: [{ value: text }],
+      returnByValue: true,
+    },
+    { sessionId: entry.sessionId },
+  )
+  const outcome = r.result.value
+  if (!outcome.ok) throw fillFailure(ref, text, outcome)
+  return { element: inspect.label ?? ref }
+}
+
+/** 写入失败的说明。格式不合、约束不满足、页面不接受三者分开成句，下一步不一样。 */
+function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpError {
+  const type = outcome.type ?? ''
+  switch (outcome.reason) {
+    case 'disabled':
+      return new CdpError(`元素 ${ref} 当前不可用，没有写入`)
+    case 'readonly':
+      return new CdpError(`元素 ${ref} 是只读的，没有写入`)
+    case 'not_fillable':
+      return new CdpError(`元素 ${ref} 不是可输入的控件`)
+    case 'no_empty':
+      return new CdpError(`${type} 类型没有空值，清不掉；给一个合法值`)
+    case 'bad_type':
+      return new CdpError(`认不出的输入类型 ${type}`)
+    case 'bad_format':
+      return new CdpError(`${wanted} 不是 ${type} 类型接受的格式，原值没有改动`)
+    case 'constraint':
+      return new CdpError(
+        `${wanted} 不满足 ${type} 的 min / max / step 约束（能接受的是 ${outcome.value ?? ''}），原值没有改动`,
+      )
+    case 'rejected':
+      return new CdpError(
+        `写入已经发到页面上，但值随即变成了 ${outcome.value ?? ''}（写的是 ${outcome.wanted ?? wanted}），这次输入没有被接受`,
+      )
+    default:
+      return new CdpError(`元素 ${ref} 写入失败`)
+  }
+}
+
+/**
+ * 按下状态里量取终点。
+ *
+ * 终点仍在可视区外时在按下状态内有界推进滚动并重新量取；跨文档、节点丢失或坐标量不定
+ * 就返回 `null`，由调用方收尾。**不反复回头滚起点**：它已经按下，再滚它只会把按下的
+ * 位置甩开。
+ */
+async function dragTarget(
+  page: PageHandle,
+  end: { entry: RefRecord; objectId: string },
+  ref: string,
+  run: Execution,
+): Promise<Point | null> {
+  const { client } = page
+  for (let pass = 0; pass <= MAX_DRAG_SCROLLS; pass++) {
+    if (!run.open(client)) return null
+    const view = await inspectNode(client, end.entry.sessionId, end.objectId, run.deadline).catch(
+      () => null,
+    )
+    if (!view || !view.connected || view.identity !== end.entry.identity) return null
+    if (view.inView === true) {
+      return toInputPoint(page, end.entry, view, ref, run.deadline, false).catch(() => null)
+    }
+    if (pass === MAX_DRAG_SCROLLS) return null
+    await client
+      .send(
+        'Runtime.callFunctionOn',
+        { objectId: end.objectId, functionDeclaration: SCROLL_FN, returnByValue: true },
+        { sessionId: end.entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
+      )
+      .catch(() => null)
+  }
+  return null
+}
+
+/**
+ * 拖动：两端都取自同一份观察。
+ *
+ * 先只读核两端，再完成必要滚动，最后在同一个坐标系里重新量取并复核起点可命中——
+ * **不得用第一次滚动前的起点坐标**，后一次滚动会让它指向另一个位置。按下之后每条移动
+ * 带 `buttons: 1`，最后 `mouseReleased` 清为 0。
+ *
+ * 只承诺指针事件驱动的拖动，不承诺 HTML5 DataTransfer 原生拖放链。
+ */
+async function dragOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  toRef: string | undefined,
+): Promise<BrowserActReceipt> {
+  if (!toRef) throw new CdpError('drag 需要终点元素引用 toRef')
+  if (toRef === ref) throw new CdpError('drag 的起点与终点是同一个元素')
+  const { client, sessionId } = page
+  const run = new Execution()
+  const deadline = run.deadline
+  // 先只读核两端：任一端已经不在了就不必滚动页面，更不该按下鼠标。
+  await resolveRef(page, record, ref, deadline)
+  const end = await resolveRef(page, record, toRef, deadline)
+  // 先滚终点、后量起点：滚终点会把起点带到别的位置，先量到的那一份从此不成立。
+  await scrollIntoView(client, end.entry, end.objectId, end.inspect, deadline)
+  const start = await prepareAction(page, record, ref, { scroll: true, hit: true, deadline })
+  const from = start.point
+
+  const send = async (
+    type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
+    point: Point,
+    buttons: number,
+  ): Promise<boolean> => {
+    if (!run.open(client)) return false
+    return run.run(() =>
+      mouseEvent(
+        client,
+        sessionId,
+        type,
+        point,
+        {
+          button: 'left',
+          buttons,
+          ...(type === 'mouseMoved' ? {} : { clickCount: 1 }),
+        },
+        deadline,
+      ),
     )
   }
+  const sequence = async (): Promise<boolean> => {
+    if (!(await send('mousePressed', from, 1))) return false
+    const to = await dragTarget(page, end, toRef, run)
+    if (!to) return false
+    const middle = { x: Math.round((from.x + to.x) / 2), y: Math.round((from.y + to.y) / 2) }
+    if (!(await send('mouseMoved', middle, 1))) return false
+    if (!(await send('mouseMoved', to, 1))) return false
+    return send('mouseReleased', to, 0)
+  }
+  if (await sequence()) run.finish()
+  await settleInput(client)
+  return { element: start.inspect.label ?? ref, point: from, execution: run.receipt() }
 }
 
 /** 等一个选择器出现。页内等待器只观察并返回，不点击、不提交。 */
@@ -841,11 +1811,8 @@ export async function clickForDownload(
   ref: string,
 ): Promise<BrowserActReceipt> {
   await assertDoc(page, record)
-  const { entry, inspect } = await resolveRef(page, record, ref)
-  if (inspect.sameTree !== true) {
-    throw new BrowserAmbiguousRefError(`元素 ${ref} 的命中点落在别处，请重新观察`)
-  }
-  const point = { x: (inspect.x ?? 0) + entry.offsetX, y: (inspect.y ?? 0) + entry.offsetY }
+  // 与普通点击同一条准备：定位、滚动与命中说明都一致，两处不给两套解释。
+  const { inspect, point } = await prepareAction(page, record, ref, { scroll: true, hit: true })
   await clickPoint(page.client, page.sessionId, point)
   return { element: inspect.label ?? ref, point }
 }

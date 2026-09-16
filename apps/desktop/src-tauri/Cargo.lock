@@ -2900,6 +2900,7 @@ dependencies = [
 [[package]]
 name = "schemars"
 version = "1.2.2"
+ "webview2-com",
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [

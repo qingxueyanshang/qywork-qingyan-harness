@@ -31,7 +31,8 @@
     "op": "download.arm",
     "tabId": "bt_1",
     "conversationId": "cv_a1",
-    "path": "D:\\work\\out.bin"
+    "path": "D:\\work\\out.bin",
+    "downloadId": "dl_4"
   },
   "result": {
     "type": "browser.result",
@@ -54,5 +55,15 @@
     "url": "http://127.0.0.1:9000/file.bin",
     "reason": "unauthorized",
     "suggestedName": "file.bin"
+  },
+  "downloadFinished": {
+    "type": "browser.event",
+    "connectionEpoch": 3,
+    "seq": 12,
+    "kind": "download.finished",
+    "tabId": "bt_1",
+    "path": "D:\\work\\out.bin",
+    "success": true,
+    "downloadId": "dl_4"
   }
 }

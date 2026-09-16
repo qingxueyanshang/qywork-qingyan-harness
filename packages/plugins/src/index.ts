@@ -5,7 +5,7 @@
  * 唯一的装配方是 `runtime/extensions.ts`。
  */
 
-// 可信调用身份：runtime 的宿主能力实现按它裁决路径、取本次执行的浏览器端口
+// 可信调用身份：runtime 的宿主能力实现按它裁决路径
 export type { HostCallContext } from './host.ts'
 // 加载：runtime 逐层调用再合并
 export { loadPlugins, type PluginRegistry, pluginToolPrefix } from './loader.ts'

@@ -46,6 +46,9 @@ pub struct RequestFrame {
     pub url: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// `download.arm` / `download.disarm` 认的本次下载身份。服务端每次生成一个不复用的值。
+    #[serde(default)]
+    pub download_id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -103,6 +106,9 @@ pub struct EventFrame {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_name: Option<String>,
+    /// 消费掉的那份授权的身份。缺席即这次下载没有命中授权，不得结算任何工具调用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_id: Option<String>,
 }
 
 impl EventFrame {
@@ -121,6 +127,7 @@ impl EventFrame {
             success: None,
             reason: None,
             suggested_name: None,
+            download_id: None,
         }
     }
 }
@@ -172,6 +179,7 @@ mod tests {
             conversation_id: None,
             url: None,
             path: None,
+            download_id: None,
         }
     }
 
@@ -191,6 +199,7 @@ mod tests {
         assert_eq!(parsed.conversation_id.as_deref(), Some("cv_a1"));
         assert_eq!(parsed.tab_id.as_deref(), Some("bt_1"));
         assert_eq!(parsed.path.as_deref(), Some(r"D:\work\out.bin"));
+        assert_eq!(parsed.download_id.as_deref(), Some("dl_4"));
         assert_eq!(parsed.url, None);
     }
 
@@ -246,6 +255,13 @@ mod tests {
         event.reason = Some("unauthorized");
         event.suggested_name = Some("file.bin".into());
         assert_eq!(serde_json::to_value(&event).unwrap(), sample("event"));
+
+        // 终态带回消费掉的那份授权身份；服务端按它认领，不按 tabId。
+        let mut finished = EventFrame::new(3, 12, "download.finished", "bt_1".into());
+        finished.path = Some(r"D:\work\out.bin".into());
+        finished.success = Some(true);
+        finished.download_id = Some("dl_4".into());
+        assert_eq!(serde_json::to_value(&finished).unwrap(), sample("downloadFinished"));
     }
 
     /// 缺省字段不能发成 `null`：接收端的可选字段判定会从「没有」变成「有且为空」。

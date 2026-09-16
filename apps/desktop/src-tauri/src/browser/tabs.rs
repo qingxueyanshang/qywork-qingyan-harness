@@ -4,19 +4,28 @@
 //! 因此它们合流进同一个 WebView2 environment：一个 CDP 端点、一份登录状态。
 //! 参数串有任何差别都会另起一个 environment，而那会让同一份 profile 被开两次。
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::webview::{DownloadEvent, WebviewBuilder};
+use tauri::webview::{PlatformWebview, WebviewBuilder};
 use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect, Url,
     Webview, WebviewUrl,
 };
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs, ICoreWebView2_4,
+    COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+    COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
+};
+use webview2_com::{take_pwstr, DownloadStartingEventHandler, StateChangedEventHandler};
+use windows::core::{Interface, HSTRING, PWSTR};
 
 use super::frames::TabSnapshot;
-use super::Runtime;
+use super::{DownloadVerdict, Runtime};
 
 /// wry 在未指定 `additional_browser_args` 时传的默认值。
 /// 指定该方法会**整体替换**默认值，所以必须自己带上。
@@ -33,6 +42,12 @@ const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 /// `add_child` 返回时子视图还停在 `about:blank`，注入的标记要等目标文档创建出来才存在；
 /// 实测这段是 700 ms 量级。不等就返回的话，调用方按标记去认页必然认不到。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
+
+/// 下载钩子绑到原生对象上的等待上限。
+///
+/// `with_webview` 把闭包排到主线程再执行，因此这里必须等一个回执：不等就返回的话，
+/// 绑定失败会以「这一页的下载全部按未授权取消」的形式出现在很久之后。
+const DOWNLOAD_HOOK_WAIT: Duration = Duration::from_secs(10);
 
 /// 用户新开一页时的落点。地址栏空着，由用户输入真实地址。
 ///
@@ -142,7 +157,6 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
     let blank_target = spec.url == BLANK;
     let event_tab = spec.tab_id.clone();
     let title_tab = spec.tab_id.clone();
-    let download_tab = spec.tab_id.clone();
     let (loaded_tx, loaded_rx) = channel::<()>();
     let loaded_tx = Arc::new(Mutex::new(Some(loaded_tx)));
     let builder = WebviewBuilder::new(spec.tab_id.clone(), WebviewUrl::External(url))
@@ -172,8 +186,7 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
                     let _ = tx.send(());
                 }
             }
-        })
-        .on_download(move |_webview, event| decide(&download_tab, event));
+        });
 
     let webview = window
         .add_child(
@@ -182,6 +195,9 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
             LogicalSize::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
         )
         .map_err(|e| format!("建子视图失败：{e}"))?;
+
+    // 绑在等首个文档之前：文档一加载出来就可能发起下载，那时钩子必须已经在。
+    bind_downloads(&webview, &spec.tab_id)?;
 
     if !blank_target && loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
         log::warn!("子视图 {} 在期限内没有加载出首个文档", spec.tab_id);
@@ -209,34 +225,121 @@ fn marker_script(marker: &str) -> String {
     )
 }
 
-/// 逐下载裁决。返回 false 即取消，且不弹默认下载 UI。
-fn decide(tab_id: &str, event: DownloadEvent<'_>) -> bool {
-    let Some(host) = super::host() else { return false };
-    match event {
-        DownloadEvent::Requested { url, destination } => {
-            let suggested = destination
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned());
-            match host.decide_download(tab_id, url.as_str(), suggested) {
-                Ok(Some(path)) => {
-                    *destination = path;
-                    true
-                }
-                // 人工页沿用浏览器提议的目标路径。
-                Ok(None) => true,
-                Err(()) => false,
-            }
-        }
-        DownloadEvent::Finished { url: _, path, success } => {
-            host.note_download_finished(
-                tab_id,
-                path.map(|p| p.to_string_lossy().into_owned()),
-                success,
-            );
-            true
-        }
-        _ => true,
+/// 在这一页的 WebView2 上接管下载。
+///
+/// 绑的是 `DownloadStarting` 交出的那个 `ICoreWebView2DownloadOperation`：终态由该对象的
+/// `StateChanged` 回报，一次下载的结果因此只能归发起它的那一次调用。
+/// **不要换回 `WebviewBuilder::on_download`**：那条路的完成回报只带 tab 与路径，
+/// 同一页上两次下载的终态分不开，先发起的那次会认领后发起的那次的结果。
+fn bind_downloads(view: &Webview<Runtime>, tab_id: &str) -> Result<(), String> {
+    let tab = tab_id.to_owned();
+    let (tx, rx) = channel::<Result<(), String>>();
+    view.with_webview(move |platform| {
+        let _ = tx.send(register_downloads(&platform, tab));
+    })
+    .map_err(|e| format!("取不到子视图的原生句柄：{e}"))?;
+    rx.recv_timeout(DOWNLOAD_HOOK_WAIT)
+        .map_err(|_| "下载钩子在期限内没有注册成功".to_owned())?
+}
+
+/// 注册 `DownloadStarting`。在主线程上执行，句柄由 `PlatformWebview` 给出。
+fn register_downloads(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        let core = platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("取不到 CoreWebView2：{e}"))?;
+        let core4: ICoreWebView2_4 = core
+            .cast()
+            .map_err(|e| format!("这个 WebView2 运行时没有下载事件：{e}"))?;
+        core4
+            .add_DownloadStarting(
+                &DownloadStartingEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    starting(&tab_id, &args)
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册下载事件失败：{e}"))?;
     }
+    Ok(())
+}
+
+/// 一次下载开始。裁决在宿主的授权表里做完，放行的那一次把身份绑到下载对象上。
+///
+/// 宿主不在时取消：没有授权表就判不了这次下载该不该放行，放行等于无裁决写盘。
+fn starting(
+    tab_id: &str,
+    args: &ICoreWebView2DownloadStartingEventArgs,
+) -> windows::core::Result<()> {
+    unsafe {
+        let Some(host) = super::host() else {
+            return args.SetCancel(true);
+        };
+        let operation = args.DownloadOperation()?;
+        let mut raw = PWSTR::null();
+        operation.Uri(&mut raw)?;
+        let url = take_pwstr(raw);
+        let mut raw = PWSTR::null();
+        args.ResultFilePath(&mut raw)?;
+        let suggested = PathBuf::from(take_pwstr(raw))
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        match host.decide_download(tab_id, &url, suggested) {
+            // 人工页沿用浏览器提议的目标路径；`SetHandled` 只是不弹默认下载 UI。
+            DownloadVerdict::Default => args.SetHandled(true),
+            DownloadVerdict::Allow(path, download_id) => {
+                args.SetResultFilePath(&HSTRING::from(path.as_os_str()))?;
+                args.SetHandled(true)?;
+                watch_state(tab_id, &operation, download_id)
+            }
+            // 宿主在裁决时已经发过 `download.blocked`，这里只执行取消。
+            DownloadVerdict::Cancel => args.SetCancel(true),
+        }
+    }
+}
+
+/// 把本次身份绑到下载对象上，终态由它自己回报。
+///
+/// 回调在终态时就地解除：注册与解除都在这个下载对象上完成，不留一个跟着对象到析构的闭包。
+/// `IN_PROGRESS` 不是终态，收到它不回报。
+fn watch_state(
+    tab_id: &str,
+    operation: &ICoreWebView2DownloadOperation,
+    download_id: String,
+) -> windows::core::Result<()> {
+    let tab = tab_id.to_owned();
+    let token = Rc::new(Cell::new(0i64));
+    let slot = Rc::clone(&token);
+    let mut fresh = 0i64;
+    unsafe {
+        operation.add_StateChanged(
+            &StateChangedEventHandler::create(Box::new(move |op, _| {
+                let Some(op) = op else { return Ok(()) };
+                let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                op.State(&mut state)?;
+                if state == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+                    return Ok(());
+                }
+                let success = state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+                let path = if success {
+                    let mut raw = PWSTR::null();
+                    op.ResultFilePath(&mut raw)?;
+                    Some(take_pwstr(raw))
+                } else {
+                    None
+                };
+                if let Some(host) = super::host() {
+                    host.note_download_finished(&tab, path, success, &download_id);
+                }
+                op.remove_StateChanged(slot.get())
+            })),
+            &mut fresh,
+        )?;
+    }
+    token.set(fresh);
+    Ok(())
 }
 
 #[cfg(test)]

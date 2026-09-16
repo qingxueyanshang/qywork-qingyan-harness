@@ -54,6 +54,7 @@ export interface BrowserRequestParams {
   conversationId?: string
   url?: string
   path?: string
+  downloadId?: string
 }
 
 export class BrowserBridge {
@@ -134,6 +135,7 @@ export class BrowserBridge {
       ...(params.conversationId !== undefined ? { conversationId: params.conversationId } : {}),
       ...(params.url !== undefined ? { url: params.url } : {}),
       ...(params.path !== undefined ? { path: params.path } : {}),
+      ...(params.downloadId !== undefined ? { downloadId: params.downloadId } : {}),
     }
     return new Promise<BrowserResultFrame['data']>((resolve, reject) => {
       const timer = setTimeout(() => {

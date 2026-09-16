@@ -1003,8 +1003,6 @@ describe('浏览器控制跟着这一轮执行走', () => {
       wait: async () => ({ found: true, observation }),
       upload: async () => ({ files: [] }),
       download: async () => ({}),
-      armDownload: async () => {},
-      disarmDownload: async () => false,
       release: async () => {
         released += 1
       },

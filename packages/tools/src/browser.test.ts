@@ -12,7 +12,9 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
+  BrowserActResult,
   BrowserObservation,
+  BrowserOptionsPage,
   BrowserPort,
   ToolContext,
   ToolOutcome,
@@ -74,7 +76,19 @@ function fakeBrowser(over: Partial<BrowserPort> = {}): { port: BrowserPort; call
     },
     observe: async (input) => {
       note('observe', input)
-      return OB
+      if (!input.optionsFor) return OB
+      return {
+        tabId: input.tabId,
+        observationId: input.optionsFor.observationId,
+        ref: input.optionsFor.ref,
+        items: [
+          { label: 'A', value: 'a' },
+          { label: 'B', value: 'b', disabled: true },
+        ],
+        total: 42,
+        offset: input.optionsFor.offset ?? 0,
+        nextOffset: (input.optionsFor.offset ?? 0) + 2,
+      } satisfies BrowserOptionsPage
     },
     act: async (input) => {
       note('act', input)
@@ -92,8 +106,6 @@ function fakeBrowser(over: Partial<BrowserPort> = {}): { port: BrowserPort; call
       note('download', input)
       return { path: input.absolutePath, bytes: 3 }
     },
-    armDownload: async () => {},
-    disarmDownload: async () => false,
     release: async () => {},
   }
   return { port: { ...base, ...over }, calls }
@@ -226,7 +238,7 @@ describe('发动作之前的终态', () => {
   test('认不出的动作名直接拒绝，不猜一个近似的', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'drag', ref: 'e1' },
+      { tabId: 'bt_1', observationId: 'ob_1', action: 'swipe', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.message).toContain('action 只能是')
@@ -277,11 +289,249 @@ describe('发动作之前的终态', () => {
   })
 })
 
+describe('动作的适用范围', () => {
+  const base = { tabId: 'bt_1', observationId: 'ob_1' }
+
+  test('schema 的动作枚举与运行时接受的动作是同一份', () => {
+    const actionEnum = (browserActTool.parameters as { properties: { action: { enum: string[] } } })
+      .properties.action.enum
+    expect(actionEnum).toEqual([
+      'click',
+      'dblclick',
+      'rightclick',
+      'hover',
+      'fill',
+      'type',
+      'select',
+      'scroll',
+      'press',
+      'drag',
+    ])
+  })
+
+  test('新动作的合法参数原样到端口', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    for (const action of ['hover', 'dblclick', 'rightclick']) {
+      const r = await browserActTool.fn({ ...base, action, ref: 'e1' }, ctx)
+      expect(r.status).toBe('success')
+      expect(calls.at(-1)?.input).toEqual({ ...base, action, ref: 'e1' })
+    }
+
+    await browserActTool.fn({ ...base, action: 'drag', ref: 'e1', toRef: 'e2' }, ctx)
+    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'drag', ref: 'e1', toRef: 'e2' })
+
+    await browserActTool.fn({ ...base, action: 'type', ref: 'e1', text: '你好' }, ctx)
+    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'type', ref: 'e1', text: '你好' })
+
+    await browserActTool.fn({ ...base, action: 'press', key: 'Ctrl+Shift+Enter' }, ctx)
+    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'press', key: 'Ctrl+Shift+Enter' })
+  })
+
+  test('鼠标动作缺 ref 在调端口前判', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    for (const action of ['click', 'dblclick', 'rightclick', 'hover']) {
+      const r = await browserActTool.fn({ ...base, action }, ctx)
+      expect(r.executed).toBe(false)
+      expect(r.message).toContain('必须给 ref')
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  test('drag 要两端，两端不能是同一个', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const drag = { ...base, action: 'drag' }
+
+    const noTo = await browserActTool.fn({ ...drag, ref: 'e1' }, ctx)
+    expect(noTo.executed).toBe(false)
+    expect(noTo.message).toContain('toRef')
+
+    const noFrom = await browserActTool.fn({ ...drag, toRef: 'e2' }, ctx)
+    expect(noFrom.executed).toBe(false)
+    expect(noFrom.message).toContain('必须给 ref')
+
+    const same = await browserActTool.fn({ ...drag, ref: 'e1', toRef: 'e1' }, ctx)
+    expect(same.executed).toBe(false)
+    expect(same.message).toContain('不能是同一个元素')
+    expect(calls).toHaveLength(0)
+  })
+
+  test('用不上的参数拒绝，不静默忽略', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const cases: Record<string, unknown>[] = [
+      { action: 'click', ref: 'e1', toRef: 'e2' },
+      { action: 'scroll', key: 'Enter' },
+      { action: 'hover', ref: 'e1', text: 'x' },
+      { action: 'press', key: 'Enter', deltaY: 100 },
+      { action: 'drag', ref: 'e1', toRef: 'e2', text: 'x' },
+      { action: 'fill', ref: 'e1', text: 'x', key: 'Enter' },
+      { action: 'type', ref: 'e1', text: 'x', toRef: 'e2' },
+      { action: 'select', ref: 'e1', text: 'x', deltaY: 1 },
+    ]
+    for (const args of cases) {
+      const r = await browserActTool.fn({ ...base, ...args }, ctx)
+      expect(r.executed).toBe(false)
+      expect(r.message).toContain('不接受')
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  test('type 的长度与控制字符在调端口前判', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const typing = { ...base, action: 'type', ref: 'e1' }
+
+    const long = await browserActTool.fn({ ...typing, text: 'a'.repeat(2001) }, ctx)
+    expect(long.executed).toBe(false)
+    expect(long.message).toContain('最多 2000 个字符')
+
+    const control = await browserActTool.fn({ ...typing, text: 'ab' }, ctx)
+    expect(control.executed).toBe(false)
+    expect(control.message).toContain('U+0007')
+
+    const empty = await browserActTool.fn({ ...typing, text: '' }, ctx)
+    expect(empty.executed).toBe(false)
+    expect(empty.message).toContain('type 必须给 text')
+    expect(calls).toHaveLength(0)
+
+    const edge = await browserActTool.fn({ ...typing, text: 'a'.repeat(2000) }, ctx)
+    expect(edge.status).toBe('success')
+
+    // 按 Unicode 码点计数：1001 个 emoji 是 2002 个 UTF-16 单元，仍在上限内。
+    const emoji = '😀'.repeat(1001)
+    const many = await browserActTool.fn({ ...typing, text: emoji }, ctx)
+    expect(many.status).toBe('success')
+    expect(calls.at(-1)?.input).toMatchObject({ text: emoji })
+
+    // CRLF 与单独的 CR 归一为换行；制表符保留。
+    await browserActTool.fn({ ...typing, text: 'a\r\nb\rc\td' }, ctx)
+    expect(calls.at(-1)?.input).toMatchObject({ text: 'a\nb\nc\td' })
+  })
+
+  test('press 的键名整串预检', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const press = { ...base, action: 'press' }
+
+    for (const key of ['Enter', 'Ctrl+A', 'Shift+Tab', 'Ctrl+Shift+Enter', 'Plus', 'Ctrl+Plus']) {
+      const r = await browserActTool.fn({ ...press, key }, ctx)
+      expect(r.status).toBe('success')
+      expect(calls.at(-1)?.input).toMatchObject({ key })
+    }
+    // 段之间的空格归一，端口拿到的是规范写法。
+    await browserActTool.fn({ ...press, key: 'Ctrl + A' }, ctx)
+    expect(calls.at(-1)?.input).toMatchObject({ key: 'Ctrl+A' })
+
+    const sent = calls.length
+    for (const key of ['Ctrl+', '+', 'Ctrl++A', 'Ctrl+Ctrl+A', 'Super+A', 'Ctrl+A+B']) {
+      const r = await browserActTool.fn({ ...press, key }, ctx)
+      expect(r.status).toBe('failure')
+      expect(r.executed).toBe(false)
+    }
+    expect(calls).toHaveLength(sent)
+  })
+})
+
+describe('部分完成与结果未知', () => {
+  test('partial 是失败，回执与新观察都在，消息说明不要重放', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({
+        element: 'textarea 备注',
+        execution: { state: 'partial', confirmedUnits: 12 },
+        observation: OB,
+        settle: 'quiet',
+      }),
+    })
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', observationId: 'ob_0', action: 'type', ref: 'e1', text: '一二三' },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('failure')
+    expect(r.executed).toBe(true)
+    expect(r.errorKind).toBe('browser_partial')
+    expect(r.message).toContain('已确认 12 个单元')
+    expect(r.message).toContain('不要重放')
+    expect(data(r)).toMatchObject({
+      element: 'textarea 备注',
+      execution: { state: 'partial', confirmedUnits: 12 },
+      observationId: 'ob_1',
+      settle: 'quiet',
+    })
+    expect(data(r).elements).toHaveLength(1)
+  })
+
+  test('unknown 没有观察时保留回执与观察失败原因', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({
+        execution: { state: 'unknown' },
+        observation: null,
+        observationError: '连接已断开',
+      }),
+    })
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', observationId: 'ob_0', action: 'drag', ref: 'e1', toRef: 'e2' },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('failure')
+    expect(r.executed).toBe(true)
+    expect(r.errorKind).toBe('browser_unknown')
+    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('连接已断开')
+    expect(r.message).toContain('不要重放')
+    expect(data(r)).toEqual({ execution: { state: 'unknown' }, observationError: '连接已断开' })
+  })
+
+  test('completed 与缺席都按普通成功投递', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({
+        element: 'button 提交',
+        execution: { state: 'completed', confirmedUnits: 2 },
+        observation: OB,
+      }),
+    })
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', observationId: 'ob_0', action: 'dblclick', ref: 'e1' },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.errorKind).toBeUndefined()
+    expect(data(r)).toMatchObject({
+      execution: { state: 'completed', confirmedUnits: 2 },
+      observationId: 'ob_1',
+    })
+  })
+
+  test('端口回执里的其他字段原样带出，不逐个挑', async () => {
+    // 字段名由动作那一侧定（fill 的规范化值、约束结果）；这里验的是投递不挑字段。
+    const receipt = {
+      element: 'input 生日',
+      point: { x: 10, y: 20 },
+      normalizedValue: '2026-09-16',
+      constraint: 'rangeUnderflow',
+      observation: OB,
+    } as BrowserActResult
+    const { port } = fakeBrowser({ act: async () => receipt })
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', observationId: 'ob_0', action: 'fill', ref: 'e1', text: '2026-09-16' },
+      ctxWith('/w', port),
+    )
+    expect(data(r)).toMatchObject({
+      element: 'input 生日',
+      point: { x: 10, y: 20 },
+      normalizedValue: '2026-09-16',
+      constraint: 'rangeUnderflow',
+    })
+  })
+})
+
 describe('null 与空串的缺席语义', () => {
   test('observe 的可选字段写成 null 时按没给算', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserObserveTool.fn(
-      { tabId: 'bt_1', frame: null, offset: null, screenshot: null },
+      { tabId: 'bt_1', frame: null, offset: null, screenshot: null, optionsFor: null },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('success')
@@ -397,6 +647,62 @@ describe('观察的投递', () => {
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(r.message).toContain('连接已断开')
+  })
+})
+
+describe('选项读取', () => {
+  test('optionsFor 到达端口，选项页展开到 data，范围与下一页写进消息', async () => {
+    const { port, calls } = fakeBrowser()
+    const r = await browserObserveTool.fn(
+      { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 0 } },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls).toEqual([
+      {
+        method: 'observe',
+        input: { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 0 } },
+      },
+    ])
+    expect(data(r)).toMatchObject({ ref: 'e3', total: 42, offset: 0, nextOffset: 2 })
+    expect(data(r).items).toHaveLength(2)
+    // 选项页不是观察：不给元素表，也不冒充一个新的 observationId。
+    expect(data(r)).not.toHaveProperty('elements')
+    expect(data(r).observationId).toBe('ob_1')
+    expect(r.message).toContain('1-2/42')
+    expect(r.message).toContain('optionsFor.offset=2')
+  })
+
+  test('optionsFor 与 frame、screenshot、offset 混用在调端口前拒绝', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const optionsFor = { observationId: 'ob_1', ref: 'e3' }
+    for (const extra of [{ frame: 'f1' }, { screenshot: true }, { offset: 10 }]) {
+      const r = await browserObserveTool.fn({ tabId: 'bt_1', optionsFor, ...extra }, ctx)
+      expect(r.status).toBe('failure')
+      expect(r.executed).toBe(false)
+      expect(r.message).toContain('不能与')
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  test('optionsFor 的必填项与取值范围在调端口前判', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const cases = [
+      { optionsFor: { ref: 'e3' } },
+      { optionsFor: { observationId: 'ob_1' } },
+      { optionsFor: { observationId: 'ob_1', ref: 'e3', offset: -1 } },
+      { optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 'abc' } },
+      { optionsFor: 'e3' },
+    ]
+    for (const args of cases) {
+      const r = await browserObserveTool.fn({ tabId: 'bt_1', ...args }, ctx)
+      expect(r.status).toBe('failure')
+      expect(r.executed).toBe(false)
+      expect(r.message).toContain('optionsFor')
+    }
+    expect(calls).toHaveLength(0)
   })
 })
 

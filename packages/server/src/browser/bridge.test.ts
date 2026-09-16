@@ -14,6 +14,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
+  BrowserEventFrame,
   BrowserRequestFrame,
   BrowserResultFrame,
   HostReadyFrame,
@@ -343,6 +344,7 @@ test('请求帧的线上形状与 Rust 侧共用同一份样例', async () => {
       'connectionEpoch',
       'conversationId',
       'deadline',
+      'downloadId',
       'op',
       'path',
       'requestId',
@@ -350,4 +352,28 @@ test('请求帧的线上形状与 Rust 侧共用同一份样例', async () => {
       'type',
     ].sort(),
   )
+})
+
+/**
+ * 下载终态带回被消费掉的那份授权身份。
+ *
+ * 少了它，服务端只能按 tabId 认领，同一页上先发起的调用会拿走后发起那次的结果。
+ */
+test('下载终态样例带着身份字段，两侧按同一份形状编解码', async () => {
+  const sample = samples().downloadFinished as unknown as BrowserEventFrame
+  expect(sample.kind).toBe('download.finished')
+  expect(sample.downloadId).toBe('dl_4')
+  expect(sample.success).toBe(true)
+
+  const handle = fresh()
+  const host = await FakeHost.connect(handle.port)
+  host.ready()
+  await settle()
+  let seen: BrowserEventFrame | null = null
+  handle.browser?.onEvent((frame) => {
+    seen = frame
+  })
+  host.send(sample)
+  await settle()
+  expect((seen as BrowserEventFrame | null)?.downloadId).toBe('dl_4')
 })
