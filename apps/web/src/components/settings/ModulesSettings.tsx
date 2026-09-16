@@ -190,7 +190,7 @@ const MODULES: Module[] = [
   },
   {
     id: 'schedule',
-    label: '调度',
+    label: '定时任务',
     consoles: [{ page: 'schedules', label: '去配置' }],
     notes: [
       {
@@ -267,7 +267,6 @@ interface ToolRow {
   summary: string
   permissionEffect: string
   params: { name: string; required: boolean }[]
-  source: string
 }
 
 export function ModulesSettings() {
@@ -344,9 +343,6 @@ export function ModulesSettings() {
                   <div class="setting-row stack">
                     <div class="module-tool">
                       <code class="module-name">{r.name}</code>
-                      <Show when={r.source !== 'builtin'}>
-                        <span class="module-src">{r.source}</span>
-                      </Show>
                       <span class="module-summary">{r.summary}</span>
                       <span class="module-perm">{permText(r.permissionEffect)}</span>
                     </div>

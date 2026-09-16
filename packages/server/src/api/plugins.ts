@@ -18,8 +18,46 @@
 
 import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { globalPluginsDir } from '@qywork/runtime'
+import type { PluginRegistry } from '@qywork/plugins'
+import { globalPluginsDir, pluginToolPrefix } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
+
+export interface PluginRow {
+  id: string
+  name: string
+  version: string
+  permissions: string[]
+  tools: { name: string; description: string }[]
+  /** 纯声明式插件没有进程，也就无所谓隔离。三种状态分开报：把「不适用」显示成「无隔离」会被读成一处安全问题。 */
+  process: 'declarative' | 'running' | 'unknown'
+  sandboxed?: boolean
+  netGuarded?: boolean
+  note?: string
+}
+
+/**
+ * 注册表投影成插件页的行。
+ *
+ * 工具归属按 `pluginToolPrefix` 判，不要写成 `${id}__`：注册名经过消毒，
+ * `qywork.browser` 的工具叫 `qywork_browser__tabs`，按原 id 拼前缀一个都匹配不上。
+ */
+export function pluginRows(reg: PluginRegistry): PluginRow[] {
+  return reg.plugins.map((pl) => {
+    const rt = pl.host?.runtime
+    const prefix = pluginToolPrefix(pl.manifest.id)
+    return {
+      id: pl.manifest.id,
+      name: pl.manifest.name,
+      version: pl.manifest.version,
+      permissions: pl.manifest.permissions ?? [],
+      tools: reg.toolSpecs
+        .filter((t) => t.name.startsWith(prefix))
+        .map((t) => ({ name: t.name, description: t.description })),
+      process: !pl.host ? 'declarative' : rt ? 'running' : 'unknown',
+      ...(rt ? { sandboxed: rt.sandboxed, netGuarded: rt.netGuarded, note: rt.note } : {}),
+    }
+  })
+}
 
 /**
  * 读一个插件目录的清单摘要。**只看不装。**
@@ -80,29 +118,22 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
   if (p === '/api/plugins') {
-    const { loadExtensions } = await import('@qywork/runtime')
-    const ext = await loadExtensions(d.workspaceRoot)
-    const reg = ext.plugins
-    return json({
-      dir: globalPluginsDir(),
-      plugins: reg.plugins.map((pl) => {
-        const rt = pl.host?.runtime
-        return {
-          id: pl.manifest.id,
-          name: pl.manifest.name,
-          version: pl.manifest.version,
-          permissions: pl.manifest.permissions ?? [],
-          tools: reg.toolSpecs
-            .filter((t) => t.name.startsWith(`${pl.manifest.id}__`))
-            .map((t) => ({ name: t.name, description: t.description })),
-          // 纯声明式插件没有进程，也就无所谓隔离。这三种状态必须分开报——
-          // 把「不适用」显示成「无隔离」会被读成一处安全问题。
-          process: !pl.host ? 'declarative' : rt ? 'running' : 'unknown',
-          ...(rt ? { sandboxed: rt.sandboxed, netGuarded: rt.netGuarded, note: rt.note } : {}),
-        }
-      }),
-      failures: reg.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
-    })
+    /*
+     * 走引用计数，配对 release，同 `/api/tools`：直接 `loadExtensions` 会给每一次请求
+     * 新起一批插件与 MCP 子进程，且没有人关。回的也必须是模型手里那一份——
+     * 现起一份的话卡上的隔离状态与连接状态和模型实际用的那份可以不一致。
+     */
+    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const ext = await acquireExtensions(d.workspaceRoot)
+    try {
+      return json({
+        dir: globalPluginsDir(),
+        plugins: pluginRows(ext.plugins),
+        failures: ext.plugins.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
+      })
+    } finally {
+      releaseExtensions(d.workspaceRoot)
+    }
   }
 
   // 安装 / 卸载插件。

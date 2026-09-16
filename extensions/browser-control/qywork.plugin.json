@@ -10,7 +10,7 @@
     "tools": [
       {
         "name": "tabs",
-        "description": "列出内置浏览器的标签页，或新开一页、接管一页、关掉一页。create 打开的页归本会话，本会话之后每条消息都能直接对它 observe/act，不需要任何交接。list 返回的 controlled=true 是归本会话的页；controlled=false 是用户手动开的页，默认操作不了——只有用户在聊天里点名要你用他开的某一页时，才用 action=bind 带那个 tabId 接管它。别的会话的页不会出现在列表里。",
+        "description": "列出内置浏览器的标签页，或新建、接管、关闭一页。create 打开的页归本会话，后续消息可直接对它 observe 与 act。list 返回的 controlled=false 是用户手动打开的页，只有用户明确要求使用该页时才用 action=bind 接管。其他会话的页不在列表内。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -18,7 +18,7 @@
             "url": { "type": "string", "description": "action=create 时要打开的 http/https 地址" },
             "tabId": {
               "type": "string",
-              "description": "action=bind 要接管、action=close 要关掉的标签页"
+              "description": "action=bind 要接管、action=close 要关闭的标签页"
             }
           },
           "required": ["action"],
@@ -28,7 +28,7 @@
       },
       {
         "name": "navigate",
-        "description": "在已控制的标签页里跳转、后退、前进或重新加载。换文档之后所有元素编号失效，必须重新观察。",
+        "description": "在已控制的标签页里跳转、后退、前进或重新加载。文档变化后元素编号全部失效，必须重新 observe。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -43,7 +43,7 @@
       },
       {
         "name": "observe",
-        "description": "看一页现在是什么样：实际地址、标题、可操作元素与页面正文。返回的 observationId 与元素 ref 是做动作的前提。页面变化、点过按钮、跳过页之后都要重新观察一次，旧编号会被拒绝。truncated=true 时用 offset 取后面的元素。screenshot=true 才截图，只在元素表说不清版面时才要。",
+        "description": "返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提；页面变化、点击、跳转之后必须重新观察，旧编号会被拒绝。truncated=true 时用 offset 取后续元素。screenshot=true 才截图，仅在元素表不足以判断版面时使用。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -62,7 +62,7 @@
       },
       {
         "name": "act",
-        "description": "在刚观察到的元素上做一个动作：click 点击、fill 覆盖输入框内容、select 选下拉项、scroll 滚动、press 按一个功能键。observationId 必须是最近一次观察的返回值。返回 stale 或 ambiguous 说明页面已经变了，重新观察后再来，不要换个编号重试。",
+        "description": "对最近一次 observe 返回的元素执行动作：click 点击、fill 覆盖输入框内容、select 选下拉项、scroll 滚动、press 按功能键。observationId 必须是最近一次观察的返回值。返回 stale 或 ambiguous 表示页面已变化，重新 observe 后再执行，不要换编号重试。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -71,7 +71,7 @@
             "action": { "type": "string", "enum": ["click", "fill", "select", "scroll", "press"] },
             "ref": {
               "type": "string",
-              "description": "元素编号。scroll 与 press 可以不给，作用在整页上"
+              "description": "元素编号。scroll 与 press 可省略，作用于整页"
             },
             "text": {
               "type": "string",
@@ -90,7 +90,7 @@
       },
       {
         "name": "wait",
-        "description": "等一个 CSS 选择器出现，最多 60 秒。用它替代反复观察轮询。等到之后仍要重新观察拿新的元素编号。",
+        "description": "等待一个 CSS 选择器出现，最多 60 秒，用于替代反复 observe 轮询。等到之后仍需重新 observe 获取新的元素编号。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -105,7 +105,7 @@
       },
       {
         "name": "upload",
-        "description": "把工作区里的文件交给页面上的文件输入框。ref 必须指向一个 input[type=file]。路径按工作区规则裁决，越界会被拒绝。",
+        "description": "把工作区内的文件交给页面上的文件输入框，ref 必须指向 input[type=file]。路径按工作区规则裁决，越界拒绝。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -121,7 +121,7 @@
       },
       {
         "name": "download",
-        "description": "点一个下载链接或按钮，把文件存到工作区的指定路径。目标文件已存在时会被拒绝，换个路径再来。结果里带 blocked 说明这次下载被宿主拦下了，原因一并给出。",
+        "description": "点击下载链接或按钮，把文件保存到工作区内的指定路径。目标文件已存在时拒绝。结果带 blocked 表示下载被宿主拦截，原因随结果给出。",
         "parameters": {
           "type": "object",
           "properties": {

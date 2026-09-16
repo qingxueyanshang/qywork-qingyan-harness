@@ -193,19 +193,16 @@
   font-size: var(--fs-sm);
   color: var(--text-primary);
 }
-/* 外置工具才有：注册名是消毒过的（`my.server` → `mcp__my_server__x`），
-   真正的来源只有这一格说得出。内置工具不显示——那是默认，写出来只是噪声。 */
-.module-src {
-  flex: none;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-}
+/* 用途只占一行：外置工具的这段文本来自它的清单，长度不受控，折行会把整页撑成段落。 */
 .module-summary {
   flex: 1 1 auto;
   min-width: 0;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .module-perm {
   flex: none;

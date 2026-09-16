@@ -69,11 +69,16 @@ export const handleExtrasApi: ApiHandler = async (url, req, d) => {
     push(`mcp:${name}`, name, '', mcp.scopeOf[name] ?? 'project')
   }
 
-  const { loadExtensions } = await import('@qywork/runtime')
-  const ext = await loadExtensions(d.workspaceRoot)
-  // 插件只有全局一个目录，层不用从路径反推。
-  for (const pl of ext.plugins.plugins) {
-    push(`plugin:${pl.manifest.id}`, pl.manifest.id, pl.manifest.name, 'global')
+  // 引用计数配对 release，同 `/api/tools`：直接 `loadExtensions` 每次请求都新起一批子进程且无人关。
+  const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+  const ext = await acquireExtensions(d.workspaceRoot)
+  try {
+    // 插件只有全局一个目录，层不用从路径反推。
+    for (const pl of ext.plugins.plugins) {
+      push(`plugin:${pl.manifest.id}`, pl.manifest.id, pl.manifest.name, 'global')
+    }
+  } finally {
+    releaseExtensions(d.workspaceRoot)
   }
 
   return json({ extras: rows })

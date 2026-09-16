@@ -1,9 +1,8 @@
 /**
  * 插件的两条**写**接口。
  *
- * 覆盖范围：`api/plugins.ts` 的 `/api/plugins/install` 与 `/api/plugins/<id>` DELETE。
- * `/api/plugins` GET 只是把 `loadExtensions` 的结果转出去，改坏了界面上立刻看得见，
- * 这里不测。
+ * 覆盖范围：`api/plugins.ts` 的 `/api/plugins/install`、`/api/plugins/<id>` DELETE，
+ * 以及 GET 用的投影 `pluginRows`。GET 本身只是把共享扩展转出去，这里不起子进程。
  *
  * 钉的是两条**安全边界**，它们只存在于代码里，没有任何检查挡着后续重构：
  *
@@ -18,7 +17,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handlePluginsApi } from './plugins.ts'
+import type { PluginRegistry } from '@qywork/plugins'
+import { handlePluginsApi, pluginRows } from './plugins.ts'
 import type { ApiRequestDeps } from './types.ts'
 
 const dirs: string[] = []
@@ -164,5 +164,31 @@ describe('删一个插件', () => {
     }
     // 插件目录本身也还在。
     expect(await exists(plugins)).toBe(true)
+  })
+})
+
+describe('插件页的投影', () => {
+  /** 注册名经过消毒，id 里的点变成下划线；按原 id 拼前缀会把工具数报成 0。 */
+  test('id 含点的插件也能数出自己的工具', () => {
+    const reg = {
+      plugins: [
+        {
+          manifest: { id: 'qywork.browser', name: '内置浏览器', version: '0.1.0', permissions: [] },
+          dir: '/x',
+          host: null,
+        },
+      ],
+      previewers: new Map(),
+      roles: new Map(),
+      providers: new Map(),
+      toolSpecs: [
+        { name: 'qywork_browser__tabs', description: '标签页' },
+        { name: 'other_plugin__go', description: '别家的' },
+      ],
+      failures: [],
+    } as unknown as PluginRegistry
+    const [row] = pluginRows(reg)
+    expect(row!.tools).toEqual([{ name: 'qywork_browser__tabs', description: '标签页' }])
+    expect(row!.process).toBe('declarative')
   })
 })
