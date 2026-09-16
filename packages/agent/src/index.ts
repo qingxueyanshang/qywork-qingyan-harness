@@ -23,6 +23,18 @@ export {
   summaryCutOf,
   unitKey,
 } from './compaction.ts'
+// 按键词表：tools 的 press 预检与 server 的 CDP 客户端按同一份表裁决
+export {
+  KEY_HINT,
+  type KeySpec,
+  type KeyStroke,
+  keySpec,
+  keyStroke,
+  MODIFIER_KEYS,
+  type ModifierName,
+  modifierBits,
+  PRESS_KEYS,
+} from './keys.ts'
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
 export {

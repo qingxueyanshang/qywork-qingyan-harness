@@ -21,16 +21,18 @@
  * `executed: false`；调进端口之后的异常一律 `executed: true`，动作可能已经发到网站。
  */
 
-import type {
-  BrowserActionKind,
-  BrowserExecution,
-  BrowserObservation,
-  BrowserOptionsPage,
-  BrowserPort,
-  FollowUpObservation,
-  ToolContext,
-  ToolOutcome,
-  ToolSpec,
+import {
+  type BrowserActionKind,
+  type BrowserExecution,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  type BrowserPort,
+  type FollowUpObservation,
+  KEY_HINT,
+  keyStroke,
+  type ToolContext,
+  type ToolOutcome,
+  type ToolSpec,
 } from '@qywork/agent'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
 
@@ -143,30 +145,24 @@ const ACT_KINDS = Object.keys(ACT_FIELDS) as BrowserActionKind[]
 /** 动作的可选参数全集，逐个按 `ACT_FIELDS` 核适用范围。 */
 const ACT_OPTIONAL = ['ref', 'toRef', 'text', 'key', 'deltaY'] as const
 
-/** 组合键里认的修饰键。 */
-const MODIFIER_KEYS = new Set(['Ctrl', 'Shift', 'Alt', 'Meta'])
-
 /**
- * `press` 的键名预检：按 `+` 切段，末段是主键，之前各段是不重复的修饰键。
+ * `press` 的键名预检：整串按 `@qywork/agent` 的词表解析，主键名一并判。
  *
- * 只判结构不判主键名——键表由 CDP 客户端维护，在这里再写一份两边会各自漂移。
+ * 空段、重复或认不出的修饰键、认不出的主键在这里就是参数错，`executed` 为假。
+ * **不要在这里另写一份键名判定**：端口用的是同一个 `keyStroke`，两份表会各自漂移，
+ * 未知主键名因此在预检放行、到端口才被拒，调用方拿到的是「动作可能已经发出」。
  * 加号本身写 `Plus`：`Ctrl++` 切出来的空段分不出是主键还是漏写。
  */
 function pressKey(raw: unknown): string {
   const key = str(raw, 'key')
-  const parts = key.split('+').map((part) => part.trim())
-  if (parts.some((part) => part === '')) {
-    throw new ArgError(`key 的每一段都不能为空，收到 ${JSON.stringify(key)}；加号本身写 Plus`)
+  const trimmed = key
+    .split('+')
+    .map((part) => part.trim())
+    .join('+')
+  if (!keyStroke(trimmed)) {
+    throw new ArgError(`不支持的按键：${JSON.stringify(key)}（${KEY_HINT}）`)
   }
-  const seen = new Set<string>()
-  for (const mod of parts.slice(0, -1)) {
-    if (!MODIFIER_KEYS.has(mod)) {
-      throw new ArgError(`修饰键只能是 Ctrl / Shift / Alt / Meta，收到 ${mod}`)
-    }
-    if (seen.has(mod)) throw new ArgError(`修饰键 ${mod} 重复：${key}`)
-    seen.add(mod)
-  }
-  return parts.join('+')
+  return trimmed
 }
 
 /** 换行与制表以外的 C0/C1 控制字符。返回第一个命中的字符。 */
@@ -536,7 +532,7 @@ export const browserObserveTool: ToolSpec = {
     '返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提。' +
     'truncated=true 时用 offset 取后续元素。' +
     'screenshot=true 才截图，仅在元素表不足以判断版面时使用。' +
-    'frame 只看某个跨站 iframe，取自元素的 frame 字段。' +
+    'frame 只看某个 iframe，取自元素的 frame 字段。' +
     '元素上的 expanded 与 selected 缺席表示这个角色没有这一项，不表示收起或未选中；' +
     'options 是 select 的选项摘要，按当前页面现读。' +
     '元素上的 optionsTruncated=true 表示这个 select 的选项没有列全：' +
@@ -546,7 +542,7 @@ export const browserObserveTool: ToolSpec = {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
-      frame: { type: 'string', description: '只看某个跨站 iframe，取自元素的 frame 字段' },
+      frame: { type: 'string', description: '只看某个 iframe，取自元素的 frame 字段' },
       screenshot: { type: 'boolean' },
       offset: { type: 'integer', description: '从第几个元素开始返回' },
       optionsFor: {
@@ -683,7 +679,7 @@ export const browserWaitTool: ToolSpec = {
     `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
     '取得新观察时结果里直接带回元素表与 observationId，据此继续下一步，不必再调 browser_observe；' +
     '未取得观察时先 browser_observe 确认页面状态。' +
-    '选择器只查主文档，跨站 iframe 用 browser_observe 的 frame 参数。',
+    '选择器只查主文档，iframe 里的元素用 browser_observe 的 frame 参数。',
   parameters: {
     type: 'object',
     properties: {

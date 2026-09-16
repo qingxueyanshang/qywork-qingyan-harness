@@ -73,6 +73,13 @@ interface NodeModel {
   rewriteTo?: string
   /** 固定定位：矩形不随滚动移动，scrollIntoView 也移不动它。 */
   fixed?: boolean
+  /**
+   * 页内复核函数在这个节点上抛异常。
+   *
+   * 文本节点就是这一类：它没有 `getBoundingClientRect`。`returnByValue` 下页内异常
+   * 不进 `result.value`，回包给的是 `exceptionDetails`。
+   */
+  inspectThrows?: boolean
   options?: OptionModel[]
 }
 
@@ -85,12 +92,17 @@ interface AxModel {
   props?: { name: string; value: unknown }[]
 }
 
-/** 一个文档：主文档或一个跨站子帧。 */
+/** 一个文档：主文档、一个跨站子帧，或一个同进程子帧。 */
 interface DocModel {
   sessionId: string
-  /** 子帧的 targetId；主文档没有。 */
+  /**
+   * 帧编号：跨站子帧是它子会话的 targetId，同进程子帧是 CDP 的 frameId。主文档没有。
+   */
   frame?: string
-  /** 父文档的会话。 */
+  /**
+   * 父文档的会话。同进程子帧与父文档同会话，这一项与 `sessionId` 相同——
+   * 它不另起子会话，因此也不发 `Target.attachedToTarget`。
+   */
   parent?: string
   /** 父文档里承载这个帧的那个节点。 */
   owner?: number
@@ -146,18 +158,26 @@ function mainDoc(): DocModel {
   }
 }
 
-function domTree(doc: DocModel): Record<string, unknown> {
+/**
+ * 一份文档的 DOM 快照。同进程子帧按 `pierce` 的形状嵌在它的 iframe 节点下，
+ * 并在那个节点上带 `frameId`——AX 树按这个编号取。
+ */
+function domTree(docs: DocModel[], doc: DocModel): Record<string, unknown> {
   return {
     backendNodeId: 1,
     nodeName: '#document',
     nodeType: 9,
-    children: doc.nodes.map((n) => ({
-      backendNodeId: n.backendNodeId,
-      nodeName: n.tag.toUpperCase(),
-      nodeType: 1,
-      attributes: Object.entries(n.attrs).flat(),
-      children: [],
-    })),
+    children: doc.nodes.map((n) => {
+      const inner = docs.find((d) => d.sessionId === doc.sessionId && d.owner === n.backendNodeId)
+      return {
+        backendNodeId: n.backendNodeId,
+        nodeName: n.tag.toUpperCase(),
+        nodeType: 1,
+        attributes: Object.entries(n.attrs).flat(),
+        children: [],
+        ...(inner ? { frameId: inner.frame, contentDocument: domTree(docs, inner) } : {}),
+      }
+    }),
   }
 }
 
@@ -165,10 +185,14 @@ function labelOf(node: NodeModel): string {
   return node.attrs['aria-label'] ?? node.attrs.id ?? node.tag
 }
 
+/** Chromium 的 color 输入框认的几个颜色名。取样即可，不需要整张 CSS 颜色表。 */
+const COLOR_WORDS: Record<string, string> = { red: '#ff0000', blue: '#0000ff' }
+
 /**
  * 按输入类型规范化一个值。空串表示这个类型不接受这个写法，与浏览器一致。
  *
  * `range` 对越界值是钳到边界而不是拒绝，所以它规范化之后与原值不等——调用方据此判约束。
+ * `color` 是另一种：它对任何写法都给得出一个颜色，合法性因此判不了，由写入前的格式判据挡。
  */
 function normalizeValue(attrs: Record<string, string>, type: string, value: string): string {
   if (value === '') return ''
@@ -200,20 +224,26 @@ function normalizeValue(attrs: Record<string, string>, type: string, value: stri
       return String(Math.min(max, Math.max(min, Number(value))))
     }
     case 'color':
-      return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : ''
+      // 与 Chromium 一致：认不出的写法不回空串，而是换成一个具体颜色。
+      // 按「规范化结果非空」判的话 red 会被当成合法输入，写进去的是另一个值。
+      if (/^#[0-9a-fA-F]{6}$/.test(value)) return value.toLowerCase()
+      return (COLOR_WORDS[value] ?? '#000000') as string
     default:
       return value
   }
 }
 
-/** min / max 约束。ISO 日期与时间按字符串比较就是按时间先后比较。 */
+/** min / max / step 约束。ISO 日期与时间按字符串比较就是按时间先后比较。 */
 function outOfRange(attrs: Record<string, string>, type: string, value: string): boolean {
   if (value === '') return false
-  const { min, max } = attrs
-  if (min === undefined && max === undefined) return false
+  const { min, max, step } = attrs
+  if (min === undefined && max === undefined && step === undefined) return false
   if (type === 'number' || type === 'range') {
     const n = Number(value)
-    return (min !== undefined && n < Number(min)) || (max !== undefined && n > Number(max))
+    if (min !== undefined && n < Number(min)) return true
+    if (max !== undefined && n > Number(max)) return true
+    if (step === undefined) return false
+    return (n - Number(min ?? 0)) % Number(step) !== 0
   }
   return (min !== undefined && value < min) || (max !== undefined && value > max)
 }
@@ -260,7 +290,7 @@ class FakePage {
           // 子帧以子会话形式附加：页会话开了自动附加之后才发得出这些事件。
           if (cmd.method === 'Target.setAutoAttach' && cmd.sessionId === MAIN) {
             for (const doc of self.model.docs) {
-              if (!doc.parent) continue
+              if (!doc.parent || doc.parent === doc.sessionId) continue
               ws.send(
                 JSON.stringify({
                   method: 'Target.attachedToTarget',
@@ -454,13 +484,21 @@ class FakePage {
     if (value === '' && (type === 'range' || type === 'color')) {
       return { ok: false, reason: 'no_empty', type }
     }
+    if (type === 'color' && !/^#[0-9a-fA-F]{6}$/.test(value)) {
+      return { ok: false, reason: 'bad_format', type }
+    }
     const normalized = normalizeValue(node.attrs, type, value)
     if (value !== '' && normalized === '') return { ok: false, reason: 'bad_format', type }
     if (type === 'range' && normalized !== value) {
-      return { ok: false, reason: 'constraint', type, value: normalized }
+      return { ok: false, reason: 'clamped', type, value: normalized }
     }
     if (outOfRange(node.attrs, type, normalized)) {
-      return { ok: false, reason: 'constraint', type, value: normalized }
+      const limits: Record<string, string> = {}
+      for (const attr of ['min', 'max', 'step']) {
+        const one = node.attrs[attr]
+        if (one !== undefined) limits[attr] = one
+      }
+      return { ok: false, reason: 'constraint', type, limits }
     }
     node.value = node.rewriteTo ?? normalized
     const after = node.value
@@ -497,14 +535,17 @@ class FakePage {
       case 'Target.attachToTarget':
         return { sessionId: MAIN }
       case 'DOM.getDocument':
-        return { root: domTree(doc) }
-      case 'Accessibility.getFullAXTree':
-        if (doc.axDelayCalls > 0) {
-          doc.axDelayCalls -= 1
+        return { root: domTree(m.docs, doc) }
+      case 'Accessibility.getFullAXTree': {
+        // 不带 frameId 只覆盖本会话的根帧；同进程子帧要按它自己的编号取。
+        const frameId = cmd.params?.frameId
+        const scope = frameId === undefined ? doc : (m.docs.find((d) => d.frame === frameId) ?? doc)
+        if (scope.axDelayCalls > 0) {
+          scope.axDelayCalls -= 1
           return { nodes: [] }
         }
         return {
-          nodes: doc.ax.map((n) => ({
+          nodes: scope.ax.map((n) => ({
             backendDOMNodeId: n.backendDOMNodeId,
             role: { value: n.role },
             name: { value: n.name },
@@ -515,6 +556,7 @@ class FakePage {
             ...(n.ignored ? { ignored: true } : {}),
           })),
         }
+      }
       case 'DOM.getFrameOwner': {
         const frameId = String(cmd.params?.frameId ?? '')
         const child = m.docs.find((d) => d.frame === frameId)
@@ -570,6 +612,15 @@ class FakePage {
         }
         if (decl.includes('qyTypingTarget')) {
           return { result: { value: this.typingTarget(found.doc, found.node) } }
+        }
+        if (found.node.inspectThrows === true) {
+          return {
+            result: {},
+            exceptionDetails: {
+              text: 'Uncaught',
+              exception: { description: 'TypeError: el.getBoundingClientRect is not a function' },
+            },
+          }
         }
         return { result: { value: this.inspect(found.doc, found.node) } }
       }
@@ -738,6 +789,49 @@ function addFrame(page: FakePage, y = 400): void {
   })
 }
 
+/**
+ * 主文档里放一个同进程 iframe，帧内有一个按钮和一段正文。
+ *
+ * 与 `addFrame` 的差别只有一处：它不另起子会话，`DOM.getDocument` 的 `pierce` 直接
+ * 把它的文档带回来。同源 / 同站 iframe 走的就是这条路。
+ */
+function addSameFrame(page: FakePage, y = 200): void {
+  const doc = page.model.docs[0] as DocModel
+  doc.nodes.push({
+    backendNodeId: 40,
+    tag: 'iframe',
+    attrs: { id: 'same' },
+    box: { x: 50, y, width: 400, height: 200 },
+  })
+  page.model.docs.push({
+    sessionId: MAIN,
+    frame: 'FRAME5AME',
+    parent: MAIN,
+    owner: 40,
+    viewport: { width: 400, height: 200 },
+    scrollY: 0,
+    nodes: [
+      {
+        backendNodeId: 41,
+        tag: 'button',
+        attrs: { id: 'inner-btn' },
+        box: { x: 20, y: 30, width: 120, height: 40 },
+      },
+      {
+        backendNodeId: 42,
+        tag: 'span',
+        attrs: { id: 'inner-out' },
+        box: { x: 20, y: 90, width: 120, height: 20 },
+      },
+    ],
+    ax: [
+      { backendDOMNodeId: 41, role: 'button', name: '框架内按钮' },
+      { backendDOMNodeId: 42, role: 'StaticText', name: '框架内正文' },
+    ],
+    axDelayCalls: 0,
+  })
+}
+
 /** 盖住整页的浮层：固定定位，排在最后，命中测试按绘制顺序取它。 */
 function addMask(page: FakePage, label: string): void {
   const doc = page.model.docs[0] as DocModel
@@ -824,6 +918,46 @@ test('观察把 AX 语义与节点属性合成一张元素表，无角色的容�
   expect(observation.truncated).toBe(false)
   // 观察只读：一条滚动命令都不发。
   expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+})
+
+test('正文节点上的动作在解析引用时就拒，一条输入事件都不发', async () => {
+  const { fake, handle } = await newPage()
+  // 文本节点在真实页面上没有 getBoundingClientRect：页内复核函数在它身上抛异常。
+  const doc = fake.model.docs[0] as DocModel
+  const text = doc.nodes.find((n) => n.backendNodeId === 13) as NodeModel
+  text.inspectThrows = true
+  const { record, observation } = await observe(handle)
+  const ref = refOf(observation, '结果：42')
+  expect(ref).not.toBe('')
+
+  for (const action of ['click', 'dblclick', 'rightclick', 'hover', 'type', 'fill'] as const) {
+    const err = String(
+      await act(handle, record, { action, ref, text: 'x' }).catch((e: Error) => e.message),
+    )
+    expect(err).toContain(ref)
+    expect(err).toContain('不是可操作的节点')
+    // 内部异常原文对调用方没有下一步，不许出现在失败说明里。
+    expect(err).not.toContain('TypeError')
+  }
+  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(0)
+  expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
+  expect(fake.called('qyInspect')).toHaveLength(0)
+})
+
+test('页内复核抛异常时给出可判定的失败，不把内部异常原文透出去', async () => {
+  const { fake, handle } = await newPage()
+  const doc = fake.model.docs[0] as DocModel
+  const button = doc.nodes.find((n) => n.backendNodeId === 10) as NodeModel
+  const { record, observation } = await observe(handle)
+  const ref = refOf(observation, '提交')
+  button.inspectThrows = true
+
+  const err = String(
+    await act(handle, record, { action: 'click', ref }).catch((e: Error) => e.message),
+  )
+  expect(err).toContain(`元素 ${ref} 无法在页内定位`)
+  expect(err).not.toContain('TypeError')
+  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(0)
 })
 
 test('AX 的展开与选中按实际布尔输出，没有这一项就不写', async () => {
@@ -935,6 +1069,7 @@ test('点击视口外的元素先滚到可见处，再按滚动后的实时坐�
   expect(fake.called('qyScrollIntoView')).toHaveLength(1)
   expect(r.point).toEqual({ x: 50, y: 580 })
   expect(fake.mouse()).toEqual([
+    { type: 'mouseMoved', x: 50, y: 580 },
     { type: 'mousePressed', x: 50, y: 580 },
     { type: 'mouseReleased', x: 50, y: 580 },
   ])
@@ -1041,9 +1176,70 @@ test('点击命中时按元素中心发下压与抬起两条事件', async () =>
     ref: go?.ref ?? '',
   })
   expect(r.point).toEqual({ x: 40, y: 20 })
-  expect(fake.mouse().map((e) => e.type)).toEqual(['mousePressed', 'mouseReleased'])
+  expect(fake.mouse().map((e) => e.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased'])
   // 已经可见的元素不滚动。
   expect((fake.model.docs[0] as DocModel).scrollY).toBe(0)
+})
+
+test('同进程 iframe 的内容进元素表，带帧编号，动作按帧位置发事件', async () => {
+  const { fake, handle } = await newPage(addSameFrame)
+  const { record, observation } = await observe(handle)
+
+  const inner = observation.elements.find((e) => e.name === '框架内按钮')
+  expect(inner?.frame).toBe('FRAME5AME')
+  expect(inner?.ref.startsWith('f')).toBe(true)
+  // 帧内正文同样要进表：模型靠它读得到框架里的结果。
+  expect(observation.elements.some((e) => e.name === '框架内正文')).toBe(true)
+  // 主文档的元素照常在同一张表里，编号不带帧前缀。
+  expect(observation.elements.find((e) => e.name === '提交')?.frame).toBeUndefined()
+  // 这一帧的 AX 树按帧编号取；不带编号的那一次只覆盖根帧。
+  const axCalls = fake.sent('Accessibility.getFullAXTree')
+  expect(axCalls.some((c) => c.params?.frameId === 'FRAME5AME')).toBe(true)
+
+  // 观察之后父页自己滚了 100：帧的位置现取，不用观察时量到的那一份。
+  ;(fake.model.docs[0] as DocModel).scrollY = 100
+  const r = await act(handle, record, { action: 'click', ref: inner?.ref ?? '' })
+  // 帧内中心 (80,50) + 此刻的 iframe 位置 (50,100)。
+  expect(r.point).toEqual({ x: 130, y: 150 })
+  expect(fake.mouse()[1]).toEqual({ type: 'mousePressed', x: 130, y: 150 })
+})
+
+test('observe 指定同进程帧只回该帧的元素', async () => {
+  const { handle } = await newPage(addSameFrame)
+  const { observation } = await observe(handle, { frame: 'FRAME5AME' })
+
+  expect(observation.elements.map((e) => e.name)).toEqual(['框架内按钮', '框架内正文'])
+  expect(observation.elements.every((e) => e.frame === 'FRAME5AME')).toBe(true)
+})
+
+test('父层浮层盖住同进程 iframe 时按遮挡拒绝，一条鼠标事件都不发', async () => {
+  const { fake, handle } = await newPage((f) => {
+    addSameFrame(f)
+    addMask(f, '父层遮罩')
+  })
+  const { record, observation } = await observe(handle)
+  const inner = observation.elements.find((e) => e.name === '框架内按钮')
+
+  const err = await act(handle, record, { action: 'click', ref: inner?.ref ?? '' }).catch(
+    (e: Error) => e,
+  )
+  expect(err).toBeInstanceOf(BrowserAmbiguousRefError)
+  expect(String((err as Error).message)).toContain('所在的 iframe')
+  expect(fake.mouse()).toHaveLength(0)
+})
+
+test('同进程 iframe 已被移除时判定位失败，不把事件发到文档左上角', async () => {
+  const { fake, handle } = await newPage(addSameFrame)
+  const { record, observation } = await observe(handle)
+  const inner = observation.elements.find((e) => e.name === '框架内按钮')
+
+  fake.model.gone.add(40)
+  const err = await act(handle, record, { action: 'click', ref: inner?.ref ?? '' }).catch(
+    (e: Error) => e,
+  )
+  expect(err).toBeInstanceOf(BrowserStaleRefError)
+  expect(String((err as Error).message)).toContain('iframe')
+  expect(fake.mouse()).toHaveLength(0)
 })
 
 test('父页滚过之后，跨站 iframe 里的元素按现取的帧位置发事件', async () => {
@@ -1062,7 +1258,7 @@ test('父页滚过之后，跨站 iframe 里的元素按现取的帧位置发事
   })
   // 帧内中心 (60,35) + 此刻的帧位置 (100,200)。用观察时的偏移会得到 y=435。
   expect(r.point).toEqual({ x: 160, y: 235 })
-  expect(fake.mouse()[0]).toEqual({ type: 'mousePressed', x: 160, y: 235 })
+  expect(fake.mouse()[1]).toEqual({ type: 'mousePressed', x: 160, y: 235 })
 })
 
 test('iframe 整体在可视区外时把父页一起滚上来，再按现取的位置发事件', async () => {
@@ -1538,6 +1734,7 @@ test('rightclick 用右键发按下抬起，定位与左键同一套', async () 
 
   await act(handle, record, { action: 'rightclick', ref: refOf(observation, '提交') })
   expect(fake.mouseDetail()).toEqual([
+    { type: 'mouseMoved', x: 40, y: 20, button: 'none', buttons: 0 },
     { type: 'mousePressed', x: 40, y: 20, button: 'right', buttons: 2, clickCount: 1 },
     { type: 'mouseReleased', x: 40, y: 20, button: 'right', buttons: 0, clickCount: 1 },
   ])
@@ -1549,6 +1746,7 @@ test('dblclick 发两轮按下抬起，clickCount 依次 1 与 2', async () => {
 
   const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
   expect(fake.mouseDetail()).toEqual([
+    { type: 'mouseMoved', x: 40, y: 20, button: 'none', buttons: 0 },
     { type: 'mousePressed', x: 40, y: 20, button: 'left', buttons: 1, clickCount: 1 },
     { type: 'mouseReleased', x: 40, y: 20, button: 'left', buttons: 0, clickCount: 1 },
     { type: 'mousePressed', x: 40, y: 20, button: 'left', buttons: 1, clickCount: 2 },
@@ -1560,8 +1758,8 @@ test('dblclick 发两轮按下抬起，clickCount 依次 1 与 2', async () => {
 test('dblclick 第二轮注入失败时回 partial，并把按下的键补抬起', async () => {
   const { fake, handle } = await newPage()
   const { record, observation } = await observe(handle)
-  // 第 3 条输入事件是第二轮的按下：它被拒之后页面上只发生了第一轮。
-  fake.model.failInputAt = 3
+  // 第 1 条是按下之前的移动，第 4 条才是第二轮的按下：它被拒之后页面上只发生了第一轮。
+  fake.model.failInputAt = 4
 
   const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
   expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1 })
@@ -1792,17 +1990,43 @@ test('fill 的日期：合法值写进去，非法值预检拒绝且原值不动
   expect(fake.valueOf(20)).toBe('')
 })
 
-test('fill 的 datetime-local 按类型规范化，回执认的是规范化之后的值', async () => {
+test('fill 的 datetime-local 按类型规范化，回执带写进去的值与它经过规范化', async () => {
   const { fake, handle } = await newPage()
   addField(fake, 21, 'input', { id: 'when', type: 'datetime-local' })
   const { record, observation } = await observe(handle)
 
-  await act(handle, record, {
+  const receipt = await act(handle, record, {
     action: 'fill',
     ref: refOf(observation, '字段 21'),
     text: '2026-03-01T09:30:00',
   })
   expect(fake.valueOf(21)).toBe('2026-03-01T09:30')
+  expect(receipt).toMatchObject({ value: '2026-03-01T09:30', normalized: true })
+
+  const same = await act(handle, record, {
+    action: 'fill',
+    ref: refOf(observation, '字段 21'),
+    text: '2026-03-01T09:30',
+  })
+  expect(same).toMatchObject({ value: '2026-03-01T09:30', normalized: false })
+})
+
+test('fill 的 color 只认 #rrggbb，颜色名在写入前拒绝且原值不动', async () => {
+  const { fake, handle } = await newPage()
+  addField(fake, 25, 'input', { id: 'hue', type: 'color' }, { value: '#112233' })
+  const { record, observation } = await observe(handle)
+  const ref = refOf(observation, '字段 25')
+
+  // 页面对 red 给得出 #ff0000：按「规范化结果非空」判会放行，写进去的是另一个值。
+  const err = await act(handle, record, { action: 'fill', ref, text: 'red' }).catch(
+    (e: Error) => e.message,
+  )
+  expect(String(err)).toContain('不是 color 类型接受的格式')
+  expect(fake.valueOf(25)).toBe('#112233')
+
+  const receipt = await act(handle, record, { action: 'fill', ref, text: '#00FF00' })
+  expect(fake.valueOf(25)).toBe('#00ff00')
+  expect(receipt).toMatchObject({ value: '#00ff00', normalized: true })
 })
 
 test('fill 的 number 越界按约束拒绝，清空照常放行', async () => {
@@ -1814,11 +2038,36 @@ test('fill 的 number 越界按约束拒绝，清空照常放行', async () => {
   const err = await act(handle, record, { action: 'fill', ref, text: '99' }).catch(
     (e: Error) => e.message,
   )
-  expect(String(err)).toContain('min / max / step')
+  expect(String(err)).toContain('min=1、max=10')
   expect(fake.valueOf(22)).toBe('5')
 
   await act(handle, record, { action: 'fill', ref, text: '' })
   expect(fake.valueOf(22)).toBe('')
+})
+
+test('number 约束不满足时报控件上的 min / max / step，不报被拒的那个值', async () => {
+  const { fake, handle } = await newPage()
+  addField(
+    fake,
+    26,
+    'input',
+    { id: 'step', type: 'number', min: '0', max: '100', step: '5' },
+    { value: '10' },
+  )
+  const { record, observation } = await observe(handle)
+  const ref = refOf(observation, '字段 26')
+
+  const err = String(
+    await act(handle, record, { action: 'fill', ref, text: '12' }).catch((e: Error) => e.message),
+  )
+  expect(err).toContain('min=0、max=100、step=5')
+  // number 不钳制，规范化之后仍是 12：把它当成「能接受的值」给出来等于让调用方原样重试。
+  expect(err).not.toContain('能接受的是 12')
+  expect(err).not.toContain('能写入的是 12')
+  expect(fake.valueOf(26)).toBe('10')
+
+  await act(handle, record, { action: 'fill', ref, text: '15' })
+  expect(fake.valueOf(26)).toBe('15')
 })
 
 test('fill 的 range 越界按约束拒绝，不接受静默钳到边界；它也不能清空', async () => {
@@ -1891,6 +2140,8 @@ test('drag 按下后每条移动带 buttons 1，最后抬起清为 0', async () 
     toRef: refOf(observation, '目标槽'),
   })
   expect(fake.mouseDetail()).toEqual([
+    // 按下之前先把指针移到起点，这一条不计入执行回执的单元数。
+    { type: 'mouseMoved', x: 50, y: 220, button: 'none', buttons: 0 },
     { type: 'mousePressed', x: 50, y: 220, button: 'left', buttons: 1, clickCount: 1 },
     { type: 'mouseMoved', x: 150, y: 250, button: 'left', buttons: 1 },
     { type: 'mouseMoved', x: 250, y: 280, button: 'left', buttons: 1 },
@@ -1913,6 +2164,13 @@ test('终点在视口外时先滚终点再滚起点，坐标一律按滚完之�
   })
   // 起点用的是两次滚动之后的位置，不是观察时那一份。
   expect(fake.mouseDetail()[0]).toEqual({
+    type: 'mouseMoved',
+    x: 50,
+    y: 20,
+    button: 'none',
+    buttons: 0,
+  })
+  expect(fake.mouseDetail()[1]).toEqual({
     type: 'mousePressed',
     x: 50,
     y: 20,
@@ -1935,8 +2193,9 @@ test('终点在视口外时先滚终点再滚起点，坐标一律按滚完之�
 test('drag 按下之后取消，鼠标被补一次抬起，回执不报完成', async () => {
   const { fake, handle } = await newPage(addDragPair)
   const { record, observation } = await observe(handle)
+  // 第 1 条是按下之前的移动，第 2 条才是按下：取消要落在按下之后。
   fake.model.onInput = (nth) => {
-    if (nth === 1) void handle.client.cancel('测试取消')
+    if (nth === 2) void handle.client.cancel('测试取消')
   }
 
   const r = await act(handle, record, {
@@ -1948,6 +2207,53 @@ test('drag 按下之后取消，鼠标被补一次抬起，回执不报完成', 
   const released = fake.mouseDetail().filter((e) => e.type === 'mouseReleased')
   expect(released).toHaveLength(1)
   expect(released[0]).toMatchObject({ x: 50, y: 220, buttons: 0 })
+})
+
+test('按下之前一律先把指针移到落点，且那一条不计入执行回执的单元数', async () => {
+  const first = (fake: FakePage) => fake.mouseDetail()[0]
+  const aim = { type: 'mouseMoved', button: 'none', buttons: 0 }
+
+  const click = await newPage()
+  {
+    const { record, observation } = await observe(click.handle)
+    await act(click.handle, record, { action: 'click', ref: refOf(observation, '提交') })
+    expect(first(click.fake)).toEqual({ ...aim, x: 40, y: 20 })
+  }
+
+  const right = await newPage()
+  {
+    const { record, observation } = await observe(right.handle)
+    await act(right.handle, record, { action: 'rightclick', ref: refOf(observation, '提交') })
+    expect(first(right.fake)).toEqual({ ...aim, x: 40, y: 20 })
+  }
+
+  const dbl = await newPage()
+  {
+    const { record, observation } = await observe(dbl.handle)
+    const r = await act(dbl.handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
+    expect(first(dbl.fake)).toEqual({ ...aim, x: 40, y: 20 })
+    // 单元数仍是按下抬起的轮数：移动是定位不是业务事件。
+    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 2 })
+  }
+
+  const drag = await newPage(addDragPair)
+  {
+    const { record, observation } = await observe(drag.handle)
+    const r = await act(drag.handle, record, {
+      action: 'drag',
+      ref: refOf(observation, '卡片'),
+      toRef: refOf(observation, '目标槽'),
+    })
+    expect(first(drag.fake)).toEqual({ ...aim, x: 50, y: 220 })
+    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 4 })
+  }
+
+  const download = await newPage()
+  {
+    const { record, observation } = await observe(download.handle)
+    await clickForDownload(download.handle, record, refOf(observation, '提交'))
+    expect(first(download.fake)).toEqual({ ...aim, x: 40, y: 20 })
+  }
 })
 
 test('drag 缺终点或两端相同时在发事件之前拒绝', async () => {

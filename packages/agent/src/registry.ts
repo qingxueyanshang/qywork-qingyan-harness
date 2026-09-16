@@ -147,7 +147,7 @@ export interface BrowserElement {
   optionsTruncated?: boolean
   /** 正文摘要，按上限截断，不是整段 HTML。 */
   text?: string
-  /** 跨站 iframe 的帧编号；缺席表示主文档。 */
+  /** iframe 的帧编号；缺席表示主文档。 */
   frame?: string
 }
 
@@ -189,8 +189,8 @@ export interface BrowserActInput {
   text?: string
   /**
    * `press` 的按键：功能键名，或 `Ctrl` / `Shift` / `Alt` / `Meta` 加主键的组合，
-   * 例如 `Ctrl+A`、`Shift+Tab`、`Ctrl+Shift+Enter`、`Ctrl+Plus`。按键表由 CDP 客户端
-   * 维护，不接受任意字符串。
+   * 例如 `Ctrl+A`、`Shift+Tab`、`Ctrl+Shift+Enter`、`Ctrl+Plus`。按 `keys.ts` 的词表
+   * 解析，不接受任意字符串。
    */
   key?: string
   /** `scroll` 的滚动量，向下为正。 */
@@ -240,6 +240,10 @@ export interface BrowserActReceipt {
   point?: { x: number; y: number }
   /** 多事件动作的执行结果。`type` / `drag` / `dblclick` 必带，单事件动作缺席。 */
   execution?: BrowserExecution
+  /** `fill` 写入后控件里的实际值。 */
+  value?: string
+  /** `fill` 写进去的值与给的文本不一致：控件按自己的类型规范化过，例如日期截掉了秒。 */
+  normalized?: boolean
 }
 
 /** 底层等待回执。 */
@@ -296,7 +300,7 @@ export interface BrowserPort {
    */
   observe(input: {
     tabId: string
-    /** 只看某个跨站 iframe。缺省覆盖主文档与其全部子帧。 */
+    /** 只看某个 iframe。缺省覆盖主文档与其全部子帧。 */
     frame?: string
     screenshot?: boolean
     /** 从第几个元素起返回，配合 `truncated` 翻页。 */

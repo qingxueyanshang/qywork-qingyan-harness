@@ -2,7 +2,7 @@
  * 自写 CDP 客户端的发送口、配对与取消语义。
  *
  * 覆盖范围：`cdp.ts` 全部（连接、按标记附加、方法白名单、迟到回包、本地拒绝、
- * teardown 白名单、键盘布局表与组合键解析、已按下未释放的键表与鼠标按下状态、
+ * teardown 白名单、已按下未释放的键表与鼠标按下状态、
  * 页会话初始化、按会话过滤的事件订阅、静默探针的登记与清理）。
  *
  * 对端是一个按脚本回帧的假调试端点：被测的是客户端的判定时机——命令**有没有入网**、
@@ -17,9 +17,6 @@ import {
   CdpClient,
   CdpInitError,
   CdpTimeoutError,
-  keySpec,
-  keyStroke,
-  PRESS_KEYS,
 } from './cdp.ts'
 
 interface Command {
@@ -338,45 +335,6 @@ test('连接断开时待决调用由本客户端拒绝，不等远端返回', as
   const pending = client.send('Accessibility.getFullAXTree', {}, { timeoutMs: 30_000 })
   client.close()
   expect((await failure(pending)).message).toMatch(/断开/)
-})
-
-test('键盘表按物理键给键码，不按字符码点', () => {
-  expect(keySpec(';')).toEqual({ key: ';', code: 'Semicolon', keyCode: 186, text: ';' })
-  expect(keySpec(':')).toEqual({
-    key: ':',
-    code: 'Semicolon',
-    keyCode: 186,
-    text: ':',
-    shift: true,
-  })
-  // 分号与冒号是同一个物理键。按字符码点算会得到 59 与 58，两个都不是可用的虚拟键码。
-  expect(keySpec(';')?.keyCode).not.toBe(';'.codePointAt(0))
-  expect(keySpec('a')?.keyCode).toBe(keySpec('A')?.keyCode)
-  expect(PRESS_KEYS).toContain('Enter')
-  expect(PRESS_KEYS).toContain('PageDown')
-})
-
-test('组合键解析：修饰键在前、主键在末，空段与重复修饰键一律拒绝', () => {
-  expect(keyStroke('Ctrl+A')).toEqual({
-    modifiers: ['Ctrl'],
-    // Ctrl+A 是 Ctrl 加 A 键：不补 Shift，页面看到的 key 是 a。
-    key: { key: 'a', code: 'KeyA', keyCode: 65, text: 'a' },
-  })
-  expect(keyStroke('Ctrl+a')?.key.key).toBe('a')
-  expect(keyStroke('Shift+Tab')?.modifiers).toEqual(['Shift'])
-  expect(keyStroke('Ctrl+Shift+Enter')?.modifiers).toEqual(['Ctrl', 'Shift'])
-  // 加号写 Plus：它是上排符号，要按住 Shift 才产生。
-  expect(keyStroke('Ctrl+Plus')?.modifiers).toEqual(['Ctrl', 'Shift'])
-  expect(keyStroke('Ctrl+Plus')?.key.code).toBe('Equal')
-  // 不带其他修饰键的大写字母补 Shift，否则页面收到的是小写。
-  expect(keyStroke('A')).toEqual({
-    modifiers: ['Shift'],
-    key: { key: 'A', code: 'KeyA', keyCode: 65, text: 'A', shift: true },
-  })
-
-  for (const bad of ['', 'Ctrl+', '+A', 'Ctrl++', 'Ctrl+Ctrl+A', 'Hyper+A', 'F13', 'ctrl+a']) {
-    expect(keyStroke(bad)).toBeNull()
-  }
 })
 
 test('取消把按下未释放的鼠标补一次 mouseReleased，坐标取最后移动到的位置', async () => {

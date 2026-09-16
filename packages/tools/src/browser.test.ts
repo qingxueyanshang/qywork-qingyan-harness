@@ -426,12 +426,29 @@ describe('动作的适用范围', () => {
     expect(calls.at(-1)?.input).toMatchObject({ key: 'Ctrl+A' })
 
     const sent = calls.length
-    for (const key of ['Ctrl+', '+', 'Ctrl++A', 'Ctrl+Ctrl+A', 'Super+A', 'Ctrl+A+B']) {
+    // 主键名与结构在同一处判：认不出的主键同样是参数错，端口一次都不该被调进去。
+    for (const key of [
+      'Ctrl+',
+      '+',
+      'Ctrl++A',
+      'Ctrl+Ctrl+A',
+      'Super+A',
+      'Ctrl+A+B',
+      'NoSuchKey',
+      'F13',
+      'Ctrl+NoSuchKey',
+      'enter',
+    ]) {
       const r = await browserActTool.fn({ ...press, key }, ctx)
       expect(r.status).toBe('failure')
       expect(r.executed).toBe(false)
+      expect(r.errorKind).toBe('invalid_argument')
     }
     expect(calls).toHaveLength(sent)
+
+    const unknown = await browserActTool.fn({ ...press, key: 'NoSuchKey' }, ctx)
+    expect(unknown.message).toContain('NoSuchKey')
+    expect(unknown.message).toContain('Enter')
   })
 })
 

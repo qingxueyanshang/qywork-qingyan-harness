@@ -15,15 +15,19 @@
  * 4. **动作只发 CDP 的 Input 事件。** 不调系统鼠标键盘，不置前窗口。
  */
 
-import type {
-  BrowserActInput,
-  BrowserActReceipt,
-  BrowserElement,
-  BrowserExecution,
-  BrowserObservation,
-  BrowserOptionsPage,
-  BrowserSelectOption,
-  BrowserWaitReceipt,
+import {
+  type BrowserActInput,
+  type BrowserActReceipt,
+  type BrowserElement,
+  type BrowserExecution,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  type BrowserSelectOption,
+  type BrowserWaitReceipt,
+  KEY_HINT,
+  type KeyStroke,
+  keySpec,
+  keyStroke,
 } from '@qywork/agent'
 import { log } from '@qywork/core'
 import {
@@ -32,10 +36,6 @@ import {
   CdpDisconnectedError,
   CdpError,
   CdpTimeoutError,
-  type KeyStroke,
-  keySpec,
-  keyStroke,
-  PRESS_KEYS,
 } from './cdp.ts'
 
 /** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
@@ -199,9 +199,23 @@ async function settleInput(client: CdpClient): Promise<void> {
  */
 interface RefRecord {
   backendNodeId: number
-  /** 元素所在的 CDP 会话：主文档是页会话，跨站 iframe 是它的子会话。 */
+  /** 元素所在的 CDP 会话：主文档与同进程 iframe 是页会话，跨站 iframe 是它的子会话。 */
   sessionId: string
   frame?: string
+  /**
+   * 同进程帧链：从元素所在文档向外，每一跳是承载它的 iframe 元素在父文档里的节点号。
+   *
+   * 缺席即元素直接在会话的根文档里。这一层记的是结构不是几何——盒子在动作准备里现取。
+   */
+  owners?: number[]
+  /**
+   * 这一项能不能承载动作。
+   *
+   * 元素表里同时有可操作元素与正文节点（正文让模型读得到页面结果）。正文节点上
+   * 没有矩形也没有 `getBoundingClientRect`，页内复核函数在它身上抛异常，动作因此
+   * 以一句内部异常原文结束。登记时记下这一位，动作在解析引用时就拒。
+   */
+  actionable: boolean
   /** `标签|id|name|type`。动作前页内重算一遍，对不上即判失效。 */
   identity: string
 }
@@ -411,15 +425,24 @@ const FILL_FN = `function qyFill(value) {
     for (const attr of ['min', 'max', 'step']) {
       if (el.hasAttribute(attr)) probe.setAttribute(attr, el.getAttribute(attr))
     }
+    // color 只接受 #rrggbb。认不出的写法它换成一个具体颜色而不是空串，
+    // 按「规范化结果非空」判会把 red 当成合法输入，写进去的是另一个值。
+    if (type === 'color' && !/^#[0-9a-fA-F]{6}$/.test(value)) {
+      return { ok: false, reason: 'bad_format', type: type }
+    }
     probe.value = value
     normalized = probe.value
     if (value !== '' && normalized === '') return { ok: false, reason: 'bad_format', type: type }
     if (type === 'range' && normalized !== value) {
-      return { ok: false, reason: 'constraint', type: type, value: cut(normalized) }
+      return { ok: false, reason: 'clamped', type: type, value: cut(normalized) }
     }
     const v = probe.validity
     if (v && (v.rangeUnderflow || v.rangeOverflow || v.stepMismatch)) {
-      return { ok: false, reason: 'constraint', type: type, value: cut(normalized) }
+      const limits = {}
+      for (const attr of ['min', 'max', 'step']) {
+        if (el.hasAttribute(attr)) limits[attr] = cut(el.getAttribute(attr))
+      }
+      return { ok: false, reason: 'constraint', type: type, limits: limits }
     }
   }
   const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
@@ -459,7 +482,12 @@ interface DomNode {
   shadowRoots?: DomNode[]
   contentDocument?: DomNode
   pseudoElements?: DomNode[]
+  /** iframe 元素上是它承载的那一帧的编号；文档节点上是这份文档所属的帧。 */
+  frameId?: string
 }
+
+/** 一个元素节点在 DOM 快照里的标签与属性。 */
+type DomInfo = { tag: string; attrs: Record<string, string> }
 
 interface AxNode {
   ignored?: boolean
@@ -583,39 +611,46 @@ export async function observePage(
   }
 }
 
-/** 主文档与在范围内的跨站子帧各采一次，合成一张元素表。 */
+/** 主文档与在范围内的子帧各采一次，合成一张元素表。 */
 async function collectAll(
   client: CdpClient,
   sessionId: string,
   opts: { frame?: string },
   deadline: number,
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
-  const frames: FrameScope[] = [{ sessionId }]
+  const sessions: { sessionId: string; frame?: string }[] = [{ sessionId }]
   for (const child of client.childSessionsOf(sessionId)) {
-    if (opts.frame && child.targetId !== opts.frame) continue
-    frames.push({ sessionId: child.sessionId, frame: child.targetId })
+    sessions.push({ sessionId: child.sessionId, frame: child.targetId })
   }
-  // 指定了帧就只看那一个，主文档不掺进来——否则「只看这个 iframe」返回的仍是整页。
-  const scope = opts.frame ? frames.filter((f) => f.frame === opts.frame) : frames
+  // 指定的是某个跨站帧时只问它那一个会话；同进程帧的编号看不出属于哪个会话，全问一遍。
+  const named = opts.frame ? sessions.find((s) => s.frame === opts.frame) : undefined
+  const scope = named ? [named] : sessions
 
   const all: { element: BrowserElement; ref: RefRecord }[] = []
-  for (const f of scope) {
-    if (!f.frame) {
-      all.push(...(await collectFrame(client, f, deadline, COLLECT_TIMEOUT_MS)))
+  for (const s of scope) {
+    if (s.frame === undefined) {
+      all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS)))
       continue
     }
     // 跨站子帧由它自己的渲染进程应答，正在加载或已经消失时会一直不回。
     // 一个帧不答不该让整页观察不出来——跳过它，主文档照常给出元素表。
     try {
-      all.push(...(await collectFrame(client, f, deadline, FRAME_TIMEOUT_MS)))
+      all.push(...(await collectSession(client, s, deadline, FRAME_TIMEOUT_MS)))
     } catch (err) {
       log.warn('browser', `子帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  return all
+  // 指定了帧就只留那一帧的元素——否则「只看这个 iframe」返回的仍是整页。
+  return opts.frame ? all.filter((i) => i.element.frame === opts.frame) : all
 }
 
-type FrameScope = { sessionId: string; frame?: string }
+/**
+ * 一份文档的采集范围。
+ *
+ * `frame` 是帧编号：跨站帧取它子会话的 targetId，同进程帧取 CDP 的 frameId，
+ * 主文档缺席。`owners` 见 `RefRecord.owners`。
+ */
+type FrameScope = { sessionId: string; frame?: string; owners?: number[] }
 
 /** 编号在筛完之后才发，所以候选里只有除 `ref` 之外的那些字段。 */
 interface Candidate {
@@ -624,14 +659,70 @@ interface Candidate {
   ref: RefRecord
 }
 
-/** 一帧里的元素。DOM 快照给标签与属性，AX 树给角色、名称与状态，按 backendNodeId 对上。 */
-async function collectFrame(
+/**
+ * 把一次 `pierce` 快照按文档拆开。
+ *
+ * **同进程 iframe 必须单独成一份。** `pierce` 把它的 `contentDocument` 一并带回来，
+ * 而 `Accessibility.getFullAXTree` 不带 `frameId` 时只覆盖会话的根帧：混在一起的话，
+ * 帧内节点对不上任何 AX 行，整个同源 iframe 的内容都产不出候选。
+ * 影子根里的内容属于宿主所在的文档，跟着宿主走。跨站 iframe 没有 `contentDocument`，
+ * 它由自己的子会话采集。
+ */
+function splitDocs(
+  root: DomNode,
+  session: { sessionId: string; frame?: string },
+): { scope: FrameScope; nodes: Map<number, DomInfo> }[] {
+  const out: { scope: FrameScope; nodes: Map<number, DomInfo> }[] = []
+  const walk = (node: DomNode, scope: FrameScope, nodes: Map<number, DomInfo>): void => {
+    if (node.nodeType === 1) {
+      const attrs: Record<string, string> = {}
+      const flat = node.attributes ?? []
+      for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i] as string] = flat[i + 1] as string
+      nodes.set(node.backendNodeId, { tag: node.nodeName.toLowerCase(), attrs })
+    }
+    for (const child of node.children ?? []) walk(child, scope, nodes)
+    for (const shadow of node.shadowRoots ?? []) walk(shadow, scope, nodes)
+    for (const pseudo of node.pseudoElements ?? []) walk(pseudo, scope, nodes)
+    const inner = node.contentDocument
+    if (!inner) return
+    const frame = node.frameId ?? inner.frameId
+    // 取不到帧编号就取不到这一帧的 AX 树；层数超过上限时坐标也换算不到顶层。
+    // 两种情况下这一帧不进元素表，主文档照常给出它自己的。
+    if (frame === undefined) return
+    if ((scope.owners?.length ?? 0) >= MAX_FRAME_DEPTH) return
+    const subScope: FrameScope = {
+      sessionId: scope.sessionId,
+      frame,
+      owners: [node.backendNodeId, ...(scope.owners ?? [])],
+    }
+    const subNodes = new Map<number, DomInfo>()
+    out.push({ scope: subScope, nodes: subNodes })
+    walk(inner, subScope, subNodes)
+  }
+  const rootScope: FrameScope = {
+    sessionId: session.sessionId,
+    ...(session.frame === undefined ? {} : { frame: session.frame }),
+  }
+  const rootNodes = new Map<number, DomInfo>()
+  out.push({ scope: rootScope, nodes: rootNodes })
+  walk(root, rootScope, rootNodes)
+  return out
+}
+
+/**
+ * 一个会话里的全部文档。DOM 快照一次取回，AX 树按帧各取一次，按 backendNodeId 对上。
+ *
+ * 同进程帧不套 AX 重取：它与根文档共用这一次 DOM 快照与本阶段预算，重取一遍等于
+ * 把每个 iframe 的等待叠加到同一份预算上。这一帧的 AX 还没建起来时它不进元素表，
+ * 重新观察即取得。
+ */
+async function collectSession(
   client: CdpClient,
-  frame: FrameScope,
+  session: { sessionId: string; frame?: string },
   deadline: number,
   capMs: number,
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
-  const { sessionId } = frame
+  const { sessionId } = session
   const limit = () => within(deadline, capMs)
   // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 另走它自己的会话。
   const dom = await client.send<{ root: DomNode }>(
@@ -639,42 +730,52 @@ async function collectFrame(
     { depth: -1, pierce: true },
     { sessionId, ...limit() },
   )
-  const byBackend = new Map<number, { tag: string; attrs: Record<string, string> }>()
-  flatten(dom.root, byBackend)
+  const docs = splitDocs(dom.root, session)
 
-  const fetchAx = async () =>
+  const fetchAx = async (frameId?: string) =>
     (
       await client.send<{ nodes: AxNode[] }>(
         'Accessibility.getFullAXTree',
-        {},
+        frameId === undefined ? {} : { frameId },
         { sessionId, ...limit() },
       )
     ).nodes
 
-  let candidates = axCandidates(await fetchAx(), byBackend, frame)
-
-  /*
-   * AX 树懒计算：主文档刚加载完可能仍为空，静态表单因此也返回 0 候选。
-   * DOM 里有可交互元素却 0 候选时，短间隔重取 AX 树，非空即用；到上限仍空就从
-   * DOM 快照直接产元素表（语义降级但不为 0）。子帧不套——它自带超时与跳过。
-   * 重取也吃总预算：本阶段上限与剩余预算取小，到期就用手上的结果。
-   */
-  if (!frame.frame && candidates.length === 0 && domHasActionable(byBackend)) {
-    const until = Math.min(deadline, Date.now() + AX_RETRY_TOTAL_MS)
-    while (candidates.length === 0 && leftMs(until) > 0) {
-      await sleep(Math.min(AX_RETRY_INTERVAL_MS, leftMs(until)))
-      candidates = axCandidates(await fetchAx(), byBackend, frame)
+  const out: { element: BrowserElement; ref: RefRecord }[] = []
+  for (const doc of docs) {
+    const sub = doc.scope.owners !== undefined
+    if (sub) {
+      const nodes = await fetchAx(doc.scope.frame).catch((err: unknown) => {
+        log.warn('browser', `同进程帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
+        return null
+      })
+      if (nodes) out.push(...dedupeAndNumber(axCandidates(nodes, doc.nodes, doc.scope), doc.scope))
+      continue
     }
-    if (candidates.length === 0) candidates = domCandidates(byBackend, frame)
+    let candidates = axCandidates(await fetchAx(), doc.nodes, doc.scope)
+    /*
+     * AX 树懒计算：主文档刚加载完可能仍为空，静态表单因此也返回 0 候选。
+     * DOM 里有可交互元素却 0 候选时，短间隔重取 AX 树，非空即用；到上限仍空就从
+     * DOM 快照直接产元素表（语义降级但不为 0）。子帧不套——它自带超时与跳过。
+     * 重取也吃总预算：本阶段上限与剩余预算取小，到期就用手上的结果。
+     */
+    if (session.frame === undefined && candidates.length === 0 && domHasActionable(doc.nodes)) {
+      const until = Math.min(deadline, Date.now() + AX_RETRY_TOTAL_MS)
+      while (candidates.length === 0 && leftMs(until) > 0) {
+        await sleep(Math.min(AX_RETRY_INTERVAL_MS, leftMs(until)))
+        candidates = axCandidates(await fetchAx(), doc.nodes, doc.scope)
+      }
+      if (candidates.length === 0) candidates = domCandidates(doc.nodes, doc.scope)
+    }
+    out.push(...dedupeAndNumber(candidates, doc.scope))
   }
-
-  return dedupeAndNumber(candidates, frame)
+  return out
 }
 
 /** 从 AX 树建候选：AX 给角色 / 名称 / 状态，DOM 给标签与属性。 */
 function axCandidates(
   nodes: AxNode[],
-  byBackend: Map<number, { tag: string; attrs: Record<string, string> }>,
+  byBackend: Map<number, DomInfo>,
   frame: FrameScope,
 ): Candidate[] {
   const candidates: Candidate[] = []
@@ -713,6 +814,8 @@ function axCandidates(
         backendNodeId,
         sessionId: frame.sessionId,
         ...(frame.frame ? { frame: frame.frame } : {}),
+        ...(frame.owners ? { owners: frame.owners } : {}),
+        actionable,
         identity: [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
       },
     })
@@ -737,9 +840,7 @@ function boolProp(
 }
 
 /** DOM 快照中是否存在可交互元素。AX 树没建起来时靠它判断该不该重取。 */
-function domHasActionable(
-  byBackend: Map<number, { tag: string; attrs: Record<string, string> }>,
-): boolean {
+function domHasActionable(byBackend: Map<number, DomInfo>): boolean {
   for (const { tag, attrs } of byBackend.values()) {
     if (tag === 'input' && attrs.type === 'hidden') continue
     if (ACTIONABLE_TAGS.has(tag)) return true
@@ -754,10 +855,7 @@ function domHasActionable(
  * 语义降级——名称只能取 `aria-label` / `placeholder` / `name` 这类属性，拿不到
  * AX 计算出的可访问名。**不造假元素**：只收真实的可交互标签，隐藏 input 不收。
  */
-function domCandidates(
-  byBackend: Map<number, { tag: string; attrs: Record<string, string> }>,
-  frame: FrameScope,
-): Candidate[] {
+function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Candidate[] {
   const out: Candidate[] = []
   for (const [backendNodeId, { tag, attrs }] of byBackend) {
     if (tag === 'input' && attrs.type === 'hidden') continue
@@ -784,6 +882,8 @@ function domCandidates(
         backendNodeId,
         sessionId: frame.sessionId,
         ...(frame.frame ? { frame: frame.frame } : {}),
+        ...(frame.owners ? { owners: frame.owners } : {}),
+        actionable: true,
         identity: [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
       },
     })
@@ -816,22 +916,6 @@ function dedupeAndNumber(
     out.push({ element: { ref, ...c.element }, ref: c.ref })
   }
   return out
-}
-
-function flatten(
-  node: DomNode,
-  out: Map<number, { tag: string; attrs: Record<string, string> }>,
-): void {
-  if (node.nodeType === 1) {
-    const attrs: Record<string, string> = {}
-    const flat = node.attributes ?? []
-    for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i] as string] = flat[i + 1] as string
-    out.set(node.backendNodeId, { tag: node.nodeName.toLowerCase(), attrs })
-  }
-  for (const child of node.children ?? []) flatten(child, out)
-  for (const shadow of node.shadowRoots ?? []) flatten(shadow, out)
-  for (const pseudo of node.pseudoElements ?? []) flatten(pseudo, out)
-  if (node.contentDocument) flatten(node.contentDocument, out)
 }
 
 /**
@@ -1013,6 +1097,9 @@ async function resolveRef(
   const { client } = page
   const entry = record.refs.get(ref)
   if (!entry) throw new BrowserStaleRefError(`这次观察里没有元素 ${ref}，请重新观察`)
+  if (!entry.actionable) {
+    throw new CdpError(`元素 ${ref} 是正文，不是可操作的节点；在元素表里挑一个带可操作角色的项`)
+  }
 
   const resolved = await client
     .send<{ object: { objectId?: string } }>(
@@ -1024,24 +1111,37 @@ async function resolveRef(
   const objectId = resolved?.object.objectId
   if (!objectId) throw new BrowserStaleRefError(`元素 ${ref} 已经不在页面上，请重新观察`)
 
-  const inspect = await inspectNode(client, entry.sessionId, objectId, deadline)
+  const inspect = await inspectNode(client, entry.sessionId, objectId, ref, deadline)
   assertSameNode(ref, entry, inspect, '')
   return { entry, objectId, inspect }
 }
 
-/** 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。 */
+/**
+ * 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。
+ *
+ * 页内抛异常时 `returnByValue` 下的 `result.value` 是 `undefined`，**必须在这里结掉**：
+ * 直接返回的话，下一步解引用它会以一句内部异常原文结束，而那句话对调用方没有下一步。
+ */
 async function inspectNode(
   client: CdpClient,
   sessionId: string,
   objectId: string,
+  ref: string,
   deadline: number,
 ): Promise<Inspection> {
-  const inspected = await client.send<{ result: { value: Inspection } }>(
+  const inspected = await client.send<{
+    result: { value?: Inspection }
+    exceptionDetails?: unknown
+  }>(
     'Runtime.callFunctionOn',
     { objectId, functionDeclaration: INSPECT_FN, returnByValue: true },
     { sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
   )
-  return inspected.result.value
+  const view = inspected.result.value
+  if (inspected.exceptionDetails !== undefined || typeof view !== 'object' || view === null) {
+    throw new BrowserStaleRefError(`元素 ${ref} 无法在页内定位，请重新观察`)
+  }
+  return view
 }
 
 /** 节点还是不是原来那一个。`when` 说明这次复核发生在哪一步。 */
@@ -1077,7 +1177,7 @@ async function prepareAction(
   const { entry, objectId, inspect } = await resolveRef(page, record, ref, deadline)
   let view = inspect
   if (opts.scroll && (await scrollIntoView(client, entry, objectId, view, deadline))) {
-    view = await inspectNode(client, entry.sessionId, objectId, deadline)
+    view = await inspectNode(client, entry.sessionId, objectId, ref, deadline)
     assertSameNode(ref, entry, view, '滚动后')
   }
   if (opts.hit && view.disabled === true) throw new CdpError(`元素 ${ref} 当前不可用`)
@@ -1113,8 +1213,9 @@ async function scrollIntoView(
 /**
  * 把元素在自己文档里的中心点换算成页会话的输入坐标。
  *
- * 主文档的点不用换算。跨站 iframe 逐层向上：每一层现取 owner 与盒子，换算之后在
- * 那一层复核命中，父层遮罩因此拦得住。任一层查不到就抛失效，不继续用一个半成品坐标。
+ * 主文档的点不用换算。有帧的逐层向上：同进程帧的一跳按登记的 iframe 节点在同一个会话里
+ * 现取盒子，跨站帧的一跳跨会话找承载它的文档。每换算一层就在那一层复核命中，
+ * 父层遮罩因此拦得住。任一层查不到就抛失效，不继续用一个半成品坐标。
  */
 async function toInputPoint(
   page: PageHandle,
@@ -1125,7 +1226,18 @@ async function toInputPoint(
   requireHit: boolean,
 ): Promise<Point> {
   let point: Point = { x: view.x ?? 0, y: view.y ?? 0 }
-  let frame = entry.frame
+  for (const owner of entry.owners ?? []) {
+    if (leftMs(deadline) <= 0) {
+      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标没能在动作期限内量定，请重新观察`)
+    }
+    const mapped = await ownerHop(page.client, entry.sessionId, owner, point, ref, deadline)
+    if (requireHit) assertHittable(`元素 ${ref} 所在的 iframe`, mapped)
+    point = { x: mapped.x, y: mapped.y }
+  }
+  // 跨站帧的起点是元素所在子会话对应的那一帧；同进程帧的换算上面已经走完。
+  let frame = page.client
+    .childSessionsOf(page.sessionId)
+    .find((c) => c.sessionId === entry.sessionId)?.targetId
   for (let depth = 0; frame; depth += 1) {
     if (depth >= MAX_FRAME_DEPTH) {
       throw new BrowserStaleRefError(`元素 ${ref} 的帧层数超过上限，无法定位，请重新观察`)
@@ -1142,7 +1254,44 @@ async function toInputPoint(
 }
 
 /**
- * 走一层帧：找到承载这一帧的文档，把点换算过去。
+ * 走一层同进程帧：承载它的 iframe 元素与它在同一个会话里，按登记的节点号取回来换算。
+ *
+ * 节点已经不在时判定位失败，不补零——补零会把事件发到文档左上角。
+ */
+async function ownerHop(
+  client: CdpClient,
+  sessionId: string,
+  backendNodeId: number,
+  point: Point,
+  ref: string,
+  deadline: number,
+): Promise<FramePoint> {
+  const resolved = await client
+    .send<{ object: { objectId?: string } }>(
+      'DOM.resolveNode',
+      { backendNodeId },
+      { sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+    )
+    .catch(() => null)
+  const objectId = resolved?.object.objectId
+  if (!objectId) {
+    throw new BrowserStaleRefError(`元素 ${ref} 所在的 iframe 已经不在页面上，请重新观察`)
+  }
+  const mapped = await client.send<{ result: { value: FramePoint } }>(
+    'Runtime.callFunctionOn',
+    {
+      objectId,
+      functionDeclaration: FRAME_POINT_FN,
+      arguments: [{ value: point.x }, { value: point.y }],
+      returnByValue: true,
+    },
+    { sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+  )
+  return mapped.result.value
+}
+
+/**
+ * 走一层跨站帧：找到承载这一帧的文档，把点换算过去。
  *
  * 父文档按试探定位：`DOM.getFrameOwner` 只在这一帧的父会话里答得出来，页会话先试，
  * 不中再试其余子会话——嵌套的跨站 iframe 的父文档也是一个子会话。
@@ -1358,12 +1507,7 @@ async function pressOn(
   key: string | undefined,
 ): Promise<void> {
   const stroke = keyStroke(key ?? '')
-  if (!stroke) {
-    throw new CdpError(
-      `不支持的按键：${key}（功能键 ${PRESS_KEYS.join('、')}，或字母数字标点；` +
-        '可加 Ctrl / Shift / Alt / Meta 修饰键，加号写成 Plus）',
-    )
-  }
+  if (!stroke) throw new CdpError(`不支持的按键：${key}（${KEY_HINT}）`)
   try {
     await page.client.pressStroke(sessionId, stroke)
   } finally {
@@ -1394,12 +1538,29 @@ async function mouseEvent(
   )
 }
 
+/**
+ * 把指针移到落点。按下之前必须先发这一条。
+ *
+ * **不要省掉它。** 直接发 `mousePressed` 时 CDP 回包确认、随后的移动也带 `buttons: 1`，
+ * 而渲染进程一次 mousedown 都没有派发——页内文档级捕获监听器一条都没收到。
+ * 点击与拖动各跑 30 轮，各复现 1 次。它不是业务事件，不计入执行回执的单元数。
+ */
+async function aimAt(
+  client: CdpClient,
+  sessionId: string,
+  point: Point,
+  deadline?: number,
+): Promise<void> {
+  await mouseEvent(client, sessionId, 'mouseMoved', point, { button: 'none', buttons: 0 }, deadline)
+}
+
 async function clickPoint(
   client: CdpClient,
   sessionId: string,
   point: Point,
   button: 'left' | 'right' = 'left',
 ): Promise<void> {
+  await aimAt(client, sessionId, point)
   const buttonsOf = (down: boolean) => (down ? (button === 'right' ? 2 : 1) : 0)
   for (const type of ['mousePressed', 'mouseReleased'] as const) {
     await mouseEvent(client, sessionId, type, point, {
@@ -1445,6 +1606,7 @@ async function doubleClickOnPage(
     hit: true,
     deadline: run.deadline,
   })
+  await aimAt(client, sessionId, point, run.deadline)
   let done = true
   for (const clickCount of [1, 2]) {
     if (!run.open(client)) {
@@ -1601,6 +1763,8 @@ interface FillOutcome {
   /** 预检认可的值。回读与它不一致即页面把这次写入改掉了。 */
   wanted?: string
   normalized?: boolean
+  /** 控件上写着的 `min` / `max` / `step`，只在约束不满足时给。 */
+  limits?: { min?: string; max?: string; step?: string }
 }
 
 /**
@@ -1629,10 +1793,16 @@ async function fillOnPage(
   )
   const outcome = r.result.value
   if (!outcome.ok) throw fillFailure(ref, text, outcome)
-  return { element: inspect.label ?? ref }
+  // 回执带写入后的实际值与它是否经过规范化：日期截秒、时间补零这类改写在页面上看得见，
+  // 不给出来的话，调用方只能再观察一次才知道控件里现在是什么。
+  return {
+    element: inspect.label ?? ref,
+    ...(outcome.value === undefined ? {} : { value: outcome.value }),
+    ...(outcome.normalized === undefined ? {} : { normalized: outcome.normalized }),
+  }
 }
 
-/** 写入失败的说明。格式不合、约束不满足、页面不接受三者分开成句，下一步不一样。 */
+/** 写入失败的说明。格式不合、超出取值范围、约束不满足、页面不接受各自成句，下一步不一样。 */
 function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpError {
   const type = outcome.type ?? ''
   switch (outcome.reason) {
@@ -1648,9 +1818,14 @@ function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpErro
       return new CdpError(`认不出的输入类型 ${type}`)
     case 'bad_format':
       return new CdpError(`${wanted} 不是 ${type} 类型接受的格式，原值没有改动`)
-    case 'constraint':
+    case 'clamped':
       return new CdpError(
-        `${wanted} 不满足 ${type} 的 min / max / step 约束（能接受的是 ${outcome.value ?? ''}），原值没有改动`,
+        `${wanted} 超出 ${type} 的取值范围，能写入的是 ${outcome.value ?? ''}，原值没有改动`,
+      )
+    case 'constraint':
+      // 报控件上写着的限制，不报「能接受的是」：number 不钳制，那一栏会与被拒的值同数。
+      return new CdpError(
+        `${wanted} 不满足 ${type} 的约束${limitsText(outcome.limits)}，原值没有改动`,
       )
     case 'rejected':
       return new CdpError(
@@ -1659,6 +1834,12 @@ function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpErro
     default:
       return new CdpError(`元素 ${ref} 写入失败`)
   }
+}
+
+/** 控件上写着的限制。一项都没有时给空串，不写一对空括号。 */
+function limitsText(limits: FillOutcome['limits']): string {
+  const parts = Object.entries(limits ?? {}).map(([name, value]) => `${name}=${value}`)
+  return parts.length === 0 ? '' : `（${parts.join('、')}）`
 }
 
 /**
@@ -1677,9 +1858,13 @@ async function dragTarget(
   const { client } = page
   for (let pass = 0; pass <= MAX_DRAG_SCROLLS; pass++) {
     if (!run.open(client)) return null
-    const view = await inspectNode(client, end.entry.sessionId, end.objectId, run.deadline).catch(
-      () => null,
-    )
+    const view = await inspectNode(
+      client,
+      end.entry.sessionId,
+      end.objectId,
+      ref,
+      run.deadline,
+    ).catch(() => null)
     if (!view || !view.connected || view.identity !== end.entry.identity) return null
     if (view.inView === true) {
       return toInputPoint(page, end.entry, view, ref, run.deadline, false).catch(() => null)
@@ -1723,6 +1908,7 @@ async function dragOnPage(
   await scrollIntoView(client, end.entry, end.objectId, end.inspect, deadline)
   const start = await prepareAction(page, record, ref, { scroll: true, hit: true, deadline })
   const from = start.point
+  await aimAt(client, sessionId, from, deadline)
 
   const send = async (
     type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
