@@ -41,14 +41,18 @@ import {
   getConversation,
   latestSentProviderRequest,
   listMessages,
-  listRunContextSnapshots,
   listRuns,
   listSteps,
   type Store,
   setCompactionManifest,
   summaryOutputPercentile,
 } from '@qywork/store'
-import { attachmentsOf, stepsToUnits } from './transcript.ts'
+import {
+  attachmentsOf,
+  latestContextSnapshot,
+  replayedContextByUser,
+  stepsToUnits,
+} from './transcript.ts'
 
 /**
  * 摘要输出的观测分位。
@@ -88,15 +92,37 @@ export class RuntimeCompaction implements CompactionPort {
    * 一轮几十次，每次一个 SQL 查询纯属浪费。压缩由本对象自己执行，所以它总是知道最新值。
    */
   private manifest: CompactionManifest | null
-  /** 最新 run 的上下文归属；空快照也要覆盖旧 run，不能误把旧上下文钉回来。 */
-  private latestContextUserMessageId: MessageId | null
+  /**
+   * 最新 run 的完整快照。回放去重后一段可能只出现在早期轮次，被摘要线折掉时从这里
+   * 钉回，模型看到的仍是完整的当前快照。空快照也要覆盖旧 run，不能误把旧上下文钉回来。
+   */
+  private readonly latestContext: ReturnType<typeof latestContextSnapshot>
 
   constructor(private readonly deps: CompactionDeps) {
     this.manifest = getConversation(deps.store, deps.conversationId)?.compactionManifest ?? null
-    this.latestContextUserMessageId =
-      [...listRunContextSnapshots(deps.store, deps.conversationId)]
-        .reverse()
-        .find((snapshot) => snapshot.userMessageId !== null)?.userMessageId ?? null
+    this.latestContext = latestContextSnapshot(deps.store, deps.conversationId)
+  }
+
+  /** 最新快照里在 `visible` 中找不到的段，按快照顺序做成待钉回的上下文消息。 */
+  private missingContext(visible: readonly WireMessage[]): WireMessage[] {
+    if (!this.latestContext) return []
+    const { userMessageId, segments } = this.latestContext
+    return segments
+      .filter(
+        (segment) =>
+          !visible.some(
+            (message) =>
+              message.role === 'context' &&
+              message._group === segment.group &&
+              message.content === segment.content,
+          ),
+      )
+      .map((segment) => ({
+        role: 'context' as const,
+        content: segment.content,
+        _group: segment.group,
+        _messageId: userMessageId,
+      }))
   }
 
   /**
@@ -118,15 +144,6 @@ export class RuntimeCompaction implements CompactionPort {
     const condenseKey = condense ? cutKey(condense) : null
     const todoFacts = currentTodoFacts(messageUnits(history))
     const todoTable = todoFacts[0]
-    const latestContext = this.latestContextUserMessageId
-      ? history.filter(
-          (message) =>
-            message.role === 'context' && message._messageId === this.latestContextUserMessageId,
-        )
-      : []
-    const latestContextKey = latestContext[0] ? unitKey(latestContext[0]) : null
-    const pinContext =
-      summaryKey !== null && latestContextKey !== null && latestContextKey <= summaryKey
 
     let folded = 0
     const out: WireMessage[] = []
@@ -164,7 +181,7 @@ export class RuntimeCompaction implements CompactionPort {
             .flatMap((fact) => todoFactMessages(fact))
 
     return [
-      ...(pinContext ? latestContext : []),
+      ...this.missingContext(out),
       ...(manifest[0] ? [manifest[0]] : []),
       ...pinnedTodos,
       ...manifest.slice(1),
@@ -368,23 +385,16 @@ export class RuntimeCompaction implements CompactionPort {
     const condenseKey = condense ? cutKey(condense) : null
     const todoFacts = currentTodoFacts(units)
     const todoTable = todoFacts[0]
-    const latestContext = this.latestContextUserMessageId
-      ? units.find(
-          (unit) =>
-            unit.cut.messageId === this.latestContextUserMessageId &&
-            unit.messages.some((message) => message.role === 'context'),
-        )
-      : undefined
-    const pinContext =
-      summaryKey !== null && latestContext !== undefined && latestContext.key <= summaryKey
 
     let folded = 0
     let total = 0
+    const visible: WireMessage[] = []
     for (const unit of units) {
       if (summaryKey !== null && unit.key <= summaryKey) {
         folded++
         continue
       }
+      visible.push(...unit.messages)
       if (condenseKey !== null && unit.key <= condenseKey) {
         const messageTokens = estimateMessages(unit.messages, density)
         const attachmentTokens = Math.max(0, unit.tokens - messageTokens)
@@ -401,12 +411,7 @@ export class RuntimeCompaction implements CompactionPort {
 
     // manifest 的切线与当前历史不相交时，投影函数也不会平白插入摘要。
     if (folded === 0) return total
-    if (pinContext && latestContext) {
-      total += estimateMessages(
-        latestContext.messages.filter((message) => message.role === 'context'),
-        density,
-      )
-    }
+    total += estimateMessages(this.missingContext(visible), density)
     if (summaryKey !== null) {
       total += todoFacts
         .filter((fact) => fact.key <= summaryKey)
@@ -431,14 +436,7 @@ export class RuntimeCompaction implements CompactionPort {
       list.push(r)
       byUser.set(r.userMessageId, list)
     }
-    const contextByUser = new Map<
-      string,
-      ReturnType<typeof listRunContextSnapshots>[number]['segments']
-    >()
-    for (const snapshot of listRunContextSnapshots(store, conversationId)) {
-      if (!snapshot.userMessageId) continue
-      contextByUser.set(snapshot.userMessageId, snapshot.segments)
-    }
+    const contextByUser = replayedContextByUser(store, conversationId)
 
     const units: Unit[] = []
     for (const m of listMessages(store, conversationId, messageIdUpperBound)) {

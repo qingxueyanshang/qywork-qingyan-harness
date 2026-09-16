@@ -317,7 +317,7 @@ describe('历史装配', () => {
     expect(mediaFlags).toEqual([false, true])
   })
 
-  test('每个 run 的上下文只出现在所属真实用户消息之前，重复重建不漂移', async () => {
+  test('run 的上下文只出现在所属真实用户消息之前，与上一轮相同的段不再回放，重复重建不漂移', async () => {
     const { store, conv, ask, run } = fixture()
     const m1 = ask('第一轮')
     run(m1, [
@@ -325,21 +325,44 @@ describe('历史装配', () => {
       { content: '## 记忆索引\n- no-repeat', group: 'memory' },
     ])
     const m2 = ask('第二轮')
-    run(m2, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
+    run(m2, [
+      { content: '工作区：C:/ws', group: 'workspaceState' },
+      { content: '## 记忆索引\n- no-repeat', group: 'memory' },
+    ])
+    const m3 = ask('第三轮')
+    run(m3, [
+      { content: '工作区：C:/ws', group: 'workspaceState' },
+      { content: '## 记忆索引\n- no-repeat\n- second', group: 'memory' },
+    ])
 
-    const first = await buildHistory(store, conv.id, m2, noAttachments)
-    const second = await buildHistory(store, conv.id, m2, noAttachments)
+    const first = await buildHistory(store, conv.id, m3, noAttachments)
+    const second = await buildHistory(store, conv.id, m3, noAttachments)
     expect(second).toEqual(first)
     expect(first.map((message) => message.role)).toEqual([
       'context',
       'context',
       'user',
+      'user',
       'context',
       'user',
     ])
-    expect(first.filter((message) => message.role === 'context')).toHaveLength(3)
     expect(first[2]!.content).toBe('第一轮')
-    expect(first[4]!.content).toBe('第二轮')
+    expect(first[3]!.content).toBe('第二轮')
+    expect(first[4]!.content).toBe('## 记忆索引\n- no-repeat\n- second')
+    expect(first[5]!.content).toBe('第三轮')
+    store.close()
+  })
+
+  test('同一条用户消息多次 run 时按最后一次快照与上一轮比较', async () => {
+    const { store, conv, ask, run } = fixture()
+    const m1 = ask('第一轮')
+    run(m1, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
+    const m2 = ask('第二轮')
+    run(m2, [{ content: '工作区：C:/other', group: 'workspaceState' }])
+    run(m2, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
+
+    const out = await buildHistory(store, conv.id, m2, noAttachments)
+    expect(out.map((message) => message.role)).toEqual(['context', 'user', 'user'])
     store.close()
   })
 

@@ -20,7 +20,14 @@
 
 import { envelopeResult, stepStamp, toolResultContent } from '@qywork/agent'
 import type { ContentBlock, WireMessage, WireToolCall } from '@qywork/ai'
-import type { Attachment, ContextGroup, ConversationId, MessageId, Step } from '@qywork/core'
+import type {
+  Attachment,
+  ContextGroup,
+  ConversationId,
+  MessageId,
+  RunContextSegment,
+  Step,
+} from '@qywork/core'
 import {
   listMessages,
   listRunContextSnapshots,
@@ -28,6 +35,54 @@ import {
   listSteps,
   type Store,
 } from '@qywork/store'
+
+/** 段相同的判据：分组与正文逐字相等。回放去重与压缩钉回共用，两处不同形就会漏段或重复。 */
+export function sameContextSegment(a: RunContextSegment, b: RunContextSegment): boolean {
+  return a.group === b.group && a.content === b.content
+}
+
+/**
+ * 每条用户消息前要回放的运行上下文段。
+ *
+ * 同一条用户消息多次 run 时取最后一次的快照。与上一条用户消息的快照相同的段不回放：
+ * 历史里已有一份，跨 run 仍只追加，前缀缓存不受影响。每个 run 的完整快照仍在
+ * `runs.context_snapshot`，导出与压缩钉回都从完整快照取，不从这里取。
+ * 装配侧与压缩侧都必须调这一份，两侧各算一遍会切错线。
+ */
+export function replayedContextByUser(
+  store: Store,
+  conversationId: ConversationId,
+): Map<MessageId, RunContextSegment[]> {
+  const fullByUser = new Map<MessageId, RunContextSegment[]>()
+  for (const snapshot of listRunContextSnapshots(store, conversationId)) {
+    if (!snapshot.userMessageId) continue
+    // 重复 set 保持首次插入的位置，值取最后一次 run 的快照。
+    fullByUser.set(snapshot.userMessageId, snapshot.segments)
+  }
+  const out = new Map<MessageId, RunContextSegment[]>()
+  let previous: RunContextSegment[] = []
+  for (const [userMessageId, segments] of fullByUser) {
+    out.set(
+      userMessageId,
+      segments.filter((segment) => !previous.some((p) => sameContextSegment(p, segment))),
+    )
+    previous = segments
+  }
+  return out
+}
+
+/** 最新 run 的完整快照。压缩把折掉的段从这里钉回，不重新扫描。 */
+export function latestContextSnapshot(
+  store: Store,
+  conversationId: ConversationId,
+): { userMessageId: MessageId; segments: RunContextSegment[] } | null {
+  const latest = [...listRunContextSnapshots(store, conversationId)]
+    .reverse()
+    .find((snapshot) => snapshot.userMessageId !== null)
+  return latest?.userMessageId
+    ? { userMessageId: latest.userMessageId, segments: latest.segments }
+    : null
+}
 
 /** 投影产物统一带的分组标记。工具结果的执行记录/正文二分在计量层做，不在这里拆。 */
 const GROUP: ContextGroup = 'executionRecords'
@@ -332,14 +387,7 @@ export async function buildHistory(
     byUser.set(r.userMessageId, list)
   }
 
-  const contextByUser = new Map<
-    string,
-    ReturnType<typeof listRunContextSnapshots>[number]['segments']
-  >()
-  for (const snapshot of listRunContextSnapshots(store, conversationId)) {
-    if (!snapshot.userMessageId) continue
-    contextByUser.set(snapshot.userMessageId, snapshot.segments)
-  }
+  const contextByUser = replayedContextByUser(store, conversationId)
 
   const out: WireMessage[] = []
   for (const m of listMessages(store, conversationId, upperBound)) {

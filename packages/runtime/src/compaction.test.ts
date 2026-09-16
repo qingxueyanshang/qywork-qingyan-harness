@@ -219,6 +219,43 @@ describe('投影三区', () => {
     store.close()
   })
 
+  test('与上一轮相同的段只回放一次；被摘要线折掉后从最新快照钉回，段不丢也不重复', async () => {
+    const { store, ws, conv, ids } = fresh(8)
+    const segments = [
+      { content: '工作区：C:/ws', group: 'workspaceState' as const },
+      { content: '## 记忆索引\n- no-repeat', group: 'memory' as const },
+    ]
+    for (const [i, userMessageId] of [ids[0]!, ids[2]!, ids[4]!].entries()) {
+      createRun(store, {
+        conversationId: conv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `dedupe-${i}`,
+        userMessageId,
+        messageIdUpperBound: userMessageId,
+        contextSnapshot: segments,
+      })
+    }
+    const raw = await history(store, conv.id)
+    expect(raw.filter((message) => message.role === 'context').map((m) => m.content)).toEqual([
+      '工作区：C:/ws',
+      '## 记忆索引\n- no-repeat',
+    ])
+
+    const p = port(store, conv.id)
+    expect((await p.run(await pressure(store, conv.id))).status).toBe('compacted')
+    const projected = p.project(await history(store, conv.id))
+    expect(projected.filter((message) => message.role === 'context').map((m) => m.content)).toEqual(
+      ['工作区：C:/ws', '## 记忆索引\n- no-repeat'],
+    )
+    expect(projected.slice(0, 3).map((message) => message.role)).toEqual([
+      'context',
+      'context',
+      'user',
+    ])
+    store.close()
+  })
+
   test('最后一次成功 write_todos 跨摘要与收纳仍保留完整调用和结果', async () => {
     const { store, ws, conv, ids } = fresh(2)
     const run = createRun(store, {
