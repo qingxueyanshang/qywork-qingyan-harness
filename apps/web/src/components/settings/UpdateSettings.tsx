@@ -4,8 +4,8 @@ import { config, replaceConfig } from './configStore.ts'
 
 const MODES = {
   installed: '安装版',
-  'source-desktop': '源码 · 桌面',
-  'source-web': '源码 · Web',
+  'source-desktop': '源码版',
+  'source-web': '源码版',
   manual: '手动更新',
 }
 
@@ -22,9 +22,9 @@ export function UpdateSettings() {
       {(value) => {
         const view = () => updatePresentation(value())
         return (
-          <section class="settings-block app-update-section" aria-label="软件更新">
+          <section class="settings-block app-update-section" aria-label="更新">
             <div class="settings-block-head app-update-heading">
-              <h3>软件更新</h3>
+              <h3>更新</h3>
               <div class="app-update-version" title="当前版本与运行方式">
                 <span>{value().currentVersion}</span>
                 <span>{MODES[value().mode]}</span>
