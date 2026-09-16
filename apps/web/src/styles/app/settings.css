@@ -155,8 +155,14 @@
   background: var(--text-secondary);
 }
 .app-update-section .app-update-switch:checked {
-  background: var(--text-primary);
-  border-color: var(--text-primary);
+  background: light-dark(
+    color-mix(in srgb, var(--text-primary) 30%, var(--bg-raised)),
+    var(--text-primary)
+  );
+  border-color: light-dark(
+    color-mix(in srgb, var(--text-primary) 30%, var(--bg-raised)),
+    var(--text-primary)
+  );
 }
 .app-update-section .app-update-switch:checked::before {
   transform: translateX(12px);

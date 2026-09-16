@@ -64,7 +64,7 @@ export function ensureConfig(): void {
 
 export async function reloadConfig(): Promise<void> {
   try {
-    setPayload(await loadServerConfig())
+    publishConfig(await loadServerConfig())
     setError(null)
   } catch (e) {
     setError(e)
@@ -88,7 +88,14 @@ export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
  * Base URL 时丢失 Key）。串行化保证每次写入读到的均为前一次落盘后的结果；队列内
  * 单次失败不阻断后续写入。
  */
-let writeQueue: Promise<unknown> = Promise.resolve()
+type ConfigEdit = (cur: RedactedConfig) => RedactedConfig | null
+const writeQueue: { edit: ConfigEdit; resolve: () => void }[] = []
+
+/** 保存回执上仍叠加尚未完成的编辑，避免前一次回执把后一次操作闪回旧值。 */
+function publishConfig(fresh: ConfigPayload): void {
+  const projected = writeQueue.reduce((cur, { edit }) => edit(cur) ?? cur, fresh.config)
+  setPayload({ ...fresh, config: projected })
+}
 
 /**
  * 改配置。**传的是改法，不是改完的那份。**
@@ -100,9 +107,7 @@ let writeQueue: Promise<unknown> = Promise.resolve()
  * 传改法就能在写之前重新拿一次服务端真值、在它之上再算一遍。
  * 返回 `null` 表示放弃这次写（前提在新数据上不再成立）。
  */
-export async function replaceConfig(
-  edit: (cur: RedactedConfig) => RedactedConfig | null,
-): Promise<void> {
+export async function replaceConfig(edit: ConfigEdit): Promise<void> {
   const prev = payload()
   if (!prev) return
   const optimistic = edit(prev.config)
@@ -110,9 +115,25 @@ export async function replaceConfig(
   // 乐观更新立即做，不进队列：控件要马上反映操作。此刻 payload 已含前一次的乐观值，
   // 所以连续改两格叠加正确；真正要串行的只是下面读服务端 + PUT 那一段。
   setPayload({ ...prev, config: optimistic })
-  const run = writeQueue.then(() => flushWrite(edit))
-  writeQueue = run.catch(() => {})
-  return run
+  return new Promise<void>((resolve) => {
+    writeQueue.push({ edit, resolve })
+    if (!busy()) void flushWrites()
+  })
+}
+
+async function flushWrites(): Promise<void> {
+  setBusy(true)
+  try {
+    while (writeQueue.length) {
+      const pending = writeQueue[0]!
+      const fresh = await flushWrite(pending.edit)
+      writeQueue.shift()
+      if (fresh) publishConfig(fresh)
+      pending.resolve()
+    }
+  } finally {
+    setBusy(false)
+  }
 }
 
 /** 服务端以 409（配置已被其他客户端修改）拒绝保存：唯一携带 `status` 的错误。 */
@@ -123,32 +144,32 @@ function isConflict(e: unknown): boolean {
   )
 }
 
-async function flushWrite(edit: (cur: RedactedConfig) => RedactedConfig | null): Promise<void> {
-  setBusy(true)
+async function flushWrite(edit: ConfigEdit): Promise<ConfigPayload | null> {
   try {
     // 409 表示配置已被其他客户端修改。重新读取完整配置、在其上重放本次编辑后再次提交；
     // 有界重试以避免两端反复冲突。同一客户端的写入已由队列串行，不会与自身冲突。
     for (let attempt = 0; ; attempt++) {
       const fresh = await loadServerConfig()
       const next = edit(fresh.config)
-      if (!next) {
-        setPayload(fresh)
-        break
-      }
       try {
-        setPayload(await saveServerConfig(next, fresh.version))
-        break
+        const saved = next ? await saveServerConfig(next, fresh.version) : fresh
+        setWriteError(null)
+        return saved
       } catch (e) {
         if (isConflict(e) && attempt < 5) continue
         throw e
       }
     }
-    setWriteError(null)
   } catch (e) {
     // 失败必须回滚到服务端真值，否则界面显示的是一个从未落盘的值。
     setWriteError(explainApiError(e, '保存失败'))
-    await reloadConfig()
-  } finally {
-    setBusy(false)
+    try {
+      const fresh = await loadServerConfig()
+      setError(null)
+      return fresh
+    } catch (reloadError) {
+      setError(reloadError)
+      return null
+    }
   }
 }

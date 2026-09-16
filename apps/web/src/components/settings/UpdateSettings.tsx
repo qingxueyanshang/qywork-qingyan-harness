@@ -1,6 +1,6 @@
 import { createSignal, Show } from 'solid-js'
 import { actOnUpdate, appUpdate, updatePresentation } from '../../lib/store/app-update.ts'
-import { config, configBusy, patchConfig } from './configStore.ts'
+import { config, replaceConfig } from './configStore.ts'
 
 const MODES = {
   installed: '安装版',
@@ -13,7 +13,10 @@ export function UpdateSettings() {
   const [notes, showNotes] = createSignal(false)
   const preferences = () => config()?.updates ?? { autoCheck: true, autoDownload: true }
   const toggle = (field: 'autoCheck' | 'autoDownload', value: boolean) =>
-    void patchConfig({ updates: { ...preferences(), [field]: value } })
+    void replaceConfig((cur) => ({
+      ...cur,
+      updates: { autoCheck: true, autoDownload: true, ...cur.updates, [field]: value },
+    }))
   return (
     <Show when={appUpdate()}>
       {(value) => {
@@ -47,7 +50,7 @@ export function UpdateSettings() {
                     role="switch"
                     aria-checked={preferences().autoCheck}
                     checked={preferences().autoCheck}
-                    disabled={!config() || configBusy()}
+                    disabled={!config()}
                     onChange={(e) => toggle('autoCheck', e.currentTarget.checked)}
                   />
                 </label>
@@ -59,7 +62,7 @@ export function UpdateSettings() {
                     role="switch"
                     aria-checked={preferences().autoDownload}
                     checked={preferences().autoDownload}
-                    disabled={!config() || configBusy()}
+                    disabled={!config()}
                     onChange={(e) => toggle('autoDownload', e.currentTarget.checked)}
                   />
                 </label>

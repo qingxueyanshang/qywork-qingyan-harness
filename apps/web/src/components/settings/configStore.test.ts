@@ -24,6 +24,7 @@ let server: {
   active: { provider: string; model: string }
   mode: PermissionMode
   providers: Record<string, ServerProvider>
+  updates: { autoCheck: boolean; autoDownload: boolean }
 }
 let serverVersion = 0
 /** 下一次 saveServerConfig 先注入一次「别处的并发改动」，逼出一次 409。 */
@@ -45,12 +46,12 @@ function payloadFromServer(): ConfigPayload {
     notices: [],
     problems: [],
     defaultEnvAllowList: [],
-    config: { active: server.active, mode: server.mode, providers },
+    config: { active: server.active, mode: server.mode, providers, updates: server.updates },
   }
 }
 
 const loadServerConfig = mock(() => Promise.resolve(payloadFromServer()))
-const saveServerConfig = mock((config: RedactedConfig, baseVersion?: string) => {
+function persistConfig(config: RedactedConfig, baseVersion?: string): Promise<ConfigPayload> {
   injectConflictOnce?.()
   injectConflictOnce = null
   if (baseVersion !== undefined && baseVersion !== String(serverVersion)) {
@@ -66,9 +67,11 @@ const saveServerConfig = mock((config: RedactedConfig, baseVersion?: string) => 
       ...(baseUrl ? { baseUrl } : {}),
     }
   }
+  if (config.updates) server.updates = { ...config.updates }
   serverVersion++
   return Promise.resolve(payloadFromServer())
-})
+}
+const saveServerConfig = mock(persistConfig)
 
 mock.module('../../lib/store/index.ts', () => ({
   loadServerConfig,
@@ -76,7 +79,24 @@ mock.module('../../lib/store/index.ts', () => ({
   explainApiError: (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback),
 }))
 
-const { replaceConfig, reloadConfig } = await import('./configStore.ts')
+const { config, configBusy, configWriteError, replaceConfig, reloadConfig } = await import(
+  './configStore.ts'
+)
+
+function pause() {
+  let resume!: () => void
+  const promise = new Promise<void>((resolve) => {
+    resume = resolve
+  })
+  return { promise, resume }
+}
+
+const setUpdate =
+  (field: 'autoCheck' | 'autoDownload', value: boolean) =>
+  (cur: RedactedConfig): RedactedConfig => ({
+    ...cur,
+    updates: { autoCheck: true, autoDownload: true, ...cur.updates, [field]: value },
+  })
 
 const setKey =
   (key: string) =>
@@ -97,9 +117,12 @@ describe('配置写串行化与乐观并发', () => {
       active: { provider: 'ds', model: 'm' },
       mode: 'auto',
       providers: { ds: { kind: 'openai_chat_completions' } },
+      updates: { autoCheck: true, autoDownload: true },
     }
     serverVersion = 0
     injectConflictOnce = null
+    saveServerConfig.mockReset()
+    saveServerConfig.mockImplementation(persistConfig)
     await reloadConfig()
   })
 
@@ -130,5 +153,60 @@ describe('配置写串行化与乐观并发', () => {
     // 第一次 save 撞 409；重读拿到别处那次的 baseUrl，重放本次 setKey 后再存。
     expect(server.providers.ds?.apiKey).toBe('sk-z')
     expect(server.providers.ds?.baseUrl).toBe('https://other.example/v1')
+  })
+
+  test('连续改两个开关，前一次保存返回时不覆盖后一次的即时显示', async () => {
+    const first = pause()
+    const second = pause()
+    saveServerConfig.mockImplementationOnce(async (next, version) => {
+      await first.promise
+      return persistConfig(next, version)
+    })
+    saveServerConfig.mockImplementationOnce(async (next, version) => {
+      await second.promise
+      return persistConfig(next, version)
+    })
+    const a = replaceConfig(setUpdate('autoCheck', false))
+    const b = replaceConfig(setUpdate('autoDownload', false))
+    try {
+      expect(config()?.updates).toEqual({ autoCheck: false, autoDownload: false })
+      first.resume()
+      await a
+      expect(config()?.updates).toEqual({ autoCheck: false, autoDownload: false })
+      expect(configBusy()).toBe(true)
+    } finally {
+      first.resume()
+      second.resume()
+      await Promise.all([a, b])
+    }
+    expect(server.updates).toEqual({ autoCheck: false, autoDownload: false })
+    expect(configBusy()).toBe(false)
+  })
+
+  test('第一次保存失败时只回滚失败项，后续开关仍保持用户刚选的值并继续保存', async () => {
+    const first = pause()
+    const second = pause()
+    saveServerConfig.mockImplementationOnce(async () => {
+      await first.promise
+      throw new Error('无法保存自动检查设置')
+    })
+    saveServerConfig.mockImplementationOnce(async (next, version) => {
+      await second.promise
+      return persistConfig(next, version)
+    })
+    const a = replaceConfig(setUpdate('autoCheck', false))
+    const b = replaceConfig(setUpdate('autoDownload', false))
+    try {
+      first.resume()
+      await a
+      expect(configWriteError()).toBe('无法保存自动检查设置')
+      expect(config()?.updates).toEqual({ autoCheck: true, autoDownload: false })
+    } finally {
+      second.resume()
+      await Promise.all([a, b])
+    }
+    expect(server.updates).toEqual({ autoCheck: true, autoDownload: false })
+    expect(configWriteError()).toBeNull()
+    expect(configBusy()).toBe(false)
   })
 })
