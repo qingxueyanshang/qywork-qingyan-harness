@@ -2,7 +2,8 @@
  * 浏览器控制的会话归属与并发。
  *
  * 覆盖范围：`coordinator.ts` 的控制槽发放、版本准入、会话归属校验、按会话关页与释放，
- * 以及它经 `bridge.ts` 发出的 `create` / `bind` / `close.conversation` / `download.arm` 形状。
+ * 动作与导航之后的静默等待、观察登记与失败说明，以及它经 `bridge.ts` 发出的
+ * `create` / `bind` / `close.conversation` / `download.arm` 形状。
  *
  * 对端是一个自动应答的假宿主，外加一个只走通路的假调试端点——这里问的是
  * 「哪条会话的页归谁、别的会话能不能操作它、删会话关不关得掉页」，不是 CDP 协议细节
@@ -52,14 +53,42 @@ async function failure(pending: Promise<unknown> | undefined): Promise<Error> {
   return out as Error
 }
 
+/** 假调试端点的开关：单条用例按需改它，改完影响其后的每一条命令。 */
+interface Devtools {
+  port: number
+  clicks: () => number
+  /** 下一次 goto 回这个 errorText，模拟导航被拒。 */
+  navigateError: string | null
+  /** 让采集命令报错，模拟动作之后观察取不到。 */
+  failObserve: boolean
+  /** 每次探针读数都换一个变更计数，模拟持续变化的页面。 */
+  churn: boolean
+  /** 探针读数不给 ready 与 mutations，模拟探针无效。 */
+  blindProbe: boolean
+  /** 每条命令答完回调一次。用来在动作与观察之间插事。 */
+  onCommand: ((method: string, expression: string) => void) | null
+}
+
 /**
  * 只走通路的假调试端点：一个 page target、一个可点的下载链接。
  *
- * 元素与动作的判定在 `page.test.ts`；这里只要让观察和点击能走通，
- * 好把下载的授权、触发、终态、磁盘核对这条链接起来。
+ * 元素与动作的判定在 `page.test.ts`；这里只要让观察、点击与导航能走通，
+ * 好把下载的授权、触发、终态、磁盘核对，以及动作之后的静默等待与观察这两条链接起来。
+ * 导航按真端点的形状回 frameId 并补发 `Page.frameNavigated`：协调器按事件确认导航，
+ * 不按「令牌没变就是同文档」推断。探针按真实表达式应答并给全 `ready` 与 `mutations`。
  */
-function fakeDevtools(marker: string): { port: number; clicks: () => number } {
+function fakeDevtools(marker: string): Devtools {
   let clicks = 0
+  let mutations = 0
+  const state: Devtools = {
+    port: 0,
+    clicks: () => clicks,
+    navigateError: null,
+    failObserve: false,
+    churn: false,
+    blindProbe: false,
+    onCommand: null,
+  }
   const server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
@@ -79,11 +108,37 @@ function fakeDevtools(marker: string): { port: number; clicks: () => number } {
           params?: Record<string, unknown>
         }
         let result: Record<string, unknown> = {}
+        let error: string | null = null
         if (cmd.method === 'Target.getTargets') {
           result = { targetInfos: [{ targetId: 'page-1', type: 'page' }] }
         }
         if (cmd.method === 'Target.attachToTarget') result = { sessionId: 'sess-1' }
+        if (cmd.method === 'Page.getFrameTree') {
+          result = { frameTree: { frame: { id: 'frame-1' } } }
+        }
+        if (cmd.method === 'Page.getNavigationHistory') {
+          result = { currentIndex: 1, entries: [{ id: 1 }, { id: 2 }] }
+        }
+        if (
+          cmd.method === 'Page.navigate' ||
+          cmd.method === 'Page.reload' ||
+          cmd.method === 'Page.navigateToHistoryEntry'
+        ) {
+          if (cmd.method === 'Page.navigate' && state.navigateError) {
+            result = { frameId: 'frame-1', errorText: state.navigateError }
+          } else {
+            result = { frameId: 'frame-1', loaderId: 'loader-1' }
+            ws.send(
+              JSON.stringify({
+                method: 'Page.frameNavigated',
+                sessionId: 'sess-1',
+                params: { frame: { id: 'frame-1', loaderId: 'loader-1' } },
+              }),
+            )
+          }
+        }
         if (cmd.method === 'DOM.getDocument') {
+          if (state.failObserve) error = '采集失败'
           result = {
             root: {
               backendNodeId: 1,
@@ -134,14 +189,35 @@ function fakeDevtools(marker: string): { port: number; clicks: () => number } {
                 value: { token: 'doc-1', url: 'http://127.0.0.1:1/page', title: '夹具页' },
               },
             }
+          } else if (expr.includes('__qyworkProbeRead')) {
+            if (state.churn) mutations += 1
+            result = {
+              result: {
+                value: state.blindProbe ? {} : { ready: 'complete', mutations },
+              },
+            }
+          } else if (expr.includes('__qyworkProbe(')) {
+            result = { result: { value: { id: 5 } } }
+          } else if (expr.includes('__qyworkWait(')) {
+            result = { result: { value: { id: 7, immediate: false } } }
+          } else if (expr.includes('__qyworkAwait(')) {
+            result = { result: { value: { found: true, id: 7 } } }
           } else result = { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
         }
-        ws.send(JSON.stringify({ id: cmd.id, result }))
+        ws.send(
+          JSON.stringify(
+            error === null
+              ? { id: cmd.id, result }
+              : { id: cmd.id, error: { code: -32000, message: error } },
+          ),
+        )
+        state.onCommand?.(cmd.method, String(cmd.params?.expression ?? ''))
       },
     },
   })
   cleanups.push(() => server.stop(true))
-  return { port: server.port ?? 0, clicks: () => clicks }
+  state.port = server.port ?? 0
+  return state
 }
 
 /**
@@ -301,7 +377,7 @@ function fresh(): ReturnType<typeof serve> {
 async function ready(): Promise<{
   handle: ReturnType<typeof serve>
   host: AutoHost
-  devtools: { port: number; clicks: () => number }
+  devtools: Devtools
 }> {
   const handle = fresh()
   const host = await AutoHost.connect(handle.port)
@@ -562,4 +638,172 @@ test('换一次导航就作废旧观察，动作拿不到过期编号', async ()
       )
     ).message,
   ).toMatch(/失效/)
+})
+
+test('导航只作废目标页的观察，别的标签页的编号照常可用', async () => {
+  const { handle } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const one = await port?.open('http://127.0.0.1:1/page')
+  const two = await port?.open('http://127.0.0.1:1/other')
+  const obOne = await port?.observe({ tabId: one?.tabId ?? '' })
+  const obTwo = await port?.observe({ tabId: two?.tabId ?? '' })
+
+  await port?.navigate({ tabId: one?.tabId ?? '', action: 'reload' })
+
+  // 另一页没被这次导航动过，它的编号仍然指得到节点。
+  const other = await port?.act({
+    tabId: two?.tabId ?? '',
+    observationId: obTwo?.observationId ?? '',
+    action: 'click',
+    ref: obTwo?.elements[0]?.ref ?? '',
+  })
+  expect(other?.element).toBe('dl')
+  // 导航的那一页旧编号作废。
+  expect(
+    (
+      await failure(
+        port?.act({
+          tabId: one?.tabId ?? '',
+          observationId: obOne?.observationId ?? '',
+          action: 'click',
+          ref: obOne?.elements[0]?.ref ?? '',
+        }),
+      )
+    ).message,
+  ).toMatch(/失效/)
+})
+
+test('动作之后直接给出新观察，用它再动作一次不必中间再观察', async () => {
+  const { handle } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+
+  const first = await port?.act({
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    action: 'click',
+    ref: ob?.elements[0]?.ref ?? '',
+  })
+  if (!first || first.observation === null) throw new Error('这次动作本应带回观察')
+  expect(first.element).toBe('dl')
+  expect(first.settle).toBe('quiet')
+  expect(first.observation.observationId).not.toBe(ob?.observationId)
+
+  // 拿回来的编号直接用：这中间一次 observe 都没有。
+  const second = await port?.act({
+    tabId: tab?.tabId ?? '',
+    observationId: first.observation.observationId,
+    action: 'click',
+    ref: first.observation.elements[0]?.ref ?? '',
+  })
+  if (!second || second.observation === null) throw new Error('这次动作本应带回观察')
+  expect(second.element).toBe('dl')
+})
+
+test('动作发出后观察取不到时保留回执，另说明为什么没看见', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+
+  devtools.failObserve = true
+  const r = await port?.act({
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    action: 'click',
+    ref: ob?.elements[0]?.ref ?? '',
+  })
+  if (!r || r.observation !== null) throw new Error('这次观察本应取不到')
+  // 动作已经发出去了：回执留着，模型据此知道不该重复点。
+  expect(r.element).toBe('dl')
+  expect(r.point).toEqual({ x: 10, y: 10 })
+  expect(r.observationError).toContain('采集失败')
+  expect(devtools.clicks()).toBe(1)
+})
+
+test('探针读数缺字段时不报静默，按阶段上限如实标注', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+
+  devtools.blindProbe = true
+  const r = await port?.act({
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    action: 'click',
+    ref: ob?.elements[0]?.ref ?? '',
+  })
+  if (!r || r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('deadline')
+})
+
+test('取消之后不再开新观察，动作回执仍然给得出', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+
+  // 点击已经发出、静默探针刚登记上就释放控制：这一刻之后不得再开新观察。
+  devtools.onCommand = (_method, expression) => {
+    if (!expression.includes('__qyworkProbe(')) return
+    devtools.onCommand = null
+    void port?.release()
+  }
+  const r = await port?.act({
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    action: 'click',
+    ref: ob?.elements[0]?.ref ?? '',
+  })
+  if (!r || r.observation !== null) throw new Error('这次观察本应取不到')
+  expect(r.element).toBe('dl')
+  expect(r.observationError).toMatch(/取消/)
+  expect(devtools.clicks()).toBe(1)
+})
+
+test('导航回的是导航之后的观察，不再另回一份标签信息', async () => {
+  const { handle } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+
+  const r = await port?.navigate({
+    tabId: tab?.tabId ?? '',
+    action: 'goto',
+    url: 'http://127.0.0.1:1/next',
+  })
+  if (!r || r.observation === null) throw new Error('这次导航本应带回观察')
+  // 地址取自观察，是页面此刻的实际地址，不是请求过的那个。
+  expect(r.observation.url).toBe('http://127.0.0.1:1/page')
+  expect(r.observation.elements.length).toBeGreaterThan(0)
+  expect(r.settle).toBe('quiet')
+})
+
+test('导航被拒时报失败，不拿旧页快照冒充跳转成功', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+
+  devtools.navigateError = 'net::ERR_NAME_NOT_RESOLVED'
+  const err = await failure(
+    port?.navigate({
+      tabId: tab?.tabId ?? '',
+      action: 'goto',
+      url: 'http://127.0.0.1:1/missing',
+    }),
+  )
+  expect(err.message).toMatch(/ERR_NAME_NOT_RESOLVED/)
+})
+
+test('等待结束后直接采一次观察，不做静默等待也不带静默标注', async () => {
+  const { handle } = await ready()
+  const port = handle.browser?.portFor('cv_1')
+  const tab = await port?.open('http://127.0.0.1:1/page')
+
+  const r = await port?.wait({ tabId: tab?.tabId ?? '', selector: '#dl', timeoutMs: 1_000 })
+  expect(r?.found).toBe(true)
+  if (!r || r.observation === null) throw new Error('这次等待本应带回观察')
+  expect('settle' in r).toBe(false)
+  expect(r.observation.elements.length).toBeGreaterThan(0)
 })

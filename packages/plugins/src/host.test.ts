@@ -294,38 +294,6 @@ describe('权限在宿主侧强制', () => {
     expect(requiredPermissions('exec.run')).toEqual(['process:exec'])
     expect(requiredPermissions('storage.get')).toEqual(['storage'])
   })
-
-  test('浏览器方法要 browser:control，上传下载另外各要一份文件权限', () => {
-    expect(requiredPermissions('browser.observe')).toEqual(['browser:control'])
-    expect(requiredPermissions('browser.act')).toEqual(['browser:control'])
-    expect(requiredPermissions('browser.upload')).toEqual(['browser:control', 'workspace:read'])
-    expect(requiredPermissions('browser.download')).toEqual(['browser:control', 'workspace:write'])
-  })
-
-  test('browser 权限不映射成 process:exec，也换不到出网或读文件', () => {
-    const h = new PluginHost({
-      manifest: manifest(['browser:control']),
-      dir: '/tmp',
-      entry: '/tmp/x.mjs',
-      onCapability: async () => null,
-    })
-    expect(checkPermission(h, 'browser.act').ok).toBe(true)
-    expect(checkPermission(h, 'exec.run').ok).toBe(false)
-    expect(checkPermission(h, 'net.fetch').ok).toBe(false)
-    expect(checkPermission(h, 'fs.read').ok).toBe(false)
-    expect(checkPermission(h, 'browser.upload').ok).toBe(false)
-    expect(checkPermission(h, 'browser.download').ok).toBe(false)
-  })
-
-  test('只有 process:exec 的插件调不动浏览器', () => {
-    const h = new PluginHost({
-      manifest: manifest(['process:exec']),
-      dir: '/tmp',
-      entry: '/tmp/x.mjs',
-      onCapability: async () => null,
-    })
-    expect(checkPermission(h, 'browser.act').ok).toBe(false)
-  })
 })
 
 /** 反向 RPC 的样板：原样带回宿主给的 callId，同时在参数里另报一份假身份。 */

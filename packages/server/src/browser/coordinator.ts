@@ -25,6 +25,7 @@ import type {
   BrowserPort,
   BrowserTabInfo,
   BrowserWaitResult,
+  FollowUpObservation,
 } from '@qywork/agent'
 import type { BrowserEventFrame } from '@qywork/core'
 import { log } from '@qywork/core'
@@ -36,6 +37,7 @@ import {
   type ObservationRecord,
   observePage,
   type PageHandle,
+  readDocument,
   uploadToPage,
   waitOnPage,
 } from './page.ts'
@@ -57,6 +59,60 @@ export class BrowserNotOwnedError extends Error {}
 
 /** 一次观察在协调器里保留多久。只留最近几份，旧编号本来就要求重新观察。 */
 const MAX_OBSERVATIONS = 8
+
+/**
+ * 动作与导航的后处理绝对预算：静默等待、导航确认、观察采集共用这一个截止时间。
+ *
+ * 各阶段不重新给满额度，否则一条默认 15000 ms 的 CDP 命令就能让整次调用远超上限。
+ * 导航命令本身的 30000 ms 在这份预算之外。这些是工程预算，不是网站就绪保证。
+ */
+const FOLLOW_UP_BUDGET_MS = 10_000
+/** 静默等待的阶段上限。到点即采，采得到就按 `deadline` 如实标注。 */
+const QUIET_LIMIT_MS = 1_500
+/** 静默采样间隔。 */
+const QUIET_SAMPLE_MS = 100
+/** 探针命令的单条上限，再短也按剩余预算取小。 */
+const PROBE_TIMEOUT_MS = 2_000
+/** 等导航提交事件的上限。 */
+const COMMIT_WAIT_MS = 3_000
+/** 导航命令本身的上限。 */
+const NAVIGATE_TIMEOUT_MS = 30_000
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** 距截止时间还剩多少毫秒。 */
+const leftMs = (deadline: number) => deadline - Date.now()
+/** 探针命令的超时：剩余预算与单条上限取小。 */
+const probeTimeout = (deadline: number) => Math.max(1, Math.min(PROBE_TIMEOUT_MS, leftMs(deadline)))
+
+/** 等一个兑现，或到点为止。到点时清掉定时器，不留悬着的计时。 */
+function firstOf(pending: Promise<void>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), Math.max(0, ms))
+    void pending.then(() => {
+      clearTimeout(timer)
+      resolve(true)
+    })
+  })
+}
+
+/**
+ * 一次动作或导航期间的框架事件。
+ *
+ * 建立在发命令之前、结束时 `stop`：事件可能先于命令回包到达，判断「这段时间里有没有
+ * 导航」必须覆盖命令本身。`Page` 域事件由页会话初始化时的 `Page.enable` 发布，
+ * 这里不另开事件源。
+ */
+interface NavWatch {
+  /** 收到的导航事件条数。静默采样按它是否增长判断本次窗口内有没有导航。 */
+  events(): number
+  /** 有导航开始但还没收到结束事件。 */
+  loading(): boolean
+  /** 已经收到提交证据。 */
+  committed(): boolean
+  /** 提交时兑现，等导航确认用它，不轮询。 */
+  commit: Promise<void>
+  stop(): void
+}
 
 /**
  * 当前控制槽。宿主断开、释放控制、初始化失败三种情况下都回到 `null`。
@@ -254,6 +310,11 @@ export class BrowserCoordinator {
     const sessionId = control.sessions.get(tabId)
     control.sessions.delete(tabId)
     if (sessionId) control.client?.forgetSession(sessionId)
+    this.#dropObservations(control, tabId)
+  }
+
+  /** 作废一页的全部观察编号。作废范围只到这一页，别的标签页的编号仍然有效。 */
+  #dropObservations(control: Control, tabId: string): void {
     for (const [id, record] of [...control.observations]) {
       if (record.tabId === tabId) control.observations.delete(id)
     }
@@ -325,40 +386,58 @@ export class BrowserCoordinator {
     return record
   }
 
+  /**
+   * 地址栏级导航，返回导航之后的观察。
+   *
+   * 导航是否发生按本次的 CDP 事件与 `Page.navigate` 的回执判定，不按「令牌没变就是
+   * 同文档」推断——令牌没变也可能是导航还没提交。
+   */
   async #navigate(
     owner: number,
     conversationId: string,
     input: { tabId: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string },
-  ): Promise<BrowserTabInfo> {
+  ): Promise<FollowUpObservation> {
     const { control, page } = await this.#pageOf(owner, conversationId, input.tabId)
-    // 换文档即换观察：旧编号指向的节点已经不存在，留着只会让下一次动作打在别处。
-    control.observations.clear()
+    // 换文档即换观察：旧编号指向的节点已经不存在。只清这一页的——别的标签页没被这次导航动过。
+    this.#dropObservations(control, input.tabId)
     const { client, sessionId } = page
-    if (input.action === 'goto') {
-      await client.send('Page.navigate', { url: input.url ?? '' }, { sessionId, timeoutMs: 30_000 })
-    } else if (input.action === 'reload') {
-      await client.send('Page.reload', {}, { sessionId, timeoutMs: 30_000 })
-    } else {
-      const history = await client.send<{
-        currentIndex: number
-        entries: { id: number }[]
-      }>('Page.getNavigationHistory', {}, { sessionId })
-      const step = input.action === 'back' ? -1 : 1
-      const entry = history.entries[history.currentIndex + step]
-      if (!entry)
-        throw new BrowserBridgeError(`没有可${input.action === 'back' ? '后退' : '前进'}的历史`)
-      await client.send('Page.navigateToHistoryEntry', { entryId: entry.id }, { sessionId })
-    }
-    const head = await client.send<{ result: { value: { url: string; title: string } } }>(
-      'Runtime.evaluate',
-      { expression: '({ url: location.href, title: document.title })', returnByValue: true },
-      { sessionId, timeoutMs: 30_000 },
+    // 基线现取。观察表里最后那一份是另一个时刻、可能是另一页的值，当基线会判错。
+    const baseline = await readDocument(page)
+    const tree = await client.send<{ frameTree: { frame: { id: string } } }>(
+      'Page.getFrameTree',
+      {},
+      { sessionId },
     )
-    return {
-      tabId: input.tabId,
-      url: head.result.value.url,
-      title: head.result.value.title,
-      controlled: true,
+    const watch = this.#watchNav(page, tree.frameTree.frame.id)
+    try {
+      if (input.action === 'goto') {
+        const sent = await client.send<{ errorText?: string }>(
+          'Page.navigate',
+          { url: input.url ?? '' },
+          { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS },
+        )
+        // errorText 表示这次导航失败，页面还停在原处。不能接着采一份旧页快照当跳转成功。
+        if (sent.errorText) throw new BrowserBridgeError(`导航失败：${sent.errorText}`)
+      } else if (input.action === 'reload') {
+        await client.send('Page.reload', {}, { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS })
+      } else {
+        const history = await client.send<{
+          currentIndex: number
+          entries: { id: number }[]
+        }>('Page.getNavigationHistory', {}, { sessionId })
+        const step = input.action === 'back' ? -1 : 1
+        const entry = history.entries[history.currentIndex + step]
+        if (!entry)
+          throw new BrowserBridgeError(`没有可${input.action === 'back' ? '后退' : '前进'}的历史`)
+        await client.send('Page.navigateToHistoryEntry', { entryId: entry.id }, { sessionId })
+      }
+      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
+      const committed = await this.#awaitCommit(page, watch, baseline, deadline)
+      const settle = await this.#quietWait(page, watch, deadline)
+      // 没确认到提交就不报 quiet：那一刻的静默可能属于还没被替换掉的旧文档。
+      return await this.#followUp(control, page, deadline, committed ? settle : 'deadline')
+    } finally {
+      watch.stop()
     }
   }
 
@@ -368,11 +447,28 @@ export class BrowserCoordinator {
     input: { tabId: string; frame?: string; screenshot?: boolean; offset?: number },
   ): Promise<BrowserObservation> {
     const { control, page } = await this.#pageOf(owner, conversationId, input.tabId)
-    const { observation, record } = await observePage(page, {
+    return this.#observeInto(control, page, {
       ...(input.frame !== undefined ? { frame: input.frame } : {}),
       ...(input.screenshot !== undefined ? { screenshot: input.screenshot } : {}),
       ...(input.offset !== undefined ? { offset: input.offset } : {}),
     })
+  }
+
+  /**
+   * 采集一次观察并登记编号。公开 observe 与三处自动观察共用它。
+   *
+   * 登记前再核一次控制槽与 owner：采集期间控制可能已经释放或被宿主断开，那份结果
+   * 不进表，也不从旧记录里补一个编号顶替。
+   */
+  async #observeInto(
+    control: Control,
+    page: PageHandle,
+    opts: { frame?: string; screenshot?: boolean; offset?: number; deadline?: number },
+  ): Promise<BrowserObservation> {
+    const { observation, record } = await observePage(page, opts)
+    if (this.#control !== control || this.#retired.has(control.owner)) {
+      throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这份观察不登记')
+    }
     control.observations.set(record.observationId, record)
     // 只留最近几份。旧编号本来就要求重新观察，留着它们只是让内存跟着轮数长。
     while (control.observations.size > MAX_OBSERVATIONS) {
@@ -383,13 +479,167 @@ export class BrowserCoordinator {
     return observation
   }
 
+  /**
+   * 动作之后的后续观察。
+   *
+   * 观察没取得时回 `observationError` 而不是抛错：动作已经发出去了，把它丢进异常会让
+   * 调用方分不清「没操作」与「操作后没看见」，从而重复提交。取消之后不再开新观察。
+   */
+  async #followUp(
+    control: Control,
+    page: PageHandle,
+    deadline: number,
+    settle?: 'quiet' | 'deadline',
+  ): Promise<FollowUpObservation> {
+    if (page.client.cancelled) {
+      return { observation: null, observationError: '已取消，动作之后没有再观察' }
+    }
+    try {
+      const observation = await this.#observeInto(control, page, { deadline })
+      return settle === undefined ? { observation } : { observation, settle }
+    } catch (err) {
+      return {
+        observation: null,
+        observationError: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  #watchNav(page: PageHandle, frameId?: string): NavWatch {
+    let events = 0
+    let inflight = 0
+    let committed = false
+    let settle: () => void = () => {}
+    const commit = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    const mine = (id: unknown) => frameId === undefined || id === frameId
+    const off = page.client.onSessionEvent(page.sessionId, (event) => {
+      const params = event.params
+      const frame = params.frame as { id?: string } | undefined
+      if (event.method === 'Page.frameStartedLoading' && mine(params.frameId)) {
+        events += 1
+        inflight += 1
+        return
+      }
+      if (event.method === 'Page.frameStoppedLoading' && mine(params.frameId)) {
+        events += 1
+        inflight = Math.max(0, inflight - 1)
+      } else if (event.method === 'Page.frameNavigated' && mine(frame?.id)) {
+        events += 1
+      } else if (event.method === 'Page.navigatedWithinDocument' && mine(params.frameId)) {
+        events += 1
+      } else {
+        return
+      }
+      committed = true
+      settle()
+    })
+    return {
+      events: () => events,
+      loading: () => inflight > 0,
+      committed: () => committed,
+      commit,
+      stop: off,
+    }
+  }
+
+  /**
+   * 等导航提交。
+   *
+   * 事件到了就是提交。上限内一条都没到时现读一次文档与基线比：换了文档或地址同样算
+   * 提交。两者都没有时返回 false——那时不得声称静默，这次导航可能仍未提交。
+   */
+  async #awaitCommit(
+    page: PageHandle,
+    watch: NavWatch,
+    baseline: { token: string; url: string },
+    deadline: number,
+  ): Promise<boolean> {
+    if (watch.committed()) return true
+    if (await firstOf(watch.commit, Math.min(leftMs(deadline), COMMIT_WAIT_MS))) return true
+    const head = await readDocument(page, probeTimeout(deadline)).catch(() => null)
+    return head !== null && (head.token !== baseline.token || head.url !== baseline.url)
+  }
+
+  /**
+   * 动作之后的有界静默等待。
+   *
+   * 连续两次采样 `readyState` 为 complete 且 DOM 变更计数不变才算静默；期间收到导航
+   * 事件就重新计数，正在加载的旧文档不得提前通过。**静默只说明此刻可以采一份快照**：
+   * 尚未发出的延迟请求预知不了，它不表示网站业务已经完成。
+   *
+   * 探针读数缺字段时按未静默处理——把缺席当成 complete 会让一个仍在加载的页面通过。
+   */
+  async #quietWait(
+    page: PageHandle,
+    watch: NavWatch,
+    deadline: number,
+  ): Promise<'quiet' | 'deadline'> {
+    const { client, sessionId } = page
+    if (client.cancelled) return 'deadline'
+    const stage = Math.min(deadline, Date.now() + QUIET_LIMIT_MS)
+    try {
+      let probe = await client.startProbe(sessionId, probeTimeout(deadline))
+      try {
+        let previous: { ready: string; mutations: number } | null = null
+        let seen = watch.events()
+        while (leftMs(stage) > 0) {
+          await sleep(Math.min(QUIET_SAMPLE_MS, leftMs(stage)))
+          const read = await client.readProbe(sessionId, probe, probeTimeout(deadline))
+          const moved = watch.events() !== seen
+          seen = watch.events()
+          if (moved || watch.loading()) {
+            previous = null
+            continue
+          }
+          if (read.gone === true) {
+            // 探针随旧文档一起没了。只读等待器可以重建，动作一概不重发。
+            previous = null
+            if (leftMs(stage) <= 0) break
+            probe = await client.startProbe(sessionId, probeTimeout(deadline))
+            continue
+          }
+          if (typeof read.ready !== 'string' || typeof read.mutations !== 'number') {
+            log.warn('browser', '静默探针读数不完整，本次按未静默处理')
+            previous = null
+            continue
+          }
+          if (
+            previous?.ready === 'complete' &&
+            read.ready === 'complete' &&
+            previous.mutations === read.mutations
+          ) {
+            return 'quiet'
+          }
+          previous = { ready: read.ready, mutations: read.mutations }
+        }
+      } finally {
+        await client.disposeWaiter(sessionId, probe).catch(() => {})
+      }
+    } catch (err) {
+      log.warn('browser', `静默等待跳过：${err instanceof Error ? err.message : String(err)}`)
+    }
+    return 'deadline'
+  }
+
   async #act(
     owner: number,
     conversationId: string,
     input: BrowserActInput,
   ): Promise<BrowserActResult> {
     const { control, page } = await this.#pageOf(owner, conversationId, input.tabId)
-    return actOnPage(page, this.#recordOf(control, input.tabId, input.observationId), input)
+    const record = this.#recordOf(control, input.tabId, input.observationId)
+    // 订阅先于动作建立：点击触发的导航可能在动作回包之前就开始了。
+    const watch = this.#watchNav(page)
+    try {
+      const receipt = await actOnPage(page, record, input)
+      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
+      const settle = await this.#quietWait(page, watch, deadline)
+      return { ...receipt, ...(await this.#followUp(control, page, deadline, settle)) }
+    } finally {
+      watch.stop()
+    }
   }
 
   async #wait(
@@ -397,8 +647,11 @@ export class BrowserCoordinator {
     conversationId: string,
     input: { tabId: string; selector: string; timeoutMs: number },
   ): Promise<BrowserWaitResult> {
-    const { page } = await this.#pageOf(owner, conversationId, input.tabId)
-    return waitOnPage(page, input.selector, input.timeoutMs)
+    const { control, page } = await this.#pageOf(owner, conversationId, input.tabId)
+    const receipt = await waitOnPage(page, input.selector, input.timeoutMs)
+    // 等待按选择器结果直接采集：选择器已经是调用方给的就绪判据，不再叠一层静默等待。
+    const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
+    return { ...receipt, ...(await this.#followUp(control, page, deadline)) }
   }
 
   async #upload(

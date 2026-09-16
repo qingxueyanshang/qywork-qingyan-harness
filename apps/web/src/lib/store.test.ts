@@ -2814,7 +2814,7 @@ describe('内置浏览器能力投影', () => {
       sandbox: { backend: 'none', active: false, reason: '' },
       environment: [],
       mode: 'auto',
-      browser: { connected, runtimeSupported: connected, pluginInstalled: connected },
+      browser: { connected, runtimeSupported: connected },
     }) as never
 
   test('browser.state 整份替换能力投影，不是第二份状态', () => {
@@ -2825,7 +2825,7 @@ describe('内置浏览器能力投影', () => {
       at: 0,
       event: {
         type: 'browser.state',
-        browser: { connected: true, runtimeSupported: true, pluginInstalled: true },
+        browser: { connected: true, runtimeSupported: true },
       },
     } as never)
     expect(state.capabilities?.browser.connected).toBe(true)

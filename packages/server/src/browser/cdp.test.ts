@@ -2,7 +2,8 @@
  * 自写 CDP 客户端的发送口、配对与取消语义。
  *
  * 覆盖范围：`cdp.ts` 全部（连接、按标记附加、方法白名单、迟到回包、本地拒绝、
- * teardown 白名单、已按下未释放的键表、页会话初始化）。
+ * teardown 白名单、已按下未释放的键表、页会话初始化、按会话过滤的事件订阅、
+ * 静默探针的登记与清理）。
  *
  * 对端是一个按脚本回帧的假调试端点：被测的是客户端的判定时机——命令**有没有入网**、
  * 待决调用**由谁结掉**，拿真浏览器测不出「取消之后那一条命令有没有入网」。
@@ -31,6 +32,8 @@ class FakeEndpoint {
   received: Command[] = []
   replies = new Map<string, (cmd: Command) => Record<string, unknown> | { error: string }>()
   delays = new Map<string, number>()
+  /** 已连上的那条连接。主动发协议事件用它。 */
+  socket: ServerWebSocket<undefined> | null = null
 
   constructor() {
     const self = this
@@ -47,6 +50,9 @@ class FakeEndpoint {
         return srv.upgrade(req) ? undefined : new Response('no', { status: 400 })
       },
       websocket: {
+        open(ws: ServerWebSocket<undefined>) {
+          self.socket = ws
+        },
         message(ws: ServerWebSocket<undefined>, raw: string | Buffer) {
           const cmd = JSON.parse(String(raw)) as Command
           self.received.push(cmd)
@@ -71,10 +77,17 @@ class FakeEndpoint {
     return this.received.map((c) => c.method)
   }
 
+  /** 主动发一条协议事件。真端点在导航、加载时这么发。 */
+  emit(sessionId: string, method: string, params: Record<string, unknown> = {}): void {
+    this.socket?.send(JSON.stringify({ method, sessionId, params }))
+  }
+
   stop(): void {
     this.server.stop(true)
   }
 }
+
+const settle = () => new Promise((r) => setTimeout(r, 30))
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
@@ -245,6 +258,63 @@ test('等待器按 id 登记、等结果、单独清掉，计数读得回来', a
 
   // 页内脚本只观察：登记与清理都走 Runtime.evaluate，没有一条 Input 域命令。
   expect(endpoint.methods().filter((m) => m.startsWith('Input.'))).toEqual([])
+})
+
+test('会话事件按 sessionId 分发，取消订阅之后一条都不再收到', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  const seen: string[] = []
+  const off = client.onSessionEvent(sessionId, (event) => seen.push(event.method))
+  expect(client.watchers()).toBe(1)
+  endpoint.emit(sessionId, 'Page.frameStartedLoading', { frameId: 'f1' })
+  // 另一个会话上的同名事件不进这一份订阅：两页同时受控时它会把别的页算进来。
+  endpoint.emit('sess-other', 'Page.frameNavigated', { frame: { id: 'f9' } })
+  await settle()
+  expect(seen).toEqual(['Page.frameStartedLoading'])
+
+  off()
+  expect(client.watchers()).toBe(0)
+  endpoint.emit(sessionId, 'Page.loadEventFired')
+  await settle()
+  expect(seen).toEqual(['Page.frameStartedLoading'])
+})
+
+test('静默探针走等待器注册表：读数原样给出，取消时随统一清理清掉', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('Runtime.evaluate', (cmd) => {
+    const expression = String(cmd.params?.expression ?? '')
+    if (expression === 'window.__qyworkTab') return { result: { value: 'marker-a' } }
+    if (expression.includes('__qyworkProbeRead')) {
+      return { result: { value: { ready: 'loading', mutations: 4 } } }
+    }
+    if (expression.includes('__qyworkProbe(')) return { result: { value: { id: 3 } } }
+    return { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
+  })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  const probe = await client.startProbe(sessionId, 2_000)
+  expect(probe).toBe(3)
+  // 读数原样上交，客户端不替页面把 loading 改成 complete。
+  expect(await client.readProbe(sessionId, probe, 2_000)).toEqual({
+    ready: 'loading',
+    mutations: 4,
+  })
+
+  // 探针不在页内时读不出字段，客户端按失效给出，不补一个就绪的默认值。
+  endpoint.replies.set('Runtime.evaluate', () => ({ result: {} }))
+  expect(await client.readProbe(sessionId, probe, 2_000)).toEqual({ gone: true })
+
+  const before = endpoint.received.length
+  await client.cancel()
+  const disposals = endpoint.received
+    .slice(before)
+    .filter((c) => String(c.params?.expression ?? '').includes('__qyworkDisposeAll'))
+  expect(disposals).toHaveLength(1)
+  // 取消之后开不出新探针：它是业务命令，不是 teardown。
+  expect(await failure(client.startProbe(sessionId, 2_000))).toBeInstanceOf(CdpCancelledError)
 })
 
 test('重复取消是空操作，不再发第二轮清理', async () => {

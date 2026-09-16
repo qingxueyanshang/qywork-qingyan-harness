@@ -2,7 +2,8 @@
  * 受控页面上的观察与动作判定。
  *
  * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、翻页、
- * 文档令牌与身份指纹的失效判定、命中点复核、五种动作的发送形状、上传、下载触发）。
+ * 文档令牌与身份指纹的失效判定、命中点复核、五种动作的发送形状、上传、下载触发、
+ * 采集前后的一致性判定与观察预算）。
  *
  * 对端是一个按脚本回帧的假调试端点：被测的是**客户端发出了什么、在什么条件下拒绝**。
  * 真浏览器上的动态 DOM、重名按钮、跨站 iframe、Shadow DOM 由端到端脚本覆盖，
@@ -15,6 +16,7 @@ import { CdpClient } from './cdp.ts'
 import {
   actOnPage,
   BrowserAmbiguousRefError,
+  BrowserObserveTimeoutError,
   BrowserStaleRefError,
   observePage,
   type PageHandle,
@@ -43,6 +45,8 @@ interface PageModel {
   gone: Set<number>
   /** 头 N 次 `Accessibility.getFullAXTree` 回空树——模拟 AX 懒计算还没就绪。 */
   axDelayCalls: number
+  /** 答完这条命令就换文档令牌，模拟采集中途发生导航。 */
+  flipTokenAfter?: string
 }
 
 function domTree(model: PageModel): Record<string, unknown> {
@@ -95,6 +99,10 @@ class FakePage {
           const cmd = JSON.parse(String(raw)) as Command
           self.received.push(cmd)
           const out = self.answer(cmd)
+          if (self.model.flipTokenAfter === cmd.method) {
+            delete self.model.flipTokenAfter
+            self.model.token = 'doc-2'
+          }
           ws.send(
             JSON.stringify(
               'error' in out
@@ -371,6 +379,69 @@ test('换过文档之后整份观察失效，不重新定位到同名元素', as
   }).catch((e: Error) => e)
   expect(err).toBeInstanceOf(BrowserStaleRefError)
   expect(String((err as Error).message)).toContain('重新观察')
+})
+
+test('换过文档之后不带元素的 press 同样被拒，一条按键事件都不发', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  fixtureModel(fake)
+  const handle = await connect(fake)
+  const { record } = await observePage(handle, {})
+
+  fake.model.token = 'doc-2'
+  const err = await actOnPage(handle, record, {
+    tabId: 'bt_1',
+    observationId: record.observationId,
+    action: 'press',
+    key: 'Enter',
+  }).catch((e: Error) => e)
+  expect(err).toBeInstanceOf(BrowserStaleRefError)
+  expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
+})
+
+test('换过文档之后不带元素的 scroll 同样被拒，一条鼠标事件都不发', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  fixtureModel(fake)
+  const handle = await connect(fake)
+  const { record } = await observePage(handle, {})
+
+  fake.model.token = 'doc-2'
+  const err = await actOnPage(handle, record, {
+    tabId: 'bt_1',
+    observationId: record.observationId,
+    action: 'scroll',
+    deltaY: 200,
+  }).catch((e: Error) => e)
+  expect(err).toBeInstanceOf(BrowserStaleRefError)
+  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(0)
+})
+
+test('采集中途换了文档就整份丢掉重采，不登记旧令牌配新元素的观察', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  fixtureModel(fake)
+  const handle = await connect(fake)
+  // 第一趟采完 AX 树之后换文档：采集前读到 doc-1，采集后读到 doc-2。
+  fake.model.flipTokenAfter = 'Accessibility.getFullAXTree'
+
+  const { record, observation } = await observePage(handle, {})
+  // 重采过一趟，登记的是换文档之后那一份。
+  expect(fake.sent('DOM.getDocument')).toHaveLength(2)
+  expect(record.docToken).toBe('doc-2')
+  expect(observation.observationId).toContain('doc-2')
+})
+
+test('预算已经耗尽时不发采集命令，报可判定的失败', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  fixtureModel(fake)
+  const handle = await connect(fake)
+  const before = fake.sent('DOM.getDocument').length
+
+  const err = await observePage(handle, { deadline: Date.now() - 1 }).catch((e: Error) => e)
+  expect(err).toBeInstanceOf(BrowserObserveTimeoutError)
+  expect(fake.sent('DOM.getDocument')).toHaveLength(before)
 })
 
 test('同一个编号指到另一个节点时判失效，不照旧点下去', async () => {

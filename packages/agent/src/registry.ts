@@ -139,18 +139,43 @@ export interface BrowserActInput {
   deltaY?: number
 }
 
-export interface BrowserActResult {
+/**
+ * 动作之后的后续观察。两种结果互斥：取得观察，或说明为什么没取得。
+ *
+ * 观察缺席不代表动作没发出去。调用方拿到 `observationError` 时先观察确认，
+ * 不要重复同一个动作。
+ */
+export type FollowUpObservation =
+  | {
+      observation: BrowserObservation
+      /**
+       * 快照是在什么条件下采的。
+       *
+       * `quiet`：短暂静默后采到；`deadline`：静默等待到阶段上限，但仍在总预算内采到有效快照。
+       * 两者都只说明这一刻的快照可用，**不表示网站业务已经完成**。`wait` 不带这个字段。
+       */
+      settle?: 'quiet' | 'deadline'
+    }
+  | { observation: null; observationError: string }
+
+/** 底层动作回执。观察由协调器在动作之后补上。 */
+export interface BrowserActReceipt {
   /** 动作真正作用到的元素，供调用方核对打在了哪儿。 */
   element?: string
   /** 命中点，坐标动作才有。 */
   point?: { x: number; y: number }
 }
 
-export interface BrowserWaitResult {
+/** 底层等待回执。 */
+export interface BrowserWaitReceipt {
   found: boolean
   /** 没等到时的原因：`timeout` 或 `cancelled`。 */
   reason?: string
 }
+
+export type BrowserActResult = BrowserActReceipt & FollowUpObservation
+
+export type BrowserWaitResult = BrowserWaitReceipt & FollowUpObservation
 
 export interface BrowserDownloadResult {
   /** 落盘的绝对路径。被拦下时缺席。 */
@@ -177,12 +202,17 @@ export interface BrowserPort {
   bind(tabId: string): Promise<BrowserTabInfo>
   /** 关掉一页。只释放这一页的资源，profile 与其他页不受影响。 */
   close(tabId: string): Promise<void>
-  /** 地址栏级导航。`goto` 必须带 url，其余三种不带。 */
+  /**
+   * 地址栏级导航。`goto` 必须带 url，其余三种不带。
+   *
+   * 返回导航之后的观察，不另回一份 tab/url/title——观察里的实际地址是真源。
+   * 导航被拒（`errorText`）时抛错，不拿旧页快照冒充跳转成功。
+   */
   navigate(input: {
     tabId: string
     action: 'goto' | 'back' | 'forward' | 'reload'
     url?: string
-  }): Promise<BrowserTabInfo>
+  }): Promise<FollowUpObservation>
   /** 观察一页：实际地址、标题、元素与按需截图。 */
   observe(input: {
     tabId: string
@@ -192,9 +222,13 @@ export interface BrowserPort {
     /** 从第几个元素起返回，配合 `truncated` 翻页。 */
     offset?: number
   }): Promise<BrowserObservation>
-  /** 在已观察的元素上做一次有限动作。 */
+  /** 在已观察的元素上做一次有限动作，并带回动作之后的观察。 */
   act(input: BrowserActInput): Promise<BrowserActResult>
-  /** 等一个 CSS 选择器出现。有限超时，取消时一并清理页内等待器。 */
+  /**
+   * 等一个 CSS 选择器出现。有限超时，取消时一并清理页内等待器。
+   *
+   * 等待结束后直接采一次观察，不再额外做静默等待，因此结果不带 `settle`。
+   */
   wait(input: { tabId: string; selector: string; timeoutMs: number }): Promise<BrowserWaitResult>
   /**
    * 把本机文件交给一个文件输入元素。
@@ -904,7 +938,7 @@ export interface ToolOutcome {
 // ─────────────────────────────── 工具声明 ───────────────────────────────
 
 /**
- * 工具能力大类。**九个内置 + 一个类外的 `external`，没有「其他」。**
+ * 工具能力大类。**十个内置 + 一个类外的 `external`，没有「其他」。**
  *
  * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
  * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
@@ -924,6 +958,7 @@ export type ToolCategory =
   | 'files'
   | 'code'
   | 'web'
+  | 'browser'
   | 'memory'
   | 'skills'
   | 'planning'
@@ -942,6 +977,7 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'files',
   'code',
   'web',
+  'browser',
   'memory',
   'skills',
   'planning',

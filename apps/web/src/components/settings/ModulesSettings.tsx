@@ -131,6 +131,7 @@ const MODULES: Module[] = [
       },
     ],
   },
+  { id: 'browser', label: '浏览器' },
   /*
    * 记忆和技能是两个类目，不是一个「记忆与技能」。
    *
@@ -250,6 +251,7 @@ const PERMS: Record<string, { label: string; warn?: number }> = {
   write: { label: '写入', warn: 1 },
   delete: { label: '删除', warn: 1 },
   network: { label: '出网', warn: 1 },
+  browser: { label: '浏览器', warn: 1 },
   execute: { label: '执行', warn: 2 },
   internal_control: { label: '不走权限闸' },
 }

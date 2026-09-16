@@ -1034,16 +1034,17 @@ describe('工具清单', () => {
   })
 
   /**
-   * 函数型字段**只允许 `write_todos` 的动作**这一个：它首建报「创建」、
-   * 之后报「修改」，那是用户两次点名要的行为，页面上如实报「不固定」。
+   * 函数型动作只允许两个门面：`write_todos` 首建报「创建」、之后报「修改」；
+   * `browser_tabs` 的 list 是读一份清单、create / bind / close 改变本会话手里的页，
+   * 两者都按参数分档，页面上如实报「不固定」。
    * 再多一个就要先问「这一栏还答不答得了问题」——一页全是「不固定」等于没有这一栏。
    * 权限效果一个都不许是函数：那一栏是安全边界，不固定就是没说。
    */
-  test('只有 write_todos 的动作是函数型，权限效果一个都不是', async () => {
+  test('只有 write_todos 与 browser_tabs 的动作是函数型，权限效果一个都不是', async () => {
     for (const row of await tools()) {
       expect(row.permissionEffect).not.toBe('不固定')
       expect(row.objectLabel).not.toBe('不固定')
-      if (row.actionKind === '不固定') expect(row.name).toBe('write_todos')
+      if (row.actionKind === '不固定') expect(['write_todos', 'browser_tabs']).toContain(row.name)
     }
   })
 })

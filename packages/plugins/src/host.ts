@@ -49,7 +49,6 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import type { BrowserPort } from '@qywork/agent'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
@@ -65,8 +64,7 @@ const READY_TIMEOUT_MS = 10_000
  * 宿主从待决调用表取回这份上下文；调用结束、超时、取消之后 parentCallId 立即失效，
  * 迟到的反向 RPC 因此没有身份可用。
  *
- * `signal` 与 `browser` 是宿主进程内的对象，**不跨 RPC 边界**——插件拿到的始终只有
- * 一个 callId。
+ * `signal` 是宿主进程内的对象，**不跨 RPC 边界**——插件拿到的始终只有一个 callId。
  */
 export interface HostCallContext {
   pluginId: string
@@ -81,8 +79,6 @@ export interface HostCallContext {
   additionalDirectories?: string[]
   /** 「完全访问」模式：路径层不裁决。 */
   unrestrictedPaths?: boolean
-  /** 本次执行的内置浏览器控制。没接上时浏览器宿主方法一律失败。 */
-  browser?: BrowserPort
 }
 
 export interface HostRequest {
@@ -316,8 +312,8 @@ export class PluginHost {
    * 调用插件导出的方法。
    *
    * 超时、取消、进程退出**都走 `settle`**：只删待决项而留着调用身份的话，
-   * 插件那一侧的执行照旧能反过来操作宿主——在浏览器控制上这意味着用户按下
-   * 停止之后仍有点击到达网站。`settle` 同时告知插件这次调用作废，让它自己停下。
+   * 插件那一侧的执行照旧能反过来操作宿主——用户按下停止之后仍会有写入落盘。
+   * `settle` 同时告知插件这次调用作废，让它自己停下。
    *
    * 超时与取消都**不杀进程**：可能只是这一次调用慢，别的调用还在正常跑。
    */
@@ -402,11 +398,6 @@ export function requiredPermissions(method: string): PluginPermission[] | null {
   if (method.startsWith('net.')) return ['network']
   if (method.startsWith('exec.')) return ['process:exec']
   if (method.startsWith('storage.')) return ['storage']
-  // 上传要读工作区文件、下载要往工作区写文件，两条各自再要一份文件权限；
-  // 不由 `browser:control` 一并代表——否则声明一个浏览器权限就换来了整个工作区。
-  if (method === 'browser.upload') return ['browser:control', 'workspace:read']
-  if (method === 'browser.download') return ['browser:control', 'workspace:write']
-  if (method.startsWith('browser.')) return ['browser:control']
   return null
 }
 

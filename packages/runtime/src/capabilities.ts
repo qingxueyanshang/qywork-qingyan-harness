@@ -21,14 +21,12 @@
 
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { BrowserActionKind } from '@qywork/agent'
 import type { HostCallContext } from '@qywork/plugins'
 import {
   collectProcess,
   displayPath,
   PROTECTED_DIRS,
   resolveInWorkspace,
-  rootsOf,
   type SafetyOptions,
   safeFetch,
   spawnGuarded,
@@ -46,12 +44,6 @@ const MAX_EXEC_TIMEOUT_MS = 300_000
 const MAX_STORAGE_BYTES = 2 * 1024 * 1024
 /** fs.list 单次返回的条目上限。 */
 const MAX_LIST_ENTRIES = 2000
-/** 一次等待的上限。超过这个值的请求按它截断，不接受任意时长。 */
-const MAX_BROWSER_WAIT_MS = 60_000
-/** 一次下载从触发到落盘的上限。 */
-const BROWSER_DOWNLOAD_TIMEOUT_MS = 120_000
-/** 单次上传的文件数上限。 */
-const MAX_UPLOAD_FILES = 10
 
 export const PLUGIN_DATA_DIR = '.qy/plugin-data'
 
@@ -91,16 +83,6 @@ export const HOST_CAPABILITIES = [
   'storage.set',
   'storage.delete',
   'storage.list',
-  'browser.tabs',
-  'browser.open',
-  'browser.bind',
-  'browser.close',
-  'browser.navigate',
-  'browser.observe',
-  'browser.act',
-  'browser.wait',
-  'browser.upload',
-  'browser.download',
 ] as const
 
 export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandler {
@@ -112,7 +94,6 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
 
   return async (method, params, context) => {
     const pluginId = context.pluginId
-    if (method.startsWith('browser.')) return browserCapability(method, params, context)
     switch (method) {
       case 'fs.read': {
         const path = await inWorkspace(params.path, true)
@@ -356,182 +337,4 @@ function requireKey(raw: unknown): string {
   const key = String(raw ?? '').trim()
   if (!key) throw new Error('缺少 key')
   return key
-}
-
-// ───────────────────────── 内置浏览器 ─────────────────────────
-
-/**
- * 浏览器宿主方法。
- *
- * 三条边界：
- *
- * 1. **端口只从可信调用上下文取。** 插件报的工作区、会话、Run 一概不读——
- *    `context.browser` 是宿主按这一轮执行装配的，插件手里只有一个 callId。
- * 2. **一次调用一个有限动作。** 不接受「把这件事做完」这种任务描述，
- *    做完一步就回去，由既有 Agent 再观察再决定。
- * 3. **上传下载的路径先裁决再交给宿主。** 走的是这一轮会话的根目录清单（`rootsOf`），
- *    与内置文件工具同一份判定；宿主只按裁决后的绝对路径写盘。
- *
- *    这一条与同文件里 `fs.*` 的根目录来源不同，是有意的：`fs.*` 的根随插件装配固定，
- *    而浏览器上传下载发生在某一轮执行里，`additionalDirectories` 与「完全访问」的语义
- *    必须跟着那一轮的会话配置走——同一个模式下文件工具放行、浏览器拦住，就是两套账。
- */
-async function browserCapability(
-  method: string,
-  params: Record<string, unknown>,
-  context: HostCallContext,
-): Promise<unknown> {
-  const browser = context.browser
-  if (!browser) throw new Error('本次执行没有内置浏览器控制')
-  // 停止之后不再发起新动作。等待中的那一次由端口自己拒绝，这里挡的是新来的。
-  if (context.signal.aborted) throw new Error('本次执行已停止，不再操作浏览器')
-
-  switch (method) {
-    case 'browser.tabs':
-      return { tabs: await browser.tabs() }
-
-    case 'browser.open':
-      return browser.open(webUrl(params.url))
-
-    // 把一页接管到本会话（归属判定在宿主）：用户点名的页 / 幂等地重认本会话的页。
-    case 'browser.bind':
-      return browser.bind(str(params.tabId, 'tabId'))
-
-    case 'browser.close': {
-      await browser.close(str(params.tabId, 'tabId'))
-      return { closed: true }
-    }
-
-    case 'browser.navigate': {
-      const action = oneOf(params.action, ['goto', 'back', 'forward', 'reload'] as const, 'action')
-      return browser.navigate({
-        tabId: str(params.tabId, 'tabId'),
-        action,
-        ...(action === 'goto' ? { url: webUrl(params.url) } : {}),
-      })
-    }
-
-    case 'browser.observe':
-      return browser.observe({
-        tabId: str(params.tabId, 'tabId'),
-        ...(given(params.frame) ? { frame: str(params.frame, 'frame') } : {}),
-        ...(params.screenshot === true ? { screenshot: true } : {}),
-        ...(given(params.offset) ? { offset: nonNegative(params.offset, 'offset') } : {}),
-      })
-
-    case 'browser.act': {
-      const action: BrowserActionKind = oneOf(
-        params.action,
-        ['click', 'fill', 'select', 'scroll', 'press'] as const,
-        'action',
-      )
-      return browser.act({
-        tabId: str(params.tabId, 'tabId'),
-        observationId: str(params.observationId, 'observationId'),
-        action,
-        ...(given(params.ref) ? { ref: str(params.ref, 'ref') } : {}),
-        // 空文本对 fill 是有意义的（清空输入框），所以它只按 null 判缺席。
-        ...(params.text !== undefined && params.text !== null ? { text: String(params.text) } : {}),
-        ...(given(params.key) ? { key: str(params.key, 'key') } : {}),
-        ...(given(params.deltaY) ? { deltaY: Number(params.deltaY) } : {}),
-      })
-    }
-
-    case 'browser.wait':
-      return browser.wait({
-        tabId: str(params.tabId, 'tabId'),
-        selector: str(params.selector, 'selector'),
-        timeoutMs: given(params.timeoutMs)
-          ? Math.min(MAX_BROWSER_WAIT_MS, Math.max(100, Number(params.timeoutMs)))
-          : 10_000,
-      })
-
-    case 'browser.upload': {
-      const raw = Array.isArray(params.paths) ? params.paths : [params.paths]
-      if (raw.length === 0 || raw.length > MAX_UPLOAD_FILES) {
-        throw new Error(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件`)
-      }
-      const paths: string[] = []
-      for (const one of raw) {
-        paths.push(
-          await resolveInWorkspace(rootsOf(context), String(one ?? ''), { mustExist: true }),
-        )
-      }
-      return browser.upload({
-        tabId: str(params.tabId, 'tabId'),
-        observationId: str(params.observationId, 'observationId'),
-        ref: str(params.ref, 'ref'),
-        paths,
-      })
-    }
-
-    case 'browser.download': {
-      // 先裁决路径再触发：授权是按这个绝对路径登记的，顺序反过来就成了
-      // 「先让网站开始下载，再看它能不能落盘」。
-      const absolutePath = await resolveInWorkspace(rootsOf(context), str(params.path, 'path'), {
-        mustExist: false,
-      })
-      return browser.download({
-        tabId: str(params.tabId, 'tabId'),
-        observationId: str(params.observationId, 'observationId'),
-        ref: str(params.ref, 'ref'),
-        absolutePath,
-        timeoutMs: BROWSER_DOWNLOAD_TIMEOUT_MS,
-      })
-    }
-
-    default:
-      throw new Error(`宿主能力尚未实现：${method}`)
-  }
-}
-
-/**
- * 这个可选参数给了没有。
- *
- * **`null` 与空串按缺席算。** 模型常把没填的可选字段显式写成 `null`。按「给了一个非法值」
- * 拒绝的话，一次本来正常的调用会被一个没打算填的字段挡下来：实测
- * `browser_observe{frame:null}` 连续四次报「缺少 frame」。
- */
-function given(raw: unknown): boolean {
-  return raw !== undefined && raw !== null && String(raw).trim() !== ''
-}
-
-function str(raw: unknown, field: string): string {
-  const value = String(raw ?? '').trim()
-  if (!value) throw new Error(`缺少 ${field}`)
-  return value
-}
-
-function oneOf<T extends string>(raw: unknown, allowed: readonly T[], field: string): T {
-  const value = String(raw ?? '')
-  if (!allowed.includes(value as T)) {
-    throw new Error(`${field} 只能是 ${allowed.join(' / ')}，收到 ${JSON.stringify(raw)}`)
-  }
-  return value as T
-}
-
-function nonNegative(raw: unknown, field: string): number {
-  const value = Number(raw)
-  if (!Number.isFinite(value) || value < 0) throw new Error(`${field} 必须是非负整数`)
-  return Math.floor(value)
-}
-
-/**
- * 只放行网页协议。
- *
- * `file:` 能读本机任意文件、`javascript:` 在当前页面执行脚本，两者都绕过这里
- * 全部的边界；模型给出的地址一律按不可信处理。
- */
-function webUrl(raw: unknown): string {
-  const value = str(raw, 'url')
-  let parsed: URL
-  try {
-    parsed = new URL(value)
-  } catch {
-    throw new Error(`地址无法解析：${value}`)
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`只支持 http 与 https，收到 ${parsed.protocol}`)
-  }
-  return parsed.toString()
 }

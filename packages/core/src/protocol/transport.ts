@@ -156,15 +156,13 @@ export interface ServerCapabilities {
 /**
  * 内置浏览器此刻可用到什么程度。
  *
- * `connected` 单独成立即可手动浏览；AI 控制要三项同时成立。
+ * `connected` 单独成立即可手动浏览；AI 控制要两项同时成立。
  */
 export interface BrowserCapability {
   /** 原生浏览器宿主已连上服务端。手动浏览的唯一判据。 */
   connected: boolean
   /** 宿主上报的 WebView2 Runtime 版本达到 AI 控制的下限。宿主没连上时为 `false`。 */
   runtimeSupported: boolean
-  /** 全局插件目录里装着声明 `browser:control` 的插件。 */
-  pluginInstalled: boolean
 }
 
 /**

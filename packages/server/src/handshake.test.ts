@@ -78,7 +78,6 @@ function shake(
       browser: () => ({
         connected: false,
         runtimeSupported: false,
-        pluginInstalled: false,
       }),
       announceGit: () => {},
     },

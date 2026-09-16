@@ -16,10 +16,10 @@
 
 import type {
   BrowserActInput,
-  BrowserActResult,
+  BrowserActReceipt,
   BrowserElement,
   BrowserObservation,
-  BrowserWaitResult,
+  BrowserWaitReceipt,
 } from '@qywork/agent'
 import { log } from '@qywork/core'
 import { type CdpClient, CdpError, keySpec, PRESS_KEYS } from './cdp.ts'
@@ -44,12 +44,29 @@ const FRAME_TIMEOUT_MS = 5_000
 const AX_RETRY_INTERVAL_MS = 150
 const AX_RETRY_TOTAL_MS = 1_500
 
+/** 调用方没有给截止时间时，一次观察的总预算。 */
+const OBSERVE_BUDGET_MS = 30_000
+/** 单条采集命令的上限。剩余预算更少时按剩余预算发，不再给满额度。 */
+const COLLECT_TIMEOUT_MS = 15_000
+/** 单次截图的上限。 */
+const SHOT_TIMEOUT_MS = 20_000
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** 距截止时间还剩多少毫秒。 */
+const leftMs = (deadline: number) => deadline - Date.now()
+
+/** 一条命令的超时：剩余预算与本条上限取小。发命令前由调用方判定预算是否已经耗尽。 */
+function within(deadline: number, capMs: number): { timeoutMs: number } {
+  return { timeoutMs: Math.max(1, Math.min(capMs, leftMs(deadline))) }
+}
 
 /** 元素引用已经指不到原来那个节点。调用方必须重新观察，不能改写编号重试。 */
 export class BrowserStaleRefError extends CdpError {}
 /** 命中点落在别的元素上。页面结构变了或被浮层盖住，同样要求重新观察。 */
 export class BrowserAmbiguousRefError extends CdpError {}
+/** 预算内没能采到一份前后一致的快照。调用方保留已经发出的动作回执，不重做动作。 */
+export class BrowserObserveTimeoutError extends CdpError {}
 
 interface RefRecord {
   backendNodeId: number
@@ -212,27 +229,87 @@ export interface PageHandle {
 }
 
 /**
+ * 现读主文档的令牌、地址与标题。
+ *
+ * 跨文档判定与采集一致性判定都按它现取，不用观察表里记的那一份：那份记的是上一次
+ * 采集的页面，与此刻的文档不一定是同一个。
+ */
+export async function readDocument(
+  page: PageHandle,
+  timeoutMs?: number,
+): Promise<{ token: string; url: string; title: string }> {
+  const head = await page.client.send<{
+    result: { value: { token: string; url: string; title: string } }
+  }>(
+    'Runtime.evaluate',
+    { expression: DOC_TOKEN, returnByValue: true },
+    { sessionId: page.sessionId, ...(timeoutMs === undefined ? {} : { timeoutMs }) },
+  )
+  return head.result.value
+}
+
+/**
  * 观察一页。
  *
  * 主文档与它的跨站子帧各取一次 DOM 快照和 AX 树；子帧元素的矩形叠加该帧在顶层文档
  * 中的偏移之后才是可发事件的坐标。
+ *
+ * **采集前后各核一次主文档令牌与地址**：期间换了文档或地址，这份结果里混着两个页面的
+ * 元素，整份丢掉在剩余预算内重采，不登记「旧令牌配新元素」的观察。预算耗尽抛
+ * `BrowserObserveTimeoutError`。采集一致不等于 DOM 与业务状态从此不再变化。
  */
 export async function observePage(
   page: PageHandle,
-  opts: { frame?: string; screenshot?: boolean; offset?: number },
+  opts: { frame?: string; screenshot?: boolean; offset?: number; deadline?: number },
 ): Promise<{ observation: BrowserObservation; record: ObservationRecord }> {
   const { client, sessionId, tabId } = page
-  const head = await client.send<{
-    result: { value: { token: string; url: string; title: string } }
-  }>('Runtime.evaluate', { expression: DOC_TOKEN, returnByValue: true }, { sessionId })
-  const doc = head.result.value
+  const deadline = opts.deadline ?? Date.now() + OBSERVE_BUDGET_MS
+  for (;;) {
+    if (leftMs(deadline) <= 0) {
+      throw new BrowserObserveTimeoutError('没有在预算内采到一份前后一致的观察，请重新观察')
+    }
+    const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
+    const all = await collectAll(client, sessionId, opts, deadline)
+    const offset = opts.offset ?? 0
+    const shown = all.slice(offset, offset + MAX_ELEMENTS)
+    const image = opts.screenshot ? await capture(client, sessionId, deadline) : null
+    const after = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
+    if (after.token !== before.token || after.url !== before.url) continue
 
-  const frames: { sessionId: string; frame?: string; offsetX: number; offsetY: number }[] = [
-    { sessionId, offsetX: 0, offsetY: 0 },
-  ]
+    const refs = new Map<string, RefRecord>()
+    for (const item of shown) refs.set(item.element.ref, item.ref)
+    const record: ObservationRecord = {
+      observationId: `ob_${after.token}_${offset}_${Date.now().toString(36)}`,
+      tabId,
+      docToken: after.token,
+      refs,
+    }
+    return {
+      observation: {
+        tabId,
+        url: after.url,
+        title: after.title,
+        observationId: record.observationId,
+        elements: shown.map((i) => i.element),
+        truncated: offset + shown.length < all.length,
+        ...(image ? { image } : {}),
+      },
+      record,
+    }
+  }
+}
+
+/** 主文档与在范围内的跨站子帧各采一次，合成一张元素表。 */
+async function collectAll(
+  client: CdpClient,
+  sessionId: string,
+  opts: { frame?: string },
+  deadline: number,
+): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
+  const frames: FrameScope[] = [{ sessionId, offsetX: 0, offsetY: 0 }]
   for (const child of client.childSessionsOf(sessionId)) {
     if (opts.frame && child.targetId !== opts.frame) continue
-    const offset = await frameOffset(client, sessionId, child.targetId)
+    const offset = await frameOffset(client, sessionId, child.targetId, deadline)
     frames.push({
       sessionId: child.sessionId,
       frame: child.targetId,
@@ -246,44 +323,18 @@ export async function observePage(
   const all: { element: BrowserElement; ref: RefRecord }[] = []
   for (const f of scope) {
     if (!f.frame) {
-      all.push(...(await collectFrame(client, f)))
+      all.push(...(await collectFrame(client, f, deadline, COLLECT_TIMEOUT_MS)))
       continue
     }
     // 跨站子帧由它自己的渲染进程应答，正在加载或已经消失时会一直不回。
     // 一个帧不答不该让整页观察不出来——跳过它，主文档照常给出元素表。
     try {
-      all.push(...(await collectFrame(client, f, FRAME_TIMEOUT_MS)))
+      all.push(...(await collectFrame(client, f, deadline, FRAME_TIMEOUT_MS)))
     } catch (err) {
       log.warn('browser', `子帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
     }
   }
-
-  const offset = opts.offset ?? 0
-  const page_ = all.slice(offset, offset + MAX_ELEMENTS)
-  const refs = new Map<string, RefRecord>()
-  for (const item of page_) refs.set(item.element.ref, item.ref)
-
-  const record: ObservationRecord = {
-    observationId: `ob_${doc.token}_${offset}_${Date.now().toString(36)}`,
-    tabId,
-    docToken: doc.token,
-    refs,
-  }
-
-  const image = opts.screenshot ? await capture(client, sessionId) : null
-
-  return {
-    observation: {
-      tabId,
-      url: doc.url,
-      title: doc.title,
-      observationId: record.observationId,
-      elements: page_.map((i) => i.element),
-      truncated: offset + page_.length < all.length,
-      ...(image ? { image } : {}),
-    },
-    record,
-  }
+  return all
 }
 
 type FrameScope = { sessionId: string; frame?: string; offsetX: number; offsetY: number }
@@ -299,15 +350,16 @@ interface Candidate {
 async function collectFrame(
   client: CdpClient,
   frame: FrameScope,
-  timeoutMs?: number,
+  deadline: number,
+  capMs: number,
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
   const { sessionId } = frame
-  const limit = timeoutMs === undefined ? {} : { timeoutMs }
+  const limit = () => within(deadline, capMs)
   // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 另走它自己的会话。
   const dom = await client.send<{ root: DomNode }>(
     'DOM.getDocument',
     { depth: -1, pierce: true },
-    { sessionId, ...limit },
+    { sessionId, ...limit() },
   )
   const byBackend = new Map<number, { tag: string; attrs: Record<string, string> }>()
   flatten(dom.root, byBackend)
@@ -317,7 +369,7 @@ async function collectFrame(
       await client.send<{ nodes: AxNode[] }>(
         'Accessibility.getFullAXTree',
         {},
-        { sessionId, ...limit },
+        { sessionId, ...limit() },
       )
     ).nodes
 
@@ -327,11 +379,12 @@ async function collectFrame(
    * AX 树懒计算：主文档刚加载完可能仍为空，静态表单因此也返回 0 候选。
    * DOM 里有可交互元素却 0 候选时，短间隔重取 AX 树，非空即用；到上限仍空就从
    * DOM 快照直接产元素表（语义降级但不为 0）。子帧不套——它自带超时与跳过。
+   * 重取也吃总预算：本阶段上限与剩余预算取小，到期就用手上的结果。
    */
   if (!frame.frame && candidates.length === 0 && domHasActionable(byBackend)) {
-    const deadline = Date.now() + AX_RETRY_TOTAL_MS
-    while (candidates.length === 0 && Date.now() < deadline) {
-      await sleep(AX_RETRY_INTERVAL_MS)
+    const until = Math.min(deadline, Date.now() + AX_RETRY_TOTAL_MS)
+    while (candidates.length === 0 && leftMs(until) > 0) {
+      await sleep(Math.min(AX_RETRY_INTERVAL_MS, leftMs(until)))
       candidates = axCandidates(await fetchAx(), byBackend, frame)
     }
     if (candidates.length === 0) candidates = domCandidates(byBackend, frame)
@@ -492,17 +545,18 @@ async function frameOffset(
   client: CdpClient,
   pageSession: string,
   frameId: string,
+  deadline: number,
 ): Promise<{ x: number; y: number }> {
   try {
     const owner = await client.send<{ backendNodeId: number }>(
       'DOM.getFrameOwner',
       { frameId },
-      { sessionId: pageSession },
+      { sessionId: pageSession, ...within(deadline, FRAME_TIMEOUT_MS) },
     )
     const box = await client.send<{ model: { content: number[] } }>(
       'DOM.getBoxModel',
       { backendNodeId: owner.backendNodeId },
-      { sessionId: pageSession },
+      { sessionId: pageSession, ...within(deadline, FRAME_TIMEOUT_MS) },
     )
     return { x: box.model.content[0] ?? 0, y: box.model.content[1] ?? 0 }
   } catch {
@@ -514,12 +568,14 @@ async function frameOffset(
 async function capture(
   client: CdpClient,
   sessionId: string,
+  deadline: number,
 ): Promise<{ data: string; mime: string } | null> {
   for (const quality of [60, 35]) {
+    if (leftMs(deadline) <= 0) return null
     const shot = await client.send<{ data: string }>(
       'Page.captureScreenshot',
       { format: 'jpeg', quality },
-      { sessionId, timeoutMs: 20_000 },
+      { sessionId, ...within(deadline, SHOT_TIMEOUT_MS) },
     )
     if (shot.data.length * 0.75 <= MAX_SHOT_BYTES) {
       return { data: shot.data, mime: 'image/jpeg' }
@@ -542,25 +598,31 @@ interface Inspection {
 }
 
 /**
+ * 核对这次观察仍是当前文档。
+ *
+ * 每条动作路径的第一步都是它，**不放在 `resolveRef` 里**：不带 ref 的 press 与 scroll
+ * 不解析节点，放在那里它们就带着一份跨文档的旧观察打到新页面上。
+ */
+async function assertDoc(page: PageHandle, record: ObservationRecord): Promise<void> {
+  const doc = await readDocument(page)
+  if (doc.token !== record.docToken) {
+    throw new BrowserStaleRefError('页面已经换过文档，这次观察的元素编号全部失效，请重新观察')
+  }
+}
+
+/**
  * 把一个 ref 解析成可操作的节点。
  *
- * 文档令牌、节点连接状态、身份指纹三项全过才算命中；任一不符按失效返回，
- * 要求重新观察。**不做「按名字再找一个」的重定位**——那会把点击落在另一个同名按钮上。
+ * 节点连接状态与身份指纹都过才算命中；任一不符按失效返回，要求重新观察。
+ * **不做「按名字再找一个」的重定位**——那会把点击落在另一个同名按钮上。
+ * 文档令牌由调用方先过 `assertDoc`。
  */
 async function resolveRef(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
-  const { client, sessionId } = page
-  const head = await client.send<{ result: { value: { token: string } } }>(
-    'Runtime.evaluate',
-    { expression: DOC_TOKEN, returnByValue: true },
-    { sessionId },
-  )
-  if (head.result.value.token !== record.docToken) {
-    throw new BrowserStaleRefError('页面已经换过文档，这次观察的元素编号全部失效，请重新观察')
-  }
+  const { client } = page
   const entry = record.refs.get(ref)
   if (!entry) throw new BrowserStaleRefError(`这次观察里没有元素 ${ref}，请重新观察`)
 
@@ -589,13 +651,18 @@ async function resolveRef(
   return { entry, objectId, inspect }
 }
 
-/** 在已观察的元素上做一次有限动作。 */
+/**
+ * 在已观察的元素上做一次有限动作，返回动作回执。
+ *
+ * 动作之后的观察由协调器补，这里不采。
+ */
 export async function actOnPage(
   page: PageHandle,
   record: ObservationRecord,
   input: BrowserActInput,
-): Promise<BrowserActResult> {
+): Promise<BrowserActReceipt> {
   const { client, sessionId } = page
+  await assertDoc(page, record)
 
   if (input.action === 'scroll' && !input.ref) {
     const y = input.deltaY ?? 400
@@ -727,7 +794,7 @@ export async function waitOnPage(
   page: PageHandle,
   selector: string,
   timeoutMs: number,
-): Promise<BrowserWaitResult> {
+): Promise<BrowserWaitReceipt> {
   const { client, sessionId } = page
   const waiterId = await client.startWaiter(sessionId, selector, timeoutMs)
   try {
@@ -751,6 +818,7 @@ export async function uploadToPage(
   ref: string,
   paths: string[],
 ): Promise<{ files: string[] }> {
+  await assertDoc(page, record)
   const { entry } = await resolveRef(page, record, ref)
   await page.client.send(
     'DOM.setFileInputFiles',
@@ -771,7 +839,8 @@ export async function clickForDownload(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
-): Promise<BrowserActResult> {
+): Promise<BrowserActReceipt> {
+  await assertDoc(page, record)
   const { entry, inspect } = await resolveRef(page, record, ref)
   if (inspect.sameTree !== true) {
     throw new BrowserAmbiguousRefError(`元素 ${ref} 的命中点落在别处，请重新观察`)

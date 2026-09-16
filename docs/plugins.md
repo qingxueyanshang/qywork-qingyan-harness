@@ -136,8 +136,8 @@ ode.exe
 - `permissions` 必须覆盖你所有工具的 `permissionEffect`——声明 `read` 的工具而清单里
   没有 `workspace:read`，加载期直接拒绝。用户在安装提示里看到的权限清单必须和插件
   实际能做的事自洽。`permissionEffect` 可选 `read` / `write` / `delete` / `execute` /
-  `network` / `browser`，分别要 `workspace:read` / `workspace:write` /
-  `workspace:write` / `process:exec` / `network` / `browser:control`。
+  `network`，分别要 `workspace:read` / `workspace:write` /
+  `workspace:write` / `process:exec` / `network`。
 - **动作语义与对象名不在清单里声明。** 插件工具在会话里一律显示成「调用 插件 ·
   `plugin:<id>/<工具名>`」——它是跨进程请来的外置能力，这件事由宿主判定。清单里写
   `actionKind` / `objectLabel` 不报错，但不会被读。
@@ -225,16 +225,6 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 | `net.fetch` | `network` | `url`, `method?`, `headers?`, `body?` | `{status, url, contentType, body, redirects}` |
 | `exec.run` | `process:exec` | `command`, `cwd?`, `timeoutMs?` | `{exitCode, stdout, stderr, timedOut}` |
 | `storage.get` / `set` / `delete` / `list` | `storage` | `key`, `value?` | 见实现 |
-| `browser.tabs` | `browser:control` | — | `{tabs:[{tabId,url,title,controlled}]}` |
-| `browser.open` | `browser:control` | `url` | `{tabId,url,title,controlled}` |
-| `browser.bind` | `browser:control` | `tabId` | `{tabId,url,title,controlled}` |
-| `browser.close` | `browser:control` | `tabId` | `{closed}` |
-| `browser.navigate` | `browser:control` | `tabId`, `action`（`goto`/`back`/`forward`/`reload`）, `url?` | `{tabId,url,title,controlled}` |
-| `browser.observe` | `browser:control` | `tabId`, `frame?`, `screenshot?`, `offset?` | `{url,title,observationId,elements,truncated,image?}` |
-| `browser.act` | `browser:control` | `tabId`, `observationId`, `action`, `ref?`, `text?`, `key?`, `deltaY?` | `{element?,point?}` |
-| `browser.wait` | `browser:control` | `tabId`, `selector`, `timeoutMs?` | `{found,reason?}` |
-| `browser.upload` | `browser:control` + `workspace:read` | `tabId`, `observationId`, `ref`, `paths` | `{files}` |
-| `browser.download` | `browser:control` + `workspace:write` | `tabId`, `observationId`, `ref`, `path` | `{path,bytes}` 或 `{blocked,suggestedName?}` |
 
 几条会咬人的限制：
 
@@ -250,32 +240,6 @@ stdin/stdout 上的行分隔 JSON，每行一个对象。**stdout 只能走协�
 
 未登记的方法一律拒绝，而不是放行——忘了登记的后果是「新能力用不了」，
 不是「新能力对所有插件无条件开放」。
-
-### `browser:control`：操作内置浏览器
-
-这个权限给的是**归本会话的那些页**，不是整个浏览器。归属键是会话 id，跨消息稳定。
-
-- 页有两条来路：`browser.open` 新建一页，它归开它的这条会话，之后该会话的每一条消息都能
-  **直接**操作，不需要任何交接；`browser.bind` 把用户自己开的页接管到本会话。
-  `browser.tabs` 只列本会话的页（`controlled:true`）与用户手动开的页（`controlled:false`）——
-  别的会话的页不出现。用户页操作会被拒，直到用户在聊天里点名要你用他开的某一页，你再用
-  `browser.bind` 带那个 `tabId` 接管它；已归别的会话的页拒绝接管。归属只认会话 id，
-  页面内容和你给的 `tabId` 都改不了它。
-- **元素引用有效期只到下一次变化。** `browser.observe` 返回 `observationId` 和一批
-  元素 `ref`；动作必须带上同一个 `observationId`。导航、重新观察、节点被替换之后，
-  旧引用一律拒绝并要求重新观察，不会被重新定位到另一个同名元素上。
-- **动作只发浏览器内部的输入事件**，不动系统鼠标键盘、不置前任何窗口。
-  可打印文本走 `action:'fill'`，`action:'press'` 只认一张固定的功能键表。
-- **上传下载的路径按工作区规则裁决**，且遵循**当前会话**的 `additionalDirectories`
-  与「完全访问」语义——与内置文件工具同一份判定（`fs.*` 的根是插件装配时固定的那一个，
-  这一点上两者不同）。下载是「先授权再触发」：目标文件已存在时宿主拒绝覆盖，
-  结果里带 `blocked`。
-- **截图按需产生**，放在 `data.images` 里，与其他工具的图片走同一条通道。
-- 用户停止这一轮，或宿主断开之后，本次执行的 CDP 连接立即作废：后续调用拿到明确失败。
-  归属不随之丢失——页仍归这条会话，下一条消息用新一轮接着操作。已经发到网站上的点击和提交
-  不会被撤回，如实按失败记录，**不要自动重试有副作用的动作**。
-
-这个权限换不到别的：它不映射 `process:exec`，也不等价 `network`。
 
 私有存储落成 `.qy/plugin-data/<插件 id>.json`。不放 SQLite 是因为插件行为异常时
 「用户能直接打开看、直接删」比性能重要得多。

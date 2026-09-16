@@ -1,12 +1,10 @@
 /**
  * 插件清单校验。
  *
- * 覆盖范围：`manifest.ts`，外加 `extensions/browser-control/qywork.plugin.json`
- * ——那份清单装进插件目录之前必须先在这里过一遍，写错了装上才发现太晚。
+ * 覆盖范围：`manifest.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { join } from 'node:path'
 import { MANIFEST_VERSION, parseManifest } from './manifest.ts'
 
 const base = {
@@ -62,26 +60,6 @@ describe('插件清单校验', () => {
     expect(parseManifest(fixed, 'p').contributes.tools).toHaveLength(1)
   })
 
-  test('browser 效果要 browser:control，不认 process:exec 顶替', () => {
-    const tool = {
-      name: 'act',
-      description: 'x',
-      parameters: {},
-      permissionEffect: 'browser',
-    }
-    expect(() =>
-      parseManifest(
-        { ...base, permissions: ['process:exec'], contributes: { tools: [tool] } },
-        'p',
-      ),
-    ).toThrow(/需要权限 browser:control/)
-    const ok = parseManifest(
-      { ...base, permissions: ['browser:control'], contributes: { tools: [tool] } },
-      'p',
-    )
-    expect(ok.permissions).toEqual(['browser:control'])
-  })
-
   /**
    * 工具名不得以 id 的主题段开头。注册名是 `<id 消毒>__<工具名>`，主题段已经在前缀里，
    * 再带一遍就是 `qywork_browser__browser_tabs` 这种重复。命中报错并给去前缀的建议。
@@ -90,10 +68,10 @@ describe('插件清单校验', () => {
     const withThemePrefix = {
       ...base,
       id: 'qywork.browser',
-      permissions: ['browser:control'],
+      permissions: ['workspace:read'],
       contributes: {
         tools: [
-          { name: 'browser_tabs', description: 'x', parameters: {}, permissionEffect: 'browser' },
+          { name: 'browser_tabs', description: 'x', parameters: {}, permissionEffect: 'read' },
         ],
       },
     }
@@ -104,7 +82,7 @@ describe('插件清单校验', () => {
     const exact = {
       ...withThemePrefix,
       contributes: {
-        tools: [{ name: 'browser', description: 'x', parameters: {}, permissionEffect: 'browser' }],
+        tools: [{ name: 'browser', description: 'x', parameters: {}, permissionEffect: 'read' }],
       },
     }
     expect(() => parseManifest(exact, 'p')).toThrow(/去掉这个前缀/)
@@ -113,7 +91,7 @@ describe('插件清单校验', () => {
     const fixed = {
       ...withThemePrefix,
       contributes: {
-        tools: [{ name: 'tabs', description: 'x', parameters: {}, permissionEffect: 'browser' }],
+        tools: [{ name: 'tabs', description: 'x', parameters: {}, permissionEffect: 'read' }],
       },
     }
     expect((parseManifest(fixed, 'p').contributes.tools ?? []).map((t) => t.name)).toEqual(['tabs'])
@@ -123,29 +101,12 @@ describe('插件清单校验', () => {
       ...withThemePrefix,
       contributes: {
         tools: [
-          { name: 'open_browser', description: 'x', parameters: {}, permissionEffect: 'browser' },
+          { name: 'open_browser', description: 'x', parameters: {}, permissionEffect: 'read' },
         ],
       },
     }
     expect((parseManifest(midword, 'p').contributes.tools ?? []).map((t) => t.name)).toEqual([
       'open_browser',
-    ])
-  })
-
-  test('内置浏览器插件的清单是合法的', async () => {
-    const raw = await Bun.file(
-      join(import.meta.dir, '../../../extensions/browser-control/qywork.plugin.json'),
-    ).json()
-    const m = parseManifest(raw, 'extensions/browser-control')
-    expect(m.permissions.sort()).toEqual(['browser:control', 'workspace:read', 'workspace:write'])
-    expect((m.contributes.tools ?? []).map((t) => t.name).sort()).toEqual([
-      'act',
-      'download',
-      'navigate',
-      'observe',
-      'tabs',
-      'upload',
-      'wait',
     ])
   })
 

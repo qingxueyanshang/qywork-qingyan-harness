@@ -51,13 +51,6 @@ export type PluginPermission =
   | 'network'
   /** 读写自己的私有存储 */
   | 'storage'
-  /**
-   * 操作内置浏览器里本次执行控制的页面。
-   *
-   * 不用 `process:exec` 顶替：那条等于给出运行任意子进程的权力。也不等价 `network`
-   * ——这些页面带着用户的登录态，而 `net.fetch` 走的是另一条不带登录态的出网闸。
-   */
-  | 'browser:control'
 
 /**
  * 一个工具贡献。
@@ -71,7 +64,7 @@ export interface ToolContribution {
   name: string
   description: string
   parameters: Record<string, unknown>
-  permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network' | 'browser'
+  permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network'
 }
 
 export interface PreviewerContribution {
@@ -152,7 +145,6 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
     'process:exec',
     'network',
     'storage',
-    'browser:control',
   ]
   for (const p of permissions) {
     if (!known.includes(p as PluginPermission)) return fail(`未知权限：${String(p)}`)
@@ -218,7 +210,6 @@ const KNOWN_EFFECTS: ToolContribution['permissionEffect'][] = [
   'delete',
   'execute',
   'network',
-  'browser',
 ]
 
 function requiredPermission(effect: ToolContribution['permissionEffect']): PluginPermission | null {
@@ -232,8 +223,6 @@ function requiredPermission(effect: ToolContribution['permissionEffect']): Plugi
       return 'process:exec'
     case 'network':
       return 'network'
-    case 'browser':
-      return 'browser:control'
     default:
       return null
   }

@@ -816,7 +816,6 @@ describe('看板按这一端真有的能力列行', () => {
       browser: {
         connected: true,
         runtimeSupported: true,
-        pluginInstalled: true,
       },
     })
     store.setWorkspace({ id: 'ws_board', root: 'C:work', name: 'work' })

@@ -71,7 +71,7 @@ export interface PluginRegistry {
  * 宿主能力实现。第三个参数是这次工具调用的**可信身份**。
  *
  * 它不能由实现方自己推断，也不能由插件自报：一个 handler 服务所有插件，而私有存储、
- * 配额、路径裁决、浏览器控制都得知道是谁在调、替哪一轮执行在调。身份由
+ * 配额、路径裁决都得知道是谁在调、替哪一轮执行在调。身份由
  * `PluginHost` 按 callId 保管，插件那侧只有一个 parentCallId。
  */
 export type PluginCapabilityHandler = (
@@ -214,8 +214,8 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       category: 'external',
       facet: plugin.manifest.id,
       summary: t.description,
-      // 跨进程调用。**ctx 不出宿主进程**——它带着 sink 句柄、AbortSignal、
-      // 浏览器端口这些宿主内部对象，序列化过去等于把它们交出去。这里只从 ctx
+      // 跨进程调用。**ctx 不出宿主进程**——它带着 sink 句柄、AbortSignal 这些
+      // 宿主内部对象，序列化过去等于把它们交出去。这里只从 ctx
       // 取出这次调用的身份留在宿主内存里，插件那侧拿到的仍然只有一个 callId；
       // 它要用宿主能力就走 host.* RPC，那条路上有权限闸，身份按 callId 取回。
       fn: async (args, ctx) => {
@@ -262,8 +262,8 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
 /**
  * 从工具上下文摘出这次调用的可信身份。
  *
- * 只取插件能力需要的那几项。**`signal` 与 `browser` 是宿主进程内的对象**，留在宿主
- * 内存里按 callId 取回；它们不进 RPC 帧。
+ * 只取插件能力需要的那几项。**`signal` 是宿主进程内的对象**，留在宿主内存里按 callId
+ * 取回；它不进 RPC 帧。
  */
 function callContext(pluginId: string, ctx: ToolContext): HostCallContext {
   return {
@@ -276,7 +276,6 @@ function callContext(pluginId: string, ctx: ToolContext): HostCallContext {
     deadline: Date.now() + CALL_TIMEOUT_MS,
     ...(ctx.additionalDirectories ? { additionalDirectories: ctx.additionalDirectories } : {}),
     ...(ctx.unrestrictedPaths ? { unrestrictedPaths: true } : {}),
-    ...(ctx.browser ? { browser: ctx.browser } : {}),
   }
 }
 

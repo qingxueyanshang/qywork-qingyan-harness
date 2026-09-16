@@ -323,7 +323,9 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     )
 
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { mcpConfig: true })
+    // 浏览器工具也列进来：这一页是设置目录，按静态完整清单列，
+    // 不是某条会话此刻能不能调它的真源。
+    registerBuiltinTools(registry, { mcpConfig: true, browser: true })
     /*
      * `load_tool` 要手动补一行：它只在会话建待加载池时注册，不在 `registerBuiltinTools`
      * 里，这个裸注册表列不出它。**不要在这里重算一遍分档**（量 schema 总量、超阈值才列）

@@ -6,7 +6,6 @@ import {
   installPlugin,
   isDesktopShell,
   pickWorkspace,
-  state,
   uninstallPlugin,
 } from '../lib/store/index.ts'
 import { IconTrash } from './Icons.tsx'
@@ -56,20 +55,6 @@ interface PluginsPayload {
 /** 插件目录的最后一段。绝对路径当标题会把整张卡撑成两行，而原因才是要看的。 */
 function dirName(dir: string): string {
   return dir.split(/[\\/]/).pop() ?? dir
-}
-
-/**
- * 这个插件依赖的宿主能力缺了哪一样。`null` = 齐了。
- *
- * 装上了不等于能用：内置浏览器要原生宿主连上、运行时版本达标。
- * 缺了就在卡上说一句，不然用户看到工具没出现，只能怀疑是装失败了。
- */
-function missingHost(permissions: string[]): string | null {
-  if (!permissions.includes('browser:control')) return null
-  const caps = state.capabilities?.browser
-  if (!caps?.connected) return '内置浏览器未连接'
-  if (!caps.runtimeSupported) return '内置浏览器运行时版本过低'
-  return null
 }
 
 /** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
@@ -194,9 +179,6 @@ export function PluginsPanel() {
                         {/* 隔离状态分三种，不能合并显示。
                           「纯声明式插件没有进程」和「有进程但没隔离」是完全不同的事，
                           显示成同一个「无」会把前者读成一处安全问题。 */}
-                        <Show when={missingHost(p.permissions)}>
-                          {(reason) => <div class="entry-extra bad">{reason()}</div>}
-                        </Show>
                         <div class="entry-extra">
                           <Show when={p.process === 'declarative'}>
                             <span>纯声明式插件，没有代码进程</span>

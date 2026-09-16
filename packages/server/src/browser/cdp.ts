@@ -112,6 +112,27 @@ export interface WaiterStats {
   timers: number
 }
 
+/**
+ * 一次静默探针读数。
+ *
+ * 三个字段都可能缺席，缺席即探针不成立。**调用方不得把缺席当作「文档已就绪」**：
+ * 那会让一个还在加载的页面提前通过静默判定。
+ */
+export interface ProbeRead {
+  /** `document.readyState`。 */
+  ready?: string
+  /** 探针建立以来的 DOM 变更条数。 */
+  mutations?: number
+  /** 这个探针已经不在当前文档里：换过文档，或已被清理。 */
+  gone?: boolean
+}
+
+/** 一条协议事件。订阅方按 `method` 分派，`params` 原样给出。 */
+export interface CdpEvent {
+  method: string
+  params: Record<string, unknown>
+}
+
 export interface CancelSummary {
   rejectedPending: number
   waiterStats: WaiterStats[]
@@ -120,20 +141,20 @@ export interface CancelSummary {
 }
 
 /**
- * 页内等待器。只 `querySelector` 观察并返回坐标，不点击、不提交、不输入。
+ * 页内等待器与静默探针。只 `querySelector` 观察、只数 DOM 变更，不点击、不提交、不输入。
  *
  * 注册表挂在 `window` 上，因此可以按 id 单独清理，并读回 observer 与 timer
- * 的计数作为清理证据。
+ * 的计数作为清理证据。**探针必须走这张表建**：另挂一个观察器的话，取消与断连时
+ * 的清理路径找不到它，它会跟着文档一直观察下去。
  */
 const WAITER_RUNTIME = `(() => {
   if (window.__qyworkWaiters) return 'already'
   window.__qyworkWaiters = new Map()
   window.__qyworkSeq = 0
   window.__qyworkLive = { observers: 0, timers: 0 }
-  window.__qyworkWait = (selector, timeoutMs) => {
-    const id = ++window.__qyworkSeq
+  const make = () => {
     let settle
-    const rec = { id, done: false, obs: null, timer: null }
+    const rec = { id: ++window.__qyworkSeq, done: false, obs: null, timer: null, mutations: 0 }
     rec.promise = new Promise((r) => { settle = r })
     rec.finish = (result) => {
       if (rec.done) return
@@ -142,7 +163,17 @@ const WAITER_RUNTIME = `(() => {
       if (rec.timer !== null) { clearTimeout(rec.timer); rec.timer = null; window.__qyworkLive.timers-- }
       settle(result)
     }
-    window.__qyworkWaiters.set(id, rec)
+    window.__qyworkWaiters.set(rec.id, rec)
+    return rec
+  }
+  const watch = (rec, fn) => {
+    rec.obs = new MutationObserver(fn)
+    window.__qyworkLive.observers++
+    rec.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true })
+  }
+  window.__qyworkWait = (selector, timeoutMs) => {
+    const rec = make()
+    const id = rec.id
     const check = () => {
       const el = document.querySelector(selector)
       if (!el) return false
@@ -151,12 +182,20 @@ const WAITER_RUNTIME = `(() => {
       return true
     }
     if (check()) return { id, immediate: true }
-    rec.obs = new MutationObserver(() => { check() })
-    window.__qyworkLive.observers++
-    rec.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true })
+    watch(rec, () => { check() })
     rec.timer = setTimeout(() => rec.finish({ found: false, reason: 'timeout', id }), timeoutMs)
     window.__qyworkLive.timers++
     return { id, immediate: false }
+  }
+  window.__qyworkProbe = () => {
+    const rec = make()
+    watch(rec, (records) => { rec.mutations += records.length })
+    return { id: rec.id }
+  }
+  window.__qyworkProbeRead = (id) => {
+    const rec = window.__qyworkWaiters.get(id)
+    if (!rec || rec.done) return { gone: true }
+    return { ready: document.readyState, mutations: rec.mutations }
   }
   window.__qyworkAwait = (id) => {
     const rec = window.__qyworkWaiters.get(id)
@@ -194,6 +233,8 @@ export class CdpClient {
   #childSessions = new Map<string, { parent: string; targetId: string }>()
   /** 本客户端按下但尚未释放的键。取消时按它补发 keyUp。 */
   #heldKeys = new Map<string, { sessionId: string; params: Record<string, unknown> }>()
+  /** 短寿命事件订阅。每一项只服务一次调用，由建立方在结束时摘掉。 */
+  #watchers = new Set<{ sessionId: string; listener: (event: CdpEvent) => void }>()
   #businessClosed = false
   #cancelled = false
 
@@ -420,6 +461,51 @@ export class CdpClient {
     )
   }
 
+  /**
+   * 订阅一个页会话上的协议事件，返回取消函数。
+   *
+   * 只服务一次调用：在发命令之前建立，结束时必须调返回的函数。不调的话订阅表会跟着
+   * 轮数长，而且上一次调用的判断会被这一次的事件改写。`Page` 域的事件由
+   * `Page.enable` 发布，页会话初始化时已经开过。
+   */
+  onSessionEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
+    const entry = { sessionId, listener }
+    this.#watchers.add(entry)
+    return () => {
+      this.#watchers.delete(entry)
+    }
+  }
+
+  /** 当前订阅数。清理证据，不是调试输出。 */
+  watchers(): number {
+    return this.#watchers.size
+  }
+
+  /** 登记一个静默探针并返回它的页内 id。探针只数 DOM 变更，不查选择器、不动页面。 */
+  async startProbe(sessionId: string, timeoutMs: number): Promise<number> {
+    const created = await this.send<{ result: { value: { id?: number } } }>(
+      'Runtime.evaluate',
+      { expression: 'window.__qyworkProbe()', returnByValue: true },
+      { sessionId, timeoutMs },
+    )
+    const id = created.result.value?.id
+    if (typeof id !== 'number') throw new CdpError('静默探针没有登记成功')
+    return id
+  }
+
+  /** 读一次探针。结果按 `ProbeRead` 判定，缺字段的读数不得当作就绪。 */
+  async readProbe(sessionId: string, probeId: number, timeoutMs: number): Promise<ProbeRead> {
+    const r = await this.send<{ result: { value?: ProbeRead } }>(
+      'Runtime.evaluate',
+      {
+        expression: `window.__qyworkProbeRead ? window.__qyworkProbeRead(${probeId}) : { gone: true }`,
+        returnByValue: true,
+      },
+      { sessionId, timeoutMs },
+    )
+    return r.result.value ?? { gone: true }
+  }
+
   /** 登记一个等待器并返回它的页内 id。返回后调用方用 `awaitWaiter` 等结果。 */
   async startWaiter(sessionId: string, selector: string, timeoutMs: number): Promise<number> {
     const created = await this.send<{ result: { value: { id: number } } }>(
@@ -450,7 +536,7 @@ export class CdpClient {
     return done.result.value
   }
 
-  /** 清掉一个页内等待器并读回计数。计数是清理证据，不是调试输出。 */
+  /** 清掉一个页内等待器或探针并读回计数。计数是清理证据，不是调试输出。 */
   async disposeWaiter(sessionId: string, waiterId: number): Promise<WaiterStats> {
     const r = await this.send<{ result: { value: WaiterStats } }>(
       'Runtime.evaluate',
@@ -586,6 +672,16 @@ export class CdpClient {
     if (msg.method === 'Target.detachedFromTarget') {
       const sessionId = (msg.params?.sessionId as string | undefined) ?? ''
       this.#childSessions.delete(sessionId)
+    }
+    if (!msg.method) return
+    const event: CdpEvent = { method: msg.method, params: msg.params ?? {} }
+    for (const watcher of [...this.#watchers]) {
+      if (watcher.sessionId !== (msg.sessionId ?? '')) continue
+      try {
+        watcher.listener(event)
+      } catch (err) {
+        log.warn('browser', `事件订阅出错：${err instanceof Error ? err.message : String(err)}`)
+      }
     }
   }
 

@@ -206,7 +206,7 @@ export function groupTitle(members: TranscriptItem[]): string {
     const list = byKind.get(k)!
     const objects = new Set(list.map((s) => s.action?.objectLabel ?? ''))
     const noun = objects.size === 1 ? (list[0]!.action?.objectLabel ?? '动作') : '动作'
-    return `${VERBS[k]} ${list.length} 个${noun}`
+    return `${VERBS[k]} ${list.length} ${UNITS[k]}${noun}`
   })
 
   const failed = tools.filter((s) => s.status === 'failure').length
@@ -229,6 +229,17 @@ const VERBS: Record<ActionKind, string> = {
   delete: '删除',
   run: '运行',
   call: '调用',
+}
+
+/** 量词按动词分：对象是物的计「个」（读取 2 个文件），动作类的计「次」（调用 3 次浏览器）。 */
+const UNITS: Record<ActionKind, string> = {
+  query: '个',
+  read: '个',
+  write: '个',
+  edit: '个',
+  delete: '个',
+  run: '次',
+  call: '次',
 }
 
 export function verb(kind: ActionKind): string {

@@ -281,6 +281,7 @@ export class Session {
       delegate: opts.delegate !== undefined,
       plugins: opts.plugins !== undefined,
       mcpConfig: true,
+      browser: opts.browser !== undefined,
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)
@@ -756,22 +757,8 @@ export class Session {
       const plugin = /^(.+?)__/.exec(spec.name)
       return plugin ? disabled.has(`plugin:${plugin[1]}`) : false
     }
-    /*
-     * **没有浏览器就不注册浏览器工具。**
-     *
-     * 判据是工具声明的 `browser` 效果，它由清单里的 `browser:control` 强制要求
-     * （`manifest.ts` 的校验），不按插件名猜。宿主没连上、运行时版本不达标、
-     * 这一轮是成员会话——三种情况装配方都不注入端口，此时注册进来的就是一个
-     * 点了必然报错的名字，而模型会反复去调它。
-     */
-    const noBrowser = (spec: { permissionEffect: unknown }) =>
-      !this.opts.browser && spec.permissionEffect === 'browser'
     const eligible = ext.toolSpecs.filter(
-      (spec) =>
-        !(allow && !allow.has(spec.name)) &&
-        !off(spec) &&
-        !noBrowser(spec) &&
-        !this.registry.has(spec.name),
+      (spec) => !(allow && !allow.has(spec.name)) && !off(spec) && !this.registry.has(spec.name),
     )
 
     /*
@@ -965,8 +952,11 @@ export class Session {
    *   `resolveInWorkspace` 锁死、外发已经过 SSRF 闸，都是**确定性**判断，
    *   越界的根本走不到这里。所以放行，不必再花一次往返去问模型。
    * - **MCP 与插件工具**：是用户显式配置/安装的，属于知情同意，放行——
-   *   不为用户自己选的扩展造第三套闸。内置浏览器工具（`browser` 效果）走的是同一条：
-   *   它由插件贡献，装不装由用户决定，目标页只能是本次执行自己开出来的那些。
+   *   不为用户自己选的扩展造第三套闸。
+   * - **内置浏览器工具**（`browser` 效果）：端口由装配方按这一轮执行注入，
+   *   参数里自报的会话、Run、工作区根一概不读；页归属由宿主裁决，用户手动开的页
+   *   要用户点名后经 `bind` 才归本会话；上传下载的路径与文件工具走同一份裁决。
+   *   边界都在参数解析之前，放行。
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
    *   （命令字符串里的路径不经过参数解析）。只有它需要真正的裁决。
    */

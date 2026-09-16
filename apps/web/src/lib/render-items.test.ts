@@ -347,13 +347,13 @@ describe('组头文案', () => {
    */
   test('有正在跑的也是摘要，不换成「正在…」', () => {
     expect(groupTitle([tool('文件', 'read'), tool('命令', 'run', { status: 'running' })])).toBe(
-      '读取 1 个文件，运行 1 个命令',
+      '读取 1 个文件，运行 1 次命令',
     )
   })
 
   /** 计数把正在跑的那条也算进去：工具陆续启动时数字自然增长，不会先空着。 */
   test('正在跑的工具也进计数', () => {
-    expect(groupTitle([tool('命令', 'run', { status: 'running' })])).toBe('运行 1 个命令')
+    expect(groupTitle([tool('命令', 'run', { status: 'running' })])).toBe('运行 1 次命令')
   })
 
   test('同桶对象一致时用那个名词', () => {
@@ -362,6 +362,10 @@ describe('组头文案', () => {
 
   test('同桶对象不一致时退化成「动作」 —— 硬凑名词只会误导', () => {
     expect(groupTitle([tool('a.ts', 'read'), tool('b.ts', 'read')])).toBe('读取 2 个动作')
+    // 调用与运行计次：对象是同一个浏览器或同一条命令，计「个」会把一页数成三页。
+    expect(
+      groupTitle([tool('浏览器', 'call'), tool('浏览器', 'call'), tool('浏览器', 'call')]),
+    ).toBe('调用 3 次浏览器')
   })
 
   test('多桶按首次出现顺序拼', () => {

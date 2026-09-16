@@ -7,6 +7,7 @@
  */
 
 import type { ToolRegistry } from '@qywork/agent'
+import { browserTools } from './browser.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
 import { moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
@@ -117,7 +118,7 @@ import { workflowTool } from './workflow.ts'
  */
 export function registerBuiltinTools(
   registry: ToolRegistry,
-  opts: { delegate?: boolean; plugins?: boolean; mcpConfig?: boolean } = {},
+  opts: { delegate?: boolean; plugins?: boolean; mcpConfig?: boolean; browser?: boolean } = {},
 ): void {
   const shell = commandShell()
   for (const spec of [
@@ -135,6 +136,9 @@ export function registerBuiltinTools(
     updateGoalTool,
     webFetchTool,
     webSearchTool,
+    // 浏览器同样按通道注册：宿主没连上、版本不达标、成员会话三种情况都拿不到端口，
+    // 此时注册进来的是七个必然报错的名字。
+    ...(opts.browser ? browserTools : []),
     readMemoryTool,
     writeMemoryTool,
     deleteMemoryTool,

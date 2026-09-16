@@ -31,7 +31,6 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { configPath, NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
-import { globalPluginsDir } from './extensions.ts'
 import { buildTailNotes } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
@@ -985,22 +984,23 @@ describe('浏览器控制跟着这一轮执行走', () => {
   function fakeBrowser(): { port: BrowserPort; released: () => number } {
     let released = 0
     const tab = { tabId: 'bt_1', url: 'https://a', title: 'A', controlled: true }
+    const observation = {
+      tabId: 'bt_1',
+      url: 'https://a',
+      title: 'A',
+      observationId: 'ob_1',
+      elements: [],
+      truncated: false,
+    }
     const port = {
       tabs: async () => [tab],
       open: async () => tab,
       bind: async () => tab,
       close: async () => {},
-      navigate: async () => tab,
-      observe: async () => ({
-        tabId: 'bt_1',
-        url: 'https://a',
-        title: 'A',
-        observationId: 'ob_1',
-        elements: [],
-        truncated: false,
-      }),
-      act: async () => ({}),
-      wait: async () => ({ found: true }),
+      navigate: async () => ({ observation }),
+      observe: async () => observation,
+      act: async () => ({ observation }),
+      wait: async () => ({ found: true, observation }),
       upload: async () => ({ files: [] }),
       download: async () => ({}),
       armDownload: async () => {},
@@ -1033,85 +1033,57 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  /** 装一个只贡献浏览器工具的插件。判据是清单里的 browser:control，不是插件名。 */
-  async function workspaceWithBrowserPlugin(): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), 'qywork-sess-br-'))
-    process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-sess-home-'))
-    const dir = join(globalPluginsDir(), 'demo.browser')
-    await mkdir(dir, { recursive: true })
-    const NL = String.fromCharCode(10)
-    await writeFile(
-      join(dir, 'index.mjs'),
-      `process.stdout.write(JSON.stringify({ type: 'ready' }) + ${JSON.stringify(NL)})${NL}`,
-      'utf8',
-    )
-    await writeFile(
-      join(dir, 'qywork.plugin.json'),
-      JSON.stringify({
-        manifestVersion: 1,
-        id: 'demo.browser',
-        name: '演示浏览器',
-        version: '1.0.0',
-        description: '只贡献一个浏览器工具',
-        main: 'index.mjs',
-        permissions: ['browser:control'],
-        contributes: {
-          tools: [
-            {
-              name: 'act',
-              description: '动一下',
-              parameters: { type: 'object', properties: {} },
-              permissionEffect: 'browser',
-            },
-          ],
-        },
-      }),
-      'utf8',
-    )
-    return root
-  }
+  /** 七个内置浏览器工具。整组按通道注册，不逐个开关。 */
+  const SEVEN = [
+    'browser_tabs',
+    'browser_navigate',
+    'browser_observe',
+    'browser_act',
+    'browser_wait',
+    'browser_upload',
+    'browser_download',
+  ]
 
-  test('没有浏览器时浏览器工具不注册，不留一个必然报错的名字', async () => {
-    const root = await workspaceWithBrowserPlugin()
-    const store = new Store({ path: ':memory:' })
-    const s = new Session({
-      store,
-      config,
-      workspaceRoot: root,
-      signal: new AbortController().signal,
-    })
-    await (
-      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
-    ).loadExtensionTools(DEFAULT_DENSITY)
-    const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
-      .schemas()
-      .map((t) => t.name)
-    expect(names).not.toContain('demo_browser__act')
+  test('没有端口时七个浏览器工具都不注册，不留必然报错的名字', async () => {
+    const { s, store, names } = await session()
+    const listed = names()
+    for (const name of SEVEN) expect(listed).not.toContain(name)
     s.dispose()
     store.close()
-  }, 20_000)
+  })
 
-  test('接上浏览器之后同一个工具就注册进来', async () => {
+  test('接上端口之后七个都进工具表', async () => {
     const browser = fakeBrowser()
-    const root = await workspaceWithBrowserPlugin()
-    const store = new Store({ path: ':memory:' })
-    const s = new Session({
-      store,
-      config,
-      workspaceRoot: root,
-      signal: new AbortController().signal,
-      browser: browser.port,
-    })
-    await (
-      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
-    ).loadExtensionTools(DEFAULT_DENSITY)
-    const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
-      .schemas()
-      .map((t) => t.name)
-    expect(names).toContain('demo_browser__act')
+    const { s, store, names } = await session({ browser: browser.port })
+    const listed = names()
+    for (const name of SEVEN) expect(listed).toContain(name)
     s.dispose()
     store.close()
-  }, 20_000)
+  })
+
+  test('角色的 allowedTools 同样筛浏览器工具', async () => {
+    const browser = fakeBrowser()
+    const { s, store, names } = await session({
+      browser: browser.port,
+      allowedTools: ['browser_observe', 'read_file'],
+    })
+    const listed = names()
+    expect(listed).toContain('browser_observe')
+    expect(listed).not.toContain('browser_act')
+    s.dispose()
+    store.close()
+  })
+
+  test('成员会话没有端口，点名了也注册不进来', async () => {
+    const { s, store, names } = await session({
+      allowedTools: ['browser_observe', 'read_file'],
+    })
+    const listed = names()
+    expect(listed).toContain('read_file')
+    expect(listed).not.toContain('browser_observe')
+    s.dispose()
+    store.close()
+  })
 
   test('没有端口时工具上下文里就没有浏览器通道', async () => {
     const { s, store } = await session()
