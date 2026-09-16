@@ -72,6 +72,7 @@ export interface RedactedProvider {
  * 字段不会被抹掉」钉住——改这里之前先看那条。
  */
 export interface RedactedConfig {
+  updates?: { autoCheck: boolean; autoDownload: boolean }
   /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型，删光最后一个模型后也没有。 */
   active?: ModelRef
   providers: Record<string, RedactedProvider>

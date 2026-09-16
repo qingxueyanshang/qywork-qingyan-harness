@@ -1,5 +1,6 @@
 import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
+import { hasAppUpdate } from '../lib/store/app-update.ts'
 import {
   activateWorkspace,
   isDesktopShell,
@@ -213,6 +214,9 @@ export function Sidebar(props: { onClose?: () => void }) {
             <button class="nav-item" type="button" onClick={() => openSettings()}>
               <IconSettings size={15} />
               系统设置
+              <Show when={hasAppUpdate()}>
+                <span class="app-update-dot" role="img" aria-label="有新版本" />
+              </Show>
             </button>
           </li>
         </ul>

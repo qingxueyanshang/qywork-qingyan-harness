@@ -110,7 +110,7 @@ export async function startRun(
         type: 'run.error',
         runId: '' as RunId,
         code: 'internal_error',
-        message: '该会话已有任务在执行，请先中断',
+        message: deps.runs.updating ? '应用正在更新，请稍后重试' : '该会话已有任务在执行，请先中断',
       },
       conversationId,
     )
@@ -340,7 +340,14 @@ export async function startRun(
 function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDeps, 'ws'>): boolean {
   const item = deps.runs.takeNext(conversationId)
   if (!item) return false
+  // 队首移交给定时回调期间仍属于待执行任务，复用会话占位阻止更新退出。
+  if (!deps.runs.reserve(conversationId)) {
+    deps.runs.enqueueFront(conversationId, item)
+    return true
+  }
   setTimeout(() => {
+    // release 与 startRun 的 reserve 之间没有 await，退出占位不能插入其中。
+    deps.runs.release(conversationId)
     if (deps.runs.hasRun(conversationId)) {
       deps.runs.enqueueFront(conversationId, item)
       return

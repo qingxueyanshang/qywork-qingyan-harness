@@ -6,6 +6,7 @@
 /// 加一条命令就要同时改这里与 `capabilities/default.json`，漏改的表现是
 /// 前端调用被拒，不是静默放行。
 const APP_COMMANDS: &[&str] = &[
+    "app_update",
     "pick_workspace",
     "pick_files",
     "save_session_export",
@@ -28,6 +29,7 @@ const APP_COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=QYWORK_UPDATER_PUBLIC_KEY");
     // tauri_build 不为图标声明 rerun-if-changed。缺这一行时改 icons/ 不会触发构建脚本重跑，
     // exe 资源段里的仍是上次编译时嵌入的 icon.ico。
     println!("cargo:rerun-if-changed=icons/icon.ico");

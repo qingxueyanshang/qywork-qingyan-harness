@@ -13,6 +13,38 @@ import { EventBus } from './bus.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
+describe('更新与新任务互斥', () => {
+  test('占位、运行、子任务、跟进队列全部结束后才允许退出', () => {
+    const subagents = new SubagentRegistry()
+    const runs = new RunManager(null as never, new EventBus(), subagents)
+    const cv = 'cv_update' as ConversationId
+    runs.reserve(cv)
+    expect(runs.claimUpdate()).toBe(false)
+    runs.register({
+      conversationId: cv,
+      runId: 'rn_update' as never,
+      controller: new AbortController(),
+      startedAt: 0,
+    })
+    expect(runs.claimUpdate()).toBe(false)
+    runs.unregister('rn_update' as never)
+    subagents.add(cv, 'child', { name: 'child', kind: 'temp', controller: new AbortController() })
+    expect(runs.claimUpdate()).toBe(false)
+    subagents.remove(cv, 'child')
+    runs.enqueue(cv, { id: 'queued', content: 'pending', steer: false })
+    expect(runs.claimUpdate()).toBe(false)
+    runs.takeNext(cv)
+    runs.arm(cv, { goalId: 'goal-update', revision: 1 })
+    expect(runs.claimUpdate()).toBe(false)
+    runs.disarm(cv)
+    expect(runs.claimUpdate()).toBe(true)
+    expect(runs.reserve(cv)).toBe(false)
+    expect(runs.reserve('another' as ConversationId)).toBe(false)
+    runs.cancelUpdate()
+    expect(runs.reserve(cv)).toBe(true)
+  })
+})
+
 describe('同会话只允许一个 run', () => {
   /**
    * 原始失败形状：`isBusy()` 检查与 `runs.register()` 之间隔着建 Session、

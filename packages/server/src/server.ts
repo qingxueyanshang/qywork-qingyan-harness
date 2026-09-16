@@ -81,6 +81,7 @@ export interface ServeOptions {
    * 整条不发布。不给它一个默认值——默认值等于人人都能注册宿主。
    */
   browserHostKey?: string
+  updateHostKey?: string
   /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
   previousProcessExit?: ProcessExitObservation
   /**
@@ -278,6 +279,7 @@ export function serve(opts: ServeOptions) {
     {
       store: opts.store,
       config: opts.config,
+      canStart: () => !runs.updating,
       start: (conversationId, prompt) =>
         startRun(conversationId, prompt, undefined, {
           store: opts.store,
@@ -341,6 +343,26 @@ export function serve(opts: ServeOptions) {
 
     async fetch(req: Request, srv: Bun.Server<SocketData>) {
       const url = new URL(req.url)
+
+      if (url.pathname === '/internal/app-update') {
+        const address = srv.requestIP(req)?.address
+        if (
+          !opts.updateHostKey ||
+          !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? '') ||
+          req.headers.get('x-qywork-update-key') !== opts.updateHostKey
+        ) {
+          return new Response('unauthorized', { status: 401 })
+        }
+        if (req.method !== 'POST') return new Response('method not allowed', { status: 405 })
+        const body = (await req.json().catch(() => null)) as { action?: unknown } | null
+        if (!body || typeof body !== 'object') return json({ error: 'invalid action' }, 400)
+        if (body.action === 'cancel') {
+          runs.cancelUpdate()
+          return json({ claimed: false })
+        }
+        if (body.action !== 'claim') return json({ error: 'invalid action' }, 400)
+        return json({ claimed: runs.claimUpdate(), busy: runs.busyConversations().length })
+      }
 
       /*
        * ── 原生浏览器宿主连接 ──

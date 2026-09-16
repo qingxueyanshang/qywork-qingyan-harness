@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
 import { TrustDialog } from './components/TrustDialog.tsx'
+import { observeAppUpdate } from './lib/store/app-update.ts'
 
 // 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
 // 只想聊天的用户不该为文件预览付首屏成本。
@@ -143,6 +144,8 @@ export function App() {
 
   onMount(() => {
     client.connect()
+    const stopUpdates = observeAppUpdate()
+    onCleanup(stopUpdates)
 
     /*
      * 空闲时先把面板那块代码取回来。

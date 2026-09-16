@@ -12,6 +12,24 @@ import { collect } from './collect-installer.ts'
 const ROOT = join(import.meta.dir, '..')
 
 describe('桌面发布清单', () => {
+  test('正式更新必须打包签名并上传清单', () => {
+    const workflow = readFileSync(
+      new URL('../.github/workflows/release-windows.yml', import.meta.url),
+      'utf8',
+    )
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    )
+    expect(config.bundle.createUpdaterArtifacts).toBe(false)
+    expect(workflow).toContain('createUpdaterArtifacts = $true')
+    expect(workflow).toContain('includeUpdaterJson: true')
+    expect(workflow).toContain('secrets.TAURI_SIGNING_PRIVATE_KEY')
+    expect(workflow).toContain('vars.QYWORK_UPDATER_PUBLIC_KEY')
+    expect(workflow).toContain('--config ../../.tmp/updater-config.json')
+    expect(workflow.indexOf('name: Configure signed updates')).toBeLessThan(
+      workflow.indexOf('run: bun run gate'),
+    )
+  })
   test('安装包携带项目与第三方许可证', () => {
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json'), 'utf8'),
@@ -101,6 +119,7 @@ describe('本地安装包收集', () => {
     mkdirSync(bundle, { recursive: true })
     mkdirSync(deps, { recursive: true })
     writeFileSync(join(bundle, 'qywork_9.9.9_x64-setup.exe'), 'setup')
+    writeFileSync(join(bundle, 'qywork_9.9.9_x64-setup.exe.sig'), 'signature')
     writeFileSync(join(deps, 'qywork.rlib'), 'rlib')
     const out = join(base, 'installer')
 
@@ -108,6 +127,7 @@ describe('本地安装包收集', () => {
       expect(await collect(target, out)).toBe(0)
 
       expect(existsSync(join(out, 'qywork_9.9.9_x64-setup.exe'))).toBe(true)
+      expect(readFileSync(join(out, 'qywork_9.9.9_x64-setup.exe.sig'), 'utf8')).toBe('signature')
       expect(readFileSync(join(out, 'SHA256SUMS.txt'), 'utf8')).toContain(
         'qywork_9.9.9_x64-setup.exe',
       )

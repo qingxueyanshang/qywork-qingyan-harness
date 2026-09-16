@@ -109,6 +109,163 @@
   margin-left: auto;
 }
 
+/* 更新区的版本随标题排列，状态与操作固定在最后一行。 */
+.app-update-heading {
+  justify-content: space-between;
+}
+.app-update-version {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.app-update-version span:first-child {
+  color: var(--text-primary);
+}
+.app-update-section {
+  gap: 0;
+  margin-bottom: var(--s-3);
+}
+.app-update-section .settings-block-head {
+  margin-bottom: var(--s-2);
+}
+.app-update-section .app-update-switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-inset);
+  cursor: pointer;
+}
+.app-update-section .app-update-switch::before {
+  content: "";
+  display: block;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.app-update-section .app-update-switch:checked {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+.app-update-section .app-update-switch:checked::before {
+  transform: translateX(12px);
+  background: var(--bg-raised);
+}
+.app-update-section .app-update-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.app-update-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--s-3);
+  min-width: 0;
+  min-height: 48px;
+  max-height: 48px;
+  border-top: 1px solid var(--border-subtle);
+}
+.app-update-status {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-sm);
+}
+.app-update-status.bad {
+  color: var(--danger);
+}
+.app-update-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 26px;
+  padding: 0 9px;
+  margin-left: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+.app-update-action.primary {
+  border-color: var(--text-primary);
+  background: var(--text-primary);
+  color: var(--bg-raised);
+}
+.app-update-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.app-update-notes-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.app-update-notes-link:hover {
+  color: var(--text-primary);
+}
+.app-update-progress {
+  width: 64px;
+  height: 3px;
+  min-width: 20px;
+  accent-color: var(--text-primary);
+}
+.app-update-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--success);
+}
+.app-update-notes {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-6) var(--s-8) var(--s-6) var(--settings-inset);
+  background: var(--bg-raised);
+}
+.app-update-notes-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.app-update-notes-heading h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+.app-update-notes pre {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.7;
+}
+
 /* ── 行式设置卡 ──
  *
  * 若干行叠成一张卡，行间一条分隔线。左标题右控件，控件右缘对齐——
@@ -132,6 +289,16 @@
 }
 .setting-row + .setting-row {
   border-top: 1px solid var(--border-subtle);
+}
+.app-update-section .setting-rows {
+  border: 0;
+  border-radius: 0;
+}
+.app-update-section .setting-row {
+  min-height: 48px;
+  max-height: 48px;
+  padding: 0;
+  justify-content: space-between;
 }
 /* 控件无界的那一格：标题和说明在上，控件自己占满一行。
    绝对路径、多行清单挤到右边一列只会被截断，而截断的路径没用。 */

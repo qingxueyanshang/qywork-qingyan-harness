@@ -40,11 +40,11 @@ export async function collect(targetDir: string, outDir: string): Promise<number
   const found: { dir: string; name: string }[] = []
   for (const dir of await bundleDirs(targetDir)) {
     for (const name of await readdir(dir).catch(() => [])) {
-      if (name.endsWith('.exe')) found.push({ dir, name })
+      if (name.endsWith('.exe') || name.endsWith('.exe.sig')) found.push({ dir, name })
     }
   }
 
-  if (found.length === 0) {
+  if (!found.some((file) => file.name.endsWith('.exe'))) {
     process.stderr.write('没有找到安装包，先跑 bun run tauri:build\n')
     return 1
   }
@@ -60,7 +60,7 @@ export async function collect(targetDir: string, outDir: string): Promise<number
   }
 
   for (const name of await readdir(outDir)) {
-    if (name.endsWith('.exe') && !delivered.has(name)) {
+    if ((name.endsWith('.exe') || name.endsWith('.exe.sig')) && !delivered.has(name)) {
       await rm(join(outDir, name), { force: true })
     }
   }

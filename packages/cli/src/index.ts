@@ -344,6 +344,7 @@ async function runServe(args: string[]): Promise<number> {
      * 也就没有浏览器资源。**不要落进配置文件**——那等于把一个可以注册宿主的凭据入盘。
      */
     ...(process.env.QYWORK_BROWSER_KEY ? { browserHostKey: process.env.QYWORK_BROWSER_KEY } : {}),
+    ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
   })
 

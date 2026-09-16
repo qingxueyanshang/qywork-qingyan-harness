@@ -116,6 +116,10 @@ fn spawn_process(
         .sidecar("qy")
         .map_err(|e| anyhow!("找不到 qy sidecar：{e}"))?
         .args(args);
+    command = command.env(
+        "QYWORK_UPDATE_KEY",
+        &app.state::<crate::updater::UpdateOwner>().key,
+    );
     if let Some(value) = token {
         // CLI 的 serve 以这一变量作为显式令牌。恢复时必须复用，否则旧 WebView
         // 会拿原令牌连到同一端口，再被永久判成 unauthorized。
@@ -305,6 +309,10 @@ fn supervise(
                 if handle.0.lock().stopping {
                     return;
                 }
+                if crate::updater::installing(&app) {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
 
                 match spawn_process(
                     &app,
@@ -402,6 +410,11 @@ pub async fn spawn(
 /// 收掉子进程。退出路径上必须调用，且要能被重复调用而不出错。
 pub fn shutdown(app: &AppHandle) {
     shutdown_handle(&app.state::<SidecarHandle>());
+}
+
+/// 安装期间由更新所有者禁止恢复；安装启动失败后仍复用原监督器。
+pub fn stop_for_update(app: &AppHandle) {
+    kill_current(&app.state::<SidecarHandle>());
 }
 
 /// 同上，但直接拿句柄——握手超时那条路径上还没有可用的 app state 引用。

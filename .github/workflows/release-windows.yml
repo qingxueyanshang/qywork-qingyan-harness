@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 60
     env:
       CI: true
+      QYWORK_UPDATER_PUBLIC_KEY: ${{ vars.QYWORK_UPDATER_PUBLIC_KEY }}
 
     steps:
       - name: Verify release source
@@ -56,6 +57,18 @@ jobs:
       - name: Set up build
         uses: ./.github/actions/setup-build
 
+      - name: Configure signed updates
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:QYWORK_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Configure QYWORK_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY before releasing."
+          }
+          New-Item -ItemType Directory -Force -Path .tmp | Out-Null
+          @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:QYWORK_UPDATER_PUBLIC_KEY.Trim() } } } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath .tmp/updater-config.json -Encoding utf8
+
       - name: Run release gate
         run: bun run gate
 
@@ -64,16 +77,18 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
-          args: --target x86_64-pc-windows-msvc --bundles nsis
+          args: --target x86_64-pc-windows-msvc --bundles nsis --config ../../.tmp/updater-config.json
           tagName: v__VERSION__
           releaseName: qywork v__VERSION__
           releaseCommitish: ${{ github.sha }}
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true
           generateReleaseNotes: true
           releaseBody: ${{ steps.release_notes.outputs.body }}
 

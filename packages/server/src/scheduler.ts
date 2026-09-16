@@ -33,6 +33,7 @@ import { claimDueSchedules, type Store } from '@qywork/store'
 const SCHEDULER_TICK_MS = 30_000
 
 export interface SchedulerDeps {
+  canStart?: () => boolean
   store: Store
   /** 建会话时定死的接口与模型，取 `active`。 */
   config: QyConfig
@@ -48,6 +49,7 @@ export interface SchedulerDeps {
  * 「有会话、无 Run」，界面按「没有执行记录」显示，成因写进 stderr。
  */
 export async function tickSchedules(deps: SchedulerDeps): Promise<void> {
+  if (deps.canStart?.() === false) return
   // 没配默认模型就不认领：定时任务要按 active 建会话，没有 active 就无从起轮。
   // 不认领 = 任务留在到期状态，配好模型后照常触发，不静默丢一次。
   const active = deps.config.active

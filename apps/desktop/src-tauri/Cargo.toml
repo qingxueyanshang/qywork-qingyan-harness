@@ -24,10 +24,12 @@ tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2.11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 # 用于 sidecar 输出通道与握手/恢复计时。tokio 本来就在依赖树里（tauri 的运行时就是它），
 # 写成直接依赖只是让这些类型和函数可以被命名，不新增任何 crate。
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
 serde_json = "1"
 parking_lot = "0.12"
 anyhow = "1"
@@ -50,12 +52,12 @@ windows = { version = "0.61", features = [
   "Win32_Security_Cryptography",
   "Win32_System_Threading",
 ] }
-
-[features]
 # 逐下载钩子绑的是 `DownloadStarting` 交出的 `ICoreWebView2DownloadOperation` 本身，
 # 见 browser/tabs.rs。版本跟 tauri 传递依赖的那份对齐（0.38），否则 `PlatformWebview::controller()`
 # 交出来的接口与这里的类型不是同一个。
 webview2-com = "0.38"
+
+[features]
 # 由 tauri-build 生成的自定义协议开关，勿手改。
 custom-protocol = ["tauri/custom-protocol"]
 

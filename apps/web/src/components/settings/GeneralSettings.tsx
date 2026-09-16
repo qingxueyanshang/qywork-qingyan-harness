@@ -15,6 +15,7 @@ import { ConfigStatus } from './ConfigStatus.tsx'
 import { config, configError, configPath, ensureConfig, reloadConfig } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { PathRow, Row } from './Row.tsx'
+import { UpdateSettings } from './UpdateSettings.tsx'
 
 const THEMES: { id: ThemePref; label: string }[] = [
   { id: 'system', label: '跟随系统' },
@@ -130,6 +131,7 @@ export function GeneralSettings() {
 
   return (
     <>
+      <UpdateSettings />
       <section class="settings-block">
         <h3 class="settings-block-head">外观</h3>
         <div class="setting-rows">

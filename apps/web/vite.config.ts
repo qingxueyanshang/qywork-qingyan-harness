@@ -13,7 +13,11 @@ const AGENT_PORT = process.env.QYWORK_PORT ?? '7717'
  */
 const COORDINATED_RELOAD = process.env.QYWORK_COORDINATED_RELOAD === '1'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  define: {
+    __QYWORK_UPDATE_ENDPOINT__:
+      command === 'serve' ? (process.env.QYWORK_UPDATE_ENDPOINT ?? 'null') : 'null',
+  },
   plugins: [solid()],
   server: {
     port: 5180,
@@ -40,4 +44,4 @@ export default defineConfig({
     // （实测 593 kB），按需加载就失效了。交给 Vite 按动态导入边界自动切分。
     chunkSizeWarningLimit: 700,
   },
-})
+}))

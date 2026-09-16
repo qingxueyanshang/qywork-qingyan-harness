@@ -18,6 +18,16 @@ import { compactConversation, resumeGoal, setGoal, submitMessage } from './run-c
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
+  if (deps.runs.updating && cmd.type !== 'subscribe' && cmd.type !== 'conversation.interrupt') {
+    reject(
+      deps.ws,
+      cmd.type,
+      'conflict',
+      '应用正在更新，请稍后重试',
+      'clientRequestId' in cmd ? cmd.clientRequestId : undefined,
+    )
+    return
+  }
 
   switch (cmd.type) {
     case 'subscribe':

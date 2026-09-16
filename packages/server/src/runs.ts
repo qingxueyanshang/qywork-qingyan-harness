@@ -53,6 +53,27 @@ export class RunManager {
   private readonly byConversation = new Map<string, RunId>()
   /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
   private readonly reserved = new Set<string>()
+  private updateClaimed = false
+
+  /** 在现有忙态集合上原子占住退出时机；没有单独的任务计数。 */
+  claimUpdate(): boolean {
+    if (
+      this.armed.size ||
+      this.busyConversations().length ||
+      [...this.queues.values()].some((q) => q.length)
+    )
+      return false
+    this.updateClaimed = true
+    return true
+  }
+
+  cancelUpdate(): void {
+    this.updateClaimed = false
+  }
+
+  get updating(): boolean {
+    return this.updateClaimed
+  }
   /** 每个会话最多一条待续起标记。见 `GoalArm`。 */
   private readonly armed = new Map<string, GoalArm>()
   /**
@@ -141,7 +162,7 @@ export class RunManager {
    * 返回 false = 已经有人在跑，调用方必须直接回绝。
    */
   reserve(conversationId: ConversationId): boolean {
-    if (this.hasRun(conversationId)) return false
+    if (this.updateClaimed || this.hasRun(conversationId)) return false
     this.reserved.add(conversationId)
     this.announce(conversationId)
     return true

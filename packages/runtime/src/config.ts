@@ -59,6 +59,7 @@ export interface ModelRef {
 }
 
 export interface QyConfig {
+  updates?: { autoCheck: boolean; autoDownload: boolean }
   /**
    * 当前生效的「接口 × 模型」。**可缺省**：出厂不预设模型，用户配好之前它就是没有。
    * 缺省时新会话不带默认模型、发送在起 run 前被明确拒绝（`no_model`），不回落到任何模型。
@@ -652,6 +653,14 @@ export function collectSecrets(cfg: QyConfig): { values: string[] } {
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
+  if (
+    cfg.updates !== undefined &&
+    (!cfg.updates ||
+      typeof cfg.updates.autoCheck !== 'boolean' ||
+      typeof cfg.updates.autoDownload !== 'boolean')
+  ) {
+    problems.push('更新设置必须包含 autoCheck 和 autoDownload 布尔值')
+  }
 
   /*
    * 思考档位必须在词表里。

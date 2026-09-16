@@ -23,6 +23,7 @@
     }
   },
   "bundle": {
+    "createUpdaterArtifacts": false,
     "active": true,
     "targets": ["nsis", "dmg", "app", "deb", "appimage"],
     "license": "Apache-2.0",
@@ -51,5 +52,5 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": { "updater": { "pubkey": "", "windows": { "installMode": "passive" } } }
 }

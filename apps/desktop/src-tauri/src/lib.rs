@@ -9,15 +9,17 @@
 //! WebView 也不通过 Tauri IPC 拿业务数据，它直连 `qy serve` 的 WebSocket，
 //! 和手机端走完全相同的协议。这样「桌面能做手机做不了」的能力漂移在结构上就不存在。
 //!
-//! **例外只有一个：终端（`terminal.rs`）。** 它走 IPC 不是图方便——PTY 是本机进程
+//! **本机进程能力通过 IPC 提供。** 终端（`terminal.rs`）的 PTY 是本机进程
 //! 和一对操作系统句柄，跨不过网络，手机端不可能有；放进 sidecar 等于把「在这台
 //! 机器上跑任意命令」开到局域网上。再要开例外，先说清楚为什么这件事**在结构上**
 //! 到不了另一端，而不只是这边实现起来更简单。
+//! 安装更新（`updater.rs`）由外壳校验安装包并退出当前进程，远程 Web 不提供此入口。
 
 mod browser;
 mod logfile;
 mod sidecar;
 mod terminal;
+mod updater;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -431,12 +433,15 @@ pub fn run() {
      * `ShellExt::sidecar()` 与 `app.dialog()` 都是 Rust 直调，不过那一层。
      */
     tauri::Builder::default()
+        .manage(updater::owner())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(sidecar::SidecarHandle::default())
         .manage(terminal::TerminalHandle::default())
         .invoke_handler(tauri::generate_handler![
+            updater::app_update,
             pick_workspace,
             pick_files,
             save_session_export,
@@ -491,6 +496,7 @@ pub fn run() {
                 // 两处都声明会得到 "a webview with label `main` already exists" 的 panic，
                 // 而 panic 会绕过退出清理，把 qy sidecar 留成孤儿进程。
                 let script = sidecar::init_script(&info);
+                updater::start(&handle, &info);
 
                 build_main_window(&handle, &script)?;
                 #[cfg(desktop)]

@@ -218,3 +218,4 @@ export {
   ROLE_COMMAND,
   type ServerCapabilities,
 } from './protocol/transport.ts'
+export type { UpdateAction, UpdatePreferences, UpdateSnapshot } from './protocol/updates.ts'

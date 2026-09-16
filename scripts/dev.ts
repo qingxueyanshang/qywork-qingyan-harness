@@ -40,11 +40,15 @@ import { watch } from 'node:fs'
 import { join } from 'node:path'
 import { dataPath } from '@qywork/runtime'
 import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
+import { handoffSourceUpdate } from './update/handoff.ts'
+import { startSourceUpdater } from './update/source.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
 /** 每次开发会话现生成一个。不写死在仓库里——那就是一个入库的凭证。 */
 const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
+const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
+const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
  * 原生浏览器宿主连接的凭据，同样每次现生成。
  *
@@ -113,7 +117,7 @@ const env = {
 }
 
 /** 只有这两个进程拿得到宿主凭据。 */
-const privilegedEnv = { ...env, QYWORK_BROWSER_KEY: BROWSER_KEY }
+const privilegedEnv = { ...env, QYWORK_BROWSER_KEY: BROWSER_KEY, QYWORK_UPDATE_KEY: UPDATE_KEY }
 
 /**
  * 用**正在跑的这个 bun**，不写裸名 `bun`。
@@ -189,7 +193,9 @@ if (!(await waitReady())) {
   agent.kill()
   process.exit(1)
 }
-process.stderr.write('[dev] sidecar 就绪，正在启动桌面外壳\n')
+process.stderr.write(
+  `[dev] sidecar 就绪，正在启动${MODE === 'desktop' ? '桌面外壳' : 'Web 界面'}\n`,
+)
 
 /**
  * 这个 sidecar 手上还有没有没跑完的 run。
@@ -270,21 +276,62 @@ function killTree(proc: ReturnType<typeof Bun.spawn>): void {
   proc.kill()
 }
 
+const updater = await startSourceUpdater({
+  root: ROOT,
+  mode: MODE,
+  sidecarPort: PORT,
+  hostKey: UPDATE_KEY,
+  async apply(target, head) {
+    await handoffSourceUpdate(
+      { root: ROOT, target, head, mode: MODE, parentPid: process.pid },
+      { QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) },
+    )
+    setTimeout(() => {
+      stopAll()
+      process.exit(0)
+    }, 300)
+  },
+})
+
 const web = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/web'), 'dev'], {
   cwd: ROOT,
-  env,
+  env: { ...env, QYWORK_UPDATE_ENDPOINT: JSON.stringify(updater.endpoint) },
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'ignore',
 })
 
-const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
-  cwd: ROOT,
-  env: privilegedEnv,
-  stdout: 'inherit',
-  stderr: 'inherit',
-  stdin: 'inherit',
-})
+const shell =
+  MODE === 'desktop'
+    ? Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
+        cwd: ROOT,
+        env: privilegedEnv,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        stdin: 'inherit',
+      })
+    : null
+
+if (MODE === 'web') {
+  const url = `http://127.0.0.1:5180/#t=${TOKEN}`
+  process.stderr.write(`[dev] ${url}\n`)
+  if (!process.argv.includes('--no-open')) {
+    const ready = setInterval(async () => {
+      try {
+        if (!(await fetch('http://127.0.0.1:5180/')).ok) return
+        clearInterval(ready)
+        Bun.spawn(['powershell.exe', '-NoProfile', '-Command', `Start-Process '${url}'`], {
+          stdin: 'ignore',
+          stdout: 'ignore',
+          stderr: 'ignore',
+        })
+      } catch {
+        /* Vite 尚未就绪。 */
+      }
+    }, 300)
+    ready.unref()
+  }
+}
 
 /**
  * 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。
@@ -296,15 +343,14 @@ const shell = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri
  */
 const stopAll = () => {
   stopping = true
+  updater.close()
   agent.kill()
   killTree(web)
-  shell.kill()
+  if (shell) killTree(shell)
 }
 process.on('SIGINT', stopAll)
 process.on('SIGTERM', stopAll)
 
-const code = await shell.exited
-stopping = true
-agent.kill()
-killTree(web)
+const code = await (shell ?? web).exited
+stopAll()
 process.exit(code)
