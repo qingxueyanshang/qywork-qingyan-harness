@@ -118,6 +118,14 @@ interface DocModel {
   url?: string
   /** 跨站帧的导航还没提交：这一帧此刻是主进程里的 about:blank 占位帧，没有子会话。 */
   uncommitted?: boolean
+  /**
+   * 这一帧不发 `Page.frameStartedLoading`。
+   *
+   * 两种真实情形都是这个形状：页面把它推迟着（`loading="lazy"` 还没触发），
+   * 或者导航早在附上会话之前就开始了，事件已经发完。它与正在导航的帧在 DOM
+   * 快照里同形，分别只在这条事件上。
+   */
+  noLoadEvent?: boolean
   /** 这一帧的 `Target.attachedToTarget` 推迟这么久才发。缺省时用模型上那一份。 */
   attachDelayMs?: number
   /** 当前焦点节点。`DOM.focus` 改它，按键与文本插入落到它身上。 */
@@ -153,6 +161,8 @@ interface PageModel {
   attachDelayMs?: number
   /** 子会话的 `Accessibility.enable` 推迟这么久才回，模拟开域还没完成。 */
   childInitDelayMs?: number
+  /** 附上会话那一刻主文档的 `document.readyState`。缺省是加载已经完成。 */
+  readyState?: string
 }
 
 const MAIN = 's1'
@@ -318,6 +328,20 @@ class FakePage {
           }
           // 子帧以子会话形式附加：承载它的那个会话开了自动附加之后才发得出这些事件。
           // 嵌套的跨站帧挂在它父帧的子会话下，所以这里按 `parent` 匹配，不是只认页会话。
+          // 有导航在飞的帧由浏览器报出来；页面推迟着的帧一条事件都没有。
+          if (cmd.method === 'Page.enable') {
+            for (const doc of self.model.docs) {
+              if (doc.parent !== cmd.sessionId) continue
+              if (!doc.uncommitted || doc.noLoadEvent) continue
+              ws.send(
+                JSON.stringify({
+                  method: 'Page.frameStartedLoading',
+                  sessionId: cmd.sessionId,
+                  params: { frameId: doc.frame },
+                }),
+              )
+            }
+          }
           if (cmd.method === 'Target.setAutoAttach') {
             const attach = (doc: DocModel) => {
               // 导航提交之后才换成独立目标，占位帧同时消失。
@@ -365,6 +389,27 @@ class FakePage {
         },
       },
     })
+  }
+
+  /**
+   * 一个会话的帧树。
+   *
+   * 已经提交的跨站帧不在里面：它换了渲染进程，父会话的帧树看不到它。尚未提交的
+   * 跨站帧还在本进程里，`url` 为空表示它还没提交过任何文档。
+   */
+  frameTree(doc: DocModel): Record<string, unknown> {
+    const kids = this.model.docs.filter(
+      (c) => c !== doc && doc.nodes.some((n) => n.backendNodeId === c.owner),
+    )
+    return {
+      frame: {
+        id: doc.frame ?? 'frame-main',
+        url: doc.uncommitted ? '' : (doc.url ?? 'http://127.0.0.1:1/page'),
+      },
+      childFrames: kids
+        .filter((c) => c.sessionId === doc.sessionId || c.uncommitted)
+        .map((c) => this.frameTree(c)),
+    }
   }
 
   docOf(sessionId: string | undefined): DocModel {
@@ -582,6 +627,8 @@ class FakePage {
         return { sessionId: MAIN }
       case 'DOM.getDocument':
         return { root: domTree(m.docs, doc) }
+      case 'Page.getFrameTree':
+        return { frameTree: this.frameTree(doc) }
       case 'Accessibility.getFullAXTree': {
         // 不带 frameId 只覆盖本会话的根帧；同进程子帧要按它自己的编号取。
         const frameId = cmd.params?.frameId
@@ -674,6 +721,7 @@ class FakePage {
       }
       case 'Runtime.evaluate': {
         const expr = String(cmd.params?.expression ?? '')
+        if (expr === 'document.readyState') return { result: { value: m.readyState ?? 'complete' } }
         if (expr.includes('__qyworkTab')) return { result: { value: 'marker-1' } }
         if (expr.includes('__qyworkDoc')) {
           return { result: { value: { token: m.token, url: m.url, title: m.title } } }
@@ -1389,6 +1437,39 @@ test('等满仍未就位的第三层帧按 framesPending 报出，不静默少�
   expect(observation.elements.map((e) => e.name)).toContain('帧内按钮')
   expect(observation.elements.map((e) => e.name)).not.toContain('第三层按钮')
   expect(observation.framesPending).toEqual(['frame-b'])
+})
+
+test('页面推迟加载的 iframe 不算未就位，观察不为它等待', async () => {
+  const { fake, handle } = await newPage((f) => {
+    addFrame(f)
+    const frame = f.model.docs[1] as DocModel
+    // `loading="lazy"` 还没触发：帧在 DOM 里，没有导航在飞，等多久都不会有内容。
+    frame.uncommitted = true
+    frame.noLoadEvent = true
+    frame.attachDelayMs = 60_000
+  })
+  const started = Date.now()
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('提交')
+  expect(observation.elements.map((e) => e.name)).not.toContain('帧内按钮')
+  expect(observation.framesPending).toBeUndefined()
+  expect(Date.now() - started).toBeLessThan(500)
+  expect(fake.sent('DOM.getDocument')).toHaveLength(1)
+})
+
+test('附上会话时文档还在加载，帧树里尚无文档的帧照样等', async () => {
+  const { handle } = await newPage((f) => {
+    addFrame(f)
+    const frame = f.model.docs[1] as DocModel
+    // 导航在附上会话之前就开始了，那条事件已经发完；帧树里它还没有文档。
+    frame.uncommitted = true
+    frame.noLoadEvent = true
+    frame.attachDelayMs = 300
+    f.model.readyState = 'loading'
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('帧内按钮')
+  expect(observation.framesPending).toBeUndefined()
 })
 
 test('同进程 iframe 已经提交时不算未就位，观察不为它等待', async () => {

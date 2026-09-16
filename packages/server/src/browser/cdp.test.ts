@@ -16,6 +16,7 @@ import {
   allowedMethod,
   CdpCancelledError,
   CdpClient,
+  CdpError,
   CdpInitError,
   CdpTimeoutError,
 } from './cdp.ts'
@@ -59,7 +60,7 @@ class FakeEndpoint {
           self.received.push(cmd)
           const send = () => {
             const make = self.replies.get(cmd.method)
-            const out = make ? make(cmd) : {}
+            const out = make ? make(cmd) : self.fallback(cmd)
             const body =
               'error' in out && typeof out.error === 'string'
                 ? { id: cmd.id, error: { code: -32000, message: out.error } }
@@ -72,6 +73,19 @@ class FakeEndpoint {
         },
       },
     })
+  }
+
+  /**
+   * 没登记回帧的方法怎么答。
+   *
+   * 页会话初始化要取帧树，缺了它初始化整条走不下去，所以这一条由端点默认答出来，
+   * 每个用例不必各写一遍。
+   */
+  fallback(cmd: Command): Record<string, unknown> {
+    if (cmd.method === 'Page.getFrameTree') {
+      return { frameTree: { frame: { id: `frame-${cmd.sessionId ?? 'main'}` } } }
+    }
+    return {}
   }
 
   methods(): string[] {
@@ -259,6 +273,89 @@ test('等待器按 id 登记、等结果、单独清掉，计数读得回来', a
 
   // 页内脚本只观察：登记与清理都走 Runtime.evaluate，没有一条 Input 域命令。
   expect(endpoint.methods().filter((m) => m.startsWith('Input.'))).toEqual([])
+})
+
+test('根帧停止加载即清掉附上会话那一刻记下的在飞帧，之后按事件重新记', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('Page.getFrameTree', () => ({
+    frameTree: {
+      frame: { id: 'root-1', url: 'http://127.0.0.1:1/page' },
+      childFrames: [{ frame: { id: 'kid-1', url: '' } }],
+    },
+  }))
+  endpoint.replies.set('Runtime.evaluate', (cmd) => {
+    const expression = String(cmd.params?.expression ?? '')
+    if (expression === 'window.__qyworkTab') return { result: { value: 'marker-a' } }
+    if (expression === 'document.readyState') return { result: { value: 'loading' } }
+    return { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
+  })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+  // 附上会话时文档还在加载：帧树里尚无文档的帧先当成在导航，那一段没有事件可收。
+  expect([...client.settlingFrames(sessionId)]).toEqual(['kid-1'])
+
+  // 根帧停下来说明子树里在飞的导航都已结束，这批不能一直留着。
+  endpoint.emit(sessionId, 'Page.frameStoppedLoading', { frameId: 'root-1' })
+  await settle()
+  expect([...client.settlingFrames(sessionId)]).toEqual([])
+
+  endpoint.emit(sessionId, 'Page.frameStartedLoading', { frameId: 'kid-2' })
+  await settle()
+  expect([...client.settlingFrames(sessionId)]).toEqual(['kid-2'])
+  // 跨站帧提交时换渲染进程，以 detach 的形式离开父会话。
+  endpoint.emit(sessionId, 'Page.frameDetached', { frameId: 'kid-2' })
+  await settle()
+  expect([...client.settlingFrames(sessionId)]).toEqual([])
+})
+
+test('等待器运行时不在当前文档时先补注入再登记，不把页内异常原文交出去', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  let installed = false
+  endpoint.replies.set('Runtime.evaluate', (cmd) => {
+    const expression = String(cmd.params?.expression ?? '')
+    if (expression === 'window.__qyworkTab') return { result: { value: 'marker-a' } }
+    if (expression.startsWith('(() => {')) {
+      installed = true
+      return { result: { value: 'installed' } }
+    }
+    // 运行时不在时页内抛异常：`returnByValue` 下 result.value 缺席，另带 exceptionDetails。
+    if (expression.startsWith('window.__qyworkWait(') && !installed) {
+      return { result: {}, exceptionDetails: { text: 'Uncaught' } }
+    }
+    if (expression.startsWith('window.__qyworkWait(')) {
+      return { result: { value: { id: 7, immediate: false } } }
+    }
+    return { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
+  })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+  installed = false
+
+  expect(await client.startWaiter(sessionId, '#go', 5_000)).toBe(7)
+  // 补的是运行时注入，不是把登记重发一遍：两次登记之间隔着一条注入。
+  const evaluated = endpoint.received
+    .filter((c) => c.method === 'Runtime.evaluate')
+    .map((c) => String(c.params?.expression ?? ''))
+  const first = evaluated.findIndex((e) => e.startsWith('window.__qyworkWait('))
+  const inject = evaluated.findIndex((e, i) => i > first && e.startsWith('(() => {'))
+  expect(inject).toBeGreaterThan(first)
+  expect(
+    evaluated.findIndex((e, i) => i > inject && e.startsWith('window.__qyworkWait(')),
+  ).toBeGreaterThan(inject)
+})
+
+test('补注入之后回包仍不是对象时给可判定的失败，不解引用 undefined', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+  // 注入与登记都答不出值：这一页此刻没有等待器可用。
+  endpoint.replies.set('Runtime.evaluate', () => ({ result: {} }))
+
+  const err = await failure(client.startWaiter(sessionId, '#go', 5_000))
+  expect(err).toBeInstanceOf(CdpError)
+  expect(err.message).toContain('页面还没准备好等待器')
+  const awaited = await failure(client.awaitWaiter(sessionId, 7, 5_000))
+  expect(awaited.message).toContain('页面还没准备好等待器')
 })
 
 test('会话事件按 sessionId 分发，取消订阅之后一条都不再收到', async () => {

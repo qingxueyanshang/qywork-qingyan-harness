@@ -635,21 +635,27 @@ export async function observePage(
 /**
  * 一份文档快照里还没法采的帧。主文档与每个跨站子会话的文档各过一遍，见 `scanFrames`。
  *
- * 判据是 `<iframe>` 元素与它此刻承载的文档对不上：`src` 指着一个地址，而这一帧既没有
- * 已就绪的子会话，承载的又还是 `about:blank`。跨站 iframe 在导航提交前由主进程承载一个
- * 空白占位帧，提交之后才换成独立目标并附上子会话——这段窗口里它在 DOM 里看得见、
- * 采集却什么都拿不到。
+ * 三个条件同时成立才算：`src` 指着一个地址、这一帧没有已就绪的子会话、承载的文档
+ * 还是 `about:blank`，且它还在往就位走（`settling`，见 `CdpClient.settlingFrames`）。
+ * 跨站 iframe 在导航提交前由主进程承载一个空白占位帧，提交之后才换成独立目标并附上
+ * 子会话——这段窗口里它在 DOM 里看得见、采集却什么都拿不到。
  *
- * **不要改用 `Page.getFrameTree` 核对**：页会话的帧树里只有本进程的帧，
+ * **`settling` 这一条不能省。** 页面自己推迟的帧（`loading="lazy"` 尚未触发）在快照里
+ * 与正在导航的帧完全同形：都是一个 `about:blank` 空文档，按形状判分不开。少了这一条，
+ * 一页上每个延迟加载的帧每次观察都被算成未就位，观察白等满 `FRAME_ATTACH_TOTAL_MS`，
+ * 而它们等到天亮也不会提交。实测：css-tricks 的 flexbox 指南里 18 个 `loading="lazy"`
+ * 的 codepen 嵌入帧就是这样，每次观察固定多花 2 秒，`framesPending` 每次都报同一批。
+ *
+ * **不要改用 `Page.getFrameTree` 核对帧在不在**：页会话的帧树里只有本进程的帧，
  * 已经提交的跨站帧不在其中，按它核会把正常的帧判成缺失。
  */
-function pendingFrames(root: DomNode, ready: Set<string>): string[] {
+function pendingFrames(root: DomNode, ready: Set<string>, settling: ReadonlySet<string>): string[] {
   const out: string[] = []
   const walk = (node: DomNode): void => {
     if (node.nodeName.toLowerCase() === 'iframe') {
       const frame = node.frameId
       // 取不到帧编号的帧本来就不进元素表，见 splitDocs。
-      if (frame !== undefined && !ready.has(frame)) {
+      if (frame !== undefined && !ready.has(frame) && settling.has(frame)) {
         const flat = node.attributes ?? []
         let src = ''
         for (let i = 0; i + 1 < flat.length; i += 2) {
@@ -700,9 +706,10 @@ async function scanFrames(
   const children = client.childSessionsOf(sessionId)
   const ready = new Set(children.map((c) => c.targetId))
   const shots = new Map<string, DomNode>()
+  const settling = client.settlingFrames(sessionId)
   const root = await snapshot(client, sessionId, deadline, COLLECT_TIMEOUT_MS)
   shots.set(sessionId, root)
-  const pending = pendingFrames(root, ready)
+  const pending = pendingFrames(root, ready, settling)
   for (const child of children) {
     const doc = await snapshot(client, child.sessionId, deadline, FRAME_TIMEOUT_MS).catch(
       (err: unknown) => {
@@ -712,7 +719,7 @@ async function scanFrames(
     )
     if (!doc) continue
     shots.set(child.sessionId, doc)
-    pending.push(...pendingFrames(doc, ready))
+    pending.push(...pendingFrames(doc, ready, settling))
   }
   return { shots, pending }
 }

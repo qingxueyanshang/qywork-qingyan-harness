@@ -77,6 +77,15 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>
 }
 
+/** `Page.getFrameTree` 的一层。`url` 为空表示这一帧还没提交过任何文档。 */
+interface FrameTreeNode {
+  frame: { id: string; url?: string }
+  childFrames?: FrameTreeNode[]
+}
+
+/** 没在盯的会话回这一份。调用方只读，不得往里写。 */
+const NO_FRAMES: ReadonlySet<string> = new Set()
+
 interface CdpMessage {
   id?: number
   method?: string
@@ -216,6 +225,17 @@ export class CdpClient {
    * 到达时，开域是随后的异步命令——两者之间这个会话答不出 AX 树。
    */
   #childSessions = new Map<string, { parent: string; targetId: string; ready: boolean }>()
+  /**
+   * 每个会话的根帧编号，以及它的文档树里此刻有导航在飞的帧。
+   *
+   * 观察要判的是「等一等这一帧会不会有内容」，而 DOM 快照答不了这件事：
+   * `loading="lazy"` 还没被触发的帧与正在导航的帧，在快照里都是一个 `about:blank`
+   * 空文档。按形状判的话，一页上所有延迟加载的帧每次观察都被算成未就位。
+   *
+   * 进出由浏览器自己报：`Page.frameStartedLoading` 进，`frameStoppedLoading` 与
+   * `frameDetached` 出——跨站帧提交时换渲染进程，以 detach 的形式离开父会话。
+   */
+  #frameLoads = new Map<string, { root: string; loading: Set<string> }>()
   /** 本客户端按下但尚未释放的键。取消时按它补发 keyUp。 */
   #heldKeys = new Map<string, { sessionId: string; params: Record<string, unknown> }>()
   /**
@@ -357,7 +377,7 @@ export class CdpClient {
    * 按它判会得到假阳性。
    */
   async #initPageSession(sessionId: string): Promise<void> {
-    await this.send('Page.enable', {}, { sessionId })
+    await this.#watchFrames(sessionId)
     await this.send('Runtime.enable', {}, { sessionId })
     await this.send('DOM.enable', {}, { sessionId })
     await this.send('Accessibility.enable', {}, { sessionId })
@@ -429,8 +449,10 @@ export class CdpClient {
   forgetSession(pageSessionId: string): void {
     for (const child of this.#ownedChildren(pageSessionId)) {
       this.#childSessions.delete(child.sessionId)
+      this.#frameLoads.delete(child.sessionId)
     }
     this.#pageSessions.delete(pageSessionId)
+    this.#frameLoads.delete(pageSessionId)
     for (const [key, held] of [...this.#heldKeys]) {
       if (held.sessionId === pageSessionId) this.#heldKeys.delete(key)
     }
@@ -480,6 +502,8 @@ export class CdpClient {
   }
 
   async #initChildSession(sessionId: string): Promise<void> {
+    // 帧导航状态放在最前：子会话附上时它的文档刚提交，里面的帧随后才建，早开一步少漏一帧。
+    await this.#watchFrames(sessionId)
     await this.send('Runtime.enable', {}, { sessionId })
     await this.send('DOM.enable', {}, { sessionId })
     await this.send('Accessibility.enable', {}, { sessionId })
@@ -489,6 +513,61 @@ export class CdpClient {
       { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
       { sessionId },
     )
+  }
+
+  /**
+   * 开 `Page` 域并开始记这个会话的帧导航状态。
+   *
+   * 登记在 `Page.enable` 之前：这条命令一生效事件就来，晚一步登记就漏掉它们。
+   * `Page` 域同时也是导航订阅（`onSessionEvent`）的事件来源。
+   *
+   * 附上会话这一刻已经在飞的导航没有事件可收，所以文档还没 `complete` 时，
+   * 把帧树里尚无文档的帧一并记成在导航，由根帧的 `frameStoppedLoading` 统一清掉——
+   * 根帧要等子树里全部在飞的导航结束才停。**文档已经 `complete` 时一个都不记**：
+   * 那时没有在飞的导航，而清空它们的那个事件也不会再来，记下就是永远不退的未就位。
+   */
+  async #watchFrames(sessionId: string): Promise<void> {
+    const entry = { root: '', loading: new Set<string>() }
+    this.#frameLoads.set(sessionId, entry)
+    await this.send('Page.enable', {}, { sessionId })
+    const tree = await this.send<{ frameTree: FrameTreeNode }>(
+      'Page.getFrameTree',
+      {},
+      { sessionId },
+    )
+    entry.root = tree.frameTree.frame.id
+    const state = await this.send<{ result: { value?: unknown } }>(
+      'Runtime.evaluate',
+      { expression: 'document.readyState', returnByValue: true },
+      { sessionId },
+    )
+    if (state.result.value === 'complete') return
+    const walk = (node: FrameTreeNode): void => {
+      for (const child of node.childFrames ?? []) {
+        if (!child.frame.url) entry.loading.add(child.frame.id)
+        walk(child)
+      }
+    }
+    walk(tree.frameTree)
+  }
+
+  /**
+   * 这一页里此刻还在往就位走的帧，含嵌套的那几层。
+   *
+   * 两种来源：浏览器报着有导航在飞的帧，以及子会话已经附上、域还没开完的帧
+   * （那一段它答不出 AX 树）。观察按它判一帧等不等得到内容，见 `page.ts` 的
+   * `pendingFrames`——两样都不占的帧，要么已经能采，要么由页面自己推迟着
+   * （`loading="lazy"` 未触发），等它只是白花时间。
+   */
+  settlingFrames(pageSessionId: string): ReadonlySet<string> {
+    const out = new Set<string>(this.#frameLoads.get(pageSessionId)?.loading ?? NO_FRAMES)
+    for (const child of this.#ownedChildren(pageSessionId)) {
+      if (!child.ready) out.add(child.targetId)
+      for (const frame of this.#frameLoads.get(child.sessionId)?.loading ?? NO_FRAMES) {
+        out.add(frame)
+      }
+    }
+    return out
   }
 
   /**
@@ -513,17 +592,23 @@ export class CdpClient {
 
   /** 登记一个静默探针并返回它的页内 id。探针只数 DOM 变更，不查选择器、不动页面。 */
   async startProbe(sessionId: string, timeoutMs: number): Promise<number> {
-    const created = await this.send<{ result: { value: { id?: number } } }>(
-      'Runtime.evaluate',
-      { expression: 'window.__qyworkProbe()', returnByValue: true },
-      { sessionId, timeoutMs },
+    const created = await this.#evalObject<{ id?: number }>(
+      sessionId,
+      'window.__qyworkProbe()',
+      timeoutMs,
     )
-    const id = created.result.value?.id
+    const id = created.id
     if (typeof id !== 'number') throw new CdpError('静默探针没有登记成功')
     return id
   }
 
-  /** 读一次探针。结果按 `ProbeRead` 判定，缺字段的读数不得当作就绪。 */
+  /**
+   * 读一次探针。结果按 `ProbeRead` 判定，缺字段的读数不得当作就绪。
+   *
+   * 运行时缺席在表达式里就地答成 `gone`，不走 `#evalObject` 的补注入：探针随文档走，
+   * 换过文档的探针本来就已失效，`gone` 正是调用方要的那个终态——它据此重建探针，
+   * 而重建走 `startProbe`，注入在那一边补。
+   */
   async readProbe(sessionId: string, probeId: number, timeoutMs: number): Promise<ProbeRead> {
     const r = await this.send<{ result: { value?: ProbeRead } }>(
       'Runtime.evaluate',
@@ -538,15 +623,13 @@ export class CdpClient {
 
   /** 登记一个等待器并返回它的页内 id。返回后调用方用 `awaitWaiter` 等结果。 */
   async startWaiter(sessionId: string, selector: string, timeoutMs: number): Promise<number> {
-    const created = await this.send<{ result: { value: { id: number } } }>(
-      'Runtime.evaluate',
-      {
-        expression: `window.__qyworkWait(${JSON.stringify(selector)}, ${timeoutMs})`,
-        returnByValue: true,
-      },
-      { sessionId },
+    const created = await this.#evalObject<{ id?: number }>(
+      sessionId,
+      `window.__qyworkWait(${JSON.stringify(selector)}, ${timeoutMs})`,
     )
-    return created.result.value.id
+    const id = created.id
+    if (typeof id !== 'number') throw new CdpError('页内等待器没有登记成功')
+    return id
   }
 
   async awaitWaiter(
@@ -554,16 +637,45 @@ export class CdpClient {
     waiterId: number,
     timeoutMs: number,
   ): Promise<Record<string, unknown>> {
-    const done = await this.send<{ result: { value: Record<string, unknown> } }>(
-      'Runtime.evaluate',
-      {
-        expression: `window.__qyworkAwait(${waiterId})`,
-        returnByValue: true,
-        awaitPromise: true,
-      },
-      { sessionId, timeoutMs },
+    return this.#evalObject<Record<string, unknown>>(
+      sessionId,
+      `window.__qyworkAwait(${waiterId})`,
+      timeoutMs,
     )
-    return done.result.value
+  }
+
+  /**
+   * 在页内求一次值，回包必须是对象。
+   *
+   * 等待器运行时不在当前文档时（还没注入完，或者文档换了），页内求值抛的是
+   * `undefined is not an object`，`returnByValue` 下 `result.value` 是 `undefined`。
+   * **必须在这里结掉**：直接交给调用方，下一步解引用它会以一句内部异常原文结束，
+   * 而那句话对调用方没有下一步。
+   *
+   * 缺席时先补一次注入再求一次值——注入是运行时自己的既有路径，页面状态不受影响；
+   * 重发的是取值，不是业务动作。补过还不成立就报出来。
+   */
+  async #evalObject<T>(sessionId: string, expression: string, timeoutMs?: number): Promise<T> {
+    const opts = { sessionId, ...(timeoutMs === undefined ? {} : { timeoutMs }) }
+    for (const attempt of [0, 1]) {
+      const r = await this.send<{ result: { value?: unknown }; exceptionDetails?: unknown }>(
+        'Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true },
+        opts,
+      )
+      const value = r.result.value
+      if (r.exceptionDetails === undefined && typeof value === 'object' && value !== null) {
+        return value as T
+      }
+      if (attempt === 0) {
+        await this.send(
+          'Runtime.evaluate',
+          { expression: WAITER_RUNTIME, returnByValue: true },
+          opts,
+        )
+      }
+    }
+    throw new CdpError('页面还没准备好等待器，请重新观察后再等')
   }
 
   /** 清掉一个页内等待器或探针并读回计数。计数是清理证据，不是调试输出。 */
@@ -631,6 +743,7 @@ export class CdpClient {
     }
     this.#childSessions.clear()
     this.#pageSessions.clear()
+    this.#frameLoads.clear()
     return { rejectedPending, waiterStats, keysReleased, mouseReleased, detached }
   }
 
@@ -792,7 +905,9 @@ export class CdpClient {
     if (msg.method === 'Target.detachedFromTarget') {
       const sessionId = (msg.params?.sessionId as string | undefined) ?? ''
       this.#childSessions.delete(sessionId)
+      this.#frameLoads.delete(sessionId)
     }
+    this.#trackFrameLoad(msg)
     if (!msg.method) return
     const event: CdpEvent = { method: msg.method, params: msg.params ?? {} }
     for (const watcher of [...this.#watchers]) {
@@ -802,6 +917,25 @@ export class CdpClient {
       } catch (err) {
         log.warn('browser', `事件订阅出错：${err instanceof Error ? err.message : String(err)}`)
       }
+    }
+  }
+
+  /**
+   * 按 `Page` 的帧事件维护「这一帧正在导航」。
+   *
+   * 根帧停下来意味着子树里在飞的导航都已结束，附上会话那一刻记下的那批随之作废，
+   * 见 `#watchFrames`。
+   */
+  #trackFrameLoad(msg: CdpMessage): void {
+    const entry = this.#frameLoads.get(msg.sessionId ?? '')
+    if (!entry) return
+    const frameId = (msg.params?.frameId as string | undefined) ?? ''
+    if (!frameId) return
+    if (msg.method === 'Page.frameStartedLoading') entry.loading.add(frameId)
+    if (msg.method === 'Page.frameDetached') entry.loading.delete(frameId)
+    if (msg.method === 'Page.frameStoppedLoading') {
+      entry.loading.delete(frameId)
+      if (frameId === entry.root) entry.loading.clear()
     }
   }
 
