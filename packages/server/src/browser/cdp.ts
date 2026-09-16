@@ -211,8 +211,11 @@ export class CdpClient {
    *
    * 记的是「谁的子会话」而不是一张平表：观察要按页取它自己那几个帧，
    * 平表在同时控制多页时会把别的页的帧算进来。
+   *
+   * `ready` 表示 `#initChildSession` 已经跑完。登记发生在 `Target.attachedToTarget`
+   * 到达时，开域是随后的异步命令——两者之间这个会话答不出 AX 树。
    */
-  #childSessions = new Map<string, { parent: string; targetId: string }>()
+  #childSessions = new Map<string, { parent: string; targetId: string; ready: boolean }>()
   /** 本客户端按下但尚未释放的键。取消时按它补发 keyUp。 */
   #heldKeys = new Map<string, { sessionId: string; params: Record<string, unknown> }>()
   /**
@@ -388,8 +391,8 @@ export class CdpClient {
    *
    * 按父链归属，不按附加顺序：同时控制两页时，平表会把另一页的帧算进这一页。
    */
-  childSessionsOf(pageSessionId: string): { sessionId: string; targetId: string }[] {
-    const out: { sessionId: string; targetId: string }[] = []
+  #ownedChildren(pageSessionId: string): { sessionId: string; targetId: string; ready: boolean }[] {
+    const out: { sessionId: string; targetId: string; ready: boolean }[] = []
     const owned = new Set([pageSessionId])
     // 子会话可能先于它的父会话登记，所以按表长度兜一圈直到不再增长。
     for (let pass = 0; pass < this.#childSessions.size + 1; pass++) {
@@ -397,12 +400,24 @@ export class CdpClient {
       for (const [sessionId, info] of this.#childSessions) {
         if (owned.has(sessionId) || !owned.has(info.parent)) continue
         owned.add(sessionId)
-        out.push({ sessionId, targetId: info.targetId })
+        out.push({ sessionId, targetId: info.targetId, ready: info.ready })
         grew = true
       }
       if (!grew) break
     }
     return out
+  }
+
+  /**
+   * 一页里**已经开完域**的跨站 iframe 子会话。
+   *
+   * 只回就绪的：刚登记、`Runtime` / `DOM` / `Accessibility` 还没开的会话答不出 AX 树，
+   * 交给采集只会得到一个空帧。调用方据此判定「这一帧还没就位」，不要改成回全部。
+   */
+  childSessionsOf(pageSessionId: string): { sessionId: string; targetId: string }[] {
+    return this.#ownedChildren(pageSessionId)
+      .filter((c) => c.ready)
+      .map((c) => ({ sessionId: c.sessionId, targetId: c.targetId }))
   }
 
   /**
@@ -412,7 +427,7 @@ export class CdpClient {
    * 逐条报 `No session with given id`。
    */
   forgetSession(pageSessionId: string): void {
-    for (const child of this.childSessionsOf(pageSessionId)) {
+    for (const child of this.#ownedChildren(pageSessionId)) {
       this.#childSessions.delete(child.sessionId)
     }
     this.#pageSessions.delete(pageSessionId)
@@ -753,18 +768,25 @@ export class CdpClient {
       const sessionId = (msg.params?.sessionId as string | undefined) ?? ''
       const info = msg.params?.targetInfo as { targetId?: string } | undefined
       if (sessionId) {
-        this.#childSessions.set(sessionId, {
+        const entry = {
           parent: msg.sessionId ?? '',
           targetId: info?.targetId ?? '',
-        })
-        // 子会话要先开域才观察得到。附加是事件驱动的，这里只能异步补；
-        // 失败不影响主文档，观察时这一帧拿不到元素而已。
-        void this.#initChildSession(sessionId).catch((err) => {
-          log.warn(
-            'browser',
-            `子帧会话初始化失败：${err instanceof Error ? err.message : String(err)}`,
-          )
-        })
+          ready: false,
+        }
+        this.#childSessions.set(sessionId, entry)
+        // 子会话要先开域才观察得到。附加是事件驱动的，这里只能异步补，开完才置 ready；
+        // 失败时这一帧留在未就绪，由观察侧报出，不当作没有这一帧。
+        void this.#initChildSession(sessionId)
+          .then(() => {
+            // 期间可能已经 detach 再附上另一条会话，只认自己登记的那一条。
+            if (this.#childSessions.get(sessionId) === entry) entry.ready = true
+          })
+          .catch((err) => {
+            log.warn(
+              'browser',
+              `子帧会话初始化失败：${err instanceof Error ? err.message : String(err)}`,
+            )
+          })
       }
     }
     if (msg.method === 'Target.detachedFromTarget') {

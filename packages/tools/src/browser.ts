@@ -300,7 +300,8 @@ function observationData(ob: BrowserObservation): Record<string, unknown> {
 function observationLine(ob: BrowserObservation): string {
   return (
     `${ob.title || '(无标题)'} · ${ob.url} · ${ob.elements.length} 个元素` +
-    (ob.truncated ? '（还有更多，用 offset 继续取）' : '')
+    (ob.truncated ? '（还有更多，用 offset 继续取）' : '') +
+    (ob.framesPending?.length ? `（${ob.framesPending.length} 个 iframe 还没就位，重新观察）` : '')
   )
 }
 

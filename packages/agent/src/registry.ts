@@ -161,6 +161,13 @@ export interface BrowserObservation {
   elements: BrowserElement[]
   /** 元素数超过上限而截断。调用方要知道这一页不是全部。 */
   truncated: boolean
+  /**
+   * 这一刻还没能采到内容的跨站 iframe 的帧编号。
+   *
+   * 缺席表示没有这样的帧。列出来的帧在页面上存在，但这份元素表里没有它的元素——
+   * 重新观察即取得，不要按「这一帧是空的」推断。
+   */
+  framesPending?: string[]
   /** 按需截图，`screenshot` 为真时才产生。 */
   image?: { data: string; mime: string }
 }

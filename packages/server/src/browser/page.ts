@@ -66,6 +66,19 @@ const FRAME_TIMEOUT_MS = 5_000
 const AX_RETRY_INTERVAL_MS = 150
 const AX_RETRY_TOTAL_MS = 1_500
 
+/**
+ * 跨站帧附上子会话之前的等待上限与重查间隔。
+ *
+ * 建页只等主文档 load 完成，跨站 iframe 的导航在那之后才提交；实测这一段在空闲机器上
+ * 也只有几十毫秒的余量，观察撞进去就得到一张没有帧内元素的表。等满仍未就位的帧按
+ * `framesPending` 报出，不静默少算。
+ */
+const FRAME_ATTACH_INTERVAL_MS = 100
+const FRAME_ATTACH_TOTAL_MS = 2_000
+
+/** 尚未提交导航的帧承载的地址。 */
+const BLANK_URL = 'about:blank'
+
 /** 调用方没有给截止时间时，一次观察的总预算。 */
 const OBSERVE_BUDGET_MS = 30_000
 /** 单条采集命令的上限。剩余预算更少时按剩余预算发，不再给满额度。 */
@@ -484,6 +497,8 @@ interface DomNode {
   pseudoElements?: DomNode[]
   /** iframe 元素上是它承载的那一帧的编号；文档节点上是这份文档所属的帧。 */
   frameId?: string
+  /** 文档节点此刻的地址。导航尚未提交时为 `about:blank`。 */
+  documentURL?: string
 }
 
 /** 一个元素节点在 DOM 快照里的标签与属性。 */
@@ -580,7 +595,7 @@ export async function observePage(
       throw new BrowserObserveTimeoutError('没有在预算内采到一份前后一致的观察，请重新观察')
     }
     const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
-    const all = await collectAll(client, sessionId, opts, deadline)
+    const { items: all, pending } = await collectAll(client, sessionId, opts, deadline)
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
     await attachOptions(client, shown, deadline)
@@ -604,6 +619,7 @@ export async function observePage(
         observationId: record.observationId,
         elements: shown.map((i) => i.element),
         truncated: offset + shown.length < all.length,
+        ...(pending.length > 0 ? { framesPending: pending } : {}),
         ...(image ? { image } : {}),
       },
       record,
@@ -611,13 +627,82 @@ export async function observePage(
   }
 }
 
-/** 主文档与在范围内的子帧各采一次，合成一张元素表。 */
+/**
+ * 主文档快照里还没法采的帧。
+ *
+ * 判据是 `<iframe>` 元素与它此刻承载的文档对不上：`src` 指着一个地址，而这一帧既没有
+ * 已就绪的子会话，承载的又还是 `about:blank`。跨站 iframe 在导航提交前由主进程承载一个
+ * 空白占位帧，提交之后才换成独立目标并附上子会话——这段窗口里它在 DOM 里看得见、
+ * 采集却什么都拿不到。
+ *
+ * **不要改用 `Page.getFrameTree` 核对**：页会话的帧树里只有本进程的帧，
+ * 已经提交的跨站帧不在其中，按它核会把正常的帧判成缺失。
+ */
+function pendingFrames(root: DomNode, ready: Set<string>): string[] {
+  const out: string[] = []
+  const walk = (node: DomNode): void => {
+    if (node.nodeName.toLowerCase() === 'iframe') {
+      const frame = node.frameId
+      // 取不到帧编号的帧本来就不进元素表，见 splitDocs。
+      if (frame !== undefined && !ready.has(frame)) {
+        const flat = node.attributes ?? []
+        let src = ''
+        for (let i = 0; i + 1 < flat.length; i += 2) {
+          if (flat[i] === 'src') src = flat[i + 1] as string
+        }
+        const inner = node.contentDocument
+        const blank = inner === undefined || inner.documentURL === BLANK_URL
+        if (src !== '' && src !== BLANK_URL && blank) out.push(frame)
+      }
+    }
+    for (const child of node.children ?? []) walk(child)
+    for (const shadow of node.shadowRoots ?? []) walk(shadow)
+    if (node.contentDocument) walk(node.contentDocument)
+  }
+  walk(root)
+  return out
+}
+
+/** 主文档的一次 DOM 快照。`pierce` 穿透影子根与同进程 iframe。 */
+async function snapshot(client: CdpClient, sessionId: string, deadline: number): Promise<DomNode> {
+  const dom = await client.send<{ root: DomNode }>(
+    'DOM.getDocument',
+    { depth: -1, pierce: true },
+    { sessionId, ...within(deadline, COLLECT_TIMEOUT_MS) },
+  )
+  return dom.root
+}
+
+/**
+ * 主文档与在范围内的子帧各采一次，合成一张元素表。
+ *
+ * 未就位的跨站帧先等，等不到就连同编号一起报出来（`pending`），不当作这一页没有这一帧。
+ */
 async function collectAll(
   client: CdpClient,
   sessionId: string,
   opts: { frame?: string },
   deadline: number,
-): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
+): Promise<{ items: { element: BrowserElement; ref: RefRecord }[]; pending: string[] }> {
+  const readyFrames = () => new Set(client.childSessionsOf(sessionId).map((c) => c.targetId))
+  // 指定了帧就只等那一帧：别的帧没就位不该拖住「只看这个 iframe」。
+  const inScope = (frames: string[]) =>
+    opts.frame ? frames.filter((f) => f === opts.frame) : frames
+  // 点名的跨站帧已经就位时这一次不看主文档：那份快照这次用不上，取它只消耗预算。
+  const onReadyFrame = opts.frame !== undefined && readyFrames().has(opts.frame)
+  let root: DomNode | undefined
+  let pending: string[] = []
+  if (!onReadyFrame) {
+    root = await snapshot(client, sessionId, deadline)
+    pending = inScope(pendingFrames(root, readyFrames()))
+    const until = Math.min(deadline, Date.now() + FRAME_ATTACH_TOTAL_MS)
+    while (pending.length > 0 && leftMs(until) > 0) {
+      await sleep(Math.min(FRAME_ATTACH_INTERVAL_MS, leftMs(until)))
+      root = await snapshot(client, sessionId, deadline)
+      pending = inScope(pendingFrames(root, readyFrames()))
+    }
+  }
+
   const sessions: { sessionId: string; frame?: string }[] = [{ sessionId }]
   for (const child of client.childSessionsOf(sessionId)) {
     sessions.push({ sessionId: child.sessionId, frame: child.targetId })
@@ -629,7 +714,7 @@ async function collectAll(
   const all: { element: BrowserElement; ref: RefRecord }[] = []
   for (const s of scope) {
     if (s.frame === undefined) {
-      all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS)))
+      all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS, root)))
       continue
     }
     // 跨站子帧由它自己的渲染进程应答，正在加载或已经消失时会一直不回。
@@ -641,7 +726,8 @@ async function collectAll(
     }
   }
   // 指定了帧就只留那一帧的元素——否则「只看这个 iframe」返回的仍是整页。
-  return opts.frame ? all.filter((i) => i.element.frame === opts.frame) : all
+  const items = opts.frame ? all.filter((i) => i.element.frame === opts.frame) : all
+  return { items, pending }
 }
 
 /**
@@ -712,6 +798,8 @@ function splitDocs(
 /**
  * 一个会话里的全部文档。DOM 快照一次取回，AX 树按帧各取一次，按 backendNodeId 对上。
  *
+ * `root` 是调用方已经取过的这一会话的快照，给了就不再重取。
+ *
  * 同进程帧不套 AX 重取：它与根文档共用这一次 DOM 快照与本阶段预算，重取一遍等于
  * 把每个 iframe 的等待叠加到同一份预算上。这一帧的 AX 还没建起来时它不进元素表，
  * 重新观察即取得。
@@ -721,16 +809,21 @@ async function collectSession(
   session: { sessionId: string; frame?: string },
   deadline: number,
   capMs: number,
+  root?: DomNode,
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
   const { sessionId } = session
   const limit = () => within(deadline, capMs)
   // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 另走它自己的会话。
-  const dom = await client.send<{ root: DomNode }>(
-    'DOM.getDocument',
-    { depth: -1, pierce: true },
-    { sessionId, ...limit() },
-  )
-  const docs = splitDocs(dom.root, session)
+  const doc =
+    root ??
+    (
+      await client.send<{ root: DomNode }>(
+        'DOM.getDocument',
+        { depth: -1, pierce: true },
+        { sessionId, ...limit() },
+      )
+    ).root
+  const docs = splitDocs(doc, session)
 
   const fetchAx = async (frameId?: string) =>
     (

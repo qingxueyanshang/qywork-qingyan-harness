@@ -4,7 +4,7 @@
  * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、翻页、
  * 文档令牌与身份指纹的失效判定、动作前的按需滚动与实时坐标、命中失败的分类说明、
  * select 的选项摘要与继续读取、十种动作的发送形状与多事件动作的执行回执、上传、下载触发、
- * 采集前后的一致性判定与观察预算）。
+ * 采集前后的一致性判定与观察预算、跨站帧未就位时的等待与 `framesPending`）。
  *
  * 对端是一个按几何模型应答的假调试端点：文档有视口与滚动量，节点有文档坐标里的矩形，
  * 命中测试按矩形与列表顺序取最后一个（绘制顺序），`scrollIntoView` 改滚动量并逐层
@@ -114,6 +114,10 @@ interface DocModel {
   axDelayCalls: number
   /** 这个文档滚不动：模拟根元素 overflow 被裁掉。 */
   noScroll?: boolean
+  /** 这份文档的地址。观察按它判一帧的导航提交没有。 */
+  url?: string
+  /** 跨站帧的导航还没提交：这一帧此刻是主进程里的 about:blank 占位帧，没有子会话。 */
+  uncommitted?: boolean
   /** 当前焦点节点。`DOM.focus` 改它，按键与文本插入落到它身上。 */
   activeElement?: number
 }
@@ -143,6 +147,10 @@ interface PageModel {
   dropInputAt?: number
   /** 每条 `Input.*` 命令答完调一次，参数是它是第几条。用来在动作中途插事。 */
   onInput?: (nth: number) => void
+  /** `Target.attachedToTarget` 推迟这么久才发，模拟跨站帧的导航晚于主文档提交。 */
+  attachDelayMs?: number
+  /** 子会话的 `Accessibility.enable` 推迟这么久才回，模拟开域还没完成。 */
+  childInitDelayMs?: number
 }
 
 const MAIN = 's1'
@@ -161,21 +169,40 @@ function mainDoc(): DocModel {
 /**
  * 一份文档的 DOM 快照。同进程子帧按 `pierce` 的形状嵌在它的 iframe 节点下，
  * 并在那个节点上带 `frameId`——AX 树按这个编号取。
+ *
+ * 跨站子帧的 iframe 节点同样带 `frameId`，但没有 `contentDocument`：它由自己的
+ * 渲染进程承载，`pierce` 带不回来。导航还没提交的那一段例外——那时它是本进程里的
+ * `about:blank` 占位帧，`contentDocument` 在、地址是 `about:blank`。
  */
 function domTree(docs: DocModel[], doc: DocModel): Record<string, unknown> {
   return {
     backendNodeId: 1,
     nodeName: '#document',
     nodeType: 9,
+    documentURL: doc.url ?? 'http://127.0.0.1:1/page',
     children: doc.nodes.map((n) => {
-      const inner = docs.find((d) => d.sessionId === doc.sessionId && d.owner === n.backendNodeId)
+      const owned = docs.find((d) => d.owner === n.backendNodeId)
+      const sameProcess = owned?.sessionId === doc.sessionId
+      const blank = owned !== undefined && !sameProcess && owned.uncommitted === true
       return {
         backendNodeId: n.backendNodeId,
         nodeName: n.tag.toUpperCase(),
         nodeType: 1,
         attributes: Object.entries(n.attrs).flat(),
         children: [],
-        ...(inner ? { frameId: inner.frame, contentDocument: domTree(docs, inner) } : {}),
+        ...(owned ? { frameId: owned.frame } : {}),
+        ...(sameProcess && owned ? { contentDocument: domTree(docs, owned) } : {}),
+        ...(blank
+          ? {
+              contentDocument: {
+                backendNodeId: 1,
+                nodeName: '#document',
+                nodeType: 9,
+                documentURL: 'about:blank',
+                children: [],
+              },
+            }
+          : {}),
       }
     }),
   }
@@ -289,8 +316,9 @@ class FakePage {
           }
           // 子帧以子会话形式附加：页会话开了自动附加之后才发得出这些事件。
           if (cmd.method === 'Target.setAutoAttach' && cmd.sessionId === MAIN) {
-            for (const doc of self.model.docs) {
-              if (!doc.parent || doc.parent === doc.sessionId) continue
+            const attach = (doc: DocModel) => {
+              // 导航提交之后才换成独立目标，占位帧同时消失。
+              delete doc.uncommitted
               ws.send(
                 JSON.stringify({
                   method: 'Target.attachedToTarget',
@@ -302,19 +330,33 @@ class FakePage {
                 }),
               )
             }
+            for (const doc of self.model.docs) {
+              if (!doc.parent || doc.parent === doc.sessionId) continue
+              const late = self.model.attachDelayMs
+              if (late) setTimeout(() => attach(doc), late)
+              else attach(doc)
+            }
           }
           const out = self.answer(cmd)
           if (self.model.flipTokenAfter === cmd.method) {
             delete self.model.flipTokenAfter
             self.model.token = 'doc-2'
           }
-          ws.send(
-            JSON.stringify(
-              'error' in out
-                ? { id: cmd.id, error: { code: -32000, message: String(out.error) } }
-                : { id: cmd.id, result: out },
-            ),
-          )
+          const reply = () =>
+            ws.send(
+              JSON.stringify(
+                'error' in out
+                  ? { id: cmd.id, error: { code: -32000, message: String(out.error) } }
+                  : { id: cmd.id, result: out },
+              ),
+            )
+          // 子会话开域的回包迟到：登记与开完之间的那一段，这个会话答不出 AX 树。
+          const slow =
+            self.model.childInitDelayMs !== undefined &&
+            cmd.method === 'Accessibility.enable' &&
+            cmd.sessionId !== MAIN
+          if (slow) setTimeout(reply, self.model.childInitDelayMs)
+          else reply()
           if (cmd.method.startsWith('Input.')) self.model.onInput?.(self.inputs)
         },
       },
@@ -540,6 +582,8 @@ class FakePage {
         // 不带 frameId 只覆盖本会话的根帧；同进程子帧要按它自己的编号取。
         const frameId = cmd.params?.frameId
         const scope = frameId === undefined ? doc : (m.docs.find((d) => d.frame === frameId) ?? doc)
+        // 导航还没提交的帧此刻承载的是空白文档，它的 AX 树里没有目标页的节点。
+        if (scope.uncommitted) return { nodes: [] }
         if (scope.axDelayCalls > 0) {
           scope.axDelayCalls -= 1
           return { nodes: [] }
@@ -766,7 +810,7 @@ function addFrame(page: FakePage, y = 400): void {
   doc.nodes.push({
     backendNodeId: 50,
     tag: 'iframe',
-    attrs: { id: 'ad' },
+    attrs: { id: 'ad', src: 'http://other.test/ad' },
     box: { x: 100, y, width: 400, height: 300 },
   })
   page.model.docs.push({
@@ -800,7 +844,7 @@ function addSameFrame(page: FakePage, y = 200): void {
   doc.nodes.push({
     backendNodeId: 40,
     tag: 'iframe',
-    attrs: { id: 'same' },
+    attrs: { id: 'same', src: '/inner' },
     box: { x: 50, y, width: 400, height: 200 },
   })
   page.model.docs.push({
@@ -1240,6 +1284,53 @@ test('同进程 iframe 已被移除时判定位失败，不把事件发到文档
   expect(err).toBeInstanceOf(BrowserStaleRefError)
   expect(String((err as Error).message)).toContain('iframe')
   expect(fake.mouse()).toHaveLength(0)
+})
+
+test('跨站帧的附加事件晚于观察到达时等它就位，帧内元素照样进表', async () => {
+  const { fake, handle } = await newPage((f) => {
+    addFrame(f)
+    // 建页只等主文档 load：这一帧此刻还是本进程里的 about:blank 占位帧。
+    ;(f.model.docs[1] as DocModel).uncommitted = true
+    f.model.attachDelayMs = 300
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('帧内按钮')
+  expect(observation.elements.find((e) => e.name === '帧内按钮')?.frame).toBe('frame-a')
+  expect(observation.framesPending).toBeUndefined()
+  // 等的是这一帧就位，不是定长睡眠：主文档快照按间隔重取到它出现为止。
+  expect(fake.sent('DOM.getDocument').length).toBeGreaterThan(1)
+})
+
+test('子会话开域还没完成时观察等它开完，不把空帧当作没有元素', async () => {
+  const { handle } = await newPage((f) => {
+    addFrame(f)
+    f.model.childInitDelayMs = 300
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('帧内按钮')
+  expect(observation.framesPending).toBeUndefined()
+})
+
+test('等满仍未就位的跨站帧按 framesPending 报出，不静默少元素', async () => {
+  const { handle } = await newPage((f) => {
+    addFrame(f)
+    ;(f.model.docs[1] as DocModel).uncommitted = true
+    // 超过观察给这一步的预算：这一帧这次采不到。
+    f.model.attachDelayMs = 60_000
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).not.toContain('帧内按钮')
+  expect(observation.framesPending).toEqual(['frame-a'])
+})
+
+test('同进程 iframe 已经提交时不算未就位，观察不为它等待', async () => {
+  const { fake, handle } = await newPage(addSameFrame)
+  const started = Date.now()
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('框架内按钮')
+  expect(observation.framesPending).toBeUndefined()
+  expect(Date.now() - started).toBeLessThan(500)
+  expect(fake.sent('DOM.getDocument')).toHaveLength(1)
 })
 
 test('父页滚过之后，跨站 iframe 里的元素按现取的帧位置发事件', async () => {

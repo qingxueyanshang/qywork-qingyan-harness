@@ -3,7 +3,8 @@
  *
  * 覆盖范围：`cdp.ts` 全部（连接、按标记附加、方法白名单、迟到回包、本地拒绝、
  * teardown 白名单、已按下未释放的键表与鼠标按下状态、
- * 页会话初始化、按会话过滤的事件订阅、静默探针的登记与清理）。
+ * 页会话初始化、跨站子会话的登记与就绪判定、按会话过滤的事件订阅、
+ * 静默探针的登记与清理）。
  *
  * 对端是一个按脚本回帧的假调试端点：被测的是客户端的判定时机——命令**有没有入网**、
  * 待决调用**由谁结掉**，拿真浏览器测不出「取消之后那一条命令有没有入网」。
@@ -315,6 +316,42 @@ test('静默探针走等待器注册表：读数原样给出，取消时随统�
   expect(disposals).toHaveLength(1)
   // 取消之后开不出新探针：它是业务命令，不是 teardown。
   expect(await failure(client.startProbe(sessionId, 2_000))).toBeInstanceOf(CdpCancelledError)
+})
+
+test('子会话开完域才算数：登记之后、开域回包之前不进 childSessionsOf', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  // 子会话的开域命令晚回：这一段里它答不出 AX 树，交给采集只会得到一个空帧。
+  endpoint.delays.set('Accessibility.enable', 200)
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  endpoint.emit(sessionId, 'Target.attachedToTarget', {
+    sessionId: 'child-1',
+    targetInfo: { targetId: 'frame-a', type: 'iframe' },
+  })
+  await settle()
+  expect(client.childSessionsOf(sessionId)).toEqual([])
+  await new Promise((r) => setTimeout(r, 300))
+  expect(client.childSessionsOf(sessionId)).toEqual([{ sessionId: 'child-1', targetId: 'frame-a' }])
+})
+
+test('子会话开域失败时它不进 childSessionsOf，也不被当成不存在的帧', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('DOM.enable', (cmd) =>
+    cmd.sessionId === 'child-1' ? { error: 'No session with given id' } : {},
+  )
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  endpoint.emit(sessionId, 'Target.attachedToTarget', {
+    sessionId: 'child-1',
+    targetInfo: { targetId: 'frame-a', type: 'iframe' },
+  })
+  await settle()
+  expect(client.childSessionsOf(sessionId)).toEqual([])
+  // 登记还在，取消时这条会话照样要 detach——不是「没有这一帧」。
+  const { detached } = await client.cancel()
+  expect(detached).toContain('child-1')
 })
 
 test('重复取消是空操作，不再发第二轮清理', async () => {
