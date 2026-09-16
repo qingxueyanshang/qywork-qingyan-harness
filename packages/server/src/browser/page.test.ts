@@ -118,6 +118,8 @@ interface DocModel {
   url?: string
   /** 跨站帧的导航还没提交：这一帧此刻是主进程里的 about:blank 占位帧，没有子会话。 */
   uncommitted?: boolean
+  /** 这一帧的 `Target.attachedToTarget` 推迟这么久才发。缺省时用模型上那一份。 */
+  attachDelayMs?: number
   /** 当前焦点节点。`DOM.focus` 改它，按键与文本插入落到它身上。 */
   activeElement?: number
 }
@@ -314,8 +316,9 @@ class FakePage {
             ws.close()
             return
           }
-          // 子帧以子会话形式附加：页会话开了自动附加之后才发得出这些事件。
-          if (cmd.method === 'Target.setAutoAttach' && cmd.sessionId === MAIN) {
+          // 子帧以子会话形式附加：承载它的那个会话开了自动附加之后才发得出这些事件。
+          // 嵌套的跨站帧挂在它父帧的子会话下，所以这里按 `parent` 匹配，不是只认页会话。
+          if (cmd.method === 'Target.setAutoAttach') {
             const attach = (doc: DocModel) => {
               // 导航提交之后才换成独立目标，占位帧同时消失。
               delete doc.uncommitted
@@ -332,7 +335,8 @@ class FakePage {
             }
             for (const doc of self.model.docs) {
               if (!doc.parent || doc.parent === doc.sessionId) continue
-              const late = self.model.attachDelayMs
+              if (doc.parent !== cmd.sessionId) continue
+              const late = doc.attachDelayMs ?? self.model.attachDelayMs
               if (late) setTimeout(() => attach(doc), late)
               else attach(doc)
             }
@@ -834,6 +838,40 @@ function addFrame(page: FakePage, y = 400): void {
 }
 
 /**
+ * 在 `addFrame` 那个跨站子帧里再放一个跨站 iframe，第三层帧内有一个按钮。
+ *
+ * 第三层的 iframe 元素只在第二层那个会话的文档里看得见：`pierce` 穿不过渲染进程边界，
+ * 主文档快照里没有它。
+ */
+function addNestedFrame(page: FakePage): void {
+  const mid = page.model.docs.find((d) => d.sessionId === 'sf1') as DocModel
+  mid.nodes.push({
+    backendNodeId: 61,
+    tag: 'iframe',
+    attrs: { id: 'deep', src: 'http://third.test/inner' },
+    box: { x: 10, y: 60, width: 300, height: 200 },
+  })
+  page.model.docs.push({
+    sessionId: 'sf2',
+    frame: 'frame-b',
+    parent: 'sf1',
+    owner: 61,
+    viewport: { width: 300, height: 200 },
+    scrollY: 0,
+    nodes: [
+      {
+        backendNodeId: 62,
+        tag: 'button',
+        attrs: { id: 'deep-btn' },
+        box: { x: 5, y: 10, width: 100, height: 30 },
+      },
+    ],
+    ax: [{ backendDOMNodeId: 62, role: 'button', name: '第三层按钮' }],
+    axDelayCalls: 0,
+  })
+}
+
+/**
  * 主文档里放一个同进程 iframe，帧内有一个按钮和一段正文。
  *
  * 与 `addFrame` 的差别只有一处：它不另起子会话，`DOM.getDocument` 的 `pierce` 直接
@@ -1321,6 +1359,36 @@ test('等满仍未就位的跨站帧按 framesPending 报出，不静默少元�
   const { observation } = await observe(handle)
   expect(observation.elements.map((e) => e.name)).not.toContain('帧内按钮')
   expect(observation.framesPending).toEqual(['frame-a'])
+})
+
+test('跨站帧里那一层还没提交时同样要等，第三层元素照样进表', async () => {
+  const { handle } = await newPage((f) => {
+    addFrame(f)
+    addNestedFrame(f)
+    const deep = f.model.docs[2] as DocModel
+    // 第二层已经就位，第三层还是它文档里的 about:blank 占位帧。
+    deep.uncommitted = true
+    deep.attachDelayMs = 300
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('第三层按钮')
+  expect(observation.elements.find((e) => e.name === '第三层按钮')?.frame).toBe('frame-b')
+  expect(observation.framesPending).toBeUndefined()
+})
+
+test('等满仍未就位的第三层帧按 framesPending 报出，不静默少掉整层', async () => {
+  const { handle } = await newPage((f) => {
+    addFrame(f)
+    addNestedFrame(f)
+    const deep = f.model.docs[2] as DocModel
+    deep.uncommitted = true
+    // 超过观察给这一步的预算：这一帧这次采不到。
+    deep.attachDelayMs = 60_000
+  })
+  const { observation } = await observe(handle)
+  expect(observation.elements.map((e) => e.name)).toContain('帧内按钮')
+  expect(observation.elements.map((e) => e.name)).not.toContain('第三层按钮')
+  expect(observation.framesPending).toEqual(['frame-b'])
 })
 
 test('同进程 iframe 已经提交时不算未就位，观察不为它等待', async () => {

@@ -72,6 +72,11 @@ const AX_RETRY_TOTAL_MS = 1_500
  * 建页只等主文档 load 完成，跨站 iframe 的导航在那之后才提交；实测这一段在空闲机器上
  * 也只有几十毫秒的余量，观察撞进去就得到一张没有帧内元素的表。等满仍未就位的帧按
  * `framesPending` 报出，不静默少算。
+ *
+ * 2 秒的依据（2026-09-16 实测，回环三层跨站页与公网含跨站 iframe 的页各十轮）：不限速时
+ * 跨站帧在首次观察的头几轮重查里就绪；给帧加 1.5 秒时延后，首次观察报 `framesPending`，
+ * 第二次观察（约 1 秒后）拿到帧内元素。**不要往上调**：这段上限是每一次撞上未就位帧的
+ * 观察都要等的固定开销，而等不到的帧多等一秒仍然等不到，`framesPending` 已经把它说清楚。
  */
 const FRAME_ATTACH_INTERVAL_MS = 100
 const FRAME_ATTACH_TOTAL_MS = 2_000
@@ -628,7 +633,7 @@ export async function observePage(
 }
 
 /**
- * 主文档快照里还没法采的帧。
+ * 一份文档快照里还没法采的帧。主文档与每个跨站子会话的文档各过一遍，见 `scanFrames`。
  *
  * 判据是 `<iframe>` 元素与它此刻承载的文档对不上：`src` 指着一个地址，而这一帧既没有
  * 已就绪的子会话，承载的又还是 `about:blank`。跨站 iframe 在导航提交前由主进程承载一个
@@ -663,14 +668,53 @@ function pendingFrames(root: DomNode, ready: Set<string>): string[] {
   return out
 }
 
-/** 主文档的一次 DOM 快照。`pierce` 穿透影子根与同进程 iframe。 */
-async function snapshot(client: CdpClient, sessionId: string, deadline: number): Promise<DomNode> {
+/** 一个会话的一次 DOM 快照。`pierce` 穿透影子根与同进程 iframe。 */
+async function snapshot(
+  client: CdpClient,
+  sessionId: string,
+  deadline: number,
+  capMs: number,
+): Promise<DomNode> {
   const dom = await client.send<{ root: DomNode }>(
     'DOM.getDocument',
     { depth: -1, pierce: true },
-    { sessionId, ...within(deadline, COLLECT_TIMEOUT_MS) },
+    { sessionId, ...within(deadline, capMs) },
   )
   return dom.root
+}
+
+/**
+ * 扫一遍还没法采的帧：主文档与每个已就位的跨站子会话各取一次快照，各自判自己文档里的 iframe。
+ *
+ * **只看主文档快照判不到嵌套的那一层。** `pierce` 穿不过渲染进程边界，跨站子帧的文档
+ * 不在主文档快照里；嵌套在它里面那个尚未提交的帧因此既不会被等，也不会进 `framesPending`，
+ * 观察静默少掉整层元素。子会话答不出快照时跳过它这一轮——一个不答的帧不该拖住整页观察。
+ *
+ * 快照一并回给调用方复用：采集与这次判定用同一份，不为同一个会话取两遍。
+ */
+async function scanFrames(
+  client: CdpClient,
+  sessionId: string,
+  deadline: number,
+): Promise<{ shots: Map<string, DomNode>; pending: string[] }> {
+  const children = client.childSessionsOf(sessionId)
+  const ready = new Set(children.map((c) => c.targetId))
+  const shots = new Map<string, DomNode>()
+  const root = await snapshot(client, sessionId, deadline, COLLECT_TIMEOUT_MS)
+  shots.set(sessionId, root)
+  const pending = pendingFrames(root, ready)
+  for (const child of children) {
+    const doc = await snapshot(client, child.sessionId, deadline, FRAME_TIMEOUT_MS).catch(
+      (err: unknown) => {
+        log.warn('browser', `子帧快照跳过：${err instanceof Error ? err.message : String(err)}`)
+        return null
+      },
+    )
+    if (!doc) continue
+    shots.set(child.sessionId, doc)
+    pending.push(...pendingFrames(doc, ready))
+  }
+  return { shots, pending }
 }
 
 /**
@@ -684,24 +728,24 @@ async function collectAll(
   opts: { frame?: string },
   deadline: number,
 ): Promise<{ items: { element: BrowserElement; ref: RefRecord }[]; pending: string[] }> {
-  const readyFrames = () => new Set(client.childSessionsOf(sessionId).map((c) => c.targetId))
   // 指定了帧就只等那一帧：别的帧没就位不该拖住「只看这个 iframe」。
   const inScope = (frames: string[]) =>
     opts.frame ? frames.filter((f) => f === opts.frame) : frames
-  // 点名的跨站帧已经就位时这一次不看主文档：那份快照这次用不上，取它只消耗预算。
-  const onReadyFrame = opts.frame !== undefined && readyFrames().has(opts.frame)
-  let root: DomNode | undefined
-  let pending: string[] = []
+  // 点名的跨站帧已经就位时这一次不扫：那几份快照这次用不上，取它们只消耗预算。
+  const onReadyFrame =
+    opts.frame !== undefined &&
+    client.childSessionsOf(sessionId).some((c) => c.targetId === opts.frame)
+  let scan = { shots: new Map<string, DomNode>(), pending: [] as string[] }
   if (!onReadyFrame) {
-    root = await snapshot(client, sessionId, deadline)
-    pending = inScope(pendingFrames(root, readyFrames()))
+    scan = await scanFrames(client, sessionId, deadline)
+    // 重查共用这一份预算，不为每一层帧各给满额度。
     const until = Math.min(deadline, Date.now() + FRAME_ATTACH_TOTAL_MS)
-    while (pending.length > 0 && leftMs(until) > 0) {
+    while (inScope(scan.pending).length > 0 && leftMs(until) > 0) {
       await sleep(Math.min(FRAME_ATTACH_INTERVAL_MS, leftMs(until)))
-      root = await snapshot(client, sessionId, deadline)
-      pending = inScope(pendingFrames(root, readyFrames()))
+      scan = await scanFrames(client, sessionId, deadline)
     }
   }
+  const pending = inScope(scan.pending)
 
   const sessions: { sessionId: string; frame?: string }[] = [{ sessionId }]
   for (const child of client.childSessionsOf(sessionId)) {
@@ -713,14 +757,15 @@ async function collectAll(
 
   const all: { element: BrowserElement; ref: RefRecord }[] = []
   for (const s of scope) {
+    const shot = scan.shots.get(s.sessionId)
     if (s.frame === undefined) {
-      all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS, root)))
+      all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS, shot)))
       continue
     }
     // 跨站子帧由它自己的渲染进程应答，正在加载或已经消失时会一直不回。
     // 一个帧不答不该让整页观察不出来——跳过它，主文档照常给出元素表。
     try {
-      all.push(...(await collectSession(client, s, deadline, FRAME_TIMEOUT_MS)))
+      all.push(...(await collectSession(client, s, deadline, FRAME_TIMEOUT_MS, shot)))
     } catch (err) {
       log.warn('browser', `子帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
     }
