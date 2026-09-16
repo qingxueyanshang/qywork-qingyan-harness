@@ -51,7 +51,6 @@ export {
   estimateSchemas,
   estimateText,
   MEDIA_TOKENS,
-  mediaBytes,
   type TokenDensity,
 } from './tokens.ts'
 // 协议无关的请求与事件形状

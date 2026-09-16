@@ -896,6 +896,83 @@ describe('注入消息的回读', () => {
   })
 })
 
+/*
+ * 带图执行记录的回读。
+ *
+ * 图像字节定格在 step payload 的 `outcome.data.images` 里；取回时必须作为图像块交出，
+ * outcome 文本里不能夹着 base64——那是一段模型读不懂、却按满额计费的正文。
+ */
+describe('带图执行记录的回读', () => {
+  test('call_id 与 step id 两条入口都把图拆成图像块，outcome 文本无字节', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const shot = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      toolCallId: 'call_shot',
+      providerBatchId: 'bt_1',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, shot.id, 'success', {
+      kind: 'tool_result',
+      args: { path: 'shot.png' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '读取 shot.png（图片）',
+        data: { images: [{ data: 'QUJD', mime: 'image/png' }] },
+      },
+    } as never)
+    const plain = appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      toolCallId: 'call_plain',
+      providerBatchId: 'bt_2',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, plain.id, 'success', {
+      kind: 'tool_result',
+      args: { path: 'a.ts' },
+      outcome: { status: 'success', executed: true, message: '读取 a.ts', data: { lines: 3 } },
+    } as never)
+
+    const make = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
+      }
+    ).makeToolContext.bind(s)
+    const ctx = make(run.id, () => {}, 'm', conv.id)
+
+    const byCall = ctx.history?.byCallId('call_shot')
+    expect(byCall?.images).toEqual([{ data: 'QUJD', mime: 'image/png' }])
+    expect(byCall?.outcome).not.toContain('QUJD')
+    expect(JSON.parse(byCall?.outcome ?? '{}')).toMatchObject({ message: '读取 shot.png（图片）' })
+    expect(ctx.history?.step(`${run.id}:${shot.id}`)).toEqual(byCall)
+
+    // 没有图的记录不带 `images` 键，`data` 原样保留。
+    const text = ctx.history?.byCallId('call_plain')
+    expect(text).not.toHaveProperty('images')
+    expect(JSON.parse(text?.outcome ?? '{}')).toMatchObject({ data: { lines: 3 } })
+    store.close()
+  })
+})
+
 /** `workspaceWithMcp` 会改 `QYWORK_HOME`，每条用例跑完还回去。 */
 const HOME_BEFORE = process.env.QYWORK_HOME
 afterEach(() => {

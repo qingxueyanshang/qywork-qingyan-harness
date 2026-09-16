@@ -28,7 +28,7 @@ import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
 import { AgentLoop, MAX_RESENDS, softLimit, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
-import { MEDIA_BYTES_SOFT_LIMIT, ToolRegistry } from './registry.ts'
+import { ToolRegistry } from './registry.ts'
 
 /*
  * 退避是真的在等。只把退避那一档改成立即触发，别的定时器原样放行——
@@ -285,45 +285,6 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(comp.state.runs).toBeGreaterThan(0)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
-    expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
-  })
-
-  /**
-   * 媒体字节越线同样在发送前压一次，哪怕 token 占用离软阈值很远。
-   *
-   * 实测形状：1M 窗口、26 万 token、22 张截图共 52.9 MB，网关 413。
-   * token 尺对图按固定值计，量不到这一维。
-   */
-  test('媒体字节越线：占用远低于软阈值也在发送前压一次', async () => {
-    const comp = fakeCompaction(okOutcome)
-    const shot = 'A'.repeat(2_500_000)
-    const history: WireMessage[] = Array.from({ length: 8 }, (_, i) => ({
-      role: 'tool' as const,
-      toolCallId: `c${i}`,
-      content: [
-        {
-          type: 'text' as const,
-          text: `{"call_id":"c${i}","tool":"read_file","status":"success"}`,
-        },
-        {
-          type: 'image' as const,
-          mimeType: 'image/png',
-          source: { kind: 'base64' as const, data: shot },
-        },
-      ],
-    }))
-    expect(shot.length * 8).toBeGreaterThan(MEDIA_BYTES_SOFT_LIMIT)
-    const events: AgentEvent[] = []
-    for await (const ev of build(okAdapter(), comp.port).run({
-      runId: 'rn_bytes' as never,
-      history,
-      signal: new AbortController().signal,
-    })) {
-      events.push(ev)
-    }
-    expect(comp.state.runs).toBe(1)
-    expect(comp.state.seen[0]!.occupancy).toBeLessThan(softLimit({ contextWindow: 1_000_000 }))
-    expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
   })
 

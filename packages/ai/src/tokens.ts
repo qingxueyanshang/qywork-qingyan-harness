@@ -122,27 +122,6 @@ export function estimateContent(
 }
 
 /**
- * 一段消息里媒体块占的请求体字节。
- *
- * token 尺对媒体按固定值计（`MEDIA_TOKENS`），与线上字节相差三个数量级：
- * 一张 2.5 MB 的截图 2000 token。网关按字节拒（HTTP 413），所以字节要单独量。
- * base64 原样进请求体，其长度即线上字节。
- *
- * 边界：`path` 与 `url` 形态计 0——字节在 `materialize` 才读盘，发送前检查在它之前。
- */
-export function mediaBytes(messages: readonly WireMessage[]): number {
-  let total = 0
-  for (const m of messages) {
-    if (typeof m.content === 'string' || !m.content) continue
-    for (const block of m.content) {
-      if (block.type === 'text') continue
-      if (block.source.kind === 'base64') total += block.source.data.length
-    }
-  }
-  return total
-}
-
-/**
  * 一条 wire 消息的全部占用。
  *
  * 三部分缺一不可：正文、**工具调用参数**、**思考正文**。

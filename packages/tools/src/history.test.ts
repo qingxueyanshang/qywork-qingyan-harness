@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { HistoryPort, ToolContext } from '@qywork/agent'
+import type { HistoryPort, HistoryStep, ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readHistoryTool } from './history.ts'
 
@@ -19,12 +19,19 @@ function memHistory(): HistoryPort {
     ms_1: { role: 'user', content: '把签名算法定为 RS256，不要用 HS256' },
     ms_big: { role: 'assistant', content: LONG },
   }
-  const steps: Record<string, { tool: string; status: string; args: string; outcome: string }> = {
+  const steps: Record<string, HistoryStep> = {
     'rn_1:7': {
       tool: 'read_file',
       status: 'success',
       args: '{"path":"a.ts"}',
       outcome: '{"ok":1}',
+    },
+    'rn_1:9': {
+      tool: 'read_file',
+      status: 'success',
+      args: '{"path":"shot.png"}',
+      outcome: '{"status":"success","message":"读取 shot.png（图片）"}',
+      images: [{ data: 'QUJD', mime: 'image/png' }],
     },
   }
   // 收纳过的工具结果只剩信封，信封里的 call_id 是它唯一的地址。
@@ -134,6 +141,16 @@ describe('取回原文', () => {
 
   test('未知 call_id 报 not_found', async () => {
     expect((await run({ call_id: 'call_nope' })).errorKind).toBe('not_found')
+  })
+
+  /** 被 `images_omitted` 信封替换掉的那张图，凭记录 id 取回的是定格的同一份字节。 */
+  test('带图的执行记录把图作为图像块带回，outcome 文本里没有字节', async () => {
+    const r = await run({ step_id: 'rn_1:9' })
+    expect(r.status).toBe('success')
+    const d = r.data as { outcome: string; images: { data: string; mime: string }[] }
+    expect(d.images).toEqual([{ data: 'QUJD', mime: 'image/png' }])
+    expect(d.outcome).not.toContain('QUJD')
+    expect(r.message).toContain('含图片')
   })
 
   test('执行记录带回参数与结果', async () => {

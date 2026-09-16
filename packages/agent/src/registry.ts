@@ -548,22 +548,6 @@ export function deliveryBudget(contextWindow: number): { perCall: number; batchC
 }
 
 /**
- * 单次请求体的字节上限。
- *
- * Anthropic Messages API 文档给的上限是 32 MB；DeepSeek 网关实测 47.8 MB 放行、
- * 52.9 MB 返回 413。取小者。token 尺量不到这一维：图像块按 `MEDIA_TOKENS` 固定计，
- * 一张 2.5 MB 的截图只算 2000 token，二十几张就撞网关而窗口占用不到三成。
- */
-export const REQUEST_BYTES_LIMIT = 32 * 1024 * 1024
-
-/**
- * 媒体字节的压缩触发线与尾部保留额，与 token 侧的 `softLimit` / `batchCap` 同构：
- * 过半触发收纳，收纳后尾部最多留四分之一。保留额必须低于触发线，否则收纳之后仍越线。
- */
-export const MEDIA_BYTES_SOFT_LIMIT = REQUEST_BYTES_LIMIT / 2
-export const MEDIA_BYTES_RETAIN = REQUEST_BYTES_LIMIT / 4
-
-/**
  * 一段将要作为工具结果投递的正文有多大。**闸门与请求共用这一把尺。**
  *
  * 按 JSON 档量而不是散文档：它最终躺在 `{call_id, tool, status, executed,
@@ -616,6 +600,20 @@ export function chargeBatchBudget(
  * `undefined` 是合法值。工具在册但端口没接时如实报「读不了历史」，**不要退化成
  * 「找不到」**——后者会让模型把它当成 id 写错，然后拿几轮去猜一个取不到的 id。
  */
+/**
+ * 一条执行记录的取回形态。
+ *
+ * `images` 与 `outcome` 分开：图像字节走图像块，不序列化进 outcome 文本——
+ * 一张截图的 base64 有几 MB，当文本回给模型既读不懂又占满投递预算。
+ */
+export interface HistoryStep {
+  tool: string
+  status: string
+  args: string
+  outcome: string
+  images?: { data: string; mime: string }[]
+}
+
 export interface HistoryPort {
   /**
    * 按消息 id 取回原文。不存在返回 null。
@@ -631,7 +629,7 @@ export interface HistoryPort {
    * id 用摘要里那种 `<runId>:<stepId>` 复合形式——单独一个 step id 在跨 run 的
    * 会话里不唯一，而摘要正文引用的是跨 run 的远期记录。
    */
-  step(id: string): { tool: string; status: string; args: string; outcome: string } | null
+  step(id: string): HistoryStep | null
   /**
    * 按工具调用 id 取回那次调用的执行记录。
    *
@@ -642,7 +640,7 @@ export interface HistoryPort {
    * 不往信封里加新键正是为此：信封每多一个字段，所有历史请求的字节都变，
    * 前缀缓存全失配。
    */
-  byCallId(callId: string): { tool: string; status: string; args: string; outcome: string } | null
+  byCallId(callId: string): HistoryStep | null
   /**
    * 在本会话的全部历史里搜子串，返回命中项与它的定位符。
    *

@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ContentBlock, WireMessage } from '@qywork/ai'
 import { condenseMessage } from './compaction.ts'
-import { envelopeResult, materialize, toolResultContent } from './loop.ts'
+import { envelopeResult, materialize, omitImages, toolResultContent } from './loop.ts'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -344,5 +344,44 @@ describe('收纳', () => {
     expect((JSON.parse(twice.content as string) as Record<string, unknown>).images_omitted).toBe(
       true,
     )
+  })
+})
+
+describe('图像块只在产生它的那一轮出现', () => {
+  const withImage = (): WireMessage => ({
+    role: 'tool',
+    toolCallId: 'c1',
+    content: [
+      { type: 'text', text: envelope },
+      { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'QUJD' } },
+    ],
+  })
+
+  /** 信封保留 `result`，只摘图像块并标记；模型据标记知道图不在场。 */
+  test('带图的工具结果换成 images_omitted 信封，result 保留', () => {
+    const out = omitImages(withImage())
+    expect(typeof out.content).toBe('string')
+    const env = JSON.parse(out.content as string) as Record<string, unknown>
+    expect(env.images_omitted).toBe(true)
+    expect(env.result).toEqual({ lines: 1 })
+    expect(out.content as string).not.toContain('QUJD')
+  })
+
+  /** 投影每次请求都跑：无图必须回原引用，有图必须逐字稳定，否则前缀缓存全失配。 */
+  test('无图原引用返回，有图两次产物逐字相同', () => {
+    const plain: WireMessage = { role: 'tool', toolCallId: 'c2', content: envelope }
+    expect(omitImages(plain)).toBe(plain)
+    const user: WireMessage = { role: 'user', content: 'x' }
+    expect(omitImages(user)).toBe(user)
+    expect(omitImages(withImage()).content).toBe(omitImages(withImage()).content)
+  })
+
+  /** 换出来的信封再收纳一次仍带标记，两条路径产物同形。 */
+  test('省略后的信封经收纳仍标 images_omitted', () => {
+    const env = JSON.parse(condenseMessage(omitImages(withImage())).content as string) as Record<
+      string,
+      unknown
+    >
+    expect(env.images_omitted).toBe(true)
   })
 })

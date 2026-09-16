@@ -22,14 +22,13 @@ import {
   condenseMessage,
   cutKey,
   deliveryBudget,
-  MEDIA_BYTES_RETAIN,
   projectManifest,
   softLimit,
   summaryCutOf,
   unitKey,
 } from '@qywork/agent'
 import type { TokenDensity, WireMessage } from '@qywork/ai'
-import { estimateMessages, MEDIA_TOKENS, mediaBytes } from '@qywork/ai'
+import { estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
 import type {
   ActionKind,
   CompactionCut,
@@ -75,8 +74,6 @@ interface Unit {
   key: string
   cut: CompactionCut
   tokens: number
-  /** 媒体块的请求体字节。与 `tokens` 是两把尺，选界时各对各的保留额。 */
-  bytes: number
   messages: WireMessage[]
   /** 会话消息行；执行记录单元为 null。 */
   row: CompactionInput['messages'][number] | null
@@ -206,7 +203,7 @@ export class RuntimeCompaction implements CompactionPort {
             Math.max(1, Math.floor(units.reduce((total, unit) => total + unit.tokens, 0) / 4)),
           )
         : automaticRetain
-    const foldIndex = foldIndexOf(units, retain, MEDIA_BYTES_RETAIN)
+    const foldIndex = foldIndexOf(units, retain)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
     const todoFacts = currentTodoFacts(units)
@@ -466,8 +463,6 @@ export class RuntimeCompaction implements CompactionPort {
         cut,
         // 附件按固定值计，与装配那侧同一口径；按 base64 长度估会高出两个数量级。
         tokens: estimateMessages([...context, wire], density) + m.attachments.length * MEDIA_TOKENS,
-        // 消息行的附件是路径形态，字节到 `materialize` 才读盘，这里量到的是 0。
-        bytes: mediaBytes([...context, wire]),
         messages: [...context, wire],
         row: {
           id: m.id,
@@ -490,7 +485,6 @@ export class RuntimeCompaction implements CompactionPort {
             key: cutKey(stepCut),
             cut: stepCut,
             tokens: estimateMessages(u.messages, density) + files.length * MEDIA_TOKENS,
-            bytes: mediaBytes(u.messages),
             messages: u.messages,
             /*
              * run 内注入的那句用户消息也要有 `row`，否则它折进摘要线之后
@@ -653,20 +647,11 @@ function toolEnvelopeStatus(content: WireMessage['content']): string | null {
  *
  * 先加后判，所以把总量顶过预算的那个单元自己也留着——至少保留最后一个单元。
  */
-/**
- * 从尾部往前累加，token 或媒体字节任一到达保留额即定折叠线。
- *
- * 最后一个单元始终整体保留：它自己就超额时折叠线落在它之前。
- * 字节这一维不能省——图像块按固定 token 计，只按 token 保留会把几十 MB 的截图
- * 全留在尾部，收纳一次不省一个字节。
- */
-function foldIndexOf(units: Unit[], retain: number, retainBytes: number): number {
+function foldIndexOf(units: Unit[], retain: number): number {
   let spent = 0
-  let spentBytes = 0
   for (let i = units.length - 1; i >= 0; i--) {
     spent += units[i]!.tokens
-    spentBytes += units[i]!.bytes
-    if (spent >= retain || spentBytes >= retainBytes) return i - 1
+    if (spent >= retain) return i - 1
   }
   return -1
 }

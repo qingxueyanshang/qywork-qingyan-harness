@@ -13,7 +13,10 @@ import {
   type CompactionPort,
   type DelegatePort,
   decideCommand,
+  envelopeResult,
   type HistoryPort,
+  type HistoryStep,
+  imagesOf,
   type LoopPersistence,
   type PermissionVerdict,
   type PluginPort,
@@ -1343,6 +1346,29 @@ const NEWLINE = String.fromCharCode(10)
  * 大小上限不在这里判，在 `materialize` 那一刻判——路径型附件指向用户自己的文件，
  * 它在被引用之后还会继续长，而这里只是记下位置。
  */
+/**
+ * 执行记录的取回形态：图像字节从 outcome 里拆出来走图像块，outcome 文本里不留 base64。
+ * 读回来的图与 `read_file` 定格进执行记录的是同一份字节。
+ */
+function stepRecord(st: Step): HistoryStep {
+  const payload = (st.payload ?? {}) as { args?: unknown; outcome?: Record<string, unknown> }
+  const outcome = payload.outcome ?? {}
+  const data =
+    outcome.data && typeof outcome.data === 'object'
+      ? (outcome.data as Record<string, unknown>)
+      : undefined
+  const images = imagesOf(data)
+  const rest = envelopeResult(data)
+  const { data: _dropped, ...withoutData } = outcome
+  return {
+    tool: st.toolName ?? 'unknown',
+    status: st.status,
+    args: JSON.stringify(payload.args ?? {}),
+    outcome: JSON.stringify(data ? { ...withoutData, ...(rest ? { data: rest } : {}) } : outcome),
+    ...(images.length ? { images } : {}),
+  }
+}
+
 export async function withAttachments(
   workspaceRoot: string,
   text: string,
@@ -1454,25 +1480,12 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
         // `{tool,status,args,outcome}`，套上去只会回一个 `tool:'unknown'`
         // 加两个空 JSON——看起来被处理了，实际什么都没答。
         if (!st || st.kind === 'user') return null
-        const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
-        return {
-          tool: st.toolName ?? 'unknown',
-          status: st.status,
-          args: JSON.stringify(payload.args ?? {}),
-          outcome: JSON.stringify(payload.outcome ?? {}),
-        }
+        return stepRecord(st)
       },
       byCallId: (callId) => {
         for (const run of listRuns(store, cid)) {
           const st = listSteps(store, run.id).find((x) => x.toolCallId === callId)
-          if (!st) continue
-          const payload = (st.payload ?? {}) as { args?: unknown; outcome?: unknown }
-          return {
-            tool: st.toolName ?? 'unknown',
-            status: st.status,
-            args: JSON.stringify(payload.args ?? {}),
-            outcome: JSON.stringify(payload.outcome ?? {}),
-          }
+          if (st) return stepRecord(st)
         }
         return null
       },

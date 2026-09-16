@@ -2475,6 +2475,125 @@ describe('注册表是工具的唯一权威', () => {
 })
 
 describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
+  /**
+   * 复现原始失败形状的最小版：每一波读一张图，第三次请求体里只能有第二张。
+   * 第一张的 tool 消息必须是字符串信封且标 `images_omitted`：缺了标记，信封与图仍在场的成功信封同形。
+   */
+  test('只有最后一个工具波次的图进请求体，更早的换成 images_omitted 信封', async () => {
+    const bodies: Record<string, unknown>[] = []
+    let requestIndex = 0
+    const call = (id: string) => ({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id,
+                function: { name: 'read_image', arguments: JSON.stringify({ path: `${id}.png` }) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })
+    const endpoint = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        bodies.push((await req.json()) as Record<string, unknown>)
+        requestIndex++
+        const events =
+          requestIndex <= 2
+            ? [
+                call(`call_${requestIndex}`),
+                { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+              ]
+            : [
+                { choices: [{ delta: { content: '完成' }, finish_reason: null }] },
+                { choices: [{ delta: {}, finish_reason: 'stop' }] },
+              ]
+        const stream = [
+          ...events.map((event) => `data: ${JSON.stringify(event)}`),
+          'data: [DONE]',
+          '',
+        ].join('\n\n')
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+      },
+    })
+
+    try {
+      const adapter = buildAdapter({
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-test',
+        model: 'deepseek-v4-flash-vision-exp',
+        baseUrl: `http://127.0.0.1:${endpoint.port}/v1`,
+      })
+      const registry = new ToolRegistry()
+      let reads = 0
+      registry.register({
+        name: 'read_image',
+        description: '读取图片。',
+        parameters: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
+        actionKind: 'read',
+        objectLabel: '图片',
+        category: 'files',
+        facet: '测试',
+        summary: '测试夹具',
+        permissionEffect: 'read',
+        fn: async () => {
+          reads++
+          return {
+            status: 'success',
+            executed: true,
+            message: `读取 shot_${reads}.png（图片）`,
+            data: { images: [{ data: `IMG${reads}`, mime: 'image/png' }] },
+          }
+        },
+      })
+      const loop = new AgentLoop({
+        adapter,
+        registry,
+        systemPrompt: 'sys',
+        persist: noopPersistence(),
+        makeToolContext: (runId) => baseCtx(runId),
+      })
+      for await (const _ of loop.run({
+        runId: 'rn_image_scope' as never,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        // 读完整轮即可，请求体由本机端点记录。
+      }
+
+      expect(bodies).toHaveLength(3)
+      const tools = (bodies[2]!.messages as { role?: string; content?: unknown }[]).filter(
+        (m) => m.role === 'tool',
+      )
+      expect(tools).toHaveLength(2)
+      // 第一波：字符串信封，带标记，一个图像字节都没有。
+      expect(typeof tools[0]!.content).toBe('string')
+      expect(JSON.parse(tools[0]!.content as string)).toMatchObject({
+        call_id: 'call_1',
+        images_omitted: true,
+      })
+      expect(JSON.stringify(bodies[2])).not.toContain('IMG1')
+      // 第二波：图仍在。
+      const second = tools[1]!.content as { type?: string; image_url?: { url?: string } }[]
+      expect(second[1]).toEqual({
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,IMG2' },
+      })
+    } finally {
+      endpoint.stop(true)
+    }
+  })
+
   test('工具结果的信封、图片字节、MIME 与 call id 进入下一次请求体', async () => {
     const bodies: Record<string, unknown>[] = []
     let requestIndex = 0

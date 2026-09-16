@@ -22,6 +22,7 @@ import {
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
+import { MEDIA_TOKENS } from '@qywork/ai'
 
 /** 一次搜索最多回多少条命中。再多模型也读不完，只会把预算烧光。 */
 const MAX_HITS = 40
@@ -57,7 +58,8 @@ export const readHistoryTool: ToolSpec = {
     '读回被压缩折叠掉的会话历史原文。上下文压缩后的摘要里带着 [message:xxx] 与 ' +
     '[action:xxx] 标记，传入标记中的 id 返回该条的完整内容。' +
     'id 未知时传 query 检索（返回命中行与对应 id）。' +
-    '被收纳过的工具结果只剩信封，传入信封里的 call_id 返回完整的参数与结果。' +
+    '被收纳过的工具结果只剩信封，传入信封里的 call_id 返回完整的参数与结果；' +
+    '信封里 images_omitted 为 true 的，同样用 call_id 取回当时读到的那张图。' +
     '读的范围是本会话与本会话派出的子 agent 的历史，范围外的 id 回「没有这条」；' +
     '工具落盘的大块输出（rs_xxx）用 read_resource。' +
     '传 subagent（本会话子 agent 的 id）时读的是那个子 agent 的历史，其余参数含义不变。',
@@ -162,10 +164,28 @@ export const readHistoryTool: ToolSpec = {
       const text = `${st.args}\n${st.outcome}`
       const over = charged(ctx, text)
       if (over) return over
+      const images = st.images ?? []
+      if (images.length) {
+        // 图按 `read_file` 同一口径扣投递预算，一张一份 `MEDIA_TOKENS`。
+        const budget = chargeBatchBudget(ctx, MEDIA_TOKENS * images.length)
+        if (!budget.ok) {
+          return {
+            status: 'failure',
+            message: `本批投递预算只剩 ${budget.batchRemaining} token，装不下这条记录里的 ${images.length} 张图，下一轮再读。`,
+            errorKind: 'result_too_large',
+          }
+        }
+      }
       return {
         status: 'success',
-        message: `读回执行记录 ${shown}（${st.tool} · ${st.status}）`,
-        data: { tool: st.tool, status: st.status, args: st.args, outcome: st.outcome },
+        message: `读回执行记录 ${shown}（${st.tool} · ${st.status}${images.length ? '，含图片' : ''}）`,
+        data: {
+          tool: st.tool,
+          status: st.status,
+          args: st.args,
+          outcome: st.outcome,
+          ...(images.length ? { images } : {}),
+        },
       }
     }
 

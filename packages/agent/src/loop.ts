@@ -30,7 +30,6 @@ import {
   estimateRequest,
   estimateSchemas,
   estimateText,
-  mediaBytes,
   ProviderError,
 } from '@qywork/ai'
 import type {
@@ -71,7 +70,6 @@ import {
 } from './progress.ts'
 import {
   isParallelSafe,
-  MEDIA_BYTES_SOFT_LIMIT,
   type PermissionEffect,
   resetBatchBudget,
   resolveAction,
@@ -1118,15 +1116,11 @@ export class AgentLoop {
 
         if (transcript.length > compactedAt) {
           const occupancy = occupancyOf(req)
-          // 两把尺各判一次：token 对窗口，媒体字节对网关的请求体上限。
-          const bytes = mediaBytes(req.messages)
-          if (occupancy > softLimit(adapter.spec) || bytes > MEDIA_BYTES_SOFT_LIMIT) {
+          if (occupancy > softLimit(adapter.spec)) {
             compactedAt = transcript.length
             log.info('agent', '发送前检查触发压缩', {
               occupancy,
               softLimit: softLimit(adapter.spec),
-              mediaBytes: bytes,
-              mediaBytesSoftLimit: MEDIA_BYTES_SOFT_LIMIT,
             })
             yield { type: 'compaction', runId: input.runId, phase: 'started' }
             // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
@@ -2221,7 +2215,23 @@ export class AgentLoop {
         ]
       : input.history
     const assembledRaw: WireMessage[] = [...history, ...transcript]
-    const projected = this.compaction.project(assembledRaw)
+    /*
+     * 图像块只在产生它的那一轮出现：transcript 最后一个工具波次（最后一条带 toolCalls
+     * 的 assistant 之后的 tool 结果）保留图，其余带图的工具结果换成 `images_omitted`
+     * 信封。模型在看图的那一轮已经把观察写进正文，之后每轮重放的是它看过的像素，
+     * 而字节随张数线性累积，每轮都要重新上传。要再看按路径重读，或用信封里的
+     * `call_id` 经 `read_history` 取回定格的那一张。
+     */
+    let lastCall = -1
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i]!.role === 'assistant' && transcript[i]!.toolCalls?.length) {
+        lastCall = i
+        break
+      }
+    }
+    const keepFrom = lastCall < 0 ? assembledRaw.length : history.length + lastCall
+    const scoped = assembledRaw.map((m, i) => (i >= keepFrom ? m : omitImages(m)))
+    const projected = this.compaction.project(scoped)
     const messages: WireMessage[] = [...projected]
 
     /*
@@ -2533,12 +2543,37 @@ export function toolResultContent(
 }
 
 /**
+ * 把带图的工具结果换成只有信封的形态，信封里标 `images_omitted: true`。
+ *
+ * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
+ * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
+ *
+ * **必须逐字稳定且无图时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
+ * 断点之前的字节每次都变。
+ */
+export function omitImages(m: WireMessage): WireMessage {
+  if (m.role !== 'tool' || typeof m.content === 'string' || !m.content) return m
+  if (!m.content.some((b) => b.type === 'image')) return m
+  const text = m.content.find((b) => b.type === 'text')
+  if (!text || text.type !== 'text') return m
+  let env: Record<string, unknown>
+  try {
+    env = JSON.parse(text.text) as Record<string, unknown>
+  } catch {
+    return m
+  }
+  return { ...m, content: JSON.stringify({ ...env, images_omitted: true }) }
+}
+
+/**
  * `outcome.data.images` 里那几张。
  *
  * **是数组不是单张**：MCP 工具一次调用能带回好几张图，取第一张就是把其余的静默丢掉。
  * `read_file` 读一个文件，给一个一元数组。
  */
-function imagesOf(data: Record<string, unknown> | undefined): { data: string; mime: string }[] {
+export function imagesOf(
+  data: Record<string, unknown> | undefined,
+): { data: string; mime: string }[] {
   const raw = data?.images
   if (!Array.isArray(raw)) return []
   const out: { data: string; mime: string }[] = []
