@@ -10,6 +10,15 @@
 
 import { tauriInvoke, tauriListen } from './store/index.ts'
 
+/** `terminal_list` 的一行。与 Rust `TerminalSession` 同形。 */
+export interface TerminalSession {
+  id: string
+  /** 这条会话所属的工作区 id。建出来就不再改。 */
+  workspaceId: string
+  /** 外壳进程里的创建序号，与内置浏览器页共用一个计数器。页签条按它排序。 */
+  createdSeq: number
+}
+
 type OutputHandler = (data: string) => void
 type ExitHandler = (code: number | null) => void
 

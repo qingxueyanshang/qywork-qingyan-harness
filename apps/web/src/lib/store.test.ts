@@ -326,8 +326,8 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('内置浏览器页签跟着宿主的存活页走', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id },
-      { id: 'bt_2', title: '浏览器 2', workspaceId: WS_A.id },
+      { id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_2', title: '浏览器 2', workspaceId: WS_A.id, createdSeq: 2 },
     ])
     expect(panelTabs().map((t) => [t.id, t.kind, t.title])).toEqual([
       ['bt_1', 'browser', '浏览器 1'],
@@ -342,7 +342,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     })
 
     // 宿主那边关掉 bt_2：页签跟着没，落到左边那页，收尾**不再走一遍**。
-    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id }])
+    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_1'])
     expect(activePanelTab()).toBe('bt_1')
     expect(closed).toBe(0)
@@ -351,8 +351,8 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('两个工作区各一页 —— 各自只见自己的', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
     setWorkspace(WS_B)
@@ -366,14 +366,14 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('后台工作区最后一页关掉 —— 那个条目的页签清空、当前页修正', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     setWorkspace(WS_B)
     setSidePanel({ tab: 'bt_b1' })
     setWorkspace(WS_A)
 
-    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id }])
+    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
     setWorkspace(WS_B)
     expect(panelTabs()).toEqual([])
@@ -384,8 +384,8 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     reset()
     setWorkspace(null)
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     setWorkspace(WS_A)
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
@@ -487,7 +487,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
 
     setWorkspace(WS_A)
     openPreviewTab('http://localhost:9100')
-    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id }])
+    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
 
     setWorkspace(WS_B)
     expect(panelTabs().map((t) => t.id)).toEqual(bTabs)
@@ -547,8 +547,8 @@ describe('外壳还在跑的终端按项目补回页签', () => {
   test('两个项目的记录都建立，当前只显示自己那几条', () => {
     reset()
     restoreTerminalTabs([
-      { id: 'terminal-41', workspaceId: WS_A.id },
-      { id: 'terminal-42', workspaceId: WS_B.id },
+      { id: 'terminal-41', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'terminal-42', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     expect(panelTabs().map((t) => t.id)).toEqual(['terminal-41'])
     setWorkspace(WS_B)
@@ -558,7 +558,7 @@ describe('外壳还在跑的终端按项目补回页签', () => {
   test('没有活动项目时照样按记录恢复，切进去就看得见', () => {
     reset()
     setWorkspace(null)
-    restoreTerminalTabs([{ id: 'terminal-51', workspaceId: WS_B.id }])
+    restoreTerminalTabs([{ id: 'terminal-51', workspaceId: WS_B.id, createdSeq: 3 }])
     setWorkspace(WS_B)
     expect(panelTabs().map((t) => t.id)).toEqual(['terminal-51'])
   })
@@ -566,11 +566,38 @@ describe('外壳还在跑的终端按项目补回页签', () => {
   test('新开的序号高过整份清单，别的项目那几条也算', () => {
     reset()
     restoreTerminalTabs([
-      { id: 'terminal-70', workspaceId: WS_A.id },
-      { id: 'terminal-99', workspaceId: WS_B.id },
+      { id: 'terminal-70', workspaceId: WS_A.id, createdSeq: 4 },
+      { id: 'terminal-99', workspaceId: WS_B.id, createdSeq: 5 },
     ])
     openPanelTab('terminal')
     expect(panelTabs().map((t) => t.id)).toEqual(['terminal-70', 'terminal-100'])
+  })
+
+  /**
+   * 原始失败形状：整页刷新后终端清单与浏览器清单各自异步回来，先到的那一份整块排在
+   * 前面，页签顺序与刷新前不同。判据是两种到达顺序给出同一条页签条。
+   */
+  test('两份清单以相反顺序回来 —— 页签仍按创建顺序排', () => {
+    // 外壳里的创建顺序：终端、浏览器、终端、浏览器，序号由外壳进程统一发。
+    const terminals = [
+      { id: 'terminal-201', workspaceId: WS_A.id, createdSeq: 201 },
+      { id: 'terminal-203', workspaceId: WS_A.id, createdSeq: 203 },
+    ]
+    const browsers = [
+      { id: 'bt_202', title: '浏览器 202', workspaceId: WS_A.id, createdSeq: 202 },
+      { id: 'bt_204', title: '浏览器 204', workspaceId: WS_A.id, createdSeq: 204 },
+    ]
+    const created = ['terminal-201', 'bt_202', 'terminal-203', 'bt_204']
+
+    reset()
+    restoreTerminalTabs(terminals)
+    syncBrowserTabs(browsers)
+    expect(panelTabs().map((t) => t.id)).toEqual(created)
+
+    reset()
+    syncBrowserTabs(browsers)
+    restoreTerminalTabs(terminals)
+    expect(panelTabs().map((t) => t.id)).toEqual(created)
   })
 })
 

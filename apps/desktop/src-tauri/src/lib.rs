@@ -22,7 +22,23 @@ mod terminal;
 mod updater;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+/// 浏览器页与终端会话共用的创建序号。
+///
+/// 界面的页签条是这两份清单合起来的投影，而它们各自异步回来；跨类型可比的创建顺序
+/// 只有进程这一侧给得出，`bt_N` 与 `terminal-N` 是两个互不相关的计数。
+static CREATED_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 领一个创建序号，从 1 起，本进程内不重复。
+///
+/// **只在资源第一次建立时领。** 已存在的 id 重新接上来不换号：序号表达的是创建顺序，
+/// 不是这一次接入的顺序。
+pub(crate) fn next_created_seq() -> u64 {
+    CREATED_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 /// 运行时的日志写到 stderr 与 `logs/qywork.log`，最后一条 error 留给启动失败的对话框。
 ///

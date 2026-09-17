@@ -257,10 +257,11 @@ impl BrowserHost {
                 url: tab.url.clone(),
                 title: tab.title.clone(),
                 workspace_id: tab.workspace_id.clone(),
+                created_seq: tab.created_seq,
             })
             .collect();
-        // HashMap 的遍历顺序每次都不同，页签条会随之变动。按 tabId 排出稳定顺序。
-        list.sort_by(|a, b| a.tab_id.cmp(&b.tab_id));
+        // HashMap 的遍历顺序每次都不同。按创建序号排，与前端页签条的顺序规则同一份。
+        list.sort_by_key(|view| view.created_seq);
         list
     }
 
@@ -299,6 +300,7 @@ impl BrowserHost {
                 let url = frame.url.clone().ok_or("create 缺少 url")?;
                 let workspace_id = workspace_of(frame, "create")?;
                 self.create(app, &url, workspace_id, frame.conversation_id.clone())
+                    .map(|(data, _)| data)
             }
             "close" => self.close(frame.tab_id.as_deref().ok_or("close 缺少 tabId")?),
             "bind" => self.bind(
@@ -332,23 +334,28 @@ impl BrowserHost {
         }
     }
 
+    /// 建一页。回的是服务端要的结果数据，以及这一页的创建序号——界面按序号排页签条，
+    /// 而序号不属于宿主连接的协议。
     fn create(
         &self,
         app: &AppHandle,
         url: &str,
         workspace_id: String,
         conversation_id: Option<String>,
-    ) -> Result<ResultData, String> {
-        let (tab_id, marker) = {
+    ) -> Result<(ResultData, u64), String> {
+        // 序号与 tabId 在同一把锁里领：分开领的话并发建页会让 `bt_N` 的编号
+        // 与创建顺序不一致，页签上的「浏览器 2」排在「浏览器 1」前面。
+        let (tab_id, created_seq, marker) = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             state.next_tab += 1;
-            (format!("bt_{}", state.next_tab), new_host_key())
+            (format!("bt_{}", state.next_tab), crate::next_created_seq(), new_host_key())
         };
         // 建视图在锁外：`add_child` 会等主线程，而主线程上的下载钩子要拿同一把锁。
         let tab = tabs::create(
             app,
             tabs::NewTab {
                 tab_id: tab_id.clone(),
+                created_seq,
                 marker: marker.clone(),
                 url: url.to_owned(),
                 profile_dir: self.profile.dir().to_path_buf(),
@@ -371,12 +378,15 @@ impl BrowserHost {
             f.conversation_id = Some(snapshot.conversation_id.clone());
         });
         self.changed();
-        Ok(ResultData {
-            tab_id: Some(snapshot.tab_id),
-            url: Some(snapshot.url),
-            title: Some(snapshot.title),
-            ..ResultData::default()
-        })
+        Ok((
+            ResultData {
+                tab_id: Some(snapshot.tab_id),
+                url: Some(snapshot.url),
+                title: Some(snapshot.title),
+                ..ResultData::default()
+            },
+            created_seq,
+        ))
     }
 
     fn close(&self, tab_id: &str) -> Result<ResultData, String> {
@@ -601,12 +611,13 @@ pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Resu
     if target != tabs::BLANK && !target.starts_with("http://") && !target.starts_with("https://") {
         return Err("只能打开 http / https 地址".to_owned());
     }
-    let data = host.create(app, target, workspace_id.to_owned(), None)?;
+    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
         url: data.url.unwrap_or_default(),
         title: data.title.unwrap_or_default(),
         workspace_id: workspace_id.to_owned(),
+        created_seq,
     })
 }
 

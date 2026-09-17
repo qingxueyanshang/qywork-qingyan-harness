@@ -9,9 +9,10 @@
 
 use serde::Serialize;
 
-/// 界面看得见的一页。**只有 id / 地址 / 标题 / 工作区**：会话归属是协调器的事，
+/// 界面看得见的一页。**只有 id / 地址 / 标题 / 工作区 / 创建序号**：会话归属是协调器的事，
 /// 工具栏是标准浏览器 chrome，不区分人工页与 AI 页。
-/// 工作区在这里出现，是因为界面要按它决定这一页在不在当前页签条上。
+/// 工作区在这里出现，是因为界面要按它决定这一页在不在当前页签条上；
+/// 创建序号与终端会话共用一个计数器，界面按它把两份清单排成一条页签条。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabView {
@@ -19,6 +20,7 @@ pub struct TabView {
     pub url: String,
     pub title: String,
     pub workspace_id: String,
+    pub created_seq: u64,
 }
 
 #[cfg(not(windows))]

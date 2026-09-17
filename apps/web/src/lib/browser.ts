@@ -11,13 +11,15 @@
 
 import { tauriInvoke, tauriListen } from './store/shell.ts'
 
-/** 界面看得见的一页。与 Rust `TabView` 同形：只有 id / 地址 / 标题 / 工作区。 */
+/** 界面看得见的一页。与 Rust `TabView` 同形：只有 id / 地址 / 标题 / 工作区 / 创建序号。 */
 export interface NativeTab {
   tabId: string
   url: string
   title: string
   /** 这一页所属的工作区 id。建页时定，此后不改。 */
   workspaceId: string
+  /** 外壳进程里的创建序号，与终端会话共用一个计数器。页签条按它排序。 */
+  createdSeq: number
 }
 
 /** 用户新开的空标签停在这个地址上。地址栏对它显示为空。 */

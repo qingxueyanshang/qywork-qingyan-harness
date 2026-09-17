@@ -63,6 +63,8 @@ pub struct Tab {
     pub marker: String,
     /// 这一页所属的工作区 id。建页时定，此后不改——页面不在工作区之间移动。
     pub workspace_id: String,
+    /// 外壳进程里的创建序号，与终端会话共用一个计数器。界面按它排页签条。
+    pub created_seq: u64,
     /// 拥有它的会话 id；`None` = 用户手动开的页。归属跟着会话走，跨消息稳定。
     pub conversation_id: Option<String>,
     /// 最后一次摆出来的物理尺寸。移出可视区时按它停，不缩小页面视口。
@@ -145,6 +147,7 @@ pub fn navigate(view: &Webview<Runtime>, action: &str, url: Option<&str>) -> Res
 
 pub struct NewTab {
     pub tab_id: String,
+    pub created_seq: u64,
     pub marker: String,
     pub url: String,
     pub profile_dir: PathBuf,
@@ -224,6 +227,7 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
         title: String::new(),
         marker: spec.marker,
         workspace_id: spec.workspace_id,
+        created_seq: spec.created_seq,
         conversation_id: spec.conversation_id,
         size: (DEFAULT_SIZE.0 as u32, DEFAULT_SIZE.1 as u32),
     })

@@ -52,7 +52,12 @@ function labelOf(tabId: string): string {
 function project(list: NativeTab[]): void {
   setTabs(list)
   syncBrowserTabs(
-    list.map((t) => ({ id: t.tabId, title: labelOf(t.tabId), workspaceId: t.workspaceId })),
+    list.map((t) => ({
+      id: t.tabId,
+      title: labelOf(t.tabId),
+      workspaceId: t.workspaceId,
+      createdSeq: t.createdSeq,
+    })),
   )
   // 关掉这一页时连带关掉原生页。宿主那边已经没了的页在 `syncBrowserTabs` 里
   // 先摘掉登记，不会再走到这里。

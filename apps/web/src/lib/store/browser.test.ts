@@ -79,10 +79,14 @@ interface HostTab {
   url: string
   title: string
   workspaceId: string
+  createdSeq: number
 }
 
+let seq = 0
+
 function hostTab(tabId: string, workspaceId: string): HostTab {
-  return { tabId, url: 'about:blank', title: '', workspaceId }
+  seq += 1
+  return { tabId, url: 'about:blank', title: '', workspaceId, createdSeq: seq }
 }
 
 /** 等宿主回包与投影跑完：`openBrowserTab` 与初始化对账都要过几个微任务。 */
@@ -192,7 +196,9 @@ describe('内置浏览器页按工作区落账', () => {
       if (cmd === 'browser_tabs') return Promise.resolve([bTab, aTab])
       return undefined
     })
-    syncBrowserTabs([{ id: bTab.tabId, title: '浏览器 1', workspaceId: WS_B.id }])
+    syncBrowserTabs([
+      { id: bTab.tabId, title: '浏览器 1', workspaceId: WS_B.id, createdSeq: bTab.createdSeq },
+    ])
     setWorkspace(WS_B)
     setSidePanel({ tab: bTab.tabId })
 

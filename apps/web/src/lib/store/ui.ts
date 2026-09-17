@@ -7,6 +7,7 @@
 
 import { createEffect, createSignal, onCleanup } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import type { TerminalSession } from '../terminal.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 
 /**
@@ -57,6 +58,14 @@ export interface PanelTab {
    * **内置浏览器页没有这个字段**：那一页的地址在原生宿主手里，前端只投影。
    */
   url?: string
+  /**
+   * 创建序号，页签条按它排。
+   *
+   * 外壳给的页（终端、内置浏览器）用外壳进程那个计数器的值：两份清单各自异步回来，
+   * 按到达顺序追加会让整页刷新后的页签顺序与创建顺序不同，而 `terminal-N` 与 `bt_N`
+   * 是两个互不相关的计数，跨类型比不了。纯前端的页用 `nextLocalSeq`。
+   */
+  createdSeq: number
 }
 
 /**
@@ -176,6 +185,35 @@ type NumberedKind = keyof typeof TAB_LABEL
 const tabSeq: Record<NumberedKind, number> = { terminal: 0, preview: 0 }
 
 /**
+ * 纯前端那几种页（网页预览、子会话、外部 CLI）的创建序号。
+ *
+ * **跟着见过的外壳序号抬。** 不抬的话，先开三页网页预览再开一页内置浏览器时，
+ * 那一页的外壳序号比它们都小，会被插到中间去，而新开的页该落在页签条末尾。
+ * 这几种页刷新后不存在，所以序号不必与外壳对得上，只要大小关系成立。
+ */
+let localSeq = 0
+
+function nextLocalSeq(): number {
+  localSeq += 1
+  return localSeq
+}
+
+/** 记下一个外壳序号，抬高本地计数的起点。 */
+function noteHostSeq(seq: number): void {
+  if (seq > localSeq) localSeq = seq
+}
+
+/** 按创建序号把几页插进清单：序号相同的排在已有那一页后面。 */
+function insertBySeq(tabs: readonly PanelTab[], added: readonly PanelTab[]): PanelTab[] {
+  const list = [...tabs]
+  for (const tab of added) {
+    const at = list.findIndex((t) => t.createdSeq > tab.createdSeq)
+    list.splice(at < 0 ? list.length : at, 0, tab)
+  }
+  return list
+}
+
+/**
  * 新开一页并翻到它。`url` 只有网页预览页用得上：新开出来就指着它。
  *
  * 没有活动工作区时不开：这一页背后是 PTY 或 iframe，开出来就没有条目装得下它。
@@ -187,7 +225,7 @@ export function openPanelTab(kind: NumberedKind, url?: string): void {
   tabSeq[kind] += 1
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
-  const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}` }
+  const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}`, createdSeq: nextLocalSeq() }
   // `exactOptionalPropertyTypes` 开着：没有地址时这个键必须不存在，不能写 undefined。
   if (url) tab.url = url
   updatePanel(wsId, (cur) => ({ tabs: [...cur.tabs, tab], page: { tab: id } }))
@@ -239,33 +277,55 @@ export function setPanelTabUrl(id: string, url: string): void {
  * 而这一页已经被关掉了，再走一次就是对着一个不存在的 tabId 再关一次。
  */
 export function syncBrowserTabs(
-  tabs: readonly { id: string; title: string; workspaceId: string }[],
+  tabs: readonly { id: string; title: string; workspaceId: string; createdSeq: number }[],
 ): void {
-  const groups = new Map<string, { id: string; title: string }[]>()
+  const groups = new Map<string, HostTab[]>()
   for (const [wsId, panel] of Object.entries(panels())) {
     if (panel.tabs.some((t) => t.kind === 'browser')) groups.set(wsId, [])
   }
   for (const t of tabs) {
+    noteHostSeq(t.createdSeq)
     const list = groups.get(t.workspaceId) ?? []
-    list.push({ id: t.id, title: t.title })
+    list.push({ id: t.id, title: t.title, createdSeq: t.createdSeq })
     groups.set(t.workspaceId, list)
   }
   for (const [wsId, list] of groups) alignBrowserTabs(wsId, list)
 }
 
-/** 把一个工作区的浏览器页签对齐到给定清单。**只按传进来的工作区寻址**，不读当前工作区。 */
-function alignBrowserTabs(wsId: string, tabs: readonly { id: string; title: string }[]): void {
+interface HostTab {
+  id: string
+  title: string
+  createdSeq: number
+}
+
+/**
+ * 把一个工作区的浏览器页签对齐到给定清单。**只按传进来的工作区寻址**，不读当前工作区。
+ *
+ * 新页按 `createdSeq` 插入而不是追加到末尾：这份清单与终端那份各自异步回来，
+ * 追加的话整页刷新后的页签顺序取决于谁先回来。
+ */
+function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
   const cur = panelOf(wsId)
   const wanted = new Set(tabs.map((t) => t.id))
   const known = new Set(cur.tabs.map((t) => t.id))
   const gone = cur.tabs.filter((t) => t.kind === 'browser' && !wanted.has(t.id))
   const added = tabs
     .filter((t) => !known.has(t.id))
-    .map((t): PanelTab => ({ id: t.id, kind: 'browser', title: t.title }))
+    .map(
+      (t): PanelTab => ({
+        id: t.id,
+        kind: 'browser',
+        title: t.title,
+        createdSeq: t.createdSeq,
+      }),
+    )
   if (!gone.length && !added.length) return
   const orphaned = gone.find((t) => t.id === activeTabOf(cur))
   for (const t of gone) tabDisposers.delete(t.id)
-  const list = [...cur.tabs.filter((t) => !gone.includes(t)), ...added]
+  const list = insertBySeq(
+    cur.tabs.filter((t) => !gone.includes(t)),
+    added,
+  )
   if (!orphaned) {
     updatePanel(wsId, (c) => ({ ...c, tabs: list }))
     return
@@ -289,7 +349,7 @@ export function openConversationTab(conversationId: string, title: string): void
   updatePanel(wsId, (cur) => ({
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
-      : [...cur.tabs, { id, kind: 'conversation', title }],
+      : [...cur.tabs, { id, kind: 'conversation', title, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
 }
@@ -312,7 +372,9 @@ export function openCliTab(stepId: string, nodeId: string, title: string): void 
   // 标题单独给，不拿 `nodeId` 顶：派一件那张卡的节点 id 是个内部常量，
   // 直接送上去页签就叫那个常量。
   updatePanel(wsId, (cur) => ({
-    tabs: cur.tabs.some((t) => t.id === id) ? cur.tabs : [...cur.tabs, { id, kind: 'cli', title }],
+    tabs: cur.tabs.some((t) => t.id === id)
+      ? cur.tabs
+      : [...cur.tabs, { id, kind: 'cli', title, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
 }
@@ -340,26 +402,31 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
  * 那时通常还没有活动工作区，按当前工作区写就是把全部 PTY 丢掉。
  * 序号取整份清单的最大值，包括别的工作区那几条——`terminal-N` 是 Rust 那张表的键，
  * 全进程唯一，按当前工作区算会让下一次新开撞上一个已经存在的 id。
+ *
+ * 补回来的页按 `createdSeq` 插入而不是追加到末尾：这份清单与浏览器那份各自异步回来，
+ * 追加的话整页刷新后的页签顺序取决于谁先回来。
  */
-export function restoreTerminalTabs(
-  sessions: readonly { id: string; workspaceId: string }[],
-): void {
-  const found = new Map<string, { n: number; tab: PanelTab }[]>()
+export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void {
+  const found = new Map<string, PanelTab[]>()
   for (const s of sessions) {
+    noteHostSeq(s.createdSeq)
     if (!s.id.startsWith('terminal-')) continue
     const n = Number(s.id.slice('terminal-'.length))
     if (!Number.isInteger(n) || n < 1) continue
     tabSeq.terminal = Math.max(tabSeq.terminal, n)
     if (!s.workspaceId) continue
     if (panelOf(s.workspaceId).tabs.some((t) => t.id === s.id)) continue
-    const tab: PanelTab = { id: s.id, kind: 'terminal', title: `${TAB_LABEL.terminal} ${n}` }
     const list = found.get(s.workspaceId) ?? []
-    list.push({ n, tab })
+    list.push({
+      id: s.id,
+      kind: 'terminal',
+      title: `${TAB_LABEL.terminal} ${n}`,
+      createdSeq: s.createdSeq,
+    })
     found.set(s.workspaceId, list)
   }
   for (const [wsId, list] of found) {
-    list.sort((a, b) => a.n - b.n)
-    updatePanel(wsId, (cur) => ({ ...cur, tabs: [...cur.tabs, ...list.map((f) => f.tab)] }))
+    updatePanel(wsId, (cur) => ({ ...cur, tabs: insertBySeq(cur.tabs, list) }))
   }
 }
 
@@ -658,7 +725,7 @@ export function absPath(rel: string): string {
  * 只有桌面端有 PTY；调不通就算了，那只意味着这一次没能补回页签。
  */
 if (isDesktopShell()) {
-  void tauriInvoke<{ id: string; workspaceId: string }[]>('terminal_list')
+  void tauriInvoke<TerminalSession[]>('terminal_list')
     .then(restoreTerminalTabs)
     .catch(() => {})
 }

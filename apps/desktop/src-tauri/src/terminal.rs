@@ -35,6 +35,8 @@ struct Session {
     /// 这条会话属于哪个工作区。**建出来就不再改**：id 与 PTY 是一一对应的，
     /// 改归属等于把一个正在跑的 shell 记到另一个工作区名下。
     workspace_id: String,
+    /// 外壳进程里的创建序号，与浏览器页共用一个计数器。界面按它排页签条。
+    created_seq: u64,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -50,12 +52,13 @@ struct Session {
 #[derive(Default)]
 pub struct TerminalHandle(Mutex<HashMap<String, Session>>);
 
-/// `terminal_list` 的一行：会话 id 与它的工作区归属。
+/// `terminal_list` 的一行：会话 id、工作区归属与创建序号。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSession {
     id: String,
     workspace_id: String,
+    created_seq: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -141,6 +144,8 @@ pub fn terminal_open(
         id.clone(),
         Session {
             workspace_id,
+            // 重接已存在的 id 在函数开头就返回了，序号只在这里领一次。
+            created_seq: crate::next_created_seq(),
             master: pair.master,
             writer,
             killer,
@@ -179,6 +184,7 @@ pub fn terminal_list(state: State<TerminalHandle>) -> Vec<TerminalSession> {
         .map(|(id, session)| TerminalSession {
             id: id.clone(),
             workspace_id: session.workspace_id.clone(),
+            created_seq: session.created_seq,
         })
         .collect()
 }
