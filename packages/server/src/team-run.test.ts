@@ -1,14 +1,19 @@
 /**
- * 覆盖范围：`team-run.ts` 的 `memberModel`（成员会话用哪一对「接口 × 模型」）
- * 与 `memberOutcome`（一个成员算不算做成了）。
+ * 覆盖范围：`team-run.ts` 的 `memberModel`（成员会话用哪一对「接口 × 模型」）、
+ * `memberOutcome`（一个成员算不算做成了）与 `ownerWorkspace`（浏览器控制挂哪个工作区）。
  *
  * `runBuiltinMember` 本身要一整条 `Session` 才跑得起来，由冒烟脚本
  * `scripts/smoke-delegate.ts` 在真机上覆盖；这里锁的是它的选型规则。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { ConversationId, WorkspaceId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { memberModel, memberOutcome, resolveModel } from './team-run.ts'
+import { createConversation, Store, upsertWorkspace } from '@qywork/store'
+import { memberModel, memberOutcome, ownerWorkspace, resolveModel } from './team-run.ts'
 
 const config = {
   active: { provider: '默认接口', model: 'm-default' },
@@ -179,5 +184,39 @@ describe('成员算不算做成了', () => {
   test('报错优先于终态：错误原文要原样带回去', () => {
     const r = memberOutcome({ error: '[no_api_key] 没配 key', stop: null, output: '' })
     expect(r.error).toContain('no_api_key')
+  })
+})
+
+describe('成员的浏览器控制挂哪个工作区', () => {
+  const dirs: string[] = []
+  const stores: Store[] = []
+  afterAll(() => {
+    for (const s of stores) s.close()
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {}
+    }
+  })
+
+  function freshStore(): { store: Store; workspaceId: WorkspaceId } {
+    const dir = mkdtempSync(join(tmpdir(), 'qywork-team-'))
+    dirs.push(dir)
+    const store = new Store({ path: join(dir, 'a.sqlite3') })
+    stores.push(store)
+    const ws = upsertWorkspace(store, dir, 'W')
+    return { store, workspaceId: ws.id }
+  }
+
+  test('读的是派它的那条顶层会话所在的工作区', () => {
+    const { store, workspaceId } = freshStore()
+    const top = createConversation(store, { workspaceId, provider: 'p', model: 'm' })
+    expect(ownerWorkspace(store, top.id)).toBe(workspaceId)
+  })
+
+  /** 顶层会话行查不到时给 `null`，调用方据此不造端口——不传空串让宿主去猜。 */
+  test('查不到那一行时给 null', () => {
+    const { store } = freshStore()
+    expect(ownerWorkspace(store, 'cv_查无此会话' as ConversationId)).toBeNull()
   })
 })

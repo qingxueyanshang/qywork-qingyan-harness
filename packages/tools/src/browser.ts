@@ -254,12 +254,20 @@ function declaredKind(err: unknown): string | undefined {
   return typeof kind === 'string' && kind ? kind : undefined
 }
 
+/** 端口按 `BrowserRefusal` 声明的执行前拒绝。缺席时由 `send` 有没有被调过来判。 */
+function declaredExecuted(err: unknown): boolean | undefined {
+  if (!(err instanceof Error)) return undefined
+  const executed = (err as Error & { executed?: unknown }).executed
+  return typeof executed === 'boolean' ? executed : undefined
+}
+
 /**
  * 七个工具共用的前置判定与终态。
  *
  * 停止之后不再发起新动作：等待中的那一次由端口自己拒绝，这里挡的是新来的。
- * 异常的 `executed` 取自 `send` 有没有被调过——不这样判的话，
- * 「参数写错」与「点击已发出但连接断了」会得到同一个结果，而后者禁止重发。
+ * 异常的 `executed` 先认端口自己声明的那一份，缺席时取自 `send` 有没有被调过——
+ * 不这样判的话，「参数写错」与「点击已发出但连接断了」会得到同一个结果，而后者禁止重发。
+ * 判据只能是契约字段，不能匹配错误文案。
  */
 async function onBrowser(
   ctx: ToolContext,
@@ -277,11 +285,12 @@ async function onBrowser(
   try {
     return await body(browser, send)
   } catch (err) {
+    const executed = declaredExecuted(err) ?? entered
     return {
       status: 'failure',
-      executed: entered,
+      executed,
       message: err instanceof Error ? err.message : String(err),
-      errorKind: declaredKind(err) ?? (entered ? 'browser_failed' : 'invalid_argument'),
+      errorKind: declaredKind(err) ?? (executed ? 'browser_failed' : 'invalid_argument'),
     }
   }
 }

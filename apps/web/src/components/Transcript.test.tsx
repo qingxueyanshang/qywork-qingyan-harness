@@ -20,8 +20,11 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 const resizeCallbacks = new Map<Element, ResizeObserverCallback>()
 
-beforeAll(() => {
+beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
+  // 右侧那几页按项目分账，图卡点开子会话与 CLI 页要有一个当前项目才落得下。
+  const store = await import('../lib/store/index.ts')
+  store.setWorkspace({ id: 'ws_transcript', root: 'C:/ws', name: 'ws' })
   // happy-dom 没有 ResizeObserver，而会话流的贴底跟随挂在它上面。
   ;(globalThis as Record<string, unknown>).ResizeObserver = class {
     private readonly targets: Element[] = []
@@ -48,6 +51,7 @@ afterAll(async () => {
  */
 async function resetStore() {
   const store = await import('../lib/store/index.ts')
+  store.setWorkspace(null)
   store.setState({
     activeConversation: null,
     busyConversations: [],

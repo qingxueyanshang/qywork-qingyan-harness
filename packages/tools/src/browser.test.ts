@@ -16,6 +16,7 @@ import type {
   BrowserObservation,
   BrowserOptionsPage,
   BrowserPort,
+  BrowserRefusal,
   ToolContext,
   ToolOutcome,
   ToolSpec,
@@ -664,6 +665,70 @@ describe('观察的投递', () => {
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(r.message).toContain('连接已断开')
+  })
+
+  /**
+   * 端口自己声明的执行前拒绝盖过「进没进过端口」的推断。
+   *
+   * 页面已经被另一个执行者占住时这次调用一帧都没发出去，标成已执行会让模型认为
+   * 页面已被动过而不再重试。判据只能是契约字段，不是错误文案。
+   */
+  test('端口按契约拒绝时记 executed:false，错误种类原样带出', async () => {
+    const refusal: BrowserRefusal = { errorKind: 'browser_busy', executed: false }
+    const refuse = () => {
+      throw Object.assign(new Error('标签页 bt_1 正被另一个任务操作'), refusal)
+    }
+    const { port } = fakeBrowser({
+      act: async () => refuse(),
+      observe: async () => refuse(),
+      close: async () => refuse(),
+    })
+    const outcomes = [
+      await browserActTool.fn(
+        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+        ctxWith('/w', port),
+      ),
+      await browserObserveTool.fn({ tabId: 'bt_1' }, ctxWith('/w', port)),
+      await browserTabsTool.fn({ action: 'close', tabId: 'bt_1' }, ctxWith('/w', port)),
+    ]
+    for (const r of outcomes) {
+      expect(r.status).toBe('failure')
+      expect(r.executed).toBe(false)
+      expect(r.errorKind).toBe('browser_busy')
+      expect(r.message).toContain('正被另一个任务操作')
+    }
+  })
+
+  /** 看不见的 tabId 与 busy 同样一帧未发，回执是参数不合法，不是「已执行但失败」。 */
+  test('看不见的 tabId 按契约拒绝时记 executed:false 与 invalid_argument', async () => {
+    const refusal: BrowserRefusal = { errorKind: 'invalid_argument', executed: false }
+    const deny = (message: string) => async () => {
+      throw Object.assign(new Error(message), refusal)
+    }
+    const outcomes = [
+      await browserObserveTool.fn(
+        { tabId: 'bt_9' },
+        ctxWith('/w', fakeBrowser({ observe: deny('标签页 bt_9 不在本工作区') }).port),
+      ),
+      await browserTabsTool.fn(
+        { action: 'close', tabId: 'bt_9' },
+        ctxWith('/w', fakeBrowser({ close: deny('标签页 bt_9 不归本会话') }).port),
+      ),
+      await browserObserveTool.fn(
+        { tabId: 'bt_9' },
+        ctxWith('/w', fakeBrowser({ observe: deny('标签页 bt_9 不归本会话') }).port),
+      ),
+      await browserObserveTool.fn(
+        { tabId: 'bt_9' },
+        ctxWith('/w', fakeBrowser({ observe: deny('认不出的标签页 bt_9') }).port),
+      ),
+    ]
+    for (const r of outcomes) {
+      expect(r.status).toBe('failure')
+      expect(r.executed).toBe(false)
+      expect(r.errorKind).toBe('invalid_argument')
+      expect(r.message).toContain('bt_9')
+    }
   })
 })
 

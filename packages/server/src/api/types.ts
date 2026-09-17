@@ -50,7 +50,7 @@ export interface ApiDeps {
    */
   collectGarbage(): { removed: number }
   /**
-   * 关掉一条会话名下的全部内置浏览器 AI 页。删除 / 归档会话时调，页面不留孤儿。
+   * 关掉一条会话名下的全部内置浏览器 AI 页。只有删除会话调它——归档不关页。
    *
    * 归属在原生宿主上按会话记（见 `browser/coordinator.ts`）；没有内置浏览器时是 no-op。
    */

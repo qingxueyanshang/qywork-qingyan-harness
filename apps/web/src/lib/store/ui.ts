@@ -67,16 +67,78 @@ export interface PanelTab {
  * 同时成立，谁盖过谁只能靠每个调用点自觉，那就是第二本账。
  */
 export type PanelPage = PanelView | { tab: string }
-export const [sidePanel, setSidePanel] = createSignal<PanelPage | null>(null)
 
-const [tabs, setTabs] = createSignal<readonly PanelTab[]>([])
+/**
+ * 一个工作区的面板：开着哪几页，翻开的是哪一页。
+ *
+ * 两样合在一个条目里，不是两张按工作区的表：翻开的那一页通常就是这份 `tabs` 里的一条，
+ * 分开存的时候「页签换成了 B 的、当前页还是 A 的那一条」在类型上完全合法。
+ */
+interface WorkspacePanel {
+  tabs: readonly PanelTab[]
+  page: PanelPage | null
+}
 
-/** 开着哪几页可多开的页。顺序即页签条上的顺序。 */
-export const panelTabs = tabs
+const EMPTY_PANEL: WorkspacePanel = { tabs: [], page: null }
+
+/**
+ * 面板状态按工作区分账。切工作区不收任何资源，只是换一个键去读。
+ *
+ * **键只能是 `WorkspaceInfo.id`。** 没有活动工作区时一律不建条目：空字符串键的条目
+ * 切进任何工作区都读不到，里面登记的 PTY 与原生页从此没有界面碰得到。
+ */
+const [panels, setPanels] = createSignal<Readonly<Record<string, WorkspacePanel>>>({})
+
+function panelOf(wsId: string | undefined): WorkspacePanel {
+  return (wsId ? panels()[wsId] : undefined) ?? EMPTY_PANEL
+}
+
+/**
+ * 按**显式**工作区改一条条目。
+ *
+ * 宿主投影与异步回包必须拿资源自带的工作区调它，不要在 await 之后读当前工作区：
+ * 请求期间用户可能已经切走，回包时的当前工作区可能是 B，写过去就是把 A 的页记进 B 的条目。
+ */
+function updatePanel(wsId: string, next: (cur: WorkspacePanel) => WorkspacePanel): void {
+  setPanels((all) => ({ ...all, [wsId]: next(all[wsId] ?? EMPTY_PANEL) }))
+}
+
+/** 当前工作区开着哪几页可多开的页。顺序即页签条上的顺序。 */
+export function panelTabs(): readonly PanelTab[] {
+  return panelOf(workspace()?.id).tabs
+}
+
+/** 当前工作区的面板翻开在哪一页。`null` = 收起；没有活动工作区时也是 `null`。 */
+export function sidePanel(): PanelPage | null {
+  return panelOf(workspace()?.id).page
+}
+
+/** 翻到某一页。没有活动工作区时不写——那一页没有归属得上的条目。 */
+export function setSidePanel(page: PanelPage | null): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
+  updatePanel(wsId, (cur) => ({ ...cur, page }))
+}
+
+/**
+ * 按**显式**工作区翻到某一页。
+ *
+ * 异步回包用它，不要用 `setSidePanel`：那个读的是回包时的当前工作区，
+ * 而请求期间用户可能已经切走。
+ */
+export function showPanelTab(wsId: string, id: string): void {
+  updatePanel(wsId, (cur) => ({ ...cur, page: { tab: id } }))
+}
 
 /** 当前翻开的那一页的 id；停在固定视图上时是 `null`。派生量，不是第二份状态。 */
 export function activePanelTab(): string | null {
   const page = sidePanel()
+  return page !== null && typeof page === 'object' ? page.tab : null
+}
+
+/** 从一条条目里取出它翻开的那一页的 id。给不便读当前工作区的投影入口用。 */
+function activeTabOf(panel: WorkspacePanel): string | null {
+  const page = panel.page
   return page !== null && typeof page === 'object' ? page.tab : null
 }
 
@@ -86,6 +148,11 @@ export function activePanelTab(): string | null {
  * **为什么不放在组件的 `onCleanup` 里**：收起面板会把整块面板卸载，而那时终端必须
  * 保持存活——用户收起去看会话，切回来命令还得在跑、滚动历史还得在。所以「组件卸载」和
  * 「这一页被关掉」是两件不同的事，只有后者该收资源，而后者唯一的入口在这里。
+ *
+ * 关页入口清单——浏览器页：用户点页签 ×、AI 的 `browser_tabs(action=close)`、
+ * 删除所属会话、应用退出、宿主建页中途失败时回收未登记的视图；终端：用户点页签 ×、
+ * 应用退出、「重开」按钮替换旧 PTY、子进程自行退出。切换与移除工作区、归档会话、
+ * 停止、一轮结束、宿主重连都不关页。
  */
 const tabDisposers = new Map<string, () => void>()
 
@@ -108,16 +175,22 @@ const TAB_LABEL = { terminal: '终端', preview: '网页预览' } as const
 type NumberedKind = keyof typeof TAB_LABEL
 const tabSeq: Record<NumberedKind, number> = { terminal: 0, preview: 0 }
 
-/** 新开一页并翻到它。`url` 只有网页预览页用得上：新开出来就指着它。 */
+/**
+ * 新开一页并翻到它。`url` 只有网页预览页用得上：新开出来就指着它。
+ *
+ * 没有活动工作区时不开：这一页背后是 PTY 或 iframe，开出来就没有条目装得下它。
+ * 序号也不在那时消耗掉。
+ */
 export function openPanelTab(kind: NumberedKind, url?: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
   tabSeq[kind] += 1
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
   const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}` }
   // `exactOptionalPropertyTypes` 开着：没有地址时这个键必须不存在，不能写 undefined。
   if (url) tab.url = url
-  setTabs((list) => [...list, tab])
-  setSidePanel({ tab: id })
+  updatePanel(wsId, (cur) => ({ tabs: [...cur.tabs, tab], page: { tab: id } }))
 }
 
 /**
@@ -142,7 +215,12 @@ export function panelTabUrl(id: string): string {
 
 /** 网页预览页跳到另一个地址。 */
 export function setPanelTabUrl(id: string, url: string): void {
-  setTabs((list) => list.map((t) => (t.id === id ? { ...t, url } : t)))
+  const wsId = workspace()?.id
+  if (!wsId) return
+  updatePanel(wsId, (cur) => ({
+    ...cur,
+    tabs: cur.tabs.map((t) => (t.id === id ? { ...t, url } : t)),
+  }))
 }
 
 /**
@@ -152,27 +230,50 @@ export function setPanelTabUrl(id: string, url: string): void {
  * 少了它，整页刷新之后页签是空的而原生页还在——那几页只能等应用退出时被收掉
  * （同 `restoreTerminalTabs`）。
  *
+ * **每页按它自带的工作区落账，不读当前工作区**：这一次调用可能发生在模块建立时
+ * （那时还没有活动工作区），清单里也可能有后台工作区的页。对齐范围是
+ * 「已有条目里有浏览器页的工作区」并上「本次清单里的工作区」——某工作区最后一页
+ * 关掉后它不出现在清单里，旧页签与失效的当前页仍要在这一轮清掉。
+ *
  * 宿主那边已经没了的页**不走 `tabDisposers`**：它是「关掉这一页」的收尾，
  * 而这一页已经被关掉了，再走一次就是对着一个不存在的 tabId 再关一次。
  */
-export function syncBrowserTabs(tabs: readonly { id: string; title: string }[]): void {
-  const list = panelTabs()
+export function syncBrowserTabs(
+  tabs: readonly { id: string; title: string; workspaceId: string }[],
+): void {
+  const groups = new Map<string, { id: string; title: string }[]>()
+  for (const [wsId, panel] of Object.entries(panels())) {
+    if (panel.tabs.some((t) => t.kind === 'browser')) groups.set(wsId, [])
+  }
+  for (const t of tabs) {
+    const list = groups.get(t.workspaceId) ?? []
+    list.push({ id: t.id, title: t.title })
+    groups.set(t.workspaceId, list)
+  }
+  for (const [wsId, list] of groups) alignBrowserTabs(wsId, list)
+}
+
+/** 把一个工作区的浏览器页签对齐到给定清单。**只按传进来的工作区寻址**，不读当前工作区。 */
+function alignBrowserTabs(wsId: string, tabs: readonly { id: string; title: string }[]): void {
+  const cur = panelOf(wsId)
   const wanted = new Set(tabs.map((t) => t.id))
-  const known = new Set(list.map((t) => t.id))
-  const gone = list.filter((t) => t.kind === 'browser' && !wanted.has(t.id))
+  const known = new Set(cur.tabs.map((t) => t.id))
+  const gone = cur.tabs.filter((t) => t.kind === 'browser' && !wanted.has(t.id))
   const added = tabs
     .filter((t) => !known.has(t.id))
     .map((t): PanelTab => ({ id: t.id, kind: 'browser', title: t.title }))
   if (!gone.length && !added.length) return
-  const current = activePanelTab()
-  const orphaned = gone.find((t) => t.id === current)
+  const orphaned = gone.find((t) => t.id === activeTabOf(cur))
   for (const t of gone) tabDisposers.delete(t.id)
-  const kept = list.filter((t) => !gone.includes(t))
-  setTabs([...kept, ...added])
-  if (!orphaned) return
-  const i = list.indexOf(orphaned)
-  const next = list[i + 1] ?? list[i - 1]
-  setSidePanel(next && !gone.includes(next) ? { tab: next.id } : 'files')
+  const list = [...cur.tabs.filter((t) => !gone.includes(t)), ...added]
+  if (!orphaned) {
+    updatePanel(wsId, (c) => ({ ...c, tabs: list }))
+    return
+  }
+  const i = cur.tabs.indexOf(orphaned)
+  const next = cur.tabs[i + 1] ?? cur.tabs[i - 1]
+  const page: PanelPage = next && !gone.includes(next) ? { tab: next.id } : 'files'
+  updatePanel(wsId, () => ({ tabs: list, page }))
 }
 
 /**
@@ -182,11 +283,15 @@ export function syncBrowserTabs(tabs: readonly { id: string; title: string }[]):
  * ——两页看同一条已经跑完的会话，内容逐字相同。
  */
 export function openConversationTab(conversationId: string, title: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
   const id = `conversation-${conversationId}`
-  if (!panelTabs().some((t) => t.id === id)) {
-    setTabs((list) => [...list, { id, kind: 'conversation', title }])
-  }
-  setSidePanel({ tab: id })
+  updatePanel(wsId, (cur) => ({
+    tabs: cur.tabs.some((t) => t.id === id)
+      ? cur.tabs
+      : [...cur.tabs, { id, kind: 'conversation', title }],
+    page: { tab: id },
+  }))
 }
 
 /** 从页 id 反取会话 id。`openConversationTab` 是唯一的生产者。 */
@@ -201,13 +306,15 @@ export function tabConversationId(tabId: string): string {
  * 是翻回去，不是并排开出第二页。
  */
 export function openCliTab(stepId: string, nodeId: string, title: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
   const id = `cli-${stepId}-${nodeId}`
-  if (!panelTabs().some((t) => t.id === id)) {
-    // 标题单独给，不拿 `nodeId` 顶：派一件那张卡的节点 id 是个内部常量，
-    // 直接送上去页签就叫那个常量。
-    setTabs((list) => [...list, { id, kind: 'cli', title }])
-  }
-  setSidePanel({ tab: id })
+  // 标题单独给，不拿 `nodeId` 顶：派一件那张卡的节点 id 是个内部常量，
+  // 直接送上去页签就叫那个常量。
+  updatePanel(wsId, (cur) => ({
+    tabs: cur.tabs.some((t) => t.id === id) ? cur.tabs : [...cur.tabs, { id, kind: 'cli', title }],
+    page: { tab: id },
+  }))
 }
 
 /** 从页 id 反取「哪张卡 + 哪个节点」。`openCliTab` 是唯一的生产者。 */
@@ -228,21 +335,32 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
  * 对一次账，不能只靠 `openPanelTab` 往上加。
  *
  * **只补不删。** 认不出的 id 一律不动：浏览器页在外壳那边本来就没有对应物。
- * 序号也要跟着抬上去，否则下一次新开会撞上一个已经存在的 id。
+ *
+ * **每条按它自己报的工作区补，不看当前工作区**：这一次调用发生在模块建立时，
+ * 那时通常还没有活动工作区，按当前工作区写就是把全部 PTY 丢掉。
+ * 序号取整份清单的最大值，包括别的工作区那几条——`terminal-N` 是 Rust 那张表的键，
+ * 全进程唯一，按当前工作区算会让下一次新开撞上一个已经存在的 id。
  */
-export function restoreTerminalTabs(ids: readonly string[]): void {
-  const known = new Set(panelTabs().map((t) => t.id))
-  const found: { n: number; tab: PanelTab }[] = []
-  for (const id of ids) {
-    if (known.has(id) || !id.startsWith('terminal-')) continue
-    const n = Number(id.slice('terminal-'.length))
+export function restoreTerminalTabs(
+  sessions: readonly { id: string; workspaceId: string }[],
+): void {
+  const found = new Map<string, { n: number; tab: PanelTab }[]>()
+  for (const s of sessions) {
+    if (!s.id.startsWith('terminal-')) continue
+    const n = Number(s.id.slice('terminal-'.length))
     if (!Number.isInteger(n) || n < 1) continue
     tabSeq.terminal = Math.max(tabSeq.terminal, n)
-    found.push({ n, tab: { id, kind: 'terminal', title: `${TAB_LABEL.terminal} ${n}` } })
+    if (!s.workspaceId) continue
+    if (panelOf(s.workspaceId).tabs.some((t) => t.id === s.id)) continue
+    const tab: PanelTab = { id: s.id, kind: 'terminal', title: `${TAB_LABEL.terminal} ${n}` }
+    const list = found.get(s.workspaceId) ?? []
+    list.push({ n, tab })
+    found.set(s.workspaceId, list)
   }
-  if (!found.length) return
-  found.sort((a, b) => a.n - b.n)
-  setTabs((list) => [...list, ...found.map((f) => f.tab)])
+  for (const [wsId, list] of found) {
+    list.sort((a, b) => a.n - b.n)
+    updatePanel(wsId, (cur) => ({ ...cur, tabs: [...cur.tabs, ...list.map((f) => f.tab)] }))
+  }
 }
 
 /**
@@ -252,28 +370,17 @@ export function restoreTerminalTabs(ids: readonly string[]): void {
  * ——**不连带把面板收起来**：用户点的是这一页的 ×，不是面板的 ×。
  */
 export function closePanelTab(id: string): void {
-  const list = panelTabs()
-  const i = list.findIndex((t) => t.id === id)
+  const wsId = workspace()?.id
+  if (!wsId) return
+  const cur = panelOf(wsId)
+  const i = cur.tabs.findIndex((t) => t.id === id)
   if (i < 0) return
-  const current = activePanelTab() === id
-  setTabs(list.filter((t) => t.id !== id))
+  const next = cur.tabs[i + 1] ?? cur.tabs[i - 1]
+  const tabs = cur.tabs.filter((t) => t.id !== id)
+  const page: PanelPage | null =
+    activeTabOf(cur) === id ? (next ? { tab: next.id } : 'files') : cur.page
+  updatePanel(wsId, () => ({ tabs, page }))
   disposeTab(id)
-  if (!current) return
-  const next = list[i + 1] ?? list[i - 1]
-  setSidePanel(next ? { tab: next.id } : 'files')
-}
-
-/**
- * 换项目时把可多开的页全关掉。
- *
- * 不留着：终端里那个 shell 跑在上一个项目的目录里，浏览器那页指着上一个项目起的服务。
- * 留下来的表现是页签还在、点进去内容全是上一个项目的。
- */
-export function closeAllPanelTabs(): void {
-  const current = activePanelTab()
-  for (const t of panelTabs()) disposeTab(t.id)
-  setTabs([])
-  if (current) setSidePanel('files')
 }
 
 /**
@@ -385,8 +492,9 @@ export function togglePanelMax(): void {
 const [lastPage, setLastPage] = createSignal<PanelPage>('files')
 
 /**
- * 这一页还在不在。**收起期间它可能已经没了**：换项目会把可多开的那些页全关掉，
- * 而记着的可能正是其中一页——不判一下的话展开出来是一块谁也点不掉的空白。
+ * 这一页在当前工作区还在不在。**记着的那一页随时可能落空**：它被关掉了，
+ * 或者它属于另一个工作区（`lastPage` 只有一份，跨工作区共用）
+ * ——不判一下的话展开出来是一块谁也点不掉的空白。
  */
 function pageAlive(page: PanelPage): boolean {
   return typeof page === 'string' || panelTabs().some((t) => t.id === page.tab)
@@ -550,7 +658,7 @@ export function absPath(rel: string): string {
  * 只有桌面端有 PTY；调不通就算了，那只意味着这一次没能补回页签。
  */
 if (isDesktopShell()) {
-  void tauriInvoke<string[]>('terminal_list')
+  void tauriInvoke<{ id: string; workspaceId: string }[]>('terminal_list')
     .then(restoreTerminalTabs)
     .catch(() => {})
 }

@@ -205,7 +205,7 @@ export async function startRun(
      * 宿主没连上或运行时版本不达标时不注入端口，这一轮连浏览器工具都不注册；
      * 装配成「先给一个端口，调用时再报错」的话，模型会拿到一个必然失败的能力。
      */
-    ...(deps.browser?.available() ? { browser: deps.browser.portFor(conversationId) } : {}),
+    ...(deps.browser?.available() ? { browser: deps.browser.portFor(conversationId, ws.id) } : {}),
     // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
     followUps: (id) => deps.runs.takeSteered(id),
   })

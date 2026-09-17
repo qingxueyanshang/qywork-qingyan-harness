@@ -34,9 +34,12 @@ function wire(): Promise<void> {
  *
  * 接上一条已经在跑的会话时返回它的回放缓冲（外壳侧维护，见 `terminal.rs`），
  * 新起的会话返回空串。调用方要把它原样写进 xterm——那是重建屏幕，不是历史记录。
+ *
+ * `workspaceId` 是这条会话的归属，重接时外壳按它核对：报成另一个工作区会被拒绝。
  */
 export async function openTerminal(
   id: string,
+  workspaceId: string,
   cwd: string,
   cols: number,
   rows: number,
@@ -47,7 +50,7 @@ export async function openTerminal(
   // 先挂监听再开进程：反过来的话 shell 的第一行提示符可能在监听装好之前就输出完了，
   // 表现是终端开出来是空白的，敲一下回车才冒出提示符。
   await wire()
-  return await tauriInvoke<string>('terminal_open', { id, cwd, cols, rows })
+  return await tauriInvoke<string>('terminal_open', { id, workspaceId, cwd, cols, rows })
 }
 
 export function writeTerminal(id: string, data: string): Promise<void> {

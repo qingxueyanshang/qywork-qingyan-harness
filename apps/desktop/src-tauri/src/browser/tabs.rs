@@ -61,6 +61,8 @@ pub struct Tab {
     pub url: String,
     pub title: String,
     pub marker: String,
+    /// 这一页所属的工作区 id。建页时定，此后不改——页面不在工作区之间移动。
+    pub workspace_id: String,
     /// 拥有它的会话 id；`None` = 用户手动开的页。归属跟着会话走，跨消息稳定。
     pub conversation_id: Option<String>,
     /// 最后一次摆出来的物理尺寸。移出可视区时按它停，不缩小页面视口。
@@ -74,6 +76,7 @@ impl Tab {
             url: self.url.clone(),
             title: self.title.clone(),
             marker: self.marker.clone(),
+            workspace_id: self.workspace_id.clone(),
             conversation_id: self.conversation_id.clone(),
         }
     }
@@ -84,9 +87,14 @@ impl Tab {
     }
 
     pub fn close(self) {
-        if let Err(e) = self.webview.close() {
-            log::warn!("关闭子视图失败：{e}");
-        }
+        close_view(self.webview);
+    }
+}
+
+/// 关掉一个子视图。构造中途失败的回收与正常关闭走同一条路。
+fn close_view(view: Webview<Runtime>) {
+    if let Err(e) = view.close() {
+        log::warn!("关闭子视图失败：{e}");
     }
 }
 
@@ -141,6 +149,7 @@ pub struct NewTab {
     pub url: String,
     pub profile_dir: PathBuf,
     pub debug_port: u16,
+    pub workspace_id: String,
     pub conversation_id: Option<String>,
 }
 
@@ -197,7 +206,12 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
         .map_err(|e| format!("建子视图失败：{e}"))?;
 
     // 绑在等首个文档之前：文档一加载出来就可能发起下载，那时钩子必须已经在。
-    bind_downloads(&webview, &spec.tab_id)?;
+    // 失败即回收这一个子视图：`add_child` 已经把它挂上窗口，直接返回错误会留下一个
+    // 存活表里没有、界面也关不掉的视图。
+    if let Err(e) = bind_downloads(&webview, &spec.tab_id) {
+        close_view(webview);
+        return Err(e);
+    }
 
     if !blank_target && loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
         log::warn!("子视图 {} 在期限内没有加载出首个文档", spec.tab_id);
@@ -209,6 +223,7 @@ pub fn create(app: &AppHandle, spec: NewTab) -> Result<Tab, String> {
         url,
         title: String::new(),
         marker: spec.marker,
+        workspace_id: spec.workspace_id,
         conversation_id: spec.conversation_id,
         size: (DEFAULT_SIZE.0 as u32, DEFAULT_SIZE.1 as u32),
     })

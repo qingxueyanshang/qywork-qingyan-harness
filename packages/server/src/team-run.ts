@@ -123,6 +123,20 @@ const CUT_SHORT: Partial<Record<StopReason, string>> = {
   internal_guard: '上一轮在工具执行期间中断，这一轮的结果不可信',
 }
 
+/**
+ * 成员的浏览器控制挂在哪个工作区：读派它的那条顶层会话那一行。
+ *
+ * 查不到即 `null`，调用方据此**不造端口**，这一轮连浏览器工具都不注册。
+ * 不要改成读成员会话自己那一行：它的工作区与顶层的不一定相同，按它建页会建到另一个
+ * 工作区去。也不要传空串，宿主按「缺工作区」拒绝，失败落在每一次工具调用上。
+ */
+export function ownerWorkspace(
+  store: CommandDeps['store'],
+  ownerConversation: ConversationId,
+): string | null {
+  return getConversation(store, ownerConversation)?.workspaceId ?? null
+}
+
 export async function runBuiltinMember(
   input: {
     /** 运行约束：角色的提示词与工具面；临时子 agent 两者都空。 */
@@ -167,6 +181,7 @@ export async function runBuiltinMember(
    */
   const ownerConversation =
     getConversation(deps.store, input.conversationId)?.parentConversationId ?? input.conversationId
+  const workspaceId = ownerWorkspace(deps.store, ownerConversation)
 
   const controller = new AbortController()
   const abortFromParent = () => controller.abort(input.signal.reason)
@@ -182,15 +197,17 @@ export async function runBuiltinMember(
     ...(extraSystem ? { extraSystem } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
     /*
-     * 成员会话与顶层会话走同一条判定，也各自领一份控制身份：控制槽按顶层会话分配，
-     * 同一条会话的第二个执行拿到 busy。不接这里的代价是另一条入口
+     * 成员会话与顶层会话走同一条判定，也各自领一份控制身份：控制槽按执行者分配，
+     * 成员之间各占各的页，碰同一页才 busy。不接这里的代价是另一条入口
      * 默认不含浏览器时也无法给出原因。
      *
      * **控制归属记的是派它的那条顶层会话**：界面上的「停止」发
      * `conversation.interrupt`，而那条指令只认顶层会话（它连带停掉名下的子 agent）。
      * 记成员会话 id 的话，那颗按钮停不到任何一轮。
      */
-    ...(deps.browser?.available() ? { browser: deps.browser.portFor(ownerConversation) } : {}),
+    ...(deps.browser?.available() && workspaceId
+      ? { browser: deps.browser.portFor(ownerConversation, workspaceId) }
+      : {}),
   })
 
   let text = ''

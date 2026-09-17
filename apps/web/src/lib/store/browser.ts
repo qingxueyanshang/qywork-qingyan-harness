@@ -5,7 +5,8 @@
  * 事件推过来，这里只存一份镜像。前端不生成 tabId、不改地址——那两样写在这边
  * 就是第二本账，而 AI 操作的是宿主那一份。
  *
- * 页签条由 `syncBrowserTabs` 跟着镜像走，因此整页刷新之后原生页照样回到页签上。
+ * 页签条由 `syncBrowserTabs` 跟着镜像走，每一页按它自带的 `workspaceId` 落到那个
+ * 工作区的条目上，因此整页刷新之后各工作区的原生页各自回到自己的页签条上。
  */
 
 import { createSignal } from 'solid-js'
@@ -19,7 +20,7 @@ import {
 } from '../browser.ts'
 import { isNativeBrowserShell } from './shell.ts'
 import { state } from './state.ts'
-import { holdPanelTab, openPreviewTab, setSidePanel, syncBrowserTabs } from './ui.ts'
+import { holdPanelTab, openPreviewTab, showPanelTab, syncBrowserTabs, workspace } from './ui.ts'
 
 const [tabs, setTabs] = createSignal<readonly NativeTab[]>([])
 
@@ -50,7 +51,9 @@ function labelOf(tabId: string): string {
 
 function project(list: NativeTab[]): void {
   setTabs(list)
-  syncBrowserTabs(list.map((t) => ({ id: t.tabId, title: labelOf(t.tabId) })))
+  syncBrowserTabs(
+    list.map((t) => ({ id: t.tabId, title: labelOf(t.tabId), workspaceId: t.workspaceId })),
+  )
   // 关掉这一页时连带关掉原生页。宿主那边已经没了的页在 `syncBrowserTabs` 里
   // 先摘掉登记，不会再走到这里。
   for (const t of list) holdPanelTab(t.tabId, () => void closeBrowserPage(t.tabId).catch(() => {}))
@@ -61,11 +64,21 @@ function project(list: NativeTab[]): void {
  *
  * 页签由宿主推回来的清单建立，不在这里先建一个再等宿主确认——先建的那一份
  * 会带着一个前端编的 id。
+ *
+ * 归属在第一次 await 之前取：请求期间用户可能切走，之后读到的当前工作区是另一个，
+ * 按它写就是把这一页记进别人的条目。回包也不拼回镜像，而是按宿主的存活清单对账——
+ * 单页回执只说「建过」，用户在这期间关掉它的话，拼回去就是复活一个已经没了的 tabId。
  */
 export async function openBrowserTab(url?: string): Promise<void> {
-  const tab = await openBrowserPage(url)
-  project([...tabs().filter((t) => t.tabId !== tab.tabId), tab])
-  setSidePanel({ tab: tab.tabId })
+  // 没有当前工作区就没有这一页的归属，宿主那边也会拒。
+  const workspaceId = workspace()?.id
+  if (!workspaceId) return
+  const tab = await openBrowserPage(url, workspaceId)
+  const list = await listBrowserTabs()
+  project(list)
+  if (list.some((t) => t.tabId === tab.tabId && t.workspaceId === workspaceId)) {
+    showPanelTab(workspaceId, tab.tabId)
+  }
 }
 
 /**

@@ -58,7 +58,6 @@ const {
   client,
   dropView,
   modelCatalog,
-  closeAllPanelTabs,
   closePanel,
   closePanelTab,
   explainApiError,
@@ -82,11 +81,13 @@ const {
   reloadActiveConversation,
   runClosed,
   resizePanel,
+  restoreTerminalTabs,
   saveServerConfig,
   selectConversation,
   sendMessage,
   setPanelTabUrl,
   setSidePanel,
+  setWorkspace,
   syncBrowserTabs,
   setState,
   sidePanel,
@@ -175,6 +176,10 @@ const freshView = (id: string) => {
   dropView(id)
   openView(id)
 }
+
+/** 页签与当前页按项目分账，所以凡是碰这两样的用例都要先站在一个具体项目上。 */
+const WS_A = { id: 'ws_tab_a', root: 'C:/a', name: 'A' }
+const WS_B = { id: 'ws_tab_b', root: 'C:/b', name: 'B' }
 
 describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {
   test('收起状态下点开，回到默认的文件视图', () => {
@@ -280,7 +285,12 @@ describe('面板宽度：拖出来的数照原样记住', () => {
 
 describe('可多开的页：+ 开出来，× 关掉', () => {
   const reset = () => {
-    closeAllPanelTabs()
+    for (const ws of [WS_A, WS_B]) {
+      setWorkspace(ws)
+      for (const t of panelTabs()) closePanelTab(t.id)
+      setSidePanel(null)
+    }
+    setWorkspace(WS_A)
     setSidePanel('files')
   }
 
@@ -316,8 +326,8 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('内置浏览器页签跟着宿主的存活页走', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_1', title: '浏览器 1' },
-      { id: 'bt_2', title: '浏览器 2' },
+      { id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id },
+      { id: 'bt_2', title: '浏览器 2', workspaceId: WS_A.id },
     ])
     expect(panelTabs().map((t) => [t.id, t.kind, t.title])).toEqual([
       ['bt_1', 'browser', '浏览器 1'],
@@ -332,10 +342,55 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     })
 
     // 宿主那边关掉 bt_2：页签跟着没，落到左边那页，收尾**不再走一遍**。
-    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1' }])
+    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id }])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_1'])
     expect(activePanelTab()).toBe('bt_1')
     expect(closed).toBe(0)
+  })
+
+  test('两个工作区各一页 —— 各自只见自己的', () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+    ])
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_b1'])
+  })
+
+  /**
+   * 最后一页关掉之后那个工作区不再出现在宿主清单里，对齐范围仍要覆盖它
+   * ——只按清单里的工作区对齐的话，B 的页签会留在条上而宿主那边已经没有这一页。
+   */
+  test('后台工作区最后一页关掉 —— 那个条目的页签清空、当前页修正', () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+    ])
+    setWorkspace(WS_B)
+    setSidePanel({ tab: 'bt_b1' })
+    setWorkspace(WS_A)
+
+    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id }])
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
+    setWorkspace(WS_B)
+    expect(panelTabs()).toEqual([])
+    expect(sidePanel()).toBe('files')
+  })
+
+  test('没有活动项目时宿主投影照样按每页自己的工作区落账', () => {
+    reset()
+    setWorkspace(null)
+    syncBrowserTabs([
+      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id },
+      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id },
+    ])
+    setWorkspace(WS_A)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_b1'])
   })
 
   test('关掉当前那一页 —— 落到右边那页，不收起面板', () => {
@@ -395,20 +450,61 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(closed).toBe('a')
   })
 
-  test('换项目把每一页都收掉', () => {
+  test('换项目只是换一份页签 —— 切过去只见 B，切回来 A 原样，一个 disposer 都没跑', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('preview')
+    const opened = panelTabs().map((t) => t.id)
+    const page = sidePanel()
     let closed = 0
-    for (const t of panelTabs()) {
-      holdPanelTab(t.id, () => {
+    for (const id of opened) {
+      holdPanelTab(id, () => {
         closed += 1
       })
     }
-    closeAllPanelTabs()
-    expect(closed).toBe(2)
-    expect(panelTabs().length).toBe(0)
-    expect(sidePanel()).toBe('files')
+
+    setWorkspace(WS_B)
+    expect(panelTabs()).toEqual([])
+    expect(sidePanel()).toBe(null)
+    openPanelTab('terminal')
+    const onlyB = panelTabs().map((t) => t.id)
+    expect(onlyB).toHaveLength(1)
+    expect(opened).not.toContain(onlyB[0])
+
+    setWorkspace(WS_A)
+    expect(panelTabs().map((t) => t.id)).toEqual(opened)
+    expect(sidePanel()).toEqual(page)
+    expect(closed).toBe(0)
+  })
+
+  test('直接写 A 的条目不动 B 的选择', () => {
+    reset()
+    openPanelTab('terminal')
+    setWorkspace(WS_B)
+    openPanelTab('terminal')
+    const bTabs = panelTabs().map((t) => t.id)
+    const bPage = sidePanel()
+
+    setWorkspace(WS_A)
+    openPreviewTab('http://localhost:9100')
+    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id }])
+
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(bTabs)
+    expect(sidePanel()).toEqual(bPage)
+  })
+
+  test('没有活动项目时一页都不生成', () => {
+    reset()
+    setWorkspace(null)
+    openPanelTab('terminal')
+    openPreviewTab('http://localhost:9200')
+    openConversationTab('cv_no_ws', '子 agent')
+    expect(panelTabs()).toEqual([])
+    expect(sidePanel()).toBe(null)
+
+    setWorkspace(WS_A)
+    expect(panelTabs()).toEqual([])
   })
 
   test('收起再展开回到那一页 —— 和固定视图同一条路', () => {
@@ -424,10 +520,57 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   test('记着的那一页在收起期间没了 —— 展开回文件视图，不是一块点不掉的空白', () => {
     reset()
     openPanelTab('terminal')
+    const id = panelTabs()[0]!.id
     togglePanel()
-    closeAllPanelTabs()
+    closePanelTab(id)
     togglePanel()
     expect(sidePanel()).toBe('files')
+  })
+})
+
+/**
+ * 外壳那边还在跑的 PTY 按记录归属补回页签。
+ *
+ * 锁的是两条失败形状：整份清单按当前项目写入时，别的项目那几条 PTY 再也没有界面
+ * 碰得到；序号只按当前项目那几条抬，下一次新开会撞上一个已经存在的 id。
+ */
+describe('外壳还在跑的终端按项目补回页签', () => {
+  const reset = () => {
+    for (const ws of [WS_A, WS_B]) {
+      setWorkspace(ws)
+      for (const t of panelTabs()) closePanelTab(t.id)
+    }
+    setWorkspace(WS_A)
+    setSidePanel('files')
+  }
+
+  test('两个项目的记录都建立，当前只显示自己那几条', () => {
+    reset()
+    restoreTerminalTabs([
+      { id: 'terminal-41', workspaceId: WS_A.id },
+      { id: 'terminal-42', workspaceId: WS_B.id },
+    ])
+    expect(panelTabs().map((t) => t.id)).toEqual(['terminal-41'])
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(['terminal-42'])
+  })
+
+  test('没有活动项目时照样按记录恢复，切进去就看得见', () => {
+    reset()
+    setWorkspace(null)
+    restoreTerminalTabs([{ id: 'terminal-51', workspaceId: WS_B.id }])
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(['terminal-51'])
+  })
+
+  test('新开的序号高过整份清单，别的项目那几条也算', () => {
+    reset()
+    restoreTerminalTabs([
+      { id: 'terminal-70', workspaceId: WS_A.id },
+      { id: 'terminal-99', workspaceId: WS_B.id },
+    ])
+    openPanelTab('terminal')
+    expect(panelTabs().map((t) => t.id)).toEqual(['terminal-70', 'terminal-100'])
   })
 })
 
@@ -484,6 +627,7 @@ describe('接口错误还原成人话', () => {
  */
 describe('事件按会话归属过滤', () => {
   const reset = (activeConversation: string | null) => {
+    setWorkspace(WS_A)
     setState({ activeConversation, conversations: [], busyConversations: [], todos: [] })
     if (activeConversation) freshView(activeConversation)
   }

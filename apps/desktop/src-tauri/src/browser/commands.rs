@@ -9,14 +9,16 @@
 
 use serde::Serialize;
 
-/// 界面看得见的一页。**只有 id / 地址 / 标题**：归属是协调器的事，工具栏是标准浏览器
-/// chrome，不区分人工页与 AI 页。
+/// 界面看得见的一页。**只有 id / 地址 / 标题 / 工作区**：会话归属是协调器的事，
+/// 工具栏是标准浏览器 chrome，不区分人工页与 AI 页。
+/// 工作区在这里出现，是因为界面要按它决定这一页在不在当前页签条上。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabView {
     pub tab_id: String,
     pub url: String,
     pub title: String,
+    pub workspace_id: String,
 }
 
 #[cfg(not(windows))]
@@ -34,20 +36,26 @@ pub fn browser_tabs() -> Vec<TabView> {
     }
 }
 
-/// 新开一页。`url` 缺席即一页空标签。
+/// 新开一页。`url` 缺席即一页空标签；`workspaceId` 必带，这一页从此归那个工作区。
 ///
 /// **必须是 async**：建子视图要等主线程，同步命令跑在主线程上会死锁。
 #[tauri::command]
-pub async fn browser_open(app: tauri::AppHandle, url: Option<String>) -> Result<TabView, String> {
+pub async fn browser_open(
+    app: tauri::AppHandle,
+    url: Option<String>,
+    workspace_id: String,
+) -> Result<TabView, String> {
     #[cfg(windows)]
     {
-        tauri::async_runtime::spawn_blocking(move || super::user_open(&app, url.as_deref()))
-            .await
-            .map_err(|e| format!("建页任务失败：{e}"))?
+        tauri::async_runtime::spawn_blocking(move || {
+            super::user_open(&app, url.as_deref(), &workspace_id)
+        })
+        .await
+        .map_err(|e| format!("建页任务失败：{e}"))?
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, url);
+        let _ = (app, url, workspace_id);
         Err(UNSUPPORTED.to_owned())
     }
 }

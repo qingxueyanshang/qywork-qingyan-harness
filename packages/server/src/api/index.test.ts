@@ -67,7 +67,7 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
     // 而集成部分 `e2e.test.ts` 已经覆盖了。
     runs: { isBusy: () => false },
     bus: { publish: () => {} },
-    // 归档 / 删除会话时关它名下的内置浏览器页。没有宿主时是一次空操作。
+    // 删除会话时关它名下的内置浏览器页。没有宿主时是一次空操作。
     closeBrowserPages: async () => {},
     enableLan: () => {
       lan = true
@@ -1340,6 +1340,28 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(res?.status).toBe(200)
     expect(listConversations(d.store, d.wsId as never).map((x) => x.id)).not.toContain(c.id)
     expect(getConversation(d.store, c.id)).not.toBeNull()
+  })
+
+  /*
+   * 归档留页、删除关页。两条都要测：只测其中一条的话，把关页调用挪到另一条上
+   * 仍然全绿，而用户看到的是归档之后页签自己没了。
+   */
+  test('归档不关内置浏览器页，删除才关', async () => {
+    const d = deps()
+    const closed: string[] = []
+    d.closeBrowserPages = (id) => {
+      closed.push(id)
+      return Promise.resolve()
+    }
+    const archived = conv(d)
+    const res = await call(`/api/conversations/${archived.id}/archive`, { method: 'POST' }, d)
+    expect(res?.status).toBe(200)
+    expect(closed).toEqual([])
+
+    const deleted = conv(d)
+    const gone = await call(`/api/conversations/${deleted.id}`, { method: 'DELETE' }, d)
+    expect(gone?.status).toBe(200)
+    expect(closed).toEqual([deleted.id])
   })
 
   /* 硬删是真删——这条锁的就是「删了就不在了」，不是「从列表里消失」。 */

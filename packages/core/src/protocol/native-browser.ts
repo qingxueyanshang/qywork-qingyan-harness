@@ -63,10 +63,18 @@ export interface BrowserTabSnapshot {
   title: string
   marker: string
   /**
+   * 这一页所属的工作区 id。建页时定，此后不改——页面不在工作区之间移动。
+   *
+   * 用户页也有它：没有会话归属不等于没有工作区归属，界面按它决定这一页在不在
+   * 当前页签条上，协调器按它决定模型看不看得见这一页。缺席不是合法状态，
+   * 收到没有它的页一律拒收，不填空串顶上。
+   */
+  workspaceId: string
+  /**
    * 拥有它的会话 id；`null` = 用户手动开的页（不归任何 AI 会话）。
    *
    * 归属跟着会话生命周期，跨消息稳定：AI 在某会话里 `create` 的页归它，之后该会话的每一条
-   * 消息都能直接操作，不需要交接；会话删除/归档即关它名下的页。下载裁决也按它分岔
+   * 消息都能直接操作，不需要交接；会话删除即关它名下的页，归档不关。下载裁决也按它分岔
    * （归 AI 的页要授权，用户页走默认目录）。不要再加一个 `manual` 字段，这将是同一事项的独立第二份状态。
    */
   conversationId: string | null
@@ -104,6 +112,13 @@ export interface BrowserRequestFrame {
   deadline: number
   op: BrowserOp
   tabId?: string
+  /**
+   * 目标工作区，`create` 与 `bind` 必带且非空。
+   *
+   * 宿主按 op 校验，缺席直接拒绝：回落到「当前工作区」需要宿主自己存一份当前状态，
+   * 而当前在看哪个工作区只有界面知道。`bind` 用它拒绝跨工作区接管。
+   */
+  workspaceId?: string
   conversationId?: string
   /** `create` 的目标地址。 */
   url?: string
@@ -126,6 +141,7 @@ export interface BrowserResultFrame {
   ok: boolean
   data?: {
     tabId?: string
+    /** `bind` 专有。`create` 不带它：建页不占页，认页的标记由 `opened` 事件给出。 */
     marker?: string
     url?: string
     title?: string
@@ -150,6 +166,13 @@ export interface BrowserEventFrame {
   title?: string
   /** `opened` 专有：这一页的注入标记，CDP 侧按它认页。 */
   marker?: string
+  /**
+   * `opened` 必带：这一页所属的工作区。
+   *
+   * 新页只经这条事件进入服务端存活表，缺了它那一页没有工作区归属；服务端按协议错误
+   * 拒收，不猜当前工作区也不填空串。导航、标题与 `control` 事件不带它，工作区不改。
+   */
+  workspaceId?: string
   /** `opened` 的初始归属与 `control`（`bind` 后）的新归属。`null` = 用户页。 */
   conversationId?: string | null
   path?: string

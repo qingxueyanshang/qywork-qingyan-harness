@@ -63,6 +63,7 @@ export {
   type BrowserObservation,
   type BrowserOptionsPage,
   type BrowserPort,
+  type BrowserRefusal,
   type BrowserSelectOption,
   type BrowserTabInfo,
   type BrowserWaitReceipt,

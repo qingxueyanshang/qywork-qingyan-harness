@@ -30,7 +30,8 @@ import {
  * 到的是一块空白，而 PTY 那边还在跑。
  *
  * 因此**卸载不销毁**。真正的销毁只发生在这一页被关掉时，入口是 store 的
- * `holdPanelTab`（页签上的 × 和换项目都走它），见 `disposePane`。
+ * `holdPanelTab`（页签上那颗 × 走它），见 `disposePane`。换工作区只是把这一页
+ * 从当前那份页签里派生掉，PTY 与实例都留着。
  */
 
 /** Shift + 滚轮查看历史时一格翻三行。 */
@@ -272,24 +273,29 @@ function syncSize(id: string, pane: Pane): void {
   )
 }
 
+/**
+ * 起这条会话的 PTY。
+ *
+ * **归属与目录取自同一份工作区快照**：分两次读的话，中间切了工作区就会把 A 的 id
+ * 配上 B 的根目录。没有活动工作区时不起——那条 PTY 归不到任何页签条上。
+ */
 async function ensureStarted(id: string, pane: Pane): Promise<void> {
   if (pane.started) return
+  const ws = workspace()
+  if (!ws) {
+    markGone(id, pane, 'open', new Error('没有打开的项目'))
+    return
+  }
   pane.started = true
   pane.setEnd(null)
   try {
-    const backlog = await openTerminal(
-      id,
-      workspace()?.root ?? '',
-      pane.term.cols,
-      pane.term.rows,
-      {
-        output: (d) => pane.term.write(d),
-        exit: (code) => {
-          pane.started = false
-          pane.setEnd({ kind: 'exited', code })
-        },
+    const backlog = await openTerminal(id, ws.id, ws.root, pane.term.cols, pane.term.rows, {
+      output: (d) => pane.term.write(d),
+      exit: (code) => {
+        pane.started = false
+        pane.setEnd({ kind: 'exited', code })
       },
-    )
+    })
     // 接上一条已经在跑的会话时，先把外壳存着的那段重放进来，否则用户接回来
     // 面对的是一块空屏——shell 仍在运行，但要敲一下才看得出来。
     if (backlog) pane.term.write(backlog)

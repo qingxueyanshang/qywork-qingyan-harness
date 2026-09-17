@@ -51,6 +51,8 @@ interface Pending {
 
 export interface BrowserRequestParams {
   tabId?: string
+  /** `create` 与 `bind` 必带。宿主对缺席直接拒绝，不回落到任何默认工作区。 */
+  workspaceId?: string
   conversationId?: string
   url?: string
   path?: string
@@ -132,6 +134,7 @@ export class BrowserBridge {
       deadline: Date.now() + deadlineMs,
       op,
       ...(params.tabId !== undefined ? { tabId: params.tabId } : {}),
+      ...(params.workspaceId !== undefined ? { workspaceId: params.workspaceId } : {}),
       ...(params.conversationId !== undefined ? { conversationId: params.conversationId } : {}),
       ...(params.url !== undefined ? { url: params.url } : {}),
       ...(params.path !== undefined ? { path: params.path } : {}),
@@ -188,6 +191,13 @@ export class BrowserBridge {
   }
 
   #ready(frame: HostReadyFrame): void {
+    // 工作区缺席的快照按协议错误拒收整条连接：接下它就要给那些页编一个工作区，
+    // 而服务端没有「当前工作区」这个状态。不注册宿主即整条浏览器控制能力不发布。
+    const orphan = frame.tabs.find((tab) => !tab.workspaceId)
+    if (orphan) {
+      log.warn('browser', '宿主快照里有页没有工作区，这条连接不接受', { tabId: orphan.tabId })
+      return
+    }
     // 重连按新纪元重建：先让上一纪元的待决调用失败，再登记快照。
     this.#failPending(new BrowserBridgeError('浏览器宿主已重连'))
     this.#host = {
@@ -230,11 +240,18 @@ export class BrowserBridge {
     // 新页进入存活集合的唯一途径。AI 建的和用户自己新开的走的是同一条——
     // 少了后者，模型在 `browser_tabs` 里看不见用户的那一页。
     if (frame.kind === 'opened') {
+      // 没有工作区的新页不进存活表：填空串顶上会让它在每个工作区里都不归属、
+      // 又处处可见。这一页因此对服务端不存在，界面那份投影仍由宿主推。
+      if (!frame.workspaceId) {
+        log.warn('browser', '新页没有带工作区，不进存活表', { tabId: frame.tabId })
+        return
+      }
       this.#tabs.set(frame.tabId, {
         tabId: frame.tabId,
         url: frame.url ?? '',
         title: frame.title ?? '',
         marker: frame.marker ?? '',
+        workspaceId: frame.workspaceId,
         conversationId: frame.conversationId ?? null,
       })
     } else if (frame.kind === 'closed') this.#tabs.delete(frame.tabId)

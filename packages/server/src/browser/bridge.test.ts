@@ -27,6 +27,9 @@ import { serve } from '../server.ts'
 
 const HOST_KEY = 'browser-host-key-for-tests'
 
+/** 样例快照里那两页所在的工作区。端口按它取，跨工作区的过滤在 `coordinator.test.ts`。 */
+const WS = 'ws_a'
+
 const config: QyConfig = {
   active: { provider: 'fake', model: 'm' },
   providers: {
@@ -215,7 +218,7 @@ test('断线让所有待决调用失败，并把能力一起下线', async () =>
   const host = await FakeHost.connect(handle.port)
   host.ready()
   await settle()
-  const port = handle.browser?.portFor('cv_bridge')
+  const port = handle.browser?.portFor('cv_bridge', WS)
   const pending = port?.open('http://127.0.0.1:1/page')
   await host.next()
   host.socket.close()
@@ -235,7 +238,7 @@ test('宿主的 opened 事件是新页进存活快照的唯一途径，control �
   const host = await FakeHost.connect(handle.port)
   host.send({ ...(samples().hostReady as unknown as HostReadyFrame), tabs: [] })
   await settle()
-  expect(await handle.browser?.portFor('cv_bridge').tabs()).toEqual([])
+  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
 
   host.send({
     type: 'browser.event',
@@ -246,11 +249,12 @@ test('宿主的 opened 事件是新页进存活快照的唯一途径，control �
     url: 'http://127.0.0.1:1/page',
     title: '人工开的页',
     marker: 'm7',
+    workspaceId: WS,
     conversationId: null,
   })
   await settle()
   // 用户页对任何会话都是不可控。
-  expect(await handle.browser?.portFor('cv_bridge').tabs()).toEqual([
+  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([
     { tabId: 'bt_7', url: 'http://127.0.0.1:1/page', title: '人工开的页', controlled: false },
   ])
 
@@ -264,13 +268,13 @@ test('宿主的 opened 事件是新页进存活快照的唯一途径，control �
   })
   await settle()
   // 归到 cv_bridge 之后，这一页对它可控。
-  expect(await handle.browser?.portFor('cv_bridge').tabs()).toEqual([
+  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([
     { tabId: 'bt_7', url: 'http://127.0.0.1:1/page', title: '人工开的页', controlled: true },
   ])
 
   host.send({ type: 'browser.event', connectionEpoch: 3, seq: 3, kind: 'closed', tabId: 'bt_7' })
   await settle()
-  expect(await handle.browser?.portFor('cv_bridge').tabs()).toEqual([])
+  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
 })
 
 test('重连取到的是完整存活页快照，旧快照不残留', async () => {
@@ -279,7 +283,7 @@ test('重连取到的是完整存活页快照，旧快照不残留', async () =>
   first.ready()
   await settle()
   // 样例里 bt_1 归 cv_a1、bt_2 是用户页；从 cv_a1 看得见两页。
-  expect(await handle.browser?.portFor('cv_a1').tabs()).toHaveLength(2)
+  expect(await handle.browser?.portFor('cv_a1', WS).tabs()).toHaveLength(2)
   first.socket.close()
   await settle()
 
@@ -294,12 +298,13 @@ test('重连取到的是完整存活页快照，旧快照不残留', async () =>
         url: 'http://127.0.0.1:1/x',
         title: 'X',
         marker: 'm9',
+        workspaceId: WS,
         conversationId: null,
       },
     ],
   })
   await settle()
-  const tabs = await handle.browser?.portFor('cv_a1').tabs()
+  const tabs = await handle.browser?.portFor('cv_a1', WS).tabs()
   expect(tabs?.map((t) => t.tabId)).toEqual(['bt_9'])
 })
 
@@ -308,7 +313,7 @@ test('旧纪元的结果不能完成新纪元的调用', async () => {
   const host = await FakeHost.connect(handle.port)
   host.ready()
   await settle()
-  const port = handle.browser?.portFor('cv_bridge')
+  const port = handle.browser?.portFor('cv_bridge', WS)
   const pending = port?.open('http://127.0.0.1:1/page')
   const request = await host.next()
   expect(request.connectionEpoch).toBe(3)
@@ -325,7 +330,7 @@ test('请求帧的线上形状与 Rust 侧共用同一份样例', async () => {
   const host = await FakeHost.connect(handle.port)
   host.ready()
   await settle()
-  const port = handle.browser?.portFor('cv_bridge')
+  const port = handle.browser?.portFor('cv_bridge', WS)
   const opening = port?.open('http://127.0.0.1:1/page')
   const create = await host.next()
   expect(create.type).toBe('browser.request')
@@ -333,6 +338,7 @@ test('请求帧的线上形状与 Rust 侧共用同一份样例', async () => {
   expect(create.connectionEpoch).toBe(3)
   expect(create.url).toBe('http://127.0.0.1:1/page')
   expect(create.conversationId).toBe('cv_bridge')
+  expect(create.workspaceId).toBe(WS)
   expect(create.deadline).toBeGreaterThan(Date.now())
 
   host.refuse(create, 'refused')
@@ -352,6 +358,56 @@ test('请求帧的线上形状与 Rust 侧共用同一份样例', async () => {
       'type',
     ].sort(),
   )
+
+  const creating = samples().createRequest as unknown as BrowserRequestFrame
+  expect(Object.keys(creating).sort()).toEqual(
+    [
+      'connectionEpoch',
+      'conversationId',
+      'deadline',
+      'op',
+      'requestId',
+      'type',
+      'url',
+      'workspaceId',
+    ].sort(),
+  )
+})
+
+/**
+ * 工作区缺席的页不进服务端存活表。
+ *
+ * 填空串顶上的话，那一页在每个工作区里都不归属又处处可见；服务端这边没有
+ * 「当前工作区」可以拿来猜，所以只能拒收。
+ */
+test('host.ready 里有页没带工作区就不接受这条连接，opened 缺工作区不进快照', async () => {
+  const handle = fresh()
+  const host = await FakeHost.connect(handle.port)
+  const sample = samples().hostReady as unknown as HostReadyFrame
+  host.send({
+    ...sample,
+    tabs: [{ tabId: 'bt_1', url: 'http://127.0.0.1:1/x', title: 'X', marker: 'm1' }],
+  } as unknown as HostReadyFrame)
+  await settle()
+  expect(handle.browser?.available()).toBe(false)
+
+  host.send({ ...sample, tabs: [] })
+  await settle()
+  expect(handle.browser?.available()).toBe(true)
+
+  host.send({
+    type: 'browser.event',
+    connectionEpoch: 3,
+    seq: 1,
+    kind: 'opened',
+    tabId: 'bt_8',
+    url: 'http://127.0.0.1:1/y',
+    title: 'Y',
+    marker: 'm8',
+    conversationId: null,
+  })
+  await settle()
+  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
 })
 
 /**

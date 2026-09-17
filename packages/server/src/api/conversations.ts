@@ -292,6 +292,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
    * `POST /api/workspaces/:id/archive`，只是范围缩到一条。
    *
    * **正在跑的不拦**：归档不删任何数据，那一轮照常跑完。（删除必须拦，见下。）
+   *
+   * **内置浏览器页不关**：归属没变，页留在宿主上；关页只由删除那条触发。
    */
   const archiveMatch = /^\/api\/conversations\/([^/]+)\/archive$/.exec(p)
   if (archiveMatch && req.method === 'POST') {
@@ -299,8 +301,6 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
     // 已经归档过的回 false。这里当成功处理：用户要的终态（不在列表里）已经成立。
     archiveConversation(d.store, id)
-    // 归档即关它名下的内置浏览器 AI 页——归档后它不再在列表里，页留着就是孤儿。
-    await d.closeBrowserPages(id)
     return json({ ok: true })
   }
 

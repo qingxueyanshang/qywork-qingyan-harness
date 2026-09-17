@@ -12,6 +12,7 @@
         "url": "http://127.0.0.1:9000/page",
         "title": "夹具页",
         "marker": "9a3f",
+        "workspaceId": "ws_a",
         "conversationId": "cv_a1"
       },
       {
@@ -19,9 +20,20 @@
         "url": "http://127.0.0.1:9000/page",
         "title": "夹具页",
         "marker": "b1c4",
+        "workspaceId": "ws_a",
         "conversationId": null
       }
     ]
+  },
+  "createRequest": {
+    "type": "browser.request",
+    "requestId": "br_13",
+    "connectionEpoch": 3,
+    "deadline": 1757744400000,
+    "op": "create",
+    "workspaceId": "ws_a",
+    "conversationId": "cv_a1",
+    "url": "http://127.0.0.1:9000/page"
   },
   "request": {
     "type": "browser.request",
@@ -45,6 +57,18 @@
       "url": "http://127.0.0.1:9000/page",
       "title": "夹具页"
     }
+  },
+  "opened": {
+    "type": "browser.event",
+    "connectionEpoch": 3,
+    "seq": 10,
+    "kind": "opened",
+    "tabId": "bt_1",
+    "url": "http://127.0.0.1:9000/page",
+    "title": "夹具页",
+    "marker": "9a3f",
+    "workspaceId": "ws_a",
+    "conversationId": "cv_a1"
   },
   "event": {
     "type": "browser.event",

@@ -11,11 +11,13 @@
 
 import { tauriInvoke, tauriListen } from './store/shell.ts'
 
-/** 界面看得见的一页。与 Rust `TabView` 同形：只有 id / 地址 / 标题。 */
+/** 界面看得见的一页。与 Rust `TabView` 同形：只有 id / 地址 / 标题 / 工作区。 */
 export interface NativeTab {
   tabId: string
   url: string
   title: string
+  /** 这一页所属的工作区 id。建页时定，此后不改。 */
+  workspaceId: string
 }
 
 /** 用户新开的空标签停在这个地址上。地址栏对它显示为空。 */
@@ -25,9 +27,9 @@ export function listBrowserTabs(): Promise<NativeTab[]> {
   return tauriInvoke<NativeTab[]>('browser_tabs')
 }
 
-/** 新开一页。不给地址就是一页空标签。 */
-export function openBrowserPage(url?: string): Promise<NativeTab> {
-  return tauriInvoke<NativeTab>('browser_open', url ? { url } : {})
+/** 新开一页。不给地址就是一页空标签；工作区必带，这一页从此归它。 */
+export function openBrowserPage(url: string | undefined, workspaceId: string): Promise<NativeTab> {
+  return tauriInvoke<NativeTab>('browser_open', { workspaceId, ...(url ? { url } : {}) })
 }
 
 export function closeBrowserPage(tabId: string): Promise<void> {

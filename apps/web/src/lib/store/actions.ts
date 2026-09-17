@@ -20,7 +20,7 @@ import {
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { hasRun, isRunning, markBusy, setState, state } from './state.ts'
-import { closeAllPanelTabs, setOpenFile, setWorkspace } from './ui.ts'
+import { setOpenFile, setWorkspace } from './ui.ts'
 
 /**
  * 拉这个项目的会话列表，并保证**总有一条是活动的**。
@@ -62,8 +62,8 @@ export async function loadConversations(): Promise<void> {
  * 面板里那些「展开了哪些目录 / 选中了哪一行 / 正在看哪个 diff」不在这里清——
  * 它们是面板的局部状态，由 `SidePanel` 按项目 id 整块重挂负责（见那边的注释）。
  *
- * **终端页和浏览器页要连着里面的进程一起关掉**：那个 shell 跑在上一个项目的目录里，
- * 靠重挂是收不掉的（PTY 在 Rust 侧，只认显式关闭）。
+ * **可多开的那些页不在这里收。** 它们按项目分账（`ui.ts` 的 `panels`），换项目只是
+ * 换一个键去读：终端里的命令接着跑，浏览器页接着停在原处，切回来还是原样。
  */
 export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
   // 新建与切换共用这一次 upsert；服务端同时保证至少有一条用户会话并返回完整列表。
@@ -72,7 +72,6 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
   if (!first) throw new Error('项目没有可用会话')
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setOpenFile(null)
-  closeAllPanelTabs()
   setState({ conversations, activeConversation: null, fileChanges: [], git: null })
   syncViews()
   await selectConversation(first.id)

@@ -9,6 +9,9 @@
  *
  * `store/browser.ts` 顶层 `new QyClient` 不在这条链上，但它经 `state.ts` / `ui.ts` 间接
  * 触到几个浏览器全局，所以这里先补齐再动态 import（同 `store.test.ts` 的理由）。
+ *
+ * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection` 与 `openBrowserTab`，
+ * 连同它们经 `store/ui.ts` 按工作区落账的那一段。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -30,21 +33,33 @@ g.localStorage ??= {
   removeItem: (k: string) => stored.delete(k),
 }
 
-const { initBrowserProjection } = await import('./browser.ts')
+const { initBrowserProjection, openBrowserTab } = await import('./browser.ts')
+const { panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } = await import(
+  './ui.ts'
+)
 
 interface Invoke {
   cmd: string
   args: Record<string, unknown> | undefined
 }
 
-/** 装成 Windows 桌面外壳，记录所有原生调用。返回 restore。 */
-function asShell(invokes: Invoke[]): () => void {
+/**
+ * 装成 Windows 桌面外壳，记录所有原生调用。返回 restore。
+ *
+ * `reply` 给某条命令自定回包，返回 `undefined` 的走默认回包。
+ */
+function asShell(
+  invokes: Invoke[],
+  reply?: (cmd: string, args: Record<string, unknown> | undefined) => Promise<unknown> | undefined,
+): () => void {
   const origNav = g.navigator
   const origTauri = g.__TAURI_INTERNALS__
   g.navigator = { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
   g.__TAURI_INTERNALS__ = {
     invoke: (cmd: string, args: Record<string, unknown> | undefined) => {
       invokes.push({ cmd, args })
+      const custom = reply?.(cmd, args)
+      if (custom) return custom
       if (cmd === 'browser_tabs') return Promise.resolve([])
       return Promise.resolve(0)
     },
@@ -54,6 +69,35 @@ function asShell(invokes: Invoke[]): () => void {
     g.navigator = origNav
     g.__TAURI_INTERNALS__ = origTauri
   }
+}
+
+const WS_A = { id: 'ws_browser_a', root: 'C:/a', name: 'A' }
+const WS_B = { id: 'ws_browser_b', root: 'C:/b', name: 'B' }
+
+interface HostTab {
+  tabId: string
+  url: string
+  title: string
+  workspaceId: string
+}
+
+function hostTab(tabId: string, workspaceId: string): HostTab {
+  return { tabId, url: 'about:blank', title: '', workspaceId }
+}
+
+/** 等宿主回包与投影跑完：`openBrowserTab` 与初始化对账都要过几个微任务。 */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** 清掉两个工作区的浏览器页签与选择。空清单按并集对齐，两边一起收。 */
+function reset(): void {
+  syncBrowserTabs([])
+  for (const ws of [WS_A, WS_B]) {
+    setWorkspace(ws)
+    setSidePanel('files')
+  }
+  setWorkspace(null)
 }
 
 describe('内置浏览器投影初始化', () => {
@@ -91,5 +135,105 @@ describe('内置浏览器投影初始化', () => {
     initBrowserProjection()
 
     expect(invokes).toHaveLength(0)
+  })
+})
+
+describe('内置浏览器页按工作区落账', () => {
+  let restore: (() => void) | undefined
+  afterEach(() => {
+    restore?.()
+    restore = undefined
+  })
+
+  test('整页刷新后两个工作区各自恢复自己的页', async () => {
+    reset()
+    const host = [hostTab('bt_a1', WS_A.id), hostTab('bt_b1', WS_B.id)]
+    restore = asShell([], (cmd) => (cmd === 'browser_tabs' ? Promise.resolve(host) : undefined))
+
+    initBrowserProjection()
+    await flush()
+
+    setWorkspace(WS_A)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
+    setWorkspace(WS_B)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_b1'])
+  })
+
+  test('开页翻到新开的那一页', async () => {
+    reset()
+    const tab = hostTab('bt_a9', WS_A.id)
+    restore = asShell([], (cmd) => {
+      if (cmd === 'browser_open') return Promise.resolve(tab)
+      if (cmd === 'browser_tabs') return Promise.resolve([tab])
+      return undefined
+    })
+    setWorkspace(WS_A)
+
+    await openBrowserTab()
+
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a9'])
+    expect(sidePanel()).toEqual({ tab: 'bt_a9' })
+  })
+
+  /**
+   * 原始失败形状：开页请求在途时切到 B，回包按「完成时的当前工作区」写，
+   * B 的页签条上多出 A 的那一页，B 原来停的那一页也被顶掉。
+   */
+  test('开页回包迟到 —— B 的页签与当前页一动不动，切回 A 见到新页', async () => {
+    reset()
+    const aTab = hostTab('bt_a9', WS_A.id)
+    const bTab = hostTab('bt_b1', WS_B.id)
+    let land: (() => void) | undefined
+    const opened = new Promise<HostTab>((resolve) => {
+      land = () => resolve(aTab)
+    })
+    restore = asShell([], (cmd) => {
+      if (cmd === 'browser_open') return opened
+      if (cmd === 'browser_tabs') return Promise.resolve([bTab, aTab])
+      return undefined
+    })
+    syncBrowserTabs([{ id: bTab.tabId, title: '浏览器 1', workspaceId: WS_B.id }])
+    setWorkspace(WS_B)
+    setSidePanel({ tab: bTab.tabId })
+
+    setWorkspace(WS_A)
+    const opening = openBrowserTab()
+    setWorkspace(WS_B)
+    land?.()
+    await opening
+
+    expect(panelTabs().map((t) => t.id)).toEqual([bTab.tabId])
+    expect(sidePanel()).toEqual({ tab: bTab.tabId })
+    setWorkspace(WS_A)
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a9'])
+    expect(sidePanel()).toEqual({ tab: 'bt_a9' })
+  })
+
+  test('回包到达前这一页已被关掉 —— 不复活也不选中', async () => {
+    reset()
+    const tab = hostTab('bt_a9', WS_A.id)
+    restore = asShell([], (cmd) => {
+      if (cmd === 'browser_open') return Promise.resolve(tab)
+      // 对账时它已经不在宿主的存活清单里。
+      if (cmd === 'browser_tabs') return Promise.resolve([])
+      return undefined
+    })
+    setWorkspace(WS_A)
+
+    await openBrowserTab()
+
+    expect(panelTabs()).toEqual([])
+    expect(sidePanel()).toBe('files')
+  })
+
+  test('没有活动工作区时不开页', async () => {
+    reset()
+    const invokes: Invoke[] = []
+    restore = asShell(invokes)
+    setWorkspace(null)
+
+    await openBrowserTab()
+
+    expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
   })
 })

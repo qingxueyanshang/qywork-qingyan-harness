@@ -30,23 +30,31 @@ async function clickLink(html: string) {
 }
 
 describe('正文里的链接', () => {
-  test('落到右侧面板的网页预览页，并挡下默认跳转', async () => {
+  /** 页签按项目分账，所以这一组要先有一个当前项目；用完把页都关掉还回去。 */
+  async function freshWorkspace() {
     const store = await import('./lib/store/index.ts')
-    store.closeAllPanelTabs()
+    store.setWorkspace({ id: 'ws_link', root: 'C:/ws', name: 'ws' })
+    for (const t of store.panelTabs()) store.closePanelTab(t.id)
+    return store
+  }
+
+  test('落到右侧面板的网页预览页，并挡下默认跳转', async () => {
+    const store = await freshWorkspace()
     const event = await clickLink('<a href="http://localhost:8000">http://localhost:8000</a>')
     expect(event.defaultPrevented).toBe(true)
     const [tab] = store.panelTabs()
     expect(tab?.kind).toBe('preview')
     expect(tab?.url).toBe('http://localhost:8000')
-    store.closeAllPanelTabs()
+    for (const t of store.panelTabs()) store.closePanelTab(t.id)
+    store.setWorkspace(null)
   })
 
   test('http(s) 之外的 scheme 不接管 —— 那两种页都只加载得了 http(s)', async () => {
-    const store = await import('./lib/store/index.ts')
-    store.closeAllPanelTabs()
+    const store = await freshWorkspace()
     const event = await clickLink('<a href="mailto:a@b.com">a@b.com</a>')
     expect(event.defaultPrevented).toBe(false)
     expect(store.panelTabs().length).toBe(0)
+    store.setWorkspace(null)
   })
 })
 

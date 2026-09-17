@@ -13,6 +13,7 @@ pub struct TabSnapshot {
     pub url: String,
     pub title: String,
     pub marker: String,
+    pub workspace_id: String,
     pub conversation_id: Option<String>,
 }
 
@@ -40,6 +41,9 @@ pub struct RequestFrame {
     pub op: String,
     #[serde(default)]
     pub tab_id: Option<String>,
+    /// `create` / `bind` 必带且非空，其余 op 不看它。按 op 校验，缺席不回落到任何默认工作区。
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
@@ -96,6 +100,9 @@ pub struct EventFrame {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marker: Option<String>,
+    /// `opened` 必带：新页只经这条事件进入服务端存活表，缺了它那一页没有工作区归属。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +129,7 @@ impl EventFrame {
             url: None,
             title: None,
             marker: None,
+            workspace_id: None,
             conversation_id: None,
             path: None,
             success: None,
@@ -176,6 +184,7 @@ mod tests {
             deadline,
             op: "close".into(),
             tab_id: Some("t1".into()),
+            workspace_id: None,
             conversation_id: None,
             url: None,
             path: None,
@@ -201,6 +210,17 @@ mod tests {
         assert_eq!(parsed.path.as_deref(), Some(r"D:\work\out.bin"));
         assert_eq!(parsed.download_id.as_deref(), Some("dl_4"));
         assert_eq!(parsed.url, None);
+        assert_eq!(parsed.workspace_id, None);
+    }
+
+    #[test]
+    fn create_request_sample_carries_the_workspace() {
+        let parsed: RequestFrame =
+            serde_json::from_value(sample("createRequest")).expect("样例必须能解出来");
+        assert_eq!(parsed.op, "create");
+        assert_eq!(parsed.workspace_id.as_deref(), Some("ws_a"));
+        assert_eq!(parsed.conversation_id.as_deref(), Some("cv_a1"));
+        assert_eq!(parsed.url.as_deref(), Some("http://127.0.0.1:9000/page"));
     }
 
     #[test]
@@ -218,6 +238,7 @@ mod tests {
                     url: "http://127.0.0.1:9000/page".into(),
                     title: "夹具页".into(),
                     marker: "9a3f".into(),
+                    workspace_id: "ws_a".into(),
                     conversation_id: Some("cv_a1".into()),
                 },
                 TabSnapshot {
@@ -225,6 +246,7 @@ mod tests {
                     url: "http://127.0.0.1:9000/page".into(),
                     title: "夹具页".into(),
                     marker: "b1c4".into(),
+                    workspace_id: "ws_a".into(),
                     conversation_id: None,
                 },
             ],
@@ -255,6 +277,15 @@ mod tests {
         event.reason = Some("unauthorized");
         event.suggested_name = Some("file.bin".into());
         assert_eq!(serde_json::to_value(&event).unwrap(), sample("event"));
+
+        // 新页只经 `opened` 进入服务端存活表，工作区归属随这一帧过去。
+        let mut opened = EventFrame::new(3, 10, "opened", "bt_1".into());
+        opened.url = Some("http://127.0.0.1:9000/page".into());
+        opened.title = Some("夹具页".into());
+        opened.marker = Some("9a3f".into());
+        opened.workspace_id = Some("ws_a".into());
+        opened.conversation_id = Some(Some("cv_a1".into()));
+        assert_eq!(serde_json::to_value(&opened).unwrap(), sample("opened"));
 
         // 终态带回消费掉的那份授权身份；服务端按它认领，不按 tabId。
         let mut finished = EventFrame::new(3, 12, "download.finished", "bt_1".into());

@@ -367,6 +367,8 @@ describe('文件树层级', () => {
 describe('页签栏横向滚轮', () => {
   async function renderTabs() {
     const store = await import('../lib/store/index.ts')
+    // 面板翻开在哪一页按项目记，先站到一个项目上再翻页。
+    store.setWorkspace({ id: 'ws_tabs_wheel', root: 'C:work', name: 'work' })
     store.setSidePanel('todos')
 
     const { render } = await import('solid-js/web')
@@ -478,6 +480,12 @@ describe('页签栏横向滚轮', () => {
  * happy-dom 没有 IntersectionObserver，这里用一个只记回调的替身，由测试自己触发相交。
  */
 describe('变更页按轮', () => {
+  // 面板翻开在哪一页按项目记，所以项目要在每条用例翻页之前就位。
+  beforeEach(async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setWorkspace({ id: 'ws_changes', root: 'C:work', name: 'work' })
+  })
+
   class FakeObserver {
     static instances: FakeObserver[] = []
     observed: Element[] = []
@@ -528,8 +536,6 @@ describe('变更页按轮', () => {
   const mount = async () => {
     ;(globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = FakeObserver
     FakeObserver.instances = []
-    const store = await import('../lib/store/index.ts')
-    store.setWorkspace({ id: 'ws_changes', root: 'C:work', name: 'work' })
     const { render } = await import('solid-js/web')
     const { default: SidePanel } = await import('./SidePanel.tsx')
     const host = document.createElement('div')

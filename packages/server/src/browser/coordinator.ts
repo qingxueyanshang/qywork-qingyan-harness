@@ -9,11 +9,13 @@
  *
  * 三条边界：
  *
- * 1. **控制槽按顶层会话分配。** 不同会话各有自己的 CDP 连接、页会话表与观察表，
- *    可以同时操作各自的页；同一条会话的第二个执行拿到明确失败，不排队、不抢占。
+ * 1. **控制槽按执行者分配，独占降到页这一级。** 每次执行各有自己的 CDP 连接、页会话表
+ *    与观察表，同一条会话的父子与并行成员各操作各的页；两个执行者碰同一页时，后到的
+ *    一方拿到明确失败，不排队、不抢占。
  *    这条不影响归属：C 的 run 释放后 C 的页仍归 C，C 的下一条消息接着用。
- * 2. **只操作自己会话的页。** 别的会话拿不到这一页的会话，也附不上它。用户页要用户在聊天里
- *    点名后模型 `bind` 才归本会话。
+ * 2. **只操作本工作区里自己会话的页。** 工作区先收口：别的工作区的页不列出来、也附不上，
+ *    连用户页都只在本工作区里可见。其上再判会话归属，用户页要用户在聊天里点名后模型
+ *    `bind` 才归本会话。
  * 3. **宿主断开或重连即全部控制作废**：CDP 连接、页会话丢弃；归属留在宿主上，重连后接着用。
  */
 
@@ -25,6 +27,7 @@ import type {
   BrowserObservation,
   BrowserOptionsPage,
   BrowserPort,
+  BrowserRefusal,
   BrowserTabInfo,
   BrowserWaitResult,
   FollowUpObservation,
@@ -54,11 +57,28 @@ import {
  */
 export const MIN_RUNTIME_VERSION = '152.0.4191.66'
 
-export class BrowserBusyError extends Error {}
+/**
+ * 这一页正被另一个执行者占着。
+ *
+ * 本次调用还没有向宿主或 CDP 发出任何帧，因此按 `BrowserRefusal` 声明 `executed:false`：
+ * 调用方据此知道页面没被动过。已发出的动作即使随后失败也不得用这个形状。
+ */
+export class BrowserBusyError extends Error implements BrowserRefusal {
+  readonly errorKind = 'browser_busy' as const
+  readonly executed = false as const
+}
 /** 这个端口已经释放过。上一条消息的 Run 收尾后再调工具走到这里，不复活。 */
 export class BrowserReleasedError extends Error {}
-/** 这一页不归本会话。跨会话隔离与「用户页未 bind」都走这条。 */
-export class BrowserNotOwnedError extends Error {}
+/**
+ * 这个 tabId 不在本次执行看得见的清单里：跨工作区、跨会话、未接管的用户页、认不出的 id
+ * 都走这条。
+ *
+ * 判定在同步段完成，一帧都没发出去，因此同样按 `BrowserRefusal` 声明 `executed:false`。
+ */
+export class BrowserNotOwnedError extends Error implements BrowserRefusal {
+  readonly errorKind = 'invalid_argument' as const
+  readonly executed = false as const
+}
 
 /** 一次观察在协调器里保留多久。只留最近几份，旧编号本来就要求重新观察。 */
 const MAX_OBSERVATIONS = 8
@@ -125,22 +145,28 @@ interface NavWatch {
 }
 
 /**
- * 一条会话的控制槽。每条顶层会话至多一个，宿主断开、重连、释放、初始化失败时消亡。
+ * 一次执行的控制槽。每个 owner 至多一个，宿主断开、重连、释放、初始化失败时消亡。
  *
- * 它是「这条会话此刻哪一个 Run 在用 CDP 连接」的账，**不是归属账**——归属在宿主上按会话记。
+ * 它是「这次执行手里有哪条 CDP 连接、附着哪些页」的账，**不是归属账**——归属在宿主上
+ * 按会话记。`sessions` 与 `attaching` 合起来就是这次执行占着的页，页级互斥只认它们。
  */
 interface Control {
   owner: number
-  /** 这个 Run 归哪条会话（顶层会话）。归属判定与自动附页都按它。 */
+  /** 这次执行归哪条会话（顶层会话）。归属判定与占页都按它。 */
   conversationId: string
   /** 建槽时的宿主连接纪元。异步提交点按它核对宿主身份，重连后的槽不被旧回调改写。 */
   epoch: number
   client: CdpClient | null
   /** 建连的在途 Promise。同槽并发附页共用它，不为第二页再连一条。 */
   connecting: Promise<CdpClient> | null
-  /** tabId → CDP 页会话 id。只是本 Run 已经附上的那些，不是归属。 */
+  /** tabId → CDP 页会话 id。只是本次执行已经附上的那些，不是归属。 */
   sessions: Map<string, string>
-  /** tabId → 附页的在途 Promise。同一页并发附加共用一次。 */
+  /**
+   * tabId → 占页的在途 Promise。同槽同页并发调用共用一次。
+   *
+   * 登记即占住这一页：从冲突检查到这里是同一个同步段，中间不得插 await，否则两个
+   * 执行者会双双通过检查并各自向同一页发输入。
+   */
   attaching: Map<string, Promise<void>>
   /** 观察编号 → 该次观察的 ref 表。动作只认这里有的编号。 */
   observations: Map<string, ObservationRecord>
@@ -148,7 +174,7 @@ interface Control {
   arms: Map<string, string>
   /** 本槽在途的下载等待。释放时逐条终结，不等各自的期限。 */
   waits: Set<(reason: string) => void>
-  /** 这一次释放的收尾。非 `null` 即槽正在清理：新 Run 要等它结束，不得附到清理中的页。 */
+  /** 这一次释放的收尾。非 `null` 即槽正在清理：别的执行者要等它结束才能接手它占着的页。 */
   releasing: Promise<void> | null
 }
 
@@ -160,6 +186,8 @@ interface Control {
 interface Lease {
   owner: number
   conversationId: string
+  /** 这次执行所在的工作区。列页、建页与接管都按它收口，跨工作区的 tabId 一律拒绝。 */
+  workspaceId: string
   released: boolean
 }
 
@@ -177,8 +205,8 @@ export function meetsRuntimeFloor(version: string, floor = MIN_RUNTIME_VERSION):
 
 export class BrowserCoordinator {
   #bridge: BrowserBridge
-  /** 顶层会话 id → 控制槽。不同会话并行，同一会话的第二个 owner 拿到明确失败。 */
-  #controls = new Map<string, Control>()
+  /** owner → 控制槽。每次执行一个，互不相干；碰同一页才互斥。 */
+  #controls = new Map<number, Control>()
   #nextOwner = 0
   #nextDownload = 0
   #offHostChange: () => void
@@ -216,14 +244,15 @@ export class BrowserCoordinator {
   }
 
   /**
-   * 关掉一条会话名下的全部 AI 页。会话删除/归档走这条，页面不留孤儿。
+   * 关掉一条会话名下的全部 AI 页。只有会话删除走这条，页面不留孤儿；归档不关页。
    *
-   * 先让这条会话的控制槽收尾，再发 `close.conversation`：反过来的话清理命令打在
-   * 已经不存在的页会话上，逐条报错。归属在宿主上，所以只发一条，由宿主按会话过滤删页。
+   * 先让这条会话**全部**执行者的控制槽收尾，再发一次 `close.conversation`：反过来的话
+   * 清理命令打在已经不存在的页会话上，逐条报错。归属在宿主上，所以只发一条，
+   * 由宿主按会话过滤删页。
    */
   async closeConversation(conversationId: string): Promise<void> {
-    const control = this.#controls.get(conversationId)
-    if (control) await this.#teardown(control)
+    const mine = [...this.#controls.values()].filter((c) => c.conversationId === conversationId)
+    await Promise.all(mine.map((control) => this.#teardown(control)))
     await this.#bridge.request('close.conversation', { conversationId }).catch((err) => {
       log.info('browser', `按会话关页未送达：${err instanceof Error ? err.message : String(err)}`)
     })
@@ -233,13 +262,14 @@ export class BrowserCoordinator {
    * 给一次执行造一个端口。
    *
    * 端口自己不占控制槽，第一次操作才占。`conversationId` 是这个 Run 的归属，
-   * 传进来的都是顶层会话（成员会话记派它的那条）。
+   * 传进来的都是顶层会话（成员会话记派它的那条）；`workspaceId` 是那条会话所在的
+   * 工作区，装配方查不到就不该造端口，这里不接受空值。
    */
-  portFor(conversationId: string): BrowserPort {
+  portFor(conversationId: string, workspaceId: string): BrowserPort {
     this.#nextOwner += 1
-    const lease: Lease = { owner: this.#nextOwner, conversationId, released: false }
+    const lease: Lease = { owner: this.#nextOwner, conversationId, workspaceId, released: false }
     return {
-      tabs: async () => this.#tabs(conversationId),
+      tabs: async () => this.#tabs(lease),
       open: (url) => this.#open(lease, url),
       bind: (tabId) => this.#bind(lease, tabId),
       close: (tabId) => this.#close(lease, tabId),
@@ -266,20 +296,25 @@ export class BrowserCoordinator {
   }
 
   /**
-   * 存活页清单：本会话自己的页 + 用户手动开的页。别的会话的页不列出来，也不给它 tabId。
+   * 存活页清单：**本工作区里**本会话自己的页 + 用户手动开的页。
+   * 别的工作区的页与别的会话的页都不列出来，也不给它们 tabId。
    *
    * `controlled` = 这一页归本会话（可以直接操作）。用户页 `controlled:false`，
    * 要用户在聊天里点名后 `bind` 才归本会话。
    */
-  async #tabs(conversationId: string): Promise<BrowserTabInfo[]> {
+  async #tabs(lease: Lease): Promise<BrowserTabInfo[]> {
     return this.#bridge
       .tabs()
-      .filter((tab) => tab.conversationId === conversationId || tab.conversationId === null)
+      .filter(
+        (tab) =>
+          tab.workspaceId === lease.workspaceId &&
+          (tab.conversationId === lease.conversationId || tab.conversationId === null),
+      )
       .map((tab) => ({
         tabId: tab.tabId,
         url: tab.url,
         title: tab.title,
-        controlled: tab.conversationId === conversationId,
+        controlled: tab.conversationId === lease.conversationId,
       }))
   }
 
@@ -291,15 +326,15 @@ export class BrowserCoordinator {
    */
   async #release(lease: Lease): Promise<void> {
     lease.released = true
-    const control = this.#controls.get(lease.conversationId)
-    if (!control || control.owner !== lease.owner) return
+    const control = this.#controls.get(lease.owner)
+    if (!control) return
     await this.#teardown(control)
   }
 
   /**
    * 收尾一个控制槽：关业务入口 → 终结本槽下载等待 → 撤销未消费授权 → 取消客户端 → 断连。
    *
-   * 槽在整段清理期间**仍留在表里**，新 Run 因此不会附到一个正在被清理的页；清理结束后
+   * 槽在整段清理期间**仍留在表里**，别的执行者因此不会附到一个正在被清理的页；清理结束后
    * 按对象相等删除，重连后建出的新槽不被这一次收尾删掉。全程共用一个截止时间。
    */
   #teardown(control: Control): Promise<void> {
@@ -323,9 +358,7 @@ export class BrowserCoordinator {
         client?.close()
       })
       .finally(() => {
-        if (this.#controls.get(control.conversationId) === control) {
-          this.#controls.delete(control.conversationId)
-        }
+        if (this.#controls.get(control.owner) === control) this.#controls.delete(control.owner)
       })
     control.releasing = done
     return done
@@ -341,12 +374,15 @@ export class BrowserCoordinator {
   /**
    * 这个槽此刻还作数吗。
    *
-   * 三项缺一不可：它仍是本会话当前的槽、没有在清理、宿主连接纪元没变。
-   * 每个异步提交点都要过这一关——建连、附页、观察、建页的回包都可能在释放或重连之后到达。
+   * 三项缺一不可：它仍是本次执行当前的槽、没有在清理、宿主连接纪元没变。
+   * 每个异步提交点都要过这一关——建连、占页与观察的回包都可能在释放或重连之后到达。
+   *
+   * 页还占不占得住**不看它**：清理中的槽仍会对它附着的页发收尾命令，那些页要等收尾
+   * 结束才放给别人，判据是 `#holderOf`。
    */
   #alive(control: Control): boolean {
     return (
-      this.#controls.get(control.conversationId) === control &&
+      this.#controls.get(control.owner) === control &&
       control.releasing === null &&
       this.#host()?.connectionEpoch === control.epoch
     )
@@ -355,20 +391,17 @@ export class BrowserCoordinator {
   /**
    * 取本次执行的控制槽，没有就建一个。
    *
-   * 同一会话已有另一个 owner 时明确失败；槽正在清理时等它结束再建新的——
-   * 这一等是本槽自己的收尾，有界（`RELEASE_BUDGET_MS`），不是全局队列。
+   * 本 owner 的槽正在清理时等它结束再建新的——宿主断连与初始化失败会在端口不知情的
+   * 情况下拆掉槽。这一等是本槽自己的收尾，有界（`RELEASE_BUDGET_MS`），不是全局队列。
    */
   async #acquire(lease: Lease): Promise<Control> {
     for (;;) {
       if (lease.released) throw new BrowserReleasedError('本次执行的浏览器控制已经结束')
-      const existing = this.#controls.get(lease.conversationId)
+      const existing = this.#controls.get(lease.owner)
       if (!existing) break
       if (existing.releasing) {
         await existing.releasing
         continue
-      }
-      if (existing.owner !== lease.owner) {
-        throw new BrowserBusyError('这条会话的浏览器已被另一个任务控制')
       }
       return existing
     }
@@ -387,7 +420,7 @@ export class BrowserCoordinator {
       waits: new Set(),
       releasing: null,
     }
-    this.#controls.set(lease.conversationId, control)
+    this.#controls.set(lease.owner, control)
     return control
   }
 
@@ -409,68 +442,63 @@ export class BrowserCoordinator {
     }
   }
 
+  /**
+   * 建一页。**建页不占页**：它只让宿主把页记到本会话名下，控制权要等第一次 observe
+   * 或 act 时按页级互斥去取。
+   *
+   * 因此 `opened` 事件先于 create 回包到达也不会有两个入口分别附页；本次执行释放之后
+   * 回包才到时，这一页照样如实返回——它已经在宿主的存活表里，归属也已经落下。
+   */
   async #open(lease: Lease, url: string): Promise<BrowserTabInfo> {
-    const control = await this.#acquire(lease)
-    const data = await this.#bridge.request('create', { url, conversationId: lease.conversationId })
+    await this.#acquire(lease)
+    const data = await this.#bridge.request('create', {
+      url,
+      workspaceId: lease.workspaceId,
+      conversationId: lease.conversationId,
+    })
     const tabId = data?.tabId
-    const marker = data?.marker
-    if (!tabId || !marker) throw new BrowserBridgeError('宿主没有给出 tabId 与标记')
-    // 回包迟到：这一页是本次调用的产物，保留将产生一个无人操作、无法回收的页面。
-    if (!this.#alive(control)) {
-      await this.#bridge.request('close', { tabId }).catch(() => {})
-      throw new BrowserReleasedError('本次执行的浏览器控制已经结束，新建的页已回收')
-    }
-    try {
-      await this.#attach(control, tabId, marker)
-    } catch (err) {
-      // 附不上就把刚建出来的这一页收掉：理由同上。
-      await this.#bridge.request('close', { tabId }).catch(() => {})
-      throw err
-    }
+    if (!tabId) throw new BrowserBridgeError('宿主没有给出 tabId')
     return { tabId, url: data?.url ?? url, title: data?.title ?? '', controlled: true }
   }
 
   /**
-   * 接管一页到本会话。
+   * 接管一页到本会话，并占住它。
    *
    * 归属判定在宿主：用户页 → 归本会话；已归本会话 → 幂等；已归另一条会话 → 拒绝。
-   * 拿到 marker 之后附上 CDP 会话。`bind` 只在「用户点名了自己开的页」时用；本会话
-   * 自己开的页由后续操作自动附页，不需要显式 bind。
+   * `bind` 只在「用户点名了自己开的页」时用；本会话自己开的页由后续操作直接占页，
+   * 不需要显式 bind。
    *
-   * 接管迟到时只撤销本次附加，**不关这一页**：它是用户自己开的页，归属已经落到宿主上。
+   * 回的地址与标题取宿主快照：接管成功时它已经带上新归属，不另读一份 bind 回包。
    */
   async #bind(lease: Lease, tabId: string): Promise<BrowserTabInfo> {
     const control = await this.#acquire(lease)
-    const data = await this.#bridge.request('bind', { tabId, conversationId: lease.conversationId })
-    const marker = data?.marker
-    if (!marker) throw new BrowserBridgeError('宿主没有给出标记')
-    if (!this.#alive(control)) {
-      throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这一页不附加')
-    }
-    await this.#attach(control, tabId, marker)
-    return { tabId, url: data?.url ?? '', title: data?.title ?? '', controlled: true }
+    await this.#hold(lease, control, tabId, 'bind')
+    const snap = this.#bridge.tab(tabId)
+    return { tabId, url: snap?.url ?? '', title: snap?.title ?? '', controlled: true }
   }
 
   /**
-   * 取这一页的 CDP 句柄。占控制槽、核归属、自动附页三步都在这里。
+   * 取这一页的 CDP 句柄。占控制槽、核归属、占页三步都在这里。
    *
    * **归属跨消息稳定**：本会话上一条消息建的页仍归它，这一步按宿主快照核对归属后
-   * 自动附上 CDP 会话——所以下一条消息直接 observe/act 就能用，不需要交接。
+   * 直接占页——所以下一条消息直接 observe/act 就能用，不需要交接。
    */
   async #pageOf(lease: Lease, tabId: string): Promise<{ control: Control; page: PageHandle }> {
     const control = await this.#acquire(lease)
-    if (!control.sessions.has(tabId)) {
-      const snap = this.#bridge.tab(tabId)
-      if (!snap) throw new BrowserBridgeError(`认不出的标签页 ${tabId}`)
-      if (snap.conversationId !== lease.conversationId) {
-        throw new BrowserNotOwnedError(`标签页 ${tabId} 不归本会话`)
-      }
-      await this.#attach(control, tabId, snap.marker)
-    }
+    await this.#hold(lease, control, tabId, 'page')
     const client = control.client
     const sessionId = control.sessions.get(tabId)
     if (!client || !sessionId) throw new BrowserBridgeError(`标签页 ${tabId} 没有可用的会话`)
     return { control, page: { client, sessionId, tabId } }
+  }
+
+  /** 此刻占着这一页的另一个槽。清理中的槽同样算占着：它还会对这一页发收尾命令。 */
+  #holderOf(self: Control, tabId: string): Control | null {
+    for (const control of this.#controls.values()) {
+      if (control === self) continue
+      if (control.sessions.has(tabId) || control.attaching.has(tabId)) return control
+    }
+    return null
   }
 
   #recordOf(control: Control, tabId: string, observationId: string): ObservationRecord {
@@ -871,44 +899,96 @@ export class BrowserCoordinator {
   }
 
   /**
-   * 建立这一页的 CDP 会话。
+   * 占住一页并建立它的 CDP 会话。`bind` 与全部页面操作共用这一个入口。
+   *
+   * 准入、冲突检查与登记在同一个同步段里完成，正文推迟到登记之后的微任务：先发 bind、
+   * 先建连接或先 await 的话，两个执行者会双双通过检查，各自向同一页发输入。
+   * 存活的持有者一律 busy；正在清理的持有者等它收尾结束（有界）再重查，不报 busy。
    *
    * 页会话初始化被拒（焦点仿真不可用）时撤销整个控制槽：带着一个焦点判定不成立的
-   * 会话继续操作，输入会落在看不见的地方。附加成功时若本槽已经作废，只撤销这一次附加，
-   * 不关页面——页面归属在宿主上，与本次执行无关。
+   * 会话继续操作，输入会落在看不见的地方。
    */
-  async #attach(control: Control, tabId: string, marker: string): Promise<void> {
-    if (control.sessions.has(tabId)) return
-    const inflight = control.attaching.get(tabId)
-    if (inflight) return inflight
-    const task = (async () => {
-      const client = await this.#clientOf(control)
-      try {
-        const { sessionId } = await client.attachByMarker(marker)
-        if (!this.#alive(control)) {
-          await client
-            .send(
-              'Target.detachFromTarget',
-              { sessionId },
-              { teardown: 'detach', timeoutMs: 3_000 },
-            )
-            .catch(() => {})
-          throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这一页不登记')
-        }
-        control.sessions.set(tabId, sessionId)
-      } catch (err) {
-        if (err instanceof CdpInitError) await this.#teardown(control)
-        throw err
+  async #hold(lease: Lease, control: Control, tabId: string, mode: 'bind' | 'page'): Promise<void> {
+    let marker = ''
+    for (;;) {
+      if (control.sessions.has(tabId)) return
+      const inflight = control.attaching.get(tabId)
+      if (inflight) return inflight
+      if (!this.#alive(control)) {
+        throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这一页不附加')
       }
-    })().finally(() => {
-      control.attaching.delete(tabId)
-    })
+      const snap = this.#bridge.tab(tabId)
+      if (!snap) throw new BrowserNotOwnedError(`认不出的标签页 ${tabId}`)
+      if (snap.workspaceId !== lease.workspaceId) {
+        throw new BrowserNotOwnedError(`标签页 ${tabId} 不在本工作区`)
+      }
+      // bind 是「用户点名了自己开的页」，因此额外接受无归属的页；页面操作只认本会话的页。
+      const mine = snap.conversationId === lease.conversationId
+      if (!mine && !(mode === 'bind' && snap.conversationId === null)) {
+        throw new BrowserNotOwnedError(
+          mode === 'bind' ? `标签页 ${tabId} 归另一条会话，接管不了` : `标签页 ${tabId} 不归本会话`,
+        )
+      }
+      const holder = this.#holderOf(control, tabId)
+      if (!holder) {
+        marker = snap.marker
+        break
+      }
+      if (!holder.releasing) throw new BrowserBusyError(`标签页 ${tabId} 正被另一个任务操作`)
+      await holder.releasing
+    }
+    const task = Promise.resolve()
+      .then(async () => {
+        if (mode === 'bind') {
+          const data = await this.#bridge.request('bind', {
+            tabId,
+            workspaceId: lease.workspaceId,
+            conversationId: lease.conversationId,
+          })
+          if (!data?.marker) throw new BrowserBridgeError('宿主没有给出标记')
+          marker = data.marker
+        }
+        const client = await this.#clientOf(control)
+        try {
+          const { sessionId } = await client.attachByMarker(marker)
+          const detach = () =>
+            client
+              .send(
+                'Target.detachFromTarget',
+                { sessionId },
+                { teardown: 'detach', timeoutMs: 3_000 },
+              )
+              .catch(() => {})
+          // 宿主已经关掉的页不再登记：迟到的附加会让一个不存在的页重新可操作。
+          if (!this.#bridge.tab(tabId)) {
+            await detach()
+            throw new BrowserBridgeError(`标签页 ${tabId} 已经关闭`)
+          }
+          if (!this.#alive(control)) {
+            await detach()
+            throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这一页不登记')
+          }
+          control.sessions.set(tabId, sessionId)
+        } catch (err) {
+          if (err instanceof CdpInitError) await this.#teardown(control)
+          throw err
+        }
+      })
+      .finally(() => {
+        // 槽已经开始收尾时占用留到收尾结束：清理命令还会打在这一页上，此刻放手会让
+        // 接手者的等待器与旧连接的清理交错。
+        if (control.releasing && !control.sessions.has(tabId)) {
+          void control.releasing.finally(() => control.attaching.delete(tabId))
+          return
+        }
+        control.attaching.delete(tabId)
+      })
     control.attaching.set(tabId, task)
     return task
   }
 
   async #close(lease: Lease, tabId: string): Promise<void> {
-    // 归属核对走 pageOf；核过之后再关。
+    // 归属与页级占用都走 pageOf：别的执行者持着这一页时 close 同样 busy，不做互斥的旁路。
     await this.#pageOf(lease, tabId)
     await this.#bridge.request('close', { tabId })
     this.#forget(tabId)

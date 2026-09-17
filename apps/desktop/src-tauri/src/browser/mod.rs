@@ -179,6 +179,16 @@ fn free_loopback_port() -> Option<u16> {
     listener.local_addr().ok().map(|a| a.port())
 }
 
+/// 取请求帧里的工作区 id。空值与缺席一律拒绝：没有工作区的页在界面上无处归属，
+/// 也无从判断该不该让另一个工作区的会话操作它。
+#[cfg(windows)]
+fn workspace_of(frame: &RequestFrame, op: &str) -> Result<String, String> {
+    match frame.workspace_id.as_deref() {
+        Some(id) if !id.is_empty() => Ok(id.to_owned()),
+        _ => Err(format!("{op} 缺少 workspaceId")),
+    }
+}
+
 #[cfg(windows)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -234,8 +244,9 @@ impl BrowserHost {
         self.state.lock().expect("宿主状态锁被污染").connection_epoch
     }
 
-    /// 界面用的标签页清单。**只有 id / 地址 / 标题**：marker 与归属是 CDP 与协调器的事，
-    /// 工具栏只是标准浏览器 chrome，不区分人工页与 AI 页。
+    /// 界面用的标签页清单。**只有 id / 地址 / 标题 / 工作区**：marker 与会话归属是 CDP 与
+    /// 协调器的事，工具栏只是标准浏览器 chrome，不区分人工页与 AI 页。
+    /// 工作区在这里出现，是因为界面要按它决定这一页在不在当前页签条上。
     fn views(&self) -> Vec<TabView> {
         let state = self.state.lock().expect("宿主状态锁被污染");
         let mut list: Vec<TabView> = state
@@ -245,6 +256,7 @@ impl BrowserHost {
                 tab_id: id.clone(),
                 url: tab.url.clone(),
                 title: tab.title.clone(),
+                workspace_id: tab.workspace_id.clone(),
             })
             .collect();
         // HashMap 的遍历顺序每次都不同，页签条会随之变动。按 tabId 排出稳定顺序。
@@ -285,11 +297,13 @@ impl BrowserHost {
         match frame.op.as_str() {
             "create" => {
                 let url = frame.url.clone().ok_or("create 缺少 url")?;
-                self.create(app, &url, frame.conversation_id.clone())
+                let workspace_id = workspace_of(frame, "create")?;
+                self.create(app, &url, workspace_id, frame.conversation_id.clone())
             }
             "close" => self.close(frame.tab_id.as_deref().ok_or("close 缺少 tabId")?),
             "bind" => self.bind(
                 frame.tab_id.as_deref().ok_or("bind 缺少 tabId")?,
+                &workspace_of(frame, "bind")?,
                 frame.conversation_id.as_deref().ok_or("bind 缺少 conversationId")?,
             ),
             "close.conversation" => self.close_conversation(
@@ -322,6 +336,7 @@ impl BrowserHost {
         &self,
         app: &AppHandle,
         url: &str,
+        workspace_id: String,
         conversation_id: Option<String>,
     ) -> Result<ResultData, String> {
         let (tab_id, marker) = {
@@ -338,6 +353,7 @@ impl BrowserHost {
                 url: url.to_owned(),
                 profile_dir: self.profile.dir().to_path_buf(),
                 debug_port: self.debug_port(),
+                workspace_id,
                 conversation_id,
             },
         )?;
@@ -351,12 +367,12 @@ impl BrowserHost {
             f.url = Some(snapshot.url.clone());
             f.title = Some(snapshot.title.clone());
             f.marker = Some(snapshot.marker.clone());
+            f.workspace_id = Some(snapshot.workspace_id.clone());
             f.conversation_id = Some(snapshot.conversation_id.clone());
         });
         self.changed();
         Ok(ResultData {
             tab_id: Some(snapshot.tab_id),
-            marker: Some(snapshot.marker),
             url: Some(snapshot.url),
             title: Some(snapshot.title),
             ..ResultData::default()
@@ -378,15 +394,24 @@ impl BrowserHost {
 
     /// 接管一个已存在的标签页，把它归给某条会话。
     ///
+    /// 工作区先判：跨工作区的接管一律拒绝，页面不在工作区之间移动。
     /// 归属规则：用户页（`None`）→ 归给这条会话（用户在聊天里点名后模型才这么做）；
     /// 已归本会话 → 幂等放行；已归另一条会话 → 拒绝，不抢占。没有交接标记这一说。
-    fn bind(&self, tab_id: &str, conversation_id: &str) -> Result<ResultData, String> {
+    fn bind(
+        &self,
+        tab_id: &str,
+        workspace_id: &str,
+        conversation_id: &str,
+    ) -> Result<ResultData, String> {
         let (snapshot, adopted) = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             let tab = state
                 .tabs
                 .get_mut(tab_id)
                 .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?;
+            if tab.workspace_id != workspace_id {
+                return Err("这一页属于另一个工作区，接管不了".to_owned());
+            }
             let adopted = match tab.conversation_id.as_deref() {
                 Some(owner) if owner != conversation_id => {
                     return Err("这一页归另一条会话，接管不了".to_owned())
@@ -414,7 +439,7 @@ impl BrowserHost {
         })
     }
 
-    /// 关掉一条会话名下的全部页。会话删除/归档走这一条，页面不留孤儿。
+    /// 关掉一条会话名下的全部页。只有会话删除走这一条，页面不留孤儿；归档不关页。
     fn close_conversation(&self, conversation_id: &str) -> Result<ResultData, String> {
         let closed = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
@@ -566,18 +591,22 @@ pub fn tab_views() -> Vec<TabView> {
 /// 同一套下载裁决。**不要另写一条用户专用的建页路径**：两条路会在参数串、
 /// 标记注入与首个文档等待上分头漂移。
 #[cfg(windows)]
-pub fn user_open(app: &AppHandle, url: Option<&str>) -> Result<TabView, String> {
+pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Result<TabView, String> {
     let host = host().ok_or(NO_HOST)?;
+    if workspace_id.is_empty() {
+        return Err("新建标签页缺少工作区".to_owned());
+    }
     // 不给地址就是一页空标签，地址由用户在地址栏里输入。
     let target = url.unwrap_or(tabs::BLANK);
     if target != tabs::BLANK && !target.starts_with("http://") && !target.starts_with("https://") {
         return Err("只能打开 http / https 地址".to_owned());
     }
-    let data = host.create(app, target, None)?;
+    let data = host.create(app, target, workspace_id.to_owned(), None)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
         url: data.url.unwrap_or_default(),
         title: data.title.unwrap_or_default(),
+        workspace_id: workspace_id.to_owned(),
     })
 }
 

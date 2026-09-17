@@ -67,9 +67,10 @@ export interface SinkPort {
  * **不注入就没有这个能力。** 没有原生宿主连上来时装配方不注入，对应的工具也就
  * 不注册——没有浏览器的浏览器工具没有降级形态。
  *
- * **控制权按会话分配，跟着这一次执行走。** 不同会话可以同时各自控制自己的页；
- * 同一条会话的第二个执行得到明确失败，不排队。这一轮结束由装配方调 `release`，
- * 未消费的下载授权随之作废，页面保留给用户接手。
+ * **控制权按页分配，跟着这一次执行走。** 每次执行各操作各的页，同一条会话的父子与
+ * 并行成员互不相干；碰同一页时后到的一方得到 `BrowserRefusal` 形状的明确失败，
+ * 不排队。这一轮结束由装配方调 `release`，未消费的下载授权随之作废，
+ * 页面保留给用户接手。
  */
 export interface BrowserTabInfo {
   tabId: string
@@ -274,17 +275,35 @@ export interface BrowserDownloadResult {
   suggestedName?: string
 }
 
+/**
+ * 执行前拒绝：判定落在同步段里，本次操作**没有向宿主或浏览器发出任何帧**，页面没被动过。
+ *
+ * 只有这一种形状允许回 `executed:false`。已发出的动作、超时与断连一律按已执行回执，
+ * 把它们也标成未执行会让调用方重发一次已经生效的操作。
+ *
+ * 两种 kind 够用：页被别的执行者占着是 `browser_busy`，tabId 不在本次可见清单里
+ * （跨工作区、跨会话、未接管的用户页、认不出的 id）是 `invalid_argument`。
+ * 不要为后四种各起一个 kind，调用方对它们的处置完全一样。
+ */
+export interface BrowserRefusal {
+  errorKind: 'browser_busy' | 'invalid_argument'
+  executed: false
+}
+
 export interface BrowserPort {
-  /** 宿主此刻的存活页，含用户手动开的那些。 */
+  /** 本工作区里宿主此刻的存活页，含用户手动开的那些。别的工作区的页不在其中。 */
   tabs(): Promise<BrowserTabInfo[]>
-  /** 新建一页并取得控制权。不切换系统焦点，也不置前任何窗口。 */
+  /**
+   * 新建一页。**建页不取得控制权**：这一页归本会话，第一次 observe 或 act 时才占住它，
+   * 在那之前别的执行者可以先占。不切换系统焦点，也不置前任何窗口。
+   */
   open(url: string): Promise<BrowserTabInfo>
   /**
    * 把一页接管到本会话。
    *
    * 归属判定在宿主：用户手动开的页 → 归本会话（用户在聊天里点名后模型才这么做）；
    * 已归本会话 → 幂等；已归另一条会话 → 失败，不抢占。**本会话自己开的页不需要
-   * `bind`**：后续 observe/act 按归属自动附页。
+   * `bind`**：后续 observe/act 按归属直接占页。接管同时占住这一页。
    */
   bind(tabId: string): Promise<BrowserTabInfo>
   /** 关掉一页。只释放这一页的资源，profile 与其他页不受影响。 */

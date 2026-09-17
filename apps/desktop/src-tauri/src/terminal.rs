@@ -7,9 +7,10 @@
 //! 所以终端是桌面独有能力，握手之外由 `isDesktopShell()` 判定，别的端不显示入口。
 //!
 //! 会话不随面板切换而销毁：用户切去查看文件、甚至将整块面板收起时，命令仍需继续运行。
-//! 销毁只发生在显式关闭（页签上的 ×、换项目）、子进程自己退出、以及应用退出时。
+//! 销毁只发生在显式关闭（页签上的 ×）、子进程自己退出、以及应用退出时。
 //!
-//! 一条 id 一条会话，前端可以同时开几条（页签由 `panelTabs` 管）。
+//! 一条 id 一条会话，前端可以同时开几条（页签由 `panelTabs` 管）。每条会话记住它属于
+//! 哪个工作区：前端按工作区分开显示页签，换工作区不关任何一条。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -31,6 +32,9 @@ const READ_CHUNK: usize = 8 * 1024;
 const BACKLOG_CAP: usize = 256 * 1024;
 
 struct Session {
+    /// 这条会话属于哪个工作区。**建出来就不再改**：id 与 PTY 是一一对应的，
+    /// 改归属等于把一个正在跑的 shell 记到另一个工作区名下。
+    workspace_id: String,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -45,6 +49,14 @@ struct Session {
 
 #[derive(Default)]
 pub struct TerminalHandle(Mutex<HashMap<String, Session>>);
+
+/// `terminal_list` 的一行：会话 id 与它的工作区归属。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSession {
+    id: String,
+    workspace_id: String,
+}
 
 #[derive(Clone, Serialize)]
 struct Output {
@@ -65,16 +77,23 @@ struct Exit {
 /// 已经存在的 id 不报错，直接把它的回放缓冲交出去：前端在面板重新挂载时会无条件
 /// 调一次，报错时用户看到的是一个已打开的终端，配一句「已存在」的红字。新起的会话
 /// 没有可回放的，回空串。
+///
+/// **重接必须报同一个工作区**，否则拒绝：接受的话这条 PTY 会同时出现在两个工作区的
+/// 页签上，而它只有一份 cwd 和一个子进程。
 #[tauri::command]
 pub fn terminal_open(
     app: AppHandle,
     state: State<TerminalHandle>,
     id: String,
+    workspace_id: String,
     cwd: String,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
     if let Some(session) = state.0.lock().get(&id) {
+        if session.workspace_id != workspace_id {
+            return Err("这条终端属于另一个项目".to_owned());
+        }
         return Ok(session.backlog.lock().clone());
     }
 
@@ -121,6 +140,7 @@ pub fn terminal_open(
     state.0.lock().insert(
         id.clone(),
         Session {
+            workspace_id,
             master: pair.master,
             writer,
             killer,
@@ -151,8 +171,16 @@ pub fn terminal_open(
 /// 开发期热更换掉那个模块都算），而 shell 还在跑——不对一次账，那条会话就没有
 /// 任何界面碰得到它，只能等应用退出时被 `shutdown` 收掉。
 #[tauri::command]
-pub fn terminal_list(state: State<TerminalHandle>) -> Vec<String> {
-    state.0.lock().keys().cloned().collect()
+pub fn terminal_list(state: State<TerminalHandle>) -> Vec<TerminalSession> {
+    state
+        .0
+        .lock()
+        .iter()
+        .map(|(id, session)| TerminalSession {
+            id: id.clone(),
+            workspace_id: session.workspace_id.clone(),
+        })
+        .collect()
 }
 
 /// 键盘输入。原样写进 PTY，不做任何解释——回车、Ctrl-C、方向键都是字节，

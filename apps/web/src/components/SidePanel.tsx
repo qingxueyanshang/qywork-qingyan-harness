@@ -431,9 +431,11 @@ export default function SidePanel() {
            * 树是新的、旁边那半还是旧的，点击不产生任何响应。
            *
            * 逐个清一遍是行不通的：那是一份「所有局部状态」的清单，加一个 signal 就漏一条。
-           * 重挂是唯一不会漏的做法。`openFile` 与可多开的那些页不在这里——它们在 store
-           * 里，由 `activateWorkspace` 清（那边有注释）。终端尤其不能靠重挂收：
-           * PTY 在 Rust 侧，只认显式关闭。
+           * 重挂是唯一不会漏的做法。`openFile` 不在这里，由 `activateWorkspace` 清。
+           *
+           * **重挂不收可多开的那些页**：它们按项目分账（`store/ui.ts` 的 `panels`），
+           * 只有当前项目那几条被派生出来。终端的 xterm 实例挂在模块级的 `panes` 上、
+           * PTY 在 Rust 侧，重挂只是把宿主搬进搬出，切回来命令还在跑。
            */}
           <Show when={workspace()?.id} keyed>
             {/*
