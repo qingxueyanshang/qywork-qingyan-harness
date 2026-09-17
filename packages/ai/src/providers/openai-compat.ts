@@ -63,12 +63,19 @@ export class OpenAICompatAdapter implements LlmAdapter {
   private readonly baseUrl: string
   private readonly dashScopeMedia: boolean
   private readonly uploadedMedia = new Map<string, Promise<string>>()
+  /**
+   * OpenCode 端点拒绝不带 `x-opencode-session` 的请求（400），且 prompt cache 按这个值隔离：
+   * 同一会话必须发同一个值，值变了前缀缓存不命中。有 `cacheKey` 时发会话 id；
+   * 检测与压缩摘要这类不带 `cacheKey` 的请求用这个按适配器实例生成的值。其他端点为 null。
+   */
+  private readonly openCodeSession: string | null
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
     this.apiKey = profile.apiKey || 'unset'
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
     this.dashScopeMedia = isDashScopeMediaEndpoint(this.baseUrl)
+    this.openCodeSession = isOpenCodeEndpoint(this.baseUrl) ? crypto.randomUUID() : null
     this.client = new OpenAI({
       apiKey: this.apiKey,
       ...PROVIDER_HTTP,
@@ -101,6 +108,15 @@ export class OpenAICompatAdapter implements LlmAdapter {
       reasoningTokens: 0,
       source: 'estimated',
     }
+    const requestHeaders = {
+      ...mediaHeaders,
+      ...(req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id'
+        ? { 'x-grok-conv-id': req.cacheKey }
+        : {}),
+      ...(this.openCodeSession
+        ? { 'x-opencode-session': req.cacheKey ?? this.openCodeSession }
+        : {}),
+    }
     let stopReason: ProviderStopReason = 'end_turn'
     // provider 的原话，只进账本不参与判断。收尾时还是空串 = 流被截断，见下面那条守卫。
     let rawFinish = ''
@@ -114,17 +130,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         { ...body, stream: true, stream_options: { include_usage: true } } as never,
         {
           ...(req.signal ? { signal: req.signal } : {}),
-          ...(Object.keys(mediaHeaders).length ||
-          (req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id')
-            ? {
-                headers: {
-                  ...mediaHeaders,
-                  ...(req.cacheKey && this.spec.cacheRouting === 'x_grok_conv_id'
-                    ? { 'x-grok-conv-id': req.cacheKey }
-                    : {}),
-                },
-              }
-            : {}),
+          ...(Object.keys(requestHeaders).length ? { headers: requestHeaders } : {}),
         },
       )) as unknown as AsyncIterable<CompatChunk>
 
@@ -384,6 +390,14 @@ export function isDashScopeMediaEndpoint(baseUrl: string): boolean {
       host === 'dashscope-us.aliyuncs.com' ||
       host.endsWith('.maas.aliyuncs.com')
     )
+  } catch {
+    return false
+  }
+}
+
+export function isOpenCodeEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === 'opencode.ai'
   } catch {
     return false
   }

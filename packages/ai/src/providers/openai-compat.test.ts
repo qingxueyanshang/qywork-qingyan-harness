@@ -243,6 +243,64 @@ describe('用户消息带视频', () => {
   })
 })
 
+describe('OpenCode 会话请求头', () => {
+  /**
+   * 端点按主机名判定，所以把发往 opencode.ai 的请求转到本机 server；
+   * 断言的仍是真实 HTTP 请求头。SDK 在构造时取 `globalThis.fetch`，替换必须先于建适配器。
+   */
+  async function sendToOpenCode(cacheKeys: (string | undefined)[]): Promise<(string | null)[]> {
+    requestHeaders.length = 0
+    const realFetch = globalThis.fetch
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      return realFetch(`${base}${url.pathname.replace('/zen/go/v1', '')}`, init)
+    }) as typeof fetch
+    try {
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model: 'deepseek-flash',
+          baseUrl: 'https://opencode.ai/zen/go',
+        },
+        lookupModel('deepseek-flash', 'openai_chat_completions'),
+      )
+      for (const cacheKey of cacheKeys) {
+        for await (const _ of adapter.stream({
+          model: 'deepseek-flash',
+          system: [],
+          messages: [{ role: 'user', content: '嗨' }],
+          tools: [],
+          maxOutputTokens: 64,
+          ...(cacheKey ? { cacheKey } : {}),
+          signal: new AbortController().signal,
+        })) {
+          // 只看请求头
+        }
+      }
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    return requestHeaders.map((h) => h.get('x-opencode-session'))
+  }
+
+  test('有 cacheKey 时发会话 id', async () => {
+    expect(await sendToOpenCode(['cv_a', 'cv_a'])).toEqual(['cv_a', 'cv_a'])
+  })
+
+  /** 检测与压缩摘要不带 cacheKey；端点缺这个头就回 400，所以仍要发，且同一适配器内不变。 */
+  test('没有 cacheKey 时发同一个按适配器生成的值', async () => {
+    const [first, second] = await sendToOpenCode([undefined, undefined])
+    expect(first).toBeTruthy()
+    expect(second).toBe(first!)
+  })
+
+  test('其他端点不发', async () => {
+    await send('deepseek-flash')
+    expect(requestHeaders[0]?.get('x-opencode-session')).toBeNull()
+  })
+})
+
 describe('百炼媒体上传', () => {
   test('只在百炼官方端点保留本地路径', () => {
     expect(
