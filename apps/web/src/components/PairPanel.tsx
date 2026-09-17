@@ -116,10 +116,13 @@ function Qr(props: { text: string }) {
       }).catch(() => '')
     },
   )
+  // 用 `loaded()`，不要改成 `svg()`：后者在取数期间进入设置内容区的 Suspense，
+  // 整页内容被摘出 DOM，滚动容器高度归零，挂回后 `scrollTop` 停在 0。
+  // 换地址时 `loaded()` 给上一张码，码框尺寸不变。
   return (
     <div class="pair-qr">
-      <Show when={svg()} fallback={<div class="preview-loading" />}>
-        <div innerHTML={svg()!} />
+      <Show when={loaded(svg)} fallback={<div class="preview-loading" />}>
+        {(s) => <div innerHTML={s()} />}
       </Show>
     </div>
   )
