@@ -20,7 +20,7 @@ const ROOT = join(import.meta.dir, '..')
  * 取的是包根而不是 `src`：配置文件（`vite.config.ts`、`build.rs`）里的注释同样算注释，
  * 按 `src` 划范围会把它们漏在外面。
  */
-const ROOTS = ['packages', 'apps/web', 'apps/desktop/src-tauri', 'scripts']
+const ROOTS = ['packages', 'apps/web', 'apps/desktop/src-tauri', 'apps/desktop/native', 'scripts']
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'gen', '.git'])
 /** `.ps1` / `.toml` 走 `#` 行注释，其余走 C 系。 */
