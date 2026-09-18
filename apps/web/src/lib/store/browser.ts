@@ -11,6 +11,7 @@
 
 import { createSignal } from 'solid-js'
 import {
+  BLANK_PAGE,
   closeBrowserPage,
   listBrowserTabs,
   type NativeTab,
@@ -43,10 +44,24 @@ export function browserReady(): boolean {
   return isNativeBrowserShell() && state.capabilities?.browser.connected === true
 }
 
-/** 页签上的字。**建出来就不再改**，页面标题变了也不动——用户正瞄着那颗 ×。 */
-function labelOf(tabId: string): string {
-  const n = /(\d+)$/.exec(tabId)?.[1]
-  return n ? `浏览器 ${n}` : '浏览器'
+/**
+ * 页签上的字：网页标题，标题还没到时用主机名，空标签用「新标签页」。
+ * 标题会随页面变，× 的位置由页签的固定宽度保证（`.tab-name.fixed`），不要改回不定宽。
+ */
+function labelOf(tab: NativeTab): string {
+  const title = tab.title.trim()
+  if (title && title !== BLANK_PAGE) return title
+  try {
+    return new URL(tab.url).host || '新标签页'
+  } catch {
+    return '新标签页'
+  }
+}
+
+/** 某一页的页签名，会话流里指这一页时用同一个名字。认不出的 id 给 `undefined`。 */
+export function browserTabLabel(tabId: string): string | undefined {
+  const tab = browserTab(tabId)
+  return tab ? labelOf(tab) : undefined
 }
 
 function project(list: NativeTab[]): void {
@@ -54,7 +69,7 @@ function project(list: NativeTab[]): void {
   syncBrowserTabs(
     list.map((t) => ({
       id: t.tabId,
-      title: labelOf(t.tabId),
+      title: labelOf(t),
       workspaceId: t.workspaceId,
       createdSeq: t.createdSeq,
     })),

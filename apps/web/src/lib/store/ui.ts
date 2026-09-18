@@ -300,6 +300,7 @@ interface HostTab {
 
 /**
  * 把一个工作区的浏览器页签对齐到给定清单。**只按传进来的工作区寻址**，不读当前工作区。
+ * 页签名跟着清单里的 `title` 走：它是网页标题的投影，页面跳转后会变。
  *
  * 新页按 `createdSeq` 插入而不是追加到末尾：这份清单与终端那份各自异步回来，
  * 追加的话整页刷新后的页签顺序取决于谁先回来。
@@ -319,11 +320,15 @@ function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
         createdSeq: t.createdSeq,
       }),
     )
-  if (!gone.length && !added.length) return
+  const titles = new Map(tabs.map((t) => [t.id, t.title]))
+  const retitled = cur.tabs.some((t) => t.kind === 'browser' && titles.get(t.id) !== t.title)
+  if (!gone.length && !added.length && !retitled) return
   const orphaned = gone.find((t) => t.id === activeTabOf(cur))
   for (const t of gone) tabDisposers.delete(t.id)
   const list = insertBySeq(
-    cur.tabs.filter((t) => !gone.includes(t)),
+    cur.tabs
+      .filter((t) => !gone.includes(t))
+      .map((t) => (t.kind === 'browser' ? { ...t, title: titles.get(t.id) ?? t.title } : t)),
     added,
   )
   if (!orphaned) {

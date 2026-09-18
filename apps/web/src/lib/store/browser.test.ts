@@ -10,7 +10,7 @@
  * `store/browser.ts` 顶层 `new QyClient` 不在这条链上，但它经 `state.ts` / `ui.ts` 间接
  * 触到几个浏览器全局，所以这里先补齐再动态 import（同 `store.test.ts` 的理由）。
  *
- * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection` 与 `openBrowserTab`，
+ * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection`、`openBrowserTab` 与 `browserTabLabel`，
  * 连同它们经 `store/ui.ts` 按工作区落账的那一段。
  */
 
@@ -33,7 +33,7 @@ g.localStorage ??= {
   removeItem: (k: string) => stored.delete(k),
 }
 
-const { initBrowserProjection, openBrowserTab } = await import('./browser.ts')
+const { browserTabLabel, initBrowserProjection, openBrowserTab } = await import('./browser.ts')
 const { panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } = await import(
   './ui.ts'
 )
@@ -161,6 +161,32 @@ describe('内置浏览器页按工作区落账', () => {
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
     setWorkspace(WS_B)
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_b1'])
+  })
+
+  /**
+   * 原始失败形状：页签写死成「浏览器 N」，会话流里指这一页时只剩内部 id `bt_N`，
+   * 两处都认不出是哪个网页。页签名取网页标题，标题未到用主机名，空标签用「新标签页」。
+   */
+  test('页签名跟着网页标题走，会话流取同一个名字', async () => {
+    reset()
+    const tab = hostTab('bt_a1', WS_A.id)
+    let host: HostTab[] = [tab]
+    restore = asShell([], (cmd) => (cmd === 'browser_tabs' ? Promise.resolve(host) : undefined))
+    setWorkspace(WS_A)
+    const titleAfter = async (next: Partial<HostTab>): Promise<string | undefined> => {
+      host = [{ ...tab, ...next }]
+      initBrowserProjection()
+      await flush()
+      return panelTabs()[0]?.title
+    }
+
+    expect(await titleAfter({})).toBe('新标签页')
+    expect(await titleAfter({ url: 'https://www.ibizsim.cn/', title: 'about:blank' })).toBe(
+      'www.ibizsim.cn',
+    )
+    expect(await titleAfter({ url: 'https://www.ibizsim.cn/', title: 'iBizSim' })).toBe('iBizSim')
+    expect(browserTabLabel('bt_a1')).toBe('iBizSim')
+    expect(browserTabLabel('bt_gone')).toBeUndefined()
   })
 
   test('开页翻到新开的那一页', async () => {

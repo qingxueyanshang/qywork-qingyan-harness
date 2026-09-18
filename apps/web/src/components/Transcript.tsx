@@ -46,6 +46,7 @@ import {
   todosOf,
 } from '../lib/step-view.ts'
 import {
+  browserTabLabel,
   composerStackAbove,
   foldOpen,
   hasRunStatus,
@@ -1512,6 +1513,18 @@ function cardTitle(item: TranscriptItem): string {
   return firstLine(typeof raw === 'string' ? raw.trim() : '')
 }
 
+/**
+ * 动作行行尾的目标。浏览器工具的 `action.target` 是宿主的 tabId（开页时是占位串），
+ * 只供权限与冲突判定；显示成那一页的页签名，页不在时显示参数里的地址，两者都没有就不显示。
+ */
+function shownTarget(item: TranscriptItem): string | undefined {
+  const target = item.action?.target
+  if (!target) return undefined
+  if (!item.toolName?.startsWith('browser_')) return displayTarget(target)
+  const url = item.args?.url
+  return browserTabLabel(target) ?? (typeof url === 'string' ? url : undefined)
+}
+
 function ToolCard(props: { item: TranscriptItem }) {
   const changes = () => fileDelta(props.item.outcome?.fileChanges)
   const images = () =>
@@ -1530,7 +1543,7 @@ function ToolCard(props: { item: TranscriptItem }) {
         failed={props.item.status === 'failure'}
         label={actionLabel(props.item)}
         statusWord={statusWord(props.item.status)}
-        {...(props.item.action?.target ? { target: displayTarget(props.item.action.target) } : {})}
+        {...(shownTarget(props.item) ? { target: shownTarget(props.item)! } : {})}
         {...(changes() ? { changes: changes()! } : {})}
       >
         <StepBody item={props.item} />

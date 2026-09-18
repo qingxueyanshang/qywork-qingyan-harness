@@ -362,6 +362,7 @@ export default function SidePanel() {
                 >
                   <button
                     class="tab-name"
+                    classList={{ fixed: t.kind === 'browser' }}
                     type="button"
                     role="tab"
                     aria-selected={onTab(t.id)}

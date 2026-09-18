@@ -167,6 +167,10 @@
   font-size: var(--fs-sm);
   font-weight: inherit;
 }
+/* 浏览器页的名字是网页标题，随页面变；定宽让 × 的位置不随标题长度移动。 */
+.tab-name.fixed {
+  width: 128px;
+}
 /* × 比通用的 icon-btn 小一圈：出厂 28px 在 36px 高的横带里几乎顶满，
    看起来像页签里嵌了一颗独立的按钮。常驻不淡入——只在 hover 时出现的话，
    触屏上没有 hover 这一步。 */
