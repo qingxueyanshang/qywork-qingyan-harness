@@ -111,13 +111,39 @@ const ok =
 
 /** 挂住这一轮，直到用例主动放行。用来制造「会话正在跑」。 */
 function gate(payload: string): { turn: Turn; release: () => void } {
-  let release = (): void => {}
-  const turn: Turn = () =>
-    new Promise<Response>((resolve) => {
-      release = () => resolve(new Response(payload, { headers: SSE_HEADERS }))
-    })
-  return { turn, release: () => release() }
+  let release!: () => void
+  const ready = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const turn: Turn = async () => {
+    await ready
+    return new Response(payload, { headers: SSE_HEADERS })
+  }
+  return { turn, release }
 }
+
+describe('模拟接口放行', () => {
+  test('请求到达前放行仍返回响应', async () => {
+    const held = gate('ok')
+    held.release()
+    const response = await held.turn('')
+    expect(await response.text()).toBe('ok')
+  })
+
+  test('请求到达后仍须等待放行', async () => {
+    const held = gate('ok')
+    let completed = false
+    const pending = Promise.resolve(held.turn('')).then((response) => {
+      completed = true
+      return response
+    })
+    await Bun.sleep(10)
+    expect(completed).toBe(false)
+    held.release()
+    const response = await pending
+    expect(await response.text()).toBe('ok')
+  })
+})
 
 // ───────────────────────── 装配 ─────────────────────────
 
