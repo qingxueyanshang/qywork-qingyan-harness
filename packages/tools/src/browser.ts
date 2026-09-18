@@ -603,6 +603,9 @@ export const browserActTool: ToolSpec = {
     '动作之后取得新观察时结果里直接带回新的元素表与 observationId，据此继续下一步，' +
     '不必再调 browser_observe；settle=quiet 只表示页面短暂没有变化，不代表网站业务已完成，' +
     '后续目标还没出现时用 browser_wait。' +
+    '页面没有跳转时先前观察的元素编号仍然有效，同一个 observationId 可以在同一轮里发出多个动作，' +
+    '按发出顺序依次执行；同一轮里前一个动作失败不会阻止后面的动作执行。' +
+    '输入后页面重建了节点时，后面的动作按编号失效被拒绝，用最新的 observationId 重发。' +
     'hover 之后的观察是采集那一刻的页面，延时展开的层可能还没出现，用 browser_wait 等它。' +
     'type 的非键盘字符按文本插入，不产生完整的键盘与输入法事件。' +
     'drag 只覆盖指针事件驱动的拖动，不支持 HTML5 原生拖放。' +

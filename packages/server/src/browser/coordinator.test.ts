@@ -1542,6 +1542,29 @@ test('动作之后直接给出新观察，用它再动作一次不必中间再�
   expect(second.element).toBe('dl')
 })
 
+/**
+ * `browser_act` 的说明让模型在同一轮里用同一个 observationId 连发多个输入。
+ * 动作后的自动观察只登记新编号，不作废同一文档里先前的那一份。
+ */
+test('动作之后先前那份观察仍可用：同一个 observationId 连发两次动作', async () => {
+  const { handle } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+  const input = {
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    action: 'click' as const,
+    ref: firstRef(ob),
+  }
+
+  const first = await port?.act(input)
+  const second = await port?.act(input)
+
+  expect(first?.element).toBe('dl')
+  expect(second?.element).toBe('dl')
+})
+
 test('动作发出后观察取不到时保留回执，另说明为什么没看见', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
