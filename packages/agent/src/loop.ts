@@ -1417,6 +1417,7 @@ export class AgentLoop {
                 causes: failureCauseChain(err),
                 providerEvents,
                 silentMs,
+                transport: pe?.transport ?? null,
                 assistantChars: assistantText.length,
                 toolCallCount: calls.length,
                 retry: { decision, attempt, max: MAX_RESENDS, backoffMs },
@@ -1608,6 +1609,14 @@ export class AgentLoop {
               errno: String((raw as { code?: unknown })?.code ?? '-'),
               events: providerEvents,
               silentSeconds: Math.round(silentMs / 1000),
+              // 传输层三项与事件层对照：响应头没到、排队中（有保活行）、连接已死。
+              status: pe?.transport?.status ?? '-',
+              bytes: pe?.transport?.bytes ?? '-',
+              keepAlive: pe?.transport?.keepAliveLines ?? '-',
+              lastByteSeconds:
+                pe?.transport?.sinceLastByteMs != null
+                  ? Math.round(pe.transport.sinceLastByteMs / 1000)
+                  : '-',
             })
 
             /*

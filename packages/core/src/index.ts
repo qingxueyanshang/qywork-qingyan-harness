@@ -80,6 +80,7 @@ export {
   type ProviderRequestPurpose,
   type ProviderRequestStatus,
   type ProviderRetryDecision,
+  type ProviderTransportReading,
   REASONING_ECHOES,
   type ReasoningEcho,
   type ResourceCoverage,

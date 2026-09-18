@@ -1238,12 +1238,32 @@ export interface ProviderFailureCause {
 }
 
 /**
+ * 失败时刻的传输层读数。与事件层的 `providerEvents` / `silentMs` 对照能分出：
+ * 响应头没到（`status` 为 null）、服务端排队中（有保活行、字节仍在到达）、
+ * 连接已死（`sinceLastByteMs` 与 `silentMs` 一样长）。
+ */
+export interface ProviderTransportReading {
+  /** 响应状态码；响应头没到为 null。 */
+  status: number | null
+  /** 发出到响应头到达的毫秒数；没到为 null。 */
+  headersAfterMs: number | null
+  /** 正文累计字节数。 */
+  bytes: number
+  /** 最后一个正文字节到失败时刻的毫秒数；一个字节都没收到为 null。 */
+  sinceLastByteMs: number | null
+  /** SSE 注释行（`:` 开头）条数，服务端排队时的保活。 */
+  keepAliveLines: number
+}
+
+/**
  * 一次失败请求的可导出诊断。它仍属于 `provider_requests` 这一行，不另造重试状态表。
  */
 export interface ProviderRequestDiagnostic {
   causes: ProviderFailureCause[]
   providerEvents: number | null
   silentMs: number | null
+  /** 适配器没接传输读数的路径（本地拒绝、子进程）为 null。 */
+  transport: ProviderTransportReading | null
   assistantChars: number | null
   toolCallCount: number | null
   retry: {

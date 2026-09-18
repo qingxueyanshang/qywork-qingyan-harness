@@ -27,6 +27,7 @@ import {
   estimateText,
   type TokenDensity,
 } from '../tokens.ts'
+import { newTrace, readTransport, traceFetch } from '../transport.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -102,11 +103,15 @@ export class AnthropicAdapter implements LlmAdapter {
     // 累积工具调用：SDK 把参数按 input_json_delta 分片流下来，要自己拼回 JSON。
     const partial = new Map<number, { id: string; name: string; json: string }>()
 
+    const trace = newTrace()
+
     try {
-      const stream = this.client.messages.stream(
-        body as unknown as Anthropic.MessageStreamParams,
-        req.signal ? { signal: req.signal } : {},
-      )
+      const stream = this.client
+        .withOptions({ fetch: traceFetch(trace) })
+        .messages.stream(
+          body as unknown as Anthropic.MessageStreamParams,
+          req.signal ? { signal: req.signal } : {},
+        )
 
       for await (const ev of stream as AsyncIterable<AnthropicStreamEvent>) {
         switch (ev.type) {
@@ -190,7 +195,7 @@ export class AnthropicAdapter implements LlmAdapter {
       const calls = collectToolCalls(partial, req.model)
       if (calls.length) yield { type: 'tool_calls', calls }
     } catch (err) {
-      throw classifyProviderError('anthropic_messages', err)
+      throw classifyProviderError('anthropic_messages', err, readTransport(trace))
     }
 
     yield { type: 'usage', usage }

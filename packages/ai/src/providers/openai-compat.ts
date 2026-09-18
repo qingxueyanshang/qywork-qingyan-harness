@@ -18,6 +18,7 @@ import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
+import { newTrace, readTransport, traceFetch } from '../transport.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -122,17 +123,20 @@ export class OpenAICompatAdapter implements LlmAdapter {
     let rawFinish = ''
     const partial = new Map<number, { id: string; name: string; json: string }>()
     const splitter = createThinkingSplitter()
+    const trace = newTrace()
 
     try {
       // 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等
       // 都不在官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
-      const stream = (await this.client.chat.completions.create(
-        { ...body, stream: true, stream_options: { include_usage: true } } as never,
-        {
-          ...(req.signal ? { signal: req.signal } : {}),
-          ...(Object.keys(requestHeaders).length ? { headers: requestHeaders } : {}),
-        },
-      )) as unknown as AsyncIterable<CompatChunk>
+      const stream = (await this.client
+        .withOptions({ fetch: traceFetch(trace) })
+        .chat.completions.create(
+          { ...body, stream: true, stream_options: { include_usage: true } } as never,
+          {
+            ...(req.signal ? { signal: req.signal } : {}),
+            ...(Object.keys(requestHeaders).length ? { headers: requestHeaders } : {}),
+          },
+        )) as unknown as AsyncIterable<CompatChunk>
 
       // SDK promise 在流响应建立后 resolve；此刻还没有消费首个 SSE chunk。
       yield { type: 'response_started' }
@@ -245,7 +249,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_chat_completions', err)
+      throw classifyProviderError('openai_chat_completions', err, readTransport(trace))
     }
 
     yield { type: 'usage', usage }

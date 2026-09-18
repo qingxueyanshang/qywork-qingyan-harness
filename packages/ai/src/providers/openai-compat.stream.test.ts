@@ -100,6 +100,20 @@ describe('流没按协议收尾', () => {
     expect(events.filter((e) => e.type === 'thinking_delta')).toHaveLength(3)
   })
 
+  /**
+   * 失败诊断要能分出「排队中」与「连接已死」：错误上带传输层读数，
+   * 服务端排队时发的 `:` 保活行也计在内。
+   */
+  test('断流的错误带传输层读数：状态码、字节数与保活行', async () => {
+    const { err } = await run(`: keep-alive\n\n: keep-alive\n\n${CUT}`)
+    expect(err).toBeInstanceOf(ProviderError)
+    const transport = (err as ProviderError).transport
+    expect(transport).toMatchObject({ status: 200, keepAliveLines: 2 })
+    expect(transport?.bytes).toBeGreaterThan(0)
+    expect(transport?.headersAfterMs).not.toBeNull()
+    expect(transport?.sinceLastByteMs).not.toBeNull()
+  })
+
   test('用量先到收尾没到的，把实数挂在错误上——账本不记零', async () => {
     const { err } = await run(CUT_WITH_USAGE)
     expect(err).toBeInstanceOf(ProviderError)

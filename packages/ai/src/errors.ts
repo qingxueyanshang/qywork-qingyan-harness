@@ -14,7 +14,7 @@
  * 没有错误码时仍要靠文案区分限速与欠费；传输层错误同样需要文案兜底。
  */
 
-import type { ErrorCode, ProviderKind } from '@qywork/core'
+import type { ErrorCode, ProviderKind, ProviderTransportReading } from '@qywork/core'
 import { type CapacityRejection, classifyCapacityRejection } from './capacity.ts'
 import type { ProviderUsage } from './types.ts'
 
@@ -48,6 +48,11 @@ export class ProviderError extends Error {
    * 只有这个事实为真时，上层才有资格补“静默了多久”。
    */
   readonly timedOut: boolean
+  /**
+   * 失败时刻的传输层读数。由 `classifyProviderError` 在适配器出口处填；
+   * 请求发出之前的失败（参数、路径、本地拒绝）没有这一份，为 null。
+   */
+  transport: ProviderTransportReading | null = null
 
   constructor(opts: {
     code: ErrorCode
@@ -162,7 +167,17 @@ function looksUnconfigured(err: unknown): boolean {
   return m.includes('unset') || m.includes('missing') || m.includes('no api key')
 }
 
-export function classifyProviderError(provider: ProviderKind, err: unknown): ProviderError {
+export function classifyProviderError(
+  provider: ProviderKind,
+  err: unknown,
+  transport: ProviderTransportReading | null = null,
+): ProviderError {
+  const classified = classify(provider, err)
+  if (transport) classified.transport = transport
+  return classified
+}
+
+function classify(provider: ProviderKind, err: unknown): ProviderError {
   if (err instanceof ProviderError) return err
 
   const status = statusOf(err)

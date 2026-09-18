@@ -54,6 +54,7 @@ import type { ReasoningEcho } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
 import { estimateRequest } from '../tokens.ts'
+import { newTrace, readTransport, traceFetch } from '../transport.ts'
 import type {
   ChatRequest,
   LlmAdapter,
@@ -134,9 +135,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     const timer = setTimeout(() => connect.abort(), PROVIDER_HTTP.timeout)
     const signal = req.signal ? AbortSignal.any([req.signal, connect.signal]) : connect.signal
 
+    const trace = newTrace()
     let res: Response
     try {
-      res = await fetch(`${this.baseUrl}/responses`, {
+      res = await traceFetch(trace)(`${this.baseUrl}/responses`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ ...body, stream: true }),
@@ -146,15 +148,19 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       })
     } catch (err) {
       if (connect.signal.aborted) {
-        throw new ProviderError({
-          code: 'network_error',
-          // 只报失败分类；实际静默时长与重发次数由 AgentLoop 统一拼装。
-          message: '连接超时',
-          provider: 'openai_responses',
-          timedOut: true,
-        })
+        throw classifyProviderError(
+          'openai_responses',
+          new ProviderError({
+            code: 'network_error',
+            // 只报失败分类；实际静默时长与重发次数由 AgentLoop 统一拼装。
+            message: '连接超时',
+            provider: 'openai_responses',
+            timedOut: true,
+          }),
+          readTransport(trace),
+        )
       }
-      throw classifyProviderError('openai_responses', err)
+      throw classifyProviderError('openai_responses', err, readTransport(trace))
     } finally {
       clearTimeout(timer)
     }
@@ -163,7 +169,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       // 错误体要读出来再分类：容量拒绝的判据全在响应正文里，
       // 只拿状态码分类会把「上下文超了」和「参数写错了」混成同一个 400。
       const text = await res.text().catch(() => '')
-      throw classifyProviderError('openai_responses', asError(res.status, text, res.headers))
+      throw classifyProviderError(
+        'openai_responses',
+        asError(res.status, text, res.headers),
+        readTransport(trace),
+      )
     }
     if (!res.body) {
       throw new ProviderError({
@@ -300,7 +310,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_responses', err)
+      throw classifyProviderError('openai_responses', err, readTransport(trace))
     }
 
     const calls = collectToolCalls(partial, req.model)
