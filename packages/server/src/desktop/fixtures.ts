@@ -12,11 +12,7 @@ import type {
   DesktopWindow,
   NativeDesktopUpFrame,
 } from '@qywork/core'
-import {
-  DESKTOP_PROTOCOL_VERSION,
-  NATIVE_BROWSER_KEY_HEADER,
-  NATIVE_DESKTOP_PATH,
-} from '@qywork/core'
+import { DESKTOP_PROTOCOL_VERSION, NATIVE_DESKTOP_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 
 export const HOST_KEY = 'desktop-host-key-for-tests'
 
@@ -61,7 +57,7 @@ export class FakeDesktopHost {
     closers: (() => void)[],
   ): Promise<FakeDesktopHost> {
     const socket = new WebSocket(`ws://127.0.0.1:${port}${NATIVE_DESKTOP_PATH}`, {
-      headers: { [NATIVE_BROWSER_KEY_HEADER]: key },
+      headers: { [NATIVE_HOST_KEY_HEADER]: key },
     })
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve()
@@ -96,6 +92,18 @@ export class FakeDesktopHost {
       dispatch: 'not_dispatched',
       observation: { kind: 'windows', capturedAt: 1, windows: [WINDOW] },
       ...over,
+    })
+  }
+
+  /** 只回执行事实，不带观察。撤销回执与动作回执用它。 */
+  settle(frame: DesktopRequestFrame, dispatch: DesktopResultFrame['dispatch']): void {
+    this.send({
+      type: 'desktop.result',
+      requestId: frame.requestId,
+      connectionEpoch: frame.connectionEpoch,
+      hostId: frame.hostId,
+      hostEpoch: frame.hostEpoch,
+      dispatch,
     })
   }
 }

@@ -184,6 +184,10 @@ async fn execute(app: &AppHandle, owner: &UpdateOwner, action: &str) -> Result<(
             .timeout(Duration::from_secs(120))
             .on_before_exit(move || {
                 crate::terminal::shutdown(&exit_app.state::<crate::terminal::TerminalHandle>());
+                // 桌面 worker 是独立进程，安装程序会替换它的可执行文件，必须先结清在途
+                // 请求再收掉它。边界：安装失败时电脑操作不再恢复，能力发布为不可用，
+                // 由用户重启应用恢复。
+                crate::desktop::shutdown();
                 // WebView 随外壳退出释放；此时安装程序仍可能启动失败，不能永久关闭浏览器宿主。
                 crate::sidecar::stop_for_update(&exit_app);
             })

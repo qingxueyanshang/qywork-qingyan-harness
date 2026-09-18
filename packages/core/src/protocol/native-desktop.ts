@@ -141,7 +141,11 @@ export interface DesktopHostReadyFrame {
   hostId: string
   hostEpoch: number
   connectionEpoch: number
-  /** worker 实际握手到的协议版本，由宿主从 worker 读回，不是它自己填的常量。 */
+  /**
+   * 协议版本。`workerReady` 为真时是宿主从 worker 的握手回执里读回的那一个，为假时是
+   * 宿主要求的那一个。宿主在 worker 报出不同版本时不发布就绪，因此这一格与
+   * `workerReady` 一起看才完整。
+   */
   protocol: number
   platform: string
   /** worker 进程已握手就绪。 */

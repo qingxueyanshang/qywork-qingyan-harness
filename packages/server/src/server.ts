@@ -87,7 +87,7 @@ export interface ServeOptions {
    * **不传两条路径都不存在**：宿主连接一律拒绝，浏览器控制与电脑操作两条能力都不发布。
    * 不给它一个默认值——默认值等于人人都能注册宿主。
    */
-  browserHostKey?: string
+  hostKey?: string
   updateHostKey?: string
   /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
   previousProcessExit?: ProcessExitObservation
@@ -156,7 +156,7 @@ export function serve(opts: ServeOptions) {
    * 浏览器宿主连接与控制协调器。**没有凭据就没有这两样**：宿主路径不接受连接，
    * 会话装配也拿不到端口，界面上不会出现一个点了报错的入口。
    */
-  const browserBridge = opts.browserHostKey ? new BrowserBridge(opts.browserHostKey) : null
+  const browserBridge = opts.hostKey ? new BrowserBridge(opts.hostKey) : null
   const browser = browserBridge ? new BrowserCoordinator(browserBridge) : null
   /*
    * 宿主连上 / 断开时把能力投影重播一份。
@@ -175,7 +175,7 @@ export function serve(opts: ServeOptions) {
    * 启用开关现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
    * 存一份快照的话用户在设置里打开之后要等重启才生效。
    */
-  const desktopBridge = opts.browserHostKey ? new DesktopBridge(opts.browserHostKey) : null
+  const desktopBridge = opts.hostKey ? new DesktopBridge(opts.hostKey) : null
   const desktop = desktopBridge
     ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled === true)
     : null

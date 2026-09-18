@@ -135,7 +135,7 @@ beforeAll(async () => {
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    browserHostKey: HOST_KEY,
+    hostKey: HOST_KEY,
   })
   host = await FakeDesktopHost.connect(handle.port, HOST_KEY, closers)
   host.send(READY)

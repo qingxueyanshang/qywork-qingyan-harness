@@ -344,7 +344,7 @@ async function runServe(args: string[]): Promise<number> {
      * 没有它两条路径都不存在：命令行直接起的 serve 没有桌面外壳，也就没有原生资源。
      * **不要落进配置文件**——那等于把一个可以注册宿主的凭据入盘。
      */
-    ...(process.env.QYWORK_BROWSER_KEY ? { browserHostKey: process.env.QYWORK_BROWSER_KEY } : {}),
+    ...(process.env.QYWORK_HOST_KEY ? { hostKey: process.env.QYWORK_HOST_KEY } : {}),
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
   })

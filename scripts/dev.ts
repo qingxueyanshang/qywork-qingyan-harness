@@ -51,12 +51,12 @@ const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
 const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
- * 原生浏览器宿主连接的凭据，同样每次现生成。
+ * 原生宿主连接的凭据，同样每次现生成。一份管浏览器与电脑操作两条宿主路径。
  *
- * 只交给 sidecar 与外壳两个进程：拿到它就能注册浏览器宿主，而 Vite 既不需要它，
+ * 只交给 sidecar 与外壳两个进程：拿到它就能注册宿主，而 Vite 既不需要它，
  * 也会把整份环境继续传给它自己派生的进程。
  */
-const BROWSER_KEY = randomBytes(24).toString('hex')
+const HOST_KEY = randomBytes(24).toString('hex')
 
 /** 那个端口上有没有一个**能应答的** qywork。用来等就绪，不用来判占用。 */
 async function answers(port: number): Promise<boolean> {
@@ -118,7 +118,7 @@ const env = {
 }
 
 /** 只有这两个进程拿得到宿主凭据。 */
-const privilegedEnv = { ...env, QYWORK_BROWSER_KEY: BROWSER_KEY, QYWORK_UPDATE_KEY: UPDATE_KEY }
+const privilegedEnv = { ...env, QYWORK_HOST_KEY: HOST_KEY, QYWORK_UPDATE_KEY: UPDATE_KEY }
 
 /**
  * 用**正在跑的这个 bun**，不写裸名 `bun`。

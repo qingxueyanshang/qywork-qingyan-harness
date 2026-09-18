@@ -1,0 +1,594 @@
+//! 两段协议的帧与它们之间的翻译。
+//!
+//! 上一段是服务端 ⇄ 宿主的 `/native/desktop`（字段与
+//! `packages/core/src/protocol/native-desktop.ts` 逐字对应），下一段是宿主 ⇄ worker 的
+//! 行分隔 JSON（字段与 `apps/desktop/native/computer-host/src/protocol.rs` 逐字对应）。
+//!
+//! 本模块不碰进程、连接与 OS，全部翻译都是纯函数。
+//!
+//! 两条边界：
+//!
+//! 1. **只有五种 op 会被翻译下去。** worker 的 `handshake` / `bind_connection` / `cancel`
+//!    由宿主自己发起，服务端发不出这三种，因此它们的观察（`ready` / `cancel_registered` /
+//!    `connection_bound`）不可能出现在服务端请求的回执里。
+//! 2. **缺省字段一律 `Option` + `skip_serializing_if`。** 多发一个 `null` 会让接收端的
+//!    可选字段判定从「没有」变成「有且为空」。
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+/// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
+pub const WORKER_PROTOCOL_VERSION: u32 = 1;
+
+/// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
+const FORWARDED_OPS: [&str; 5] = [
+    "list_windows",
+    "read_tree",
+    "read_element",
+    "set_value",
+    "invoke",
+];
+
+/// 执行实例身份加当前连接代际。回执、事件与 worker 请求都按这一份填。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub connection_epoch: u64,
+}
+
+// ── 服务端 ⇄ 宿主 ──
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostReady {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub connection_epoch: u64,
+    /// worker 实际握手到的协议版本，从它的 `ready` 观察里读回，不是宿主填的常量。
+    pub protocol: u32,
+    pub platform: &'static str,
+    pub worker_ready: bool,
+    pub authorized: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFrame {
+    #[serde(rename = "type")]
+    pub frame: &'static str,
+    pub connection_epoch: u64,
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub kind: &'static str,
+    pub worker_ready: bool,
+    pub authorized: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestFrame {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub request_id: String,
+    pub connection_epoch: u64,
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub executor_id: String,
+    /// Unix 纪元毫秒的绝对时刻。原样交给 worker：请求在队列里等待的时间要计入预算。
+    pub deadline: i64,
+    pub op: String,
+    #[serde(default)]
+    pub target: Option<Target>,
+    #[serde(default, rename = "ref")]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub max_nodes: Option<u32>,
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+    #[serde(default)]
+    pub time_budget_ms: Option<u64>,
+}
+
+/// 目标窗口身份。三项一起给，派发前重新核对，句柄复用因此识别得出。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    pub window: i64,
+    pub pid: u32,
+    pub process_started_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultFrame {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub request_id: String,
+    pub connection_epoch: u64,
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub dispatch: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_error: Option<String>,
+}
+
+impl ResultFrame {
+    /// 本地拒绝的终态：一帧都没写进 worker 的 stdin。
+    pub fn refused(request_id: String, binding: &Binding, reason: impl Into<String>) -> Self {
+        Self {
+            kind: "desktop.result",
+            request_id,
+            connection_epoch: binding.connection_epoch,
+            host_id: binding.host_id.clone(),
+            host_epoch: binding.host_epoch,
+            dispatch: "not_dispatched",
+            reason: Some(reason.into()),
+            observation: None,
+            observation_error: None,
+        }
+    }
+
+    /// 只带执行事实的终态：收尾与取消回执用它。
+    pub fn settled(
+        request_id: String,
+        binding: &Binding,
+        dispatch: Dispatch,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: "desktop.result",
+            request_id,
+            connection_epoch: binding.connection_epoch,
+            host_id: binding.host_id.clone(),
+            host_epoch: binding.host_epoch,
+            dispatch: dispatch.as_str(),
+            reason: Some(reason.into()),
+            observation: None,
+            observation_error: None,
+        }
+    }
+}
+
+/// 执行事实三态。只描述状态改变动作有没有交到 OS 手里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dispatch {
+    NotDispatched,
+    Submitted,
+    Unknown,
+}
+
+impl Dispatch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotDispatched => "not_dispatched",
+            Self::Submitted => "submitted",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+// ── 宿主 ⇄ worker ──
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRequest {
+    pub v: u32,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<i64>,
+    pub host_id: String,
+    pub host_epoch: u64,
+    pub connection_epoch: u64,
+    pub op: &'static str,
+    pub params: Value,
+}
+
+impl WorkerRequest {
+    fn new(id: String, binding: &Binding, op: &'static str, params: Value) -> Self {
+        Self {
+            v: WORKER_PROTOCOL_VERSION,
+            id,
+            deadline: None,
+            host_id: binding.host_id.clone(),
+            host_epoch: binding.host_epoch,
+            connection_epoch: binding.connection_epoch,
+            op,
+            params,
+        }
+    }
+
+    /// 建立执行实例绑定并设定 UIA 调用上界。每个 worker 进程只发一次。
+    pub fn handshake(
+        id: String,
+        binding: &Binding,
+        connection_timeout_ms: u32,
+        transaction_timeout_ms: u32,
+    ) -> Self {
+        Self::new(
+            id,
+            binding,
+            "handshake",
+            json!({
+                "connectionTimeoutMs": connection_timeout_ms,
+                "transactionTimeoutMs": transaction_timeout_ms
+            }),
+        )
+    }
+
+    /// 推进 worker 认的连接代际。宿主每次建立 WS 后发一次，旧连接排队的动作随之作废。
+    pub fn bind_connection(id: String, binding: &Binding) -> Self {
+        Self::new(id, binding, "bind_connection", json!({}))
+    }
+
+    /// 登记一个尚未派发的 worker 请求 id。已经进入 OS 调用的请求不会被它中止。
+    pub fn cancel(id: String, binding: &Binding, target: &str) -> Self {
+        Self::new(id, binding, "cancel", json!({ "target": target }))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerResponse {
+    pub id: String,
+    pub dispatch: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub observation: Option<Value>,
+    #[serde(default)]
+    pub observation_error: Option<String>,
+}
+
+impl WorkerResponse {
+    /// 握手回执里 worker 报出来的协议版本。不是 `ready` 观察时返回 `None`。
+    pub fn ready_protocol(&self) -> Option<u32> {
+        let observation = self.observation.as_ref()?;
+        if observation.get("kind")?.as_str()? != "ready" {
+            return None;
+        }
+        u32::try_from(observation.get("protocol")?.as_u64()?).ok()
+    }
+}
+
+/// 把服务端请求翻译成一条 worker 请求。
+///
+/// `window` 由调用方在核对过目标身份之后给出：本函数不做 OS 查询，也不接受
+/// 未经核对的 `frame.target.window`。返回 `Err(原因码)` 时调用方一律回
+/// `not_dispatched`，一帧都不写进 worker。
+pub fn to_worker(
+    id: String,
+    frame: &RequestFrame,
+    binding: &Binding,
+    window: i64,
+) -> Result<WorkerRequest, &'static str> {
+    if frame.kind != "desktop.request" {
+        return Err("unknown_frame");
+    }
+    let params = match frame.op.as_str() {
+        "list_windows" => json!({}),
+        "read_tree" => json!({
+            "window": window,
+            "maxNodes": frame.max_nodes.ok_or("missing_max_nodes")?,
+            "maxDepth": frame.max_depth.ok_or("missing_max_depth")?,
+            "timeBudgetMs": frame.time_budget_ms.ok_or("missing_time_budget")?,
+        }),
+        "read_element" => json!({ "window": window, "ref": reference(frame)? }),
+        "invoke" => json!({ "window": window, "ref": reference(frame)? }),
+        "set_value" => json!({
+            "window": window,
+            "ref": reference(frame)?,
+            // 空串是清空，与缺席不是一回事，所以只拒绝缺席。
+            "value": frame.value.as_deref().ok_or("missing_value")?,
+        }),
+        _ => return Err("unsupported_op"),
+    };
+    let op = FORWARDED_OPS
+        .iter()
+        .find(|op| **op == frame.op)
+        .ok_or("unsupported_op")?;
+    let mut request = WorkerRequest::new(id, binding, op, params);
+    request.deadline = Some(frame.deadline);
+    Ok(request)
+}
+
+fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
+    frame.reference.as_deref().ok_or("missing_ref")
+}
+
+/// 这个 op 需不需要目标窗口身份。`list_windows` 与 `cancel` 不带 target。
+pub fn needs_target(op: &str) -> bool {
+    matches!(op, "read_tree" | "read_element" | "set_value" | "invoke")
+}
+
+/// 把一条 worker 回执翻译成服务端结果帧。
+///
+/// `observation` 由调用方给出：窗口清单要由宿主补上进程启动时刻与应用名，那一步需要
+/// OS 查询，不在本模块里做。
+pub fn to_result(
+    request_id: String,
+    binding: &Binding,
+    response: WorkerResponse,
+    observation: Option<Value>,
+) -> ResultFrame {
+    let dispatch = match response.dispatch.as_str() {
+        "submitted" => Dispatch::Submitted,
+        "unknown" => Dispatch::Unknown,
+        _ => Dispatch::NotDispatched,
+    };
+    ResultFrame {
+        kind: "desktop.result",
+        request_id,
+        connection_epoch: binding.connection_epoch,
+        host_id: binding.host_id.clone(),
+        host_epoch: binding.host_epoch,
+        dispatch: dispatch.as_str(),
+        reason: response.reason,
+        observation,
+        observation_error: response.observation_error,
+    }
+}
+
+/// 把 worker 的窗口清单补成服务端协议要的形状。
+///
+/// `identify` 交出进程启动时刻与可执行文件名；取不到的窗口整条丢掉，不给它一个编造的
+/// 启动时刻——目标身份少一项，句柄复用就识别不出来，动作会落到另一个窗口上。
+pub fn enrich_windows(
+    observation: &Value,
+    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+) -> Option<Value> {
+    if observation.get("kind")?.as_str()? != "windows" {
+        return None;
+    }
+    let mut out = Vec::new();
+    for w in observation.get("windows")?.as_array()? {
+        let (Some(handle), Some(pid)) = (
+            w.get("window").and_then(Value::as_i64),
+            w.get("pid").and_then(Value::as_u64),
+        ) else {
+            continue;
+        };
+        let Ok(pid) = u32::try_from(pid) else { continue };
+        let Some((started_at, app)) = identify(handle, pid) else {
+            continue;
+        };
+        out.push(json!({
+            "handle": handle,
+            "pid": pid,
+            "processStartedAt": started_at,
+            "app": app,
+            "title": w.get("title").and_then(Value::as_str).unwrap_or_default(),
+        }));
+    }
+    Some(json!({
+        "kind": "windows",
+        "capturedAt": observation.get("capturedAt").and_then(Value::as_i64).unwrap_or_default(),
+        "windows": out,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding() -> Binding {
+        Binding {
+            host_id: "h1".to_owned(),
+            host_epoch: 2,
+            connection_epoch: 5,
+        }
+    }
+
+    fn request(op: &str) -> RequestFrame {
+        RequestFrame {
+            kind: "desktop.request".to_owned(),
+            request_id: "dr_1".to_owned(),
+            connection_epoch: 5,
+            host_id: "h1".to_owned(),
+            host_epoch: 2,
+            executor_id: "dx_1".to_owned(),
+            deadline: 1_700_000_000_000,
+            op: op.to_owned(),
+            target: Some(Target {
+                window: 66,
+                pid: 900,
+                process_started_at: 1_699_000_000_000,
+            }),
+            reference: Some("w.0.1#42.7".to_owned()),
+            value: None,
+            max_nodes: Some(500),
+            max_depth: Some(12),
+            time_budget_ms: Some(1500),
+        }
+    }
+
+    #[test]
+    fn read_tree_carries_the_verified_handle_and_the_absolute_deadline() {
+        let worker = to_worker("w1".to_owned(), &request("read_tree"), &binding(), 77)
+            .expect("read_tree 应当能翻译");
+        assert_eq!(
+            serde_json::to_value(&worker).unwrap(),
+            json!({
+                "v": 1, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
+                "op": "read_tree",
+                "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
+            })
+        );
+    }
+
+    /// 翻译只认服务端核对过的句柄。拿帧里那一个的话，句柄复用就白核对了。
+    #[test]
+    fn the_frames_own_window_handle_is_never_used() {
+        let worker = to_worker("w1".to_owned(), &request("invoke"), &binding(), 4242).unwrap();
+        assert_eq!(worker.params["window"], json!(4242));
+    }
+
+    #[test]
+    fn set_value_keeps_an_empty_string_and_refuses_an_absent_one() {
+        let mut frame = request("set_value");
+        frame.value = Some(String::new());
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
+        assert_eq!(worker.params["value"], json!(""));
+
+        frame.value = None;
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
+            Some("missing_value")
+        );
+    }
+
+    #[test]
+    fn missing_read_tree_bounds_are_refused_instead_of_defaulted() {
+        let mut frame = request("read_tree");
+        frame.max_nodes = None;
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
+            Some("missing_max_nodes")
+        );
+        let mut frame = request("read_tree");
+        frame.time_budget_ms = None;
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
+            Some("missing_time_budget")
+        );
+    }
+
+    /// 这三种 op 由宿主自己发起，服务端发不出去。翻译层放行它们就等于让 worker 的
+    /// `ready` / `cancel_registered` / `connection_bound` 观察流到服务端。
+    #[test]
+    fn host_only_ops_do_not_translate() {
+        for op in ["handshake", "bind_connection", "cancel", "screenshot"] {
+            assert_eq!(
+                to_worker("w1".to_owned(), &request(op), &binding(), 66).err(),
+                Some("unsupported_op"),
+                "{op}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_of_another_kind_is_refused() {
+        let mut frame = request("list_windows");
+        frame.kind = "desktop.event".to_owned();
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
+            Some("unknown_frame")
+        );
+    }
+
+    #[test]
+    fn only_window_bound_ops_need_a_target() {
+        assert!(!needs_target("list_windows"));
+        assert!(!needs_target("cancel"));
+        for op in ["read_tree", "read_element", "set_value", "invoke"] {
+            assert!(needs_target(op), "{op}");
+        }
+    }
+
+    #[test]
+    fn a_failed_reread_keeps_the_dispatch_fact() {
+        let response = WorkerResponse {
+            id: "w1".to_owned(),
+            dispatch: "submitted".to_owned(),
+            reason: None,
+            observation: None,
+            observation_error: Some("窗口已关闭".to_owned()),
+        };
+        let frame = to_result("dr_1".to_owned(), &binding(), response, None);
+        assert_eq!(
+            serde_json::to_value(&frame).unwrap(),
+            json!({
+                "type": "desktop.result", "requestId": "dr_1", "connectionEpoch": 5,
+                "hostId": "h1", "hostEpoch": 2, "dispatch": "submitted",
+                "observationError": "窗口已关闭"
+            })
+        );
+    }
+
+    /// worker 换了一个认不出的执行事实时按未派发读会让调用方重发一次可能已经生效的动作，
+    /// 所以未知字面量只能落到 `not_dispatched` 之外的判定上——这里锁住当前三个字面量。
+    #[test]
+    fn dispatch_words_map_one_to_one() {
+        for (word, expected) in [
+            ("not_dispatched", "not_dispatched"),
+            ("submitted", "submitted"),
+            ("unknown", "unknown"),
+        ] {
+            let response = WorkerResponse {
+                id: "w1".to_owned(),
+                dispatch: word.to_owned(),
+                reason: None,
+                observation: None,
+                observation_error: None,
+            };
+            assert_eq!(
+                to_result("dr_1".to_owned(), &binding(), response, None).dispatch,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn ready_protocol_comes_from_the_worker_observation() {
+        let response = WorkerResponse {
+            id: "h_1".to_owned(),
+            dispatch: "not_dispatched".to_owned(),
+            reason: None,
+            observation: Some(json!({"kind": "ready", "protocol": 1, "backend": "windows-uia"})),
+            observation_error: None,
+        };
+        assert_eq!(response.ready_protocol(), Some(1));
+
+        let other = WorkerResponse {
+            id: "h_1".to_owned(),
+            dispatch: "not_dispatched".to_owned(),
+            reason: Some("timeout_setup_failed".to_owned()),
+            observation: None,
+            observation_error: None,
+        };
+        assert_eq!(other.ready_protocol(), None);
+    }
+
+    #[test]
+    fn windows_gain_the_process_identity_and_drop_the_class_name() {
+        let observation = json!({
+            "kind": "windows",
+            "capturedAt": 17,
+            "windows": [
+                {"window": 66, "pid": 900, "title": "夹具", "className": "WindowsForms10.Window"},
+                {"window": 67, "pid": 901, "title": "读不到身份的窗口", "className": "X"}
+            ]
+        });
+        let enriched = enrich_windows(&observation, |_, pid| {
+            (pid == 900).then(|| (1_699_000_000_000, "fixture.exe".to_owned()))
+        })
+        .expect("windows 观察应当能补全");
+        assert_eq!(
+            enriched,
+            json!({
+                "kind": "windows",
+                "capturedAt": 17,
+                "windows": [{
+                    "handle": 66, "pid": 900,
+                    "processStartedAt": 1_699_000_000_000i64,
+                    "app": "fixture.exe", "title": "夹具"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn a_non_windows_observation_is_left_alone() {
+        let tree = json!({"kind": "tree", "window": 66, "capturedAt": 1});
+        assert_eq!(enrich_windows(&tree, |_, _| None), None);
+    }
+}

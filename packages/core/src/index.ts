@@ -199,7 +199,6 @@ export {
   type BrowserTabSnapshot,
   type DownloadBlockReason,
   type HostReadyFrame,
-  NATIVE_BROWSER_KEY_HEADER,
   NATIVE_BROWSER_PATH,
   type NativeBrowserUpFrame,
 } from './protocol/native-browser.ts'
@@ -221,6 +220,8 @@ export {
   NATIVE_DESKTOP_PATH,
   type NativeDesktopUpFrame,
 } from './protocol/native-desktop.ts'
+// 两条宿主连接共用的凭据头
+export { NATIVE_HOST_KEY_HEADER } from './protocol/native-host.ts'
 // 客户端 → 服务端的指令、握手与配对
 export {
   type BrowserCapability,

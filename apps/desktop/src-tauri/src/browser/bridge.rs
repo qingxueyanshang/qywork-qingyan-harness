@@ -13,11 +13,11 @@ use tauri::AppHandle;
 
 use super::frames::{reject_reason, RequestFrame, ResultFrame};
 use super::{now_ms, BrowserHost};
+use crate::hostkey::KEY_HEADER;
 use crate::ws::WsClient;
 
 /// 与 `packages/core/src/protocol/native-browser.ts` 的常量逐字一致。
 const PATH: &str = "/native/browser";
-const KEY_HEADER: &str = "x-qywork-browser-key";
 
 const RETRY_BASE_MS: u64 = 400;
 const RETRY_MAX_MS: u64 = 15_000;

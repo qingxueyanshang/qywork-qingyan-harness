@@ -54,7 +54,7 @@ function fresh(cfg = config()): ReturnType<typeof serve> {
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    browserHostKey: HOST_KEY,
+    hostKey: HOST_KEY,
   })
   cleanups.push(() => {
     handle.stop()

@@ -24,7 +24,7 @@ import type {
   HostReadyFrame,
   WorkspaceId,
 } from '@qywork/core'
-import { NATIVE_BROWSER_KEY_HEADER, NATIVE_BROWSER_PATH } from '@qywork/core'
+import { NATIVE_BROWSER_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -475,7 +475,7 @@ class AutoHost {
 
   static async connect(port: number): Promise<AutoHost> {
     const socket = new WebSocket(`ws://127.0.0.1:${port}${NATIVE_BROWSER_PATH}`, {
-      headers: { [NATIVE_BROWSER_KEY_HEADER]: HOST_KEY },
+      headers: { [NATIVE_HOST_KEY_HEADER]: HOST_KEY },
     })
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve()
@@ -532,7 +532,7 @@ function fresh(): Fixture {
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    browserHostKey: HOST_KEY,
+    hostKey: HOST_KEY,
   })
   cleanups.push(() => {
     handle.stop()

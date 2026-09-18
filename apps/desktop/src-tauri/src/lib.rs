@@ -16,6 +16,9 @@
 //! 安装更新（`updater.rs`）由外壳校验安装包并退出当前进程，远程 Web 不提供此入口。
 
 mod browser;
+/// 对外可见，因为端到端夹具（`examples/desktop-host.rs`）要链接这一份宿主实现。
+/// 拿一份复刻去测等于测了另一段代码。
+pub mod desktop;
 mod hostkey;
 mod logfile;
 mod sidecar;
@@ -408,24 +411,18 @@ fn remember_workspace(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 宿主连接的凭据。
+/// 宿主连接的凭据，一份管浏览器与电脑操作两条路径。
 ///
 /// 发布版由本进程现生成并经环境变量交给它自己拉起的 sidecar；开发版的 sidecar 由
 /// `scripts/dev.ts` 拉起，凭据由它生成，这里只接收。两种模式走同一条宿主路径。
 ///
-/// 非 Windows 没有原生浏览器宿主，返回 `None` 即这条能力整条不存在。
-#[cfg(windows)]
-fn browser_host_key() -> Option<String> {
+/// 三端都要：桌面宿主不限平台，浏览器宿主自己按 `cfg(windows)` 决定起不起。
+fn host_key() -> Option<String> {
     if tauri::is_dev() {
-        std::env::var("QYWORK_BROWSER_KEY").ok().filter(|v| !v.is_empty())
+        std::env::var("QYWORK_HOST_KEY").ok().filter(|v| !v.is_empty())
     } else {
         Some(hostkey::new_host_key()).filter(|v| !v.is_empty())
     }
-}
-
-#[cfg(not(windows))]
-fn browser_host_key() -> Option<String> {
-    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -484,7 +481,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let workspace = resolve_workspace();
 
-            let browser_key = browser_host_key();
+            let host_key = host_key();
             let started = tauri::async_runtime::block_on(async move {
                 // 后端与页面必须出自同一次构建。devUrl 模式下页面是 Vite 里的源码，
                 // 后端只能是 dev.ts 从同一棵源码树起的那个；`bin/qy` 是上一次
@@ -504,7 +501,7 @@ pub fn run() {
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    sidecar::spawn(&handle, &arg, browser_key.as_deref()).await?
+                    sidecar::spawn(&handle, &arg, host_key.as_deref()).await?
                 };
 
                 // 令牌走初始化脚本注入，而不是等前端来调命令：
@@ -520,10 +517,11 @@ pub fn run() {
                 #[cfg(desktop)]
                 build_tray(&handle)?;
 
-                // 宿主要在主窗口之后起：子 WebView 挂在它底下。
-                #[cfg(windows)]
-                if let Some(key) = browser_key {
-                    browser::start(&handle, info.port, key);
+                // 宿主要在主窗口之后起：浏览器宿主的子 WebView 挂在它底下。
+                if let Some(key) = host_key {
+                    #[cfg(windows)]
+                    browser::start(&handle, info.port, key.clone());
+                    desktop::start(&handle, info.port, key);
                 }
 
                 Ok::<(), Box<dyn std::error::Error>>(())
@@ -559,6 +557,9 @@ pub fn run() {
                 terminal::shutdown(&app.state::<terminal::TerminalHandle>());
                 #[cfg(windows)]
                 browser::shutdown();
+                // 先结清桌面在途请求再收 sidecar：收尾回执要从这条宿主 WS 发出去，
+                // sidecar 一没，服务端那边只剩超时。
+                desktop::shutdown();
                 sidecar::shutdown(app);
             }
         });

@@ -23,7 +23,7 @@ import type {
   HostReadyFrame,
   NativeBrowserUpFrame,
 } from '@qywork/core'
-import { BROWSER_EVENT_KINDS, log, NATIVE_BROWSER_KEY_HEADER } from '@qywork/core'
+import { BROWSER_EVENT_KINDS, log, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 import type { ServerWebSocket } from 'bun'
 import type { SocketData } from '../deps.ts'
 import { timingSafeEqual } from '../pairing.ts'
@@ -81,7 +81,7 @@ export class BrowserBridge {
    */
   accepts(req: Request, address: string | null): boolean {
     if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-    const presented = req.headers.get(NATIVE_BROWSER_KEY_HEADER)
+    const presented = req.headers.get(NATIVE_HOST_KEY_HEADER)
     if (!presented) return false
     return timingSafeEqual(presented, this.#key)
   }

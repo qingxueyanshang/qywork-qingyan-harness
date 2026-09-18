@@ -20,7 +20,7 @@ import type {
   HostReadyFrame,
   NativeBrowserUpFrame,
 } from '@qywork/core'
-import { NATIVE_BROWSER_KEY_HEADER, NATIVE_BROWSER_PATH } from '@qywork/core'
+import { NATIVE_BROWSER_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from '../server.ts'
@@ -61,7 +61,7 @@ function fresh(): ReturnType<typeof serve> {
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    browserHostKey: HOST_KEY,
+    hostKey: HOST_KEY,
   })
   cleanups.push(() => {
     handle.stop()
@@ -107,7 +107,7 @@ class FakeHost {
 
   static async connect(port: number, key = HOST_KEY): Promise<FakeHost> {
     const socket = new WebSocket(`ws://127.0.0.1:${port}${NATIVE_BROWSER_PATH}`, {
-      headers: { [NATIVE_BROWSER_KEY_HEADER]: key },
+      headers: { [NATIVE_HOST_KEY_HEADER]: key },
     })
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve()

@@ -13,13 +13,6 @@
 export const NATIVE_BROWSER_PATH = '/native/browser'
 
 /**
- * 宿主凭据所在的请求头。
- *
- * 不放查询串：URL 会进访问日志与错误信息，而这个值等同于「可以注册宿主」。
- */
-export const NATIVE_BROWSER_KEY_HEADER = 'x-qywork-browser-key'
-
-/**
  * 宿主接受的操作。**新增一个就要同时改 Rust 侧的分派**，
  * 宿主对认不出的 op 一律回 `ok:false`，不猜测意图。
  *
