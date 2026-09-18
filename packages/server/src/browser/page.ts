@@ -591,7 +591,13 @@ export async function readDocument(
  */
 export async function observePage(
   page: PageHandle,
-  opts: { frame?: string; screenshot?: boolean; offset?: number; deadline?: number },
+  opts: {
+    frame?: string
+    screenshot?: boolean
+    offset?: number
+    query?: string
+    deadline?: number
+  },
 ): Promise<{ observation: BrowserObservation; record: ObservationRecord }> {
   const { client, sessionId, tabId } = page
   const deadline = opts.deadline ?? Date.now() + OBSERVE_BUDGET_MS
@@ -600,7 +606,12 @@ export async function observePage(
       throw new BrowserObserveTimeoutError('没有在预算内采到一份前后一致的观察，请重新观察')
     }
     const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
-    const { items: all, pending } = await collectAll(client, sessionId, opts, deadline)
+    const collected = await collectAll(client, sessionId, opts, deadline)
+    const pending = collected.pending
+    const query = opts.query
+    const all = query
+      ? collected.items.filter((i) => matchesQuery(i.element, query))
+      : collected.items
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
     await attachOptions(client, shown, deadline)
@@ -1211,6 +1222,15 @@ interface FramePoint {
   sameTree?: boolean
   hit?: string | null
   hitLabel?: string
+}
+
+/** 名称、正文摘要、当前值任一包含查询串即命中，不分大小写。角色与标签不参与：它们不是页面上的字。 */
+function matchesQuery(element: BrowserElement, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return [element.name, element.text, element.value].some(
+    (field) => typeof field === 'string' && field.toLowerCase().includes(needle),
+  )
 }
 
 /**

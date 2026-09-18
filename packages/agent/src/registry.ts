@@ -331,6 +331,8 @@ export interface BrowserPort {
     screenshot?: boolean
     /** 从第几个元素起返回，配合 `truncated` 翻页。 */
     offset?: number
+    /** 只返回名称、正文或值包含这段文字的元素，不分大小写。翻页与 `truncated` 按筛选后的表算。 */
+    query?: string
     /**
      * 读一个 `select` 的选项：按这份旧观察里的 `ref` 定位，实时读取。
      *

@@ -1181,6 +1181,38 @@ test('元素超过上限时如实报截断，offset 取得到后面的', async (
   expect(rest.observation.elements[0]?.name).toBe('按钮 120')
 })
 
+/**
+ * 原始失败形状：目标按钮排在第 253 个，模型翻了三页才找到。
+ * `query` 按名称筛选后一次拿到，编号仍可用于动作；翻页与截断按筛选后的表算。
+ */
+test('query 只返回名称匹配的元素，编号照常可用', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes = Array.from({ length: 260 }, (_, i) => ({
+    backendNodeId: 100 + i,
+    tag: 'button',
+    attrs: { id: `b${i}` },
+  }))
+  doc.ax = doc.nodes.map((n, i) => ({
+    backendDOMNodeId: n.backendNodeId,
+    role: 'button',
+    name: i % 13 === 12 ? `进入比赛 ${i}` : `其他 ${i}`,
+  }))
+  const handle = await connect(fake)
+
+  const { observation, record } = await observe(handle, { query: '进入比赛' })
+  expect(observation.elements).toHaveLength(20)
+  expect(observation.truncated).toBe(false)
+  expect(observation.elements.every((e) => e.name.startsWith('进入比赛'))).toBe(true)
+  expect(observation.elements[0]?.name).toBe('进入比赛 12')
+  expect(record.refs.has(observation.elements[0]?.ref ?? '')).toBe(true)
+
+  const none = await observe(handle, { query: '不存在的字' })
+  expect(none.observation.elements).toHaveLength(0)
+  expect(none.observation.truncated).toBe(false)
+})
+
 test('点击视口外的元素先滚到可见处，再按滚动后的实时坐标发事件', async () => {
   const { fake, handle } = await newPage()
   addBottomButton(fake)

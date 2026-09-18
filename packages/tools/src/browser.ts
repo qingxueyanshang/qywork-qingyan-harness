@@ -110,8 +110,8 @@ function optionsForArg(
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ArgError(`optionsFor 必须是对象，收到 ${JSON.stringify(raw)}`)
   }
-  if (given(args.frame) || args.screenshot === true || given(args.offset)) {
-    throw new ArgError('optionsFor 不能与 frame、screenshot、offset 同时给')
+  if (given(args.frame) || args.screenshot === true || given(args.offset) || given(args.query)) {
+    throw new ArgError('optionsFor 不能与 frame、screenshot、offset、query 同时给')
   }
   const one = raw as Record<string, unknown>
   return {
@@ -434,6 +434,7 @@ export const browserTabsTool: ToolSpec = {
   description:
     '列出内置浏览器的标签页，或新建、接管、关闭一页。' +
     'create 打开的页归本会话，后续消息可直接对它 observe 与 act；' +
+    'tabId 由 create 的返回值给出，同一轮里无法预知；create 已按 url 加载页面，不需要再 navigate。' +
     '开页不附带观察，先 browser_observe 或 browser_wait 再操作。' +
     'list 返回的 controlled=false 是用户手动打开的页，' +
     '只有用户明确要求使用该页时才用 action=bind 接管。其他会话的页不在列表内。',
@@ -540,6 +541,7 @@ export const browserObserveTool: ToolSpec = {
   name: 'browser_observe',
   description:
     '返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提。' +
+    'query 只返回名称、正文或值包含该文字的元素：知道要找什么时用它，一次拿到全部匹配项，不必翻页。' +
     'truncated=true 时用 offset 取后续元素。' +
     'screenshot=true 才截图，仅在元素表不足以判断版面时使用。' +
     'frame 只看某个 iframe，取自元素的 frame 字段。' +
@@ -555,6 +557,7 @@ export const browserObserveTool: ToolSpec = {
       frame: { type: 'string', description: '只看某个 iframe，取自元素的 frame 字段' },
       screenshot: { type: 'boolean' },
       offset: { type: 'integer', description: '从第几个元素开始返回' },
+      query: { type: 'string', description: '只返回名称、正文或值包含这段文字的元素，不分大小写' },
       optionsFor: {
         type: 'object',
         description: '读一个 select 的选项，不产生新观察也不移动页面',
@@ -582,6 +585,7 @@ export const browserObserveTool: ToolSpec = {
         ...(given(args.frame) ? { frame: str(args.frame, 'frame') } : {}),
         ...(args.screenshot === true ? { screenshot: true } : {}),
         ...(given(args.offset) ? { offset: nonNegative(args.offset, 'offset') } : {}),
+        ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
         ...(optionsFor ? { optionsFor } : {}),
       }
       const r = await send(() => browser.observe(input))

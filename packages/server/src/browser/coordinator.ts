@@ -576,6 +576,7 @@ export class BrowserCoordinator {
       frame?: string
       screenshot?: boolean
       offset?: number
+      query?: string
       optionsFor?: { observationId: string; ref: string; offset?: number }
     },
   ): Promise<BrowserObservation | BrowserOptionsPage> {
@@ -592,6 +593,7 @@ export class BrowserCoordinator {
       ...(input.frame !== undefined ? { frame: input.frame } : {}),
       ...(input.screenshot !== undefined ? { screenshot: input.screenshot } : {}),
       ...(input.offset !== undefined ? { offset: input.offset } : {}),
+      ...(input.query !== undefined ? { query: input.query } : {}),
     })
   }
 
@@ -604,7 +606,13 @@ export class BrowserCoordinator {
   async #observeInto(
     control: Control,
     page: PageHandle,
-    opts: { frame?: string; screenshot?: boolean; offset?: number; deadline?: number },
+    opts: {
+      frame?: string
+      screenshot?: boolean
+      offset?: number
+      query?: string
+      deadline?: number
+    },
   ): Promise<BrowserObservation> {
     const { observation, record } = await observePage(page, opts)
     if (!this.#alive(control)) {
