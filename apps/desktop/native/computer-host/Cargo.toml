@@ -21,6 +21,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Com",
   # RuntimeId 是 SAFEARRAY，读它的函数在 Ole 下。
   "Win32_System_Ole",
+  # 缓存属性按 VARIANT 交回，RuntimeId 那一项要从里面取 SAFEARRAY。
+  "Win32_System_Variant",
   # 窗口枚举、标题、类名与所属进程。
   "Win32_UI_WindowsAndMessaging",
 ] }

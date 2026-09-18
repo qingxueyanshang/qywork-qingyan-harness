@@ -3,8 +3,13 @@
 //! 选 stdio 不选命名管道：stdio 随子进程一同关闭，worker 退出即 stdin 结束，宿主不需要
 //! 心跳或残留端点清理；本机命名管道还要自己做访问控制，而继承来的 stdio 只有父子两端。
 //!
-//! 接收与执行分在两个线程：一次 OS 调用可能阻塞到 UIA 超时上界，取消消息要在那段时间里
-//! 仍能被读到并登记，不能排在长调用后面。
+//! 三类线程：
+//!
+//! - **接收线程**：读 stdin。取消与连接代际就地处理，其余进执行队列。一次 OS 调用可能
+//!   阻塞到 UIA 超时上界，取消消息要在那段时间里仍能被读到并登记。
+//! - **执行线程**：一条一条跑窗口发现、读树与动作。
+//! - **等待线程**：每条 `wait` 请求一条，自带 COM 单元与 UIA 客户端。等待最长可以到分钟级，
+//!   放执行线程上会把同一时间的窗口发现与读树全堵住，而取消要在等待期间生效。
 //!
 //! 每条请求都有终态：解析失败、后端不可用、通道已关闭都各自回一条 `not_dispatched`。
 
@@ -20,11 +25,13 @@ use std::io::{BufRead, Write};
 use std::sync::mpsc::{Receiver, Sender};
 #[cfg(windows)]
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use protocol::{
-    action_dispatch, admit, now_ms, Binding, HostIdentity, Observation, Op, Request, Response,
-    PROTOCOL_VERSION,
+    action_dispatch, admit, now_ms, Binding, Bounds, HostIdentity, Observation, Op, Request,
+    Response, PROTOCOL_VERSION,
 };
 
 #[cfg(windows)]
@@ -41,12 +48,15 @@ fn main() -> std::process::ExitCode {
 /// worker 的全部跨线程状态。
 ///
 /// 取消登记按 requestId 记，执行线程取到目标请求时一并移除；目标请求始终没有到达时，
-/// 该条目留到下次握手被清空。
+/// 该条目留到下次握手被清空。等待中的请求例外：它在派发之后才可能被取消，由等待线程
+/// 每轮查一次并在收尾时移除。
 #[cfg(windows)]
 #[derive(Default)]
 struct State {
     binding: Mutex<Option<Binding>>,
     cancelled: Mutex<HashSet<String>>,
+    /// 宿主握手时给的 UIA 调用上界。等待线程自建客户端时要用同一份。
+    timeouts: Mutex<Option<(u32, u32)>>,
 }
 
 #[cfg(windows)]
@@ -143,7 +153,7 @@ fn bind_connection(req: &Request, state: &State) -> Response {
 }
 
 #[cfg(windows)]
-fn execute_all(rx: Receiver<Request>, state: &State) {
+fn execute_all(rx: Receiver<Request>, state: &Arc<State>) {
     let backend = match windows::Backend::new() {
         Ok(b) => b,
         Err(e) => {
@@ -157,6 +167,11 @@ fn execute_all(rx: Receiver<Request>, state: &State) {
         }
     };
     for req in rx {
+        // 等待自带线程：它可能要等到分钟级，留在这条线程上会把后面的读树一并堵住。
+        if matches!(req.op, Op::Wait { .. }) {
+            spawn_wait(req, state);
+            continue;
+        }
         reply(&handle(&backend, state, req));
     }
 }
@@ -183,6 +198,7 @@ fn handle(backend: &windows::Backend, state: &State, req: Request) -> Response {
             match backend.set_timeouts(connection_timeout_ms, transaction_timeout_ms) {
                 Ok((connection, transaction)) => {
                     *state.binding.lock().expect("绑定锁") = Some(bound.clone());
+                    *state.timeouts.lock().expect("超时锁") = Some((connection, transaction));
                     state.cancelled.lock().expect("取消登记锁").clear();
                     Response::observed(
                         req.id,
@@ -200,36 +216,105 @@ fn handle(backend: &windows::Backend, state: &State, req: Request) -> Response {
                 Err(e) => Response::rejected(req.id, format!("timeout_setup_failed: {e}")),
             }
         }
-        // 这两条由接收线程处理，不进执行队列。
-        Op::Cancel { .. } | Op::BindConnection {} => {
+        // 这两条由接收线程处理，等待由自己的线程处理，都不该走到这里。
+        Op::Cancel { .. } | Op::BindConnection {} | Op::Wait { .. } => {
             Response::rejected(req.id, "not_queued".to_owned())
         }
         Op::ListWindows {} => observe(req.id, windows::list_windows()),
         Op::ReadTree {
             window,
-            max_nodes,
-            max_depth,
-            time_budget_ms,
-        } => observe(
-            req.id,
-            backend.read_tree(window, max_nodes, max_depth, time_budget_ms),
-        ),
-        Op::ReadElement { window, reference } => {
-            observe(req.id, backend.read_element(window, &reference))
-        }
+            select,
+            bounds,
+        } => observe(req.id, backend.read_tree(window, &select, bounds)),
         Op::SetValue {
             window,
             reference,
             value,
-        } => {
-            let attempt = backend.set_value(window, &reference, &value);
-            act(req.id, backend, window, &reference, attempt)
-        }
-        Op::Invoke { window, reference } => {
-            let attempt = backend.invoke(window, &reference);
-            act(req.id, backend, window, &reference, attempt)
+            bounds,
+        } => act(req.id, backend, window, &reference, Some(&value), bounds),
+        Op::Invoke {
+            window,
+            reference,
+            bounds,
+        } => act(req.id, backend, window, &reference, None, bounds),
+    }
+}
+
+/// 起一条等待线程。
+///
+/// 它自建 COM 单元与 UIA 客户端，不借执行线程那一份：COM 单元属于线程，而跨线程共享
+/// 一个客户端会让等待里的一次长调用挡住执行线程手上那一次。
+#[cfg(windows)]
+fn spawn_wait(req: Request, state: &Arc<State>) {
+    let state = Arc::clone(state);
+    std::thread::spawn(move || reply(&run_wait(&state, req)));
+}
+
+#[cfg(windows)]
+fn run_wait(state: &State, req: Request) -> Response {
+    let id = req.id.clone();
+    let binding = state.binding.lock().expect("绑定锁").clone();
+    let cancelled = state.cancelled.lock().expect("取消登记锁").remove(&id);
+    if let Err(reason) = admit(&req, binding.as_ref(), cancelled, now_ms()) {
+        return Response::rejected(id, reason.to_owned());
+    }
+    let Op::Wait {
+        window,
+        until,
+        reference,
+        value,
+        select,
+        name,
+        poll_ms,
+        timeout_ms,
+        bounds,
+    } = req.op
+    else {
+        return Response::rejected(id, "not_a_wait".to_owned());
+    };
+    let backend = match windows::Backend::new() {
+        Ok(b) => b,
+        Err(e) => return Response::rejected(id, format!("backend_unavailable: {e}")),
+    };
+    if let Some((connection, transaction)) = *state.timeouts.lock().expect("超时锁") {
+        if let Err(e) = backend.set_timeouts(connection, transaction) {
+            return Response::rejected(id, format!("timeout_setup_failed: {e}"));
         }
     }
+    let deadline = wait_deadline(timeout_ms, req.deadline, now_ms());
+    let request = windows::WaitRequest {
+        window,
+        until,
+        reference: reference.as_deref(),
+        value: value.as_deref(),
+        select: &select,
+        name: name.as_deref(),
+        poll: Duration::from_millis(poll_ms.max(1)),
+        deadline,
+        bounds,
+    };
+    let stop = || state.cancelled.lock().expect("取消登记锁").contains(&id);
+    let outcome = backend.wait(&request, &stop);
+    state.cancelled.lock().expect("取消登记锁").remove(&id);
+    match outcome {
+        Ok(observation) => Response::observed(req.id, observation),
+        Err(e) => Response::rejected(req.id, e),
+    }
+}
+
+/// 等待的截止时刻：调用方给的时长与信封里的绝对期限取先到的那个。
+///
+/// 两个都要看：时长是调用方要等多久，信封期限是宿主那条 pending 的上界，超过它再返回的
+/// 回执没有人在等。
+#[cfg(windows)]
+fn wait_deadline(timeout_ms: u64, envelope: Option<i64>, now: i64) -> Instant {
+    let at = Instant::now();
+    let own = Duration::from_millis(timeout_ms);
+    let Some(envelope) = envelope else {
+        return at + own;
+    };
+    let left = u64::try_from(envelope.saturating_sub(now)).unwrap_or(0);
+    at + own.min(Duration::from_millis(left))
 }
 
 /// 只读请求的终态：读到什么就带什么，读不到带原因，两种都不改变状态。
@@ -241,7 +326,7 @@ fn observe(id: String, outcome: Result<Observation, String>) -> Response {
     }
 }
 
-/// 动作请求的终态：执行事实由调用结果决定，动作后的重读单列。
+/// 动作请求的终态：执行事实由调用结果决定，动作后的子树重读单列。
 ///
 /// 重读失败不回退执行事实——动作可能已经生效，改记未执行会让调用方重发一次。
 #[cfg(windows)]
@@ -250,14 +335,15 @@ fn act(
     backend: &windows::Backend,
     window: i64,
     reference: &str,
-    attempt: windows::Attempt,
+    value: Option<&str>,
+    bounds: Bounds,
 ) -> Response {
+    let (attempt, observed) = backend.act(window, reference, value, bounds);
     match attempt {
         windows::Attempt::Refused(reason) => Response::rejected(id, reason),
         windows::Attempt::Called(call) => {
             let dispatch = action_dispatch(&call);
-            let mut response =
-                Response::acted(id, dispatch, backend.read_element(window, reference));
+            let mut response = Response::acted(id, dispatch, observed);
             if let Err(e) = call {
                 response.reason = Some(e);
             }
@@ -278,5 +364,52 @@ fn reply(response: &Response) {
             }
         }
         Err(e) => eprintln!("回执序列化失败：{e}"),
+    }
+}
+
+/// 只测不碰 OS 的那几条判定。等待的条件判定在 `protocol.rs`，子树筛选在 `windows.rs`。
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// 两个期限取先到的那个：调用方要等 10 秒而宿主的 pending 只剩 2 秒时，等到 2 秒就回。
+    #[test]
+    fn the_wait_deadline_takes_whichever_comes_first() {
+        let now = 1_000_000i64;
+        let short = wait_deadline(10_000, Some(now + 2_000), now);
+        let long = wait_deadline(10_000, Some(now + 60_000), now);
+        let none = wait_deadline(10_000, None, now);
+        let at = Instant::now();
+        assert!(short.saturating_duration_since(at) <= Duration::from_millis(2_100));
+        assert!(long.saturating_duration_since(at) > Duration::from_millis(9_000));
+        assert!(none.saturating_duration_since(at) > Duration::from_millis(9_000));
+    }
+
+    /// 信封期限已经过去时不等：立刻到期，不按调用方给的时长再等一轮。
+    #[test]
+    fn an_expired_envelope_leaves_no_time_to_wait() {
+        let now = 1_000_000i64;
+        let past = wait_deadline(10_000, Some(now - 5), now);
+        assert!(past <= Instant::now() + Duration::from_millis(5));
+    }
+
+    /// 等待请求走自己的线程：`execute_all` 按这个形状认它，认错就会排进执行队列，
+    /// 一次分钟级的等待会把后面的读树全堵住。
+    #[test]
+    fn a_wait_is_recognised_before_it_reaches_the_queue() {
+        let req: Request = serde_json::from_str(
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"wait","params":{"window":66,"until":"enabled","ref":"w.0#7",
+                "pollMs":100,"timeoutMs":1000,"maxNodes":10,"maxDepth":2,"timeBudgetMs":100}}"#,
+        )
+        .expect("等待请求应当解析成功");
+        assert!(matches!(req.op, Op::Wait { .. }));
+        let read: Request = serde_json::from_str(
+            r#"{"v":2,"id":"r2","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"read_tree","params":{"window":66,"maxNodes":10,"maxDepth":2,
+                "timeBudgetMs":100}}"#,
+        )
+        .expect("读树请求应当解析成功");
+        assert!(!matches!(read.op, Op::Wait { .. }));
     }
 }

@@ -1,9 +1,10 @@
 /**
- * 四个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、目标唯一匹配、动作前置
- * 条件、三态回执透传与注册元数据。
+ * 四个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
+ * 动作前置条件、三态回执与动作后观察的透传、等待条件与终态、注册元数据。
  *
- * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 覆盖。这里用一份记账假
- * 端口：断言的是「交给端口的是什么」与「有没有交下去」，不是调了几次。
+ * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
+ * `coordinator.test.ts` 覆盖。这里用一份记账假端口：断言的是「交给端口的是什么」与
+ * 「有没有交下去」，不是调了几次。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -12,6 +13,7 @@ import type {
   DesktopElement,
   DesktopPort,
   DesktopRefusal,
+  DesktopSnapshot,
   ToolContext,
   ToolOutcome,
   ToolSpec,
@@ -25,8 +27,54 @@ import {
   desktopWindowsTool,
 } from './desktop.ts'
 
+/** 窗口根。同名按钮分在两个分组下，只有祖先路径区分得开。 */
+const 窗口: DesktopElement = {
+  ref: 'w#1',
+  depth: 0,
+  role: 'window',
+  name: '另存为',
+  automationId: '',
+  enabled: true,
+  offscreen: false,
+  actions: [],
+}
+const 工具栏: DesktopElement = {
+  ref: 'w.0#2',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'tool_bar',
+  name: '',
+  automationId: 'bar',
+  enabled: true,
+  offscreen: false,
+  actions: [],
+}
+const 工具栏保存: DesktopElement = {
+  ref: 'w.0.0#3',
+  parentRef: 'w.0#2',
+  depth: 2,
+  role: 'button',
+  name: '保存',
+  automationId: 'save',
+  enabled: true,
+  offscreen: false,
+  actions: ['invoke'],
+}
+const 表单组: DesktopElement = {
+  ref: 'w.1#4',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'group',
+  name: '文件',
+  automationId: 'form',
+  enabled: true,
+  offscreen: false,
+  actions: [],
+}
 const 输入框: DesktopElement = {
-  ref: 'w.0.1',
+  ref: 'w.1.0#5',
+  parentRef: 'w.1#4',
+  depth: 2,
   role: 'edit',
   name: '姓名',
   automationId: 'nameBox',
@@ -35,25 +83,47 @@ const 输入框: DesktopElement = {
   offscreen: false,
   actions: ['set_value'],
 }
-const 保存按钮: DesktopElement = {
-  ref: 'w.0.2',
+const 表单保存: DesktopElement = {
+  ref: 'w.1.1#6',
+  parentRef: 'w.1#4',
+  depth: 2,
   role: 'button',
   name: '保存',
-  automationId: 'save',
+  automationId: 'save2',
   enabled: true,
   offscreen: false,
   actions: ['invoke'],
 }
-const 另一个保存: DesktopElement = { ...保存按钮, ref: 'w.0.3', automationId: 'save2' }
 const 灰按钮: DesktopElement = {
-  ...保存按钮,
-  ref: 'w.0.4',
+  ref: 'w.1.2#7',
+  parentRef: 'w.1#4',
+  depth: 2,
+  role: 'button',
   name: '提交',
   automationId: 'submit',
   enabled: false,
+  offscreen: false,
+  actions: ['invoke'],
 }
 
-const TABLE = [输入框, 保存按钮, 另一个保存, 灰按钮]
+const TABLE = [窗口, 工具栏, 工具栏保存, 表单组, 输入框, 表单保存, 灰按钮]
+
+function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
+  return {
+    windowId: 'dw_1',
+    app: '记事本',
+    title: '未命名',
+    observationId: 'do_1',
+    capturedAt: 1,
+    elements: TABLE,
+    truncated: false,
+    truncatedBy: [],
+    filteredBy: [],
+    visited: TABLE.length,
+    windowEnabled: true,
+    ...over,
+  }
+}
 
 interface Recorded {
   method: string
@@ -70,7 +140,14 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
   }
   const acted = (input: unknown): DesktopActResult => {
     note('act', input)
-    return { dispatch: 'submitted', actionId: 'da_1', element: { ...输入框, value: '张三' } }
+    return {
+      dispatch: 'submitted',
+      actionId: 'da_1',
+      observation: snapshot({
+        observationId: 'do_2',
+        elements: [{ ...输入框, value: '张三' }],
+      }),
+    }
   }
   const base: DesktopPort = {
     windows: async () => {
@@ -79,16 +156,7 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
     },
     observe: async (input) => {
       note('observe', input)
-      return {
-        windowId: input.windowId,
-        app: '记事本',
-        title: '未命名',
-        observationId: 'do_1',
-        capturedAt: 1,
-        elements: TABLE,
-        truncated: false,
-        truncatedBy: [],
-      }
+      return snapshot({ windowId: input.windowId })
     },
     elements: (windowId, observationId) =>
       windowId === 'dw_1' && observationId === 'do_1' ? TABLE : null,
@@ -96,7 +164,7 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
     invoke: async (input) => acted(input),
     wait: async (input) => {
       note('wait', input)
-      return { found: true, element: 保存按钮 }
+      return { found: true, observation: snapshot({ observationId: 'do_3' }) }
     },
     release: async () => {},
   }
@@ -167,7 +235,7 @@ describe('没有端口与已停止', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port, controller.signal),
     )
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'aborted' })
@@ -175,19 +243,25 @@ describe('没有端口与已停止', () => {
   })
 })
 
-describe('目标解析', () => {
+describe('目标解析与层级消歧', () => {
   test('按 ref 唯一命中时才把它交给端口', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.1', value: '张三' },
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_value',
+        ref: 'w.1.0#5',
+        value: '张三',
+      },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     expect(calls).toEqual([
       {
         method: 'act',
-        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'w.0.1', value: '张三' },
+        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'w.1.0#5', value: '张三' },
       },
     ])
   })
@@ -200,11 +274,15 @@ describe('目标解析', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(calls[0]).toMatchObject({ input: { ref: 'w.0.3' } })
+    expect(calls[0]).toMatchObject({ input: { ref: 'w.1.1#6' } })
   })
 
-  /** 同名两个按钮，挑第一个就是在另一个控件上执行动作，而且不报错。 */
-  test('同名歧义时不执行，把候选交回模型', async () => {
+  /**
+   * 同名两个按钮，挑第一个就是在另一个控件上执行动作，而且不报错。
+   *
+   * 回执要能让模型分得开这两个：只有祖先路径说得出「一个在工具栏里、一个在文件组里」。
+   */
+  test('同名歧义时不执行，候选带祖先路径交回模型', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -212,9 +290,26 @@ describe('目标解析', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_target_ambiguous' })
-    expect(r.message).toContain('w.0.2')
-    expect(r.message).toContain('w.0.3')
+    expect(r.message).toContain('w.0.0#3')
+    expect(r.message).toContain('w.1.1#6')
+    expect(r.message).toContain('window「另存为」 > tool_bar')
+    expect(r.message).toContain('window「另存为」 > group「文件」')
     expect(calls).toEqual([])
+  })
+
+  /** 祖先不在表里时走到哪算哪，不编一段路径出来。 */
+  test('父控件不在这份表里时祖先路径只写到断点', async () => {
+    const partial = [表单保存, 灰按钮].map((e) => ({ ...e }))
+    const { port } = fakeDesktop({
+      elements: () => [...partial, { ...工具栏保存 }],
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', name: '保存' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ errorKind: 'desktop_target_ambiguous' })
+    expect(r.message).not.toContain('位于')
   })
 
   test('加 role 收窄之后仍然不唯一就还是歧义，命中不到就是缺失', async () => {
@@ -231,7 +326,7 @@ describe('目标解析', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_0', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_0', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_stale' })
@@ -242,7 +337,7 @@ describe('目标解析', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.9.9' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.9.9#9' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_ref_unknown' })
@@ -255,7 +350,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.4' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.1.2#7' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
@@ -266,7 +361,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.2', value: 'x' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.0#3', value: 'x' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
@@ -278,7 +373,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const missing = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.1' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.1.0#5' },
       ctxWith(port),
     )
     expect(missing).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -286,7 +381,7 @@ describe('动作前置条件', () => {
 
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.1', value: '' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.1.0#5', value: '' },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({ input: { value: '' } })
@@ -296,7 +391,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2', value: 'x' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3', value: 'x' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -304,16 +399,28 @@ describe('动作前置条件', () => {
   })
 })
 
-describe('三态回执透传', () => {
-  test('submitted 是成功，结果里带动作身份与重读', async () => {
+describe('三态回执与动作后观察', () => {
+  /** 动作同次带回新观察：模型不必再单独 observe 就能接着发下一个动作。 */
+  test('submitted 是成功，结果里带动作身份与新的观察编号', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_value',
+        ref: 'w.1.0#5',
+        value: '张三',
+      },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     expect(r.data).toMatchObject({ dispatch: 'submitted', actionId: 'da_1' })
+    const observation = (r.data as { observation: DesktopSnapshot }).observation
+    expect(observation.observationId).toBe('do_2')
+    expect(r.message).toContain('do_2')
+    // 目标控件的新值直接出现在回执里，不用再读一次。
+    expect(r.message).toContain('张三')
   })
 
   test('not_dispatched 是没执行，executed 为假', async () => {
@@ -322,13 +429,13 @@ describe('三态回执透传', () => {
         dispatch: 'not_dispatched',
         actionId: 'da_2',
         reason: 'read_only',
-        element: null,
-        observationError: '没有重读',
+        observation: null,
+        observationError: '动作没有派发，没有重读',
       }),
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -347,13 +454,13 @@ describe('三态回执透传', () => {
         dispatch: 'unknown',
         actionId: 'da_3',
         reason: 'provider 无响应',
-        element: null,
+        observation: null,
         observationError: '宿主不可用，动作之后没有重读',
       }),
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
@@ -367,13 +474,13 @@ describe('三态回执透传', () => {
       invoke: async () => ({
         dispatch: 'submitted',
         actionId: 'da_4',
-        element: null,
+        observation: null,
         observationError: '窗口已关闭',
       }),
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -397,74 +504,172 @@ describe('三态回执透传', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.2' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_unavailable' })
   })
 })
 
-describe('观察与等待', () => {
+describe('局部查询与字段选择', () => {
+  test('子树根、角色、文字与字段选择逐项交给端口', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopObserveTool,
+      {
+        windowId: 'dw_1',
+        root: 'w.1#4',
+        role: 'button',
+        query: '保存',
+        includeValue: false,
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toEqual({
+      method: 'observe',
+      input: {
+        windowId: 'dw_1',
+        root: 'w.1#4',
+        role: 'button',
+        query: '保存',
+        includeValue: false,
+      },
+    })
+  })
+
+  test('没给筛选参数时一个都不往下传', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(calls[0]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
+  })
+
   test('观察的上限按参数夹住，读不出数就是参数错', async () => {
     const { port, calls } = fakeDesktop()
     await run(desktopObserveTool, { windowId: 'dw_1', maxNodes: 99_999 }, ctxWith(port))
     expect(calls[0]).toMatchObject({ input: { windowId: 'dw_1', maxNodes: 4000 } })
 
-    const bad = await run(desktopObserveTool, { windowId: 'dw_1', maxDepth: '一堆' }, ctxWith(port))
+    const bad = await run(desktopObserveTool, { windowId: 'dw_1', maxDepth: '很多' }, ctxWith(port))
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  test('截断如实报出来，不让调用方读成「没有」', async () => {
+  /** 截断与筛选是两件事：一个说「没读全」，一个说「挡掉了」，回执里各说一次。 */
+  test('截断与筛选分别如实报出来', async () => {
     const { port } = fakeDesktop({
-      observe: async (input) => ({
-        windowId: input.windowId,
-        app: '记事本',
-        title: '未命名',
-        observationId: 'do_1',
-        capturedAt: 1,
-        elements: TABLE,
-        truncated: true,
-        truncatedBy: ['max_nodes'],
-      }),
+      observe: async (input) =>
+        snapshot({
+          windowId: input.windowId,
+          truncated: true,
+          truncatedBy: ['max_nodes'],
+          filteredBy: ['role=button', 'nameContains=保存'],
+          visited: 900,
+        }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('max_nodes')
+    expect(r.message).toContain('role=button')
+    expect(r.data).toMatchObject({ visited: 900 })
   })
 
-  test('等待按同一套目标解析，until=value 少了 value 是参数错', async () => {
-    const { port, calls } = fakeDesktop()
-    const bad = await run(
-      desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'value', ref: 'w.0.1' },
-      ctxWith(port),
-    )
-    expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
-    expect(calls).toEqual([])
+  /** 模态窗口挡住时控件一个都动不了，这一句必须出现在读数里。 */
+  test('窗口被挡住时观察如实说明', async () => {
+    const { port } = fakeDesktop({
+      observe: async (input) => snapshot({ windowId: input.windowId, windowEnabled: false }),
+    })
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).toContain('模态窗口')
+  })
+})
 
+describe('等待', () => {
+  test('盯已知控件的条件按同一套目标解析，参数逐项交给端口', async () => {
+    const { port, calls } = fakeDesktop()
     await run(
       desktopWaitTool,
       {
         windowId: 'dw_1',
         observationId: 'do_1',
         until: 'enabled',
-        automationId: 'save',
+        automationId: 'save2',
         timeoutMs: 999_999,
       },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({
       method: 'wait',
-      input: { ref: 'w.0.2', until: 'enabled', timeoutMs: 60_000 },
+      input: { ref: 'w.1.1#6', until: 'enabled', timeoutMs: 60_000 },
     })
   })
 
-  test('没等到不是执行失败，executed 为假', async () => {
+  test('until=value 少了 value 是参数错', async () => {
+    const { port, calls } = fakeDesktop()
+    const bad = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'value', ref: 'w.1.0#5' },
+      ctxWith(port),
+    )
+    expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+
+  /** 等的是还不存在的控件或窗口，就不该要求它先出现在某一份观察里。 */
+  test('appears 与 window 不解析已有控件，按文字条件交给端口', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'appears', name: '完成', role: 'button' },
+      ctxWith(port),
+    )
+    // appears 找的是控件文字，window 找的是窗口标题：两种条件落在不同字段上，不能混。
+    expect(calls[0]).toMatchObject({
+      method: 'wait',
+      input: { until: 'appears', query: '完成', role: 'button' },
+    })
+    expect((calls[0]?.input as { ref?: string }).ref).toBeUndefined()
+
+    await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'window', name: '另存为' },
+      ctxWith(port),
+    )
+    expect(calls[1]).toMatchObject({ method: 'wait', input: { until: 'window', title: '另存为' } })
+    expect((calls[1]?.input as { query?: string }).query).toBeUndefined()
+  })
+
+  test('appears 与 window 缺了条件就是参数错', async () => {
+    const { port, calls } = fakeDesktop()
+    for (const args of [{ until: 'window' }, { until: 'appears' }]) {
+      const r = await run(
+        desktopWaitTool,
+        { windowId: 'dw_1', observationId: 'do_1', ...args },
+        ctxWith(port),
+      )
+      expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    }
+    expect(calls).toEqual([])
+  })
+
+  test('等到了带回新的观察编号', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'w.1.1#6' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('do_3')
+  })
+
+  test('到期没等到不是执行失败，executed 为假，并带回当时的控件表', async () => {
     const { port } = fakeDesktop({
-      wait: async () => ({ found: false, reason: 'timeout', element: 灰按钮 }),
+      wait: async () => ({
+        found: false,
+        reason: 'timeout',
+        observation: snapshot({ observationId: 'do_9' }),
+      }),
     })
     const r = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'w.0.4' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'w.1.2#7' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -472,6 +677,26 @@ describe('观察与等待', () => {
       executed: false,
       errorKind: 'desktop_wait_timeout',
     })
+    expect(r.data).toMatchObject({ found: false, reason: 'timeout' })
+    expect(r.message).toContain('do_9')
+  })
+
+  test('被撤销时如实回撤销，不当成超时', async () => {
+    const { port } = fakeDesktop({
+      wait: async () => ({
+        found: false,
+        reason: 'cancelled',
+        observation: null,
+        observationError: '本次执行的电脑操作已经结束',
+      }),
+    })
+    const r = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'gone', ref: 'w.1.2#7' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_unavailable' })
+    expect(r.data).toMatchObject({ reason: 'cancelled' })
   })
 })
 

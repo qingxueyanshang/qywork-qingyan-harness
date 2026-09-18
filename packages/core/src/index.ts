@@ -216,6 +216,8 @@ export {
   type DesktopRequestFrame,
   type DesktopResultFrame,
   type DesktopTarget,
+  type DesktopTreeBody,
+  type DesktopWaitUntil,
   type DesktopWindow,
   NATIVE_DESKTOP_PATH,
   type NativeDesktopUpFrame,

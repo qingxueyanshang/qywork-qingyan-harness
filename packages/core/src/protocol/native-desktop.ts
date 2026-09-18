@@ -23,7 +23,7 @@ export const NATIVE_DESKTOP_PATH = '/native/desktop'
  *
  * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
  */
-export const DESKTOP_PROTOCOL_VERSION = 1
+export const DESKTOP_PROTOCOL_VERSION = 2
 
 /**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
@@ -32,15 +32,25 @@ export const DESKTOP_PROTOCOL_VERSION = 1
  * `cancel` 撤销的是**发起它的那个执行者名下尚未派发的请求**，目标写在帧的
  * `executorId` 上；已经进入 OS 调用的请求不会被它中止。
  */
-const DESKTOP_OPS = [
-  'list_windows',
-  'read_tree',
-  'read_element',
-  'set_value',
-  'invoke',
-  'cancel',
-] as const
+const DESKTOP_OPS = ['list_windows', 'read_tree', 'set_value', 'invoke', 'wait', 'cancel'] as const
 export type DesktopOp = (typeof DESKTOP_OPS)[number]
+
+/**
+ * 等待的后置条件。判定在宿主那一侧做，服务端只给条件与两个时限。
+ *
+ * `gone` 满足时观察里一个控件都没有，范围仍指着那个 `ref`——调用方据此只作废这一段引用。
+ */
+export type DesktopWaitUntil =
+  /** 目标控件变成可用。 */
+  | 'enabled'
+  /** 目标控件的值变成给定的那一个。 */
+  | 'value'
+  /** 目标控件从树上消失。 */
+  | 'gone'
+  /** 窗口里出现一个满足 role / nameContains 的控件。 */
+  | 'appears'
+  /** 出现一个标题包含给定文字的顶层窗口，且不是目标窗口自己。 */
+  | 'window'
 
 /**
  * 执行事实。只描述「这次请求要求的状态改变动作」有没有交到 OS 手里。
@@ -88,20 +98,34 @@ export interface DesktopTarget {
   processStartedAt: number
 }
 
-/** 观察的完整性。截断原因逐条列出，调用方不能把「没采到」读成「没有」。 */
+/**
+ * 观察的完整性。
+ *
+ * **截断与筛选是两件事，分两格记。** `truncatedBy` 说的是上限截断了遍历，`filteredBy`
+ * 说的是哪些条件把遍历过的控件挡在了结果外面。调用方不能把「没采到」读成「没有」，
+ * 也不能把「被筛掉」读成「不存在」。
+ */
 export interface DesktopCompleteness {
   complete: boolean
   truncatedBy: string[]
+  filteredBy: string[]
+  /** 遍历过的控件数。三个上限限的是它，不是返回的条数。 */
+  visited: number
 }
 
 /**
- * 控件树上的一个节点。
+ * 控件表里的一个控件。
  *
  * `ref` 是不透明引用，只在产生它的那一次观察内有效；动作请求原样带回，宿主按它
  * 重新定位控件。
+ *
+ * 层级留在展平表上：`parentRef` 指向同一份表里的父控件，`depth` 是相对本次读取范围的
+ * 层数。本次范围的根没有父控件，`parentRef` 缺席。
  */
 export interface DesktopNode {
   ref: string
+  parentRef?: string
+  depth: number
   role: string
   name: string
   automationId: string
@@ -109,7 +133,31 @@ export interface DesktopNode {
   enabled: boolean
   offscreen: boolean
   actions: DesktopNodeAction[]
-  children: DesktopNode[]
+  /**
+   * 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
+   *
+   * 三项都不变而控件被换掉时核不出来，界面重排之后这个引用不可靠。缺席表示身份正常。
+   */
+  weakIdentity?: boolean
+}
+
+/**
+ * 一次控件读取的全部内容。`tree` 与 `wait` 两种观察共用它。
+ *
+ * `scope` 是本次读取覆盖的范围：给出 ref 时只读了那棵子树，缺席时读的是整窗。
+ * **调用方按它决定作废哪一段引用**——缺席时整份旧观察作废，给出 ref 时只有那一段子树
+ * 作废，无关区域的旧引用仍然成立。
+ *
+ * `windowEnabled` 为假表示目标窗口此刻被模态窗口挡着。
+ */
+export interface DesktopTreeBody {
+  window: number
+  capturedAt: number
+  scope?: string
+  windowEnabled: boolean
+  completeness: DesktopCompleteness
+  nodeCount: number
+  nodes: DesktopNode[]
 }
 
 /**
@@ -120,15 +168,9 @@ export interface DesktopNode {
  */
 export type DesktopObservation =
   | { kind: 'windows'; capturedAt: number; windows: DesktopWindow[] }
-  | {
-      kind: 'tree'
-      window: number
-      capturedAt: number
-      completeness: DesktopCompleteness
-      nodeCount: number
-      root: DesktopNode
-    }
-  | { kind: 'element'; window: number; capturedAt: number; element: DesktopNode }
+  | ({ kind: 'tree' } & DesktopTreeBody)
+  /** 一次等待的结果：有没有等到，加上返回那一刻读到的状态。 */
+  | ({ kind: 'wait'; found: boolean; reason?: string } & DesktopTreeBody)
 
 /**
  * 宿主注册帧。连接建立后宿主先发这一帧，服务端据此接受这条连接。
@@ -183,11 +225,27 @@ export interface DesktopRequestFrame {
   target?: DesktopTarget
   /** 目标控件引用，取自同一次观察。 */
   ref?: string
-  /** `set_value` 要写入的值。空串是清空，与缺席不是一回事。 */
+  /** `set_value` 要写入的值，或 `wait` 的 `until=value` 要等到的值。空串是清空，与缺席不是一回事。 */
   value?: string
   maxNodes?: number
   maxDepth?: number
   timeBudgetMs?: number
+  /** 只读这个 ref 底下的子树。缺席表示整窗。 */
+  root?: string
+  /** 只留这个角色的控件。 */
+  role?: string
+  /** 只留名称、稳定标识或值包含这段文字的控件，不分大小写。 */
+  nameContains?: string
+  /** 取不取控件当前值。缺席按取。 */
+  includeValue?: boolean
+  /** `wait` 的后置条件。 */
+  until?: DesktopWaitUntil
+  /** `wait` 的 `until=window` 要等的标题子串。 */
+  name?: string
+  /** `wait` 两次判定之间至少隔多久。 */
+  pollMs?: number
+  /** `wait` 最多等多久。`deadline` 是硬上界，宿主取先到的那个。 */
+  timeoutMs?: number
 }
 
 /**

@@ -18,16 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 1;
+pub const WORKER_PROTOCOL_VERSION: u32 = 2;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
-const FORWARDED_OPS: [&str; 5] = [
-    "list_windows",
-    "read_tree",
-    "read_element",
-    "set_value",
-    "invoke",
-];
+const FORWARDED_OPS: [&str; 5] = ["list_windows", "read_tree", "set_value", "invoke", "wait"];
 
 /// 执行实例身份加当前连接代际。回执、事件与 worker 请求都按这一份填。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +86,25 @@ pub struct RequestFrame {
     pub max_depth: Option<u32>,
     #[serde(default)]
     pub time_budget_ms: Option<u64>,
+    /// 只读这个 ref 底下的子树。缺席表示整窗。
+    #[serde(default)]
+    pub root: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub name_contains: Option<String>,
+    #[serde(default)]
+    pub include_value: Option<bool>,
+    /// 等待的后置条件。
+    #[serde(default)]
+    pub until: Option<String>,
+    /// `until=window` 要等的标题子串。
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub poll_ms: Option<u64>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// 目标窗口身份。三项一起给，派发前重新核对，句柄复用因此识别得出。
@@ -275,20 +288,50 @@ pub fn to_worker(
     }
     let params = match frame.op.as_str() {
         "list_windows" => json!({}),
-        "read_tree" => json!({
-            "window": window,
-            "maxNodes": frame.max_nodes.ok_or("missing_max_nodes")?,
-            "maxDepth": frame.max_depth.ok_or("missing_max_depth")?,
-            "timeBudgetMs": frame.time_budget_ms.ok_or("missing_time_budget")?,
-        }),
-        "read_element" => json!({ "window": window, "ref": reference(frame)? }),
-        "invoke" => json!({ "window": window, "ref": reference(frame)? }),
-        "set_value" => json!({
-            "window": window,
-            "ref": reference(frame)?,
-            // 空串是清空，与缺席不是一回事，所以只拒绝缺席。
-            "value": frame.value.as_deref().ok_or("missing_value")?,
-        }),
+        "read_tree" => {
+            let mut params = bounds(frame, window)?;
+            merge(&mut params, select(frame));
+            params
+        }
+        "invoke" => {
+            let mut params = bounds(frame, window)?;
+            merge(&mut params, json!({ "ref": reference(frame)? }));
+            params
+        }
+        "set_value" => {
+            let mut params = bounds(frame, window)?;
+            merge(
+                &mut params,
+                json!({
+                    "ref": reference(frame)?,
+                    // 空串是清空，与缺席不是一回事，所以只拒绝缺席。
+                    "value": frame.value.as_deref().ok_or("missing_value")?,
+                }),
+            );
+            params
+        }
+        "wait" => {
+            let mut params = bounds(frame, window)?;
+            merge(&mut params, select(frame));
+            merge(
+                &mut params,
+                json!({
+                    "until": frame.until.as_deref().ok_or("missing_until")?,
+                    "pollMs": frame.poll_ms.ok_or("missing_poll")?,
+                    "timeoutMs": frame.timeout_ms.ok_or("missing_timeout")?,
+                }),
+            );
+            if let Some(reference) = &frame.reference {
+                merge(&mut params, json!({ "ref": reference }));
+            }
+            if let Some(value) = &frame.value {
+                merge(&mut params, json!({ "value": value }));
+            }
+            if let Some(name) = &frame.name {
+                merge(&mut params, json!({ "name": name }));
+            }
+            params
+        }
         _ => return Err("unsupported_op"),
     };
     let op = FORWARDED_OPS
@@ -300,13 +343,51 @@ pub fn to_worker(
     Ok(request)
 }
 
+/// 三个上限加已核对的窗口句柄。缺任何一项都不翻译：worker 没有默认值，缺了就是无界读取。
+fn bounds(frame: &RequestFrame, window: i64) -> Result<Value, &'static str> {
+    Ok(json!({
+        "window": window,
+        "maxNodes": frame.max_nodes.ok_or("missing_max_nodes")?,
+        "maxDepth": frame.max_depth.ok_or("missing_max_depth")?,
+        "timeBudgetMs": frame.time_budget_ms.ok_or("missing_time_budget")?,
+    }))
+}
+
+/// 筛选与字段选择。缺席的项一律不写进去：多发一个 `null` 会让 worker 的可选字段判定
+/// 从「没有」变成「有且为空」。
+fn select(frame: &RequestFrame) -> Value {
+    let mut out = json!({});
+    if let Some(root) = &frame.root {
+        merge(&mut out, json!({ "root": root }));
+    }
+    if let Some(role) = &frame.role {
+        merge(&mut out, json!({ "role": role }));
+    }
+    if let Some(text) = &frame.name_contains {
+        merge(&mut out, json!({ "nameContains": text }));
+    }
+    if let Some(include) = frame.include_value {
+        merge(&mut out, json!({ "includeValue": include }));
+    }
+    out
+}
+
+fn merge(into: &mut Value, from: Value) {
+    let (Some(target), Value::Object(source)) = (into.as_object_mut(), from) else {
+        return;
+    };
+    for (key, value) in source {
+        target.insert(key, value);
+    }
+}
+
 fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
     frame.reference.as_deref().ok_or("missing_ref")
 }
 
 /// 这个 op 需不需要目标窗口身份。`list_windows` 与 `cancel` 不带 target。
 pub fn needs_target(op: &str) -> bool {
-    matches!(op, "read_tree" | "read_element" | "set_value" | "invoke")
+    matches!(op, "read_tree" | "set_value" | "invoke" | "wait")
 }
 
 /// 把一条 worker 回执翻译成服务端结果帧。
@@ -407,6 +488,14 @@ mod tests {
             max_nodes: Some(500),
             max_depth: Some(12),
             time_budget_ms: Some(1500),
+            root: None,
+            role: None,
+            name_contains: None,
+            include_value: None,
+            until: None,
+            name: None,
+            poll_ms: None,
+            timeout_ms: None,
         }
     }
 
@@ -417,7 +506,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 1, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "v": 2, "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
                 "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
@@ -462,11 +551,17 @@ mod tests {
         );
     }
 
-    /// 这三种 op 由宿主自己发起，服务端发不出去。翻译层放行它们就等于让 worker 的
-    /// `ready` / `cancel_registered` / `connection_bound` 观察流到服务端。
+    /// 这几种 op 由宿主自己发起或者已经删掉，服务端发不出去。翻译层放行它们就等于让
+    /// worker 的 `ready` / `cancel_registered` / `connection_bound` 观察流到服务端。
     #[test]
     fn host_only_ops_do_not_translate() {
-        for op in ["handshake", "bind_connection", "cancel", "screenshot"] {
+        for op in [
+            "handshake",
+            "bind_connection",
+            "cancel",
+            "screenshot",
+            "read_element",
+        ] {
             assert_eq!(
                 to_worker("w1".to_owned(), &request(op), &binding(), 66).err(),
                 Some("unsupported_op"),
@@ -489,9 +584,82 @@ mod tests {
     fn only_window_bound_ops_need_a_target() {
         assert!(!needs_target("list_windows"));
         assert!(!needs_target("cancel"));
-        for op in ["read_tree", "read_element", "set_value", "invoke"] {
+        for op in ["read_tree", "set_value", "invoke", "wait"] {
             assert!(needs_target(op), "{op}");
         }
+    }
+
+    /// 筛选与字段选择缺席时一个都不写进 params：多发一个 `null` 会让 worker 把「没有」
+    /// 读成「有且为空」。
+    #[test]
+    fn an_absent_selection_adds_no_keys() {
+        let worker = to_worker("w1".to_owned(), &request("read_tree"), &binding(), 77).unwrap();
+        let params = worker.params.as_object().expect("params 应当是对象");
+        assert_eq!(
+            params.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["maxDepth", "maxNodes", "timeBudgetMs", "window"]
+        );
+    }
+
+    #[test]
+    fn a_local_query_travels_as_root_role_and_text() {
+        let mut frame = request("read_tree");
+        frame.root = Some("w.0#7".to_owned());
+        frame.role = Some("button".to_owned());
+        frame.name_contains = Some("保存".to_owned());
+        frame.include_value = Some(false);
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(worker.params["root"], json!("w.0#7"));
+        assert_eq!(worker.params["role"], json!("button"));
+        assert_eq!(worker.params["nameContains"], json!("保存"));
+        assert_eq!(worker.params["includeValue"], json!(false));
+        assert_eq!(worker.params["window"], json!(77));
+    }
+
+    /// 动作也带三个上限：动作后要重读目标所在的子树，上限由服务端给，worker 不自带默认值。
+    #[test]
+    fn an_action_carries_the_bounds_for_the_follow_up_read() {
+        let worker = to_worker("w1".to_owned(), &request("invoke"), &binding(), 77).unwrap();
+        assert_eq!(worker.params["maxNodes"], json!(500));
+        assert_eq!(worker.params["maxDepth"], json!(12));
+        assert_eq!(worker.params["timeBudgetMs"], json!(1500));
+    }
+
+    #[test]
+    fn wait_carries_the_condition_and_both_time_limits() {
+        let mut frame = request("wait");
+        frame.until = Some("value".to_owned());
+        frame.value = Some("张三".to_owned());
+        frame.poll_ms = Some(250);
+        frame.timeout_ms = Some(9_000);
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(worker.op, "wait");
+        assert_eq!(worker.params["until"], json!("value"));
+        assert_eq!(worker.params["ref"], json!("w.0.1#42.7"));
+        assert_eq!(worker.params["value"], json!("张三"));
+        assert_eq!(worker.params["pollMs"], json!(250));
+        assert_eq!(worker.params["timeoutMs"], json!(9_000));
+        // 信封的 deadline 仍然照发：它是宿主那条 pending 的硬上界。
+        assert_eq!(worker.deadline, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn wait_without_a_condition_or_a_limit_is_refused() {
+        let mut frame = request("wait");
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_until")
+        );
+        frame.until = Some("enabled".to_owned());
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_poll")
+        );
+        frame.poll_ms = Some(250);
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_timeout")
+        );
     }
 
     #[test]

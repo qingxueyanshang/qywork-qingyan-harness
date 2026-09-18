@@ -24,6 +24,7 @@ import type {
   DesktopRequestFrame,
   DesktopResultFrame,
   DesktopTarget,
+  DesktopWaitUntil,
   NativeDesktopUpFrame,
 } from '@qywork/core'
 import { DESKTOP_PROTOCOL_VERSION, log, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
@@ -87,6 +88,14 @@ export interface DesktopRequestParams {
   maxNodes?: number
   maxDepth?: number
   timeBudgetMs?: number
+  root?: string
+  role?: string
+  nameContains?: string
+  includeValue?: boolean
+  until?: DesktopWaitUntil
+  name?: string
+  pollMs?: number
+  timeoutMs?: number
 }
 
 export class DesktopBridge {
@@ -162,6 +171,14 @@ export class DesktopBridge {
       ...(params.maxNodes !== undefined ? { maxNodes: params.maxNodes } : {}),
       ...(params.maxDepth !== undefined ? { maxDepth: params.maxDepth } : {}),
       ...(params.timeBudgetMs !== undefined ? { timeBudgetMs: params.timeBudgetMs } : {}),
+      ...(params.root !== undefined ? { root: params.root } : {}),
+      ...(params.role !== undefined ? { role: params.role } : {}),
+      ...(params.nameContains !== undefined ? { nameContains: params.nameContains } : {}),
+      ...(params.includeValue !== undefined ? { includeValue: params.includeValue } : {}),
+      ...(params.until !== undefined ? { until: params.until } : {}),
+      ...(params.name !== undefined ? { name: params.name } : {}),
+      ...(params.pollMs !== undefined ? { pollMs: params.pollMs } : {}),
+      ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
     }
     return new Promise<DesktopCallResult>((resolve, reject) => {
       const timer = setTimeout(() => {

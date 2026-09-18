@@ -2,12 +2,12 @@
 //!
 //! 本模块不调用任何 OS 接口，全部判定都能在没有图形会话的环境里测试。
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 /// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -59,6 +59,107 @@ pub struct Request {
     pub op: Op,
 }
 
+/// 一次读取的三个上限。语义固定：`max_nodes` 与 `max_depth` 限遍历，`time_budget_ms`
+/// 限这次遍历自身的用时，三者任一触顶都记进 `truncated_by`。
+///
+/// 筛选不走这里：被筛掉的节点仍然被遍历过，它不是截断。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bounds {
+    pub max_nodes: u32,
+    pub max_depth: u32,
+    pub time_budget_ms: u64,
+}
+
+/// 观察的筛选与字段选择。全部缺省时读整窗、取全部字段。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Select {
+    /// 子树根的 `ref`。缺席表示从窗口元素开始读。
+    #[serde(default)]
+    pub root: Option<String>,
+    /// 只留这个角色的控件。
+    #[serde(default)]
+    pub role: Option<String>,
+    /// 只留名称、稳定标识或值包含这段文字的控件，不分大小写。
+    #[serde(default)]
+    pub name_contains: Option<String>,
+    /// 取不取控件当前值。为假时 `value` 一律缺席，可用动作仍照常判定。
+    #[serde(default = "yes")]
+    pub include_value: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// 不要换成 `#[derive(Default)]`：`bool` 的派生默认值是 `false`，`include_value` 会跟着
+/// 变成假，动作后的重读与等待就再也读不到控件值。
+impl Default for Select {
+    fn default() -> Self {
+        Self {
+            root: None,
+            role: None,
+            name_contains: None,
+            include_value: true,
+        }
+    }
+}
+
+impl Select {
+    /// 施加了哪些筛选，逐条写进 `completeness.filtered_by`。
+    ///
+    /// 调用方据此区分「这个控件不存在」与「这个控件被筛掉了」，两者不能混。
+    pub fn describe(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            out.push(format!("root={root}"));
+        }
+        if let Some(role) = &self.role {
+            out.push(format!("role={role}"));
+        }
+        if let Some(text) = &self.name_contains {
+            out.push(format!("nameContains={text}"));
+        }
+        if !self.include_value {
+            out.push("includeValue=false".to_owned());
+        }
+        out
+    }
+}
+
+/// 两轮判定之间至少空出上一轮读取耗时的几倍。
+///
+/// 判定要读一次控件树，大窗口一次就是几百毫秒；按固定间隔轮询等于让目标应用的 UI 线程
+/// 在整个等待期间一直被 UIA 占着。空出 4 倍之后，等待自身在目标进程上的占空比上界是
+/// `1 / (1 + 4) = 20%`。
+const POLL_DUTY_FACTOR: u32 = 4;
+
+/// 下一轮判定之前睡多久。
+///
+/// 三条一起夹：不低于调用方给的下限、不低于上一轮读取耗时的 `POLL_DUTY_FACTOR` 倍、
+/// 不超过截止时刻还剩的时间。最后一条最优先——睡过头就错过了自己的期限。
+pub fn next_poll(floor: Duration, last_probe: Duration, left: Duration) -> Duration {
+    let paced = last_probe.saturating_mul(POLL_DUTY_FACTOR);
+    floor.max(paced).min(left)
+}
+
+/// 等待的后置条件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitUntil {
+    /// 目标控件变成可用。
+    Enabled,
+    /// 目标控件的值变成给定的那一个。
+    Value,
+    /// 目标控件从树上消失。
+    Gone,
+    /// 窗口里出现一个满足筛选条件的控件。
+    Appears,
+    /// 出现一个标题包含给定文字的顶层窗口，且不是目标窗口自己。
+    Window,
+}
+
 /// 请求动作。`params` 一律显式给出，空参数写 `{}`。
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -82,28 +183,53 @@ pub enum Op {
         target: String,
     },
     ListWindows {},
-    #[serde(rename_all = "camelCase")]
     ReadTree {
         window: i64,
-        max_nodes: u32,
-        max_depth: u32,
-        time_budget_ms: u64,
+        #[serde(flatten)]
+        select: Select,
+        #[serde(flatten)]
+        bounds: Bounds,
     },
-    ReadElement {
-        window: i64,
-        #[serde(rename = "ref")]
-        reference: String,
-    },
+    /// 给控件写值，之后重读它所在的子树。
     SetValue {
         window: i64,
         #[serde(rename = "ref")]
         reference: String,
         value: String,
+        #[serde(flatten)]
+        bounds: Bounds,
     },
+    /// 调用控件的默认动作，之后重读它所在的子树。
     Invoke {
         window: i64,
         #[serde(rename = "ref")]
         reference: String,
+        #[serde(flatten)]
+        bounds: Bounds,
+    },
+    /// 等一个后置条件成立。判定在 worker 这一侧做，到期如实回未满足与返回那一刻的状态。
+    #[serde(rename_all = "camelCase")]
+    Wait {
+        window: i64,
+        until: WaitUntil,
+        #[serde(default, rename = "ref")]
+        reference: Option<String>,
+        /// `until=value` 要等到的值。
+        #[serde(default)]
+        value: Option<String>,
+        /// `until=appears` 的筛选条件。与读树那一份同形，字段也在同一层，
+        /// 不是嵌在 `select` 对象里。
+        #[serde(flatten)]
+        select: Select,
+        /// `until=window` 要等的标题子串。
+        #[serde(default)]
+        name: Option<String>,
+        /// 两次判定之间至少隔多久。
+        poll_ms: u64,
+        /// 从收到这条请求算起最多等多久。信封的 deadline 是硬上界，两者取先到的那个。
+        timeout_ms: u64,
+        #[serde(flatten)]
+        bounds: Bounds,
     },
 }
 
@@ -205,20 +331,41 @@ pub enum Observation {
         captured_at: i64,
         windows: Vec<WindowInfo>,
     },
-    #[serde(rename_all = "camelCase")]
-    Tree {
-        window: i64,
-        captured_at: i64,
-        completeness: Completeness,
-        node_count: u32,
-        root: Node,
-    },
-    #[serde(rename_all = "camelCase")]
-    Element {
-        window: i64,
-        captured_at: i64,
-        element: Node,
-    },
+    Tree(Tree),
+    Wait(Wait),
+}
+
+/// 一次控件读取的全部内容。`Tree` 与 `Wait` 两种观察共用它。
+///
+/// 控件表是展平的前序序列，层级由 `parent_ref` 与 `depth` 表达。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tree {
+    pub window: i64,
+    pub captured_at: i64,
+    /// 本次读取覆盖的范围：子树根的 `ref`。缺席表示整窗。
+    ///
+    /// **调用方按它决定作废哪一段引用。** 缺席时整份旧观察作废，给出 ref 时只有那一段
+    /// 子树作废，无关区域的旧引用仍然成立。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// 目标窗口此刻可不可用。模态窗口挡住它时为假。
+    pub window_enabled: bool,
+    pub completeness: Completeness,
+    pub node_count: u32,
+    pub nodes: Vec<Node>,
+}
+
+/// 一次等待的结果：有没有等到，加上返回那一刻读到的状态。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Wait {
+    pub found: bool,
+    /// 没等到时的原因：`timeout` 或 `cancelled`。等到时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(flatten)]
+    pub tree: Tree,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,12 +377,19 @@ pub struct WindowInfo {
     pub class_name: String,
 }
 
-/// 观察的完整性。截断原因逐条列出，调用方不能把「没采到」读成「没有」。
+/// 观察的完整性。
+///
+/// 截断与筛选是两件事，分两格记：`truncated_by` 说的是上限截断了遍历，`filtered_by`
+/// 说的是哪些条件把遍历过的节点挡在了结果外面。调用方不能把「没采到」读成「没有」，
+/// 也不能把「被筛掉」读成「不存在」。
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Completeness {
     pub complete: bool,
     pub truncated_by: Vec<&'static str>,
+    pub filtered_by: Vec<String>,
+    /// 遍历过的节点数。三个上限限的是它，不是返回的条数。
+    pub visited: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,6 +398,11 @@ pub struct Node {
     /// 不透明引用，动作请求原样带回。内含子树索引路径与 RuntimeId。
     #[serde(rename = "ref")]
     pub reference: String,
+    /// 父节点的 `ref`。本次读取的子树根没有父节点，缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_ref: Option<String>,
+    /// 相对本次读取的子树根的层数，根为 0。
+    pub depth: u32,
     pub role: String,
     pub name: String,
     pub automation_id: String,
@@ -254,7 +413,16 @@ pub struct Node {
     /// 只列 worker 已实现的动作。控件暴露了模式但 worker 没有对应 op 时不列，
     /// 否则调用方会按这张表发出永远拿不到实现的请求。
     pub actions: Vec<&'static str>,
-    pub children: Vec<Node>,
+    /// 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
+    ///
+    /// 三项都不变而控件被换掉时核不出来，界面重排之后这个引用不可靠。为真时调用方应当
+    /// 重新观察而不是复用旧引用。
+    #[serde(skip_serializing_if = "not_set")]
+    pub weak_identity: bool,
+}
+
+fn not_set(flag: &bool) -> bool {
+    !*flag
 }
 
 /// 动作调用返回后的执行事实映射。
@@ -332,6 +500,34 @@ pub fn admit(
     Ok(())
 }
 
+/// 等待判定的输入：调用方给的条件，加上这一轮读到的事实。
+///
+/// 单列成纯函数，是为了让五种条件的判定在没有图形会话的环境里也能测。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen<'a> {
+    /// 目标控件还在，带着它此刻的可用状态与值。
+    Element { enabled: bool, value: Option<&'a str> },
+    /// 目标控件已经不在树上。
+    Missing,
+    /// 满足筛选条件的控件有多少个。
+    Matches(u32),
+    /// 有没有出现符合条件的顶层窗口。
+    Window(bool),
+}
+
+/// 这一轮读到的事实满不满足等待条件。
+pub fn satisfied(until: WaitUntil, want: Option<&str>, seen: Seen<'_>) -> bool {
+    match (until, seen) {
+        (WaitUntil::Enabled, Seen::Element { enabled, .. }) => enabled,
+        // 值缺席表示这个控件没有 ValuePattern，它等不到任何值，不能当成空串命中。
+        (WaitUntil::Value, Seen::Element { value, .. }) => value.is_some() && value == want,
+        (WaitUntil::Gone, Seen::Missing) => true,
+        (WaitUntil::Appears, Seen::Matches(count)) => count > 0,
+        (WaitUntil::Window, Seen::Window(found)) => found,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,15 +549,16 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":1,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"v":2,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
-                "op":"invoke","params":{{"window":66,"ref":"w.0.1#42.7"}}}}"#
+                "op":"invoke","params":{{"window":66,"ref":"w.0.1#42.7",
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
     }
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":1,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"v":2,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -369,7 +566,7 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":1,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"v":2,"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
     }
@@ -377,21 +574,21 @@ mod tests {
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":1,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
         assert_eq!(req.id, "r1");
         assert_eq!(req.deadline, None);
         match req.op {
-            Op::ReadTree {
-                window,
-                max_nodes,
-                max_depth,
-                time_budget_ms,
-            } => {
+            Op::ReadTree { window, bounds, .. } => {
                 assert_eq!(
-                    (window, max_nodes, max_depth, time_budget_ms),
+                    (
+                        window,
+                        bounds.max_nodes,
+                        bounds.max_depth,
+                        bounds.time_budget_ms
+                    ),
                     (66, 500, 12, 1500)
                 );
             }
@@ -399,9 +596,78 @@ mod tests {
         }
     }
 
+    /// 筛选与字段选择都缺省时读整窗、取全部字段。
+    #[test]
+    fn read_tree_defaults_to_the_whole_window_with_values() {
+        let req = parse(
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
+                "timeBudgetMs":1500}}"#,
+        );
+        match req.op {
+            Op::ReadTree { select, .. } => {
+                assert_eq!(select.root, None);
+                assert!(select.include_value);
+                assert!(select.describe().is_empty());
+            }
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+    }
+
+    /// 筛选逐条写进 completeness，调用方据此分得出「没有」与「被筛掉」。
+    #[test]
+    fn selection_is_described_field_by_field() {
+        let req = parse(
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
+                "nameContains":"保存","includeValue":false,
+                "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
+        );
+        match req.op {
+            Op::ReadTree { select, .. } => {
+                assert_eq!(
+                    select.describe(),
+                    vec![
+                        "root=w.0#7".to_owned(),
+                        "role=button".to_owned(),
+                        "nameContains=保存".to_owned(),
+                        "includeValue=false".to_owned(),
+                    ]
+                );
+            }
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_decodes_condition_and_two_bounds() {
+        let req = parse(
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
+                "value":"张三","pollMs":250,"timeoutMs":9000,
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
+        );
+        match req.op {
+            Op::Wait {
+                until,
+                reference,
+                value,
+                poll_ms,
+                timeout_ms,
+                ..
+            } => {
+                assert_eq!(until, WaitUntil::Value);
+                assert_eq!(reference.as_deref(), Some("w.0#7"));
+                assert_eq!(value.as_deref(), Some("张三"));
+                assert_eq!((poll_ms, timeout_ms), (250, 9000));
+            }
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+    }
+
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":1,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -414,8 +680,18 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":1,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
+        )
+        .is_err());
+    }
+
+    /// 单读一个控件的 op 不存在：动作与等待都自带子树重读，没有第二条只读路径。
+    #[test]
+    fn a_single_element_read_op_does_not_exist() {
+        assert!(serde_json::from_str::<Request>(
+            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
     }
@@ -427,8 +703,87 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":1,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"v":2,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
+    }
+
+    fn tree(scope: Option<&str>) -> Tree {
+        Tree {
+            window: 66,
+            captured_at: 17,
+            scope: scope.map(str::to_owned),
+            window_enabled: true,
+            completeness: Completeness {
+                complete: true,
+                truncated_by: Vec::new(),
+                filtered_by: Vec::new(),
+                visited: 1,
+            },
+            node_count: 1,
+            nodes: vec![Node {
+                reference: "w.0#7".to_owned(),
+                parent_ref: None,
+                depth: 0,
+                role: "button".to_owned(),
+                name: "保存".to_owned(),
+                automation_id: "save".to_owned(),
+                value: None,
+                enabled: true,
+                offscreen: false,
+                actions: vec!["invoke"],
+                weak_identity: false,
+            }],
+        }
+    }
+
+    /// 层级留在展平表上：父 ref 与深度各一格，没有嵌套的子节点数组。
+    #[test]
+    fn the_tree_observation_is_a_flat_table_with_parent_links() {
+        let value = serde_json::to_value(Observation::Tree(tree(Some("w.0#7")))).unwrap();
+        assert_eq!(value["kind"], "tree");
+        assert_eq!(value["scope"], "w.0#7");
+        assert_eq!(value["windowEnabled"], true);
+        assert_eq!(value["nodes"][0]["depth"], 0);
+        assert!(value["nodes"][0].get("children").is_none());
+        assert!(value["nodes"][0].get("parentRef").is_none());
+    }
+
+    /// 整窗读没有 scope：调用方据此作废整份旧观察。
+    #[test]
+    fn a_whole_window_read_carries_no_scope() {
+        let value = serde_json::to_value(Observation::Tree(tree(None))).unwrap();
+        assert!(value.get("scope").is_none());
+    }
+
+    #[test]
+    fn a_wait_observation_carries_the_outcome_beside_the_state() {
+        let value = serde_json::to_value(Observation::Wait(Wait {
+            found: false,
+            reason: Some("timeout".to_owned()),
+            tree: tree(Some("w.0#7")),
+        }))
+        .unwrap();
+        assert_eq!(value["kind"], "wait");
+        assert_eq!(value["found"], false);
+        assert_eq!(value["reason"], "timeout");
+        assert_eq!(value["scope"], "w.0#7");
+        assert_eq!(value["nodeCount"], 1);
+    }
+
+    /// 截断与筛选分两格：被筛掉的节点遍历过，它不是截断。
+    #[test]
+    fn truncation_and_filtering_are_reported_separately() {
+        let mut body = tree(None);
+        body.completeness = Completeness {
+            complete: false,
+            truncated_by: vec!["max_nodes"],
+            filtered_by: vec!["role=button".to_owned()],
+            visited: 500,
+        };
+        let value = serde_json::to_value(Observation::Tree(body)).unwrap();
+        assert_eq!(value["completeness"]["truncatedBy"][0], "max_nodes");
+        assert_eq!(value["completeness"]["filteredBy"][0], "role=button");
+        assert_eq!(value["completeness"]["visited"], 500);
     }
 
     #[test]
@@ -465,7 +820,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":1,"id":"h","connectionEpoch":5,
+            r#"{"v":2,"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());
@@ -560,7 +915,7 @@ mod tests {
     #[test]
     fn protocol_version_is_checked_before_everything_else() {
         let mut req = invoke_request(None);
-        req.v = 2;
+        req.v = 1;
         assert_eq!(admit(&req, None, true, i64::MAX), Err("protocol_version"));
     }
 
@@ -586,5 +941,85 @@ mod tests {
             admit(&invoke_request(None), Some(&bound()), false, i64::MAX),
             Ok(())
         );
+    }
+
+    /// 五种等待条件各自只认自己那一种事实，读错一种不会误判成满足。
+    #[test]
+    fn each_wait_condition_reads_only_its_own_fact() {
+        let on = Seen::Element {
+            enabled: true,
+            value: Some("张三"),
+        };
+        let off = Seen::Element {
+            enabled: false,
+            value: Some(""),
+        };
+        assert!(satisfied(WaitUntil::Enabled, None, on));
+        assert!(!satisfied(WaitUntil::Enabled, None, off));
+        assert!(satisfied(WaitUntil::Value, Some("张三"), on));
+        assert!(!satisfied(WaitUntil::Value, Some("李四"), on));
+        assert!(satisfied(WaitUntil::Value, Some(""), off));
+        assert!(satisfied(WaitUntil::Gone, None, Seen::Missing));
+        assert!(!satisfied(WaitUntil::Gone, None, on));
+        assert!(satisfied(WaitUntil::Appears, None, Seen::Matches(1)));
+        assert!(!satisfied(WaitUntil::Appears, None, Seen::Matches(0)));
+        assert!(satisfied(WaitUntil::Window, None, Seen::Window(true)));
+        assert!(!satisfied(WaitUntil::Window, None, Seen::Window(false)));
+        // 控件还在就不算消失，控件没了也不算值等到了。
+        assert!(!satisfied(WaitUntil::Value, Some(""), Seen::Missing));
+        assert!(!satisfied(WaitUntil::Enabled, None, Seen::Missing));
+    }
+
+    /// 大窗口上的判定本身要花几百毫秒，间隔得跟着放大，否则等待会把目标应用占满。
+    #[test]
+    fn the_poll_interval_paces_itself_by_the_cost_of_the_last_probe() {
+        let floor = Duration::from_millis(250);
+        let plenty = Duration::from_secs(60);
+        // 判定很便宜时按调用方给的下限走。
+        assert_eq!(next_poll(floor, Duration::from_millis(5), plenty), floor);
+        assert_eq!(next_poll(floor, Duration::ZERO, plenty), floor);
+        // 判定贵到超过下限时按它放大：230 ms 的一轮之后空出 920 ms，占空比 20%。
+        assert_eq!(
+            next_poll(floor, Duration::from_millis(230), plenty),
+            Duration::from_millis(920)
+        );
+    }
+
+    /// 截止时刻最优先：睡过头就错过了自己的期限。
+    #[test]
+    fn the_poll_interval_never_sleeps_past_the_deadline() {
+        let floor = Duration::from_millis(250);
+        assert_eq!(
+            next_poll(floor, Duration::from_millis(230), Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            next_poll(floor, Duration::ZERO, Duration::ZERO),
+            Duration::ZERO
+        );
+    }
+
+    /// 弱身份只在为真时上线：绝大多数控件有 RuntimeId，多发一格没有意义。
+    #[test]
+    fn a_weak_identity_is_only_reported_when_it_is_weak() {
+        let mut body = tree(None);
+        let value = serde_json::to_value(Observation::Tree(body)).unwrap();
+        assert!(value["nodes"][0].get("weakIdentity").is_none());
+
+        body = tree(None);
+        body.nodes[0].weak_identity = true;
+        let value = serde_json::to_value(Observation::Tree(body)).unwrap();
+        assert_eq!(value["nodes"][0]["weakIdentity"], true);
+    }
+
+    /// 没有 ValuePattern 的控件等不到任何值，不能把「没有值」当成空串命中。
+    #[test]
+    fn a_control_without_a_value_never_satisfies_the_value_condition() {
+        let novalue = Seen::Element {
+            enabled: true,
+            value: None,
+        };
+        assert!(!satisfied(WaitUntil::Value, Some(""), novalue));
+        assert!(!satisfied(WaitUntil::Value, None, novalue));
     }
 }

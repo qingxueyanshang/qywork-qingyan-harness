@@ -4,7 +4,7 @@
  * 一次调用一个有限动作：发一条端口命令就返回，由 Agent 循环再决定下一步。
  * 这里不自己循环、不重试有副作用的动作——重试一次 invoke 等于在应用里多提交一次。
  *
- * 四条边界：
+ * 五条边界：
  *
  * 1. **端口只从 `ctx.desktop` 取。** 参数里自报的会话、Run、窗口句柄一概不读；
  *    模型手里只有端口发放的不透明 `windowId`。没有端口时这四个工具不注册
@@ -17,6 +17,8 @@
  *    「判定依据的」分属两个时刻。
  * 4. **三态回执如实透传。** `not_dispatched` 是没执行，`submitted` 是调用已被系统
  *    接受，`unknown` 是可能已经生效。只有第一种允许 `executed:false`。
+ * 5. **歧义只列候选，不打分。** 同名控件按祖先路径区分，选哪一个由模型定；
+ *    这里不按顺序、不按相似度替它挑。
  */
 
 import type {
@@ -24,6 +26,7 @@ import type {
   DesktopElement,
   DesktopFollowUp,
   DesktopPort,
+  DesktopSnapshot,
   DesktopWaitCondition,
   ToolContext,
   ToolOutcome,
@@ -45,6 +48,15 @@ const DEFAULT_WAIT_MS = 10_000
 const MAX_CANDIDATES = 10
 
 const ACTIONS: readonly DesktopNodeAction[] = ['set_value', 'invoke']
+const WAIT_CONDITIONS: readonly DesktopWaitCondition[] = [
+  'enabled',
+  'value',
+  'gone',
+  'appears',
+  'window',
+]
+/** 这几种条件盯的是一个已知控件，必须给 `ref` 或者能唯一定位到它的条件。 */
+const REF_CONDITIONS: readonly DesktopWaitCondition[] = ['enabled', 'value', 'gone']
 
 /**
  * 调用端口之前判出来的参数错与前置条件不满足。
@@ -162,6 +174,43 @@ function elementLine(e: DesktopElement): string {
   )
 }
 
+function shortLabel(e: DesktopElement): string {
+  return e.name ? `${e.role}「${e.name}」` : e.role
+}
+
+/**
+ * 一个控件的祖先路径，从最外层往里写。
+ *
+ * 同名控件只能靠它区分：两个都叫「保存」的按钮，一个在工具栏里、一个在对话框里。
+ * 路径顺着 `parentRef` 在同一张控件表里往上走；父控件不在表里就停下，交出已经走到的
+ * 那一段——观察被筛过时表里可能只剩一段祖先。
+ */
+function ancestorPath(table: DesktopElement[], element: DesktopElement): string {
+  const byRef = new Map(table.map((e) => [e.ref, e]))
+  const parts: string[] = []
+  const seen = new Set<string>([element.ref])
+  let at = element.parentRef
+  while (at !== undefined && !seen.has(at)) {
+    seen.add(at)
+    const parent = byRef.get(at)
+    if (!parent) break
+    parts.unshift(shortLabel(parent))
+    at = parent.parentRef
+  }
+  return parts.join(' > ')
+}
+
+/**
+ * 歧义回执里的一条候选：控件本身加它的祖先路径。
+ *
+ * 身份弱的控件另说一句：应用没给它稳定标识，界面重排之后这个编号会被拒，要重新观察。
+ */
+function candidateLine(table: DesktopElement[], e: DesktopElement): string {
+  const path = ancestorPath(table, e)
+  const weak = e.weakIdentity === true ? '，身份不稳定，重排后需重新观察' : ''
+  return path ? `${elementLine(e)}（位于 ${path}${weak}）` : `${elementLine(e)}${weak}`
+}
+
 /**
  * 把模型给的目标解析成这一份观察里唯一的那个控件。
  *
@@ -208,7 +257,10 @@ function resolveTarget(
     )
   }
   if (hits.length > 1) {
-    const shown = hits.slice(0, MAX_CANDIDATES).map(elementLine).join('；')
+    const shown = hits
+      .slice(0, MAX_CANDIDATES)
+      .map((e) => candidateLine(table, e))
+      .join('；')
     throw new ArgError(
       `${describeQuery(role, automationId, name)} 匹配到 ${hits.length} 个控件，` +
         `按 ref 点名其中一个：${shown}`,
@@ -245,13 +297,23 @@ function checkPrecondition(element: DesktopElement, action: DesktopNodeAction): 
   }
 }
 
+/** 一份观察的一行读数：控件数、截断与筛选各说一次。 */
+function snapshotLine(s: DesktopSnapshot): string {
+  return (
+    `${s.observationId} · ${s.elements.length} 个控件` +
+    (s.windowEnabled ? '' : '（窗口被模态窗口挡着，控件都不可操作）') +
+    (s.truncated ? `（未读全：${s.truncatedBy.join(' / ')}）` : '') +
+    (s.filteredBy.length ? `（已筛选：${s.filteredBy.join(' / ')}）` : '')
+  )
+}
+
 /**
- * 三态回执与动作后重读合成一个结果。
+ * 三态回执与动作后的新观察合成一个结果。
  *
  * `not_dispatched` 是唯一允许 `executed:false` 的一种；另外两种一律 `executed:true`，
  * 重读缺席也不改这个判定——动作可能已经生效，重发一次等于多做一次。
  */
-function actOutcome(action: DesktopNodeAction, r: DesktopActResult): ToolOutcome {
+function actOutcome(action: DesktopNodeAction, ref: string, r: DesktopActResult): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
@@ -268,12 +330,16 @@ function actOutcome(action: DesktopNodeAction, r: DesktopActResult): ToolOutcome
     ? `${action} 的结果未知：${r.reason ?? '调用已发出但没有确认'}。`
     : `${action} 已执行。`
   const advice = '先 desktop_observe 确认应用的实际状态，不要重放这个动作。'
-  if (r.element) {
+  if (r.observation) {
+    const target = r.observation.elements.find((e) => e.ref === ref)
     return {
       status: unknown ? 'failure' : 'success',
       ...(unknown ? { executed: true, errorKind: 'desktop_unknown' } : {}),
-      message: `${lead}${elementLine(r.element)}${unknown ? `。${advice}` : ''}`,
-      data: { ...receipt, element: r.element },
+      message:
+        `${lead}新观察 ${snapshotLine(r.observation)}` +
+        (target ? `；目标现在是 ${elementLine(target)}` : '') +
+        (unknown ? `。${advice}` : ''),
+      data: { ...receipt, observation: r.observation },
     }
   }
   return {
@@ -292,18 +358,18 @@ function waitOutcome(
   follow: DesktopFollowUp,
 ): ToolOutcome {
   const lead = found ? '条件已满足。' : `没等到（${reason ?? 'timeout'}）。`
-  if (follow.element) {
+  if (follow.observation) {
     return {
       status: found ? 'success' : 'failure',
       ...(found ? {} : { executed: false, errorKind: 'desktop_wait_timeout' }),
-      message: `${lead}${elementLine(follow.element)}`,
-      data: { found, ...(reason ? { reason } : {}), element: follow.element },
+      message: `${lead}新观察 ${snapshotLine(follow.observation)}`,
+      data: { found, ...(reason ? { reason } : {}), observation: follow.observation },
     }
   }
   return {
     status: 'failure',
     executed: false,
-    message: `${lead}没有读到这个控件：${follow.observationError}`,
+    message: `${lead}没有取得当时的控件表：${follow.observationError}`,
     data: { found, ...(reason ? { reason } : {}), observationError: follow.observationError },
     errorKind: 'desktop_observation_unavailable',
   }
@@ -352,10 +418,15 @@ export const desktopObserveTool: ToolSpec = {
   name: 'desktop_observe',
   description:
     '读一个窗口的控件表：角色、名称、稳定标识、当前值、是否启用，以及宿主能在它上面执行的动作。' +
+    '每个控件带 parentRef 与 depth，同名控件靠祖先路径区分。' +
     '返回的 observationId 与控件 ref 是 desktop_act 与 desktop_wait 的前提；' +
     '重新观察即换号，旧号作废。' +
-    'truncated=true 表示这一份不是全部，用 maxNodes 或 maxDepth 调整后重读，' +
-    '不要按「没列出来就是没有」推断。' +
+    'query 只返回名称、稳定标识或值包含该文字的控件，role 只返回该角色的控件：' +
+    '知道要找什么时用它们，一次拿到全部匹配项，不必读整窗；' +
+    'root 只读某个控件底下的子树，用于翻开一个已经看到的容器。' +
+    '筛选过的观察里 filteredBy 会列出条件——没列出来的控件是被筛掉了，不是不存在。' +
+    'truncated=true 表示被上限截断了，用 maxNodes 或 maxDepth 调整后重读。' +
+    'includeValue=false 时不取控件值，读大窗口时省一部分开销。' +
     '本工具只读结构，不截图。',
   parameters: {
     type: 'object',
@@ -363,6 +434,10 @@ export const desktopObserveTool: ToolSpec = {
       windowId: { type: 'string', description: '取自 desktop_windows' },
       maxNodes: { type: 'integer', description: `最多读多少个控件，上限 ${MAX_NODES}` },
       maxDepth: { type: 'integer', description: `最多读多少层，上限 ${MAX_DEPTH}` },
+      root: { type: 'string', description: '只读这个控件底下的子树，取自上一份观察的 ref' },
+      role: { type: 'string', description: '只返回这个角色的控件' },
+      query: { type: 'string', description: '只返回名称、稳定标识或值包含这段文字的控件' },
+      includeValue: { type: 'boolean', description: '取不取控件当前值，默认取' },
     },
     required: ['windowId'],
     additionalProperties: false,
@@ -381,13 +456,15 @@ export const desktopObserveTool: ToolSpec = {
         ...(given(args.maxDepth)
           ? { maxDepth: bounded(args.maxDepth, 'maxDepth', 1, MAX_DEPTH) }
           : {}),
+        ...(given(args.root) ? { root: str(args.root, 'root') } : {}),
+        ...(given(args.role) ? { role: str(args.role, 'role') } : {}),
+        ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
+        ...(args.includeValue === false ? { includeValue: false } : {}),
       }
       const snapshot = await send(() => desktop.observe(input))
       return {
         status: 'success',
-        message:
-          `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshot.elements.length} 个控件` +
-          (snapshot.truncated ? `（未读全：${snapshot.truncatedBy.join(' / ')}）` : ''),
+        message: `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}`,
         data: { ...snapshot },
       }
     }),
@@ -399,11 +476,13 @@ export const desktopActTool: ToolSpec = {
   description:
     '在观察到的控件上执行一个动作：set_value 写值（空串是清空），invoke 调用默认动作（按钮、菜单项）。' +
     '目标可以给 ref，也可以给 automationId 或 name（可加 role 收窄）；' +
-    '匹配到多个时不执行，结果里列出候选，改用 ref 点名。' +
+    '匹配到多个时不执行，结果里按祖先路径列出候选，改用 ref 点名。' +
     '控件被禁用或不支持该动作时同样不执行。' +
     '结果里的 dispatch 有三种：not_dispatched 表示没有执行，submitted 表示调用已被系统接受，' +
     'unknown 表示调用已发出但结果无法确认——遇到 unknown 先 desktop_observe 确认实际状态，不要重放。' +
-    '动作可能弹出模态窗口或改变控件树，之后要重新观察。',
+    '动作之后同次带回目标所在子树的新观察与新的 observationId，据此继续下一步，' +
+    '不必再调 desktop_observe；子树之外的旧 ref 在新编号下仍然有效。' +
+    '动作弹出模态窗口时整份观察作废，先 desktop_windows 再重新观察。',
   parameters: {
     type: 'object',
     properties: {
@@ -446,7 +525,7 @@ export const desktopActTool: ToolSpec = {
             })
           : desktop.invoke({ windowId, observationId, ref: element.ref }),
       )
-      return actOutcome(action, r)
+      return actOutcome(action, element.ref, r)
     }),
 }
 
@@ -454,20 +533,26 @@ export const desktopWaitTool: ToolSpec = {
   ...BASE,
   name: 'desktop_wait',
   description:
-    '等一个控件满足后置条件：until=enabled 等它变成可用，until=value 等它的值变成 value。' +
-    '按固定间隔重读同一个控件，超时即返回，不派发任何动作。' +
-    '目标的给法与 desktop_act 相同。' +
-    `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
-    '控件树被重建时这份观察会失效，那时重新 desktop_observe 再等。',
+    '等一个后置条件成立，判定在宿主那一侧做，不派发任何动作。' +
+    'until=enabled 等某个控件变成可用，until=value 等它的值变成 value，until=gone 等它消失——' +
+    '这三种要给目标控件，给法与 desktop_act 相同。' +
+    'until=appears 等窗口里出现满足 role 与 name 的控件，until=window 等出现标题包含 name 的新窗口——' +
+    '这两种不需要已有的控件编号，等到之后 until=window 要先 desktop_windows 取新窗口。' +
+    `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒；到期如实返回未满足与当时的控件表。` +
+    '结果里同样带回新的 observationId，据此继续下一步。',
   parameters: {
     type: 'object',
     properties: {
       windowId: { type: 'string' },
       observationId: { type: 'string' },
-      until: { type: 'string', enum: ['enabled', 'value'] },
+      until: { type: 'string', enum: WAIT_CONDITIONS },
       ref: { type: 'string' },
       automationId: { type: 'string' },
-      name: { type: 'string' },
+      name: {
+        type: 'string',
+        description:
+          'enabled / value / gone 时按名称定位控件；appears 时是要出现的控件名称；window 时是新窗口标题的子串',
+      },
       role: { type: 'string' },
       value: { type: 'string', description: 'until=value 时要等到的值' },
       timeoutMs: { type: 'integer' },
@@ -476,25 +561,37 @@ export const desktopWaitTool: ToolSpec = {
     additionalProperties: false,
   },
   actionKind: 'read',
-  summary: '等一个桌面控件满足后置条件',
+  summary: '等一个桌面后置条件成立',
   targetExtractor: windowTarget,
 
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
       const windowId = str(args.windowId, 'windowId')
       const observationId = str(args.observationId, 'observationId')
-      const until: DesktopWaitCondition = oneOf(args.until, ['enabled', 'value'] as const, 'until')
+      const until = oneOf(args.until, WAIT_CONDITIONS, 'until')
       if (until === 'value' && (args.value === undefined || args.value === null)) {
         throw new ArgError('until=value 必须给 value')
       }
-      const element = resolveTarget(desktop.elements(windowId, observationId), args)
+      if (until === 'window' && !given(args.name)) {
+        throw new ArgError('until=window 必须给 name：要等的新窗口标题里的一段文字')
+      }
+      if (until === 'appears' && !given(args.name) && !given(args.role)) {
+        throw new ArgError('until=appears 必须给 name 或 role')
+      }
+      // 盯已知控件的那三种先在本地解析成唯一目标；另外两种等的是还没出现的控件或窗口。
+      const ref = REF_CONDITIONS.includes(until)
+        ? resolveTarget(desktop.elements(windowId, observationId), args).ref
+        : undefined
       const r = await send(() =>
         desktop.wait({
           windowId,
           observationId,
-          ref: element.ref,
           until,
+          ...(ref !== undefined ? { ref } : {}),
           ...(until === 'value' ? { value: String(args.value) } : {}),
+          ...(until === 'appears' && given(args.role) ? { role: str(args.role, 'role') } : {}),
+          ...(until === 'appears' && given(args.name) ? { query: str(args.name, 'name') } : {}),
+          ...(until === 'window' && given(args.name) ? { title: str(args.name, 'name') } : {}),
           timeoutMs: given(args.timeoutMs)
             ? bounded(args.timeoutMs, 'timeoutMs', MIN_WAIT_MS, MAX_WAIT_MS)
             : DEFAULT_WAIT_MS,

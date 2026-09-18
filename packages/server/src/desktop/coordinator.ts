@@ -30,7 +30,7 @@ import type {
   DesktopWaitResult,
   DesktopWindowInfo,
 } from '@qywork/agent'
-import type { DesktopNode, DesktopObservation, DesktopTarget } from '@qywork/core'
+import type { DesktopNode, DesktopObservation, DesktopTarget, DesktopTreeBody } from '@qywork/core'
 import { log } from '@qywork/core'
 import {
   type DesktopBridge,
@@ -44,8 +44,15 @@ const DEFAULT_MAX_NODES = 1500
 const DEFAULT_MAX_DEPTH = 20
 /** 读树的时间预算。UIA 这类跨进程接口没有请求级硬上界，只能给采集端一个预算。 */
 const READ_TREE_BUDGET_MS = 4_000
-/** 等待时两次重读之间隔多久。 */
-const WAIT_POLL_MS = 200
+/** 等待时两次判定之间至少隔多久。判定在宿主那一侧做，这个数只是它的轮询下界。 */
+const WAIT_POLL_MS = 250
+/**
+ * 等待请求的期限比调用方要的时长多出来的那一段。
+ *
+ * 宿主到点之后还要重读一次目标子树才回执，这一段要盖得住那次读取；给短了的话，本地的
+ * 超时会先到，一次正常到期的等待会被记成宿主不可用。
+ */
+const WAIT_SLACK_MS = READ_TREE_BUDGET_MS + 2_000
 /**
  * 撤销请求的期限。
  *
@@ -89,6 +96,11 @@ interface ObservationRecord {
   /** 采集这一份时的宿主代际。代际一变这份记录即作废。 */
   epochKey: string
   elements: DesktopElement[]
+  truncatedBy: string[]
+  filteredBy: string[]
+  visited: number
+  capturedAt: number
+  windowEnabled: boolean
 }
 
 /** 一次执行持有的身份。`released` 置上之后这个端口永不再取得能力。 */
@@ -108,8 +120,6 @@ interface Waiter {
   reject: (err: Error) => void
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
 /** 宿主代际键。三项任一变化即旧观察与旧引用整体作废。 */
 function epochKeyOf(host: NativeDesktopHost): string {
   return `${host.hostId}#${host.hostEpoch}#${host.connectionEpoch}`
@@ -120,10 +130,12 @@ function identityKey(w: { handle: number; pid: number; processStartedAt: number 
   return `${w.handle}:${w.pid}:${w.processStartedAt}`
 }
 
-/** 一个节点的端口形状。子节点不进去：层级不在端口契约里。 */
+/** 一个控件的端口形状。层级跟着走：`parentRef` 指同一张表里的父控件。 */
 function elementOf(node: DesktopNode): DesktopElement {
   return {
     ref: node.ref,
+    ...(node.parentRef !== undefined ? { parentRef: node.parentRef } : {}),
+    depth: node.depth,
     role: node.role,
     name: node.name,
     automationId: node.automationId,
@@ -131,13 +143,55 @@ function elementOf(node: DesktopNode): DesktopElement {
     enabled: node.enabled,
     offscreen: node.offscreen,
     actions: [...node.actions],
+    ...(node.weakIdentity === true ? { weakIdentity: true } : {}),
   }
 }
 
-/** 控件树展平成表。定位按 role / name / automationId 做，不按路径。 */
-function flatten(node: DesktopNode, out: DesktopElement[]): void {
-  out.push(elementOf(node))
-  for (const child of node.children) flatten(child, out)
+/** `ref` 里的下标路径。身份段（`#` 之后）不参与范围判定。 */
+function pathOf(ref: string): string {
+  const at = ref.indexOf('#')
+  return at < 0 ? ref : ref.slice(0, at)
+}
+
+/** 这个控件在不在 `scope` 那棵子树里。按下标路径逐段比，不是字符串前缀。 */
+function inScope(ref: string, scope: string): boolean {
+  const path = pathOf(ref)
+  const root = pathOf(scope)
+  return path === root || path.startsWith(`${root}.`)
+}
+
+/**
+ * 把新读到的一段并进上一份控件表。
+ *
+ * 三条规则，判据都是可核实的事实：
+ *
+ * 1. **窗口被模态窗口挡住**（`windowEnabled` 为假）：整份作废。这个窗口的控件此刻一个
+ *    都动不了，留着旧编号等于留一张全是不可用目标的表。
+ * 2. **本次读的是一棵子树**（`scope` 给了 ref）：只有那棵子树里的旧编号作废，新读到的
+ *    按原位置插回去；子树外的控件没被动过，旧编号仍然成立。
+ * 3. **本次读的是整窗**（`scope` 缺席）：整份替换。
+ */
+function spliceElements(
+  previous: DesktopElement[],
+  fresh: DesktopElement[],
+  scope: string | undefined,
+  windowEnabled: boolean,
+): DesktopElement[] {
+  if (!windowEnabled || scope === undefined) return fresh
+  const out: DesktopElement[] = []
+  let inserted = false
+  for (const element of previous) {
+    if (inScope(element.ref, scope)) {
+      if (!inserted) {
+        out.push(...fresh)
+        inserted = true
+      }
+      continue
+    }
+    out.push(element)
+  }
+  if (!inserted) out.push(...fresh)
+  return out
 }
 
 export class DesktopCoordinator {
@@ -353,14 +407,25 @@ export class DesktopCoordinator {
 
   async #observe(
     lease: Lease,
-    input: { windowId: string; maxNodes?: number; maxDepth?: number },
+    input: {
+      windowId: string
+      maxNodes?: number
+      maxDepth?: number
+      root?: string
+      role?: string
+      query?: string
+      includeValue?: boolean
+    },
   ): Promise<DesktopSnapshot> {
     this.#liveHost(lease)
     await this.#acquire(lease)
     // 排队可能等了很久：进场之后重新确认宿主还在、重新解析目标，并取当次的代际。
     // 等待期间宿主换过代际的话，这个不透明 id 已经不在窗口表里，要的是那一句拒绝。
-    const host = this.#liveHost(lease)
+    this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    // 子树根必须来自本执行者对这个窗口的上一份观察：现编一个编号等于让宿主去定位一个
+    // 没人见过的位置。
+    if (input.root !== undefined) this.#requireRef(lease, input.windowId, input.root)
     // 目标在**发请求之前**就登记：读树可能挂在 provider 上直到超时，等回包之后再登记的话，
     // 界面在这段时间里说不出正在操作谁。
     this.#setTarget(lease, known.app)
@@ -370,29 +435,43 @@ export class DesktopCoordinator {
       maxNodes: input.maxNodes ?? DEFAULT_MAX_NODES,
       maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
       timeBudgetMs: READ_TREE_BUDGET_MS,
+      ...(input.root !== undefined ? { root: input.root } : {}),
+      ...(input.role !== undefined ? { role: input.role } : {}),
+      ...(input.query !== undefined ? { nameContains: input.query } : {}),
+      ...(input.includeValue !== undefined ? { includeValue: input.includeValue } : {}),
     })
-    const observation = expect(result, 'tree')
-    const elements: DesktopElement[] = []
-    flatten(observation.root, elements)
+    return this.#absorb(lease, input.windowId, expect(result, 'tree'))
+  }
+
+  /**
+   * 把一份读取结果并进本执行者对这个窗口的观察，并换一个新编号。
+   *
+   * 整窗读整份替换，子树读只换那一段，见 `spliceElements`。换编号是硬性的：旧编号对应
+   * 的那张表已经不是这一张，留着它等于让模型在两份表之间挑。
+   */
+  #absorb(lease: Lease, windowId: string, body: DesktopTreeBody): DesktopSnapshot {
+    const host = this.#liveHost(lease)
+    const known = this.#targetOf(windowId)
+    const previous = lease.observations.get(windowId)
+    const fresh = body.nodes.map(elementOf)
+    const elements =
+      previous && previous.epochKey === epochKeyOf(host)
+        ? spliceElements(previous.elements, fresh, body.scope, body.windowEnabled)
+        : fresh
     this.#nextObservation += 1
     const record: ObservationRecord = {
       observationId: `do_${this.#nextObservation}`,
-      windowId: input.windowId,
+      windowId,
       epochKey: epochKeyOf(host),
       elements,
+      truncatedBy: [...body.completeness.truncatedBy],
+      filteredBy: [...body.completeness.filteredBy],
+      visited: body.completeness.visited,
+      capturedAt: body.capturedAt,
+      windowEnabled: body.windowEnabled,
     }
-    // 同一个窗口只留最近一份：留着旧编号等于让模型在一份已经不成立的快照上发动作。
-    lease.observations.set(input.windowId, record)
-    return {
-      windowId: input.windowId,
-      app: known.app,
-      title: known.title,
-      observationId: record.observationId,
-      capturedAt: observation.capturedAt,
-      elements,
-      truncated: !observation.completeness.complete,
-      truncatedBy: [...observation.completeness.truncatedBy],
-    }
+    lease.observations.set(windowId, record)
+    return snapshotOf(record, known)
   }
 
   /**
@@ -422,6 +501,14 @@ export class DesktopCoordinator {
     }
   }
 
+  /** 这个引用在不在本执行者对该窗口的最近一份观察里，不看编号。 */
+  #requireRef(lease: Lease, windowId: string, ref: string): void {
+    const record = lease.observations.get(windowId)
+    if (!record || !record.elements.some((e) => e.ref === ref)) {
+      throw new DesktopTargetError(`这个窗口最近一份观察里没有控件 ${ref}，请重新观察`)
+    }
+  }
+
   async #act(
     lease: Lease,
     op: 'set_value' | 'invoke',
@@ -443,17 +530,19 @@ export class DesktopCoordinator {
         target: this.#frameTarget(known),
         ref: input.ref,
         ...(input.value !== undefined ? { value: input.value } : {}),
+        maxNodes: DEFAULT_MAX_NODES,
+        maxDepth: DEFAULT_MAX_DEPTH,
+        timeBudgetMs: READ_TREE_BUDGET_MS,
       })
-      // 动作改了控件树，旧编号不再成立：下一步必须重新观察。
-      lease.observations.delete(input.windowId)
       return {
         dispatch: result.dispatch,
         actionId,
         ...(result.reason !== undefined ? { reason: result.reason } : {}),
-        ...followUpOf(result.observation, result.observationError),
+        ...this.#followUp(lease, input.windowId, result.observation, result.observationError),
       }
     } catch (err) {
       if (!(err instanceof DesktopBridgeError)) throw err
+      // 重读没拿到，这个窗口的控件表停在动作之前那一刻：整份作废。
       lease.observations.delete(input.windowId)
       // 执行事实来自异常自己带的那一格：压成一句失败的话，调用方分不出「没执行」
       // 与「可能已经执行」，而后者禁止重发。
@@ -461,26 +550,33 @@ export class DesktopCoordinator {
         dispatch: err.dispatch,
         actionId,
         reason: err.message,
-        element: null,
+        observation: null,
         observationError: '宿主不可用，动作之后没有重读',
       }
     }
   }
 
   /**
-   * 等一个控件满足后置条件。
+   * 等一个后置条件成立。
    *
-   * 按固定间隔重读同一个 `ref`，不派发任何动作。每一轮都重新检查本次执行还在不在：
-   * 用户按下停止之后不再继续占着宿主轮询。
+   * 判定下沉到宿主：这里只发一条请求并等它的终态，不在本地按固定间隔重读。期限比调用方
+   * 要的时长多一段，宿主到点之后还要重读一次目标子树。
+   *
+   * **等待期间本次执行仍然占着桌面**：引用在观察里产生、在动作里消费，中间放别人进来
+   * 它就不再成立。占用不会被等待卡死——`release` 一到就撤销这条请求，宿主在一个轮询间隔
+   * 内以 `cancelled` 收尾，桌面随即交给下一个执行者。
    */
   async #wait(
     lease: Lease,
     input: {
       windowId: string
       observationId: string
-      ref: string
       until: DesktopWaitCondition
+      ref?: string
       value?: string
+      role?: string
+      query?: string
+      title?: string
       timeoutMs: number
     },
   ): Promise<DesktopWaitResult> {
@@ -488,24 +584,65 @@ export class DesktopCoordinator {
     await this.#acquire(lease)
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    this.#recordOf(lease, input.windowId, input.observationId, input.ref)
-    this.#setTarget(lease, known.app)
-    const deadline = Date.now() + input.timeoutMs
-    let last: DesktopFollowUp = { element: null, observationError: '还没有读到这个控件' }
-    for (;;) {
-      if (lease.released) return { found: false, reason: 'cancelled', ...last }
-      const result = await this.#bridge.request('read_element', {
-        executorId: lease.executorId,
-        target: this.#frameTarget(known),
-        ref: input.ref,
-      })
-      last = followUpOf(result.observation, result.reason ?? '没有读到这个控件')
-      if (last.element && satisfied(last.element, input.until, input.value)) {
-        return { found: true, ...last }
-      }
-      if (Date.now() + WAIT_POLL_MS >= deadline) return { found: false, reason: 'timeout', ...last }
-      await sleep(WAIT_POLL_MS)
+    if (input.ref !== undefined) {
+      this.#recordOf(lease, input.windowId, input.observationId, input.ref)
     }
+    this.#setTarget(lease, known.app)
+    try {
+      const result = await this.#bridge.request(
+        'wait',
+        {
+          executorId: lease.executorId,
+          target: this.#frameTarget(known),
+          until: input.until,
+          ...(input.ref !== undefined ? { ref: input.ref } : {}),
+          ...(input.value !== undefined ? { value: input.value } : {}),
+          ...(input.role !== undefined ? { role: input.role } : {}),
+          ...(input.query !== undefined ? { nameContains: input.query } : {}),
+          ...(input.title !== undefined ? { name: input.title } : {}),
+          pollMs: WAIT_POLL_MS,
+          timeoutMs: input.timeoutMs,
+          maxNodes: DEFAULT_MAX_NODES,
+          maxDepth: DEFAULT_MAX_DEPTH,
+          timeBudgetMs: READ_TREE_BUDGET_MS,
+        },
+        input.timeoutMs + WAIT_SLACK_MS,
+      )
+      const observation = expect(result, 'wait')
+      return {
+        found: observation.found,
+        ...(observation.reason !== undefined ? { reason: observation.reason } : {}),
+        ...this.#followUp(lease, input.windowId, observation, undefined),
+      }
+    } catch (err) {
+      if (!(err instanceof DesktopBridgeError)) throw err
+      lease.observations.delete(input.windowId)
+      return {
+        found: false,
+        reason: lease.released ? 'cancelled' : 'unavailable',
+        observation: null,
+        observationError: err.message,
+      }
+    }
+  }
+
+  /**
+   * 动作或等待之后的那份重读。
+   *
+   * 读到了就并进观察并换新编号；没读到就把这个窗口的控件表整份作废——它停在动作之前
+   * 那一刻，而动作可能已经生效。执行事实不受这里影响。
+   */
+  #followUp(
+    lease: Lease,
+    windowId: string,
+    observation: DesktopObservation | undefined,
+    error: string | undefined,
+  ): DesktopFollowUp {
+    if (observation?.kind === 'tree' || observation?.kind === 'wait') {
+      return { observation: this.#absorb(lease, windowId, observation) }
+    }
+    lease.observations.delete(windowId)
+    return { observation: null, observationError: error ?? '宿主没有回传动作之后的读数' }
   }
 
   /**
@@ -574,22 +711,21 @@ export class DesktopCoordinator {
   }
 }
 
-/** 后置条件判定。`value` 条件要求调用方给出目标值，端口那侧已经拦过缺席。 */
-function satisfied(
-  element: DesktopElement,
-  until: DesktopWaitCondition,
-  value: string | undefined,
-): boolean {
-  return until === 'enabled' ? element.enabled : element.value === value
-}
-
-/** 重读结果的两种形状。观察缺席时如实说明原因，不拿旧读数顶上。 */
-function followUpOf(
-  observation: DesktopObservation | undefined,
-  error: string | undefined,
-): DesktopFollowUp {
-  if (observation?.kind === 'element') return { element: elementOf(observation.element) }
-  return { element: null, observationError: error ?? '宿主没有回传动作之后的读数' }
+/** 一份记录交给调用方的形状。应用名与标题来自窗口表，不是观察里的。 */
+function snapshotOf(record: ObservationRecord, known: KnownWindow): DesktopSnapshot {
+  return {
+    windowId: record.windowId,
+    app: known.app,
+    title: known.title,
+    observationId: record.observationId,
+    capturedAt: record.capturedAt,
+    elements: record.elements,
+    truncated: record.truncatedBy.length > 0,
+    truncatedBy: [...record.truncatedBy],
+    filteredBy: [...record.filteredBy],
+    visited: record.visited,
+    windowEnabled: record.windowEnabled,
+  }
 }
 
 /**
