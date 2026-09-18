@@ -146,6 +146,16 @@ export interface ServerCapabilities {
    * 宿主连接变化时由 `browser.state` 事件更新同一份投影。
    */
   browser: BrowserCapability
+  /**
+   * 电脑操作。**三件事分开报，不合成一个布尔。**
+   *
+   * 三者是依次成立的阶段，合成之后界面只说得出「用不了」，说不出卡在哪一步，
+   * 而这三步的下一步动作完全不同：装应用、授权、等组件起来。
+   *
+   * 与浏览器同理，这条服务端知情：原生宿主是连到服务端的，worker 与授权状态由它上报。
+   * 宿主连接变化时由 `desktop.state` 事件更新同一份投影。
+   */
+  desktop: DesktopCapability
   // 思考强度**不在这里**。它是「接口 × 模型」那一格的属性，而握手是连接级、
   // 只报一次——报上来的那个值在用户切一次模型之后就不再成立。
   // 它随模型目录一起下发（`/api/models` 每行的 `effort`），与该模型的
@@ -162,6 +172,22 @@ export interface BrowserCapability {
   connected: boolean
   /** 宿主上报的 WebView2 Runtime 版本达到 AI 控制的下限。宿主没连上时为 `false`。 */
   runtimeSupported: boolean
+}
+
+/**
+ * 电脑操作此刻可用到什么程度。三项依次成立，工具注册要求三项同时为真。
+ *
+ * 用户在设置里的启用开关**不在这里**：那是配置（`config.json` 的 `desktopEnabled`），
+ * 由设置页按项读写；握手报的是这台机器此刻的客观状态。两者混成一个数之后，
+ * 「关掉了」与「组件没起来」在界面上分不开。
+ */
+export interface DesktopCapability {
+  /** 桌面宿主已连上服务端。 */
+  connected: boolean
+  /** 宿主上报 worker 进程已握手就绪。宿主没连上时为 `false`。 */
+  workerReady: boolean
+  /** 操作系统已授予桌面控制所需的权限。宿主没连上时为 `false`。 */
+  authorized: boolean
 }
 
 /**

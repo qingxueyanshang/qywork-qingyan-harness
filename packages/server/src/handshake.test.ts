@@ -79,6 +79,11 @@ function shake(
         connected: false,
         runtimeSupported: false,
       }),
+      desktop: () => ({
+        connected: false,
+        workerReady: false,
+        authorized: false,
+      }),
       announceGit: () => {},
     },
   )

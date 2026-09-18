@@ -10,6 +10,7 @@ import type { ContentStore, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
+import type { DesktopCoordinator } from './desktop/coordinator.ts'
 import type { RunManager } from './runs.ts'
 import type { SubagentRegistry } from './subagents.ts'
 
@@ -35,6 +36,11 @@ export interface CommandDeps {
    * 要不要给这一轮浏览器能力，不给一个必然报错的端口。
    */
   browser?: BrowserCoordinator
+  /**
+   * 电脑操作的协调器。**没有宿主凭据时不传**——会话装配据此决定要不要给这一轮
+   * 桌面能力；用户有没有启用由协调器自己按配置现判。
+   */
+  desktop?: DesktopCoordinator
 }
 
 /** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */
@@ -43,12 +49,13 @@ export interface SocketData {
   authed: boolean
   origin: 'desktop' | 'mobile' | 'cli' | 'external'
   /**
-   * 这是不是原生浏览器宿主连接。
+   * 这条连接是哪一种原生宿主。`null` = 普通配对客户端。
    *
-   * **由服务端在升级时判定并写死**，不看客户端自报的 `origin`：宿主帧与聊天指令
-   * 走两条完全不同的处理路径，靠自报字段区分等于让任何已配对客户端注册宿主。
+   * **由服务端按 URL 路径在升级时判定并写死**，不看客户端自报的任何字段：三类帧
+   * （聊天指令、浏览器资源操作、桌面控件操作）走三条完全不同的处理路径，
+   * 靠自报字段区分等于让任何已配对客户端注册宿主。
    */
-  native: boolean
+  native: 'browser' | 'desktop' | null
   /** 升级成功的时刻，关闭时算这条连接活了多久。 */
   openedAt: number
 }

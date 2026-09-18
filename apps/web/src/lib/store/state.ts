@@ -273,6 +273,13 @@ export interface AppState {
   /** 这一轮的每一次写入，按到达先后；净效果由 `foldFileChanges` 折，与变更页同一份口径。 */
   fileChanges: FileChange[]
   git: Omit<GitStateEvent, 'type'> | null
+  /**
+   * 桌面通道此刻在操作哪个应用。**进程级读数**，不按会话分——物理桌面只有一个。
+   *
+   * `null` = 没有执行者持着桌面目标。服务端在执行者释放、宿主断开时都会推 `null`，
+   * 前端不自己推断超时清空：那样两边会各存一份判定。
+   */
+  desktopTarget: string | null
 }
 
 const initial: AppState = {
@@ -287,6 +294,7 @@ const initial: AppState = {
   fileVersion: 0,
   fileChanges: [],
   git: null,
+  desktopTarget: null,
   followUps: [],
   todos: [],
   goal: null,
@@ -367,7 +375,7 @@ export function isConversationRunning(id: string | null): boolean {
 }
 
 /**
- * 整轮状态条这一轮挂不挂：有没做完的待办，或这一轮改过文件。
+ * 整轮状态条这一轮挂不挂：有没做完的待办、这一轮改过文件，或者正在操作某个桌面应用。
  *
  * 判据放在这里而不是组件里：`RunStatus` 按它决定挂不挂，`Transcript` 按它决定
  * 底部留多少白，两处是同一个判据。
@@ -376,7 +384,9 @@ export function hasRunStatus(): boolean {
   return (
     isRunning() &&
     view().runStartedAt !== null &&
-    (state.todos.some((t) => t.status !== 'completed') || state.fileChanges.length > 0)
+    (state.todos.some((t) => t.status !== 'completed') ||
+      state.fileChanges.length > 0 ||
+      state.desktopTarget !== null)
   )
 }
 

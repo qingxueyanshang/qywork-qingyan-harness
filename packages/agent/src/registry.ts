@@ -30,6 +30,7 @@ import type {
   WorkflowCall,
   WorkflowTransition,
 } from '@qywork/core'
+import type { DesktopPort } from './desktop.ts'
 
 // ─────────────────────────────── 执行上下文 ───────────────────────────────
 
@@ -890,6 +891,13 @@ export interface ToolContext {
    */
   browser?: BrowserPort
   /**
+   * 电脑操作通道。见 `DesktopPort`。
+   *
+   * 没接上时桌面工具不注册——同 `browser` 那条：没有原生宿主的桌面工具
+   * 没有任何降级形态。
+   */
+  desktop?: DesktopPort
+  /**
    * 定时任务通道。见 `SchedulePort`。
    *
    * 可选而不是必填可空：没接上时三个工具明确报「没有定时任务表」，那是**更严**的一侧
@@ -1069,6 +1077,7 @@ export type ToolCategory =
   | 'code'
   | 'web'
   | 'browser'
+  | 'desktop'
   | 'memory'
   | 'skills'
   | 'planning'
@@ -1088,6 +1097,7 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'code',
   'web',
   'browser',
+  'desktop',
   'memory',
   'skills',
   'planning',
@@ -1111,6 +1121,13 @@ export type PermissionEffect =
    * 与一次无登录态的出网请求不是同一类事。
    */
   | 'browser'
+  /**
+   * 操作本机上别的应用的窗口与控件。
+   *
+   * 单列一条而不是并进 `execute`：`execute` 是起一个新进程，这一条改的是已经在跑的
+   * 应用的状态，边界由宿主的目标身份与系统授权裁决，不经命令行规则。
+   */
+  | 'desktop'
   /** 纯内部控制（如 todo 记账），不受权限闸约束。 */
   | 'internal_control'
 

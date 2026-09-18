@@ -1,4 +1,5 @@
-import { Show } from 'solid-js'
+import { For, Show } from 'solid-js'
+import { state } from '../../lib/store/index.ts'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -9,10 +10,31 @@ import {
   reloadConfig,
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
-import { Field } from './Row.tsx'
+import { Field, Row } from './Row.tsx'
+
+const SWITCH = [
+  { on: false, label: '关闭' },
+  { on: true, label: '启用' },
+]
 
 /**
- * 权限：agent 能读写哪些路径、哪些名字像凭证的环境变量仍要放行。
+ * 这台机器此刻卡在哪一步。
+ *
+ * 三项能力位依次成立，只报第一个不成立的那一步：三项各占一行的话，
+ * 宿主没连上时后两行都会写「未连接」，同一件事印三遍。
+ */
+function desktopStatus(): string {
+  const d = state.capabilities?.desktop
+  if (!d) return '读取中…'
+  if (!d.connected) return '宿主未连接'
+  if (!d.authorized) return '系统未授权'
+  if (!d.workerReady) return '组件未就绪'
+  return '已就绪'
+}
+
+/**
+ * 权限：agent 能读写哪些路径、哪些名字像凭证的环境变量仍要放行、能不能操作本机上
+ * 别的应用。
  *
  * 审批模式（自动审批 / 完全访问）**不在这里**。它在输入区那个 chip 上——决定的是
  * 下一轮能不能不问就动手，和「用哪个模型」同一层，随时要改。搬进设置意味着改一次
@@ -66,6 +88,33 @@ export function AccessSettings() {
                   onBlur={(e) => void patchConfig({ envAllowList: lines(e.currentTarget.value) })}
                 />
               </Field>
+            </div>
+          </section>
+
+          {/* 电脑操作单开一张卡：它管的不是路径，而是 agent 能不能操作本机上别的应用。
+                两行——用户改得了的那一项，和这台机器此刻的实际状态。 */}
+          <section class="settings-block">
+            <h3 class="settings-block-head">电脑操作</h3>
+            <div class="setting-rows">
+              <Row label="启用">
+                <div class="seg">
+                  <For each={SWITCH}>
+                    {(o) => (
+                      <button
+                        class="seg-item"
+                        classList={{ active: (c().desktopEnabled === true) === o.on }}
+                        type="button"
+                        onClick={() => void patchConfig({ desktopEnabled: o.on })}
+                      >
+                        {o.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Row>
+              <Row label="状态">
+                <span class="setting-row-hint">{desktopStatus()}</span>
+              </Row>
             </div>
           </section>
 

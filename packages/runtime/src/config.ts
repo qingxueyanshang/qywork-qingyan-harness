@@ -71,6 +71,17 @@ export interface QyConfig {
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
+   * 允不允许 agent 操作本机上别的应用（电脑操作）。**默认关**。
+   *
+   * 默认关是因为这条能力越出工作区：它改的是用户正开着的应用的状态，而那里没有
+   * 路径边界可裁决。关着时装配方不注入桌面端口，桌面工具整组不注册——不是注册一组
+   * 必然报错的名字。
+   *
+   * 它与握手里的 `capabilities.desktop` 是两件事：那一份报的是这台机器此刻的客观
+   * 状态（宿主连没连上、worker 起没起来、系统授没授权），这一格是用户的选择。
+   */
+  desktopEnabled?: boolean
+  /**
    * 工作区之外**额外**可读写的绝对路径。
    *
    * **它是「要沙箱」和「要操作电脑」的交汇点。** 这两个需求方向相反：一个要把边界收紧到工作区，一个
@@ -660,6 +671,11 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       typeof cfg.updates.autoDownload !== 'boolean')
   ) {
     problems.push('更新设置必须包含 autoCheck 和 autoDownload 布尔值')
+  }
+  // 非布尔值落盘之后按真值判定，「关着」会被读成「开着」，而界面上那个开关显示的是
+  // 它自己算出来的另一个结果。
+  if (cfg.desktopEnabled !== undefined && typeof cfg.desktopEnabled !== 'boolean') {
+    problems.push('desktopEnabled 必须是 true 或 false')
   }
 
   /*

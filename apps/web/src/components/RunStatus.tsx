@@ -28,8 +28,10 @@ import { IconSpinner } from './Icons.tsx'
  * 忙闲那一半仍要判：重拉会话时 `runStartedAt` 取自账本里 `status='running'` 的那一行，
  * 服务进程崩过之后那一行不再成立（同 `reloadActiveConversation` 的说明）。
  *
- * 两段各自的条件：
+ * 三段各自的条件：
  *
+ * - **目标应用**：桌面通道此刻在操作谁。进程级读数，由服务端在执行者释放或宿主
+ *   断开时推回 `null`，前端不自己推断它什么时候过期。
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
  * - **文件**：这一轮的读数，`run.started` 时清空。建了又删的不算，同变更页。
  */
@@ -46,6 +48,13 @@ export function RunStatus() {
     <Show when={hasRunStatus()}>
       <div class="run-status">
         <div class="changes-chip">
+          {/* 目标应用没有可跳的去处，所以是一段读数不是按钮。 */}
+          <Show when={state.desktopTarget}>{(app) => <span>正在操作 {app()}</span>}</Show>
+          <Show when={state.desktopTarget && (inProgress() || files().length > 0)}>
+            <span class="sep" aria-hidden="true">
+              ·
+            </span>
+          </Show>
           <Show when={inProgress()}>
             <IconSpinner size={12} />
             {/* 完整清单在右侧面板，这里只报进度：给出的数必须有去处。 */}

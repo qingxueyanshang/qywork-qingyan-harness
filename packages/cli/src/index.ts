@@ -338,10 +338,11 @@ async function runServe(args: string[]): Promise<number> {
     // Tauri spawn 时用环境变量把令牌传进来，桌面端就不必再走扫码。
     ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
     /*
-     * 原生浏览器宿主连接的凭据，同样只从环境变量来。
+     * 原生宿主连接的凭据，同样只从环境变量来。**一份凭据管两条宿主路径**
+     * （`/native/browser` 与 `/native/desktop`），是哪一种由服务端按 URL 路径判定。
      *
-     * 没有它就没有 `/native/browser` 这条路径：命令行直接起的 serve 没有桌面外壳，
-     * 也就没有浏览器资源。**不要落进配置文件**——那等于把一个可以注册宿主的凭据入盘。
+     * 没有它两条路径都不存在：命令行直接起的 serve 没有桌面外壳，也就没有原生资源。
+     * **不要落进配置文件**——那等于把一个可以注册宿主的凭据入盘。
      */
     ...(process.env.QYWORK_BROWSER_KEY ? { browserHostKey: process.env.QYWORK_BROWSER_KEY } : {}),
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),

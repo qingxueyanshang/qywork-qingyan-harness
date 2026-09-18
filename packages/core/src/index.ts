@@ -171,6 +171,8 @@ export type {
   ActionKind,
   AgentEvent,
   BrowserStateEvent,
+  DesktopStateEvent,
+  DesktopTargetEvent,
   ErrorCode,
   EventEnvelope,
   GitStateEvent,
@@ -201,6 +203,24 @@ export {
   NATIVE_BROWSER_PATH,
   type NativeBrowserUpFrame,
 } from './protocol/native-browser.ts'
+// 桌面原生宿主连接的帧与操作枚举：宿主与 server 两侧按这一份编解码
+export {
+  DESKTOP_PROTOCOL_VERSION,
+  type DesktopCompleteness,
+  type DesktopDispatch,
+  type DesktopEventFrame,
+  type DesktopHostReadyFrame,
+  type DesktopNode,
+  type DesktopNodeAction,
+  type DesktopObservation,
+  type DesktopOp,
+  type DesktopRequestFrame,
+  type DesktopResultFrame,
+  type DesktopTarget,
+  type DesktopWindow,
+  NATIVE_DESKTOP_PATH,
+  type NativeDesktopUpFrame,
+} from './protocol/native-desktop.ts'
 // 客户端 → 服务端的指令、握手与配对
 export {
   type BrowserCapability,
@@ -208,6 +228,7 @@ export {
   type ClientOrigin,
   type CommandRejectedFrame,
   type CommandRejectReason,
+  type DesktopCapability,
   decodePairingUrl,
   type EnvDependency,
   encodePairingUrl,

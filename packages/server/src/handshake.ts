@@ -9,7 +9,13 @@
  * 打包时出自同一次构建。完整理由写在 `HelloFrame` 的注释里。
  */
 
-import type { BrowserCapability, EventEnvelope, HelloFrame, HelloOkFrame } from '@qywork/core'
+import type {
+  BrowserCapability,
+  DesktopCapability,
+  EventEnvelope,
+  HelloFrame,
+  HelloOkFrame,
+} from '@qywork/core'
 import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
@@ -44,6 +50,11 @@ export function handleHello(
      * `browser.state` 事件必须读同一份判定，各存一份必然在重连那一刻分叉。
      */
     browser(): BrowserCapability
+    /**
+     * 电脑操作此刻可用到什么程度。**与 `browser` 同一条理由现取**：宿主在应用启动
+     * 之后才连上来，握手与 `desktop.state` 事件必须读同一份判定。
+     */
+    desktop(): DesktopCapability
     /**
      * 当前分支名广播一份。
      *
@@ -122,6 +133,7 @@ export function handleHello(
       environment: probeEnvironment(),
       mode: deps.config.mode ?? 'auto',
       browser: deps.browser(),
+      desktop: deps.desktop(),
     },
   }
   ws.send(JSON.stringify(ok))

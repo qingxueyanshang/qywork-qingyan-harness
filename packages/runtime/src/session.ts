@@ -12,6 +12,7 @@ import {
   type BrowserPort,
   type CompactionPort,
   type DelegatePort,
+  type DesktopPort,
   decideCommand,
   envelopeResult,
   type HistoryPort,
@@ -175,6 +176,13 @@ export interface SessionOptions {
    */
   browser?: BrowserPort
   /**
+   * 电脑操作通道。见 `DesktopPort`。
+   *
+   * 由装配方依据用户的启用开关与当前宿主状态实时判定后传入；没传即这一轮没有
+   * 桌面能力。会话结束时 `dispose` 会撤销它名下尚未派发的请求。
+   */
+  desktop?: DesktopPort
+  /**
    * 取走此刻标了「调整方向」的跟进消息。**每个 step 边界调一次。**
    *
    * 队列的真源在服务端的 `RunManager`（进程内，不落盘）；这里把它接到 loop
@@ -270,6 +278,13 @@ export class Session {
             `停止时释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`,
           )
         })
+        // 桌面动作同理，而且更急：排队中的 invoke 一旦派发就作用在用户正在看的应用上。
+        void this.opts.desktop?.release().catch((err) => {
+          log.warn(
+            'desktop',
+            `停止时撤销电脑操作失败：${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
       },
       { once: true },
     )
@@ -282,6 +297,7 @@ export class Session {
       plugins: opts.plugins !== undefined,
       mcpConfig: true,
       browser: opts.browser !== undefined,
+      desktop: opts.desktop !== undefined,
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)
@@ -837,6 +853,11 @@ export class Session {
     this.opts.browser?.release().catch((err) => {
       log.warn('browser', `释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`)
     })
+    // 电脑操作跟着会话走：这一轮收尾即撤销本执行者名下尚未派发的请求。
+    // 已经交给 OS 的动作不回滚——那是执行事实，不是可撤销的占用。
+    this.opts.desktop?.release().catch((err) => {
+      log.warn('desktop', `撤销电脑操作失败：${err instanceof Error ? err.message : String(err)}`)
+    })
     if (!this.extensions) return
     this.extensions = null
     releaseExtensions(this.opts.workspaceRoot)
@@ -957,6 +978,9 @@ export class Session {
    *   参数里自报的会话、Run、工作区根一概不读；页归属由宿主裁决，用户手动开的页
    *   要用户点名后经 `bind` 才归本会话；上传下载的路径与文件工具走同一份裁决。
    *   边界都在参数解析之前，放行。
+   * - **内置桌面工具**（`desktop` 效果）：端口由装配方按用户的启用开关与宿主状态注入，
+   *   参数里只有端口发放的不透明目标 id，OS 句柄到不了模型手里；能不能操作由
+   *   系统授权与宿主裁决。边界同样在参数解析之前，放行。
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
    *   （命令字符串里的路径不经过参数解析）。只有它需要真正的裁决。
    */
@@ -1076,6 +1100,7 @@ export class Session {
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
+      ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       history: historyPortFor(store, conversationId as ConversationId),
       signal: this.opts.signal,

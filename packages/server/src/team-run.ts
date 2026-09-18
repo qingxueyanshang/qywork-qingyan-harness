@@ -208,6 +208,14 @@ export async function runBuiltinMember(
     ...(deps.browser?.available() && workspaceId
       ? { browser: deps.browser.portFor(ownerConversation, workspaceId) }
       : {}),
+    /*
+     * 成员会话与顶层会话走同一条判定，也各领一份执行者身份：撤销按执行者记，
+     * 父会话停止时成员的 Session 被 abort，撤销的只是它自己名下的排队请求。
+     *
+     * **控制归属记的是派它的那条顶层会话**，与浏览器同一条理由：界面上的「停止」发
+     * `conversation.interrupt`，而那条指令只认顶层会话。
+     */
+    ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
   })
 
   let text = ''

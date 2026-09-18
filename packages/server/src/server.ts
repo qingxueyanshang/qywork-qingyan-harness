@@ -13,7 +13,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
-import { log, NATIVE_BROWSER_PATH } from '@qywork/core'
+import { log, NATIVE_BROWSER_PATH, NATIVE_DESKTOP_PATH } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   acquireExtensions,
@@ -40,6 +40,9 @@ import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
 import type { SocketData } from './deps.ts'
+import { DesktopBridge } from './desktop/bridge.ts'
+import { desktopCapability } from './desktop/capability.ts'
+import { DesktopCoordinator } from './desktop/coordinator.ts'
 import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
@@ -75,10 +78,14 @@ export interface ServeOptions {
   /** 由外部注入的令牌（Tauri spawn 时用环境变量传），不传则自己生成。 */
   token?: string
   /**
-   * 原生浏览器宿主连接的凭据（桌面外壳 spawn 时用环境变量传）。
+   * 原生宿主连接的凭据（桌面外壳 spawn 时用环境变量传）。
    *
-   * **不传就没有这条路径**：`/native/browser` 不接受任何连接，浏览器控制能力
-   * 整条不发布。不给它一个默认值——默认值等于人人都能注册宿主。
+   * **一份凭据管两条宿主路径**：`/native/browser` 与 `/native/desktop` 由同一个桌面
+   * 外壳进程发起，同一次启动只有一个随机值；是哪一种宿主由服务端按 URL 路径判定，
+   * 不看客户端自报的字段。
+   *
+   * **不传两条路径都不存在**：宿主连接一律拒绝，浏览器控制与电脑操作两条能力都不发布。
+   * 不给它一个默认值——默认值等于人人都能注册宿主。
    */
   browserHostKey?: string
   updateHostKey?: string
@@ -159,6 +166,24 @@ export function serve(opts: ServeOptions) {
    */
   const offBrowserHost = browserBridge?.onHostChange(() => {
     bus.publish({ type: 'browser.state', browser: browserCapability(browserBridge) })
+  })
+  /*
+   * 桌面宿主连接与电脑操作协调器。**与浏览器共用同一份宿主凭据**：两条路径由同一个
+   * 桌面外壳进程发起，同一次启动只有一个随机值；哪一种宿主由 URL 路径判定，
+   * 不看客户端自报的字段。没有凭据就没有这两样。
+   *
+   * 启用开关现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
+   * 存一份快照的话用户在设置里打开之后要等重启才生效。
+   */
+  const desktopBridge = opts.browserHostKey ? new DesktopBridge(opts.browserHostKey) : null
+  const desktop = desktopBridge
+    ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled === true)
+    : null
+  const offDesktopHost = desktopBridge?.onHostChange(() => {
+    bus.publish({ type: 'desktop.state', desktop: desktopCapability(desktopBridge) })
+  })
+  const offDesktopTarget = desktop?.onTargetChange((app) => {
+    bus.publish({ type: 'desktop.target', app })
   })
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
@@ -289,6 +314,7 @@ export function serve(opts: ServeOptions) {
           runs,
           subagents,
           ...(browser ? { browser } : {}),
+          ...(desktop ? { desktop } : {}),
         }),
     },
     opts.schedulerTickMs,
@@ -365,13 +391,16 @@ export function serve(opts: ServeOptions) {
       }
 
       /*
-       * ── 原生浏览器宿主连接 ──
+       * ── 原生宿主连接 ──
        *
-       * 必须排在 `/stream` 之前单独判：它不验配对令牌，验的是宿主凭据加回环地址，
-       * 而且升级后走的是另一条帧处理路径。
+       * 必须排在 `/stream` 之前单独判：它们不验配对令牌，验的是宿主凭据加回环地址，
+       * 而且升级后各走一条独立的帧处理路径。**是哪一种宿主由路径定**，写进
+       * `ws.data.native`，之后的三处分派都只读这一格。
        */
-      if (url.pathname === NATIVE_BROWSER_PATH) {
-        if (!browserBridge?.accepts(req, srv.requestIP(req)?.address ?? null)) {
+      if (url.pathname === NATIVE_BROWSER_PATH || url.pathname === NATIVE_DESKTOP_PATH) {
+        const kind = url.pathname === NATIVE_BROWSER_PATH ? 'browser' : 'desktop'
+        const bridge = kind === 'browser' ? browserBridge : desktopBridge
+        if (!bridge?.accepts(req, srv.requestIP(req)?.address ?? null)) {
           return new Response('unauthorized', { status: 401 })
         }
         const ok = srv.upgrade(req, {
@@ -379,7 +408,7 @@ export function serve(opts: ServeOptions) {
             id: crypto.randomUUID(),
             authed: true,
             origin: 'cli' as const,
-            native: true,
+            native: kind,
             openedAt: Date.now(),
           },
         })
@@ -397,7 +426,7 @@ export function serve(opts: ServeOptions) {
             id: crypto.randomUUID(),
             authed: true,
             origin: (url.searchParams.get('origin') as SocketData['origin']) ?? 'external',
-            native: false,
+            native: null,
             openedAt: Date.now(),
           },
         })
@@ -444,6 +473,7 @@ export function serve(opts: ServeOptions) {
                 runs,
                 subagents,
                 ...(browser ? { browser } : {}),
+                ...(desktop ? { desktop } : {}),
               })
             },
             watchGit: () => gitWatch.retarget(),
@@ -468,9 +498,13 @@ export function serve(opts: ServeOptions) {
 
     websocket: {
       async message(ws: ServerWebSocket<SocketData>, raw: string | Buffer) {
-        // 宿主连接只走资源操作，聊天指令一概不在这条路径上解析。
-        if (ws.data.native) {
+        // 宿主连接只走各自的资源操作，聊天指令一概不在这两条路径上解析。
+        if (ws.data.native === 'browser') {
           browserBridge?.message(ws, String(raw))
+          return
+        }
+        if (ws.data.native === 'desktop') {
+          desktopBridge?.message(ws, String(raw))
           return
         }
         let frame: HelloFrame | ClientCommand
@@ -489,6 +523,7 @@ export function serve(opts: ServeOptions) {
             config: opts.config,
             runs,
             browser: () => browserCapability(browserBridge),
+            desktop: () => desktopCapability(desktopBridge),
             announceGit: () => gitWatch.announce(),
           })
           return
@@ -503,12 +538,14 @@ export function serve(opts: ServeOptions) {
           runs,
           subagents,
           ...(browser ? { browser } : {}),
+          ...(desktop ? { desktop } : {}),
         })
       },
       open(ws: ServerWebSocket<SocketData>) {
         if (ws.data.native) {
-          browserBridge?.open(ws)
-          log.info('ws', 'open', { id: ws.data.id, origin: 'native-browser' })
+          if (ws.data.native === 'browser') browserBridge?.open(ws)
+          else desktopBridge?.open(ws)
+          log.info('ws', 'open', { id: ws.data.id, origin: `native-${ws.data.native}` })
           return
         }
         log.info('ws', 'open', { id: ws.data.id, origin: ws.data.origin })
@@ -527,7 +564,8 @@ export function serve(opts: ServeOptions) {
           seconds: Math.round((Date.now() - ws.data.openedAt) / 1000),
         })
         if (ws.data.native) {
-          browserBridge?.close(ws)
+          if (ws.data.native === 'browser') browserBridge?.close(ws)
+          else desktopBridge?.close(ws)
           return
         }
         unsubscribers.get(ws.data.id)?.()
@@ -559,6 +597,7 @@ export function serve(opts: ServeOptions) {
     content,
     token,
     browser,
+    desktop,
     port: boundPort,
     // 启动横幅要显示的是**真正生效的**工作区。调用方传进来的可能是 null
     // （没给 --cwd），那时由 bootstrapWorkspace 决定用哪个，只有这里知道结果。
@@ -574,6 +613,9 @@ export function serve(opts: ServeOptions) {
       gitWatch.stop()
       offBrowserHost?.()
       browser?.stop()
+      offDesktopHost?.()
+      offDesktopTarget?.()
+      desktop?.stop()
       runs.interruptAll()
       // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。
       subagents.interruptAll()

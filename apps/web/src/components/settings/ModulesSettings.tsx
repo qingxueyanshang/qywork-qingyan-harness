@@ -132,6 +132,23 @@ const MODULES: Module[] = [
     ],
   },
   { id: 'browser', label: '浏览器' },
+  {
+    id: 'desktop',
+    label: '电脑操作',
+    consoles: [{ page: 'access', label: '去配置' }],
+    notes: [
+      {
+        label: 'desktopEnabled',
+        text: () =>
+          '默认关闭。启用之后还要宿主连上、组件就绪、系统授权三项都成立，模型才拿得到这组工具。',
+      },
+      {
+        label: 'dispatch',
+        text: () =>
+          '每个动作回执分三种：未执行、已提交、结果未知。结果未知不重发，先重新观察实际状态。',
+      },
+    ],
+  },
   /*
    * 记忆和技能是两个类目，不是一个「记忆与技能」。
    *
@@ -252,6 +269,7 @@ const PERMS: Record<string, { label: string; warn?: number }> = {
   delete: { label: '删除', warn: 1 },
   network: { label: '出网', warn: 1 },
   browser: { label: '浏览器', warn: 1 },
+  desktop: { label: '电脑操作', warn: 2 },
   execute: { label: '执行', warn: 2 },
   internal_control: { label: '不走权限闸' },
 }

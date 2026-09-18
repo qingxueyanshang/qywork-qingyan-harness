@@ -23,6 +23,20 @@ export {
   summaryCutOf,
   unitKey,
 } from './compaction.ts'
+// 电脑操作端口：tools 按它写桌面工具，server 的协调器实现它，runtime 注入
+export type {
+  DesktopActReceipt,
+  DesktopActResult,
+  DesktopElement,
+  DesktopFollowUp,
+  DesktopPort,
+  DesktopRefusal,
+  DesktopSnapshot,
+  DesktopWaitCondition,
+  DesktopWaitReceipt,
+  DesktopWaitResult,
+  DesktopWindowInfo,
+} from './desktop.ts'
 // 按键词表：tools 的 press 预检与 server 的 CDP 客户端按同一份表裁决
 export {
   KEY_HINT,

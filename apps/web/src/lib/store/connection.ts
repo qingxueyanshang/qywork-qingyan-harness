@@ -282,6 +282,21 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
+  /*
+   * 电脑操作能力与正在操作的目标应用：同样是进程级的，同样在归属判定之前处理。
+   *
+   * 目标应用跟着服务端推的值走，前端不自己推断它什么时候该清空——执行者释放、
+   * 宿主断开、能力下线三条路径服务端都会推 `null`，各存一份判定必然在某一条上分叉。
+   */
+  if (ev.type === 'desktop.state') {
+    setState('capabilities', (caps) => (caps ? { ...caps, desktop: ev.desktop } : caps))
+    return
+  }
+  if (ev.type === 'desktop.target') {
+    setState('desktopTarget', ev.app)
+    return
+  }
+
   const from = frame.conversationId
   // 没有归属的是工作区级事件（git 状态那类），按当前会话算。
   const mine = !from || from === state.activeConversation

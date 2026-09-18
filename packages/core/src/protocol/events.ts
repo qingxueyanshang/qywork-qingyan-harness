@@ -25,7 +25,7 @@ import type {
   ToolActionStatus,
   ToolOutcomeWire,
 } from '../domain/model.ts'
-import type { BrowserCapability } from './transport.ts'
+import type { BrowserCapability, DesktopCapability } from './transport.ts'
 
 export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
   /** 本连接内全序单调递增，从 1 开始。 */
@@ -74,6 +74,8 @@ export type AgentEvent =
   | FileChangedEvent
   | GitStateEvent
   | BrowserStateEvent
+  | DesktopStateEvent
+  | DesktopTargetEvent
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
@@ -500,6 +502,29 @@ export interface GitStateEvent {
 export interface BrowserStateEvent {
   type: 'browser.state'
   browser: BrowserCapability
+}
+
+/**
+ * 电脑操作能力变了。**进程级事件，信封上不带 `conversationId`。**
+ *
+ * 与 `browser.state` 同一条理由：桌面宿主在应用启动后才连上来，授权与 worker 状态
+ * 之后还会再变。这条事件与握手里的 `capabilities.desktop` 是同一份投影。
+ */
+export interface DesktopStateEvent {
+  type: 'desktop.state'
+  desktop: DesktopCapability
+}
+
+/**
+ * 桌面通道此刻在操作哪个应用。**同样是进程级的**：物理桌面只有一个，
+ * 两条会话同时操作时后到的那一次覆盖这个读数。
+ *
+ * `null` = 没有任何执行者持着桌面目标。执行者释放、宿主断开、能力下线都要把它清回
+ * `null`——留着一个旧应用名比不显示更糟，界面会一直说它在操作一个早就结束的目标。
+ */
+export interface DesktopTargetEvent {
+  type: 'desktop.target'
+  app: string | null
 }
 
 // ─────────────────────────────── 多智能体 ───────────────────────────────

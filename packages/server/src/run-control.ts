@@ -206,6 +206,14 @@ export async function startRun(
      * 装配成「先给一个端口，调用时再报错」的话，模型会拿到一个必然失败的能力。
      */
     ...(deps.browser?.available() ? { browser: deps.browser.portFor(conversationId, ws.id) } : {}),
+    /*
+     * 电脑操作同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
+     * 由协调器一次判完，缺任一项就不注入端口，这一轮连桌面工具都不注册。
+     *
+     * 端口按执行者发放，顶层会话与它派出去的成员各领一份：停止只撤销自己名下的
+     * 排队请求，不会连带撤掉另一条会话正在做的动作。
+     */
+    ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
     // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
     followUps: (id) => deps.runs.takeSteered(id),
   })

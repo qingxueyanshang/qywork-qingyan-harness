@@ -88,6 +88,8 @@ export interface RedactedConfig {
   mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]
+  /** 允不允许 agent 操作本机上别的应用。缺省即关。 */
+  desktopEnabled?: boolean
 }
 export interface ConfigPayload {
   path: string

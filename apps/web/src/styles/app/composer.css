@@ -73,7 +73,7 @@
 }
 .changes-chip {
   /* 指针在 `.run-status` 那一层被关掉了，这里单独开回来：关掉的是整宽那条带子
-     （它悬在正文上面），开回来的是 chip 自己——里面两段读数都是按钮。 */
+     （它悬在正文上面），开回来的是 chip 自己——里面的待办与文件读数是按钮。 */
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
@@ -97,7 +97,7 @@
 .changes-chip .sep {
   color: var(--text-tertiary);
 }
-/* 两段读数都是按钮（点开对应面板），但不画成按钮：画边框或底色会让整条读成
+/* 待办与文件两段读数是按钮（点开对应面板），但不画成按钮：画边框或底色会让整条读成
    「一个控件旁边挂着几个数字」。 */
 .run-jump {
   display: inline-flex;
