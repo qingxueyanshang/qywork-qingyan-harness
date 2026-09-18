@@ -12,8 +12,8 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use super::frames::{reject_reason, RequestFrame, ResultFrame};
-use super::ws::WsClient;
 use super::{now_ms, BrowserHost};
+use crate::ws::WsClient;
 
 /// 与 `packages/core/src/protocol/native-browser.ts` 的常量逐字一致。
 const PATH: &str = "/native/browser";

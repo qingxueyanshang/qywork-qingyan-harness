@@ -16,10 +16,12 @@
 //! 安装更新（`updater.rs`）由外壳校验安装包并退出当前进程，远程 Web 不提供此入口。
 
 mod browser;
+mod hostkey;
 mod logfile;
 mod sidecar;
 mod terminal;
 mod updater;
+mod ws;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -417,7 +419,7 @@ fn browser_host_key() -> Option<String> {
     if tauri::is_dev() {
         std::env::var("QYWORK_BROWSER_KEY").ok().filter(|v| !v.is_empty())
     } else {
-        Some(browser::new_host_key()).filter(|v| !v.is_empty())
+        Some(hostkey::new_host_key()).filter(|v| !v.is_empty())
     }
 }
 

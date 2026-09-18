@@ -26,8 +26,6 @@ mod frames;
 mod profile;
 #[cfg(windows)]
 mod tabs;
-#[cfg(windows)]
-mod ws;
 
 #[cfg(windows)]
 use std::collections::HashMap;
@@ -47,8 +45,11 @@ use frames::{EventFrame, HostReady, RequestFrame, ResultData};
 use profile::ProfileLock;
 #[cfg(windows)]
 use tabs::Tab;
+
 #[cfg(windows)]
-use ws::WsSender;
+use crate::hostkey::new_host_key;
+#[cfg(windows)]
+use crate::ws::WsSender;
 
 #[cfg(windows)]
 /// 进程内唯一的宿主。一个 qywork 进程只打开一份 profile，这个静态就是那份权威。
@@ -90,26 +91,6 @@ struct HostState {
     next_tab: u64,
     /// 置上之后连接线程不再重连。退出与异常断开的唯一分界。
     stopping: bool,
-}
-
-#[cfg(windows)]
-/// 一次随机凭据。只在本次启动有效，经受控环境变量交给 sidecar。
-pub fn new_host_key() -> String {
-    let mut raw = [0u8; 32];
-    // SAFETY: 缓冲区长度与传入的字节数一致；系统首选 RNG 不需要算法句柄。
-    let status = unsafe {
-        windows::Win32::Security::Cryptography::BCryptGenRandom(
-            None,
-            &mut raw,
-            windows::Win32::Security::Cryptography::BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status.is_err() {
-        // 取不到系统随机数时不降级成可预测的凭据：没有凭据即不发布这条能力。
-        log::error!("取系统随机数失败，浏览器宿主连接不启用：{status:?}");
-        return String::new();
-    }
-    raw.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 拉起宿主：占用 profile、分配回环 CDP 端口、连上 sidecar 的宿主路径。
@@ -679,17 +660,3 @@ pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> 
 #[cfg(windows)]
 /// 子视图里挂的 Tauri 运行时类型。钩子签名要它。
 type Runtime = Wry;
-
-#[cfg(all(windows, test))]
-mod tests {
-    use super::new_host_key;
-
-    #[test]
-    fn host_key_is_long_hex_and_differs_per_call() {
-        let a = new_host_key();
-        let b = new_host_key();
-        assert_eq!(a.len(), 64, "{a}");
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, b);
-    }
-}

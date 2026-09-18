@@ -25,7 +25,7 @@
     "tauri:build": "bun run build:agent && bun run build:computer-host && bun run --cwd apps/desktop tauri build && bun run scripts/collect-installer.ts",
     "gate": "bun run typecheck && biome check . && bun run test && bun run typecheck:rust && bun run typecheck:computer-host && bun run test:computer-host",
     "typecheck": "tsc --build --force && bun run --cwd apps/web typecheck",
-    "typecheck:rust": "cargo check --quiet --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "typecheck:rust": "cargo check --quiet --locked --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "typecheck:computer-host": "cargo check --quiet --locked --manifest-path apps/desktop/native/computer-host/Cargo.toml",
     "test": "bun run scripts/run-tests.ts",
     "test:computer-host": "cargo test --quiet --locked --manifest-path apps/desktop/native/computer-host/Cargo.toml",

@@ -69,7 +69,8 @@ fn preferences(raw: &str) -> Option<(bool, bool)> {
 
 pub fn owner() -> UpdateOwner {
     #[cfg(windows)]
-    let key = crate::browser::new_host_key();
+    let key = crate::hostkey::new_host_key();
+    // 非 Windows 没有安装更新实现，空串即不给 sidecar 发 `updateHostKey`，这条能力整条不存在。
     #[cfg(not(windows))]
     let key = String::new();
     let enabled = cfg!(windows)

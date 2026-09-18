@@ -78,22 +78,27 @@ async function main(argv: string[]): Promise<number> {
   }
 
   /*
-   * computer-host 的 Cargo.lock 里本 crate 自己那个 [[package]] 块。
+   * 两个 Cargo.lock 里本仓自己那个 [[package]] 块。
    *
    * 清单改了而 lock 没改，带 `--locked` 的检查、测试与构建全部以 101 失败
    * （`cannot update the lock file ... because --locked was passed`），而门禁里正有这三条。
-   * 必须锚定 `name = "qy-computer-host"` 的下一行：依赖项的 version 行格式完全一样，
+   * 必须锚定 `name = "<crate>"` 的下一行：依赖项的 version 行格式完全一样，
    * 不锚定就会改到别的包。
    */
-  const lockedCrate = /(name = "qy-computer-host"\nversion = )"[^"]*"/
-  targets.push({
-    path: join(ROOT, 'apps/desktop/native/computer-host/Cargo.lock'),
-    apply: (t) => {
-      // 匹配不上就报错，不返回原文：原文会被判成「已一致」，--check 因此永远通过。
-      if (!lockedCrate.test(t)) throw new Error('Cargo.lock 里没有 qy-computer-host 的包块')
-      return t.replace(lockedCrate, `$1"${target}"`)
-    },
-  })
+  for (const [rel, crate] of [
+    ['apps/desktop/src-tauri/Cargo.lock', 'qywork'],
+    ['apps/desktop/native/computer-host/Cargo.lock', 'qy-computer-host'],
+  ] as const) {
+    const lockedCrate = new RegExp(`(name = "${crate}"\\nversion = )"[^"]*"`)
+    targets.push({
+      path: join(ROOT, rel),
+      apply: (t) => {
+        // 匹配不上就报错，不返回原文：原文会被判成「已一致」，--check 因此永远通过。
+        if (!lockedCrate.test(t)) throw new Error(`${rel} 里没有 ${crate} 的包块`)
+        return t.replace(lockedCrate, `$1"${target}"`)
+      },
+    })
+  }
 
   let stale = 0
   for (const t of targets) {
