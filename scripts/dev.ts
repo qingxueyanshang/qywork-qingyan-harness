@@ -39,6 +39,7 @@ import { randomBytes } from 'node:crypto'
 import { watch } from 'node:fs'
 import { join } from 'node:path'
 import { dataPath } from '@qywork/runtime'
+import { externalBinPath } from './external-bin.ts'
 import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
 import { startSourceUpdater } from './update/source.ts'
@@ -126,6 +127,36 @@ const privilegedEnv = { ...env, QYWORK_BROWSER_KEY: BROWSER_KEY, QYWORK_UPDATE_K
  * 传 `'bun'` 直接 ENOENT。这一条是机器级陷阱，不是本仓的事，但踩上去的是本仓。
  */
 const BUN = process.execPath
+
+/**
+ * 补齐 `externalBin` 声明的文件。
+ *
+ * 外壳的构建脚本在编译期检查这些文件存在，缺一个就以 101 退出，`tauri dev` 也走这一步。
+ * 开发态不执行它们的内容——sidecar 由本脚本从源码跑——所以只在缺失时编一次，
+ * 已经在的不跟着源码重编。
+ */
+async function ensureExternalBins(): Promise<void> {
+  const assets = [
+    ['qy', 'scripts/build-sidecar.ts'],
+    ['qy-computer-host', 'scripts/build-computer-host.ts'],
+  ] as const
+  for (const [name, script] of assets) {
+    if (await Bun.file(await externalBinPath(name)).exists()) continue
+    process.stderr.write(`[dev] 缺少外部二进制 ${name}，先编译一次\n`)
+    const build = Bun.spawn([BUN, 'run', join(ROOT, script)], {
+      cwd: ROOT,
+      stdout: 'inherit',
+      stderr: 'inherit',
+      stdin: 'ignore',
+    })
+    if ((await build.exited) !== 0) {
+      process.stderr.write(`[dev] ${name} 编译失败，详见上方输出\n`)
+      process.exit(1)
+    }
+  }
+}
+
+if (MODE === 'desktop') await ensureExternalBins()
 
 function spawnAgent(): ReturnType<typeof Bun.spawn> {
   return Bun.spawn(

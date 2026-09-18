@@ -1,7 +1,7 @@
 name: Set up qywork build
-description: 装 Bun 与 Rust、装依赖、核对版本清单、编译 sidecar。CI 与发布共用同一份。
+description: 装 Bun 与 Rust、装依赖、核对版本清单、编译两个外部二进制。CI 与发布共用同一份。
 
-# 第三方 action 的 pin 与 sidecar 的编译时机只写在这里。两个工作流各抄一遍的话，
+# 第三方 action 的 pin 与外部二进制的编译时机只写在这里。两个工作流各抄一遍的话，
 # 改了 pin 只改一处的表现是「一条工作流用新版本、另一条用旧版本」，而两边都是绿的。
 
 runs:
@@ -25,9 +25,14 @@ runs:
       shell: pwsh
       run: bun run scripts/sync-version.ts --check
 
-    # 必须在 `bun run gate` 之前。gate 末尾的 cargo check 会跑 tauri 的构建脚本，
-    # 而 tauri.conf.json 把 bin/qy 声明成 externalBin：干净 runner 上那个文件不存在，
-    # 构建脚本报 `resource path bin\qy-... doesn't exist` 并以 101 退出。
+    # 这两步必须在 `bun run gate` 之前。gate 里的 cargo check 会跑 tauri 的构建脚本，
+    # 而 tauri.conf.json 把 bin/qy 与 bin/qy-computer-host 都声明成 externalBin：
+    # 干净 runner 上这些文件不存在，构建脚本报
+    # `resource path bin\qy-... doesn't exist` 并以 101 退出。
     - name: Build sidecar
       shell: pwsh
       run: bun run build:agent
+
+    - name: Build computer-host
+      shell: pwsh
+      run: bun run build:computer-host

@@ -1,33 +1,18 @@
 #!/usr/bin/env bun
 /**
- * 把 `qy` 编译成单文件二进制，并按 Tauri 要求的命名放进 sidecar 目录。
- *
- * Tauri 的 `externalBin: ["bin/qy"]` 在打包时会去找 `bin/qy-<目标三元组>`
- * （macOS 上还会因 arm64/x86_64 分成两个）。名字差一个字都会在打包末尾才报错，
- * 所以三元组由 `rustc -vV` 现问，而不是照着平台猜。
+ * 把 `qy` 编译成单文件二进制，并按 Tauri 要求的命名放进 sidecar 目录
+ * （`externalBin` 的命名规则见 `external-bin.ts`）。
  *
  *   bun run scripts/build-sidecar.ts
  */
 
 import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { BIN_DIR, externalBinPath } from './external-bin.ts'
 
 const ROOT = join(import.meta.dir, '..')
-const OUT_DIR = join(ROOT, 'apps/desktop/src-tauri/bin')
 const ENTRY = join(ROOT, 'packages/cli/src/index.ts')
 const ICON = join(ROOT, 'apps/desktop/src-tauri/icons/icon.ico')
-
-async function hostTriple(): Promise<string> {
-  const proc = Bun.spawn(['rustc', '-vV'], { stdout: 'pipe', stderr: 'pipe' })
-  const out = await new Response(proc.stdout).text()
-  const code = await proc.exited
-  if (code !== 0) {
-    throw new Error('未找到 rustc。Tauri 需要 Rust 工具链，请先安装：https://rustup.rs')
-  }
-  const m = /^host:\s*(\S+)$/m.exec(out)
-  if (!m) throw new Error('无法从 rustc -vV 解析目标三元组')
-  return m[1]!
-}
 
 /**
  * Windows PE 版本信息。仅在编译目标为 Windows 时传。
@@ -57,11 +42,9 @@ function windowsMetadata(version: string): string[] {
 }
 
 async function main(): Promise<number> {
-  const triple = await hostTriple()
-  const ext = process.platform === 'win32' ? '.exe' : ''
-  const outfile = join(OUT_DIR, `qy-${triple}${ext}`)
+  const outfile = await externalBinPath('qy')
 
-  await mkdir(OUT_DIR, { recursive: true })
+  await mkdir(BIN_DIR, { recursive: true })
   await rm(outfile, { force: true })
 
   process.stdout.write(`编译 sidecar → ${outfile}\n`)

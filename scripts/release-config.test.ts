@@ -1,6 +1,7 @@
 /**
- * 发布链路的回归。**覆盖范围**：`apps/desktop/src-tauri/tauri.conf.json` 与
- * `.github/` 下的工作流清单，以及 `scripts/collect-installer.ts` 的收集与清理。
+ * 发布链路的回归。**覆盖范围**：`apps/desktop/src-tauri/tauri.conf.json`、`.github/` 下的
+ * 工作流清单、`package.json` 的门禁与资产入口，以及 `scripts/collect-installer.ts` 的
+ * 收集与清理。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -51,16 +52,29 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * 干净 runner 上没有 sidecar，而 `bun run gate` 末尾的 `cargo check` 会跑 tauri 的
-   * 构建脚本，`tauri.conf.json` 把 `bin/qy` 声明成 `externalBin`：文件不在就以 101 退出。
+   * 干净 runner 上没有这些外部二进制，而 `bun run gate` 里的 `cargo check` 会跑 tauri 的
+   * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明过的文件不在就以 101 退出。
    * 两个工作流都从同一个 action 拿这个前置，所以顺序在那一份里判。
    */
-  test('每条工作流都在门禁前准备 sidecar', () => {
+  test('每条工作流都在门禁前准备全部 externalBin', () => {
     const setup = readFileSync(
       new URL('../.github/actions/setup-build/action.yml', import.meta.url),
       'utf8',
     )
-    expect(setup).toContain('bun run build:agent')
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    ) as { bundle: { externalBin: string[] } }
+    /** 每个条目由哪条命令准备。加了条目不加命令，这里就红。 */
+    const prepared = {
+      'bin/qy': 'bun run build:agent',
+      'bin/qy-computer-host': 'bun run build:computer-host',
+    }
+
+    expect(config.bundle.externalBin).toHaveLength(Object.keys(prepared).length)
+    for (const [entry, command] of Object.entries(prepared)) {
+      expect(config.bundle.externalBin).toContain(entry)
+      expect(setup).toContain(command)
+    }
 
     for (const name of ['ci.yml', 'release-windows.yml']) {
       const workflow = readFileSync(
@@ -91,6 +105,25 @@ describe('桌面发布清单', () => {
     expect(workflow).toContain('cancel-in-progress: true')
     // 与发布工作流的 group 重名会让一次 push 取消正在出安装包的那次发布。
     expect(workflow).not.toContain('group: windows-release')
+  })
+
+  /**
+   * worker 是独立 crate：src-tauri 的 `cargo check` 不覆盖它，Bun 测试也不执行它的 Rust
+   * 单测。不在 gate 里显式列出，它的编译错误和失败测试不会让任何一条流水线变红。
+   */
+  test('门禁显式检查并测试独立 worker crate', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+
+    for (const name of ['typecheck:computer-host', 'test:computer-host']) {
+      expect(pkg.scripts.gate).toContain(`bun run ${name}`)
+      // `--locked` 保证检查的是锁定版本，不在门禁里顺着依赖更新改写 lock。
+      expect(pkg.scripts[name]).toContain('--locked')
+      expect(pkg.scripts[name]).toContain(
+        '--manifest-path apps/desktop/native/computer-host/Cargo.toml',
+      )
+    }
   })
 
   test('Windows 发布必须携带当前版本的更新说明', () => {

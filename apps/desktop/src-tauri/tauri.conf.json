@@ -40,7 +40,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["bin/qy"],
+    "externalBin": ["bin/qy", "bin/qy-computer-host"],
     "macOS": {
       "minimumSystemVersion": "11.0"
     },
