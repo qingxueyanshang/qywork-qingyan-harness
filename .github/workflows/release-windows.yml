@@ -17,57 +17,24 @@ jobs:
     timeout-minutes: 60
     env:
       CI: true
-      QYWORK_UPDATER_PUBLIC_KEY: ${{ vars.QYWORK_UPDATER_PUBLIC_KEY }}
 
     steps:
-      - name: Verify release source
-        shell: pwsh
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: |
-          if ($env:RELEASE_REF -ne "refs/heads/master") {
-            throw "Windows releases must run from master; selected $env:RELEASE_REF."
-          }
-
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - name: Load release notes
-        id: release_notes
-        shell: pwsh
-        run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          $notesPath = ".github/release-notes/v$version.md"
-          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
-            throw "Missing release notes: $notesPath"
-          }
-
-          $notes = (Get-Content -LiteralPath $notesPath -Raw).Trim()
-          if ([string]::IsNullOrWhiteSpace($notes)) {
-            throw "Release notes are empty: $notesPath"
-          }
-
-          $delimiter = "RELEASE_NOTES_$([guid]::NewGuid().ToString('N'))"
-          "body<<$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          $notes | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          $delimiter | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Prepare release
+        id: prepare
+        uses: ./.github/actions/release-prepare
+        with:
+          updater-public-key: ${{ vars.QYWORK_UPDATER_PUBLIC_KEY }}
+          updater-private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Set up build
         uses: ./.github/actions/setup-build
-
-      - name: Configure signed updates
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:QYWORK_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-            throw "Configure QYWORK_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY before releasing."
-          }
-          New-Item -ItemType Directory -Force -Path .tmp | Out-Null
-          @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:QYWORK_UPDATER_PUBLIC_KEY.Trim() } } } |
-            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath .tmp/updater-config.json -Encoding utf8
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Run release gate
         run: bun run gate
@@ -90,25 +57,25 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           generateReleaseNotes: true
-          releaseBody: ${{ steps.release_notes.outputs.body }}
+          releaseBody: ${{ steps.prepare.outputs.notes }}
 
       - name: Create checksum
-        shell: pwsh
+        shell: bash
         run: |
-          $bundlePath = ".tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis"
-          $installers = @(Get-ChildItem -LiteralPath $bundlePath -Filter "*.exe" -File)
-          if ($installers.Count -ne 1) {
-            throw "Expected one NSIS installer in $bundlePath, found $($installers.Count)."
-          }
-
-          $installer = $installers[0]
-          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($installer.Name)" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding ascii
+          bundle=".tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          installers=("$bundle"/*.exe)
+          # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+          [ -f "${installers[0]}" ] || installers=()
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "Expected one NSIS installer in $bundle, found ${#installers[@]}." >&2
+            exit 1
+          fi
+          ( cd "$bundle" && sha256sum "$(basename "${installers[0]}")" ) > SHA256SUMS-windows-x86_64.txt
 
       - name: Upload checksum to draft release
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          gh release upload "v$version" SHA256SUMS.txt --clobber
+          version="$(tr -d '[:space:]' < VERSION)"
+          gh release upload "v$version" SHA256SUMS-windows-x86_64.txt --clobber

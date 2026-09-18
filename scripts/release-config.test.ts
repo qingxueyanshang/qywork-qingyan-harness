@@ -1,7 +1,7 @@
 /**
  * 发布链路的回归。**覆盖范围**：`apps/desktop/src-tauri/tauri.conf.json`、`.github/` 下的
- * 工作流清单、`package.json` 的门禁与资产入口，以及 `scripts/collect-installer.ts` 的
- * 收集与清理。
+ * 工作流与两个共用 composite action、`package.json` 的门禁与资产入口，以及
+ * `scripts/collect-installer.ts` 的收集与清理。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -12,24 +12,87 @@ import { collect } from './collect-installer.ts'
 
 const ROOT = join(import.meta.dir, '..')
 
+/** 三条发行工作流。每加一个出包平台就加一行，下面的结构断言随即覆盖它。 */
+const RELEASE_WORKFLOWS = ['release-windows.yml', 'release-macos.yml', 'release-linux.yml']
+
+function workflowText(name: string): string {
+  return readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8')
+}
+
+function actionText(name: string): string {
+  return readFileSync(new URL(`../.github/actions/${name}/action.yml`, import.meta.url), 'utf8')
+}
+
 describe('桌面发布清单', () => {
   test('正式更新必须打包签名并上传清单', () => {
-    const workflow = readFileSync(
-      new URL('../.github/workflows/release-windows.yml', import.meta.url),
-      'utf8',
-    )
+    const prepare = actionText('release-prepare')
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     )
+    // 平时的构建不出更新产物，只有发行工作流临时覆盖这一项。
     expect(config.bundle.createUpdaterArtifacts).toBe(false)
-    expect(workflow).toContain('createUpdaterArtifacts = $true')
-    expect(workflow).toContain('includeUpdaterJson: true')
-    expect(workflow).toContain('secrets.TAURI_SIGNING_PRIVATE_KEY')
-    expect(workflow).toContain('vars.QYWORK_UPDATER_PUBLIC_KEY')
-    expect(workflow).toContain('--config ../../.tmp/updater-config.json')
-    expect(workflow.indexOf('name: Configure signed updates')).toBeLessThan(
-      workflow.indexOf('run: bun run gate'),
-    )
+    expect(prepare).toContain('"createUpdaterArtifacts":true')
+
+    for (const name of RELEASE_WORKFLOWS) {
+      const workflow = workflowText(name)
+      expect(workflow).toContain('includeUpdaterJson: true')
+      expect(workflow).toContain('secrets.TAURI_SIGNING_PRIVATE_KEY')
+      expect(workflow).toContain('vars.QYWORK_UPDATER_PUBLIC_KEY')
+      expect(workflow).toContain('--config ../../.tmp/updater-config.json')
+      // 缺签名密钥要在门禁与编译之前停，不是跑完一小时再停。
+      expect(workflow.indexOf('uses: ./.github/actions/release-prepare')).toBeGreaterThan(-1)
+      expect(workflow.indexOf('uses: ./.github/actions/release-prepare')).toBeLessThan(
+        workflow.indexOf('run: bun run gate'),
+      )
+    }
+  })
+
+  /**
+   * 三条发行工作流往同一个 tag 的草稿 Release 上传。校验和文件同名的话，后一条的
+   * `gh release upload --clobber` 会把前一条的那份覆盖掉，而两条都是绿的。
+   */
+  test('每个平台的校验和文件名互不相同', () => {
+    const prefixes = {
+      'release-windows.yml': 'SHA256SUMS-windows-',
+      'release-macos.yml': 'SHA256SUMS-macos-',
+      'release-linux.yml': 'SHA256SUMS-linux-',
+    }
+
+    for (const [name, prefix] of Object.entries(prefixes)) {
+      const workflow = workflowText(name)
+      expect(workflow).toContain(prefix)
+      // 不带平台的那个名字三条都会写，最后一条 upload 会盖掉前两条。
+      expect(workflow).not.toContain('SHA256SUMS.txt')
+      for (const other of Object.values(prefixes)) {
+        if (other !== prefix) expect(workflow).not.toContain(other)
+      }
+    }
+  })
+
+  /**
+   * macOS 的 Apple 签名与公证要账号，缺了仍然出包——但产物得自己说清楚它没签过，
+   * 否则拿到的人按「能装」的预期去装，撞的是 Gatekeeper。
+   */
+  test('缺 Apple 证书时产出未签名包并在校验和文件名上标明', () => {
+    const workflow = workflowText('release-macos.yml')
+
+    expect(workflow).toContain('secrets.APPLE_CERTIFICATE')
+    expect(workflow).toContain('secrets.APPLE_ID')
+    expect(workflow).toContain('secrets.APPLE_TEAM_ID')
+    expect(workflow).toContain('suffix=-unsigned')
+    expect(workflow).toContain('steps.apple.outputs.suffix')
+    expect(workflow).toContain('::warning')
+    expect(workflow).not.toContain('continue-on-error')
+  })
+
+  /** 两种架构各用匹配架构的 runner：外部二进制按 `rustc -vV` 的宿主三元组命名。 */
+  test('macOS 发布覆盖 x86_64 与 arm64 两种目标', () => {
+    const workflow = workflowText('release-macos.yml')
+
+    expect(workflow).toContain('x86_64-apple-darwin')
+    expect(workflow).toContain('aarch64-apple-darwin')
+    expect(workflow).toContain('macos-15-intel')
+    expect(workflow).toContain('macos-latest')
   })
   test('安装包携带项目与第三方许可证', () => {
     const config = JSON.parse(
@@ -54,13 +117,10 @@ describe('桌面发布清单', () => {
   /**
    * 干净 runner 上没有这些外部二进制，而 `bun run gate` 里的 `cargo check` 会跑 tauri 的
    * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明过的文件不在就以 101 退出。
-   * 两个工作流都从同一个 action 拿这个前置，所以顺序在那一份里判。
+   * 每条工作流都从同一个 action 拿这个前置，所以顺序在那一份里判。
    */
   test('每条工作流都在门禁前准备全部 externalBin', () => {
-    const setup = readFileSync(
-      new URL('../.github/actions/setup-build/action.yml', import.meta.url),
-      'utf8',
-    )
+    const setup = actionText('setup-build')
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     ) as { bundle: { externalBin: string[] } }
@@ -76,11 +136,8 @@ describe('桌面发布清单', () => {
       expect(setup).toContain(command)
     }
 
-    for (const name of ['ci.yml', 'release-windows.yml']) {
-      const workflow = readFileSync(
-        new URL(`../.github/workflows/${name}`, import.meta.url),
-        'utf8',
-      )
+    for (const name of ['ci.yml', ...RELEASE_WORKFLOWS]) {
+      const workflow = workflowText(name)
       const prepared = workflow.indexOf('uses: ./.github/actions/setup-build')
       const gate = workflow.indexOf('run: bun run gate')
 
@@ -90,11 +147,31 @@ describe('桌面发布清单', () => {
   })
 
   /**
+   * Linux 上 tauri 链接的是系统 WebKitGTK，runner 镜像不预装。缺哪一个都不是链接错误，
+   * 而是对应 `*-sys` 的 build script 以 101 退出，报 pkg-config 找不到该库。
+   */
+  test('setup-build 在 Linux runner 上装齐 tauri 的系统依赖', () => {
+    const setup = actionText('setup-build')
+
+    expect(setup).toContain("runner.os == 'Linux'")
+    for (const pkg of [
+      'libwebkit2gtk-4.1-dev',
+      'build-essential',
+      'libxdo-dev',
+      'libssl-dev',
+      'libayatana-appindicator3-dev',
+      'librsvg2-dev',
+    ]) {
+      expect(setup).toContain(pkg)
+    }
+  })
+
+  /**
    * CI 不许持有写权限，也不许放过一部分门禁：它是提交与 PR 的唯一自动证据，
    * 降一格就等于没有。
    */
   test('CI 只读、只接分支 push、跑全量门禁、按分支取消旧的那次', () => {
-    const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
+    const workflow = workflowText('ci.yml')
 
     expect(workflow).toContain('contents: read')
     expect(workflow).not.toContain('contents: write')
@@ -104,42 +181,72 @@ describe('桌面发布清单', () => {
     expect(workflow).not.toContain('continue-on-error')
     expect(workflow).toContain('cancel-in-progress: true')
     // 与发布工作流的 group 重名会让一次 push 取消正在出安装包的那次发布。
-    expect(workflow).not.toContain('group: windows-release')
+    for (const group of ['windows-release', 'macos-release', 'linux-release']) {
+      expect(workflow).not.toContain(`group: ${group}`)
+    }
+  })
+
+  /**
+   * 桌面包要出三种，而 gate 里的 cargo check 按运行平台选分支、两个 externalBin 按运行
+   * 平台的三元组编译。少一端，那一端的编译错误要到发布当天才暴露。
+   */
+  test('CI 三端都跑门禁', () => {
+    const workflow = workflowText('ci.yml')
+
+    for (const runner of ['windows-latest', 'macos-latest', 'ubuntu-latest']) {
+      expect(workflow).toContain(runner)
+    }
+    expect(workflow).toContain('runs-on: $' + '{{ matrix.os }}')
   })
 
   /**
    * worker 是独立 crate：src-tauri 的 `cargo check` 不覆盖它，Bun 测试也不执行它的 Rust
    * 单测。不在 gate 里显式列出，它的编译错误和失败测试不会让任何一条流水线变红。
+   *
+   * 两个 Cargo.lock 都受跟踪，所以每条 cargo 命令都要 `--locked`：不带它的那条会在
+   * 清单版本已改、lock 待写回时改写这个受跟踪文件，而门禁只读。
    */
-  test('门禁显式检查并测试独立 worker crate', () => {
+  test('门禁的每条 cargo 命令都点名 manifest 并带 --locked', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
     }
+    const manifests = {
+      'typecheck:rust': 'apps/desktop/src-tauri/Cargo.toml',
+      'typecheck:computer-host': 'apps/desktop/native/computer-host/Cargo.toml',
+      'test:computer-host': 'apps/desktop/native/computer-host/Cargo.toml',
+    }
 
-    for (const name of ['typecheck:computer-host', 'test:computer-host']) {
+    for (const [name, manifest] of Object.entries(manifests)) {
       expect(pkg.scripts.gate).toContain(`bun run ${name}`)
-      // `--locked` 保证检查的是锁定版本，不在门禁里顺着依赖更新改写 lock。
       expect(pkg.scripts[name]).toContain('--locked')
-      expect(pkg.scripts[name]).toContain(
-        '--manifest-path apps/desktop/native/computer-host/Cargo.toml',
-      )
+      expect(pkg.scripts[name]).toContain(`--manifest-path ${manifest}`)
     }
   })
 
-  test('Windows 发布必须携带当前版本的更新说明', () => {
+  test('发布必须携带当前版本的更新说明', () => {
     const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim()
     const notes = readFileSync(
       new URL(`../.github/release-notes/v${version}.md`, import.meta.url),
       'utf8',
     )
-    const workflow = readFileSync(
-      new URL('../.github/workflows/release-windows.yml', import.meta.url),
-      'utf8',
-    )
 
     expect(notes).toContain('## 本次更新')
-    expect(workflow).toContain('.github/release-notes/v$version.md')
-    expect(workflow).toContain('releaseBody: $' + '{{ steps.release_notes.outputs.body }}')
+    expect(actionText('release-prepare')).toContain('.github/release-notes/v$version.md')
+    for (const name of RELEASE_WORKFLOWS) {
+      expect(workflowText(name)).toContain('releaseBody: $' + '{{ steps.prepare.outputs.notes }}')
+    }
+  })
+
+  /** 发布只从 master 出，判定写在共用 action 里，三条工作流不各判一遍。 */
+  test('发布来源与更新说明只有共用 action 一处判定', () => {
+    const prepare = actionText('release-prepare')
+
+    expect(prepare).toContain('refs/heads/master')
+    for (const name of RELEASE_WORKFLOWS) {
+      const workflow = workflowText(name)
+      expect(workflow).not.toContain('refs/heads/master')
+      expect(workflow).not.toContain('release-notes')
+    }
   })
 })
 

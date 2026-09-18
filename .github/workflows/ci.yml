@@ -3,8 +3,9 @@ name: CI
 # 日常门禁：每次分支 push 与每个 pull request 都跑一遍完整的 `bun run gate` 加 Web 构建。
 # 发布工作流只在手动触发时跑，它的绿灯不能替日常提交作证。
 #
-# 只跑 Windows：这是目前唯一有发布产物的平台，也是 sidecar 与 cargo check 的目标平台。
-# 前置步骤与发布工作流共用 .github/actions/setup-build，不在这里另抄一份。
+# 三端同跑：安装包要出 Windows、macOS 与 Linux 三种，而 gate 里的 cargo check 按运行平台
+# 选分支、两个 externalBin 按运行平台的三元组编译。只跑一端时，另外两端的编译错误要到
+# 发布当天才暴露。前置步骤与发布工作流共用 .github/actions/setup-build，不在这里另抄一份。
 
 on:
   push:
@@ -23,9 +24,18 @@ concurrency:
 
 jobs:
   gate:
-    name: Gate on Windows
-    runs-on: windows-latest
-    timeout-minutes: 45
+    name: Gate on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # 三端都是冷编译，没有 Rust 缓存；Windows 一端原本按 45 分钟走，另两端更慢。
+    timeout-minutes: 60
+    strategy:
+      # 一端红了仍要看到另外两端是不是同一处原因，所以不提前取消同批的其余 job。
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
     env:
       CI: true
 

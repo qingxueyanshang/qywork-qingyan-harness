@@ -118,7 +118,7 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 
 关闭窗口会收进系统托盘；完全退出使用托盘菜单中的“退出”。
 安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示；
-Release 中的 `SHA256SUMS.txt` 可用于校验文件完整性。
+Release 中的 `SHA256SUMS-windows-x86_64.txt` 可用于校验文件完整性。
 
 ## 从源码启动
 

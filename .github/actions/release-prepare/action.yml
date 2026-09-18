@@ -1,0 +1,70 @@
+name: Prepare qywork release
+description: 校验发布来源、读出本版更新说明、写出带更新公钥的打包配置。三条发行工作流共用同一份。
+
+# 这三件事与出包平台无关。各工作流各写一遍的话，改了 master 判定、说明文件命名或更新
+# 配置的形状只改一处，另外两条仍按旧规则发布，而三条都是绿的。
+#
+# 必须在 `bun run gate` 之前用：缺签名密钥时要立刻停，而不是等门禁和编译跑完再停。
+
+inputs:
+  updater-public-key:
+    description: 更新包验签公钥，取自仓库变量 QYWORK_UPDATER_PUBLIC_KEY。
+    required: true
+  updater-private-key:
+    description: 更新包签名私钥，取自仓库机密 TAURI_SIGNING_PRIVATE_KEY。只用于判空，签名由打包步骤自己做。
+    required: true
+
+outputs:
+  notes:
+    description: 本版更新说明正文，交给 tauri-action 的 releaseBody。
+    value: ${{ steps.release_notes.outputs.body }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify release source
+      shell: bash
+      env:
+        RELEASE_REF: ${{ github.ref }}
+      run: |
+        if [ "$RELEASE_REF" != "refs/heads/master" ]; then
+          echo "Releases must run from master; selected $RELEASE_REF." >&2
+          exit 1
+        fi
+
+    - name: Load release notes
+      id: release_notes
+      shell: bash
+      run: |
+        version="$(tr -d '[:space:]' < VERSION)"
+        notes_path=".github/release-notes/v$version.md"
+        if [ ! -f "$notes_path" ]; then
+          echo "Missing release notes: $notes_path" >&2
+          exit 1
+        fi
+        if [ -z "$(tr -d '[:space:]' < "$notes_path")" ]; then
+          echo "Release notes are empty: $notes_path" >&2
+          exit 1
+        fi
+        # 分隔符取随机值：说明正文里若出现固定分隔符，GITHUB_OUTPUT 会被截断成半段。
+        delimiter="RELEASE_NOTES_${RANDOM}${RANDOM}${RANDOM}"
+        {
+          echo "body<<$delimiter"
+          cat "$notes_path"
+          echo "$delimiter"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Configure signed updates
+      shell: bash
+      env:
+        UPDATER_PUBLIC_KEY: ${{ inputs.updater-public-key }}
+        UPDATER_PRIVATE_KEY: ${{ inputs.updater-private-key }}
+      run: |
+        pubkey="$(printf '%s' "$UPDATER_PUBLIC_KEY" | tr -d '[:space:]')"
+        if [ -z "$pubkey" ] || [ -z "$UPDATER_PRIVATE_KEY" ]; then
+          echo "Configure QYWORK_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY before releasing." >&2
+          exit 1
+        fi
+        mkdir -p .tmp
+        printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}\n' \
+          "$pubkey" > .tmp/updater-config.json

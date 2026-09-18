@@ -1,0 +1,127 @@
+name: macOS Release
+
+# 两种架构各用匹配架构的 runner，不用一个 job 代表两种：`bin/qy` 与 `bin/qy-computer-host`
+# 都按 `rustc -vV` 的宿主三元组命名，sidecar 编完还会就地运行一次自检，arm64 runner 上
+# 产不出也跑不了 x86_64 的资产。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build macOS ${{ matrix.arch }} installer
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      # 两个 job 往同一个 tag 的草稿 Release 上传，并发时会各自去建那个 Release。
+      # 串行跑，第二个 job 拿到的就是第一个建好的那一份。
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+    env:
+      CI: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare release
+        id: prepare
+        uses: ./.github/actions/release-prepare
+        with:
+          updater-public-key: ${{ vars.QYWORK_UPDATER_PUBLIC_KEY }}
+          updater-private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      # 更新包签名与 Apple 签名是两件事：前者由 release-prepare 强制要求，缺了直接停；
+      # 后者缺了仍要出包，但产物必须自报未签名，否则拿到的人会以为它能过 Gatekeeper。
+      - name: Detect Apple signing secrets
+        id: apple
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] &&
+             [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+            echo "本次 macOS 包由 Apple 证书签名并公证。"
+          else
+            echo "suffix=-unsigned" >> "$GITHUB_OUTPUT"
+            echo "::warning title=macOS 包未签名未公证::缺 APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_TEAM_ID，本次产物未签名未公证，Gatekeeper 会拦；校验和文件名带 -unsigned。"
+          fi
+
+      - name: Set up build
+        uses: ./.github/actions/setup-build
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Run release gate
+        run: bun run gate
+
+      - name: Build installer and create draft release
+        id: tauri
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 空值即不签名、不公证：tauri 按这几个变量是否存在决定走不走签名流程。
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: bun run tauri
+          args: --target ${{ matrix.target }} --bundles app,dmg --config ../../.tmp/updater-config.json
+          tagName: v__VERSION__
+          releaseName: qywork v__VERSION__
+          releaseCommitish: ${{ github.sha }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          generateReleaseNotes: true
+          releaseBody: ${{ steps.prepare.outputs.notes }}
+
+      - name: Create checksum
+        shell: bash
+        run: |
+          bundle=".tmp/cargo-target/${{ matrix.target }}/release/bundle/dmg"
+          installers=("$bundle"/*.dmg)
+          # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+          [ -f "${installers[0]}" ] || installers=()
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "Expected one dmg in $bundle, found ${#installers[@]}." >&2
+            exit 1
+          fi
+          ( cd "$bundle" && shasum -a 256 "$(basename "${installers[0]}")" ) \
+            > "SHA256SUMS-macos-${{ matrix.arch }}${{ steps.apple.outputs.suffix }}.txt"
+
+      - name: Upload checksum to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          gh release upload "v$version" \
+            "SHA256SUMS-macos-${{ matrix.arch }}${{ steps.apple.outputs.suffix }}.txt" --clobber

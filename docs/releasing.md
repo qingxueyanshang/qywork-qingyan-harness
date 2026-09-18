@@ -39,7 +39,7 @@ git diff --check
 
 - Windows x64 NSIS 安装程序；
 - 安装包的 `.sig` 签名与 `latest.json` 更新清单；
-- `SHA256SUMS.txt` 完整性校验文件；
+- `SHA256SUMS-windows-x86_64.txt` 完整性校验文件；
 - GitHub 根据提交记录生成的版本说明。
 
 工作流使用仓库自带的 `GITHUB_TOKEN` 写入 Release，不需要配置 SSH 或个人访问令牌。
@@ -50,7 +50,7 @@ git diff --check
 
 1. 标签和标题中的版本与 `VERSION` 一致；
 2. 安装程序可以在 Windows x64 上完成安装、启动和卸载；
-3. 安装包的 SHA-256 与 `SHA256SUMS.txt` 一致；
+3. 安装包的 SHA-256 与 `SHA256SUMS-windows-x86_64.txt` 一致；
 4. 版本说明准确描述本次变化。
 5. `latest.json` 的版本、Windows x64 下载地址及签名指向同一安装包；
 6. 用上一版带相同更新公钥的客户端完成下载、重启更新，并确认项目与配置保留。
