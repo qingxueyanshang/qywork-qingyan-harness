@@ -956,8 +956,8 @@ const RowStream = createContext<{ items: () => TranscriptItem[]; live: () => boo
   live: isRunning,
 })
 
-/** 六行用户正文的实际高度：13px 基准字号 × 1.55 行高 × 6，取整为 121px。 */
-const USER_MESSAGE_PREVIEW_HEIGHT = 121
+/** 六行用户正文的实际高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。改 `.bubble` 的字号或行高时这里要跟着改。 */
+const USER_MESSAGE_PREVIEW_HEIGHT = 126
 
 /**
  * 用户消息只在真实渲染高度超过六行时收敛。正文仍是 transcript 的原投影；这里的

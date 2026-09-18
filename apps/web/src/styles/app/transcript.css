@@ -144,6 +144,7 @@
   padding: 8px var(--s-3);
   border-radius: var(--r-xl);
   background: var(--bg-inset);
+  font-size: var(--fs-prose);
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -204,6 +205,7 @@
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
+  font-size: var(--fs-prose);
   line-height: 1.6;
 }
 
@@ -215,7 +217,7 @@
   margin-bottom: 0;
 }
 .markdown p {
-  margin: 0 0 var(--s-2);
+  margin: 0 0 var(--s-3);
 }
 .markdown p:last-child {
   margin-bottom: 0;

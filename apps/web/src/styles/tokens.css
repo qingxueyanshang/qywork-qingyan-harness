@@ -134,6 +134,8 @@
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-base: 13px;
+  /* 会话正文与用户气泡共用。改这里要同时改 `Transcript.tsx` 的 `USER_MESSAGE_PREVIEW_HEIGHT`。 */
+  --fs-prose: 13.5px;
   --fs-md: 14px;
   --fs-lg: 16px;
   --fs-xl: 20px;
@@ -189,7 +191,7 @@
     --border-default: rgba(255, 255, 255, 0.12);
     --border-strong: rgba(255, 255, 255, 0.2);
 
-    --text-primary: #f2f2f4;
+    --text-primary: #e6e6ea;
     --text-secondary: #a0a0a8;
     --text-tertiary: #6e6e78;
     --text-inverted: #16161a;
@@ -232,7 +234,7 @@
   --border-default: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.2);
 
-  --text-primary: #f2f2f4;
+  --text-primary: #e6e6ea;
   --text-secondary: #a0a0a8;
   --text-tertiary: #6e6e78;
   --text-inverted: #16161a;
