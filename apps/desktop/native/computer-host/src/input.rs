@@ -338,7 +338,7 @@ pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
 /// 抬起、抬起改成不带 `KEYEVENTF_UNICODE` 的普通 `VK_PACKET` 键事件，实测全都照丢。
 /// 关掉输入法、把线程布局换成 0x0409 也照丢，所以它不是输入法在吃事件。
 ///
-/// **按范围判，不按实测到的单字表**：范围里的 U+2012、U+3030、U+303D、实测是不丢的，
+/// **按范围判，不按实测到的单字表**：范围里的 U+2012、U+3030、U+303D 实测是不丢的，
 /// 多判几个字符只是多走一次粘贴，少判一个就是把字打错。
 pub const fn keyup_dropped(unit: u16) -> bool {
     matches!(
