@@ -1666,3 +1666,40 @@ VALUES ('sch_a', 'C:/ws/demo', '日报', 'p', 'interval', 30, 1, 1),
     db.close()
   })
 })
+
+/** 对象名改了，落盘的 step 不转的话同一条会话里会印出新旧两个名词。 */
+describe('迁移 56：控制类工具的对象名', () => {
+  test('两组工具自己的 step 跟着转，别的工具同名的对象名不动', () => {
+    const db = dbBefore(56)
+    insertStep(db, 's_desk', 'desktop_observe', {
+      kind: 'tool_result',
+      action: { kind: 'read', objectLabel: '电脑操作', target: 'dw_3' },
+    })
+    insertStep(db, 's_desk_bare', 'desktop_windows', {
+      kind: 'tool_result',
+      action: { kind: 'query', objectLabel: '电脑操作', target: '电脑操作' },
+    })
+    insertStep(db, 's_web', 'browser_act', {
+      kind: 'tool_result',
+      action: { kind: 'call', objectLabel: '浏览器', target: null },
+    })
+    insertStep(db, 's_plugin', 'plugin_x', {
+      kind: 'tool_result',
+      action: { kind: 'call', objectLabel: '浏览器', target: null },
+    })
+    applyOne(db, 56)
+    expect(payloadOf(db, 's_desk').action).toEqual({
+      kind: 'read',
+      objectLabel: '电脑控制',
+      target: 'dw_3',
+    })
+    expect(payloadOf(db, 's_desk_bare').action).toEqual({
+      kind: 'query',
+      objectLabel: '电脑控制',
+      target: '电脑控制',
+    })
+    expect(payloadOf(db, 's_web').action.objectLabel).toBe('浏览器控制')
+    expect(payloadOf(db, 's_plugin').action.objectLabel).toBe('浏览器')
+    db.close()
+  })
+})

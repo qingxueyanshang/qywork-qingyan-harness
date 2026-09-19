@@ -2052,6 +2052,38 @@ CREATE INDEX idx_schedules_last_conversation ON schedules(last_run_conversation_
       renameSchedule.finalize()
     },
   },
+  {
+    id: 56,
+    name: 'control_object_labels',
+    /**
+     * 两组控制类工具的对象名改为「电脑控制」「浏览器控制」，已经落盘的 step 跟着转。
+     *
+     * 对象名随 step 落库，会话回放按落库的值拼「动词 + 对象」。只改工具声明的话，
+     * 同一条会话里改名前后的步骤会印出两个名词。
+     *
+     * 只转这两组工具自己的 step：按工具名前缀限定，不按对象名全表替换——
+     * 「浏览器」也可能是别的工具或插件声明的对象名。桌面工具没有具体目标时把对象名
+     * 同时填进了 `target`，那一格一并转。
+     *
+     * 一次性转换，不是兼容层：转完之后代码里没有分支认识旧名。
+     */
+    sql: `
+UPDATE steps
+SET payload = json_set(payload, '$.action.objectLabel', '电脑控制')
+WHERE tool_name LIKE 'desktop\\_%' ESCAPE '\\'
+  AND json_extract(payload, '$.action.objectLabel') = '电脑操作';
+
+UPDATE steps
+SET payload = json_set(payload, '$.action.target', '电脑控制')
+WHERE tool_name LIKE 'desktop\\_%' ESCAPE '\\'
+  AND json_extract(payload, '$.action.target') = '电脑操作';
+
+UPDATE steps
+SET payload = json_set(payload, '$.action.objectLabel', '浏览器控制')
+WHERE tool_name LIKE 'browser\\_%' ESCAPE '\\'
+  AND json_extract(payload, '$.action.objectLabel') = '浏览器';
+`,
+  },
 ]
 
 /**
