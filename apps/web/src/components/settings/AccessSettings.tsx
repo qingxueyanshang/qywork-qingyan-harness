@@ -97,7 +97,7 @@ export function AccessSettings() {
             <h3 class="settings-block-head">电脑操作</h3>
             <div class="setting-rows">
               <Row label="启用">
-                <Switch
+                <OnOff
                   on={c().desktopEnabled === true}
                   onPick={(on) => void patchConfig({ desktopEnabled: on })}
                 />
@@ -105,7 +105,7 @@ export function AccessSettings() {
               {/* 这一句是边界不是说明：界面上没有第二处说得出「开了之后 agent 会占用
                     鼠标键盘」。关着时桌面工具仍然可用，只是只剩不打扰的那一半。 */}
               <Row label="前台操作" hint="用真实鼠标键盘，执行时会打断你">
-                <Switch
+                <OnOff
                   on={c().desktopForeground === true}
                   onPick={(on) => void patchConfig({ desktopForeground: on })}
                 />
@@ -123,8 +123,13 @@ export function AccessSettings() {
   )
 }
 
-/** 两格开关。这张卡上有两项同形的开关，写两遍的代价是改一处忘另一处。 */
-function Switch(props: { on: boolean; onPick: (on: boolean) => void }) {
+/**
+ * 两格开关。这张卡上有两项同形的开关，写两遍的代价是改一处忘另一处。
+ *
+ * 不要取名 `Switch`：与 Solid 的控制流组件同名，开发模式下渲染到它即抛错，
+ * 外层设置弹窗的页面切换随之失效。
+ */
+function OnOff(props: { on: boolean; onPick: (on: boolean) => void }) {
   return (
     <div class="seg">
       <For each={SWITCH}>
