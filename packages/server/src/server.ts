@@ -175,12 +175,16 @@ export function serve(opts: ServeOptions) {
    * 两个开关都现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
    * 存一份快照的话用户在设置里改完之后要等重启才生效。前台接管那一个随每条请求下发到
    * worker，运行中关掉在下一次派发就被拒。
+   *
+   * **两个开关的缺省不同，判据也因此不同。** 电脑操作缺席按启用（`!== false`），
+   * 与浏览器控制一致：它只发后台语义动作，不动真实指针键盘。前台接管缺席按关闭
+   * （`=== true`），它会占用用户的鼠标与键盘，只能由用户显式打开。
    */
   const desktopBridge = opts.hostKey
     ? new DesktopBridge(opts.hostKey, () => opts.config.desktopForeground === true)
     : null
   const desktop = desktopBridge
-    ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled === true)
+    ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled !== false)
     : null
   const offDesktopHost = desktopBridge?.onHostChange(() => {
     bus.publish({ type: 'desktop.state', desktop: desktopCapability(desktopBridge) })

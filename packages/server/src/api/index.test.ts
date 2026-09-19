@@ -1028,6 +1028,29 @@ describe('工具清单', () => {
     expect(row?.summary).toContain('超过阈值')
   })
 
+  /**
+   * 按通道注册的两组工具都要列进来。少一个通道的表现不是报错，是「模块」页那一组
+   * 只剩说明行，读起来像这组能力压根没有工具。
+   */
+  test('浏览器与电脑操作的工具都列得出来', async () => {
+    const rows = await tools()
+    const names = rows.map((t) => t.name)
+    for (const name of [
+      'desktop_windows',
+      'desktop_observe',
+      'desktop_act',
+      'desktop_act_sequence',
+      'desktop_wait',
+    ]) {
+      expect(names).toContain(name)
+    }
+    expect(names).toContain('browser_tabs')
+    const row = rows.find((t) => t.name === 'desktop_act')
+    expect(row?.category).toBe('desktop')
+    expect(row?.permissionEffect).toBe('desktop')
+    expect(row?.source).toBe('builtin')
+  })
+
   test('只回 tools 一个键 —— mcpServers 没有任何消费者', async () => {
     const res = await call('/api/tools')
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])

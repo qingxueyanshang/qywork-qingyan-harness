@@ -487,3 +487,22 @@ test('用户关掉电脑操作之后，下一轮连工具都不注册', async ()
   expect(names).not.toContain('desktop_windows')
   expect(names).not.toContain('desktop_act')
 })
+
+/**
+ * 缺席按启用。用户的配置文件里从来没有过这一格，按「等于 true 才算开」判的话，
+ * 模型手里一个桌面工具都没有，只能绕去 run_command 自己写截图脚本。
+ */
+test('配置里没有这一格时这组工具照常注册', async () => {
+  delete config.desktopEnabled
+  script = [textTurn('好的')]
+  bodies = []
+  const conv = conversation()
+  await startRun(conv, '随便说一句', undefined, deps())
+  await Bun.sleep(400)
+  config.desktopEnabled = true
+
+  const names = toolNames(bodies[0] ?? '{}')
+  expect(names).toContain('desktop_windows')
+  expect(names).toContain('desktop_act')
+  expect(names).toContain('desktop_observe')
+})

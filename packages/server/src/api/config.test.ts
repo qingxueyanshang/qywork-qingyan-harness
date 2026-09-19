@@ -295,6 +295,32 @@ describe('落盘门禁', () => {
   })
 
   /**
+   * 电脑操作那两格只收布尔。设置页写出去的是 `true` / `false`，别的客户端写进一个
+   * 字符串时必须在落盘前拦住：`desktopEnabled` 的判据是「不是 false 就算开」，
+   * 一个 `'off'` 落进去读出来是开着的。
+   */
+  test('电脑操作的开关不是布尔时 422，不落盘', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      const res = await put(d, {
+        providers: {
+          main: { kind: 'anthropic_messages', hasApiKey: true, models: { 'claude-opus-5': {} } },
+        },
+        mode: 'auto',
+        desktopEnabled: 'off',
+      } as unknown as Parameters<typeof put>[1])
+      expect(res!.status).toBe(422)
+      expect(d.config.desktopEnabled).toBeUndefined()
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /**
    * 乐观并发：带一个过期的 baseVersion（模拟另一个窗口已经改过）保存，回 409 且不落盘。
    * 带当前 version 的正常保存放行。不带 baseVersion 的老客户端/脚本照旧放行。
    */

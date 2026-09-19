@@ -2,14 +2,16 @@ import { createResource, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import { client, type SettingsPage, setSettingsPage, state } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
+import { config, ensureConfig, patchConfig } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
+import { OnOff } from './OnOff.tsx'
 
 /**
  * 这个 agent 由什么组成。
  *
- * **只说明，不配置。** 这一页全是读数与边界，一个表单都没有。要改的配置在横线下面各自的操作台上，
- * 有操作台的组在组头给一个跳转。**没有操作台的组不给跳转按钮**——
- * 指向一个空页比不指更糟。
+ * **要改的配置在各自的操作台上**，有操作台的组在组头给一个跳转。
+ * **没有操作台的组不给跳转按钮**——指向一个空页比不指更糟。
+ * 例外是「这一组能不能用」本身：它没有别处可去，就在组头给一个开关（`Module.toggle`）。
  *
  * **列底层名，不只列中文用途。** 「机制字段只在 CLI 里露面」这条判据撑不住：
  * 同一个 `edit_file`，工具卡上写「修改文件」、参数表里写
@@ -35,6 +37,13 @@ interface Module {
   label: string
   /** 这个模块的操作台。没有就不给按钮。 */
   consoles?: { page: SettingsPage; label: string }[]
+  /**
+   * 组头右侧的开关，读写配置里的一格。
+   *
+   * 给了开关就不要再给 `consoles`：两者占同一个位置，而「这组能不能用」与
+   * 「去别处配它」是同一个问题的两种答法，摆在一起用户不知道该点哪个。
+   */
+  toggle?: { on: () => boolean; onPick: (on: boolean) => void }
   /** 不由工具承担的那部分。文案取实时读数，所以是函数。 */
   notes?: { label: string; text: () => string; warn?: () => boolean }[]
   /**
@@ -132,22 +141,20 @@ const MODULES: Module[] = [
     ],
   },
   { id: 'browser', label: '浏览器' },
+  /*
+   * 组头是开关，不是「去配置」：这一组能不能用就由这一格决定，没有别处可去。
+   * 占用真实鼠标键盘的前台操作在「权限」页，它是另一个问题。
+   *
+   * 两条以内部键名为标签的说明行删掉了：`desktopEnabled` 说的事开关自己就写着，
+   * `dispatch` 是宿主回执的协议字段，用户既判断不了也不按它做任何决定（B7）。
+   */
   {
     id: 'desktop',
     label: '电脑操作',
-    consoles: [{ page: 'access', label: '去配置' }],
-    notes: [
-      {
-        label: 'desktopEnabled',
-        text: () =>
-          '默认关闭。启用之后还要宿主连上、组件就绪、系统授权三项都成立，模型才拿得到这组工具。',
-      },
-      {
-        label: 'dispatch',
-        text: () =>
-          '每个动作回执分三种：未执行、已提交、结果未知。结果未知不重发，先重新观察实际状态。',
-      },
-    ],
+    toggle: {
+      on: () => config()?.desktopEnabled !== false,
+      onPick: (on) => void patchConfig({ desktopEnabled: on }),
+    },
   },
   /*
    * 记忆和技能是两个类目，不是一个「记忆与技能」。
@@ -290,6 +297,8 @@ interface ToolRow {
 }
 
 export function ModulesSettings() {
+  // 组头那个开关读写的是同一份服务端配置，和各设置页共用一份（见 `configStore.ts`）。
+  ensureConfig()
   const [data, { refetch }] = createResource(() => client.api<{ tools: ToolRow[] }>('/api/tools'))
 
   /** 后端已按类目排好序，这里只分组不重排；只有说明没有工具的模块补在末尾。 */
@@ -338,6 +347,14 @@ export function ModulesSettings() {
           <section class="settings-block">
             <div class="settings-block-head">
               <h3>{g.mod.label}</h3>
+              {/* 开关要等配置到手再画：还没到手时点下去写不出去，而界面上看不出来。 */}
+              <Show when={g.mod.toggle}>
+                {(t) => (
+                  <Show when={config()}>
+                    <OnOff on={t().on()} onPick={t().onPick} />
+                  </Show>
+                )}
+              </Show>
               <Show when={g.mod.consoles}>
                 {(cs) => (
                   <span class="module-consoles">

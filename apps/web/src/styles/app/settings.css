@@ -430,6 +430,11 @@
   font-weight: 500;
   box-shadow: var(--shadow-sm);
 }
+/* 组头右侧的开关。与「去配置」按钮占同一个位置，同一组不会两者都有。
+   这一条要排在 `.seg` 之后：写在前面的话 lint 按降序特异性判它可能不生效。 */
+.settings-block-head .seg {
+  margin-left: auto;
+}
 
 /* ── 类目导航 ──
    弹窗里的左边一栏，类目本身沿用 `.nav-item`，这里只管排布和组间分隔。
