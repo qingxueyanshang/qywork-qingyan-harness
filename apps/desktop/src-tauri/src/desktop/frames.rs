@@ -18,10 +18,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 2;
+pub const WORKER_PROTOCOL_VERSION: u32 = 3;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
-const FORWARDED_OPS: [&str; 5] = ["list_windows", "read_tree", "set_value", "invoke", "wait"];
+const FORWARDED_OPS: [&str; 6] = [
+    "list_windows",
+    "read_tree",
+    "set_value",
+    "invoke",
+    "wait",
+    "capture_image",
+];
 
 /// 执行实例身份加当前连接代际。回执、事件与 worker 请求都按这一份填。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +112,16 @@ pub struct RequestFrame {
     pub poll_ms: Option<u64>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// `capture_image` 要采的屏幕物理像素矩形。缺席表示整窗。
+    #[serde(default)]
+    pub region: Option<Value>,
+    /// `capture_image` 要求的窗口几何代际。
+    #[serde(default)]
+    pub expect_generation: Option<String>,
+    #[serde(default)]
+    pub max_edge: Option<u32>,
+    #[serde(default)]
+    pub max_bytes: Option<u32>,
 }
 
 /// 目标窗口身份。三项一起给，派发前重新核对，句柄复用因此识别得出。
@@ -332,6 +349,23 @@ pub fn to_worker(
             }
             params
         }
+        "capture_image" => {
+            let mut params = json!({
+                "window": window,
+                "maxEdge": frame.max_edge.ok_or("missing_max_edge")?,
+                "maxBytes": frame.max_bytes.ok_or("missing_max_bytes")?,
+                "timeBudgetMs": frame.time_budget_ms.ok_or("missing_time_budget")?,
+            });
+            if let Some(region) = &frame.region {
+                merge(&mut params, json!({ "region": region }));
+            }
+            // 区域来自上一张图时代际必须一起给：少了它，窗口在两次采集之间移动过也照采，
+            // 采回来的是另一块界面。
+            if let Some(generation) = &frame.expect_generation {
+                merge(&mut params, json!({ "expectGeneration": generation }));
+            }
+            params
+        }
         _ => return Err("unsupported_op"),
     };
     let op = FORWARDED_OPS
@@ -387,7 +421,10 @@ fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
 
 /// 这个 op 需不需要目标窗口身份。`list_windows` 与 `cancel` 不带 target。
 pub fn needs_target(op: &str) -> bool {
-    matches!(op, "read_tree" | "set_value" | "invoke" | "wait")
+    matches!(
+        op,
+        "read_tree" | "set_value" | "invoke" | "wait" | "capture_image"
+    )
 }
 
 /// 把一条 worker 回执翻译成服务端结果帧。
@@ -496,6 +533,10 @@ mod tests {
             name: None,
             poll_ms: None,
             timeout_ms: None,
+            region: None,
+            expect_generation: None,
+            max_edge: None,
+            max_bytes: None,
         }
     }
 
@@ -506,7 +547,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 2, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "v": 3, "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
                 "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
@@ -584,9 +625,63 @@ mod tests {
     fn only_window_bound_ops_need_a_target() {
         assert!(!needs_target("list_windows"));
         assert!(!needs_target("cancel"));
-        for op in ["read_tree", "set_value", "invoke", "wait"] {
+        for op in ["read_tree", "set_value", "invoke", "wait", "capture_image"] {
             assert!(needs_target(op), "{op}");
         }
+    }
+
+    /// 整窗采集带三个上限与核对过的句柄，不带区域也不带代际。
+    #[test]
+    fn a_whole_window_capture_carries_the_limits_and_nothing_else() {
+        let mut frame = request("capture_image");
+        frame.max_edge = Some(1568);
+        frame.max_bytes = Some(4 << 20);
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(worker.op, "capture_image");
+        assert_eq!(
+            worker.params,
+            json!({"window": 77, "maxEdge": 1568, "maxBytes": 4 << 20, "timeBudgetMs": 1500})
+        );
+    }
+
+    /// 按上一张图的区域重采时，区域与代际一起下去：少了代际，窗口移动过也照采。
+    #[test]
+    fn a_region_capture_carries_the_rect_and_the_generation() {
+        let mut frame = request("capture_image");
+        frame.max_edge = Some(1568);
+        frame.max_bytes = Some(4 << 20);
+        frame.region = Some(json!({"x": -1800, "y": -100, "width": 400, "height": 300}));
+        frame.expect_generation = Some("80,80,520,460@96#65537".to_owned());
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(
+            worker.params["region"],
+            json!({"x": -1800, "y": -100, "width": 400, "height": 300})
+        );
+        assert_eq!(
+            worker.params["expectGeneration"],
+            json!("80,80,520,460@96#65537")
+        );
+    }
+
+    /// 采集的上限同样没有默认值：缺了就是一张尺寸与字节都无界的图。
+    #[test]
+    fn missing_capture_limits_are_refused_instead_of_defaulted() {
+        let mut frame = request("capture_image");
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_max_edge")
+        );
+        frame.max_edge = Some(1568);
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_max_bytes")
+        );
+        frame.max_bytes = Some(4 << 20);
+        frame.time_budget_ms = None;
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_time_budget")
+        );
     }
 
     /// 筛选与字段选择缺席时一个都不写进 params：多发一个 `null` 会让 worker 把「没有」

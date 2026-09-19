@@ -23,7 +23,7 @@ export const NATIVE_DESKTOP_PATH = '/native/desktop'
  *
  * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
  */
-export const DESKTOP_PROTOCOL_VERSION = 2
+export const DESKTOP_PROTOCOL_VERSION = 3
 
 /**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
@@ -32,8 +32,29 @@ export const DESKTOP_PROTOCOL_VERSION = 2
  * `cancel` 撤销的是**发起它的那个执行者名下尚未派发的请求**，目标写在帧的
  * `executorId` 上；已经进入 OS 调用的请求不会被它中止。
  */
-const DESKTOP_OPS = ['list_windows', 'read_tree', 'set_value', 'invoke', 'wait', 'cancel'] as const
+const DESKTOP_OPS = [
+  'list_windows',
+  'read_tree',
+  'set_value',
+  'invoke',
+  'wait',
+  'capture_image',
+  'cancel',
+] as const
 export type DesktopOp = (typeof DESKTOP_OPS)[number]
+
+/**
+ * 屏幕物理像素矩形。
+ *
+ * 原点是虚拟桌面原点：主显示器左上角为 `(0,0)`，它左侧或上方的显示器给出负坐标，
+ * 因此四个数都是有符号的。控件包围盒与图像几何用同一套坐标。
+ */
+export interface DesktopRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 /**
  * 等待的后置条件。判定在宿主那一侧做，服务端只给条件与两个时限。
@@ -132,6 +153,13 @@ export interface DesktopNode {
   value?: string
   enabled: boolean
   offscreen: boolean
+  /**
+   * 控件的包围盒，与图像几何同一套坐标。
+   *
+   * provider 不给包围盒的控件缺席。**缺席不等于控件不存在**，也不等于它在屏幕外——
+   * 后者由 `offscreen` 说。
+   */
+  rect?: DesktopRect
   actions: DesktopNodeAction[]
   /**
    * 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
@@ -161,9 +189,50 @@ export interface DesktopTreeBody {
 }
 
 /**
+ * 一张交给模型的图绑定的几何。
+ *
+ * **`imageWidth` / `imageHeight` 是模型实际看到的像素数**，采集端缩放之后的那一个；
+ * `screen` 是这张图覆盖的屏幕物理像素矩形。两者的商就是换算比例，调用方不要另取 `dpi`
+ * 去算——`dpi` 是窗口所在显示器的缩放读数（96 = 100%），只用来说明这张图是在哪一档
+ * 缩放下采的。
+ *
+ * `generation` 是窗口矩形与显示器的代际：窗口移动、缩放、换显示器或 DPI 变化之后它就
+ * 不同，按图定位的请求在派发前据此被拒。
+ */
+export interface DesktopImageGeometry {
+  imageWidth: number
+  imageHeight: number
+  screen: DesktopRect
+  dpi: number
+  generation: string
+}
+
+/** 图像采集的方式。 */
+export type DesktopImageSource =
+  /** Windows Graphics Capture。按窗口采，窗口被遮挡也采得到它自己的内容。 */
+  | 'wgc'
+  /**
+   * `PrintWindow`。退路，依赖目标应用响应 `WM_PRINT`。
+   *
+   * 画不全的部分在图上是黑的，调用方据此判断这张图能不能当依据。
+   */
+  | 'print_window'
+
+/** 一次图像采集的结果。 */
+export interface DesktopImageBody {
+  window: number
+  capturedAt: number
+  source: DesktopImageSource
+  geometry: DesktopImageGeometry
+  mime: string
+  /** base64 编码的图像字节。 */
+  bytes: string
+}
+
+/**
  * 一次观察。
  *
- * 只有这三种进得了服务端：宿主与 worker 之间的握手、取消登记与连接绑定回执止于宿主，
+ * 只有这四种进得了服务端：宿主与 worker 之间的握手、取消登记与连接绑定回执止于宿主，
  * 服务端不认那几种。
  */
 export type DesktopObservation =
@@ -171,6 +240,79 @@ export type DesktopObservation =
   | ({ kind: 'tree' } & DesktopTreeBody)
   /** 一次等待的结果：有没有等到，加上返回那一刻读到的状态。 */
   | ({ kind: 'wait'; found: boolean; reason?: string } & DesktopTreeBody)
+  | ({ kind: 'image' } & DesktopImageBody)
+
+/**
+ * 图像坐标 → 屏幕物理坐标。
+ *
+ * 换算按像素中心走：图像像素 `(x, y)` 覆盖屏幕上的一小块，取它中心落在的那个屏幕像素。
+ * 缩图之后一个图像像素对应多个屏幕像素，误差上界是缩放比的一半。
+ *
+ * **这是图像坐标换算的唯一实现**，采集端只产出几何、不做换算。
+ */
+export function imagePointToScreen(
+  geometry: DesktopImageGeometry,
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const { imageWidth, imageHeight, screen } = geometry
+  return {
+    x: screen.x + Math.round(((x + 0.5) * screen.width) / imageWidth - 0.5),
+    y: screen.y + Math.round(((y + 0.5) * screen.height) / imageHeight - 0.5),
+  }
+}
+
+/**
+ * 屏幕物理坐标 → 图像坐标。
+ *
+ * **不在这张图覆盖的范围里时返回 `null`**，不夹到边上：夹出来的坐标看着合法，
+ * 而它指的不是调用方要的那个位置。
+ */
+export function screenPointToImage(
+  geometry: DesktopImageGeometry,
+  x: number,
+  y: number,
+): { x: number; y: number } | null {
+  const { imageWidth, imageHeight, screen } = geometry
+  if (
+    x < screen.x ||
+    y < screen.y ||
+    x >= screen.x + screen.width ||
+    y >= screen.y + screen.height
+  ) {
+    return null
+  }
+  return {
+    x: Math.min(imageWidth - 1, Math.floor(((x - screen.x) * imageWidth) / screen.width)),
+    y: Math.min(imageHeight - 1, Math.floor(((y - screen.y) * imageHeight) / screen.height)),
+  }
+}
+
+/**
+ * 图像矩形 → 屏幕物理矩形。
+ *
+ * 按边换算而不是按像素中心：矩形要的是覆盖范围，两条边各自取所在的屏幕位置。
+ * 与这张图**没有交集**时返回 `null`，宽高至少为 1。
+ */
+export function imageRectToScreen(
+  geometry: DesktopImageGeometry,
+  rect: DesktopRect,
+): DesktopRect | null {
+  const { imageWidth, imageHeight, screen } = geometry
+  const left = Math.max(0, Math.min(imageWidth, rect.x))
+  const top = Math.max(0, Math.min(imageHeight, rect.y))
+  const right = Math.max(left, Math.min(imageWidth, rect.x + rect.width))
+  const bottom = Math.max(top, Math.min(imageHeight, rect.y + rect.height))
+  if (right <= left || bottom <= top) return null
+  const x = screen.x + Math.round((left * screen.width) / imageWidth)
+  const y = screen.y + Math.round((top * screen.height) / imageHeight)
+  return {
+    x,
+    y,
+    width: Math.max(1, screen.x + Math.round((right * screen.width) / imageWidth) - x),
+    height: Math.max(1, screen.y + Math.round((bottom * screen.height) / imageHeight) - y),
+  }
+}
 
 /**
  * 宿主注册帧。连接建立后宿主先发这一帧，服务端据此接受这条连接。
@@ -246,6 +388,24 @@ export interface DesktopRequestFrame {
   pollMs?: number
   /** `wait` 最多等多久。`deadline` 是硬上界，宿主取先到的那个。 */
   timeoutMs?: number
+  /** `capture_image` 要采的屏幕物理像素矩形。缺席表示整窗。 */
+  region?: DesktopRect
+  /**
+   * `capture_image` 要求窗口几何代际仍是这一个。
+   *
+   * 按上一张图的区域重采时必须带：窗口在两次采集之间移动过的话，那个矩形指的已经
+   * 不是同一块界面。宿主在派发前核对，对不上即拒绝。
+   */
+  expectGeneration?: string
+  /**
+   * `capture_image` 交给模型的图像长边上限。
+   *
+   * **采集端按它缩图，几何因此在采集端就定稿。** 上限由调用方给，采集端不自带默认值：
+   * 两处各有一个默认值时，几何记的尺寸与模型看到的尺寸会分叉。
+   */
+  maxEdge?: number
+  /** `capture_image` 编码之后的字节上限。超过即拒绝，不把一帧塞进宿主连接。 */
+  maxBytes?: number
 }
 
 /**

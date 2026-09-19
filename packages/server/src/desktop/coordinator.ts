@@ -23,6 +23,7 @@ import type {
   DesktopActResult,
   DesktopElement,
   DesktopFollowUp,
+  DesktopImage,
   DesktopPort,
   DesktopRefusal,
   DesktopSnapshot,
@@ -30,8 +31,15 @@ import type {
   DesktopWaitResult,
   DesktopWindowInfo,
 } from '@qywork/agent'
-import type { DesktopNode, DesktopObservation, DesktopTarget, DesktopTreeBody } from '@qywork/core'
-import { log } from '@qywork/core'
+import type {
+  DesktopImageGeometry,
+  DesktopNode,
+  DesktopObservation,
+  DesktopRect,
+  DesktopTarget,
+  DesktopTreeBody,
+} from '@qywork/core'
+import { imageRectToScreen, log } from '@qywork/core'
 import {
   type DesktopBridge,
   DesktopBridgeError,
@@ -61,6 +69,20 @@ const WAIT_SLACK_MS = READ_TREE_BUDGET_MS + 2_000
  * 超时的余量。给得太短的话，每次在读树中途停止都会让桌面挡到宿主换代际为止。
  */
 const CANCEL_DEADLINE_MS = READ_TREE_BUDGET_MS + 4_000
+/**
+ * 一次采集等一帧的上限。
+ *
+ * WGC 的帧由合成器推过来，实测一两个合成周期就到；退路的 `PrintWindow` 是同步调用。
+ * 给到 3 秒是留给挂起的应用，到期即如实回失败。
+ */
+const CAPTURE_BUDGET_MS = 3_000
+/**
+ * 一张图编码之后的字节上限。
+ *
+ * 宿主连接的单帧上限是 8 MiB，base64 把字节数放大到 4/3，因此 4 MiB 的 PNG 在连接上
+ * 约占 5.4 MiB。超过这个数的请求在采集端就被拒，不让一帧把宿主连接打断。
+ */
+const CAPTURE_MAX_BYTES = 4 * 1024 * 1024
 
 /**
  * 端口已经释放，或者此刻没有可用的宿主。
@@ -103,6 +125,22 @@ interface ObservationRecord {
   windowEnabled: boolean
 }
 
+/**
+ * 一张已经交给模型的图。`imageRef` 指的就是这一条。
+ *
+ * 绑定四项：目标窗口身份（`windowId` 加它的身份键）、宿主三条代际（`epochKey`）、
+ * 几何（含窗口矩形代际）与采集时刻。任一项对不上，按这个 ref 定位的请求都不该派发。
+ */
+interface ImageRecord {
+  imageRef: string
+  windowId: string
+  /** 采集时那个窗口的身份键。窗口关掉重开之后它就变了。 */
+  identityKey: string
+  epochKey: string
+  geometry: DesktopImageGeometry
+  capturedAt: number
+}
+
 /** 一次执行持有的身份。`released` 置上之后这个端口永不再取得能力。 */
 interface Lease {
   owner: number
@@ -111,6 +149,8 @@ interface Lease {
   released: boolean
   /** 本执行者的观察记录，按 `windowId` 各留最近一份。 */
   observations: Map<string, ObservationRecord>
+  /** 本执行者交出去的图，按 `imageRef` 索引。 */
+  images: Map<string, ImageRecord>
 }
 
 /** 排在桌面占用后面的执行者。撤销时按 `lease` 认领自己那一条。 */
@@ -142,6 +182,7 @@ function elementOf(node: DesktopNode): DesktopElement {
     ...(node.value !== undefined ? { value: node.value } : {}),
     enabled: node.enabled,
     offscreen: node.offscreen,
+    ...(node.rect !== undefined ? { rect: { ...node.rect } } : {}),
     actions: [...node.actions],
     ...(node.weakIdentity === true ? { weakIdentity: true } : {}),
   }
@@ -201,6 +242,7 @@ export class DesktopCoordinator {
   #nextObservation = 0
   #nextAction = 0
   #nextWindow = 0
+  #nextImage = 0
   /** 已发现的窗口，按不透明 id 索引。 */
   #windows = new Map<string, KnownWindow>()
   /** 身份键 → 不透明 id。同一个窗口再次被发现时沿用同一个 id。 */
@@ -277,12 +319,14 @@ export class DesktopCoordinator {
       conversationId,
       released: false,
       observations: new Map(),
+      images: new Map(),
     }
     this.#leases.set(lease.owner, lease)
     return {
       windows: () => this.#windowList(lease),
       observe: (input) => this.#observe(lease, input),
       elements: (windowId, observationId) => this.#elements(lease, windowId, observationId),
+      captureImage: (input) => this.#captureImage(lease, input),
       setValue: (input) => this.#act(lease, 'set_value', input),
       invoke: (input) => this.#act(lease, 'invoke', input),
       wait: (input) => this.#wait(lease, input),
@@ -501,6 +545,104 @@ export class DesktopCoordinator {
     }
   }
 
+  /**
+   * 采一张目标窗口的图。
+   *
+   * 三种取景：整窗、窗口内的屏幕矩形、上一张图里的一块。第三种是 `imageRef` 的消费端，
+   * 走的就是后续按图定位的动作要走的那条换算与核对路径——
+   * **这里换算成屏幕矩形并带上窗口几何代际，宿主在派发前重新核对窗口矩形**。
+   *
+   * 失效的 `imageRef` 在本地就拒绝，一帧都不发：换算要用采集那一刻的几何，而那份几何
+   * 已经不成立了。
+   */
+  async #captureImage(
+    lease: Lease,
+    input: {
+      windowId: string
+      maxEdge: number
+      region?: DesktopRect
+      imageRef?: string
+      imageRect?: DesktopRect
+    },
+  ): Promise<DesktopImage> {
+    this.#liveHost(lease)
+    await this.#acquire(lease)
+    const host = this.#liveHost(lease)
+    const known = this.#targetOf(input.windowId)
+    const framed = this.#regionOf(lease, known, input)
+    this.#setTarget(lease, known.app)
+    const result = await this.#bridge.request(
+      'capture_image',
+      {
+        executorId: lease.executorId,
+        target: this.#frameTarget(known),
+        maxEdge: input.maxEdge,
+        maxBytes: CAPTURE_MAX_BYTES,
+        timeBudgetMs: CAPTURE_BUDGET_MS,
+        ...(framed.region !== undefined ? { region: framed.region } : {}),
+        ...(framed.expectGeneration !== undefined
+          ? { expectGeneration: framed.expectGeneration }
+          : {}),
+      },
+      CAPTURE_BUDGET_MS + 5_000,
+    )
+    const observation = expect(result, 'image')
+    this.#nextImage += 1
+    const record: ImageRecord = {
+      imageRef: `di_${this.#nextImage}`,
+      windowId: input.windowId,
+      identityKey: identityKey(known),
+      epochKey: epochKeyOf(host),
+      geometry: observation.geometry,
+      capturedAt: observation.capturedAt,
+    }
+    lease.images.set(record.imageRef, record)
+    return {
+      imageRef: record.imageRef,
+      data: observation.bytes,
+      mime: observation.mime,
+      geometry: observation.geometry,
+      source: observation.source,
+      capturedAt: observation.capturedAt,
+    }
+  }
+
+  /**
+   * 这次采集要采哪一块，以及要不要带上窗口几何代际。
+   *
+   * `imageRef` 那一支的失效判据四条，逐条都是可核实的事实：本执行者交出过这个 ref、
+   * 宿主没换过代际、那张图采的是同一个窗口身份、那块矩形与图有交集。任一条不成立即
+   * 在本地拒绝——**不伪造一个能发出去的矩形**。
+   */
+  #regionOf(
+    lease: Lease,
+    known: KnownWindow,
+    input: { windowId: string; region?: DesktopRect; imageRef?: string; imageRect?: DesktopRect },
+  ): { region?: DesktopRect; expectGeneration?: string } {
+    if (input.imageRef === undefined) {
+      return input.region === undefined ? {} : { region: input.region }
+    }
+    if (input.imageRect === undefined) {
+      throw new DesktopTargetError('按上一张图取区域时要给 imageRect')
+    }
+    const record = lease.images.get(input.imageRef)
+    if (!record) {
+      throw new DesktopTargetError(`认不出的图 ${input.imageRef}，请重新采图`)
+    }
+    const host = this.#bridge.host()
+    if (!host || record.epochKey !== epochKeyOf(host)) {
+      throw new DesktopTargetError(`${input.imageRef} 已经失效：桌面宿主换过代际，请重新采图`)
+    }
+    if (record.windowId !== input.windowId || record.identityKey !== identityKey(known)) {
+      throw new DesktopTargetError(`${input.imageRef} 采的不是这个窗口，请重新采图`)
+    }
+    const region = imageRectToScreen(record.geometry, input.imageRect)
+    if (!region) {
+      throw new DesktopTargetError(`给的矩形不在 ${input.imageRef} 覆盖的范围里`)
+    }
+    return { region, expectGeneration: record.geometry.generation }
+  }
+
   /** 这个引用在不在本执行者对该窗口的最近一份观察里，不看编号。 */
   #requireRef(lease: Lease, windowId: string, ref: string): void {
     const record = lease.observations.get(windowId)
@@ -661,6 +803,7 @@ export class DesktopCoordinator {
     if (lease.released) return
     lease.released = true
     lease.observations.clear()
+    lease.images.clear()
     this.#leases.delete(lease.owner)
     this.#dropWaiter(lease, '本次执行的电脑操作已经结束')
     const held = this.#holder === lease

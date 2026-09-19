@@ -578,7 +578,7 @@ impl DesktopHost {
                 Some((found.started_at_ms, found.app))
             })
             .ok_or_else(|| "窗口清单的字段对不上".to_owned()),
-            Some("tree" | "wait") => Ok(observation),
+            Some("tree" | "wait" | "image") => Ok(observation),
             other => Err(format!("认不出的观察 {}", other.unwrap_or("(无 kind)"))),
         }
     }

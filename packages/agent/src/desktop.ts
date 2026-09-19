@@ -15,7 +15,14 @@
  * 撤销这个执行者名下尚未派发的请求；已经交给 OS 的动作不回滚。
  */
 
-import type { DesktopDispatch, DesktopNodeAction, DesktopWaitUntil } from '@qywork/core'
+import type {
+  DesktopDispatch,
+  DesktopImageGeometry,
+  DesktopImageSource,
+  DesktopNodeAction,
+  DesktopRect,
+  DesktopWaitUntil,
+} from '@qywork/core'
 
 /**
  * 一个可操作的顶层窗口。
@@ -53,6 +60,13 @@ export interface DesktopElement {
   enabled: boolean
   /** 不在可视区内。不等于不可操作：语义动作不要求控件可见。 */
   offscreen: boolean
+  /**
+   * 控件的包围盒，屏幕物理像素，与图像几何同一套坐标。
+   *
+   * 有了它，树里读到的控件与图上看到的位置对得上。provider 不给包围盒的控件缺席——
+   * **缺席不等于控件不存在**，也不等于它在屏幕外，后者由 `offscreen` 说。
+   */
+  rect?: DesktopRect
   actions: DesktopNodeAction[]
   /**
    * 这个控件没有稳定身份，只能按角色、名称与稳定标识核对。
@@ -60,6 +74,25 @@ export interface DesktopElement {
    * 界面重排之后这个引用不可靠，拿它发动作会被拒。缺席表示身份正常。
    */
   weakIdentity?: boolean
+}
+
+/**
+ * 一张交给模型的图。
+ *
+ * `geometry.imageWidth` / `imageHeight` 就是 `data` 里那张图的像素数——采集端按调用方
+ * 给的长边上限缩好才编码，**几何在采集端定稿**，上层不再缩第二次。
+ *
+ * `imageRef` 不透明，绑定目标窗口身份、三条代际、几何与采集时刻。按图定位的请求原样
+ * 带回它；窗口移动、缩放、换显示器、DPI 变化或宿主换代之后它一律失效。
+ */
+export interface DesktopImage {
+  imageRef: string
+  /** base64 编码的图像字节。 */
+  data: string
+  mime: string
+  geometry: DesktopImageGeometry
+  source: DesktopImageSource
+  capturedAt: number
 }
 
 /**
@@ -167,6 +200,24 @@ export interface DesktopPort {
    * 现读一份新的会让「模型看到的」与「判定依据的」不是同一个时刻。
    */
   elements(windowId: string, observationId: string): DesktopElement[] | null
+  /**
+   * 采一张目标窗口的图。**这是这个端口上唯一会采集图像的入口**，`observe` 不采。
+   *
+   * 三种取景，按参数分：不给 `region` 与 `imageRef` 是整窗；只给 `region` 是窗口内的
+   * 一块屏幕物理像素矩形；给 `imageRef` 加 `imageRect` 是把上一张图里的那一块放大重采，
+   * 换算与代际核对由实现方做。
+   *
+   * `maxEdge` 由调用方给：采集端按它缩图，几何随之定稿，上层不再缩第二次。
+   */
+  captureImage(input: {
+    windowId: string
+    maxEdge: number
+    region?: DesktopRect
+    /** 上一张图的引用。给了就必须给 `imageRect`。 */
+    imageRef?: string
+    /** 上一张图里的一块矩形，图像坐标。 */
+    imageRect?: DesktopRect
+  }): Promise<DesktopImage>
   /** 给控件写值。空串是清空，与不给这个参数不是一回事。 */
   setValue(input: {
     windowId: string

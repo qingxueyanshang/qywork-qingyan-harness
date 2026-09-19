@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ::windows::core::{Interface, BOOL, BSTR};
-use ::windows::Win32::Foundation::{HWND, LPARAM, TRUE};
+use ::windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
 use ::windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, SAFEARRAY,
 };
@@ -32,14 +32,16 @@ use ::windows::Win32::UI::Accessibility::{
     AutomationElementMode_Full, CUIAutomation8, IUIAutomation, IUIAutomation2,
     IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
     IUIAutomationInvokePattern, IUIAutomationValuePattern, TreeScope, TreeScope_Children,
-    TreeScope_Element, UIA_AutomationIdPropertyId, UIA_ControlTypePropertyId,
-    UIA_E_ELEMENTNOTAVAILABLE, UIA_E_TIMEOUT, UIA_InvokePatternId, UIA_IsEnabledPropertyId,
-    UIA_IsOffscreenPropertyId, UIA_NamePropertyId, UIA_RuntimeIdPropertyId, UIA_ValuePatternId,
+    TreeScope_Element, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId,
+    UIA_ControlTypePropertyId, UIA_E_ELEMENTNOTAVAILABLE, UIA_E_TIMEOUT, UIA_InvokePatternId,
+    UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_NamePropertyId,
+    UIA_RuntimeIdPropertyId, UIA_ValuePatternId,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
 };
 
+use crate::geometry::ScreenRect;
 use crate::protocol::{
     next_poll, now_ms, satisfied, Bounds, Completeness, Node, Observation, Seen, Select, Tree, Wait,
     WaitUntil, WindowInfo,
@@ -70,19 +72,21 @@ fn take_calls() -> u64 {
     }
 }
 
-/// 把一次读取的节点数、跨进程调用数与耗时写到 stderr。只在 debug 构建里输出。
+/// 把一次读取的节点数、跨进程调用数、采集次数与耗时写到 stderr。只在 debug 构建里输出。
 ///
 /// 这是读树成本的唯一测量口径：计数器与这一行一起加减，改其中一处会让对照数据对不上。
+/// `captures` 在结构化路径上恒为 0——读树、动作与等待都走不到采集代码。
 fn report_cost(op: &str, nodes: u32, started: Instant) {
     let calls = take_calls();
+    let captures = crate::capture::take_captures();
     #[cfg(debug_assertions)]
     eprintln!(
-        "cost {op} nodes={nodes} uia_calls={calls} elapsed_ms={:.3}",
+        "cost {op} nodes={nodes} uia_calls={calls} captures={captures} elapsed_ms={:.3}",
         started.elapsed().as_secs_f64() * 1000.0
     );
     #[cfg(not(debug_assertions))]
     {
-        let _ = (op, nodes, calls, started);
+        let _ = (op, nodes, calls, captures, started);
     }
 }
 
@@ -718,6 +722,8 @@ impl Backend {
             actions.push("invoke");
         }
 
+        let bounds = unsafe { element.CachedBoundingRectangle() }.map_err(uia("读包围盒"))?;
+
         let identity = cached_identity(element)?;
         Ok(Node {
             reference: encode_ref(path, &identity),
@@ -729,10 +735,26 @@ impl Backend {
             value,
             enabled,
             offscreen,
+            rect: bounding_box(bounds),
             actions,
             weak_identity: identity.is_weak(),
         })
     }
+}
+
+/// UIA 的包围盒转成图像几何那一套的矩形。
+///
+/// 零尺寸按缺席算：provider 对没有可视位置的控件交回的就是一个全零矩形，把它当成
+/// 「位于屏幕左上角、宽高为零」会让调用方在那里找一个不存在的目标。
+fn bounding_box(r: RECT) -> Option<ScreenRect> {
+    let width = r.right - r.left;
+    let height = r.bottom - r.top;
+    (width > 0 && height > 0).then_some(ScreenRect {
+        x: r.left,
+        y: r.top,
+        width,
+        height,
+    })
 }
 
 /// 读一个节点要用到的属性。
@@ -745,6 +767,7 @@ const NODE_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] =
     UIA_AutomationIdPropertyId,
     UIA_IsEnabledPropertyId,
     UIA_IsOffscreenPropertyId,
+    UIA_BoundingRectanglePropertyId,
 ];
 
 /// 建一个缓存请求：固定用控件视图筛子节点，范围固定为「本节点 + 它的子节点」。
@@ -1232,6 +1255,7 @@ mod tests {
             value: value.map(str::to_owned),
             enabled: true,
             offscreen: false,
+            rect: None,
             actions: Vec::new(),
             weak_identity: false,
         }

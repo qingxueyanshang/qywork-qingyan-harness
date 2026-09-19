@@ -25,6 +25,7 @@ import type {
   DesktopActResult,
   DesktopElement,
   DesktopFollowUp,
+  DesktopImage,
   DesktopPort,
   DesktopSnapshot,
   DesktopWaitCondition,
@@ -32,7 +33,8 @@ import type {
   ToolOutcome,
   ToolSpec,
 } from '@qywork/agent'
-import type { DesktopNodeAction } from '@qywork/core'
+import type { DesktopNodeAction, DesktopRect } from '@qywork/core'
+import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读树的节点数上限。上限由端口再夹一次，这里挡的是明显越界的请求。 */
 const MAX_NODES = 4000
@@ -46,6 +48,13 @@ const MIN_WAIT_MS = 100
 const DEFAULT_WAIT_MS = 10_000
 /** 歧义时回给模型的候选条数上限。列全一份长清单对消歧没有帮助。 */
 const MAX_CANDIDATES = 10
+/** 按控件取景时向外扩的像素数上限。扩过头就成了整窗，不如直接采整窗。 */
+const MAX_PAD = 400
+/** 图像坐标的取值上界。图像本身长边不超过 `MAX_EDGE`，这个数只是挡住明显越界的请求。 */
+const MAX_IMAGE_COORD = 100_000
+/** 采集模式。`structure` 一个像素都不采。 */
+const CAPTURES = ['structure', 'region_image', 'combined'] as const
+type CaptureMode = (typeof CAPTURES)[number]
 
 const ACTIONS: readonly DesktopNodeAction[] = ['set_value', 'invoke']
 const WAIT_CONDITIONS: readonly DesktopWaitCondition[] = [
@@ -375,6 +384,65 @@ function waitOutcome(
   }
 }
 
+/**
+ * 把一张图接到工具结果的图像通道上。
+ *
+ * **字节走 `data.images`，不进 `message`**：一串 base64 模型读不懂，留在正文里只照价计费。
+ *
+ * 过一遍 `shrinkImage` 之后按几何核尺寸：采集端已经按 `MAX_EDGE` 缩好，这里本该一个
+ * 字节不动。真缩了或者尺寸对不上，说明几何记的不是模型看到的那一张，按图算出来的屏幕
+ * 坐标就是错的——**那时宁可不给图**。
+ */
+async function imagePayload(
+  image: DesktopImage,
+): Promise<{ data: Record<string, unknown>; line: string } | { error: string }> {
+  const raw = Uint8Array.from(Buffer.from(image.data, 'base64'))
+  const fit = await shrinkImage(raw, image.mime)
+  const size = imageSizeOf(fit.bytes)
+  const g = image.geometry
+  if (!size || size.width !== g.imageWidth || size.height !== g.imageHeight) {
+    return {
+      error:
+        `采到的图与它的几何对不上（几何 ${g.imageWidth}×${g.imageHeight}，` +
+        `图 ${size ? `${size.width}×${size.height}` : '尺寸读不出'}），这张图不能用来定位。`,
+    }
+  }
+  const hint = image.source === 'print_window' ? '，退路采集，没有重绘的区域是黑的' : ''
+  return {
+    data: {
+      imageRef: image.imageRef,
+      geometry: g,
+      source: image.source,
+      imageCapturedAt: image.capturedAt,
+      images: [{ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }],
+    },
+    line:
+      `${image.imageRef} ${g.imageWidth}×${g.imageHeight} 像素，` +
+      `对应屏幕 ${g.screen.x},${g.screen.y} ${g.screen.width}×${g.screen.height}，` +
+      `显示器 DPI ${g.dpi}${hint}`,
+  }
+}
+
+/** 当前模型不收图片时的终态。重试永远不会成功，所以话里要带下一步该干什么。 */
+const NO_VISION = {
+  status: 'failure',
+  executed: false,
+  message:
+    '当前模型不接受图片输入，采图没有意义。改用 capture=structure 读控件表；' +
+    '树里找不到目标时说明这一步需要视觉，请换一个支持图片的模型。',
+  errorKind: 'unsupported',
+} as const
+
+/** 按控件取景：包围盒向外扩若干像素。 */
+function padded(rect: DesktopRect, pad: number): DesktopRect {
+  return {
+    x: rect.x - pad,
+    y: rect.y - pad,
+    width: rect.width + pad * 2,
+    height: rect.height + pad * 2,
+  }
+}
+
 /** 四个工具的目标都是那个窗口。`desktop_windows` 没有窗口可指，见它自己的 spec。 */
 function windowTarget(args: Record<string, unknown>): string | null {
   return given(args.windowId) ? String(args.windowId).trim() : null
@@ -417,39 +485,96 @@ export const desktopObserveTool: ToolSpec = {
   ...BASE,
   name: 'desktop_observe',
   description:
-    '读一个窗口的控件表：角色、名称、稳定标识、当前值、是否启用，以及宿主能在它上面执行的动作。' +
+    '观察一个窗口。capture 决定观察什么：' +
+    'structure（默认）只读控件表，一个像素都不采；region_image 只采图；combined 两样都要。' +
+    '先用 structure——控件表直接给出名称、值与可执行的动作；' +
+    '只有树里找不到目标时（画布、无名图标、自绘界面）才采图。' +
+    '控件表给出角色、名称、稳定标识、当前值、是否启用、宿主能执行的动作，' +
+    '以及 rect：控件在屏幕上的包围盒，与图用同一套坐标，树与图因此对得上。' +
     '每个控件带 parentRef 与 depth，同名控件靠祖先路径区分。' +
-    '返回的 observationId 与控件 ref 是 desktop_act 与 desktop_wait 的前提；' +
-    '重新观察即换号，旧号作废。' +
-    'query 只返回名称、稳定标识或值包含该文字的控件，role 只返回该角色的控件：' +
-    '知道要找什么时用它们，一次拿到全部匹配项，不必读整窗；' +
+    '返回的 observationId 与控件 ref 是 desktop_act 与 desktop_wait 的前提；重新观察即换号，旧号作废。' +
+    'query 只返回名称、稳定标识或值包含该文字的控件，role 只返回该角色的控件；' +
     'root 只读某个控件底下的子树，用于翻开一个已经看到的容器。' +
     '筛选过的观察里 filteredBy 会列出条件——没列出来的控件是被筛掉了，不是不存在。' +
     'truncated=true 表示被上限截断了，用 maxNodes 或 maxDepth 调整后重读。' +
-    'includeValue=false 时不取控件值，读大窗口时省一部分开销。' +
-    '本工具只读结构，不截图。',
+    'includeValue=false 时不取控件当前值，读大窗口时省一部分开销。' +
+    '采图默认采整窗；around 指一个控件，只采它的包围盒向外扩 pad 像素的那一块——' +
+    'region_image 下它按 observationId 那一份控件表解析，combined 下按这次读到的那一份；' +
+    'imageRef 加 imageRect 把上一张图里的那一块放大重采，用于看清一处细节。' +
+    '图带回 imageRef 与 geometry；窗口移动、缩放、换显示器之后旧 imageRef 失效，重新采图。' +
+    'capturedAt 是控件表的时刻，imageCapturedAt 是图的时刻，两者不是同一刻。',
   parameters: {
     type: 'object',
     properties: {
       windowId: { type: 'string', description: '取自 desktop_windows' },
+      capture: { type: 'string', enum: CAPTURES, description: '观察什么，默认 structure' },
       maxNodes: { type: 'integer', description: `最多读多少个控件，上限 ${MAX_NODES}` },
       maxDepth: { type: 'integer', description: `最多读多少层，上限 ${MAX_DEPTH}` },
       root: { type: 'string', description: '只读这个控件底下的子树，取自上一份观察的 ref' },
       role: { type: 'string', description: '只返回这个角色的控件' },
       query: { type: 'string', description: '只返回名称、稳定标识或值包含这段文字的控件' },
       includeValue: { type: 'boolean', description: '取不取控件当前值，默认取' },
+      observationId: {
+        type: 'string',
+        description: 'capture=region_image 用 around 取景时要给，取自 desktop_observe',
+      },
+      around: { type: 'string', description: '只采这个控件周围的那一块，控件 ref' },
+      pad: { type: 'integer', description: `around 向外扩多少像素，上限 ${MAX_PAD}` },
+      imageRef: { type: 'string', description: '要放大的那一张图，取自上一次采图' },
+      imageRect: {
+        type: 'object',
+        description: 'imageRef 那张图里的一块，图像坐标',
+        properties: {
+          x: { type: 'integer' },
+          y: { type: 'integer' },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+        },
+        required: ['x', 'y', 'width', 'height'],
+        additionalProperties: false,
+      },
     },
     required: ['windowId'],
     additionalProperties: false,
   },
   actionKind: 'read',
-  summary: '读一个窗口的控件表',
+  summary: '读一个窗口的控件表或采一张图',
   targetExtractor: windowTarget,
 
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
+      const windowId = str(args.windowId, 'windowId')
+      const capture: CaptureMode = given(args.capture)
+        ? oneOf(args.capture, CAPTURES, 'capture')
+        : 'structure'
+      if (capture === 'structure' && framingGiven(args)) {
+        throw new ArgError('取景参数只在 capture=region_image 或 combined 下有意义')
+      }
+      // combined 的 around 按这次读到的控件表解析：读树会换一个观察编号，
+      // 再拿调用方给的那个旧编号去解析，解出来的是一份已经作废的表。
+      if (capture === 'combined' && given(args.observationId)) {
+        throw new ArgError('capture=combined 时不要给 observationId：around 按这次读到的控件表解析')
+      }
+      // 不收图片的模型在采集之前就回绝：采一张它看不到的图要付出整条采集与编码的代价。
+      if (capture !== 'structure' && ctx.vision === false) return NO_VISION
+
+      if (capture === 'region_image') {
+        const image = await captureFor(desktop, send, windowId, args, null)
+        const payload = await imagePayload(image)
+        if ('error' in payload) {
+          return {
+            status: 'failure',
+            message: payload.error,
+            errorKind: 'desktop_image_mismatch',
+          }
+        }
+        return { status: 'success', message: `图 ${payload.line}`, data: payload.data }
+      }
+
+      // 参数在进端口之前解析完：解析放进 `send` 的回调里，一次参数错会被记成
+      // 「已经交给端口了」，而那意味着不许重发。
       const input = {
-        windowId: str(args.windowId, 'windowId'),
+        windowId,
         ...(given(args.maxNodes)
           ? { maxNodes: bounded(args.maxNodes, 'maxNodes', 1, MAX_NODES) }
           : {}),
@@ -462,12 +587,90 @@ export const desktopObserveTool: ToolSpec = {
         ...(args.includeValue === false ? { includeValue: false } : {}),
       }
       const snapshot = await send(() => desktop.observe(input))
+      const line = `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}`
+      if (capture === 'structure') {
+        return { status: 'success', message: line, data: { ...snapshot } }
+      }
+      // 控件表已经拿到手：图采不到也要把它交出去，并说清图为什么没有。
+      const captured = await captureFor(desktop, send, windowId, args, snapshot.elements).then(
+        (image) => imagePayload(image),
+        (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+      )
+      if ('error' in captured) {
+        return {
+          status: 'success',
+          message: `${line}；没有采到图：${captured.error}`,
+          data: { ...snapshot, imageError: captured.error },
+        }
+      }
       return {
         status: 'success',
-        message: `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}`,
-        data: { ...snapshot },
+        message: `${line}；图 ${captured.line}`,
+        data: { ...snapshot, ...captured.data },
       }
     }),
+}
+
+/** 这次调用给了取景参数没有。给了就要求 capture 不是 structure。 */
+function framingGiven(args: Record<string, unknown>): boolean {
+  return given(args.around) || given(args.imageRef) || args.imageRect !== undefined
+}
+
+/**
+ * 按参数决定采哪一块。
+ *
+ * 三种取景互斥：整窗、`around` 加 `pad`、`imageRef` 加 `imageRect`。同时给后两种时不挑，
+ * 当场拒绝——挑错一种采回来的是另一块界面。
+ *
+ * `fresh` 是这次调用刚读到的控件表，`combined` 给它、`region_image` 给 `null`。
+ * **`around` 只在手上这一份表里解析**：`combined` 读过树之后旧观察编号已经作废，
+ * 拿调用方给的那个编号去解析，解出来的是一份已经不存在的表。
+ */
+async function captureFor(
+  desktop: DesktopPort,
+  send: PortCall,
+  windowId: string,
+  args: Record<string, unknown>,
+  fresh: DesktopElement[] | null,
+): Promise<DesktopImage> {
+  const around = given(args.around)
+  const byImage = given(args.imageRef)
+  if (around && byImage) throw new ArgError('around 与 imageRef 只能给一个')
+  if (around) {
+    const ref = str(args.around, 'around')
+    const table = fresh ?? desktop.elements(windowId, str(args.observationId, 'observationId'))
+    if (!table) {
+      throw new ArgError(
+        '这份观察已经失效，请重新调用 desktop_observe 取新的 observationId 与 ref。',
+        'desktop_observation_stale',
+      )
+    }
+    const element = table.find((e) => e.ref === ref)
+    if (!element) {
+      throw new ArgError(`这份观察里没有 ${ref}。`, 'desktop_ref_unknown')
+    }
+    const box = element.rect
+    if (!box) {
+      throw new ArgError(`${ref} 没有包围盒，取不了景；改采整窗或换一个控件。`, 'desktop_no_bounds')
+    }
+    const pad = given(args.pad) ? bounded(args.pad, 'pad', 0, MAX_PAD) : 0
+    const region = padded(box, pad)
+    return send(() => desktop.captureImage({ windowId, maxEdge: MAX_EDGE, region }))
+  }
+  if (byImage) {
+    const imageRef = str(args.imageRef, 'imageRef')
+    const raw = args.imageRect
+    if (!raw || typeof raw !== 'object') throw new ArgError('给了 imageRef 就要给 imageRect')
+    const box = raw as Record<string, unknown>
+    const imageRect: DesktopRect = {
+      x: bounded(box.x, 'imageRect.x', 0, MAX_IMAGE_COORD),
+      y: bounded(box.y, 'imageRect.y', 0, MAX_IMAGE_COORD),
+      width: bounded(box.width, 'imageRect.width', 1, MAX_IMAGE_COORD),
+      height: bounded(box.height, 'imageRect.height', 1, MAX_IMAGE_COORD),
+    }
+    return send(() => desktop.captureImage({ windowId, maxEdge: MAX_EDGE, imageRef, imageRect }))
+  }
+  return send(() => desktop.captureImage({ windowId, maxEdge: MAX_EDGE }))
 }
 
 export const desktopActTool: ToolSpec = {

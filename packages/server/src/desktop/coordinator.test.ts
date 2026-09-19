@@ -2,8 +2,9 @@
  * 桌面占用与观察记账。
  *
  * 覆盖范围：`desktop/coordinator.ts` 的占用、排队、撤销、释放、目标读数、局部查询参数、
- * 动作后观察的并入与目标级失效，以及等待的四种终态。同目录的 `bridge.test.ts` 覆盖宿主
- * 连接与代际配对，`assembly.test.ts` 覆盖端口注入。
+ * 动作后观察的并入与目标级失效、等待的四种终态，以及图像采集的取景参数、imageRef 的
+ * 换算与四条失效判据、控件包围盒的透传。同目录的 `bridge.test.ts` 覆盖宿主连接与代际
+ * 配对，`assembly.test.ts` 覆盖端口注入。
  *
  * 用真 `serve()` 加真 WebSocket 假宿主：占用判定要和在途调用的收尾按固定顺序配合，
  * 拿假 bridge 测等于把这两者之间的顺序跳过去。
@@ -619,4 +620,300 @@ test('等待期间宿主换代：等待有终态，旧观察随执行实例作�
   expect(result.found).toBe(false)
   expect(result.observation).toBeNull()
   expect(a.elements('dw_1', first.observationId)).toBeNull()
+})
+
+/** 一张整窗图的观察。几何的形状与本机实测一致：窗口矩形与可见边框差 7 像素。 */
+const IMAGE: Extract<DesktopObservation, { kind: 'image' }> = {
+  kind: 'image',
+  window: WINDOW.handle,
+  capturedAt: 11,
+  source: 'wgc',
+  geometry: {
+    imageWidth: 506,
+    imageHeight: 453,
+    screen: { x: 87, y: 80, width: 506, height: 453 },
+    dpi: 96,
+    generation: '80,80,520,460@96#65537',
+  },
+  mime: 'image/png',
+  bytes: 'iVBORw0KGgo=',
+}
+
+/** 采一张整窗图，返回它的 imageRef 与宿主收到的那一帧。 */
+async function captured(
+  host: FakeDesktopHost,
+  pending: Promise<{ imageRef: string }>,
+): Promise<{ imageRef: string; frame: DesktopRequestFrame }> {
+  const frame = await host.next()
+  host.reply(frame, { observation: { ...IMAGE, window: frame.target?.window ?? 0 } })
+  const image = await pending
+  return { imageRef: image.imageRef, frame }
+}
+
+test('整窗采集只带上限，不带区域与代际', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const { frame } = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+  expect(frame.op).toBe('capture_image')
+  expect(frame.maxEdge).toBe(1568)
+  expect(frame.maxBytes).toBe(4 * 1024 * 1024)
+  expect(frame.region).toBeUndefined()
+  expect(frame.expectGeneration).toBeUndefined()
+  // 目标身份三项照常带：采集也要在派发前核对窗口还是不是同一个。
+  expect(frame.target).toEqual({
+    window: WINDOW.handle,
+    pid: WINDOW.pid,
+    processStartedAt: WINDOW.processStartedAt,
+  })
+})
+
+test('给了屏幕矩形就原样下去，不带代际', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const { frame } = await captured(
+    host,
+    a.captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      region: { x: 280, y: 180, width: 160, height: 64 },
+    }),
+  )
+  expect(frame.region).toEqual({ x: 280, y: 180, width: 160, height: 64 })
+  expect(frame.expectGeneration).toBeUndefined()
+})
+
+/**
+ * imageRef 的换算与核对路径：图像矩形在这里算成屏幕矩形，窗口几何代际一起下去，
+ * 由宿主在派发前重新核对窗口矩形。
+ */
+test('按上一张图的区域重采：换算成屏幕矩形并带上几何代际', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+  const { frame } = await captured(
+    host,
+    a.captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      imageRef: first.imageRef,
+      imageRect: { x: 10, y: 20, width: 100, height: 50 },
+    }),
+  )
+  // 这张图是 1:1 的，换算就是一次平移：87+10、80+20。
+  expect(frame.region).toEqual({ x: 97, y: 100, width: 100, height: 50 })
+  expect(frame.expectGeneration).toBe('80,80,520,460@96#65537')
+})
+
+test('缩过的图按比例换算，不按 DPI', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const pending = a.captureImage({ windowId: 'dw_1', maxEdge: 1568 })
+  const frame = await host.next()
+  host.reply(frame, {
+    observation: {
+      ...IMAGE,
+      window: frame.target?.window ?? 0,
+      geometry: {
+        imageWidth: 1568,
+        imageHeight: 882,
+        screen: { x: 10, y: 20, width: 3840, height: 2160 },
+        dpi: 192,
+        generation: '10,20,3840,2160@192#65537',
+      },
+    },
+  })
+  const image = await pending
+
+  const { frame: second } = await captured(
+    host,
+    a.captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      imageRef: image.imageRef,
+      imageRect: { x: 100, y: 100, width: 200, height: 100 },
+    }),
+  )
+  expect(second.region).toEqual({ x: 255, y: 265, width: 490, height: 245 })
+})
+
+test('认不出的 imageRef 在本地就被拒，一帧都不发', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  const before = host.received.length
+  const failed = await a
+    .captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      imageRef: 'di_404',
+      imageRect: { x: 0, y: 0, width: 10, height: 10 },
+    })
+    .catch((err: unknown) => err as Error & { executed?: boolean })
+  expect(String(failed)).toContain('认不出的图')
+  expect((failed as { executed?: boolean }).executed).toBe(false)
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+/** 换代之后采集那一刻的几何已经不成立，拿它换算出来的矩形指的是另一块界面。 */
+test('宿主换代之后旧 imageRef 失效', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  host.ready({ hostEpoch: 9 })
+  await tick()
+  // 换代之后窗口表也作废，重新发现一次才有可用的不透明 id。
+  const again = (await discover(host, () => a.windows()))[0]?.windowId ?? ''
+
+  const before = host.received.length
+  const failed = await a
+    .captureImage({
+      windowId: again,
+      maxEdge: 1568,
+      imageRef: first.imageRef,
+      imageRect: { x: 0, y: 0, width: 10, height: 10 },
+    })
+    .catch((err: unknown) => String(err))
+  expect(String(failed)).toContain('换过代际')
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+/** 窗口关掉重开之后句柄会被复用，旧图指的是上一个窗口。 */
+test('窗口身份变了之后旧 imageRef 失效', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  // 同一个句柄，进程启动时刻换了：这是另一个窗口，不透明 id 因此也换了一个。
+  const reborn = { ...WINDOW, processStartedAt: WINDOW.processStartedAt + 1 }
+  const listing = a.windows()
+  const frame = await host.next()
+  host.reply(frame, { observation: { kind: 'windows', capturedAt: 2, windows: [reborn] } })
+  const windows = await listing
+  const again = windows[0]?.windowId ?? ''
+  expect(again).not.toBe('dw_1')
+
+  const failed = await a
+    .captureImage({
+      windowId: again,
+      maxEdge: 1568,
+      imageRef: first.imageRef,
+      imageRect: { x: 0, y: 0, width: 10, height: 10 },
+    })
+    .catch((err: unknown) => String(err))
+  expect(String(failed)).toContain('采的不是这个窗口')
+})
+
+test('矩形落在图外时在本地就被拒', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  const failed = await a
+    .captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      imageRef: first.imageRef,
+      imageRect: { x: 600, y: 0, width: 50, height: 50 },
+    })
+    .catch((err: unknown) => String(err))
+  expect(String(failed)).toContain('不在')
+})
+
+/** 释放之后这个端口报废，它交出去的图一并作废。 */
+test('释放之后旧 imageRef 不再能用', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  const releasing = a.release()
+  const cancel = await host.next()
+  host.settle(cancel, 'not_dispatched')
+  await releasing
+
+  const failed = await a
+    .captureImage({
+      windowId: 'dw_1',
+      maxEdge: 1568,
+      imageRef: first.imageRef,
+      imageRect: { x: 0, y: 0, width: 10, height: 10 },
+    })
+    .catch((err: unknown) => String(err))
+  expect(String(failed)).toContain('已经结束')
+})
+
+/** 采集要先占桌面：两个执行者同时采图会互相看见对方改出来的窗口状态。 */
+test('采集与观察走同一把占用', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const b = desktop.portFor('cv_b')
+  await discover(host, () => a.windows())
+  await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  const queued = b.captureImage({ windowId: 'dw_1', maxEdge: 1568 })
+  const before = host.received.length
+  await tick()
+  expect(host.received.length).toBe(before)
+
+  const releasing = a.release()
+  const cancel = await host.next()
+  host.settle(cancel, 'not_dispatched')
+  await releasing
+  await captured(host, queued)
+})
+
+/** 控件包围盒与图用同一套坐标，树那一侧不能把它丢掉。 */
+test('控件包围盒随观察交到端口外面', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const pending = a.observe({ windowId: 'dw_1' })
+  const frame = await host.next()
+  host.reply(frame, {
+    observation: {
+      ...TREE,
+      window: frame.target?.window ?? 0,
+      nodes: NODES.map((n) =>
+        n.ref === 'w.0.0#3'
+          ? { ...n, actions: [...n.actions], rect: { x: 300, y: 200, width: 120, height: 24 } }
+          : { ...n, actions: [...n.actions] },
+      ),
+    },
+  })
+  const snapshot = await pending
+  expect(snapshot.elements.find((e) => e.ref === 'w.0.0#3')?.rect).toEqual({
+    x: 300,
+    y: 200,
+    width: 120,
+    height: 24,
+  })
+  expect(snapshot.elements.find((e) => e.ref === 'w#1')?.rect).toBeUndefined()
 })

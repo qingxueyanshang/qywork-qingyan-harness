@@ -1,6 +1,7 @@
 /**
  * 四个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
- * 动作前置条件、三态回执与动作后观察的透传、等待条件与终态、注册元数据。
+ * 动作前置条件、三态回执与动作后观察的透传、等待条件与终态、注册元数据，以及采集模式、
+ * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型。
  *
  * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
  * `coordinator.test.ts` 覆盖。这里用一份记账假端口：断言的是「交给端口的是什么」与
@@ -11,6 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import type {
   DesktopActResult,
   DesktopElement,
+  DesktopImage,
   DesktopPort,
   DesktopRefusal,
   DesktopSnapshot,
@@ -81,6 +83,7 @@ const 输入框: DesktopElement = {
   value: '',
   enabled: true,
   offscreen: false,
+  rect: { x: 300, y: 200, width: 120, height: 24 },
   actions: ['set_value'],
 }
 const 表单保存: DesktopElement = {
@@ -125,6 +128,39 @@ function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
   }
 }
 
+/**
+ * 一段够 `imageSizeOf` 认出宽高的 PNG 字节：签名加 IHDR 头。
+ *
+ * 不带像素数据是有意的：长边在 `MAX_EDGE` 以内时 `shrinkImage` 一个字节都不动，
+ * 这条路径上没有人会去解码它。
+ */
+function png(width: number, height: number): string {
+  const bytes = new Uint8Array(33)
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  bytes.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8)
+  new DataView(bytes.buffer).setUint32(16, width)
+  new DataView(bytes.buffer).setUint32(20, height)
+  return Buffer.from(bytes).toString('base64')
+}
+
+function image(over: Partial<DesktopImage> = {}): DesktopImage {
+  return {
+    imageRef: 'di_1',
+    data: png(506, 453),
+    mime: 'image/png',
+    geometry: {
+      imageWidth: 506,
+      imageHeight: 453,
+      screen: { x: 87, y: 80, width: 506, height: 453 },
+      dpi: 96,
+      generation: '80,80,520,460@96#65537',
+    },
+    source: 'wgc',
+    capturedAt: 2,
+    ...over,
+  }
+}
+
 interface Recorded {
   method: string
   input: unknown
@@ -160,6 +196,10 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
     },
     elements: (windowId, observationId) =>
       windowId === 'dw_1' && observationId === 'do_1' ? TABLE : null,
+    captureImage: async (input) => {
+      note('captureImage', input)
+      return image()
+    },
     setValue: async (input) => acted(input),
     invoke: async (input) => acted(input),
     wait: async (input) => {
@@ -577,6 +617,364 @@ describe('局部查询与字段选择', () => {
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('模态窗口')
+  })
+})
+
+describe('采集模式', () => {
+  /** 默认不采图：多一次采集就是多一次目标进程的合成与一次编码。 */
+  test('不给 capture 就只读结构，端口的采集入口一次都不碰', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+    expect(r.data).not.toHaveProperty('images')
+    expect(r.data).not.toHaveProperty('imageRef')
+  })
+
+  test('capture=structure 同样不采图', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }, ctxWith(port))
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+  })
+
+  test('capture=region_image 只采图，不读树', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(calls).toEqual([{ method: 'captureImage', input: { windowId: 'dw_1', maxEdge: 1568 } }])
+    expect(r.status).toBe('success')
+    expect(r.data).toMatchObject({ imageRef: 'di_1', source: 'wgc', imageCapturedAt: 2 })
+  })
+
+  test('capture=combined 两样都要，两个时刻分开记', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'combined' },
+      ctxWith(port),
+    )
+    expect(calls.map((c) => c.method)).toEqual(['observe', 'captureImage'])
+    expect(r.data).toMatchObject({ capturedAt: 1, imageCapturedAt: 2, observationId: 'do_1' })
+  })
+
+  /** 树已经读到了就交出去：图没采到不该把这一次观察一起作废。 */
+  test('combined 采图失败时控件表照样交回，并说清图为什么没有', async () => {
+    const { port } = fakeDesktop({
+      captureImage: async () => {
+        throw new Error('window_minimized: 窗口已最小化，采不到内容')
+      },
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'combined' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.data).toMatchObject({ observationId: 'do_1' })
+    expect(r.data).not.toHaveProperty('images')
+    expect(String(r.data?.imageError)).toContain('window_minimized')
+    expect(r.message).toContain('没有采到图')
+  })
+
+  test('取景参数只在采图模式下成立', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', around: 'w.1.0#5', observationId: 'do_1' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+
+  test('around 与 imageRef 同时给时不挑一个，当场拒绝', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      {
+        windowId: 'dw_1',
+        capture: 'region_image',
+        around: 'w.1.0#5',
+        observationId: 'do_1',
+        imageRef: 'di_1',
+        imageRect: { x: 0, y: 0, width: 10, height: 10 },
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+})
+
+describe('按控件与按图取景', () => {
+  test('around 把控件包围盒外扩若干像素交给端口', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopObserveTool,
+      {
+        windowId: 'dw_1',
+        capture: 'region_image',
+        observationId: 'do_1',
+        around: 'w.1.0#5',
+        pad: 20,
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toEqual({
+      method: 'captureImage',
+      input: {
+        windowId: 'dw_1',
+        maxEdge: 1568,
+        region: { x: 280, y: 180, width: 160, height: 64 },
+      },
+    })
+  })
+
+  /**
+   * combined 先读树，旧观察编号随之作废。拿调用方给的那个编号去解析 around，
+   * 解出来的是一份已经不存在的表。
+   */
+  test('combined 的 around 按这次读到的控件表解析', async () => {
+    const { port, calls } = fakeDesktop({
+      // 这一份端口只认 do_1；combined 读完树拿到的是 do_1 的内容，但不该再查一次。
+      elements: () => null,
+      observe: async (input) => snapshot({ windowId: input.windowId, observationId: 'do_9' }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'combined', around: 'w.1.0#5', pad: 5 },
+      ctxWith(port),
+    )
+    // `elements` 恒回 null：走到它就会以「观察已失效」收尾，采不到图。
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['captureImage'])
+    expect(calls[0]).toMatchObject({
+      input: { region: { x: 295, y: 195, width: 130, height: 34 } },
+    })
+  })
+
+  test('combined 不接受 observationId', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'combined', observationId: 'do_1', around: 'w.1.0#5' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+
+  test('没给 pad 就按包围盒本身取景', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'w.1.0#5' },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({
+      input: { region: { x: 300, y: 200, width: 120, height: 24 } },
+    })
+  })
+
+  /** 没有包围盒的控件取不了景，编一个矩形出来采回的是别处。 */
+  test('控件没有包围盒时拒绝取景，一帧都不发', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'w.0.0#3' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_no_bounds' })
+    expect(calls).toEqual([])
+  })
+
+  test('观察失效时 around 在本地就被挡下', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_9', around: 'w.1.0#5' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_stale' })
+    expect(calls).toEqual([])
+  })
+
+  test('imageRef 加 imageRect 原样交给端口换算', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopObserveTool,
+      {
+        windowId: 'dw_1',
+        capture: 'region_image',
+        imageRef: 'di_1',
+        imageRect: { x: 10, y: 20, width: 100, height: 50 },
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toEqual({
+      method: 'captureImage',
+      input: {
+        windowId: 'dw_1',
+        maxEdge: 1568,
+        imageRef: 'di_1',
+        imageRect: { x: 10, y: 20, width: 100, height: 50 },
+      },
+    })
+  })
+
+  test('给了 imageRef 没给 imageRect 时拒绝，一帧都不发', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image', imageRef: 'di_1' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+
+  /** 失效的 imageRef 由端口判定，工具原样透传它的拒绝。 */
+  test('端口拒绝失效的 imageRef 时原样交回模型', async () => {
+    const { port } = fakeDesktop({
+      captureImage: async () => {
+        const err = Object.assign(new Error('di_1 已经失效：桌面宿主换过代际，请重新采图'), {
+          errorKind: 'invalid_argument',
+          executed: false,
+        })
+        throw err
+      },
+    })
+    const r = await run(
+      desktopObserveTool,
+      {
+        windowId: 'dw_1',
+        capture: 'region_image',
+        imageRef: 'di_1',
+        imageRect: { x: 0, y: 0, width: 10, height: 10 },
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(r.message).toContain('已经失效')
+  })
+})
+
+describe('图片通道与几何定稿', () => {
+  /** base64 留在 message 里模型读不懂，只照价计费；字节只走 data.images。 */
+  test('图像字节走 images 通道，不进回执正文', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    const images = (r.data as { images?: { data: string; mime: string }[] }).images ?? []
+    expect(images).toHaveLength(1)
+    expect(images[0]?.mime).toBe('image/png')
+    expect(images[0]?.data.length).toBeGreaterThan(0)
+    expect(r.message).not.toContain(images[0]?.data ?? '')
+  })
+
+  test('几何随图一起交回，说得出图像尺寸与它对应的屏幕矩形', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r.data).toMatchObject({
+      geometry: {
+        imageWidth: 506,
+        imageHeight: 453,
+        screen: { x: 87, y: 80, width: 506, height: 453 },
+        dpi: 96,
+      },
+    })
+    expect(r.message).toContain('506×453')
+    expect(r.message).toContain('87,80')
+  })
+
+  /**
+   * 几何在采集端定稿，这里只核对。
+   *
+   * 尺寸对不上意味着模型看到的与几何记的不是同一张图，按图算出来的屏幕坐标就是错的。
+   */
+  test('图像尺寸与几何对不上时不把这张图交给模型', async () => {
+    const { port } = fakeDesktop({
+      captureImage: async () => image({ data: png(320, 240) }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', errorKind: 'desktop_image_mismatch' })
+    expect(r.data).toBeUndefined()
+  })
+
+  test('combined 下尺寸对不上时控件表仍然交回，图不交', async () => {
+    const { port } = fakeDesktop({
+      captureImage: async () => image({ data: png(320, 240) }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'combined' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.data).toMatchObject({ observationId: 'do_1' })
+    expect(r.data).not.toHaveProperty('images')
+    expect(String(r.data?.imageError)).toContain('对不上')
+  })
+
+  /** 退路采集画不全的区域是黑的，模型要知道这张图能不能当依据。 */
+  test('退路采集在回执里点名', async () => {
+    const { port } = fakeDesktop({
+      captureImage: async () => image({ source: 'print_window' }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r.data).toMatchObject({ source: 'print_window' })
+    expect(r.message).toContain('黑的')
+  })
+})
+
+describe('不收图片的模型', () => {
+  /** 采一张模型看不到的图要付出整条采集与编码的代价，所以在采之前就回绝。 */
+  test('vision=false 时采图模式在发请求之前回绝', async () => {
+    const { port, calls } = fakeDesktop()
+    const ctx = { ...ctxWith(port), vision: false as const }
+    for (const capture of ['region_image', 'combined']) {
+      const r = await run(desktopObserveTool, { windowId: 'dw_1', capture }, ctx)
+      expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'unsupported' })
+      expect(r.message).toContain('capture=structure')
+    }
+    expect(calls).toEqual([])
+  })
+
+  test('vision=false 不影响结构化观察', async () => {
+    const { port, calls } = fakeDesktop()
+    const ctx = { ...ctxWith(port), vision: false as const }
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctx)
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+  })
+
+  /** 三态里只有 `false` 拦：`null` 是没有出处，按放行算。 */
+  test('vision=null 时照常采图', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['captureImage'])
   })
 })
 

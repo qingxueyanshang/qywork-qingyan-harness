@@ -6,8 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::geometry::{Geometry, ScreenRect};
+
 /// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -207,6 +209,25 @@ pub enum Op {
         #[serde(flatten)]
         bounds: Bounds,
     },
+    /// 采一张目标窗口的图。
+    ///
+    /// 这是唯一会采集图像的 op：读树、动作与等待都走不到采集代码。
+    #[serde(rename_all = "camelCase")]
+    CaptureImage {
+        window: i64,
+        /// 要采的屏幕物理像素矩形。缺席表示整窗。
+        #[serde(default)]
+        region: Option<ScreenRect>,
+        /// 要求窗口几何代际仍是这一个。对不上即拒绝派发，不采一张对不上号的图。
+        #[serde(default)]
+        expect_generation: Option<String>,
+        /// 交给模型的图像长边上限。worker 不自带默认值，上限由调用方给。
+        max_edge: u32,
+        /// 编码之后的字节上限。超过即拒绝，不把一帧塞进宿主连接。
+        max_bytes: u32,
+        /// 等一帧到达的上限。
+        time_budget_ms: u64,
+    },
     /// 等一个后置条件成立。判定在 worker 这一侧做，到期如实回未满足与返回那一刻的状态。
     #[serde(rename_all = "camelCase")]
     Wait {
@@ -319,6 +340,11 @@ pub enum Observation {
         /// 从 UIA 接口读回来的实际值，不是请求里那两个数的回声。
         connection_timeout_ms: u32,
         transaction_timeout_ms: u32,
+        /// 本进程的 DPI 感知模式是不是 per-monitor v2，从 OS 读回来的实际值。
+        ///
+        /// 为假时窗口矩形被系统虚拟化过，采到的图与控件包围盒对不上同一套坐标，
+        /// 采集请求一律拒绝。
+        dpi_per_monitor_v2: bool,
     },
     /// 取消已登记。它不说明目标请求有没有执行过——接收线程查不到那件事，目标请求自己那条
     /// `reason: cancelled` 的回执才是取消生效的证据。
@@ -333,6 +359,23 @@ pub enum Observation {
     },
     Tree(Tree),
     Wait(Wait),
+    Image(Image),
+}
+
+/// 一次图像采集的结果。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Image {
+    pub window: i64,
+    pub captured_at: i64,
+    /// 这一帧是怎么采到的。退路与主路径要分得开：`print_window` 依赖目标应用自己
+    /// 响应 `WM_PRINT`，画不全的部分在图上是黑的。
+    pub source: &'static str,
+    pub geometry: Geometry,
+    /// 图像的媒体类型。
+    pub mime: &'static str,
+    /// base64 编码的图像字节。
+    pub bytes: String,
 }
 
 /// 一次控件读取的全部内容。`Tree` 与 `Wait` 两种观察共用它。
@@ -410,6 +453,12 @@ pub struct Node {
     pub value: Option<String>,
     pub enabled: bool,
     pub offscreen: bool,
+    /// 控件的包围盒，屏幕物理像素，与图像几何同一套坐标。
+    ///
+    /// provider 不给包围盒的控件缺席（零尺寸同样按缺席算）。**缺席不等于控件不存在**，
+    /// 也不等于它在屏幕外——那一件事由 `offscreen` 说。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rect: Option<ScreenRect>,
     /// 只列 worker 已实现的动作。控件暴露了模式但 worker 没有对应 op 时不列，
     /// 否则调用方会按这张表发出永远拿不到实现的请求。
     pub actions: Vec<&'static str>,
@@ -549,7 +598,7 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":2,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"v":3,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
                 "op":"invoke","params":{{"window":66,"ref":"w.0.1#42.7",
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
@@ -558,7 +607,7 @@ mod tests {
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":2,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"v":3,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -566,7 +615,7 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":2,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"v":3,"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
     }
@@ -574,7 +623,7 @@ mod tests {
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -600,7 +649,7 @@ mod tests {
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -618,7 +667,7 @@ mod tests {
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
                 "nameContains":"保存","includeValue":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
@@ -642,7 +691,7 @@ mod tests {
     #[test]
     fn wait_decodes_condition_and_two_bounds() {
         let req = parse(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
                 "value":"张三","pollMs":250,"timeoutMs":9000,
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
@@ -667,7 +716,7 @@ mod tests {
 
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -680,7 +729,7 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
         )
         .is_err());
@@ -690,7 +739,7 @@ mod tests {
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":2,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
@@ -703,7 +752,7 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":2,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"v":3,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
     }
 
@@ -730,6 +779,12 @@ mod tests {
                 value: None,
                 enabled: true,
                 offscreen: false,
+                rect: Some(ScreenRect {
+                    x: 120,
+                    y: 240,
+                    width: 80,
+                    height: 24,
+                }),
                 actions: vec!["invoke"],
                 weak_identity: false,
             }],
@@ -820,7 +875,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":2,"id":"h","connectionEpoch":5,
+            r#"{"v":3,"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());

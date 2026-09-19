@@ -21,6 +21,7 @@ import type {
   DesktopHostReadyFrame,
   DesktopObservation,
   DesktopOp,
+  DesktopRect,
   DesktopRequestFrame,
   DesktopResultFrame,
   DesktopTarget,
@@ -96,6 +97,10 @@ export interface DesktopRequestParams {
   name?: string
   pollMs?: number
   timeoutMs?: number
+  region?: DesktopRect
+  expectGeneration?: string
+  maxEdge?: number
+  maxBytes?: number
 }
 
 export class DesktopBridge {
@@ -179,6 +184,12 @@ export class DesktopBridge {
       ...(params.name !== undefined ? { name: params.name } : {}),
       ...(params.pollMs !== undefined ? { pollMs: params.pollMs } : {}),
       ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      ...(params.region !== undefined ? { region: params.region } : {}),
+      ...(params.expectGeneration !== undefined
+        ? { expectGeneration: params.expectGeneration }
+        : {}),
+      ...(params.maxEdge !== undefined ? { maxEdge: params.maxEdge } : {}),
+      ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
     }
     return new Promise<DesktopCallResult>((resolve, reject) => {
       const timer = setTimeout(() => {

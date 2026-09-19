@@ -13,6 +13,9 @@
 //!
 //! 每条请求都有终态：解析失败、后端不可用、通道已关闭都各自回一条 `not_dispatched`。
 
+#[cfg(windows)]
+mod capture;
+mod geometry;
 mod protocol;
 #[cfg(windows)]
 mod windows;
@@ -34,8 +37,20 @@ use protocol::{
     Response, PROTOCOL_VERSION,
 };
 
+/// 本进程的 DPI 感知模式。`main` 最前面设一次，此后只读。
+///
+/// **必须在任何窗口矩形或 DPI 查询之前设**：设晚了，系统已经按虚拟化的坐标回答过问题，
+/// 而那些答案不会重来。
+#[cfg(windows)]
+static DPI_PER_MONITOR_V2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
+    let per_monitor_v2 = capture::set_per_monitor_v2();
+    let _ = DPI_PER_MONITOR_V2.set(per_monitor_v2);
+    // 宿主把 worker 的 stderr 转进应用日志：图像几何对不上时，这一行说得出是哪一档
+    // DPI 感知、有几台显示器、虚拟桌面的原点在哪。
+    eprintln!("dpi per_monitor_v2={per_monitor_v2} displays {}", capture::monitor_report());
     serve()
 }
 
@@ -166,18 +181,28 @@ fn execute_all(rx: Receiver<Request>, state: &Arc<State>) {
             return;
         }
     };
+    // 采集器建不起来不拦住整条 worker：结构化观察与动作不碰它，只有采集请求要如实报错。
+    let capturer = capture::Capturer::new();
+    if let Err(e) = &capturer {
+        eprintln!("图像采集不可用：{e}");
+    }
     for req in rx {
         // 等待自带线程：它可能要等到分钟级，留在这条线程上会把后面的读树一并堵住。
         if matches!(req.op, Op::Wait { .. }) {
             spawn_wait(req, state);
             continue;
         }
-        reply(&handle(&backend, state, req));
+        reply(&handle(&backend, capturer.as_ref(), state, req));
     }
 }
 
 #[cfg(windows)]
-fn handle(backend: &windows::Backend, state: &State, req: Request) -> Response {
+fn handle(
+    backend: &windows::Backend,
+    capturer: Result<&capture::Capturer, &String>,
+    state: &State,
+    req: Request,
+) -> Response {
     let cancelled = state.cancelled.lock().expect("取消登记锁").remove(&req.id);
     let binding = state.binding.lock().expect("绑定锁").clone();
     if let Err(reason) = admit(&req, binding.as_ref(), cancelled, now_ms()) {
@@ -209,6 +234,7 @@ fn handle(backend: &windows::Backend, state: &State, req: Request) -> Response {
                             host_epoch: bound.host.host_epoch,
                             connection_timeout_ms: connection,
                             transaction_timeout_ms: transaction,
+                            dpi_per_monitor_v2: dpi_per_monitor_v2(),
                         },
                     )
                 }
@@ -237,7 +263,43 @@ fn handle(backend: &windows::Backend, state: &State, req: Request) -> Response {
             reference,
             bounds,
         } => act(req.id, backend, window, &reference, None, bounds),
+        Op::CaptureImage {
+            window,
+            region,
+            expect_generation,
+            max_edge,
+            max_bytes,
+            time_budget_ms,
+        } => {
+            // per-monitor v2 没设上时窗口矩形被系统虚拟化过，采到的图与控件包围盒不在
+            // 同一套坐标上。交一张对不上号的图比不交更糟，所以这里直接拒。
+            if !dpi_per_monitor_v2() {
+                return Response::rejected(
+                    req.id,
+                    "dpi_awareness_unset: 进程不是 per-monitor v2 DPI 感知，图像几何不可信"
+                        .to_owned(),
+                );
+            }
+            let outcome = match capturer {
+                Ok(capturer) => capturer.capture(&capture::CaptureRequest {
+                    window,
+                    region,
+                    expect_generation: expect_generation.as_deref(),
+                    max_edge,
+                    max_bytes,
+                    budget: Duration::from_millis(time_budget_ms),
+                }),
+                Err(e) => Err(format!("backend_unavailable: {e}")),
+            };
+            observe(req.id, outcome.map(Observation::Image))
+        }
     }
+}
+
+/// 本进程的 DPI 感知模式。`main` 没跑过（单测进程）时按未设记。
+#[cfg(windows)]
+fn dpi_per_monitor_v2() -> bool {
+    DPI_PER_MONITOR_V2.get().copied().unwrap_or(false)
 }
 
 /// 起一条等待线程。
