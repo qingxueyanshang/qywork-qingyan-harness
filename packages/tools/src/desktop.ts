@@ -819,6 +819,8 @@ function typedReadback(
 function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
+  if (r.delivery !== undefined) receipt.delivery = r.delivery
+  if (r.clipboardRestored !== undefined) receipt.clipboardRestored = r.clipboardRestored
   if (r.dispatch === 'not_dispatched') {
     return {
       status: 'failure',
@@ -833,6 +835,14 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
     ? `${action.kind} 的结果未知：${r.reason ?? '调用已发出但没有确认'}。`
     : `${action.kind} 已执行。`
   const advice = '先 desktop_observe 确认应用的实际状态，不要重放这个动作。'
+  // 走粘贴时这次输入动过用户的剪贴板，回执必须说出来；注入不动剪贴板，不写这一句。
+  // 原因原文只在 `submitted` 那一支补：`unknown` 的 `lead` 已经印过同一段。
+  const pasteNote =
+    r.delivery !== 'paste'
+      ? ''
+      : `。这段文字里有注入会丢按键抬起的字符，改走了剪贴板粘贴${
+          r.clipboardRestored === true ? '，原剪贴板内容已恢复' : ''
+        }${!unknown && r.reason !== undefined ? `。${r.reason}` : ''}`
   if (r.observation) {
     const target = r.observation.elements.find((e) => e.ref === ref)
     const readback = typedReadback(action, target)
@@ -857,6 +867,7 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
         `${lead}新观察 ${snapshotLine(r.observation)}` +
         (target ? `；目标现在是 ${elementLine(target)}` : '') +
         readbackNote +
+        pasteNote +
         (unknown ? `。${advice}` : ''),
       data: { ...receipt, observation: r.observation },
     }
@@ -876,6 +887,7 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
         (appeared.length
           ? `这个应用新出现了窗口：${listed}。对它 desktop_observe 继续。`
           : `这个应用当前的窗口：${listed}。`) +
+        pasteNote +
         (unknown ? advice : ''),
       data: { ...receipt, blocking: r.blocking, observationError: r.observationError },
     }
@@ -883,7 +895,7 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
   return {
     status: 'failure',
     executed: true,
-    message: `${lead}没有取得动作之后的读数：${r.observationError}。${advice}`,
+    message: `${lead}没有取得动作之后的读数：${r.observationError}${pasteNote}。${advice}`,
     data: { ...receipt, observationError: r.observationError },
     errorKind: unknown ? 'desktop_unknown' : 'desktop_observation_unavailable',
   }
@@ -1290,6 +1302,10 @@ export const desktopActTool: ToolSpec = {
     '先按图 click 一下输入区把光标放进去，再这样发；' +
     'type_text 的结果按动作后重读的控件值核对：读不到这段文字返回 desktop_readback_mismatch，' +
     '读不回控件值的目标（窗口本身、不暴露值的控件）在回执里说明，改用取图核对；' +
+    '含全角标点、破折号或半角连字符的文字整段改走剪贴板粘贴（这些字符逐键注入会丢按键抬起，' +
+    '自处理键盘的应用会把后一个字打成前一个），回执里的 delivery 是 paste，' +
+    'clipboardRestored 说明用户原来的剪贴板内容有没有放回去——' +
+    '不要自己去写剪贴板脚本，这条路工具已经走完；' +
     'press_key 按一个键，key 用 a-z / 0-9 / f1-f24 / ' +
     'enter / tab / escape / space / backspace / delete / insert / home / end / ' +
     'page_up / page_down / up / down / left / right 这些名字，modifiers 给 ctrl / alt / shift / win；' +

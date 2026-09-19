@@ -327,6 +327,34 @@ pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
     out
 }
 
+/// 注入这个码元时系统不投递配对的抬起事件。
+///
+/// 实测（Windows 10 19045，2026-09-19，键盘布局 0x0804 与 0x0409 结果相同）：这几段里的
+/// 字符按 `KEYEVENTF_UNICODE` 注入时，目标窗口的消息循环只收到 `WM_KEYDOWN`，
+/// 配对的 `WM_KEYUP` 一条都不到；下一个字符的按下因此落在「这个键还按着」的状态上。
+/// `SendInput` 对这些事件全部返回已收下，发送侧看不出差别。
+///
+/// 改不掉：逐字符发、逐事件发、批间隔 1 ms 与 10 ms、抬起换扫描码、一个字符发两次三次
+/// 抬起、抬起改成不带 `KEYEVENTF_UNICODE` 的普通 `VK_PACKET` 键事件，实测全都照丢。
+/// 关掉输入法、把线程布局换成 0x0409 也照丢，所以它不是输入法在吃事件。
+///
+/// **按范围判，不按实测到的单字表**：范围里的 U+2012、U+3030、U+303D、实测是不丢的，
+/// 多判几个字符只是多走一次粘贴，少判一个就是把字打错。
+pub const fn keyup_dropped(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x002D | 0x2010..=0x2015 | 0x3000..=0x303F | 0xFF00..=0xFFDF
+    )
+}
+
+/// 这段文字要不要改走剪贴板粘贴。
+///
+/// 一段里只要有一个码元的抬起会被吞掉就**整段**粘贴：按字符拆成注入与粘贴两截发，
+/// 两截之间光标位置由目标决定，顺序不再受控。
+pub fn needs_paste(text: &str) -> bool {
+    text.encode_utf16().any(keyup_dropped)
+}
+
 /// 一批 UTF-16 码元的事件序列。每个码元一对按下抬起。
 pub fn unit_events(units: &[u16]) -> Vec<Event> {
     let mut events = Vec::with_capacity(units.len() * 2);
@@ -655,6 +683,36 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// 抬起会被吞掉的那几段按范围判，段外的字符不受影响。
+    #[test]
+    fn the_characters_whose_key_up_never_arrives_are_matched_by_range() {
+        // 实测丢抬起的：半角连字符、破折号、CJK 标点、全角与半角形。
+        for unit in [0x002D, 0x2010, 0x2014, 0x3000, 0x3001, 0x300C, 0xFF0C, 0xFF01, 0xFF9F] {
+            assert!(keyup_dropped(unit), "U+{unit:04X} 应当判为丢抬起");
+        }
+        // 实测不丢的：ASCII 字母数字与其余标点、汉字、假名、U+FFE0 之后的那一段。
+        for unit in [
+            0x0020, 0x002C, 0x002E, 0x0041, 0x0061, 0x4E00, 0x54E6, 0x3042, 0x30A2, 0xAC00, 0x2026,
+            0xFFE0, 0xFFE5, 0xFFEF,
+        ] {
+            assert!(!keyup_dropped(unit), "U+{unit:04X} 不该判为丢抬起");
+        }
+    }
+
+    /// 一段里有一个码元丢抬起就整段粘贴，代理对按码元判。
+    #[test]
+    fn text_goes_to_the_clipboard_when_any_one_unit_loses_its_key_up() {
+        assert!(!needs_paste("hello world"));
+        assert!(!needs_paste("张三 abc"));
+        assert!(!needs_paste(""));
+        assert!(needs_paste("哦哦行，那你先用这个号跑吧"));
+        // 半角连字符同样丢抬起，普通英文也可能走粘贴。
+        assert!(needs_paste("hello-world"));
+        // 代理对的两个码元都在补充平面，不在任何一段里。
+        assert!(!needs_paste("好的👍"));
+        assert!(needs_paste("好的👍。"));
     }
 
     #[test]

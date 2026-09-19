@@ -15,6 +15,8 @@
 //!    窗口续输。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
 //!    不套后台那三条——激活本来就会改前台，「同进程多出一个顶层窗口」证明不了它。
+//! 7. **文字输入有两种投递方式**，按文字内容选，不按应用选；走粘贴的那一次会动用户的
+//!    剪贴板，投递方式与剪贴板去向一律进回执。
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
@@ -31,13 +33,15 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+use crate::clipboard::{self, clipboard_note, SystemBoard};
 use crate::geometry::{to_absolute, ScreenPoint, ScreenRect};
 use crate::input::{
-    drag_path, key_code, key_stroke, modifier_code, text_batches, unit_events, wheel_of, Event,
-    Hold, Sink, SystemSink,
+    drag_path, key_code, key_stroke, modifier_code, needs_paste, text_batches, unit_events,
+    wheel_of, Event, Hold, Sink, SystemSink,
 };
 use crate::protocol::{
-    classify_input, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton, WindowState,
+    classify_input, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton, TextDelivery,
+    WindowState,
 };
 use crate::windows::{
     current_pattern, defer, dispatch_call, Attempt, CallWatch, Outcome, StateWatch,
@@ -51,6 +55,15 @@ const DRAG_STEPS: u32 = 12;
 const DRAG_STEP_MS: u64 = 16;
 /// 一次文字注入按多少个 UTF-16 码元分批。批与批之间重核前台窗口。
 const TEXT_BATCH_UNITS: usize = 24;
+/// 发完 Ctrl+V 之后给目标读剪贴板留多久，之后才把原内容放回去。
+///
+/// 目标处理粘贴是异步的：Ctrl+V 只是进了它的输入队列，它取到 `WM_PASTE` 再去读剪贴板。
+/// 恢复得太早它读到的是已经放回去的旧内容。
+///
+/// 实测（Windows 10 19045，2026-09-19）：同步处理 `WM_PASTE` 的 WinForms 文本框等 0 ms
+/// 会粘到恢复后的内容，25 ms 起正确；把 `WM_PASTE` 推迟 200 ms 的目标要等满 200 ms，
+/// 100 ms 不够。取 400 ms 是在后一种目标上留一倍余量。
+const PASTE_SETTLE: Duration = Duration::from_millis(400);
 /// 激活之后等前台窗口真的改过来多久。前台切换要目标窗口线程处理激活消息，不是同步的。
 const ACTIVATE_SETTLE: Duration = Duration::from_millis(400);
 /// 读回窗口状态或矩形的等待上限。模式调用返回之后窗口还要重绘一次。
@@ -376,14 +389,59 @@ fn foreground_ok(window: i64) -> Result<(), String> {
     ))
 }
 
-/// 分批注入文字。每批之前重核前台窗口，变了立即停止并如实带回已发出多少。
+/// 投进文字。投递方式按内容定，不按应用定。
+///
+/// 一段里只要有一个码元的抬起会被系统吞掉（`input::keyup_dropped`）就整段走剪贴板粘贴：
+/// 那种码元注入之后目标只收到按下，下一个字符的按下落在「这个键还按着」的状态上，
+/// 按自动重复处理的目标会重复前一个字符并丢掉这一个。其余文字仍走逐码元注入。
 fn type_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
+    if text.is_empty() {
+        return Attempt::Refused("empty_text: 没有要输入的内容".to_owned());
+    }
+    if needs_paste(text) {
+        return paste_text(window, sink, text);
+    }
+    inject_text(window, sink, text)
+}
+
+/// 写剪贴板、发 Ctrl+V、把原剪贴板内容放回去。
+///
+/// 粘贴之前重核一次前台：保存与写入之间用户可能已经切走，那时这次 Ctrl+V 会落到别的
+/// 窗口上。剪贴板拿不到时记未派发，**不退回去用注入**——那条路对这段文字会把字打错。
+fn paste_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
+    let board = SystemBoard;
+    let outcome = clipboard::paste(
+        &board,
+        sink,
+        text,
+        &|| foreground_ok(window),
+        &|| std::thread::sleep(PASTE_SETTLE),
+    );
+    match outcome {
+        Err(reason) => Attempt::Refused(reason),
+        Ok(pasted) => {
+            let (dispatch, reason) = classify_input(pasted.sent, pasted.requested);
+            let note = clipboard_note(&pasted.restored);
+            let reason = match (reason, note.is_empty()) {
+                (Some(text), true) => Some(text),
+                (Some(text), false) => Some(format!("{text}{note}")),
+                (None, true) => None,
+                (None, false) => Some(note.trim_start_matches('；').to_owned()),
+            };
+            Attempt::Called(Outcome::typed(
+                dispatch,
+                reason,
+                TextDelivery::pasted(!pasted.restored.left_behind()),
+            ))
+        }
+    }
+}
+
+/// 分批注入文字。每批之前重核前台窗口，变了立即停止并如实带回已发出多少。
+fn inject_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
     let batches = text_batches(text, TEXT_BATCH_UNITS);
     let total: usize = batches.iter().map(Vec::len).sum();
     let requested = u32::try_from(total * 2).unwrap_or(u32::MAX);
-    if requested == 0 {
-        return Attempt::Refused("empty_text: 没有要输入的内容".to_owned());
-    }
     let mut sent = 0u32;
     let mut interrupted: Option<String> = None;
     for batch in &batches {
@@ -407,7 +465,7 @@ fn type_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
         )),
         None => reason,
     };
-    Attempt::Called(Outcome::returned(dispatch, reason))
+    Attempt::Called(Outcome::typed(dispatch, reason, TextDelivery::injected()))
 }
 
 /// 一次组合键。整条序列一次交给系统，中间没有别的输入插得进来。

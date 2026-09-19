@@ -786,6 +786,10 @@ export class DesktopCoordinator {
         dispatch: result.dispatch,
         actionId,
         ...(result.reason !== undefined ? { reason: result.reason } : {}),
+        ...(result.delivery !== undefined ? { delivery: result.delivery } : {}),
+        ...(result.clipboardRestored !== undefined
+          ? { clipboardRestored: result.clipboardRestored }
+          : {}),
         ...this.#blockedBy(result.blocking),
         ...this.#followUp(lease, input.windowId, result.observation, result.observationError),
       }

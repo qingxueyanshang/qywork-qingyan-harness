@@ -1,4 +1,4 @@
-//! 宿主与 worker 之间的行分隔 JSON 协议：请求、回执、执行事实三态与派发前的准入判定。
+﻿//! 宿主与 worker 之间的行分隔 JSON 协议：请求、回执、执行事实三态与派发前的准入判定。
 //!
 //! 本模块不调用任何 OS 接口，全部判定都能在没有图形会话的环境里测试。
 
@@ -572,12 +572,55 @@ pub enum Dispatch {
     Unknown,
 }
 
+/// `type_text` 实际用的投递方式。别的动作缺席。
+///
+/// 两种方式由文字内容定，不按应用分：`input::needs_paste` 判这段里有没有抬起会被系统
+/// 吞掉的码元，有就整段走粘贴。调用方按它判断这次输入有没有动过剪贴板。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// `KEYEVENTF_UNICODE` 逐码元注入。
+    Inject,
+    /// 写剪贴板再发 Ctrl+V。
+    Paste,
+}
+
+/// 一次文字输入的投递事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextDelivery {
+    pub method: Delivery,
+    /// 走粘贴时粘贴前保存的剪贴板内容有没有放回去。注入时缺席。
+    pub clipboard_restored: Option<bool>,
+}
+
+impl TextDelivery {
+    pub const fn injected() -> Self {
+        Self {
+            method: Delivery::Inject,
+            clipboard_restored: None,
+        }
+    }
+
+    pub const fn pasted(restored: bool) -> Self {
+        Self {
+            method: Delivery::Paste,
+            clipboard_restored: Some(restored),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub v: u32,
     pub id: String,
     pub dispatch: Dispatch,
+    /// 文字输入的投递方式。只有 `type_text` 有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+    /// 走粘贴时粘贴前保存的剪贴板内容有没有放回去。注入时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clipboard_restored: Option<bool>,
     /// 拒绝原因码，或动作调用返回的失败原文。有 `reason` 且 `dispatch` 是 `unknown` 时，
     /// 表示调用已经发出而失败，不是没有执行。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -606,6 +649,8 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
+            delivery: None,
+            clipboard_restored: None,
             reason: Some(reason),
             observation: None,
             observation_error: None,
@@ -620,6 +665,8 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
+            delivery: None,
+            clipboard_restored: None,
             reason: None,
             observation: Some(observation),
             observation_error: None,
@@ -638,6 +685,8 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch,
+            delivery: None,
+            clipboard_restored: None,
             reason: None,
             observation,
             observation_error,

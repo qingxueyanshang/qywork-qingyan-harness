@@ -84,7 +84,8 @@ use crate::protocol::{
     ActionEvidence, ActionSpec, Bounds,
     range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
     ScrollState, Seen, Select,
-    SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil, WindowInfo,
+    SelectionState, Text, TextDelivery, TextSelection, ToggleState, Tree, Wait, WaitUntil,
+    WindowInfo,
 };
 
 pub const BACKEND: &str = "windows-uia";
@@ -150,6 +151,8 @@ pub struct Outcome {
     pub returned: bool,
     /// `returned` 为假时目标进程此刻的顶层窗口，纯 Win32 读出，不进 UIA。
     pub windows: Vec<BlockingWindow>,
+    /// 文字输入这一次走的投递方式。只有 `type_text` 填，别的动作缺席。
+    pub text: Option<TextDelivery>,
 }
 
 impl Outcome {
@@ -159,6 +162,15 @@ impl Outcome {
             reason,
             returned: true,
             windows: Vec::new(),
+            text: None,
+        }
+    }
+
+    /// 同 `returned`，再记下这次文字输入的投递方式。
+    pub fn typed(dispatch: Dispatch, reason: Option<String>, text: TextDelivery) -> Self {
+        Self {
+            text: Some(text),
+            ..Self::returned(dispatch, reason)
         }
     }
 }
@@ -2072,6 +2084,7 @@ pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
                 reason,
                 returned: false,
                 windows: watch.blocking(),
+                text: None,
             });
         }
         std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));

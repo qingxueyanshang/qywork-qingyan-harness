@@ -1170,6 +1170,34 @@ test('不点名控件的键盘输入按窗口派发，帧里没有 ref 也没有
   expect((await acting).dispatch).toBe('submitted')
 })
 
+/**
+ * 文字投递方式与剪贴板去向要原样到调用方。
+ *
+ * 少了这一段，走粘贴的那一次在回执里与逐键注入完全一样，模型说不出剪贴板被动过。
+ */
+test('宿主回的投递方式与剪贴板恢复状态原样透传', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    action: { kind: 'type_text', text: '哦哦行，' },
+  })
+  const frame = await host.next()
+  host.reply(frame, {
+    dispatch: 'submitted',
+    delivery: 'paste',
+    clipboardRestored: false,
+    observation: subtree(),
+  })
+  const result = await acting
+  expect(result.delivery).toBe('paste')
+  expect(result.clipboardRestored).toBe(false)
+})
+
 test('图外的坐标在本地就被拒，一帧都不发', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)

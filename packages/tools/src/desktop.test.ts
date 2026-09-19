@@ -2014,6 +2014,67 @@ describe('前台动作', () => {
     expect(r.message).not.toContain('读回不一致')
   })
 
+  /**
+   * 走粘贴的那一次动过用户的剪贴板，回执要说得出投递方式与剪贴板的去向。
+   *
+   * 少了这一条，模型看到的与逐键注入完全一样，既不知道剪贴板被改过，也无从告诉用户。
+   */
+  function pastedPort(over: { clipboardRestored: boolean; reason?: string }) {
+    return foregroundPort({
+      act: async () => ({
+        dispatch: 'submitted' as const,
+        actionId: 'da_10',
+        delivery: 'paste' as const,
+        clipboardRestored: over.clipboardRestored,
+        ...(over.reason === undefined ? {} : { reason: over.reason }),
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [{ ...焦点框, value: '哦哦行，那你先用这个号跑吧' }],
+        }),
+      }),
+    })
+  }
+
+  test('走粘贴且剪贴板已恢复时，回执说明投递方式', async () => {
+    const { port } = pastedPort({ clipboardRestored: true })
+    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('改走了剪贴板粘贴')
+    expect(r.message).toContain('原剪贴板内容已恢复')
+    expect(r.data).toMatchObject({ delivery: 'paste', clipboardRestored: true })
+  })
+
+  test('剪贴板没有恢复时，回执说出里面现在是本次输入的文字', async () => {
+    const { port } = pastedPort({
+      clipboardRestored: false,
+      reason: '这期间剪贴板被别的程序改过，没有恢复，里面现在是本次粘贴的文字',
+    })
+    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('改走了剪贴板粘贴')
+    expect(r.message).not.toContain('原剪贴板内容已恢复')
+    expect(r.message).toContain('里面现在是本次粘贴的文字')
+    expect(r.data).toMatchObject({ delivery: 'paste', clipboardRestored: false })
+  })
+
+  test('走注入时回执不提剪贴板', async () => {
+    const { port } = foregroundPort({
+      act: async () => ({
+        dispatch: 'submitted' as const,
+        actionId: 'da_11',
+        delivery: 'inject' as const,
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [{ ...焦点框, value: '张三 abc' }],
+        }),
+      }),
+    })
+    const r = await 输入(port, '张三 abc')
+    expect(r.status).toBe('success')
+    expect(r.message).not.toContain('剪贴板')
+    expect(r.data).toMatchObject({ delivery: 'inject' })
+  })
+
   test('读回只管 type_text，别的动作不按输入文字判', async () => {
     const { port } = typedPort('别的值')
     const r = await run(

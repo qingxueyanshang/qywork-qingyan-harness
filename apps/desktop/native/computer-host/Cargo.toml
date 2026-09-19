@@ -21,6 +21,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Com",
   # 编码后的 PNG 先进一个 HGLOBAL 流，再从流里取字节。
   "Win32_System_Com_StructuredStorage",
+  # 剪贴板投递：枚举格式、读写内容、序列号。
+  "Win32_System_DataExchange",
   "Win32_System_Memory",
   # RuntimeId 是 SAFEARRAY，读它的函数在 Ole 下。
   "Win32_System_Ole",

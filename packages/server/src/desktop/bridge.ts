@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 桌面原生宿主连接的服务端一侧。
  *
  * 这条连接由宿主主动连上来，只承载桌面控件的观察与动作；聊天指令与浏览器资源操作
@@ -57,6 +57,9 @@ export interface NativeDesktopHost {
 export interface DesktopCallResult {
   dispatch: DesktopResultFrame['dispatch']
   reason?: string
+  /** 文字输入的投递方式与剪贴板是否已恢复。只有 `type_text` 有。 */
+  delivery?: DesktopResultFrame['delivery']
+  clipboardRestored?: boolean
   observation?: DesktopObservation
   observationError?: string
   /** 动作调用尚未返回时目标进程此刻的顶层窗口。见协议里的 `blocking`。 */
@@ -342,6 +345,10 @@ export class DesktopBridge {
     pending.resolve({
       dispatch: frame.dispatch,
       ...(frame.reason !== undefined ? { reason: frame.reason } : {}),
+      ...(frame.delivery !== undefined ? { delivery: frame.delivery } : {}),
+      ...(frame.clipboardRestored !== undefined
+        ? { clipboardRestored: frame.clipboardRestored }
+        : {}),
       ...(frame.observation !== undefined ? { observation: frame.observation } : {}),
       ...(frame.observationError !== undefined ? { observationError: frame.observationError } : {}),
       ...(frame.blocking !== undefined ? { blocking: frame.blocking } : {}),
