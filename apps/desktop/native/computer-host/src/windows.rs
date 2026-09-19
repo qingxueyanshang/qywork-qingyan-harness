@@ -30,12 +30,15 @@ use ::windows::Win32::System::Com::{
 use ::windows::Win32::System::Ole::{
     SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
 };
-use ::windows::Win32::System::Variant::{VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8};
+use ::windows::Win32::System::Variant::{
+    VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VT_UNKNOWN,
+};
 use ::windows::Win32::UI::Accessibility::{
     AutomationElementMode_Full, CUIAutomation8, ExpandCollapseState_Collapsed,
     ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode,
     ExpandCollapseState_PartiallyExpanded, IUIAutomation, IUIAutomation2,
     IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
+    IUIAutomationElementArray,
     IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern, IUIAutomationItemContainerPattern,
     IUIAutomationRangeValuePattern, IUIAutomationScrollItemPattern, IUIAutomationScrollPattern,
     IUIAutomationSelectionItemPattern, IUIAutomationSelectionPattern, IUIAutomationTextPattern,
@@ -64,6 +67,7 @@ use ::windows::Win32::UI::Accessibility::{
     UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
     UIA_SelectionCanSelectMultiplePropertyId, UIA_SelectionIsSelectionRequiredPropertyId,
     UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId, UIA_SelectionPatternId,
+    UIA_SelectionSelectionPropertyId,
     UIA_TextPatternId, UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId,
     UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId, UIA_ValueValuePropertyId,
     UIA_VirtualizedItemPatternId,
@@ -76,7 +80,8 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 use crate::foreground;
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    next_poll, now_ms, satisfied, scroll_amounts, toggle_steps, ActionEvidence, ActionSpec, Bounds,
+    next_poll, now_ms, satisfied, scroll_amounts, selected_name_budget, toggle_steps,
+    ActionEvidence, ActionSpec, Bounds,
     range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
     ScrollState, Seen, Select,
     SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil, WindowInfo,
@@ -866,7 +871,9 @@ impl Backend {
         cached_bool(&element, "读窗口可用状态", |e| unsafe { e.CachedIsEnabled() })
     }
 
-    /// 从缓存读一个节点的属性。不发跨进程调用。
+    /// 从缓存读一个节点的属性。
+    ///
+    /// 只有选择容器的选中项是实时读的，见 `selected_names`；其余全部来自缓存。
     fn read_cached_node(
         &self,
         element: &IUIAutomationElement,
@@ -958,7 +965,8 @@ impl Backend {
                 cached_flag(element, UIA_SelectionCanSelectMultiplePropertyId)?,
                 cached_flag(element, UIA_SelectionIsSelectionRequiredPropertyId)?,
             ) {
-                selection = Some(SelectionState { multiple, required });
+                let (names, total) = selected_names(element)?;
+                selection = Some(SelectionState::new(multiple, required, names, total));
             }
         }
 
@@ -1534,6 +1542,55 @@ fn available(
     id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
 ) -> Result<bool, Failure> {
     Ok(cached_flag(element, id)?.unwrap_or(false))
+}
+
+/// 选择容器此刻选中的那几项的名称，以及容器报的选中项总数。
+///
+/// **不要把 `UIA_SelectionSelectionPropertyId` 放进缓存请求。** 缓存请求整棵树共用一份，
+/// 同一个容器在一次遍历里被缓存不止一次，provider 每次都要另造一条完整的选中项数组：
+/// 一个选中 800 项的虚拟化列表，放进缓存请求让单轮读树从 170 ms 涨到 645 ms，改成在这里
+/// 每个容器实时读一次是 310 ms。数组的代价与选中项数成正比，实时读只保证每个容器付一次。
+///
+/// 名称再按每项一次跨进程调用读：数组里的元素**自己不带缓存**，读它们的缓存名称回
+/// `E_INVALIDARG`。名称的调用数按 `selected_name_budget` 截。
+///
+/// 读某一项名称时它已经消失，就跳过这一项，总数照原样交出去——两者不等即名单不全。
+/// 其余失败一律交出去：provider 不应答时后面每一项都会各等一次超时。
+///
+/// `includeState` 为假时调用方走不到这里：那时容器约束的两个属性不在缓存请求里，
+/// 整份 `selection` 就不成立。
+fn selected_names(element: &IUIAutomationElement) -> Result<(Vec<String>, usize), Failure> {
+    count_call();
+    let variant = unsafe { element.GetCurrentPropertyValue(UIA_SelectionSelectionPropertyId) }
+        .map_err(uia("读选中项"))?;
+    if variant.vt() != VT_UNKNOWN {
+        return Ok((Vec::new(), 0));
+    }
+    // SAFETY: vt 是 VT_UNKNOWN 时联合体里有效的就是 punkVal；接口指针归 VARIANT 所有，
+    // 这里只借它取元素。
+    let Some(unknown) = (unsafe { &*variant.Anonymous.Anonymous.Anonymous.punkVal }).as_ref() else {
+        return Ok((Vec::new(), 0));
+    };
+    let array = unknown
+        .cast::<IUIAutomationElementArray>()
+        .map_err(uia("取选中项"))?;
+    let length = unsafe { array.Length() }.map_err(uia("读选中项数"))?;
+    let total = usize::try_from(length).unwrap_or(0);
+    let mut names = Vec::new();
+    for index in 0..selected_name_budget(total) {
+        let item = unsafe { array.GetElement(index as i32) }.map_err(uia("取选中项"))?;
+        count_call();
+        match unsafe { item.CurrentName() } {
+            Ok(name) => names.push(name.to_string()),
+            Err(e) => {
+                let failure = uia("读选中项名称")(e);
+                if !failure.is_element_gone() {
+                    return Err(failure);
+                }
+            }
+        }
+    }
+    Ok((names, total))
 }
 
 /// 一个滚动轴的位置百分比。这个轴滚不动、或状态没取时缺席。

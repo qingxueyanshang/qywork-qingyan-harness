@@ -1,6 +1,7 @@
 /**
  * 五个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
- * 动作前置条件、三态回执与动作后观察的透传、等待条件与终态、注册元数据，以及采集模式、
+ * 动作前置条件、三态回执与动作后观察的透传、选择容器的选中项渲染、等待条件与终态、
+ * 注册元数据，以及采集模式、
  * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型，
  * 以及有限动作序列的逐步执行、引用接续、后置条件、七种停止边界与 `executed` 语义。
  *
@@ -275,6 +276,24 @@ const 文档框: DesktopElement = {
   text: true,
 }
 
+/** 收起的组合框：控件表里没有它的项，选中项只在 selection.selected 里。 */
+const 组合框: DesktopElement = {
+  ref: 'w.11#18',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'combo_box',
+  name: '部门',
+  automationId: 'deptCombo',
+  enabled: true,
+  offscreen: false,
+  actions: [
+    { action: 'expand', delivery: ['background'] },
+    { action: 'collapse', delivery: ['background'] },
+  ],
+  expand: 'collapsed',
+  selection: { multiple: false, required: false, selected: ['市场部'] },
+}
+
 const TABLE = [
   窗口,
   工具栏,
@@ -291,6 +310,7 @@ const TABLE = [
   树节点,
   长列表,
   文档框,
+  组合框,
 ]
 
 /** 前台模式开着时那一份控件表。窗口根换成带窗口动作的那一个。 */
@@ -858,6 +878,111 @@ describe('按需字段', () => {
 
     await run(desktopObserveTool, { windowId: 'dw_1', includeState: true }, ctxWith(port))
     expect(calls[2]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
+  })
+})
+
+describe('选择容器的选中项', () => {
+  /** 收起的组合框在表里没有子控件，选中项只能由容器那一格交出来。 */
+  test('收起的组合框把选中项随观察交出来', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    const table = (r.data as unknown as DesktopSnapshot).elements
+    const combo = table.find((e) => e.automationId === 'deptCombo')
+    expect(combo?.selection?.selected).toEqual(['市场部'])
+    expect(table.filter((e) => e.parentRef === combo?.ref)).toEqual([])
+  })
+
+  /** 改完选中项，同次带回的那份观察里容器已经是新值：模型不必再单独观察一次。 */
+  test('动作同次带回的观察里容器的选中项已更新', async () => {
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_9',
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [
+            {
+              ...单选列表,
+              selection: { multiple: false, required: false, selected: ['single-alpha'] },
+            },
+            { ...单选项, selected: true },
+          ],
+        }),
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'w.5.0#12' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    const observation = (r.data as { observation: DesktopSnapshot }).observation
+    expect(observation.elements.find((e) => e.ref === 'w.5#11')?.selection?.selected).toEqual([
+      'single-alpha',
+    ])
+  })
+
+  /** 目标本身是容器时那一行就印出选中的是哪几项；名单不全时一并说出来。 */
+  test('目标是容器时行上印出选中项与名单不全', async () => {
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_10',
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [
+            {
+              ...长列表,
+              selection: {
+                multiple: true,
+                required: false,
+                selected: ['甲', '乙'],
+                truncated: true,
+              },
+            },
+          ],
+        }),
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'scroll',
+        ref: 'w.7#14',
+        direction: 'down',
+      },
+      ctxWith(port),
+    )
+    expect(r.message).toContain('选中 "甲"、"乙" 等')
+  })
+
+  /** includeState=false 的那份观察里没有这一格，行上也就不印选中项。 */
+  test('不取状态细节时行上不印选中项', async () => {
+    const 无状态长列表: DesktopElement = { ...长列表 }
+    delete 无状态长列表.selection
+    delete 无状态长列表.scroll
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_11',
+        observation: snapshot({ observationId: 'do_2', elements: [无状态长列表] }),
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'scroll',
+        ref: 'w.7#14',
+        direction: 'down',
+      },
+      ctxWith(port),
+    )
+    expect(r.message).toContain('w.7#14')
+    expect(r.message).not.toContain('选中')
   })
 })
 

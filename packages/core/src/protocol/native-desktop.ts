@@ -237,10 +237,17 @@ export interface DesktopRangeState {
   largeChange?: number
 }
 
-/** SelectionPattern 读到的容器约束。 */
+/**
+ * SelectionPattern 读到的容器约束与当前选中项。
+ *
+ * `selected` 是当前选中项的名称。一项都没选中时缺席；`truncated` 为真表示它不是全部，
+ * 要看全得读容器里的项。**收起的组合框在控件表里没有子控件，它的选中项只在这里读得到。**
+ */
 export interface DesktopSelectionState {
   multiple: boolean
   required: boolean
+  selected?: string[]
+  truncated?: boolean
 }
 
 /**
@@ -349,7 +356,7 @@ export interface DesktopNode {
   expand?: 'collapsed' | 'expanded' | 'partial' | 'leaf' | 'unknown'
   /** SelectionItemPattern 的现态。 */
   selected?: boolean
-  /** SelectionPattern 读到的容器约束。只有选择容器有。 */
+  /** SelectionPattern 读到的容器约束与当前选中项。只有选择容器有。 */
   selection?: DesktopSelectionState
   /** ScrollPattern 的滚动位置。滚动后重读按它核对。 */
   scroll?: DesktopScrollState

@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`desktop/coordinator.ts` 的占用、排队、撤销、释放、目标读数、局部查询参数、
  * 动作后观察的并入与目标级失效、等待的四种终态，以及图像采集的取景参数、imageRef 的
- * 换算与四条失效判据、控件包围盒的透传。同目录的 `bridge.test.ts` 覆盖宿主连接与代际
- * 配对，`assembly.test.ts` 覆盖端口注入。
+ * 换算与四条失效判据、控件包围盒与选择容器选中项名单的透传。同目录的 `bridge.test.ts`
+ * 覆盖宿主连接与代际配对，`assembly.test.ts` 覆盖端口注入。
  *
  * 用真 `serve()` 加真 WebSocket 假宿主：占用判定要和在途调用的收尾按固定顺序配合，
  * 拿假 bridge 测等于把这两者之间的顺序跳过去。
@@ -1039,6 +1039,45 @@ test('控件包围盒随观察交到端口外面', async () => {
     height: 24,
   })
   expect(snapshot.elements.find((e) => e.ref === 'w#1')?.rect).toBeUndefined()
+})
+
+/** 选中项名单与它的截断标记随观察交到端口外面；worker 没给时端口不造一份。 */
+test('选择容器的选中项名单随观察交到端口外面', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const pending = a.observe({ windowId: 'dw_1' })
+  const frame = await host.next()
+  host.reply(frame, {
+    observation: {
+      ...TREE,
+      window: frame.target?.window ?? 0,
+      nodes: NODES.map((n) =>
+        n.ref === 'w.0#2'
+          ? {
+              ...n,
+              actions: [...n.actions],
+              selection: {
+                multiple: true,
+                required: false,
+                selected: ['甲', '乙'],
+                truncated: true,
+              },
+            }
+          : { ...n, actions: [...n.actions] },
+      ),
+    },
+  })
+  const snapshot = await pending
+  expect(snapshot.elements.find((e) => e.ref === 'w.0#2')?.selection).toEqual({
+    multiple: true,
+    required: false,
+    selected: ['甲', '乙'],
+    truncated: true,
+  })
+  expect(snapshot.elements.find((e) => e.ref === 'w#1')?.selection).toBeUndefined()
 })
 
 /**

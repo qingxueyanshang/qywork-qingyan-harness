@@ -837,14 +837,47 @@ pub fn range_state(
     })
 }
 
-/// SelectionPattern 读到的容器约束。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// 最多列几项选中项的名称。
+///
+/// 名称逐项跨进程读，上限限的是这个代价；选中项再多时该读的是列表本身，不是一份长名单。
+pub const MAX_SELECTED_NAMES: usize = 16;
+
+/// 这一次要读几项选中项的名称。
+pub fn selected_name_budget(total: usize) -> usize {
+    total.min(MAX_SELECTED_NAMES)
+}
+
+/// SelectionPattern 读到的容器约束与当前选中项。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionState {
     /// 容器允许同时选中多项。
     pub multiple: bool,
     /// 容器要求始终有一项被选中。
     pub required: bool,
+    /// 当前选中项的名称。一项都没选中时为空。
+    ///
+    /// 收起的组合框在控件表里没有子节点，它的选中项只在这里读得到。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub selected: Vec<String>,
+    /// `selected` 不是全部。
+    #[serde(skip_serializing_if = "not_set")]
+    pub truncated: bool,
+}
+
+impl SelectionState {
+    /// `total` 是容器报的选中项数，`names` 只含读到名称的那几项。
+    ///
+    /// 两者不等即名单不全：撞上 `MAX_SELECTED_NAMES`，或某一项在读它名称之前消失。
+    /// 两种都记同一格，调用方要的是「这不是全部」这一件事。
+    pub fn new(multiple: bool, required: bool, names: Vec<String>, total: usize) -> Self {
+        Self {
+            multiple,
+            required,
+            truncated: names.len() < total,
+            selected: names,
+        }
+    }
 }
 
 /// ScrollPattern 读到的滚动位置，百分比。
@@ -928,7 +961,7 @@ pub struct Node {
     /// SelectionItemPattern 的现态。没有这个模式时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<bool>,
-    /// SelectionPattern 读到的容器约束。只有选择容器有。
+    /// SelectionPattern 读到的容器约束与当前选中项。只有选择容器有。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection: Option<SelectionState>,
     /// ScrollPattern 的滚动位置。滚动后重读按它核对。
@@ -1787,6 +1820,55 @@ mod tests {
         assert_eq!(range_state(f64::NAN, 0.0, 100.0, 1.0, 10.0), None);
         assert_eq!(range_state(1.0, f64::NAN, 100.0, 1.0, 10.0), None);
         assert_eq!(range_state(1.0, 0.0, f64::INFINITY, 1.0, 10.0), None);
+    }
+
+    /// 选中项名称进 `selected`，一项都没选中时这一格与截断标记都不出现。
+    #[test]
+    fn a_container_carries_the_names_of_what_is_selected() {
+        let mut body = tree(None);
+        body.nodes[0].selection = Some(SelectionState::new(
+            false,
+            false,
+            vec!["市场部".to_owned()],
+            1,
+        ));
+        let value = serde_json::to_value(Observation::Tree(body)).unwrap();
+        let selection = &value["nodes"][0]["selection"];
+        assert_eq!(selection["selected"], serde_json::json!(["市场部"]));
+        assert_eq!(selection["multiple"], false);
+        assert!(selection.get("truncated").is_none());
+
+        let mut empty = tree(None);
+        empty.nodes[0].selection = Some(SelectionState::new(true, false, Vec::new(), 0));
+        let value = serde_json::to_value(Observation::Tree(empty)).unwrap();
+        let selection = &value["nodes"][0]["selection"];
+        assert!(selection.get("selected").is_none(), "没有选中项时不该出现这一格");
+        assert!(selection.get("truncated").is_none());
+        assert_eq!(selection["multiple"], true);
+    }
+
+    /// 选中项多于上限时只读前几项，并标出名单不全。
+    #[test]
+    fn a_long_selection_is_cut_at_the_cap_and_says_so() {
+        let total = MAX_SELECTED_NAMES + 7;
+        assert_eq!(selected_name_budget(total), MAX_SELECTED_NAMES);
+        assert_eq!(selected_name_budget(3), 3);
+        let names: Vec<String> = (0..selected_name_budget(total))
+            .map(|i| format!("行-{i}"))
+            .collect();
+        let state = SelectionState::new(true, false, names, total);
+        assert_eq!(state.selected.len(), MAX_SELECTED_NAMES);
+        assert!(state.truncated);
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["truncated"], true);
+    }
+
+    /// 读名称时某一项已经消失：那一项没有名称，名单因此不全。
+    #[test]
+    fn a_selected_item_that_vanished_leaves_the_list_incomplete() {
+        let state = SelectionState::new(true, false, vec!["甲".to_owned()], 2);
+        assert!(state.truncated);
+        assert_eq!(state.selected, vec!["甲".to_owned()]);
     }
 
     /// 滚不动的那个轴缺席。**缺席不是 0**：0 是「在顶端」。

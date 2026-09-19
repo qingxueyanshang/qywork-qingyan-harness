@@ -221,7 +221,18 @@ function elementOf(node: DesktopNode): DesktopElement {
     ...(node.toggle !== undefined ? { toggle: node.toggle } : {}),
     ...(node.expand !== undefined ? { expand: node.expand } : {}),
     ...(node.selected !== undefined ? { selected: node.selected } : {}),
-    ...(node.selection !== undefined ? { selection: { ...node.selection } } : {}),
+    ...(node.selection !== undefined
+      ? {
+          selection: {
+            multiple: node.selection.multiple,
+            required: node.selection.required,
+            ...(node.selection.selected !== undefined
+              ? { selected: [...node.selection.selected] }
+              : {}),
+            ...(node.selection.truncated === true ? { truncated: true } : {}),
+          },
+        }
+      : {}),
     ...(node.scroll !== undefined ? { scroll: { ...node.scroll } } : {}),
     ...(node.text === true ? { text: true } : {}),
     ...(node.weakIdentity === true ? { weakIdentity: true } : {}),

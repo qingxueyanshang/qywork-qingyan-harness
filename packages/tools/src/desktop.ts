@@ -304,8 +304,17 @@ function elementLine(e: DesktopElement): string {
     `${e.ref} ${e.role} ${e.name || '(无名称)'}` +
     (e.automationId ? ` #${e.automationId}` : '') +
     (e.value === undefined ? '' : ` = ${JSON.stringify(e.value)}`) +
+    selectedLabel(e) +
     (e.enabled ? '' : ' 已禁用')
   )
+}
+
+/** 选择容器此刻选中的那几项。一项都没选中时不写。 */
+function selectedLabel(e: DesktopElement): string {
+  const names = e.selection?.selected
+  if (!names?.length) return ''
+  const listed = names.map((n) => JSON.stringify(n)).join('、')
+  return ` 选中 ${listed}${e.selection?.truncated === true ? ' 等' : ''}`
 }
 
 function shortLabel(e: DesktopElement): string {
@@ -881,7 +890,10 @@ export const desktopObserveTool: ToolSpec = {
     '控件表给出角色、名称、稳定标识、当前值、是否启用，' +
     'actions（每个动作带 delivery 与不可用原因），' +
     '以及控件模式读到的状态：range 数值区间、toggle 复选现态、expand 展开现态、' +
-    'selected 这一项选中没有、selection 容器的多选与必选约束、scroll 滚动位置百分比、' +
+    'selected 这一项选中没有、' +
+    'selection 容器的多选与必选约束连同当前选中项的名称 selection.selected——' +
+    '收起的组合框也读得到，不用展开它，selection.truncated 为真时名单不是全部；' +
+    'scroll 滚动位置百分比、' +
     'text 能不能读文档文本；' +
     '以及 rect：控件在屏幕上的包围盒，与图用同一套坐标，树与图因此对得上。' +
     '每个控件带 parentRef 与 depth，同名控件靠祖先路径区分。' +

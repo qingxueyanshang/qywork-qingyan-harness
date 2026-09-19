@@ -89,7 +89,7 @@ export interface DesktopElement {
   expand?: 'collapsed' | 'expanded' | 'partial' | 'leaf' | 'unknown'
   /** 这一项此刻选中没有。 */
   selected?: boolean
-  /** 选择容器的多选与必选约束。只有容器有。 */
+  /** 选择容器的多选与必选约束，以及当前选中项的名称。只有容器有。 */
   selection?: DesktopSelectionState
   /** 滚动位置百分比。滚动后重读按它核对。 */
   scroll?: DesktopScrollState
