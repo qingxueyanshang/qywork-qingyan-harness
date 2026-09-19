@@ -150,7 +150,7 @@ const MODULES: Module[] = [
       },
     ],
   },
-  { id: 'browser', label: '浏览器' },
+  { id: 'browser', label: '浏览器控制' },
   /*
    * 组头是开关，不是「去配置」：这一组能不能用就由这一格决定，没有别处可去。
    * 占用真实鼠标键盘的前台操作在「权限」页，它是另一个问题。
@@ -160,7 +160,7 @@ const MODULES: Module[] = [
    */
   {
     id: 'desktop',
-    label: '电脑操作',
+    label: '电脑控制',
     toggle: {
       on: () => desktopSwitchOn(config()),
       onPick: (on) => void patchConfig({ desktopEnabled: on }),
@@ -285,8 +285,8 @@ const PERMS: Record<string, { label: string; warn?: number }> = {
   write: { label: '写入', warn: 1 },
   delete: { label: '删除', warn: 1 },
   network: { label: '出网', warn: 1 },
-  browser: { label: '浏览器', warn: 1 },
-  desktop: { label: '电脑操作', warn: 2 },
+  browser: { label: '浏览器控制', warn: 1 },
+  desktop: { label: '电脑控制', warn: 2 },
   execute: { label: '执行', warn: 2 },
   internal_control: { label: '不走权限闸' },
 }

@@ -1,5 +1,5 @@
 /**
- * 电脑操作的五个工具：窗口发现、结构化观察、动作、有限动作序列、等待。
+ * 电脑控制的五个工具：窗口发现、结构化观察、动作、有限动作序列、等待。
  *
  * 单个动作一次调用发一条端口命令就返回，由 Agent 循环再决定下一步。序列是同一个
  * `DesktopPort.act` 的有界循环，不重试有副作用的动作——重试一次 invoke 等于在应用里
@@ -245,7 +245,7 @@ function bounded(raw: unknown, field: string, low: number, high: number): number
 const NO_PORT = {
   status: 'failure',
   executed: false,
-  message: '本次执行没有电脑操作能力，无法操作桌面应用。',
+  message: '本次执行没有电脑控制能力，无法操作桌面应用。',
   errorKind: 'unsupported',
 } as const
 
@@ -775,7 +775,7 @@ function bareWindowNote(s: DesktopSnapshot): string {
     '输入用 action=type_text 且不给控件' +
     (foreground
       ? '。'
-      : '。前台操作此刻没有启用，这个窗口点不了也输不了，要用户在设置的「权限 → 电脑操作 → 前台操作」里打开。')
+      : '。前台操作此刻没有启用，这个窗口点不了也输不了，要用户在设置的「权限 → 电脑控制 → 前台操作」里打开。')
   )
 }
 
@@ -943,7 +943,7 @@ function windowTarget(args: Record<string, unknown>): string | null {
 const BASE = {
   category: 'desktop',
   facet: '桌面控件',
-  objectLabel: '电脑操作',
+  objectLabel: '电脑控制',
   permissionEffect: 'desktop',
 } as const
 
@@ -961,7 +961,7 @@ export const desktopWindowsTool: ToolSpec = {
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
   summary: '列出可操作的桌面窗口',
-  targetExtractor: () => '电脑操作',
+  targetExtractor: () => '电脑控制',
 
   fn: (_args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {

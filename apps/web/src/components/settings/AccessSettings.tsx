@@ -87,11 +87,11 @@ export function AccessSettings() {
             </div>
           </section>
 
-          {/* 电脑操作单开一张卡：它管的不是路径，而是 agent 能不能操作本机上别的应用。
-                **整组的开关不在这里**，在「模块 → 电脑操作」的组头，同一个开关只放一处。
+          {/* 电脑控制单开一张卡：它管的不是路径，而是 agent 能不能操作本机上别的应用。
+                **整组的开关不在这里**，在「模块 → 电脑控制」的组头，同一个开关只放一处。
                 留在这一页的是会占用真实鼠标键盘的那一半，和这台机器此刻的实际状态。 */}
           <section class="settings-block">
-            <h3 class="settings-block-head">电脑操作</h3>
+            <h3 class="settings-block-head">电脑控制</h3>
             <div class="setting-rows">
               {/* 这一句是边界不是说明：界面上没有第二处说得出「开了之后 agent 会占用
                     鼠标键盘」。关着时桌面工具仍然可用，只是只剩不打扰的那一半。 */}

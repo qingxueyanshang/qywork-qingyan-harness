@@ -231,7 +231,7 @@ const VERBS: Record<ActionKind, string> = {
   call: '调用',
 }
 
-/** 量词按动词分：对象是物的计「个」（读取 2 个文件），动作类的计「次」（调用 3 次浏览器）。 */
+/** 量词按动词分：对象是物的计「个」（读取 2 个文件），动作类的计「次」（调用 3 次浏览器控制）。 */
 const UNITS: Record<ActionKind, string> = {
   query: '个',
   read: '个',

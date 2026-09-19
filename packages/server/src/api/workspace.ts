@@ -323,7 +323,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     )
 
     const registry = new ToolRegistry()
-    // 浏览器与电脑操作的工具也列进来：这一页是设置目录，按静态完整清单列，
+    // 浏览器与电脑控制的工具也列进来：这一页是设置目录，按静态完整清单列，
     // 不是某条会话此刻能不能调它的真源。漏掉一个通道的表现是那一组只剩说明行，
     // 读起来像这组能力只有两条。
     registerBuiltinTools(registry, { mcpConfig: true, browser: true, desktop: true })

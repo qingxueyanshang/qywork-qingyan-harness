@@ -27,7 +27,7 @@ use super::frames::{Binding, Dispatch};
 /// 重启退避的起点与上界。
 const RESTART_BASE_MS: u64 = 500;
 const RESTART_MAX_MS: u64 = 15_000;
-/// 连续失败多少次之后不再重启。到达上限即电脑操作整条发布为不可用。
+/// 连续失败多少次之后不再重启。到达上限即电脑控制整条发布为不可用。
 const RESTART_MAX_ATTEMPTS: u32 = 5;
 /// 活过这个时长即认为这次启动是成功的，下一次失败从头退避。
 const HEALTHY_RUN_MS: u128 = 60_000;

@@ -1196,7 +1196,7 @@ describe('三态回执与动作后观察', () => {
     }
     const { port } = fakeDesktop({
       act: async () => {
-        throw new Refused('本次执行的电脑操作已经结束')
+        throw new Refused('本次执行的电脑控制已经结束')
       },
     })
     const r = await run(
@@ -1742,7 +1742,7 @@ describe('等待', () => {
         found: false,
         reason: 'cancelled',
         observation: null,
-        observationError: '本次执行的电脑操作已经结束',
+        observationError: '本次执行的电脑控制已经结束',
       }),
     })
     const r = await run(
@@ -2958,7 +2958,7 @@ describe('有限动作序列', () => {
     const failing: DesktopPort = {
       ...port,
       act: async () => {
-        throw Object.assign(new Error('电脑操作此刻不可用'), refusal)
+        throw Object.assign(new Error('电脑控制此刻不可用'), refusal)
       },
     }
     const r = await run(

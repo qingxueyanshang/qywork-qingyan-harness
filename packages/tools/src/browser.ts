@@ -424,7 +424,7 @@ function tabTarget(args: Record<string, unknown>): string | null {
 const BASE = {
   category: 'browser',
   facet: '页面',
-  objectLabel: '浏览器',
+  objectLabel: '浏览器控制',
   permissionEffect: 'browser',
 } as const
 

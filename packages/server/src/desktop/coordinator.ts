@@ -1,5 +1,5 @@
 /**
- * 电脑操作协调器：应用进程级对象，由 `serve` 装配。
+ * 电脑控制协调器：应用进程级对象，由 `serve` 装配。
  *
  * 它只执行已经绑定身份的操作——不规划任务，不存第二份「任务进行到哪」。
  *
@@ -347,7 +347,7 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 电脑操作能力是否可用。
+   * 电脑控制能力是否可用。
    *
    * 四项缺一不可：用户启用了、宿主连上了、worker 就绪了、系统授权了。
    * 装配方按它决定要不要注入端口——不是先给一个端口、调用时再报错。
@@ -411,8 +411,8 @@ export class DesktopCoordinator {
 
   /** 本次执行还能不能操作桌面。每个发请求的入口都要过这一关。 */
   #liveHost(lease: Lease): NativeDesktopHost {
-    if (lease.released) throw new DesktopUnavailableError('本次执行的电脑操作已经结束')
-    if (!this.available()) throw new DesktopUnavailableError('电脑操作此刻不可用')
+    if (lease.released) throw new DesktopUnavailableError('本次执行的电脑控制已经结束')
+    if (!this.available()) throw new DesktopUnavailableError('电脑控制此刻不可用')
     const host = this.#bridge.host()
     if (!host) throw new DesktopUnavailableError('桌面宿主未连接')
     return host
@@ -427,7 +427,7 @@ export class DesktopCoordinator {
    */
   #acquire(lease: Lease): Promise<void> {
     if (lease.released) {
-      return Promise.reject(new DesktopUnavailableError('本次执行的电脑操作已经结束'))
+      return Promise.reject(new DesktopUnavailableError('本次执行的电脑控制已经结束'))
     }
     if (this.#holder === lease) return Promise.resolve()
     if (this.#blocked !== null) {
@@ -1017,10 +1017,10 @@ export class DesktopCoordinator {
     lease.observations.clear()
     lease.images.clear()
     this.#leases.delete(lease.owner)
-    this.#dropWaiter(lease, '本次执行的电脑操作已经结束')
+    this.#dropWaiter(lease, '本次执行的电脑控制已经结束')
     const held = this.#holder === lease
     if (held) this.#clearTarget()
-    this.#bridge.settleExecutor(lease.executorId, '本次执行的电脑操作已经结束')
+    this.#bridge.settleExecutor(lease.executorId, '本次执行的电脑控制已经结束')
     const before = this.#bridge.host()
     if (!before) {
       // 宿主没了，这个执行实例名下的一切随之作废，没有什么要等着结清。
@@ -1048,7 +1048,7 @@ export class DesktopCoordinator {
     log.warn('desktop', '执行者释放后仍可能有请求在执行，桌面暂不交给下一个执行者', {
       executorId: lease.executorId,
     })
-    this.#block('上一次电脑操作还没有确认结清，此刻不能操作桌面')
+    this.#block('上一次电脑控制还没有确认结清，此刻不能操作桌面')
   }
 
   #setTarget(lease: Lease, app: string, foreground = false): void {

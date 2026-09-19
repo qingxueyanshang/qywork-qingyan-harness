@@ -1,5 +1,5 @@
 /**
- * 「模块」页电脑操作那一组：组头的开关读的是 `desktopEnabled`，写的也是它。
+ * 「模块」页电脑控制那一组：组头的开关读的是 `desktopEnabled`，写的也是它。
  *
  * 覆盖范围：`ModulesSettings.tsx` 的组头开关与工具行分组、`OnOff.tsx` 的两格形态。
  *
@@ -29,7 +29,7 @@ const TOOLS = {
       name: 'desktop_windows',
       category: 'desktop',
       facet: '桌面控件',
-      objectLabel: '电脑操作',
+      objectLabel: '电脑控制',
       summary: '列出可操作的桌面窗口',
       actionKind: 'read',
       permissionEffect: 'desktop',
@@ -39,10 +39,10 @@ const TOOLS = {
   ],
 }
 
-/** 电脑操作那一组的组头里那两格开关。 */
+/** 电脑控制那一组的组头里那两格开关。 */
 function segOf(host: HTMLElement): HTMLButtonElement[] {
   const head = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find((h) =>
-    h.querySelector('h3')?.textContent?.includes('电脑操作'),
+    h.querySelector('h3')?.textContent?.includes('电脑控制'),
   )
   return Array.from(head?.querySelectorAll<HTMLButtonElement>('.seg-item') ?? [])
 }

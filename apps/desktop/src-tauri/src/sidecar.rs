@@ -126,7 +126,7 @@ fn spawn_process(
         command = command.env("QYWORK_TOKEN", value);
     }
     if let Some(value) = host_key {
-        // 原生宿主连接的凭据，一份管浏览器与电脑操作两条路径。只交给这一个子进程：
+        // 原生宿主连接的凭据，一份管浏览器与电脑控制两条路径。只交给这一个子进程：
         // 它不注入页面、不进命令行参数、不落盘，也不传给插件。恢复时复用同一份，
         // 否则宿主连不回新起的 sidecar。
         command = command.env("QYWORK_HOST_KEY", value);

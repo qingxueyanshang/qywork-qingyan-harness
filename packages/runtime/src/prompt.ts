@@ -44,7 +44,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 /**
  * 能力段。**每个类目一条不少地告诉模型**——不说它就想不起来自己能做这件事，
- * 这是当前模型不主动用记忆、技能、派活、定时、电脑操作的直接原因。
+ * 这是当前模型不主动用记忆、技能、派活、定时、电脑控制的直接原因。
  *
  * 每行绑定一个门槛工具，只有它在注册表里才发出这一行：subagent / workflow /
  * load_tool / install_plugin / 桌面那五个按通道注册（见 `tools/src/index.ts`），
@@ -60,7 +60,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'desktop_windows',
-    line: '- 电脑操作：操作本机上已经开着的应用用这一组——desktop_windows 列窗口、desktop_observe 读控件表、desktop_act 执行。不要用 run_command 写截图或按坐标点击的脚本，那条路看不到控件也拿不到执行事实。控件表里找不到目标（画布、自绘界面）时用 desktop_observe 的 capture 取图，再按图里的像素坐标给 imageRef 与 imageX / imageY。',
+    line: '- 电脑控制：操作本机上已经开着的应用用这一组——desktop_windows 列窗口、desktop_observe 读控件表、desktop_act 执行。不要用 run_command 写截图或按坐标点击的脚本，那条路看不到控件也拿不到执行事实。控件表里找不到目标（画布、自绘界面）时用 desktop_observe 的 capture 取图，再按图里的像素坐标给 imageRef 与 imageX / imageY。',
   },
   {
     tool: 'write_memory',

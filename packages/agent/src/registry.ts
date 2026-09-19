@@ -891,7 +891,7 @@ export interface ToolContext {
    */
   browser?: BrowserPort
   /**
-   * 电脑操作通道。见 `DesktopPort`。
+   * 电脑控制通道。见 `DesktopPort`。
    *
    * 没接上时桌面工具不注册——同 `browser` 那条：没有原生宿主的桌面工具
    * 没有任何降级形态。

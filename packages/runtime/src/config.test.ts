@@ -160,7 +160,7 @@ describe('配置体检', () => {
   })
 
   /** 非布尔值落盘之后按真值判定，「关着」会被读成「开着」。 */
-  test('两个电脑操作开关只接受布尔值，缺席放行', () => {
+  test('两个电脑控制开关只接受布尔值，缺席放行', () => {
     expect(diagnoseConfig(cfg({ desktopEnabled: true, desktopForeground: false }))).toEqual([])
     expect(diagnoseConfig(cfg())).toEqual([])
     expect(diagnoseConfig(cfg({ desktopForeground: 'yes' as unknown as boolean }))).toEqual([

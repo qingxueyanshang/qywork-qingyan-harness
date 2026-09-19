@@ -295,11 +295,11 @@ describe('落盘门禁', () => {
   })
 
   /**
-   * 电脑操作那两格只收布尔。设置页写出去的是 `true` / `false`，别的客户端写进一个
+   * 电脑控制那两格只收布尔。设置页写出去的是 `true` / `false`，别的客户端写进一个
    * 字符串时必须在落盘前拦住：`desktopEnabled` 的判据是「不是 false 就算开」，
    * 一个 `'off'` 落进去读出来是开着的。
    */
-  test('电脑操作的开关不是布尔时 422，不落盘', async () => {
+  test('电脑控制的开关不是布尔时 422，不落盘', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home

@@ -173,7 +173,7 @@ async function connected(handle: ReturnType<typeof serve>): Promise<{
   host.ready()
   await tick()
   const desktop = handle.desktop
-  if (!desktop) throw new Error('这个 serve 应当装配了电脑操作协调器')
+  if (!desktop) throw new Error('这个 serve 应当装配了电脑控制协调器')
   return { host, desktop }
 }
 
@@ -265,7 +265,7 @@ test('排队中撤销：轮到它之前就释放，它不再进场，后面的�
 
   // B 还在排队时就被父级停止撤下来。
   const releasedB = b.release()
-  await expect(observeB).rejects.toThrow('本次执行的电脑操作已经结束')
+  await expect(observeB).rejects.toThrow('本次执行的电脑控制已经结束')
   host.settle(await host.next(), 'not_dispatched')
   await releasedB
 

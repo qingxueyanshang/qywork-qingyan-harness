@@ -1032,7 +1032,7 @@ describe('工具清单', () => {
    * 按通道注册的两组工具都要列进来。少一个通道的结果不是报错，是「模块」页那一组
    * 只剩说明行，读起来像这组能力没有工具。
    */
-  test('浏览器与电脑操作的工具都列得出来', async () => {
+  test('浏览器与电脑控制的工具都列得出来', async () => {
     const rows = await tools()
     const names = rows.map((t) => t.name)
     for (const name of [

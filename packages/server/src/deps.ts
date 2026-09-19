@@ -37,7 +37,7 @@ export interface CommandDeps {
    */
   browser?: BrowserCoordinator
   /**
-   * 电脑操作的协调器。**没有宿主凭据时不传**——会话装配据此决定要不要给这一轮
+   * 电脑控制的协调器。**没有宿主凭据时不传**——会话装配据此决定要不要给这一轮
    * 桌面能力；用户有没有启用由协调器自己按配置现判。
    */
   desktop?: DesktopCoordinator

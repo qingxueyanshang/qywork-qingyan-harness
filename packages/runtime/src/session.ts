@@ -176,7 +176,7 @@ export interface SessionOptions {
    */
   browser?: BrowserPort
   /**
-   * 电脑操作通道。见 `DesktopPort`。
+   * 电脑控制通道。见 `DesktopPort`。
    *
    * 由装配方依据用户的启用开关与当前宿主状态实时判定后传入；没传即这一轮没有
    * 桌面能力。会话结束时 `dispose` 会撤销它名下尚未派发的请求。
@@ -282,7 +282,7 @@ export class Session {
         void this.opts.desktop?.release().catch((err) => {
           log.warn(
             'desktop',
-            `停止时撤销电脑操作失败：${err instanceof Error ? err.message : String(err)}`,
+            `停止时撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`,
           )
         })
       },
@@ -853,10 +853,10 @@ export class Session {
     this.opts.browser?.release().catch((err) => {
       log.warn('browser', `释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`)
     })
-    // 电脑操作跟着会话走：这一轮收尾即撤销本执行者名下尚未派发的请求。
+    // 电脑控制跟着会话走：这一轮收尾即撤销本执行者名下尚未派发的请求。
     // 已经交给 OS 的动作不回滚——那是执行事实，不是可撤销的占用。
     this.opts.desktop?.release().catch((err) => {
-      log.warn('desktop', `撤销电脑操作失败：${err instanceof Error ? err.message : String(err)}`)
+      log.warn('desktop', `撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`)
     })
     if (!this.extensions) return
     this.extensions = null

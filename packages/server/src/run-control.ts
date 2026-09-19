@@ -207,7 +207,7 @@ export async function startRun(
      */
     ...(deps.browser?.available() ? { browser: deps.browser.portFor(conversationId, ws.id) } : {}),
     /*
-     * 电脑操作同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
+     * 电脑控制同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
      * 由协调器一次判完，缺任一项就不注入端口，这一轮连桌面工具都不注册。
      *
      * 端口按执行者发放，顶层会话与它派出去的成员各领一份：停止只撤销自己名下的

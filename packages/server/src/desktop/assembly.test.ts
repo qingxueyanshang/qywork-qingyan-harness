@@ -474,7 +474,7 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   expect(out.ok).toBe(false)
 })
 
-test('用户关掉电脑操作之后，下一轮连工具都不注册', async () => {
+test('用户关掉电脑控制之后，下一轮连工具都不注册', async () => {
   config.desktopEnabled = false
   script = [textTurn('好的')]
   bodies = []

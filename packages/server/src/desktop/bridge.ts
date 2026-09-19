@@ -38,7 +38,7 @@ import { timingSafeEqual } from '../pairing.ts'
 /** 一次操作的默认期限。宿主按它拒绝过期请求，服务端按它拒绝本地待决调用。 */
 const DEFAULT_DEADLINE_MS = 20_000
 
-/** 已连上的宿主。没有宿主时整条电脑操作能力不发布。 */
+/** 已连上的宿主。没有宿主时整条电脑控制能力不发布。 */
 export interface NativeDesktopHost {
   hostId: string
   hostEpoch: number

@@ -51,7 +51,7 @@ export function handleHello(
      */
     browser(): BrowserCapability
     /**
-     * 电脑操作此刻可用到什么程度。**与 `browser` 同一条理由现取**：宿主在应用启动
+     * 电脑控制此刻可用到什么程度。**与 `browser` 同一条理由现取**：宿主在应用启动
      * 之后才连上来，握手与 `desktop.state` 事件必须读同一份判定。
      */
     desktop(): DesktopCapability

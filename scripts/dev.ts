@@ -51,7 +51,7 @@ const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
 const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
- * 原生宿主连接的凭据，同样每次现生成。一份管浏览器与电脑操作两条宿主路径。
+ * 原生宿主连接的凭据，同样每次现生成。一份管浏览器与电脑控制两条宿主路径。
  *
  * 只交给 sidecar 与外壳两个进程：拿到它就能注册宿主，而 Vite 既不需要它，
  * 也会把整份环境继续传给它自己派生的进程。

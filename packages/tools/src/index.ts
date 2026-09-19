@@ -146,7 +146,7 @@ export function registerBuiltinTools(
     // 浏览器同样按通道注册：宿主没连上、版本不达标、成员会话三种情况都拿不到端口，
     // 此时注册进来的是七个必然报错的名字。
     ...(opts.browser ? browserTools : []),
-    // 电脑操作同样按通道注册：没启用、宿主没连上、worker 没就绪、系统没授权，
+    // 电脑控制同样按通道注册：没启用、宿主没连上、worker 没就绪、系统没授权，
     // 四种情况都拿不到端口，此时注册进来的是四个必然报错的名字。
     ...(opts.desktop ? desktopTools : []),
     readMemoryTool,

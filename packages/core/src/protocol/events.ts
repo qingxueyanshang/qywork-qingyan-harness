@@ -505,7 +505,7 @@ export interface BrowserStateEvent {
 }
 
 /**
- * 电脑操作能力变了。**进程级事件，信封上不带 `conversationId`。**
+ * 电脑控制能力变了。**进程级事件，信封上不带 `conversationId`。**
  *
  * 与 `browser.state` 同一条理由：桌面宿主在应用启动后才连上来，授权与 worker 状态
  * 之后还会再变。这条事件与握手里的 `capabilities.desktop` 是同一份投影。

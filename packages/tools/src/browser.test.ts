@@ -158,7 +158,7 @@ describe('注册元数据', () => {
     for (const spec of browserTools) {
       expect(spec.category).toBe('browser')
       expect(spec.permissionEffect).toBe('browser')
-      expect(spec.objectLabel).toBe('浏览器')
+      expect(spec.objectLabel).toBe('浏览器控制')
       expect(spec.facet).toBe('页面')
       expect(spec.summary.trim()).not.toBe('')
       // 默认串行：不声明 parallelSafe，同一页上两个动作不进同一波次。

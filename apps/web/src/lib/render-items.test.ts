@@ -364,8 +364,12 @@ describe('组头文案', () => {
     expect(groupTitle([tool('a.ts', 'read'), tool('b.ts', 'read')])).toBe('读取 2 个动作')
     // 调用与运行计次：对象是同一个浏览器或同一条命令，计「个」会把一页数成三页。
     expect(
-      groupTitle([tool('浏览器', 'call'), tool('浏览器', 'call'), tool('浏览器', 'call')]),
-    ).toBe('调用 3 次浏览器')
+      groupTitle([
+        tool('浏览器控制', 'call'),
+        tool('浏览器控制', 'call'),
+        tool('浏览器控制', 'call'),
+      ]),
+    ).toBe('调用 3 次浏览器控制')
   })
 
   test('多桶按首次出现顺序拼', () => {

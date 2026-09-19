@@ -1,4 +1,4 @@
-//! 电脑操作宿主：随包的 worker 进程与服务端 `/native/desktop` 之间的那一段。
+//! 电脑控制宿主：随包的 worker 进程与服务端 `/native/desktop` 之间的那一段。
 //!
 //! 这一层不解释任务意图，只做四件事：管 worker 的生死、给三条身份定值、把服务端的帧
 //! 翻译成 worker 请求再把回执翻回去、在 worker 没了时把在途请求按事实收尾。
@@ -122,7 +122,7 @@ struct HostState {
 pub struct DesktopHost {
     host_id: String,
     worker_path: PathBuf,
-    /// 桌面执行权。`None` = 没抢到，本进程整条电脑操作不可用，也不拉起 worker。
+    /// 桌面执行权。`None` = 没抢到，本进程整条电脑控制不可用，也不拉起 worker。
     /// 只按它的存活期起作用：丢弃它即释放，因此宿主活多久就要拿着它多久。
     _desktop_lock: Option<lock::DesktopLock>,
     state: Mutex<HostState>,
@@ -130,14 +130,14 @@ pub struct DesktopHost {
 
 /// 拉起宿主：占桌面执行权、定位随包 worker、连上 sidecar 的宿主路径。
 ///
-/// 失败只写日志并结束这条能力——电脑操作起不来不该拦住整个应用启动。
+/// 失败只写日志并结束这条能力——电脑控制起不来不该拦住整个应用启动。
 pub fn start(app: &AppHandle, port: u16, key: String) {
     // 与 `qy` sidecar 同一套定位：`externalBin` 的产物就在可执行文件旁边，
     // 开发态与安装态由插件自己判。不要改成自己拼路径，那是第二处声明。
     let command: std::process::Command = match app.shell().sidecar(WORKER_NAME) {
         Ok(command) => command.into(),
         Err(e) => {
-            log::error!("找不到随包的 {WORKER_NAME}，电脑操作不启用：{e}");
+            log::error!("找不到随包的 {WORKER_NAME}，电脑控制不启用：{e}");
             return;
         }
     };
@@ -149,7 +149,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
     let desktop_lock = match lock::acquire() {
         Ok(held) => Some(held),
         Err(reason) => {
-            log::warn!("电脑操作不可用：{reason}");
+            log::warn!("电脑控制不可用：{reason}");
             None
         }
     };
@@ -190,7 +190,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
     host
 }
 
-/// 停掉电脑操作：先禁新派发并结清在途，再让 worker 收场，最后断开宿主连接。
+/// 停掉电脑控制：先禁新派发并结清在途，再让 worker 收场，最后断开宿主连接。
 ///
 /// 顺序不能反。先断连接的话，在途请求的收尾回执发不出去，服务端那边只剩超时，而超时
 /// 一律按已派发记——一次可证明没有发出去的动作会被记成可能已经执行。
@@ -754,7 +754,7 @@ fn supervise(host: &Arc<DesktopHost>) {
         }
         attempt = next_attempt(attempt, started.elapsed());
         let Some(delay) = restart_delay(attempt) else {
-            log::error!("computer-host worker 连续启动失败，电脑操作不再自动重启");
+            log::error!("computer-host worker 连续启动失败，电脑控制不再自动重启");
             return;
         };
         log::info!("{delay:?} 后重启 computer-host worker（第 {attempt} 次）");

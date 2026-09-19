@@ -23,7 +23,7 @@ export {
   summaryCutOf,
   unitKey,
 } from './compaction.ts'
-// 电脑操作端口：tools 按它写桌面工具，server 的协调器实现它，runtime 注入
+// 电脑控制端口：tools 按它写桌面工具，server 的协调器实现它，runtime 注入
 export type {
   DesktopActReceipt,
   DesktopActResult,
