@@ -62,7 +62,7 @@ const 甲输入框: DesktopNode = {
   value: '',
   enabled: true,
   offscreen: false,
-  actions: ['set_value'],
+  actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 const 乙组: DesktopNode = {
   ref: 'w.1#4',
@@ -84,7 +84,7 @@ const 乙按钮: DesktopNode = {
   automationId: 'save',
   enabled: true,
   offscreen: false,
-  actions: ['invoke'],
+  actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 
 const NODES: DesktopNode[] = [窗口根, 甲组, 甲输入框, 乙组, 乙按钮]
@@ -447,9 +447,15 @@ test('动作同次带回新观察：目标子树换掉，无关区域的旧引�
   const a = desktop.portFor('cv_a')
   const first = await firstLook(host, a)
 
-  const acting = a.invoke({ windowId: 'dw_1', observationId: first.observationId, ref: 'w.1.0#5' })
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
   const frame = await host.next()
-  expect(frame.op).toBe('invoke')
+  expect(frame.op).toBe('act')
+  expect(frame.action).toEqual({ kind: 'invoke' })
   // 动作也带三个上限：宿主要用它们读目标所在的子树。
   expect(frame.maxNodes).toBeGreaterThan(0)
   expect(frame.maxDepth).toBeGreaterThan(0)
@@ -476,7 +482,12 @@ test('动作之后窗口被模态窗口挡住：整份观察作废，只剩重�
   const a = desktop.portFor('cv_a')
   const first = await firstLook(host, a)
 
-  const acting = a.invoke({ windowId: 'dw_1', observationId: first.observationId, ref: 'w.1.0#5' })
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
   const frame = await host.next()
   host.reply(frame, {
     dispatch: 'submitted',
@@ -494,13 +505,125 @@ test('动作之后没有重读：这个窗口的控件表整份作废', async ()
   const a = desktop.portFor('cv_a')
   const first = await firstLook(host, a)
 
-  const acting = a.invoke({ windowId: 'dw_1', observationId: first.observationId, ref: 'w.1.0#5' })
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
   const frame = await host.next()
   host.reply(frame, { dispatch: 'unknown', observationError: '窗口已关闭' })
   const result = await acting
   expect(result.dispatch).toBe('unknown')
   expect(result.observation).toBeNull()
   expect(a.elements('dw_1', first.observationId)).toBeNull()
+})
+
+/**
+ * 调用没返回时宿主不重读目标窗口，改带一份窗口清单。那份清单要走 `desktop_windows`
+ * 同一条登记路径：同一个窗口在两条路径上拿到的是同一个 id，新窗口拿到就能直接观察。
+ */
+test('动作调用未返回：窗口清单按同一条路径登记，新窗口当场可观察', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
+  const frame = await host.next()
+  const dialog = { handle: 77, pid: WINDOW.pid, processStartedAt: WINDOW.processStartedAt }
+  const dialogTarget = {
+    window: dialog.handle,
+    pid: dialog.pid,
+    processStartedAt: dialog.processStartedAt,
+  }
+  host.reply(frame, {
+    dispatch: 'submitted',
+    reason: '调用尚未返回，目标窗口已被禁用',
+    observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+    blocking: [
+      { ...WINDOW, appeared: false },
+      { ...dialog, app: WINDOW.app, title: '另存为', appeared: true },
+    ],
+  })
+  const result = await acting
+
+  expect(result.dispatch).toBe('submitted')
+  expect(result.observation).toBeNull()
+  // 目标窗口沿用原来那个 id，不因为走了另一条路径就换号。
+  expect(result.blocking?.[0]).toEqual({
+    windowId: 'dw_1',
+    app: WINDOW.app,
+    title: WINDOW.title,
+    appeared: false,
+  })
+  const appeared = result.blocking?.[1]
+  expect(appeared?.appeared).toBe(true)
+  expect(appeared?.windowId).not.toBe('dw_1')
+
+  // 新窗口当场可观察：不必先再列一次窗口。
+  if (!appeared) throw new Error('回执里没有新窗口')
+  const observing = a.observe({ windowId: appeared.windowId })
+  const next = await host.next()
+  expect(next.op).toBe('read_tree')
+  expect(next.target).toEqual(dialogTarget)
+  host.reply(next, { observation: { ...TREE, window: dialog.handle } })
+  expect((await observing).elements.length).toBeGreaterThan(0)
+})
+
+/** 动作回执里那份清单只覆盖目标进程，拿它剪会把别的进程的窗口一并作废。 */
+test('动作回执的窗口清单不剪掉别的窗口', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const other = {
+    handle: 88,
+    pid: 901,
+    processStartedAt: 1_700_000_000_001,
+    app: '别的',
+    title: '别的窗口',
+  }
+  const listing = a.windows()
+  const listFrame = await host.next()
+  host.reply(listFrame, {
+    observation: { kind: 'windows', capturedAt: 1, windows: [WINDOW, other] },
+  })
+  const listed = await listing
+  expect(listed).toHaveLength(2)
+  const otherId = listed[1]?.windowId
+  if (!otherId) throw new Error('第二个窗口没有拿到 id')
+
+  // 不能再走一次窗口发现：那一次会按整机清单剪掉这里刚登记的第二个窗口。
+  const looking = a.observe({ windowId: 'dw_1' })
+  const look = await host.next()
+  host.reply(look, treeOf(look))
+  const first = await looking
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
+  const frame = await host.next()
+  host.reply(frame, {
+    dispatch: 'submitted',
+    observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+    blocking: [{ ...WINDOW, appeared: false }],
+  })
+  await acting
+
+  // 另一个进程的窗口没被这份清单剪掉：它此刻仍然指得动。
+  const observing = a.observe({ windowId: otherId })
+  const next = await host.next()
+  expect(next.target?.window).toBe(other.handle)
+  host.reply(next, { observation: { ...TREE, window: other.handle } })
+  await observing
 })
 
 test('等待的条件与两个时限落在帧上，等到之后带回新观察', async () => {

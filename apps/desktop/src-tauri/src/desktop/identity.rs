@@ -122,9 +122,9 @@ fn parse_btime(stat: &str) -> Option<i64> {
         .ok()
 }
 
-/// macOS 的进程启动时刻要经 `sysctl` 的 `kinfo_proc`，而那需要一份手写的 C 结构体布局；
-/// 本机没有 macOS 可验，写一份没验过的布局会读出垃圾值而不报错。
-/// 这条随批 4.3 的 macOS 原生后端一起实现——在那之前 worker 在 macOS 上本来就直接退出。
+/// macOS 未实现：返回 `None`，窗口因此不进清单。进程启动时刻要经 `sysctl` 的
+/// `kinfo_proc` 读，需要一份手写的 C 结构体布局；布局写错不报错，读出的是无效值。
+/// worker 在 macOS 上没有后端，启动即以明确错误退出。
 #[cfg(target_os = "macos")]
 pub fn process_identity(_pid: u32) -> Option<ProcessIdentity> {
     None

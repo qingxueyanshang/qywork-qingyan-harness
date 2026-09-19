@@ -98,6 +98,72 @@ pub struct Spawned {
     pub link: WorkerLink,
     pub stdout: ChildStdout,
     pub stderr: ChildStderr,
+    /// 绑着这个 worker 的作业对象。**它活多久，worker 就最多活多久。**
+    ///
+    /// 宿主进程被强杀时没有任何代码跑得到，只有内核在最后一个句柄关闭时收掉作业里的
+    /// 进程。调用方要把它按住到不再需要这个 worker 为止，提前丢掉就是当场杀掉它。
+    pub job: Option<Job>,
+}
+
+/// 一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象。
+///
+/// 只有 Windows 有：非 Windows 目前没有 worker 实现，对应的进程组或 `PR_SET_PDEATHSIG`
+/// 一并留到那一端落地时做，现在不给一个做不到的承诺。
+#[cfg(windows)]
+pub struct Job(windows::Win32::Foundation::HANDLE);
+
+#[cfg(not(windows))]
+pub struct Job(());
+
+// SAFETY: 句柄由本类型独占，只在 Drop 里关一次。
+#[cfg(windows)]
+unsafe impl Send for Job {}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: 句柄由 CreateJobObjectW 交给本类型，此处是唯一的关闭点。
+        unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); }
+    }
+}
+
+/// 把一个已经起来的进程放进「作业关闭即杀」的作业对象。
+///
+/// 失败不拦住 worker 启动：拿不到这层兜底时它照常工作，只是宿主被强杀后会留下孤儿。
+#[cfg(windows)]
+fn confine(child: &Child) -> Option<Job> {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // SAFETY: 三步都只用本函数构造的句柄与结构体；失败即返回 None，不留半个状态。
+    unsafe {
+        let job = CreateJobObjectW(None, None).ok()?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of!(limits).cast(),
+            u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).ok()?,
+        );
+        let assigned = AssignProcessToJobObject(job, HANDLE(child.as_raw_handle()));
+        if let (Ok(()), Ok(())) = (set, assigned) {
+            return Some(Job(job));
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(job);
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn confine(_child: &Child) -> Option<Job> {
+    None
 }
 
 /// 拉起一个 worker 进程。三条管道都要接：stdout 是回执，stderr 是它退出的原因。
@@ -115,6 +181,10 @@ pub fn spawn(path: &Path) -> std::io::Result<Spawned> {
     }
     let mut child = command.spawn()?;
     let pid = child.id();
+    let job = confine(&child);
+    if job.is_none() {
+        log::warn!("computer-host worker pid={pid} 没能放进作业对象，宿主被强杀时它会留下");
+    }
     let stdin = child
         .stdin
         .take()
@@ -135,6 +205,7 @@ pub fn spawn(path: &Path) -> std::io::Result<Spawned> {
         },
         stdout,
         stderr,
+        job,
     })
 }
 

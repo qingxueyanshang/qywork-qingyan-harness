@@ -21,23 +21,28 @@
 
 import type {
   DesktopActResult,
+  DesktopBlockingWindowInfo,
   DesktopElement,
   DesktopFollowUp,
   DesktopImage,
   DesktopPort,
   DesktopRefusal,
   DesktopSnapshot,
+  DesktopText,
   DesktopWaitCondition,
   DesktopWaitResult,
   DesktopWindowInfo,
 } from '@qywork/agent'
 import type {
+  DesktopAction,
+  DesktopBlockingWindow,
   DesktopImageGeometry,
   DesktopNode,
   DesktopObservation,
   DesktopRect,
   DesktopTarget,
   DesktopTreeBody,
+  DesktopWindow,
 } from '@qywork/core'
 import { imageRectToScreen, log } from '@qywork/core'
 import {
@@ -183,7 +188,18 @@ function elementOf(node: DesktopNode): DesktopElement {
     enabled: node.enabled,
     offscreen: node.offscreen,
     ...(node.rect !== undefined ? { rect: { ...node.rect } } : {}),
-    actions: [...node.actions],
+    actions: node.actions.map((a) => ({
+      action: a.action,
+      delivery: [...a.delivery],
+      ...(a.unavailable !== undefined ? { unavailable: a.unavailable } : {}),
+    })),
+    ...(node.range !== undefined ? { range: { ...node.range } } : {}),
+    ...(node.toggle !== undefined ? { toggle: node.toggle } : {}),
+    ...(node.expand !== undefined ? { expand: node.expand } : {}),
+    ...(node.selected !== undefined ? { selected: node.selected } : {}),
+    ...(node.selection !== undefined ? { selection: { ...node.selection } } : {}),
+    ...(node.scroll !== undefined ? { scroll: { ...node.scroll } } : {}),
+    ...(node.text === true ? { text: true } : {}),
     ...(node.weakIdentity === true ? { weakIdentity: true } : {}),
   }
 }
@@ -327,8 +343,8 @@ export class DesktopCoordinator {
       observe: (input) => this.#observe(lease, input),
       elements: (windowId, observationId) => this.#elements(lease, windowId, observationId),
       captureImage: (input) => this.#captureImage(lease, input),
-      setValue: (input) => this.#act(lease, 'set_value', input),
-      invoke: (input) => this.#act(lease, 'invoke', input),
+      act: (input) => this.#act(lease, input),
+      readText: (input) => this.#readText(lease, input),
       wait: (input) => this.#wait(lease, input),
       release: () => this.#release(lease),
     }
@@ -412,11 +428,27 @@ export class DesktopCoordinator {
     this.#liveHost(lease)
     const result = await this.#bridge.request('list_windows', { executorId: lease.executorId })
     const observation = expect(result, 'windows')
-    const seen = new Set<string>()
+    const out = this.#register(observation.windows)
+    // 这一次没再出现的窗口就地作废：句柄会被 OS 复用，留着旧 id 等于给一个可能
+    // 指向另一个窗口的目标。**只有整机清单能这样剪**——动作回执带回的是单个进程的窗口，
+    // 拿它剪会把别的进程的窗口一并作废。
+    const seen = new Set(observation.windows.map(identityKey))
+    for (const [key, id] of [...this.#byIdentity]) {
+      if (seen.has(key)) continue
+      this.#byIdentity.delete(key)
+      this.#windows.delete(id)
+    }
+    return out
+  }
+
+  /**
+   * 把一批窗口登记成不透明 id。**这是 id 的唯一产生处**：同一个窗口在窗口清单里与在
+   * 动作回执里拿到的是同一个 id，模型因此不必分辨它是从哪一条路径来的。
+   */
+  #register(windows: DesktopWindow[]): DesktopWindowInfo[] {
     const out: DesktopWindowInfo[] = []
-    for (const w of observation.windows) {
+    for (const w of windows) {
       const key = identityKey(w)
-      seen.add(key)
       let windowId = this.#byIdentity.get(key)
       if (windowId === undefined) {
         this.#nextWindow += 1
@@ -425,13 +457,6 @@ export class DesktopCoordinator {
       }
       this.#windows.set(windowId, { windowId, ...w })
       out.push({ windowId, app: w.app, title: w.title })
-    }
-    // 这一次没再出现的窗口就地作废：句柄会被 OS 复用，留着旧 id 等于给一个可能
-    // 指向另一个窗口的目标。
-    for (const [key, id] of [...this.#byIdentity]) {
-      if (seen.has(key)) continue
-      this.#byIdentity.delete(key)
-      this.#windows.delete(id)
     }
     return out
   }
@@ -459,6 +484,7 @@ export class DesktopCoordinator {
       role?: string
       query?: string
       includeValue?: boolean
+      includeState?: boolean
     },
   ): Promise<DesktopSnapshot> {
     this.#liveHost(lease)
@@ -483,6 +509,7 @@ export class DesktopCoordinator {
       ...(input.role !== undefined ? { role: input.role } : {}),
       ...(input.query !== undefined ? { nameContains: input.query } : {}),
       ...(input.includeValue !== undefined ? { includeValue: input.includeValue } : {}),
+      ...(input.includeState !== undefined ? { includeState: input.includeState } : {}),
     })
     return this.#absorb(lease, input.windowId, expect(result, 'tree'))
   }
@@ -653,8 +680,7 @@ export class DesktopCoordinator {
 
   async #act(
     lease: Lease,
-    op: 'set_value' | 'invoke',
-    input: { windowId: string; observationId: string; ref: string; value?: string },
+    input: { windowId: string; observationId: string; ref: string; action: DesktopAction },
   ): Promise<DesktopActResult> {
     this.#liveHost(lease)
     // 观察已经占下了桌面，这里通常是空操作；观察之后被强制释放过才会真的排队。
@@ -666,12 +692,12 @@ export class DesktopCoordinator {
     const actionId = `da_${this.#nextAction}`
     this.#setTarget(lease, known.app)
     try {
-      const result = await this.#bridge.request(op, {
+      const result = await this.#bridge.request('act', {
         executorId: lease.executorId,
         actionId,
         target: this.#frameTarget(known),
         ref: input.ref,
-        ...(input.value !== undefined ? { value: input.value } : {}),
+        action: input.action,
         maxNodes: DEFAULT_MAX_NODES,
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
@@ -680,6 +706,7 @@ export class DesktopCoordinator {
         dispatch: result.dispatch,
         actionId,
         ...(result.reason !== undefined ? { reason: result.reason } : {}),
+        ...this.#blockedBy(result.blocking),
         ...this.#followUp(lease, input.windowId, result.observation, result.observationError),
       }
     } catch (err) {
@@ -695,6 +722,36 @@ export class DesktopCoordinator {
         observation: null,
         observationError: '宿主不可用，动作之后没有重读',
       }
+    }
+  }
+
+  /**
+   * 读一个控件的文档文本与选区。
+   *
+   * **它不换观察编号**：读文本不动控件表，换号会让调用方手上刚拿到的 `ref` 一并作废。
+   */
+  async #readText(
+    lease: Lease,
+    input: { windowId: string; observationId: string; ref: string; maxChars: number },
+  ): Promise<DesktopText> {
+    this.#liveHost(lease)
+    await this.#acquire(lease)
+    this.#liveHost(lease)
+    const known = this.#targetOf(input.windowId)
+    this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+    this.#setTarget(lease, known.app)
+    const result = await this.#bridge.request('read_text', {
+      executorId: lease.executorId,
+      target: this.#frameTarget(known),
+      ref: input.ref,
+      maxChars: input.maxChars,
+    })
+    const observation = expect(result, 'text')
+    return {
+      text: observation.text,
+      truncated: observation.truncated,
+      selectionSupport: observation.selectionSupport,
+      selection: observation.selection.map((s) => ({ ...s })),
     }
   }
 
@@ -765,6 +822,25 @@ export class DesktopCoordinator {
         observation: null,
         observationError: err.message,
       }
+    }
+  }
+
+  /**
+   * 动作调用尚未返回时同次带回的那份窗口清单。
+   *
+   * 走 `#register`——与 `desktop_windows` 同一条登记路径：调用方拿到的 `windowId` 可以
+   * 直接观察，不必先再列一次窗口。这一批不剪旧窗口，它只覆盖目标那一个进程。
+   */
+  #blockedBy(blocking: DesktopBlockingWindow[] | undefined): {
+    blocking?: DesktopBlockingWindowInfo[]
+  } {
+    if (!blocking || blocking.length === 0) return {}
+    const registered = this.#register(blocking)
+    return {
+      blocking: registered.map((info, at) => ({
+        ...info,
+        appeared: blocking[at]?.appeared === true,
+      })),
     }
   }
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::{Geometry, ScreenRect};
 
 /// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -89,6 +89,13 @@ pub struct Select {
     /// 取不取控件当前值。为假时 `value` 一律缺席，可用动作仍照常判定。
     #[serde(default = "yes")]
     pub include_value: bool,
+    /// 取不取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、
+    /// 滚动位置。
+    ///
+    /// 为假时这几格一律缺席，**可用动作表不受影响**——动作按模式有没有判，那几个布尔
+    /// 属性一直取。读大窗口时省下这十五个属性的取数成本。
+    #[serde(default = "yes")]
+    pub include_state: bool,
 }
 
 const fn yes() -> bool {
@@ -104,6 +111,7 @@ impl Default for Select {
             role: None,
             name_contains: None,
             include_value: true,
+            include_state: true,
         }
     }
 }
@@ -125,6 +133,9 @@ impl Select {
         }
         if !self.include_value {
             out.push("includeValue=false".to_owned());
+        }
+        if !self.include_state {
+            out.push("includeState=false".to_owned());
         }
         out
     }
@@ -162,6 +173,139 @@ pub enum WaitUntil {
     Window,
 }
 
+/// 复选状态。三态控件的中间态是一个可以主动写入的目标态，不是「切一次」的副产物。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToggleState {
+    Off,
+    On,
+    Indeterminate,
+}
+
+impl ToggleState {
+    /// UIA 的 ToggleState 常量顺序：0 = Off，1 = On，2 = Indeterminate。
+    pub fn from_uia(raw: i32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Off),
+            1 => Some(Self::On),
+            2 => Some(Self::Indeterminate),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+}
+
+/// TogglePattern 只有 `Toggle()`，它按固定环转一格。要到达一个目标态只能按现态算要转几格。
+///
+/// 环的长度由控件自己决定：二态控件在 Off 与 On 之间转，三态控件多一个 Indeterminate。
+/// **环长判错就会停在别的状态上**，所以它由调用方按控件实际支持的状态数给出。
+/// 环上没有的状态返回 `None`：二态控件到不了中间态，调用方据此拒绝而不是转到别处去。
+pub fn toggle_steps(current: ToggleState, target: ToggleState, tri_state: bool) -> Option<u32> {
+    let ring: &[ToggleState] = if tri_state {
+        &[ToggleState::Off, ToggleState::On, ToggleState::Indeterminate]
+    } else {
+        &[ToggleState::Off, ToggleState::On]
+    };
+    let at = ring.iter().position(|s| *s == current)?;
+    let to = ring.iter().position(|s| *s == target)?;
+    Some(u32::try_from((to + ring.len() - at) % ring.len()).unwrap_or(0))
+}
+
+/// 滚动方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl ScrollDirection {
+    fn vertical(self) -> bool {
+        matches!(self, Self::Up | Self::Down)
+    }
+}
+
+/// 一次滚动的步长。ScrollPattern 只认「一行」与「一页」，没有像素量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollStep {
+    Line,
+    Page,
+}
+
+/// UIA `ScrollAmount` 常量。
+///
+/// 顺序是 LargeDecrement(0) / SmallDecrement(1) / NoAmount(2) / LargeIncrement(3) /
+/// SmallIncrement(4)。**不要按枚举名的字母序重排**，调用按这个数值传。
+pub const SCROLL_NO_AMOUNT: i32 = 2;
+
+/// 把方向与步长换成 `Scroll(horizontal, vertical)` 的两个实参。
+///
+/// 不动的那一个轴必须是 `NoAmount`：传别的值会让这次滚动同时动两个轴。
+pub fn scroll_amounts(direction: ScrollDirection, step: ScrollStep) -> (i32, i32) {
+    let amount = match (direction, step) {
+        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Page) => 0,
+        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Line) => 1,
+        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Page) => 3,
+        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Line) => 4,
+    };
+    if direction.vertical() {
+        (SCROLL_NO_AMOUNT, amount)
+    } else {
+        (amount, SCROLL_NO_AMOUNT)
+    }
+}
+
+/// 一次动作要执行什么。
+///
+/// 每一种都带齐自己的参数：动作与参数分两处给的话，`set_value` 少了值也能翻译成一条
+/// 合法请求，缺的那一项要到 provider 调用那一刻才暴露。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActionSpec {
+    /// InvokePattern。按钮与菜单项的默认动作。
+    Invoke,
+    /// ValuePattern。空串是清空，与缺席不是一回事。
+    SetValue { value: String },
+    /// RangeValuePattern。越界与只读一律拒绝，不夹到边界上。
+    SetRangeValue { value: f64 },
+    /// SelectionItemPattern。单选：把选择换成这一项。
+    Select,
+    /// SelectionItemPattern。增选：容器不支持多选时拒绝。
+    AddToSelection,
+    /// SelectionItemPattern。取消选中这一项。
+    RemoveFromSelection,
+    /// TogglePattern。按目标态表达，不是「切一次」。
+    SetToggle { state: ToggleState },
+    /// ExpandCollapsePattern。
+    Expand,
+    /// ExpandCollapsePattern。
+    Collapse,
+    /// ScrollPattern。一次一步，步长由 `step` 给。
+    Scroll {
+        direction: ScrollDirection,
+        step: ScrollStep,
+    },
+    /// ScrollItemPattern。把这个控件滚进可见区。
+    ScrollIntoView,
+    /// ItemContainerPattern + VirtualizedItemPattern。
+    ///
+    /// 目标是**容器**：按名称在容器里找一项（未实例化的项也找得到），找到就实例化它。
+    /// 虚拟化列表里没实例化的项不在控件树上，拿不到 `ref`，只能这样进得去。
+    RealizeItem { name: String },
+    /// TextPattern。按 UTF-16 码元的偏移设选区。
+    SelectText { start: u32, length: u32 },
+}
+
 /// 请求动作。`params` 一律显式给出，空参数写 `{}`。
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -192,22 +336,26 @@ pub enum Op {
         #[serde(flatten)]
         bounds: Bounds,
     },
-    /// 给控件写值，之后重读它所在的子树。
-    SetValue {
+    /// 在控件上执行一个动作，之后重读它所在的子树。
+    ///
+    /// 所有改变状态的动作走这一条：定位、准入、可放弃等待与重读只有一处实现，
+    /// 按动作分成多个 op 会让这四件事各有一份拷贝。
+    Act {
         window: i64,
         #[serde(rename = "ref")]
         reference: String,
-        value: String,
+        action: ActionSpec,
         #[serde(flatten)]
         bounds: Bounds,
     },
-    /// 调用控件的默认动作，之后重读它所在的子树。
-    Invoke {
+    /// 读一个控件的文档文本与选区。只读，不改变状态。
+    #[serde(rename_all = "camelCase")]
+    ReadText {
         window: i64,
         #[serde(rename = "ref")]
         reference: String,
-        #[serde(flatten)]
-        bounds: Bounds,
+        /// 交回多少个 UTF-16 码元。超出即截断并标记。
+        max_chars: u32,
     },
     /// 采一张目标窗口的图。
     ///
@@ -284,6 +432,16 @@ pub struct Response {
     /// 动作已派发但随后的重读失败时填这里，`dispatch` 保持原值。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
+    /// 动作调用尚未返回时目标进程此刻的顶层窗口，纯 Win32 读出。
+    ///
+    /// 只在 `observation_error` 是 `target_blocked` 那一支出现：那时重读目标窗口必然
+    /// 等到超时，这一格替它说清「下一步该看哪个窗口」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking: Option<Vec<BlockingWindow>>,
+    /// 回执发出之后还要清一次这个窗口所属 provider 的连接。**不上线**，只把这件事
+    /// 从动作路径带回执行循环。见 `Backend::drain_provider`。
+    #[serde(skip)]
+    pub after_reply: Option<i64>,
 }
 
 impl Response {
@@ -296,6 +454,8 @@ impl Response {
             reason: Some(reason),
             observation: None,
             observation_error: None,
+            blocking: None,
+            after_reply: None,
         }
     }
 
@@ -308,6 +468,8 @@ impl Response {
             reason: None,
             observation: Some(observation),
             observation_error: None,
+            blocking: None,
+            after_reply: None,
         }
     }
 
@@ -324,8 +486,20 @@ impl Response {
             reason: None,
             observation,
             observation_error,
+            blocking: None,
+            after_reply: None,
         }
     }
+}
+
+/// 动作调用尚未返回时交回的一个顶层窗口。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockingWindow {
+    #[serde(flatten)]
+    pub info: WindowInfo,
+    /// 动作调用之前这个窗口不存在。模态对话框就是这样冒出来的。
+    pub appeared: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -360,6 +534,7 @@ pub enum Observation {
     Tree(Tree),
     Wait(Wait),
     Image(Image),
+    Text(Text),
 }
 
 /// 一次图像采集的结果。
@@ -435,6 +610,122 @@ pub struct Completeness {
     pub visited: u32,
 }
 
+/// 只有后台语义一种投递方式。前台原始输入尚未实现，`delivery` 里因此不会出现它。
+pub const DELIVERY_BACKGROUND: &str = "background";
+
+/// 控件上的一个动作，连同它此刻能不能执行。
+///
+/// `delivery` 为空表示此刻执行不了，原因在 `unavailable`。模式缺失的动作不列：
+/// 每个控件列出全部十几个动作会把「这里能做什么」盖住。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeAction {
+    pub action: &'static str,
+    pub delivery: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<&'static str>,
+}
+
+impl NodeAction {
+    /// 这个动作此刻能后台执行。
+    pub fn ready(action: &'static str) -> Self {
+        Self {
+            action,
+            delivery: vec![DELIVERY_BACKGROUND],
+            unavailable: None,
+        }
+    }
+
+    /// 控件暴露了这个模式，但此刻用不了。原因是控件自己的属性，不是猜的。
+    pub fn blocked(action: &'static str, reason: &'static str) -> Self {
+        Self {
+            action,
+            delivery: Vec::new(),
+            unavailable: Some(reason),
+        }
+    }
+}
+
+/// RangeValuePattern 读到的数值区间。动作前的越界判定按它做。
+///
+/// **非有限数一律不发**：provider 对没有步长的控件交回 NaN，照发会在 JSON 里变成
+/// `null`，而字段声明的是数字。三项主值任一非有限时整个区间缺席，见 `range_state`。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeState {
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub small_change: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub large_change: Option<f64>,
+}
+
+/// 把读到的五个数收成一份区间。值、下界、上界任一非有限即整份缺席。
+pub fn range_state(
+    value: f64,
+    min: f64,
+    max: f64,
+    small_change: f64,
+    large_change: f64,
+) -> Option<RangeState> {
+    (value.is_finite() && min.is_finite() && max.is_finite()).then_some(RangeState {
+        value,
+        min,
+        max,
+        small_change: small_change.is_finite().then_some(small_change),
+        large_change: large_change.is_finite().then_some(large_change),
+    })
+}
+
+/// SelectionPattern 读到的容器约束。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionState {
+    /// 容器允许同时选中多项。
+    pub multiple: bool,
+    /// 容器要求始终有一项被选中。
+    pub required: bool,
+}
+
+/// ScrollPattern 读到的滚动位置，百分比。
+///
+/// 某个轴不能滚动时那一格缺席。**缺席不等于 0**：0 是「在顶端」。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub horizontal: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<f64>,
+}
+
+/// 一次文本读取的全部内容。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Text {
+    pub window: i64,
+    pub captured_at: i64,
+    /// 读的是哪个控件。
+    pub scope: String,
+    pub text: String,
+    /// `text` 被 `maxChars` 截断了。后面还有内容，不是文档到此为止。
+    pub truncated: bool,
+    /// 这个控件支持哪种选区：`none` / `single` / `multiple`。
+    pub selection_support: &'static str,
+    pub selection: Vec<TextSelection>,
+}
+
+/// 一段选区。`start` 是它在文档里的起点，按 UTF-16 码元计。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSelection {
+    pub start: u32,
+    pub text: String,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
@@ -459,9 +750,30 @@ pub struct Node {
     /// 也不等于它在屏幕外——那一件事由 `offscreen` 说。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<ScreenRect>,
-    /// 只列 worker 已实现的动作。控件暴露了模式但 worker 没有对应 op 时不列，
+    /// 只列 worker 已实现的动作。控件暴露了模式但 worker 没有对应实现时不列，
     /// 否则调用方会按这张表发出永远拿不到实现的请求。
-    pub actions: Vec<&'static str>,
+    pub actions: Vec<NodeAction>,
+    /// RangeValuePattern 的数值区间。没有这个模式时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<RangeState>,
+    /// TogglePattern 的现态。没有这个模式时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle: Option<&'static str>,
+    /// ExpandCollapsePattern 的现态：`collapsed` / `expanded` / `partial` / `leaf`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expand: Option<&'static str>,
+    /// SelectionItemPattern 的现态。没有这个模式时缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    /// SelectionPattern 读到的容器约束。只有选择容器有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionState>,
+    /// ScrollPattern 的滚动位置。滚动后重读按它核对。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollState>,
+    /// 这个控件有 TextPattern，可以读文档文本与选区。
+    #[serde(skip_serializing_if = "not_set")]
+    pub text: bool,
     /// 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
     ///
     /// 三项都不变而控件被换掉时核不出来，界面重排之后这个引用不可靠。为真时调用方应当
@@ -474,15 +786,58 @@ fn not_set(flag: &bool) -> bool {
     !*flag
 }
 
-/// 动作调用返回后的执行事实映射。
-///
-/// 失败一律记 `unknown`：UIA 是跨进程调用，provider 可能已经执行完动作才返回错误，
-/// 调用方无法据此断定状态未变。
-pub fn action_dispatch(call: &Result<(), String>) -> Dispatch {
-    match call {
-        Ok(()) => Dispatch::Submitted,
-        Err(_) => Dispatch::Unknown,
+/// 动作已经生效的可核实证据。三项都由 Win32 读出，读它们不进 UIA，
+/// 因此不会被目标进程的嵌套消息循环挡住。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionEvidence {
+    /// 目标窗口被禁用。Win32 的模态对话框正是这样挡住属主窗口的。
+    WindowDisabled,
+    /// 目标窗口已经销毁。
+    WindowGone,
+    /// 目标进程里多出一个此前没有的顶层窗口。
+    NewWindow,
+}
+
+impl ActionEvidence {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WindowDisabled => "目标窗口已被禁用",
+            Self::WindowGone => "目标窗口已关闭",
+            Self::NewWindow => "目标进程出现了新的顶层窗口",
+        }
     }
+}
+
+/// 一次动作调用的终态。`None` = 还判不出来，接着等。
+///
+/// `InvokePattern.Invoke()` 点开模态对话框时，provider 那一侧要等对话框关掉才返回，
+/// 客户端这次调用因此挂到 UIA 连接超时。**不能据此记未执行**：动作已经生效了。
+/// 所以调用放到一条可以放弃等待的线程上，主路径改判可核实的事实——
+/// 目标窗口被禁用、已关闭，或者同进程多出一个顶层窗口——三者任一成立即 `submitted`。
+/// 没有证据而调用仍未返回才是 `unknown`。
+pub fn classify_action(
+    returned: Option<&Result<(), String>>,
+    evidence: Option<ActionEvidence>,
+    expired: bool,
+) -> Option<(Dispatch, Option<String>)> {
+    if let Some(call) = returned {
+        return Some(match call {
+            Ok(()) => (Dispatch::Submitted, None),
+            Err(text) => (Dispatch::Unknown, Some(text.clone())),
+        });
+    }
+    if let Some(evidence) = evidence {
+        return Some((
+            Dispatch::Submitted,
+            Some(format!("调用尚未返回，{}", evidence.as_str())),
+        ));
+    }
+    expired.then(|| {
+        (
+            Dispatch::Unknown,
+            Some("call_pending: 动作调用尚未返回，也没有可核实的生效证据".to_owned()),
+        )
+    })
 }
 
 fn check_host(req: &Request, binding: &Binding) -> Result<(), &'static str> {
@@ -598,16 +953,17 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":3,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"v":4,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
-                "op":"invoke","params":{{"window":66,"ref":"w.0.1#42.7",
+                "op":"act","params":{{"window":66,"ref":"w.0.1#42.7",
+                "action":{{"kind":"invoke"}},
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
     }
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":3,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"v":4,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -615,15 +971,30 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":3,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"v":4,"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
+    }
+
+    fn act_params(action: &str) -> Request {
+        parse(&format!(
+            r#"{{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"act","params":{{"window":66,"ref":"w.0#7","action":{action},
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
+        ))
+    }
+
+    fn action_of(req: Request) -> ActionSpec {
+        match req.op {
+            Op::Act { action, .. } => action,
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
     }
 
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -649,7 +1020,7 @@ mod tests {
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -657,6 +1028,7 @@ mod tests {
             Op::ReadTree { select, .. } => {
                 assert_eq!(select.root, None);
                 assert!(select.include_value);
+                assert!(select.include_state);
                 assert!(select.describe().is_empty());
             }
             other => panic!("解析成了别的 op：{other:?}"),
@@ -667,9 +1039,9 @@ mod tests {
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
-                "nameContains":"保存","includeValue":false,
+                "nameContains":"保存","includeValue":false,"includeState":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
         );
         match req.op {
@@ -681,6 +1053,7 @@ mod tests {
                         "role=button".to_owned(),
                         "nameContains=保存".to_owned(),
                         "includeValue=false".to_owned(),
+                        "includeState=false".to_owned(),
                     ]
                 );
             }
@@ -691,7 +1064,7 @@ mod tests {
     #[test]
     fn wait_decodes_condition_and_two_bounds() {
         let req = parse(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
                 "value":"张三","pollMs":250,"timeoutMs":9000,
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
@@ -716,7 +1089,7 @@ mod tests {
 
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -729,7 +1102,7 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
         )
         .is_err());
@@ -739,7 +1112,7 @@ mod tests {
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":3,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
@@ -752,7 +1125,7 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":3,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"v":4,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
     }
 
@@ -785,7 +1158,14 @@ mod tests {
                     width: 80,
                     height: 24,
                 }),
-                actions: vec!["invoke"],
+                actions: vec![NodeAction::ready("invoke")],
+                range: None,
+                toggle: None,
+                expand: None,
+                selected: None,
+                selection: None,
+                scroll: None,
+                text: false,
                 weak_identity: false,
             }],
         }
@@ -841,6 +1221,61 @@ mod tests {
         assert_eq!(value["completeness"]["visited"], 500);
     }
 
+    /// 调用没返回时不重读目标窗口，换成一份纯 Win32 的顶层窗口清单：
+    /// 那一刻目标应用的 UI 线程卡在调用里，任何 UIA 读取都会等到超时。
+    #[test]
+    fn a_blocked_action_carries_the_windows_instead_of_a_reread() {
+        let mut resp = Response::acted(
+            "r1".to_owned(),
+            Dispatch::Submitted,
+            Err("target_blocked: 动作调用尚未返回，没有重读目标窗口".to_owned()),
+        );
+        resp.blocking = Some(vec![
+            BlockingWindow {
+                info: WindowInfo {
+                    window: 66,
+                    pid: 900,
+                    title: "夹具".to_owned(),
+                    class_name: "WindowsForms10.Window".to_owned(),
+                },
+                appeared: false,
+            },
+            BlockingWindow {
+                info: WindowInfo {
+                    window: 67,
+                    pid: 900,
+                    title: "qywork modal dialog".to_owned(),
+                    class_name: "#32770".to_owned(),
+                },
+                appeared: true,
+            },
+        ]);
+        let value = serde_json::to_value(&resp).expect("回执应当序列化成功");
+        assert_eq!(value["dispatch"], "submitted");
+        assert!(value["observationError"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("target_blocked")));
+        assert!(value.get("observation").is_none());
+        // 回执发出之后要清一次 provider，这件事只在 worker 内部传，不上线。
+        resp.after_reply = Some(66);
+        let value = serde_json::to_value(&resp).expect("回执应当序列化成功");
+        assert!(value.get("afterReply").is_none());
+        assert!(value.get("after_reply").is_none());
+        // 身份字段与窗口清单同形：宿主按同一条路径补进程启动时刻与应用名。
+        assert_eq!(value["blocking"][0]["window"], 66);
+        assert_eq!(value["blocking"][0]["appeared"], false);
+        assert_eq!(value["blocking"][1]["title"], "qywork modal dialog");
+        assert_eq!(value["blocking"][1]["appeared"], true);
+    }
+
+    /// 调用返回了就照常重读，不带这一格。
+    #[test]
+    fn a_returned_action_carries_no_window_list() {
+        let resp = Response::acted("r1".to_owned(), Dispatch::Submitted, Err("窗口已关闭".to_owned()));
+        let value = serde_json::to_value(&resp).expect("回执应当序列化成功");
+        assert!(value.get("blocking").is_none());
+    }
+
     #[test]
     fn failed_reread_keeps_the_dispatch_fact() {
         let resp = Response::acted(
@@ -855,11 +1290,229 @@ mod tests {
 
     #[test]
     fn failed_action_call_is_unknown_not_undispatched() {
-        assert_eq!(action_dispatch(&Ok(())), Dispatch::Submitted);
         assert_eq!(
-            action_dispatch(&Err("provider 无响应".to_owned())),
-            Dispatch::Unknown
+            classify_action(Some(&Ok(())), None, true),
+            Some((Dispatch::Submitted, None))
         );
+        assert_eq!(
+            classify_action(Some(&Err("provider 无响应".to_owned())), None, true),
+            Some((Dispatch::Unknown, Some("provider 无响应".to_owned())))
+        );
+    }
+
+    /// 调用没返回而目标窗口被模态对话框挡住：动作已经生效，必须记 submitted。
+    #[test]
+    fn verifiable_evidence_settles_a_call_that_has_not_returned() {
+        for evidence in [
+            ActionEvidence::WindowDisabled,
+            ActionEvidence::WindowGone,
+            ActionEvidence::NewWindow,
+        ] {
+            let settled = classify_action(None, Some(evidence), false);
+            let (dispatch, reason) = settled.expect("有证据即有终态");
+            assert_eq!(dispatch, Dispatch::Submitted);
+            assert!(reason.is_some_and(|r| r.contains("调用尚未返回")));
+        }
+    }
+
+    /// 没有证据、调用也没返回：期限之前接着等，到期才记 unknown。
+    #[test]
+    fn a_pending_call_without_evidence_waits_then_becomes_unknown() {
+        assert_eq!(classify_action(None, None, false), None);
+        let (dispatch, reason) = classify_action(None, None, true).expect("到期即有终态");
+        assert_eq!(dispatch, Dispatch::Unknown);
+        assert!(reason.is_some_and(|r| r.starts_with("call_pending")));
+    }
+
+    /// 调用自己带回来的结果优先于证据：它说得更准。
+    #[test]
+    fn a_returned_call_outranks_the_evidence() {
+        assert_eq!(
+            classify_action(Some(&Ok(())), Some(ActionEvidence::NewWindow), false),
+            Some((Dispatch::Submitted, None))
+        );
+    }
+
+    /// 二态控件按一下就到，三态控件按目标态算要按几下；环上没有的状态返回 None。
+    #[test]
+    fn toggle_steps_count_the_presses_a_target_state_needs() {
+        use ToggleState::{Indeterminate, Off, On};
+        assert_eq!(toggle_steps(Off, On, false), Some(1));
+        assert_eq!(toggle_steps(On, Off, false), Some(1));
+        assert_eq!(toggle_steps(Off, Off, false), Some(0));
+        // 三态环按 Off → On → Indeterminate → Off 转。
+        assert_eq!(toggle_steps(Off, On, true), Some(1));
+        assert_eq!(toggle_steps(Off, Indeterminate, true), Some(2));
+        assert_eq!(toggle_steps(Indeterminate, Off, true), Some(1));
+        assert_eq!(toggle_steps(On, Indeterminate, true), Some(1));
+        // 二态控件到不了中间态：报不支持，不是按两下凑过去。
+        assert_eq!(toggle_steps(Off, Indeterminate, false), None);
+        assert_eq!(toggle_steps(Indeterminate, Off, false), None);
+    }
+
+    #[test]
+    fn toggle_state_maps_to_the_uia_constants() {
+        assert_eq!(ToggleState::from_uia(0), Some(ToggleState::Off));
+        assert_eq!(ToggleState::from_uia(1), Some(ToggleState::On));
+        assert_eq!(ToggleState::from_uia(2), Some(ToggleState::Indeterminate));
+        assert_eq!(ToggleState::from_uia(3), None);
+        assert_eq!(ToggleState::Indeterminate.as_str(), "indeterminate");
+    }
+
+    /// 不动的那个轴必须是 NoAmount：传别的值会让一次滚动同时动两个轴。
+    #[test]
+    fn scroll_amounts_move_one_axis_at_a_time() {
+        use ScrollDirection::{Down, Left, Right, Up};
+        use ScrollStep::{Line, Page};
+        assert_eq!(scroll_amounts(Down, Line), (SCROLL_NO_AMOUNT, 4));
+        assert_eq!(scroll_amounts(Down, Page), (SCROLL_NO_AMOUNT, 3));
+        assert_eq!(scroll_amounts(Up, Line), (SCROLL_NO_AMOUNT, 1));
+        assert_eq!(scroll_amounts(Up, Page), (SCROLL_NO_AMOUNT, 0));
+        assert_eq!(scroll_amounts(Right, Line), (4, SCROLL_NO_AMOUNT));
+        assert_eq!(scroll_amounts(Left, Page), (0, SCROLL_NO_AMOUNT));
+    }
+
+    /// 每种动作的参数跟着自己的名字走，少一项就解析失败，不会翻译成一条合法请求。
+    #[test]
+    fn each_action_carries_its_own_parameters() {
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"invoke"}"#)),
+            ActionSpec::Invoke
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"set_value","value":""}"#)),
+            ActionSpec::SetValue { value } if value.is_empty()
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"set_range_value","value":12.5}"#)),
+            ActionSpec::SetRangeValue { value } if (value - 12.5).abs() < f64::EPSILON
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"set_toggle","state":"indeterminate"}"#)),
+            ActionSpec::SetToggle { state: ToggleState::Indeterminate }
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"scroll","direction":"down","step":"page"}"#)),
+            ActionSpec::Scroll { direction: ScrollDirection::Down, step: ScrollStep::Page }
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"realize_item","name":"第 900 项"}"#)),
+            ActionSpec::RealizeItem { name } if name == "第 900 项"
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"select_text","start":3,"length":4}"#)),
+            ActionSpec::SelectText { start: 3, length: 4 }
+        ));
+        for bad in [
+            r#"{"kind":"set_value"}"#,
+            r#"{"kind":"set_range_value"}"#,
+            r#"{"kind":"set_toggle","state":"maybe"}"#,
+            r#"{"kind":"scroll","direction":"down"}"#,
+            r#"{"kind":"click"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Request>(&format!(
+                    r#"{{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                        "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
+                        "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
+                ))
+                .is_err(),
+                "{bad} 应当解析失败"
+            );
+        }
+    }
+
+    /// 可用动作表要说得出「这个动作此刻能不能用」，只读与叶节点各有自己的原因码。
+    #[test]
+    fn an_action_offer_carries_its_delivery_and_reason() {
+        let ready = serde_json::to_value(NodeAction::ready("invoke")).unwrap();
+        assert_eq!(ready, json_of(r#"{"action":"invoke","delivery":["background"]}"#));
+        let blocked = serde_json::to_value(NodeAction::blocked("set_value", "read_only")).unwrap();
+        assert_eq!(
+            blocked,
+            json_of(r#"{"action":"set_value","delivery":[],"unavailable":"read_only"}"#)
+        );
+    }
+
+    fn json_of(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).expect("用例里的 JSON 应当合法")
+    }
+
+    /// 文本观察自带读的是哪个控件、截断标记与选区起点。
+    #[test]
+    fn a_text_observation_reports_truncation_and_selection_offsets() {
+        let value = serde_json::to_value(Observation::Text(Text {
+            window: 66,
+            captured_at: 17,
+            scope: "w.3#9".to_owned(),
+            text: "中文内容".to_owned(),
+            truncated: true,
+            selection_support: "single",
+            selection: vec![TextSelection {
+                start: 2,
+                text: "内容".to_owned(),
+                truncated: false,
+            }],
+        }))
+        .unwrap();
+        assert_eq!(value["kind"], "text");
+        assert_eq!(value["scope"], "w.3#9");
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["selectionSupport"], "single");
+        assert_eq!(value["selection"][0]["start"], 2);
+        assert_eq!(value["selection"][0]["text"], "内容");
+    }
+
+    /// 读文本是只读 op：它不带上限三件套，也不进动作那条路径。
+    #[test]
+    fn read_text_is_its_own_read_only_op() {
+        let req = parse(
+            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"read_text","params":{"window":66,"ref":"w.3#9","maxChars":2000}}"#,
+        );
+        assert!(matches!(
+            req.op,
+            Op::ReadText { window: 66, max_chars: 2000, .. }
+        ));
+    }
+
+    /// 控件状态只在对应模式存在时上线，缺席的不发空格子。
+    #[test]
+    fn pattern_state_fields_are_absent_without_the_pattern() {
+        let value = serde_json::to_value(Observation::Tree(tree(None))).unwrap();
+        let node = &value["nodes"][0];
+        for key in ["range", "toggle", "expand", "selected", "selection", "scroll", "text"] {
+            assert!(node.get(key).is_none(), "{key} 不该出现");
+        }
+    }
+
+    /// 步长读不出有限数时那两格缺席；值或边界非有限时整份区间缺席。
+    #[test]
+    fn a_range_drops_the_values_the_provider_cannot_give() {
+        let full = range_state(20.0, 0.0, 100.0, 1.0, 10.0).expect("有限数应当成一份区间");
+        assert_eq!(full.small_change, Some(1.0));
+        let stepless = range_state(35.0, 0.0, 100.0, f64::NAN, f64::NAN)
+            .expect("只有步长非有限时区间仍然成立");
+        assert_eq!((stepless.small_change, stepless.large_change), (None, None));
+        let value = serde_json::to_value(stepless).unwrap();
+        assert!(value.get("smallChange").is_none());
+        assert_eq!(value["value"], 35.0);
+        assert_eq!(range_state(f64::NAN, 0.0, 100.0, 1.0, 10.0), None);
+        assert_eq!(range_state(1.0, f64::NAN, 100.0, 1.0, 10.0), None);
+        assert_eq!(range_state(1.0, 0.0, f64::INFINITY, 1.0, 10.0), None);
+    }
+
+    /// 滚不动的那个轴缺席。**缺席不是 0**：0 是「在顶端」。
+    #[test]
+    fn a_non_scrollable_axis_is_absent_rather_than_zero() {
+        let mut body = tree(None);
+        body.nodes[0].scroll = Some(ScrollState {
+            horizontal: None,
+            vertical: Some(0.0),
+        });
+        let value = serde_json::to_value(Observation::Tree(body)).unwrap();
+        assert!(value["nodes"][0]["scroll"].get("horizontal").is_none());
+        assert_eq!(value["nodes"][0]["scroll"]["vertical"], 0.0);
     }
 
     #[test]
@@ -875,7 +1528,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":3,"id":"h","connectionEpoch":5,
+            r#"{"v":4,"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());

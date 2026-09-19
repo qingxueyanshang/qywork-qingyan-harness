@@ -60,7 +60,7 @@ const 工具栏保存: DesktopElement = {
   automationId: 'save',
   enabled: true,
   offscreen: false,
-  actions: ['invoke'],
+  actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 const 表单组: DesktopElement = {
   ref: 'w.1#4',
@@ -84,7 +84,7 @@ const 输入框: DesktopElement = {
   enabled: true,
   offscreen: false,
   rect: { x: 300, y: 200, width: 120, height: 24 },
-  actions: ['set_value'],
+  actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 const 表单保存: DesktopElement = {
   ref: 'w.1.1#6',
@@ -95,7 +95,7 @@ const 表单保存: DesktopElement = {
   automationId: 'save2',
   enabled: true,
   offscreen: false,
-  actions: ['invoke'],
+  actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 const 灰按钮: DesktopElement = {
   ref: 'w.1.2#7',
@@ -106,10 +106,138 @@ const 灰按钮: DesktopElement = {
   automationId: 'submit',
   enabled: false,
   offscreen: false,
-  actions: ['invoke'],
+  actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 
-const TABLE = [窗口, 工具栏, 工具栏保存, 表单组, 输入框, 表单保存, 灰按钮]
+const 滑块: DesktopElement = {
+  ref: 'w.2#8',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'slider',
+  name: '音量',
+  automationId: 'slider',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'set_range_value', delivery: ['background'] }],
+  range: { value: 20, min: 0, max: 100, smallChange: 1, largeChange: 10 },
+}
+const 进度条: DesktopElement = {
+  ref: 'w.3#9',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'progress_bar',
+  name: '进度',
+  automationId: 'progress',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'set_range_value', delivery: [], unavailable: 'read_only' }],
+  range: { value: 35, min: 0, max: 100, smallChange: 0, largeChange: 0 },
+}
+const 三态复选: DesktopElement = {
+  ref: 'w.4#10',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'check_box',
+  name: '三态',
+  automationId: 'triCheck',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'set_toggle', delivery: ['background'] }],
+  toggle: 'off',
+}
+const 单选列表: DesktopElement = {
+  ref: 'w.5#11',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'list',
+  name: '单选',
+  automationId: 'singleList',
+  enabled: true,
+  offscreen: false,
+  actions: [],
+  selection: { multiple: false, required: false },
+}
+const 单选项: DesktopElement = {
+  ref: 'w.5.0#12',
+  parentRef: 'w.5#11',
+  depth: 2,
+  role: 'list_item',
+  name: 'single-alpha',
+  automationId: '',
+  enabled: true,
+  offscreen: false,
+  actions: [
+    { action: 'select', delivery: ['background'] },
+    { action: 'add_to_selection', delivery: ['background'] },
+    { action: 'remove_from_selection', delivery: ['background'] },
+  ],
+  selected: false,
+}
+const 树节点: DesktopElement = {
+  ref: 'w.6#13',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'tree_item',
+  name: 'treeRoot',
+  automationId: 'treeRoot',
+  enabled: true,
+  offscreen: false,
+  actions: [
+    { action: 'expand', delivery: ['background'] },
+    { action: 'collapse', delivery: ['background'] },
+  ],
+  expand: 'collapsed',
+}
+const 长列表: DesktopElement = {
+  ref: 'w.7#14',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'list',
+  name: '长列表',
+  automationId: 'bigList',
+  enabled: true,
+  offscreen: false,
+  actions: [
+    { action: 'scroll', delivery: ['background'] },
+    { action: 'realize_item', delivery: ['background'] },
+  ],
+  scroll: { vertical: 0 },
+  selection: { multiple: false, required: false },
+}
+const 文档框: DesktopElement = {
+  ref: 'w.8#15',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'edit',
+  name: '正文',
+  automationId: 'doc',
+  value: '第一行中文内容',
+  enabled: true,
+  offscreen: false,
+  actions: [
+    { action: 'set_value', delivery: ['background'] },
+    { action: 'select_text', delivery: ['background'] },
+  ],
+  text: true,
+}
+
+const TABLE = [
+  窗口,
+  工具栏,
+  工具栏保存,
+  表单组,
+  输入框,
+  表单保存,
+  灰按钮,
+  滑块,
+  进度条,
+  三态复选,
+  单选列表,
+  单选项,
+  树节点,
+  长列表,
+  文档框,
+]
 
 function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
   return {
@@ -200,8 +328,11 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
       note('captureImage', input)
       return image()
     },
-    setValue: async (input) => acted(input),
-    invoke: async (input) => acted(input),
+    act: async (input) => acted(input),
+    readText: async (input) => {
+      note('readText', input)
+      return { text: '这是一段文本', truncated: false, selectionSupport: 'single', selection: [] }
+    },
     wait: async (input) => {
       note('wait', input)
       return { found: true, observation: snapshot({ observationId: 'do_3' }) }
@@ -301,7 +432,12 @@ describe('目标解析与层级消歧', () => {
     expect(calls).toEqual([
       {
         method: 'act',
-        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'w.1.0#5', value: '张三' },
+        input: {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          ref: 'w.1.0#5',
+          action: { kind: 'set_value', value: '张三' },
+        },
       },
     ])
   })
@@ -424,7 +560,7 @@ describe('动作前置条件', () => {
       { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.1.0#5', value: '' },
       ctxWith(port),
     )
-    expect(calls[0]).toMatchObject({ input: { value: '' } })
+    expect(calls[0]).toMatchObject({ input: { action: { kind: 'set_value', value: '' } } })
   })
 
   test('invoke 带 value 是写错，不静默忽略', async () => {
@@ -435,6 +571,275 @@ describe('动作前置条件', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toEqual([])
+  })
+})
+
+describe('动作族：参数、目标态与前置条件', () => {
+  /** 可用动作表说得出「此刻能不能执行」，只读的那一项 delivery 为空且带原因。 */
+  test('delivery 为空的动作在本地就被拒，原因如实带出来', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_range_value',
+        ref: 'w.3#9',
+        number: 50,
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    expect(r.message).toContain('read_only')
+    expect(calls).toEqual([])
+  })
+
+  test('数值越界在本地按观察里的区间拒绝，不夹到边界上', async () => {
+    const { port, calls } = fakeDesktop()
+    const over = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_range_value',
+        ref: 'w.2#8',
+        number: 120,
+      },
+      ctxWith(port),
+    )
+    expect(over).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
+    expect(over.message).toContain('0 到 100')
+    expect(calls).toEqual([])
+
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_range_value',
+        ref: 'w.2#8',
+        number: 42,
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({ input: { action: { kind: 'set_range_value', value: 42 } } })
+  })
+
+  /** 目标态就是目标态：已经在那个状态上时不发动作，也不「切一次」。 */
+  test('set_toggle 按目标态发，已经是目标态就不发', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_toggle',
+        ref: 'w.4#10',
+        state: 'indeterminate',
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({
+      input: { action: { kind: 'set_toggle', state: 'indeterminate' } },
+    })
+
+    const again = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_toggle',
+        ref: 'w.4#10',
+        state: 'off',
+      },
+      ctxWith(port),
+    )
+    expect(again).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
+    expect(calls).toHaveLength(1)
+  })
+
+  /** 容器的多选约束在祖先那一格上，本地顺着 parentRef 就判得出来。 */
+  test('单选容器上的增选在本地被拒，select 照发', async () => {
+    const { port, calls } = fakeDesktop()
+    const add = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'add_to_selection', ref: 'w.5.0#12' },
+      ctxWith(port),
+    )
+    expect(add).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
+    expect(calls).toEqual([])
+
+    await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'w.5.0#12' },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({ input: { action: { kind: 'select' } } })
+  })
+
+  test('已经收起的树节点不再 collapse，expand 照发', async () => {
+    const { port, calls } = fakeDesktop()
+    const again = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'collapse', ref: 'w.6#13' },
+      ctxWith(port),
+    )
+    expect(again).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
+    expect(calls).toEqual([])
+
+    await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'expand', ref: 'w.6#13' },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({ input: { action: { kind: 'expand' } } })
+  })
+
+  test('scroll 的方向必填，步长默认一行', async () => {
+    const { port, calls } = fakeDesktop()
+    const missing = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'scroll', ref: 'w.7#14' },
+      ctxWith(port),
+    )
+    expect(missing).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'scroll',
+        ref: 'w.7#14',
+        direction: 'down',
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({
+      input: { action: { kind: 'scroll', direction: 'down', step: 'line' } },
+    })
+  })
+
+  test('realize_item 要给项名，select_text 要给起点与长度', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'realize_item',
+        ref: 'w.7#14',
+        itemName: 'row-0900',
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]).toMatchObject({
+      input: { action: { kind: 'realize_item', name: 'row-0900' } },
+    })
+
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'select_text',
+        ref: 'w.8#15',
+        start: 3,
+        length: 4,
+      },
+      ctxWith(port),
+    )
+    expect(calls[1]).toMatchObject({
+      input: { action: { kind: 'select_text', start: 3, length: 4 } },
+    })
+
+    const bare = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'realize_item', ref: 'w.7#14' },
+      ctxWith(port),
+    )
+    expect(bare).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  })
+
+  /** 不属于这个动作的参数一律拒绝：静默忽略会让「写了值」这件事看起来发生过。 */
+  test('参数不属于这个动作就拒绝，不静默忽略', async () => {
+    const { port, calls } = fakeDesktop()
+    for (const args of [
+      { action: 'invoke', ref: 'w.0.0#3', value: 'x' },
+      { action: 'expand', ref: 'w.6#13', number: 1 },
+      { action: 'set_toggle', ref: 'w.4#10', state: 'on', value: 'x' },
+    ]) {
+      const r = await run(
+        desktopActTool,
+        { windowId: 'dw_1', observationId: 'do_1', ...args },
+        ctxWith(port),
+      )
+      expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    }
+    expect(calls).toEqual([])
+  })
+})
+
+describe('按需字段', () => {
+  /** 两个开关各自独立，都只在显式关掉时才交给端口。 */
+  test('includeValue 与 includeState 只在关掉时下传', async () => {
+    const { port, calls } = fakeDesktop()
+    await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(calls[0]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
+
+    await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', includeValue: false, includeState: false },
+      ctxWith(port),
+    )
+    expect(calls[1]).toEqual({
+      method: 'observe',
+      input: { windowId: 'dw_1', includeValue: false, includeState: false },
+    })
+
+    await run(desktopObserveTool, { windowId: 'dw_1', includeState: true }, ctxWith(port))
+    expect(calls[2]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
+  })
+})
+
+describe('读文本与选区', () => {
+  test('capture=text 读文档文本与选区，不换观察编号', async () => {
+    const { port, calls } = fakeDesktop({
+      readText: async (input) => {
+        calls.push({ method: 'readText', input })
+        return {
+          text: '第一行中文内容',
+          truncated: true,
+          selectionSupport: 'single',
+          selection: [{ start: 3, text: '中文', truncated: false }],
+        }
+      },
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'w.8#15', maxChars: 50 },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls).toEqual([
+      {
+        method: 'readText',
+        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'w.8#15', maxChars: 50 },
+      },
+    ])
+    expect(r.data).toMatchObject({ ref: 'w.8#15', truncated: true, selectionSupport: 'single' })
+    expect(r.message).toContain('截断')
+  })
+
+  test('没有 TextPattern 的控件读不了文本，一帧都不发', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'w.0.0#3' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ errorKind: 'desktop_action_unsupported' })
     expect(calls).toEqual([])
   })
 })
@@ -465,7 +870,7 @@ describe('三态回执与动作后观察', () => {
 
   test('not_dispatched 是没执行，executed 为假', async () => {
     const { port } = fakeDesktop({
-      invoke: async () => ({
+      act: async () => ({
         dispatch: 'not_dispatched',
         actionId: 'da_2',
         reason: 'read_only',
@@ -490,7 +895,7 @@ describe('三态回执与动作后观察', () => {
   /** 结果未知是禁止重发的那一侧：它必须记成已执行。 */
   test('unknown 记成已执行，并要求先重新观察', async () => {
     const { port } = fakeDesktop({
-      invoke: async () => ({
+      act: async () => ({
         dispatch: 'unknown',
         actionId: 'da_3',
         reason: 'provider 无响应',
@@ -511,7 +916,7 @@ describe('三态回执与动作后观察', () => {
   /** 重读失败不改执行事实：动作已经发出去了。 */
   test('submitted 但重读失败仍记已执行', async () => {
     const { port } = fakeDesktop({
-      invoke: async () => ({
+      act: async () => ({
         dispatch: 'submitted',
         actionId: 'da_4',
         observation: null,
@@ -531,6 +936,61 @@ describe('三态回执与动作后观察', () => {
     expect(r.data).toMatchObject({ dispatch: 'submitted' })
   })
 
+  /**
+   * 调用没返回时目标窗口读不动，宿主换成一份窗口清单。回执要把新出现的那个窗口
+   * 点名交出去，模型下一步观察它而不是目标窗口。
+   */
+  test('调用未返回时回执给出新窗口的 windowId，不报「没有读数」', async () => {
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_5',
+        reason: '调用尚未返回，目标窗口已被禁用',
+        observation: null,
+        observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+        blocking: [
+          { windowId: 'dw_1', app: 'fixture.exe', title: '夹具', appeared: false },
+          { windowId: 'dw_9', app: 'fixture.exe', title: '另存为', appeared: true },
+        ],
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('dw_9')
+    expect(r.message).toContain('另存为')
+    expect(r.message).toContain('desktop_observe')
+    // 没出现过的那个窗口不喧宾夺主：只点名新出现的。
+    expect(r.message).not.toContain('dw_1 fixture.exe 夹具')
+    expect(r.data).toMatchObject({ dispatch: 'submitted' })
+  })
+
+  /** 结果未知时仍要说「先读状态，别重放」。 */
+  test('调用未返回且没有证据时是 unknown，仍要求先重新观察', async () => {
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'unknown',
+        actionId: 'da_6',
+        reason: 'call_pending: 动作调用尚未返回，也没有可核实的生效证据',
+        observation: null,
+        observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+        blocking: [{ windowId: 'dw_1', app: 'fixture.exe', title: '夹具', appeared: false }],
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
+    expect(r.message).toContain('不要重放')
+    // 没有新窗口时如实列当前窗口，不硬说有新窗口。
+    expect(r.message).toContain('当前的窗口')
+  })
+
   /** 端口自己声明的执行前拒绝优先于「调进去过」这一判据。 */
   test('端口按 DesktopRefusal 拒绝时不记成已执行', async () => {
     class Refused extends Error implements DesktopRefusal {
@@ -538,7 +998,7 @@ describe('三态回执与动作后观察', () => {
       readonly executed = false as const
     }
     const { port } = fakeDesktop({
-      invoke: async () => {
+      act: async () => {
         throw new Refused('本次执行的电脑操作已经结束')
       },
     })

@@ -33,7 +33,14 @@ import type {
   ToolOutcome,
   ToolSpec,
 } from '@qywork/agent'
-import type { DesktopNodeAction, DesktopRect } from '@qywork/core'
+import type {
+  DesktopAction,
+  DesktopActionKind,
+  DesktopRect,
+  DesktopScrollDirection,
+  DesktopScrollStep,
+  DesktopToggleState,
+} from '@qywork/core'
 import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读树的节点数上限。上限由端口再夹一次，这里挡的是明显越界的请求。 */
@@ -52,11 +59,32 @@ const MAX_CANDIDATES = 10
 const MAX_PAD = 400
 /** 图像坐标的取值上界。图像本身长边不超过 `MAX_EDGE`，这个数只是挡住明显越界的请求。 */
 const MAX_IMAGE_COORD = 100_000
-/** 采集模式。`structure` 一个像素都不采。 */
-const CAPTURES = ['structure', 'region_image', 'combined'] as const
+/** 一次读文本最多要回多少个 UTF-16 码元。超出即截断并标记。 */
+const MAX_TEXT_CHARS = 20_000
+/** 选区偏移的取值上界。挡住明显越界的请求，真实上界由文档长度定。 */
+const MAX_TEXT_OFFSET = 10_000_000
+/** 采集模式。`structure` 一个像素都不采，`text` 也不采。 */
+const CAPTURES = ['structure', 'region_image', 'combined', 'text'] as const
 type CaptureMode = (typeof CAPTURES)[number]
 
-const ACTIONS: readonly DesktopNodeAction[] = ['set_value', 'invoke']
+const ACTIONS: readonly DesktopActionKind[] = [
+  'invoke',
+  'set_value',
+  'set_range_value',
+  'select',
+  'add_to_selection',
+  'remove_from_selection',
+  'set_toggle',
+  'expand',
+  'collapse',
+  'scroll',
+  'scroll_into_view',
+  'realize_item',
+  'select_text',
+]
+const TOGGLE_STATES: readonly DesktopToggleState[] = ['off', 'on', 'indeterminate']
+const SCROLL_DIRECTIONS: readonly DesktopScrollDirection[] = ['up', 'down', 'left', 'right']
+const SCROLL_STEPS: readonly DesktopScrollStep[] = ['line', 'page']
 const WAIT_CONDITIONS: readonly DesktopWaitCondition[] = [
   'enabled',
   'value',
@@ -289,20 +317,171 @@ function describeQuery(role?: string, automationId?: string, name?: string): str
     .join(' ')
 }
 
-/** 动作前的前置条件：控件启用，且宿主真的能在它上面执行这个动作。 */
-function checkPrecondition(element: DesktopElement, action: DesktopNodeAction): void {
+/**
+ * 动作前的前置条件：控件启用、宿主在这个控件上实现了这个动作、且此刻能执行。
+ *
+ * 三条都能在本地判完，判完再发：拿一次往返换回来的是同一句拒绝。宿主那侧仍然照判，
+ * 控件状态可能在观察与动作之间变过。
+ */
+function checkPrecondition(element: DesktopElement, kind: DesktopActionKind): void {
   if (!element.enabled) {
     throw new ArgError(
-      `${element.ref} 当前处于禁用状态，没有执行 ${action}。`,
+      `${element.ref} 当前处于禁用状态，没有执行 ${kind}。`,
       'desktop_precondition',
     )
   }
-  if (!element.actions.includes(action)) {
-    const usable = element.actions.length ? element.actions.join(' / ') : '无'
+  const offer = element.actions.find((a) => a.action === kind)
+  if (!offer) {
+    const usable = element.actions.length ? element.actions.map((a) => a.action).join(' / ') : '无'
     throw new ArgError(
-      `${element.ref} 不支持 ${action}，它可用的动作是：${usable}`,
+      `${element.ref} 不支持 ${kind}，它可用的动作是：${usable}`,
       'desktop_action_unsupported',
     )
+  }
+  if (offer.delivery.length === 0) {
+    throw new ArgError(
+      `${element.ref} 此刻不能执行 ${kind}：${offer.unavailable ?? '宿主没有说明原因'}`,
+      'desktop_action_unsupported',
+    )
+  }
+}
+
+/**
+ * 这一项所在的选择容器。顺着 `parentRef` 往上找第一个带 `selection` 的控件。
+ *
+ * 找不到返回 `undefined`：观察被筛过时祖先可能不在表里，那时不在本地拦，交给宿主判。
+ */
+function selectionContainer(
+  table: DesktopElement[],
+  element: DesktopElement,
+): DesktopElement | undefined {
+  const byRef = new Map(table.map((e) => [e.ref, e]))
+  const seen = new Set<string>([element.ref])
+  let at = element.parentRef
+  while (at !== undefined && !seen.has(at)) {
+    seen.add(at)
+    const parent = byRef.get(at)
+    if (!parent) return undefined
+    if (parent.selection) return parent
+    at = parent.parentRef
+  }
+  return undefined
+}
+
+/**
+ * 把模型给的参数拼成一个动作，并按观察里读到的状态判前置条件。
+ *
+ * 值域、目标态与容器约束都在这里判：观察里已经带着 `range` / `toggle` / `expand` /
+ * `selection`，本地判得出的就不发出去换一句拒绝。
+ */
+/**
+ * 每种动作认哪几个参数。**给了不属于这个动作的参数即拒绝**：静默忽略的话，
+ * `action=invoke` 带着 `value` 会被读成「写了值」，而那一次写没有发生过。
+ */
+const ACTION_PARAMS: Record<DesktopActionKind, readonly string[]> = {
+  invoke: [],
+  set_value: ['value'],
+  set_range_value: ['number'],
+  select: [],
+  add_to_selection: [],
+  remove_from_selection: [],
+  set_toggle: ['state'],
+  expand: [],
+  collapse: [],
+  scroll: ['direction', 'step'],
+  scroll_into_view: [],
+  realize_item: ['itemName'],
+  select_text: ['start', 'length'],
+}
+
+/** 定位目标用的参数。它们对每种动作都成立，不参与动作参数的核对。 */
+const TARGET_PARAMS = ['windowId', 'observationId', 'action', 'ref', 'automationId', 'name', 'role']
+
+function checkActionParams(kind: DesktopActionKind, args: Record<string, unknown>): void {
+  const allowed = new Set<string>([...TARGET_PARAMS, ...ACTION_PARAMS[kind]])
+  const extra = Object.keys(args).filter((key) => !allowed.has(key) && args[key] !== undefined)
+  if (extra.length) {
+    throw new ArgError(`${kind} 不接受 ${extra.join(' / ')}`)
+  }
+}
+
+function buildAction(
+  table: DesktopElement[],
+  element: DesktopElement,
+  kind: DesktopActionKind,
+  args: Record<string, unknown>,
+): DesktopAction {
+  checkActionParams(kind, args)
+  switch (kind) {
+    case 'invoke':
+    case 'select':
+    case 'scroll_into_view':
+      return { kind }
+    case 'set_value': {
+      // 空串是清空，只有完全不给这个参数才算没提供。
+      if (args.value === undefined || args.value === null) {
+        throw new ArgError('set_value 必须给 value')
+      }
+      return { kind, value: String(args.value) }
+    }
+    case 'set_range_value': {
+      const value = Number(args.number)
+      if (args.number === undefined || args.number === null || !Number.isFinite(value)) {
+        throw new ArgError('set_range_value 必须给 number')
+      }
+      const range = element.range
+      // 越界不夹到边上：夹出来的值看着合法，而它不是调用方要的那一个。
+      if (range && (value < range.min || value > range.max)) {
+        throw new ArgError(
+          `${element.ref} 只接受 ${range.min} 到 ${range.max}，给的是 ${value}。`,
+          'desktop_precondition',
+        )
+      }
+      return { kind, value }
+    }
+    case 'add_to_selection':
+    case 'remove_from_selection': {
+      const container = selectionContainer(table, element)
+      if (container?.selection?.multiple === false) {
+        throw new ArgError(
+          `${container.ref} 一次只能选一项，用 action=select 换选择。`,
+          'desktop_precondition',
+        )
+      }
+      return { kind }
+    }
+    case 'set_toggle': {
+      const state = oneOf(args.state, TOGGLE_STATES, 'state')
+      if (element.toggle === state) {
+        throw new ArgError(`${element.ref} 已经是 ${state}，没有执行。`, 'desktop_precondition')
+      }
+      return { kind, state }
+    }
+    case 'expand':
+    case 'collapse': {
+      if (element.expand === 'leaf') {
+        throw new ArgError(`${element.ref} 没有可展开的内容。`, 'desktop_precondition')
+      }
+      const already = kind === 'expand' ? 'expanded' : 'collapsed'
+      if (element.expand === already) {
+        throw new ArgError(`${element.ref} 已经是 ${already}，没有执行。`, 'desktop_precondition')
+      }
+      return { kind }
+    }
+    case 'scroll':
+      return {
+        kind,
+        direction: oneOf(args.direction, SCROLL_DIRECTIONS, 'direction'),
+        step: given(args.step) ? oneOf(args.step, SCROLL_STEPS, 'step') : 'line',
+      }
+    case 'realize_item':
+      return { kind, name: str(args.itemName, 'itemName') }
+    case 'select_text':
+      return {
+        kind,
+        start: bounded(args.start, 'start', 0, MAX_TEXT_OFFSET),
+        length: bounded(args.length, 'length', 0, MAX_TEXT_OFFSET),
+      }
   }
 }
 
@@ -322,7 +501,7 @@ function snapshotLine(s: DesktopSnapshot): string {
  * `not_dispatched` 是唯一允许 `executed:false` 的一种；另外两种一律 `executed:true`，
  * 重读缺席也不改这个判定——动作可能已经生效，重发一次等于多做一次。
  */
-function actOutcome(action: DesktopNodeAction, ref: string, r: DesktopActResult): ToolOutcome {
+function actOutcome(action: DesktopActionKind, ref: string, r: DesktopActResult): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
@@ -349,6 +528,25 @@ function actOutcome(action: DesktopNodeAction, ref: string, r: DesktopActResult)
         (target ? `；目标现在是 ${elementLine(target)}` : '') +
         (unknown ? `。${advice}` : ''),
       data: { ...receipt, observation: r.observation },
+    }
+  }
+  // 调用还没返回：目标窗口此刻读不动，宿主换成一份窗口清单。下一步观察的是新出现的
+  // 那个窗口，不是目标窗口。
+  if (r.blocking) {
+    const appeared = r.blocking.filter((w) => w.appeared)
+    const listed = (appeared.length ? appeared : r.blocking)
+      .map((w) => `${w.windowId} ${w.app} ${w.title || '(无标题)'}`)
+      .join('；')
+    return {
+      status: unknown ? 'failure' : 'success',
+      ...(unknown ? { executed: true, errorKind: 'desktop_unknown' } : {}),
+      message:
+        `${lead}目标窗口此刻在响应这次调用，没有重读它。` +
+        (appeared.length
+          ? `这个应用新出现了窗口：${listed}。对它 desktop_observe 继续。`
+          : `这个应用当前的窗口：${listed}。`) +
+        (unknown ? advice : ''),
+      data: { ...receipt, blocking: r.blocking, observationError: r.observationError },
     }
   }
   return {
@@ -486,10 +684,15 @@ export const desktopObserveTool: ToolSpec = {
   name: 'desktop_observe',
   description:
     '观察一个窗口。capture 决定观察什么：' +
-    'structure（默认）只读控件表，一个像素都不采；region_image 只采图；combined 两样都要。' +
+    'structure（默认）只读控件表，一个像素都不采；region_image 只采图；combined 两样都要；' +
+    'text 读一个控件的文档文本与选区，要给 observationId 与控件（ref / automationId / name）。' +
     '先用 structure——控件表直接给出名称、值与可执行的动作；' +
     '只有树里找不到目标时（画布、无名图标、自绘界面）才采图。' +
-    '控件表给出角色、名称、稳定标识、当前值、是否启用、宿主能执行的动作，' +
+    '控件表给出角色、名称、稳定标识、当前值、是否启用，' +
+    'actions（每个动作带 delivery 与不可用原因），' +
+    '以及控件模式读到的状态：range 数值区间、toggle 复选现态、expand 展开现态、' +
+    'selected 这一项选中没有、selection 容器的多选与必选约束、scroll 滚动位置百分比、' +
+    'text 能不能读文档文本；' +
     '以及 rect：控件在屏幕上的包围盒，与图用同一套坐标，树与图因此对得上。' +
     '每个控件带 parentRef 与 depth，同名控件靠祖先路径区分。' +
     '返回的 observationId 与控件 ref 是 desktop_act 与 desktop_wait 的前提；重新观察即换号，旧号作废。' +
@@ -497,7 +700,8 @@ export const desktopObserveTool: ToolSpec = {
     'root 只读某个控件底下的子树，用于翻开一个已经看到的容器。' +
     '筛选过的观察里 filteredBy 会列出条件——没列出来的控件是被筛掉了，不是不存在。' +
     'truncated=true 表示被上限截断了，用 maxNodes 或 maxDepth 调整后重读。' +
-    'includeValue=false 时不取控件当前值，读大窗口时省一部分开销。' +
+    'includeValue=false 时不取控件当前值，includeState=false 时不取上面那几项状态——' +
+    '读大窗口时各省一部分开销，两者都不影响 actions。' +
     '采图默认采整窗；around 指一个控件，只采它的包围盒向外扩 pad 像素的那一块——' +
     'region_image 下它按 observationId 那一份控件表解析，combined 下按这次读到的那一份；' +
     'imageRef 加 imageRect 把上一张图里的那一块放大重采，用于看清一处细节。' +
@@ -514,9 +718,21 @@ export const desktopObserveTool: ToolSpec = {
       role: { type: 'string', description: '只返回这个角色的控件' },
       query: { type: 'string', description: '只返回名称、稳定标识或值包含这段文字的控件' },
       includeValue: { type: 'boolean', description: '取不取控件当前值，默认取' },
+      includeState: {
+        type: 'boolean',
+        description: '取不取 range / toggle / expand / selected / selection / scroll，默认取',
+      },
       observationId: {
         type: 'string',
-        description: 'capture=region_image 用 around 取景时要给，取自 desktop_observe',
+        description:
+          'capture=region_image 用 around 取景时要给，capture=text 一定要给，取自 desktop_observe',
+      },
+      ref: { type: 'string', description: 'capture=text 要读哪个控件，取自同一份观察' },
+      automationId: { type: 'string', description: 'capture=text 按稳定标识定位，要求唯一命中' },
+      name: { type: 'string', description: 'capture=text 按名称定位，要求唯一命中' },
+      maxChars: {
+        type: 'integer',
+        description: `capture=text 最多要回多少字，上限 ${MAX_TEXT_CHARS}`,
       },
       around: { type: 'string', description: '只采这个控件周围的那一块，控件 ref' },
       pad: { type: 'integer', description: `around 向外扩多少像素，上限 ${MAX_PAD}` },
@@ -547,8 +763,36 @@ export const desktopObserveTool: ToolSpec = {
       const capture: CaptureMode = given(args.capture)
         ? oneOf(args.capture, CAPTURES, 'capture')
         : 'structure'
-      if (capture === 'structure' && framingGiven(args)) {
+      if (capture !== 'region_image' && capture !== 'combined' && framingGiven(args)) {
         throw new ArgError('取景参数只在 capture=region_image 或 combined 下有意义')
+      }
+      if (capture === 'text') {
+        const observationId = str(args.observationId, 'observationId')
+        const element = resolveTarget(desktop.elements(windowId, observationId), args)
+        if (element.text !== true) {
+          throw new ArgError(
+            `${element.ref} 读不出文档文本；它的当前值在观察的 value 里。`,
+            'desktop_action_unsupported',
+          )
+        }
+        const maxChars = given(args.maxChars)
+          ? bounded(args.maxChars, 'maxChars', 1, MAX_TEXT_CHARS)
+          : MAX_TEXT_CHARS
+        const read = await send(() =>
+          desktop.readText({ windowId, observationId, ref: element.ref, maxChars }),
+        )
+        const selection = read.selection.length
+          ? read.selection
+              .map((s) => `${s.start} 起 ${JSON.stringify(s.text)}${s.truncated ? '（截断）' : ''}`)
+              .join('；')
+          : '无'
+        return {
+          status: 'success',
+          message:
+            `${element.ref} 文本 ${read.text.length} 字${read.truncated ? '（截断）' : ''}` +
+            `；选区 ${selection}`,
+          data: { ref: element.ref, ...read },
+        }
       }
       // combined 的 around 按这次读到的控件表解析：读树会换一个观察编号，
       // 再拿调用方给的那个旧编号去解析，解出来的是一份已经作废的表。
@@ -585,6 +829,7 @@ export const desktopObserveTool: ToolSpec = {
         ...(given(args.role) ? { role: str(args.role, 'role') } : {}),
         ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
         ...(args.includeValue === false ? { includeValue: false } : {}),
+        ...(args.includeState === false ? { includeState: false } : {}),
       }
       const snapshot = await send(() => desktop.observe(input))
       const line = `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}`
@@ -677,15 +922,25 @@ export const desktopActTool: ToolSpec = {
   ...BASE,
   name: 'desktop_act',
   description:
-    '在观察到的控件上执行一个动作：set_value 写值（空串是清空），invoke 调用默认动作（按钮、菜单项）。' +
+    '在观察到的控件上执行一个动作。每个控件的 actions 列出它此刻能做什么：' +
+    'delivery 非空才能执行，为空时 unavailable 说明原因（只读、叶节点、滚不动）。' +
+    'invoke 调用默认动作（按钮、菜单项）；set_value 写值（空串是清空）；' +
+    'set_range_value 按 number 写数值（滑块、微调框），越界与只读一律拒绝；' +
+    'select 换成只选这一项，add_to_selection / remove_from_selection 增选与取消，单选容器上不可用；' +
+    'set_toggle 按 state 把复选控件设成 off / on / indeterminate——给的是目标态不是切一次；' +
+    'expand / collapse 展开或收起菜单、树节点、组合框；' +
+    'scroll 按 direction 与 step（line 默认 / page）滚一步；scroll_into_view 把控件滚进可见区；' +
+    'realize_item 在虚拟化列表容器上按 itemName 找一项并实例化它，之后重新观察才拿得到它的 ref；' +
+    'select_text 按 start 与 length（UTF-16 码元）设选区。' +
     '目标可以给 ref，也可以给 automationId 或 name（可加 role 收窄）；' +
     '匹配到多个时不执行，结果里按祖先路径列出候选，改用 ref 点名。' +
-    '控件被禁用或不支持该动作时同样不执行。' +
     '结果里的 dispatch 有三种：not_dispatched 表示没有执行，submitted 表示调用已被系统接受，' +
     'unknown 表示调用已发出但结果无法确认——遇到 unknown 先 desktop_observe 确认实际状态，不要重放。' +
     '动作之后同次带回目标所在子树的新观察与新的 observationId，据此继续下一步，' +
     '不必再调 desktop_observe；子树之外的旧 ref 在新编号下仍然有效。' +
-    '动作弹出模态窗口时整份观察作废，先 desktop_windows 再重新观察。',
+    '动作打开模态对话框时没有新观察，结果里改带 blocking：目标应用此刻的窗口，' +
+    'appeared 为真的是这次动作之后冒出来的——直接对它的 windowId 调 desktop_observe。' +
+    '本工具不移动鼠标、不按键、不置前台，也不设焦点。',
   parameters: {
     type: 'object',
     properties: {
@@ -697,38 +952,33 @@ export const desktopActTool: ToolSpec = {
       name: { type: 'string', description: '按名称定位，要求唯一命中' },
       role: { type: 'string', description: '与 automationId 或 name 一起收窄匹配' },
       value: { type: 'string', description: 'set_value 要写入的值，空串是清空' },
+      number: { type: 'number', description: 'set_range_value 要写入的数值' },
+      state: { type: 'string', enum: TOGGLE_STATES, description: 'set_toggle 的目标态' },
+      direction: { type: 'string', enum: SCROLL_DIRECTIONS, description: 'scroll 的方向' },
+      step: { type: 'string', enum: SCROLL_STEPS, description: 'scroll 一步滚多少，默认 line' },
+      itemName: { type: 'string', description: 'realize_item 要实例化的那一项的名称' },
+      start: { type: 'integer', description: 'select_text 的起点，UTF-16 码元' },
+      length: { type: 'integer', description: 'select_text 的长度，UTF-16 码元' },
     },
     required: ['windowId', 'observationId', 'action'],
     additionalProperties: false,
   },
   actionKind: 'call',
-  summary: '在桌面控件上写值或调用默认动作',
+  summary: '在桌面控件上执行一个语义动作',
   targetExtractor: windowTarget,
 
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
       const windowId = str(args.windowId, 'windowId')
       const observationId = str(args.observationId, 'observationId')
-      const action = oneOf(args.action, ACTIONS, 'action')
-      // set_value 的空串是清空，只有完全不给这个参数才算没提供。
-      if (action === 'set_value' && (args.value === undefined || args.value === null)) {
-        throw new ArgError('set_value 必须给 value')
-      }
-      if (action === 'invoke' && given(args.value)) throw new ArgError('invoke 不接受 value')
-      const element = resolveTarget(desktop.elements(windowId, observationId), args)
-      checkPrecondition(element, action)
+      const kind = oneOf(args.action, ACTIONS, 'action')
+      const table = desktop.elements(windowId, observationId)
+      const element = resolveTarget(table, args)
+      checkPrecondition(element, kind)
+      const action = buildAction(table ?? [], element, kind, args)
 
-      const r = await send(() =>
-        action === 'set_value'
-          ? desktop.setValue({
-              windowId,
-              observationId,
-              ref: element.ref,
-              value: String(args.value),
-            })
-          : desktop.invoke({ windowId, observationId, ref: element.ref }),
-      )
-      return actOutcome(action, element.ref, r)
+      const r = await send(() => desktop.act({ windowId, observationId, ref: element.ref, action }))
+      return actOutcome(kind, element.ref, r)
     }),
 }
 

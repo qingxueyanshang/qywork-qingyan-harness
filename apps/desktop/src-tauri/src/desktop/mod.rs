@@ -32,7 +32,8 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::ws::WsSender;
 use frames::{
-    enrich_windows, needs_target, to_result, to_worker, Binding, Dispatch, EventFrame, HostReady,
+    enrich_blocking, enrich_windows, needs_target, to_result, to_worker, Binding, Dispatch,
+    EventFrame, HostReady,
     RequestFrame, ResultFrame, WorkerRequest, WorkerResponse, WORKER_PROTOCOL_VERSION,
 };
 use worker::{
@@ -555,13 +556,26 @@ impl DesktopHost {
             return;
         };
         let observation = response.observation.take();
+        let blocking = response.blocking.take();
         let mut frame = to_result(request_id, &binding, response, None);
         match observation.map(|o| self.project(o)) {
             None => {}
             Some(Ok(projected)) => frame.observation = Some(projected),
             Some(Err(reason)) => frame.observation_error = Some(reason),
         }
+        // 补不上身份的窗口在这里被丢掉，与窗口清单同一条规则：目标身份少一项，
+        // 句柄复用就识别不出来。
+        frame.blocking = blocking.and_then(|b| enrich_blocking(&b, |handle, pid| self.identify(handle, pid)));
         self.send_frame(&frame);
+    }
+
+    /// 一个窗口的进程启动时刻与可执行文件名。句柄与 pid 对不上即认不出。
+    fn identify(&self, handle: i64, pid: u32) -> Option<(i64, String)> {
+        if identity::window_pid(handle)? != pid {
+            return None;
+        }
+        let found = identity::process_identity(pid)?;
+        Some((found.started_at_ms, found.app))
     }
 
     /// 把 worker 的观察投影成服务端协议里的形状。
@@ -570,15 +584,9 @@ impl DesktopHost {
     /// 启动时刻——目标身份少一项，句柄复用就识别不出来。
     fn project(&self, observation: serde_json::Value) -> Result<serde_json::Value, String> {
         match observation.get("kind").and_then(serde_json::Value::as_str) {
-            Some("windows") => enrich_windows(&observation, |handle, pid| {
-                if identity::window_pid(handle)? != pid {
-                    return None;
-                }
-                let found = identity::process_identity(pid)?;
-                Some((found.started_at_ms, found.app))
-            })
-            .ok_or_else(|| "窗口清单的字段对不上".to_owned()),
-            Some("tree" | "wait" | "image") => Ok(observation),
+            Some("windows") => enrich_windows(&observation, |handle, pid| self.identify(handle, pid))
+                .ok_or_else(|| "窗口清单的字段对不上".to_owned()),
+            Some("tree" | "wait" | "image" | "text") => Ok(observation),
             other => Err(format!("认不出的观察 {}", other.unwrap_or("(无 kind)"))),
         }
     }
@@ -729,6 +737,9 @@ fn run_worker(host: &Arc<DesktopHost>) -> Result<(), String> {
         .map_err(|e| format!("拉不起 {}：{e}", host.worker_path.display()))?;
     let mut child = spawned.child;
     let pid = spawned.link.pid();
+    // 作业对象按住到本函数返回为止，也就是这个 worker 进程的一生。提前丢掉它就是当场
+    // 杀掉 worker：作业里最后一个句柄关闭时内核收掉作业里的全部进程。
+    let _job = spawned.job;
     log::info!("computer-host worker 已启动 pid={pid}");
 
     // stderr 只写日志：非 Windows 的 worker 直接在这里说明它没有可用实现。

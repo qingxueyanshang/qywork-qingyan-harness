@@ -28,6 +28,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   # 窗口枚举、标题、类名、所属进程与窗口矩形。
   "Win32_UI_WindowsAndMessaging",
+  # IsWindowEnabled 在这个模块下：模态对话框把属主窗口禁用是动作已生效的证据之一。
+  "Win32_UI_Input_KeyboardAndMouse",
   # PrintWindow 在这个模块下，不在 WindowsAndMessaging。
   "Win32_Storage_Xps",
   # 进程 DPI 感知模式与窗口所在显示器的 DPI。

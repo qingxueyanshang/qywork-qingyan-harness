@@ -33,8 +33,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use protocol::{
-    action_dispatch, admit, now_ms, Binding, Bounds, HostIdentity, Observation, Op, Request,
-    Response, PROTOCOL_VERSION,
+    admit, now_ms, ActionSpec, Binding, Bounds, HostIdentity, Observation, Op, Request, Response,
+    PROTOCOL_VERSION,
 };
 
 /// 本进程的 DPI 感知模式。`main` 最前面设一次，此后只读。
@@ -192,7 +192,14 @@ fn execute_all(rx: Receiver<Request>, state: &Arc<State>) {
             spawn_wait(req, state);
             continue;
         }
-        reply(&handle(&backend, capturer.as_ref(), state, req));
+        let response = handle(&backend, capturer.as_ref(), state, req);
+        let drain = response.after_reply;
+        reply(&response);
+        // 回执先出去，再付这一次 provider 重连的代价：放回执之前付的话，一次点开模态框的
+        // 动作要等满连接超时才回得了。
+        if let Some(window) = drain {
+            backend.drain_provider(window);
+        }
     }
 }
 
@@ -252,17 +259,17 @@ fn handle(
             select,
             bounds,
         } => observe(req.id, backend.read_tree(window, &select, bounds)),
-        Op::SetValue {
+        Op::Act {
             window,
             reference,
-            value,
+            action,
             bounds,
-        } => act(req.id, backend, window, &reference, Some(&value), bounds),
-        Op::Invoke {
+        } => act(req.id, backend, window, &reference, &action, bounds),
+        Op::ReadText {
             window,
             reference,
-            bounds,
-        } => act(req.id, backend, window, &reference, None, bounds),
+            max_chars,
+        } => observe(req.id, backend.read_text(window, &reference, max_chars)),
         Op::CaptureImage {
             window,
             region,
@@ -397,17 +404,19 @@ fn act(
     backend: &windows::Backend,
     window: i64,
     reference: &str,
-    value: Option<&str>,
+    action: &ActionSpec,
     bounds: Bounds,
 ) -> Response {
-    let (attempt, observed) = backend.act(window, reference, value, bounds);
+    let (attempt, observed) = backend.act(window, reference, action, bounds);
     match attempt {
         windows::Attempt::Refused(reason) => Response::rejected(id, reason),
-        windows::Attempt::Called(call) => {
-            let dispatch = action_dispatch(&call);
-            let mut response = Response::acted(id, dispatch, observed);
-            if let Err(e) = call {
-                response.reason = Some(e);
+        windows::Attempt::Called(outcome) => {
+            let mut response = Response::acted(id, outcome.dispatch, observed);
+            response.reason = outcome.reason;
+            // 调用没返回时这一格替掉那次必然超时的重读，见 `Outcome::returned`。
+            if !outcome.returned {
+                response.blocking = Some(outcome.windows);
+                response.after_reply = Some(window);
             }
             response
         }

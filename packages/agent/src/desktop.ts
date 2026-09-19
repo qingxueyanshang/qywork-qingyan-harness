@@ -16,11 +16,17 @@
  */
 
 import type {
+  DesktopAction,
   DesktopDispatch,
   DesktopImageGeometry,
   DesktopImageSource,
   DesktopNodeAction,
+  DesktopRangeState,
   DesktopRect,
+  DesktopScrollState,
+  DesktopSelectionState,
+  DesktopTextSelection,
+  DesktopToggleState,
   DesktopWaitUntil,
 } from '@qywork/core'
 
@@ -68,12 +74,39 @@ export interface DesktopElement {
    */
   rect?: DesktopRect
   actions: DesktopNodeAction[]
+  /** RangeValuePattern 的数值区间。没有这个模式时缺席。 */
+  range?: DesktopRangeState
+  /** 复选的现态。 */
+  toggle?: DesktopToggleState
+  /** 展开折叠的现态。 */
+  expand?: 'collapsed' | 'expanded' | 'partial' | 'leaf' | 'unknown'
+  /** 这一项此刻选中没有。 */
+  selected?: boolean
+  /** 选择容器的多选与必选约束。只有容器有。 */
+  selection?: DesktopSelectionState
+  /** 滚动位置百分比。滚动后重读按它核对。 */
+  scroll?: DesktopScrollState
+  /** 这个控件读得出文档文本与选区。 */
+  text?: boolean
   /**
    * 这个控件没有稳定身份，只能按角色、名称与稳定标识核对。
    *
    * 界面重排之后这个引用不可靠，拿它发动作会被拒。缺席表示身份正常。
    */
   weakIdentity?: boolean
+}
+
+/**
+ * 一次文本读取。
+ *
+ * `truncated` 为真表示后面还有内容，不是文档到此为止。选区起点按 UTF-16 码元计，
+ * 超过 `maxChars` 的起点按 `maxChars` 记。
+ */
+export interface DesktopText {
+  text: string
+  truncated: boolean
+  selectionSupport: 'none' | 'single' | 'multiple'
+  selection: DesktopTextSelection[]
 }
 
 /**
@@ -134,6 +167,16 @@ export type DesktopFollowUp =
   | { observation: DesktopSnapshot }
   | { observation: null; observationError: string }
 
+/**
+ * 动作调用尚未返回时同次带回的一个顶层窗口。
+ *
+ * `windowId` 走的是 `windows()` 那一条登记路径，拿到就能直接 `observe`。
+ */
+export interface DesktopBlockingWindowInfo extends DesktopWindowInfo {
+  /** 动作调用之前这个窗口不存在。 */
+  appeared: boolean
+}
+
 /** 一次动作的执行回执。`dispatch` 是执行事实，与重读结果分列。 */
 export interface DesktopActReceipt {
   dispatch: DesktopDispatch
@@ -141,6 +184,14 @@ export interface DesktopActReceipt {
   actionId: string
   /** 拒绝原因码，或动作调用返回的失败原文。 */
   reason?: string
+  /**
+   * 动作调用尚未返回，因此**没有重读目标窗口**——那一刻目标应用的 UI 线程还卡在这次
+   * 调用里，任何读取都会等到超时。这是目标进程此刻的顶层窗口，`appeared` 为真的那些是
+   * 这次动作之后冒出来的（模态对话框走的就是这一支）。
+   *
+   * 缺席表示调用已经返回，重读结果照常在 `observation` 里。
+   */
+  blocking?: DesktopBlockingWindowInfo[]
 }
 
 export type DesktopActResult = DesktopActReceipt & DesktopFollowUp
@@ -192,6 +243,13 @@ export interface DesktopPort {
     query?: string
     /** 取不取控件当前值。缺席按取。 */
     includeValue?: boolean
+    /**
+     * 取不取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、
+     * 滚动位置。缺席按取。
+     *
+     * **可用动作表不受它影响**：动作按控件有没有对应模式判，那一项一直取。
+     */
+    includeState?: boolean
   }): Promise<DesktopSnapshot>
   /**
    * 取回一次观察记录的控件表。**`null` = 这次观察已经失效**，调用方要重新观察。
@@ -218,15 +276,29 @@ export interface DesktopPort {
     /** 上一张图里的一块矩形，图像坐标。 */
     imageRect?: DesktopRect
   }): Promise<DesktopImage>
-  /** 给控件写值。空串是清空，与不给这个参数不是一回事。 */
-  setValue(input: {
+  /**
+   * 在一个控件上执行一个动作。
+   *
+   * 十三种动作走同一个入口：每种各开一个方法的话，占用、目标核对与动作后重读会在
+   * 每个方法里各写一遍。动作可能弹出模态窗口，那时整份观察作废。
+   */
+  act(input: {
     windowId: string
     observationId: string
     ref: string
-    value: string
+    action: DesktopAction
   }): Promise<DesktopActResult>
-  /** 调用控件的默认动作（按钮、菜单项）。可能弹出模态窗口，之后要重新观察。 */
-  invoke(input: { windowId: string; observationId: string; ref: string }): Promise<DesktopActResult>
+  /**
+   * 读一个控件的文档文本与选区。只读，不改变状态，也不设焦点。
+   *
+   * 它不换观察编号：读文本不动控件表。
+   */
+  readText(input: {
+    windowId: string
+    observationId: string
+    ref: string
+    maxChars: number
+  }): Promise<DesktopText>
   /**
    * 等一个后置条件成立。有界超时，判定在宿主那一侧做。
    *

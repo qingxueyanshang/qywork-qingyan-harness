@@ -15,36 +15,68 @@
 //!    TreeWalker 会多出第二套顺序，同一个 `ref` 在两处指不同节点。
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(debug_assertions)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use ::windows::core::{Interface, BOOL, BSTR};
 use ::windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
 use ::windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, SAFEARRAY,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    SAFEARRAY,
 };
 use ::windows::Win32::System::Ole::{
     SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
 };
-use ::windows::Win32::System::Variant::{VARIANT, VT_ARRAY};
+use ::windows::Win32::System::Variant::{VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8};
 use ::windows::Win32::UI::Accessibility::{
-    AutomationElementMode_Full, CUIAutomation8, IUIAutomation, IUIAutomation2,
+    AutomationElementMode_Full, CUIAutomation8, ExpandCollapseState_Collapsed,
+    ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode,
+    ExpandCollapseState_PartiallyExpanded, IUIAutomation, IUIAutomation2,
     IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
-    IUIAutomationInvokePattern, IUIAutomationValuePattern, TreeScope, TreeScope_Children,
-    TreeScope_Element, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId,
-    UIA_ControlTypePropertyId, UIA_E_ELEMENTNOTAVAILABLE, UIA_E_TIMEOUT, UIA_InvokePatternId,
-    UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_NamePropertyId,
-    UIA_RuntimeIdPropertyId, UIA_ValuePatternId,
+    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern, IUIAutomationItemContainerPattern,
+    IUIAutomationRangeValuePattern, IUIAutomationScrollItemPattern, IUIAutomationScrollPattern,
+    IUIAutomationSelectionItemPattern, IUIAutomationSelectionPattern, IUIAutomationTextPattern,
+    IUIAutomationTextRange, IUIAutomationTogglePattern, IUIAutomationValuePattern,
+    IUIAutomationVirtualizedItemPattern, ScrollAmount, SupportedTextSelection,
+    SupportedTextSelection_Multiple, SupportedTextSelection_None, SupportedTextSelection_Single,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, TreeScope,
+    TreeScope_Children, TreeScope_Element, UIA_AutomationIdPropertyId,
+    UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_E_ELEMENTNOTAVAILABLE,
+    UIA_E_TIMEOUT, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_ExpandCollapsePatternId,
+    UIA_InvokePatternId, UIA_IsEnabledPropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
+    UIA_IsItemContainerPatternAvailablePropertyId, UIA_IsOffscreenPropertyId,
+    UIA_IsRangeValuePatternAvailablePropertyId, UIA_IsScrollItemPatternAvailablePropertyId,
+    UIA_IsScrollPatternAvailablePropertyId, UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_IsSelectionPatternAvailablePropertyId, UIA_IsTextPatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId,
+    UIA_ItemContainerPatternId, UIA_NamePropertyId, UIA_RangeValueIsReadOnlyPropertyId,
+    UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
+    UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
+    UIA_RangeValueValuePropertyId, UIA_RuntimeIdPropertyId,
+    UIA_ScrollHorizontalScrollPercentPropertyId, UIA_ScrollHorizontallyScrollablePropertyId,
+    UIA_ScrollItemPatternId, UIA_ScrollPatternId, UIA_ScrollPatternNoScroll,
+    UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
+    UIA_SelectionCanSelectMultiplePropertyId, UIA_SelectionIsSelectionRequiredPropertyId,
+    UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId, UIA_SelectionPatternId,
+    UIA_TextPatternId, UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId,
+    UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId, UIA_ValueValuePropertyId,
+    UIA_VirtualizedItemPatternId,
 };
+use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
 };
 
 use crate::geometry::ScreenRect;
 use crate::protocol::{
-    next_poll, now_ms, satisfied, Bounds, Completeness, Node, Observation, Seen, Select, Tree, Wait,
-    WaitUntil, WindowInfo,
+    next_poll, now_ms, satisfied, scroll_amounts, toggle_steps, ActionEvidence, ActionSpec, Bounds,
+    range_state, BlockingWindow, Completeness, Dispatch, Node, NodeAction, Observation, ScrollState,
+    Seen, Select,
+    SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil, WindowInfo,
 };
 
 pub const BACKEND: &str = "windows-uia";
@@ -92,10 +124,35 @@ fn report_cost(op: &str, nodes: u32, started: Instant) {
 
 /// 一次动作尝试的事实。`Refused` 表示没有向 provider 发出调用，`Called` 表示调用已经发出。
 ///
-/// 两者必须分开：`Called(Err)` 的动作可能已经生效，不能与「模式缺失」「只读」归为同一类。
+/// 两者必须分开：`Called` 的动作可能已经生效，不能与「模式缺失」「只读」归为同一类。
+/// `Called` 自带执行事实与原文，由可放弃等待路径判定，见 `dispatch_call`。
 pub enum Attempt {
     Refused(String),
-    Called(Result<(), String>),
+    Called(Outcome),
+}
+
+/// 一次已经发出的动作调用的终态。
+pub struct Outcome {
+    pub dispatch: Dispatch,
+    pub reason: Option<String>,
+    /// 调用已经返回。
+    ///
+    /// 为假时目标应用的 UI 线程还卡在这次调用里，**对这个窗口的任何 UIA 读取都会等到
+    /// 超时**，所以调用方不要在这种回执之后重读目标窗口。
+    pub returned: bool,
+    /// `returned` 为假时目标进程此刻的顶层窗口，纯 Win32 读出，不进 UIA。
+    pub windows: Vec<BlockingWindow>,
+}
+
+impl Outcome {
+    fn returned(dispatch: Dispatch, reason: Option<String>) -> Self {
+        Self {
+            dispatch,
+            reason,
+            returned: true,
+            windows: Vec::new(),
+        }
+    }
 }
 
 const TIMEOUT_HRESULT: i32 = UIA_E_TIMEOUT as i32;
@@ -103,6 +160,9 @@ const ELEMENT_GONE_HRESULT: i32 = UIA_E_ELEMENTNOTAVAILABLE as i32;
 
 /// 目标已经不在树上时的拒绝原因前缀。等待的「控件消失」条件按它判定。
 const REF_STALE: &str = "ref_stale";
+
+/// 动作调用尚未返回，没有重读目标窗口。调用方按它决定下一步观察哪个窗口。
+const TARGET_BLOCKED: &str = "target_blocked";
 
 /// 失败的两种形状：UIA 调用返回的错误，以及 worker 自己判定的拒绝。
 ///
@@ -114,6 +174,14 @@ enum Failure {
 
 /// 把一次 UIA 调用的错误包成 `Failure`，`step` 是出错的那一步。
 fn uia(step: &'static str) -> impl Fn(::windows::core::Error) -> Failure {
+    move |e| Failure::Uia {
+        code: e.code().0,
+        text: format!("{step}失败：{e}"),
+    }
+}
+
+/// 同 `uia`，用在步骤名要按模式名拼出来的地方。
+fn uia_owned(step: String) -> impl FnOnce(::windows::core::Error) -> Failure {
     move |e| Failure::Uia {
         code: e.code().0,
         text: format!("{step}失败：{e}"),
@@ -248,8 +316,18 @@ impl Backend {
             .map_err(|e| format!("关闭 AutoSetFocus 失败：{e}"))?;
         let control_view = unsafe { automation.ControlViewCondition() }
             .map_err(|e| format!("取 ControlViewCondition 失败：{e}"))?;
-        let nav_cache = build_cache(&automation, &control_view, NODE_PROPERTIES, true)
-            .map_err(|e| format!("建重定位缓存请求失败：{e}"))?;
+        // 重定位要的属性与读树那一份完全相同：定位沿途的节点会被当成完整节点读
+        // （等待的判定就这么读目标控件），少一项就会在那里撞上「所需属性不在
+        // CacheRequest 中」。
+        let nav_cache = build_cache(
+            &automation,
+            &control_view,
+            Fields {
+                value: true,
+                state: true,
+            },
+        )
+        .map_err(|e| format!("建重定位缓存请求失败：{e}"))?;
         Ok(Self {
             automation,
             options,
@@ -286,15 +364,10 @@ impl Backend {
         }
     }
 
-    /// 读树用的缓存请求。`include_value` 为假时不取控件值，可用动作仍照常判定。
-    fn walk_cache(&self, include_value: bool) -> Result<IUIAutomationCacheRequest, Failure> {
-        build_cache(
-            &self.automation,
-            &self.control_view,
-            NODE_PROPERTIES,
-            include_value,
-        )
-        .map_err(uia("建读树缓存请求"))
+    /// 读树用的缓存请求。取不取值与取不取状态细节各自可选，可用动作一直判得出来。
+    fn walk_cache(&self, fields: Fields) -> Result<IUIAutomationCacheRequest, Failure> {
+        build_cache(&self.automation, &self.control_view, fields)
+            .map_err(uia("建读树缓存请求"))
     }
 
     /// 取窗口元素并把它与它的子节点一次缓存回来。一次跨进程调用。
@@ -379,7 +452,10 @@ impl Backend {
         select: &Select,
         bounds: Bounds,
     ) -> Result<Tree, Failure> {
-        let cache = self.walk_cache(select.include_value)?;
+        let cache = self.walk_cache(Fields {
+            value: select.include_value,
+            state: select.include_state,
+        })?;
         match &select.root {
             None => {
                 let root = self.window_element(window, &cache)?;
@@ -455,7 +531,10 @@ impl Backend {
     ) -> Result<Observation, String> {
         let select = Select::default();
         let read = || -> Result<Tree, Failure> {
-            let cache = self.walk_cache(true)?;
+            let cache = self.walk_cache(Fields {
+                value: true,
+                state: true,
+            })?;
             match &located.parent {
                 Some(parent) => {
                     let root = self.expand(parent, &cache)?;
@@ -472,63 +551,17 @@ impl Backend {
         read().map(Observation::Tree).map_err(|f| f.into_reason(window))
     }
 
-    fn write_value(&self, window: i64, element: &IUIAutomationElement, value: &str) -> Attempt {
-        count_call();
-        let pattern = match optional(unsafe { element.GetCurrentPattern(UIA_ValuePatternId) })
-            .map_err(uia("取 ValuePattern"))
-        {
-            Ok(Some(p)) => p,
-            Ok(None) => return Attempt::Refused("pattern_missing: value".to_owned()),
-            Err(f) => return Attempt::Refused(f.into_reason(window)),
-        };
-        let value_pattern: IUIAutomationValuePattern =
-            match pattern.cast().map_err(uia("ValuePattern 转换")) {
-                Ok(p) => p,
-                Err(f) => return Attempt::Refused(f.into_reason(window)),
-            };
-        count_call();
-        match unsafe { value_pattern.CurrentIsReadOnly() }.map_err(uia("读只读标志")) {
-            Ok(read_only) if read_only.as_bool() => {
-                return Attempt::Refused("read_only".to_owned())
-            }
-            Ok(_) => {}
-            Err(f) => return Attempt::Refused(f.into_reason(window)),
-        }
-        count_call();
-        Attempt::Called(
-            unsafe { value_pattern.SetValue(&BSTR::from(value)) }.map_err(|e| e.to_string()),
-        )
-    }
-
-    fn call_default(&self, window: i64, element: &IUIAutomationElement) -> Attempt {
-        count_call();
-        let pattern = match optional(unsafe { element.GetCurrentPattern(UIA_InvokePatternId) })
-            .map_err(uia("取 InvokePattern"))
-        {
-            Ok(Some(p)) => p,
-            Ok(None) => return Attempt::Refused("pattern_missing: invoke".to_owned()),
-            Err(f) => return Attempt::Refused(f.into_reason(window)),
-        };
-        let invoke_pattern: IUIAutomationInvokePattern =
-            match pattern.cast().map_err(uia("InvokePattern 转换")) {
-                Ok(p) => p,
-                Err(f) => return Attempt::Refused(f.into_reason(window)),
-            };
-        count_call();
-        Attempt::Called(unsafe { invoke_pattern.Invoke() }.map_err(|e| e.to_string()))
-    }
-
     /// 执行一个动作并重读目标所在的子树。
     ///
-    /// `value` 给了是写值，缺席是调用默认动作。两者的定位、准入与重读完全一样，合成
-    /// 一条路径：分开写会让「动作前重定位」这件事有两个出处。
+    /// 十三种动作共用这一条路径：定位、准入判定、可放弃等待的调用与动作后重读各只有
+    /// 一处实现。按动作分成多条路径会让这四件事各有一份拷贝。
     ///
     /// **没有派发就不重读**：那一份观察会被调用方读成动作已经发生。
     pub fn act(
         &self,
         window: i64,
         reference: &str,
-        value: Option<&str>,
+        action: &ActionSpec,
         bounds: Bounds,
     ) -> (Attempt, Result<Observation, String>) {
         let located = match self.locate(window, reference) {
@@ -536,22 +569,56 @@ impl Backend {
             Err(f) => {
                 let reason = f.into_reason(window);
                 return (
-                    Attempt::Refused(reason.clone()),
+                    Attempt::Refused(reason),
                     Err("动作没有派发，没有重读".to_owned()),
                 );
             }
         };
-        let attempt = match value {
-            Some(v) => self.write_value(window, &located.element, v),
-            None => self.call_default(window, &located.element),
-        };
-        match attempt {
+        match perform(window, &located.element, action) {
             Attempt::Refused(reason) => (
                 Attempt::Refused(reason),
                 Err("动作没有派发，没有重读".to_owned()),
             ),
+            // 调用还没返回：目标应用的 UI 线程卡在里面，这一次重读必然等满时间预算再超时。
+            // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
+            // 那一个。
+            Attempt::Called(outcome) if !outcome.returned => {
+                // 定位到的那两个元素同样不能在这条线程上丢弃：释放代理也要等目标进程
+                // 应答，就地丢会等满 UIA 连接超时。
+                release_off_thread(located);
+                (
+                    Attempt::Called(outcome),
+                    Err(format!(
+                        "{TARGET_BLOCKED}: 动作调用尚未返回，没有重读目标窗口；\
+                         目标进程此刻的顶层窗口随回执带回"
+                    )),
+                )
+            }
             called => (called, self.reread_around(window, &located, bounds)),
         }
+    }
+
+    /// 清一次到目标 provider 的连接。
+    ///
+    /// 上一次动作调用还挂在目标应用里时，**这个 provider 上的下一次 UIA 调用必定等到
+    /// 连接超时才回，再下一次才正常**（实测 2010 ms 失败、随后成功）。这一次调用就是
+    /// 那个代价，由 worker 在回执发出之后自己付：留给调用方付的话，它下一次观察拿到的
+    /// 是一次不该有的超时失败。
+    pub fn drain_provider(&self, window: i64) {
+        let _ = self.window_element(window, &self.nav_cache);
+    }
+
+    /// 读一个控件的文档文本与选区。只读，不改变状态，也不设焦点。
+    pub fn read_text(
+        &self,
+        window: i64,
+        reference: &str,
+        max_chars: u32,
+    ) -> Result<Observation, String> {
+        let located = self.locate(window, reference).map_err(|f| f.into_reason(window))?;
+        let pattern: IUIAutomationTextPattern =
+            current_pattern(window, &located.element, UIA_TextPatternId, "TextPattern")?;
+        read_document(window, reference, &pattern, max_chars).map_err(|f| f.into_reason(window))
     }
 
     /// 等一个后置条件成立。判定、轮询与到期都在这里，调用方只拿终态。
@@ -700,26 +767,123 @@ impl Backend {
 
         let mut actions = Vec::new();
         let mut value = None;
-        if let Some(pattern) =
-            optional(unsafe { element.GetCachedPattern(UIA_ValuePatternId) }).map_err(uia("取 ValuePattern"))?
-        {
-            let value_pattern: IUIAutomationValuePattern =
-                pattern.cast().map_err(uia("ValuePattern 转换"))?;
+        if available(element, UIA_IsValuePatternAvailablePropertyId)? {
             // 缓存请求没要值时这里读不到，属于字段选择的结果，不是失败。
-            if let Ok(text) = unsafe { value_pattern.CachedValue() } {
-                value = Some(text.to_string());
-            }
-            if !cached_bool(&value_pattern, "读只读标志", |p| unsafe {
-                p.CachedIsReadOnly()
-            })? {
-                actions.push("set_value");
+            value = cached_string(element, UIA_ValueValuePropertyId)?;
+            actions.push(
+                if cached_flag(element, UIA_ValueIsReadOnlyPropertyId)?.unwrap_or(false) {
+                    NodeAction::blocked("set_value", "read_only")
+                } else {
+                    NodeAction::ready("set_value")
+                },
+            );
+        }
+        if available(element, UIA_IsInvokePatternAvailablePropertyId)? {
+            actions.push(NodeAction::ready("invoke"));
+        }
+
+        let mut range = None;
+        if available(element, UIA_IsRangeValuePatternAvailablePropertyId)? {
+            range = range_state(
+                cached_number(element, UIA_RangeValueValuePropertyId)?.unwrap_or(f64::NAN),
+                cached_number(element, UIA_RangeValueMinimumPropertyId)?.unwrap_or(f64::NAN),
+                cached_number(element, UIA_RangeValueMaximumPropertyId)?.unwrap_or(f64::NAN),
+                cached_number(element, UIA_RangeValueSmallChangePropertyId)?.unwrap_or(f64::NAN),
+                cached_number(element, UIA_RangeValueLargeChangePropertyId)?.unwrap_or(f64::NAN),
+            );
+            actions.push(
+                if cached_flag(element, UIA_RangeValueIsReadOnlyPropertyId)?.unwrap_or(false) {
+                    NodeAction::blocked("set_range_value", "read_only")
+                } else {
+                    NodeAction::ready("set_range_value")
+                },
+            );
+        }
+
+        let mut toggle = None;
+        if available(element, UIA_IsTogglePatternAvailablePropertyId)? {
+            toggle = cached_int(element, UIA_ToggleToggleStatePropertyId)?
+                .and_then(ToggleState::from_uia)
+                .map(ToggleState::as_str);
+            actions.push(NodeAction::ready("set_toggle"));
+        }
+
+        let mut expand = None;
+        if available(element, UIA_IsExpandCollapsePatternAvailablePropertyId)? {
+            let state = cached_int(element, UIA_ExpandCollapseExpandCollapseStatePropertyId)?;
+            expand = state.map(expand_name);
+            // 叶节点两个方向都到不了：它没有可展开的内容，调用会失败。
+            // 状态没取时按不是叶节点算，由动作那一刻的实时读数拒。
+            let leaf = state == Some(ExpandCollapseState_LeafNode.0);
+            actions.push(if leaf {
+                NodeAction::blocked("expand", "leaf_node")
+            } else {
+                NodeAction::ready("expand")
+            });
+            actions.push(if leaf {
+                NodeAction::blocked("collapse", "leaf_node")
+            } else {
+                NodeAction::ready("collapse")
+            });
+        }
+
+        let mut selected = None;
+        if available(element, UIA_IsSelectionItemPatternAvailablePropertyId)? {
+            selected = cached_flag(element, UIA_SelectionItemIsSelectedPropertyId)?;
+            actions.push(NodeAction::ready("select"));
+            // 容器支不支持多选要问容器，那是一次跨进程调用；放到动作那一刻问，
+            // 读树时不为每一项各问一次。
+            actions.push(NodeAction::ready("add_to_selection"));
+            actions.push(NodeAction::ready("remove_from_selection"));
+        }
+
+        let mut selection = None;
+        if available(element, UIA_IsSelectionPatternAvailablePropertyId)? {
+            if let (Some(multiple), Some(required)) = (
+                cached_flag(element, UIA_SelectionCanSelectMultiplePropertyId)?,
+                cached_flag(element, UIA_SelectionIsSelectionRequiredPropertyId)?,
+            ) {
+                selection = Some(SelectionState { multiple, required });
             }
         }
-        if optional(unsafe { element.GetCachedPattern(UIA_InvokePatternId) })
-            .map_err(uia("取 InvokePattern"))?
-            .is_some()
-        {
-            actions.push("invoke");
+
+        let mut scroll = None;
+        if available(element, UIA_IsScrollPatternAvailablePropertyId)? {
+            let horizontal = cached_flag(element, UIA_ScrollHorizontallyScrollablePropertyId)?;
+            let vertical = cached_flag(element, UIA_ScrollVerticallyScrollablePropertyId)?;
+            if horizontal.is_some() || vertical.is_some() {
+                scroll = Some(ScrollState {
+                    horizontal: axis_percent(
+                        element,
+                        horizontal,
+                        UIA_ScrollHorizontalScrollPercentPropertyId,
+                    )?,
+                    vertical: axis_percent(
+                        element,
+                        vertical,
+                        UIA_ScrollVerticalScrollPercentPropertyId,
+                    )?,
+                });
+            }
+            // 状态没取时按可滚动算：那一刻能不能滚由动作的实时读数判。
+            actions.push(
+                if horizontal == Some(false) && vertical == Some(false) {
+                    NodeAction::blocked("scroll", "not_scrollable")
+                } else {
+                    NodeAction::ready("scroll")
+                },
+            );
+        }
+        if available(element, UIA_IsScrollItemPatternAvailablePropertyId)? {
+            actions.push(NodeAction::ready("scroll_into_view"));
+        }
+        if available(element, UIA_IsItemContainerPatternAvailablePropertyId)? {
+            actions.push(NodeAction::ready("realize_item"));
+        }
+        let text = available(element, UIA_IsTextPatternAvailablePropertyId)?;
+        if text {
+            // 支不支持设选区要问 `SupportedTextSelection`，它没有缓存版本；动作那一刻再问。
+            actions.push(NodeAction::ready("select_text"));
         }
 
         let bounds = unsafe { element.CachedBoundingRectangle() }.map_err(uia("读包围盒"))?;
@@ -737,8 +901,30 @@ impl Backend {
             offscreen,
             rect: bounding_box(bounds),
             actions,
+            range,
+            toggle,
+            expand,
+            selected,
+            selection,
+            scroll,
+            text,
             weak_identity: identity.is_weak(),
         })
+    }
+}
+
+/// ExpandCollapseState 常量转成回执里的名字。
+fn expand_name(state: i32) -> &'static str {
+    if state == ExpandCollapseState_Collapsed.0 {
+        "collapsed"
+    } else if state == ExpandCollapseState_Expanded.0 {
+        "expanded"
+    } else if state == ExpandCollapseState_PartiallyExpanded.0 {
+        "partial"
+    } else if state == ExpandCollapseState_LeafNode.0 {
+        "leaf"
+    } else {
+        "unknown"
     }
 }
 
@@ -768,6 +954,43 @@ const NODE_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] =
     UIA_IsEnabledPropertyId,
     UIA_IsOffscreenPropertyId,
     UIA_BoundingRectanglePropertyId,
+    UIA_ValueIsReadOnlyPropertyId,
+    // 模式有没有：走 `Is*PatternAvailable` 布尔属性，不缓存模式对象本身。
+    // **不要改回 `AddPattern`**：provider 要为每个节点各造一份模式对象，实测同一个
+    // 155 节点窗口从 197 ms 涨到 518 ms，而这里只要判「有没有」。
+    UIA_IsValuePatternAvailablePropertyId,
+    UIA_IsInvokePatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_IsRangeValuePatternAvailablePropertyId,
+    UIA_IsSelectionPatternAvailablePropertyId,
+    UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_IsScrollPatternAvailablePropertyId,
+    UIA_IsScrollItemPatternAvailablePropertyId,
+    UIA_IsTextPatternAvailablePropertyId,
+    UIA_IsItemContainerPatternAvailablePropertyId,
+];
+
+/// 控件模式的状态属性。
+///
+/// 与 `NODE_PROPERTIES` 分开一份，是因为 `includeState` 为假时不请求它们：动作可用性
+/// 只看上面那些布尔属性，状态细节是另一件事。
+const STATE_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] = &[
+    UIA_ToggleToggleStatePropertyId,
+    UIA_ExpandCollapseExpandCollapseStatePropertyId,
+    UIA_RangeValueValuePropertyId,
+    UIA_RangeValueMinimumPropertyId,
+    UIA_RangeValueMaximumPropertyId,
+    UIA_RangeValueSmallChangePropertyId,
+    UIA_RangeValueLargeChangePropertyId,
+    UIA_RangeValueIsReadOnlyPropertyId,
+    UIA_SelectionCanSelectMultiplePropertyId,
+    UIA_SelectionIsSelectionRequiredPropertyId,
+    UIA_SelectionItemIsSelectedPropertyId,
+    UIA_ScrollHorizontalScrollPercentPropertyId,
+    UIA_ScrollVerticalScrollPercentPropertyId,
+    UIA_ScrollHorizontallyScrollablePropertyId,
+    UIA_ScrollVerticallyScrollablePropertyId,
 ];
 
 /// 建一个缓存请求：固定用控件视图筛子节点，范围固定为「本节点 + 它的子节点」。
@@ -777,8 +1000,7 @@ const NODE_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] =
 fn build_cache(
     automation: &IUIAutomation,
     control_view: &IUIAutomationCondition,
-    properties: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID],
-    include_value: bool,
+    fields: Fields,
 ) -> ::windows::core::Result<IUIAutomationCacheRequest> {
     unsafe {
         let cache = automation.CreateCacheRequest()?;
@@ -788,18 +1010,30 @@ fn build_cache(
         cache.SetAutomationElementMode(AutomationElementMode_Full)?;
         // RuntimeId 是 `ref` 的核对依据，每个节点都要，不随字段选择变。
         cache.AddProperty(UIA_RuntimeIdPropertyId)?;
-        for property in properties {
+        for property in NODE_PROPERTIES {
             cache.AddProperty(*property)?;
         }
-        // ValuePattern 一直缓存：可用动作要按它的只读标志判，与取不取值是两件事。
-        cache.AddPattern(UIA_ValuePatternId)?;
-        cache.AddPattern(UIA_InvokePatternId)?;
-        if include_value {
-            cache.AddProperty(::windows::Win32::UI::Accessibility::UIA_ValueValuePropertyId)?;
+        if fields.value {
+            cache.AddProperty(UIA_ValueValuePropertyId)?;
         }
-        cache.AddProperty(::windows::Win32::UI::Accessibility::UIA_ValueIsReadOnlyPropertyId)?;
+        if fields.state {
+            for property in STATE_PROPERTIES {
+                cache.AddProperty(*property)?;
+            }
+        }
         Ok(cache)
     }
+}
+
+/// 这一次读取要取哪些可选字段。
+///
+/// 两项都不影响可用动作表：动作按 `Is*PatternAvailable` 判，那几个属性一直取。
+#[derive(Debug, Clone, Copy)]
+struct Fields {
+    /// 取控件当前值。
+    value: bool,
+    /// 取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、滚动位置。
+    state: bool,
 }
 
 /// 一个节点连同它在前序表里的父节点下标。筛选时按 `keep` 决定留不留。
@@ -1031,6 +1265,132 @@ fn cached_bool<T>(
     read(source).map(|v| v.as_bool()).map_err(uia(step))
 }
 
+/// 这一次缓存请求没要这个属性。
+///
+/// UIA 对不在 CacheRequest 里的属性回 `E_INVALIDARG`；本模块的属性 id 全是常量，
+/// 这个码在这里只有这一个成因。
+const NOT_REQUESTED: i32 = -2_147_024_809; // E_INVALIDARG (0x80070057)
+
+/// 读一个缓存属性。这一次没要这一项时返回 `None`，不是失败。
+fn cached_value(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<VARIANT>, Failure> {
+    match unsafe { element.GetCachedPropertyValue(id) } {
+        Ok(variant) => Ok(Some(variant)),
+        Err(e) if e.code().0 == NOT_REQUESTED => Ok(None),
+        Err(e) => Err(uia("读缓存属性")(e)),
+    }
+}
+
+/// 缓存属性里的布尔值。缺席或类型不符时 `None`。
+///
+/// **缺席与假是两件事**：没取这一项时按假读，会把「不知道」写成「不可以」。
+fn cached_flag(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<bool>, Failure> {
+    let Some(variant) = cached_value(element, id)? else {
+        return Ok(None);
+    };
+    if variant.vt() != VT_BOOL {
+        return Ok(None);
+    }
+    // SAFETY: vt 是 VT_BOOL 时联合体里有效的就是 boolVal。
+    Ok(Some(unsafe { variant.Anonymous.Anonymous.Anonymous.boolVal }.as_bool()))
+}
+
+/// 缓存属性里的浮点数。
+fn cached_number(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<f64>, Failure> {
+    let Some(variant) = cached_value(element, id)? else {
+        return Ok(None);
+    };
+    if variant.vt() != VT_R8 {
+        return Ok(None);
+    }
+    // SAFETY: vt 是 VT_R8 时联合体里有效的就是 dblVal。
+    Ok(Some(unsafe { variant.Anonymous.Anonymous.Anonymous.dblVal }))
+}
+
+/// 缓存属性里的整数。控件模式的状态枚举按它读。
+fn cached_int(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<i32>, Failure> {
+    let Some(variant) = cached_value(element, id)? else {
+        return Ok(None);
+    };
+    if variant.vt() != VT_I4 {
+        return Ok(None);
+    }
+    // SAFETY: vt 是 VT_I4 时联合体里有效的就是 lVal。
+    Ok(Some(unsafe { variant.Anonymous.Anonymous.Anonymous.lVal }))
+}
+
+/// 缓存属性里的字符串。
+fn cached_string(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<String>, Failure> {
+    let Some(variant) = cached_value(element, id)? else {
+        return Ok(None);
+    };
+    if variant.vt() != VT_BSTR {
+        return Ok(None);
+    }
+    // SAFETY: vt 是 VT_BSTR 时联合体里有效的就是 bstrVal；字符串归 VARIANT 所有，
+    // 这里只借读再复制一份出去。
+    let text = unsafe { &*variant.Anonymous.Anonymous.Anonymous.bstrVal };
+    Ok(Some(String::from_utf16_lossy(text)))
+}
+
+/// 这个控件有没有某个控件模式。按 `Is*PatternAvailable` 布尔属性判，不造模式对象。
+fn available(
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<bool, Failure> {
+    Ok(cached_flag(element, id)?.unwrap_or(false))
+}
+
+/// 一个滚动轴的位置百分比。这个轴滚不动、或状态没取时缺席。
+///
+/// **缺席不等于 0**：0 是「在顶端」。
+fn axis_percent(
+    element: &IUIAutomationElement,
+    scrollable: Option<bool>,
+    id: ::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+) -> Result<Option<f64>, Failure> {
+    if scrollable != Some(true) {
+        return Ok(None);
+    }
+    Ok(cached_number(element, id)?.filter(|p| *p != UIA_ScrollPatternNoScroll))
+}
+
+/// 取一个控件此刻的模式。定位之后要调模式方法时用它，读的是实时状态不是缓存。
+///
+/// 模式缺失返回 `pattern_missing`，与调用失败分开：前者可证明没有发出动作调用。
+fn current_pattern<T: Interface>(
+    window: i64,
+    element: &IUIAutomationElement,
+    id: ::windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
+    name: &'static str,
+) -> Result<T, String> {
+    count_call();
+    let found = optional(unsafe { element.GetCurrentPattern(id) })
+        .map_err(uia_owned(format!("取 {name}")))
+        .map_err(|f| f.into_reason(window))?;
+    let Some(pattern) = found else {
+        return Err(format!("pattern_missing: {name}"));
+    };
+    pattern
+        .cast::<T>()
+        .map_err(uia_owned(format!("{name} 转换")))
+        .map_err(|f| f.into_reason(window))
+}
+
 /// 取缓存里的子节点。缓存请求的范围含子节点，因此不发跨进程调用。
 ///
 /// 没有子节点时 UIA 交回的是空指针加 S_OK，按 `optional` 判成「没有」，不是调用失败。
@@ -1185,6 +1545,673 @@ fn decode_ref(reference: &str) -> Result<(Vec<usize>, Identity), String> {
     Ok((indexes, Identity::decode(identity)))
 }
 
+// ── 动作：可放弃等待的调用路径 ──
+
+/// 主路径等一次动作调用返回多久。
+///
+/// 正常的模式调用在这段时间里早就回来了。它不是调用的上界——`InvokePattern.Invoke()`
+/// 点开模态对话框时，provider 那一侧要等对话框关掉才返回。
+const CALL_CONFIRM_MS: u64 = 400;
+/// 调用没按时返回时，再花多久找可核实的生效证据。
+///
+/// 两段加起来留在宿主给的 UIA 连接超时（2000 ms）以内：超过它调用自己就带错误返回，
+/// 再等只是把同一个结论推迟。
+const CALL_EVIDENCE_MS: u64 = 1_400;
+/// 找证据时两次查询之间隔多久。查的全是 Win32 窗口属性，一次几微秒。
+const EVIDENCE_POLL_MS: u64 = 40;
+/// 尚未返回的动作调用线程上界。
+///
+/// 到上界即拒绝新动作：那说明目标应用已经有这么多次调用没回来，再发一次只多一条挂着的
+/// 线程。每条线程在调用返回时自行退出，UIA 连接超时给了它一个上界。
+const MAX_PENDING_CALLS: u32 = 8;
+/// 一次 `set_toggle` 最多按几下。三态环最长三格，按不到目标态即如实回未知。
+const MAX_TOGGLE_STEPS: u32 = 3;
+/// 调用没返回时随回执带回几个顶层窗口。
+///
+/// 这一格是给调用方指下一步观察哪个窗口用的，不是窗口清单的第二个入口。
+const MAX_BLOCKING_WINDOWS: usize = 16;
+
+static PENDING_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// 一次待发的模式调用，连同它捕获的 UIA 接口。
+///
+/// **两端都在进程的 MTA 里**：`Backend::new` 与每条调用线程都做
+/// `CoInitializeEx(COINIT_MULTITHREADED)`，同一个接口指针因此可以直接跨线程调用，
+/// 不需要封送。不要把 UIA 客户端改成 STA，那时这个封装不再成立。
+struct Deferred(Box<dyn FnOnce() -> Result<(), String>>);
+
+// SAFETY: 接口对象归进程 MTA 所有，调用线程加入同一个 MTA 之后可以直接调它。
+unsafe impl Send for Deferred {}
+
+impl Deferred {
+    /// 发出这次调用。
+    ///
+    /// **必须经这个方法用它**：闭包里直接解构字段的话，2021 版的按字段捕获会让线程
+    /// 捕到里面那个 `Box`，`Send` 就不再由本类型声明。
+    fn run(self) -> Result<(), String> {
+        (self.0)()
+    }
+}
+
+/// 把一次 UIA 模式调用包成可以交给别的线程的形状。
+fn defer(call: impl FnOnce() -> ::windows::core::Result<()> + 'static) -> Deferred {
+    Deferred(Box::new(move || call().map_err(|e| e.to_string())))
+}
+
+/// 调用前后都读得到的窗口事实。动作是否生效的证据全部由它给出。
+///
+/// 三项都是 Win32 调用：目标进程的 UI 线程正在跑模态对话框的嵌套消息循环时，
+/// 这些调用照常应答，而任何 UIA 调用都会排在那次没返回的调用后面。
+struct CallWatch {
+    window: i64,
+    pid: u32,
+    was_enabled: bool,
+    before: Vec<i64>,
+}
+
+impl CallWatch {
+    fn before(window: i64) -> Self {
+        let hwnd = HWND(window as *mut c_void);
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        Self {
+            window,
+            pid,
+            was_enabled: unsafe { IsWindowEnabled(hwnd) }.as_bool(),
+            before: process_windows(pid).into_iter().map(|w| w.window).collect(),
+        }
+    }
+
+    /// 调用没返回时交给调用方的那份事实：目标进程此刻的顶层窗口，调用之前不存在的标出来。
+    ///
+    /// 只带前 `MAX_BLOCKING_WINDOWS` 个：这一格是给调用方指下一步观察哪个窗口用的，
+    /// 不是窗口清单的第二个入口。
+    fn blocking(&self) -> Vec<BlockingWindow> {
+        process_windows(self.pid)
+            .into_iter()
+            .take(MAX_BLOCKING_WINDOWS)
+            .map(|info| BlockingWindow {
+                appeared: !self.before.contains(&info.window),
+                info,
+            })
+            .collect()
+    }
+
+    /// 动作已经生效的证据。没有即 `None`。
+    ///
+    /// 「窗口被禁用」只在调用之前它是启用的时候才算数：一个本来就禁用的窗口说明不了
+    /// 这次调用做过什么。
+    fn evidence(&self) -> Option<ActionEvidence> {
+        let hwnd = HWND(self.window as *mut c_void);
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return Some(ActionEvidence::WindowGone);
+        }
+        if self.was_enabled && !unsafe { IsWindowEnabled(hwnd) }.as_bool() {
+            return Some(ActionEvidence::WindowDisabled);
+        }
+        if self.pid != 0
+            && process_windows(self.pid)
+                .iter()
+                .any(|w| !self.before.contains(&w.window))
+        {
+            return Some(ActionEvidence::NewWindow);
+        }
+        None
+    }
+}
+
+/// 一个进程此刻的可见顶层窗口。标题为空的也收：模态对话框未必有标题。
+///
+/// 纯 Win32 枚举：`GetWindowTextW` 对无响应的跨进程窗口交回缓存标题而不阻塞，因此这个
+/// 函数在目标 UI 线程卡死时仍然按时返回。
+fn process_windows(pid: u32) -> Vec<WindowInfo> {
+    struct Sink {
+        pid: u32,
+        found: Vec<WindowInfo>,
+    }
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let sink = &mut *(lparam.0 as *mut Sink);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != sink.pid {
+            return TRUE;
+        }
+        let mut title = [0u16; 512];
+        let written = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+        let mut class_name = [0u16; 256];
+        let class_written = GetClassNameW(hwnd, &mut class_name).max(0) as usize;
+        sink.found.push(WindowInfo {
+            window: hwnd.0 as i64,
+            pid,
+            title: String::from_utf16_lossy(&title[..written]),
+            class_name: String::from_utf16_lossy(&class_name[..class_written]),
+        });
+        TRUE
+    }
+    if pid == 0 {
+        return Vec::new();
+    }
+    let mut sink = Sink {
+        pid,
+        found: Vec::new(),
+    };
+    // SAFETY: 回调只在本次调用期间运行，lparam 指向本栈帧上的 sink。
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(sink) as isize)) };
+    sink.found
+}
+
+/// 起一条线程发这次调用。到达线程上界时返回 `None`，调用没有发出。
+fn spawn_call(deferred: Deferred) -> Option<Receiver<Result<(), String>>> {
+    PENDING_CALLS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n < MAX_PENDING_CALLS).then_some(n + 1)
+        })
+        .ok()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // 加入进程的 MTA。接口对象属于它，不加入就调不动。
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let result = deferred.run();
+        // 送不出去是常态：主路径可能已经放弃等待了。
+        let _ = tx.send(result);
+        if hr.is_ok() {
+            unsafe { CoUninitialize() };
+        }
+        PENDING_CALLS.fetch_sub(1, Ordering::SeqCst);
+    });
+    Some(rx)
+}
+
+/// 把一个 UIA 接口交给另一条线程去丢弃。
+///
+/// **目标应用的 UI 线程卡在一次没返回的调用里时，释放它的代理要等它应答**：在执行线程上
+/// 丢弃会等满 UIA 连接超时，实测一个元素约两秒。占用与动作调用同一份线程额度；
+/// 额度满时这个封装就地被丢弃，退回等目标进程应答。
+fn release_off_thread<T: 'static>(value: T) {
+    let _ = spawn_call(Deferred(Box::new(move || {
+        drop(value);
+        Ok(())
+    })));
+}
+
+/// 发一次可能不返回的模式调用，并在有界时间里定下执行事实。
+///
+/// 先等一个短确认窗口；没等到就改看可核实的事实（目标窗口被禁用、已关闭，或目标进程
+/// 多出一个顶层窗口）。有证据即 `submitted`，没有证据而调用仍未返回才是 `unknown`。
+fn dispatch_call(window: i64, deferred: Deferred) -> Attempt {
+    let watch = CallWatch::before(window);
+    let Some(rx) = spawn_call(deferred) else {
+        return Attempt::Refused(format!(
+            "action_calls_exhausted: 已有 {MAX_PENDING_CALLS} 次动作调用没有返回，这一次没有发出"
+        ));
+    };
+    count_call();
+    let first = match rx.recv_timeout(Duration::from_millis(CALL_CONFIRM_MS)) {
+        Ok(result) => Some(result),
+        Err(RecvTimeoutError::Timeout) => None,
+        Err(RecvTimeoutError::Disconnected) => {
+            Some(Err("动作调用线程没有留下结果".to_owned()))
+        }
+    };
+    if let Some(result) = first {
+        let (dispatch, reason) = crate::protocol::classify_action(Some(&result), None, true)
+            .expect("调用有返回值时终态必定判得出");
+        return Attempt::Called(Outcome::returned(dispatch, reason));
+    }
+    let until = Instant::now() + Duration::from_millis(CALL_EVIDENCE_MS);
+    loop {
+        let returned = match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("动作调用线程没有留下结果".to_owned())),
+        };
+        let settled = crate::protocol::classify_action(
+            returned.as_ref(),
+            watch.evidence(),
+            Instant::now() >= until,
+        );
+        if let Some((dispatch, reason)) = settled {
+            if returned.is_some() {
+                return Attempt::Called(Outcome::returned(dispatch, reason));
+            }
+            return Attempt::Called(Outcome {
+                dispatch,
+                reason,
+                returned: false,
+                windows: watch.blocking(),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));
+    }
+}
+
+/// 按动作取模式、判前置条件，然后发调用。
+///
+/// 前置条件判在这里而不是调用之后：只读、越界、模式缺失都是可证明的「没有发出调用」，
+/// 归 `not_dispatched`。
+fn perform(window: i64, element: &IUIAutomationElement, action: &ActionSpec) -> Attempt {
+    if let ActionSpec::SetToggle { state } = action {
+        return set_toggle(window, element, *state);
+    }
+    match plan(window, element, action) {
+        Ok(deferred) => dispatch_call(window, deferred),
+        Err(reason) => Attempt::Refused(reason),
+    }
+}
+
+/// 一次动作的准入判定与调用构造。`Err` 一律是「可证明没有发出调用」。
+fn plan(
+    window: i64,
+    element: &IUIAutomationElement,
+    action: &ActionSpec,
+) -> Result<Deferred, String> {
+    match action {
+        ActionSpec::Invoke => {
+            let pattern: IUIAutomationInvokePattern =
+                current_pattern(window, element, UIA_InvokePatternId, "InvokePattern")?;
+            Ok(defer(move || unsafe { pattern.Invoke() }))
+        }
+        ActionSpec::SetValue { value } => {
+            let pattern: IUIAutomationValuePattern =
+                current_pattern(window, element, UIA_ValuePatternId, "ValuePattern")?;
+            count_call();
+            if unsafe { pattern.CurrentIsReadOnly() }
+                .map_err(uia("读只读标志"))
+                .map_err(|f| f.into_reason(window))?
+                .as_bool()
+            {
+                return Err("read_only".to_owned());
+            }
+            let text = BSTR::from(value.as_str());
+            Ok(defer(move || unsafe { pattern.SetValue(&text) }))
+        }
+        ActionSpec::SetRangeValue { value } => {
+            let pattern: IUIAutomationRangeValuePattern =
+                current_pattern(window, element, UIA_RangeValuePatternId, "RangeValuePattern")?;
+            let read = |step: &'static str,
+                        f: &dyn Fn() -> ::windows::core::Result<f64>|
+             -> Result<f64, String> {
+                count_call();
+                f().map_err(uia(step)).map_err(|e| e.into_reason(window))
+            };
+            count_call();
+            if unsafe { pattern.CurrentIsReadOnly() }
+                .map_err(uia("读数值只读标志"))
+                .map_err(|f| f.into_reason(window))?
+                .as_bool()
+            {
+                return Err("read_only".to_owned());
+            }
+            let min = read("读数值下界", &|| unsafe { pattern.CurrentMinimum() })?;
+            let max = read("读数值上界", &|| unsafe { pattern.CurrentMaximum() })?;
+            // 越界不夹到边上：夹出来的值看着合法，而它不是调用方要的那一个。
+            // provider 给不出有限边界时这一关判不了，交给它自己拒。
+            if min.is_finite() && max.is_finite() && (*value < min || *value > max) {
+                return Err(format!("out_of_range: 允许 {min} 到 {max}，给的是 {value}"));
+            }
+            let target = *value;
+            Ok(defer(move || unsafe { pattern.SetValue(target) }))
+        }
+        ActionSpec::Select => {
+            let pattern: IUIAutomationSelectionItemPattern = current_pattern(
+                window,
+                element,
+                UIA_SelectionItemPatternId,
+                "SelectionItemPattern",
+            )?;
+            Ok(defer(move || unsafe { pattern.Select() }))
+        }
+        ActionSpec::AddToSelection | ActionSpec::RemoveFromSelection => {
+            let pattern: IUIAutomationSelectionItemPattern = current_pattern(
+                window,
+                element,
+                UIA_SelectionItemPatternId,
+                "SelectionItemPattern",
+            )?;
+            // 单选容器上增选与取消都做不到：调用会失败，而失败按 unknown 记，
+            // 调用方分不出「容器本来就不支持」与「可能已经改了选择」。
+            if !multi_select(window, &pattern)? {
+                return Err("single_selection_only: 这个容器一次只能选一项，用 select".to_owned());
+            }
+            let add = matches!(action, ActionSpec::AddToSelection);
+            Ok(defer(move || unsafe {
+                if add {
+                    pattern.AddToSelection()
+                } else {
+                    pattern.RemoveFromSelection()
+                }
+            }))
+        }
+        ActionSpec::Expand | ActionSpec::Collapse => {
+            let pattern: IUIAutomationExpandCollapsePattern = current_pattern(
+                window,
+                element,
+                UIA_ExpandCollapsePatternId,
+                "ExpandCollapsePattern",
+            )?;
+            count_call();
+            let state = unsafe { pattern.CurrentExpandCollapseState() }
+                .map_err(uia("读展开状态"))
+                .map_err(|f| f.into_reason(window))?;
+            if state.0 == ExpandCollapseState_LeafNode.0 {
+                return Err("leaf_node: 这个控件没有可展开的内容".to_owned());
+            }
+            let expand = matches!(action, ActionSpec::Expand);
+            let already = if expand {
+                state.0 == ExpandCollapseState_Expanded.0
+            } else {
+                state.0 == ExpandCollapseState_Collapsed.0
+            };
+            if already {
+                return Err(format!(
+                    "already_in_state: 这个控件已经是 {}",
+                    expand_name(state.0)
+                ));
+            }
+            Ok(defer(move || unsafe {
+                if expand {
+                    pattern.Expand()
+                } else {
+                    pattern.Collapse()
+                }
+            }))
+        }
+        ActionSpec::Scroll { direction, step } => {
+            let pattern: IUIAutomationScrollPattern =
+                current_pattern(window, element, UIA_ScrollPatternId, "ScrollPattern")?;
+            count_call();
+            let axis = if matches!(
+                direction,
+                crate::protocol::ScrollDirection::Up | crate::protocol::ScrollDirection::Down
+            ) {
+                unsafe { pattern.CurrentVerticallyScrollable() }
+            } else {
+                unsafe { pattern.CurrentHorizontallyScrollable() }
+            };
+            if !axis
+                .map_err(uia("读可滚动标志"))
+                .map_err(|f| f.into_reason(window))?
+                .as_bool()
+            {
+                return Err("not_scrollable: 这个方向上滚不动".to_owned());
+            }
+            let (horizontal, vertical) = scroll_amounts(*direction, *step);
+            Ok(defer(move || unsafe {
+                pattern.Scroll(ScrollAmount(horizontal), ScrollAmount(vertical))
+            }))
+        }
+        ActionSpec::ScrollIntoView => {
+            let pattern: IUIAutomationScrollItemPattern =
+                current_pattern(window, element, UIA_ScrollItemPatternId, "ScrollItemPattern")?;
+            Ok(defer(move || unsafe { pattern.ScrollIntoView() }))
+        }
+        ActionSpec::RealizeItem { name } => {
+            let container: IUIAutomationItemContainerPattern = current_pattern(
+                window,
+                element,
+                UIA_ItemContainerPatternId,
+                "ItemContainerPattern",
+            )?;
+            count_call();
+            let needle = VARIANT::from(name.as_str());
+            let found = optional(unsafe {
+                container.FindItemByProperty(None, UIA_NamePropertyId, &needle)
+            })
+            .map_err(uia("在容器里找项"))
+            .map_err(|f| f.into_reason(window))?;
+            let Some(item) = found else {
+                return Err(format!("item_not_found: 容器里没有名为 {name} 的项"));
+            };
+            let virtualized: IUIAutomationVirtualizedItemPattern =
+                current_pattern(window, &item, UIA_VirtualizedItemPatternId, "VirtualizedItemPattern")?;
+            Ok(defer(move || unsafe { virtualized.Realize() }))
+        }
+        ActionSpec::SelectText { start, length } => {
+            let pattern: IUIAutomationTextPattern =
+                current_pattern(window, element, UIA_TextPatternId, "TextPattern")?;
+            count_call();
+            let support = unsafe { pattern.SupportedTextSelection() }
+                .map_err(uia("读选区支持"))
+                .map_err(|f| f.into_reason(window))?;
+            if support.0 == SupportedTextSelection_None.0 {
+                return Err("selection_unsupported: 这个控件不支持设选区".to_owned());
+            }
+            let range = sub_range(window, &pattern, *start, *length)?;
+            Ok(defer(move || unsafe { range.Select() }))
+        }
+        // 上面一条条列完，剩下的只有在 `perform` 里单独处理的那一个。
+        ActionSpec::SetToggle { .. } => Err("not_planned: set_toggle 走它自己的路径".to_owned()),
+    }
+}
+
+/// 这一项所在的选择容器支不支持多选。一次跨进程调用，只在增选/取消选中时才问。
+fn multi_select(
+    window: i64,
+    item: &IUIAutomationSelectionItemPattern,
+) -> Result<bool, String> {
+    count_call();
+    let container = unsafe { item.CurrentSelectionContainer() }
+        .map_err(uia("取选择容器"))
+        .map_err(|f| f.into_reason(window))?;
+    let pattern: IUIAutomationSelectionPattern =
+        current_pattern(window, &container, UIA_SelectionPatternId, "SelectionPattern")?;
+    count_call();
+    Ok(unsafe { pattern.CurrentCanSelectMultiple() }
+        .map_err(uia("读多选约束"))
+        .map_err(|f| f.into_reason(window))?
+        .as_bool())
+}
+
+/// 把复选控件按到目标态。
+///
+/// TogglePattern 只有 `Toggle()`，它沿控件自己的状态环转一格；到达一个目标态只能按现态
+/// 算要转几格。环长按「两端有没有中间态」推断，**每按一下都重读一次状态**——推断错了
+/// 由这一步兜住，不会停在别的状态上还报成功。
+fn set_toggle(window: i64, element: &IUIAutomationElement, target: ToggleState) -> Attempt {
+    let pattern: IUIAutomationTogglePattern =
+        match current_pattern(window, element, UIA_TogglePatternId, "TogglePattern") {
+            Ok(p) => p,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+    let attempt = toggle_to(window, &pattern, target);
+    // 某一下没返回时这个模式对象也丢不动，理由同 `act` 里的定位结果。
+    if matches!(&attempt, Attempt::Called(outcome) if !outcome.returned) {
+        release_off_thread(pattern);
+    }
+    attempt
+}
+
+/// 按目标态逐下按，每下之后重读状态。`pattern` 的收场归调用方。
+fn toggle_to(
+    window: i64,
+    pattern: &IUIAutomationTogglePattern,
+    target: ToggleState,
+) -> Attempt {
+    let read = || -> Result<ToggleState, String> {
+        count_call();
+        let raw = unsafe { pattern.CurrentToggleState() }
+            .map_err(uia("读复选状态"))
+            .map_err(|f| f.into_reason(window))?;
+        ToggleState::from_uia(raw.0).ok_or_else(|| format!("unknown_toggle_state: {}", raw.0))
+    };
+    let current = match read() {
+        Ok(s) => s,
+        Err(reason) => return Attempt::Refused(reason),
+    };
+    if current == target {
+        return Attempt::Refused(format!(
+            "already_in_state: 这个控件已经是 {}",
+            target.as_str()
+        ));
+    }
+    let tri_state = current == ToggleState::Indeterminate || target == ToggleState::Indeterminate;
+    let Some(planned) = toggle_steps(current, target, tri_state) else {
+        return Attempt::Refused(format!(
+            "toggle_state_unsupported: 到不了 {}",
+            target.as_str()
+        ));
+    };
+    let mut last = current;
+    for _ in 0..planned.min(MAX_TOGGLE_STEPS) {
+        let toggle = pattern.clone();
+        match dispatch_call(window, defer(move || unsafe { toggle.Toggle() })) {
+            Attempt::Called(outcome) if outcome.dispatch == Dispatch::Submitted && outcome.returned => {}
+            other => return other,
+        }
+        match read() {
+            Ok(state) => {
+                last = state;
+                if state == target {
+                    return Attempt::Called(Outcome::returned(Dispatch::Submitted, None));
+                }
+            }
+            // 状态读不回来时不再按：按下去就不知道停在哪里了。
+            Err(reason) => {
+                return Attempt::Called(Outcome::returned(
+                    Dispatch::Unknown,
+                    Some(format!("按过之后读不回状态：{reason}")),
+                ))
+            }
+        }
+    }
+    Attempt::Called(Outcome::returned(
+        Dispatch::Unknown,
+        Some(format!(
+            "toggle_target_unreached: 按了 {planned} 下之后是 {}，要的是 {}",
+            last.as_str(),
+            target.as_str()
+        )),
+    ))
+}
+
+// ── 文本 ──
+
+/// 一次选区起点查询最多读多少码元。起点超过它时按它记，回执里说明。
+const MAX_OFFSET_PROBE: i32 = 100_000;
+
+/// 读文档文本与全部选区。
+fn read_document(
+    window: i64,
+    reference: &str,
+    pattern: &IUIAutomationTextPattern,
+    max_chars: u32,
+) -> Result<Observation, Failure> {
+    count_call();
+    let document = unsafe { pattern.DocumentRange() }.map_err(uia("取文档范围"))?;
+    count_call();
+    // 多要一个码元：要回来的比上限长就说明后面还有内容。
+    let raw = unsafe { document.GetText(i32::try_from(max_chars).unwrap_or(i32::MAX).saturating_add(1)) }
+        .map_err(uia("读文档文本"))?;
+    let (text, truncated) = clip_utf16(&raw, max_chars);
+    count_call();
+    let support = unsafe { pattern.SupportedTextSelection() }.map_err(uia("读选区支持"))?;
+    let mut selection = Vec::new();
+    if support.0 != SupportedTextSelection_None.0 {
+        count_call();
+        if let Some(ranges) =
+            optional(unsafe { pattern.GetSelection() }).map_err(uia("读选区"))?
+        {
+            let length = unsafe { ranges.Length() }.map_err(uia("读选区条数"))?;
+            for index in 0..length {
+                let range = unsafe { ranges.GetElement(index) }.map_err(uia("取选区"))?;
+                selection.push(selected_range(&document, &range, max_chars)?);
+            }
+        }
+    }
+    Ok(Observation::Text(Text {
+        window,
+        captured_at: now_ms(),
+        scope: reference.to_owned(),
+        text,
+        truncated,
+        selection_support: selection_support_name(support),
+        selection,
+    }))
+}
+
+/// 一段选区的起点与文本。起点按 UTF-16 码元计。
+fn selected_range(
+    document: &IUIAutomationTextRange,
+    range: &IUIAutomationTextRange,
+    max_chars: u32,
+) -> Result<TextSelection, Failure> {
+    count_call();
+    let prefix = unsafe { document.Clone() }.map_err(uia("复制文档范围"))?;
+    unsafe { prefix.MoveEndpointByRange(TextPatternRangeEndpoint_End, range, TextPatternRangeEndpoint_Start) }
+        .map_err(uia("对齐选区起点"))?;
+    count_call();
+    let head = unsafe { prefix.GetText(MAX_OFFSET_PROBE) }.map_err(uia("读选区之前的文本"))?;
+    count_call();
+    let body = unsafe { range.GetText(i32::try_from(max_chars).unwrap_or(i32::MAX).saturating_add(1)) }
+        .map_err(uia("读选区文本"))?;
+    let (text, truncated) = clip_utf16(&body, max_chars);
+    Ok(TextSelection {
+        start: u32::try_from(head.len()).unwrap_or(u32::MAX),
+        text,
+        truncated,
+    })
+}
+
+/// 文档里从 `start` 起 `length` 个码元的那一段。
+fn sub_range(
+    window: i64,
+    pattern: &IUIAutomationTextPattern,
+    start: u32,
+    length: u32,
+) -> Result<IUIAutomationTextRange, String> {
+    let step = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
+    let wrap = |f: Failure| f.into_reason(window);
+    count_call();
+    let range = unsafe { pattern.DocumentRange() }
+        .map_err(uia("取文档范围"))
+        .map_err(wrap)?;
+    count_call();
+    unsafe {
+        range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, step(start))
+    }
+    .map_err(uia("移动选区起点"))
+    .map_err(wrap)?;
+    // 先把终点收到起点上，再往后推：不收的话终点还停在文档末尾，推出来的是整段尾巴。
+    unsafe {
+        range.MoveEndpointByRange(
+            TextPatternRangeEndpoint_End,
+            &range,
+            TextPatternRangeEndpoint_Start,
+        )
+    }
+    .map_err(uia("收拢选区终点"))
+    .map_err(wrap)?;
+    unsafe {
+        range.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, step(length))
+    }
+    .map_err(uia("移动选区终点"))
+    .map_err(wrap)?;
+    Ok(range)
+}
+
+/// 按 UTF-16 码元截断。截断点落在代理对中间时那一个字符换成替换字符。
+fn clip_utf16(raw: &BSTR, max_chars: u32) -> (String, bool) {
+    let wide: &[u16] = raw;
+    let limit = max_chars as usize;
+    if wide.len() <= limit {
+        return (String::from_utf16_lossy(wide), false);
+    }
+    (String::from_utf16_lossy(&wide[..limit]), true)
+}
+
+fn selection_support_name(support: SupportedTextSelection) -> &'static str {
+    if support.0 == SupportedTextSelection_Single.0 {
+        "single"
+    } else if support.0 == SupportedTextSelection_Multiple.0 {
+        "multiple"
+    } else {
+        "none"
+    }
+}
+
 /// UIA 控件类型常量从 50000 起连续编号，按偏移取名。
 const ROLES: [&str; 41] = [
     "button",
@@ -1257,6 +2284,13 @@ mod tests {
             offscreen: false,
             rect: None,
             actions: Vec::new(),
+            range: None,
+            toggle: None,
+            expand: None,
+            selected: None,
+            selection: None,
+            scroll: None,
+            text: false,
             weak_identity: false,
         }
     }
@@ -1369,6 +2403,84 @@ mod tests {
         assert_eq!(role_name(50_040), "app_bar");
         assert_eq!(role_name(50_041), "control_50041");
         assert_eq!(role_name(0), "control_0");
+    }
+
+    /// 调用线程有上界：到上界之后不再起线程，那一次动作因此没有发出。
+    ///
+    /// 额度在线程退出时归还，所以上界不会因为一段时间的拥挤就永久关闭动作。
+    #[test]
+    fn pending_action_calls_are_bounded_and_the_budget_comes_back() {
+        static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        RELEASE.store(false, Ordering::SeqCst);
+        let mut held = Vec::new();
+        for _ in 0..MAX_PENDING_CALLS {
+            let rx = spawn_call(Deferred(Box::new(|| {
+                while !RELEASE.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(())
+            })))
+            .expect("上界之内应当起得来线程");
+            held.push(rx);
+        }
+        assert!(
+            spawn_call(Deferred(Box::new(|| Ok(())))).is_none(),
+            "到上界之后不该再起线程"
+        );
+        RELEASE.store(true, Ordering::SeqCst);
+        for rx in held {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        let recovered = loop {
+            if let Some(rx) = spawn_call(Deferred(Box::new(|| Ok(())))) {
+                break Some(rx);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let rx = recovered.expect("线程退出之后额度应当归还");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
+    }
+
+    #[test]
+    fn expand_state_names_cover_the_four_uia_constants() {
+        assert_eq!(expand_name(ExpandCollapseState_Collapsed.0), "collapsed");
+        assert_eq!(expand_name(ExpandCollapseState_Expanded.0), "expanded");
+        assert_eq!(
+            expand_name(ExpandCollapseState_PartiallyExpanded.0),
+            "partial"
+        );
+        assert_eq!(expand_name(ExpandCollapseState_LeafNode.0), "leaf");
+        assert_eq!(expand_name(9), "unknown");
+    }
+
+    #[test]
+    fn selection_support_names_follow_the_uia_constants() {
+        assert_eq!(selection_support_name(SupportedTextSelection_None), "none");
+        assert_eq!(
+            selection_support_name(SupportedTextSelection_Single),
+            "single"
+        );
+        assert_eq!(
+            selection_support_name(SupportedTextSelection_Multiple),
+            "multiple"
+        );
+    }
+
+    /// 截断按 UTF-16 码元算：中文一个字一个码元，emoji 是一对代理。
+    #[test]
+    fn text_is_clipped_by_utf16_units_and_marked() {
+        let text = BSTR::from("中文内容");
+        assert_eq!(clip_utf16(&text, 10), ("中文内容".to_owned(), false));
+        assert_eq!(clip_utf16(&text, 4), ("中文内容".to_owned(), false));
+        assert_eq!(clip_utf16(&text, 2), ("中文".to_owned(), true));
+        assert_eq!(clip_utf16(&BSTR::new(), 4), (String::new(), false));
+        // 截断点落在代理对中间时那一个字符换成替换字符，仍然标记为截断。
+        let pair = BSTR::from("a🙂b");
+        assert_eq!(clip_utf16(&pair, 2), ("a\u{fffd}".to_owned(), true));
     }
 
     /// 没有筛选条件时一个都不挡。

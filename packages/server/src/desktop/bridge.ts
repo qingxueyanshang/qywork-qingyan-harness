@@ -17,6 +17,8 @@
  */
 
 import type {
+  DesktopAction,
+  DesktopBlockingWindow,
   DesktopEventFrame,
   DesktopHostReadyFrame,
   DesktopObservation,
@@ -57,6 +59,8 @@ export interface DesktopCallResult {
   reason?: string
   observation?: DesktopObservation
   observationError?: string
+  /** 动作调用尚未返回时目标进程此刻的顶层窗口。见协议里的 `blocking`。 */
+  blocking?: DesktopBlockingWindow[]
 }
 
 export class DesktopBridgeError extends Error {
@@ -85,6 +89,8 @@ export interface DesktopRequestParams {
   actionId?: string
   target?: DesktopTarget
   ref?: string
+  action?: DesktopAction
+  maxChars?: number
   value?: string
   maxNodes?: number
   maxDepth?: number
@@ -93,6 +99,7 @@ export interface DesktopRequestParams {
   role?: string
   nameContains?: string
   includeValue?: boolean
+  includeState?: boolean
   until?: DesktopWaitUntil
   name?: string
   pollMs?: number
@@ -172,6 +179,8 @@ export class DesktopBridge {
       ...(params.actionId !== undefined ? { actionId: params.actionId } : {}),
       ...(params.target !== undefined ? { target: params.target } : {}),
       ...(params.ref !== undefined ? { ref: params.ref } : {}),
+      ...(params.action !== undefined ? { action: params.action } : {}),
+      ...(params.maxChars !== undefined ? { maxChars: params.maxChars } : {}),
       ...(params.value !== undefined ? { value: params.value } : {}),
       ...(params.maxNodes !== undefined ? { maxNodes: params.maxNodes } : {}),
       ...(params.maxDepth !== undefined ? { maxDepth: params.maxDepth } : {}),
@@ -180,6 +189,7 @@ export class DesktopBridge {
       ...(params.role !== undefined ? { role: params.role } : {}),
       ...(params.nameContains !== undefined ? { nameContains: params.nameContains } : {}),
       ...(params.includeValue !== undefined ? { includeValue: params.includeValue } : {}),
+      ...(params.includeState !== undefined ? { includeState: params.includeState } : {}),
       ...(params.until !== undefined ? { until: params.until } : {}),
       ...(params.name !== undefined ? { name: params.name } : {}),
       ...(params.pollMs !== undefined ? { pollMs: params.pollMs } : {}),
@@ -324,6 +334,7 @@ export class DesktopBridge {
       ...(frame.reason !== undefined ? { reason: frame.reason } : {}),
       ...(frame.observation !== undefined ? { observation: frame.observation } : {}),
       ...(frame.observationError !== undefined ? { observationError: frame.observationError } : {}),
+      ...(frame.blocking !== undefined ? { blocking: frame.blocking } : {}),
     })
   }
 

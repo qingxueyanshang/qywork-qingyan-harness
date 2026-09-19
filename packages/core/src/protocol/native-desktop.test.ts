@@ -165,7 +165,7 @@ describe('图像矩形 → 屏幕矩形', () => {
   })
 })
 
-/** 采集与包围盒是协议里新加的一段，版本号必须跟着走。 */
-test('协议版本随图像与包围盒一起推进', () => {
-  expect(DESKTOP_PROTOCOL_VERSION).toBe(3)
+/** 动作族换形状是一次不兼容改动，版本号必须跟着走。 */
+test('协议版本随动作族一起推进', () => {
+  expect(DESKTOP_PROTOCOL_VERSION).toBe(4)
 })

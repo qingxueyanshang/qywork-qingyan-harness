@@ -197,7 +197,7 @@ async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
             value: '',
             enabled: true,
             offscreen: false,
-            actions: ['set_value'],
+            actions: [{ action: 'set_value', delivery: ['background'] }],
           },
         ],
       },
@@ -236,7 +236,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
 
   const list = await serveOnce('list_windows')
   const tree = await serveOnce('read_tree')
-  const act = await serveOnce('set_value')
+  const act = await serveOnce('act')
   // 脚本跑完最后一轮文本才算这一轮结束。
   await Bun.sleep(400)
 
@@ -261,7 +261,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
     pid: WINDOW.pid,
     processStartedAt: WINDOW.processStartedAt,
   })
-  expect(act.value).toBe('张三')
+  expect(act.action).toEqual({ kind: 'set_value', value: '张三' })
 
   // 结果未知如实走到模型手里：这一条不能被读成「没执行」，也不能被读成成功。
   const body = bodies.at(-1) ?? '{}'
@@ -304,7 +304,7 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   expect(names).not.toContain('desktop_wait')
 
   // 上一条用例里主任务那个执行者不是这一个。
-  const mainExecutor = host.received.find((f) => f.op === 'set_value')?.executorId
+  const mainExecutor = host.received.find((f) => f.op === 'act')?.executorId
   expect(mainExecutor).toBeTruthy()
   expect(frame.executorId).not.toBe(mainExecutor)
 

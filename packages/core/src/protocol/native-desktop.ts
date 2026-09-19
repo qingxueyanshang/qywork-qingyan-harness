@@ -23,11 +23,14 @@ export const NATIVE_DESKTOP_PATH = '/native/desktop'
  *
  * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
  */
-export const DESKTOP_PROTOCOL_VERSION = 3
+export const DESKTOP_PROTOCOL_VERSION = 4
 
 /**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
  * `not_dispatched`，不猜测意图。
+ *
+ * 改变状态的动作只有 `act` 一条，要执行什么写在 `DesktopRequestFrame.action` 里：
+ * 每种动作各占一个 op 的话，定位、准入与动作后重读会各有一份拷贝。
  *
  * `cancel` 撤销的是**发起它的那个执行者名下尚未派发的请求**，目标写在帧的
  * `executorId` 上；已经进入 OS 调用的请求不会被它中止。
@@ -35,8 +38,8 @@ export const DESKTOP_PROTOCOL_VERSION = 3
 const DESKTOP_OPS = [
   'list_windows',
   'read_tree',
-  'set_value',
-  'invoke',
+  'act',
+  'read_text',
   'wait',
   'capture_image',
   'cancel',
@@ -87,8 +90,113 @@ export type DesktopDispatch =
   /** 调用已发出但结果无法确认，动作可能已经生效。不得改记为未执行。 */
   | 'unknown'
 
-/** 控件此刻可用的动作。只列宿主真的实现了的那些。 */
-export type DesktopNodeAction = 'set_value' | 'invoke'
+/**
+ * 宿主实现了的动作。
+ *
+ * 每一种绑定一个 UIA 控件模式：`invoke` 是 InvokePattern，`set_value` 是 ValuePattern，
+ * `set_range_value` 是 RangeValuePattern，三个 selection 是 SelectionItemPattern，
+ * `set_toggle` 是 TogglePattern，`expand` / `collapse` 是 ExpandCollapsePattern，
+ * `scroll` 是 ScrollPattern，`scroll_into_view` 是 ScrollItemPattern，
+ * `realize_item` 是 ItemContainerPattern 加 VirtualizedItemPattern，
+ * `select_text` 是 TextPattern。
+ */
+export type DesktopActionKind =
+  | 'invoke'
+  | 'set_value'
+  | 'set_range_value'
+  | 'select'
+  | 'add_to_selection'
+  | 'remove_from_selection'
+  | 'set_toggle'
+  | 'expand'
+  | 'collapse'
+  | 'scroll'
+  | 'scroll_into_view'
+  | 'realize_item'
+  | 'select_text'
+
+/** 复选的目标态。动作按目标态表达，不是「切一次」。 */
+export type DesktopToggleState = 'off' | 'on' | 'indeterminate'
+
+export type DesktopScrollDirection = 'up' | 'down' | 'left' | 'right'
+/** 一次滚动的步长。语义滚动只认「一行」与「一页」，没有像素量。 */
+export type DesktopScrollStep = 'line' | 'page'
+
+/**
+ * 一次动作要执行什么，参数跟着动作走。
+ *
+ * 动作与参数分两处给的话，`set_value` 少了值也能拼成一条合法请求，缺的那一项要到
+ * provider 调用那一刻才暴露。
+ */
+export type DesktopAction =
+  | { kind: 'invoke' }
+  /** 空串是清空，与不给这个参数不是一回事。 */
+  | { kind: 'set_value'; value: string }
+  /** 越界与只读一律拒绝，不夹到边界上。 */
+  | { kind: 'set_range_value'; value: number }
+  | { kind: 'select' }
+  | { kind: 'add_to_selection' }
+  | { kind: 'remove_from_selection' }
+  | { kind: 'set_toggle'; state: DesktopToggleState }
+  | { kind: 'expand' }
+  | { kind: 'collapse' }
+  | { kind: 'scroll'; direction: DesktopScrollDirection; step: DesktopScrollStep }
+  | { kind: 'scroll_into_view' }
+  /** 目标是容器：按名称找一项（未实例化的也找得到）并实例化它。 */
+  | { kind: 'realize_item'; name: string }
+  /** 按 UTF-16 码元的偏移设选区。 */
+  | { kind: 'select_text'; start: number; length: number }
+
+/**
+ * 动作的投递方式。
+ *
+ * 后台语义动作经控件模式发出，不置前台、不动指针、不设焦点。**前台原始输入尚未实现**，
+ * 因此这个联合此刻只有一个成员；`delivery` 是数组而不是布尔，正是为了它落地时不必改形状。
+ */
+export type DesktopDelivery = 'background'
+
+/**
+ * 控件上的一个动作，连同它此刻能不能执行。
+ *
+ * `delivery` 为空表示此刻执行不了，原因在 `unavailable`（`read_only`、`leaf_node`、
+ * `not_scrollable` 之类）。**模式缺失的动作不在这张表里**：列全十几个动作会把
+ * 「这里能做什么」盖住。
+ */
+export interface DesktopNodeAction {
+  action: DesktopActionKind
+  delivery: DesktopDelivery[]
+  unavailable?: string
+}
+
+/**
+ * RangeValuePattern 读到的数值区间。动作前的越界判定按它做。
+ *
+ * 步长两格可能缺席：provider 对没有步长的控件给不出有限数。整份区间缺席表示
+ * 连值与边界都读不出有限数，那时越界判定只能交给宿主。
+ */
+export interface DesktopRangeState {
+  value: number
+  min: number
+  max: number
+  smallChange?: number
+  largeChange?: number
+}
+
+/** SelectionPattern 读到的容器约束。 */
+export interface DesktopSelectionState {
+  multiple: boolean
+  required: boolean
+}
+
+/**
+ * ScrollPattern 读到的滚动位置，百分比。
+ *
+ * 某个轴滚不动时那一格缺席。**缺席不等于 0**：0 是「在顶端」。
+ */
+export interface DesktopScrollState {
+  horizontal?: number
+  vertical?: number
+}
 
 /**
  * 一个顶层窗口。
@@ -105,6 +213,16 @@ export interface DesktopWindow {
   /** 可执行文件的显示名，界面上「正在操作哪个应用」显示的就是它。 */
   app: string
   title: string
+}
+
+/**
+ * 动作调用尚未返回时同次带回的一个顶层窗口。
+ *
+ * 身份三项与 `DesktopWindow` 完全相同：服务端按同一条路径登记不透明 id，不另造一套。
+ */
+export interface DesktopBlockingWindow extends DesktopWindow {
+  /** 动作调用之前这个窗口不存在。模态对话框就是这样冒出来的。 */
+  appeared: boolean
 }
 
 /**
@@ -161,12 +279,50 @@ export interface DesktopNode {
    */
   rect?: DesktopRect
   actions: DesktopNodeAction[]
+  /** RangeValuePattern 的数值区间。没有这个模式时缺席。 */
+  range?: DesktopRangeState
+  /** TogglePattern 的现态。 */
+  toggle?: DesktopToggleState
+  /** ExpandCollapsePattern 的现态。 */
+  expand?: 'collapsed' | 'expanded' | 'partial' | 'leaf' | 'unknown'
+  /** SelectionItemPattern 的现态。 */
+  selected?: boolean
+  /** SelectionPattern 读到的容器约束。只有选择容器有。 */
+  selection?: DesktopSelectionState
+  /** ScrollPattern 的滚动位置。滚动后重读按它核对。 */
+  scroll?: DesktopScrollState
+  /** 这个控件有 TextPattern，可以读文档文本与选区。 */
+  text?: boolean
   /**
    * 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
    *
    * 三项都不变而控件被换掉时核不出来，界面重排之后这个引用不可靠。缺席表示身份正常。
    */
   weakIdentity?: boolean
+}
+
+/** 一段选区。`start` 是它在文档里的起点，按 UTF-16 码元计。 */
+export interface DesktopTextSelection {
+  start: number
+  text: string
+  truncated: boolean
+}
+
+/**
+ * 一次文本读取的全部内容。
+ *
+ * `truncated` 为真表示后面还有内容，不是文档到此为止。
+ */
+export interface DesktopTextBody {
+  window: number
+  capturedAt: number
+  /** 读的是哪个控件。 */
+  scope: string
+  text: string
+  truncated: boolean
+  /** 这个控件支持哪种选区。`none` 时设选区的动作会被拒。 */
+  selectionSupport: 'none' | 'single' | 'multiple'
+  selection: DesktopTextSelection[]
 }
 
 /**
@@ -241,6 +397,7 @@ export type DesktopObservation =
   /** 一次等待的结果：有没有等到，加上返回那一刻读到的状态。 */
   | ({ kind: 'wait'; found: boolean; reason?: string } & DesktopTreeBody)
   | ({ kind: 'image' } & DesktopImageBody)
+  | ({ kind: 'text' } & DesktopTextBody)
 
 /**
  * 图像坐标 → 屏幕物理坐标。
@@ -351,7 +508,7 @@ export interface DesktopRequestFrame {
   type: 'desktop.request'
   requestId: string
   /**
-   * 动作身份。只有 `set_value` / `invoke` 带它。
+   * 动作身份。只有 `act` 带它。
    *
    * 与 `requestId` 分列：回执丢失后重新观察确认时，调用方要能说出「是哪一次动作」，
    * 而重试产生的是新的 `requestId`。
@@ -367,7 +524,11 @@ export interface DesktopRequestFrame {
   target?: DesktopTarget
   /** 目标控件引用，取自同一次观察。 */
   ref?: string
-  /** `set_value` 要写入的值，或 `wait` 的 `until=value` 要等到的值。空串是清空，与缺席不是一回事。 */
+  /** `act` 要执行的动作。参数跟着动作走。 */
+  action?: DesktopAction
+  /** `read_text` 要回多少个 UTF-16 码元。超出即截断并标记。 */
+  maxChars?: number
+  /** `wait` 的 `until=value` 要等到的值。空串是清空，与缺席不是一回事。 */
   value?: string
   maxNodes?: number
   maxDepth?: number
@@ -380,6 +541,8 @@ export interface DesktopRequestFrame {
   nameContains?: string
   /** 取不取控件当前值。缺席按取。 */
   includeValue?: boolean
+  /** 取不取控件模式的状态细节。缺席按取；为假时可用动作表不受影响。 */
+  includeState?: boolean
   /** `wait` 的后置条件。 */
   until?: DesktopWaitUntil
   /** `wait` 的 `until=window` 要等的标题子串。 */
@@ -425,6 +588,14 @@ export interface DesktopResultFrame {
   reason?: string
   observation?: DesktopObservation
   observationError?: string
+  /**
+   * 动作调用尚未返回时目标进程此刻的顶层窗口。
+   *
+   * 只在 `observationError` 是 `target_blocked` 那一支出现：那时目标应用的 UI 线程还卡在
+   * 这次调用里，对目标窗口的任何读取都会等到超时，所以没有重读。调用方据此决定下一步
+   * 观察哪个窗口。
+   */
+  blocking?: DesktopBlockingWindow[]
 }
 
 /**

@@ -18,14 +18,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 3;
+pub const WORKER_PROTOCOL_VERSION: u32 = 4;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
 const FORWARDED_OPS: [&str; 6] = [
     "list_windows",
     "read_tree",
-    "set_value",
-    "invoke",
+    "act",
+    "read_text",
     "wait",
     "capture_image",
 ];
@@ -87,6 +87,13 @@ pub struct RequestFrame {
     pub reference: Option<String>,
     #[serde(default)]
     pub value: Option<String>,
+    /// 一次动作要执行什么。原样交给 worker：动作与参数的合法组合由 worker 定，
+    /// 宿主再判一遍就是第二份词表。
+    #[serde(default)]
+    pub action: Option<Value>,
+    /// `read_text` 要回多少个 UTF-16 码元。
+    #[serde(default)]
+    pub max_chars: Option<u32>,
     #[serde(default)]
     pub max_nodes: Option<u32>,
     #[serde(default)]
@@ -102,6 +109,8 @@ pub struct RequestFrame {
     pub name_contains: Option<String>,
     #[serde(default)]
     pub include_value: Option<bool>,
+    #[serde(default)]
+    pub include_state: Option<bool>,
     /// 等待的后置条件。
     #[serde(default)]
     pub until: Option<String>,
@@ -149,6 +158,9 @@ pub struct ResultFrame {
     pub observation: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
+    /// 动作调用尚未返回时目标进程此刻的顶层窗口。身份三项与窗口清单同形。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking: Option<Value>,
 }
 
 impl ResultFrame {
@@ -164,6 +176,7 @@ impl ResultFrame {
             reason: Some(reason.into()),
             observation: None,
             observation_error: None,
+            blocking: None,
         }
     }
 
@@ -184,6 +197,7 @@ impl ResultFrame {
             reason: Some(reason.into()),
             observation: None,
             observation_error: None,
+            blocking: None,
         }
     }
 }
@@ -276,6 +290,9 @@ pub struct WorkerResponse {
     pub observation: Option<Value>,
     #[serde(default)]
     pub observation_error: Option<String>,
+    /// 动作调用尚未返回时目标进程此刻的顶层窗口。
+    #[serde(default)]
+    pub blocking: Option<Value>,
 }
 
 impl WorkerResponse {
@@ -310,23 +327,22 @@ pub fn to_worker(
             merge(&mut params, select(frame));
             params
         }
-        "invoke" => {
-            let mut params = bounds(frame, window)?;
-            merge(&mut params, json!({ "ref": reference(frame)? }));
-            params
-        }
-        "set_value" => {
+        "act" => {
             let mut params = bounds(frame, window)?;
             merge(
                 &mut params,
                 json!({
                     "ref": reference(frame)?,
-                    // 空串是清空，与缺席不是一回事，所以只拒绝缺席。
-                    "value": frame.value.as_deref().ok_or("missing_value")?,
+                    "action": frame.action.as_ref().ok_or("missing_action")?,
                 }),
             );
             params
         }
+        "read_text" => json!({
+            "window": window,
+            "ref": reference(frame)?,
+            "maxChars": frame.max_chars.ok_or("missing_max_chars")?,
+        }),
         "wait" => {
             let mut params = bounds(frame, window)?;
             merge(&mut params, select(frame));
@@ -403,6 +419,9 @@ fn select(frame: &RequestFrame) -> Value {
     if let Some(include) = frame.include_value {
         merge(&mut out, json!({ "includeValue": include }));
     }
+    if let Some(include) = frame.include_state {
+        merge(&mut out, json!({ "includeState": include }));
+    }
     out
 }
 
@@ -423,7 +442,7 @@ fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
 pub fn needs_target(op: &str) -> bool {
     matches!(
         op,
-        "read_tree" | "set_value" | "invoke" | "wait" | "capture_image"
+        "read_tree" | "act" | "read_text" | "wait" | "capture_image"
     )
 }
 
@@ -452,6 +471,7 @@ pub fn to_result(
         reason: response.reason,
         observation,
         observation_error: response.observation_error,
+        blocking: None,
     }
 }
 
@@ -461,13 +481,34 @@ pub fn to_result(
 /// 启动时刻——目标身份少一项，句柄复用就识别不出来，动作会落到另一个窗口上。
 pub fn enrich_windows(
     observation: &Value,
-    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
 ) -> Option<Value> {
     if observation.get("kind")?.as_str()? != "windows" {
         return None;
     }
+    Some(json!({
+        "kind": "windows",
+        "capturedAt": observation.get("capturedAt").and_then(Value::as_i64).unwrap_or_default(),
+        "windows": enrich_list(observation.get("windows")?.as_array()?, identify),
+    }))
+}
+
+/// 动作回执里那份顶层窗口清单的补全。与窗口清单走同一条补全路径，身份三项因此同形，
+/// 服务端按同一套规则登记不透明 id；`appeared` 原样保留。
+pub fn enrich_blocking(
+    blocking: &Value,
+    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+) -> Option<Value> {
+    Some(Value::Array(enrich_list(blocking.as_array()?, identify)))
+}
+
+/// 逐条补上进程启动时刻与可执行文件名。补不上的整条丢掉。
+fn enrich_list(
+    windows: &[Value],
+    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+) -> Vec<Value> {
     let mut out = Vec::new();
-    for w in observation.get("windows")?.as_array()? {
+    for w in windows {
         let (Some(handle), Some(pid)) = (
             w.get("window").and_then(Value::as_i64),
             w.get("pid").and_then(Value::as_u64),
@@ -478,19 +519,19 @@ pub fn enrich_windows(
         let Some((started_at, app)) = identify(handle, pid) else {
             continue;
         };
-        out.push(json!({
+        let mut entry = json!({
             "handle": handle,
             "pid": pid,
             "processStartedAt": started_at,
             "app": app,
             "title": w.get("title").and_then(Value::as_str).unwrap_or_default(),
-        }));
+        });
+        if let Some(appeared) = w.get("appeared").and_then(Value::as_bool) {
+            merge(&mut entry, json!({ "appeared": appeared }));
+        }
+        out.push(entry);
     }
-    Some(json!({
-        "kind": "windows",
-        "capturedAt": observation.get("capturedAt").and_then(Value::as_i64).unwrap_or_default(),
-        "windows": out,
-    }))
+    out
 }
 
 #[cfg(test)]
@@ -522,6 +563,8 @@ mod tests {
             }),
             reference: Some("w.0.1#42.7".to_owned()),
             value: None,
+            action: None,
+            max_chars: None,
             max_nodes: Some(500),
             max_depth: Some(12),
             time_budget_ms: Some(1500),
@@ -529,6 +572,7 @@ mod tests {
             role: None,
             name_contains: None,
             include_value: None,
+            include_state: None,
             until: None,
             name: None,
             poll_ms: None,
@@ -547,7 +591,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 3, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "v": 4, "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
                 "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
@@ -558,21 +602,43 @@ mod tests {
     /// 翻译只认服务端核对过的句柄。拿帧里那一个的话，句柄复用就白核对了。
     #[test]
     fn the_frames_own_window_handle_is_never_used() {
-        let worker = to_worker("w1".to_owned(), &request("invoke"), &binding(), 4242).unwrap();
+        let mut frame = request("act");
+        frame.action = Some(json!({"kind": "invoke"}));
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 4242).unwrap();
         assert_eq!(worker.params["window"], json!(4242));
     }
 
+    /// 动作原样下去，宿主不解释它：词表只有 worker 一份。空串是清空，照样带下去。
     #[test]
-    fn set_value_keeps_an_empty_string_and_refuses_an_absent_one() {
-        let mut frame = request("set_value");
-        frame.value = Some(String::new());
+    fn the_action_travels_verbatim_and_is_required() {
+        let mut frame = request("act");
+        frame.action = Some(json!({"kind": "set_value", "value": ""}));
         let worker = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
-        assert_eq!(worker.params["value"], json!(""));
+        assert_eq!(worker.op, "act");
+        assert_eq!(worker.params["action"], json!({"kind": "set_value", "value": ""}));
+        assert_eq!(worker.params["ref"], json!("w.0.1#42.7"));
 
-        frame.value = None;
+        frame.action = None;
         assert_eq!(
             to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
-            Some("missing_value")
+            Some("missing_action")
+        );
+    }
+
+    /// 读文本是只读 op：只要句柄、控件与上限，不带读树那三个上限。
+    #[test]
+    fn read_text_carries_only_its_own_limit() {
+        let mut frame = request("read_text");
+        frame.max_chars = Some(4000);
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(
+            worker.params,
+            json!({"window": 77, "ref": "w.0.1#42.7", "maxChars": 4000})
+        );
+        frame.max_chars = None;
+        assert_eq!(
+            to_worker("w1".to_owned(), &frame, &binding(), 77).err(),
+            Some("missing_max_chars")
         );
     }
 
@@ -601,7 +667,8 @@ mod tests {
             "bind_connection",
             "cancel",
             "screenshot",
-            "read_element",
+            "set_value",
+            "invoke",
         ] {
             assert_eq!(
                 to_worker("w1".to_owned(), &request(op), &binding(), 66).err(),
@@ -625,7 +692,7 @@ mod tests {
     fn only_window_bound_ops_need_a_target() {
         assert!(!needs_target("list_windows"));
         assert!(!needs_target("cancel"));
-        for op in ["read_tree", "set_value", "invoke", "wait", "capture_image"] {
+        for op in ["read_tree", "act", "read_text", "wait", "capture_image"] {
             assert!(needs_target(op), "{op}");
         }
     }
@@ -703,18 +770,22 @@ mod tests {
         frame.role = Some("button".to_owned());
         frame.name_contains = Some("保存".to_owned());
         frame.include_value = Some(false);
+        frame.include_state = Some(false);
         let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
         assert_eq!(worker.params["root"], json!("w.0#7"));
         assert_eq!(worker.params["role"], json!("button"));
         assert_eq!(worker.params["nameContains"], json!("保存"));
         assert_eq!(worker.params["includeValue"], json!(false));
+        assert_eq!(worker.params["includeState"], json!(false));
         assert_eq!(worker.params["window"], json!(77));
     }
 
     /// 动作也带三个上限：动作后要重读目标所在的子树，上限由服务端给，worker 不自带默认值。
     #[test]
     fn an_action_carries_the_bounds_for_the_follow_up_read() {
-        let worker = to_worker("w1".to_owned(), &request("invoke"), &binding(), 77).unwrap();
+        let mut frame = request("act");
+        frame.action = Some(json!({"kind": "invoke"}));
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
         assert_eq!(worker.params["maxNodes"], json!(500));
         assert_eq!(worker.params["maxDepth"], json!(12));
         assert_eq!(worker.params["timeBudgetMs"], json!(1500));
@@ -765,6 +836,7 @@ mod tests {
             reason: None,
             observation: None,
             observation_error: Some("窗口已关闭".to_owned()),
+            blocking: None,
         };
         let frame = to_result("dr_1".to_owned(), &binding(), response, None);
         assert_eq!(
@@ -792,6 +864,7 @@ mod tests {
                 reason: None,
                 observation: None,
                 observation_error: None,
+                blocking: None,
             };
             assert_eq!(
                 to_result("dr_1".to_owned(), &binding(), response, None).dispatch,
@@ -808,6 +881,7 @@ mod tests {
             reason: None,
             observation: Some(json!({"kind": "ready", "protocol": 1, "backend": "windows-uia"})),
             observation_error: None,
+            blocking: None,
         };
         assert_eq!(response.ready_protocol(), Some(1));
 
@@ -817,6 +891,7 @@ mod tests {
             reason: Some("timeout_setup_failed".to_owned()),
             observation: None,
             observation_error: None,
+            blocking: None,
         };
         assert_eq!(other.ready_protocol(), None);
     }
@@ -847,6 +922,48 @@ mod tests {
                 }]
             })
         );
+    }
+
+    /// 动作回执里那份窗口清单与 `list_windows` 同一条补全路径：身份三项同形，服务端
+    /// 因此按同一套规则登记不透明 id，不另造一套。`appeared` 原样保留。
+    #[test]
+    fn a_blocking_list_is_enriched_like_the_window_list() {
+        let blocking = json!([
+            {"window": 66, "pid": 900, "title": "夹具", "className": "WindowsForms10.Window", "appeared": false},
+            {"window": 67, "pid": 900, "title": "modal", "className": "#32770", "appeared": true},
+            {"window": 68, "pid": 901, "title": "读不到身份", "className": "X", "appeared": true}
+        ]);
+        let enriched = enrich_blocking(&blocking, |_, pid| {
+            (pid == 900).then(|| (1_699_000_000_000, "fixture.exe".to_owned()))
+        })
+        .expect("窗口清单应当能补全");
+        assert_eq!(
+            enriched,
+            json!([
+                {
+                    "handle": 66, "pid": 900, "processStartedAt": 1_699_000_000_000i64,
+                    "app": "fixture.exe", "title": "夹具", "appeared": false
+                },
+                {
+                    "handle": 67, "pid": 900, "processStartedAt": 1_699_000_000_000i64,
+                    "app": "fixture.exe", "title": "modal", "appeared": true
+                }
+            ])
+        );
+    }
+
+    /// 窗口清单本身不带 `appeared`，补全之后也不该凭空多一格。
+    #[test]
+    fn the_window_list_gains_no_appeared_flag() {
+        let observation = json!({
+            "kind": "windows", "capturedAt": 17,
+            "windows": [{"window": 66, "pid": 900, "title": "夹具", "className": "X"}]
+        });
+        let enriched = enrich_windows(&observation, |_, _| {
+            Some((1_699_000_000_000, "fixture.exe".to_owned()))
+        })
+        .expect("窗口清单应当能补全");
+        assert!(enriched["windows"][0].get("appeared").is_none());
     }
 
     #[test]
