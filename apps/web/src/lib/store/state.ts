@@ -280,6 +280,8 @@ export interface AppState {
    * 前端不自己推断超时清空：那样两边会各存一份判定。
    */
   desktopTarget: string | null
+  /** 持着桌面的执行者已经用过前台接管。运行态读数按它换一个说法。 */
+  desktopTargetForeground: boolean
 }
 
 const initial: AppState = {
@@ -295,6 +297,7 @@ const initial: AppState = {
   fileChanges: [],
   git: null,
   desktopTarget: null,
+  desktopTargetForeground: false,
   followUps: [],
   todos: [],
   goal: null,

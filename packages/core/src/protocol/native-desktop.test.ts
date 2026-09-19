@@ -167,5 +167,5 @@ describe('图像矩形 → 屏幕矩形', () => {
 
 /** 动作族换形状是一次不兼容改动，版本号必须跟着走。 */
 test('协议版本随动作族一起推进', () => {
-  expect(DESKTOP_PROTOCOL_VERSION).toBe(4)
+  expect(DESKTOP_PROTOCOL_VERSION).toBe(5)
 })

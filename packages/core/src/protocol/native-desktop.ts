@@ -23,7 +23,7 @@ export const NATIVE_DESKTOP_PATH = '/native/desktop'
  *
  * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
  */
-export const DESKTOP_PROTOCOL_VERSION = 4
+export const DESKTOP_PROTOCOL_VERSION = 5
 
 /**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
@@ -93,12 +93,17 @@ export type DesktopDispatch =
 /**
  * 宿主实现了的动作。
  *
- * 每一种绑定一个 UIA 控件模式：`invoke` 是 InvokePattern，`set_value` 是 ValuePattern，
- * `set_range_value` 是 RangeValuePattern，三个 selection 是 SelectionItemPattern，
- * `set_toggle` 是 TogglePattern，`expand` / `collapse` 是 ExpandCollapsePattern，
- * `scroll` 是 ScrollPattern，`scroll_into_view` 是 ScrollItemPattern，
- * `realize_item` 是 ItemContainerPattern 加 VirtualizedItemPattern，
- * `select_text` 是 TextPattern。
+ * 前十三种绑定一个 UIA 控件模式，经模式调用发出：`invoke` 是 InvokePattern，
+ * `set_value` 是 ValuePattern，`set_range_value` 是 RangeValuePattern，
+ * 三个 selection 是 SelectionItemPattern，`set_toggle` 是 TogglePattern，
+ * `expand` / `collapse` 是 ExpandCollapsePattern，`scroll` 是 ScrollPattern，
+ * `scroll_into_view` 是 ScrollItemPattern，`realize_item` 是 ItemContainerPattern 加
+ * VirtualizedItemPattern，`select_text` 是 TextPattern。
+ *
+ * 其余的由原始输入与窗口接口发出，**只在用户启用前台接管时可用**：
+ * `click` / `hover` / `drag` / `wheel` 是指针事件，`type_text` / `press_key` 是键盘事件，
+ * `activate` 是系统前台窗口接口，`set_window_state` / `close_window` 是 WindowPattern，
+ * `move_window` / `resize_window` 是 TransformPattern。
  */
 export type DesktopActionKind =
   | 'invoke'
@@ -114,6 +119,36 @@ export type DesktopActionKind =
   | 'scroll_into_view'
   | 'realize_item'
   | 'select_text'
+  | 'click'
+  | 'hover'
+  | 'drag'
+  | 'wheel'
+  | 'type_text'
+  | 'press_key'
+  | 'activate'
+  | 'set_window_state'
+  | 'move_window'
+  | 'resize_window'
+  | 'close_window'
+
+export type DesktopMouseButton = 'left' | 'right' | 'middle'
+
+/** 组合键里的修饰键。按下顺序即数组顺序，释放按逆序。 */
+export type DesktopModifier = 'ctrl' | 'alt' | 'shift' | 'win'
+
+/** 窗口的显示状态。 */
+export type DesktopWindowState = 'normal' | 'minimized' | 'maximized'
+
+/**
+ * 一次拖拽的终点。
+ *
+ * 两种给法都不带图像坐标：图像坐标在服务端换算成屏幕坐标，宿主只认屏幕像素与控件引用。
+ */
+export type DesktopDragTarget =
+  /** 落在另一个控件的包围盒中心。派发前重新定位它，读那一刻的包围盒。 */
+  | { kind: 'ref'; ref: string }
+  /** 相对起点的屏幕像素偏移。滑块与拖动排序用它。 */
+  | { kind: 'offset'; dx: number; dy: number }
 
 /** 复选的目标态。动作按目标态表达，不是「切一次」。 */
 export type DesktopToggleState = 'off' | 'on' | 'indeterminate'
@@ -146,14 +181,34 @@ export type DesktopAction =
   | { kind: 'realize_item'; name: string }
   /** 按 UTF-16 码元的偏移设选区。 */
   | { kind: 'select_text'; start: number; length: number }
+  /** `count` 是 1 或 2，双击按 2 表达。 */
+  | { kind: 'click'; button: DesktopMouseButton; count: number }
+  | { kind: 'hover' }
+  | { kind: 'drag'; to: DesktopDragTarget }
+  /** `amount` 是滚动格数，一格是系统设定的行数。 */
+  | { kind: 'wheel'; direction: DesktopScrollDirection; amount: number }
+  | { kind: 'type_text'; text: string }
+  | { kind: 'press_key'; key: string; modifiers: DesktopModifier[] }
+  | { kind: 'activate' }
+  | { kind: 'set_window_state'; state: DesktopWindowState }
+  /** 屏幕物理像素。 */
+  | { kind: 'move_window'; x: number; y: number }
+  /** 屏幕物理像素。 */
+  | { kind: 'resize_window'; width: number; height: number }
+  /** 发的是关闭请求，不是强杀进程。 */
+  | { kind: 'close_window' }
 
 /**
  * 动作的投递方式。
  *
- * 后台语义动作经控件模式发出，不置前台、不动指针、不设焦点。**前台原始输入尚未实现**，
- * 因此这个联合此刻只有一个成员；`delivery` 是数组而不是布尔，正是为了它落地时不必改形状。
+ * `background` 经控件模式发出，不置前台、不动指针、不设焦点。
+ * `foreground` 经原始输入或前台窗口接口发出，会把前台从用户手上拿走——**它只在用户
+ * 显式启用前台接管时出现**，关着时前台动作一条都不在表里。
+ *
+ * **后台失败不会自动升级到前台。** 两种投递方式各自可用与否由控件与模式决定，
+ * 宿主不替调用方换一种再试。
  */
-export type DesktopDelivery = 'background'
+export type DesktopDelivery = 'background' | 'foreground'
 
 /**
  * 控件上的一个动作，连同它此刻能不能执行。
@@ -271,6 +326,13 @@ export interface DesktopNode {
   value?: string
   enabled: boolean
   offscreen: boolean
+  /**
+   * 这个控件此刻持有键盘焦点。
+   *
+   * 文字与按键去的是焦点所在的地方，所以键盘动作只列在这个控件上。前台接管关着时
+   * 这一项一律缺席——那时它不在采集端的读取范围里。
+   */
+  focused?: boolean
   /**
    * 控件的包围盒，与图像几何同一套坐标。
    *
@@ -519,11 +581,25 @@ export interface DesktopRequestFrame {
   hostEpoch: number
   executorId: string
   deadline: number
+  /**
+   * 用户有没有启用前台接管。
+   *
+   * **每条请求都带，宿主与 worker 都不缓存它**：缓存一份的话，用户在运行中关掉前台
+   * 接管要等宿主换代际才生效。前台动作的准入判定只看这一格。
+   */
+  foreground: boolean
   op: DesktopOp
   /** 目标窗口身份。`list_windows` 与 `cancel` 不带。 */
   target?: DesktopTarget
   /** 目标控件引用，取自同一次观察。 */
   ref?: string
+  /**
+   * 指针动作的屏幕物理像素落点。**与 `ref` 互斥**。
+   *
+   * 由服务端从图像坐标换算好，因此必须与 `expectGeneration` 一起给：窗口在采图与派发
+   * 之间移动过的话，这个坐标指的已经不是同一块界面。
+   */
+  point?: { x: number; y: number }
   /** `act` 要执行的动作。参数跟着动作走。 */
   action?: DesktopAction
   /** `read_text` 要回多少个 UTF-16 码元。超出即截断并标记。 */
@@ -554,10 +630,10 @@ export interface DesktopRequestFrame {
   /** `capture_image` 要采的屏幕物理像素矩形。缺席表示整窗。 */
   region?: DesktopRect
   /**
-   * `capture_image` 要求窗口几何代际仍是这一个。
+   * 要求窗口几何代际仍是这一个。
    *
-   * 按上一张图的区域重采时必须带：窗口在两次采集之间移动过的话，那个矩形指的已经
-   * 不是同一块界面。宿主在派发前核对，对不上即拒绝。
+   * 按上一张图的区域重采、或按图上的坐标操作时必须带：窗口在采图与派发之间移动过的话，
+   * 那个矩形或坐标指的已经不是同一块界面。宿主在派发前核对，对不上即拒绝。
    */
   expectGeneration?: string
   /**

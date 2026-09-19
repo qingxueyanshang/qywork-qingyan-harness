@@ -159,6 +159,18 @@ describe('配置体检', () => {
     expect(p).toContain('ds')
   })
 
+  /** 非布尔值落盘之后按真值判定，「关着」会被读成「开着」。 */
+  test('两个电脑操作开关只接受布尔值，缺席放行', () => {
+    expect(diagnoseConfig(cfg({ desktopEnabled: true, desktopForeground: false }))).toEqual([])
+    expect(diagnoseConfig(cfg())).toEqual([])
+    expect(diagnoseConfig(cfg({ desktopForeground: 'yes' as unknown as boolean }))).toEqual([
+      'desktopForeground 必须是 true 或 false',
+    ])
+    expect(diagnoseConfig(cfg({ desktopEnabled: 1 as unknown as boolean }))).toEqual([
+      'desktopEnabled 必须是 true 或 false',
+    ])
+  })
+
   test('一个接口都没有时也不崩', () => {
     expect(diagnoseConfig({ active: { provider: 'x', model: 'm' }, providers: {} })).toHaveLength(1)
   })

@@ -15,7 +15,11 @@
 
 #[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod foreground;
 mod geometry;
+#[cfg(windows)]
+mod input;
 mod protocol;
 #[cfg(windows)]
 mod windows;
@@ -33,7 +37,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use protocol::{
-    admit, now_ms, ActionSpec, Binding, Bounds, HostIdentity, Observation, Op, Request, Response,
+    admit, now_ms, Binding, HostIdentity, InputNotice, Observation, Op, Request, Response,
     PROTOCOL_VERSION,
 };
 
@@ -46,6 +50,11 @@ static DPI_PER_MONITOR_V2: std::sync::OnceLock<bool> = std::sync::OnceLock::new(
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
+    // 按下状态账一有变化就发一行：宿主按最后一次通报在确认 worker 退出之后补发释放。
+    // 注册要在任何请求进来之前做完，漏一次通报就漏一次释放。
+    input::on_change(|held| notify_input(&InputNotice::of(held)));
+    // 起来先报一次空账：宿主据此知道这一代 worker 手上什么都没按住。
+    notify_input(&InputNotice::of(input::held()));
     let per_monitor_v2 = capture::set_per_monitor_v2();
     let _ = DPI_PER_MONITOR_V2.set(per_monitor_v2);
     // 宿主把 worker 的 stderr 转进应用日志：图像几何对不上时，这一行说得出是哪一档
@@ -258,13 +267,31 @@ fn handle(
             window,
             select,
             bounds,
-        } => observe(req.id, backend.read_tree(window, &select, bounds)),
+        } => observe(
+            req.id,
+            backend.read_tree(window, &select, bounds, req.foreground),
+        ),
         Op::Act {
             window,
             reference,
+            point,
+            expect_generation,
             action,
             bounds,
-        } => act(req.id, backend, window, &reference, &action, bounds),
+        } => act(
+            req.id,
+            backend,
+            state,
+            &windows::ActRequest {
+                window,
+                reference: reference.as_deref(),
+                point,
+                expect_generation: expect_generation.as_deref(),
+                action: &action,
+                bounds,
+                foreground: req.foreground,
+            },
+        ),
         Op::ReadText {
             window,
             reference,
@@ -361,6 +388,7 @@ fn run_wait(state: &State, req: Request) -> Response {
         poll: Duration::from_millis(poll_ms.max(1)),
         deadline,
         bounds,
+        foreground: req.foreground,
     };
     let stop = || state.cancelled.lock().expect("取消登记锁").contains(&id);
     let outcome = backend.wait(&request, &stop);
@@ -402,12 +430,14 @@ fn observe(id: String, outcome: Result<Observation, String>) -> Response {
 fn act(
     id: String,
     backend: &windows::Backend,
-    window: i64,
-    reference: &str,
-    action: &ActionSpec,
-    bounds: Bounds,
+    state: &State,
+    req: &windows::ActRequest<'_>,
 ) -> Response {
-    let (attempt, observed) = backend.act(window, reference, action, bounds);
+    // 派发之后到达的取消要在拖拽途中生效：准入那一刻的登记已经被取走，这里查的是
+    // 此后新登记的那一条。拖拽是唯一一个在派发中途还能被中止的动作。
+    let stop = || state.cancelled.lock().expect("取消登记锁").contains(&id);
+    let (attempt, observed) = backend.act(req, &stop);
+    state.cancelled.lock().expect("取消登记锁").remove(&id);
     match attempt {
         windows::Attempt::Refused(reason) => Response::rejected(id, reason),
         windows::Attempt::Called(outcome) => {
@@ -416,17 +446,28 @@ fn act(
             // 调用没返回时这一格替掉那次必然超时的重读，见 `Outcome::returned`。
             if !outcome.returned {
                 response.blocking = Some(outcome.windows);
-                response.after_reply = Some(window);
+                response.after_reply = Some(req.window);
             }
             response
         }
     }
 }
 
+/// 发一行输入状态通报。与回执共用 stdout 的整行写出路径，两者不会在同一行里交错。
+#[cfg(windows)]
+fn notify_input(notice: &InputNotice) {
+    write_line(serde_json::to_string(notice));
+}
+
 /// 整行一次写出。分两次写会让两个线程的回执在同一行里交错。
 #[cfg(windows)]
 fn reply(response: &Response) {
-    match serde_json::to_string(response) {
+    write_line(serde_json::to_string(response));
+}
+
+#[cfg(windows)]
+fn write_line(text: serde_json::Result<String>) {
+    match text {
         Ok(mut line) => {
             line.push('\n');
             let mut out = std::io::stdout().lock();

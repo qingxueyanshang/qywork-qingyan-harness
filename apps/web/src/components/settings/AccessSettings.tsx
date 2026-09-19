@@ -92,25 +92,23 @@ export function AccessSettings() {
           </section>
 
           {/* 电脑操作单开一张卡：它管的不是路径，而是 agent 能不能操作本机上别的应用。
-                两行——用户改得了的那一项，和这台机器此刻的实际状态。 */}
+                三行——用户改得了的两项，和这台机器此刻的实际状态。 */}
           <section class="settings-block">
             <h3 class="settings-block-head">电脑操作</h3>
             <div class="setting-rows">
               <Row label="启用">
-                <div class="seg">
-                  <For each={SWITCH}>
-                    {(o) => (
-                      <button
-                        class="seg-item"
-                        classList={{ active: (c().desktopEnabled === true) === o.on }}
-                        type="button"
-                        onClick={() => void patchConfig({ desktopEnabled: o.on })}
-                      >
-                        {o.label}
-                      </button>
-                    )}
-                  </For>
-                </div>
+                <Switch
+                  on={c().desktopEnabled === true}
+                  onPick={(on) => void patchConfig({ desktopEnabled: on })}
+                />
+              </Row>
+              {/* 这一句是边界不是说明：界面上没有第二处说得出「开了之后 agent 会占用
+                    鼠标键盘」。关着时桌面工具仍然可用，只是只剩不打扰的那一半。 */}
+              <Row label="前台操作" hint="用真实鼠标键盘，执行时会打断你">
+                <Switch
+                  on={c().desktopForeground === true}
+                  onPick={(on) => void patchConfig({ desktopForeground: on })}
+                />
               </Row>
               <Row label="状态">
                 <span class="setting-row-hint">{desktopStatus()}</span>
@@ -122,6 +120,26 @@ export function AccessSettings() {
         </>
       )}
     </Show>
+  )
+}
+
+/** 两格开关。这张卡上有两项同形的开关，写两遍的代价是改一处忘另一处。 */
+function Switch(props: { on: boolean; onPick: (on: boolean) => void }) {
+  return (
+    <div class="seg">
+      <For each={SWITCH}>
+        {(o) => (
+          <button
+            class="seg-item"
+            classList={{ active: props.on === o.on }}
+            type="button"
+            onClick={() => props.onPick(o.on)}
+          >
+            {o.label}
+          </button>
+        )}
+      </For>
+    </div>
   )
 }
 

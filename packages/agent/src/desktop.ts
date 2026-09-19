@@ -67,6 +67,13 @@ export interface DesktopElement {
   /** 不在可视区内。不等于不可操作：语义动作不要求控件可见。 */
   offscreen: boolean
   /**
+   * 这个控件此刻持有键盘焦点。
+   *
+   * 文字与按键去的是焦点所在的地方，所以键盘动作只列在这个控件上。前台接管关着时
+   * 这一项一律缺席。
+   */
+  focused?: boolean
+  /**
    * 控件的包围盒，屏幕物理像素，与图像几何同一套坐标。
    *
    * 有了它，树里读到的控件与图上看到的位置对得上。provider 不给包围盒的控件缺席——
@@ -94,6 +101,19 @@ export interface DesktopElement {
    * 界面重排之后这个引用不可靠，拿它发动作会被拒。缺席表示身份正常。
    */
   weakIdentity?: boolean
+}
+
+/**
+ * 一张已经交给模型的图上的一个点。
+ *
+ * 换算与窗口几何代际的核对由实现方做：换算要用采集那一刻的几何，而那份几何在窗口
+ * 移动之后就不成立了。
+ */
+export interface DesktopImagePoint {
+  imageRef: string
+  /** 图像坐标，不是屏幕坐标。 */
+  x: number
+  y: number
 }
 
 /**
@@ -277,15 +297,21 @@ export interface DesktopPort {
     imageRect?: DesktopRect
   }): Promise<DesktopImage>
   /**
-   * 在一个控件上执行一个动作。
+   * 在一个控件或一个屏幕位置上执行一个动作。
    *
-   * 十三种动作走同一个入口：每种各开一个方法的话，占用、目标核对与动作后重读会在
-   * 每个方法里各写一遍。动作可能弹出模态窗口，那时整份观察作废。
+   * 全部动作走同一个入口：每种各开一个方法的话，占用、目标核对与动作后重读会在每个
+   * 方法里各写一遍。动作可能弹出模态窗口，那时整份观察作废。
+   *
+   * 目标两种给法，**只能给一个**：`ref` 指一个控件，派发前重新定位并读那一刻的包围盒；
+   * `at` 指上一张图里的一个点，只有指针动作接受它。
    */
   act(input: {
     windowId: string
     observationId: string
-    ref: string
+    /** 控件目标。除指针动作外都必须给。 */
+    ref?: string
+    /** 图像点目标。只有指针动作接受。 */
+    at?: DesktopImagePoint
     action: DesktopAction
   }): Promise<DesktopActResult>
   /**

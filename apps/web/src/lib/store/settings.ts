@@ -90,6 +90,7 @@ export interface RedactedConfig {
   envAllowList?: string[]
   /** 允不允许 agent 操作本机上别的应用。缺省即关。 */
   desktopEnabled?: boolean
+  desktopForeground?: boolean
 }
 export interface ConfigPayload {
   path: string

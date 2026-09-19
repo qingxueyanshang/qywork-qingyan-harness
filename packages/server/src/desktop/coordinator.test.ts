@@ -1040,3 +1040,206 @@ test('控件包围盒随观察交到端口外面', async () => {
   })
   expect(snapshot.elements.find((e) => e.ref === 'w#1')?.rect).toBeUndefined()
 })
+
+/**
+ * 按图定位的动作：图像坐标在这里换算成屏幕坐标，窗口几何代际一起下去，
+ * 由宿主在派发前重新核对窗口矩形。控件与图像点只能给一个。
+ */
+test('按图定位的指针动作换算成屏幕坐标并带上几何代际', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  const image = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: 'do_ignored',
+    at: { imageRef: image.imageRef, x: 10, y: 20 },
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  const frame = await host.next()
+  expect(frame.op).toBe('act')
+  // 这张图是 1:1 的，换算就是一次平移：87+10、80+20。
+  expect(frame.point).toEqual({ x: 97, y: 100 })
+  expect(frame.expectGeneration).toBe('80,80,520,460@96#65537')
+  expect(frame.ref).toBeUndefined()
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  expect((await acting).dispatch).toBe('submitted')
+})
+
+test('控件与图像点只能给一个，两种都给或都不给都在本地拒绝', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+  const image = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+  const before = host.received.length
+
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: first.observationId,
+      ref: 'w.1.0#5',
+      at: { imageRef: image.imageRef, x: 1, y: 1 },
+      action: { kind: 'click', button: 'left', count: 1 },
+    }),
+  ).rejects.toThrow('只能给一个')
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: first.observationId,
+      action: { kind: 'click', button: 'left', count: 1 },
+    }),
+  ).rejects.toThrow('要给控件或图像点')
+  // 键盘与窗口动作没有落点可言。
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: first.observationId,
+      at: { imageRef: image.imageRef, x: 1, y: 1 },
+      action: { kind: 'activate' },
+    }),
+  ).rejects.toThrow('只能按控件执行')
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+test('图外的坐标在本地就被拒，一帧都不发', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  const image = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+  const before = host.received.length
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: 'do_ignored',
+      at: { imageRef: image.imageRef, x: 5000, y: 1 },
+      action: { kind: 'click', button: 'left', count: 1 },
+    }),
+  ).rejects.toThrow('覆盖的范围')
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: 'do_ignored',
+      at: { imageRef: image.imageRef, x: -1, y: 1 },
+      action: { kind: 'click', button: 'left', count: 1 },
+    }),
+  ).rejects.toThrow('覆盖的范围')
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+test('认不出的图在本地就被拒，一帧都不发', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  const before = host.received.length
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: 'do_ignored',
+      at: { imageRef: 'di_404', x: 1, y: 1 },
+      action: { kind: 'click', button: 'left', count: 1 },
+    }),
+  ).rejects.toThrow('认不出的图')
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+/** 拖拽终点写在动作里：像素偏移原样下去，控件终点要来自本执行者见过的观察。 */
+test('拖拽的像素偏移原样下去，控件终点要在观察里', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'drag', to: { kind: 'offset', dx: 80, dy: 0 } },
+  })
+  const frame = await host.next()
+  expect(frame.action).toEqual({ kind: 'drag', to: { kind: 'offset', dx: 80, dy: 0 } })
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  const next = await acting
+  const now = next.observation?.observationId ?? first.observationId
+
+  const before = host.received.length
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: now,
+      ref: 'w.1.0#5',
+      action: { kind: 'drag', to: { kind: 'ref', ref: 'w.9#9' } },
+    }),
+  ).rejects.toThrow('没有控件')
+  await tick()
+  expect(host.received.length).toBe(before)
+})
+
+/**
+ * 前台接管的读数按回执上调。
+ *
+ * 宿主拒绝派发时桌面没有被碰，那时说「正在前台操作」是一句假话；派发出去之后不再退回，
+ * 一次前台点击已经把焦点留在目标应用上了。
+ */
+test('前台接管的读数只在宿主真的派发之后才上调', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const seen: [string | null, boolean][] = []
+  cleanups.push(desktop.onTargetChange((app, foreground) => seen.push([app, foreground])))
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+  expect(seen.at(-1)).toEqual(['记事本', false])
+
+  // 宿主拒绝派发：读数不动。
+  const refused = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  let frame = await host.next()
+  host.reply(frame, { dispatch: 'not_dispatched', reason: 'foreground_disabled: 前台操作没有启用' })
+  expect((await refused).dispatch).toBe('not_dispatched')
+  expect(desktop.targetForeground()).toBe(false)
+
+  // 拒绝派发时没有重读，这个窗口的控件表整份作废：重新观察一次再往下走。
+  const again = await firstLook(host, a)
+
+  // 派发出去了：读数上调，之后的后台读取不把它退回去。
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: again.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  frame = await host.next()
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  const done = await acting
+  expect(desktop.targetForeground()).toBe(true)
+  expect(seen.at(-1)).toEqual(['记事本', true])
+
+  const reading = a.act({
+    windowId: 'dw_1',
+    observationId: done.observation?.observationId ?? again.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'invoke' },
+  })
+  frame = await host.next()
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  await reading
+  expect(desktop.targetForeground()).toBe(true)
+
+  // 释放时随应用名一起清回去。
+  const releasing = a.release()
+  host.reply(await host.next())
+  await releasing
+  expect(desktop.targetForeground()).toBe(false)
+  expect(seen.at(-1)).toEqual([null, false])
+})

@@ -25,6 +25,7 @@ import type {
   DesktopElement,
   DesktopFollowUp,
   DesktopImage,
+  DesktopImagePoint,
   DesktopPort,
   DesktopRefusal,
   DesktopSnapshot,
@@ -44,7 +45,7 @@ import type {
   DesktopTreeBody,
   DesktopWindow,
 } from '@qywork/core'
-import { imageRectToScreen, log } from '@qywork/core'
+import { imagePointToScreen, imageRectToScreen, log } from '@qywork/core'
 import {
   type DesktopBridge,
   DesktopBridgeError,
@@ -88,6 +89,28 @@ const CAPTURE_BUDGET_MS = 3_000
  * 约占 5.4 MiB。超过这个数的请求在采集端就被拒，不让一帧把宿主连接打断。
  */
 const CAPTURE_MAX_BYTES = 4 * 1024 * 1024
+/**
+ * 走前台投递的动作。
+ *
+ * 只用来判「这一次算不算前台接管」，让运行态读数说得出此刻在前台操作，
+ * 而且只在宿主真的派发了之后才上调。**准入不在这里判**：前台模式有没有开由宿主
+ * 那一侧按请求自带的开关裁决，在这里再判一遍就是第二处裁决。
+ */
+const FOREGROUND_ACTIONS: ReadonlySet<string> = new Set([
+  'click',
+  'hover',
+  'drag',
+  'wheel',
+  'type_text',
+  'press_key',
+  'activate',
+  'set_window_state',
+  'move_window',
+  'resize_window',
+  'close_window',
+])
+/** 接受图像点落点的那几种。其余动作只能按控件执行。 */
+const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag', 'wheel'])
 
 /**
  * 端口已经释放，或者此刻没有可用的宿主。
@@ -187,6 +210,7 @@ function elementOf(node: DesktopNode): DesktopElement {
     ...(node.value !== undefined ? { value: node.value } : {}),
     enabled: node.enabled,
     offscreen: node.offscreen,
+    ...(node.focused === true ? { focused: true } : {}),
     ...(node.rect !== undefined ? { rect: { ...node.rect } } : {}),
     actions: node.actions.map((a) => ({
       action: a.action,
@@ -278,7 +302,14 @@ export class DesktopCoordinator {
   #blocked: string | null = null
   /** 此刻在操作哪个应用。只有 `#holder` 写得动它。 */
   #targetApp: string | null = null
-  #targetChanges = new Set<(app: string | null) => void>()
+  /**
+   * 持着桌面的那个执行者已经用过前台接管。
+   *
+   * 只进不退：一次前台点击之后焦点已经在目标应用上，之后的后台读取改不回来这件事。
+   * 随 `#targetApp` 一起清回去。
+   */
+  #targetForeground = false
+  #targetChanges = new Set<(app: string | null, foreground: boolean) => void>()
   #offHostChange: () => void
 
   constructor(bridge: DesktopBridge, enabled: () => boolean) {
@@ -313,7 +344,12 @@ export class DesktopCoordinator {
     return this.#targetApp
   }
 
-  onTargetChange(listener: (app: string | null) => void): () => void {
+  /** 持着桌面的执行者用没用过前台接管。界面按它区分两种读数。 */
+  targetForeground(): boolean {
+    return this.#targetForeground
+  }
+
+  onTargetChange(listener: (app: string | null, foreground: boolean) => void): () => void {
     this.#targetChanges.add(listener)
     return () => this.#targetChanges.delete(listener)
   }
@@ -652,22 +688,34 @@ export class DesktopCoordinator {
     if (input.imageRect === undefined) {
       throw new DesktopTargetError('按上一张图取区域时要给 imageRect')
     }
-    const record = lease.images.get(input.imageRef)
-    if (!record) {
-      throw new DesktopTargetError(`认不出的图 ${input.imageRef}，请重新采图`)
-    }
-    const host = this.#bridge.host()
-    if (!host || record.epochKey !== epochKeyOf(host)) {
-      throw new DesktopTargetError(`${input.imageRef} 已经失效：桌面宿主换过代际，请重新采图`)
-    }
-    if (record.windowId !== input.windowId || record.identityKey !== identityKey(known)) {
-      throw new DesktopTargetError(`${input.imageRef} 采的不是这个窗口，请重新采图`)
-    }
+    const record = this.#imageOf(lease, known, input.windowId, input.imageRef)
     const region = imageRectToScreen(record.geometry, input.imageRect)
     if (!region) {
       throw new DesktopTargetError(`给的矩形不在 ${input.imageRef} 覆盖的范围里`)
     }
     return { region, expectGeneration: record.geometry.generation }
+  }
+
+  /**
+   * 取一张交出去过的图，并核对它此刻还成不成立。
+   *
+   * 四条判据逐条都是可核实的事实：本执行者交出过这个 ref、宿主没换过代际、那张图采的是
+   * 同一个窗口身份、窗口几何代际随请求一起交给宿主再核一次。任一条不成立即在本地拒绝
+   * ——**不伪造一个能发出去的坐标**。
+   */
+  #imageOf(lease: Lease, known: KnownWindow, windowId: string, imageRef: string): ImageRecord {
+    const record = lease.images.get(imageRef)
+    if (!record) {
+      throw new DesktopTargetError(`认不出的图 ${imageRef}，请重新采图`)
+    }
+    const host = this.#bridge.host()
+    if (!host || record.epochKey !== epochKeyOf(host)) {
+      throw new DesktopTargetError(`${imageRef} 已经失效：桌面宿主换过代际，请重新采图`)
+    }
+    if (record.windowId !== windowId || record.identityKey !== identityKey(known)) {
+      throw new DesktopTargetError(`${imageRef} 采的不是这个窗口，请重新采图`)
+    }
+    return record
   }
 
   /** 这个引用在不在本执行者对该窗口的最近一份观察里，不看编号。 */
@@ -680,14 +728,21 @@ export class DesktopCoordinator {
 
   async #act(
     lease: Lease,
-    input: { windowId: string; observationId: string; ref: string; action: DesktopAction },
+    input: {
+      windowId: string
+      observationId: string
+      ref?: string
+      at?: DesktopImagePoint
+      action: DesktopAction
+    },
   ): Promise<DesktopActResult> {
     this.#liveHost(lease)
     // 观察已经占下了桌面，这里通常是空操作；观察之后被强制释放过才会真的排队。
     await this.#acquire(lease)
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+    const aimed = this.#aim(lease, known, input)
+    this.#checkDestination(lease, input.windowId, input.action)
     this.#nextAction += 1
     const actionId = `da_${this.#nextAction}`
     this.#setTarget(lease, known.app)
@@ -696,12 +751,17 @@ export class DesktopCoordinator {
         executorId: lease.executorId,
         actionId,
         target: this.#frameTarget(known),
-        ref: input.ref,
+        ...aimed,
         action: input.action,
         maxNodes: DEFAULT_MAX_NODES,
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
       })
+      // 前台接管的读数按回执上调：宿主拒绝派发时桌面没有被碰，那时说「正在前台操作」
+      // 是一句假话。
+      if (FOREGROUND_ACTIONS.has(input.action.kind) && result.dispatch !== 'not_dispatched') {
+        this.#setTarget(lease, known.app, true)
+      }
       return {
         dispatch: result.dispatch,
         actionId,
@@ -723,6 +783,60 @@ export class DesktopCoordinator {
         observationError: '宿主不可用，动作之后没有重读',
       }
     }
+  }
+
+  /**
+   * 这次动作打在哪儿：控件引用，或上一张图里那个点换算出来的屏幕坐标。
+   *
+   * **两种只能给一个。** 给控件时按观察编号核对它还在不在这一份表里；给图像点时走
+   * 与按图重采同一条换算与代际核对路径，失效的 `imageRef` 在本地就拒绝，一帧都不发。
+   */
+  #aim(
+    lease: Lease,
+    known: KnownWindow,
+    input: {
+      windowId: string
+      observationId: string
+      ref?: string
+      at?: DesktopImagePoint
+      action: DesktopAction
+    },
+  ): { ref?: string; point?: { x: number; y: number }; expectGeneration?: string } {
+    if (input.ref !== undefined && input.at !== undefined) {
+      throw new DesktopTargetError('控件与图像点只能给一个')
+    }
+    if (input.ref !== undefined) {
+      this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+      return { ref: input.ref }
+    }
+    if (input.at === undefined) {
+      throw new DesktopTargetError('要给控件或图像点')
+    }
+    if (!FOREGROUND_POINTER.has(input.action.kind)) {
+      throw new DesktopTargetError(`${input.action.kind} 只能按控件执行，不能给图像点`)
+    }
+    const record = this.#imageOf(lease, known, input.windowId, input.at.imageRef)
+    const { imageWidth, imageHeight } = record.geometry
+    // 图外的坐标在本地就拒：换算出来的屏幕点落在窗口外面，宿主只说得出「落点不在窗口里」，
+    // 而调用方要的是「这个点不在那张图上」。
+    if (input.at.x < 0 || input.at.y < 0 || input.at.x >= imageWidth || input.at.y >= imageHeight) {
+      throw new DesktopTargetError(
+        `给的坐标不在 ${input.at.imageRef} 覆盖的范围里（图是 ${imageWidth}×${imageHeight}）`,
+      )
+    }
+    const point = imagePointToScreen(record.geometry, input.at.x, input.at.y)
+    return { point, expectGeneration: record.geometry.generation }
+  }
+
+  /**
+   * 拖拽的控件终点要在本执行者对这个窗口的最近一份观察里。
+   *
+   * 终点写在动作里而不是另开一格：只有拖拽有终点，多一格空字段会让调用方按它给出
+   * 一个不会被读的值。像素偏移不需要核对，它由宿主在派发前夹进目标窗口。
+   */
+  #checkDestination(lease: Lease, windowId: string, action: DesktopAction): void {
+    if (action.kind !== 'drag' || action.to.kind !== 'ref') return
+    this.#requireRef(lease, windowId, action.to.ref)
   }
 
   /**
@@ -915,18 +1029,22 @@ export class DesktopCoordinator {
     this.#block('上一次电脑操作还没有确认结清，此刻不能操作桌面')
   }
 
-  #setTarget(lease: Lease, app: string): void {
+  #setTarget(lease: Lease, app: string, foreground = false): void {
     // 只有持有桌面的执行者写得动这个读数。少了这一条，两个执行者的目标会互相覆盖，
     // 界面上显示的是最后写进来的那一个，而不是此刻真在操作的那一个。
-    if (this.#holder !== lease || this.#targetApp === app) return
+    if (this.#holder !== lease) return
+    const takeover = this.#targetForeground || foreground
+    if (this.#targetApp === app && this.#targetForeground === takeover) return
     this.#targetApp = app
-    for (const listener of [...this.#targetChanges]) listener(app)
+    this.#targetForeground = takeover
+    for (const listener of [...this.#targetChanges]) listener(app, takeover)
   }
 
   #clearTarget(): void {
-    if (this.#targetApp === null) return
+    if (this.#targetApp === null && !this.#targetForeground) return
     this.#targetApp = null
-    for (const listener of [...this.#targetChanges]) listener(null)
+    this.#targetForeground = false
+    for (const listener of [...this.#targetChanges]) listener(null, false)
   }
 }
 

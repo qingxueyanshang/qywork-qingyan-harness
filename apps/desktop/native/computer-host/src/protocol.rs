@@ -6,10 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::{Geometry, ScreenRect};
+use crate::geometry::{Geometry, ScreenPoint, ScreenRect};
 
 /// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -57,6 +57,12 @@ pub struct Request {
     /// 服务端在重连时丢弃旧 pending，但 worker 的执行队列里还压着旧连接的动作请求；没有
     /// 这个字段，那些动作会照常派发而没有任何人能收回执。
     pub connection_epoch: u64,
+    /// 用户有没有启用前台接管。
+    ///
+    /// 前台原始输入与窗口操作只在它为真时派发，worker 不自行升级；缺席按假算，
+    /// 少一个字段的请求因此只拿得到后台语义动作。
+    #[serde(default)]
+    pub foreground: bool,
     #[serde(flatten)]
     pub op: Op,
 }
@@ -265,10 +271,76 @@ pub fn scroll_amounts(direction: ScrollDirection, step: ScrollStep) -> (i32, i32
     }
 }
 
+/// 鼠标键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// 组合键里的修饰键。按下顺序即这里给的顺序，释放按逆序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Modifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Win,
+}
+
+/// 窗口的显示状态。`WindowPattern` 的三种可视状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowState {
+    Normal,
+    Minimized,
+    Maximized,
+}
+
+impl WindowState {
+    /// UIA 的 `WindowVisualState` 常量顺序：0 = Normal，1 = Maximized，2 = Minimized。
+    pub const fn as_uia(self) -> i32 {
+        match self {
+            Self::Normal => 0,
+            Self::Maximized => 1,
+            Self::Minimized => 2,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Minimized => "minimized",
+            Self::Maximized => "maximized",
+        }
+    }
+}
+
+/// 一次拖拽的终点。
+///
+/// 两种给法都不带图像坐标：图像坐标在服务端换算成屏幕坐标，worker 只认屏幕像素与
+/// 控件引用。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DragTarget {
+    /// 落在另一个控件的包围盒中心。派发前重新定位它，读那一刻的包围盒。
+    Ref {
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+    /// 相对起点的屏幕像素偏移。滑块与拖动排序用它。
+    Offset { dx: i32, dy: i32 },
+}
+
 /// 一次动作要执行什么。
 ///
 /// 每一种都带齐自己的参数：动作与参数分两处给的话，`set_value` 少了值也能翻译成一条
 /// 合法请求，缺的那一项要到 provider 调用那一刻才暴露。
+///
+/// **后台语义动作与前台原始输入在同一个枚举里**，按 `foreground_only` 分开准入：
+/// 分成两个枚举的话，定位、准入、可放弃等待与动作后重读会各有一份拷贝。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActionSpec {
@@ -304,7 +376,72 @@ pub enum ActionSpec {
     RealizeItem { name: String },
     /// TextPattern。按 UTF-16 码元的偏移设选区。
     SelectText { start: u32, length: u32 },
+    /// SendInput 的鼠标按下与抬起。`count` 是 1 或 2，双击由调用方按 2 表达。
+    Click { button: MouseButton, count: u32 },
+    /// SendInput 的指针移动。只移动，不按键。
+    Hover,
+    /// SendInput 的按下 → 分段移动 → 抬起。中止路径一律释放本次按下的键。
+    Drag { to: DragTarget },
+    /// SendInput 的滚轮。`amount` 是滚动格数，一格是系统设定的行数。
+    Wheel {
+        direction: ScrollDirection,
+        amount: u32,
+    },
+    /// SendInput 的 `KEYEVENTF_UNICODE` 文字注入。代理对成对发出。
+    TypeText { text: String },
+    /// SendInput 的物理按键。修饰键按给出的顺序按下，逆序释放。
+    PressKey {
+        key: String,
+        #[serde(default)]
+        modifiers: Vec<Modifier>,
+    },
+    /// Win32 的前台窗口接口。受系统前台锁限制，拒绝即如实回执。
+    Activate,
+    /// WindowPattern 的可视状态。按目标态表达，不是「切一次」。
+    SetWindowState { state: WindowState },
+    /// TransformPattern 的移动。屏幕物理像素。
+    MoveWindow { x: i32, y: i32 },
+    /// TransformPattern 的缩放。屏幕物理像素。
+    ResizeWindow { width: i32, height: i32 },
+    /// WindowPattern 的关闭。发的是关闭请求，不是强杀进程。
+    CloseWindow,
 }
+
+impl ActionSpec {
+    /// 这个动作只能由前台原始输入或前台窗口接口交付。
+    ///
+    /// 判据是它会不会改变系统前台窗口、真实指针或键盘焦点：会的一律归前台，
+    /// 由用户显式开启的前台模式裁决。**不按「用的是不是 SendInput」分**——
+    /// 窗口状态与激活走的是 Win32 与 UIA 接口，一样会把前台从用户手上拿走。
+    pub const fn foreground_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Click { .. }
+                | Self::Hover
+                | Self::Drag { .. }
+                | Self::Wheel { .. }
+                | Self::TypeText { .. }
+                | Self::PressKey { .. }
+                | Self::Activate
+                | Self::SetWindowState { .. }
+                | Self::MoveWindow { .. }
+                | Self::ResizeWindow { .. }
+                | Self::CloseWindow
+        )
+    }
+
+    /// 这个动作的落点可以由调用方直接给屏幕坐标。只有指针动作可以。
+    pub const fn takes_point(&self) -> bool {
+        matches!(
+            self,
+            Self::Click { .. } | Self::Hover | Self::Drag { .. } | Self::Wheel { .. }
+        )
+    }
+}
+
+/// 前台模式没开时的拒绝原因。工具层与 worker 用同一个码。
+pub const FOREGROUND_DISABLED: &str =
+    "foreground_disabled: 前台操作没有启用，这次请求没有派发，桌面没有被动过";
 
 /// 请求动作。`params` 一律显式给出，空参数写 `{}`。
 #[derive(Debug, Deserialize)]
@@ -340,10 +477,19 @@ pub enum Op {
     ///
     /// 所有改变状态的动作走这一条：定位、准入、可放弃等待与重读只有一处实现，
     /// 按动作分成多个 op 会让这四件事各有一份拷贝。
+    ///
+    /// 目标两种给法，互斥：`ref` 指一个控件，派发前重新定位并读那一刻的包围盒；
+    /// `point` 直接给屏幕物理像素落点，那时必须同时给 `expectGeneration`，
+    /// 窗口在采图与派发之间移动过即拒绝。
+    #[serde(rename_all = "camelCase")]
     Act {
         window: i64,
-        #[serde(rename = "ref")]
-        reference: String,
+        #[serde(default, rename = "ref")]
+        reference: Option<String>,
+        #[serde(default)]
+        point: Option<ScreenPoint>,
+        #[serde(default)]
+        expect_generation: Option<String>,
         action: ActionSpec,
         #[serde(flatten)]
         bounds: Bounds,
@@ -610,13 +756,16 @@ pub struct Completeness {
     pub visited: u32,
 }
 
-/// 只有后台语义一种投递方式。前台原始输入尚未实现，`delivery` 里因此不会出现它。
+/// 经控件模式发出，不置前台、不动指针、不设焦点。
 pub const DELIVERY_BACKGROUND: &str = "background";
+/// 经原始输入或前台窗口接口发出，会把前台从用户手上拿走。只在用户启用前台模式时出现。
+pub const DELIVERY_FOREGROUND: &str = "foreground";
 
 /// 控件上的一个动作，连同它此刻能不能执行。
 ///
 /// `delivery` 为空表示此刻执行不了，原因在 `unavailable`。模式缺失的动作不列：
-/// 每个控件列出全部十几个动作会把「这里能做什么」盖住。
+/// 每个控件列出全部二十几个动作会把「这里能做什么」盖住。前台模式关着时，
+/// 前台动作同样一条都不列。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeAction {
@@ -632,6 +781,15 @@ impl NodeAction {
         Self {
             action,
             delivery: vec![DELIVERY_BACKGROUND],
+            unavailable: None,
+        }
+    }
+
+    /// 这个动作此刻能前台执行。
+    pub fn foreground(action: &'static str) -> Self {
+        Self {
+            action,
+            delivery: vec![DELIVERY_FOREGROUND],
             unavailable: None,
         }
     }
@@ -744,6 +902,11 @@ pub struct Node {
     pub value: Option<String>,
     pub enabled: bool,
     pub offscreen: bool,
+    /// 这个控件此刻持有键盘焦点。前台模式关着时一律为假——那时这一项不在缓存请求里。
+    ///
+    /// 文字与按键去的是焦点所在的地方，所以键盘动作只列在这个控件上。
+    #[serde(skip_serializing_if = "not_set")]
+    pub focused: bool,
     /// 控件的包围盒，屏幕物理像素，与图像几何同一套坐标。
     ///
     /// provider 不给包围盒的控件缺席（零尺寸同样按缺席算）。**缺席不等于控件不存在**，
@@ -786,8 +949,11 @@ fn not_set(flag: &bool) -> bool {
     !*flag
 }
 
-/// 动作已经生效的可核实证据。三项都由 Win32 读出，读它们不进 UIA，
+/// 动作已经生效的可核实证据。每一项都由 Win32 读出，读它们不进 UIA，
 /// 因此不会被目标进程的嵌套消息循环挡住。
+///
+/// **每种动作只认属于它的那几项。** 前三项是后台模式调用的证据；激活会主动改前台，
+/// 那时「同进程出现新顶层窗口」证明不了这次激活做过什么，窗口动作因此各用各的读回值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionEvidence {
     /// 目标窗口被禁用。Win32 的模态对话框正是这样挡住属主窗口的。
@@ -796,6 +962,10 @@ pub enum ActionEvidence {
     WindowGone,
     /// 目标进程里多出一个此前没有的顶层窗口。
     NewWindow,
+    /// 目标窗口已经处于请求的显示状态。
+    WindowState,
+    /// 目标窗口矩形已经是请求的位置或尺寸。
+    WindowRect,
 }
 
 impl ActionEvidence {
@@ -804,6 +974,8 @@ impl ActionEvidence {
             Self::WindowDisabled => "目标窗口已被禁用",
             Self::WindowGone => "目标窗口已关闭",
             Self::NewWindow => "目标进程出现了新的顶层窗口",
+            Self::WindowState => "目标窗口已经是请求的显示状态",
+            Self::WindowRect => "目标窗口矩形已经是请求的值",
         }
     }
 }
@@ -838,6 +1010,74 @@ pub fn classify_action(
             Some("call_pending: 动作调用尚未返回，也没有可核实的生效证据".to_owned()),
         )
     })
+}
+
+/// worker 此刻按住不放的鼠标键与虚拟键码。
+///
+/// **它只描述输入状态，不是任务状态。** 随按随记、释放即清，宿主按它在确认 worker
+/// 退出之后补发释放。空账表示这个 worker 手上没有按住任何键。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldInput {
+    /// 按住的鼠标键名。
+    pub buttons: Vec<&'static str>,
+    pub keys: Vec<HeldKey>,
+}
+
+/// 一个按住不放的物理键。
+///
+/// **扩展键标志要一起记**：抬起事件少了 `E0` 前缀，目标应用收到的是小键盘上的同码键，
+/// 它按下的那一个仍然停在按下状态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldKey {
+    pub vk: u16,
+    pub extended: bool,
+}
+
+/// 输入状态通报。与回执共用 stdout，靠 `input` 这一格与回执区分——回执一定带
+/// `id` 与 `dispatch`，通报一定不带。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputNotice {
+    pub v: u32,
+    pub input: HeldInput,
+}
+
+impl InputNotice {
+    pub fn of(held: HeldInput) -> Self {
+        Self {
+            v: PROTOCOL_VERSION,
+            input: held,
+        }
+    }
+}
+
+/// 一批原始输入发出之后的执行事实。
+///
+/// `SendInput` 的返回值是真的插进输入队列的事件数，**它可能小于请求数**：
+/// 目标进程完整性比本进程高时 UIPI 会把这一批挡掉。三种终态：
+/// 一个事件都没进去是可证明的未派发；全部进去是已派发；进去一部分只能是未知——
+/// 已经进 OS 的那一部分可能已经生效，记成未执行会让调用方重发一次。
+pub fn classify_input(sent: u32, requested: u32) -> (Dispatch, Option<String>) {
+    if requested == 0 || sent == 0 {
+        return (
+            Dispatch::NotDispatched,
+            Some(format!(
+                "input_blocked: {requested} 个输入事件一个都没有进入系统输入队列，\
+                 目标窗口的进程完整性可能高于 qywork"
+            )),
+        );
+    }
+    if sent >= requested {
+        return (Dispatch::Submitted, None);
+    }
+    (
+        Dispatch::Unknown,
+        Some(format!(
+            "input_partial: {requested} 个输入事件只发出了 {sent} 个，已发出的部分可能已经生效"
+        )),
+    )
 }
 
 fn check_host(req: &Request, binding: &Binding) -> Result<(), &'static str> {
@@ -895,11 +1135,57 @@ pub fn admit(
             }
         }
     }
+    if let Op::Act {
+        reference,
+        point,
+        expect_generation,
+        action,
+        ..
+    } = &req.op
+    {
+        check_act(
+            action,
+            reference.is_some(),
+            point.is_some(),
+            expect_generation.is_some(),
+            req.foreground,
+        )?;
+    }
     if cancelled {
         return Err("cancelled");
     }
     if req.deadline.is_some_and(|d| now >= d) {
         return Err("deadline_exceeded");
+    }
+    Ok(())
+}
+
+/// 一次动作请求的目标与模式判定。
+///
+/// **前台模式关着时前台动作在这里就被拒**：这是派发前的唯一准入判定，
+/// 放到执行路径里判就会多出第二处裁决。后台失败不会自动升级成前台，
+/// 这个函数不看动作有没有后台替代品。
+pub fn check_act(
+    action: &ActionSpec,
+    has_ref: bool,
+    has_point: bool,
+    has_generation: bool,
+    foreground: bool,
+) -> Result<(), &'static str> {
+    if action.foreground_only() && !foreground {
+        return Err(FOREGROUND_DISABLED);
+    }
+    match (has_ref, has_point) {
+        (true, true) => return Err("target_conflict: ref 与 point 只能给一个"),
+        (false, false) => return Err("missing_target: 要给 ref 或 point"),
+        (false, true) if !action.takes_point() => {
+            return Err("point_unsupported: 这个动作只能按控件执行")
+        }
+        _ => {}
+    }
+    // 按图定位必须带窗口几何代际：少了它，窗口在采图与派发之间移动过也照点。
+    if has_point && !has_generation {
+        return Err("missing_generation: 按屏幕坐标操作要带窗口几何代际");
     }
     Ok(())
 }
@@ -953,7 +1239,7 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":4,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"v":5,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0.1#42.7",
                 "action":{{"kind":"invoke"}},
@@ -963,7 +1249,7 @@ mod tests {
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":4,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"v":5,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -971,14 +1257,14 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":4,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"v":5,"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
     }
 
     fn act_params(action: &str) -> Request {
         parse(&format!(
-            r#"{{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0#7","action":{action},
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
@@ -994,7 +1280,7 @@ mod tests {
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1020,7 +1306,7 @@ mod tests {
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1039,7 +1325,7 @@ mod tests {
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
                 "nameContains":"保存","includeValue":false,"includeState":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
@@ -1064,7 +1350,7 @@ mod tests {
     #[test]
     fn wait_decodes_condition_and_two_bounds() {
         let req = parse(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
                 "value":"张三","pollMs":250,"timeoutMs":9000,
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
@@ -1089,7 +1375,7 @@ mod tests {
 
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -1102,7 +1388,7 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
         )
         .is_err());
@@ -1112,7 +1398,7 @@ mod tests {
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
@@ -1125,7 +1411,7 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":4,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"v":5,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
     }
 
@@ -1152,6 +1438,7 @@ mod tests {
                 value: None,
                 enabled: true,
                 offscreen: false,
+                focused: false,
                 rect: Some(ScreenRect {
                     x: 120,
                     y: 240,
@@ -1412,7 +1699,7 @@ mod tests {
         ] {
             assert!(
                 serde_json::from_str::<Request>(&format!(
-                    r#"{{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                    r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                         "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
                         "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
                 ))
@@ -1467,7 +1754,7 @@ mod tests {
     #[test]
     fn read_text_is_its_own_read_only_op() {
         let req = parse(
-            r#"{"v":4,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_text","params":{"window":66,"ref":"w.3#9","maxChars":2000}}"#,
         );
         assert!(matches!(
@@ -1528,7 +1815,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":4,"id":"h","connectionEpoch":5,
+            r#"{"v":5,"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());
@@ -1718,6 +2005,274 @@ mod tests {
         body.nodes[0].weak_identity = true;
         let value = serde_json::to_value(Observation::Tree(body)).unwrap();
         assert_eq!(value["nodes"][0]["weakIdentity"], true);
+    }
+
+    /// 前台动作与后台动作在同一个枚举里，按 `foreground_only` 分开准入。
+    #[test]
+    fn foreground_actions_are_marked_and_background_ones_are_not() {
+        for spec in [
+            r#"{"kind":"click","button":"left","count":2}"#,
+            r#"{"kind":"hover"}"#,
+            r#"{"kind":"drag","to":{"kind":"offset","dx":80,"dy":0}}"#,
+            r#"{"kind":"wheel","direction":"down","amount":3}"#,
+            r#"{"kind":"type_text","text":"张三"}"#,
+            r#"{"kind":"press_key","key":"a","modifiers":["ctrl"]}"#,
+            r#"{"kind":"activate"}"#,
+            r#"{"kind":"set_window_state","state":"maximized"}"#,
+            r#"{"kind":"move_window","x":100,"y":200}"#,
+            r#"{"kind":"resize_window","width":900,"height":600}"#,
+            r#"{"kind":"close_window"}"#,
+        ] {
+            assert!(
+                action_of(act_params(spec)).foreground_only(),
+                "{spec} 应当是前台动作"
+            );
+        }
+        for spec in [
+            r#"{"kind":"invoke"}"#,
+            r#"{"kind":"set_value","value":"x"}"#,
+            r#"{"kind":"scroll","direction":"down","step":"line"}"#,
+            r#"{"kind":"select_text","start":0,"length":3}"#,
+        ] {
+            assert!(
+                !action_of(act_params(spec)).foreground_only(),
+                "{spec} 应当是后台动作"
+            );
+        }
+    }
+
+    /// 只有指针动作接受屏幕落点。别的动作给了坐标也没有落点可言。
+    #[test]
+    fn only_pointer_actions_take_a_screen_point() {
+        for spec in [
+            r#"{"kind":"click","button":"right","count":1}"#,
+            r#"{"kind":"hover"}"#,
+            r#"{"kind":"drag","to":{"kind":"ref","ref":"w.1#9"}}"#,
+            r#"{"kind":"wheel","direction":"up","amount":1}"#,
+        ] {
+            assert!(action_of(act_params(spec)).takes_point(), "{spec} 应当接受落点");
+        }
+        for spec in [
+            r#"{"kind":"type_text","text":"x"}"#,
+            r#"{"kind":"activate"}"#,
+            r#"{"kind":"invoke"}"#,
+        ] {
+            assert!(
+                !action_of(act_params(spec)).takes_point(),
+                "{spec} 不该接受落点"
+            );
+        }
+    }
+
+    /// 前台动作的参数同样跟着自己的名字走，少一项或写错枚举都解析失败。
+    #[test]
+    fn foreground_action_parameters_are_checked_at_parse_time() {
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"click","button":"middle","count":1}"#)),
+            ActionSpec::Click { button: MouseButton::Middle, count: 1 }
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"press_key","key":"enter"}"#)),
+            ActionSpec::PressKey { modifiers, .. } if modifiers.is_empty()
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"set_window_state","state":"minimized"}"#)),
+            ActionSpec::SetWindowState { state: WindowState::Minimized }
+        ));
+        assert!(matches!(
+            action_of(act_params(r#"{"kind":"drag","to":{"kind":"offset","dx":-4,"dy":9}}"#)),
+            ActionSpec::Drag { to: DragTarget::Offset { dx: -4, dy: 9 } }
+        ));
+        for bad in [
+            r#"{"kind":"click","button":"left"}"#,
+            r#"{"kind":"click","button":"back","count":1}"#,
+            r#"{"kind":"wheel","direction":"down"}"#,
+            r#"{"kind":"type_text"}"#,
+            r#"{"kind":"press_key","key":"a","modifiers":["hyper"]}"#,
+            r#"{"kind":"set_window_state","state":"tiny"}"#,
+            r#"{"kind":"drag"}"#,
+            r#"{"kind":"drag","to":{"kind":"offset","dx":1}}"#,
+            r#"{"kind":"move_window","x":1}"#,
+            r#"{"kind":"resize_window","width":900}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Request>(&format!(
+                    r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                        "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
+                        "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
+                ))
+                .is_err(),
+                "{bad} 应当解析失败"
+            );
+        }
+    }
+
+    fn act_request(action: &str, target: &str, foreground: bool) -> Request {
+        parse(&format!(
+            r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "foreground":{foreground},"op":"act","params":{{"window":66,{target}
+                "action":{action},"maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
+        ))
+    }
+
+    /// 前台模式关着时前台动作在准入判定就被拒，一条系统调用都不发。
+    #[test]
+    fn foreground_actions_are_refused_while_the_mode_is_off() {
+        let click = r#"{"kind":"click","button":"left","count":1}"#;
+        let off = act_request(click, r#""ref":"w.0#7","#, false);
+        assert_eq!(admit(&off, Some(&bound()), false, 0), Err(FOREGROUND_DISABLED));
+        let on = act_request(click, r#""ref":"w.0#7","#, true);
+        assert_eq!(admit(&on, Some(&bound()), false, 0), Ok(()));
+        // 后台动作不受这个开关影响。
+        let background = act_request(r#"{"kind":"invoke"}"#, r#""ref":"w.0#7","#, false);
+        assert_eq!(admit(&background, Some(&bound()), false, 0), Ok(()));
+    }
+
+    /// 身份与代际先判：旧代际的前台请求拿到的是代际不符，不是前台未启用。
+    #[test]
+    fn identity_is_checked_before_the_foreground_mode() {
+        let mut req = act_request(r#"{"kind":"click","button":"left","count":1}"#, r#""ref":"w.0#7","#, false);
+        req.connection_epoch = 4;
+        assert_eq!(
+            admit(&req, Some(&bound()), false, 0),
+            Err("connection_epoch_mismatch")
+        );
+    }
+
+    /// 两种目标给法互斥，且按图定位必须带窗口几何代际。
+    #[test]
+    fn a_target_is_either_a_control_or_a_screen_point() {
+        let click = r#"{"kind":"click","button":"left","count":1}"#;
+        let point = r#""point":{"x":10,"y":20},"expectGeneration":"g","#;
+        assert_eq!(admit(&act_request(click, point, true), Some(&bound()), false, 0), Ok(()));
+        assert_eq!(
+            admit(
+                &act_request(click, r#""ref":"w.0#7","point":{"x":10,"y":20},"expectGeneration":"g","#, true),
+                Some(&bound()),
+                false,
+                0
+            ),
+            Err("target_conflict: ref 与 point 只能给一个")
+        );
+        assert_eq!(
+            admit(&act_request(click, "", true), Some(&bound()), false, 0),
+            Err("missing_target: 要给 ref 或 point")
+        );
+        assert_eq!(
+            admit(
+                &act_request(click, r#""point":{"x":10,"y":20},"#, true),
+                Some(&bound()),
+                false,
+                0
+            ),
+            Err("missing_generation: 按屏幕坐标操作要带窗口几何代际")
+        );
+        // 键盘与窗口动作没有落点可言。
+        assert_eq!(
+            admit(
+                &act_request(r#"{"kind":"activate"}"#, point, true),
+                Some(&bound()),
+                false,
+                0
+            ),
+            Err("point_unsupported: 这个动作只能按控件执行")
+        );
+    }
+
+    /// 前台开关缺席按关算：少一个字段的请求只拿得到后台动作。
+    #[test]
+    fn the_foreground_flag_defaults_to_off() {
+        assert!(!invoke_request(None).foreground);
+        let on: Request = serde_json::from_str(
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "foreground":true,"op":"list_windows","params":{}}"#,
+        )
+        .expect("请求应当解析成功");
+        assert!(on.foreground);
+    }
+
+    /// 按图定位的动作不给 ref，给屏幕落点与窗口几何代际。
+    #[test]
+    fn an_action_can_target_a_screen_point_instead_of_a_control() {
+        let req = parse(
+            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "foreground":true,"op":"act","params":{"window":66,
+                "point":{"x":-1800,"y":240},"expectGeneration":"100,100,800,600@96#7",
+                "action":{"kind":"click","button":"left","count":1},
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
+        );
+        match req.op {
+            Op::Act {
+                reference,
+                point,
+                expect_generation,
+                ..
+            } => {
+                assert_eq!(reference, None);
+                assert_eq!(point, Some(ScreenPoint { x: -1800, y: 240 }));
+                assert_eq!(expect_generation.as_deref(), Some("100,100,800,600@96#7"));
+            }
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+    }
+
+    /// 前台动作的可用项与后台动作在同一张表里，靠 delivery 分。
+    #[test]
+    fn a_foreground_offer_declares_its_own_delivery() {
+        let offer = serde_json::to_value(NodeAction::foreground("click")).unwrap();
+        assert_eq!(offer, json_of(r#"{"action":"click","delivery":["foreground"]}"#));
+    }
+
+    /// 一批输入全进队列才是已派发；发出去一部分只能是未知，一个都没进才是未派发。
+    #[test]
+    fn a_partly_sent_input_batch_is_unknown_not_undispatched() {
+        assert_eq!(classify_input(6, 6), (Dispatch::Submitted, None));
+        let (dispatch, reason) = classify_input(4, 6);
+        assert_eq!(dispatch, Dispatch::Unknown);
+        assert!(reason.is_some_and(|r| r.starts_with("input_partial") && r.contains("只发出了 4")));
+        let (dispatch, reason) = classify_input(0, 6);
+        assert_eq!(dispatch, Dispatch::NotDispatched);
+        assert!(reason.is_some_and(|r| r.starts_with("input_blocked")));
+        assert_eq!(classify_input(0, 0).0, Dispatch::NotDispatched);
+    }
+
+    /// 窗口动作各认各的证据，与后台那三条不混。
+    #[test]
+    fn window_action_evidence_names_what_was_read_back() {
+        for evidence in [
+            ActionEvidence::WindowState,
+            ActionEvidence::WindowRect,
+        ] {
+            let (dispatch, reason) =
+                classify_action(None, Some(evidence), false).expect("有证据即有终态");
+            assert_eq!(dispatch, Dispatch::Submitted);
+            assert!(reason.is_some_and(|r| r.contains("调用尚未返回")));
+        }
+    }
+
+    /// 输入状态通报不带 id 与 dispatch，回执一定带：宿主据此分得开这两种行。
+    #[test]
+    fn an_input_notice_is_told_apart_from_a_receipt_by_its_shape() {
+        let notice = serde_json::to_value(InputNotice::of(HeldInput {
+            buttons: vec!["left"],
+            keys: vec![HeldKey {
+                vk: 162,
+                extended: false,
+            }],
+        }))
+        .expect("通报应当序列化成功");
+        assert_eq!(notice["v"], 5);
+        assert_eq!(notice["input"]["buttons"][0], "left");
+        assert_eq!(notice["input"]["keys"][0], json_of(r#"{"vk":162,"extended":false}"#));
+        assert!(notice.get("id").is_none());
+        assert!(notice.get("dispatch").is_none());
+        let receipt =
+            serde_json::to_value(Response::rejected("r1".to_owned(), "x".to_owned())).unwrap();
+        assert!(receipt.get("input").is_none());
+        assert_eq!(
+            serde_json::to_value(InputNotice::of(HeldInput::default())).unwrap()["input"],
+            json_of(r#"{"buttons":[],"keys":[]}"#)
+        );
     }
 
     /// 没有 ValuePattern 的控件等不到任何值，不能把「没有值」当成空串命中。

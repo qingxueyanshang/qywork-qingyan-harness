@@ -31,6 +31,7 @@ export type {
   DesktopElement,
   DesktopFollowUp,
   DesktopImage,
+  DesktopImagePoint,
   DesktopPort,
   DesktopRefusal,
   DesktopSnapshot,

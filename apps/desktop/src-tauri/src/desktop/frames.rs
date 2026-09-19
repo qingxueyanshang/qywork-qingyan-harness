@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 4;
+pub const WORKER_PROTOCOL_VERSION: u32 = 5;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
 const FORWARDED_OPS: [&str; 6] = [
@@ -80,6 +80,9 @@ pub struct RequestFrame {
     pub executor_id: String,
     /// Unix 纪元毫秒的绝对时刻。原样交给 worker：请求在队列里等待的时间要计入预算。
     pub deadline: i64,
+    /// 用户有没有启用前台接管。原样交给 worker，宿主不自行判定也不缓存它。
+    #[serde(default)]
+    pub foreground: bool,
     pub op: String,
     #[serde(default)]
     pub target: Option<Target>,
@@ -121,6 +124,9 @@ pub struct RequestFrame {
     pub poll_ms: Option<u64>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// 指针动作的屏幕物理像素落点。与 `ref` 互斥。
+    #[serde(default)]
+    pub point: Option<Value>,
     /// `capture_image` 要采的屏幕物理像素矩形。缺席表示整窗。
     #[serde(default)]
     pub region: Option<Value>,
@@ -232,6 +238,8 @@ pub struct WorkerRequest {
     pub host_id: String,
     pub host_epoch: u64,
     pub connection_epoch: u64,
+    /// 用户有没有启用前台接管。宿主自己发起的请求一律为假：它们不派发任何动作。
+    pub foreground: bool,
     pub op: &'static str,
     pub params: Value,
 }
@@ -245,6 +253,7 @@ impl WorkerRequest {
             host_id: binding.host_id.clone(),
             host_epoch: binding.host_epoch,
             connection_epoch: binding.connection_epoch,
+            foreground: false,
             op,
             params,
         }
@@ -331,11 +340,19 @@ pub fn to_worker(
             let mut params = bounds(frame, window)?;
             merge(
                 &mut params,
-                json!({
-                    "ref": reference(frame)?,
-                    "action": frame.action.as_ref().ok_or("missing_action")?,
-                }),
+                json!({ "action": frame.action.as_ref().ok_or("missing_action")? }),
             );
+            // 两种目标给法互斥，哪一种成立由 worker 的准入判定裁决；宿主只原样转，
+            // 再判一遍就是第二份词表。
+            if let Some(reference) = &frame.reference {
+                merge(&mut params, json!({ "ref": reference }));
+            }
+            if let Some(point) = &frame.point {
+                merge(&mut params, json!({ "point": point }));
+            }
+            if let Some(generation) = &frame.expect_generation {
+                merge(&mut params, json!({ "expectGeneration": generation }));
+            }
             params
         }
         "read_text" => json!({
@@ -390,6 +407,7 @@ pub fn to_worker(
         .ok_or("unsupported_op")?;
     let mut request = WorkerRequest::new(id, binding, op, params);
     request.deadline = Some(frame.deadline);
+    request.foreground = frame.foreground;
     Ok(request)
 }
 
@@ -436,6 +454,48 @@ fn merge(into: &mut Value, from: Value) {
 
 fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
     frame.reference.as_deref().ok_or("missing_ref")
+}
+
+/// worker 发上来的一行。
+///
+/// 两种形状靠字段区分，不靠额外的类型标记：回执一定带 `id` 与 `dispatch`，
+/// 输入状态通报一定只带 `input`。顺序不能反——`untagged` 按声明顺序试，
+/// 回执那一支先试就会把通报也解析成一条没有 id 的回执。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum WorkerLine {
+    Input(InputNotice),
+    Response(WorkerResponse),
+}
+
+/// worker 此刻按住的鼠标键与虚拟键码。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputNotice {
+    pub input: HeldInput,
+}
+
+/// **只描述输入状态，不是任务状态。** 宿主按它在确认 worker 退出之后补发释放。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldInput {
+    pub buttons: Vec<String>,
+    pub keys: Vec<HeldKey>,
+}
+
+/// 一个按住不放的物理键。扩展键标志要一起带：抬起事件少了它，目标应用收到的是
+/// 小键盘上的同码键，它按下的那一个仍然停在按下状态。
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldKey {
+    pub vk: u16,
+    pub extended: bool,
+}
+
+impl HeldInput {
+    pub fn is_empty(&self) -> bool {
+        self.buttons.is_empty() && self.keys.is_empty()
+    }
 }
 
 /// 这个 op 需不需要目标窗口身份。`list_windows` 与 `cancel` 不带 target。
@@ -555,6 +615,7 @@ mod tests {
             host_epoch: 2,
             executor_id: "dx_1".to_owned(),
             deadline: 1_700_000_000_000,
+            foreground: false,
             op: op.to_owned(),
             target: Some(Target {
                 window: 66,
@@ -562,6 +623,7 @@ mod tests {
                 process_started_at: 1_699_000_000_000,
             }),
             reference: Some("w.0.1#42.7".to_owned()),
+            point: None,
             value: None,
             action: None,
             max_chars: None,
@@ -591,9 +653,9 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 4, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "v": 5, "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
-                "op": "read_tree",
+                "foreground": false, "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
             })
         );
@@ -623,6 +685,68 @@ mod tests {
             to_worker("w1".to_owned(), &frame, &binding(), 66).err(),
             Some("missing_action")
         );
+    }
+
+    /// 前台开关随每条请求原样下去：宿主不缓存它，运行中关掉在下一条请求上就生效。
+    #[test]
+    fn the_foreground_switch_travels_with_every_request() {
+        let mut frame = request("act");
+        frame.action = Some(json!({"kind": "click", "button": "left", "count": 1}));
+        let off = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
+        assert!(!off.foreground);
+        frame.foreground = true;
+        let on = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
+        assert!(on.foreground);
+        // 宿主自己发起的请求一律不带前台：它们不派发任何动作。
+        assert!(!WorkerRequest::cancel("w2".to_owned(), &binding(), "w1").foreground);
+        assert!(!WorkerRequest::bind_connection("w3".to_owned(), &binding()).foreground);
+    }
+
+    /// 按图定位的动作带屏幕落点与窗口几何代际，不带 ref。两种目标由 worker 裁决。
+    #[test]
+    fn a_pointer_action_can_carry_a_screen_point_instead_of_a_control() {
+        let mut frame = request("act");
+        frame.foreground = true;
+        frame.reference = None;
+        frame.action = Some(json!({"kind": "click", "button": "right", "count": 1}));
+        frame.point = Some(json!({"x": -1800, "y": 240}));
+        frame.expect_generation = Some("100,100,800,600@96#7".to_owned());
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
+        assert_eq!(worker.params["point"], json!({"x": -1800, "y": 240}));
+        assert_eq!(worker.params["expectGeneration"], json!("100,100,800,600@96#7"));
+        assert!(worker.params.get("ref").is_none());
+    }
+
+    /// 输入状态通报与回执靠字段分：通报没有 id 与 dispatch，回执没有 input。
+    #[test]
+    fn an_input_notice_is_not_mistaken_for_a_receipt() {
+        let notice = serde_json::from_str::<WorkerLine>(
+            r#"{"v":5,"input":{"buttons":["left"],"keys":[{"vk":17,"extended":false}]}}"#,
+        )
+        .expect("通报应当解析成功");
+        match notice {
+            WorkerLine::Input(notice) => {
+                assert_eq!(notice.input.buttons, vec!["left".to_owned()]);
+                assert_eq!(notice.input.keys.len(), 1);
+                assert_eq!(notice.input.keys[0].vk, 17);
+                assert!(!notice.input.is_empty());
+            }
+            WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),
+        }
+        let receipt = serde_json::from_str::<WorkerLine>(
+            r#"{"v":5,"id":"w1","dispatch":"submitted"}"#,
+        )
+        .expect("回执应当解析成功");
+        match receipt {
+            WorkerLine::Response(r) => assert_eq!((r.id.as_str(), r.dispatch.as_str()), ("w1", "submitted")),
+            WorkerLine::Input(n) => panic!("解析成了通报：{n:?}"),
+        }
+        let empty = serde_json::from_str::<WorkerLine>(r#"{"v":5,"input":{"buttons":[],"keys":[]}}"#)
+            .expect("空账应当解析成功");
+        match empty {
+            WorkerLine::Input(notice) => assert!(notice.input.is_empty()),
+            WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),
+        }
     }
 
     /// 读文本是只读 op：只要句柄、控件与上限，不带读树那三个上限。

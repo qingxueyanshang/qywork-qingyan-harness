@@ -82,6 +82,16 @@ export interface QyConfig {
    */
   desktopEnabled?: boolean
   /**
+   * 允不允许 agent 用前台操作：指针、键盘与窗口管理。**默认关**。
+   *
+   * 关着时只有后台语义动作可用——它们经控件接口发出，不动真实指针、不改焦点、
+   * 不抢前台。开着时模型可以发出会打断用户的输入，因此它是用户的一次显式选择，
+   * 后台失败不会自动升级到前台。
+   *
+   * 它随每条桌面请求下发到执行组件：运行中关掉，下一次派发就被拒。
+   */
+  desktopForeground?: boolean
+  /**
    * 工作区之外**额外**可读写的绝对路径。
    *
    * **它是「要沙箱」和「要操作电脑」的交汇点。** 这两个需求方向相反：一个要把边界收紧到工作区，一个
@@ -676,6 +686,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   // 它自己算出来的另一个结果。
   if (cfg.desktopEnabled !== undefined && typeof cfg.desktopEnabled !== 'boolean') {
     problems.push('desktopEnabled 必须是 true 或 false')
+  }
+  if (cfg.desktopForeground !== undefined && typeof cfg.desktopForeground !== 'boolean') {
+    problems.push('desktopForeground 必须是 true 或 false')
   }
 
   /*

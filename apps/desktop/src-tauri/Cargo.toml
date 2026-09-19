@@ -55,6 +55,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Threading",
   # worker 放进一个「作业关闭即杀」的作业对象：宿主被强杀时它随之结束。
   "Win32_System_JobObjects",
+  # 强杀 worker 之后补发它按住的键与鼠标键的抬起，见 desktop/input.rs。
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 # 逐下载钩子绑的是 `DownloadStarting` 交出的 `ICoreWebView2DownloadOperation` 本身，
 # 见 browser/tabs.rs。版本跟 tauri 传递依赖的那份对齐（0.38），否则 `PlatformWebview::controller()`

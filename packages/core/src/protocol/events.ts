@@ -525,6 +525,13 @@ export interface DesktopStateEvent {
 export interface DesktopTargetEvent {
   type: 'desktop.target'
   app: string | null
+  /**
+   * 此刻持着桌面的那个执行者已经用过前台接管。
+   *
+   * 它只进不退：一次前台点击之后焦点已经在目标应用上，之后的后台读取改不回来这件事。
+   * 执行者释放时随 `app` 一起清回去。
+   */
+  foreground: boolean
 }
 
 // ─────────────────────────────── 多智能体 ───────────────────────────────

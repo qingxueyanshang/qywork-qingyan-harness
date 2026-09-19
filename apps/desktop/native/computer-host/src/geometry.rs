@@ -23,6 +23,14 @@ pub struct ScreenRect {
     pub height: i32,
 }
 
+/// 屏幕物理像素点。指针落点与拖拽终点都按它表达。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
 impl ScreenRect {
     pub const fn right(&self) -> i32 {
         self.x + self.width
@@ -30,6 +38,19 @@ impl ScreenRect {
 
     pub const fn bottom(&self) -> i32 {
         self.y + self.height
+    }
+
+    /// 矩形中心。按控件包围盒派发指针时落在这里。
+    pub const fn center(&self) -> ScreenPoint {
+        ScreenPoint {
+            x: self.x + self.width / 2,
+            y: self.y + self.height / 2,
+        }
+    }
+
+    /// 这个点在不在矩形里。右边界与下边界不算在内，与 `intersect` 同一套半开区间。
+    pub const fn contains(&self, point: ScreenPoint) -> bool {
+        point.x >= self.x && point.y >= self.y && point.x < self.right() && point.y < self.bottom()
     }
 
     /// 两个矩形的交。不相交时返回 `None`，不返回零尺寸矩形——零尺寸的图采不出来，
@@ -46,6 +67,29 @@ impl ScreenRect {
             height: bottom - y,
         })
     }
+}
+
+/// 绝对指针坐标的满量程。`SendInput` 把 0 到这个数铺在虚拟桌面的宽高上。
+const ABSOLUTE_SPAN: i32 = 65_535;
+
+/// 屏幕物理像素点 → `SendInput` 的绝对指针坐标。
+///
+/// 三条约束，换错任一条指针都会落在别处：
+///
+/// 1. **铺的是虚拟桌面矩形，不是主显示器矩形**，因此事件要带
+///    `MOUSEEVENTF_VIRTUALDESK`；虚拟桌面原点在主显示器左侧或上方有显示器时是负数。
+/// 2. **分母取宽高减一**：最后一个像素要落在满量程上，用宽高本身会整体差一格。
+/// 3. 结果夹在 0 与满量程之间：桌面外的点没有对应的绝对坐标。
+pub fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
+    let span = |value: i32, origin: i32, size: i32| -> i32 {
+        let range = f64::from((size - 1).max(1));
+        let scaled = (f64::from(value - origin) * f64::from(ABSOLUTE_SPAN) / range).round();
+        (scaled as i32).clamp(0, ABSOLUTE_SPAN)
+    };
+    (
+        span(point.x, desktop.x, desktop.width),
+        span(point.y, desktop.y, desktop.height),
+    )
 }
 
 /// 一张图的几何。交给模型的每一张图都带一份。
@@ -182,6 +226,55 @@ mod tests {
             width,
             height,
         }
+    }
+
+    fn point(x: i32, y: i32) -> ScreenPoint {
+        ScreenPoint { x, y }
+    }
+
+    /// 单屏：左上角落在 0，右下角那个像素落在满量程上。
+    #[test]
+    fn absolute_coordinates_span_the_whole_desktop() {
+        let desktop = rect(0, 0, 2560, 1440);
+        assert_eq!(to_absolute(point(0, 0), desktop), (0, 0));
+        assert_eq!(to_absolute(point(2559, 1439), desktop), (65_535, 65_535));
+        assert_eq!(to_absolute(point(1280, 720), desktop), (32_780, 32_790));
+    }
+
+    /// 负原点：主显示器左上方还有一台时，虚拟桌面原点是负的，换算要从那里起算。
+    #[test]
+    fn a_negative_desktop_origin_is_the_zero_of_the_absolute_range() {
+        let desktop = rect(-1920, -200, 4480, 1640);
+        assert_eq!(to_absolute(point(-1920, -200), desktop), (0, 0));
+        assert_eq!(to_absolute(point(2559, 1439), desktop), (65_535, 65_535));
+        // 主显示器左上角落在虚拟桌面中间偏左：1920 / 4479 与 200 / 1639 的满量程比例。
+        assert_eq!(to_absolute(point(0, 0), desktop), (28_093, 7_997));
+    }
+
+    /// 桌面外的点夹在量程两端，不绕回另一侧。
+    #[test]
+    fn a_point_outside_the_desktop_is_clamped_to_the_range() {
+        let desktop = rect(0, 0, 2560, 1440);
+        assert_eq!(to_absolute(point(-10, -10), desktop), (0, 0));
+        assert_eq!(to_absolute(point(9999, 9999), desktop), (65_535, 65_535));
+    }
+
+    /// 单像素宽的桌面不会让分母变成 0。
+    #[test]
+    fn a_one_pixel_desktop_does_not_divide_by_zero() {
+        assert_eq!(to_absolute(point(0, 0), rect(0, 0, 1, 1)), (0, 0));
+    }
+
+    #[test]
+    fn a_rect_gives_its_center_and_tells_what_it_covers() {
+        let r = rect(100, 200, 80, 24);
+        assert_eq!(r.center(), point(140, 212));
+        assert!(r.contains(point(100, 200)));
+        assert!(r.contains(point(179, 223)));
+        // 右边界与下边界在矩形之外，与 `intersect` 的半开区间一致。
+        assert!(!r.contains(point(180, 212)));
+        assert!(!r.contains(point(140, 224)));
+        assert!(!r.contains(point(99, 212)));
     }
 
     #[test]

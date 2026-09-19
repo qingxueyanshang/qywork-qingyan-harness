@@ -383,3 +383,96 @@ test('释放之后端口报废，并向宿主发出按执行者撤销', async ()
   expect(host.received.filter((f) => f.op === 'cancel').length).toBe(count)
   expect((await failure(port?.windows())).message).toMatch(/已经结束/)
 })
+
+/**
+ * 前台开关随每条请求下发。
+ *
+ * 宿主与 worker 都不缓存它：缓存一份的话，用户在运行中关掉前台接管要等宿主换代际
+ * 才生效，而那中间的每一次派发都还带着旧值。
+ */
+test('前台开关每条请求现读一次，运行中关掉在下一次派发就生效', async () => {
+  const cfg = config()
+  cfg.desktopForeground = true
+  const handle = fresh(cfg)
+  const host = await connect(handle.port)
+  host.ready()
+  await settle()
+  const port = handle.desktop?.portFor('cv_a')
+
+  const first = port?.windows()
+  const on = await host.next()
+  expect(on.foreground).toBe(true)
+  host.reply(on)
+  await first
+
+  cfg.desktopForeground = false
+  const second = port?.windows()
+  const off = await host.next()
+  expect(off.foreground).toBe(false)
+  host.reply(off)
+  await second
+})
+
+/** 缺席按关：配置里没有这一项时，请求帧里那一格是假而不是缺席。 */
+test('没配过前台开关时请求帧仍带一个明确的假', async () => {
+  const handle = fresh()
+  const host = await connect(handle.port)
+  host.ready()
+  await settle()
+  const port = handle.desktop?.portFor('cv_a')
+  const pending = port?.windows()
+  const frame = await host.next()
+  expect(frame.foreground).toBe(false)
+  host.reply(frame)
+  await pending
+})
+
+/**
+ * 运行态读数区分后台与前台。
+ *
+ * 只进不退：一次前台点击之后焦点已经在目标应用上，之后的后台读取改不回来这件事；
+ * 执行者释放时随应用名一起清回去。
+ */
+test('前台接管过之后运行态读数说得出这一点，释放时清回去', async () => {
+  const cfg = config()
+  cfg.desktopForeground = true
+  const handle = fresh(cfg)
+  const client = new WebSocket(
+    `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
+  )
+  const frames: {
+    type: string
+    event?: { type?: string; app?: string | null; foreground?: boolean }
+  }[] = []
+  client.onmessage = (ev) => frames.push(JSON.parse(String(ev.data)))
+  await new Promise<void>((resolve, reject) => {
+    client.onopen = () => resolve()
+    client.onerror = () => reject(new Error('配对连接应当能建立'))
+  })
+  cleanups.push(() => client.close())
+  client.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
+  await settle()
+
+  const host = await connect(handle.port)
+  host.ready()
+  await settle()
+  const port = handle.desktop?.portFor('cv_a')
+  const listing = port?.windows()
+  host.reply(await host.next())
+  await listing
+
+  const targets = () => frames.map((f) => f.event).filter((e) => e?.type === 'desktop.target')
+
+  // 后台观察：目标登记上去，但还没有前台接管。
+  const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
+  await host.next()
+  await settle()
+  expect(targets().at(-1)).toMatchObject({ app: '记事本', foreground: false })
+
+  const releasing = port?.release()
+  await observing
+  host.reply(await host.next())
+  await releasing
+  await settle()
+  expect(targets().at(-1)).toMatchObject({ app: null, foreground: false })
+})

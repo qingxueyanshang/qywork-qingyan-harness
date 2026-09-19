@@ -49,7 +49,13 @@ export function RunStatus() {
       <div class="run-status">
         <div class="changes-chip">
           {/* 目标应用没有可跳的去处，所以是一段读数不是按钮。 */}
-          <Show when={state.desktopTarget}>{(app) => <span>正在操作 {app()}</span>}</Show>
+          <Show when={state.desktopTarget}>
+            {(app) => (
+              <span>
+                {state.desktopTargetForeground ? '正在前台操作' : '正在操作'} {app()}
+              </span>
+            )}
+          </Show>
           <Show when={state.desktopTarget && (inProgress() || files().length > 0)}>
             <span class="sep" aria-hidden="true">
               ·

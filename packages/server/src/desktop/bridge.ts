@@ -89,6 +89,8 @@ export interface DesktopRequestParams {
   actionId?: string
   target?: DesktopTarget
   ref?: string
+  /** 指针动作的屏幕物理像素落点。与 `ref` 互斥。 */
+  point?: { x: number; y: number }
   action?: DesktopAction
   maxChars?: number
   value?: string
@@ -112,14 +114,20 @@ export interface DesktopRequestParams {
 
 export class DesktopBridge {
   #key: string
+  #foreground: () => boolean
   #socket: ServerWebSocket<SocketData> | null = null
   #host: NativeDesktopHost | null = null
   #pending = new Map<string, Pending>()
   #nextRequest = 0
   #hostChanges = new Set<(host: NativeDesktopHost | null) => void>()
 
-  constructor(key: string) {
+  /**
+   * `foreground` 每条请求现读一次，不存快照：存一份的话，用户在运行中关掉前台接管
+   * 要等宿主换代际才生效。
+   */
+  constructor(key: string, foreground: () => boolean) {
     this.#key = key
+    this.#foreground = foreground
   }
 
   /**
@@ -175,10 +183,12 @@ export class DesktopBridge {
       hostEpoch: host.hostEpoch,
       executorId: params.executorId,
       deadline: Date.now() + deadlineMs,
+      foreground: this.#foreground(),
       op,
       ...(params.actionId !== undefined ? { actionId: params.actionId } : {}),
       ...(params.target !== undefined ? { target: params.target } : {}),
       ...(params.ref !== undefined ? { ref: params.ref } : {}),
+      ...(params.point !== undefined ? { point: params.point } : {}),
       ...(params.action !== undefined ? { action: params.action } : {}),
       ...(params.maxChars !== undefined ? { maxChars: params.maxChars } : {}),
       ...(params.value !== undefined ? { value: params.value } : {}),

@@ -47,12 +47,14 @@ use ::windows::Win32::UI::Accessibility::{
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_E_ELEMENTNOTAVAILABLE,
     UIA_E_TIMEOUT, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_ExpandCollapsePatternId,
     UIA_InvokePatternId, UIA_IsEnabledPropertyId,
-    UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
+    UIA_HasKeyboardFocusPropertyId, UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_IsInvokePatternAvailablePropertyId,
     UIA_IsItemContainerPatternAvailablePropertyId, UIA_IsOffscreenPropertyId,
     UIA_IsRangeValuePatternAvailablePropertyId, UIA_IsScrollItemPatternAvailablePropertyId,
     UIA_IsScrollPatternAvailablePropertyId, UIA_IsSelectionItemPatternAvailablePropertyId,
     UIA_IsSelectionPatternAvailablePropertyId, UIA_IsTextPatternAvailablePropertyId,
-    UIA_IsTogglePatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId, UIA_IsTransformPatternAvailablePropertyId,
+    UIA_IsValuePatternAvailablePropertyId, UIA_IsWindowPatternAvailablePropertyId,
     UIA_ItemContainerPatternId, UIA_NamePropertyId, UIA_RangeValueIsReadOnlyPropertyId,
     UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
     UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
@@ -71,11 +73,12 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
 };
 
-use crate::geometry::ScreenRect;
+use crate::foreground;
+use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
     next_poll, now_ms, satisfied, scroll_amounts, toggle_steps, ActionEvidence, ActionSpec, Bounds,
-    range_state, BlockingWindow, Completeness, Dispatch, Node, NodeAction, Observation, ScrollState,
-    Seen, Select,
+    range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
+    ScrollState, Seen, Select,
     SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil, WindowInfo,
 };
 
@@ -145,7 +148,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn returned(dispatch: Dispatch, reason: Option<String>) -> Self {
+    pub fn returned(dispatch: Dispatch, reason: Option<String>) -> Self {
         Self {
             dispatch,
             reason,
@@ -163,6 +166,9 @@ const REF_STALE: &str = "ref_stale";
 
 /// 动作调用尚未返回，没有重读目标窗口。调用方按它决定下一步观察哪个窗口。
 const TARGET_BLOCKED: &str = "target_blocked";
+
+/// 没有派发就不重读：那一份观察会被调用方读成动作已经发生。
+const NOT_DISPATCHED: &str = "动作没有派发，没有重读";
 
 /// 失败的两种形状：UIA 调用返回的错误，以及 worker 自己判定的拒绝。
 ///
@@ -254,6 +260,25 @@ pub struct WaitRequest<'a> {
     pub poll: Duration,
     pub deadline: Instant,
     pub bounds: Bounds,
+    /// 用户启用了前台接管。等待自带的那份重读按它决定列不列前台动作。
+    pub foreground: bool,
+}
+
+/// 一次动作请求的全部目标信息。
+///
+/// 收成一个结构体而不是八个位置参数：目标两种给法、几何代际与前台开关都要一起传，
+/// 位置参数写错顺序不会编译失败。
+pub struct ActRequest<'a> {
+    pub window: i64,
+    /// 控件目标。与 `point` 互斥，准入判定已经保证只给了一个。
+    pub reference: Option<&'a str>,
+    /// 屏幕物理像素落点。只有指针动作接受。
+    pub point: Option<ScreenPoint>,
+    /// 采集落点那张图的窗口几何代际。给了 `point` 就必须给。
+    pub expect_generation: Option<&'a str>,
+    pub action: &'a ActionSpec,
+    pub bounds: Bounds,
+    pub foreground: bool,
 }
 
 /// 一轮判定读到的事实。`Matched` 一并带回这一轮读到的树，返回时不再重读一遍。
@@ -325,6 +350,9 @@ impl Backend {
             Fields {
                 value: true,
                 state: true,
+                // 定位路径上不取前台属性：焦点与窗口模式在派发那一刻实时读，
+                // 读的是动作发出前的真值而不是定位时的快照。
+                foreground: false,
             },
         )
         .map_err(|e| format!("建重定位缓存请求失败：{e}"))?;
@@ -440,8 +468,9 @@ impl Backend {
         window: i64,
         select: &Select,
         bounds: Bounds,
+        foreground: bool,
     ) -> Result<Observation, String> {
-        self.read_tree_inner(window, select, bounds)
+        self.read_tree_inner(window, select, bounds, foreground)
             .map(Observation::Tree)
             .map_err(|f| f.into_reason(window))
     }
@@ -451,20 +480,23 @@ impl Backend {
         window: i64,
         select: &Select,
         bounds: Bounds,
+        foreground: bool,
     ) -> Result<Tree, Failure> {
-        let cache = self.walk_cache(Fields {
+        let fields = Fields {
             value: select.include_value,
             state: select.include_state,
-        })?;
+            foreground,
+        };
+        let cache = self.walk_cache(fields)?;
         match &select.root {
             None => {
                 let root = self.window_element(window, &cache)?;
-                self.walk_from(window, &root, &[], select, bounds, &cache)
+                self.walk_from(window, &root, &[], select, bounds, &cache, fields)
             }
             Some(reference) => {
                 let located = self.locate(window, reference)?;
                 let root = self.expand(&located.element, &cache)?;
-                self.walk_from(window, &root, &located.path, select, bounds, &cache)
+                self.walk_from(window, &root, &located.path, select, bounds, &cache, fields)
             }
         }
     }
@@ -481,6 +513,7 @@ impl Backend {
         select: &Select,
         bounds: Bounds,
         cache: &IUIAutomationCacheRequest,
+        fields: Fields,
     ) -> Result<Tree, Failure> {
         let captured_at = now_ms();
         let started = Instant::now();
@@ -489,6 +522,7 @@ impl Backend {
             cache,
             select,
             bounds,
+            fields,
             until: started + Duration::from_millis(bounds.time_budget_ms),
             visited: 0,
             truncated_by: Vec::new(),
@@ -528,23 +562,26 @@ impl Backend {
         window: i64,
         located: &Located,
         bounds: Bounds,
+        foreground: bool,
     ) -> Result<Observation, String> {
         let select = Select::default();
         let read = || -> Result<Tree, Failure> {
-            let cache = self.walk_cache(Fields {
+            let fields = Fields {
                 value: true,
                 state: true,
-            })?;
+                foreground,
+            };
+            let cache = self.walk_cache(fields)?;
             match &located.parent {
                 Some(parent) => {
                     let root = self.expand(parent, &cache)?;
                     let path = &located.path[..located.path.len() - 1];
-                    self.walk_from(window, &root, path, &select, bounds, &cache)
+                    self.walk_from(window, &root, path, &select, bounds, &cache, fields)
                 }
                 // 目标就是窗口元素：这时「所在子树」只能是整窗。
                 None => {
                     let root = self.window_element(window, &cache)?;
-                    self.walk_from(window, &root, &[], &select, bounds, &cache)
+                    self.walk_from(window, &root, &[], &select, bounds, &cache, fields)
                 }
             }
         };
@@ -559,33 +596,51 @@ impl Backend {
     /// **没有派发就不重读**：那一份观察会被调用方读成动作已经发生。
     pub fn act(
         &self,
-        window: i64,
-        reference: &str,
-        action: &ActionSpec,
-        bounds: Bounds,
+        req: &ActRequest<'_>,
+        stop: &dyn Fn() -> bool,
     ) -> (Attempt, Result<Observation, String>) {
-        let located = match self.locate(window, reference) {
-            Ok(l) => l,
-            Err(f) => {
-                let reason = f.into_reason(window);
+        let ActRequest {
+            window,
+            reference,
+            point,
+            expect_generation,
+            action,
+            bounds,
+            foreground: fg,
+        } = *req;
+        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，
+        // 那个坐标指的已经不是同一块界面。
+        if let Some(expected) = expect_generation {
+            if let Err(reason) = foreground::check_generation(window, expected) {
+                return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
+            }
+        }
+        let located = match reference.map(|r| self.locate(window, r)) {
+            None => None,
+            Some(Ok(l)) => Some(l),
+            Some(Err(f)) => {
                 return (
-                    Attempt::Refused(reason),
-                    Err("动作没有派发，没有重读".to_owned()),
-                );
+                    Attempt::Refused(f.into_reason(window)),
+                    Err(NOT_DISPATCHED.to_owned()),
+                )
             }
         };
-        match perform(window, &located.element, action) {
-            Attempt::Refused(reason) => (
-                Attempt::Refused(reason),
-                Err("动作没有派发，没有重读".to_owned()),
-            ),
+        let aim = match self.aim(window, located.as_ref(), point, action) {
+            Ok(aim) => aim,
+            Err(reason) => return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
+        };
+        let element = located.as_ref().map(|l| &l.element);
+        match perform(window, element, action, aim, stop) {
+            Attempt::Refused(reason) => (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
             // 调用还没返回：目标应用的 UI 线程卡在里面，这一次重读必然等满时间预算再超时。
             // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
             // 那一个。
             Attempt::Called(outcome) if !outcome.returned => {
                 // 定位到的那两个元素同样不能在这条线程上丢弃：释放代理也要等目标进程
                 // 应答，就地丢会等满 UIA 连接超时。
-                release_off_thread(located);
+                if let Some(located) = located {
+                    release_off_thread(located);
+                }
                 (
                     Attempt::Called(outcome),
                     Err(format!(
@@ -594,8 +649,58 @@ impl Backend {
                     )),
                 )
             }
-            called => (called, self.reread_around(window, &located, bounds)),
+            called => {
+                let observed = match &located {
+                    Some(located) => self.reread_around(window, located, bounds, fg),
+                    // 按屏幕坐标操作时没有「目标所在子树」，只能重读整窗。
+                    None => self.read_tree(window, &Select::default(), bounds, fg),
+                };
+                (called, observed)
+            }
         }
+    }
+
+    /// 指针动作的落点与拖拽终点。非指针动作两项都缺席。
+    ///
+    /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次
+    /// 重新定位拿到的那一份**，不是观察时记下的——控件在观察与动作之间移动过时，
+    /// 旧包围盒的中心已经指向别处。
+    fn aim(
+        &self,
+        window: i64,
+        located: Option<&Located>,
+        point: Option<ScreenPoint>,
+        action: &ActionSpec,
+    ) -> Result<foreground::Aim, String> {
+        if !action.takes_point() {
+            return Ok(foreground::Aim::default());
+        }
+        let anchor = match point {
+            Some(point) => point,
+            None => {
+                let located = located.ok_or("missing_target: 指针动作要给控件或屏幕落点")?;
+                box_center(window, &located.element)?
+            }
+        };
+        let destination = match action {
+            ActionSpec::Drag { to } => Some(match to {
+                DragTarget::Offset { dx, dy } => ScreenPoint {
+                    x: anchor.x + dx,
+                    y: anchor.y + dy,
+                },
+                DragTarget::Ref { reference } => {
+                    let target = self
+                        .locate(window, reference)
+                        .map_err(|f| f.into_reason(window))?;
+                    box_center(window, &target.element)?
+                }
+            }),
+            _ => None,
+        };
+        Ok(foreground::Aim {
+            anchor: Some(anchor),
+            destination,
+        })
     }
 
     /// 清一次到目标 provider 的连接。
@@ -670,7 +775,8 @@ impl Backend {
         match req.until {
             WaitUntil::Window => Ok(Probe::NewWindow(self.window_appeared(req))),
             WaitUntil::Appears => {
-                let tree = self.read_tree_inner(req.window, &Select::default(), req.bounds)?;
+                let tree =
+                    self.read_tree_inner(req.window, &Select::default(), req.bounds, req.foreground)?;
                 let count = tree
                     .nodes
                     .iter()
@@ -687,7 +793,15 @@ impl Backend {
                     .ok_or_else(|| Failure::Refused("missing_ref".to_owned()))?;
                 match self.locate(req.window, reference) {
                     Ok(located) => {
-                        let node = self.read_cached_node(&located.element, &located.path)?;
+                        let node = self.read_cached_node(
+                            &located.element,
+                            &located.path,
+                            Fields {
+                                value: true,
+                                state: true,
+                                foreground: false,
+                            },
+                        )?;
                         Ok(Probe::Element {
                             enabled: node.enabled,
                             value: node.value,
@@ -727,7 +841,7 @@ impl Backend {
                     root: Some(reference.to_owned()),
                     ..Select::default()
                 };
-                self.read_tree_inner(req.window, &select, req.bounds)
+                self.read_tree_inner(req.window, &select, req.bounds, req.foreground)
             }
             Some(reference) => Ok(Tree {
                 window: req.window,
@@ -743,7 +857,7 @@ impl Backend {
                 node_count: 0,
                 nodes: Vec::new(),
             }),
-            None => self.read_tree_inner(req.window, &Select::default(), req.bounds),
+            None => self.read_tree_inner(req.window, &Select::default(), req.bounds, req.foreground),
         }
     }
 
@@ -757,6 +871,7 @@ impl Backend {
         &self,
         element: &IUIAutomationElement,
         path: &[usize],
+        fields: Fields,
     ) -> Result<Node, Failure> {
         let control_type = unsafe { element.CachedControlType() }.map_err(uia("读控件类型"))?;
         let name = unsafe { element.CachedName() }.map_err(uia("读名称"))?;
@@ -887,6 +1002,33 @@ impl Backend {
         }
 
         let bounds = unsafe { element.CachedBoundingRectangle() }.map_err(uia("读包围盒"))?;
+        let rect = bounding_box(bounds);
+
+        let focused = cached_flag(element, UIA_HasKeyboardFocusPropertyId)?.unwrap_or(false);
+        if fields.foreground {
+            // 指针动作只列在有可视位置、且此刻在可视区里的控件上：没有包围盒就指不出
+            // 落点，在可视区外的控件那个坐标上是挡在它前面的另一个控件。
+            if rect.is_some() && !offscreen {
+                for action in ["click", "hover", "drag", "wheel"] {
+                    actions.push(NodeAction::foreground(action));
+                }
+            }
+            // 键盘动作只列在此刻持有键盘焦点的控件上：输入去的是焦点所在的地方，
+            // 列在别处就是承诺一件做不到的事——本模块不替用户抢焦点。
+            if focused {
+                actions.push(NodeAction::foreground("type_text"));
+                actions.push(NodeAction::foreground("press_key"));
+            }
+            if available(element, UIA_IsWindowPatternAvailablePropertyId)? {
+                for action in ["activate", "set_window_state", "close_window"] {
+                    actions.push(NodeAction::foreground(action));
+                }
+            }
+            if available(element, UIA_IsTransformPatternAvailablePropertyId)? {
+                actions.push(NodeAction::foreground("move_window"));
+                actions.push(NodeAction::foreground("resize_window"));
+            }
+        }
 
         let identity = cached_identity(element)?;
         Ok(Node {
@@ -899,7 +1041,8 @@ impl Backend {
             value,
             enabled,
             offscreen,
-            rect: bounding_box(bounds),
+            focused,
+            rect,
             actions,
             range,
             toggle,
@@ -926,6 +1069,19 @@ fn expand_name(state: i32) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// 一个控件此刻的包围盒中心，屏幕物理像素。
+///
+/// 没有包围盒的控件指不出落点：provider 对没有可视位置的控件交回全零矩形，
+/// 按它算出来的中心是屏幕左上角。
+pub fn box_center(window: i64, element: &IUIAutomationElement) -> Result<ScreenPoint, String> {
+    let bounds = unsafe { element.CachedBoundingRectangle() }
+        .map_err(uia("读包围盒"))
+        .map_err(|f| f.into_reason(window))?;
+    bounding_box(bounds)
+        .map(|rect| rect.center())
+        .ok_or_else(|| "no_bounds: 这个控件没有可视位置，指不出落点".to_owned())
 }
 
 /// UIA 的包围盒转成图像几何那一套的矩形。
@@ -1021,19 +1177,36 @@ fn build_cache(
                 cache.AddProperty(*property)?;
             }
         }
+        if fields.foreground {
+            for property in FOREGROUND_PROPERTIES {
+                cache.AddProperty(*property)?;
+            }
+        }
         Ok(cache)
     }
 }
 
+/// 前台模式下才取的属性。
+///
+/// 前台模式关着时一条都不请求：它们只服务于前台动作表，而那时前台动作一条都不列。
+const FOREGROUND_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] = &[
+    UIA_HasKeyboardFocusPropertyId,
+    UIA_IsWindowPatternAvailablePropertyId,
+    UIA_IsTransformPatternAvailablePropertyId,
+];
+
 /// 这一次读取要取哪些可选字段。
 ///
-/// 两项都不影响可用动作表：动作按 `Is*PatternAvailable` 判，那几个属性一直取。
+/// 前两项不影响可用动作表：动作按 `Is*PatternAvailable` 判，那几个属性一直取。
+/// `foreground` 影响：它决定前台动作列不列，以及要不要多请求三个属性。
 #[derive(Debug, Clone, Copy)]
 struct Fields {
     /// 取控件当前值。
     value: bool,
     /// 取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、滚动位置。
     state: bool,
+    /// 用户启用了前台接管。
+    foreground: bool,
 }
 
 /// 一个节点连同它在前序表里的父节点下标。筛选时按 `keep` 决定留不留。
@@ -1052,6 +1225,7 @@ struct Walk<'a> {
     cache: &'a IUIAutomationCacheRequest,
     select: &'a Select,
     bounds: Bounds,
+    fields: Fields,
     until: Instant,
     visited: u32,
     truncated_by: Vec<&'static str>,
@@ -1104,7 +1278,7 @@ impl Walk<'_> {
         depth: u32,
         parent: Option<usize>,
     ) -> Result<(), Failure> {
-        let mut node = self.backend.read_cached_node(element, path)?;
+        let mut node = self.backend.read_cached_node(element, path, self.fields)?;
         node.depth = depth;
         self.visited += 1;
         let matched = matches_select(self.select, &node);
@@ -1372,7 +1546,7 @@ fn axis_percent(
 /// 取一个控件此刻的模式。定位之后要调模式方法时用它，读的是实时状态不是缓存。
 ///
 /// 模式缺失返回 `pattern_missing`，与调用失败分开：前者可证明没有发出动作调用。
-fn current_pattern<T: Interface>(
+pub fn current_pattern<T: Interface>(
     window: i64,
     element: &IUIAutomationElement,
     id: ::windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
@@ -1578,7 +1752,7 @@ static PENDING_CALLS: AtomicU32 = AtomicU32::new(0);
 /// **两端都在进程的 MTA 里**：`Backend::new` 与每条调用线程都做
 /// `CoInitializeEx(COINIT_MULTITHREADED)`，同一个接口指针因此可以直接跨线程调用，
 /// 不需要封送。不要把 UIA 客户端改成 STA，那时这个封装不再成立。
-struct Deferred(Box<dyn FnOnce() -> Result<(), String>>);
+pub struct Deferred(Box<dyn FnOnce() -> Result<(), String>>);
 
 // SAFETY: 接口对象归进程 MTA 所有，调用线程加入同一个 MTA 之后可以直接调它。
 unsafe impl Send for Deferred {}
@@ -1594,15 +1768,26 @@ impl Deferred {
 }
 
 /// 把一次 UIA 模式调用包成可以交给别的线程的形状。
-fn defer(call: impl FnOnce() -> ::windows::core::Result<()> + 'static) -> Deferred {
+pub fn defer(call: impl FnOnce() -> ::windows::core::Result<()> + 'static) -> Deferred {
     Deferred(Box::new(move || call().map_err(|e| e.to_string())))
 }
 
-/// 调用前后都读得到的窗口事实。动作是否生效的证据全部由它给出。
+/// 调用没返回时去哪儿找「动作已经生效」的证据。
+///
+/// **每种动作认的证据不同**：后台模式调用认「窗口被禁用 / 已关闭 / 同进程多出一个顶层
+/// 窗口」，而激活会主动改前台，那时「多出一个顶层窗口」证明不了这次激活做过什么。
+/// 窗口动作因此各自读回自己那一项。
+pub trait Watch {
+    fn evidence(&self) -> Option<ActionEvidence>;
+    /// 调用没返回时交给调用方的顶层窗口清单。
+    fn blocking(&self) -> Vec<BlockingWindow>;
+}
+
+/// 调用前后都读得到的窗口事实。后台模式调用的证据全部由它给出。
 ///
 /// 三项都是 Win32 调用：目标进程的 UI 线程正在跑模态对话框的嵌套消息循环时，
 /// 这些调用照常应答，而任何 UIA 调用都会排在那次没返回的调用后面。
-struct CallWatch {
+pub struct CallWatch {
     window: i64,
     pid: u32,
     was_enabled: bool,
@@ -1610,7 +1795,7 @@ struct CallWatch {
 }
 
 impl CallWatch {
-    fn before(window: i64) -> Self {
+    pub fn before(window: i64) -> Self {
         let hwnd = HWND(window as *mut c_void);
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
@@ -1622,6 +1807,9 @@ impl CallWatch {
         }
     }
 
+}
+
+impl Watch for CallWatch {
     /// 调用没返回时交给调用方的那份事实：目标进程此刻的顶层窗口，调用之前不存在的标出来。
     ///
     /// 只带前 `MAX_BLOCKING_WINDOWS` 个：这一格是给调用方指下一步观察哪个窗口用的，
@@ -1657,6 +1845,36 @@ impl CallWatch {
             return Some(ActionEvidence::NewWindow);
         }
         None
+    }
+}
+
+/// 按一个读回值判生效的观察者。窗口动作用它：激活、显示状态与窗口矩形各读各的。
+///
+/// 顶层窗口清单仍由内层的 `CallWatch` 给：关闭窗口引出未保存提示时，调用方要的
+/// 是那个提示框的 id。
+pub struct StateWatch {
+    base: CallWatch,
+    kind: ActionEvidence,
+    reached: Box<dyn Fn() -> bool>,
+}
+
+impl StateWatch {
+    pub fn new(window: i64, kind: ActionEvidence, reached: Box<dyn Fn() -> bool>) -> Self {
+        Self {
+            base: CallWatch::before(window),
+            kind,
+            reached,
+        }
+    }
+}
+
+impl Watch for StateWatch {
+    fn evidence(&self) -> Option<ActionEvidence> {
+        (self.reached)().then_some(self.kind)
+    }
+
+    fn blocking(&self) -> Vec<BlockingWindow> {
+        self.base.blocking()
     }
 }
 
@@ -1737,12 +1955,11 @@ fn release_off_thread<T: 'static>(value: T) {
     })));
 }
 
-/// 发一次可能不返回的模式调用，并在有界时间里定下执行事实。
+/// 发一次可能不返回的调用，并在有界时间里定下执行事实。
 ///
-/// 先等一个短确认窗口；没等到就改看可核实的事实（目标窗口被禁用、已关闭，或目标进程
-/// 多出一个顶层窗口）。有证据即 `submitted`，没有证据而调用仍未返回才是 `unknown`。
-fn dispatch_call(window: i64, deferred: Deferred) -> Attempt {
-    let watch = CallWatch::before(window);
+/// 先等一个短确认窗口；没等到就改看 `watch` 认的可核实事实。有证据即 `submitted`，
+/// 没有证据而调用仍未返回才是 `unknown`。
+pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
     let Some(rx) = spawn_call(deferred) else {
         return Attempt::Refused(format!(
             "action_calls_exhausted: 已有 {MAX_PENDING_CALLS} 次动作调用没有返回，这一次没有发出"
@@ -1792,12 +2009,25 @@ fn dispatch_call(window: i64, deferred: Deferred) -> Attempt {
 ///
 /// 前置条件判在这里而不是调用之后：只读、越界、模式缺失都是可证明的「没有发出调用」，
 /// 归 `not_dispatched`。
-fn perform(window: i64, element: &IUIAutomationElement, action: &ActionSpec) -> Attempt {
+fn perform(
+    window: i64,
+    element: Option<&IUIAutomationElement>,
+    action: &ActionSpec,
+    aim: foreground::Aim,
+    stop: &dyn Fn() -> bool,
+) -> Attempt {
+    if action.foreground_only() {
+        return foreground::perform(window, element, action, aim, stop);
+    }
+    // 后台动作一律按控件执行，屏幕落点对它们没有意义；准入判定已经拦下这种组合。
+    let Some(element) = element else {
+        return Attempt::Refused("missing_target: 这个动作要给控件".to_owned());
+    };
     if let ActionSpec::SetToggle { state } = action {
         return set_toggle(window, element, *state);
     }
     match plan(window, element, action) {
-        Ok(deferred) => dispatch_call(window, deferred),
+        Ok(deferred) => dispatch_call(&CallWatch::before(window), deferred),
         Err(reason) => Attempt::Refused(reason),
     }
 }
@@ -1982,8 +2212,22 @@ fn plan(
             let range = sub_range(window, &pattern, *start, *length)?;
             Ok(defer(move || unsafe { range.Select() }))
         }
-        // 上面一条条列完，剩下的只有在 `perform` 里单独处理的那一个。
+        // 上面一条条列完，剩下的是在 `perform` 里单独分流的那些。逐条列而不是写一个
+        // `_`：新增一个后台动作忘了接进来时要在这里编译失败，不是变成一句拒绝。
         ActionSpec::SetToggle { .. } => Err("not_planned: set_toggle 走它自己的路径".to_owned()),
+        ActionSpec::Click { .. }
+        | ActionSpec::Hover
+        | ActionSpec::Drag { .. }
+        | ActionSpec::Wheel { .. }
+        | ActionSpec::TypeText { .. }
+        | ActionSpec::PressKey { .. }
+        | ActionSpec::Activate
+        | ActionSpec::SetWindowState { .. }
+        | ActionSpec::MoveWindow { .. }
+        | ActionSpec::ResizeWindow { .. }
+        | ActionSpec::CloseWindow => {
+            Err("not_planned: 前台动作走前台输入路径".to_owned())
+        }
     }
 }
 
@@ -2016,7 +2260,8 @@ fn set_toggle(window: i64, element: &IUIAutomationElement, target: ToggleState) 
             Ok(p) => p,
             Err(reason) => return Attempt::Refused(reason),
         };
-    let attempt = toggle_to(window, &pattern, target);
+    let watch = CallWatch::before(window);
+    let attempt = toggle_to(window, &watch, &pattern, target);
     // 某一下没返回时这个模式对象也丢不动，理由同 `act` 里的定位结果。
     if matches!(&attempt, Attempt::Called(outcome) if !outcome.returned) {
         release_off_thread(pattern);
@@ -2027,6 +2272,7 @@ fn set_toggle(window: i64, element: &IUIAutomationElement, target: ToggleState) 
 /// 按目标态逐下按，每下之后重读状态。`pattern` 的收场归调用方。
 fn toggle_to(
     window: i64,
+    watch: &dyn Watch,
     pattern: &IUIAutomationTogglePattern,
     target: ToggleState,
 ) -> Attempt {
@@ -2057,7 +2303,7 @@ fn toggle_to(
     let mut last = current;
     for _ in 0..planned.min(MAX_TOGGLE_STEPS) {
         let toggle = pattern.clone();
-        match dispatch_call(window, defer(move || unsafe { toggle.Toggle() })) {
+        match dispatch_call(watch, defer(move || unsafe { toggle.Toggle() })) {
             Attempt::Called(outcome) if outcome.dispatch == Dispatch::Submitted && outcome.returned => {}
             other => return other,
         }
@@ -2282,6 +2528,7 @@ mod tests {
             value: value.map(str::to_owned),
             enabled: true,
             offscreen: false,
+            focused: false,
             rect: None,
             actions: Vec::new(),
             range: None,

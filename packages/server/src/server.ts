@@ -172,18 +172,21 @@ export function serve(opts: ServeOptions) {
    * 桌面外壳进程发起，同一次启动只有一个随机值；哪一种宿主由 URL 路径判定，
    * 不看客户端自报的字段。没有凭据就没有这两样。
    *
-   * 启用开关现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
-   * 存一份快照的话用户在设置里打开之后要等重启才生效。
+   * 两个开关都现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
+   * 存一份快照的话用户在设置里改完之后要等重启才生效。前台接管那一个随每条请求下发到
+   * worker，运行中关掉在下一次派发就被拒。
    */
-  const desktopBridge = opts.hostKey ? new DesktopBridge(opts.hostKey) : null
+  const desktopBridge = opts.hostKey
+    ? new DesktopBridge(opts.hostKey, () => opts.config.desktopForeground === true)
+    : null
   const desktop = desktopBridge
     ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled === true)
     : null
   const offDesktopHost = desktopBridge?.onHostChange(() => {
     bus.publish({ type: 'desktop.state', desktop: desktopCapability(desktopBridge) })
   })
-  const offDesktopTarget = desktop?.onTargetChange((app) => {
-    bus.publish({ type: 'desktop.target', app })
+  const offDesktopTarget = desktop?.onTargetChange((app, foreground) => {
+    bus.publish({ type: 'desktop.target', app, foreground })
   })
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。

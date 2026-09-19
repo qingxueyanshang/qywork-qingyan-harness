@@ -294,6 +294,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
   if (ev.type === 'desktop.target') {
     setState('desktopTarget', ev.app)
+    setState('desktopTargetForeground', ev.foreground)
     return
   }
 

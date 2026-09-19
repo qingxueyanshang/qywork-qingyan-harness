@@ -17,6 +17,7 @@
 mod bridge;
 mod frames;
 mod identity;
+mod input;
 mod lock;
 mod worker;
 
@@ -33,8 +34,8 @@ use tauri_plugin_shell::ShellExt;
 use crate::ws::WsSender;
 use frames::{
     enrich_blocking, enrich_windows, needs_target, to_result, to_worker, Binding, Dispatch,
-    EventFrame, HostReady,
-    RequestFrame, ResultFrame, WorkerRequest, WorkerResponse, WORKER_PROTOCOL_VERSION,
+    EventFrame, HeldInput, HostReady,
+    RequestFrame, ResultFrame, WorkerLine, WorkerRequest, WorkerResponse, WORKER_PROTOCOL_VERSION,
 };
 use worker::{
     cancel_outcome, cancel_targets, drain_server, next_attempt, restart_delay, CancelOutcome,
@@ -111,6 +112,9 @@ struct HostState {
     next_worker_id: u64,
     /// 握手回执的等待者。只有 worker 监督线程会登记。
     handshake: Option<(String, Sender<WorkerResponse>)>,
+    /// 当前 worker 报上来的按下状态账。**它只是输入状态，不是任务状态**：
+    /// 宿主按它在确认 worker 退出之后补发释放，别的判定一概不读它。
+    held: HeldInput,
     /// 置上之后连接线程不再重连、监督线程不再拉起 worker。
     stopping: bool,
 }
@@ -166,6 +170,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
             pending: HashMap::new(),
             next_worker_id: 0,
             handshake: None,
+            held: HeldInput::default(),
             stopping: false,
         }),
     });
@@ -524,10 +529,15 @@ impl DesktopHost {
         }
     }
 
-    /// 收一条 worker 回执。宿主自己发起的那几种止于这里，不透到服务端。
+    /// 收一条 worker 发上来的行。宿主自己发起的那几种回执止于这里，不透到服务端。
     fn on_worker_response(&self, line: &str) {
-        let mut response: WorkerResponse = match serde_json::from_str(line) {
-            Ok(r) => r,
+        let mut response = match serde_json::from_str::<WorkerLine>(line) {
+            Ok(WorkerLine::Response(r)) => r,
+            // 按下状态账只记下来，不进回执路径：它不对应任何一条请求。
+            Ok(WorkerLine::Input(notice)) => {
+                self.state.lock().expect("桌面宿主状态锁被污染").held = notice.input;
+                return;
+            }
             Err(e) => {
                 log::warn!("认不出的 worker 回执：{e}");
                 return;
@@ -610,7 +620,28 @@ impl DesktopHost {
         }
     }
 
+    /// worker 已经退出，把它按住的键与鼠标键补一次抬起。
+    ///
+    /// **只有 worker 自己来不及收拾时才轮得到这里**：它正常退出与每一条中止路径都会先
+    /// 释放本次按下的那一份，账随之清空；被强杀时那份账停在最后一次通报上。
+    fn release_held_input(&self) {
+        let held = {
+            let mut state = self.state.lock().expect("桌面宿主状态锁被污染");
+            std::mem::take(&mut state.held)
+        };
+        if held.is_empty() {
+            return;
+        }
+        let sent = input::release(&held);
+        log::warn!(
+            "computer-host worker 退出时还按着 {:?} 与 {:?}，已补发 {sent} 个抬起事件",
+            held.buttons,
+            held.keys
+        );
+    }
+
     fn worker_gone(&self, reason: &str) {
+        self.release_held_input();
         let (settled, event) = {
             let mut state = self.state.lock().expect("桌面宿主状态锁被污染");
             state.worker_ready = false;
@@ -876,6 +907,7 @@ mod tests {
             pending: HashMap::new(),
             next_worker_id: 0,
             handshake: None,
+            held: HeldInput::default(),
             stopping: false,
         }
     }

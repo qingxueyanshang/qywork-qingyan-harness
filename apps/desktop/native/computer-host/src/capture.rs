@@ -574,7 +574,7 @@ struct Pixels {
 }
 
 /// 读窗口此刻的几何事实。
-fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
+pub fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
     let mut window = RECT::default();
     // SAFETY: 出参是本栈帧上的结构体。
     unsafe { GetWindowRect(hwnd, &mut window) }.map_err(|e| format!("读窗口矩形失败：{e}"))?;

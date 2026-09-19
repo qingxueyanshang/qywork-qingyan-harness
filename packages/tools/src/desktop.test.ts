@@ -204,6 +204,57 @@ const 长列表: DesktopElement = {
   scroll: { vertical: 0 },
   selection: { multiple: false, required: false },
 }
+/** 前台模式开着时读到的按钮：指针动作带 foreground delivery，后台动作照常。 */
+const 前台按钮: DesktopElement = {
+  ref: 'w.9#16',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'button',
+  name: '前台',
+  automationId: 'fgButton',
+  enabled: true,
+  offscreen: false,
+  rect: { x: 400, y: 300, width: 100, height: 30 },
+  actions: [
+    { action: 'invoke', delivery: ['background'] },
+    { action: 'click', delivery: ['foreground'] },
+    { action: 'hover', delivery: ['foreground'] },
+    { action: 'drag', delivery: ['foreground'] },
+    { action: 'wheel', delivery: ['foreground'] },
+  ],
+}
+/** 持有键盘焦点的那一个。键盘动作只挂在它身上。 */
+const 焦点框: DesktopElement = {
+  ref: 'w.10#17',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'edit',
+  name: '焦点',
+  automationId: 'focusBox',
+  value: '',
+  enabled: true,
+  offscreen: false,
+  focused: true,
+  rect: { x: 400, y: 400, width: 100, height: 24 },
+  actions: [
+    { action: 'set_value', delivery: ['background'] },
+    { action: 'click', delivery: ['foreground'] },
+    { action: 'type_text', delivery: ['foreground'] },
+    { action: 'press_key', delivery: ['foreground'] },
+  ],
+}
+/** 前台模式开着时的窗口根：窗口动作挂在它身上。 */
+const 前台窗口: DesktopElement = {
+  ...窗口,
+  actions: [
+    { action: 'activate', delivery: ['foreground'] },
+    { action: 'set_window_state', delivery: ['foreground'] },
+    { action: 'close_window', delivery: ['foreground'] },
+    { action: 'move_window', delivery: ['foreground'] },
+    { action: 'resize_window', delivery: ['foreground'] },
+  ],
+}
+
 const 文档框: DesktopElement = {
   ref: 'w.8#15',
   parentRef: 'w#1',
@@ -238,6 +289,9 @@ const TABLE = [
   长列表,
   文档框,
 ]
+
+/** 前台模式开着时那一份控件表。窗口根换成带窗口动作的那一个。 */
+const FOREGROUND_TABLE = [前台窗口, ...TABLE.slice(1), 前台按钮, 焦点框]
 
 function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
   return {
@@ -1563,4 +1617,370 @@ test('窗口发现把不透明 id 与应用名交给模型', async () => {
   const r = await run(desktopWindowsTool, {}, ctxWith(port))
   expect(r.status).toBe('success')
   expect(r.data).toEqual({ windows: [{ windowId: 'dw_1', app: '记事本', title: '未命名' }] })
+})
+
+/**
+ * 前台动作：本地只按可用动作表裁决，真正的准入在宿主那一侧。
+ *
+ * 表里没有 foreground delivery 就是用户没启用，工具在派发之前拒；表里有就照常交下去，
+ * 后台失败不会在这里被换成前台重试。
+ */
+describe('前台动作', () => {
+  function foregroundPort(over: Partial<DesktopPort> = {}) {
+    const base = fakeDesktop(over)
+    return {
+      ...base,
+      port: {
+        ...base.port,
+        elements: (windowId: string, observationId: string) =>
+          windowId === 'dw_1' && observationId === 'do_1' ? FOREGROUND_TABLE : null,
+      } as DesktopPort,
+    }
+  }
+
+  test('前台模式关着时表里没有前台动作，请求在派发之前被拒', async () => {
+    const { port, calls } = fakeDesktop()
+    for (const action of ['click', 'type_text', 'activate', 'close_window']) {
+      const r = await run(
+        desktopActTool,
+        {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          action,
+          ref: 'w.0.0#3',
+          ...(action === 'type_text' ? { text: '张三' } : {}),
+        },
+        ctxWith(port),
+      )
+      expect(r).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'desktop_action_unsupported',
+      })
+    }
+    expect(calls).toEqual([])
+  })
+
+  test('表里有 foreground delivery 时照常交给端口', async () => {
+    const { port, calls } = foregroundPort()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', button: 'right' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls).toEqual([
+      {
+        method: 'act',
+        input: {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          ref: 'w.9#16',
+          action: { kind: 'click', button: 'right', count: 1 },
+        },
+      },
+    ])
+  })
+
+  test('双击按 count 表达，上限是 2', async () => {
+    const { port, calls } = foregroundPort()
+    await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', count: 2 },
+      ctxWith(port),
+    )
+    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+      kind: 'click',
+      button: 'left',
+      count: 2,
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', count: 9 },
+      ctxWith(port),
+    )
+    // 越界按上限夹，不拒：三击没有额外语义，两下已经是双击。
+    expect(r.status).toBe('success')
+    expect((calls[1]?.input as { action: { count: number } }).action.count).toBe(2)
+  })
+
+  test('键盘动作只挂在持有焦点的控件上', async () => {
+    const { port, calls } = foregroundPort()
+    const blocked = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'w.9#16', text: '张三' },
+      ctxWith(port),
+    )
+    expect(blocked).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    const ok = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'type_text',
+        ref: 'w.10#17',
+        text: '张三',
+      },
+      ctxWith(port),
+    )
+    expect(ok.status).toBe('success')
+    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+      kind: 'type_text',
+      text: '张三',
+    })
+  })
+
+  test('组合键的修饰键按词表校验，重复的只留一份', async () => {
+    const { port, calls } = foregroundPort()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        ref: 'w.10#17',
+        key: 'a',
+        modifiers: ['ctrl', 'ctrl'],
+      },
+      ctxWith(port),
+    )
+    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+      kind: 'press_key',
+      key: 'a',
+      modifiers: ['ctrl'],
+    })
+    const bad = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        ref: 'w.10#17',
+        key: 'a',
+        modifiers: ['hyper'],
+      },
+      ctxWith(port),
+    )
+    expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  })
+
+  test('拖拽终点二选一：控件或像素偏移，都给即拒', async () => {
+    const { port, calls } = foregroundPort()
+    const byOffset = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'w.9#16', dx: 80, dy: 0 },
+      ctxWith(port),
+    )
+    expect(byOffset.status).toBe('success')
+    expect(calls[0]?.input).toMatchObject({
+      action: { kind: 'drag', to: { kind: 'offset', dx: 80, dy: 0 } },
+    })
+    const both = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'drag',
+        ref: 'w.9#16',
+        toRef: 'w.1.0#5',
+        dx: 80,
+      },
+      ctxWith(port),
+    )
+    expect(both).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    const none = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'w.9#16' },
+      ctxWith(port),
+    )
+    expect(none).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  })
+
+  test('按图定位与按控件定位互斥，且只有指针动作接受图像点', async () => {
+    const { port, calls } = foregroundPort()
+    const byImage = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        imageRef: 'di_1',
+        imageX: 40,
+        imageY: 50,
+      },
+      ctxWith(port),
+    )
+    expect(byImage.status).toBe('success')
+    expect(calls[0]?.input).toEqual({
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      at: { imageRef: 'di_1', x: 40, y: 50 },
+      action: { kind: 'click', button: 'left', count: 1 },
+    })
+    const both = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        ref: 'w.9#16',
+        imageRef: 'di_1',
+        imageX: 1,
+        imageY: 1,
+      },
+      ctxWith(port),
+    )
+    expect(both).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    const wrongKind = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'activate',
+        imageRef: 'di_1',
+        imageX: 1,
+        imageY: 1,
+      },
+      ctxWith(port),
+    )
+    expect(wrongKind).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  })
+
+  test('失效的 imageRef 由端口拒绝，回执按未执行记', async () => {
+    const { port } = foregroundPort({
+      act: async () => {
+        throw Object.assign(new Error('di_1 已经失效：桌面宿主换过代际，请重新采图'), {
+          errorKind: 'invalid_argument',
+          executed: false,
+        } satisfies DesktopRefusal)
+      },
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        imageRef: 'di_1',
+        imageX: 1,
+        imageY: 1,
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'invalid_argument' })
+    expect(r.message).toContain('重新采图')
+  })
+
+  test('窗口动作认 windowState，不与复选的 state 混用', async () => {
+    const { port, calls } = foregroundPort()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_window_state',
+        ref: 'w#1',
+        windowState: 'maximized',
+      },
+      ctxWith(port),
+    )
+    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+      kind: 'set_window_state',
+      state: 'maximized',
+    })
+    const wrongParam = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_window_state',
+        ref: 'w#1',
+        state: 'maximized',
+      },
+      ctxWith(port),
+    )
+    expect(wrongParam).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  })
+
+  test('部分派发按未知记，回执带上已发出多少与下一步', async () => {
+    const { port } = foregroundPort({
+      act: async () => ({
+        dispatch: 'unknown',
+        actionId: 'da_7',
+        reason: 'input_partial: 12 个输入事件只发出了 4 个，已发出的部分可能已经生效',
+        observation: null,
+        observationError: '目标窗口读不回来',
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'type_text',
+        ref: 'w.10#17',
+        text: '张三',
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
+    expect(r.message).toContain('只发出了 4 个')
+    expect(r.message).toContain('不要重放这个动作')
+  })
+
+  test('前台模式未启用时宿主的拒绝按未执行透传', async () => {
+    const { port } = foregroundPort({
+      act: async () => ({
+        dispatch: 'not_dispatched',
+        actionId: 'da_8',
+        reason: 'foreground_disabled: 前台操作没有启用，这次请求没有派发，桌面没有被动过',
+        observation: null,
+        observationError: '动作没有派发，没有重读',
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_not_dispatched',
+    })
+    expect(r.message).toContain('foreground_disabled')
+  })
+
+  test('关闭窗口带回提示框的窗口 id，让调用方接着观察它', async () => {
+    const { port } = foregroundPort({
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_9',
+        reason: '调用尚未返回，目标进程出现了新的顶层窗口',
+        blocking: [
+          { windowId: 'dw_1', app: '记事本', title: '未命名', appeared: false },
+          { windowId: 'dw_2', app: '记事本', title: '', appeared: true },
+        ],
+        observation: null,
+        observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'close_window', ref: 'w#1' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('dw_2')
+    expect(r.message).not.toContain('dw_1 记事本 未命名')
+  })
+
+  test('前台动作没有新增工具入口，四个工具名不变', () => {
+    expect(desktopTools.map((t) => t.name)).toEqual([
+      'desktop_windows',
+      'desktop_observe',
+      'desktop_act',
+      'desktop_wait',
+    ])
+  })
 })

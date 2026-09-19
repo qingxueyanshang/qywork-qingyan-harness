@@ -36,10 +36,13 @@ import type {
 import type {
   DesktopAction,
   DesktopActionKind,
+  DesktopModifier,
+  DesktopMouseButton,
   DesktopRect,
   DesktopScrollDirection,
   DesktopScrollStep,
   DesktopToggleState,
+  DesktopWindowState,
 } from '@qywork/core'
 import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
 
@@ -81,7 +84,31 @@ const ACTIONS: readonly DesktopActionKind[] = [
   'scroll_into_view',
   'realize_item',
   'select_text',
+  'click',
+  'hover',
+  'drag',
+  'wheel',
+  'type_text',
+  'press_key',
+  'activate',
+  'set_window_state',
+  'move_window',
+  'resize_window',
+  'close_window',
 ]
+/** 接受图像点落点的那几种。其余动作只能按控件执行。 */
+const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
+const MOUSE_BUTTONS: readonly DesktopMouseButton[] = ['left', 'right', 'middle']
+const MODIFIERS: readonly DesktopModifier[] = ['ctrl', 'alt', 'shift', 'win']
+const WINDOW_STATES: readonly DesktopWindowState[] = ['normal', 'minimized', 'maximized']
+/** 一次点击最多连点几下。双击是 2，没有三击。 */
+const MAX_CLICK_COUNT = 2
+/** 一次滚轮最多滚几格。 */
+const MAX_WHEEL_AMOUNT = 20
+/** 一次输入最多多少个字。更长的文本分几次发，中途前台变了才停得住。 */
+const MAX_TEXT_LENGTH = 4000
+/** 拖拽偏移与窗口坐标的取值上界。挡住明显越界的请求，真实上界由屏幕与窗口能力定。 */
+const MAX_SCREEN_COORD = 100_000
 const TOGGLE_STATES: readonly DesktopToggleState[] = ['off', 'on', 'indeterminate']
 const SCROLL_DIRECTIONS: readonly DesktopScrollDirection[] = ['up', 'down', 'left', 'right']
 const SCROLL_STEPS: readonly DesktopScrollStep[] = ['line', 'page']
@@ -392,13 +419,30 @@ const ACTION_PARAMS: Record<DesktopActionKind, readonly string[]> = {
   scroll_into_view: [],
   realize_item: ['itemName'],
   select_text: ['start', 'length'],
+  click: ['button', 'count'],
+  hover: [],
+  drag: ['toRef', 'dx', 'dy'],
+  wheel: ['direction', 'amount'],
+  type_text: ['text'],
+  press_key: ['key', 'modifiers'],
+  activate: [],
+  set_window_state: ['windowState'],
+  move_window: ['x', 'y'],
+  resize_window: ['width', 'height'],
+  close_window: [],
 }
 
 /** 定位目标用的参数。它们对每种动作都成立，不参与动作参数的核对。 */
 const TARGET_PARAMS = ['windowId', 'observationId', 'action', 'ref', 'automationId', 'name', 'role']
+/** 按图定位用的参数。只有指针动作接受它们。 */
+const POINT_PARAMS = ['imageRef', 'imageX', 'imageY']
 
 function checkActionParams(kind: DesktopActionKind, args: Record<string, unknown>): void {
-  const allowed = new Set<string>([...TARGET_PARAMS, ...ACTION_PARAMS[kind]])
+  const allowed = new Set<string>([
+    ...TARGET_PARAMS,
+    ...(POINTER_ACTIONS.includes(kind) ? POINT_PARAMS : []),
+    ...ACTION_PARAMS[kind],
+  ])
   const extra = Object.keys(args).filter((key) => !allowed.has(key) && args[key] !== undefined)
   if (extra.length) {
     throw new ArgError(`${kind} 不接受 ${extra.join(' / ')}`)
@@ -482,7 +526,76 @@ function buildAction(
         start: bounded(args.start, 'start', 0, MAX_TEXT_OFFSET),
         length: bounded(args.length, 'length', 0, MAX_TEXT_OFFSET),
       }
+    case 'click':
+      return {
+        kind,
+        button: given(args.button) ? oneOf(args.button, MOUSE_BUTTONS, 'button') : 'left',
+        count: given(args.count) ? bounded(args.count, 'count', 1, MAX_CLICK_COUNT) : 1,
+      }
+    case 'hover':
+    case 'activate':
+    case 'close_window':
+      return { kind }
+    case 'drag': {
+      const byRef = given(args.toRef)
+      const byOffset = given(args.dx) || given(args.dy)
+      if (byRef && byOffset) throw new ArgError('drag 的终点给 toRef 或 dx/dy，不能都给')
+      if (byRef) {
+        return { kind, to: { kind: 'ref', ref: str(args.toRef, 'toRef') } }
+      }
+      if (!byOffset) throw new ArgError('drag 必须给终点：toRef，或 dx 与 dy')
+      return {
+        kind,
+        to: {
+          kind: 'offset',
+          dx: bounded(args.dx ?? 0, 'dx', -MAX_SCREEN_COORD, MAX_SCREEN_COORD),
+          dy: bounded(args.dy ?? 0, 'dy', -MAX_SCREEN_COORD, MAX_SCREEN_COORD),
+        },
+      }
+    }
+    case 'wheel':
+      return {
+        kind,
+        direction: oneOf(args.direction, SCROLL_DIRECTIONS, 'direction'),
+        amount: given(args.amount) ? bounded(args.amount, 'amount', 1, MAX_WHEEL_AMOUNT) : 1,
+      }
+    case 'type_text': {
+      // 空串没有可输入的内容，与 set_value 的「清空」不是一回事。
+      const text = str(args.text, 'text')
+      if (text.length > MAX_TEXT_LENGTH) {
+        throw new ArgError(`text 最多 ${MAX_TEXT_LENGTH} 个字，给的是 ${text.length} 个`)
+      }
+      return { kind, text }
+    }
+    case 'press_key':
+      return { kind, key: str(args.key, 'key'), modifiers: modifiersOf(args.modifiers) }
+    case 'set_window_state':
+      return { kind, state: oneOf(args.windowState, WINDOW_STATES, 'windowState') }
+    case 'move_window':
+      return {
+        kind,
+        x: bounded(args.x, 'x', -MAX_SCREEN_COORD, MAX_SCREEN_COORD),
+        y: bounded(args.y, 'y', -MAX_SCREEN_COORD, MAX_SCREEN_COORD),
+      }
+    case 'resize_window':
+      return {
+        kind,
+        width: bounded(args.width, 'width', 1, MAX_SCREEN_COORD),
+        height: bounded(args.height, 'height', 1, MAX_SCREEN_COORD),
+      }
   }
+}
+
+/** 组合键的修饰键。重复的按第一次出现的位置留一份：按两次同一个键没有额外含义。 */
+function modifiersOf(raw: unknown): DesktopModifier[] {
+  if (raw === undefined || raw === null) return []
+  if (!Array.isArray(raw)) throw new ArgError('modifiers 必须是数组')
+  const out: DesktopModifier[] = []
+  for (const item of raw) {
+    const modifier = oneOf(item, MODIFIERS, 'modifiers')
+    if (!out.includes(modifier)) out.push(modifier)
+  }
+  return out
 }
 
 /** 一份观察的一行读数：控件数、截断与筛选各说一次。 */
@@ -924,6 +1037,9 @@ export const desktopActTool: ToolSpec = {
   description:
     '在观察到的控件上执行一个动作。每个控件的 actions 列出它此刻能做什么：' +
     'delivery 非空才能执行，为空时 unavailable 说明原因（只读、叶节点、滚不动）。' +
+    'delivery=background 的动作经控件接口发出，不动指针、不改焦点、不抢前台；' +
+    'delivery=foreground 的动作用真实指针与键盘，会打断用户——' +
+    '它们只在用户启用了前台操作时出现在 actions 里，没出现就是没启用，不要改用别的动作代替。' +
     'invoke 调用默认动作（按钮、菜单项）；set_value 写值（空串是清空）；' +
     'set_range_value 按 number 写数值（滑块、微调框），越界与只读一律拒绝；' +
     'select 换成只选这一项，add_to_selection / remove_from_selection 增选与取消，单选容器上不可用；' +
@@ -932,6 +1048,22 @@ export const desktopActTool: ToolSpec = {
     'scroll 按 direction 与 step（line 默认 / page）滚一步；scroll_into_view 把控件滚进可见区；' +
     'realize_item 在虚拟化列表容器上按 itemName 找一项并实例化它，之后重新观察才拿得到它的 ref；' +
     'select_text 按 start 与 length（UTF-16 码元）设选区。' +
+    '以下是前台动作：' +
+    'click 在控件上点一下，button 选 left / right / middle，count 给 2 就是双击；' +
+    'hover 把指针移到控件上；' +
+    'drag 从控件按住拖到终点，终点给 toRef（另一个控件）或 dx/dy（相对起点的屏幕像素）；' +
+    'wheel 在控件上滚 amount 格，方向由 direction 给；' +
+    'type_text 把 text 输进当前持有键盘焦点的控件——它只出现在那一个控件的 actions 里，' +
+    '要先 click 它取得焦点；press_key 按一个键，key 用 a-z / 0-9 / f1-f24 / ' +
+    'enter / tab / escape / space / backspace / delete / insert / home / end / ' +
+    'page_up / page_down / up / down / left / right 这些名字，modifiers 给 ctrl / alt / shift / win；' +
+    'activate 把窗口切到前台，受系统前台锁限制，被拒时如实返回 not_dispatched；' +
+    'set_window_state 按 windowState 设成 normal / minimized / maximized；' +
+    'move_window 按 x/y 移动，resize_window 按 width/height 缩放，两者都是屏幕物理像素；' +
+    'close_window 请求关闭窗口（不是结束进程），有未保存内容时会弹出提示框，' +
+    '那时结果里带 blocking，观察它再由用户或后续判断决定选哪一项。' +
+    '指针动作还可以不给控件，改给 imageRef 加 imageX / imageY——' +
+    '用上一次采图返回的 imageRef 与图像坐标，窗口在采图之后移动过则被拒，重新采图即可。' +
     '目标可以给 ref，也可以给 automationId 或 name（可加 role 收窄）；' +
     '匹配到多个时不执行，结果里按祖先路径列出候选，改用 ref 点名。' +
     '结果里的 dispatch 有三种：not_dispatched 表示没有执行，submitted 表示调用已被系统接受，' +
@@ -939,8 +1071,7 @@ export const desktopActTool: ToolSpec = {
     '动作之后同次带回目标所在子树的新观察与新的 observationId，据此继续下一步，' +
     '不必再调 desktop_observe；子树之外的旧 ref 在新编号下仍然有效。' +
     '动作打开模态对话框时没有新观察，结果里改带 blocking：目标应用此刻的窗口，' +
-    'appeared 为真的是这次动作之后冒出来的——直接对它的 windowId 调 desktop_observe。' +
-    '本工具不移动鼠标、不按键、不置前台，也不设焦点。',
+    'appeared 为真的是这次动作之后冒出来的——直接对它的 windowId 调 desktop_observe。',
   parameters: {
     type: 'object',
     properties: {
@@ -959,6 +1090,31 @@ export const desktopActTool: ToolSpec = {
       itemName: { type: 'string', description: 'realize_item 要实例化的那一项的名称' },
       start: { type: 'integer', description: 'select_text 的起点，UTF-16 码元' },
       length: { type: 'integer', description: 'select_text 的长度，UTF-16 码元' },
+      button: { type: 'string', enum: MOUSE_BUTTONS, description: 'click 按哪个键，默认 left' },
+      count: { type: 'integer', description: `click 连点几下，1 或 ${MAX_CLICK_COUNT}，默认 1` },
+      amount: { type: 'integer', description: `wheel 滚几格，上限 ${MAX_WHEEL_AMOUNT}，默认 1` },
+      toRef: { type: 'string', description: 'drag 的终点控件，取自同一份观察' },
+      dx: { type: 'integer', description: 'drag 相对起点的横向屏幕像素' },
+      dy: { type: 'integer', description: 'drag 相对起点的纵向屏幕像素' },
+      text: { type: 'string', description: `type_text 要输入的文字，上限 ${MAX_TEXT_LENGTH} 字` },
+      key: { type: 'string', description: 'press_key 要按的键名' },
+      modifiers: {
+        type: 'array',
+        items: { type: 'string', enum: MODIFIERS },
+        description: 'press_key 的修饰键',
+      },
+      windowState: {
+        type: 'string',
+        enum: WINDOW_STATES,
+        description: 'set_window_state 的目标状态',
+      },
+      x: { type: 'integer', description: 'move_window 的屏幕横坐标' },
+      y: { type: 'integer', description: 'move_window 的屏幕纵坐标' },
+      width: { type: 'integer', description: 'resize_window 的宽度' },
+      height: { type: 'integer', description: 'resize_window 的高度' },
+      imageRef: { type: 'string', description: '按图定位：上一次采图返回的 imageRef' },
+      imageX: { type: 'integer', description: '按图定位：图像横坐标' },
+      imageY: { type: 'integer', description: '按图定位：图像纵坐标' },
     },
     required: ['windowId', 'observationId', 'action'],
     additionalProperties: false,
@@ -972,6 +1128,24 @@ export const desktopActTool: ToolSpec = {
       const windowId = str(args.windowId, 'windowId')
       const observationId = str(args.observationId, 'observationId')
       const kind = oneOf(args.action, ACTIONS, 'action')
+      // 按图定位没有控件可判：落点归不归目标窗口、前台接管开没开都由宿主在派发前核，
+      // 本地只核参数。按控件定位仍然在这里判完再发。
+      if (given(args.imageRef)) {
+        if (!POINTER_ACTIONS.includes(kind)) {
+          throw new ArgError(`${kind} 只能按控件执行，不接受 imageRef`)
+        }
+        if (given(args.ref) || given(args.automationId) || given(args.name)) {
+          throw new ArgError('控件与图像点只能给一个')
+        }
+        const at = {
+          imageRef: str(args.imageRef, 'imageRef'),
+          x: bounded(args.imageX, 'imageX', 0, MAX_IMAGE_COORD),
+          y: bounded(args.imageY, 'imageY', 0, MAX_IMAGE_COORD),
+        }
+        const action = buildAction([], pointTarget(), kind, args)
+        const r = await send(() => desktop.act({ windowId, observationId, at, action }))
+        return actOutcome(kind, at.imageRef, r)
+      }
       const table = desktop.elements(windowId, observationId)
       const element = resolveTarget(table, args)
       checkPrecondition(element, kind)
@@ -980,6 +1154,25 @@ export const desktopActTool: ToolSpec = {
       const r = await send(() => desktop.act({ windowId, observationId, ref: element.ref, action }))
       return actOutcome(kind, element.ref, r)
     }),
+}
+
+/**
+ * 按图定位时给 `buildAction` 的替身控件。
+ *
+ * 它不代表任何真实控件：按图定位时手上没有控件表，而 `buildAction` 的值域与目标态判定
+ * 只对按控件定位的动作成立——指针动作一条都不读它。
+ */
+function pointTarget(): DesktopElement {
+  return {
+    ref: '',
+    depth: 0,
+    role: '',
+    name: '',
+    automationId: '',
+    enabled: true,
+    offscreen: false,
+    actions: [],
+  }
 }
 
 export const desktopWaitTool: ToolSpec = {
