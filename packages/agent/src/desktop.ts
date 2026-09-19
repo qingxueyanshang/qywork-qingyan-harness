@@ -123,6 +123,9 @@ export interface DesktopImagePoint {
  * 超过 `maxChars` 的起点按 `maxChars` 记。
  */
 export interface DesktopText {
+  /** 读的是哪个窗口。界面按它显示目标，不显示窗口编号。 */
+  app: string
+  title: string
   text: string
   truncated: boolean
   selectionSupport: 'none' | 'single' | 'multiple'
@@ -139,6 +142,9 @@ export interface DesktopText {
  * 带回它；窗口移动、缩放、换显示器、DPI 变化或宿主换代之后它一律失效。
  */
 export interface DesktopImage {
+  /** 采的是哪个窗口。界面按它显示目标，不显示窗口编号。 */
+  app: string
+  title: string
   imageRef: string
   /** base64 编码的图像字节。 */
   data: string

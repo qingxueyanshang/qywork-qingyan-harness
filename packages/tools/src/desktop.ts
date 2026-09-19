@@ -902,6 +902,8 @@ async function imagePayload(
   const hint = image.source === 'print_window' ? '，退路采集，没有重绘的区域是黑的' : ''
   return {
     data: {
+      app: image.app,
+      title: image.title,
       imageRef: image.imageRef,
       geometry: g,
       source: image.source,

@@ -679,6 +679,8 @@ export class DesktopCoordinator {
     }
     lease.images.set(record.imageRef, record)
     return {
+      app: known.app,
+      title: known.title,
       imageRef: record.imageRef,
       data: observation.bytes,
       mime: observation.mime,
@@ -884,6 +886,8 @@ export class DesktopCoordinator {
     })
     const observation = expect(result, 'text')
     return {
+      app: known.app,
+      title: known.title,
       text: observation.text,
       truncated: observation.truncated,
       selectionSupport: observation.selectionSupport,

@@ -17,6 +17,7 @@ import {
   untrack,
   useContext,
 } from 'solid-js'
+import { desktopWindowLabel } from '../lib/desktop-target.ts'
 import { createStreamRenderer, renderMarkdown } from '../lib/markdown.ts'
 import {
   actionLabel,
@@ -1516,10 +1517,12 @@ function cardTitle(item: TranscriptItem): string {
 /**
  * 动作行行尾的目标。浏览器工具的 `action.target` 是宿主的 tabId（开页时是占位串），
  * 只供权限与冲突判定；显示成那一页的页签名，页不在时显示参数里的地址，两者都没有就不显示。
+ * 电脑控制工具同理：`action.target` 是不透明的窗口编号，显示的是结果里带回的窗口标题。
  */
 function shownTarget(item: TranscriptItem): string | undefined {
   const target = item.action?.target
   if (!target) return undefined
+  if (item.toolName?.startsWith('desktop_')) return desktopWindowLabel(item.outcome?.data)
   if (!item.toolName?.startsWith('browser_')) return displayTarget(target)
   const url = item.args?.url
   return browserTabLabel(target) ?? (typeof url === 'string' ? url : undefined)

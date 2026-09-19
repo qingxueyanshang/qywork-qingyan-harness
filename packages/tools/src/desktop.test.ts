@@ -364,6 +364,8 @@ function png(width: number, height: number): string {
 
 function image(over: Partial<DesktopImage> = {}): DesktopImage {
   return {
+    app: '记事本',
+    title: '未命名',
     imageRef: 'di_1',
     data: png(506, 453),
     mime: 'image/png',
@@ -422,7 +424,14 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
     act: async (input) => acted(input),
     readText: async (input) => {
       note('readText', input)
-      return { text: '这是一段文本', truncated: false, selectionSupport: 'single', selection: [] }
+      return {
+        app: '记事本',
+        title: '未命名',
+        text: '这是一段文本',
+        truncated: false,
+        selectionSupport: 'single',
+        selection: [],
+      }
     },
     wait: async (input) => {
       note('wait', input)
@@ -1006,6 +1015,8 @@ describe('读文本与选区', () => {
       readText: async (input) => {
         calls.push({ method: 'readText', input })
         return {
+          app: '记事本',
+          title: '未命名',
           text: '第一行中文内容',
           truncated: true,
           selectionSupport: 'single',
@@ -2413,6 +2424,8 @@ describe('有限动作序列', () => {
         }
       },
       readText: async () => ({
+        app: '记事本',
+        title: '未命名',
         text: '',
         truncated: false,
         selectionSupport: 'none',
