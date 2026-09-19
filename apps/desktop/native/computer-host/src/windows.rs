@@ -531,9 +531,9 @@ impl Backend {
         let mut path = root_path.to_vec();
         // 根节点读不到就整体失败：没有根就没有这次观察，不存在可以跳过它继续的走法。
         walk.node(root, &mut path, 0, None)?;
-        let (nodes, visited, truncated_by) = walk.finish();
+        let (nodes, root_enabled, visited, truncated_by) = walk.finish();
         let enabled = if root_path.is_empty() {
-            nodes.first().map(|n| n.enabled)
+            root_enabled
         } else {
             Some(self.window_enabled(window)?)
         };
@@ -1330,23 +1330,30 @@ impl Walk<'_> {
     }
 
     /// 输出前序表：只留 `keep` 的节点，并把父引用填成父节点的 `ref`。
-    fn finish(self) -> (Vec<Node>, u32, Vec<&'static str>) {
-        let refs: Vec<String> = self
-            .collected
-            .iter()
-            .map(|c| c.node.reference.clone())
-            .collect();
-        let mut nodes = Vec::new();
-        for entry in self.collected {
-            if !entry.keep {
-                continue;
-            }
-            let mut node = entry.node;
-            node.parent_ref = entry.parent.map(|at| refs[at].clone());
-            nodes.push(node);
-        }
-        (nodes, self.visited, self.truncated_by)
+    fn finish(self) -> (Vec<Node>, Option<bool>, u32, Vec<&'static str>) {
+        let (nodes, root_enabled) = flatten(self.collected);
+        (nodes, root_enabled, self.visited, self.truncated_by)
     }
+}
+
+/// 展平收集到的节点，并单独带出根节点的可用状态。
+///
+/// **窗口可用状态只能取根节点，不能取返回表的第一项。** 筛选发生在遍历之后：根节点
+/// 匹配不上筛选条件时第一项是某个普通控件，一条都匹配不上时表是空的。按第一项判会把
+/// 「按名称筛出 0 个控件」报成「窗口被模态窗口挡着，控件都不可操作」，与事实不符。
+fn flatten(collected: Vec<Collected>) -> (Vec<Node>, Option<bool>) {
+    let refs: Vec<String> = collected.iter().map(|c| c.node.reference.clone()).collect();
+    let root_enabled = collected.first().map(|c| c.node.enabled);
+    let mut nodes = Vec::new();
+    for entry in collected {
+        if !entry.keep {
+            continue;
+        }
+        let mut node = entry.node;
+        node.parent_ref = entry.parent.map(|at| refs[at].clone());
+        nodes.push(node);
+    }
+    (nodes, root_enabled)
 }
 
 /// 一个节点过不过得了筛选。没有筛选条件时全过。
@@ -2540,6 +2547,37 @@ mod tests {
             text: false,
             weak_identity: false,
         }
+    }
+
+    fn collected(reference: &str, enabled: bool, keep: bool, parent: Option<usize>) -> Collected {
+        let mut n = node("button", "按钮", "", None);
+        n.reference = reference.to_owned();
+        n.enabled = enabled;
+        Collected {
+            node: n,
+            parent,
+            keep,
+        }
+    }
+
+    #[test]
+    fn the_window_enabled_flag_comes_from_the_root_not_from_the_first_kept_node() {
+        // 筛选把根筛掉、只留一个可用的控件：窗口仍然是被挡住的那个状态。
+        let (nodes, root_enabled) = flatten(vec![
+            collected("w#1", false, false, None),
+            collected("w.0#3", true, true, Some(0)),
+        ]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].parent_ref.as_deref(), Some("w#1"));
+        assert_eq!(root_enabled, Some(false));
+
+        // 一条都没筛中：表是空的，窗口状态仍取根节点，不是「窗口被模态窗口挡着」。
+        let (nodes, root_enabled) = flatten(vec![
+            collected("w#1", true, false, None),
+            collected("w.0#3", true, false, Some(0)),
+        ]);
+        assert!(nodes.is_empty());
+        assert_eq!(root_enabled, Some(true));
     }
 
     #[test]

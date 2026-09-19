@@ -2460,6 +2460,41 @@ describe('有限动作序列', () => {
     expect(calls).toEqual([])
   })
 
+  test('步与后置条件里用不上的参数填空位时照常执行', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'set_value',
+          ref: 'w.1.0#5',
+          automationId: '',
+          name: '',
+          role: '',
+          value: '张三',
+          number: null,
+          state: '',
+          direction: '',
+          step: '',
+          itemName: '',
+          start: null,
+          length: null,
+          expect: {
+            until: 'value',
+            value: '张三',
+            state: '',
+            name: '',
+            role: '',
+            timeoutMs: null,
+          },
+        },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'success', executed: true })
+    expect(calls.filter((c) => c.method === 'act')).toHaveLength(1)
+  })
+
   test('toggle 与 selected 不接受 timeoutMs', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
@@ -2638,5 +2673,85 @@ describe('有限动作序列', () => {
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2])
+  })
+})
+
+/**
+ * strict 工具 schema 把每个可选参数都列进 `required` 并在类型里加 `null`，
+ * 模型因此为用不上的参数填 `null`。这些 `null` 必须与「没给」等价。
+ */
+describe('可选参数填空位', () => {
+  /** 按 strict 形状补齐：schema 里的每个键都在，没点名的填 null。 */
+  function strictArgs(spec: ToolSpec, named: Record<string, unknown>): Record<string, unknown> {
+    const props = (spec.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(props)) out[key] = key in named ? named[key] : null
+    return out
+  }
+
+  test('structure 观察带着 imageRect: null 仍然读树', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      strictArgs(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+  })
+
+  test('invoke 带着另外二十来个 null 参数仍然派发', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopActTool,
+      strictArgs(desktopActTool, {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'invoke',
+        ref: 'w.0.0#3',
+      }),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.filter((c) => c.method === 'act')).toHaveLength(1)
+    expect((calls.find((c) => c.method === 'act')?.input as { action: unknown }).action).toEqual({
+      kind: 'invoke',
+    })
+  })
+
+  test('空位填空串时同样派发：模型两种填法都见过', async () => {
+    const { port, calls } = fakeDesktop()
+    const padded = strictArgs(desktopActTool, {
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      action: 'set_value',
+      ref: 'w.1.0#5',
+      value: '张三',
+    })
+    // 字符串型的空位填空串，数值型的填 null——实测里模型就是这么混着填的。
+    for (const [key, v] of Object.entries(padded)) if (v === null) padded[key] = ''
+    padded.number = null
+    padded.imageRect = null
+    const r = await run(desktopActTool, padded, ctxWith(port))
+    expect(r.status).toBe('success')
+    expect(calls.filter((c) => c.method === 'act')).toHaveLength(1)
+  })
+
+  test('真的给了不属于这个动作的值仍然当场拒绝', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopActTool,
+      strictArgs(desktopActTool, {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'invoke',
+        ref: 'w.0.0#3',
+        value: '张三',
+      }),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('invoke 不接受 value')
+    expect(calls).toEqual([])
   })
 })

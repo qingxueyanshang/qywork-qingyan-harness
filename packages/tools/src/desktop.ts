@@ -196,7 +196,18 @@ class ArgError extends Error {
   }
 }
 
-/** 这个可选参数给了没有。`null` 与空串按缺席算，与浏览器工具同一条判据。 */
+/**
+ * 这个可选参数给了没有。`null` 与空串按缺席算，与浏览器工具同一条判据。
+ *
+ * **这条判据也管「不属于本动作的参数」那一类检查，不要在那里换成 `!== undefined`。**
+ * strict 工具 schema 把每个可选参数都列进 `required` 并在类型里加 `null`
+ * （`packages/ai` 的 `strictify`），模型按它为用不上的参数逐个填空位——实测填的是
+ * `null` 与空串两种。按 `!== undefined` 判会把一次 `set_value` 附带的二十来个空位
+ * 全报成多余参数，动作一次也派发不出去。
+ *
+ * 空串对这条检查不构成例外：`value` 的清空语义由动作自己的参数表放行，
+ * 走不到这条判据。
+ */
 function given(raw: unknown): boolean {
   return raw !== undefined && raw !== null && String(raw).trim() !== ''
 }
@@ -508,7 +519,7 @@ function checkActionParams(
     ...(POINTER_ACTIONS.includes(kind) ? POINT_PARAMS : []),
     ...ACTION_PARAMS[kind],
   ])
-  const extra = Object.keys(args).filter((key) => !allowed.has(key) && args[key] !== undefined)
+  const extra = Object.keys(args).filter((key) => !allowed.has(key) && given(args[key]))
   if (extra.length) {
     throw new ArgError(`${kind} 不接受 ${extra.join(' / ')}`)
   }
@@ -1037,7 +1048,7 @@ export const desktopObserveTool: ToolSpec = {
 
 /** 这次调用给了取景参数没有。给了就要求 capture 不是 structure。 */
 function framingGiven(args: Record<string, unknown>): boolean {
-  return given(args.around) || given(args.imageRef) || args.imageRect !== undefined
+  return given(args.around) || given(args.imageRef) || given(args.imageRect)
 }
 
 /**
@@ -1352,7 +1363,7 @@ function expectOf(raw: unknown, index: number): ExpectPlan | null {
   const at = `第 ${index} 步的 expect`
   const until = oneOf(o.until, EXPECTATIONS, `${at}.until`)
   const allowed = new Set<string>(['until', ...EXPECT_PARAMS[until]])
-  const extra = Object.keys(o).filter((key) => !allowed.has(key) && o[key] !== undefined)
+  const extra = Object.keys(o).filter((key) => !allowed.has(key) && given(o[key]))
   if (extra.length) throw new ArgError(`${at}.until=${until} 不接受 ${extra.join(' / ')}`)
   if (until === 'value' && (o.value === undefined || o.value === null)) {
     throw new ArgError(`${at}.until=value 必须给 value`)
