@@ -524,6 +524,7 @@ impl Backend {
         let started = Instant::now();
         let mut walk = Walk {
             backend: self,
+            window,
             cache,
             select,
             bounds,
@@ -799,6 +800,7 @@ impl Backend {
                 match self.locate(req.window, reference) {
                     Ok(located) => {
                         let node = self.read_cached_node(
+                            req.window,
                             &located.element,
                             &located.path,
                             Fields {
@@ -876,6 +878,7 @@ impl Backend {
     /// 只有选择容器的选中项是实时读的，见 `selected_names`；其余全部来自缓存。
     fn read_cached_node(
         &self,
+        window: i64,
         element: &IUIAutomationElement,
         path: &[usize],
         fields: Fields,
@@ -1021,9 +1024,13 @@ impl Backend {
                     actions.push(NodeAction::foreground(action));
                 }
             }
-            // 键盘动作只列在此刻持有键盘焦点的控件上：输入去的是焦点所在的地方，
-            // 列在别处就是承诺一件做不到的事——本模块不替用户抢焦点。
-            if focused {
+            // 键盘动作列在两处：此刻持有键盘焦点的控件，以及窗口根节点在它就是系统
+            // 前台窗口的时候。前者是「输入会进这个控件」，后者是「输入会进这个窗口」
+            // ——自绘界面不暴露业务控件，给不出一个持有焦点的控件，只列前者等于对
+            // 这类应用关掉整条键盘路径。路径为空才是窗口元素自己，子树读的根带着它
+            // 在整窗里的下标。
+            let window_keyboard = path.is_empty() && foreground::foreground_window() == window;
+            if focused || window_keyboard {
                 actions.push(NodeAction::foreground("type_text"));
                 actions.push(NodeAction::foreground("press_key"));
             }
@@ -1230,6 +1237,8 @@ struct Collected {
 /// 一样付出了读取成本。两者在 `completeness` 里分两格记。
 struct Walk<'a> {
     backend: &'a Backend,
+    /// 这次读的是哪个窗口。窗口根节点的键盘动作按「它是不是系统前台窗口」列。
+    window: i64,
     cache: &'a IUIAutomationCacheRequest,
     select: &'a Select,
     bounds: Bounds,
@@ -1286,7 +1295,7 @@ impl Walk<'_> {
         depth: u32,
         parent: Option<usize>,
     ) -> Result<(), Failure> {
-        let mut node = self.backend.read_cached_node(element, path, self.fields)?;
+        let mut node = self.backend.read_cached_node(self.window, element, path, self.fields)?;
         node.depth = depth;
         self.visited += 1;
         let matched = matches_select(self.select, &node);

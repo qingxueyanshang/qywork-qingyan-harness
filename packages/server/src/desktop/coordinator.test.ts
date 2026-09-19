@@ -1144,6 +1144,32 @@ test('控件与图像点只能给一个，两种都给或都不给都在本地�
   expect(host.received.length).toBe(before)
 })
 
+/**
+ * 键盘输入两样都不给时目标是窗口本身，帧里 `ref` 与 `point` 都缺席。
+ *
+ * 自绘界面不暴露业务控件，要求点名一个控件等于对它们关掉整条键盘路径。准入判定在
+ * worker 那一侧（前台窗口就是目标窗口），这里只负责不拦、不伪造一个 ref。
+ */
+test('不点名控件的键盘输入按窗口派发，帧里没有 ref 也没有 point', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    action: { kind: 'type_text', text: '你好 hello' },
+  })
+  const frame = await host.next()
+  expect(frame.op).toBe('act')
+  expect(frame.ref).toBeUndefined()
+  expect(frame.point).toBeUndefined()
+  expect(frame.action).toEqual({ kind: 'type_text', text: '你好 hello' })
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  expect((await acting).dispatch).toBe('submitted')
+})
+
 test('图外的坐标在本地就被拒，一帧都不发', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)

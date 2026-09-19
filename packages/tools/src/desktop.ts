@@ -124,6 +124,13 @@ const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = [
 ]
 /** 接受图像点落点的那几种。其余动作只能按控件执行。 */
 const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
+/**
+ * 可以不点名控件、直接投给窗口的那几种。
+ *
+ * 键盘输入去的是系统焦点所在，不是某个被点名的控件。自绘界面不暴露业务控件，
+ * 永远给不出一个持有焦点的控件，只认控件等于对这类应用关掉整条键盘路径。
+ */
+const WINDOW_TARGET_ACTIONS: readonly DesktopActionKind[] = ['type_text', 'press_key']
 const MOUSE_BUTTONS: readonly DesktopMouseButton[] = ['left', 'right', 'middle']
 const MODIFIERS: readonly DesktopModifier[] = ['ctrl', 'alt', 'shift', 'win']
 const WINDOW_STATES: readonly DesktopWindowState[] = ['normal', 'minimized', 'maximized']
@@ -411,6 +418,39 @@ function resolveTarget(
     )
   }
   return first
+}
+
+/** 这次调用点名控件了没有。三种定位条件任一给了就算点名。 */
+function targetGiven(args: Record<string, unknown>): boolean {
+  return given(args.ref) || given(args.automationId) || given(args.name)
+}
+
+/**
+ * 这个控件是不是窗口根节点。
+ *
+ * 判据是 `ref` 的下标路径只有根那一段（`w`）：子树读回来的根带着它在整窗里的下标
+ * （`w.3.1`），按「没有 parentRef」判会把子树根一并算进来。
+ */
+function isWindowRoot(e: DesktopElement): boolean {
+  return e.ref.split('#')[0] === 'w'
+}
+
+/** 观察里的窗口根节点。整窗观察一定有它；只读过子树的观察没有，那时要求重读整窗。 */
+function windowRoot(table: DesktopElement[] | null): DesktopElement {
+  if (!table) {
+    throw new ArgError(
+      '这份观察已经失效，请重新调用 desktop_observe 取新的 observationId。',
+      'desktop_observation_stale',
+    )
+  }
+  const root = table.find(isWindowRoot)
+  if (!root) {
+    throw new ArgError(
+      '这份观察里没有窗口根节点，先对整窗调用一次 desktop_observe。',
+      'desktop_target_missing',
+    )
+  }
+  return root
 }
 
 function describeQuery(role?: string, automationId?: string, name?: string): string {
@@ -1236,11 +1276,24 @@ export const desktopActTool: ToolSpec = {
         return actOutcome(kind, at.imageRef, r)
       }
       const table = desktop.elements(windowId, observationId)
-      const element = resolveTarget(table, args)
+      // 键盘输入不点名控件时目标是窗口本身：观察里窗口根节点上的 type_text /
+      // press_key 说的就是「这个窗口此刻收键盘」。点名根节点与不点名是同一件事，
+      // 在这里合成同一种请求——两种写法各发一种帧就是两套判定。
+      const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
+      const element =
+        toWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
       checkPrecondition(element, kind)
       const action = buildAction(table ?? [], element, kind, args, TARGET_PARAMS)
 
-      const r = await send(() => desktop.act({ windowId, observationId, ref: element.ref, action }))
+      const byWindow = toWindow && isWindowRoot(element)
+      const r = await send(() =>
+        desktop.act({
+          windowId,
+          observationId,
+          ...(byWindow ? {} : { ref: element.ref }),
+          action,
+        }),
+      )
       return actOutcome(kind, element.ref, r)
     }),
 }

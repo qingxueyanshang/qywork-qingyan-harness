@@ -598,7 +598,13 @@ export interface DesktopRequestFrame {
   op: DesktopOp
   /** 目标窗口身份。`list_windows` 与 `cancel` 不带。 */
   target?: DesktopTarget
-  /** 目标控件引用，取自同一次观察。 */
+  /**
+   * 目标控件引用，取自同一次观察。
+   *
+   * `act` 的目标三种写法：`ref`、`point`、两者都不给。第三种只有键盘输入
+   * （`type_text` / `press_key`）能用，那时目标是窗口本身——键盘输入去的是系统焦点
+   * 所在，自绘界面给不出一个持有焦点的控件。其余动作都不给即拒。
+   */
   ref?: string
   /**
    * 指针动作的屏幕物理像素落点。**与 `ref` 互斥**。

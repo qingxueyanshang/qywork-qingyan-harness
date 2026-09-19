@@ -111,6 +111,13 @@ const FOREGROUND_ACTIONS: ReadonlySet<string> = new Set([
 ])
 /** 接受图像点落点的那几种。其余动作只能按控件执行。 */
 const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag', 'wheel'])
+/**
+ * 可以不给目标、直接投给窗口的那几种。
+ *
+ * 键盘输入去的是系统焦点所在，不是某个被点名的控件。准入判定在 worker 那一侧
+ * （前台窗口就是目标窗口且窗口未被禁用），这里只是不拦。
+ */
+const WINDOW_TARGET: ReadonlySet<string> = new Set(['type_text', 'press_key'])
 
 /**
  * 端口已经释放，或者此刻没有可用的宿主。
@@ -797,10 +804,13 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 这次动作打在哪儿：控件引用，或上一张图里那个点换算出来的屏幕坐标。
+   * 这次动作打在哪儿：控件引用、上一张图里那个点换算出来的屏幕坐标，或者两样都不给。
    *
-   * **两种只能给一个。** 给控件时按观察编号核对它还在不在这一份表里；给图像点时走
+   * **前两种只能给一个。** 给控件时按观察编号核对它还在不在这一份表里；给图像点时走
    * 与按图重采同一条换算与代际核对路径，失效的 `imageRef` 在本地就拒绝，一帧都不发。
+   *
+   * 两样都不给时目标是窗口本身，只有键盘输入能这样发：它去的是系统焦点所在，
+   * 准入由 worker 按「前台窗口就是目标窗口」判。
    */
   #aim(
     lease: Lease,
@@ -821,6 +831,7 @@ export class DesktopCoordinator {
       return { ref: input.ref }
     }
     if (input.at === undefined) {
+      if (WINDOW_TARGET.has(input.action.kind)) return {}
       throw new DesktopTargetError('要给控件或图像点')
     }
     if (!FOREGROUND_POINTER.has(input.action.kind)) {

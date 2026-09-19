@@ -258,6 +258,20 @@ const 前台窗口: DesktopElement = {
     { action: 'resize_window', delivery: ['foreground'] },
   ],
 }
+/**
+ * 自绘界面的观察：树上只有窗口根，一个业务控件都没有。
+ *
+ * 它就是系统前台窗口，所以键盘动作挂在根上——这类窗口给不出一个持有焦点的控件。
+ */
+const 自绘窗口: DesktopElement = {
+  ...窗口,
+  name: '自绘',
+  actions: [
+    { action: 'activate', delivery: ['foreground'] },
+    { action: 'type_text', delivery: ['foreground'] },
+    { action: 'press_key', delivery: ['foreground'] },
+  ],
+}
 
 const 文档框: DesktopElement = {
   ref: 'w.8#15',
@@ -1857,6 +1871,88 @@ describe('前台动作', () => {
       kind: 'type_text',
       text: '张三',
     })
+  })
+
+  /**
+   * 自绘界面：树上只有窗口根，键盘动作挂在它身上，投递时不带控件。
+   *
+   * 少了这条路，`type_text` 对这类应用整条不可用——它们永远给不出一个持有键盘焦点的
+   * 控件，而模型只能绕去 shell 自己写脚本。
+   */
+  function 自绘Port(over: Partial<DesktopPort> = {}) {
+    const base = fakeDesktop(over)
+    return {
+      ...base,
+      port: {
+        ...base.port,
+        elements: (windowId: string, observationId: string) =>
+          windowId === 'dw_1' && observationId === 'do_1' ? [自绘窗口] : null,
+      } as DesktopPort,
+    }
+  }
+
+  test('窗口根挂着键盘动作时，不点名控件的输入按窗口投递', async () => {
+    const { port, calls } = 自绘Port()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', text: '你好 hello' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls).toEqual([
+      {
+        method: 'act',
+        input: {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          action: { kind: 'type_text', text: '你好 hello' },
+        },
+      },
+    ])
+  })
+
+  test('点名窗口根与不点名发的是同一种请求，都不带 ref', async () => {
+    const { port, calls } = 自绘Port()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        ref: 'w#1',
+        key: 'a',
+        modifiers: ['ctrl'],
+      },
+      ctxWith(port),
+    )
+    expect(calls[0]?.input).toEqual({
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      action: { kind: 'press_key', key: 'a', modifiers: ['ctrl'] },
+    })
+  })
+
+  test('窗口根没有键盘动作时，不点名控件的输入在派发之前被拒', async () => {
+    const { port, calls } = foregroundPort()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', text: '张三' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    expect(calls).toEqual([])
+  })
+
+  test('键盘之外的动作不点名控件仍然要求目标', async () => {
+    const { port, calls } = 自绘Port()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(r.message).toContain('给 ref、automationId 或 name')
+    expect(calls).toEqual([])
   })
 
   test('组合键的修饰键按词表校验，重复的只留一份', async () => {

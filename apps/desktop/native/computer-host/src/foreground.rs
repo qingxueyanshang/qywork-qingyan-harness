@@ -8,8 +8,9 @@
 //!    目标窗口，三步缺一不可：观察时记下的包围盒在控件移动之后指向别处。
 //! 3. **按住的键随按随记，任何中止路径都释放。** 记账与释放由 `input::Hold` 做，
 //!    本模块不手写释放调用。
-//! 4. **键盘输入前核对前台窗口就是目标窗口、目标控件持有键盘焦点。** 焦点不在目标上
-//!    就拒绝，不替用户把焦点抢过来。
+//! 4. **键盘输入前核对前台窗口就是目标窗口且窗口未被禁用**；点名了控件时再核对它
+//!    持有键盘焦点，焦点不在它上面就拒绝，不替用户把焦点抢过来。不点名控件即以窗口
+//!    为目标。
 //! 5. **中途前台变了立即停止**，已发出多少如实带回，执行事实落 `unknown`，不向另一个
 //!    窗口续输。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
@@ -68,8 +69,8 @@ pub struct Aim {
 
 /// 执行一个前台动作。
 ///
-/// `element` 只有按控件定位时才有；按屏幕坐标定位的指针动作没有控件，键盘与窗口动作
-/// 一定有——准入判定已经保证了这一点。
+/// `element` 只有按控件定位时才有。按屏幕坐标定位的指针动作没有控件；键盘输入可以
+/// 不给控件，那时目标是窗口本身；窗口动作一定有——准入判定已经保证了这一点。
 pub fn perform(
     window: i64,
     element: Option<&IUIAutomationElement>,
@@ -85,11 +86,11 @@ pub fn perform(
         ActionSpec::Wheel { direction, amount } => {
             wheel(window, &sink, aim, wheel_of(*direction, *amount))
         }
-        ActionSpec::TypeText { text } => match focused_target(window, element) {
+        ActionSpec::TypeText { text } => match keyboard_target(window, element) {
             Err(reason) => Attempt::Refused(reason),
             Ok(()) => type_text(window, &sink, text),
         },
-        ActionSpec::PressKey { key, modifiers } => match focused_target(window, element) {
+        ActionSpec::PressKey { key, modifiers } => match keyboard_target(window, element) {
             Err(reason) => Attempt::Refused(reason),
             Ok(()) => press_key(&sink, key, modifiers),
         },
@@ -328,17 +329,25 @@ fn blocked(requested: u32) -> Attempt {
 
 // ── 键盘 ──
 
-/// 键盘输入的两条前置条件：目标窗口是系统前台窗口，目标控件持有键盘焦点。
+/// 键盘输入的前置条件。
 ///
-/// 焦点读的是实时属性不是观察时的缓存：焦点在观察与动作之间被用户改过时，
-/// 按缓存判会把输入发给另一个控件。**焦点不在目标上就拒绝**，不替用户抢焦点。
-fn focused_target(window: i64, element: Option<&IUIAutomationElement>) -> Result<(), String> {
+/// 两条对所有键盘输入成立：目标窗口是系统前台窗口，且它没有被禁用。
+/// **不给控件即以窗口为目标**，判定到此为止——键盘输入去的是系统焦点所在，
+/// 前台窗口是目标窗口时焦点必然落在这个窗口里；自绘界面不暴露业务控件，
+/// 要求点名一个持有焦点的控件等于对它们关掉整条键盘路径。
+///
+/// 给了控件再加一条：它此刻要持有键盘焦点。焦点读的是实时属性不是观察时的缓存，
+/// 焦点在观察与动作之间被用户改过时，按缓存判会把输入发给另一个控件。
+/// **焦点不在目标上就拒绝**，不替用户抢焦点。
+fn keyboard_target(window: i64, element: Option<&IUIAutomationElement>) -> Result<(), String> {
     foreground_ok(window)?;
     // SAFETY: 句柄由调用方核对过归属。
     if !unsafe { IsWindowEnabled(HWND(window as *mut c_void)) }.as_bool() {
         return Err("window_disabled: 目标窗口此刻被禁用，输入到不了它".to_owned());
     }
-    let element = element.ok_or(MISSING_ELEMENT)?;
+    let Some(element) = element else {
+        return Ok(());
+    };
     // SAFETY: 实时属性查询，跨进程调用由 UIA 的连接超时兜底。
     let focused = unsafe { element.CurrentHasKeyboardFocus() }
         .map_err(|e| format!("读键盘焦点失败：{e}"))?
@@ -349,6 +358,12 @@ fn focused_target(window: i64, element: Option<&IUIAutomationElement>) -> Result
         );
     }
     Ok(())
+}
+
+/// 系统前台窗口的句柄。窗口根节点的键盘动作表按它列。
+pub fn foreground_window() -> i64 {
+    // SAFETY: 无参只读查询。
+    unsafe { GetForegroundWindow() }.0 as i64
 }
 
 fn foreground_ok(window: i64) -> Result<(), String> {
@@ -573,11 +588,6 @@ fn confirm(attempt: Attempt, limit: Duration, reached: impl Fn() -> bool) -> Att
 }
 
 // ── Win32 读数 ──
-
-fn foreground_window() -> i64 {
-    // SAFETY: 无参只读查询。
-    unsafe { GetForegroundWindow() }.0 as i64
-}
 
 fn alive(window: i64) -> bool {
     // SAFETY: 只读查询。

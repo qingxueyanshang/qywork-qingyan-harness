@@ -58,12 +58,13 @@ test('组头开关：缺席按启用、显式 false 才关，点一下写出去�
   const { ModulesSettings } = await import('./ModulesSettings.tsx')
 
   let stored: Record<string, unknown> = { providers: {} }
-  let saved: Record<string, unknown> | null = null
+  // 用数组收：`let saved = null` 会被控制流分析收窄成 `null`，读它的那一行就没有字段。
+  const saves: Record<string, unknown>[] = []
   store.client.api = async <T,>(path: string, init?: RequestInit) => {
     if (path === '/api/tools') return TOOLS as T
     if (path === '/api/config' && init?.method === 'PUT') {
       const body = JSON.parse(String(init.body)) as { config: Record<string, unknown> }
-      saved = body.config
+      saves.push(body.config)
       stored = body.config
       return { ok: true } as T
     }
@@ -101,7 +102,7 @@ test('组头开关：缺席按启用、显式 false 才关，点一下写出去�
     // 点「关闭」写出去的是这一格。
     click(segOf(host).find((b) => b.textContent === '关闭') as HTMLButtonElement)
     await new Promise((r) => setTimeout(r, 30))
-    expect(saved?.desktopEnabled).toBe(false)
+    expect(saves.at(-1)?.desktopEnabled).toBe(false)
     expect(activeLabel(host)).toBe('关闭')
 
     // 显式 true：显示为启用。

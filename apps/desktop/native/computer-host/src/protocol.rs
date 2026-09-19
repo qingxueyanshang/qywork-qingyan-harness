@@ -437,6 +437,15 @@ impl ActionSpec {
             Self::Click { .. } | Self::Hover | Self::Drag { .. } | Self::Wheel { .. }
         )
     }
+
+    /// 这个动作可以不给目标，直接投给窗口。只有键盘输入可以。
+    ///
+    /// 键盘输入去的是系统焦点所在，而不是某个被点名的控件；前台窗口就是目标窗口时，
+    /// 焦点必然落在这个窗口里。自绘界面不暴露业务控件，给不出一个持有焦点的控件，
+    /// 少了这一条它们整条键盘路径不可用。
+    pub const fn targets_window(&self) -> bool {
+        matches!(self, Self::TypeText { .. } | Self::PressKey { .. })
+    }
 }
 
 /// 前台模式没开时的拒绝原因。工具层与 worker 用同一个码。
@@ -1198,6 +1207,9 @@ pub fn admit(
 /// **前台模式关着时前台动作在这里就被拒**：这是派发前的唯一准入判定，
 /// 放到执行路径里判就会多出第二处裁决。后台失败不会自动升级成前台，
 /// 这个函数不看动作有没有后台替代品。
+///
+/// 目标三种写法：控件、屏幕落点、两者都不给。第三种只有 `targets_window` 的动作
+/// 能用，它的目标是窗口本身。
 pub fn check_act(
     action: &ActionSpec,
     has_ref: bool,
@@ -1210,7 +1222,9 @@ pub fn check_act(
     }
     match (has_ref, has_point) {
         (true, true) => return Err("target_conflict: ref 与 point 只能给一个"),
-        (false, false) => return Err("missing_target: 要给 ref 或 point"),
+        (false, false) if !action.targets_window() => {
+            return Err("missing_target: 要给 ref 或 point")
+        }
         (false, true) if !action.takes_point() => {
             return Err("point_unsupported: 这个动作只能按控件执行")
         }
@@ -2142,6 +2156,48 @@ mod tests {
             assert!(
                 !action_of(act_params(spec)).takes_point(),
                 "{spec} 不该接受落点"
+            );
+        }
+    }
+
+    /// 只有键盘输入可以不给目标：目标是窗口本身。
+    ///
+    /// 别的动作不给目标即拒——指针动作没有落点可言，窗口动作没有可调用的模式对象。
+    #[test]
+    fn only_keyboard_actions_may_omit_the_target() {
+        for spec in [
+            r#"{"kind":"type_text","text":"你好"}"#,
+            r#"{"kind":"press_key","key":"a","modifiers":["ctrl"]}"#,
+        ] {
+            let action = action_of(act_params(spec));
+            assert!(action.targets_window(), "{spec} 应当可以投给窗口");
+            assert_eq!(check_act(&action, false, false, false, true), Ok(()));
+            // 点名控件时仍然照常放行，判定留给执行路径上的焦点核对。
+            assert_eq!(check_act(&action, true, false, false, true), Ok(()));
+            // 屏幕落点仍然不接受：键盘输入没有落点可言。
+            assert_eq!(
+                check_act(&action, false, true, true, true),
+                Err("point_unsupported: 这个动作只能按控件执行")
+            );
+            // 前台模式关着时这两种一样拒，缺目标不构成例外。
+            assert_eq!(
+                check_act(&action, false, false, false, false),
+                Err(FOREGROUND_DISABLED)
+            );
+        }
+        for spec in [
+            r#"{"kind":"click","button":"left","count":1}"#,
+            r#"{"kind":"hover"}"#,
+            r#"{"kind":"activate"}"#,
+            r#"{"kind":"close_window"}"#,
+            r#"{"kind":"invoke"}"#,
+        ] {
+            let action = action_of(act_params(spec));
+            assert!(!action.targets_window(), "{spec} 不该可以投给窗口");
+            assert_eq!(
+                check_act(&action, false, false, false, true),
+                Err("missing_target: 要给 ref 或 point"),
+                "{spec} 不给目标应当被拒"
             );
         }
     }
