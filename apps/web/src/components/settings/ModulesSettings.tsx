@@ -57,6 +57,16 @@ interface Module {
 
 const sandbox = () => state.capabilities?.sandbox ?? null
 
+/**
+ * 组头那个开关的读数：**缺席按开，只有显式 `false` 才关**。
+ *
+ * 与服务端装配桌面端口的判据是同一条（`server.ts` 的 `desktopEnabled !== false`）。
+ * 两处写法不一致的结果是界面写着「启用」而模型手里没有这组工具。
+ */
+export function desktopSwitchOn(cfg: { desktopEnabled?: boolean } | null): boolean {
+  return cfg?.desktopEnabled !== false
+}
+
 /** 命令语法由探测决定（bash → pwsh 7 → Windows PowerShell 5.1），握手只报 bash 那一格。 */
 function shellNote(): string {
   const row = state.capabilities?.environment.find((d) => d.id === 'bash')
@@ -152,7 +162,7 @@ const MODULES: Module[] = [
     id: 'desktop',
     label: '电脑操作',
     toggle: {
-      on: () => config()?.desktopEnabled !== false,
+      on: () => desktopSwitchOn(config()),
       onPick: (on) => void patchConfig({ desktopEnabled: on }),
     },
   },

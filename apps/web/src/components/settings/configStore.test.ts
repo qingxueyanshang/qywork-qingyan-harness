@@ -73,7 +73,16 @@ function persistConfig(config: RedactedConfig, baseVersion?: string): Promise<Co
 }
 const saveServerConfig = mock(persistConfig)
 
+/*
+ * 替身要**摊开真模块再覆盖那三个导出**。
+ *
+ * `mock.module` 是进程级的，一装就对后面所有导入这个模块的测试文件成立。只交出这三个
+ * 导出的话，之后任何一个引到 `state` / `client` 的组件测试都会在导入那一刻报
+ * 「Export named 'state' not found」，而失败点落在那个文件里，看不出成因在这里。
+ */
+const actualStore = await import('../../lib/store/index.ts')
 mock.module('../../lib/store/index.ts', () => ({
+  ...actualStore,
   loadServerConfig,
   saveServerConfig,
   explainApiError: (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback),

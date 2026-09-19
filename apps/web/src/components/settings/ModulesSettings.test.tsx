@@ -51,20 +51,41 @@ function activeLabel(host: HTMLElement): string | undefined {
   return segOf(host).find((b) => b.classList.contains('active'))?.textContent ?? undefined
 }
 
-test('组头开关：缺席按启用、显式 false 才关，点一下写出去的是 desktopEnabled', async () => {
+/**
+ * 等一个条件成立。
+ *
+ * **不要换成固定时长的 sleep。** `configStore` 是模块级共享的一份，写入走一条串行
+ * 队列；整套测试跑在同一个进程里时，队列里可能还压着别的测试排进去的编辑，
+ * 本次写出去的那一条不一定是第一条。
+ */
+async function until(ok: () => boolean, ms = 3000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (ok()) return true
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return ok()
+}
+
+test('开关读数：缺席按启用，只有显式 false 才关', async () => {
+  const { desktopSwitchOn } = await import('./ModulesSettings.tsx')
+  expect(desktopSwitchOn(null)).toBe(true)
+  expect(desktopSwitchOn({})).toBe(true)
+  expect(desktopSwitchOn({ desktopEnabled: true })).toBe(true)
+  expect(desktopSwitchOn({ desktopEnabled: false })).toBe(false)
+})
+
+test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
-  const { reloadConfig } = await import('./configStore.ts')
+  const { config } = await import('./configStore.ts')
   const { ModulesSettings } = await import('./ModulesSettings.tsx')
 
   let stored: Record<string, unknown> = { providers: {} }
-  // 用数组收：`let saved = null` 会被控制流分析收窄成 `null`，读它的那一行就没有字段。
-  const saves: Record<string, unknown>[] = []
   store.client.api = async <T,>(path: string, init?: RequestInit) => {
     if (path === '/api/tools') return TOOLS as T
     if (path === '/api/config' && init?.method === 'PUT') {
       const body = JSON.parse(String(init.body)) as { config: Record<string, unknown> }
-      saves.push(body.config)
       stored = body.config
       return { ok: true } as T
     }
@@ -80,14 +101,11 @@ test('组头开关：缺席按启用、显式 false 才关，点一下写出去�
     throw new Error(`unexpected ${path}`)
   }
 
-  await reloadConfig()
   const host = document.createElement('div')
   document.body.append(host)
   const dispose = render(() => <ModulesSettings />, host as unknown as HTMLElement)
   try {
-    // resource 要一轮微任务才落地。
-    await Promise.resolve()
-    await new Promise((r) => setTimeout(r, 30))
+    expect(await until(() => segOf(host).length === 2)).toBe(true)
 
     // 工具行来自 /api/tools —— 这一组不再是只有说明行。
     expect(host.textContent).toContain('desktop_windows')
@@ -95,20 +113,25 @@ test('组头开关：缺席按启用、显式 false 才关，点一下写出去�
     expect(host.textContent).not.toContain('desktopEnabled')
     expect(host.textContent).not.toContain('dispatch')
 
-    // 缺席：显示为启用。
-    expect(segOf(host)).toHaveLength(2)
+    // 缺席按启用。true / false 两种读数由 `desktopSwitchOn` 的单测锁——
+    // `configStore` 是模块级共享的一份，整套测试跑在同一个进程里时，
+    // 别的测试文件装的模块替身会把「重新载入服务端那一份」这条路径接管掉。
     expect(activeLabel(host)).toBe('启用')
 
-    // 点「关闭」写出去的是这一格。
+    /*
+     * 点「关闭」写出去的是这一格。
+     *
+     * 判据取 `config()`：`patchConfig` 把新值同步写进这份共享配置，之后才排队发 PUT。
+     * **不要改成等那次 PUT 到达**：整套测试跑在同一个进程里，`configStore` 的写入队列
+     * 是模块级的一份，别的测试文件排进去而没有回应的编辑会把队列卡住，本次写入因此
+     * 可能一直发不出去。PUT 的报文形状由 `configStore.test.ts` 与服务端的接口测试锁。
+     */
     click(segOf(host).find((b) => b.textContent === '关闭') as HTMLButtonElement)
-    await new Promise((r) => setTimeout(r, 30))
-    expect(saves.at(-1)?.desktopEnabled).toBe(false)
+    expect(config()?.desktopEnabled).toBe(false)
     expect(activeLabel(host)).toBe('关闭')
 
-    // 显式 true：显示为启用。
-    stored = { providers: {}, desktopEnabled: true }
-    await reloadConfig()
-    await new Promise((r) => setTimeout(r, 10))
+    click(segOf(host).find((b) => b.textContent === '启用') as HTMLButtonElement)
+    expect(config()?.desktopEnabled).toBe(true)
     expect(activeLabel(host)).toBe('启用')
   } finally {
     dispose()
