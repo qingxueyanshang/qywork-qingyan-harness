@@ -316,4 +316,21 @@ describe('能力段', () => {
   test('没有 run_command 就不提 Chrome', () => {
     expect(buildSystemPrompt(new Set(['read_file']))).not.toContain('--user-data-dir')
   })
+
+  /**
+   * 桌面那组工具注册了才发这一行。不说它的代价实测付过：模型手里有这组工具，
+   * 仍然用 run_command 跑自写的截图与按坐标点击的脚本。
+   */
+  test('注册了桌面工具时点名这一组，并点明不要用 run_command 写截图脚本', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
+    expect(prompt).toContain('desktop_windows')
+    expect(prompt).toContain('desktop_observe')
+    expect(prompt).toContain('不要用 run_command 写截图')
+    expect(prompt).toContain('imageX')
+  })
+
+  test('没有桌面工具就不提它们', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command']))
+    expect(prompt).not.toContain('desktop_windows')
+  })
 })

@@ -724,6 +724,61 @@ function modifiersOf(raw: unknown): DesktopModifier[] {
   return out
 }
 
+/** 这个控件在不在标题栏那棵子树里。顺着 `parentRef` 往上走。 */
+function inTitleBar(byRef: Map<string, DesktopElement>, element: DesktopElement): boolean {
+  const seen = new Set<string>()
+  let at: DesktopElement | undefined = element
+  while (at && !seen.has(at.ref)) {
+    seen.add(at.ref)
+    if (at.role === 'title_bar') return true
+    at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
+  }
+  return false
+}
+
+/**
+ * 这份观察里有几个可操作的业务控件。
+ *
+ * 判据只用观察自己：带可执行后台动作、不是窗口根、且不在标题栏子树里。标题栏、
+ * 系统菜单与最小化 / 最大化 / 关闭由系统画，任何顶层窗口都有它们，把它们算进来会
+ * 把自绘界面判成结构上可操作。**不按应用名判。**
+ */
+function operableCount(table: DesktopElement[]): number {
+  const byRef = new Map(table.map((e) => [e.ref, e]))
+  return table.filter(
+    (e) =>
+      !isWindowRoot(e) &&
+      e.actions.some((a) => a.delivery.includes('background')) &&
+      !inTitleBar(byRef, e),
+  ).length
+}
+
+/**
+ * 控件树上一个业务控件都没有的窗口，在回执里如实说明并指出下一步。
+ *
+ * 只在整窗、未截断、未筛选的观察上判：筛出零个控件与「这个窗口没有控件」是两回事，
+ * 混起来会让一次 `role=button` 的空结果被说成应用不暴露控件。
+ *
+ * 前台操作开没开按同一份 delivery 表读：关着时表里一条 `foreground` 都没有。
+ */
+function bareWindowNote(s: DesktopSnapshot): string {
+  if (s.truncated || s.filteredBy.length > 0) return ''
+  if (!s.elements.some(isWindowRoot)) return ''
+  if (operableCount(s.elements) > 0) return ''
+  const foreground = s.elements.some((e) =>
+    e.actions.some((a) => a.delivery.includes('foreground')),
+  )
+  return (
+    '；这个窗口没有暴露可操作的控件，只能按图操作：' +
+    '用 capture=region_image 或 combined 取图，' +
+    '再调 desktop_act 给 imageRef 与 imageX / imageY 点击，' +
+    '输入用 action=type_text 且不给控件' +
+    (foreground
+      ? '。'
+      : '。前台操作此刻没有启用，这个窗口点不了也输不了，要用户在设置的「权限 → 电脑操作 → 前台操作」里打开。')
+  )
+}
+
 /** 一份观察的一行读数：控件数、截断与筛选各说一次。 */
 function snapshotLine(s: DesktopSnapshot): string {
   return (
@@ -897,6 +952,9 @@ export const desktopWindowsTool: ToolSpec = {
   name: 'desktop_windows',
   description:
     '列出本机此刻可操作的顶层窗口。' +
+    '**要操作本机上已经开着的应用（聊天、浏览器之外的桌面软件、系统设置）就从这里开始**，' +
+    '不要用 run_command 写截图脚本或按坐标点击的脚本——这一组工具直接读控件、采图与投递输入，' +
+    '而脚本那条路既看不到控件也拿不到执行事实。' +
     'windowId 是后续观察与动作的唯一入口，由这里给出，无法自己拼出来；' +
     '应用重启或窗口重建之后旧的 windowId 失效，重新调用本工具取新的。' +
     '本工具不截图，也不激活或置前任何窗口。',
@@ -927,6 +985,8 @@ export const desktopObserveTool: ToolSpec = {
     'text 读一个控件的文档文本与选区，要给 observationId 与控件（ref / automationId / name）。' +
     '先用 structure——控件表直接给出名称、值与可执行的动作；' +
     '只有树里找不到目标时（画布、无名图标、自绘界面）才采图。' +
+    '回执写着「这个窗口没有暴露可操作的控件」就是自绘界面，' +
+    '改用 combined 或 region_image 取图，之后所有动作按图给坐标。' +
     '控件表给出角色、名称、稳定标识、当前值、是否启用，' +
     'actions（每个动作带 delivery 与不可用原因），' +
     '以及控件模式读到的状态：range 数值区间、toggle 复选现态、expand 展开现态、' +
@@ -1074,7 +1134,9 @@ export const desktopObserveTool: ToolSpec = {
         ...(args.includeState === false ? { includeState: false } : {}),
       }
       const snapshot = await send(() => desktop.observe(input))
-      const line = `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}`
+      const line =
+        `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}` +
+        bareWindowNote(snapshot)
       if (capture === 'structure') {
         return { status: 'success', message: line, data: { ...snapshot } }
       }
@@ -1182,8 +1244,12 @@ export const desktopActTool: ToolSpec = {
     'hover 把指针移到控件上；' +
     'drag 从控件按住拖到终点，终点给 toRef（另一个控件）或 dx/dy（相对起点的屏幕像素）；' +
     'wheel 在控件上滚 amount 格，方向由 direction 给；' +
-    'type_text 把 text 输进当前持有键盘焦点的控件——它只出现在那一个控件的 actions 里，' +
-    '要先 click 它取得焦点；press_key 按一个键，key 用 a-z / 0-9 / f1-f24 / ' +
+    'type_text 把 text 输进当前持有键盘焦点的控件——它出现在那一个控件的 actions 里，' +
+    '要先 click 它取得焦点；' +
+    '自绘界面没有这样的控件，那时 type_text 出现在窗口根节点上，' +
+    '调用时不给 ref / automationId / name，输入直接投给这个窗口——' +
+    '先按图 click 一下输入区把光标放进去，再这样发；' +
+    'press_key 按一个键，key 用 a-z / 0-9 / f1-f24 / ' +
     'enter / tab / escape / space / backspace / delete / insert / home / end / ' +
     'page_up / page_down / up / down / left / right 这些名字，modifiers 给 ctrl / alt / shift / win；' +
     'activate 把窗口切到前台，受系统前台锁限制，被拒时如实返回 not_dispatched；' +
@@ -1192,7 +1258,10 @@ export const desktopActTool: ToolSpec = {
     'close_window 请求关闭窗口（不是结束进程），有未保存内容时会弹出提示框，' +
     '那时结果里带 blocking，观察它再由用户或后续判断决定选哪一项。' +
     '指针动作还可以不给控件，改给 imageRef 加 imageX / imageY——' +
-    '用上一次采图返回的 imageRef 与图像坐标，窗口在采图之后移动过则被拒，重新采图即可。' +
+    'imageRef 取自上一次 desktop_observe 采图的回执，imageX / imageY 是**那张图里的像素坐标**' +
+    '（左上角是 0,0，按回执里 geometry 的 imageWidth × imageHeight 取值），' +
+    '不是屏幕坐标、不是百分比，换算与落点归属由服务端与宿主负责核对；' +
+    '窗口在采图之后移动过则被拒，重新采图即可。' +
     '目标可以给 ref，也可以给 automationId 或 name（可加 role 收窄）；' +
     '匹配到多个时不执行，结果里按祖先路径列出候选，改用 ref 点名。' +
     '结果里的 dispatch 有三种：not_dispatched 表示没有执行，submitted 表示调用已被系统接受，' +
@@ -1207,7 +1276,10 @@ export const desktopActTool: ToolSpec = {
       windowId: { type: 'string' },
       observationId: { type: 'string', description: '取自 desktop_observe' },
       action: { type: 'string', enum: ACTIONS },
-      ref: { type: 'string', description: '控件编号，取自同一份观察' },
+      ref: {
+        type: 'string',
+        description: '控件编号，取自同一份观察；type_text / press_key 可以不给，那时目标是窗口',
+      },
       automationId: { type: 'string', description: '按稳定标识定位，要求唯一命中' },
       name: { type: 'string', description: '按名称定位，要求唯一命中' },
       role: { type: 'string', description: '与 automationId 或 name 一起收窄匹配' },

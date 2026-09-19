@@ -1955,6 +1955,106 @@ describe('前台动作', () => {
     expect(calls).toEqual([])
   })
 
+  /**
+   * 自绘界面的观察回执要自己说清「这里没有控件」与下一步，不然模型只会反复读树，
+   * 或者绕去 shell 写截图脚本。
+   */
+  test('树上只有窗口与标题栏时，观察回执指出要取图并给坐标', async () => {
+    const 标题栏: DesktopElement = {
+      ref: 'w.1#20',
+      parentRef: 'w#1',
+      depth: 1,
+      role: 'title_bar',
+      name: '',
+      automationId: 'TitleBar',
+      value: '自绘',
+      enabled: true,
+      offscreen: false,
+      actions: [{ action: 'set_value', delivery: ['background'] }],
+    }
+    const 关闭按钮: DesktopElement = {
+      ref: 'w.1.3#21',
+      parentRef: 'w.1#20',
+      depth: 2,
+      role: 'button',
+      name: '关闭',
+      automationId: 'Close',
+      enabled: true,
+      offscreen: false,
+      actions: [{ action: 'invoke', delivery: ['background'] }],
+    }
+    const 画布: DesktopElement = {
+      ref: 'w.0#22',
+      parentRef: 'w#1',
+      depth: 1,
+      role: 'pane',
+      name: '',
+      automationId: 'canvas',
+      enabled: true,
+      offscreen: false,
+      actions: [{ action: 'click', delivery: ['foreground'] }],
+    }
+    const bare = [自绘窗口, 画布, 标题栏, 关闭按钮]
+    const { port } = fakeDesktop({
+      observe: async () => snapshot({ elements: bare }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'structure' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('这个窗口没有暴露可操作的控件')
+    expect(r.message).toContain('imageX')
+    expect(r.message).toContain('type_text')
+    // 前台开着（表里有 foreground），不该再说「要用户去设置里打开」。
+    expect(r.message).not.toContain('前台操作此刻没有启用')
+  })
+
+  test('前台操作关着时，同一句话补上要用户去设置里打开', async () => {
+    const 后台窗口: DesktopElement = { ...窗口, actions: [] }
+    const 画布: DesktopElement = {
+      ref: 'w.0#22',
+      parentRef: 'w#1',
+      depth: 1,
+      role: 'pane',
+      name: '',
+      automationId: 'canvas',
+      enabled: true,
+      offscreen: false,
+      actions: [],
+    }
+    const { port } = fakeDesktop({
+      observe: async () => snapshot({ elements: [后台窗口, 画布] }),
+    })
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).toContain('这个窗口没有暴露可操作的控件')
+    expect(r.message).toContain('前台操作此刻没有启用')
+  })
+
+  /** 筛出零个控件与「这个窗口没有控件」是两回事，混起来就成了一句假话。 */
+  test('筛过或截断的观察不说这句话', async () => {
+    const { port } = fakeDesktop({
+      observe: async () => snapshot({ elements: [自绘窗口], filteredBy: ['role=button'] }),
+    })
+    const filtered = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(filtered.message).not.toContain('没有暴露可操作的控件')
+
+    const { port: cut } = fakeDesktop({
+      observe: async () =>
+        snapshot({ elements: [自绘窗口], truncated: true, truncatedBy: ['max_nodes'] }),
+    })
+    const truncated = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(cut))
+    expect(truncated.message).not.toContain('没有暴露可操作的控件')
+  })
+
+  /** 有业务控件的窗口不该被说成自绘界面。 */
+  test('树里有可操作的业务控件时不说这句话', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).not.toContain('没有暴露可操作的控件')
+  })
+
   test('组合键的修饰键按词表校验，重复的只留一份', async () => {
     const { port, calls } = foregroundPort()
     await run(
