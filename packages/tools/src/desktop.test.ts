@@ -1943,6 +1943,84 @@ describe('前台动作', () => {
     expect(calls).toEqual([])
   })
 
+  /**
+   * `type_text` 之后读回来的值里没有这段文字时不许报成功。
+   *
+   * 派发事实与读回是两件事：`SendInput` 收下了全部事件只说明事件进了系统输入队列，
+   * 目标控件里落成什么字要按动作后的重读判。少了这一条，一次把
+   * 「哦哦行，那你先用这个号跑吧」打成「哦哦行，，先用这个号跑吧」的输入在回执里
+   * 与打对了完全一样。
+   */
+  function typedPort(value: string | null) {
+    // 值缺席要把键去掉，不是给空串：空串是「控件里此刻是空的」，缺席是「这个控件不回值」。
+    const { value: _dropped, ...无值框 } = 焦点框
+    return foregroundPort({
+      act: async () => ({
+        dispatch: 'submitted' as const,
+        actionId: 'da_9',
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [value === null ? 无值框 : { ...焦点框, value }],
+        }),
+      }),
+    })
+  }
+
+  const 输入 = (port: DesktopPort, text: string) =>
+    run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'w.10#17', text },
+      ctxWith(port),
+    )
+
+  test('type_text 读回的值里没有这段文字时按读回不一致返回，不报成功', async () => {
+    const { port } = typedPort('哦哦行，，先用这个号跑吧')
+    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_readback_mismatch',
+    })
+    expect(r.message).toContain('读回不一致')
+    expect(r.message).toContain('不要重发同一段')
+    // 控件此刻的内容由观察那一行给，读回这句不再印一遍。
+    expect(r.message).toContain('"哦哦行，，先用这个号跑吧"')
+  })
+
+  test('type_text 落在已有内容后面时读回按含不含判，仍然是成功', async () => {
+    const { port } = typedPort('原有内容哦哦行，那你先用这个号跑吧')
+    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
+    expect(r.status).toBe('success')
+    expect(r.message).not.toContain('读回不一致')
+    expect(r.message).not.toContain('取图核对')
+  })
+
+  test('type_text 的目标读不回控件值时回执指出改用取图核对', async () => {
+    const { port } = typedPort(null)
+    const r = await 输入(port, '张三')
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('取图核对')
+    expect(r.message).not.toContain('读回不一致')
+  })
+
+  test('读回只管 type_text，别的动作不按输入文字判', async () => {
+    const { port } = typedPort('别的值')
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_value',
+        ref: 'w.10#17',
+        value: '张三',
+      },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).not.toContain('读回不一致')
+    expect(r.message).not.toContain('取图核对')
+  })
+
   test('键盘之外的动作不点名控件仍然要求目标', async () => {
     const { port, calls } = 自绘Port()
     const r = await run(

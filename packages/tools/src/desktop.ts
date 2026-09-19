@@ -790,36 +790,73 @@ function snapshotLine(s: DesktopSnapshot): string {
 }
 
 /**
+ * `type_text` 之后目标控件里有没有这段文字。
+ *
+ * 判据是「含不含」不是「等不等」：输入落在光标处，控件原本可能已经有内容。
+ *
+ * 读不回值的目标（窗口本身、不暴露 ValuePattern 的控件）判不了，返回 `unreadable`，
+ * **不要按通过算**：输入事件进了系统输入队列不等于目标收下了这段文字，
+ * 回执因此只说读不回，由调用方取图核对。
+ */
+function typedReadback(
+  action: DesktopAction,
+  target: DesktopElement | undefined,
+): 'match' | 'mismatch' | 'unreadable' | null {
+  if (action.kind !== 'type_text') return null
+  if (target?.value === undefined) return 'unreadable'
+  return target.value.includes(action.text) ? 'match' : 'mismatch'
+}
+
+/**
  * 三态回执与动作后的新观察合成一个结果。
  *
  * `not_dispatched` 是唯一允许 `executed:false` 的一种；另外两种一律 `executed:true`，
  * 重读缺席也不改这个判定——动作可能已经生效，重发一次等于多做一次。
+ *
+ * 执行事实与后置条件分列：`dispatch` 说的是事件有没有交给系统，读回说的是目标里现在是
+ * 什么，两者可以一个成立一个不成立。
  */
-function actOutcome(action: DesktopActionKind, ref: string, r: DesktopActResult): ToolOutcome {
+function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
     return {
       status: 'failure',
       executed: false,
-      message: `${action} 没有执行：${r.reason ?? '宿主拒绝了这次请求'}`,
+      message: `${action.kind} 没有执行：${r.reason ?? '宿主拒绝了这次请求'}`,
       data: receipt,
       errorKind: 'desktop_not_dispatched',
     }
   }
   const unknown = r.dispatch === 'unknown'
   const lead = unknown
-    ? `${action} 的结果未知：${r.reason ?? '调用已发出但没有确认'}。`
-    : `${action} 已执行。`
+    ? `${action.kind} 的结果未知：${r.reason ?? '调用已发出但没有确认'}。`
+    : `${action.kind} 已执行。`
   const advice = '先 desktop_observe 确认应用的实际状态，不要重放这个动作。'
   if (r.observation) {
     const target = r.observation.elements.find((e) => e.ref === ref)
+    const readback = typedReadback(action, target)
+    const mismatch = readback === 'mismatch'
+    const failed = unknown || mismatch
+    const readbackNote =
+      readback === 'mismatch'
+        ? '。读回不一致：目标控件里读不到这段文字，按它此刻的内容决定下一步，' +
+          '不要重发同一段——重发是在已有内容后面再追加一次'
+        : readback === 'unreadable'
+          ? '。这个目标读不回控件值，输入结果用 desktop_observe 的 capture 取图核对'
+          : ''
     return {
-      status: unknown ? 'failure' : 'success',
-      ...(unknown ? { executed: true, errorKind: 'desktop_unknown' } : {}),
+      status: failed ? 'failure' : 'success',
+      ...(failed
+        ? {
+            executed: true,
+            errorKind: unknown ? 'desktop_unknown' : 'desktop_readback_mismatch',
+          }
+        : {}),
       message:
         `${lead}新观察 ${snapshotLine(r.observation)}` +
         (target ? `；目标现在是 ${elementLine(target)}` : '') +
+        readbackNote +
         (unknown ? `。${advice}` : ''),
       data: { ...receipt, observation: r.observation },
     }
@@ -1249,6 +1286,8 @@ export const desktopActTool: ToolSpec = {
     '自绘界面没有这样的控件，那时 type_text 出现在窗口根节点上，' +
     '调用时不给 ref / automationId / name，输入直接投给这个窗口——' +
     '先按图 click 一下输入区把光标放进去，再这样发；' +
+    'type_text 的结果按动作后重读的控件值核对：读不到这段文字返回 desktop_readback_mismatch，' +
+    '读不回控件值的目标（窗口本身、不暴露值的控件）在回执里说明，改用取图核对；' +
     'press_key 按一个键，key 用 a-z / 0-9 / f1-f24 / ' +
     'enter / tab / escape / space / backspace / delete / insert / home / end / ' +
     'page_up / page_down / up / down / left / right 这些名字，modifiers 给 ctrl / alt / shift / win；' +
@@ -1345,7 +1384,7 @@ export const desktopActTool: ToolSpec = {
         }
         const action = buildAction([], pointTarget(), kind, args, TARGET_PARAMS)
         const r = await send(() => desktop.act({ windowId, observationId, at, action }))
-        return actOutcome(kind, at.imageRef, r)
+        return actOutcome(action, at.imageRef, r)
       }
       const table = desktop.elements(windowId, observationId)
       // 键盘输入不点名控件时目标是窗口本身：观察里窗口根节点上的 type_text /
@@ -1366,7 +1405,7 @@ export const desktopActTool: ToolSpec = {
           action,
         }),
       )
-      return actOutcome(kind, element.ref, r)
+      return actOutcome(action, element.ref, r)
     }),
 }
 
