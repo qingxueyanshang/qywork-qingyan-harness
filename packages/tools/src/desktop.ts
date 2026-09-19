@@ -1,13 +1,14 @@
 /**
- * 电脑操作的四个工具：窗口发现、结构化观察、动作、等待。
+ * 电脑操作的五个工具：窗口发现、结构化观察、动作、有限动作序列、等待。
  *
- * 一次调用一个有限动作：发一条端口命令就返回，由 Agent 循环再决定下一步。
- * 这里不自己循环、不重试有副作用的动作——重试一次 invoke 等于在应用里多提交一次。
+ * 单个动作一次调用发一条端口命令就返回，由 Agent 循环再决定下一步。序列是同一个
+ * `DesktopPort.act` 的有界循环，不重试有副作用的动作——重试一次 invoke 等于在应用里
+ * 多提交一次。
  *
- * 五条边界：
+ * 六条边界：
  *
  * 1. **端口只从 `ctx.desktop` 取。** 参数里自报的会话、Run、窗口句柄一概不读；
- *    模型手里只有端口发放的不透明 `windowId`。没有端口时这四个工具不注册
+ *    模型手里只有端口发放的不透明 `windowId`。没有端口时这五个工具不注册
  *    （`index.ts` 按通道注册），工具体里仍判一次并如实报错。
  * 2. **动作前的唯一匹配与前置条件在这里判完再调端口。** 目标不唯一、控件缺失、
  *    动作不可用、控件被禁用，四种都在派发之前作为工具结果交回模型，
@@ -19,10 +20,13 @@
  *    接受，`unknown` 是可能已经生效。只有第一种允许 `executed:false`。
  * 5. **歧义只列候选，不打分。** 同名控件按祖先路径区分，选哪一个由模型定；
  *    这里不按顺序、不按相似度替它挑。
+ * 6. **序列遇到边界即截断后缀，已派发的前缀如实保留。** 后缀不会被补做，
+ *    前缀不会被重放。
  */
 
 import type {
   DesktopActResult,
+  DesktopBlockingWindowInfo,
   DesktopElement,
   DesktopFollowUp,
   DesktopImage,
@@ -36,6 +40,7 @@ import type {
 import type {
   DesktopAction,
   DesktopActionKind,
+  DesktopDispatch,
   DesktopModifier,
   DesktopMouseButton,
   DesktopRect,
@@ -96,6 +101,27 @@ const ACTIONS: readonly DesktopActionKind[] = [
   'resize_window',
   'close_window',
 ]
+/**
+ * 序列接受的动作：经控件模式发出的那十三种。
+ *
+ * 其余动作用真实指针与键盘，每一步都会改变前台与焦点，后面那些步骤的前置条件因此
+ * 不再独立成立。不要把它们加进来，序列没有重新取得焦点的手段。
+ */
+const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = [
+  'invoke',
+  'set_value',
+  'set_range_value',
+  'select',
+  'add_to_selection',
+  'remove_from_selection',
+  'set_toggle',
+  'expand',
+  'collapse',
+  'scroll',
+  'scroll_into_view',
+  'realize_item',
+  'select_text',
+]
 /** 接受图像点落点的那几种。其余动作只能按控件执行。 */
 const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
 const MOUSE_BUTTONS: readonly DesktopMouseButton[] = ['left', 'right', 'middle']
@@ -121,6 +147,39 @@ const WAIT_CONDITIONS: readonly DesktopWaitCondition[] = [
 ]
 /** 这几种条件盯的是一个已知控件，必须给 `ref` 或者能唯一定位到它的条件。 */
 const REF_CONDITIONS: readonly DesktopWaitCondition[] = ['enabled', 'value', 'gone']
+
+/**
+ * 一次序列最多几步。
+ *
+ * 整组在同一次桌面占用里跑完，期间别的执行者进不来；每一步还带一次动作后重读。
+ * 十步的占用时长与 `desktop_wait` 一次的上限同级，再长就该让模型重新观察一次。
+ */
+const MAX_STEPS = 10
+/** 一步的后置条件最多等多久。 */
+const MAX_EXPECT_MS = 15_000
+/** 调用方没给时长时，一步的后置条件等多久。 */
+const DEFAULT_EXPECT_MS = 3_000
+/** 序列里一步的后置条件。 */
+const EXPECTATIONS = ['value', 'toggle', 'selected', 'gone', 'appears'] as const
+type Expectation = (typeof EXPECTATIONS)[number]
+/**
+ * 后置条件对应的宿主等待条件。**缺席的两种没有宿主等待**：`toggle` 与 `selected`
+ * 经 TogglePattern / SelectionItemPattern 同步写入，按动作自己带回的那份观察判一次；
+ * 本地不另开轮询，判定只在宿主那一侧做。
+ */
+const EXPECT_WAITS: Partial<Record<Expectation, DesktopWaitCondition>> = {
+  value: 'value',
+  gone: 'gone',
+  appears: 'appears',
+}
+/** 后置条件接受的参数。给了不属于这一种的即拒绝，同 `ACTION_PARAMS`。 */
+const EXPECT_PARAMS: Record<Expectation, readonly string[]> = {
+  value: ['value', 'timeoutMs'],
+  toggle: ['state'],
+  selected: [],
+  gone: ['timeoutMs'],
+  appears: ['name', 'role', 'timeoutMs'],
+}
 
 /**
  * 调用端口之前判出来的参数错与前置条件不满足。
@@ -196,7 +255,7 @@ function declaredExecuted(err: unknown): boolean | undefined {
 }
 
 /**
- * 四个工具共用的前置判定与终态。
+ * 五个工具共用的前置判定与终态。
  *
  * 停止之后不再发起新动作：等待中的那一次由端口自己拒绝，这里挡的是新来的。
  * 异常的 `executed` 先认端口自己声明的那一份，缺席时取自 `send` 有没有被调过——
@@ -434,12 +493,18 @@ const ACTION_PARAMS: Record<DesktopActionKind, readonly string[]> = {
 
 /** 定位目标用的参数。它们对每种动作都成立，不参与动作参数的核对。 */
 const TARGET_PARAMS = ['windowId', 'observationId', 'action', 'ref', 'automationId', 'name', 'role']
+/** 序列里一步认的定位参数。窗口与观察编号是整组给的，不写在步里。 */
+const STEP_PARAMS = ['action', 'ref', 'automationId', 'name', 'role', 'expect']
 /** 按图定位用的参数。只有指针动作接受它们。 */
 const POINT_PARAMS = ['imageRef', 'imageX', 'imageY']
 
-function checkActionParams(kind: DesktopActionKind, args: Record<string, unknown>): void {
+function checkActionParams(
+  kind: DesktopActionKind,
+  args: Record<string, unknown>,
+  target: readonly string[],
+): void {
   const allowed = new Set<string>([
-    ...TARGET_PARAMS,
+    ...target,
     ...(POINTER_ACTIONS.includes(kind) ? POINT_PARAMS : []),
     ...ACTION_PARAMS[kind],
   ])
@@ -454,8 +519,9 @@ function buildAction(
   element: DesktopElement,
   kind: DesktopActionKind,
   args: Record<string, unknown>,
+  target: readonly string[],
 ): DesktopAction {
-  checkActionParams(kind, args)
+  checkActionParams(kind, args, target)
   switch (kind) {
     case 'invoke':
     case 'select':
@@ -754,7 +820,7 @@ function padded(rect: DesktopRect, pad: number): DesktopRect {
   }
 }
 
-/** 四个工具的目标都是那个窗口。`desktop_windows` 没有窗口可指，见它自己的 spec。 */
+/** 其余四个工具的目标都是那个窗口。`desktop_windows` 没有窗口可指，见它自己的 spec。 */
 function windowTarget(args: Record<string, unknown>): string | null {
   return given(args.windowId) ? String(args.windowId).trim() : null
 }
@@ -1142,14 +1208,14 @@ export const desktopActTool: ToolSpec = {
           x: bounded(args.imageX, 'imageX', 0, MAX_IMAGE_COORD),
           y: bounded(args.imageY, 'imageY', 0, MAX_IMAGE_COORD),
         }
-        const action = buildAction([], pointTarget(), kind, args)
+        const action = buildAction([], pointTarget(), kind, args, TARGET_PARAMS)
         const r = await send(() => desktop.act({ windowId, observationId, at, action }))
         return actOutcome(kind, at.imageRef, r)
       }
       const table = desktop.elements(windowId, observationId)
       const element = resolveTarget(table, args)
       checkPrecondition(element, kind)
-      const action = buildAction(table ?? [], element, kind, args)
+      const action = buildAction(table ?? [], element, kind, args, TARGET_PARAMS)
 
       const r = await send(() => desktop.act({ windowId, observationId, ref: element.ref, action }))
       return actOutcome(kind, element.ref, r)
@@ -1173,6 +1239,559 @@ function pointTarget(): DesktopElement {
     offscreen: false,
     actions: [],
   }
+}
+
+/** 一步的后置条件，参数按 `until` 收窄。`timeoutMs` 只对有宿主等待的那几种有意义。 */
+interface ExpectPlan {
+  until: Expectation
+  value?: string
+  state?: DesktopToggleState
+  name?: string
+  role?: string
+  timeoutMs: number
+}
+
+/** 一步解析出来的计划。目标留在 `args` 里，**每一步按轮到它时手上那份控件表解析**。 */
+interface StepPlan {
+  index: number
+  kind: DesktopActionKind
+  args: Record<string, unknown>
+  expect: ExpectPlan | null
+}
+
+/** 一步的回执。`dispatch` 是执行事实，`expect` 是后置条件的判定结果，两者分列。 */
+interface StepReceipt {
+  index: number
+  action: DesktopActionKind
+  /** 解析成功时是控件 ref，解析失败时是这一步给的定位条件。 */
+  target: string
+  actionId?: string
+  dispatch: DesktopDispatch
+  reason?: string
+  expect?: { until: Expectation; met: boolean }
+  durationMs: number
+}
+
+/** 序列停在哪一步、为什么。`advice` 只有 `unknown` 那一支有。 */
+interface Halt {
+  index: number
+  reason: string
+  errorKind: string
+  advice?: string
+}
+
+/** 动作调用没有带回重读时手上剩下的那点事实。 */
+interface Unread {
+  blocking?: DesktopBlockingWindowInfo[]
+  observationError?: string
+}
+
+/**
+ * 序列走到此刻的观察。
+ *
+ * 每一步的动作与等待都换一个观察编号并带回新的控件表，下一步按手上这一份解析目标。
+ * `table` 为 `null` 表示这一次没有重读，后面的步骤无从解析，序列到此为止。
+ */
+interface Cursor {
+  observationId: string
+  table: DesktopElement[] | null
+  last: DesktopSnapshot | null
+  unread: Unread
+}
+
+/** `unknown` 之后给模型的下一步。与单动作同一句话。 */
+const UNKNOWN_ADVICE = '先 desktop_observe 确认应用的实际状态，不要重放这一步。'
+
+/**
+ * 把 `steps` 解析成有类型的计划。**一条不合格整组拒绝，一步都不派发。**
+ *
+ * 目标不在这里解析：第一步之后的控件表由上一步的动作回执带回，解析要用那一份。
+ */
+function planSteps(raw: unknown): StepPlan[] {
+  if (!Array.isArray(raw)) throw new ArgError('steps 必须是数组')
+  if (raw.length === 0) throw new ArgError('steps 至少给一步')
+  if (raw.length > MAX_STEPS) {
+    throw new ArgError(`一次最多 ${MAX_STEPS} 步，给的是 ${raw.length} 步，拆成几次调用。`)
+  }
+  return raw.map((item, at) => {
+    const index = at + 1
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new ArgError(`第 ${index} 步不是一个对象`)
+    }
+    const args = item as Record<string, unknown>
+    const kind = stepKind(args.action, index)
+    checkActionParams(kind, args, STEP_PARAMS)
+    return { index, kind, args, expect: expectOf(args.expect, index) }
+  })
+}
+
+/**
+ * 这一步的动作。前台动作单独给一句话：它们在 `desktop_act` 上是可用的，
+ * 模型要知道换哪个入口，而不只是「这个词不认」。
+ */
+function stepKind(raw: unknown, index: number): DesktopActionKind {
+  const value = String(raw ?? '')
+  if (SEQUENCE_ACTIONS.includes(value as DesktopActionKind)) return value as DesktopActionKind
+  if (ACTIONS.includes(value as DesktopActionKind)) {
+    throw new ArgError(
+      `第 ${index} 步的 ${value} 用真实指针或键盘执行，序列不接受，` +
+        '它会改变前台与焦点，后面几步的前置条件因此不再成立；用 desktop_act 单独执行它。',
+    )
+  }
+  throw new ArgError(
+    `第 ${index} 步的 action 只能是 ${SEQUENCE_ACTIONS.join(' / ')}，收到 ${JSON.stringify(raw)}`,
+  )
+}
+
+function expectOf(raw: unknown, index: number): ExpectPlan | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ArgError(`第 ${index} 步的 expect 不是一个对象`)
+  }
+  const o = raw as Record<string, unknown>
+  const at = `第 ${index} 步的 expect`
+  const until = oneOf(o.until, EXPECTATIONS, `${at}.until`)
+  const allowed = new Set<string>(['until', ...EXPECT_PARAMS[until]])
+  const extra = Object.keys(o).filter((key) => !allowed.has(key) && o[key] !== undefined)
+  if (extra.length) throw new ArgError(`${at}.until=${until} 不接受 ${extra.join(' / ')}`)
+  if (until === 'value' && (o.value === undefined || o.value === null)) {
+    throw new ArgError(`${at}.until=value 必须给 value`)
+  }
+  if (until === 'appears' && !given(o.name) && !given(o.role)) {
+    throw new ArgError(`${at}.until=appears 必须给 name 或 role`)
+  }
+  return {
+    until,
+    ...(until === 'value' ? { value: String(o.value) } : {}),
+    ...(until === 'toggle' ? { state: oneOf(o.state, TOGGLE_STATES, `${at}.state`) } : {}),
+    ...(until === 'appears' && given(o.name) ? { name: str(o.name, `${at}.name`) } : {}),
+    ...(until === 'appears' && given(o.role) ? { role: str(o.role, `${at}.role`) } : {}),
+    timeoutMs: given(o.timeoutMs)
+      ? bounded(o.timeoutMs, `${at}.timeoutMs`, MIN_WAIT_MS, MAX_EXPECT_MS)
+      : DEFAULT_EXPECT_MS,
+  }
+}
+
+/**
+ * 后置条件成立没有，判据是**交回模型的那份控件表**。
+ *
+ * 只有一个判定处：宿主等待只是在有界时间内换一份更新的表，满足与否仍按表读。
+ */
+function metBy(table: DesktopElement[] | null, ref: string, expect: ExpectPlan): boolean {
+  if (!table) return false
+  const target = table.find((e) => e.ref === ref)
+  switch (expect.until) {
+    case 'value':
+      return target?.value === expect.value
+    case 'toggle':
+      return target?.toggle === expect.state
+    case 'selected':
+      return target?.selected === true
+    case 'gone':
+      return target === undefined
+    case 'appears':
+      return table.some((e) => appeared(e, expect))
+  }
+}
+
+/** `appears` 的匹配：角色相等，名称或稳定标识含那段文字，不分大小写。 */
+function appeared(e: DesktopElement, expect: ExpectPlan): boolean {
+  if (expect.role !== undefined && e.role !== expect.role) return false
+  if (expect.name === undefined) return true
+  const needle = expect.name.toLowerCase()
+  return e.name.toLowerCase().includes(needle) || e.automationId.toLowerCase().includes(needle)
+}
+
+/** 这一步的定位条件，解析失败时的回执按它说得出「是哪一步的哪个目标」。 */
+function targetLabel(args: Record<string, unknown>): string {
+  if (given(args.ref)) return String(args.ref).trim()
+  const query = describeQuery(
+    given(args.role) ? String(args.role).trim() : undefined,
+    given(args.automationId) ? String(args.automationId).trim() : undefined,
+    given(args.name) ? String(args.name).trim() : undefined,
+  )
+  return query || '(没有给定位条件)'
+}
+
+function stepLine(r: StepReceipt): string {
+  const fact =
+    r.dispatch === 'not_dispatched' ? '没有执行' : r.dispatch === 'unknown' ? '结果未知' : '已执行'
+  const expect =
+    r.expect === undefined
+      ? ''
+      : ` · 后置条件 ${r.expect.until} ${r.expect.met ? '已满足' : '未满足'}`
+  return (
+    `${r.index} ${r.action} ${r.target} ${fact}` +
+    (r.reason === undefined ? '' : `：${r.reason}`) +
+    expect
+  )
+}
+
+/** 句末只留一个句号。拒绝原因有的自带句号，有的没有。 */
+function sentence(text: string): string {
+  return text.endsWith('。') ? text : `${text}。`
+}
+
+/** 最后一份观察的那一行。没有重读时改说目标窗口此刻的窗口清单或读不到的原因。 */
+function tailLine(last: DesktopSnapshot | null, unread: Unread): string {
+  if (last) return `最后观察 ${snapshotLine(last)}`
+  const blocking = unread.blocking ?? []
+  if (blocking.length) {
+    const appearedWindows = blocking.filter((w) => w.appeared)
+    const listed = (appearedWindows.length ? appearedWindows : blocking)
+      .map((w) => `${w.windowId} ${w.app} ${w.title || '(无标题)'}`)
+      .join('；')
+    return appearedWindows.length
+      ? `目标窗口此刻在响应这次调用，没有重读它。这个应用新出现了窗口：${listed}。对它 desktop_observe 继续。`
+      : `目标窗口此刻在响应这次调用，没有重读它。这个应用当前的窗口：${listed}。`
+  }
+  return `没有取得最后一份观察：${unread.observationError ?? '宿主没有回传动作之后的读数'}`
+}
+
+/**
+ * 把逐步回执合成一个工具结果。
+ *
+ * `executed` 与单动作同一条判据：只要有一步的执行事实不是 `not_dispatched`，
+ * 这次调用就不是未执行，后缀没做不改变这一点。
+ */
+function sequenceOutcome(
+  plans: StepPlan[],
+  done: StepReceipt[],
+  halt: Halt | null,
+  last: DesktopSnapshot | null,
+  unread: Unread,
+): ToolOutcome {
+  const dispatched = done.filter((r) => r.dispatch !== 'not_dispatched').map((r) => r.index)
+  const notExecuted = plans.filter((p) => !dispatched.includes(p.index)).map((p) => p.index)
+  const attempted = new Set(done.map((r) => r.index))
+  const pending = plans.filter((p) => !attempted.has(p.index))
+  const lines = done.map(stepLine)
+  const head = halt
+    ? `${dispatched.length} 步已派发，${notExecuted.length} 步未执行。`
+    : `${plans.length} 步全部执行。`
+  const stopped = halt
+    ? `停在第 ${halt.index} 步：${sentence(halt.reason)}` +
+      (pending.length ? `未执行：${pending.map((p) => `${p.index} ${p.kind}`).join('、')}。` : '') +
+      (halt.advice === undefined ? '' : halt.advice)
+    : ''
+  return {
+    status: halt ? 'failure' : 'success',
+    executed: dispatched.length > 0,
+    message: [head, ...lines, stopped, tailLine(last, unread)].filter(Boolean).join('\n'),
+    data: {
+      steps: done,
+      dispatched,
+      notExecuted,
+      ...(halt ? { stoppedAt: halt.index, stopReason: halt.reason } : {}),
+      ...(last ? { observation: last } : {}),
+      ...unread,
+    },
+    ...(halt ? { errorKind: halt.errorKind } : {}),
+  }
+}
+
+/** 动作或等待带回的重读接到 `cursor` 上。没有重读时控件表整份作废，序列到此为止。 */
+function advance(
+  cursor: Cursor,
+  follow: DesktopFollowUp & { blocking?: DesktopBlockingWindowInfo[] },
+): void {
+  if (follow.observation) {
+    cursor.observationId = follow.observation.observationId
+    cursor.table = follow.observation.elements
+    cursor.last = follow.observation
+    cursor.unread = {}
+    return
+  }
+  cursor.table = null
+  cursor.last = null
+  cursor.unread = {
+    ...(follow.blocking ? { blocking: follow.blocking } : {}),
+    ...(follow.observationError === undefined ? {} : { observationError: follow.observationError }),
+  }
+}
+
+/**
+ * 执行一步，回它的回执与该不该停。
+ *
+ * 目标解析、前置条件与动作组装都按 `cursor` 手上那份控件表做，与单动作同一套判定。
+ * **这里不抛异常**：异常会把已派发的前缀一起丢掉，而那些动作已经发生了。
+ */
+async function runStep(
+  desktop: DesktopPort,
+  send: PortCall,
+  windowId: string,
+  cursor: Cursor,
+  plan: StepPlan,
+): Promise<{ receipt: StepReceipt; halt: Halt | null }> {
+  let element: DesktopElement
+  let action: DesktopAction
+  // 目标解析成功之后回执改记 ref：前置条件与值域那几条拒绝说的是一个已经定位到的控件。
+  let target = targetLabel(plan.args)
+  try {
+    element = resolveTarget(cursor.table, plan.args)
+    target = element.ref
+    checkPrecondition(element, plan.kind)
+    action = buildAction(cursor.table ?? [], element, plan.kind, plan.args, STEP_PARAMS)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    return {
+      receipt: {
+        index: plan.index,
+        action: plan.kind,
+        target,
+        dispatch: 'not_dispatched',
+        reason,
+        durationMs: 0,
+      },
+      halt: { index: plan.index, reason, errorKind: declaredKind(err) ?? 'invalid_argument' },
+    }
+  }
+
+  const started = Date.now()
+  let result: DesktopActResult
+  try {
+    result = await send(() =>
+      desktop.act({ windowId, observationId: cursor.observationId, ref: element.ref, action }),
+    )
+  } catch (err) {
+    // 端口自己声明了执行前拒绝才算没发出去；其余一律按可能已生效收尾。
+    const refused = declaredExecuted(err) === false
+    const reason = err instanceof Error ? err.message : String(err)
+    return {
+      receipt: {
+        index: plan.index,
+        action: plan.kind,
+        target: element.ref,
+        dispatch: refused ? 'not_dispatched' : 'unknown',
+        reason,
+        durationMs: Date.now() - started,
+      },
+      halt: {
+        index: plan.index,
+        reason,
+        errorKind: declaredKind(err) ?? (refused ? 'invalid_argument' : 'desktop_unknown'),
+        ...(refused ? {} : { advice: UNKNOWN_ADVICE }),
+      },
+    }
+  }
+
+  const receipt: StepReceipt = {
+    index: plan.index,
+    action: plan.kind,
+    target: element.ref,
+    actionId: result.actionId,
+    dispatch: result.dispatch,
+    ...(result.reason === undefined ? {} : { reason: result.reason }),
+    durationMs: Date.now() - started,
+  }
+  advance(cursor, result)
+  if (result.dispatch === 'not_dispatched') {
+    return {
+      receipt,
+      halt: {
+        index: plan.index,
+        reason: result.reason ?? '宿主拒绝了这次请求',
+        errorKind: 'desktop_not_dispatched',
+      },
+    }
+  }
+  if (result.dispatch === 'unknown') {
+    return {
+      receipt,
+      halt: {
+        index: plan.index,
+        reason: result.reason ?? '调用已发出但没有确认',
+        errorKind: 'desktop_unknown',
+        advice: UNKNOWN_ADVICE,
+      },
+    }
+  }
+  if (!result.observation) {
+    return {
+      receipt,
+      halt: {
+        index: plan.index,
+        reason: cursor.unread.blocking
+          ? '动作调用还没有返回，目标窗口此刻读不动'
+          : `没有取得动作之后的读数：${cursor.unread.observationError}`,
+        errorKind: cursor.unread.blocking ? 'desktop_blocked' : 'desktop_observation_unavailable',
+      },
+    }
+  }
+  if (!plan.expect) return { receipt, halt: null }
+
+  const settled = await settle(desktop, send, windowId, cursor, element.ref, plan.expect)
+  receipt.expect = { until: plan.expect.until, met: settled.met }
+  if (settled.met) return { receipt, halt: null }
+  return {
+    receipt,
+    halt: {
+      index: plan.index,
+      reason:
+        settled.error ?? `后置条件 ${plan.expect.until} 在 ${plan.expect.timeoutMs} 毫秒内没有成立`,
+      errorKind: 'desktop_postcondition',
+    },
+  }
+}
+
+/**
+ * 判这一步的后置条件，必要时在有界时间内等一次。
+ *
+ * 动作自己带回的那份观察先判一次；不成立且这一种有宿主等待条件时等一次换一份更新的表，
+ * 再按同一条判据判。等待发不出去不改变已派发的事实，按未满足收尾。
+ */
+async function settle(
+  desktop: DesktopPort,
+  send: PortCall,
+  windowId: string,
+  cursor: Cursor,
+  ref: string,
+  expect: ExpectPlan,
+): Promise<{ met: boolean; error?: string }> {
+  if (metBy(cursor.table, ref, expect)) return { met: true }
+  const until = EXPECT_WAITS[expect.until]
+  if (!until) return { met: false }
+  try {
+    const waited = await send(() =>
+      desktop.wait({
+        windowId,
+        observationId: cursor.observationId,
+        until,
+        ...(until === 'appears' ? {} : { ref }),
+        ...(expect.value === undefined ? {} : { value: expect.value }),
+        ...(expect.role === undefined ? {} : { role: expect.role }),
+        ...(expect.name === undefined ? {} : { query: expect.name }),
+        timeoutMs: expect.timeoutMs,
+      }),
+    )
+    advance(cursor, waited)
+  } catch (err) {
+    return { met: false, error: err instanceof Error ? err.message : String(err) }
+  }
+  return { met: metBy(cursor.table, ref, expect) }
+}
+
+export const desktopActSequenceTool: ToolSpec = {
+  ...BASE,
+  name: 'desktop_act_sequence',
+  description:
+    '在同一个窗口上按顺序执行一组已经确定的后台动作，逐项执行、逐项留回执，' +
+    `一次最多 ${MAX_STEPS} 步。用它替代连续多次 desktop_act，省的是模型往返，不是核验。` +
+    '只接受经控件接口发出的后台动作：' +
+    'invoke / set_value / set_range_value / select / add_to_selection / remove_from_selection / ' +
+    'set_toggle / expand / collapse / scroll / scroll_into_view / realize_item / select_text。' +
+    '参数与 desktop_act 的同名参数一致。' +
+    '真实指针与键盘的动作（click、type_text、press_key、close_window 这些）不接受——' +
+    '它们每一步都会改变前台与焦点，后面几步的前置条件因此不再成立，用 desktop_act 一次一个。' +
+    '每一步的目标给 ref，或给 automationId / name（可加 role 收窄），要求在当时那份控件表里唯一命中；' +
+    '第一步按 observationId 那份表解析，之后每一步按上一步动作带回的新观察解析——' +
+    '动作只重读目标所在的子树，子树之外的 ref 在新编号下仍然有效，' +
+    '目标可能被重建的步骤用 automationId / name 更稳。' +
+    '每一步可以给 expect 作为后置条件，不满足即停在这一步：' +
+    'until=value 值等于 value，until=toggle 复选态等于 state，until=selected 这一项被选中，' +
+    'until=gone 这个控件从树上消失，until=appears 窗口里出现名称含 name（可加 role）的控件。' +
+    `value / gone / appears 在有界时间内等（timeoutMs，默认 ${DEFAULT_EXPECT_MS} 毫秒，上限 ${MAX_EXPECT_MS}）；` +
+    'toggle 与 selected 按动作自己带回的那份观察判一次，不接受 timeoutMs。' +
+    '以下任一条命中即停在该步并放弃后面的步骤：' +
+    '某步没有执行（目标歧义、缺失、失效，或前置条件不满足）、结果未知、后置条件没等到、' +
+    '动作调用没有返回（弹出模态窗口或新窗口）、本次执行被停止。' +
+    '结果里 dispatched 是已派发的步号，notExecuted 是没有执行的步号，两者分开列；' +
+    '停下来之后不要重发整组，按回执里最后那份观察重新规划；' +
+    '某一步结果未知时先 desktop_observe 确认实际状态，不要重放那一步。',
+  parameters: {
+    type: 'object',
+    properties: {
+      windowId: { type: 'string' },
+      observationId: { type: 'string', description: '第一步按它那份控件表解析目标' },
+      steps: {
+        type: 'array',
+        description: `按顺序执行的动作，最多 ${MAX_STEPS} 步`,
+        items: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: SEQUENCE_ACTIONS },
+            ref: { type: 'string', description: '控件编号，取自当时那份观察' },
+            automationId: { type: 'string', description: '按稳定标识定位，要求唯一命中' },
+            name: { type: 'string', description: '按名称定位，要求唯一命中' },
+            role: { type: 'string', description: '与 automationId 或 name 一起收窄匹配' },
+            value: { type: 'string', description: 'set_value 要写入的值，空串是清空' },
+            number: { type: 'number', description: 'set_range_value 要写入的数值' },
+            state: { type: 'string', enum: TOGGLE_STATES, description: 'set_toggle 的目标态' },
+            direction: { type: 'string', enum: SCROLL_DIRECTIONS, description: 'scroll 的方向' },
+            step: {
+              type: 'string',
+              enum: SCROLL_STEPS,
+              description: 'scroll 一步滚多少，默认 line',
+            },
+            itemName: { type: 'string', description: 'realize_item 要实例化的那一项的名称' },
+            start: { type: 'integer', description: 'select_text 的起点，UTF-16 码元' },
+            length: { type: 'integer', description: 'select_text 的长度，UTF-16 码元' },
+            expect: {
+              type: 'object',
+              description: '这一步的后置条件，不满足即停在这一步',
+              properties: {
+                until: { type: 'string', enum: EXPECTATIONS },
+                value: { type: 'string', description: 'until=value 要等到的值' },
+                state: {
+                  type: 'string',
+                  enum: TOGGLE_STATES,
+                  description: 'until=toggle 的目标态',
+                },
+                name: { type: 'string', description: 'until=appears 要出现的控件名称的一段文字' },
+                role: { type: 'string', description: 'until=appears 的角色' },
+                timeoutMs: {
+                  type: 'integer',
+                  description: `until=value / gone / appears 最多等多久，上限 ${MAX_EXPECT_MS}`,
+                },
+              },
+              required: ['until'],
+              additionalProperties: false,
+            },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['windowId', 'observationId', 'steps'],
+    additionalProperties: false,
+  },
+  actionKind: 'call',
+  summary: '在一个窗口上按顺序执行一组后台动作',
+  targetExtractor: windowTarget,
+
+  fn: (args, ctx) =>
+    onDesktop(ctx, async (desktop, send) => {
+      const windowId = str(args.windowId, 'windowId')
+      const observationId = str(args.observationId, 'observationId')
+      // 参数错在派发之前抛出去，`onDesktop` 记成未执行——此时一帧都还没发。
+      const plans = planSteps(args.steps)
+
+      const cursor: Cursor = {
+        observationId,
+        table: desktop.elements(windowId, observationId),
+        last: null,
+        unread: {},
+      }
+      const done: StepReceipt[] = []
+      let halt: Halt | null = null
+
+      for (const plan of plans) {
+        if (ctx.signal.aborted) {
+          halt = { index: plan.index, reason: '本次执行已停止', errorKind: 'aborted' }
+          break
+        }
+        const outcome = await runStep(desktop, send, windowId, cursor, plan)
+        done.push(outcome.receipt)
+        ctx.emit('progress', `${stepLine(outcome.receipt)}\n`)
+        if (outcome.halt) {
+          halt = outcome.halt
+          break
+        }
+      }
+
+      return sequenceOutcome(plans, done, halt, cursor.last, cursor.unread)
+    }),
 }
 
 export const desktopWaitTool: ToolSpec = {
@@ -1252,5 +1871,6 @@ export const desktopTools: ToolSpec[] = [
   desktopWindowsTool,
   desktopObserveTool,
   desktopActTool,
+  desktopActSequenceTool,
   desktopWaitTool,
 ]

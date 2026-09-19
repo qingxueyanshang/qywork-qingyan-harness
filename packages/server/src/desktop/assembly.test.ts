@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`run-control.ts` 与 `team-run.ts` 两处 `new Session` 的桌面端口注入、
  * `runtime/session.ts` 的注册选项与 `ToolContext` 转发、`tools/index.ts` 的按通道注册、
- * `tools/desktop.ts` 与 `desktop/coordinator.ts` 之间的端到端往返，以及父级停止时的
- * 执行者撤销。
+ * `tools/desktop.ts` 与 `desktop/coordinator.ts` 之间的端到端往返（含有限动作序列的
+ * 逐帧派发、截断与不产生额外模型请求），以及父级停止时的执行者撤销。
  *
  * **为什么必须走真链路。** 手造一个带端口的 `Session` 只能证明「端口传进去就能用」，
  * 而真正会坏的是装配：主任务与子任务两条入口各自决定给不给端口，漏掉任一条的表现是
@@ -17,7 +17,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ConversationId, DesktopOp, DesktopRequestFrame } from '@qywork/core'
+import type { ConversationId, DesktopNode, DesktopOp, DesktopRequestFrame } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -77,17 +77,23 @@ function usage() {
   return { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 } }
 }
 
-let script: string[] = []
+/**
+ * 一轮的应答。函数形式按这一条请求体现算——观察编号由协调器分配，脚本里写不死它。
+ */
+type Turn = string | ((body: string) => string)
+
+let script: Turn[] = []
 let bodies: string[] = []
 
 const provider = Bun.serve({
   port: 0,
   async fetch(req) {
-    bodies.push(await req.text())
+    const body = await req.text()
+    bodies.push(body)
     const next = script.shift()
     // 脚本用完回 401：它归 `auth_failed`，当场终结这一轮，不会让循环接着转下去。
     if (!next) return new Response('脚本已用完', { status: 401 })
-    return new Response(next, { headers: SSE_HEADERS })
+    return new Response(typeof next === 'function' ? next(body) : next, { headers: SSE_HEADERS })
   },
 })
 
@@ -95,6 +101,11 @@ const provider = Bun.serve({
 function toolNames(body: string): string[] {
   const parsed = JSON.parse(body) as { tools?: { name?: string }[] }
   return (parsed.tools ?? []).map((t) => t.name ?? '')
+}
+
+/** 这一条请求体里最近一份观察的编号。编号由协调器分配，脚本只能从模型看到的正文里读。 */
+function observationIn(body: string): string {
+  return /do_\d+/.exec(body)?.[0] ?? ''
 }
 
 // ───────────────────────── 装配 ─────────────────────────
@@ -172,6 +183,25 @@ function conversation(parentConversationId?: ConversationId): ConversationId {
   }).id
 }
 
+/**
+ * 答掉这一轮收尾时的撤销帧。
+ *
+ * **不答的代价是后面的用例拿不到桌面**：协调器要宿主确认这个执行者名下已无在执行的
+ * 请求，确认不了就把桌面挡到宿主换代际为止。
+ */
+async function settleCancel(from: number): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    const cancel = host.received.slice(from).find((f) => f.op === 'cancel')
+    if (cancel) {
+      host.settle(cancel, 'not_dispatched')
+      await Bun.sleep(30)
+      return
+    }
+    await Bun.sleep(20)
+  }
+  throw new Error('没有收到撤销帧')
+}
+
 /** 按 op 等一条请求帧，并回一份合适的观察。 */
 async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
   const frame = await host.next()
@@ -231,6 +261,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
     textTurn('做完了'),
   ]
   bodies = []
+  const seen = host.received.length
   const conv = conversation()
   await startRun(conv, '把姓名填成张三', undefined, deps())
 
@@ -239,10 +270,17 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   const act = await serveOnce('act')
   // 脚本跑完最后一轮文本才算这一轮结束。
   await Bun.sleep(400)
+  await settleCancel(seen)
 
   // 工具真的进了下发给模型的那张表。
   expect(toolNames(bodies[0] ?? '{}')).toEqual(
-    expect.arrayContaining(['desktop_windows', 'desktop_observe', 'desktop_act', 'desktop_wait']),
+    expect.arrayContaining([
+      'desktop_windows',
+      'desktop_observe',
+      'desktop_act',
+      'desktop_act_sequence',
+      'desktop_wait',
+    ]),
   )
 
   // 身份四项逐条落在帧上，动作另有 actionId。
@@ -267,6 +305,121 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   const body = bodies.at(-1) ?? '{}'
   expect(body).toContain('结果未知')
   expect(body).toContain('不要重放')
+})
+
+/** 序列用的控件表：三个各自可动的后台控件，够走三步。 */
+const NAME_BOX: DesktopNode = {
+  ref: 'w.0#7',
+  depth: 0,
+  role: 'edit',
+  name: '姓名',
+  automationId: 'nameBox',
+  value: '',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'set_value', delivery: ['background'] }],
+}
+const AGREE_BOX: DesktopNode = {
+  ref: 'w.1#8',
+  depth: 0,
+  role: 'check_box',
+  name: '同意',
+  automationId: 'agree',
+  enabled: true,
+  offscreen: false,
+  toggle: 'off',
+  actions: [{ action: 'set_toggle', delivery: ['background'] }],
+}
+const SAVE_BUTTON: DesktopNode = {
+  ref: 'w.2#9',
+  depth: 0,
+  role: 'button',
+  name: '保存',
+  automationId: 'save',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'invoke', delivery: ['background'] }],
+}
+
+/**
+ * 有限动作序列走完真链路：一次工具调用，逐动作一帧，停下之后不再发帧。
+ *
+ * 断言的是帧而不是工具内部状态：序列要证明的就是「模型发一次、宿主收到几次」。
+ * 每一帧回一份 `scope` 限定的子树重读，子树之外的旧 `ref` 因此仍然成立——
+ * 第二、三步给的正是第一份观察里的编号。
+ */
+test('一次序列调用逐动作发帧，actionId 各不相同，截断后不再发帧', async () => {
+  script = [
+    toolTurn('desktop_observe', { windowId: 'dw_1' }),
+    (body) =>
+      toolTurn('desktop_act_sequence', {
+        windowId: 'dw_1',
+        observationId: observationIn(body),
+        steps: [
+          { action: 'set_value', ref: 'w.0#7', value: '张三' },
+          { action: 'set_toggle', ref: 'w.1#8', state: 'on' },
+          { action: 'invoke', ref: 'w.2#9' },
+        ],
+      }),
+    textTurn('停在第二步了'),
+  ]
+  bodies = []
+  const seen = host.received.length
+  const conv = conversation()
+  // 窗口不必再发现一次：`dw_1` 由上面那条用例登记过，窗口表是协调器级的。
+  await startRun(conv, '把表单填好', undefined, deps())
+
+  const tree = await host.next()
+  expect(tree.op).toBe('read_tree')
+  host.reply(tree, {
+    observation: {
+      kind: 'tree',
+      window: WINDOW.handle,
+      capturedAt: 2,
+      windowEnabled: true,
+      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 3 },
+      nodeCount: 3,
+      nodes: [{ ...NAME_BOX }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
+    },
+  })
+
+  const first = await host.next()
+  expect(first.op).toBe('act')
+  expect(first.ref).toBe('w.0#7')
+  host.reply(first, {
+    dispatch: 'submitted',
+    observation: {
+      kind: 'tree',
+      window: WINDOW.handle,
+      capturedAt: 3,
+      scope: 'w.0#7',
+      windowEnabled: true,
+      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 1 },
+      nodeCount: 1,
+      nodes: [{ ...NAME_BOX, value: '张三' }],
+    },
+  })
+
+  const second = await host.next()
+  expect(second.op).toBe('act')
+  // 第一步只重读了它自己那棵子树，第二步给的编号来自第一份观察，仍然成立。
+  expect(second.ref).toBe('w.1#8')
+  host.reply(second, { dispatch: 'unknown', reason: 'provider 无响应' })
+
+  await Bun.sleep(400)
+
+  // 第三步一帧都没发：`unknown` 之后后缀不执行。
+  const acts = host.received.slice(seen).filter((f) => f.op === 'act')
+  expect(acts.map((f) => f.ref)).toEqual(['w.0#7', 'w.1#8'])
+  expect(acts[0]?.actionId).not.toBe(acts[1]?.actionId)
+
+  // 序列本身不产生模型请求：观察一轮、序列一轮、收尾一轮，一共三条。
+  expect(bodies).toHaveLength(3)
+  const body = bodies.at(-1) ?? '{}'
+  expect(body).toContain('结果未知')
+  expect(body).toContain('不要重放')
+  expect(body).toContain('未执行：3 invoke')
+  await settleCancel(seen)
 })
 
 /**
@@ -300,6 +453,7 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   const names = toolNames(bodies[0] ?? '{}')
   expect(names).toContain('desktop_windows')
   expect(names).not.toContain('desktop_act')
+  expect(names).not.toContain('desktop_act_sequence')
   expect(names).not.toContain('desktop_observe')
   expect(names).not.toContain('desktop_wait')
 

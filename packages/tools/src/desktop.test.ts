@@ -1,7 +1,8 @@
 /**
- * 四个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
+ * 五个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
  * 动作前置条件、三态回执与动作后观察的透传、等待条件与终态、注册元数据，以及采集模式、
- * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型。
+ * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型，
+ * 以及有限动作序列的逐步执行、引用接续、后置条件、七种停止边界与 `executed` 语义。
  *
  * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
  * `coordinator.test.ts` 覆盖。这里用一份记账假端口：断言的是「交给端口的是什么」与
@@ -21,7 +22,9 @@ import type {
   ToolSpec,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import type { DesktopAction } from '@qywork/core'
 import {
+  desktopActSequenceTool,
   desktopActTool,
   desktopObserveTool,
   desktopTools,
@@ -424,11 +427,12 @@ function run(
 }
 
 describe('注册元数据', () => {
-  test('四个工具都在 desktop 类目下，权限效果单列', () => {
+  test('五个工具都在 desktop 类目下，权限效果单列', () => {
     expect(desktopTools.map((t) => t.name)).toEqual([
       'desktop_windows',
       'desktop_observe',
       'desktop_act',
+      'desktop_act_sequence',
       'desktop_wait',
     ])
     for (const spec of desktopTools) {
@@ -1975,12 +1979,664 @@ describe('前台动作', () => {
     expect(r.message).not.toContain('dw_1 记事本 未命名')
   })
 
-  test('前台动作没有新增工具入口，四个工具名不变', () => {
+  test('前台动作没有新增工具入口，工具名不变', () => {
     expect(desktopTools.map((t) => t.name)).toEqual([
       'desktop_windows',
       'desktop_observe',
       'desktop_act',
+      'desktop_act_sequence',
       'desktop_wait',
     ])
+  })
+
+  test('前台动作不进序列，整组在派发之前被拒', async () => {
+    const { port, calls } = foregroundPort()
+    for (const action of ['click', 'type_text', 'press_key', 'activate', 'close_window']) {
+      const r = await run(
+        desktopActSequenceTool,
+        {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          steps: [
+            { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+            {
+              action,
+              ref: 'w.9#16',
+              ...(action === 'type_text' ? { text: '李四' } : {}),
+              ...(action === 'press_key' ? { key: 'enter' } : {}),
+            },
+          ],
+        },
+        ctxWith(port),
+      )
+      expect(r).toMatchObject({ status: 'failure', executed: false })
+      expect(r.message).toContain('desktop_act')
+    }
+    expect(calls).toEqual([])
+  })
+})
+
+/**
+ * 有限动作序列：一次调用交付一组已确定的后台动作。
+ *
+ * 这里的假端口比上面那份多一层状态：动作按语义落在一份可变的控件表上，每次动作换一个
+ * 观察编号。序列的判据是「上一步带回的那份表」，一个永远回同一份表的假端口证明不了
+ * 引用接续。
+ */
+describe('有限动作序列', () => {
+  type ActOverride = {
+    dispatch?: DesktopActResult['dispatch']
+    reason?: string
+    blocking?: { windowId: string; app: string; title: string; appeared: boolean }[]
+    observation?: DesktopSnapshot | null
+    observationError?: string
+  }
+
+  function sequencePort(options: { acts?: (ActOverride | null)[]; onAct?: () => void } = {}) {
+    const calls: Recorded[] = []
+    let table = TABLE.map((e) => ({ ...e }))
+    let observationId = 'do_1'
+    let nextObservation = 1
+    let nextAction = 0
+
+    const bump = (): DesktopSnapshot => {
+      nextObservation += 1
+      observationId = `do_${nextObservation}`
+      return snapshot({ observationId, elements: table })
+    }
+    const apply = (ref: string | undefined, action: DesktopAction): void => {
+      const at = table.findIndex((e) => e.ref === ref)
+      const target = table[at]
+      if (!target) return
+      if (action.kind === 'set_value') table[at] = { ...target, value: action.value }
+      if (action.kind === 'set_toggle') table[at] = { ...target, toggle: action.state }
+      if (action.kind === 'select') table[at] = { ...target, selected: true }
+    }
+    const adopt = (over: ActOverride): void => {
+      if (!over.observation) return
+      table = over.observation.elements.map((e) => ({ ...e }))
+      observationId = over.observation.observationId
+    }
+
+    const port: DesktopPort = {
+      windows: async () => [{ windowId: 'dw_1', app: '记事本', title: '未命名' }],
+      observe: async () => snapshot({ observationId, elements: table }),
+      elements: (windowId, asked) =>
+        windowId === 'dw_1' && asked === observationId ? table : null,
+      captureImage: async () => image(),
+      act: async (input) => {
+        calls.push({ method: 'act', input })
+        nextAction += 1
+        options.onAct?.()
+        const over = options.acts?.[nextAction - 1] ?? null
+        const dispatch = over?.dispatch ?? 'submitted'
+        if (dispatch === 'submitted') apply(input.ref, input.action)
+        const actionId = `da_${nextAction}`
+        if (!over) return { dispatch, actionId, observation: bump() }
+        if (over.observation === null) {
+          return {
+            dispatch,
+            actionId,
+            ...(over.reason === undefined ? {} : { reason: over.reason }),
+            ...(over.blocking ? { blocking: over.blocking } : {}),
+            observation: null,
+            observationError: over.observationError ?? '目标窗口此刻读不动',
+          }
+        }
+        if (over.observation) adopt(over)
+        return {
+          dispatch,
+          actionId,
+          ...(over.reason === undefined ? {} : { reason: over.reason }),
+          observation: over.observation ?? bump(),
+        }
+      },
+      readText: async () => ({
+        text: '',
+        truncated: false,
+        selectionSupport: 'none',
+        selection: [],
+      }),
+      wait: async (input) => {
+        calls.push({ method: 'wait', input })
+        return { found: false, reason: 'timeout', observation: bump() }
+      },
+      release: async () => {},
+    }
+    return { port, calls, current: () => table }
+  }
+
+  function seq(steps: Record<string, unknown>[]): Record<string, unknown> {
+    return { windowId: 'dw_1', observationId: 'do_1', steps }
+  }
+
+  test('逐步执行，每步一个 actionId，动作按顺序带着当时那份观察编号发出', async () => {
+    const { port, calls, current } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
+        { action: 'select', ref: 'w.5.0#12' },
+      ]),
+      ctxWith(port),
+    )
+
+    expect(r.status).toBe('success')
+    expect(r.executed).toBe(true)
+    expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act'])
+    const inputs = calls.map((c) => c.input as { observationId: string; ref: string })
+    expect(inputs.map((i) => i.ref)).toEqual(['w.1.0#5', 'w.4#10', 'w.5.0#12'])
+    // 每一步按上一步带回的那个编号发出，不是原地复用第一个。
+    expect(inputs.map((i) => i.observationId)).toEqual(['do_1', 'do_2', 'do_3'])
+
+    const data = r.data as {
+      steps: { index: number; actionId: string; dispatch: string; durationMs: number }[]
+      dispatched: number[]
+      notExecuted: number[]
+      observation: DesktopSnapshot
+    }
+    expect(data.steps.map((s) => s.actionId)).toEqual(['da_1', 'da_2', 'da_3'])
+    expect(new Set(data.steps.map((s) => s.actionId)).size).toBe(3)
+    expect(data.steps.every((s) => s.dispatch === 'submitted')).toBe(true)
+    expect(data.steps.every((s) => typeof s.durationMs === 'number')).toBe(true)
+    expect(data.dispatched).toEqual([1, 2, 3])
+    expect(data.notExecuted).toEqual([])
+    expect(data.observation.observationId).toBe('do_4')
+    expect(r.message).toContain('3 步全部执行')
+
+    // 夹具自己的状态说得出这三步真落下去了。
+    const table = current()
+    expect(table.find((e) => e.ref === 'w.1.0#5')?.value).toBe('张三')
+    expect(table.find((e) => e.ref === 'w.4#10')?.toggle).toBe('on')
+    expect(table.find((e) => e.ref === 'w.5.0#12')?.selected).toBe(true)
+  })
+
+  test('序列只调端口，不经过任何模型请求通道', async () => {
+    const { port, calls } = sequencePort()
+    await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls.every((c) => c.method === 'act' || c.method === 'wait')).toBe(true)
+  })
+
+  test('每一步经进度通道上报一次', async () => {
+    const { port } = sequencePort()
+    const sent: { channel: string; delta: string }[] = []
+    const ctx: ToolContext = {
+      ...ctxWith(port),
+      emit: (channel, delta) => {
+        sent.push({ channel, delta })
+      },
+    }
+    await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctx,
+    )
+    expect(sent).toHaveLength(2)
+    expect(sent.every((s) => s.channel === 'progress')).toBe(true)
+    expect(sent[0]?.delta).toContain('1 set_value w.1.0#5 已执行')
+    expect(sent[1]?.delta).toContain('2 invoke w.0.0#3 已执行')
+  })
+
+  test('第 2 步结果未知时停下，第 3 步不执行', async () => {
+    const { port, calls } = sequencePort({
+      acts: [null, { dispatch: 'unknown', reason: '调用超时' }],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+
+    expect(calls).toHaveLength(2)
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
+    const data = r.data as { dispatched: number[]; notExecuted: number[]; stoppedAt: number }
+    expect(data.dispatched).toEqual([1, 2])
+    expect(data.notExecuted).toEqual([3])
+    expect(data.stoppedAt).toBe(2)
+    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('不要重放')
+    expect(r.message).toContain('未执行：3 invoke')
+  })
+
+  test('某步没有执行时停下，已派发的前缀如实保留', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.1.2#7' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+
+    // 第 2 步的目标是禁用控件：本地判完就停，一帧都没发。
+    expect(calls).toHaveLength(1)
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_precondition',
+    })
+    const data = r.data as { dispatched: number[]; notExecuted: number[] }
+    expect(data.dispatched).toEqual([1])
+    expect(data.notExecuted).toEqual([2, 3])
+    expect(r.message).toContain('2 invoke w.1.2#7 没有执行')
+  })
+
+  test('第一步就没有执行时整组记未执行', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'invoke', ref: 'w.1.2#7' },
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls).toEqual([])
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect((r.data as { dispatched: number[] }).dispatched).toEqual([])
+  })
+
+  test('后置条件按动作带回的观察判，满足就不发等待', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'set_value',
+          ref: 'w.1.0#5',
+          value: '张三',
+          expect: { until: 'value', value: '张三' },
+        },
+        {
+          action: 'set_toggle',
+          ref: 'w.4#10',
+          state: 'on',
+          expect: { until: 'toggle', state: 'on' },
+        },
+        { action: 'select', ref: 'w.5.0#12', expect: { until: 'selected' } },
+      ]),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act'])
+    const data = r.data as { steps: { expect?: { until: string; met: boolean } }[] }
+    expect(data.steps.map((s) => s.expect)).toEqual([
+      { until: 'value', met: true },
+      { until: 'toggle', met: true },
+      { until: 'selected', met: true },
+    ])
+    expect(r.message).toContain('后置条件 value 已满足')
+  })
+
+  test('后置条件没等到即截断后缀', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'set_value',
+          ref: 'w.1.0#5',
+          value: '张三',
+          expect: { until: 'value', value: '李四', timeoutMs: 200 },
+        },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+    // 观察里判不成立才发等待，等待到期仍不成立就停。
+    expect(calls.map((c) => c.method)).toEqual(['act', 'wait'])
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_postcondition',
+    })
+    const data = r.data as { dispatched: number[]; notExecuted: number[] }
+    expect(data.dispatched).toEqual([1])
+    expect(data.notExecuted).toEqual([2])
+    expect(r.message).toContain('后置条件 value 未满足')
+  })
+
+  test('toggle 与 selected 没有宿主等待，不成立当场停', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'set_toggle',
+          ref: 'w.4#10',
+          state: 'on',
+          expect: { until: 'toggle', state: 'indeterminate' },
+        },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls.map((c) => c.method)).toEqual(['act'])
+    expect(r).toMatchObject({ status: 'failure', errorKind: 'desktop_postcondition' })
+  })
+
+  test('调用没有返回时截断后缀，并带回新出现的窗口 id', async () => {
+    const { port, calls } = sequencePort({
+      acts: [
+        null,
+        {
+          observation: null,
+          blocking: [
+            { windowId: 'dw_1', app: '记事本', title: '未命名', appeared: false },
+            { windowId: 'dw_9', app: '记事本', title: '未保存', appeared: true },
+          ],
+        },
+      ],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'invoke', ref: 'w.1.1#6' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls).toHaveLength(2)
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_blocked' })
+    expect(r.message).toContain('dw_9')
+    expect(r.message).not.toContain('最后观察')
+    const data = r.data as { blocking: { windowId: string }[]; notExecuted: number[] }
+    expect(data.blocking.map((w) => w.windowId)).toEqual(['dw_1', 'dw_9'])
+    expect(data.notExecuted).toEqual([3])
+  })
+
+  test('动作之后读不到控件表时截断后缀', async () => {
+    const { port, calls } = sequencePort({
+      acts: [{ observation: null, observationError: '宿主不可用' }],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls).toHaveLength(1)
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_observation_unavailable',
+    })
+    expect(r.message).toContain('宿主不可用')
+  })
+
+  test('步与步之间检查取消，已派发的不重放', async () => {
+    const controller = new AbortController()
+    const { port, calls } = sequencePort({ onAct: () => controller.abort() })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port, controller.signal),
+    )
+    expect(calls).toHaveLength(1)
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'aborted' })
+    expect((r.data as { notExecuted: number[] }).notExecuted).toEqual([2])
+  })
+
+  test('超过长度上限整组被拒，一步都不派发', async () => {
+    const { port, calls } = sequencePort()
+    const steps = Array.from({ length: 11 }, () => ({
+      action: 'set_value',
+      ref: 'w.1.0#5',
+      value: '张三',
+    }))
+    const r = await run(desktopActSequenceTool, seq(steps), ctxWith(port))
+    expect(calls).toEqual([])
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('最多 10 步')
+  })
+
+  test('close_window 不论在哪一步都被拒，一步都不派发', async () => {
+    const { port, calls } = sequencePort()
+    const notLast = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'close_window', ref: 'w#1' },
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+      ]),
+      ctxWith(port),
+    )
+    const last = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'close_window', ref: 'w#1' },
+      ]),
+      ctxWith(port),
+    )
+    for (const r of [notLast, last]) {
+      expect(r).toMatchObject({ status: 'failure', executed: false })
+      expect(r.message).toContain('desktop_act')
+    }
+    expect(calls).toEqual([])
+  })
+
+  test('不认的动作名整组被拒', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([{ action: 'frobnicate', ref: 'w.1.0#5' }]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(calls).toEqual([])
+  })
+
+  test('步里给了不属于这个动作的参数即整组拒绝', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([{ action: 'invoke', ref: 'w.0.0#3', value: '张三' }]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('invoke 不接受 value')
+    expect(calls).toEqual([])
+  })
+
+  test('toggle 与 selected 不接受 timeoutMs', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'set_toggle',
+          ref: 'w.4#10',
+          state: 'on',
+          expect: { until: 'toggle', state: 'on', timeoutMs: 500 },
+        },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('timeoutMs')
+    expect(calls).toEqual([])
+  })
+
+  test('引用接续：子树之外的旧 ref 在新编号下仍然解析得到', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    const second = calls[1]?.input as { observationId: string; ref: string }
+    expect(second.ref).toBe('w.0.0#3')
+    expect(second.observationId).toBe('do_2')
+  })
+
+  test('引用接续：新观察里没有这个 ref 就停下来交回模型，不另找一个顶上', async () => {
+    const rebuilt = TABLE.map((e) => (e.ref === 'w.4#10' ? { ...e, ref: 'w.4#77' } : { ...e }))
+    const { port, calls } = sequencePort({
+      acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls).toHaveLength(1)
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_ref_unknown',
+    })
+    expect(r.message).toContain('2 set_toggle w.4#10 没有执行')
+  })
+
+  test('引用接续：按 automationId 定位的步骤在新观察里重新解析', async () => {
+    const rebuilt = TABLE.map((e) => (e.ref === 'w.4#10' ? { ...e, ref: 'w.4#77' } : { ...e }))
+    const { port, calls } = sequencePort({
+      acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_toggle', automationId: 'triCheck', state: 'on' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    const second = calls[1]?.input as { observationId: string; ref: string }
+    expect(second.ref).toBe('w.4#77')
+    expect(second.observationId).toBe('do_9')
+  })
+
+  test('目标歧义时停在那一步，候选按祖先路径列出', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', name: '保存' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls).toHaveLength(1)
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_target_ambiguous',
+    })
+    expect(r.message).toContain('匹配到 2 个控件')
+  })
+
+  test('起手那份观察已经失效时一步都不派发', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_404',
+        steps: [{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }],
+      },
+      ctxWith(port),
+    )
+    expect(calls).toEqual([])
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_observation_stale',
+    })
+  })
+
+  test('本轮已停止时整组不发起', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      ctxWith(port, controller.signal),
+    )
+    expect(calls).toEqual([])
+    expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'aborted' })
+  })
+
+  test('没有端口时如实报，不当成执行过', async () => {
+    const r = await run(
+      desktopActSequenceTool,
+      seq([{ action: 'invoke', ref: 'w.0.0#3' }]),
+      ctxWith(),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'unsupported' })
+  })
+
+  test('端口声明执行前拒绝时这一步记没有执行', async () => {
+    const refusal: DesktopRefusal = { errorKind: 'desktop_unavailable', executed: false }
+    const { port } = sequencePort()
+    const failing: DesktopPort = {
+      ...port,
+      act: async () => {
+        throw Object.assign(new Error('电脑操作此刻不可用'), refusal)
+      },
+    }
+    const r = await run(
+      desktopActSequenceTool,
+      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      ctxWith(failing),
+    )
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_unavailable',
+    })
+  })
+
+  test('端口没声明执行事实时按可能已生效收尾', async () => {
+    const { port } = sequencePort()
+    const failing: DesktopPort = {
+      ...port,
+      act: async () => {
+        throw new Error('连接断了')
+      },
+    }
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'w.0.0#3' },
+      ]),
+      ctxWith(failing),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
+    expect(r.message).toContain('不要重放')
+    const data = r.data as { dispatched: number[]; notExecuted: number[] }
+    expect(data.dispatched).toEqual([1])
+    expect(data.notExecuted).toEqual([2])
   })
 })
