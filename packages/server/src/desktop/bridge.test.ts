@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DesktopResultFrame } from '@qywork/core'
-import { DESKTOP_PROTOCOL_VERSION, NATIVE_DESKTOP_PATH } from '@qywork/core'
+import { NATIVE_DESKTOP_PATH } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from '../server.ts'
@@ -116,17 +116,6 @@ test('普通配对连接发桌面宿主帧也注册不了宿主', async () => {
   ws.send(JSON.stringify(READY))
   await settle()
   expect(handle.desktop?.available()).toBe(false)
-})
-
-test('协议版本对不上就不注册宿主', async () => {
-  const handle = fresh()
-  const host = await connect(handle.port)
-  host.ready({ protocol: DESKTOP_PROTOCOL_VERSION + 1 })
-  await settle()
-  expect(handle.desktop?.available()).toBe(false)
-  host.ready()
-  await settle()
-  expect(handle.desktop?.available()).toBe(true)
 })
 
 test('三项能力位分开报，worker 没就绪或没授权时不发布能力', async () => {

@@ -120,7 +120,7 @@ describe('桌面发布清单', () => {
    *
    * 两个条目的来源不同：`bin/qy` 由共用 action 在门禁前编，顺序在那一份里判；
    * `bin/qy-computer-host` 由外壳自己的构建脚本在同一次编译里出，工作流里再编一遍
-   * 就是第二个入口，旧产物与外壳协议版本对不上的那条路径也随之回来。
+   * 就是第二个入口，外壳旁边放的 worker 因此可能来自另一次编译。
    */
   test('externalBin 的每个条目都只有一处准备它', () => {
     const setup = actionText('setup-build')

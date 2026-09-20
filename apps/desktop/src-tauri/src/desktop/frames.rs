@@ -17,14 +17,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// worker crate 里那个只含协议版本的文件，外壳把它一起编进来。
-///
-/// 本模块同时处理两段协议，所以对外用 `WORKER_PROTOCOL_VERSION` 这个名字点明是哪一段。
-#[path = "../../../native/computer-host/src/protocol_version.rs"]
-mod worker_protocol;
-
-pub use worker_protocol::PROTOCOL_VERSION as WORKER_PROTOCOL_VERSION;
-
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
 const FORWARDED_OPS: [&str; 6] = [
     "list_windows",
@@ -53,8 +45,6 @@ pub struct HostReady {
     pub host_id: String,
     pub host_epoch: u64,
     pub connection_epoch: u64,
-    /// worker 实际握手到的协议版本，从它的 `ready` 观察里读回，不是宿主填的常量。
-    pub protocol: u32,
     pub platform: &'static str,
     pub worker_ready: bool,
     pub authorized: bool,
@@ -236,7 +226,6 @@ impl Dispatch {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerRequest {
-    pub v: u32,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline: Option<i64>,
@@ -252,7 +241,6 @@ pub struct WorkerRequest {
 impl WorkerRequest {
     fn new(id: String, binding: &Binding, op: &'static str, params: Value) -> Self {
         Self {
-            v: WORKER_PROTOCOL_VERSION,
             id,
             deadline: None,
             host_id: binding.host_id.clone(),
@@ -310,13 +298,12 @@ pub struct WorkerResponse {
 }
 
 impl WorkerResponse {
-    /// 握手回执里 worker 报出来的协议版本。不是 `ready` 观察时返回 `None`。
-    pub fn ready_protocol(&self) -> Option<u32> {
-        let observation = self.observation.as_ref()?;
-        if observation.get("kind")?.as_str()? != "ready" {
-            return None;
-        }
-        u32::try_from(observation.get("protocol")?.as_u64()?).ok()
+    /// 这条回执是不是 worker 发布就绪的那一条。为假时握手被拒，`reason` 是原因。
+    pub fn is_ready(&self) -> bool {
+        self.observation
+            .as_ref()
+            .and_then(|o| o.get("kind")?.as_str())
+            == Some("ready")
     }
 }
 
@@ -658,7 +645,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 6, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
                 "foreground": false, "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}
@@ -726,7 +713,7 @@ mod tests {
     #[test]
     fn an_input_notice_is_not_mistaken_for_a_receipt() {
         let notice = serde_json::from_str::<WorkerLine>(
-            r#"{"v":5,"input":{"buttons":["left"],"keys":[{"vk":17,"extended":false}]}}"#,
+            r#"{"input":{"buttons":["left"],"keys":[{"vk":17,"extended":false}]}}"#,
         )
         .expect("通报应当解析成功");
         match notice {
@@ -739,14 +726,14 @@ mod tests {
             WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),
         }
         let receipt = serde_json::from_str::<WorkerLine>(
-            r#"{"v":5,"id":"w1","dispatch":"submitted"}"#,
+            r#"{"id":"w1","dispatch":"submitted"}"#,
         )
         .expect("回执应当解析成功");
         match receipt {
             WorkerLine::Response(r) => assert_eq!((r.id.as_str(), r.dispatch.as_str()), ("w1", "submitted")),
             WorkerLine::Input(n) => panic!("解析成了通报：{n:?}"),
         }
-        let empty = serde_json::from_str::<WorkerLine>(r#"{"v":5,"input":{"buttons":[],"keys":[]}}"#)
+        let empty = serde_json::from_str::<WorkerLine>(r#"{"input":{"buttons":[],"keys":[]}}"#)
             .expect("空账应当解析成功");
         match empty {
             WorkerLine::Input(notice) => assert!(notice.input.is_empty()),
@@ -1003,16 +990,16 @@ mod tests {
     }
 
     #[test]
-    fn ready_protocol_comes_from_the_worker_observation() {
+    fn readiness_comes_from_the_worker_observation() {
         let response = WorkerResponse {
             id: "h_1".to_owned(),
             dispatch: "not_dispatched".to_owned(),
             reason: None,
-            observation: Some(json!({"kind": "ready", "protocol": 1, "backend": "windows-uia"})),
+            observation: Some(json!({"kind": "ready", "backend": "windows-uia"})),
             observation_error: None,
             blocking: None,
         };
-        assert_eq!(response.ready_protocol(), Some(1));
+        assert!(response.is_ready());
 
         let other = WorkerResponse {
             id: "h_1".to_owned(),
@@ -1022,7 +1009,7 @@ mod tests {
             observation_error: None,
             blocking: None,
         };
-        assert_eq!(other.ready_protocol(), None);
+        assert!(!other.is_ready());
     }
 
     #[test]

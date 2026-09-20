@@ -39,7 +39,7 @@ const WORKER: &str = "qy-computer-host";
 ///
 /// **这一步不要挪回调用方。** worker 是独立 crate，产物随外壳一起分发；由调用方各自
 /// 先跑一个编译脚本的话，`tauri dev` 自己触发的重启、`cargo run`、`cargo check` 都编
-/// 不到它，旧产物与重编出来的外壳协议版本对不上，握手被拒、电脑控制整组工具不注册。
+/// 不到它，外壳旁边留着的是上一次编出来的那个 worker。
 /// 放在这里，「编外壳」本身就保证旁边那个 worker 来自同一份源码。
 ///
 /// 必须在 `tauri_build` 之前跑完：`externalBin` 声明的文件在那一步就要存在。

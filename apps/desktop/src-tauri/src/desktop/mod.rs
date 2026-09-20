@@ -34,8 +34,8 @@ use tauri_plugin_shell::ShellExt;
 use crate::ws::WsSender;
 use frames::{
     enrich_blocking, enrich_windows, needs_target, to_result, to_worker, Binding, Dispatch,
-    EventFrame, HeldInput, HostReady,
-    RequestFrame, ResultFrame, WorkerLine, WorkerRequest, WorkerResponse, WORKER_PROTOCOL_VERSION,
+    EventFrame, HeldInput, HostReady, RequestFrame, ResultFrame, WorkerLine, WorkerRequest,
+    WorkerResponse,
 };
 use worker::{
     cancel_outcome, cancel_targets, drain_server, next_attempt, restart_delay, CancelOutcome,
@@ -105,8 +105,6 @@ struct HostState {
     /// worker 此刻认的连接代际。它只接受严格增大的值，所以要记下来才判得出该不该发
     /// `bind_connection`：worker 起来与 WS 建连没有固定先后，握手带的可能已经是旧值。
     worker_connection_epoch: u64,
-    /// worker 握手时报回来的协议版本。没有就绪的 worker 时是宿主要求的那一个。
-    protocol: u32,
     /// 已经交给 worker 的请求，按 worker 请求 id 索引。
     pending: HashMap<String, Pending>,
     next_worker_id: u64,
@@ -166,7 +164,6 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
             worker_pid: None,
             worker_ready: false,
             worker_connection_epoch: 0,
-            protocol: WORKER_PROTOCOL_VERSION,
             pending: HashMap::new(),
             next_worker_id: 0,
             handshake: None,
@@ -242,7 +239,6 @@ impl DesktopHost {
             host_id: self.host_id.clone(),
             host_epoch: state.host_epoch,
             connection_epoch,
-            protocol: state.protocol,
             platform: platform(),
             worker_ready: state.worker_ready,
             authorized: authorized(),
@@ -842,10 +838,9 @@ fn begin_worker(
     (binding, (id, rx))
 }
 
-/// 等握手回执，核对协议版本，然后把新的执行实例发布出去。
+/// 等握手回执，然后把新的执行实例发布出去。
 ///
-/// 版本对不上即不发布就绪：接下它就要按一份读不准的协议解释观察，而错误的观察会变成
-/// 一次打在别的控件上的动作。
+/// worker 没有发布就绪即不发布执行实例：那时 UIA 调用没有上界，一次调用不会有终态。
 fn await_ready(
     host: &Arc<DesktopHost>,
     rx: &Receiver<WorkerResponse>,
@@ -854,18 +849,12 @@ fn await_ready(
     let response = rx
         .recv_timeout(HANDSHAKE_TIMEOUT)
         .map_err(|_| "worker 在超时内没有回握手".to_owned())?;
-    let protocol = response
-        .ready_protocol()
-        .ok_or_else(|| response.reason.clone().unwrap_or_else(|| "握手被拒".to_owned()))?;
-    if protocol != WORKER_PROTOCOL_VERSION {
-        return Err(format!(
-            "worker 协议版本 {protocol} 与宿主要求的 {WORKER_PROTOCOL_VERSION} 不一致"
-        ));
+    if !response.is_ready() {
+        return Err(response.reason.unwrap_or_else(|| "握手被拒".to_owned()));
     }
     let ready = {
         let mut state = host.state.lock().expect("桌面宿主状态锁被污染");
         state.worker_ready = true;
-        state.protocol = protocol;
         // 握手带的是 `begin_worker` 那一刻的连接代际。WS 可能在这期间才连上并把代际推高，
         // 所以先记下 worker 实际认的那一个，再由 `rebind_worker` 补齐差值。
         state.worker_connection_epoch = binding.connection_epoch;
@@ -874,7 +863,6 @@ fn await_ready(
             host_id: host.host_id.clone(),
             host_epoch: binding.host_epoch,
             connection_epoch: state.connection_epoch,
-            protocol,
             platform: platform(),
             worker_ready: true,
             authorized: authorized(),
@@ -883,10 +871,7 @@ fn await_ready(
     host.rebind_worker();
     // 换代走同一条 WS 上重发 `host.ready`：服务端据此作废旧执行实例名下的一切。
     host.send_frame(&ready);
-    log::info!(
-        "computer-host worker 已就绪 hostEpoch={} protocol={protocol}",
-        binding.host_epoch
-    );
+    log::info!("computer-host worker 已就绪 hostEpoch={}", binding.host_epoch);
     Ok(())
 }
 
@@ -903,7 +888,6 @@ mod tests {
             worker_pid: None,
             worker_ready: false,
             worker_connection_epoch: 0,
-            protocol: WORKER_PROTOCOL_VERSION,
             pending: HashMap::new(),
             next_worker_id: 0,
             handshake: None,

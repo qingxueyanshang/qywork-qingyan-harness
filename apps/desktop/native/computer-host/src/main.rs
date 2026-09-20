@@ -39,7 +39,6 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use protocol::{
     admit, now_ms, Binding, HostIdentity, InputNotice, Observation, Op, Request, Response,
-    PROTOCOL_VERSION,
 };
 
 /// 本进程的 DPI 感知模式。`main` 最前面设一次，此后只读。
@@ -245,7 +244,6 @@ fn handle(
                     Response::observed(
                         req.id,
                         Observation::Ready {
-                            protocol: PROTOCOL_VERSION,
                             backend: windows::BACKEND,
                             host_id: bound.host.host_id,
                             host_epoch: bound.host.host_epoch,

@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Geometry, ScreenPoint, ScreenRect};
 
-include!("protocol_version.rs");
-
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -39,7 +37,6 @@ pub struct Binding {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
-    pub v: u32,
     /// requestId。解析失败的请求也要带着它回执，否则调用方的 pending 没有终态。
     pub id: String,
     /// Unix 纪元毫秒的绝对时刻；缺省表示不设截止。
@@ -574,7 +571,6 @@ pub enum Dispatch {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
-    pub v: u32,
     pub id: String,
     pub dispatch: Dispatch,
     /// 拒绝原因码，或动作调用返回的失败原文。有 `reason` 且 `dispatch` 是 `unknown` 时，
@@ -602,7 +598,6 @@ impl Response {
     /// 没有派发动作的终态：拒绝、参数无效、目标失效、只读请求失败。
     pub fn rejected(id: String, reason: String) -> Self {
         Self {
-            v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
             reason: Some(reason),
@@ -616,7 +611,6 @@ impl Response {
     /// 只读请求与握手的终态。
     pub fn observed(id: String, observation: Observation) -> Self {
         Self {
-            v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
             reason: None,
@@ -634,7 +628,6 @@ impl Response {
             Err(e) => (None, Some(e)),
         };
         Self {
-            v: PROTOCOL_VERSION,
             id,
             dispatch,
             reason: None,
@@ -661,7 +654,6 @@ pub struct BlockingWindow {
 pub enum Observation {
     #[serde(rename_all = "camelCase")]
     Ready {
-        protocol: u32,
         backend: &'static str,
         host_id: String,
         host_epoch: u64,
@@ -1081,16 +1073,12 @@ pub struct HeldKey {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputNotice {
-    pub v: u32,
     pub input: HeldInput,
 }
 
 impl InputNotice {
     pub fn of(held: HeldInput) -> Self {
-        Self {
-            v: PROTOCOL_VERSION,
-            input: held,
-        }
+        Self { input: held }
     }
 }
 
@@ -1133,7 +1121,7 @@ fn check_host(req: &Request, binding: &Binding) -> Result<(), &'static str> {
 
 /// 派发前的唯一准入判定。返回 `Err(reason)` 时调用方一律记 `not_dispatched`。
 ///
-/// 顺序固定：协议版本 → 执行实例身份 → 连接代际 → 取消登记 → 截止时刻。身份或代际不符的
+/// 顺序固定：执行实例身份 → 连接代际 → 取消登记 → 截止时刻。身份或代际不符的
 /// 请求不进入取消与超时判断，旧绑定的请求因此影响不到当前绑定的登记。
 pub fn admit(
     req: &Request,
@@ -1141,9 +1129,6 @@ pub fn admit(
     cancelled: bool,
     now: i64,
 ) -> Result<(), &'static str> {
-    if req.v != PROTOCOL_VERSION {
-        return Err("protocol_version");
-    }
     match req.op {
         Op::Handshake { .. } => {
             if let Some(binding) = binding {
@@ -1285,7 +1270,7 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":6,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0.1#42.7",
                 "action":{{"kind":"invoke"}},
@@ -1295,7 +1280,7 @@ mod tests {
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":6,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -1303,14 +1288,14 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":6,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
     }
 
     fn act_params(action: &str) -> Request {
         parse(&format!(
-            r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0#7","action":{action},
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
@@ -1326,7 +1311,7 @@ mod tests {
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1352,7 +1337,7 @@ mod tests {
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1371,7 +1356,7 @@ mod tests {
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
                 "nameContains":"保存","includeValue":false,"includeState":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
@@ -1396,7 +1381,7 @@ mod tests {
     #[test]
     fn wait_decodes_condition_and_two_bounds() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
                 "value":"张三","pollMs":250,"timeoutMs":9000,
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
@@ -1421,7 +1406,7 @@ mod tests {
 
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -1434,7 +1419,7 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
         )
         .is_err());
@@ -1444,7 +1429,7 @@ mod tests {
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
@@ -1457,7 +1442,7 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":6,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
     }
 
@@ -1745,7 +1730,7 @@ mod tests {
         ] {
             assert!(
                 serde_json::from_str::<Request>(&format!(
-                    r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                    r#"{{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                         "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
                         "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
                 ))
@@ -1800,7 +1785,7 @@ mod tests {
     #[test]
     fn read_text_is_its_own_read_only_op() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_text","params":{"window":66,"ref":"w.3#9","maxChars":2000}}"#,
         );
         assert!(matches!(
@@ -1910,7 +1895,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":6,"id":"h","connectionEpoch":5,
+            r#"{"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());
@@ -2000,13 +1985,6 @@ mod tests {
             admit(&req, Some(&bound()), true, i64::MAX),
             Err("cancelled")
         );
-    }
-
-    #[test]
-    fn protocol_version_is_checked_before_everything_else() {
-        let mut req = invoke_request(None);
-        req.v = 1;
-        assert_eq!(admit(&req, None, true, i64::MAX), Err("protocol_version"));
     }
 
     #[test]
@@ -2234,7 +2212,7 @@ mod tests {
         ] {
             assert!(
                 serde_json::from_str::<Request>(&format!(
-                    r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                    r#"{{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                         "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
                         "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
                 ))
@@ -2246,7 +2224,7 @@ mod tests {
 
     fn act_request(action: &str, target: &str, foreground: bool) -> Request {
         parse(&format!(
-            r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":{foreground},"op":"act","params":{{"window":66,{target}
                 "action":{action},"maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
@@ -2321,7 +2299,7 @@ mod tests {
     fn the_foreground_flag_defaults_to_off() {
         assert!(!invoke_request(None).foreground);
         let on: Request = serde_json::from_str(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":true,"op":"list_windows","params":{}}"#,
         )
         .expect("请求应当解析成功");
@@ -2332,7 +2310,7 @@ mod tests {
     #[test]
     fn an_action_can_target_a_screen_point_instead_of_a_control() {
         let req = parse(
-            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":true,"op":"act","params":{"window":66,
                 "point":{"x":-1800,"y":240},"expectGeneration":"100,100,800,600@96#7",
                 "action":{"kind":"click","button":"left","count":1},
@@ -2398,7 +2376,6 @@ mod tests {
             }],
         }))
         .expect("通报应当序列化成功");
-        assert_eq!(notice["v"], PROTOCOL_VERSION);
         assert_eq!(notice["input"]["buttons"][0], "left");
         assert_eq!(notice["input"]["keys"][0], json_of(r#"{"vk":162,"extended":false}"#));
         assert!(notice.get("id").is_none());

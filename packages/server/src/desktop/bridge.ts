@@ -30,7 +30,7 @@ import type {
   DesktopWaitUntil,
   NativeDesktopUpFrame,
 } from '@qywork/core'
-import { DESKTOP_PROTOCOL_VERSION, log, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
+import { log, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 import type { ServerWebSocket } from 'bun'
 import type { SocketData } from '../deps.ts'
 import { timingSafeEqual } from '../pairing.ts'
@@ -290,15 +290,6 @@ export class DesktopBridge {
   }
 
   #ready(frame: DesktopHostReadyFrame): void {
-    // 协议版本不一致即整条能力不发布。接下它就要按一份读不准的帧去解释观察结果，
-    // 而错误的观察会变成一次打在别的控件上的动作。
-    if (frame.protocol !== DESKTOP_PROTOCOL_VERSION) {
-      log.warn('desktop', '宿主协议版本不一致，这条连接不接受', {
-        host: frame.protocol,
-        server: DESKTOP_PROTOCOL_VERSION,
-      })
-      return
-    }
     // 重连或换 worker 都按新代际重建：先让上一代的待决调用收尾，再登记新身份。
     this.#failPending('桌面宿主已换代')
     this.#host = {

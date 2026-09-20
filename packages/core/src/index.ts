@@ -204,7 +204,6 @@ export {
 } from './protocol/native-browser.ts'
 // 桌面原生宿主连接的帧与操作枚举：宿主与 server 两侧按这一份编解码
 export {
-  DESKTOP_PROTOCOL_VERSION,
   type DesktopAction,
   type DesktopActionKind,
   type DesktopBlockingWindow,

@@ -12,7 +12,7 @@ import type {
   DesktopWindow,
   NativeDesktopUpFrame,
 } from '@qywork/core'
-import { DESKTOP_PROTOCOL_VERSION, NATIVE_DESKTOP_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
+import { NATIVE_DESKTOP_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 
 export const HOST_KEY = 'desktop-host-key-for-tests'
 
@@ -21,7 +21,6 @@ export const READY: DesktopHostReadyFrame = {
   hostId: 'h1',
   hostEpoch: 2,
   connectionEpoch: 3,
-  protocol: DESKTOP_PROTOCOL_VERSION,
   platform: 'windows',
   workerReady: true,
   authorized: true,

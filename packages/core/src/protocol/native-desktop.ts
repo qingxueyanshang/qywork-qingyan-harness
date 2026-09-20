@@ -19,16 +19,6 @@
 export const NATIVE_DESKTOP_PATH = '/native/desktop'
 
 /**
- * 宿主与 worker 之间那份协议的版本。
- *
- * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
- *
- * 必须等于 worker crate 的 `protocol_version.rs` 里那个数，改协议时两处同改；
- * `scripts/desktop-protocol-version.test.ts` 在门禁里比对。
- */
-export const DESKTOP_PROTOCOL_VERSION = 6
-
-/**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
  * `not_dispatched`，不猜测意图。
  *
@@ -548,18 +538,19 @@ export function imageRectToScreen(
  *
  * 同一条连接上可以再发：worker 被换掉时宿主用新的 `hostEpoch` 重发一次，服务端据此
  * 作废旧执行实例名下的一切。`connectionEpoch` 由宿主每次连接自增。
+ *
+ * **这条链路不设手写的协议版本。** 不要给这一帧加一个 `protocol` 让服务端比对：那个数
+ * 只在有人记得同改时才成立，对不上即整条连接被拒，电脑控制一组工具全部不注册。服务端、
+ * 宿主外壳与 worker 三端出自同一次构建——开发态三者同一棵源码树，`build.rs` 在编外壳的
+ * 同一次构建里编出 worker；发行版三者同一次打包——链路上没有能独立升级的一端。
+ *
+ * 重新引入版本比对的前提是出现这样一端，届时比对的是构建产出的标识。
  */
 export interface DesktopHostReadyFrame {
   type: 'host.ready'
   hostId: string
   hostEpoch: number
   connectionEpoch: number
-  /**
-   * 协议版本。`workerReady` 为真时是宿主从 worker 的握手回执里读回的那一个，为假时是
-   * 宿主要求的那一个。宿主在 worker 报出不同版本时不发布就绪，因此这一格与
-   * `workerReady` 一起看才完整。
-   */
-  protocol: number
   platform: string
   /** worker 进程已握手就绪。 */
   workerReady: boolean
