@@ -2,7 +2,7 @@
 name = "qy-computer-host"
 # 这一行与 Cargo.lock 里本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
 # `VERSION` 一起灌入，不要手改：只改其中一处，带 `--locked` 的检查、测试与构建全部失败。
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 rust-version = "1.80"
 publish = false
