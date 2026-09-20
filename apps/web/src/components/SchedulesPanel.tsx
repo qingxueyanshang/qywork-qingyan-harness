@@ -98,6 +98,9 @@ export function SchedulesPanel() {
                   {/* 周期、下次时刻与两个动作同在一行：动作贴行尾，不单独占卡片底部一行。 */}
                   <div class="schedule-meta">
                     <span class="field-hint">{describe(s)}</span>
+                    <Show when={s.lastRunAt}>
+                      {(t) => <span class="field-hint">上次 {fmt(t())}</span>}
+                    </Show>
                     <Show when={s.enabled && s.nextRunAt}>
                       {(t) => <span class="field-hint">下次 {fmt(t())}</span>}
                     </Show>
@@ -122,16 +125,13 @@ export function SchedulesPanel() {
                       </button>
                     </div>
                   </div>
-                  <div class="schedule-prompt">{s.prompt}</div>
-
                   {/* 上次触发的结果贴在这条任务上：触发的时候没人开着界面，
-                      只发事件等于没有接收者。正文取自那一次的 Run。 */}
-                  <Show when={s.lastRunAt}>
-                    {(t) => <div class="field-hint">上次触发 {fmt(t())}</div>}
-                  </Show>
+                      只发事件等于没有接收者。正文取自那一次的 Run。排在任务正文之前：
+                      正文可以很长，排在后面要滚到卡片底部才看得到。 */}
                   <Show when={outcome(s)}>
                     {(text) => <div class="field-hint bad">{text()}</div>}
                   </Show>
+                  <div class="schedule-prompt">{s.prompt}</div>
                 </div>
               )}
             </For>
