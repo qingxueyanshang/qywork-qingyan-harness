@@ -37,6 +37,7 @@ import type {
 import type {
   DesktopAction,
   DesktopBlockingWindow,
+  DesktopDispatch,
   DesktopImageGeometry,
   DesktopNode,
   DesktopObservation,
@@ -787,20 +788,29 @@ export class DesktopCoordinator {
         actionId,
         ...(result.reason !== undefined ? { reason: result.reason } : {}),
         ...this.#blockedBy(result.blocking),
-        ...this.#followUp(lease, input.windowId, result.observation, result.observationError),
+        ...this.#followUp(
+          lease,
+          input.windowId,
+          result.dispatch,
+          result.observation,
+          result.observationError,
+        ),
       }
     } catch (err) {
       if (!(err instanceof DesktopBridgeError)) throw err
-      // 重读没拿到，这个窗口的控件表停在动作之前那一刻：整份作废。
-      lease.observations.delete(input.windowId)
       // 执行事实来自异常自己带的那一格：压成一句失败的话，调用方分不出「没执行」
       // 与「可能已经执行」，而后者禁止重发。
       return {
         dispatch: err.dispatch,
         actionId,
         reason: err.message,
-        observation: null,
-        observationError: '宿主不可用，动作之后没有重读',
+        ...this.#followUp(
+          lease,
+          input.windowId,
+          err.dispatch,
+          undefined,
+          '宿主不可用，动作之后没有重读',
+        ),
       }
     }
   }
@@ -951,7 +961,7 @@ export class DesktopCoordinator {
       return {
         found: observation.found,
         ...(observation.reason !== undefined ? { reason: observation.reason } : {}),
-        ...this.#followUp(lease, input.windowId, observation, undefined),
+        ...this.#followUp(lease, input.windowId, null, observation, undefined),
       }
     } catch (err) {
       if (!(err instanceof DesktopBridgeError)) throw err
@@ -987,17 +997,26 @@ export class DesktopCoordinator {
   /**
    * 动作或等待之后的那份重读。
    *
-   * 读到了就并进观察并换新编号；没读到就把这个窗口的控件表整份作废——它停在动作之前
-   * 那一刻，而动作可能已经生效。执行事实不受这里影响。
+   * 读到了就并进观察并换新编号。没读到时按执行事实分两种：**未派发的动作一条系统调用
+   * 都没发出，上一份观察仍然成立，就地保留、编号不变**——作废它等于要求调用方为一件
+   * 没有发生的事重新观察一次；已派发与结果未知那两种，控件表停在动作之前那一刻而动作
+   * 可能已经生效，整份作废。
+   *
+   * `dispatch` 给 `null` 表示这次调用不派发动作（等待），它总带着一份重读。
+   * 执行事实不受这里影响。
    */
   #followUp(
     lease: Lease,
     windowId: string,
+    dispatch: DesktopDispatch | null,
     observation: DesktopObservation | undefined,
     error: string | undefined,
   ): DesktopFollowUp {
     if (observation?.kind === 'tree' || observation?.kind === 'wait') {
       return { observation: this.#absorb(lease, windowId, observation) }
+    }
+    if (dispatch === 'not_dispatched') {
+      return { observation: null, observationError: '动作没有派发，上一份观察仍然有效' }
     }
     lease.observations.delete(windowId)
     return { observation: null, observationError: error ?? '宿主没有回传动作之后的读数' }

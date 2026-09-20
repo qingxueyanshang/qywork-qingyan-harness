@@ -499,6 +499,45 @@ test('动作之后窗口被模态窗口挡住：整份观察作废，只剩重�
   expect(result.observation.elements.map((e) => e.ref)).toEqual(['w.1#4', 'w.1.0#5'])
 })
 
+/**
+ * 未派发的动作不动观察记账。
+ *
+ * 宿主拒绝派发时一条系统调用都没发出，控件表停在原处仍然成立。作废它会让下一个动作
+ * 拿着同一个编号撞上「观察已失效」，而那次失败的成因是上一次拒绝，不是观察本身。
+ */
+test('动作被宿主拒绝派发：观察编号仍然有效，下一个动作照常发得出去', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  const refused = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  host.reply(await host.next(), { dispatch: 'not_dispatched', reason: 'occluded: 680,853' })
+  const result = await refused
+  expect(result.dispatch).toBe('not_dispatched')
+  expect(result.observation).toBeNull()
+  expect(a.elements('dw_1', first.observationId)?.map((e) => e.ref)).toEqual(
+    NODES.map((n) => n.ref),
+  )
+
+  // 同一个编号接着发下一个动作：它发得出去，不是「观察已失效」。
+  const next = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'w.1.0#5',
+    action: { kind: 'activate' },
+  })
+  const frame = await host.next()
+  expect(frame.op).toBe('act')
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  expect((await next).dispatch).toBe('submitted')
+})
+
 test('动作之后没有重读：这个窗口的控件表整份作废', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
@@ -1294,13 +1333,11 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   expect((await refused).dispatch).toBe('not_dispatched')
   expect(desktop.targetForeground()).toBe(false)
 
-  // 拒绝派发时没有重读，这个窗口的控件表整份作废：重新观察一次再往下走。
-  const again = await firstLook(host, a)
-
-  // 派发出去了：读数上调，之后的后台读取不把它退回去。
+  // 派发出去了：读数上调，之后的后台读取不把它退回去。拒绝派发没有动观察记账，
+  // 接着用的仍是第一份那个编号。
   const acting = a.act({
     windowId: 'dw_1',
-    observationId: again.observationId,
+    observationId: first.observationId,
     ref: 'w.1.0#5',
     action: { kind: 'click', button: 'left', count: 1 },
   })
@@ -1312,7 +1349,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
 
   const reading = a.act({
     windowId: 'dw_1',
-    observationId: done.observation?.observationId ?? again.observationId,
+    observationId: done.observation?.observationId ?? first.observationId,
     ref: 'w.1.0#5',
     action: { kind: 'invoke' },
   })

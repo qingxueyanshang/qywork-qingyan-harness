@@ -187,7 +187,8 @@ export interface DesktopSnapshot {
  * 调用方拿到它就能接着发下一个动作，不必再单独观察一次。
  *
  * **重读缺席不代表动作没发出去。** 调用方拿到 `observationError` 时先重新观察确认，
- * 不要重复同一个动作。
+ * 不要重复同一个动作。**`dispatch` 为 `not_dispatched` 是例外**：一条系统调用都没发出，
+ * 上一份观察与它的编号仍然有效，不必重新观察。
  */
 export type DesktopFollowUp =
   | { observation: DesktopSnapshot }
