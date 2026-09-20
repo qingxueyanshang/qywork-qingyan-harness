@@ -32,6 +32,7 @@ import {
   desktopWaitTool,
   desktopWindowsTool,
 } from './desktop.ts'
+import { MAX_EDGE } from './image.ts'
 
 /** 窗口根。同名按钮分在两个分组下，只有祖先路径区分得开。 */
 const 窗口: DesktopElement = {
@@ -2109,7 +2110,7 @@ describe('前台动作', () => {
       actions: [{ action: 'click', delivery: ['foreground'] }],
     }
     const bare = [自绘窗口, 画布, 标题栏, 关闭按钮]
-    const { port } = fakeDesktop({
+    const { port, calls } = fakeDesktop({
       observe: async () => snapshot({ elements: bare }),
     })
     const r = await run(
@@ -2119,9 +2120,48 @@ describe('前台动作', () => {
     )
     expect(r.status).toBe('success')
     expect(r.message).toContain('无可操作控件')
-    expect(r.message).toContain('改用 capture 取图')
+    // 同一次调用把整窗图一并给了，调用方不必再发一次采图。
+    const shots = calls.filter((c) => c.method === 'captureImage')
+    expect(shots).toHaveLength(1)
+    expect(shots[0]?.input).toMatchObject({ windowId: 'dw_1' })
+    expect(r.message).toContain('di_1')
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
     // 前台开着（表里有 foreground），不该再说它没启用。
     expect(r.message).not.toContain('前台操作未启用')
+  })
+
+  test('无可操作控件但模型不收图片：只给控件表，不采那张看不到的图', async () => {
+    const 画布: DesktopElement = {
+      ref: 'w.0#22',
+      parentRef: 'w#1',
+      depth: 1,
+      role: 'pane',
+      name: '',
+      automationId: 'canvas',
+      enabled: true,
+      offscreen: false,
+      actions: [{ action: 'click', delivery: ['foreground'] }],
+    }
+    const { port, calls } = fakeDesktop({
+      observe: async () => snapshot({ elements: [窗口, 画布] }),
+    })
+    const ctx = { ...ctxWith(port), vision: false }
+    const r = await run(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }, ctx)
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('无可操作控件')
+    expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+  })
+
+  test('控件表里有业务控件时不附图：调用方按控件表就能定位', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'structure' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).not.toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
   test('前台操作关着时，同一行补上它没启用', async () => {
@@ -2284,6 +2324,69 @@ describe('前台动作', () => {
     expect(wrongKind).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
+  /**
+   * 按图定位说明调用方看的是图不是控件表，动作后的控件数对它零信息量。
+   * 回执自带动作后的整窗图，省掉随后那次单独采图。
+   */
+  test('按图定位的动作回执自带动作后的整窗图', async () => {
+    const { port, calls } = foregroundPort()
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        imageRef: 'di_1',
+        imageX: 40,
+        imageY: 50,
+      },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+    expect(calls[1]?.input).toEqual({ windowId: 'dw_1', maxEdge: MAX_EDGE })
+    expect(r.message).toContain('click 已执行')
+    expect(r.message).toContain('di_1')
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('未派发的按图动作不附图：什么都没发生，手上那张图仍然成立', async () => {
+    const { port, calls } = foregroundPort({
+      act: async () => ({
+        dispatch: 'not_dispatched',
+        actionId: 'da_1',
+        reason: 'occluded: 680,853',
+        observation: null,
+        observationError: '动作没有派发，上一份观察仍然有效',
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        imageRef: 'di_1',
+        imageX: 40,
+        imageY: 50,
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('occluded')
+    expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+  })
+
+  test('按控件定位的动作不附图：控件表本身就说得出动作后的状态', async () => {
+    const { port, calls } = foregroundPort()
+    await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16' },
+      ctxWith(port),
+    )
+    expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+  })
+
   test('失效的 imageRef 由端口拒绝，回执按未执行记', async () => {
     const { port } = foregroundPort({
       act: async () => {
@@ -2423,9 +2526,9 @@ describe('前台动作', () => {
     ])
   })
 
-  test('前台动作不进序列，整组在派发之前被拒', async () => {
+  test('改窗口矩形的动作不进序列，整组在派发之前被拒', async () => {
     const { port, calls } = foregroundPort()
-    for (const action of ['click', 'type_text', 'press_key', 'activate', 'close_window']) {
+    for (const action of ['set_window_state', 'move_window', 'resize_window', 'close_window']) {
       const r = await run(
         desktopActSequenceTool,
         {
@@ -2436,8 +2539,9 @@ describe('前台动作', () => {
             {
               action,
               ref: 'w.9#16',
-              ...(action === 'type_text' ? { text: '李四' } : {}),
-              ...(action === 'press_key' ? { key: 'enter' } : {}),
+              ...(action === 'set_window_state' ? { windowState: 'maximized' } : {}),
+              ...(action === 'move_window' ? { x: 1, y: 2 } : {}),
+              ...(action === 'resize_window' ? { width: 300, height: 200 } : {}),
             },
           ],
         },
@@ -2545,6 +2649,120 @@ describe('有限动作序列', () => {
   function seq(steps: Record<string, unknown>[]): Record<string, unknown> {
     return { windowId: 'dw_1', observationId: 'do_1', steps }
   }
+
+  /**
+   * 自绘界面的常见三连。控件表上只有窗口根：第一步按图给坐标，后两步投给窗口本身。
+   * 一次调用跑完，末尾带一张动作后的整窗图。
+   */
+  test('自绘界面：按图点击加两步键盘一次跑完，末尾附动作后的图', async () => {
+    const bare = [自绘窗口]
+    const calls: Recorded[] = []
+    let observationId = 'do_1'
+    let acted = 0
+    const port: DesktopPort = {
+      windows: async () => [{ windowId: 'dw_1', app: '自绘', title: '自绘' }],
+      observe: async () => snapshot({ observationId, elements: bare }),
+      elements: (windowId, asked) => (windowId === 'dw_1' && asked === observationId ? bare : null),
+      captureImage: async (input) => {
+        calls.push({ method: 'captureImage', input })
+        return image()
+      },
+      act: async (input) => {
+        calls.push({ method: 'act', input })
+        acted += 1
+        observationId = `do_${acted + 1}`
+        return {
+          dispatch: 'submitted',
+          actionId: `da_${acted}`,
+          observation: snapshot({ observationId, elements: bare }),
+        }
+      },
+      readText: async () => {
+        throw new Error('这一步不读文本')
+      },
+      wait: async () => {
+        throw new Error('这一步不等待')
+      },
+      release: async () => {},
+    }
+
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'click', imageRef: 'di_1', imageX: 700, imageY: 900 },
+        { action: 'type_text', text: '好的' },
+        { action: 'press_key', key: 'enter' },
+      ]),
+      ctxWith(port),
+    )
+
+    expect(r.status).toBe('success')
+    expect(r.executed).toBe(true)
+    expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act', 'captureImage'])
+    const acts = calls.slice(0, 3).map((c) => c.input as Record<string, unknown>)
+    expect(acts[0]).toMatchObject({ at: { imageRef: 'di_1', x: 700, y: 900 } })
+    // 键盘两步不点名控件：目标是窗口本身，帧里既没有 ref 也没有 at。
+    expect(acts[1]).not.toHaveProperty('ref')
+    expect(acts[1]).not.toHaveProperty('at')
+    expect(acts[1]).toMatchObject({ action: { kind: 'type_text', text: '好的' } })
+    expect(acts[2]).toMatchObject({ action: { kind: 'press_key', key: 'enter' } })
+    // 每一步按上一步带回的那个编号发出。
+    expect(acts.map((a) => a.observationId)).toEqual(['do_1', 'do_2', 'do_3'])
+    expect(r.message).toContain('di_1')
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('整组都按控件定位时不附图', async () => {
+    const { port, calls } = sequencePort()
+    await run(
+      desktopActSequenceTool,
+      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      ctxWith(port),
+    )
+    expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+  })
+
+  test('按图定位的步骤不接受 expect：没有控件可判', async () => {
+    const { port, calls } = sequencePort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        {
+          action: 'click',
+          imageRef: 'di_1',
+          imageX: 1,
+          imageY: 2,
+          expect: { until: 'selected' },
+        },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('expect')
+    expect(calls).toEqual([])
+  })
+
+  /**
+   * 未派发的一步一条系统调用都没发出，控件表与观察编号停在原处仍然成立。
+   * 回执说清这件事，调用方据此改条件重试，不必先重新观察一次。
+   */
+  test('第一步就未派发：控件表没有被作废，回执说手上那个编号仍然有效', async () => {
+    const { port } = sequencePort({
+      acts: [{ dispatch: 'not_dispatched', reason: 'occluded: 680,853', observation: null }],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'select', ref: 'w.5.0#12' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('occluded: 680,853')
+    expect(r.message).toContain('观察 do_1 仍然有效')
+    expect(r.message).not.toContain('读不到最后一份控件表')
+  })
 
   test('逐步执行，每步一个 actionId，动作按顺序带着当时那份观察编号发出', async () => {
     const { port, calls, current } = sequencePort()

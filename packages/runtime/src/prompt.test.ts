@@ -326,7 +326,10 @@ describe('能力段', () => {
     expect(prompt).toContain('desktop_windows')
     expect(prompt).toContain('desktop_observe')
     expect(prompt).toContain('不要用 run_command 截图点坐标')
-    expect(prompt).toContain('capture')
+    // 自绘界面那条路径要点全：observe 自带图、按图动作的回执自带图、连招走 sequence。
+    expect(prompt).toContain('无可操作控件')
+    expect(prompt).toContain('按图给坐标')
+    expect(prompt).toContain('desktop_act_sequence')
   })
 
   test('没有桌面工具就不提它们', () => {

@@ -60,7 +60,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'desktop_windows',
-    line: '- 电脑控制：操作本机已经开着的应用走 desktop_windows → desktop_observe → desktop_act，不要用 run_command 截图点坐标。控件表里找不到目标时用 capture 取图，动作按图给坐标。',
+    line: '- 电脑控制：操作本机已经开着的应用走 desktop_windows → desktop_observe → desktop_act，不要用 run_command 截图点坐标。自绘界面（回执写「无可操作控件」）的 observe 已经把整窗图一并给了，动作按图给坐标；按图定位的动作回执自带动作后的图，不必再观察一次。连着几步打在同一个窗口上用 desktop_act_sequence 一次跑完。',
   },
   {
     tool: 'write_memory',

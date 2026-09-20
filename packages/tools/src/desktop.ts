@@ -3,7 +3,7 @@
  *
  * 单个动作一次调用发一条端口命令就返回，由 Agent 循环再决定下一步。序列是同一个
  * `DesktopPort.act` 的有界循环，不重试有副作用的动作——重试一次 invoke 等于在应用里
- * 多提交一次。
+ * 多提交一次。两者的目标解析与动作组装都走 `planAct`，只有这一份。
  *
  * 六条边界：
  *
@@ -30,6 +30,7 @@ import type {
   DesktopElement,
   DesktopFollowUp,
   DesktopImage,
+  DesktopImagePoint,
   DesktopPort,
   DesktopSnapshot,
   DesktopWaitCondition,
@@ -102,26 +103,27 @@ const ACTIONS: readonly DesktopActionKind[] = [
   'close_window',
 ]
 /**
- * 序列接受的动作：经控件模式发出的那十三种。
+ * 序列不接受的动作：会改变窗口矩形或让窗口消失的那四种。
  *
- * 其余动作用真实指针与键盘，每一步都会改变前台与焦点，后面那些步骤的前置条件因此
- * 不再独立成立。不要把它们加进来，序列没有重新取得焦点的手段。
+ * 窗口一动，控件包围盒与按图定位用的窗口几何代际一起失效，后面几步的 `imageRef` 会被
+ * 宿主在派发前逐条拒掉。用 `desktop_act` 单独执行它们，再重新观察。
  */
-const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = [
-  'invoke',
-  'set_value',
-  'set_range_value',
-  'select',
-  'add_to_selection',
-  'remove_from_selection',
-  'set_toggle',
-  'expand',
-  'collapse',
-  'scroll',
-  'scroll_into_view',
-  'realize_item',
-  'select_text',
+const WINDOW_SHAPE_ACTIONS: readonly DesktopActionKind[] = [
+  'set_window_state',
+  'move_window',
+  'resize_window',
+  'close_window',
 ]
+/**
+ * 序列接受的动作。
+ *
+ * 指针与键盘动作也在内：worker 在每次派发前把目标窗口拿回前台，后面几步的前台前置条件
+ * 因此仍然成立。点名控件的 `type_text` 要那个控件持有键盘焦点，由它前面那一步的 click
+ * 给出——激活窗口不改控件焦点。
+ */
+const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = ACTIONS.filter(
+  (kind) => !WINDOW_SHAPE_ACTIONS.includes(kind),
+)
 /** 接受图像点落点的那几种。其余动作只能按控件执行。 */
 const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
 /**
@@ -742,21 +744,30 @@ function operableCount(table: DesktopElement[]): number {
 }
 
 /**
- * 控件树上一个业务控件都没有的窗口，在回执里记下来。
+ * 控件树上一个业务控件都没有的窗口。自绘界面走的就是这一支，只能看图按坐标操作。
  *
  * 只在整窗、未截断、未筛选的观察上判：筛出零个控件与「这个窗口没有控件」是两回事，
  * 混起来会让一次 `role=button` 的空结果被说成应用不暴露控件。
  *
+ * **这是「附不附图」与「回执写不写这一句」共同的判据**，两处不要各判一套。
+ */
+function isBareWindow(s: DesktopSnapshot): boolean {
+  if (s.truncated || s.filteredBy.length > 0) return false
+  if (!s.elements.some(isWindowRoot)) return false
+  return operableCount(s.elements) === 0
+}
+
+/**
+ * 自绘窗口在回执里记下来。
+ *
  * 前台操作开没开按同一份 delivery 表读：关着时表里一条 `foreground` 都没有。
  */
 function bareWindowNote(s: DesktopSnapshot): string {
-  if (s.truncated || s.filteredBy.length > 0) return ''
-  if (!s.elements.some(isWindowRoot)) return ''
-  if (operableCount(s.elements) > 0) return ''
+  if (!isBareWindow(s)) return ''
   const foreground = s.elements.some((e) =>
     e.actions.some((a) => a.delivery.includes('foreground')),
   )
-  return ` · 无可操作控件 · 改用 capture 取图${foreground ? '' : ' · 前台操作未启用'}`
+  return ` · 无可操作控件${foreground ? '' : ' · 前台操作未启用'}`
 }
 
 /** 一份观察的一行读数：控件数、截断与筛选各说一次。 */
@@ -920,6 +931,40 @@ async function imagePayload(
   }
 }
 
+/**
+ * 按图定位的动作在回执上附一张动作后的整窗图。
+ *
+ * 自绘窗口的控件数对调用方零信息量，它只能看图，附上这一张省掉随后那次单独采图。
+ * **未派发的不附**：什么都没发生，手上那张图仍然成立。
+ *
+ * 时机就是动作回执到手那一刻——宿主在回执之前已经重读过一次目标子树，画面的稳定时间
+ * 由那一次给出，这里不另等。
+ *
+ * 图采不到只在回执尾巴上补一句，不改执行事实：动作已经发生了。
+ */
+async function withShot(
+  outcome: ToolOutcome,
+  dispatched: boolean,
+  desktop: DesktopPort,
+  send: PortCall,
+  windowId: string,
+  ctx: ToolContext,
+): Promise<ToolOutcome> {
+  if (!dispatched || ctx.vision === false) return outcome
+  const shot = await send(() => desktop.captureImage({ windowId, maxEdge: MAX_EDGE })).then(
+    (image) => imagePayload(image),
+    (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+  )
+  if ('error' in shot) {
+    return { ...outcome, message: `${outcome.message} · 没有采到图 · ${shot.error}` }
+  }
+  return {
+    ...outcome,
+    message: `${outcome.message} · ${shot.line}`,
+    data: { ...outcome.data, ...shot.data },
+  }
+}
+
 /** 当前模型不收图片时的终态。重试永远不会成功，所以话里要带下一步该干什么。 */
 const NO_VISION = {
   status: 'failure',
@@ -982,7 +1027,8 @@ export const desktopObserveTool: ToolSpec = {
     '先用 structure，树里找不到目标时才采图。' +
     '控件表给角色、名称、automationId、value、enabled、rect、parentRef 与控件状态；' +
     'actions 列出此刻能做什么，delivery 非空才能执行。' +
-    '回执里「无可操作控件」就是自绘界面，改用取图，动作按图给坐标；「未读全」调 maxNodes 或 maxDepth 重读。' +
+    '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
+    '「未读全」调 maxNodes 或 maxDepth 重读。' +
     '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提，重新观察即换号；窗口移动后旧 imageRef 失效。',
   parameters: {
     type: 'object',
@@ -1112,7 +1158,11 @@ export const desktopObserveTool: ToolSpec = {
       const line =
         `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}` +
         bareWindowNote(snapshot)
-      if (capture === 'structure') {
+      // 自绘窗口的 structure 观察直接附上整窗图：控件表里一个业务控件都没有，调用方
+      // 只能看图按坐标操作，两次往返之间没有可做的判断。判据与那句「无可操作控件」
+      // 同一处，见 `isBareWindow`。
+      const alsoImage = capture === 'combined' || (isBareWindow(snapshot) && ctx.vision !== false)
+      if (!alsoImage) {
         return { status: 'success', message: line, data: { ...snapshot } }
       }
       // 控件表已经拿到手：图采不到也要把它交出去，并说清图为什么没有。
@@ -1209,10 +1259,12 @@ export const desktopActTool: ToolSpec = {
     'move_window / resize_window / close_window 用真实指针键盘，只在用户启用前台操作时出现在 actions 里，' +
     '没出现就是没启用，不要改用别的动作代替。' +
     'type_text 点名控件时要它此刻持有键盘焦点，先 click 它；自绘界面不给控件，输入投给窗口。' +
-    '指针动作可以不给控件，改给 imageRef 与 imageX / imageY。' +
+    '指针动作可以不给控件，改给 imageRef 与 imageX / imageY；按图定位的动作回执自带一张动作后的整窗图，不必再观察一次。' +
     'dispatch 三种：not_dispatched 未执行，submitted 已执行，unknown 结果未知——先重新观察，不要重放；' +
     '「读回不一致」同样不要重发同一段。' +
-    '动作之后同次带回新观察与新的 observationId；弹出新窗口时改带 blocking，对它继续观察。',
+    'not_dispatched 时手上的 observationId 仍然有效，按原因码改条件重试即可。' +
+    '动作之后同次带回新观察与新的 observationId；弹出新窗口时改带 blocking，对它继续观察。' +
+    '连着几个动作打在同一个窗口上时用 desktop_act_sequence，一次调用跑完。',
   parameters: {
     type: 'object',
     properties: {
@@ -1277,45 +1329,68 @@ export const desktopActTool: ToolSpec = {
       const windowId = str(args.windowId, 'windowId')
       const observationId = str(args.observationId, 'observationId')
       const kind = oneOf(args.action, ACTIONS, 'action')
-      // 按图定位没有控件可判：落点归不归目标窗口、前台接管开没开都由宿主在派发前核，
-      // 本地只核参数。按控件定位仍然在这里判完再发。
-      if (given(args.imageRef)) {
-        if (!POINTER_ACTIONS.includes(kind)) {
-          throw new ArgError(`${kind} 只能按控件执行，不接受 imageRef`)
-        }
-        if (given(args.ref) || given(args.automationId) || given(args.name)) {
-          throw new ArgError('控件与图像点只能给一个')
-        }
-        const at = {
-          imageRef: str(args.imageRef, 'imageRef'),
-          x: bounded(args.imageX, 'imageX', 0, MAX_IMAGE_COORD),
-          y: bounded(args.imageY, 'imageY', 0, MAX_IMAGE_COORD),
-        }
-        const action = buildAction([], pointTarget(), kind, args, TARGET_PARAMS)
-        const r = await send(() => desktop.act({ windowId, observationId, at, action }))
-        return actOutcome(action, at.imageRef, r)
-      }
-      const table = desktop.elements(windowId, observationId)
-      // 键盘输入不点名控件时目标是窗口本身：观察里窗口根节点上的 type_text /
-      // press_key 说的就是「这个窗口此刻收键盘」。点名根节点与不点名是同一件事，
-      // 在这里合成同一种请求——两种写法各发一种帧就是两套判定。
-      const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
-      const element =
-        toWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
-      checkPrecondition(element, kind)
-      const action = buildAction(table ?? [], element, kind, args, TARGET_PARAMS)
-
-      const byWindow = toWindow && isWindowRoot(element)
-      const r = await send(() =>
-        desktop.act({
-          windowId,
-          observationId,
-          ...(byWindow ? {} : { ref: element.ref }),
-          action,
-        }),
-      )
-      return actOutcome(action, element.ref, r)
+      const table = given(args.imageRef) ? null : desktop.elements(windowId, observationId)
+      const { aim, action } = planAct(table, kind, args, TARGET_PARAMS)
+      const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
+      const outcome = actOutcome(action, aim.element?.ref ?? '', r)
+      if (aim.input.at === undefined) return outcome
+      return withShot(outcome, r.dispatch !== 'not_dispatched', desktop, send, windowId, ctx)
     }),
+}
+
+/**
+ * 一次动作打在哪儿，以及回执里怎么称呼这个目标。
+ *
+ * `input` 里 `ref` 与 `at` 互斥，两样都不带时目标是窗口本身。`element` 是解析到的
+ * 那个控件，按图定位时缺席——读回核对与后置条件都要它，没有它就没得判。
+ */
+interface Aim {
+  input: { ref?: string; at?: DesktopImagePoint }
+  element?: DesktopElement
+  label: string
+}
+
+/**
+ * 解析这次动作的目标并组装动作。**单动作与序列的每一步共用这一份。**
+ *
+ * 三种给法：`imageRef` 加 `imageX` / `imageY` 是上一张图里的一个点，只有指针动作接受；
+ * 键盘输入不点名控件时目标是窗口根节点——点名根节点与不点名是同一件事，在这里合成
+ * 同一种请求，两种写法各发一种帧就是两套判定；其余按 `ref` / `automationId` / `name`
+ * 定位，并在派发前判一次前置条件。
+ *
+ * 按图定位时不判前置条件：手上没有控件，落点归不归目标窗口、前台接管开没开都由宿主在
+ * 派发前核。
+ */
+function planAct(
+  table: DesktopElement[] | null,
+  kind: DesktopActionKind,
+  args: Record<string, unknown>,
+  params: readonly string[],
+): { aim: Aim; action: DesktopAction } {
+  if (given(args.imageRef)) {
+    if (!POINTER_ACTIONS.includes(kind)) {
+      throw new ArgError(`${kind} 只能按控件执行，不接受 imageRef`)
+    }
+    if (targetGiven(args)) throw new ArgError('控件与图像点只能给一个')
+    const at = {
+      imageRef: str(args.imageRef, 'imageRef'),
+      x: bounded(args.imageX, 'imageX', 0, MAX_IMAGE_COORD),
+      y: bounded(args.imageY, 'imageY', 0, MAX_IMAGE_COORD),
+    }
+    return {
+      aim: { input: { at }, label: `${at.imageRef} ${at.x},${at.y}` },
+      action: buildAction([], pointTarget(), kind, args, params),
+    }
+  }
+  const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
+  const element = toWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
+  checkPrecondition(element, kind)
+  const action = buildAction(table ?? [], element, kind, args, params)
+  const byWindow = toWindow && isWindowRoot(element)
+  return {
+    aim: { input: byWindow ? {} : { ref: element.ref }, element, label: element.ref },
+    action,
+  }
 }
 
 /**
@@ -1413,21 +1488,26 @@ function planSteps(raw: unknown): StepPlan[] {
     const args = item as Record<string, unknown>
     const kind = stepKind(args.action, index)
     checkActionParams(kind, args, STEP_PARAMS)
-    return { index, kind, args, expect: expectOf(args.expect, index) }
+    const expect = expectOf(args.expect, index)
+    // 后置条件按控件判，按图定位那一步没有控件。
+    if (expect && given(args.imageRef)) {
+      throw new ArgError(`第 ${index} 步按图定位，没有控件可判 expect`)
+    }
+    return { index, kind, args, expect }
   })
 }
 
 /**
- * 这一步的动作。前台动作单独给一句话：它们在 `desktop_act` 上是可用的，
+ * 这一步的动作。窗口形变动作单独给一句话：它们在 `desktop_act` 上是可用的，
  * 模型要知道换哪个入口，而不只是「这个词不认」。
  */
 function stepKind(raw: unknown, index: number): DesktopActionKind {
   const value = String(raw ?? '')
   if (SEQUENCE_ACTIONS.includes(value as DesktopActionKind)) return value as DesktopActionKind
-  if (ACTIONS.includes(value as DesktopActionKind)) {
+  if (WINDOW_SHAPE_ACTIONS.includes(value as DesktopActionKind)) {
     throw new ArgError(
-      `第 ${index} 步的 ${value} 用真实指针或键盘执行，序列不接受，` +
-        '它会改变前台与焦点，后面几步的前置条件因此不再成立；用 desktop_act 单独执行它。',
+      `第 ${index} 步的 ${value} 会改变窗口矩形，后面几步的控件包围盒与 imageRef 随之失效；` +
+        '用 desktop_act 单独执行它，再重新观察。',
     )
   }
   throw new ArgError(
@@ -1496,6 +1576,7 @@ function appeared(e: DesktopElement, expect: ExpectPlan): boolean {
 
 /** 这一步的定位条件，解析失败时的回执按它说得出「是哪一步的哪个目标」。 */
 function targetLabel(args: Record<string, unknown>): string {
+  if (given(args.imageRef)) return String(args.imageRef).trim()
   if (given(args.ref)) return String(args.ref).trim()
   const query = describeQuery(
     given(args.role) ? String(args.role).trim() : undefined,
@@ -1517,10 +1598,15 @@ function stepLine(r: StepReceipt): string {
   )
 }
 
-/** 最后一份观察的那一行。没有重读时改说目标窗口此刻的窗口清单或读不到的原因。 */
-function tailLine(last: DesktopSnapshot | null, unread: Unread): string {
-  if (last) return `最后观察 ${snapshotLine(last)}`
-  const blocking = unread.blocking ?? []
+/**
+ * 最后一份观察的那一行。
+ *
+ * 没有重读时分三种：调用未返回的说目标窗口此刻的窗口清单；控件表还在的说手上那个编号
+ * 仍然有效（第一步就未派发时走这一支，那一步一条系统调用都没发出）；其余说读不到的原因。
+ */
+function tailLine(cursor: Cursor): string {
+  if (cursor.last) return `最后观察 ${snapshotLine(cursor.last)}`
+  const blocking = cursor.unread.blocking ?? []
   if (blocking.length) {
     const appearedWindows = blocking.filter((w) => w.appeared)
     const listed = (appearedWindows.length ? appearedWindows : blocking)
@@ -1528,7 +1614,8 @@ function tailLine(last: DesktopSnapshot | null, unread: Unread): string {
       .join(' · ')
     return `调用未返回 · ${appearedWindows.length ? '新窗口' : '当前窗口'} ${listed}`
   }
-  return `读不到最后一份控件表 · ${unread.observationError ?? '宿主没有回传动作之后的读数'}`
+  if (cursor.table) return `观察 ${cursor.observationId} 仍然有效`
+  return `读不到最后一份控件表 · ${cursor.unread.observationError ?? '宿主没有回传动作之后的读数'}`
 }
 
 /**
@@ -1541,8 +1628,7 @@ function sequenceOutcome(
   plans: StepPlan[],
   done: StepReceipt[],
   halt: Halt | null,
-  last: DesktopSnapshot | null,
-  unread: Unread,
+  cursor: Cursor,
 ): ToolOutcome {
   const dispatched = done.filter((r) => r.dispatch !== 'not_dispatched').map((r) => r.index)
   const notExecuted = plans.filter((p) => !dispatched.includes(p.index)).map((p) => p.index)
@@ -1559,14 +1645,14 @@ function sequenceOutcome(
   return {
     status: halt ? 'failure' : 'success',
     executed: dispatched.length > 0,
-    message: [head, ...lines, stopped, tailLine(last, unread)].filter(Boolean).join('\n'),
+    message: [head, ...lines, stopped, tailLine(cursor)].filter(Boolean).join('\n'),
     data: {
       steps: done,
       dispatched,
       notExecuted,
       ...(halt ? { stoppedAt: halt.index, stopReason: halt.reason } : {}),
-      ...(last ? { observation: last } : {}),
-      ...unread,
+      ...(cursor.last ? { observation: cursor.last } : {}),
+      ...cursor.unread,
     },
     ...(halt ? { errorKind: halt.errorKind } : {}),
   }
@@ -1605,15 +1691,16 @@ async function runStep(
   cursor: Cursor,
   plan: StepPlan,
 ): Promise<{ receipt: StepReceipt; halt: Halt | null }> {
-  let element: DesktopElement
+  let aim: Aim
   let action: DesktopAction
-  // 目标解析成功之后回执改记 ref：前置条件与值域那几条拒绝说的是一个已经定位到的控件。
+  // 目标解析成功之后回执改记解析出来的目标：前置条件与值域那几条拒绝说的是一个
+  // 已经定位到的控件。
   let target = targetLabel(plan.args)
   try {
-    element = resolveTarget(cursor.table, plan.args)
-    target = element.ref
-    checkPrecondition(element, plan.kind)
-    action = buildAction(cursor.table ?? [], element, plan.kind, plan.args, STEP_PARAMS)
+    const planned = planAct(cursor.table, plan.kind, plan.args, STEP_PARAMS)
+    aim = planned.aim
+    action = planned.action
+    target = aim.label
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     return {
@@ -1633,7 +1720,7 @@ async function runStep(
   let result: DesktopActResult
   try {
     result = await send(() =>
-      desktop.act({ windowId, observationId: cursor.observationId, ref: element.ref, action }),
+      desktop.act({ windowId, observationId: cursor.observationId, ...aim.input, action }),
     )
   } catch (err) {
     // 端口自己声明了执行前拒绝才算没发出去；其余一律按可能已生效收尾。
@@ -1643,7 +1730,7 @@ async function runStep(
       receipt: {
         index: plan.index,
         action: plan.kind,
-        target: element.ref,
+        target: aim.label,
         dispatch: refused ? 'not_dispatched' : 'unknown',
         reason,
         durationMs: Date.now() - started,
@@ -1659,14 +1746,15 @@ async function runStep(
   const receipt: StepReceipt = {
     index: plan.index,
     action: plan.kind,
-    target: element.ref,
+    target: aim.label,
     actionId: result.actionId,
     dispatch: result.dispatch,
     ...(result.reason === undefined ? {} : { reason: result.reason }),
     durationMs: Date.now() - started,
   }
-  advance(cursor, result)
   if (result.dispatch === 'not_dispatched') {
+    // 一条系统调用都没发出，控件表与观察编号都还是上一步那一份：`advance` 会把它们
+    // 清掉，回执随即说「读不到最后一份控件表」，而那份表此刻仍然有效。
     return {
       receipt,
       halt: {
@@ -1676,6 +1764,7 @@ async function runStep(
       },
     }
   }
+  advance(cursor, result)
   if (result.dispatch === 'unknown') {
     return {
       receipt,
@@ -1698,9 +1787,10 @@ async function runStep(
       },
     }
   }
-  if (!plan.expect) return { receipt, halt: null }
+  // 后置条件按控件判，按图定位的那一步没有控件可判，`planSteps` 已经拦掉。
+  if (!plan.expect || !aim.element) return { receipt, halt: null }
 
-  const settled = await settle(desktop, send, windowId, cursor, element.ref, plan.expect)
+  const settled = await settle(desktop, send, windowId, cursor, aim.element.ref, plan.expect)
   receipt.expect = { until: plan.expect.until, met: settled.met }
   if (settled.met) return { receipt, halt: null }
   return {
@@ -1754,8 +1844,11 @@ export const desktopActSequenceTool: ToolSpec = {
   ...BASE,
   name: 'desktop_act_sequence',
   description:
-    `在同一个窗口上按顺序执行一组后台动作，一次最多 ${MAX_STEPS} 步，参数与 desktop_act 的同名参数一致；前台动作不接受。` +
-    '第一步按 observationId 那份控件表解析目标，之后每一步按上一步带回的新观察解析。' +
+    `在同一个窗口上按顺序执行一组动作，一次最多 ${MAX_STEPS} 步，参数与 desktop_act 的同名参数一致；` +
+    'set_window_state / move_window / resize_window / close_window 不接受，它们会让后面几步的 imageRef 失效。' +
+    '自绘界面的「点输入框 → type_text → press_key」这类连招走这里，一次调用跑完。' +
+    '第一步按 observationId 那份控件表解析目标，之后每一步按上一步带回的新观察解析；' +
+    '按图定位的步骤给 imageRef 与 imageX / imageY，这组里有按图定位的步骤时末尾自带一张动作后的整窗图。' +
     '某步未执行、结果未知、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后面的步骤。' +
     '结果里 dispatched 与 notExecuted 分列；停下来之后按最后那份观察重新规划，不要重发整组。',
   parameters: {
@@ -1786,6 +1879,40 @@ export const desktopActSequenceTool: ToolSpec = {
             itemName: { type: 'string', description: 'realize_item 要实例化的那一项的名称' },
             start: { type: 'integer', description: 'select_text 的起点，UTF-16 码元' },
             length: { type: 'integer', description: 'select_text 的长度，UTF-16 码元' },
+            button: {
+              type: 'string',
+              enum: MOUSE_BUTTONS,
+              description: 'click 按哪个键，默认 left',
+            },
+            count: {
+              type: 'integer',
+              description: `click 连点几下，1 或 ${MAX_CLICK_COUNT}，默认 1`,
+            },
+            amount: {
+              type: 'integer',
+              description: `wheel 滚几格，上限 ${MAX_WHEEL_AMOUNT}，默认 1`,
+            },
+            toRef: { type: 'string', description: 'drag 的终点控件，取自当时那份观察' },
+            dx: { type: 'integer', description: 'drag 相对起点的横向屏幕像素' },
+            dy: { type: 'integer', description: 'drag 相对起点的纵向屏幕像素' },
+            text: {
+              type: 'string',
+              description: `type_text 要输入的文字，上限 ${MAX_TEXT_LENGTH} 字`,
+            },
+            key: {
+              type: 'string',
+              description:
+                '键名：a-z / 0-9 / f1-f24 / enter / tab / escape / space / backspace / delete / ' +
+                'insert / home / end / page_up / page_down / up / down / left / right',
+            },
+            modifiers: {
+              type: 'array',
+              items: { type: 'string', enum: MODIFIERS },
+              description: 'press_key 的修饰键',
+            },
+            imageRef: { type: 'string', description: '按图定位：上一次采图返回的 imageRef' },
+            imageX: { type: 'integer', description: '按图定位：图内像素横坐标，左上角是 0,0' },
+            imageY: { type: 'integer', description: '按图定位：图内像素纵坐标，左上角是 0,0' },
             expect: {
               type: 'object',
               description: '这一步的后置条件，不满足即停在这一步',
@@ -1825,7 +1952,7 @@ export const desktopActSequenceTool: ToolSpec = {
     additionalProperties: false,
   },
   actionKind: 'call',
-  summary: '在一个窗口上按顺序执行一组后台动作',
+  summary: '在一个窗口上按顺序执行一组动作',
   targetExtractor: windowTarget,
 
   fn: (args, ctx) =>
@@ -1858,7 +1985,13 @@ export const desktopActSequenceTool: ToolSpec = {
         }
       }
 
-      return sequenceOutcome(plans, done, halt, cursor.last, cursor.unread)
+      const outcome = sequenceOutcome(plans, done, halt, cursor)
+      // 这一组里有按图定位的步骤，说明调用方看的是图不是控件表：末尾补一张动作后的
+      // 整窗图，判据与单动作同一条，见 `withShot`。
+      const byImage = plans.some((p) => given(p.args.imageRef))
+      const dispatched = done.some((r) => r.dispatch !== 'not_dispatched')
+      if (!byImage) return outcome
+      return withShot(outcome, dispatched, desktop, send, windowId, ctx)
     }),
 }
 
