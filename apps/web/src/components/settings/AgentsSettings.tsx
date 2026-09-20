@@ -1,7 +1,6 @@
 import { ROLE_COMMAND } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { nextRole } from '../../lib/role-form.ts'
 import {
   askInChat,
   loadTeam,
@@ -9,7 +8,7 @@ import {
   loadTeamRaw,
   saveTeamRaw,
 } from '../../lib/store/index.ts'
-import { IconPencil, IconTrash } from '../Icons.tsx'
+import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 
@@ -24,15 +23,10 @@ import { EmptyBox, EntryCard, Section } from './Page.tsx'
  * 两者都能当编排节点的目标，但配置面毫不相干。把 CLI 当成「角色的一种运行位置」
  * 写进角色里，代价是建一条角色必须先懂后端这个概念。
  *
- * **表单就是 team.json 的编辑器，不是第二本账。** 角色由表单改，但**落盘仍然只有 `/api/team/raw` 一
- * 条路**：表单读当前原文、改对象、整份写回。另开一条结构化写接口就是第二条落库路径，两条路径迟早在
- * 某次加字段时对不上。代价是写回时格式由 `JSON.stringify` 重排——JSON 没有注释，重排不丢信息。
+ * **这一页只列、只删，不改角色。** 角色写在 `team.json` 里：要改就改那个文件，或在会话里让模型改。
+ * 删除仍走 `/api/team/raw` 一条路：读当前原文、去掉那一条、整份写回。
  *
- * 界面上**没有原文编辑框**：表单盖不住的那几样（编排图、规则）要懂 JSON 结构才填得对，
- * 那不是用户在设置页里该判断的事。
- *
- * **加一条角色走 /role 命令，不在这里填表。** 角色要写的是系统提示词与能用哪些工具，面板里几个格
- * 子填不全。「添加」把命令送进输入框，用户接着写描述，模型按这条明确要求建角色。
+ * **加一条角色走 /role 命令。** 「添加」把命令送进输入框，用户接着写描述，模型按这条明确要求建角色。
  *
  * **编排跟着仓库走。** 角色与编排图全是项目属性，跟到别的仓库去只会派错人。所以配置在工作区的
  * `.qy/team.json`，不在用户全局配置里。
@@ -52,21 +46,12 @@ interface TeamJson {
   rules?: unknown
 }
 
-interface RoleForm {
-  id: string
-  name: string
-  description: string
-  systemPrompt: string
-  model: string
-}
-
 export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
   const [clis, { refetch: refetchClis }] = createResource(loadTeamClis)
   const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
   const [error, setError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
-  const [roleForm, setRoleForm] = createSignal<RoleForm | null>(null)
 
   // `loaded()` 而不是 `file()`：存一次要把两个 resource 都重取，重取期间留住上一份。
   const text = () => loaded(file)?.raw ?? ''
@@ -123,36 +108,6 @@ export default function AgentsSettings() {
     </button>
   )
 
-  const openRole = (id: string) => {
-    const r = config()?.roles?.find((x) => x.id === id)
-    if (!r) {
-      setError('在 team.json 中找不到该角色，其定义可能已被修改')
-      return
-    }
-    setError(null)
-    setRoleForm({
-      id: r.id ?? '',
-      name: r.name ?? '',
-      description: r.description ?? '',
-      systemPrompt: r.systemPrompt ?? '',
-      model: r.model ?? '',
-    })
-  }
-
-  const saveRole = (f: RoleForm) =>
-    void writeConfig((cfg) => {
-      const id = f.id.trim()
-      if (!id) return '标识不能为空'
-      cfg.roles ??= []
-      const roles = cfg.roles
-      const at = roles.findIndex((x) => x.id === id)
-      const next = nextRole(at >= 0 ? roles[at] : undefined, f)
-      if (at >= 0) roles[at] = next
-      else roles.push(next)
-      setRoleForm(null)
-      return null
-    })
-
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
@@ -187,22 +142,12 @@ export default function AgentsSettings() {
                             <button
                               class="icon-btn"
                               type="button"
-                              aria-label={`编辑角色 ${r.name}`}
-                              data-tip="编辑"
-                              onClick={() => openRole(r.id)}
-                            >
-                              <IconPencil size={13} />
-                            </button>
-                            <button
-                              class="icon-btn"
-                              type="button"
                               aria-label={`删除角色 ${r.name}`}
                               data-tip="删除"
                               disabled={busy()}
                               onClick={() =>
                                 void writeConfig((cfg) => {
                                   cfg.roles = (cfg.roles ?? []).filter((x) => x.id !== r.id)
-                                  if (roleForm()?.id === r.id) setRoleForm(null)
                                   return null
                                 })
                               }
@@ -217,88 +162,6 @@ export default function AgentsSettings() {
                 </div>
               </Show>
             </Section>
-
-            <Show when={roleForm()}>
-              {(f) => (
-                <Section title={`编辑 ${f().name || f().id}`}>
-                  <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">标识</span>
-                        <span class="setting-row-hint">编排图按它引用这个角色</span>
-                      </div>
-                      {/* 标识不可改：改一个已有角色的 id 等于换一个角色，
-                          而编排图里引用它的那些节点会当场失效。 */}
-                      <input type="text" value={f().id} disabled />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">名称</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().name}
-                        placeholder="如 代码审查员"
-                        onInput={(e) => setRoleForm({ ...f(), name: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">说明</span>
-                        <span class="setting-row-hint">调度者按它决定把什么交给这个角色</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={f().description}
-                        onInput={(e) => setRoleForm({ ...f(), description: e.currentTarget.value })}
-                      />
-                    </div>
-                    <div class="setting-row">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">模型</span>
-                        <span class="setting-row-hint">留空跟着当前会话</span>
-                      </div>
-                      <div class="setting-row-control">
-                        <input
-                          type="text"
-                          value={f().model}
-                          placeholder="跟随会话"
-                          onInput={(e) => setRoleForm({ ...f(), model: e.currentTarget.value })}
-                        />
-                      </div>
-                    </div>
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">系统提示词</span>
-                        <span class="setting-row-hint">追加在这个角色的系统提示词后面</span>
-                      </div>
-                      <textarea
-                        class="code-area"
-                        rows={6}
-                        value={f().systemPrompt}
-                        onInput={(e) =>
-                          setRoleForm({ ...f(), systemPrompt: e.currentTarget.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                  <div class="row-actions">
-                    <button
-                      class="btn-primary"
-                      type="button"
-                      disabled={busy() || !f().id.trim()}
-                      onClick={() => saveRole(f())}
-                    >
-                      保存
-                    </button>
-                    <button class="btn-ghost" type="button" onClick={() => setRoleForm(null)}>
-                      取消
-                    </button>
-                    <Show when={error()}>{(e) => <span class="save-msg bad">{e()}</span>}</Show>
-                  </div>
-                </Section>
-              )}
-            </Show>
 
             {/* 外部 CLI 这一段**没有增删改**：它整条来自本机探测。
                 能显示的只有「装在哪、接没接入」，两样都不是用户在这里填的。 */}
@@ -334,15 +197,8 @@ export default function AgentsSettings() {
               </Show>
             </Section>
 
-            {/* 表单没开着时报错也要有地方落——删一条角色被拒的话，
-                否则那句话跟着表单一起消失了。
-
-                **`error()` 必须排在这串 `&&` 的最后。** `Show` 把 `when` 的求值
-                结果原样交给子函数，写成 `error() && !roleForm()` 时那个结果是
-                布尔 `true`，渲染出来是一个空的红框——报错框在，字没了。 */}
-            <Show when={!roleForm() && error()}>
-              {(e) => <p class="settings-notices bad">{e()}</p>}
-            </Show>
+            {/* 删一条角色被拒时的原因。 */}
+            <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
           </>
         )}
       </Show>
