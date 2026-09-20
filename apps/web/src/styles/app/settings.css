@@ -1406,7 +1406,14 @@ textarea.code-area::placeholder {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* 周期与下次时刻在左，两个动作贴行尾。动作用 `.btn-ghost.sm`，字号与这一行的读数同为 `--fs-xs`。 */
+.schedule-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
 .schedule-actions {
+  margin-left: auto;
   display: flex;
   gap: var(--s-2);
 }

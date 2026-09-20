@@ -95,7 +95,33 @@ export function SchedulesPanel() {
                     </button>
                   </div>
 
-                  <div class="field-hint">{describe(s)}</div>
+                  {/* 周期、下次时刻与两个动作同在一行：动作贴行尾，不单独占卡片底部一行。 */}
+                  <div class="schedule-meta">
+                    <span class="field-hint">{describe(s)}</span>
+                    <Show when={s.enabled && s.nextRunAt}>
+                      {(t) => <span class="field-hint">下次 {fmt(t())}</span>}
+                    </Show>
+                    <div class="schedule-actions">
+                      <button
+                        class="btn-ghost sm"
+                        type="button"
+                        disabled={busy() === s.id}
+                        onClick={() =>
+                          void act(s.id, () => updateSchedule(s.id, { enabled: !s.enabled }))
+                        }
+                      >
+                        {s.enabled ? '停用' : '启用'}
+                      </button>
+                      <button
+                        class="btn-ghost sm"
+                        type="button"
+                        disabled={busy() === s.id}
+                        onClick={() => void act(s.id, () => runScheduleNow(s.id))}
+                      >
+                        立刻跑一次
+                      </button>
+                    </div>
+                  </div>
                   <div class="schedule-prompt">{s.prompt}</div>
 
                   {/* 上次触发的结果贴在这条任务上：触发的时候没人开着界面，
@@ -106,30 +132,6 @@ export function SchedulesPanel() {
                   <Show when={outcome(s)}>
                     {(text) => <div class="field-hint bad">{text()}</div>}
                   </Show>
-                  <Show when={s.enabled && s.nextRunAt}>
-                    {(t) => <div class="field-hint">下次 {fmt(t())}</div>}
-                  </Show>
-
-                  <div class="schedule-actions">
-                    <button
-                      class="btn-ghost"
-                      type="button"
-                      disabled={busy() === s.id}
-                      onClick={() =>
-                        void act(s.id, () => updateSchedule(s.id, { enabled: !s.enabled }))
-                      }
-                    >
-                      {s.enabled ? '停用' : '启用'}
-                    </button>
-                    <button
-                      class="btn-ghost"
-                      type="button"
-                      disabled={busy() === s.id}
-                      onClick={() => void act(s.id, () => runScheduleNow(s.id))}
-                    >
-                      立刻跑一次
-                    </button>
-                  </div>
                 </div>
               )}
             </For>
