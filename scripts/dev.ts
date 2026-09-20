@@ -36,11 +36,11 @@
 
 import { Database } from 'bun:sqlite'
 import { randomBytes } from 'node:crypto'
-import { watch } from 'node:fs'
 import { join } from 'node:path'
 import { dataPath } from '@qywork/runtime'
 import { externalBinPath } from './external-bin.ts'
 import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
+import { watchSource } from './source-watch.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
 import { startSourceUpdater } from './update/source.ts'
 
@@ -267,15 +267,11 @@ supervisor = createReloadSupervisor({
 })
 supervising = true
 
-watch(join(ROOT, 'packages'), { recursive: true }, (_event, file) => {
-  if (isSourceChange(file)) supervisor.onChange()
-})
+watchSource(join(ROOT, 'packages'), isSourceChange, () => supervisor.onChange())
 
 // 前端也必须经过同一条空闲闸门。只盯 packages 会让 Vite 页面先换代，正是
 // 「新建 subagent 后状态条消失」的根因；这里只登记变化，不在运行中杀进程。
-watch(join(ROOT, 'apps/web/src'), { recursive: true }, (_event, file) => {
-  if (isWebSourceChange(file)) supervisor.onChange()
-})
+watchSource(join(ROOT, 'apps/web/src'), isWebSourceChange, () => supervisor.onChange())
 
 /*
  * **不设 `QYWORK_WORKSPACE`。**
