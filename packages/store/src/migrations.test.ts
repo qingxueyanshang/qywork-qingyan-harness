@@ -1703,3 +1703,67 @@ describe('迁移 56：控制类工具的对象名', () => {
     db.close()
   })
 })
+
+/**
+ * 列改名之后原值就是绑定：已有行指向最近一次触发建的那条会话，此后的触发发进它。
+ * 值被清空的话，每条存量任务的下一次触发都会再开一条会话。
+ */
+describe('迁移 57：定时任务绑定会话', () => {
+  test('原值保留、外键与索引跟着改名，新列默认 0', () => {
+    const db = dbBefore(57)
+    db.exec(`
+INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at)
+VALUES ('ws_1', 'W', 'C:\\ws', 10, 10);
+INSERT INTO conversations
+  (id, workspace_id, title, model, cache_generation, created_at, updated_at, provider)
+VALUES ('cv_bound', 'ws_1', '上次那条', 'm', 0, 1, 1, 'p');
+INSERT INTO schedules
+  (id, workspace_root, title, prompt, kind, every_minutes, enabled, created_at,
+   last_run_at, last_run_conversation_id)
+VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bound'),
+       ('sch_never', 'C:\\ws', '没跑过', 'p', 'interval', 30, 1, 2, NULL, NULL);
+`)
+
+    applyOne(db, 57)
+
+    expect(
+      db
+        .query<
+          {
+            id: string
+            conversation_id: string | null
+            new_conversation: number
+            last_run_at: number | null
+          },
+          []
+        >('SELECT id, conversation_id, new_conversation, last_run_at FROM schedules ORDER BY id')
+        .all(),
+    ).toEqual([
+      { id: 'sch_bound', conversation_id: 'cv_bound', new_conversation: 0, last_run_at: 222 },
+      { id: 'sch_never', conversation_id: null, new_conversation: 0, last_run_at: null },
+    ])
+
+    // 索引按新名字重建，旧名字不再存在。主键的自动索引没有 SQL，不在这份里。
+    expect(
+      db
+        .query<{ name: string }, []>(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index' AND tbl_name = 'schedules' AND sql IS NOT NULL ORDER BY name`,
+        )
+        .all()
+        .map((r) => r.name),
+    ).toEqual(['idx_schedules_conversation', 'idx_schedules_workspace'])
+
+    // `ON DELETE SET NULL` 跟着列名走：删会话之后置空，触发游标保留。
+    db.exec('PRAGMA foreign_keys = ON')
+    db.query('DELETE FROM conversations WHERE id = ?').run('cv_bound')
+    expect(
+      db
+        .query<{ conversation_id: string | null; last_run_at: number | null }, [string]>(
+          'SELECT conversation_id, last_run_at FROM schedules WHERE id = ?',
+        )
+        .get('sch_bound'),
+    ).toEqual({ conversation_id: null, last_run_at: 222 })
+    db.close()
+  })
+})

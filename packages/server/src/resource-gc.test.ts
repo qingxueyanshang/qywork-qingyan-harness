@@ -21,6 +21,7 @@ import {
   createRun,
   createSchedule,
   getConversation,
+  listSchedules,
   recordUsage,
   Store,
   upsertWorkspace,
@@ -247,16 +248,23 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
   }
 
   // 全停之后才放一条到期任务。还有计时器在跑的话，10 ms 一跳，下面这段等待里必被认领。
-  const s = createSchedule(store, dir, {
-    title: '不该被认领',
-    prompt: '执行',
-    kind: 'interval',
-    everyMinutes: 1,
+  const home = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'fake',
+    model: 'deepseek-v4-flash',
+    title: '排任务的会话',
   })
+  const s = createSchedule(
+    store,
+    dir,
+    { title: '不该被认领', prompt: '执行', kind: 'interval', everyMinutes: 1 },
+    home.id,
+  )
   store.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, s.id)
   await Bun.sleep(400)
 
-  expect(countOf(store.db, 'SELECT COUNT(*) AS n FROM conversations')).toBe(0)
+  // 认领会起一轮并推进游标，两者都没发生。
   expect(countOf(store.db, 'SELECT COUNT(*) AS n FROM runs')).toBe(0)
+  expect(listSchedules(store, dir, Date.now())[0]!.lastRunAt).toBe(undefined)
   expect(ws.rootPath).toBe(dir)
 })

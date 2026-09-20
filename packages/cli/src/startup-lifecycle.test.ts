@@ -14,7 +14,6 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Schedule } from '@qywork/core'
 import { type QyConfig, RuntimeSink } from '@qywork/runtime'
 import {
   ContentStore,
@@ -112,7 +111,8 @@ async function fixture(name: string): Promise<Fixture> {
   // 正文提交了、引用没登记——进程在主库提交前退出留下的就是这个形状。
   const orphan = content.put(enc.encode(`${name} 上次没登记完`))
 
-  const legacy: Schedule[] = [
+  // 旧文件里那条记录的原样形状。键名是历史事实，不跟着 `Schedule` 改。
+  const legacy = [
     {
       id: `sc_legacy_${name}`,
       workspaceRoot: ws,

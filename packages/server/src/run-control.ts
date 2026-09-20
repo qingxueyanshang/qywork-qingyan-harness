@@ -54,8 +54,8 @@ export type RoundSource =
 /**
  * 一条消息进这条会话：有 run 在跑就排进队列，闲着就当场起一轮。
  *
- * **用户发的消息与子 agent 的回执走同一个函数。** 两处各写一遍的话，
- * 「判忙与起轮在同一个同步块里」这条要守两次，而漏掉的那一次不会报错。
+ * **用户发的消息、子 agent 的回执与定时触发走同一个函数。** 三处各写一遍的话，
+ * 「判忙与起轮在同一个同步块里」这条要守三次，而漏掉的那一次不会报错。
  *
  * **闸是 `hasRun` 不是 `isBusy`**：只有子 agent 在跑时这条会话没有可注入的那一轮，
  * 排进队列就没有人会去消费它。
@@ -100,9 +100,8 @@ export async function startRun(
    * 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
    *
    * **走得到这条回绝的只剩一处竞态**：目标续起的 `setTimeout` 到点时会话又忙了
-   * （`fireGoalRound`）。
-   * 用户发消息不再走到这里——忙时它排进队列（`commands.ts`）；定时任务也不会
-   * ——两条路径都是**新建会话**再起轮（`server.ts` 与 `api/schedules.ts`）。
+   * （`fireGoalRound`）。用户发消息与定时触发都不再走到这里——两者都经 `submitMessage`，
+   * 忙时排进队列。
    */
   if (!deps.runs.reserve(conversationId)) {
     deps.bus.publish(

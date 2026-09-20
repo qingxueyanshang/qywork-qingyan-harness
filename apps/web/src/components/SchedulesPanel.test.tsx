@@ -87,6 +87,7 @@ function schedule(over: Partial<ScheduleView>): ScheduleView {
     everyMinutes: 60,
     enabled: true,
     createdAt: 1,
+    newConversation: false,
     nextRunAt: null,
     due: false,
     lastRun: null,

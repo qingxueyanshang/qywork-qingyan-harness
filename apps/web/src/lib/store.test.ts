@@ -954,6 +954,20 @@ describe('事件按会话归属过滤', () => {
     expect(transcript()[0]?.id).toBe('ms_2')
   })
 
+  /*
+   * 原始失败形状：定时任务每次发的是同一句 prompt，第二轮的 `run.started` 认领了上一轮
+   * 那条已落库的气泡，界面上这一轮的用户消息不存在。只与 `local_` 前缀那条对齐才不会。
+   */
+  test('同一会话连着两次同正文的 run.started 出两条用户气泡', () => {
+    reset('cv_now')
+    applyEvent(runStarted('cv_now', 'ms_1', { content: '检查一次群消息' }))
+    applyEvent(runStarted('cv_now', 'ms_2', { content: '检查一次群消息' }))
+    expect(transcript().map((i) => [i.kind, i.text, i.id])).toEqual([
+      ['user', '检查一次群消息', 'ms_1'],
+      ['user', '检查一次群消息', 'ms_2'],
+    ])
+  })
+
   /**
    * 忙闲反过来：它是**工作区级事件**，别的会话那条必须收下——左栏要为列表里
    * 每一条画状态。原始失败形状是「只有点开的那条会话才转圈，别的在跑也看不出来」。
@@ -1158,6 +1172,56 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(state.conversations.find((c) => c.id === 'cv_other')?.title).toBe('改过的标题')
     expect(state.conversations.find((c) => c.id === 'cv_now')?.title).toBe('当前')
+  })
+
+  /*
+   * 服务端自己建的会话（定时任务认领）要当场出现在左栏。它是**工作区级**事件：
+   * 信封不带归属，按归属路由会被整帧丢掉，而列表里本来就没有这一条。
+   */
+  const created = (id: string, workspaceId: string) =>
+    ({
+      seq: 7,
+      at: 0,
+      event: {
+        type: 'conversation.created',
+        conversation: {
+          id,
+          workspaceId,
+          title: '定时任务',
+          provider: 'p',
+          model: 'm',
+          compactionManifest: null,
+          cacheGeneration: 0,
+          source: null,
+          sourceRef: null,
+          externalSession: null,
+          parentConversationId: null,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    }) as never
+
+  test('本项目新建的会话插到列表顶上', () => {
+    reset('cv_now')
+    setState('conversations', [{ id: 'cv_now', title: '当前', model: 'a' } as never])
+    applyEvent(created('cv_made', WS_A.id))
+    expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_made', 'cv_now'])
+  })
+
+  test('别的项目建的会话不进这一份列表', () => {
+    reset('cv_now')
+    setState('conversations', [{ id: 'cv_now', title: '当前', model: 'a' } as never])
+    applyEvent(created('cv_elsewhere', WS_B.id))
+    expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_now'])
+  })
+
+  test('同一条重复到达不插第二遍', () => {
+    reset('cv_now')
+    setState('conversations', [])
+    applyEvent(created('cv_made', WS_A.id))
+    applyEvent(created('cv_made', WS_A.id))
+    expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_made'])
   })
 })
 

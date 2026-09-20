@@ -14,7 +14,7 @@ export type ScheduleKind = 'interval' | 'daily'
 /**
  * 一条定时任务。**这里只有配置与触发游标，没有执行结果。**
  *
- * 上一次跑成什么样由 `lastRunConversationId` 关联的 Run 回答（见 `ScheduleView.lastRun`）。
+ * 上一次跑成什么样由 `conversationId` 关联的 Run 回答（见 `ScheduleView.lastRun`）。
  * 在此另存一份 status/error 将构成独立的第二份状态：Run 落终态与任务表回写之间隔着进程退出的
  * 窗口，两份必然分叉。
  */
@@ -35,8 +35,20 @@ export interface Schedule {
   createdAt: number
   /** 自动触发游标：最近一次自动触发的时刻。手动试跑不推进它。 */
   lastRunAt?: number
-  /** 最近一次触发建的会话。会话被删除后置空，游标保留。 */
-  lastRunConversationId?: string
+  /**
+   * 最近一次触发进的那条会话。会话被删除后置空，游标保留。
+   *
+   * `newConversation` 为假时它同时是绑定：触发把 `prompt` 作为一条用户消息发进这里，
+   * 上下文跨次延续；这一格为空时下一次触发新建一条会话并写回。
+   */
+  conversationId?: string
+  /**
+   * 每次触发另建一条会话，各次互不可见。
+   *
+   * **只由用户明确要求置真**，不按任务内容推断。建任务时定死，之后不改——改它等于让
+   * 同一条任务的历史一半在绑定会话里、一半散在别处。
+   */
+  newConversation: boolean
 }
 
 /**
@@ -52,13 +64,19 @@ export interface ScheduleDraft {
   everyMinutes?: number
   atHour?: number
   atMinute?: number
+  /** 见 `Schedule.newConversation`。缺省 = 发回建任务的那条会话。 */
+  newConversation?: boolean
 }
 
 /**
- * 上一次触发的执行终态投影。
+ * 绑定会话里最近一条 Run 的终态投影。
  *
- * `runId` 为 null = 有会话没有 Run：认领提交之后、`startRun` 落 Run 之前进程退出，
- * 或者旧数据导入时本来就没有可核验的历史执行。调用方须如实呈现，不得补一个假的成功。
+ * **边界：读到的不一定是定时触发那一轮。** 绑定会话同时收用户手动发的消息，最近一条 Run
+ * 可能出自那一轮。为此加一列「上次触发产生的 run」就是第二本账：Run 落终态与任务表回写
+ * 之间隔着进程退出的窗口。
+ *
+ * `runId` 为 null = 有会话没有 Run：认领提交之后、起轮之前进程退出，或者旧数据导入时
+ * 本来就没有可核验的历史执行。调用方须如实呈现，不得补一个假的成功。
  */
 export interface ScheduleLastRun {
   conversationId: string
@@ -71,7 +89,7 @@ export interface ScheduleLastRun {
 export interface ScheduleView extends Schedule {
   nextRunAt: number | null
   due: boolean
-  /** null = 没有关联会话（从没触发过，或会话已被删除）。 */
+  /** null = 没有绑定会话（会话已被删除，或旧数据从未绑定）。 */
   lastRun: ScheduleLastRun | null
 }
 

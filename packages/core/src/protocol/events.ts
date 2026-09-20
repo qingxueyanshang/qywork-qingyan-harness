@@ -15,6 +15,7 @@ import type {
   CompactionManifest,
   ContextBreakdown,
   ContextOmitted,
+  Conversation,
   FileChange,
   FollowUp,
   Goal,
@@ -50,6 +51,7 @@ export interface EventEnvelope<T extends AgentEvent = AgentEvent> {
 
 export type AgentEvent =
   // ── 会话 ──
+  | ConversationCreatedEvent
   | ConversationUpdatedEvent
   | ConversationBusyEvent
   // ── run 生命周期 ──
@@ -84,6 +86,21 @@ export type AgentEvent =
   | MessageInjectedEvent
 
 // ─────────────────────────────── 会话 ───────────────────────────────
+
+/**
+ * 服务端自己建了一条会话。
+ *
+ * **工作区级事件：信封上不带 `conversationId`。** 按会话过滤下发的话，只有已经订阅了
+ * 这条会话的客户端收得到，而要解决的正是「列表里还没有这一条」。
+ *
+ * 负载是完整的 `Conversation`，客户端直接插进列表，不再回头拉一次列表。
+ *
+ * 只有定时任务认领新建会话时发它：用户点「新对话」走 HTTP，回体里已经带着这条会话。
+ */
+export interface ConversationCreatedEvent {
+  type: 'conversation.created'
+  conversation: Conversation
+}
 
 /**
  * 会话属性变更：模型、标题、最近修改时间。

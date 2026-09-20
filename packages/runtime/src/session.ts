@@ -1081,10 +1081,19 @@ export class Session {
       /*
        * 定时任务绑到**当前工作区**：任务表是全机一份，端口在这里把归属钉死，
        * 工具那侧没有跨项目的入口。写入与调度 tick 走同一份仓储，不另开一条落盘路径。
+       *
+       * 建出来的任务同时绑到**顶层会话**：触发时消息发进它，而子会话不接受直接发消息
+       * （`server/commands.ts` 的 `message.send` 当场回绝），绑过去的任务一次也触发不了。
        */
       schedules: {
         list: () => listSchedules(store, this.opts.workspaceRoot, Date.now()),
-        create: (draft) => createSchedule(store, this.opts.workspaceRoot, draft),
+        create: (draft) =>
+          createSchedule(
+            store,
+            this.opts.workspaceRoot,
+            draft,
+            getConversation(store, conversationId)?.parentConversationId ?? conversationId,
+          ),
         remove: (id) => deleteSchedule(store, id, this.opts.workspaceRoot),
       },
       /*

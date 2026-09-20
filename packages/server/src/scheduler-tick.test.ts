@@ -15,7 +15,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
-import { createSchedule, Store, upsertWorkspace } from '@qywork/store'
+import { createConversation, createSchedule, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from './server.ts'
 
 /** 401 假 provider：`auth_failed` 不在重发名单里，一次就落终态。 */
@@ -66,13 +66,19 @@ afterAll(async () => {
 test('不注入间隔：生产的缺省 tick 把一条到期任务带到 Run 终态', async () => {
   const dir = await mkdtemp(join(root, 'ws-'))
   const store = new Store({ path: join(root, 'tick.sqlite3') })
-  upsertWorkspace(store, dir, '定时')
-  const made = createSchedule(store, dir, {
-    title: '每分钟一次',
-    prompt: '汇报一次。',
-    kind: 'interval',
-    everyMinutes: 1,
+  const ws = upsertWorkspace(store, dir, '定时')
+  const home = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'fake',
+    model: 'deepseek-v4-flash',
+    title: '排任务的会话',
   })
+  const made = createSchedule(
+    store,
+    dir,
+    { title: '每分钟一次', prompt: '汇报一次。', kind: 'interval', everyMinutes: 1 },
+    home.id,
+  )
   // 建出来就已经到期：`isDue` 按 createdAt 与游标算，回拨两分钟让第一跳就认领得到。
   store.db
     .query('UPDATE schedules SET created_at = ? WHERE id = ?')
@@ -108,7 +114,7 @@ test('不注入间隔：生产的缺省 tick 把一条到期任务带到 Run 终
     expect(providerCalls).toBeGreaterThan(0)
     // 第一跳不可能早于 30 秒：早于它说明装配处又把间隔注了进去。
     expect(waited).toBeGreaterThanOrEqual(30_000)
-    // 只认领一次：一条会话、一条 Run。
+    // 只认领一次：绑定的那条会话原样复用，一条 Run。
     const counts = store.db
       .query<{ conversations: number; runs: number }, []>(
         'SELECT (SELECT count(*) FROM conversations) AS conversations, (SELECT count(*) FROM runs) AS runs',

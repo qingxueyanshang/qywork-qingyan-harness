@@ -10,6 +10,7 @@ const base: Schedule = {
   everyMinutes: 30,
   enabled: true,
   createdAt: 0,
+  newConversation: false,
 }
 
 /** 本地时区的某天某点，避免用 UTC 常量——daily 的语义就是本地时间。 */

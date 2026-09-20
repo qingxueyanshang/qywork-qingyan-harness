@@ -32,6 +32,14 @@ import type {
 import { createStore, produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
 
+/**
+ * 乐观插入的那条用户气泡的 id 前缀。
+ *
+ * 按回车时本地生成，`run.started` 到达后换成账本里的真值。**两侧必须用同一个常量**：
+ * 对齐判定靠它认出「这条是本地的」，各写一遍字面量的话，改了一侧的表现是气泡变成两条。
+ */
+export const LOCAL_ID_PREFIX = 'local_'
+
 export interface TranscriptItem {
   id: string
   /**

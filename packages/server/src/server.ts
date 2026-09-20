@@ -23,7 +23,7 @@ import {
   importLegacySchedules,
   releaseExtensions,
 } from '@qywork/runtime'
-import type { ProcessExitObservation, Store } from '@qywork/store'
+import type { ProcessExitObservation, ScheduleClaim, Store } from '@qywork/store'
 import {
   ContentStore,
   contentPathFor,
@@ -48,7 +48,7 @@ import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
-import { startRun } from './run-control.ts'
+import { submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { startScheduler } from './scheduler.ts'
 import { SubagentRegistry } from './subagents.ts'
@@ -303,26 +303,40 @@ export function serve(opts: ServeOptions) {
   const unsubscribers = new Map<string, () => void>()
 
   /*
-   * 定时任务调度。推进函数在 `scheduler.ts`，这里只负责启停。
+   * 交付一次定时触发：认领新建的会话先广播，再把 prompt 作为一条用户消息发进去。
    *
-   * 装配用的依赖与手动发消息完全一致：同一个 `startRun`、同一份 config。
+   * **两个入口（tick 与「立刻跑一次」）共用这一个函数**，两处各写一遍的话，其中一处
+   * 漏掉广播的表现是那条会话要刷新一次才出现在左栏。
+   *
+   * **走 `submitMessage` 而不是 `startRun`**：认领提交与进程内占位之间有一段窗口，
+   * 用户恰好在这段里发了消息时直接起轮会被回绝成一条 `run.error`，这次触发随之丢掉。
+   * 经 `submitMessage` 则排成跟进消息，与手动发消息完全同一条路径。
    */
+  const submitSchedule = (claim: ScheduleClaim): Promise<void> => {
+    if (claim.created) bus.publish({ type: 'conversation.created', conversation: claim.created })
+    return submitMessage(
+      claim.conversationId,
+      { id: crypto.randomUUID(), content: claim.schedule.prompt, steer: false },
+      {
+        store: opts.store,
+        content,
+        config: opts.config,
+        bus,
+        runs,
+        subagents,
+        ...(browser ? { browser } : {}),
+        ...(desktop ? { desktop } : {}),
+      },
+    )
+  }
+
+  /* 定时任务调度。推进函数在 `scheduler.ts`，这里只负责启停。 */
   const scheduler = startScheduler(
     {
       store: opts.store,
       config: opts.config,
       canStart: () => !runs.updating,
-      start: (conversationId, prompt) =>
-        startRun(conversationId, prompt, undefined, {
-          store: opts.store,
-          content,
-          config: opts.config,
-          bus,
-          runs,
-          subagents,
-          ...(browser ? { browser } : {}),
-          ...(desktop ? { desktop } : {}),
-        }),
+      submit: submitSchedule,
     },
     opts.schedulerTickMs,
   )
@@ -469,18 +483,18 @@ export function serve(opts: ServeOptions) {
             disableLan,
             lanEnabled,
             lanPort: () => lanPort,
-            // 定时任务的「立刻跑一次」走这条，与正常对话完全同一条路径。
+            // 定时任务的「立刻跑一次」走这条，与自动触发完全同一个函数。
             // 注入而不是让 api 模块 import：那会成环（server → api → server）。
-            startRun: (conversationId, prompt) => {
-              void startRun(conversationId, prompt, undefined, {
-                store: opts.store,
-                content,
-                config: opts.config,
-                bus,
-                runs,
-                subagents,
-                ...(browser ? { browser } : {}),
-                ...(desktop ? { desktop } : {}),
+            //
+            // 投递失败就地写一行。认领已经提交，HTTP 那侧已经回过 200——吞掉的话
+            // 留下的是一条有会话、无 Run 的记录，而成因哪里都查不到。
+            submitSchedule: (claim) => {
+              void submitSchedule(claim).catch((err: unknown) => {
+                log.error(
+                  'scheduler',
+                  `定时任务「${claim.schedule.title}」起轮失败：${err instanceof Error ? err.message : String(err)}`,
+                  { scheduleId: claim.schedule.id },
+                )
               })
             },
             watchGit: () => gitWatch.retarget(),

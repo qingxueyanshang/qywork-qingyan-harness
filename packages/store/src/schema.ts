@@ -2084,6 +2084,29 @@ WHERE tool_name LIKE 'browser\\_%' ESCAPE '\\'
   AND json_extract(payload, '$.action.objectLabel') = '浏览器';
 `,
   },
+  {
+    id: 57,
+    name: 'schedule_conversation',
+    /**
+     * 定时任务绑定会话：`last_run_conversation_id` 改名为 `conversation_id`，
+     * 语义是「最近一次触发进的那条会话」。
+     *
+     * 默认触发把 prompt 作为一条用户消息发进这一列指向的会话，上下文跨次延续；
+     * 已有行指向最近一次触发建的那条会话，原值保留即完成绑定。
+     *
+     * `new_conversation = 1` 的任务每次触发另建一条会话，各次互不可见，该列仍写本次进的
+     * 那条——忙态判定与终态投影因此不分叉。存量行默认 0。
+     *
+     * 索引一并重建：`RENAME COLUMN` 改写索引里的列引用，索引名不跟着改。
+     * 外键仍是 `ON DELETE SET NULL`——会话被删之后下一次触发新建一条并写回该列。
+     */
+    sql: `
+ALTER TABLE schedules RENAME COLUMN last_run_conversation_id TO conversation_id;
+ALTER TABLE schedules ADD COLUMN new_conversation INTEGER NOT NULL DEFAULT 0;
+DROP INDEX idx_schedules_last_conversation;
+CREATE INDEX idx_schedules_conversation ON schedules(conversation_id);
+`,
+  },
 ]
 
 /**
@@ -2272,8 +2295,10 @@ export interface ScheduleRow {
   enabled: number
   created_at: number
   last_run_at: number | null
-  /** `ON DELETE SET NULL`：关联会话被删除后置空，触发游标保留。 */
-  last_run_conversation_id: string | null
+  /** `ON DELETE SET NULL`：最近一次触发进的会话，被删除后置空，触发游标保留。 */
+  conversation_id: string | null
+  /** SQLite 没有布尔：0/1。1 = 每次触发另建一条会话。 */
+  new_conversation: number
 }
 
 /**
@@ -2410,6 +2435,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'enabled',
     'created_at',
     'last_run_at',
-    'last_run_conversation_id',
+    'conversation_id',
+    'new_conversation',
   ],
 }

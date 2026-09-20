@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Schedule } from '@qywork/core'
 import { createConversation, listSchedules, Store, upsertWorkspace } from '@qywork/store'
 import { importLegacySchedules } from './schedules.ts'
 
@@ -36,18 +35,19 @@ function writeLegacy(list: unknown): void {
   writeFileSync(legacy(), JSON.stringify(list, null, 2), 'utf8')
 }
 
-const one: Schedule & { lastError?: string } = {
+/** 旧文件里那条记录的原样形状。键名是历史事实，不跟着 `Schedule` 改。 */
+const one = {
   id: 'sch_kept',
   workspaceRoot: ROOT,
   title: '日报',
   prompt: '写日报',
-  kind: 'daily',
+  kind: 'daily' as const,
   atHour: 9,
   atMinute: 30,
   enabled: false,
   createdAt: 1_700_000_000_000,
   lastRunAt: 1_700_000_600_000,
-  lastError: '上一版留下的报错',
+  lastError: '旧文件里留下的报错',
 }
 
 describe('导入', () => {
@@ -73,6 +73,8 @@ describe('导入', () => {
     // 文件里的 lastError 不带过来：执行结果的唯一权威是关联的 Run。
     expect('lastError' in s).toBe(false)
     expect(s.lastRun).toBe(null)
+    // 旧文件没有这一项，导入后照旧发进绑定会话。
+    expect(s.newConversation).toBe(false)
 
     expect(existsSync(legacy())).toBe(false)
     expect(JSON.parse(readFileSync(imported(), 'utf8'))).toEqual([one])
@@ -85,7 +87,7 @@ describe('导入', () => {
     expect(listSchedules(store, ROOT, Date.now()).length).toBe(1)
   })
 
-  test('关联会话还在就保留，不在就丢掉这个 id 而不是让外键拒绝整份导入', () => {
+  test('旧文件里的 lastRunConversationId 落成绑定会话，会话不在就丢掉这个 id', () => {
     const conv = createConversation(store, {
       workspaceId: upsertWorkspace(store, ROOT, 'A').id,
       provider: 'p',
@@ -99,8 +101,8 @@ describe('导入', () => {
     expect(importLegacySchedules(store)).toBe(2)
 
     const rows = listSchedules(store, ROOT, Date.now())
-    expect(rows.find((s) => s.id === 'sch_live')?.lastRunConversationId).toBe(conv.id)
-    expect(rows.find((s) => s.id === 'sch_gone')?.lastRunConversationId).toBe(undefined)
+    expect(rows.find((s) => s.id === 'sch_live')?.conversationId).toBe(conv.id)
+    expect(rows.find((s) => s.id === 'sch_gone')?.conversationId).toBe(undefined)
   })
 
   test('坏 JSON 抛错并保留原字节，不当成空表继续跑', () => {

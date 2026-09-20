@@ -31,10 +31,21 @@ function legacyPath(): string {
 }
 
 /**
+ * 旧文件里的记录。**键名是历史事实，一律不改**（CLAUDE.md D2）——`lastRunConversationId`
+ * 读进来落到 `Schedule.conversationId`。
+ */
+interface LegacyRecord extends Partial<Omit<Schedule, 'conversationId'>> {
+  lastRunConversationId?: string
+}
+
+/**
  * 逐条校验旧记录。任何一条不合法就整份中止——半份导入比不导入坏得多。
  *
  * 旧文件里的 `lastError` 不带过来：执行结果的唯一权威是关联的 Run，
  * 而文件里的记录通常没有可核验的 Run，把它复制成一份新的运行状态就是伪造历史。
+ *
+ * 旧文件没有「每次触发另建会话」这一项，一律按 false 导入：绑定会话原样带过来，
+ * 导入后接着发进同一条会话。
  */
 function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
   let parsed: unknown
@@ -47,7 +58,7 @@ function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
 
   const seen = new Set<string>()
   const out: Schedule[] = []
-  for (const item of parsed as Partial<Schedule>[]) {
+  for (const item of parsed as LegacyRecord[]) {
     const problems = diagnoseSchedule(item)
     if (typeof item.id !== 'string' || item.id === '') problems.push('id 缺失')
     else if (seen.has(item.id)) problems.push('id 重复')
@@ -81,7 +92,8 @@ function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
       enabled: item.enabled as boolean,
       createdAt: item.createdAt as number,
       ...(item.lastRunAt === undefined ? {} : { lastRunAt: item.lastRunAt }),
-      ...(conversationId === undefined ? {} : { lastRunConversationId: conversationId }),
+      ...(conversationId === undefined ? {} : { conversationId }),
+      newConversation: false,
     })
   }
   return out

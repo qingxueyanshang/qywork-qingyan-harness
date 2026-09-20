@@ -636,21 +636,34 @@ async function main(): Promise<number> {
    * 负载要的是确定的触发节奏，所以这里直接经仓储建，`created_at` 回拨到两分钟前让首轮立即到期。
    */
   const fixture = new Store({ path: mainDb })
-  const wsIds: Record<string, string> = {
-    A: upsertWorkspace(fixture, wsA, 'A').id,
-    B: upsertWorkspace(fixture, wsB, 'B').id,
+  const workspaces = {
+    A: upsertWorkspace(fixture, wsA, 'A'),
+    B: upsertWorkspace(fixture, wsB, 'B'),
   }
+  const wsIds: Record<string, string> = { A: workspaces.A.id, B: workspaces.B.id }
   const scheduleIds: Record<string, string> = {}
   for (const [name, path] of [
     ['A', wsA],
     ['B', wsB],
   ] as const) {
-    const made = createSchedule(fixture, path, {
-      title: `负载任务 ${name}`,
-      prompt: `${name} 的固定负载：读一遍 payload.txt 并汇报字节数。`,
-      kind: 'interval',
-      everyMinutes: 1,
+    // 任务绑定建它的那条会话，触发时消息发进去。负载里没有模型工具那一步，这里补一条。
+    const home = createConversation(fixture, {
+      workspaceId: workspaces[name].id,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      title: `排任务的会话 ${name}`,
     })
+    const made = createSchedule(
+      fixture,
+      path,
+      {
+        title: `负载任务 ${name}`,
+        prompt: `${name} 的固定负载：读一遍 payload.txt 并汇报字节数。`,
+        kind: 'interval',
+        everyMinutes: 1,
+      },
+      home.id,
+    )
     fixture.db
       .query('UPDATE schedules SET created_at = ? WHERE id = ?')
       .run(Date.now() - 120_000, made.id)

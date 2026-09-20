@@ -8,11 +8,12 @@
  *
  * **忙态查的是 runs 表，不是进程内的 RunManager**：跨进程的竞争只有落盘的状态答得了。
  *
- * **这里不存执行结果。** 上一次跑成什么样按 `last_run_conversation_id` 关联的 Run 读
+ * **这里不存执行结果。** 上一次跑成什么样按 `conversation_id` 关联的 Run 读
  * （`scheduleView`）。任务表里再存一份 status/error 就是第二本账。
  */
 
 import type {
+  Conversation,
   ConversationId,
   Schedule,
   ScheduleDraft,
@@ -25,12 +26,15 @@ import type { Store } from './db.ts'
 import { createConversation, normalizeWorkspaceRoot } from './repos.ts'
 import type { ScheduleRow } from './schema.ts'
 
-/** 认领成功的一次触发。调用方在事务提交之后按它起轮。 */
+/** 认领成功的一次触发。调用方在事务提交之后把 prompt 发进 `conversationId`。 */
 export interface ScheduleClaim {
   schedule: Schedule
   workspaceId: WorkspaceId
   workspaceRoot: string
+  /** 这次触发发进哪条会话。 */
   conversationId: ConversationId
+  /** 这次认领新建的会话；复用绑定会话时为 null。调用方据此决定要不要广播。 */
+  created: Conversation | null
 }
 
 /**
@@ -55,9 +59,8 @@ function rowToSchedule(r: ScheduleRow): Schedule {
     enabled: r.enabled === 1,
     createdAt: r.created_at,
     ...(r.last_run_at === null ? {} : { lastRunAt: r.last_run_at }),
-    ...(r.last_run_conversation_id === null
-      ? {}
-      : { lastRunConversationId: r.last_run_conversation_id }),
+    ...(r.conversation_id === null ? {} : { conversationId: r.conversation_id }),
+    newConversation: r.new_conversation === 1,
   }
 }
 
@@ -67,13 +70,13 @@ function readOne(store: Store, id: string): Schedule | null {
 }
 
 /**
- * 上一次触发的执行终态。
+ * 绑定会话里最近一条 run 的终态。
  *
- * 取该会话最近建的那条 run。会话被删除时列已被 `ON DELETE SET NULL` 置空，
- * 因此这里读到的一定是仍然存在的会话；查不到 run 就如实回 `runId: null`。
+ * 会话被删除时列已被 `ON DELETE SET NULL` 置空，因此这里读到的一定是仍然存在的会话；
+ * 查不到 run 就如实回 `runId: null`。边界见 `ScheduleLastRun`。
  */
 function lastRunOf(store: Store, s: Schedule): ScheduleLastRun | null {
-  const cid = s.lastRunConversationId
+  const cid = s.conversationId
   if (cid === undefined) return null
   const row = store.db
     .query<
@@ -111,8 +114,8 @@ export function listSchedules(store: Store, workspaceRoot: string, now: number):
 
 const INSERT_SQL = `INSERT INTO schedules
   (id, workspace_root, title, prompt, kind, every_minutes, at_hour, at_minute,
-   enabled, created_at, last_run_at, last_run_conversation_id)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+   enabled, created_at, last_run_at, conversation_id, new_conversation)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 function insert(store: Store, s: Schedule): void {
   store.db
@@ -129,25 +132,33 @@ function insert(store: Store, s: Schedule): void {
       s.enabled ? 1 : 0,
       s.createdAt,
       s.lastRunAt ?? null,
-      s.lastRunConversationId ?? null,
+      s.conversationId ?? null,
+      s.newConversation ? 1 : 0,
     )
 }
 
 /**
  * 建一条任务。id 与 createdAt 在这里生成——两个入口各拼一遍 id 前缀，
  * 设置页和调度器会各认得一半。
+ *
+ * `conversationId` 是建任务的那条会话，触发时消息发进它。**归属只在建的时候写得对**，
+ * 所以它必填；`draft.newConversation` 为真的任务每次触发另建会话，不绑定它。
  */
 export function createSchedule(
   store: Store,
   workspaceRoot: string,
   draft: ScheduleDraft,
+  conversationId: ConversationId,
 ): Schedule {
+  const separate = draft.newConversation === true
   const s: Schedule = {
     ...draft,
     id: `sch_${crypto.randomUUID().slice(0, 12)}`,
     workspaceRoot: normalizeWorkspaceRoot(workspaceRoot),
     enabled: true,
     createdAt: Date.now(),
+    newConversation: separate,
+    ...(separate ? {} : { conversationId }),
   }
   insert(store, s)
   return s
@@ -156,8 +167,9 @@ export function createSchedule(
 /**
  * 改一条任务的可编辑字段。
  *
- * 触发游标、归属工作区、createdAt 不接受外部改写：让调用方能写 `lastRunAt` 等于把
- * 「下次什么时候触发」交给它决定。
+ * 触发游标、归属工作区、createdAt、`newConversation` 不接受外部改写：让调用方能写
+ * `lastRunAt` 等于把「下次什么时候触发」交给它决定，而改 `newConversation` 会让同一条
+ * 任务的历史一半在绑定会话里、一半散在别处。
  */
 export function updateSchedule(
   store: Store,
@@ -217,7 +229,7 @@ function workspaceIdForRoot(store: Store, root: string): WorkspaceId | null {
 }
 
 /**
- * 上一次触发的那条会话（含它派出的子会话）还有没有未落终态的 run。
+ * 最近一次触发进的那条会话（含它派出的子会话）还有没有未落终态的 run。
  *
  * 查落盘状态而不是进程内的登记表：另一个进程正在跑的那一轮，这个进程的 RunManager 里
  * 没有记录。启动时的 `recoverStaleRuns` 负责回收无人持有的残留行。
@@ -250,22 +262,34 @@ function claimInTx(
 ): ScheduleClaimResult {
   const workspaceId = workspaceIdForRoot(store, s.workspaceRoot)
   if (workspaceId === null) return { ok: false, reason: 'workspace_missing' }
-  if (hasLiveRun(store, s.lastRunConversationId)) return { ok: false, reason: 'busy' }
+  if (hasLiveRun(store, s.conversationId)) return { ok: false, reason: 'busy' }
 
-  const conv = createConversation(store, {
-    workspaceId,
-    provider: input.provider,
-    model: input.model,
-    title: s.title,
-  })
+  /*
+   * 复用绑定会话，`conversation_id` 为空才新建。空只有两种来路：会话被删
+   * （`ON DELETE SET NULL`）与旧数据从未绑定。不在这里另查会话存不存在——外键已经
+   * 把「指着一条不存在的会话」排除了。
+   *
+   * `newConversation` 的任务每次都新建，本次进的那条照样写回该列：忙态判定与终态
+   * 投影读的是同一格，分叉的话两种任务要各写一套判定。
+   */
+  const created =
+    s.newConversation || s.conversationId === undefined
+      ? createConversation(store, {
+          workspaceId,
+          provider: input.provider,
+          model: input.model,
+          title: s.title,
+        })
+      : null
+  const conversationId = created?.id ?? (s.conversationId as ConversationId)
   if (advanceCursor) {
     store.db
-      .query('UPDATE schedules SET last_run_at = ?, last_run_conversation_id = ? WHERE id = ?')
-      .run(input.now, conv.id, s.id)
+      .query('UPDATE schedules SET last_run_at = ?, conversation_id = ? WHERE id = ?')
+      .run(input.now, conversationId, s.id)
   } else {
     store.db
-      .query('UPDATE schedules SET last_run_conversation_id = ? WHERE id = ?')
-      .run(conv.id, s.id)
+      .query('UPDATE schedules SET conversation_id = ? WHERE id = ?')
+      .run(conversationId, s.id)
   }
   return {
     ok: true,
@@ -273,7 +297,8 @@ function claimInTx(
       schedule: s,
       workspaceId,
       workspaceRoot: s.workspaceRoot,
-      conversationId: conv.id,
+      conversationId,
+      created,
     },
   }
 }
@@ -305,8 +330,8 @@ export function claimDueSchedules(store: Store, input: ClaimInput): ScheduleClai
 /**
  * 「立刻跑一次」：同一个认领事务，但**不推进自动触发游标**。
  *
- * 推进的话「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。关联会话仍然写回，
- * 试跑的结果因此和自动触发一样能在面板上看到。
+ * 推进的话「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。本次进的那条会话仍然
+ * 写回，试跑的结果因此和自动触发一样能在面板上看到。
  */
 export function claimScheduleNow(
   store: Store,

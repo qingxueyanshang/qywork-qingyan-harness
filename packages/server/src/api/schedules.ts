@@ -41,8 +41,9 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       if (!current) return json({ error: 'not found' }, 404)
       const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
       if (!body) return json({ error: 'bad request' }, 400)
-      // id / workspaceRoot / createdAt / 触发游标一律不接受客户端改写：
-      // 让客户端能写 lastRunAt 等于把「下次什么时候触发」交给它决定。
+      // id / workspaceRoot / createdAt / 触发游标 / 绑定会话 / newConversation
+      // 一律不接受客户端改写：让客户端能写 lastRunAt 等于把「下次什么时候触发」交给它决定，
+      // 而改 newConversation 会让同一条任务的历史一半在绑定会话里、一半散在别处。
       //
       // 部分更新以现值为底：时间字段按**最终** kind 从 `current` 兜底，只发 `{enabled}`
       // 的启停不该因为没带时刻而被判不合法。与最终 kind 无关的那些字段不带，
@@ -77,12 +78,13 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
   // 这是这个功能唯一能被**当场验证**的入口：定时触发要等到点，
   // 而「配好了会不会跑」是用户第一个想知道的事。
   //
-  // 走与自动触发同一个认领事务，但不推进自动触发游标：推进的话「每天 9 点」会因为
-  // 下午点过一次试跑而当天不再自动触发。上一轮还没落终态时回 409，不叠加第二轮。
+  // 走与自动触发同一个认领事务和同一个投递函数，但不推进自动触发游标：推进的话
+  // 「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。上一轮还没落终态时回 409，
+  // 不叠加第二轮。
   const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
   if (schedRunMatch && req.method === 'POST') {
     if (d.runs.updating) return json({ error: '应用正在更新，请稍后重试' }, 409)
-    // 没配默认模型就没法建会话起轮；当场回 422，而不是建一条发不出请求的会话。
+    // 没配默认模型就没法定会话的接口与模型；当场回 422，而不是建一条发不出请求的会话。
     if (!d.config.active) return json({ error: NO_MODEL_MESSAGE }, 422)
     const claimed = claimScheduleNow(d.store, schedRunMatch[1]!, d.workspaceRoot, {
       now: Date.now(),
@@ -94,7 +96,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       if (claimed.reason === 'workspace_missing') return json({ error: '项目已移除' }, 409)
       return json({ error: 'not found' }, 404)
     }
-    d.startRun(claimed.claim.conversationId, claimed.claim.schedule.prompt)
+    d.submitSchedule(claimed.claim)
     return json({ ok: true, conversationId: claimed.claim.conversationId })
   }
 

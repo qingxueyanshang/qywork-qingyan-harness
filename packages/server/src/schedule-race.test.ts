@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
-import { createSchedule, Store, upsertWorkspace } from '@qywork/store'
+import { createConversation, createSchedule, Store, upsertWorkspace } from '@qywork/store'
 
 /** 401 假 provider：只计数、只回鉴权失败，一次就落终态。 */
 let providerCalls = 0
@@ -61,13 +61,19 @@ test('两个操作系统进程对同一条到期任务只认领一次', async ()
   const workspaceRoot = await mkdtemp(join(root, 'ws-'))
   const dbPath = join(root, 'race.sqlite3')
   const seed = new Store({ path: dbPath })
-  upsertWorkspace(seed, workspaceRoot, 'W')
-  const s = createSchedule(seed, workspaceRoot, {
-    title: '只该跑一次',
-    prompt: '执行',
-    kind: 'interval',
-    everyMinutes: 1,
+  const ws = upsertWorkspace(seed, workspaceRoot, 'W')
+  const conversation = createConversation(seed, {
+    workspaceId: ws.id,
+    provider: 'fake',
+    model: 'deepseek-v4-flash',
+    title: '排任务的会话',
   })
+  const s = createSchedule(
+    seed,
+    workspaceRoot,
+    { title: '只该跑一次', prompt: '执行', kind: 'interval', everyMinutes: 1 },
+    conversation.id,
+  )
   seed.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, s.id)
   seed.close()
 

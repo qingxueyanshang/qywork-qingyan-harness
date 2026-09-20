@@ -54,6 +54,11 @@ function describeTiming(s: {
     : `每天 ${pad(s.atHour ?? 0)}:${pad(s.atMinute ?? 0)}`
 }
 
+/** 触发发到哪里的一句话说法。建完的回执与列表共用一份。 */
+function describeTarget(s: { newConversation: boolean }): string {
+  return s.newConversation ? '每次新建会话' : '发回本会话'
+}
+
 /**
  * 上一次触发的说法。
  *
@@ -91,7 +96,9 @@ const BOUNDARY =
 export const createScheduleTool: ToolSpec = {
   name: 'create_schedule',
   description:
-    '排一条定时任务：到点自动新建一个会话，把 prompt 当作用户消息发进去。' +
+    '排一条定时任务：到点把 prompt 作为一条用户消息发进当前会话，上下文接着往下走，' +
+    '不需要了就用 delete_schedule 停掉。' +
+    '用户明确要求这条任务每次触发新建会话时才给 new_conversation=true，不要按任务内容自行判断。' +
     // 条件必填逐条写清。`diagnoseSchedule` 是运行期才拦的，
     // 只靠它等于让模型先废一整轮往返才知道该给哪个参数。
     'kind="interval" 时必须给 every_minutes（分钟）；' +
@@ -101,7 +108,7 @@ export const createScheduleTool: ToolSpec = {
   parameters: {
     type: 'object',
     properties: {
-      title: { type: 'string', description: '任务标题，触发时用作会话标题' },
+      title: { type: 'string', description: '任务标题' },
       prompt: { type: 'string', description: '触发时发出去的消息内容' },
       kind: {
         type: 'string',
@@ -111,6 +118,12 @@ export const createScheduleTool: ToolSpec = {
       every_minutes: { type: 'integer', description: 'kind=interval 必填，不小于 1' },
       at_hour: { type: 'integer', description: 'kind=daily 必填，0–23，本机时区' },
       at_minute: { type: 'integer', description: 'kind=daily 必填，0–59' },
+      new_conversation: {
+        type: 'boolean',
+        description:
+          '仅当用户明确要求这条任务每次触发新建会话时为 true；未要求时不要传，' +
+          '默认把消息发回当前会话',
+      },
     },
     required: ['title', 'prompt', 'kind'],
     additionalProperties: false,
@@ -119,9 +132,9 @@ export const createScheduleTool: ToolSpec = {
   objectLabel: '定时任务',
   category: 'schedule',
   facet: '定时任务',
-  summary: '排一条到点自动开新会话的任务',
+  summary: '排一条到点发消息的任务',
   targetExtractor: (a) => (typeof a.title === 'string' ? a.title : null),
-  // 写的是本机的任务表，触发时走的是与手动发消息**完全相同**的 `startRun` 与
+  // 写的是本机的任务表，触发时走的是与手动发消息**完全相同**的 `submitMessage` 与
   // 同一份 config——排一条任务不会拿到任何当前拿不到的权限。
   permissionEffect: 'internal_control',
   parallelSafe: false,
@@ -148,6 +161,7 @@ export const createScheduleTool: ToolSpec = {
       title: String(args.title ?? '').trim(),
       prompt: String(args.prompt ?? '').trim(),
       kind,
+      newConversation: args.new_conversation === true,
       // 时刻**不补默认值**。HTTP 面能默认是因为表单一定填好了才提交；
       // 这里少一个字段意味着模型没想清楚跑在什么时候，静默补一个 9:00 的话
       // 用户会在一个谁都没选过的时刻收到触发。缺了就让下面那道校验说出来。
@@ -171,8 +185,15 @@ export const createScheduleTool: ToolSpec = {
     const saved = port.create(draft)
     return {
       status: 'success',
-      message: `已排定「${saved.title}」${describeTiming(saved)}，id ${saved.id}。${BOUNDARY}`,
-      data: { id: saved.id, title: saved.title, timing: describeTiming(saved) },
+      message:
+        `已排定「${saved.title}」${describeTiming(saved)}，${describeTarget(saved)}，` +
+        `id ${saved.id}。${BOUNDARY}`,
+      data: {
+        id: saved.id,
+        title: saved.title,
+        timing: describeTiming(saved),
+        newConversation: saved.newConversation,
+      },
     }
   },
 }
@@ -180,7 +201,8 @@ export const createScheduleTool: ToolSpec = {
 export const listSchedulesTool: ToolSpec = {
   name: 'list_schedules',
   description:
-    '列出当前工作区已排的定时任务：触发方式、下次预计时刻、上次跑的时间与结果。' +
+    '列出当前工作区已排的定时任务：触发方式、发回本会话还是每次新建会话、下次预计时刻、' +
+    '上次跑的时间与结果。' +
     // 它不像 list_skills 那样冗余：定时任务不进上下文（它随时在变），
     // 这是模型查当前状态的唯一入口。
     '定时任务不在上下文里，查询当前已排任务只能通过本工具。' +
@@ -207,6 +229,7 @@ export const listSchedulesTool: ToolSpec = {
       id: s.id,
       title: s.title,
       timing: describeTiming(s),
+      newConversation: s.newConversation,
       enabled: s.enabled,
       nextRunAt: s.nextRunAt,
       lastRunAt: s.lastRunAt ?? null,
@@ -218,7 +241,7 @@ export const listSchedulesTool: ToolSpec = {
       message: mine
         .map((s) =>
           [
-            `${s.id}  ${s.title}  ${describeTiming(s)}`,
+            `${s.id}  ${s.title}  ${describeTiming(s)}  ${describeTarget(s)}`,
             s.enabled ? '' : '  [已停用]',
             s.nextRunAt === null ? '' : `  下次 ${stamp(s.nextRunAt)}`,
             lastRunNote(s),

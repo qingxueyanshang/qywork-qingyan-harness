@@ -1,18 +1,18 @@
 /**
  * HTTP API 各域共用的依赖与出参。
  *
- * **为什么 `startRun` 是注入进来的。** `api/schedules.ts` 的「立刻跑一次」必须走与正常对话**完全相
- * 同**的执行路径 ——另写一条只在定时任务上跑的简化路径，等同于新增一份独立的第二份状态，而那条路上的 bug
- * 只有定时任务会遇到，也就最晚被发现。
+ * **为什么 `submitSchedule` 是注入进来的。** `api/schedules.ts` 的「立刻跑一次」必须走与自动
+ * 触发**完全相同**的那一个函数 ——另写一条只在这个入口上跑的简化路径，等同于新增一份独立的第二份
+ * 状态，而那条路上的 bug 只有定时任务会遇到，也就最晚被发现。
  *
- * 但 `startRun` 住在 `server.ts`，而 `server.ts` 要 import 这些 api 模块——
+ * 但那个函数住在 `server.ts`，而 `server.ts` 要 import 这些 api 模块——
  * 反过来 import 会成环。所以由 `server.ts` 在装配时把它注入进来：
  * **接口定义在上层，实现由下层注入**（`SinkPort` 是同一个套路）。
  */
 
 import type { ConversationId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import type { Store } from '@qywork/store'
+import type { ScheduleClaim, Store } from '@qywork/store'
 import type { EventBus } from '../bus.ts'
 import type { Pairing } from '../pairing.ts'
 import type { RunManager } from '../runs.ts'
@@ -29,12 +29,12 @@ export interface ApiDeps {
   disableLan(): void
   lanEnabled(): boolean
   lanPort(): number
-  /** 起一轮。由 `server.ts` 注入，见本文件头注释。 */
-  startRun(conversationId: ConversationId, prompt: string): void
+  /** 交付一次定时触发（广播新建会话 + 发用户消息）。由 `server.ts` 注入，见本文件头注释。 */
+  submitSchedule(claim: ScheduleClaim): void
   /**
    * 「当前项目换了」——把分支监听重新指过去并报一份新的。
    *
-   * 与 `startRun` 同一个理由注入：监听住在 `server.ts`，反向 import 会成环。
+   * 与 `submitSchedule` 同一个理由注入：监听住在 `server.ts`，反向 import 会成环。
    * 只有 upsert 项目那条路该调它：那个动作改的正是 `last_opened_at`，
    * 而监听盯的就是「最近打开的那个」。
    */

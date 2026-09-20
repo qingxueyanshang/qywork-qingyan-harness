@@ -1,13 +1,15 @@
 /**
  * 定时任务的完整触发链路。**覆盖范围**：`scheduler.ts` 与 `api/schedules.ts`，
- * 并穿过 `store/schedules.ts` 的认领事务、`run-control.ts` 的起轮与 `tools/schedules.ts` 的
+ * 并穿过 `store/schedules.ts` 的认领事务、`run-control.ts` 的投递与 `tools/schedules.ts` 的
  * 模型工具投影。
  *
- * 两条断言直接复现原始失败形状：
+ * 四条断言直接复现原始失败形状：
  *
  * - **E04**：服务以工作区 A 启动，工作区 B 的到期任务照样触发；模型返回 401 之后，任务 API、
  *   `list_schedules` 工具与再取一次（刷新）读到同一个 Run 终态。
  * - **E05**：同一到期时机两个 `serve()` 实例只产生一条会话、一条 Run、一次模型请求。
+ * - 目标会话被进程内占位占住时，这次触发排进跟进队列而不是落一条 `run.error`。
+ * - 认领新建会话时广播 `conversation.created`，信封上不带会话归属。
  *
  * 计时器是真的：两条都由 `serve()` 自己的 `setInterval` 驱动，测试不直接调推进函数。
  * 注入的只有 tick 间隔与假 provider 的响应。
@@ -23,8 +25,16 @@ import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import type { ConversationId, EventEnvelope, WorkspaceId } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
-import { createSchedule, listSchedules, Store, upsertWorkspace } from '@qywork/store'
+import {
+  createConversation,
+  createSchedule,
+  listSchedules,
+  type ScheduleClaim,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 import { registerBuiltinTools } from '@qywork/tools'
 import { tickSchedules } from './scheduler.ts'
 import { serve } from './server.ts'
@@ -85,14 +95,30 @@ async function waitFor<T>(read: () => T | null, note: string, timeoutMs = 15_000
   }
 }
 
-/** 一条已经到期的间隔任务。 */
-function dueSchedule(store: Store, workspaceRoot: string, title: string): string {
-  const s = createSchedule(store, workspaceRoot, {
+/** 建任务的那条会话。任务绑定它，触发时消息发进去。 */
+function homeConversation(store: Store, workspaceId: WorkspaceId, title: string): ConversationId {
+  return createConversation(store, {
+    workspaceId,
+    provider: 'fake',
+    model: 'deepseek-v4-flash',
     title,
-    prompt: `执行 ${title}`,
-    kind: 'interval',
-    everyMinutes: 1,
-  })
+  }).id
+}
+
+/** 一条已经到期的间隔任务，绑定在给定会话上。 */
+function dueSchedule(
+  store: Store,
+  workspaceRoot: string,
+  title: string,
+  home: ConversationId,
+  draft: { newConversation?: boolean } = {},
+): string {
+  const s = createSchedule(
+    store,
+    workspaceRoot,
+    { title, prompt: `执行 ${title}`, kind: 'interval', everyMinutes: 1, ...draft },
+    home,
+  )
   store.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, s.id)
   return s.id
 }
@@ -138,7 +164,8 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
   const store = new Store({ path: join(root, 'e04.sqlite3') })
   const wsA = upsertWorkspace(store, dirA, 'A')
   const wsB = upsertWorkspace(store, dirB, 'B')
-  const scheduleId = dueSchedule(store, dirB, 'B 的日报')
+  const homeB = homeConversation(store, wsB.id, 'B 排任务的会话')
+  const scheduleId = dueSchedule(store, dirB, 'B 的日报', homeB)
 
   const handle = serve({
     store,
@@ -163,11 +190,13 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
               error_code: string | null
               error_message: string | null
               workspace_id: string
+              conversation_id: string
             },
             []
           >(
             `SELECT r.id AS id, r.status AS status, r.error_code AS error_code,
-                    r.error_message AS error_message, r.workspace_id AS workspace_id
+                    r.error_message AS error_message, r.workspace_id AS workspace_id,
+                    r.conversation_id AS conversation_id
              FROM runs r WHERE r.status NOT IN ('queued','running')`,
           )
           .get(),
@@ -180,6 +209,8 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
     expect(run.status).toBe('failed')
     expect(run.error_code).toBe('auth_failed')
     expect(run.error_message ?? '').not.toBe('')
+    // 这一轮跑在建任务的那条会话里，没有另建。
+    expect(run.conversation_id).toBe(homeB)
     expect(countOf(store, 'SELECT COUNT(*) AS n FROM conversations')).toBe(1)
 
     type Payload = {
@@ -242,19 +273,19 @@ test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不�
   const dir = await mkdtemp(join(root, 'put-'))
   const store = new Store({ path: join(root, 'put.sqlite3') })
   const ws = upsertWorkspace(store, dir, 'W')
-  const interval = createSchedule(store, dir, {
-    title: '每五分钟',
-    prompt: 'p',
-    kind: 'interval',
-    everyMinutes: 5,
-  })
-  const daily = createSchedule(store, dir, {
-    title: '每天九点',
-    prompt: 'p',
-    kind: 'daily',
-    atHour: 9,
-    atMinute: 30,
-  })
+  const home = homeConversation(store, ws.id, '排任务的会话')
+  const interval = createSchedule(
+    store,
+    dir,
+    { title: '每五分钟', prompt: 'p', kind: 'interval', everyMinutes: 5 },
+    home,
+  )
+  const daily = createSchedule(
+    store,
+    dir,
+    { title: '每天九点', prompt: 'p', kind: 'daily', atHour: 9, atMinute: 30 },
+    home,
+  )
 
   const handle = serve({
     store,
@@ -293,18 +324,27 @@ test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不�
       )
       .get(interval.id)
     expect(switched).toEqual({ kind: 'daily', every_minutes: null, at_hour: 9 })
+
+    // 绑定会话与「每次新建会话」不接受客户端改写。
+    expect(
+      (await put(interval.id, { conversationId: 'cv_forged', newConversation: true })).status,
+    ).toBe(200)
+    const kept = listSchedules(store, dir, Date.now()).find((r) => r.id === interval.id)!
+    expect(kept.conversationId).toBe(home)
+    expect(kept.newConversation).toBe(false)
   } finally {
     handle.stop()
     store.close()
   }
 }, 30_000)
 
-test('一条起轮失败不影响同一批里后面那条：认领已提交，跳过就是静默丢一次触发', async () => {
+test('一条投递失败不影响同一批里后面那条：认领已提交，跳过就是静默丢一次触发', async () => {
   const dir = await mkdtemp(join(root, 'isolate-'))
   const store = new Store({ path: join(root, 'isolate.sqlite3') })
-  upsertWorkspace(store, dir, 'W')
-  const first = dueSchedule(store, dir, '先跑的')
-  const second = dueSchedule(store, dir, '后跑的')
+  const ws = upsertWorkspace(store, dir, 'W')
+  const home = homeConversation(store, ws.id, '排任务的会话')
+  const first = dueSchedule(store, dir, '先跑的', home)
+  const second = dueSchedule(store, dir, '后跑的', home)
 
   const started: string[] = []
   const lines: string[] = []
@@ -318,10 +358,9 @@ test('一条起轮失败不影响同一批里后面那条：认领已提交，�
     await tickSchedules({
       store,
       config: await loadConfig(),
-      start: async (conversationId, prompt) => {
-        started.push(prompt)
-        if (prompt.includes('先跑的')) throw new Error('装配失败')
-        void conversationId
+      submit: async (claim: ScheduleClaim) => {
+        started.push(claim.schedule.prompt)
+        if (claim.schedule.prompt.includes('先跑的')) throw new Error('装配失败')
       },
     })
   } finally {
@@ -329,7 +368,7 @@ test('一条起轮失败不影响同一批里后面那条：认领已提交，�
   }
 
   try {
-    // 两条都起过轮：抛错那条没有把另一条一起跳掉。同一毫秒建的两条按 id 排，顺序不作断言。
+    // 两条都投过：抛错那条没有把另一条一起跳掉。同一毫秒建的两条按 id 排，顺序不作断言。
     expect(started.length).toBe(2)
     expect(started).toContain('执行 先跑的')
     expect(started).toContain('执行 后跑的')
@@ -338,11 +377,12 @@ test('一条起轮失败不影响同一批里后面那条：认领已提交，�
     expect(failure).toContain('先跑的')
     expect(failure).toContain(first)
     expect(lines.filter((l) => l.includes('起轮失败')).length).toBe(1)
-    // 两条的认领都已提交：游标推进、会话建好，投影按「没有执行记录」显示。
+    // 两条的认领都已提交：游标推进、会话取定，投影按「没有执行记录」显示。
     const views = listSchedules(store, dir, Date.now())
     expect(views.map((v) => v.id).sort()).toEqual([first, second].sort())
     for (const v of views) {
       expect(v.lastRunAt).toBeGreaterThan(0)
+      expect(v.conversationId).toBe(home)
       expect(v.lastRun?.runId).toBe(null)
     }
   } finally {
@@ -350,12 +390,123 @@ test('一条起轮失败不影响同一批里后面那条：认领已提交，�
   }
 })
 
+/**
+ * 「立刻跑一次」与 tick 共用同一个投递函数，所以它是这两条断言的确定性入口：
+ * tick 由计时器驱动，占位那一步没有可插进去的时机。
+ */
+function collectFrames(handle: ReturnType<typeof serve>): {
+  frames: EventEnvelope[]
+  stop(): void
+} {
+  const frames: EventEnvelope[] = []
+  const stop = handle.bus.subscribe({
+    id: `probe_${crypto.randomUUID()}`,
+    origin: 'cli',
+    conversations: null,
+    send: (frame) => {
+      frames.push(frame)
+    },
+  })
+  return { frames, stop }
+}
+
+/*
+ * 原始失败形状：触发那一刻用户恰好在这条会话里说了话，直接起轮会被进程内占位回绝成一条
+ * `run.error`，这次触发随之丢掉。走用户消息入口则排成跟进消息。
+ *
+ * 占位而不落 run 行，正是 `startRun` 里「reserve 成功、runId 还没拿到」那一段的形状：
+ * 认领事务查 runs 表判不出忙，闸只有 `runs.hasRun`。
+ */
+test('目标会话正忙时触发排进跟进队列，不落 run.error', async () => {
+  const dir = await mkdtemp(join(root, 'busy-'))
+  const store = new Store({ path: join(root, 'busy.sqlite3') })
+  const ws = upsertWorkspace(store, dir, 'W')
+  const home = homeConversation(store, ws.id, '排任务的会话')
+  const scheduleId = dueSchedule(store, dir, '忙的时候到点', home)
+
+  const handle = serve({
+    store,
+    config: await loadConfig(),
+    workspaceRoot: dir,
+    port: 0,
+    host: '127.0.0.1',
+    // tick 拉到很长：这条走「立刻跑一次」，不该被自动触发插进来。
+    schedulerTickMs: 3_600_000,
+  })
+
+  try {
+    expect(handle.runs.reserve(home)).toBe(true)
+    const probe = collectFrames(handle)
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/schedules/${scheduleId}/run?ws=${ws.id}`,
+      { method: 'POST', headers: { authorization: `Bearer ${handle.token}` } },
+    )
+    expect(res.status).toBe(200)
+    // 投递是 fire-and-forget，等这一跳的微任务排空。
+    await Bun.sleep(50)
+    probe.stop()
+
+    expect(probe.frames.filter((f) => f.event.type === 'run.error')).toEqual([])
+    const queued = probe.frames.find((f) => f.event.type === 'queue.changed')?.event
+    expect(queued?.type === 'queue.changed' && queued.queue.map((q) => q.content)).toEqual([
+      '执行 忙的时候到点',
+    ])
+  } finally {
+    handle.stop()
+    store.close()
+  }
+}, 30_000)
+
+/*
+ * 左栏要能当场看见这条会话。`conversation.created` 是**工作区级**事件：信封不带
+ * conversationId，否则只有已经订阅了它的客户端收得到，而列表里本来就没有这一条。
+ */
+test('认领新建会话时广播 conversation.created，信封不带会话归属', async () => {
+  const dir = await mkdtemp(join(root, 'created-'))
+  const store = new Store({ path: join(root, 'created.sqlite3') })
+  const ws = upsertWorkspace(store, dir, 'W')
+  const home = homeConversation(store, ws.id, '排任务的会话')
+  const scheduleId = dueSchedule(store, dir, '每次新建会话的那条', home, { newConversation: true })
+
+  const handle = serve({
+    store,
+    config: await loadConfig(),
+    workspaceRoot: dir,
+    port: 0,
+    host: '127.0.0.1',
+    schedulerTickMs: 3_600_000,
+  })
+
+  try {
+    const probe = collectFrames(handle)
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/schedules/${scheduleId}/run?ws=${ws.id}`,
+      { method: 'POST', headers: { authorization: `Bearer ${handle.token}` } },
+    )
+    expect(res.status).toBe(200)
+    await Bun.sleep(50)
+    probe.stop()
+
+    const hit = probe.frames.find((f) => f.event.type === 'conversation.created')
+    expect(hit).toBeDefined()
+    expect(hit?.conversationId).toBe(undefined)
+    const created = hit?.event.type === 'conversation.created' ? hit.event.conversation : null
+    expect(created?.workspaceId).toBe(ws.id)
+    expect(created?.id).not.toBe(home)
+    // 广播的那条就是这次触发进的会话，账本里也是它。
+    expect(listSchedules(store, dir, Date.now())[0]!.conversationId).toBe(created?.id)
+  } finally {
+    handle.stop()
+    store.close()
+  }
+}, 30_000)
+
 test('E05：同一到期时机两个 serve() 实例只产生一条会话、一条 Run、一次模型请求', async () => {
   const dir = await mkdtemp(join(root, 'race-'))
   const dbPath = join(root, 'e05.sqlite3')
   const seed = new Store({ path: dbPath })
-  upsertWorkspace(seed, dir, 'W')
-  dueSchedule(seed, dir, '只该跑一次')
+  const ws = upsertWorkspace(seed, dir, 'W')
+  dueSchedule(seed, dir, '只该跑一次', homeConversation(seed, ws.id, '排任务的会话'))
   seed.close()
 
   const before = providerCalls

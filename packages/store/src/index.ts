@@ -88,6 +88,7 @@ export {
   deleteSchedule,
   insertSchedules,
   listSchedules,
+  type ScheduleClaim,
   updateSchedule,
 } from './schedules.ts'
 // 落盘 schema 版本。**真源就在 schema.ts，不设中心登记表**（CLAUDE.md D2）

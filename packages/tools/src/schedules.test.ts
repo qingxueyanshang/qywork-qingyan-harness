@@ -31,6 +31,7 @@ function fakePort(workspaceRoot: string, shared: Schedule[]) {
         workspaceRoot,
         enabled: true,
         createdAt: Date.now(),
+        newConversation: draft.newConversation === true,
       }
       shared.push(s)
       return s
@@ -92,6 +93,46 @@ describe('定时任务工具', () => {
     expect(s.everyMinutes).toBe(30)
     // 每天那两个字段不该存在，不是存成 undefined。
     expect('atHour' in s).toBe(false)
+    // 缺省发回当前会话，回执把这一条说出来。
+    expect(s.newConversation).toBe(false)
+    expect(r.message).toContain('发回本会话')
+    expect(r.data?.newConversation).toBe(false)
+  })
+
+  test('new_conversation=true 建出的任务每次新建会话，回执与列表都说得出来', async () => {
+    const { shared, w1 } = setup()
+    const r = await create(w1, {
+      title: '日报',
+      prompt: '写今天的日报',
+      kind: 'daily',
+      at_hour: 9,
+      at_minute: 0,
+      new_conversation: true,
+    })
+    expect(r.status).toBe('success')
+    expect(shared[0]!.newConversation).toBe(true)
+    expect(r.message).toContain('每次新建会话')
+    expect(r.data?.newConversation).toBe(true)
+
+    const listed = await listSchedulesTool.fn({}, w1)
+    expect(listed.message).toContain('每次新建会话')
+    expect((listed.data?.schedules as { newConversation: boolean }[])[0]?.newConversation).toBe(
+      true,
+    )
+  })
+
+  /** 判定口径归用户，不归模型：没带这个参数就一律绑定当前会话。 */
+  test('不传 new_conversation 时一律绑定当前会话', async () => {
+    const { shared, w1 } = setup()
+    const r = await create(w1, {
+      title: '每天出一份日报',
+      prompt: '写今天的日报',
+      kind: 'daily',
+      at_hour: 9,
+      at_minute: 0,
+    })
+    expect(shared[0]!.newConversation).toBe(false)
+    expect(r.message).toContain('发回本会话')
   })
 
   test('回执里带着两条边界：关掉应用不会触发', async () => {

@@ -19,7 +19,7 @@ import {
   type WorkspaceInput,
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
-import { hasRun, isRunning, markBusy, setState, state } from './state.ts'
+import { hasRun, isRunning, LOCAL_ID_PREFIX, markBusy, setState, state } from './state.ts'
 import { setOpenFile, setWorkspace } from './ui.ts'
 
 /**
@@ -404,7 +404,7 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
         })
       } else {
         s.views[id]?.transcript.push({
-          id: `local_${Date.now()}`,
+          id: `${LOCAL_ID_PREFIX}${Date.now()}`,
           kind: 'user',
           text: content,
           ...(attachments?.length ? { attachments } : {}),

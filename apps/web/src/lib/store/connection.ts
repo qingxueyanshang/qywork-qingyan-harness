@@ -32,6 +32,7 @@ import {
   type ChangesView,
   type ChangeTurn,
   dropView,
+  LOCAL_ID_PREFIX,
   markBusy,
   openView,
   setState,
@@ -243,6 +244,23 @@ export function discardPace(): void {
 export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   const ev = frame.event
 
+  /*
+   * 服务端自己建的会话先处理：列表里还没有这一条，按信封归属路由必然被整帧丢掉，
+   * 而它要解决的正是「左栏看不见这条会话」。
+   *
+   * 别的项目那份丢掉：它看起来完全合理，插进去没人会怀疑它属于另一个项目。
+   */
+  if (ev.type === 'conversation.created') {
+    if (ev.conversation.workspaceId !== workspace()?.id) return
+    setState(
+      produce((s) => {
+        if (s.conversations.some((c) => c.id === ev.conversation.id)) return
+        s.conversations.unshift(ev.conversation)
+      }),
+    )
+    return
+  }
+
   // 会话属性变更先处理：它按自己的 id 找列表项，和「当前是哪条」无关。
   if (ev.type === 'conversation.updated') {
     pacer.flush()
@@ -394,10 +412,15 @@ function foldContent(cid: string, ev: AgentEvent): void {
           /*
            * 对齐这一轮回答的那条用户气泡。
            *
-           * 界面上按回车那一条是客户端乐观插进去的，带的是本地 id；而目标续起、
-           * 定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条事件来。
-           * 两种情况用同一条规则收：正文对得上就把 id 换成账本里的真值，
-           * 对不上就补一条——补完之后活的这份与刷新后从账本投影出来的那份同 id。
+           * 界面上按回车那一条是客户端乐观插进去的，带的是 `local_` 前缀的本地 id；
+           * 而目标续起、定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条
+           * 事件来。两种情况用同一条规则收：**末条气泡带着本地 id 且正文对得上**才把 id
+           * 换成账本里的真值，否则补一条——补完之后活的这份与刷新后从账本投影出来的
+           * 那份同 id。
+           *
+           * **本地 id 这一条不能省。** 只比正文的话，同一条会话里重复发同一段正文
+           * （定时任务每次发的就是同一句 prompt）时，第二轮会认领上一轮那条已落库的
+           * 气泡，界面上这一轮的用户消息不存在。
            *
            * 回执起的那一轮不走对齐：它没有乐观插入可对，形态也不是气泡。
            */
@@ -412,7 +435,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
             let last = v.transcript.length - 1
             while (last >= 0 && v.transcript[last]!.kind !== 'user') last--
             const hit = last >= 0 ? v.transcript[last]! : null
-            if (hit && hit.text === ev.userMessage.content) {
+            if (hit?.id.startsWith(LOCAL_ID_PREFIX) && hit.text === ev.userMessage.content) {
               hit.id = ev.userMessageId
             } else {
               v.transcript.push({
