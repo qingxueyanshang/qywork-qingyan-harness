@@ -17,14 +17,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, EventEnvelope } from '@qywork/core'
 import { toPosixPath } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
-import { MAX_ENTRY_CHARS } from '@qywork/tools'
+import { MEMORY_DIR } from '@qywork/tools'
 import { serve } from './server.ts'
 
 // ───────────────────────── 假 provider ─────────────────────────
@@ -264,36 +264,17 @@ describe('HTTP 面', () => {
     expect(Object.keys(after.config.providers)).toEqual(Object.keys(before.config.providers))
   })
 
-  test('记忆可增可删，非法 key 与超长内容被挡在落盘之前', async () => {
-    // agent 能写记忆，人却看不到也删不掉——这条接口就是补那个不对称的。
-    const put = await fetch(`${base()}/api/memory/build-commands`, {
-      method: 'PUT',
-      headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ content: '构建用 bun run gate，不要单独跑 tsc。' }),
-    })
-    expect(put.status).toBe(200)
+  test('记忆看得到也删得掉，非法 key 被挡住', async () => {
+    // agent 能写记忆，人却看不到也删不掉——这条接口补的是这个不对称。写入只走工具，
+    // 这里按工具落盘的位置直接放一个文件。
+    const dir = join(ws_dir, MEMORY_DIR)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'build-commands.md'), '构建用 bun run gate，不要单独跑 tsc。', 'utf8')
 
     const list = (await (await fetch(`${base()}/api/memory`, { headers: auth() })).json()) as {
       entries?: { key: string; preview: string }[]
     }
     expect(list.entries?.some((e) => e.key === 'build-commands')).toBe(true)
-
-    // 校验先于落盘：超长直接 422，不写一半。上限与 `write_memory` **共用同一个常数**
-    // （`@qywork/tools` 导出），两处各写一个数迟早漂成两个。
-    const tooLong = await fetch(`${base()}/api/memory/build-commands`, {
-      method: 'PUT',
-      headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'x'.repeat(MAX_ENTRY_CHARS + 1) }),
-    })
-    expect(tooLong.status).toBe(422)
-    // 边界值本身要能存进去——差一位的上限是最容易写错的那种。
-    const atLimit = await fetch(`${base()}/api/memory/at-limit`, {
-      method: 'PUT',
-      headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'x'.repeat(MAX_ENTRY_CHARS) }),
-    })
-    expect(atLimit.status).toBe(200)
-    await fetch(`${base()}/api/memory/at-limit`, { method: 'DELETE', headers: auth() })
 
     // 路径穿越：安全化之后不该还能碰到 .qy/memory 之外。
     const traversal = await fetch(

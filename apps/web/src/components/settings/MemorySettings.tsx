@@ -1,13 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import {
-  askInChat,
-  deleteMemory,
-  loadMemory,
-  loadMemoryEntry,
-  type Scope,
-  saveMemory,
-} from '../../lib/store/index.ts'
+import { askInChat, deleteMemory, loadMemory, type Scope } from '../../lib/store/index.ts'
 import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
@@ -24,19 +17,11 @@ import { newMemoryPrompt } from './ScopePrompts.ts'
  * 不列的话「在全局改了却没生效」查不出来；不贴标记的话界面等于宣称
  * 一条不生效的内容在生效。
  *
- * **编辑器拉的是全文，而且是这一层的全文。** 列表接口只回首行摘要。拿摘要填编辑框的话，用户不改任何
- * 字点一下保存，正文就被截成一行——静默、不可恢复。读单条**必须带层**：同一个 key 在两层里各有一
- * 份，拿错层等于把项目层的正文存进全局。
- *
- * **已有的失焦即存，新建要一次显式提交。** 改一条已有记忆和改「工作区之外额外可读写的目录」是同一个
- * 形状，没有理由两样。新建不同：它建的是一个还不存在的条目，标识敲到一半就落盘会在库里留下一串半
- * 截的键，所以那一次保留一颗「创建」。
+ * **能建、能删，不能在这里改正文。** 记忆是目录里的文件：要改就改那个文件，或在会话里让模型改。
+ * 页头给出这一层的目录，卡片给出键名，两者拼起来就是那个文件。
  */
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
-  /** 正在编辑哪一条记忆的标识。`null` = 没在编辑。 */
-  const [editing, setEditing] = createSignal<string | null>(null)
-  const [draft, setDraft] = createSignal('')
   /** 看的是哪一层。新建也落在这一层——用户正看着它。 */
   const [scope, setScope] = createSignal<Scope>('project')
   const [busy, setBusy] = createSignal(false)
@@ -56,27 +41,6 @@ export default function MemorySettings() {
     }
   }
 
-  const open = (key: string, from: Scope) => {
-    setEditing(key)
-    setDraft('')
-    void loadMemoryEntry(key, from)
-      .then((full) => {
-        // 拉回来时用户可能已经切去编辑别的了，别把他正在打的字盖掉。
-        if (editing() === key) setDraft(full.content)
-      })
-      .catch(() => setEditing(null))
-  }
-
-  /** 失焦即存。正文空着不发——那是一次误清空，不是一条空记忆。 */
-  const commit = () => {
-    const key = editing()
-    if (!key || !draft().trim()) return
-    void run(async () => {
-      await saveMemory(key, draft(), scope())
-      await refetch()
-    })
-  }
-
   /**
    * 这一页的动作。**路径那一行和空态框共用同一份**——两处各写一遍的话迟早只改
    * 一处，而空的时候用户看到的是空态框里那一份。
@@ -87,8 +51,8 @@ export default function MemorySettings() {
     </button>
   )
 
-  // `loaded()` 而不是 `mem()`：重取期间留住上一份（存一条、删一条之后都要重取，
-  // 正在编辑的输入框不该被摘出 DOM），出错时给 undefined 让下面那条 `LoadState` 接住。
+  // `loaded()` 而不是 `mem()`：删一条之后要重取，重取期间留住上一份，列表不闪空；
+  // 出错时给 undefined 让下面那条 `LoadState` 接住。
   return (
     <>
       {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。
@@ -103,9 +67,6 @@ export default function MemorySettings() {
               value={scope()}
               onChange={(s) => {
                 setScope(s)
-                // 切层等于换一批文件，正在编辑的那条不属于新的这一层。
-                setEditing(null)
-                setDraft('')
                 setError(null)
               }}
               dirs={m().dirs}
@@ -123,7 +84,6 @@ export default function MemorySettings() {
                       <EntryCard
                         name={e.key}
                         desc={e.preview}
-                        onOpen={() => open(e.key, e.scope)}
                         badge={<Show when={e.shadowedBy}>{(by) => <ShadowTag by={by()} />}</Show>}
                         actions={
                           <button
@@ -135,7 +95,6 @@ export default function MemorySettings() {
                             onClick={() =>
                               void run(async () => {
                                 await deleteMemory(e.key, e.scope)
-                                if (editing() === e.key) setEditing(null)
                                 await refetch()
                               })
                             }
@@ -150,41 +109,7 @@ export default function MemorySettings() {
               </Show>
             </Section>
 
-            <Show when={editing()}>
-              {(e) => (
-                <Section title={`编辑 ${e()}`}>
-                  <div class="setting-rows">
-                    <div class="setting-row stack">
-                      <div class="setting-row-text">
-                        <span class="setting-row-label">内容</span>
-                      </div>
-                      <textarea
-                        class="code-area"
-                        rows={8}
-                        value={draft()}
-                        onInput={(ev) => setDraft(ev.currentTarget.value)}
-                        onBlur={commit}
-                      />
-                    </div>
-                  </div>
-
-                  {/* 没有提交键：正文框失焦时就已经存了。 */}
-                  <div class="row-actions">
-                    <button
-                      class="btn-ghost"
-                      type="button"
-                      onClick={() => {
-                        setEditing(null)
-                        setDraft('')
-                      }}
-                    >
-                      关闭
-                    </button>
-                    <Show when={error()}>{(msg) => <span class="save-msg bad">{msg()}</span>}</Show>
-                  </div>
-                </Section>
-              )}
-            </Show>
+            <Show when={error()}>{(msg) => <p class="settings-notices bad">{msg()}</p>}</Show>
           </>
         )}
       </Show>

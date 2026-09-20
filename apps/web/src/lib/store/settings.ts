@@ -624,29 +624,6 @@ export interface MemoryEntry {
 export function loadMemory(): Promise<{ dirs: ScopeDir[]; entries: MemoryEntry[] }> {
   return client.api<{ dirs: ScopeDir[]; entries: MemoryEntry[] }>('/api/memory')
 }
-/**
- * 读一条记忆的**全文**。
- *
- * 列表只回首行摘要，够渲染列表、不够编辑。编辑器必须走这条——
- * 拿摘要去填编辑框，用户不改字点一下保存就把正文截成一行了。
- *
- * **必须带层**：同一个 key 在两层里各有一份，不带层拿到的是优先级高的那份，
- * 而编辑框接着会把它存回用户点开的那一层。
- */
-export function loadMemoryEntry(
-  key: string,
-  scope: Scope,
-): Promise<{ key: string; content: string; scope: Scope }> {
-  return client.api<{ key: string; content: string; scope: Scope }>(
-    `/api/memory/${encodeURIComponent(key)}?scope=${scope}`,
-  )
-}
-export function saveMemory(key: string, content: string, scope: Scope): Promise<{ ok: boolean }> {
-  return scheduleWrite(`/api/memory/${encodeURIComponent(key)}?scope=${scope}`, {
-    method: 'PUT',
-    body: JSON.stringify({ content }),
-  })
-}
 export function deleteMemory(key: string, scope: Scope): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/memory/${encodeURIComponent(key)}?scope=${scope}`, {
     method: 'DELETE',

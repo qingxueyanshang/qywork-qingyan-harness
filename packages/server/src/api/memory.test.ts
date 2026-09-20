@@ -71,64 +71,6 @@ describe('记忆列表按层分列', () => {
   })
 })
 
-describe('读单条认作用域', () => {
-  test('被盖住的全局条目，读回来的是全局那份正文', async () => {
-    const { root, home } = await workspace()
-    await write(join(root, '.agents'), 'style', '项目的')
-    await write(home, 'style', '全局的')
-
-    const g = (await (await call(root, '/api/memory/style?scope=global'))!.json()) as {
-      content: string
-      scope: string
-    }
-    expect(g.content.trim()).toBe('全局的')
-    expect(g.scope).toBe('global')
-
-    const p = (await (await call(root, '/api/memory/style?scope=project'))!.json()) as {
-      content: string
-    }
-    expect(p.content.trim()).toBe('项目的')
-  })
-
-  test('这一层没有这条时回 404，而不是回另一层那份', async () => {
-    const { root } = await workspace()
-    await write(join(root, '.agents'), 'style', '项目的')
-    expect((await call(root, '/api/memory/style?scope=global'))!.status).toBe(404)
-  })
-})
-
-describe('写单条认作用域', () => {
-  test('存到全局不会碰项目层那份', async () => {
-    const { root, home } = await workspace()
-    await write(join(root, '.agents'), 'style', '项目的')
-    await write(home, 'style', '全局的')
-
-    const res = await call(root, '/api/memory/style?scope=global', {
-      method: 'PUT',
-      body: JSON.stringify({ content: '改过的全局' }),
-    })
-    expect(res!.status).toBe(200)
-
-    const g = (await (await call(root, '/api/memory/style?scope=global'))!.json()) as {
-      content: string
-    }
-    const p = (await (await call(root, '/api/memory/style?scope=project'))!.json()) as {
-      content: string
-    }
-    expect(g.content.trim()).toBe('改过的全局')
-    expect(p.content.trim()).toBe('项目的')
-  })
-
-  test('不认的层名回 400，不落盘', async () => {
-    const { root } = await workspace()
-    const res = await call(root, '/api/memory/style?scope=builtin', {
-      method: 'PUT',
-      body: JSON.stringify({ content: 'x' }),
-    })
-    expect(res!.status).toBe(400)
-  })
-})
-
 describe('删一个技能', () => {
   test('删的是目录名，删完就扫不到了；删一个不存在的回 404', async () => {
     const { root } = await workspace()

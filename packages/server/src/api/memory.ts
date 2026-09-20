@@ -10,6 +10,9 @@
  * 和工具走同一个函数。另写一份「给界面用的扫描」必然和工具那份漂移，
  * 而漂移的表现是「界面上有这条记忆，模型却说没有」。
  *
+ * **记忆：能列、能删，不在网页上改正文。** 它是层目录里的文件，要改就改文件，或在会话里让模型改；
+ * 这里没有读单条与写单条的接口。
+ *
  * **技能：能建、能导、能删，但不能在网页上编辑正文。** 一个技能最少就是 `<目录>/SKILL.md`——建一个
  * 不需要文件管理界面，一个表单就够。所以建和删都在这里。**改正文不在**：技能目录里可以带脚本、附
  * 件，在网页上编辑一个目录需要一整套文件管理器，那是编辑器该干的事。列表回目录的绝对路径，要改就
@@ -19,13 +22,10 @@
  * 那等于从网上取一段内容、下次加载就用它，和插件那条边界同一个理由。
  */
 
-import { cp, mkdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { cp, mkdir, readFile, rm, stat, unlink } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
 import {
   listAllScopedEntries,
-  listScopedEntries,
-  MAX_ENTRIES,
-  MAX_ENTRY_CHARS,
   MEMORY_DIR,
   MEMORY_SUBDIR,
   resolveInWorkspace,
@@ -101,7 +101,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
 
     const scope = writableScope(url.searchParams.get('scope'))
     if (!scope) {
-      return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
+      return json({ error: 'bad request', message: '只能删项目层或全局层的条目' }, 400)
     }
     // 项目层多过一遍工作区边界：安全化规则将来可能被放宽，这是最后一道。
     // 全局层不在工作区里，靠的是 `safeKey` 已经把分隔符和 `..` 全清掉了。
@@ -112,55 +112,6 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
           })
         : memoryFile(d.workspaceRoot, scope, key)
     if (file === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-
-    /**
-     * 读单条的**全文**。
-     *
-     * 列表接口只回首行摘要（`listEntries` 的 `preview`），够渲染列表，不够编辑。
-     * 没有这条接口的话，界面只能把摘要塞进编辑框，用户不改任何字点一下保存，
-     * 正文就被截成一行——静默、不可恢复。靠界面上一句「这是摘要不是全文」挡着
-     * 不算修，那是拿文案给结构缺陷打补丁。
-     *
-     * 不存在回 404 而不是空串：空串会被编辑器当成「这条是空的」照常保存下去。
-     */
-    if (req.method === 'GET') {
-      // 读**认作用域**，读的就是下面 PUT / DELETE 要写的那个文件。
-      //
-      // 不能按优先级找：设置页按层分列，被项目层盖住的那条全局记忆照样列在
-      // 全局那一栏里、照样点得开。按优先级找会把项目层那份的正文填进编辑框，
-      // 用户不改任何字点一下保存，全局那条就被项目那条的内容覆盖了。
-      const text = await readFile(file, 'utf8').catch(() => null)
-      return text === null ? json({ error: 'not found' }, 404) : json({ key, content: text, scope })
-    }
-
-    if (req.method === 'PUT') {
-      const body = (await req.json().catch(() => null)) as { content?: string } | null
-      const content = (body?.content ?? '').trim()
-      // 校验先于落盘：不合法直接 422 且不写一半。
-      if (!content) return json({ error: 'invalid', message: '内容为空' }, 422)
-      if (content.length > MAX_ENTRY_CHARS) {
-        return json(
-          {
-            error: 'invalid',
-            message: `单条记忆最多 ${MAX_ENTRY_CHARS} 字符，当前 ${content.length}；内容过长时应改写为文档`,
-          },
-          422,
-        )
-      }
-      // 条数上限必须和工具那边**同样生效**。只在工具侧拦的话，界面成了绕过它的路：
-      // 尾区索引每轮都发，无上限地涨下去会逐步占满上下文，
-      // 而现象是回答质量下降——报错和日志里都没有指向记忆条数的线索。
-      const existing = await listScopedEntries(scopeRoots(d.workspaceRoot))
-      if (existing.length >= MAX_ENTRIES && !existing.some((e) => e.key === key)) {
-        return json(
-          { error: 'invalid', message: `记忆已达 ${MAX_ENTRIES} 条上限，先删掉不再需要的` },
-          422,
-        )
-      }
-      await mkdir(dirname(file), { recursive: true })
-      await writeFile(file, `${content}\n`, 'utf8')
-      return json({ ok: true, key })
-    }
 
     if (req.method === 'DELETE') {
       // 删一个本来就不存在的键回 404 而不是静默成功：静默成功会让
