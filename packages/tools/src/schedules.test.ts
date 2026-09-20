@@ -95,7 +95,7 @@ describe('定时任务工具', () => {
     expect('atHour' in s).toBe(false)
     // 缺省发回当前会话，回执把这一条说出来。
     expect(s.newConversation).toBe(false)
-    expect(r.message).toContain('发回本会话')
+    expect(r.message).toContain('发回原会话')
     expect(r.data?.newConversation).toBe(false)
   })
 
@@ -132,7 +132,7 @@ describe('定时任务工具', () => {
       at_minute: 0,
     })
     expect(shared[0]!.newConversation).toBe(false)
-    expect(r.message).toContain('发回本会话')
+    expect(r.message).toContain('发回原会话')
   })
 
   test('回执里带着两条边界：关掉应用不会触发', async () => {

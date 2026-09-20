@@ -56,7 +56,7 @@ function describeTiming(s: {
 
 /** 触发发到哪里的一句话说法。建完的回执与列表共用一份。 */
 function describeTarget(s: { newConversation: boolean }): string {
-  return s.newConversation ? '每次新建会话' : '发回本会话'
+  return s.newConversation ? '每次新建会话' : '发回原会话'
 }
 
 /**
@@ -201,7 +201,7 @@ export const createScheduleTool: ToolSpec = {
 export const listSchedulesTool: ToolSpec = {
   name: 'list_schedules',
   description:
-    '列出当前工作区已排的定时任务：触发方式、发回本会话还是每次新建会话、下次预计时刻、' +
+    '列出当前工作区已排的定时任务：触发方式、发回原会话还是每次新建会话、下次预计时刻、' +
     '上次跑的时间与结果。' +
     // 它不像 list_skills 那样冗余：定时任务不进上下文（它随时在变），
     // 这是模型查当前状态的唯一入口。
