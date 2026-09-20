@@ -1,6 +1,6 @@
 //! 前台接管：指针、键盘与窗口操作。
 //!
-//! 六条边界：
+//! 七条边界：
 //!
 //! 1. **这里的每一个动作都会把前台从用户手上拿走**，因此只在用户显式启用前台模式时
 //!    才走得到这里；关着时准入判定在 `protocol::admit` 就拒了，一条系统调用都不发。
@@ -15,8 +15,8 @@
 //!    窗口续输。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
 //!    不套后台那三条——激活本来就会改前台，「同进程多出一个顶层窗口」证明不了它。
-//! 7. **文字输入有两种投递方式**，按文字内容选，不按应用选；走粘贴的那一次会动用户的
-//!    剪贴板，投递方式与剪贴板去向一律进回执。
+//! 7. **文字只有一条投递路径**：按 UTF-16 码元投字符消息给焦点窗口。它不按键、不改
+//!    剪贴板，对字符集也没有限制。
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
@@ -28,20 +28,18 @@ use ::windows::Win32::UI::Accessibility::{
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowRect, IsIconic, IsWindow, IsZoomed,
-    SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetWindowRect, IsIconic,
+    IsWindow, IsZoomed, SetForegroundWindow, WindowFromPoint, GA_ROOT, GUITHREADINFO,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
-use crate::clipboard::{self, clipboard_note, SystemBoard};
 use crate::geometry::{to_absolute, ScreenPoint, ScreenRect};
 use crate::input::{
-    drag_path, key_code, key_stroke, modifier_code, needs_paste, text_batches, unit_events,
-    wheel_of, Event, Hold, Sink, SystemSink,
+    drag_path, key_code, key_stroke, modifier_code, post_text, wheel_of, CharSink, Event, Hold,
+    Sink, SystemCharSink, SystemSink,
 };
 use crate::protocol::{
-    classify_input, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton, TextDelivery,
-    WindowState,
+    classify_input, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton, WindowState,
 };
 use crate::windows::{
     current_pattern, defer, dispatch_call, Attempt, CallWatch, Outcome, StateWatch,
@@ -53,17 +51,8 @@ use crate::windows::{
 const DRAG_STEPS: u32 = 12;
 /// 拖拽两段之间隔多久。总时长因此约 `DRAG_STEPS * DRAG_STEP_MS`。
 const DRAG_STEP_MS: u64 = 16;
-/// 一次文字注入按多少个 UTF-16 码元分批。批与批之间重核前台窗口。
+/// 一次文字投递按多少个 UTF-16 码元分批。批与批之间重核前台窗口与收件窗口。
 const TEXT_BATCH_UNITS: usize = 24;
-/// 发完 Ctrl+V 之后给目标读剪贴板留多久，之后才把原内容放回去。
-///
-/// 目标处理粘贴是异步的：Ctrl+V 只是进了它的输入队列，它取到 `WM_PASTE` 再去读剪贴板。
-/// 恢复得太早它读到的是已经放回去的旧内容。
-///
-/// 实测（Windows 10 19045，2026-09-19）：同步处理 `WM_PASTE` 的 WinForms 文本框等 0 ms
-/// 会粘到恢复后的内容，25 ms 起正确；把 `WM_PASTE` 推迟 200 ms 的目标要等满 200 ms，
-/// 100 ms 不够。取 400 ms 是在后一种目标上留一倍余量。
-const PASTE_SETTLE: Duration = Duration::from_millis(400);
 /// 激活之后等前台窗口真的改过来多久。前台切换要目标窗口线程处理激活消息，不是同步的。
 const ACTIVATE_SETTLE: Duration = Duration::from_millis(400);
 /// 读回窗口状态或矩形的等待上限。模式调用返回之后窗口还要重绘一次。
@@ -101,7 +90,7 @@ pub fn perform(
         }
         ActionSpec::TypeText { text } => match keyboard_target(window, element) {
             Err(reason) => Attempt::Refused(reason),
-            Ok(()) => type_text(window, &sink, text),
+            Ok(()) => type_text(window, &SystemCharSink, text),
         },
         ActionSpec::PressKey { key, modifiers } => match keyboard_target(window, element) {
             Err(reason) => Attempt::Refused(reason),
@@ -146,12 +135,12 @@ pub fn perform(
         | ActionSpec::ScrollIntoView
         | ActionSpec::RealizeItem { .. }
         | ActionSpec::SelectText { .. } => {
-            Attempt::Refused("not_foreground: 这个动作不走前台输入路径".to_owned())
+            Attempt::Refused("not_foreground: 这个动作不走前台路径".to_owned())
         }
     }
 }
 
-const MISSING_ELEMENT: &str = "missing_target: 这个动作要给控件，不能只给屏幕落点";
+const MISSING_ELEMENT: &str = "missing_target: 这个动作只能按控件执行";
 
 /// 这次请求带的窗口几何代际还成不成立。
 ///
@@ -165,7 +154,7 @@ pub fn check_generation(window: i64, expected: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "geometry_changed: 窗口几何已经变了（{expected} → {actual}），请重新采图"
+        "geometry_changed: {expected} → {actual}"
     ))
 }
 
@@ -173,7 +162,7 @@ pub fn check_generation(window: i64, expected: &str) -> Result<(), String> {
 
 fn click(window: i64, sink: &dyn Sink, aim: Aim, button: MouseButton, count: u32) -> Attempt {
     if count == 0 || count > 2 {
-        return Attempt::Refused(format!("invalid_count: 一次只发 1 次或 2 次，给的是 {count}"));
+        return Attempt::Refused(format!("invalid_count: {count}，只接受 1 或 2"));
     }
     let anchor = match landing(window, aim) {
         Ok(point) => point,
@@ -225,14 +214,14 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
         Err(reason) => return Attempt::Refused(reason),
     };
     let Some(destination) = aim.destination else {
-        return Attempt::Refused("missing_target: 拖拽要给终点".to_owned());
+        return Attempt::Refused("missing_target: 拖拽没有终点".to_owned());
     };
     // 终点同样要落在目标窗口里：拖到别的窗口上等于把这次放手交给了另一个应用。
     match window_rect(window) {
         Err(reason) => return Attempt::Refused(reason),
         Ok(rect) if !rect.contains(destination) => {
             return Attempt::Refused(format!(
-                "drop_outside_window: 终点 {},{} 不在目标窗口里",
+                "drop_outside_window: {},{}",
                 destination.x, destination.y
             ))
         }
@@ -254,8 +243,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
         return Attempt::Called(Outcome::returned(
             Dispatch::NotDispatched,
             Some(
-                "input_blocked: 指针已经移到起点，按下没有进入输入队列，这次拖拽没有发生"
-                    .to_owned(),
+                "input_blocked: 按下没有进入输入队列，指针已在起点".to_owned(),
             ),
         ));
     }
@@ -267,7 +255,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
             return Attempt::Called(Outcome::returned(
                 Dispatch::Unknown,
                 Some(format!(
-                    "cancelled: 拖拽走到第 {moved} 段时被撤销，本次按下的左键已经释放"
+                    "cancelled: 拖拽第 {moved} 段 · 左键已释放"
                 )),
             ));
         }
@@ -275,7 +263,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
             hold.release();
             return Attempt::Called(Outcome::returned(
                 Dispatch::Unknown,
-                Some("target_lost: 拖拽途中目标窗口消失，本次按下的左键已经释放".to_owned()),
+                Some("target_lost: 拖拽途中窗口消失 · 左键已释放".to_owned()),
             ));
         }
         moved += sink.send(&[move_event(*point)]);
@@ -291,11 +279,11 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
 fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let anchor = aim
         .anchor
-        .ok_or("missing_target: 指针动作要给控件或屏幕落点")?;
+        .ok_or("missing_target: 指针动作没有落点")?;
     let rect = window_rect(window)?;
     if !rect.contains(anchor) {
         return Err(format!(
-            "point_outside_window: 落点 {},{} 不在目标窗口里",
+            "point_outside_window: {},{}",
             anchor.x, anchor.y
         ));
     }
@@ -307,7 +295,7 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     }) };
     if hit.0.is_null() {
         return Err(format!(
-            "point_unowned: 落点 {},{} 上没有窗口",
+            "point_unowned: {},{}",
             anchor.x, anchor.y
         ));
     }
@@ -315,7 +303,7 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let root = unsafe { GetAncestor(hit, GA_ROOT) };
     if root.0 as i64 != window {
         return Err(format!(
-            "occluded: 落点 {},{} 上是另一个窗口，这一下没有发出",
+            "occluded: {},{}",
             anchor.x, anchor.y
         ));
     }
@@ -356,18 +344,18 @@ fn keyboard_target(window: i64, element: Option<&IUIAutomationElement>) -> Resul
     foreground_ok(window)?;
     // SAFETY: 句柄由调用方核对过归属。
     if !unsafe { IsWindowEnabled(HWND(window as *mut c_void)) }.as_bool() {
-        return Err("window_disabled: 目标窗口此刻被禁用，输入到不了它".to_owned());
+        return Err("window_disabled: 目标窗口已禁用".to_owned());
     }
     let Some(element) = element else {
         return Ok(());
     };
     // SAFETY: 实时属性查询，跨进程调用由 UIA 的连接超时兜底。
     let focused = unsafe { element.CurrentHasKeyboardFocus() }
-        .map_err(|e| format!("读键盘焦点失败：{e}"))?
+        .map_err(|e| format!("读键盘焦点失败 {e}"))?
         .as_bool();
     if !focused {
         return Err(
-            "not_focused: 这个控件此刻没有键盘焦点，输入不会进它；先点击它取得焦点".to_owned(),
+            "not_focused: 这个控件没有键盘焦点 · 先 click 它".to_owned(),
         );
     }
     Ok(())
@@ -384,94 +372,64 @@ fn foreground_ok(window: i64) -> Result<(), String> {
     if at == window {
         return Ok(());
     }
-    Err(format!(
-        "not_foreground: 系统前台窗口是 {at}，不是目标窗口 {window}"
-    ))
+    Err(format!("not_foreground: {at}"))
 }
 
-/// 投进文字。投递方式按内容定，不按应用定。
+/// 投进文字。一条路径，对任何字符都一样。
 ///
-/// 一段里只要有一个码元的抬起会被系统吞掉（`input::keyup_dropped`）就整段走剪贴板粘贴：
-/// 那种码元注入之后目标只收到按下，下一个字符的按下落在「这个键还按着」的状态上，
-/// 按自动重复处理的目标会重复前一个字符并丢掉这一个。其余文字仍走逐码元注入。
-fn type_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
+/// 每一批之前重求收件窗口（`text_target`），前台或焦点变了立即停下并如实带回已投出
+/// 多少；不向别的窗口续投。
+fn type_text(window: i64, chars: &dyn CharSink, text: &str) -> Attempt {
     if text.is_empty() {
-        return Attempt::Refused("empty_text: 没有要输入的内容".to_owned());
+        return Attempt::Refused("empty_text: 文字为空".to_owned());
     }
-    if needs_paste(text) {
-        return paste_text(window, sink, text);
-    }
-    inject_text(window, sink, text)
-}
-
-/// 写剪贴板、发 Ctrl+V、把原剪贴板内容放回去。
-///
-/// 粘贴之前重核一次前台：保存与写入之间用户可能已经切走，那时这次 Ctrl+V 会落到别的
-/// 窗口上。剪贴板拿不到时记未派发，**不退回去用注入**——那条路对这段文字会把字打错。
-fn paste_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
-    let board = SystemBoard;
-    let outcome = clipboard::paste(
-        &board,
-        sink,
-        text,
-        &|| foreground_ok(window),
-        &|| std::thread::sleep(PASTE_SETTLE),
-    );
-    match outcome {
-        Err(reason) => Attempt::Refused(reason),
-        Ok(pasted) => {
-            let (dispatch, reason) = classify_input(pasted.sent, pasted.requested);
-            let note = clipboard_note(&pasted.restored);
-            let reason = match (reason, note.is_empty()) {
-                (Some(text), true) => Some(text),
-                (Some(text), false) => Some(format!("{text}{note}")),
-                (None, true) => None,
-                (None, false) => Some(note.trim_start_matches('；').to_owned()),
-            };
-            Attempt::Called(Outcome::typed(
-                dispatch,
-                reason,
-                TextDelivery::pasted(!pasted.restored.left_behind()),
-            ))
-        }
-    }
-}
-
-/// 分批注入文字。每批之前重核前台窗口，变了立即停止并如实带回已发出多少。
-fn inject_text(window: i64, sink: &dyn Sink, text: &str) -> Attempt {
-    let batches = text_batches(text, TEXT_BATCH_UNITS);
-    let total: usize = batches.iter().map(Vec::len).sum();
-    let requested = u32::try_from(total * 2).unwrap_or(u32::MAX);
-    let mut sent = 0u32;
-    let mut interrupted: Option<String> = None;
-    for batch in &batches {
-        if let Err(reason) = foreground_ok(window) {
-            interrupted = Some(reason);
-            break;
-        }
-        let events = unit_events(batch);
-        let got = sink.send(&events);
-        sent += got;
-        if got < u32::try_from(events.len()).unwrap_or(u32::MAX) {
-            break;
-        }
-    }
-    let (dispatch, reason) = classify_input(sent, requested);
-    // 前台窗口中途变了时原因由它说，不留 `classify_input` 那句关于 UIPI 的推测：
+    let out = post_text(chars, text, TEXT_BATCH_UNITS, &|| text_target(window));
+    let (dispatch, reason) = classify_input(out.sent, out.requested);
+    // 中途停下来时原因由 `text_target` 说，不留 `classify_input` 那句关于 UIPI 的推测：
     // 这一次停下来的成因是可核实的，不是猜的。
-    let reason = match interrupted {
-        Some(note) => Some(format!(
-            "{note}，已发出 {sent} / {requested} 个输入事件，没有向别的窗口续输"
-        )),
+    let reason = match out.interrupted {
+        Some(note) => Some(format!("{note} · 已投出 {} / {} 个字符", out.sent, out.requested)),
         None => reason,
     };
-    Attempt::Called(Outcome::typed(dispatch, reason, TextDelivery::injected()))
+    Attempt::Called(Outcome::returned(dispatch, reason))
+}
+
+/// 这一批文字投给哪个窗口。
+///
+/// 前台窗口必须仍是目标窗口，收件窗口取系统前台线程的焦点窗口；没有焦点控件时
+/// 目标窗口自己收（自绘界面就是这一支）。**焦点窗口必须属于目标窗口**：焦点在两批
+/// 之间被用户移到别的应用上时，剩下的字符宁可不投也不投给那一个。
+fn text_target(window: i64) -> Result<i64, String> {
+    foreground_ok(window)?;
+    let focus = gui_focus();
+    if focus == 0 {
+        return Ok(window);
+    }
+    // SAFETY: 句柄来自上一行的查询。
+    let root = unsafe { GetAncestor(HWND(focus as *mut c_void), GA_ROOT) };
+    if root.0 as i64 != window {
+        return Err(format!("not_focused: 焦点在窗口 {} 上", root.0 as i64));
+    }
+    Ok(focus)
+}
+
+/// 系统前台线程此刻的焦点窗口。没有焦点控件时返回 0。
+fn gui_focus() -> i64 {
+    let mut info = GUITHREADINFO {
+        cbSize: u32::try_from(std::mem::size_of::<GUITHREADINFO>()).unwrap_or(0),
+        ..GUITHREADINFO::default()
+    };
+    // SAFETY: 出参是本栈帧上的结构体，线程号 0 表示前台线程。
+    if unsafe { GetGUIThreadInfo(0, &mut info) }.is_err() {
+        return 0;
+    }
+    info.hwndFocus.0 as i64
 }
 
 /// 一次组合键。整条序列一次交给系统，中间没有别的输入插得进来。
 fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
     let Some(main) = key_code(key) else {
-        return Attempt::Refused(format!("unknown_key: 认不出的键名 {key}"));
+        return Attempt::Refused(format!("unknown_key: {key}"));
     };
     let held: Vec<(u16, bool)> = modifiers.iter().map(|m| modifier_code(*m)).collect();
     let events = key_stroke(main, &held);
@@ -511,12 +469,11 @@ fn activate(window: i64) -> Attempt {
     if accepted {
         return Attempt::Called(Outcome::returned(
             Dispatch::Unknown,
-            Some("调用返回成功，但前台窗口没有变成目标窗口".to_owned()),
+            Some("调用成功，前台窗口没有变成目标窗口".to_owned()),
         ));
     }
     Attempt::Refused(
-        "foreground_lock: 系统前台锁拒绝了这次激活，前台窗口没有改变，目标只会闪烁任务栏按钮"
-            .to_owned(),
+        "foreground_lock: 前台锁拒绝了这次激活，前台窗口没有变".to_owned(),
     )
 }
 
@@ -533,10 +490,10 @@ fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowS
         WindowState::Normal => Ok(::windows::core::BOOL(1)),
     };
     match allowed {
-        Err(e) => return Attempt::Refused(format!("读窗口能力失败：{e}")),
+        Err(e) => return Attempt::Refused(format!("读窗口能力失败 {e}")),
         Ok(flag) if !flag.as_bool() => {
             return Attempt::Refused(format!(
-                "state_unsupported: 这个窗口不能变成 {}",
+                "state_unsupported: {}",
                 target.as_str()
             ))
         }
@@ -544,7 +501,7 @@ fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowS
     }
     if window_state(window) == Some(target) {
         return Attempt::Refused(format!(
-            "already_in_state: 这个窗口已经是 {}",
+            "already_in_state: {}",
             target.as_str()
         ));
     }
@@ -580,9 +537,9 @@ fn transform(window: i64, element: &IUIAutomationElement, placement: Placement) 
         Placement::Resize { .. } => (unsafe { pattern.CurrentCanResize() }, "缩放"),
     };
     match allowed {
-        Err(e) => return Attempt::Refused(format!("读窗口能力失败：{e}")),
+        Err(e) => return Attempt::Refused(format!("读窗口能力失败 {e}")),
         Ok(flag) if !flag.as_bool() => {
-            return Attempt::Refused(format!("transform_unsupported: 这个窗口不能{name}"))
+            return Attempt::Refused(format!("transform_unsupported: {name}"))
         }
         Ok(_) => {}
     }
@@ -641,7 +598,7 @@ fn confirm(attempt: Attempt, limit: Duration, reached: impl Fn() -> bool) -> Att
     }
     Attempt::Called(Outcome::returned(
         Dispatch::Unknown,
-        Some("调用返回成功，但窗口没有变成请求的状态".to_owned()),
+        Some("调用成功，窗口没有变成请求的状态".to_owned()),
     ))
 }
 
@@ -656,7 +613,7 @@ fn window_rect(window: i64) -> Result<ScreenRect, String> {
     let mut rect = RECT::default();
     // SAFETY: 出参是本栈帧上的结构体。
     unsafe { GetWindowRect(HWND(window as *mut c_void), &mut rect) }
-        .map_err(|e| format!("target_lost: 读窗口矩形失败：{e}"))?;
+        .map_err(|e| format!("target_lost: 读窗口矩形失败 {e}"))?;
     Ok(ScreenRect {
         x: rect.left,
         y: rect.top,

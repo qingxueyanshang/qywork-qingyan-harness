@@ -1170,12 +1170,8 @@ test('不点名控件的键盘输入按窗口派发，帧里没有 ref 也没有
   expect((await acting).dispatch).toBe('submitted')
 })
 
-/**
- * 文字投递方式与剪贴板去向要原样到调用方。
- *
- * 少了这一段，走粘贴的那一次在回执里与逐键注入完全一样，模型说不出剪贴板被动过。
- */
-test('宿主回的投递方式与剪贴板恢复状态原样透传', async () => {
+/** 全角标点与半角连字符不再让文字走第二条投递路径，请求帧与普通文字一模一样。 */
+test('含全角标点的文字按原文发下去，没有第二种投递', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
   const a = desktop.portFor('cv_a')
@@ -1184,18 +1180,14 @@ test('宿主回的投递方式与剪贴板恢复状态原样透传', async () =>
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    action: { kind: 'type_text', text: '哦哦行，' },
+    action: { kind: 'type_text', text: '哦哦行，那你先用这个号跑吧' },
   })
   const frame = await host.next()
-  host.reply(frame, {
-    dispatch: 'submitted',
-    delivery: 'paste',
-    clipboardRestored: false,
-    observation: subtree(),
-  })
+  expect(frame.action).toEqual({ kind: 'type_text', text: '哦哦行，那你先用这个号跑吧' })
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
   const result = await acting
-  expect(result.delivery).toBe('paste')
-  expect(result.clipboardRestored).toBe(false)
+  expect(result.dispatch).toBe('submitted')
+  expect(Object.keys(result)).not.toContain('delivery')
 })
 
 test('图外的坐标在本地就被拒，一帧都不发', async () => {
@@ -1298,7 +1290,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
     action: { kind: 'click', button: 'left', count: 1 },
   })
   let frame = await host.next()
-  host.reply(frame, { dispatch: 'not_dispatched', reason: 'foreground_disabled: 前台操作没有启用' })
+  host.reply(frame, { dispatch: 'not_dispatched', reason: 'foreground_disabled: 前台操作未启用' })
   expect((await refused).dispatch).toBe('not_dispatched')
   expect(desktop.targetForeground()).toBe(false)
 

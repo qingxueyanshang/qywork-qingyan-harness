@@ -60,7 +60,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'desktop_windows',
-    line: '- 电脑控制：操作本机上已经开着的应用用这一组——desktop_windows 列窗口、desktop_observe 读控件表、desktop_act 执行。不要用 run_command 写截图或按坐标点击的脚本，那条路看不到控件也拿不到执行事实。控件表里找不到目标（画布、自绘界面）时用 desktop_observe 的 capture 取图，再按图里的像素坐标给 imageRef 与 imageX / imageY。',
+    line: '- 电脑控制：操作本机已经开着的应用走 desktop_windows → desktop_observe → desktop_act，不要用 run_command 截图点坐标。控件表里找不到目标时用 capture 取图，动作按图给坐标。',
   },
   {
     tool: 'write_memory',

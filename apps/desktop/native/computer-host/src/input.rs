@@ -1,9 +1,9 @@
 //! 前台原始输入：事件序列的构造、派发与按下状态账。
 //!
-//! 五条边界：
+//! 六条边界：
 //!
-//! 1. **派发只经 `Sink`。** 真实实现调 `SendInput`，单测换成记录器，测试不向系统发出
-//!    任何输入。
+//! 1. **派发只经 `Sink` 与 `CharSink`。** 真实实现调 `SendInput` 与 `PostMessageW`，
+//!    单测换成记录器，测试不向系统发出任何输入。
 //! 2. **按下之前先记账，释放之后再清账。** 顺序不能反：反过来的话，按下与记账之间
 //!    worker 被强杀，那个键就没有人知道它按住了。多记一次的代价是宿主补发一个多余的
 //!    抬起事件，应用收到没有配对按下的抬起一律忽略。
@@ -14,6 +14,10 @@
 //!    这里只把已经定好的事件交给系统。
 //! 5. **扫描码由派发端补。** 虚拟键码到扫描码的映射是一次 OS 查询，放进事件序列就
 //!    测不了；事件序列里只有虚拟键码与扩展键标志。
+//! 6. **文字不走键盘事件。** `Event` 里没有文字，文字由 `post_text` 按 UTF-16 码元
+//!    投字符消息。不要为文字新增键盘事件：`KEYEVENTF_UNICODE` 注入时系统对
+//!    U+002D、U+2010–2015、U+3000–303F、U+FF00–FFDF 只投递按下、不投递配对的抬起，
+//!    自己记按键状态的应用把下一个按下当成自动重复，重复前字、吞掉后字。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -31,8 +35,6 @@ pub enum Event {
     Wheel { delta: i32, horizontal: bool },
     /// 物理按键。
     Key { vk: u16, extended: bool, down: bool },
-    /// 一个 UTF-16 码元的文字注入。
-    Unicode { unit: u16, down: bool },
 }
 
 /// 一次滚动的格数对应的轮值。系统按它换算成实际行数。
@@ -44,6 +46,14 @@ pub const WHEEL_DELTA: i32 = 120;
 /// UIPI 会把这一批挡掉。调用方按这个数判执行事实，不按调用有没有报错判。
 pub trait Sink {
     fn send(&self, events: &[Event]) -> u32;
+}
+
+/// 把一批 UTF-16 码元作为字符消息投给一个窗口。
+///
+/// 返回真的进了目标消息队列的码元数。逐条判，**不要改成只看最后一条的返回值**：
+/// UIPI 拦截是逐条生效的。
+pub trait CharSink {
+    fn post(&self, window: i64, units: &[u16]) -> u32;
 }
 
 // ── 按下状态账 ──
@@ -327,48 +337,51 @@ pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
     out
 }
 
-/// 注入这个码元时系统不投递配对的抬起事件。
-///
-/// 实测（Windows 10 19045，2026-09-19，键盘布局 0x0804 与 0x0409 结果相同）：这几段里的
-/// 字符按 `KEYEVENTF_UNICODE` 注入时，目标窗口的消息循环只收到 `WM_KEYDOWN`，
-/// 配对的 `WM_KEYUP` 一条都不到；下一个字符的按下因此落在「这个键还按着」的状态上。
-/// `SendInput` 对这些事件全部返回已收下，发送侧看不出差别。
-///
-/// 改不掉：逐字符发、逐事件发、批间隔 1 ms 与 10 ms、抬起换扫描码、一个字符发两次三次
-/// 抬起、抬起改成不带 `KEYEVENTF_UNICODE` 的普通 `VK_PACKET` 键事件，实测全都照丢。
-/// 关掉输入法、把线程布局换成 0x0409 也照丢，所以它不是输入法在吃事件。
-///
-/// **按范围判，不按实测到的单字表**：范围里的 U+2012、U+3030、U+303D 实测是不丢的，
-/// 多判几个字符只是多走一次粘贴，少判一个就是把字打错。
-pub const fn keyup_dropped(unit: u16) -> bool {
-    matches!(
-        unit,
-        0x002D | 0x2010..=0x2015 | 0x3000..=0x303F | 0xFF00..=0xFFDF
-    )
+/// 一次文字投递的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    /// 真的进了目标消息队列的码元数。
+    pub sent: u32,
+    /// 这段文字一共有多少个码元。
+    pub requested: u32,
+    /// 中途停下来的原因。停下来时 `sent` 是已经投出去的那一段。
+    pub interrupted: Option<String>,
 }
 
-/// 这段文字要不要改走剪贴板粘贴。
+/// 把文字逐码元投给收件窗口。
 ///
-/// 一段里只要有一个码元的抬起会被吞掉就**整段**粘贴：按字符拆成注入与粘贴两截发，
-/// 两截之间光标位置由目标决定，顺序不再受控。
-pub fn needs_paste(text: &str) -> bool {
-    text.encode_utf16().any(keyup_dropped)
-}
-
-/// 一批 UTF-16 码元的事件序列。每个码元一对按下抬起。
-pub fn unit_events(units: &[u16]) -> Vec<Event> {
-    let mut events = Vec::with_capacity(units.len() * 2);
-    for unit in units {
-        events.push(Event::Unicode {
-            unit: *unit,
-            down: true,
-        });
-        events.push(Event::Unicode {
-            unit: *unit,
-            down: false,
-        });
+/// `target` 在每一批之前重新求收件窗口，返回 `Err` 即停止投递并把原因带回；
+/// 前台核对与焦点归属都在它里面判。批与批之间因此至少重核一次，一批之内不重核：
+/// 一个代理对的两个码元不能被中途停在中间，那不是任何字符。
+pub fn post_text(
+    chars: &dyn CharSink,
+    text: &str,
+    max_units: usize,
+    target: &dyn Fn() -> Result<i64, String>,
+) -> Delivered {
+    let batches = text_batches(text, max_units);
+    let requested = u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX);
+    let mut sent = 0u32;
+    let mut interrupted = None;
+    for batch in &batches {
+        let window = match target() {
+            Ok(window) => window,
+            Err(reason) => {
+                interrupted = Some(reason);
+                break;
+            }
+        };
+        let got = chars.post(window, batch);
+        sent += got;
+        if got < u32::try_from(batch.len()).unwrap_or(u32::MAX) {
+            break;
+        }
     }
-    events
+    Delivered {
+        sent,
+        requested,
+        interrupted,
+    }
 }
 
 /// 滚动方向与格数 → 轮值与轴。
@@ -405,10 +418,14 @@ pub fn drag_path(from: ScreenPoint, to: ScreenPoint, steps: u32) -> Vec<ScreenPo
 
 #[cfg(windows)]
 mod os {
-    use super::{Event, Sink};
+    use std::ffi::c_void;
+
+    use super::{CharSink, Event, Sink};
+    use ::windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CHAR};
     use ::windows::Win32::UI::Input::KeyboardAndMouse::{
         MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-        KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC,
+        KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
         MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT,
@@ -429,6 +446,39 @@ mod os {
             let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
             // SAFETY: 切片与结构体尺寸都由本函数构造，调用期间不会被改动。
             unsafe { SendInput(&inputs, size) }
+        }
+    }
+
+    /// 真实文字投递口。整个进程只有这一处投 `WM_CHAR`。
+    pub struct SystemCharSink;
+
+    /// `WM_CHAR` 的 lParam：重复次数 1，扫描码 0，非扩展键。
+    ///
+    /// 不要改成从虚拟键码算出来的扫描码：这一条消息不对应任何一次按键，编一个扫描码
+    /// 出来会让按扫描码分派的目标收到一个不存在的键。
+    const CHAR_LPARAM: isize = 1;
+
+    impl CharSink for SystemCharSink {
+        fn post(&self, window: i64, units: &[u16]) -> u32 {
+            let hwnd = HWND(window as *mut c_void);
+            let mut sent = 0u32;
+            for unit in units {
+                // SAFETY: 句柄由调用方核对过归属，消息与参数都是常量形状。
+                let ok = unsafe {
+                    PostMessageW(
+                        Some(hwnd),
+                        WM_CHAR,
+                        WPARAM(*unit as usize),
+                        LPARAM(CHAR_LPARAM),
+                    )
+                }
+                .is_ok();
+                if !ok {
+                    break;
+                }
+                sent += 1;
+            }
+            sent
         }
     }
 
@@ -509,20 +559,12 @@ mod os {
                 }
                 keyboard(vk, scan_of(vk), flags)
             }
-            Event::Unicode { unit, down } => {
-                let mut flags = KEYEVENTF_UNICODE;
-                if !down {
-                    flags |= KEYEVENTF_KEYUP;
-                }
-                // 文字注入的虚拟键码必须是 0：给了键码系统就按那个键处理，注入的字符被丢掉。
-                keyboard(0, unit, flags)
-            }
         }
     }
 }
 
 #[cfg(windows)]
-pub use os::SystemSink;
+pub use os::{SystemCharSink, SystemSink};
 
 #[cfg(test)]
 mod tests {
@@ -660,59 +702,135 @@ mod tests {
         assert!(text_batches("", 4).is_empty());
     }
 
+    /// 单测用的文字投递记录器。它不向任何窗口投消息。
+    #[derive(Default)]
+    struct CharRecorder {
+        posted: Mutex<Vec<(i64, Vec<u16>)>>,
+        /// 每次调用只接受这么多个码元。默认全接受，用来构造 UIPI 拦截的形状。
+        accept: Option<u32>,
+    }
+
+    impl CharSink for CharRecorder {
+        fn post(&self, window: i64, units: &[u16]) -> u32 {
+            let count = u32::try_from(units.len()).unwrap_or(u32::MAX);
+            let taken = self.accept.map_or(count, |limit| limit.min(count));
+            if let Ok(mut log) = self.posted.lock() {
+                log.push((window, units[..taken as usize].to_vec()));
+            }
+            taken
+        }
+    }
+
+    impl CharRecorder {
+        /// 投出去的全部码元，按投递顺序接在一起。
+        fn units(&self) -> Vec<u16> {
+            self.posted
+                .lock()
+                .expect("记录器锁")
+                .iter()
+                .flat_map(|(_, units)| units.clone())
+                .collect()
+        }
+        fn windows(&self) -> Vec<i64> {
+            self.posted
+                .lock()
+                .expect("记录器锁")
+                .iter()
+                .map(|(window, _)| *window)
+                .collect()
+        }
+    }
+
+    fn to(window: i64) -> impl Fn() -> Result<i64, String> {
+        move || Ok(window)
+    }
+
+    /// 文字按码元逐条投给收件窗口，顺序与原文一致，一个码元一条消息。
     #[test]
-    fn each_code_unit_becomes_a_press_and_a_release() {
+    fn text_is_delivered_one_code_unit_at_a_time_in_order() {
+        let chars = CharRecorder::default();
+        let out = post_text(&chars, "哦哦行，abc", 24, &to(77));
+        assert_eq!(out.sent, 7);
+        assert_eq!(out.requested, 7);
+        assert_eq!(out.interrupted, None);
         assert_eq!(
-            unit_events(&[0x41, 0x42]),
-            vec![
-                Event::Unicode {
-                    unit: 0x41,
-                    down: true
-                },
-                Event::Unicode {
-                    unit: 0x41,
-                    down: false
-                },
-                Event::Unicode {
-                    unit: 0x42,
-                    down: true
-                },
-                Event::Unicode {
-                    unit: 0x42,
-                    down: false
-                },
-            ]
+            chars.units(),
+            vec![0x54E6, 0x54E6, 0x884C, 0xFF0C, 0x0061, 0x0062, 0x0063]
         );
+        assert_eq!(chars.windows(), vec![77]);
     }
 
-    /// 抬起会被吞掉的那几段按范围判，段外的字符不受影响。
+    /// 代理对的两个码元在同一批里投出去，批边界不会把它们分开。
     #[test]
-    fn the_characters_whose_key_up_never_arrives_are_matched_by_range() {
-        // 实测丢抬起的：半角连字符、破折号、CJK 标点、全角与半角形。
-        for unit in [0x002D, 0x2010, 0x2014, 0x3000, 0x3001, 0x300C, 0xFF0C, 0xFF01, 0xFF9F] {
-            assert!(keyup_dropped(unit), "U+{unit:04X} 应当判为丢抬起");
-        }
-        // 实测不丢的：ASCII 字母数字与其余标点、汉字、假名、U+FFE0 之后的那一段。
-        for unit in [
-            0x0020, 0x002C, 0x002E, 0x0041, 0x0061, 0x4E00, 0x54E6, 0x3042, 0x30A2, 0xAC00, 0x2026,
-            0xFFE0, 0xFFE5, 0xFFEF,
-        ] {
-            assert!(!keyup_dropped(unit), "U+{unit:04X} 不该判为丢抬起");
+    fn a_surrogate_pair_is_delivered_inside_one_batch() {
+        let chars = CharRecorder::default();
+        let out = post_text(&chars, "👍👍", 3, &to(9));
+        assert_eq!(out.sent, 4);
+        assert_eq!(out.requested, 4);
+        let log = chars.posted.lock().expect("记录器锁").clone();
+        assert_eq!(log.len(), 2);
+        for (_, units) in &log {
+            assert_eq!(units.len(), 2);
+            assert!((0xD800..0xDC00).contains(&units[0]));
+            assert!((0xDC00..0xE000).contains(&units[1]));
         }
     }
 
-    /// 一段里有一个码元丢抬起就整段粘贴，代理对按码元判。
+    /// 收件窗口每一批之前重新求：焦点在批之间换到别的控件时，后面的码元跟着走。
     #[test]
-    fn text_goes_to_the_clipboard_when_any_one_unit_loses_its_key_up() {
-        assert!(!needs_paste("hello world"));
-        assert!(!needs_paste("张三 abc"));
-        assert!(!needs_paste(""));
-        assert!(needs_paste("哦哦行，那你先用这个号跑吧"));
-        // 半角连字符同样丢抬起，普通英文也可能走粘贴。
-        assert!(needs_paste("hello-world"));
-        // 代理对的两个码元都在补充平面，不在任何一段里。
-        assert!(!needs_paste("好的👍"));
-        assert!(needs_paste("好的👍。"));
+    fn the_receiving_window_is_resolved_once_per_batch() {
+        let chars = CharRecorder::default();
+        let calls = Mutex::new(0);
+        let out = post_text(&chars, "abcd", 2, &|| {
+            let mut n = calls.lock().expect("计数锁");
+            *n += 1;
+            Ok(if *n == 1 { 11 } else { 22 })
+        });
+        assert_eq!(out.sent, 4);
+        assert_eq!(chars.windows(), vec![11, 22]);
+    }
+
+    /// 收件窗口求不到时停下来，已经投出去的那一段如实带回，后面的不再投。
+    #[test]
+    fn delivery_stops_when_the_receiving_window_is_gone() {
+        let chars = CharRecorder::default();
+        let calls = Mutex::new(0);
+        let out = post_text(&chars, "abcd", 2, &|| {
+            let mut n = calls.lock().expect("计数锁");
+            *n += 1;
+            if *n == 1 {
+                Ok(5)
+            } else {
+                Err("not_foreground: 3".to_owned())
+            }
+        });
+        assert_eq!(out.sent, 2);
+        assert_eq!(out.requested, 4);
+        assert_eq!(out.interrupted.as_deref(), Some("not_foreground: 3"));
+        assert_eq!(chars.units(), vec![0x0061, 0x0062]);
+    }
+
+    /// 消息被拦下时停在那一条，已投数小于请求数。
+    #[test]
+    fn a_blocked_message_stops_the_rest_of_the_text() {
+        let chars = CharRecorder {
+            accept: Some(1),
+            ..CharRecorder::default()
+        };
+        let out = post_text(&chars, "abcd", 24, &to(1));
+        assert_eq!(out.sent, 1);
+        assert_eq!(out.requested, 4);
+        assert_eq!(out.interrupted, None);
+    }
+
+    /// 空文字一条消息都不投。
+    #[test]
+    fn empty_text_posts_nothing() {
+        let chars = CharRecorder::default();
+        let out = post_text(&chars, "", 24, &to(1));
+        assert_eq!(out.sent, 0);
+        assert_eq!(out.requested, 0);
+        assert!(chars.units().is_empty());
     }
 
     #[test]

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 5;
+pub const WORKER_PROTOCOL_VERSION: u32 = 6;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
 const FORWARDED_OPS: [&str; 6] = [
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&worker).unwrap(),
             json!({
-                "v": 5, "id": "w1", "deadline": 1_700_000_000_000i64,
+                "v": 6, "id": "w1", "deadline": 1_700_000_000_000i64,
                 "hostId": "h1", "hostEpoch": 2, "connectionEpoch": 5,
                 "foreground": false, "op": "read_tree",
                 "params": {"window": 77, "maxNodes": 500, "maxDepth": 12, "timeBudgetMs": 1500}

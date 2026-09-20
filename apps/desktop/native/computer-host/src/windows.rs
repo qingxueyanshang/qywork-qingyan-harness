@@ -84,7 +84,7 @@ use crate::protocol::{
     ActionEvidence, ActionSpec, Bounds,
     range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
     ScrollState, Seen, Select,
-    SelectionState, Text, TextDelivery, TextSelection, ToggleState, Tree, Wait, WaitUntil,
+    SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil,
     WindowInfo,
 };
 
@@ -151,8 +151,6 @@ pub struct Outcome {
     pub returned: bool,
     /// `returned` 为假时目标进程此刻的顶层窗口，纯 Win32 读出，不进 UIA。
     pub windows: Vec<BlockingWindow>,
-    /// 文字输入这一次走的投递方式。只有 `type_text` 填，别的动作缺席。
-    pub text: Option<TextDelivery>,
 }
 
 impl Outcome {
@@ -162,15 +160,6 @@ impl Outcome {
             reason,
             returned: true,
             windows: Vec::new(),
-            text: None,
-        }
-    }
-
-    /// 同 `returned`，再记下这次文字输入的投递方式。
-    pub fn typed(dispatch: Dispatch, reason: Option<String>, text: TextDelivery) -> Self {
-        Self {
-            text: Some(text),
-            ..Self::returned(dispatch, reason)
         }
     }
 }
@@ -696,7 +685,7 @@ impl Backend {
         let anchor = match point {
             Some(point) => point,
             None => {
-                let located = located.ok_or("missing_target: 指针动作要给控件或屏幕落点")?;
+                let located = located.ok_or("missing_target: 指针动作没有落点")?;
                 box_center(window, &located.element)?
             }
         };
@@ -1108,7 +1097,7 @@ pub fn box_center(window: i64, element: &IUIAutomationElement) -> Result<ScreenP
         .map_err(|f| f.into_reason(window))?;
     bounding_box(bounds)
         .map(|rect| rect.center())
-        .ok_or_else(|| "no_bounds: 这个控件没有可视位置，指不出落点".to_owned())
+        .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
 }
 
 /// UIA 的包围盒转成图像几何那一套的矩形。
@@ -2047,7 +2036,7 @@ fn release_off_thread<T: 'static>(value: T) {
 pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
     let Some(rx) = spawn_call(deferred) else {
         return Attempt::Refused(format!(
-            "action_calls_exhausted: 已有 {MAX_PENDING_CALLS} 次动作调用没有返回，这一次没有发出"
+            "action_calls_exhausted: {MAX_PENDING_CALLS}"
         ));
     };
     count_call();
@@ -2084,7 +2073,6 @@ pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
                 reason,
                 returned: false,
                 windows: watch.blocking(),
-                text: None,
             });
         }
         std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));
@@ -2107,7 +2095,7 @@ fn perform(
     }
     // 后台动作一律按控件执行，屏幕落点对它们没有意义；准入判定已经拦下这种组合。
     let Some(element) = element else {
-        return Attempt::Refused("missing_target: 这个动作要给控件".to_owned());
+        return Attempt::Refused("missing_target: 这个动作只能按控件执行".to_owned());
     };
     if let ActionSpec::SetToggle { state } = action {
         return set_toggle(window, element, *state);
@@ -2166,7 +2154,7 @@ fn plan(
             // 越界不夹到边上：夹出来的值看着合法，而它不是调用方要的那一个。
             // provider 给不出有限边界时这一关判不了，交给它自己拒。
             if min.is_finite() && max.is_finite() && (*value < min || *value > max) {
-                return Err(format!("out_of_range: 允许 {min} 到 {max}，给的是 {value}"));
+                return Err(format!("out_of_range: {value}，允许 {min} 到 {max}"));
             }
             let target = *value;
             Ok(defer(move || unsafe { pattern.SetValue(target) }))
@@ -2190,7 +2178,7 @@ fn plan(
             // 单选容器上增选与取消都做不到：调用会失败，而失败按 unknown 记，
             // 调用方分不出「容器本来就不支持」与「可能已经改了选择」。
             if !multi_select(window, &pattern)? {
-                return Err("single_selection_only: 这个容器一次只能选一项，用 select".to_owned());
+                return Err("single_selection_only: 这个容器一次只能选一项 · 改用 select".to_owned());
             }
             let add = matches!(action, ActionSpec::AddToSelection);
             Ok(defer(move || unsafe {
@@ -2213,7 +2201,7 @@ fn plan(
                 .map_err(uia("读展开状态"))
                 .map_err(|f| f.into_reason(window))?;
             if state.0 == ExpandCollapseState_LeafNode.0 {
-                return Err("leaf_node: 这个控件没有可展开的内容".to_owned());
+                return Err("leaf_node: 没有可展开的内容".to_owned());
             }
             let expand = matches!(action, ActionSpec::Expand);
             let already = if expand {
@@ -2223,7 +2211,7 @@ fn plan(
             };
             if already {
                 return Err(format!(
-                    "already_in_state: 这个控件已经是 {}",
+                    "already_in_state: {}",
                     expand_name(state.0)
                 ));
             }
@@ -2252,7 +2240,7 @@ fn plan(
                 .map_err(|f| f.into_reason(window))?
                 .as_bool()
             {
-                return Err("not_scrollable: 这个方向上滚不动".to_owned());
+                return Err("not_scrollable: 这个方向滚不动".to_owned());
             }
             let (horizontal, vertical) = scroll_amounts(*direction, *step);
             Ok(defer(move || unsafe {
@@ -2279,7 +2267,7 @@ fn plan(
             .map_err(uia("在容器里找项"))
             .map_err(|f| f.into_reason(window))?;
             let Some(item) = found else {
-                return Err(format!("item_not_found: 容器里没有名为 {name} 的项"));
+                return Err(format!("item_not_found: {name}"));
             };
             let virtualized: IUIAutomationVirtualizedItemPattern =
                 current_pattern(window, &item, UIA_VirtualizedItemPatternId, "VirtualizedItemPattern")?;
@@ -2293,7 +2281,7 @@ fn plan(
                 .map_err(uia("读选区支持"))
                 .map_err(|f| f.into_reason(window))?;
             if support.0 == SupportedTextSelection_None.0 {
-                return Err("selection_unsupported: 这个控件不支持设选区".to_owned());
+                return Err("selection_unsupported: 这个控件不支持选区".to_owned());
             }
             let range = sub_range(window, &pattern, *start, *length)?;
             Ok(defer(move || unsafe { range.Select() }))

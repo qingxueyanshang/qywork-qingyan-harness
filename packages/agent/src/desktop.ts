@@ -25,7 +25,6 @@ import type {
   DesktopRect,
   DesktopScrollState,
   DesktopSelectionState,
-  DesktopTextDelivery,
   DesktopTextSelection,
   DesktopToggleState,
   DesktopWaitUntil,
@@ -211,14 +210,6 @@ export interface DesktopActReceipt {
   actionId: string
   /** 拒绝原因码，或动作调用返回的失败原文。 */
   reason?: string
-  /**
-   * `type_text` 这一次实际用的投递方式。别的动作缺席。
-   *
-   * `paste` 表示这次输入动过剪贴板，`clipboardRestored` 说的是粘贴前保存的内容有没有
-   * 放回去；为假时剪贴板里留着本次输入的文字，调用方要把这件事说给用户。
-   */
-  delivery?: DesktopTextDelivery
-  clipboardRestored?: boolean
   /**
    * 动作调用尚未返回，因此**没有重读目标窗口**——那一刻目标应用的 UI 线程还卡在这次
    * 调用里，任何读取都会等到超时。这是目标进程此刻的顶层窗口，`appeared` 为真的那些是

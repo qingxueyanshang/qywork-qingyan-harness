@@ -16,7 +16,6 @@
 #[cfg(windows)]
 mod capture;
 #[cfg(windows)]
-mod clipboard;
 #[cfg(windows)]
 mod foreground;
 mod geometry;
@@ -445,10 +444,6 @@ fn act(
         windows::Attempt::Called(outcome) => {
             let mut response = Response::acted(id, outcome.dispatch, observed);
             response.reason = outcome.reason;
-            if let Some(text) = outcome.text {
-                response.delivery = Some(text.method);
-                response.clipboard_restored = text.clipboard_restored;
-            }
             // 调用没返回时这一格替掉那次必然超时的重读，见 `Outcome::returned`。
             if !outcome.returned {
                 response.blocking = Some(outcome.windows);

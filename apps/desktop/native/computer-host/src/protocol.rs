@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::{Geometry, ScreenPoint, ScreenRect};
 
 /// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -450,7 +450,7 @@ impl ActionSpec {
 
 /// 前台模式没开时的拒绝原因。工具层与 worker 用同一个码。
 pub const FOREGROUND_DISABLED: &str =
-    "foreground_disabled: 前台操作没有启用，这次请求没有派发，桌面没有被动过";
+    "foreground_disabled: 前台操作未启用";
 
 /// 请求动作。`params` 一律显式给出，空参数写 `{}`。
 #[derive(Debug, Deserialize)]
@@ -572,55 +572,12 @@ pub enum Dispatch {
     Unknown,
 }
 
-/// `type_text` 实际用的投递方式。别的动作缺席。
-///
-/// 两种方式由文字内容定，不按应用分：`input::needs_paste` 判这段里有没有抬起会被系统
-/// 吞掉的码元，有就整段走粘贴。调用方按它判断这次输入有没有动过剪贴板。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Delivery {
-    /// `KEYEVENTF_UNICODE` 逐码元注入。
-    Inject,
-    /// 写剪贴板再发 Ctrl+V。
-    Paste,
-}
-
-/// 一次文字输入的投递事实。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextDelivery {
-    pub method: Delivery,
-    /// 走粘贴时粘贴前保存的剪贴板内容有没有放回去。注入时缺席。
-    pub clipboard_restored: Option<bool>,
-}
-
-impl TextDelivery {
-    pub const fn injected() -> Self {
-        Self {
-            method: Delivery::Inject,
-            clipboard_restored: None,
-        }
-    }
-
-    pub const fn pasted(restored: bool) -> Self {
-        Self {
-            method: Delivery::Paste,
-            clipboard_restored: Some(restored),
-        }
-    }
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub v: u32,
     pub id: String,
     pub dispatch: Dispatch,
-    /// 文字输入的投递方式。只有 `type_text` 有。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<Delivery>,
-    /// 走粘贴时粘贴前保存的剪贴板内容有没有放回去。注入时缺席。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clipboard_restored: Option<bool>,
     /// 拒绝原因码，或动作调用返回的失败原文。有 `reason` 且 `dispatch` 是 `unknown` 时，
     /// 表示调用已经发出而失败，不是没有执行。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -649,8 +606,6 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
-            delivery: None,
-            clipboard_restored: None,
             reason: Some(reason),
             observation: None,
             observation_error: None,
@@ -665,8 +620,6 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch: Dispatch::NotDispatched,
-            delivery: None,
-            clipboard_restored: None,
             reason: None,
             observation: Some(observation),
             observation_error: None,
@@ -685,8 +638,6 @@ impl Response {
             v: PROTOCOL_VERSION,
             id,
             dispatch,
-            delivery: None,
-            clipboard_restored: None,
             reason: None,
             observation,
             observation_error,
@@ -1335,7 +1286,7 @@ mod tests {
     fn invoke_request(deadline: Option<i64>) -> Request {
         let deadline = deadline.map_or("null".to_owned(), |d| d.to_string());
         parse(&format!(
-            r#"{{"v":5,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
+            r#"{{"v":6,"id":"r1","deadline":{deadline},"hostId":"h1","hostEpoch":2,
                 "connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0.1#42.7",
                 "action":{{"kind":"invoke"}},
@@ -1345,7 +1296,7 @@ mod tests {
 
     fn handshake_request(host_id: &str, host_epoch: u64, connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":5,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
+            r#"{{"v":6,"id":"h","hostId":"{host_id}","hostEpoch":{host_epoch},
                 "connectionEpoch":{connection_epoch},"op":"handshake",
                 "params":{{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}}}"#
         ))
@@ -1353,14 +1304,14 @@ mod tests {
 
     fn bind_request(connection_epoch: u64) -> Request {
         parse(&format!(
-            r#"{{"v":5,"id":"b","hostId":"h1","hostEpoch":2,
+            r#"{{"v":6,"id":"b","hostId":"h1","hostEpoch":2,
                 "connectionEpoch":{connection_epoch},"op":"bind_connection","params":{{}}}}"#
         ))
     }
 
     fn act_params(action: &str) -> Request {
         parse(&format!(
-            r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"act","params":{{"window":66,"ref":"w.0#7","action":{action},
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
@@ -1376,7 +1327,7 @@ mod tests {
     #[test]
     fn request_decodes_op_and_params() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1402,7 +1353,7 @@ mod tests {
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"maxNodes":500,"maxDepth":12,
                 "timeBudgetMs":1500}}"#,
         );
@@ -1421,7 +1372,7 @@ mod tests {
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
                 "nameContains":"保存","includeValue":false,"includeState":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
@@ -1446,7 +1397,7 @@ mod tests {
     #[test]
     fn wait_decodes_condition_and_two_bounds() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"wait","params":{"window":66,"until":"value","ref":"w.0#7",
                 "value":"张三","pollMs":250,"timeoutMs":9000,
                 "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
@@ -1471,7 +1422,7 @@ mod tests {
 
     #[test]
     fn op_without_params_still_requires_an_empty_object() {
-        const HEAD: &str = r#""v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
+        const HEAD: &str = r#""v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5"#;
         assert!(matches!(
             parse(&format!(r#"{{{HEAD},"op":"list_windows","params":{{}}}}"#)).op,
             Op::ListWindows {}
@@ -1484,7 +1435,7 @@ mod tests {
     #[test]
     fn unknown_op_does_not_decode_into_a_default() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"screenshot","params":{}}"#
         )
         .is_err());
@@ -1494,7 +1445,7 @@ mod tests {
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_element","params":{"window":66,"ref":"w.0#7"}}"#
         )
         .is_err());
@@ -1507,7 +1458,7 @@ mod tests {
                 .expect("回执应当序列化成功");
         assert_eq!(
             json,
-            r#"{"v":5,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
+            r#"{"v":6,"id":"r1","dispatch":"not_dispatched","reason":"read_only"}"#
         );
     }
 
@@ -1795,7 +1746,7 @@ mod tests {
         ] {
             assert!(
                 serde_json::from_str::<Request>(&format!(
-                    r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                    r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                         "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
                         "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
                 ))
@@ -1850,7 +1801,7 @@ mod tests {
     #[test]
     fn read_text_is_its_own_read_only_op() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "op":"read_text","params":{"window":66,"ref":"w.3#9","maxChars":2000}}"#,
         );
         assert!(matches!(
@@ -1960,7 +1911,7 @@ mod tests {
             Ok(())
         );
         assert!(serde_json::from_str::<Request>(
-            r#"{"v":5,"id":"h","connectionEpoch":5,
+            r#"{"v":6,"id":"h","connectionEpoch":5,
                 "op":"handshake","params":{"connectionTimeoutMs":2000,"transactionTimeoutMs":2000}}"#
         )
         .is_err());
@@ -2284,7 +2235,7 @@ mod tests {
         ] {
             assert!(
                 serde_json::from_str::<Request>(&format!(
-                    r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                    r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                         "op":"act","params":{{"window":66,"ref":"w.0#7","action":{bad},
                         "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
                 ))
@@ -2296,7 +2247,7 @@ mod tests {
 
     fn act_request(action: &str, target: &str, foreground: bool) -> Request {
         parse(&format!(
-            r#"{{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":{foreground},"op":"act","params":{{"window":66,{target}
                 "action":{action},"maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}}}"#
         ))
@@ -2371,7 +2322,7 @@ mod tests {
     fn the_foreground_flag_defaults_to_off() {
         assert!(!invoke_request(None).foreground);
         let on: Request = serde_json::from_str(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":true,"op":"list_windows","params":{}}"#,
         )
         .expect("请求应当解析成功");
@@ -2382,7 +2333,7 @@ mod tests {
     #[test]
     fn an_action_can_target_a_screen_point_instead_of_a_control() {
         let req = parse(
-            r#"{"v":5,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+            r#"{"v":6,"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
                 "foreground":true,"op":"act","params":{"window":66,
                 "point":{"x":-1800,"y":240},"expectGeneration":"100,100,800,600@96#7",
                 "action":{"kind":"click","button":"left","count":1},
@@ -2448,7 +2399,7 @@ mod tests {
             }],
         }))
         .expect("通报应当序列化成功");
-        assert_eq!(notice["v"], 5);
+        assert_eq!(notice["v"], PROTOCOL_VERSION);
         assert_eq!(notice["input"]["buttons"][0], "left");
         assert_eq!(notice["input"]["keys"][0], json_of(r#"{"vk":162,"extended":false}"#));
         assert!(notice.get("id").is_none());

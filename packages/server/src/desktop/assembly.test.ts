@@ -304,7 +304,6 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   // 结果未知如实走到模型手里：这一条不能被读成「没执行」，也不能被读成成功。
   const body = bodies.at(-1) ?? '{}'
   expect(body).toContain('结果未知')
-  expect(body).toContain('不要重放')
 })
 
 /** 序列用的控件表：三个各自可动的后台控件，够走三步。 */
@@ -417,8 +416,7 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
   expect(bodies).toHaveLength(3)
   const body = bodies.at(-1) ?? '{}'
   expect(body).toContain('结果未知')
-  expect(body).toContain('不要重放')
-  expect(body).toContain('未执行：3 invoke')
+  expect(body).toContain('未执行 3 invoke')
   await settleCancel(seen)
 })
 

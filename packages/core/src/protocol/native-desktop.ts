@@ -91,19 +91,6 @@ export type DesktopDispatch =
   | 'unknown'
 
 /**
- * `type_text` 实际用的投递方式。
- *
- * 由文字内容定，不按应用分：有些码元按 `KEYEVENTF_UNICODE` 注入时系统不投递配对的抬起
- * 事件，目标因此看到同一个虚拟键连续按下，按自动重复处理的目标会重复前一个字符并丢掉
- * 这一个。这类文字整段改走剪贴板粘贴。
- */
-export type DesktopTextDelivery =
-  /** 逐码元键盘注入。 */
-  | 'inject'
-  /** 写剪贴板再发 Ctrl+V。 */
-  | 'paste'
-
-/**
  * 宿主实现了的动作。
  *
  * 前十三种绑定一个 UIA 控件模式，经模式调用发出：`invoke` 是 InvokePattern，
@@ -688,10 +675,6 @@ export interface DesktopResultFrame {
   dispatch: DesktopDispatch
   /** 拒绝原因码，或动作调用返回的失败原文。 */
   reason?: string
-  /** 文字输入的投递方式。只有 `type_text` 有。 */
-  delivery?: DesktopTextDelivery
-  /** 走粘贴时粘贴前保存的剪贴板内容有没有放回去。注入时缺席。 */
-  clipboardRestored?: boolean
   observation?: DesktopObservation
   observationError?: string
   /**

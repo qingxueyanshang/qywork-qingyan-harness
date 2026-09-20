@@ -233,7 +233,6 @@ export {
   type DesktopSelectionState,
   type DesktopTarget,
   type DesktopTextBody,
-  type DesktopTextDelivery,
   type DesktopTextSelection,
   type DesktopToggleState,
   type DesktopTreeBody,

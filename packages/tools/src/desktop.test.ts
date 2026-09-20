@@ -1117,7 +1117,8 @@ describe('三态回执与动作后观察', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('不要重放')
+    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('provider 无响应')
     expect(r.data).toMatchObject({ dispatch: 'unknown', actionId: 'da_3' })
   })
 
@@ -1170,7 +1171,7 @@ describe('三态回执与动作后观察', () => {
     expect(r.status).toBe('success')
     expect(r.message).toContain('dw_9')
     expect(r.message).toContain('另存为')
-    expect(r.message).toContain('desktop_observe')
+    expect(r.message).toContain('调用未返回')
     // 没出现过的那个窗口不喧宾夺主：只点名新出现的。
     expect(r.message).not.toContain('dw_1 fixture.exe 夹具')
     expect(r.data).toMatchObject({ dispatch: 'submitted' })
@@ -1194,9 +1195,9 @@ describe('三态回执与动作后观察', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('不要重放')
+    expect(r.message).toContain('结果未知')
     // 没有新窗口时如实列当前窗口，不硬说有新窗口。
-    expect(r.message).toContain('当前的窗口')
+    expect(r.message).toContain('当前窗口')
   })
 
   /** 端口自己声明的执行前拒绝优先于「调进去过」这一判据。 */
@@ -1957,7 +1958,7 @@ describe('前台动作', () => {
   /**
    * `type_text` 之后读回来的值里没有这段文字时不许报成功。
    *
-   * 派发事实与读回是两件事：`SendInput` 收下了全部事件只说明事件进了系统输入队列，
+   * 派发事实与读回是两件事：投递口收下了全部字符只说明它们进了目标的消息队列，
    * 目标控件里落成什么字要按动作后的重读判。少了这一条，一次把
    * 「哦哦行，那你先用这个号跑吧」打成「哦哦行，，先用这个号跑吧」的输入在回执里
    * 与打对了完全一样。
@@ -1993,7 +1994,6 @@ describe('前台动作', () => {
       errorKind: 'desktop_readback_mismatch',
     })
     expect(r.message).toContain('读回不一致')
-    expect(r.message).toContain('不要重发同一段')
     // 控件此刻的内容由观察那一行给，读回这句不再印一遍。
     expect(r.message).toContain('"哦哦行，，先用这个号跑吧"')
   })
@@ -2003,76 +2003,40 @@ describe('前台动作', () => {
     const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
     expect(r.status).toBe('success')
     expect(r.message).not.toContain('读回不一致')
-    expect(r.message).not.toContain('取图核对')
+    expect(r.message).not.toContain('读不回控件值')
   })
 
-  test('type_text 的目标读不回控件值时回执指出改用取图核对', async () => {
+  test('type_text 的目标读不回控件值时回执如实说读不回', async () => {
     const { port } = typedPort(null)
     const r = await 输入(port, '张三')
     expect(r.status).toBe('success')
-    expect(r.message).toContain('取图核对')
+    expect(r.message).toContain('读不回控件值')
     expect(r.message).not.toContain('读回不一致')
   })
 
   /**
-   * 走粘贴的那一次动过用户的剪贴板，回执要说得出投递方式与剪贴板的去向。
-   *
-   * 少了这一条，模型看到的与逐键注入完全一样，既不知道剪贴板被改过，也无从告诉用户。
+   * 全角标点不再让文字改道：请求原样发下去，回执里没有第二种投递，也不提剪贴板。
    */
-  function pastedPort(over: { clipboardRestored: boolean; reason?: string }) {
-    return foregroundPort({
-      act: async () => ({
-        dispatch: 'submitted' as const,
-        actionId: 'da_10',
-        delivery: 'paste' as const,
-        clipboardRestored: over.clipboardRestored,
-        ...(over.reason === undefined ? {} : { reason: over.reason }),
-        observation: snapshot({
-          observationId: 'do_2',
-          elements: [{ ...焦点框, value: '哦哦行，那你先用这个号跑吧' }],
-        }),
-      }),
-    })
-  }
-
-  test('走粘贴且剪贴板已恢复时，回执说明投递方式', async () => {
-    const { port } = pastedPort({ clipboardRestored: true })
-    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
-    expect(r.status).toBe('success')
-    expect(r.message).toContain('改走了剪贴板粘贴')
-    expect(r.message).toContain('原剪贴板内容已恢复')
-    expect(r.data).toMatchObject({ delivery: 'paste', clipboardRestored: true })
-  })
-
-  test('剪贴板没有恢复时，回执说出里面现在是本次输入的文字', async () => {
-    const { port } = pastedPort({
-      clipboardRestored: false,
-      reason: '这期间剪贴板被别的程序改过，没有恢复，里面现在是本次粘贴的文字',
-    })
-    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
-    expect(r.status).toBe('success')
-    expect(r.message).toContain('改走了剪贴板粘贴')
-    expect(r.message).not.toContain('原剪贴板内容已恢复')
-    expect(r.message).toContain('里面现在是本次粘贴的文字')
-    expect(r.data).toMatchObject({ delivery: 'paste', clipboardRestored: false })
-  })
-
-  test('走注入时回执不提剪贴板', async () => {
+  test('含全角标点的文字按原文发一次，回执不提剪贴板', async () => {
+    const seen: unknown[] = []
     const { port } = foregroundPort({
-      act: async () => ({
-        dispatch: 'submitted' as const,
-        actionId: 'da_11',
-        delivery: 'inject' as const,
-        observation: snapshot({
-          observationId: 'do_2',
-          elements: [{ ...焦点框, value: '张三 abc' }],
-        }),
-      }),
+      act: async (input) => {
+        seen.push(input.action)
+        return {
+          dispatch: 'submitted' as const,
+          actionId: 'da_10',
+          observation: snapshot({
+            observationId: 'do_2',
+            elements: [{ ...焦点框, value: '哦哦行，那你先用这个号跑吧' }],
+          }),
+        }
+      },
     })
-    const r = await 输入(port, '张三 abc')
+    const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
     expect(r.status).toBe('success')
     expect(r.message).not.toContain('剪贴板')
-    expect(r.data).toMatchObject({ delivery: 'inject' })
+    expect(r.data).not.toHaveProperty('delivery')
+    expect(seen).toEqual([{ kind: 'type_text', text: '哦哦行，那你先用这个号跑吧' }])
   })
 
   test('读回只管 type_text，别的动作不按输入文字判', async () => {
@@ -2090,7 +2054,7 @@ describe('前台动作', () => {
     )
     expect(r.status).toBe('success')
     expect(r.message).not.toContain('读回不一致')
-    expect(r.message).not.toContain('取图核对')
+    expect(r.message).not.toContain('读不回控件值')
   })
 
   test('键盘之外的动作不点名控件仍然要求目标', async () => {
@@ -2101,7 +2065,7 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
-    expect(r.message).toContain('给 ref、automationId 或 name')
+    expect(r.message).toContain('ref、automationId 或 name 给一个')
     expect(calls).toEqual([])
   })
 
@@ -2154,14 +2118,13 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(r.message).toContain('这个窗口没有暴露可操作的控件')
-    expect(r.message).toContain('imageX')
-    expect(r.message).toContain('type_text')
-    // 前台开着（表里有 foreground），不该再说「要用户去设置里打开」。
-    expect(r.message).not.toContain('前台操作此刻没有启用')
+    expect(r.message).toContain('无可操作控件')
+    expect(r.message).toContain('改用 capture 取图')
+    // 前台开着（表里有 foreground），不该再说它没启用。
+    expect(r.message).not.toContain('前台操作未启用')
   })
 
-  test('前台操作关着时，同一句话补上要用户去设置里打开', async () => {
+  test('前台操作关着时，同一行补上它没启用', async () => {
     const 后台窗口: DesktopElement = { ...窗口, actions: [] }
     const 画布: DesktopElement = {
       ref: 'w.0#22',
@@ -2178,8 +2141,8 @@ describe('前台动作', () => {
       observe: async () => snapshot({ elements: [后台窗口, 画布] }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
-    expect(r.message).toContain('这个窗口没有暴露可操作的控件')
-    expect(r.message).toContain('前台操作此刻没有启用')
+    expect(r.message).toContain('无可操作控件')
+    expect(r.message).toContain('前台操作未启用')
   })
 
   /** 筛出零个控件与「这个窗口没有控件」是两回事，混起来就成了一句假话。 */
@@ -2400,7 +2363,7 @@ describe('前台动作', () => {
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
     expect(r.message).toContain('只发出了 4 个')
-    expect(r.message).toContain('不要重放这个动作')
+    expect(r.message).toContain('结果未知')
   })
 
   test('前台模式未启用时宿主的拒绝按未执行透传', async () => {
@@ -2408,7 +2371,7 @@ describe('前台动作', () => {
       act: async () => ({
         dispatch: 'not_dispatched',
         actionId: 'da_8',
-        reason: 'foreground_disabled: 前台操作没有启用，这次请求没有派发，桌面没有被动过',
+        reason: 'foreground_disabled: 前台操作未启用',
         observation: null,
         observationError: '动作没有派发，没有重读',
       }),
@@ -2682,8 +2645,8 @@ describe('有限动作序列', () => {
     expect(data.notExecuted).toEqual([3])
     expect(data.stoppedAt).toBe(2)
     expect(r.message).toContain('结果未知')
-    expect(r.message).toContain('不要重放')
-    expect(r.message).toContain('未执行：3 invoke')
+    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('未执行 3 invoke')
   })
 
   test('某步没有执行时停下，已派发的前缀如实保留', async () => {
@@ -2708,7 +2671,7 @@ describe('有限动作序列', () => {
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2, 3])
-    expect(r.message).toContain('2 invoke w.1.2#7 没有执行')
+    expect(r.message).toContain('2 invoke w.1.2#7 未执行')
   })
 
   test('第一步就没有执行时整组记未执行', async () => {
@@ -2755,7 +2718,7 @@ describe('有限动作序列', () => {
       { until: 'toggle', met: true },
       { until: 'selected', met: true },
     ])
-    expect(r.message).toContain('后置条件 value 已满足')
+    expect(r.message).toContain('value 已满足')
   })
 
   test('后置条件没等到即截断后缀', async () => {
@@ -2783,7 +2746,7 @@ describe('有限动作序列', () => {
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2])
-    expect(r.message).toContain('后置条件 value 未满足')
+    expect(r.message).toContain('value 未满足')
   })
 
   test('toggle 与 selected 没有宿主等待，不成立当场停', async () => {
@@ -3022,7 +2985,7 @@ describe('有限动作序列', () => {
       executed: true,
       errorKind: 'desktop_ref_unknown',
     })
-    expect(r.message).toContain('2 set_toggle w.4#10 没有执行')
+    expect(r.message).toContain('2 set_toggle w.4#10 未执行')
   })
 
   test('引用接续：按 automationId 定位的步骤在新观察里重新解析', async () => {
@@ -3060,7 +3023,7 @@ describe('有限动作序列', () => {
       executed: true,
       errorKind: 'desktop_target_ambiguous',
     })
-    expect(r.message).toContain('匹配到 2 个控件')
+    expect(r.message).toContain('匹配 2 个')
   })
 
   test('起手那份观察已经失效时一步都不派发', async () => {
@@ -3142,7 +3105,7 @@ describe('有限动作序列', () => {
       ctxWith(failing),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('不要重放')
+    expect(r.message).toContain('结果未知')
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2])
