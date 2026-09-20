@@ -1,7 +1,7 @@
 name: Set up qywork build
-description: 装 Bun 与 Rust、备齐 Linux 系统库、装依赖、核对版本清单、编译两个外部二进制。三端的 CI 与发布共用同一份。
+description: 装 Bun 与 Rust、备齐 Linux 系统库、装依赖、核对版本清单、编译 sidecar。三端的 CI 与发布共用同一份。
 
-# 第三方 action 的 pin 与外部二进制的编译时机只写在这里。几个工作流各抄一遍的话，
+# 第三方 action 的 pin 与 sidecar 的编译时机只写在这里。几个工作流各抄一遍的话，
 # 改了 pin 只改一处的表现是「一条工作流用新版本、另一条用旧版本」，而两边都是绿的。
 #
 # 全部 run 步骤用 bash：Windows runner 上是 Git Bash，三端都有。写 pwsh 会让 Linux 与
@@ -54,17 +54,15 @@ runs:
       shell: bash
       run: bun run scripts/sync-version.ts --check
 
-    # 这两步必须在 `bun run gate` 之前。gate 里的 cargo check 会跑 tauri 的构建脚本，
-    # 而 tauri.conf.json 把 bin/qy 与 bin/qy-computer-host 都声明成 externalBin：
-    # 干净 runner 上这些文件不存在，构建脚本报
-    # `resource path bin\qy-... doesn't exist` 并以 101 退出。
+    # 这一步必须在 `bun run gate` 之前。gate 里的 cargo check 会跑 tauri 的构建脚本，
+    # 而 tauri.conf.json 把 bin/qy 声明成 externalBin：干净 runner 上这个文件不存在，
+    # 构建脚本报 `resource path bin\qy-... doesn't exist` 并以 101 退出。
     #
-    # 两个产物都按 `rustc -vV` 的宿主三元组命名，因此 runner 架构必须与要出的包一致：
+    # 另一个 externalBin（bin/qy-computer-host）不在这里准备：外壳的构建脚本在同一次
+    # 编译里出它，CI 与本地因此拿到的都是与外壳同源的 worker。
+    #
+    # 产物按 `rustc -vV` 的宿主三元组命名，因此 runner 架构必须与要出的包一致：
     # arm64 runner 上准备不出 x86_64 的资产，sidecar 编完还会就地自检运行一次。
     - name: Build sidecar
       shell: bash
       run: bun run build:agent
-
-    - name: Build computer-host
-      shell: bash
-      run: bun run build:computer-host

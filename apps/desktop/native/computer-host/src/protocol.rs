@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Geometry, ScreenPoint, ScreenRect};
 
-/// 协议版本。版本不一致的请求直接拒绝，不做字段级兼容。
-pub const PROTOCOL_VERSION: u32 = 6;
+include!("protocol_version.rs");
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {

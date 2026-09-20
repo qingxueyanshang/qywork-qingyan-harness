@@ -117,24 +117,26 @@ describe('桌面发布清单', () => {
   /**
    * 干净 runner 上没有这些外部二进制，而 `bun run gate` 里的 `cargo check` 会跑 tauri 的
    * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明过的文件不在就以 101 退出。
-   * 每条工作流都从同一个 action 拿这个前置，所以顺序在那一份里判。
+   *
+   * 两个条目的来源不同：`bin/qy` 由共用 action 在门禁前编，顺序在那一份里判；
+   * `bin/qy-computer-host` 由外壳自己的构建脚本在同一次编译里出，工作流里再编一遍
+   * 就是第二个入口，旧产物与外壳协议版本对不上的那条路径也随之回来。
    */
-  test('每条工作流都在门禁前准备全部 externalBin', () => {
+  test('externalBin 的每个条目都只有一处准备它', () => {
     const setup = actionText('setup-build')
+    const buildScript = readFileSync(join(ROOT, 'apps/desktop/src-tauri/build.rs'), 'utf8')
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     ) as { bundle: { externalBin: string[] } }
-    /** 每个条目由哪条命令准备。加了条目不加命令，这里就红。 */
-    const prepared = {
-      'bin/qy': 'bun run build:agent',
-      'bin/qy-computer-host': 'bun run build:computer-host',
-    }
 
-    expect(config.bundle.externalBin).toHaveLength(Object.keys(prepared).length)
-    for (const [entry, command] of Object.entries(prepared)) {
-      expect(config.bundle.externalBin).toContain(entry)
-      expect(setup).toContain(command)
-    }
+    expect(config.bundle.externalBin).toEqual(['bin/qy', 'bin/qy-computer-host'])
+    expect(setup).toContain('bun run build:agent')
+    expect(buildScript).toContain('qy-computer-host')
+    expect(setup).not.toContain('build:computer-host')
+    expect(Object.values(pkg.scripts).join('\n')).not.toContain('build:computer-host')
 
     for (const name of ['ci.yml', ...RELEASE_WORKFLOWS]) {
       const workflow = workflowText(name)

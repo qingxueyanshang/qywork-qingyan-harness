@@ -17,8 +17,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// 宿主与 worker 之间那份协议的版本。与 worker 的 `PROTOCOL_VERSION` 同一个数。
-pub const WORKER_PROTOCOL_VERSION: u32 = 6;
+/// worker crate 里那个只含协议版本的文件，外壳把它一起编进来。
+///
+/// 本模块同时处理两段协议，所以对外用 `WORKER_PROTOCOL_VERSION` 这个名字点明是哪一段。
+#[path = "../../../native/computer-host/src/protocol_version.rs"]
+mod worker_protocol;
+
+pub use worker_protocol::PROTOCOL_VERSION as WORKER_PROTOCOL_VERSION;
 
 /// 服务端请求的 op 里能翻译成 worker 请求的那些。`cancel` 由宿主展开，不在此列。
 const FORWARDED_OPS: [&str; 6] = [
