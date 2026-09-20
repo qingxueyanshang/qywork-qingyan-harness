@@ -31,7 +31,10 @@ windows = { version = "0.61", features = [
   # 窗口枚举、标题、类名、所属进程与窗口矩形。
   "Win32_UI_WindowsAndMessaging",
   # IsWindowEnabled 在这个模块下：模态对话框把属主窗口禁用是动作已生效的证据之一。
+  # AttachThreadInput 也在这里：前台锁拒绝激活之后挂到前台线程上再要一次前台。
   "Win32_UI_Input_KeyboardAndMouse",
+  # GetCurrentThreadId，AttachThreadInput 的本端线程号。
+  "Win32_System_Threading",
   # PrintWindow 在这个模块下，不在 WindowsAndMessaging。
   "Win32_Storage_Xps",
   # 进程 DPI 感知模式与窗口所在显示器的 DPI。

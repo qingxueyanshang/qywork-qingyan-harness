@@ -15,6 +15,7 @@
 //! 换成当前值的话，一条跨代际的迟到回执会结算另一次调用。
 
 mod bridge;
+mod foreground;
 mod frames;
 mod identity;
 mod input;
@@ -412,6 +413,14 @@ impl DesktopHost {
         } else {
             0
         };
+        // 前台模式的请求派发前把前台权让给 worker：用户发消息那一刻前台进程通常就是本
+        // 进程，系统只允许前台进程转让这份权限。不看返回值——让不成时 worker 自己还有
+        // 第二级手段，这里没有可裁决的事。
+        if frame.foreground {
+            if let Some(pid) = self.worker_pid() {
+                foreground::grant(pid);
+            }
+        }
         let request = {
             let mut state = self.state.lock().expect("桌面宿主状态锁被污染");
             let id = state.take_worker_id();

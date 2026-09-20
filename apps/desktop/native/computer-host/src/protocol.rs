@@ -426,6 +426,22 @@ impl ActionSpec {
         )
     }
 
+    /// 这个动作用真实指针或键盘投递，因此要求目标窗口此刻在系统前台。
+    ///
+    /// 窗口动作（激活、状态、移动、缩放、关闭）不在内：它们经 Win32 与 UIA 接口发出，
+    /// 目标窗口在不在前台都执行得了。
+    pub const fn takes_input(&self) -> bool {
+        matches!(
+            self,
+            Self::Click { .. }
+                | Self::Hover
+                | Self::Drag { .. }
+                | Self::Wheel { .. }
+                | Self::TypeText { .. }
+                | Self::PressKey { .. }
+        )
+    }
+
     /// 这个动作的落点可以由调用方直接给屏幕坐标。只有指针动作可以。
     pub const fn takes_point(&self) -> bool {
         matches!(

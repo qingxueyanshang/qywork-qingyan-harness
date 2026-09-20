@@ -8,11 +8,12 @@
 //!    目标窗口，三步缺一不可：观察时记下的包围盒在控件移动之后指向别处。
 //! 3. **按住的键随按随记，任何中止路径都释放。** 记账与释放由 `input::Hold` 做，
 //!    本模块不手写释放调用。
-//! 4. **键盘输入前核对前台窗口就是目标窗口且窗口未被禁用**；点名了控件时再核对它
-//!    持有键盘焦点，焦点不在它上面就拒绝，不替用户把焦点抢过来。不点名控件即以窗口
-//!    为目标。
+//! 4. **指针与键盘输入在派发前先把目标窗口拿到前台**（`ensure_foreground`，两条路径
+//!    共用这一处），再做各自原有的核对：指针核对落点归目标窗口，键盘核对前台窗口就是
+//!    目标窗口且窗口未被禁用。点名了控件时再核对它持有键盘焦点，焦点不在它上面就拒绝
+//!    ——激活窗口不等于改控件焦点，这一条不替用户做。不点名控件即以窗口为目标。
 //! 5. **中途前台变了立即停止**，已发出多少如实带回，执行事实落 `unknown`，不向另一个
-//!    窗口续输。
+//!    窗口续输。这条管的是动作进行中，不是派发前。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
 //!    不套后台那三条——激活本来就会改前台，「同进程多出一个顶层窗口」证明不了它。
 //! 7. **文字只有一条投递路径**：按 UTF-16 码元投字符消息给焦点窗口。它不按键、不改
@@ -26,11 +27,13 @@ use ::windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationTransformPattern, IUIAutomationWindowPattern,
     UIA_TransformPatternId, UIA_WindowPatternId, WindowVisualState,
 };
+use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetWindowRect, IsIconic,
-    IsWindow, IsZoomed, SetForegroundWindow, WindowFromPoint, GA_ROOT, GUITHREADINFO,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
+    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed, SetForegroundWindow,
+    ShowWindow, WindowFromPoint, GA_ROOT, GUITHREADINFO, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
 
 use crate::geometry::{to_absolute, ScreenPoint, ScreenRect};
@@ -81,6 +84,9 @@ pub fn perform(
     stop: &dyn Fn() -> bool,
 ) -> Attempt {
     let sink = SystemSink;
+    if action.takes_input() {
+        ensure_foreground(window);
+    }
     match action {
         ActionSpec::Click { button, count } => click(window, &sink, aim, *button, *count),
         ActionSpec::Hover => hover(window, &sink, aim),
@@ -276,6 +282,9 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
 }
 
 /// 这次指针动作落在哪个屏幕坐标上，并核对那个位置确实属于目标窗口。
+///
+/// 目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完；走到这里仍被盖住的是
+/// 置顶窗口，如实拒绝。
 fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let anchor = aim
         .anchor
@@ -330,7 +339,7 @@ fn blocked(requested: u32) -> Attempt {
 
 // ── 键盘 ──
 
-/// 键盘输入的前置条件。
+/// 键盘输入的前置条件。目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完。
 ///
 /// 两条对所有键盘输入成立：目标窗口是系统前台窗口，且它没有被禁用。
 /// **不给控件即以窗口为目标**，判定到此为止——键盘输入去的是系统焦点所在，
@@ -453,28 +462,109 @@ fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
 
 // ── 窗口 ──
 
-/// 激活目标窗口。
+/// 派发前把目标窗口拿到前台。已经在前台时不做任何调用。
 ///
-/// 受系统前台锁限制：前台权不在本进程手上时 `SetForegroundWindow` 不改前台，只让目标的
-/// 任务栏按钮闪烁。**那时如实报未派发**，不用 `AttachThreadInput`、模拟 Alt 键之类的
-/// 旁门绕过它——绕过去的是用户的防打扰设定。
-fn activate(window: i64) -> Attempt {
-    let hwnd = HWND(window as *mut c_void);
-    // SAFETY: 句柄由调用方核对过归属。
-    let accepted = unsafe { SetForegroundWindow(hwnd) }.as_bool();
-    let reached = settled(ACTIVATE_SETTLE, || foreground_window() == window);
-    if reached {
-        return Attempt::Called(Outcome::returned(Dispatch::Submitted, None));
+/// **指针与键盘两条路径共用这一处**，激活只在这里发生：前台输入的落点核对
+/// （`landing` 的遮挡判定、`keyboard_target` 的前台判定）都以目标窗口在前台为前提，
+/// 各写一份就是两处激活。提不上来不在这里裁决——随后那次核对照原样给原因码。
+fn ensure_foreground(window: i64) {
+    if foreground_window() == window {
+        return;
     }
-    if accepted {
-        return Attempt::Called(Outcome::returned(
+    let _ = raise(window);
+}
+
+/// 一次前台提升的结果。
+enum Raised {
+    /// 前台窗口已经是目标窗口。
+    Reached,
+    /// 调用被接受，前台窗口没有变成目标窗口。
+    Accepted,
+    /// 两级都被系统前台锁拒绝，前台窗口没有变。
+    Refused,
+}
+
+/// 把目标窗口提到前台。
+///
+/// 两级，第二级只在第一级没到位时走：直接 `SetForegroundWindow`；被系统前台锁拒绝之后
+/// 挂到当前前台窗口的线程上再调一次——挂接期间两个线程共用输入状态，系统据此把调用方
+/// 算作前台线程并放行。任何返回路径都解除挂接。
+///
+/// **不要改成模拟 Alt 按键。** 那条写法向用户此刻正在用的应用投一次真实按键，
+/// 而这个函数只能改前台归属。
+///
+/// 最小化的窗口先还原：最小化状态下前台切换只恢复任务栏按钮，窗口本身不上来。
+fn raise(window: i64) -> Raised {
+    let hwnd = HWND(window as *mut c_void);
+    // SAFETY: 句柄由调用方核对过归属，两项都只读写显示状态。
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+    // SAFETY: 同上。
+    let direct = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+    if settled(ACTIVATE_SETTLE, || foreground_window() == window) {
+        return Raised::Reached;
+    }
+    let attached = attached_raise(hwnd);
+    if settled(ACTIVATE_SETTLE, || foreground_window() == window) {
+        return Raised::Reached;
+    }
+    if direct || attached {
+        Raised::Accepted
+    } else {
+        Raised::Refused
+    }
+}
+
+/// 挂到当前前台窗口的线程上再要一次前台。返回真表示这一次调用被接受。
+///
+/// 解除挂接不能省，也不能只写在成功那一条路径上：挂着不放的话两个线程从此共用输入队列，
+/// 目标应用卡住时本进程的输入一并卡住。
+fn attached_raise(hwnd: HWND) -> bool {
+    // SAFETY: 无参只读查询。
+    let front = unsafe { GetForegroundWindow() };
+    if front.0.is_null() {
+        return false;
+    }
+    // SAFETY: 句柄来自上一行，进程号出参不要。
+    let front_thread = unsafe { GetWindowThreadProcessId(front, None) };
+    // SAFETY: 无参只读查询。
+    let own_thread = unsafe { GetCurrentThreadId() };
+    if front_thread == 0 || front_thread == own_thread {
+        return false;
+    }
+    // SAFETY: 两个线程号都来自上面的查询。
+    if !unsafe { AttachThreadInput(own_thread, front_thread, true) }.as_bool() {
+        return false;
+    }
+    // SAFETY: 句柄由调用方核对过归属。
+    unsafe {
+        let _ = BringWindowToTop(hwnd);
+    }
+    // SAFETY: 同上。
+    let accepted = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+    // SAFETY: 解除上面那一次挂接，两个线程号不变。
+    unsafe {
+        let _ = AttachThreadInput(own_thread, front_thread, false);
+    }
+    accepted
+}
+
+/// 激活目标窗口。三种终态：到达前台记已执行，调用被接受而前台没变记结果未知，
+/// 两级都被前台锁拒绝记未派发。
+fn activate(window: i64) -> Attempt {
+    match raise(window) {
+        Raised::Reached => Attempt::Called(Outcome::returned(Dispatch::Submitted, None)),
+        Raised::Accepted => Attempt::Called(Outcome::returned(
             Dispatch::Unknown,
             Some("调用成功，前台窗口没有变成目标窗口".to_owned()),
-        ));
+        )),
+        Raised::Refused => Attempt::Refused(
+            "foreground_lock: 前台锁拒绝了这次激活，前台窗口没有变".to_owned(),
+        ),
     }
-    Attempt::Refused(
-        "foreground_lock: 前台锁拒绝了这次激活，前台窗口没有变".to_owned(),
-    )
 }
 
 fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowState) -> Attempt {
