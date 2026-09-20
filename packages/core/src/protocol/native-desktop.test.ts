@@ -1,6 +1,6 @@
 /**
  * 桌面图像几何的坐标换算。**覆盖范围**：`native-desktop.ts` 的 `imagePointToScreen`、
- * `screenPointToImage` 与 `imageRectToScreen`，以及 `DESKTOP_PROTOCOL_VERSION`。
+ * `screenPointToImage` 与 `imageRectToScreen`。
  *
  * 这一份是图像坐标换算的唯一实现：采集端只产出几何，不做换算；按图定位的请求由服务端
  * 按它算成屏幕矩形再交给宿主。四种形状都要覆盖——原样尺寸、缩图、裁剪原点、多显示器
@@ -9,7 +9,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  DESKTOP_PROTOCOL_VERSION,
   type DesktopImageGeometry,
   imagePointToScreen,
   imageRectToScreen,
@@ -163,9 +162,4 @@ describe('图像矩形 → 屏幕矩形', () => {
     expect(out?.width).toBeGreaterThanOrEqual(1)
     expect(out?.height).toBeGreaterThanOrEqual(1)
   })
-})
-
-/** 动作族换形状是一次不兼容改动，版本号必须跟着走。 */
-test('协议版本随动作族一起推进', () => {
-  expect(DESKTOP_PROTOCOL_VERSION).toBe(5)
 })

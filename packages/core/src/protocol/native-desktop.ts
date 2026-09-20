@@ -22,8 +22,11 @@ export const NATIVE_DESKTOP_PATH = '/native/desktop'
  * 宿主与 worker 之间那份协议的版本。
  *
  * 服务端在 `host.ready` 里核对它：版本不一致即不注册宿主，不做字段级兼容。
+ *
+ * 必须等于 worker crate 的 `protocol_version.rs` 里那个数，改协议时两处同改；
+ * `scripts/desktop-protocol-version.test.ts` 在门禁里比对。
  */
-export const DESKTOP_PROTOCOL_VERSION = 5
+export const DESKTOP_PROTOCOL_VERSION = 6
 
 /**
  * 宿主接受的操作。**新增一个就要同时改宿主侧的分派**，宿主对认不出的 op 一律回
