@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { probeBash } from '../packages/tools/src/sandbox.ts'
 import { collect } from './collect-installer.ts'
 
 const ROOT = join(import.meta.dir, '..')
@@ -24,6 +25,37 @@ function actionText(name: string): string {
 }
 
 describe('桌面发布清单', () => {
+  test('发布准备把同一公钥写入打包配置和客户端编译环境', () => {
+    const action = Bun.YAML.parse(actionText('release-prepare')) as {
+      runs: { steps: { name: string; run?: string }[] }
+    }
+    const script = action.runs.steps.find((step) => step.name === 'Configure signed updates')?.run
+    expect(script).toBeDefined()
+    const bash = probeBash().path
+    expect(bash).not.toBeNull()
+    const dir = mkdtempSync(join(tmpdir(), 'release-key-'))
+    const publicKey = 'dXBkYXRlci10ZXN0LWtleQ=='
+    try {
+      const result = Bun.spawnSync([bash!, '-c', script!], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          UPDATER_PUBLIC_KEY: ` ${publicKey}\n`,
+          UPDATER_PRIVATE_KEY: 'test-private-key',
+          GITHUB_ENV: 'github-env',
+        },
+      })
+      expect(result.exitCode).toBe(0)
+      const config = JSON.parse(readFileSync(join(dir, '.tmp/updater-config.json'), 'utf8'))
+      expect(config.plugins.updater.pubkey).toBe(publicKey)
+      const environment = readFileSync(join(dir, 'github-env'), 'utf8')
+      expect(environment.trim()).toBe(`QYWORK_UPDATER_PUBLIC_KEY=${publicKey}`)
+      expect(environment).not.toContain('test-private-key')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('正式更新必须打包签名并上传清单', () => {
     const prepare = actionText('release-prepare')
     const config = JSON.parse(

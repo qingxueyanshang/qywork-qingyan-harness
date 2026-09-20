@@ -68,3 +68,4 @@ runs:
         mkdir -p .tmp
         printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}\n' \
           "$pubkey" > .tmp/updater-config.json
+        printf 'QYWORK_UPDATER_PUBLIC_KEY=%s\n' "$pubkey" >> "$GITHUB_ENV"
