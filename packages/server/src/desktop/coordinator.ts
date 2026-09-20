@@ -43,6 +43,7 @@ import type {
   DesktopObservation,
   DesktopRect,
   DesktopTarget,
+  DesktopTargetEvent,
   DesktopTreeBody,
   DesktopWindow,
 } from '@qywork/core'
@@ -319,16 +320,9 @@ export class DesktopCoordinator {
    * 本来就已经作废。
    */
   #blocked: string | null = null
-  /** 此刻在操作哪个应用。只有 `#holder` 写得动它。 */
-  #targetApp: string | null = null
-  /**
-   * 持着桌面的那个执行者已经用过前台接管。
-   *
-   * 只进不退：一次前台点击之后焦点已经在目标应用上，之后的后台读取改不回来这件事。
-   * 随 `#targetApp` 一起清回去。
-   */
-  #targetForeground = false
-  #targetChanges = new Set<(app: string | null, foreground: boolean) => void>()
+  /** 只有 `#holder` 写得动的目标快照，会话归属与应用、前台状态一起发布和清空。 */
+  #target: DesktopTargetEvent['target'] = null
+  #targetChanges = new Set<(target: DesktopTargetEvent['target']) => void>()
   #offHostChange: () => void
 
   constructor(bridge: DesktopBridge, enabled: () => boolean) {
@@ -358,17 +352,12 @@ export class DesktopCoordinator {
     return this.#enabled() && host !== null && host.workerReady && host.authorized
   }
 
-  /** 此刻在操作哪个应用。界面按它显示运行态的目标。 */
-  target(): string | null {
-    return this.#targetApp
+  /** 此刻哪条会话在操作哪个应用。握手与实时事件都取这一份。 */
+  target(): DesktopTargetEvent['target'] {
+    return this.#target
   }
 
-  /** 持着桌面的执行者用没用过前台接管。界面按它区分两种读数。 */
-  targetForeground(): boolean {
-    return this.#targetForeground
-  }
-
-  onTargetChange(listener: (app: string | null, foreground: boolean) => void): () => void {
+  onTargetChange(listener: (target: DesktopTargetEvent['target']) => void): () => void {
     this.#targetChanges.add(listener)
     return () => this.#targetChanges.delete(listener)
   }
@@ -377,8 +366,8 @@ export class DesktopCoordinator {
    * 给一次执行造一个端口。
    *
    * `executorId` 每次不同：占用、排队与撤销按它记，两条会话、父任务与子任务因此
-   * 各占各的、各撤各的。`conversationId` 只进日志：桌面是一台机器共有的资源，
-   * 谁能操作它不按会话裁决。
+   * 各占各的、各撤各的。`conversationId` 用于日志和目标读数的归属；桌面仍按执行者
+   * 串行占用，不因界面切换会话而改变。
    *
    * 端口自己不占桌面，第一次在窗口上观察或动作才占。
    */
@@ -1078,18 +1067,21 @@ export class DesktopCoordinator {
     // 只有持有桌面的执行者写得动这个读数。少了这一条，两个执行者的目标会互相覆盖，
     // 界面上显示的是最后写进来的那一个，而不是此刻真在操作的那一个。
     if (this.#holder !== lease) return
-    const takeover = this.#targetForeground || foreground
-    if (this.#targetApp === app && this.#targetForeground === takeover) return
-    this.#targetApp = app
-    this.#targetForeground = takeover
-    for (const listener of [...this.#targetChanges]) listener(app, takeover)
+    const takeover = this.#target?.foreground || foreground
+    if (
+      this.#target?.conversationId === lease.conversationId &&
+      this.#target.app === app &&
+      this.#target.foreground === takeover
+    )
+      return
+    this.#target = { conversationId: lease.conversationId, app, foreground: takeover }
+    for (const listener of [...this.#targetChanges]) listener(this.#target)
   }
 
   #clearTarget(): void {
-    if (this.#targetApp === null && !this.#targetForeground) return
-    this.#targetApp = null
-    this.#targetForeground = false
-    for (const listener of [...this.#targetChanges]) listener(null, false)
+    if (this.#target === null) return
+    this.#target = null
+    for (const listener of [...this.#targetChanges]) listener(null)
   }
 }
 

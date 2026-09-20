@@ -85,6 +85,7 @@ function shake(
         authorized: false,
       }),
       announceGit: () => {},
+      announceDesktopTarget: () => {},
     },
   )
   return sock

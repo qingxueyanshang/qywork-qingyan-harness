@@ -20,6 +20,7 @@ import type {
   DesktopObservation,
   DesktopRequestFrame,
   DesktopResultFrame,
+  DesktopTargetEvent,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
@@ -373,19 +374,20 @@ test('父任务停止只释放所属执行者：别人的在途调用与窗口�
 test('「正在操作」读数跟随占用，不被排队中的执行者覆盖', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
-  const seen: (string | null)[] = []
-  cleanups.push(desktop.onTargetChange((app) => seen.push(app)))
+  const seen: DesktopTargetEvent['target'][] = []
+  cleanups.push(desktop.onTargetChange((target) => seen.push(target)))
   const a = desktop.portFor('cv_a')
   const b = desktop.portFor('cv_b')
   await discover(host, () => a.windows())
 
   await observed(host, a.observe({ windowId: 'dw_1' }))
-  expect(seen).toEqual([WINDOW.app])
+  const targetA = { conversationId: 'cv_a', app: WINDOW.app, foreground: false }
+  expect(seen).toEqual([targetA])
 
   // B 在排队，写不动这个读数。
   const observeB = b.observe({ windowId: 'dw_2' })
   await tick()
-  expect(seen).toEqual([WINDOW.app])
+  expect(seen).toEqual([targetA])
 
   const released = a.release()
   host.settle(await host.next(), 'not_dispatched')
@@ -393,7 +395,13 @@ test('「正在操作」读数跟随占用，不被排队中的执行者覆盖',
   const readB = await host.next()
   host.reply(readB, treeOf(readB))
   await observeB
-  expect(seen).toEqual([WINDOW.app, null, OTHER.app])
+  const targetB = { conversationId: 'cv_b', app: OTHER.app, foreground: false }
+  expect(seen).toEqual([targetA, null, targetB])
+  expect(desktop.target()).toEqual(targetB)
+  host.socket.close()
+  await tick()
+  expect(desktop.target()).toBeNull()
+  expect(seen.at(-1)).toBeNull()
 })
 
 test('局部查询的子树根、角色、文字与字段选择逐项落在帧上', async () => {
@@ -1315,11 +1323,11 @@ test('拖拽的像素偏移原样下去，控件终点要在观察里', async ()
 test('前台接管的读数只在宿主真的派发之后才上调', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
-  const seen: [string | null, boolean][] = []
-  cleanups.push(desktop.onTargetChange((app, foreground) => seen.push([app, foreground])))
+  const seen: DesktopTargetEvent['target'][] = []
+  cleanups.push(desktop.onTargetChange((target) => seen.push(target)))
   const a = desktop.portFor('cv_a')
   const first = await firstLook(host, a)
-  expect(seen.at(-1)).toEqual(['记事本', false])
+  expect(seen.at(-1)).toEqual({ conversationId: 'cv_a', app: '记事本', foreground: false })
 
   // 宿主拒绝派发：读数不动。
   const refused = a.act({
@@ -1331,7 +1339,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   let frame = await host.next()
   host.reply(frame, { dispatch: 'not_dispatched', reason: 'foreground_disabled: 前台操作未启用' })
   expect((await refused).dispatch).toBe('not_dispatched')
-  expect(desktop.targetForeground()).toBe(false)
+  expect(desktop.target()?.foreground).toBe(false)
 
   // 派发出去了：读数上调，之后的后台读取不把它退回去。拒绝派发没有动观察记账，
   // 接着用的仍是第一份那个编号。
@@ -1344,8 +1352,8 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   frame = await host.next()
   host.reply(frame, { dispatch: 'submitted', observation: subtree() })
   const done = await acting
-  expect(desktop.targetForeground()).toBe(true)
-  expect(seen.at(-1)).toEqual(['记事本', true])
+  expect(desktop.target()?.foreground).toBe(true)
+  expect(seen.at(-1)).toEqual({ conversationId: 'cv_a', app: '记事本', foreground: true })
 
   const reading = a.act({
     windowId: 'dw_1',
@@ -1356,12 +1364,12 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   frame = await host.next()
   host.reply(frame, { dispatch: 'submitted', observation: subtree() })
   await reading
-  expect(desktop.targetForeground()).toBe(true)
+  expect(desktop.target()?.foreground).toBe(true)
 
   // 释放时随应用名一起清回去。
   const releasing = a.release()
   host.reply(await host.next())
   await releasing
-  expect(desktop.targetForeground()).toBe(false)
-  expect(seen.at(-1)).toEqual([null, false])
+  expect(desktop.target()).toBeNull()
+  expect(seen.at(-1)).toBeNull()
 })

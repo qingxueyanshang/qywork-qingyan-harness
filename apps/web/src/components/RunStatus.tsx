@@ -1,6 +1,6 @@
 import { foldFileChanges, todoProgress } from '@qywork/core'
 import { Show } from 'solid-js'
-import { hasRunStatus, openPanel, state } from '../lib/store/index.ts'
+import { activeDesktopTarget, hasRunStatus, openPanel, state } from '../lib/store/index.ts'
 import { IconSpinner } from './Icons.tsx'
 
 /**
@@ -30,8 +30,8 @@ import { IconSpinner } from './Icons.tsx'
  *
  * 三段各自的条件：
  *
- * - **目标应用**：桌面通道此刻在操作谁。进程级读数，由服务端在执行者释放或宿主
- *   断开时推回 `null`，前端不自己推断它什么时候过期。
+ * - **目标应用**：当前会话此刻在操作谁。归属由持有桌面的执行者决定，释放或宿主
+ *   断开时由服务端清空；别的会话的目标不挂在这一轮名下。
  * - **进度**：还剩没剩，不是清单有没有条目。全打勾之后不显示——它回答「还要多久」。
  * - **文件**：这一轮的读数，`run.started` 时清空。建了又删的不算，同变更页。
  */
@@ -49,14 +49,14 @@ export function RunStatus() {
       <div class="run-status">
         <div class="changes-chip">
           {/* 目标应用没有可跳的去处，所以是一段读数不是按钮。 */}
-          <Show when={state.desktopTarget}>
-            {(app) => (
+          <Show when={activeDesktopTarget()}>
+            {(target) => (
               <span>
-                {state.desktopTargetForeground ? '正在前台操作' : '正在操作'} {app()}
+                {target().foreground ? '正在前台操作' : '正在操作'} {target().app}
               </span>
             )}
           </Show>
-          <Show when={state.desktopTarget && (inProgress() || files().length > 0)}>
+          <Show when={activeDesktopTarget() && (inProgress() || files().length > 0)}>
             <span class="sep" aria-hidden="true">
               ·
             </span>

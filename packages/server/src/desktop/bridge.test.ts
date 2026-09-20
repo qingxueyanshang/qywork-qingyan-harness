@@ -13,7 +13,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DesktopResultFrame } from '@qywork/core'
+import type { DesktopResultFrame, DesktopTargetEvent, HelloFrame } from '@qywork/core'
 import { NATIVE_DESKTOP_PATH } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
@@ -191,18 +191,22 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
   await host.next()
   await settle()
   const targets = frames
-    .map((f) => f.event as { type?: string; app?: string | null } | undefined)
+    .map((f) => f.event as DesktopTargetEvent | undefined)
     .filter((e) => e?.type === 'desktop.target')
-  expect(targets.at(-1)?.app).toBe('记事本')
+  expect(targets.at(-1)?.target).toEqual({
+    conversationId: 'cv_a',
+    app: '记事本',
+    foreground: false,
+  })
   const releasing = port?.release()
   await observing
   host.reply(await host.next())
   await releasing
   await settle()
   const cleared = frames
-    .map((f) => f.event as { type?: string; app?: string | null } | undefined)
+    .map((f) => f.event as DesktopTargetEvent | undefined)
     .filter((e) => e?.type === 'desktop.target')
-  expect(cleared.at(-1)?.app).toBe(null)
+  expect(cleared.at(-1)?.target).toBe(null)
 })
 
 test('请求帧带齐身份字段：连接代际、执行实例、执行者与截止时刻', async () => {
@@ -223,6 +227,61 @@ test('请求帧带齐身份字段：连接代际、执行实例、执行者与�
   host.reply(frame)
   // OS 句柄不出端口：模型拿到的只有不透明 id 与应用名。
   expect(await pending).toEqual([{ windowId: 'dw_1', app: '记事本', title: '未命名' }])
+})
+
+test('首连、补发和换流重连都恢复当前桌面目标及其所属会话', async () => {
+  const handle = fresh()
+  const host = await connect(handle.port)
+  host.ready()
+  await settle()
+  const port = handle.desktop?.portFor('cv_wechat')
+  const listing = port?.windows()
+  host.reply(await host.next())
+  await listing
+  const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
+  await host.next()
+
+  const snapshot = async (resume?: HelloFrame['resume']) => {
+    const client = new WebSocket(
+      `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
+    )
+    const events: DesktopTargetEvent[] = []
+    client.onmessage = (ev) => {
+      const frame = JSON.parse(String(ev.data))
+      if (frame.event?.type === 'desktop.target') events.push(frame.event)
+    }
+    await new Promise<void>((resolve, reject) => {
+      client.onopen = () => resolve()
+      client.onerror = () => reject(new Error('配对连接应当能建立'))
+    })
+    cleanups.push(() => client.close())
+    // 即使只订阅别的会话，快照仍保留实际归属，切回时无需等待目标再次变化。
+    client.send(
+      JSON.stringify({
+        type: 'hello',
+        token: handle.token,
+        origin: 'desktop',
+        subscribe: ['cv_other'],
+        ...(resume ? { resume } : {}),
+      }),
+    )
+    await settle()
+    client.close()
+    return events
+  }
+
+  const active = { conversationId: 'cv_wechat', app: '记事本', foreground: false }
+  expect((await snapshot()).at(-1)?.target).toEqual(active)
+  const releasing = port?.release()
+  await observing
+  host.reply(await host.next())
+  await releasing
+
+  // 补发里有旧目标；最后一帧必须是现在已释放的快照。
+  const replayed = await snapshot({ streamId: handle.bus.streamId, lastSeq: 0 })
+  expect(replayed.some((event) => event.target?.conversationId === 'cv_wechat')).toBe(true)
+  expect(replayed.at(-1)?.target).toBeNull()
+  expect((await snapshot({ streamId: 'previous-server', lastSeq: 9000 })).at(-1)?.target).toBeNull()
 })
 
 test('代际对不上的迟到回执不得完成这次调用', async () => {
@@ -431,7 +490,7 @@ test('前台接管过之后运行态读数说得出这一点，释放时清回�
   )
   const frames: {
     type: string
-    event?: { type?: string; app?: string | null; foreground?: boolean }
+    event?: DesktopTargetEvent
   }[] = []
   client.onmessage = (ev) => frames.push(JSON.parse(String(ev.data)))
   await new Promise<void>((resolve, reject) => {
@@ -456,12 +515,16 @@ test('前台接管过之后运行态读数说得出这一点，释放时清回�
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
   await settle()
-  expect(targets().at(-1)).toMatchObject({ app: '记事本', foreground: false })
+  expect(targets().at(-1)?.target).toEqual({
+    conversationId: 'cv_a',
+    app: '记事本',
+    foreground: false,
+  })
 
   const releasing = port?.release()
   await observing
   host.reply(await host.next())
   await releasing
   await settle()
-  expect(targets().at(-1)).toMatchObject({ app: null, foreground: false })
+  expect(targets().at(-1)?.target).toBeNull()
 })

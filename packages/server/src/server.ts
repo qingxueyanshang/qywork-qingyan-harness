@@ -189,8 +189,8 @@ export function serve(opts: ServeOptions) {
   const offDesktopHost = desktopBridge?.onHostChange(() => {
     bus.publish({ type: 'desktop.state', desktop: desktopCapability(desktopBridge) })
   })
-  const offDesktopTarget = desktop?.onTargetChange((app, foreground) => {
-    bus.publish({ type: 'desktop.target', app, foreground })
+  const offDesktopTarget = desktop?.onTargetChange((target) => {
+    bus.publish({ type: 'desktop.target', target })
   })
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
@@ -546,6 +546,9 @@ export function serve(opts: ServeOptions) {
             browser: () => browserCapability(browserBridge),
             desktop: () => desktopCapability(desktopBridge),
             announceGit: () => gitWatch.announce(),
+            announceDesktopTarget: () => {
+              bus.publish({ type: 'desktop.target', target: desktop?.target() ?? null })
+            },
           })
           return
         }

@@ -62,6 +62,8 @@ export function handleHello(
      * 那条监听只在它变了的时候报，一个刚连上的客户端等不到。
      */
     announceGit(): void
+    /** 补发完成后广播当前桌面目标，首连和缺口补不上时也能恢复会话归属。 */
+    announceDesktopTarget(): void
   },
 ) {
   if (frame.token !== deps.token) {
@@ -140,6 +142,7 @@ export function handleHello(
   deps.announceGit()
 
   for (const f of backlog) ws.send(JSON.stringify(f))
+  deps.announceDesktopTarget()
 }
 
 /**
