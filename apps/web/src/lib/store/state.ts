@@ -17,6 +17,7 @@ import type {
   ContextOmitted,
   Conversation,
   ConversationChangeStep,
+  DesktopTargetEvent,
   FileChange,
   FollowUp,
   GitStateEvent,
@@ -282,14 +283,12 @@ export interface AppState {
   fileChanges: FileChange[]
   git: Omit<GitStateEvent, 'type'> | null
   /**
-   * 桌面通道此刻在操作哪个应用。**进程级读数**，不按会话分——物理桌面只有一个。
+   * 服务端桌面占用快照，带所属会话。保留后台会话的目标，切回时立即可读。
    *
    * `null` = 没有执行者持着桌面目标。服务端在执行者释放、宿主断开时都会推 `null`，
    * 前端不自己推断超时清空：那样两边会各存一份判定。
    */
-  desktopTarget: string | null
-  /** 持着桌面的执行者已经用过前台接管。运行态读数按它换一个说法。 */
-  desktopTargetForeground: boolean
+  desktopTarget: DesktopTargetEvent['target']
 }
 
 const initial: AppState = {
@@ -305,7 +304,6 @@ const initial: AppState = {
   fileChanges: [],
   git: null,
   desktopTarget: null,
-  desktopTargetForeground: false,
   followUps: [],
   todos: [],
   goal: null,
@@ -385,6 +383,12 @@ export function isConversationRunning(id: string | null): boolean {
   return id !== null && state.busyConversations.includes(id)
 }
 
+/** 当前会话的桌面目标。占用权仍由服务端裁决，切换会话只改变读数归属。 */
+export function activeDesktopTarget(): DesktopTargetEvent['target'] {
+  const target = state.desktopTarget
+  return target?.conversationId === state.activeConversation ? target : null
+}
+
 /**
  * 整轮状态条这一轮挂不挂：有没做完的待办、这一轮改过文件，或者正在操作某个桌面应用。
  *
@@ -397,7 +401,7 @@ export function hasRunStatus(): boolean {
     view().runStartedAt !== null &&
     (state.todos.some((t) => t.status !== 'completed') ||
       state.fileChanges.length > 0 ||
-      state.desktopTarget !== null)
+      activeDesktopTarget() !== null)
   )
 }
 

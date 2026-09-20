@@ -9,6 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import type { DesktopTargetEvent, EventEnvelope } from '@qywork/core'
 
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -30,10 +31,17 @@ async function resetStore() {
     todos: [],
     fileChanges: [],
     lastRunId: null,
+    desktopTarget: null,
   })
 }
 
 const CV = 'cv_chip'
+const OTHER = 'cv_wechat'
+const targetFrame = (target: DesktopTargetEvent['target']): EventEnvelope<DesktopTargetEvent> => ({
+  seq: 3,
+  at: 0,
+  event: { type: 'desktop.target', target },
+})
 
 async function mount() {
   const { render } = await import('solid-js/web')
@@ -105,6 +113,58 @@ const finishedFrame = (runId: string) =>
   }) as never
 
 describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
+  test('后台会话操作 QQ 时，当前会话的运行条不显示它的目标', async () => {
+    const store = await afterPreviousRun()
+    store.sendMessage('接着干')
+    store.applyEvent(startedFrame('run_now'))
+    const { host, dispose } = await mount()
+    try {
+      store.applyEvent(targetFrame({ app: 'QQ.exe', foreground: false, conversationId: OTHER }))
+      expect(host.textContent).toContain('已完成 1 / 2')
+      expect(host.textContent).not.toContain('QQ.exe')
+      store.setState('todos', [])
+      expect(host.textContent).toBe('')
+    } finally {
+      dispose()
+      await resetStore()
+    }
+  })
+
+  test('切到操作所属会话立即显示，切走不串台，后台释放后切回不残留', async () => {
+    const store = await afterPreviousRun()
+    store.applyEvent(startedFrame('run_now'))
+    store.setState('busyConversations', [CV, OTHER])
+    store.setState('todos', [])
+    store.applyEvent(targetFrame({ conversationId: OTHER, app: 'QQ.exe', foreground: true }))
+    const selectRunning = (id: string) => {
+      store.setState('activeConversation', id)
+      // 切会话会重建 view；这里补入历史加载返回的运行时刻。
+      store.setState('views', id, 'runStartedAt', 1)
+    }
+    const { host, dispose } = await mount()
+    try {
+      expect(host.textContent).toBe('')
+      selectRunning(OTHER)
+      expect(host.textContent).toBe('正在前台操作 QQ.exe')
+      selectRunning(CV)
+      expect(host.textContent).toBe('')
+      store.applyEvent(targetFrame(null))
+      selectRunning(OTHER)
+      expect(host.textContent).toBe('')
+
+      // 同一应用换了执行会话，归属也必须一起更新。
+      store.applyEvent(targetFrame({ conversationId: CV, app: 'QQ.exe', foreground: false }))
+      expect(host.textContent).toBe('')
+      selectRunning(CV)
+      expect(host.textContent).toBe('正在操作 QQ.exe')
+      store.applyEvent(targetFrame(null))
+      expect(host.textContent).toBe('')
+    } finally {
+      dispose()
+      await resetStore()
+    }
+  })
+
   test('按下回车到 run.started 之间不出现——上一轮的文件读数不许挂在这一轮名下', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()

@@ -301,7 +301,8 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   /*
-   * 电脑控制能力与正在操作的目标应用：同样是进程级的，同样在归属判定之前处理。
+   * 电脑控制能力与桌面占用快照：全局接收，目标快照自带所属会话。切换到后台会话时
+   * 可以立即读到它的目标，运行条只消费当前会话那一份。
    *
    * 目标应用跟着服务端推的值走，前端不自己推断它什么时候该清空——执行者释放、
    * 宿主断开、能力下线三条路径服务端都会推 `null`，各存一份判定必然在某一条上分叉。
@@ -311,8 +312,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
   if (ev.type === 'desktop.target') {
-    setState('desktopTarget', ev.app)
-    setState('desktopTargetForeground', ev.foreground)
+    setState('desktopTarget', ev.target)
     return
   }
 
