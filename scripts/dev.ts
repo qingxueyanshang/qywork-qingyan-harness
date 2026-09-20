@@ -129,39 +129,30 @@ const privilegedEnv = { ...env, QYWORK_HOST_KEY: HOST_KEY, QYWORK_UPDATE_KEY: UP
 const BUN = process.execPath
 
 /**
- * 补齐 `externalBin` 声明的文件。
+ * 补齐 `externalBin` 声明的 `qy`。
  *
- * 外壳的构建脚本在编译期检查这些文件存在，缺一个就以 101 退出，`tauri dev` 也走这一步。
+ * 外壳的构建脚本在编译期检查这个文件存在，缺了就以 101 退出，`tauri dev` 也走这一步。
+ * 开发态不执行它（sidecar 由本脚本从源码跑），所以只在缺失时编一次。
  *
- * 两个文件的处理不同：
- * - `qy` 在开发态不被执行（sidecar 由本脚本从源码跑），只在缺失时编一次。
- * - `qy-computer-host` 在开发态由外壳真的拉起，且与外壳按协议版本握手。不要改成
- *   「只在缺失时编」：外壳每次启动都从源码重编，留着旧的 worker 就是版本不符，
- *   握手被拒、电脑控制这组工具整组不注册，而界面上只有一行「组件未就绪」。
- *   cargo 是增量的，源码没变时这一步只花一次无事可做的构建。
+ * 另一个 `externalBin`（`qy-computer-host`）不在这里编：它由外壳自己的构建脚本
+ * （`apps/desktop/src-tauri/build.rs`）在同一次编译里出，任何入口拿到的都与外壳同源。
  */
-async function ensureExternalBins(): Promise<void> {
-  const assets = [
-    { name: 'qy', script: 'scripts/build-sidecar.ts', always: false },
-    { name: 'qy-computer-host', script: 'scripts/build-computer-host.ts', always: true },
-  ] as const
-  for (const { name, script, always } of assets) {
-    if (!always && (await Bun.file(await externalBinPath(name)).exists())) continue
-    process.stderr.write(`[dev] 编译外部二进制 ${name}\n`)
-    const build = Bun.spawn([BUN, 'run', join(ROOT, script)], {
-      cwd: ROOT,
-      stdout: 'inherit',
-      stderr: 'inherit',
-      stdin: 'ignore',
-    })
-    if ((await build.exited) !== 0) {
-      process.stderr.write(`[dev] ${name} 编译失败，详见上方输出\n`)
-      process.exit(1)
-    }
+async function ensureSidecarBin(): Promise<void> {
+  if (await Bun.file(await externalBinPath('qy')).exists()) return
+  process.stderr.write('[dev] 编译外部二进制 qy\n')
+  const build = Bun.spawn([BUN, 'run', join(ROOT, 'scripts/build-sidecar.ts')], {
+    cwd: ROOT,
+    stdout: 'inherit',
+    stderr: 'inherit',
+    stdin: 'ignore',
+  })
+  if ((await build.exited) !== 0) {
+    process.stderr.write('[dev] qy 编译失败，详见上方输出\n')
+    process.exit(1)
   }
 }
 
-if (MODE === 'desktop') await ensureExternalBins()
+if (MODE === 'desktop') await ensureSidecarBin()
 
 function spawnAgent(): ReturnType<typeof Bun.spawn> {
   return Bun.spawn(
