@@ -545,7 +545,7 @@ test('动作调用未返回：窗口清单按同一条路径登记，新窗口�
   host.reply(frame, {
     dispatch: 'submitted',
     reason: '调用尚未返回，目标窗口已被禁用',
-    observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+    observationError: 'target_blocked',
     blocking: [
       { ...WINDOW, appeared: false },
       { ...dialog, app: WINDOW.app, title: '另存为', appeared: true },
@@ -613,7 +613,7 @@ test('动作回执的窗口清单不剪掉别的窗口', async () => {
   const frame = await host.next()
   host.reply(frame, {
     dispatch: 'submitted',
-    observationError: 'target_blocked: 动作调用尚未返回，没有重读目标窗口',
+    observationError: 'target_blocked',
     blocking: [{ ...WINDOW, appeared: false }],
   })
   await acting

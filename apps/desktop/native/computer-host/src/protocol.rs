@@ -387,7 +387,7 @@ pub enum ActionSpec {
         direction: ScrollDirection,
         amount: u32,
     },
-    /// SendInput 的 `KEYEVENTF_UNICODE` 文字注入。代理对成对发出。
+    /// 文字按 UTF-16 码元投成字符消息，不产生键盘事件。代理对的两个码元相邻投出。
     TypeText { text: String },
     /// SendInput 的物理按键。修饰键按给出的顺序按下，逆序释放。
     PressKey {
@@ -1043,13 +1043,13 @@ pub fn classify_action(
     if let Some(evidence) = evidence {
         return Some((
             Dispatch::Submitted,
-            Some(format!("调用尚未返回，{}", evidence.as_str())),
+            Some(evidence.as_str().to_owned()),
         ));
     }
     expired.then(|| {
         (
             Dispatch::Unknown,
-            Some("call_pending: 动作调用尚未返回，也没有可核实的生效证据".to_owned()),
+            Some("call_pending".to_owned()),
         )
     })
 }
@@ -1562,7 +1562,7 @@ mod tests {
         let mut resp = Response::acted(
             "r1".to_owned(),
             Dispatch::Submitted,
-            Err("target_blocked: 动作调用尚未返回，没有重读目标窗口".to_owned()),
+            Err("target_blocked".to_owned()),
         );
         resp.blocking = Some(vec![
             BlockingWindow {
@@ -1645,7 +1645,7 @@ mod tests {
             let settled = classify_action(None, Some(evidence), false);
             let (dispatch, reason) = settled.expect("有证据即有终态");
             assert_eq!(dispatch, Dispatch::Submitted);
-            assert!(reason.is_some_and(|r| r.contains("调用尚未返回")));
+            assert_eq!(reason.as_deref(), Some(evidence.as_str()));
         }
     }
 
@@ -2384,7 +2384,7 @@ mod tests {
             let (dispatch, reason) =
                 classify_action(None, Some(evidence), false).expect("有证据即有终态");
             assert_eq!(dispatch, Dispatch::Submitted);
-            assert!(reason.is_some_and(|r| r.contains("调用尚未返回")));
+            assert_eq!(reason.as_deref(), Some(evidence.as_str()));
         }
     }
 

@@ -650,10 +650,7 @@ impl Backend {
                 }
                 (
                     Attempt::Called(outcome),
-                    Err(format!(
-                        "{TARGET_BLOCKED}: 动作调用尚未返回，没有重读目标窗口；\
-                         目标进程此刻的顶层窗口随回执带回"
-                    )),
+                    Err(TARGET_BLOCKED.to_owned()),
                 )
             }
             called => {
