@@ -39,7 +39,12 @@ import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { dataPath } from '@qywork/runtime'
 import { externalBinPath } from './external-bin.ts'
-import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
+import {
+  createReloadSupervisor,
+  isConsoleInterrupt,
+  isSourceChange,
+  isWebSourceChange,
+} from './reload-supervisor.ts'
 import { watchSource } from './source-watch.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
 import { startSourceUpdater } from './update/source.ts'
@@ -166,7 +171,7 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       '--host',
       '127.0.0.1',
       // 这个脚本被硬关（关窗口、任务管理器）时它自己也退。少了这条，
-      // 下面那个 stopAll 没机会跑，sidecar 会带着一串后台进程活下来。
+      // shutdown 没机会跑时，sidecar 必须自行结束。
       '--parent-pid',
       String(process.pid),
       // **不传 --cwd**：传了就等于把这个仓库登记成项目，而开发态不要这个默认
@@ -193,6 +198,21 @@ let stopping = false
 let supervising = false
 let agent!: ReturnType<typeof Bun.spawn>
 let supervisor!: ReturnType<typeof createReloadSupervisor>
+let web: ReturnType<typeof Bun.spawn> | undefined
+let shell: ReturnType<typeof Bun.spawn> | undefined
+let updater: Awaited<ReturnType<typeof startSourceUpdater>> | undefined
+
+/** 先关闭自动恢复入口，再结束子进程；sidecar 只结束自身，保留任务启动的后台服务。 */
+function shutdown(code: number): never {
+  stopping = true
+  updater?.close()
+  agent?.kill()
+  if (web) killTree(web)
+  if (shell) killTree(shell)
+  process.exit(code)
+}
+process.on('SIGINT', () => shutdown(0))
+process.on('SIGTERM', () => shutdown(0))
 
 /**
  * 起一个 sidecar 并盯着它的退出。
@@ -205,6 +225,8 @@ let supervisor!: ReturnType<typeof createReloadSupervisor>
 function startAgent(): void {
   agent = spawnAgent()
   void agent.exited.then((code) => {
+    // 同一控制台的子进程退出通知可能先于父进程的 SIGINT 到达。
+    if (!stopping && isConsoleInterrupt(code)) shutdown(0)
     if (!stopping && supervising) supervisor.onExit(code)
   })
 }
@@ -217,8 +239,7 @@ if (!(await waitReady())) {
       ? '[dev] sidecar 启动失败，详见上方输出\n'
       : '[dev] sidecar 启动超时（30 秒内未就绪）\n',
   )
-  agent.kill()
-  process.exit(1)
+  shutdown(1)
 }
 process.stderr.write(
   `[dev] sidecar 就绪，正在启动${MODE === 'desktop' ? '桌面外壳' : 'Web 界面'}\n`,
@@ -299,7 +320,7 @@ function killTree(proc: ReturnType<typeof Bun.spawn>): void {
   proc.kill()
 }
 
-const updater = await startSourceUpdater({
+updater = await startSourceUpdater({
   root: ROOT,
   mode: MODE,
   sidecarPort: PORT,
@@ -309,31 +330,28 @@ const updater = await startSourceUpdater({
       { root: ROOT, target, head, mode: MODE, parentPid: process.pid },
       { QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) },
     )
-    setTimeout(() => {
-      stopAll()
-      process.exit(0)
-    }, 300)
+    setTimeout(() => shutdown(0), 300)
   },
 })
 
-const web = Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/web'), 'dev'], {
-  cwd: ROOT,
+web = Bun.spawn([BUN, join(ROOT, 'apps/web/node_modules/vite/bin/vite.js')], {
+  cwd: join(ROOT, 'apps/web'),
   env: { ...env, QYWORK_UPDATE_ENDPOINT: JSON.stringify(updater.endpoint) },
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'ignore',
 })
 
-const shell =
+shell =
   MODE === 'desktop'
-    ? Bun.spawn([BUN, 'run', '--cwd', join(ROOT, 'apps/desktop'), 'tauri', 'dev'], {
-        cwd: ROOT,
+    ? Bun.spawn([BUN, join(ROOT, 'apps/desktop/node_modules/@tauri-apps/cli/tauri.js'), 'dev'], {
+        cwd: join(ROOT, 'apps/desktop'),
         env: privilegedEnv,
         stdout: 'inherit',
         stderr: 'inherit',
         stdin: 'inherit',
       })
-    : null
+    : undefined
 
 if (MODE === 'web') {
   const url = `http://127.0.0.1:5180/#t=${TOKEN}`
@@ -356,24 +374,5 @@ if (MODE === 'web') {
   }
 }
 
-/**
- * 谁先退都把另一个收干净——留下的 qy 会占着端口和 SQLite 的 WAL 锁。
- *
- * **不杀更深的那一层。** sidecar 底下挂着模型用 `run_command` 起的后台进程
- * （`run.ps1 start` 那类服务），那是用户要的结果，不该因为开发环境退出而被收掉。
- * 它们也不会再持有端口——命令挂在 runner 底下，那个进程出生在绑端口之前，
- * 手里没有监听句柄（`tools/runner.ts`）。
- */
-const stopAll = () => {
-  stopping = true
-  updater.close()
-  agent.kill()
-  killTree(web)
-  if (shell) killTree(shell)
-}
-process.on('SIGINT', stopAll)
-process.on('SIGTERM', stopAll)
-
 const code = await (shell ?? web).exited
-stopAll()
-process.exit(code)
+shutdown(isConsoleInterrupt(code) ? 0 : code)

@@ -29,6 +29,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+trap {
+  Write-Host ("启动失败：" + $_.Exception.Message) -ForegroundColor Red
+  Read-Host '按回车键关闭' | Out-Null
+  exit 1
+}
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -73,28 +78,31 @@ function Clear-StaleShell {
 }
 
 # --- 前置检查 -----------------------------------------------------------------
-# Start-Process 只认真正的可执行文件。npm 装出来的 bun 在 PATH 上有三个同名入口
-# （bun.ps1 / bun.cmd / 无扩展名的 shell 脚本），`-FilePath 'bun'` 会挑到最后那个，
-# 报「%1 is not a valid Win32 application」。所以这里显式挑 .exe，退而求其次挑 .cmd。
-function Resolve-Exe([string]$Name) {
+# npm 的 bun.cmd 只用于定位真实可执行文件，不能作为常驻父进程，否则 Ctrl-C 会等待批处理确认。
+function Resolve-Bun {
   $cands = @(
-    Get-Command $Name -All -ErrorAction SilentlyContinue |
+    Get-Command bun -All -ErrorAction SilentlyContinue |
       Where-Object { $_.CommandType -eq 'Application' } |
       Select-Object -ExpandProperty Source
   )
   $hit = $cands | Where-Object { $_ -like '*.exe' } | Select-Object -First 1
   if (-not $hit) { $hit = $cands | Where-Object { $_ -like '*.cmd' -or $_ -like '*.bat' } | Select-Object -First 1 }
-  return $hit
+  if (-not $hit) { return $null }
+  $executable = & $hit --print 'process.execPath'
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+    throw '无法定位 Bun 可执行文件'
+  }
+  return $executable
 }
 
-$bunExe = Resolve-Exe 'bun'
+$bunExe = Resolve-Bun
 if (-not $bunExe) {
   throw "PATH 上找不到 bun。装一个：https://bun.sh （或 ``irm bun.sh/install.ps1 | iex``）"
 }
 
 if (-not $SkipInstall -and -not (Test-Path (Join-Path $root 'node_modules'))) {
   Say '首次运行，装依赖（bun install）…'
-  bun install
+  & $bunExe install
   if ($LASTEXITCODE -ne 0) { throw 'bun install 失败' }
 }
 
@@ -120,5 +128,8 @@ Clear-DevPort 5180
 Clear-DevPort 7717
 if ($Mode -eq 'desktop') { Clear-StaleShell }
 Say "以 $Mode 模式启动；关闭终端会结束本实例。"
-if ($Mode -eq 'web') { bun run dev --web } else { bun run dev }
+$devArgs = @((Join-Path $PSScriptRoot 'dev.ts'))
+if ($Mode -eq 'web') { $devArgs += '--web' }
+& $bunExe @devArgs
+if ($LASTEXITCODE -ne 0) { throw "进程退出，退出码 $LASTEXITCODE" }
 exit $LASTEXITCODE

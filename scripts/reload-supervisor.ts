@@ -39,6 +39,11 @@ export interface ReloadSupervisor {
   onExit(code: number | null): void
 }
 
+/** Windows 控制台中断可能保留 NTSTATUS，也可能被 Bun 截成低 8 位退出码。 */
+export function isConsoleInterrupt(code: number | null, platform = process.platform): boolean {
+  return platform === 'win32' && code !== null && (code === 58 || code >>> 0 === 0xc000013a)
+}
+
 export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   let timer: unknown = null
   let reloading = false

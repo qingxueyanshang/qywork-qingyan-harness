@@ -10,7 +10,23 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createReloadSupervisor, isSourceChange, isWebSourceChange } from './reload-supervisor.ts'
+import {
+  createReloadSupervisor,
+  isConsoleInterrupt,
+  isSourceChange,
+  isWebSourceChange,
+} from './reload-supervisor.ts'
+
+test('控制台中断只在 Windows 按原始或截断的状态码识别，其它错误保留', () => {
+  for (const code of [58, 0xc000013a, -1073741510]) {
+    expect(isConsoleInterrupt(code, 'win32')).toBe(true)
+  }
+  for (const code of [null, 0, 1, 2, 101, 130]) {
+    expect(isConsoleInterrupt(code, 'win32')).toBe(false)
+  }
+  expect(isConsoleInterrupt(58, 'linux')).toBe(false)
+  expect(isConsoleInterrupt(58, 'darwin')).toBe(false)
+})
 
 function unusedPort(): number {
   const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })

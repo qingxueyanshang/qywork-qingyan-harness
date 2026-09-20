@@ -13,11 +13,6 @@ rem policy just to start the app.
 setlocal
 set "MODE=%~1"
 if "%MODE%"=="" set "MODE=desktop"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start.ps1" -Mode %MODE%
-set "CODE=%ERRORLEVEL%"
-if not "%CODE%"=="0" (
-  echo.
-  echo Failed to start. Exit code %CODE%
-  pause
-)
-exit /b %CODE%
+rem Hand console ownership to PowerShell; an active batch would prompt on Ctrl-C.
+start "QyWork" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start.ps1" -Mode "%MODE%"
+exit /b %ERRORLEVEL%
