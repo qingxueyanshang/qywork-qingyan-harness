@@ -132,17 +132,22 @@ const BUN = process.execPath
  * 补齐 `externalBin` 声明的文件。
  *
  * 外壳的构建脚本在编译期检查这些文件存在，缺一个就以 101 退出，`tauri dev` 也走这一步。
- * 开发态不执行它们的内容——sidecar 由本脚本从源码跑——所以只在缺失时编一次，
- * 已经在的不跟着源码重编。
+ *
+ * 两个文件的处理不同：
+ * - `qy` 在开发态不被执行（sidecar 由本脚本从源码跑），只在缺失时编一次。
+ * - `qy-computer-host` 在开发态由外壳真的拉起，且与外壳按协议版本握手。不要改成
+ *   「只在缺失时编」：外壳每次启动都从源码重编，留着旧的 worker 就是版本不符，
+ *   握手被拒、电脑控制这组工具整组不注册，而界面上只有一行「组件未就绪」。
+ *   cargo 是增量的，源码没变时这一步只花一次无事可做的构建。
  */
 async function ensureExternalBins(): Promise<void> {
   const assets = [
-    ['qy', 'scripts/build-sidecar.ts'],
-    ['qy-computer-host', 'scripts/build-computer-host.ts'],
+    { name: 'qy', script: 'scripts/build-sidecar.ts', always: false },
+    { name: 'qy-computer-host', script: 'scripts/build-computer-host.ts', always: true },
   ] as const
-  for (const [name, script] of assets) {
-    if (await Bun.file(await externalBinPath(name)).exists()) continue
-    process.stderr.write(`[dev] 缺少外部二进制 ${name}，先编译一次\n`)
+  for (const { name, script, always } of assets) {
+    if (!always && (await Bun.file(await externalBinPath(name)).exists())) continue
+    process.stderr.write(`[dev] 编译外部二进制 ${name}\n`)
     const build = Bun.spawn([BUN, 'run', join(ROOT, script)], {
       cwd: ROOT,
       stdout: 'inherit',
