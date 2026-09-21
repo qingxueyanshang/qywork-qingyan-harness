@@ -1,4 +1,7 @@
-/** 覆盖范围：`sink.ts` 的可重放性分类、裁剪与落盘，以及子 agent 产出的投递闸。 */
+/**
+ * 覆盖范围：`sink.ts` 的可重放性分类、裁剪与落盘、调用方自带摘录的那条入口，
+ * 以及子 agent 产出的投递闸。
+ */
 import { describe, expect, test } from 'bun:test'
 import { chargeBatchBudget, deliveredTokens, deliveryBudget } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
@@ -40,6 +43,90 @@ describe('可重放性分类', () => {
 
   test('第三方 MCP 工具保守当作不可重放', () => {
     expect(isContentAuthority('mcp__github__get_issue')).toBe(true)
+  })
+
+  /** 漏一个的后果是那个出口静默不落盘：`deliver` 直接走不截断分支，不报错。 */
+  test('会带回观察的四个 desktop 工具都在表里', () => {
+    for (const name of ['desktop_observe', 'desktop_act', 'desktop_act_sequence', 'desktop_wait']) {
+      expect(isContentAuthority(name)).toBe(true)
+    }
+  })
+
+  test('会带回观察或选项页的四个 browser 工具都在表里，只回短回执的三个不在', () => {
+    for (const name of ['browser_observe', 'browser_act', 'browser_navigate', 'browser_wait']) {
+      expect(isContentAuthority(name)).toBe(true)
+    }
+    for (const name of ['browser_tabs', 'browser_upload', 'browser_download']) {
+      expect(isContentAuthority(name)).toBe(false)
+    }
+  })
+})
+
+/**
+ * 结构化正文按字节头尾裁出来的不是可用的结果，这类调用方自己选好投递哪一部分，
+ * `deliver` 只管落盘、地址、覆盖事实与失败降级。
+ */
+describe('调用方自带摘录', () => {
+  const body = enc.encode('a'.repeat(INLINE_BUDGET_BYTES * 3))
+  const excerpt = { text: '[{"ref":"w#0"}]', truncated: true, deliveredBytes: 15 }
+
+  test('正文照旧整份落盘，摘录原样回，不追加保存说明', () => {
+    const sink = fakeSink()
+    const r = deliver(sink, {
+      toolName: 'desktop_observe',
+      sourceType: 'desktop:observation',
+      body,
+      excerpt,
+    })
+
+    expect(sink.landed[0]!.byteLength).toBe(body.byteLength)
+    expect(r.resourceId).toBe('rs_1')
+    expect(r.text).toBe(excerpt.text)
+    expect(r.coverage.deliveredBytes).toBe(15)
+    expect(r.coverage.totalBytes).toBe(body.byteLength)
+    expect(r.coverage.truncated).toBe(true)
+  })
+
+  test('落盘失败时给出原因，摘录仍然原样回', () => {
+    const failing: SinkPort = {
+      land() {
+        throw new Error('磁盘满了')
+      },
+      read: () => null,
+      stat: () => null,
+    }
+    const r = deliver(failing, {
+      toolName: 'desktop_act',
+      sourceType: 'desktop:observation',
+      body,
+      excerpt,
+    })
+
+    expect(r.resourceId).toBeNull()
+    expect(r.status).toBe('partial')
+    expect(r.landError).toBe('磁盘满了')
+    expect(r.text).toBe(excerpt.text)
+    expect(r.coverage.landFailed).toBe(true)
+  })
+
+  test('没有 sink 时不落盘，摘录原样回', () => {
+    const r = deliver(null, {
+      toolName: 'desktop_act',
+      sourceType: 'desktop:observation',
+      body,
+      excerpt,
+    })
+    expect(r.resourceId).toBeNull()
+    expect(r.landError).toBeUndefined()
+    expect(r.text).toBe(excerpt.text)
+  })
+
+  test('现有调用方不受影响：仍按字节裁剪并追加保存说明', () => {
+    const sink = fakeSink()
+    const r = deliver(sink, { toolName: 'run_command', sourceType: 'shell', body })
+    expect(r.text).toContain('完整输出已保存')
+    expect(r.text).toContain('read_resource')
+    expect(r.landError).toBeUndefined()
   })
 })
 

@@ -99,6 +99,7 @@ export {
   type PermissionVerdict,
   type PluginPort,
   RESULT_BUDGET_RATIO,
+  recordBatchSpent,
   resetBatchBudget,
   type SchedulePort,
   type SinkPort,

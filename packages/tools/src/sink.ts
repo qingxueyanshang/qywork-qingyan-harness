@@ -53,6 +53,19 @@ export const CONTENT_AUTHORITY_TOOLS: ReadonlySet<string> = new Set([
   // 的那个进程都已经结束，重派得到的是另一次执行的结果。
   'subagent',
   'workflow',
+  // 观察是采集那一刻的界面。再观察一次得到的是另一个时刻的控件表，控件编号也换了一批，
+  // 动作所依据的那一份无从重建。四个出口都可能带回观察，因此四个都在表里。
+  'desktop_observe',
+  'desktop_act',
+  'desktop_act_sequence',
+  'desktop_wait',
+  // 页面观察同理：元素编号只属于产生它的那一次观察，重新观察即换号。
+  // 这四个工具会带回观察或选项页，`browser_tabs` / `browser_upload` / `browser_download`
+  // 只回短回执，不落盘。
+  'browser_observe',
+  'browser_act',
+  'browser_navigate',
+  'browser_wait',
 ])
 
 export function isContentAuthority(toolName: string): boolean {
@@ -72,6 +85,22 @@ export function isContentAuthority(toolName: string): boolean {
  */
 export const INLINE_BUDGET_BYTES = 8 * 1024
 
+/**
+ * 观察结果上限占单次投递预算的比例。
+ *
+ * **产品里只有这一个数**：它同时决定「多大算大」与「视图装多少」，desktop 的控件表与
+ * browser 的元素表共用它。写成比例是为了让小窗口跟着缩。
+ */
+export const OBSERVATION_RESULT_BUDGET_RATIO = 1 / 4
+
+/** 这一轮观察结果的上限（token）。 */
+export function observationResultBudget(contextWindow: number): number {
+  return Math.max(
+    1,
+    Math.floor(deliveryBudget(contextWindow).perCall * OBSERVATION_RESULT_BUDGET_RATIO),
+  )
+}
+
 /** 头尾各留一半：错误信息通常在尾部（stack trace、exit code），只留头部会把它切掉。 */
 const HEAD_RATIO = 0.6
 
@@ -82,6 +111,8 @@ export interface LandedResult {
   resourceId: string | null
   coverage: ResourceCoverage
   status: ResourceStatus
+  /** 只有落盘抛错时有：自带摘录的调用方据它组织自己的说明。 */
+  landError?: string
 }
 
 /**
@@ -152,6 +183,10 @@ function decodeAtBoundary(slice: Uint8Array, side: 'head' | 'tail'): string {
  *
  * 分支 2 容易被误改成「内容权威一律落盘」。那样每条 `ls` 都会
  * 在正文库里留一行，GC 压力和写放大都不划算。
+ *
+ * **`excerpt` 是调用方自带的摘录。** 结构化正文（控件表、元素表）按字节头尾裁出来的
+ * 不是可用的结果，这类调用方自己选好投递哪一部分，`deliver` 只管落盘、地址、覆盖事实
+ * 与失败降级，`text` 原样回、不再追加保存说明——说明由调用方按自己的结果形状写。
  */
 export function deliver(
   sink: SinkPort | null,
@@ -162,10 +197,11 @@ export function deliver(
     mimeType?: string | null
     query?: string
     budget?: number
+    excerpt?: { text: string; truncated: boolean; deliveredBytes: number }
   },
 ): LandedResult {
   const budget = input.budget ?? INLINE_BUDGET_BYTES
-  const clamped = clampBody(input.body, budget)
+  const clamped = input.excerpt ?? clampBody(input.body, budget)
 
   const baseCoverage: ResourceCoverage = {
     deliveredBytes: clamped.deliveredBytes,
@@ -194,7 +230,9 @@ export function deliver(
       coverage: baseCoverage,
     })
     return {
-      text: `${clamped.text}\n\n[完整输出已保存：${landed.resourceId}，共 ${input.body.byteLength.toLocaleString()} 字节。用 read_resource 读取。]`,
+      text: input.excerpt
+        ? clamped.text
+        : `${clamped.text}\n\n[完整输出已保存：${landed.resourceId}，共 ${input.body.byteLength.toLocaleString()} 字节。用 read_resource 读取。]`,
       resourceId: landed.resourceId,
       coverage: baseCoverage,
       status: 'complete',
@@ -203,11 +241,15 @@ export function deliver(
     // 落盘失败不能把工具调用整体判失败——正文的头尾摘要仍然有效，
     // 模型拿着它照样能继续。但**必须**告诉模型完整正文拿不到了，
     // 否则它会去调 read_resource 然后撞一个不存在的 id。
+    const why = err instanceof Error ? err.message : String(err)
     return {
-      text: `${clamped.text}\n\n[完整输出保存失败：${err instanceof Error ? err.message : String(err)}。只有上面这段可用。]`,
+      text: input.excerpt
+        ? clamped.text
+        : `${clamped.text}\n\n[完整输出保存失败：${why}。只有上面这段可用。]`,
       resourceId: null,
       coverage: { ...baseCoverage, landFailed: true },
       status: 'partial',
+      landError: why,
     }
   }
 }
