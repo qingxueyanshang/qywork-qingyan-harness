@@ -174,7 +174,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
           if (tc.id) slot.id = tc.id
           if (tc.function?.name) slot.name = tc.function.name
           const argsDelta: string = tc.function?.arguments ?? ''
-          if (argsDelta) slot.json += argsDelta
+          if (argsDelta) {
+            slot.json += argsDelta
+            yield { type: 'tool_call_progress' }
+          }
         }
 
         if (choice.finish_reason) {

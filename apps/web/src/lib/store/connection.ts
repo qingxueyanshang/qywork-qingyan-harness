@@ -191,7 +191,7 @@ const thinkFrames = createFramer({ write: appendThinking, schedule })
  * **这份名单宁可短。** 漏一条只是多冲一次（顿一下）；多写一条会让真正要落
  * transcript 的事件看到一段放了一半的正文，那是顺序错乱，比顿挫严重得多。
  */
-const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
+const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state', 'tool.generating'])
 
 /**
  * 「正在重连」那句话的收场信号：重发的那一次真的开始出数据了，或者整轮结束了。
@@ -204,6 +204,7 @@ const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state'])
 const RESUMED: ReadonlySet<AgentEvent['type']> = new Set([
   'thinking.delta',
   'text.delta',
+  'tool.generating',
   'tool.started',
   'run.error',
   'run.finished',
@@ -350,6 +351,9 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
      * 状态行会按这个过期时刻报「已 N 秒没有新数据」。
      */
     if ('runId' in ev && ev.runId !== null) setState('views', cid, 'lastEventAt', Date.now())
+    if (RESUMED.has(ev.type) || ev.type === 'run.started' || ev.type === 'run.retrying') {
+      setState('views', cid, 'generatingToolCall', ev.type === 'tool.generating')
+    }
     // 收场判据的唯一落点，理由见 `RESUMED`。
     if (state.views[cid]?.retry && RESUMED.has(ev.type)) {
       setState('views', cid, 'retry', null)
@@ -1018,6 +1022,7 @@ export async function loadConversationView(id: string): Promise<void> {
           v.usage = null
           v.lastEventAt = null
           v.retry = null
+          v.generatingToolCall = false
         }
       }),
     )
@@ -1400,6 +1405,7 @@ export async function reloadActiveConversation(): Promise<void> {
           v.lastEventAt = live ? Date.now() : null
           // 重连计数活在 AgentLoop 调用栈，账本没有对应字段，重拉只能清空。
           v.retry = null
+          v.generatingToolCall = false
           // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
           v.error = null
         }

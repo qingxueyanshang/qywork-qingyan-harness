@@ -259,6 +259,8 @@ export type ProviderEvent =
   | { type: 'response_started' }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
+  /** 收到非空工具参数片段；只报告生成进度，完整调用仍由 tool_calls 交付。 */
+  | { type: 'tool_call_progress' }
   | { type: 'tool_calls'; calls: WireToolCall[] }
   | { type: 'usage'; usage: ProviderUsage }
   /**

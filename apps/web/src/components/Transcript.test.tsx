@@ -67,6 +67,101 @@ function resize(target: Element) {
   resizeCallbacks.get(target)?.([], {} as ResizeObserver)
 }
 
+test('主会话与子会话状态行按真实参数进度显示，静默与重连仍能接管', async () => {
+  const store = await import('../lib/store/index.ts')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const { render } = await import('solid-js/web')
+  const { LiveRunBar } = await import('./Transcript.tsx')
+  const ids = ['cv_progress_main', 'cv_progress_child']
+  store.setState({
+    activeConversation: ids[0]!,
+    busyConversations: ids,
+    connection: 'ready',
+    views: {},
+  })
+  store.openConversationTab(ids[1]!, '子会话')
+  store.syncViews()
+  for (const id of ids) {
+    store.openView(id)
+    store.setState('views', id, 'runStartedAt', Date.now() - 60_000)
+    store.setState('views', id, 'lastEventAt', Date.now() - 31_000)
+  }
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(
+    () => (
+      <>
+        <LiveRunBar conversationId={ids[0]!} />
+        <LiveRunBar conversationId={ids[1]!} />
+      </>
+    ),
+    host as unknown as HTMLElement,
+  )
+  let seq = 0
+  const progress = (conversationId: string) =>
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId,
+      event: { type: 'tool.generating', runId: 'rn_progress' },
+    } as never)
+  const notes = () => [...host.querySelectorAll('.run-live')].map((el) => el.textContent)
+  try {
+    expect(notes().every((note) => note?.includes('没有新数据'))).toBe(true)
+    progress(ids[0]!)
+    expect(notes()[0]).toBe('正在生成…')
+    expect(notes()[1]).toContain('没有新数据')
+    expect(store.viewOf(ids[0]!).transcript).toHaveLength(0)
+    progress(ids[1]!)
+    expect(notes()).toEqual(['正在生成…', '正在生成…'])
+
+    store.setState('views', ids[0]!, 'lastEventAt', Date.now() - 31_000)
+    expect(notes()[0]).toContain('没有新数据')
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'run.retrying',
+        runId: 'rn_progress',
+        attempt: 1,
+        max: 5,
+        failedThinkingStepIds: [],
+      },
+    } as never)
+    expect(notes()[0]).toBe('正在重连 1 / 5…')
+    progress(ids[0]!)
+    expect(notes()[0]).toBe('正在生成…')
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'tool.started',
+        runId: 'rn_progress',
+        stepId: 'st_progress',
+        toolCallId: 'call_progress',
+        toolName: 'write_file',
+        batchId: 'bt_progress',
+        callIndex: 0,
+        waveIndex: 0,
+        args: { path: 'page.html' },
+        action: { kind: 'write', objectLabel: '文件', target: 'page.html' },
+      },
+    } as never)
+    expect(notes()[0]).toBe('正在执行…')
+    expect(store.viewOf(ids[0]!).generatingToolCall).toBe(false)
+  } finally {
+    dispose()
+    host.remove()
+    store.closePanelTab(`conversation-${ids[1]}`)
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
 describe('工具图片回放', () => {
   test('read_file 图片只给模型，不自动渲染成会话图片', async () => {
     const store = await import('../lib/store/index.ts')
@@ -81,6 +176,7 @@ describe('工具图片回放', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [
@@ -133,6 +229,7 @@ describe('工具图片回放', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [
@@ -478,6 +575,7 @@ describe('子会话与主会话共用流式外壳', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
         },
@@ -570,6 +668,7 @@ describe('子会话与主会话共用流式外壳', () => {
           runStartedAt: 100,
           usage: null,
           lastEventAt: 100,
+          generatingToolCall: false,
           retry: null,
           error: null,
         },
@@ -677,6 +776,7 @@ describe('子会话与主会话共用流式外壳', () => {
           runStartedAt: 100,
           usage: null,
           lastEventAt: 100,
+          generatingToolCall: false,
           retry: null,
           error: null,
         },
@@ -688,6 +788,7 @@ describe('子会话与主会话共用流式外壳', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
         },
@@ -741,6 +842,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [
@@ -890,6 +992,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runStartedAt: Date.now(),
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [
@@ -1082,6 +1185,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [],

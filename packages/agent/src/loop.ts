@@ -1303,6 +1303,7 @@ export class AgentLoop {
                   !recordedFirstContent &&
                   (ev.type === 'thinking_delta' ||
                     ev.type === 'text_delta' ||
+                    ev.type === 'tool_call_progress' ||
                     ev.type === 'tool_calls')
                 ) {
                   recordedFirstContent = true
@@ -1312,6 +1313,10 @@ export class AgentLoop {
               if (input.signal.aborted) break
 
               switch (ev.type) {
+                case 'tool_call_progress':
+                  // 同一条参数进度既刷新 openStream 的空闲计时，也交给界面显示。
+                  yield { type: 'tool.generating', runId: input.runId }
+                  break
                 case 'response_started':
                   // 只作为传输遥测边界；不产生模型可见内容或 UI step。
                   break

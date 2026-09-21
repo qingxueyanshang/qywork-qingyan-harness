@@ -145,7 +145,10 @@ export class AnthropicAdapter implements LlmAdapter {
               const slot = partial.get(ev.index)
               // **必须兜住缺席**：直接拼接会把字符串 `undefined` 接进 JSON，
               // 随后 `JSON.parse` 抛错，整次工具调用的参数将丢失。
-              if (slot) slot.json += d.partial_json ?? ''
+              if (slot && d.partial_json) {
+                slot.json += d.partial_json
+                yield { type: 'tool_call_progress' }
+              }
             }
             break
           }

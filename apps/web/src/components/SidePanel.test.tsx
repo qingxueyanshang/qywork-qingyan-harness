@@ -150,6 +150,7 @@ describe('文件页刷新', () => {
           runStartedAt: null,
           usage: null,
           lastEventAt: null,
+          generatingToolCall: false,
           retry: null,
           error: null,
           transcript: [],
@@ -529,6 +530,7 @@ describe('变更页按轮', () => {
     runStartedAt: null,
     usage: null,
     lastEventAt: null,
+    generatingToolCall: false,
     retry: null,
     error: null,
   })
