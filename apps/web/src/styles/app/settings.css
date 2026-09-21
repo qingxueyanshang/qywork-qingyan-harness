@@ -1393,9 +1393,23 @@ textarea.code-area::placeholder {
   font-weight: 600;
   font-size: var(--fs-sm);
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-head:has(.schedule-outcome) .schedule-title {
+  flex-shrink: 0;
+  max-width: 50%;
+}
+.schedule-outcome {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .schedule-head .icon-btn {
   margin-left: auto;
+  flex-shrink: 0;
 }
 .schedule-prompt {
   padding: 6px var(--s-2);
