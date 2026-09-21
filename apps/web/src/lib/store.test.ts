@@ -54,6 +54,7 @@ const {
   activePanelTab,
   activateWorkspace,
   applyEvent,
+  applyRejected,
   discardPace,
   client,
   dropView,
@@ -989,6 +990,105 @@ describe('事件按会话归属过滤', () => {
       event: { type: 'conversation.busy', conversationId: 'cv_other', busy: false },
     } as never)
     expect(state.busyConversations).toEqual([])
+  })
+
+  /**
+   * 起轮前被拒的那一轮怎么收场。服务端在 run 建立之前拒绝时不发 `run.finished`
+   * （约定写在 `RunErrorEvent` 上），终态只有 `conversation.busy: false`。
+   *
+   * **原始失败形状**：按下回车那一刻客户端乐观置忙，只认 `run.finished` 的话
+   * 这一格永远放不下来，输入框停在停止按钮上。
+   */
+  test('没配 key 被拒 —— run.error 不放下忙闲，随后那条忙闲才放', () => {
+    reset('cv_now')
+    // 按下回车那一刻的乐观置忙（`sendMessage` 走的同一张表）。
+    setState('busyConversations', ['cv_now'])
+    applyEvent({
+      seq: 7,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'run.error', runId: '', code: 'no_api_key', message: '未配置 API Key' },
+    } as never)
+    expect(view().error?.message).toBe('未配置 API Key')
+    expect(isRunning()).toBe(true)
+
+    applyEvent({
+      seq: 8,
+      at: 0,
+      event: { type: 'conversation.busy', conversationId: 'cv_now', busy: false },
+    } as never)
+    expect(isRunning()).toBe(false)
+  })
+
+  /**
+   * 被拒的指令怎么收场。服务端从未为它置忙，因此**不会有任何 `conversation.busy`**
+   * 来放下按回车时乐观置上的那一格——冲销只能挂在「这条指令被拒」这一事实上。
+   *
+   * **原始失败形状**：应用更新期间按回车，指令被回绝，输入框停在停止按钮上，
+   * 直到重连由握手快照重置。
+   */
+  const captureSend = () => {
+    const sent: { type: string; clientRequestId?: string }[] = []
+    const before = client.send
+    ;(client as unknown as { send: (cmd: unknown) => void }).send = (cmd) => {
+      sent.push(cmd as { type: string })
+    }
+    return {
+      requestId: () => sent.find((c) => c.type === 'message.send')?.clientRequestId ?? '',
+      restore: () => {
+        ;(client as unknown as { send: typeof before }).send = before
+      },
+    }
+  }
+
+  const rejection = (clientRequestId?: string) =>
+    ({
+      type: 'command.rejected',
+      command: 'message.send',
+      reason: 'conflict',
+      message: '应用正在更新，请稍后重试',
+      ...(clientRequestId ? { clientRequestId } : {}),
+    }) as never
+
+  test('这条指令被拒 —— 它预支的那一笔忙落回闲', () => {
+    reset('cv_now')
+    const sent = captureSend()
+    try {
+      sendMessage('更新完再说')
+    } finally {
+      sent.restore()
+    }
+    expect(isRunning()).toBe(true)
+
+    applyRejected(rejection(sent.requestId()))
+    expect(isRunning()).toBe(false)
+    expect(state.notice?.message).toBe('应用正在更新，请稍后重试')
+  })
+
+  test('会话本来就在跑 —— 后发的指令被拒，仍为忙', () => {
+    reset('cv_now')
+    // 服务端置忙在先：这一格不是客户端预支的，被拒也不该动它。
+    setState('busyConversations', ['cv_now'])
+    const sent = captureSend()
+    try {
+      sendMessage('顺带看看日志')
+    } finally {
+      sent.restore()
+    }
+
+    applyRejected(rejection(sent.requestId()))
+    expect(isRunning()).toBe(true)
+    // 不带幂等键的指令（`followup.steer` 那类）被拒同样不动忙闲。
+    applyRejected(rejection())
+    expect(isRunning()).toBe(true)
+  })
+
+  /** 断线时客户端自己合成的那条回执走同一条冲销路径，它带着同一个幂等键。 */
+  test('连接断开时按回车 —— 没发出去，忙闲不留在界面上', () => {
+    reset('cv_now')
+    sendMessage('在吗')
+    expect(state.notice?.reason).toBe('not_ready')
+    expect(isRunning()).toBe(false)
   })
 
   /*
@@ -2345,7 +2445,15 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
     setState('busyConversations', [])
-    sendMessage('接着干')
+    // 指令要真发出去：换不掉 `client.send` 的话，这里没有连接，它当场回一条
+    // `not_ready` 把乐观置忙冲销掉——那是断线，不是这条用例要测的那一段。
+    const before = client.send
+    ;(client as unknown as { send: (cmd: unknown) => void }).send = () => {}
+    try {
+      sendMessage('接着干')
+    } finally {
+      ;(client as unknown as { send: typeof before }).send = before
+    }
     expect(isRunning()).toBe(true)
     expect(runClosed()).toBe(false)
   })

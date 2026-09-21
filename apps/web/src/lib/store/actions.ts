@@ -19,7 +19,7 @@ import {
   type WorkspaceInput,
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
-import { hasRun, isRunning, LOCAL_ID_PREFIX, markBusy, setState, state } from './state.ts'
+import { hasRun, isRunning, LOCAL_ID_PREFIX, prepayBusy, setState, state } from './state.ts'
 import { setOpenFile, setWorkspace } from './ui.ts'
 
 /**
@@ -418,9 +418,10 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
    * 乐观置忙：用户按下回车，左栏那一行和输入框立刻进入执行态，不等服务端回执。
    *
    * **写的是同一张表**，不是给「当前这条」另记一个布尔——服务端占位成功后会用
-   * `conversation.busy` 覆盖同一格，被回绝时也由它把这格放下来。
+   * `conversation.busy` 覆盖同一格。带上 `requestId` 是为了这条指令被拒时
+   * 冲销得掉这一笔（`applyRejected`）：被拒的指令服务端从未置忙，没有忙闲事件会来。
    */
-  markBusy(id, true)
+  prepayBusy(id, requestId)
   client.send({
     type: 'message.send',
     clientRequestId: requestId,

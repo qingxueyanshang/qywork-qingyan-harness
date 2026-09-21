@@ -201,6 +201,23 @@ describe('指令发不出去要有回执', () => {
     expect(rejected[0]?.command).toBe('conversation.setModel')
   })
 
+  /**
+   * **原始失败形状**：断线时按回车，界面停在生成中。
+   *
+   * 乐观置忙那一笔由 `clientRequestId` 定位着冲销（`store/connection.ts` 的
+   * `applyRejected`），这条回执不带它就没有第二种办法认出是哪一次发送。
+   */
+  test('自己合成的回执带上幂等键，与服务端那条同一口径', () => {
+    const { c, rejected } = client()
+    c.send({
+      type: 'message.send',
+      clientRequestId: 'req-7',
+      conversationId: 'cv_1' as never,
+      content: '在吗',
+    })
+    expect(rejected[0]?.clientRequestId).toBe('req-7')
+  })
+
   test('连接已放弃时说的是「断开」，不是「稍后重试」——后者永远不会好', () => {
     const { c, rejected } = client()
     c.close()

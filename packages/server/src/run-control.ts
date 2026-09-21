@@ -22,6 +22,7 @@ import type {
   Goal,
   RunId,
   StopReason,
+  Workspace,
 } from '@qywork/core'
 import { log } from '@qywork/core'
 import {
@@ -117,122 +118,137 @@ export async function startRun(
   }
 
   /*
-   * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
-   * 续起就作废——他插的这一句才是这条会话现在该干的事。
+   * 后台跑，不阻塞 WebSocket 消息循环——否则一轮 agent 跑十分钟，
+   * 这十分钟里连中断指令都收不到。
    *
-   * 目标续起与子 agent 回执都不清：它们不是人的动作。
-   * 放在 reserve 成功之后：被回绝的消息没有发生，不该动任何状态。
-   */
-  if (!source) deps.runs.disarm(conversationId)
-
-  /*
-   * 这一轮跑在哪个目录下，**按会话查，不问进程**。
+   * **占位之后的一切都在这个 try 里**，包括起轮的序言（查项目目录、定模型、装配
+   * Session 与它的端口）。序言留在 try 之外的话，那里任何一处抛出（落库失败、
+   * 工具注册冲突）都没有人释放占位，此后这条会话每条消息都被回绝
+   * 「已有任务在执行」，直到进程重启。
    *
-   * 服务进程不许拿一个 `workspaceRoot` 常量（启动时的 `--cwd`）：那样一个进程
-   * 只服务得了一个项目，而那个常量本身就是 `workspaces` 表的一份缓存。
-   *
-   * 查不到就停：回落到某个默认根等于拿着 A 项目的会话去 B 项目的目录里跑命令，
-   * 而工具的路径约束、shell 的沙箱边界全部以这个根为界。
+   * 序言整段是同步的，因此 `startRun` 返回之前它已经跑完——起轮的闸仍然是
+   * 「检查与占位在同一个同步块里」。
    */
-  const ws = workspaceOf(deps.store, conversationId)
-  if (!ws) {
-    deps.runs.release(conversationId)
-    deps.bus.publish(
-      {
-        type: 'run.error',
-        runId: '' as RunId,
-        code: 'internal_error',
-        message: '这个会话找不到对应的项目目录，无法执行',
-      },
-      conversationId,
-    )
-    return
-  }
-
-  /*
-   * 没有可用模型就不起这一轮。真源是「本轮显式 > 会话当前 > 配置默认」这条链
-   * （与 `session.ask` 同一条），三者皆空 = 用户还没配模型。**在这里拦下并回结构化
-   * `no_model`**，而不是拿一个不存在的接口发出去等 401。界面另有就地拦截，这条是兜底。
-   */
-  const runModel =
-    model || getConversation(deps.store, conversationId)?.model || deps.config.active?.model
-  if (!runModel) {
-    deps.runs.release(conversationId)
-    deps.bus.publish(
-      { type: 'run.error', runId: '' as RunId, code: 'no_model', message: NO_MODEL_MESSAGE },
-      conversationId,
-    )
-    return
-  }
-
-  const controller = new AbortController()
-  let currentRunId: RunId | null = null
-
-  const session = new Session({
-    store: deps.store,
-    config: deps.config,
-    content: deps.content,
-    workspaceRoot: ws.rootPath,
-    signal: controller.signal,
-    // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，因此它那边连
-    // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
-    delegate: makeDelegate({
-      deps,
-      workspaceRoot: ws.rootPath,
-      conversationId,
-      // 回执可能在这一轮结束很久之后才到，那时这个 Session 早已 dispose：
-      // 投递走的是会话级的那条路，与用户发消息同一个函数。
-      deliver: (followUp) => {
-        void submitMessage(conversationId, followUp, deps).catch((err) => {
-          deps.bus.publish(
-            {
-              type: 'run.error',
-              runId: '' as RunId,
-              code: 'internal_error',
-              message: err instanceof Error ? err.message : String(err),
-            },
-            conversationId,
-          )
-        })
-      },
-    }),
-    // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
-    plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
-    /*
-     * 浏览器控制**按当前宿主状态现判**，不缓存。
-     *
-     * 宿主没连上或运行时版本不达标时不注入端口，这一轮连浏览器工具都不注册；
-     * 装配成「先给一个端口，调用时再报错」的话，模型会拿到一个必然失败的能力。
-     */
-    ...(deps.browser?.available() ? { browser: deps.browser.portFor(conversationId, ws.id) } : {}),
-    /*
-     * 电脑控制同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
-     * 由协调器一次判完，缺任一项就不注入端口，这一轮连桌面工具都不注册。
-     *
-     * 端口按执行者发放，顶层会话与它派出去的成员各领一份：停止只撤销自己名下的
-     * 排队请求，不会连带撤掉另一条会话正在做的动作。
-     */
-    ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
-    // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
-    followUps: (id) => deps.runs.takeSteered(id),
-  })
-
-  /*
-   * 这一轮怎么收的场，只在续起判定里用。
-   *
-   * **两个都要收，因为报错有两条路**：loop 内部的 provider 错误**不会抛出来**，
-   * 它被就地转成 `run.error` + `run.finished{stopReason:'provider_error'}`
-   * （`agent/loop.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
-   * 只认 catch 的话，一次 provider 报错会被判成「这一轮正常跑完了」然后接着续起
-   * ——那正是「不自动重试异常」要防的形状。
-   */
-  let stopReason: StopReason | null = null
-  let failure: string | null = null
-
-  // 后台跑，不阻塞 WebSocket 消息循环——否则一轮 agent 跑十分钟，
-  // 这十分钟里连中断指令都收不到。
   void (async () => {
+    /*
+     * 序言里装出来的两样，收尾要用。
+     * **声明在 try 外**：抛在赋值之前时它们仍是 null，收尾照走。
+     */
+    let ws: Workspace | null = null
+    let session: Session | null = null
+    const controller = new AbortController()
+    let currentRunId: RunId | null = null
+    /*
+     * 这一轮怎么收的场，只在续起判定里用。
+     *
+     * **两个都要收，因为报错有两条路**：loop 内部的 provider 错误**不会抛出来**，
+     * 它被就地转成 `run.error` + `run.finished{stopReason:'provider_error'}`
+     * （`agent/loop.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
+     * 只认 catch 的话，一次 provider 报错会被判成「这一轮正常跑完了」然后接着续起
+     * ——那正是「不自动重试异常」要防的形状。
+     */
+    let stopReason: StopReason | null = null
+    let failure: string | null = null
+
     try {
+      /*
+       * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
+       * 续起就作废——他插的这一句才是这条会话现在该干的事。
+       *
+       * 目标续起与子 agent 回执都不清：它们不是人的动作。
+       * 放在 reserve 成功之后：被回绝的消息没有发生，不该动任何状态。
+       */
+      if (!source) deps.runs.disarm(conversationId)
+
+      /*
+       * 这一轮跑在哪个目录下，**按会话查，不问进程**。
+       *
+       * 服务进程不许拿一个 `workspaceRoot` 常量（启动时的 `--cwd`）：那样一个进程
+       * 只服务得了一个项目，而那个常量本身就是 `workspaces` 表的一份缓存。
+       *
+       * 查不到就停：回落到某个默认根等于拿着 A 项目的会话去 B 项目的目录里跑命令，
+       * 而工具的路径约束、shell 的沙箱边界全部以这个根为界。
+       */
+      ws = workspaceOf(deps.store, conversationId)
+      if (!ws) {
+        deps.bus.publish(
+          {
+            type: 'run.error',
+            runId: '' as RunId,
+            code: 'internal_error',
+            message: '这个会话找不到对应的项目目录，无法执行',
+          },
+          conversationId,
+        )
+        return
+      }
+
+      /*
+       * 没有可用模型就不起这一轮。真源是「本轮显式 > 会话当前 > 配置默认」这条链
+       * （与 `session.ask` 同一条），三者皆空 = 用户还没配模型。**在这里拦下并回结构化
+       * `no_model`**，而不是拿一个不存在的接口发出去等 401。界面另有就地拦截，这条是兜底。
+       */
+      const runModel =
+        model || getConversation(deps.store, conversationId)?.model || deps.config.active?.model
+      if (!runModel) {
+        deps.bus.publish(
+          { type: 'run.error', runId: '' as RunId, code: 'no_model', message: NO_MODEL_MESSAGE },
+          conversationId,
+        )
+        return
+      }
+
+      session = new Session({
+        store: deps.store,
+        config: deps.config,
+        content: deps.content,
+        workspaceRoot: ws.rootPath,
+        signal: controller.signal,
+        // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，因此它那边连
+        // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
+        delegate: makeDelegate({
+          deps,
+          workspaceRoot: ws.rootPath,
+          conversationId,
+          // 回执可能在这一轮结束很久之后才到，那时这个 Session 早已 dispose：
+          // 投递走的是会话级的那条路，与用户发消息同一个函数。
+          deliver: (followUp) => {
+            void submitMessage(conversationId, followUp, deps).catch((err) => {
+              deps.bus.publish(
+                {
+                  type: 'run.error',
+                  runId: '' as RunId,
+                  code: 'internal_error',
+                  message: err instanceof Error ? err.message : String(err),
+                },
+                conversationId,
+              )
+            })
+          },
+        }),
+        // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
+        plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
+        /*
+         * 浏览器控制**按当前宿主状态现判**，不缓存。
+         *
+         * 宿主没连上或运行时版本不达标时不注入端口，这一轮连浏览器工具都不注册；
+         * 装配成「先给一个端口，调用时再报错」的话，模型会拿到一个必然失败的能力。
+         */
+        ...(deps.browser?.available()
+          ? { browser: deps.browser.portFor(conversationId, ws.id) }
+          : {}),
+        /*
+         * 电脑控制同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
+         * 由协调器一次判完，缺任一项就不注入端口，这一轮连桌面工具都不注册。
+         *
+         * 端口按执行者发放，顶层会话与它派出去的成员各领一份：停止只撤销自己名下的
+         * 排队请求，不会连带撤掉另一条会话正在做的动作。
+         */
+        ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
+        // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
+        followUps: (id) => deps.runs.takeSteered(id),
+      })
+
       for await (const ev of session.ask(content, conversationId, {
         ...(model ? { model } : {}),
         ...(attachments?.length ? { attachments } : {}),
@@ -299,7 +315,8 @@ export async function startRun(
       else deps.runs.release(conversationId)
       // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
-      session.dispose()
+      // null = 序言没走到装配就停了（查不到项目、没有模型、装配抛错）。
+      session?.dispose()
       const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
       /*
        * 「调整方向」只对发出它的那一轮成立。这一轮收尾了，没赶上 step 边界的那些
@@ -330,7 +347,8 @@ export async function startRun(
         failure,
         skipResume: fired,
       })
-      void publishGitState(ws.rootPath, ws.id, deps.bus)
+      // 查不到项目目录时没有可播的工作区，这一轮也没碰过任何文件。
+      if (ws) void publishGitState(ws.rootPath, ws.id, deps.bus)
     }
   })()
 }
