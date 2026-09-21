@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
 import { TrustDialog } from './components/TrustDialog.tsx'
+import { localHtmlUrl } from './lib/links.ts'
 import { observeAppUpdate } from './lib/store/app-update.ts'
 
 // 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
@@ -46,7 +47,7 @@ import {
  * （模型正文、配置提醒），没有手写的锚点。
  *
  * 桌面外壳里 `target="_blank"` 什么也不会发生——WebView 没有开新窗口这回事，
- * 点了没反应。http(s) 之外的 scheme 不接管：浏览器页只加载得了 http(s)。
+ * 点了没反应。本地 HTML 链接按工作区解析后交给同一个浏览器入口。
  *
  * **网页预览那条路上外站不一定框得进来**：`X-Frame-Options` / `frame-ancestors`
  * 拒绝时那一页是空白，而跨源 iframe 的加载结果读不到，这一侧看不出被拒。
@@ -55,7 +56,7 @@ import {
 export function openLink(e: MouseEvent): void {
   const link = (e.target as Element).closest('a')
   const href = link?.getAttribute('href') ?? ''
-  if (!/^https?:\/\//i.test(href)) return
+  if (!/^https?:\/\//i.test(href) && !localHtmlUrl(href, '/')) return
   e.preventDefault()
   openLinkInPanel(href)
 }

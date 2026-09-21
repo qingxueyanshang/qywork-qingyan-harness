@@ -98,6 +98,32 @@ describe('代码块正文按字面转义', () => {
 })
 
 describe('外链', () => {
+  test('本地 HTML 链接的相对路径、Windows 路径和 file URL 在净化后保留', () => {
+    for (const href of ['flying-bird.html', 'C:/ws/flying-bird.html', 'file:///C:/ws/a%20b.html']) {
+      const md = `[预览](${href})`
+      expect(renderMarkdown(md)).toContain(`href="${href}"`)
+      const stream = createStreamRenderer()
+      const { settled, live } = stream.push(`${md}\n\n第二段\n\n第三段\n\n第四段`)
+      expect(settled + live).toContain(`href="${href}"`)
+    }
+  })
+
+  test('本地链接的属性仍转义，图片 src 不放行 file 协议', () => {
+    const html = renderMarkdown('[预览](<file:///C:/ws/a"onclick="alert.html>)')
+    expect(html).not.toContain('"onclick=')
+    expect(renderMarkdown('<img src="file:///C:/ws/a.html" onerror="alert(1)">')).not.toContain(
+      'file:',
+    )
+    expect(renderMarkdown('[坏链接](javascript:page.html)')).not.toContain('javascript:')
+    for (const href of [
+      'javascript&colon;page.html',
+      'javascript&#58;page.html',
+      'java&#9;script:page.html',
+    ]) {
+      expect(renderMarkdown(`<a href="${href}">预览</a>`)).not.toContain('href=')
+    }
+  })
+
   test('一律新窗口打开并断开 opener —— 模型给的链接不可信', () => {
     const html = renderMarkdown('[example](https://example.com)')
     expect(html).toContain('target="_blank"')
