@@ -195,8 +195,8 @@ export function ConversationRow(props: {
       {/* 确认是弹窗，不在行里就地展开——232px 的栏放不下。 */}
       <ConfirmDialog
         open={armed() !== null}
-        title={armed() === 'delete' ? '删除这条会话？' : '归档这条会话？'}
-        message={armed() === 'delete' ? '删了拿不回来。' : '归档后在界面上找不回来。'}
+        title={armed() === 'delete' ? '删除会话？' : '归档会话？'}
+        message={armed() === 'delete' ? undefined : '归档后无法在界面中恢复。'}
         confirmLabel={armed() === 'delete' ? '删除' : '归档'}
         danger={armed() === 'delete'}
         onConfirm={() =>

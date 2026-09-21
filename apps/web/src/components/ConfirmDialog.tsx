@@ -14,8 +14,8 @@ import { holdOverlay } from '../lib/store/index.ts'
 export function ConfirmDialog(props: {
   open: boolean
   title: string
-  /** 一句话说清后果与边界。B7：能力边界要留全，不折叠、不降对比度。 */
-  message: string
+  /** 仅补充标题未包含的必要信息。 */
+  message?: string | undefined
   /** 确认按钮的文字。用动词本身（「移除」「归档」），不写「确定」。 */
   confirmLabel: string
   /** 真的会造成不可逆改动时才给 true，按钮转成危险色。 */
@@ -46,7 +46,9 @@ export function ConfirmDialog(props: {
       <div class="sheet-backdrop pass-through">
         <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label={props.title}>
           <h2 class="confirm-title">{props.title}</h2>
-          <p class="confirm-message">{props.message}</p>
+          <Show when={props.message}>
+            <p class="confirm-message">{props.message}</p>
+          </Show>
           <div class="confirm-actions">
             <button class="btn-ghost" type="button" onClick={props.onCancel}>
               取消
