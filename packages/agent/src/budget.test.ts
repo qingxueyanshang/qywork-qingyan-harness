@@ -2,7 +2,8 @@
  * 投递预算。
  *
  * 覆盖范围：`registry.ts` 的 `READ_DELIVERY_CAP` / `RESULT_BUDGET_RATIO` /
- * `BATCH_TO_CALL_RATIO` / `deliveryBudget` / `resetBatchBudget` / `chargeBatchBudget`。
+ * `BATCH_TO_CALL_RATIO` / `deliveryBudget` / `resetBatchBudget` / `chargeBatchBudget` /
+ * `recordBatchSpent`。
  *
  * 这一组锁的是两件用户看得见的事：**一次工具调用不许占掉大半个窗口**，
  * 以及**一波并行读取加起来也有上界**——后者同时是压缩的保留预算，
@@ -14,6 +15,7 @@ import {
   chargeBatchBudget,
   deliveryBudget,
   READ_DELIVERY_CAP,
+  recordBatchSpent,
   resetBatchBudget,
 } from './registry.ts'
 
@@ -75,5 +77,42 @@ describe('投递预算', () => {
     chargeBatchBudget(c, 24_000)
     resetBatchBudget(c.state)
     expect(chargeBatchBudget(c, 24_000).ok).toBe(true)
+  })
+})
+
+/**
+ * 已经投出去的量走这一条：副作用发生过的工具没有「不投」这个选项，
+ * 唯一正确的做法是把真实用量记进同一份计数。
+ */
+describe('已投递用量', () => {
+  /** 32K 档单次 4000、整波 8000。先用掉 6000，余额 2000。 */
+  const spent6000 = () => {
+    const c = ctx(32_000)
+    chargeBatchBudget(c, 4000)
+    chargeBatchBudget(c, 2000)
+    expect(chargeBatchBudget(c, 0).batchRemaining).toBe(2000)
+    return c
+  }
+
+  test('余额 2000 时投 4000：照实累加，余额报 0', () => {
+    const c = spent6000()
+    expect(recordBatchSpent(c, 4000).batchRemaining).toBe(0)
+    expect(chargeBatchBudget(c, 0).batchRemaining).toBe(0)
+  })
+
+  test('累计值不截回上限，随后的读取准入不使用假余额', () => {
+    const c = spent6000()
+    recordBatchSpent(c, 4000)
+    // 截回上限的话这一笔会被放行：8000 - 8000 + 100 仍在界内。
+    expect(chargeBatchBudget(c, 100).ok).toBe(false)
+    resetBatchBudget(c.state)
+    expect(chargeBatchBudget(c, 100).ok).toBe(true)
+  })
+
+  test('准入通过的那一笔与已投递走同一份计数', () => {
+    const c = ctx(200_000)
+    chargeBatchBudget(c, 10_000)
+    recordBatchSpent(c, 10_000)
+    expect(chargeBatchBudget(c, 0).batchRemaining).toBe(30_000)
   })
 })

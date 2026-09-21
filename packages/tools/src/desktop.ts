@@ -50,6 +50,7 @@ import type {
   DesktopToggleState,
   DesktopWindowState,
 } from '@qywork/core'
+import { type DesktopResultParts, desktopResult } from './desktop-results.ts'
 import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读树的节点数上限。上限由端口再夹一次，这里挡的是明显越界的请求。 */
@@ -70,6 +71,13 @@ const MAX_PAD = 400
 const MAX_IMAGE_COORD = 100_000
 /** 一次读文本最多要回多少个 UTF-16 码元。超出即截断并标记。 */
 const MAX_TEXT_CHARS = 20_000
+/**
+ * 回执行里控件值最多印多少字。
+ *
+ * 取 200 与浏览器观察对名称、值的采集上限同一量级。超过只印字数：回执与控件表两处
+ * 印同一份长文本会把整条结果挤出投递上限，而值本身在控件表里已经有了。
+ */
+const MAX_LINE_VALUE_CHARS = 200
 /** 选区偏移的取值上界。挡住明显越界的请求，真实上界由文档长度定。 */
 const MAX_TEXT_OFFSET = 10_000_000
 /** 采集模式。`structure` 一个像素都不采，`text` 也不采。 */
@@ -316,6 +324,18 @@ function elementLine(e: DesktopElement): string {
     selectedLabel(e) +
     (e.enabled ? '' : ' 已禁用')
   )
+}
+
+/**
+ * 动作回执里的目标那一行。
+ *
+ * 长值只印字数，原文不进回执：它在同一条结果的控件表里，视图裁过时那个控件带
+ * `valueOmittedChars`。读回核验按完整值判，不看这一行。
+ */
+function targetLine(element: DesktopElement): string {
+  const { value, ...rest } = element
+  if (value === undefined || value.length <= MAX_LINE_VALUE_CHARS) return elementLine(element)
+  return `${elementLine(rest)} · 值 ${value.length} 字，在控件表里`
 }
 
 /** 选择容器此刻选中的那几项。一项都没选中时不写。 */
@@ -798,6 +818,15 @@ function typedReadback(
   return target.value.includes(action.text) ? 'match' : 'mismatch'
 }
 
+/** 结果生产交回的三格接到 `ToolOutcome` 上。没有落盘时不写 `resources` 这个键。 */
+function delivered(parts: DesktopResultParts): Pick<ToolOutcome, 'message' | 'data' | 'resources'> {
+  return {
+    message: parts.message,
+    data: parts.data,
+    ...(parts.resources ? { resources: parts.resources } : {}),
+  }
+}
+
 /**
  * 三态回执与动作后的新观察合成一个结果。
  *
@@ -807,7 +836,12 @@ function typedReadback(
  * 执行事实与后置条件分列：`dispatch` 说的是事件有没有交给系统，读回说的是目标里现在是
  * 什么，两者可以一个成立一个不成立。
  */
-function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): ToolOutcome {
+function actOutcome(
+  ctx: ToolContext,
+  action: DesktopAction,
+  ref: string,
+  r: DesktopActResult,
+): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
@@ -824,9 +858,23 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
     ? `${action.kind} 结果未知 · ${r.reason ?? '调用已发出未确认'}`
     : `${action.kind} 已执行${r.reason === undefined ? '' : ` · ${r.reason}`}`
   if (r.observation) {
+    // 目标查找与读回核验按端口交回的完整控件表做，不看投给模型的那一部分。
     const target = r.observation.elements.find((e) => e.ref === ref)
     const readback = typedReadback(action, target)
     const failed = unknown || readback === 'mismatch'
+    const parts = desktopResult({
+      ctx,
+      toolName: 'desktop_act',
+      snapshot: r.observation,
+      place: 'observation',
+      receipt,
+      targetRef: ref || null,
+      lead:
+        `${lead} · ${snapshotLine(r.observation)}` +
+        (target ? ` · 目标 ${targetLine(target)}` : '') +
+        (readback === 'mismatch' ? ' · 读回不一致' : '') +
+        (readback === 'unreadable' ? ' · 读不回控件值' : ''),
+    })
     return {
       status: failed ? 'failure' : 'success',
       ...(failed
@@ -835,12 +883,7 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
             errorKind: unknown ? 'desktop_unknown' : 'desktop_readback_mismatch',
           }
         : {}),
-      message:
-        `${lead} · ${snapshotLine(r.observation)}` +
-        (target ? ` · 目标 ${elementLine(target)}` : '') +
-        (readback === 'mismatch' ? ' · 读回不一致' : '') +
-        (readback === 'unreadable' ? ' · 读不回控件值' : ''),
-      data: { ...receipt, observation: r.observation },
+      ...delivered(parts),
     }
   }
   // 调用还没返回：目标窗口此刻读不动，宿主换成一份窗口清单。下一步观察的是新出现的
@@ -868,17 +911,27 @@ function actOutcome(action: DesktopAction, ref: string, r: DesktopActResult): To
 
 /** 等待结果的投递。等待不派发动作，因此失败一律 `executed:false`。 */
 function waitOutcome(
+  ctx: ToolContext,
   found: boolean,
   reason: string | undefined,
+  ref: string | undefined,
   follow: DesktopFollowUp,
 ): ToolOutcome {
   const lead = found ? '已满足' : `未满足 · ${reason ?? 'timeout'}`
   if (follow.observation) {
+    const parts = desktopResult({
+      ctx,
+      toolName: 'desktop_wait',
+      snapshot: follow.observation,
+      place: 'observation',
+      receipt: { found, ...(reason ? { reason } : {}) },
+      targetRef: ref ?? null,
+      lead: `${lead} · ${snapshotLine(follow.observation)}`,
+    })
     return {
       status: found ? 'success' : 'failure',
       ...(found ? {} : { executed: false, errorKind: 'desktop_wait_timeout' }),
-      message: `${lead} · ${snapshotLine(follow.observation)}`,
-      data: { found, ...(reason ? { reason } : {}), observation: follow.observation },
+      ...delivered(parts),
     }
   }
   return {
@@ -1028,7 +1081,9 @@ export const desktopObserveTool: ToolSpec = {
     '控件表给角色、名称、automationId、value、enabled、rect、parentRef 与控件状态；' +
     'actions 列出此刻能做什么，delivery 非空才能执行。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
-    '「未读全」调 maxNodes 或 maxDepth 重读。' +
+    '「未读全」是采集没采全，调 maxNodes 或 maxDepth 重读；' +
+    '「已投 N/M 个控件」是这一次只返回了其中一部分，完整控件表已按结果里的 resource id 存好，' +
+    '用 read_resource 读，不必重读。' +
     '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提，重新观察即换号；窗口移动后旧 imageRef 失效。',
   parameters: {
     type: 'object',
@@ -1162,25 +1217,40 @@ export const desktopObserveTool: ToolSpec = {
       // 只能看图按坐标操作，两次往返之间没有可做的判断。判据与那句「无可操作控件」
       // 同一处，见 `isBareWindow`。
       const alsoImage = capture === 'combined' || (isBareWindow(snapshot) && ctx.vision !== false)
+      const parts = desktopResult({
+        ctx,
+        toolName: 'desktop_observe',
+        snapshot,
+        place: 'top',
+        targetRef: null,
+        lead: line,
+      })
       if (!alsoImage) {
-        return { status: 'success', message: line, data: { ...snapshot } }
+        return { status: 'success', ...delivered(parts) }
       }
       // 控件表已经拿到手：图采不到也要把它交出去，并说清图为什么没有。
       const captured = await captureFor(desktop, send, windowId, args, snapshot.elements).then(
         (image) => imagePayload(image),
         (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
       )
+      // 图像字节走 `data.images`，不计入投递上限：它不是文本，也不进存盘正文。
       if ('error' in captured) {
         return {
           status: 'success',
-          message: `${line} · 没有采到图 · ${captured.error}`,
-          data: { ...snapshot, imageError: captured.error },
+          ...delivered({
+            ...parts,
+            message: `${parts.message} · 没有采到图 · ${captured.error}`,
+            data: { ...parts.data, imageError: captured.error },
+          }),
         }
       }
       return {
         status: 'success',
-        message: `${line} · ${captured.line}`,
-        data: { ...snapshot, ...captured.data },
+        ...delivered({
+          ...parts,
+          message: `${parts.message} · ${captured.line}`,
+          data: { ...parts.data, ...captured.data },
+        }),
       }
     }),
 }
@@ -1332,7 +1402,7 @@ export const desktopActTool: ToolSpec = {
       const table = given(args.imageRef) ? null : desktop.elements(windowId, observationId)
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS)
       const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
-      const outcome = actOutcome(action, aim.element?.ref ?? '', r)
+      const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r)
       if (aim.input.at === undefined) return outcome
       return withShot(outcome, r.dispatch !== 'not_dispatched', desktop, send, windowId, ctx)
     }),
@@ -1625,6 +1695,7 @@ function tailLine(cursor: Cursor): string {
  * 这次调用就不是未执行，后缀没做不改变这一点。
  */
 function sequenceOutcome(
+  ctx: ToolContext,
   plans: StepPlan[],
   done: StepReceipt[],
   halt: Halt | null,
@@ -1642,18 +1713,37 @@ function sequenceOutcome(
     ? `停在第 ${halt.index} 步 · ${halt.reason}` +
       (pending.length ? ` · 未执行 ${pending.map((p) => `${p.index} ${p.kind}`).join('、')}` : '')
     : ''
+  const lead = [head, ...lines, stopped, tailLine(cursor)].filter(Boolean).join('\n')
+  const receipt: Record<string, unknown> = {
+    steps: done,
+    dispatched,
+    notExecuted,
+    ...(halt ? { stoppedAt: halt.index, stopReason: halt.reason } : {}),
+  }
+  const status = halt ? 'failure' : 'success'
+  // 逐步回执、停止点与 `notExecuted` 原样保留，只有最后那份观察按上限处理。
+  if (!cursor.last) {
+    return {
+      status,
+      executed: dispatched.length > 0,
+      message: lead,
+      data: { ...receipt, ...cursor.unread },
+      ...(halt ? { errorKind: halt.errorKind } : {}),
+    }
+  }
+  const parts = desktopResult({
+    ctx,
+    toolName: 'desktop_act_sequence',
+    snapshot: cursor.last,
+    place: 'observation',
+    receipt,
+    targetRef: done.at(-1)?.target ?? null,
+    lead,
+  })
   return {
-    status: halt ? 'failure' : 'success',
+    status,
     executed: dispatched.length > 0,
-    message: [head, ...lines, stopped, tailLine(cursor)].filter(Boolean).join('\n'),
-    data: {
-      steps: done,
-      dispatched,
-      notExecuted,
-      ...(halt ? { stoppedAt: halt.index, stopReason: halt.reason } : {}),
-      ...(cursor.last ? { observation: cursor.last } : {}),
-      ...cursor.unread,
-    },
+    ...delivered(parts),
     ...(halt ? { errorKind: halt.errorKind } : {}),
   }
 }
@@ -1985,7 +2075,7 @@ export const desktopActSequenceTool: ToolSpec = {
         }
       }
 
-      const outcome = sequenceOutcome(plans, done, halt, cursor)
+      const outcome = sequenceOutcome(ctx, plans, done, halt, cursor)
       // 这一组里有按图定位的步骤，说明调用方看的是图不是控件表：末尾补一张动作后的
       // 整窗图，判据与单动作同一条，见 `withShot`。
       const byImage = plans.some((p) => given(p.args.imageRef))
@@ -2068,7 +2158,7 @@ export const desktopWaitTool: ToolSpec = {
             : DEFAULT_WAIT_MS,
         }),
       )
-      return waitOutcome(r.found, r.reason, r)
+      return waitOutcome(ctx, r.found, r.reason, ref, r)
     }),
 }
 

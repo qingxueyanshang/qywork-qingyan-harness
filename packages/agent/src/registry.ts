@@ -711,6 +711,22 @@ export function resetBatchBudget(state: Map<string, unknown>): void {
 }
 
 /**
+ * 记一笔已经投递出去的用量。**不作准入裁决，实际投了多少就加多少。**
+ *
+ * 给已经产生副作用的工具用：动作执行完了，结果也定稿了，此时唯一正确的做法是
+ * 把真实用量记进同一份计数。累计值允许越过 `batchCap`——把它截回上限会让同一波里
+ * 其余读取工具读到一笔不存在的余额，余额查询因此只在报数时取到 0 为止。
+ */
+export function recordBatchSpent(
+  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
+  tokens: number,
+): { batchRemaining: number } {
+  const spent = ((ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0) + tokens
+  ctx.state.set(BATCH_SPENT_KEY, spent)
+  return { batchRemaining: Math.max(0, deliveryBudget(ctx.contextWindow).batchCap - spent) }
+}
+
+/**
  * 记一笔结果占用，回答「还放得下吗」。
  *
  * **只对无副作用的读取工具用。** 写入类工具执行完再说超预算是没有意义的——
@@ -723,7 +739,7 @@ export function chargeBatchBudget(
   const { perCall, batchCap } = deliveryBudget(ctx.contextWindow)
   const spent = (ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0
   const ok = tokens <= perCall && spent + tokens <= batchCap
-  if (ok) ctx.state.set(BATCH_SPENT_KEY, spent + tokens)
+  if (ok) recordBatchSpent(ctx, tokens)
   return { ok, perCall, batchRemaining: Math.max(0, batchCap - spent) }
 }
 

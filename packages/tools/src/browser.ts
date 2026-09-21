@@ -36,6 +36,7 @@ import {
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
+import { browserResult, isOptionsPage } from './browser-results.ts'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
 
 /** 一次等待的上限。超过这个值的请求按它截断，不接受任意时长。 */
@@ -318,28 +319,12 @@ async function onBrowser(
   }
 }
 
-/**
- * 观察的投递形状。
- *
- * 截图字节走 `images`：`agent/loop.ts` 的 `imagesOf` 按这个键取图，
- * 留在普通 JSON 字段里的 base64 模型读不懂，只照价计费。
- */
-function observationData(ob: BrowserObservation): Record<string, unknown> {
-  const { image, ...rest } = ob
-  return { ...rest, ...(image ? { images: [image] } : {}) }
-}
-
 function observationLine(ob: BrowserObservation): string {
   return (
     `${ob.title || '(无标题)'} · ${ob.url} · ${ob.elements.length} 个元素` +
     (ob.truncated ? '（还有更多，用 offset 继续取）' : '') +
     (ob.framesPending?.length ? `（${ob.framesPending.length} 个 iframe 还没就位，重新观察）` : '')
   )
-}
-
-/** 选项页与元素表按形状分：只有选项页带 `items`。 */
-function isOptionsPage(r: BrowserObservation | BrowserOptionsPage): r is BrowserOptionsPage {
-  return 'items' in r
 }
 
 function optionsLine(page: BrowserOptionsPage): string {
@@ -358,6 +343,8 @@ function optionsLine(page: BrowserOptionsPage): string {
  * 缺席时不沿用旧的 `observationId`。
  */
 function withFollowUp(
+  ctx: ToolContext,
+  toolName: string,
   receipt: Record<string, unknown>,
   follow: FollowUpObservation,
   opts: { lead: string; ok: boolean; advice: string },
@@ -367,12 +354,14 @@ function withFollowUp(
     return {
       status: opts.ok ? 'success' : 'failure',
       ...(opts.ok ? {} : { executed: true }),
-      message: `${opts.lead}${observationLine(ob)}`,
-      data: {
-        ...receipt,
-        ...observationData(ob),
+      ...browserResult({
+        ctx,
+        toolName,
+        page: ob,
+        receipt,
         ...(follow.settle ? { settle: follow.settle } : {}),
-      },
+        lead: `${opts.lead}${observationLine(ob)}`,
+      }),
     }
   }
   return {
@@ -382,6 +371,22 @@ function withFollowUp(
     data: { ...receipt, observationError: follow.observationError },
     errorKind: 'browser_observation_unavailable',
   }
+}
+
+/** 动作回执里那一格元素标签印进 message 的字数上限。 */
+const MAX_ACTED_LABEL_CHARS = 200
+
+/**
+ * 动作行里的目标那一格。
+ *
+ * 标签取自页面自报的 `aria-label`，长度无界，超过上限只印字数：message 不参与视图裁剪，
+ * 一段长标签会把整条结果的上限吃满，元素表因此一个都投不出去。原文仍在回执的
+ * `element` 字段里。
+ */
+function actedLabel(element: string | undefined): string {
+  if (!element) return ''
+  if (element.length <= MAX_ACTED_LABEL_CHARS) return `：${element}`
+  return `：标签 ${element.length} 字，见结果里的 element`
 }
 
 /** 后续观察的三个键由 `withFollowUp` 单独投递，不算回执字段。 */
@@ -406,6 +411,7 @@ function receiptOf(result: object): Record<string, unknown> {
  * `executed` 为真。观察在就展开，让调用方据此判断实际做到了哪一步。
  */
 function incompleteAct(
+  ctx: ToolContext,
   action: BrowserActionKind,
   execution: BrowserExecution,
   receipt: Record<string, unknown>,
@@ -421,12 +427,14 @@ function incompleteAct(
     return {
       status: 'failure',
       executed: true,
-      message: `${lead}${observationLine(follow.observation)}。${advice}`,
-      data: {
-        ...receipt,
-        ...observationData(follow.observation),
+      ...browserResult({
+        ctx,
+        toolName: 'browser_act',
+        page: follow.observation,
+        receipt,
         ...(follow.settle ? { settle: follow.settle } : {}),
-      },
+        lead: `${lead}${observationLine(follow.observation)}。${advice}`,
+      }),
       errorKind,
     }
   }
@@ -561,7 +569,7 @@ export const browserNavigateTool: ToolSpec = {
         ...(action === 'goto' ? { url: await browserUrl(args.url, ctx) } : {}),
       }
       const follow = await send(() => browser.navigate(input))
-      return withFollowUp({}, follow, {
+      return withFollowUp(ctx, 'browser_navigate', {}, follow, {
         lead: `${action} 已发出。`,
         ok: true,
         advice: '先 browser_observe 确认当前页面，不要重复跳转。',
@@ -574,8 +582,10 @@ export const browserObserveTool: ToolSpec = {
   name: 'browser_observe',
   description:
     '返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提。' +
-    'query 只返回名称、正文或值包含该文字的元素：知道要找什么时用它，一次拿到全部匹配项，不必翻页。' +
+    'query 只返回名称、正文或值包含该文字的元素，知道要找什么时优先用它。' +
     'truncated=true 时用 offset 取后续元素。' +
+    '元素多时结果里只带前面一部分，delivery 写明给了多少、本次采到多少；' +
+    '其余元素按结果里的 resource id 用 read_resource 读，页面其他范围仍用 offset 或 query。' +
     'screenshot=true 才截图，仅在元素表不足以判断版面时使用。' +
     'frame 只看某个 iframe，取自元素的 frame 字段。' +
     '元素上的 expanded 与 selected 缺席表示这个角色没有这一项，不表示收起或未选中；' +
@@ -622,10 +632,15 @@ export const browserObserveTool: ToolSpec = {
         ...(optionsFor ? { optionsFor } : {}),
       }
       const r = await send(() => browser.observe(input))
-      if (isOptionsPage(r)) {
-        return { status: 'success', message: optionsLine(r), data: { ...r } }
+      return {
+        status: 'success',
+        ...browserResult({
+          ctx,
+          toolName: 'browser_observe',
+          page: r,
+          lead: isOptionsPage(r) ? optionsLine(r) : observationLine(r),
+        }),
       }
-      return { status: 'success', message: observationLine(r), data: observationData(r) }
     }),
 }
 
@@ -711,10 +726,10 @@ export const browserActTool: ToolSpec = {
       const r = await send(() => browser.act(input))
       const receipt = receiptOf(r)
       if (r.execution && r.execution.state !== 'completed') {
-        return incompleteAct(action, r.execution, receipt, r)
+        return incompleteAct(ctx, action, r.execution, receipt, r)
       }
-      return withFollowUp(receipt, r, {
-        lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
+      return withFollowUp(ctx, 'browser_act', receipt, r, {
+        lead: `${action} 已发出${actedLabel(r.element)}。`,
         ok: true,
         advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
       })
@@ -755,11 +770,19 @@ export const browserWaitTool: ToolSpec = {
           : DEFAULT_WAIT_MS,
       }
       const r = await send(() => browser.wait(input))
-      return withFollowUp({ found: r.found, ...(r.reason ? { reason: r.reason } : {}) }, r, {
-        lead: r.found ? `${selector} 已出现。` : `没等到 ${selector}（${r.reason ?? 'timeout'}）。`,
-        ok: r.found,
-        advice: '先 browser_observe 确认页面状态。',
-      })
+      return withFollowUp(
+        ctx,
+        'browser_wait',
+        { found: r.found, ...(r.reason ? { reason: r.reason } : {}) },
+        r,
+        {
+          lead: r.found
+            ? `${selector} 已出现。`
+            : `没等到 ${selector}（${r.reason ?? 'timeout'}）。`,
+          ok: r.found,
+          advice: '先 browser_observe 确认页面状态。',
+        },
+      )
     }),
 }
 
