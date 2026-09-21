@@ -234,8 +234,21 @@ export interface RunFinishedEvent {
   fileChanges: FileChange[]
 }
 
+/**
+ * 这一轮出错了。**不保证配得上一条 `run.finished`。**
+ *
+ * 起轮前就被拒的四条路——会话已有任务在跑、会话查不到项目目录、三处都取不到模型、
+ * 装配 adapter 抛错（没配 key、档案解析失败）——发生在 run 建立之前：`runId` 是空串，
+ * 账本里也没有这一轮的 run 行，因此不会再有 `run.finished`。
+ *
+ * **这几条的终态是 `conversation.busy: false`**，由服务端释放会话占位时发出。
+ * 客户端不要拿这条事件去放下「在跑」：忙闲的裁决点只有占位与登记那一处，
+ * 在这里补一个判断就是第二本账。唯一不跟一条忙闲的是「会话已有任务在跑」——
+ * 占位在另一轮名下，这条会话此刻确实仍在跑，放下才是错的。
+ */
 export interface RunErrorEvent {
   type: 'run.error'
+  /** 起轮前被拒时为空串：那时 run 还不存在。 */
   runId: RunId
   /** 归类后的错误码，前端据此决定提示（如去配 key、去充值、换模型）。 */
   code: ErrorCode

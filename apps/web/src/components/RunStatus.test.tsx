@@ -24,6 +24,10 @@ afterAll(async () => {
  */
 async function resetStore() {
   const store = await import('../lib/store/index.ts')
+  if (sendBefore) {
+    ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
+    sendBefore = null
+  }
   store.setState({
     activeConversation: null,
     busyConversations: [],
@@ -34,6 +38,9 @@ async function resetStore() {
     desktopTarget: null,
   })
 }
+
+/** 换掉的那个 `client.send`，收尾时还回去。见 `afterPreviousRun`。 */
+let sendBefore: ((cmd: never) => void) | null = null
 
 const CV = 'cv_chip'
 const OTHER = 'cv_wechat'
@@ -51,9 +58,17 @@ async function mount() {
   return { host, dispose }
 }
 
-/** 一轮跑完之后的静止态：待办还剩两条没做，上一轮改过一个文件。 */
+/**
+ * 一轮跑完之后的静止态：待办还剩两条没做，上一轮改过一个文件。
+ *
+ * 一并把 `client.send` 换成空实现：这个文件看的是按下回车之后界面怎么画，
+ * 而这里没有连接——不换的话 `sendMessage` 当场收到一条 `not_ready` 回执，
+ * 乐观置上的那一格被冲销回闲态（`store/connection.ts` 的 `applyRejected`）。
+ */
 async function afterPreviousRun() {
   const store = await import('../lib/store/index.ts')
+  sendBefore ??= store.client.send.bind(store.client)
+  ;(store.client as unknown as { send: (cmd: unknown) => void }).send = () => {}
   store.setState({
     activeConversation: CV,
     views: {

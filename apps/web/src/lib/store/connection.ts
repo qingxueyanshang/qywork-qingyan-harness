@@ -11,6 +11,7 @@ import type {
   ActionDescriptor,
   AgentEvent,
   Attachment,
+  CommandRejectedFrame,
   ContextBreakdown,
   ContextOmitted,
   ConversationChangesPageResponse,
@@ -33,10 +34,12 @@ import {
   type ChangeTurn,
   dropView,
   LOCAL_ID_PREFIX,
-  markBusy,
   openView,
+  refundBusy,
   setState,
+  settleBusy,
   state,
+  syncBusy,
   type TranscriptItem,
 } from './state.ts'
 import { panelTabs, tabConversationId, workspace } from './ui.ts'
@@ -45,7 +48,7 @@ export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
   onCapabilities: (caps) => setState('capabilities', caps),
   // 握手带的忙闲快照直接整表替换：它是服务端此刻的全部，不是一条增量。
-  onBusy: (ids) => setState('busyConversations', [...ids]),
+  onBusy: (ids) => syncBusy(ids),
   onResync: () => {
     // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
     void reloadActiveConversation()
@@ -64,8 +67,23 @@ export const client = new QyClient({
     }
   },
   onEvent: (frame) => applyEvent(frame),
-  onRejected: (frame) => setState('notice', { message: frame.message, reason: frame.reason }),
+  onRejected: (frame) => applyRejected(frame),
 })
+
+/**
+ * 把一条拒绝回执折进 `state`。
+ *
+ * 两件事：说出来（`notice`），以及**冲销这条指令预支的那一笔忙**。被拒的指令服务端
+ * 从未置忙，也就不会发 `conversation.busy: false` 来放下按回车时乐观置上的那一格，
+ * 界面会一直停在生成中，直到重连由握手快照重置。
+ *
+ * 冲销按 `clientRequestId` 定位那一笔，不按「收到拒绝」定位会话：这条会话可能
+ * 真的正在跑别的轮次（被拒的是 `followup.steer` 之类）。
+ */
+export function applyRejected(frame: CommandRejectedFrame): void {
+  setState('notice', { message: frame.message, reason: frame.reason })
+  refundBusy(frame.clientRequestId)
+}
 
 /*
  * 热更新换掉这个模块之前，把旧连接关干净。
@@ -286,7 +304,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    * 算进去的话，静默检测会被后台会话持续刷新，「链路断了」永远报不出来。
    */
   if (ev.type === 'conversation.busy') {
-    markBusy(ev.conversationId, ev.busy)
+    settleBusy(ev.conversationId, ev.busy)
     return
   }
 

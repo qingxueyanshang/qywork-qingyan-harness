@@ -492,8 +492,57 @@ export function ledgerRevision(): string {
 }
 
 /** 记下 / 抹掉「这条会话在跑」。幂等，重复到达的忙闲事件不会写出两行。 */
-export function markBusy(id: string, busy: boolean): void {
+function markBusy(id: string, busy: boolean): void {
   setState('busyConversations', (list) =>
     busy ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id),
   )
+}
+
+/**
+ * 按回车那一刻预支出去的忙：会话 id → 预支它的那条 `message.send` 的 `clientRequestId`。
+ *
+ * **不是第二本忙闲账**：忙闲仍只有 `busyConversations` 一张表，这里只记「那一格是
+ * 谁预支的」。指令被拒时服务端从未置忙，不会有任何 `conversation.busy` 来冲销它，
+ * 所以冲销要认得出是哪一笔——看到任何拒绝就置闲会把这条会话真正在跑的那一轮抹掉。
+ *
+ * 预支只活到服务端写这一格为止（`settleBusy` / `syncBusy`），之后这一格由服务端作数。
+ */
+const prepaidBusy = new Map<string, string>()
+
+/**
+ * 乐观置忙：用户按下回车，界面立刻进入执行态，不等服务端回执。
+ *
+ * 会话本来就在跑时不记这一笔——那一格是服务端写的，这条指令被拒也不该动它。
+ */
+export function prepayBusy(id: string, requestId: string): void {
+  if (!isConversationRunning(id)) prepaidBusy.set(id, requestId)
+  markBusy(id, true)
+}
+
+/** 服务端裁决了这一格。预支到此为止，之后到的拒绝回执不再冲销它。 */
+export function settleBusy(id: string, busy: boolean): void {
+  prepaidBusy.delete(id)
+  markBusy(id, busy)
+}
+
+/** 握手快照：服务端此刻的全部，整表替换，全部预支随之作废。 */
+export function syncBusy(ids: readonly string[]): void {
+  prepaidBusy.clear()
+  setState('busyConversations', [...ids])
+}
+
+/**
+ * 这条指令被拒，冲销它预支的那一笔忙。
+ *
+ * 按 `clientRequestId` 认，认不出的不动：没带这个键的指令（`followup.steer`、
+ * `conversation.interrupt`）被拒时，会话跑的是别的轮次。
+ */
+export function refundBusy(requestId: string | undefined): void {
+  if (!requestId) return
+  for (const [id, prepaid] of prepaidBusy) {
+    if (prepaid !== requestId) continue
+    prepaidBusy.delete(id)
+    markBusy(id, false)
+    return
+  }
 }
