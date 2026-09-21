@@ -184,10 +184,11 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 export async function resolveInWorkspace(
   roots: RootsInput,
   candidate: string,
-  opts: { mustExist?: boolean } = {},
+  opts: { mustExist?: boolean; literal?: boolean } = {},
 ): Promise<string> {
   const { workspaceRoot, additional, unrestricted } = normalizeRoots(roots)
-  const raw = decodeSafely(candidate)
+  // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
+  const raw = opts.literal ? candidate : decodeSafely(candidate)
 
   // 相对路径的基准永远是工作区，不是额外根目录——额外根目录只能用绝对路径够到。
   // 否则 `read_file("notes.md")` 会变成「在若干个根里逐个试探」，

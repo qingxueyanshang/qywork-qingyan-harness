@@ -59,7 +59,17 @@ function keyFields(spec: KeySpec): Record<string, unknown> {
 export class CdpError extends Error {}
 export class CdpCancelledError extends CdpError {}
 export class CdpTimeoutError extends CdpError {}
-export class CdpDisconnectedError extends CdpError {}
+export class CdpDisconnectedError extends CdpError {
+  readonly errorKind = 'browser_disconnected' as const
+
+  constructor(readonly detail: string) {
+    super(
+      `${detail}。浏览器控制连接不可用，页面可能仍正常显示；` +
+        '已发出的操作结果可能不明，不要直接重复点击、输入或提交。' +
+        '先对原 tabId 调用 browser_observe，重新连接并核对页面；再次失败时停止重复调用并报告。',
+    )
+  }
+}
 /** 会话初始化命令被拒。调用方必须撤销控制，不换命令重试。 */
 export class CdpInitError extends CdpError {}
 
@@ -259,25 +269,45 @@ export class CdpClient {
 
   /** 连上宿主分配的回环端点。端点只有在第一个子视图建出来之后才开始监听。 */
   static async connect(debugPort: number, timeoutMs = 10_000): Promise<CdpClient> {
-    const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    const version = (await res.json()) as { webSocketDebuggerUrl?: string }
-    const url = version.webSocketDebuggerUrl
-    if (!url) throw new CdpError('调试端点没有给出 WebSocket 地址')
-    const socket = new WebSocket(url)
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new CdpTimeoutError('CDP 连接超时')), timeoutMs)
-      socket.onopen = () => {
-        clearTimeout(timer)
-        resolve()
-      }
-      socket.onerror = () => {
-        clearTimeout(timer)
-        reject(new CdpDisconnectedError('CDP 连接失败'))
-      }
-    })
-    return new CdpClient(socket)
+    try {
+      const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (!res.ok) throw new Error(`调试端点返回 HTTP ${res.status}`)
+      const version = (await res.json()) as { webSocketDebuggerUrl?: string }
+      const url = version.webSocketDebuggerUrl
+      if (!url) throw new Error('调试端点没有给出 WebSocket 地址')
+      const socket = new WebSocket(url)
+      await new Promise<void>((resolve, reject) => {
+        const fail = (detail: string) => {
+          clearTimeout(timer)
+          reject(new Error(detail))
+          socket.close()
+        }
+        const timer = setTimeout(() => fail('CDP 连接超时'), timeoutMs)
+        socket.onopen = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+        socket.onerror = () => fail('CDP 连接失败')
+        socket.onclose = () => fail('CDP 握手期间连接已断开')
+      })
+      return new CdpClient(socket)
+    } catch (err) {
+      throw new CdpDisconnectedError(
+        `控制连接建立失败：${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  get connected(): boolean {
+    return this.#socket.readyState === WebSocket.OPEN
+  }
+
+  /** 断连通知交给控制槽统一收尾；注册前已断开的连接立即通知。 */
+  onDisconnect(listener: () => void): void {
+    if (!this.connected) listener()
+    else this.#socket.addEventListener('close', listener, { once: true })
   }
 
   get cancelled(): boolean {
@@ -390,6 +420,7 @@ export class CdpClient {
     try {
       await this.send('Emulation.setFocusEmulationEnabled', { enabled: true }, { sessionId })
     } catch (err) {
+      if (err instanceof CdpDisconnectedError) throw err
       throw new CdpInitError(`焦点仿真被拒：${err instanceof Error ? err.message : String(err)}`)
     }
     await this.send(

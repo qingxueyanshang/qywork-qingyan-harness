@@ -14,13 +14,15 @@
  *    nullable，模型因此常把没填的字段显式写成 `null`；按「给了一个非法值」拒绝的话，
  *    一次正常调用会被一个没打算填的字段挡下来。例外是 `fill` 与 `select` 的 `text`：
  *    空串分别是清空输入框与选中值为空的选项，只有 `null` 才算未提供。
- * 4. **上传下载的路径先裁决再交给端口。** 走这一轮会话的根目录清单（`rootsOf`），
+ * 4. **本地预览、上传下载的路径先裁决再交给端口。** 走这一轮会话的根目录清单（`rootsOf`），
  *    与内置文件工具同一份判定；端口只按裁决后的绝对路径操作。
  *
- * `executed` 的判据是**端口有没有被调进去**：参数、路径、停止状态在调用前拒绝，
- * `executed: false`；调进端口之后的异常一律 `executed: true`，动作可能已经发到网站。
+ * `executed` 优先采用端口声明的执行前拒绝；其余异常按是否进入端口保守判定，
+ * 避免把已发出的页面动作标成未执行。
  */
 
+import { stat } from 'node:fs/promises'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   type BrowserActionKind,
   type BrowserExecution,
@@ -212,23 +214,44 @@ function textField(action: BrowserActionKind, raw: unknown): { text?: string } {
 }
 
 /**
- * 只放行网页协议。
- *
- * `file:` 能读本机任意文件、`javascript:` 在当前页面执行脚本，两者都绕过这里
- * 全部的边界；模型给出的地址一律按不可信处理。
+ * 网页地址直接交给浏览器；本地文件先走文件工具的路径裁决，再转成 file URL。
  */
-function webUrl(raw: unknown): string {
+async function browserUrl(raw: unknown, ctx: ToolContext): Promise<string> {
   const value = str(raw, 'url')
-  let parsed: URL
-  try {
-    parsed = new URL(value)
-  } catch {
-    throw new ArgError(`地址无法解析：${value}`)
+  let candidate = value
+  let suffix: URL | undefined
+  // Windows 盘符不是 URL 协议；无协议的路径相对当前工作区解析。
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[a-z]:[/\\]/i.test(value)) {
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw new ArgError(`地址无法解析：${value}`)
+    }
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString()
+    if (parsed.protocol !== 'file:') {
+      throw new ArgError(`只支持 http、https、本地文件路径与 file URL，收到 ${parsed.protocol}`)
+    }
+    try {
+      candidate = fileURLToPath(parsed)
+    } catch {
+      throw new ArgError(`本地文件地址无法解析：${value}`)
+    }
+    suffix = parsed
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new ArgError(`只支持 http 与 https，收到 ${parsed.protocol}`)
+  const absolute = await resolveInWorkspace(rootsOf(ctx), candidate, {
+    mustExist: true,
+    literal: true,
+  })
+  if (!(await stat(absolute)).isFile()) {
+    throw new ArgError(`路径不是文件：${candidate}。请指定要预览的 HTML 或其他文件。`)
   }
-  return parsed.toString()
+  const url = pathToFileURL(absolute)
+  if (suffix) {
+    url.search = suffix.search
+    url.hash = suffix.hash
+  }
+  return url.toString()
 }
 
 const NO_PORT = {
@@ -434,6 +457,7 @@ export const browserTabsTool: ToolSpec = {
   description:
     '列出内置浏览器的标签页，或新建、接管、关闭一页。' +
     'create 打开的页归本会话，后续消息可直接对它 observe 与 act；' +
+    '简单 HTML 可直接传本地路径或 file URL，无需启动服务；依赖开发服务器、模块加载或接口的项目使用 http/https 地址。' +
     'tabId 由 create 的返回值给出，同一轮里无法预知；create 已按 url 加载页面，不需要再 navigate。' +
     '开页不附带观察，先 browser_observe 或 browser_wait 再操作。' +
     'list 返回的 controlled=false 是用户手动打开的页，' +
@@ -442,7 +466,11 @@ export const browserTabsTool: ToolSpec = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: ['list', 'create', 'bind', 'close'] },
-      url: { type: 'string', description: 'action=create 时要打开的 http/https 地址' },
+      url: {
+        type: 'string',
+        description:
+          'action=create 时的 http/https 地址、file URL 或本地文件路径（相对工作区或绝对路径）',
+      },
       tabId: {
         type: 'string',
         description: 'action=bind 要接管、action=close 要关闭的标签页',
@@ -462,7 +490,7 @@ export const browserTabsTool: ToolSpec = {
       const action = oneOf(args.action, ['list', 'create', 'bind', 'close'] as const, 'action')
 
       if (action === 'create') {
-        const url = webUrl(args.url)
+        const url = await browserUrl(args.url, ctx)
         const tab = await send(() => browser.open(url))
         return {
           status: 'success',
@@ -501,6 +529,7 @@ export const browserNavigateTool: ToolSpec = {
   name: 'browser_navigate',
   description:
     '在已控制的标签页里跳转、后退、前进或重新加载。' +
+    '简单 HTML 可直接打开本地路径或 file URL；需要服务的项目使用 http/https 地址。' +
     '取得新观察时结果里直接带回元素表与 observationId，据此继续下一步，不必再调 browser_observe。' +
     'observationId 与元素 ref 属于产生它的那一份观察与那一份文档，换文档后要用新的一份。' +
     '未取得观察时结果为失败，先 browser_observe 确认当前页面，不要重复跳转。',
@@ -509,7 +538,11 @@ export const browserNavigateTool: ToolSpec = {
     properties: {
       tabId: { type: 'string' },
       action: { type: 'string', enum: ['goto', 'back', 'forward', 'reload'] },
-      url: { type: 'string', description: 'action=goto 时的 http/https 地址' },
+      url: {
+        type: 'string',
+        description:
+          'action=goto 时的 http/https 地址、file URL 或本地文件路径（相对工作区或绝对路径）',
+      },
     },
     required: ['tabId', 'action'],
     additionalProperties: false,
@@ -525,7 +558,7 @@ export const browserNavigateTool: ToolSpec = {
       const input = {
         tabId,
         action,
-        ...(action === 'goto' ? { url: webUrl(args.url) } : {}),
+        ...(action === 'goto' ? { url: await browserUrl(args.url, ctx) } : {}),
       }
       const follow = await send(() => browser.navigate(input))
       return withFollowUp({}, follow, {

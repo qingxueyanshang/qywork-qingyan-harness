@@ -277,17 +277,13 @@ export interface BrowserDownloadResult {
 }
 
 /**
- * 执行前拒绝：判定落在同步段里，本次操作**没有向宿主或浏览器发出任何帧**，页面没被动过。
- *
- * 只有这一种形状允许回 `executed:false`。已发出的动作、超时与断连一律按已执行回执，
- * 把它们也标成未执行会让调用方重发一次已经生效的操作。
- *
- * 两种 kind 够用：页被别的执行者占着是 `browser_busy`，tabId 不在本次可见清单里
- * （跨工作区、跨会话、未接管的用户页、认不出的 id）是 `invalid_argument`。
- * 不要为后四种各起一个 kind，调用方对它们的处置完全一样。
+ * 页面操作执行前拒绝：页级准入失败，或控制连接准备失败，尚未发出页面业务动作。
+ * 已发出的动作遇到断连或超时不得声明 `executed:false`，应保留结果不明的回执。
+ * `browser_disconnected` 需先对原页重新观察；`browser_busy` 等持有者释放；
+ * `invalid_argument` 需修正参数。
  */
 export interface BrowserRefusal {
-  errorKind: 'browser_busy' | 'invalid_argument'
+  errorKind: 'browser_busy' | 'invalid_argument' | 'browser_disconnected'
   executed: false
 }
 

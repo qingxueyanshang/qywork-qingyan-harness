@@ -471,6 +471,21 @@ test('连接断开时待决调用由本客户端拒绝，不等远端返回', as
   expect((await failure(pending)).message).toMatch(/断开/)
 })
 
+test('断连事件通知控制层，断连后注册也立即通知', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  expect(client.connected).toBe(true)
+  const closed = new Promise<void>((resolve) => client.onDisconnect(resolve))
+  endpoint.socket?.close()
+  await closed
+  expect(client.connected).toBe(false)
+  await new Promise<void>((resolve) => client.onDisconnect(resolve))
+  const err = await failure(client.send('Target.getTargets'))
+  expect(err).toMatchObject({ errorKind: 'browser_disconnected' })
+  expect(err.message).toContain('browser_observe')
+  expect(endpoint.methods()).toEqual([])
+})
+
 test('取消把按下未释放的鼠标补一次 mouseReleased，坐标取最后移动到的位置', async () => {
   const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
   const client = await connect(endpoint)
