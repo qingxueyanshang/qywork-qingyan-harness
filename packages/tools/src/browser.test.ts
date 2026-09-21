@@ -8,9 +8,10 @@
 
 import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type {
   BrowserActResult,
   BrowserObservation,
@@ -215,14 +216,14 @@ describe('发动作之前的终态', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('只放行 http 与 https，javascript: 到不了端口', async () => {
+  test('拒绝执行脚本与其他协议，HTTP/HTTPS 仍可打开', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
-    for (const url of ['javascript:alert(1)', 'file:///C:/Windows/win.ini']) {
+    for (const url of ['javascript:alert(1)', 'data:text/html,test', 'ftp://host/a']) {
       const r = await browserTabsTool.fn({ action: 'create', url }, ctx)
       expect(r.status).toBe('failure')
       expect(r.executed).toBe(false)
-      expect(r.message).toContain('只支持 http 与 https')
+      expect(r.errorKind).toBe('invalid_argument')
     }
     const bad = await browserNavigateTool.fn(
       { tabId: 'bt_1', action: 'goto', url: 'javascript:void 0' },
@@ -231,9 +232,80 @@ describe('发动作之前的终态', () => {
     expect(bad.executed).toBe(false)
     expect(calls).toHaveLength(0)
 
-    const ok = await browserTabsTool.fn({ action: 'create', url: 'https://a/' }, ctx)
-    expect(ok.status).toBe('success')
-    expect(calls).toEqual([{ method: 'open', input: 'https://a/' }])
+    for (const url of ['https://a/', 'http://localhost:8766/pelican-bike.html']) {
+      const ok = await browserTabsTool.fn({ action: 'create', url }, ctx)
+      expect(ok.status).toBe('success')
+      expect(calls.at(-1)).toEqual({ method: 'open', input: url })
+    }
+  })
+
+  test('相对路径、Windows 绝对路径与 file URL 打开同一文件，保留中文和特殊字符', async () => {
+    const root = await workspace()
+    const name = '鹈鹕 骑车 #100%20.html'
+    const absolute = join(root, name)
+    await writeFile(absolute, '<title>本地预览</title>')
+    const url = pathToFileURL(absolute).href
+    const { port, calls } = fakeBrowser()
+    for (const input of [name, absolute, url]) {
+      const r = await browserTabsTool.fn({ action: 'create', url: input }, ctxWith(root, port))
+      expect(r.status).toBe('success')
+      expect(calls.at(-1)).toEqual({ method: 'open', input: url })
+    }
+    const withSuffix = `${url}?preview=1#scene`
+    const r = await browserNavigateTool.fn(
+      { tabId: 'bt_1', action: 'goto', url: withSuffix },
+      ctxWith(root, port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls.at(-1)).toEqual({
+      method: 'navigate',
+      input: { tabId: 'bt_1', action: 'goto', url: withSuffix },
+    })
+  })
+
+  test('本地文件不存在、是目录或 URL 编码不合法时，不调用浏览器', async () => {
+    const root = await workspace()
+    const { port, calls } = fakeBrowser()
+    for (const [url, kind] of [
+      ['missing.html', 'path_not_found'],
+      [root, 'invalid_argument'],
+      ['file:///%ZZ.html', 'invalid_argument'],
+    ]) {
+      const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith(root, port))
+      expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: kind })
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  test('本地预览与文件工具共用工作区、额外目录和完全访问的路径裁决', async () => {
+    const root = await workspace()
+    const outside = await workspace()
+    const outsideFile = join(outside, 'a.txt')
+    const link = join(root, 'linked')
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const { port, calls } = fakeBrowser()
+    for (const url of [outsideFile, pathToFileURL(outsideFile).href, join(link, 'a.txt')]) {
+      for (const spec of [browserTabsTool, browserNavigateTool]) {
+        const r = await spec.fn(
+          { action: spec === browserTabsTool ? 'create' : 'goto', tabId: 'bt_1', url },
+          ctxWith(root, port),
+        )
+        expect(r).toMatchObject({
+          status: 'failure',
+          executed: false,
+          errorKind: 'path_out_of_workspace',
+        })
+      }
+    }
+    expect(calls).toHaveLength(0)
+    for (const permission of [{ additionalDirectories: [outside] }, { unrestrictedPaths: true }]) {
+      const r = await browserTabsTool.fn(
+        { action: 'create', url: outsideFile },
+        { ...ctxWith(root, port), ...permission },
+      )
+      expect(r.status).toBe('success')
+      expect(calls.at(-1)).toEqual({ method: 'open', input: pathToFileURL(outsideFile).href })
+    }
   })
 
   test('认不出的动作名直接拒绝，不猜一个近似的', async () => {
@@ -665,6 +737,34 @@ describe('观察的投递', () => {
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(r.message).toContain('连接已断开')
+  })
+
+  test('连接准备失败和动作发出后断连按端口证据区分，向模型保留恢复指引', async () => {
+    for (const executed of [false, true]) {
+      const error = Object.assign(
+        new Error(
+          executed
+            ? '控制连接断开，结果可能不明；先 browser_observe 核对，不要重复点击'
+            : '控制连接准备失败，操作未执行；先 browser_observe 重连',
+        ),
+        { errorKind: 'browser_disconnected', ...(executed ? {} : { executed: false }) },
+      )
+      const { port } = fakeBrowser({
+        act: async () => {
+          throw error
+        },
+      })
+      const result = await browserActTool.fn(
+        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+        ctxWith('/w', port),
+      )
+      expect(result).toMatchObject({
+        status: 'failure',
+        executed,
+        errorKind: 'browser_disconnected',
+      })
+      expect(result.message).toContain('browser_observe')
+    }
   })
 
   /**

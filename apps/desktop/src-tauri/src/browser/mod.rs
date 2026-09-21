@@ -589,9 +589,6 @@ pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Resu
     }
     // 不给地址就是一页空标签，地址由用户在地址栏里输入。
     let target = url.unwrap_or(tabs::BLANK);
-    if target != tabs::BLANK && !target.starts_with("http://") && !target.starts_with("https://") {
-        return Err("只能打开 http / https 地址".to_owned());
-    }
     let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),

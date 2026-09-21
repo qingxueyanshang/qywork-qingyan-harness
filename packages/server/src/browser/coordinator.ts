@@ -35,7 +35,7 @@ import type {
 import type { BrowserEventFrame } from '@qywork/core'
 import { log } from '@qywork/core'
 import { type BrowserBridge, BrowserBridgeError, type NativeBrowserHost } from './bridge.ts'
-import { CdpClient, CdpInitError } from './cdp.ts'
+import { CdpClient, CdpDisconnectedError, CdpInitError } from './cdp.ts'
 import {
   actOnPage,
   clickForDownload,
@@ -78,6 +78,21 @@ export class BrowserReleasedError extends Error {}
 export class BrowserNotOwnedError extends Error implements BrowserRefusal {
   readonly errorKind = 'invalid_argument' as const
   readonly executed = false as const
+}
+
+/** 连接准备阶段失败，尚未进入页面业务动作。 */
+class BrowserConnectionError extends Error implements BrowserRefusal {
+  readonly errorKind = 'browser_disconnected' as const
+  readonly executed = false as const
+
+  constructor(cause: CdpDisconnectedError) {
+    super(
+      '浏览器控制连接准备失败，本次页面操作未执行。' +
+        '请对原 tabId 调用 browser_observe 重连并取得新观察；无需新开标签或延长页面等待。' +
+        `再次失败时停止重复调用并报告。原因：${cause.detail}`,
+      { cause },
+    )
+  }
 }
 
 /** 一次观察在协调器里保留多久。只留最近几份，旧编号本来就要求重新观察。 */
@@ -145,7 +160,7 @@ interface NavWatch {
 }
 
 /**
- * 一次执行的控制槽。每个 owner 至多一个，宿主断开、重连、释放、初始化失败时消亡。
+ * 一次执行的控制槽。每个 owner 至多一个，宿主或 CDP 断连、释放、初始化失败时消亡。
  *
  * 它是「这次执行手里有哪条 CDP 连接、附着哪些页」的账，**不是归属账**——归属在宿主上
  * 按会话记。`sessions` 与 `attaching` 合起来就是这次执行占着的页，页级互斥只认它们。
@@ -640,6 +655,12 @@ export class BrowserCoordinator {
     deadline: number,
     settle?: 'quiet' | 'deadline',
   ): Promise<FollowUpObservation> {
+    if (!page.client.connected) {
+      return {
+        observation: null,
+        observationError: new CdpDisconnectedError('动作之后未取得观察').message,
+      }
+    }
     if (page.client.cancelled) {
       return { observation: null, observationError: '已取消，动作之后没有再观察' }
     }
@@ -897,6 +918,10 @@ export class BrowserCoordinator {
             throw new BrowserReleasedError('本次执行的浏览器控制已经结束，这条连接不登记')
           }
           control.client = client
+          client.onDisconnect(() => {
+            if (control.client === client) void this.#teardown(control).catch(() => {})
+          })
+          if (!client.connected) throw new CdpDisconnectedError('CDP 连接已断开')
           return client
         })
         .finally(() => {
@@ -956,8 +981,8 @@ export class BrowserCoordinator {
           if (!data?.marker) throw new BrowserBridgeError('宿主没有给出标记')
           marker = data.marker
         }
-        const client = await this.#clientOf(control)
         try {
+          const client = await this.#clientOf(control)
           const { sessionId } = await client.attachByMarker(marker)
           const detach = () =>
             client
@@ -979,6 +1004,10 @@ export class BrowserCoordinator {
           control.sessions.set(tabId, sessionId)
         } catch (err) {
           if (err instanceof CdpInitError) await this.#teardown(control)
+          if (err instanceof CdpDisconnectedError) {
+            await this.#teardown(control)
+            throw new BrowserConnectionError(err)
+          }
           throw err
         }
       })

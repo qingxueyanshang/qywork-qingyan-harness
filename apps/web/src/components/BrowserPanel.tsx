@@ -29,13 +29,6 @@ function shown(url: string): string {
   return url === BLANK_PAGE ? '' : url
 }
 
-/** 用户习惯只打 `localhost:3000`。补 `http://` 之后再交给宿主校验。 */
-function normalize(raw: string): string {
-  const s = raw.trim()
-  if (!s) return ''
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`
-}
-
 export default function BrowserPanel(props: { id: string }) {
   const tab = () => browserTab(props.id)
   const [draft, setDraft] = createSignal<string | null>(null)
@@ -44,7 +37,6 @@ export default function BrowserPanel(props: { id: string }) {
   const address = () => draft() ?? shown(tab()?.url ?? '')
 
   let slot!: HTMLDivElement
-  let input!: HTMLInputElement
 
   /** 把占位容器的矩形报给宿主。翻到别的页、浮层盖上来、矩形量不出来时移出可视区。 */
   const layout = () => {
@@ -78,13 +70,8 @@ export default function BrowserPanel(props: { id: string }) {
   }
 
   const go = () => {
-    const next = normalize(address())
+    const next = address().trim()
     if (!next) return
-    if (!/^https?:\/\//i.test(next)) {
-      input.setCustomValidity('只能打开 http / https 地址')
-      input.reportValidity()
-      return
-    }
     setDraft(null)
     run(navigateBrowserPage(props.id, 'goto', next))
   }
@@ -127,17 +114,14 @@ export default function BrowserPanel(props: { id: string }) {
         </button>
         <input
           class="web-url"
-          ref={input}
           // **不能用 `type="url"`**：那会开浏览器自带的校验，`localhost:3000`
           // 不带协议直接被判不合法，表单提交被静默拦下，按回车没有任何反应。
           type="text"
           spellcheck={false}
-          placeholder="localhost:3000"
+          placeholder="网址或本地文件路径"
           value={address()}
           onInput={(e) => {
             setDraft(e.currentTarget.value)
-            // 留着非空的 customValidity，原生校验会拦下之后每一次提交。
-            e.currentTarget.setCustomValidity('')
           }}
           onBlur={() => setDraft(null)}
         />

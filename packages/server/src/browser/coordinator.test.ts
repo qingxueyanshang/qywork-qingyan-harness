@@ -17,7 +17,14 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { BrowserObservation, BrowserOptionsPage } from '@qywork/agent'
+import {
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  type BrowserPort,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import type {
   BrowserEventFrame,
   BrowserRequestFrame,
@@ -34,6 +41,7 @@ import {
   Store,
   upsertWorkspace,
 } from '@qywork/store'
+import { registerBuiltinTools } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { EventBus } from '../bus.ts'
 import { handleCommand } from '../commands.ts'
@@ -104,6 +112,8 @@ function gate(): { promise: Promise<void>; open: () => void } {
 /** 假调试端点的开关：单条用例按需改它，改完影响其后的每一条命令。 */
 interface Devtools {
   port: number
+  disconnect: (index?: number) => void
+  rejectConnections: boolean
   clicks: () => number
   /** 收到过多少条命令。页级互斥的用例按它断言被拒的一方一帧都没发到浏览器。 */
   commands: () => number
@@ -132,12 +142,20 @@ interface Devtools {
  * 不按「令牌没变就是同文档」推断。探针按真实表达式应答并给全 `ready` 与 `mutations`。
  */
 function fakeDevtools(marker: string): Devtools {
+  const sockets = new Set<ServerWebSocket<unknown>>()
   let clicks = 0
   let keys = 0
   let mutations = 0
   let commands = 0
   const state: Devtools = {
     port: 0,
+    disconnect: (index) => {
+      const targets = [...sockets]
+      for (const socket of index === undefined ? targets : targets.slice(index, index + 1)) {
+        socket.close()
+      }
+    },
+    rejectConnections: false,
     clicks: () => clicks,
     commands: () => commands,
     hold: null,
@@ -153,6 +171,7 @@ function fakeDevtools(marker: string): Devtools {
     hostname: '127.0.0.1',
     fetch(req, srv) {
       if (new URL(req.url).pathname === '/json/version') {
+        if (state.rejectConnections) return new Response('调试端点暂不可用', { status: 503 })
         return Response.json({
           webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/devtools/browser/fake`,
         })
@@ -160,6 +179,12 @@ function fakeDevtools(marker: string): Devtools {
       return srv.upgrade(req) ? undefined : new Response('no', { status: 400 })
     },
     websocket: {
+      open(ws: ServerWebSocket<unknown>) {
+        sockets.add(ws)
+      },
+      close(ws: ServerWebSocket<unknown>) {
+        sockets.delete(ws)
+      },
       message(ws: ServerWebSocket<unknown>, raw: string | Buffer) {
         const cmd = JSON.parse(String(raw)) as {
           id: number
@@ -553,6 +578,26 @@ async function ready(): Promise<Fixture & { host: AutoHost; devtools: Devtools }
   host.ready(devtools.port)
   await settle()
   return { ...fixture, host, devtools }
+}
+
+/** 使用真实工具出口核对模型收到的错误回执。 */
+function browserContext(dir: string, browser: BrowserPort | undefined): ToolContext {
+  return {
+    workspaceRoot: dir,
+    conversationId: 'cv_1',
+    runId: 'rn_1',
+    model: 'test',
+    contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
+    vision: null,
+    resources: new Map(),
+    state: new Map(),
+    sink: null,
+    signal: new AbortController().signal,
+    emit: () => {},
+    requestPermission: async () => true,
+    ...(browser ? { browser } : {}),
+  }
 }
 
 /**
@@ -1139,6 +1184,107 @@ test('宿主断开让全部控制作废，重连之后的新执行照常建槽',
   await settle()
   const ob = await after?.observe({ tabId: tab?.tabId ?? '' })
   expect(ob?.observationId).toBeTruthy()
+})
+
+test('CDP 单独断连后，同一执行可观察原页和新页，旧观察失效且其他执行不受影响', async () => {
+  const { handle, host, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const other = handle.browser?.portFor('cv_2', WS)
+  await port?.open('http://127.0.0.1:1/page')
+  const old = await port?.observe({ tabId: 'bt_1' })
+  await other?.open('http://127.0.0.1:1/page')
+  const unaffected = await other?.observe({ tabId: 'bt_2' })
+
+  devtools.disconnect(0)
+  await settle()
+  expect(handle.browser?.available()).toBe(true)
+  expect(host.owners.get('bt_1')).toBe('cv_1')
+  const restored = await port?.observe({ tabId: 'bt_1' })
+  expect(restored?.observationId).toBeTruthy()
+  expect(restored?.observationId).not.toBe(old?.observationId)
+  const stale = await failure(
+    port?.act({
+      tabId: 'bt_1',
+      observationId: old?.observationId ?? '',
+      action: 'click',
+      ref: firstRef(old),
+    }),
+  )
+  expect(stale.message).toContain('重新观察')
+  expect(devtools.clicks()).toBe(0)
+  expect(
+    (
+      await other?.act({
+        tabId: 'bt_2',
+        observationId: unaffected?.observationId ?? '',
+        action: 'click',
+        ref: firstRef(unaffected),
+      })
+    )?.element,
+  ).toBe('dl')
+
+  await port?.open('http://127.0.0.1:1/page')
+  expect((await port?.wait({ tabId: 'bt_3', selector: 'h1', timeoutMs: 1000 }))?.found).toBe(true)
+  expect(host.ops()).not.toContain('close')
+})
+
+test('控制连接建立失败明确声明页面操作未执行，端点恢复后同一执行可继续观察', async () => {
+  const { handle, devtools, dir } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, { browser: true })
+  await port?.open('http://127.0.0.1:1/page')
+  devtools.rejectConnections = true
+  const result = await registry
+    .get('browser_observe')
+    ?.fn({ tabId: 'bt_1' }, browserContext(dir, port))
+  expect(result).toMatchObject({
+    status: 'failure',
+    errorKind: 'browser_disconnected',
+    executed: false,
+  })
+  expect(result?.message).toContain('browser_observe')
+  expect(result?.message).toContain('未执行')
+  expect(devtools.commands()).toBe(0)
+  devtools.rejectConnections = false
+  expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
+})
+
+test('点击发出后 CDP 断连保留结果不明，不重放点击，下一次观察恢复', async () => {
+  const { handle, devtools, dir } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, { browser: true })
+  await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: 'bt_1' })
+  const held = gate()
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent') return
+    if (devtools.clicks() === 0) {
+      devtools.hold = { method, gate: held.promise }
+    } else devtools.disconnect()
+  }
+  const result = await registry.get('browser_act')?.fn(
+    {
+      tabId: 'bt_1',
+      observationId: ob?.observationId ?? '',
+      action: 'click',
+      ref: firstRef(ob),
+    },
+    browserContext(dir, port),
+  )
+  held.open()
+  expect(result).toMatchObject({
+    status: 'failure',
+    errorKind: 'browser_disconnected',
+    executed: true,
+  })
+  expect(result?.message).toContain('结果可能不明')
+  expect(result?.message).toContain('不要直接重复')
+  expect(devtools.clicks()).toBe(1)
+  devtools.onCommand = null
+  expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
+  expect(devtools.clicks()).toBe(1)
 })
 
 test('不归本会话的标签页在发请求之前就被挡住，归本会话的照常带会话 id 走', async () => {
