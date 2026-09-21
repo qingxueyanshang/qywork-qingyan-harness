@@ -230,7 +230,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           const idx = Number(event.output_index ?? 0)
           const slot = partial.get(idx)
           const argsDelta = String(event.delta ?? '')
-          if (slot && argsDelta) slot.json += argsDelta
+          if (slot && argsDelta) {
+            slot.json += argsDelta
+            yield { type: 'tool_call_progress' }
+          }
           continue
         }
 

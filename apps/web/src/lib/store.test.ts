@@ -1064,6 +1064,58 @@ describe('事件按会话归属过滤', () => {
     expect(viewOf('cv_now').retry).toBe(null)
   })
 
+  test('工具参数进度刷新本会话、结束重连，不提前创建工具步骤', () => {
+    discardPace()
+    reset('cv_now')
+    applyEvent(retryFrame(1, 1))
+    setState('views', 'cv_now', 'lastEventAt', 1)
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'tool.generating', runId: 'run_1' },
+    } as never)
+    expect(viewOf('cv_now').generatingToolCall).toBe(true)
+    expect(viewOf('cv_now').lastEventAt).toBeGreaterThan(1)
+    expect(viewOf('cv_now').retry).toBe(null)
+    expect(viewOf('cv_now').transcript).toHaveLength(0)
+
+    applyEvent(retryFrame(3, 2))
+    expect(viewOf('cv_now').generatingToolCall).toBe(false)
+    applyEvent({
+      seq: 4,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'tool.generating', runId: 'run_1' },
+    } as never)
+    applyEvent({
+      seq: 5,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'run.finished', runId: 'run_1', stopReason: 'user_interrupt', usage: null },
+    } as never)
+    expect(viewOf('cv_now').generatingToolCall).toBe(false)
+    expect(viewOf('cv_now').lastEventAt).toBe(null)
+  })
+
+  test('子会话参数进度不改变主会话的阶段或静默时间', () => {
+    reset('cv_now')
+    openConversationTab('cv_child_progress', '子会话')
+    syncViews()
+    setState('views', 'cv_now', 'lastEventAt', 1)
+    applyEvent({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_child_progress',
+      event: { type: 'tool.generating', runId: 'run_child' },
+    } as never)
+    expect(viewOf('cv_child_progress').generatingToolCall).toBe(true)
+    expect(viewOf('cv_now').generatingToolCall).toBe(false)
+    expect(viewOf('cv_now').lastEventAt).toBe(1)
+    closePanelTab('conversation-cv_child_progress')
+    syncViews()
+  })
+
   test('工作区级事件不收场——后台一次文件改动不该把这句话抹掉', () => {
     reset('cv_now')
     applyEvent(retryFrame(1, 2))

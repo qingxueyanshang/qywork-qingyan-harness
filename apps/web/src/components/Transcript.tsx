@@ -403,9 +403,8 @@ const SILENT_MS = 30_000
 /**
  * 这一轮此刻在**哪个阶段**。
  *
- * 五态，句式平齐：正在请求 / 正在思考 / 正在执行 / 正在回复 / 正在重连 N / M；
- * 外加一档「已 N 秒没有新数据」——它不是第六种阶段，是**前五种全都不再为真**时
- * 唯一诚实的说法。
+ * 阶段包括请求、思考、生成、执行、回复和重连；
+ * 近期没有收到进度、也没有工具正在执行时，显示「已 N 秒没有新数据」。
  *
  * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
  * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、不重复——
@@ -453,6 +452,7 @@ function liveStatus(now: number, conversationId: string): string {
     return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
   }
 
+  if (current.generatingToolCall) return '正在生成…'
   if (last?.kind === 'thinking') return '正在思考…'
   if (last?.kind === 'text') return '正在回复…'
   return '正在请求…'

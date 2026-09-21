@@ -62,6 +62,7 @@ export type AgentEvent =
   // ── 模型输出 ──
   | TextDeltaEvent
   | ThinkingDeltaEvent
+  | ToolGeneratingEvent
   // ── 工具 ──
   | ToolStartedEvent
   | ToolDeltaEvent
@@ -308,6 +309,12 @@ export interface TextDeltaEvent {
   stepId: StepId
   /** 只有增量。 */
   delta: string
+}
+
+/** 工具参数正在生成。它还不是可执行的调用，不创建工具步骤或写入模型历史。 */
+export interface ToolGeneratingEvent {
+  type: 'tool.generating'
+  runId: RunId
 }
 
 /**

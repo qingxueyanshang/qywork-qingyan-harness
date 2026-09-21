@@ -181,6 +181,8 @@ export interface ConversationView {
   usage: RunUsage | null
   /** 这条会话最后收到事件的本地时刻，用来识别静默。 */
   lastEventAt: number | null
+  /** 来自 tool.generating；参数尚未收齐，工具还没有开始执行。 */
+  generatingToolCall: boolean
   /** 这条会话正在原样重发第几次；真源是服务端的 `run.retrying`。 */
   retry: { attempt: number; max: number } | null
   /**
@@ -201,6 +203,7 @@ const EMPTY_VIEW: ConversationView = Object.freeze({
   runStartedAt: null,
   usage: null,
   lastEventAt: null,
+  generatingToolCall: false,
   retry: null,
   error: null,
 })
@@ -345,6 +348,7 @@ export function openView(id: string): void {
     runStartedAt: null,
     usage: null,
     lastEventAt: null,
+    generatingToolCall: false,
     retry: null,
     error: null,
   })

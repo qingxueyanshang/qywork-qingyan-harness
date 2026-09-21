@@ -65,6 +65,7 @@ async function afterPreviousRun() {
         runStartedAt: null,
         usage: null,
         lastEventAt: null,
+        generatingToolCall: false,
         retry: null,
         error: null,
       },

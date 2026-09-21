@@ -828,6 +828,247 @@ describe('流卡死要有终态，不能无限期挂着', () => {
   })
 })
 
+describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
+  const kinds = ['openai_responses', 'openai_chat_completions', 'anthropic_messages'] as const
+  type Kind = (typeof kinds)[number]
+  const encode = new TextEncoder()
+  const sse = (event: Record<string, unknown>) =>
+    `${event.type ? `event: ${event.type}\n` : ''}data: ${JSON.stringify(event)}\n\n`
+
+  function wire(kind: Kind, tool: boolean) {
+    if (kind === 'openai_responses') {
+      return {
+        start: tool
+          ? sse({
+              type: 'response.output_item.added',
+              output_index: 0,
+              item: { type: 'function_call', call_id: 'call_probe', name: 'probe' },
+            })
+          : '',
+        delta: (delta: string) =>
+          sse(
+            tool
+              ? { type: 'response.function_call_arguments.delta', output_index: 0, delta }
+              : { type: 'response.output_text.delta', delta },
+          ),
+        end: sse({ type: 'response.completed', response: { status: 'completed' } }),
+      }
+    }
+    if (kind === 'openai_chat_completions') {
+      const chunk = (delta: unknown, finish_reason: string | null = null) =>
+        sse({ choices: [{ delta, finish_reason }] })
+      return {
+        start: tool
+          ? chunk({
+              tool_calls: [
+                { index: 0, id: 'call_probe', function: { name: 'probe', arguments: '' } },
+              ],
+            })
+          : '',
+        delta: (delta: string) =>
+          chunk(
+            tool
+              ? { tool_calls: [{ index: 0, function: { arguments: delta } }] }
+              : { content: delta },
+          ),
+        end: `${chunk({}, tool ? 'tool_calls' : 'stop')}data: [DONE]\n\n`,
+      }
+    }
+    return {
+      start:
+        sse({
+          type: 'message_start',
+          message: {
+            id: 'msg_probe',
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-opus-5',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        }) +
+        sse({
+          type: 'content_block_start',
+          index: 0,
+          content_block: tool
+            ? { type: 'tool_use', id: 'call_probe', name: 'probe', input: {} }
+            : { type: 'text', text: '' },
+        }),
+      delta: (delta: string) =>
+        sse({
+          type: 'content_block_delta',
+          index: 0,
+          delta: tool
+            ? { type: 'input_json_delta', partial_json: delta }
+            : { type: 'text_delta', text: delta },
+        }),
+      end:
+        sse({ type: 'content_block_stop', index: 0 }) +
+        sse({
+          type: 'message_delta',
+          delta: { stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 1 },
+        }) +
+        sse({ type: 'message_stop' }),
+    }
+  }
+
+  async function exercise(kind: Kind, mode: 'continuous' | 'stall' | 'heartbeat' | 'cancel') {
+    let requests = 0
+    let executions = 0
+    let parametersComplete = false
+    let earlyExecution = false
+    let firstContent = false
+    let contentBeforeCompletion = false
+    const events: AgentEvent[] = []
+    const controller = new AbortController()
+    const parts = ['{"content":"', ...Array<string>(6).fill('x'), '"}']
+    const endpoint = Bun.serve({
+      port: 0,
+      fetch() {
+        requests++
+        const broken = requests === 1 && (mode === 'stall' || mode === 'heartbeat')
+        const tool =
+          requests === 1 || ((mode === 'stall' || mode === 'heartbeat') && requests === 2)
+        const frames = wire(kind, tool)
+        if (!tool)
+          return new Response(frames.start + frames.delta('完成') + frames.end, {
+            headers: { 'content-type': 'text/event-stream' },
+          })
+        let index = 0
+        let canceled = false
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(sink) {
+              if (index > 0) await Bun.sleep(60)
+              if (canceled) return
+              if (index === 0) sink.enqueue(encode.encode(frames.start))
+              else if (broken && (mode === 'heartbeat' || index > 1)) {
+                // 空参数与 SSE 保活都不是生成进展，不能让死请求无限续命。
+                sink.enqueue(encode.encode(`: keep-alive\n\n${frames.delta('')}`))
+              } else if (index <= parts.length)
+                sink.enqueue(encode.encode(frames.delta(parts[index - 1]!)))
+              else {
+                parametersComplete = true
+                sink.enqueue(encode.encode(frames.end))
+                sink.close()
+              }
+              index++
+            },
+            cancel() {
+              canceled = true
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      },
+    })
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'probe',
+      description: '接收完整内容。',
+      parameters: {
+        type: 'object',
+        properties: { content: { type: 'string' } },
+        required: ['content'],
+        additionalProperties: false,
+      },
+      actionKind: 'read',
+      objectLabel: '内容',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'read',
+      async fn(args) {
+        executions++
+        earlyExecution ||= !parametersComplete
+        expect(args.content).toBe('xxxxxx')
+        return { status: 'success', executed: true, message: 'ok' }
+      },
+    })
+    const persist = noopPersistence()
+    persist.markRequestFirstContent = () => {
+      firstContent = true
+      contentBeforeCompletion ||= !parametersComplete
+    }
+    const model = kind === 'anthropic_messages' ? 'claude-opus-5' : 'gpt-6-astra'
+    const loop = new AgentLoop({
+      adapter: buildAdapter({
+        kind,
+        model,
+        apiKey: 'sk-test',
+        baseUrl: `http://127.0.0.1:${endpoint.port}/v1`,
+      }),
+      registry,
+      systemPrompt: 's',
+      persist,
+      makeToolContext: baseCtx,
+      streamIdleTimeoutMs: 300,
+    })
+    try {
+      for await (const event of loop.run({
+        runId: 'rn_progress' as never,
+        history: [],
+        signal: controller.signal,
+      })) {
+        events.push(event)
+        if (event.type === 'tool.generating' && mode === 'cancel') controller.abort()
+      }
+    } finally {
+      controller.abort()
+      endpoint.stop(true)
+    }
+    return { requests, executions, earlyExecution, firstContent, contentBeforeCompletion, events }
+  }
+
+  for (const kind of kinds) {
+    test(`${kind} 参数持续到达超过空闲窗口，实时报告生成且只执行完整调用一次`, async () => {
+      const result = await exercise(kind, 'continuous')
+      expect(result.requests).toBe(2)
+      expect(result.executions).toBe(1)
+      expect(result.earlyExecution).toBe(false)
+      expect(result.firstContent && result.contentBeforeCompletion).toBe(true)
+      expect(result.events.filter((ev) => ev.type === 'tool.generating')).toHaveLength(8)
+      expect(
+        result.events.some((ev) => ev.type === 'run.retrying' || ev.type === 'run.error'),
+      ).toBe(false)
+      expect(result.events.findIndex((ev) => ev.type === 'tool.generating')).toBeLessThan(
+        result.events.findIndex((ev) => ev.type === 'tool.started'),
+      )
+    })
+
+    test(`${kind} 参数停止后只有心跳和空片段，仍重连且不执行残缺调用`, async () => {
+      const result = await exercise(kind, 'stall')
+      expect(result.requests).toBe(3)
+      expect(result.executions).toBe(1)
+      expect(result.earlyExecution).toBe(false)
+      expect(result.events.filter((ev) => ev.type === 'run.retrying')).toHaveLength(1)
+      expect(result.events.some((ev) => ev.type === 'run.error')).toBe(false)
+    })
+  }
+
+  test('首内容之前只有保活，不伪造生成进度，超时走原有重连', async () => {
+    const result = await exercise('openai_responses', 'heartbeat')
+    const retry = result.events.findIndex((ev) => ev.type === 'run.retrying')
+    expect(retry).toBeGreaterThan(-1)
+    expect(result.events.slice(0, retry).some((ev) => ev.type === 'tool.generating')).toBe(false)
+    expect(result.executions).toBe(1)
+  })
+
+  test('参数生成中停止，不执行工具也不触发自动重连', async () => {
+    const result = await exercise('openai_responses', 'cancel')
+    expect(result.requests).toBe(1)
+    expect(result.executions).toBe(0)
+    expect(result.events.some((ev) => ev.type === 'run.retrying')).toBe(false)
+    expect(result.events.at(-1)).toMatchObject({
+      type: 'run.finished',
+      stopReason: 'user_interrupt',
+    })
+  })
+})
+
 describe('上下文分组占用', () => {
   /**
    * 回归测试：**压缩之后 breakdown 必须跟着变**。
