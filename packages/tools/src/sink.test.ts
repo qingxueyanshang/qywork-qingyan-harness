@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`sink.ts` 的可重放性分类、裁剪与落盘、调用方自带摘录的那条入口，
- * 以及子 agent 产出的投递闸。
+ * 以及子 agent 产出的投递闸与它的用量记账。
  */
 import { describe, expect, test } from 'bun:test'
 import { chargeBatchBudget, deliveredTokens, deliveryBudget } from '@qywork/agent'
@@ -318,5 +318,19 @@ describe('子 agent 产出的投递闸', () => {
     })
     const after = chargeBatchBudget(ctx, 0).batchRemaining
     expect(before - after).toBe(deliveredTokens(landed.text, DEFAULT_DENSITY))
+  })
+
+  /** 产出已经投出去了，这一笔不记等于让同一波后面的读取工具按一份不存在的余额作准入。 */
+  test('本批剩不下时照样记账，同一波后面的读取工具看到余额 0', () => {
+    const ctx = context()
+    const { batchCap } = deliveryBudget(window)
+    expect(chargeBatchBudget(ctx, budget).ok).toBe(true)
+    expect(chargeBatchBudget(ctx, batchCap - budget - 200).ok).toBe(true)
+    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+
+    deliverAgentOutput(ctx, { toolName: 'subagent', sourceType: 'subagent', body: huge })
+
+    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
+    expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
   })
 })

@@ -32,7 +32,7 @@
 import { mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { join } from 'node:path'
-import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
 import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
@@ -427,7 +427,9 @@ function deliverStreams(
     })
 
     // 摘录记进本批预算：`deliver` 已压到 8 KB 内，但一波多次执行仍是一笔。
-    chargeBatchBudget(ctx, deliveredTokens(landed.text, ctx.density))
+    // 必须是 `recordBatchSpent` 而不是 `chargeBatchBudget`：命令已经执行、摘录已经投出，
+    // 超预算时后者不累加，同一波里其余读取工具会按一笔不存在的余额作准入。
+    recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
     data[channel] = landed.text
     // 覆盖事实必须进 data：模型读 message 和 data，读不到 coverage 就不知道自己看的是几分之几。
     if (landed.coverage.truncated) data[`${channel}Coverage`] = landed.coverage

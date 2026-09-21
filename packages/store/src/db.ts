@@ -94,6 +94,17 @@ export class Store {
     return this.db.transaction(fn).immediate()
   }
 
+  /**
+   * 关闭连接。**不保证释放 OS 文件句柄。**
+   *
+   * 同一个连接上经 `db.query()` 执行过的互异 SQL 超过 `Database.MAX_QUERY_CACHE_SIZE`
+   * 之后，被缓存淘汰的 prepared statement 不会 finalize，`sqlite3_close()` 返回
+   * SQLITE_BUSY：`-wal` / `-shm` 留在盘上，文件在进程退出前保持占用。
+   * 同进程内不要在关库之后删除或移动库文件。
+   *
+   * 不要传 `throwOnError`：这个失败在常规用量下每次都发生，调用方无从补救，
+   * 而调用点多在 `finally` 里，抛出会替换掉正在传播的那个错误。
+   */
   close(): void {
     this.db.close()
   }

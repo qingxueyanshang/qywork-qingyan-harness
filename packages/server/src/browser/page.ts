@@ -42,7 +42,7 @@ import {
 const MAX_ELEMENTS = 120
 /** 元素名称与正文摘要的字符上限。 */
 const MAX_TEXT = 200
-/** 遮挡元素与选项样例的名称上限。 */
+/** 动作回执的目标标签、遮挡元素与选项样例的名称上限。 */
 const MAX_LABEL = 60
 /** 单个 select 一次返回的选项上限。 */
 const MAX_SELECT_OPTIONS = 30
@@ -263,8 +263,11 @@ const DOC_TOKEN = `(() => {
  *
  * 一次往返答完全部问题。分成几次的代价是它们之间页面可能又变了，
  * 那样「复核通过」说的就不是最终发事件时的状态。
+ *
+ * `label` 与 `hitLabel` 都按 `MAX_LABEL` 截。页面自报的 `aria-label` 长度无界，
+ * 不在这里截的话它会经由动作回执进 message。
  */
-const INSPECT_FN = `function qyInspect() {
+export const INSPECT_FN = `function qyInspect() {
   const el = this
   const tag = (el.tagName || '').toLowerCase()
   const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
@@ -296,7 +299,7 @@ const INSPECT_FN = `function qyInspect() {
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
     hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
     disabled: el.disabled === true,
-    label: (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim().slice(0, ${MAX_LABEL}) || tag,
+    label: (((el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) || tag,
   }
 }`
 
@@ -1209,6 +1212,7 @@ interface Inspection {
   /** 命中到的那个元素的名称摘要，取 `aria-label` 或可取得文本，有界。 */
   hitLabel?: string
   disabled?: boolean
+  /** 目标自己的名称摘要，取 `aria-label`、可取得文本或标签名，有界。动作回执的 `element` 取它。 */
   label?: string
 }
 

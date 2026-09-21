@@ -319,9 +319,24 @@ async function onBrowser(
   }
 }
 
+/**
+ * message 里页面标题与网址各自最多印多少字。
+ *
+ * 两个数取 200，与观察对元素名称、正文的采集上限同一量级。页面自报的标题与网址长度无界
+ * （data URL 可以有几万字），而 message 不参与视图裁剪：一段长标题或一条长网址会把整条
+ * 结果的上限吃满，元素表因此一个都投不出去。原值仍在 `data` 里。
+ */
+const MAX_TITLE_CHARS = 200
+const MAX_URL_CHARS = 200
+
+/** 超过上限印前缀加省略号。网址的前缀是 origin 加路径前段，仍看得出打开的是哪一站。 */
+function clip(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}…`
+}
+
 function observationLine(ob: BrowserObservation): string {
   return (
-    `${ob.title || '(无标题)'} · ${ob.url} · ${ob.elements.length} 个元素` +
+    `${ob.title ? clip(ob.title, MAX_TITLE_CHARS) : '(无标题)'} · ${clip(ob.url, MAX_URL_CHARS)} · ${ob.elements.length} 个元素` +
     (ob.truncated ? '（还有更多，用 offset 继续取）' : '') +
     (ob.framesPending?.length ? `（${ob.framesPending.length} 个 iframe 还没就位，重新观察）` : '')
   )
@@ -371,22 +386,6 @@ function withFollowUp(
     data: { ...receipt, observationError: follow.observationError },
     errorKind: 'browser_observation_unavailable',
   }
-}
-
-/** 动作回执里那一格元素标签印进 message 的字数上限。 */
-const MAX_ACTED_LABEL_CHARS = 200
-
-/**
- * 动作行里的目标那一格。
- *
- * 标签取自页面自报的 `aria-label`，长度无界，超过上限只印字数：message 不参与视图裁剪，
- * 一段长标签会把整条结果的上限吃满，元素表因此一个都投不出去。原文仍在回执的
- * `element` 字段里。
- */
-function actedLabel(element: string | undefined): string {
-  if (!element) return ''
-  if (element.length <= MAX_ACTED_LABEL_CHARS) return `：${element}`
-  return `：标签 ${element.length} 字，见结果里的 element`
 }
 
 /** 后续观察的三个键由 `withFollowUp` 单独投递，不算回执字段。 */
@@ -502,7 +501,7 @@ export const browserTabsTool: ToolSpec = {
         const tab = await send(() => browser.open(url))
         return {
           status: 'success',
-          message: `已打开 ${tab.tabId}：${tab.url}。先 browser_observe 或 browser_wait 再操作。`,
+          message: `已打开 ${tab.tabId}：${clip(tab.url, MAX_URL_CHARS)}。先 browser_observe 或 browser_wait 再操作。`,
           data: { tab },
         }
       }
@@ -510,7 +509,11 @@ export const browserTabsTool: ToolSpec = {
       if (action === 'bind') {
         const tabId = str(args.tabId, 'tabId')
         const tab = await send(() => browser.bind(tabId))
-        return { status: 'success', message: `已接管 ${tab.tabId}：${tab.url}`, data: { tab } }
+        return {
+          status: 'success',
+          message: `已接管 ${tab.tabId}：${clip(tab.url, MAX_URL_CHARS)}`,
+          data: { tab },
+        }
       }
 
       if (action === 'close') {
@@ -729,7 +732,8 @@ export const browserActTool: ToolSpec = {
         return incompleteAct(ctx, action, r.execution, receipt, r)
       }
       return withFollowUp(ctx, 'browser_act', receipt, r, {
-        lead: `${action} 已发出${actedLabel(r.element)}。`,
+        // `element` 由采集侧按标签上限截过，这里直接印，不要再加一层长度守卫。
+        lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
         ok: true,
         advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
       })

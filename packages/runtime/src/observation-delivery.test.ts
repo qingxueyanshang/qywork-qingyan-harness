@@ -346,9 +346,8 @@ interface Harness {
 /**
  * 每条用例一对真实库文件。
  *
- * **目录不在这里删**：写满一整条工具 step 之后 `Database.close()` 留下的句柄在本平台上
- * 直到进程退出才释放，`rmSync` 必然报 EBUSY。整轮的临时目录由 `scripts/run-tests.ts`
- * 在测试子进程退出之后统一清掉。
+ * **目录不在这里删**：关库不保证释放文件句柄（见 `Store.close`），Windows 上同进程
+ * `rmSync` 报 EBUSY。整轮的临时目录由 `scripts/run-tests.ts` 在测试子进程退出之后统一清掉。
  */
 const open: Harness[] = []
 afterEach(() => {
