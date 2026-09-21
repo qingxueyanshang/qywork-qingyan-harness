@@ -34,6 +34,13 @@ const SOURCE_TYPE = 'desktop:observation'
  * 少装一个控件，低估会让结果越过上限。
  */
 const ID_ESTIMATE = 'r'.repeat(32)
+/**
+ * 视图里窗口标题最多留多少字。
+ *
+ * 取 200，与 message 里控件值的上限同一量级。标题由窗口自报、长度无界，而上限按整条
+ * 结果计量：一段长标题会把视图预算吃光，控件一个都投不出去。
+ */
+export const MAX_TITLE_CHARS = 200
 
 type DesktopResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
 
@@ -169,11 +176,26 @@ function assemble(
   delivery: Delivery,
   resources: IntermediateResourceRef[] = [],
 ): DesktopResultParts {
-  const observation = { ...input.snapshot, elements: view, delivery }
+  const observation = { ...boundedTitle(input.snapshot), elements: view, delivery }
   return {
     message: `${input.lead} · ${noteOf(delivery)}`,
     data: compose(receipt, observation, input.place),
     ...(resources.length ? { resources } : {}),
+  }
+}
+
+/**
+ * 视图里的窗口标题：超过 `MAX_TITLE_CHARS` 只留前缀，并标明省掉多少字。
+ *
+ * 只用在大观察路径上。完整原值在存盘正文的第一行，按 `delivery.resourceId` 读得回来；
+ * 留前缀而不是整格去掉，是因为动作行上的窗口名取的就是这一格。
+ */
+function boundedTitle(snapshot: DesktopSnapshot): Record<string, unknown> {
+  if (snapshot.title.length <= MAX_TITLE_CHARS) return { ...snapshot }
+  return {
+    ...snapshot,
+    title: snapshot.title.slice(0, MAX_TITLE_CHARS),
+    titleOmittedChars: snapshot.title.length - MAX_TITLE_CHARS,
   }
 }
 

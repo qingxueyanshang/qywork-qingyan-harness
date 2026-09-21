@@ -50,7 +50,7 @@ import type {
   DesktopToggleState,
   DesktopWindowState,
 } from '@qywork/core'
-import { type DesktopResultParts, desktopResult } from './desktop-results.ts'
+import { type DesktopResultParts, desktopResult, MAX_TITLE_CHARS } from './desktop-results.ts'
 import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读树的节点数上限。上限由端口再夹一次，这里挡的是明显越界的请求。 */
@@ -818,6 +818,12 @@ function typedReadback(
   return target.value.includes(action.text) ? 'match' : 'mismatch'
 }
 
+/** message 里的窗口标题。标题由应用自报、长度无界，超过上限印前缀；`data` 里的标题按结果生产的规则处理。 */
+function windowTitle(title: string): string {
+  if (!title) return '(无标题)'
+  return title.length <= MAX_TITLE_CHARS ? title : `${title.slice(0, MAX_TITLE_CHARS)}…`
+}
+
 /** 结果生产交回的三格接到 `ToolOutcome` 上。没有落盘时不写 `resources` 这个键。 */
 function delivered(parts: DesktopResultParts): Pick<ToolOutcome, 'message' | 'data' | 'resources'> {
   return {
@@ -1211,7 +1217,7 @@ export const desktopObserveTool: ToolSpec = {
       }
       const snapshot = await send(() => desktop.observe(input))
       const line =
-        `${snapshot.app} · ${snapshot.title || '(无标题)'} · ${snapshotLine(snapshot)}` +
+        `${snapshot.app} · ${windowTitle(snapshot.title)} · ${snapshotLine(snapshot)}` +
         bareWindowNote(snapshot)
       // 自绘窗口的 structure 观察直接附上整窗图：控件表里一个业务控件都没有，调用方
       // 只能看图按坐标操作，两次往返之间没有可做的判断。判据与那句「无可操作控件」
