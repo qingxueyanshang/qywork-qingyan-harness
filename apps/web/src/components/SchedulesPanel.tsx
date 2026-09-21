@@ -83,7 +83,17 @@ export function SchedulesPanel() {
               {(s) => (
                 <div class="schedule-card" classList={{ off: !s.enabled }}>
                   <div class="schedule-head">
-                    <span class="schedule-title">{s.title}</span>
+                    <span class="schedule-title" title={s.title}>
+                      {s.title}
+                    </span>
+                    {/* 上次结果跟任务名称同行；正文可很长，结果不能排在它后面。 */}
+                    <Show when={outcome(s)}>
+                      {(text) => (
+                        <span class="schedule-outcome field-hint bad" title={text()}>
+                          {text()}
+                        </span>
+                      )}
+                    </Show>
                     <button
                       class="icon-btn"
                       type="button"
@@ -125,12 +135,6 @@ export function SchedulesPanel() {
                       </button>
                     </div>
                   </div>
-                  {/* 上次触发的结果贴在这条任务上：触发的时候没人开着界面，
-                      只发事件等于没有接收者。正文取自那一次的 Run。排在任务正文之前：
-                      正文可以很长，排在后面要滚到卡片底部才看得到。 */}
-                  <Show when={outcome(s)}>
-                    {(text) => <div class="field-hint bad">{text()}</div>}
-                  </Show>
                   <div class="schedule-prompt">{s.prompt}</div>
                 </div>
               )}
@@ -151,7 +155,7 @@ function describe(s: ScheduleView): string {
 }
 
 /**
- * 上次触发的结果。正常跑完与从没触发过都返回 null——那一行只在有话说时出现。
+ * 上次触发的结果。正常跑完与从没触发过都返回 null，只在有话说时显示。
  *
  * 有触发时刻却没有执行记录，如实说出来：认领之后、起轮之前进程退出会留下这个状态，
  * 把它显示成成功是给账本注水。
