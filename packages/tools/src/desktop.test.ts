@@ -575,6 +575,29 @@ describe('目标解析与层级消歧', () => {
     expect(calls).toEqual([])
   })
 
+  /** 候选清单与动作回执共用长值规则：十个候选各印一份长值就把整条结果撑掉。 */
+  test('候选控件的长值只印字数，原文不进 message', async () => {
+    const 长值 = '文'.repeat(60_000)
+    const { port } = fakeDesktop({
+      elements: () => [
+        { ...窗口 },
+        { ...工具栏 },
+        { ...工具栏保存, value: 长值 },
+        { ...表单组 },
+        { ...表单保存, value: 长值 },
+      ],
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', name: '保存' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_target_ambiguous' })
+    expect(r.message).toContain(`值 ${长值.length} 字`)
+    expect(r.message).not.toContain('文文文文文文')
+    expect(r.message.length).toBeLessThan(500)
+  })
+
   /** 祖先不在表里时走到哪算哪，不编一段路径出来。 */
   test('父控件不在这份表里时祖先路径只写到断点', async () => {
     const partial = [表单保存, 灰按钮].map((e) => ({ ...e }))

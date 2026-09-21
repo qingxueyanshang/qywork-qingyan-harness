@@ -72,9 +72,9 @@ const MAX_IMAGE_COORD = 100_000
 /** 一次读文本最多要回多少个 UTF-16 码元。超出即截断并标记。 */
 const MAX_TEXT_CHARS = 20_000
 /**
- * 回执行里控件值最多印多少字。
+ * message 里控件值最多印多少字。
  *
- * 取 200 与浏览器观察对名称、值的采集上限同一量级。超过只印字数：回执与控件表两处
+ * 取 200 与浏览器观察对名称、值的采集上限同一量级。超过只印字数：message 与控件表两处
  * 印同一份长文本会把整条结果挤出投递上限，而值本身在控件表里已经有了。
  */
 const MAX_LINE_VALUE_CHARS = 200
@@ -316,26 +316,26 @@ async function onDesktop(
   }
 }
 
+/**
+ * message 里描述一个控件的那一行。动作回执的目标与歧义候选清单共用它。
+ *
+ * 长值只印字数，原文不进 message：它在同一条结果的控件表里，视图裁过时那个控件带
+ * `valueOmittedChars`。读回核验按完整值判，不看这一行。
+ */
 function elementLine(e: DesktopElement): string {
   return (
     `${e.ref} ${e.role} ${e.name || '(无名称)'}` +
     (e.automationId ? ` #${e.automationId}` : '') +
-    (e.value === undefined ? '' : ` = ${JSON.stringify(e.value)}`) +
+    valueLabel(e.value) +
     selectedLabel(e) +
     (e.enabled ? '' : ' 已禁用')
   )
 }
 
-/**
- * 动作回执里的目标那一行。
- *
- * 长值只印字数，原文不进回执：它在同一条结果的控件表里，视图裁过时那个控件带
- * `valueOmittedChars`。读回核验按完整值判，不看这一行。
- */
-function targetLine(element: DesktopElement): string {
-  const { value, ...rest } = element
-  if (value === undefined || value.length <= MAX_LINE_VALUE_CHARS) return elementLine(element)
-  return `${elementLine(rest)} · 值 ${value.length} 字，在控件表里`
+function valueLabel(value: string | undefined): string {
+  if (value === undefined) return ''
+  if (value.length <= MAX_LINE_VALUE_CHARS) return ` = ${JSON.stringify(value)}`
+  return ` · 值 ${value.length} 字，在控件表里`
 }
 
 /** 选择容器此刻选中的那几项。一项都没选中时不写。 */
@@ -871,7 +871,7 @@ function actOutcome(
       targetRef: ref || null,
       lead:
         `${lead} · ${snapshotLine(r.observation)}` +
-        (target ? ` · 目标 ${targetLine(target)}` : '') +
+        (target ? ` · 目标 ${elementLine(target)}` : '') +
         (readback === 'mismatch' ? ' · 读回不一致' : '') +
         (readback === 'unreadable' ? ' · 读不回控件值' : ''),
     })

@@ -270,6 +270,26 @@ describe('小页整份内联', () => {
     expect((r.data as { images: unknown }).images).toEqual([{ data: 'QUJD', mime: 'image/png' }])
   })
 
+  /**
+   * 页面自报的标题与网址长度都无界（data URL 可以有几万字）。message 不参与视图裁剪，
+   * 这两格印原值会把整条结果的上限吃满，元素表因此一个都投不出去。
+   */
+  test('超长标题与网址在 message 里截短，data 里仍是原值', async () => {
+    const title = '标'.repeat(400)
+    const url = `https://a/${'p'.repeat(400)}`
+    const ctx = context(fakeBrowser({ observe: async () => ({ ...小页, title, url }) }), fakeSink())
+    const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const data = r.data as { title: string; url: string }
+
+    expect(r.message.length).toBeLessThan(600)
+    // 网址留开头：origin 与路径前段还看得出打开的是哪一站。
+    expect(r.message).toContain('https://a/pppp')
+    expect(data.title).toBe(title)
+    expect(data.url).toBe(url)
+    expect(elementsOf(r).length).toBe(1)
+    expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
+  })
+
   /** 截图按图像块发出，不进信封文本：把它算进上限会让一页三个元素的小页去存盘。 */
   test('带一张大截图的小页仍整份内联，不落盘', async () => {
     const sink = fakeSink()
@@ -368,21 +388,6 @@ describe('大页只投前面一部分', () => {
     const r = await browserActTool.fn(CLICK, ctx)
     expect(r.message).not.toContain('合成正文')
     expect(r.message.length).toBeLessThan(300)
-  })
-
-  /** 页面自报的标签没有长度上限，印进 message 会把整条结果的上限吃满。 */
-  test('超长的目标标签只印字数，原文仍在回执里', async () => {
-    const label = '标'.repeat(5000)
-    const ctx = context(
-      fakeBrowser({ act: async () => ({ element: label, observation: 大页 }) }),
-      fakeSink(),
-    )
-    const r = await browserActTool.fn(CLICK, ctx)
-
-    expect(r.message).toContain(`标签 ${label.length} 字`)
-    expect(r.message).not.toContain('标标标标标标')
-    expect((r.data as { element: string }).element).toBe(label)
-    expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
   })
 })
 

@@ -19,9 +19,9 @@
  */
 
 import {
-  chargeBatchBudget,
   deliveredTokens,
   deliveryBudget,
+  recordBatchSpent,
   type SinkPort,
   type ToolContext,
 } from '@qywork/agent'
@@ -294,9 +294,10 @@ export function deliverAgentOutput(
     mimeType: 'text/plain',
     budget: budgetBytes(Math.floor(perCall / share), ctx.density),
   })
-  // 摘录记进本批预算，与 `run_command` 同形：`ok` 不必判，副作用已经发生，
-  // 这一笔是给同一波里其余读取工具看的余额。
-  chargeBatchBudget(ctx, deliveredTokens(landed.text, ctx.density))
+  // 摘录记进本批预算，与 `run_command` 同形。必须是 `recordBatchSpent` 而不是
+  // `chargeBatchBudget`：产出已经投出，超预算时后者不累加，同一波里其余读取工具
+  // 会按一笔不存在的余额作准入。
+  recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
   return {
     text: landed.text,
     coverage: landed.coverage.truncated ? landed.coverage : null,

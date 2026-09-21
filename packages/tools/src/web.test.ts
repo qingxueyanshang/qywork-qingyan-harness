@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import type { ToolContext } from '@qywork/agent'
+import { chargeBatchBudget, deliveryBudget, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { htmlToText, parseDuckDuckGo, webFetchTool } from './web.ts'
+import { htmlToText, NET_POLICY_KEY, parseDuckDuckGo, webFetchTool } from './web.ts'
 
 function ctx(): ToolContext {
   return {
@@ -85,6 +85,35 @@ describe('搜索结果解析', () => {
 
   test('空页面返回空数组而不是抛', () => {
     expect(parseDuckDuckGo('<html></html>', 10)).toEqual([])
+  })
+})
+
+describe('抓取的用量记账', () => {
+  /** 抓取已经发生、摘录已经投出，这一笔不记等于让同一波后面的读取工具按一份不存在的余额作准入。 */
+  test('本批剩不下时照样记账，同一波后面的读取工具看到余额 0', async () => {
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        new Response('甲'.repeat(200_000), { headers: { 'content-type': 'text/plain' } }),
+    })
+    try {
+      const c = ctx()
+      // 回环地址按 allowHosts 放行：SSRF 闸对 127.0.0.1 默认拒绝。
+      c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
+      const { perCall, batchCap } = deliveryBudget(c.contextWindow)
+      expect(chargeBatchBudget(c, perCall).ok).toBe(true)
+      expect(chargeBatchBudget(c, batchCap - perCall - 200).ok).toBe(true)
+      expect(chargeBatchBudget(c, 0).batchRemaining).toBe(200)
+
+      const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+
+      expect(r.status).toBe('success')
+      expect(chargeBatchBudget(c, 0).batchRemaining).toBe(0)
+      expect(chargeBatchBudget(c, 100).ok).toBe(false)
+    } finally {
+      await server.stop(true)
+    }
   })
 })
 

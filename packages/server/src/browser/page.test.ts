@@ -25,6 +25,7 @@ import {
   BrowserObserveTimeoutError,
   BrowserStaleRefError,
   clickForDownload,
+  INSPECT_FN,
   type ObservationRecord,
   observePage,
   type PageHandle,
@@ -1275,6 +1276,35 @@ test('滚动触发节点替换时判失效，要求重新观察，不照旧点�
   expect(err).toBeInstanceOf(BrowserStaleRefError)
   expect(String((err as Error).message)).toContain('滚动后')
   expect(fake.mouse()).toHaveLength(0)
+})
+
+/**
+ * 页内复核函数只在真浏览器里跑，假调试端点是按同一模型另写的应答，所以这一条直接对
+ * 源码求值。采集侧不截的话，长标签经由动作回执进 message，一条结果的上限就被它吃满。
+ */
+test('页内复核交回的标签有界，`aria-label` 与可取得文本同一个上限', () => {
+  const long = '标'.repeat(5000)
+  const inspect = new Function(`return ${INSPECT_FN}`)() as (this: object) => { label?: string }
+  const element = (over: { ariaLabel?: string; innerText?: string }) => ({
+    tagName: 'DIV',
+    id: '',
+    isConnected: true,
+    innerText: over.innerText ?? '',
+    getAttribute: (name: string) => (name === 'aria-label' ? (over.ariaLabel ?? null) : null),
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    ownerDocument: {
+      defaultView: { innerWidth: 800, innerHeight: 600 },
+      elementFromPoint: () => null,
+    },
+    getRootNode: () => ({}),
+  })
+
+  const byAria = inspect.call(element({ ariaLabel: long })).label ?? ''
+  const byText = inspect.call(element({ innerText: long })).label ?? ''
+
+  expect(byAria).toBe(byText)
+  expect(byAria.length).toBeLessThan(long.length)
+  expect(long.startsWith(byAria)).toBe(true)
 })
 
 test('被浮层盖住时报出遮挡元素的标签与名称，一条鼠标事件都不发', async () => {

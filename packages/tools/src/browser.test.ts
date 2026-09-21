@@ -979,4 +979,17 @@ describe('标签页', () => {
     expect(closed.status).toBe('success')
     expect(calls).toEqual([{ method: 'close', input: 'bt_1' }])
   })
+
+  /** 网址长度无界，message 只放短的执行事实；端口拿到的与 data 里的都是原值。 */
+  test('开页回执里的超长网址截短，端口与 data 拿到原值', async () => {
+    const { port, calls } = fakeBrowser()
+    const url = `https://a/${'p'.repeat(500)}`
+    const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith('/w', port))
+
+    expect(r.status).toBe('success')
+    expect(r.message.length).toBeLessThan(300)
+    expect(r.message).toContain('https://a/pppp')
+    expect(calls).toEqual([{ method: 'open', input: url }])
+    expect((data(r) as { tab: { url: string } }).tab.url).toBe(url)
+  })
 })
