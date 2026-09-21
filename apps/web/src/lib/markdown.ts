@@ -28,7 +28,14 @@
 
 import { Lexer, marked, Parser, Renderer, Tokenizer, type Tokens } from 'marked'
 import { createSignal } from 'solid-js'
-import { filterXSS, getDefaultWhiteList } from 'xss'
+import {
+  escapeAttrValue,
+  filterXSS,
+  friendlyAttrValue,
+  getDefaultWhiteList,
+  safeAttrValue,
+} from 'xss'
+import { localHtmlUrl } from './links.ts'
 
 type Hljs = typeof import('highlight.js/lib/common').default
 
@@ -175,7 +182,16 @@ function finish(raw: string): string {
   const wrapped = raw
     .replace(/<table>/g, '<div class="table-wrap"><table>')
     .replace(/<\/table>/g, '</table></div>')
-  return filterXSS(wrapped, { whiteList: WHITELIST })
+  return filterXSS(wrapped, {
+    whiteList: WHITELIST,
+    safeAttrValue(tag, name, value, cssFilter) {
+      // 仅保留可点击的本地 HTML 地址；不放行资源 src 或脚本协议。
+      const decoded = friendlyAttrValue(value)
+      if (tag === 'a' && name === 'href' && localHtmlUrl(decoded, '/'))
+        return escapeAttrValue(decoded)
+      return safeAttrValue(tag, name, value, cssFilter)
+    },
+  })
 }
 
 /** 整段渲染。定稿走这条：它不受增量的已知偏差影响，也开着语言自动检测。 */

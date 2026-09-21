@@ -3,8 +3,8 @@
  * 与 `copyCode`（代码块右上角的复制按钮）。两者的触发元素全部由 markdown 渲染产出，
  * 根上这一处是它们唯一的落点。
  *
- * 这里没有桌面外壳，因此链接落在网页预览页上；内置浏览器那条路要真实原生宿主，
- * 由真实桌面应用上的验收覆盖。
+ * 普通客户端验证网页预览；桌面端用原生命令桩验证文件地址、工作区归属与页签选择。
+ * 真实 WebView2 的加载与布局需另做桌面验收。
  *
  * DOM 在这里装、用完卸掉，理由同 `components/RunStatus.test.tsx`。
  */
@@ -49,11 +49,82 @@ describe('正文里的链接', () => {
     store.setWorkspace(null)
   })
 
-  test('http(s) 之外的 scheme 不接管 —— 那两种页都只加载得了 http(s)', async () => {
+  test('邮件协议不进入网页预览', async () => {
     const store = await freshWorkspace()
     const event = await clickLink('<a href="mailto:a@b.com">a@b.com</a>')
     expect(event.defaultPrevented).toBe(false)
     expect(store.panelTabs().length).toBe(0)
+    store.setWorkspace(null)
+  })
+
+  test('点击真实 Markdown 本地 HTML 链接，在当前工作区的内置浏览器中打开', async () => {
+    const store = await freshWorkspace()
+    const { renderMarkdown } = await import('./lib/markdown.ts')
+    const g = globalThis as Record<string, unknown>
+    const previousTauri = g.__TAURI_INTERNALS__
+    const previousAgent = Object.getOwnPropertyDescriptor(navigator, 'userAgent')
+    const previousCapabilities = store.state.capabilities
+    const opened: { url: string; workspaceId: string }[] = []
+    let hostTabs: Record<string, unknown>[] = []
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows NT 10.0' })
+    g.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args: { url: string; workspaceId: string }) => {
+        if (cmd === 'browser_open') {
+          opened.push(args)
+          const tab = {
+            tabId: `bt_link_${opened.length}`,
+            url: args.url,
+            title: '预览',
+            workspaceId: args.workspaceId,
+            createdSeq: opened.length,
+          }
+          hostTabs = [...hostTabs, tab]
+          return tab
+        }
+        if (cmd === 'browser_tabs') return hostTabs
+      },
+    }
+    store.setState('capabilities', { browser: { connected: true } } as NonNullable<
+      typeof previousCapabilities
+    >)
+    try {
+      for (const href of [
+        'flying-bird.html',
+        './flying-bird.html',
+        'file:///C:/ws/flying-bird.html',
+        'C:/ws/flying-bird.html',
+      ]) {
+        const event = await clickLink(
+          renderMarkdown(`已创建 [flying-bird.html](${href})，双击即可打开。`),
+        )
+        await new Promise((r) => setTimeout(r, 0))
+        expect(event.defaultPrevented).toBe(true)
+        expect(opened.at(-1)).toEqual({
+          url: 'file:///C:/ws/flying-bird.html',
+          workspaceId: 'ws_link',
+        })
+        expect(store.activePanelTab()).toBe(`bt_link_${opened.length}`)
+        expect(store.panelTabs().at(-1)?.kind).toBe('browser')
+      }
+      expect(opened).toHaveLength(4)
+    } finally {
+      for (const t of store.panelTabs()) store.closePanelTab(t.id)
+      store.setWorkspace(null)
+      store.setState('capabilities', previousCapabilities)
+      g.__TAURI_INTERNALS__ = previousTauri
+      if (previousAgent) Object.defineProperty(navigator, 'userAgent', previousAgent)
+      else Reflect.deleteProperty(navigator, 'userAgent')
+    }
+  })
+
+  test('没有原生浏览器的客户端明确提示本地预览不可用，并阻止默认跳转', async () => {
+    const store = await freshWorkspace()
+    const { renderMarkdown } = await import('./lib/markdown.ts')
+    const event = await clickLink(renderMarkdown('[预览](flying-bird.html)'))
+    expect(event.defaultPrevented).toBe(true)
+    expect(store.panelTabs()).toHaveLength(0)
+    expect(store.state.notice?.message).toContain('Windows 桌面端')
+    store.setState('notice', null)
     store.setWorkspace(null)
   })
 })

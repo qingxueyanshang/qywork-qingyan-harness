@@ -19,8 +19,9 @@ import {
   openBrowserPage,
   parkBrowserView,
 } from '../browser.ts'
+import { localHtmlUrl } from '../links.ts'
 import { isNativeBrowserShell } from './shell.ts'
-import { state } from './state.ts'
+import { setState, state } from './state.ts'
 import { holdPanelTab, openPreviewTab, showPanelTab, syncBrowserTabs, workspace } from './ui.ts'
 
 const [tabs, setTabs] = createSignal<readonly NativeTab[]>([])
@@ -104,14 +105,28 @@ export async function openBrowserTab(url?: string): Promise<void> {
 /**
  * 正文里的链接落到右侧面板。
  *
- * **两条路按端分，不按可用性分**：这一端有内置浏览器就只走内置浏览器，
- * 宿主没连上时这条链接没有落点——**不退成网页预览**。退过去的话用户拿到的是一个
- * 看起来一样、却没有登录状态也不受 AI 控制的页面，而他分辨不出来。
- * 别的端本来就只有网页预览，那是那一端真实的能力范围。
+ * 本地 HTML 使用工作区文件地址；HTTP 链接按所在端使用内置浏览器或网页预览。
+ * 宿主不可用或开页失败时投递已有的错误通知，不把 file URL 交给远端 iframe。
  */
 export function openLinkInPanel(url: string): void {
+  const local = localHtmlUrl(url, workspace()?.root ?? '/')
+  const failed = (message: string) => setState('notice', { reason: 'preview_failed', message })
   if (isNativeBrowserShell()) {
-    if (browserReady()) void openBrowserTab(url)
+    if (!workspace()) {
+      failed('请先打开工作区。')
+      return
+    }
+    if (!browserReady()) {
+      failed('内置浏览器尚未连接，请稍后重试。')
+      return
+    }
+    void openBrowserTab(local ?? url).catch((error: unknown) => {
+      failed(`无法打开预览：${error instanceof Error ? error.message : String(error)}`)
+    })
+    return
+  }
+  if (local) {
+    failed('本地网页预览需要 Windows 桌面端。')
     return
   }
   openPreviewTab(url)
