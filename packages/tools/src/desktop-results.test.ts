@@ -212,6 +212,19 @@ function fakePort(table: DesktopElement[], acted: Acted): DesktopPort {
   }
 }
 
+/** 观察与动作后重读都带同一个超长标题。 */
+function longTitlePort(title: string, acted: Acted): DesktopPort {
+  const after = snapshot(大表, { observationId: 'do_2', title })
+  return {
+    ...fakePort(大表, acted),
+    observe: async () => snapshot(大表, { title }),
+    act: async () => {
+      acted.acts++
+      return { dispatch: 'submitted', actionId: 'da_1', observation: after }
+    },
+  }
+}
+
 function fakeSink(): SinkPort & { landed: Uint8Array[]; mimes: (string | null)[] } {
   const landed: Uint8Array[] = []
   const mimes: (string | null)[] = []
@@ -402,6 +415,37 @@ describe('大控件表只投一部分', () => {
       DEFAULT_DENSITY,
     )
     expect(size).toBeLessThanOrEqual(LIMIT)
+  })
+
+  /** 标题由窗口自报、长度无界，而上限按整条结果计量：原值进视图时控件一个都投不出去。 */
+  test('超长窗口标题只留前缀并标出省略字数，原值在存盘正文里，窗口名仍显示得出', async () => {
+    const 长标题 = '合成标题'.repeat(2_000)
+    const sink = fakeSink()
+    const ctx = context(longTitlePort(长标题, { acts: 0 }), sink)
+    const r = await actOnTarget(ctx)
+    const observation = observationOf(r) as DeliveredObservation & { titleOmittedChars?: number }
+
+    expect(observation.elements.length).toBeGreaterThan(0)
+    expect(observation.title).toBe(长标题.slice(0, 200))
+    expect(observation.titleOmittedChars).toBe(长标题.length - 200)
+    expect(observation.app).toBe('合成应用')
+    expect(fromJsonl(sink.landed[0] as Uint8Array).title).toBe(长标题)
+    const size = deliveredTokens(
+      JSON.stringify({ message: r.message, data: r.data, resources: r.resources }),
+      DEFAULT_DENSITY,
+    )
+    expect(size).toBeLessThanOrEqual(LIMIT)
+  })
+
+  test('observe 的 message 里超长标题只印前缀，控件照样投得出去', async () => {
+    const 长标题 = '合成标题'.repeat(2_000)
+    const ctx = context(longTitlePort(长标题, { acts: 0 }), fakeSink())
+    const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+
+    expect(r.message).not.toContain(长标题)
+    expect(r.message).toContain(`${长标题.slice(0, 200)}…`)
+    const data = r.data as { elements: unknown[] }
+    expect(data.elements.length).toBeGreaterThan(0)
   })
 })
 

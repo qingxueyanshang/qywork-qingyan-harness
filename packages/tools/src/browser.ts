@@ -36,7 +36,7 @@ import {
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
-import { browserResult, isOptionsPage } from './browser-results.ts'
+import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
 
 /** 一次等待的上限。超过这个值的请求按它截断，不接受任意时长。 */
@@ -322,12 +322,12 @@ async function onBrowser(
 /**
  * message 里页面标题与网址各自最多印多少字。
  *
- * 两个数取 200，与观察对元素名称、正文的采集上限同一量级。页面自报的标题与网址长度无界
+ * 与视图里页面元数据的上限是同一个数（`MAX_META_CHARS`）。页面自报的标题与网址长度无界
  * （data URL 可以有几万字），而 message 不参与视图裁剪：一段长标题或一条长网址会把整条
  * 结果的上限吃满，元素表因此一个都投不出去。原值仍在 `data` 里。
  */
-const MAX_TITLE_CHARS = 200
-const MAX_URL_CHARS = 200
+const MAX_TITLE_CHARS = MAX_META_CHARS
+const MAX_URL_CHARS = MAX_META_CHARS
 
 /** 超过上限印前缀加省略号。网址的前缀是 origin 加路径前段，仍看得出打开的是哪一站。 */
 function clip(value: string, limit: number): string {

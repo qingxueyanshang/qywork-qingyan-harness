@@ -383,6 +383,34 @@ describe('大页只投前面一部分', () => {
     }
   })
 
+  /** 标题与网址由页面自报、长度无界，而上限按整条结果计量：原值进视图时元素一个都投不出去。 */
+  test('超长标题与网址只留前缀并标出省略字数，原值在存盘正文里', async () => {
+    const title = '标'.repeat(5_000)
+    const url = `https://a/${'p'.repeat(5_000)}`
+    const sink = fakeSink()
+    const ctx = context(fakeBrowser({ observe: async () => ({ ...大页, title, url }) }), sink)
+    const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const data = r.data as {
+      title: string
+      url: string
+      titleOmittedChars: number
+      urlOmittedChars: number
+    }
+
+    expect(elementsOf(r).length).toBeGreaterThan(0)
+    expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
+    expect(data.title).toBe(title.slice(0, 200))
+    expect(data.titleOmittedChars).toBe(title.length - 200)
+    expect(data.url).toBe(url.slice(0, 200))
+    expect(data.urlOmittedChars).toBe(url.length - 200)
+
+    const { meta } = fromJsonl(sink.landed[0] as Uint8Array) as {
+      meta: { title: string; url: string }
+    }
+    expect(meta.title).toBe(title)
+    expect(meta.url).toBe(url)
+  })
+
   test('message 只放执行事实，不印元素正文', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserActTool.fn(CLICK, ctx)

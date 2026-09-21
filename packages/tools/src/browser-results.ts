@@ -36,6 +36,14 @@ const JSONL_MIME = 'application/x-ndjson'
  * 少装一个元素，低估会让结果越过上限。
  */
 const ID_ESTIMATE = 'r'.repeat(32)
+/**
+ * 视图里页面标题与网址各自最多留多少字。
+ *
+ * 取 200，与采集侧对元素名称、正文的上限同一量级。页面自报的标题与网址长度无界
+ * （data URL 可以有几万字），而上限按整条结果计量：5,000 字的标题加 5,000 字的网址
+ * 就能把视图预算吃光，元素一个都投不出去。
+ */
+export const MAX_META_CHARS = 200
 
 type BrowserResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
 
@@ -187,7 +195,9 @@ function assemble(
 ): BrowserResultParts {
   const { key, rest, image } = split(input.page)
   const page =
-    trimmed === null ? rest : { ...rest, [key]: trimmed.view, delivery: trimmed.delivery }
+    trimmed === null
+      ? rest
+      : { ...boundedMeta(rest), [key]: trimmed.view, delivery: trimmed.delivery }
   return {
     message:
       trimmed === null ? input.lead : `${input.lead} · ${noteOf(input.page, trimmed.delivery)}`,
@@ -199,6 +209,23 @@ function assemble(
     },
     ...(resources.length ? { resources } : {}),
   }
+}
+
+/**
+ * 视图里的页面元数据：超长的标题与网址只留前 `MAX_META_CHARS` 字，并标明省掉多少字。
+ *
+ * 只用在大页路径上。完整原值在存盘正文的第一行，按 `delivery.resourceId` 读得回来；
+ * 小页整份内联，这两格逐字不变。
+ */
+function boundedMeta(rest: Record<string, unknown>): Record<string, unknown> {
+  const bounded = { ...rest }
+  for (const key of ['title', 'url'] as const) {
+    const value = rest[key]
+    if (typeof value !== 'string' || value.length <= MAX_META_CHARS) continue
+    bounded[key] = value.slice(0, MAX_META_CHARS)
+    bounded[`${key}OmittedChars`] = value.length - MAX_META_CHARS
+  }
+  return bounded
 }
 
 /** message 里的投递事实：给了多少、其余在哪读，或者为什么读不回来。 */
