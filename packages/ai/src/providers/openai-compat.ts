@@ -613,11 +613,17 @@ export function strictify(schema: Record<string, unknown>): Record<string, unkno
   return out
 }
 
-/** 可选参数在 strict 下的表达方式：类型里加一个 `null`，不是从 `required` 里拿掉。 */
+/** 可选参数保持必填；类型与枚举都要允许 null，否则无关参数仍被迫取实值。 */
 function nullable(node: Record<string, unknown>): Record<string, unknown> {
   const type = node.type
   if (typeof type !== 'string' || type === 'null') return node
-  return { ...node, type: [type, 'null'] }
+  return {
+    ...node,
+    type: [type, 'null'],
+    ...(Array.isArray(node.enum) && !node.enum.includes(null)
+      ? { enum: [...node.enum, null] }
+      : {}),
+  }
 }
 
 /*

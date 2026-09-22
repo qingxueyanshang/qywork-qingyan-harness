@@ -4,6 +4,7 @@
  * 注册元数据，以及采集模式、
  * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型，
  * 以及有限动作序列的逐步执行、引用接续、后置条件、七种停止边界与 `executed` 语义。
+ * strict 参数另覆盖两种 OpenAI 接口的实际请求定义与 wheel 的空参数执行。
  *
  * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
  * `coordinator.test.ts` 覆盖。这里用一份记账假端口：断言的是「交给端口的是什么」与
@@ -22,7 +23,8 @@ import type {
   ToolOutcome,
   ToolSpec,
 } from '@qywork/agent'
-import { DEFAULT_DENSITY } from '@qywork/ai'
+import { ToolRegistry } from '@qywork/agent'
+import { buildAdapter, DEFAULT_DENSITY } from '@qywork/ai'
 import type { DesktopAction } from '@qywork/core'
 import {
   desktopActSequenceTool,
@@ -3365,6 +3367,80 @@ describe('可选参数填空位', () => {
     for (const key of Object.keys(props)) out[key] = key in named ? named[key] : null
     return out
   }
+
+  test('两种 OpenAI 接口允许 wheel 的无关枚举填 null，并按原坐标派发滚动', async () => {
+    const registry = new ToolRegistry()
+    registry.register(desktopActTool)
+    const bodies: Record<string, unknown>[] = []
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(req) {
+        bodies.push((await req.json()) as Record<string, unknown>)
+        const frame = new URL(req.url).pathname.endsWith('/responses')
+          ? { type: 'response.completed', response: { status: 'completed', output: [] } }
+          : { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        return new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      },
+    })
+    const args = strictArgs(desktopActTool, {
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      action: 'wheel',
+      direction: 'up',
+      amount: 6,
+      imageRef: 'di_1',
+      imageX: 1030,
+      imageY: 375,
+    })
+    try {
+      for (const kind of ['openai_responses', 'openai_chat_completions'] as const) {
+        const adapter = buildAdapter({
+          kind,
+          model: 'gpt-6-astra',
+          apiKey: 'test',
+          baseUrl: `http://127.0.0.1:${server.port}`,
+        })
+        for await (const _ of adapter.stream({
+          model: 'gpt-6-astra',
+          system: [],
+          messages: [{ role: 'user', content: '向上滚动' }],
+          tools: registry.schemas(),
+          maxOutputTokens: 64,
+        })) {
+          // 消费本地端点的响应，检查实际发送的参数定义。
+        }
+        const raw = (bodies.at(-1)!.tools as Record<string, unknown>[])[0]!
+        const tool = (raw.function ?? raw) as {
+          strict: boolean
+          parameters: {
+            required: string[]
+            properties: Record<string, { type: string | string[]; enum?: unknown[] }>
+          }
+        }
+        expect(tool.strict).toBe(true)
+        for (const [key, value] of Object.entries(args)) {
+          expect(tool.parameters.required).toContain(key)
+          const field = tool.parameters.properties[key]!
+          if (value === null) expect(field.type).toContain('null')
+          if (field.enum) expect(field.enum).toContain(value)
+        }
+        const { port, calls } = fakeDesktop()
+        const result = await registry.execute('desktop_act', args, ctxWith(port))
+        expect(result).toMatchObject({ status: 'success', executed: true })
+        expect(calls.find((call) => call.method === 'act')?.input).toEqual({
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          at: { imageRef: 'di_1', x: 1030, y: 375 },
+          action: { kind: 'wheel', direction: 'up', amount: 6 },
+        })
+      }
+    } finally {
+      server.stop(true)
+    }
+  })
 
   test('structure 观察带着 imageRect: null 仍然读树', async () => {
     const { port, calls } = fakeDesktop()
