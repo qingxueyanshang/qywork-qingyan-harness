@@ -280,6 +280,8 @@ export interface SummaryTrace {
   /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
   headers(requestId: string, at: number): void
   firstEvent(requestId: string): void
+  /** 每一段非空内容都调；`at` 是适配器解析该段时的观察时刻，不是调用时刻。 */
+  content(requestId: string, at: number): void
   settle(
     requestId: string,
     status: 'received' | 'uncertain' | 'rejected',

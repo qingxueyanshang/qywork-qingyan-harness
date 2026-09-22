@@ -283,12 +283,19 @@ export type ProviderEvent =
    * 两者相差的毫秒数正是这一列要度量的首包等待。
    */
   | { type: 'response_started'; headersAt: number }
-  | { type: 'thinking_delta'; delta: string }
-  | { type: 'response_reasoning'; reasoning: ResponseReasoning }
-  | { type: 'text_delta'; delta: string }
+  /*
+   * 带内容的五个事件都携带 `at`：该段内容**到达本地并解析出来**的时刻。
+   *
+   * 取的是解析时刻而不是消费时刻——调用方处理这一段之前可能先落库、先渲染，
+   * 那几毫秒正是「最后一段内容到现在多久」要度量的那一段。
+   * 空 delta、心跳、响应头与用量不带它，也不推进任何内容时刻。
+   */
+  | { type: 'thinking_delta'; delta: string; at: number }
+  | { type: 'response_reasoning'; reasoning: ResponseReasoning; at: number }
+  | { type: 'text_delta'; delta: string; at: number }
   /** 收到非空工具参数片段；只报告生成进度，完整调用仍由 tool_calls 交付。 */
-  | { type: 'tool_call_progress' }
-  | { type: 'tool_calls'; calls: WireToolCall[] }
+  | { type: 'tool_call_progress'; at: number }
+  | { type: 'tool_calls'; calls: WireToolCall[]; at: number }
   | { type: 'usage'; usage: ProviderUsage }
   /**
    * `stopReason` 是归一化结论，`rawStopReason` 是 provider 的原话。

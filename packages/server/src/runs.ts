@@ -108,6 +108,16 @@ export class RunManager {
   }
 
   /**
+   * 这条会话此刻在跑的那一轮 id。只占了位还没拿到 runId 时为 null。
+   *
+   * **只有它能回答「现在这一轮是哪一条」。** 账本里的 `runs.status` 在服务进程崩过
+   * 之后可能还挂着 `running`，照它取会把一条早已结束的 run 当成运行中。
+   */
+  currentRunId(conversationId: ConversationId): RunId | null {
+    return this.byConversation.get(conversationId) ?? null
+  }
+
+  /**
    * 这条会话此刻在不在执行：有 run，或者有派出去还没回来的子 agent。
    *
    * **界面与停止按钮认它。** 只认 run 的话，一条只有子 agent 在跑的会话在界面上

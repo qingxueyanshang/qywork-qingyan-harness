@@ -55,6 +55,7 @@ export {
 } from './keys.ts'
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
+// `MAX_RESENDS` 同理：历史接口的运行中快照要报同一个上限，另写一个数就是第二本账
 export {
   AgentLoop,
   type CompactionPort,
@@ -62,6 +63,7 @@ export {
   envelopeResult,
   imagesOf,
   type LoopPersistence,
+  MAX_RESENDS,
   omitImages,
   softLimit,
   toolResultContent,

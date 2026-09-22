@@ -27,7 +27,7 @@ import {
   listRunContextSnapshots,
   listSteps,
   listWorkspaces,
-  markProviderRequestFirstContent,
+  markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
   markProviderRequestInputImages,
@@ -81,7 +81,9 @@ describe('逐请求传输证据', () => {
     // 观察时刻由调用方给，重复写入保持第一次：后到的那个不是响应头到达时刻。
     markProviderRequestHeaders(store, request.id, 1_700_000_009_000)
     markProviderRequestFirstEvent(store, request.id)
-    markProviderRequestFirstContent(store, request.id)
+    // 每一段内容都写一次：首值留在 first_content_at，末值覆盖 last_content_at。
+    markProviderRequestContent(store, request.id, 1_700_000_010_000)
+    markProviderRequestContent(store, request.id, 1_700_000_012_000)
     settleProviderRequest(store, request.id, 'received', null, null, 'completed')
 
     const found = listProviderRequests(store, run.id)[0]!
@@ -95,7 +97,8 @@ describe('逐请求传输证据', () => {
     expect(found.sentAt).toBeNumber()
     expect(found.headersAt).toBe(1_700_000_000_000)
     expect(found.firstEventAt).toBeNumber()
-    expect(found.firstContentAt).toBeNumber()
+    expect(found.firstContentAt).toBe(1_700_000_010_000)
+    expect(found.lastContentAt).toBe(1_700_000_012_000)
     expect(found.completedAt).toBeNumber()
     expect(found.inputImageBatchId).toBeNull()
     store.close()

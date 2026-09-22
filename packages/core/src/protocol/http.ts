@@ -15,6 +15,7 @@ import type { MessageId } from '../domain/ids.ts'
 import type {
   FileChange,
   Message,
+  ProviderRequestStatus,
   Run,
   Step,
   TodoItem,
@@ -34,7 +35,7 @@ import type {
  * 它必须随首屏一起回：最新一次 `write_todos` 可能早于当前页，前端不能为了找它
  * 又把全部历史拉一遍。
  */
-export interface ConversationHistoryPageResponse {
+export interface ConversationHistoryPage {
   messages: Message[]
   runs: Run[]
   steps: Step[]
@@ -45,6 +46,49 @@ export interface ConversationHistoryPageResponse {
    */
   workflowStarts: Step[]
   nextCursor: MessageId | null
+}
+
+export interface ConversationHistoryPageResponse extends ConversationHistoryPage {
+  /**
+   * 这条会话此刻正在跑的那一轮与那一次请求；没有在跑的 run 时为 null。
+   *
+   * 落库账本答不了「当前请求走到哪一阶段」，而事件环有界、断线久了补不回来，
+   * 所以刷新只能从这里恢复。它由服务端从 RunManager 的当前 run 与同一份请求账
+   * 现取，**不是第二份状态**：每个字段都能在 `provider_requests` 那一行里找到来源。
+   */
+  live: ConversationLiveSnapshot | null
+}
+
+/** 运行中这一轮的只读快照。 */
+export interface ConversationLiveSnapshot {
+  runId: string
+  /**
+   * 取快照那一刻事件总线的序号。
+   *
+   * 客户端按它裁决先后：序号更大的实时事件已经比这份快照新，不许被它覆盖回去；
+   * 序号不大于它的迟到事件属于快照已经包含的那一段，丢弃。
+   */
+  seq: number
+  /** 这一轮最近一次主请求；一次都还没登记时为 null。 */
+  request: LiveRequestSnapshot | null
+}
+
+/** 最近一次主请求（`purpose='turn'`）在账本里的样子。 */
+export interface LiveRequestSnapshot {
+  requestId: string
+  /** 本次故障链内的重发序号，首发 0。与 `run.request` 同一口径。 */
+  attempt: number
+  max: number
+  status: ProviderRequestStatus
+  sentAt: number | null
+  headersAt: number | null
+  firstContentAt: number | null
+  lastContentAt: number | null
+  /**
+   * 退避倒计时的截止点（等待开始时刻 + 退避时长）。
+   * 只有「这一次已失败且下一次尚未发出」时才非空。
+   */
+  backoffUntil: number | null
 }
 
 /**

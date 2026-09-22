@@ -21,7 +21,7 @@ import {
   createConversation,
   createRun,
   listProviderRequests,
-  markProviderRequestFirstContent,
+  markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
   markProviderRequestSent,
@@ -71,7 +71,7 @@ function ledger(): Ledger {
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
     markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
-    markRequestFirstContent: (id) => markProviderRequestFirstContent(store, id as never),
+    markRequestContent: (id, at) => markProviderRequestContent(store, id as never, at),
     settleRequest: (id, status, usage, errorCode, finishReason, errorMessage) =>
       settleProviderRequest(
         store,

@@ -1242,6 +1242,14 @@ export interface ProviderRequest {
   firstEventAt: number | null
   /** 第一段思考、正文或工具调用到达的时刻。 */
   firstContentAt: number | null
+  /**
+   * 最后一段非空思考、正文或新增工具参数到达的时刻。
+   *
+   * 「此刻静默了多久」只能由它算。`firstContentAt` 答的是另一个问题——
+   * 持续输出时它离现在越来越远，拿它当静默起点会把一次正常输出报成长时间无响应。
+   * 心跳、空 delta、响应头与用量都不推进它。NULL = 存量行或本次尚无内容。
+   */
+  lastContentAt: number | null
   /** 请求进入 received / uncertain / rejected 终态的时刻。 */
   completedAt: number | null
   createdAt: number
@@ -1308,6 +1316,13 @@ export interface ProviderRequestDiagnostic {
     attempt: number | null
     max: number
     backoffMs: number | null
+    /**
+     * 退避等待开始的时刻；不重发时为 null。
+     *
+     * 刷新之后的倒计时只能由它加 `backoffMs` 还原——`completedAt` 是终态落账时刻，
+     * 与等待起点不是同一件事。
+     */
+    at: number | null
   }
 }
 

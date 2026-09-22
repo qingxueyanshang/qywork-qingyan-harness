@@ -26,6 +26,7 @@ import type {
   ConversationRunsResponse,
   ConversationUsageResponse,
   MessageId,
+  RunId,
 } from '@qywork/core'
 import {
   appendMessage,
@@ -38,7 +39,11 @@ import {
   getWorkspaceByPath,
   listConversations,
   listWorkspaces,
+  markProviderRequestContent,
+  markProviderRequestHeaders,
+  markProviderRequestSent,
   openProviderRequest,
+  recordProviderRequestDiagnostic,
   recordUsage,
   Store,
   setConversationTitle,
@@ -48,8 +53,23 @@ import {
 import type { ModelsResponse } from './conversations.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
+/**
+ * RunManager 的替身。`runId` 是一个可写字段：历史接口的运行中快照只问
+ * 「此刻在跑的是哪一轮」，测试按需摆上一个真实 run 的 id。
+ */
+interface RunsStub {
+  isBusy(): boolean
+  runId: RunId | null
+  currentRunId(): RunId | null
+}
+
 function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
   let lan = false
+  const runsStub: RunsStub = {
+    isBusy: () => false,
+    runId: null,
+    currentRunId: () => runsStub.runId,
+  }
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, root, root.split(/[/]/).filter(Boolean).pop() ?? root)
   return {
@@ -65,8 +85,8 @@ function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
     // 会话那几条动作要用到这两个：删除前问一句「在跑吗」，重命名后广播一条。
     // 只给这两个方法，不造一个真的 RunManager / EventBus——那会把这里变成集成测试，
     // 而集成部分 `e2e.test.ts` 已经覆盖了。
-    runs: { isBusy: () => false },
-    bus: { publish: () => {} },
+    runs: runsStub,
+    bus: { publish: () => {}, currentSeq: 77 },
     // 删除会话时关它名下的内置浏览器页。没有宿主时是一次空操作。
     closeBrowserPages: async () => {},
     enableLan: () => {
@@ -1172,6 +1192,145 @@ describe('会话历史分页接口', () => {
     expect(page.runs).toHaveLength(1)
     expect(page.steps.map((s) => s.content)).toEqual(['答案 2'])
     expect(page.nextCursor).toBe(ids[1]!)
+    // 没有 run 在跑：不给运行中快照，界面因此不会把一条已结束的轮次画成执行中。
+    expect(page.live).toBeNull()
+  })
+
+  /**
+   * 运行中那一轮的只读快照。事件环有界，断线久了补不回来，刷新只能从这里恢复
+   * 「当前请求走到哪一阶段」。每个字段都必须能在 `provider_requests` 那一行里找到来源。
+   */
+  test('运行中返回 live 快照：阶段时刻与次数都来自请求账', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const msg = appendMessage(d.store, {
+      conversationId: conv.id,
+      role: 'user',
+      content: '继续',
+      attachments: [],
+    })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: workspaceId as never,
+      model: 'm',
+      clientRequestId: 'live-1',
+      userMessageId: msg.id,
+      messageIdUpperBound: msg.id,
+      contextSnapshot: [],
+    })
+    ;(d.runs as unknown as { runId: RunId | null }).runId = run.id
+
+    const open = (retryIndex: number) =>
+      openProviderRequest(d.store, {
+        runId: run.id,
+        turnIndex: 0,
+        retryIndex,
+        purpose: 'turn',
+        providerKind: 'openai_chat_completions',
+        model: 'm',
+        measuredInputTokens: 10,
+        sentCategories: {} as never,
+        omittedCategories: {} as never,
+        payloadHash: 'h',
+      })
+
+    // 第一次被回绝并排了一次重发；第二次已经发出、响应头已到、出过内容。
+    const failed = open(0)
+    markProviderRequestSent(d.store, failed.id)
+    settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
+    recordProviderRequestDiagnostic(d.store, failed.id, {
+      causes: [],
+      providerEvents: 0,
+      silentMs: 0,
+      transport: null,
+      assistantChars: 0,
+      toolCallCount: 0,
+      retry: { decision: 'resend', attempt: 1, max: 5, backoffMs: 60_000, at: 1_700_000_000_000 },
+    })
+    const live = open(1)
+    markProviderRequestSent(d.store, live.id)
+    markProviderRequestHeaders(d.store, live.id, 1_700_000_061_000)
+    markProviderRequestContent(d.store, live.id, 1_700_000_062_000)
+    markProviderRequestContent(d.store, live.id, 1_700_000_065_000)
+
+    const res = await call(`/api/conversations/${conv.id}/history`, undefined, d)
+    const page = (await res?.json()) as ConversationHistoryPageResponse
+    expect(page.live?.runId).toBe(run.id)
+    // 事件序号边界由总线现取：客户端按它裁决快照与实时事件谁更新。
+    expect(page.live?.seq).toBe(77)
+    expect(page.live?.request).toMatchObject({
+      requestId: live.id,
+      // 次数取自上一行的重发裁决，不是 `retry_index`——后者每个 turn 从 0 重来。
+      attempt: 1,
+      max: 5,
+      status: 'in_flight',
+      headersAt: 1_700_000_061_000,
+      firstContentAt: 1_700_000_062_000,
+      lastContentAt: 1_700_000_065_000,
+      // 下一次已经发出，退避结束，倒计时不再有截止点。
+      backoffUntil: null,
+    })
+    expect(page.live?.request?.sentAt).toBeNumber()
+  })
+
+  /** 还在退避里：最近一行已经落终态且裁决是重发，截止点由等待起点加退避时长还原。 */
+  test('退避期间的 live 快照给出倒计时截止点', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: workspaceId as never,
+      model: 'm',
+      clientRequestId: 'live-2',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    ;(d.runs as unknown as { runId: RunId | null }).runId = run.id
+    const failed = openProviderRequest(d.store, {
+      runId: run.id,
+      turnIndex: 0,
+      retryIndex: 0,
+      purpose: 'turn',
+      providerKind: 'openai_chat_completions',
+      model: 'm',
+      measuredInputTokens: 10,
+      sentCategories: {} as never,
+      omittedCategories: {} as never,
+      payloadHash: 'h',
+    })
+    markProviderRequestSent(d.store, failed.id)
+    settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
+    recordProviderRequestDiagnostic(d.store, failed.id, {
+      causes: [],
+      providerEvents: 0,
+      silentMs: 0,
+      transport: null,
+      assistantChars: 0,
+      toolCallCount: 0,
+      retry: { decision: 'resend', attempt: 2, max: 5, backoffMs: 60_000, at: 1_700_000_000_000 },
+    })
+
+    const res = await call(`/api/conversations/${conv.id}/history`, undefined, d)
+    const page = (await res?.json()) as ConversationHistoryPageResponse
+    expect(page.live?.request).toMatchObject({
+      requestId: failed.id,
+      attempt: 2,
+      max: 5,
+      status: 'rejected',
+      lastContentAt: null,
+      backoffUntil: 1_700_000_060_000,
+    })
   })
 
   test('非法页大小回 422，不静默改成别的数', async () => {

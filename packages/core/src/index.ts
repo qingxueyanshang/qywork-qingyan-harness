@@ -183,9 +183,12 @@ export type {
   ConversationChangeStep,
   ConversationChangesPageResponse,
   ConversationChangeTurn,
+  ConversationHistoryPage,
   ConversationHistoryPageResponse,
+  ConversationLiveSnapshot,
   ConversationRunsResponse,
   ConversationUsageResponse,
+  LiveRequestSnapshot,
   UsageResponse,
 } from './protocol/http.ts'
 // 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按这一份编解码

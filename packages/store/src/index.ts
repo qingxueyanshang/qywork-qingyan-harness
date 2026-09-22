@@ -47,7 +47,7 @@ export {
   listSteps,
   listWorkspaces,
   type ModelFinishRate,
-  markProviderRequestFirstContent,
+  markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
   markProviderRequestInputImages,
