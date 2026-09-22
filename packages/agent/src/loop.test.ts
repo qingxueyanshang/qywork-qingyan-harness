@@ -100,7 +100,7 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
       // 面板的总数就是这个值，而分组明细是同一次装配的估算，两者相等是恒等式。
       // 给一个与请求无关的常数，等于让假适配器造出真适配器造不出的状态。
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
-      yield { type: 'response_started' }
+      yield { type: 'response_started', headersAt: Date.now() }
       if (calls) {
         yield { type: 'tool_calls', calls }
       } else {
@@ -786,7 +786,7 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (opts.connectMs) await new Promise((resolve) => setTimeout(resolve, opts.connectMs))
-        yield { type: 'response_started' }
+        yield { type: 'response_started', headersAt: Date.now() }
         if (opts.text) yield { type: 'text_delta', delta: '半' }
         await new Promise<void>((resolve) => {
           req.signal?.addEventListener('abort', () => {
@@ -1530,7 +1530,7 @@ describe('原地打转', () => {
           type: 'request_prepared',
           measuredInputTokens: estimateRequest(req, base.spec.density),
         }
-        yield { type: 'response_started' }
+        yield { type: 'response_started', headersAt: Date.now() }
         yield { type: 'text_delta', delta: '仍停在同一个位置' }
         yield {
           type: 'usage',
@@ -2207,7 +2207,7 @@ describe('正常响应结束不冒充任务完成', () => {
       async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
         seen.push(req.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent))
         yield { type: 'request_prepared', measuredInputTokens: 1 }
-        yield { type: 'response_started' }
+        yield { type: 'response_started', headersAt: Date.now() }
         yield { type: 'thinking_delta', delta: '想一想' }
         yield { type: 'text_delta', delta: '完成' }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }

@@ -1502,6 +1502,7 @@ export function openProviderRequest(
     requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
     sentAt: null,
+    headersAt: null,
     firstEventAt: null,
     firstContentAt: null,
     completedAt: null,
@@ -1513,9 +1514,9 @@ export function openProviderRequest(
        (id, run_id, turn_index, retry_index, purpose, provider_name, provider_kind, model, status,
         measured_input_tokens, provider_input_tokens, provider_output_tokens, provider_cached_tokens,
         provider_cache_write_tokens, sent_categories, omitted_categories, error_code, payload_hash,
-        request_bytes, cache_route_fingerprint, sent_at, first_event_at, first_content_at, completed_at,
-        created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,?)`,
+        request_bytes, cache_route_fingerprint, sent_at, headers_at, first_event_at, first_content_at,
+        completed_at, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,?)`,
     )
     .run(
       row.id,
@@ -1543,6 +1544,17 @@ export function markProviderRequestSent(store: Store, id: ProviderRequestId): vo
   store.db
     .query("UPDATE provider_requests SET status = 'in_flight', sent_at = ? WHERE id = ?")
     .run(Date.now(), id)
+}
+
+/**
+ * 响应头到达的时刻。**`at` 由传输层观察得到，不要在这里取当前时刻**：
+ * 事件从适配器传到这里已经晚了若干毫秒，而这一列的用途正是与 `sent_at`
+ * 相减得出首包等待。重复调用保持第一次。
+ */
+export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, at: number): void {
+  store.db
+    .query('UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?) WHERE id = ?')
+    .run(at, id)
 }
 
 /** provider 的第一个真实流事件。重复调用保持第一次，不让后续事件覆盖。 */
@@ -1692,6 +1704,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,
     sentAt: r.sent_at,
+    headersAt: r.headers_at,
     firstEventAt: r.first_event_at,
     firstContentAt: r.first_content_at,
     completedAt: r.completed_at,

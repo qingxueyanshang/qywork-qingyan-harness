@@ -1221,6 +1221,16 @@ export interface ProviderRequest {
   requestBytes: number | null
   cacheRouteFingerprint: string | null
   sentAt: number | null
+  /**
+   * 响应头到达的时刻，由传输层在 `fetch` 返回时观察。
+   *
+   * 它与 `firstEventAt` 之间那一段是「远端已接单、模型还没产出」；缺了它，
+   * 连接未通与接单后等待在账本上是同一种静默。
+   *
+   * 边界：非 2xx 的响应在适配器抛错前不交付 `response_started`，这一列因此为 null，
+   * 那一次的响应头时刻只在失败诊断的传输读数里。
+   */
+  headersAt: number | null
   /** provider 返回的第一个流事件；不含本地 request_prepared。 */
   firstEventAt: number | null
   /** 第一段思考、正文或工具调用到达的时刻。 */
