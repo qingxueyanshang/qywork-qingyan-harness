@@ -5,7 +5,7 @@
  * key、五分钟、跑真模型）两档的话，**中间是空的**，而那道缝真的漏过缺陷：`bun test` 看不见 serve
  * 的装配，smoke-serve 要真 key 才跑、因此少有人跑，一条不再成立的断言长期留在缝里没有变红。
  *
- * 这一层验的是**协议与装配**，不验模型：握手鉴权、订阅、指令 fail-closed、
+ * 这一层验的是**协议与装配**，不验模型：握手鉴权、订阅、指令 fail-closed（未知指令、处理抛出）、
  * 一轮完整的 run（工具调用 → 文件改动 → 收尾）、seq 单调、断线补发。
  * 模型的行为由脚本化的 SSE 决定，所以它是确定性的——
  * 一次红就是一次真的回归，不是 provider 抖动。
@@ -604,6 +604,65 @@ describe('WebSocket 协议与一轮完整 run', () => {
 
     ws.close()
   }, 30_000)
+
+  /**
+   * 指令处理抛出异常时的回执。
+   *
+   * 注入用 `PRAGMA query_only`：`conversation.setModel` 那一次 UPDATE 因此抛 SQLite
+   * 错误。SQLite 的写在真实运行里会因并发写锁、磁盘满、库文件只读而失败。
+   *
+   * 断言到「连接仍在、后一条指令照常有答复」为止：没有回执时的形状不是报错难看，
+   * 是客户端一条帧都收不到，界面停在生成中直到重连。
+   */
+  test('指令处理抛出 —— 回执带指令名，连接不断，后续指令照常处理', async () => {
+    const created = (await (
+      await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    ).json()) as { conversation: { id: string } }
+
+    const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    const rejections: { command?: string; reason?: string; message?: string }[] = []
+    const seen: AgentEvent[] = []
+    const helloReady = Promise.withResolvers<void>()
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data))
+      if (msg.type === 'hello.ok') helloReady.resolve()
+      else if (msg.type === 'command.rejected') rejections.push(msg)
+      else if (msg.event) seen.push(msg.event as AgentEvent)
+    })
+    await new Promise<void>((res, rej) => {
+      ws.addEventListener('open', () => res(), { once: true })
+      ws.addEventListener('error', () => rej(new Error('ws 连接失败')), { once: true })
+    })
+    ws.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
+    await helloReady.promise
+
+    const setModel = JSON.stringify({
+      type: 'conversation.setModel',
+      conversationId: created.conversation.id,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+    })
+    store.db.run('PRAGMA query_only = true')
+    try {
+      ws.send(setModel)
+      await Bun.sleep(300)
+    } finally {
+      store.db.run('PRAGMA query_only = false')
+    }
+
+    expect(rejections).toHaveLength(1)
+    expect(rejections[0]?.command).toBe('conversation.setModel')
+    expect(rejections[0]?.reason).toBe('internal_error')
+    expect((rejections[0]?.message ?? '').length).toBeGreaterThan(0)
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+
+    // 同一条指令在写恢复之后照常处理：广播到达即这条连接还在分发指令。
+    ws.send(setModel)
+    await Bun.sleep(300)
+    expect(seen.some((e) => e.type === 'conversation.updated')).toBe(true)
+    expect(rejections).toHaveLength(1)
+    ws.close()
+  })
 })
 
 /*

@@ -87,6 +87,10 @@ export async function submitMessage(
  * deps 里**不含 `ws`**：这条路径除了 `handleCommand`，还要给定时任务用，
  * 而定时触发没有发起方的连接。它本来也没用过 `ws`——事件全部走 bus 广播，
  * 因为同一个会话可能同时开在桌面端和手机上。
+ *
+ * **返回的 promise 不会 reject**：占位失败发一条 `run.error` 后正常返回，
+ * 占位之后的一切（含起轮序言）都在后台那段异步的 try/finally 里收尾。
+ * 调用方因此不必接 `.catch()`。
  */
 export async function startRun(
   conversationId: ConversationId,
@@ -384,19 +388,7 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
       deps,
       item.attachments,
       item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
-    ).catch((err) => {
-      // 塞回队首而不是吞掉：卡片重新出现，用户看得见它没发出去。
-      deps.runs.enqueueFront(conversationId, item)
-      deps.bus.publish(
-        {
-          type: 'run.error',
-          runId: '' as RunId,
-          code: 'internal_error',
-          message: err instanceof Error ? err.message : String(err),
-        },
-        conversationId,
-      )
-    })
+    )
   }, 0)
   return true
 }

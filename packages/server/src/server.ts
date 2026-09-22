@@ -38,7 +38,7 @@ import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
-import { handleCommand } from './commands.ts'
+import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
 import { DesktopBridge } from './desktop/bridge.ts'
 import { desktopCapability } from './desktop/capability.ts'
@@ -553,17 +553,37 @@ export function serve(opts: ServeOptions) {
           return
         }
 
-        await handleCommand(frame as ClientCommand, {
-          ws,
-          store: opts.store,
-          content,
-          config: opts.config,
-          bus,
-          runs,
-          subagents,
-          ...(browser ? { browser } : {}),
-          ...(desktop ? { desktop } : {}),
-        })
+        const cmd = frame as ClientCommand
+        /*
+         * 指令处理抛出时也要有回执。这条 await 之外没有接住的人，抛出即一条
+         * unhandled rejection：客户端一条帧都收不到，而「服务端正在处理」与
+         * 「服务端出错了」在界面上无法区分。
+         *
+         * 只回执与记日志，不重试：重试会把一次故障放大成一串相同的失败。
+         */
+        try {
+          await handleCommand(cmd, {
+            ws,
+            store: opts.store,
+            content,
+            config: opts.config,
+            bus,
+            runs,
+            subagents,
+            ...(browser ? { browser } : {}),
+            ...(desktop ? { desktop } : {}),
+          })
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err)
+          log.error('ws', `指令 ${cmd.type} 处理失败：${detail}`, { id: ws.data.id })
+          reject(
+            ws,
+            cmd.type,
+            'internal_error',
+            `服务端处理该指令时出错：${detail}`,
+            'clientRequestId' in cmd ? cmd.clientRequestId : undefined,
+          )
+        }
       },
       open(ws: ServerWebSocket<SocketData>) {
         if (ws.data.native) {

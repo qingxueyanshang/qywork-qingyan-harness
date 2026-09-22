@@ -389,7 +389,7 @@ export class QyClient {
       type: 'command.rejected',
       command: cmd.type,
       reason: 'not_ready',
-      message: this.closed ? '连接已断开，请重新打开应用' : '连接已断开，请重新打开应用',
+      message: '连接已断开，请重新打开应用',
       // 幂等键原样回传，与服务端那条回执同一口径：接收方据此定位是哪一次操作，
       // 按回车时乐观置上的那一格要靠它才冲销得掉。
       ...('clientRequestId' in cmd ? { clientRequestId: cmd.clientRequestId } : {}),
