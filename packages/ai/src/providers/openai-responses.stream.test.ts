@@ -2,8 +2,8 @@
  * Responses 适配器的**真实 HTTP 路径**：fetch → SSE → 事件 → 用量。
  *
  * **为什么单独一个文件，而且要起一个真的 HTTP server。** 隔壁 `openai-responses.test.ts` 测的是纯函
- * 数（`buildInput` / `applyUsage` / `readSse`），它锁得住形状，锁不住**这条链路真的能跑通**。这两
- * 件事之间出过一次错：`readSse` 一直是对的，而 `stream()` 只认
+ * 数（`buildInput` / `applyUsage`），它锁得住形状，锁不住**这条链路真的能跑通**。这两
+ * 件事之间出过一次错：SSE 分帧（`../sse.ts`）一直是对的，而 `stream()` 只认
  * `response.reasoning_summary_text.delta`，因此 DeepSeek 发的 `response.reasoning_text.delta` 全程
  * 不被识别、一个 `thinking_delta` 都没有——纯函数测试全绿，思考内容全丢。
  *

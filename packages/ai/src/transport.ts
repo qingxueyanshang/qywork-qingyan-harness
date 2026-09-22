@@ -36,11 +36,16 @@ export function newTrace(now = Date.now()): TransportTrace {
   }
 }
 
-/** 失败时刻的读数。时长都相对于 `now`，落进诊断后不再依赖绝对时刻。 */
+/**
+ * 失败时刻的读数。时长都相对于 `now`，落进诊断后不再依赖绝对时刻。
+ *
+ * `headersAt` 是例外：请求账那一列记的是时刻，非 2xx 只有这一条路能把它带出适配器。
+ */
 export function readTransport(trace: TransportTrace, now = Date.now()): ProviderTransportReading {
   return {
     status: trace.status,
     headersAfterMs: trace.headersAt === null ? null : trace.headersAt - trace.sentAt,
+    headersAt: trace.headersAt,
     bytes: trace.bytes,
     sinceLastByteMs: trace.lastByteAt === null ? null : now - trace.lastByteAt,
     keepAliveLines: trace.keepAliveLines,
@@ -98,16 +103,18 @@ function count(trace: TransportTrace, chunk: Uint8Array, lineStart: boolean): bo
 }
 
 /**
- * 按字节空闲计时的响应体。超时时让本地读者拿到 `stream_idle_timeout`，同时取消上游。
+ * 按字节空闲计时的响应体。超时时让本地读者拿到 `stream_idle_timeout`，同时释放连接。
  *
- * 不要改成 `AbortController` 中止整个请求：SDK 会把它包装成 AbortError，与用户按停止
- * 落到同一个形状，两者从此分不开。
+ * **本地读者拿到的必须是 `stream_idle_timeout`，不能是 AbortError**：后者与用户按停止
+ * 落到同一个形状，两者从此分不开。所以先 `controller.error()` 定形状，再中止请求；
+ * 不要把中止当作向读者报错的手段。
  */
 function supervise(
   trace: TransportTrace,
   body: ReadableStream<Uint8Array>,
   provider: ProviderKind,
   idleMs: number,
+  release: () => void,
 ): ReadableStream<Uint8Array> {
   const reader = body.getReader()
   let lineStart = true
@@ -136,15 +143,19 @@ function supervise(
         lineStart = count(trace, result.value, lineStart)
         controller.enqueue(result.value)
       } catch (err) {
+        // 先取消再中止：取消让还挂着的那次 `read()` 以 done 收场，跳过它的话
+        // 中止会把它变成一条没人接的拒绝。
         await reader.cancel().catch(() => {})
         controller.error(err)
+        release()
       } finally {
         clearTimeout(timer)
       }
     },
-    cancel(reason) {
+    async cancel(reason) {
       clearTimeout(timer)
-      return reader.cancel(reason)
+      await reader.cancel(reason).catch(() => {})
+      release()
     },
   })
 }
@@ -159,6 +170,7 @@ async function boundedErrorBody(
   trace: TransportTrace,
   res: Response,
   body: ReadableStream<Uint8Array>,
+  release: () => void,
 ): Promise<Response> {
   const reader = body.getReader()
   const parts: Uint8Array[] = []
@@ -179,6 +191,7 @@ async function boundedErrorBody(
   } finally {
     clearTimeout(timer)
     await reader.cancel().catch(() => {})
+    release()
   }
   const joined = new Uint8Array(total)
   let offset = 0
@@ -198,6 +211,11 @@ async function boundedErrorBody(
  *
  * `idleMs` 是 2xx 正文的字节空闲上限，由调用方从 `ChatRequest.idleTimeoutMs` 传入。
  * 响应对象要重建：`body` 是一次性的流，接了监督就只能交出新的那一份。
+ *
+ * **释放连接靠中止请求，不是取消 body。** 实测（Bun 1.3.14）：读者 `cancel()` 之后
+ * socket 仍然开着，服务端既收不到断开也不会释放名额。所以这里自带一个中止器，
+ * 与调用方的停止信号并联，正文提前结束（空闲超时、调用方取消、错误正文读到上限）时
+ * 中止它。调用方的信号仍然独立有效，两者不互相替代。
  */
 export function traceFetch(
   trace: TransportTrace,
@@ -206,13 +224,21 @@ export function traceFetch(
   base: Fetch = fetch,
 ): Fetch {
   return async (input, init) => {
-    const res = await base(input, init)
+    const closing = new AbortController()
+    const caller = init?.signal
+    const release = () => {
+      closing.abort()
+    }
+    const res = await base(input, {
+      ...init,
+      signal: caller ? AbortSignal.any([caller, closing.signal]) : closing.signal,
+    })
     trace.status = res.status
     trace.headersAt = Date.now()
     const body = res.body
     if (!body) return res
-    if (!res.ok) return await boundedErrorBody(trace, res, body)
-    return new Response(supervise(trace, body, provider, idleMs), {
+    if (!res.ok) return await boundedErrorBody(trace, res, body, release)
+    return new Response(supervise(trace, body, provider, idleMs, release), {
       status: res.status,
       statusText: res.statusText,
       headers: res.headers,

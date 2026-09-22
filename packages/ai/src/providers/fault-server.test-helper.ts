@@ -6,7 +6,13 @@
  *
  * `receipts` 是服务端侧的独立事实——收到过几次请求、各在什么时刻。客户端账本要与它
  * 对账才能判出重发次数是否真实；只数客户端自己的记录证明不了对端收没收到。
+ *
+ * 文件末尾一并提供三协议参数化的适配器驱动（`FAULT_PROTOCOLS` / `drainAdapter` /
+ * `withFault`）：夹具与驱动各写一份就会漂移。
  */
+
+import { buildAdapter } from '../factory.ts'
+import type { ProviderEvent, ProviderProfile } from '../types.ts'
 
 const enc = new TextEncoder()
 
@@ -25,6 +31,10 @@ export type FaultMode =
   | 'headers_then_silence'
   /** 先发若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
   | 'keepalive_then_ok'
+  /** 一次完整的正常响应：协议终态与用量都发全，随后 EOF。 */
+  | 'complete'
+  /** 工具参数只发了半截 JSON，协议终态是输出上限。 */
+  | 'truncated_tool_call'
 
 export interface FaultServer {
   /** Anthropic Messages 的 baseUrl；SDK 自己接 `/v1/messages`。 */
@@ -36,11 +46,19 @@ export interface FaultServer {
   mode: FaultMode
   /** `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头里带的 Retry-After 秒数。 */
   retryAfterSeconds: number
+  /** `inline_error` 事件里的分类词与原文，三协议共用同一份。 */
+  inlineError: { type: string; message: string }
+  /**
+   * 客户端主动断开连接的次数，由永不结束的响应体的 `cancel` 回调计数。
+   *
+   * 这是服务端侧的独立事实：客户端说自己取消了 body 证明不了连接真的释放了。
+   */
+  closedByClient: number
   stop(): void
 }
 
 type Protocol = 'responses' | 'chat' | 'anthropic'
-type Shape = 'text' | 'tool' | 'inline_error' | 'truncated'
+type Shape = 'text' | 'tool' | 'inline_error' | 'truncated' | 'truncated_tool'
 
 const SSE_HEADERS = { 'content-type': 'text/event-stream' } as const
 
@@ -51,11 +69,17 @@ const SSE_HEADERS = { 'content-type': 'text/event-stream' } as const
  * `prefix` 不能为空：`Bun.serve` 要等正文的第一个分片才发响应头，一个字节都不写的话
  * 客户端连响应头都收不到，「响应头已到、正文不来」这个形状就构造不出来。
  */
-function endless(prefix: string, status: number, headers: Record<string, string>): Response {
+function endless(
+  prefix: string,
+  status: number,
+  headers: Record<string, string>,
+  onCancel: () => void,
+): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(enc.encode(prefix))
     },
+    cancel: onCancel,
   })
   return new Response(body, { status, headers })
 }
@@ -84,7 +108,7 @@ function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 }
 
-function responsesBody(shape: Shape): string {
+function responsesBody(shape: Shape, inline: InlineError): string {
   const created = { type: 'response.created', response: { id: 'resp_1', status: 'in_progress' } }
   const message = {
     type: 'response.output_item.added',
@@ -146,16 +170,43 @@ function responsesBody(shape: Shape): string {
         completed({ input_tokens: 11, output_tokens: 7 }),
       ])
     case 'inline_error':
-      return sse([
-        created,
-        { type: 'error', code: 'server_error', message: 'The server had an error' },
-      ])
+      return sse([created, { type: 'error', code: inline.type, message: inline.message }])
     case 'truncated':
       return sse([created, message, textDelta])
+    case 'truncated_tool':
+      return sse([
+        created,
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'call_1',
+            name: 'echo',
+            arguments: '',
+          },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: 'fc_1',
+          output_index: 0,
+          delta: '{"a":',
+        },
+        {
+          type: 'response.incomplete',
+          response: {
+            id: 'resp_1',
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            usage: { input_tokens: 11, output_tokens: 7 },
+          },
+        },
+      ])
   }
 }
 
-function chatBody(shape: Shape): string {
+function chatBody(shape: Shape, inline: InlineError): string {
   const chunk = (fields: Record<string, unknown>) => ({
     id: 'chatcmpl_1',
     object: 'chat.completion.chunk',
@@ -207,22 +258,16 @@ function chatBody(shape: Shape): string {
             ],
           }),
           chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
-          usageChunk,
+          // 工具轮的输出用量与另两条协议取同一个数，三协议参数化才能断言同一句。
+          chunk({
+            choices: [],
+            usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+          }),
         ],
         true,
       )
     case 'inline_error':
-      return data(
-        [
-          {
-            error: {
-              message: 'The server had an error while processing your request',
-              type: 'server_error',
-            },
-          },
-        ],
-        false,
-      )
+      return data([{ error: { message: inline.message, type: inline.type } }], false)
     // 用量那一格先到、finish_reason 还没到就 FIN：适配器据此报断流并带上真实用量。
     case 'truncated':
       return data(
@@ -232,10 +277,36 @@ function chatBody(shape: Shape): string {
         ],
         false,
       )
+    case 'truncated_tool':
+      return data(
+        [
+          chunk({
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_1',
+                      type: 'function',
+                      function: { name: 'echo', arguments: '{"a":' },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] }),
+          usageChunk,
+        ],
+        true,
+      )
   }
 }
 
-function anthropicBody(shape: Shape): string {
+function anthropicBody(shape: Shape, inline: InlineError): string {
   const start = {
     type: 'message_start',
     message: {
@@ -288,19 +359,51 @@ function anthropicBody(shape: Shape): string {
         { type: 'message_stop' },
       ])
     case 'inline_error':
-      return sse([
-        start,
-        { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
-      ])
+      return sse([start, { type: 'error', error: { type: inline.type, message: inline.message } }])
     case 'truncated':
       return sse([start, ...textBlock])
+    case 'truncated_tool':
+      return sse([
+        start,
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_1', name: 'echo', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"a":' },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'max_tokens', stop_sequence: null },
+          usage: { output_tokens: 7 },
+        },
+        { type: 'message_stop' },
+      ])
   }
 }
 
-function bodyOf(protocol: Protocol, shape: Shape): string {
-  if (protocol === 'responses') return responsesBody(shape)
-  if (protocol === 'chat') return chatBody(shape)
-  return anthropicBody(shape)
+/** `inline_error` 事件的分类词与原文。 */
+export interface InlineError {
+  type: string
+  message: string
+}
+
+/**
+ * 三协议默认的流内错误。分类词取各家都用的过载码，原文三协议一致，
+ * 参数化测试因此可以对同一句断言。
+ */
+const DEFAULT_INLINE_ERROR: InlineError = {
+  type: 'overloaded_error',
+  message: 'Upstream is overloaded, please retry',
+}
+
+function bodyOf(protocol: Protocol, shape: Shape, inline = DEFAULT_INLINE_ERROR): string {
+  if (protocol === 'responses') return responsesBody(shape, inline)
+  if (protocol === 'chat') return chatBody(shape, inline)
+  return anthropicBody(shape, inline)
 }
 
 function protocolOf(pathname: string): Protocol {
@@ -311,6 +414,9 @@ function protocolOf(pathname: string): Protocol {
 
 function respond(protocol: Protocol, fault: FaultServer): Response {
   const retryAfter = String(fault.retryAfterSeconds)
+  const closed = () => {
+    fault.closedByClient++
+  }
   switch (fault.mode) {
     case 'retry_after_then_ok':
       return fault.receipts.length === 1
@@ -320,21 +426,29 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
           })
         : new Response(bodyOf(protocol, 'text'), { headers: SSE_HEADERS })
     case 'hung_error_body':
-      return endless('{"error":{"message":"No available accounts', 503, {
-        'content-type': 'application/json',
-        'retry-after': retryAfter,
-      })
+      return endless(
+        '{"error":{"message":"No available accounts',
+        503,
+        { 'content-type': 'application/json', 'retry-after': retryAfter },
+        closed,
+      )
     case 'tool_then_no_eof':
-      return endless(bodyOf(protocol, 'tool'), 200, SSE_HEADERS)
+      return endless(bodyOf(protocol, 'tool'), 200, SSE_HEADERS, closed)
     case 'inline_error':
-      return new Response(bodyOf(protocol, 'inline_error'), { headers: SSE_HEADERS })
+      return new Response(bodyOf(protocol, 'inline_error', fault.inlineError), {
+        headers: SSE_HEADERS,
+      })
     case 'eof_before_terminal':
       return new Response(bodyOf(protocol, 'truncated'), { headers: SSE_HEADERS })
     case 'headers_then_silence':
       // 单个换行只为把响应头冲出去：它不构成任何 SSE 事件，之后一个字节都不再来。
-      return endless('\n', 200, SSE_HEADERS)
+      return endless('\n', 200, SSE_HEADERS, closed)
     case 'keepalive_then_ok':
       return keepAliveThen(protocol)
+    case 'complete':
+      return new Response(bodyOf(protocol, 'text'), { headers: SSE_HEADERS })
+    case 'truncated_tool_call':
+      return new Response(bodyOf(protocol, 'truncated_tool'), { headers: SSE_HEADERS })
   }
 }
 
@@ -345,6 +459,8 @@ export function startFaultServer(mode: FaultMode): FaultServer {
     receipts: [],
     mode,
     retryAfterSeconds: 1,
+    inlineError: DEFAULT_INLINE_ERROR,
+    closedByClient: 0,
     stop: () => {},
   }
   const server = Bun.serve({
@@ -375,4 +491,69 @@ export function closedPortBaseUrl(): string {
   const url = `http://127.0.0.1:${probe.port}`
   probe.stop(true)
   return url
+}
+
+// ───────────────────────── 三协议参数化驱动 ─────────────────────────
+
+/** 三条协议各取一条目录里有的模型。协议按配置判定，不按模型名。 */
+export const FAULT_PROTOCOLS = [
+  { kind: 'openai_responses', model: 'deepseek-flash' },
+  { kind: 'openai_chat_completions', model: 'deepseek-chat' },
+  { kind: 'anthropic_messages', model: 'claude-opus-5' },
+] as const satisfies readonly { kind: ProviderProfile['kind']; model: string }[]
+
+export function faultBaseUrl(fault: FaultServer, kind: ProviderProfile['kind']): string {
+  return kind === 'anthropic_messages' ? fault.anthropicBaseUrl : fault.openaiBaseUrl
+}
+
+export interface DrainResult {
+  events: ProviderEvent[]
+  err: unknown
+  elapsedMs: number
+}
+
+/** 跑完一条流，把事件和终态一起交出来——「断之前收到了什么」和错误本身要一起看。 */
+export async function drainAdapter(opts: {
+  fault: FaultServer
+  kind: ProviderProfile['kind']
+  model: string
+  idleTimeoutMs: number
+  signal?: AbortSignal
+}): Promise<DrainResult> {
+  const adapter = buildAdapter({
+    kind: opts.kind,
+    apiKey: 'sk-fault',
+    baseUrl: faultBaseUrl(opts.fault, opts.kind),
+    model: opts.model,
+  })
+  const events: ProviderEvent[] = []
+  const started = Date.now()
+  try {
+    for await (const ev of adapter.stream({
+      model: opts.model,
+      system: [],
+      messages: [{ role: 'user', content: '你好' }],
+      tools: [],
+      maxOutputTokens: 64,
+      idleTimeoutMs: opts.idleTimeoutMs,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })) {
+      events.push(ev)
+    }
+    return { events, err: null, elapsedMs: Date.now() - started }
+  } catch (err) {
+    return { events, err, elapsedMs: Date.now() - started }
+  }
+}
+
+export async function withFault<T>(
+  mode: FaultMode,
+  fn: (fault: FaultServer) => Promise<T>,
+): Promise<T> {
+  const fault = startFaultServer(mode)
+  try {
+    return await fn(fault)
+  } finally {
+    fault.stop()
+  }
 }

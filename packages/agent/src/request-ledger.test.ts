@@ -165,6 +165,16 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
     expect(received?.headersAt).not.toBeNull()
     expect(received!.headersAt!).toBeGreaterThanOrEqual(received!.sentAt!)
     expect(received!.firstEventAt!).toBeGreaterThanOrEqual(received!.headersAt!)
+
+    /*
+     * 被回绝的那一行同样要有响应头时刻。
+     *
+     * 非 2xx 走不到 `response_started`（适配器在那条路上直接抛错），时刻只能经传输读数
+     * 进账。缺了它，「连不上」与「远端回绝了」在账本上都是一行没有响应头的记录。
+     */
+    expect(rejected?.headersAt).not.toBeNull()
+    expect(rejected!.headersAt!).toBeGreaterThanOrEqual(rejected!.sentAt!)
+    expect(rejected?.firstEventAt).toBeNull()
   } finally {
     led.close()
     fault.stop()
@@ -183,6 +193,8 @@ test('连接被拒：每一行都不是 received，用量全为 null', async () 
     expect(rows.length).toBe(MAX_RESENDS + 1)
     for (const row of rows) {
       expect(row.status).not.toBe('received')
+      // 一个字节都没连上，响应头时刻因此为空：它与「回绝了」是两种不同的失败。
+      expect(row.headersAt).toBeNull()
       expect(row.providerInputTokens).toBeNull()
       expect(row.providerOutputTokens).toBeNull()
       expect(row.providerCachedTokens).toBeNull()

@@ -10,8 +10,10 @@ import {
   ProviderError,
 } from '@qywork/ai'
 import {
+  FAULT_PROTOCOLS,
   type FaultMode,
   type FaultServer,
+  faultBaseUrl,
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type {
@@ -860,15 +862,16 @@ describe('监督期间按停止，不报断流也不再发请求', () => {
   async function stopDuring(
     mode: FaultMode,
     runId: string,
+    protocol: (typeof FAULT_PROTOCOLS)[number],
   ): Promise<{ types: string[]; stopReason: string; receipts: number }> {
     const fault = startFaultServer(mode)
     const controller = new AbortController()
     const loop = new AgentLoop({
       adapter: buildAdapter({
-        kind: 'openai_responses',
-        model: 'deepseek-flash',
+        kind: protocol.kind,
+        model: protocol.model,
         apiKey: 'sk-fault',
-        baseUrl: fault.openaiBaseUrl,
+        baseUrl: faultBaseUrl(fault, protocol.kind),
       }),
       registry: new ToolRegistry(),
       systemPrompt: 's',
@@ -896,14 +899,17 @@ describe('监督期间按停止，不报断流也不再发请求', () => {
     }
   }
 
-  for (const mode of ['hung_error_body', 'headers_then_silence'] as const) {
-    test(`${mode} 期间停止：run 以 user_interrupt 收尾，不再发请求`, async () => {
-      const result = await stopDuring(mode, `rn_stop_${mode}`)
-      expect(result.stopReason).toBe('user_interrupt')
-      expect(result.types).not.toContain('run.error')
-      expect(result.types).not.toContain('run.retrying')
-      expect(result.receipts).toBe(1)
-    }, 20_000)
+  // 三协议都要过：掐流与用户停止的归类在适配器那侧各写一份，只验一条协议漏得掉另两条。
+  for (const protocol of FAULT_PROTOCOLS) {
+    for (const mode of ['hung_error_body', 'headers_then_silence'] as const) {
+      test(`${protocol.kind} 在 ${mode} 期间停止：run 以 user_interrupt 收尾，不再发请求`, async () => {
+        const result = await stopDuring(mode, `rn_stop_${protocol.kind}_${mode}`, protocol)
+        expect(result.stopReason).toBe('user_interrupt')
+        expect(result.types).not.toContain('run.error')
+        expect(result.types).not.toContain('run.retrying')
+        expect(result.receipts).toBe(1)
+      }, 20_000)
+    }
   }
 })
 
