@@ -85,6 +85,7 @@ export {
   type ReasoningEcho,
   type ResourceCoverage,
   type ResourceStatus,
+  type ResponseReasoning,
   type Run,
   type RunContextSegment,
   type RunInterruption,

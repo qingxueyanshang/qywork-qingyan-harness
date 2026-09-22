@@ -25,6 +25,7 @@ import type {
   ContextGroup,
   ConversationId,
   MessageId,
+  ResponseReasoning,
   RunContextSegment,
   Step,
 } from '@qywork/core'
@@ -210,10 +211,13 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
    * 同时开启 `preserveAssistantReasoning`。两边必须同形，否则下一轮缓存前缀会断。
    */
   let pendingReasoning = ''
+  let pendingResponseReasoning: ResponseReasoning | undefined
   const flushText = () => {
     const reasoning = opts.preserveAssistantReasoning ? pendingReasoning : ''
+    const responseReasoning = pendingResponseReasoning
     pendingReasoning = ''
-    if (!pendingText.trim() && !reasoning) {
+    pendingResponseReasoning = undefined
+    if (!pendingText.trim() && !reasoning && !responseReasoning) {
       pendingText = ''
       return
     }
@@ -225,6 +229,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
             role: 'assistant',
             content: pendingText,
             ...(reasoning ? { reasoningContent: reasoning } : {}),
+            ...(responseReasoning ? { responseReasoning } : {}),
             _group: GROUP,
           },
           pendingStamp,
@@ -238,6 +243,8 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
   let i = 0
   while (i < steps.length) {
     const step = steps[i]!
+    // 密文快照在响应收尾落盘；其后的文本或思考属于下一次生成，不能覆盖上一轮。
+    if (pendingResponseReasoning && (step.kind === 'text' || step.kind === 'thinking')) flushText()
     if (step.kind === 'thinking') {
       /*
        * 失败的思考不进模型视图。
@@ -247,7 +254,11 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
        * 无关生成拼成一条 `reasoningContent` 回传，与活侧不同形——违反本文件开头
        * 那条「必须与活的逐字同形」，缓存前缀也从那里断。
        */
-      if (step.status !== 'failure') pendingReasoning += step.content ?? ''
+      if (step.status !== 'failure') {
+        pendingReasoning += step.content ?? ''
+        if (step.payload?.kind === 'response_reasoning')
+          pendingResponseReasoning = step.payload.reasoning
+      }
       pendingStamp = stepStamp(step.runId, step.seq)
       i += 1
       continue
@@ -316,7 +327,9 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
 
     // 思考正文只来自独立 thinking step；迁移 37 已把旧工具行正文搬过去。
     const reasoning = pendingReasoning
+    const responseReasoning = pendingResponseReasoning
     pendingReasoning = ''
+    pendingResponseReasoning = undefined
     // 戳取批次里最大的 seq：活的 transcript 那侧是「一波跑完时的高水位」，同一个数。
     const stamp = stepStamp(batch[0]!.runId, Math.max(...batch.map((s) => s.seq)))
 
@@ -327,6 +340,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
           content: pendingText,
           toolCalls: calls,
           ...(reasoning ? { reasoningContent: reasoning } : {}),
+          ...(responseReasoning ? { responseReasoning } : {}),
           _group: GROUP,
         },
         stamp,

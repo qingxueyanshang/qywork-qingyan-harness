@@ -704,8 +704,64 @@ describe('模型目录', () => {
     })
   })
 
+  test('MiMo 的三种协议规格同时进入模型库与已配置列表', async () => {
+    for (const kind of ['openai_chat_completions', 'openai_responses', 'anthropic_messages']) {
+      const b = await body(withConfig(kind, 'mimo-v2.6-pro'))
+      const vendor = b.library.find((v) => v.id === 'xiaomi')!
+      expect(vendor.models.map((m) => m.id)).toEqual([
+        'mimo-v2.6-pro',
+        'mimo-v2.6-flash',
+        'mimo-v2.6-pro-ultraspeed',
+      ])
+      expect(vendor.models.find((m) => m.id === 'mimo-v2.6-pro')).toMatchObject({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 131_072,
+        vision: true,
+        thinksByDefault: true,
+        effortLevels: [],
+        input: 3,
+        output: 6,
+        cacheRead: 0.025,
+        currency: 'CNY',
+      })
+      expect(b.providers[0]!.models[0]).toMatchObject({
+        id: 'mimo-v2.6-pro',
+        label: 'MiMo V2.6 Pro',
+        known: true,
+        vision: true,
+        effortLevels: [],
+        effort: null,
+      })
+    }
+  })
+
+  test('GLM FlashX 与 Grok 4.7 在模型库去重，配置列表保留协议专属档位', async () => {
+    for (const kind of ['openai_chat_completions', 'openai_responses']) {
+      for (const [model, vendor] of [
+        ['glm-5.3-flashx', 'zhipu'],
+        ['grok-4.7', 'xai'],
+      ] as const) {
+        const b = await body(withConfig(kind, model))
+        expect(
+          b.library.find((v) => v.id === vendor)!.models.filter((m) => m.id === model),
+        ).toHaveLength(1)
+        expect(b.providers[0]!.models[0]).toMatchObject({
+          id: model,
+          known: true,
+          vision: true,
+          effortLevels:
+            model === 'grok-4.7'
+              ? ['low', 'medium', 'high', 'xhigh']
+              : kind === 'openai_responses'
+                ? ['high', 'max']
+                : ['low', 'high', 'max'],
+        })
+      }
+    }
+  })
+
   /** 内置库不能被改小：缺少一家厂商，设置页上那整组模型将随之消失。 */
-  test('内置库覆盖九家厂商', async () => {
+  test('内置库覆盖已收录厂商', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
     expect(b.library.map((v) => v.id).sort()).toEqual([
       'alibaba',
@@ -716,6 +772,7 @@ describe('模型目录', () => {
       'moonshot',
       'openai',
       'xai',
+      'xiaomi',
       'zhipu',
     ])
     const all = b.library.flatMap((v) => v.models)

@@ -14,6 +14,7 @@ import {
   applyTransportCapabilities,
   builtinCatalog,
   computeCost,
+  effortIsTransmittable,
   lookupModel,
   priceAt,
 } from './catalog.ts'
@@ -108,6 +109,60 @@ describe('DeepSeek 当前规格', () => {
   })
   test('Haiku 的预算模式不声明 effort 档位', () => {
     expect(lookupModel('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
+  })
+})
+
+describe('MiMo 官方模型映射', () => {
+  for (const kind of [
+    'openai_chat_completions',
+    'openai_responses',
+    'anthropic_messages',
+  ] as const) {
+    test(`${kind} 按协议收录三款模型，思考开关不伪装成强度`, () => {
+      for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro-ultraspeed']) {
+        const m = lookupModel(id, kind)
+        expect(builtinCatalog().filter((s) => s.id === id && s.provider === kind)).toHaveLength(1)
+        expect(m).toMatchObject({
+          vendor: 'xiaomi',
+          provider: kind,
+          contextWindow: 1_000_000,
+          maxOutputTokens: 131_072,
+          vision: true,
+          video: false,
+          thinksByDefault: true,
+          effortLevels: [],
+          chatReasoningProtocol: 'preserved',
+          cacheRouting: 'none',
+          reasoningEcho: kind === 'openai_responses' ? 'reasoning_text' : 'none',
+        })
+        expect(m.catalogued).not.toBe(false)
+        const effective = applyTransportCapabilities(m, {
+          effort: true,
+          effortLevels: ['low', 'high', 'max'],
+          thinking: 'reasoning_effort',
+        })
+        expect(effective.effortLevels).toEqual([])
+        expect(effortIsTransmittable(effective)).toBe(false)
+      }
+    })
+  }
+
+  test('国内按量价格进入费用计算，缓存输入不重复计费', () => {
+    for (const [id, cost] of [
+      ['mimo-v2.6-pro', 9.025],
+      ['mimo-v2.6-flash', 3.02],
+      ['mimo-v2.6-pro-ultraspeed', 90.25],
+    ] as const) {
+      const m = lookupModel(id, 'openai_responses')
+      expect(m.pricing.currency).toBe('CNY')
+      expect(
+        computeCost(m, {
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cachedTokens: 1_000_000,
+        }),
+      ).toBeCloseTo(cost)
+    }
   })
 })
 
@@ -291,6 +346,7 @@ describe('视频输入', () => {
         'openai_chat_completions:MiniMax-M3',
         'openai_chat_completions:glm-4.6v',
         'openai_chat_completions:glm-5.3-flash',
+        'openai_chat_completions:glm-5.3-flashx',
         'openai_chat_completions:glm-5v-turbo',
         'openai_chat_completions:kimi-k3',
         'openai_chat_completions:qwen3-vl-flash',
@@ -730,8 +786,8 @@ describe('目录里的价格与档位', () => {
     expect(spec('qwen3.8-max').chatToolSchema).toBe('openai_strict')
   })
 
-  test('GLM-5.3 两款走保留思考协议，并保留厂商原生工具 schema', () => {
-    for (const id of ['glm-5.3', 'glm-5.3-flash']) {
+  test('GLM-5.3 系列 Chat 走保留思考协议，并保留厂商原生工具 schema', () => {
+    for (const id of ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx']) {
       expect(spec(id).effortLevels).toEqual(['low', 'high', 'max'])
       expect(spec(id).maxOutputTokens).toBe(131_072)
       expect(spec(id).chatReasoningProtocol).toBe('glm_preserved')
@@ -739,7 +795,7 @@ describe('目录里的价格与档位', () => {
     }
   })
 
-  test('官方可确认的输出上限已收录；只有 Grok 两条保留 null', () => {
+  test('官方可确认的输出上限已收录；Grok 不猜独立上限', () => {
     expect(spec('MiniMax-M3').maxOutputTokens).toBe(524_288)
     expect(spec('glm-4.6v').maxOutputTokens).toBe(32_768)
     expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)
@@ -747,6 +803,6 @@ describe('目录里的价格与档位', () => {
       builtinCatalog()
         .filter((m) => m.maxOutputTokens === null)
         .map((m) => m.id),
-    ).toEqual(['grok-4.6', 'grok-4.5'])
+    ).toEqual(['grok-4.7', 'grok-4.7', 'grok-4.6', 'grok-4.5'])
   })
 })

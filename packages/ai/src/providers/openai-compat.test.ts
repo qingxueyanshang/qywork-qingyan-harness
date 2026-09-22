@@ -528,6 +528,64 @@ describe('OpenAI 那套只发 reasoning_effort', () => {
 })
 
 describe('逐模型的历史思考协议', () => {
+  test('MiMo 回传所有历史思考和标准 JSON 工具调用，忽略旧强度选择', async () => {
+    const body = await send(
+      'mimo-v2.6-pro',
+      'high',
+      [
+        {
+          name: 'read_file',
+          description: '读取文件',
+          strict: true,
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' }, limit: { type: 'integer' } },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      [
+        { role: 'user', content: '开始' },
+        { role: 'assistant', content: '计划', reasoningContent: '第一轮思考' },
+        { role: 'user', content: '继续' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoningContent: '工具轮思考',
+          toolCalls: [
+            { id: 'c1', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } },
+          ],
+        },
+        { role: 'tool', toolCallId: 'c1', content: '内容' },
+      ],
+    )
+    expect(body.messages).toMatchObject([
+      { role: 'user' },
+      { role: 'assistant', reasoning_content: '第一轮思考' },
+      { role: 'user' },
+      {
+        role: 'assistant',
+        reasoning_content: '工具轮思考',
+        tool_calls: [
+          {
+            id: 'c1',
+            function: { name: 'read_file', arguments: '{"path":"pelican-bike/index.html"}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'c1' },
+    ])
+    expect(body.tools).toMatchObject([
+      {
+        type: 'function',
+        function: { name: 'read_file', strict: true, parameters: { required: ['path', 'limit'] } },
+      },
+    ])
+    for (const field of ['thinking', 'reasoning_effort', 'preserve_thinking', 'prompt_cache_key'])
+      expect(body).not.toHaveProperty(field)
+  })
+
   const history: WireMessage[] = [
     { role: 'user', content: '第一问' },
     { role: 'assistant', content: '第一答', reasoningContent: '完整思考' },

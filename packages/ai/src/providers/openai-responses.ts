@@ -120,6 +120,16 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     let settled = false
     /** 按 output_index 累积的工具调用。参数是分片到达的。 */
     const partial = new Map<number, { id: string; name: string; json: string }>()
+    const encryptedReasoning = new Map<number, Record<string, unknown>>()
+    const keepReasoning = (idx: number, item: Record<string, unknown>) => {
+      if (
+        this.spec.reasoningEcho === 'encrypted_content' &&
+        item.type === 'reasoning' &&
+        typeof item.encrypted_content === 'string' &&
+        item.encrypted_content
+      )
+        encryptedReasoning.set(idx, item)
+    }
 
     /*
      * 连接超时：**只管到响应头到达为止**，之后必须撤掉。
@@ -219,7 +229,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             const slot = {
               id: String(item.call_id ?? item.id ?? `call_${idx}`),
               name: String(item.name ?? ''),
-              json: '',
+              json: typeof item.arguments === 'string' ? item.arguments : '',
             }
             partial.set(idx, slot)
           }
@@ -249,6 +259,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
         if (type === 'response.output_item.done') {
           const item = (event.item ?? {}) as Record<string, unknown>
+          keepReasoning(Number(event.output_index ?? 0), item)
           if (item.type !== 'function_call') continue
           const idx = Number(event.output_index ?? 0)
           const name = String(item.name ?? '')
@@ -273,6 +284,21 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
         if (type === 'response.completed' || type === 'response.incomplete') {
           const response = (event.response ?? {}) as Record<string, unknown>
+          // 完整 output 是本轮最终快照，替换增量记录，避免漏参或重复调用。
+          if (Array.isArray(response.output)) {
+            partial.clear()
+            encryptedReasoning.clear()
+            for (const [idx, item] of response.output.entries()) {
+              if (!item || typeof item !== 'object') continue
+              keepReasoning(idx, item)
+              if (item?.type !== 'function_call') continue
+              partial.set(idx, {
+                id: String(item.call_id ?? item.id ?? `call_${idx}`),
+                name: String(item.name ?? ''),
+                json: typeof item.arguments === 'string' ? item.arguments : '',
+              })
+            }
+          }
           applyUsage(usage, response.usage as Record<string, unknown> | undefined)
           rawFinish = rawStatusOf(response)
           stopReason = normalizeStatus(response)
@@ -317,6 +343,15 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     }
 
     const calls = collectToolCalls(partial, req.model)
+    if (encryptedReasoning.size) {
+      yield {
+        type: 'response_reasoning',
+        reasoning: {
+          model: req.model,
+          items: [...encryptedReasoning].sort(([a], [b]) => a - b).map(([, item]) => item),
+        },
+      }
+    }
     if (calls.length) {
       // 截断优先，别把 max_tokens 覆盖成 tool_use——理由同 openai-compat：
       // 参数拼到一半被截断时，抹掉截断信号 = 上层拿着残缺参数照常执行工具。
@@ -338,11 +373,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     return {
       model: req.model,
       ...(instructions ? { instructions } : {}),
-      input: buildInput(req.messages, this.spec.reasoningEcho),
+      input: buildInput(req.messages, this.spec.reasoningEcho, req.model),
       // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
       // 未收录的模型不申报，让端点用自己的默认。
       ...(cap === null ? {} : { max_output_tokens: cap }),
-      ...(req.tools.length ? { tools: buildTools(req.tools) } : {}),
+      ...(req.tools.length ? { tools: buildTools(req.tools, this.spec.chatToolSchema) } : {}),
       ...this.buildReasoning(req),
       // 亲和键发不发由目录里那条模型说了算，判据与 chat/completions 那支同一个
       // 字段——两条协议各写一套判定，就会出现「同一个模型换条协议就不发了」。
@@ -376,7 +411,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         ...(effort ? { effort } : {}),
         // 要拿到 thinking_delta 就必须显式要摘要；不要的话推理过程完全不可见，
         // 而用户看到的是「模型停了很久然后突然出结果」。
-        summary: 'auto',
+        ...(this.spec.reasoningEcho === 'reasoning_text_object' ? {} : { summary: 'auto' }),
       },
     }
   }
@@ -393,8 +428,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
  */
 const LOST_REASONING = '(上一轮的思考内容未能保留)'
 
-function reasoningItem(text: string): Record<string, unknown> {
-  return { type: 'reasoning', content: [{ type: 'reasoning_text', text }] }
+function reasoningItem(text: string, echo: ReasoningEcho): Record<string, unknown> {
+  const content = { type: 'reasoning_text', text }
+  return { type: 'reasoning', content: echo === 'reasoning_text_object' ? content : [content] }
 }
 
 /**
@@ -409,11 +445,20 @@ function reasoningItem(text: string): Record<string, unknown> {
 export function buildInput(
   messages: WireMessage[],
   echo: ReasoningEcho,
+  model?: string,
 ): Record<string, unknown>[] {
   const items: Record<string, unknown>[] = []
-  const echoesReasoning = echo === 'reasoning_text'
+  const echoesReasoning = echo === 'reasoning_text' || echo === 'reasoning_text_object'
 
   for (const m of mergeContextIntoUsers(messages)) {
+    if (
+      m.role === 'assistant' &&
+      echo === 'encrypted_content' &&
+      m.responseReasoning &&
+      m.responseReasoning.model === model
+    ) {
+      items.push(...m.responseReasoning.items)
+    }
     if (m.role === 'tool') {
       /*
        * **工具结果里能放图。** 文档原话：`function_call_output` 的结果「可以是纯
@@ -434,7 +479,7 @@ export function buildInput(
       // reasoning 必须排在 function_call **之前**。放到 call 与 output 中间，
       // 会被判成「找不到工具输出」——错误信息指向的地方跟真正的原因无关。
       const reasoning = m.reasoningContent?.trim()
-      if (echoesReasoning) items.push(reasoningItem(reasoning || LOST_REASONING))
+      if (echoesReasoning) items.push(reasoningItem(reasoning || LOST_REASONING, echo))
       if (text) {
         items.push({
           type: 'message',
@@ -458,7 +503,7 @@ export function buildInput(
     const role = m.role
     const isAssistant = role === 'assistant'
     if (isAssistant && echoesReasoning && m.reasoningContent) {
-      items.push(reasoningItem(m.reasoningContent))
+      items.push(reasoningItem(m.reasoningContent, echo))
     }
     if (typeof m.content === 'string') {
       items.push({
@@ -485,15 +530,18 @@ function toResponsesContent(content: Exclude<WireMessage['content'], string>) {
 }
 
 /** 工具定义是**扁平**的，没有 chat 协议那层 `function: {...}` 包装。 */
-export function buildTools(tools: ToolSchema[]): Record<string, unknown>[] {
+export function buildTools(
+  tools: ToolSchema[],
+  schema: ModelSpec['chatToolSchema'] = 'openai_strict',
+): Record<string, unknown>[] {
   return [...tools]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((t) => ({
       type: 'function',
       name: t.name,
       description: t.description,
-      parameters: t.strict ? strictify(t.parameters) : t.parameters,
-      ...(t.strict ? { strict: true } : {}),
+      parameters: t.strict && schema === 'openai_strict' ? strictify(t.parameters) : t.parameters,
+      ...(t.strict && schema === 'openai_strict' ? { strict: true } : {}),
     }))
 }
 

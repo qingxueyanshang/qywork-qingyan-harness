@@ -134,6 +134,8 @@ export function estimateMessage(m: WireMessage, d: TokenDensity): number {
   const charsPerToken = m.role === 'tool' ? d.jsonCharsPerToken : d.textCharsPerToken
   let total = PER_MESSAGE_OVERHEAD + estimateContent(m.content, d, charsPerToken)
   if (m.reasoningContent) total += estimateText(m.reasoningContent, d)
+  // 密文没有本地 tokenizer；以发送字节保守估算，收到 provider 用量后由锚点校准。
+  if (m.responseReasoning) total += estimateJson(m.responseReasoning.items, d)
   for (const call of m.toolCalls ?? []) {
     total += estimateText(call.name, d) + estimateJson(call.arguments, d)
   }

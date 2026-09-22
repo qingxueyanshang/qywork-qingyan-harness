@@ -281,6 +281,162 @@ async function run(
 
 // ───────────────────────── 断言 ─────────────────────────
 
+/** 官方契约的合成夹具，仅验证客户端，不作为 MiMo 现场原始响应。 */
+describe('完整工具参数快照', () => {
+  const item = {
+    type: 'function_call',
+    id: 'fc_read',
+    call_id: 'c_read',
+    name: 'read_file',
+    arguments: '{"path":"pelican-bike/index.html"}',
+  }
+
+  test('added 已带完整参数时不清空', async () => {
+    const events = await run(
+      sse([
+        { type: 'response.output_item.added', output_index: 0, item },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { ...item, arguments: undefined },
+        },
+        { type: 'response.completed', response: { status: 'completed' } },
+      ]),
+    )
+    expect(events.find((e) => e.type === 'tool_calls')).toMatchObject({
+      calls: [{ id: 'c_read', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } }],
+    })
+  })
+
+  test('最终 output 替换增量参数和索引，不会丢参或重复执行', async () => {
+    const events = await run(
+      sse([
+        { type: 'response.output_item.added', output_index: 1, item: { ...item, arguments: '' } },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          delta: '{"path":"stale"}',
+        },
+        { type: 'response.completed', response: { status: 'completed', output: [item] } },
+      ]),
+    )
+    expect(events.filter((e) => e.type === 'tool_calls')).toEqual([
+      {
+        type: 'tool_calls',
+        calls: [
+          { id: 'c_read', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } },
+        ],
+      },
+    ])
+  })
+
+  test('完整快照未包含调用时不执行早先的增量调用', async () => {
+    const events = await run(
+      sse([
+        { type: 'response.output_item.added', output_index: 0, item },
+        { type: 'response.completed', response: { status: 'completed', output: [] } },
+      ]),
+    )
+    expect(events.some((e) => e.type === 'tool_calls')).toBe(false)
+  })
+
+  test('正文 XML 保持正文，实际空参数不从文本猜造', async () => {
+    const xml =
+      '<tool_call><function=read_file><parameter=path>pelican-bike/index.html</parameter></function></tool_call>'
+    const events = await run(
+      sse([
+        { type: 'response.output_text.delta', delta: xml },
+        {
+          type: 'response.completed',
+          response: { status: 'completed', output: [{ ...item, arguments: '{}' }] },
+        },
+      ]),
+    )
+    expect(events.find((e) => e.type === 'text_delta')).toEqual({ type: 'text_delta', delta: xml })
+    expect(events.find((e) => e.type === 'tool_calls')).toMatchObject({
+      calls: [{ name: 'read_file', arguments: {} }],
+    })
+  })
+})
+
+test('MiMo Responses 回传完整历史思考、标准工具 JSON 及官方输出上限', async () => {
+  script = {
+    status: 200,
+    body: TOOL_RUN,
+    contentType: 'text/event-stream',
+    headers: {},
+    delayMs: 0,
+  }
+  const mimo = buildAdapter({
+    kind: 'openai_responses',
+    model: 'mimo-v2.6-pro',
+    baseUrl: BASE,
+    apiKey: 'sk-test',
+  })
+  const events: ProviderEvent[] = []
+  for await (const event of mimo.stream({
+    model: 'mimo-v2.6-pro',
+    system: [],
+    effort: 'high',
+    cacheKey: 'mimo-session',
+    maxOutputTokens: 200_000,
+    messages: [
+      { role: 'user', content: '开始' },
+      { role: 'assistant', content: '计划', reasoningContent: '第一轮思考' },
+      { role: 'user', content: '继续' },
+      {
+        role: 'assistant',
+        content: '',
+        reasoningContent: '工具轮思考',
+        toolCalls: [
+          { id: 'c1', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } },
+        ],
+      },
+      { role: 'tool', toolCallId: 'c1', content: '内容' },
+    ],
+    tools: [
+      {
+        name: 'read_file',
+        description: '读取文件',
+        strict: true,
+        parameters: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
+      },
+    ],
+  }))
+    events.push(event)
+  expect(lastBody).toMatchObject({
+    model: 'mimo-v2.6-pro',
+    max_output_tokens: 131_072,
+    input: [
+      { type: 'message', role: 'user' },
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: '第一轮思考' }] },
+      { type: 'message', role: 'assistant' },
+      { type: 'message', role: 'user' },
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: '工具轮思考' }] },
+      {
+        type: 'function_call',
+        name: 'read_file',
+        call_id: 'c1',
+        arguments: '{"path":"pelican-bike/index.html"}',
+      },
+      { type: 'function_call_output', call_id: 'c1', output: '内容' },
+    ],
+    tools: [
+      { type: 'function', name: 'read_file', strict: true, parameters: { required: ['path'] } },
+    ],
+  })
+  expect(lastBody).not.toHaveProperty('reasoning')
+  expect(lastBody).not.toHaveProperty('prompt_cache_key')
+  expect(events.find((e) => e.type === 'tool_calls')).toMatchObject({
+    calls: [{ name: 'get_weather', arguments: { city: '北京' } }],
+  })
+})
+
 test('响应建立事件早于模型内容', async () => {
   const events = await run(TEXT_RUN)
   const started = events.findIndex((e) => e.type === 'response_started')

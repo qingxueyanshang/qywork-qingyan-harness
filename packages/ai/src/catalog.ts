@@ -41,6 +41,7 @@ export interface Pricing {
 /** 历史思考内容的回放规则；自定义模型覆盖与内置目录共用。 */
 export const CHAT_REASONING_PROTOCOLS = [
   'standard',
+  'preserved',
   'qwen_preserved',
   'glm_preserved',
   'deepseek_preserved',
@@ -105,12 +106,12 @@ export interface ModelSpec {
    * Chat Completions 的历史思考协议。
    *
    * `standard` 保持原有行为：只给带 tool_calls 的 assistant 回放 `reasoning_content`。
-   * 其余值声明厂商要求的完整历史回放，其中 Qwen / GLM 还需要请求开关，
+   * `preserved` 回放所有历史思考且不增加请求开关；Qwen / GLM 还需要请求开关，
    * 避免「请求体开了保留、历史投影却仍丢思考」这种半套实现。
    */
   chatReasoningProtocol: ChatReasoningProtocol
   /**
-   * Chat Completions 的工具参数 schema 协议。
+   * OpenAI 兼容协议的工具参数 schema 规则（字段名沿用已有配置）。
    *
    * `openai_strict` 会把可选属性改成「必填但可为 null」并发送 `strict:true`；
    * `native` 保留模型库注册时的原生 required/optional 形状。两者不能按
@@ -247,11 +248,22 @@ export const VENDORS: readonly Vendor[] = [
     defaultBaseUrl: 'https://api.deepseek.com/v1',
   },
   {
+    id: 'xiaomi',
+    displayName: '小米 MiMo',
+    defaultKind: 'openai_chat_completions',
+    defaultBaseUrl: 'https://api.xiaomimimo.com/v1',
+  },
+  {
     id: 'google',
     displayName: 'Google',
     defaultKind: 'openai_chat_completions',
   },
-  { id: 'xai', displayName: 'xAI', defaultKind: 'openai_chat_completions' },
+  {
+    id: 'xai',
+    displayName: 'xAI',
+    defaultKind: 'openai_chat_completions',
+    defaultBaseUrl: 'https://api.x.ai/v1',
+  },
   {
     id: 'alibaba',
     displayName: '阿里云百炼',
@@ -266,6 +278,7 @@ export const VENDORS: readonly Vendor[] = [
     id: 'zhipu',
     displayName: '智谱',
     defaultKind: 'openai_chat_completions',
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
   },
   {
     id: 'minimax',
@@ -411,7 +424,7 @@ const GPT_56_LUNA_LONG: LongContextTier = {
 }
 
 /** xAI 官方价目表：提示词满 20 万，整条请求按 $4 / $12 / 缓存 $1 算。 */
-const GROK_46_LONG: LongContextTier = {
+const GROK_46_47_LONG: LongContextTier = {
   thresholdTokens: 200_000,
   input: 4,
   output: 12,
@@ -814,6 +827,54 @@ function deepseekCatalog(now: number): ModelSpec[] {
 }
 
 /**
+ * MiMo 官方规格与国内按量价格，2026-09-22 核对。
+ * https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go
+ * https://mimo.mi.com/docs/zh-CN/api/chat/responses
+ * 正向 effort 值均开启同一种思考，不声明独立强度；三协议均保留历史思考。
+ */
+function mimoCatalog(): ModelSpec[] {
+  const models = [
+    { id: 'mimo-v2.6-pro', displayName: 'MiMo V2.6 Pro', input: 3, output: 6, cacheRead: 0.025 },
+    { id: 'mimo-v2.6-flash', displayName: 'MiMo V2.6 Flash', input: 1, output: 2, cacheRead: 0.02 },
+    {
+      id: 'mimo-v2.6-pro-ultraspeed',
+      displayName: 'MiMo V2.6 Pro UltraSpeed',
+      input: 30,
+      output: 60,
+      cacheRead: 0.25,
+    },
+  ]
+  return models.flatMap(({ id, displayName, input, output, cacheRead }): ModelSpec[] => {
+    const base: ModelSpec = {
+      id,
+      displayName,
+      provider: 'openai_chat_completions',
+      vendor: 'xiaomi',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      density: DEFAULT_DENSITY,
+      vision: true,
+      // 当前媒体管线未接入 MiMo 的视频输入。
+      video: false,
+      pricing: { input, output, cacheRead, cacheWrite5m: 0, cacheWrite1h: 0, currency: 'CNY' },
+      thinking: 'none',
+      thinksByDefault: true,
+      effortLevels: [],
+      reasoningEcho: 'none',
+      chatReasoningProtocol: 'preserved',
+      chatToolSchema: 'openai_strict',
+      cacheRouting: 'none',
+      minCacheablePrefix: 0,
+    }
+    return [
+      base,
+      { ...base, provider: 'openai_responses', reasoningEcho: 'reasoning_text' },
+      { ...base, provider: 'anthropic_messages' },
+    ]
+  })
+}
+
+/**
  * 未知模型的保守默认值。
  *
  * BYOK 场景下用户可能填任意模型名（中转站的自定义名、本地 ollama 模型、明天才发布的
@@ -1125,6 +1186,25 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     },
 
     // ── xAI ──
+    // 2026-09-21 官方 4.7：两协议的缓存与历史回传不同；Fast 未开放公共 API。
+    ...(['openai_chat_completions', 'openai_responses'] as const).map(
+      (provider): ModelSpec => ({
+        ...base,
+        ...effort(['low', 'medium', 'high', 'xhigh']),
+        id: 'grok-4.7',
+        displayName: 'Grok 4.7',
+        provider,
+        vendor: 'xai',
+        chatToolSchema: 'native',
+        cacheRouting: provider === 'openai_responses' ? 'prompt_cache_key' : 'x_grok_conv_id',
+        reasoningEcho: provider === 'openai_responses' ? 'encrypted_content' : 'none',
+        vision: true,
+        contextWindow: 500_000,
+        maxOutputTokens: null,
+        pricing: usd(2, 6, 0.5),
+        longContext: [GROK_46_47_LONG],
+      }),
+    ),
     /*
      * xAI 官方价目表（2026-08）。两条都是 500K 窗口、**提示词满 20 万整条翻倍**：
      *
@@ -1152,7 +1232,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       contextWindow: 500_000,
       maxOutputTokens: null,
       pricing: usd(2, 6, 0.5),
-      longContext: [GROK_46_LONG],
+      longContext: [GROK_46_47_LONG],
     },
     {
       ...base,
@@ -1312,12 +1392,13 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── 智谱 ──
      *
-     * 价目来源：智谱国内站价目表（2026-08），逐字，单位 ¥/百万：
+     * 价目来源：智谱国内站价目表（2026-09-22 核对），单位 ¥/百万：
      *
      * | 模型 | 输入 | 缓存命中 | 输出 |
      * |---|---|---|---|
      * | glm-5.3 | 8 | 2 | 28 |
      * | glm-5.3-flash | 0.8（限时 0.4） | 0.23（限时 0.115） | 2.8（限时 1.4） |
+     * | glm-5.3-flashx | 2 | 0.57 | 7 |
      * | glm-5.2 | 8 | 2 | 28 |
      * | glm-4.7 | 2 | 0.4 | 8 |
      * | glm-5v-turbo | 5 | 1.2 | 22 |
@@ -1340,38 +1421,48 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * glm-5v-turbo 的模型页：200K 窗口、128K 最大输出、收图片视频文本文件，
      * 思考是一个开关而不是档位。glm-4.6v：128K 窗口、32K 最大输出。
      */
-    {
-      ...base,
-      ...effort(['low', 'high', 'max']),
-      id: 'glm-5.3',
-      displayName: 'GLM-5.3',
-      vendor: 'zhipu',
-      vision: false,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 131_072,
-      pricing: cny(8, 28, 2),
-      chatReasoningProtocol: 'glm_preserved',
-      // 智谱只公开标准 required/optional Function Call 形状；不要套 OpenAI strict 的
-      // 「全部 required + nullable」。Flash 实测会把 JSON null 采样成字符串 "null"。
-      chatToolSchema: 'native',
-      // 国内站缓存自动识别公共前缀、无需手动参数，不发送未声明的 prompt_cache_key。
-      cacheRouting: 'none',
-    },
-    {
-      ...base,
-      ...effort(['low', 'high', 'max']),
-      id: 'glm-5.3-flash',
-      displayName: 'GLM-5.3 Flash',
-      vendor: 'zhipu',
-      vision: true,
-      video: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 131_072,
-      pricing: glm53FlashPromo(now),
-      chatReasoningProtocol: 'glm_preserved',
-      chatToolSchema: 'native',
-      cacheRouting: 'none',
-    },
+    ...[
+      { id: 'glm-5.3', displayName: 'GLM-5.3', vision: false, pricing: cny(8, 28, 2) },
+      {
+        id: 'glm-5.3-flash',
+        displayName: 'GLM-5.3 Flash',
+        vision: true,
+        pricing: glm53FlashPromo(now),
+      },
+      {
+        id: 'glm-5.3-flashx',
+        displayName: 'GLM-5.3 FlashX',
+        vision: true,
+        pricing: cny(2, 7, 0.57),
+      },
+    ].flatMap((model): ModelSpec[] => {
+      const chat: ModelSpec = {
+        ...base,
+        ...effort(['low', 'high', 'max']),
+        ...model,
+        vendor: 'zhipu',
+        video: model.vision,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 131_072,
+        chatReasoningProtocol: 'glm_preserved',
+        // 保留原生 required/optional；Flash 实测会把 strict 的 null 采样为字符串。
+        chatToolSchema: 'native',
+        cacheRouting: 'none',
+      }
+      return [
+        chat,
+        {
+          ...chat,
+          provider: 'openai_responses',
+          // 官方 Responses 将 low/medium 映射为 high，xhigh 映射为 max。
+          effortLevels: ['high', 'max'],
+          reasoningEcho: 'reasoning_text_object',
+          chatReasoningProtocol: 'preserved',
+          cacheRouting: 'prompt_cache_key',
+          video: false,
+        },
+      ]
+    }),
     {
       ...base,
       ...effort(['low', 'high', 'max']),
@@ -1573,7 +1664,12 @@ export function applyTransportCapabilities(
 
 /** 全部内置模型。提供默认规格与计价，不限制未收录模型的接入或探测。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [...claudeCatalog(), ...deepseekCatalog(now), ...openAiCompatCatalog(now)]
+  return [
+    ...claudeCatalog(),
+    ...deepseekCatalog(now),
+    ...mimoCatalog(),
+    ...openAiCompatCatalog(now),
+  ]
 }
 
 /**

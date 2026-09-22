@@ -6,7 +6,13 @@
 
 // `ContextGroup` 的真源在 `core/domain/model.ts`。这里只转出去给 `_group` 用——
 // 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
-import type { ContextGroup, EffortLevel, ProviderKind, ThinkingMode } from '@qywork/core'
+import type {
+  ContextGroup,
+  EffortLevel,
+  ProviderKind,
+  ResponseReasoning,
+  ThinkingMode,
+} from '@qywork/core'
 import type { ModelSpec, SpecOverride } from './catalog.ts'
 
 // ─────────────────────────────── 配置 ───────────────────────────────
@@ -137,6 +143,8 @@ export interface WireMessage {
    * 原样回传 reasoning_content，否则后续轮次 400。Anthropic 路径不需要。
    */
   reasoningContent?: string
+  /** 不可展示的 Responses 原始 reasoning 条目，回传时校验模型身份。 */
+  responseReasoning?: ResponseReasoning
   /**
    * 缓存断点：**从请求开头到这条消息为止**的字节被 provider 缓存。
    *
@@ -258,6 +266,7 @@ export type ProviderEvent =
    */
   | { type: 'response_started' }
   | { type: 'thinking_delta'; delta: string }
+  | { type: 'response_reasoning'; reasoning: ResponseReasoning }
   | { type: 'text_delta'; delta: string }
   /** 收到非空工具参数片段；只报告生成进度，完整调用仍由 tool_calls 交付。 */
   | { type: 'tool_call_progress' }

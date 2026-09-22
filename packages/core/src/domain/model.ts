@@ -122,8 +122,18 @@ export const REASONING_ECHOES = [
   'none',
   /** 回传 `{type:'reasoning', content:[{type:'reasoning_text'}]}`。 */
   'reasoning_text',
+  /** GLM Responses 的 content 是单个 reasoning_text 对象。 */
+  'reasoning_text_object',
+  /** 原样回传带 encrypted_content 的 reasoning 条目。 */
+  'encrypted_content',
 ] as const
 export type ReasoningEcho = (typeof REASONING_ECHOES)[number]
+
+/** Responses 返回的密文不展示为思考正文，也不能跨模型回传。 */
+export interface ResponseReasoning {
+  model: string
+  items: Record<string, unknown>[]
+}
 
 // ─────────────────────────────── 会话 ───────────────────────────────
 
@@ -744,6 +754,7 @@ export interface NodeState {
  * 早期版本没存，刷新后所有历史工具卡都显示成「读取」，包括写入和执行命令。
  */
 export type StepPayload =
+  | { kind: 'response_reasoning'; reasoning: ResponseReasoning }
   | {
       kind: 'tool_call'
       args: Record<string, unknown>

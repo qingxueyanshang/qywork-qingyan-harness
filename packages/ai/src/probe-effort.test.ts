@@ -57,6 +57,16 @@ const profile = (model = 'custom'): ProviderProfile => ({
 })
 
 describe('五档逐一检测', () => {
+  test('MiMo 即使旧检测接受多档，也只做连接检测且不增加虚假强度', async () => {
+    const r = await probeModel(
+      { ...profile('mimo-v2.6-pro'), transport: { effort: true, effortLevels: levels } },
+      { gapMs: 0 },
+    )
+    expect(seen).toEqual([undefined])
+    expect(r.effortSource).toBe('catalog')
+    expect(r.effortLevels).toEqual([])
+    expect(toTransportCapabilities(r).effort).toBe(false)
+  })
   test('未收录模型也真正发送五档和非法对照，并能在后续请求使用', async () => {
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(seen.slice(0, 6)).toEqual([undefined, ...levels])

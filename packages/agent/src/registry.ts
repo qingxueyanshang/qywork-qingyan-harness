@@ -1287,6 +1287,20 @@ export class ToolRegistry {
       }
     }
 
+    // required 与发给模型的 schema 同源，缺参时不进入权限解析或工具执行。
+    const required = spec.parameters.required
+    const missing = Array.isArray(required)
+      ? required.filter((key): key is string => typeof key === 'string' && args[key] === undefined)
+      : []
+    if (missing.length) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: `工具 ${name} 缺少必填参数：${missing.join('、')}。请按工具定义传入 JSON 参数。`,
+        errorKind: 'invalid_tool_arguments',
+      }
+    }
+
     const effect = resolvePermissionEffect(spec, args)
     if (effect !== 'internal_control') {
       const action = resolveAction(spec, args, ctx)
