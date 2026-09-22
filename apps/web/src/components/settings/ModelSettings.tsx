@@ -491,16 +491,17 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
       const why = o.probes.filter((s) => !s.ok && !s.skipped).map((s) => s.detail)
       return { text: ['连接失败', ...why].join('　'), bad: true }
     }
-    // 思考那一格只说用户能拿它做什么：有哪几档，或者为什么一档都没有。
+    // 默认思考输出与档位校验分别展示；未观察到输出不代表模型不支持思考。
+    const thinking = o.thinksByDefault ? '已观察到思考输出' : '未观察到默认思考'
     const levels = o.effortLevels
     const effort = o.inconclusive.includes('effort')
-      ? '思考档位未确认'
+      ? '档位生效未验证'
       : o.untested.includes('effort')
         ? '思考档位未检测'
         : levels.length > 0
           ? `${o.effortSource === 'catalog' ? '模型库' : '接口接受'}：${levels.join(' / ')}`
-          : '无思考档位'
-    return { text: `连接正常　${effort}`, bad: false }
+          : '无可调档位'
+    return { text: `连接正常　${thinking}　${effort}`, bad: false }
   }
   return (
     <span
