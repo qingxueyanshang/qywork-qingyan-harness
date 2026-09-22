@@ -294,18 +294,22 @@ export class RunManager {
   }
 
   /**
-   * 把余下条目的去向全部复位成「加入队列」。
+   * 把余下**用户**条目的去向复位成「加入队列」。
    *
    * **「调整方向」只对发出它时的那一轮成立。** 这一轮已经收尾了，没赶上边界的
    * 那些条目再没有可注入的地方；留着 `steer=true` 的话，下一轮一起跑就会把它们
    * 注入到一轮用户没有指向过的执行里。
+   *
+   * **带 `origin` 的回执不复位**：它的语义是「下一次有机会就交给模型」，
+   * 不指向某一轮。复位掉的话，父轮非正常收尾之后它要等下一轮跑完才单独起一轮，
+   * 比用户那条继续的话晚整整一轮到达模型。
    */
   resetSteer(conversationId: ConversationId): void {
     const list = this.queues.get(conversationId)
-    if (!list?.some((f) => f.steer)) return
+    if (!list?.some((f) => f.steer && !f.origin)) return
     this.setQueue(
       conversationId,
-      list.map((f) => ({ ...f, steer: false })),
+      list.map((f) => (f.origin ? f : { ...f, steer: false })),
     )
   }
 

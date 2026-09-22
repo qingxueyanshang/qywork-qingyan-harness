@@ -34,7 +34,14 @@ import {
   resolveModel,
   Session,
 } from '@qywork/runtime'
-import { createGoal, currentGoal, getConversation, updateGoal, workspaceOf } from '@qywork/store'
+import {
+  createGoal,
+  currentGoal,
+  getConversation,
+  listRuns,
+  updateGoal,
+  workspaceOf,
+} from '@qywork/store'
 import { makeDelegate } from './delegate.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -60,6 +67,9 @@ export type RoundSource =
  *
  * **闸是 `hasRun` 不是 `isBusy`**：只有子 agent 在跑时这条会话没有可注入的那一轮，
  * 排进队列就没有人会去消费它。
+ *
+ * **空闲时回执还要再过一道父轮终态**（见 `continuableAfterLastRun`）；
+ * 人发的消息不过这道闸——他是新预算的发起方。
  */
 export async function submitMessage(
   conversationId: ConversationId,
@@ -67,7 +77,10 @@ export async function submitMessage(
   deps: Omit<CommandDeps, 'ws'>,
   model?: string,
 ): Promise<void> {
-  if (deps.runs.hasRun(conversationId)) {
+  if (
+    deps.runs.hasRun(conversationId) ||
+    (item.origin && !continuableAfterLastRun(conversationId, deps))
+  ) {
     deps.runs.enqueue(conversationId, item)
     return
   }
@@ -324,8 +337,8 @@ export async function startRun(
       const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
       /*
        * 「调整方向」只对发出它的那一轮成立。这一轮收尾了，没赶上 step 边界的那些
-       * 条目再没有可注入的地方；留着标记的话下一轮开跑会把它们注入到一轮用户
-       * 没有指向过的执行里。
+       * 用户条目再没有可注入的地方；留着标记的话下一轮开跑会把它们注入到一轮用户
+       * 没有指向过的执行里。带 `origin` 的回执不在此列，理由见 `resetSteer`。
        */
       deps.runs.resetSteer(conversationId)
       /*
@@ -402,6 +415,25 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
  * 黑名单的表现是「按一个没人想过的状态接着自动跑」。
  */
 const CONTINUABLE: StopReason[] = ['completed']
+
+/**
+ * 这条会话最近一轮是不是正常收尾。回执在会话空闲时按它决定起轮还是入队。
+ *
+ * **与收尾处的火发判据同一个 `CONTINUABLE`**：回执早到时走收尾那条路，晚到时走
+ * 这条路，两条路各写一套白名单的话，同一条回执按到达时机得到两种答案——晚到的那次
+ * 会绕过已经耗尽的重试预算，拿到全新的五次额度。
+ *
+ * 查不到任何一轮时按可续：回执的父轮必然存在过，查不到说明账本里没有可裁决的终态，
+ * 入队会让它没有任何起轮者。
+ */
+function continuableAfterLastRun(
+  conversationId: ConversationId,
+  deps: Omit<CommandDeps, 'ws'>,
+): boolean {
+  const last = listRuns(deps.store, conversationId).at(-1)
+  if (!last) return true
+  return !!last.stopReason && CONTINUABLE.includes(last.stopReason)
+}
 
 /**
  * 停下来的说法。**每一种都要有话说**——没理由的 blocked 是最坏的一种停：
