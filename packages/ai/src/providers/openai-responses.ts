@@ -148,7 +148,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     const trace = newTrace()
     let res: Response
     try {
-      res = await traceFetch(trace)(`${this.baseUrl}/responses`, {
+      res = await traceFetch(
+        trace,
+        'openai_responses',
+        req.idleTimeoutMs,
+      )(`${this.baseUrl}/responses`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ ...body, stream: true }),

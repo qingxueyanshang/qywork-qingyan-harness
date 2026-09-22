@@ -21,6 +21,10 @@ export type FaultMode =
   | 'inline_error'
   /** 用量已回报，流在协议终态之前 FIN。 */
   | 'eof_before_terminal'
+  /** 200 响应头已到，之后一个字节都不再发。 */
+  | 'headers_then_silence'
+  /** 先发若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
+  | 'keepalive_then_ok'
 
 export interface FaultServer {
   /** Anthropic Messages 的 baseUrl；SDK 自己接 `/v1/messages`。 */
@@ -44,6 +48,8 @@ const SSE_HEADERS = { 'content-type': 'text/event-stream' } as const
  * 正文发出开头一段之后永不结束的响应。
  *
  * 构造的流不 `close`，调用方必须靠 `stop()` 强制断开，否则测试进程不会退出。
+ * `prefix` 不能为空：`Bun.serve` 要等正文的第一个分片才发响应头，一个字节都不写的话
+ * 客户端连响应头都收不到，「响应头已到、正文不来」这个形状就构造不出来。
  */
 function endless(prefix: string, status: number, headers: Record<string, string>): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -52,6 +58,25 @@ function endless(prefix: string, status: number, headers: Record<string, string>
     },
   })
   return new Response(body, { status, headers })
+}
+
+/** 保活行的条数与间隔。间隔要短于被测客户端的空闲上限，总时长要长于它。 */
+const KEEP_ALIVE_LINES = 5
+const KEEP_ALIVE_GAP_MS = 80
+
+/** 先发若干 SSE 注释行，再发完整的一次正常响应。 */
+function keepAliveThen(protocol: Protocol): Response {
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (let i = 0; i < KEEP_ALIVE_LINES; i++) {
+        controller.enqueue(enc.encode(': ping\n\n'))
+        await Bun.sleep(KEEP_ALIVE_GAP_MS)
+      }
+      controller.enqueue(enc.encode(bodyOf(protocol, 'text')))
+      controller.close()
+    },
+  })
+  return new Response(body, { headers: SSE_HEADERS })
 }
 
 /** 带 `event:` 行的 SSE；Responses 与 Anthropic 两条协议都按事件名分派。 */
@@ -305,6 +330,11 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return new Response(bodyOf(protocol, 'inline_error'), { headers: SSE_HEADERS })
     case 'eof_before_terminal':
       return new Response(bodyOf(protocol, 'truncated'), { headers: SSE_HEADERS })
+    case 'headers_then_silence':
+      // 单个换行只为把响应头冲出去：它不构成任何 SSE 事件，之后一个字节都不再来。
+      return endless('\n', 200, SSE_HEADERS)
+    case 'keepalive_then_ok':
+      return keepAliveThen(protocol)
   }
 }
 

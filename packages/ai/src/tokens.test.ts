@@ -21,6 +21,7 @@ import {
   MEDIA_TOKENS,
   type TokenDensity,
 } from './tokens.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 
 const D = DEFAULT_DENSITY
 /** 已标定那一档，取自目录本身——这一并锁住那条模型确实带着 density。 */
@@ -189,6 +190,7 @@ describe('整个请求', () => {
       messages: [{ role: 'user' as const, content: 'b'.repeat(40) }],
       tools: [{ name: 't', description: 'd', parameters: { type: 'object' } }],
       maxOutputTokens: 100,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: new AbortController().signal,
     }
     const d: TokenDensity = { ...D, textCharsPerToken: 4 }

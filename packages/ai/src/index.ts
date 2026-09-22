@@ -53,6 +53,8 @@ export {
   MEDIA_TOKENS,
   type TokenDensity,
 } from './tokens.ts'
+// 流空闲上限的基准：agent 按思考档位放宽它，runtime 的摘要直接用它
+export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 // 协议无关的请求与事件形状
 export type {
   ChatRequest,

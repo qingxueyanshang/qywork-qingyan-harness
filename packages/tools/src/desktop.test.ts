@@ -24,7 +24,7 @@ import type {
   ToolSpec,
 } from '@qywork/agent'
 import { ToolRegistry } from '@qywork/agent'
-import { buildAdapter, DEFAULT_DENSITY } from '@qywork/ai'
+import { buildAdapter, DEFAULT_DENSITY, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import type { DesktopAction } from '@qywork/core'
 import {
   desktopActSequenceTool,
@@ -3409,6 +3409,7 @@ describe('可选参数填空位', () => {
           messages: [{ role: 'user', content: '向上滚动' }],
           tools: registry.schemas(),
           maxOutputTokens: 64,
+          idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         })) {
           // 消费本地端点的响应，检查实际发送的参数定义。
         }

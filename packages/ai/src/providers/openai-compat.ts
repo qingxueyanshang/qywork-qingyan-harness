@@ -129,7 +129,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       // 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等
       // 都不在官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
       const stream = (await this.client
-        .withOptions({ fetch: traceFetch(trace) })
+        .withOptions({ fetch: traceFetch(trace, 'openai_chat_completions', req.idleTimeoutMs) })
         .chat.completions.create(
           { ...body, stream: true, stream_options: { include_usage: true } } as never,
           {
@@ -814,7 +814,8 @@ const THINKING_CLOSE = '</thinking>'
  * 所以判错的最坏结果是显示在错的区，不会是内容消失。
  *
  * 代价：块内内容攒到闭合标签才输出，那一段不是逐字出现的。这种块实测是一行摘要，
- * 而流空闲看门狗的下限是 180 秒（`agent/loop.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），够不着。
+ * 而流空闲上限的基准是 180 秒（`transport.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），够不着。
+ * 何况空闲计时在传输层按字节算，正文攒在本地不影响它。
  */
 export function createThinkingSplitter(): {
   push(delta: string): { thinking: string; text: string }

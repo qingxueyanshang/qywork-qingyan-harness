@@ -31,6 +31,7 @@ import {
   estimateSchemas,
   estimateText,
   ProviderError,
+  STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
 import type {
   ActionDescriptor,
@@ -113,7 +114,7 @@ export interface LoopDeps {
    */
   compaction?: CompactionPort
   /**
-   * 流空闲超时（毫秒）。不传用 `STREAM_IDLE_TIMEOUT_MS`。
+   * 流空闲上限（毫秒）。不传按 `effort` 从 `STREAM_IDLE_TIMEOUT_MS` 放宽。
    * 存在的理由只有一个：让测试在几百毫秒内验到这条路径。回归测试不能等三分钟。
    */
   streamIdleTimeoutMs?: number
@@ -386,28 +387,9 @@ export interface RunInput {
 const NEWLINE = String.fromCharCode(10)
 
 /**
- * 流空闲超时。响应头到达之后，**两个事件之间**超过这个时长没有新事件就判定流卡死。
+ * 按思考档位放宽流空闲上限，结果填进 `ChatRequest.idleTimeoutMs` 交给传输层执行。
  *
- * 没有这条超时，provider 侧断流之后 run 既不出错也不结束：界面持续转圈，日志无输出。
- * `stream_idle_timeout` 这个码因此必须有生产者——它是少数**只能靠事件不出现**
- * 才发现得了的死链路。
- *
- * 计的是**间隔**不是总时长：一轮 agent 跑十分钟是正常的，十分钟里一个字节都没有不是。
- * 响应头之前不归它管：有的中转站要等上游思考结束才回响应头，那一段只有一个上限，
- * 是 ai 包的 `PROVIDER_HTTP.timeout`。不要让看门狗从发出就计时——那样 180 秒会先于
- * 600 秒掐掉一次正在思考的请求，两个超时管同一段就是两本账。
- * 180 秒留给响应头之后、首个 delta 之前：思考不回传的模型在这段一个字节都没有。
- * 判错的代价（把一次正常的慢请求掐掉）比判漏（无限期挂住）大。
- *
- * 运行时自带的 socket 空闲超时在适配器里已关掉（`PROVIDER_HTTP.fetchOptions`），
- * 不然静默 300 秒就被它先掐，这个数超过 300 的部分从不生效。
- */
-export const STREAM_IDLE_TIMEOUT_MS = 180_000
-
-/**
- * 按思考档位放宽空闲超时。
- *
- * 180 秒是给常规档留的。高档位下首 token 之前模型要先想很久——`xhigh`/`max`
+ * 基准 180 秒是给常规档留的。高档位下首 token 之前模型要先想很久——`xhigh`/`max`
  * 在长 prompt 上实测能超过三分钟，而那时掐掉的是一次**完全正常**的请求。
  * 判错的代价（把慢请求掐死）比判漏（多挂一会儿）大得多，所以往宽了给。
  *
@@ -467,11 +449,11 @@ export const MAX_RESENDS = 5
  * 而真正的原因——这个模型不接受图片——一个字都没出现。中转站已证实可恢复的模糊
  * 拒绝由 `ai/errors.ts` 精确归成 `provider_unavailable`，不要在这里再按文案分叉。
  *
- * **超时与断连同价。** `stream_idle_timeout` 是看门狗掐断的流，连接已经判死，立刻原样重发；
- * 连接超时（`timedOut` 的 `network_error`）是响应头等了 `PROVIDER_HTTP.timeout` 还没回，
- * 同样。掐了不重发等于这一轮必败，重复推理的代价由重发窗口限住：正文已显示的部分
- * 作为上一条保留，不重跑。
- * 「静默可能是上游还在想」只对响应头之前成立，那一段看门狗不计时（见 `openStream`），
+ * **超时与断连同价。** `stream_idle_timeout` 是传输层按字节空闲掐断的流，连接已经判死，
+ * 立刻原样重发；连接超时（`timedOut` 的 `network_error`）是响应头等了
+ * `PROVIDER_HTTP.timeout` 还没回，同样。掐了不重发等于这一轮必败，重复推理的代价由
+ * 重发窗口限住：正文已显示的部分作为上一条保留，不重跑。
+ * 「静默可能是上游还在想」只对响应头之前成立，那一段传输层不计时，
  * 不存在中转站还在等上游思考、这边掐了再发让它重跑一遍的情形。
  */
 const RESENDABLE: ReadonlyMap<string, number> = new Map([
@@ -492,7 +474,7 @@ function resendBackoffMs(error: ProviderError, resends: number): number | undefi
 /**
  * 本地计时器确认超时后的现场读数。
  *
- * 分类短语由 `ai/src/errors.ts` 与 `openStream` 给，它们拿不到静默时长，
+ * 分类短语由 `ai` 包的传输层与错误归类给，它们拿不到静默时长，
  * 也不知道这次收到过数据没有；而这两项区分请求未落地（一个字节都没收到）
  * 与生成中断（收到过之后停了）。只有 `ProviderError.timedOut` 为真才调用这里，
  * 立即断流与协议失败不能借一段“静默了多久”伪装成超时。
@@ -530,8 +512,8 @@ function failureCauseChain(error: unknown): ProviderFailureCause[] {
 /**
  * 让一个 await 能被中止信号提前结束。
  *
- * **abort 只是置一个信号，等的人不看它就等于没停。** provider 那侧的等待本来就和
- * 卡死检测赛跑（见 `openStream` 里的 `Promise.race`），工具与压缩这两侧没有：
+ * **abort 只是置一个信号，等的人不看它就等于没停。** provider 那侧的等待有传输层的
+ * 字节空闲上限兜着，工具与压缩这两侧没有：
  * 其中任何一个不返回，整轮就停在那个 await 上：停止按钮**无响应**——
  * 不报错、转圈不停、日志无输出，只能重启应用。
  *
@@ -745,71 +727,14 @@ export class AgentLoop {
   private async openStream(
     adapter: LlmAdapter,
     req: ChatRequest,
-    onStall: () => void,
   ): Promise<AsyncIterable<ProviderEvent>> {
-    const provider = adapter.spec.provider
-    const idleMs = this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(req.effort)
-    const it = adapter
-      .stream(
-        await materialize(req, {
-          image: adapter.spec.vision,
-          video: adapter.spec.video && adapter.transmits.video === true,
-          mediaPaths: adapter.transmits.mediaPaths === true,
-        }),
-      )
-      [Symbol.asyncIterator]()
-
-    /**
-     * 收到过 provider 事件才算流开了。此前的等待（连接、响应头，缓冲型中转站还包括
-     * 上游整段思考）由 `PROVIDER_HTTP.timeout` 管，看门狗不计时；三个适配器都在响应头
-     * 到达处 yield `response_started`。
-     */
-    let opened = false
-
-    /** 等一个事件。流开了之后超时就判流卡死并中止本次请求。 */
-    const step = async (): Promise<IteratorResult<ProviderEvent>> => {
-      if (!opened) {
-        const result = await it.next()
-        if (!result.done && result.value.type !== 'request_prepared') opened = true
-        return result
-      }
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const stalled = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          // 先中止底层请求再拒绝：不然连接会一直挂着，
-          // 而它占着的正是已被判定为不可恢复的那条流。
-          onStall()
-          reject(
-            new ProviderError({
-              code: 'stream_idle_timeout',
-              // 只给分类短语，不带数字。「收到了多少 / 多久没动静」由 `run()` 统一补
-              // （`transportReading`）——两处各拼一半的话，同一句话就有了两个作者。
-              message: '模型响应中断',
-              provider,
-              timedOut: true,
-            }),
-          )
-        }, idleMs)
-      })
-      try {
-        return await Promise.race([it.next(), stalled])
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-
-    const first = await step()
-    return {
-      async *[Symbol.asyncIterator]() {
-        if (first.done) return
-        yield first.value
-        for (;;) {
-          const next = await step()
-          if (next.done) return
-          yield next.value
-        }
-      },
-    }
+    return adapter.stream(
+      await materialize(req, {
+        image: adapter.spec.vision,
+        video: adapter.spec.video && adapter.transmits.video === true,
+        mediaPaths: adapter.transmits.mediaPaths === true,
+      }),
+    )
   }
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent, void, unknown> {
@@ -1080,8 +1005,8 @@ export class AgentLoop {
          * 估算失误时这里放行，由容量拒绝那条窄路兜底——凭证收得很窄，
          * 泛化的 400 不触发（理由写在那个分支上）。
          */
-        // `signal` 不在这里合成：每次尝试要自己的 `attemptAbort`（卡死检测掐的是
-        // 那一次连接），所以装配只出请求体，信号在尝试循环里逐次接上。
+        // `signal` 不在这里合成：每次尝试自带一个中止器，所以装配只出请求体，
+        // 信号在尝试循环里逐次接上。
         const turnNotice = notices.length ? notices.join('\n') : null
         notices.length = 0
         let req = this.buildRequest(input, transcript, occupancyOf, turnNotice)
@@ -1255,7 +1180,7 @@ export class AgentLoop {
         carriedResends = 0
         for (;;) {
           attemptThinking = []
-          // 每次尝试自己的中止器：卡死检测掐的是**这一次**连接，
+          // 每次尝试自己的中止器：它与用户停止的信号并联成这一次的 `req.signal`，
           // 复用上一次那个等于新连接一开就已经是 aborted。
           const attemptAbort = new AbortController()
           req = { ...req, signal: AbortSignal.any([input.signal, attemptAbort.signal]) }
@@ -1296,7 +1221,7 @@ export class AgentLoop {
           let recordedFirstContent = false
 
           try {
-            const stream = await this.openStream(adapter, req, () => attemptAbort.abort())
+            const stream = await this.openStream(adapter, req)
             persist.markRequestSent(requestId)
 
             for await (const ev of stream) {
@@ -1329,7 +1254,7 @@ export class AgentLoop {
                   break
                 }
                 case 'tool_call_progress':
-                  // 同一条参数进度既刷新 openStream 的空闲计时，也交给界面显示。
+                  // 参数进度只交给界面显示；空闲计时在传输层按字节走，不看事件。
                   yield { type: 'tool.generating', runId: input.runId }
                   break
                 case 'response_started':
@@ -2313,6 +2238,7 @@ export class AgentLoop {
       messages,
       tools: registry.schemas(),
       maxOutputTokens: adapter.spec.maxOutputTokens,
+      idleTimeoutMs: this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(input.effort),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
       signal: input.signal,

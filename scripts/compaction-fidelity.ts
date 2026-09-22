@@ -17,7 +17,7 @@
  *   bun run scripts/compaction-fidelity.ts
  */
 
-import { buildAdapter, estimateText } from '@qywork/ai'
+import { buildAdapter, estimateText, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import { loadConfig, makeSummarizer, RuntimeCompaction, resolveModel } from '@qywork/runtime'
 import {
   appendMessage,
@@ -135,6 +135,7 @@ async function main(): Promise<number> {
       messages: [{ role: 'user', content: question }],
       tools: [],
       maxOutputTokens: maxOut,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: AbortSignal.timeout(120_000),
     })) {
       if (ev.type === 'text_delta') text += ev.delta

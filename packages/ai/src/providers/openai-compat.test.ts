@@ -14,6 +14,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { lookupModel, unknownModel } from '../catalog.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
 import {
   createThinkingSplitter,
@@ -71,6 +72,7 @@ async function send(
     messages,
     tools,
     maxOutputTokens: 64,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     ...(effort ? { effort: effort as never } : {}),
     signal: new AbortController().signal,
   })) {
@@ -96,6 +98,7 @@ async function sendWithCap(
     messages: [{ role: 'user', content: '嗨' }],
     tools: [],
     maxOutputTokens: requested,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     signal: new AbortController().signal,
   })) {
     // 读完即可。
@@ -272,6 +275,7 @@ describe('OpenCode 会话请求头', () => {
           messages: [{ role: 'user', content: '嗨' }],
           tools: [],
           maxOutputTokens: 64,
+          idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
           ...(cacheKey ? { cacheKey } : {}),
           signal: new AbortController().signal,
         })) {
@@ -343,6 +347,7 @@ describe('百炼媒体上传', () => {
       ],
       tools: [],
       maxOutputTokens: 16,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     }
     expect(dashScopeMediaHeaders(false, request)).toEqual({})
     expect(dashScopeMediaHeaders(true, request)).toEqual({
@@ -372,6 +377,7 @@ describe('百炼媒体上传', () => {
         ],
         tools: [],
         maxOutputTokens: 16,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       },
       async (media) => {
         uploaded.push(media)
@@ -768,6 +774,7 @@ describe('无名工具调用', () => {
           messages: [{ role: 'user', content: 'hi' }],
           tools: [],
           maxOutputTokens: 64,
+          idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         })) {
           // 只关心它抛不抛，事件本身不看。
         }
@@ -808,6 +815,7 @@ describe('缓存路由亲和键', () => {
       messages: [{ role: 'user', content: '嗨' }],
       tools: [],
       maxOutputTokens: 64,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       cacheKey: 'cv_0mt0x92q10000mx0dff',
       signal: new AbortController().signal,
     })) {
@@ -836,6 +844,7 @@ describe('缓存路由亲和键', () => {
       messages: [{ role: 'user', content: '嗨' }],
       tools: [],
       maxOutputTokens: 64,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       cacheKey: 'cv_grok_1',
       signal: new AbortController().signal,
     })) {
@@ -879,6 +888,7 @@ describe('缓存路由亲和键', () => {
       messages: [{ role: 'user', content: '嗨' }],
       tools: [],
       maxOutputTokens: 64,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       cacheKey: 'cv_x',
       signal: new AbortController().signal,
     })) {
@@ -902,6 +912,7 @@ describe('缓存路由亲和键', () => {
         messages: [{ role: 'user', content: '嗨' }],
         tools: [],
         maxOutputTokens: 64,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         cacheKey: 'cv_should_not_cross_protocols',
         signal: new AbortController().signal,
       })) {
@@ -1011,6 +1022,7 @@ describe('正文里的思考标签', () => {
         messages: [{ role: 'user', content: '嗨' }],
         tools: [],
         maxOutputTokens: 64,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         signal: new AbortController().signal,
       })) {
         if (ev.type === 'thinking_delta') thinking += ev.delta
@@ -1181,6 +1193,7 @@ describe('运行上下文的上线形状', () => {
       ],
       tools: [],
       maxOutputTokens: 64,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: new AbortController().signal,
     })) {
       // 只看请求体

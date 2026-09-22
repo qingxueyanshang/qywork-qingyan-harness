@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ResponseReasoning } from '@qywork/core'
 import { applyTransportCapabilities, builtinCatalog, lookupModel, priceAt } from '../catalog.ts'
 import { buildAdapter } from '../factory.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderEvent } from '../types.ts'
 import { buildInput } from './openai-responses.ts'
 
@@ -54,6 +55,7 @@ async function exchange(
       system: [],
       messages: [{ role: 'user', content: '读取 a.ts' }],
       maxOutputTokens: null,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       tools,
       effort: 'high',
       cacheKey: 'stable-conversation',

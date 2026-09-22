@@ -23,8 +23,8 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  * - `timeout` 覆盖到**响应头到达为止**（两个 SDK 都在 fetch 的 finally 里 `clearTimeout`，
  *   `openai-responses` 手写的定时器同样）。响应头之前这一段只有它一个上限：有的中转站要等
  *   上游思考结束才回响应头，实测 gemini-3.8-flash 接「写整个游戏」的请求，响应头 39.7 秒
- *   才到，长上下文更久。响应头之后归 AgentLoop 的流空闲看门狗（`STREAM_IDLE_TIMEOUT_MS`，
- *   按思考档位放宽，最高 540 秒）。两段各一个权威，不要让任何一个跨段。
+ *   才到，长上下文更久。响应头之后归传输层按字节计时（`transport.ts` 的 `traceFetch`，
+ *   上限由 `ChatRequest.idleTimeoutMs` 给）。两段各一个权威，不要让任何一个跨段。
  * - `maxRetries: 0`：连不上时 SDK 自己重试两次，用户看到的就是三倍的等待。
  *   自动重发由 AgentLoop 的统一判据负责，适配器不能再暗中叠一条重试链。
  * - `fetchOptions.timeout: false`：关掉 Bun 的 socket 空闲超时。它默认 300 秒
@@ -106,6 +106,12 @@ export interface ChatRequest {
    */
   maxOutputTokens: number | null
   effort?: EffortLevel
+  /**
+   * 响应头到达之后允许的最长字节空闲，由 `traceFetch` 执行。
+   *
+   * 适配器只负责把它传给传输层，不自己判超时：同一段时间有两个计时器就是两本账。
+   */
+  idleTimeoutMs: number
   /** 缓存路由亲和键；同一会话稳定。 */
   cacheKey?: string
   signal?: AbortSignal

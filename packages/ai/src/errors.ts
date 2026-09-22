@@ -177,8 +177,25 @@ export function classifyProviderError(
   return classified
 }
 
+/**
+ * 沿 cause 链取回已经归好类的错误。只走四层，既覆盖 SDK 包装又防损坏对象成环。
+ *
+ * 传输层判定的断流是一个 `ProviderError`，而 SDK 在响应体流出错时会把它再包一层
+ * （Anthropic 的 `messages.stream` 实测如此）。只看最外层会把 `stream_idle_timeout`
+ * 归成 `internal_error`，重发表因此再也看不到这个码。
+ */
+function carriedProviderError(err: unknown): ProviderError | null {
+  let current: unknown = err
+  for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth++) {
+    if (current instanceof ProviderError) return current
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
+}
+
 function classify(provider: ProviderKind, err: unknown): ProviderError {
-  if (err instanceof ProviderError) return err
+  const carried = carriedProviderError(err)
+  if (carried) return carried
 
   const status = statusOf(err)
   const message = messageOf(err)
