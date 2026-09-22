@@ -16,6 +16,7 @@ import type {
   ContextOmitted,
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
+  ConversationLiveSnapshot,
   EventEnvelope,
   FollowUp,
   Goal,
@@ -32,9 +33,11 @@ import {
   type ChangeStep,
   type ChangesView,
   type ChangeTurn,
+  type ConversationView,
   dropView,
   LOCAL_ID_PREFIX,
   openView,
+  type RequestProjection,
   refundBusy,
   setState,
   settleBusy,
@@ -211,23 +214,6 @@ const thinkFrames = createFramer({ write: appendThinking, schedule })
  */
 const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state', 'tool.generating'])
 
-/**
- * 「正在重连」那句话的收场信号：重发的那一次真的开始出数据了，或者整轮结束了。
- *
- * 服务端不发配对的「重发结束」事件，理由在 `RunRetryingEvent` 上。所以收场判据
- * 只有这一张表 + 入口那一处判断；**不要散到各 case 里**，那是三十次忘记的机会。
- * 工作区级事件（git 状态、文件变更）不在表里：它们与这一轮的模型输出无关，
- * 算进去的话后台一次文件改动就把这句话抹掉了。
- */
-const RESUMED: ReadonlySet<AgentEvent['type']> = new Set([
-  'thinking.delta',
-  'text.delta',
-  'tool.generating',
-  'tool.started',
-  'run.error',
-  'run.finished',
-])
-
 /** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
 export function discardPace(): void {
   pacer.discard()
@@ -299,9 +285,6 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
   /*
    * 忙闲同样在归属之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
-   *
-   * **也在 `lastEventAt` 之前**：别的会话开跑不是这条会话「有动静」，
-   * 算进去的话，静默检测会被后台会话持续刷新，「链路断了」永远报不出来。
    */
   if (ev.type === 'conversation.busy') {
     settleBusy(ev.conversationId, ev.busy)
@@ -359,25 +342,8 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
   const cid = from ?? state.activeConversation
   if (cid) {
-    /*
-     * **「有动静」的唯一落点，就是这里，而且跟着会话 id 落。**
-     * 父会话与几个子会话会同时出帧；放在 AppState 单例上时，后台任意一条都会改写
-     * 当前页的静默时长。归到 view 后，每一页只读自己的现场。
-     *
-     * **只有带 runId 的事件算。** 服务端在 `run.finished` 之后还会发 `goal` 与工作区级的
-     * `git.state`，它们不属于任何一轮；记进去的话，下一句发出、`run.started` 到达之前，
-     * 状态行会按这个过期时刻报「已 N 秒没有新数据」。
-     */
-    if ('runId' in ev && ev.runId !== null) setState('views', cid, 'lastEventAt', Date.now())
-    if (RESUMED.has(ev.type) || ev.type === 'run.started' || ev.type === 'run.retrying') {
-      setState('views', cid, 'generatingToolCall', ev.type === 'tool.generating')
-    }
-    // 收场判据的唯一落点，理由见 `RESUMED`。
-    if (state.views[cid]?.retry && RESUMED.has(ev.type)) {
-      setState('views', cid, 'retry', null)
-    }
     foldContent(cid, ev)
-    foldConversationRunState(cid, ev)
+    foldConversationRunState(cid, frame.seq, ev)
   }
   if (mine) foldRunState(ev)
 }
@@ -659,10 +625,32 @@ function foldContent(cid: string, ev: AgentEvent): void {
 }
 
 /**
- * 每条已订阅会话自己的运行中读数。它与正文同样按 cid 归属，主会话与子会话
- * 因而能复用同一个状态条，而不会拿父会话的 token、静默时长或重试次数冒充子会话。
+ * 把一条事件折进当前请求投影。**序号不大于投影上那个的一律丢弃**：
+ * 快照与实时事件走同一条路进来，先后只由序号裁决（见 `RequestProjection.seq`）。
  */
-function foldConversationRunState(cid: string, ev: AgentEvent): void {
+function writeRequest(
+  cid: string,
+  seq: number,
+  next: (prev: RequestProjection | null) => RequestProjection | null,
+): void {
+  setState(
+    produce((s) => {
+      const v = s.views[cid]
+      if (!v) return
+      if (v.request && seq <= v.request.seq) return
+      v.request = next(v.request)
+    }),
+  )
+}
+
+/**
+ * 每条已订阅会话自己的运行中读数。它与正文同样按 cid 归属，主会话与子会话
+ * 因而能复用同一个状态条，而不会拿父会话的 token、请求阶段或重试次数冒充子会话。
+ *
+ * `generatingToolCall` 跟着同一批事件走：它回答的是「最后那段内容是不是工具参数」，
+ * 与阶段不是同一个问题，所以留在自己的字段上，但只由这里一处写。
+ */
+function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): void {
   switch (ev.type) {
     case 'run.started':
       setState(
@@ -670,27 +658,79 @@ function foldConversationRunState(cid: string, ev: AgentEvent): void {
           const v = s.views[cid]
           if (!v) return
           v.usage = null
-          v.retry = null
+          v.request = null
+          v.generatingToolCall = false
         }),
       )
       return
 
+    case 'run.request':
+      setState('views', cid, 'generatingToolCall', false)
+      writeRequest(cid, seq, (prev) => ({
+        requestId: ev.requestId,
+        attempt: ev.attempt,
+        max: ev.max,
+        phase: ev.phase,
+        // 发出即结束等待：截止点清掉，次数留着。
+        backoffUntil: null,
+        sentAt:
+          ev.phase === 'sent'
+            ? ev.at
+            : prev?.requestId === ev.requestId
+              ? (prev?.sentAt ?? null)
+              : null,
+        headersAt: ev.phase === 'headers' ? ev.at : null,
+        lastContentAt: null,
+        seq,
+      }))
+      return
+
     case 'run.retrying':
-      setState('views', cid, 'retry', { attempt: ev.attempt, max: ev.max })
+      setState('views', cid, 'generatingToolCall', false)
+      writeRequest(cid, seq, () => ({
+        requestId: ev.requestId,
+        attempt: ev.attempt,
+        max: ev.max,
+        phase: 'backoff',
+        backoffUntil: ev.at + ev.backoffMs,
+        sentAt: null,
+        headersAt: null,
+        lastContentAt: null,
+        seq,
+      }))
+      return
+
+    case 'thinking.delta':
+    case 'text.delta':
+    case 'tool.generating':
+      setState('views', cid, 'generatingToolCall', ev.type === 'tool.generating')
+      /*
+       * 内容事件不带 requestId，所以只推进已有投影的阶段与最后内容时刻。
+       * 没有投影时整条丢掉——那说明 `run.request` 还没到（首屏加载期），
+       * 此刻凭空造一条投影等于编一个 requestId 与次数，而刷新快照马上会给真值。
+       */
+      writeRequest(cid, seq, (prev) =>
+        prev ? { ...prev, phase: 'content', lastContentAt: ev.at, seq } : null,
+      )
       return
 
     case 'usage':
       setState('views', cid, 'usage', ev.usage)
       return
 
+    case 'tool.started':
+      setState('views', cid, 'generatingToolCall', false)
+      return
+
+    case 'run.error':
     case 'run.finished':
       setState(
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
-          v.usage = null
-          v.lastEventAt = null
-          v.retry = null
+          if (ev.type === 'run.finished') v.usage = null
+          v.request = null
+          v.generatingToolCall = false
         }),
       )
       return
@@ -851,6 +891,56 @@ interface HistoryPage extends Folded {
   /** 这一页引用却不在页里的 workflow 首派，见 `ConversationHistoryPageResponse`。 */
   workflowStarts: StoredStep[]
   nextCursor: string | null
+  /** 运行中这一轮与当前请求的只读快照；没有 run 在跑时为 null。 */
+  live: ConversationLiveSnapshot | null
+}
+
+/**
+ * 把刷新快照折成投影。阶段由时刻派生，四条判据与实时事件一一对应：
+ * 有退避截止点是在等，有内容时刻是在出内容，有响应头是在等内容，其余是刚发出。
+ *
+ * **已经失败又没在等待的那一行不生成投影。** 它是这一轮最后一次请求，
+ * 重发预算已耗尽，说「正在请求」是假话；收尾条马上会带着停止原因落进流里。
+ */
+function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
+  const r = live.request
+  if (!r) return null
+  if ((r.status === 'rejected' || r.status === 'uncertain') && r.backoffUntil === null) return null
+  const phase =
+    r.backoffUntil !== null
+      ? 'backoff'
+      : r.lastContentAt !== null
+        ? 'content'
+        : r.headersAt !== null
+          ? 'headers'
+          : 'sent'
+  return {
+    requestId: r.requestId,
+    attempt: r.attempt,
+    max: r.max,
+    phase,
+    backoffUntil: r.backoffUntil,
+    sentAt: r.sentAt,
+    headersAt: r.headersAt,
+    lastContentAt: r.lastContentAt,
+    seq: live.seq,
+  }
+}
+
+/**
+ * 把快照写进一条会话的投影。
+ *
+ * 序号不大于现有投影的快照整份丢弃——加载期间先到的实时事件比它新。
+ * `live` 为 null 表示服务端此刻没有这条会话的 run，投影随之清空。
+ */
+function restoreRequest(v: ConversationView, live: ConversationLiveSnapshot | null): void {
+  if (!live) {
+    v.request = null
+    v.generatingToolCall = false
+    return
+  }
+  if (v.request && live.seq < v.request.seq) return
+  v.request = projectLive(live)
 }
 
 /** 一页折成会话流：首派先进流，它自己那一行由 workflow 折叠藏起来，只为把那张卡画全。 */
@@ -932,6 +1022,7 @@ async function fetchConversationPage(
     todos: page.todos,
     workflowStarts: page.workflowStarts as unknown as StoredStep[],
     nextCursor: page.nextCursor,
+    live: page.live,
   }
 }
 
@@ -1031,16 +1122,13 @@ export async function loadConversationView(id: string): Promise<void> {
         const known = new Set(items.map((i) => i.id))
         v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+        restoreRequest(v, page.live)
         if (live) {
           v.runStartedAt ??= live.createdAt
           v.usage ??= live.usage
-          v.lastEventAt ??= Date.now()
         } else if (!s.busyConversations.includes(id)) {
           v.runStartedAt = null
           v.usage = null
-          v.lastEventAt = null
-          v.retry = null
-          v.generatingToolCall = false
         }
       }),
     )
@@ -1419,11 +1507,8 @@ export async function reloadActiveConversation(): Promise<void> {
           v.runStartedAt = live ? live.createdAt : null
           v.runUserMessageId = live?.userMessageId ?? null
           v.usage = live?.usage ?? null
-          // 重拉之后「上一次有动静」只能从此刻算起：之前收过什么事件已经无从得知。
-          v.lastEventAt = live ? Date.now() : null
-          // 重连计数活在 AgentLoop 调用栈，账本没有对应字段，重拉只能清空。
-          v.retry = null
-          v.generatingToolCall = false
+          // 当前请求的阶段、次数与内容时刻由同一份请求账现取，不按重拉时刻造一个。
+          restoreRequest(v, folded.live)
           // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
           v.error = null
         }

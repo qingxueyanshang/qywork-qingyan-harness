@@ -149,9 +149,8 @@ describe('文件页刷新', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [],
         },
@@ -529,9 +528,8 @@ describe('变更页按轮', () => {
     runUserMessageId: null,
     runStartedAt: null,
     usage: null,
-    lastEventAt: null,
     generatingToolCall: false,
-    retry: null,
+    request: null,
     error: null,
   })
 

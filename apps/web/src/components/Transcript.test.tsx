@@ -134,7 +134,108 @@ test('发送到起轮之间保留耗时列，开始时刻到达时同步计时�
   }
 })
 
-test('主会话与子会话状态行按真实参数进度显示，静默与重连仍能接管', async () => {
+/**
+ * 持续输出之后的间隔按**最后一段内容**算，刷新前后是同一个数。
+ *
+ * 原始失败形状：按首内容、步骤创建或页面加载时刻算——t=0 收首段、t=60 s 收末段，
+ * 那三种取法在 t=65 s 分别报 65 秒、65 秒和 0 秒，而真相是 5 秒。
+ */
+test('间隔按最后内容时刻算，刷新前后是同一个数', async () => {
+  const store = await import('../lib/store/index.ts')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const nowBefore = Date.now
+  const { render } = await import('solid-js/web')
+  const { LiveRunBar } = await import('./Transcript.tsx')
+  const id = 'cv_silence'
+  const t0 = 1_700_000_000_000
+  let now = t0
+  Date.now = () => now
+  store.setState({
+    activeConversation: id,
+    busyConversations: [id],
+    connection: 'ready',
+    views: {},
+  })
+  store.openView(id)
+  store.setState('views', id, 'runStartedAt', t0)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <LiveRunBar conversationId={id} />, host as unknown as HTMLElement)
+  const note = () => host.querySelector('.run-live')?.textContent
+  try {
+    // t=0 首段、t=60 s 末段，两段都走实时事件。
+    store.applyEvent({
+      seq: 1,
+      at: t0,
+      conversationId: id,
+      event: {
+        type: 'run.request',
+        runId: 'rn_silence',
+        requestId: 'pr_silence',
+        phase: 'sent',
+        attempt: 0,
+        max: 5,
+        at: t0,
+      },
+    } as never)
+    store.applyEvent({
+      seq: 2,
+      at: t0,
+      conversationId: id,
+      event: { type: 'text.delta', runId: 'rn_silence', stepId: 'st_1', delta: '首段', at: t0 },
+    } as never)
+    store.applyEvent({
+      seq: 3,
+      at: t0,
+      conversationId: id,
+      event: {
+        type: 'text.delta',
+        runId: 'rn_silence',
+        stepId: 'st_1',
+        delta: '末段',
+        at: t0 + 60_000,
+      },
+    } as never)
+
+    // t=65 s：距末段 5 秒，没到改口的阈值，这一格照旧说在回复。
+    now = t0 + 65_000
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(now - store.viewOf(id).request!.lastContentAt!).toBe(5_000)
+    expect(note()).toBe('正在回复…')
+
+    // 再过 30 秒越过阈值：报的是距末段的 35 秒。按首段算会报 95 秒。
+    now = t0 + 95_000
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(note()).toBe('已 35 秒无新增内容')
+
+    /*
+     * 刷新：投影改由历史接口的快照写，最后内容时刻是账本里的同一个值，
+     * 因此这一格一个字都不变。按重拉时刻算会归零，那一格会退回「正在回复…」。
+     */
+    store.setState('views', id, 'request', {
+      requestId: 'pr_silence',
+      attempt: 0,
+      max: 5,
+      phase: 'content' as const,
+      backoffUntil: null,
+      sentAt: t0,
+      headersAt: t0,
+      lastContentAt: t0 + 60_000,
+      seq: 9,
+    })
+    expect(note()).toBe('已 35 秒无新增内容')
+  } finally {
+    dispose()
+    host.remove()
+    Date.now = nowBefore
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
+test('主会话与子会话状态行按真实参数进度显示，退避与重连仍能接管', async () => {
   const store = await import('../lib/store/index.ts')
   const workspaceBefore = store.workspace()
   const connectionBefore = store.state.connection
@@ -149,10 +250,24 @@ test('主会话与子会话状态行按真实参数进度显示，静默与重�
   })
   store.openConversationTab(ids[1]!, '子会话')
   store.syncViews()
+  let seq = 0
+  // 静默那一档按当前请求的最后内容时刻算，所以直接把投影摆成「出过内容、已经 31 秒没动」。
+  const silent = (conversationId: string) =>
+    store.setState('views', conversationId, 'request', {
+      requestId: 'pr_progress',
+      attempt: 0,
+      max: 5,
+      phase: 'content' as const,
+      backoffUntil: null,
+      sentAt: null,
+      headersAt: null,
+      lastContentAt: Date.now() - 31_000,
+      seq: ++seq,
+    })
   for (const id of ids) {
     store.openView(id)
     store.setState('views', id, 'runStartedAt', Date.now() - 60_000)
-    store.setState('views', id, 'lastEventAt', Date.now() - 31_000)
+    silent(id)
   }
   const host = document.createElement('div')
   document.body.append(host)
@@ -165,26 +280,25 @@ test('主会话与子会话状态行按真实参数进度显示，静默与重�
     ),
     host as unknown as HTMLElement,
   )
-  let seq = 0
   const progress = (conversationId: string) =>
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),
       conversationId,
-      event: { type: 'tool.generating', runId: 'rn_progress' },
+      event: { type: 'tool.generating', runId: 'rn_progress', at: Date.now() },
     } as never)
   const notes = () => [...host.querySelectorAll('.run-live')].map((el) => el.textContent)
   try {
-    expect(notes().every((note) => note?.includes('没有新数据'))).toBe(true)
+    expect(notes().every((note) => note?.includes('无新增内容'))).toBe(true)
     progress(ids[0]!)
     expect(notes()[0]).toBe('正在生成…')
-    expect(notes()[1]).toContain('没有新数据')
+    expect(notes()[1]).toContain('无新增内容')
     expect(store.viewOf(ids[0]!).transcript).toHaveLength(0)
     progress(ids[1]!)
     expect(notes()).toEqual(['正在生成…', '正在生成…'])
 
-    store.setState('views', ids[0]!, 'lastEventAt', Date.now() - 31_000)
-    expect(notes()[0]).toContain('没有新数据')
+    silent(ids[0]!)
+    expect(notes()[0]).toContain('无新增内容')
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),
@@ -192,9 +306,27 @@ test('主会话与子会话状态行按真实参数进度显示，静默与重�
       event: {
         type: 'run.retrying',
         runId: 'rn_progress',
+        requestId: 'pr_progress',
         attempt: 1,
         max: 5,
+        backoffMs: 60_000,
+        at: Date.now(),
         failedThinkingStepIds: [],
+      },
+    } as never)
+    expect(notes()[0]).toMatch(/^等待重试，(60|61) 秒后…$/)
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'run.request',
+        runId: 'rn_progress',
+        requestId: 'pr_retry',
+        phase: 'sent',
+        attempt: 1,
+        max: 5,
+        at: Date.now(),
       },
     } as never)
     expect(notes()[0]).toBe('正在重连 1 / 5…')
@@ -242,9 +374,8 @@ describe('工具图片回放', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [
             {
@@ -295,9 +426,8 @@ describe('工具图片回放', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [
             {
@@ -641,9 +771,8 @@ describe('子会话与主会话共用流式外壳', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
         },
       },
@@ -854,9 +983,8 @@ describe('子会话与主会话共用流式外壳', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
         },
       },
@@ -908,9 +1036,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [
             { id: 'u-short', kind: 'user', text: '短消息' },
@@ -1058,9 +1185,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runUserMessageId: null,
           runStartedAt: Date.now(),
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [
             { id: 'u1', kind: 'user', text: '问一句' },
@@ -1251,9 +1377,8 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
           runUserMessageId: null,
           runStartedAt: null,
           usage: null,
-          lastEventAt: null,
           generatingToolCall: false,
-          retry: null,
+          request: null,
           error: null,
           transcript: [],
         },

@@ -151,6 +151,35 @@ export interface ChangesView {
   error: string | null
 }
 
+/**
+ * 当前请求投影：这一次请求是哪一条、第几次、走到哪一阶段、各阶段的时刻。
+ *
+ * 四个阶段按事实推进，只有 `run.request` / `run.retrying` / 内容事件与刷新快照能写它。
+ * `backoff` 与 `sent` 之间不是同一次请求：退避结束之后 `requestId` 换成新的一行，
+ * 而次数留着——那正是「正在重连 N / M」要说的事。
+ */
+export interface RequestProjection {
+  requestId: string
+  /** 本次故障链内的重发序号，首发 0。 */
+  attempt: number
+  max: number
+  phase: 'backoff' | 'sent' | 'headers' | 'content'
+  /** 退避倒计时的截止点；只有 `backoff` 阶段非空。 */
+  backoffUntil: number | null
+  sentAt: number | null
+  headersAt: number | null
+  /** 最后一段非空内容到达的时刻，与 `provider_requests.last_content_at` 同一个值。 */
+  lastContentAt: number | null
+  /**
+   * 写下这个投影的那条事件的序号（快照写的是它携带的边界）。
+   *
+   * **先后只按它裁决。** 序号不大于它的事件属于已经折进来的那一段，丢弃；
+   * 加载期间先到的新事件因此不会被较旧的快照覆盖回去，旧请求的迟到事件也
+   * 退不回新请求的阶段。
+   */
+  seq: number
+}
+
 export interface ConversationView {
   transcript: TranscriptItem[]
   /**
@@ -179,12 +208,16 @@ export interface ConversationView {
   runStartedAt: number | null
   /** 运行中这一轮的实时用量；收尾后转入 run 条目并清空。 */
   usage: RunUsage | null
-  /** 这条会话最后收到事件的本地时刻，用来识别静默。 */
-  lastEventAt: number | null
   /** 来自 tool.generating；参数尚未收齐，工具还没有开始执行。 */
   generatingToolCall: boolean
-  /** 这条会话正在原样重发第几次；真源是服务端的 `run.retrying`。 */
-  retry: { attempt: number; max: number } | null
+  /**
+   * 这条会话当前那一次 provider 请求走到哪了。`null` = 没有请求在身上。
+   *
+   * **阶段、次数、等待截止点与最后内容时刻收在同一个对象里。** 拆成几个并列字段时，
+   * 退避结束的事件只清得掉其中一个，界面因此同时挂着「正在重连 2 / 5」和新请求的
+   * 思考内容。实时事件与刷新快照按同一条规则写它，两条路恢复出来的是同一个状态。
+   */
+  request: RequestProjection | null
   /**
    * 这条会话最后一次报错。
    *
@@ -202,9 +235,8 @@ const EMPTY_VIEW: ConversationView = Object.freeze({
   runUserMessageId: null,
   runStartedAt: null,
   usage: null,
-  lastEventAt: null,
   generatingToolCall: false,
-  retry: null,
+  request: null,
   error: null,
 })
 
@@ -347,9 +379,8 @@ export function openView(id: string): void {
     runUserMessageId: null,
     runStartedAt: null,
     usage: null,
-    lastEventAt: null,
     generatingToolCall: false,
-    retry: null,
+    request: null,
     error: null,
   })
 }
@@ -479,7 +510,7 @@ export function hasRun(): boolean {
  * 四个分量各对应一类落库：`lastRunId` 与忙闲对 `runs` 行的起止，
  * `transcript.length` 对 `steps` 行（一条 step 一个条目），
  * `usage.turns.length` 对 provider 的每次 usage 回报。
- * 不要换成 `lastEventAt`：它每来一帧就动一次，等于把重取拉到 token 频率。
+ * 不要换成当前请求投影的内容时刻：它每来一帧就动一次，等于把重取拉到 token 频率。
  */
 export function ledgerRevision(): string {
   const marks = [
